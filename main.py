@@ -8,8 +8,8 @@ import yfinance as yf
 app = Flask(__name__)
 
 # 從 Render 的 Environment Variables 讀取你的 LINE 金鑰
-line_bot_api = LineBotApi(os.environ.get("CHANNEL_ACCESS_TOKEN"))
-handler = WebhookHandler(os.environ.get("CHANNEL_SECRET"))
+line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
+handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
 
 @app.route("/")
