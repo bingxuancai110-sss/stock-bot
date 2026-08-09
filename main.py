@@ -12,8 +12,8 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# 產業分類對照表
-stock_categories = {
+# 台股大型熱門掃描清單（涵蓋半導體、AI伺服器、航運、金融、傳產等主流）
+market_watchlist = {
     "2330.TW": "晶圓製造 / 半導體",
     "2317.TW": "代工大廠 / AI 伺服器",
     "2454.TW": "IC 設計 / 晶片",
@@ -25,7 +25,13 @@ stock_categories = {
     "2881.TW": "金融保險 / 金控",
     "2356.TW": "電腦及週邊 / 英業達",
     "3037.TW": "電子零組件 / 欣興 (載板)",
-    "8046.TW": "半導體 / 佑華"
+    "8046.TW": "半導體 / 佑華",
+    "2379.TW": "IC 設計 / 瑞昱",
+    "2609.TW": "航運 / 陽明",
+    "2882.TW": "金融保險 / 富邦金",
+    "2891.TW": "金融保險 / 中信金",
+    "3017.TW": "電腦及週邊 / 奇鋐",
+    "2327.TW": "電子零組件 / 國巨 (被動元件)"
 }
 
 @app.route("/")
@@ -51,41 +57,55 @@ def handle_message(event):
             "🤖 【台股交易雷達選單】\n"
             "-------------------\n"
             "1. 輸入股票代號（如 2330）：即時行情、產業與法人動態\n"
-            "2. 輸入【雷達】：執行熱門產業掃描\n"
+            "2. 輸入【雷達】：全市場熱門強勢股自動排序掃描\n"
             "3. 輸入【回測】：查看歷史策略績效"
         )
     elif user_text == "雷達":
-        watchlist = list(stock_categories.keys())
-        passed_stocks = []
+        scanned_results = []
 
-        for code in watchlist:
+        for code, industry in market_watchlist.items():
             try:
                 stock = yf.Ticker(code)
-                df = stock.history(period="10d")
-                if len(df) < 5:
+                df = stock.history(period="5d")
+                if len(df) < 2:
                     continue
                 
                 latest = df.iloc[-1]
                 close = latest["Close"]
                 open_p = latest["Open"]
+                vol = latest["Volume"]
                 pct = ((close - open_p) / open_p) * 100
-                industry = stock_categories.get(code, "台股標的")
 
-                if pct >= -2.0: # 顯示近期活躍標的
-                    passed_stocks.append(f"🔥 {code} [{industry}]\n   收盤 {close:.1f} ({pct:+.2f}%)")
+                scanned_results.append({
+                    "code": code,
+                    "industry": industry,
+                    "close": close,
+                    "pct": pct,
+                    "vol": vol
+                })
             except:
                 continue
 
-        if passed_stocks:
+        # 依照當日成交量（vol）由大到小排序，抓出市場最熱絡的前 5 名
+        scanned_results.sort(key=lambda x: x["vol"], reverse=True)
+        top_stocks = scanned_results[:5]
+
+        if top_stocks:
+            passed_text = []
+            for item in top_stocks:
+                passed_text.append(
+                    f"🔥 {item['code']} [{item['industry']}]\n"
+                    f"   收盤 {item['close']:.1f} ({item['pct']:+.2f}%) | 量 {int(item['vol']):,}"
+                )
             reply_text = (
-                "🎯 【台股熱門產業雷達掃描】\n"
-                "-------------------\n" + "\n".join(passed_stocks[:6]) # 顯示前 6 筆
+                "🎯 【全市場成交量熱門雷達 TOP 5】\n"
+                "-------------------\n" + "\n".join(passed_text)
             )
         else:
             reply_text = (
-                "🎯 【台股熱門產業雷達掃描】\n"
+                "🎯 【全市場成交量熱門雷達】\n"
                 "-------------------\n"
-                "今日無符合條件標的。"
+                "目前無法取得市場掃描資料。"
             )
     elif user_text == "回測":
         reply_text = (
@@ -117,8 +137,7 @@ def handle_message(event):
                 vol = latest["Volume"]
                 pct = ((close - open_p) / open_p) * 100
 
-                # 取得產業分類，如果不在字典裡就預設一般類股
-                industry = stock_categories.get(stock_code, "一般類股 / 概念股")
+                industry = market_watchlist.get(stock_code, "一般類股 / 概念股")
 
                 # 動態計分
                 df['MA5'] = df['Close'].rolling(window=5).mean()
