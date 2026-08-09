@@ -90,7 +90,7 @@ def generate_morning_brief():
 
     today_str = datetime.now().strftime("%Y/%m/%d")
     return (
-        f"☀️ 【台股自動推播測試】\n"
+        f"☀️ 【台股自動推播 21:09 測試】\n"
         f"📅 日期：{today_str}\n"
         f"-------------------\n"
         f"🇺🇸 **美股主要指數**：\n"
@@ -113,9 +113,9 @@ def scheduled_morning_push():
         except Exception as e:
             print(f"推播錯誤: {e}")
 
-# 測試設定：改為今晚 20:54 準時發送
+# 測試設定：改為今晚 21:09 準時發送
 scheduler = BackgroundScheduler(timezone=timezone('Asia/Taipei'))
-scheduler.add_job(scheduled_morning_push, 'cron', hour=20, minute=54)
+scheduler.add_job(scheduled_morning_push, 'cron', hour=21, minute=9)
 scheduler.start()
 
 @app.route("/")
