@@ -15,6 +15,7 @@ handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 TARGET_USER_IDS = [
     "Ue00f44b36b32a87adaca89034ec24e58", # 你的 ID
     "Ue08d460394314e6ec6753b12540d10d7", # 朋友的 ID
+    "U08c66472c8b1d0bf2aa59436e7934573", # 新增的 ID
 ]
 
 black_horse_database = {
