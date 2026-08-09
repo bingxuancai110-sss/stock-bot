@@ -80,6 +80,12 @@ def generate_morning_brief():
     msft_pct = get_us_stock_pct("MSFT")
     amzn_pct = get_us_stock_pct("AMZN")
     googl_pct = get_us_stock_pct("GOOGL")
+    mu_pct = get_us_stock_pct("MU")
+    lite_pct = get_us_stock_pct("LITE")
+
+    # 總經數據預留位（非農與 CPI 可於此處更新或對接 API）
+    nfp_data = "待下次數據公佈更新 (非農)"
+    cpi_data = "待下次數據公佈更新 (CPI)"
 
     strategy_advice = (
         "💡 **台股操作對策**：\n"
@@ -88,18 +94,23 @@ def generate_morning_brief():
 
     today_str = datetime.now().strftime("%Y/%m/%d")
     return (
-        f"☀️ 【台股盤前與美股動態速覽 (21:32 測試)】\n"
+        f"☀️ 【台股盤前與總經動態速覽】\n"
         f"📅 日期：{today_str}\n"
         f"-------------------\n"
         f"🇺🇸 **美股主要指數**：\n"
         f"• 費城半導體：{sox_pct:+.2f}%\n"
         f"• 那斯達克：{ixic_pct:+.2f}%\n\n"
-        f"💻 **美股科技五巨頭表現**：\n"
+        f"💻 **美股科技五巨頭與重點股**：\n"
         f"• 輝達 (NVDA)：{nvda_pct:+.2f}%\n"
         f"• 蘋果 (AAPL)：{aapl_pct:+.2f}%\n"
         f"• 微軟 (MSFT)：{msft_pct:+.2f}%\n"
         f"• 亞馬遜 (AMZN)：{amzn_pct:+.2f}%\n"
-        f"• 谷歌 (GOOGL)：{googl_pct:+.2f}%\n\n"
+        f"• 谷歌 (GOOGL)：{googl_pct:+.2f}%\n"
+        f"• 美光 (MU)：{mu_pct:+.2f}%\n"
+        f"• Lumentum (LITE)：{lite_pct:+.2f}%\n\n"
+        f"📊 **總經關鍵數據**：\n"
+        f"• 非農就業 (NFP)：{nfp_data}\n"
+        f"• 消費者物價指數 (CPI)：{cpi_data}\n\n"
         f"{strategy_advice}"
     )
 
