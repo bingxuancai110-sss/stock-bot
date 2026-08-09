@@ -14,7 +14,7 @@ handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
 TARGET_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# 1. 💡【黑馬專區資料庫】：專挑「底部打底、籌碼沉澱、準備起漲」的潛力低基期個股
+# 1. 💡【黑馬專區資料庫】：專挑「底部打底、籌碼沉澱、準備起漲」的低基期潛力股
 black_horse_database = {
     "2609": {"name": "陽明", "industry": "貨櫃航運", "reason": " 底部箱型整理完成，籌碼沉澱，殖利率保護下等待資金點火起漲"},
     "2303": {"name": "聯電", "industry": "成熟製程晶圓", "reason": " 股價長期在底部打底，評價修復空間大，隨時準備強勢補漲"},
@@ -52,7 +52,7 @@ def get_realtime_stock(code):
                 continue
                 
             close = float(closes[-1])
-            prev_close = float(closes[-2]) # 準確使用前一日收盤價
+            prev_close = float(closes[-2])
             
             high = float(meta.get('regularMarketDayHigh', max(closes[-3:])))
             low = float(meta.get('regularMarketDayLow', min(closes[-3:])))
@@ -72,7 +72,6 @@ def get_realtime_stock(code):
     return None
 
 def get_us_stock_pct(symbol):
-    """抓取美股指數與個股漲跌幅"""
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=1d"
@@ -86,46 +85,27 @@ def get_us_stock_pct(symbol):
     return 0.0
 
 def generate_morning_brief():
-    """盤前分析：美股指數、總經數據（非農/CPI）、五巨頭與台股操作對策"""
     sox_pct = get_us_stock_pct("^SOX")
     ixic_pct = get_us_stock_pct("^IXIC")
-
     nvda_pct = get_us_stock_pct("NVDA")
     aapl_pct = get_us_stock_pct("AAPL")
     msft_pct = get_us_stock_pct("MSFT")
     amzn_pct = get_us_stock_pct("AMZN")
     googl_pct = get_us_stock_pct("GOOGL")
 
-    if sox_pct >= 1.0 and nvda_pct >= 0.5:
-        strategy_advice = (
-            "💡 **台股今日操作對策**：\n"
-            "美股半導體與 AI 強勢，台股開盤受激勵走高。\n"
-            "• **操作建議**：留意底部起漲的潛力黑馬，並搭配技術突破雷達順勢操作。"
-        )
-    elif sox_pct <= -1.0:
-        strategy_advice = (
-            "💡 **台股今日操作對策**：\n"
-            "美股拉回，台股恐面臨修正壓力。\n"
-            "• **操作建議**：保守觀望，尋找低基期、具防禦力的底部黑馬布局。"
-        )
-    else:
-        strategy_advice = (
-            "💡 **台股今日操作對策**：\n"
-            "美股高檔震盪，盤勢類股輪動。\n"
-            "• **操作建議**：著重基本面打底完成的黑馬標的，低接不追高。"
-        )
+    strategy_advice = (
+        "💡 **台股操作對策**：\n"
+        "• 專注低基期、底部準備起漲的黑馬股，搭配技術面爆量雷達同步操作。"
+    )
 
     today_str = datetime.now().strftime("%Y/%m/%d")
     return (
-        f"☀️ 【台股盤前與美股動態速覽】\n"
+        f"☀️ 【台股自動推播測試：盤前與美股動態】\n"
         f"📅 日期：{today_str}\n"
         f"-------------------\n"
         f"🇺🇸 **美股主要指數**：\n"
         f"• 費城半導體：{sox_pct:+.2f}%\n"
         f"• 那斯達克：{ixic_pct:+.2f}%\n\n"
-        f"📊 **美國重要總經數據 (Macro)**：\n"
-        f"• 非農就業報告 (NFP)：就業維持穩健，軟著陸預期延續\n"
-        f"• 消費者物價指數 (CPI)：通膨數據牽動 Fed 利率政策\n\n"
         f"💻 **美股科技五巨頭表現**：\n"
         f"• 輝達 (NVDA)：{nvda_pct:+.2f}%\n"
         f"• 蘋果 (AAPL)：{aapl_pct:+.2f}%\n"
@@ -144,7 +124,8 @@ def scheduled_morning_push():
             pass
 
 scheduler = BackgroundScheduler()
-scheduler.add_job(scheduled_morning_push, 'cron', hour=8, minute=0)
+# 測試設定：改為今天晚上 20:46 準時發送
+scheduler.add_job(scheduled_morning_push, 'cron', hour=20, minute=46)
 scheduler.start()
 
 @app.route("/")
@@ -173,7 +154,6 @@ def handle_message(event):
     user_text_upper = user_text.upper()
     pure_code = "".join(filter(str.isdigit, user_text))
 
-    # 1. 個股即時行情查詢
     if len(pure_code) == 4 and len(user_text) <= 5:
         data = get_realtime_stock(pure_code)
         if data:
@@ -212,25 +192,19 @@ def handle_message(event):
                 f"• 5日均線：{ma5:.1f} | 20日均線：{ma20:.1f}"
             )
         else:
-            reply_text = f"❌ 查無代號 {pure_code} 的即時行情資料，請確認代號是否正確。"
+            reply_text = f"❌ 查無代號 {pure_code} 的即時行情資料。"
 
-    # 2. 選單指令
     elif user_text_upper in ["MENU", "MANU", "選單", "幫助", "HELP"]:
         reply_text = (
             "🤖 【蔡秉軒御用選股機器人選單】\n"
             "-------------------\n"
-            "1. 輸入【黑馬】：專看【底部打底、準備起漲】的低基期潛力股\n"
+            "1. 輸入【黑馬】：專看【底部打底、準備起漲】的潛力股\n"
             "2. 輸入【雷達】：專看【技術面：爆量、均線突破】的強勢股\n"
             "3. 輸入【回測】：策略歷史表現與勝率驗證\n"
-            "4. 輸入【盤前】：美股、總經與台股對策\n"
-            "💡 提示：輸入任意 4 位數代號（如 2303、2609）查詢最精準的行情與漲跌幅！"
+            "4. 輸入【盤前】：美股與台股對策"
         )
-        
-    # 3. 盤前指令
     elif user_text in ["盤前", "早安", "MORNING"]:
         reply_text = generate_morning_brief()
-        
-    # 4. 雷達指令（技術面：爆量、突破）
     elif user_text == "雷達":
         radar_results = []
         for code, info in radar_database.items():
@@ -242,28 +216,9 @@ def handle_message(event):
                         f"  🏷️ 技術特徵：【{info['tag']}】\n"
                         f"  💰 現價：{data['close']:.1f} ({data['pct']:+.2f}%)"
                     )
-        
-        reply_text = (
-            "🎯 【技術面強勢雷達：爆量與均線突破】\n"
-            "-------------------\n" + 
-            ("\n\n".join(radar_results[:4]) if radar_results else "目前盤面無符合技術突破之標的。")
-        )
-
-    # 5. 回測指令
+        reply_text = "🎯 【技術面強勢雷達】\n-------------------\n" + ("\n\n".join(radar_results[:4]) if radar_results else "目前無符合標的。")
     elif user_text == "回測":
-        reply_text = (
-            "📈 【策略歷史回測報告】\n"
-            "-------------------\n"
-            "• 回測週期：過去 12 個月\n"
-            "• 核心策略：底部起漲黑馬股 + 爆量突破雷達\n"
-            "• 歷史總交易次數：48 次\n"
-            "• 勝率表現：75.5%\n"
-            "• 平均單筆報酬率：+7.8%\n"
-            "• 最大回檔 (MDD)：-6.8%\n"
-            "💬 結論：黑馬全面轉為「底部準備起漲」低基期邏輯，不再抓長不動的高檔股！"
-        )
-
-    # 6. 黑馬指令（專門跑基本面：底部打底、準備起漲的低基期潛力股）
+        reply_text = "📈 【策略歷史回測報告】\n勝率：75.5% | 平均報酬：+7.8%"
     elif user_text == "黑馬":
         horse_results = []
         for code, info in black_horse_database.items():
@@ -274,15 +229,9 @@ def handle_message(event):
                 f"  🚀 底部起漲亮點：{info['reason']}\n"
                 f"  💰 {price_str}"
             )
-
-        reply_text = (
-            "🔥 【底部起漲・潛力黑馬專區】\n"
-            "-------------------\n" + 
-            ("\n\n".join(horse_results) if horse_results else "目前無符合條件之黑馬標的。")
-        )
-
+        reply_text = "🔥 【底部起漲・潛力黑馬專區】\n-------------------\n" + "\n\n".join(horse_results)
     else:
-        reply_text = f"輸入格式錯誤！請輸入【黑馬】、【雷達】、【回測】、【menu】或 4 位數台股代號。"
+        reply_text = f"輸入格式錯誤！請輸入【黑馬】、【雷達】、【回測】或 4 位數台股代號。"
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
