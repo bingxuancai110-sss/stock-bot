@@ -11,13 +11,12 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# 支援多人同時自動推播的清單 (4人)
 TARGET_USER_IDS = [
     "Ue00f44b36b32a87adaca89034ec24e58", # 你的 ID
-    "Ue08d460394314e6ec6753b12540d10d7", # 朋友 ID 1
-    "U08c66472c8b1d0bf2aa59436e7934573", # 朋友 ID 2
-    "U0a2557ddb509428885f3dd53540c78d8", # 朋友 ID 3
 ]
+
+# 記憶體內建的自選股清單（以 LINE User ID 為 key 儲存各自選股）
+user_watchlists = {}
 
 black_horse_database = {
     "3293": {"name": "鈊象", "industry": "網路遊戲 / 軟體", "reason": " 營收與 EPS 長期高速成長，獲利強悍，底部整理後隨時準備強勢創高"},
@@ -33,6 +32,25 @@ radar_database = {
     "2382": {"name": "廣達", "industry": "AI 伺服器", "tag": "🔥 爆量長紅突破"},
     "3231": {"name": "緯創", "industry": "AI 伺服器基板", "tag": "⚡ 短線量縮回測強撐"},
     "1503": {"name": "士電", "industry": "重電機電", "tag": "🚀 量價齊揚突破箱型"},
+}
+
+# 概念股資料庫
+industry_database = {
+    "PCB": [
+        {"code": "2368", "name": "金像電", "industry": "PCB / 伺服器板"},
+        {"code": "3037", "name": "欣興", "industry": "ABF 載板"},
+        {"code": "6269", "name": "台郡", "industry": "軟板"},
+    ],
+    "散熱": [
+        {"code": "3017", "name": "奇鋐", "industry": "散熱 / 3D VC"},
+        {"code": "3324", "name": "雙鴻", "industry": "水冷散熱"},
+        {"code": "2421", "name": "建準", "industry": "伺服器風扇"},
+    ],
+    "半導體": [
+        {"code": "2330", "name": "台積電", "industry": "晶圓代工"},
+        {"code": "2303", "name": "聯電", "industry": "成熟製程"},
+        {"code": "3711", "name": "日月光投控", "industry": "封測"},
+    ]
 }
 
 def get_realtime_stock(code):
@@ -157,14 +175,60 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    if event.source.user_id:
-        print(f"📌 收到來自使用者的 ID: {event.source.user_id}")
+    user_id = event.source.user_id
+    if user_id:
+        print(f"📌 收到來自使用者的 ID: {user_id}")
 
     user_text = event.message.text.strip()
     user_text_upper = user_text.upper()
     pure_code = "".join(filter(str.isdigit, user_text))
 
-    if len(pure_code) == 4 and len(user_text) <= 5:
+    # 初始化使用者的自選股清單
+    if user_id not in user_watchlists:
+        user_watchlists[user_id] = []
+
+    # 1. 加自選股指令 (例如：加2330)
+    if user_text.startswith("加") and len(pure_code) == 4:
+        if pure_code not in user_watchlists[user_id]:
+            user_watchlists[user_id].append(pure_code)
+            reply_text = f"✅ 成功將 {pure_code} 加入您的個人自選股！\n輸入【自選】即可隨時查看。"
+        else:
+            reply_text = f"📌 {pure_code} 已經在您的自選股清單中囉！"
+
+    # 2. 刪除自選股指令 (例如：刪2330)
+    elif user_text.startswith("刪") and len(pure_code) == 4:
+        if pure_code in user_watchlists[user_id]:
+            user_watchlists[user_id].remove(pure_code)
+            reply_text = f"🗑️ 已從自選股清單中移除 {pure_code}。"
+        else:
+            reply_text = f"❌ 您的自選股清單中找不到 {pure_code}。"
+
+    # 3. 查看自選股指令
+    elif user_text in ["自選", "WATCHLIST"]:
+        if not user_watchlists[user_id]:
+            reply_text = "📂 您的自選股清單目前是空的。\n請輸入【加 股票代號】來新增（例如：加 2330）。"
+        else:
+            results = [f"📂 【您的個人自選股追蹤】\n-------------------"]
+            for code in user_watchlists[user_id]:
+                data = get_realtime_stock(code)
+                if data:
+                    results.append(f"• {code}：現價 {data['close']:.1f} ({data['pct']:+.2f}%) | 20日均 {data['ma20']:.1f}")
+                else:
+                    results.append(f"• {code}：行情讀取中")
+            reply_text = "\n".join(results)
+
+    # 4. 概念股快查指令
+    elif user_text_upper in industry_database:
+        items = industry_database[user_text_upper]
+        results = [f"🏷️ 【熱門概念股：{user_text_upper} 族群】\n-------------------"]
+        for stock in items:
+            data = get_realtime_stock(stock["code"])
+            price_str = f"現價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
+            results.append(f"• {stock['code']} {stock['name']} ({stock['industry']})\n  💰 {price_str}")
+        reply_text = "\n\n".join(results)
+
+    # 5. 一般 4 位數股票行情查詢
+    elif len(pure_code) == 4 and len(user_text) <= 5:
         data = get_realtime_stock(pure_code)
         if data:
             close = data["close"]
@@ -204,14 +268,18 @@ def handle_message(event):
         else:
             reply_text = f"❌ 查無代號 {pure_code} 的即時行情資料。"
 
+    # 6. 選單與其他指令
     elif user_text_upper in ["MENU", "MANU", "選單", "幫助", "HELP"]:
         reply_text = (
             "🤖 【蔡秉軒御用選股機器人選單】\n"
             "-------------------\n"
-            "1. 輸入【黑馬】：專看【高成長科技股・底部起漲】潛力股\n"
-            "2. 輸入【雷達】：專看【技術面：爆量、均線突破】強勢股\n"
-            "3. 輸入【回測】：策略歷史表現與勝率驗證\n"
-            "4. 輸入【盤前】：美股與台股對策"
+            "1. 輸入【黑馬】：高成長科技股・底部起漲潛力股\n"
+            "2. 輸入【雷達】：技術面爆量、均線突破強勢股\n"
+            "3. 輸入【自選】：查看您的個人自選股清單\n"
+            "4. 輸入【PCB】/【散熱】/【半導體】：熱門概念股快查\n"
+            "5. 輸入【盤前】：美股、總經與台股對策\n"
+            "💡 新增自選股範例：輸入【加 2330】\n"
+            "💡 刪除自選股範例：輸入【刪 2330】"
         )
     elif user_text in ["盤前", "早安", "MORNING"]:
         reply_text = generate_morning_brief()
@@ -241,7 +309,7 @@ def handle_message(event):
             )
         reply_text = "🔥 【高成長科技・潛力黑馬專區】\n-------------------\n" + "\n\n".join(horse_results)
     else:
-        reply_text = f"輸入格式錯誤！請輸入【黑馬】、【雷達】、【回測】或 4 位數台股代號。"
+        reply_text = f"輸入格式錯誤！請輸入【選單】查看完整功能指令。"
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
