@@ -15,20 +15,20 @@ handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
 TARGET_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# 核心參考字典（確保三率完全獨立、6442為光聖、並補上常見的30開頭櫃買股票）
+# 核心參考字典（專注於名稱、產業與黑馬/成長動能追蹤）
 market_watchlist = {
-    "2330": {"name": "台積電", "industry": "晶圓製造 / 半導體", "is_dark_horse": True, "rev_growth": [18.5, 22.1, 15.4], "gross_margin": 53.2, "op_margin": 42.5, "net_margin": 44.1},
-    "2317": {"name": "鴻海", "industry": "代工大廠 / AI 伺服器", "is_dark_horse": False, "rev_growth": [12.0, 8.5, 14.2], "gross_margin": 6.5, "op_margin": 3.8, "net_margin": 4.2},
-    "2454": {"name": "聯發科", "industry": "IC 設計 / 晶片", "is_dark_horse": True, "rev_growth": [25.4, 30.1, 28.0], "gross_margin": 48.6, "op_margin": 21.3, "net_margin": 23.5},
-    "6442": {"name": "光聖", "industry": "光通訊 / 網通元件", "is_dark_horse": True, "rev_growth": [35.2, 41.0, 38.6], "gross_margin": 32.1, "op_margin": 18.2, "net_margin": 19.6},
-    "2308": {"name": "台達電", "industry": "電子零組件 / 被動元件", "is_dark_horse": False, "rev_growth": [5.2, 9.1, 11.0], "gross_margin": 28.1, "op_margin": 10.5, "net_margin": 11.8},
-    "2382": {"name": "廣達", "industry": "電腦及週邊 / AI 伺服器", "is_dark_horse": False, "rev_growth": [15.2, 11.4, 9.8], "gross_margin": 11.2, "op_margin": 5.1, "net_margin": 5.8},
-    "3231": {"name": "緯創", "industry": "電腦及週邊 / 緯創集團", "is_dark_horse": False, "rev_growth": [8.1, 14.2, 12.5], "gross_margin": 8.4, "op_margin": 3.6, "net_margin": 4.1},
-    "2603": {"name": "長榮", "industry": "航運 / 貨櫃運輸", "is_dark_horse": False, "rev_growth": [-2.1, 4.5, 8.2], "gross_margin": 22.5, "op_margin": 16.1, "net_margin": 18.5},
-    "3037": {"name": "欣興", "industry": "電子零組件 / 欣興 (載板)", "is_dark_horse": True, "rev_growth": [14.5, 16.8, 20.2], "gross_margin": 18.5, "op_margin": 8.2, "net_margin": 9.0},
-    "3081": {"name": "聯捷", "industry": "電子零組件 / 櫃買概念股", "is_dark_horse": False, "rev_growth": [10.2, 8.1, 9.5], "gross_margin": 24.5, "op_margin": 11.2, "net_margin": 12.0},
-    "3083": {"name": "網龍", "industry": "數位內容 / 遊戲", "is_dark_horse": False, "rev_growth": [5.0, -2.1, 3.2], "gross_margin": 45.0, "op_margin": 8.5, "net_margin": 9.2},
-    "3088": {"name": "艾訊", "industry": "工業電腦 / IPC", "is_dark_horse": False, "rev_growth": [8.2, 10.5, 9.1], "gross_margin": 36.2, "op_margin": 14.1, "net_margin": 15.5},
+    "2330": {"name": "台積電", "industry": "晶圓製造 / 半導體", "is_dark_horse": True, "rev_growth": [18.5, 22.1, 15.4]},
+    "2317": {"name": "鴻海", "industry": "代工大廠 / AI 伺服器", "is_dark_horse": False, "rev_growth": [12.0, 8.5, 14.2]},
+    "2454": {"name": "聯發科", "industry": "IC 設計 / 晶片", "is_dark_horse": True, "rev_growth": [25.4, 30.1, 28.0]},
+    "6442": {"name": "光聖", "industry": "光通訊 / 網通元件", "is_dark_horse": True, "rev_growth": [35.2, 41.0, 38.6]},
+    "2308": {"name": "台達電", "industry": "電子零組件 / 被動元件", "is_dark_horse": False, "rev_growth": [5.2, 9.1, 11.0]},
+    "2382": {"name": "廣達", "industry": "電腦及週邊 / AI 伺服器", "is_dark_horse": False, "rev_growth": [15.2, 11.4, 9.8]},
+    "3231": {"name": "緯創", "industry": "電腦及週邊 / 緯創集團", "is_dark_horse": False, "rev_growth": [8.1, 14.2, 12.5]},
+    "2603": {"name": "長榮", "industry": "航運 / 貨櫃運輸", "is_dark_horse": False, "rev_growth": [-2.1, 4.5, 8.2]},
+    "3037": {"name": "欣興", "industry": "電子零組件 / 欣興 (載板)", "is_dark_horse": True, "rev_growth": [14.5, 16.8, 20.2]},
+    "3081": {"name": "聯捷", "industry": "電子零組件 / 櫃買概念股", "is_dark_horse": False, "rev_growth": [10.2, 8.1, 9.5]},
+    "3083": {"name": "網龍", "industry": "數位內容 / 遊戲", "is_dark_horse": False, "rev_growth": [5.0, -2.1, 3.2]},
+    "3088": {"name": "艾訊", "industry": "工業電腦 / IPC", "is_dark_horse": False, "rev_growth": [8.2, 10.5, 9.1]},
 }
 
 def generate_morning_brief():
@@ -192,17 +192,12 @@ def handle_message(event):
     else:
         pure_code = "".join(filter(str.isdigit, user_text))
         if len(pure_code) == 4:
-            # 取得對應資訊，若不在字典內則給予各自獨立且合理的預設三率（絕不讓營業利益率與稅前淨利率相同）
             info_dict = market_watchlist.get(pure_code, {
                 "name": f"台股 {pure_code}", 
-                "industry": "一般上市櫃 / 概念股", 
-                "gross_margin": 28.5, 
-                "op_margin": 11.2, 
-                "net_margin": 12.8
+                "industry": "一般上市櫃 / 概念股"
             })
             name = info_dict["name"]
             industry = info_dict["industry"]
-            gm, om, nm = info_dict["gross_margin"], info_dict["op_margin"], info_dict["net_margin"]
             
             try:
                 df = pd.DataFrame()
@@ -245,10 +240,6 @@ def handle_message(event):
                     f"💰 即時成交：{close:.2f} ({pct:+.2f}%)\n"
                     f"🔺 最高：{high:.2f} | 🔻 最低：{low:.2f}\n"
                     f"📦 成交量：{int(vol / 1000):,} 張\n\n"
-                    f"📋 【營收三率表現】\n"
-                    f"• 毛利率：{gm:.1f}%\n"
-                    f"• 營業利益率：{om:.1f}%\n"
-                    f"• 稅前淨利率：{nm:.1f}%\n\n"
                     f"🎯 【進場訊號引擎】\n"
                     f"• 綜合評分：{score}/100\n"
                     f"• 建議進場區：{close:.1f}\n"
@@ -266,10 +257,6 @@ def handle_message(event):
                     f"-------------------\n"
                     f"💰 即時成交：100.00 (+0.00%)\n"
                     f"📦 成交量：1,000 張\n\n"
-                    f"📋 【營收三率表現】\n"
-                    f"• 毛利率：{gm:.1f}%\n"
-                    f"• 營業利益率：{om:.1f}%\n"
-                    f"• 稅前淨利率：{nm:.1f}%\n\n"
                     f"🎯 【進場訊號引擎】\n"
                     f"• 綜合評分：75/100\n"
                     f"• 建議進場區：100.0\n"
