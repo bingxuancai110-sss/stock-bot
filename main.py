@@ -5,8 +5,6 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from datetime import datetime
-from apscheduler.schedulers.background import BackgroundScheduler
-from pytz import timezone
 
 app = Flask(__name__)
 
@@ -90,7 +88,7 @@ def generate_morning_brief():
 
     today_str = datetime.now().strftime("%Y/%m/%d")
     return (
-        f"☀️ 【台股自動推播 21:09 測試】\n"
+        f"☀️ 【台股盤前與美股動態速覽 (21:15 測試)】\n"
         f"📅 日期：{today_str}\n"
         f"-------------------\n"
         f"🇺🇸 **美股主要指數**：\n"
@@ -105,22 +103,21 @@ def generate_morning_brief():
         f"{strategy_advice}"
     )
 
-def scheduled_morning_push():
+@app.route("/")
+def home():
+    return "Stock Bot & Radar is alive!"
+
+# 專用推播觸發路由：只要 cron-job.org 呼叫這個網址，就會立刻發送推播！
+@app.route("/push-test")
+def push_test():
     if TARGET_USER_ID:
         try:
             message = generate_morning_brief()
             line_bot_api.push_message(TARGET_USER_ID, TextSendMessage(text=message))
+            return "Push Success!"
         except Exception as e:
-            print(f"推播錯誤: {e}")
-
-# 測試設定：改為今晚 21:09 準時發送
-scheduler = BackgroundScheduler(timezone=timezone('Asia/Taipei'))
-scheduler.add_job(scheduled_morning_push, 'cron', hour=21, minute=9)
-scheduler.start()
-
-@app.route("/")
-def home():
-    return "Stock Bot & Radar is alive!"
+            return f"Push Failed: {e}"
+    return "Target User ID not found."
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -207,7 +204,7 @@ def handle_message(event):
         horse_results = []
         for code, info in black_horse_database.items():
             data = get_realtime_stock(code)
-            price_str = f"現價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
+            price_str = f"现價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
             horse_results.append(
                 f"• {code} {info['name']} ({info['industry']})\n"
                 f"  🚀 科技成長亮點：{info['reason']}\n"
