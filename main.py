@@ -1,5 +1,4 @@
 import os
-import random
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -12,7 +11,6 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# 台股大型熱門掃描清單（涵蓋半導體、AI伺服器、航運、金融、傳產等主流）
 market_watchlist = {
     "2330.TW": "晶圓製造 / 半導體",
     "2317.TW": "代工大廠 / AI 伺服器",
@@ -26,6 +24,7 @@ market_watchlist = {
     "2356.TW": "電腦及週邊 / 英業達",
     "3037.TW": "電子零組件 / 欣興 (載板)",
     "8046.TW": "半導體 / 佑華",
+    "2492.TW": "華新科 / 被動元件",
     "2379.TW": "IC 設計 / 瑞昱",
     "2609.TW": "航運 / 陽明",
     "2882.TW": "金融保險 / 富邦金",
@@ -56,8 +55,8 @@ def handle_message(event):
         reply_text = (
             "🤖 【台股交易雷達選單】\n"
             "-------------------\n"
-            "1. 輸入股票代號（如 2330）：即時行情、產業與法人動態\n"
-            "2. 輸入【雷達】：全市場熱門強勢股自動排序掃描\n"
+            "1. 輸入股票代號（如 2330）：即時行情與技術分析\n"
+            "2. 輸入【雷達】：全市場成交量熱門掃描\n"
             "3. 輸入【回測】：查看歷史策略績效"
         )
     elif user_text == "雷達":
@@ -86,16 +85,19 @@ def handle_message(event):
             except:
                 continue
 
-        # 依照當日成交量（vol）由大到小排序，抓出市場最熱絡的前 5 名
         scanned_results.sort(key=lambda x: x["vol"], reverse=True)
         top_stocks = scanned_results[:5]
 
         if top_stocks:
             passed_text = []
             for item in top_stocks:
+                # 轉換為直覺好讀的張數與漲跌符號
+                vol_lots = int(item['vol'] / 1000)
+                status_icon = "🟢" if item['pct'] >= 0 else "🔴"
+                
                 passed_text.append(
-                    f"🔥 {item['code']} [{item['industry']}]\n"
-                    f"   收盤 {item['close']:.1f} ({item['pct']:+.2f}%) | 量 {int(item['vol']):,}"
+                    f"{status_icon} **{item['code']}** | {item['industry']}\n"
+                    f"   收盤 {item['close']:.1f} ({item['pct']:+.2f}%) ｜ 量 {vol_lots:,} 張"
                 )
             reply_text = (
                 "🎯 【全市場成交量熱門雷達 TOP 5】\n"
@@ -124,7 +126,7 @@ def handle_message(event):
             stock = yf.Ticker(stock_code)
             df = stock.history(period="20d")
             if df.empty:
-                stock_code = f"{user_text}.TWO" if not user_text.endswith(".TWO") else user_text
+                stock_code = f"{user_text}.TWO" if not stock_code.endswith(".TWO") else user_text
                 stock = yf.Ticker(stock_code)
                 df = stock.history(period="20d")
 
@@ -135,11 +137,11 @@ def handle_message(event):
                 high = latest["High"]
                 low = latest["Low"]
                 vol = latest["Volume"]
+                vol_lots = int(vol / 1000)
                 pct = ((close - open_p) / open_p) * 100
 
                 industry = market_watchlist.get(stock_code, "一般類股 / 概念股")
 
-                # 動態計分
                 df['MA5'] = df['Close'].rolling(window=5).mean()
                 df['MA20'] = df['Close'].rolling(window=20).mean()
                 ma5_val = df['MA5'].iloc[-1]
@@ -156,39 +158,22 @@ def handle_message(event):
                 
                 score = min(max(score, 55), 96)
 
-                # 法人數據與目標價
-                if pct > 1.0:
-                    fi_val = f"買超 +{int(pct * 950)} 張"
-                    it_val = f"買超 +{int(pct * 350)} 張"
-                    dl_val = f"買超 +{int(pct * 200)} 張"
-                elif pct < -1.0:
-                    fi_val = f"賣超 -{int(abs(pct) * 1050)} 張"
-                    it_val = f"賣超 -{int(abs(pct) * 300)} 張"
-                    dl_val = f"賣超 -{int(abs(pct) * 180)} 張"
-                else:
-                    fi_val = "調節 -150 張"
-                    it_val = "觀望 / 小幅買超"
-                    dl_val = "短線避險 +60 張"
-
-                target_price = close * 1.12
-
                 reply_text = (
                     f"📊 【台股即時行情：{stock_code}】\n"
                     f"🏢 產業類別：{industry}\n"
                     f"-------------------\n"
                     f"💰 即時成交：{close:.2f} ({pct:+.2f}%)\n"
                     f"🔺 最高：{high:.2f} | 🔻 最低：{low:.2f}\n"
-                    f"📦 成交量：{int(vol):,}\n\n"
+                    f"📦 成交量：{vol_lots:,} 張\n\n"
                     f"🎯 【進場訊號引擎】\n"
                     f"• 綜合評分：{score}/100\n"
                     f"• 建議進場區：{close:.1f}\n"
                     f"• 第一停利 (TP1)：{close * 1.035:.1f}\n"
                     f"• 動態停損 (SL)：{close * 0.975:.1f}\n\n"
-                    f"🏛️ 【法人與目標價情報】\n"
-                    f"• 外資昨日：{fi_val}\n"
-                    f"• 投信昨日：{it_val}\n"
-                    f"• 自營商昨日：{dl_val}\n"
-                    f"• 機構平均目標價：約 {target_price:.1f}"
+                    f"📈 【技術面與均線狀態】\n"
+                    f"• 5日均線：{ma5_val:.1f}\n"
+                    f"• 20日均線：{ma20_val:.1f}\n"
+                    f"• 趨勢判定：{'多頭排列 (偏多)' if ma5_val > ma20_val else '短線回檔 / 整理'}"
                 )
             else:
                 reply_text = f"找不到代號「{user_text}」的台股資料！"
