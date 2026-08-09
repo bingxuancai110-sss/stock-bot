@@ -56,7 +56,7 @@ def handle_message(event):
             "🤖 【台股交易雷達選單】\n"
             "-------------------\n"
             "1. 輸入股票代號（如 2330）：即時行情與技術分析\n"
-            "2. 輸入【雷達】：全市場成交量熱門掃描\n"
+            "2. 輸入【雷達】：多方動能與量價掃描\n"
             "3. 輸入【回測】：查看歷史策略績效"
         )
     elif user_text == "雷達":
@@ -65,8 +65,8 @@ def handle_message(event):
         for code, industry in market_watchlist.items():
             try:
                 stock = yf.Ticker(code)
-                df = stock.history(period="5d")
-                if len(df) < 2:
+                df = stock.history(period="25d")
+                if len(df) < 20:
                     continue
                 
                 latest = df.iloc[-1]
@@ -75,37 +75,64 @@ def handle_message(event):
                 vol = latest["Volume"]
                 pct = ((close - open_p) / open_p) * 100
 
+                # 計算均線
+                df['MA5'] = df['Close'].rolling(window=5).mean()
+                df['MA20'] = df['Close'].rolling(window=20).mean()
+                df['VolMA5'] = df['Volume'].rolling(window=5).mean()
+                
+                ma5 = df['MA5'].iloc[-1]
+                ma20 = df['MA20'].iloc[-1]
+                vol_ma5 = df['VolMA5'].iloc[-1]
+
+                # 【優化後的篩選與評分邏輯】
+                # 1. 計算量能放大倍數 (當日量 / 5日均量)
+                vol_ratio = vol / vol_ma5 if vol_ma5 > 0 else 1.0
+
+                # 2. 評分機制：基礎分 60，漲幅大加分，站上 MA20 加分，帶量加分
+                score = 60
+                if close > ma20:
+                    score += 12  # 站上月線，中線偏多
+                if ma5 > ma20:
+                    score += 8   # 短期均線多頭排列
+                if vol_ratio > 1.2:
+                    score += 10  # 帶量突破 5 日均量
+                score += int(pct * 3) # 依當日漲跌微調
+                
+                score = min(max(score, 40), 98)
+
                 scanned_results.append({
                     "code": code,
                     "industry": industry,
                     "close": close,
                     "pct": pct,
-                    "vol": vol
+                    "vol": vol,
+                    "score": score,
+                    "vol_ratio": vol_ratio
                 })
             except:
                 continue
 
-        scanned_results.sort(key=lambda x: x["vol"], reverse=True)
+        # 依照「綜合評分」排序，找出最強的前 5 檔
+        scanned_results.sort(key=lambda x: x["score"], reverse=True)
         top_stocks = scanned_results[:5]
 
         if top_stocks:
             passed_text = []
             for item in top_stocks:
-                # 轉換為直覺好讀的張數與漲跌符號
                 vol_lots = int(item['vol'] / 1000)
-                status_icon = "🟢" if item['pct'] >= 0 else "🔴"
+                status_icon = "🔴" if item['pct'] >= 0 else "🟢"  # 台股習慣：紅漲綠跌
                 
                 passed_text.append(
-                    f"{status_icon} **{item['code']}** | {item['industry']}\n"
-                    f"   收盤 {item['close']:.1f} ({item['pct']:+.2f}%) ｜ 量 {vol_lots:,} 張"
+                    f"{status_icon} {item['code']} | {item['industry']}\n"
+                    f"   收盤 {item['close']:.1f} ({item['pct']:+.2f}%) ｜ 量 {vol_lots:,} 張 ｜ 綜合評分: {item['score']}"
                 )
             reply_text = (
-                "🎯 【全市場成交量熱門雷達 TOP 5】\n"
+                "🎯 【台股多方動能與量價雷達 TOP 5】\n"
                 "-------------------\n" + "\n".join(passed_text)
             )
         else:
             reply_text = (
-                "🎯 【全市場成交量熱門雷達】\n"
+                "🎯 【台股多方動能與量價雷達】\n"
                 "-------------------\n"
                 "目前無法取得市場掃描資料。"
             )
@@ -124,11 +151,11 @@ def handle_message(event):
 
         try:
             stock = yf.Ticker(stock_code)
-            df = stock.history(period="20d")
+            df = stock.history(period="25d")
             if df.empty:
-                stock_code = f"{user_text}.TWO" if not stock_code.endswith(".TWO") else user_text
+                stock_code = f"{user_text}.TWO" if not user_text.endswith(".TWO") else user_text
                 stock = yf.Ticker(stock_code)
-                df = stock.history(period="20d")
+                df = stock.history(period="25d")
 
             if not df.empty:
                 latest = df.iloc[-1]
@@ -147,16 +174,13 @@ def handle_message(event):
                 ma5_val = df['MA5'].iloc[-1]
                 ma20_val = df['MA20'].iloc[-1]
 
-                score = 72
-                score += int(pct * 6)
-                if vol > df['Volume'].rolling(5).mean().iloc[-1]:
-                    score += 8
+                score = 65
+                if close > ma20_val:
+                    score += 15
                 if ma5_val > ma20_val:
                     score += 10
-                else:
-                    score -= 8
-                
-                score = min(max(score, 55), 96)
+                score += int(pct * 4)
+                score = min(max(score, 50), 95)
 
                 reply_text = (
                     f"📊 【台股即時行情：{stock_code}】\n"
@@ -178,7 +202,7 @@ def handle_message(event):
             else:
                 reply_text = f"找不到代號「{user_text}」的台股資料！"
         except:
-            reply_text = "系統處理發生錯誤，請稍後再試。"
+            reply_text = "系統處理發生錯誤請稍後再試。"
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
