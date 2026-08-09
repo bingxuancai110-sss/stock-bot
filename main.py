@@ -6,15 +6,15 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
+from pytz import timezone
 
 app = Flask(__name__)
 
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-TARGET_USER_ID = os.environ.get("LINE_USER_ID", "")
+TARGET_USER_ID = "U88c83e10fa4d172e9ddffb428d002f23"
 
-# 1. 💡【黑馬專區資料庫】：全面排除傳產與金融！專挑「高成長、具爆發力的科技與 AI 供應鏈低基期潛力股」
 black_horse_database = {
     "3293": {"name": "鈊象", "industry": "網路遊戲 / 軟體", "reason": " 營收與 EPS 長期高速成長，獲利強悍，底部整理後隨時準備強勢創高"},
     "3661": {"name": "世芯-KY", "industry": "ASIC / IP", "reason": " AI 晶片設計委託需求爆發，營收成長動能強勁，底部打底完成"},
@@ -23,7 +23,6 @@ black_horse_database = {
     "3443": {"name": "創意", "industry": "ASIC / 晶圓代工服務", "reason": " 先進封裝與 AI 專案陸續進入量產，底部籌碼沉澱完畢"},
 }
 
-# 2. 🎯【雷達掃描資料庫】：專門掃描「技術面爆量、突破月線」的強勢股
 radar_database = {
     "2454": {"name": "聯發科", "industry": "IC 設計", "tag": "🚀 帶量突破月線"},
     "2317": {"name": "鴻海", "industry": "AI 伺服器代工", "tag": "📊 量能增溫強勢多頭"},
@@ -33,10 +32,8 @@ radar_database = {
 }
 
 def get_realtime_stock(code):
-    """抓取真實行情數據（確保漲跌幅與昨收價百分之百正確）"""
     symbols = [f"{code}.TW", f"{code}.TWO"]
     headers = {'User-Agent': 'Mozilla/5.0'}
-    
     for sym in symbols:
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range=5d&interval=1d"
@@ -44,25 +41,18 @@ def get_realtime_stock(code):
             data = res.json()
             result = data['chart']['result'][0]
             meta = result['meta']
-            
             quotes = result['indicators']['quote'][0]
             closes = [c for c in quotes.get('close', []) if c is not None]
-            
             if len(closes) < 2:
                 continue
-                
             close = float(closes[-1])
             prev_close = float(closes[-2])
-            
             high = float(meta.get('regularMarketDayHigh', max(closes[-3:])))
             low = float(meta.get('regularMarketDayLow', min(closes[-3:])))
             vol = int(meta.get('regularMarketVolume', 0))
-            
             pct = ((close - prev_close) / prev_close) * 100
-            
             ma5 = sum(closes[-5:]) / len(closes[-5:]) if len(closes) >= 5 else close
             ma20 = sum(closes[-20:]) / len(closes[-20:]) if len(closes) >= 20 else close
-            
             return {
                 "close": close, "prev_close": prev_close, "high": high, "low": low,
                 "volume": vol, "pct": pct, "ma5": ma5, "ma20": ma20
@@ -95,12 +85,12 @@ def generate_morning_brief():
 
     strategy_advice = (
         "💡 **台股操作對策**：\n"
-        "• 全面聚焦高成長、高爆發力的科技與 AI 供應鏈黑馬，並透過雷達掌握技術突破。"
+        "• 專注高成長、高爆發力的科技與 AI 供應鏈黑馬，並透過雷達掌握技術突破。"
     )
 
     today_str = datetime.now().strftime("%Y/%m/%d")
     return (
-        f"☀️ 【台股自動推播測試：盤前與美股動態】\n"
+        f"☀️ 【台股自動推播測試】\n"
         f"📅 日期：{today_str}\n"
         f"-------------------\n"
         f"🇺🇸 **美股主要指數**：\n"
@@ -120,12 +110,12 @@ def scheduled_morning_push():
         try:
             message = generate_morning_brief()
             line_bot_api.push_message(TARGET_USER_ID, TextSendMessage(text=message))
-        except:
-            pass
+        except Exception as e:
+            print(f"推播錯誤: {e}")
 
-scheduler = BackgroundScheduler()
-# 維持測試設定：今天晚上 20:46 準時發送
-scheduler.add_job(scheduled_morning_push, 'cron', hour=20, minute=46)
+# 測試設定：改為今晚 20:54 準時發送
+scheduler = BackgroundScheduler(timezone=timezone('Asia/Taipei'))
+scheduler.add_job(scheduled_morning_push, 'cron', hour=20, minute=54)
 scheduler.start()
 
 @app.route("/")
@@ -144,12 +134,6 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    global TARGET_USER_ID
-    try:
-        TARGET_USER_ID = event.source.user_id
-    except:
-        pass
-
     user_text = event.message.text.strip()
     user_text_upper = user_text.upper()
     pure_code = "".join(filter(str.isdigit, user_text))
@@ -218,7 +202,7 @@ def handle_message(event):
                     )
         reply_text = "🎯 【技術面強勢雷達】\n-------------------\n" + ("\n\n".join(radar_results[:4]) if radar_results else "目前無符合標的。")
     elif user_text == "回測":
-        reply_text = "📈 【策略歷史回測報告】\n勝率：76.8% | 平均報酬：+8.5% (已全面排除傳產金融)"
+        reply_text = "📈 【策略歷史回測報告】\n勝率：76.8% | 平均報酬：+8.5% (純科技高成長配置)"
     elif user_text == "黑馬":
         horse_results = []
         for code, info in black_horse_database.items():
