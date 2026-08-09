@@ -4,3 +4,4 @@ requests
 twstock
 pandas
 gunicorn
+yfinance
