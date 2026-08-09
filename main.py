@@ -1,9 +1,9 @@
 import os
+import requests
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-import yfinance as yf
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -14,7 +14,7 @@ handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
 TARGET_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# 完整的台股觀察清單與分類（漲價概念股歸類在黑馬）
+# 完整的台股觀察清單與分類
 market_watchlist = {
     "2330": {"name": "台積電", "industry": "先進製程 / CoWoS", "category": "🔥 黑馬股 (漲價供不應求)", "group": "半導體"},
     "2454": {"name": "聯發科", "industry": "IC 設計", "category": "技術突破", "group": "半導體"},
@@ -29,41 +29,82 @@ market_watchlist = {
     "2368": {"name": "金像電", "industry": "伺服器 PCB", "category": "均線多頭", "group": "PCB"},
 }
 
-def generate_morning_brief():
-    try:
-        sox_df = yf.Ticker("^SOX").history(period="10d")
-        ixic_df = yf.Ticker("^IXIC").history(period="10d")
-        
-        sox_pct = 0.65
-        ixic_pct = 0.82
-        
-        if len(sox_df) >= 2:
-            sox_pct = ((sox_df.iloc[-1]["Close"] - sox_df.iloc[-2]["Close"]) / sox_df.iloc[-2]["Close"]) * 100
-        if len(ixic_df) >= 2:
-            ixic_pct = ((ixic_df.iloc[-1]["Close"] - ixic_df.iloc[-2]["Close"]) / ixic_df.iloc[-2]["Close"]) * 100
+def get_realtime_stock(code):
+    """透過 Yahoo Finance 輕量 API 抓取即時資料，避免 yfinance 逾時失效"""
+    symbols = [f"{code}.TW", f"{code}.TWO"]
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    
+    for sym in symbols:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range=1mo&interval=1d"
+            res = requests.get(url, headers=headers, timeout=5)
+            data = res.json()
+            result = data['chart']['result'][0]
+            meta = result['meta']
             
-        market_tone = "🔴 多方氣勢強勁 (偏多操作)" if sox_pct >= 0 else "🟢 短線拉回整理 (保守觀望)"
+            close = meta.get('regularMarketPrice', meta.get('previousClose', 100.0))
+            prev_close = meta.get('chartPreviousClose', meta.get('previousClose', close))
+            high = meta.get('regularMarketDayHigh', close)
+            low = meta.get('regularMarketDayLow', close)
+            vol = meta.get('regularMarketVolume', 1000000)
+            
+            pct = ((close - prev_close) / prev_close) * 100 if prev_close else 0.0
+            
+            # 計算均線
+            quotes = result['indicators']['quote'][0]
+            closes = [c for c in quotes.get('close', []) if c is not None]
+            
+            ma5 = sum(closes[-5:]) / len(closes[-5:]) if len(closes) >= 5 else close
+            ma20 = sum(closes[-20:]) / len(closes[-20:]) if len(closes) >= 20 else close
+            
+            return {
+                "close": float(close),
+                "high": float(high),
+                "low": float(low),
+                "volume": int(vol),
+                "pct": float(pct),
+                "ma5": float(ma5),
+                "ma20": float(ma20)
+            }
+        except Exception:
+            continue
+    return None
 
-        today_str = datetime.now().strftime("%Y/%m/%d")
-        return (
-            f"☀️ 【台股盤前與市場動向速覽】\n"
-            f"📅 日期：{today_str}\n"
-            f"-------------------\n"
-            f"🇺🇸 **美股最近交易日動向**：\n"
-            f"• 費城半導體：{sox_pct:+.2f}%\n"
-            f"• 那斯達克：{ixic_pct:+.2f}%\n"
-            f"• 市場基調：{market_tone}"
-        )
+def get_us_market():
+    """抓取美股指數真實漲跌幅"""
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    sox_pct, ixic_pct = 0.65, 0.82
+    try:
+        url_sox = "https://query1.finance.yahoo.com/v8/finance/chart/^SOX?range=5d&interval=1d"
+        res = requests.get(url_sox, headers=headers, timeout=4).json()
+        meta = res['chart']['result'][0]['meta']
+        sox_pct = ((meta['regularMarketPrice'] - meta['chartPreviousClose']) / meta['chartPreviousClose']) * 100
     except:
-        return (
-            f"☀️ 【台股盤前與市場動向速覽】\n"
-            f"📅 日期：{datetime.now().strftime('%Y/%m/%d')}\n"
-            f"-------------------\n"
-            f"🇺🇸 **美股最近交易日動向**：\n"
-            f"• 費城半導體：+0.65%\n"
-            f"• 那斯達克：+0.82%\n"
-            f"• 市場基調：🔴 多方氣勢強勁"
-        )
+        pass
+
+    try:
+        url_ixic = "https://query1.finance.yahoo.com/v8/finance/chart/^IXIC?range=5d&interval=1d"
+        res = requests.get(url_ixic, headers=headers, timeout=4).json()
+        meta = res['chart']['result'][0]['meta']
+        ixic_pct = ((meta['regularMarketPrice'] - meta['chartPreviousClose']) / meta['chartPreviousClose']) * 100
+    except:
+        pass
+
+    return sox_pct, ixic_pct
+
+def generate_morning_brief():
+    sox_pct, ixic_pct = get_us_market()
+    market_tone = "🔴 多方氣勢強勁 (偏多操作)" if sox_pct >= 0 else "🟢 短線拉回整理 (保守觀望)"
+    today_str = datetime.now().strftime("%Y/%m/%d")
+    return (
+        f"☀️ 【台股盤前與市場動向速覽】\n"
+        f"📅 日期：{today_str}\n"
+        f"-------------------\n"
+        f"🇺🇸 **美股最近交易日動向**：\n"
+        f"• 費城半導體：{sox_pct:+.2f}%\n"
+        f"• 那斯達克：{ixic_pct:+.2f}%\n"
+        f"• 市場基調：{market_tone}"
+    )
 
 def scheduled_morning_push():
     if TARGET_USER_ID:
@@ -103,7 +144,7 @@ def handle_message(event):
     user_text_upper = user_text.upper()
     pure_code = "".join(filter(str.isdigit, user_text))
 
-    # 1. 優先處理個股代號查詢（如 2330）
+    # 1. 處理個股代號查詢
     if len(pure_code) == 4 and len(user_text) <= 5:
         info_dict = market_watchlist.get(pure_code, {
             "name": f"台股 {pure_code}", 
@@ -114,25 +155,16 @@ def handle_message(event):
         industry = info_dict["industry"]
         category = info_dict["category"]
         
-        try:
-            df = yf.Ticker(f"{pure_code}.TW").history(period="30d")
-            if df.empty or len(df) < 5:
-                df = yf.Ticker(f"{pure_code}.TWO").history(period="30d")
-
-            if df.empty or len(df) < 5:
-                close, high, low, vol, pct, ma5, ma20 = 100.0, 102.5, 98.5, 1000000, 1.0, 99.0, 97.5
-            else:
-                closes = df['Close'].tolist()
-                latest = df.iloc[-1]
-                close = float(latest.get("Close", 100.0))
-                open_p = float(latest.get("Open", close))
-                high = float(latest.get("High", close))
-                low = float(latest.get("Low", close))
-                vol = float(latest.get("Volume", 1000000))
-                pct = ((close - open_p) / open_p) * 100 if open_p > 0 else 0.0
-                ma5 = sum(closes[-5:]) / 5
-                ma20 = sum(closes[-20:]) / 20 if len(closes) >= 20 else closes[-1]
-
+        data = get_realtime_stock(pure_code)
+        if data:
+            close = data["close"]
+            high = data["high"]
+            low = data["low"]
+            vol = data["volume"]
+            pct = data["pct"]
+            ma5 = data["ma5"]
+            ma20 = data["ma20"]
+            
             score = min(max(65 + (15 if close > ma20 else 0) + (10 if ma5 > ma20 else 0) + int(pct * 4), 50), 98)
             if "🔥" in category:
                 score = min(score + 5, 98)
@@ -153,14 +185,8 @@ def handle_message(event):
                 f"📈 【技術面狀態】\n"
                 f"• 5日均線：{ma5:.1f} | 20日均線：{ma20:.1f}"
             )
-        except:
-            reply_text = (
-                f"📊 【台股即時行情：{pure_code} {name}】\n"
-                f"🏢 產業類別：{industry}\n"
-                f"🏷️ 雷達屬性分類：【{category}】\n"
-                f"-------------------\n"
-                f"🎯 目前連線整理中，請稍後再試。"
-            )
+        else:
+            reply_text = f"❌ 查無代號 {pure_code} 的即時行情資料，請確認代號是否正確。"
 
     # 2. 四大核心指令：Manu / 選單
     elif user_text_upper in ["MENU", "MANU", "選單", "幫助", "HELP"]:
@@ -182,24 +208,15 @@ def handle_message(event):
     elif user_text == "雷達":
         scanned_results = []
         for code, info in market_watchlist.items():
-            try:
-                df = yf.Ticker(f"{code}.TW").history(period="20d")
-                if len(df) < 5:
-                    df = yf.Ticker(f"{code}.TWO").history(period="20d")
-                closes = df['Close'].tolist()
-                latest_close = closes[-1]
-                open_p = df.iloc[-1]["Open"]
-                pct = ((latest_close - open_p) / open_p) * 100
-                score = 80 + int(pct * 3)
+            data = get_realtime_stock(code)
+            if data:
+                score = 80 + int(data["pct"] * 3)
                 if "🔥" in info["category"]: score += 5
-                
                 scanned_results.append({
                     "display": f"{code} {info['name']}",
-                    "close": latest_close, "pct": pct, "score": min(score, 98), 
+                    "close": data["close"], "pct": data["pct"], "score": min(score, 98), 
                     "category": info["category"]
                 })
-            except:
-                continue
 
         scanned_results.sort(key=lambda x: x["score"], reverse=True)
         top_stocks = scanned_results[:5]
@@ -211,7 +228,7 @@ def handle_message(event):
                 f"  屬性：{item['category']}\n"
                 f"  收盤 {item['close']:.1f} ({item['pct']:+.2f}%)"
             )
-        reply_text = "🎯 【技術面強勢雷達 TOP 5】\n-------------------\n" + "\n\n".join(passed_text)
+        reply_text = "🎯 【技術面強勢雷達 TOP 5】\n-------------------\n" + ("\n\n".join(passed_text) if passed_text else "目前掃描中，請稍後再試。")
 
     # 5. 回測指令
     elif user_text == "回測":
@@ -227,7 +244,7 @@ def handle_message(event):
             "💬 結論：結合供不應求與黑馬題材的過濾機制，能有效提升勝率與爆發力！"
         )
 
-    # 6. 黑馬指令（漲價概念股與供不應求族群）
+    # 6. 黑馬指令
     elif user_text == "黑馬":
         groups = {}
         for code, info in market_watchlist.items():
