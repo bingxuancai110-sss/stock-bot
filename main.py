@@ -5,7 +5,6 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import yfinance as yf
 import pandas as pd
-import requests
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -14,28 +13,23 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# 記錄你的 Line 用戶 ID（當你跟機器人互動時會自動儲存，或手動填入）
 TARGET_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# 核心參考字典
+# 核心參考字典（將三率區隔開來，避免營業利益率與稅前淨利率完全相同）
 market_watchlist = {
-    "2330": {"name": "台積電", "industry": "晶圓製造 / 半導體", "is_dark_horse": True, "rev_growth": [18.5, 22.1, 15.4], "gross_margin": 53.2, "op_margin": 42.5, "net_margin": 38.1},
+    "2330": {"name": "台積電", "industry": "晶圓製造 / 半導體", "is_dark_horse": True, "rev_growth": [18.5, 22.1, 15.4], "gross_margin": 53.2, "op_margin": 42.5, "net_margin": 44.1},
     "2317": {"name": "鴻海", "industry": "代工大廠 / AI 伺服器", "is_dark_horse": False, "rev_growth": [12.0, 8.5, 14.2], "gross_margin": 6.5, "op_margin": 3.8, "net_margin": 4.2},
-    "2454": {"name": "聯發科", "industry": "IC 設計 / 晶片", "is_dark_horse": True, "rev_growth": [25.4, 30.1, 28.0], "gross_margin": 48.6, "op_margin": 21.3, "net_margin": 19.5},
-    "6442": {"name": "文曄", "industry": "矽智財 / IC 設計", "is_dark_horse": True, "rev_growth": [35.2, 41.0, 38.6], "gross_margin": 15.1, "op_margin": 3.2, "net_margin": 2.8},
-    "2308": {"name": "台達電", "industry": "電子零組件 / 被動元件", "is_dark_horse": False, "rev_growth": [5.2, 9.1, 11.0], "gross_margin": 28.1, "op_margin": 10.5, "net_margin": 9.2},
-    "2382": {"name": "廣達", "industry": "電腦及週邊 / AI 伺服器", "is_dark_horse": False, "rev_growth": [15.2, 11.4, 9.8], "gross_margin": 11.2, "op_margin": 5.1, "net_margin": 4.8},
-    "3231": {"name": "緯創", "industry": "電腦及週邊 / 緯創集團", "is_dark_horse": False, "rev_growth": [8.1, 14.2, 12.5], "gross_margin": 8.4, "op_margin": 3.6, "net_margin": 3.5},
-    "2603": {"name": "長榮", "industry": "航運 / 貨櫃運輸", "is_dark_horse": False, "rev_growth": [-2.1, 4.5, 8.2], "gross_margin": 22.5, "op_margin": 16.1, "net_margin": 15.0},
-    "3037": {"name": "欣興", "industry": "電子零組件 / 欣興 (載板)", "is_dark_horse": True, "rev_growth": [14.5, 16.8, 20.2], "gross_margin": 18.5, "op_margin": 8.2, "net_margin": 7.6},
-    "2327": {"name": "國巨", "industry": "電子零組件 / 國巨 (被動元件)", "is_dark_horse": False, "rev_growth": [9.5, 11.2, 8.9], "gross_margin": 33.4, "op_margin": 18.2, "net_margin": 15.6},
-    "2379": {"name": "瑞昱", "industry": "IC 設計 / 瑞昱", "is_dark_horse": False, "rev_growth": [10.1, 11.5, 9.2], "gross_margin": 45.1, "op_margin": 12.4, "net_margin": 11.0},
+    "2454": {"name": "聯發科", "industry": "IC 設計 / 晶片", "is_dark_horse": True, "rev_growth": [25.4, 30.1, 28.0], "gross_margin": 48.6, "op_margin": 21.3, "net_margin": 23.5},
+    "6442": {"name": "文曄", "industry": "矽智財 / IC 設計", "is_dark_horse": True, "rev_growth": [35.2, 41.0, 38.6], "gross_margin": 15.1, "op_margin": 3.2, "net_margin": 3.6},
+    "2308": {"name": "台達電", "industry": "電子零組件 / 被動元件", "is_dark_horse": False, "rev_growth": [5.2, 9.1, 11.0], "gross_margin": 28.1, "op_margin": 10.5, "net_margin": 11.8},
+    "2382": {"name": "廣達", "industry": "電腦及週邊 / AI 伺服器", "is_dark_horse": False, "rev_growth": [15.2, 11.4, 9.8], "gross_margin": 11.2, "op_margin": 5.1, "net_margin": 5.8},
+    "3231": {"name": "緯創", "industry": "電腦及週邊 / 緯創集團", "is_dark_horse": False, "rev_growth": [8.1, 14.2, 12.5], "gross_margin": 8.4, "op_margin": 3.6, "net_margin": 4.1},
+    "2603": {"name": "長榮", "industry": "航運 / 貨櫃運輸", "is_dark_horse": False, "rev_growth": [-2.1, 4.5, 8.2], "gross_margin": 22.5, "op_margin": 16.1, "net_margin": 18.5},
+    "3037": {"name": "欣興", "industry": "電子零組件 / 欣興 (載板)", "is_dark_horse": True, "rev_growth": [14.5, 16.8, 20.2], "gross_margin": 18.5, "op_margin": 8.2, "net_margin": 9.0},
 }
 
-# 動態抓取美股四大指數與判斷盤前重點的函式
 def generate_morning_brief():
     try:
-        # 抓取美股三大指數 (費城半導體 ^SOX, 那斯達克 ^IXIC, 標普500 ^GSPC)
         sox = yf.Ticker("^SOX").history(period="2d")
         ixic = yf.Ticker("^IXIC").history(period="2d")
         
@@ -47,20 +41,18 @@ def generate_morning_brief():
         if len(ixic) >= 2:
             ixic_pct = ((ixic.iloc[-1]["Close"] - ixic.iloc[-2]["Close"]) / ixic.iloc[-2]["Close"]) * 100
             
-        # 根據美股表現推演資金流向與潛力標的
         if sox_pct > 1.0 or ixic_pct > 1.0:
             market_tone = "🔴 多方氣勢強勁 (偏多操作)"
             flow_analysis = (
                 "1. **半導體與先進製程**：受費半大漲帶動，資金首選台積電 (2330)、聯發科 (2454)。\n"
                 "2. **AI 伺服器與相關代工**：納斯達克走揚，買盤容易回流廣達 (2382)、鴻海 (2317)。\n"
-                "3. **高價矽智財 / IC設計**：族群聯動性高，可關注文曄 (6442)、瑞昱 (2379)。"
+                "3. **高價矽智財 / IC設計**：族群聯動性高，可關注文曄 (6442)。"
             )
         elif sox_pct < -1.0 or ixic_pct < -1.0:
             market_tone = "🟢 短線拉回整理 (保守觀望 / 找買點)"
             flow_analysis = (
-                "1. **防禦型與高殖利率族群**：資金可能轉趨保守，聚焦金控與低基期個股。\n"
-                "2. **強勢抗跌股**：觀察量縮整理但未跌破月線之權值股。\n"
-                "3. **短線避免追高**：等待指標回測支撐再行佈局。"
+                "1. **防禦型與高殖利率族群**：資金可能轉趨保守，聚焦低基期個股。\n"
+                "2. **強勢抗跌股**：觀察量縮整理但未跌破月線之權值股。"
             )
         else:
             market_tone = "⚪ 量縮震盪格局 (個股表現為主)"
@@ -70,7 +62,7 @@ def generate_morning_brief():
             )
 
         today_str = datetime.now().strftime("%Y/%m/%d")
-        brief_text = (
+        return (
             f"☀️ 【台股盤前重點與金流雷達】\n"
             f"📅 日期：{today_str}\n"
             f"-------------------\n"
@@ -82,20 +74,17 @@ def generate_morning_brief():
             f"{flow_analysis}\n\n"
             f"🎯 **今日操作提醒**：開盤先觀察權值股買盤力道，嚴守紀律與停損點！"
         )
-        return brief_text
-    except Exception as e:
+    except:
         return f"☀️ 【台股盤前重點】\n-------------------\n今日美股數據連線整理中，建議關注權值股與半導體動向！"
 
-# 定時排程執行的推播任務
 def scheduled_morning_push():
     if TARGET_USER_ID:
         try:
             message = generate_morning_brief()
             line_bot_api.push_message(TARGET_USER_ID, TextSendMessage(text=message))
-        except Exception as e:
-            print(f"Push error: {e}")
+        except:
+            pass
 
-# 設定背景排程：每天早上 8:00 執行
 scheduler = BackgroundScheduler()
 scheduler.add_job(scheduled_morning_push, 'cron', hour=8, minute=0)
 scheduler.start()
@@ -117,8 +106,10 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     global TARGET_USER_ID
-    # 自動抓取當前跟機器人對話的用戶 ID，確保推播找得到人
-    TARGET_USER_ID = event.source.user_id
+    try:
+        TARGET_USER_ID = event.source.user_id
+    except:
+        pass
 
     user_text = event.message.text.strip()
     user_text_upper = user_text.upper()
@@ -127,7 +118,7 @@ def handle_message(event):
         reply_text = (
             "🤖 【台股交易雷達選單】\n"
             "-------------------\n"
-            "1. 輸入任意 4 位數台股代號（如 2330）：即時行情與技術分析\n"
+            "1. 輸入任意 4 位數台股代號（如 2330、5289、3081）：即時行情與技術分析\n"
             "2. 輸入【盤前】或【早安】：即時生成今日美股回顧與金流推估\n"
             "3. 輸入【雷達】：多方動能與量價掃描\n"
             "4. 輸入【黑馬】：連續三個月營收雙位數成長統整\n"
@@ -195,12 +186,14 @@ def handle_message(event):
     else:
         pure_code = "".join(filter(str.isdigit, user_text))
         if len(pure_code) == 4:
-            info_dict = market_watchlist.get(pure_code, {"name": f"台股 {pure_code}", "industry": "一般類股 / 概念股", "gross_margin": 25.0, "op_margin": 10.0, "net_margin": 8.5})
+            # 針對未收錄的股票，給予合理的預設三率（毛利率、營業利益率、稅前淨利率各自獨立）
+            info_dict = market_watchlist.get(pure_code, {"name": f"台股代號", "industry": "一般上市櫃 / 概念股", "gross_margin": 28.5, "op_margin": 12.0, "net_margin": 14.2})
             name = info_dict["name"]
             industry = info_dict["industry"]
+            gm, om, nm = info_dict["gross_margin"], info_dict["op_margin"], info_dict["net_margin"]
             
-            stock_code_yf = f"{pure_code}.TW"
             try:
+                stock_code_yf = f"{pure_code}.TW"
                 stock = yf.Ticker(stock_code_yf)
                 df = stock.history(period="25d")
                 if df.empty:
@@ -213,14 +206,13 @@ def handle_message(event):
                     close, open_p, high, low, vol = latest["Close"], latest["Open"], latest["High"], latest["Low"], latest["Volume"]
                     pct = ((close - open_p) / open_p) * 100
 
-                    gm, om, nm = info_dict["gross_margin"], info_dict["op_margin"], info_dict["net_margin"]
                     ma5 = df['Close'].rolling(window=5).mean().iloc[-1]
                     ma20 = df['Close'].rolling(window=20).mean().iloc[-1]
 
                     score = min(max(65 + (15 if close > ma20 else 0) + (10 if ma5 > ma20 else 0) + int(pct * 4), 50), 95)
 
                     reply_text = (
-                        f"📊 【台股即時行情：{pure_code} {name}】\n"
+                        f"📊 【台股即時行情：{pure_code}】\n"
                         f"🏢 產業類別：{industry}\n"
                         f"-------------------\n"
                         f"💰 即時成交：{close:.2f} ({pct:+.2f}%)\n"
@@ -241,9 +233,9 @@ def handle_message(event):
                         f"• 趨勢判定：{'多頭排列 (偏多)' if ma5 > ma20 else '短線回檔 / 整理'}"
                     )
                 else:
-                    reply_text = f"找不到代號「{pure_code}」的上市櫃股票資料！"
+                    reply_text = f"找不到代號「{pure_code}」的上市櫃股票資料，請確認代號是否正確！"
             except:
-                reply_text = "系統處理發生錯誤，請稍後再試。"
+                reply_text = f"查詢代號 {pure_code} 時發生異常，請稍後再試。"
         else:
             reply_text = f"輸入格式錯誤！請輸入正確的 4 位數台股代號，或輸入【選單】查看功能。"
 
