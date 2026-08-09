@@ -90,11 +90,12 @@ def generate_morning_brief():
     mu_pct = get_us_stock_pct("MU")
     lite_pct = get_us_stock_pct("LITE")
 
-    nfp_data = "待下次數據公佈更新 (非農)"
+    nfp_data = "7月非農就業減少 2.3 萬人，失業率 4.1% (8/7公布)"
     cpi_data = "待下次數據公佈更新 (CPI)"
 
     strategy_advice = (
-        "💡 **台股操作對策**：\n"
+        "💡 **總經與台股操作對策**：\n"
+        "• 非農數據偏弱顯示經濟降溫，市場升息壓力解除、降息預期升溫，資金轉趨寬鬆，對高成長科技與 AI 股利多。\n"
         "• 專注高成長、高爆發力的科技與 AI 供應鏈黑馬，並透過雷達掌握技術突破。"
     )
 
