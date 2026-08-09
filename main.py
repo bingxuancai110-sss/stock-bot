@@ -15,7 +15,7 @@ handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
 TARGET_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# 核心參考字典（將三率區隔開來，避免營業利益率與稅前淨利率完全相同）
+# 核心參考字典
 market_watchlist = {
     "2330": {"name": "台積電", "industry": "晶圓製造 / 半導體", "is_dark_horse": True, "rev_growth": [18.5, 22.1, 15.4], "gross_margin": 53.2, "op_margin": 42.5, "net_margin": 44.1},
     "2317": {"name": "鴻海", "industry": "代工大廠 / AI 伺服器", "is_dark_horse": False, "rev_growth": [12.0, 8.5, 14.2], "gross_margin": 6.5, "op_margin": 3.8, "net_margin": 4.2},
@@ -118,7 +118,7 @@ def handle_message(event):
         reply_text = (
             "🤖 【台股交易雷達選單】\n"
             "-------------------\n"
-            "1. 輸入任意 4 位數台股代號（如 2330、5289、3081）：即時行情與技術分析\n"
+            "1. 輸入任意 4 位數台股代號（如 2330、3081）：即時行情與技術分析\n"
             "2. 輸入【盤前】或【早安】：即時生成今日美股回顧與金流推估\n"
             "3. 輸入【雷達】：多方動能與量價掃描\n"
             "4. 輸入【黑馬】：連續三個月營收雙位數成長統整\n"
@@ -186,33 +186,39 @@ def handle_message(event):
     else:
         pure_code = "".join(filter(str.isdigit, user_text))
         if len(pure_code) == 4:
-            # 針對未收錄的股票，給予合理的預設三率（毛利率、營業利益率、稅前淨利率各自獨立）
-            info_dict = market_watchlist.get(pure_code, {"name": f"台股代號", "industry": "一般上市櫃 / 概念股", "gross_margin": 28.5, "op_margin": 12.0, "net_margin": 14.2})
+            info_dict = market_watchlist.get(pure_code, {"name": f"台股 {pure_code}", "industry": "一般上市櫃 / 概念股", "gross_margin": 28.5, "op_margin": 12.0, "net_margin": 14.2})
             name = info_dict["name"]
             industry = info_dict["industry"]
             gm, om, nm = info_dict["gross_margin"], info_dict["op_margin"], info_dict["net_margin"]
             
             try:
-                stock_code_yf = f"{pure_code}.TW"
-                stock = yf.Ticker(stock_code_yf)
+                df = pd.DataFrame()
+                # 嘗試抓取 .TW (上市)
+                stock = yf.Ticker(f"{pure_code}.TW")
                 df = stock.history(period="25d")
-                if df.empty:
-                    stock_code_yf = f"{pure_code}.TWO"
-                    stock = yf.Ticker(stock_code_yf)
+                
+                # 如果空的，嘗試抓取 .TWO (上櫃)
+                if df.empty or len(df) == 0:
+                    stock = yf.Ticker(f"{pure_code}.TWO")
                     df = stock.history(period="25d")
 
-                if not df.empty:
+                if not df.empty and len(df) > 0:
                     latest = df.iloc[-1]
-                    close, open_p, high, low, vol = latest["Close"], latest["Open"], latest["High"], latest["Low"], latest["Volume"]
-                    pct = ((close - open_p) / open_p) * 100
+                    close = float(latest.get("Close", 0))
+                    open_p = float(latest.get("Open", close))
+                    high = float(latest.get("High", close))
+                    low = float(latest.get("Low", close))
+                    vol = float(latest.get("Volume", 0))
+                    
+                    pct = ((close - open_p) / open_p) * 100 if open_p > 0 else 0.0
 
-                    ma5 = df['Close'].rolling(window=5).mean().iloc[-1]
-                    ma20 = df['Close'].rolling(window=20).mean().iloc[-1]
+                    ma5 = df['Close'].rolling(window=5).mean().iloc[-1] if len(df) >= 5 else close
+                    ma20 = df['Close'].rolling(window=20).mean().iloc[-1] if len(df) >= 20 else close
 
                     score = min(max(65 + (15 if close > ma20 else 0) + (10 if ma5 > ma20 else 0) + int(pct * 4), 50), 95)
 
                     reply_text = (
-                        f"📊 【台股即時行情：{pure_code}】\n"
+                        f"📊 【台股即時行情：{pure_code} {name}】\n"
                         f"🏢 產業類別：{industry}\n"
                         f"-------------------\n"
                         f"💰 即時成交：{close:.2f} ({pct:+.2f}%)\n"
@@ -233,9 +239,9 @@ def handle_message(event):
                         f"• 趨勢判定：{'多頭排列 (偏多)' if ma5 > ma20 else '短線回檔 / 整理'}"
                     )
                 else:
-                    reply_text = f"找不到代號「{pure_code}」的上市櫃股票資料，請確認代號是否正確！"
-            except:
-                reply_text = f"查詢代號 {pure_code} 時發生異常，請稍後再試。"
+                    reply_text = f"找不到代號「{pure_code}」的上市櫃歷史成交資料，請確認代號是否正確。"
+            except Exception as e:
+                reply_text = f"代號 {pure_code} 查詢中無可用數據，請輸入其他代號或稍後再試。"
         else:
             reply_text = f"輸入格式錯誤！請輸入正確的 4 位數台股代號，或輸入【選單】查看功能。"
 
