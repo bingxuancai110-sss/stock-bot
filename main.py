@@ -88,7 +88,7 @@ def generate_morning_brief():
 
     today_str = datetime.now().strftime("%Y/%m/%d")
     return (
-        f"☀️ 【台股盤前與美股動態速覽 (21:15 測試)】\n"
+        f"☀️ 【台股盤前與美股動態速覽】\n"
         f"📅 日期：{today_str}\n"
         f"-------------------\n"
         f"🇺🇸 **美股主要指數**：\n"
@@ -107,7 +107,6 @@ def generate_morning_brief():
 def home():
     return "Stock Bot & Radar is alive!"
 
-# 專用推播觸發路由：只要 cron-job.org 呼叫這個網址，就會立刻發送推播！
 @app.route("/push-test")
 def push_test():
     if TARGET_USER_ID:
@@ -131,6 +130,9 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
+    # 幫你把當前傳訊息的 User ID 印在 Render Log 裡
+    print(f"👉 當前用戶的 User ID 是: {event.source.user_id}")
+
     user_text = event.message.text.strip()
     user_text_upper = user_text.upper()
     pure_code = "".join(filter(str.isdigit, user_text))
@@ -204,7 +206,7 @@ def handle_message(event):
         horse_results = []
         for code, info in black_horse_database.items():
             data = get_realtime_stock(code)
-            price_str = f"现價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
+            price_str = f"現價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
             horse_results.append(
                 f"• {code} {info['name']} ({info['industry']})\n"
                 f"  🚀 科技成長亮點：{info['reason']}\n"
