@@ -11,11 +11,12 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# 支援多人同時自動推播的清單
+# 支援多人同時自動推播的清單 (4人)
 TARGET_USER_IDS = [
     "Ue00f44b36b32a87adaca89034ec24e58", # 你的 ID
-    "Ue08d460394314e6ec6753b12540d10d7", # 朋友的 ID
-    "U08c66472c8b1d0bf2aa59436e7934573", # 新增的 ID
+    "Ue08d460394314e6ec6753b12540d10d7", # 朋友 ID 1
+    "U08c66472c8b1d0bf2aa59436e7934573", # 朋友 ID 2
+    "U0a2557ddb509428885f3dd53540c78d8", # 朋友 ID 3
 ]
 
 black_horse_database = {
