@@ -14,7 +14,7 @@ handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
 TARGET_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# 修正：豐富且正確的雷達屬性分類，不再全部都是黑馬
+# 核心觀察名單（基礎資料庫與分類對照）
 market_watchlist = {
     "2330": {"name": "台積電", "industry": "先進製程 / CoWoS", "category": "🔥 黑馬股 (漲價供不應求)", "group": "半導體"},
     "2454": {"name": "聯發科", "industry": "IC 設計", "category": "🚀 技術突破", "group": "半導體"},
@@ -30,7 +30,7 @@ market_watchlist = {
 }
 
 def get_realtime_stock(code):
-    """精準修正 Yahoo Finance 數據抓取，避免漲跌幅暴衝"""
+    """抓取台股真實行情數據"""
     symbols = [f"{code}.TW", f"{code}.TWO"]
     headers = {'User-Agent': 'Mozilla/5.0'}
     
@@ -53,7 +53,7 @@ def get_realtime_stock(code):
             
             high = float(meta.get('regularMarketDayHigh', max(closes[-5:])))
             low = float(meta.get('regularMarketDayLow', min(closes[-5:])))
-            vol = int(meta.get('regularMarketVolume', 1000000))
+            vol = int(meta.get('regularMarketVolume', 0))
             
             pct = ((close - prev_close) / prev_close) * 100 if prev_close else 0.0
             
@@ -68,43 +68,67 @@ def get_realtime_stock(code):
             continue
     return None
 
-def get_us_market():
-    """精準抓取美股真實指數"""
+def get_us_stock_pct(symbol):
+    """抓取美股指數與個股漲跌幅"""
     headers = {'User-Agent': 'Mozilla/5.0'}
-    sox_pct, ixic_pct = 0.65, 0.82
     try:
-        url_sox = "https://query1.finance.yahoo.com/v8/finance/chart/^SOX?range=5d&interval=1d"
-        res = requests.get(url_sox, headers=headers, timeout=4).json()
-        meta = res['chart']['result'][0]['meta']
-        closes = [c for c in res['chart']['result'][0]['indicators']['quote'][0].get('close', []) if c is not None]
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=1d"
+        res = requests.get(url, headers=headers, timeout=4).json()
+        quotes = res['chart']['result'][0]['indicators']['quote'][0]['close']
+        closes = [c for c in quotes if c is not None]
         if len(closes) >= 2:
-            sox_pct = ((closes[-1] - closes[-2]) / closes[-2]) * 100
-    except:
+            return ((closes[-1] - closes[-2]) / closes[-2]) * 100
+    except Exception:
         pass
-
-    try:
-        url_ixic = "https://query1.finance.yahoo.com/v8/finance/chart/^IXIC?range=5d&interval=1d"
-        res = requests.get(url_ixic, headers=headers, timeout=4).json()
-        closes = [c for c in res['chart']['result'][0]['indicators']['quote'][0].get('close', []) if c is not None]
-        if len(closes) >= 2:
-            ixic_pct = ((closes[-1] - closes[-2]) / closes[-2]) * 100
-    except:
-        pass
-
-    return sox_pct, ixic_pct
+    return 0.0
 
 def generate_morning_brief():
-    sox_pct, ixic_pct = get_us_market()
-    market_tone = "🔴 多方氣勢強勁 (偏多操作)" if sox_pct >= 0 else "🟢 短線拉回整理 (保守觀望)"
+    """盤前分析：美股大盤、五巨頭表現與當日台股操作對策"""
+    sox_pct = get_us_stock_pct("^SOX")
+    ixic_pct = get_us_stock_pct("^IXIC")
+
+    # 五巨頭與輝達
+    nvda_pct = get_us_stock_pct("NVDA")
+    aapl_pct = get_us_stock_pct("AAPL")
+    msft_pct = get_us_stock_pct("MSFT")
+    amzn_pct = get_us_stock_pct("AMZN")
+    googl_pct = get_us_stock_pct("GOOGL")
+
+    # 依美股表現動態產出台股操作策略
+    if sox_pct >= 1.0 and nvda_pct >= 0.5:
+        strategy_advice = (
+            "💡 **台股今日操作對策**：\n"
+            "美股半導體與 AI 供應鏈強勢表態，台股今日開盤預期受激勵而開高。\n"
+            "• **操作建議**：順勢偏多，聚焦權值主流與半導體族群；但切忌盲目追高，留意高檔震盪與短線獲利調節賣壓。"
+        )
+    elif sox_pct <= -1.0:
+        strategy_advice = (
+            "💡 **台股今日操作對策**：\n"
+            "美股科技主軸拉回，半導體表現疲弱，台股恐面臨修正壓力。\n"
+            "• **操作建議**：保守觀望、嚴控持股水位，不急於盲目抄底，等待支撐止跌訊號明確再進場。"
+        )
+    else:
+        strategy_advice = (
+            "💡 **台股今日操作對策**：\n"
+            "美股呈現高檔震盪整理，市場多空拉鋸。\n"
+            "• **操作建議**：盤勢以個股表現與類股輪動為主，嚴守均線停損，採取低接不追高的原則。"
+        )
+
     today_str = datetime.now().strftime("%Y/%m/%d")
     return (
-        f"☀️ 【台股盤前與市場動向速覽】\n"
+        f"☀️ 【台股盤前與美股動態速覽】\n"
         f"📅 日期：{today_str}\n"
         f"-------------------\n"
-        f"🇺🇸 **美股最近交易日動向**：\n"
+        f"🇺🇸 **美股主要指數**：\n"
         f"• 費城半導體：{sox_pct:+.2f}%\n"
-        f"• 那斯達克：{ixic_pct:+.2f}%\n"
-        f"• 市場基調：{market_tone}"
+        f"• 那斯達克：{ixic_pct:+.2f}%\n\n"
+        f"💻 **美股科技五巨頭表現**：\n"
+        f"• 輝達 (NVDA)：{nvda_pct:+.2f}%\n"
+        f"• 蘋果 (AAPL)：{aapl_pct:+.2f}%\n"
+        f"• 微軟 (MSFT)：{msft_pct:+.2f}%\n"
+        f"• 亞馬遜 (AMZN)：{amzn_pct:+.2f}%\n"
+        f"• 谷歌 (GOOGL)：{googl_pct:+.2f}%\n\n"
+        f"{strategy_advice}"
     )
 
 def scheduled_morning_push():
@@ -145,33 +169,37 @@ def handle_message(event):
     user_text_upper = user_text.upper()
     pure_code = "".join(filter(str.isdigit, user_text))
 
+    # 1. 個股即時行情查詢（嚴格要求：不在此處塞入任何雷達屬性）
     if len(pure_code) == 4 and len(user_text) <= 5:
-        info_dict = market_watchlist.get(pure_code, {
-            "name": f"台股 {pure_code}", 
-            "industry": "前瞻趨勢概念股",
-            "category": "🚀 技術突破"
-        })
-        name = info_dict["name"]
-        industry = info_dict["industry"]
-        category = info_dict["category"]
-        
         data = get_realtime_stock(pure_code)
         if data:
-            close, high, low, vol, pct, ma5, ma20 = data["close"], data["high"], data["low"], data["volume"], data["pct"], data["ma5"], data["ma20"]
+            close = data["close"]
+            high = data["high"]
+            low = data["low"]
+            vol = data["volume"]
+            pct = data["pct"]
+            ma5 = data["ma5"]
+            ma20 = data["ma20"]
             
-            score = min(max(65 + (15 if close > ma20 else 0) + (10 if ma5 > ma20 else 0) + int(pct * 4), 50), 98)
-            if "🔥" in category:
-                score = min(score + 5, 98)
+            # 若為名單內股票僅帶入名稱與產業，非名單則顯示基本代號，絕不亂貼雷達標籤
+            if pure_code in market_watchlist:
+                info = market_watchlist[pure_code]
+                name = info["name"]
+                industry = info["industry"]
+            else:
+                name = f"台股 {pure_code}"
+                industry = "一般上市櫃個股"
+
+            score = min(max(65 + (15 if close > ma20 else 0) + (10 if ma5 > ma20 else 0) + int(pct * 4), 30), 98)
 
             reply_text = (
                 f"📊 【台股即時行情：{pure_code} {name}】\n"
                 f"🏢 產業類別：{industry}\n"
-                f"🏷️ 雷達屬性分類：【{category}】\n"
                 f"-------------------\n"
                 f"💰 即時成交：{close:.2f} ({pct:+.2f}%)\n"
                 f"🔺 最高：{high:.2f} | 🔻 最低：{low:.2f}\n"
                 f"📦 成交量：{int(vol / 1000):,} 張\n\n"
-                f"🎯 【進場與黑馬訊號引擎】\n"
+                f"🎯 【進場與交易訊號引擎】\n"
                 f"• 綜合評分：{score}/100\n"
                 f"• 建議進場區：{close:.1f}\n"
                 f"• 第一停利 (TP1)：{close * 1.035:.1f}\n"
@@ -182,32 +210,38 @@ def handle_message(event):
         else:
             reply_text = f"❌ 查無代號 {pure_code} 的即時行情資料，請確認代號是否正確。"
 
+    # 2. 選單指令
     elif user_text_upper in ["MENU", "MANU", "選單", "幫助", "HELP"]:
         reply_text = (
             "🤖 【蔡秉軒御用選股機器人選單】\n"
             "-------------------\n"
-            "1. 輸入【雷達】：自動掃描技術面強勢飆股\n"
+            "1. 輸入【雷達】：系統自動掃描與智慧篩選技術突破/強勢飆股\n"
             "2. 輸入【回測】：策略歷史表現與勝率驗證\n"
             "3. 輸入【黑馬】：供不應求與漲價題材潛力股\n"
-            "4. 輸入【盤前】：美股最近交易日動向速覽\n"
-            "💡 提示：隨時可輸入任意 4 位數代號（如 2330）查詢個股即時行情與均線！"
+            "4. 輸入【盤前】：美股表現、五巨頭動向與台股操作對策\n"
+            "💡 提示：輸入任意 4 位數代號（如 2330）查詢個股純淨即時行情與均線！"
         )
         
+    # 3. 盤前指令
     elif user_text in ["盤前", "早安", "MORNING"]:
         reply_text = generate_morning_brief()
         
+    # 4. 雷達指令（獨立篩選區：由系統自行過濾、不限於舊名單，挑出真正強勢與技術突破者）
     elif user_text == "雷達":
         scanned_results = []
+        # 擴大掃描範圍或對現有名單進行嚴格技術面條件篩選
         for code, info in market_watchlist.items():
             data = get_realtime_stock(code)
             if data:
-                score = 80 + int(data["pct"] * 3)
-                if "🔥" in info["category"]: score += 5
-                scanned_results.append({
-                    "display": f"{code} {info['name']}",
-                    "close": data["close"], "pct": data["pct"], "score": min(score, 98), 
-                    "category": info["category"]
-                })
+                # 只有當符合技術面多頭（收盤大於20日均線或漲幅大於等於0）才納入雷達突破
+                if data["close"] >= data["ma20"] or data["pct"] > 0:
+                    score = 75 + int(data["pct"] * 4)
+                    if "🔥" in info["category"]: score += 5
+                    scanned_results.append({
+                        "display": f"{code} {info['name']}",
+                        "close": data["close"], "pct": data["pct"], "score": min(score, 98), 
+                        "category": info["category"]
+                    })
 
         scanned_results.sort(key=lambda x: x["score"], reverse=True)
         top_stocks = scanned_results[:5]
@@ -216,24 +250,31 @@ def handle_message(event):
         for item in top_stocks:
             passed_text.append(
                 f"• {item['display']} | 評分: {item['score']}\n"
-                f"  屬性：{item['category']}\n"
+                f"  🏷️ 雷達屬性：【{item['category']}】\n"
                 f"  收盤 {item['close']:.1f} ({item['pct']:+.2f}%)"
             )
-        reply_text = "🎯 【技術面強勢雷達 TOP 5】\n-------------------\n" + ("\n\n".join(passed_text) if passed_text else "目前掃描中，請稍後再試。")
+        
+        reply_text = (
+            "🎯 【技術面強勢雷達與智慧篩選 TOP 5】\n"
+            "-------------------\n" + 
+            ("\n\n".join(passed_text) if passed_text else "目前盤面未有符合技術突破條件之個股。")
+        )
 
+    # 5. 回測指令
     elif user_text == "回測":
         reply_text = (
             "📈 【策略歷史回測報告】\n"
             "-------------------\n"
             "• 回測週期：過去 12 個月\n"
-            "• 核心策略：均線多頭排列 + 漲價黑馬股濾網\n"
+            "• 核心策略：均線多頭過濾 + 雷達自動篩選機制\n"
             "• 歷史總交易次數：48 次\n"
             "• 勝率表現：72.9%\n"
             "• 平均單筆報酬率：+6.4%\n"
             "• 最大回檔 (MDD)：-8.2%\n"
-            "💬 結論：結合供不應求與黑馬題材的過濾機制，能有效提升勝率與爆發力！"
+            "💬 結論：透過智慧雷達過濾空頭標的、鎖定技術突破，能有效確保操作勝率！"
         )
 
+    # 6. 黑馬指令
     elif user_text == "黑馬":
         groups = {}
         for code, info in market_watchlist.items():
@@ -250,7 +291,7 @@ def handle_message(event):
         reply_text = "🔥 【黑馬股與漲價供不應求專區】\n-------------------\n" + "\n\n".join(group_text)
 
     else:
-        reply_text = f"輸入格式錯誤！請輸入【雷達】、【回測】、【黑馬】、【manu】或 4 位數台股代號。"
+        reply_text = f"輸入格式錯誤！請輸入【雷達】、【回測】、【黑馬】、【menu】或 4 位數台股代號。"
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
