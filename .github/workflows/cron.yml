@@ -1,0 +1,14 @@
+name: Send Daily Stock Push
+
+on:
+  schedule:
+    - cron: '44 13 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit Push API
+        run: |
+          curl -X GET "https://stock-bot-6xct.onrender.com/push-test"
