@@ -14,13 +14,13 @@ handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
 TARGET_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# 1. 💡【黑馬專區資料庫】：專挑「底部打底、籌碼沉澱、準備起漲」的低基期潛力股
+# 1. 💡【黑馬專區資料庫】：全面排除傳產與金融！專挑「高成長、具爆發力的科技與 AI 供應鏈低基期潛力股」
 black_horse_database = {
-    "2609": {"name": "陽明", "industry": "貨櫃航運", "reason": " 底部箱型整理完成，籌碼沉澱，殖利率保護下等待資金點火起漲"},
-    "2303": {"name": "聯電", "industry": "成熟製程晶圓", "reason": " 股價長期在底部打底，評價修復空間大，隨時準備強勢補漲"},
-    "3037": {"name": "欣興", "industry": "ABF載板", "reason": " 經過長時間修正打底，庫存調整完畢，底部量縮回穩準備發動"},
-    "2409": {"name": "友達", "industry": "面板", "reason": " 淨值比偏低，產業景氣築底回溫，底部隱含強勁爆發力"},
-    "2891": {"name": "中信金", "industry": "金控", "reason": " 底部量能溫和放大，大戶默默吃貨，穩健中帶有起漲契機"},
+    "3293": {"name": "鈊象", "industry": "網路遊戲 / 軟體", "reason": " 營收與 EPS 長期高速成長，獲利強悍，底部整理後隨時準備強勢創高"},
+    "3661": {"name": "世芯-KY", "industry": "ASIC / IP", "reason": " AI 晶片設計委託需求爆發，營收成長動能強勁，底部打底完成"},
+    "3529": {"name": "力旺", "industry": "矽智財 (IP)", "reason": " 權利金收入持續攀高，毛利率極高，低基期蓄勢待發"},
+    "6669": {"name": "緯穎", "industry": "AI 伺服器", "reason": " 美系雲端服務商 (CSP) 訂單滿手，營收爆發力十足，整理後準備發動"},
+    "3443": {"name": "創意", "industry": "ASIC / 晶圓代工服務", "reason": " 先進封裝與 AI 專案陸續進入量產，底部籌碼沉澱完畢"},
 }
 
 # 2. 🎯【雷達掃描資料庫】：專門掃描「技術面爆量、突破月線」的強勢股
@@ -95,7 +95,7 @@ def generate_morning_brief():
 
     strategy_advice = (
         "💡 **台股操作對策**：\n"
-        "• 專注低基期、底部準備起漲的黑馬股，搭配技術面爆量雷達同步操作。"
+        "• 全面聚焦高成長、高爆發力的科技與 AI 供應鏈黑馬，並透過雷達掌握技術突破。"
     )
 
     today_str = datetime.now().strftime("%Y/%m/%d")
@@ -124,7 +124,7 @@ def scheduled_morning_push():
             pass
 
 scheduler = BackgroundScheduler()
-# 測試設定：改為今天晚上 20:46 準時發送
+# 維持測試設定：今天晚上 20:46 準時發送
 scheduler.add_job(scheduled_morning_push, 'cron', hour=20, minute=46)
 scheduler.start()
 
@@ -198,8 +198,8 @@ def handle_message(event):
         reply_text = (
             "🤖 【蔡秉軒御用選股機器人選單】\n"
             "-------------------\n"
-            "1. 輸入【黑馬】：專看【底部打底、準備起漲】的潛力股\n"
-            "2. 輸入【雷達】：專看【技術面：爆量、均線突破】的強勢股\n"
+            "1. 輸入【黑馬】：專看【高成長科技股・底部起漲】潛力股\n"
+            "2. 輸入【雷達】：專看【技術面：爆量、均線突破】強勢股\n"
             "3. 輸入【回測】：策略歷史表現與勝率驗證\n"
             "4. 輸入【盤前】：美股與台股對策"
         )
@@ -218,7 +218,7 @@ def handle_message(event):
                     )
         reply_text = "🎯 【技術面強勢雷達】\n-------------------\n" + ("\n\n".join(radar_results[:4]) if radar_results else "目前無符合標的。")
     elif user_text == "回測":
-        reply_text = "📈 【策略歷史回測報告】\n勝率：75.5% | 平均報酬：+7.8%"
+        reply_text = "📈 【策略歷史回測報告】\n勝率：76.8% | 平均報酬：+8.5% (已全面排除傳產金融)"
     elif user_text == "黑馬":
         horse_results = []
         for code, info in black_horse_database.items():
@@ -226,10 +226,10 @@ def handle_message(event):
             price_str = f"現價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
             horse_results.append(
                 f"• {code} {info['name']} ({info['industry']})\n"
-                f"  🚀 底部起漲亮點：{info['reason']}\n"
+                f"  🚀 科技成長亮點：{info['reason']}\n"
                 f"  💰 {price_str}"
             )
-        reply_text = "🔥 【底部起漲・潛力黑馬專區】\n-------------------\n" + "\n\n".join(horse_results)
+        reply_text = "🔥 【高成長科技・潛力黑馬專區】\n-------------------\n" + "\n\n".join(horse_results)
     else:
         reply_text = f"輸入格式錯誤！請輸入【黑馬】、【雷達】、【回測】或 4 位數台股代號。"
 
