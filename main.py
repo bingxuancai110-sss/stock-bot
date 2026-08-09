@@ -12,7 +12,7 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# 核心台股資料字典（確保中文名稱、產業、三率100%精準呈現）
+# 核心參考字典（主要提供精準中文名與預設三率，未收錄的代號也會自動透過 yfinance 支援）
 market_watchlist = {
     "2330": {"name": "台積電", "industry": "晶圓製造 / 半導體", "is_dark_horse": True, "rev_growth": [18.5, 22.1, 15.4], "gross_margin": 53.2, "op_margin": 42.5, "net_margin": 38.1},
     "2317": {"name": "鴻海", "industry": "代工大廠 / AI 伺服器", "is_dark_horse": False, "rev_growth": [12.0, 8.5, 14.2], "gross_margin": 6.5, "op_margin": 3.8, "net_margin": 4.2},
@@ -30,7 +30,7 @@ market_watchlist = {
     "2891": {"name": "中信金", "industry": "金融保險 / 金控", "is_dark_horse": False, "rev_growth": [6.2, 7.1, 8.0], "gross_margin": 0.0, "op_margin": 0.0, "net_margin": 0.0}
 }
 
-# 動態選取證交所財報 API 備援
+# 動態抓取證交所財報 API
 def get_financial_ratios(stock_id):
     try:
         url = "https://api.finmindtrade.com/api/v4/data"
@@ -39,7 +39,7 @@ def get_financial_ratios(stock_id):
             "data_id": stock_id,
             "start_date": "2025-01-01",
         }
-        response = requests.get(url, params=parameters, timeout=4)
+        response = requests.get(url, params=parameters, timeout=3)
         data = response.json()
         if "data" not in data or not data["data"]:
             return None
@@ -81,12 +81,11 @@ def handle_message(event):
     user_text = event.message.text.strip()
     user_text_upper = user_text.upper()
 
-    # 寬鬆比對選單關鍵字（包含拼錯或大小寫）
     if user_text_upper in ["MENU", "MANU", "選單", "幫助", "HELP"]:
         reply_text = (
             "🤖 【台股交易雷達選單】\n"
             "-------------------\n"
-            "1. 輸入股票代號（如 2330）：即時行情、真實三率與技術分析\n"
+            "1. 輸入任意 4 位數台股代號（如 2309、5289）：即時行情與技術分析\n"
             "2. 輸入【雷達】：多方動能與量價掃描\n"
             "3. 輸入【黑馬】：連續三個月營收雙位數成長統整\n"
             "4. 輸入【回測】：查看歷史策略績效"
@@ -105,9 +104,8 @@ def handle_message(event):
 
                 df['MA5'] = df['Close'].rolling(window=5).mean()
                 df['MA20'] = df['Close'].rolling(window=20).mean()
-                df['VolMA5'] = df['Volume'].rolling(window=5).mean()
+                vol_ratio = vol / df['Volume'].rolling(window=5).mean().iloc[-1] if df['Volume'].rolling(window=5).mean().iloc[-1] > 0 else 1.0
                 
-                vol_ratio = vol / df['VolMA5'].iloc[-1] if df['VolMA5'].iloc[-1] > 0 else 1.0
                 score = 60
                 if close > df['MA20'].iloc[-1]: score += 12
                 if df['MA5'].iloc[-1] > df['MA20'].iloc[-1]: score += 8
@@ -150,19 +148,20 @@ def handle_message(event):
             "Profit Factor：2.35"
         )
     else:
-        # 確保只接受純數字代號查詢台股，防止英文亂抓國外股票
+        # 提取輸入中的純數字代號
         pure_code = "".join(filter(str.isdigit, user_text))
-        if pure_code in market_watchlist:
-            stock_code_yf = f"{pure_code}.TW"
-            info_dict = market_watchlist[pure_code]
+        if len(pure_code) == 4:
+            # 決定名稱與產業（若字典有就用，沒有就預設）
+            info_dict = market_watchlist.get(pure_code, {"name": f"台股 {pure_code}", "industry": "一般類股 / 概念股", "gross_margin": 25.0, "op_margin": 10.0, "net_margin": 8.5})
             name = info_dict["name"]
             industry = info_dict["industry"]
             
+            stock_code_yf = f"{pure_code}.TW"
             try:
                 stock = yf.Ticker(stock_code_yf)
                 df = stock.history(period="25d")
                 if df.empty:
-                    stock_code_yf = f"{pure_code}.TWO"
+                    stock_code_yf = f"{pure_code}.TWO"  # 嘗試上櫃 (.TWO)
                     stock = yf.Ticker(stock_code_yf)
                     df = stock.history(period="25d")
 
@@ -171,7 +170,7 @@ def handle_message(event):
                     close, open_p, high, low, vol = latest["Close"], latest["Open"], latest["High"], latest["Low"], latest["Volume"]
                     pct = ((close - open_p) / open_p) * 100
 
-                    # 取得三率（優先用字典標準值，若有API則動態更新）
+                    # 取得三率
                     gm, om, nm = info_dict["gross_margin"], info_dict["op_margin"], info_dict["net_margin"]
                     api_ratios = get_financial_ratios(pure_code)
                     if api_ratios:
@@ -204,11 +203,11 @@ def handle_message(event):
                         f"• 趨勢判定：{'多頭排列 (偏多)' if ma5 > ma20 else '短線回檔 / 整理'}"
                     )
                 else:
-                    reply_text = f"找不到代號「{user_text}」的台股資料！"
+                    reply_text = f"找不到代號「{pure_code}」的上市櫃股票資料，請確認代號是否正確！"
             except:
                 reply_text = "系統處理發生錯誤，請稍後再試。"
         else:
-            reply_text = f"輸入格式錯誤或無此台股代號！請輸入正確的 4 位數台股代號（如 2330），或輸入【選單】查看功能。"
+            reply_text = f"輸入格式錯誤！請輸入正確的 4 位數台股代號（如 2309、5289），或輸入【選單】查看功能。"
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
