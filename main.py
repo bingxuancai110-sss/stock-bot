@@ -11,7 +11,6 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# 支援多人推播的清單（以後有新朋友的 ID，直接往這個清單裡面加逗號貼進來即可）
 TARGET_USER_IDS = [
     "Ue00f44b36b32a87adaca89034ec24e58", # 你的 ID
 ]
@@ -76,9 +75,14 @@ def get_us_stock_pct(symbol):
     return 0.0
 
 def generate_morning_brief():
+    dji_pct = get_us_stock_pct("^DJI")
+    gspc_pct = get_us_stock_pct("^GSPC")
     sox_pct = get_us_stock_pct("^SOX")
     ixic_pct = get_us_stock_pct("^IXIC")
+    
     nvda_pct = get_us_stock_pct("NVDA")
+    tsm_pct = get_us_stock_pct("TSM")
+    amd_pct = get_us_stock_pct("AMD")
     aapl_pct = get_us_stock_pct("AAPL")
     msft_pct = get_us_stock_pct("MSFT")
     amzn_pct = get_us_stock_pct("AMZN")
@@ -100,10 +104,14 @@ def generate_morning_brief():
         f"📅 日期：{today_str}\n"
         f"-------------------\n"
         f"🇺🇸 **美股主要指數**：\n"
+        f"• 道瓊工業：{dji_pct:+.2f}%\n"
+        f"• 標普 500：{gspc_pct:+.2f}%\n"
         f"• 費城半導體：{sox_pct:+.2f}%\n"
         f"• 那斯達克：{ixic_pct:+.2f}%\n\n"
-        f"💻 **美股科技五巨頭與重點股**：\n"
+        f"💻 **美股科技巨頭與重點股**：\n"
         f"• 輝達 (NVDA)：{nvda_pct:+.2f}%\n"
+        f"• 台積電ADR (TSM)：{tsm_pct:+.2f}%\n"
+        f"• 超微 (AMD)：{amd_pct:+.2f}%\n"
         f"• 蘋果 (AAPL)：{aapl_pct:+.2f}%\n"
         f"• 微軟 (MSFT)：{msft_pct:+.2f}%\n"
         f"• 亞馬遜 (AMZN)：{amzn_pct:+.2f}%\n"
@@ -125,7 +133,6 @@ def push_test():
     if TARGET_USER_IDS:
         try:
             message = generate_morning_brief()
-            # 迴圈將訊息發送給清單中的所有人
             for uid in TARGET_USER_IDS:
                 line_bot_api.push_message(uid, TextSendMessage(text=message))
             return "Push Success to all users!"
@@ -145,7 +152,6 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # 自動將傳訊息者的 User ID 印在 Render Logs 上，方便抓取
     if event.source.user_id:
         print(f"📌 收到來自使用者的 ID: {event.source.user_id}")
 
