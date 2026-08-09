@@ -2,7 +2,7 @@ name: Send Daily Stock Push
 
 on:
   schedule:
-    - cron: '44 13 * * *'
+    - cron: '41 13 * * *'
   workflow_dispatch:
 
 jobs:
