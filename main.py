@@ -11,7 +11,7 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-TARGET_USER_ID = "U88c83e10fa4d172e9ddffb428d002f23"
+TARGET_USER_ID = "Ue00f44b36b32a87adaca89034ec24e58"
 
 black_horse_database = {
     "3293": {"name": "鈊象", "industry": "網路遊戲 / 軟體", "reason": " 營收與 EPS 長期高速成長，獲利強悍，底部整理後隨時準備強勢創高"},
@@ -88,7 +88,7 @@ def generate_morning_brief():
 
     today_str = datetime.now().strftime("%Y/%m/%d")
     return (
-        f"☀️ 【台股盤前與美股動態速覽】\n"
+        f"☀️ 【台股盤前與美股動態速覽 (21:27 測試)】\n"
         f"📅 日期：{today_str}\n"
         f"-------------------\n"
         f"🇺🇸 **美股主要指數**：\n"
@@ -130,9 +130,6 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # 幫你把當前傳訊息的 User ID 印在 Render Log 裡
-    print(f"👉 當前用戶的 User ID 是: {event.source.user_id}")
-
     user_text = event.message.text.strip()
     user_text_upper = user_text.upper()
     pure_code = "".join(filter(str.isdigit, user_text))
