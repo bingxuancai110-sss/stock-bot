@@ -88,7 +88,7 @@ def generate_morning_brief():
 
     today_str = datetime.now().strftime("%Y/%m/%d")
     return (
-        f"☀️ 【台股盤前與美股動態速覽 (21:27 測試)】\n"
+        f"☀️ 【台股盤前與美股動態速覽 (21:32 測試)】\n"
         f"📅 日期：{today_str}\n"
         f"-------------------\n"
         f"🇺🇸 **美股主要指數**：\n"
