@@ -14,23 +14,23 @@ handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
 TARGET_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# 完整的台股觀察清單與分類
+# 修正：豐富且正確的雷達屬性分類，不再全部都是黑馬
 market_watchlist = {
     "2330": {"name": "台積電", "industry": "先進製程 / CoWoS", "category": "🔥 黑馬股 (漲價供不應求)", "group": "半導體"},
-    "2454": {"name": "聯發科", "industry": "IC 設計", "category": "技術突破", "group": "半導體"},
-    "2317": {"name": "鴻海", "industry": "AI 伺服器代工", "category": "權值主流", "group": "AI"},
-    "2382": {"name": "廣達", "industry": "AI 伺服器", "category": "技術突破", "group": "AI"},
-    "3231": {"name": "緯創", "industry": "AI 伺服器基板", "category": "量能增溫", "group": "AI"},
+    "2454": {"name": "聯發科", "industry": "IC 設計", "category": "🚀 技術突破", "group": "半導體"},
+    "2317": {"name": "鴻海", "industry": "AI 伺服器代工", "category": "👑 權值主流", "group": "AI"},
+    "2382": {"name": "廣達", "industry": "AI 伺服器", "category": "🚀 技術突破", "group": "AI"},
+    "3231": {"name": "緯創", "industry": "AI 伺服器基板", "category": "📊 量能增溫", "group": "AI"},
     "6442": {"name": "光聖", "industry": "光通訊 / 矽光子", "category": "🔥 黑馬股 (漲價供不應求)", "group": "網通"},
-    "2308": {"name": "台達電", "industry": "電源 / 重電綠能", "category": "🔥 黑馬股 (漲價供不應求)", "group": "重電"},
+    "2308": {"name": "台達電", "industry": "電源 / 重電綠能", "category": "🌱 產業復甦", "group": "重電"},
     "1503": {"name": "士電", "industry": "電機機械 / 重電", "category": "🔥 黑馬股 (漲價供不應求)", "group": "重電"},
     "1519": {"name": "華城", "industry": "變壓器 / 美國重電", "category": "🔥 黑馬股 (漲價供不應求)", "group": "重電"},
-    "3037": {"name": "欣興", "industry": "ABF載板", "category": "產業復甦", "group": "PCB"},
-    "2368": {"name": "金像電", "industry": "伺服器 PCB", "category": "均線多頭", "group": "PCB"},
+    "3037": {"name": "欣興", "industry": "ABF載板", "category": "🌱 產業復甦", "group": "PCB"},
+    "2368": {"name": "金像電", "industry": "伺服器 PCB", "category": "📈 均線多頭", "group": "PCB"},
 }
 
 def get_realtime_stock(code):
-    """透過 Yahoo Finance 輕量 API 抓取即時資料，避免 yfinance 逾時失效"""
+    """精準修正 Yahoo Finance 數據抓取，避免漲跌幅暴衝"""
     symbols = [f"{code}.TW", f"{code}.TWO"]
     headers = {'User-Agent': 'Mozilla/5.0'}
     
@@ -42,51 +42,52 @@ def get_realtime_stock(code):
             result = data['chart']['result'][0]
             meta = result['meta']
             
-            close = meta.get('regularMarketPrice', meta.get('previousClose', 100.0))
-            prev_close = meta.get('chartPreviousClose', meta.get('previousClose', close))
-            high = meta.get('regularMarketDayHigh', close)
-            low = meta.get('regularMarketDayLow', close)
-            vol = meta.get('regularMarketVolume', 1000000)
-            
-            pct = ((close - prev_close) / prev_close) * 100 if prev_close else 0.0
-            
-            # 計算均線
             quotes = result['indicators']['quote'][0]
             closes = [c for c in quotes.get('close', []) if c is not None]
+            
+            if not closes:
+                continue
+                
+            close = float(closes[-1])
+            prev_close = float(meta.get('chartPreviousClose', closes[-2] if len(closes) > 1 else close))
+            
+            high = float(meta.get('regularMarketDayHigh', max(closes[-5:])))
+            low = float(meta.get('regularMarketDayLow', min(closes[-5:])))
+            vol = int(meta.get('regularMarketVolume', 1000000))
+            
+            pct = ((close - prev_close) / prev_close) * 100 if prev_close else 0.0
             
             ma5 = sum(closes[-5:]) / len(closes[-5:]) if len(closes) >= 5 else close
             ma20 = sum(closes[-20:]) / len(closes[-20:]) if len(closes) >= 20 else close
             
             return {
-                "close": float(close),
-                "high": float(high),
-                "low": float(low),
-                "volume": int(vol),
-                "pct": float(pct),
-                "ma5": float(ma5),
-                "ma20": float(ma20)
+                "close": close, "high": high, "low": low,
+                "volume": vol, "pct": pct, "ma5": ma5, "ma20": ma20
             }
         except Exception:
             continue
     return None
 
 def get_us_market():
-    """抓取美股指數真實漲跌幅"""
+    """精準抓取美股真實指數"""
     headers = {'User-Agent': 'Mozilla/5.0'}
     sox_pct, ixic_pct = 0.65, 0.82
     try:
         url_sox = "https://query1.finance.yahoo.com/v8/finance/chart/^SOX?range=5d&interval=1d"
         res = requests.get(url_sox, headers=headers, timeout=4).json()
         meta = res['chart']['result'][0]['meta']
-        sox_pct = ((meta['regularMarketPrice'] - meta['chartPreviousClose']) / meta['chartPreviousClose']) * 100
+        closes = [c for c in res['chart']['result'][0]['indicators']['quote'][0].get('close', []) if c is not None]
+        if len(closes) >= 2:
+            sox_pct = ((closes[-1] - closes[-2]) / closes[-2]) * 100
     except:
         pass
 
     try:
         url_ixic = "https://query1.finance.yahoo.com/v8/finance/chart/^IXIC?range=5d&interval=1d"
         res = requests.get(url_ixic, headers=headers, timeout=4).json()
-        meta = res['chart']['result'][0]['meta']
-        ixic_pct = ((meta['regularMarketPrice'] - meta['chartPreviousClose']) / meta['chartPreviousClose']) * 100
+        closes = [c for c in res['chart']['result'][0]['indicators']['quote'][0].get('close', []) if c is not None]
+        if len(closes) >= 2:
+            ixic_pct = ((closes[-1] - closes[-2]) / closes[-2]) * 100
     except:
         pass
 
@@ -144,12 +145,11 @@ def handle_message(event):
     user_text_upper = user_text.upper()
     pure_code = "".join(filter(str.isdigit, user_text))
 
-    # 1. 處理個股代號查詢
     if len(pure_code) == 4 and len(user_text) <= 5:
         info_dict = market_watchlist.get(pure_code, {
             "name": f"台股 {pure_code}", 
             "industry": "前瞻趨勢概念股",
-            "category": "🔥 黑馬股 (漲價供不應求)"
+            "category": "🚀 技術突破"
         })
         name = info_dict["name"]
         industry = info_dict["industry"]
@@ -157,13 +157,7 @@ def handle_message(event):
         
         data = get_realtime_stock(pure_code)
         if data:
-            close = data["close"]
-            high = data["high"]
-            low = data["low"]
-            vol = data["volume"]
-            pct = data["pct"]
-            ma5 = data["ma5"]
-            ma20 = data["ma20"]
+            close, high, low, vol, pct, ma5, ma20 = data["close"], data["high"], data["low"], data["volume"], data["pct"], data["ma5"], data["ma20"]
             
             score = min(max(65 + (15 if close > ma20 else 0) + (10 if ma5 > ma20 else 0) + int(pct * 4), 50), 98)
             if "🔥" in category:
@@ -188,7 +182,6 @@ def handle_message(event):
         else:
             reply_text = f"❌ 查無代號 {pure_code} 的即時行情資料，請確認代號是否正確。"
 
-    # 2. 四大核心指令：Manu / 選單
     elif user_text_upper in ["MENU", "MANU", "選單", "幫助", "HELP"]:
         reply_text = (
             "🤖 【蔡秉軒御用選股機器人選單】\n"
@@ -200,11 +193,9 @@ def handle_message(event):
             "💡 提示：隨時可輸入任意 4 位數代號（如 2330）查詢個股即時行情與均線！"
         )
         
-    # 3. 盤前指令
     elif user_text in ["盤前", "早安", "MORNING"]:
         reply_text = generate_morning_brief()
         
-    # 4. 雷達指令
     elif user_text == "雷達":
         scanned_results = []
         for code, info in market_watchlist.items():
@@ -230,7 +221,6 @@ def handle_message(event):
             )
         reply_text = "🎯 【技術面強勢雷達 TOP 5】\n-------------------\n" + ("\n\n".join(passed_text) if passed_text else "目前掃描中，請稍後再試。")
 
-    # 5. 回測指令
     elif user_text == "回測":
         reply_text = (
             "📈 【策略歷史回測報告】\n"
@@ -244,7 +234,6 @@ def handle_message(event):
             "💬 結論：結合供不應求與黑馬題材的過濾機制，能有效提升勝率與爆發力！"
         )
 
-    # 6. 黑馬指令
     elif user_text == "黑馬":
         groups = {}
         for code, info in market_watchlist.items():
