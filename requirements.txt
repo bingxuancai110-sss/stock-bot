@@ -1,8 +1,8 @@
 flask==3.0.3
 line-bot-sdk==3.25.0
 yfinance==0.2.38
-pandas==2.0.3
-numpy==1.24.3
+pandas==2.2.3
+numpy==1.26.4
 apscheduler==3.10.4
 gunicorn==22.0.0
 requests==2.31.0
