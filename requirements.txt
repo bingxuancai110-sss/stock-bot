@@ -1,7 +1,6 @@
-Flask
+flask
 line-bot-sdk
-requests
-twstock
-pandas
-gunicorn
 yfinance
+pandas
+apscheduler
+gunicorn
