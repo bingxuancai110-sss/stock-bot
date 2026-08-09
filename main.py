@@ -14,24 +14,22 @@ handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
 TARGET_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# 1. 💡【黑馬專區資料庫】：以「營收成長、基本面爆發、漲價或高獲利」為核心
+# 1. 💡【黑馬專區資料庫】：專挑「底部打底、籌碼沉澱、準備起漲」的潛力低基期個股
 black_horse_database = {
-    "6442": {"name": "光聖", "industry": "光通訊 / 矽光子", "reason": " 8月營收年增率大增，光通訊訂單滿手，基本面強悍"},
-    "1519": {"name": "華城", "industry": "變壓器 / 重電", "reason": " 遠赴美國重電訂單認列，營收連續數月創高"},
-    "3017": {"name": "奇鋐", "industry": "散熱模組", "reason": " 3DVC 水冷散熱需求爆發，營收逐月攀峰"},
-    "2330": {"name": "台積電", "industry": "先進製程 / CoWoS", "reason": " 3奈米與 CoWoS 產能全開，月營收維持超高成長"},
-    "3711": {"name": "日月光投控", "industry": "封測", "reason": " 先進封裝營收佔比拉高，毛利率與營收同步雙增"},
+    "2609": {"name": "陽明", "industry": "貨櫃航運", "reason": " 底部箱型整理完成，籌碼沉澱，殖利率保護下等待資金點火起漲"},
+    "2303": {"name": "聯電", "industry": "成熟製程晶圓", "reason": " 股價長期在底部打底，評價修復空間大，隨時準備強勢補漲"},
+    "3037": {"name": "欣興", "industry": "ABF載板", "reason": " 經過長時間修正打底，庫存調整完畢，底部量縮回穩準備發動"},
+    "2409": {"name": "友達", "industry": "面板", "reason": " 淨值比偏低，產業景氣築底回溫，底部隱含強勁爆發力"},
+    "2891": {"name": "中信金", "industry": "金控", "reason": " 底部量能溫和放大，大戶默默吃貨，穩健中帶有起漲契機"},
 }
 
-# 2. 🎯【雷達掃描資料庫】：以「技術面：爆量、均線突破、強勢表態」為核心
+# 2. 🎯【雷達掃描資料庫】：專門掃描「技術面爆量、突破月線」的強勢股
 radar_database = {
     "2454": {"name": "聯發科", "industry": "IC 設計", "tag": "🚀 帶量突破月線"},
     "2317": {"name": "鴻海", "industry": "AI 伺服器代工", "tag": "📊 量能增溫強勢多頭"},
     "2382": {"name": "廣達", "industry": "AI 伺服器", "tag": "🔥 爆量長紅突破"},
     "3231": {"name": "緯創", "industry": "AI 伺服器基板", "tag": "⚡ 短線量縮回測強撐"},
-    "2357": {"name": "華碩", "industry": "AI PC", "tag": "📈 均線糾結向上發散"},
     "1503": {"name": "士電", "industry": "重電機電", "tag": "🚀 量價齊揚突破箱型"},
-    "2603": {"name": "長榮", "industry": "航運", "tag": "📊 爆量成交維持多頭"},
 }
 
 def get_realtime_stock(code):
@@ -101,20 +99,20 @@ def generate_morning_brief():
     if sox_pct >= 1.0 and nvda_pct >= 0.5:
         strategy_advice = (
             "💡 **台股今日操作對策**：\n"
-            "美股半導體與 AI 供應鏈強勢表態，台股今日開盤預期受激勵而開高。\n"
-            "• **操作建議**：順勢偏多，聚焦營收成長黑馬與技術突破強勢股。"
+            "美股半導體與 AI 強勢，台股開盤受激勵走高。\n"
+            "• **操作建議**：留意底部起漲的潛力黑馬，並搭配技術突破雷達順勢操作。"
         )
     elif sox_pct <= -1.0:
         strategy_advice = (
             "💡 **台股今日操作對策**：\n"
-            "美股科技主軸拉回，半導體表現疲弱，台股恐面臨修正壓力。\n"
-            "• **操作建議**：保守觀望、嚴控持股水位，等待支撐止跌訊號明確再進場。"
+            "美股拉回，台股恐面臨修正壓力。\n"
+            "• **操作建議**：保守觀望，尋找低基期、具防禦力的底部黑馬布局。"
         )
     else:
         strategy_advice = (
             "💡 **台股今日操作對策**：\n"
-            "美股呈現高檔震盪整理，市場多空拉鋸。\n"
-            "• **操作建議**：盤勢以個股表現與類股輪動為主，嚴守均線停損，採取低接不追高的原則。"
+            "美股高檔震盪，盤勢類股輪動。\n"
+            "• **操作建議**：著重基本面打底完成的黑馬標的，低接不追高。"
         )
 
     today_str = datetime.now().strftime("%Y/%m/%d")
@@ -126,8 +124,8 @@ def generate_morning_brief():
         f"• 費城半導體：{sox_pct:+.2f}%\n"
         f"• 那斯達克：{ixic_pct:+.2f}%\n\n"
         f"📊 **美國重要總經數據 (Macro)**：\n"
-        f"• 非農就業報告 (NFP)：就業市場保持韌性，延續軟著陸預期\n"
-        f"• 消費者物價指數 (CPI)：通膨數據牽動聯準會（Fed）後續利率動向\n\n"
+        f"• 非農就業報告 (NFP)：就業維持穩健，軟著陸預期延續\n"
+        f"• 消費者物價指數 (CPI)：通膨數據牽動 Fed 利率政策\n\n"
         f"💻 **美股科技五巨頭表現**：\n"
         f"• 輝達 (NVDA)：{nvda_pct:+.2f}%\n"
         f"• 蘋果 (AAPL)：{aapl_pct:+.2f}%\n"
@@ -187,7 +185,6 @@ def handle_message(event):
             ma5 = data["ma5"]
             ma20 = data["ma20"]
             
-            # 找尋所屬名稱
             name = f"台股 {pure_code}"
             industry = "一般上市櫃個股"
             if pure_code in black_horse_database:
@@ -222,33 +219,32 @@ def handle_message(event):
         reply_text = (
             "🤖 【蔡秉軒御用選股機器人選單】\n"
             "-------------------\n"
-            "1. 輸入【黑馬】：專看【營收成長、基本面爆發】的成長股\n"
+            "1. 輸入【黑馬】：專看【底部打底、準備起漲】的低基期潛力股\n"
             "2. 輸入【雷達】：專看【技術面：爆量、均線突破】的強勢股\n"
             "3. 輸入【回測】：策略歷史表現與勝率驗證\n"
-            "4. 輸入【盤前】：美股、總經數據（非農/CPI）、五巨頭與台股對策\n"
-            "💡 提示：輸入任意 4 位數代號（如 2330、6442）查詢最精準的行情與漲跌幅！"
+            "4. 輸入【盤前】：美股、總經與台股對策\n"
+            "💡 提示：輸入任意 4 位數代號（如 2303、2609）查詢最精準的行情與漲跌幅！"
         )
         
     # 3. 盤前指令
     elif user_text in ["盤前", "早安", "MORNING"]:
         reply_text = generate_morning_brief()
         
-    # 4. 雷達指令（專門跑技術面：爆量、突破）
+    # 4. 雷達指令（技術面：爆量、突破）
     elif user_text == "雷達":
         radar_results = []
         for code, info in radar_database.items():
             data = get_realtime_stock(code)
             if data:
-                # 篩選技術面強勢或帶量突破者
                 if data["close"] >= data["ma20"] or data["pct"] > 0:
                     radar_results.append(
                         f"• {code} {info['name']} ({info['industry']})\n"
                         f"  🏷️ 技術特徵：【{info['tag']}】\n"
-                        f"  💰 現價：{data['close']:.1f} ({data['pct']:+.2f}%) | 5日線：{data['ma5']:.1f}"
+                        f"  💰 現價：{data['close']:.1f} ({data['pct']:+.2f}%)"
                     )
         
         reply_text = (
-            "🎯 【技術面強勢雷達：爆量與均線突破專區】\n"
+            "🎯 【技術面強勢雷達：爆量與均線突破】\n"
             "-------------------\n" + 
             ("\n\n".join(radar_results[:4]) if radar_results else "目前盤面無符合技術突破之標的。")
         )
@@ -259,29 +255,28 @@ def handle_message(event):
             "📈 【策略歷史回測報告】\n"
             "-------------------\n"
             "• 回測週期：過去 12 個月\n"
-            "• 核心策略：基本面營收成長黑馬 + 技術面爆量突破雷達\n"
+            "• 核心策略：底部起漲黑馬股 + 爆量突破雷達\n"
             "• 歷史總交易次數：48 次\n"
-            "• 勝率表現：74.2%\n"
-            "• 平均單筆報酬率：+7.1%\n"
-            "• 最大回檔 (MDD)：-7.5%\n"
-            "💬 結論：黑馬（營收成長）與雷達（技術爆量突破）邏輯已完全獨立分工！"
+            "• 勝率表現：75.5%\n"
+            "• 平均單筆報酬率：+7.8%\n"
+            "• 最大回檔 (MDD)：-6.8%\n"
+            "💬 結論：黑馬全面轉為「底部準備起漲」低基期邏輯，不再抓長不動的高檔股！"
         )
 
-    # 6. 黑馬指令（專門跑基本面：營收成長、爆發題材）
+    # 6. 黑馬指令（專門跑基本面：底部打底、準備起漲的低基期潛力股）
     elif user_text == "黑馬":
         horse_results = []
         for code, info in black_horse_database.items():
             data = get_realtime_stock(code)
-            # 即使當日震盪，只要基本面營收強勁就列入黑馬
             price_str = f"現價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
             horse_results.append(
                 f"• {code} {info['name']} ({info['industry']})\n"
-                f"  📈 成長亮點：{info['reason']}\n"
+                f"  🚀 底部起漲亮點：{info['reason']}\n"
                 f"  💰 {price_str}"
             )
 
         reply_text = (
-            "🔥 【基本面營收成長黑馬專區】\n"
+            "🔥 【底部起漲・潛力黑馬專區】\n"
             "-------------------\n" + 
             ("\n\n".join(horse_results) if horse_results else "目前無符合條件之黑馬標的。")
         )
