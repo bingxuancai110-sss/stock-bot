@@ -11,7 +11,10 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-TARGET_USER_ID = "Ue00f44b36b32a87adaca89034ec24e58"
+# 支援多人推播的清單（以後有新朋友的 ID，直接往這個清單裡面加逗號貼進來即可）
+TARGET_USER_IDS = [
+    "Ue00f44b36b32a87adaca89034ec24e58", # 你的 ID
+]
 
 black_horse_database = {
     "3293": {"name": "鈊象", "industry": "網路遊戲 / 軟體", "reason": " 營收與 EPS 長期高速成長，獲利強悍，底部整理後隨時準備強勢創高"},
@@ -83,7 +86,6 @@ def generate_morning_brief():
     mu_pct = get_us_stock_pct("MU")
     lite_pct = get_us_stock_pct("LITE")
 
-    # 總經數據預留位（非農與 CPI 可於此處更新或對接 API）
     nfp_data = "待下次數據公佈更新 (非農)"
     cpi_data = "待下次數據公佈更新 (CPI)"
 
@@ -120,14 +122,16 @@ def home():
 
 @app.route("/push-test")
 def push_test():
-    if TARGET_USER_ID:
+    if TARGET_USER_IDS:
         try:
             message = generate_morning_brief()
-            line_bot_api.push_message(TARGET_USER_ID, TextSendMessage(text=message))
-            return "Push Success!"
+            # 迴圈將訊息發送給清單中的所有人
+            for uid in TARGET_USER_IDS:
+                line_bot_api.push_message(uid, TextSendMessage(text=message))
+            return "Push Success to all users!"
         except Exception as e:
             return f"Push Failed: {e}"
-    return "Target User ID not found."
+    return "Target User IDs not found."
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -141,6 +145,10 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
+    # 自動將傳訊息者的 User ID 印在 Render Logs 上，方便抓取
+    if event.source.user_id:
+        print(f"📌 收到來自使用者的 ID: {event.source.user_id}")
+
     user_text = event.message.text.strip()
     user_text_upper = user_text.upper()
     pure_code = "".join(filter(str.isdigit, user_text))
