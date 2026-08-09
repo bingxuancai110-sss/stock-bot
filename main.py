@@ -167,16 +167,16 @@ def handle_message(event):
     if user_id not in user_alerts:
         user_alerts[user_id] = {}
 
-    # 1. 加自選股指令 (例如：加2330)
-    if user_text.startswith("加") and len(pure_code) == 4:
+    # 1. 加自選股指令 (例如：加2330 或 加 2330)
+    if "加" in user_text and len(pure_code) == 4:
         if pure_code not in user_watchlists[user_id]:
             user_watchlists[user_id].append(pure_code)
             reply_text = f"✅ 新增自選成功：{pure_code}\n輸入「自選」即可檢視完整清單。"
         else:
             reply_text = f"📌 {pure_code} 已經在您的自選股清單中囉！"
 
-    # 2. 刪除自選股指令 (例如：刪2330)
-    elif user_text.startswith("刪") and len(pure_code) == 4:
+    # 2. 刪除自選股指令 (例如：刪2330 或 刪 2330)
+    elif "刪" in user_text and len(pure_code) == 4:
         if pure_code in user_watchlists[user_id]:
             user_watchlists[user_id].remove(pure_code)
             if pure_code in user_alerts[user_id]:
@@ -185,26 +185,46 @@ def handle_message(event):
         else:
             reply_text = f"❌ 找不到代號 {pure_code}"
 
-    # 3. 設定到價通知指令 (例如：設 2330 1500)
-    elif user_text.startswith("設") or user_text.startswith("設定"):
-        parts = user_text.replace("設定", "設").split()
-        if len(parts) >= 3:
-            target_code = "".join(filter(str.isdigit, parts[1]))
-            try:
-                target_price = float(parts[2])
-                if len(target_code) == 4:
-                    if target_code not in user_watchlists[user_id]:
-                        user_watchlists[user_id].append(target_code)
-                    user_alerts[user_id][target_code] = target_price
-                    reply_text = f"🔔 到價通知設定成功！\n• 股票代號：{target_code}\n• 目標價格：{target_price}"
-                else:
-                    reply_text = "❌ 格式錯誤，請輸入 4 位數代號。範例：設 2330 1500"
-            except ValueError:
-                reply_text = "❌ 價格格式錯誤。範例：設 2330 1500"
-        else:
-            reply_text = "❌ 指令格式錯誤。範例：設 2330 1500"
+    # 3. 設定到價通知指令（支援「設 2330 2500」、「設定 2330 2500」或直接打「2330 2500」）
+    elif ("設" in user_text) or (" " in user_text and len(pure_code) >= 7):
+        # 把文字清理乾淨並用空格分割
+        clean_text = user_text.replace("設定", "").replace("設", "").strip()
+        parts = clean_text.split()
+        
+        target_code = None
+        target_price = None
+        
+        for p in parts:
+            p_digits = "".join(filter(str.isdigit, p))
+            if len(p_digits) == 4 and not target_code:
+                target_code = p_digits
+            else:
+                try:
+                    val = float(p)
+                    if val > 10:  # 價格通常大於10
+                        target_price = val
+                except ValueError:
+                    pass
+                    
+        # 如果使用者直接傳了像 "2330 2500" 這種沒有「設」字的格式
+        if not target_code and len(parts) >= 2:
+            c_part = "".join(filter(str.isdigit, parts[0]))
+            if len(c_part) == 4:
+                target_code = c_part
+                try:
+                    target_price = float(parts[1])
+                except ValueError:
+                    pass
 
-    # 4. 查看自選股指令（全新放大版：紅燈漲綠燈跌、間距拉開、附支撐壓力）
+        if target_code and target_price:
+            if target_code not in user_watchlists[user_id]:
+                user_watchlists[user_id].append(target_code)
+            user_alerts[user_id][target_code] = target_price
+            reply_text = f"🔔 到價通知設定成功！\n• 股票代號：{target_code}\n• 目標價格：{target_price}"
+        else:
+            reply_text = "❌ 格式錯誤！\n正確範例：\n• 設 2330 1500\n• 2330 1500"
+
+    # 4. 查看自選股指令（放大版：紅燈漲綠燈跌、間距拉開、附支撐壓力）
     elif user_text in ["自選", "WATCHLIST"]:
         if not user_watchlists[user_id]:
             reply_text = (
@@ -212,7 +232,7 @@ def handle_message(event):
                 "===================\n"
                 "目前清單是空的。\n\n"
                 "💡 新增指令：加 2330\n"
-                "💡 設定到價：設 2330 1500"
+                "💡 設定到價：2330 1500"
             )
         else:
             results = ["📂 【我的自選股清單】\n==================="]
@@ -226,7 +246,6 @@ def handle_message(event):
                     # 紅燈漲 🔴、綠燈跌 🟢
                     light_icon = "🔴" if pct >= 0 else "🟢"
                     
-                    # 計算簡易支撐與壓力（支援帶入自設目標價）
                     support = data['low'] * 0.99
                     resistance = data['high'] * 1.01
                     
@@ -243,11 +262,11 @@ def handle_message(event):
                 else:
                     results.append(f"\n⚪ 【 {code} 】 行情讀取中...")
             
-            results.append("\n===================\n💡 刪除：刪 2330 | 設價：設 2330 1500")
+            results.append("\n==================-\n💡 刪除：刪 2330 | 設價：2330 1500")
             reply_text = "\n".join(results)
 
-    # 5. 一般 4 位數股票行情查詢
-    elif len(pure_code) == 4 and len(user_text) <= 5:
+    # 5. 一般 4 位數股票行情查詢（限制必須剛好 4 碼，才不會跟到價設定衝突）
+    elif len(pure_code) == 4 and len(user_text) <= 5 and " " not in user_text:
         data = get_realtime_stock(pure_code)
         if data:
             close = data["close"]
@@ -271,7 +290,7 @@ def handle_message(event):
 
             reply_text = (
                 f"📊 {pure_code} {name} ({industry})\n"
-                f"==================-\n"
+                f"===================\n"
                 f"💰 現價：{close:.2f} ({pct:+.2f}%)\n"
                 f"🔺 高/低：{high:.2f} / {low:.2f}\n"
                 f"📦 量能：{int(vol / 1000):,} 張\n\n"
@@ -295,7 +314,7 @@ def handle_message(event):
             "• 輸入「自選」➜ 查看放大版紅綠燈清單\n"
             "• 輸入「加 2330」➜ 新增自選\n"
             "• 輸入「刪 2330」➜ 移除自選\n"
-            "• 輸入「設 2330 1500」➜ 設定到價通知\n"
+            "• 輸入「2330 1500」➜ 設定到價通知\n"
             "==================="
         )
     elif user_text in ["盤前", "早安", "MORNING"]:
