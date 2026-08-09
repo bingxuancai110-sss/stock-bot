@@ -15,7 +15,6 @@ handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
 TARGET_USER_ID = os.environ.get("LINE_USER_ID", "")
 
-# 核心參考字典（專注於名稱、產業與黑馬/成長動能追蹤）
 market_watchlist = {
     "2330": {"name": "台積電", "industry": "晶圓製造 / 半導體", "is_dark_horse": True, "rev_growth": [18.5, 22.1, 15.4]},
     "2317": {"name": "鴻海", "industry": "代工大廠 / AI 伺服器", "is_dark_horse": False, "rev_growth": [12.0, 8.5, 14.2]},
