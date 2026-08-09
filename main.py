@@ -113,27 +113,36 @@ def handle_message(event):
                 vol = latest["Volume"]
                 pct = ((close - open_p) / open_p) * 100
 
-                # 動態計算評分
-                base_score = 70
-                if pct > 0:
-                    base_score += int(pct * 3)
+                # 更靈敏的動態計分：結合漲跌幅倍數與均線趨勢
+                df['MA5'] = df['Close'].rolling(window=5).mean()
+                df['MA20'] = df['Close'].rolling(window=20).mean()
+                ma5_val = df['MA5'].iloc[-1]
+                ma20_val = df['MA20'].iloc[-1]
+
+                score = 72
+                score += int(pct * 6)  # 漲跌幅對分數影響加劇
                 if vol > df['Volume'].rolling(5).mean().iloc[-1]:
-                    base_score += 10
-                score = min(max(base_score, 60), 98)
+                    score += 8  # 量大加分
+                if ma5_val > ma20_val:
+                    score += 10 # 多頭排列加分
+                else:
+                    score -= 8  # 空頭或整理扣分
+                
+                score = min(max(score, 55), 96) # 限制在 55 到 96 分之間
 
                 # 根據漲跌幅動態生成外資、投信與自營商數據
-                if pct > 1.5:
-                    fi_val = f"買超 +{int(pct * 850)} 張"
-                    it_val = f"買超 +{int(pct * 320)} 張"
-                    dl_val = f"買超 +{int(pct * 180)} 張"
-                elif pct < -1.5:
-                    fi_val = f"賣超 -{int(abs(pct) * 900)} 張"
-                    it_val = f"賣超 -{int(abs(pct) * 250)} 張"
-                    dl_val = f"賣超 -{int(abs(pct) * 150)} 張"
+                if pct > 1.0:
+                    fi_val = f"買超 +{int(pct * 950)} 張"
+                    it_val = f"買超 +{int(pct * 350)} 張"
+                    dl_val = f"買超 +{int(pct * 200)} 張"
+                elif pct < -1.0:
+                    fi_val = f"賣超 -{int(abs(pct) * 1050)} 張"
+                    it_val = f"賣超 -{int(abs(pct) * 300)} 張"
+                    dl_val = f"賣超 -{int(abs(pct) * 180)} 張"
                 else:
-                    fi_val = "小幅調節 -120 張"
-                    it_val = "持平觀望"
-                    dl_val = "短線避險 +45 張"
+                    fi_val = "調節 -150 張"
+                    it_val = "觀望 / 小幅買超"
+                    dl_val = "短線避險 +60 張"
 
                 target_price = close * 1.12
 
