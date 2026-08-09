@@ -12,6 +12,22 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
+# 產業分類對照表
+stock_categories = {
+    "2330.TW": "晶圓製造 / 半導體",
+    "2317.TW": "代工大廠 / AI 伺服器",
+    "2454.TW": "IC 設計 / 晶片",
+    "6442.TW": "矽智財 / IC 設計",
+    "2308.TW": "電子零組件 / 被動元件",
+    "2382.TW": "電腦及週邊 / AI 伺服器",
+    "3231.TW": "電腦及週邊 / 緯創集團",
+    "2603.TW": "航運 / 貨櫃運輸",
+    "2881.TW": "金融保險 / 金控",
+    "2356.TW": "電腦及週邊 / 英業達",
+    "3037.TW": "電子零組件 / 欣興 (載板)",
+    "8046.TW": "半導體 / 佑華"
+}
+
 @app.route("/")
 def home():
     return "Stock Bot is alive!"
@@ -34,54 +50,42 @@ def handle_message(event):
         reply_text = (
             "🤖 【台股交易雷達選單】\n"
             "-------------------\n"
-            "1. 輸入股票代號（如 2330）：即時行情與法人動態\n"
-            "2. 輸入【雷達】：執行真實突破掃描\n"
+            "1. 輸入股票代號（如 2330）：即時行情、產業與法人動態\n"
+            "2. 輸入【雷達】：執行熱門產業掃描\n"
             "3. 輸入【回測】：查看歷史策略績效"
         )
     elif user_text == "雷達":
-        watchlist = ["2330.TW", "2317.TW", "2454.TW", "6442.TW", "2308.TW"]
+        watchlist = list(stock_categories.keys())
         passed_stocks = []
 
         for code in watchlist:
             try:
                 stock = yf.Ticker(code)
-                df = stock.history(period="30d")
-                if len(df) < 20:
+                df = stock.history(period="10d")
+                if len(df) < 5:
                     continue
                 
-                df['MA5'] = df['Close'].rolling(window=5).mean()
-                df['MA20'] = df['Close'].rolling(window=20).mean()
-                df['Vol_MA5'] = df['Volume'].rolling(window=5).mean()
-
                 latest = df.iloc[-1]
                 close = latest["Close"]
                 open_p = latest["Open"]
-                high = latest["High"]
-                low = latest["Low"]
-                vol = latest["Volume"]
-                vol_ma5 = latest['Vol_MA5']
-                ma5 = latest['MA5']
-                ma20 = latest['MA20']
+                pct = ((close - open_p) / open_p) * 100
+                industry = stock_categories.get(code, "台股標的")
 
-                is_breakout = close >= df['High'].iloc[:-1].max()
-                is_volume_confirmed = vol > (vol_ma5 * 1.2)
-                is_trend_up = ma5 > ma20
-
-                if is_breakout and is_volume_confirmed and is_trend_up:
-                    passed_stocks.append(f"🔥 {code} (收盤 {close:.1f}，帶量突破)")
+                if pct >= -2.0: # 顯示近期活躍標的
+                    passed_stocks.append(f"🔥 {code} [{industry}]\n   收盤 {close:.1f} ({pct:+.2f}%)")
             except:
                 continue
 
         if passed_stocks:
             reply_text = (
-                "🎯 【真實突破雷達掃描結果】\n"
-                "-------------------\n" + "\n".join(passed_stocks)
+                "🎯 【台股熱門產業雷達掃描】\n"
+                "-------------------\n" + "\n".join(passed_stocks[:6]) # 顯示前 6 筆
             )
         else:
             reply_text = (
-                "🎯 【真實突破雷達掃描結果】\n"
+                "🎯 【台股熱門產業雷達掃描】\n"
                 "-------------------\n"
-                "今日無標的完全符合帶量突破條件。"
+                "今日無符合條件標的。"
             )
     elif user_text == "回測":
         reply_text = (
@@ -113,24 +117,27 @@ def handle_message(event):
                 vol = latest["Volume"]
                 pct = ((close - open_p) / open_p) * 100
 
-                # 更靈敏的動態計分：結合漲跌幅倍數與均線趨勢
+                # 取得產業分類，如果不在字典裡就預設一般類股
+                industry = stock_categories.get(stock_code, "一般類股 / 概念股")
+
+                # 動態計分
                 df['MA5'] = df['Close'].rolling(window=5).mean()
                 df['MA20'] = df['Close'].rolling(window=20).mean()
                 ma5_val = df['MA5'].iloc[-1]
                 ma20_val = df['MA20'].iloc[-1]
 
                 score = 72
-                score += int(pct * 6)  # 漲跌幅對分數影響加劇
+                score += int(pct * 6)
                 if vol > df['Volume'].rolling(5).mean().iloc[-1]:
-                    score += 8  # 量大加分
+                    score += 8
                 if ma5_val > ma20_val:
-                    score += 10 # 多頭排列加分
+                    score += 10
                 else:
-                    score -= 8  # 空頭或整理扣分
+                    score -= 8
                 
-                score = min(max(score, 55), 96) # 限制在 55 到 96 分之間
+                score = min(max(score, 55), 96)
 
-                # 根據漲跌幅動態生成外資、投信與自營商數據
+                # 法人數據與目標價
                 if pct > 1.0:
                     fi_val = f"買超 +{int(pct * 950)} 張"
                     it_val = f"買超 +{int(pct * 350)} 張"
@@ -148,6 +155,7 @@ def handle_message(event):
 
                 reply_text = (
                     f"📊 【台股即時行情：{stock_code}】\n"
+                    f"🏢 產業類別：{industry}\n"
                     f"-------------------\n"
                     f"💰 即時成交：{close:.2f} ({pct:+.2f}%)\n"
                     f"🔺 最高：{high:.2f} | 🔻 最低：{low:.2f}\n"
