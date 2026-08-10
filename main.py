@@ -1,8 +1,6 @@
 import os
-import socket
 import requests
 import psycopg2
-from urllib.parse import urlparse
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -14,19 +12,32 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# --- Supabase 資料庫連線 (強制轉 IPv4) ---
+# --- GitHub 遠端黑馬與雷達清單設定 ---
+GITHUB_BLACK_HORSE_URL = "https://raw.githubusercontent.com/你的帳號/你的專案/main/black_horse.json"
+GITHUB_RADAR_URL = "https://raw.githubusercontent.com/你的帳號/你的專案/main/radar_data.json"
+
+def fetch_latest_black_horses():
+    try:
+        response = requests.get(GITHUB_BLACK_HORSE_URL, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"讀取黑馬清單失敗: {e}")
+    return None
+
+def fetch_latest_radars():
+    try:
+        response = requests.get(GITHUB_RADAR_URL, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"讀取雷達清單失敗: {e}")
+    return None
+
+# --- Supabase 資料庫連線 (使用標準連線字串) ---
 def get_db_connection():
     db_url = os.environ.get("DATABASE_URL")
-    url = urlparse(db_url)
-    ipv4_addr = socket.gethostbyname(url.hostname)
-    conn = psycopg2.connect(
-        database=url.path[1:],
-        user=url.username,
-        password=url.password,
-        host=ipv4_addr,
-        port=url.port,
-        sslmode='require'
-    )
+    conn = psycopg2.connect(db_url, sslmode='require')
     return conn
 
 def init_db():
@@ -41,7 +52,7 @@ def init_db():
 
 init_db()
 
-# --- 資料庫操作 (拿掉會吞掉錯誤的 try-except，讓錯誤直接現形) ---
+# --- 資料庫操作 ---
 def add_user_to_db(user_id):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -75,7 +86,24 @@ def remove_watchlist_db(user_id, code):
     cursor.close()
     conn.close()
 
-# --- 行情獲取 ---
+# 備用靜態資料庫
+black_horse_database = {
+    "3293": {"name": "鈊象", "industry": "網路遊戲 / 軟體", "reason": "營收與 EPS 長期高速成長，獲利強悍，底部整理後隨時準備強勢創高"},
+    "3661": {"name": "世芯-KY", "industry": "ASIC / IP", "reason": "AI 晶片設計委託需求爆發，營收成長動能強勁，底部打底完成"},
+    "3529": {"name": "力旺", "industry": "矽智財 (IP)", "reason": "權利金收入持續攀高，毛利率極高，低基期蓄勢待發"},
+    "6669": {"name": "緯穎", "industry": "AI 伺服器", "reason": "美系雲端服務商 (CSP) 訂單滿手，營收爆發力十足，整理後準備發動"},
+    "3443": {"name": "創意", "industry": "ASIC / 晶圓代工服務", "reason": "先進封裝與 AI 專案陸續進入量產，底部籌碼沉澱完畢"},
+}
+
+radar_database = {
+    "2454": {"name": "聯發科", "industry": "IC 設計", "tag": "🚀 帶量突破月線"},
+    "2317": {"name": "鴻海", "industry": "AI 伺服器代工", "tag": "📊 量能增溫強勢多頭"},
+    "2382": {"name": "廣達", "industry": "AI 伺服器", "tag": "🔥 爆量長紅突破"},
+    "3231": {"name": "緯創", "industry": "AI 伺服器基板", "tag": "⚡ 短線量縮回測強撐"},
+    "1503": {"name": "士電", "industry": "重電機電", "tag": "🚀 量價齊揚突破箱型"},
+}
+
+# --- 行情與總經獲取 ---
 def get_realtime_stock(code):
     headers = {'User-Agent': 'Mozilla/5.0'}
     for sym in [f"{code}.TW", f"{code}.TWO"]:
@@ -98,6 +126,33 @@ def get_realtime_stock(code):
         except: continue
     return None
 
+def get_us_stock_pct(symbol):
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=1d"
+        res = requests.get(url, headers=headers, timeout=4).json()
+        closes = [c for c in res['chart']['result'][0]['indicators']['quote'][0]['close'] if c is not None]
+        if len(closes) >= 2:
+            return ((closes[-1] - closes[-2]) / closes[-2]) * 100
+    except:
+        pass
+    return 0.0
+
+def generate_morning_brief():
+    dji = get_us_stock_pct("^DJI")
+    sox = get_us_stock_pct("^SOX")
+    nvda = get_us_stock_pct("NVDA")
+    tsm = get_us_stock_pct("TSM")
+    today_str = datetime.now().strftime("%Y/%m/%d")
+    return (
+        f"☀️ 【台股盤前與總經動態】\n📅 日期：{today_str}\n"
+        f"-------------------\n"
+        f"• 道瓊指數：{dji:+.2f}%\n"
+        f"• 費城半導體：{sox:+.2f}%\n"
+        f"• 輝達 (NVDA)：{nvda:+.2f}%\n"
+        f"• 台積電ADR (TSM)：{tsm:+.2f}%"
+    )
+
 # --- 主程式 ---
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -111,6 +166,7 @@ def callback():
 def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
+    text_upper = text.upper()
     pure_code = "".join(filter(str.isdigit, text))
     
     try:
@@ -118,33 +174,82 @@ def handle_message(event):
 
         if "加" in text and 4 <= len(pure_code) <= 6:
             add_watchlist_db(user_id, pure_code)
-            reply = f"✅ 已新增自選：{pure_code}"
+            reply = f"✅ 新增自選成功：{pure_code}"
         elif "刪" in text and 4 <= len(pure_code) <= 6:
             remove_watchlist_db(user_id, pure_code)
-            reply = f"🗑️ 已移除自選：{pure_code}"
-        elif text == "自選":
+            reply = f"🗑️ 已從自選清單移除：{pure_code}"
+        elif text in ["自選", "WATCHLIST"]:
             codes = get_user_watchlist(user_id)
             if not codes: 
-                reply = "📂 清單為空。"
+                reply = "📂 目前自選清單是空的。\n💡 輸入「加 2330」即可新增！"
             else:
-                results = ["📂 【我的自選股】"]
+                results = ["📂 【我的雲端自選股與策略】\n==================="]
                 for code in codes:
                     data = get_realtime_stock(code)
-                    if data: 
-                        results.append(f"• {code}：{data['close']:.2f} ({data['pct']:+.2f}%)")
+                    if data:
+                        close, pct, ma20 = data['close'], data['pct'], data['ma20']
+                        light = "🔴" if pct >= 0 else "🟢"
+                        strategy = "🔥【多方續強】帶量上攻，沿 5 日線續抱。" if close > ma20 and pct > 0 else "⚡【回測月線】多頭拉回，守穩支撐。"
+                        block = f"\n{light} 【{code}】 現價：{close:.2f} ({pct:+.2f}%)\n📋 策略：{strategy}"
+                        results.append(block)
                     else:
-                        results.append(f"• {code}：行情讀取中")
+                        results.append(f"\n⚪ 【{code}】 行情讀取中...")
                 reply = "\n".join(results)
-        elif 4 <= len(pure_code) <= 6 and " " not in text:
+        elif 4 <= len(pure_code) <= 6 and len(text) <= 7 and " " not in text:
             data = get_realtime_stock(pure_code)
-            if data: 
-                reply = f"📊 {pure_code} 現價：{data['close']:.2f} ({data['pct']:+.2f}%)"
+            if data:
+                name, industry = "上市櫃個股/ETF", "一般個股"
+                if pure_code in black_horse_database:
+                    name, industry = black_horse_database[pure_code]["name"], black_horse_database[pure_code]["industry"]
+                elif pure_code in radar_database:
+                    name, industry = radar_database[pure_code]["name"], radar_database[pure_code]["industry"]
+                reply = (
+                    f"📊 {pure_code} {name} ({industry})\n"
+                    f"===================\n"
+                    f"💰 現價：{data['close']:.2f} ({data['pct']:+.2f}%)\n"
+                    f"🔺 高/低：{data['high']:.2f} / {data['low']:.2f}\n"
+                    f"📦 量能：{int(data['volume'] / 1000):,} 張"
+                )
             else: 
-                reply = "❌ 查無行情。"
+                reply = f"❌ 查無代號 {pure_code} 的行情。"
+        elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
+            reply = (
+                "🤖 蔡秉軒御用選股機器人\n"
+                "===================\n"
+                "• 輸入「盤前」➜ 美股與總經速覽\n"
+                "• 輸入「黑馬」➜ 高潛力成長股\n"
+                "• 輸入「雷達」➜ 全市場強勢突破\n"
+                "• 輸入「自選」➜ 查看雲端自選股\n"
+                "• 輸入「加 2330」➜ 新增自選\n"
+                "• 輸入「刪 2330」➜ 刪除自選"
+            )
+        elif text in ["盤前", "早安"]:
+            reply = generate_morning_brief()
+        elif text == "雷達":
+            remote_radar = fetch_latest_radars()
+            results = []
+            if remote_radar and "stocks" in remote_radar:
+                for s in remote_radar["stocks"]:
+                    d = get_realtime_stock(s.get('code'))
+                    p_str = f"現價 {d['close']:.1f} ({d['pct']:+.2f}%)" if d else "更新中"
+                    results.append(f"• {s.get('code')} {s.get('name')} | {p_str}\n  └ {s.get('tag', '突破')}")
+                reply = f"🎯 強勢突破雷達 ({remote_radar.get('update_time', '')})\n-------------------\n" + "\n\n".join(results[:6])
+            else:
+                reply = "🎯 雷達目前連線中..."
+        elif text == "黑馬":
+            remote_data = fetch_latest_black_horses()
+            results = []
+            if remote_data and "stocks" in remote_data:
+                for s in remote_data["stocks"]:
+                    d = get_realtime_stock(s.get('code'))
+                    p_str = f"現價 {d['close']:.1f} ({d['pct']:+.2f}%)" if d else "更新中"
+                    results.append(f"• {s.get('code')} {s.get('name')} | {p_str}\n  └ {s.get('reason')}")
+                reply = f"🔥 潛力黑馬專區 ({remote_data.get('update_time', '')})\n-------------------\n" + "\n\n".join(results)
+            else:
+                reply = "🔥 黑馬專區目前連線中..."
         else:
-            reply = "🤖 蔡秉軒御用機器人，功能：加/刪/自選/行情。"
+            reply = "❌ 指令錯誤！請輸入「選單」查看所有功能。"
     except Exception as e:
-        # 如果資料庫操作出錯，直接把錯誤傳回 LINE 讓我們看看到底發生什麼事
         reply = f"🔥 發生錯誤：{str(e)}"
     
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
