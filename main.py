@@ -488,8 +488,7 @@ def handle_message(event):
             data = get_realtime_stock(code)
             if data:
                 if data["close"] >= data["ma20"] or data["pct"] > 0:
-                    radar_results.append(f"• {code} {info['name']}：現價 {data['close']:.1f} ({data['pct']
-+.2f}%)")
+                    radar_results.append(f"• {code} {info['name']}：現價 {data['close']:.1f} ({data['pct']:+.2f}%)")
         reply_text = "🎯 技術面強勢雷達\n-------------------\n" + ("\n".join(radar_results[:4]) if radar_results else "目前無符合標的。")
     elif user_text == "黑馬":
         horse_results = []
