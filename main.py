@@ -205,12 +205,10 @@ def generate_morning_brief():
         f"{strategy_advice}"
     )
 
-# 抓取大盤、重要權值股與個人自選股組合成完整盤後戰報
 def generate_afternoon_brief(user_id):
     today_str = datetime.now().strftime("%Y/%m/%d")
     report_lines = [f"🌙 【台股盤後戰報總結】\n📅 日期：{today_str}\n==================="]
 
-    # 1. 📈 大盤概況
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         url = "https://query1.finance.yahoo.com/v8/finance/chart/^TWII?range=5d&interval=1d"
@@ -248,7 +246,6 @@ def generate_afternoon_brief(user_id):
     except Exception:
         report_lines.append("📈 【台股大盤概況】\n• 數據讀取中...")
 
-    # 2. 🏢 重要權值個股
     report_lines.append("\n===================\n🏢 【重要權值個股】")
     key_weights = [("2330", "台積電"), ("2317", "鴻海"), ("2454", "聯發科")]
     for code, name in key_weights:
@@ -258,13 +255,12 @@ def generate_afternoon_brief(user_id):
         else:
             report_lines.append(f"• {name} ({code})：數據更新中")
 
-    # 3. ⭐ 個人自選股追蹤
     report_lines.append("\n===================\n⭐ 【我的自選股追蹤】")
     user_watchlist = get_user_watchlist(user_id)
     user_alerts = get_user_alerts(user_id)
 
     if not user_watchlist:
-        report_lines.append("目前自選清單是空的。\n💡 輸入「加 2330」即可新增自選！")
+        report_lines.append("目前自選清單是空的。\n💡 輸入「加 00981」即可新增自選！")
     else:
          for code in user_watchlist:
             data = get_realtime_stock(code)
@@ -285,7 +281,7 @@ def generate_afternoon_brief(user_id):
 
 @app.route("/")
 def home():
-    return "Stock Bot & Radar (Keyword Edition) is alive!"
+    return "Stock Bot & Radar (Multi-Digit ETF Edition) is alive!"
 
 @app.route("/push-test")
 def push_test():
@@ -322,16 +318,16 @@ def handle_message(event):
     user_watchlist = get_user_watchlist(user_id)
     user_alerts = get_user_alerts(user_id)
 
-    # 1. 加自選股指令
-    if "加" in user_text and len(pure_code) == 4:
+    # 1. 加自選股指令（支援 4 到 6 位數代號）
+    if "加" in user_text and 4 <= len(pure_code) <= 6:
         if pure_code not in user_watchlist:
             add_watchlist_db(user_id, pure_code)
             reply_text = f"✅ 新增自選成功：{pure_code}\n輸入「自選」即可檢視完整清單與策略。"
         else:
             reply_text = f"📌 {pure_code} 已經在您的自選股清單中囉！"
 
-    # 2. 刪除自選股指令
-    elif "刪" in user_text and len(pure_code) == 4:
+    # 2. 刪除自選股指令（支援 4 到 6 位數代號）
+    elif "刪" in user_text and 4 <= len(pure_code) <= 6:
         if pure_code in user_watchlist:
             remove_watchlist_db(user_id, pure_code)
             reply_text = f"🗑️ 已從自選清單移除：{pure_code}"
@@ -348,7 +344,7 @@ def handle_message(event):
         
         for p in parts:
             p_digits = "".join(filter(str.isdigit, p))
-            if len(p_digits) == 4 and not target_code:
+            if 4 <= len(p_digits) <= 6 and not target_code:
                 target_code = p_digits
             else:
                 try:
@@ -360,7 +356,7 @@ def handle_message(event):
                     
         if not target_code and len(parts) >= 2:
             c_part = "".join(filter(str.isdigit, parts[0]))
-            if len(c_part) == 4:
+            if 4 <= len(c_part) <= 6:
                 target_code = c_part
                 try:
                     target_price = float(parts[1])
@@ -371,11 +367,11 @@ def handle_message(event):
             if target_code not in user_watchlist:
                 add_watchlist_db(user_id, target_code)
             set_alert_db(user_id, target_code, target_price)
-            reply_text = f"🔔 到價通知設定成功！\n• 股票代號：{target_code}\n• 目標價格：{target_price}"
+            reply_text = f"🔔 到價通知設定成功！\n• 股票/ETF代號：{target_code}\n• 目標價格：{target_price}"
         else:
-            reply_text = "❌ 格式錯誤！\n正確範例：\n• 設 2330 1500\n• 2330 1500"
+            reply_text = "❌ 格式錯誤！\n正確範例：\n• 設 00981 15\n• 00981 15"
 
-    # 4. 查看自選股指令（附帶操作策略、紅綠燈、支撐壓力）
+    # 4. 查看自選股指令
     elif user_text in ["自選", "WATCHLIST"]:
         updated_watchlist = get_user_watchlist(user_id)
         updated_alerts = get_user_alerts(user_id)
@@ -385,8 +381,8 @@ def handle_message(event):
                 "📂 【我的自選股清單】\n"
                 "===================\n"
                 "目前清單是空的。\n\n"
-                "💡 新增指令：加 2330\n"
-                "💡 設定到價：2330 1500"
+                "💡 新增指令：加 00981\n"
+                "💡 設定到價：00981 15"
             )
         else:
             results = ["📂 【我的自選股與策略清單】\n==================="]
@@ -414,9 +410,9 @@ def handle_message(event):
                         strategy = "🛡️【保守觀望】空方趨勢或量縮盤整，等待打底完成再進場。"
                     
                     stock_block = (
-                        f"\n{light_icon} 【 {code} 】 現價：{close:.1f} ({pct:+.2f}%)\n"
+                        f"\n{light_icon} 【 {code} 】 現價：{close:.2f} ({pct:+.2f}%)\n"
                         f"-------------------\n"
-                        f"🛡️ 支撐價：{support:.1f}  |  🎯 壓力價：{resistance:.1f}\n"
+                        f"🛡️ 支撐價：{support:.2f}  |  🎯 壓力價：{resistance:.2f}\n"
                         f"📋 操作策略：\n{strategy}"
                     )
                     if alert_p:
@@ -426,11 +422,11 @@ def handle_message(event):
                 else:
                     results.append(f"\n⚪ 【 {code} 】 行情讀取中...")
             
-            results.append("\n===================\n💡 刪除：刪 2330 | 設價：2330 1500")
+            results.append("\n===================\n💡 刪除：刪 00981 | 設價：00981 15")
             reply_text = "\n".join(results)
 
-    # 5. 一般 4 位數股票行情查詢
-    elif len(pure_code) == 4 and len(user_text) <= 5 and " " not in user_text:
+    # 5. 一般 4 到 6 位數代號行情查詢（支援 ETF）
+    elif 4 <= len(pure_code) <= 6 and len(user_text) <= 7 and " " not in user_text:
         data = get_realtime_stock(pure_code)
         if data:
             close = data["close"]
@@ -441,8 +437,8 @@ def handle_message(event):
             ma5 = data["ma5"]
             ma20 = data["ma20"]
             
-            name = f"台股 {pure_code}"
-            industry = "一般上市櫃個股"
+            name = f"台股/ETF {pure_code}"
+            industry = "上市櫃個股或 ETF"
             if pure_code in black_horse_database:
                 name = black_horse_database[pure_code]["name"]
                 industry = black_horse_database[pure_code]["industry"]
@@ -459,11 +455,11 @@ def handle_message(event):
                 f"🔺 高/低：{high:.2f} / {low:.2f}\n"
                 f"📦 量能：{int(vol / 1000):,} 張\n\n"
                 f"🎯 綜合評分：{score}分\n"
-                f"🛡️ 支撐防守：{low * 0.99:.1f}  |  🎯 壓力目標：{high * 1.01:.1f}\n"
-                f"💡 建議進場：{close:.1f} | 停利：{close * 1.035:.1f} | 停損：{close * 0.975:.1f}"
+                f"🛡️ 支撐防守：{low * 0.99:.2f}  |  🎯 壓力目標：{high * 1.01:.2f}\n"
+                f"💡 建議進場：{close:.2f} | 停利：{close * 1.035:.2f} | 停損：{close * 0.975:.2f}"
             )
         else:
-            reply_text = f"❌ 查無代號 {pure_code} 的即時行情。"
+            reply_text = f"❌ 查無代號 {pure_code} 的即時行情（或該代號暫無資料）。"
 
     # 6. 選單與功能指令
     elif user_text_upper in ["MENU", "MANU", "選單", "幫助", "HELP"]:
@@ -477,9 +473,9 @@ def handle_message(event):
             "• 輸入「雷達」➜ 技術面突破強勢\n\n"
             "📂 自選與策略管理\n"
             "• 輸入「自選」➜ 查看紅綠燈與操作策略\n"
-            "• 輸入「加 2330」➜ 新增自選\n"
-            "• 輸入「刪 2330」➜ 移除自選\n"
-            "• 輸入「2330 1500」➜ 設定到價通知\n"
+            "• 輸入「加 00981」➜ 新增自選 (支援 5 碼)\n"
+            "• 輸入「刪 00981」➜ 移除自選\n"
+            "• 輸入「00981 15」➜ 設定到價通知\n"
             "==================="
         )
     elif user_text in ["盤前", "早安", "MORNING"]:
@@ -492,7 +488,8 @@ def handle_message(event):
             data = get_realtime_stock(code)
             if data:
                 if data["close"] >= data["ma20"] or data["pct"] > 0:
-                    radar_results.append(f"• {code} {info['name']}：現價 {data['close']:.1f} ({data['pct']:+.2f}%)")
+                    radar_results.append(f"• {code} {info['name']}：現價 {data['close']:.1f} ({data['pct']
++.2f}%)")
         reply_text = "🎯 技術面強勢雷達\n-------------------\n" + ("\n".join(radar_results[:4]) if radar_results else "目前無符合標的。")
     elif user_text == "黑馬":
         horse_results = []
