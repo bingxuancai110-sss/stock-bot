@@ -8,33 +8,24 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from datetime import datetime
+from google import genai
 
 app = Flask(__name__)
 
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# --- GitHub 遠端黑馬與雷達清單設定 ---
-GITHUB_BLACK_HORSE_URL = "https://raw.githubusercontent.com/你的帳號/你的專案/main/black_horse.json"
-GITHUB_RADAR_URL = "https://raw.githubusercontent.com/你的帳號/你的專案/main/radar_data.json"
-
-def fetch_latest_black_horses():
-    try:
-        response = requests.get(GITHUB_BLACK_HORSE_URL, timeout=5)
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        print(f"讀取黑馬清單失敗: {e}")
-    return None
-
-def fetch_latest_radars():
-    try:
-        response = requests.get(GITHUB_RADAR_URL, timeout=5)
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        print(f"讀取雷達清單失敗: {e}")
-    return None
+# --- Google GenAI 初始化 (使用新版 google-genai) ---
+ai_client = None
+try:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if api_key:
+        ai_client = genai.Client(api_key=api_key)
+        print("✅ Gemini AI 初始化成功！")
+    else:
+        print("⚠️ 警告：未找到 GEMINI_API_KEY 環境變數")
+except Exception as e:
+    print(f"❌ Gemini 初始化失敗: {e}")
 
 # --- Supabase 資料庫連線 (強制轉 IPv4，解決 Render 網路阻擋問題) ---
 def get_db_connection():
@@ -83,7 +74,7 @@ def get_user_watchlist(user_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT code FROM watchlists WHERE TRIM(user_id) = %s", (str(user_id).strip(),))
+        cursor.execute("SELECT code FROM watchlists WHERE user_id = %s", (str(user_id).strip(),))
         codes = [row[0] for row in cursor.fetchall()]
         cursor.close()
         conn.close()
@@ -96,7 +87,7 @@ def add_watchlist_db(user_id, code):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO watchlists (user_id, code) VALUES (%s, %s) ON CONFLICT (user_id, code) DO NOTHING", (str(user_id).strip(), code))
+        cursor.execute("INSERT INTO watchlists (user_id, code) VALUES (%s, %s) ON CONFLICT (user_id, code) DO NOTHING", (str(user_id).strip(), str(code).strip()))
         conn.commit()
         cursor.close()
         conn.close()
@@ -107,7 +98,7 @@ def remove_watchlist_db(user_id, code):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM watchlists WHERE TRIM(user_id) = %s AND code = %s", (str(user_id).strip(), code))
+        cursor.execute("DELETE FROM watchlists WHERE user_id = %s AND code = %s", (str(user_id).strip(), str(code).strip()))
         conn.commit()
         cursor.close()
         conn.close()
@@ -181,6 +172,19 @@ def generate_morning_brief():
         f"• 台積電ADR (TSM)：{tsm:+.2f}%"
     )
 
+def ask_gemini(prompt):
+    if not ai_client:
+        return "🤖 AI 尚未啟用，請檢查 Render 上的 GEMINI_API_KEY 設定。"
+    try:
+        # 使用新版 google-genai 呼叫方式
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return response.text
+    except Exception as e:
+        return f"AI 思考中發生錯誤：{str(e)}"
+
 # --- 主程式 ---
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -249,34 +253,15 @@ def handle_message(event):
                 "• 輸入「雷達」➜ 全市場強勢突破\n"
                 "• 輸入「自選」➜ 查看雲端自選股\n"
                 "• 輸入「加 2330」➜ 新增自選\n"
-                "• 輸入「刪 2330」➜ 刪除自選"
+                "• 輸入「刪 2330」➜ 刪除自選\n"
+                "• 其他文字 ➜ 直接交給 Gemini AI 智慧對話"
             )
         elif text in ["盤前", "早安"]:
             reply = generate_morning_brief()
-        elif text == "雷達":
-            remote_radar = fetch_latest_radars()
-            results = []
-            if remote_radar and "stocks" in remote_radar:
-                for s in remote_radar["stocks"]:
-                    d = get_realtime_stock(s.get('code'))
-                    p_str = f"現價 {d['close']:.1f} ({d['pct']:+.2f}%)" if d else "更新中"
-                    results.append(f"• {s.get('code')} {s.get('name')} | {p_str}\n  └ {s.get('tag', '突破')}")
-                reply = f"🎯 強勢突破雷達 ({remote_radar.get('update_time', '')})\n-------------------\n" + "\n\n".join(results[:6])
-            else:
-                reply = "🎯 雷達目前連線中..."
-        elif text == "黑馬":
-            remote_data = fetch_latest_black_horses()
-            results = []
-            if remote_data and "stocks" in remote_data:
-                for s in remote_data["stocks"]:
-                    d = get_realtime_stock(s.get('code'))
-                    p_str = f"現價 {d['close']:.1f} ({d['pct']:+.2f}%)" if d else "更新中"
-                    results.append(f"• {s.get('code')} {s.get('name')} | {p_str}\n  └ {s.get('reason')}")
-                reply = f"🔥 潛力黑馬專區 ({remote_data.get('update_time', '')})\n-------------------\n" + "\n\n".join(results)
-            else:
-                reply = "🔥 黑馬專區目前連線中..."
         else:
-            reply = "❌ 指令錯誤！請輸入「選單」查看所有功能。"
+            # 非指定指令時，交由 Gemini AI 處理
+            reply = ask_gemini(text)
+            
     except Exception as e:
         reply = f"🔥 發生錯誤：{str(e)}"
     
