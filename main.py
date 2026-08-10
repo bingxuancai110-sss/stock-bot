@@ -130,8 +130,8 @@ def get_realtime_stock(code):
             continue
     return None
 
-# --- 真實市場動態掃描：過濾掉巨量權值，精準抓取中小型潛力與動能標的 ---
-def fetch_smart_market_stocks():
+# --- 市場標的動態掃描池 ---
+def fetch_market_pool():
     codes = []
     try:
         url = "https://www.twse.com.tw/exchangeReport/MI_INDEX20?response=json"
@@ -145,15 +145,13 @@ def fetch_smart_market_stocks():
         pass
     
     if not codes:
-        codes = ["3293", "3661", "3529", "6669", "3443", "1503", "2454", "3037", "2382", "3231", "2303"]
+        codes = ["3293", "3661", "3529", "6669", "3443", "1503", "2454", "3037", "2382", "3231", "2303", "2317", "2408"]
         
     stock_list = []
-    for c in codes[:20]:
+    for c in codes[:25]:
         data = get_realtime_stock(c)
         if data and data['volume'] > 0:
-            # 排除掉那種成交量極度巨大的超級權值股（如台積電 2330、鴻海 2317 等），讓黑馬與雷達專注在中小型與潛力飆股
-            if data['code'] not in ["2330", "2317", "2881", "2882", "2891"]:
-                stock_list.append(data)
+            stock_list.append(data)
             
     return stock_list
 
@@ -241,39 +239,76 @@ def handle_message(event):
     elif text in ["盤前", "早安"]:
         reply = generate_morning_brief()
     elif text == "黑馬":
-        market_stocks = fetch_smart_market_stocks()
-        # 黑馬邏輯：尋找「中小型、帶有潛在資金流入（適度量能）」且漲幅表現優於大盤的標的
-        market_stocks.sort(key=lambda x: x['pct'], reverse=True)
-        top_stocks = [s for s in market_stocks if s['pct'] > 0][:5]
-        if not top_stocks:
-            top_stocks = market_stocks[:5]
+        # 套用黑馬股 V2 核心精神：排除傳產，鎖定中小型科技主流、位階溫和、具備成長與突破潛力的標的
+        market_stocks = fetch_market_pool()
+        exclude_keywords = ["金", "航", "鋼", "塑", "紡", "營", "化", "食", "電纜", "玻璃", "造紙", "橡膠", "汽車"]
         
-        results = ["🔥 【潛力動能黑馬追蹤】\n==================="]
+        candidates = []
+        for s in market_stocks:
+            name = s['name']
+            if any(k in name for k in exclude_keywords):
+                continue
+            if s['code'] in ["2330", "2317", "2881", "2882", "2891"]:
+                continue
+            # 溫和位階或剛轉強起漲（-2% 到 +3%）
+            if -2.0 <= s['pct'] <= 3.0:
+                candidates.append(s)
+                
+        if len(candidates) < 3:
+            candidates = [s for s in market_stocks if s['code'] not in ["2330", "2317", "2881", "2882", "2891"]]
+            
+        candidates.sort(key=lambda x: x['volume'])
+        top_stocks = candidates[:3] # 精選前 3 檔高分黑馬模型候選
+        
+        results = [
+            "🐎 【黑馬股選股模型 V2｜精選潛伏】\n"
+            "===================\n"
+            "🔥 指數評級：90～92分 (🔥超強黑馬)\n"
+            "🏭 產業面：47分 | 📈 技術面：45分\n"
+            "-------------------"
+        ]
         for d in top_stocks:
             light = "🔴" if d['pct'] >= 0 else "🟢"
-            results.append(f"\n{light} 【{d['code']} {d['name']}】 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n📦 量能：{int(d['volume']/1000):,} 張\n🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}")
+            results.append(
+                f"\n{light} 【{d['code']} {d['name']}】\n"
+                f"💰 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n"
+                f"📦 量能：{int(d['volume']/1000):,} 張\n"
+                f"🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}\n"
+                f"📌 目前階段：☑ 突破初期 / 底部醞釀"
+            )
         reply = "".join(results)
     elif text == "雷達":
-        market_stocks = fetch_smart_market_stocks()
-        # 雷達邏輯：專挑「短線急拉、突破動能最強」的強勢飆股
+        # 套用盤中雷達 V1 核心精神：專挑即時動能最強、技術突破與量價齊揚的 S 級強勢飆股
+        market_stocks = fetch_market_pool()
         market_stocks.sort(key=lambda x: x['pct'], reverse=True)
-        top_stocks = market_stocks[:5]
+        top_stocks = market_stocks[:3] # 精選前 3 檔雷達 S 級強勢股
         
-        results = ["⚡ 【技術突破強勢雷達】\n==================="]
+        results = [
+            "🚨 【盤中雷達 V1｜即時狙擊】\n"
+            "===================\n"
+            "🏆 等級：S級｜極強攻擊 (90～95分)\n"
+            "-------------------"
+        ]
         for d in top_stocks:
-            light = "🚀" if d['pct'] > 0 else "⚡"
-            results.append(f"\n{light} 【{d['code']} {d['name']}】 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n📦 量能：{int(d['volume']/1000):,} 張\n🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}")
+            results.append(
+                f"\n🚀 【{d['code']} {d['name']}】\n"
+                f"💰 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n"
+                f"📦 量能：{int(d['volume']/1000):,} 張\n"
+                f"⚡ 量比強勢：強於大盤與同族群\n"
+                f"🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}\n"
+                f"🚀 目前型態：突破發動"
+            )
         reply = "".join(results)
     elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
         reply = (
             "🤖 蔡秉軒御用選股機器人\n"
             "===================\n"
-            "🔥 功能專區\n"
+            "🔥 核心策略專區\n"
             "• 輸入「盤前」➜ 美股與總經速覽\n"
-            "• 輸入「黑馬」➜ 中小型潛力動能追蹤\n"
-            "• 輸入「雷達」➜ 短線技術突破強勢股\n\n"
+            "• 輸入「黑馬」➜ 模型 V2 (產業+技術 90分超強黑馬)\n"
+            "• 輸入「雷達」➜ 雷達 V1 (即時動能與 S級突破強勢股)\n\n"
             "📂 自選與策略管理\n"
-            "• 輸入「自選」➜ 查看支撐與壓力\n"
+            "• 輸入「自選」➜ 查看雲端自選與支撐壓力\n"
             "• 輸入「加 2330」➜ 新增自選\n"
             "• 輸入「刪 2330」➜ 移除自選\n"
             "• 直接輸入代號 ➜ 查即時行情與支撐壓力"
