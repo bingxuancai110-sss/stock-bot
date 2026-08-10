@@ -176,9 +176,9 @@ def ask_gemini(prompt):
     if not ai_client:
         return "🤖 AI 尚未啟用，請檢查 Render 上的 GEMINI_API_KEY 設定。"
     try:
-        # 將模型名稱改為目前最穩定的 gemini-1.5-flash
+        # 改用 gemini-2.0-flash
         response = ai_client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.0-flash',
             contents=prompt,
         )
         return response.text
@@ -204,7 +204,6 @@ def handle_message(event):
     try:
         add_user_to_db(user_id)
 
-        # 關鍵字指令優先攔截，避免被當成 AI 聊天
         if "加" in text and 4 <= len(pure_code) <= 6:
             add_watchlist_db(user_id, pure_code)
             reply = f"✅ 新增自選成功：{pure_code}"
