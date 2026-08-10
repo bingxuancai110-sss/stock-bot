@@ -86,7 +86,7 @@ def remove_watchlist_db(user_id, code):
         conn.close()
     except: pass
 
-# --- 資料庫與資料庫字典 ---
+# --- 資料庫字典 ---
 black_horse_database = {
     "3293": {"name": "鈊象", "industry": "網路遊戲 / 軟體", "reason": "營收與 EPS 長期高速成長，獲利強悍，底部整理後隨時準備強勢創高"},
     "3661": {"name": "世芯-KY", "industry": "ASIC / IP", "reason": "AI 晶片設計委託需求爆發，營收成長動能強勁，底部打底完成"},
@@ -103,23 +103,46 @@ radar_database = {
     "1503": {"name": "士電", "industry": "重電機電", "tag": "🚀 量價齊揚突破箱型"},
 }
 
-# --- 行情獲取 ---
+# --- 改用證交所官方 API 抓取台股即時行情 ---
 def get_realtime_stock(code):
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    for sym in [f"{code}.TW", f"{code}.TWO"]:
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range=5d&interval=1d"
-            res = requests.get(url, headers=headers, timeout=5).json()
-            result = res['chart']['result'][0]
-            close = float(result['indicators']['quote'][0]['close'][-1])
-            prev_close = float(result['meta']['previousClose'])
-            closes = [c for c in result['indicators']['quote'][0].get('close', []) if c is not None]
-            ma20 = sum(closes[-20:]) / len(closes[-20:]) if len(closes) >= 20 else close
-            high = float(result['meta'].get('regularMarketDayHigh', close))
-            low = float(result['meta'].get('regularMarketDayLow', close))
-            volume = int(result['meta'].get('regularMarketVolume', 0))
-            return {"close": close, "pct": ((close - prev_close) / prev_close) * 100, "high": high, "low": low, "volume": volume, "ma20": ma20}
-        except: continue
+    try:
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{code}.tw&_={int(datetime.now().timestamp() * 1000)}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers, timeout=5).json()
+        
+        if "msgArray" in res and len(res["msgArray"]) > 0:
+            data = res["msgArray"][0]
+            if data.get("z") == "-":  # 如果剛好沒成交價，抓最近買進價
+                close = float(data.get("b", "0").split("_")[0]) if data.get("b") != "" else 0.0
+            else:
+                close = float(data.get("z", "0"))
+            
+            y_price = float(data.get("y", "0"))
+            pct = ((close - y_price) / y_price) * 100 if y_price > 0 else 0.0
+            high = float(data.get("h", "0")) if data.get("h") != "" else close
+            low = float(data.get("l", "0")) if data.get("l") != "" else close
+            volume = int(data.get("v", "0")) * 1000 if data.get("v", "") != "" else 0
+            
+            return {"close": close, "pct": pct, "high": high, "low": low, "volume": volume, "ma20": close}
+    except Exception as e:
+        print(f"TWSE API 錯誤: {e}")
+    
+    # 備用：若櫃買 (OTC) 或是上市備用
+    try:
+        url_otc = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_{code}.tw&_={int(datetime.now().timestamp() * 1000)}"
+        res = requests.get(url_otc, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
+        if "msgArray" in res and len(res["msgArray"]) > 0:
+            data = res["msgArray"][0]
+            close = float(data.get("z", "0")) if data.get("z") != "-" else 0.0
+            y_price = float(data.get("y", "0"))
+            pct = ((close - y_price) / y_price) * 100 if y_price > 0 else 0.0
+            high = float(data.get("h", "0")) if data.get("h") != "" else close
+            low = float(data.get("l", "0")) if data.get("l") != "" else close
+            volume = int(data.get("v", "0")) * 1000 if data.get("v", "") != "" else 0
+            return {"close": close, "pct": pct, "high": high, "low": low, "volume": volume, "ma20": close}
+    except:
+        pass
+        
     return None
 
 def get_us_stock_pct(symbol):
@@ -182,9 +205,9 @@ def handle_message(event):
             for code in codes:
                 data = get_realtime_stock(code)
                 if data:
-                    close, pct, ma20 = data['close'], data['pct'], data['ma20']
+                    close, pct = data['close'], data['pct']
                     light = "🔴" if pct >= 0 else "🟢"
-                    strategy = "🔥【多方續強】帶量上攻，沿 5 日線續抱。" if close > ma20 and pct > 0 else "⚡【回測月線】多頭拉回，守穩支撐。"
+                    strategy = "🔥【多方續強】帶量上攻，沿 5 日線續抱。" if pct > 0 else "⚡【回測月線】多頭拉回，守穩支撐。"
                     block = f"\n{light} 【{code}】 現價：{close:.2f} ({pct:+.2f}%)\n📋 策略：{strategy}"
                     results.append(block)
                 else:
@@ -200,7 +223,7 @@ def handle_message(event):
                 name, industry = radar_database[pure_code]["name"], radar_database[pure_code]["industry"]
             reply = (
                 f"📊 {pure_code} {name} ({industry})\n"
-                f"==================-\n"
+                f"===================\n"
                 f"💰 現價：{data['close']:.2f} ({data['pct']:+.2f}%)\n"
                 f"🔺 高/低：{data['high']:.2f} / {data['low']:.2f}\n"
                 f"📦 量能：{int(data['volume'] / 1000):,} 張"
