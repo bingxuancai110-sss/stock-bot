@@ -12,6 +12,22 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
+# --- GitHub 遠端黑馬清單設定 ---
+# 💡 請將下方網址換成你們專案中，實際存放黑馬清單檔案的 GitHub Raw 連結
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/你的帳號/你的專案/main/black_horse.json"
+
+def fetch_latest_black_horses():
+    """從 GitHub 遠端動態抓取最新黑馬清單"""
+    try:
+        response = requests.get(GITHUB_RAW_URL, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return None
+    except Exception as e:
+        print(f"讀取黑馬清單失敗: {e}")
+        return None
+
 # --- SQLite 資料庫初始化 ---
 def init_db():
     conn = sqlite3.connect('stock_bot.db')
@@ -95,6 +111,7 @@ def set_alert_db(user_id, code, price):
     cursor.execute("INSERT OR REPLACE INTO alerts (user_id, code, price) VALUES (?, ?, ?)", (user_id, code, price))
     conn.close()
 
+# 備用靜態黑馬與雷達字典（若遠端抓取失敗時可作為備援）
 black_horse_database = {
     "3293": {"name": "鈊象", "industry": "網路遊戲 / 軟體", "reason": "營收與 EPS 長期高速成長，獲利強悍，底部整理後隨時準備強勢創高"},
     "3661": {"name": "世芯-KY", "industry": "ASIC / IP", "reason": "AI 晶片設計委託需求爆發，營收成長動能強勁，底部打底完成"},
@@ -491,12 +508,30 @@ def handle_message(event):
                     radar_results.append(f"• {code} {info['name']}：現價 {data['close']:.1f} ({data['pct']:+.2f}%)")
         reply_text = "🎯 技術面強勢雷達\n-------------------\n" + ("\n".join(radar_results[:4]) if radar_results else "目前無符合標的。")
     elif user_text == "黑馬":
+        # 🌟 動態從 GitHub 讀取最新黑馬清單，若失敗則退回使用本地靜態字典
+        remote_data = fetch_latest_black_horses()
         horse_results = []
-        for code, info in black_horse_database.items():
-            data = get_realtime_stock(code)
-            price_str = f"現價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
-            horse_results.append(f"• {code} {info['name']} | {price_str}\n  └ {info['reason']}")
-        reply_text = "🔥 潛力黑馬專區\n-------------------\n" + "\n\n".join(horse_results)
+        
+        if remote_data and "stocks" in remote_data:
+            stocks = remote_data["stocks"]
+            for stock in stocks:
+                code = stock.get('code')
+                name = stock.get('name', '')
+                reason = stock.get('reason', '')
+                data = get_realtime_stock(code)
+                price_str = f"現價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
+                horse_results.append(f"• {code} {name} | {price_str}\n  └ {reason}")
+            update_time = remote_data.get("update_time", "")
+            header_str = f"🔥 潛力黑馬專區 (更新於: {update_time})\n-------------------\n"
+        else:
+            # 備援機制：讀取本地靜態清單
+            for code, info in black_horse_database.items():
+                data = get_realtime_stock(code)
+                price_str = f"現價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
+                horse_results.append(f"• {code} {info['name']} | {price_str}\n  └ {info['reason']}")
+            header_str = "🔥 潛力黑馬專區\n-------------------\n"
+            
+        reply_text = header_str + "\n\n".join(horse_results)
     else:
         reply_text = "❌ 指令錯誤！請輸入「選單」查看功能。"
 
