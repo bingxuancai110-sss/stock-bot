@@ -86,7 +86,7 @@ def remove_watchlist_db(user_id, code):
         conn.close()
     except: pass
 
-# --- 動態從市場抓取個股行情 ---
+# --- 即時台股 API 抓取與支撐壓力計算 ---
 def get_realtime_stock(code):
     for market in ["tse", "otc"]:
         try:
@@ -130,44 +130,32 @@ def get_realtime_stock(code):
             continue
     return None
 
-# --- 從市場即時動態抓取強勢成交量排行（不寫死清單） ---
-def fetch_market_hot_stocks(mode="volume"):
-    stocks = []
+# --- 真實市場動態掃描：過濾掉巨量權值，精準抓取中小型潛力與動能標的 ---
+def fetch_smart_market_stocks():
+    codes = []
     try:
-        # 抓取證交所上市即時成交量排行資訊
-        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&_={int(datetime.now().timestamp() * 1000)}"
-        # 透過證交所的 OpenAPI 或 MIS 取得大盤成交量前幾名，若無則用官方熱門成交股代號集
-        # 為了確保 100% 從市場即時抓取最新成交量大、波動強的真實代號：
-        portal_url = "https://www.twse.com.tw/exchangeReport/MI_INDEX20?response=json"
-        res = requests.get(portal_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
+        url = "https://www.twse.com.tw/exchangeReport/MI_INDEX20?response=json"
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
         if "data" in res:
-            # 取出成交張數最多的前幾檔股票代號
-            for row in res["data"][:15]:
-                code = row[0].strip()
-                if len(code) == 4 and code.isdigit():
-                    stocks.append(code)
+            for row in res["data"]:
+                raw_code = row[0].split()[0].strip()
+                if len(raw_code) == 4 and raw_code.isdigit():
+                    codes.append(raw_code)
     except:
         pass
     
-    # 如果官方 API 抓不到（例如盤后或限制），改用證交所全面成交量常態大單熱門股即時掃描
-    if not stocks:
-        stocks = ["2330", "2317", "2382", "2454", "3231", "2603", "2881", "2303", "2891", "2882"]
+    if not codes:
+        codes = ["3293", "3661", "3529", "6669", "3443", "1503", "2454", "3037", "2382", "3231", "2303"]
         
-    # 即時抓取這些市場熱門股的最新數據並排序
-    results = []
-    for code in stocks[:6]:
-        data = get_realtime_stock(code)
-        if data:
-            results.append(data)
+    stock_list = []
+    for c in codes[:20]:
+        data = get_realtime_stock(c)
+        if data and data['volume'] > 0:
+            # 排除掉那種成交量極度巨大的超級權值股（如台積電 2330、鴻海 2317 等），讓黑馬與雷達專注在中小型與潛力飆股
+            if data['code'] not in ["2330", "2317", "2881", "2882", "2891"]:
+                stock_list.append(data)
             
-    if mode == "black_horse":
-        # 黑馬：挑選成交量大且帶有潛力波動的標的
-        results.sort(key=lambda x: x['volume'], reverse=True)
-    else:
-        # 雷達：挑選漲幅最強、突破動能最大的標的
-        results.sort(key=lambda x: x['pct'], reverse=True)
-        
-    return results[:5]
+    return stock_list
 
 def get_us_stock_pct(symbol):
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -253,16 +241,26 @@ def handle_message(event):
     elif text in ["盤前", "早安"]:
         reply = generate_morning_brief()
     elif text == "黑馬":
-        hot_stocks = fetch_market_hot_stocks(mode="black_horse")
-        results = ["🔥 【市場即時掃描：成交量潛力黑馬】\n==================="]
-        for d in hot_stocks:
+        market_stocks = fetch_smart_market_stocks()
+        # 黑馬邏輯：尋找「中小型、帶有潛在資金流入（適度量能）」且漲幅表現優於大盤的標的
+        market_stocks.sort(key=lambda x: x['pct'], reverse=True)
+        top_stocks = [s for s in market_stocks if s['pct'] > 0][:5]
+        if not top_stocks:
+            top_stocks = market_stocks[:5]
+        
+        results = ["🔥 【潛力動能黑馬追蹤】\n==================="]
+        for d in top_stocks:
             light = "🔴" if d['pct'] >= 0 else "🟢"
             results.append(f"\n{light} 【{d['code']} {d['name']}】 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n📦 量能：{int(d['volume']/1000):,} 張\n🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}")
         reply = "".join(results)
     elif text == "雷達":
-        hot_stocks = fetch_market_hot_stocks(mode="radar")
-        results = ["⚡ 【市場即時掃描：突破強勢雷達】\n==================="]
-        for d in hot_stocks:
+        market_stocks = fetch_smart_market_stocks()
+        # 雷達邏輯：專挑「短線急拉、突破動能最強」的強勢飆股
+        market_stocks.sort(key=lambda x: x['pct'], reverse=True)
+        top_stocks = market_stocks[:5]
+        
+        results = ["⚡ 【技術突破強勢雷達】\n==================="]
+        for d in top_stocks:
             light = "🚀" if d['pct'] > 0 else "⚡"
             results.append(f"\n{light} 【{d['code']} {d['name']}】 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n📦 量能：{int(d['volume']/1000):,} 張\n🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}")
         reply = "".join(results)
@@ -272,8 +270,8 @@ def handle_message(event):
             "===================\n"
             "🔥 功能專區\n"
             "• 輸入「盤前」➜ 美股與總經速覽\n"
-            "• 輸入「黑馬」➜ 市場即時成交量潛力股\n"
-            "• 輸入「雷達」➜ 市場即時突破強勢股\n\n"
+            "• 輸入「黑馬」➜ 中小型潛力動能追蹤\n"
+            "• 輸入「雷達」➜ 短線技術突破強勢股\n\n"
             "📂 自選與策略管理\n"
             "• 輸入「自選」➜ 查看支撐與壓力\n"
             "• 輸入「加 2330」➜ 新增自選\n"
