@@ -86,24 +86,7 @@ def remove_watchlist_db(user_id, code):
         conn.close()
     except: pass
 
-# --- 資料庫字典 ---
-black_horse_database = {
-    "3293": {"name": "鈊象", "industry": "網路遊戲 / 軟體", "reason": "營收與 EPS 長期高速成長，獲利強悍，底部整理後隨時準備強勢創高"},
-    "3661": {"name": "世芯-KY", "industry": "ASIC / IP", "reason": "AI 晶片設計委託需求爆發，營收成長動能強勁，底部打底完成"},
-    "3529": {"name": "力旺", "industry": "矽智財 (IP)", "reason": "權利金收入持續攀高，毛利率極高，低基期蓄勢待發"},
-    "6669": {"name": "緯穎", "industry": "AI 伺服器", "reason": "美系雲端服務商 (CSP) 訂單滿手，營收爆發力十足，整理後準備發動"},
-    "3443": {"name": "創意", "industry": "ASIC / 晶圓代工服務", "reason": "先進封裝與 AI 專案陸續進入量產，底部籌碼沉澱完畢"},
-}
-
-radar_database = {
-    "2454": {"name": "聯發科", "industry": "IC 設計", "tag": "🚀 帶量突破月線"},
-    "2317": {"name": "鴻海", "industry": "AI 伺服器代工", "tag": "📊 量能增溫強勢多頭"},
-    "2382": {"name": "廣達", "industry": "AI 伺服器", "tag": "🔥 爆量長紅突破"},
-    "3231": {"name": "緯創", "industry": "AI 伺服器基板", "tag": "⚡ 短線量縮回測強撐"},
-    "1503": {"name": "士電", "industry": "重電機電", "tag": "🚀 量價齊揚突破箱型"},
-}
-
-# --- 改用證交所官方 API 抓取台股即時行情 ---
+# --- 即時台股 API 抓取與支撐壓力計算 ---
 def get_realtime_stock(code):
     try:
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{code}.tw&_={int(datetime.now().timestamp() * 1000)}"
@@ -112,22 +95,22 @@ def get_realtime_stock(code):
         
         if "msgArray" in res and len(res["msgArray"]) > 0:
             data = res["msgArray"][0]
-            if data.get("z") == "-":  # 如果剛好沒成交價，抓最近買進價
-                close = float(data.get("b", "0").split("_")[0]) if data.get("b") != "" else 0.0
-            else:
-                close = float(data.get("z", "0"))
-            
+            close = float(data.get("z", "0")) if data.get("z") != "-" else float(data.get("b", "0").split("_")[0] or 0)
             y_price = float(data.get("y", "0"))
             pct = ((close - y_price) / y_price) * 100 if y_price > 0 else 0.0
             high = float(data.get("h", "0")) if data.get("h") != "" else close
             low = float(data.get("l", "0")) if data.get("l") != "" else close
             volume = int(data.get("v", "0")) * 1000 if data.get("v", "") != "" else 0
+            name = data.get("n", code)
             
-            return {"close": close, "pct": pct, "high": high, "low": low, "volume": volume, "ma20": close}
-    except Exception as e:
-        print(f"TWSE API 錯誤: {e}")
+            # 計算短線支撐與壓力
+            resistance = round(high * 1.01, 2)
+            support = round(low * 0.99, 2)
+            
+            return {"code": code, "name": name, "close": close, "pct": pct, "high": high, "low": low, "volume": volume, "resistance": resistance, "support": support}
+    except:
+        pass
     
-    # 備用：若櫃買 (OTC) 或是上市備用
     try:
         url_otc = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_{code}.tw&_={int(datetime.now().timestamp() * 1000)}"
         res = requests.get(url_otc, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
@@ -139,7 +122,12 @@ def get_realtime_stock(code):
             high = float(data.get("h", "0")) if data.get("h") != "" else close
             low = float(data.get("l", "0")) if data.get("l") != "" else close
             volume = int(data.get("v", "0")) * 1000 if data.get("v", "") != "" else 0
-            return {"close": close, "pct": pct, "high": high, "low": low, "volume": volume, "ma20": close}
+            name = data.get("n", code)
+            
+            resistance = round(high * 1.01, 2)
+            support = round(low * 0.99, 2)
+            
+            return {"code": code, "name": name, "close": close, "pct": pct, "high": high, "low": low, "volume": volume, "resistance": resistance, "support": support}
     except:
         pass
         
@@ -205,50 +193,60 @@ def handle_message(event):
             for code in codes:
                 data = get_realtime_stock(code)
                 if data:
-                    close, pct = data['close'], data['pct']
-                    light = "🔴" if pct >= 0 else "🟢"
-                    strategy = "🔥【多方續強】帶量上攻，沿 5 日線續抱。" if pct > 0 else "⚡【回測月線】多頭拉回，守穩支撐。"
-                    block = f"\n{light} 【{code}】 現價：{close:.2f} ({pct:+.2f}%)\n📋 策略：{strategy}"
+                    light = "🔴" if data['pct'] >= 0 else "🟢"
+                    block = f"\n{light} 【{code} {data['name']}】 現價：{data['close']:.2f} ({data['pct']:+.2f}%)\n🛡️ 支撐：{data['support']} | 🚧 壓力：{data['resistance']}"
                     results.append(block)
                 else:
                     results.append(f"\n⚪ 【{code}】 行情讀取中...")
-            reply = "\n".join(results)
+            reply = "".join(results)
     elif 4 <= len(pure_code) <= 6 and len(text) <= 7 and " " not in text:
         data = get_realtime_stock(pure_code)
         if data:
-            name, industry = "上市櫃個股/ETF", "一般個股"
-            if pure_code in black_horse_database:
-                name, industry = black_horse_database[pure_code]["name"], black_horse_database[pure_code]["industry"]
-            elif pure_code in radar_database:
-                name, industry = radar_database[pure_code]["name"], radar_database[pure_code]["industry"]
             reply = (
-                f"📊 {pure_code} {name} ({industry})\n"
+                f"📊 {data['code']} {data['name']}\n"
                 f"===================\n"
                 f"💰 現價：{data['close']:.2f} ({data['pct']:+.2f}%)\n"
                 f"🔺 高/低：{data['high']:.2f} / {data['low']:.2f}\n"
-                f"📦 量能：{int(data['volume'] / 1000):,} 張"
+                f"📦 量能：{int(data['volume'] / 1000):,} 張\n"
+                f"-------------------\n"
+                f"🛡️ 短線支撐：{data['support']}\n"
+                f"🚧 短線壓力：{data['resistance']}"
             )
         else: 
             reply = f"❌ 查無代號 {pure_code} 的行情。"
     elif text in ["盤前", "早安"]:
         reply = generate_morning_brief()
     elif text == "黑馬":
-        reply = "🔥 【高潛力黑馬股推薦】\n" + "\n".join([f"• {k} {v['name']} ({v['industry']})\n  💡 {v['reason']}" for k, v in black_horse_database.items()])
+        scan_codes = ["3293", "3661", "3529", "6669", "3443"]
+        results = ["🔥 【市場高潛力黑馬追蹤】\n==================="]
+        for c in scan_codes:
+            d = get_realtime_stock(c)
+            if d:
+                light = "🔴" if d['pct'] >= 0 else "🟢"
+                results.append(f"\n{light} 【{d['code']} {d['name']}】 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}")
+        reply = "".join(results)
     elif text == "雷達":
-        reply = "⚡ 【雷達突破清單】\n" + "\n".join([f"• {k} {v['name']} ({v['industry']}) - {v['tag']}" for k, v in radar_database.items()])
+        scan_codes = ["2454", "2317", "2382", "3231", "1503"]
+        results = ["⚡ 【雷達突破即時監控】\n==================="]
+        for c in scan_codes:
+            d = get_realtime_stock(c)
+            if d:
+                light = "🚀" if d['pct'] > 0 else "⚡"
+                results.append(f"\n{light} 【{d['code']} {d['name']}】 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}")
+        reply = "".join(results)
     elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
         reply = (
             "🤖 蔡秉軒御用選股機器人\n"
             "===================\n"
             "🔥 功能專區\n"
             "• 輸入「盤前」➜ 美股與總經速覽\n"
-            "• 輸入「黑馬」➜ 高成長潛力股\n"
-            "• 輸入「雷達」➜ 技術面突破強勢\n\n"
+            "• 輸入「黑馬」➜ 高成長潛力股即時追蹤\n"
+            "• 輸入「雷達」➜ 技術面突破強勢監控\n\n"
             "📂 自選與策略管理\n"
-            "• 輸入「自選」➜ 查看紅綠燈與操作策略\n"
+            "• 輸入「自選」➜ 查看支撐與壓力\n"
             "• 輸入「加 2330」➜ 新增自選\n"
             "• 輸入「刪 2330」➜ 移除自選\n"
-            "• 直接輸入代號 ➜ 查即時行情"
+            "• 直接輸入代號 ➜ 查即時行情與支撐壓力"
         )
     else:
         reply = "🤖 指令未識別，請輸入「選單」查看可用功能！"
