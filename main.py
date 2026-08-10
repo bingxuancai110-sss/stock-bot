@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import requests
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
@@ -11,13 +12,88 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-TARGET_USER_IDS = [
-    "Ue00f44b36b32a87adaca89034ec24e58", # 你的 ID
-]
+# --- SQLite 資料庫初始化 ---
+def init_db():
+    conn = sqlite3.connect('stock_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS watchlists (
+            user_id TEXT,
+            code TEXT,
+            PRIMARY KEY (user_id, code)
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS alerts (
+            user_id TEXT,
+            code TEXT,
+            price REAL,
+            PRIMARY KEY (user_id, code)
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-# 記憶體內建的自選股清單與到價通知設定 {user_id: {code: target_price}}
-user_watchlists = {}
-user_alerts = {}
+init_db()
+
+def get_all_users():
+    conn = sqlite3.connect('stock_bot.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users")
+    users = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    if "Ue00f44b36b32a87adaca89034ec24e58" not in users:
+        users.append("Ue00f44b36b32a87adaca89034ec24e58")
+    return users
+
+def add_user_to_db(user_id):
+    conn = sqlite3.connect('stock_bot.db')
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_user_watchlist(user_id):
+    conn = sqlite3.connect('stock_bot.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT code FROM watchlists WHERE user_id = ?", (user_id,))
+    codes = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return codes
+
+def add_watchlist_db(user_id, code):
+    conn = sqlite3.connect('stock_bot.db')
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO watchlists (user_id, code) VALUES (?, ?)", (user_id, code))
+    conn.commit()
+    conn.close()
+
+def remove_watchlist_db(user_id, code):
+    conn = sqlite3.connect('stock_bot.db')
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM watchlists WHERE user_id = ? AND code = ?", (user_id, code))
+    cursor.execute("DELETE FROM alerts WHERE user_id = ? AND code = ?", (user_id, code))
+    conn.commit()
+    conn.close()
+
+def get_user_alerts(user_id):
+    conn = sqlite3.connect('stock_bot.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT code, price FROM alerts WHERE user_id = ?", (user_id,))
+    alerts = {row[0]: row[1] for row in cursor.fetchall()}
+    conn.close()
+    return alerts
+
+def set_alert_db(user_id, code, price):
+    conn = sqlite3.connect('stock_bot.db')
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO alerts (user_id, code, price) VALUES (?, ?, ?)", (user_id, code, price))
+    conn.close()
 
 black_horse_database = {
     "3293": {"name": "鈊象", "industry": "網路遊戲 / 軟體", "reason": "營收與 EPS 長期高速成長，獲利強悍，底部整理後隨時準備強勢創高"},
@@ -129,18 +205,97 @@ def generate_morning_brief():
         f"{strategy_advice}"
     )
 
+# 抓取大盤、重要權值股與個人自選股組合成完整盤後戰報
+def generate_afternoon_brief(user_id):
+    today_str = datetime.now().strftime("%Y/%m/%d")
+    report_lines = [f"🌙 【台股盤後戰報總結】\n📅 日期：{today_str}\n==================="]
+
+    # 1. 📈 大盤概況
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/^TWII?range=5d&interval=1d"
+        res = requests.get(url, headers=headers, timeout=5)
+        data = res.json()
+        result = data['chart']['result'][0]
+        meta = result['meta']
+        quotes = result['indicators']['quote'][0]
+        closes = [c for c in quotes.get('close', []) if c is not None]
+        
+        close = float(closes[-1])
+        prev_close = float(closes[-2]) if len(closes) >= 2 else close
+        change = close - prev_close
+        pct = (change / prev_close) * 100
+        high = float(meta.get('regularMarketDayHigh', max(closes[-3:])))
+        low = float(meta.get('regularMarketDayLow', min(closes[-3:])))
+        vol = int(meta.get('regularMarketVolume', 0))
+        
+        if pct > 1.0:
+            market_mood = "🔥 強勢大漲，多方格局掌控全場。"
+        elif pct > 0:
+            market_mood = "📈 震盪收紅，盤勢偏多整理。"
+        elif pct > -1.0:
+            market_mood = "📉 震盪收黑，高檔逢壓調節。"
+        else:
+            market_mood = "⚠️ 拉回修正，留意支撐防守。"
+
+        report_lines.append(
+            f"📈 【台股大盤概況】\n"
+            f"• 收盤指數：{close:,.2f} ({pct:+.2f}%)\n"
+            f"• 漲跌點數：{change:+,.2f} 點\n"
+            f"• 成交量能：{int(vol / 100000000):,} 億\n"
+            f"• 盤勢解讀：{market_mood}"
+        )
+    except Exception:
+        report_lines.append("📈 【台股大盤概況】\n• 數據讀取中...")
+
+    # 2. 🏢 重要權值個股
+    report_lines.append("\n===================\n🏢 【重要權值個股】")
+    key_weights = [("2330", "台積電"), ("2317", "鴻海"), ("2454", "聯發科")]
+    for code, name in key_weights:
+        w_data = get_realtime_stock(code)
+        if w_data:
+            report_lines.append(f"• {name} ({code})：{w_data['close']:.1f} ({w_data['pct']:+.2f}%)")
+        else:
+            report_lines.append(f"• {name} ({code})：數據更新中")
+
+    # 3. ⭐ 個人自選股追蹤
+    report_lines.append("\n===================\n⭐ 【我的自選股追蹤】")
+    user_watchlist = get_user_watchlist(user_id)
+    user_alerts = get_user_alerts(user_id)
+
+    if not user_watchlist:
+        report_lines.append("目前自選清單是空的。\n💡 輸入「加 2330」即可新增自選！")
+    else:
+         for code in user_watchlist:
+            data = get_realtime_stock(code)
+            alert_p = user_alerts.get(code)
+            if data:
+                close = data['close']
+                pct = data['pct']
+                light = "🔴" if pct >= 0 else "🟢"
+                item_str = f"{light} {code} 現價：{close:.1f} ({pct:+.2f}%)"
+                if alert_p:
+                    item_str += f" [目標:{alert_p}]"
+                report_lines.append(item_str)
+            else:
+                report_lines.append(f"⚪ {code} 讀取中...")
+
+    report_lines.append("===================\n💡 保持紀律操作，祝您操盤順利！")
+    return "\n".join(report_lines)
+
 @app.route("/")
 def home():
-    return "Stock Bot & Radar is alive!"
+    return "Stock Bot & Radar (Keyword Edition) is alive!"
 
 @app.route("/push-test")
 def push_test():
-    if TARGET_USER_IDS:
+    target_users = get_all_users()
+    if target_users:
         try:
             message = generate_morning_brief()
-            for uid in TARGET_USER_IDS:
+            for uid in target_users:
                 line_bot_api.push_message(uid, TextSendMessage(text=message))
-            return "Push Success to all users!"
+            return f"Push Success to {len(target_users)} users!"
         except Exception as e:
             return f"Push Failed: {e}"
     return "Target User IDs not found."
@@ -162,25 +317,23 @@ def handle_message(event):
     user_text_upper = user_text.upper()
     pure_code = "".join(filter(str.isdigit, user_text))
 
-    if user_id not in user_watchlists:
-        user_watchlists[user_id] = []
-    if user_id not in user_alerts:
-        user_alerts[user_id] = {}
+    add_user_to_db(user_id)
+
+    user_watchlist = get_user_watchlist(user_id)
+    user_alerts = get_user_alerts(user_id)
 
     # 1. 加自選股指令
     if "加" in user_text and len(pure_code) == 4:
-        if pure_code not in user_watchlists[user_id]:
-            user_watchlists[user_id].append(pure_code)
+        if pure_code not in user_watchlist:
+            add_watchlist_db(user_id, pure_code)
             reply_text = f"✅ 新增自選成功：{pure_code}\n輸入「自選」即可檢視完整清單與策略。"
         else:
             reply_text = f"📌 {pure_code} 已經在您的自選股清單中囉！"
 
     # 2. 刪除自選股指令
     elif "刪" in user_text and len(pure_code) == 4:
-        if pure_code in user_watchlists[user_id]:
-            user_watchlists[user_id].remove(pure_code)
-            if pure_code in user_alerts[user_id]:
-                del user_alerts[user_id][pure_code]
+        if pure_code in user_watchlist:
+            remove_watchlist_db(user_id, pure_code)
             reply_text = f"🗑️ 已從自選清單移除：{pure_code}"
         else:
             reply_text = f"❌ 找不到代號 {pure_code}"
@@ -215,16 +368,19 @@ def handle_message(event):
                     pass
 
         if target_code and target_price:
-            if target_code not in user_watchlists[user_id]:
-                user_watchlists[user_id].append(target_code)
-            user_alerts[user_id][target_code] = target_price
+            if target_code not in user_watchlist:
+                add_watchlist_db(user_id, target_code)
+            set_alert_db(user_id, target_code, target_price)
             reply_text = f"🔔 到價通知設定成功！\n• 股票代號：{target_code}\n• 目標價格：{target_price}"
         else:
             reply_text = "❌ 格式錯誤！\n正確範例：\n• 設 2330 1500\n• 2330 1500"
 
     # 4. 查看自選股指令（附帶操作策略、紅綠燈、支撐壓力）
     elif user_text in ["自選", "WATCHLIST"]:
-        if not user_watchlists[user_id]:
+        updated_watchlist = get_user_watchlist(user_id)
+        updated_alerts = get_user_alerts(user_id)
+        
+        if not updated_watchlist:
             reply_text = (
                 "📂 【我的自選股清單】\n"
                 "===================\n"
@@ -234,22 +390,20 @@ def handle_message(event):
             )
         else:
             results = ["📂 【我的自選股與策略清單】\n==================="]
-            for code in user_watchlists[user_id]:
+            for code in updated_watchlist:
                 data = get_realtime_stock(code)
-                alert_p = user_alerts[user_id].get(code)
+                alert_p = updated_alerts.get(code)
                 
                 if data:
                     close = data['close']
                     pct = data['pct']
                     ma20 = data['ma20']
                     
-                    # 紅燈漲 🔴、綠燈跌 🟢
                     light_icon = "🔴" if pct >= 0 else "🟢"
                     
                     support = data['low'] * 0.99
                     resistance = data['high'] * 1.01
                     
-                    # 自動判定操作策略
                     if close > ma20 and pct > 0:
                         strategy = "🔥【多方續強】帶量上攻，可沿 5 日線續抱，逢壓不急追。"
                     elif close > ma20 and pct <= 0:
@@ -311,15 +465,16 @@ def handle_message(event):
         else:
             reply_text = f"❌ 查無代號 {pure_code} 的即時行情。"
 
-    # 6. 選單與其他指令
+    # 6. 選單與功能指令
     elif user_text_upper in ["MENU", "MANU", "選單", "幫助", "HELP"]:
         reply_text = (
             "🤖 蔡秉軒御用選股機器人\n"
             "===================\n"
             "🔥 功能專區\n"
+            "• 輸入「盤前」➜ 美股與總經速覽\n"
+            "• 輸入「盤後」➜ 大盤、權值股與自選戰報\n"
             "• 輸入「黑馬」➜ 高成長潛力股\n"
-            "• 輸入「雷達」➜ 技術面突破強勢\n"
-            "• 輸入「盤前」➜ 美股與總經速覽\n\n"
+            "• 輸入「雷達」➜ 技術面突破強勢\n\n"
             "📂 自選與策略管理\n"
             "• 輸入「自選」➜ 查看紅綠燈與操作策略\n"
             "• 輸入「加 2330」➜ 新增自選\n"
@@ -329,6 +484,8 @@ def handle_message(event):
         )
     elif user_text in ["盤前", "早安", "MORNING"]:
         reply_text = generate_morning_brief()
+    elif user_text in ["盤後", "收盤", "AFTERNOON"]:
+        reply_text = generate_afternoon_brief(user_id)
     elif user_text == "雷達":
         radar_results = []
         for code, info in radar_database.items():
