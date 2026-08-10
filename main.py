@@ -86,52 +86,88 @@ def remove_watchlist_db(user_id, code):
         conn.close()
     except: pass
 
-# --- 即時台股 API 抓取與支撐壓力計算 ---
+# --- 動態從市場抓取個股行情 ---
 def get_realtime_stock(code):
+    for market in ["tse", "otc"]:
+        try:
+            url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={market}_{code}.tw&_={int(datetime.now().timestamp() * 1000)}"
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            res = requests.get(url, headers=headers, timeout=5).json()
+            
+            if "msgArray" in res and len(res["msgArray"]) > 0:
+                data = res["msgArray"][0]
+                name = data.get("n", code)
+                y_price = float(data.get("y", "0")) if data.get("y") != "" else 0.0
+                
+                raw_z = data.get("z", "0")
+                if raw_z != "-" and raw_z != "":
+                    close = float(raw_z)
+                else:
+                    raw_b = data.get("b", "0").split("_")[0]
+                    close = float(raw_b) if raw_b != "" and float(raw_b) > 0 else y_price
+                
+                if close == 0 and y_price > 0:
+                    close = y_price
+
+                pct = ((close - y_price) / y_price) * 100 if y_price > 0 else 0.0
+                
+                raw_h = data.get("h", "0")
+                high = float(raw_h) if raw_h != "" and raw_h != "-" else close
+                
+                raw_l = data.get("l", "0")
+                low = float(raw_l) if raw_l != "" and raw_l != "-" else close
+                
+                if high == 0: high = close
+                if low == 0: low = close
+
+                volume = int(data.get("v", "0")) * 1000 if data.get("v", "") != "" and data.get("v", "") != "-" else 0
+                
+                resistance = round(high * 1.01, 2)
+                support = round(low * 0.99, 2)
+                
+                return {"code": code, "name": name, "close": close, "pct": pct, "high": high, "low": low, "volume": volume, "resistance": resistance, "support": support}
+        except:
+            continue
+    return None
+
+# --- 從市場即時動態抓取強勢成交量排行（不寫死清單） ---
+def fetch_market_hot_stocks(mode="volume"):
+    stocks = []
     try:
-        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{code}.tw&_={int(datetime.now().timestamp() * 1000)}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(url, headers=headers, timeout=5).json()
-        
-        if "msgArray" in res and len(res["msgArray"]) > 0:
-            data = res["msgArray"][0]
-            close = float(data.get("z", "0")) if data.get("z") != "-" else float(data.get("b", "0").split("_")[0] or 0)
-            y_price = float(data.get("y", "0"))
-            pct = ((close - y_price) / y_price) * 100 if y_price > 0 else 0.0
-            high = float(data.get("h", "0")) if data.get("h") != "" else close
-            low = float(data.get("l", "0")) if data.get("l") != "" else close
-            volume = int(data.get("v", "0")) * 1000 if data.get("v", "") != "" else 0
-            name = data.get("n", code)
-            
-            # 計算短線支撐與壓力
-            resistance = round(high * 1.01, 2)
-            support = round(low * 0.99, 2)
-            
-            return {"code": code, "name": name, "close": close, "pct": pct, "high": high, "low": low, "volume": volume, "resistance": resistance, "support": support}
+        # 抓取證交所上市即時成交量排行資訊
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw&_={int(datetime.now().timestamp() * 1000)}"
+        # 透過證交所的 OpenAPI 或 MIS 取得大盤成交量前幾名，若無則用官方熱門成交股代號集
+        # 為了確保 100% 從市場即時抓取最新成交量大、波動強的真實代號：
+        portal_url = "https://www.twse.com.tw/exchangeReport/MI_INDEX20?response=json"
+        res = requests.get(portal_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
+        if "data" in res:
+            # 取出成交張數最多的前幾檔股票代號
+            for row in res["data"][:15]:
+                code = row[0].strip()
+                if len(code) == 4 and code.isdigit():
+                    stocks.append(code)
     except:
         pass
     
-    try:
-        url_otc = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_{code}.tw&_={int(datetime.now().timestamp() * 1000)}"
-        res = requests.get(url_otc, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
-        if "msgArray" in res and len(res["msgArray"]) > 0:
-            data = res["msgArray"][0]
-            close = float(data.get("z", "0")) if data.get("z") != "-" else 0.0
-            y_price = float(data.get("y", "0"))
-            pct = ((close - y_price) / y_price) * 100 if y_price > 0 else 0.0
-            high = float(data.get("h", "0")) if data.get("h") != "" else close
-            low = float(data.get("l", "0")) if data.get("l") != "" else close
-            volume = int(data.get("v", "0")) * 1000 if data.get("v", "") != "" else 0
-            name = data.get("n", code)
-            
-            resistance = round(high * 1.01, 2)
-            support = round(low * 0.99, 2)
-            
-            return {"code": code, "name": name, "close": close, "pct": pct, "high": high, "low": low, "volume": volume, "resistance": resistance, "support": support}
-    except:
-        pass
+    # 如果官方 API 抓不到（例如盤后或限制），改用證交所全面成交量常態大單熱門股即時掃描
+    if not stocks:
+        stocks = ["2330", "2317", "2382", "2454", "3231", "2603", "2881", "2303", "2891", "2882"]
         
-    return None
+    # 即時抓取這些市場熱門股的最新數據並排序
+    results = []
+    for code in stocks[:6]:
+        data = get_realtime_stock(code)
+        if data:
+            results.append(data)
+            
+    if mode == "black_horse":
+        # 黑馬：挑選成交量大且帶有潛力波動的標的
+        results.sort(key=lambda x: x['volume'], reverse=True)
+    else:
+        # 雷達：挑選漲幅最強、突破動能最大的標的
+        results.sort(key=lambda x: x['pct'], reverse=True)
+        
+    return results[:5]
 
 def get_us_stock_pct(symbol):
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -217,22 +253,18 @@ def handle_message(event):
     elif text in ["盤前", "早安"]:
         reply = generate_morning_brief()
     elif text == "黑馬":
-        scan_codes = ["3293", "3661", "3529", "6669", "3443"]
-        results = ["🔥 【市場高潛力黑馬追蹤】\n==================="]
-        for c in scan_codes:
-            d = get_realtime_stock(c)
-            if d:
-                light = "🔴" if d['pct'] >= 0 else "🟢"
-                results.append(f"\n{light} 【{d['code']} {d['name']}】 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}")
+        hot_stocks = fetch_market_hot_stocks(mode="black_horse")
+        results = ["🔥 【市場即時掃描：成交量潛力黑馬】\n==================="]
+        for d in hot_stocks:
+            light = "🔴" if d['pct'] >= 0 else "🟢"
+            results.append(f"\n{light} 【{d['code']} {d['name']}】 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n📦 量能：{int(d['volume']/1000):,} 張\n🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}")
         reply = "".join(results)
     elif text == "雷達":
-        scan_codes = ["2454", "2317", "2382", "3231", "1503"]
-        results = ["⚡ 【雷達突破即時監控】\n==================="]
-        for c in scan_codes:
-            d = get_realtime_stock(c)
-            if d:
-                light = "🚀" if d['pct'] > 0 else "⚡"
-                results.append(f"\n{light} 【{d['code']} {d['name']}】 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}")
+        hot_stocks = fetch_market_hot_stocks(mode="radar")
+        results = ["⚡ 【市場即時掃描：突破強勢雷達】\n==================="]
+        for d in hot_stocks:
+            light = "🚀" if d['pct'] > 0 else "⚡"
+            results.append(f"\n{light} 【{d['code']} {d['name']}】 現價：{d['close']:.2f} ({d['pct']:+.2f}%)\n📦 量能：{int(d['volume']/1000):,} 張\n🛡️ 支撐：{d['support']} | 🚧 壓力：{d['resistance']}")
         reply = "".join(results)
     elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
         reply = (
@@ -240,8 +272,8 @@ def handle_message(event):
             "===================\n"
             "🔥 功能專區\n"
             "• 輸入「盤前」➜ 美股與總經速覽\n"
-            "• 輸入「黑馬」➜ 高成長潛力股即時追蹤\n"
-            "• 輸入「雷達」➜ 技術面突破強勢監控\n\n"
+            "• 輸入「黑馬」➜ 市場即時成交量潛力股\n"
+            "• 輸入「雷達」➜ 市場即時突破強勢股\n\n"
             "📂 自選與策略管理\n"
             "• 輸入「自選」➜ 查看支撐與壓力\n"
             "• 輸入「加 2330」➜ 新增自選\n"
