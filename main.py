@@ -12,20 +12,33 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# --- GitHub 遠端黑馬清單設定 ---
-# 💡 請將下方網址換成你們專案中，實際存放黑馬清單檔案的 GitHub Raw 連結
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/你的帳號/你的專案/main/black_horse.json"
+# --- GitHub 遠端黑馬與雷達清單設定 ---
+# 💡 請將下方網址換成你們專案中，實際存放黑馬與雷達檔案的 GitHub Raw 連結
+GITHUB_BLACK_HORSE_URL = "https://raw.githubusercontent.com/你的帳號/你的專案/main/black_horse.json"
+GITHUB_RADAR_URL = "https://raw.githubusercontent.com/你的帳號/你的專案/main/radar_data.json"
 
 def fetch_latest_black_horses():
     """從 GitHub 遠端動態抓取最新黑馬清單"""
     try:
-        response = requests.get(GITHUB_RAW_URL, timeout=5)
+        response = requests.get(GITHUB_BLACK_HORSE_URL, timeout=5)
         if response.status_code == 200:
             return response.json()
         else:
             return None
     except Exception as e:
         print(f"讀取黑馬清單失敗: {e}")
+        return None
+
+def fetch_latest_radars():
+    """從 GitHub 遠端動態抓取全市場最新雷達篩選結果"""
+    try:
+        response = requests.get(GITHUB_RADAR_URL, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return None
+    except Exception as e:
+        print(f"讀取雷達清單失敗: {e}")
         return None
 
 # --- SQLite 資料庫初始化 ---
@@ -111,7 +124,7 @@ def set_alert_db(user_id, code, price):
     cursor.execute("INSERT OR REPLACE INTO alerts (user_id, code, price) VALUES (?, ?, ?)", (user_id, code, price))
     conn.close()
 
-# 備用靜態黑馬與雷達字典（若遠端抓取失敗時可作為備援）
+# 備用靜態字典（若遠端抓取失敗時的備援）
 black_horse_database = {
     "3293": {"name": "鈊象", "industry": "網路遊戲 / 軟體", "reason": "營收與 EPS 長期高速成長，獲利強悍，底部整理後隨時準備強勢創高"},
     "3661": {"name": "世芯-KY", "industry": "ASIC / IP", "reason": "AI 晶片設計委託需求爆發，營收成長動能強勁，底部打底完成"},
@@ -487,7 +500,7 @@ def handle_message(event):
             "• 輸入「盤前」➜ 美股與總經速覽\n"
             "• 輸入「盤後」➜ 大盤、權值股與自選戰報\n"
             "• 輸入「黑馬」➜ 高成長潛力股\n"
-            "• 輸入「雷達」➜ 技術面突破強勢\n\n"
+            "• 輸入「雷達」➜ 全市場強勢突破股\n\n"
             "📂 自選與策略管理\n"
             "• 輸入「自選」➜ 查看紅綠燈與操作策略\n"
             "• 輸入「加 00981」➜ 新增自選 (支援 5 碼)\n"
@@ -500,15 +513,33 @@ def handle_message(event):
     elif user_text in ["盤後", "收盤", "AFTERNOON"]:
         reply_text = generate_afternoon_brief(user_id)
     elif user_text == "雷達":
+        # 🌟 動態從 GitHub 讀取全市場強勢突破雷達清單
+        remote_radar = fetch_latest_radars()
         radar_results = []
-        for code, info in radar_database.items():
-            data = get_realtime_stock(code)
-            if data:
-                if data["close"] >= data["ma20"] or data["pct"] > 0:
-                    radar_results.append(f"• {code} {info['name']}：現價 {data['close']:.1f} ({data['pct']:+.2f}%)")
-        reply_text = "🎯 技術面強勢雷達\n-------------------\n" + ("\n".join(radar_results[:4]) if radar_results else "目前無符合標的。")
+        
+        if remote_radar and "stocks" in remote_radar:
+            stocks = remote_radar["stocks"]
+            for stock in stocks:
+                code = stock.get('code')
+                name = stock.get('name', '')
+                tag = stock.get('tag', '🚀 強勢突破 / 創新高')
+                data = get_realtime_stock(code)
+                price_str = f"現價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
+                radar_results.append(f"• {code} {name} | {price_str}\n  └ {tag}")
+            update_time = remote_radar.get("update_time", "")
+            header_str = f"🎯 全市場強勢突破雷達 (更新於: {update_time})\n-------------------\n"
+        else:
+            # 備援機制：若無遠端檔案則用原本的靜態字典
+            for code, info in radar_database.items():
+                data = get_realtime_stock(code)
+                if data:
+                    if data["close"] >= data["ma20"] or data["pct"] > 0:
+                        radar_results.append(f"• {code} {info['name']}：現價 {data['close']:.1f} ({data['pct']:+.2f}%)")
+            header_str = "🎯 技術面強勢雷達 (備援模式)\n-------------------\n"
+            
+        reply_text = header_str + ("\n\n".join(radar_results[:6]) if radar_results else "目前無符合標的。")
     elif user_text == "黑馬":
-        # 🌟 動態從 GitHub 讀取最新黑馬清單，若失敗則退回使用本地靜態字典
+        # 🌟 動態從 GitHub 讀取最新黑馬清單
         remote_data = fetch_latest_black_horses()
         horse_results = []
         
@@ -529,7 +560,7 @@ def handle_message(event):
                 data = get_realtime_stock(code)
                 price_str = f"現價 {data['close']:.1f} ({data['pct']:+.2f}%)" if data else "行情更新中"
                 horse_results.append(f"• {code} {info['name']} | {price_str}\n  └ {info['reason']}")
-            header_str = "🔥 潛力黑馬專區\n-------------------\n"
+            header_str = "🔥 潛力黑馬專區 (備援模式)\n-------------------\n"
             
         reply_text = header_str + "\n\n".join(horse_results)
     else:
