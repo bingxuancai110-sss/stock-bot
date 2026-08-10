@@ -1,6 +1,8 @@
 import os
+import socket
 import requests
 import psycopg2
+from urllib.parse import urlparse
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -34,57 +36,83 @@ def fetch_latest_radars():
         print(f"讀取雷達清單失敗: {e}")
     return None
 
-# --- Supabase 資料庫連線 (使用標準連線字串) ---
+# --- Supabase 資料庫連線 (強制轉 IPv4，解決 Render 網路阻擋問題) ---
 def get_db_connection():
     db_url = os.environ.get("DATABASE_URL")
-    conn = psycopg2.connect(db_url, sslmode='require')
+    url = urlparse(db_url)
+    ipv4_addr = socket.gethostbyname(url.hostname)
+    
+    conn = psycopg2.connect(
+        database=url.path[1:],
+        user=url.username,
+        password=url.password,
+        host=ipv4_addr,
+        port=url.port,
+        sslmode='require'
+    )
     return conn
 
 def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS watchlists (user_id TEXT, code TEXT, PRIMARY KEY (user_id, code))''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY)''')
-    conn.commit()
-    cursor.close()
-    conn.close()
-    print("✅ 資料庫初始化成功！")
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS watchlists (user_id TEXT, code TEXT, PRIMARY KEY (user_id, code))''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY)''')
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print("✅ 資料庫初始化成功！")
+    except Exception as e:
+        print(f"❌ 初始化資料庫發生錯誤: {e}")
 
 init_db()
 
 # --- 資料庫操作 ---
 def add_user_to_db(user_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (str(user_id).strip(),))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (str(user_id).strip(),))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"❌ 新增使用者失敗: {e}")
 
 def get_user_watchlist(user_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT code FROM watchlists WHERE TRIM(user_id) = %s", (str(user_id).strip(),))
-    codes = [row[0] for row in cursor.fetchall()]
-    cursor.close()
-    conn.close()
-    return codes
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT code FROM watchlists WHERE TRIM(user_id) = %s", (str(user_id).strip(),))
+        codes = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return codes
+    except Exception as e:
+        print(f"❌ 讀取自選清單失敗: {e}")
+        return []
 
 def add_watchlist_db(user_id, code):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO watchlists (user_id, code) VALUES (%s, %s) ON CONFLICT (user_id, code) DO NOTHING", (str(user_id).strip(), code))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO watchlists (user_id, code) VALUES (%s, %s) ON CONFLICT (user_id, code) DO NOTHING", (str(user_id).strip(), code))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"❌ 新增自選失敗: {e}")
 
 def remove_watchlist_db(user_id, code):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM watchlists WHERE TRIM(user_id) = %s AND code = %s", (str(user_id).strip(), code))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM watchlists WHERE TRIM(user_id) = %s AND code = %s", (str(user_id).strip(), code))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"❌ 刪除自選失敗: {e}")
 
 # 備用靜態資料庫
 black_horse_database = {
@@ -205,7 +233,7 @@ def handle_message(event):
                     name, industry = radar_database[pure_code]["name"], radar_database[pure_code]["industry"]
                 reply = (
                     f"📊 {pure_code} {name} ({industry})\n"
-                    f"===================\n"
+                    f"==================-\n"
                     f"💰 現價：{data['close']:.2f} ({data['pct']:+.2f}%)\n"
                     f"🔺 高/低：{data['high']:.2f} / {data['low']:.2f}\n"
                     f"📦 量能：{int(data['volume'] / 1000):,} 張"
@@ -215,7 +243,7 @@ def handle_message(event):
         elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
             reply = (
                 "🤖 蔡秉軒御用選股機器人\n"
-                "===================\n"
+                "==================-\n"
                 "• 輸入「盤前」➜ 美股與總經速覽\n"
                 "• 輸入「黑馬」➜ 高潛力成長股\n"
                 "• 輸入「雷達」➜ 全市場強勢突破\n"
