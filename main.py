@@ -15,7 +15,7 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# --- Google GenAI 初始化 (使用新版 google-genai) ---
+# --- Google GenAI 初始化 ---
 ai_client = None
 try:
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -27,7 +27,7 @@ try:
 except Exception as e:
     print(f"❌ Gemini 初始化失敗: {e}")
 
-# --- Supabase 資料庫連線 (強制轉 IPv4，解決 Render 網路阻擋問題) ---
+# --- Supabase 資料庫連線 ---
 def get_db_connection():
     db_url = os.environ.get("DATABASE_URL")
     url = urlparse(db_url)
@@ -176,9 +176,9 @@ def ask_gemini(prompt):
     if not ai_client:
         return "🤖 AI 尚未啟用，請檢查 Render 上的 GEMINI_API_KEY 設定。"
     try:
-        # 使用新版 google-genai 呼叫方式
+        # 將模型名稱改為目前最穩定的 gemini-1.5-flash
         response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-1.5-flash',
             contents=prompt,
         )
         return response.text
@@ -204,6 +204,7 @@ def handle_message(event):
     try:
         add_user_to_db(user_id)
 
+        # 關鍵字指令優先攔截，避免被當成 AI 聊天
         if "加" in text and 4 <= len(pure_code) <= 6:
             add_watchlist_db(user_id, pure_code)
             reply = f"✅ 新增自選成功：{pure_code}"
@@ -244,20 +245,23 @@ def handle_message(event):
                 )
             else: 
                 reply = f"❌ 查無代號 {pure_code} 的行情。"
-        elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
-            reply = (
-                "🤖 蔡秉軒御用選股機器人\n"
-                "==================-\n"
-                "• 輸入「盤前」➜ 美股與總經速覽\n"
-                "• 輸入「黑馬」➜ 高潛力成長股\n"
-                "• 輸入「雷達」➜ 全市場強勢突破\n"
-                "• 輸入「自選」➜ 查看雲端自選股\n"
-                "• 輸入「加 2330」➜ 新增自選\n"
-                "• 輸入「刪 2330」➜ 刪除自選\n"
-                "• 其他文字 ➜ 直接交給 Gemini AI 智慧對話"
-            )
-        elif text in ["盤前", "早安"]:
-            reply = generate_morning_brief()
+        elif text_upper in ["MENU", "選單", "幫助", "HELP", "雷達", "盤前", "早安"]:
+            if text_upper in ["MENU", "選單", "幫助", "HELP"]:
+                reply = (
+                    "🤖 蔡秉軒御用選股機器人\n"
+                    "==================-\n"
+                    "• 輸入「盤前」➜ 美股與總經速覽\n"
+                    "• 輸入「黑馬」➜ 高潛力成長股\n"
+                    "• 輸入「雷達」➜ 全市場強勢突破\n"
+                    "• 輸入「自選」➜ 查看雲端自選股\n"
+                    "• 輸入「加 2330」➜ 新增自選\n"
+                    "• 輸入「刪 2330」➜ 刪除自選\n"
+                    "• 其他文字 ➜ 直接交給 Gemini AI 智慧對話"
+                )
+            elif text in ["盤前", "早安"]:
+                reply = generate_morning_brief()
+            elif text == "雷達":
+                reply = "⚡ 【雷達選單】\n目前市場強勢突破個股：\n" + "\n".join([f"• {k} {v['name']} ({v['industry']}) - {v['tag']}" for k, v in radar_database.items()])
         else:
             # 非指定指令時，交由 Gemini AI 處理
             reply = ask_gemini(text)
