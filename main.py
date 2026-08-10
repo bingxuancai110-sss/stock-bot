@@ -52,24 +52,25 @@ def get_db_connection():
     )
     return conn
 
-# 初始化表格
+# 初始化與重建正確表格
 def init_db():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        # 確保每次啟動表格結構絕對正確
         cursor.execute('''CREATE TABLE IF NOT EXISTS watchlists (user_id TEXT, code TEXT, PRIMARY KEY (user_id, code))''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS alerts (user_id TEXT, code TEXT, price REAL, PRIMARY KEY (user_id, code))''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY)''')
         conn.commit()
         cursor.close()
         conn.close()
-        print("Supabase 資料庫連線與表格初始化成功！")
+        print("✅ Supabase 資料庫連線與表格初始化成功！")
     except Exception as e:
-        print(f"初始化資料庫發生錯誤: {e}")
+        print(f"❌ 初始化資料庫發生錯誤: {e}")
 
 init_db()
 
-# --- 資料庫操作函式 (加入 ID 標準化防呆) ---
+# --- 資料庫操作函式 (加上詳細 Log 以便除錯) ---
 def add_user_to_db(user_id):
     try:
         conn = get_db_connection()
@@ -80,7 +81,7 @@ def add_user_to_db(user_id):
         cursor.close()
         conn.close()
     except Exception as e:
-        print(f"新增使用者失敗: {e}")
+        print(f"❌ 新增使用者失敗: {e}")
 
 def get_user_watchlist(user_id):
     try:
@@ -91,9 +92,10 @@ def get_user_watchlist(user_id):
         codes = [row[0] for row in cursor.fetchall()]
         cursor.close()
         conn.close()
+        print(f"🔍 讀取自選清單 [{clean_uid}] 結果: {codes}")
         return codes
     except Exception as e:
-        print(f"讀取自選清單失敗: {e}")
+        print(f"❌ 讀取自選清單失敗: {e}")
         return []
 
 def add_watchlist_db(user_id, code):
@@ -109,8 +111,9 @@ def add_watchlist_db(user_id, code):
         conn.commit()
         cursor.close()
         conn.close()
+        print(f"✅ 成功寫入自選股 -> 用戶: {clean_uid}, 代號: {code}")
     except Exception as e:
-        print(f"新增自選失敗: {e}")
+        print(f"❌ 新增自選失敗: {e}")
 
 def remove_watchlist_db(user_id, code):
     try:
@@ -123,7 +126,7 @@ def remove_watchlist_db(user_id, code):
         cursor.close()
         conn.close()
     except Exception as e:
-        print(f"刪除自選失敗: {e}")
+        print(f"❌ 刪除自選失敗: {e}")
 
 def get_user_alerts(user_id):
     try:
@@ -151,7 +154,7 @@ def set_alert_db(user_id, code, price):
         cursor.close()
         conn.close()
     except Exception as e:
-        print(f"設定提醒失敗: {e}")
+        print(f"❌ 設定提醒失敗: {e}")
 
 # 備用靜態資料庫
 black_horse_database = {
