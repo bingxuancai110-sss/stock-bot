@@ -8,24 +8,11 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from datetime import datetime
-from google import genai
 
 app = Flask(__name__)
 
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
-
-# --- Google GenAI 初始化 ---
-ai_client = None
-try:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if api_key:
-        ai_client = genai.Client(api_key=api_key)
-        print("✅ Gemini AI 初始化成功！")
-    else:
-        print("⚠️ 警告：未找到 GEMINI_API_KEY 環境變數")
-except Exception as e:
-    print(f"❌ Gemini 初始化失敗: {e}")
 
 # --- Supabase 資料庫連線 ---
 def get_db_connection():
@@ -172,19 +159,6 @@ def generate_morning_brief():
         f"• 台積電ADR (TSM)：{tsm:+.2f}%"
     )
 
-def ask_gemini(prompt):
-    if not ai_client:
-        return "🤖 AI 尚未啟用，請檢查 Render 上的 GEMINI_API_KEY 設定。"
-    try:
-        # 改用 gemini-2.0-flash
-        response = ai_client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt,
-        )
-        return response.text
-    except Exception as e:
-        return f"AI 思考中發生錯誤：{str(e)}"
-
 # --- 主程式 ---
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -244,7 +218,7 @@ def handle_message(event):
                 )
             else: 
                 reply = f"❌ 查無代號 {pure_code} 的行情。"
-        elif text_upper in ["MENU", "選單", "幫助", "HELP", "雷達", "盤前", "早安"]:
+        elif text_upper in ["MENU", "選單", "幫助", "HELP", "雷達", "盤前", "早安", "黑馬"]:
             if text_upper in ["MENU", "選單", "幫助", "HELP"]:
                 reply = (
                     "🤖 蔡秉軒御用選股機器人\n"
@@ -254,16 +228,16 @@ def handle_message(event):
                     "• 輸入「雷達」➜ 全市場強勢突破\n"
                     "• 輸入「自選」➜ 查看雲端自選股\n"
                     "• 輸入「加 2330」➜ 新增自選\n"
-                    "• 輸入「刪 2330」➜ 刪除自選\n"
-                    "• 其他文字 ➜ 直接交給 Gemini AI 智慧對話"
+                    "• 輸入「刪 2330」➜ 刪除自選"
                 )
             elif text in ["盤前", "早安"]:
                 reply = generate_morning_brief()
             elif text == "雷達":
                 reply = "⚡ 【雷達選單】\n目前市場強勢突破個股：\n" + "\n".join([f"• {k} {v['name']} ({v['industry']}) - {v['tag']}" for k, v in radar_database.items()])
+            elif text == "黑馬":
+                reply = "🐎 【黑馬股清單】\n高潛力成長股：\n" + "\n".join([f"• {k} {v['name']} ({v['industry']})\n  💡 {v['reason']}" for k, v in black_horse_database.items()])
         else:
-            # 非指定指令時，交由 Gemini AI 處理
-            reply = ask_gemini(text)
+            reply = "🤖 指令未識別，請輸入「選單」查看可用功能！"
             
     except Exception as e:
         reply = f"🔥 發生錯誤：{str(e)}"
