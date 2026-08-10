@@ -69,12 +69,13 @@ def init_db():
 
 init_db()
 
-# --- 資料庫操作函式 ---
+# --- 資料庫操作函式 (加入 ID 標準化防呆) ---
 def add_user_to_db(user_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (user_id,))
+        clean_uid = str(user_id).strip()
+        cursor.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (clean_uid,))
         conn.commit()
         cursor.close()
         conn.close()
@@ -85,7 +86,8 @@ def get_user_watchlist(user_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT code FROM watchlists WHERE user_id = %s", (user_id,))
+        clean_uid = str(user_id).strip()
+        cursor.execute("SELECT code FROM watchlists WHERE TRIM(user_id) = %s", (clean_uid,))
         codes = [row[0] for row in cursor.fetchall()]
         cursor.close()
         conn.close()
@@ -98,7 +100,12 @@ def add_watchlist_db(user_id, code):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO watchlists (user_id, code) VALUES (%s, %s) ON CONFLICT (user_id, code) DO NOTHING", (user_id, code))
+        clean_uid = str(user_id).strip()
+        cursor.execute("""
+            INSERT INTO watchlists (user_id, code) 
+            VALUES (%s, %s) 
+            ON CONFLICT (user_id, code) DO NOTHING
+        """, (clean_uid, code))
         conn.commit()
         cursor.close()
         conn.close()
@@ -109,8 +116,9 @@ def remove_watchlist_db(user_id, code):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM watchlists WHERE user_id = %s AND code = %s", (user_id, code))
-        cursor.execute("DELETE FROM alerts WHERE user_id = %s AND code = %s", (user_id, code))
+        clean_uid = str(user_id).strip()
+        cursor.execute("DELETE FROM watchlists WHERE TRIM(user_id) = %s AND code = %s", (clean_uid, code))
+        cursor.execute("DELETE FROM alerts WHERE TRIM(user_id) = %s AND code = %s", (clean_uid, code))
         conn.commit()
         cursor.close()
         conn.close()
@@ -121,7 +129,8 @@ def get_user_alerts(user_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT code, price FROM alerts WHERE user_id = %s", (user_id,))
+        clean_uid = str(user_id).strip()
+        cursor.execute("SELECT code, price FROM alerts WHERE TRIM(user_id) = %s", (clean_uid,))
         alerts = {row[0]: row[1] for row in cursor.fetchall()}
         cursor.close()
         conn.close()
@@ -133,7 +142,11 @@ def set_alert_db(user_id, code, price):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO alerts (user_id, code, price) VALUES (%s, %s, %s) ON CONFLICT (user_id, code) DO UPDATE SET price = EXCLUDED.price", (user_id, code, price))
+        clean_uid = str(user_id).strip()
+        cursor.execute("""
+            INSERT INTO alerts (user_id, code, price) VALUES (%s, %s, %s) 
+            ON CONFLICT (user_id, code) DO UPDATE SET price = EXCLUDED.price
+        """, (clean_uid, code, price))
         conn.commit()
         cursor.close()
         conn.close()
