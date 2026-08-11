@@ -15,6 +15,11 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
+# --- 根路由（專門給 cron-job.org 快速喚醒，秒速回傳絕不超時） ---
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot is alive!", 200
+
 # --- Supabase 資料庫連線 ---
 def get_db_connection():
     db_url = os.environ.get("DATABASE_URL")
@@ -133,7 +138,7 @@ def get_realtime_stock(code):
 
 # --- 市場標的動態掃描池 ---
 def fetch_market_pool():
-    codes = ["6173", "2330", "2454", "3661", "6669", "3443", "3037", "2382", "3231", "2303", "1503", "3293", "3529", "2408", "8299", "5347"]
+    codes = ["6173", "2330", "2454", "3661", "6669", "3443", "3037", "2382", "3231", "2303", "1503", "3293", "3529", "2408", "8299", "5347", "4931"]
     try:
         url = "https://www.twse.com.tw/exchangeReport/MI_INDEX20?response=json"
         res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
@@ -146,20 +151,35 @@ def fetch_market_pool():
         pass
         
     stock_list = []
-    for c in codes[:40]:
+    for c in codes[:35]:
         data = get_realtime_stock(c)
         if data and data['volume'] > 0:
             stock_list.append(data)
             
     return stock_list
 
-# --- 多樣化黑馬文案庫（確保每隻股票評語、原因、風險完全不同） ---
-INDUSTRY_POOLS = [
-    "・產業：受惠全球AI伺服器與高階運算供應鏈強勁拉貨，訂單能見度高。",
-    "・產業：車用電子與被動元件庫存去化告一段落，迎來規格升級循環。",
-    "・產業：低軌衛星與網通基礎建設需求外溢，長線基本面具備高防禦護城河。",
-    "・產業：半導體先進製程與特用化學在地化供應，營運具備強悍爆發力。"
-]
+# --- 智慧產業動態對應（依據公司名稱或屬性給予正確專業文案） ---
+def get_smart_industry_desc(name, code, index):
+    if "台積電" in name or code == "2330":
+        return "・產業：全球晶圓代工龍頭，受惠3奈米與CoWoS先進封裝強勁需求，市占穩固。"
+    elif "聯發科" in name or code == "2454":
+        return "・產業：全球智慧型手機晶片與旗艦AI處理器大廠，市占率與毛利率同步上揚。"
+    elif "世芯" in name or code == "3661" or "創意" in name or "力旺" in name:
+        return "・產業：頂尖ASIC與矽智財(IP)供應商，深耕美系CSP大廠客製化AI晶片專案。"
+    elif "欣興" in name or code == "3037" or "南電" in name or "景碩" in name:
+        return "・產業：高階載板（ABF/BT）領導廠，受惠AI伺服器與高階交換器載板規格升級。"
+    elif "廣達" in name or code == "2382" or "緯創" in name or "技嘉" in name or "英業達" in name:
+        return "・產業：AI伺服器代工主力，美系雲端服務商(CSP)資本支出擴張下的直接受惠者。"
+    elif "新日興" in name or code == "4931":
+        return "・產業：全球軸承龍頭廠，積極卡位摺疊手機與高階筆電轉軸新規格商機。"
+
+    general_pools = [
+        "・產業：受惠全球AI伺服器與高效能運算(HPC)供應鏈拉貨，訂單能見度延伸至明年。",
+        "・產業：半導體先進製程與特用化學在地化供應，營運具備強悍自主成長爆發力。",
+        "・產業：網通基礎建設與資料中心升級需求外溢，長線基本面具備高防禦護城河。",
+        "・產業：自動化設備與電子零組件庫存去化告一段落，迎來規格與毛利雙升循環。"
+    ]
+    return general_pools[index % len(general_pools)]
 
 TECH_POOLS = [
     "・技術：股價帶量突破糾結均線，多頭排列正式成形。",
@@ -177,7 +197,7 @@ BREAK_POOLS = [
 
 RISK_POOLS = [
     "・短線乖離率略高，慎防追高逢壓震盪拉回",
-    "・上方遭遇前波套牢神仙區，需量能持續滾量換手",
+    "・上方遭遇前波套牢區，需量能持續滾量換手",
     "・國際總經與期貨結算日前夕，短線波動可能加劇",
     "・法人籌碼若出現鬆動，需嚴守移動停利點"
 ]
@@ -186,22 +206,19 @@ STAGES = [
     "☑ 突破初期\n□ 底部醞釀\n□ 趨勢轉強\n□ 主升段\n□ 高檔警戒",
     "□ 突破初期\n☑ 底部醞釀\n□ 趨勢轉強\n□ 主升段\n□ 高檔警戒",
     "□ 突破初期\n□ 底部醞釀\n☑ 趨勢轉強\n□ 主升段\n□ 高檔警戒",
-    "□ 突破初期\n□ 底部醞釀\n□ 趨勢轉強\n☑ 主升段\n□ 高檔警戒"
+    "□ 突破初期\n□ 底部醞釀\n□ 趨勢轉強\n□ 主升段\n☑ 高檔警戒"
 ]
 
 def analyze_horse(stock, index):
-    pct = stock['pct']
     vol = stock['volume']
-    
-    ind_score = 31 + ((index * 3) % 9)     # 31~39
-    tech_score = 46 + ((index * 4) % 13)   # 46~58
+    ind_score = 31 + ((index * 3) % 9)
+    tech_score = 46 + ((index * 4) % 13)
     total_score = ind_score + tech_score
     if total_score > 96: total_score = 93
     
     grade = "🔥 超強黑馬" if total_score >= 90 else ("🚀 強勢黑馬" if total_score >= 85 else "🐎 黑馬候選")
 
-    # 利用 index 錯開取用不同的文案，確保每檔截然不同
-    ind_desc = INDUSTRY_POOLS[index % len(INDUSTRY_POOLS)]
+    ind_desc = get_smart_industry_desc(stock['name'], stock['code'], index)
     tech_desc = TECH_POOLS[index % len(TECH_POOLS)]
     break_desc = BREAK_POOLS[index % len(BREAK_POOLS)]
     risk_desc = RISK_POOLS[index % len(RISK_POOLS)]
@@ -223,8 +240,6 @@ def analyze_horse(stock, index):
 
 def analyze_radar(stock, index):
     pct = stock['pct']
-    vol = stock['volume']
-    
     radar_score = 86 + ((index * 3) % 9)
     level = "S級 | 極強攻擊" if pct >= 3.0 else ("A級 | 穩健突破" if pct >= 1.0 else "B級 | 盤堅向上")
     
@@ -234,7 +249,6 @@ def analyze_radar(stock, index):
         "・低接買盤強勁，下檔支撐力道扎實\n・均線糾結後向上發散，具備突破契機\n・法人與大戶資金點火跡象明顯"
     ]
     r_extra = reasons[index % len(reasons)]
-    
     return radar_score, level, r_extra
 
 def get_us_stock_pct(symbol):
@@ -305,10 +319,13 @@ def handle_message(event):
             reply = "".join(results)
     elif 4 <= len(pure_code) <= 6 and len(text) <= 7 and " " not in text:
         data = get_realtime_stock(pure_code)
+        if not data:
+            data = get_realtime_stock(pure_code)  # 強制再次確認查詢
+            
         if data:
             reply = (
                 f"📊 {data['code']} {data['name']}\n"
-                f"===================\n"
+                f"==================-\n"
                 f"💰 現價：{data['close']:.2f} ({data['pct']:+.2f}%)\n"
                 f"🔺 高/低：{data['high']:.2f} / {data['low']:.2f}\n"
                 f"📦 量能：{int(data['volume'] / 1000):,} 張\n"
@@ -326,7 +343,6 @@ def handle_message(event):
         candidates = [s for s in market_stocks if not any(k in s['name'] for k in exclude_keywords)]
         if not candidates: candidates = market_stocks
         
-        # 隨機打亂或取前幾檔，確保每次叫出來的股票組合多變
         random.shuffle(candidates)
         top_three = candidates[:3]
         
@@ -392,13 +408,13 @@ def handle_message(event):
             "===================\n"
             "🔥 核心策略專區\n"
             "• 輸入「盤前」➜ 美股與總經速覽\n"
-            "• 輸入「黑馬」➜ 多維度動態獨立黑馬 (3檔)\n"
-            "• 輸入「雷達」➜ 盤中獨立多樣化雷達 (3檔)\n\n"
+            "• 輸入「黑馬」➜ 智慧黑馬股評語 (3檔)\n"
+            "• 輸入「雷達」➜ 盤中強勢雷達 (3檔)\n\n"
             "📂 自選與策略管理\n"
             "• 輸入「自選」➜ 查看雲端自選與支撐壓力\n"
             "• 輸入「加 2330」➜ 新增自選\n"
             "• 輸入「刪 2330」➜ 移除自選\n"
-            "• 直接輸入代號（如 6173）➜ 查即時行情與支撐"
+            "• 直接輸入代號（如 4931、6173）➜ 查即時行情與支撐"
         )
     else:
         reply = "🤖 指令未識別，請輸入「選單」查看可用功能！"
