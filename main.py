@@ -15,7 +15,15 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# --- 1. 喚醒專用根路由（絕不超時） ---
+# --- 繁體中文名稱對照表（解決英文名稱問題） ---
+STOCK_NAME_MAP = {
+    "2330": "台積電", "2454": "聯發科", "3661": "世芯-KY", "6669": "緯穎", 
+    "3037": "欣興", "2382": "廣達", "3231": "緯創", "4931": "新日興", 
+    "3081": "聯亞", "6442": "光聖", "3529": "力旺", "3443": "創意", 
+    "6173": "信昌電", "1503": "士電"
+}
+
+# --- 1. 喚醒專用根路由 ---
 @app.route("/", methods=["GET"])
 def home():
     return "Bot is alive and awake!", 200
@@ -71,7 +79,6 @@ def add_user_to_db(user_id):
     except Exception as e:
         print(f"❌ 新增使用者錯誤: {e}")
 
-# 嚴格修復：確保自選股能正確寫入資料庫
 def add_watchlist_db(user_id, code):
     try:
         conn = get_db_connection()
@@ -117,9 +124,12 @@ def get_user_watchlist(user_id):
         print(f"❌ 讀取自選股錯誤: {e}")
         return []
 
-# --- 穩健的股價抓取引擎 ---
+# --- 穩健的股價抓取引擎（強制繁體中文名稱） ---
 def get_realtime_stock(code):
     code = str(code).strip()
+    # 優先從對照表抓中文名，若無則用代號
+    stock_name = STOCK_NAME_MAP.get(code, code)
+
     for suffix in [".TW", ".TWO"]:
         try:
             symbol = f"{code}{suffix}"
@@ -132,7 +142,6 @@ def get_realtime_stock(code):
                 continue
                 
             meta = result_meta[0].get('meta', {})
-            name = meta.get('shortName', code)
             close = meta.get('regularMarketPrice', 0.0)
             prev_close = meta.get('chartPreviousClose', close)
             
@@ -156,7 +165,7 @@ def get_realtime_stock(code):
             
             return {
                 "code": code,
-                "name": name,
+                "name": stock_name,
                 "close": float(close),
                 "pct": float(pct),
                 "high": float(high),
@@ -170,7 +179,7 @@ def get_realtime_stock(code):
     return None
 
 def fetch_market_pool():
-    codes = ["2330", "2454", "3661", "6669", "3037", "2382", "3231", "4931", "3081", "3529", "3443", "6173", "1503"]
+    codes = ["2330", "2454", "3661", "6669", "3037", "2382", "3231", "4931", "3081", "6442", "3529", "3443", "6173", "1503"]
     stock_list = []
     for c in codes:
         data = get_realtime_stock(c)
@@ -195,6 +204,8 @@ def get_smart_industry_desc(name, code):
         return "・產業：全球軸承龍頭廠，積極卡位摺疊手機與高階筆電轉軸新規格商機。"
     elif "聯亞" in name or code == "3081":
         return "・產業：高階光通訊雷射晶粒(LD)大廠，受惠矽光子與資料中心高速傳輸需求。"
+    elif "光聖" in name or code == "6442":
+        return "・產業：高階光被動元件與資料中心連接器大廠，受惠北美資料中心布建需求。"
     return "・產業：受惠全球AI伺服器與高效能運算(HPC)供應鏈拉貨，訂單能見度延伸至明年。"
 
 TECH_POOLS = [
@@ -275,24 +286,25 @@ def handle_message(event):
     
     add_user_to_db(user_id)
 
-    # 嚴格修復：加自選
+    # 1. 加自選
     if "加" in text and 4 <= len(pure_code) <= 6:
         success = add_watchlist_db(user_id, pure_code)
+        c_name = STOCK_NAME_MAP.get(pure_code, pure_code)
         if success:
-            reply = f"✅ 新增自選成功：{pure_code}"
+            reply = f"✅ 新增自選成功：{pure_code} {c_name}"
         else:
             reply = f"❌ 新增自選失敗，資料庫寫入異常：{pure_code}"
             
-    # 嚴格修復：刪自選
+    # 2. 刪自選
     elif "刪" in text and 4 <= len(pure_code) <= 6:
         remove_watchlist_db(user_id, pure_code)
         reply = f"🗑️ 已從自選清單移除：{pure_code}"
         
-    # 嚴格修復：看自選清單
+    # 3. 看自選清單
     elif text in ["自選", "WATCHLIST"]:
         codes = get_user_watchlist(user_id)
         if not codes: 
-            reply = "📂 目前自選清單是空的。\n💡 請輸入「加 3081」或「加 4931」來新增自選！"
+            reply = "📂 目前自選清單是空的。\n💡 請輸入「加 3081」或「加 6442」來新增自選！"
         else:
             results = ["📂 【我的雲端自選股與策略】\n==================="]
             for code in codes:
@@ -305,12 +317,13 @@ def handle_message(event):
                     results.append(f"\n⚪ 【{code}】 查無行情")
             reply = "".join(results)
             
+    # 4. 單獨查代號行情
     elif 4 <= len(pure_code) <= 6 and len(text) <= 7 and " " not in text:
         data = get_realtime_stock(pure_code)
         if data:
             reply = (
                 f"📊 {data['code']} {data['name']}\n"
-                f"===================\n"
+                f"==================-\n"
                 f"💰 現價：{data['close']:.2f} ({data['pct']:+.2f}%)\n"
                 f"🔺 高/低：{data['high']:.2f} / {data['low']:.2f}\n"
                 f"📦 量能：{int(data['volume'] / 1000):,} 張\n"
@@ -321,66 +334,75 @@ def handle_message(event):
         else: 
             reply = f"❌ 查無代號 {pure_code} 的行情，請確認代號是否正確。"
             
+    # 5. 盤前速覽
     elif text in ["盤前", "早安"]:
         reply = generate_morning_brief()
         
+    # 6. 黑馬股評語
     elif text == "黑馬":
         market_stocks = fetch_market_pool()
-        random.shuffle(market_stocks)
-        top_three = market_stocks[:3]
-        reports = []
-        for i, d in enumerate(top_three):
-            res = analyze_horse(d, i)
-            report = (
-                f"🐎 黑馬股\n\n"
-                f"股票：{d['name']}\n"
-                f"代號：{d['code']}\n\n"
-                f"黑馬指數：{res['total_score']}／100\n\n"
-                f"🏭 產業面：{res['ind_score']}／40\n"
-                f"📈 技術面：{res['tech_score']}／60\n\n"
-                f"【入選原因】\n"
-                f"{res['ind_desc']}\n"
-                f"{res['tech_desc']}\n"
-                f"{res['break_desc']}\n"
-                f"{res['vol_desc']}\n\n"
-                f"【目前階段】\n"
-                f"{res['stage_box']}\n\n"
-                f"【風險】\n"
-                f"{res['risk_desc']}\n\n"
-                f"【黑馬判定】\n"
-                f"{res['grade']}\n"
-                f"-----------------------------------"
-            )
-            reports.append(report)
-        reply = "\n\n".join(reports)
+        if not market_stocks:
+            reply = "❌ 目前無法取得市場股票池資料。"
+        else:
+            random.shuffle(market_stocks)
+            top_three = market_stocks[:3]
+            reports = []
+            for i, d in enumerate(top_three):
+                res = analyze_horse(d, i)
+                report = (
+                    f"🐎 智慧黑馬股 #{i+1}\n\n"
+                    f"股票：{d['name']}\n"
+                    f"代號：{d['code']}\n\n"
+                    f"黑馬指數：{res['total_score']}／100\n\n"
+                    f"🏭 產業面：{res['ind_score']}／40\n"
+                    f"📈 技術面：{res['tech_score']}／60\n\n"
+                    f"【入選原因】\n"
+                    f"{res['ind_desc']}\n"
+                    f"{res['tech_desc']}\n"
+                    f"{res['break_desc']}\n"
+                    f"{res['vol_desc']}\n\n"
+                    f"【目前階段】\n"
+                    f"{res['stage_box']}\n\n"
+                    f"【風險】\n"
+                    f"{res['risk_desc']}\n\n"
+                    f"【黑馬判定】\n"
+                    f"{res['grade']}\n"
+                    f"-----------------------------------"
+                )
+                reports.append(report)
+            reply = "\n\n".join(reports)
         
+    # 7. 盤中雷達
     elif text == "雷達":
         market_stocks = fetch_market_pool()
-        market_stocks.sort(key=lambda x: x['pct'], reverse=True)
-        top_three = market_stocks[:3]
-        reports = []
-        for i, d in enumerate(top_three):
-            r_score, level, r_extra = analyze_radar(d, i)
-            report = (
-                f"🚨【盤中雷達】\n\n"
-                f"🔥 強勢股票：{d['name']}\n"
-                f"📌 股票代號：{d['code']}\n\n"
-                f"💰 現價：{data['close']:.2f}\n" if 'data' in locals() else f"💰 現價：{d['close']:.2f}\n"
-                f"📈 漲幅：{d['pct']:+.2f}%\n"
-                f"📊 成交量：{int(d['volume']/1000):,}張\n"
-                f"⚡ 量比：2.15\n\n"
-                f"📡 雷達分數：{r_score}／100\n"
-                f"🏆 等級：{level}\n\n"
-                f"【強勢原因】\n\n"
-                f"{r_extra}\n\n"
-                f"【目前型態】\n\n"
-                f"🚀 突破發動\n\n"
-                f"【注意】\n\n"
-                f"⚠️ 漲多震盪難免，操作務必設好停損停利\n"
-                f"-----------------------------------"
-            )
-            reports.append(report)
-        reply = "\n\n".join(reports)
+        if not market_stocks:
+            reply = "❌ 目前無法取得市場股票池資料。"
+        else:
+            market_stocks.sort(key=lambda x: x['pct'], reverse=True)
+            top_three = market_stocks[:3]
+            reports = []
+            for i, d in enumerate(top_three):
+                r_score, level, r_extra = analyze_radar(d, i)
+                report = (
+                    f"🚨【盤中雷達】\n\n"
+                    f"🔥 強勢股票：{d['name']}\n"
+                    f"📌 股票代號：{d['code']}\n\n"
+                    f"💰 現價：{d['close']:.2f}\n"
+                    f"📈 漲幅：{d['pct']:+.2f}%\n"
+                    f"📊 成交量：{int(d['volume']/1000):,}張\n"
+                    f"⚡ 量比：2.15\n\n"
+                    f"📡 雷達分數：{r_score}／100\n"
+                    f"🏆 等級：{level}\n\n"
+                    f"【強勢原因】\n\n"
+                    f"{r_extra}\n\n"
+                    f"【目前型態】\n\n"
+                    f"🚀 突破發動\n\n"
+                    f"【注意】\n\n"
+                    f"⚠️ 漲多震盪難免，操作務必設好停損停利\n"
+                    f"-----------------------------------"
+                )
+                reports.append(report)
+            reply = "\n\n".join(reports)
         
     elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
         reply = (
@@ -394,7 +416,7 @@ def handle_message(event):
             "• 輸入「自選」➜ 查看雲端自選與支撐壓力\n"
             "• 輸入「加 3081」➜ 新增自選\n"
             "• 輸入「刪 3081」➜ 移除自選\n"
-            "• 直接輸入代號（如 3081、4931）➜ 查即時行情與支撐"
+            "• 直接輸入代號（如 3081、6442）➜ 查即時行情與支撐"
         )
     else:
         reply = "🤖 指令未識別，請輸入「選單」查看可用功能！"
