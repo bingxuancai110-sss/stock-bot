@@ -15,7 +15,7 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
-# --- 繁體中文名稱對照表（解決英文名稱問題） ---
+# --- 繁體中文名稱對照表 ---
 STOCK_NAME_MAP = {
     "2330": "台積電", "2454": "聯發科", "3661": "世芯-KY", "6669": "緯穎", 
     "3037": "欣興", "2382": "廣達", "3231": "緯創", "4931": "新日興", 
@@ -124,10 +124,9 @@ def get_user_watchlist(user_id):
         print(f"❌ 讀取自選股錯誤: {e}")
         return []
 
-# --- 穩健的股價抓取引擎（強制繁體中文名稱） ---
+# --- 穩健的股價抓取引擎 ---
 def get_realtime_stock(code):
     code = str(code).strip()
-    # 優先從對照表抓中文名，若無則用代號
     stock_name = STOCK_NAME_MAP.get(code, code)
 
     for suffix in [".TW", ".TWO"]:
@@ -179,7 +178,7 @@ def get_realtime_stock(code):
     return None
 
 def fetch_market_pool():
-    codes = ["2330", "2454", "3661", "6669", "3037", "2382", "3231", "4931", "3081", "6442", "3529", "3443", "6173", "1503"]
+    codes = list(STOCK_NAME_MAP.keys())
     stock_list = []
     for c in codes:
         data = get_realtime_stock(c)
@@ -341,11 +340,12 @@ def handle_message(event):
     # 6. 黑馬股評語
     elif text == "黑馬":
         market_stocks = fetch_market_pool()
-        if not market_stocks:
+        valid_stocks = [s for s in market_stocks if -11.0 <= s['pct'] <= 11.0]
+        if not valid_stocks:
             reply = "❌ 目前無法取得市場股票池資料。"
         else:
-            random.shuffle(market_stocks)
-            top_three = market_stocks[:3]
+            random.shuffle(valid_stocks)
+            top_three = valid_stocks[:3]
             reports = []
             for i, d in enumerate(top_three):
                 res = analyze_horse(d, i)
@@ -375,11 +375,12 @@ def handle_message(event):
     # 7. 盤中雷達
     elif text == "雷達":
         market_stocks = fetch_market_pool()
-        if not market_stocks:
+        valid_stocks = [s for s in market_stocks if -11.0 <= s['pct'] <= 11.0]
+        if not valid_stocks:
             reply = "❌ 目前無法取得市場股票池資料。"
         else:
-            market_stocks.sort(key=lambda x: x['pct'], reverse=True)
-            top_three = market_stocks[:3]
+            valid_stocks.sort(key=lambda x: x['pct'], reverse=True)
+            top_three = valid_stocks[:3]
             reports = []
             for i, d in enumerate(top_three):
                 r_score, level, r_extra = analyze_radar(d, i)
