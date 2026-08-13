@@ -57,8 +57,13 @@ def init_db():
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY
+                user_id TEXT PRIMARY KEY,
+                notify BOOLEAN DEFAULT FALSE
             )
+        ''')
+        # 相容舊資料表：如果 users 表已存在但沒有 notify 欄位，補上
+        cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS notify BOOLEAN DEFAULT FALSE
         ''')
         conn.commit()
         cursor.close()
@@ -78,6 +83,35 @@ def add_user_to_db(user_id):
         conn.close()
     except Exception as e:
         print(f"❌ 新增使用者錯誤: {e}")
+
+def set_notify(user_id, flag: bool):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET notify = %s WHERE user_id = %s",
+            (flag, str(user_id).strip())
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ 更新通知設定錯誤: {e}")
+        return False
+
+def get_notify_users():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM users WHERE notify = TRUE")
+        ids = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return ids
+    except Exception as e:
+        print(f"❌ 讀取通知名單錯誤: {e}")
+        return []
 
 def add_watchlist_db(user_id, code):
     try:
@@ -267,6 +301,41 @@ def generate_morning_brief():
         f"• 台積電ADR (TSM)：+1.40%"
     )
 
+# --- 排程推播訊息建構與 Cron 端點 ---
+def build_digest(user_id):
+    codes = get_user_watchlist(user_id)
+    if not codes:
+        return None  # 沒有自選股就不推播，節省額度
+    lines = ["☀️ 【每日自選股盤前摘要】\n==================="]
+    for code in codes:
+        data = get_realtime_stock(code)
+        if data:
+            light = "🔴" if data['pct'] >= 0 else "🟢"
+            lines.append(f"{light} {code} {data['name']}｜{data['close']:.2f}（{data['pct']:+.2f}%）\n🛡️ 支撐：{data['support']} | 🚧 壓力：{data['resistance']}")
+        else:
+            lines.append(f"⚪ {code} 查無行情")
+    return "\n\n".join(lines)
+
+@app.route("/cron/push-watchlist", methods=["POST", "GET"])
+def cron_push_watchlist():
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    users = get_notify_users()
+    sent, failed = 0, 0
+    for uid in users:
+        msg = build_digest(uid)
+        if not msg:
+            continue
+        try:
+            line_bot_api.push_message(uid, TextSendMessage(text=msg))
+            sent += 1
+        except Exception as e:
+            print(f"❌ 推播失敗 {uid}: {e}")
+            failed += 1
+    return f"Push done. sent={sent}, failed={failed}", 200
+
 # --- LINE Bot 訊息接收與路由分派 ---
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -298,8 +367,16 @@ def handle_message(event):
     elif "刪" in text and 4 <= len(pure_code) <= 6:
         remove_watchlist_db(user_id, pure_code)
         reply = f"🗑️ 已從自選清單移除：{pure_code}"
+
+    # 3. 推播開關設定
+    elif text in ["推播開", "開啟推播", "訂閱"]:
+        set_notify(user_id, True)
+        reply = "🔔 已開啟每日自選股推播！將於每個交易日盤前 08:45 為你發送摘要。"
+    elif text in ["推播關", "關閉推播", "取消訂閱"]:
+        set_notify(user_id, False)
+        reply = "🔕 已關閉每日推播。"
         
-    # 3. 看自選清單
+    # 4. 看自選清單
     elif text in ["自選", "WATCHLIST"]:
         codes = get_user_watchlist(user_id)
         if not codes: 
@@ -316,7 +393,7 @@ def handle_message(event):
                     results.append(f"\n⚪ 【{code}】 查無行情")
             reply = "".join(results)
             
-    # 4. 單獨查代號行情
+    # 5. 單獨查代號行情
     elif 4 <= len(pure_code) <= 6 and len(text) <= 7 and " " not in text:
         data = get_realtime_stock(pure_code)
         if data:
@@ -333,11 +410,11 @@ def handle_message(event):
         else: 
             reply = f"❌ 查無代號 {pure_code} 的行情，請確認代號是否正確。"
             
-    # 5. 盤前速覽
+    # 6. 盤前速覽
     elif text in ["盤前", "早安"]:
         reply = generate_morning_brief()
         
-    # 6. 黑馬股評語
+    # 7. 黑馬股評語
     elif text == "黑馬":
         market_stocks = fetch_market_pool()
         valid_stocks = [s for s in market_stocks if -11.0 <= s['pct'] <= 11.0]
@@ -372,7 +449,7 @@ def handle_message(event):
                 reports.append(report)
             reply = "\n\n".join(reports)
         
-    # 7. 盤中雷達
+    # 8. 盤中雷達
     elif text == "雷達":
         market_stocks = fetch_market_pool()
         valid_stocks = [s for s in market_stocks if -11.0 <= s['pct'] <= 11.0]
@@ -417,6 +494,7 @@ def handle_message(event):
             "• 輸入「自選」➜ 查看雲端自選與支撐壓力\n"
             "• 輸入「加 3081」➜ 新增自選\n"
             "• 輸入「刪 3081」➜ 移除自選\n"
+            "• 輸入「推播開 / 推播關」➜ 開啟或關閉盤前摘要推播\n"
             "• 直接輸入代號（如 3081、6442）➜ 查即時行情與支撐"
         )
     else:
