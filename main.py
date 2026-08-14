@@ -835,15 +835,19 @@ def get_industry_momentum(revenue_data, industry_map):
 
     stats = {}
     for ind, values in buckets.items():
-        if len(values) < 3:  # 家數太少的產業，中位數沒有代表性
+        if len(values) < 3:  # 家數太少的產業，統計值沒有代表性
             continue
         values.sort()
         n = len(values)
         median = values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2
-        stats[ind] = {"median": round(median, 1), "count": n}
+        # 用第75百分位（領先群跑多快），而不是中位數。
+        # 大產業動輒六七十家，中位數會被一堆平庸公司拉平，各產業幾乎沒差別；
+        # 看領先群才分得出哪個族群真的有一批公司在噴。
+        p75 = values[min(n - 1, int(n * 0.75))]
+        stats[ind] = {"median": round(median, 1), "p75": round(p75, 1), "count": n}
 
     for rank, (ind, _s) in enumerate(
-        sorted(stats.items(), key=lambda x: x[1]["median"], reverse=True), start=1
+        sorted(stats.items(), key=lambda x: x[1]["p75"], reverse=True), start=1
     ):
         stats[ind]["rank"] = rank
 
@@ -852,29 +856,30 @@ def get_industry_momentum(revenue_data, industry_map):
 
 def score_from_industry_momentum(ind_stats):
     """
-    產業動能分數（0-20）。看的是「這檔股票所在的產業整體在不在成長」，
-    而不是這一家公司自己好不好——後者已經由營收成長那項評分了。
+    產業動能分數（0-20）。看的是「這檔股票所在的產業，領先群跑得多快」，
+    而不是這一家公司自己好不好——後者已由營收成長那項評分。
     回傳 (分數, 說明文字)
     """
     if not ind_stats:
         return 8, "產業動能資料不足"
 
+    p75 = ind_stats["p75"]
     median = ind_stats["median"]
     rank = ind_stats.get("rank")
     count = ind_stats["count"]
-    rank_text = f"（族群中位數 {median:+.1f}%，{count} 家，動能排名第 {rank}）" if rank else ""
+    detail = f"（前25%為 {p75:+.1f}%、中位 {median:+.1f}%，{count} 家，排名第 {rank}）"
 
-    if median >= 40:
-        return 20, f"整體需求強勁{rank_text}"
-    if median >= 25:
-        return 17, f"整體成長明確{rank_text}"
-    if median >= 15:
-        return 13, f"整體穩健成長{rank_text}"
-    if median >= 5:
-        return 9, f"整體溫和成長{rank_text}"
-    if median > 0:
-        return 5, f"整體成長趨緩{rank_text}"
-    return 1, f"整體衰退中{rank_text}"
+    if p75 >= 80:
+        return 20, f"族群領先群強勁噴發{detail}"
+    if p75 >= 50:
+        return 17, f"族群領先群高速成長{detail}"
+    if p75 >= 30:
+        return 14, f"族群領先群成長明確{detail}"
+    if p75 >= 15:
+        return 10, f"族群領先群穩健成長{detail}"
+    if p75 > 0:
+        return 5, f"族群成長有限{detail}"
+    return 1, f"族群整體衰退{detail}"
 
 
 def score_from_cum_revenue_growth(cum_yoy_pct):
