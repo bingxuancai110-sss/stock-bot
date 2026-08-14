@@ -725,6 +725,147 @@ def get_revenue_growth_months(codes, max_months=12):
     return result
 
 
+# --- 估值資料（TWSE 每日本益比／殖利率／股價淨值比） ---
+_valuation_cache = {"date": None, "data": {}}
+
+def fetch_valuation():
+    """
+    抓全市場本益比、殖利率、股價淨值比。一天快取一次。
+    注意：TWSE 的本益比是用「近四季已申報財報」算的歷史本益比，
+    不是分析師預估的未來本益比，看的時候要記得這點。
+    """
+    today = datetime.now().strftime("%Y%m%d")
+    if _valuation_cache["date"] == today and _valuation_cache["data"]:
+        return _valuation_cache["data"]
+
+    url = "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"
+    try:
+        rows = requests.get(url, timeout=20, headers={'User-Agent': 'Mozilla/5.0'}).json()
+    except Exception as e:
+        print(f"❌ 抓取本益比資料失敗: {e}")
+        return _valuation_cache["data"] or {}
+
+    def to_float(s):
+        try:
+            v = float(str(s).replace(",", "").strip())
+            return v if v > 0 else None
+        except (ValueError, TypeError):
+            return None
+
+    result = {}
+    for row in rows or []:
+        code = str(row.get("Code", "")).strip()
+        if not code:
+            continue
+        result[code] = {
+            "pe": to_float(row.get("PEratio")),
+            "pb": to_float(row.get("PBratio")),
+            "yield": to_float(row.get("DividendYield")),
+        }
+
+    if result:
+        _valuation_cache["date"] = today
+        _valuation_cache["data"] = result
+        print(f"✅ 估值資料抓取成功，共 {len(result)} 筆")
+    return result
+
+
+def score_from_valuation(pe, growth_pct):
+    """
+    估值分數（0-25）。用 PEG 概念：本益比 ÷ 成長率。
+    這裡的成長率用「累計營收年增率」代替標準PEG的EPS成長率——
+    因為免費資料拿不到預估EPS。方向正確，但不是標準PEG，判讀時要留意。
+    回傳 (分數, PEG值或None, 說明)
+    """
+    if pe is None:
+        return 10, None, "無本益比資料（可能虧損或剛上市）"
+    if growth_pct is None or growth_pct <= 0:
+        # 沒成長就純看本益比高低
+        if pe <= 12:
+            return 14, None, f"本益比 {pe:.1f} 偏低，但缺乏成長性"
+        if pe <= 20:
+            return 8, None, f"本益比 {pe:.1f}"
+        return 3, None, f"本益比 {pe:.1f} 偏高且無成長"
+
+    peg = pe / growth_pct
+    if peg <= 0.3:
+        return 25, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，成長遠未反映在股價"
+    if peg <= 0.5:
+        return 22, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，明顯低估"
+    if peg <= 1.0:
+        return 18, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，估值合理"
+    if peg <= 1.5:
+        return 12, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，估值偏高"
+    if peg <= 2.5:
+        return 6, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，成長已充分反映"
+    return 2, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，估值昂貴"
+
+
+def get_industry_momentum(revenue_data, industry_map):
+    """
+    用真實資料推導「產業動能」：把全市場月營收依產業別加總，
+    算出各產業的累計營收年增率中位數，排出哪些族群整體需求在成長。
+
+    這是用資料反推需求，不是預測。產業營收集體暴衝，通常就代表
+    該環節供不應求、產品在漲價——跟研究機構說的「供給緊張」是同一件事，
+    差別在這是已發生的驗證，而且每月自動更新，不需人工維護。
+
+    回傳 {產業代碼: {"median": 中位數年增率, "count": 家數, "rank": 名次}}
+    """
+    buckets = {}
+    for code, info in (revenue_data or {}).items():
+        ind = industry_map.get(code)
+        if not ind:
+            continue
+        cum = info.get("cum_yoy_pct")
+        if cum is None:
+            continue
+        buckets.setdefault(ind, []).append(cum)
+
+    stats = {}
+    for ind, values in buckets.items():
+        if len(values) < 3:  # 家數太少的產業，中位數沒有代表性
+            continue
+        values.sort()
+        n = len(values)
+        median = values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2
+        stats[ind] = {"median": round(median, 1), "count": n}
+
+    for rank, (ind, _s) in enumerate(
+        sorted(stats.items(), key=lambda x: x[1]["median"], reverse=True), start=1
+    ):
+        stats[ind]["rank"] = rank
+
+    return stats
+
+
+def score_from_industry_momentum(ind_stats):
+    """
+    產業動能分數（0-20）。看的是「這檔股票所在的產業整體在不在成長」，
+    而不是這一家公司自己好不好——後者已經由營收成長那項評分了。
+    回傳 (分數, 說明文字)
+    """
+    if not ind_stats:
+        return 8, "產業動能資料不足"
+
+    median = ind_stats["median"]
+    rank = ind_stats.get("rank")
+    count = ind_stats["count"]
+    rank_text = f"（族群中位數 {median:+.1f}%，{count} 家，動能排名第 {rank}）" if rank else ""
+
+    if median >= 40:
+        return 20, f"整體需求強勁{rank_text}"
+    if median >= 25:
+        return 17, f"整體成長明確{rank_text}"
+    if median >= 15:
+        return 13, f"整體穩健成長{rank_text}"
+    if median >= 5:
+        return 9, f"整體溫和成長{rank_text}"
+    if median > 0:
+        return 5, f"整體成長趨緩{rank_text}"
+    return 1, f"整體衰退中{rank_text}"
+
+
 def score_from_cum_revenue_growth(cum_yoy_pct):
     """
     累計營收年增率轉分數（0-40）。用「今年至今 vs 去年同期」而非單月，
@@ -1383,7 +1524,9 @@ def handle_message(event):
             reply = "❌ 目前無法取得三大法人資料，可能是非交易時段或非交易日，請稍後再試。"
         else:
             revenue_data = fetch_monthly_revenue()
+            valuation_data = fetch_valuation()
             bh_industry_map = get_industry_map()
+            industry_momentum = get_industry_momentum(revenue_data, bh_industry_map)
             candidates = [
                 (code, info) for code, info in inst_data.items()
                 if len(code) == 4 and code.isdigit()
@@ -1412,28 +1555,41 @@ def handle_message(event):
 
                 yoy_pct = revenue_data.get(code, {}).get("yoy_pct")
                 cum_yoy_pct = revenue_data.get(code, {}).get("cum_yoy_pct")
-                revenue_score = score_from_cum_revenue_growth(cum_yoy_pct)  # 0-40，累計年增為主軸
+                # 營收成長壓縮成 0-25（原本 0-40）
+                revenue_score = round(score_from_cum_revenue_growth(cum_yoy_pct) * 25 / 40)
+
+                val = valuation_data.get(code, {})
+                pe = val.get("pe")
+                val_score, peg, val_desc = score_from_valuation(pe, cum_yoy_pct)  # 0-25
+
+                supply_score, supply_desc = score_from_industry_momentum(
+                    industry_momentum.get(bh_industry_map.get(code))
+                )  # 0-20
 
                 streak = streaks.get(code, 0)
-                streak_score = score_from_streak(streak)  # 0-30，法人連續佈局
+                streak_score = round(score_from_streak(streak) * 20 / 30)  # 0-20
 
-                chip_raw = score_from_net_lots(info["total_net_lots"])  # 0-40
-                chip_score = round(chip_raw * 15 / 40)  # 壓縮成 0-15（單日買超權重降低）
+                chip_raw = score_from_net_lots(info["total_net_lots"])
+                tech_raw = score_from_technical(price["pct"], turnover)
+                # 當日籌碼與技術合併壓縮成 0-10，長線選股不該讓單日表現主導
+                chip_tech_score = round((chip_raw / 40 * 5) + (tech_raw / 60 * 5))
 
-                tech_raw = score_from_technical(price["pct"], turnover)  # 0-60
-                tech_score = round(tech_raw * 15 / 60)  # 壓縮成 0-15（當日漲幅只作輔助）
-
-                total_score = revenue_score + streak_score + chip_score + tech_score  # 滿分 100
+                total_score = (revenue_score + val_score + supply_score
+                               + streak_score + chip_tech_score)  # 滿分 100
                 scored.append((total_score, code, info, price, revenue_score,
-                               streak_score, streak, chip_score, tech_score, yoy_pct, cum_yoy_pct))
+                               val_score, val_desc, peg, supply_score, supply_desc,
+                               streak_score, streak, chip_tech_score,
+                               yoy_pct, cum_yoy_pct))
 
             scored.sort(key=lambda x: x[0], reverse=True)  # 依綜合總分排序，長線指標權重最高
 
             reports = []
             industry_map = get_industry_map()
-            for rank, (total_score, code, info, price, revenue_score, streak_score,
-                       streak, chip_score, tech_score, yoy_pct, cum_yoy_pct) in enumerate(scored[:5], start=1):
-                grade = "🔥 題材爆發" if total_score >= 80 else ("🚀 成長強勢" if total_score >= 60 else "📈 潛力觀察")
+            for rank, (total_score, code, info, price, revenue_score,
+                       val_score, val_desc, peg, supply_score, supply_desc,
+                       streak_score, streak, chip_tech_score,
+                       yoy_pct, cum_yoy_pct) in enumerate(scored[:5], start=1):
+                grade = "🔥 高度看好" if total_score >= 75 else ("🚀 值得關注" if total_score >= 55 else "📈 觀察名單")
                 cum_text = f"{cum_yoy_pct:+.1f}%" if cum_yoy_pct is not None else "尚無資料"
                 yoy_text = f"{yoy_pct:+.1f}%" if yoy_pct is not None else "尚無資料"
                 streak_text = f"連續{streak}日買超" if streak >= 1 else "近期無連續買超"
@@ -1445,16 +1601,17 @@ def handle_message(event):
                     f"代號：{code}\n"
                     f"產業：{ind_text}\n\n"
                     f"黑馬指數：{total_score}／100\n\n"
-                    f"💡 營收成長：{revenue_score}／40\n"
+                    f"💡 營收成長：{revenue_score}／25\n"
                     f"　　累計年增 {cum_text}（單月 {yoy_text}）\n"
-                    f"🔁 法人連續性：{streak_score}／30（{streak_text}）\n"
-                    f"🏦 當日籌碼：{chip_score}／15（買超 {info['total_net_lots']:,} 張）\n"
-                    f"📈 技術面：{tech_score}／15\n\n"
-                    f"【即時數據】\n"
-                    f"{build_technical_desc(price['pct'], price['volume']//1000, info['total_net_lots'], calc_turnover_billion(price['close'], price['volume']))}\n\n"
-                    f"【風險】\n"
-                    f"{build_risk_desc(price['pct'], info['total_net_lots'])}\n\n"
-                    f"【黑馬判定】\n"
+                    f"💰 估值：{val_score}／25\n"
+                    f"　　{val_desc}\n"
+                    f"🏭 產業動能：{supply_score}／20\n"
+                    f"　　{supply_desc}\n"
+                    f"🔁 法人連續性：{streak_score}／20（{streak_text}）\n"
+                    f"📊 當日籌碼技術：{chip_tech_score}／10\n\n"
+                    f"【位階】\n"
+                    f"{build_position_desc(price)}\n\n"
+                    f"【判定】\n"
                     f"{grade}\n"
                     f"-----------------------------------"
                 )
