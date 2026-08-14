@@ -98,6 +98,18 @@ def init_db():
                 industry TEXT
             )
         ''')
+        # 每月營收快照：TWSE 只提供最新一期，歷史必須自己每月累積
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS revenue_history (
+                code TEXT,
+                period TEXT,
+                yoy_pct REAL,
+                cum_yoy_pct REAL,
+                mom_pct REAL,
+                month_revenue REAL,
+                PRIMARY KEY (code, period)
+            )
+        ''')
         conn.commit()
         cursor.close()
     except Exception as e:
@@ -578,6 +590,116 @@ def get_industry_map(force_reload=False):
         release_db_connection(conn)
 
 
+def save_revenue_history(period, data):
+    """
+    存下這一期的月營收快照。TWSE 只給最新一期，所以歷史只能這樣一個月一個月累積。
+    累積幾期之後就能算「連續成長月數」。
+    """
+    if not period or not data:
+        return
+    rows = [
+        (code, str(period),
+         info.get("yoy_pct"), info.get("cum_yoy_pct"),
+         info.get("mom_pct"), info.get("month_revenue"))
+        for code, info in data.items()
+    ]
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        execute_values(
+            cursor,
+            """
+            INSERT INTO revenue_history
+                (code, period, yoy_pct, cum_yoy_pct, mom_pct, month_revenue)
+            VALUES %s
+            ON CONFLICT (code, period) DO UPDATE SET
+                yoy_pct = EXCLUDED.yoy_pct,
+                cum_yoy_pct = EXCLUDED.cum_yoy_pct,
+                mom_pct = EXCLUDED.mom_pct,
+                month_revenue = EXCLUDED.month_revenue
+            """,
+            rows,
+            page_size=500,
+        )
+        conn.commit()
+        cursor.close()
+        print(f"💾 已存入月營收快照（{period}），共 {len(rows)} 檔")
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 寫入月營收快照失敗（{period}）: {e}")
+    finally:
+        release_db_connection(conn)
+
+
+def get_revenue_growth_months(codes, max_months=12):
+    """
+    算「單月營收年增率連續為正的月數」。需要資料庫累積多期才有意義，
+    現在只有一期，所有股票都會是 0 或 1，屬預期行為。
+    """
+    codes = [str(c).strip() for c in codes]
+    if not codes:
+        return {}
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT code, period, yoy_pct FROM revenue_history
+            WHERE code = ANY(%s)
+            ORDER BY code, period DESC
+            """,
+            (codes,),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+    except Exception as e:
+        print(f"❌ 查詢營收連續成長失敗: {e}")
+        return {}
+    finally:
+        release_db_connection(conn)
+
+    series = {}
+    for code, _period, yoy in rows:
+        series.setdefault(code, []).append(yoy)
+
+    result = {}
+    for code in codes:
+        streak = 0
+        for yoy in series.get(code, [])[:max_months]:
+            if yoy is not None and yoy > 0:
+                streak += 1
+            else:
+                break
+        result[code] = streak
+    return result
+
+
+def score_from_cum_revenue_growth(cum_yoy_pct):
+    """
+    累計營收年增率轉分數（0-40）。用「今年至今 vs 去年同期」而非單月，
+    比較不會被單月出貨遞延或去年基期異常扭曲，適合長線判斷。
+    """
+    if cum_yoy_pct is None:
+        return 8  # 無資料給基本分，不因缺資料被過度懲罰
+    if cum_yoy_pct >= 50:
+        return 40
+    if cum_yoy_pct >= 30:
+        return 34
+    if cum_yoy_pct >= 20:
+        return 28
+    if cum_yoy_pct >= 10:
+        return 22
+    if cum_yoy_pct >= 5:
+        return 16
+    if cum_yoy_pct > 0:
+        return 10
+    if cum_yoy_pct > -10:
+        return 4
+    return 0
+
+
 def score_from_streak(streak):
     """連續買超天數轉分數（0-30）。連續性比單日大買更能代表法人真的在佈局。"""
     if streak >= 8:
@@ -731,12 +853,17 @@ def fetch_monthly_revenue():
             code = str(row.get("公司代號", "")).strip()
             if not code:
                 continue
-            yoy = to_float(row.get("營業收入-去年同月增減(%)"))
-            result[code] = {"yoy_pct": yoy}
+            result[code] = {
+                "yoy_pct": to_float(row.get("營業收入-去年同月增減(%)")),
+                "cum_yoy_pct": to_float(row.get("累計營業收入-前期比較增減(%)")),
+                "mom_pct": to_float(row.get("營業收入-上月比較增減(%)")),
+                "month_revenue": to_float(row.get("營業收入-當月營收")),
+            }
 
         _revenue_cache["period"] = period
         _revenue_cache["data"] = result
         print(f"✅ 月營收抓取成功（{period}），共 {len(result)} 筆")
+        save_revenue_history(period, result)
         return result
     except Exception as e:
         print(f"❌ 抓取月營收資料錯誤: {e}")
@@ -1178,8 +1305,8 @@ def handle_message(event):
                     continue
 
                 yoy_pct = revenue_data.get(code, {}).get("yoy_pct")
-                revenue_score = score_from_revenue_growth(yoy_pct)  # 0-50
-                revenue_score = round(revenue_score * 40 / 50)  # 壓縮成 0-40
+                cum_yoy_pct = revenue_data.get(code, {}).get("cum_yoy_pct")
+                revenue_score = score_from_cum_revenue_growth(cum_yoy_pct)  # 0-40，累計年增為主軸
 
                 streak = streaks.get(code, 0)
                 streak_score = score_from_streak(streak)  # 0-30，法人連續佈局
@@ -1192,22 +1319,28 @@ def handle_message(event):
 
                 total_score = revenue_score + streak_score + chip_score + tech_score  # 滿分 100
                 scored.append((total_score, code, info, price, revenue_score,
-                               streak_score, streak, chip_score, tech_score, yoy_pct))
+                               streak_score, streak, chip_score, tech_score, yoy_pct, cum_yoy_pct))
 
             scored.sort(key=lambda x: x[0], reverse=True)  # 依綜合總分排序，長線指標權重最高
 
             reports = []
+            industry_map = get_industry_map()
             for rank, (total_score, code, info, price, revenue_score, streak_score,
-                       streak, chip_score, tech_score, yoy_pct) in enumerate(scored[:5], start=1):
+                       streak, chip_score, tech_score, yoy_pct, cum_yoy_pct) in enumerate(scored[:5], start=1):
                 grade = "🔥 題材爆發" if total_score >= 80 else ("🚀 成長強勢" if total_score >= 60 else "📈 潛力觀察")
+                cum_text = f"{cum_yoy_pct:+.1f}%" if cum_yoy_pct is not None else "尚無資料"
                 yoy_text = f"{yoy_pct:+.1f}%" if yoy_pct is not None else "尚無資料"
                 streak_text = f"連續{streak}日買超" if streak >= 1 else "近期無連續買超"
+                ind_code = industry_map.get(code)
+                ind_text = industry_name(ind_code) if ind_code else "未分類"
                 report = (
                     f"🐎 智慧黑馬股 #{rank}\n\n"
                     f"股票：{info['name']}\n"
-                    f"代號：{code}\n\n"
+                    f"代號：{code}\n"
+                    f"產業：{ind_text}\n\n"
                     f"黑馬指數：{total_score}／100\n\n"
-                    f"💡 題材／獲利：{revenue_score}／40（月營收年增 {yoy_text}）\n"
+                    f"💡 營收成長：{revenue_score}／40\n"
+                    f"　　累計年增 {cum_text}（單月 {yoy_text}）\n"
                     f"🔁 法人連續性：{streak_score}／30（{streak_text}）\n"
                     f"🏦 當日籌碼：{chip_score}／15（買超 {info['total_net_lots']:,} 張）\n"
                     f"📈 技術面：{tech_score}／15\n\n"
