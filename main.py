@@ -928,6 +928,40 @@ def score_from_streak(streak):
     return 0
 
 
+def get_cumulative_net_buy_for_codes(codes, days=10):
+    """查指定股票近 N 個交易日的累計買超與買超天數。回傳 {code: (累計張數, 買超天數)}。"""
+    codes = [str(c).strip() for c in codes]
+    if not codes:
+        return {}
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            WITH recent AS (
+                SELECT DISTINCT trade_date FROM inst_history
+                ORDER BY trade_date DESC LIMIT %s
+            )
+            SELECT h.code,
+                   SUM(h.total_net_lots),
+                   COUNT(*) FILTER (WHERE h.total_net_lots > 0)
+            FROM inst_history h
+            JOIN recent r ON h.trade_date = r.trade_date
+            WHERE h.code = ANY(%s)
+            GROUP BY h.code
+            """,
+            (days, codes),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return {r[0]: (r[1] or 0, r[2] or 0) for r in rows}
+    except Exception as e:
+        print(f"❌ 查詢自選股累計買超失敗: {e}")
+        return {}
+    finally:
+        release_db_connection(conn)
+
+
 def get_cumulative_net_buy(days=10, top_n=80):
     """
     從 inst_history 撈「近 N 個交易日累計買超」前 top_n 名。
@@ -1359,16 +1393,122 @@ def build_market_recap():
 
     return "\n".join(lines)
 
-# --- 自選股健檢：把 watchlist 全部跑一次評分，依總分排序 ---
+# --- 自選股健檢：用長線指標評估「這檔還健康嗎」，不是評估「今天漲不漲」 ---
+def score_watchlist_chips(cum_lots, buy_days, streak):
+    """
+    籌碼分數（0-30）。看的是近10日法人的累計方向與持續性，
+    不是單日買賣超——單日雜訊太大，隔天就翻臉的情況很常見。
+    """
+    if cum_lots > 0:
+        base = min(20, 8 + cum_lots / 1500)  # 累計買超越多分數越高，20分封頂
+        base += min(10, streak * 2)          # 連續買超再加成
+        return round(min(30, base))
+    if cum_lots == 0:
+        return 12
+    # 累計賣超，依賣超幅度扣分
+    return max(0, round(10 + cum_lots / 3000))
+
+
+def score_watchlist_position(price):
+    """
+    位階分數（0-25）。股價相對近期高點與均線的位置。
+    高檔乖離大不代表不好，但持有時該知道自己站在哪。
+    """
+    score = 0
+    close = price.get("close")
+    pos = price.get("pos_vs_60d_high")
+    ma20 = price.get("ma20")
+
+    # 距離季線高點的位置：貼近高點代表趨勢強，但過度乖離要留意
+    if pos is not None:
+        if pos >= 0:
+            score += 15   # 創新高，趨勢最強
+        elif pos >= -8:
+            score += 13
+        elif pos >= -20:
+            score += 9
+        elif pos >= -35:
+            score += 5
+        else:
+            score += 2    # 距高點超過35%，明顯轉弱
+    else:
+        score += 7
+
+    # 站上或跌破20日均線
+    if ma20 and close:
+        diff = (close - ma20) / ma20 * 100
+        if diff >= 20:
+            score += 6    # 乖離過大，短線風險
+        elif diff >= 0:
+            score += 10   # 站穩均線之上
+        elif diff >= -8:
+            score += 5
+        else:
+            score += 1    # 跌破均線且距離拉開
+    else:
+        score += 5
+
+    return min(25, score)
+
+
+def build_watchlist_advice(total, chip_score, pos_score, rev_score, val_score,
+                           cum_lots, streak, price, cum_yoy, pe):
+    """
+    把四個面向的訊號合成一句可操作的觀察。
+    規則式，不是預測——講的是「現在這組數字代表什麼、該注意什麼」。
+    """
+    close = price.get("close")
+    ma20 = price.get("ma20")
+    pos = price.get("pos_vs_60d_high")
+    ma_diff = ((close - ma20) / ma20 * 100) if (ma20 and close) else None
+
+    # 最優先：基本面惡化
+    if cum_yoy is not None and cum_yoy < 0 and cum_lots < 0:
+        return "⚠️ 營收衰退且法人同步出場，兩個面向一起轉弱，建議重新檢視持有理由"
+
+    # 籌碼與趨勢同時轉弱
+    if cum_lots < 0 and ma_diff is not None and ma_diff < 0:
+        return "⚠️ 法人賣超且跌破月線，短線偏弱，若持有應設好停損位"
+
+    if cum_lots < 0:
+        return "🔻 法人近期站在賣方，但價格結構尚未破壞，可觀察是否只是短線調節"
+
+    # 高乖離示警
+    if ma_diff is not None and ma_diff >= 20:
+        return "🔥 基本面與籌碼皆強，但短線乖離過大，此時進場成本偏高，等回測均線較穩"
+
+    # 強勢且結構健康
+    if total >= 70 and pos is not None and pos >= -8:
+        return "✅ 籌碼、位階、基本面三方同向，趨勢完整，持有可續抱並以月線為防守"
+
+    # 基本面好但還在低位（最值得留意的一種）
+    if rev_score >= 18 and pos is not None and pos <= -20 and cum_lots > 0:
+        return "💡 基本面佳但股價仍距高點一段，法人已在承接，屬落後補漲的觀察對象"
+
+    if val_score <= 8 and rev_score >= 18:
+        return "💰 成長性不錯但估值已偏貴，追價空間有限，等回檔較有利"
+
+    if streak >= 3 and pos is not None and pos > -20:
+        return "📈 法人持續買超且價格站在相對高位，趨勢延續中"
+
+    if rev_score <= 10:
+        return "📉 營收成長動能偏弱，基本面缺乏支撐，僅適合短線看待"
+
+    return "😐 各面向訊號中性，暫無明顯方向，續觀察法人動向與月線支撐"
+
+
 def build_healthcheck_report(user_id):
     codes = get_user_watchlist(user_id)
     if not codes:
         return "📂 自選股清單是空的\n輸入「加 3081」新增自選"
 
     institutional_data = fetch_institutional_data()
+    revenue_data = fetch_monthly_revenue()
+    valuation_data = fetch_valuation()
     streaks = get_consecutive_days_batch(codes)
-    rows = []  # (total_score, display_text)
+    cum_map = get_cumulative_net_buy_for_codes(codes, days=10)
 
+    rows = []
     for code in codes:
         stock = get_realtime_stock(code)
         if not stock:
@@ -1376,32 +1516,59 @@ def build_healthcheck_report(user_id):
             continue
 
         inst = institutional_data.get(code, {})
-        net_lots = inst.get("total_net_lots", 0)
+        name = inst.get("name") or stock["name"]
+        cum_lots, buy_days = cum_map.get(code, (0, 0))
         streak = streaks.get(code, 0)
 
-        chip_score = score_from_net_lots(net_lots)
-        turnover = calc_turnover_billion(stock["close"], stock["volume"])
-        tech_score = score_from_technical(stock["pct"], turnover)
-        total_score = chip_score + tech_score
+        chip_score = score_watchlist_chips(cum_lots, buy_days, streak)   # 0-30
+        pos_score = score_watchlist_position(stock)                       # 0-25
 
-        flag = "🟢" if total_score >= 70 else ("🟡" if total_score >= 40 else "🔴")
-        name = inst.get("name") or stock["name"]
-        streak_text = f"　連{streak}買" if streak >= 2 else ""
+        cum_yoy = revenue_data.get(code, {}).get("cum_yoy_pct")
+        rev_score = round(score_from_cum_revenue_growth(cum_yoy) * 25 / 40)  # 0-25
+
+        pe = valuation_data.get(code, {}).get("pe")
+        val_score, peg, _desc = score_from_valuation(pe, cum_yoy)
+        val_score = round(val_score * 20 / 25)                            # 0-20
+
+        total = chip_score + pos_score + rev_score + val_score
+        flag = "🟢" if total >= 70 else ("🟡" if total >= 45 else "🔴")
+
+        # 一句話點出目前最該注意的事實
+        if cum_lots < 0:
+            note = f"法人近10日賣超 {abs(cum_lots):,} 張"
+        elif streak >= 3:
+            note = f"法人連 {streak} 日買超"
+        elif cum_lots > 0:
+            note = f"法人近10日買超 {cum_lots:,} 張（{buy_days} 天）"
+        else:
+            note = "法人近期無明顯動作"
+
+        pos_txt = (f"距高點 {stock['pos_vs_60d_high']:+.1f}%"
+                   if stock.get("pos_vs_60d_high") is not None else "位階資料不足")
+        rev_txt = f"營收年增 {cum_yoy:+.1f}%" if cum_yoy is not None else "營收無資料"
+        pe_txt = f"PE {pe:.1f}" if pe else "PE 無"
+
+        advice = build_watchlist_advice(total, chip_score, pos_score, rev_score,
+                                        val_score, cum_lots, streak, stock, cum_yoy, pe)
 
         text = (
-            f"{flag} {name} {code}　{total_score}分\n"
-            f"{stock['close']:.2f}（{stock['pct']:+.2f}%）"
-            f"　法人{net_lots:+,}張{streak_text}\n"
-            f"🛡️{stock['support']} 🚧{fmt_resistance(stock['resistance'])}"
+            f"{flag} {name} {code}　{total}分\n"
+            f"{stock['close']:.2f}（{stock['pct']:+.2f}%）　{pos_txt}\n"
+            f"{note}\n"
+            f"{rev_txt}　{pe_txt}　🛡️{stock['support']} 🚧{fmt_resistance(stock['resistance'])}\n"
+            f"{advice}"
         )
-        rows.append((total_score, text))
+        rows.append((total, text))
 
     rows.sort(key=lambda x: x[0], reverse=True)
     body = "\n\n".join(text for _, text in rows)
-    report = (f"📋 自選股健檢（{len(codes)}檔）\n\n{body}\n\n"
-              f"🟢70+ 🟡40-69 🔴<40　🛡️支撐 🚧壓力")
+    report = (
+        f"📋 自選股健檢（{len(codes)}檔）\n\n{body}\n\n"
+        f"評分＝籌碼30＋位階25＋營收25＋估值20\n"
+        f"🟢70+ 🟡45-69 🔴<45\n"
+        f"※ 觀察為數據歸納，非投資建議，請自行判斷"
+    )
 
-    # LINE 單則文字訊息長度上限保護（約 5000 字），過長就截斷並提示
     if len(report) > 4800:
         report = report[:4750] + "\n\n…（清單過長，已截斷）"
     return report
