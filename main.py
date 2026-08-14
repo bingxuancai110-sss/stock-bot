@@ -324,9 +324,16 @@ def score_from_net_lots(lots):
     if lots > 0: return 5
     return 0
 
-def score_from_technical(pct, volume_lots):
+def calc_turnover_billion(close, volume_shares):
+    """成交金額（億元）。改用金額而非「張數」評分，避免高價股（如緯穎）
+    因為一張要價高、成交張數天生偏少，在量能分數上被系統性低估。"""
+    if not close or not volume_shares:
+        return 0.0
+    return (close * volume_shares) / 100_000_000
+
+def score_from_technical(pct, turnover_billion):
     pct_score = max(0, min(30, pct * 6))
-    vol_score = max(0, min(30, volume_lots / 500))
+    vol_score = max(0, min(30, turnover_billion))  # 1億元＝1分，30億元封頂
     return round(pct_score + vol_score)
 
 def build_technical_desc(pct, volume_lots, net_lots):
@@ -397,7 +404,8 @@ def build_healthcheck_report(user_id):
         net_lots = inst.get("total_net_lots", 0)
 
         chip_score = score_from_net_lots(net_lots)
-        tech_score = score_from_technical(stock["pct"], stock["volume"] // 1000)
+        turnover = calc_turnover_billion(stock["close"], stock["volume"])
+        tech_score = score_from_technical(stock["pct"], turnover)
         total_score = chip_score + tech_score
 
         flag = "🟢" if total_score >= 70 else ("🟡" if total_score >= 40 else "🔴")
@@ -560,7 +568,8 @@ def handle_message(event):
                     continue
                 rank += 1
                 chip_score = score_from_net_lots(info["total_net_lots"])
-                tech_score = score_from_technical(price["pct"], price["volume"] // 1000)
+                turnover = calc_turnover_billion(price["close"], price["volume"])
+                tech_score = score_from_technical(price["pct"], turnover)
                 total_score = chip_score + tech_score
                 grade = "🔥 超強黑馬" if total_score >= 80 else ("🚀 強勢黑馬" if total_score >= 60 else "📈 潛力股")
                 report = (
@@ -602,7 +611,8 @@ def handle_message(event):
 
             reports = []
             for code, info, price in priced[:3]:
-                r_score = min(100, 60 + score_from_technical(price["pct"], price["volume"] // 1000))
+                turnover = calc_turnover_billion(price["close"], price["volume"])
+                r_score = min(100, 60 + score_from_technical(price["pct"], turnover))
                 level = "S級 | 極強攻擊" if price["pct"] >= 2.0 else "A級 | 穩健突破"
                 report = (
                     f"🚨【盤中雷達】\n\n"
