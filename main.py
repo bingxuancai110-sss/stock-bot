@@ -332,7 +332,7 @@ def calc_turnover_billion(close, volume_shares):
     return (close * volume_shares) / 100_000_000
 
 def score_from_technical(pct, turnover_billion):
-    pct_score = max(0, min(30, pct * 6))
+    pct_score = max(0, min(30, pct * 3))  # 貼近台股±10%漲跌停，10%封頂拿滿分
     vol_score = max(0, min(30, turnover_billion))  # 1億元＝1分，30億元封頂
     return round(pct_score + vol_score)
 
@@ -546,7 +546,7 @@ def handle_message(event):
     elif text in ["盤前", "早安"]:
         reply = generate_morning_brief()
 
-    # 8. 黑馬股（真實三大法人買超排行 + 真實技術面）
+    # 8. 黑馬股（真實三大法人買超排行 + 真實技術面，依總分排序）
     elif text == "黑馬":
         inst_data = fetch_institutional_data()
         if not inst_data:
@@ -554,23 +554,31 @@ def handle_message(event):
         else:
             candidates = [
                 (code, info) for code, info in inst_data.items()
-                if len(code) == 4 and code.isdigit() and info["total_net_lots"] > 0
+                if len(code) == 4 and code.isdigit()
+                and not code.startswith("00")  # 排除 ETF（0050、0056...）
+                and info["total_net_lots"] > 0
             ]
             candidates.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
 
-            reports = []
-            rank = 0
-            for code, info in candidates[:15]:
-                if rank >= 3:
-                    break
+            scored = []
+            for code, info in candidates[:30]:
                 price = get_realtime_stock(code)
                 if not price:
                     continue
-                rank += 1
-                chip_score = score_from_net_lots(info["total_net_lots"])
+                if price["close"] < 10:  # 排除低價股，容易被小額資金拉出失真漲幅
+                    continue
                 turnover = calc_turnover_billion(price["close"], price["volume"])
+                if turnover < 1:  # 排除成交金額 <1億元，流動性不足
+                    continue
+                chip_score = score_from_net_lots(info["total_net_lots"])
                 tech_score = score_from_technical(price["pct"], turnover)
                 total_score = chip_score + tech_score
+                scored.append((total_score, code, info, price, chip_score, tech_score))
+
+            scored.sort(key=lambda x: x[0], reverse=True)  # 依綜合總分排序，不是純法人買超排名
+
+            reports = []
+            for rank, (total_score, code, info, price, chip_score, tech_score) in enumerate(scored[:3], start=1):
                 grade = "🔥 超強黑馬" if total_score >= 80 else ("🚀 強勢黑馬" if total_score >= 60 else "📈 潛力股")
                 report = (
                     f"🐎 智慧黑馬股 #{rank}\n\n"
@@ -598,15 +606,23 @@ def handle_message(event):
         else:
             candidates = [
                 (code, info) for code, info in inst_data.items()
-                if len(code) == 4 and code.isdigit() and info["total_net_lots"] > 0
+                if len(code) == 4 and code.isdigit()
+                and not code.startswith("00")  # 排除 ETF
+                and info["total_net_lots"] > 0
             ]
             candidates.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
 
             priced = []
-            for code, info in candidates[:20]:
+            for code, info in candidates[:30]:
                 price = get_realtime_stock(code)
-                if price:
-                    priced.append((code, info, price))
+                if not price:
+                    continue
+                if price["close"] < 10:  # 排除低價股
+                    continue
+                turnover = calc_turnover_billion(price["close"], price["volume"])
+                if turnover < 1:  # 排除成交金額 <1億元
+                    continue
+                priced.append((code, info, price))
             priced.sort(key=lambda x: x[2]["pct"], reverse=True)
 
             reports = []
