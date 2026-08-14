@@ -226,9 +226,9 @@ def get_realtime_stock(code):
     for suffix in [".TW", ".TWO"]:
         try:
             symbol = f"{code}{suffix}"
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=1d"
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=3mo&interval=1d"
             headers = {'User-Agent': 'Mozilla/5.0'}
-            res = requests.get(url, headers=headers, timeout=5).json()
+            res = requests.get(url, headers=headers, timeout=8).json()
 
             result_meta = res.get('chart', {}).get('result', [])
             if not result_meta:
@@ -238,16 +238,22 @@ def get_realtime_stock(code):
             timestamps = result_meta[0].get('timestamp', [])
             indicators = result_meta[0].get('indicators', {}).get('quote', [{}])[0]
             raw_closes = indicators.get('close', [])
+            raw_highs = indicators.get('high', [])
+            raw_lows = indicators.get('low', [])
+            raw_volumes = indicators.get('volume', [])
 
             # 把「日期」跟「收盤價」配對起來，過濾掉沒有成交/資料缺失的那幾筆，
             # 同時保留正確的日期對應，不能只看陣列位置。
             tw_tz = timezone(timedelta(hours=8))
             bars = []
-            for ts, c in zip(timestamps, raw_closes):
+            for i, (ts, c) in enumerate(zip(timestamps, raw_closes)):
                 if c is None:
                     continue
                 bar_date = datetime.fromtimestamp(ts, tw_tz).date()
-                bars.append((bar_date, c))
+                h = raw_highs[i] if i < len(raw_highs) and raw_highs[i] is not None else c
+                l = raw_lows[i] if i < len(raw_lows) and raw_lows[i] is not None else c
+                v = raw_volumes[i] if i < len(raw_volumes) and raw_volumes[i] is not None else 0
+                bars.append((bar_date, c, h, l, v))
 
             today_date = datetime.now(tw_tz).date()
 
@@ -262,10 +268,13 @@ def get_realtime_stock(code):
             #   累積漲幅，誤標成「當日漲幅」。
             if bars and bars[-1][0] == today_date:
                 prev_close = bars[-2][1] if len(bars) >= 2 else meta.get('chartPreviousClose', close)
+                hist = bars[:-1]  # 計算位階時排除今天，避免今天自己抬高自己的高點
             elif bars:
                 prev_close = bars[-1][1]
+                hist = bars
             else:
                 prev_close = meta.get('chartPreviousClose', close)
+                hist = []
 
             if not close or close == 0:
                 continue
@@ -275,8 +284,40 @@ def get_realtime_stock(code):
             low = meta.get('regularMarketDayLow', close) or close
             volume = meta.get('regularMarketVolume', 0) or 0
 
-            resistance = round(high * 1.01, 2)
-            support = round(low * 0.99, 2)
+            # --- 位階與量能：判斷「這根K棒站在什麼位置」 ---
+            h20 = [b[2] for b in hist[-20:]]
+            l20 = [b[3] for b in hist[-20:]]
+            h60 = [b[2] for b in hist[-60:]]
+            l60 = [b[3] for b in hist[-60:]]
+            c20 = [b[1] for b in hist[-20:]]
+            v20 = [b[4] for b in hist[-20:] if b[4]]
+
+            high_20d = max(h20) if h20 else None
+            low_20d = min(l20) if l20 else None
+            high_60d = max(h60) if h60 else None
+            low_60d = min(l60) if l60 else None
+            ma20 = round(sum(c20) / len(c20), 2) if c20 else None
+            avg_vol_20 = (sum(v20) / len(v20)) if v20 else None
+            vol_ratio = round(volume / avg_vol_20, 2) if avg_vol_20 else None
+
+            # 距離近60日高點多遠（0% 代表就在最高點，負值代表還在下方）
+            pos_vs_60d_high = round((close - high_60d) / high_60d * 100, 2) if high_60d else None
+
+            # 連續上漲天數（含今天）
+            up_streak = 0
+            series = [b[1] for b in hist] + [close]
+            for i in range(len(series) - 1, 0, -1):
+                if series[i] > series[i - 1]:
+                    up_streak += 1
+                else:
+                    break
+
+            # 支撐壓力改用實際的近期高低點與均線，不再用「今日高低價微調」
+            resistance = round(high_60d, 2) if (high_60d and close >= (high_20d or 0)) else (
+                round(high_20d, 2) if high_20d else round(high * 1.01, 2))
+            support_candidates = [x for x in [low_20d, ma20] if x and x < close]
+            support = round(max(support_candidates), 2) if support_candidates else (
+                round(low_20d, 2) if low_20d else round(low * 0.99, 2))
 
             return {
                 "code": code,
@@ -287,7 +328,15 @@ def get_realtime_stock(code):
                 "low": float(low),
                 "volume": int(volume),
                 "resistance": resistance,
-                "support": support
+                "support": support,
+                "high_20d": high_20d,
+                "low_20d": low_20d,
+                "high_60d": high_60d,
+                "low_60d": low_60d,
+                "ma20": ma20,
+                "vol_ratio": vol_ratio,
+                "pos_vs_60d_high": pos_vs_60d_high,
+                "up_streak": up_streak,
             }
         except:
             continue
@@ -776,6 +825,57 @@ def score_from_technical(pct, turnover_billion):
     pct_score = max(0, min(30, pct * 3))  # 貼近台股±10%漲跌停，10%封頂拿滿分
     vol_score = max(0, min(30, turnover_billion))  # 1億元＝1分，30億元封頂
     return round(pct_score + vol_score)
+
+def build_position_desc(price):
+    """
+    描述「這根K棒站在什麼位置」，讓突破、追高、無量漲停能被區分開來。
+    只陳述事實，不下買賣結論。
+    """
+    parts = []
+    close = price.get("close")
+    h20, h60 = price.get("high_20d"), price.get("high_60d")
+    ma20 = price.get("ma20")
+    vol_ratio = price.get("vol_ratio")
+    up_streak = price.get("up_streak", 0)
+    pos = price.get("pos_vs_60d_high")
+
+    # 位階
+    if h60 and close >= h60:
+        parts.append("・突破近60日高點（創季線以來新高）")
+    elif h20 and close >= h20:
+        parts.append("・突破近20日高點")
+    elif pos is not None:
+        parts.append(f"・距近60日高點 {pos:+.1f}%")
+
+    # 與均線關係
+    if ma20 and close:
+        diff = (close - ma20) / ma20 * 100
+        if diff >= 15:
+            parts.append(f"・站上20日均線 {diff:+.1f}%，乖離偏大")
+        else:
+            parts.append(f"・20日均線 {ma20}（{diff:+.1f}%）")
+
+    # 量能相對自己過去的水準
+    if vol_ratio:
+        if vol_ratio >= 3:
+            parts.append(f"・量能為20日均量的 {vol_ratio} 倍，爆量")
+        elif vol_ratio >= 1.5:
+            parts.append(f"・量能為20日均量的 {vol_ratio} 倍，明顯放大")
+        elif vol_ratio < 0.8:
+            parts.append(f"・量能僅20日均量的 {vol_ratio} 倍，量縮")
+        else:
+            parts.append(f"・量能為20日均量的 {vol_ratio} 倍")
+
+    # 連漲天數
+    if up_streak >= 5:
+        parts.append(f"・已連續上漲 {up_streak} 天")
+    elif up_streak >= 2:
+        parts.append(f"・連續上漲 {up_streak} 天")
+    elif up_streak <= 0:
+        parts.append("・今日為近期首根上漲K棒")
+
+    return "\n".join(parts) if parts else "・位階資料不足"
+
 
 def build_technical_desc(pct, volume_lots, net_lots, turnover_billion=None):
     parts = []
@@ -1382,9 +1482,9 @@ def handle_message(event):
                     continue
                 if price["close"] < 10:  # 排除低價股
                     continue
-                # 雷達的定位是「剛啟動、還沒噴出」：漲幅太小代表還沒發動，
-                # 太大（接近漲停）代表追高風險高，兩端都排除
-                if not (1.5 <= price["pct"] <= 6.0):
+                if price["pct"] < 1.5:  # 還沒發動的先不看；上限不設，漲停也可能是突破的起點
+                    continue
+                if price["pct"] > 10.5:  # 防呆：超過台股漲跌幅上限視為資料異常
                     continue
                 turnover = calc_turnover_billion(price["close"], price["volume"])
                 if turnover < 1:  # 排除成交金額 <1億元
@@ -1393,23 +1493,38 @@ def handle_message(event):
 
             streaks = get_consecutive_days_batch([c for c, _, _ in priced])
 
-            # 排序改用「法人連續買超天數」優先，同天數再比當日買超張數，
-            # 而不是單純比誰漲最多——漲最多的通常也是最危險的
-            priced.sort(
-                key=lambda x: (streaks.get(x[0], 0), x[1]["total_net_lots"]),
-                reverse=True,
-            )
+            def radar_rank(item):
+                """
+                排序邏輯：突破位階 > 帶量 > 法人連續買超 > 當日漲幅。
+                目的是讓「帶量突破前高」排在「已連漲多日的追高盤」前面。
+                """
+                code, info, price = item
+                close = price["close"]
+                breakout = 0
+                if price.get("high_60d") and close >= price["high_60d"]:
+                    breakout = 2  # 創季線新高
+                elif price.get("high_20d") and close >= price["high_20d"]:
+                    breakout = 1
+                vol_ratio = price.get("vol_ratio") or 0
+                # 連漲太多天的扣分，避免推薦已經噴到末端的股票
+                fatigue = -1 if price.get("up_streak", 0) >= 5 else 0
+                return (breakout + fatigue, vol_ratio, streaks.get(code, 0), price["pct"])
+
+            priced.sort(key=radar_rank, reverse=True)
 
             reports = []
             for code, info, price in priced[:5]:
                 turnover = calc_turnover_billion(price["close"], price["volume"])
                 streak = streaks.get(code, 0)
-                if streak >= 4:
-                    level = "🅰️ 法人持續加碼"
-                elif streak >= 2:
-                    level = "🅱️ 連續買超中"
+                close = price["close"]
+                if price.get("high_60d") and close >= price["high_60d"]:
+                    level = "🚀 帶量突破季線新高"
+                elif price.get("high_20d") and close >= price["high_20d"]:
+                    level = "📈 突破近月高點"
+                elif price.get("up_streak", 0) >= 5:
+                    level = "⚠️ 已連漲多日，位階偏高"
                 else:
-                    level = "👀 單日進場，觀察中"
+                    level = "👀 區間內上漲"
                 streak_line = f"🔁 法人連續買超：{streak} 日\n" if streak >= 2 else ""
                 report = (
                     f"🚨【盤中雷達】\n\n"
@@ -1421,8 +1536,8 @@ def handle_message(event):
                     f"🏦 三大法人買超：{info['total_net_lots']:,} 張\n"
                     f"{streak_line}\n"
                     f"🏆 狀態：{level}\n\n"
-                    f"【型態】\n"
-                    f"{build_technical_desc(price['pct'], price['volume']//1000, info['total_net_lots'], calc_turnover_billion(price['close'], price['volume']))}\n\n"
+                    f"【位階】\n"
+                    f"{build_position_desc(price)}\n\n"
                     f"【注意】\n"
                     f"{build_risk_desc(price['pct'], info['total_net_lots'])}\n"
                     f"-----------------------------------"
