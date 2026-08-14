@@ -1,5 +1,6 @@
 import os
 import socket
+import time
 import requests
 import psycopg2
 from psycopg2 import pool
@@ -783,6 +784,61 @@ def cron_push_watchlist():
             print(f"❌ 推播失敗 {uid}: {e}")
             failed += 1
     return f"Push done. sent={sent}, failed={failed}", 200
+
+@app.route("/cron/fetch-t86", methods=["POST", "GET"])
+def cron_fetch_t86():
+    """每個交易日收盤後自動抓一次 T86 並存進歷史表，不依賴使用者操作。"""
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    # 清掉快取強制重抓，確保拿到今天最新公布的資料
+    _t86_cache["cache_date"] = None
+    data = fetch_institutional_data()
+    if not data:
+        return "No T86 data available (non-trading day or not yet published).", 200
+    return f"OK. date={_t86_cache.get('data_date')}, stocks={len(data)}", 200
+
+
+@app.route("/backfill", methods=["POST", "GET"])
+def backfill_t86():
+    """
+    回補過去的 T86 歷史資料。
+    用法：/backfill?token=你的CRON_SECRET&days=10&offset=0
+      days   一次回補幾天（預設 10，上限 15，避免 Render timeout）
+      offset 從幾天前開始往回算（第一次 0，第二次 10，第三次 20...）
+    重複回補同一天不會產生重複資料。
+    """
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    try:
+        days = min(int(request.args.get("days", 10)), 15)
+        offset = int(request.args.get("offset", 0))
+    except ValueError:
+        return "參數錯誤：days 與 offset 必須是數字", 400
+
+    saved, skipped = [], []
+    for i in range(offset, offset + days):
+        query_date = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
+        data = _fetch_t86_for_date(query_date)
+        if data:
+            save_t86_history(query_date, data)
+            saved.append(f"{query_date}({len(data)})")
+        else:
+            skipped.append(query_date)
+        time.sleep(3)  # 禮貌等待，避免被 TWSE 擋
+
+    total_days = get_history_days_count()
+    return (
+        f"回補完成\n"
+        f"成功：{len(saved)} 天 → {', '.join(saved) if saved else '無'}\n"
+        f"無資料（假日或未公布）：{len(skipped)} 天 → {', '.join(skipped) if skipped else '無'}\n"
+        f"目前資料庫累積：{total_days} 個交易日\n"
+        f"下一批請用 offset={offset + days}"
+    ), 200
+
 
 # --- LINE Bot 訊息接收與路由分派 ---
 @app.route("/callback", methods=["POST"])
