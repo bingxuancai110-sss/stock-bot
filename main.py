@@ -1470,6 +1470,13 @@ def build_watchlist_advice(total, chip_score, pos_score, rev_score, val_score,
     if cum_lots < 0 and ma_diff is not None and ma_diff < 0:
         return "⚠️ 法人賣超且跌破月線，短線偏弱，若持有應設好停損位"
 
+    # 貴 + 弱：本益比偏高但股價已回落一段，通常代表市場在下修對它的成長預期。
+    # 這個組合比單看 PEG 更值得警惕，所以排在一般籌碼判斷之前。
+    if (val_score <= 10 and pos is not None and pos <= -20):
+        if cum_lots < 0:
+            return "🔻 本益比偏高但股價已回落一段，法人同步減碼，市場恐在重新評價其成長性"
+        return "🤔 本益比偏高但股價已回落一段，市場可能在重新評價成長性，留意估值是否過去給太高"
+
     if cum_lots < 0:
         return "🔻 法人近期站在賣方，但價格結構尚未破壞，可觀察是否只是短線調節"
 
