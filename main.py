@@ -921,6 +921,47 @@ def score_from_streak(streak):
     return 0
 
 
+def get_cumulative_net_buy(days=10, top_n=80):
+    """
+    從 inst_history 撈「近 N 個交易日累計買超」前 top_n 名。
+    這是黑馬候選池的來源——長線佈局往往是「量小但持續」，
+    看單日買超排行會漏掉那種每天買 800 張、連買 15 天的股票。
+    回傳 [(code, name, 累計張數, 有買超的天數), ...]
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            WITH recent AS (
+                SELECT DISTINCT trade_date FROM inst_history
+                ORDER BY trade_date DESC LIMIT %s
+            )
+            SELECT h.code,
+                   MAX(h.name) AS name,
+                   SUM(h.total_net_lots) AS cum_lots,
+                   COUNT(*) FILTER (WHERE h.total_net_lots > 0) AS buy_days
+            FROM inst_history h
+            JOIN recent r ON h.trade_date = r.trade_date
+            WHERE length(h.code) = 4 AND h.code ~ '^[0-9]+$'
+              AND h.code NOT LIKE '00%%'
+            GROUP BY h.code
+            HAVING SUM(h.total_net_lots) > 0
+            ORDER BY cum_lots DESC
+            LIMIT %s
+            """,
+            (days, top_n),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [(r[0], r[1], r[2] or 0, r[3] or 0) for r in rows]
+    except Exception as e:
+        print(f"❌ 查詢累計買超失敗: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
 def get_history_days_count():
     """目前資料庫累積了幾個交易日的法人歷史（用來判斷連續指標可不可信）。"""
     conn = get_db_connection()
@@ -1543,21 +1584,35 @@ def handle_message(event):
             valuation_data = fetch_valuation()
             bh_industry_map = get_industry_map()
             industry_momentum = get_industry_momentum(revenue_data, bh_industry_map)
+            # 候選池改用「近10日累計買超」而非「今日買超前40名」。
+            # 長線佈局常是量小但持續，看單日排行會漏掉每天小買、連買十幾天的股票；
+            # 池子也因此變寬變雜，產業動能那一項才有鑑別度。
+            cum_buyers = get_cumulative_net_buy(days=10, top_n=80)
+            if not cum_buyers:
+                # 歷史資料還沒累積時，退回原本的當日買超排行，功能不會整個斷掉
+                cum_buyers = [
+                    (code, info.get("name", code), info["total_net_lots"], 1)
+                    for code, info in sorted(
+                        inst_data.items(),
+                        key=lambda x: x[1]["total_net_lots"], reverse=True
+                    )
+                    if len(code) == 4 and code.isdigit()
+                    and not code.startswith("00") and info["total_net_lots"] > 0
+                ][:80]
+
             candidates = [
-                (code, info) for code, info in inst_data.items()
-                if len(code) == 4 and code.isdigit()
-                and not code.startswith("00")  # 排除 ETF（0050、0056...）
-                and info["total_net_lots"] > 0
+                (code, {"name": name, "total_net_lots": inst_data.get(code, {}).get("total_net_lots", 0),
+                        "cum_lots": cum_lots, "buy_days": buy_days})
+                for code, name, cum_lots, buy_days in cum_buyers
                 # 排除金融保險業：銀行的「營收」是利息與手續費收入，
                 # 性質與製造業不同，套用同一套營收成長標準會失真
-                and bh_industry_map.get(code, "").zfill(2) != "17"
+                if bh_industry_map.get(code, "").zfill(2) != "17"
             ]
-            candidates.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
 
-            streaks = get_consecutive_days_batch([c for c, _ in candidates[:40]])
+            streaks = get_consecutive_days_batch([c for c, _ in candidates])
 
             scored = []
-            for code, info in candidates[:40]:
+            for code, info in candidates:
                 price = get_realtime_stock(code)
                 if not price:
                     continue
@@ -1585,7 +1640,7 @@ def handle_message(event):
                 streak = streaks.get(code, 0)
                 streak_score = round(score_from_streak(streak) * 20 / 30)  # 0-20
 
-                chip_raw = score_from_net_lots(info["total_net_lots"])
+                chip_raw = score_from_net_lots(info.get("cum_lots", 0))
                 tech_raw = score_from_technical(price["pct"], turnover)
                 # 當日籌碼與技術合併壓縮成 0-10，長線選股不該讓單日表現主導
                 chip_tech_score = round((chip_raw / 40 * 5) + (tech_raw / 60 * 5))
@@ -1624,7 +1679,9 @@ def handle_message(event):
                     f"🏭 產業動能：{supply_score}／20\n"
                     f"　　{supply_desc}\n"
                     f"🔁 法人連續性：{streak_score}／20（{streak_text}）\n"
-                    f"📊 當日籌碼技術：{chip_tech_score}／10\n\n"
+                    f"📊 籌碼技術：{chip_tech_score}／10\n"
+                    f"　　近10日累計買超 {info.get('cum_lots', 0):,} 張"
+                    f"（{info.get('buy_days', 0)} 天買超）\n\n"
                     f"【位階】\n"
                     f"{build_position_desc(price)}\n\n"
                     f"【判定】\n"
