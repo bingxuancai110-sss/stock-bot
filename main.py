@@ -3,6 +3,7 @@ import socket
 import requests
 import psycopg2
 from psycopg2 import pool
+from psycopg2.extras import execute_values
 from urllib.parse import urlparse
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
@@ -70,6 +71,23 @@ def init_db():
         ''')
         cursor.execute('''
             ALTER TABLE users ADD COLUMN IF NOT EXISTS notify BOOLEAN DEFAULT FALSE
+        ''')
+        # 每日三大法人買賣超歷史（用來算「連續買超天數」等長線指標）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS inst_history (
+                code TEXT,
+                trade_date DATE,
+                name TEXT,
+                foreign_net_lots INTEGER,
+                trust_net_lots INTEGER,
+                dealer_net_lots INTEGER,
+                total_net_lots INTEGER,
+                PRIMARY KEY (code, trade_date)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_inst_history_code_date
+            ON inst_history (code, trade_date DESC)
         ''')
         conn.commit()
         cursor.close()
@@ -562,6 +580,7 @@ def build_market_recap():
     stock_rows = [
         (code, info) for code, info in inst_data.items()
         if len(code) == 4 and code.isdigit()
+        and not code.startswith("00")  # 排除 ETF
     ]
     buy_leaders = sorted(stock_rows, key=lambda x: x[1]["total_net_lots"], reverse=True)[:3]
     sell_leaders = sorted(stock_rows, key=lambda x: x[1]["total_net_lots"])[:3]
