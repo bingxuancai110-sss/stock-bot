@@ -385,6 +385,166 @@ def generate_morning_brief():
         f"• 台積電ADR (TSM)：+1.40%"
     )
 
+# --- 月營收（TWSE OpenAPI t187ap05_L，全上市公司，一個月只有一期，用「資料年月」當快取key） ---
+_revenue_cache = {"period": None, "data": {}}
+
+def fetch_monthly_revenue():
+    """抓上市公司最新一期月營收，回傳 {代號: {"yoy_pct": 去年同月增減%}}。
+    這是「有題材／獲利成長」判斷的核心資料來源，用來讓黑馬邏輯跟雷達真正不一樣。"""
+    try:
+        url = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
+        rows = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'}).json()
+        if not rows:
+            return _revenue_cache["data"]
+
+        period = rows[0].get("資料年月")
+        if _revenue_cache["period"] == period and _revenue_cache["data"]:
+            return _revenue_cache["data"]
+
+        def to_float(s):
+            try:
+                return float(str(s).replace(",", ""))
+            except (ValueError, TypeError):
+                return None
+
+        result = {}
+        for row in rows:
+            code = str(row.get("公司代號", "")).strip()
+            if not code:
+                continue
+            yoy = to_float(row.get("營業收入-去年同月增減(%)"))
+            result[code] = {"yoy_pct": yoy}
+
+        _revenue_cache["period"] = period
+        _revenue_cache["data"] = result
+        print(f"✅ 月營收抓取成功（{period}），共 {len(result)} 筆")
+        return result
+    except Exception as e:
+        print(f"❌ 抓取月營收資料錯誤: {e}")
+        return _revenue_cache["data"]
+
+def score_from_revenue_growth(yoy_pct):
+    """依營收年增率評分，作為「有題材／獲利」的量化依據（0-50分）。"""
+    if yoy_pct is None:
+        return 0
+    if yoy_pct >= 50:
+        return 50
+    if yoy_pct >= 30:
+        return 40
+    if yoy_pct >= 15:
+        return 30
+    if yoy_pct >= 5:
+        return 20
+    if yoy_pct > 0:
+        return 10
+    return 0
+
+# --- 大盤指數（TWSE 官方 OpenAPI，固定回傳最新一個交易日收盤資訊） ---
+def fetch_taiex_summary():
+    try:
+        url = "https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX"
+        res = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'}).json()
+        for row in res:
+            if row.get("指數") == "發行量加權股價指數":
+                return {
+                    "close": row.get("收盤指數"),
+                    "sign": row.get("漲跌"),
+                    "pts": row.get("漲跌點數"),
+                    "pct": row.get("漲跌百分比"),
+                }
+        return None
+    except Exception as e:
+        print(f"❌ 抓取大盤指數錯誤: {e}")
+        return None
+
+# --- 三大法人合計買賣超金額（跟 T86 同體系的 rwd JSON API） ---
+def fetch_institutional_total():
+    try:
+        url = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
+        res = requests.get(url, params={"response": "json"}, timeout=10, headers={'User-Agent': 'Mozilla/5.0'}).json()
+        if res.get("stat") != "OK":
+            return None
+
+        fields = res.get("fields", [])
+        rows = res.get("data", [])
+
+        def col(name, default=None):
+            return fields.index(name) if name in fields else default
+
+        name_i = col("單位名稱")
+        buy_i = col("買進金額")
+        sell_i = col("賣出金額")
+        net_i = col("買賣差額")
+
+        def to_int(s):
+            try:
+                return int(str(s).replace(",", ""))
+            except (ValueError, TypeError):
+                return None
+
+        breakdown = {}
+        total_net = 0
+        for row in rows:
+            if name_i is None:
+                continue
+            name = row[name_i].strip()
+            net_val = to_int(row[net_i]) if net_i is not None else None
+            if net_val is None and buy_i is not None and sell_i is not None:
+                b, s = to_int(row[buy_i]), to_int(row[sell_i])
+                net_val = (b - s) if (b is not None and s is not None) else None
+            if net_val is None:
+                continue
+            breakdown[name] = net_val
+            total_net += net_val
+
+        if not breakdown:
+            return None
+        return {"total": total_net, "breakdown": breakdown}
+    except Exception as e:
+        print(f"❌ 抓取法人合計金額錯誤: {e}")
+        return None
+
+# --- 盤後解盤：使用者手動輸入關鍵字才觸發，不自動推播 ---
+def build_market_recap():
+    inst_data = fetch_institutional_data()
+    if not inst_data:
+        return "❌ 目前無法取得盤後資料，可能是非交易日或資料尚未公布，請稍後再試。"
+
+    lines = ["📊 盤後解盤", "─" * 14]
+
+    taiex = fetch_taiex_summary()
+    if taiex and taiex.get("close"):
+        arrow = "▲" if taiex.get("sign") == "+" else ("▼" if taiex.get("sign") == "-" else "－")
+        lines.append(f"大盤 {taiex['close']}　{arrow}{taiex.get('pts','?')}（{taiex.get('pct','?')}%）")
+    else:
+        lines.append("大盤：資料暫缺")
+
+    inst_total = fetch_institutional_total()
+    if inst_total:
+        total_yi = inst_total["total"] / 100_000_000
+        lines.append(f"三大法人合計：{total_yi:+.1f}億")
+        for name, val in inst_total["breakdown"].items():
+            lines.append(f"　{name}　{val/100_000_000:+.1f}億")
+    lines.append("─" * 14)
+
+    stock_rows = [
+        (code, info) for code, info in inst_data.items()
+        if len(code) == 4 and code.isdigit()
+    ]
+    buy_leaders = sorted(stock_rows, key=lambda x: x[1]["total_net_lots"], reverse=True)[:3]
+    sell_leaders = sorted(stock_rows, key=lambda x: x[1]["total_net_lots"])[:3]
+
+    lines.append("🟢 法人買超前3")
+    for code, info in buy_leaders:
+        lines.append(f"{info['name']}({code}) +{info['total_net_lots']:,}張")
+
+    lines.append("")
+    lines.append("🔴 法人賣超前3")
+    for code, info in sell_leaders:
+        lines.append(f"{info['name']}({code}) {info['total_net_lots']:,}張")
+
+    return "\n".join(lines)
+
 # --- 自選股健檢：把 watchlist 全部跑一次評分，依總分排序 ---
 def build_healthcheck_report(user_id):
     codes = get_user_watchlist(user_id)
@@ -546,12 +706,17 @@ def handle_message(event):
     elif text in ["盤前", "早安"]:
         reply = generate_morning_brief()
 
-    # 8. 黑馬股（真實三大法人買超排行 + 真實技術面，依總分排序）
+    # 7.5 盤後解盤（使用者手動輸入才觸發，不自動推播）
+    elif text in ["解盤", "盤後解盤", "盤後"]:
+        reply = build_market_recap()
+
+    # 8. 黑馬股（不同於雷達：以「月營收年增率」為主軸，找有題材／獲利成長的股票）
     elif text == "黑馬":
         inst_data = fetch_institutional_data()
         if not inst_data:
             reply = "❌ 目前無法取得三大法人資料，可能是非交易時段或非交易日，請稍後再試。"
         else:
+            revenue_data = fetch_monthly_revenue()
             candidates = [
                 (code, info) for code, info in inst_data.items()
                 if len(code) == 4 and code.isdigit()
@@ -561,7 +726,7 @@ def handle_message(event):
             candidates.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
 
             scored = []
-            for code, info in candidates[:30]:
+            for code, info in candidates[:40]:
                 price = get_realtime_stock(code)
                 if not price:
                     continue
@@ -570,23 +735,33 @@ def handle_message(event):
                 turnover = calc_turnover_billion(price["close"], price["volume"])
                 if turnover < 1:  # 排除成交金額 <1億元，流動性不足
                     continue
-                chip_score = score_from_net_lots(info["total_net_lots"])
-                tech_score = score_from_technical(price["pct"], turnover)
-                total_score = chip_score + tech_score
-                scored.append((total_score, code, info, price, chip_score, tech_score))
 
-            scored.sort(key=lambda x: x[0], reverse=True)  # 依綜合總分排序，不是純法人買超排名
+                yoy_pct = revenue_data.get(code, {}).get("yoy_pct")
+                revenue_score = score_from_revenue_growth(yoy_pct)  # 0-50
+
+                chip_raw = score_from_net_lots(info["total_net_lots"])  # 0-40
+                chip_score = round(chip_raw * 25 / 40)  # 壓縮成 0-25
+
+                tech_raw = score_from_technical(price["pct"], turnover)  # 0-60
+                tech_score = round(tech_raw * 25 / 60)  # 壓縮成 0-25
+
+                total_score = revenue_score + chip_score + tech_score  # 滿分 100
+                scored.append((total_score, code, info, price, revenue_score, chip_score, tech_score, yoy_pct))
+
+            scored.sort(key=lambda x: x[0], reverse=True)  # 依綜合總分排序，營收成長權重最高
 
             reports = []
-            for rank, (total_score, code, info, price, chip_score, tech_score) in enumerate(scored[:3], start=1):
-                grade = "🔥 超強黑馬" if total_score >= 80 else ("🚀 強勢黑馬" if total_score >= 60 else "📈 潛力股")
+            for rank, (total_score, code, info, price, revenue_score, chip_score, tech_score, yoy_pct) in enumerate(scored[:3], start=1):
+                grade = "🔥 題材爆發" if total_score >= 80 else ("🚀 成長強勢" if total_score >= 60 else "📈 潛力觀察")
+                yoy_text = f"{yoy_pct:+.1f}%" if yoy_pct is not None else "尚無資料"
                 report = (
                     f"🐎 智慧黑馬股 #{rank}\n\n"
                     f"股票：{info['name']}\n"
                     f"代號：{code}\n\n"
                     f"黑馬指數：{total_score}／100\n\n"
-                    f"🏦 籌碼面：{chip_score}／40（三大法人買超 {info['total_net_lots']:,} 張）\n"
-                    f"📈 技術面：{tech_score}／60\n\n"
+                    f"💡 題材／獲利：{revenue_score}／50（月營收年增 {yoy_text}）\n"
+                    f"🏦 籌碼面：{chip_score}／25（三大法人買超 {info['total_net_lots']:,} 張）\n"
+                    f"📈 技術面：{tech_score}／25\n\n"
                     f"【即時數據】\n"
                     f"{build_technical_desc(price['pct'], price['volume']//1000, info['total_net_lots'])}\n\n"
                     f"【風險】\n"
@@ -655,7 +830,8 @@ def handle_message(event):
             "===================\n"
             "🔥 核心策略專區（真實三大法人籌碼）\n"
             "• 輸入「盤前」➜ 美股與總經速覽\n"
-            "• 輸入「黑馬」➜ 法人買超前三強評分\n"
+            "• 輸入「解盤」➜ 盤後大盤與法人資金解析\n"
+            "• 輸入「黑馬」➜ 有題材／營收成長的潛力股\n"
             "• 輸入「雷達」➜ 法人買超中漲幅最強前三\n\n"
             "📂 自選與策略管理\n"
             "• 輸入「自選」➜ 查看雲端自選與支撐壓力\n"
