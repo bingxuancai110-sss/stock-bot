@@ -1115,16 +1115,61 @@ def build_risk_desc(pct, net_lots):
         return "・籌碼與價格同步走強，仍須留意大盤系統性風險"
     return "・盤勢仍有變數，操作務必自行設好停損停利"
 
+def fetch_us_market():
+    """
+    抓美股主要指數與台股相關個股的最新收盤。
+    美股收盤約當台灣時間清晨，所以盤前查到的就是最新一夜的結果。
+    回傳 [(顯示名稱, 收盤價, 漲跌幅%), ...]，抓不到的項目會被略過。
+    """
+    targets = [
+        ("道瓊指數", "^DJI"),
+        ("那斯達克", "^IXIC"),
+        ("費城半導體", "^SOX"),
+        ("輝達 NVDA", "NVDA"),
+        ("台積電ADR", "TSM"),
+    ]
+    results = []
+    for label, symbol in targets:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=1d"
+            res = requests.get(url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'}).json()
+            meta = res.get('chart', {}).get('result', [{}])[0].get('meta', {})
+            close = meta.get('regularMarketPrice')
+            prev = meta.get('chartPreviousClose') or meta.get('previousClose')
+
+            # 優先用日K序列的倒數第二筆當前收，跟個股的算法一致，
+            # 避免 chartPreviousClose 指到查詢區間起點而不是前一交易日
+            closes = [c for c in (res.get('chart', {}).get('result', [{}])[0]
+                                  .get('indicators', {}).get('quote', [{}])[0]
+                                  .get('close', []) or []) if c is not None]
+            if len(closes) >= 2:
+                prev = closes[-2] if abs(closes[-1] - (close or 0)) < 0.01 else closes[-1]
+
+            if not close or not prev:
+                continue
+            pct = (close - prev) / prev * 100
+            results.append((label, close, pct))
+        except Exception as e:
+            print(f"❌ 抓取 {symbol} 失敗: {e}")
+            continue
+    return results
+
+
 def generate_morning_brief():
     today_str = datetime.now().strftime("%Y/%m/%d")
-    return (
-        f"☀️ 【台股盤前與總經動態】\n📅 日期：{today_str}\n"
-        f"-------------------\n"
-        f"• 道瓊指數：+0.45%\n"
-        f"• 費城半導體：+1.12%\n"
-        f"• 輝達 (NVDA)：+1.85%\n"
-        f"• 台積電ADR (TSM)：+1.40%"
-    )
+    lines = [f"☀️ 【美股與總經速覽】", f"📅 {today_str}", "─" * 14]
+
+    data = fetch_us_market()
+    if not data:
+        lines.append("⚠️ 美股資料暫時取得失敗，請稍後再試")
+    else:
+        for label, close, pct in data:
+            arrow = "🔴" if pct >= 0 else "🟢"
+            lines.append(f"{arrow} {label}：{close:,.2f}（{pct:+.2f}%）")
+        lines.append("─" * 14)
+        lines.append("※ 為美股最近一個交易日收盤")
+
+    return "\n".join(lines)
 
 # --- 月營收（TWSE OpenAPI t187ap05_L，全上市公司，一個月只有一期，用「資料年月」當快取key） ---
 _revenue_cache = {"period": None, "data": {}}
@@ -1332,15 +1377,17 @@ def build_healthcheck_report(user_id):
         streak_text = f"　連{streak}買" if streak >= 2 else ""
 
         text = (
-            f"{flag} {name} {code}\n"
+            f"{flag} {name} {code}　{total_score}分\n"
             f"{stock['close']:.2f}（{stock['pct']:+.2f}%）"
-            f"　法人{net_lots:+,}張{streak_text}　{total_score}分"
+            f"　法人{net_lots:+,}張{streak_text}\n"
+            f"🛡️{stock['support']} 🚧{stock['resistance']}"
         )
         rows.append((total_score, text))
 
     rows.sort(key=lambda x: x[0], reverse=True)
     body = "\n\n".join(text for _, text in rows)
-    report = f"📋 自選股健檢（{len(codes)}檔）\n\n{body}\n\n🟢70+ 🟡40-69 🔴<40"
+    report = (f"📋 自選股健檢（{len(codes)}檔）\n\n{body}\n\n"
+              f"🟢70+ 🟡40-69 🔴<40　🛡️支撐 🚧壓力")
 
     # LINE 單則文字訊息長度上限保護（約 5000 字），過長就截斷並提示
     if len(report) > 4800:
@@ -1528,25 +1575,9 @@ def handle_message(event):
         set_notify(user_id, False)
         reply = "🔕 已關閉每日推播。"
 
-    # 4. 看自選清單
-    elif text in ["自選", "WATCHLIST"]:
-        codes = get_user_watchlist(user_id)
-        if not codes:
-            reply = "📂 目前自選清單是空的。\n💡 請輸入「加 3081」或「加 6442」來新增自選！"
-        else:
-            results = ["📂 【我的雲端自選股與策略】\n==================="]
-            for code in codes:
-                data = get_realtime_stock(code)
-                if data:
-                    light = "🔴" if data['pct'] >= 0 else "🟢"
-                    block = f"\n{light} 【{code} {data['name']}】 現價：{data['close']:.2f} ({data['pct']:+.2f}%)\n🛡️ 支撐：{data['support']} | 🚧 壓力：{data['resistance']}"
-                    results.append(block)
-                else:
-                    results.append(f"\n⚪ 【{code}】 查無行情")
-            reply = "".join(results)
-
-    # 5. 自選股一鍵健檢（新增功能）
-    elif text in ["健檢", "自選健檢"]:
+    # 4+5. 自選清單與健檢已合併——兩者原本都在列自選股，差別只在有沒有評分，
+    # 併成同一份報告，「自選」與「健檢」都指向它
+    elif text in ["自選", "WATCHLIST", "健檢", "自選健檢"]:
         reply = build_healthcheck_report(user_id)
 
     # 6. 單獨查代號行情
@@ -1780,13 +1811,12 @@ def handle_message(event):
             "🤖 蔡秉軒御用選股機器人\n"
             "===================\n"
             "🔥 核心策略專區（真實三大法人籌碼）\n"
-            "• 輸入「盤前」➜ 美股與總經速覽\n"
+            "• 輸入「盤前」➜ 美股與費半即時收盤\n"
             "• 輸入「解盤」➜ 盤後大盤與法人資金解析\n"
-            "• 輸入「黑馬」➜ 有題材／營收成長的潛力股\n"
-            "• 輸入「雷達」➜ 法人連續買超、剛啟動的股票\n\n"
+            "• 輸入「黑馬」➜ 營收成長＋估值＋產業動能綜合選股\n"
+            "• 輸入「雷達」➜ 帶量突破、法人買超的強勢股\n\n"
             "📂 自選與策略管理\n"
-            "• 輸入「自選」➜ 查看雲端自選與支撐壓力\n"
-            "• 輸入「健檢」➜ 自選股一鍵健檢評分報告\n"
+            "• 輸入「自選」或「健檢」➜ 自選股評分＋支撐壓力\n"
             "• 輸入「加 3081」➜ 新增自選\n"
             "• 輸入「刪 3081」➜ 移除自選\n"
             "• 輸入「推播開 / 推播關」➜ 開啟或關閉盤前摘要推播\n"
