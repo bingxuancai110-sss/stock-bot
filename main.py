@@ -313,8 +313,15 @@ def get_realtime_stock(code):
                     break
 
             # 支撐壓力改用實際的近期高低點與均線，不再用「今日高低價微調」
-            resistance = round(high_60d, 2) if (high_60d and close >= (high_20d or 0)) else (
-                round(high_20d, 2) if high_20d else round(high * 1.01, 2))
+            # 若已突破近60日高點，上方沒有參考壓力可言，回傳 None 讓顯示端說明
+            if high_60d and close >= high_60d:
+                resistance = None
+            elif high_20d and close >= high_20d:
+                resistance = round(high_60d, 2) if high_60d else None
+            elif high_20d:
+                resistance = round(high_20d, 2)
+            else:
+                resistance = round(high * 1.01, 2)
             support_candidates = [x for x in [low_20d, ma20] if x and x < close]
             support = round(max(support_candidates), 2) if support_candidates else (
                 round(low_20d, 2) if low_20d else round(low * 0.99, 2))
@@ -1024,6 +1031,11 @@ def score_from_technical(pct, turnover_billion):
     vol_score = max(0, min(30, turnover_billion))  # 1億元＝1分，30億元封頂
     return round(pct_score + vol_score)
 
+def fmt_resistance(r):
+    """壓力為 None 代表股價已突破近60日高點，上方無參考壓力。"""
+    return f"{r}" if r is not None else "已突破前高（無壓力參考）"
+
+
 def build_position_desc(price):
     """
     描述「這根K棒站在什麼位置」，讓突破、追高、無量漲停能被區分開來。
@@ -1380,7 +1392,7 @@ def build_healthcheck_report(user_id):
             f"{flag} {name} {code}　{total_score}分\n"
             f"{stock['close']:.2f}（{stock['pct']:+.2f}%）"
             f"　法人{net_lots:+,}張{streak_text}\n"
-            f"🛡️{stock['support']} 🚧{stock['resistance']}"
+            f"🛡️{stock['support']} 🚧{fmt_resistance(stock['resistance'])}"
         )
         rows.append((total_score, text))
 
@@ -1404,7 +1416,7 @@ def build_digest(user_id):
         data = get_realtime_stock(code)
         if data:
             light = "🔴" if data['pct'] >= 0 else "🟢"
-            lines.append(f"{light} {code} {data['name']}｜{data['close']:.2f}（{data['pct']:+.2f}%）\n🛡️ 支撐：{data['support']} | 🚧 壓力：{data['resistance']}")
+            lines.append(f"{light} {code} {data['name']}｜{data['close']:.2f}（{data['pct']:+.2f}%）\n🛡️ 支撐：{data['support']} | 🚧 壓力：{fmt_resistance(data['resistance'])}")
         else:
             lines.append(f"⚪ {code} 查無行情")
     return "\n\n".join(lines)
@@ -1592,7 +1604,7 @@ def handle_message(event):
                 f"📦 量能：{int(data['volume'] / 1000):,} 張\n"
                 f"-------------------\n"
                 f"🛡️ 短線支撐：{data['support']}\n"
-                f"🚧 短線壓力：{data['resistance']}"
+                f"🚧 短線壓力：{fmt_resistance(data['resistance'])}"
             )
         else:
             reply = f"❌ 查無代號 {pure_code} 的行情，請確認代號是否正確。"
