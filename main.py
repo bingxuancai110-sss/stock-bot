@@ -989,6 +989,36 @@ def sync_industry():
     ), 200
 
 
+@app.route("/check-industry", methods=["POST", "GET"])
+def check_industry():
+    """列出每個產業別代碼＋對照名稱＋3家範例公司，用來人工確認對照表正確。"""
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT code, name, industry FROM stock_info ORDER BY industry, code")
+        rows = cursor.fetchall()
+        cursor.close()
+    except Exception as e:
+        return f"查詢失敗: {e}", 500
+    finally:
+        release_db_connection(conn)
+
+    grouped = {}
+    for code, name, ind in rows:
+        grouped.setdefault(ind, []).append(f"{name}({code})")
+
+    lines = []
+    for ind in sorted(grouped):
+        samples = "、".join(grouped[ind][:3])
+        lines.append(f"{ind} = {industry_name(ind)}　共{len(grouped[ind])}檔　例：{samples}")
+
+    return "產業別對照確認\n\n" + "\n".join(lines), 200
+
+
 @app.route("/backfill", methods=["POST", "GET"])
 def backfill_t86():
     """
