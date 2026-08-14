@@ -8,7 +8,7 @@ from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
 
 app = Flask(__name__)
@@ -196,15 +196,37 @@ def get_realtime_stock(code):
                 continue
 
             meta = result_meta[0].get('meta', {})
-            close = meta.get('regularMarketPrice', 0.0)
-            prev_close = meta.get('chartPreviousClose', close)
+            timestamps = result_meta[0].get('timestamp', [])
+            indicators = result_meta[0].get('indicators', {}).get('quote', [{}])[0]
+            raw_closes = indicators.get('close', [])
 
+            # 把「日期」跟「收盤價」配對起來，過濾掉沒有成交/資料缺失的那幾筆，
+            # 同時保留正確的日期對應，不能只看陣列位置。
+            tw_tz = timezone(timedelta(hours=8))
+            bars = []
+            for ts, c in zip(timestamps, raw_closes):
+                if c is None:
+                    continue
+                bar_date = datetime.fromtimestamp(ts, tw_tz).date()
+                bars.append((bar_date, c))
+
+            today_date = datetime.now(tw_tz).date()
+
+            close = meta.get('regularMarketPrice', 0.0)
             if not close or close == 0:
-                indicators = result_meta[0].get('indicators', {}).get('quote', [{}])[0]
-                closes = [c for c in indicators.get('close', []) if c is not None]
-                if closes:
-                    close = closes[-1]
-                    prev_close = closes[-2] if len(closes) >= 2 else close
+                close = bars[-1][1] if bars else 0.0
+
+            # 判斷「日K序列」最後一筆到底是不是今天：
+            # - 是今天 → 昨收 = 倒數第二筆
+            # - 還停在昨天（Yahoo 資料還沒更新到今天）→ 倒數第一筆本身才是昨收，
+            #   不能再往前抓倒數第二筆，不然會變成抓到前天，算出兩天以上的
+            #   累積漲幅，誤標成「當日漲幅」。
+            if bars and bars[-1][0] == today_date:
+                prev_close = bars[-2][1] if len(bars) >= 2 else meta.get('chartPreviousClose', close)
+            elif bars:
+                prev_close = bars[-1][1]
+            else:
+                prev_close = meta.get('chartPreviousClose', close)
 
             if not close or close == 0:
                 continue
@@ -732,6 +754,8 @@ def handle_message(event):
                     continue
                 if price["close"] < 10:  # 排除低價股，容易被小額資金拉出失真漲幅
                     continue
+                if abs(price["pct"]) > 10.5:  # 防呆：台股單日漲跌幅上限10%，超過視為資料異常
+                    continue
                 turnover = calc_turnover_billion(price["close"], price["volume"])
                 if turnover < 1:  # 排除成交金額 <1億元，流動性不足
                     continue
@@ -793,6 +817,8 @@ def handle_message(event):
                 if not price:
                     continue
                 if price["close"] < 10:  # 排除低價股
+                    continue
+                if abs(price["pct"]) > 10.5:  # 防呆：漲跌幅超過台股上限視為資料異常
                     continue
                 turnover = calc_turnover_billion(price["close"], price["volume"])
                 if turnover < 1:  # 排除成交金額 <1億元
