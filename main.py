@@ -331,6 +331,116 @@ def _fetch_t86_for_date(query_date):
         print(f"❌ 抓取三大法人資料錯誤（{query_date}）: {e}")
         return None
 
+def save_t86_history(query_date, data):
+    """
+    把某一天的 T86 資料整批寫進 inst_history。
+    query_date 格式 YYYYMMDD。同一天重複寫入會覆蓋（保持最新）。
+    """
+    if not data:
+        return
+    try:
+        trade_date = datetime.strptime(query_date, "%Y%m%d").date()
+    except ValueError:
+        print(f"❌ save_t86_history 日期格式錯誤: {query_date}")
+        return
+
+    rows = [
+        (
+            code,
+            trade_date,
+            info.get("name", ""),
+            info.get("foreign_net_lots", 0),
+            info.get("trust_net_lots", 0),
+            info.get("dealer_net_lots", 0),
+            info.get("total_net_lots", 0),
+        )
+        for code, info in data.items()
+    ]
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        execute_values(
+            cursor,
+            """
+            INSERT INTO inst_history
+                (code, trade_date, name, foreign_net_lots,
+                 trust_net_lots, dealer_net_lots, total_net_lots)
+            VALUES %s
+            ON CONFLICT (code, trade_date) DO UPDATE SET
+                name = EXCLUDED.name,
+                foreign_net_lots = EXCLUDED.foreign_net_lots,
+                trust_net_lots = EXCLUDED.trust_net_lots,
+                dealer_net_lots = EXCLUDED.dealer_net_lots,
+                total_net_lots = EXCLUDED.total_net_lots
+            """,
+            rows,
+            page_size=500,
+        )
+        conn.commit()
+        cursor.close()
+        print(f"💾 已存入 T86 歷史（{query_date}），共 {len(rows)} 檔")
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 寫入 T86 歷史失敗（{query_date}）: {e}")
+    finally:
+        release_db_connection(conn)
+
+
+def get_consecutive_days(code, direction="buy", max_days=20):
+    """
+    從 inst_history 算「三大法人連續買超（或賣超）天數」。
+    direction: "buy" 看連續買超，"sell" 看連續賣超。
+    只算最近 max_days 個有紀錄的交易日；資料不足就回傳目前算得出的天數。
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT total_net_lots FROM inst_history
+            WHERE code = %s
+            ORDER BY trade_date DESC
+            LIMIT %s
+            """,
+            (str(code).strip(), max_days),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+    except Exception as e:
+        print(f"❌ 查詢連續買賣超失敗（{code}）: {e}")
+        return 0
+    finally:
+        release_db_connection(conn)
+
+    streak = 0
+    for (lots,) in rows:
+        lots = lots or 0
+        if direction == "buy" and lots > 0:
+            streak += 1
+        elif direction == "sell" and lots < 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def get_history_days_count():
+    """目前資料庫累積了幾個交易日的法人歷史（用來判斷連續指標可不可信）。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(DISTINCT trade_date) FROM inst_history")
+        n = cursor.fetchone()[0]
+        cursor.close()
+        return n or 0
+    except Exception as e:
+        print(f"❌ 查詢歷史天數失敗: {e}")
+        return 0
+    finally:
+        release_db_connection(conn)
+
+
 def fetch_institutional_data():
     """
     抓當日 T86 資料；若今天資料還沒公布（例如盤中、假日），
@@ -349,6 +459,7 @@ def fetch_institutional_data():
             _t86_cache["cache_date"] = today
             _t86_cache["data_date"] = query_date
             _t86_cache["data"] = data
+            save_t86_history(query_date, data)
             return data
 
     print("⚠️ 往前找了 5 天仍無 T86 資料")
