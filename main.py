@@ -505,7 +505,7 @@ def fetch_institutional_total():
                 return None
 
         breakdown = {}
-        total_net = 0
+        total_net = None
         for row in rows:
             if name_i is None:
                 continue
@@ -516,11 +516,21 @@ def fetch_institutional_total():
                 net_val = (b - s) if (b is not None and s is not None) else None
             if net_val is None:
                 continue
+
+            # 證交所回傳的資料本身就內含一列「合計」，直接採用它，
+            # 不能把它跟其他列一起加總，否則總額會被重複計算一次。
+            if "合計" in name:
+                total_net = net_val
+                continue
+
             breakdown[name] = net_val
-            total_net += net_val
 
         if not breakdown:
             return None
+
+        # 萬一某天沒有「合計」列，才自行加總各單位
+        if total_net is None:
+            total_net = sum(breakdown.values())
         return {"total": total_net, "breakdown": breakdown}
     except Exception as e:
         print(f"❌ 抓取法人合計金額錯誤: {e}")
