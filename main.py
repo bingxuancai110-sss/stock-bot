@@ -90,6 +90,14 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_inst_history_code_date
             ON inst_history (code, trade_date DESC)
         ''')
+        # 上市公司基本資料（產業別）：抓一次即可，用來做「產業趨勢」分析
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stock_info (
+                code TEXT PRIMARY KEY,
+                name TEXT,
+                industry TEXT
+            )
+        ''')
         conn.commit()
         cursor.close()
     except Exception as e:
@@ -426,6 +434,145 @@ def get_consecutive_days(code, direction="buy", max_days=20):
     return streak
 
 
+def get_consecutive_days_batch(codes, direction="buy", max_days=20):
+    """
+    一次查多檔股票的連續買（賣）超天數，只打一次資料庫。
+    回傳 {code: streak}。黑馬／雷達要掃幾十檔，用這個比逐檔查快很多。
+    """
+    codes = [str(c).strip() for c in codes]
+    if not codes:
+        return {}
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT code, trade_date, total_net_lots FROM inst_history
+            WHERE code = ANY(%s)
+            ORDER BY code, trade_date DESC
+            """,
+            (codes,),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+    except Exception as e:
+        print(f"❌ 批次查詢連續買賣超失敗: {e}")
+        return {}
+    finally:
+        release_db_connection(conn)
+
+    series = {}
+    for code, _trade_date, lots in rows:
+        series.setdefault(code, []).append(lots or 0)
+
+    result = {}
+    for code in codes:
+        streak = 0
+        for lots in series.get(code, [])[:max_days]:
+            if direction == "buy" and lots > 0:
+                streak += 1
+            elif direction == "sell" and lots < 0:
+                streak += 1
+            else:
+                break
+        result[code] = streak
+    return result
+
+
+def fetch_and_save_industry():
+    """
+    從 TWSE OpenAPI 抓上市公司基本資料（含產業別），存進 stock_info。
+    產業別幾乎不變，抓一次就夠，之後想更新再打一次端點即可。
+    回傳 (筆數, 產業別樣本清單)。
+    """
+    url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+    try:
+        rows = requests.get(url, timeout=20, headers={'User-Agent': 'Mozilla/5.0'}).json()
+    except Exception as e:
+        print(f"❌ 抓取公司基本資料失敗: {e}")
+        return 0, []
+
+    if not rows:
+        return 0, []
+
+    records = []
+    for row in rows:
+        code = str(row.get("公司代號", "")).strip()
+        name = str(row.get("公司簡稱", "")).strip()
+        industry = str(row.get("產業別", "")).strip()
+        if code:
+            records.append((code, name, industry))
+
+    if not records:
+        return 0, []
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        execute_values(
+            cursor,
+            """
+            INSERT INTO stock_info (code, name, industry)
+            VALUES %s
+            ON CONFLICT (code) DO UPDATE SET
+                name = EXCLUDED.name,
+                industry = EXCLUDED.industry
+            """,
+            records,
+            page_size=500,
+        )
+        conn.commit()
+        cursor.close()
+        print(f"💾 已存入公司基本資料，共 {len(records)} 檔")
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 寫入公司基本資料失敗: {e}")
+        return 0, []
+    finally:
+        release_db_connection(conn)
+
+    sample = sorted({ind for _, _, ind in records if ind})[:30]
+    return len(records), sample
+
+
+_industry_cache = {"map": None}
+
+def get_industry_map(force_reload=False):
+    """回傳 {代號: 產業別}。讀一次就快取在記憶體，避免每次選股都查資料庫。"""
+    if _industry_cache["map"] is not None and not force_reload:
+        return _industry_cache["map"]
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT code, industry FROM stock_info WHERE industry IS NOT NULL AND industry <> ''")
+        rows = cursor.fetchall()
+        cursor.close()
+        _industry_cache["map"] = {code: ind for code, ind in rows}
+        return _industry_cache["map"]
+    except Exception as e:
+        print(f"❌ 讀取產業別失敗: {e}")
+        return {}
+    finally:
+        release_db_connection(conn)
+
+
+def score_from_streak(streak):
+    """連續買超天數轉分數（0-30）。連續性比單日大買更能代表法人真的在佈局。"""
+    if streak >= 8:
+        return 30
+    if streak >= 5:
+        return 25
+    if streak >= 3:
+        return 18
+    if streak >= 2:
+        return 10
+    if streak >= 1:
+        return 5
+    return 0
+
+
 def get_history_days_count():
     """目前資料庫累積了幾個交易日的法人歷史（用來判斷連續指標可不可信）。"""
     conn = get_db_connection()
@@ -715,6 +862,7 @@ def build_healthcheck_report(user_id):
         return "📂 自選股清單是空的\n輸入「加 3081」新增自選"
 
     institutional_data = fetch_institutional_data()
+    streaks = get_consecutive_days_batch(codes)
     rows = []  # (total_score, display_text)
 
     for code in codes:
@@ -725,6 +873,7 @@ def build_healthcheck_report(user_id):
 
         inst = institutional_data.get(code, {})
         net_lots = inst.get("total_net_lots", 0)
+        streak = streaks.get(code, 0)
 
         chip_score = score_from_net_lots(net_lots)
         turnover = calc_turnover_billion(stock["close"], stock["volume"])
@@ -733,11 +882,12 @@ def build_healthcheck_report(user_id):
 
         flag = "🟢" if total_score >= 70 else ("🟡" if total_score >= 40 else "🔴")
         name = inst.get("name") or stock["name"]
+        streak_text = f"　連{streak}買" if streak >= 2 else ""
 
         text = (
             f"{flag} {name} {code}\n"
             f"{stock['close']:.2f}（{stock['pct']:+.2f}%）"
-            f"　法人{net_lots:+,}張　{total_score}分"
+            f"　法人{net_lots:+,}張{streak_text}　{total_score}分"
         )
         rows.append((total_score, text))
 
@@ -800,6 +950,25 @@ def cron_fetch_t86():
     return f"OK. date={_t86_cache.get('data_date')}, stocks={len(data)}", 200
 
 
+@app.route("/sync-industry", methods=["POST", "GET"])
+def sync_industry():
+    """抓取並儲存上市公司產業別。一次性作業，之後想更新再打一次。"""
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    count, sample = fetch_and_save_industry()
+    if not count:
+        return "抓取失敗或無資料，請看 Render Logs。", 200
+
+    get_industry_map(force_reload=True)
+    return (
+        f"產業別同步完成\n"
+        f"共存入：{count} 檔\n"
+        f"產業別樣本（前30種）：\n" + "\n".join(sample)
+    ), 200
+
+
 @app.route("/backfill", methods=["POST", "GET"])
 def backfill_t86():
     """
@@ -814,7 +983,7 @@ def backfill_t86():
         abort(403)
 
     try:
-        days = min(int(request.args.get("days", 10)), 15)
+        days = min(int(request.args.get("days", 5)), 15)
         offset = int(request.args.get("offset", 0))
     except ValueError:
         return "參數錯誤：days 與 offset 必須是數字", 400
@@ -828,7 +997,7 @@ def backfill_t86():
             saved.append(f"{query_date}({len(data)})")
         else:
             skipped.append(query_date)
-        time.sleep(3)  # 禮貌等待，避免被 TWSE 擋
+        time.sleep(1.2)  # 禮貌等待，避免被 TWSE 擋
 
     total_days = get_history_days_count()
     return (
@@ -943,6 +1112,8 @@ def handle_message(event):
             ]
             candidates.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
 
+            streaks = get_consecutive_days_batch([c for c, _ in candidates[:40]])
+
             scored = []
             for code, info in candidates[:40]:
                 price = get_realtime_stock(code)
@@ -958,30 +1129,38 @@ def handle_message(event):
 
                 yoy_pct = revenue_data.get(code, {}).get("yoy_pct")
                 revenue_score = score_from_revenue_growth(yoy_pct)  # 0-50
+                revenue_score = round(revenue_score * 40 / 50)  # 壓縮成 0-40
+
+                streak = streaks.get(code, 0)
+                streak_score = score_from_streak(streak)  # 0-30，法人連續佈局
 
                 chip_raw = score_from_net_lots(info["total_net_lots"])  # 0-40
-                chip_score = round(chip_raw * 25 / 40)  # 壓縮成 0-25
+                chip_score = round(chip_raw * 15 / 40)  # 壓縮成 0-15（單日買超權重降低）
 
                 tech_raw = score_from_technical(price["pct"], turnover)  # 0-60
-                tech_score = round(tech_raw * 25 / 60)  # 壓縮成 0-25
+                tech_score = round(tech_raw * 15 / 60)  # 壓縮成 0-15（當日漲幅只作輔助）
 
-                total_score = revenue_score + chip_score + tech_score  # 滿分 100
-                scored.append((total_score, code, info, price, revenue_score, chip_score, tech_score, yoy_pct))
+                total_score = revenue_score + streak_score + chip_score + tech_score  # 滿分 100
+                scored.append((total_score, code, info, price, revenue_score,
+                               streak_score, streak, chip_score, tech_score, yoy_pct))
 
-            scored.sort(key=lambda x: x[0], reverse=True)  # 依綜合總分排序，營收成長權重最高
+            scored.sort(key=lambda x: x[0], reverse=True)  # 依綜合總分排序，長線指標權重最高
 
             reports = []
-            for rank, (total_score, code, info, price, revenue_score, chip_score, tech_score, yoy_pct) in enumerate(scored[:3], start=1):
+            for rank, (total_score, code, info, price, revenue_score, streak_score,
+                       streak, chip_score, tech_score, yoy_pct) in enumerate(scored[:5], start=1):
                 grade = "🔥 題材爆發" if total_score >= 80 else ("🚀 成長強勢" if total_score >= 60 else "📈 潛力觀察")
                 yoy_text = f"{yoy_pct:+.1f}%" if yoy_pct is not None else "尚無資料"
+                streak_text = f"連續{streak}日買超" if streak >= 1 else "近期無連續買超"
                 report = (
                     f"🐎 智慧黑馬股 #{rank}\n\n"
                     f"股票：{info['name']}\n"
                     f"代號：{code}\n\n"
                     f"黑馬指數：{total_score}／100\n\n"
-                    f"💡 題材／獲利：{revenue_score}／50（月營收年增 {yoy_text}）\n"
-                    f"🏦 籌碼面：{chip_score}／25（三大法人買超 {info['total_net_lots']:,} 張）\n"
-                    f"📈 技術面：{tech_score}／25\n\n"
+                    f"💡 題材／獲利：{revenue_score}／40（月營收年增 {yoy_text}）\n"
+                    f"🔁 法人連續性：{streak_score}／30（{streak_text}）\n"
+                    f"🏦 當日籌碼：{chip_score}／15（買超 {info['total_net_lots']:,} 張）\n"
+                    f"📈 技術面：{tech_score}／15\n\n"
                     f"【即時數據】\n"
                     f"{build_technical_desc(price['pct'], price['volume']//1000, info['total_net_lots'])}\n\n"
                     f"【風險】\n"
@@ -1022,11 +1201,15 @@ def handle_message(event):
                 priced.append((code, info, price))
             priced.sort(key=lambda x: x[2]["pct"], reverse=True)
 
+            streaks = get_consecutive_days_batch([c for c, _, _ in priced[:5]])
+
             reports = []
-            for code, info, price in priced[:3]:
+            for code, info, price in priced[:5]:
                 turnover = calc_turnover_billion(price["close"], price["volume"])
                 r_score = min(100, 60 + score_from_technical(price["pct"], turnover))
                 level = "S級 | 極強攻擊" if price["pct"] >= 2.0 else "A級 | 穩健突破"
+                streak = streaks.get(code, 0)
+                streak_line = f"🔁 法人連續買超：{streak} 日\n" if streak >= 2 else ""
                 report = (
                     f"🚨【盤中雷達】\n\n"
                     f"🔥 強勢股票：{info['name']}\n"
@@ -1034,7 +1217,8 @@ def handle_message(event):
                     f"💰 現價：{price['close']:.2f}\n"
                     f"📈 漲幅：{price['pct']:+.2f}%\n"
                     f"📊 成交量：{int(price['volume']/1000):,}張\n"
-                    f"🏦 三大法人買超：{info['total_net_lots']:,} 張\n\n"
+                    f"🏦 三大法人買超：{info['total_net_lots']:,} 張\n"
+                    f"{streak_line}\n"
                     f"📡 雷達分數：{r_score}／100\n"
                     f"🏆 等級：{level}\n\n"
                     f"【型態】\n"
