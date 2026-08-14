@@ -774,13 +774,17 @@ def score_from_valuation(pe, growth_pct):
     """
     估值分數（0-25）。用 PEG 概念：本益比 ÷ 成長率。
     這裡的成長率用「累計營收年增率」代替標準PEG的EPS成長率——
-    因為免費資料拿不到預估EPS。方向正確，但不是標準PEG，判讀時要留意。
+    因為免費資料拿不到預估EPS。方向正確，但不是標準PEG。
+
+    重要：PEG 極低（<0.3）通常不是真的便宜，而是景氣循環股從谷底反彈
+    造成的失真——營收年增率因去年基期低而暴衝，但本益比用的是過去四季
+    獲利，兩者時間軸對不上。循環股最危險的買點恰好就是本益比看起來
+    最低的時候，所以這段不給滿分，改為示警。
     回傳 (分數, PEG值或None, 說明)
     """
     if pe is None:
         return 10, None, "無本益比資料（可能虧損或剛上市）"
     if growth_pct is None or growth_pct <= 0:
-        # 沒成長就純看本益比高低
         if pe <= 12:
             return 14, None, f"本益比 {pe:.1f} 偏低，但缺乏成長性"
         if pe <= 20:
@@ -788,14 +792,21 @@ def score_from_valuation(pe, growth_pct):
         return 3, None, f"本益比 {pe:.1f} 偏高且無成長"
 
     peg = pe / growth_pct
+
+    # 成長率高到不合常理時，多半是去年基期極低所致，不是本業真的翻倍
+    if growth_pct >= 100:
+        return 12, peg, (f"本益比 {pe:.1f}，PEG {peg:.2f}\n"
+                         f"　　⚠️ 年增 {growth_pct:.0f}% 恐為低基期效應，"
+                         f"PEG 失真，需自行查核獲利品質")
     if peg <= 0.3:
-        return 25, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，成長遠未反映在股價"
+        return 15, peg, (f"本益比 {pe:.1f}，PEG {peg:.2f}\n"
+                         f"　　⚠️ PEG 異常低，留意是否為景氣循環股高獲利期")
     if peg <= 0.5:
-        return 22, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，明顯低估"
+        return 25, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，明顯低估"
     if peg <= 1.0:
-        return 18, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，估值合理"
+        return 20, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，估值合理"
     if peg <= 1.5:
-        return 12, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，估值偏高"
+        return 13, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，估值偏高"
     if peg <= 2.5:
         return 6, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，成長已充分反映"
     return 2, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，估值昂貴"
