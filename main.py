@@ -1580,6 +1580,118 @@ def build_healthcheck_report(user_id):
         report = report[:4750] + "\n\n…（清單過長，已截斷）"
     return report
 
+# --- 個股新聞（Google News RSS，免費、可帶關鍵字查詢） ---
+def fetch_stock_news(keyword, max_items=2, within_hours=30):
+    """
+    抓某個關鍵字的最新新聞。只回傳標題、來源、連結、發布時間——
+    不抓內文也不轉貼全文，版權上安全，實務上你也只需要標題判斷要不要點進去。
+    within_hours 用來過濾掉舊聞，預設只看 30 小時內的。
+    """
+    import xml.etree.ElementTree as ET
+    from urllib.parse import quote
+
+    query = quote(f"{keyword} 股價 OR 營收 OR 法人")
+    url = (f"https://news.google.com/rss/search?q={query}"
+           f"&hl=zh-TW&gl=TW&ceid=TW:zh-Hant")
+    try:
+        res = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+        root = ET.fromstring(res.content)
+    except Exception as e:
+        print(f"❌ 抓取新聞失敗（{keyword}）: {e}")
+        return []
+
+    now = datetime.now(timezone.utc)
+    items = []
+    for item in root.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        source = (item.findtext("source") or "").strip()
+        pub = item.findtext("pubDate")
+
+        if not title:
+            continue
+
+        # Google News 的標題格式是「標題 - 媒體名」，把媒體名切出來
+        if " - " in title and not source:
+            title, source = title.rsplit(" - ", 1)
+
+        if pub:
+            try:
+                pub_dt = datetime.strptime(pub, "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
+                if (now - pub_dt).total_seconds() > within_hours * 3600:
+                    continue
+            except ValueError:
+                pass
+
+        items.append({"title": title.strip(), "source": source.strip(), "link": link})
+        if len(items) >= max_items:
+            break
+    return items
+
+
+def build_news_digest(user_id):
+    """
+    盤後新聞摘要：只推跟使用者自選股有關的新聞。
+    沒有新聞的股票直接略過，不硬湊版面。
+    """
+    codes = get_user_watchlist(user_id)
+    if not codes:
+        return None
+
+    inst_data = fetch_institutional_data()
+    lines = [f"📰 自選股新聞（{datetime.now().strftime('%m/%d')}）", "─" * 14]
+
+    found = 0
+    for code in codes:
+        name = (inst_data.get(code, {}).get("name")
+                or STOCK_NAME_MAP.get(code) or code)
+        news = fetch_stock_news(name, max_items=2)
+        if not news:
+            continue
+        found += 1
+        lines.append(f"\n🔹 {name} {code}")
+        for n in news:
+            src = f"（{n['source']}）" if n["source"] else ""
+            lines.append(f"・{n['title']}{src}")
+            if n["link"]:
+                lines.append(f"　{n['link']}")
+        time.sleep(0.5)  # 禮貌等待，避免短時間內連續請求
+
+    if not found:
+        lines.append("今日自選股無相關新聞")
+    else:
+        lines.append("\n─" * 1)
+        lines.append("※ 僅列標題與連結，詳情請點原文")
+
+    digest = "\n".join(lines)
+    if len(digest) > 4800:
+        digest = digest[:4750] + "\n\n…（內容過長，已截斷）"
+    return digest
+
+
+@app.route("/cron/push-news", methods=["POST", "GET"])
+def cron_push_news():
+    """盤後推播自選股新聞。建議每個交易日 15:00 跑一次，一天一則。"""
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    users = get_notify_users()
+    sent, failed, empty = 0, 0, 0
+    for uid in users:
+        msg = build_news_digest(uid)
+        if not msg:
+            empty += 1
+            continue
+        try:
+            line_bot_api.push_message(uid, TextSendMessage(text=msg))
+            sent += 1
+        except Exception as e:
+            print(f"❌ 新聞推播失敗 {uid}: {e}")
+            failed += 1
+    return f"News push done. sent={sent}, failed={failed}, empty={empty}", 200
+
+
 # --- 排程推播訊息建構與 Cron 端點 ---
 def build_digest(user_id):
     codes = get_user_watchlist(user_id)
@@ -1770,18 +1882,34 @@ def handle_message(event):
     elif 4 <= len(pure_code) <= 6 and len(text) <= 7 and " " not in text:
         data = get_realtime_stock(pure_code)
         if data:
+            inst = fetch_institutional_data().get(pure_code, {})
+            disp_name = inst.get("name") or data["name"]
             reply = (
-                f"📊 {data['code']} {data['name']}\n"
-                f"==================-\n"
+                f"📊 {data['code']} {disp_name}\n"
+                f"──────────────\n"
                 f"💰 現價：{data['close']:.2f} ({data['pct']:+.2f}%)\n"
                 f"🔺 高/低：{data['high']:.2f} / {data['low']:.2f}\n"
                 f"📦 量能：{int(data['volume'] / 1000):,} 張\n"
-                f"-------------------\n"
-                f"🛡️ 短線支撐：{data['support']}\n"
-                f"🚧 短線壓力：{fmt_resistance(data['resistance'])}"
+                f"──────────────\n"
+                f"🛡️ 支撐：{data['support']}\n"
+                f"🚧 壓力：{fmt_resistance(data['resistance'])}\n"
+                f"\n【位階】\n{build_position_desc(data)}"
             )
+
+            news = fetch_stock_news(disp_name, max_items=2)
+            if news:
+                reply += "\n\n📰 相關新聞"
+                for n in news:
+                    src = f"（{n['source']}）" if n["source"] else ""
+                    reply += f"\n・{n['title']}{src}"
+                    if n["link"]:
+                        reply += f"\n　{n['link']}"
         else:
             reply = f"❌ 查無代號 {pure_code} 的行情，請確認代號是否正確。"
+
+    # 6.5 自選股新聞（手動查詢，跟盤後推播同一份內容）
+    elif text in ["新聞", "自選新聞"]:
+        reply = build_news_digest(user_id) or "📂 自選清單是空的，先用「加 2330」新增自選"
 
     # 7. 盤前速覽
     elif text in ["盤前", "早安"]:
@@ -2003,10 +2131,11 @@ def handle_message(event):
             "• 輸入「雷達」➜ 帶量突破、法人買超的強勢股\n\n"
             "📂 自選與策略管理\n"
             "• 輸入「自選」或「健檢」➜ 自選股評分＋支撐壓力\n"
+            "• 輸入「新聞」➜ 自選股相關新聞標題與連結\n"
             "• 輸入「加 3081」➜ 新增自選\n"
             "• 輸入「刪 3081」➜ 移除自選\n"
             "• 輸入「推播開 / 推播關」➜ 開啟或關閉盤前摘要推播\n"
-            "• 直接輸入代號（如 3081、6442）➜ 查即時行情與支撐"
+            "• 直接輸入代號（如 3081、6442）➜ 行情、位階與相關新聞"
         )
     else:
         reply = "🤖 指令未識別，請輸入「選單」查看可用功能！"
