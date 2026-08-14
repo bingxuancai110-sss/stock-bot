@@ -8,7 +8,7 @@ from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-from datetime import datetime
+from datetime import datetime, timedelta
 import random
 
 app = Flask(__name__)
@@ -233,25 +233,21 @@ def get_realtime_stock(code):
     return None
 
 # --- 三大法人買賣超（TWSE T86，全市場，一天快取一次） ---
-_t86_cache = {"date": None, "data": {}}
+# 快取用「今天日期」當 key，但實際資料可能是往前找到的最近一個交易日
+_t86_cache = {"cache_date": None, "data_date": None, "data": {}}
 
-def fetch_institutional_data():
-    today = datetime.now().strftime("%Y%m%d")
-    if _t86_cache["date"] == today and _t86_cache["data"]:
-        return _t86_cache["data"]
-
+def _fetch_t86_for_date(query_date):
+    """向 TWSE 抓取指定日期的 T86 資料，成功回傳 dict，查無資料回傳 None。"""
     try:
         url = "https://www.twse.com.tw/rwd/zh/fund/T86"
-        params = {"date": today, "selectType": "ALL", "response": "json"}
+        params = {"date": query_date, "selectType": "ALL", "response": "json"}
         res = requests.get(url, params=params, timeout=10, headers={'User-Agent': 'Mozilla/5.0'}).json()
 
         if res.get("stat") != "OK":
-            print(f"⚠️ T86 無資料（可能非交易日）: {res.get('stat')}")
-            return _t86_cache["data"]
+            return None
 
         fields = res.get("fields", [])
         rows = res.get("data", [])
-        print(f"✅ T86 抓取成功，共 {len(rows)} 筆，欄位: {fields}")
 
         def col(name, default=None):
             return fields.index(name) if name in fields else default
@@ -286,12 +282,37 @@ def fetch_institutional_data():
                 "total_net_lots": total_net // 1000,
             }
 
-        _t86_cache["date"] = today
-        _t86_cache["data"] = result
+        if not result:
+            return None
+
+        print(f"✅ T86 抓取成功（{query_date}），共 {len(rows)} 筆")
         return result
     except Exception as e:
-        print(f"❌ 抓取三大法人資料錯誤: {e}")
+        print(f"❌ 抓取三大法人資料錯誤（{query_date}）: {e}")
+        return None
+
+def fetch_institutional_data():
+    """
+    抓當日 T86 資料；若今天資料還沒公布（例如盤中、假日），
+    自動往前找最近一個有資料的交易日，最多往前找 5 天。
+    一天只需成功抓取一次，之後直接用快取。
+    """
+    today = datetime.now().strftime("%Y%m%d")
+
+    if _t86_cache["cache_date"] == today and _t86_cache["data"]:
         return _t86_cache["data"]
+
+    for days_back in range(0, 6):
+        query_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
+        data = _fetch_t86_for_date(query_date)
+        if data:
+            _t86_cache["cache_date"] = today
+            _t86_cache["data_date"] = query_date
+            _t86_cache["data"] = data
+            return data
+
+    print("⚠️ 往前找了 5 天仍無 T86 資料")
+    return _t86_cache["data"]
 
 # --- 真實評分邏輯 ---
 def score_from_net_lots(lots):
@@ -361,7 +382,7 @@ def generate_morning_brief():
 def build_healthcheck_report(user_id):
     codes = get_user_watchlist(user_id)
     if not codes:
-        return "📂 你的自選股清單是空的，先輸入「加 3081」新增自選吧！"
+        return "📂 自選股清單是空的\n輸入「加 3081」新增自選"
 
     institutional_data = fetch_institutional_data()
     rows = []  # (total_score, display_text)
@@ -369,7 +390,7 @@ def build_healthcheck_report(user_id):
     for code in codes:
         stock = get_realtime_stock(code)
         if not stock:
-            rows.append((-1, f"⚪ {code}：查無行情資料"))
+            rows.append((-1, f"⚪ {code} 查無行情"))
             continue
 
         inst = institutional_data.get(code, {})
@@ -383,21 +404,19 @@ def build_healthcheck_report(user_id):
         name = inst.get("name") or stock["name"]
 
         text = (
-            f"{flag} {name}（{code}）\n"
-            f"　現價 {stock['close']:.2f}（{stock['pct']:+.2f}%）\n"
-            f"　籌碼 {net_lots:+,} 張｜總分 {total_score}／100"
+            f"{flag} {name} {code}\n"
+            f"{stock['close']:.2f}（{stock['pct']:+.2f}%）"
+            f"　法人{net_lots:+,}張　{total_score}分"
         )
         rows.append((total_score, text))
 
     rows.sort(key=lambda x: x[0], reverse=True)
     body = "\n\n".join(text for _, text in rows)
-    header = f"📋 自選股健檢報告（共 {len(codes)} 檔）\n{'─' * 16}\n\n"
-    footer = "\n\n" + "─" * 16 + "\n🟢 70分以上 ・🟡 40-69分 ・🔴 40分以下"
-    report = header + body + footer
+    report = f"📋 自選股健檢（{len(codes)}檔）\n\n{body}\n\n🟢70+ 🟡40-69 🔴<40"
 
     # LINE 單則文字訊息長度上限保護（約 5000 字），過長就截斷並提示
     if len(report) > 4800:
-        report = report[:4750] + "\n\n…（清單過長，已截斷，建議分批查詢或減少自選檔數）"
+        report = report[:4750] + "\n\n…（清單過長，已截斷）"
     return report
 
 # --- 排程推播訊息建構與 Cron 端點 ---
