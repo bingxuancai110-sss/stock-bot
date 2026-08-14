@@ -777,7 +777,7 @@ def score_from_technical(pct, turnover_billion):
     vol_score = max(0, min(30, turnover_billion))  # 1億元＝1分，30億元封頂
     return round(pct_score + vol_score)
 
-def build_technical_desc(pct, volume_lots, net_lots):
+def build_technical_desc(pct, volume_lots, net_lots, turnover_billion=None):
     parts = []
     if pct >= 3:
         parts.append(f"・當日大漲 {pct:.2f}%，漲勢強勁")
@@ -790,12 +790,14 @@ def build_technical_desc(pct, volume_lots, net_lots):
     else:
         parts.append(f"・當日持平（{pct:+.2f}%）")
 
-    if volume_lots >= 10000:
-        parts.append(f"・成交量達 {volume_lots:,} 張，量能爆發")
-    elif volume_lots >= 3000:
-        parts.append(f"・成交量 {volume_lots:,} 張，量能明顯放大")
-    else:
+    if turnover_billion is None:
         parts.append(f"・成交量 {volume_lots:,} 張")
+    elif turnover_billion >= 50:
+        parts.append(f"・成交金額 {turnover_billion:.1f} 億（{volume_lots:,} 張），量能爆發")
+    elif turnover_billion >= 15:
+        parts.append(f"・成交金額 {turnover_billion:.1f} 億（{volume_lots:,} 張），量能明顯放大")
+    else:
+        parts.append(f"・成交金額 {turnover_billion:.1f} 億（{volume_lots:,} 張）")
 
     if net_lots > 0:
         parts.append(f"・三大法人合計買超 {net_lots:,} 張")
@@ -1281,11 +1283,15 @@ def handle_message(event):
             reply = "❌ 目前無法取得三大法人資料，可能是非交易時段或非交易日，請稍後再試。"
         else:
             revenue_data = fetch_monthly_revenue()
+            bh_industry_map = get_industry_map()
             candidates = [
                 (code, info) for code, info in inst_data.items()
                 if len(code) == 4 and code.isdigit()
                 and not code.startswith("00")  # 排除 ETF（0050、0056...）
                 and info["total_net_lots"] > 0
+                # 排除金融保險業：銀行的「營收」是利息與手續費收入，
+                # 性質與製造業不同，套用同一套營收成長標準會失真
+                and bh_industry_map.get(code, "").zfill(2) != "17"
             ]
             candidates.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
 
@@ -1345,7 +1351,7 @@ def handle_message(event):
                     f"🏦 當日籌碼：{chip_score}／15（買超 {info['total_net_lots']:,} 張）\n"
                     f"📈 技術面：{tech_score}／15\n\n"
                     f"【即時數據】\n"
-                    f"{build_technical_desc(price['pct'], price['volume']//1000, info['total_net_lots'])}\n\n"
+                    f"{build_technical_desc(price['pct'], price['volume']//1000, info['total_net_lots'], calc_turnover_billion(price['close'], price['volume']))}\n\n"
                     f"【風險】\n"
                     f"{build_risk_desc(price['pct'], info['total_net_lots'])}\n\n"
                     f"【黑馬判定】\n"
@@ -1370,28 +1376,40 @@ def handle_message(event):
             candidates.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
 
             priced = []
-            for code, info in candidates[:30]:
+            for code, info in candidates[:60]:
                 price = get_realtime_stock(code)
                 if not price:
                     continue
                 if price["close"] < 10:  # 排除低價股
                     continue
-                if abs(price["pct"]) > 10.5:  # 防呆：漲跌幅超過台股上限視為資料異常
+                # 雷達的定位是「剛啟動、還沒噴出」：漲幅太小代表還沒發動，
+                # 太大（接近漲停）代表追高風險高，兩端都排除
+                if not (1.5 <= price["pct"] <= 6.0):
                     continue
                 turnover = calc_turnover_billion(price["close"], price["volume"])
                 if turnover < 1:  # 排除成交金額 <1億元
                     continue
                 priced.append((code, info, price))
-            priced.sort(key=lambda x: x[2]["pct"], reverse=True)
 
-            streaks = get_consecutive_days_batch([c for c, _, _ in priced[:5]])
+            streaks = get_consecutive_days_batch([c for c, _, _ in priced])
+
+            # 排序改用「法人連續買超天數」優先，同天數再比當日買超張數，
+            # 而不是單純比誰漲最多——漲最多的通常也是最危險的
+            priced.sort(
+                key=lambda x: (streaks.get(x[0], 0), x[1]["total_net_lots"]),
+                reverse=True,
+            )
 
             reports = []
             for code, info, price in priced[:5]:
                 turnover = calc_turnover_billion(price["close"], price["volume"])
-                r_score = min(100, 60 + score_from_technical(price["pct"], turnover))
-                level = "S級 | 極強攻擊" if price["pct"] >= 2.0 else "A級 | 穩健突破"
                 streak = streaks.get(code, 0)
+                if streak >= 4:
+                    level = "🅰️ 法人持續加碼"
+                elif streak >= 2:
+                    level = "🅱️ 連續買超中"
+                else:
+                    level = "👀 單日進場，觀察中"
                 streak_line = f"🔁 法人連續買超：{streak} 日\n" if streak >= 2 else ""
                 report = (
                     f"🚨【盤中雷達】\n\n"
@@ -1399,13 +1417,12 @@ def handle_message(event):
                     f"📌 股票代號：{code}\n\n"
                     f"💰 現價：{price['close']:.2f}\n"
                     f"📈 漲幅：{price['pct']:+.2f}%\n"
-                    f"📊 成交量：{int(price['volume']/1000):,}張\n"
+                    f"📊 成交金額：{turnover:.1f} 億\n"
                     f"🏦 三大法人買超：{info['total_net_lots']:,} 張\n"
                     f"{streak_line}\n"
-                    f"📡 雷達分數：{r_score}／100\n"
-                    f"🏆 等級：{level}\n\n"
+                    f"🏆 狀態：{level}\n\n"
                     f"【型態】\n"
-                    f"{build_technical_desc(price['pct'], price['volume']//1000, info['total_net_lots'])}\n\n"
+                    f"{build_technical_desc(price['pct'], price['volume']//1000, info['total_net_lots'], calc_turnover_billion(price['close'], price['volume']))}\n\n"
                     f"【注意】\n"
                     f"{build_risk_desc(price['pct'], info['total_net_lots'])}\n"
                     f"-----------------------------------"
@@ -1421,7 +1438,7 @@ def handle_message(event):
             "• 輸入「盤前」➜ 美股與總經速覽\n"
             "• 輸入「解盤」➜ 盤後大盤與法人資金解析\n"
             "• 輸入「黑馬」➜ 有題材／營收成長的潛力股\n"
-            "• 輸入「雷達」➜ 法人買超中漲幅最強前三\n\n"
+            "• 輸入「雷達」➜ 法人連續買超、剛啟動的股票\n\n"
             "📂 自選與策略管理\n"
             "• 輸入「自選」➜ 查看雲端自選與支撐壓力\n"
             "• 輸入「健檢」➜ 自選股一鍵健檢評分報告\n"
