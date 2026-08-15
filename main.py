@@ -270,8 +270,15 @@ def get_realtime_stock(code):
                 prev_close = bars[-2][1] if len(bars) >= 2 else meta.get('chartPreviousClose', close)
                 hist = bars[:-1]  # 計算位階時排除今天，避免今天自己抬高自己的高點
             elif bars:
-                prev_close = bars[-1][1]
-                hist = bars
+                # 序列停在昨天（或更早）——可能是盤前、假日、非交易日。
+                # 若目前報價就等於最後一根K的收盤，代表這根K就是「最新收盤」，
+                # 昨收要再往前一根，否則會拿自己比自己，永遠顯示 0.00%。
+                if abs(close - bars[-1][1]) < 0.001 and len(bars) >= 2:
+                    prev_close = bars[-2][1]
+                    hist = bars[:-1]
+                else:
+                    prev_close = bars[-1][1]
+                    hist = bars
             else:
                 prev_close = meta.get('chartPreviousClose', close)
                 hist = []
@@ -1697,15 +1704,20 @@ def build_digest(user_id):
     codes = get_user_watchlist(user_id)
     if not codes:
         return None
-    lines = ["☀️ 【每日自選股盤前摘要】\n==================="]
+    inst_data = fetch_institutional_data()
+    lines = [f"☀️ 【每日自選股摘要】", "─" * 14]
     for code in codes:
         data = get_realtime_stock(code)
         if data:
+            name = inst_data.get(code, {}).get("name") or data["name"]
             light = "🔴" if data['pct'] >= 0 else "🟢"
-            lines.append(f"{light} {code} {data['name']}｜{data['close']:.2f}（{data['pct']:+.2f}%）\n🛡️ 支撐：{data['support']} | 🚧 壓力：{fmt_resistance(data['resistance'])}")
+            lines.append(
+                f"\n{light} {name} {code}｜{data['close']:.2f}（{data['pct']:+.2f}%）\n"
+                f"🛡️ 支撐：{data['support']} | 🚧 壓力：{fmt_resistance(data['resistance'])}"
+            )
         else:
-            lines.append(f"⚪ {code} 查無行情")
-    return "\n\n".join(lines)
+            lines.append(f"\n⚪ {code} 查無行情")
+    return "\n".join(lines)
 
 @app.route("/cron/push-watchlist", methods=["POST", "GET"])
 def cron_push_watchlist():
@@ -1868,7 +1880,7 @@ def handle_message(event):
     # 3. 推播開關設定
     elif text in ["推播開", "開啟推播", "訂閱"]:
         set_notify(user_id, True)
-        reply = "🔔 已開啟每日自選股推播！將於每個交易日盤前 08:45 為你發送摘要。"
+        reply = "🔔 已開啟每日推播，推播時間依排程設定為準。"
     elif text in ["推播關", "關閉推播", "取消訂閱"]:
         set_notify(user_id, False)
         reply = "🔕 已關閉每日推播。"
