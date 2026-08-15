@@ -636,6 +636,8 @@ def get_realtime_stock(code):
                 "vol_ratio": vol_ratio,
                 "pos_vs_60d_high": pos_vs_60d_high,
                 "up_streak": up_streak,
+                # 近期收盤序列，供組合頁計算個股之間的相關係數用
+                "closes": [b[1] for b in hist[-60:]] + [float(close)],
             }
         except:
             continue
@@ -2213,6 +2215,7 @@ def build_quick_reply():
         ("📂 自選", "自選"),
         ("📊 解盤", "解盤"),
         ("📰 新聞", "新聞"),
+        ("🌐 網頁", "網頁"),
     ]
     return QuickReply(items=[
         QuickReplyButton(action=MessageAction(label=label, text=text))
@@ -2239,6 +2242,9 @@ def build_menu_flex():
         ("我的自選", "#2E7D5B", "#E6F1EC", [
             ("自選", "持股評分、位階與支撐壓力"),
             ("新聞", "自選股相關新聞與連結"),
+        ]),
+        ("網頁版", "#6B4E9E", "#EFEAF7", [
+            ("網頁", "🚧 Coming soon　持股組合分析\n產業集中度、相關係數、加權基本面"),
         ]),
         ("推播設定", "#7A8290", "#EDEFF1", [
             ("申請推播", "🔒 VIP 限定　每日盤前自動發送\n非 VIP 可直接點上方「盤前」查看相同內容"),
@@ -2320,9 +2326,9 @@ def build_menu_flex():
 # ============================================================
 BASE_CSS = """
 :root{
-  --paper:#F2F3F0; --paper-2:#EAEBE7; --ink:#1B2027;
-  --ink-soft:#5C646E; --ink-faint:#8E959C; --rule:#D3D6D0;
-  --up:#C8362B; --down:#1F7A5A; --brass:#8A6A3B; --brass-2:#A98A5C;
+  --paper:#E8E9E4; --paper-2:#DBDDD6; --ink:#12161B;
+  --ink-soft:#454C55; --ink-faint:#767D85; --rule:#B9BDB4;
+  --up:#A82A20; --down:#155C42; --brass:#6E5228; --brass-2:#8A6A3B;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--paper);color:var(--ink);line-height:1.55;
@@ -2362,22 +2368,47 @@ form.add{margin-top:26px;padding:18px;background:var(--paper-2)}
 form.add h3{font-size:14px;font-weight:600;margin-bottom:12px}
 .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
 label{display:block;font-size:11.5px;color:var(--ink-soft);margin-bottom:3px}
-input,select{width:100%;padding:9px 10px;font-size:14px;background:#FFF;
+input,select{width:100%;padding:9px 10px;font-size:14px;background:#FDFDFC;
   border:1px solid var(--rule);border-radius:2px;color:var(--ink);
   font-family:inherit}
 input:focus,select:focus{outline:2px solid var(--brass);outline-offset:-1px}
 button{margin-top:12px;padding:10px 20px;font-size:14px;font-family:inherit;
   background:var(--ink);color:var(--paper);border:0;border-radius:2px;cursor:pointer}
 button:hover{background:#000}
-.del{background:none;color:var(--ink-faint);font-size:11.5px;padding:0;margin:0;
-  text-decoration:underline;cursor:pointer}
-.del:hover{background:none;color:var(--up)}
+.del{background:#FFF;color:var(--ink-soft);font-size:11.5px;
+  padding:3px 10px;margin:0;border:1px solid var(--rule);border-radius:2px;
+  cursor:pointer;line-height:1.4}
+.del:hover{background:var(--up);color:#FFF;border-color:var(--up)}
 .empty{padding:40px 0;text-align:center;color:var(--ink-faint);font-size:14px}
 .msg{margin:14px 0;padding:11px 14px;background:var(--paper-2);
   border-left:2px solid var(--brass);font-size:13px}
 footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--rule);
   font-size:11.5px;color:var(--ink-faint);line-height:1.7}
 .totals{display:flex;gap:28px;flex-wrap:wrap;padding:18px 0 8px}
+.band{display:flex;height:48px;width:100%;overflow:hidden;border-radius:2px;
+  margin-top:4px}
+.band span{display:flex;align-items:center;justify-content:center;
+  font-size:11.5px;font-weight:500;white-space:nowrap;overflow:hidden}
+.legend{display:flex;flex-wrap:wrap;gap:5px 18px;margin-top:10px;
+  font-size:12.5px;color:var(--ink-soft)}
+.legend i{display:inline-block;width:9px;height:9px;margin-right:5px;
+  border-radius:1px}
+.callout{margin-top:14px;padding:13px 15px;background:var(--paper-2);
+  border-left:2px solid var(--brass);font-size:13.5px;line-height:1.7}
+.alert{padding:13px 0;border-bottom:1px solid var(--rule);font-size:13.5px;
+  line-height:1.7;display:flex;gap:11px}
+.alert .tag{font-size:10.5px;letter-spacing:.1em;color:var(--brass);
+  padding-top:3px;white-space:nowrap}
+.q{padding:14px 0;border-bottom:1px solid var(--rule)}
+.q-title{font-size:13.5px;font-weight:500;margin-bottom:8px}
+.opt{display:block;font-size:13.5px;color:var(--ink-soft);padding:4px 0;
+  cursor:pointer;margin:0}
+.opt input{width:auto;margin-right:7px}
+.req{font-size:10.5px;color:var(--brass);letter-spacing:.08em;margin-left:5px}
+.opt-tag{font-size:10.5px;color:var(--ink-faint);letter-spacing:.08em;
+  margin-left:5px}
+.hint{font-size:12px;color:var(--ink-soft);background:var(--paper-2);
+  padding:10px 13px;border-left:2px solid var(--brass);margin-top:8px}
 .total-label{font-size:12px;color:var(--ink-soft)}
 .total-value{font-size:24px;font-weight:600;margin-top:2px}
 .total-sub{font-size:12.5px}
@@ -2401,7 +2432,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     nav = ""
     if nav_active:
         nav = ("<nav>"
-               + tab("/web", "組合", "portfolio")
+               + tab("/web/portfolio", "組合", "portfolio")
                + tab("/web/positions", "持股", "positions")
                + tab("/web/settings", "設定", "settings")
                + "</nav>")
@@ -2452,7 +2483,8 @@ def web_login():
 @app.route("/web")
 @web_login_required
 def web_home(uid):
-    return redirect("/web/positions")
+    # 有持股就直接看分析，沒有就先去輸入
+    return redirect("/web/portfolio" if get_positions(uid) else "/web/positions")
 
 
 @app.route("/web/positions", methods=["GET", "POST"])
@@ -2582,6 +2614,384 @@ def web_positions(uid):
     return render_page("持股", body, nav_active="positions")
 
 
+# ── 問卷與門檻設定 ──
+# 前四題必填，其餘可略過；沒填的用保守預設值，並在畫面上說明原因。
+PROFILE_FIELDS = [
+    ("age_band", "你的年齡區間", True,
+     ["未滿 30 歲", "30–39 歲", "40–49 歲", "50–59 歲", "60 歲以上"]),
+    ("horizon", "這筆錢預計多久之後可能會用到？", True,
+     ["1 年內", "1–3 年", "3–10 年", "10 年以上", "沒有特定用途"]),
+    ("asset_share", "這筆投資佔你可動用資產的比重大約是？", True,
+     ["不到四分之一", "約四分之一到一半", "約一半以上", "幾乎全部"]),
+    ("income_type", "你的收入穩定度", True,
+     ["固定薪資", "固定薪資 + 變動獎金", "接案或營業收入", "目前無固定收入"]),
+    ("drawdown_experience", "過去實際經歷過最大的帳面虧損？當時做了什麼？", False,
+     ["沒有經歷過明顯虧損", "虧損 10% 以內就減碼了", "撐過 20–30% 沒有動作",
+      "撐過 30% 以上沒有動作", "曾經在虧損時加碼"]),
+    ("check_frequency", "你多久會看一次帳戶？", False,
+     ["一天多次", "每天一次", "每週", "每月或更少"]),
+    ("holding_period", "你的持股平均會抱多久？", False,
+     ["幾天", "幾週", "幾個月", "一年以上", "不一定"]),
+    ("other_assets", "除了台股，你還有哪些部位？", False,
+     ["美股", "ETF", "債券", "房地產", "定存或現金", "幾乎只有台股"]),
+]
+
+DEFAULT_LOSS_ALERT = 20
+DEFAULT_POSITION_ALERT = 30
+CONSERVATIVE_LOSS_ALERT = 15
+CONSERVATIVE_POSITION_ALERT = 25
+
+
+def get_profile(user_id):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT age_band, horizon, asset_share, income_type,
+                   drawdown_experience, loss_alert_pct, position_alert_pct,
+                   check_frequency, holding_period, other_assets
+            FROM user_profile WHERE user_id = %s
+        """, (str(user_id).strip(),))
+        r = cursor.fetchone()
+        cursor.close()
+        if not r:
+            return {}
+        keys = ["age_band", "horizon", "asset_share", "income_type",
+                "drawdown_experience", "loss_alert_pct", "position_alert_pct",
+                "check_frequency", "holding_period", "other_assets"]
+        return dict(zip(keys, r))
+    except Exception as e:
+        print(f"❌ 讀取設定失敗: {e}")
+        return {}
+    finally:
+        release_db_connection(conn)
+
+
+def save_profile(user_id, data):
+    cols = ["age_band", "horizon", "asset_share", "income_type",
+            "drawdown_experience", "loss_alert_pct", "position_alert_pct",
+            "check_frequency", "holding_period", "other_assets"]
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            INSERT INTO user_profile (user_id, {', '.join(cols)}, updated_at)
+            VALUES (%s, {', '.join(['%s'] * len(cols))}, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+                {', '.join(f'{c} = EXCLUDED.{c}' for c in cols)},
+                updated_at = NOW()
+        """, (str(user_id).strip(), *[data.get(c) for c in cols]))
+        conn.commit()
+        cursor.close()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 儲存設定失敗: {e}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def get_thresholds(profile):
+    """
+    取得提醒門檻。使用者沒自訂時給預設值；
+    若他表示「沒有經歷過明顯虧損」，預設改保守一點——
+    沒真的痛過的人普遍高估自己的承受度。
+    """
+    never = profile.get("drawdown_experience") == "沒有經歷過明顯虧損"
+    loss = profile.get("loss_alert_pct")
+    pos = profile.get("position_alert_pct")
+    conservative = never and loss is None and pos is None
+    return {
+        "loss": loss or (CONSERVATIVE_LOSS_ALERT if never else DEFAULT_LOSS_ALERT),
+        "position": pos or (CONSERVATIVE_POSITION_ALERT if never else DEFAULT_POSITION_ALERT),
+        "conservative": conservative,
+    }
+
+
+@app.route("/web/settings", methods=["GET", "POST"])
+@web_login_required
+def web_settings(uid):
+    msg = ""
+    if request.method == "POST":
+        data = {k: (request.form.get(k) or None) for k, _, _, _ in PROFILE_FIELDS}
+        for k in ("loss_alert_pct", "position_alert_pct"):
+            v = request.form.get(k)
+            data[k] = int(v) if v and v.isdigit() else None
+        if all(data.get(k) for k, _, req, _ in PROFILE_FIELDS if req):
+            save_profile(uid, data)
+            msg = "設定已儲存。"
+        else:
+            msg = "前四題為必填，請確認都已選擇。"
+
+    p = get_profile(uid)
+    th = get_thresholds(p)
+
+    def radio_group(key, label, required, options):
+        opts = "".join(
+            f'<label class="opt"><input type="radio" name="{key}" value="{o}"'
+            f'{" checked" if p.get(key) == o else ""}'
+            f'{" required" if required else ""}> {o}</label>'
+            for o in options
+        )
+        req = '<span class="req">必填</span>' if required else '<span class="opt-tag">可略過</span>'
+        return f'<div class="q"><div class="q-title">{label} {req}</div>{opts}</div>'
+
+    required_html = "".join(
+        radio_group(k, l, r, o) for k, l, r, o in PROFILE_FIELDS if r)
+    optional_html = "".join(
+        radio_group(k, l, r, o) for k, l, r, o in PROFILE_FIELDS if not r)
+
+    def sel(key, current, options):
+        return "".join(
+            f'<option value="{v}"{" selected" if str(current) == str(v) else ""}>{t}</option>'
+            for v, t in options)
+
+    body = f"""
+{f'<div class="msg">{msg}</div>' if msg else ''}
+<form method="post">
+
+<div class="section-head"><h2>基本設定</h2>
+  <span class="section-note">四題必填</span></div>
+{required_html}
+
+<div class="section-head"><h2>提醒門檻</h2>
+  <span class="section-note">分析頁會依此判斷</span></div>
+<div class="fields" style="margin-bottom:6px">
+  <div><label>帳面虧損達多少時提醒</label>
+    <select name="loss_alert_pct">
+      <option value="">使用預設（{th['loss']}%）</option>
+      {sel('loss_alert_pct', p.get('loss_alert_pct'),
+           [(10, '10%'), (15, '15%'), (20, '20%'), (30, '30%')])}
+    </select></div>
+  <div><label>單一持股佔比超過多少時提醒</label>
+    <select name="position_alert_pct">
+      <option value="">使用預設（{th['position']}%）</option>
+      {sel('position_alert_pct', p.get('position_alert_pct'),
+           [(20, '20%'), (25, '25%'), (30, '30%'), (40, '40%')])}
+    </select></div>
+</div>
+{'<div class="hint">你表示尚無實際回檔經驗，預設門檻已自動調得較保守。</div>'
+ if th['conservative'] else ''}
+
+<div class="section-head"><h2>進階設定</h2>
+  <span class="section-note">可略過，填了分析會更貼近你</span></div>
+{optional_html}
+
+<button type="submit">儲存設定</button>
+</form>"""
+    return render_page("設定", body, nav_active="settings")
+
+
+# ============================================================
+# 組合分析
+# ============================================================
+def pearson(xs, ys):
+    """兩組報酬率的相關係數。長度不足或無波動時回傳 None，不硬算。"""
+    n = min(len(xs), len(ys))
+    if n < 10:
+        return None
+    xs, ys = xs[-n:], ys[-n:]
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxy = sum((a - mx) * (b - my) for a, b in zip(xs, ys))
+    sxx = sum((a - mx) ** 2 for a in xs)
+    syy = sum((b - my) ** 2 for b in ys)
+    if sxx <= 0 or syy <= 0:
+        return None
+    return sxy / (sxx * syy) ** 0.5
+
+
+def daily_returns(closes):
+    return [(closes[i] - closes[i - 1]) / closes[i - 1]
+            for i in range(1, len(closes)) if closes[i - 1]]
+
+
+def avg_correlation(price_map):
+    """組合內兩兩相關係數的平均。這是判斷『假分散』的核心指標。"""
+    codes = [c for c, p in price_map.items() if p and p.get("closes")]
+    rets = {c: daily_returns(price_map[c]["closes"]) for c in codes}
+    vals = []
+    for i in range(len(codes)):
+        for j in range(i + 1, len(codes)):
+            r = pearson(rets[codes[i]], rets[codes[j]])
+            if r is not None:
+                vals.append(r)
+    return (sum(vals) / len(vals)) if vals else None
+
+
+def effective_holdings(n, avg_corr):
+    """
+    把「檔數 + 平均相關係數」換算成等效的獨立持股數。
+    公式取自等權重組合的變異數：n / (1 + (n-1)·ρ)。
+    八檔高度連動的電子股，等效可能只有兩檔。
+    """
+    if n <= 1 or avg_corr is None:
+        return None
+    denom = 1 + (n - 1) * max(avg_corr, 0)
+    return n / denom if denom > 0 else None
+
+
+@app.route("/web/portfolio")
+@web_login_required
+def web_portfolio(uid):
+    positions = get_positions(uid)
+    if not positions:
+        return render_page("組合分析", """
+<div class="empty">還沒有持股紀錄。<br><br>
+<a href="/web/positions" style="color:var(--brass)">先去新增持股 →</a></div>""",
+                           nav_active="portfolio")
+
+    profile = get_profile(uid)
+    th = get_thresholds(profile)
+    inst = fetch_institutional_data() or {}
+    revenue = fetch_monthly_revenue() or {}
+    valuation = fetch_valuation() or {}
+    ind_map = get_industry_map() or {}
+
+    price_map, total_value, total_cost = {}, 0.0, 0.0
+    for p in positions:
+        pr = get_realtime_stock(p["code"])
+        price_map[p["code"]] = pr
+        if pr:
+            total_value += pr["close"] * p["shares"]
+        total_cost += p["cost"] * p["shares"]
+
+    # ── 產業集中度 ──
+    by_industry, holdings = {}, []
+    for p in positions:
+        pr = price_map.get(p["code"])
+        if not pr:
+            continue
+        value = pr["close"] * p["shares"]
+        weight = value / total_value * 100 if total_value else 0
+        ind = ind_map.get(p["code"])
+        label = industry_name(ind) if ind else "未分類"
+        by_industry[label] = by_industry.get(label, 0) + weight
+        name = inst.get(p["code"], {}).get("name") or pr["name"]
+        holdings.append({
+            "code": p["code"], "name": name, "weight": weight, "value": value,
+            "cost": p["cost"], "price": pr,
+            "pl": (pr["close"] - p["cost"]) / p["cost"] * 100,
+            "industry": label,
+            "cum_yoy": revenue.get(p["code"], {}).get("cum_yoy_pct"),
+            "pe": valuation.get(p["code"], {}).get("pe"),
+        })
+
+    ordered = sorted(by_industry.items(), key=lambda x: x[1], reverse=True)
+    tints = ["#6E5228", "#8A6A3B", "#A98A5C", "#C3AC85", "#DCCFB4"]
+    band, legend = [], []
+    for i, (label, w) in enumerate(ordered):
+        color = tints[i] if i < len(tints) else "#EAEBE7"
+        fg = "#FFF" if i < 3 else "#3B2F1C"
+        band.append(f'<span style="flex:{w:.2f};background:{color};color:{fg}">'
+                    f'{label if w >= 12 else ""}{f"　{w:.0f}%" if w >= 12 else ""}</span>')
+        legend.append(f'<span><i style="background:{color}"></i>{label} {w:.1f}%</span>')
+
+    # ── 相關係數 ──
+    avg_corr = avg_correlation(price_map)
+    eff = effective_holdings(len(holdings), avg_corr)
+
+    # ── 加權基本面 ──
+    def weighted(key):
+        num = sum(h["weight"] * h[key] for h in holdings if h[key] is not None)
+        den = sum(h["weight"] for h in holdings if h[key] is not None)
+        return num / den if den else None
+    w_yoy, w_pe = weighted("cum_yoy"), weighted("pe")
+
+    # ── 提醒 ──
+    alerts = []
+    top = max(holdings, key=lambda h: h["weight"]) if holdings else None
+    if top and top["weight"] > th["position"]:
+        second = sorted(holdings, key=lambda h: h["weight"], reverse=True)
+        ratio = (f"，是第二大持股的 {top['weight'] / second[1]['weight']:.1f} 倍"
+                 if len(second) > 1 and second[1]["weight"] else "")
+        alerts.append(("集中度",
+                       f"{top['name']}佔 {top['weight']:.1f}%，超過你設定的 "
+                       f"{th['position']}%{ratio}。單一事件對組合的影響顯著。"))
+
+    if ordered and ordered[0][1] >= 50:
+        drop = 25
+        impact = ordered[0][1] / 100 * drop
+        alerts.append(("產業集中",
+                       f"{ordered[0][0]}佔 {ordered[0][1]:.1f}%。若該族群整體修正 "
+                       f"{drop}%，組合約下跌 {impact:.1f}%"
+                       + (f"，超出你設定的 {th['loss']}% 可接受範圍。"
+                          if impact > th["loss"] else "。")))
+
+    if avg_corr is not None and avg_corr >= 0.7 and eff:
+        alerts.append(("分散不足",
+                       f"{len(holdings)} 檔持股兩兩相關係數平均 {avg_corr:.2f}，"
+                       f"實際分散效果約等於 {eff:.1f} 檔。"))
+
+    losers = [h for h in holdings if h["pl"] <= -th["loss"]]
+    for h in losers:
+        alerts.append(("虧損提醒",
+                       f"{h['name']}虧損 {abs(h['pl']):.1f}%，"
+                       f"已達你設定的 {th['loss']}% 門檻。"))
+
+    if w_pe and w_yoy is not None:
+        alerts.append(("基本面",
+                       f"組合加權營收年增率 {w_yoy:+.1f}%，加權本益比 {w_pe:.1f} 倍。"))
+
+    if not profile:
+        alerts.append(("尚未設定",
+                       "你還沒填寫問卷，目前使用預設門檻。"
+                       "填寫後提醒會更貼近你的狀況。"))
+
+    pl_total = ((total_value - total_cost) / total_cost * 100) if total_cost else None
+    corr_txt = (f"兩兩相關係數平均 <b>{avg_corr:.2f}</b>，"
+                f"實際分散效果約等於 <b>{eff:.1f} 檔</b>。"
+                if avg_corr is not None and eff else
+                "持股數不足或資料不齊，尚無法計算相關係數。")
+
+    body = f"""
+<div class="totals">
+  <div><div class="total-label">總市值</div>
+       <div class="total-value num">{total_value:,.0f}</div>
+       <div class="total-sub">{fmt_pct(pl_total)}</div></div>
+  <div><div class="total-label">持股檔數</div>
+       <div class="total-value num">{len(holdings)}</div>
+       <div class="total-sub" style="color:var(--ink-faint)">
+         {len(by_industry)} 個產業</div></div>
+  <div><div class="total-label">最大單一持股</div>
+       <div class="total-value num">{top['weight']:.1f}%</div>
+       <div class="total-sub" style="color:var(--ink-faint)">{top['name']}</div></div>
+</div>
+
+<div class="section-head"><h2>產業集中度</h2>
+  <span class="section-note">寬度即權重</span></div>
+<div class="band">{''.join(band)}</div>
+<div class="legend">{''.join(legend)}</div>
+<div class="callout">{corr_txt}</div>
+
+<div class="section-head"><h2>持股權重</h2>
+  <span class="section-note">依權重排序</span></div>
+<div class="rows">
+{''.join(f'''
+<div class="row">
+  <div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div>
+  <div class="price num">{h['weight']:.1f}%</div>
+  <div class="meta">
+    <span><em>產業</em> {h['industry']}</span>
+    <span><em>損益</em> {fmt_pct(h['pl'])}</span>
+    <span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span>
+    <span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span>
+  </div>
+  <div class="chg">{fmt_pct(h['price']['pct'])}</div>
+  <div class="bar"><div style="width:{h['weight']:.1f}%"></div></div>
+</div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}
+</div>
+
+<div class="section-head"><h2>值得注意</h2>
+  <span class="section-note">依你設定的門檻</span></div>
+<div class="rows">
+{''.join(f'<div class="alert"><span class="tag">{tag}</span><span>{txt}</span></div>'
+         for tag, txt in alerts) if alerts
+ else '<div class="empty">目前沒有觸及門檻的項目。</div>'}
+</div>"""
+    return render_page("組合分析", body, nav_active="portfolio")
+
+
 # --- LINE Bot 訊息接收與路由分派 ---
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -2642,10 +3052,11 @@ def handle_message(event):
         token = create_web_token(user_id)
         if token:
             base = request.url_root.rstrip("/")
-            reply = (f"🌐 台股 BOT 網頁版\n\n"
+            reply = (f"🌐 台股 BOT 網頁版　🚧 Coming soon\n\n"
                      f"{base}/web/login?t={token}\n\n"
-                     f"點連結即可登入，可新增持股、查看組合分析。\n"
-                     f"連結 {WEB_SESSION_DAYS} 天內有效，過期再輸入「網頁」取得新的。")
+                     f"可輸入持股，查看產業集中度、相關係數與加權基本面。\n"
+                     f"連結 {WEB_SESSION_DAYS} 天內有效，過期再輸入「網頁」取得新的。\n\n"
+                     f"⚠️ 目前仍在開發中，功能與畫面可能隨時調整。")
         else:
             reply = "❌ 產生連結失敗，請稍後再試。"
 
