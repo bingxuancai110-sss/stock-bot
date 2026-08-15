@@ -1910,67 +1910,90 @@ def backfill_t86():
 
 def build_menu_flex():
     """
-    用 Flex Message 做彩色選單。LINE 的純文字訊息無法上色，
-    要分色只能改用 Flex；順便把每個指令做成可點擊的按鈕，不必打字。
+    彩色選單（Flex Message）。LINE 純文字無法上色，分色只能用 Flex。
+    版面上把「按鈕」與「說明」左右並排，比上下堆疊省一半高度，
+    說明文字仍保留給第一次使用的人看。
     """
+    # (分區名稱, 主色, 按鈕底色（主色的淡色版）, [(指令, 說明)])
     groups = [
-        ("市場動態", "#3A6EA5", [
+        ("市場動態", "#3A6EA5", "#E8EFF7", [
             ("盤前", "美股、殖利率、VIX 與自選摘要"),
-            ("解盤", "盤後大盤與法人資金"),
+            ("解盤", "盤後大盤與三大法人資金"),
         ]),
-        ("選股策略", "#C08A2E", [
-            ("黑馬", "營收＋估值＋產業動能綜合選股"),
-            ("雷達", "帶量突破、法人買超的強勢股"),
+        ("選股策略", "#B5822A", "#F7EFDF", [
+            ("黑馬", "營收成長＋估值＋產業動能"),
+            ("雷達", "帶量突破、法人買超強勢股"),
         ]),
-        ("我的自選", "#2E7D5B", [
+        ("我的自選", "#2E7D5B", "#E6F1EC", [
             ("自選", "持股評分、位階與支撐壓力"),
             ("新聞", "自選股相關新聞與連結"),
         ]),
-        ("設定", "#6B7280", [
-            ("推播開", "開啟每日盤前推播"),
-            ("推播關", "關閉每日推播"),
+        ("推播設定", "#7A8290", "#EDEFF1", [
+            ("推播開", "每個交易日早上自動發送"),
+            ("推播關", "停止自動發送"),
         ]),
     ]
 
-    body = [{
-        "type": "text", "text": "蔡秉軒御用選股機器人",
-        "weight": "bold", "size": "lg", "color": "#1B2027",
-    }, {
-        "type": "text", "text": "點選下方按鈕，或直接輸入股票代號",
-        "size": "xs", "color": "#8E959C", "margin": "sm", "wrap": True,
-    }]
-
-    for title, color, items in groups:
-        body.append({
-            "type": "box", "layout": "horizontal", "margin": "xl",
+    def row(label, desc, tint):
+        """一列＝左邊指令按鈕（該分區的淡色底），右邊說明文字。"""
+        return {
+            "type": "box", "layout": "horizontal", "margin": "md",
+            "alignItems": "center", "spacing": "md",
             "contents": [
-                {"type": "box", "layout": "vertical", "width": "4px",
+                {
+                    "type": "button", "style": "secondary", "height": "sm",
+                    "color": tint, "flex": 4, "adjustMode": "shrink-to-fit",
+                    "action": {"type": "message", "label": label, "text": label},
+                },
+                {
+                    "type": "text", "text": desc, "size": "xxs", "flex": 7,
+                    "color": "#98A0A8", "wrap": True, "gravity": "center",
+                },
+            ],
+        }
+
+    body = [
+        {"type": "text", "text": "選股機器人", "weight": "bold",
+         "size": "xl", "color": "#1B2027"},
+        {"type": "text", "text": "點按鈕即可執行，或直接輸入股票代號",
+         "size": "xxs", "color": "#A8AEB5", "margin": "xs", "wrap": True},
+        {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+    ]
+
+    for title, color, tint, items in groups:
+        body.append({
+            "type": "box", "layout": "horizontal", "margin": "lg",
+            "alignItems": "center", "spacing": "sm",
+            "contents": [
+                {"type": "box", "layout": "vertical", "width": "3px", "height": "13px",
                  "backgroundColor": color, "cornerRadius": "2px", "contents": []},
-                {"type": "text", "text": title, "size": "sm", "weight": "bold",
-                 "color": color, "margin": "md", "gravity": "center"},
+                {"type": "text", "text": title, "size": "xs", "weight": "bold",
+                 "color": color},
             ],
         })
         for label, desc in items:
-            body.append({
-                "type": "box", "layout": "vertical", "margin": "md",
-                "contents": [
-                    {"type": "button", "style": "secondary", "height": "sm",
-                     "color": "#F2F3F0",
-                     "action": {"type": "message", "label": label, "text": label}},
-                    {"type": "text", "text": desc, "size": "xxs",
-                     "color": "#8E959C", "margin": "xs", "wrap": True},
-                ],
-            })
+            body.append(row(label, desc, tint))
 
-    body.append({
-        "type": "text", "margin": "xl", "size": "xxs", "color": "#8E959C", "wrap": True,
-        "text": "新增自選：輸入「加 2330」　移除：「刪 2330」",
-    })
+    body += [
+        {"type": "separator", "margin": "xl", "color": "#E8EAE6"},
+        {"type": "box", "layout": "vertical", "margin": "md", "spacing": "xs",
+         "contents": [
+             {"type": "text", "text": "加入自選　輸入「加 2330」",
+              "size": "xxs", "color": "#A8AEB5"},
+             {"type": "text", "text": "移除自選　輸入「刪 2330」",
+              "size": "xxs", "color": "#A8AEB5"},
+             {"type": "text", "text": "查詢個股　直接輸入代號，如 2330",
+              "size": "xxs", "color": "#A8AEB5"},
+         ]},
+    ]
 
     bubble = {
         "type": "bubble",
-        "body": {"type": "box", "layout": "vertical", "contents": body,
-                 "paddingAll": "18px", "backgroundColor": "#FFFFFF"},
+        "body": {
+            "type": "box", "layout": "vertical", "contents": body,
+            "paddingAll": "20px", "backgroundColor": "#FFFFFF",
+        },
+        "styles": {"body": {"backgroundColor": "#FFFFFF"}},
     }
     return FlexSendMessage(alt_text="選股機器人選單", contents=bubble)
 
