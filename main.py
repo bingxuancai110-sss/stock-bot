@@ -73,6 +73,14 @@ def init_db():
         cursor.execute('''
             ALTER TABLE users ADD COLUMN IF NOT EXISTS notify BOOLEAN DEFAULT FALSE
         ''')
+        # 存 LINE 顯示名稱，這樣在 Supabase 後台才認得出誰是誰，
+        # 要開通推播直接把那一列的 notify 改成 true 即可
+        cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT
+        ''')
+        cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP
+        ''')
         # 每日三大法人買賣超歷史（用來算「連續買超天數」等長線指標）
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS inst_history (
@@ -121,12 +129,30 @@ def init_db():
 init_db()
 
 def add_user_to_db(user_id):
+    """
+    記錄使用者。順便抓 LINE 顯示名稱存起來——沒有名字的話，
+    後台看到的只有一串亂碼 user_id，無法判斷要開通誰的推播。
+    抓名字失敗不影響主要流程。
+    """
+    uid = str(user_id).strip()
+    name = None
+    try:
+        name = line_bot_api.get_profile(uid).display_name
+    except Exception as e:
+        print(f"⚠️ 取得使用者名稱失敗 {uid}: {e}")
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING",
-            (str(user_id).strip(),)
+            """
+            INSERT INTO users (user_id, display_name, last_seen)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+                display_name = COALESCE(EXCLUDED.display_name, users.display_name),
+                last_seen = NOW()
+            """,
+            (uid, name)
         )
         conn.commit()
         cursor.close()
@@ -1934,7 +1960,7 @@ def build_menu_flex():
             ("新聞", "自選股相關新聞與連結"),
         ]),
         ("推播設定", "#7A8290", "#EDEFF1", [
-            ("推播開", "每個交易日早上自動發送"),
+            ("申請推播", "🔒 VIP 限定　每日盤前自動發送\n非 VIP 可直接點上方「盤前」查看相同內容"),
             ("推播關", "停止自動發送"),
         ]),
     ]
@@ -2071,12 +2097,20 @@ def handle_message(event):
         reply = f"🗑️ 已從自選清單移除：{pure_code}"
 
     # 3. 推播開關設定
-    elif text in ["推播開", "開啟推播", "訂閱"]:
-        set_notify(user_id, True)
-        reply = "🔔 已開啟每日推播，推播時間依排程設定為準。"
+    elif text in ["推播開", "開啟推播", "訂閱", "申請推播"]:
+        # 每日推播為名額制：LINE 免費方案每月僅 200 則主動訊息，
+        # 以每人每個交易日 1 則計算，最多只能服務約 9 人，
+        # 因此改為申請制，由管理者在後台開通，使用者無法自行啟用。
+        reply = (
+            "📮 已收到每日推播的申請\n\n"
+            "每日盤前推播為名額制，需由管理者開通。\n"
+            "已收到你的申請，開通後隔天早上就會自動收到。\n\n"
+            "在此之前，隨時輸入「盤前」都能看到相同內容。"
+        )
     elif text in ["推播關", "關閉推播", "取消訂閱"]:
+        # 關閉不需要審核，使用者隨時可以自己退出
         set_notify(user_id, False)
-        reply = "🔕 已關閉每日推播。"
+        reply = "🔕 已關閉每日推播。想再開啟請輸入「申請推播」。"
 
     # 4+5. 自選清單與健檢已合併——兩者原本都在列自選股，差別只在有沒有評分，
     # 併成同一份報告，「自選」與「健檢」都指向它
