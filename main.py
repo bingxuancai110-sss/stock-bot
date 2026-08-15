@@ -81,6 +81,10 @@ def init_db():
         cursor.execute('''
             ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP
         ''')
+        # 是否申請過推播，讓管理者一眼看出誰在等開通
+        cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS requested BOOLEAN DEFAULT FALSE
+        ''')
         # 每日三大法人買賣超歷史（用來算「連續買超天數」等長線指標）
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS inst_history (
@@ -161,6 +165,71 @@ def add_user_to_db(user_id):
         print(f"❌ 新增使用者錯誤: {e}")
     finally:
         release_db_connection(conn)
+
+def is_admin(user_id):
+    """管理者身分由環境變數 ADMIN_USER_ID 指定，未設定時沒有人是管理者。"""
+    admin = os.environ.get("ADMIN_USER_ID", "").strip()
+    return bool(admin) and str(user_id).strip() == admin
+
+
+def set_requested(user_id, flag=True):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET requested = %s WHERE user_id = %s",
+                       (flag, str(user_id).strip()))
+        conn.commit()
+        cursor.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 更新申請狀態錯誤: {e}")
+    finally:
+        release_db_connection(conn)
+
+
+def list_users():
+    """
+    回傳所有使用者，順序固定（依 user_id 排序），
+    這樣「名單」顯示的編號跟「開通 N」用的編號才會一致。
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT user_id, COALESCE(display_name, '(未知)'),
+                   COALESCE(notify, FALSE), COALESCE(requested, FALSE)
+            FROM users ORDER BY user_id
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        return rows
+    except Exception as e:
+        print(f"❌ 讀取使用者名單錯誤: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def build_user_list_report():
+    rows = list_users()
+    if not rows:
+        return "目前沒有任何使用者紀錄。"
+
+    on = sum(1 for r in rows if r[2])
+    lines = [f"👥 使用者名單（共 {len(rows)} 人，已開通 {on} 人）", "─" * 14]
+    for i, (uid, name, notify, requested) in enumerate(rows, start=1):
+        mark = "🔔" if notify else ("📮" if requested else "　")
+        lines.append(f"{i:>2}. {mark} {name}")
+    lines += [
+        "─" * 14,
+        "🔔 已開通　📮 申請中",
+        "",
+        "開通：輸入「開通 3」",
+        "停用：輸入「停用 3」",
+        f"（免費方案每月 200 則，每人每交易日 1 則，建議上限 9 人）",
+    ]
+    return "\n".join(lines)
+
 
 def set_notify(user_id, flag: bool):
     conn = get_db_connection()
@@ -2082,8 +2151,41 @@ def handle_message(event):
 
     add_user_to_db(user_id)
 
+    # 0. 管理指令（只有 ADMIN_USER_ID 本人可用，其他人輸入等同無效指令）
+    if text in ["我的ID", "我的id", "MYID"]:
+        reply = f"你的 user_id：\n{user_id}"
+
+    elif is_admin(user_id) and text in ["名單", "使用者", "VIP"]:
+        reply = build_user_list_report()
+
+    elif is_admin(user_id) and (text.startswith("開通") or text.startswith("停用")):
+        turn_on = text.startswith("開通")
+        arg = text[2:].strip()
+        rows = list_users()
+        target, ambiguous = None, None
+
+        if arg.isdigit() and 1 <= int(arg) <= len(rows):
+            target = rows[int(arg) - 1]
+        elif arg:
+            matches = [r for r in rows if arg in r[1]]
+            if len(matches) == 1:
+                target = matches[0]
+            elif len(matches) > 1:
+                ambiguous = "、".join(m[1] for m in matches[:5])
+
+        if target:
+            set_notify(target[0], turn_on)
+            if turn_on:
+                set_requested(target[0], False)
+            reply = (f"{'🔔 已開通' if turn_on else '🔕 已停用'}：{target[1]}\n\n"
+                     + build_user_list_report())
+        elif ambiguous:
+            reply = f"符合「{arg}」的有多人：{ambiguous}\n請改用編號，例如「開通 3」"
+        else:
+            reply = f"找不到「{arg}」。輸入「名單」查看編號。"
+
     # 1. 加自選
-    if "加" in text and 4 <= len(pure_code) <= 6:
+    elif "加" in text and 4 <= len(pure_code) <= 6:
         success = add_watchlist_db(user_id, pure_code)
         c_name = STOCK_NAME_MAP.get(pure_code, pure_code)
         if success:
@@ -2101,6 +2203,7 @@ def handle_message(event):
         # 每日推播為名額制：LINE 免費方案每月僅 200 則主動訊息，
         # 以每人每個交易日 1 則計算，最多只能服務約 9 人，
         # 因此改為申請制，由管理者在後台開通，使用者無法自行啟用。
+        set_requested(user_id, True)
         reply = (
             "📮 已收到每日推播的申請\n\n"
             "每日盤前推播為名額制，需由管理者開通。\n"
