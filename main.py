@@ -9,7 +9,9 @@ from urllib.parse import urlparse
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, FlexSendMessage, FollowEvent
+from linebot.models import (MessageEvent, TextMessage, TextSendMessage,
+                            FlexSendMessage, FollowEvent,
+                            QuickReply, QuickReplyButton, MessageAction)
 from datetime import datetime, timedelta, timezone
 import random
 
@@ -2013,6 +2015,27 @@ def backfill_t86():
     ), 200
 
 
+def build_quick_reply():
+    """
+    輸入框上方的快捷列。它會跟著最新一則訊息，不會像選單卡片那樣被
+    後續訊息往上推走——使用者看完長長的黑馬報告後，不必往回捲找選單。
+    LINE 上限 13 顆，這裡只放最常用的。
+    """
+    items = [
+        ("📋 選單", "選單"),
+        ("☀️ 盤前", "盤前"),
+        ("🐎 黑馬", "黑馬"),
+        ("🚨 雷達", "雷達"),
+        ("📂 自選", "自選"),
+        ("📊 解盤", "解盤"),
+        ("📰 新聞", "新聞"),
+    ]
+    return QuickReply(items=[
+        QuickReplyButton(action=MessageAction(label=label, text=text))
+        for label, text in items
+    ])
+
+
 def build_menu_flex():
     """
     彩色選單（Flex Message）。LINE 純文字無法上色，分色只能用 Flex。
@@ -2141,7 +2164,9 @@ def handle_follow(event):
         "作者：蔡秉軒　敬上"
     ))
     try:
-        line_bot_api.reply_message(event.reply_token, [welcome, build_menu_flex()])
+        menu = build_menu_flex()
+        menu.quick_reply = build_quick_reply()
+        line_bot_api.reply_message(event.reply_token, [welcome, menu])
     except Exception as e:
         print(f"❌ 歡迎訊息發送失敗 {user_id}: {e}")
 
@@ -2476,10 +2501,13 @@ def handle_message(event):
         flex_reply = build_menu_flex()
         reply = None
 
+    qr = build_quick_reply()
     if flex_reply is not None:
+        flex_reply.quick_reply = qr
         line_bot_api.reply_message(event.reply_token, flex_reply)
     else:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+        line_bot_api.reply_message(
+            event.reply_token, TextSendMessage(text=reply, quick_reply=qr))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
