@@ -87,6 +87,51 @@ def init_db():
         cursor.execute('''
             ALTER TABLE users ADD COLUMN IF NOT EXISTS requested BOOLEAN DEFAULT FALSE
         ''')
+        # ── 網頁版：持股、問卷設定、登入權杖 ──
+        # 持股與自選股分開存：自選股是「在看的」，持股是「真的買了的」，
+        # 只有後者才有股數與成本，組合分析也只該算後者。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS positions (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                shares INTEGER NOT NULL,
+                cost REAL NOT NULL,
+                bought_on DATE,
+                note TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_positions_user ON positions (user_id)
+        ''')
+        # 問卷與門檻設定。前四題必填，其餘可略過，所以全部允許 NULL。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_profile (
+                user_id TEXT PRIMARY KEY,
+                age_band TEXT,
+                horizon TEXT,
+                asset_share TEXT,
+                income_type TEXT,
+                drawdown_experience TEXT,
+                loss_alert_pct INTEGER,
+                position_alert_pct INTEGER,
+                check_frequency TEXT,
+                holding_period TEXT,
+                other_assets TEXT,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        ''')
+        # 網頁登入權杖：LINE 傳「網頁」時產生，點連結即登入，
+        # 這樣不必另外做 LINE Login 也不必讓使用者記帳號密碼。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS web_sessions (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                expires_at TIMESTAMP NOT NULL
+            )
+        ''')
         # 每日三大法人買賣超歷史（用來算「連續買超天數」等長線指標）
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS inst_history (
@@ -319,6 +364,144 @@ def get_user_watchlist(user_id):
         return []
     finally:
         release_db_connection(conn)
+
+# ============================================================
+# 網頁版：登入權杖、持股、問卷設定
+# ============================================================
+import secrets
+from functools import wraps
+from flask import make_response, redirect, url_for
+
+WEB_SESSION_DAYS = 30  # 權杖有效天數
+
+
+def create_web_token(user_id):
+    """產生一次性登入連結用的權杖。舊權杖不刪除，讓使用者可以多裝置同時登入。"""
+    token = secrets.token_urlsafe(24)
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO web_sessions (token, user_id, expires_at)
+            VALUES (%s, %s, NOW() + INTERVAL '%s days')
+            """,
+            (token, str(user_id).strip(), WEB_SESSION_DAYS),
+        )
+        conn.commit()
+        cursor.close()
+        return token
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 建立網頁權杖失敗: {e}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+
+def resolve_web_token(token):
+    """驗證權杖並回傳 user_id；過期或不存在回傳 None。"""
+    if not token:
+        return None
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id FROM web_sessions WHERE token = %s AND expires_at > NOW()",
+            (token,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return row[0] if row else None
+    except Exception as e:
+        print(f"❌ 驗證網頁權杖失敗: {e}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+
+def current_web_user():
+    """從網址參數或 cookie 取得目前登入者。網址參數優先，方便換裝置。"""
+    return resolve_web_token(request.args.get("t") or request.cookies.get("stockbot_token"))
+
+
+def web_login_required(view):
+    """未登入就導向說明頁，不直接報錯——使用者可能只是連結過期。"""
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        uid = current_web_user()
+        if not uid:
+            return render_page("需要登入", NEED_LOGIN_HTML), 401
+        return view(uid, *args, **kwargs)
+    return wrapper
+
+
+# ── 持股 CRUD ──
+def get_positions(user_id):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, code, shares, cost, bought_on, note
+            FROM positions WHERE user_id = %s ORDER BY id
+            """,
+            (str(user_id).strip(),),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [
+            {"id": r[0], "code": r[1], "shares": r[2], "cost": r[3],
+             "bought_on": r[4], "note": r[5]}
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"❌ 讀取持股失敗: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def add_position(user_id, code, shares, cost, bought_on=None, note=None):
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO positions (user_id, code, shares, cost, bought_on, note)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (str(user_id).strip(), str(code).strip(), int(shares),
+             float(cost), bought_on or None, note or None),
+        )
+        conn.commit()
+        cursor.close()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 新增持股失敗: {e}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def delete_position(user_id, pos_id):
+    """一定要同時比對 user_id，否則有人改網址上的 id 就能刪別人的持股。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM positions WHERE id = %s AND user_id = %s",
+                       (int(pos_id), str(user_id).strip()))
+        conn.commit()
+        cursor.close()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 刪除持股失敗: {e}")
+        return False
+    finally:
+        release_db_connection(conn)
+
 
 # --- 穩健的股價抓取引擎 ---
 def get_realtime_stock(code):
@@ -2130,6 +2313,275 @@ def build_menu_flex():
     return FlexSendMessage(alt_text="台股 BOT 選單", contents=bubble)
 
 
+# ============================================================
+# 網頁版：版型與頁面
+# 設計沿用「紙本月報」風格：冷灰紙底、黃銅結構色，
+# 紅綠「只」用於漲跌，不用在按鈕或標籤，避免語意混淆。
+# ============================================================
+BASE_CSS = """
+:root{
+  --paper:#F2F3F0; --paper-2:#EAEBE7; --ink:#1B2027;
+  --ink-soft:#5C646E; --ink-faint:#8E959C; --rule:#D3D6D0;
+  --up:#C8362B; --down:#1F7A5A; --brass:#8A6A3B; --brass-2:#A98A5C;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--paper);color:var(--ink);line-height:1.55;
+  font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:720px;margin:0 auto;padding:0 20px 80px}
+.num{font-variant-numeric:tabular-nums;
+  font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+.up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--ink-faint)}
+header{padding:30px 0 20px}
+.eyebrow{font-size:11px;letter-spacing:.2em;color:var(--brass);
+  text-transform:uppercase;margin-bottom:8px}
+h1{font-size:27px;letter-spacing:.02em;font-weight:700;line-height:1.25}
+.dateline{margin-top:6px;font-size:12.5px;color:var(--ink-faint)}
+nav{display:flex;gap:18px;padding:14px 0;border-top:1px solid var(--rule);
+  border-bottom:1px solid var(--rule);font-size:13.5px;margin-bottom:8px}
+nav a{color:var(--ink-soft);text-decoration:none}
+nav a.on{color:var(--ink);font-weight:500;border-bottom:2px solid var(--brass);
+  padding-bottom:2px}
+h2{font-size:16px;font-weight:600;letter-spacing:.02em}
+.section-head{display:flex;align-items:baseline;justify-content:space-between;
+  margin:30px 0 10px}
+.section-note{font-size:12px;color:var(--ink-faint)}
+.rows{border-top:1px solid var(--rule)}
+.row{display:grid;grid-template-columns:1fr auto;gap:3px 12px;
+  padding:15px 0;border-bottom:1px solid var(--rule)}
+.name{font-size:15.5px;font-weight:500}
+.code{font-size:12px;color:var(--ink-faint);margin-left:6px}
+.price{text-align:right;font-size:15.5px;font-weight:500}
+.chg{text-align:right;font-size:12.5px}
+.meta{grid-column:1/-1;display:flex;gap:16px;flex-wrap:wrap;
+  font-size:12px;color:var(--ink-soft);margin-top:4px}
+.meta em{font-style:normal;color:var(--ink-faint)}
+.bar{grid-column:1/-1;height:3px;background:var(--paper-2);margin-top:8px}
+.bar div{height:100%;background:var(--brass-2)}
+form.add{margin-top:26px;padding:18px;background:var(--paper-2)}
+form.add h3{font-size:14px;font-weight:600;margin-bottom:12px}
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+label{display:block;font-size:11.5px;color:var(--ink-soft);margin-bottom:3px}
+input,select{width:100%;padding:9px 10px;font-size:14px;background:#FFF;
+  border:1px solid var(--rule);border-radius:2px;color:var(--ink);
+  font-family:inherit}
+input:focus,select:focus{outline:2px solid var(--brass);outline-offset:-1px}
+button{margin-top:12px;padding:10px 20px;font-size:14px;font-family:inherit;
+  background:var(--ink);color:var(--paper);border:0;border-radius:2px;cursor:pointer}
+button:hover{background:#000}
+.del{background:none;color:var(--ink-faint);font-size:11.5px;padding:0;margin:0;
+  text-decoration:underline;cursor:pointer}
+.del:hover{background:none;color:var(--up)}
+.empty{padding:40px 0;text-align:center;color:var(--ink-faint);font-size:14px}
+.msg{margin:14px 0;padding:11px 14px;background:var(--paper-2);
+  border-left:2px solid var(--brass);font-size:13px}
+footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--rule);
+  font-size:11.5px;color:var(--ink-faint);line-height:1.7}
+.totals{display:flex;gap:28px;flex-wrap:wrap;padding:18px 0 8px}
+.total-label{font-size:12px;color:var(--ink-soft)}
+.total-value{font-size:24px;font-weight:600;margin-top:2px}
+.total-sub{font-size:12.5px}
+"""
+
+NEED_LOGIN_HTML = """
+<div class="msg">
+  這個連結已失效或尚未登入。<br><br>
+  請回到 LINE 的「台股 BOT」，輸入 <b>網頁</b>，
+  機器人會給你一組新的連結。
+</div>
+"""
+
+
+def render_page(title, body, nav_active=None, user_name=None):
+    """所有網頁共用的外框。用字串組裝就好，這個規模不需要模板引擎。"""
+    def tab(href, label, key):
+        on = " class=\"on\"" if key == nav_active else ""
+        return f'<a href="{href}"{on}>{label}</a>'
+
+    nav = ""
+    if nav_active:
+        nav = ("<nav>"
+               + tab("/web", "組合", "portfolio")
+               + tab("/web/positions", "持股", "positions")
+               + tab("/web/settings", "設定", "settings")
+               + "</nav>")
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}｜台股 BOT</title>
+<style>{BASE_CSS}</style>
+</head><body><div class="wrap">
+<header>
+  <div class="eyebrow">Taiwan Stock Bot</div>
+  <h1>{title}</h1>
+  <div class="dateline">{datetime.now().strftime('%Y / %m / %d')}
+    {'　' + user_name if user_name else ''}</div>
+</header>
+{nav}
+{body}
+<footer>
+以上為你輸入之持股的數據整理，不構成投資建議。<br>
+資料來源：臺灣證券交易所、Yahoo Finance。作者：蔡秉軒
+</footer>
+</div></body></html>"""
+
+
+def fmt_pct(v):
+    if v is None:
+        return '<span class="flat">—</span>'
+    cls = "flat" if abs(v) < 0.005 else ("up" if v > 0 else "down")
+    return f'<span class="num {cls}">{v:+.2f}%</span>'
+
+
+@app.route("/web/login")
+def web_login():
+    """帶 ?t=權杖 進來，驗證後寫入 cookie，之後就不必每次帶網址參數。"""
+    token = request.args.get("t", "")
+    uid = resolve_web_token(token)
+    if not uid:
+        return render_page("需要登入", NEED_LOGIN_HTML), 401
+    resp = make_response(redirect("/web/positions"))
+    resp.set_cookie("stockbot_token", token,
+                    max_age=WEB_SESSION_DAYS * 86400,
+                    httponly=True, samesite="Lax", secure=True)
+    return resp
+
+
+@app.route("/web")
+@web_login_required
+def web_home(uid):
+    return redirect("/web/positions")
+
+
+@app.route("/web/positions", methods=["GET", "POST"])
+@web_login_required
+def web_positions(uid):
+    msg = ""
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "delete":
+            delete_position(uid, request.form.get("id"))
+            msg = "已刪除。"
+        else:
+            code = "".join(filter(str.isdigit, request.form.get("code", "")))
+            try:
+                shares = int(request.form.get("shares", "0"))
+                cost = float(request.form.get("cost", "0"))
+            except ValueError:
+                shares, cost = 0, 0.0
+            if not code or shares <= 0 or cost <= 0:
+                msg = "請填入正確的代號、股數與成本價。"
+            else:
+                add_position(uid, code, shares, cost,
+                             request.form.get("bought_on") or None)
+                msg = f"已新增 {code}。"
+
+    positions = get_positions(uid)
+    inst = fetch_institutional_data() or {}
+
+    rows_html, total_value, total_cost = [], 0.0, 0.0
+    enriched = []
+    for p in positions:
+        price = get_realtime_stock(p["code"])
+        if price:
+            value = price["close"] * p["shares"]
+            cost_total = p["cost"] * p["shares"]
+            total_value += value
+            total_cost += cost_total
+            enriched.append((p, price, value, cost_total))
+        else:
+            enriched.append((p, None, 0.0, p["cost"] * p["shares"]))
+            total_cost += p["cost"] * p["shares"]
+
+    for p, price, value, cost_total in sorted(
+            enriched, key=lambda x: x[2], reverse=True):
+        name = (inst.get(p["code"], {}).get("name")
+                or (price["name"] if price else p["code"]))
+        weight = (value / total_value * 100) if total_value else 0
+        if price:
+            pl = (price["close"] - p["cost"]) / p["cost"] * 100
+            held = ((datetime.now().date() - p["bought_on"]).days
+                    if p["bought_on"] else None)
+            rows_html.append(f"""
+<div class="row">
+  <div><span class="name">{name}</span><span class="code">{p['code']}</span></div>
+  <div class="price num">{price['close']:,.2f}</div>
+  <div class="meta">
+    <span><em>持有</em> <span class="num">{p['shares']:,}</span> 股</span>
+    <span><em>成本</em> <span class="num">{p['cost']:,.2f}</span></span>
+    <span><em>損益</em> {fmt_pct(pl)}</span>
+    <span><em>市值</em> <span class="num">{value:,.0f}</span></span>
+    <span><em>權重</em> <span class="num">{weight:.1f}%</span></span>
+    {f'<span><em>持有</em> {held} 天</span>' if held is not None else ''}
+    <form method="post" style="display:inline;margin:0"
+          onsubmit="return confirm('確定刪除 {name}？')">
+      <input type="hidden" name="action" value="delete">
+      <input type="hidden" name="id" value="{p['id']}">
+      <button class="del" type="submit">刪除</button>
+    </form>
+  </div>
+  <div class="chg">{fmt_pct(price['pct'])}</div>
+  <div class="bar"><div style="width:{weight:.1f}%"></div></div>
+</div>""")
+        else:
+            rows_html.append(f"""
+<div class="row">
+  <div><span class="name">{p['code']}</span>
+       <span class="code">查無行情</span></div>
+  <div class="price flat">—</div>
+  <div class="meta">
+    <span><em>持有</em> <span class="num">{p['shares']:,}</span> 股</span>
+    <form method="post" style="display:inline;margin:0">
+      <input type="hidden" name="action" value="delete">
+      <input type="hidden" name="id" value="{p['id']}">
+      <button class="del" type="submit">刪除</button>
+    </form>
+  </div>
+  <div class="chg"></div>
+</div>""")
+
+    pl_total = ((total_value - total_cost) / total_cost * 100) if total_cost else None
+    totals = f"""
+<div class="totals">
+  <div><div class="total-label">總市值</div>
+       <div class="total-value num">{total_value:,.0f}</div>
+       <div class="total-sub">{fmt_pct(pl_total)}</div></div>
+  <div><div class="total-label">總成本</div>
+       <div class="total-value num">{total_cost:,.0f}</div>
+       <div class="total-sub" style="color:var(--ink-faint)">
+         損益 <span class="num">{total_value - total_cost:+,.0f}</span></div></div>
+  <div><div class="total-label">持股檔數</div>
+       <div class="total-value num">{len(positions)}</div></div>
+</div>""" if positions else ""
+
+    body = f"""
+{f'<div class="msg">{msg}</div>' if msg else ''}
+{totals}
+<div class="section-head"><h2>持股明細</h2>
+  <span class="section-note">依市值排序</span></div>
+<div class="rows">
+{''.join(rows_html) if rows_html else '<div class="empty">還沒有持股紀錄，用下方表單新增。</div>'}
+</div>
+
+<form class="add" method="post">
+  <h3>新增持股</h3>
+  <div class="fields">
+    <div><label>股票代號</label>
+      <input name="code" inputmode="numeric" placeholder="2330" required></div>
+    <div><label>股數</label>
+      <input name="shares" inputmode="numeric" placeholder="1000" required></div>
+    <div><label>成本價</label>
+      <input name="cost" inputmode="decimal" placeholder="950.5" required></div>
+    <div><label>買進日期（可略）</label>
+      <input name="bought_on" type="date"></div>
+  </div>
+  <button type="submit">新增</button>
+</form>"""
+    return render_page("持股", body, nav_active="positions")
+
+
 # --- LINE Bot 訊息接收與路由分派 ---
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -2185,6 +2637,17 @@ def handle_message(event):
     # 0. 管理指令（只有 ADMIN_USER_ID 本人可用，其他人輸入等同無效指令）
     if text in ["我的ID", "我的id", "MYID"]:
         reply = f"你的 user_id：\n{user_id}"
+
+    elif text in ["網頁", "WEB", "網頁版"]:
+        token = create_web_token(user_id)
+        if token:
+            base = request.url_root.rstrip("/")
+            reply = (f"🌐 台股 BOT 網頁版\n\n"
+                     f"{base}/web/login?t={token}\n\n"
+                     f"點連結即可登入，可新增持股、查看組合分析。\n"
+                     f"連結 {WEB_SESSION_DAYS} 天內有效，過期再輸入「網頁」取得新的。")
+        else:
+            reply = "❌ 產生連結失敗，請稍後再試。"
 
     elif is_admin(user_id) and text in ["名單", "使用者", "VIP"]:
         reply = build_user_list_report()
