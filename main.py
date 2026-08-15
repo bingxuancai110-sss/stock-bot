@@ -1184,10 +1184,15 @@ def fetch_quote(symbol):
             close = closes[-1]
         if not close:
             return None
-        # 前一交易日收盤：若最後一根K就是目前報價，前收要再往前一根
-        if len(closes) >= 2:
-            prev = closes[-2] if abs(closes[-1] - close) < 0.001 else closes[-1]
-        else:
+        # 前一交易日收盤：從尾端往回找第一筆「跟現價不同」的收盤。
+        # Yahoo 的日K陣列尾端偶爾會出現重複的收盤價（同一天被塞兩筆），
+        # 若死抓倒數第二筆就會拿到跟現價一樣的數字，算出假的 0.00%。
+        prev = None
+        for c in reversed(closes):
+            if abs(c - close) > max(0.005, abs(close) * 1e-6):
+                prev = c
+                break
+        if prev is None:
             prev = meta.get('chartPreviousClose')
         if not prev:
             return None
@@ -1229,7 +1234,7 @@ def generate_morning_brief():
                 continue
             got = True
             close, pct, diff = q
-            arrow = "🔴" if pct >= 0 else "🟢"
+            arrow = "⚪" if abs(pct) < 0.005 else ("🔴" if pct > 0 else "🟢")
             if as_yield:
                 # 殖利率用「基點」表達比百分比變化直觀（升息循環常用語言）
                 block.append(f"{arrow} {label}：{close:.3f}%（{diff*100:+.1f} bps）")
@@ -1244,14 +1249,14 @@ def generate_morning_brief():
     tnx = fetch_quote("^TNX")
     if tnx:
         close, pct, diff = tnx
-        arrow = "🔴" if diff >= 0 else "🟢"
+        arrow = "⚪" if abs(diff) < 0.0005 else ("🔴" if diff > 0 else "🟢")
         lines.append(f"{arrow} 美10年債殖利率：{close:.3f}%（{diff*100:+.1f} bps）")
     for label, sym in BRIEF_MACRO[1:]:
         q = fetch_quote(sym)
         if not q:
             continue
         close, pct, _diff = q
-        arrow = "🔴" if pct >= 0 else "🟢"
+        arrow = "⚪" if abs(pct) < 0.005 else ("🔴" if pct > 0 else "🟢")
         lines.append(f"{arrow} {label}：{close:,.2f}（{pct:+.2f}%）")
 
     lines += fmt_rows("重點個股", BRIEF_STOCKS)
@@ -1953,9 +1958,9 @@ def build_menu_flex():
         }
 
     body = [
-        {"type": "text", "text": "選股機器人", "weight": "bold",
+        {"type": "text", "text": "台股 BOT", "weight": "bold",
          "size": "xl", "color": "#1B2027"},
-        {"type": "text", "text": "點按鈕即可執行，或直接輸入股票代號",
+        {"type": "text", "text": "點按鈕即可執行，或直接輸入股票代號　·　查詢約需 20 秒",
          "size": "xxs", "color": "#A8AEB5", "margin": "xs", "wrap": True},
         {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
     ]
@@ -1985,6 +1990,9 @@ def build_menu_flex():
              {"type": "text", "text": "查詢個股　直接輸入代號，如 2330",
               "size": "xxs", "color": "#A8AEB5"},
          ]},
+        {"type": "separator", "margin": "lg", "color": "#EEF0EC"},
+        {"type": "text", "text": "作者：蔡秉軒　敬上", "size": "xxs",
+         "color": "#B4B9BF", "margin": "md", "align": "end"},
     ]
 
     bubble = {
@@ -1995,7 +2003,7 @@ def build_menu_flex():
         },
         "styles": {"body": {"backgroundColor": "#FFFFFF"}},
     }
-    return FlexSendMessage(alt_text="選股機器人選單", contents=bubble)
+    return FlexSendMessage(alt_text="台股 BOT 選單", contents=bubble)
 
 
 # --- LINE Bot 訊息接收與路由分派 ---
@@ -2020,11 +2028,17 @@ def handle_follow(event):
     add_user_to_db(user_id)
 
     welcome = TextSendMessage(text=(
-        "歡迎使用選股機器人 📈\n\n"
+        "歡迎使用台股 BOT 📈\n\n"
         "這裡可以查台股行情、法人籌碼、營收與估值，"
         "也能建立自己的自選股清單。\n\n"
         "下面是可用的功能，直接點按鈕就能執行。\n"
-        "隨時輸入「選單」都能再叫出來。"
+        "隨時輸入「選單」都能再叫出來。\n\n"
+        "⏳ 小提醒\n"
+        "每個指令都會即時去抓最新的行情、法人與財務資料，"
+        "大約需要 20 秒才會回覆。送出後請稍等一下，"
+        "不用重複點擊，謝謝包涵。\n\n"
+        "———\n"
+        "作者：蔡秉軒　敬上"
     ))
     try:
         line_bot_api.reply_message(event.reply_token, [welcome, build_menu_flex()])
