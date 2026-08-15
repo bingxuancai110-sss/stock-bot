@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, FlexSendMessage
 from datetime import datetime, timedelta, timezone
 import random
 
@@ -1908,6 +1908,73 @@ def backfill_t86():
     ), 200
 
 
+def build_menu_flex():
+    """
+    用 Flex Message 做彩色選單。LINE 的純文字訊息無法上色，
+    要分色只能改用 Flex；順便把每個指令做成可點擊的按鈕，不必打字。
+    """
+    groups = [
+        ("市場動態", "#3A6EA5", [
+            ("盤前", "美股、殖利率、VIX 與自選摘要"),
+            ("解盤", "盤後大盤與法人資金"),
+        ]),
+        ("選股策略", "#C08A2E", [
+            ("黑馬", "營收＋估值＋產業動能綜合選股"),
+            ("雷達", "帶量突破、法人買超的強勢股"),
+        ]),
+        ("我的自選", "#2E7D5B", [
+            ("自選", "持股評分、位階與支撐壓力"),
+            ("新聞", "自選股相關新聞與連結"),
+        ]),
+        ("設定", "#6B7280", [
+            ("推播開", "開啟每日盤前推播"),
+            ("推播關", "關閉每日推播"),
+        ]),
+    ]
+
+    body = [{
+        "type": "text", "text": "蔡秉軒御用選股機器人",
+        "weight": "bold", "size": "lg", "color": "#1B2027",
+    }, {
+        "type": "text", "text": "點選下方按鈕，或直接輸入股票代號",
+        "size": "xs", "color": "#8E959C", "margin": "sm", "wrap": True,
+    }]
+
+    for title, color, items in groups:
+        body.append({
+            "type": "box", "layout": "horizontal", "margin": "xl",
+            "contents": [
+                {"type": "box", "layout": "vertical", "width": "4px",
+                 "backgroundColor": color, "cornerRadius": "2px", "contents": []},
+                {"type": "text", "text": title, "size": "sm", "weight": "bold",
+                 "color": color, "margin": "md", "gravity": "center"},
+            ],
+        })
+        for label, desc in items:
+            body.append({
+                "type": "box", "layout": "vertical", "margin": "md",
+                "contents": [
+                    {"type": "button", "style": "secondary", "height": "sm",
+                     "color": "#F2F3F0",
+                     "action": {"type": "message", "label": label, "text": label}},
+                    {"type": "text", "text": desc, "size": "xxs",
+                     "color": "#8E959C", "margin": "xs", "wrap": True},
+                ],
+            })
+
+    body.append({
+        "type": "text", "margin": "xl", "size": "xxs", "color": "#8E959C", "wrap": True,
+        "text": "新增自選：輸入「加 2330」　移除：「刪 2330」",
+    })
+
+    bubble = {
+        "type": "bubble",
+        "body": {"type": "box", "layout": "vertical", "contents": body,
+                 "paddingAll": "18px", "backgroundColor": "#FFFFFF"},
+    }
+    return FlexSendMessage(alt_text="選股機器人選單", contents=bubble)
+
+
 # --- LINE Bot 訊息接收與路由分派 ---
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -1922,6 +1989,7 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
+    flex_reply = None  # 若為 Flex 訊息（彩色選單），改用這個回覆
     text = event.message.text.strip()
     text_upper = text.upper()
     pure_code = "".join(filter(str.isdigit, text))
@@ -1990,7 +2058,7 @@ def handle_message(event):
 
     # 7. 盤前速覽
     elif text in ["盤前", "早安"]:
-        reply = generate_morning_brief()
+        reply = build_morning_push(user_id)
 
     # 7.5 盤後解盤（使用者手動輸入才觸發，不自動推播）
     elif text in ["解盤", "盤後解盤", "盤後"]:
@@ -2198,26 +2266,16 @@ def handle_message(event):
             reply = "\n\n".join(reports) if reports else "❌ 暫無符合條件的標的。"
 
     elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
-        reply = (
-            "🤖 蔡秉軒御用選股機器人\n"
-            "===================\n"
-            "🔥 核心策略專區（真實三大法人籌碼）\n"
-            "• 輸入「盤前」➜ 美股、殖利率、VIX、重點個股與總經新聞\n"
-            "• 輸入「解盤」➜ 盤後大盤與法人資金解析\n"
-            "• 輸入「黑馬」➜ 營收成長＋估值＋產業動能綜合選股\n"
-            "• 輸入「雷達」➜ 帶量突破、法人買超的強勢股\n\n"
-            "📂 自選與策略管理\n"
-            "• 輸入「自選」或「健檢」➜ 自選股評分＋支撐壓力\n"
-            "• 輸入「新聞」➜ 自選股相關新聞標題與連結\n"
-            "• 輸入「加 3081」➜ 新增自選\n"
-            "• 輸入「刪 3081」➜ 移除自選\n"
-            "• 輸入「推播開 / 推播關」➜ 開啟或關閉盤前摘要推播\n"
-            "• 直接輸入代號（如 3081、6442）➜ 行情、位階與相關新聞"
-        )
+        flex_reply = build_menu_flex()
+        reply = None
+
     else:
         reply = "🤖 指令未識別，請輸入「選單」查看可用功能！"
 
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+    if flex_reply is not None:
+        line_bot_api.reply_message(event.reply_token, flex_reply)
+    else:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
