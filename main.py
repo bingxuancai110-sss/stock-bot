@@ -167,9 +167,14 @@ def add_user_to_db(user_id):
         release_db_connection(conn)
 
 def is_admin(user_id):
-    """管理者身分由環境變數 ADMIN_USER_ID 指定，未設定時沒有人是管理者。"""
-    admin = os.environ.get("ADMIN_USER_ID", "").strip()
-    return bool(admin) and str(user_id).strip() == admin
+    """
+    管理者由環境變數 ADMIN_USER_ID 指定，多位管理者用逗號分隔，例如：
+    ADMIN_USER_ID=Uaaa...,Ubbb...
+    未設定時沒有人是管理者，管理指令對所有人都無效。
+    """
+    raw = os.environ.get("ADMIN_USER_ID", "")
+    admins = {a.strip() for a in raw.split(",") if a.strip()}
+    return str(user_id).strip() in admins if admins else False
 
 
 def set_requested(user_id, flag=True):
