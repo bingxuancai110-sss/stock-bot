@@ -1168,61 +1168,109 @@ def build_risk_desc(pct, net_lots):
         return "・籌碼與價格同步走強，仍須留意大盤系統性風險"
     return "・盤勢仍有變數，操作務必自行設好停損停利"
 
-def fetch_us_market():
-    """
-    抓美股主要指數與台股相關個股的最新收盤。
-    美股收盤約當台灣時間清晨，所以盤前查到的就是最新一夜的結果。
-    回傳 [(顯示名稱, 收盤價, 漲跌幅%), ...]，抓不到的項目會被略過。
-    """
-    targets = [
-        ("道瓊指數", "^DJI"),
-        ("那斯達克", "^IXIC"),
-        ("費城半導體", "^SOX"),
-        ("輝達 NVDA", "NVDA"),
-        ("台積電ADR", "TSM"),
-    ]
-    results = []
-    for label, symbol in targets:
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=1d"
-            res = requests.get(url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'}).json()
-            meta = res.get('chart', {}).get('result', [{}])[0].get('meta', {})
-            close = meta.get('regularMarketPrice')
-            prev = meta.get('chartPreviousClose') or meta.get('previousClose')
+def fetch_quote(symbol):
+    """抓單一標的最新收盤與漲跌。回傳 (價格, 漲跌幅%, 漲跌絕對值) 或 None。"""
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=1d"
+        res = requests.get(url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'}).json()
+        result = res.get('chart', {}).get('result', [])
+        if not result:
+            return None
+        meta = result[0].get('meta', {})
+        close = meta.get('regularMarketPrice')
+        closes = [c for c in (result[0].get('indicators', {}).get('quote', [{}])[0]
+                              .get('close', []) or []) if c is not None]
+        if not close and closes:
+            close = closes[-1]
+        if not close:
+            return None
+        # 前一交易日收盤：若最後一根K就是目前報價，前收要再往前一根
+        if len(closes) >= 2:
+            prev = closes[-2] if abs(closes[-1] - close) < 0.001 else closes[-1]
+        else:
+            prev = meta.get('chartPreviousClose')
+        if not prev:
+            return None
+        return close, (close - prev) / prev * 100, close - prev
+    except Exception as e:
+        print(f"❌ 抓取 {symbol} 失敗: {e}")
+        return None
 
-            # 優先用日K序列的倒數第二筆當前收，跟個股的算法一致，
-            # 避免 chartPreviousClose 指到查詢區間起點而不是前一交易日
-            closes = [c for c in (res.get('chart', {}).get('result', [{}])[0]
-                                  .get('indicators', {}).get('quote', [{}])[0]
-                                  .get('close', []) or []) if c is not None]
-            if len(closes) >= 2:
-                prev = closes[-2] if abs(closes[-1] - (close or 0)) < 0.01 else closes[-1]
 
-            if not close or not prev:
-                continue
-            pct = (close - prev) / prev * 100
-            results.append((label, close, pct))
-        except Exception as e:
-            print(f"❌ 抓取 {symbol} 失敗: {e}")
-            continue
-    return results
+# 盤前簡報要看的標的。想增減直接改這裡，格式是 (顯示名稱, Yahoo代號)
+BRIEF_INDICES = [
+    ("道瓊", "^DJI"), ("那斯達克", "^IXIC"),
+    ("S&P 500", "^GSPC"), ("費城半導體", "^SOX"),
+]
+BRIEF_MACRO = [
+    ("美10年債殖利率", "^TNX"), ("VIX 恐慌指數", "^VIX"),
+    ("美元指數", "DX-Y.NYB"), ("西德州原油", "CL=F"),
+]
+BRIEF_STOCKS = [
+    ("輝達 NVDA", "NVDA"), ("博通 AVGO", "AVGO"), ("超微 AMD", "AMD"),
+    ("美光 MU", "MU"), ("Lumentum LITE", "LITE"), ("台積電ADR", "TSM"),
+]
 
 
 def generate_morning_brief():
-    today_str = datetime.now().strftime("%Y/%m/%d")
-    lines = [f"☀️ 【美股與總經速覽】", f"📅 {today_str}", "─" * 14]
+    """
+    盤前總經簡報：美股指數、殖利率與波動率、台廠相關重要個股、總經新聞標題。
+    數據全部來自實際報價；CPI／非農這類發布結果與解讀不自行生成，
+    改列新聞標題與連結，由你自己判讀。
+    """
+    lines = [f"☀️ 盤前總經簡報　{datetime.now().strftime('%m/%d')}", "═" * 13]
 
-    data = fetch_us_market()
-    if not data:
-        lines.append("⚠️ 美股資料暫時取得失敗，請稍後再試")
-    else:
-        for label, close, pct in data:
+    def fmt_rows(title, targets, as_yield=False):
+        block = [f"\n【{title}】"]
+        got = False
+        for label, sym in targets:
+            q = fetch_quote(sym)
+            if not q:
+                continue
+            got = True
+            close, pct, diff = q
             arrow = "🔴" if pct >= 0 else "🟢"
-            lines.append(f"{arrow} {label}：{close:,.2f}（{pct:+.2f}%）")
-        lines.append("─" * 14)
-        lines.append("※ 為美股最近一個交易日收盤")
+            if as_yield:
+                # 殖利率用「基點」表達比百分比變化直觀（升息循環常用語言）
+                block.append(f"{arrow} {label}：{close:.3f}%（{diff*100:+.1f} bps）")
+            else:
+                block.append(f"{arrow} {label}：{close:,.2f}（{pct:+.2f}%）")
+        return block if got else [f"\n【{title}】\n資料暫缺"]
 
-    return "\n".join(lines)
+    lines += fmt_rows("美股指數", BRIEF_INDICES)
+
+    # 殖利率與 VIX 分開處理：^TNX 是殖利率本身，用 bps 表示變化才有意義
+    lines.append("\n【債市與風險指標】")
+    tnx = fetch_quote("^TNX")
+    if tnx:
+        close, pct, diff = tnx
+        arrow = "🔴" if diff >= 0 else "🟢"
+        lines.append(f"{arrow} 美10年債殖利率：{close:.3f}%（{diff*100:+.1f} bps）")
+    for label, sym in BRIEF_MACRO[1:]:
+        q = fetch_quote(sym)
+        if not q:
+            continue
+        close, pct, _diff = q
+        arrow = "🔴" if pct >= 0 else "🟢"
+        lines.append(f"{arrow} {label}：{close:,.2f}（{pct:+.2f}%）")
+
+    lines += fmt_rows("重點個股", BRIEF_STOCKS)
+
+    # 總經新聞：只給標題與連結，不生成解讀
+    news = fetch_stock_news("CPI OR 非農 OR 聯準會 OR 美債殖利率", max_items=3, within_hours=36)
+    if news:
+        lines.append("\n【總經焦點】")
+        for n in news:
+            src = f"（{n['source']}）" if n["source"] else ""
+            lines.append(f"・{n['title']}{src}")
+            if n["link"]:
+                lines.append(f"　{n['link']}")
+
+    lines.append("\n═" * 1)
+    lines.append("※ 為前一交易日收盤數據")
+    brief = "\n".join(lines)
+    return brief[:4750] + "\n…（已截斷）" if len(brief) > 4800 else brief
+
 
 # --- 月營收（TWSE OpenAPI t187ap05_L，全上市公司，一個月只有一期，用「資料年月」當快取key） ---
 _revenue_cache = {"period": None, "data": {}}
@@ -2137,7 +2185,7 @@ def handle_message(event):
             "🤖 蔡秉軒御用選股機器人\n"
             "===================\n"
             "🔥 核心策略專區（真實三大法人籌碼）\n"
-            "• 輸入「盤前」➜ 美股與費半即時收盤\n"
+            "• 輸入「盤前」➜ 美股、殖利率、VIX、重點個股與總經新聞\n"
             "• 輸入「解盤」➜ 盤後大盤與法人資金解析\n"
             "• 輸入「黑馬」➜ 營收成長＋估值＋產業動能綜合選股\n"
             "• 輸入「雷達」➜ 帶量突破、法人買超的強勢股\n\n"
