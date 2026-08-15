@@ -1767,6 +1767,23 @@ def build_digest(user_id):
             lines.append(f"\n⚪ {code} 查無行情")
     return "\n".join(lines)
 
+def build_morning_push(user_id):
+    """
+    早上推播的完整內容：總經簡報 ＋ 自選股摘要，合併成一則。
+    合併而非分兩則，是因為 LINE 免費方案的推播則數有限，
+    一天一則才撐得住整個月。
+    """
+    parts = [generate_morning_brief()]
+    digest = build_digest(user_id)
+    if digest:
+        parts.append("\n" + "═" * 13 + "\n")
+        parts.append(digest)
+    msg = "\n".join(parts)
+    if len(msg) > 4800:
+        msg = msg[:4750] + "\n\n…（內容過長，已截斷）"
+    return msg
+
+
 @app.route("/cron/push-watchlist", methods=["POST", "GET"])
 def cron_push_watchlist():
     secret = request.args.get("token")
@@ -1776,7 +1793,7 @@ def cron_push_watchlist():
     users = get_notify_users()
     sent, failed = 0, 0
     for uid in users:
-        msg = build_digest(uid)
+        msg = build_morning_push(uid)
         if not msg:
             continue
         try:
