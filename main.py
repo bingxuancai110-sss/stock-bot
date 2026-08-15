@@ -12,7 +12,7 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import (MessageEvent, TextMessage, TextSendMessage,
                             FlexSendMessage, FollowEvent,
                             QuickReply, QuickReplyButton, MessageAction)
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 import random
 
 app = Flask(__name__)
@@ -462,6 +462,34 @@ def get_positions(user_id):
         release_db_connection(conn)
 
 
+def merge_positions(positions):
+    """
+    同一檔股票的多筆進場合併成一列顯示，成本用加權平均。
+    資料庫仍保留每一筆原始紀錄——之後要分析「是否在虧損時加碼」
+    需要知道每次進場的時間與價位，合併掉就永遠算不出來了。
+    回傳每組另附 lots（原始明細），供展開檢視與刪除。
+    """
+    grouped = {}
+    for p in positions:
+        g = grouped.setdefault(p["code"], {
+            "code": p["code"], "shares": 0, "cost_total": 0.0, "lots": []})
+        g["shares"] += p["shares"]
+        g["cost_total"] += p["cost"] * p["shares"]
+        g["lots"].append(p)
+
+    merged = []
+    for g in grouped.values():
+        dates = [l["bought_on"] for l in g["lots"] if l["bought_on"]]
+        merged.append({
+            "code": g["code"],
+            "shares": g["shares"],
+            "cost": g["cost_total"] / g["shares"] if g["shares"] else 0.0,
+            "bought_on": min(dates) if dates else None,   # 以最早一筆算持有天數
+            "lots": sorted(g["lots"], key=lambda x: (x["bought_on"] or date.min)),
+        })
+    return merged
+
+
 def add_position(user_id, code, shares, cost, bought_on=None, note=None):
     conn = get_db_connection()
     try:
@@ -501,6 +529,20 @@ def delete_position(user_id, pos_id):
         return False
     finally:
         release_db_connection(conn)
+
+
+import re
+
+def normalize_code(raw):
+    """
+    從輸入取出股票代號。不能只留數字——主動式ETF的第六碼是英文
+    （A 為股票型、D 為債券型，例如 00981A），濾掉字母就查不到了。
+    回傳大寫代號，格式不符則回傳空字串。
+    """
+    if not raw:
+        return ""
+    m = re.search(r"(\d{4,6}[A-Za-z]?)", str(raw).strip())
+    return m.group(1).upper() if m else ""
 
 
 # --- 穩健的股價抓取引擎 ---
@@ -2379,6 +2421,10 @@ button:hover{background:#000}
   padding:3px 10px;margin:0;border:1px solid var(--rule);border-radius:2px;
   cursor:pointer;line-height:1.4}
 .del:hover{background:var(--up);color:#FFF;border-color:var(--up)}
+.lots{grid-column:1/-1;margin-top:6px;font-size:12px}
+.lots summary{color:var(--brass);cursor:pointer;font-size:11.5px}
+.lot{padding:7px 0 7px 12px;color:var(--ink-soft);
+  border-left:2px solid var(--rule);margin-top:6px}
 .empty{padding:40px 0;text-align:center;color:var(--ink-faint);font-size:14px}
 .msg{margin:14px 0;padding:11px 14px;background:var(--paper-2);
   border-left:2px solid var(--brass);font-size:13px}
@@ -2497,7 +2543,7 @@ def web_positions(uid):
             delete_position(uid, request.form.get("id"))
             msg = "已刪除。"
         else:
-            code = "".join(filter(str.isdigit, request.form.get("code", "")))
+            code = normalize_code(request.form.get("code", ""))
             try:
                 shares = int(request.form.get("shares", "0"))
                 cost = float(request.form.get("cost", "0"))
@@ -2510,8 +2556,31 @@ def web_positions(uid):
                              request.form.get("bought_on") or None)
                 msg = f"已新增 {code}。"
 
-    positions = get_positions(uid)
+    positions = merge_positions(get_positions(uid))
     inst = fetch_institutional_data() or {}
+
+    def lots_html(p, name):
+        """單筆就一顆刪除鍵；分批買進則收在 details 裡，可個別刪除。"""
+        lots = p.get("lots", [])
+        if len(lots) <= 1:
+            lid = lots[0]["id"] if lots else 0
+            return (f'<form method="post" style="display:inline;margin:0" '
+                    f'onsubmit="return confirm(\'確定刪除 {name}？\')">'
+                    f'<input type="hidden" name="action" value="delete">'
+                    f'<input type="hidden" name="id" value="{lid}">'
+                    f'<button class="del" type="submit">刪除</button></form>')
+        items = "".join(
+            f'<div class="lot">'
+            f'<span class="num">{l["shares"]:,}</span> 股　'
+            f'成本 <span class="num">{l["cost"]:,.2f}</span>　'
+            f'{l["bought_on"].strftime("%Y/%m/%d") if l["bought_on"] else "未填日期"}'
+            f'<form method="post" style="display:inline;margin-left:10px">'
+            f'<input type="hidden" name="action" value="delete">'
+            f'<input type="hidden" name="id" value="{l["id"]}">'
+            f'<button class="del" type="submit">刪除</button></form>'
+            f'</div>' for l in lots)
+        return (f'<details class="lots"><summary>分 {len(lots)} 筆買進</summary>'
+                f'{items}</details>')
 
     rows_html, total_value, total_cost = [], 0.0, 0.0
     enriched = []
@@ -2547,12 +2616,7 @@ def web_positions(uid):
     <span><em>市值</em> <span class="num">{value:,.0f}</span></span>
     <span><em>權重</em> <span class="num">{weight:.1f}%</span></span>
     {f'<span><em>持有</em> {held} 天</span>' if held is not None else ''}
-    <form method="post" style="display:inline;margin:0"
-          onsubmit="return confirm('確定刪除 {name}？')">
-      <input type="hidden" name="action" value="delete">
-      <input type="hidden" name="id" value="{p['id']}">
-      <button class="del" type="submit">刪除</button>
-    </form>
+    {lots_html(p, name)}
   </div>
   <div class="chg">{fmt_pct(price['pct'])}</div>
   <div class="bar"><div style="width:{weight:.1f}%"></div></div>
@@ -2565,11 +2629,7 @@ def web_positions(uid):
   <div class="price flat">—</div>
   <div class="meta">
     <span><em>持有</em> <span class="num">{p['shares']:,}</span> 股</span>
-    <form method="post" style="display:inline;margin:0">
-      <input type="hidden" name="action" value="delete">
-      <input type="hidden" name="id" value="{p['id']}">
-      <button class="del" type="submit">刪除</button>
-    </form>
+    {lots_html(p, p['code'])}
   </div>
   <div class="chg"></div>
 </div>""")
@@ -2834,7 +2894,7 @@ def effective_holdings(n, avg_corr):
 @app.route("/web/portfolio")
 @web_login_required
 def web_portfolio(uid):
-    positions = get_positions(uid)
+    positions = merge_positions(get_positions(uid))
     if not positions:
         return render_page("組合分析", """
 <div class="empty">還沒有持股紀錄。<br><br>
@@ -3040,7 +3100,7 @@ def handle_message(event):
     flex_reply = None  # 若為 Flex 訊息（彩色選單），改用這個回覆
     text = event.message.text.strip()
     text_upper = text.upper()
-    pure_code = "".join(filter(str.isdigit, text))
+    pure_code = normalize_code(text)  # 保留主動式ETF的英文尾碼，如 00981A
 
     add_user_to_db(user_id)
 
@@ -3090,7 +3150,7 @@ def handle_message(event):
             reply = f"找不到「{arg}」。輸入「名單」查看編號。"
 
     # 1. 加自選
-    elif "加" in text and 4 <= len(pure_code) <= 6:
+    elif "加" in text and 4 <= len(pure_code) <= 7:
         success = add_watchlist_db(user_id, pure_code)
         c_name = STOCK_NAME_MAP.get(pure_code, pure_code)
         if success:
@@ -3099,7 +3159,7 @@ def handle_message(event):
             reply = f"❌ 新增自選失敗，資料庫寫入異常：{pure_code}"
 
     # 2. 刪自選
-    elif "刪" in text and 4 <= len(pure_code) <= 6:
+    elif "刪" in text and 4 <= len(pure_code) <= 7:
         remove_watchlist_db(user_id, pure_code)
         reply = f"🗑️ 已從自選清單移除：{pure_code}"
 
@@ -3126,7 +3186,7 @@ def handle_message(event):
         reply = build_healthcheck_report(user_id)
 
     # 6. 單獨查代號行情
-    elif 4 <= len(pure_code) <= 6 and len(text) <= 7 and " " not in text:
+    elif 4 <= len(pure_code) <= 7 and len(text) <= 8 and " " not in text:
         data = get_realtime_stock(pure_code)
         if data:
             inst = fetch_institutional_data().get(pure_code, {})
