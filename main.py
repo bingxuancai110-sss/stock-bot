@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, FlexSendMessage
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, FlexSendMessage, FollowEvent
 from datetime import datetime, timedelta, timezone
 import random
 
@@ -2009,6 +2009,29 @@ def callback():
         abort(400)
     return "OK"
 
+@handler.add(FollowEvent)
+def handle_follow(event):
+    """
+    新用戶加好友時自動送出歡迎訊息與選單。
+    不能假設新用戶會自己想到要輸入「選單」，也不能假設他會注意到
+    聊天室下方的圖文選單——第一次接觸就把可用功能攤開來給他看。
+    """
+    user_id = event.source.user_id
+    add_user_to_db(user_id)
+
+    welcome = TextSendMessage(text=(
+        "歡迎使用選股機器人 📈\n\n"
+        "這裡可以查台股行情、法人籌碼、營收與估值，"
+        "也能建立自己的自選股清單。\n\n"
+        "下面是可用的功能，直接點按鈕就能執行。\n"
+        "隨時輸入「選單」都能再叫出來。"
+    ))
+    try:
+        line_bot_api.reply_message(event.reply_token, [welcome, build_menu_flex()])
+    except Exception as e:
+        print(f"❌ 歡迎訊息發送失敗 {user_id}: {e}")
+
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
@@ -2293,7 +2316,9 @@ def handle_message(event):
         reply = None
 
     else:
-        reply = "🤖 指令未識別，請輸入「選單」查看可用功能！"
+        # 指令沒對上時直接把選單給他，不要只回一句「請輸入選單」
+        flex_reply = build_menu_flex()
+        reply = None
 
     if flex_reply is not None:
         line_bot_api.reply_message(event.reply_token, flex_reply)
