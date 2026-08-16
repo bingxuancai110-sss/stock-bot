@@ -1005,15 +1005,21 @@ def fetch_and_save_industry():
             continue
         n = 0
         for row in rows:
+            # 欄位名稱各市場不同：證交所用中文，櫃買中心用英文。
+            # 產業別在上櫃／興櫃叫 SecuritiesIndustryCode，
+            # 漏掉它會讓 1,200 多檔上櫃興櫃股票沒有產業別，
+            # 進而完全不出現在依類股分組的選股結果裡。
             code = _pick(row, "公司代號", "SecuritiesCompanyCode", "Code")
-            name = _pick(row, "公司簡稱", "CompanyName", "Name", "公司名稱")
-            industry = _pick(row, "產業別", "Industry")
+            name = _pick(row, "公司簡稱", "CompanyAbbreviation",
+                         "CompanyName", "Name", "公司名稱")
+            industry = _pick(row, "產業別", "SecuritiesIndustryCode", "Industry")
             if not code:
                 continue
             records.append((code, name, industry.zfill(2) if industry else "", market))
             n += 1
         counts[market] = n
-        print(f"✅ {market}公司基本資料 {n} 筆")
+        with_ind = sum(1 for c, _nm, i, m in records if m == market and i)
+        print(f"✅ {market}公司基本資料 {n} 筆（有產業別 {with_ind} 筆）")
 
     if not records:
         return 0, []
@@ -1047,7 +1053,12 @@ def fetch_and_save_industry():
     finally:
         release_db_connection(conn)
 
-    sample = [f"{m}：{c} 檔" for m, c in counts.items()]
+    ind_counts = {}
+    for _c, _n, i, m in records:
+        if i:
+            ind_counts[m] = ind_counts.get(m, 0) + 1
+    sample = [f"{m}：{c} 檔（有產業別 {ind_counts.get(m, 0)} 檔）"
+              for m, c in counts.items()]
     sample += sorted({ind for _, _, ind, _ in records if ind})[:30]
     return len(records), sample
 
