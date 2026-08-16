@@ -124,6 +124,21 @@ def init_db():
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         ''')
+        # 既有資料表不會因 CREATE TABLE IF NOT EXISTS 而新增欄位，
+        # 之後補的欄位一律用 ALTER TABLE，否則舊使用者存不進去。
+        for _col, _type in [
+            ("fee_discount", "REAL"),
+            ("min_fee", "INTEGER"),
+            ("loss_alert_pct", "INTEGER"),
+            ("position_alert_pct", "INTEGER"),
+            ("check_frequency", "TEXT"),
+            ("holding_period", "TEXT"),
+            ("other_assets", "TEXT"),
+            ("drawdown_experience", "TEXT"),
+        ]:
+            cursor.execute(
+                f"ALTER TABLE user_profile ADD COLUMN IF NOT EXISTS {_col} {_type}")
+
         # 網頁登入權杖：LINE 傳「網頁」時產生，點連結即登入，
         # 這樣不必另外做 LINE Login 也不必讓使用者記帳號密碼。
         cursor.execute('''
@@ -2865,8 +2880,8 @@ def web_settings(uid):
         except ValueError:
             data["fee_discount"] = None
         if all(data.get(k) for k, _, req, _ in PROFILE_FIELDS if req):
-            save_profile(uid, data)
-            msg = "設定已儲存。"
+            msg = ("設定已儲存。" if save_profile(uid, data)
+                   else "儲存失敗，請稍後再試或回報問題。")
         else:
             msg = "前四題為必填，請確認都已選擇。"
 
