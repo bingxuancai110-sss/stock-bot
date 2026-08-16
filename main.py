@@ -915,6 +915,17 @@ INDUSTRY_NAME_MAP = {
     "37": "運動休閒", "38": "居家生活",
 }
 
+def is_financial(code, ind_map):
+    """
+    是否為金融保險業（產業代碼 17）。
+    務必 strip()：資料庫存進來的代碼可能帶空白，
+    顯示用的 industry_name() 有 strip 而過濾條件沒有的話，
+    就會出現「畫面顯示金融保險、卻沒被排除」的矛盾。
+    """
+    raw = ind_map.get(str(code).strip())
+    return bool(raw) and str(raw).strip().zfill(2) == "17"
+
+
 def industry_name(code):
     """把產業別代碼轉成中文名稱；查不到就回傳原代碼，不會讓資料消失。"""
     code = str(code).strip().zfill(2)
@@ -941,7 +952,7 @@ def fetch_and_save_industry():
     for row in rows:
         code = str(row.get("公司代號", "")).strip()
         name = str(row.get("公司簡稱", "")).strip()
-        industry = str(row.get("產業別", "")).strip()
+        industry = str(row.get("產業別", "")).strip().zfill(2)
         if code:
             records.append((code, name, industry))
 
@@ -3372,6 +3383,7 @@ def web_screener(uid):
     min_score = request.args.get("min_score", "")
     max_pe = request.args.get("max_pe", "")
     industry_filter = request.args.get("industry", "")
+    show_fin = request.args.get("fin", "") == "1"   # 預設排除金融股
 
     inst = fetch_institutional_data()
     if not inst:
@@ -3386,9 +3398,14 @@ def web_screener(uid):
 
     # ── 候選池 ──
     if mode == "radar":
+        # 與黑馬一致排除金融保險業（產業代碼 17）：
+        # 銀行保險的「營收」是利息、手續費與投資收益，
+        # 年增率動輒數百％多半來自評價變動而非本業成長，
+        # 套進成長型評分會讓金融股整片霸榜。
         pool = [(c, i) for c, i in inst.items()
                 if len(c) == 4 and c.isdigit() and not c.startswith("00")
-                and i["total_net_lots"] > 0]
+                and i["total_net_lots"] > 0
+                and (show_fin or not is_financial(c, ind_map))]
         pool.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
         pool = [(c, {"name": i.get("name", c), "total_net_lots": i["total_net_lots"],
                      "cum_lots": i["total_net_lots"], "buy_days": 1})
@@ -3398,7 +3415,7 @@ def web_screener(uid):
         pool = [(c, {"name": n, "total_net_lots": inst.get(c, {}).get("total_net_lots", 0),
                      "cum_lots": cl, "buy_days": bd})
                 for c, n, cl, bd in cum
-                if ind_map.get(c, "").zfill(2) != "17"]
+                if show_fin or not is_financial(c, ind_map)]
 
     streaks = get_consecutive_days_batch([c for c, _ in pool])
 
@@ -3504,6 +3521,10 @@ def web_screener(uid):
       {opt('','全部',industry_filter)}
       {''.join(opt(i, i, industry_filter) for i in industries)}
     </select></div>
+    <div><label>金融保險股</label><select name="fin" onchange="this.form.submit()">
+      {opt('','排除（建議）','1' if show_fin else '')}
+      {opt('1','納入','1' if show_fin else '')}
+    </select></div>
   </div>
 </form>"""
 
@@ -3518,6 +3539,7 @@ def web_screener(uid):
      class="{'on' if mode == 'radar' else ''}">雷達</a>
 </div>
 <div class="mode-note">{
+  '' if show_fin else '預設排除金融保險業：其「營收」為利息與投資收益，年增率常因評價變動而失真。　'}{
   '近 10 日累計買超前 120 名，依營收成長、估值、產業動能、法人連續性綜合評分。'
   if mode != 'radar' else
   '當日法人買超且漲幅 1.5% 以上，著重帶量突破與位階。'}</div>
@@ -3753,7 +3775,7 @@ def handle_message(event):
                 for code, name, cum_lots, buy_days in cum_buyers
                 # 排除金融保險業：銀行的「營收」是利息與手續費收入，
                 # 性質與製造業不同，套用同一套營收成長標準會失真
-                if bh_industry_map.get(code, "").zfill(2) != "17"
+                if not is_financial(code, bh_industry_map)
             ]
 
             streaks = get_consecutive_days_batch([c for c, _ in candidates])
