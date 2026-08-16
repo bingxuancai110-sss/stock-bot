@@ -2325,26 +2325,27 @@ def build_menu_flex():
     def row(label, desc, tint):
         """一列＝左邊指令按鈕（該分區的淡色底），右邊說明文字。"""
         return {
-            "type": "box", "layout": "horizontal", "margin": "md",
+            "type": "box", "layout": "horizontal", "margin": "lg",
             "alignItems": "center", "spacing": "md",
             "contents": [
                 {
-                    "type": "button", "style": "secondary", "height": "sm",
+                    "type": "button", "style": "secondary", "height": "md",
                     "color": tint, "flex": 4, "adjustMode": "shrink-to-fit",
                     "action": {"type": "message", "label": label, "text": label},
                 },
                 {
-                    "type": "text", "text": desc, "size": "xxs", "flex": 7,
-                    "color": "#98A0A8", "wrap": True, "gravity": "center",
+                    # xxs 對長輩太小，放大到 sm 並把灰階加深以提高對比
+                    "type": "text", "text": desc, "size": "sm", "flex": 7,
+                    "color": "#6B737B", "wrap": True, "gravity": "center",
                 },
             ],
         }
 
     body = [
         {"type": "text", "text": "台股 BOT", "weight": "bold",
-         "size": "xl", "color": "#1B2027"},
+         "size": "xxl", "color": "#1B2027"},
         {"type": "text", "text": "點按鈕即可執行，或直接輸入股票代號　·　查詢約需 20 秒",
-         "size": "xxs", "color": "#A8AEB5", "margin": "xs", "wrap": True},
+         "size": "sm", "color": "#8E959C", "margin": "sm", "wrap": True},
         {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
     ]
 
@@ -2353,36 +2354,55 @@ def build_menu_flex():
             "type": "box", "layout": "horizontal", "margin": "lg",
             "alignItems": "center", "spacing": "sm",
             "contents": [
-                {"type": "box", "layout": "vertical", "width": "3px", "height": "13px",
+                {"type": "box", "layout": "vertical", "width": "4px", "height": "18px",
                  "backgroundColor": color, "cornerRadius": "2px", "contents": []},
-                {"type": "text", "text": title, "size": "xs", "weight": "bold",
+                {"type": "text", "text": title, "size": "md", "weight": "bold",
                  "color": color},
             ],
         })
         for label, desc in items:
             body.append(row(label, desc, tint))
 
+    # 這段是「怎麼用」的核心說明，原本是灰色小字容易被略過，
+    # 改成有底色的區塊＋深色文字，並把要輸入的內容獨立成一行放大。
+    def howto(label, cmd, note):
+        return {
+            "type": "box", "layout": "vertical", "margin": "md", "spacing": "xs",
+            "contents": [
+                {"type": "text", "text": label, "size": "sm",
+                 "color": "#6B737B", "weight": "bold"},
+                {"type": "box", "layout": "baseline", "spacing": "sm",
+                 "contents": [
+                     {"type": "text", "text": cmd, "size": "lg",
+                      "weight": "bold", "color": "#1B2027", "flex": 0},
+                     {"type": "text", "text": note, "size": "sm",
+                      "color": "#8E959C", "wrap": True},
+                 ]},
+            ],
+        }
+
     body += [
         {"type": "separator", "margin": "xl", "color": "#E8EAE6"},
-        {"type": "box", "layout": "vertical", "margin": "md", "spacing": "xs",
+        {"type": "text", "text": "也可以直接打字", "size": "md",
+         "weight": "bold", "color": "#1B2027", "margin": "lg"},
+        {"type": "box", "layout": "vertical", "margin": "md",
+         "backgroundColor": "#F4F5F2", "cornerRadius": "4px",
+         "paddingAll": "14px", "spacing": "sm",
          "contents": [
-             {"type": "text", "text": "加入自選　輸入「加 2330」",
-              "size": "xxs", "color": "#A8AEB5"},
-             {"type": "text", "text": "移除自選　輸入「刪 2330」",
-              "size": "xxs", "color": "#A8AEB5"},
-             {"type": "text", "text": "查詢個股　直接輸入代號，如 2330",
-              "size": "xxs", "color": "#A8AEB5"},
+             howto("加入自選", "加 2330", "換成你要的代號"),
+             howto("移除自選", "刪 2330", "從清單移除"),
+             howto("查詢個股", "2330", "只打代號即可"),
          ]},
         {"type": "separator", "margin": "lg", "color": "#EEF0EC"},
-        {"type": "text", "text": "作者：蔡秉軒　敬上", "size": "xxs",
-         "color": "#B4B9BF", "margin": "md", "align": "end"},
+        {"type": "text", "text": "作者：蔡秉軒　敬上", "size": "sm",
+         "color": "#8E959C", "margin": "md", "align": "end"},
     ]
 
     bubble = {
         "type": "bubble",
         "body": {
             "type": "box", "layout": "vertical", "contents": body,
-            "paddingAll": "20px", "backgroundColor": "#FFFFFF",
+            "paddingAll": "22px", "backgroundColor": "#FFFFFF",
         },
         "styles": {"body": {"backgroundColor": "#FFFFFF"}},
     }
