@@ -1069,6 +1069,21 @@ def get_name_map(force_reload=False):
         release_db_connection(conn)
 
 
+def short_company_name(name):
+    """
+    公司全名太長不適合列表顯示（例：昕力資訊股份有限公司）。
+    有簡稱就用簡稱；只有全名時去掉常見的組織型態後綴。
+    """
+    if not name:
+        return name
+    n = str(name).strip()
+    for suffix in ("股份有限公司", "有限公司", "股份公司", "公司"):
+        if n.endswith(suffix) and len(n) > len(suffix):
+            n = n[: -len(suffix)]
+            break
+    return n.strip()
+
+
 def stock_display_name(code, inst_data=None, fallback=None):
     """
     取得顯示名稱，優先序：當日法人資料 → stock_info → 寫死對照表 → 代號。
@@ -1081,7 +1096,7 @@ def stock_display_name(code, inst_data=None, fallback=None):
             return n
     n = get_name_map().get(code)
     if n:
-        return n
+        return short_company_name(n)
     return fallback or STOCK_NAME_MAP.get(code, code)
 
 def get_industry_map(force_reload=False):
@@ -2040,7 +2055,7 @@ def build_healthcheck_report(user_id):
             continue
 
         inst = institutional_data.get(code, {})
-        name = inst.get("name") or stock["name"]
+        name = stock_display_name(code, institutional_data, stock["name"])
         cum_lots, buy_days = cum_map.get(code, (0, 0))
         streak = streaks.get(code, 0)
 
@@ -2843,8 +2858,8 @@ def web_positions(uid):
 
     for p, price, value, cost_total in sorted(
             enriched, key=lambda x: x[2], reverse=True):
-        name = (inst.get(p["code"], {}).get("name")
-                or (price["name"] if price else p["code"]))
+        name = stock_display_name(p["code"], inst,
+                                  price["name"] if price else None)
         weight = (value / total_value * 100) if total_value else 0
         if price:
             gross_pl = (price["close"] - p["cost"]) / p["cost"] * 100
@@ -3955,7 +3970,8 @@ def handle_message(event):
         data = get_realtime_stock(pure_code)
         if data:
             inst_all = fetch_institutional_data() or {}
-            disp_name = stock_display_name(pure_code, inst_all, data["name"])
+            disp_name = short_company_name(
+                stock_display_name(pure_code, inst_all, data["name"]))
             reply = (
                 f"📊 {data['code']} {disp_name}\n"
                 f"──────────────\n"
