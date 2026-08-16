@@ -2474,7 +2474,14 @@ footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--rule);
   line-height:1.7;display:flex;gap:11px}
 .alert .tag{font-size:10.5px;letter-spacing:.1em;color:var(--brass);
   padding-top:3px;white-space:nowrap}
-.tabs{display:flex;gap:6px;margin:18px 0 6px}
+.tabs{display:flex;gap:6px;margin:18px 0 6px;align-items:center;flex-wrap:wrap}
+.tabs-gap{flex:0 0 14px}
+.sector{margin-top:22px}
+.sector-head{display:flex;align-items:baseline;justify-content:space-between;
+  gap:10px;padding:8px 11px;background:var(--paper-2);
+  border-left:3px solid var(--brass)}
+.sector-name{font-size:14.5px;font-weight:600}
+.sector-mom{font-size:11.5px;color:var(--ink-soft);text-align:right}
 .tabs a{padding:7px 18px;font-size:14px;text-decoration:none;
   color:var(--ink-soft);background:var(--paper-2);border-radius:2px}
 .tabs a.on{background:var(--ink);color:var(--paper);font-weight:500}
@@ -3384,6 +3391,7 @@ def web_screener(uid):
     max_pe = request.args.get("max_pe", "")
     industry_filter = request.args.get("industry", "")
     show_fin = request.args.get("fin", "") == "1"   # 預設排除金融股
+    view = request.args.get("view", "list")         # list=總排行, sector=依產業
 
     inst = fetch_institutional_data()
     if not inst:
@@ -3494,12 +3502,72 @@ def web_screener(uid):
 
     industries = sorted({r["industry"] for r in rows})
 
+    # ── 依產業檢視 ──
+    # 總排行容易被當紅族群整片佔滿，看不到其他產業有沒有東西。
+    # 這裡改成「每個有動能的產業各出代表」，並依產業動能排序，
+    # 讓「哪些族群正在成長」和「該族群裡誰最強」兩個問題分開回答。
+    sector_blocks = []
+    if view == "sector":
+        by_ind = {}
+        for r in rows:
+            by_ind.setdefault(r["industry"], []).append(r)
+        ranked_inds = []
+        for ind_txt, members in by_ind.items():
+            members.sort(key=lambda x: x["score"], reverse=True)
+            code_of = next((c for c, v in ind_map.items()
+                            if industry_name(v) == ind_txt), None)
+            st = momentum.get(ind_map.get(code_of)) if code_of else None
+            ranked_inds.append({
+                "name": ind_txt,
+                "p75": st["p75"] if st else None,
+                "median": st["median"] if st else None,
+                "count": st["count"] if st else None,
+                "members": members,
+            })
+        # 有產業動能資料的排前面，並依領先群成長率高低排序
+        ranked_inds.sort(key=lambda x: (x["p75"] is not None,
+                                        x["p75"] if x["p75"] is not None else 0),
+                         reverse=True)
+        sector_blocks = ranked_inds
+
     def opt(v, t, cur):
         return f'<option value="{v}"{" selected" if str(cur) == str(v) else ""}>{t}</option>'
+
+    def stock_row(r):
+        return f"""
+<div class="row">
+  <div><span class="name">{r['name']}</span><span class="code">{r['code']}</span>
+    {f'<span class="badge">{r["breakout"]}</span>' if r['breakout'] else ''}</div>
+  <div class="price num">{r['score']}<span class="sub">分</span></div>
+  <div class="meta">
+    <span><em>價</em> <span class="num">{r['close']:,.2f}</span> {fmt_pct(r['pct'])}</span>
+    <span><em>營收年增</em> {f"{r['cum_yoy']:+.1f}%" if r['cum_yoy'] is not None else '—'}</span>
+    <span><em>PE</em> {f"{r['pe']:.1f}" if r['pe'] else '—'}</span>
+    <span><em>PEG</em> {f"{r['peg']:.2f}" if r['peg'] else '—'}</span>
+    <span><em>連買</em> {r['streak']} 日</span>
+    <span><em>金額</em> <span class="num">{r['turnover']:.1f}</span> 億</span>
+  </div>
+  <div class="chg sub">營收{r['rev']}·估值{r['val']}·產業{r['mom']}·籌碼{r['streak_score']}·技術{r['chip']}</div>
+  <div class="bar"><div style="width:{r['score']}%"></div></div>
+</div>"""
+
+    def sector_block(b, per):
+        mom = (f'領先群 {b["p75"]:+.1f}%・中位 {b["median"]:+.1f}%・{b["count"]} 家'
+               if b["p75"] is not None else '無產業動能資料')
+        picks = "".join(stock_row(r) for r in b["members"][:per])
+        return f"""
+<div class="sector">
+  <div class="sector-head">
+    <span class="sector-name">{b['name']}</span>
+    <span class="sector-mom">{mom}</span>
+  </div>
+  <div class="rows">{picks}</div>
+</div>"""
 
     controls = f"""
 <form method="get" class="controls">
   <input type="hidden" name="mode" value="{mode}">
+  <input type="hidden" name="view" value="{view}">
   <div class="fields">
     <div><label>排序</label><select name="sort" onchange="this.form.submit()">
       {opt('score','綜合分數',sort_key)}{opt('pct','當日漲幅',sort_key)}
@@ -3531,41 +3599,41 @@ def web_screener(uid):
     dist_html = "".join(
         f'<span class="dist-item"><b>{n}</b> 檔 {label}</span>' for label, n in dist)
 
+    per_sector = 2 if limit >= 20 else 1
+    if view == "sector":
+        main_html = ("".join(sector_block(b, per_sector) for b in sector_blocks)
+                     or '<div class="empty">沒有符合條件的標的，試著放寬篩選。</div>')
+        count_note = f"{len(sector_blocks)} 個產業・每個產業取前 {per_sector} 名"
+    else:
+        main_html = ('<div class="rows">'
+                     + "".join(stock_row(r) for r in shown) + '</div>'
+                     if shown else
+                     '<div class="empty">沒有符合條件的標的，試著放寬篩選。</div>')
+        count_note = f"共 {len(rows)} 檔符合條件"
+
     body = f"""
 <div class="tabs">
-  <a href="/web/screener?mode=blackhorse"
+  <a href="/web/screener?mode=blackhorse&view={view}"
      class="{'on' if mode != 'radar' else ''}">黑馬</a>
-  <a href="/web/screener?mode=radar"
+  <a href="/web/screener?mode=radar&view={view}"
      class="{'on' if mode == 'radar' else ''}">雷達</a>
+  <span class="tabs-gap"></span>
+  <a href="/web/screener?mode={mode}&view=list"
+     class="{'on' if view != 'sector' else ''}">總排行</a>
+  <a href="/web/screener?mode={mode}&view=sector"
+     class="{'on' if view == 'sector' else ''}">依產業</a>
 </div>
 <div class="mode-note">{
   '' if show_fin else '預設排除金融保險業：其「營收」為利息與投資收益，年增率常因評價變動而失真。　'}{
   '近 10 日累計買超前 120 名，依營收成長、估值、產業動能、法人連續性綜合評分。'
   if mode != 'radar' else
-  '當日法人買超且漲幅 1.5% 以上，著重帶量突破與位階。'}</div>
+  '當日法人買超且漲幅 1.5% 以上，著重帶量突破與位階。'}{
+  '　產業依「領先群營收年增率」由高至低排列。' if view == 'sector' else ''}</div>
 
-<div class="dist">{dist_html}<span class="dist-note">共 {len(rows)} 檔符合條件</span></div>
+<div class="dist">{dist_html}<span class="dist-note">{count_note}</span></div>
 {controls}
-
-<div class="rows">
-{''.join(f'''
-<div class="row">
-  <div><span class="name">{r['name']}</span><span class="code">{r['code']}</span>
-    {f'<span class="badge">{r["breakout"]}</span>' if r['breakout'] else ''}</div>
-  <div class="price num">{r['score']}<span class="sub">分</span></div>
-  <div class="meta">
-    <span><em>價</em> <span class="num">{r['close']:,.2f}</span> {fmt_pct(r['pct'])}</span>
-    <span><em>產業</em> {r['industry']}</span>
-    <span><em>營收年增</em> {f"{r['cum_yoy']:+.1f}%" if r['cum_yoy'] is not None else '—'}</span>
-    <span><em>PE</em> {f"{r['pe']:.1f}" if r['pe'] else '—'}</span>
-    <span><em>PEG</em> {f"{r['peg']:.2f}" if r['peg'] else '—'}</span>
-    <span><em>連買</em> {r['streak']} 日</span>
-    <span><em>金額</em> <span class="num">{r['turnover']:.1f}</span> 億</span>
-  </div>
-  <div class="chg sub">營收{r['rev']}·估值{r['val']}·產業{r['mom']}·籌碼{r['streak_score']}·技術{r['chip']}</div>
-  <div class="bar"><div style="width:{r['score']}%"></div></div>
-</div>''' for r in shown) if shown else '<div class="empty">沒有符合條件的標的，試著放寬篩選。</div>'}
-</div>"""
+{main_html}
+"""
     return render_page("選股台", body, nav_active="screener")
 
 
