@@ -2923,6 +2923,12 @@ def web_settings(uid):
 
 <div class="section-head"><h2>基本設定</h2>
   <span class="section-note">四題必填</span></div>
+<div class="hint">
+  這些答案不會改變數據本身，而是決定「什麼該提醒你」。<br>
+  例如同樣 60% 集中在半導體，資金一年內要用、
+  且這是你全部身家的人，會看到比較強的警示；
+  十年不動用的人則會看到不同的說明。
+</div>
 {required_html}
 
 <div class="section-head"><h2>提醒門檻</h2>
@@ -3017,6 +3023,75 @@ def effective_holdings(n, avg_corr):
         return None
     denom = 1 + (n - 1) * max(avg_corr, 0)
     return n / denom if denom > 0 else None
+
+
+def build_profile_alerts(profile, holdings, top, ordered_industries, th):
+    """
+    把問卷答案轉成「對你而言」的提醒。
+    同樣一個 68% 集中度，對十年不動的人和明年要用錢的人意義完全不同——
+    這裡不改變事實，只改變該提醒什麼、以及用什麼標準衡量。
+    """
+    out = []
+    if not profile:
+        return out
+
+    horizon = profile.get("horizon")
+    share = profile.get("asset_share")
+    income = profile.get("income_type")
+    freq = profile.get("check_frequency")
+    hold = profile.get("holding_period")
+    others = profile.get("other_assets")
+    top_w = top["weight"] if top else 0
+    top_ind = ordered_industries[0] if ordered_industries else None
+
+    # 短年期 × 高集中：時間不夠攤平波動
+    if horizon in ("1 年內", "1–3 年") and top_ind and top_ind[1] >= 40:
+        out.append(("資金年期",
+                    f"你標記這筆錢{horizon}可能會用到，但{top_ind[0]}佔 "
+                    f"{top_ind[1]:.0f}%。族群回檔時，這個年期未必來得及等到回升。"))
+
+    # 長年期：反過來說明波動不必然是問題
+    if horizon == "10 年以上" and top_ind and top_ind[1] >= 50:
+        out.append(("資金年期",
+                    f"集中在{top_ind[0]}（{top_ind[1]:.0f}%）波動會較大，"
+                    f"但你標記這筆錢 10 年以上不會動用，時間本身是可用的緩衝。"))
+
+    # 身家比重放大集中度的實質風險
+    if share == "幾乎全部" and top_w >= th["position"]:
+        out.append(("資產比重",
+                    f"這筆投資是你幾乎全部的可動用資產，"
+                    f"而單一持股已佔 {top_w:.0f}%。單一事件的影響會直接反映在生活上。"))
+    elif share == "不到四分之一" and top_w >= th["position"]:
+        out.append(("資產比重",
+                    f"單一持股佔組合 {top_w:.0f}%，但這筆投資佔你可動用資產不到四分之一，"
+                    f"換算後的實質曝險相對有限。"))
+
+    # 收入穩定度影響「被迫賣出」的風險
+    if income in ("接案或營業收入", "目前無固定收入") and top_ind and top_ind[1] >= 50:
+        out.append(("收入穩定度",
+                    f"你的收入並非固定薪資，而組合有 {top_ind[1]:.0f}% 集中在單一族群。"
+                    f"若收入與股市同時轉弱，可能被迫在低點賣出。"))
+
+    # 只有台股 → 集中度沒有其他資產分散
+    if others == "幾乎只有台股" and top_ind and top_ind[1] >= 50:
+        out.append(("資產分散",
+                    f"你的部位幾乎只有台股，{top_ind[0]}又佔 {top_ind[1]:.0f}%，"
+                    f"整體風險沒有其他資產類別可以分攤。"))
+
+    # 自述年期與實際持有習慣矛盾
+    if horizon in ("3–10 年", "10 年以上") and hold in ("幾天", "幾週"):
+        out.append(("習慣落差",
+                    f"你標記這筆錢{horizon}才會用到，但平均持股只抱{hold}。"
+                    f"長期規劃與實際操作之間有落差，值得留意是哪一邊需要調整。"))
+
+    # 看盤頻率高 × 已有虧損部位
+    losers = [h for h in holdings if h["pl"] is not None and h["pl"] < 0]
+    if freq == "一天多次" and len(losers) >= 3:
+        out.append(("看盤頻率",
+                    f"你每天多次查看帳戶，目前有 {len(losers)} 檔在虧損。"
+                    f"高頻檢視在波動期容易放大情緒，判斷前先確認依據有沒有變。"))
+
+    return out
 
 
 @app.route("/web/portfolio")
@@ -3119,6 +3194,8 @@ def web_portfolio(uid):
         alerts.append(("虧損提醒",
                        f"{h['name']}虧損 {abs(h['pl']):.1f}%，"
                        f"已達你設定的 {th['loss']}% 門檻。"))
+
+    alerts += build_profile_alerts(profile, holdings, top, ordered, th)
 
     if w_pe and w_yoy is not None:
         alerts.append(("基本面",
