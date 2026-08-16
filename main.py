@@ -3793,11 +3793,14 @@ def web_screener(uid):
                      "cum_lots": i["total_net_lots"], "buy_days": 1})
                 for c, i in pool[:80]]
     else:
-        cum = get_cumulative_net_buy(days=10, top_n=120)
+        # 先取足夠大的母體再依類股篩選。
+        # 若只取前 120 名，那份名單幾乎全是電子股，
+        # 切到傳產或金融就會整頁空白——不是沒有標的，是被電子股佔滿了。
+        cum = get_cumulative_net_buy(days=10, top_n=800)
         pool = [(c, {"name": n, "total_net_lots": inst.get(c, {}).get("total_net_lots", 0),
                      "cum_lots": cl, "buy_days": bd})
                 for c, n, cl, bd in cum
-                if stock_category(c, ind_map) == cat_filter]
+                if stock_category(c, ind_map) == cat_filter][:120]
 
     streaks = get_consecutive_days_batch([c for c, _ in pool])
 
@@ -3885,7 +3888,11 @@ def web_screener(uid):
         "pe": lambda r: -r["pe"] if r["pe"] else -9999,
         "streak": lambda r: r["streak"],
         "turnover": lambda r: r["turnover"],
+        "yield": lambda r: r["yield"] if r.get("yield") else -1,
+        "pb": lambda r: -r["pb"] if r.get("pb") else -9999,
     }
+    if cat_filter == "金融" and sort_key == "score":
+        sort_key = "yield"   # 金融股沒有分數，改用殖利率當預設排序
     if mode == "radar":
         # 突破位階 → 量能倍數 → 連買天數 → 漲幅，不加總成單一分數
         def radar_key(r):
@@ -4071,17 +4078,18 @@ def web_screener(uid):
   <input type="hidden" name="cat" value="{cat_filter}">
   <div class="fields">
     <div><label>排序</label><select name="sort" onchange="this.form.submit()">
-      {opt('score','綜合分數',sort_key)}{opt('pct','當日漲幅',sort_key)}
+      {'' if cat_filter == '金融' else opt('score','綜合分數',sort_key)}{opt('pct','當日漲幅',sort_key)}
       {opt('yoy','營收年增',sort_key)}{opt('pe','本益比（低→高）',sort_key)}
       {opt('streak','法人連買天數',sort_key)}{opt('turnover','成交金額',sort_key)}
+      {opt('yield','殖利率',sort_key)}{opt('pb','股價淨值比（低→高）',sort_key)}
     </select></div>
     <div><label>顯示筆數</label><select name="limit" onchange="this.form.submit()">
       {opt(10,'10 筆',limit)}{opt(20,'20 筆',limit)}{opt(50,'50 筆',limit)}
     </select></div>
-    <div><label>最低分數</label><select name="min_score" onchange="this.form.submit()">
+    {'' if cat_filter == '金融' else f'''<div><label>最低分數</label><select name="min_score" onchange="this.form.submit()">
       {opt('','不限',min_score)}{opt(60,'60 以上',min_score)}
       {opt(70,'70 以上',min_score)}{opt(80,'80 以上',min_score)}
-    </select></div>
+    </select></div>'''}
     <div><label>本益比上限</label><select name="max_pe" onchange="this.form.submit()">
       {opt('','不限',max_pe)}{opt(15,'15 倍',max_pe)}{opt(20,'20 倍',max_pe)}
       {opt(30,'30 倍',max_pe)}{opt(50,'50 倍',max_pe)}
@@ -4102,6 +4110,14 @@ def web_screener(uid):
     n_20 = len([r for r in rows if r["breakout"] == "破月高"])
     n_vol = len([r for r in rows if (r.get("vol_ratio") or 0) >= 2])
     n_streak = len([r for r in rows if r["streak"] >= 3])
+    # 金融股不評分，分數分布全是 0，改列對它有意義的統計
+    n_pb1 = len([r for r in rows if r.get("pb") and r["pb"] <= 1.0])
+    n_dy4 = len([r for r in rows if r.get("yield") and r["yield"] >= 4])
+    fin_dist = (f'<span class="dist-item"><b>{n_pb1}</b> 檔 PB≤1</span>'
+                f'<span class="dist-item"><b>{n_dy4}</b> 檔殖利率≥4%</span>'
+                f'<span class="dist-item"><b>{len([r for r in rows if r["streak"] >= 3])}</b>'
+                f' 檔連買≥3日</span>')
+
     radar_dist = (f'<span class="dist-item"><b>{n_60}</b> 檔創季線新高</span>'
                   f'<span class="dist-item"><b>{n_20}</b> 檔破月高</span>'
                   f'<span class="dist-item"><b>{n_vol}</b> 檔量能≥2倍</span>'
@@ -4138,14 +4154,14 @@ def web_screener(uid):
      class="{'on' if view == 'sector' else ''}">依產業</a>'''}
 </div>
 <div class="mode-note">{
-  CATEGORY_NOTE.get(cat_filter, '')}{
+  ('' if mode == 'radar' else CATEGORY_NOTE.get(cat_filter, ''))}{
   '近 10 日累計買超前 120 名，依營收成長、估值、產業動能、法人連續性綜合評分。'
   if mode != 'radar' else
   '當日法人買超且漲幅 1.5% 以上。雷達看的是型態與位階，不給綜合分數——'
   '「今天什麼在動」跟「什麼值得抱幾個月」是兩個問題。'}{
   '　產業依「領先群營收年增率」由高至低排列。' if view == 'sector' else ''}</div>
 
-<div class="dist">{radar_dist if mode == "radar" else dist_html}<span class="dist-note">{count_note}</span></div>
+<div class="dist">{radar_dist if mode == "radar" else (fin_dist if cat_filter == "金融" else dist_html)}<span class="dist-note">{count_note}</span></div>
 {controls}
 {main_html}
 """
