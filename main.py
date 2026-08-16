@@ -174,6 +174,8 @@ def init_db():
                 industry TEXT
             )
         ''')
+        cursor.execute(
+            "ALTER TABLE stock_info ADD COLUMN IF NOT EXISTS market TEXT")
         # 每月營收快照：TWSE 只提供最新一期，歷史必須自己每月累積
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS revenue_history (
@@ -932,29 +934,62 @@ def industry_name(code):
     return INDUSTRY_NAME_MAP.get(code, f"未知類別({code})")
 
 
+# ── 資料來源涵蓋範圍 ──
+# 證交所 OpenAPI 只含「上市」；上櫃與興櫃要另外接櫃買中心（TPEx）。
+# 少了這塊，上櫃／興櫃股票會出現「名稱＝代號」「營收無資料」的情況。
+TWSE_BASE = "https://openapi.twse.com.tw/v1"
+TPEX_BASE = "https://www.tpex.org.tw/openapi/v1"
+
+
+def _get_json(url, timeout=20):
+    try:
+        return requests.get(url, timeout=timeout,
+                            headers={'User-Agent': 'Mozilla/5.0'}).json()
+    except Exception as e:
+        print(f"❌ 抓取失敗 {url}: {e}")
+        return None
+
+
+def _pick(row, *names):
+    """欄位名稱各來源不一致，依序嘗試；找不到回傳空字串。"""
+    for n in names:
+        if n in row and row[n] not in (None, ""):
+            return str(row[n]).strip()
+    return ""
+
+
 def fetch_and_save_industry():
     """
-    從 TWSE OpenAPI 抓上市公司基本資料（含產業別），存進 stock_info。
+    抓公司基本資料（名稱＋產業別），涵蓋上市、上櫃、興櫃三個市場。
     產業別幾乎不變，抓一次就夠，之後想更新再打一次端點即可。
     回傳 (筆數, 產業別樣本清單)。
     """
-    url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
-    try:
-        rows = requests.get(url, timeout=20, headers={'User-Agent': 'Mozilla/5.0'}).json()
-    except Exception as e:
-        print(f"❌ 抓取公司基本資料失敗: {e}")
-        return 0, []
+    sources = [
+        ("上市", f"{TWSE_BASE}/opendata/t187ap03_L"),
+        ("上櫃", f"{TPEX_BASE}/mopsfin_t187ap03_O"),
+        ("興櫃", f"{TPEX_BASE}/mopsfin_t187ap03_R"),
+    ]
 
-    if not rows:
-        return 0, []
+    records, counts = [], {}
+    for market, url in sources:
+        rows = _get_json(url)
+        if not rows:
+            counts[market] = 0
+            continue
+        n = 0
+        for row in rows:
+            code = _pick(row, "公司代號", "SecuritiesCompanyCode", "Code")
+            name = _pick(row, "公司簡稱", "CompanyName", "Name", "公司名稱")
+            industry = _pick(row, "產業別", "Industry")
+            if not code:
+                continue
+            records.append((code, name, industry.zfill(2) if industry else "", market))
+            n += 1
+        counts[market] = n
+        print(f"✅ {market}公司基本資料 {n} 筆")
 
-    records = []
-    for row in rows:
-        code = str(row.get("公司代號", "")).strip()
-        name = str(row.get("公司簡稱", "")).strip()
-        industry = str(row.get("產業別", "")).strip().zfill(2)
-        if code:
-            records.append((code, name, industry))
+    if not records:
+        return 0, []
 
     if not records:
         return 0, []
@@ -965,11 +1000,12 @@ def fetch_and_save_industry():
         execute_values(
             cursor,
             """
-            INSERT INTO stock_info (code, name, industry)
+            INSERT INTO stock_info (code, name, industry, market)
             VALUES %s
             ON CONFLICT (code) DO UPDATE SET
                 name = EXCLUDED.name,
-                industry = EXCLUDED.industry
+                industry = EXCLUDED.industry,
+                market = EXCLUDED.market
             """,
             records,
             page_size=500,
@@ -984,11 +1020,50 @@ def fetch_and_save_industry():
     finally:
         release_db_connection(conn)
 
-    sample = sorted({ind for _, _, ind in records if ind})[:30]
+    sample = [f"{m}：{c} 檔" for m, c in counts.items()]
+    sample += sorted({ind for _, _, ind, _ in records if ind})[:30]
     return len(records), sample
 
 
 _industry_cache = {"map": None}
+_name_cache = {"map": None}
+
+
+def get_name_map(force_reload=False):
+    """
+    代號→公司名稱。來自 stock_info（含上市、上櫃、興櫃），
+    比程式裡那份只有十幾檔的寫死對照表完整得多。
+    """
+    if _name_cache["map"] is not None and not force_reload:
+        return _name_cache["map"]
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT code, name FROM stock_info WHERE name IS NOT NULL AND name <> ''")
+        _name_cache["map"] = {c: n for c, n in cursor.fetchall()}
+        cursor.close()
+        return _name_cache["map"]
+    except Exception as e:
+        print(f"❌ 讀取名稱對照失敗: {e}")
+        return {}
+    finally:
+        release_db_connection(conn)
+
+
+def stock_display_name(code, inst_data=None, fallback=None):
+    """
+    取得顯示名稱，優先序：當日法人資料 → stock_info → 寫死對照表 → 代號。
+    興櫃股票不在法人資料裡，所以 stock_info 這層很重要。
+    """
+    code = str(code).strip()
+    if inst_data:
+        n = inst_data.get(code, {}).get("name")
+        if n:
+            return n
+    n = get_name_map().get(code)
+    if n:
+        return n
+    return fallback or STOCK_NAME_MAP.get(code, code)
 
 def get_industry_map(force_reload=False):
     """回傳 {代號: 產業別}。讀一次就快取在記憶體，避免每次選股都查資料庫。"""
@@ -1109,35 +1184,33 @@ def fetch_valuation():
     if _valuation_cache["date"] == today and _valuation_cache["data"]:
         return _valuation_cache["data"]
 
-    url = "https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL"
-    try:
-        rows = requests.get(url, timeout=20, headers={'User-Agent': 'Mozilla/5.0'}).json()
-    except Exception as e:
-        print(f"❌ 抓取本益比資料失敗: {e}")
-        return _valuation_cache["data"] or {}
-
-    def to_float(s):
+    def to_float(v):
         try:
-            v = float(str(s).replace(",", "").strip())
-            return v if v > 0 else None
+            f = float(str(v).replace(",", "").strip())
+            return f if f > 0 else None
         except (ValueError, TypeError):
             return None
 
     result = {}
-    for row in rows or []:
-        code = str(row.get("Code", "")).strip()
-        if not code:
-            continue
-        result[code] = {
-            "pe": to_float(row.get("PEratio")),
-            "pb": to_float(row.get("PBratio")),
-            "yield": to_float(row.get("DividendYield")),
-        }
+    # 上市
+    for row in _get_json(f"{TWSE_BASE}/exchangeReport/BWIBBU_ALL") or []:
+        code = _pick(row, "Code")
+        if code:
+            result[code] = {"pe": to_float(row.get("PEratio")),
+                            "pb": to_float(row.get("PBratio")),
+                            "yield": to_float(row.get("DividendYield"))}
+    # 上櫃（欄位名稱與上市不同，要另外對應）
+    for row in _get_json(f"{TPEX_BASE}/tpex_mainboard_peratio_analysis") or []:
+        code = _pick(row, "SecuritiesCompanyCode", "Code")
+        if code:
+            result[code] = {"pe": to_float(row.get("PriceEarningRatio")),
+                            "pb": to_float(row.get("PriceBookRatio")),
+                            "yield": to_float(row.get("YieldRatio"))}
 
     if result:
         _valuation_cache["date"] = today
         _valuation_cache["data"] = result
-        print(f"✅ 估值資料抓取成功，共 {len(result)} 筆")
+        print(f"✅ 估值資料抓取成功，共 {len(result)} 筆（含上櫃）")
     return result
 
 
@@ -1638,44 +1711,51 @@ def generate_morning_brief():
 _revenue_cache = {"period": None, "data": {}}
 
 def fetch_monthly_revenue():
-    """抓上市公司最新一期月營收，回傳 {代號: {"yoy_pct": 去年同月增減%}}。
-    這是「有題材／獲利成長」判斷的核心資料來源，用來讓黑馬邏輯跟雷達真正不一樣。"""
-    try:
-        url = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
-        rows = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'}).json()
+    """
+    抓最新一期月營收，涵蓋上市、上櫃、興櫃。
+    證交所只給上市，上櫃與興櫃在櫃買中心，缺了就會出現「營收無資料」。
+    """
+    def to_float(v):
+        try:
+            return float(str(v).replace(",", ""))
+        except (ValueError, TypeError):
+            return None
+
+    sources = [
+        f"{TWSE_BASE}/opendata/t187ap05_L",   # 上市
+        f"{TPEX_BASE}/mopsfin_t187ap05_O",    # 上櫃
+        f"{TPEX_BASE}/t187ap05_R",            # 興櫃
+    ]
+
+    result, period = {}, None
+    for url in sources:
+        rows = _get_json(url, timeout=20)
         if not rows:
-            return _revenue_cache["data"]
-
-        period = rows[0].get("資料年月")
-        if _revenue_cache["period"] == period and _revenue_cache["data"]:
-            return _revenue_cache["data"]
-
-        def to_float(s):
-            try:
-                return float(str(s).replace(",", ""))
-            except (ValueError, TypeError):
-                return None
-
-        result = {}
+            continue
+        period = period or _pick(rows[0], "資料年月", "Period")
         for row in rows:
-            code = str(row.get("公司代號", "")).strip()
+            code = _pick(row, "公司代號", "SecuritiesCompanyCode", "Code")
             if not code:
                 continue
             result[code] = {
-                "yoy_pct": to_float(row.get("營業收入-去年同月增減(%)")),
-                "cum_yoy_pct": to_float(row.get("累計營業收入-前期比較增減(%)")),
-                "mom_pct": to_float(row.get("營業收入-上月比較增減(%)")),
-                "month_revenue": to_float(row.get("營業收入-當月營收")),
+                "yoy_pct": to_float(_pick(row, "營業收入-去年同月增減(%)")),
+                "cum_yoy_pct": to_float(_pick(row, "累計營業收入-前期比較增減(%)")),
+                "mom_pct": to_float(_pick(row, "營業收入-上月比較增減(%)")),
+                "month_revenue": to_float(_pick(row, "營業收入-當月營收")),
             }
 
-        _revenue_cache["period"] = period
-        _revenue_cache["data"] = result
-        print(f"✅ 月營收抓取成功（{period}），共 {len(result)} 筆")
-        save_revenue_history(period, result)
-        return result
-    except Exception as e:
-        print(f"❌ 抓取月營收資料錯誤: {e}")
+    if not result:
         return _revenue_cache["data"]
+
+    if _revenue_cache["period"] == period and len(_revenue_cache["data"]) >= len(result):
+        return _revenue_cache["data"]
+
+    _revenue_cache["period"] = period
+    _revenue_cache["data"] = result
+    print(f"✅ 月營收抓取成功（{period}），共 {len(result)} 筆（含上櫃、興櫃）")
+    save_revenue_history(period, result)
+    return result
+
 
 def score_from_revenue_growth(yoy_pct):
     """依營收年增率評分，作為「有題材／獲利」的量化依據（0-50分）。"""
@@ -2061,8 +2141,7 @@ def build_news_digest(user_id):
 
     found = 0
     for code in codes:
-        name = (inst_data.get(code, {}).get("name")
-                or STOCK_NAME_MAP.get(code) or code)
+        name = stock_display_name(code, inst_data)
         news = fetch_stock_news(name, max_items=2)
         if not news:
             continue
@@ -2120,7 +2199,7 @@ def build_digest(user_id):
     for code in codes:
         data = get_realtime_stock(code)
         if data:
-            name = inst_data.get(code, {}).get("name") or data["name"]
+            name = stock_display_name(code, inst_data, data["name"])
             light = "🔴" if data['pct'] >= 0 else "🟢"
             lines.append(
                 f"\n{light} {name} {code}｜{data['close']:.2f}（{data['pct']:+.2f}%）\n"
@@ -2194,10 +2273,11 @@ def sync_industry():
         return "抓取失敗或無資料，請看 Render Logs。", 200
 
     get_industry_map(force_reload=True)
+    get_name_map(force_reload=True)
     return (
-        f"產業別同步完成\n"
-        f"共存入：{count} 檔\n"
-        f"產業別樣本（前30種）：\n" + "\n".join(sample)
+        f"公司基本資料同步完成\n"
+        f"共存入：{count} 檔（上市＋上櫃＋興櫃）\n\n"
+        + "\n".join(sample)
     ), 200
 
 
@@ -3237,7 +3317,7 @@ def web_portfolio(uid):
         else:
             label = "未分類"
         by_industry[label] = by_industry.get(label, 0) + weight
-        name = inst.get(p["code"], {}).get("name") or pr["name"]
+        name = stock_display_name(p["code"], inst, pr["name"])
         holdings.append({
             "code": p["code"], "name": name, "weight": weight, "value": value,
             "cost": p["cost"], "price": pr,
@@ -3794,8 +3874,8 @@ def handle_message(event):
     elif 4 <= len(pure_code) <= 7 and len(text) <= 8 and " " not in text:
         data = get_realtime_stock(pure_code)
         if data:
-            inst = fetch_institutional_data().get(pure_code, {})
-            disp_name = inst.get("name") or data["name"]
+            inst_all = fetch_institutional_data() or {}
+            disp_name = stock_display_name(pure_code, inst_all, data["name"])
             reply = (
                 f"📊 {data['code']} {disp_name}\n"
                 f"──────────────\n"
