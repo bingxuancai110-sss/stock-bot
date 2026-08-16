@@ -1298,6 +1298,53 @@ def score_from_valuation(pe, growth_pct):
     return 2, peg, f"本益比 {pe:.1f}，PEG {peg:.2f}，估值昂貴"
 
 
+def score_stock_by_category(code, ind_map, price, cum_yoy, val, streak,
+                            cum_lots, turnover, momentum_stats):
+    """
+    依股票所屬類別套用對應的評分規則，讓不同類股的分數可以互相比較。
+    回傳 dict，金融股回傳 category="金融" 且 total=None（不評分）。
+    """
+    cat = stock_category(code, ind_map)
+    pe = (val or {}).get("pe")
+    pb = (val or {}).get("pb")
+    dy = (val or {}).get("yield")
+
+    if cat == "金融":
+        # 金融股不評分：真正該看的 ROE、利差、逾放比在免費資料中沒有，
+        # 硬給分數只會讓人誤以為那個數字有意義。
+        return {"category": cat, "total": None, "pe": pe, "pb": pb, "yield": dy,
+                "detail": "金融股不評分，僅列事實供判讀"}
+
+    mom_score, mom_desc = score_from_industry_momentum(
+        momentum_stats.get(ind_map.get(str(code).strip())))
+    streak_score_raw = score_from_streak(streak)
+    chip_tech = round((score_from_net_lots(cum_lots) / 40 * 5)
+                      + (score_from_technical(price["pct"], turnover) / 60 * 5))
+
+    if cat == "電子":
+        rev = round(score_from_cum_revenue_growth(cum_yoy) * 25 / 40)   # 0-25
+        val_score, peg, val_desc = score_from_valuation(pe, cum_yoy)     # 0-25
+        mom = mom_score                                                  # 0-20
+        streak_score = round(streak_score_raw * 20 / 30)                 # 0-20
+        caps = ("25", "25", "20", "20", "10")
+    else:  # 傳產：成長門檻放低、估值改看 PB 與殖利率、產業動能加重
+        rev = score_revenue_traditional(cum_yoy)                         # 0-20
+        val_score, val_desc = score_value_traditional(pb, dy, pe)        # 0-25
+        peg = (pe / cum_yoy) if (pe and cum_yoy and cum_yoy > 0) else None
+        mom = round(mom_score * 25 / 20)                                 # 0-25
+        streak_score = round(streak_score_raw * 20 / 30)                 # 0-20
+        caps = ("20", "25", "25", "20", "10")
+
+    return {
+        "category": cat,
+        "total": rev + val_score + mom + streak_score + chip_tech,
+        "rev": rev, "val": val_score, "mom": mom,
+        "streak_score": streak_score, "chip": chip_tech,
+        "caps": caps, "peg": peg, "pe": pe, "pb": pb, "yield": dy,
+        "val_desc": val_desc, "mom_desc": mom_desc,
+    }
+
+
 def get_industry_momentum(revenue_data, industry_map):
     """
     用真實資料推導「產業動能」：把全市場月營收依產業別加總，
@@ -1366,6 +1413,111 @@ def score_from_industry_momentum(ind_stats):
     if p75 > 0:
         return 5, f"族群成長有限{detail}"
     return 1, f"族群整體衰退{detail}"
+
+
+# ── 類股分類與各自的評分規則 ──
+# 電子、傳產、金融三類的財務結構差很多，用同一套標準會系統性失真：
+#   電子成長股 → 看 PEG，營收年增 15% 只算普通
+#   傳產循環股 → 看 PB 與殖利率，營收年增 15% 已經很好；
+#                而且景氣循環股最危險的時候正好是本益比最低的時候
+#   金融股     → 「營收」是利息與投資收益，且真正該看的 ROE、利差、
+#                逾放比在免費資料裡都沒有，因此不評分，只列事實
+ELECTRONIC_INDUSTRIES = {
+    "13",  # 電子工業（舊總類）
+    "24",  # 半導體業
+    "25",  # 電腦及週邊設備業
+    "26",  # 光電業
+    "27",  # 通信網路業
+    "28",  # 電子零組件業
+    "29",  # 電子通路業
+    "30",  # 資訊服務業
+    "31",  # 其他電子業
+    "36",  # 數位雲端
+}
+
+
+def stock_category(code, ind_map):
+    """回傳 電子 / 金融 / 傳產。查不到產業別時歸為傳產（保守）。"""
+    raw = ind_map.get(str(code).strip())
+    ind = str(raw).strip().zfill(2) if raw else ""
+    if ind == "17":
+        return "金融"
+    if ind in ELECTRONIC_INDUSTRIES:
+        return "電子"
+    return "傳產"
+
+
+def score_revenue_traditional(cum_yoy_pct):
+    """
+    傳產的營收成長分數（0-20）。門檻比電子低：
+    電子 +15% 只算普通，傳產 +15% 已經相當好。
+    """
+    if cum_yoy_pct is None:
+        return 6
+    if cum_yoy_pct >= 25:
+        return 20
+    if cum_yoy_pct >= 15:
+        return 17
+    if cum_yoy_pct >= 10:
+        return 14
+    if cum_yoy_pct >= 5:
+        return 10
+    if cum_yoy_pct > 0:
+        return 6
+    if cum_yoy_pct > -10:
+        return 3
+    return 0
+
+
+def score_value_traditional(pb, dividend_yield, pe):
+    """
+    傳產的估值分數（0-25）。以股價淨值比與殖利率為主，本益比只作輔助。
+    循環股的本益比在獲利高點時最低，單看 PE 會在最危險的時候給最高分。
+    回傳 (分數, 說明)
+    """
+    score, parts = 0, []
+
+    if pb is None:
+        score += 8
+        parts.append("無淨值比資料")
+    elif pb <= 0.8:
+        score += 14
+        parts.append(f"PB {pb:.2f}，低於淨值")
+    elif pb <= 1.2:
+        score += 12
+        parts.append(f"PB {pb:.2f}，接近淨值")
+    elif pb <= 2.0:
+        score += 8
+        parts.append(f"PB {pb:.2f}")
+    elif pb <= 3.5:
+        score += 4
+        parts.append(f"PB {pb:.2f} 偏高")
+    else:
+        score += 1
+        parts.append(f"PB {pb:.2f} 明顯偏高")
+
+    if dividend_yield is None:
+        score += 3
+        parts.append("無殖利率資料")
+    elif dividend_yield >= 6:
+        score += 11
+        parts.append(f"殖利率 {dividend_yield:.1f}%")
+    elif dividend_yield >= 4:
+        score += 9
+        parts.append(f"殖利率 {dividend_yield:.1f}%")
+    elif dividend_yield >= 2:
+        score += 6
+        parts.append(f"殖利率 {dividend_yield:.1f}%")
+    elif dividend_yield > 0:
+        score += 3
+        parts.append(f"殖利率 {dividend_yield:.1f}% 偏低")
+    else:
+        score += 1
+        parts.append("未配息")
+
+    if pe:
+        parts.append(f"PE {pe:.1f}")
+    return min(25, score), "，".join(parts)
 
 
 def score_from_cum_revenue_growth(cum_yoy_pct):
@@ -2705,6 +2857,9 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .controls .fields{grid-template-columns:repeat(auto-fit,minmax(110px,1fr))}
 .badge{font-size:10.5px;color:var(--brass);border:1px solid var(--brass);
   border-radius:2px;padding:1px 5px;margin-left:6px;vertical-align:2px}
+.badge.muted{color:var(--ink-faint);border-color:var(--rule)}
+.num.hot{color:var(--up);font-weight:600}
+.num.warm{color:var(--brass);font-weight:600}
 .profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
   gap:1px;background:var(--rule);border:1px solid var(--rule);margin-top:4px}
 .pf{background:var(--paper);padding:9px 11px;display:flex;
@@ -3586,6 +3741,15 @@ def web_portfolio(uid):
     return render_page("組合分析", body, nav_active="portfolio")
 
 
+CATEGORY_NOTE = {
+    "電子": "成長型評分：營收年增 25＋估值(PEG) 25＋產業動能 20＋法人連續性 20＋籌碼技術 10。　",
+    "傳產": "循環型評分：成長門檻放低(≥25% 即滿分)，估值改看股價淨值比與殖利率——"
+            "景氣循環股在獲利高點時本益比最低，用 PE 判斷便宜容易買在最危險的位置。　",
+    "金融": "不評分：金融股該看的 ROE、利差、逾放比在免費資料中沒有，"
+            "硬給分數會讓人誤以為那個數字有意義，因此只列事實供判讀。　",
+}
+
+
 # ============================================================
 # 選股台：黑馬／雷達的完整版
 # LINE 受限於訊息長度只能給 5 檔；網頁可以給 20 檔並支援排序篩選。
@@ -3600,7 +3764,7 @@ def web_screener(uid):
     min_score = request.args.get("min_score", "")
     max_pe = request.args.get("max_pe", "")
     industry_filter = request.args.get("industry", "")
-    show_fin = request.args.get("fin", "") == "1"   # 預設排除金融股
+    cat_filter = request.args.get("cat", "電子")   # 電子／傳產／金融
     view = request.args.get("view", "list")         # list=總排行, sector=依產業
 
     inst = fetch_institutional_data()
@@ -3623,7 +3787,7 @@ def web_screener(uid):
         pool = [(c, i) for c, i in inst.items()
                 if len(c) == 4 and c.isdigit() and not c.startswith("00")
                 and i["total_net_lots"] > 0
-                and (show_fin or not is_financial(c, ind_map))]
+                and stock_category(c, ind_map) == cat_filter]
         pool.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
         pool = [(c, {"name": i.get("name", c), "total_net_lots": i["total_net_lots"],
                      "cum_lots": i["total_net_lots"], "buy_days": 1})
@@ -3633,7 +3797,7 @@ def web_screener(uid):
         pool = [(c, {"name": n, "total_net_lots": inst.get(c, {}).get("total_net_lots", 0),
                      "cum_lots": cl, "buy_days": bd})
                 for c, n, cl, bd in cum
-                if show_fin or not is_financial(c, ind_map)]
+                if stock_category(c, ind_map) == cat_filter]
 
     streaks = get_consecutive_days_batch([c for c, _ in pool])
 
@@ -3649,18 +3813,19 @@ def web_screener(uid):
             continue
 
         cum_yoy = revenue.get(code, {}).get("cum_yoy_pct")
-        pe = valuation.get(code, {}).get("pe")
         streak = streaks.get(code, 0)
         ind_code = ind_map.get(code)
         ind_txt = industry_name(ind_code) if ind_code else "未分類"
 
-        rev_score = round(score_from_cum_revenue_growth(cum_yoy) * 25 / 40)
-        val_score, peg, val_desc = score_from_valuation(pe, cum_yoy)
-        mom_score, mom_desc = score_from_industry_momentum(momentum.get(ind_code))
-        streak_score = round(score_from_streak(streak) * 20 / 30)
-        chip_tech = round((score_from_net_lots(info["cum_lots"]) / 40 * 5)
-                          + (score_from_technical(price["pct"], turnover) / 60 * 5))
-        total = rev_score + val_score + mom_score + streak_score + chip_tech
+        sc = score_stock_by_category(
+            code, ind_map, price, cum_yoy, valuation.get(code, {}),
+            streak, info["cum_lots"], turnover, momentum)
+        pe, pb, dy = sc["pe"], sc["pb"], sc["yield"]
+        peg = sc.get("peg")
+        total = sc["total"]
+        rev_score = sc.get("rev", 0); val_score = sc.get("val", 0)
+        mom_score = sc.get("mom", 0); streak_score = sc.get("streak_score", 0)
+        chip_tech = sc.get("chip", 0); caps = sc.get("caps", ("", "", "", "", ""))
 
         breakout = ""
         if price.get("high_60d") and price["close"] >= price["high_60d"]:
@@ -3673,15 +3838,19 @@ def web_screener(uid):
             "close": price["close"], "pct": price["pct"], "score": total,
             "rev": rev_score, "val": val_score, "mom": mom_score,
             "streak": streak, "streak_score": streak_score, "chip": chip_tech,
-            "cum_yoy": cum_yoy, "pe": pe, "peg": peg, "turnover": turnover,
+            "cum_yoy": cum_yoy, "pe": pe, "pb": pb, "yield": dy,
+            "peg": peg, "turnover": turnover, "caps": caps,
+            "category": sc["category"],
             "cum_lots": info["cum_lots"], "buy_days": info["buy_days"],
             "breakout": breakout, "vol_ratio": price.get("vol_ratio"),
             "pos": price.get("pos_vs_60d_high"),
+            "up_streak": price.get("up_streak", 0),
         })
 
     # ── 篩選 ──
     if min_score.isdigit():
-        rows = [r for r in rows if r["score"] >= int(min_score)]
+        rows = [r for r in rows
+                if r["score"] is not None and r["score"] >= int(min_score)]
     try:
         if max_pe:
             rows = [r for r in rows if r["pe"] and r["pe"] <= float(max_pe)]
@@ -3690,24 +3859,58 @@ def web_screener(uid):
     if industry_filter:
         rows = [r for r in rows if r["industry"] == industry_filter]
 
+    # ── 雷達專屬篩選：型態導向，不用分數 ──
+    if mode == "radar":
+        bk = request.args.get("breakout", "")
+        if bk == "60":
+            rows = [r for r in rows if r["breakout"] == "季線新高"]
+        elif bk == "20":
+            rows = [r for r in rows if r["breakout"] in ("季線新高", "破月高")]
+        try:
+            min_vol = float(request.args.get("min_vol", "") or 0)
+            if min_vol:
+                rows = [r for r in rows
+                        if r.get("vol_ratio") and r["vol_ratio"] >= min_vol]
+        except ValueError:
+            pass
+        min_streak = request.args.get("min_streak", "")
+        if min_streak.isdigit():
+            rows = [r for r in rows if r["streak"] >= int(min_streak)]
+
     # ── 排序 ──
     sorters = {
-        "score": lambda r: r["score"],
+        "score": lambda r: (r["score"] if r["score"] is not None else -1),
         "pct": lambda r: r["pct"],
         "yoy": lambda r: r["cum_yoy"] if r["cum_yoy"] is not None else -999,
         "pe": lambda r: -r["pe"] if r["pe"] else -9999,
         "streak": lambda r: r["streak"],
         "turnover": lambda r: r["turnover"],
     }
-    rows.sort(key=sorters.get(sort_key, sorters["score"]), reverse=True)
+    if mode == "radar":
+        # 突破位階 → 量能倍數 → 連買天數 → 漲幅，不加總成單一分數
+        def radar_key(r):
+            bk = 2 if r["breakout"] == "季線新高" else (1 if r["breakout"] else 0)
+            fatigue = -1 if (r.get("up_streak") or 0) >= 5 else 0
+            return (bk + fatigue, r.get("vol_ratio") or 0, r["streak"], r["pct"])
+        radar_sorters = {
+            "pattern": radar_key,
+            "vol": lambda r: (r.get("vol_ratio") or 0,),
+            "pct": lambda r: (r["pct"],),
+            "streak": lambda r: (r["streak"],),
+            "turnover": lambda r: (r["turnover"],),
+        }
+        rows.sort(key=radar_sorters.get(sort_key, radar_key), reverse=True)
+    else:
+        rows.sort(key=sorters.get(sort_key, sorters["score"]), reverse=True)
     shown = rows[:limit]
 
     # ── 分數分布：判斷今天整體訊號強不強 ──
     bands = [(80, "80 以上"), (70, "70–79"), (60, "60–69"), (0, "60 以下")]
-    dist, rest = [], sorted(rows, key=lambda r: r["score"], reverse=True)
+    dist, rest = [], sorted(rows, key=lambda r: (r["score"] or -1), reverse=True)
     for i, (lo, label) in enumerate(bands):
         hi = bands[i - 1][0] if i else 999
-        n = len([r for r in rest if lo <= r["score"] < hi])
+        n = len([r for r in rest if r["score"] is not None
+                 and lo <= r["score"] < hi])
         dist.append((label, n))
 
     industries = sorted({r["industry"] for r in rows})
@@ -3723,7 +3926,7 @@ def web_screener(uid):
             by_ind.setdefault(r["industry"], []).append(r)
         ranked_inds = []
         for ind_txt, members in by_ind.items():
-            members.sort(key=lambda x: x["score"], reverse=True)
+            members.sort(key=lambda x: (x["score"] or -1), reverse=True)
             code_of = next((c for c, v in ind_map.items()
                             if industry_name(v) == ind_txt), None)
             st = momentum.get(ind_map.get(code_of)) if code_of else None
@@ -3743,21 +3946,68 @@ def web_screener(uid):
     def opt(v, t, cur):
         return f'<option value="{v}"{" selected" if str(cur) == str(v) else ""}>{t}</option>'
 
-    def stock_row(r):
+    def radar_row(r):
+        """
+        雷達不給綜合分數。雷達回答的是「今天什麼在動、動在什麼位置」，
+        那是型態問題不是估值問題；硬給一個總分只會跟黑馬混淆，
+        而且分數在幾十檔的範圍內拉不開差距，等於噪音。
+        """
+        badge = (f'<span class="badge">{r["breakout"]}</span>'
+                 if r["breakout"] else '<span class="badge muted">區間內</span>')
+        vr = r.get("vol_ratio")
+        vol_txt = f"{vr:.1f} 倍" if vr else "—"
+        vol_cls = "hot" if vr and vr >= 2 else ("warm" if vr and vr >= 1.5 else "")
+        streak_txt = f"{r['streak']} 日" if r["streak"] else "—"
         return f"""
 <div class="row">
-  <div><span class="name">{r['name']}</span><span class="code">{r['code']}</span>
-    {f'<span class="badge">{r["breakout"]}</span>' if r['breakout'] else ''}</div>
+  <div><span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}</div>
+  <div class="price">{fmt_pct(r['pct'])}</div>
+  <div class="meta">
+    <span><em>價</em> <span class="num">{r['close']:,.2f}</span></span>
+    <span><em>量能</em> <span class="num {vol_cls}">{vol_txt}</span>（20日均量）</span>
+    <span><em>距高點</em> <span class="num">{f"{r['pos']:+.1f}%" if r['pos'] is not None else '—'}</span></span>
+    <span><em>連買</em> {streak_txt}</span>
+    <span><em>金額</em> <span class="num">{r['turnover']:.1f}</span> 億</span>
+    <span><em>產業</em> {r['industry']}</span>
+  </div>
+</div>"""
+
+    def stock_row(r):
+        badge = f'<span class="badge">{r["breakout"]}</span>' if r["breakout"] else ""
+        if r["score"] is None:
+            # 金融股不評分，只列事實
+            return f"""
+<div class="row">
+  <div><span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}</div>
+  <div class="price num">{r['close']:,.2f}</div>
+  <div class="meta">
+    <span><em>產業</em> {r['industry']}</span>
+    <span><em>PB</em> {f"{r['pb']:.2f}" if r['pb'] else '—'}</span>
+    <span><em>殖利率</em> {f"{r['yield']:.1f}%" if r['yield'] else '—'}</span>
+    <span><em>PE</em> {f"{r['pe']:.1f}" if r['pe'] else '—'}</span>
+    <span><em>連買</em> {r['streak']} 日</span>
+    <span><em>距高點</em> {f"{r['pos']:+.1f}%" if r['pos'] is not None else '—'}</span>
+    <span><em>金額</em> <span class="num">{r['turnover']:.1f}</span> 億</span>
+  </div>
+  <div class="chg">{fmt_pct(r['pct'])}</div>
+</div>"""
+        c = r["caps"]
+        extra = (f'<span><em>PEG</em> {r["peg"]:.2f}</span>' if r["peg"]
+                 else (f'<span><em>PB</em> {r["pb"]:.2f}</span>' if r["pb"] else ""))
+        return f"""
+<div class="row">
+  <div><span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}</div>
   <div class="price num">{r['score']}<span class="sub">分</span></div>
   <div class="meta">
     <span><em>價</em> <span class="num">{r['close']:,.2f}</span> {fmt_pct(r['pct'])}</span>
     <span><em>營收年增</em> {f"{r['cum_yoy']:+.1f}%" if r['cum_yoy'] is not None else '—'}</span>
     <span><em>PE</em> {f"{r['pe']:.1f}" if r['pe'] else '—'}</span>
-    <span><em>PEG</em> {f"{r['peg']:.2f}" if r['peg'] else '—'}</span>
+    {extra}
+    <span><em>殖利率</em> {f"{r['yield']:.1f}%" if r['yield'] else '—'}</span>
     <span><em>連買</em> {r['streak']} 日</span>
     <span><em>金額</em> <span class="num">{r['turnover']:.1f}</span> 億</span>
   </div>
-  <div class="chg sub">營收{r['rev']}·估值{r['val']}·產業{r['mom']}·籌碼{r['streak_score']}·技術{r['chip']}</div>
+  <div class="chg sub">營收{r['rev']}/{c[0]}·估值{r['val']}/{c[1]}·產業{r['mom']}/{c[2]}·籌碼{r['streak_score']}/{c[3]}·技術{r['chip']}/{c[4]}</div>
   <div class="bar"><div style="width:{r['score']}%"></div></div>
 </div>"""
 
@@ -3774,10 +4024,51 @@ def web_screener(uid):
   <div class="rows">{picks}</div>
 </div>"""
 
-    controls = f"""
+    if mode == "radar":
+        controls = f"""
+<form method="get" class="controls">
+  <input type="hidden" name="mode" value="radar">
+  <input type="hidden" name="cat" value="{cat_filter}">
+  <input type="hidden" name="view" value="list">
+  <div class="fields">
+    <div><label>排序</label><select name="sort" onchange="this.form.submit()">
+      {opt('pattern','型態（突破→量能→連買）',sort_key)}
+      {opt('vol','量能倍數',sort_key)}{opt('pct','當日漲幅',sort_key)}
+      {opt('streak','法人連買天數',sort_key)}{opt('turnover','成交金額',sort_key)}
+    </select></div>
+    <div><label>突破狀態</label><select name="breakout" onchange="this.form.submit()">
+      {opt('','不限',request.args.get('breakout',''))}
+      {opt('60','僅創季線新高',request.args.get('breakout',''))}
+      {opt('20','已突破月高以上',request.args.get('breakout',''))}
+    </select></div>
+    <div><label>量能倍數</label><select name="min_vol" onchange="this.form.submit()">
+      {opt('','不限',request.args.get('min_vol',''))}
+      {opt('1.5','≥ 1.5 倍',request.args.get('min_vol',''))}
+      {opt('2','≥ 2 倍',request.args.get('min_vol',''))}
+      {opt('3','≥ 3 倍',request.args.get('min_vol',''))}
+    </select></div>
+    <div><label>法人連買</label><select name="min_streak" onchange="this.form.submit()">
+      {opt('','不限',request.args.get('min_streak',''))}
+      {opt('2','≥ 2 日',request.args.get('min_streak',''))}
+      {opt('3','≥ 3 日',request.args.get('min_streak',''))}
+      {opt('5','≥ 5 日',request.args.get('min_streak',''))}
+    </select></div>
+    <div><label>顯示筆數</label><select name="limit" onchange="this.form.submit()">
+      {opt(10,'10 筆',limit)}{opt(20,'20 筆',limit)}{opt(50,'50 筆',limit)}
+    </select></div>
+    <div><label>類股範圍</label><select name="cat" onchange="this.form.submit()">
+      {opt('電子','電子科技',cat_filter)}
+      {opt('傳產','傳統產業',cat_filter)}
+      {opt('金融','金融保險',cat_filter)}
+    </select></div>
+  </div>
+</form>"""
+    else:
+        controls = f"""
 <form method="get" class="controls">
   <input type="hidden" name="mode" value="{mode}">
   <input type="hidden" name="view" value="{view}">
+  <input type="hidden" name="cat" value="{cat_filter}">
   <div class="fields">
     <div><label>排序</label><select name="sort" onchange="this.form.submit()">
       {opt('score','綜合分數',sort_key)}{opt('pct','當日漲幅',sort_key)}
@@ -3799,48 +4090,62 @@ def web_screener(uid):
       {opt('','全部',industry_filter)}
       {''.join(opt(i, i, industry_filter) for i in industries)}
     </select></div>
-    <div><label>金融保險股</label><select name="fin" onchange="this.form.submit()">
-      {opt('','排除（建議）','1' if show_fin else '')}
-      {opt('1','納入','1' if show_fin else '')}
+    <div><label>類股範圍</label><select name="cat" onchange="this.form.submit()">
+      {opt('電子','電子科技',cat_filter)}
+      {opt('傳產','傳統產業',cat_filter)}
+      {opt('金融','金融保險',cat_filter)}
     </select></div>
   </div>
 </form>"""
 
+    n_60 = len([r for r in rows if r["breakout"] == "季線新高"])
+    n_20 = len([r for r in rows if r["breakout"] == "破月高"])
+    n_vol = len([r for r in rows if (r.get("vol_ratio") or 0) >= 2])
+    n_streak = len([r for r in rows if r["streak"] >= 3])
+    radar_dist = (f'<span class="dist-item"><b>{n_60}</b> 檔創季線新高</span>'
+                  f'<span class="dist-item"><b>{n_20}</b> 檔破月高</span>'
+                  f'<span class="dist-item"><b>{n_vol}</b> 檔量能≥2倍</span>'
+                  f'<span class="dist-item"><b>{n_streak}</b> 檔連買≥3日</span>')
+
     dist_html = "".join(
         f'<span class="dist-item"><b>{n}</b> 檔 {label}</span>' for label, n in dist)
 
+    row_fn = radar_row if mode == "radar" else stock_row
     per_sector = 2 if limit >= 20 else 1
+    if mode == "radar":
+        view = "list"   # 雷達不看產業動能，依產業檢視對它沒有意義
     if view == "sector":
         main_html = ("".join(sector_block(b, per_sector) for b in sector_blocks)
                      or '<div class="empty">沒有符合條件的標的，試著放寬篩選。</div>')
         count_note = f"{len(sector_blocks)} 個產業・每個產業取前 {per_sector} 名"
     else:
         main_html = ('<div class="rows">'
-                     + "".join(stock_row(r) for r in shown) + '</div>'
+                     + "".join(row_fn(r) for r in shown) + '</div>'
                      if shown else
                      '<div class="empty">沒有符合條件的標的，試著放寬篩選。</div>')
         count_note = f"共 {len(rows)} 檔符合條件"
 
     body = f"""
 <div class="tabs">
-  <a href="/web/screener?mode=blackhorse&view={view}"
+  <a href="/web/screener?mode=blackhorse&view={view}&cat={cat_filter}"
      class="{'on' if mode != 'radar' else ''}">黑馬</a>
-  <a href="/web/screener?mode=radar&view={view}"
+  <a href="/web/screener?mode=radar&view={view}&cat={cat_filter}"
      class="{'on' if mode == 'radar' else ''}">雷達</a>
-  <span class="tabs-gap"></span>
-  <a href="/web/screener?mode={mode}&view=list"
+  {'' if mode == 'radar' else f'''<span class="tabs-gap"></span>
+  <a href="/web/screener?mode={mode}&view=list&cat={cat_filter}"
      class="{'on' if view != 'sector' else ''}">總排行</a>
-  <a href="/web/screener?mode={mode}&view=sector"
-     class="{'on' if view == 'sector' else ''}">依產業</a>
+  <a href="/web/screener?mode={mode}&view=sector&cat={cat_filter}"
+     class="{'on' if view == 'sector' else ''}">依產業</a>'''}
 </div>
 <div class="mode-note">{
-  '' if show_fin else '預設排除金融保險業：其「營收」為利息與投資收益，年增率常因評價變動而失真。　'}{
+  CATEGORY_NOTE.get(cat_filter, '')}{
   '近 10 日累計買超前 120 名，依營收成長、估值、產業動能、法人連續性綜合評分。'
   if mode != 'radar' else
-  '當日法人買超且漲幅 1.5% 以上，著重帶量突破與位階。'}{
+  '當日法人買超且漲幅 1.5% 以上。雷達看的是型態與位階，不給綜合分數——'
+  '「今天什麼在動」跟「什麼值得抱幾個月」是兩個問題。'}{
   '　產業依「領先群營收年增率」由高至低排列。' if view == 'sector' else ''}</div>
 
-<div class="dist">{dist_html}<span class="dist-note">{count_note}</span></div>
+<div class="dist">{radar_dist if mode == "radar" else dist_html}<span class="dist-note">{count_note}</span></div>
 {controls}
 {main_html}
 """
