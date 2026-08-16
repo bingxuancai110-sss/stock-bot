@@ -119,6 +119,8 @@ def init_db():
                 check_frequency TEXT,
                 holding_period TEXT,
                 other_assets TEXT,
+                fee_discount REAL,
+                min_fee INTEGER,
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         ''')
@@ -2404,6 +2406,7 @@ h2{font-size:16px;font-weight:600;letter-spacing:.02em}
 .meta{grid-column:1/-1;display:flex;gap:16px;flex-wrap:wrap;
   font-size:12px;color:var(--ink-soft);margin-top:4px}
 .meta em{font-style:normal;color:var(--ink-faint)}
+.sub{color:var(--ink-faint);font-size:11px;margin-left:3px}
 .bar{grid-column:1/-1;height:3px;background:var(--paper-2);margin-top:8px}
 .bar div{height:100%;background:var(--brass-2)}
 form.add{margin-top:26px;padding:18px;background:var(--paper-2)}
@@ -2558,6 +2561,7 @@ def web_positions(uid):
 
     positions = merge_positions(get_positions(uid))
     inst = fetch_institutional_data() or {}
+    fee_disc, min_fee = get_fee_settings(get_profile(uid))
 
     def lots_html(p, name):
         """單筆就一顆刪除鍵；分批買進則收在 details 裡，可個別刪除。"""
@@ -2596,13 +2600,22 @@ def web_positions(uid):
             enriched.append((p, None, 0.0, p["cost"] * p["shares"]))
             total_cost += p["cost"] * p["shares"]
 
+    total_fee = sum(
+        net_profit(p["code"], p["shares"], p["cost"], pr["close"],
+                   p.get("lots"), fee_disc, min_fee)[2]
+        for p, pr, _v, _c in enriched if pr)
+
     for p, price, value, cost_total in sorted(
             enriched, key=lambda x: x[2], reverse=True):
         name = (inst.get(p["code"], {}).get("name")
                 or (price["name"] if price else p["code"]))
         weight = (value / total_value * 100) if total_value else 0
         if price:
-            pl = (price["close"] - p["cost"]) / p["cost"] * 100
+            gross_pl = (price["close"] - p["cost"]) / p["cost"] * 100
+            _np, pl, cost_fee = net_profit(
+                p["code"], p["shares"], p["cost"], price["close"],
+                p.get("lots"), fee_disc, min_fee)
+            pl = pl if pl is not None else gross_pl
             held = ((datetime.now().date() - p["bought_on"]).days
                     if p["bought_on"] else None)
             rows_html.append(f"""
@@ -2612,8 +2625,10 @@ def web_positions(uid):
   <div class="meta">
     <span><em>持有</em> <span class="num">{p['shares']:,}</span> 股</span>
     <span><em>成本</em> <span class="num">{p['cost']:,.2f}</span></span>
-    <span><em>損益</em> {fmt_pct(pl)}</span>
+    <span><em>淨損益</em> {fmt_pct(pl)}
+      <span class="sub">帳面 {gross_pl:+.2f}%</span></span>
     <span><em>市值</em> <span class="num">{value:,.0f}</span></span>
+    <span><em>成本費</em> <span class="num">{cost_fee:,.0f}</span></span>
     <span><em>權重</em> <span class="num">{weight:.1f}%</span></span>
     {f'<span><em>持有</em> {held} 天</span>' if held is not None else ''}
     {lots_html(p, name)}
@@ -2634,16 +2649,18 @@ def web_positions(uid):
   <div class="chg"></div>
 </div>""")
 
-    pl_total = ((total_value - total_cost) / total_cost * 100) if total_cost else None
+    pl_total = (((total_value - total_fee - total_cost) / total_cost * 100)
+                if total_cost else None)
     totals = f"""
 <div class="totals">
   <div><div class="total-label">總市值</div>
        <div class="total-value num">{total_value:,.0f}</div>
        <div class="total-sub">{fmt_pct(pl_total)}</div></div>
-  <div><div class="total-label">總成本</div>
-       <div class="total-value num">{total_cost:,.0f}</div>
+  <div><div class="total-label">淨損益</div>
+       <div class="total-value num {'up' if total_value - total_cost - total_fee >= 0 else 'down'}">
+         {total_value - total_cost - total_fee:+,.0f}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
-         損益 <span class="num">{total_value - total_cost:+,.0f}</span></div></div>
+         已扣交易成本 <span class="num">{total_fee:,.0f}</span></div></div>
   <div><div class="total-label">持股檔數</div>
        <div class="total-value num">{len(positions)}</div></div>
 </div>""" if positions else ""
@@ -2709,7 +2726,8 @@ def get_profile(user_id):
         cursor.execute("""
             SELECT age_band, horizon, asset_share, income_type,
                    drawdown_experience, loss_alert_pct, position_alert_pct,
-                   check_frequency, holding_period, other_assets
+                   check_frequency, holding_period, other_assets,
+                   fee_discount, min_fee
             FROM user_profile WHERE user_id = %s
         """, (str(user_id).strip(),))
         r = cursor.fetchone()
@@ -2718,7 +2736,8 @@ def get_profile(user_id):
             return {}
         keys = ["age_band", "horizon", "asset_share", "income_type",
                 "drawdown_experience", "loss_alert_pct", "position_alert_pct",
-                "check_frequency", "holding_period", "other_assets"]
+                "check_frequency", "holding_period", "other_assets",
+                "fee_discount", "min_fee"]
         return dict(zip(keys, r))
     except Exception as e:
         print(f"❌ 讀取設定失敗: {e}")
@@ -2730,7 +2749,8 @@ def get_profile(user_id):
 def save_profile(user_id, data):
     cols = ["age_band", "horizon", "asset_share", "income_type",
             "drawdown_experience", "loss_alert_pct", "position_alert_pct",
-            "check_frequency", "holding_period", "other_assets"]
+            "check_frequency", "holding_period", "other_assets",
+            "fee_discount", "min_fee"]
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -2750,6 +2770,68 @@ def save_profile(user_id, data):
         return False
     finally:
         release_db_connection(conn)
+
+
+# ── 交易成本 ──
+# 台股：手續費 0.1425%（買賣各一次，券商多有折扣，且通常有最低收費），
+# 證交稅賣出時收，一般股票 0.3%、ETF 0.1%。
+BROKER_FEE_RATE = 0.001425
+TAX_RATE_STOCK = 0.003
+TAX_RATE_ETF = 0.001
+DEFAULT_FEE_DISCOUNT = 1.0   # 1.0 = 無折扣
+DEFAULT_MIN_FEE = 20
+
+
+def is_etf(code):
+    """台股 ETF 代號以 00 開頭；主動式 ETF 如 00981A 也屬之。"""
+    return str(code).startswith("00")
+
+
+def broker_fee(amount, discount=DEFAULT_FEE_DISCOUNT, min_fee=DEFAULT_MIN_FEE):
+    """單筆手續費。小額交易會被最低收費拉高，這對零股影響很大。"""
+    if amount <= 0:
+        return 0.0
+    return max(min_fee, amount * BROKER_FEE_RATE * discount)
+
+
+def net_profit(code, shares, avg_cost, price, lots=None,
+               discount=DEFAULT_FEE_DISCOUNT, min_fee=DEFAULT_MIN_FEE,
+               cost_includes_fee=True):
+    """
+    扣掉交易成本後的損益：假設現在依現價全部賣出。
+
+    預設 cost_includes_fee=True，因為多數人是直接從券商庫存頁抄「成本價」，
+    而券商的成本價已把買進手續費攤進去了（例如成交均價 11.36、成本價 11.38），
+    再加一次買進費用會重複計算。若填的是純成交價，把這個參數設為 False。
+
+    算法對齊券商：預估損益 = （市值 − 賣出手續費 − 證交稅） − 成本
+    回傳 (淨損益金額, 淨報酬率%, 賣出成本合計)
+    """
+    if not price or shares <= 0:
+        return None, None, 0.0
+
+    buy_fee = 0.0
+    if not cost_includes_fee:
+        if lots:
+            for l in lots:
+                buy_fee += broker_fee(l["shares"] * l["cost"], discount, min_fee)
+        else:
+            buy_fee = broker_fee(shares * avg_cost, discount, min_fee)
+
+    gross_value = shares * price
+    sell_fee = broker_fee(gross_value, discount, min_fee)
+    tax = gross_value * (TAX_RATE_ETF if is_etf(code) else TAX_RATE_STOCK)
+
+    total_cost = shares * avg_cost + buy_fee
+    profit = (gross_value - sell_fee - tax) - total_cost
+    pct = (profit / total_cost * 100) if total_cost else None
+    return profit, pct, buy_fee + sell_fee + tax
+
+
+def get_fee_settings(profile):
+    return (profile.get("fee_discount") or DEFAULT_FEE_DISCOUNT,
+            profile.get("min_fee") if profile.get("min_fee") is not None
+            else DEFAULT_MIN_FEE)
 
 
 def get_thresholds(profile):
@@ -2775,9 +2857,13 @@ def web_settings(uid):
     msg = ""
     if request.method == "POST":
         data = {k: (request.form.get(k) or None) for k, _, _, _ in PROFILE_FIELDS}
-        for k in ("loss_alert_pct", "position_alert_pct"):
+        for k in ("loss_alert_pct", "position_alert_pct", "min_fee"):
             v = request.form.get(k)
             data[k] = int(v) if v and v.isdigit() else None
+        try:
+            data["fee_discount"] = float(request.form.get("fee_discount") or 0) or None
+        except ValueError:
+            data["fee_discount"] = None
         if all(data.get(k) for k, _, req, _ in PROFILE_FIELDS if req):
             save_profile(uid, data)
             msg = "設定已儲存。"
@@ -2801,6 +2887,15 @@ def web_settings(uid):
         radio_group(k, l, r, o) for k, l, r, o in PROFILE_FIELDS if r)
     optional_html = "".join(
         radio_group(k, l, r, o) for k, l, r, o in PROFILE_FIELDS if not r)
+
+    sel_fee = "".join(
+        f'<option value="{v}"{" selected" if p.get("fee_discount") and abs(p["fee_discount"] - v) < 1e-9 else ""}>{t}</option>'
+        for v, t in [(1.0, "無折扣（0.1425%）"), (0.65, "65 折"), (0.6, "6 折"),
+                     (0.5, "5 折"), (0.38, "38 折"), (0.3, "3 折"), (0.28, "28 折"),
+                     (0.25, "25 折"), (0.2, "2 折")])
+    sel_min = "".join(
+        f'<option value="{v}"{" selected" if p.get("min_fee") == v else ""}>{t}</option>'
+        for v, t in [(20, "20 元"), (10, "10 元"), (5, "5 元"), (1, "1 元")])
 
     def sel(key, current, options):
         return "".join(
@@ -2833,6 +2928,24 @@ def web_settings(uid):
 </div>
 {'<div class="hint">你表示尚無實際回檔經驗，預設門檻已自動調得較保守。</div>'
  if th['conservative'] else ''}
+
+<div class="section-head"><h2>交易成本</h2>
+  <span class="section-note">用來計算淨損益</span></div>
+<div class="fields" style="margin-bottom:6px">
+  <div><label>手續費折扣</label>
+    <select name="fee_discount">
+      {sel_fee}
+    </select></div>
+  <div><label>最低手續費</label>
+    <select name="min_fee">
+      {sel_min}
+    </select></div>
+</div>
+<div class="hint">
+  券商的「成本價」通常已含買進手續費，因此這裡只扣賣出手續費與證交稅
+  （證交稅：一般股票 0.3%、ETF 0.1%）。<br>
+  折扣與最低收費各家不同，設成跟你券商一致，淨損益才會對得起來。
+</div>
 
 <div class="section-head"><h2>進階設定</h2>
   <span class="section-note">可略過，填了分析會更貼近你</span></div>
@@ -2903,6 +3016,7 @@ def web_portfolio(uid):
 
     profile = get_profile(uid)
     th = get_thresholds(profile)
+    fee_disc, min_fee = get_fee_settings(profile)
     inst = fetch_institutional_data() or {}
     revenue = fetch_monthly_revenue() or {}
     valuation = fetch_valuation() or {}
@@ -2931,7 +3045,9 @@ def web_portfolio(uid):
         holdings.append({
             "code": p["code"], "name": name, "weight": weight, "value": value,
             "cost": p["cost"], "price": pr,
-            "pl": (pr["close"] - p["cost"]) / p["cost"] * 100,
+            "pl": (net_profit(p["code"], p["shares"], p["cost"], pr["close"],
+                              p.get("lots"), fee_disc, min_fee)[1]
+                   or (pr["close"] - p["cost"]) / p["cost"] * 100),
             "industry": label,
             "cum_yoy": revenue.get(p["code"], {}).get("cum_yoy_pct"),
             "pe": valuation.get(p["code"], {}).get("pe"),
