@@ -1603,11 +1603,23 @@ def get_cumulative_net_buy(days=10, top_n=80, codes=None):
     傳產股會被擠到幾百名之外，篩選後就整頁空白。
     回傳 [(code, name, 累計張數, 有買超的天數), ...]
     """
+    # 不用「%s IS NULL OR ...」這種寫法：psycopg2 無法推斷該參數的型別，
+    # 會直接丟型別錯誤，而錯誤被 except 吃掉後只會回傳空清單，
+    # 表面上看起來像「這個類股沒有標的」，實際上是查詢從沒成功過。
+    code_clause = ""
+    params = [days]
+    if codes is not None:
+        if not codes:
+            return []
+        code_clause = "AND h.code = ANY(%s)"
+        params.append(list(codes))
+    params.append(top_n)
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            """
+            f"""
             WITH recent AS (
                 SELECT DISTINCT trade_date FROM inst_history
                 ORDER BY trade_date DESC LIMIT %s
@@ -1620,13 +1632,13 @@ def get_cumulative_net_buy(days=10, top_n=80, codes=None):
             JOIN recent r ON h.trade_date = r.trade_date
             WHERE length(h.code) = 4 AND h.code ~ '^[0-9]+$'
               AND h.code NOT LIKE '00%%'
-              AND (%s IS NULL OR h.code = ANY(%s))
+              {code_clause}
             GROUP BY h.code
             HAVING SUM(h.total_net_lots) > 0
             ORDER BY cum_lots DESC
             LIMIT %s
             """,
-            (days, codes, codes, top_n),
+            tuple(params),
         )
         rows = cursor.fetchall()
         cursor.close()
@@ -2484,6 +2496,62 @@ def sync_industry():
         f"共存入：{count} 檔（上市＋上櫃＋興櫃）\n\n"
         + "\n".join(sample)
     ), 200
+
+
+@app.route("/check-pool", methods=["POST", "GET"])
+def check_pool():
+    """
+    診斷選股台候選池。用法：/check-pool?token=...&cat=傳產
+    逐層顯示每個階段剩下幾檔，一眼看出是卡在分類、買超查詢還是流動性門檻。
+    """
+    if request.args.get("token") != os.environ.get("CRON_SECRET"):
+        abort(403)
+    cat = request.args.get("cat", "傳產")
+
+    ind_map = get_industry_map() or {}
+    lines = [f"類股：{cat}", "=" * 30, f"stock_info 有產業別的代號數：{len(ind_map)}"]
+
+    counts = {}
+    for c in ind_map:
+        k = stock_category(c, ind_map)
+        counts[k] = counts.get(k, 0) + 1
+    lines.append(f"各類股數量：{counts}")
+
+    cat_codes = [c for c in ind_map if stock_category(c, ind_map) == cat]
+    lines.append(f"本類股代號數：{len(cat_codes)}")
+    lines.append(f"前 10 個：{cat_codes[:10]}")
+
+    cum = get_cumulative_net_buy(days=10, top_n=120, codes=cat_codes)
+    lines.append(f"近10日累計買超查詢結果：{len(cum)} 檔")
+    if cum:
+        lines.append("前 5 名：" + "、".join(
+            f"{n}({c}) {cl:,}張/{bd}天" for c, n, cl, bd in cum[:5]))
+    else:
+        lines.append("⚠️ 查詢回傳空清單——看 Render Logs 是否有『查詢累計買超失敗』")
+
+    hist_days = get_history_days_count()
+    lines.append(f"inst_history 累積交易日數：{hist_days}")
+
+    min_close = 10 if cat == "電子" else 8
+    min_turnover = 1.0 if cat == "電子" else 0.3
+    lines.append(f"流動性門檻：股價≥{min_close}、成交金額≥{min_turnover}億")
+
+    ok = noprice = lowprice = lowturn = 0
+    for c, _n, _cl, _bd in cum[:30]:
+        pr = get_realtime_stock(c)
+        if not pr:
+            noprice += 1
+            continue
+        if pr["close"] < min_close:
+            lowprice += 1
+            continue
+        if calc_turnover_billion(pr["close"], pr["volume"]) < min_turnover:
+            lowturn += 1
+            continue
+        ok += 1
+    lines.append(f"前30名逐檔檢查：通過 {ok}、查無行情 {noprice}、"
+                 f"股價過低 {lowprice}、成交金額不足 {lowturn}")
+    return "\n".join(str(x) for x in lines), 200
 
 
 @app.route("/check-source", methods=["POST", "GET"])
