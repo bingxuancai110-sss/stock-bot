@@ -1,7 +1,10 @@
 import os
+import re
+import ssl
 import socket
 import time
 import requests
+from requests.adapters import HTTPAdapter
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import execute_values
@@ -550,7 +553,6 @@ def delete_position(user_id, pos_id):
         release_db_connection(conn)
 
 
-import re
 
 def normalize_code(raw):
     """
@@ -941,10 +943,27 @@ TWSE_BASE = "https://openapi.twse.com.tw/v1"
 TPEX_BASE = "https://www.tpex.org.tw/openapi/v1"
 
 
-def _get_json(url, timeout=20):
+# 櫃買中心（TPEx）的 SSL 憑證缺少 Subject Key Identifier 擴充欄位，
+# 新版 OpenSSL 預設開啟 RFC 5280 嚴格檢查會直接拒絕連線，
+# 錯誤訊息是 CERTIFICATE_VERIFY_FAILED: Missing Subject Key Identifier。
+# 這裡只關掉「嚴格擴充欄位檢查」，仍然驗證憑證鏈與主機名稱，
+# 不使用 verify=False（那會連對方是不是本人都不檢查）。
+class _RelaxedStrictAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = ssl.create_default_context()
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        kwargs["ssl_context"] = ctx
+        return super().init_poolmanager(*args, **kwargs)
+
+
+_session = requests.Session()
+_session.mount("https://www.tpex.org.tw", _RelaxedStrictAdapter())
+_session.headers.update({"User-Agent": "Mozilla/5.0"})
+
+
+def _get_json(url, timeout=25):
     try:
-        return requests.get(url, timeout=timeout,
-                            headers={'User-Agent': 'Mozilla/5.0'}).json()
+        return _session.get(url, timeout=timeout).json()
     except Exception as e:
         print(f"❌ 抓取失敗 {url}: {e}")
         return None
