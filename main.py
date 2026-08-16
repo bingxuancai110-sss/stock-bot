@@ -1593,11 +1593,14 @@ def get_cumulative_net_buy_for_codes(codes, days=10):
         release_db_connection(conn)
 
 
-def get_cumulative_net_buy(days=10, top_n=80):
+def get_cumulative_net_buy(days=10, top_n=80, codes=None):
     """
     從 inst_history 撈「近 N 個交易日累計買超」前 top_n 名。
     這是黑馬候選池的來源——長線佈局往往是「量小但持續」，
     看單日買超排行會漏掉那種每天買 800 張、連買 15 天的股票。
+    codes 若給定，只在該清單內排名——這對「依類股分別選股」很重要：
+    全市場共用一份排行時，電子股的買超量遠大於傳產與金融，
+    傳產股會被擠到幾百名之外，篩選後就整頁空白。
     回傳 [(code, name, 累計張數, 有買超的天數), ...]
     """
     conn = get_db_connection()
@@ -1617,12 +1620,13 @@ def get_cumulative_net_buy(days=10, top_n=80):
             JOIN recent r ON h.trade_date = r.trade_date
             WHERE length(h.code) = 4 AND h.code ~ '^[0-9]+$'
               AND h.code NOT LIKE '00%%'
+              AND (%s IS NULL OR h.code = ANY(%s))
             GROUP BY h.code
             HAVING SUM(h.total_net_lots) > 0
             ORDER BY cum_lots DESC
             LIMIT %s
             """,
-            (days, top_n),
+            (days, codes, codes, top_n),
         )
         rows = cursor.fetchall()
         cursor.close()
@@ -3784,33 +3788,44 @@ def web_screener(uid):
         # 銀行保險的「營收」是利息、手續費與投資收益，
         # 年增率動輒數百％多半來自評價變動而非本業成長，
         # 套進成長型評分會讓金融股整片霸榜。
+        # 雷達看的是「今天什麼在動」，不分類股——
+        # 傳產或金融只要帶量突破一樣值得注意，沒有理由先切掉。
         pool = [(c, i) for c, i in inst.items()
                 if len(c) == 4 and c.isdigit() and not c.startswith("00")
-                and i["total_net_lots"] > 0
-                and stock_category(c, ind_map) == cat_filter]
+                and i["total_net_lots"] > 0]
         pool.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
         pool = [(c, {"name": i.get("name", c), "total_net_lots": i["total_net_lots"],
                      "cum_lots": i["total_net_lots"], "buy_days": 1})
-                for c, i in pool[:80]]
+                for c, i in pool[:120]]
     else:
-        # 先取足夠大的母體再依類股篩選。
-        # 若只取前 120 名，那份名單幾乎全是電子股，
-        # 切到傳產或金融就會整頁空白——不是沒有標的，是被電子股佔滿了。
-        cum = get_cumulative_net_buy(days=10, top_n=800)
+        # 先取出該類股的所有代號，再在這個範圍內排名。
+        # 不能用全市場共用的排行去篩：電子股的買超量級遠大於傳產，
+        # 傳產會被擠到幾百名外，怎麼擴大母體都還是空的。
+        cat_codes = [c for c in ind_map
+                     if stock_category(c, ind_map) == cat_filter]
+        cum = get_cumulative_net_buy(days=10, top_n=120, codes=cat_codes)
         pool = [(c, {"name": n, "total_net_lots": inst.get(c, {}).get("total_net_lots", 0),
                      "cum_lots": cl, "buy_days": bd})
-                for c, n, cl, bd in cum
-                if stock_category(c, ind_map) == cat_filter][:120]
+                for c, n, cl, bd in cum]
 
     streaks = get_consecutive_days_batch([c for c, _ in pool])
 
-    rows = []
+    # 流動性門檻依類股調整：傳產與金融的成交金額天生低於電子股，
+    # 沿用同一組門檻會把整個類股濾掉，看起來像「沒有標的」。
+    min_close = 10 if cat_filter == "電子" else 8
+    min_turnover = 1.0 if cat_filter == "電子" else 0.3
+
+    rows, skipped_liquidity = [], 0
     for code, info in pool:
         price = get_realtime_stock(code)
-        if not price or price["close"] < 10 or abs(price["pct"]) > 10.5:
+        if not price or abs(price["pct"]) > 10.5:
+            continue
+        if price["close"] < min_close:
+            skipped_liquidity += 1
             continue
         turnover = calc_turnover_billion(price["close"], price["volume"])
-        if turnover < 1:
+        if turnover < min_turnover:
+            skipped_liquidity += 1
             continue
         if mode == "radar" and price["pct"] < 1.5:
             continue
@@ -4063,11 +4078,6 @@ def web_screener(uid):
     <div><label>顯示筆數</label><select name="limit" onchange="this.form.submit()">
       {opt(10,'10 筆',limit)}{opt(20,'20 筆',limit)}{opt(50,'50 筆',limit)}
     </select></div>
-    <div><label>類股範圍</label><select name="cat" onchange="this.form.submit()">
-      {opt('電子','電子科技',cat_filter)}
-      {opt('傳產','傳統產業',cat_filter)}
-      {opt('金融','金融保險',cat_filter)}
-    </select></div>
   </div>
 </form>"""
     else:
@@ -4138,7 +4148,12 @@ def web_screener(uid):
         main_html = ('<div class="rows">'
                      + "".join(row_fn(r) for r in shown) + '</div>'
                      if shown else
-                     '<div class="empty">沒有符合條件的標的，試著放寬篩選。</div>')
+                     f'''<div class="empty">沒有符合條件的標的。<br><br>
+<span style="font-size:12.5px">
+{"" if mode == "radar" else cat_filter + "類"}目前沒有同時滿足「法人買超」與流動性門檻
+（股價 ≥ {min_close} 元、成交金額 ≥ {min_turnover} 億）的標的，
+其中 {skipped_liquidity} 檔因流動性被排除。<br>
+可試著切換類股範圍，或放寬上方篩選條件。</span></div>''')
         count_note = f"共 {len(rows)} 檔符合條件"
 
     body = f"""
@@ -4155,10 +4170,10 @@ def web_screener(uid):
 </div>
 <div class="mode-note">{
   ('' if mode == 'radar' else CATEGORY_NOTE.get(cat_filter, ''))}{
-  '近 10 日累計買超前 120 名，依營收成長、估值、產業動能、法人連續性綜合評分。'
+  f'{cat_filter}類近 10 日累計買超前 120 名，依該類股適用的權重評分。'
   if mode != 'radar' else
-  '當日法人買超且漲幅 1.5% 以上。雷達看的是型態與位階，不給綜合分數——'
-  '「今天什麼在動」跟「什麼值得抱幾個月」是兩個問題。'}{
+  '當日法人買超且漲幅 1.5% 以上，涵蓋全部類股。雷達看的是型態與位階，'
+  '不給綜合分數——「今天什麼在動」跟「什麼值得抱幾個月」是兩個問題。'}{
   '　產業依「領先群營收年增率」由高至低排列。' if view == 'sector' else ''}</div>
 
 <div class="dist">{radar_dist if mode == "radar" else (fin_dist if cat_filter == "金融" else dist_html)}<span class="dist-note">{count_note}</span></div>
