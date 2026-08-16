@@ -658,12 +658,19 @@ def get_realtime_stock(code):
             # 距離近60日高點多遠（0% 代表就在最高點，負值代表還在下方）
             pos_vs_60d_high = round((close - high_60d) / high_60d * 100, 2) if high_60d else None
 
-            # 連續上漲天數（含今天）
-            up_streak = 0
+            # 連續上漲／下跌天數（含今天）。
+            # up_streak == 0 代表今天並非上漲，不能當成「首根上漲」；
+            # 要判斷「首根上漲」必須是 up_streak == 1。
             series = [b[1] for b in hist] + [close]
+            up_streak = down_streak = 0
             for i in range(len(series) - 1, 0, -1):
                 if series[i] > series[i - 1]:
                     up_streak += 1
+                else:
+                    break
+            for i in range(len(series) - 1, 0, -1):
+                if series[i] < series[i - 1]:
+                    down_streak += 1
                 else:
                     break
 
@@ -699,6 +706,7 @@ def get_realtime_stock(code):
                 "vol_ratio": vol_ratio,
                 "pos_vs_60d_high": pos_vs_60d_high,
                 "up_streak": up_streak,
+                "down_streak": down_streak,
                 # 近期收盤序列，供組合頁計算個股之間的相關係數用
                 "closes": [b[1] for b in hist[-60:]] + [float(close)],
             }
@@ -1581,13 +1589,20 @@ def build_position_desc(price):
         else:
             parts.append(f"・量能為20日均量的 {vol_ratio} 倍")
 
-    # 連漲天數
+    # 連漲／連跌天數。注意 up_streak==0 是「今天沒漲」，不是「首根上漲」。
+    down_streak = price.get("down_streak", 0)
     if up_streak >= 5:
         parts.append(f"・已連續上漲 {up_streak} 天")
     elif up_streak >= 2:
         parts.append(f"・連續上漲 {up_streak} 天")
-    elif up_streak <= 0:
+    elif up_streak == 1:
         parts.append("・今日為近期首根上漲K棒")
+    elif down_streak >= 5:
+        parts.append(f"・已連續下跌 {down_streak} 天")
+    elif down_streak >= 2:
+        parts.append(f"・連續下跌 {down_streak} 天")
+    elif down_streak == 1:
+        parts.append("・今日翻黑，為近期首根下跌K棒")
 
     return "\n".join(parts) if parts else "・位階資料不足"
 
