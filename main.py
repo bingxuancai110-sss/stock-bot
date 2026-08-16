@@ -2463,6 +2463,13 @@ footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--rule);
   line-height:1.7;display:flex;gap:11px}
 .alert .tag{font-size:10.5px;letter-spacing:.1em;color:var(--brass);
   padding-top:3px;white-space:nowrap}
+.profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px;background:var(--rule);border:1px solid var(--rule);margin-top:4px}
+.pf{background:var(--paper);padding:9px 11px;display:flex;
+  justify-content:space-between;gap:8px;font-size:12px}
+.pf-k{color:var(--ink-faint)}
+.pf-v{color:var(--ink);font-weight:500;text-align:right}
+.pf-empty{color:var(--ink-faint);font-weight:400}
 .q{padding:14px 0;border-bottom:1px solid var(--rule)}
 .q-title{font-size:13.5px;font-weight:500;margin-bottom:8px}
 .opt{display:block;font-size:13.5px;color:var(--ink-soft);padding:4px 0;
@@ -3042,38 +3049,44 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
     hold = profile.get("holding_period")
     others = profile.get("other_assets")
     top_w = top["weight"] if top else 0
-    top_ind = ordered_industries[0] if ordered_industries else None
+    # 判斷「集中風險」時要排除 ETF：ETF 本身就是一籃子股票，
+    # 它是分散的來源而非集中的來源，把它當成單一族群會得出相反的結論。
+    real_inds = [x for x in (ordered_industries or [])
+                 if not x[0].startswith("ETF") and x[0] != "未分類"]
+    top_ind = real_inds[0] if real_inds else None
+    etf_weight = sum(w for name, w in (ordered_industries or [])
+                     if name.startswith("ETF"))
 
     # 短年期 × 高集中：時間不夠攤平波動
-    if horizon in ("1 年內", "1–3 年") and top_ind and top_ind[1] >= 40:
+    if horizon in ("1 年內", "1–3 年") and top_ind and top_ind[1] >= 30:
         out.append(("資金年期",
                     f"你標記這筆錢{horizon}可能會用到，但{top_ind[0]}佔 "
                     f"{top_ind[1]:.0f}%。族群回檔時，這個年期未必來得及等到回升。"))
 
     # 長年期：反過來說明波動不必然是問題
-    if horizon == "10 年以上" and top_ind and top_ind[1] >= 50:
+    if horizon == "10 年以上" and top_ind and top_ind[1] >= 35:
         out.append(("資金年期",
                     f"集中在{top_ind[0]}（{top_ind[1]:.0f}%）波動會較大，"
                     f"但你標記這筆錢 10 年以上不會動用，時間本身是可用的緩衝。"))
 
     # 身家比重放大集中度的實質風險
-    if share == "幾乎全部" and top_w >= th["position"]:
+    if share == "幾乎全部" and top_w >= th["position"] * 0.7:
         out.append(("資產比重",
                     f"這筆投資是你幾乎全部的可動用資產，"
                     f"而單一持股已佔 {top_w:.0f}%。單一事件的影響會直接反映在生活上。"))
-    elif share == "不到四分之一" and top_w >= th["position"]:
+    elif share == "不到四分之一" and top_w >= th["position"] * 0.7:
         out.append(("資產比重",
                     f"單一持股佔組合 {top_w:.0f}%，但這筆投資佔你可動用資產不到四分之一，"
                     f"換算後的實質曝險相對有限。"))
 
     # 收入穩定度影響「被迫賣出」的風險
-    if income in ("接案或營業收入", "目前無固定收入") and top_ind and top_ind[1] >= 50:
+    if income in ("接案或營業收入", "目前無固定收入") and top_ind and top_ind[1] >= 35:
         out.append(("收入穩定度",
                     f"你的收入並非固定薪資，而組合有 {top_ind[1]:.0f}% 集中在單一族群。"
                     f"若收入與股市同時轉弱，可能被迫在低點賣出。"))
 
     # 只有台股 → 集中度沒有其他資產分散
-    if others == "幾乎只有台股" and top_ind and top_ind[1] >= 50:
+    if others == "幾乎只有台股" and top_ind and top_ind[1] >= 35:
         out.append(("資產分散",
                     f"你的部位幾乎只有台股，{top_ind[0]}又佔 {top_ind[1]:.0f}%，"
                     f"整體風險沒有其他資產類別可以分攤。"))
@@ -3084,9 +3097,15 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
                     f"你標記這筆錢{horizon}才會用到，但平均持股只抱{hold}。"
                     f"長期規劃與實際操作之間有落差，值得留意是哪一邊需要調整。"))
 
+    # ETF 佔比高：這是分散，不是集中，該說明而不是警示
+    if etf_weight >= 25:
+        out.append(("ETF 佔比",
+                    f"ETF 佔組合 {etf_weight:.0f}%。這部分本身已分散於一籃子標的，"
+                    f"因此上述集中度是以個股部分計算，未把 ETF 視為單一族群。"))
+
     # 看盤頻率高 × 已有虧損部位
     losers = [h for h in holdings if h["pl"] is not None and h["pl"] < 0]
-    if freq == "一天多次" and len(losers) >= 3:
+    if freq == "一天多次" and len(losers) >= 2:
         out.append(("看盤頻率",
                     f"你每天多次查看帳戶，目前有 {len(losers)} 檔在虧損。"
                     f"高頻檢視在波動期容易放大情緒，判斷前先確認依據有沒有變。"))
@@ -3129,7 +3148,12 @@ def web_portfolio(uid):
         value = pr["close"] * p["shares"]
         weight = value / total_value * 100 if total_value else 0
         ind = ind_map.get(p["code"])
-        label = industry_name(ind) if ind else "未分類"
+        if ind:
+            label = industry_name(ind)
+        elif is_etf(p["code"]):
+            label = "ETF（一籃子）"   # ETF 本身已分散，跟「查不到產業」意義不同
+        else:
+            label = "未分類"
         by_industry[label] = by_industry.get(label, 0) + weight
         name = inst.get(p["code"], {}).get("name") or pr["name"]
         holdings.append({
@@ -3175,11 +3199,13 @@ def web_portfolio(uid):
                        f"{top['name']}佔 {top['weight']:.1f}%，超過你設定的 "
                        f"{th['position']}%{ratio}。單一事件對組合的影響顯著。"))
 
-    if ordered and ordered[0][1] >= 50:
+    real_ordered = [x for x in ordered
+                    if not x[0].startswith("ETF") and x[0] != "未分類"]
+    if real_ordered and real_ordered[0][1] >= 30:
         drop = 25
-        impact = ordered[0][1] / 100 * drop
+        impact = real_ordered[0][1] / 100 * drop
         alerts.append(("產業集中",
-                       f"{ordered[0][0]}佔 {ordered[0][1]:.1f}%。若該族群整體修正 "
+                       f"{real_ordered[0][0]}佔 {real_ordered[0][1]:.1f}%。若該族群整體修正 "
                        f"{drop}%，組合約下跌 {impact:.1f}%"
                        + (f"，超出你設定的 {th['loss']}% 可接受範圍。"
                           if impact > th["loss"] else "。")))
@@ -3207,6 +3233,27 @@ def web_portfolio(uid):
                        "填寫後提醒會更貼近你的狀況。"))
 
     pl_total = ((total_value - total_cost) / total_cost * 100) if total_cost else None
+    # 把目前生效的設定攤開來，否則使用者填完問卷看不出差在哪
+    pf_items = [
+        ("虧損提醒", f"{th['loss']}%" + ("（預設）" if not profile.get("loss_alert_pct") else "")),
+        ("單一持股提醒", f"{th['position']}%" + ("（預設）" if not profile.get("position_alert_pct") else "")),
+        ("資金年期", profile.get("horizon") or "未填"),
+        ("資產比重", profile.get("asset_share") or "未填"),
+        ("收入型態", profile.get("income_type") or "未填"),
+        ("回檔經驗", profile.get("drawdown_experience") or "未填"),
+        ("看盤頻率", profile.get("check_frequency") or "未填"),
+        ("平均持有", profile.get("holding_period") or "未填"),
+        ("其他部位", profile.get("other_assets") or "未填"),
+    ]
+    profile_html = "".join(
+        f'<div class="pf"><span class="pf-k">{k}</span>'
+        f'<span class="pf-v{"" if v != "未填" else " pf-empty"}">{v}</span></div>'
+        for k, v in pf_items)
+    if not profile:
+        profile_html += ('<div class="pf" style="grid-column:1/-1">'
+                         '<a href="/web/settings" style="color:var(--brass)">'
+                         '尚未填寫問卷，前往設定 →</a></div>')
+
     corr_txt = (f"兩兩相關係數平均 <b>{avg_corr:.2f}</b>，"
                 f"實際分散效果約等於 <b>{eff:.1f} 檔</b>。"
                 if avg_corr is not None and eff else
@@ -3249,6 +3296,10 @@ def web_portfolio(uid):
   <div class="bar"><div style="width:{h['weight']:.1f}%"></div></div>
 </div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}
 </div>
+
+<div class="section-head"><h2>你的設定</h2>
+  <span class="section-note">下方提醒依此判斷</span></div>
+<div class="profile-grid">{profile_html}</div>
 
 <div class="section-head"><h2>值得注意</h2>
   <span class="section-note">依你設定的門檻</span></div>
