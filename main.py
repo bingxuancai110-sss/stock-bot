@@ -2457,8 +2457,8 @@ button:hover{background:#000}
 .empty{padding:40px 0;text-align:center;color:var(--ink-faint);font-size:14px}
 .msg{margin:14px 0;padding:11px 14px;background:var(--paper-2);
   border-left:2px solid var(--brass);font-size:13px}
-footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--rule);
-  font-size:13px;color:var(--ink-soft);line-height:1.8}
+footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
+  font-size:15px;color:var(--ink-soft);line-height:1.9}
 .totals{display:flex;gap:28px;flex-wrap:wrap;padding:18px 0 8px}
 .band{display:flex;height:48px;width:100%;overflow:hidden;border-radius:2px;
   margin-top:4px}
