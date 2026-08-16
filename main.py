@@ -2941,6 +2941,12 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .badge{font-size:10.5px;color:var(--brass);border:1px solid var(--brass);
   border-radius:2px;padding:1px 5px;margin-left:6px;vertical-align:2px}
 .badge.muted{color:var(--ink-faint);border-color:var(--rule)}
+.cat{display:inline-block;width:17px;height:17px;line-height:17px;
+  text-align:center;font-size:10.5px;border-radius:2px;margin-right:6px;
+  vertical-align:1px;color:#FFF;font-weight:500}
+.cat-電子{background:#3A6EA5}
+.cat-傳產{background:#7A6A3B}
+.cat-金融{background:#2E7D5B}
 .num.hot{color:var(--up);font-weight:600}
 .num.warm{color:var(--brass);font-weight:600}
 .profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
@@ -3847,7 +3853,7 @@ def web_screener(uid):
     min_score = request.args.get("min_score", "")
     max_pe = request.args.get("max_pe", "")
     industry_filter = request.args.get("industry", "")
-    cat_filter = request.args.get("cat", "電子")   # 電子／傳產／金融
+    cat_filter = request.args.get("cat", "")   # 空=全部；僅作顯示篩選，不影響候選池
     view = request.args.get("view", "list")         # list=總排行, sector=依產業
 
     inst = fetch_institutional_data()
@@ -3877,28 +3883,37 @@ def web_screener(uid):
                      "cum_lots": i["total_net_lots"], "buy_days": 1})
                 for c, i in pool[:120]]
     else:
-        # 先取出該類股的所有代號，再在這個範圍內排名。
-        # 不能用全市場共用的排行去篩：電子股的買超量級遠大於傳產，
-        # 傳產會被擠到幾百名外，怎麼擴大母體都還是空的。
-        cat_codes = [c for c in ind_map
-                     if stock_category(c, ind_map) == cat_filter]
-        cum = get_cumulative_net_buy(days=10, top_n=120, codes=cat_codes)
-        pool = [(c, {"name": n, "total_net_lots": inst.get(c, {}).get("total_net_lots", 0),
-                     "cum_lots": cl, "buy_days": bd})
-                for c, n, cl, bd in cum]
+        # 候選池＝三類各自取前 N 名後合併成一份排行。
+        # 不用單一全市場排行：電子股的買超量級遠大於傳產與金融，
+        # 混在一起排名時非電子類會被整批擠掉；
+        # 但也不該讓使用者自己切類別，切到空頁面同樣沒有意義。
+        # 各類取完再合併，既保證每類都有代表，又只需要看一份清單。
+        quota = {"電子": 90, "傳產": 60, "金融": 30}
+        pool = []
+        for cat, n_take in quota.items():
+            cat_codes = [c for c in ind_map if stock_category(c, ind_map) == cat]
+            if not cat_codes:
+                continue
+            for c, nm, cl, bd in get_cumulative_net_buy(
+                    days=10, top_n=n_take, codes=cat_codes):
+                pool.append((c, {
+                    "name": nm,
+                    "total_net_lots": inst.get(c, {}).get("total_net_lots", 0),
+                    "cum_lots": cl, "buy_days": bd}))
 
     streaks = get_consecutive_days_batch([c for c, _ in pool])
 
-    # 流動性門檻依類股調整：傳產與金融的成交金額天生低於電子股，
-    # 沿用同一組門檻會把整個類股濾掉，看起來像「沒有標的」。
-    min_close = 10 if cat_filter == "電子" else 8
-    min_turnover = 1.0 if cat_filter == "電子" else 0.3
+    # 流動性門檻依「個股所屬類別」判斷：
+    # 傳產與金融的成交金額天生低於電子股，用同一組門檻會整批被濾掉。
+    LIQUIDITY = {"電子": (10, 1.0), "傳產": (8, 0.3), "金融": (8, 0.3)}
 
     rows, skipped_liquidity = [], 0
     for code, info in pool:
         price = get_realtime_stock(code)
         if not price or abs(price["pct"]) > 10.5:
             continue
+        min_close, min_turnover = LIQUIDITY.get(
+            stock_category(code, ind_map), (8, 0.3))
         if price["close"] < min_close:
             skipped_liquidity += 1
             continue
@@ -3955,6 +3970,8 @@ def web_screener(uid):
         pass
     if industry_filter:
         rows = [r for r in rows if r["industry"] == industry_filter]
+    if cat_filter:
+        rows = [r for r in rows if r["category"] == cat_filter]
 
     # ── 雷達專屬篩選：型態導向，不用分數 ──
     if mode == "radar":
@@ -4073,13 +4090,18 @@ def web_screener(uid):
   </div>
 </div>"""
 
+    CAT_TAG = {"電子": "電", "傳產": "傳", "金融": "金"}
+
     def stock_row(r):
-        badge = f'<span class="badge">{r["breakout"]}</span>' if r["breakout"] else ""
+        cat_tag = (f'<span class="cat cat-{r["category"]}">'
+                   f'{CAT_TAG.get(r["category"], "")}</span>')
+        badge = (f'<span class="badge">{r["breakout"]}</span>'
+                 if r["breakout"] else "")
         if r["score"] is None:
             # 金融股不評分，只列事實
             return f"""
 <div class="row">
-  <div><span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}</div>
+  <div>{cat_tag}<span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}</div>
   <div class="price num">{r['close']:,.2f}</div>
   <div class="meta">
     <span><em>產業</em> {r['industry']}</span>
@@ -4097,7 +4119,7 @@ def web_screener(uid):
                  else (f'<span><em>PB</em> {r["pb"]:.2f}</span>' if r["pb"] else ""))
         return f"""
 <div class="row">
-  <div><span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}</div>
+  <div>{cat_tag}<span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}</div>
   <div class="price num">{r['score']}<span class="sub">分</span></div>
   <div class="meta">
     <span><em>價</em> <span class="num">{r['close']:,.2f}</span> {fmt_pct(r['pct'])}</span>
@@ -4188,6 +4210,7 @@ def web_screener(uid):
       {''.join(opt(i, i, industry_filter) for i in industries)}
     </select></div>
     <div><label>類股範圍</label><select name="cat" onchange="this.form.submit()">
+      {opt('','全部',cat_filter)}
       {opt('電子','電子科技',cat_filter)}
       {opt('傳產','傳統產業',cat_filter)}
       {opt('金融','金融保險',cat_filter)}
@@ -4211,6 +4234,13 @@ def web_screener(uid):
                   f'<span class="dist-item"><b>{n_20}</b> 檔破月高</span>'
                   f'<span class="dist-item"><b>{n_vol}</b> 檔量能≥2倍</span>'
                   f'<span class="dist-item"><b>{n_streak}</b> 檔連買≥3日</span>')
+
+    cat_counts = {}
+    for r in rows:
+        cat_counts[r["category"]] = cat_counts.get(r["category"], 0) + 1
+    cat_html = "".join(
+        f'<span class="dist-item"><b>{cat_counts.get(k, 0)}</b> 檔{k}</span>'
+        for k in ("電子", "傳產", "金融"))
 
     dist_html = "".join(
         f'<span class="dist-item"><b>{n}</b> 檔 {label}</span>' for label, n in dist)
@@ -4249,13 +4279,14 @@ def web_screener(uid):
 </div>
 <div class="mode-note">{
   ('' if mode == 'radar' else CATEGORY_NOTE.get(cat_filter, ''))}{
-  f'{cat_filter}類近 10 日累計買超前 120 名，依該類股適用的權重評分。'
+  '候選池為電子 90 檔＋傳產 60 檔＋金融 30 檔（各類分別取近 10 日累計買超前段），'
+  '每檔用所屬類別的權重評分後合併排名——電子看成長與 PEG，傳產看 PB 與殖利率，金融不評分。'
   if mode != 'radar' else
   '當日法人買超且漲幅 1.5% 以上，涵蓋全部類股。雷達看的是型態與位階，'
   '不給綜合分數——「今天什麼在動」跟「什麼值得抱幾個月」是兩個問題。'}{
   '　產業依「領先群營收年增率」由高至低排列。' if view == 'sector' else ''}</div>
 
-<div class="dist">{radar_dist if mode == "radar" else (fin_dist if cat_filter == "金融" else dist_html)}<span class="dist-note">{count_note}</span></div>
+<div class="dist">{radar_dist if mode == "radar" else (fin_dist if cat_filter == "金融" else dist_html + cat_html)}<span class="dist-note">{count_note}</span></div>
 {controls}
 {main_html}
 """
