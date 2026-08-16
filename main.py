@@ -2463,10 +2463,25 @@ footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--rule);
   line-height:1.7;display:flex;gap:11px}
 .alert .tag{font-size:10.5px;letter-spacing:.1em;color:var(--brass);
   padding-top:3px;white-space:nowrap}
+.tabs{display:flex;gap:6px;margin:18px 0 6px}
+.tabs a{padding:7px 18px;font-size:14px;text-decoration:none;
+  color:var(--ink-soft);background:var(--paper-2);border-radius:2px}
+.tabs a.on{background:var(--ink);color:var(--paper);font-weight:500}
+.mode-note{font-size:12px;color:var(--ink-faint);margin-bottom:14px;line-height:1.6}
+.dist{display:flex;flex-wrap:wrap;gap:14px;padding:11px 13px;
+  background:var(--paper-2);font-size:12.5px;color:var(--ink-soft);
+  border-left:2px solid var(--brass)}
+.dist-item b{color:var(--ink);font-size:14px}
+.dist-note{color:var(--ink-faint);margin-left:auto}
+.controls{margin:14px 0 6px}
+.controls .fields{grid-template-columns:repeat(auto-fit,minmax(110px,1fr))}
+.badge{font-size:10.5px;color:var(--brass);border:1px solid var(--brass);
+  border-radius:2px;padding:1px 5px;margin-left:6px;vertical-align:2px}
 .profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
   gap:1px;background:var(--rule);border:1px solid var(--rule);margin-top:4px}
 .pf{background:var(--paper);padding:9px 11px;display:flex;
-  justify-content:space-between;gap:8px;font-size:12px}
+  justify-content:space-between;gap:10px;font-size:12px;align-items:baseline}
+.pf-k{white-space:nowrap}
 .pf-k{color:var(--ink-faint)}
 .pf-v{color:var(--ink);font-weight:500;text-align:right}
 .pf-empty{color:var(--ink-faint);font-weight:400}
@@ -2505,6 +2520,7 @@ def render_page(title, body, nav_active=None, user_name=None):
         nav = ("<nav>"
                + tab("/web/portfolio", "組合", "portfolio")
                + tab("/web/positions", "持股", "positions")
+               + tab("/web/screener", "選股", "screener")
                + tab("/web/settings", "設定", "settings")
                + "</nav>")
 
@@ -3097,6 +3113,34 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
                     f"你標記這筆錢{horizon}才會用到，但平均持股只抱{hold}。"
                     f"長期規劃與實際操作之間有落差，值得留意是哪一邊需要調整。"))
 
+    # 「曾經在虧損時加碼」是問卷裡最有預測力的一題，
+    # 這裡用實際的分批進場紀錄去驗證他現在是不是又在做同一件事。
+    if profile.get("drawdown_experience") == "曾經在虧損時加碼":
+        averaging = []
+        for h in holdings:
+            lots = h.get("lots") or []
+            if len(lots) < 2:
+                continue
+            ordered_lots = sorted(lots, key=lambda l: (l["bought_on"] or date.min))
+            # 後買的成本比先買的低，且目前仍虧損 → 正在往下攤平
+            if (ordered_lots[-1]["cost"] < ordered_lots[0]["cost"]
+                    and h.get("pl") is not None and h["pl"] < 0):
+                averaging.append(h["name"])
+        if averaging:
+            out.append(("加碼行為",
+                        f"你曾表示在虧損時加碼過。目前{'、'.join(averaging)}"
+                        f"正是這個型態：後買的成本低於先買，且仍在虧損。"))
+        else:
+            out.append(("加碼行為",
+                        "你曾表示在虧損時加碼過。目前的持股中沒有出現"
+                        "「越跌越買且仍虧損」的型態。"))
+
+    # 資金年期未定：說明為何沒有年期相關提醒
+    if horizon == "沒有特定用途":
+        out.append(("資金年期",
+                    "你未指定這筆錢的使用時點，因此沒有年期相關的提醒。"
+                    "若有明確用途時點，集中度的判讀會不一樣。"))
+
     # ETF 佔比高：這是分散，不是集中，該說明而不是警示
     if etf_weight >= 25:
         out.append(("ETF 佔比",
@@ -3163,6 +3207,7 @@ def web_portfolio(uid):
                               p.get("lots"), fee_disc, min_fee)[1]
                    or (pr["close"] - p["cost"]) / p["cost"] * 100),
             "industry": label,
+            "lots": p.get("lots"),
             "cum_yoy": revenue.get(p["code"], {}).get("cum_yoy_pct"),
             "pe": valuation.get(p["code"], {}).get("pe"),
         })
@@ -3224,8 +3269,10 @@ def web_portfolio(uid):
     alerts += build_profile_alerts(profile, holdings, top, ordered, th)
 
     if w_pe and w_yoy is not None:
+        covered = sum(h["weight"] for h in holdings if h["pe"] is not None)
         alerts.append(("基本面",
-                       f"組合加權營收年增率 {w_yoy:+.1f}%，加權本益比 {w_pe:.1f} 倍。"))
+                       f"個股部分加權營收年增率 {w_yoy:+.1f}%，加權本益比 {w_pe:.1f} 倍"
+                       f"（涵蓋組合的 {covered:.0f}%，ETF 無本益比故未計入）。"))
 
     if not profile:
         alerts.append(("尚未設定",
@@ -3236,7 +3283,7 @@ def web_portfolio(uid):
     # 把目前生效的設定攤開來，否則使用者填完問卷看不出差在哪
     pf_items = [
         ("虧損提醒", f"{th['loss']}%" + ("（預設）" if not profile.get("loss_alert_pct") else "")),
-        ("單一持股提醒", f"{th['position']}%" + ("（預設）" if not profile.get("position_alert_pct") else "")),
+        ("單一持股", f"{th['position']}%" + ("（預設）" if not profile.get("position_alert_pct") else "")),
         ("資金年期", profile.get("horizon") or "未填"),
         ("資產比重", profile.get("asset_share") or "未填"),
         ("收入型態", profile.get("income_type") or "未填"),
@@ -3309,6 +3356,195 @@ def web_portfolio(uid):
  else '<div class="empty">目前沒有觸及門檻的項目。</div>'}
 </div>"""
     return render_page("組合分析", body, nav_active="portfolio")
+
+
+# ============================================================
+# 選股台：黑馬／雷達的完整版
+# LINE 受限於訊息長度只能給 5 檔；網頁可以給 20 檔並支援排序篩選。
+# ============================================================
+@app.route("/web/screener")
+@web_login_required
+def web_screener(uid):
+    mode = request.args.get("mode", "blackhorse")
+    limit = request.args.get("limit", "20")
+    limit = int(limit) if limit.isdigit() and int(limit) in (10, 20, 50) else 20
+    sort_key = request.args.get("sort", "score")
+    min_score = request.args.get("min_score", "")
+    max_pe = request.args.get("max_pe", "")
+    industry_filter = request.args.get("industry", "")
+
+    inst = fetch_institutional_data()
+    if not inst:
+        return render_page("選股台", """
+<div class="empty">目前無法取得三大法人資料。<br>
+可能是非交易時段或資料尚未公布，請稍後再試。</div>""", nav_active="screener")
+
+    revenue = fetch_monthly_revenue() or {}
+    valuation = fetch_valuation() or {}
+    ind_map = get_industry_map() or {}
+    momentum = get_industry_momentum(revenue, ind_map)
+
+    # ── 候選池 ──
+    if mode == "radar":
+        pool = [(c, i) for c, i in inst.items()
+                if len(c) == 4 and c.isdigit() and not c.startswith("00")
+                and i["total_net_lots"] > 0]
+        pool.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
+        pool = [(c, {"name": i.get("name", c), "total_net_lots": i["total_net_lots"],
+                     "cum_lots": i["total_net_lots"], "buy_days": 1})
+                for c, i in pool[:80]]
+    else:
+        cum = get_cumulative_net_buy(days=10, top_n=120)
+        pool = [(c, {"name": n, "total_net_lots": inst.get(c, {}).get("total_net_lots", 0),
+                     "cum_lots": cl, "buy_days": bd})
+                for c, n, cl, bd in cum
+                if ind_map.get(c, "").zfill(2) != "17"]
+
+    streaks = get_consecutive_days_batch([c for c, _ in pool])
+
+    rows = []
+    for code, info in pool:
+        price = get_realtime_stock(code)
+        if not price or price["close"] < 10 or abs(price["pct"]) > 10.5:
+            continue
+        turnover = calc_turnover_billion(price["close"], price["volume"])
+        if turnover < 1:
+            continue
+        if mode == "radar" and price["pct"] < 1.5:
+            continue
+
+        cum_yoy = revenue.get(code, {}).get("cum_yoy_pct")
+        pe = valuation.get(code, {}).get("pe")
+        streak = streaks.get(code, 0)
+        ind_code = ind_map.get(code)
+        ind_txt = industry_name(ind_code) if ind_code else "未分類"
+
+        rev_score = round(score_from_cum_revenue_growth(cum_yoy) * 25 / 40)
+        val_score, peg, val_desc = score_from_valuation(pe, cum_yoy)
+        mom_score, mom_desc = score_from_industry_momentum(momentum.get(ind_code))
+        streak_score = round(score_from_streak(streak) * 20 / 30)
+        chip_tech = round((score_from_net_lots(info["cum_lots"]) / 40 * 5)
+                          + (score_from_technical(price["pct"], turnover) / 60 * 5))
+        total = rev_score + val_score + mom_score + streak_score + chip_tech
+
+        breakout = ""
+        if price.get("high_60d") and price["close"] >= price["high_60d"]:
+            breakout = "季線新高"
+        elif price.get("high_20d") and price["close"] >= price["high_20d"]:
+            breakout = "破月高"
+
+        rows.append({
+            "code": code, "name": info["name"], "industry": ind_txt,
+            "close": price["close"], "pct": price["pct"], "score": total,
+            "rev": rev_score, "val": val_score, "mom": mom_score,
+            "streak": streak, "streak_score": streak_score, "chip": chip_tech,
+            "cum_yoy": cum_yoy, "pe": pe, "peg": peg, "turnover": turnover,
+            "cum_lots": info["cum_lots"], "buy_days": info["buy_days"],
+            "breakout": breakout, "vol_ratio": price.get("vol_ratio"),
+            "pos": price.get("pos_vs_60d_high"),
+        })
+
+    # ── 篩選 ──
+    if min_score.isdigit():
+        rows = [r for r in rows if r["score"] >= int(min_score)]
+    try:
+        if max_pe:
+            rows = [r for r in rows if r["pe"] and r["pe"] <= float(max_pe)]
+    except ValueError:
+        pass
+    if industry_filter:
+        rows = [r for r in rows if r["industry"] == industry_filter]
+
+    # ── 排序 ──
+    sorters = {
+        "score": lambda r: r["score"],
+        "pct": lambda r: r["pct"],
+        "yoy": lambda r: r["cum_yoy"] if r["cum_yoy"] is not None else -999,
+        "pe": lambda r: -r["pe"] if r["pe"] else -9999,
+        "streak": lambda r: r["streak"],
+        "turnover": lambda r: r["turnover"],
+    }
+    rows.sort(key=sorters.get(sort_key, sorters["score"]), reverse=True)
+    shown = rows[:limit]
+
+    # ── 分數分布：判斷今天整體訊號強不強 ──
+    bands = [(80, "80 以上"), (70, "70–79"), (60, "60–69"), (0, "60 以下")]
+    dist, rest = [], sorted(rows, key=lambda r: r["score"], reverse=True)
+    for i, (lo, label) in enumerate(bands):
+        hi = bands[i - 1][0] if i else 999
+        n = len([r for r in rest if lo <= r["score"] < hi])
+        dist.append((label, n))
+
+    industries = sorted({r["industry"] for r in rows})
+
+    def opt(v, t, cur):
+        return f'<option value="{v}"{" selected" if str(cur) == str(v) else ""}>{t}</option>'
+
+    controls = f"""
+<form method="get" class="controls">
+  <input type="hidden" name="mode" value="{mode}">
+  <div class="fields">
+    <div><label>排序</label><select name="sort" onchange="this.form.submit()">
+      {opt('score','綜合分數',sort_key)}{opt('pct','當日漲幅',sort_key)}
+      {opt('yoy','營收年增',sort_key)}{opt('pe','本益比（低→高）',sort_key)}
+      {opt('streak','法人連買天數',sort_key)}{opt('turnover','成交金額',sort_key)}
+    </select></div>
+    <div><label>顯示筆數</label><select name="limit" onchange="this.form.submit()">
+      {opt(10,'10 筆',limit)}{opt(20,'20 筆',limit)}{opt(50,'50 筆',limit)}
+    </select></div>
+    <div><label>最低分數</label><select name="min_score" onchange="this.form.submit()">
+      {opt('','不限',min_score)}{opt(60,'60 以上',min_score)}
+      {opt(70,'70 以上',min_score)}{opt(80,'80 以上',min_score)}
+    </select></div>
+    <div><label>本益比上限</label><select name="max_pe" onchange="this.form.submit()">
+      {opt('','不限',max_pe)}{opt(15,'15 倍',max_pe)}{opt(20,'20 倍',max_pe)}
+      {opt(30,'30 倍',max_pe)}{opt(50,'50 倍',max_pe)}
+    </select></div>
+    <div><label>產業</label><select name="industry" onchange="this.form.submit()">
+      {opt('','全部',industry_filter)}
+      {''.join(opt(i, i, industry_filter) for i in industries)}
+    </select></div>
+  </div>
+</form>"""
+
+    dist_html = "".join(
+        f'<span class="dist-item"><b>{n}</b> 檔 {label}</span>' for label, n in dist)
+
+    body = f"""
+<div class="tabs">
+  <a href="/web/screener?mode=blackhorse"
+     class="{'on' if mode != 'radar' else ''}">黑馬</a>
+  <a href="/web/screener?mode=radar"
+     class="{'on' if mode == 'radar' else ''}">雷達</a>
+</div>
+<div class="mode-note">{
+  '近 10 日累計買超前 120 名，依營收成長、估值、產業動能、法人連續性綜合評分。'
+  if mode != 'radar' else
+  '當日法人買超且漲幅 1.5% 以上，著重帶量突破與位階。'}</div>
+
+<div class="dist">{dist_html}<span class="dist-note">共 {len(rows)} 檔符合條件</span></div>
+{controls}
+
+<div class="rows">
+{''.join(f'''
+<div class="row">
+  <div><span class="name">{r['name']}</span><span class="code">{r['code']}</span>
+    {f'<span class="badge">{r["breakout"]}</span>' if r['breakout'] else ''}</div>
+  <div class="price num">{r['score']}<span class="sub">分</span></div>
+  <div class="meta">
+    <span><em>價</em> <span class="num">{r['close']:,.2f}</span> {fmt_pct(r['pct'])}</span>
+    <span><em>產業</em> {r['industry']}</span>
+    <span><em>營收年增</em> {f"{r['cum_yoy']:+.1f}%" if r['cum_yoy'] is not None else '—'}</span>
+    <span><em>PE</em> {f"{r['pe']:.1f}" if r['pe'] else '—'}</span>
+    <span><em>PEG</em> {f"{r['peg']:.2f}" if r['peg'] else '—'}</span>
+    <span><em>連買</em> {r['streak']} 日</span>
+    <span><em>金額</em> <span class="num">{r['turnover']:.1f}</span> 億</span>
+  </div>
+  <div class="chg sub">營收{r['rev']}·估值{r['val']}·產業{r['mom']}·籌碼{r['streak_score']}·技術{r['chip']}</div>
+  <div class="bar"><div style="width:{r['score']}%"></div></div>
+</div>''' for r in shown) if shown else '<div class="empty">沒有符合條件的標的，試著放寬篩選。</div>'}
+</div>"""
+    return render_page("選股台", body, nav_active="screener")
 
 
 # --- LINE Bot 訊息接收與路由分派 ---
