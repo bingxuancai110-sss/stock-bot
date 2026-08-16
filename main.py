@@ -2281,6 +2281,67 @@ def sync_industry():
     ), 200
 
 
+@app.route("/check-source", methods=["POST", "GET"])
+def check_source():
+    """
+    診斷單一代號在各資料源的狀況。
+    用法：/check-source?token=...&code=7781
+    會顯示資料庫裡存了什麼，以及各來源的原始欄位名稱——
+    欄位名稱各市場不一致，抓不到時多半是名稱對不上而不是沒資料。
+    """
+    if request.args.get("token") != os.environ.get("CRON_SECRET"):
+        abort(403)
+    code = normalize_code(request.args.get("code", "")) or "7781"
+    lines = [f"診斷代號：{code}", "=" * 30, ""]
+
+    # 資料庫
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT code, name, industry, market FROM stock_info WHERE code = %s",
+                    (code,))
+        row = cur.fetchone()
+        cur.execute("SELECT COUNT(*), COUNT(name) FROM stock_info")
+        total, named = cur.fetchone()
+        cur.execute("SELECT market, COUNT(*) FROM stock_info GROUP BY market")
+        by_market = cur.fetchall()
+        cur.close()
+        lines.append(f"[stock_info] 總筆數 {total}，有名稱 {named}")
+        lines.append(f"  各市場：{dict(by_market)}")
+        lines.append(f"  本代號：{row if row else '不存在'}")
+    except Exception as e:
+        lines.append(f"[stock_info] 查詢失敗：{e}")
+    finally:
+        release_db_connection(conn)
+
+    lines.append("")
+    sources = [
+        ("上市基本資料", f"{TWSE_BASE}/opendata/t187ap03_L", ("公司代號",)),
+        ("上櫃基本資料", f"{TPEX_BASE}/mopsfin_t187ap03_O", ("公司代號", "SecuritiesCompanyCode")),
+        ("興櫃基本資料", f"{TPEX_BASE}/mopsfin_t187ap03_R", ("公司代號", "SecuritiesCompanyCode")),
+    ]
+    for label, url, keys in sources:
+        rows = _get_json(url)
+        if not rows:
+            lines.append(f"[{label}] 抓取失敗或無資料")
+            lines.append("")
+            continue
+        lines.append(f"[{label}] 共 {len(rows)} 筆")
+        lines.append(f"  欄位：{list(rows[0].keys())[:12]}")
+        hit = None
+        for r in rows:
+            for k in keys:
+                if str(r.get(k, "")).strip() == code:
+                    hit = r
+                    break
+            if hit:
+                break
+        lines.append(f"  找到本代號：{hit if hit else '否'}")
+        lines.append("")
+
+    return "\n".join(str(x) for x in lines), 200
+
+
 @app.route("/check-industry", methods=["POST", "GET"])
 def check_industry():
     """列出每個產業別代碼＋對照名稱＋3家範例公司，用來人工確認對照表正確。"""
