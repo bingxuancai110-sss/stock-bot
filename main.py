@@ -553,6 +553,50 @@ def delete_position(user_id, pos_id):
         release_db_connection(conn)
 
 
+def sell_position(user_id, pos_id, sell_shares):
+    """
+    賣出持股。賣出股數等於整筆數量時直接刪除該筆；
+    小於時只減少股數，每股成本不變──賣出不影響剩餘股份的成本基礎。
+    這裡只更新目前持股，不記錄已實現損益歷史（那是更大的「交易紀錄」功能，
+    README 待辦第 7 項）。
+    回傳 (成功與否, 錯誤訊息或 None)
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT shares FROM positions WHERE id = %s AND user_id = %s",
+            (int(pos_id), str(user_id).strip()))
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            return False, "找不到這筆持股"
+        current_shares = row[0]
+        if sell_shares <= 0:
+            cursor.close()
+            return False, "賣出股數必須大於 0"
+        if sell_shares > current_shares:
+            cursor.close()
+            return False, f"賣出股數不能超過持有股數（{current_shares:,} 股）"
+
+        if sell_shares == current_shares:
+            cursor.execute("DELETE FROM positions WHERE id = %s AND user_id = %s",
+                           (int(pos_id), str(user_id).strip()))
+        else:
+            cursor.execute(
+                "UPDATE positions SET shares = shares - %s WHERE id = %s AND user_id = %s",
+                (sell_shares, int(pos_id), str(user_id).strip()))
+        conn.commit()
+        cursor.close()
+        return True, None
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 賣出持股失敗: {e}")
+        return False, "系統錯誤，請稍後再試"
+    finally:
+        release_db_connection(conn)
+
+
 
 def normalize_code(raw):
     """
@@ -2895,6 +2939,14 @@ button:hover{background:#000}
   padding:3px 10px;margin:0;border:1px solid var(--rule);border-radius:2px;
   cursor:pointer;line-height:1.4}
 .del:hover{background:var(--up);color:#FFF;border-color:var(--up)}
+.sell{background:#FFF;color:var(--ink-soft);font-size:11.5px;
+  padding:3px 10px;margin:0;border:1px solid var(--rule);border-radius:2px;
+  cursor:pointer;line-height:1.4}
+.sell:hover{background:var(--brass);color:#FFF;border-color:var(--brass)}
+.qty-input{width:64px;padding:4px 6px;font-size:12px;border:1px solid var(--rule);
+  border-radius:2px;font-family:inherit;color:var(--ink)}
+.disclosure{margin-top:10px}
+.disclosure summary{color:var(--brass);cursor:pointer;font-size:12.5px}
 .lots{grid-column:1/-1;margin-top:6px;font-size:12px}
 .lots summary{color:var(--brass);cursor:pointer;font-size:11.5px}
 .lot{padding:7px 0 7px 12px;color:var(--ink-soft);
@@ -3055,6 +3107,13 @@ def web_positions(uid):
         if action == "delete":
             delete_position(uid, request.form.get("id"))
             msg = "已刪除。"
+        elif action == "sell":
+            try:
+                sell_shares = int(request.form.get("sell_shares", "0"))
+            except ValueError:
+                sell_shares = 0
+            ok, err = sell_position(uid, request.form.get("id"), sell_shares)
+            msg = "已記錄賣出。" if ok else (err or "賣出失敗，請稍後再試。")
         else:
             code = normalize_code(request.form.get("code", ""))
             try:
@@ -3073,25 +3132,36 @@ def web_positions(uid):
     inst = fetch_institutional_data() or {}
     fee_disc, min_fee = get_fee_settings(get_profile(uid))
 
+    def sell_form(lot_id, max_shares):
+        return (f'<form method="post" style="display:inline-flex;align-items:center;'
+                f'gap:6px;margin-right:8px">'
+                f'<input type="hidden" name="action" value="sell">'
+                f'<input type="hidden" name="id" value="{lot_id}">'
+                f'<input class="qty-input" type="number" name="sell_shares" '
+                f'min="1" max="{max_shares}" placeholder="股數">'
+                f'<button class="sell" type="submit">賣出</button></form>')
+
+    def delete_form(lot_id, name):
+        return (f'<form method="post" style="display:inline;margin:0" '
+                f'onsubmit="return confirm(\'確定刪除 {name}？\')">'
+                f'<input type="hidden" name="action" value="delete">'
+                f'<input type="hidden" name="id" value="{lot_id}">'
+                f'<button class="del" type="submit">刪除</button></form>')
+
     def lots_html(p, name):
-        """單筆就一顆刪除鍵；分批買進則收在 details 裡，可個別刪除。"""
+        """單筆就賣出鍵＋刪除鍵；分批買進則收在 details 裡，可個別賣出或刪除。"""
         lots = p.get("lots", [])
         if len(lots) <= 1:
             lid = lots[0]["id"] if lots else 0
-            return (f'<form method="post" style="display:inline;margin:0" '
-                    f'onsubmit="return confirm(\'確定刪除 {name}？\')">'
-                    f'<input type="hidden" name="action" value="delete">'
-                    f'<input type="hidden" name="id" value="{lid}">'
-                    f'<button class="del" type="submit">刪除</button></form>')
+            max_shares = lots[0]["shares"] if lots else 0
+            return sell_form(lid, max_shares) + delete_form(lid, name)
         items = "".join(
             f'<div class="lot">'
             f'<span class="num">{l["shares"]:,}</span> 股　'
             f'成本 <span class="num">{l["cost"]:,.2f}</span>　'
             f'{l["bought_on"].strftime("%Y/%m/%d") if l["bought_on"] else "未填日期"}'
-            f'<form method="post" style="display:inline;margin-left:10px">'
-            f'<input type="hidden" name="action" value="delete">'
-            f'<input type="hidden" name="id" value="{l["id"]}">'
-            f'<button class="del" type="submit">刪除</button></form>'
+            f'<span style="margin-left:10px">{sell_form(l["id"], l["shares"])}'
+            f'{delete_form(l["id"], name)}</span>'
             f'</div>' for l in lots)
         return (f'<details class="lots"><summary>分 {len(lots)} 筆買進</summary>'
                 f'{items}</details>')
@@ -3282,6 +3352,17 @@ def save_profile(user_id, data):
         release_db_connection(conn)
 
 
+def update_profile(user_id, updates):
+    """
+    只更新傳入的欄位，其餘沿用現有設定。
+    問卷（組合分析頁）跟門檻／手續費（設定頁）現在是兩個不同表單各自送出，
+    不這樣做的話後送出的表單會把先送出那邊的值覆蓋成空白。
+    """
+    current = get_profile(user_id)
+    merged = {**current, **updates}
+    return save_profile(user_id, merged)
+
+
 # ── 交易成本 ──
 # 台股：手續費 0.1425%（買賣各一次，券商多有折扣，且通常有最低收費），
 # 證交稅賣出時收，一般股票 0.3%、ETF 0.1%。
@@ -3295,6 +3376,16 @@ DEFAULT_MIN_FEE = 20
 def is_etf(code):
     """台股 ETF 代號以 00 開頭；主動式 ETF 如 00981A 也屬之。"""
     return str(code).startswith("00")
+
+
+def is_active_etf(code):
+    """
+    主動式ETF代號末碼為英文字母（如 00981A 股票型、00982D 債券型）。
+    由經理人主動選股，不是追蹤指數的一籃子部位，
+    風險特性更接近集中持股，不該被當成「已分散」看待。
+    """
+    code = str(code).strip()
+    return is_etf(code) and code[-1:].isalpha()
 
 
 def broker_fee(amount, discount=DEFAULT_FEE_DISCOUNT, min_fee=DEFAULT_MIN_FEE):
@@ -3361,42 +3452,94 @@ def get_thresholds(profile):
     }
 
 
+def radio_group(profile, key, label, required, options):
+    opts = "".join(
+        f'<label class="opt"><input type="radio" name="{key}" value="{o}"'
+        f'{" checked" if profile.get(key) == o else ""}'
+        f'{" required" if required else ""}> {o}</label>'
+        for o in options
+    )
+    req = '<span class="req">必填</span>' if required else '<span class="opt-tag">可略過</span>'
+    return f'<div class="q"><div class="q-title">{label} {req}</div>{opts}</div>'
+
+
+def render_risk_card(profile, msg=None):
+    """
+    風險輪廓卡片，嵌在組合分析頁最上方而非獨立頁面——
+    填了答案要馬上看到下面的提醒跟著變，兩者在同一頁使用者才看得出關聯。
+    未填完必填題時顯示完整表單；填完後收成摘要＋可展開編輯。
+    """
+    required_fields = [f for f in PROFILE_FIELDS if f[2]]
+    optional_fields = [f for f in PROFILE_FIELDS if not f[2]]
+    complete = all(profile.get(k) for k, _, req, _ in PROFILE_FIELDS if req)
+    msg_html = f'<div class="msg">{msg}</div>' if msg else ""
+    required_html = "".join(radio_group(profile, k, l, r, o) for k, l, r, o in required_fields)
+    optional_html = "".join(radio_group(profile, k, l, r, o) for k, l, r, o in optional_fields)
+
+    if complete:
+        pf_items = [
+            ("資金年期", profile.get("horizon")),
+            ("資產比重", profile.get("asset_share")),
+            ("收入型態", profile.get("income_type")),
+            ("回檔經驗", profile.get("drawdown_experience") or "未填"),
+            ("看盤頻率", profile.get("check_frequency") or "未填"),
+            ("平均持有", profile.get("holding_period") or "未填"),
+            ("其他部位", profile.get("other_assets") or "未填"),
+        ]
+        summary_html = "".join(
+            f'<div class="pf"><span class="pf-k">{k}</span>'
+            f'<span class="pf-v{"" if v != "未填" else " pf-empty"}">{v}</span></div>'
+            for k, v in pf_items)
+        return f"""
+<div class="section-head"><h2>你的風險輪廓</h2>
+  <span class="section-note">下方分析依此判讀</span></div>
+{msg_html}
+<div class="profile-grid">{summary_html}</div>
+<details class="disclosure">
+  <summary>編輯風險輪廓</summary>
+  <form method="post" action="/web/portfolio" style="margin-top:10px">
+    {required_html}
+    {optional_html}
+    <button type="submit">儲存</button>
+  </form>
+</details>"""
+
+    return f"""
+<div class="section-head"><h2>你的風險輪廓</h2>
+  <span class="section-note">4 題必填，決定下方提醒怎麼判讀</span></div>
+{msg_html}
+<div class="hint">
+  這些答案不會改變數據本身，而是決定「什麼該提醒你」。
+  例如同樣 60% 集中在半導體，資金一年內要用、且這是你全部身家的人，
+  會看到比較強的警示；十年不動用的人則會看到不同的說明。
+</div>
+<form method="post" action="/web/portfolio">
+  {required_html}
+  <details class="disclosure">
+    <summary>其餘題目（可略過）</summary>
+    <div style="margin-top:8px">{optional_html}</div>
+  </details>
+  <button type="submit" style="margin-top:14px">儲存</button>
+</form>"""
+
+
 @app.route("/web/settings", methods=["GET", "POST"])
 @web_login_required
 def web_settings(uid):
     msg = ""
     if request.method == "POST":
-        data = {k: (request.form.get(k) or None) for k, _, _, _ in PROFILE_FIELDS}
+        updates = {}
         for k in ("loss_alert_pct", "position_alert_pct", "min_fee"):
             v = request.form.get(k)
-            data[k] = int(v) if v and v.isdigit() else None
+            updates[k] = int(v) if v and v.isdigit() else None
         try:
-            data["fee_discount"] = float(request.form.get("fee_discount") or 0) or None
+            updates["fee_discount"] = float(request.form.get("fee_discount") or 0) or None
         except ValueError:
-            data["fee_discount"] = None
-        if all(data.get(k) for k, _, req, _ in PROFILE_FIELDS if req):
-            msg = ("設定已儲存。" if save_profile(uid, data)
-                   else "儲存失敗，請稍後再試或回報問題。")
-        else:
-            msg = "前四題為必填，請確認都已選擇。"
+            updates["fee_discount"] = None
+        msg = "設定已儲存。" if update_profile(uid, updates) else "儲存失敗，請稍後再試或回報問題。"
 
     p = get_profile(uid)
     th = get_thresholds(p)
-
-    def radio_group(key, label, required, options):
-        opts = "".join(
-            f'<label class="opt"><input type="radio" name="{key}" value="{o}"'
-            f'{" checked" if p.get(key) == o else ""}'
-            f'{" required" if required else ""}> {o}</label>'
-            for o in options
-        )
-        req = '<span class="req">必填</span>' if required else '<span class="opt-tag">可略過</span>'
-        return f'<div class="q"><div class="q-title">{label} {req}</div>{opts}</div>'
-
-    required_html = "".join(
-        radio_group(k, l, r, o) for k, l, r, o in PROFILE_FIELDS if r)
-    optional_html = "".join(
-        radio_group(k, l, r, o) for k, l, r, o in PROFILE_FIELDS if not r)
 
     sel_fee = "".join(
         f'<option value="{v}"{" selected" if p.get("fee_discount") and abs(p["fee_discount"] - v) < 1e-9 else ""}>{t}</option>'
@@ -3416,18 +3559,8 @@ def web_settings(uid):
 {f'<div class="msg">{msg}</div>' if msg else ''}
 <form method="post">
 
-<div class="section-head"><h2>基本設定</h2>
-  <span class="section-note">四題必填</span></div>
-<div class="hint">
-  這些答案不會改變數據本身，而是決定「什麼該提醒你」。<br>
-  例如同樣 60% 集中在半導體，資金一年內要用、
-  且這是你全部身家的人，會看到比較強的警示；
-  十年不動用的人則會看到不同的說明。
-</div>
-{required_html}
-
 <div class="section-head"><h2>提醒門檻</h2>
-  <span class="section-note">分析頁會依此判斷</span></div>
+  <span class="section-note">組合分析頁會依此判斷</span></div>
 <div class="fields" style="margin-bottom:6px">
   <div><label>帳面虧損達多少時提醒</label>
     <select name="loss_alert_pct">
@@ -3463,12 +3596,13 @@ def web_settings(uid):
   折扣與最低收費各家不同，設成跟你券商一致，淨損益才會對得起來。
 </div>
 
-<div class="section-head"><h2>進階設定</h2>
-  <span class="section-note">可略過，填了分析會更貼近你</span></div>
-{optional_html}
-
 <button type="submit">儲存設定</button>
-</form>"""
+</form>
+
+<div class="hint" style="margin-top:22px">
+  想調整你的風險輪廓（資金年期、資產比重等問卷），
+  請到<a href="/web/portfolio" style="color:var(--brass)">組合分析</a>頁最上方編輯。
+</div>"""
     return render_page("設定", body, nav_active="settings")
 
 
@@ -3537,8 +3671,9 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
     hold = profile.get("holding_period")
     others = profile.get("other_assets")
     top_w = top["weight"] if top else 0
-    # 判斷「集中風險」時要排除 ETF：ETF 本身就是一籃子股票，
+    # 判斷「集中風險」時要排除ETF：ETF本身就是一籃子股票，
     # 它是分散的來源而非集中的來源，把它當成單一族群會得出相反的結論。
+    # 主動式ETF例外——它由經理人選股，不是一籃子部位，仍要算進集中度判斷。
     real_inds = [x for x in (ordered_industries or [])
                  if not x[0].startswith("ETF") and x[0] != "未分類"]
     top_ind = real_inds[0] if real_inds else None
@@ -3613,11 +3748,11 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
                     "你未指定這筆錢的使用時點，因此沒有年期相關的提醒。"
                     "若有明確用途時點，集中度的判讀會不一樣。"))
 
-    # ETF 佔比高：這是分散，不是集中，該說明而不是警示
+    # 被動ETF佔比高：這是分散，不是集中，該說明而不是警示
     if etf_weight >= 25:
         out.append(("ETF 佔比",
-                    f"ETF 佔組合 {etf_weight:.0f}%。這部分本身已分散於一籃子標的，"
-                    f"因此上述集中度是以個股部分計算，未把 ETF 視為單一族群。"))
+                    f"被動ETF佔組合 {etf_weight:.0f}%。這部分本身已分散於一籃子標的，"
+                    f"因此上述集中度是以個股與主動式ETF計算，未把被動ETF視為單一族群。"))
 
     # 看盤頻率高 × 已有虧損部位
     losers = [h for h in holdings if h["pl"] is not None and h["pl"] < 0]
@@ -3629,17 +3764,27 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
     return out
 
 
-@app.route("/web/portfolio")
+@app.route("/web/portfolio", methods=["GET", "POST"])
 @web_login_required
 def web_portfolio(uid):
-    positions = merge_positions(get_positions(uid))
-    if not positions:
-        return render_page("組合分析", """
-<div class="empty">還沒有持股紀錄。<br><br>
-<a href="/web/positions" style="color:var(--brass)">先去新增持股 →</a></div>""",
-                           nav_active="portfolio")
+    msg = ""
+    if request.method == "POST":
+        updates = {k: (request.form.get(k) or None) for k, _, _, _ in PROFILE_FIELDS}
+        if all(updates.get(k) for k, _, req, _ in PROFILE_FIELDS if req):
+            msg = "風險輪廓已儲存。" if update_profile(uid, updates) else "儲存失敗，請稍後再試。"
+        else:
+            msg = "前四題為必填，請確認都已選擇。"
 
     profile = get_profile(uid)
+    risk_card = render_risk_card(profile, msg)
+
+    positions = merge_positions(get_positions(uid))
+    if not positions:
+        body = risk_card + """
+<div class="empty">還沒有持股紀錄。<br><br>
+<a href="/web/positions" style="color:var(--brass)">先去新增持股 →</a></div>"""
+        return render_page("組合分析", body, nav_active="portfolio")
+
     th = get_thresholds(profile)
     fee_disc, min_fee = get_fee_settings(profile)
     inst = fetch_institutional_data() or {}
@@ -3666,8 +3811,12 @@ def web_portfolio(uid):
         ind = ind_map.get(p["code"])
         if ind:
             label = industry_name(ind)
+        elif is_active_etf(p["code"]):
+            # 主動式ETF由經理人選股，不是追蹤指數的一籃子部位，
+            # 風險特性接近集中持股，不能跟被動ETF一樣當成「已分散」
+            label = "主動式ETF"
         elif is_etf(p["code"]):
-            label = "ETF（一籃子）"   # ETF 本身已分散，跟「查不到產業」意義不同
+            label = "ETF（一籃子）"   # 被動ETF本身已分散，跟「查不到產業」意義不同
         else:
             label = "未分類"
         by_industry[label] = by_industry.get(label, 0) + weight
@@ -3716,8 +3865,15 @@ def web_portfolio(uid):
                        f"{top['name']}佔 {top['weight']:.1f}%，超過你設定的 "
                        f"{th['position']}%{ratio}。單一事件對組合的影響顯著。"))
 
+    active_etf_weight = next((w for name, w in ordered if name == "主動式ETF"), 0)
+    if active_etf_weight >= 20:
+        alerts.append(("主動式ETF",
+                       f"主動式ETF佔組合 {active_etf_weight:.1f}%。這類產品由經理人主動選股，"
+                       f"不是追蹤指數的一籃子部位，集中度與波動風險可能接近持有單一策略，"
+                       f"不宜視為分散配置。"))
+
     real_ordered = [x for x in ordered
-                    if not x[0].startswith("ETF") and x[0] != "未分類"]
+                    if not x[0].startswith("ETF") and x[0] != "未分類" and x[0] != "主動式ETF"]
     if real_ordered and real_ordered[0][1] >= 30:
         drop = 25
         impact = real_ordered[0][1] / 100 * drop
@@ -3746,32 +3902,7 @@ def web_portfolio(uid):
                        f"個股部分加權營收年增率 {w_yoy:+.1f}%，加權本益比 {w_pe:.1f} 倍"
                        f"（涵蓋組合的 {covered:.0f}%，ETF 無本益比故未計入）。"))
 
-    if not profile:
-        alerts.append(("尚未設定",
-                       "你還沒填寫問卷，目前使用預設門檻。"
-                       "填寫後提醒會更貼近你的狀況。"))
-
     pl_total = ((total_value - total_cost) / total_cost * 100) if total_cost else None
-    # 把目前生效的設定攤開來，否則使用者填完問卷看不出差在哪
-    pf_items = [
-        ("虧損提醒", f"{th['loss']}%" + ("（預設）" if not profile.get("loss_alert_pct") else "")),
-        ("單一持股", f"{th['position']}%" + ("（預設）" if not profile.get("position_alert_pct") else "")),
-        ("資金年期", profile.get("horizon") or "未填"),
-        ("資產比重", profile.get("asset_share") or "未填"),
-        ("收入型態", profile.get("income_type") or "未填"),
-        ("回檔經驗", profile.get("drawdown_experience") or "未填"),
-        ("看盤頻率", profile.get("check_frequency") or "未填"),
-        ("平均持有", profile.get("holding_period") or "未填"),
-        ("其他部位", profile.get("other_assets") or "未填"),
-    ]
-    profile_html = "".join(
-        f'<div class="pf"><span class="pf-k">{k}</span>'
-        f'<span class="pf-v{"" if v != "未填" else " pf-empty"}">{v}</span></div>'
-        for k, v in pf_items)
-    if not profile:
-        profile_html += ('<div class="pf" style="grid-column:1/-1">'
-                         '<a href="/web/settings" style="color:var(--brass)">'
-                         '尚未填寫問卷，前往設定 →</a></div>')
 
     corr_txt = (f"兩兩相關係數平均 <b>{avg_corr:.2f}</b>，"
                 f"實際分散效果約等於 <b>{eff:.1f} 檔</b>。"
@@ -3779,6 +3910,7 @@ def web_portfolio(uid):
                 "持股數不足或資料不齊，尚無法計算相關係數。")
 
     body = f"""
+{risk_card}
 <div class="totals">
   <div><div class="total-label">總市值</div>
        <div class="total-value num">{total_value:,.0f}</div>
@@ -3816,12 +3948,8 @@ def web_portfolio(uid):
 </div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}
 </div>
 
-<div class="section-head"><h2>你的設定</h2>
-  <span class="section-note">下方提醒依此判斷</span></div>
-<div class="profile-grid">{profile_html}</div>
-
 <div class="section-head"><h2>值得注意</h2>
-  <span class="section-note">依你設定的門檻</span></div>
+  <span class="section-note"><a href="/web/settings" style="color:var(--ink-soft)">調整門檻 →</a></span></div>
 <div class="rows">
 {''.join(f'<div class="alert"><span class="tag">{tag}</span><span>{txt}</span></div>'
          for tag, txt in alerts) if alerts
