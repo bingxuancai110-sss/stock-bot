@@ -249,6 +249,44 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_user
             ON portfolio_snapshots (user_id, snapshot_date)
         ''')
+        # 自選股每日評分快照。分數本身每次查都算得出來，但「昨天幾分」算不出來——
+        # 沒有這張表就永遠只能顯示靜態分數，看不出誰在變強、誰在轉弱，
+        # 而變化往往比絕對分數更有訊號價值。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS watchlist_scores (
+                user_id TEXT,
+                code TEXT,
+                snapshot_date DATE,
+                total INTEGER,
+                chip INTEGER,
+                position INTEGER,
+                revenue INTEGER,
+                valuation INTEGER,
+                close REAL,
+                PRIMARY KEY (user_id, code, snapshot_date)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_watchlist_scores_lookup
+            ON watchlist_scores (user_id, code, snapshot_date DESC)
+        ''')
+        # 產業動能排名的歷史。get_industry_momentum() 每次都算得出當期排名，
+        # 但「這個族群是正在變強還是變弱」需要跟過去比，那要自己累積。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS industry_momentum_history (
+                industry TEXT,
+                snapshot_date DATE,
+                p75 REAL,
+                median REAL,
+                rank INTEGER,
+                count INTEGER,
+                PRIMARY KEY (industry, snapshot_date)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_industry_momentum_date
+            ON industry_momentum_history (snapshot_date DESC)
+        ''')
         conn.commit()
         cursor.close()
     except Exception as e:
@@ -707,7 +745,7 @@ def sell_position(user_id, pos_id, sell_shares,
     已實現損益 =（賣出股數 × 賣價 − 手續費 − 證交稅）− 賣出股數 × 成本價
     成本價沿用券商口徑（已含買進手續費），所以這裡不再另外扣買進費用。
 
-    回傳 (成功與否, 錯誤訊息或 None)
+    回傳 (成功與否, 錯誤訊息或 None, 這筆的損益摘要或 None)
     """
     conn = get_db_connection()
     try:
@@ -719,14 +757,14 @@ def sell_position(user_id, pos_id, sell_shares,
         row = cursor.fetchone()
         if not row:
             cursor.close()
-            return False, "找不到這筆持股"
+            return False, "找不到這筆持股", None
         code, current_shares, lot_cost, bought_on = row
         if sell_shares <= 0:
             cursor.close()
-            return False, "賣出股數必須大於 0"
+            return False, "賣出股數必須大於 0", None
         if sell_shares > current_shares:
             cursor.close()
-            return False, f"賣出股數不能超過持有股數（{current_shares:,} 股）"
+            return False, f"賣出股數不能超過持有股數（{current_shares:,} 股）", None
 
         if sell_shares == current_shares:
             cursor.execute("DELETE FROM positions WHERE id = %s AND user_id = %s",
@@ -740,7 +778,7 @@ def sell_position(user_id, pos_id, sell_shares,
     except Exception as e:
         conn.rollback()
         print(f"❌ 賣出持股失敗: {e}")
-        return False, "系統錯誤，請稍後再試"
+        return False, "系統錯誤，請稍後再試", None
     finally:
         release_db_connection(conn)
 
@@ -749,7 +787,7 @@ def sell_position(user_id, pos_id, sell_shares,
         price_data = get_realtime_stock(code)
         sell_price = price_data["close"] if price_data else None
     if sell_price is None:
-        return True, None
+        return True, None, None
 
     gross = sell_shares * sell_price
     if fee is None:
@@ -763,7 +801,12 @@ def sell_position(user_id, pos_id, sell_shares,
 
     record_realized_trade(user_id, code, sell_shares, lot_cost, sell_price,
                           realized_pl, realized_pct, bought_on, fee, tax)
-    return True, None
+    return True, None, {
+        "code": code, "shares": sell_shares, "sell_price": sell_price,
+        "cost": lot_cost, "pl": realized_pl, "pct": realized_pct,
+        "fee": fee, "tax": tax,
+        "held_days": ((date.today() - bought_on).days if bought_on else None),
+    }
 
 
 def record_realized_trade(user_id, code, shares, buy_cost, sell_price,
@@ -890,6 +933,22 @@ def get_all_position_user_ids():
         return ids
     except Exception as e:
         print(f"❌ 讀取持股使用者清單失敗: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def get_all_watchlist_user_ids():
+    """回傳有自選股的所有 user_id，供每日評分快照 cron 逐一處理。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT user_id FROM watchlists")
+        ids = [r[0] for r in cursor.fetchall()]
+        cursor.close()
+        return ids
+    except Exception as e:
+        print(f"❌ 讀取自選股使用者清單失敗: {e}")
         return []
     finally:
         release_db_connection(conn)
@@ -1803,6 +1862,143 @@ def get_industry_momentum(revenue_data, industry_map):
     return stats
 
 
+def save_industry_momentum(stats):
+    """
+    存下這一期的產業動能排名。營收一個月才更新一期，所以這張表長得很慢，
+    但沒有它就只能看到「現在誰最強」，看不到「誰正在變強」——
+    後者才是抓題材轉換的依據。
+    """
+    if not stats:
+        return
+    rows = [(ind, s.get("p75"), s.get("median"), s.get("rank"), s.get("count"))
+            for ind, s in stats.items()]
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        execute_values(
+            cursor,
+            """
+            INSERT INTO industry_momentum_history
+                (industry, snapshot_date, p75, median, rank, count)
+            VALUES %s
+            ON CONFLICT (industry, snapshot_date) DO UPDATE SET
+                p75 = EXCLUDED.p75, median = EXCLUDED.median,
+                rank = EXCLUDED.rank, count = EXCLUDED.count
+            """,
+            rows,
+            template="(%s, CURRENT_DATE, %s, %s, %s, %s)",
+            page_size=200,
+        )
+        conn.commit()
+        cursor.close()
+        print(f"💾 已存入產業動能排名，共 {len(rows)} 個產業")
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 寫入產業動能排名失敗: {e}")
+    finally:
+        release_db_connection(conn)
+
+
+def get_industry_rotation(current_stats, days_back=45):
+    """
+    產業輪動：把目前排名跟一段時間前比，找出正在變強與正在轉弱的族群。
+
+    比的是「排名」而不是成長率本身——全市場營收一起好轉時，
+    每個產業的年增率都會上升，那反映的是景氣不是輪動；
+    排名是相對的，只有真的贏過其他族群才會往前，這才是資金會流去的地方。
+
+    days_back 預設 45 天：月營收一個月一期，跨度要夠才抓得到上一期。
+    回傳 (變強清單, 轉弱清單)，各為 [(產業名, 目前名次, 名次變化, p75)]
+    """
+    if not current_stats:
+        return [], []
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT ON (industry) industry, rank, snapshot_date
+            FROM industry_momentum_history
+            WHERE snapshot_date < CURRENT_DATE
+              AND snapshot_date >= CURRENT_DATE - %s
+            ORDER BY industry, snapshot_date ASC
+            """,
+            (days_back,),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+    except Exception as e:
+        print(f"❌ 讀取產業動能歷史失敗: {e}")
+        return [], []
+    finally:
+        release_db_connection(conn)
+
+    old_rank = {r[0]: r[1] for r in rows if r[1] is not None}
+    if not old_rank:
+        return [], []
+
+    moves = []
+    for ind, s in current_stats.items():
+        cur_rank = s.get("rank")
+        prev = old_rank.get(ind)
+        if cur_rank is None or prev is None:
+            continue
+        delta = prev - cur_rank          # 正數代表名次往前（變強）
+        if abs(delta) < 3:               # 一兩名的變動是雜訊，不值得列
+            continue
+        moves.append((industry_name(ind), cur_rank, delta, s.get("p75")))
+
+    rising = sorted([m for m in moves if m[2] > 0], key=lambda x: -x[2])[:5]
+    falling = sorted([m for m in moves if m[2] < 0], key=lambda x: x[2])[:5]
+    return rising, falling
+
+
+def build_rotation_report():
+    """產業輪動報告。歷史不足時老實說，不硬生成看起來有內容的東西。"""
+    revenue = fetch_monthly_revenue() or {}
+    ind_map = get_industry_map() or {}
+    stats = get_industry_momentum(revenue, ind_map)
+    if not stats:
+        return "❌ 目前無法取得月營收或產業別資料，請稍後再試。"
+
+    rising, falling = get_industry_rotation(stats)
+
+    lines = ["🔄 產業輪動", "─" * 14]
+
+    if not rising and not falling:
+        top = sorted(stats.items(), key=lambda x: x[1]["rank"])[:8]
+        lines.append("尚無足夠的歷史可比較排名變化。")
+        lines.append("（每期月營收公布後累積一次，需要兩期以上）\n")
+        lines.append("目前族群動能排名：")
+        for ind, s in top:
+            lines.append(f"{s['rank']:>2}. {industry_name(ind)}　"
+                         f"領先群 {s['p75']:+.0f}%（{s['count']} 家）")
+        lines.append("\n※ 看的是各產業「前 25% 公司」的累計營收年增率")
+        return "\n".join(lines)
+
+    if rising:
+        lines.append("📈 排名往前（資金題材可能正在轉入）")
+        for name, rank, delta, p75 in rising:
+            lines.append(f"・{name}　第 {rank} 名（↑{delta}）"
+                         + (f"　領先群 {p75:+.0f}%" if p75 is not None else ""))
+        lines.append("")
+
+    if falling:
+        lines.append("📉 排名退後（動能相對轉弱）")
+        for name, rank, delta, p75 in falling:
+            lines.append(f"・{name}　第 {rank} 名（↓{abs(delta)}）"
+                         + (f"　領先群 {p75:+.0f}%" if p75 is not None else ""))
+        lines.append("")
+
+    lines.append("─" * 14)
+    lines.append("排名依各產業「前 25% 公司」的累計營收年增率。")
+    lines.append("比的是相對名次而非成長率本身——全市場一起好轉時")
+    lines.append("每個產業的年增率都會上升，那是景氣不是輪動。")
+    lines.append("※ 數據歸納，非投資建議")
+    return "\n".join(lines)
+
+
 def score_from_industry_momentum(ind_stats):
     """
     產業動能分數（0-20）。看的是「這檔股票所在的產業，領先群跑得多快」，
@@ -2661,27 +2857,29 @@ def build_watchlist_advice(total, chip_score, pos_score, rev_score, val_score,
     return "😐 各面向訊號中性，暫無明顯方向，續觀察法人動向與月線支撐"
 
 
-def build_healthcheck_report(user_id):
-    codes = get_user_watchlist(user_id)
+def compute_watchlist_scores(codes):
+    """
+    算一批股票的自選股評分。抽成獨立函式，讓「顯示報告」與「每日存快照」
+    共用同一套算法——分數若兩邊各算各的，隔天比對出來的變化就沒有意義了。
+    回傳 {code: {各項分數與當下的數據}}，查無行情的代號不會出現在結果裡。
+    """
+    codes = [str(c).strip() for c in codes if c]
     if not codes:
-        return "📂 自選股清單是空的\n輸入「加 3081」新增自選"
+        return {}
 
-    institutional_data = fetch_institutional_data()
-    revenue_data = fetch_monthly_revenue()
-    valuation_data = fetch_valuation()
+    institutional_data = fetch_institutional_data() or {}
+    revenue_data = fetch_monthly_revenue() or {}
+    valuation_data = fetch_valuation() or {}
     streaks = get_consecutive_days_batch(codes)
     cum_map = get_cumulative_net_buy_for_codes(codes, days=10)
     price_map = get_realtime_stocks_bulk(codes)   # 並行抓，取代逐檔序列請求
 
-    rows = []
+    result = {}
     for code in codes:
         stock = price_map.get(code)
         if not stock:
-            rows.append((-1, f"⚪ {code} 查無行情"))
             continue
 
-        inst = institutional_data.get(code, {})
-        name = stock_display_name(code, institutional_data, stock["name"])
         cum_lots, buy_days = cum_map.get(code, (0, 0))
         streak = streaks.get(code, 0)
 
@@ -2692,10 +2890,140 @@ def build_healthcheck_report(user_id):
         rev_score = round(score_from_cum_revenue_growth(cum_yoy) * 25 / 40)  # 0-25
 
         pe = valuation_data.get(code, {}).get("pe")
-        val_score, peg, _desc = score_from_valuation(pe, cum_yoy)
-        val_score = round(val_score * 20 / 25)                            # 0-20
+        val_raw, peg, _desc = score_from_valuation(pe, cum_yoy)
+        val_score = round(val_raw * 20 / 25)                              # 0-20
 
-        total = chip_score + pos_score + rev_score + val_score
+        result[code] = {
+            "code": code,
+            "name": stock_display_name(code, institutional_data, stock["name"]),
+            "stock": stock,
+            "total": chip_score + pos_score + rev_score + val_score,
+            "chip": chip_score, "position": pos_score,
+            "revenue": rev_score, "valuation": val_score,
+            "cum_lots": cum_lots, "buy_days": buy_days, "streak": streak,
+            "cum_yoy": cum_yoy, "pe": pe,
+        }
+    return result
+
+
+def save_watchlist_scores(user_id, scores):
+    """存下今天的自選股分數。同一天重複寫入會覆蓋，cron 跑兩次也不會重複。"""
+    if not scores:
+        return
+    rows = [(str(user_id).strip(), s["code"], s["total"], s["chip"],
+             s["position"], s["revenue"], s["valuation"], s["stock"]["close"])
+            for s in scores.values()]
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        execute_values(
+            cursor,
+            """
+            INSERT INTO watchlist_scores
+                (user_id, code, snapshot_date, total, chip, position,
+                 revenue, valuation, close)
+            VALUES %s
+            ON CONFLICT (user_id, code, snapshot_date) DO UPDATE SET
+                total = EXCLUDED.total, chip = EXCLUDED.chip,
+                position = EXCLUDED.position, revenue = EXCLUDED.revenue,
+                valuation = EXCLUDED.valuation, close = EXCLUDED.close
+            """,
+            rows,
+            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s)",
+            page_size=200,
+        )
+        conn.commit()
+        cursor.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 寫入自選股評分快照失敗: {e}")
+    finally:
+        release_db_connection(conn)
+
+
+def get_previous_scores(user_id, codes, days_back=7):
+    """
+    取每檔最近一筆「今天以前」的分數，用來比對變化。
+    不硬性取昨天：週末與假日沒有快照，取最近一筆有紀錄的才不會整片空白。
+    回傳 {code: {"total":…, "date":…, 各分項}}
+    """
+    codes = [str(c).strip() for c in codes if c]
+    if not codes:
+        return {}
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT ON (code)
+                   code, snapshot_date, total, chip, position, revenue, valuation
+            FROM watchlist_scores
+            WHERE user_id = %s AND code = ANY(%s)
+              AND snapshot_date < CURRENT_DATE
+              AND snapshot_date >= CURRENT_DATE - %s
+            ORDER BY code, snapshot_date DESC
+            """,
+            (str(user_id).strip(), codes, days_back),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return {r[0]: {"date": r[1], "total": r[2], "chip": r[3],
+                       "position": r[4], "revenue": r[5], "valuation": r[6]}
+                for r in rows}
+    except Exception as e:
+        print(f"❌ 讀取歷史評分失敗: {e}")
+        return {}
+    finally:
+        release_db_connection(conn)
+
+
+def describe_score_change(cur, prev):
+    """
+    把分數變化講成一句話，並指出是哪個面向在動。
+    只講變化夠大的（±5 分以上）——每天一兩分的波動是雜訊，
+    每檔都報一次會讓真正重要的變化被淹沒。
+    回傳 (箭頭符號, 說明文字) 或 (None, None)
+    """
+    if not prev:
+        return None, None
+    diff = cur["total"] - prev["total"]
+    if abs(diff) < 5:
+        return None, None
+
+    # 找出貢獻最多的面向，讓「為什麼變」有依據而不只是報數字
+    parts = [("籌碼", cur["chip"] - prev["chip"]),
+             ("位階", cur["position"] - prev["position"]),
+             ("營收", cur["revenue"] - prev["revenue"]),
+             ("估值", cur["valuation"] - prev["valuation"])]
+    driver, dval = max(parts, key=lambda x: abs(x[1]))
+    reason = f"，主要來自{driver}{dval:+d}" if abs(dval) >= 3 else ""
+    arrow = "📈" if diff > 0 else "📉"
+    return arrow, f"{prev['total']}→{cur['total']} 分（{diff:+d}）{reason}"
+
+
+def build_healthcheck_report(user_id):
+    codes = get_user_watchlist(user_id)
+    if not codes:
+        return "📂 自選股清單是空的\n輸入「加 3081」新增自選"
+
+    institutional_data = fetch_institutional_data()
+    scores = compute_watchlist_scores(codes)
+    prev_scores = get_previous_scores(user_id, codes)
+
+    rows = []
+    for code in codes:
+        s = scores.get(code)
+        if not s:
+            rows.append((-1, f"⚪ {code} 查無行情"))
+            continue
+
+        stock = s["stock"]
+        name = s["name"]
+        cum_lots, buy_days, streak = s["cum_lots"], s["buy_days"], s["streak"]
+        chip_score, pos_score = s["chip"], s["position"]
+        rev_score, val_score = s["revenue"], s["valuation"]
+        cum_yoy, pe = s["cum_yoy"], s["pe"]
+        total = s["total"]
         flag = "🟢" if total >= 70 else ("🟡" if total >= 45 else "🔴")
 
         # 一句話點出目前最該注意的事實
@@ -2716,8 +3044,14 @@ def build_healthcheck_report(user_id):
         advice = build_watchlist_advice(total, chip_score, pos_score, rev_score,
                                         val_score, cum_lots, streak, stock, cum_yoy, pe)
 
+        # 分數變化：跟最近一次快照比。變化比絕對分數更有訊號價值——
+        # 「一直都是 70 分」跟「從 55 分升上來」是完全不同的兩件事。
+        arrow, change_txt = describe_score_change(s, prev_scores.get(code))
+        change_line = f"{arrow} {change_txt}\n" if arrow else ""
+
         text = (
             f"{flag} {name} {code}　{total}分\n"
+            f"{change_line}"
             f"{stock['close']:.2f}（{stock['pct']:+.2f}%）　{pos_txt}\n"
             f"{note}\n"
             f"{rev_txt}　{pe_txt}　🛡️{stock['support']} 🚧{fmt_resistance(stock['resistance'])}\n"
@@ -2938,8 +3272,10 @@ def cron_fetch_t86():
 @app.route("/cron/snapshot-portfolio", methods=["POST", "GET"])
 def cron_snapshot_portfolio():
     """
-    每個交易日收盤後，把每個有持股的使用者的組合市值＋當天大盤指數存一筆快照。
-    這是「組合走勢圖」的資料來源──沒有累積夠的快照，圖就只能顯示「資料還在累積中」。
+    每個交易日收盤後存快照：組合市值、自選股評分、產業動能排名。
+
+    這三樣的共同點是「當下都算得出來，但過去算不出來」——
+    沒有每天存，就永遠只能顯示靜態數字，看不出任何變化趨勢。
     建議跟 /cron/fetch-t86 排在附近時段（收盤後），一天跑一次即可。
     """
     secret = request.args.get("token")
@@ -2953,6 +3289,16 @@ def cron_snapshot_portfolio():
             taiex_close = float(str(taiex["close"]).replace(",", ""))
         except (TypeError, ValueError):
             taiex_close = None
+
+    # 產業動能排名：全市場共用一份，只要存一次
+    try:
+        stats = get_industry_momentum(fetch_monthly_revenue() or {},
+                                      get_industry_map() or {})
+        save_industry_momentum(stats)
+        ind_saved = len(stats)
+    except Exception as e:
+        print(f"❌ 產業動能快照失敗: {e}")
+        ind_saved = 0
 
     user_ids = get_all_position_user_ids()
     saved, skipped = 0, 0
@@ -2976,8 +3322,23 @@ def cron_snapshot_portfolio():
         else:
             skipped += 1
 
-    return (f"Snapshot done. users={len(user_ids)}, saved={saved}, "
-            f"skipped={skipped}, taiex={taiex_close}"), 200
+    # 自選股評分：有自選的人都要存，跟有沒有持股無關
+    wl_users, wl_saved = get_all_watchlist_user_ids(), 0
+    for uid in wl_users:
+        codes = get_user_watchlist(uid)
+        if not codes:
+            continue
+        try:
+            scores = compute_watchlist_scores(codes)
+            if scores:
+                save_watchlist_scores(uid, scores)
+                wl_saved += 1
+        except Exception as e:
+            print(f"❌ 自選股評分快照失敗 {uid}: {e}")
+
+    return (f"Snapshot done. portfolio={saved}/{len(user_ids)}, "
+            f"skipped={skipped}, watchlist={wl_saved}/{len(wl_users)}, "
+            f"industries={ind_saved}, taiex={taiex_close}"), 200
 
 
 @app.route("/cron/warmup", methods=["POST", "GET"])
@@ -3225,7 +3586,8 @@ def backfill_t86():
 
 # 會跑比較久的指令，送出後先叫載入動畫
 SLOW_COMMANDS = {
-    "黑馬", "雷達", "自選", "WATCHLIST", "健檢", "自選健檢",
+    "黑馬", "雷達", "輪動", "產業輪動", "族群",
+    "自選", "WATCHLIST", "健檢", "自選健檢",
     "盤前", "早安", "解盤", "盤後解盤", "盤後", "新聞", "自選新聞",
 }
 
@@ -3265,6 +3627,7 @@ def build_quick_reply():
         ("☀️ 盤前", "盤前"),
         ("🐎 黑馬", "黑馬"),
         ("🚨 雷達", "雷達"),
+        ("🔄 輪動", "輪動"),
         ("📂 自選", "自選"),
         ("📊 解盤", "解盤"),
         ("📰 新聞", "新聞"),
@@ -3291,6 +3654,7 @@ def build_menu_flex():
         ("選股策略", "#B5822A", "#F7EFDF", [
             ("黑馬", "營收成長＋估值＋產業動能"),
             ("雷達", "帶量突破、法人買超強勢股"),
+            ("輪動", "哪些族群排名正在往前或退後"),
         ]),
         ("我的自選", "#2E7D5B", "#E6F1EC", [
             ("自選", "持股評分、位階與支撐壓力"),
@@ -3978,10 +4342,28 @@ def web_positions(uid):
                     return None
 
             sell_shares = num("sell_shares", int) or 0
-            ok, err = sell_position(uid, request.form.get("id"), sell_shares,
-                                    sell_price=num("sell_price"),
-                                    fee=num("fee"), tax=num("tax"))
-            msg = "已記錄賣出。" if ok else (err or "賣出失敗，請稍後再試。")
+            ok, err, summary = sell_position(
+                uid, request.form.get("id"), sell_shares,
+                sell_price=num("sell_price"),
+                fee=num("fee"), tax=num("tax"))
+            if not ok:
+                msg = err or "賣出失敗，請稍後再試。"
+            elif summary:
+                # 剛填完賣價與費用，最想知道的就是這筆到底賺賠多少，
+                # 只回「已記錄」等於要人自己再翻到已實現損益去對。
+                name = stock_display_name(summary["code"])
+                sign = "獲利" if summary["pl"] >= 0 else "虧損"
+                held = (f"，持有 {summary['held_days']} 天"
+                        if summary["held_days"] is not None else "")
+                msg = (f"已賣出 {name} {summary['shares']:,} 股 "
+                       f"@{summary['sell_price']:,.2f}（成本 {summary['cost']:,.2f}"
+                       f"{held}）。<br>"
+                       f"實現{sign} <b>{summary['pl']:+,.0f}</b> "
+                       f"（{summary['pct']:+.2f}%），"
+                       f"已扣手續費 {summary['fee']:,.0f}、"
+                       f"證交稅 {summary['tax']:,.0f}。")
+            else:
+                msg = "已賣出，但查不到報價，這筆沒有損益紀錄。"
         else:
             code = normalize_code(request.form.get("code", ""))
             try:
@@ -5733,6 +6115,10 @@ def handle_message(event):
     # 7.5 盤後解盤（使用者手動輸入才觸發，不自動推播）
     elif text in ["解盤", "盤後解盤", "盤後"]:
         reply = build_market_recap()
+
+    # 7.6 產業輪動：看的是「誰在變強」而不是「誰最強」
+    elif text in ["輪動", "產業輪動", "族群"]:
+        reply = build_rotation_report()
 
     # 8. 黑馬股（不同於雷達：以「月營收年增率」為主軸，找有題材／獲利成長的股票）
     elif text == "黑馬":
