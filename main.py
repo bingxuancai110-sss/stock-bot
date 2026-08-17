@@ -3,6 +3,7 @@ import re
 import ssl
 import socket
 import time
+import threading
 import requests
 from requests.adapters import HTTPAdapter
 import psycopg2
@@ -4511,25 +4512,34 @@ SLOW_COMMANDS = {
 def start_loading_animation(user_id, seconds=60):
     """
     叫出 LINE 聊天室裡的官方載入動畫（三個點跳動），最長 60 秒。
-    只在一對一聊天有效，群組會回錯誤，所以整段包在 try 裡——
-    動畫叫不出來不該影響真正的查詢結果。
 
-    linebot SDK 版本較舊時可能沒有這個方法，因此改直接打 REST API，
-    不依賴 SDK 是否支援。
+    用背景執行緒送出，不等它回應：這支 API 現在每則訊息都會呼叫，
+    若同步等待，光是這個網路來回就會讓每則訊息都多幾百毫秒到 3 秒的延遲，
+    「加動畫」反而讓整體變慢。動畫只是視覺回饋，晚一點出現或沒出現
+    都不該影響真正的查詢。
+
+    只在一對一聊天有效，群組會回錯誤，所以整段包在 try 裡。
+    linebot SDK 版本較舊時可能沒有這個方法，因此直接打 REST API。
     """
+    def _fire():
+        try:
+            requests.post(
+                "https://api.line.me/v2/bot/chat/loading/start",
+                headers={
+                    "Authorization": f"Bearer {os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')}",
+                    "Content-Type": "application/json",
+                },
+                json={"chatId": str(user_id).strip(),
+                      "loadingSeconds": min(60, max(5, int(seconds) // 5 * 5))},
+                timeout=3,
+            )
+        except Exception as e:
+            print(f"⚠️ 載入動畫啟動失敗 {user_id}: {e}")
+
     try:
-        requests.post(
-            "https://api.line.me/v2/bot/chat/loading/start",
-            headers={
-                "Authorization": f"Bearer {os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')}",
-                "Content-Type": "application/json",
-            },
-            json={"chatId": str(user_id).strip(),
-                  "loadingSeconds": min(60, max(5, int(seconds) // 5 * 5))},
-            timeout=3,
-        )
+        threading.Thread(target=_fire, daemon=True).start()
     except Exception as e:
-        print(f"⚠️ 載入動畫啟動失敗 {user_id}: {e}")
+        print(f"⚠️ 載入動畫執行緒啟動失敗: {e}")
 
 
 def build_quick_reply():
@@ -4579,7 +4589,7 @@ def build_menu_flex():
             ("新聞", "自選股相關新聞與連結"),
         ]),
         ("網頁版", "#6B4E9E", "#EFEAF7", [
-            ("網頁", "持股組合分析、交易紀錄、選股成效\n連結與登入碼一次給，兩種瀏覽器都能開"),
+            ("網頁", "組合分析、交易紀錄、選股成效"),
         ]),
         ("推播設定", "#7A8290", "#EDEFF1", [
             ("申請推播", "🔒 VIP 限定　每日盤前自動發送\n非 VIP 可直接點上方「盤前」查看相同內容"),
@@ -7267,12 +7277,12 @@ def handle_message(event):
             quick_reply=build_quick_reply()))
         return
 
-    # 耗時的指令先叫出 LINE 官方的載入動畫（聊天室裡的三點跳動）。
-    # LINE 沒有別的方式表達「還在跑」，沒有它使用者只會看到一片安靜，
-    # 以為機器人壞了而重複點擊。用官方動畫而不是先回一則「查詢中」訊息，
-    # 是因為後者會吃掉免費方案每月 200 則的推播額度。
-    if text in SLOW_COMMANDS or (4 <= len(pure_code) <= 7 and len(text) <= 8):
-        start_loading_animation(user_id)
+    # 每則訊息都先叫出 LINE 官方的載入動畫（聊天室裡的三點跳動）。
+    # 不分指令輕重都叫，是因為使用者無法預期哪個指令會慢——
+    # 有些看似簡單的查詢遇到快取失效時一樣要跑十幾秒，
+    # 沒有動畫時那段安靜會讓人以為訊息沒送出而重複點擊。
+    # 這支 API 不計入每月推播額度，多叫幾次沒有成本。
+    start_loading_animation(user_id)
 
     # 0. 管理指令（只有 ADMIN_USER_ID 本人可用，其他人輸入等同無效指令）
     if text in ["我的ID", "我的id", "MYID"]:
