@@ -4140,7 +4140,9 @@ def cron_push_news():
     secret = request.args.get("token")
     if secret != os.environ.get("CRON_SECRET"):
         abort(403)
-    return push_to_users(get_notify_users(), build_news_digest, "News push"), 200
+    return run_in_background(
+        "新聞推播",
+        lambda: push_to_users(get_notify_users(), build_news_digest, "新聞推播")), 200
 
 
 # --- 排程推播訊息建構與 Cron 端點 ---
@@ -4187,7 +4189,9 @@ def cron_push_watchlist():
     secret = request.args.get("token")
     if secret != os.environ.get("CRON_SECRET"):
         abort(403)
-    return push_to_users(get_notify_users(), build_morning_push, "Morning push"), 200
+    return run_in_background(
+        "盤前推播",
+        lambda: push_to_users(get_notify_users(), build_morning_push, "盤前推播")), 200
 
 @app.route("/cron/fetch-t86", methods=["POST", "GET"])
 def cron_fetch_t86():
@@ -4196,28 +4200,109 @@ def cron_fetch_t86():
     if secret != os.environ.get("CRON_SECRET"):
         abort(403)
 
+    return run_in_background("抓法人資料", _do_fetch_t86), 200
+
+
+def _do_fetch_t86():
     # 清掉快取強制重抓，確保拿到今天最新公布的資料
     _t86_cache["cache_date"] = None
     data = fetch_institutional_data()
     if not data:
-        return "No institutional data available (non-trading day or not yet published).", 200
-    return (f"OK. date={_t86_cache.get('data_date')}, "
-            f"stocks={len(data)}（上市＋上櫃）"), 200
+        return "無資料（非交易日或尚未公布）"
+    n_days, missing, newest = check_data_integrity(30)
+    warn = ""
+    if missing:
+        warn = f"　⚠️ 近30天疑似缺 {'、'.join(d.strftime('%m/%d') for d in missing[:5])}"
+    return (f"日期 {_t86_cache.get('data_date')}、{len(data)} 檔（上市＋上櫃）、"
+            f"近30天已存 {n_days} 個交易日{warn}")
+
+
+# ── 背景工作 ──
+# cron-job.org 的請求有 30 秒上限，但每日快照要逐一處理每個使用者的持股、
+# 逐檔抓報價，一定超過。排程的意義是「準時觸發」而不是「等它做完」，
+# 所以端點立刻回應，實際工作丟到背景執行緒。
+#
+# 背景執行緒能活著的前提是 Render 的程式沒有被休眠——
+# 你已經有每 5 分鐘喚醒一次的排程，這個條件成立。
+_job_status = {}
+
+
+def run_in_background(name, fn):
+    """
+    把耗時工作丟到背景並立刻回應。
+    同名工作若還在跑就不重複啟動——排程偶爾會重疊觸發，
+    兩份同時跑只會互相搶資料庫連線。
+    """
+    cur = _job_status.get(name)
+    if cur and cur.get("running"):
+        started = cur.get("started_at", 0)
+        return f"{name} 仍在執行中（已 {int(time.time() - started)} 秒），本次略過。"
+
+    _job_status[name] = {"running": True, "started_at": time.time(),
+                         "result": None, "finished_at": None}
+
+    def _wrap():
+        t0 = time.time()
+        try:
+            result = fn()
+            _job_status[name].update(
+                running=False, result=str(result),
+                finished_at=time.time(), seconds=round(time.time() - t0, 1))
+            print(f"✅ 背景工作 {name} 完成（{time.time() - t0:.1f}s）：{result}")
+        except Exception as e:
+            _job_status[name].update(
+                running=False, result=f"失敗：{e}",
+                finished_at=time.time(), seconds=round(time.time() - t0, 1))
+            print(f"❌ 背景工作 {name} 失敗: {e}")
+
+    threading.Thread(target=_wrap, daemon=True).start()
+    return (f"{name} 已在背景啟動。"
+            f"結果請看 /job-status?token=... 或 Render Logs。")
+
+
+@app.route("/job-status", methods=["POST", "GET"])
+def job_status():
+    """查背景工作的執行結果。用法：/job-status?token=..."""
+    if request.args.get("token") != os.environ.get("CRON_SECRET"):
+        abort(403)
+    if not _job_status:
+        return plain_text_page(["目前沒有任何背景工作紀錄。",
+                                "（服務重啟後紀錄會清空）"]), 200
+
+    lines = ["背景工作狀態", "=" * 58, ""]
+    for name, st in sorted(_job_status.items()):
+        if st.get("running"):
+            lines.append(f"⏳ {name}　執行中"
+                         f"（已 {int(time.time() - st['started_at'])} 秒）")
+        else:
+            when = datetime.fromtimestamp(st["finished_at"]).strftime("%m/%d %H:%M")
+            lines.append(f"✅ {name}　{when} 完成，耗時 {st.get('seconds')} 秒")
+            lines.append(f"　　{st.get('result')}")
+        lines.append("")
+    return plain_text_page(lines), 200
 
 
 @app.route("/cron/snapshot-portfolio", methods=["POST", "GET"])
 def cron_snapshot_portfolio():
     """
-    每個交易日收盤後存快照：組合市值、自選股評分、產業動能排名。
+    每個交易日收盤後存快照：組合市值、自選股評分、產業動能排名、選股名單。
 
-    這三樣的共同點是「當下都算得出來，但過去算不出來」——
+    這幾樣的共同點是「當下都算得出來，但過去算不出來」——
     沒有每天存，就永遠只能顯示靜態數字，看不出任何變化趨勢。
-    建議跟 /cron/fetch-t86 排在附近時段（收盤後），一天跑一次即可。
+
+    實際工作丟到背景執行：要逐一處理每個使用者的持股並逐檔抓報價，
+    一定超過 cron-job.org 的 30 秒上限。排程的意義是準時觸發，
+    不是等它做完，所以立刻回應即可。
+    建議跟 /cron/fetch-t86 排在附近時段（收盤後），一天跑一次。
     """
     secret = request.args.get("token")
     if secret != os.environ.get("CRON_SECRET"):
         abort(403)
+    return run_in_background("每日快照", _do_daily_snapshot), 200
 
+
+def _do_daily_snapshot():
+    """實際的快照工作。回傳一行摘要字串，會記在 /job-status 裡。"""
     taiex = fetch_taiex_summary()
     taiex_close = None
     if taiex and taiex.get("close"):
@@ -4256,23 +4341,28 @@ def cron_snapshot_portfolio():
     user_ids = get_all_position_user_ids()
     saved, skipped = 0, 0
     for uid in user_ids:
-        positions = merge_positions(get_positions(uid))
-        if not positions:
-            skipped += 1
-            continue
-        total_value, total_cost = 0.0, 0.0
-        price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
-        for p in positions:
-            pr = price_map.get(p["code"])
-            if pr:
-                total_value += pr["close"] * p["shares"]
-            total_cost += p["cost"] * p["shares"]
-        if total_value <= 0:
-            skipped += 1
-            continue
-        if save_portfolio_snapshot(uid, total_value, total_cost, taiex_close):
-            saved += 1
-        else:
+        try:
+            positions = merge_positions(get_positions(uid))
+            if not positions:
+                skipped += 1
+                continue
+            total_value, total_cost = 0.0, 0.0
+            price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
+            for p in positions:
+                pr = price_map.get(p["code"])
+                if pr:
+                    total_value += pr["close"] * p["shares"]
+                total_cost += p["cost"] * p["shares"]
+            if total_value <= 0:
+                skipped += 1
+                continue
+            if save_portfolio_snapshot(uid, total_value, total_cost, taiex_close):
+                saved += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            # 單一使用者出錯不該讓其他人的快照一起沒了
+            print(f"❌ 組合快照失敗 {uid}: {e}")
             skipped += 1
 
     # 自選股評分：有自選的人都要存，跟有沒有持股無關
@@ -4289,9 +4379,9 @@ def cron_snapshot_portfolio():
         except Exception as e:
             print(f"❌ 自選股評分快照失敗 {uid}: {e}")
 
-    return (f"Snapshot done. portfolio={saved}/{len(user_ids)}, "
-            f"skipped={skipped}, watchlist={wl_saved}/{len(wl_users)}, "
-            f"industries={ind_saved}, picks={picks_saved}, taiex={taiex_close}"), 200
+    return (f"組合 {saved}/{len(user_ids)}（略過 {skipped}）、"
+            f"自選 {wl_saved}/{len(wl_users)}、產業 {ind_saved}、"
+            f"選股名單 {picks_saved}、大盤 {taiex_close}")
 
 
 # ── 資料保留期限 ──
@@ -4437,7 +4527,10 @@ def cron_warmup():
     if secret != os.environ.get("CRON_SECRET"):
         abort(403)
 
-    t0 = time.time()
+    return run_in_background("預熱快取", _do_warmup), 200
+
+
+def _do_warmup():
     done = []
     for label, fn in [
         ("法人", fetch_institutional_data),
@@ -4448,12 +4541,18 @@ def cron_warmup():
     ]:
         try:
             data = fn()
-            done.append(f"{label}={len(data) if data else 0}")
+            done.append(f"{label} {len(data) if data else 0}")
         except Exception as e:
             print(f"❌ 預熱 {label} 失敗: {e}")
-            done.append(f"{label}=失敗")
-
-    return f"Warmup done in {time.time() - t0:.1f}s. " + ", ".join(done), 200
+            done.append(f"{label} 失敗")
+    # 順便把選股台的候選池也算好，使用者進來就是快取命中
+    for mode in ("blackhorse", "radar"):
+        try:
+            rows, _s, _m = compute_screener_rows(mode)
+            done.append(f"{mode} {len(rows)} 檔")
+        except Exception as e:
+            print(f"❌ 預熱 {mode} 失敗: {e}")
+    return "、".join(done)
 
 
 @app.route("/sync-industry", methods=["POST", "GET"])
