@@ -293,6 +293,28 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_industry_momentum_date
             ON industry_momentum_history (snapshot_date DESC)
         ''')
+        # 選股成效追蹤：每天把黑馬／雷達選出來的名單存起來，
+        # 之後回頭算它們的報酬率。
+        # 這是唯一能回答「這套評分到底有沒有用」的方式——
+        # 沒有這張表，選股邏輯永遠只是一套說得通但沒被驗證過的規則。
+        # 存的是「當下的推薦價」，之後用現價比對即可算出報酬。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS pick_history (
+                mode TEXT,
+                code TEXT,
+                pick_date DATE,
+                rank INTEGER,
+                score INTEGER,
+                name TEXT,
+                industry TEXT,
+                price REAL,
+                PRIMARY KEY (mode, code, pick_date)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_pick_history_date
+            ON pick_history (pick_date DESC, mode)
+        ''')
         conn.commit()
         cursor.close()
     except Exception as e:
@@ -2102,6 +2124,165 @@ def get_industry_rotation(current_stats, days_back=45):
     return rising, falling
 
 
+def save_picks(mode, rows, top_n=5):
+    """
+    存下今天這個模式選出的前 N 名。同一天重複跑會覆蓋，cron 跑兩次不會重複。
+    存「當下價格」是關鍵——之後要算報酬得知道推薦當天是多少錢，
+    事後再回頭抓歷史價會對不上（推薦時是盤中價，收盤價又是另一個數字）。
+    """
+    if not rows:
+        return 0
+    picks = [(mode, r["code"], i, r.get("score"), r.get("name"),
+              r.get("industry"), r.get("close"))
+             for i, r in enumerate(rows[:top_n], start=1)]
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        execute_values(
+            cursor,
+            """
+            INSERT INTO pick_history
+                (mode, code, pick_date, rank, score, name, industry, price)
+            VALUES %s
+            ON CONFLICT (mode, code, pick_date) DO UPDATE SET
+                rank = EXCLUDED.rank, score = EXCLUDED.score,
+                name = EXCLUDED.name, industry = EXCLUDED.industry,
+                price = EXCLUDED.price
+            """,
+            picks,
+            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s)",
+            page_size=100,
+        )
+        conn.commit()
+        cursor.close()
+        print(f"💾 已存入 {mode} 選股名單，共 {len(picks)} 檔")
+        return len(picks)
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 寫入選股名單失敗: {e}")
+        return 0
+    finally:
+        release_db_connection(conn)
+
+
+def get_picks_since(mode, days=90):
+    """取近 N 天的選股名單，供成效計算。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT code, pick_date, rank, score, name, industry, price
+            FROM pick_history
+            WHERE mode = %s AND pick_date >= CURRENT_DATE - %s
+              AND price IS NOT NULL AND price > 0
+            ORDER BY pick_date DESC, rank
+            """,
+            (mode, days),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [{"code": r[0], "date": r[1], "rank": r[2], "score": r[3],
+                 "name": r[4], "industry": r[5], "price": r[6]} for r in rows]
+    except Exception as e:
+        print(f"❌ 讀取選股名單失敗: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def evaluate_picks(mode, days=90):
+    """
+    計算選股成效：把每一筆推薦的當時價格跟現價比，並依「推薦後經過幾天」分組。
+
+    誠實度的幾個要求：
+    ・只算已經過了該天期的樣本。推薦才 2 天的不能算進「20 日報酬」，
+      否則會混入還沒走完的區間，看起來比實際好或壞。
+    ・同時算大盤同期報酬做對照。多頭時什麼都在漲，沒有對照組的話
+      「平均 +5%」看不出是選股有效還是單純市場好。
+    ・樣本數一併呈現，讓人自己判斷這個數字可不可信。
+
+    回傳 {天期: {avg, median, win_rate, n, vs_market}} 與整體摘要。
+    """
+    picks = get_picks_since(mode, days)
+    if not picks:
+        return None
+
+    price_map = get_realtime_stocks_bulk(
+        list({p["code"] for p in picks}), workers=16)
+    today = date.today()
+
+    # 大盤對照：用快照裡存的加權指數，沒有就退回不比較
+    taiex_by_date = {}
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT snapshot_date, taiex_close FROM portfolio_snapshots
+            WHERE taiex_close IS NOT NULL AND snapshot_date >= CURRENT_DATE - %s
+            """,
+            (days,))
+        taiex_by_date = {r[0]: r[1] for r in cursor.fetchall()}
+        cursor.close()
+    except Exception as e:
+        print(f"⚠️ 讀取大盤對照失敗: {e}")
+    finally:
+        release_db_connection(conn)
+
+    taiex_now = None
+    t = fetch_taiex_summary()
+    if t and t.get("close"):
+        try:
+            taiex_now = float(str(t["close"]).replace(",", ""))
+        except (TypeError, ValueError):
+            taiex_now = None
+
+    # 用「現價」算報酬，所以一筆推薦只能歸入一個天期——
+    # 70 天前的推薦拿現價算，得到的是 70 天的報酬，不是 5 天的。
+    # 因此由長到短判斷，取它已經走過的最長區間，標籤也照實寫成區間而非定點。
+    horizons = [(60, "60 日以上"), (20, "20–59 日"), (5, "5–19 日")]
+    buckets = {label: [] for _d, label in horizons}
+    market = {label: [] for _d, label in horizons}
+
+    for p in picks:
+        cur = price_map.get(p["code"])
+        if not cur:
+            continue
+        elapsed = (today - p["date"]).days
+        ret = (cur["close"] - p["price"]) / p["price"] * 100
+        for d, label in horizons:       # 由長到短，落在第一個符合的區間
+            if elapsed >= d:
+                buckets[label].append((ret, p))
+                base = taiex_by_date.get(p["date"])
+                if base and taiex_now:
+                    market[label].append((taiex_now - base) / base * 100)
+                break
+
+    result = {}
+    for _d, label in reversed(horizons):   # 顯示時由短到長
+        vals = [r for r, _p in buckets[label]]
+        if not vals:
+            continue
+        vals_sorted = sorted(vals)
+        n = len(vals_sorted)
+        median = (vals_sorted[n // 2] if n % 2
+                  else (vals_sorted[n // 2 - 1] + vals_sorted[n // 2]) / 2)
+        mk = market[label]
+        result[label] = {
+            "n": n,
+            "avg": sum(vals) / n,
+            "median": median,
+            "win_rate": len([v for v in vals if v > 0]) / n * 100,
+            "best": max(buckets[label], key=lambda x: x[0]),
+            "worst": min(buckets[label], key=lambda x: x[0]),
+            "market": (sum(mk) / len(mk)) if mk else None,
+        }
+
+    pending = len([p for p in picks if (today - p["date"]).days < 5])
+    return {"horizons": result, "total_picks": len(picks), "pending": pending}
+
+
 def build_rotation_report():
     """產業輪動報告。歷史不足時老實說，不硬生成看起來有內容的東西。"""
     revenue = fetch_monthly_revenue() or {}
@@ -2944,6 +3125,109 @@ def fetch_institutional_total():
         return None
 
 # --- 盤後解盤：使用者手動輸入關鍵字才觸發，不自動推播 ---
+def build_compare_report(codes):
+    """
+    並排比較多檔個股。同一個指標把幾檔放在一起看，才知道「PE 30 倍」
+    到底是貴還是便宜——單看一檔永遠缺少參照點。
+    每個指標標出該項最好的一檔，但不給綜合結論：
+    哪一項重要取決於你要長抱還是短打，那不該由程式替你決定。
+    """
+    codes = [normalize_code(c) for c in codes]
+    codes = [c for c in dict.fromkeys(codes) if c][:4]   # 去重，最多四檔
+    if len(codes) < 2:
+        return "請給兩檔以上的代號，例如「比較 2330 2454」"
+
+    inst = fetch_institutional_data() or {}
+    revenue = fetch_monthly_revenue() or {}
+    valuation = fetch_valuation() or {}
+    ind_map = get_industry_map() or {}
+    streaks = get_consecutive_days_batch(codes)
+    cum_map = get_cumulative_net_buy_for_codes(codes, days=10)
+    price_map = get_realtime_stocks_bulk(codes)
+
+    items = []
+    missing = []
+    for code in codes:
+        pr = price_map.get(code)
+        if not pr:
+            missing.append(code)
+            continue
+        val = valuation.get(code, {})
+        rev = revenue.get(code, {})
+        cum_lots, buy_days = cum_map.get(code, (0, 0))
+        ind = ind_map.get(code)
+        items.append({
+            "code": code,
+            "name": short_company_name(stock_display_name(code, inst, pr["name"])),
+            "industry": industry_name(ind) if ind else "未分類",
+            "close": pr["close"], "pct": pr["pct"],
+            "pe": val.get("pe"), "pb": val.get("pb"), "yield": val.get("yield"),
+            "cum_yoy": rev.get("cum_yoy_pct"), "yoy": rev.get("yoy_pct"),
+            "pos": pr.get("pos_vs_60d_high"), "ma20": pr.get("ma20"),
+            "vol_ratio": pr.get("vol_ratio"),
+            "streak": streaks.get(code, 0), "cum_lots": cum_lots,
+            "turnover": calc_turnover_billion(pr["close"], pr["volume"]),
+        })
+
+    if len(items) < 2:
+        return (f"❌ 可比較的標的不足（查無行情：{'、'.join(missing)}）\n"
+                f"請確認代號是否正確。")
+
+    lines = ["⚖️ 個股比較", "─" * 14]
+    for it in items:
+        lines.append(f"{it['name']} {it['code']}　{it['industry']}")
+    lines.append("")
+
+    def row(label, key, fmt, better="high", suffix=""):
+        """
+        列出一個指標，並在該項表現最好的那檔後面加標記。
+        better="low" 代表數字越小越好（例如本益比）；
+        better=None 代表這項沒有好壞之分（例如現價），只列不標記。
+        缺資料的不參與比較，不會因為沒資料就被當成最好或最差。
+        """
+        vals = [(it, it.get(key)) for it in items]
+        best_code = None
+        if better:
+            valid = [(it, v) for it, v in vals if v is not None]
+            if len(valid) >= 2:
+                best = (max if better == "high" else min)(valid, key=lambda x: x[1])
+                best_code = best[0]["code"]
+        lines.append(f"【{label}】")
+        for it, v in vals:
+            mark = " ⬅" if it["code"] == best_code else ""
+            txt = fmt(v) if v is not None else "無資料"
+            lines.append(f"　{it['name']}　{txt}{suffix}{mark}")
+        lines.append("")
+
+    # 現價沒有好壞之分，不標記
+    lines.append("【現價】")
+    for it in items:
+        lines.append(f"　{it['name']}　{it['close']:,.2f}（{it['pct']:+.2f}%）")
+    lines.append("")
+
+    row("累計營收年增", "cum_yoy", lambda v: f"{v:+.1f}%", better="high")
+    row("本益比", "pe", lambda v: f"{v:.1f} 倍", better="low")
+    row("股價淨值比", "pb", lambda v: f"{v:.2f}", better="low")
+    row("殖利率", "yield", lambda v: f"{v:.2f}%", better="high")
+    row("距60日高點", "pos", lambda v: f"{v:+.1f}%", better="high")
+    row("法人連買", "streak", lambda v: f"{v} 日", better="high")
+    row("近10日累計買超", "cum_lots", lambda v: f"{v:+,} 張", better="high")
+    row("成交金額", "turnover", lambda v: f"{v:.1f} 億", better="high")
+
+    if missing:
+        lines.append(f"※ 查無行情：{'、'.join(missing)}")
+    lines += [
+        "─" * 14,
+        "⬅ 標記該項數字較優，不代表整體較好。",
+        "哪一項重要取決於你要長抱還是短打——",
+        "成長股本益比天生偏高，價值股營收成長天生偏低，",
+        "把兩者放在同一個標準下比較會得到誤導性的結論。",
+        "※ 數據整理，非投資建議",
+    ]
+    report = "\n".join(lines)
+    return report[:4750] + "\n…（已截斷）" if len(report) > 4800 else report
+
+
 def build_market_recap():
     inst_data = fetch_institutional_data()
     if not inst_data:
@@ -3565,6 +3849,23 @@ def cron_snapshot_portfolio():
         print(f"❌ 產業動能快照失敗: {e}")
         ind_saved = 0
 
+    # 選股名單：存下今天黑馬與雷達的前 5 名，之後才算得出這套評分有沒有用。
+    # 名單跟使用者無關，全市場共用一份。
+    picks_saved = 0
+    for mode in ("blackhorse", "radar"):
+        try:
+            rows, _skipped, _mom = compute_screener_rows(mode)
+            if mode == "radar":
+                rows = sorted(rows, key=lambda r: (
+                    2 if r["breakout"] == "季線新高" else (1 if r["breakout"] else 0),
+                    r.get("vol_ratio") or 0, r["streak"], r["pct"]), reverse=True)
+            else:
+                rows = sorted(rows, key=lambda r: (r["score"] if r["score"] is not None else -1),
+                              reverse=True)
+            picks_saved += save_picks(mode, rows, top_n=5)
+        except Exception as e:
+            print(f"❌ {mode} 選股名單快照失敗: {e}")
+
     user_ids = get_all_position_user_ids()
     saved, skipped = 0, 0
     for uid in user_ids:
@@ -3603,7 +3904,7 @@ def cron_snapshot_portfolio():
 
     return (f"Snapshot done. portfolio={saved}/{len(user_ids)}, "
             f"skipped={skipped}, watchlist={wl_saved}/{len(wl_users)}, "
-            f"industries={ind_saved}, taiex={taiex_close}"), 200
+            f"industries={ind_saved}, picks={picks_saved}, taiex={taiex_close}"), 200
 
 
 @app.route("/cron/warmup", methods=["POST", "GET"])
@@ -3851,7 +4152,7 @@ def backfill_t86():
 
 # 會跑比較久的指令，送出後先叫載入動畫
 SLOW_COMMANDS = {
-    "黑馬", "雷達", "輪動", "產業輪動", "族群",
+    "黑馬", "雷達", "輪動", "產業輪動", "族群", "比較",
     "自選", "WATCHLIST", "健檢", "自選健檢",
     "盤前", "早安", "解盤", "盤後解盤", "盤後", "新聞", "自選新聞",
 }
@@ -3893,6 +4194,7 @@ def build_quick_reply():
         ("🐎 黑馬", "黑馬"),
         ("🚨 雷達", "雷達"),
         ("🔄 輪動", "輪動"),
+        ("⚖️ 比較", "比較"),
         ("📂 自選", "自選"),
         ("📊 解盤", "解盤"),
         ("📰 新聞", "新聞"),
@@ -3920,6 +4222,7 @@ def build_menu_flex():
             ("黑馬", "營收成長＋估值＋產業動能"),
             ("雷達", "帶量突破、法人買超強勢股"),
             ("輪動", "哪些族群排名正在往前或退後"),
+            ("比較 2330 2454", "並排比較估值、成長與籌碼"),
         ]),
         ("我的自選", "#2E7D5B", "#E6F1EC", [
             ("自選", "持股評分、位階與支撐壓力"),
@@ -5937,6 +6240,110 @@ def compute_screener_rows(mode):
     return rows, skipped_liquidity, momentum
 
 
+def build_review_body():
+    """
+    選股成效頁：把過去推薦過的名單拿現價回頭比對。
+
+    刻意把「不利的數字」擺在跟有利的一樣顯眼的位置：勝率不到五成就顯示不到五成，
+    輸給大盤就明講輸多少。一個不敢驗證自己的選股工具，跟隨便給建議沒有差別。
+    """
+    blocks = []
+    for mode, label, note in [
+        ("blackhorse", "黑馬",
+         "長線評分：營收成長＋估值＋產業動能＋法人連續性"),
+        ("radar", "雷達",
+         "短線型態：帶量突破、法人買超"),
+    ]:
+        ev = evaluate_picks(mode)
+        if not ev:
+            blocks.append(f"""
+<div class="section-head"><h2>{label}</h2>
+  <span class="section-note">{note}</span></div>
+<div class="empty">還沒有累積推薦紀錄。<br><br>
+<span style="font-size:12.5px">每個交易日收盤後會存下當天的前 5 名，
+最快 5 個交易日後就能看到第一組成效數字。</span></div>""")
+            continue
+
+        hz = ev["horizons"]
+        if not hz:
+            blocks.append(f"""
+<div class="section-head"><h2>{label}</h2>
+  <span class="section-note">{note}</span></div>
+<div class="callout">已累積 {ev['total_picks']} 筆推薦，
+但都還不滿 5 個交易日，尚無法計算報酬。<br>
+<span style="font-size:12.5px;color:var(--ink-faint)">
+只統計已經走完該天期的樣本——推薦才兩天就算進「5 日報酬」，
+等於把還沒走完的區間混進來，數字會失真。</span></div>""")
+            continue
+
+        cards, rows_html = [], []
+        for period in ("5–19 日", "20–59 日", "60 日以上"):
+            s = hz.get(period)
+            if not s:
+                continue
+            cls = "up" if s["avg"] >= 0 else "down"
+            vs = ""
+            if s["market"] is not None:
+                diff = s["avg"] - s["market"]
+                vs = (f'<div class="total-sub" style="color:var(--ink-faint)">'
+                      f'大盤 {s["market"]:+.1f}%・'
+                      f'{"贏" if diff >= 0 else "輸"} {abs(diff):.1f}%</div>')
+            cards.append(f"""
+  <div><div class="total-label">推薦後 {period}</div>
+       <div class="total-value num {cls}">{s['avg']:+.1f}%</div>
+       <div class="total-sub" style="color:var(--ink-faint)">
+         中位 {s['median']:+.1f}%・勝率 {s['win_rate']:.0f}%・{s['n']} 筆</div>
+       {vs}</div>""")
+
+            b, bp = s["best"]
+            w, wp = s["worst"]
+            rows_html.append(f"""
+<div class="row">
+  <div><span class="name">{period}</span>
+       <span class="code">最好 / 最差</span></div>
+  <div class="price num">{s['n']} 筆</div>
+  <div class="meta">
+    <span><em>最好</em> {bp['name']}（{bp['code']}）
+      <span class="num up">{b:+.1f}%</span></span>
+    <span><em>最差</em> {wp['name']}（{wp['code']}）
+      <span class="num down">{w:+.1f}%</span></span>
+  </div>
+</div>""")
+
+        pending = (f"　另有 {ev['pending']} 筆推薦未滿 5 日，尚未計入"
+                   if ev["pending"] else "")
+        blocks.append(f"""
+<div class="section-head"><h2>{label}</h2>
+  <span class="section-note">{note}</span></div>
+<div class="dist"><span class="dist-item">累計推薦
+  <b>{ev['total_picks']}</b> 筆</span>
+  <span class="dist-note">{pending}</span></div>
+<div class="totals">{''.join(cards)}</div>
+<div class="rows">{''.join(rows_html)}</div>""")
+
+    return f"""
+<div class="tabs">
+  <a href="/web/screener?mode=blackhorse">黑馬</a>
+  <a href="/web/screener?mode=radar">雷達</a>
+  <span class="tabs-gap"></span>
+  <a href="/web/screener?mode=review" class="on">成效</a>
+</div>
+<div class="mode-note">
+  把過去推薦過的名單拿現價回頭比對，看這套評分實際上有沒有用。
+  只統計已走完該天期的樣本，並附上同期大盤報酬做對照——
+  多頭時什麼都在漲，沒有對照組的話「平均 +5%」看不出是選股有效還是市場好。
+</div>
+{''.join(blocks)}
+<div class="callout" style="margin-top:24px">
+  <b>怎麼看這些數字</b><br>
+  <span style="font-size:12.5px;color:var(--ink-faint)">
+  ・樣本數少於 30 筆時，平均值很容易被一兩檔極端值帶著跑，參考價值有限。<br>
+  ・中位數比平均值抗極端值，兩者差距大就代表少數幾檔主導了整體結果。<br>
+  ・真正該看的是「贏過大盤多少」，而不是絕對報酬。<br>
+  ・這是回頭檢視，不是預測；過去有效不保證未來有效。</span>
+</div>"""
+
+
 @app.route("/web/screener")
 @web_login_required
 def web_screener(uid):
@@ -5945,12 +6352,16 @@ def web_screener(uid):
         # 選股台是全站最重的一頁（候選池上百檔），先秒回骨架再慢慢填
         return render_loading_shell(
             "選股台", "screener",
-            ["正在抓三大法人買賣超…", "正在抓月營收與估值…",
-             "正在挑選候選池…",
-             ("正在逐檔抓報價（上百檔）…" if mode != "radar"
-              else "正在抓當日強勢股報價…"),
-             "正在評分與排序…"],
-            note="候選池涵蓋電子、傳產、金融三類，需要逐檔取得報價與量能。")
+            (["正在讀取歷史推薦名單…", "正在抓現價比對…", "正在計算報酬與勝率…"]
+             if mode == "review" else
+             ["正在抓三大法人買賣超…", "正在抓月營收與估值…",
+              "正在挑選候選池…",
+              ("正在逐檔抓報價（上百檔）…" if mode != "radar"
+               else "正在抓當日強勢股報價…"),
+              "正在評分與排序…"]),
+            note=("回頭比對過去推薦過的名單，需要抓這些股票的現價。"
+                  if mode == "review" else
+                  "候選池涵蓋電子、傳產、金融三類，需要逐檔取得報價與量能。"))
 
     limit = request.args.get("limit", "20")
     limit = int(limit) if limit.isdigit() and int(limit) in (10, 20, 50) else 20
@@ -5960,6 +6371,9 @@ def web_screener(uid):
     industry_filter = request.args.get("industry", "")
     cat_filter = request.args.get("cat", "")   # 空=全部；僅作顯示篩選，不影響候選池
     view = request.args.get("view", "list")         # list=總排行, sector=依產業
+
+    if mode == "review":
+        return respond_page("選股台", build_review_body(), "screener")
 
     inst = fetch_institutional_data()
     if not inst:
@@ -6283,6 +6697,7 @@ def web_screener(uid):
      class="{'on' if mode != 'radar' else ''}">黑馬</a>
   <a href="/web/screener?mode=radar&view={view}&cat={cat_filter}"
      class="{'on' if mode == 'radar' else ''}">雷達</a>
+  <a href="/web/screener?mode=review">成效</a>
   {'' if mode == 'radar' else f'''<span class="tabs-gap"></span>
   <a href="/web/screener?mode={mode}&view=list&cat={cat_filter}"
      class="{'on' if view != 'sector' else ''}">總排行</a>
@@ -6551,6 +6966,20 @@ def handle_message(event):
     # 7.6 產業輪動：看的是「誰在變強」而不是「誰最強」
     elif text in ["輪動", "產業輪動", "族群"]:
         reply = build_rotation_report()
+
+    # 7.7 個股比較：例如「比較 2330 2454 3661」
+    elif text.startswith("比較") or text.startswith("比"):
+        # 不能用 pure_code——那只取得到第一個代號。這裡要抓出全部代號。
+        found = re.findall(r"\d{4,6}[A-Za-z]?", text)
+        if len(found) >= 2:
+            reply = build_compare_report(found)
+        else:
+            reply = ("⚖️ 個股比較\n\n"
+                     "輸入兩檔以上的代號，例如：\n"
+                     "　比較 2330 2454\n"
+                     "　比較 2330 2454 3661\n\n"
+                     "最多可比較 4 檔，會並排列出營收成長、估值、"
+                     "籌碼與位階。")
 
     # 8. 黑馬股（不同於雷達：以「月營收年增率」為主軸，找有題材／獲利成長的股票）
     elif text == "黑馬":
