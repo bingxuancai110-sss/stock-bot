@@ -70,6 +70,12 @@ def init_db():
                 PRIMARY KEY (user_id, code)
             )
         ''')
+        # 自選股分類（長線／短線／觀察）。用 ALTER 而非寫在 CREATE 裡，
+        # 因為 CREATE TABLE IF NOT EXISTS 對既有的表不會補欄位，
+        # 舊使用者的自選清單早就建好了，只靠 CREATE 這個欄位永遠不會出現。
+        cursor.execute('''
+            ALTER TABLE watchlists ADD COLUMN IF NOT EXISTS tag TEXT
+        ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY,
@@ -433,13 +439,40 @@ def get_notify_users():
     finally:
         release_db_connection(conn)
 
-def add_watchlist_db(user_id, code):
+# ── 自選股分類 ──
+# 只有三種，不開放自由輸入：LINE 是純文字介面，自由標籤很容易打錯字，
+# 最後變成「長期」「長線」「長綫」三個實際上同一件事的分類。
+WATCHLIST_TAGS = ["長線", "短線", "觀察"]
+TAG_ALIASES = {
+    "長線": "長線", "長期": "長線", "長": "長線", "存股": "長線",
+    "短線": "短線", "短期": "短線", "短": "短線", "波段": "短線",
+    "觀察": "觀察", "看": "觀察", "追蹤": "觀察", "觀": "觀察",
+}
+TAG_ICONS = {"長線": "🌱", "短線": "⚡", "觀察": "👀"}
+
+
+def normalize_tag(raw):
+    """把使用者輸入的分類字樣轉成標準值；認不出來就回 None（歸為未分類）。"""
+    t = str(raw or "").strip()
+    return TAG_ALIASES.get(t)
+
+
+def add_watchlist_db(user_id, code, tag=None):
+    """
+    新增或更新自選股。已存在時只更新分類——
+    使用者重打一次「加 2330 長線」的意思顯然是要改分類，不是要被告知重複。
+    tag 為 None 時保留原本的分類，不會把既有分類洗掉。
+    """
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO watchlists (user_id, code) VALUES (%s, %s) ON CONFLICT (user_id, code) DO NOTHING",
-            (str(user_id).strip(), str(code).strip())
+            """
+            INSERT INTO watchlists (user_id, code, tag) VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, code) DO UPDATE SET
+                tag = COALESCE(EXCLUDED.tag, watchlists.tag)
+            """,
+            (str(user_id).strip(), str(code).strip(), tag)
         )
         conn.commit()
         cursor.close()
@@ -450,6 +483,45 @@ def add_watchlist_db(user_id, code):
         return False
     finally:
         release_db_connection(conn)
+
+
+def set_watchlist_tag(user_id, code, tag):
+    """只改分類，不新增。回傳是否真的有這檔可改。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE watchlists SET tag = %s WHERE user_id = %s AND code = %s",
+            (tag, str(user_id).strip(), str(code).strip())
+        )
+        changed = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        return changed > 0
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 更新自選股分類錯誤: {e}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def get_watchlist_tags(user_id):
+    """回傳 {code: tag}，未分類的 tag 為 None。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT code, tag FROM watchlists WHERE user_id = %s",
+                       (str(user_id).strip(),))
+        rows = cursor.fetchall()
+        cursor.close()
+        return {r[0]: r[1] for r in rows}
+    except Exception as e:
+        print(f"❌ 讀取自選股分類錯誤: {e}")
+        return {}
+    finally:
+        release_db_connection(conn)
+
 
 def remove_watchlist_db(user_id, code):
     conn = get_db_connection()
@@ -3009,12 +3081,14 @@ def build_healthcheck_report(user_id):
     institutional_data = fetch_institutional_data()
     scores = compute_watchlist_scores(codes)
     prev_scores = get_previous_scores(user_id, codes)
+    tags = get_watchlist_tags(user_id)
 
     rows = []
     for code in codes:
+        tag = tags.get(code)
         s = scores.get(code)
         if not s:
-            rows.append((-1, f"⚪ {code} 查無行情"))
+            rows.append((tag, -1, f"⚪ {code} 查無行情"))
             continue
 
         stock = s["stock"]
@@ -3057,14 +3131,36 @@ def build_healthcheck_report(user_id):
             f"{rev_txt}　{pe_txt}　🛡️{stock['support']} 🚧{fmt_resistance(stock['resistance'])}\n"
             f"{advice}"
         )
-        rows.append((total, text))
+        rows.append((tag, total, text))
 
-    rows.sort(key=lambda x: x[0], reverse=True)
-    body = "\n\n".join(text for _, text in rows)
+    # 依分類分組。長線與短線該用不同標準判讀——長線在意營收與估值，
+    # 短線在意籌碼與位階——分開列才不會混著看。
+    # 組內仍依分數排序；未分類的放最後。
+    grouped = {}
+    for tag, total, text in rows:
+        grouped.setdefault(tag, []).append((total, text))
+
+    order = [t for t in WATCHLIST_TAGS if t in grouped]
+    if None in grouped:
+        order.append(None)
+
+    blocks = []
+    has_tags = any(t is not None for t in grouped)
+    for tag in order:
+        items = sorted(grouped[tag], key=lambda x: x[0], reverse=True)
+        if has_tags:
+            icon = TAG_ICONS.get(tag, "📌")
+            label = tag or "未分類"
+            blocks.append(f"{icon}　{label}（{len(items)}）\n" + "─" * 12)
+        blocks.append("\n\n".join(text for _, text in items))
+
+    body = "\n\n".join(blocks)
+    tag_hint = ("" if has_tags else
+                "\n分類：輸入「加 2330 長線」或「分類 2330 短線」")
     report = (
         f"📋 自選股健檢（{len(codes)}檔）\n\n{body}\n\n"
         f"評分＝籌碼30＋位階25＋營收25＋估值20\n"
-        f"🟢70+ 🟡45-69 🔴<45\n"
+        f"🟢70+ 🟡45-69 🔴<45{tag_hint}\n"
         f"※ 觀察為數據歸納，非投資建議，請自行判斷"
     )
 
@@ -3736,7 +3832,8 @@ def build_menu_flex():
          "backgroundColor": "#F4F5F2", "cornerRadius": "4px",
          "paddingAll": "14px", "spacing": "sm",
          "contents": [
-             howto("加入自選", "加 2330", "換成你要的代號"),
+             howto("加入自選", "加 2330", "可加分類：加 2330 長線"),
+             howto("設定分類", "分類 2330 短線", "長線／短線／觀察"),
              howto("移除自選", "刪 2330", "從清單移除"),
              howto("查詢個股", "2330", "只打代號即可"),
          ]},
@@ -6038,14 +6135,37 @@ def handle_message(event):
         else:
             reply = f"找不到「{arg}」。輸入「名單」查看編號。"
 
-    # 1. 加自選
+    # 1. 加自選（可同時指定分類，例如「加 2330 長線」）
     elif "加" in text and 4 <= len(pure_code) <= 7:
-        success = add_watchlist_db(user_id, pure_code)
-        c_name = STOCK_NAME_MAP.get(pure_code, pure_code)
+        tag = normalize_tag(text.replace("加", "").replace(pure_code, "").strip())
+        success = add_watchlist_db(user_id, pure_code, tag)
+        c_name = stock_display_name(pure_code) or STOCK_NAME_MAP.get(pure_code, pure_code)
         if success:
-            reply = f"✅ 新增自選成功：{pure_code} {c_name}"
+            if tag:
+                reply = (f"✅ 新增自選成功：{pure_code} {c_name}\n"
+                         f"分類：{TAG_ICONS[tag]} {tag}")
+            else:
+                reply = (f"✅ 新增自選成功：{pure_code} {c_name}\n\n"
+                         f"想分類的話：輸入「分類 {pure_code} 長線」\n"
+                         f"可用分類：🌱長線　⚡短線　👀觀察")
         else:
             reply = f"❌ 新增自選失敗，資料庫寫入異常：{pure_code}"
+
+    # 1.5 只改分類，不新增
+    elif text.startswith("分類") and 4 <= len(pure_code) <= 7:
+        tag = normalize_tag(text.replace("分類", "").replace(pure_code, "").strip())
+        if not tag:
+            reply = (f"請指定分類，例如「分類 {pure_code} 長線」\n\n"
+                     f"可用分類：\n"
+                     f"🌱 長線　適合看營收與估值\n"
+                     f"⚡ 短線　適合看籌碼與位階\n"
+                     f"👀 觀察　還沒進場，先追蹤")
+        elif set_watchlist_tag(user_id, pure_code, tag):
+            c_name = stock_display_name(pure_code) or pure_code
+            reply = f"{TAG_ICONS[tag]} 已將 {pure_code} {c_name} 設為「{tag}」"
+        else:
+            reply = (f"❌ 自選清單裡沒有 {pure_code}\n"
+                     f"先輸入「加 {pure_code} {tag}」新增")
 
     # 2. 刪自選
     elif "刪" in text and 4 <= len(pure_code) <= 7:
