@@ -909,19 +909,34 @@ def record_realized_trade(user_id, code, shares, buy_cost, sell_price,
         release_db_connection(conn)
 
 
-def get_realized_trades(user_id, limit=100):
-    """回傳使用者的已實現損益紀錄，依賣出日期新到舊排序。"""
+def get_realized_trades(user_id, limit=100, code=None, month=None):
+    """
+    回傳已實現損益紀錄，依賣出日期新到舊排序。
+    code：只看某一檔；month：只看某個月（格式 YYYY-MM）。
+    兩者都用條件式組裝 SQL，不用「%s IS NULL OR …」——
+    psycopg2 無法推斷那種寫法的參數型別，會直接丟型別錯誤，
+    而錯誤被 except 吃掉後只回空清單，表面上看起來像「沒有紀錄」。
+    """
+    where, params = ["user_id = %s"], [str(user_id).strip()]
+    if code:
+        where.append("code = %s")
+        params.append(str(code).strip())
+    if month:
+        where.append("to_char(sold_on, 'YYYY-MM') = %s")
+        params.append(str(month).strip())
+    params.append(limit)
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            """
+            f"""
             SELECT code, shares, buy_cost, sell_price, realized_pl,
                    realized_pct, bought_on, sold_on, fee, tax
-            FROM realized_trades WHERE user_id = %s
+            FROM realized_trades WHERE {' AND '.join(where)}
             ORDER BY sold_on DESC, id DESC LIMIT %s
             """,
-            (str(user_id).strip(), limit),
+            tuple(params),
         )
         rows = cursor.fetchall()
         cursor.close()
@@ -937,6 +952,67 @@ def get_realized_trades(user_id, limit=100):
         return []
     finally:
         release_db_connection(conn)
+
+
+def get_trade_filters(user_id):
+    """回傳這位使用者交易紀錄裡出現過的月份與股票代號，用來產生篩選選項。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT to_char(sold_on, 'YYYY-MM') AS m
+            FROM realized_trades WHERE user_id = %s AND sold_on IS NOT NULL
+            ORDER BY m DESC
+            """,
+            (str(user_id).strip(),))
+        months = [r[0] for r in cursor.fetchall()]
+        cursor.execute(
+            "SELECT DISTINCT code FROM realized_trades WHERE user_id = %s ORDER BY code",
+            (str(user_id).strip(),))
+        codes = [r[0] for r in cursor.fetchall()]
+        cursor.close()
+        return months, codes
+    except Exception as e:
+        print(f"❌ 讀取交易篩選選項失敗: {e}")
+        return [], []
+    finally:
+        release_db_connection(conn)
+
+
+def summarize_trades(trades):
+    """
+    交易紀錄的統計摘要。只算有損益數字的那些。
+
+    盈虧比（平均獲利 ÷ 平均虧損）比勝率更值得看：
+    勝率七成但每次小賺、輸一次全吐回去，長期仍是虧的。
+    兩個數字要一起看才知道這套做法能不能持續。
+    """
+    priced = [t for t in trades if t["realized_pl"] is not None]
+    if not priced:
+        return None
+
+    wins = [t for t in priced if t["realized_pl"] > 0]
+    losses = [t for t in priced if t["realized_pl"] < 0]
+    total_pl = sum(t["realized_pl"] for t in priced)
+    avg_win = (sum(t["realized_pl"] for t in wins) / len(wins)) if wins else 0
+    avg_loss = (abs(sum(t["realized_pl"] for t in losses)) / len(losses)) if losses else 0
+    hold = [(t["sold_on"] - t["bought_on"]).days
+            for t in priced if t["bought_on"] and t["sold_on"]]
+    costs = sum((t.get("fee") or 0) + (t.get("tax") or 0) for t in priced)
+
+    return {
+        "count": len(priced),
+        "total_pl": total_pl,
+        "wins": len(wins), "losses": len(losses),
+        "win_rate": len(wins) / len(priced) * 100,
+        "avg_win": avg_win, "avg_loss": avg_loss,
+        "payoff": (avg_win / avg_loss) if avg_loss else None,
+        "best": max(priced, key=lambda t: t["realized_pl"]),
+        "worst": min(priced, key=lambda t: t["realized_pl"]),
+        "avg_hold": (sum(hold) / len(hold)) if hold else None,
+        "costs": costs,
+    }
 
 
 def save_portfolio_snapshot(user_id, total_value, total_cost, taiex_close):
@@ -4177,6 +4253,7 @@ def render_page(title, body, nav_active=None, user_name=None):
         nav = ("<nav>"
                + tab("/web/portfolio", "組合", "portfolio")
                + tab("/web/positions", "持股", "positions")
+               + tab("/web/trades", "紀錄", "trades")
                + tab("/web/screener", "選股", "screener")
                + tab("/web/settings", "設定", "settings")
                + "</nav>")
@@ -5144,6 +5221,146 @@ def render_trend_chart(snapshots):
 </div>"""
 
     return svg + legend
+
+
+@app.route("/web/trades")
+@web_login_required
+def web_trades(uid):
+    """
+    交易紀錄。組合分析頁只露出最近 10 筆，這裡看全部並可依月份、股票篩選。
+    重點在統計摘要——單看一筆一筆的損益看不出自己的做法有沒有問題，
+    勝率、盈虧比、平均持有天數合起來才說得出「這套打法能不能持續」。
+    """
+    if not wants_fragment():
+        return render_loading_shell(
+            "交易紀錄", "trades",
+            ["正在讀取交易紀錄…", "正在計算統計…"],
+            note="只統計已賣出並留下損益數字的交易。")
+
+    month = request.args.get("month", "")
+    code = request.args.get("code", "")
+    months, codes = get_trade_filters(uid)
+    trades = get_realized_trades(uid, limit=500,
+                                 code=code or None, month=month or None)
+    inst = fetch_institutional_data() or {}
+
+    if not trades and not months:
+        return respond_page("交易紀錄", """
+<div class="empty">還沒有任何交易紀錄。<br><br>
+<span style="font-size:12.5px">在持股頁按「賣出」並填入賣價後，
+這筆交易就會記錄在這裡。</span><br><br>
+<a href="/web/positions" style="color:var(--brass)">前往持股 →</a></div>""",
+                            "trades")
+
+    st = summarize_trades(trades)
+
+    def opt(v, t, cur):
+        return f'<option value="{v}"{" selected" if str(cur) == str(v) else ""}>{t}</option>'
+
+    controls = f"""
+<form method="get" class="controls">
+  <div class="fields">
+    <div><label>月份</label><select name="month" onchange="this.form.submit()">
+      {opt('', '全部', month)}
+      {''.join(opt(m, m.replace('-', ' / '), month) for m in months)}
+    </select></div>
+    <div><label>股票</label><select name="code" onchange="this.form.submit()">
+      {opt('', '全部', code)}
+      {''.join(opt(c, f"{stock_display_name(c, inst)} {c}", code) for c in codes)}
+    </select></div>
+  </div>
+</form>"""
+
+    if not st:
+        body = controls + '<div class="empty">這個範圍內沒有交易紀錄。</div>'
+        return respond_page("交易紀錄", body, "trades")
+
+    payoff_txt = f"{st['payoff']:.2f}" if st["payoff"] else "—"
+    # 勝率與盈虧比要一起判讀：只有其中一個好不代表這套做法站得住腳
+    if st["payoff"] and st["win_rate"]:
+        expectancy = (st["win_rate"] / 100 * st["avg_win"]
+                      - (1 - st["win_rate"] / 100) * st["avg_loss"])
+        exp_txt = (f"以目前的勝率與盈虧比推算，每筆交易的期望值約 "
+                   f"<b>{expectancy:+,.0f}</b> 元。")
+    else:
+        exp_txt = "獲利或虧損的樣本還不夠，暫時算不出期望值。"
+
+    best, worst = st["best"], st["worst"]
+
+    def trade_row(t):
+        name = stock_display_name(t["code"], inst)
+        pl = t["realized_pl"]
+        cls = "" if pl is None else ("up" if pl >= 0 else "down")
+        held = ((t["sold_on"] - t["bought_on"]).days
+                if t["bought_on"] and t["sold_on"] else None)
+        costs = (t.get("fee") or 0) + (t.get("tax") or 0)
+        return f"""
+<div class="row">
+  <div><span class="name">{name}</span><span class="code">{t['code']}</span></div>
+  <div class="price num {cls}">{pl:+,.0f}</div>
+  <div class="meta">
+    <span><em>報酬</em> {fmt_pct(t['realized_pct'])}</span>
+    <span><em>股數</em> <span class="num">{t['shares']:,}</span></span>
+    <span><em>成本</em> <span class="num">{t['buy_cost']:,.2f}</span></span>
+    <span><em>賣價</em> <span class="num">{t['sell_price']:,.2f}</span></span>
+    <span><em>費用稅</em> <span class="num">{costs:,.0f}</span></span>
+    {f'<span><em>持有</em> {held} 天</span>' if held is not None else ''}
+    <span><em>賣出</em> {t['sold_on'].strftime('%Y/%m/%d') if t['sold_on'] else '—'}</span>
+  </div>
+</div>"""
+
+    # 勝負比例橫帶：一眼看出賺賠筆數的分布
+    w, l = st["wins"], st["losses"]
+    flat = st["count"] - w - l
+    band = []
+    for n, color, fg, label in [(w, "var(--up)", "#FFF", f"賺 {w}"),
+                                (l, "var(--down)", "#FFF", f"賠 {l}"),
+                                (flat, "var(--rule)", "#3B2F1C", f"平 {flat}")]:
+        if n:
+            band.append(f'<span style="flex:{n};background:{color};color:{fg}">'
+                        f'{label if n / st["count"] >= 0.12 else ""}</span>')
+
+    body = f"""
+{controls}
+<div class="totals">
+  <div><div class="total-label">已實現損益</div>
+       <div class="total-value num {'up' if st['total_pl'] >= 0 else 'down'}">
+         {st['total_pl']:+,.0f}</div>
+       <div class="total-sub" style="color:var(--ink-faint)">
+         {st['count']} 筆・已扣成本 <span class="num">{st['costs']:,.0f}</span></div></div>
+  <div><div class="total-label">勝率</div>
+       <div class="total-value num">{st['win_rate']:.0f}%</div>
+       <div class="total-sub" style="color:var(--ink-faint)">
+         {st['wins']} 賺 / {st['losses']} 賠</div></div>
+  <div><div class="total-label">盈虧比</div>
+       <div class="total-value num">{payoff_txt}</div>
+       <div class="total-sub" style="color:var(--ink-faint)">
+         平均賺 {st['avg_win']:,.0f} / 賠 {st['avg_loss']:,.0f}</div></div>
+  <div><div class="total-label">平均持有</div>
+       <div class="total-value num">
+         {f"{st['avg_hold']:.0f} 天" if st['avg_hold'] is not None else '—'}</div></div>
+</div>
+
+<div class="band" style="height:34px">{''.join(band)}</div>
+<div class="callout">
+  {exp_txt}<br>
+  <span style="font-size:12.5px;color:var(--ink-faint)">
+  勝率與盈虧比要一起看：勝率七成但每次小賺、輸一次全吐回去，長期仍是虧的；
+  勝率四成但賺的時候賺得夠多，反而站得住腳。</span>
+</div>
+
+<div class="section-head"><h2>最好與最差</h2>
+  <span class="section-note">這個範圍內</span></div>
+<div class="rows">
+{trade_row(best)}
+{trade_row(worst) if worst is not best else ''}
+</div>
+
+<div class="section-head"><h2>全部交易</h2>
+  <span class="section-note">依賣出日期排序・{len(trades)} 筆</span></div>
+<div class="rows">{''.join(trade_row(t) for t in trades)}</div>
+"""
+    return respond_page("交易紀錄", body, "trades")
 
 
 @app.route("/web/settings", methods=["GET", "POST"])
