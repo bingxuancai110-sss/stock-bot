@@ -487,6 +487,24 @@ def build_user_list_report():
         lines.append(f"（免費方案每月 {PUSH_MONTHLY_QUOTA} 則，"
                      f"每人每交易日 1 則 → 上限 {PUSH_MAX_USERS} 人，"
                      f"還可開通 {PUSH_MAX_USERS - on} 人）")
+
+    # 資料完整性：缺交易日不會報錯，統計照樣算得出來也看起來合理，
+    # 只有跟券商對帳才會發現。放在這裡是因為管理者本來就會看名單，
+    # 不必特地去翻 cron 紀錄才知道資料有沒有漏。
+    n_days, missing, newest = check_data_integrity(30)
+    lines += ["", "─" * 14, "📊 法人資料完整性（近30天）"]
+    if not n_days:
+        lines.append("⚠️ 完全沒有資料，請跑 /cron/fetch-t86")
+    else:
+        lines.append(f"　已存 {n_days} 個交易日，最新 {newest}")
+        if missing:
+            shown = "、".join(d.strftime("%m/%d") for d in missing[:6])
+            more = f" 等 {len(missing)} 天" if len(missing) > 6 else ""
+            lines.append(f"　⚠️ 疑似缺 {shown}{more}")
+            lines.append("　（可能是國定假日；若否，用 /backfill 回補）")
+        else:
+            lines.append("　✅ 區間內無缺漏")
+
     return "\n".join(lines)
 
 
@@ -2779,6 +2797,55 @@ def get_cumulative_net_buy(days=10, top_n=80, codes=None):
         return []
     finally:
         release_db_connection(conn)
+
+
+def check_data_integrity(days=30):
+    """
+    檢查法人歷史有沒有缺交易日。
+
+    為什麼需要這個：缺資料不會報錯。「近 N 個交易日」是用
+    SELECT DISTINCT trade_date ... LIMIT N 取的，少了一天它就默默
+    往前多抓一天，統計照樣算得出來、數字也看起來合理，
+    只有拿去跟券商對帳才會發現。這種錯誤在正式環境可以躺很久。
+
+    判斷方式：把資料庫裡的日期序列跟「該區間內的工作日」比對。
+    國定假日無法從程式判斷（每年不同），所以只回報「疑似」缺漏，
+    由人自己確認那天是不是真的休市。
+
+    回傳 (實際天數, 疑似缺漏的日期清單, 最新日期)
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT trade_date FROM inst_history
+            WHERE trade_date >= CURRENT_DATE - %s
+            ORDER BY trade_date DESC
+            """, (days,))
+        dates = [r[0] for r in cursor.fetchall()]
+        cursor.close()
+    except Exception as e:
+        print(f"❌ 檢查資料完整性失敗: {e}")
+        return 0, [], None
+    finally:
+        release_db_connection(conn)
+
+    if not dates:
+        return 0, [], None
+
+    have = set(dates)
+    newest, oldest = dates[0], dates[-1]
+
+    # 只檢查有資料的區間內部，不往未來或更早推——
+    # 區間外沒資料是正常的（還沒抓 / 超出保留期限），不該報成缺漏
+    missing, d = [], oldest
+    while d <= newest:
+        if d.weekday() < 5 and d not in have:   # 平日卻沒資料
+            missing.append(d)
+        d += timedelta(days=1)
+
+    return len(dates), missing, newest
 
 
 def get_history_days_count():
