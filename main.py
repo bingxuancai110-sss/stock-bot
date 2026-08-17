@@ -2350,10 +2350,82 @@ def get_history_days_count():
         release_db_connection(conn)
 
 
+def fetch_tpex_institutional():
+    """
+    抓上櫃三大法人買賣超（TPEx openapi）。TWSE 的 T86 只含上市，
+    少了這塊，上櫃股在籌碼相關的功能裡等於一片空白——
+    連買天數永遠是 0、黑馬候選池也永遠不會出現上櫃股。
+
+    這個端點只給「最新一個交易日」，不接受日期參數，
+    所以歷史只能每天靠 cron 往前累積，無法像 T86 那樣回補。
+
+    欄位名稱有兩個坑：
+    1. JSON key 帶有多餘空格且命名不一致（例如
+       'ForeignInvestorsInclude MainlandAreaInvestors-Difference' 中間有空格），
+       所以用 _pick() 依序嘗試多個候選名稱，不能寫死一個。
+    2. 「外資」有兩種口徑：含與不含外資自營商。這裡取「不含」的那個，
+       跟 TWSE T86 的「外陸資買賣超股數(不含外資自營商)」對齊，
+       否則兩個市場的外資數字定義不同，混在一起比較沒有意義。
+
+    回傳 (資料 dict, 資料日期 YYYYMMDD) ；失敗回傳 (None, None)。
+    """
+    rows = _get_json(f"{TPEX_BASE}/tpex_3insti_daily_trading", timeout=20)
+    if not rows:
+        return None, None
+
+    def to_int(s):
+        try:
+            return int(str(s).replace(",", "").strip())
+        except (ValueError, TypeError):
+            return 0
+
+    # 民國年轉西元：1150814 → 20260814
+    data_date = None
+    raw_date = _pick(rows[0], "Date")
+    if len(raw_date) == 7 and raw_date.isdigit():
+        data_date = f"{int(raw_date[:3]) + 1911}{raw_date[3:]}"
+
+    result = {}
+    for row in rows:
+        code = _pick(row, "SecuritiesCompanyCode", "Code")
+        if not code:
+            continue
+        name = _pick(row, "CompanyName", "Name")
+
+        foreign = to_int(_pick(
+            row,
+            "Foreign Investors include Mainland Area Investors (Foreign Dealers excluded)-Difference",
+            "ForeignInvestorsIncludeMainlandAreaInvestors(ForeignDealersexcluded)-Difference"))
+        foreign_dealer = to_int(_pick(row, "ForeignDealers-Difference",
+                                      "Foreign Dealers-Difference"))
+        trust = to_int(_pick(row, "SecuritiesInvestmentTrustCompanies-Difference"))
+        dealer = to_int(_pick(row, "Dealers-Difference"))
+        total = to_int(_pick(row, "TotalDifference"))
+
+        # 沒有合計欄位時自行加總（外資不含自營，所以要另外把外資自營加回來）
+        if not total:
+            total = foreign + foreign_dealer + trust + dealer
+
+        result[code] = {
+            "name": name or code,
+            "foreign_net_lots": foreign // 1000,
+            "trust_net_lots": trust // 1000,
+            "dealer_net_lots": (dealer + foreign_dealer) // 1000,
+            "total_net_lots": total // 1000,
+        }
+
+    if not result:
+        return None, None
+    print(f"✅ 上櫃法人買賣超抓取成功（{data_date}），共 {len(result)} 檔")
+    return result, data_date
+
+
 def fetch_institutional_data():
     """
-    抓當日 T86 資料；若今天資料還沒公布（例如盤中、假日），
-    自動往前找最近一個有資料的交易日，最多往前找 5 天。
+    抓當日三大法人買賣超，涵蓋上市（TWSE T86）與上櫃（TPEx）。
+
+    上市的部分若今天還沒公布（盤中、假日），會自動往前找最近一個
+    有資料的交易日，最多往前找 5 天。上櫃端點只給最新一日，不能指定日期。
     一天只需成功抓取一次，之後直接用快取。
     """
     today = datetime.now().strftime("%Y%m%d")
@@ -2361,17 +2433,37 @@ def fetch_institutional_data():
     if _t86_cache["cache_date"] == today and _t86_cache["data"]:
         return _t86_cache["data"]
 
+    merged, data_date = {}, None
     for days_back in range(0, 6):
         query_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
         data = _fetch_t86_for_date(query_date)
         if data:
-            _t86_cache["cache_date"] = today
-            _t86_cache["data_date"] = query_date
-            _t86_cache["data"] = data
+            merged.update(data)
+            data_date = query_date
             save_t86_history(query_date, data)
-            return data
+            break
 
-    print("⚠️ 往前找了 5 天仍無 T86 資料")
+    # 上櫃：即使上市那邊抓失敗也照抓，兩個市場互相獨立，
+    # 沒理由因為一邊沒資料就讓另一邊也一起沒有。
+    try:
+        tpex, tpex_date = fetch_tpex_institutional()
+        if tpex:
+            merged.update(tpex)
+            # 用 TPEx 自己回報的日期存歷史，不套用上市那邊往前找到的日期，
+            # 否則兩個市場的資料會被記在同一天而其實不是同一天。
+            if tpex_date:
+                save_t86_history(tpex_date, tpex)
+            data_date = data_date or tpex_date
+    except Exception as e:
+        print(f"❌ 上櫃法人資料抓取失敗: {e}")
+
+    if merged:
+        _t86_cache["cache_date"] = today
+        _t86_cache["data_date"] = data_date
+        _t86_cache["data"] = merged
+        return merged
+
+    print("⚠️ 上市往前找了 5 天、上櫃也無資料")
     return _t86_cache["data"]
 
 # --- 真實評分邏輯 ---
@@ -3361,8 +3453,9 @@ def cron_fetch_t86():
     _t86_cache["cache_date"] = None
     data = fetch_institutional_data()
     if not data:
-        return "No T86 data available (non-trading day or not yet published).", 200
-    return f"OK. date={_t86_cache.get('data_date')}, stocks={len(data)}", 200
+        return "No institutional data available (non-trading day or not yet published).", 200
+    return (f"OK. date={_t86_cache.get('data_date')}, "
+            f"stocks={len(data)}（上市＋上櫃）"), 200
 
 
 @app.route("/cron/snapshot-portfolio", methods=["POST", "GET"])
@@ -3809,18 +3902,20 @@ def build_menu_flex():
     # 這段是「怎麼用」的核心說明，原本是灰色小字容易被略過，
     # 改成有底色的區塊＋深色文字，並把要輸入的內容獨立成一行放大。
     def howto(label, cmd, note):
+        """
+        一組「怎麼打」的說明。指令與說明改成上下堆疊而非並排——
+        並排時只要指令一長（例如「分類 2330 短線」），右邊的說明就會
+        被擠到換行且對不齊，長度不一的幾行看起來會參差不齊。
+        """
         return {
-            "type": "box", "layout": "vertical", "margin": "md", "spacing": "xs",
+            "type": "box", "layout": "vertical", "margin": "lg", "spacing": "none",
             "contents": [
-                {"type": "text", "text": label, "size": "sm",
-                 "color": "#6B737B", "weight": "bold"},
-                {"type": "box", "layout": "baseline", "spacing": "sm",
-                 "contents": [
-                     {"type": "text", "text": cmd, "size": "lg",
-                      "weight": "bold", "color": "#1B2027", "flex": 0},
-                     {"type": "text", "text": note, "size": "sm",
-                      "color": "#8E959C", "wrap": True},
-                 ]},
+                {"type": "text", "text": label, "size": "xs",
+                 "color": "#8E959C", "weight": "bold"},
+                {"type": "text", "text": cmd, "size": "lg", "weight": "bold",
+                 "color": "#1B2027", "wrap": True, "margin": "xs"},
+                {"type": "text", "text": note, "size": "xs",
+                 "color": "#8E959C", "wrap": True, "margin": "xs"},
             ],
         }
 
@@ -3832,7 +3927,7 @@ def build_menu_flex():
          "backgroundColor": "#F4F5F2", "cornerRadius": "4px",
          "paddingAll": "14px", "spacing": "sm",
          "contents": [
-             howto("加入自選", "加 2330", "可加分類：加 2330 長線"),
+             howto("加入自選", "加 2330", "也可同時分類：加 2330 長線"),
              howto("設定分類", "分類 2330 短線", "長線／短線／觀察"),
              howto("移除自選", "刪 2330", "從清單移除"),
              howto("查詢個股", "2330", "只打代號即可"),
