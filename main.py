@@ -4343,6 +4343,27 @@ def sync_industry():
     ), 200
 
 
+def plain_text_page(lines):
+    """
+    診斷輸出用等寬字體呈現。
+
+    直接回純文字時，手機瀏覽器會用比例字體並自動把換行吃掉，
+    逐列對齊的表格會擠成一團完全無法閱讀——診斷頁最需要的就是對齊。
+    包一層 <pre> 並宣告 UTF-8，欄位才會排整齊。
+    """
+    body = "\n".join(str(x) for x in lines)
+    body = (body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    return f"""<!DOCTYPE html><html lang="zh-Hant"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>診斷</title></head>
+<body style="margin:0;background:#12161B;color:#D8DBD4">
+<pre style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+ font-size:12px;line-height:1.6;padding:14px;margin:0;
+ white-space:pre;overflow-x:auto">{body}</pre>
+</body></html>"""
+
+
 @app.route("/check-pool", methods=["POST", "GET"])
 def check_pool():
     """
@@ -4397,7 +4418,7 @@ def check_pool():
         ok += 1
     lines.append(f"前30名逐檔檢查：通過 {ok}、查無行情 {noprice}、"
                  f"股價過低 {lowprice}、成交金額不足 {lowturn}")
-    return "\n".join(str(x) for x in lines), 200
+    return plain_text_page(lines), 200
 
 
 @app.route("/check-source", methods=["POST", "GET"])
@@ -4458,7 +4479,7 @@ def check_source():
         lines.append(f"  找到本代號：{hit if hit else '否'}")
         lines.append("")
 
-    return "\n".join(str(x) for x in lines), 200
+    return plain_text_page(lines), 200
 
 
 @app.route("/check-inst", methods=["POST", "GET"])
@@ -4546,7 +4567,7 @@ def check_inst():
         for d in thin:
             lines.append(f"　{d}　{counts.get(d, 0):,} 檔")
 
-    return "\n".join(str(x) for x in lines), 200
+    return plain_text_page(lines), 200
 
 
 @app.route("/check-industry", methods=["POST", "GET"])
