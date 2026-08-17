@@ -506,7 +506,7 @@ def current_web_user():
 
 
 # ── 一次性登入驗證碼 ──
-WEB_CODE_MINUTES = 10   # 短效期：這組碼只是用來換取正式權杖，不需要放很久
+WEB_CODE_MINUTES = 30   # 跟網頁連結一起給，可能過一陣子才想到要換瀏覽器開
 
 
 def create_web_code(user_id):
@@ -3269,7 +3269,6 @@ def build_quick_reply():
         ("📊 解盤", "解盤"),
         ("📰 新聞", "新聞"),
         ("🌐 網頁", "網頁"),
-        ("🔑 登入碼", "登入碼"),
     ]
     return QuickReply(items=[
         QuickReplyButton(action=MessageAction(label=label, text=text))
@@ -3298,8 +3297,7 @@ def build_menu_flex():
             ("新聞", "自選股相關新聞與連結"),
         ]),
         ("網頁版", "#6B4E9E", "#EFEAF7", [
-            ("網頁", "🚧 Coming soon　持股組合分析\n產業集中度、相關係數、加權基本面"),
-            ("登入碼", "用 6 位數在 Safari／Chrome 登入\nLINE 內開啟顯示異常時改用這個"),
+            ("網頁", "🚧 Coming soon　持股組合分析\n連結與登入碼一次給，兩種瀏覽器都能開"),
         ]),
         ("推播設定", "#7A8290", "#EDEFF1", [
             ("申請推播", "🔒 VIP 限定　每日盤前自動發送\n非 VIP 可直接點上方「盤前」查看相同內容"),
@@ -3603,8 +3601,8 @@ NEED_LOGIN_HTML = """
   </div>
   <button type="submit">登入</button>
   <div class="sell-hint">
-    回到 LINE 的「台股 BOT」，輸入 <b>登入碼</b>，機器人會給你一組 6 位數，
-    有效 10 分鐘。<br>
+    回到 LINE 的「台股 BOT」，輸入 <b>網頁</b>，訊息裡就有登入碼；
+    只想重拿一組的話輸入 <b>登入碼</b>。有效 30 分鐘。<br>
     在 LINE 裡開網頁若顯示不正常，用這個方式就能在 Safari、Chrome
     等外部瀏覽器登入。
   </div>
@@ -5580,18 +5578,37 @@ def handle_message(event):
         reply = f"你的 user_id：\n{user_id}"
 
     elif text in ["網頁", "WEB", "網頁版"]:
+        # 連結與登入碼一次都給：兩者用途不同，但使用者不該為了換瀏覽器
+        # 而需要知道要再打一次別的指令。
+        # 連結給 LINE 內開啟用，登入碼給 Safari／Chrome 用。
         token = create_web_token(user_id)
+        code = create_web_code(user_id)
+        base = request.url_root.rstrip("/")
         if token:
-            base = request.url_root.rstrip("/")
-            reply = (f"🌐 台股 BOT 網頁版　🚧 Coming soon\n\n"
-                     f"{base}/web/login?t={token}\n\n"
-                     f"可輸入持股，查看產業集中度、相關係數與加權基本面。\n"
-                     f"連結 {WEB_SESSION_DAYS} 天內有效，過期再輸入「網頁」取得新的。\n\n"
-                     f"💡 想用 Safari／Chrome 開啟\n"
-                     f"LINE 內建瀏覽器跟外部瀏覽器的登入狀態不共用，"
-                     f"直接複製網址過去會顯示「需要登入」。\n"
-                     f"請改輸入「登入碼」，用 6 位數在任何瀏覽器登入。\n\n"
-                     f"⚠️ 目前仍在開發中，功能與畫面可能隨時調整。")
+            parts = [
+                "🌐 台股 BOT 網頁版　🚧 Coming soon",
+                "",
+                "【在 LINE 裡開啟】直接點：",
+                f"{base}/web/login?t={token}",
+                "",
+            ]
+            if code:
+                parts += [
+                    "【用 Safari／Chrome 開啟】",
+                    f"網址：{base}/web/code",
+                    f"登入碼：{code}",
+                    "",
+                    f"（登入碼 {WEB_CODE_MINUTES} 分鐘內有效，只能用一次；"
+                    f"過期再輸入「登入碼」取得新的）",
+                    "",
+                ]
+            parts += [
+                "可輸入持股，查看產業集中度、相關係數與加權基本面。",
+                f"登入後可維持 {WEB_SESSION_DAYS} 天。",
+                "",
+                "⚠️ 目前仍在開發中，功能與畫面可能隨時調整。",
+            ]
+            reply = "\n".join(parts)
         else:
             reply = "❌ 產生連結失敗，請稍後再試。"
 
