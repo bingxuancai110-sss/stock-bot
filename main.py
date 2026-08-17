@@ -191,6 +191,45 @@ def init_db():
                 PRIMARY KEY (code, period)
             )
         ''')
+        # 已實現損益：賣出當下記一筆快照（成本、賣價、損益），
+        # 跟目前持股分開存──賣掉之後那筆持股就從 positions 消失了，
+        # 沒有這張表就永遠算不出「這一季賺賠多少」「勝率」這類長期指標。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS realized_trades (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                shares INTEGER NOT NULL,
+                buy_cost REAL NOT NULL,
+                sell_price REAL NOT NULL,
+                realized_pl REAL,
+                realized_pct REAL,
+                bought_on DATE,
+                sold_on DATE DEFAULT CURRENT_DATE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_realized_trades_user
+            ON realized_trades (user_id, sold_on DESC)
+        ''')
+        # 每日組合快照：市值與大盤指數各存一筆，用來畫「我的組合 vs 大盤」走勢圖。
+        # 沒有這張表就沒有歷史可畫，所以越早開始存越好，畫圖是之後的事。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                snapshot_date DATE NOT NULL,
+                total_value REAL,
+                total_cost REAL,
+                taiex_close REAL,
+                UNIQUE(user_id, snapshot_date)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_user
+            ON portfolio_snapshots (user_id, snapshot_date)
+        ''')
         conn.commit()
         cursor.close()
     except Exception as e:
@@ -553,25 +592,35 @@ def delete_position(user_id, pos_id):
         release_db_connection(conn)
 
 
-def sell_position(user_id, pos_id, sell_shares):
+def sell_position(user_id, pos_id, sell_shares, fee_discount=None, min_fee=None):
     """
     賣出持股。賣出股數等於整筆數量時直接刪除該筆；
     小於時只減少股數，每股成本不變──賣出不影響剩餘股份的成本基礎。
-    這裡只更新目前持股，不記錄已實現損益歷史（那是更大的「交易紀錄」功能，
-    README 待辦第 7 項）。
+
+    同時把這筆賣出記進 realized_trades：用當下市價估損益，
+    跟券商「立刻賣出會拿到多少」是同一套算法（net_profit，扣賣出手續費與證交稅）。
+    查不到即時報價時，賣出仍會成功，只是這筆不會有損益數字可看──
+    不能因為抓不到報價就擋掉使用者的操作。
+
+    fee_discount／min_fee 沒給時用預設值（DEFAULT_FEE_DISCOUNT／DEFAULT_MIN_FEE，
+    定義在檔案後段的「交易成本」區塊）；這裡故意不把它們寫成參數預設值，
+    因為函式定義的當下那兩個常數還沒被定義，寫成預設值會在載入模組時就噴錯，
+    改成呼叫時才判斷即可避開。
+
     回傳 (成功與否, 錯誤訊息或 None)
     """
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT shares FROM positions WHERE id = %s AND user_id = %s",
+            "SELECT code, shares, cost, bought_on FROM positions "
+            "WHERE id = %s AND user_id = %s",
             (int(pos_id), str(user_id).strip()))
         row = cursor.fetchone()
         if not row:
             cursor.close()
             return False, "找不到這筆持股"
-        current_shares = row[0]
+        code, current_shares, lot_cost, bought_on = row
         if sell_shares <= 0:
             cursor.close()
             return False, "賣出股數必須大於 0"
@@ -588,7 +637,6 @@ def sell_position(user_id, pos_id, sell_shares):
                 (sell_shares, int(pos_id), str(user_id).strip()))
         conn.commit()
         cursor.close()
-        return True, None
     except Exception as e:
         conn.rollback()
         print(f"❌ 賣出持股失敗: {e}")
@@ -596,6 +644,149 @@ def sell_position(user_id, pos_id, sell_shares):
     finally:
         release_db_connection(conn)
 
+    disc = fee_discount if fee_discount is not None else DEFAULT_FEE_DISCOUNT
+    mf = min_fee if min_fee is not None else DEFAULT_MIN_FEE
+    price_data = get_realtime_stock(code)
+    if price_data:
+        sell_price = price_data["close"]
+        realized_pl, realized_pct, _fee = net_profit(
+            code, sell_shares, lot_cost, sell_price,
+            None, disc, mf, cost_includes_fee=True)
+    else:
+        sell_price, realized_pl, realized_pct = None, None, None
+
+    if sell_price is not None:
+        record_realized_trade(user_id, code, sell_shares, lot_cost, sell_price,
+                              realized_pl, realized_pct, bought_on)
+
+    return True, None
+
+
+def record_realized_trade(user_id, code, shares, buy_cost, sell_price,
+                          realized_pl, realized_pct, bought_on):
+    """記一筆已實現損益。賣出時查不到報價就不會呼叫這裡，此表只存有損益數字的交易。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO realized_trades
+                (user_id, code, shares, buy_cost, sell_price,
+                 realized_pl, realized_pct, bought_on, sold_on)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_DATE)
+            """,
+            (str(user_id).strip(), str(code).strip(), int(shares), float(buy_cost),
+             float(sell_price), realized_pl, realized_pct, bought_on or None),
+        )
+        conn.commit()
+        cursor.close()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 記錄已實現損益失敗: {e}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def get_realized_trades(user_id, limit=100):
+    """回傳使用者的已實現損益紀錄，依賣出日期新到舊排序。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT code, shares, buy_cost, sell_price, realized_pl,
+                   realized_pct, bought_on, sold_on
+            FROM realized_trades WHERE user_id = %s
+            ORDER BY sold_on DESC, id DESC LIMIT %s
+            """,
+            (str(user_id).strip(), limit),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [
+            {"code": r[0], "shares": r[1], "buy_cost": r[2], "sell_price": r[3],
+             "realized_pl": r[4], "realized_pct": r[5],
+             "bought_on": r[6], "sold_on": r[7]}
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"❌ 讀取已實現損益失敗: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def save_portfolio_snapshot(user_id, total_value, total_cost, taiex_close):
+    """
+    存一天的組合市值快照。同一天重複寫入會覆蓋（保持最新收盤數字），
+    這樣即使 cron 意外跑了兩次也不會產生重複的一天。
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO portfolio_snapshots
+                (user_id, snapshot_date, total_value, total_cost, taiex_close)
+            VALUES (%s, CURRENT_DATE, %s, %s, %s)
+            ON CONFLICT (user_id, snapshot_date) DO UPDATE SET
+                total_value = EXCLUDED.total_value,
+                total_cost = EXCLUDED.total_cost,
+                taiex_close = EXCLUDED.taiex_close
+            """,
+            (str(user_id).strip(), total_value, total_cost, taiex_close),
+        )
+        conn.commit()
+        cursor.close()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 寫入組合快照失敗: {e}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def get_portfolio_snapshots(user_id, days=120):
+    """取近 N 天的組合快照，依日期由舊到新排序（畫圖要正序）。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT snapshot_date, total_value, total_cost, taiex_close
+            FROM portfolio_snapshots WHERE user_id = %s
+            ORDER BY snapshot_date DESC LIMIT %s
+            """,
+            (str(user_id).strip(), days),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        rows.reverse()
+        return [{"date": r[0], "value": r[1], "cost": r[2], "taiex": r[3]} for r in rows]
+    except Exception as e:
+        print(f"❌ 讀取組合快照失敗: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def get_all_position_user_ids():
+    """回傳目前有持股紀錄的所有 user_id，供每日快照 cron 逐一處理。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT user_id FROM positions")
+        ids = [r[0] for r in cursor.fetchall()]
+        cursor.close()
+        return ids
+    except Exception as e:
+        print(f"❌ 讀取持股使用者清單失敗: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
 
 
 def normalize_code(raw):
@@ -2533,6 +2724,50 @@ def cron_fetch_t86():
     return f"OK. date={_t86_cache.get('data_date')}, stocks={len(data)}", 200
 
 
+@app.route("/cron/snapshot-portfolio", methods=["POST", "GET"])
+def cron_snapshot_portfolio():
+    """
+    每個交易日收盤後，把每個有持股的使用者的組合市值＋當天大盤指數存一筆快照。
+    這是「組合走勢圖」的資料來源──沒有累積夠的快照，圖就只能顯示「資料還在累積中」。
+    建議跟 /cron/fetch-t86 排在附近時段（收盤後），一天跑一次即可。
+    """
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    taiex = fetch_taiex_summary()
+    taiex_close = None
+    if taiex and taiex.get("close"):
+        try:
+            taiex_close = float(str(taiex["close"]).replace(",", ""))
+        except (TypeError, ValueError):
+            taiex_close = None
+
+    user_ids = get_all_position_user_ids()
+    saved, skipped = 0, 0
+    for uid in user_ids:
+        positions = merge_positions(get_positions(uid))
+        if not positions:
+            skipped += 1
+            continue
+        total_value, total_cost = 0.0, 0.0
+        for p in positions:
+            pr = get_realtime_stock(p["code"])
+            if pr:
+                total_value += pr["close"] * p["shares"]
+            total_cost += p["cost"] * p["shares"]
+        if total_value <= 0:
+            skipped += 1
+            continue
+        if save_portfolio_snapshot(uid, total_value, total_cost, taiex_close):
+            saved += 1
+        else:
+            skipped += 1
+
+    return (f"Snapshot done. users={len(user_ids)}, saved={saved}, "
+            f"skipped={skipped}, taiex={taiex_close}"), 200
+
+
 @app.route("/sync-industry", methods=["POST", "GET"])
 def sync_industry():
     """抓取並儲存上市公司產業別。一次性作業，之後想更新再打一次。"""
@@ -3101,6 +3336,10 @@ def web_home(uid):
 @app.route("/web/positions", methods=["GET", "POST"])
 @web_login_required
 def web_positions(uid):
+    # 手續費設定要在處理賣出之前先讀出來，賣出當下記錄的已實現損益
+    # 才能用使用者自己的折扣／最低收費計算，跟畫面上其他地方口徑一致。
+    fee_disc, min_fee = get_fee_settings(get_profile(uid))
+
     msg = ""
     if request.method == "POST":
         action = request.form.get("action")
@@ -3112,7 +3351,8 @@ def web_positions(uid):
                 sell_shares = int(request.form.get("sell_shares", "0"))
             except ValueError:
                 sell_shares = 0
-            ok, err = sell_position(uid, request.form.get("id"), sell_shares)
+            ok, err = sell_position(uid, request.form.get("id"), sell_shares,
+                                    fee_disc, min_fee)
             msg = "已記錄賣出。" if ok else (err or "賣出失敗，請稍後再試。")
         else:
             code = normalize_code(request.form.get("code", ""))
@@ -3130,7 +3370,6 @@ def web_positions(uid):
 
     positions = merge_positions(get_positions(uid))
     inst = fetch_institutional_data() or {}
-    fee_disc, min_fee = get_fee_settings(get_profile(uid))
 
     def sell_form(lot_id, max_shares):
         return (f'<form method="post" style="display:inline-flex;align-items:center;'
@@ -3523,6 +3762,135 @@ def render_risk_card(profile, msg=None):
 </form>"""
 
 
+# ============================================================
+# 已實現損益
+# ============================================================
+def render_realized_summary(user_id, inst_data):
+    """
+    已實現損益摘要＋最近交易明細。沒有任何賣出紀錄時回傳空字串，
+    組合分析頁就不會多出一個空蕩蕩的區塊。
+    """
+    trades = get_realized_trades(user_id, limit=100)
+    if not trades:
+        return ""
+
+    priced = [t for t in trades if t["realized_pl"] is not None]
+    total_pl = sum(t["realized_pl"] for t in priced)
+    wins = len([t for t in priced if t["realized_pl"] > 0])
+    win_rate = (wins / len(priced) * 100) if priced else None
+    hold_days = [(t["sold_on"] - t["bought_on"]).days
+                 for t in trades if t["bought_on"] and t["sold_on"]]
+    avg_hold = (sum(hold_days) / len(hold_days)) if hold_days else None
+
+    def trade_row(t):
+        name = stock_display_name(t["code"], inst_data)
+        pl_cls = "" if t["realized_pl"] is None else (
+            "up" if t["realized_pl"] >= 0 else "down")
+        pl_txt = (f'<span class="num {pl_cls}">{t["realized_pl"]:+,.0f}</span>'
+                  if t["realized_pl"] is not None else '<span class="flat">—</span>')
+        return f"""
+<div class="row">
+  <div><span class="name">{name}</span><span class="code">{t['code']}</span></div>
+  <div class="price">{fmt_pct(t['realized_pct'])}</div>
+  <div class="meta">
+    <span><em>股數</em> <span class="num">{t['shares']:,}</span></span>
+    <span><em>成本</em> <span class="num">{t['buy_cost']:,.2f}</span></span>
+    <span><em>賣價</em> <span class="num">{t['sell_price']:,.2f}</span></span>
+    <span><em>損益</em> {pl_txt}</span>
+    <span><em>賣出日</em> {t['sold_on'].strftime('%Y/%m/%d') if t['sold_on'] else '—'}</span>
+  </div>
+</div>"""
+
+    return f"""
+<div class="section-head"><h2>已實現損益</h2>
+  <span class="section-note">共 {len(trades)} 筆交易</span></div>
+<div class="totals">
+  <div><div class="total-label">累計已實現損益</div>
+       <div class="total-value num {'up' if total_pl >= 0 else 'down'}">{total_pl:+,.0f}</div>
+       <div class="total-sub" style="color:var(--ink-faint)">已扣交易成本</div></div>
+  <div><div class="total-label">勝率</div>
+       <div class="total-value num">{f"{win_rate:.0f}%" if win_rate is not None else '—'}</div>
+       <div class="total-sub" style="color:var(--ink-faint)">{len(priced)} 筆有損益資料</div></div>
+  <div><div class="total-label">平均持有天數</div>
+       <div class="total-value num">{f"{avg_hold:.0f} 天" if avg_hold is not None else '—'}</div></div>
+</div>
+<div class="rows">{''.join(trade_row(t) for t in trades[:10])}</div>
+{f'<div class="section-note" style="margin-top:8px">僅顯示最近 10 筆</div>' if len(trades) > 10 else ''}
+"""
+
+
+# ============================================================
+# 組合走勢：每日快照 vs 大盤
+# ============================================================
+def render_trend_chart(snapshots):
+    """
+    組合市值 vs 加權指數的走勢比較。兩者都換算成「相對第一筆快照的漲跌幅」
+    畫在同一張圖上——這樣起始金額差異懸殊也能疊在一起比較，比較的是趨勢不是絕對數字。
+    純 SVG 手繪組裝成字串，跟整個網頁一樣不依賴任何 JS 圖表庫。
+    """
+    pts = [s for s in snapshots if s["value"]]
+    if len(pts) < 2:
+        return ('<div class="empty">資料還在累積中，'
+                '至少需要 2 天以上的快照才能畫出走勢，明天再回來看看。</div>')
+
+    base_value = pts[0]["value"]
+    port_series = [(p["value"] / base_value - 1) * 100 for p in pts]
+
+    taiex_vals = [p["taiex"] for p in pts if p["taiex"]]
+    base_taiex = taiex_vals[0] if taiex_vals else None
+    taiex_series = [
+        ((p["taiex"] / base_taiex - 1) * 100 if (p["taiex"] and base_taiex) else None)
+        for p in pts
+    ]
+
+    all_vals = port_series + [v for v in taiex_series if v is not None]
+    lo, hi = min(all_vals), max(all_vals)
+    if hi - lo < 1:  # 走勢幾乎打平時避免圖被壓成一條線，硬給一點高度
+        lo, hi = lo - 1, hi + 1
+    pad = (hi - lo) * 0.12
+    lo, hi = lo - pad, hi + pad
+
+    W, H, ML, MR, MT, MB = 640, 160, 6, 6, 10, 10
+    n = len(pts)
+
+    def x_of(i):
+        return ML + (i / (n - 1)) * (W - ML - MR) if n > 1 else ML
+
+    def y_of(v):
+        return MT + (1 - (v - lo) / (hi - lo)) * (H - MT - MB)
+
+    def path_of(series):
+        coords = [(x_of(i), y_of(v)) for i, v in enumerate(series) if v is not None]
+        if not coords:
+            return ""
+        return "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+
+    zero_y = y_of(0)
+    port_path = path_of(port_series)
+    taiex_path = path_of(taiex_series) if base_taiex else ""
+
+    port_last = port_series[-1]
+    taiex_last = next((v for v in reversed(taiex_series) if v is not None), None)
+
+    svg = f"""
+<svg viewBox="0 0 {W} {H}" width="100%" height="{H}" preserveAspectRatio="none">
+  <line x1="{ML}" y1="{zero_y:.1f}" x2="{W - MR}" y2="{zero_y:.1f}"
+        stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,3"/>
+  {f'<path d="{taiex_path}" fill="none" stroke="var(--ink-faint)" stroke-width="1.5" stroke-dasharray="4,3"/>' if taiex_path else ''}
+  <path d="{port_path}" fill="none" stroke="var(--brass)" stroke-width="2"/>
+</svg>"""
+
+    legend = f"""
+<div class="legend" style="margin-top:6px">
+  <span><i style="background:var(--brass)"></i>組合 {port_last:+.1f}%</span>
+  {f'<span><i style="background:var(--ink-faint)"></i>加權指數 {taiex_last:+.1f}%</span>' if taiex_last is not None else ''}
+  <span style="color:var(--ink-faint);margin-left:auto">
+    {pts[0]['date'].strftime('%m/%d')} – {pts[-1]['date'].strftime('%m/%d')}</span>
+</div>"""
+
+    return svg + legend
+
+
 @app.route("/web/settings", methods=["GET", "POST"])
 @web_login_required
 def web_settings(uid):
@@ -3780,9 +4148,20 @@ def web_portfolio(uid):
 
     positions = merge_positions(get_positions(uid))
     if not positions:
-        body = risk_card + """
+        # 沒有目前持股，但可能有賣光的歷史紀錄或組合快照可看，
+        # 不能因為現在空手就把已實現損益跟走勢圖也一起藏起來。
+        inst_empty = fetch_institutional_data() or {}
+        realized_html_empty = render_realized_summary(uid, inst_empty)
+        trend_html_empty = render_trend_chart(get_portfolio_snapshots(uid, days=120))
+        body = risk_card + f"""
 <div class="empty">還沒有持股紀錄。<br><br>
-<a href="/web/positions" style="color:var(--brass)">先去新增持股 →</a></div>"""
+<a href="/web/positions" style="color:var(--brass)">先去新增持股 →</a></div>
+{realized_html_empty}"""
+        if realized_html_empty or trend_html_empty:
+            body += f"""
+<div class="section-head"><h2>組合走勢</h2>
+  <span class="section-note">相對起始日漲跌幅</span></div>
+<div class="callout" style="padding:14px 15px 4px">{trend_html_empty}</div>"""
         return render_page("組合分析", body, nav_active="portfolio")
 
     th = get_thresholds(profile)
@@ -3909,6 +4288,9 @@ def web_portfolio(uid):
                 if avg_corr is not None and eff else
                 "持股數不足或資料不齊，尚無法計算相關係數。")
 
+    trend_html = render_trend_chart(get_portfolio_snapshots(uid, days=120))
+    realized_html = render_realized_summary(uid, inst)
+
     body = f"""
 {risk_card}
 <div class="totals">
@@ -3923,6 +4305,10 @@ def web_portfolio(uid):
        <div class="total-value num">{top['weight']:.1f}%</div>
        <div class="total-sub" style="color:var(--ink-faint)">{top['name']}</div></div>
 </div>
+
+<div class="section-head"><h2>組合走勢</h2>
+  <span class="section-note">相對起始日漲跌幅</span></div>
+<div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
 
 <div class="section-head"><h2>產業集中度</h2>
   <span class="section-note">寬度即權重</span></div>
@@ -3948,6 +4334,7 @@ def web_portfolio(uid):
 </div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}
 </div>
 
+{realized_html}
 <div class="section-head"><h2>值得注意</h2>
   <span class="section-note"><a href="/web/settings" style="color:var(--ink-soft)">調整門檻 →</a></span></div>
 <div class="rows">
