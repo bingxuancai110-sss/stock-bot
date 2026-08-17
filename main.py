@@ -16,6 +16,7 @@ from linebot.models import (MessageEvent, TextMessage, TextSendMessage,
                             FlexSendMessage, FollowEvent,
                             QuickReply, QuickReplyButton, MessageAction)
 from datetime import datetime, timedelta, timezone, date
+from concurrent.futures import ThreadPoolExecutor
 import random
 
 app = Flask(__name__)
@@ -802,11 +803,23 @@ def normalize_code(raw):
 
 
 # --- 穩健的股價抓取引擎 ---
+# 上櫃股票要試到第二個後綴（.TWO）才抓得到，等於白白多打一次 Yahoo。
+# 記住每個代號成功過的後綴，之後直接從那個開始試，上櫃股的請求數直接砍半。
+# 只存在記憶體，重啟就沒了，但那只是回到原本的行為，不影響正確性。
+_suffix_cache = {}
+
+
 def get_realtime_stock(code):
     code = str(code).strip()
     stock_name = STOCK_NAME_MAP.get(code, code)
 
-    for suffix in [".TW", ".TWO"]:
+    # 已知後綴排前面試，未知就照原順序
+    known = _suffix_cache.get(code)
+    suffixes = [known, ".TW", ".TWO"] if known else [".TW", ".TWO"]
+    seen = set()
+    suffixes = [s for s in suffixes if not (s in seen or seen.add(s))]
+
+    for suffix in suffixes:
         try:
             symbol = f"{code}{suffix}"
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=3mo&interval=1d"
@@ -923,6 +936,8 @@ def get_realtime_stock(code):
             support = round(max(support_candidates), 2) if support_candidates else (
                 round(low_20d, 2) if low_20d else round(low * 0.99, 2))
 
+            _suffix_cache[code] = suffix  # 這個後綴有效，下次直接從它開始
+
             return {
                 "code": code,
                 "name": stock_name,
@@ -948,6 +963,37 @@ def get_realtime_stock(code):
         except:
             continue
     return None
+
+
+def get_realtime_stocks_bulk(codes, workers=12):
+    """
+    並行抓多檔報價，回傳 {code: data 或 None}。
+
+    原本是逐檔序列請求：10 檔就要等 10 次網路來回，總時間是各檔相加。
+    抓報價幾乎全是「等 Yahoo 回應」，執行緒在等 I/O 時會放開 GIL，
+    所以用執行緒並行是有效的（這不是 CPU 密集工作，不受 GIL 限制）。
+    改成並行後總時間約等於最慢的那一檔，而不是全部相加。
+
+    workers 刻意不開太大：同時打太多請求可能被 Yahoo 限流或拒絕，
+    12 條在實務上已能把幾十檔壓進數秒內。
+    """
+    codes = list(dict.fromkeys(str(c).strip() for c in codes if c))
+    if not codes:
+        return {}
+    if len(codes) == 1:  # 只有一檔就不必付出開執行緒池的成本
+        return {codes[0]: get_realtime_stock(codes[0])}
+
+    def safe_fetch(c):
+        # 單檔失敗不能拖垮整批，一律吞掉例外回 None，交由呼叫端顯示「查無行情」
+        try:
+            return get_realtime_stock(c)
+        except Exception as e:
+            print(f"⚠️ 並行抓取失敗 {c}: {e}")
+            return None
+
+    with ThreadPoolExecutor(max_workers=min(workers, len(codes))) as ex:
+        return dict(zip(codes, ex.map(safe_fetch, codes)))
+
 
 # --- 三大法人買賣超（TWSE T86，全市場，一天快取一次） ---
 # 快取用「今天日期」當 key，但實際資料可能是往前找到的最近一個交易日
@@ -2110,6 +2156,23 @@ BRIEF_STOCKS = [
 ]
 
 
+def fetch_quotes_bulk(symbols, workers=12):
+    """並行抓多個 Yahoo 代號的報價，回傳 {symbol: (價格, 漲跌幅%, 漲跌值) 或 None}。"""
+    symbols = list(dict.fromkeys(s for s in symbols if s))
+    if not symbols:
+        return {}
+
+    def safe(s):
+        try:
+            return fetch_quote(s)
+        except Exception as e:
+            print(f"⚠️ 並行抓取報價失敗 {s}: {e}")
+            return None
+
+    with ThreadPoolExecutor(max_workers=min(workers, len(symbols))) as ex:
+        return dict(zip(symbols, ex.map(safe, symbols)))
+
+
 def generate_morning_brief():
     """
     盤前總經簡報：美股指數、殖利率與波動率、台廠相關重要個股、總經新聞標題。
@@ -2118,11 +2181,16 @@ def generate_morning_brief():
     """
     lines = [f"☀️ 盤前總經簡報　{datetime.now().strftime('%m/%d')}", "═" * 13]
 
+    # 十幾個代號一次並行抓完，取代原本一個一個等的做法
+    all_syms = ([s for _l, s in BRIEF_INDICES] + [s for _l, s in BRIEF_MACRO]
+                + [s for _l, s in BRIEF_STOCKS] + ["^TNX"])
+    quotes = fetch_quotes_bulk(all_syms)
+
     def fmt_rows(title, targets, as_yield=False):
         block = [f"\n【{title}】"]
         got = False
         for label, sym in targets:
-            q = fetch_quote(sym)
+            q = quotes.get(sym)
             if not q:
                 continue
             got = True
@@ -2139,13 +2207,13 @@ def generate_morning_brief():
 
     # 殖利率與 VIX 分開處理：^TNX 是殖利率本身，用 bps 表示變化才有意義
     lines.append("\n【債市與風險指標】")
-    tnx = fetch_quote("^TNX")
+    tnx = quotes.get("^TNX")
     if tnx:
         close, pct, diff = tnx
         arrow = "⚪" if abs(diff) < 0.0005 else ("🔴" if diff > 0 else "🟢")
         lines.append(f"{arrow} 美10年債殖利率：{close:.3f}%（{diff*100:+.1f} bps）")
     for label, sym in BRIEF_MACRO[1:]:
-        q = fetch_quote(sym)
+        q = quotes.get(sym)
         if not q:
             continue
         close, pct, _diff = q
@@ -2475,10 +2543,11 @@ def build_healthcheck_report(user_id):
     valuation_data = fetch_valuation()
     streaks = get_consecutive_days_batch(codes)
     cum_map = get_cumulative_net_buy_for_codes(codes, days=10)
+    price_map = get_realtime_stocks_bulk(codes)   # 並行抓，取代逐檔序列請求
 
     rows = []
     for code in codes:
-        stock = get_realtime_stock(code)
+        stock = price_map.get(code)
         if not stock:
             rows.append((-1, f"⚪ {code} 查無行情"))
             continue
@@ -2602,10 +2671,24 @@ def build_news_digest(user_id):
     inst_data = fetch_institutional_data()
     lines = [f"📰 自選股新聞（{datetime.now().strftime('%m/%d')}）", "─" * 14]
 
+    # 每檔都要打一次 Google News RSS，序列跑加上禮貌等待會很久。
+    # 改成小量並行（4 條）：既縮短時間，又不會對 Google News 一次灌太多請求。
+    names = {code: stock_display_name(code, inst_data) for code in codes}
+
+    def fetch_one(code):
+        try:
+            return fetch_stock_news(names[code], max_items=2)
+        except Exception as e:
+            print(f"⚠️ 並行抓新聞失敗 {code}: {e}")
+            return []
+
+    with ThreadPoolExecutor(max_workers=min(4, len(codes))) as ex:
+        news_map = dict(zip(codes, ex.map(fetch_one, codes)))
+
     found = 0
     for code in codes:
-        name = stock_display_name(code, inst_data)
-        news = fetch_stock_news(name, max_items=2)
+        name = names[code]
+        news = news_map.get(code) or []
         if not news:
             continue
         found += 1
@@ -2615,7 +2698,6 @@ def build_news_digest(user_id):
             lines.append(f"・{n['title']}{src}")
             if n["link"]:
                 lines.append(f"　{n['link']}")
-        time.sleep(0.5)  # 禮貌等待，避免短時間內連續請求
 
     if not found:
         lines.append("今日自選股無相關新聞")
@@ -2658,9 +2740,10 @@ def build_digest(user_id):
     if not codes:
         return None
     inst_data = fetch_institutional_data()
+    price_map = get_realtime_stocks_bulk(codes)   # 並行抓，取代逐檔序列請求
     lines = [f"☀️ 【每日自選股摘要】", "─" * 14]
     for code in codes:
-        data = get_realtime_stock(code)
+        data = price_map.get(code)
         if data:
             name = stock_display_name(code, inst_data, data["name"])
             light = "🔴" if data['pct'] >= 0 else "🟢"
@@ -2751,8 +2834,9 @@ def cron_snapshot_portfolio():
             skipped += 1
             continue
         total_value, total_cost = 0.0, 0.0
+        price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
         for p in positions:
-            pr = get_realtime_stock(p["code"])
+            pr = price_map.get(p["code"])
             if pr:
                 total_value += pr["close"] * p["shares"]
             total_cost += p["cost"] * p["shares"]
@@ -2827,8 +2911,9 @@ def check_pool():
     lines.append(f"流動性門檻：股價≥{min_close}、成交金額≥{min_turnover}億")
 
     ok = noprice = lowprice = lowturn = 0
+    pool_prices = get_realtime_stocks_bulk([c for c, _n, _cl, _bd in cum[:30]])
     for c, _n, _cl, _bd in cum[:30]:
-        pr = get_realtime_stock(c)
+        pr = pool_prices.get(c)
         if not pr:
             noprice += 1
             continue
@@ -3407,8 +3492,9 @@ def web_positions(uid):
 
     rows_html, total_value, total_cost = [], 0.0, 0.0
     enriched = []
+    price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
     for p in positions:
-        price = get_realtime_stock(p["code"])
+        price = price_map.get(p["code"])
         if price:
             value = price["close"] * p["shares"]
             cost_total = p["cost"] * p["shares"]
@@ -4171,10 +4257,10 @@ def web_portfolio(uid):
     valuation = fetch_valuation() or {}
     ind_map = get_industry_map() or {}
 
-    price_map, total_value, total_cost = {}, 0.0, 0.0
+    price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
+    total_value, total_cost = 0.0, 0.0
     for p in positions:
-        pr = get_realtime_stock(p["code"])
-        price_map[p["code"]] = pr
+        pr = price_map.get(p["code"])
         if pr:
             total_value += pr["close"] * p["shares"]
         total_cost += p["cost"] * p["shares"]
@@ -4423,8 +4509,11 @@ def web_screener(uid):
     LIQUIDITY = {"電子": (10, 1.0), "傳產": (8, 0.3), "金融": (8, 0.3)}
 
     rows, skipped_liquidity = [], 0
+    # 選股台的候選池動輒上百檔，序列請求是這一頁最大的延遲來源。
+    # 這裡開比較多執行緒——一次把整池抓完，總時間才不會隨檔數線性增加。
+    pool_prices = get_realtime_stocks_bulk([c for c, _ in pool], workers=16)
     for code, info in pool:
-        price = get_realtime_stock(code)
+        price = pool_prices.get(code)
         if not price or abs(price["pct"]) > 10.5:
             continue
         min_close, min_turnover = LIQUIDITY.get(
@@ -5019,10 +5108,12 @@ def handle_message(event):
             ]
 
             streaks = get_consecutive_days_batch([c for c, _ in candidates])
+            cand_prices = get_realtime_stocks_bulk(
+                [c for c, _ in candidates], workers=16)
 
             scored = []
             for code, info in candidates:
-                price = get_realtime_stock(code)
+                price = cand_prices.get(code)
                 if not price:
                     continue
                 if price["close"] < 10:  # 排除低價股，容易被小額資金拉出失真漲幅
@@ -5115,8 +5206,10 @@ def handle_message(event):
             candidates.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
 
             priced = []
+            radar_prices = get_realtime_stocks_bulk(
+                [c for c, _ in candidates[:60]], workers=16)
             for code, info in candidates[:60]:
-                price = get_realtime_stock(code)
+                price = radar_prices.get(code)
                 if not price:
                     continue
                 if price["close"] < 10:  # 排除低價股
