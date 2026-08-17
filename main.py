@@ -4255,11 +4255,15 @@ def get_db_stats():
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
+        # 只看 public schema。Supabase 內建的 auth／storage 等 schema 有幾十張
+        # 系統表（oauth_clients、sso_domains…），全列出來會把自己的資料表淹沒，
+        # 而那些也不是你能控制或需要清理的。
         cursor.execute("""
             SELECT relname,
                    n_live_tup,
                    pg_total_relation_size(relid)
             FROM pg_stat_user_tables
+            WHERE schemaname = 'public'
             ORDER BY pg_total_relation_size(relid) DESC
         """)
         rows = cursor.fetchall()
@@ -4288,18 +4292,27 @@ def db_stats():
         return f"{b / 1024 / 1024:.1f} MB"
 
     lines = [f"資料庫總用量：{mb(total)}　（Supabase 免費方案上限 500 MB）",
-             "=" * 46, ""]
+             "（含 Supabase 內建的 auth 等系統 schema；下表只列你自己的資料表）",
+             "=" * 58, "",
+             f"{'資料表':26}{'筆數':>11}{'大小':>11}   保留期限",
+             "-" * 58]
+    own = 0
     for name, n, size in rows:
         keep = RETENTION_DAYS.get(name)
         policy = f"保留 {keep[1]} 天" if keep and keep[1] else (
-            "過期即刪" if keep else "無期限")
-        lines.append(f"{name:28} {n or 0:>9,} 筆　{mb(size):>10}　{policy}")
+            "過期即刪" if keep else "不刪")
+        own += size or 0
+        lines.append(f"{name:26}{n or 0:>10,} 筆{mb(size):>11}   {policy}")
 
     pct = total / (500 * 1024 * 1024) * 100
-    lines += ["", f"已使用約 {pct:.1f}%"]
+    lines += ["-" * 58,
+              f"自己的資料表合計：{mb(own)}",
+              f"整個資料庫：{mb(total)}　已使用約 {pct:.1f}%"]
     if pct > 70:
         lines.append("⚠️ 超過七成，建議跑 /cron/cleanup 或縮短保留期限")
-    return "\n".join(lines), 200
+    else:
+        lines.append("用量正常，暫時不需要處理")
+    return plain_text_page(lines), 200
 
 
 @app.route("/cron/cleanup", methods=["POST", "GET"])
@@ -4543,82 +4556,118 @@ def check_inst():
     把資料庫裡實際存的每日數字逐列印出來，並標出「近10日」查詢實際
     用到哪幾天——數字對不上時，多半不是加總錯，而是取到的日期範圍
     跟你以為的不一樣（例如某些日期只有上櫃資料、或回補漏了某天）。
+
+    每個查詢各自借連線、各自處理錯誤：把三個查詢包在同一個 try 裡的話，
+    任何一步出錯都會讓整頁只剩一行錯誤訊息，而且錯誤還可能被包裝成
+    看似無關的樣子（例如連線在前一個錯誤後進入異常狀態，
+    下一個查詢就報 SSL 錯誤），完全看不出真正壞在哪一步。
     """
     if request.args.get("token") != os.environ.get("CRON_SECRET"):
         abort(403)
     code = normalize_code(request.args.get("code", "")) or "2330"
-    days = int(request.args.get("days", 15) or 15)
-
-    conn = get_db_connection()
     try:
-        cursor = conn.cursor()
-        # 全市場最近的交易日（這就是「近N日」查詢用的窗）
-        cursor.execute("""
-            SELECT DISTINCT trade_date FROM inst_history
-            ORDER BY trade_date DESC LIMIT %s
-        """, (days,))
-        all_dates = [r[0] for r in cursor.fetchall()]
+        days = max(1, min(60, int(request.args.get("days") or 15)))
+    except ValueError:
+        days = 15
 
-        # 這檔實際有紀錄的日子
-        cursor.execute("""
-            SELECT trade_date, foreign_net_lots, trust_net_lots,
-                   dealer_net_lots, total_net_lots
-            FROM inst_history WHERE code = %s
-            ORDER BY trade_date DESC LIMIT %s
-        """, (code, days))
-        rows = cursor.fetchall()
+    def q(sql, params, label):
+        """跑一個查詢，回傳 (結果, 錯誤訊息)。錯誤不往外拋，讓其他步驟照跑。"""
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+            cur.close()
+            return rows, None
+        except Exception as e:
+            print(f"❌ check-inst [{label}] 失敗: {e}")
+            return [], f"{type(e).__name__}: {e}"
+        finally:
+            release_db_connection(conn)
 
-        # 每個交易日全市場有幾檔——某天檔數異常少，代表那天只存到單一市場
-        cursor.execute("""
-            SELECT trade_date, COUNT(*) FROM inst_history
-            WHERE trade_date >= %s GROUP BY trade_date ORDER BY trade_date DESC
-        """, (all_dates[-1] if all_dates else date.today(),))
-        counts = dict(cursor.fetchall())
-        cursor.close()
-    except Exception as e:
-        return f"查詢失敗：{e}", 500
-    finally:
-        release_db_connection(conn)
-
-    win10 = set(all_dates[:10])
     lines = [f"代號 {code} 的法人歷史", "=" * 58, ""]
+    errors = []
+
+    all_rows, err = q(
+        "SELECT DISTINCT trade_date FROM inst_history "
+        "ORDER BY trade_date DESC LIMIT %s", (days,), "交易日清單")
+    if err:
+        errors.append(f"[交易日清單] {err}")
+    all_dates = [r[0] for r in all_rows]
+
+    rows, err = q(
+        "SELECT trade_date, foreign_net_lots, trust_net_lots, "
+        "dealer_net_lots, total_net_lots FROM inst_history "
+        "WHERE code = %s ORDER BY trade_date DESC LIMIT %s",
+        (code, days), "個股明細")
+    if err:
+        errors.append(f"[個股明細] {err}")
+
+    counts = {}
+    if all_dates:
+        cnt_rows, err = q(
+            "SELECT trade_date, COUNT(*) FROM inst_history "
+            "WHERE trade_date >= %s GROUP BY trade_date",
+            (all_dates[-1],), "每日檔數")
+        if err:
+            errors.append(f"[每日檔數] {err}")
+        counts = dict(cnt_rows)
+
+    if errors:
+        lines.append("⚠️ 部分查詢失敗：")
+        lines += [f"　{e}" for e in errors]
+        lines.append("")
+
+    if not all_dates:
+        lines.append("資料庫裡沒有任何法人歷史，先跑 /cron/fetch-t86 或 /backfill。")
+        return plain_text_page(lines), 200
+
     lines.append(f"資料庫最近 {len(all_dates)} 個交易日："
-                 f"{all_dates[0] if all_dates else '無'} ~ "
-                 f"{all_dates[-1] if all_dates else '無'}")
+                 f"{all_dates[0]} ~ {all_dates[-1]}")
     lines.append("")
-    lines.append("日期         外資     投信    自營     合計   全市場檔數  在10日窗內")
+    lines.append("日期          外資    投信    自營    合計   全市場  10日窗")
     lines.append("-" * 58)
 
+    win10 = set(all_dates[:10])
     have = {r[0] for r in rows}
     sums = [0, 0, 0, 0]
     for d, f, t, dl, tot in rows:
-        inwin = "✓" if d in win10 else ""
+        f, t, dl, tot = (f or 0), (t or 0), (dl or 0), (tot or 0)
         n = counts.get(d, 0)
-        flag = "" if n > 1500 else f" ⚠只有{n}檔"
+        thin = " <少" if 0 < n < 1500 else ""
         if d in win10:
-            sums[0] += f or 0; sums[1] += t or 0
-            sums[2] += dl or 0; sums[3] += tot or 0
-        lines.append(f"{d}  {f or 0:>7,} {t or 0:>7,} {dl or 0:>6,} "
-                     f"{tot or 0:>7,}   {n:>6,}{flag}      {inwin}")
+            sums[0] += f; sums[1] += t; sums[2] += dl; sums[3] += tot
+        lines.append(f"{d}  {f:>7,} {t:>7,} {dl:>7,} {tot:>7,}  {n:>6,}{thin}"
+                     f"   {'Y' if d in win10 else ''}")
 
-    missing = [d for d in all_dates[:10] if d not in have]
     lines += ["-" * 58,
-              f"近10日窗內加總　外資 {sums[0]:+,}　投信 {sums[1]:+,}　"
+              f"10日窗加總　外資 {sums[0]:+,}　投信 {sums[1]:+,}　"
               f"自營 {sums[2]:+,}　合計 {sums[3]:+,}",
               ""]
-    if missing:
-        lines.append(f"⚠️ 這檔在窗內有 {len(missing)} 天沒有紀錄："
-                     + "、".join(str(d) for d in missing))
-        lines.append("　（該日可能只抓到單一市場，或回補時漏掉）")
-    else:
-        lines.append("✓ 窗內每一天都有這檔的紀錄")
 
-    thin = [d for d in all_dates[:10] if counts.get(d, 0) < 1500]
-    if thin:
-        lines.append("")
-        lines.append("⚠️ 以下日期全市場檔數偏少，可能只存到上市或只存到上櫃：")
-        for d in thin:
-            lines.append(f"　{d}　{counts.get(d, 0):,} 檔")
+    missing = [d for d in all_dates[:10] if d not in have]
+    if missing:
+        lines.append(f"⚠️ 窗內有 {len(missing)} 天缺這檔的紀錄："
+                     + "、".join(str(d) for d in missing))
+    else:
+        lines.append("窗內每一天都有這檔的紀錄")
+
+    # 交易日連續性檢查：資料庫少了某一天時，10 日窗會悄悄往前多抓一天，
+    # 數字照樣算得出來也看起來合理，只有跟外部資料對帳才會發現。
+    gaps = []
+    for i in range(len(all_dates) - 1):
+        delta = (all_dates[i] - all_dates[i + 1]).days
+        if delta > 4:      # 跨週末最多 3 天，超過代表中間漏了交易日
+            gaps.append(f"{all_dates[i + 1]} → {all_dates[i]}（相隔 {delta} 天）")
+    if gaps:
+        lines += ["", "⚠️ 日期序列有異常間隔，可能漏抓了交易日："]
+        lines += [f"　{g}" for g in gaps]
+        lines.append("　用 /backfill?days=5&offset=N 回補")
+
+    thin_days = [d for d in all_dates[:10] if 0 < counts.get(d, 0) < 1500]
+    if thin_days:
+        lines += ["", "⚠️ 以下日期全市場檔數偏少，可能只存到單一市場："]
+        lines += [f"　{d}　{counts.get(d, 0):,} 檔" for d in thin_days]
 
     return plain_text_page(lines), 200
 
