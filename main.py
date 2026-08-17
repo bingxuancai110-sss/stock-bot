@@ -424,8 +424,15 @@ def build_user_list_report():
         "",
         "開通：輸入「開通 3」",
         "停用：輸入「停用 3」",
-        f"（免費方案每月 200 則，每人每交易日 1 則，建議上限 9 人）",
     ]
+    # 額度上限直接算給管理者看，不要讓他自己去記「大概九個人」
+    if on > PUSH_MAX_USERS:
+        lines.append(f"⚠️ 已開通 {on} 人，超過上限 {PUSH_MAX_USERS} 人")
+        lines.append(f"　推播時只有前 {PUSH_MAX_USERS} 位會收到，請停用部分名額")
+    else:
+        lines.append(f"（免費方案每月 {PUSH_MONTHLY_QUOTA} 則，"
+                     f"每人每交易日 1 則 → 上限 {PUSH_MAX_USERS} 人，"
+                     f"還可開通 {PUSH_MAX_USERS - on} 人）")
     return "\n".join(lines)
 
 
@@ -3929,17 +3936,33 @@ def build_news_digest(user_id):
     return digest
 
 
-@app.route("/cron/push-news", methods=["POST", "GET"])
-def cron_push_news():
-    """盤後推播自選股新聞。建議每個交易日 15:00 跑一次，一天一則。"""
-    secret = request.args.get("token")
-    if secret != os.environ.get("CRON_SECRET"):
-        abort(403)
+# ── 推播額度保護 ──
+# LINE 免費方案每月 200 則「主動推播」（回覆訊息不計入）。
+# 以每人每個交易日 1 則計算，一個月約 20 個交易日 → 最多約 9 人。
+#
+# 沒有這道保護的話，開通人數一多，額度會在月中某天突然用完，
+# 而且是「前面幾個人收到、後面的人沒收到」這種難以察覺的失敗——
+# 使用者不會來抱怨，只會覺得這個服務時好時壞。
+# 寧可一開始就明確擋下，並在回應裡講清楚超出多少。
+PUSH_MONTHLY_QUOTA = 200
+PUSH_TRADING_DAYS = 21          # 一個月的交易日數，抓保守值
+PUSH_MAX_USERS = PUSH_MONTHLY_QUOTA // PUSH_TRADING_DAYS   # ≈ 9 人
 
-    users = get_notify_users()
+
+def push_to_users(users, build_fn, label):
+    """
+    對名單推播，並在超過額度上限時只送前 N 位。
+
+    名單順序來自資料庫（依 user_id 固定排序），所以「前 N 位」每次都一樣，
+    不會今天這幾個收到、明天換另幾個——後者更糟，因為每個人都只收到一半。
+    回傳統計字串。
+    """
+    over = max(0, len(users) - PUSH_MAX_USERS)
+    targets = users[:PUSH_MAX_USERS]
+
     sent, failed, empty = 0, 0, 0
-    for uid in users:
-        msg = build_news_digest(uid)
+    for uid in targets:
+        msg = build_fn(uid)
         if not msg:
             empty += 1
             continue
@@ -3947,9 +3970,26 @@ def cron_push_news():
             line_bot_api.push_message(uid, TextSendMessage(text=msg))
             sent += 1
         except Exception as e:
-            print(f"❌ 新聞推播失敗 {uid}: {e}")
+            print(f"❌ {label}推播失敗 {uid}: {e}")
             failed += 1
-    return f"News push done. sent={sent}, failed={failed}, empty={empty}", 200
+
+    result = f"{label} done. sent={sent}, failed={failed}, empty={empty}"
+    if over:
+        warn = (f"⚠️ 已開通 {len(users)} 人，超過免費方案可負擔的 "
+                f"{PUSH_MAX_USERS} 人，本次只推播前 {PUSH_MAX_USERS} 位。"
+                f"請用「停用 N」減少開通人數。")
+        print(warn)
+        result += f" | {warn}"
+    return result
+
+
+@app.route("/cron/push-news", methods=["POST", "GET"])
+def cron_push_news():
+    """盤後推播自選股新聞。建議每個交易日 15:00 跑一次，一天一則。"""
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+    return push_to_users(get_notify_users(), build_news_digest, "News push"), 200
 
 
 # --- 排程推播訊息建構與 Cron 端點 ---
@@ -3992,23 +4032,11 @@ def build_morning_push(user_id):
 
 @app.route("/cron/push-watchlist", methods=["POST", "GET"])
 def cron_push_watchlist():
+    """早上推播盤前簡報＋自選股摘要。受 PUSH_MAX_USERS 額度保護。"""
     secret = request.args.get("token")
     if secret != os.environ.get("CRON_SECRET"):
         abort(403)
-
-    users = get_notify_users()
-    sent, failed = 0, 0
-    for uid in users:
-        msg = build_morning_push(uid)
-        if not msg:
-            continue
-        try:
-            line_bot_api.push_message(uid, TextSendMessage(text=msg))
-            sent += 1
-        except Exception as e:
-            print(f"❌ 推播失敗 {uid}: {e}")
-            failed += 1
-    return f"Push done. sent={sent}, failed={failed}", 200
+    return push_to_users(get_notify_users(), build_morning_push, "Morning push"), 200
 
 @app.route("/cron/fetch-t86", methods=["POST", "GET"])
 def cron_fetch_t86():
@@ -4865,6 +4893,46 @@ NEED_LOGIN_HTML = """
   </div>
 </form>
 """
+
+
+# ── 濫用防護 ──
+# 開放給不特定人使用後，沒有任何限制的話，一個人寫腳本狂打「黑馬」
+# 就能把 Render 的運算額度與 Yahoo 的請求配額吃光，其他人全部受影響。
+#
+# 用記憶體計數而非資料庫：這只是擋住明顯的濫用，不需要跨重啟精準持久化，
+# 而且每次請求都去查一次資料庫本身就是額外負擔。
+# Render 重啟後計數歸零是可接受的——重啟不是常態。
+_rate_buckets = {}
+RATE_LIMITS = {
+    # 動作類型: (時間窗秒數, 該窗內最多幾次)
+    "heavy": (60, 6),     # 黑馬、雷達、選股台這類要掃上百檔的
+    "normal": (60, 20),   # 一般查詢
+}
+
+
+def rate_limit_ok(key, kind="normal"):
+    """
+    回傳是否放行。超過就擋下，並回傳還要等幾秒。
+    回傳 (是否放行, 還需等待秒數)
+    """
+    window, limit = RATE_LIMITS.get(kind, RATE_LIMITS["normal"])
+    now = time.time()
+    bucket = _rate_buckets.setdefault((key, kind), [])
+
+    # 清掉時間窗外的紀錄。順便控制記憶體：只留窗內的時間戳
+    bucket[:] = [t for t in bucket if now - t < window]
+    if len(bucket) >= limit:
+        return False, int(window - (now - bucket[0])) + 1
+    bucket.append(now)
+
+    # 定期清掉完全沒有活動的 key，避免長期累積
+    if len(_rate_buckets) > 5000:
+        for k in [k for k, v in _rate_buckets.items() if not v]:
+            _rate_buckets.pop(k, None)
+    return True, 0
+
+
+HEAVY_COMMANDS = {"黑馬", "雷達", "輪動", "產業輪動", "族群", "盤前", "早安"}
 
 
 def render_page(title, body, nav_active=None, user_name=None):
@@ -6768,6 +6836,15 @@ def web_screener(uid):
     if mode == "review":
         return respond_page("選股台", build_review_body(), "screener")
 
+    # 選股台每次要掃上百檔，是全站最耗資源的一頁。
+    # 快取命中時很便宜，但快取過期後的重算不該讓人連續觸發。
+    allowed, wait = rate_limit_ok(uid, "heavy")
+    if not allowed:
+        return respond_page("選股台", f"""
+<div class="empty">查詢太頻繁了，請稍等 {wait} 秒再重新整理。<br><br>
+<span style="font-size:12.5px">選股台每次要掃描上百檔股票並逐檔取得報價，
+短時間內重複查詢會影響其他使用者。</span></div>""", "screener")
+
     inst = fetch_institutional_data()
     if not inst:
         return respond_page("選股台", """
@@ -7138,11 +7215,24 @@ def handle_follow(event):
         "歡迎使用台股 BOT 📈\n\n"
         "這裡可以查台股行情、法人籌碼、營收與估值，"
         "也能建立自己的自選股清單。\n\n"
+        "━━━━━━━━━━━━\n"
+        "⚠️ 請先了解這件事\n\n"
+        "本服務只做「公開資料的整理與呈現」，"
+        "不是投資建議，也不推薦任何個股。\n\n"
+        "・「黑馬」「雷達」是依公開數據排序的結果，"
+        "分數高不代表會漲，也不代表適合你\n"
+        "・所有評分都是作者自訂的規則，沒有經過專業認證\n"
+        "・資料來自證交所、櫃買中心與 Yahoo Finance，"
+        "可能延遲或有誤，請以官方公告為準\n"
+        "・投資有風險，盈虧由你自己承擔\n\n"
+        "看得懂數字背後的意思再做決定，"
+        "不要因為看到一個分數就進場。\n"
+        "━━━━━━━━━━━━\n\n"
         "下面是可用的功能，直接點按鈕就能執行。\n"
         "隨時輸入「選單」都能再叫出來。\n\n"
         "⏳ 小提醒\n"
         "每個指令都會即時去抓最新的行情、法人與財務資料，"
-        "大約需要 20 秒才會回覆。送出後請稍等一下，"
+        "大約需要 10-20 秒才會回覆。送出後請稍等一下，"
         "不用重複點擊，謝謝包涵。\n\n"
         "———\n"
         "作者：蔡秉軒　敬上"
@@ -7164,6 +7254,18 @@ def handle_message(event):
     pure_code = normalize_code(text)  # 保留主動式ETF的英文尾碼，如 00981A
 
     add_user_to_db(user_id)
+
+    # 濫用防護：耗時指令有較嚴格的上限。擋下時明確告知還要等多久，
+    # 而不是靜默忽略——後者會讓人以為機器人壞了而狂點，反而更糟。
+    kind = "heavy" if (text in HEAVY_COMMANDS or text in SLOW_COMMANDS) else "normal"
+    allowed, wait = rate_limit_ok(user_id, kind)
+    if not allowed:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(
+            text=(f"⏳ 查詢太頻繁了，請稍等 {wait} 秒再試。\n\n"
+                  f"每個指令都要即時抓取行情與財務資料，"
+                  f"短時間內重複查詢會影響其他使用者。"),
+            quick_reply=build_quick_reply()))
+        return
 
     # 耗時的指令先叫出 LINE 官方的載入動畫（聊天室裡的三點跳動）。
     # LINE 沒有別的方式表達「還在跑」，沒有它使用者只會看到一片安靜，
@@ -7438,7 +7540,11 @@ def handle_message(event):
                        val_score, val_desc, peg, supply_score, supply_desc,
                        streak_score, streak, chip_tech_score,
                        yoy_pct, cum_yoy_pct) in enumerate(scored[:5], start=1):
-                grade = "🔥 高度看好" if total_score >= 75 else ("🚀 值得關注" if total_score >= 55 else "📈 觀察名單")
+                # 「高度看好」這種措辭會被當成推薦，但這只是一組數字排序的結果。
+                # 改成描述「這個分數在評分標準裡的位置」，而不是對股票下判斷。
+                grade = ("🔥 各項指標均強" if total_score >= 75
+                         else ("🚀 多數指標偏強" if total_score >= 55
+                               else "📈 指標中性偏強"))
                 cum_text = f"{cum_yoy_pct:+.1f}%" if cum_yoy_pct is not None else "尚無資料"
                 yoy_text = f"{yoy_pct:+.1f}%" if yoy_pct is not None else "尚無資料"
                 streak_text = f"連續{streak}日買超" if streak >= 1 else "近期無連續買超"
@@ -7462,12 +7568,18 @@ def handle_message(event):
                     f"（{info.get('buy_days', 0)} 天買超）\n\n"
                     f"【位階】\n"
                     f"{build_position_desc(price)}\n\n"
-                    f"【判定】\n"
+                    f"【評分結果】\n"
                     f"{grade}\n"
                     f"-----------------------------------"
                 )
                 reports.append(report)
-            reply = "\n\n".join(reports) if reports else "❌ 暫無符合條件的標的。"
+            if reports:
+                reply = "\n\n".join(reports) + (
+                    "\n\n※ 以上為依公開資料排序的結果，不是推薦。\n"
+                    "分數高只代表這幾項指標數字好看，"
+                    "不代表會漲、也不代表適合你的狀況。")
+            else:
+                reply = "❌ 暫無符合條件的標的。"
 
     # 9. 盤中雷達（法人買超股票中，依漲幅排序）
     elif text == "雷達":
@@ -7553,7 +7665,12 @@ def handle_message(event):
                     f"-----------------------------------"
                 )
                 reports.append(report)
-            reply = "\n\n".join(reports) if reports else "❌ 暫無符合條件的標的。"
+            if reports:
+                reply = "\n\n".join(reports) + (
+                    "\n\n※ 以上為當日帶量上漲且法人買超的標的，不是推薦。\n"
+                    "短線強勢不代表會續強，追高風險自負。")
+            else:
+                reply = "❌ 暫無符合條件的標的。"
 
     elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
         flex_reply = build_menu_flex()
