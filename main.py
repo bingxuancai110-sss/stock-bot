@@ -3443,18 +3443,17 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
   display:flex;justify-content:space-between;gap:12px}
 .load-stage b{color:var(--ink-soft);font-weight:500}
 .quote{margin-top:34px;padding:22px 24px;background:var(--paper-2);
-  border-left:2px solid var(--brass);min-height:132px;
-  display:flex;flex-direction:column;justify-content:center}
+  border-left:2px solid var(--brass);min-height:150px;
+  position:relative;overflow:hidden}
+/* 每則語錄疊在同一個位置，靠 opacity 輪流顯示。
+   都用絕對定位才不會互相把版面推開；容器已有 min-height 撐住高度。 */
+.quote-item{position:absolute;top:22px;left:24px;right:24px;opacity:0}
 .quote-text{font-size:16px;line-height:1.85;color:var(--ink);
   letter-spacing:.01em}
 .quote-en{font-size:13px;line-height:1.7;color:var(--ink-soft);
   margin-top:9px;font-style:italic}
 .quote-by{font-size:12px;color:var(--ink-faint);margin-top:13px;
   letter-spacing:.04em}
-.quote-fade{animation:qfade 9s ease-in-out infinite}
-@keyframes qfade{
-  0%{opacity:0} 6%{opacity:1} 88%{opacity:1} 100%{opacity:0}
-}
 .load-note{margin-top:20px;font-size:11.5px;color:var(--ink-faint);
   line-height:1.7}
 """
@@ -3558,26 +3557,48 @@ INVESTING_QUOTES = [
 
 def render_quote_block():
     """
-    隨機挑幾則語錄，用純 CSS 動畫輪播。
-    為什麼不用 JS 控制：這段要在資料還沒回來時就能自己動起來，
-    不依賴任何後續請求，前端邏輯越少越不容易壞。
-    每則的 animation-delay 錯開，就形成依序淡入淡出的效果。
+    隨機挑幾則語錄輪播。
+
+    keyframes 必須依語錄則數動態產生：固定一組 keyframes 是行不通的，
+    因為「每則該亮多久」取決於總共有幾則——四則輪播時每則只能亮四分之一
+    的循環時間，若沿用單則的節奏（幾乎整個循環都亮著），四則就會同時
+    出現而疊在一起。
+
+    每則都用絕對定位疊在同一個位置，靠 opacity 決定誰可見；
+    容器給固定高度，才不會在切換時把下面的內容推上推下。
     """
     picked = random.sample(INVESTING_QUOTES, min(4, len(INVESTING_QUOTES)))
     n = len(picked)
-    cycle = 9  # 跟 CSS 的 qfade 動畫長度一致
+    per = 9          # 每則顯示秒數
+    total = n * per  # 一輪的總長度
+    share = 100.0 / n  # 每則佔整個循環的百分比
+
+    # 淡入淡出各佔該則時段的 8%，中間是完全不透明
+    fade = share * 0.08
+    keyframes = []
+    for i in range(n):
+        start = i * share
+        keyframes.append(f"""
+@keyframes q{i} {{
+  0%{{opacity:0}}
+  {start:.2f}%{{opacity:0}}
+  {start + fade:.2f}%{{opacity:1}}
+  {start + share - fade:.2f}%{{opacity:1}}
+  {start + share:.2f}%{{opacity:0}}
+  100%{{opacity:0}}
+}}""")
+
     blocks = []
     for i, (zh, en, who) in enumerate(picked):
         blocks.append(
-            f'<div class="quote-fade" style="animation-delay:{i * cycle}s;'
-            f'animation-duration:{n * cycle}s;'
-            f'{"" if i == 0 else "position:absolute;top:22px;left:24px;right:24px;"}'
-            f'opacity:0">'
+            f'<div class="quote-item" style="animation:q{i} {total}s linear infinite">'
             f'<div class="quote-text">{zh}</div>'
             f'{f"<div class=quote-en>{en}</div>" if en else ""}'
             f'<div class="quote-by">— {who}</div>'
             f'</div>')
-    return f'<div class="quote" style="position:relative">{"".join(blocks)}</div>'
+
+    return (f'<style>{"".join(keyframes)}</style>'
+            f'<div class="quote">{"".join(blocks)}</div>')
 
 
 def render_loading_shell(title, nav_active, stages, note=""):
@@ -3610,18 +3631,28 @@ def render_loading_shell(title, nav_active, stages, note=""):
   var bar = document.getElementById('loadbar');
   var stageEl = document.getElementById('loadstage');
   var pctEl = document.getElementById('loadpct');
-  var pct = 0, done = false;
+  var pct = 0, done = false, elapsed = 0;
 
-  // 進度條爬到 90% 就停住等資料，資料回來才補到 100%。
-  // 不讓它自己跑到 100 卻沒東西出現——那比慢更傷信任。
+  // 進度條永遠不會真的停住：越接近尾端爬得越慢，但仍持續前進。
+  // 完全卡在 90% 看起來就像當掉了——使用者分不出「還在跑」和「壞了」，
+  // 那比慢本身更讓人想直接關掉頁面。
   var timer = setInterval(function () {{
     if (done) return;
-    var step = pct < 55 ? 2.4 : (pct < 80 ? 0.9 : 0.25);
-    pct = Math.min(90, pct + step);
+    elapsed += 0.26;
+    var step = pct < 50 ? 2.2 : (pct < 75 ? 0.8 : (pct < 90 ? 0.28 : 0.05));
+    pct = Math.min(99, pct + step);   // 漸進趨近 99，永遠到不了但一直在動
     bar.style.width = pct + '%';
     pctEl.textContent = Math.round(pct) + '%';
-    var i = Math.min(stages.length - 1, Math.floor(pct / (90 / stages.length)));
-    stageEl.textContent = stages[i];
+
+    var i = Math.min(stages.length - 1, Math.floor(pct / (92 / stages.length)));
+    var label = stages[i];
+    // 超過預期時間就換句話講，別讓同一行字乾瞪眼
+    if (elapsed > 45) {{
+      label = '資料量較大，仍在處理中…';
+    }} else if (elapsed > 25) {{
+      label = stages[stages.length - 1] + '（快好了）';
+    }}
+    stageEl.textContent = label;
   }}, 260);
 
   function finish(html) {{
@@ -4738,36 +4769,26 @@ CATEGORY_NOTE = {
 # 選股台：黑馬／雷達的完整版
 # LINE 受限於訊息長度只能給 5 檔；網頁可以給 20 檔並支援排序篩選。
 # ============================================================
-@app.route("/web/screener")
-@web_login_required
-def web_screener(uid):
-    mode = request.args.get("mode", "blackhorse")
-    if not wants_fragment():
-        # 選股台是全站最重的一頁（候選池上百檔），先秒回骨架再慢慢填
-        return render_loading_shell(
-            "選股台", "screener",
-            ["正在抓三大法人買賣超…", "正在抓月營收與估值…",
-             "正在挑選候選池…",
-             ("正在逐檔抓報價（上百檔）…" if mode != "radar"
-              else "正在抓當日強勢股報價…"),
-             "正在評分與排序…"],
-            note="候選池涵蓋電子、傳產、金融三類，需要逐檔取得報價與量能。")
+# 選股結果快取。每個 mode 一份，存的是「還沒套使用者篩選條件」的完整清單。
+# 這一頁真正花時間的是抓上百檔報價與評分，而那份結果對所有使用者、
+# 所有篩選條件都是同一份——排序、筆數、產業、類股全是在既有清單上做取捨。
+# 沒有快取的話，使用者每動一次下拉選單就要重跑一次全部流程（數十秒），
+# 那才是最勸退的地方：第一次慢還能接受，每調一個條件都慢就不會有人用了。
+_screener_cache = {}
+SCREENER_CACHE_SECONDS = 300   # 盤中五分鐘內的報價差異對選股結論沒有影響
 
-    limit = request.args.get("limit", "20")
-    limit = int(limit) if limit.isdigit() and int(limit) in (10, 20, 50) else 20
-    sort_key = request.args.get("sort", "score")
-    min_score = request.args.get("min_score", "")
-    max_pe = request.args.get("max_pe", "")
-    industry_filter = request.args.get("industry", "")
-    cat_filter = request.args.get("cat", "")   # 空=全部；僅作顯示篩選，不影響候選池
-    view = request.args.get("view", "list")         # list=總排行, sector=依產業
 
-    inst = fetch_institutional_data()
-    if not inst:
-        return respond_page("選股台", """
-<div class="empty">目前無法取得三大法人資料。<br>
-可能是非交易時段或資料尚未公布，請稍後再試。</div>""", "screener")
+def compute_screener_rows(mode):
+    """
+    算出某個模式的完整候選清單。回傳 (rows, 因流動性被排除的檔數, 產業動能)。
+    結果快取 5 分鐘，讓調整篩選條件變成瞬間反應。
+    """
+    now = time.time()
+    hit = _screener_cache.get(mode)
+    if hit and now - hit["at"] < SCREENER_CACHE_SECONDS:
+        return hit["rows"], hit["skipped"], hit["momentum"]
 
+    inst = fetch_institutional_data() or {}
     revenue = fetch_monthly_revenue() or {}
     valuation = fetch_valuation() or {}
     ind_map = get_industry_map() or {}
@@ -4775,10 +4796,6 @@ def web_screener(uid):
 
     # ── 候選池 ──
     if mode == "radar":
-        # 與黑馬一致排除金融保險業（產業代碼 17）：
-        # 銀行保險的「營收」是利息、手續費與投資收益，
-        # 年增率動輒數百％多半來自評價變動而非本業成長，
-        # 套進成長型評分會讓金融股整片霸榜。
         # 雷達看的是「今天什麼在動」，不分類股——
         # 傳產或金融只要帶量突破一樣值得注意，沒有理由先切掉。
         pool = [(c, i) for c, i in inst.items()
@@ -4867,6 +4884,45 @@ def web_screener(uid):
             "pos": price.get("pos_vs_60d_high"),
             "up_streak": price.get("up_streak", 0),
         })
+
+    _screener_cache[mode] = {"at": now, "rows": rows,
+                             "skipped": skipped_liquidity, "momentum": momentum}
+    return rows, skipped_liquidity, momentum
+
+
+@app.route("/web/screener")
+@web_login_required
+def web_screener(uid):
+    mode = request.args.get("mode", "blackhorse")
+    if not wants_fragment():
+        # 選股台是全站最重的一頁（候選池上百檔），先秒回骨架再慢慢填
+        return render_loading_shell(
+            "選股台", "screener",
+            ["正在抓三大法人買賣超…", "正在抓月營收與估值…",
+             "正在挑選候選池…",
+             ("正在逐檔抓報價（上百檔）…" if mode != "radar"
+              else "正在抓當日強勢股報價…"),
+             "正在評分與排序…"],
+            note="候選池涵蓋電子、傳產、金融三類，需要逐檔取得報價與量能。")
+
+    limit = request.args.get("limit", "20")
+    limit = int(limit) if limit.isdigit() and int(limit) in (10, 20, 50) else 20
+    sort_key = request.args.get("sort", "score")
+    min_score = request.args.get("min_score", "")
+    max_pe = request.args.get("max_pe", "")
+    industry_filter = request.args.get("industry", "")
+    cat_filter = request.args.get("cat", "")   # 空=全部；僅作顯示篩選，不影響候選池
+    view = request.args.get("view", "list")         # list=總排行, sector=依產業
+
+    inst = fetch_institutional_data()
+    if not inst:
+        return respond_page("選股台", """
+<div class="empty">目前無法取得三大法人資料。<br>
+可能是非交易時段或資料尚未公布，請稍後再試。</div>""", "screener")
+
+    ind_map = get_industry_map() or {}
+    rows, skipped_liquidity, momentum = compute_screener_rows(mode)
+    rows = list(rows)   # 複製一份再篩選排序，避免就地排序動到快取裡那份
 
     # ── 篩選 ──
     if min_score.isdigit():
@@ -5168,8 +5224,8 @@ def web_screener(uid):
                      if shown else
                      f'''<div class="empty">沒有符合條件的標的。<br><br>
 <span style="font-size:12.5px">
-{"" if mode == "radar" else cat_filter + "類"}目前沒有同時滿足「法人買超」與流動性門檻
-（股價 ≥ {min_close} 元、成交金額 ≥ {min_turnover} 億）的標的，
+{"" if mode == "radar" else (cat_filter + "類" if cat_filter else "")}目前沒有同時滿足「法人買超」與流動性門檻
+（電子 10 元／1 億，傳產與金融 8 元／0.3 億）的標的，
 其中 {skipped_liquidity} 檔因流動性被排除。<br>
 可試著切換類股範圍，或放寬上方篩選條件。</span></div>''')
         count_note = f"共 {len(rows)} 檔符合條件"
