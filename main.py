@@ -4115,6 +4115,120 @@ def cron_snapshot_portfolio():
             f"industries={ind_saved}, picks={picks_saved}, taiex={taiex_close}"), 200
 
 
+# ── 資料保留期限 ──
+# Supabase 免費方案 500MB。inst_history 每天約 2,000 筆、一年約 60MB，
+# 單靠它可以撐好幾年；真正會隨使用者數線性成長的是 watchlist_scores
+# （使用者數 × 自選檔數 × 天數），開放給多人使用後必須設上限。
+#
+# 期限訂在「遠大於實際查詢範圍」而不是「剛好夠用」：
+# 程式只查 inst_history 最近 20 天，但保留兩年，
+# 留著是為了日後想做回測時有東西可用——資料刪掉就再也回不來了
+# （TWSE T86 可以回補，但 TPEx 上櫃那個端點只給最新一日，刪了就沒了）。
+RETENTION_DAYS = {
+    "inst_history": ("trade_date", 730),        # 2 年，保留回測空間
+    "watchlist_scores": ("snapshot_date", 400),  # 約 1 年多，只用於比對變化
+    "portfolio_snapshots": ("snapshot_date", 1095),  # 3 年，每人每天才一筆
+    "pick_history": ("pick_date", 1095),         # 3 年，量極小且是成效追蹤的依據
+    "industry_momentum_history": ("snapshot_date", 1095),
+    "web_sessions": ("expires_at", 0),           # 過期即可刪
+    "web_codes": ("expires_at", 0),
+}
+
+
+def get_db_stats():
+    """
+    各表的筆數與磁碟用量。開放使用後要能一眼看出哪張表在暴衝，
+    而不是等到寫入開始失敗才發現額度用完。
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT relname,
+                   n_live_tup,
+                   pg_total_relation_size(relid)
+            FROM pg_stat_user_tables
+            ORDER BY pg_total_relation_size(relid) DESC
+        """)
+        rows = cursor.fetchall()
+        cursor.execute("SELECT pg_database_size(current_database())")
+        total = cursor.fetchone()[0]
+        cursor.close()
+        return rows, total
+    except Exception as e:
+        print(f"❌ 讀取資料庫統計失敗: {e}")
+        return [], 0
+    finally:
+        release_db_connection(conn)
+
+
+@app.route("/db-stats", methods=["POST", "GET"])
+def db_stats():
+    """資料庫用量診斷。用法：/db-stats?token=..."""
+    if request.args.get("token") != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    rows, total = get_db_stats()
+    if not rows:
+        return "查詢失敗，請看 Render Logs。", 200
+
+    def mb(b):
+        return f"{b / 1024 / 1024:.1f} MB"
+
+    lines = [f"資料庫總用量：{mb(total)}　（Supabase 免費方案上限 500 MB）",
+             "=" * 46, ""]
+    for name, n, size in rows:
+        keep = RETENTION_DAYS.get(name)
+        policy = f"保留 {keep[1]} 天" if keep and keep[1] else (
+            "過期即刪" if keep else "無期限")
+        lines.append(f"{name:28} {n or 0:>9,} 筆　{mb(size):>10}　{policy}")
+
+    pct = total / (500 * 1024 * 1024) * 100
+    lines += ["", f"已使用約 {pct:.1f}%"]
+    if pct > 70:
+        lines.append("⚠️ 超過七成，建議跑 /cron/cleanup 或縮短保留期限")
+    return "\n".join(lines), 200
+
+
+@app.route("/cron/cleanup", methods=["POST", "GET"])
+def cron_cleanup():
+    """
+    依保留期限清掉舊資料。建議每週跑一次（例如週日凌晨）。
+
+    只刪超過期限的，不動近期資料；每張表分開執行，
+    某一張刪失敗不影響其他張——清理是維運工作，
+    不該因為一個錯誤就整批停擺。
+    """
+    if request.args.get("token") != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    results = []
+    for table, (col, days) in RETENTION_DAYS.items():
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            if days:
+                cursor.execute(
+                    f"DELETE FROM {table} WHERE {col} < CURRENT_DATE - %s", (days,))
+            else:
+                # web_sessions／web_codes 存的是到期時間，過期就沒有保留價值
+                cursor.execute(f"DELETE FROM {table} WHERE {col} < NOW()")
+            deleted = cursor.rowcount
+            conn.commit()
+            cursor.close()
+            results.append(f"{table}: 刪除 {deleted:,} 筆")
+        except Exception as e:
+            conn.rollback()
+            print(f"❌ 清理 {table} 失敗: {e}")
+            results.append(f"{table}: 失敗（{e}）")
+        finally:
+            release_db_connection(conn)
+
+    _rows, total = get_db_stats()
+    return ("清理完成\n" + "\n".join(results)
+            + f"\n\n目前總用量：{total / 1024 / 1024:.1f} MB"), 200
+
+
 @app.route("/cron/warmup", methods=["POST", "GET"])
 def cron_warmup():
     """
