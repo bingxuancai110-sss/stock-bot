@@ -8,6 +8,7 @@ import requests
 from requests.adapters import HTTPAdapter
 import psycopg2
 from psycopg2 import pool
+import psycopg2.extensions
 from psycopg2.extras import execute_values
 from urllib.parse import urlparse
 from flask import Flask, abort, request
@@ -43,22 +44,74 @@ _db_url = os.environ.get("DATABASE_URL")
 _url = urlparse(_db_url)
 _ipv4_addr = socket.gethostbyname(_url.hostname)
 
-connection_pool = psycopg2.pool.SimpleConnectionPool(
-    1, 10,
+# 一定要用 ThreadedConnectionPool 而不是 SimpleConnectionPool。
+# gunicorn 開了多執行緒之後，SimpleConnectionPool 可能把同一條連線
+# 同時交給兩個執行緒，兩邊交錯寫入同一個 SSL 串流，就會出現
+# 「SSL error: decryption failed or bad record mac」——
+# 錯誤訊息看起來像憑證問題，實際上是併發問題，很容易查錯方向。
+# 單執行緒時永遠不會發生，所以加上 --threads 之前都相安無事。
+connection_pool = psycopg2.pool.ThreadedConnectionPool(
+    1, 20,          # 上限要 ≥ gunicorn 的 threads 數，否則執行緒會卡在等連線
     database=_url.path[1:],
     user=_url.username,
     password=_url.password,
     host=_ipv4_addr,
     port=_url.port,
-    sslmode='require'
+    sslmode='require',
+    connect_timeout=10,
+    # 連線被 Supabase pooler 中途切斷時，下次借出才會發現而丟出例外。
+    # 開啟 keepalive 讓閒置連線不被靜默斷開。
+    keepalives=1,
+    keepalives_idle=30,
+    keepalives_interval=10,
+    keepalives_count=3,
 )
 
+
 def get_db_connection():
+    """
+    借一條連線。若借到的是已經壞掉的連線（例如被伺服器中途切斷），
+    直接丟棄再借一條——把壞連線放回池子只會讓下一個人也踩到。
+    """
+    for _attempt in range(3):
+        conn = connection_pool.getconn()
+        try:
+            if conn.closed:
+                connection_pool.putconn(conn, close=True)
+                continue
+            return conn
+        except Exception as e:
+            print(f"⚠️ 取得連線異常，丟棄重試: {e}")
+            try:
+                connection_pool.putconn(conn, close=True)
+            except Exception:
+                pass
     return connection_pool.getconn()
 
+
 def release_db_connection(conn):
-    if conn:
+    """
+    歸還連線。交易若停在異常狀態，必須先 rollback 再放回，
+    否則下一個借到這條連線的人會直接收到
+    「current transaction is aborted」而摸不著頭緒。
+    """
+    if not conn:
+        return
+    try:
+        # 連線處於錯誤或交易中的狀態時先清乾淨
+        if conn.closed:
+            connection_pool.putconn(conn, close=True)
+            return
+        if conn.get_transaction_status() not in (
+                psycopg2.extensions.TRANSACTION_STATUS_IDLE,):
+            conn.rollback()
         connection_pool.putconn(conn)
+    except Exception as e:
+        print(f"⚠️ 歸還連線失敗，關閉該連線: {e}")
+        try:
+            connection_pool.putconn(conn, close=True)
+        except Exception:
+            pass
 
 def init_db():
     conn = get_db_connection()
