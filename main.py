@@ -214,6 +214,11 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_realized_trades_user
             ON realized_trades (user_id, sold_on DESC)
         ''')
+        # 賣出時實際付出的手續費與證交稅。使用者自己填才準——
+        # 各券商折扣、最低收費、當沖減半都不一樣，程式算的只能是估計值。
+        for _col, _type in [("fee", "REAL"), ("tax", "REAL")]:
+            cursor.execute(
+                f"ALTER TABLE realized_trades ADD COLUMN IF NOT EXISTS {_col} {_type}")
         # 每日組合快照：市值與大盤指數各存一筆，用來畫「我的組合 vs 大盤」走勢圖。
         # 沒有這張表就沒有歷史可畫，所以越早開始存越好，畫圖是之後的事。
         cursor.execute('''
@@ -593,20 +598,19 @@ def delete_position(user_id, pos_id):
         release_db_connection(conn)
 
 
-def sell_position(user_id, pos_id, sell_shares, fee_discount=None, min_fee=None):
+def sell_position(user_id, pos_id, sell_shares,
+                  sell_price=None, fee=None, tax=None):
     """
     賣出持股。賣出股數等於整筆數量時直接刪除該筆；
     小於時只減少股數，每股成本不變──賣出不影響剩餘股份的成本基礎。
 
-    同時把這筆賣出記進 realized_trades：用當下市價估損益，
-    跟券商「立刻賣出會拿到多少」是同一套算法（net_profit，扣賣出手續費與證交稅）。
-    查不到即時報價時，賣出仍會成功，只是這筆不會有損益數字可看──
-    不能因為抓不到報價就擋掉使用者的操作。
+    賣價、手續費、證交稅都由使用者填寫，因為只有他知道實際成交的數字：
+    折扣、最低收費、當沖減半各券商不同，程式算出來的永遠只是估計值，
+    存進交易紀錄的數字應該要能跟對帳單對得起來。
+    留空的欄位才用市價與公式試算，當作方便而非準確來源。
 
-    fee_discount／min_fee 沒給時用預設值（DEFAULT_FEE_DISCOUNT／DEFAULT_MIN_FEE，
-    定義在檔案後段的「交易成本」區塊）；這裡故意不把它們寫成參數預設值，
-    因為函式定義的當下那兩個常數還沒被定義，寫成預設值會在載入模組時就噴錯，
-    改成呼叫時才判斷即可避開。
+    已實現損益 =（賣出股數 × 賣價 − 手續費 − 證交稅）− 賣出股數 × 成本價
+    成本價沿用券商口徑（已含買進手續費），所以這裡不再另外扣買進費用。
 
     回傳 (成功與否, 錯誤訊息或 None)
     """
@@ -645,27 +649,31 @@ def sell_position(user_id, pos_id, sell_shares, fee_discount=None, min_fee=None)
     finally:
         release_db_connection(conn)
 
-    disc = fee_discount if fee_discount is not None else DEFAULT_FEE_DISCOUNT
-    mf = min_fee if min_fee is not None else DEFAULT_MIN_FEE
-    price_data = get_realtime_stock(code)
-    if price_data:
-        sell_price = price_data["close"]
-        realized_pl, realized_pct, _fee = net_profit(
-            code, sell_shares, lot_cost, sell_price,
-            None, disc, mf, cost_includes_fee=True)
-    else:
-        sell_price, realized_pl, realized_pct = None, None, None
+    # 沒填賣價就用當下市價；連市價都抓不到，這筆就沒有損益數字可記
+    if sell_price is None:
+        price_data = get_realtime_stock(code)
+        sell_price = price_data["close"] if price_data else None
+    if sell_price is None:
+        return True, None
 
-    if sell_price is not None:
-        record_realized_trade(user_id, code, sell_shares, lot_cost, sell_price,
-                              realized_pl, realized_pct, bought_on)
+    gross = sell_shares * sell_price
+    if fee is None:
+        fee = broker_fee(gross)                                  # 未填則以牌價試算
+    if tax is None:
+        tax = gross * (TAX_RATE_ETF if is_etf(code) else TAX_RATE_STOCK)
 
+    cost_total = sell_shares * lot_cost
+    realized_pl = (gross - fee - tax) - cost_total
+    realized_pct = (realized_pl / cost_total * 100) if cost_total else None
+
+    record_realized_trade(user_id, code, sell_shares, lot_cost, sell_price,
+                          realized_pl, realized_pct, bought_on, fee, tax)
     return True, None
 
 
 def record_realized_trade(user_id, code, shares, buy_cost, sell_price,
-                          realized_pl, realized_pct, bought_on):
-    """記一筆已實現損益。賣出時查不到報價就不會呼叫這裡，此表只存有損益數字的交易。"""
+                          realized_pl, realized_pct, bought_on, fee=None, tax=None):
+    """記一筆已實現損益。賣出時連市價都查不到就不會呼叫這裡。"""
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -673,11 +681,12 @@ def record_realized_trade(user_id, code, shares, buy_cost, sell_price,
             """
             INSERT INTO realized_trades
                 (user_id, code, shares, buy_cost, sell_price,
-                 realized_pl, realized_pct, bought_on, sold_on)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_DATE)
+                 realized_pl, realized_pct, bought_on, sold_on, fee, tax)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_DATE, %s, %s)
             """,
             (str(user_id).strip(), str(code).strip(), int(shares), float(buy_cost),
-             float(sell_price), realized_pl, realized_pct, bought_on or None),
+             float(sell_price), realized_pl, realized_pct, bought_on or None,
+             fee, tax),
         )
         conn.commit()
         cursor.close()
@@ -698,7 +707,7 @@ def get_realized_trades(user_id, limit=100):
         cursor.execute(
             """
             SELECT code, shares, buy_cost, sell_price, realized_pl,
-                   realized_pct, bought_on, sold_on
+                   realized_pct, bought_on, sold_on, fee, tax
             FROM realized_trades WHERE user_id = %s
             ORDER BY sold_on DESC, id DESC LIMIT %s
             """,
@@ -709,7 +718,8 @@ def get_realized_trades(user_id, limit=100):
         return [
             {"code": r[0], "shares": r[1], "buy_cost": r[2], "sell_price": r[3],
              "realized_pl": r[4], "realized_pct": r[5],
-             "bought_on": r[6], "sold_on": r[7]}
+             "bought_on": r[6], "sold_on": r[7],
+             "fee": r[8], "tax": r[9]}
             for r in rows
         ]
     except Exception as e:
@@ -3431,6 +3441,28 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .total-label{font-size:12px;color:var(--ink-soft)}
 .total-value{font-size:24px;font-weight:600;margin-top:2px}
 .total-sub{font-size:12.5px}
+/* ── 賣出面板 ──
+   賣出要填四個欄位（股數、賣價、手續費、稅），全部攤在列表上會把版面撐爆，
+   所以收在 details 裡，需要時才展開。 */
+.sellbox{grid-column:1/-1;margin-top:8px}
+.sellbox>summary{display:inline-block;font-size:11.5px;color:var(--ink-soft);
+  background:#FFF;border:1px solid var(--rule);border-radius:2px;
+  padding:3px 12px;cursor:pointer;list-style:none}
+.sellbox>summary::-webkit-details-marker{display:none}
+.sellbox>summary:hover{background:var(--brass);color:#FFF;
+  border-color:var(--brass)}
+.sellpanel{margin-top:10px;padding:14px;background:var(--paper-2);
+  border-left:2px solid var(--brass)}
+.sellpanel .fields{grid-template-columns:repeat(auto-fit,minmax(96px,1fr));
+  gap:9px}
+.sellpanel label{font-size:11px}
+.sellpanel input{padding:8px 9px;font-size:14px}
+.sellpanel .row-actions{display:flex;gap:9px;align-items:center;
+  margin-top:11px;flex-wrap:wrap}
+.sellpanel button{margin:0;padding:8px 18px;font-size:13.5px}
+.sell-hint{font-size:11px;color:var(--ink-faint);margin-top:9px;line-height:1.65}
+.lot-actions{display:flex;gap:8px;margin-top:7px;flex-wrap:wrap}
+
 /* ── 載入畫面 ──
    紙本月報的調性不適合轉圈圈或跳動的小動畫，所以用一條黃銅色進度條
    ＋會淡入淡出的投資語錄。等待時有東西可讀，比盯著空白畫面好。 */
@@ -3516,42 +3548,92 @@ def fmt_pct(v):
 # 挑的都是講「紀律、耐心、風險」的短句——跟這個工具想傳達的態度一致，
 # 不放那種鼓吹重壓或保證獲利的句子。
 INVESTING_QUOTES = [
-    ("行情總在絕望中誕生，在半信半疑中成長，在憧憬中成熟，在充滿希望中毀滅。",
-     "", "約翰・坦伯頓"),
+    # 耐心與時間
+    ("股市是把錢從沒耐心的人手上，轉移到有耐心的人手上的裝置。", "", "華倫・巴菲特"),
+    ("時間是好公司的朋友，是平庸公司的敵人。", "", "華倫・巴菲特"),
+    ("大錢不是靠買賣賺來的，是靠等待。", "", "傑西・李佛摩"),
+    ("我最喜歡的持有期限是永遠。",
+     "Our favorite holding period is forever.", "華倫・巴菲特"),
+    ("有人今天能乘涼，是因為很久以前有人種了樹。", "", "華倫・巴菲特"),
+    ("複利是世界第八大奇蹟。", "", "常被歸於愛因斯坦"),
+    ("你不能為了讓孩子早點出生，就找九個女人懷孕一個月。", "", "華倫・巴菲特"),
+    ("賺大錢的關鍵不在於思考，而在於坐得住。", "", "查理・蒙格"),
+    ("在股市裡，時間是你的朋友，衝動是你的敵人。", "", "約翰・柏格"),
+    ("投資應該像看油漆變乾或看草生長一樣無聊。",
+     "Investing should be more like watching paint dry.", "保羅・薩繆森"),
+
+    # 風險與虧損
     ("風險來自於你不知道自己在做什麼。",
      "Risk comes from not knowing what you're doing.", "華倫・巴菲特"),
-    ("別人貪婪時恐懼，別人恐懼時貪婪。",
-     "", "華倫・巴菲特"),
-    ("股市是把錢從沒耐心的人手上，轉移到有耐心的人手上的裝置。",
-     "", "華倫・巴菲特"),
-    ("投資人最大的敵人，往往是他自己。",
-     "The investor's chief problem is likely himself.", "班傑明・葛拉漢"),
-    ("市場短期是投票機，長期是體重計。",
-     "", "班傑明・葛拉漢"),
-    ("你不必在每一件事上都正確，只要在少數幾件事上不犯大錯。",
-     "", "彼得・林區"),
-    ("賠錢的真正原因，是等不及而在最壞的時候賣出。",
-     "", "彼得・林區"),
-    ("懂你手上持有的是什麼，也懂你為什麼持有它。",
-     "Know what you own, and know why you own it.", "彼得・林區"),
-    ("在投資裡，讓你舒服的事情，很少讓你賺錢。",
-     "", "霍華・馬克斯"),
+    ("第一條規則是永遠不要賠錢，第二條是永遠別忘記第一條。", "", "華倫・巴菲特"),
+    ("退潮時，才知道誰在裸泳。", "", "華倫・巴菲特"),
     ("我們無法預測，但可以做好準備。",
      "You can't predict. You can prepare.", "霍華・馬克斯"),
-    ("時間是好公司的朋友，是平庸公司的敵人。",
-     "", "華倫・巴菲特"),
-    ("分散是對無知的保護；若你清楚自己在做什麼，它就沒什麼必要。",
-     "", "華倫・巴菲特"),
-    ("大錢不是靠買賣賺來的，是靠等待。",
-     "", "傑西・李佛摩"),
-    ("投資成功不需要高智商，需要的是控制住會讓人出事的衝動。",
-     "", "華倫・巴菲特"),
-    ("四個最貴的字：這次不一樣。",
+    ("在投資裡，讓你舒服的事情，很少讓你賺錢。", "", "霍華・馬克斯"),
+    ("風險不是波動，而是永久損失資本的可能。", "", "霍華・馬克斯"),
+    ("承擔風險沒問題，但別讓單一風險把你踢出局。", "", "彼得・伯恩斯坦"),
+    ("投資最危險的四個字：這次不一樣。",
      "The four most expensive words: this time it's different.", "約翰・坦伯頓"),
-    ("複利是世界第八大奇蹟。",
-     "", "常被歸於愛因斯坦"),
+    ("你要活得夠久，才能等到複利發揮作用。", "", "摩根・豪瑟"),
+    ("生存是通往成功的必要條件。", "", "納西姆・塔雷伯"),
+    ("永遠不要拿你有的、你需要的，去賭你沒有的、你不需要的。", "", "華倫・巴菲特"),
+
+    # 人性與紀律
+    ("別人貪婪時恐懼，別人恐懼時貪婪。", "", "華倫・巴菲特"),
+    ("投資人最大的敵人，往往是他自己。",
+     "The investor's chief problem is likely himself.", "班傑明・葛拉漢"),
+    ("投資成功不需要高智商，需要的是控制住會讓人出事的衝動。", "", "華倫・巴菲特"),
+    ("行情總在絕望中誕生，在半信半疑中成長，在憧憬中成熟，在充滿希望中毀滅。",
+     "", "約翰・坦伯頓"),
+    ("賠錢的真正原因，是等不及而在最壞的時候賣出。", "", "彼得・林區"),
+    ("如果你無法忍受股價腰斬，就不該投資股票。", "", "彼得・林區"),
+    ("每個人都有腦力賺股市的錢，但不是每個人都有那個胃。", "", "彼得・林區"),
+    ("市場能維持非理性的時間，比你能維持不破產的時間更久。", "", "常被歸於凱因斯"),
+    ("行情在悲觀中誕生，在懷疑中成長。", "", "約翰・坦伯頓"),
+    ("投資是門把情緒排除在決策之外的功夫。", "", "班傑明・葛拉漢"),
+    ("最重要的不是你多聰明，而是你能不能不做蠢事。", "", "查理・蒙格"),
+    ("我這輩子的成功，很大程度來自於不做傻事，而不是特別聰明。", "", "查理・蒙格"),
+    ("認識自己的能力圈，然後待在裡面。", "", "華倫・巴菲特"),
+
+    # 價值與估值
+    ("市場短期是投票機，長期是體重計。", "", "班傑明・葛拉漢"),
     ("價格是你付出的，價值是你得到的。",
      "Price is what you pay. Value is what you get.", "華倫・巴菲特"),
+    ("用普通的價格買一家好公司，遠勝過用好價格買一家普通公司。", "", "華倫・巴菲特"),
+    ("投資操作是經過分析、能保障本金並取得適當報酬的行為；不符合的就是投機。",
+     "", "班傑明・葛拉漢"),
+    ("好標的、好買點、好賣點，三者缺一不可。", "", "霍華・馬克斯"),
+    ("買得便宜不是為了買得便宜，是為了留出犯錯的空間。", "", "賽斯・卡拉曼"),
+    ("安全邊際是投資的核心概念。", "", "班傑明・葛拉漢"),
+    ("再好的公司，出價太高也會變成糟糕的投資。", "", "霍華・馬克斯"),
+
+    # 研究與功課
+    ("懂你手上持有的是什麼，也懂你為什麼持有它。",
+     "Know what you own, and know why you own it.", "彼得・林區"),
+    ("在你買進之前，先能用兩分鐘說清楚買它的理由。", "", "彼得・林區"),
+    ("投資你懂的東西，而不是你聽說的東西。", "", "彼得・林區"),
+    ("你不必在每一件事上都正確，只要在少數幾件事上不犯大錯。", "", "彼得・林區"),
+    ("讀年報，讀你要投資那家公司的年報，也讀它競爭對手的。", "", "華倫・巴菲特"),
+    ("我這輩子沒見過不讀書的聰明人，一個都沒有。", "", "查理・蒙格"),
+    ("預測未來最好的方式，是理解現在。", "", "彼得・杜拉克"),
+
+    # 分散與配置
+    ("分散是對無知的保護；若你清楚自己在做什麼，它就沒什麼必要。", "", "華倫・巴菲特"),
+    ("別把所有雞蛋放在同一個籃子裡——除非你能看好那個籃子。", "", "安德魯・卡內基"),
+    ("資產配置決定了你長期報酬的絕大部分。", "", "蓋瑞・布林森"),
+    ("不要在乾草堆裡找針，直接買下整個乾草堆。", "", "約翰・柏格"),
+    ("成本很重要，你付出去的每一分，都是你拿不回來的報酬。", "", "約翰・柏格"),
+
+    # 態度與長期
+    ("在別人絕望時買進，在別人樂觀時賣出，需要極大的意志力，回報也最豐厚。",
+     "", "約翰・坦伯頓"),
+    ("投資是少數幾件你越少動作、結果越好的事。", "", "摩根・豪瑟"),
+    ("財富是你沒有花掉的那些錢。", "", "摩根・豪瑟"),
+    ("控制你能控制的：成本、行為、時間長度。", "", "約翰・柏格"),
+    ("計畫最重要的部分，是為計畫趕不上變化預留空間。", "", "摩根・豪瑟"),
+    ("市場不會因為你需要錢，就在那天對你友善。", "", "霍華・馬克斯"),
+    ("停損不是承認失敗，是承認你不知道接下來會怎樣。", "", "傑西・李佛摩"),
+    ("一個投資人真正需要的，是在別人失去理智時保持理智。", "", "班傑明・葛拉漢"),
 ]
 
 
@@ -3749,12 +3831,20 @@ def web_positions(uid):
             delete_position(uid, request.form.get("id"))
             msg = "已刪除。"
         elif action == "sell":
-            try:
-                sell_shares = int(request.form.get("sell_shares", "0"))
-            except ValueError:
-                sell_shares = 0
+            def num(field, cast=float):
+                """空字串代表「請幫我算」，回 None；填了才用使用者給的數字。"""
+                v = (request.form.get(field) or "").strip()
+                if not v:
+                    return None
+                try:
+                    return cast(v)
+                except ValueError:
+                    return None
+
+            sell_shares = num("sell_shares", int) or 0
             ok, err = sell_position(uid, request.form.get("id"), sell_shares,
-                                    fee_disc, min_fee)
+                                    sell_price=num("sell_price"),
+                                    fee=num("fee"), tax=num("tax"))
             msg = "已記錄賣出。" if ok else (err or "賣出失敗，請稍後再試。")
         else:
             code = normalize_code(request.form.get("code", ""))
@@ -3763,46 +3853,90 @@ def web_positions(uid):
                 cost = float(request.form.get("cost", "0"))
             except ValueError:
                 shares, cost = 0, 0.0
+            # 買進手續費直接攤進每股成本，跟券商「成本價」的口徑一致
+            # （券商庫存頁顯示的成本價本來就已含買進手續費）。
+            # 留空代表你填的成本價已經含手續費了，不再重複加。
+            buy_fee = (request.form.get("buy_fee") or "").strip()
             if not code or shares <= 0 or cost <= 0:
                 msg = "請填入正確的代號、股數與成本價。"
             else:
+                try:
+                    bf = float(buy_fee) if buy_fee else 0.0
+                except ValueError:
+                    bf = 0.0
+                if bf > 0:
+                    cost = (cost * shares + bf) / shares
                 add_position(uid, code, shares, cost,
                              request.form.get("bought_on") or None)
-                msg = f"已新增 {code}。"
+                msg = (f"已新增 {code}（含手續費，每股成本 {cost:,.2f}）。"
+                       if bf > 0 else f"已新增 {code}。")
 
     positions = merge_positions(get_positions(uid))
     inst = fetch_institutional_data() or {}
 
-    def sell_form(lot_id, max_shares):
-        return (f'<form method="post" style="display:inline-flex;align-items:center;'
-                f'gap:6px;margin-right:8px">'
-                f'<input type="hidden" name="action" value="sell">'
-                f'<input type="hidden" name="id" value="{lot_id}">'
-                f'<input class="qty-input" type="number" name="sell_shares" '
-                f'min="1" max="{max_shares}" placeholder="股數">'
-                f'<button class="sell" type="submit">賣出</button></form>')
+    def sell_form(lot_id, max_shares, code, cur_price, lot_cost, label="賣出"):
+        """
+        展開式賣出面板。四個欄位都可以自己填，因為只有你知道實際成交的數字；
+        賣價預帶目前市價、手續費與稅預帶牌價試算值，方便但可以覆蓋。
+        """
+        tax_rate = TAX_RATE_ETF if is_etf(code) else TAX_RATE_STOCK
+        px = f"{cur_price:.2f}" if cur_price else ""
+        gross = (cur_price or 0) * max_shares
+        est_fee = round(broker_fee(gross)) if gross else 0
+        est_tax = round(gross * tax_rate) if gross else 0
+        return f"""
+<details class="sellbox"><summary>{label}</summary>
+<form method="post" class="sellpanel">
+  <input type="hidden" name="action" value="sell">
+  <input type="hidden" name="id" value="{lot_id}">
+  <div class="fields">
+    <div><label>賣出股數</label>
+      <input type="number" name="sell_shares" min="1" max="{max_shares}"
+             value="{max_shares}" required></div>
+    <div><label>賣出價</label>
+      <input type="number" step="0.01" name="sell_price" value="{px}"
+             placeholder="{px or '市價'}"></div>
+    <div><label>手續費</label>
+      <input type="number" step="1" name="fee" placeholder="{est_fee}"></div>
+    <div><label>證交稅</label>
+      <input type="number" step="1" name="tax" placeholder="{est_tax}"></div>
+  </div>
+  <div class="row-actions">
+    <button type="submit">確認賣出</button>
+  </div>
+  <div class="sell-hint">
+    成本 {lot_cost:,.2f}／股，全部賣出 {max_shares:,} 股。
+    手續費與證交稅留空會用牌價試算（{est_fee:,} 與 {est_tax:,}）；
+    填入對帳單上的實際金額，已實現損益才會跟券商對得起來。
+  </div>
+</form>
+</details>"""
 
     def delete_form(lot_id, name):
         return (f'<form method="post" style="display:inline;margin:0" '
-                f'onsubmit="return confirm(\'確定刪除 {name}？\')">'
+                f'onsubmit="return confirm(\'刪除是把這筆持股整筆移除，'
+                f'不會記入已實現損益。確定刪除 {name}？\')">'
                 f'<input type="hidden" name="action" value="delete">'
                 f'<input type="hidden" name="id" value="{lot_id}">'
                 f'<button class="del" type="submit">刪除</button></form>')
 
-    def lots_html(p, name):
-        """單筆就賣出鍵＋刪除鍵；分批買進則收在 details 裡，可個別賣出或刪除。"""
+    def lots_html(p, name, cur_price):
+        """單筆就一組賣出面板＋刪除鍵；分批買進則每一筆各自可賣出或刪除。"""
         lots = p.get("lots", [])
         if len(lots) <= 1:
-            lid = lots[0]["id"] if lots else 0
-            max_shares = lots[0]["shares"] if lots else 0
-            return sell_form(lid, max_shares) + delete_form(lid, name)
+            if not lots:
+                return ""
+            l = lots[0]
+            return (f'<div class="lot-actions">{delete_form(l["id"], name)}</div>'
+                    + sell_form(l["id"], l["shares"], p["code"],
+                                cur_price, l["cost"]))
         items = "".join(
             f'<div class="lot">'
             f'<span class="num">{l["shares"]:,}</span> 股　'
             f'成本 <span class="num">{l["cost"]:,.2f}</span>　'
             f'{l["bought_on"].strftime("%Y/%m/%d") if l["bought_on"] else "未填日期"}'
-            f'<span style="margin-left:10px">{sell_form(l["id"], l["shares"])}'
-            f'{delete_form(l["id"], name)}</span>'
+            f'<div class="lot-actions">{delete_form(l["id"], name)}</div>'
+            f'{sell_form(l["id"], l["shares"], p["code"], cur_price, l["cost"], "賣出這筆")}'
             f'</div>' for l in lots)
         return (f'<details class="lots"><summary>分 {len(lots)} 筆買進</summary>'
                 f'{items}</details>')
@@ -3853,7 +3987,7 @@ def web_positions(uid):
     <span><em>成本費</em> <span class="num">{cost_fee:,.0f}</span></span>
     <span><em>權重</em> <span class="num">{weight:.1f}%</span></span>
     {f'<span><em>持有</em> {held} 天</span>' if held is not None else ''}
-    {lots_html(p, name)}
+    {lots_html(p, name, price['close'])}
   </div>
   <div class="chg">{fmt_pct(price['pct'])}</div>
   <div class="bar"><div style="width:{weight:.1f}%"></div></div>
@@ -3866,7 +4000,7 @@ def web_positions(uid):
   <div class="price flat">—</div>
   <div class="meta">
     <span><em>持有</em> <span class="num">{p['shares']:,}</span> 股</span>
-    {lots_html(p, p['code'])}
+    {lots_html(p, p['code'], None)}
   </div>
   <div class="chg"></div>
 </div>""")
@@ -3905,10 +4039,16 @@ def web_positions(uid):
       <input name="shares" inputmode="numeric" placeholder="1000" required></div>
     <div><label>成本價</label>
       <input name="cost" inputmode="decimal" placeholder="950.5" required></div>
+    <div><label>手續費（可略）</label>
+      <input name="buy_fee" inputmode="numeric" placeholder="0"></div>
     <div><label>買進日期（可略）</label>
       <input name="bought_on" type="date"></div>
   </div>
   <button type="submit">新增</button>
+  <div class="sell-hint">
+    直接抄券商庫存頁的「成本價」就好，那個數字已含買進手續費，手續費欄留空即可。<br>
+    若填的是純成交價，在手續費欄填實際金額，會自動攤進每股成本。
+  </div>
 </form>"""
     return respond_page("持股", body, "positions")
 
@@ -4191,6 +4331,7 @@ def render_realized_summary(user_id, inst_data):
             "up" if t["realized_pl"] >= 0 else "down")
         pl_txt = (f'<span class="num {pl_cls}">{t["realized_pl"]:+,.0f}</span>'
                   if t["realized_pl"] is not None else '<span class="flat">—</span>')
+        costs = (t.get("fee") or 0) + (t.get("tax") or 0)
         return f"""
 <div class="row">
   <div><span class="name">{name}</span><span class="code">{t['code']}</span></div>
@@ -4200,6 +4341,7 @@ def render_realized_summary(user_id, inst_data):
     <span><em>成本</em> <span class="num">{t['buy_cost']:,.2f}</span></span>
     <span><em>賣價</em> <span class="num">{t['sell_price']:,.2f}</span></span>
     <span><em>損益</em> {pl_txt}</span>
+    <span><em>費用稅</em> <span class="num">{costs:,.0f}</span></span>
     <span><em>賣出日</em> {t['sold_on'].strftime('%Y/%m/%d') if t['sold_on'] else '—'}</span>
   </div>
 </div>"""
@@ -4300,26 +4442,13 @@ def web_settings(uid):
     msg = ""
     if request.method == "POST":
         updates = {}
-        for k in ("loss_alert_pct", "position_alert_pct", "min_fee"):
+        for k in ("loss_alert_pct", "position_alert_pct"):
             v = request.form.get(k)
             updates[k] = int(v) if v and v.isdigit() else None
-        try:
-            updates["fee_discount"] = float(request.form.get("fee_discount") or 0) or None
-        except ValueError:
-            updates["fee_discount"] = None
         msg = "設定已儲存。" if update_profile(uid, updates) else "儲存失敗，請稍後再試或回報問題。"
 
     p = get_profile(uid)
     th = get_thresholds(p)
-
-    sel_fee = "".join(
-        f'<option value="{v}"{" selected" if p.get("fee_discount") and abs(p["fee_discount"] - v) < 1e-9 else ""}>{t}</option>'
-        for v, t in [(1.0, "無折扣（0.1425%）"), (0.65, "65 折"), (0.6, "6 折"),
-                     (0.5, "5 折"), (0.38, "38 折"), (0.3, "3 折"), (0.28, "28 折"),
-                     (0.25, "25 折"), (0.2, "2 折")])
-    sel_min = "".join(
-        f'<option value="{v}"{" selected" if p.get("min_fee") == v else ""}>{t}</option>'
-        for v, t in [(20, "20 元"), (10, "10 元"), (5, "5 元"), (1, "1 元")])
 
     def sel(key, current, options):
         return "".join(
@@ -4349,28 +4478,19 @@ def web_settings(uid):
 {'<div class="hint">你表示尚無實際回檔經驗，預設門檻已自動調得較保守。</div>'
  if th['conservative'] else ''}
 
-<div class="section-head"><h2>交易成本</h2>
-  <span class="section-note">用來計算淨損益</span></div>
-<div class="fields" style="margin-bottom:6px">
-  <div><label>手續費折扣</label>
-    <select name="fee_discount">
-      {sel_fee}
-    </select></div>
-  <div><label>最低手續費</label>
-    <select name="min_fee">
-      {sel_min}
-    </select></div>
-</div>
-<div class="hint">
-  券商的「成本價」通常已含買進手續費，因此這裡只扣賣出手續費與證交稅
-  （證交稅：一般股票 0.3%、ETF 0.1%）。<br>
-  折扣與最低收費各家不同，設成跟你券商一致，淨損益才會對得起來。
-</div>
-
 <button type="submit">儲存設定</button>
 </form>
 
 <div class="hint" style="margin-top:22px">
+  <b>關於交易成本</b><br>
+  手續費與證交稅改成在交易當下直接填寫——買進時填在「新增持股」的手續費欄，
+  賣出時填在賣出面板裡。只有你看得到對帳單上的實際金額，
+  用填的比用折扣推算準確得多。<br><br>
+  持股頁的「淨損益」是未實現的估計值（假如現在賣掉大概拿到多少），
+  以牌價 0.1425% 與證交稅試算；實際賣出時一律以你填的數字為準。
+</div>
+
+<div class="hint" style="margin-top:14px">
   想調整你的風險輪廓（資金年期、資產比重等問卷），
   請到<a href="/web/portfolio" style="color:var(--brass)">組合分析</a>頁最上方編輯。
 </div>"""
