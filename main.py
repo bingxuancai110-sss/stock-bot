@@ -5252,7 +5252,8 @@ button:hover{background:#000}
   border-left:2px solid var(--brass);font-size:13px}
 footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
   font-size:15px;color:var(--ink-soft);line-height:1.9}
-.totals{display:flex;gap:28px;flex-wrap:wrap;padding:18px 0 8px}
+.totals{display:flex;gap:26px;flex-wrap:wrap;padding:18px 0 8px}
+.totals>div{min-width:88px}
 .band{display:flex;height:48px;width:100%;overflow:hidden;border-radius:2px;
   margin-top:4px}
 .band span{display:flex;align-items:center;justify-content:center;
@@ -6102,7 +6103,11 @@ def web_positions(uid):
 
 
 # ── 問卷與門檻設定 ──
-# 前四題必填，其餘可略過；沒填的用保守預設值，並在畫面上說明原因。
+# 全部必填。
+# 這些答案不是拿來裝飾的：組合分析的提醒要靠「交叉比對」才有價值——
+# 例如自述資金年期 3–10 年、實際卻只抱幾週，這個矛盾只有兩題都答了才看得出來；
+# 「曾在虧損時加碼」也要對照實際的分批進場紀錄才能點名。
+# 少一題就少一組比對，所以不留可略過的選項。
 PROFILE_FIELDS = [
     ("age_band", "你的年齡區間", True,
      ["未滿 30 歲", "30–39 歲", "40–49 歲", "50–59 歲", "60 歲以上"]),
@@ -6112,14 +6117,14 @@ PROFILE_FIELDS = [
      ["不到四分之一", "約四分之一到一半", "約一半以上", "幾乎全部"]),
     ("income_type", "你的收入穩定度", True,
      ["固定薪資", "固定薪資 + 變動獎金", "接案或營業收入", "目前無固定收入"]),
-    ("drawdown_experience", "過去實際經歷過最大的帳面虧損？當時做了什麼？", False,
+    ("drawdown_experience", "過去實際經歷過最大的帳面虧損？當時做了什麼？", True,
      ["沒有經歷過明顯虧損", "虧損 10% 以內就減碼了", "撐過 20–30% 沒有動作",
       "撐過 30% 以上沒有動作", "曾經在虧損時加碼"]),
-    ("check_frequency", "你多久會看一次帳戶？", False,
+    ("check_frequency", "你多久會看一次帳戶？", True,
      ["一天多次", "每天一次", "每週", "每月或更少"]),
-    ("holding_period", "你的持股平均會抱多久？", False,
+    ("holding_period", "你的持股平均會抱多久？", True,
      ["幾天", "幾週", "幾個月", "一年以上", "不一定"]),
-    ("other_assets", "除了台股，你還有哪些部位？", False,
+    ("other_assets", "除了台股，你還有哪些部位？", True,
      ["美股", "ETF", "債券", "房地產", "定存或現金", "幾乎只有台股"]),
 ]
 
@@ -6282,6 +6287,11 @@ def get_thresholds(profile):
     }
 
 
+def is_profile_complete(profile):
+    """問卷全部答完才算完成。任何一題沒答，交叉比對就少一組。"""
+    return bool(profile) and all(profile.get(k) for k, _l, _r, _o in PROFILE_FIELDS)
+
+
 def radio_group(profile, key, label, required, options):
     opts = "".join(
         f'<label class="opt"><input type="radio" name="{key}" value="{o}"'
@@ -6297,59 +6307,58 @@ def render_risk_card(profile, msg=None):
     """
     風險輪廓卡片，嵌在組合分析頁最上方而非獨立頁面——
     填了答案要馬上看到下面的提醒跟著變，兩者在同一頁使用者才看得出關聯。
-    未填完必填題時顯示完整表單；填完後收成摘要＋可展開編輯。
+    全部題目都必填；填完後收成摘要＋可展開編輯。
     """
-    required_fields = [f for f in PROFILE_FIELDS if f[2]]
-    optional_fields = [f for f in PROFILE_FIELDS if not f[2]]
-    complete = all(profile.get(k) for k, _, req, _ in PROFILE_FIELDS if req)
+    complete = is_profile_complete(profile)
     msg_html = f'<div class="msg">{msg}</div>' if msg else ""
-    required_html = "".join(radio_group(profile, k, l, r, o) for k, l, r, o in required_fields)
-    optional_html = "".join(radio_group(profile, k, l, r, o) for k, l, r, o in optional_fields)
+    form_html = "".join(radio_group(profile, k, l, r, o) for k, l, r, o in PROFILE_FIELDS)
 
     if complete:
         pf_items = [
+            ("年齡", profile.get("age_band")),
             ("資金年期", profile.get("horizon")),
             ("資產比重", profile.get("asset_share")),
             ("收入型態", profile.get("income_type")),
-            ("回檔經驗", profile.get("drawdown_experience") or "未填"),
-            ("看盤頻率", profile.get("check_frequency") or "未填"),
-            ("平均持有", profile.get("holding_period") or "未填"),
-            ("其他部位", profile.get("other_assets") or "未填"),
+            ("回檔經驗", profile.get("drawdown_experience")),
+            ("看盤頻率", profile.get("check_frequency")),
+            ("平均持有", profile.get("holding_period")),
+            ("其他部位", profile.get("other_assets")),
         ]
         summary_html = "".join(
             f'<div class="pf"><span class="pf-k">{k}</span>'
-            f'<span class="pf-v{"" if v != "未填" else " pf-empty"}">{v}</span></div>'
+            f'<span class="pf-v">{v}</span></div>'
             for k, v in pf_items)
         return f"""
 <div class="section-head"><h2>你的風險輪廓</h2>
-  <span class="section-note">下方分析依此判讀</span></div>
+  <span class="section-note">上方提醒依此判讀</span></div>
 {msg_html}
 <div class="profile-grid">{summary_html}</div>
 <details class="disclosure">
   <summary>編輯風險輪廓</summary>
   <form method="post" action="/web/portfolio" style="margin-top:10px">
-    {required_html}
-    {optional_html}
+    {form_html}
     <button type="submit">儲存</button>
   </form>
 </details>"""
 
+    # 未填完：說明為什麼要問，以及不填會少掉什麼
     return f"""
-<div class="section-head"><h2>你的風險輪廓</h2>
-  <span class="section-note">4 題必填，決定下方提醒怎麼判讀</span></div>
+<div class="section-head"><h2>先完成風險輪廓</h2>
+  <span class="section-note">{len(PROFILE_FIELDS)} 題，全部必填</span></div>
 {msg_html}
 <div class="hint">
-  這些答案不會改變數據本身，而是決定「什麼該提醒你」。
-  例如同樣 60% 集中在半導體，資金一年內要用、且這是你全部身家的人，
-  會看到比較強的警示；十年不動用的人則會看到不同的說明。
+  <b>為什麼要問這些</b><br>
+  這些答案不會改變數據本身，而是決定「什麼該提醒你」。<br><br>
+  同樣 60% 集中在半導體：資金一年內要用、且這是全部身家的人，
+  會看到強烈警示；十年不動用的人看到的是不同的說明。<br><br>
+  更重要的是<b>交叉比對</b>——自述資金 3–10 年不動用、實際卻只抱幾週，
+  這種矛盾只有兩題都答了才看得出來；「曾在虧損時加碼」也要對照
+  你實際的分批進場紀錄，才能指出你現在是不是又在做同一件事。<br><br>
+  少一題就少一組比對，所以沒有可略過的選項。
 </div>
 <form method="post" action="/web/portfolio">
-  {required_html}
-  <details class="disclosure">
-    <summary>其餘題目（可略過）</summary>
-    <div style="margin-top:8px">{optional_html}</div>
-  </details>
-  <button type="submit" style="margin-top:14px">儲存</button>
+  {form_html}
+  <button type="submit" style="margin-top:14px">儲存並開始分析</button>
 </form>"""
 
 
@@ -6857,13 +6866,21 @@ def web_portfolio(uid):
     msg = ""
     if request.method == "POST":
         updates = {k: (request.form.get(k) or None) for k, _, _, _ in PROFILE_FIELDS}
-        if all(updates.get(k) for k, _, req, _ in PROFILE_FIELDS if req):
+        missing = [l for k, l, _r, _o in PROFILE_FIELDS if not updates.get(k)]
+        if not missing:
             msg = "風險輪廓已儲存。" if update_profile(uid, updates) else "儲存失敗，請稍後再試。"
         else:
-            msg = "前四題為必填，請確認都已選擇。"
+            # 明確指出漏了哪幾題，不要只說「有必填未填」讓人自己找
+            msg = f"還有 {len(missing)} 題沒選：{'、'.join(missing[:3])}" + (
+                " 等" if len(missing) > 3 else "")
 
     profile = get_profile(uid)
     risk_card = render_risk_card(profile, msg)
+
+    # 問卷沒填完就只給問卷。組合分析的價值有一大半來自依你的處境判讀，
+    # 少了那些答案，剩下的數字誰看都一樣，沒有必要先給。
+    if not is_profile_complete(profile):
+        return respond_page("組合分析", risk_card, "portfolio")
 
     positions = merge_positions(get_positions(uid))
     if not positions:
@@ -7002,6 +7019,30 @@ def web_portfolio(uid):
 
     pl_total = ((total_value - total_cost) / total_cost * 100) if total_cost else None
 
+    # 提醒的入口放在總市值那一列。
+    # 提醒本身留在頁面下方（要先看完數據才有判讀的基礎），但「有沒有東西要看」
+    # 必須在第一屏就知道——放最下面等於沒放，而把提醒整段搬到最上面又會把
+    # 總市值擠下去，那是每次打開都想先確認的數字。
+    # 折衷做法：頂部只放計數與分類，點了跳到下面。
+    alert_tags = []
+    for tag, _txt in alerts:
+        if tag not in alert_tags:
+            alert_tags.append(tag)
+    if alerts:
+        alert_card = f"""
+  <div><div class="total-label">值得注意</div>
+       <div class="total-value num" style="color:var(--brass)">
+         <a href="#alerts" style="color:inherit;text-decoration:none">
+           {len(alerts)} 則 &rsaquo;</a></div>
+       <div class="total-sub" style="color:var(--ink-faint)">
+         {'・'.join(alert_tags[:3])}</div></div>"""
+    else:
+        alert_card = """
+  <div><div class="total-label">值得注意</div>
+       <div class="total-value num" style="color:var(--ink-faint)">無</div>
+       <div class="total-sub" style="color:var(--ink-faint)">
+         未觸及你設定的門檻</div></div>"""
+
     corr_txt = (f"兩兩相關係數平均 <b>{avg_corr:.2f}</b>，"
                 f"實際分散效果約等於 <b>{eff:.1f} 檔</b>。"
                 if avg_corr is not None and eff else
@@ -7023,6 +7064,7 @@ def web_portfolio(uid):
   <div><div class="total-label">最大單一持股</div>
        <div class="total-value num">{top['weight']:.1f}%</div>
        <div class="total-sub" style="color:var(--ink-faint)">{top['name']}</div></div>
+{alert_card}
 </div>
 
 <div class="section-head"><h2>組合走勢</h2>
@@ -7054,7 +7096,7 @@ def web_portfolio(uid):
 </div>
 
 {realized_html}
-<div class="section-head"><h2>值得注意</h2>
+<div class="section-head" id="alerts"><h2>值得注意</h2>
   <span class="section-note"><a href="/web/settings" style="color:var(--ink-soft)">調整門檻 →</a></span></div>
 <div class="rows">
 {''.join(f'<div class="alert"><span class="tag">{tag}</span><span>{txt}</span></div>'
