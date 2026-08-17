@@ -153,6 +153,19 @@ def init_db():
                 expires_at TIMESTAMP NOT NULL
             )
         ''')
+        # 一次性登入驗證碼。
+        # LINE 內建瀏覽器的 cookie 跟外部瀏覽器不互通，點連結登入的方式
+        # 一換瀏覽器就失效；讓使用者拿一組短碼自己輸入，就能在任何裝置
+        # 任何瀏覽器登入，不必再回 LINE 重拿連結。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS web_codes (
+                code TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                expires_at TIMESTAMP NOT NULL,
+                used BOOLEAN DEFAULT FALSE
+            )
+        ''')
         # 每日三大法人買賣超歷史（用來算「連續買超天數」等長線指標）
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS inst_history (
@@ -490,6 +503,88 @@ def resolve_web_token(token):
 def current_web_user():
     """從網址參數或 cookie 取得目前登入者。網址參數優先，方便換裝置。"""
     return resolve_web_token(request.args.get("t") or request.cookies.get("stockbot_token"))
+
+
+# ── 一次性登入驗證碼 ──
+WEB_CODE_MINUTES = 10   # 短效期：這組碼只是用來換取正式權杖，不需要放很久
+
+
+def create_web_code(user_id):
+    """
+    產生 6 位數登入碼。同一使用者先前未使用的碼一律作廢，
+    避免使用者連續要了三次卻不知道該用哪一組。
+    極小機率撞號時重試幾次即可。
+    """
+    uid = str(user_id).strip()
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE web_codes SET used = TRUE WHERE user_id = %s AND used = FALSE",
+            (uid,))
+        for _ in range(5):
+            code = f"{secrets.randbelow(1000000):06d}"
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO web_codes (code, user_id, expires_at)
+                    VALUES (%s, %s, NOW() + INTERVAL '%s minutes')
+                    """,
+                    (code, uid, WEB_CODE_MINUTES),
+                )
+                conn.commit()
+                cursor.close()
+                return code
+            except Exception:
+                conn.rollback()   # 多半是主鍵重複，換一組再試
+                cursor = conn.cursor()
+        cursor.close()
+        return None
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 建立登入碼失敗: {e}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+
+def redeem_web_code(code):
+    """
+    驗證登入碼並換成正式權杖。用過即作廢——
+    驗證碼只有六位數，允許重複使用等於把帳號長期暴露在猜號之下。
+    回傳 (token, user_id)，失敗回傳 (None, None)。
+    """
+    code = re.sub(r"\D", "", str(code or ""))   # 容忍使用者貼上時夾帶空格或符號
+    if len(code) != 6:
+        return None, None
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        # 用 UPDATE ... RETURNING 一步完成「檢查並標記已使用」，
+        # 兩個請求同時送同一組碼時只有一個會拿到結果。
+        cursor.execute(
+            """
+            UPDATE web_codes SET used = TRUE
+            WHERE code = %s AND used = FALSE AND expires_at > NOW()
+            RETURNING user_id
+            """,
+            (code,),
+        )
+        row = cursor.fetchone()
+        conn.commit()
+        cursor.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 驗證登入碼失敗: {e}")
+        return None, None
+    finally:
+        release_db_connection(conn)
+
+    if not row:
+        return None, None
+    uid = row[0]
+    return create_web_token(uid), uid
 
 
 def web_login_required(view):
@@ -3174,6 +3269,7 @@ def build_quick_reply():
         ("📊 解盤", "解盤"),
         ("📰 新聞", "新聞"),
         ("🌐 網頁", "網頁"),
+        ("🔑 登入碼", "登入碼"),
     ]
     return QuickReply(items=[
         QuickReplyButton(action=MessageAction(label=label, text=text))
@@ -3203,6 +3299,7 @@ def build_menu_flex():
         ]),
         ("網頁版", "#6B4E9E", "#EFEAF7", [
             ("網頁", "🚧 Coming soon　持股組合分析\n產業集中度、相關係數、加權基本面"),
+            ("登入碼", "用 6 位數在 Safari／Chrome 登入\nLINE 內開啟顯示異常時改用這個"),
         ]),
         ("推播設定", "#7A8290", "#EDEFF1", [
             ("申請推播", "🔒 VIP 限定　每日盤前自動發送\n非 VIP 可直接點上方「盤前」查看相同內容"),
@@ -3492,10 +3589,26 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 
 NEED_LOGIN_HTML = """
 <div class="msg">
-  這個連結已失效或尚未登入。<br><br>
-  請回到 LINE 的「台股 BOT」，輸入 <b>網頁</b>，
-  機器人會給你一組新的連結。
+  這個連結已失效或尚未登入。
 </div>
+<div class="section-head"><h2>用登入碼登入</h2>
+  <span class="section-note">任何瀏覽器都可以</span></div>
+<form method="post" action="/web/code" class="add">
+  <h3>輸入 6 位數登入碼</h3>
+  <div class="fields">
+    <div><label>登入碼</label>
+      <input name="code" inputmode="numeric" autocomplete="one-time-code"
+             maxlength="6" placeholder="000000" required
+             style="font-size:22px;letter-spacing:.3em;text-align:center"></div>
+  </div>
+  <button type="submit">登入</button>
+  <div class="sell-hint">
+    回到 LINE 的「台股 BOT」，輸入 <b>登入碼</b>，機器人會給你一組 6 位數，
+    有效 10 分鐘。<br>
+    在 LINE 裡開網頁若顯示不正常，用這個方式就能在 Safari、Chrome
+    等外部瀏覽器登入。
+  </div>
+</form>
 """
 
 
@@ -3794,6 +3907,31 @@ def web_login():
     uid = resolve_web_token(token)
     if not uid:
         return render_page("需要登入", NEED_LOGIN_HTML), 401
+    resp = make_response(redirect("/web/positions"))
+    resp.set_cookie("stockbot_token", token,
+                    max_age=WEB_SESSION_DAYS * 86400,
+                    httponly=True, samesite="Lax", secure=True)
+    return resp
+
+
+@app.route("/web/code", methods=["GET", "POST"])
+def web_code_login():
+    """
+    用 6 位數登入碼登入，給外部瀏覽器使用。
+
+    LINE 內建瀏覽器的 cookie 與 Safari／Chrome 不互通，所以「點連結登入」
+    只在 LINE 裡有效，一換瀏覽器就變回未登入。改成讓使用者自己輸入短碼，
+    任何裝置、任何瀏覽器都能登入，也不必再回 LINE 重拿一次連結。
+    """
+    if request.method == "GET":
+        return render_page("登入", NEED_LOGIN_HTML)
+
+    token, uid = redeem_web_code(request.form.get("code", ""))
+    if not token:
+        body = ('<div class="msg">登入碼不正確、已過期，或已經使用過了。'
+                '請回 LINE 輸入「登入碼」取得新的一組。</div>' + NEED_LOGIN_HTML)
+        return render_page("登入", body), 401
+
     resp = make_response(redirect("/web/positions"))
     resp.set_cookie("stockbot_token", token,
                     max_age=WEB_SESSION_DAYS * 86400,
@@ -5449,9 +5587,28 @@ def handle_message(event):
                      f"{base}/web/login?t={token}\n\n"
                      f"可輸入持股，查看產業集中度、相關係數與加權基本面。\n"
                      f"連結 {WEB_SESSION_DAYS} 天內有效，過期再輸入「網頁」取得新的。\n\n"
+                     f"💡 想用 Safari／Chrome 開啟\n"
+                     f"LINE 內建瀏覽器跟外部瀏覽器的登入狀態不共用，"
+                     f"直接複製網址過去會顯示「需要登入」。\n"
+                     f"請改輸入「登入碼」，用 6 位數在任何瀏覽器登入。\n\n"
                      f"⚠️ 目前仍在開發中，功能與畫面可能隨時調整。")
         else:
             reply = "❌ 產生連結失敗，請稍後再試。"
+
+    elif text in ["登入碼", "驗證碼", "CODE", "登入"]:
+        code = create_web_code(user_id)
+        if code:
+            base = request.url_root.rstrip("/")
+            reply = (f"🔑 網頁登入碼\n\n"
+                     f"　　{code}\n\n"
+                     f"在瀏覽器打開這個網址，輸入上面的號碼：\n"
+                     f"{base}/web/code\n\n"
+                     f"・有效 {WEB_CODE_MINUTES} 分鐘，只能使用一次\n"
+                     f"・登入後可維持 {WEB_SESSION_DAYS} 天\n"
+                     f"・Safari、Chrome、電腦瀏覽器都適用\n\n"
+                     f"重新索取會讓舊的號碼失效。")
+        else:
+            reply = "❌ 產生登入碼失敗，請稍後再試。"
 
     elif is_admin(user_id) and text in ["名單", "使用者", "VIP"]:
         reply = build_user_list_report()
