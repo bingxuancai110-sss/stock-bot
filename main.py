@@ -5991,6 +5991,7 @@ def web_positions(uid):
                 f'{items}</details>')
 
     rows_html, total_value, total_cost = [], 0.0, 0.0
+    total_day_pl = 0.0
     enriched = []
     price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
     for p in positions:
@@ -6017,10 +6018,17 @@ def web_positions(uid):
         weight = (value / total_value * 100) if total_value else 0
         if price:
             gross_pl = (price["close"] - p["cost"]) / p["cost"] * 100
-            _np, pl, cost_fee = net_profit(
+            net_amt, pl, cost_fee = net_profit(
                 p["code"], p["shares"], p["cost"], price["close"],
                 p.get("lots"), fee_disc, min_fee)
             pl = pl if pl is not None else gross_pl
+            # 今日損益金額：用漲跌幅反推昨收，再乘持股數。
+            # 直接用「今收 − 昨收」比用市值差可靠——市值差會受到當天
+            # 新增或賣出持股影響，那不是股價造成的損益。
+            prev_close = price["close"] / (1 + price["pct"] / 100) if price["pct"] != -100 else price["close"]
+            day_pl = (price["close"] - prev_close) * p["shares"]
+            total_day_pl += day_pl
+            net_amt = net_amt if net_amt is not None else (value - cost_total)
             held = ((datetime.now().date() - p["bought_on"]).days
                     if p["bought_on"] else None)
             rows_html.append(f"""
@@ -6030,12 +6038,16 @@ def web_positions(uid):
   <div class="meta">
     <span><em>持有</em> <span class="num">{p['shares']:,}</span> 股</span>
     <span><em>成本</em> <span class="num">{p['cost']:,.2f}</span></span>
-    <span><em>淨損益</em> {fmt_pct(pl)}
-      <span class="sub">帳面 {gross_pl:+.2f}%</span></span>
+    <span><em>今日</em> <span class="num {'up' if day_pl >= 0 else 'down'}">{day_pl:+,.0f}</span></span>
+    <span><em>累計</em> <span class="num {'up' if net_amt >= 0 else 'down'}">{net_amt:+,.0f}</span>
+      {fmt_pct(pl)}<span class="sub">帳面 {gross_pl:+.2f}%</span></span>
     <span><em>市值</em> <span class="num">{value:,.0f}</span></span>
-    <span><em>成本費</em> <span class="num">{cost_fee:,.0f}</span></span>
     <span><em>權重</em> <span class="num">{weight:.1f}%</span></span>
     {f'<span><em>持有</em> {held} 天</span>' if held is not None else ''}
+    <details class="disclosure" style="grid-column:1/-1;margin-top:4px">
+      <summary>損益走勢</summary>
+      {render_stock_sparkline(price, p['cost'], p['shares'])}
+    </details>
     {lots_html(p, name, price['close'])}
   </div>
   <div class="chg">{fmt_pct(price['pct'])}</div>
@@ -6066,6 +6078,11 @@ def web_positions(uid):
          {total_value - total_cost - total_fee:+,.0f}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
          已扣交易成本 <span class="num">{total_fee:,.0f}</span></div></div>
+  <div><div class="total-label">今日損益</div>
+       <div class="total-value num {'up' if total_day_pl >= 0 else 'down'}">
+         {total_day_pl:+,.0f}</div>
+       <div class="total-sub" style="color:var(--ink-faint)">
+         今收 vs 昨收</div></div>
   <div><div class="total-label">持股檔數</div>
        <div class="total-value num">{len(positions)}</div></div>
 </div>""" if positions else ""
@@ -6365,6 +6382,48 @@ def render_risk_card(profile, msg=None):
 # ============================================================
 # 已實現損益
 # ============================================================
+def render_stock_sparkline(price, cost, shares):
+    """
+    單檔的損益走勢。用 get_realtime_stock 已經回傳的近 60 日收盤序列來畫——
+    那份資料本來就是為了算相關係數而抓的，等於免費多得到一張圖，
+    而且今天就有 60 天可看，不必等每日快照累積一兩週。
+
+    畫的是「這筆持股的損益金額」而不是股價，因為你關心的是賺賠多少錢，
+    不是這檔漲到幾元。成本線（損益 0）用虛線標出來，一眼看出何時由虧轉盈。
+    """
+    closes = (price or {}).get("closes") or []
+    if len(closes) < 5 or not cost or not shares:
+        return '<div class="sub">走勢資料不足</div>'
+
+    pls = [(c - cost) * shares for c in closes]
+    lo, hi = min(pls), max(pls)
+    if hi - lo < 1:
+        lo, hi = lo - 1, hi + 1
+    pad = (hi - lo) * 0.12
+    lo, hi = lo - pad, hi + pad
+
+    W, H = 600, 84
+    n = len(pls)
+    x = lambda i: (i / (n - 1)) * W
+    y = lambda v: (1 - (v - lo) / (hi - lo)) * H
+    path = "M " + " L ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(pls))
+
+    # 損益 0 的位置：在範圍內才畫，否則那條線會貼在邊緣造成誤解
+    zero = f'<line x1="0" y1="{y(0):.1f}" x2="{W}" y2="{y(0):.1f}" stroke="var(--rule)" stroke-width="1" stroke-dasharray="3,3"/>' if lo <= 0 <= hi else ""
+    color = "var(--up)" if pls[-1] >= 0 else "var(--down)"
+
+    return f"""
+<svg viewBox="0 0 {W} {H}" width="100%" height="{H}" preserveAspectRatio="none"
+     style="display:block;margin-top:8px">
+  {zero}
+  <path d="{path}" fill="none" stroke="{color}" stroke-width="1.8"/>
+</svg>
+<div class="sub" style="display:flex;justify-content:space-between;margin-top:4px">
+  <span>近 {n} 個交易日</span>
+  <span>區間 {min(pls):+,.0f} ~ {max(pls):+,.0f}</span>
+</div>"""
+
+
 def render_realized_summary(user_id, inst_data):
     """
     已實現損益摘要＋最近交易明細。沒有任何賣出紀錄時回傳空字串，
