@@ -369,6 +369,20 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_pick_history_date
             ON pick_history (pick_date DESC, mode)
         ''')
+        # 背景工作狀態。
+        # 原本只存在記憶體，但那有兩個問題：gunicorn 開多個 worker 時，
+        # 工作在 A 執行、查詢卻可能連到 B，看到的是空的；服務一重啟也全沒了。
+        # 存資料庫就沒有這些問題，而且每個工作只佔一列，成本極低。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS job_runs (
+                name TEXT PRIMARY KEY,
+                running BOOLEAN DEFAULT FALSE,
+                started_at TIMESTAMP,
+                finished_at TIMESTAMP,
+                seconds REAL,
+                result TEXT
+            )
+        ''')
         conn.commit()
         cursor.close()
     except Exception as e:
@@ -4222,42 +4236,83 @@ def _do_fetch_t86():
 # 逐檔抓報價，一定超過。排程的意義是「準時觸發」而不是「等它做完」，
 # 所以端點立刻回應，實際工作丟到背景執行緒。
 #
-# 背景執行緒能活著的前提是 Render 的程式沒有被休眠——
-# 你已經有每 5 分鐘喚醒一次的排程，這個條件成立。
-_job_status = {}
+# 狀態存資料庫而不是記憶體：gunicorn 開多個 worker 時，工作在 A 執行、
+# 查詢卻可能連到 B，記憶體版本會看到空的；服務重啟也會全部消失。
+JOB_STALE_MINUTES = 30   # 超過這麼久還標示執行中，視為當掉的殘留
+
+
+def _job_mark_start(name):
+    """
+    標記工作開始。若同名工作已在執行中且還沒過期，回傳 False 表示不要重複啟動。
+    用 UPDATE ... WHERE 的條件一次判斷並搶佔，兩個 worker 同時觸發時
+    只有一個會成功——先查再寫會有競爭空窗。
+    """
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO job_runs (name, running, started_at)
+            VALUES (%s, TRUE, NOW())
+            ON CONFLICT (name) DO UPDATE SET
+                running = TRUE, started_at = NOW(), result = NULL,
+                finished_at = NULL, seconds = NULL
+            WHERE job_runs.running = FALSE
+               OR job_runs.started_at < NOW() - INTERVAL '%s minutes'
+            RETURNING name
+            """,
+            (name, JOB_STALE_MINUTES),
+        )
+        got = cur.fetchone() is not None
+        conn.commit()
+        cur.close()
+        return got
+    except Exception as e:
+        conn.rollback()
+        print(f"⚠️ 標記工作開始失敗（照樣執行）: {e}")
+        return True      # 記錄失敗不該擋住真正的工作
+    finally:
+        release_db_connection(conn)
+
+
+def _job_mark_done(name, result, seconds):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE job_runs SET running = FALSE, finished_at = NOW(),
+                   seconds = %s, result = %s
+            WHERE name = %s
+            """,
+            (round(seconds, 1), str(result)[:2000], name),
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"⚠️ 標記工作完成失敗: {e}")
+    finally:
+        release_db_connection(conn)
 
 
 def run_in_background(name, fn):
-    """
-    把耗時工作丟到背景並立刻回應。
-    同名工作若還在跑就不重複啟動——排程偶爾會重疊觸發，
-    兩份同時跑只會互相搶資料庫連線。
-    """
-    cur = _job_status.get(name)
-    if cur and cur.get("running"):
-        started = cur.get("started_at", 0)
-        return f"{name} 仍在執行中（已 {int(time.time() - started)} 秒），本次略過。"
-
-    _job_status[name] = {"running": True, "started_at": time.time(),
-                         "result": None, "finished_at": None}
+    """把耗時工作丟到背景並立刻回應，避免 cron 端 30 秒超時。"""
+    if not _job_mark_start(name):
+        return f"{name} 仍在執行中，本次略過。"
 
     def _wrap():
         t0 = time.time()
         try:
             result = fn()
-            _job_status[name].update(
-                running=False, result=str(result),
-                finished_at=time.time(), seconds=round(time.time() - t0, 1))
+            _job_mark_done(name, result, time.time() - t0)
             print(f"✅ 背景工作 {name} 完成（{time.time() - t0:.1f}s）：{result}")
         except Exception as e:
-            _job_status[name].update(
-                running=False, result=f"失敗：{e}",
-                finished_at=time.time(), seconds=round(time.time() - t0, 1))
+            _job_mark_done(name, f"失敗：{e}", time.time() - t0)
             print(f"❌ 背景工作 {name} 失敗: {e}")
 
     threading.Thread(target=_wrap, daemon=True).start()
-    return (f"{name} 已在背景啟動。"
-            f"結果請看 /job-status?token=... 或 Render Logs。")
+    return f"{name} 已在背景啟動。稍候用 /job-status?token=... 看結果。"
 
 
 @app.route("/job-status", methods=["POST", "GET"])
@@ -4265,19 +4320,44 @@ def job_status():
     """查背景工作的執行結果。用法：/job-status?token=..."""
     if request.args.get("token") != os.environ.get("CRON_SECRET"):
         abort(403)
-    if not _job_status:
-        return plain_text_page(["目前沒有任何背景工作紀錄。",
-                                "（服務重啟後紀錄會清空）"]), 200
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT name, running, started_at, finished_at, seconds, result
+            FROM job_runs ORDER BY COALESCE(finished_at, started_at) DESC
+            """)
+        rows = cur.fetchall()
+        cur.close()
+    except Exception as e:
+        return plain_text_page([f"查詢失敗：{e}"]), 500
+    finally:
+        release_db_connection(conn)
+
+    if not rows:
+        return plain_text_page([
+            "還沒有任何背景工作執行過。", "",
+            "先觸發一次，例如：",
+            "　/cron/snapshot-portfolio?token=...",
+            "　/cron/fetch-t86?token=...",
+            "　/cron/warmup?token=...",
+            "", "跑完後再回來這一頁就會看到結果。"]), 200
 
     lines = ["背景工作狀態", "=" * 58, ""]
-    for name, st in sorted(_job_status.items()):
-        if st.get("running"):
-            lines.append(f"⏳ {name}　執行中"
-                         f"（已 {int(time.time() - st['started_at'])} 秒）")
+    for name, running, started, finished, secs, result in rows:
+        if running:
+            mins = (datetime.now() - started).total_seconds() / 60 if started else 0
+            stale = "　⚠️ 疑似當掉" if mins > JOB_STALE_MINUTES else ""
+            lines.append(f"[執行中] {name}"
+                         f"（已 {mins:.0f} 分鐘）{stale}")
         else:
-            when = datetime.fromtimestamp(st["finished_at"]).strftime("%m/%d %H:%M")
-            lines.append(f"✅ {name}　{when} 完成，耗時 {st.get('seconds')} 秒")
-            lines.append(f"　　{st.get('result')}")
+            when = finished.strftime("%m/%d %H:%M") if finished else "?"
+            lines.append(f"[完成] {name}　{when}　耗時 {secs or 0:.1f} 秒")
+        if result:
+            for chunk in str(result).split("、"):
+                lines.append(f"    {chunk}")
         lines.append("")
     return plain_text_page(lines), 200
 
