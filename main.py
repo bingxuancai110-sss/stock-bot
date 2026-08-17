@@ -1341,6 +1341,16 @@ def get_realtime_stocks_bulk(codes, workers=12):
 # 快取用「今天日期」當 key，但實際資料可能是往前找到的最近一個交易日
 _t86_cache = {"cache_date": None, "data_date": None, "data": {}}
 
+def shares_to_lots(shares):
+    """
+    股數轉張數。必須用截斷（向零取整）而不是 Python 的 //——
+    // 對負數是向下取整，-287,500 股會變成 -288 張而不是 -287，
+    每一個賣超的日子都會多算一張，累積十天就是系統性偏差。
+    券商與看盤軟體顯示的都是截斷值，要對得起來就得一致。
+    """
+    return int(shares / 1000)
+
+
 def _fetch_t86_for_date(query_date):
     """向 TWSE 抓取指定日期的 T86 資料，成功回傳 dict，查無資料回傳 None。"""
     try:
@@ -1381,10 +1391,10 @@ def _fetch_t86_for_date(query_date):
 
             result[code] = {
                 "name": name,
-                "foreign_net_lots": foreign_net // 1000,
-                "trust_net_lots": trust_net // 1000,
-                "dealer_net_lots": dealer_net // 1000,
-                "total_net_lots": total_net // 1000,
+                "foreign_net_lots": shares_to_lots(foreign_net),
+                "trust_net_lots": shares_to_lots(trust_net),
+                "dealer_net_lots": shares_to_lots(dealer_net),
+                "total_net_lots": shares_to_lots(total_net),
             }
 
         if not result:
@@ -2792,10 +2802,10 @@ def fetch_tpex_institutional():
 
         result[code] = {
             "name": name or code,
-            "foreign_net_lots": foreign // 1000,
-            "trust_net_lots": trust // 1000,
-            "dealer_net_lots": (dealer + foreign_dealer) // 1000,
-            "total_net_lots": total // 1000,
+            "foreign_net_lots": shares_to_lots(foreign),
+            "trust_net_lots": shares_to_lots(trust),
+            "dealer_net_lots": shares_to_lots(dealer + foreign_dealer),
+            "total_net_lots": shares_to_lots(total),
         }
 
     if not result:
@@ -2833,11 +2843,21 @@ def fetch_institutional_data():
         tpex, tpex_date = fetch_tpex_institutional()
         if tpex:
             merged.update(tpex)
-            # 用 TPEx 自己回報的日期存歷史，不套用上市那邊往前找到的日期，
-            # 否則兩個市場的資料會被記在同一天而其實不是同一天。
-            if tpex_date:
+            # 只有在「上櫃日期跟上市同一天」時才存歷史。
+            # 兩邊日期不同時（例如上市今天還沒公布、上櫃已經有了）若照存，
+            # 資料庫會多出一個「只有上櫃股票」的交易日，
+            # 而「近 N 個交易日」是用全市場的 DISTINCT trade_date 去數的——
+            # 那一天會佔掉一個名額卻對上市股票貢獻 0，
+            # 等於讓上市股票的統計區間悄悄少了一天，數字全部對不上。
+            if tpex_date and tpex_date == data_date:
                 save_t86_history(tpex_date, tpex)
-            data_date = data_date or tpex_date
+            elif tpex_date and not data_date:
+                # 上市完全沒資料時才單獨存上櫃，此時不會造成混合窗口問題
+                save_t86_history(tpex_date, tpex)
+                data_date = tpex_date
+            elif tpex_date != data_date:
+                print(f"⚠️ 上櫃資料日期（{tpex_date}）與上市（{data_date}）不同，"
+                      f"本次不寫入歷史以免造成單一市場的交易日")
     except Exception as e:
         print(f"❌ 上櫃法人資料抓取失敗: {e}")
 
@@ -4437,6 +4457,94 @@ def check_source():
                 break
         lines.append(f"  找到本代號：{hit if hit else '否'}")
         lines.append("")
+
+    return "\n".join(str(x) for x in lines), 200
+
+
+@app.route("/check-inst", methods=["POST", "GET"])
+def check_inst():
+    """
+    診斷單一代號的法人歷史。用法：/check-inst?token=...&code=6669
+
+    把資料庫裡實際存的每日數字逐列印出來，並標出「近10日」查詢實際
+    用到哪幾天——數字對不上時，多半不是加總錯，而是取到的日期範圍
+    跟你以為的不一樣（例如某些日期只有上櫃資料、或回補漏了某天）。
+    """
+    if request.args.get("token") != os.environ.get("CRON_SECRET"):
+        abort(403)
+    code = normalize_code(request.args.get("code", "")) or "2330"
+    days = int(request.args.get("days", 15) or 15)
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        # 全市場最近的交易日（這就是「近N日」查詢用的窗）
+        cursor.execute("""
+            SELECT DISTINCT trade_date FROM inst_history
+            ORDER BY trade_date DESC LIMIT %s
+        """, (days,))
+        all_dates = [r[0] for r in cursor.fetchall()]
+
+        # 這檔實際有紀錄的日子
+        cursor.execute("""
+            SELECT trade_date, foreign_net_lots, trust_net_lots,
+                   dealer_net_lots, total_net_lots
+            FROM inst_history WHERE code = %s
+            ORDER BY trade_date DESC LIMIT %s
+        """, (code, days))
+        rows = cursor.fetchall()
+
+        # 每個交易日全市場有幾檔——某天檔數異常少，代表那天只存到單一市場
+        cursor.execute("""
+            SELECT trade_date, COUNT(*) FROM inst_history
+            WHERE trade_date >= %s GROUP BY trade_date ORDER BY trade_date DESC
+        """, (all_dates[-1] if all_dates else date.today(),))
+        counts = dict(cursor.fetchall())
+        cursor.close()
+    except Exception as e:
+        return f"查詢失敗：{e}", 500
+    finally:
+        release_db_connection(conn)
+
+    win10 = set(all_dates[:10])
+    lines = [f"代號 {code} 的法人歷史", "=" * 58, ""]
+    lines.append(f"資料庫最近 {len(all_dates)} 個交易日："
+                 f"{all_dates[0] if all_dates else '無'} ~ "
+                 f"{all_dates[-1] if all_dates else '無'}")
+    lines.append("")
+    lines.append("日期         外資     投信    自營     合計   全市場檔數  在10日窗內")
+    lines.append("-" * 58)
+
+    have = {r[0] for r in rows}
+    sums = [0, 0, 0, 0]
+    for d, f, t, dl, tot in rows:
+        inwin = "✓" if d in win10 else ""
+        n = counts.get(d, 0)
+        flag = "" if n > 1500 else f" ⚠只有{n}檔"
+        if d in win10:
+            sums[0] += f or 0; sums[1] += t or 0
+            sums[2] += dl or 0; sums[3] += tot or 0
+        lines.append(f"{d}  {f or 0:>7,} {t or 0:>7,} {dl or 0:>6,} "
+                     f"{tot or 0:>7,}   {n:>6,}{flag}      {inwin}")
+
+    missing = [d for d in all_dates[:10] if d not in have]
+    lines += ["-" * 58,
+              f"近10日窗內加總　外資 {sums[0]:+,}　投信 {sums[1]:+,}　"
+              f"自營 {sums[2]:+,}　合計 {sums[3]:+,}",
+              ""]
+    if missing:
+        lines.append(f"⚠️ 這檔在窗內有 {len(missing)} 天沒有紀錄："
+                     + "、".join(str(d) for d in missing))
+        lines.append("　（該日可能只抓到單一市場，或回補時漏掉）")
+    else:
+        lines.append("✓ 窗內每一天都有這檔的紀錄")
+
+    thin = [d for d in all_dates[:10] if counts.get(d, 0) < 1500]
+    if thin:
+        lines.append("")
+        lines.append("⚠️ 以下日期全市場檔數偏少，可能只存到上市或只存到上櫃：")
+        for d in thin:
+            lines.append(f"　{d}　{counts.get(d, 0):,} 檔")
 
     return "\n".join(str(x) for x in lines), 200
 
