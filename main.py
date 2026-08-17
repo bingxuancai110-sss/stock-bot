@@ -1258,6 +1258,19 @@ def _get_json(url, timeout=25):
         return None
 
 
+def fetch_json_bulk(urls, timeout=25, workers=6):
+    """
+    並行抓多個 JSON 端點，回傳 {url: 資料 或 None}。
+    月營收要打 3 個端點、估值要打 2 個，序列跑等於把各自的 timeout 相加，
+    而它們彼此不相依，沒有理由一個等完才發下一個。
+    """
+    urls = list(dict.fromkeys(u for u in urls if u))
+    if not urls:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(workers, len(urls))) as ex:
+        return dict(zip(urls, ex.map(lambda u: _get_json(u, timeout), urls)))
+
+
 def _pick(row, *names):
     """欄位名稱各來源不一致，依序嘗試；找不到回傳空字串。"""
     for n in names:
@@ -1279,8 +1292,9 @@ def fetch_and_save_industry():
     ]
 
     records, counts = [], {}
+    fetched = fetch_json_bulk([u for _m, u in sources])   # 三個市場並行抓
     for market, url in sources:
-        rows = _get_json(url)
+        rows = fetched.get(url)
         if not rows:
             counts[market] = 0
             continue
@@ -1526,15 +1540,20 @@ def fetch_valuation():
             return None
 
     result = {}
+    # 上市與上櫃兩個端點並行抓，不必等第一個回來才發第二個
+    twse_url = f"{TWSE_BASE}/exchangeReport/BWIBBU_ALL"
+    tpex_url = f"{TPEX_BASE}/tpex_mainboard_peratio_analysis"
+    fetched = fetch_json_bulk([twse_url, tpex_url])
+
     # 上市
-    for row in _get_json(f"{TWSE_BASE}/exchangeReport/BWIBBU_ALL") or []:
+    for row in fetched.get(twse_url) or []:
         code = _pick(row, "Code")
         if code:
             result[code] = {"pe": to_float(row.get("PEratio")),
                             "pb": to_float(row.get("PBratio")),
                             "yield": to_float(row.get("DividendYield"))}
     # 上櫃（欄位名稱與上市不同，要另外對應）
-    for row in _get_json(f"{TPEX_BASE}/tpex_mainboard_peratio_analysis") or []:
+    for row in fetched.get(tpex_url) or []:
         code = _pick(row, "SecuritiesCompanyCode", "Code")
         if code:
             result[code] = {"pe": to_float(row.get("PriceEarningRatio")),
@@ -2258,9 +2277,13 @@ def fetch_monthly_revenue():
         f"{TPEX_BASE}/t187ap05_R",            # 興櫃
     ]
 
+    # 三個端點並行抓：序列跑的話光是等就要三次來回（每次 timeout 20 秒），
+    # 這是「當天第一個使用者」等特別久的主因之一。
+    fetched = fetch_json_bulk(sources, timeout=20)
+
     result, period = {}, None
     for url in sources:
-        rows = _get_json(url, timeout=20)
+        rows = fetched.get(url)
         if not rows:
             continue
         period = period or _pick(rows[0], "資料年月", "Period")
@@ -2852,6 +2875,41 @@ def cron_snapshot_portfolio():
             f"skipped={skipped}, taiex={taiex_close}"), 200
 
 
+@app.route("/cron/warmup", methods=["POST", "GET"])
+def cron_warmup():
+    """
+    預熱當天的中繼資料快取（法人、月營收、估值、產業別、名稱對照）。
+
+    這些資料一天只需抓一次，但快取是「當天第一次呼叫時」才填的——
+    代表每天第一個使用者要獨自承擔全部的抓取時間（可能數十秒），
+    後面的人才享受得到快取。把這件事交給機器人自己在開盤前做完，
+    使用者任何時候進來都是熱的。
+
+    建議排在交易日早上 08:00 之前跑一次，收盤抓完 T86 之後再跑一次。
+    """
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    t0 = time.time()
+    done = []
+    for label, fn in [
+        ("法人", fetch_institutional_data),
+        ("月營收", fetch_monthly_revenue),
+        ("估值", fetch_valuation),
+        ("產業別", get_industry_map),
+        ("名稱對照", get_name_map),
+    ]:
+        try:
+            data = fn()
+            done.append(f"{label}={len(data) if data else 0}")
+        except Exception as e:
+            print(f"❌ 預熱 {label} 失敗: {e}")
+            done.append(f"{label}=失敗")
+
+    return f"Warmup done in {time.time() - t0:.1f}s. " + ", ".join(done), 200
+
+
 @app.route("/sync-industry", methods=["POST", "GET"])
 def sync_industry():
     """抓取並儲存上市公司產業別。一次性作業，之後想更新再打一次。"""
@@ -3058,6 +3116,37 @@ def backfill_t86():
         f"目前資料庫累積：{total_days} 個交易日\n"
         f"下一批請用 offset={offset + days}"
     ), 200
+
+
+# 會跑比較久的指令，送出後先叫載入動畫
+SLOW_COMMANDS = {
+    "黑馬", "雷達", "自選", "WATCHLIST", "健檢", "自選健檢",
+    "盤前", "早安", "解盤", "盤後解盤", "盤後", "新聞", "自選新聞",
+}
+
+
+def start_loading_animation(user_id, seconds=60):
+    """
+    叫出 LINE 聊天室裡的官方載入動畫（三個點跳動），最長 60 秒。
+    只在一對一聊天有效，群組會回錯誤，所以整段包在 try 裡——
+    動畫叫不出來不該影響真正的查詢結果。
+
+    linebot SDK 版本較舊時可能沒有這個方法，因此改直接打 REST API，
+    不依賴 SDK 是否支援。
+    """
+    try:
+        requests.post(
+            "https://api.line.me/v2/bot/chat/loading/start",
+            headers={
+                "Authorization": f"Bearer {os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')}",
+                "Content-Type": "application/json",
+            },
+            json={"chatId": str(user_id).strip(),
+                  "loadingSeconds": min(60, max(5, int(seconds) // 5 * 5))},
+            timeout=3,
+        )
+    except Exception as e:
+        print(f"⚠️ 載入動畫啟動失敗 {user_id}: {e}")
 
 
 def build_quick_reply():
@@ -3342,6 +3431,32 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .total-label{font-size:12px;color:var(--ink-soft)}
 .total-value{font-size:24px;font-weight:600;margin-top:2px}
 .total-sub{font-size:12.5px}
+/* ── 載入畫面 ──
+   紙本月報的調性不適合轉圈圈或跳動的小動畫，所以用一條黃銅色進度條
+   ＋會淡入淡出的投資語錄。等待時有東西可讀，比盯著空白畫面好。 */
+.loading{padding:26px 0 10px}
+.load-track{height:3px;background:var(--paper-2);overflow:hidden;
+  border-radius:2px}
+.load-bar{height:100%;width:0;background:var(--brass);
+  transition:width .5s ease}
+.load-stage{margin-top:11px;font-size:12.5px;color:var(--ink-faint);
+  display:flex;justify-content:space-between;gap:12px}
+.load-stage b{color:var(--ink-soft);font-weight:500}
+.quote{margin-top:34px;padding:22px 24px;background:var(--paper-2);
+  border-left:2px solid var(--brass);min-height:132px;
+  display:flex;flex-direction:column;justify-content:center}
+.quote-text{font-size:16px;line-height:1.85;color:var(--ink);
+  letter-spacing:.01em}
+.quote-en{font-size:13px;line-height:1.7;color:var(--ink-soft);
+  margin-top:9px;font-style:italic}
+.quote-by{font-size:12px;color:var(--ink-faint);margin-top:13px;
+  letter-spacing:.04em}
+.quote-fade{animation:qfade 9s ease-in-out infinite}
+@keyframes qfade{
+  0%{opacity:0} 6%{opacity:1} 88%{opacity:1} 100%{opacity:0}
+}
+.load-note{margin-top:20px;font-size:11.5px;color:var(--ink-faint);
+  line-height:1.7}
 """
 
 NEED_LOGIN_HTML = """
@@ -3397,6 +3512,168 @@ def fmt_pct(v):
     return f'<span class="num {cls}">{v:+.2f}%</span>'
 
 
+# ── 載入時輪播的投資語錄 ──
+# 等待時給點東西讀，比盯著空白或骨架灰塊有意思。
+# 挑的都是講「紀律、耐心、風險」的短句——跟這個工具想傳達的態度一致，
+# 不放那種鼓吹重壓或保證獲利的句子。
+INVESTING_QUOTES = [
+    ("行情總在絕望中誕生，在半信半疑中成長，在憧憬中成熟，在充滿希望中毀滅。",
+     "", "約翰・坦伯頓"),
+    ("風險來自於你不知道自己在做什麼。",
+     "Risk comes from not knowing what you're doing.", "華倫・巴菲特"),
+    ("別人貪婪時恐懼，別人恐懼時貪婪。",
+     "", "華倫・巴菲特"),
+    ("股市是把錢從沒耐心的人手上，轉移到有耐心的人手上的裝置。",
+     "", "華倫・巴菲特"),
+    ("投資人最大的敵人，往往是他自己。",
+     "The investor's chief problem is likely himself.", "班傑明・葛拉漢"),
+    ("市場短期是投票機，長期是體重計。",
+     "", "班傑明・葛拉漢"),
+    ("你不必在每一件事上都正確，只要在少數幾件事上不犯大錯。",
+     "", "彼得・林區"),
+    ("賠錢的真正原因，是等不及而在最壞的時候賣出。",
+     "", "彼得・林區"),
+    ("懂你手上持有的是什麼，也懂你為什麼持有它。",
+     "Know what you own, and know why you own it.", "彼得・林區"),
+    ("在投資裡，讓你舒服的事情，很少讓你賺錢。",
+     "", "霍華・馬克斯"),
+    ("我們無法預測，但可以做好準備。",
+     "You can't predict. You can prepare.", "霍華・馬克斯"),
+    ("時間是好公司的朋友，是平庸公司的敵人。",
+     "", "華倫・巴菲特"),
+    ("分散是對無知的保護；若你清楚自己在做什麼，它就沒什麼必要。",
+     "", "華倫・巴菲特"),
+    ("大錢不是靠買賣賺來的，是靠等待。",
+     "", "傑西・李佛摩"),
+    ("投資成功不需要高智商，需要的是控制住會讓人出事的衝動。",
+     "", "華倫・巴菲特"),
+    ("四個最貴的字：這次不一樣。",
+     "The four most expensive words: this time it's different.", "約翰・坦伯頓"),
+    ("複利是世界第八大奇蹟。",
+     "", "常被歸於愛因斯坦"),
+    ("價格是你付出的，價值是你得到的。",
+     "Price is what you pay. Value is what you get.", "華倫・巴菲特"),
+]
+
+
+def render_quote_block():
+    """
+    隨機挑幾則語錄，用純 CSS 動畫輪播。
+    為什麼不用 JS 控制：這段要在資料還沒回來時就能自己動起來，
+    不依賴任何後續請求，前端邏輯越少越不容易壞。
+    每則的 animation-delay 錯開，就形成依序淡入淡出的效果。
+    """
+    picked = random.sample(INVESTING_QUOTES, min(4, len(INVESTING_QUOTES)))
+    n = len(picked)
+    cycle = 9  # 跟 CSS 的 qfade 動畫長度一致
+    blocks = []
+    for i, (zh, en, who) in enumerate(picked):
+        blocks.append(
+            f'<div class="quote-fade" style="animation-delay:{i * cycle}s;'
+            f'animation-duration:{n * cycle}s;'
+            f'{"" if i == 0 else "position:absolute;top:22px;left:24px;right:24px;"}'
+            f'opacity:0">'
+            f'<div class="quote-text">{zh}</div>'
+            f'{f"<div class=quote-en>{en}</div>" if en else ""}'
+            f'<div class="quote-by">— {who}</div>'
+            f'</div>')
+    return f'<div class="quote" style="position:relative">{"".join(blocks)}</div>'
+
+
+def render_loading_shell(title, nav_active, stages, note=""):
+    """
+    先秒回的「殼」：導覽列、進度條、投資語錄都立刻出現，
+    真正的內容再由瀏覽器另外去要（fragment=1），回來後替換掉這一塊。
+
+    為什麼不直接讓伺服器算完再回：那段時間瀏覽器是完全空白的，
+    使用者不知道是在跑還是壞了，20 秒的空白比 20 秒的進度條難熬得多。
+
+    進度條走的是「預估」而非真實進度——真實進度要後端持續回報，
+    對這個規模的專案不划算，而且體感差異很小。重點是讓人知道還在跑。
+    stages 是階段文字清單，會依序顯示。
+    """
+    stages_js = ",".join(f'"{s}"' for s in stages)
+    shell = f"""
+<div id="loading" class="loading">
+  <div class="load-track"><div class="load-bar" id="loadbar"></div></div>
+  <div class="load-stage">
+    <span id="loadstage">正在準備…</span>
+    <b id="loadpct">0%</b>
+  </div>
+  {render_quote_block()}
+  <div class="load-note">{note}</div>
+</div>
+<div id="content"></div>
+<script>
+(function () {{
+  var stages = [{stages_js}];
+  var bar = document.getElementById('loadbar');
+  var stageEl = document.getElementById('loadstage');
+  var pctEl = document.getElementById('loadpct');
+  var pct = 0, done = false;
+
+  // 進度條爬到 90% 就停住等資料，資料回來才補到 100%。
+  // 不讓它自己跑到 100 卻沒東西出現——那比慢更傷信任。
+  var timer = setInterval(function () {{
+    if (done) return;
+    var step = pct < 55 ? 2.4 : (pct < 80 ? 0.9 : 0.25);
+    pct = Math.min(90, pct + step);
+    bar.style.width = pct + '%';
+    pctEl.textContent = Math.round(pct) + '%';
+    var i = Math.min(stages.length - 1, Math.floor(pct / (90 / stages.length)));
+    stageEl.textContent = stages[i];
+  }}, 260);
+
+  function finish(html) {{
+    done = true;
+    clearInterval(timer);
+    bar.style.width = '100%';
+    pctEl.textContent = '100%';
+    setTimeout(function () {{
+      document.getElementById('content').innerHTML = html;
+      document.getElementById('loading').style.display = 'none';
+    }}, 180);
+  }}
+
+  var url = window.location.pathname + window.location.search
+          + (window.location.search ? '&' : '?') + 'fragment=1';
+
+  fetch(url, {{ credentials: 'same-origin' }})
+    .then(function (r) {{
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }})
+    .then(finish)
+    .catch(function (e) {{
+      done = true;
+      clearInterval(timer);
+      stageEl.textContent = '載入失敗，請重新整理頁面。';
+      pctEl.textContent = '';
+      console.error(e);
+    }});
+}})();
+</script>"""
+    # 骨架也要走 render_page，才會帶上樣式與導覽列——
+    # 沒有外框的話使用者第一眼看到的會是一段沒有樣式的裸 HTML。
+    return render_page(title, shell, nav_active=nav_active)
+
+
+def wants_fragment():
+    """瀏覽器載入殼之後回頭要內容時會帶 fragment=1。"""
+    return request.args.get("fragment") == "1"
+
+
+def respond_page(title, body, nav_active):
+    """
+    內容算完後的回應：fragment 請求只回內容片段（給 JS 塞進頁面），
+    否則回完整頁面——這樣即使 JS 被停用或有人直接開 fragment 網址，
+    畫面仍然是完整可用的，不會變成一段沒有樣式的裸 HTML。
+    """
+    if wants_fragment():
+        return body
+    return render_page(title, body, nav_active=nav_active)
+
+
 @app.route("/web/login")
 def web_login():
     """帶 ?t=權杖 進來，驗證後寫入 cookie，之後就不必每次帶網址參數。"""
@@ -3421,6 +3698,15 @@ def web_home(uid):
 @app.route("/web/positions", methods=["GET", "POST"])
 @web_login_required
 def web_positions(uid):
+    # GET 且不是要片段時，先秒回骨架讓使用者馬上看到畫面，
+    # 真正的抓價工作交給後續的 fragment 請求。
+    # POST 不能這樣做——表單送出必須當場處理完，否則新增／賣出會遺失。
+    if request.method == "GET" and not wants_fragment():
+        return render_loading_shell(
+            "持股", "positions",
+            ["正在讀取你的持股…", "正在抓即時報價…", "正在計算損益與權重…"],
+            note="報價來自 Yahoo Finance，逐檔抓取需要一點時間。")
+
     # 手續費設定要在處理賣出之前先讀出來，賣出當下記錄的已實現損益
     # 才能用使用者自己的折扣／最低收費計算，跟畫面上其他地方口徑一致。
     fee_disc, min_fee = get_fee_settings(get_profile(uid))
@@ -3593,7 +3879,7 @@ def web_positions(uid):
   </div>
   <button type="submit">新增</button>
 </form>"""
-    return render_page("持股", body, nav_active="positions")
+    return respond_page("持股", body, "positions")
 
 
 # ── 問卷與門檻設定 ──
@@ -4221,6 +4507,14 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
 @app.route("/web/portfolio", methods=["GET", "POST"])
 @web_login_required
 def web_portfolio(uid):
+    if request.method == "GET" and not wants_fragment():
+        return render_loading_shell(
+            "組合分析", "portfolio",
+            ["正在讀取你的持股…", "正在抓即時報價…",
+             "正在抓法人與月營收資料…", "正在計算集中度與相關係數…",
+             "正在整理提醒…"],
+            note="組合分析會比對法人籌碼、月營收與估值，資料量較大。")
+
     msg = ""
     if request.method == "POST":
         updates = {k: (request.form.get(k) or None) for k, _, _, _ in PROFILE_FIELDS}
@@ -4248,7 +4542,7 @@ def web_portfolio(uid):
 <div class="section-head"><h2>組合走勢</h2>
   <span class="section-note">相對起始日漲跌幅</span></div>
 <div class="callout" style="padding:14px 15px 4px">{trend_html_empty}</div>"""
-        return render_page("組合分析", body, nav_active="portfolio")
+        return respond_page("組合分析", body, "portfolio")
 
     th = get_thresholds(profile)
     fee_disc, min_fee = get_fee_settings(profile)
@@ -4428,7 +4722,7 @@ def web_portfolio(uid):
          for tag, txt in alerts) if alerts
  else '<div class="empty">目前沒有觸及門檻的項目。</div>'}
 </div>"""
-    return render_page("組合分析", body, nav_active="portfolio")
+    return respond_page("組合分析", body, "portfolio")
 
 
 CATEGORY_NOTE = {
@@ -4448,6 +4742,17 @@ CATEGORY_NOTE = {
 @web_login_required
 def web_screener(uid):
     mode = request.args.get("mode", "blackhorse")
+    if not wants_fragment():
+        # 選股台是全站最重的一頁（候選池上百檔），先秒回骨架再慢慢填
+        return render_loading_shell(
+            "選股台", "screener",
+            ["正在抓三大法人買賣超…", "正在抓月營收與估值…",
+             "正在挑選候選池…",
+             ("正在逐檔抓報價（上百檔）…" if mode != "radar"
+              else "正在抓當日強勢股報價…"),
+             "正在評分與排序…"],
+            note="候選池涵蓋電子、傳產、金融三類，需要逐檔取得報價與量能。")
+
     limit = request.args.get("limit", "20")
     limit = int(limit) if limit.isdigit() and int(limit) in (10, 20, 50) else 20
     sort_key = request.args.get("sort", "score")
@@ -4459,9 +4764,9 @@ def web_screener(uid):
 
     inst = fetch_institutional_data()
     if not inst:
-        return render_page("選股台", """
+        return respond_page("選股台", """
 <div class="empty">目前無法取得三大法人資料。<br>
-可能是非交易時段或資料尚未公布，請稍後再試。</div>""", nav_active="screener")
+可能是非交易時段或資料尚未公布，請稍後再試。</div>""", "screener")
 
     revenue = fetch_monthly_revenue() or {}
     valuation = fetch_valuation() or {}
@@ -4894,7 +5199,7 @@ def web_screener(uid):
 {controls}
 {main_html}
 """
-    return render_page("選股台", body, nav_active="screener")
+    return respond_page("選股台", body, "screener")
 
 
 # --- LINE Bot 訊息接收與路由分派 ---
@@ -4948,6 +5253,13 @@ def handle_message(event):
     pure_code = normalize_code(text)  # 保留主動式ETF的英文尾碼，如 00981A
 
     add_user_to_db(user_id)
+
+    # 耗時的指令先叫出 LINE 官方的載入動畫（聊天室裡的三點跳動）。
+    # LINE 沒有別的方式表達「還在跑」，沒有它使用者只會看到一片安靜，
+    # 以為機器人壞了而重複點擊。用官方動畫而不是先回一則「查詢中」訊息，
+    # 是因為後者會吃掉免費方案每月 200 則的推播額度。
+    if text in SLOW_COMMANDS or (4 <= len(pure_code) <= 7 and len(text) <= 8):
+        start_loading_animation(user_id)
 
     # 0. 管理指令（只有 ADMIN_USER_ID 本人可用，其他人輸入等同無效指令）
     if text in ["我的ID", "我的id", "MYID"]:
