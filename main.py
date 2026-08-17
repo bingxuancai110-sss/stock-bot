@@ -1482,6 +1482,115 @@ def get_consecutive_days(code, direction="buy", max_days=20):
     return streak
 
 
+def get_investor_breakdown(codes, days=10):
+    """
+    分別取外資、投信、自營商的近 N 日累計買超與連續買超天數。
+
+    為什麼要拆開看：三大法人合計是三種完全不同的人加在一起，
+    同樣「合計買超 3,000 張」可能是投信在建倉，也可能只是自營商的
+    權證避險部位，訊號價值差很多。
+      外資　量最大，但常是 MSCI 調權重、ETF 被動調整，未必代表看好
+      投信　要對基金績效負責，通常做過研究才買，連續買最有參考價值
+      自營　很大一部分是發行權證後的避險，今天買明天沖是常態
+
+    回傳 {code: {"foreign": {...}, "trust": {...}, "dealer": {...}}}
+    每個內含 cum（累計張數）與 streak（連續買超天數）。
+    """
+    codes = [str(c).strip() for c in codes if c]
+    if not codes:
+        return {}
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT code, trade_date, foreign_net_lots, trust_net_lots, dealer_net_lots
+            FROM inst_history
+            WHERE code = ANY(%s) AND trade_date >= (
+                SELECT MIN(d) FROM (
+                    SELECT DISTINCT trade_date AS d FROM inst_history
+                    ORDER BY d DESC LIMIT %s
+                ) recent
+            )
+            ORDER BY code, trade_date DESC
+            """,
+            (codes, days),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+    except Exception as e:
+        print(f"❌ 查詢法人分項失敗: {e}")
+        return {}
+    finally:
+        release_db_connection(conn)
+
+    series = {}
+    for code, _d, f, t, dl in rows:
+        series.setdefault(code, []).append((f or 0, t or 0, dl or 0))
+
+    result = {}
+    for code in codes:
+        hist = series.get(code, [])
+        entry = {}
+        for idx, key in enumerate(("foreign", "trust", "dealer")):
+            vals = [h[idx] for h in hist]
+            streak = 0
+            for v in vals:                 # 已是日期新到舊
+                if v > 0:
+                    streak += 1
+                else:
+                    break
+            entry[key] = {"cum": sum(vals), "streak": streak,
+                          "today": vals[0] if vals else 0}
+        result[code] = entry
+    return result
+
+
+def describe_investor_breakdown(bd, compact=False):
+    """
+    把三方拆解講成人看得懂的樣子，並點出誰是主導方。
+
+    只在「主導方明確」時才下註解——三方都小量進出時硬要解讀，
+    等於把雜訊當訊號。
+    """
+    if not bd:
+        return None
+    f, t, d = bd["foreign"], bd["trust"], bd["dealer"]
+
+    def line(icon, label, x):
+        streak = f"　連買 {x['streak']} 日" if x["streak"] >= 2 else ""
+        return f"{icon} {label} {x['cum']:+,} 張{streak}"
+
+    lines = [line("🌐", "外資", f), line("🏦", "投信", t), line("🏭", "自營", d)]
+
+    # 主導方：絕對量最大且明顯超過其他兩者
+    mags = {"外資": abs(f["cum"]), "投信": abs(t["cum"]), "自營": abs(d["cum"])}
+    top = max(mags, key=mags.get)
+    rest = sorted(v for k, v in mags.items() if k != top)
+    note = None
+    if mags[top] >= 100 and mags[top] >= (rest[-1] * 2 if rest else 0):
+        vals = {"外資": f, "投信": t, "自營": d}[top]
+        side = "買超" if vals["cum"] > 0 else "賣超"
+        if top == "投信":
+            note = (f"投信主導{side}"
+                    + ("，且連續買進，通常代表有研究支撐"
+                       if vals["streak"] >= 3 and vals["cum"] > 0 else ""))
+        elif top == "自營":
+            note = "自營主導，可能含權證避險部位，訊號價值較低"
+        else:
+            note = f"外資主導{side}，留意是否為指數成分調整所致"
+
+    # 分歧：投信與外資方向相反，是值得注意的訊號
+    if t["cum"] * f["cum"] < 0 and min(abs(t["cum"]), abs(f["cum"])) >= 200:
+        who = "投信買、外資賣" if t["cum"] > 0 else "外資買、投信賣"
+        note = f"{who}，兩者看法分歧"
+
+    if note:
+        lines.append(f"　→ {note}")
+    return ("　".join(lines[:3]) if compact else "\n".join(lines))
+
+
 def get_consecutive_days_batch(codes, direction="buy", max_days=20):
     """
     一次查多檔股票的連續買（賣）超天數，只打一次資料庫。
@@ -3525,6 +3634,91 @@ def describe_score_change(cur, prev):
     return arrow, f"{prev['total']}→{cur['total']} 分（{diff:+d}）{reason}"
 
 
+def build_single_stock_report(code, user_id=None):
+    """
+    單檔完整健檢。LINE 直接輸入代號就走這裡——
+    原本只顯示報價與位階，要看評分還得先加進自選再查健檢，多了兩個步驟。
+    查詢一檔股票時想知道的本來就是「這檔現在如何」，沒理由分散在兩個指令。
+
+    user_id 有給時會一併顯示是否已在自選、以及分數變化。
+    """
+    stock = get_realtime_stock(code)
+    if not stock:
+        return f"❌ 查無代號 {code} 的行情，請確認代號是否正確。"
+
+    inst = fetch_institutional_data() or {}
+    scores = compute_watchlist_scores([code])
+    s = scores.get(code)
+    ind_map = get_industry_map() or {}
+    ind = ind_map.get(code)
+    name = short_company_name(stock_display_name(code, inst, stock["name"]))
+
+    lines = [f"📊 {code} {name}"]
+    if ind:
+        lines[0] += f"　{industry_name(ind)}"
+    lines.append("─" * 14)
+    lines.append(f"💰 {stock['close']:.2f}（{stock['pct']:+.2f}%）"
+                 f"　高低 {stock['high']:.2f}/{stock['low']:.2f}")
+    lines.append(f"📦 {int(stock['volume'] / 1000):,} 張"
+                 f"　🛡️{stock['support']} 🚧{fmt_resistance(stock['resistance'])}")
+
+    if s:
+        total = s["total"]
+        flag = "🟢" if total >= 70 else ("🟡" if total >= 45 else "🔴")
+        lines.append("")
+        lines.append(f"{flag} 綜合評分：{total}／100")
+        lines.append(f"　籌碼{s['chip']}/30　位階{s['position']}/25　"
+                     f"營收{s['revenue']}/25　估值{s['valuation']}/20")
+
+        # 分數變化：只有自選股才有歷史快照可比
+        if user_id:
+            prev = get_previous_scores(user_id, [code]).get(code)
+            arrow, change_txt = describe_score_change(s, prev)
+            if arrow:
+                lines.append(f"{arrow} {change_txt}")
+
+        cum_yoy, pe = s["cum_yoy"], s["pe"]
+        rev_txt = f"營收年增 {cum_yoy:+.1f}%" if cum_yoy is not None else "營收無資料"
+        pe_txt = f"PE {pe:.1f}" if pe else "PE 無"
+        lines.append(f"　{rev_txt}　{pe_txt}")
+
+    lines.append("")
+    lines.append("【法人籌碼】近10日")
+    bd = get_investor_breakdown([code]).get(code)
+    desc = describe_investor_breakdown(bd)
+    lines.append(desc if desc else "　尚無法人歷史資料")
+
+    lines.append("")
+    lines.append("【位階】")
+    lines.append(build_position_desc(stock))
+
+    if s:
+        lines.append("")
+        lines.append("【觀察】")
+        lines.append(build_watchlist_advice(
+            s["total"], s["chip"], s["position"], s["revenue"], s["valuation"],
+            s["cum_lots"], s["streak"], stock, s["cum_yoy"], s["pe"]))
+
+    news = fetch_stock_news(name, max_items=2)
+    if news:
+        lines.append("")
+        lines.append("📰 相關新聞")
+        for n in news:
+            src = f"（{n['source']}）" if n["source"] else ""
+            lines.append(f"・{n['title']}{src}")
+            if n["link"]:
+                lines.append(f"　{n['link']}")
+
+    if user_id:
+        in_wl = code in get_user_watchlist(user_id)
+        lines.append("")
+        lines.append(f"※ 已在自選清單" if in_wl
+                     else f"※ 輸入「加 {code}」加入自選")
+
+    report = "\n".join(lines)
+    return report[:4750] + "\n…（已截斷）" if len(report) > 4800 else report
+
+
 def build_healthcheck_report(user_id):
     codes = get_user_watchlist(user_id)
     if not codes:
@@ -3534,6 +3728,7 @@ def build_healthcheck_report(user_id):
     scores = compute_watchlist_scores(codes)
     prev_scores = get_previous_scores(user_id, codes)
     tags = get_watchlist_tags(user_id)
+    breakdowns = get_investor_breakdown(codes)
 
     rows = []
     for code in codes:
@@ -3552,8 +3747,14 @@ def build_healthcheck_report(user_id):
         total = s["total"]
         flag = "🟢" if total >= 70 else ("🟡" if total >= 45 else "🔴")
 
-        # 一句話點出目前最該注意的事實
-        if cum_lots < 0:
+        # 一句話點出目前最該注意的事實。
+        # 優先講投信——三大法人合計會把投信的動作稀釋掉，
+        # 但投信要對基金績效負責，連續買通常比合計數字更有參考價值。
+        bd = breakdowns.get(code)
+        trust = bd["trust"] if bd else None
+        if trust and trust["streak"] >= 3:
+            note = f"投信連 {trust['streak']} 日買超（累計 {trust['cum']:+,} 張）"
+        elif cum_lots < 0:
             note = f"法人近10日賣超 {abs(cum_lots):,} 張"
         elif streak >= 3:
             note = f"法人連 {streak} 日買超"
@@ -3575,12 +3776,19 @@ def build_healthcheck_report(user_id):
         arrow, change_txt = describe_score_change(s, prev_scores.get(code))
         change_line = f"{arrow} {change_txt}\n" if arrow else ""
 
+        # 法人三方拆解，只在有明確主導方或分歧時才佔一行版面
+        bd_desc = describe_investor_breakdown(bd)
+        bd_line = ""
+        if bd_desc and "→" in bd_desc:
+            bd_line = bd_desc.split("→")[-1].strip() + "\n"
+
         text = (
             f"{flag} {name} {code}　{total}分\n"
             f"{change_line}"
             f"{stock['close']:.2f}（{stock['pct']:+.2f}%）　{pos_txt}\n"
             f"{note}\n"
             f"{rev_txt}　{pe_txt}　🛡️{stock['support']} 🚧{fmt_resistance(stock['resistance'])}\n"
+            f"{bd_line}"
             f"{advice}"
         )
         rows.append((tag, total, text))
@@ -4681,6 +4889,77 @@ INVESTING_QUOTES = [
     ("市場不會因為你需要錢，就在那天對你友善。", "", "霍華・馬克斯"),
     ("停損不是承認失敗，是承認你不知道接下來會怎樣。", "", "傑西・李佛摩"),
     ("一個投資人真正需要的，是在別人失去理智時保持理智。", "", "班傑明・葛拉漢"),
+    # 認錯與修正
+    ("虧損自己會照顧自己，獲利卻不會——會跑掉的是獲利。", "", "投資諺語"),
+    ("承認錯誤不會讓你變窮，堅持錯誤才會。", "", "投資諺語"),
+    ("當事實改變，我就改變想法。你呢？", "", "常被歸於凱因斯"),
+    ("最貴的不是買錯，是買錯之後不肯認。", "", "投資諺語"),
+    ("停損是成本，不是失敗；不停損才是失敗。", "", "投資諺語"),
+    ("好的投資人常常改變主意，因為他們追求的是正確而不是面子。", "", "投資諺語"),
+    ("在市場裡，堅持己見的代價由你自己付。", "", "投資諺語"),
+
+    # 資訊與雜訊
+    ("每天的股價新聞，九成是雜訊，一成是資訊，難的是分辨。", "", "投資諺語"),
+    ("你看到的消息，價格通常已經反映過了。", "", "效率市場假說"),
+    ("愈是斬釘截鐵的預測，愈值得懷疑。", "", "霍華・馬克斯"),
+    ("知道自己不知道什麼，比知道什麼更重要。", "", "投資諺語"),
+    ("預測市場走向的人分兩種：不知道的，和不知道自己不知道的。", "", "約翰・高伯瑞"),
+    ("消息面決定短期價格，基本面決定長期價值。", "", "投資諺語"),
+    ("如果一個投資機會需要你立刻決定，那多半不是機會。", "", "投資諺語"),
+
+    # 部位與資金管理
+    ("決定你能撐多久的不是眼光，是部位大小。", "", "投資諺語"),
+    ("先想你能承受多少，再想你想賺多少。", "", "投資諺語"),
+    ("重壓一次對的，不如穩定做對很多次。", "", "投資諺語"),
+    ("留一點現金，不是為了報酬，是為了選擇權。", "", "投資諺語"),
+    ("借來的錢會改變你的判斷，因為時間不再站在你這邊。", "", "投資諺語"),
+    ("永遠不要因為一筆交易而讓自己失去繼續交易的資格。", "", "保羅・都鐸・瓊斯"),
+    ("最重要的規則是守住本金，第二重要的還是守住本金。", "", "保羅・都鐸・瓊斯"),
+
+    # 心態與情緒
+    ("市場最會做的事，就是讓最多人不舒服。", "", "投資諺語"),
+    ("恐懼與貪婪之間，只隔著一份紀律。", "", "投資諺語"),
+    ("賺錢時的自信，通常來自運氣而非能力。", "", "投資諺語"),
+    ("你不需要對每一檔股票有意見。", "", "華倫・巴菲特"),
+    ("最好的投資決定，常常是什麼都不做。", "", "投資諺語"),
+    ("急著回本的心情，是虧更多的開始。", "", "投資諺語"),
+    ("別人賺錢跟你沒有關係，這句話很難，但很值錢。", "", "投資諺語"),
+    ("投資是一場跟自己的比賽，不是跟別人的。", "", "投資諺語"),
+    ("看盤看得越勤，越容易做出你事後會後悔的決定。", "", "投資諺語"),
+
+    # 選股與產業
+    ("買股票就是買公司的一部分，不是買一張會跳動的紙。", "", "班傑明・葛拉漢"),
+    ("再厲害的騎師，騎一匹爛馬也贏不了。", "", "華倫・巴菲特"),
+    ("要投資一家連傻瓜都能經營的公司，因為總有一天會有傻瓜來經營。", "", "彼得・林區"),
+    ("護城河比一時的成長率更值錢。", "", "華倫・巴菲特"),
+    ("景氣循環股最危險的時候，正是本益比看起來最低的時候。", "", "彼得・林區"),
+    ("成長本身沒有價值，除非它需要的投入小於它產生的現金。", "", "華倫・巴菲特"),
+    ("熱門產業裡的平庸公司，比冷門產業裡的優秀公司更危險。", "", "投資諺語"),
+    ("公司的產品你若說不出它賣給誰、解決什麼問題，就別買。", "", "投資諺語"),
+
+    # 週期與時間
+    ("樹不會長到天上去。", "", "投資諺語"),
+    ("循環永遠存在，只是每次的理由聽起來都很新。", "", "霍華・馬克斯"),
+    ("最好的買點通常出現在最悲觀的時候，那也是最難下手的時候。", "", "投資諺語"),
+    ("多頭市場裡，每個人都覺得自己是股神。", "", "投資諺語"),
+    ("牛市在悲觀中誕生，在懷疑中成長，在樂觀中成熟，在興奮中死亡。", "", "約翰・坦伯頓"),
+    ("下跌時記住上漲的日子，上漲時記住下跌的日子。", "", "投資諺語"),
+    ("市場沒有新鮮事，只有你沒讀過的歷史。", "", "傑西・李佛摩"),
+
+    # 成本與費用
+    ("你控制不了報酬，但你控制得了成本。", "", "約翰・柏格"),
+    ("在投資的世界，你付出的越多，得到的越少。", "", "約翰・柏格"),
+    ("頻繁交易最穩定的受益者是券商。", "", "投資諺語"),
+    ("稅與手續費是確定的損失，報酬是不確定的收益。", "", "投資諺語"),
+
+    # 紀律與方法
+    ("沒有寫下來的計畫，在盤中就不算計畫。", "", "投資諺語"),
+    ("先想清楚什麼情況下你會賣，再決定買不買。", "", "投資諺語"),
+    ("一套普通但你能執行的方法，勝過一套完美但你做不到的。", "", "投資諺語"),
+    ("結果好不代表決策對，決策對不代表結果好。", "", "安妮・杜克"),
+    ("在不確定的世界裡，過程比單次結果更值得檢討。", "", "投資諺語"),
+    ("紀律的價值，在你最不想遵守的那天才會顯現。", "", "投資諺語"),
+    ("如果你說不出自己為什麼賺錢，那你也守不住它。", "", "投資諺語"),
 ]
 
 
@@ -6921,35 +7200,11 @@ def handle_message(event):
     elif text in ["自選", "WATCHLIST", "健檢", "自選健檢"]:
         reply = build_healthcheck_report(user_id)
 
-    # 6. 單獨查代號行情
+    # 6. 單獨查代號 → 直接給完整健檢
+    # 原本只回報價與位階，要看評分還得先加進自選再查健檢。
+    # 查一檔股票時想知道的本來就是「這檔現在如何」，沒理由分成兩個指令。
     elif 4 <= len(pure_code) <= 7 and len(text) <= 8 and " " not in text:
-        data = get_realtime_stock(pure_code)
-        if data:
-            inst_all = fetch_institutional_data() or {}
-            disp_name = short_company_name(
-                stock_display_name(pure_code, inst_all, data["name"]))
-            reply = (
-                f"📊 {data['code']} {disp_name}\n"
-                f"──────────────\n"
-                f"💰 現價：{data['close']:.2f} ({data['pct']:+.2f}%)\n"
-                f"🔺 高/低：{data['high']:.2f} / {data['low']:.2f}\n"
-                f"📦 量能：{int(data['volume'] / 1000):,} 張\n"
-                f"──────────────\n"
-                f"🛡️ 支撐：{data['support']}\n"
-                f"🚧 壓力：{fmt_resistance(data['resistance'])}\n"
-                f"\n【位階】\n{build_position_desc(data)}"
-            )
-
-            news = fetch_stock_news(disp_name, max_items=2)
-            if news:
-                reply += "\n\n📰 相關新聞"
-                for n in news:
-                    src = f"（{n['source']}）" if n["source"] else ""
-                    reply += f"\n・{n['title']}{src}"
-                    if n["link"]:
-                        reply += f"\n　{n['link']}"
-        else:
-            reply = f"❌ 查無代號 {pure_code} 的行情，請確認代號是否正確。"
+        reply = build_single_stock_report(pure_code, user_id)
 
     # 6.5 自選股新聞（手動查詢，跟盤後推播同一份內容）
     elif text in ["新聞", "自選新聞"]:
