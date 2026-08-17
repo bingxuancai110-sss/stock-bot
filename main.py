@@ -1559,8 +1559,9 @@ def describe_investor_breakdown(bd, compact=False):
     """
     把三方拆解講成人看得懂的樣子，並點出誰是主導方。
 
-    只在「主導方明確」時才下註解——三方都小量進出時硬要解讀，
-    等於把雜訊當訊號。
+    只在訊號夠明確時才下註解。判斷門檻用「相對比例」而非固定張數：
+    200 張對中小型股是大事，對台積電只是零頭，用固定值會讓大型股
+    每天都觸發同一句話，那行字就完全沒有資訊量了。
     """
     if not bd:
         return None
@@ -1572,27 +1573,36 @@ def describe_investor_breakdown(bd, compact=False):
 
     lines = [line("🌐", "外資", f), line("🏦", "投信", t), line("🏭", "自營", d)]
 
-    # 主導方：絕對量最大且明顯超過其他兩者
     mags = {"外資": abs(f["cum"]), "投信": abs(t["cum"]), "自營": abs(d["cum"])}
-    top = max(mags, key=mags.get)
-    rest = sorted(v for k, v in mags.items() if k != top)
+    activity = sum(mags.values())
     note = None
-    if mags[top] >= 100 and mags[top] >= (rest[-1] * 2 if rest else 0):
-        vals = {"外資": f, "投信": t, "自營": d}[top]
-        side = "買超" if vals["cum"] > 0 else "賣超"
-        if top == "投信":
-            note = (f"投信主導{side}"
-                    + ("，且連續買進，通常代表有研究支撐"
-                       if vals["streak"] >= 3 and vals["cum"] > 0 else ""))
-        elif top == "自營":
-            note = "自營主導，可能含權證避險部位，訊號價值較低"
-        else:
-            note = f"外資主導{side}，留意是否為指數成分調整所致"
 
-    # 分歧：投信與外資方向相反，是值得注意的訊號
-    if t["cum"] * f["cum"] < 0 and min(abs(t["cum"]), abs(f["cum"])) >= 200:
-        who = "投信買、外資賣" if t["cum"] > 0 else "外資買、投信賣"
-        note = f"{who}，兩者看法分歧"
+    # 整體量太小就不解讀——三方各買幾十張是雜訊，不是訊號
+    if activity >= 300:
+        top = max(mags, key=mags.get)
+        others = sorted((v for k, v in mags.items() if k != top), reverse=True)
+        vals = {"外資": f, "投信": t, "自營": d}[top]
+
+        # 主導方：要明顯超過第二名（兩倍以上），否則只是三方都有在動
+        if mags[top] >= others[0] * 2 and mags[top] >= activity * 0.5:
+            side = "買超" if vals["cum"] > 0 else "賣超"
+            if top == "投信":
+                note = (f"投信主導{side}"
+                        + ("，且連續買進，通常代表有研究支撐"
+                           if vals["streak"] >= 3 and vals["cum"] > 0 else ""))
+            elif top == "自營":
+                note = "自營主導，可能含權證避險部位，訊號價值較低"
+            else:
+                note = f"外資主導{side}，留意是否為指數成分調整所致"
+
+        # 分歧：投信與外資方向相反，且「兩邊力道相當」才算真的分歧。
+        # 一邊幾千張、另一邊幾百張不是分歧，那是其中一方在主導、
+        # 另一方只是小幅調節——用比例判斷才分得出這兩種情況。
+        lo, hi = sorted([abs(t["cum"]), abs(f["cum"])])
+        if (t["cum"] * f["cum"] < 0 and hi >= activity * 0.3
+                and lo >= hi * 0.5 and lo >= 500):
+            who = "投信買、外資賣" if t["cum"] > 0 else "外資買、投信賣"
+            note = f"{who}（{t['cum']:+,} / {f['cum']:+,} 張），力道相當，看法分歧"
 
     if note:
         lines.append(f"　→ {note}")
