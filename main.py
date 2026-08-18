@@ -2703,9 +2703,12 @@ def build_chips_report(days=10):
     排名用「金額」不是「張數」。用張數排會讓低價股整片霸榜——
     15 元的金融股買 10 萬張只要 15 億，1500 元的股票同樣金額只有 1,000 張。
 
-    排版原則：一檔一行、每區只給 3 檔、區塊之間空一行。
-    LINE 是純文字視窗，沒有表格也沒有對齊；一檔佔兩行、每區五檔的話
-    整則訊息超過 50 行，滑到後面就忘了前面在看什麼，等於沒有資訊。
+    排版有兩個為了 LINE 而做的調整：
+    1. 代號包在全形括號裡。「6805　116」這種「數字 空格 數字」會被 LINE
+       判斷成電話號碼而變成藍色超連結，點下去還會跳出撥號——
+       包起來就不會觸發偵測。
+    2. 每區只給 3 檔、區塊間空行。LINE 沒有表格也不等寬，
+       一檔佔兩行、每區五檔的話整則超過 50 行，滑到後面就忘了前面在看什麼。
     """
     hist_days = get_history_days_count()
     if hist_days < 3:
@@ -2716,7 +2719,7 @@ def build_chips_report(days=10):
 
     inst = fetch_institutional_data() or {}
     actual = min(days, hist_days)
-    TOP = 3          # 每區只給前 3 名
+    TOP = 3
 
     raw = {
         "trust_buy": get_top_by_investor("trust", "buy", actual, 20, min_days=6),
@@ -2734,59 +2737,70 @@ def build_chips_report(days=10):
         pr = prices.get(code)
         return (abs(lots) * 1000 * pr["close"] / 100_000_000) if pr else None
 
-    def name_of(code, name):
-        # 名稱太長會把整行擠爆，截短比對齊重要
-        nm = name or stock_display_name(code, inst)
-        return nm[:5]
+    def line(code, name, amt, hit=None, total=None):
+        # 代號用全形括號包住，避免被當成電話號碼
+        nm = (name or stock_display_name(code, inst))[:5]
+        tail = f"・{hit}/{total}天" if hit is not None else ""
+        return f"{nm}（{code}）{amt:,.0f}億{tail}"
 
-    def block(title, rows, top_n=TOP):
+    def block(title, note, rows, top_n=TOP):
         scored = []
         for code, name, cum, hit, total in rows:
             amt = amount(code, cum)
             if amt is not None:
-                scored.append((amt, code, name, cum, hit, total))
+                scored.append((amt, code, name, hit, total))
         scored.sort(reverse=True)
-
-        out = [title]
+        out = [title, note] if note else [title]
         if not scored:
-            out.append("　近期無符合標的")
-        for amt, code, name, cum, hit, total in scored[:top_n]:
-            out.append(f"{name_of(code, name)} {code}"
-                       f"　{amt:,.0f}億　{hit}/{total}天")
-        out.append("")          # 區塊之間空一行
+            out.append("近期無符合標的")
+        out += [line(c, n, a, h, t) for a, c, n, h, t in scored[:top_n]]
+        out.append("")
         return out
 
-    def block_both(title, rows, top_n=TOP):
+    def block_both(title, note, rows, top_n=TOP):
         scored = []
         for code, name, f_lots, t_lots, tot in rows:
             amt = amount(code, tot)
             if amt is not None:
-                scored.append((amt, code, name, f_lots, t_lots))
+                scored.append((amt, code, name))
         scored.sort(reverse=True)
-
-        out = [title]
+        out = [title, note]
         if not scored:
-            out.append("　近期無符合標的")
-        for amt, code, name, f_lots, t_lots in scored[:top_n]:
-            out.append(f"{name_of(code, name)} {code}　{amt:,.0f}億")
+            out.append("近期無符合標的")
+        out += [line(c, n, a) for a, c, n in scored[:top_n]]
         out.append("")
         return out
 
-    lines = [f"🦸 籌碼超人　近{actual}日", "依買賣金額排名", ""]
-    lines += block("🏦 投信認養", raw["trust_buy"])
-    lines += block("🌐 外資認養", raw["foreign_buy"])
-    lines += block_both("🔥 外資投信同買", both_buy)
-    lines += block("📉 投信調節", raw["trust_sell"])
-    lines += block_both("❄️ 外資投信同賣", both_sell)
+    lines = [f"🦸 籌碼超人　近{actual}日", "把三大法人拆開看誰在買", ""]
+    lines += block("🏦 投信認養",
+                   "國內基金。要對績效負責，通常做過研究才買，連續買最有參考價值",
+                   raw["trust_buy"])
+    lines += block("🌐 外資認養",
+                   "量最大，但常是指數調整或 ETF 被動買進，未必代表看好",
+                   raw["foreign_buy"])
+    lines += block_both("🔥 外資投信同買",
+                        "兩種立場不同的資金同時站買方，巧合機率較低",
+                        both_buy)
+    lines += block("📉 投信調節",
+                   "做研究的那批人正在減碼",
+                   raw["trust_sell"])
+    lines += block_both("❄️ 外資投信同賣",
+                        "兩邊同時撤退，通常不是巧合",
+                        both_sell)
 
     lines += [
         "─" * 12,
-        "數字＝該法人近10日買賣金額",
+        "億＝該法人近10日買賣金額",
         "天數＝10日內幾天站同方向",
+        "",
+        "為什麼要拆開看：同樣「三大法人買超3千張」，",
+        "可能是投信在建倉，也可能只是自營商的",
+        "權證避險部位，兩者意義差很多。",
         "",
         "認養需 6/10 天以上持續同向，",
         "單日爆量隔天就跑的不算。",
-        "只看籌碼，不含基本面與估值。",
+        "只看籌碼，不含基本面與估值——",
+        "法人買不代表便宜，法人賣不代表變壞。",
         "※ 上市＋上櫃，非投資建議",
     ]
     report = "\n".join(lines)
