@@ -3451,21 +3451,63 @@ def score_from_revenue_growth(yoy_pct):
 
 # --- 大盤指數（TWSE 官方 OpenAPI，固定回傳最新一個交易日收盤資訊） ---
 def fetch_taiex_summary():
+    """
+    抓加權指數。改用 Yahoo 的日K序列（^TWII）而不是 TWSE 的 MI_INDEX。
+
+    原因是「日期對得起來」：MI_INDEX 這個 OpenAPI 端點不回傳資料日期，
+    更新時間也跟 T86 不同步——大盤停在昨天、法人已經是今天的時候，
+    畫面會把兩者標成同一天，使用者只看得到「數字跟收盤對不上」
+    卻不知道是哪個環節的問題。
+
+    Yahoo 的日K有時間戳，可以明確知道這個收盤是哪一天的，
+    而且跟個股報價同源，畫面上的數字才會一致。
+    回傳 dict（含 date），失敗回傳 None。
+    """
     try:
-        url = "https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX"
-        res = requests.get(url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'}).json()
-        for row in res:
-            if row.get("指數") == "發行量加權股價指數":
-                return {
-                    "close": row.get("收盤指數"),
-                    "sign": row.get("漲跌"),
-                    "pts": row.get("漲跌點數"),
-                    "pct": row.get("漲跌百分比"),
-                }
-        return None
+        url = ("https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII"
+               "?range=5d&interval=1d")
+        res = requests.get(url, timeout=8,
+                           headers={'User-Agent': 'Mozilla/5.0'}).json()
+        result = res.get("chart", {}).get("result", [])
+        if not result:
+            return None
+        meta = result[0].get("meta", {})
+        ts = result[0].get("timestamp", []) or []
+        closes = [c for c in (result[0].get("indicators", {})
+                              .get("quote", [{}])[0].get("close", []) or [])
+                  if c is not None]
+        if not closes:
+            return None
+
+        tw_tz = timezone(timedelta(hours=8))
+        close = meta.get("regularMarketPrice") or closes[-1]
+        # 最後一根K棒的日期就是這個收盤的日期
+        bar_date = (datetime.fromtimestamp(ts[-1], tw_tz).strftime("%Y%m%d")
+                    if ts else None)
+
+        # 前收：從尾端往回找第一筆與現價不同的，避免尾端重複值算出假的 0.00%
+        prev = None
+        for c in reversed(closes):
+            if abs(c - close) > max(0.005, abs(close) * 1e-6):
+                prev = c
+                break
+        if prev is None:
+            prev = meta.get("chartPreviousClose")
+        if not prev:
+            return None
+
+        diff = close - prev
+        return {
+            "close": f"{close:,.2f}",
+            "sign": "+" if diff > 0 else ("-" if diff < 0 else ""),
+            "pts": f"{abs(diff):,.2f}",
+            "pct": f"{diff / prev * 100:+.2f}",
+            "date": bar_date,
+        }
     except Exception as e:
         print(f"❌ 抓取大盤指數錯誤: {e}")
         return None
+
 
 # --- 三大法人合計買賣超金額（跟 T86 同體系的 rwd JSON API） ---
 def fetch_institutional_total():
@@ -3533,26 +3575,47 @@ def build_market_recap():
     # 一定要標資料日期。沒有日期的話，非交易日或資料還沒公布時
     # 看到的是上一個交易日的數字，但畫面長得跟今天的一模一樣，
     # 使用者只會覺得「怎麼沒更新」而不知道原因。
-    dd = format_data_date(_t86_cache.get("data_date"))
     tw_today = datetime.now(timezone(timedelta(hours=8))).strftime("%m/%d")
-    stale = "" if dd == tw_today else f"（非今日；今天是 {tw_today}）"
-
-    lines = [f"📊 盤後解盤　{dd} 收盤", stale] if stale else [f"📊 盤後解盤　{dd} 收盤"]
-    lines.append("─" * 14)
+    inst_dd = format_data_date(_t86_cache.get("data_date"))
 
     taiex = fetch_taiex_summary()
+    taiex_dd = format_data_date(taiex.get("date")) if taiex else None
+
+    lines = ["📊 盤後解盤"]
+
+    # 大盤與法人來自不同資料源，發布時間不同步——各自標日期，
+    # 不要用一個日期涵蓋整份報告。兩者同一天時才合併成一行寫。
     if taiex and taiex.get("close"):
-        arrow = "▲" if taiex.get("sign") == "+" else ("▼" if taiex.get("sign") == "-" else "－")
-        lines.append(f"大盤 {taiex['close']}　{arrow}{taiex.get('pts','?')}（{taiex.get('pct','?')}%）")
+        arrow = ("▲" if taiex.get("sign") == "+"
+                 else ("▼" if taiex.get("sign") == "-" else "－"))
+        tag = "" if taiex_dd == inst_dd else f"　{taiex_dd}"
+        lines.append(f"─" * 14)
+        lines.append(f"大盤 {taiex['close']}　{arrow}{taiex.get('pts','?')}"
+                     f"（{taiex.get('pct','?')}%）{tag}")
     else:
+        lines.append("─" * 14)
         lines.append("大盤：資料暫缺")
+
+    if taiex_dd and taiex_dd == inst_dd:
+        lines[0] = f"📊 盤後解盤　{inst_dd} 收盤"
+    else:
+        lines[0] = f"📊 盤後解盤"
+        lines.insert(1, f"法人 {inst_dd}"
+                        + (f"　大盤 {taiex_dd}" if taiex_dd else ""))
+
+    stale = "" if inst_dd == tw_today else f"（法人非今日；今天是 {tw_today}）"
+    if stale:
+        lines.insert(1, stale)
 
     inst_total = fetch_institutional_total()
     if inst_total:
         total_yi = inst_total["total"] / 100_000_000
         lines.append(f"三大法人合計：{total_yi:+.1f}億")
         for name, val in inst_total["breakdown"].items():
-            lines.append(f"　{name}　{val/100_000_000:+.1f}億")
+            # 名稱裡的半形括號會讓「(2886) +22」這類樣式被當成電話號碼，
+            # 這裡雖然沒有數字相鄰，仍統一成全形以免日後改動時踩到
+            nm = name.replace("(", "（").replace(")", "）")
+            lines.append(f"　{nm}　{val/100_000_000:+.1f}億")
     lines.append("─" * 14)
 
     stock_rows = [
