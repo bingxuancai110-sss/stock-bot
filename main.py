@@ -1367,9 +1367,19 @@ def get_realtime_stock(code, rng="3mo"):
                 resistance = round(high_20d, 2)
             else:
                 resistance = round(high * 1.01, 2)
-            support_candidates = [x for x in [low_20d, ma20] if x and x < close]
-            support = round(max(support_candidates), 2) if support_candidates else (
-                round(low_20d, 2) if low_20d else round(low * 0.99, 2))
+            # 支撐必須在現價「下方」才有意義。
+            # 原本沒有候選時會退回 low_20d，但股價跌破近 20 日低點時
+            # 那個數字反而在現價上方——畫面就會出現「支撐 1655、現價 1625」
+            # 這種自相矛盾的東西。依序往更低的參考位找，
+            # 全都在上方就代表近期支撐已經跌破，用今日低點當最後防線。
+            support_candidates = [x for x in [low_20d, ma20, low_60d]
+                                  if x and x < close]
+            if support_candidates:
+                support = round(max(support_candidates), 2)
+                broke_support = False
+            else:
+                support = round(low, 2) if low and low < close else round(close * 0.97, 2)
+                broke_support = True
 
             _suffix_cache[code] = suffix  # 這個後綴有效，下次直接從它開始
 
@@ -1383,6 +1393,8 @@ def get_realtime_stock(code, rng="3mo"):
                 "volume": int(volume),
                 "resistance": resistance,
                 "support": support,
+                # 近期支撐全數跌破時要讓顯示端說明，不能只丟一個數字
+                "broke_support": broke_support,
                 "high_20d": high_20d,
                 "low_20d": low_20d,
                 "high_60d": high_60d,
@@ -2735,6 +2747,193 @@ def score_from_streak(streak):
     return 0
 
 
+def get_top_by_investor(investor="trust", direction="buy", days=10, top_n=10,
+                        min_days=None):
+    """
+    依「單一法人」的近 N 日累計買賣超排名，而不是三大法人合計。
+
+    合計會把三種完全不同的人加在一起：外資常是指數被動調整、
+    自營多為權證避險、投信才是做過研究的主動買盤。
+    要看「誰在認養」就必須分開排，合計排行看不出來。
+
+    「認養」的定義不只是量大，還要有持續性——連續幾天小買，
+    比單日大買更像在建倉。所以同時要求累計量與買超天數。
+
+    investor: foreign / trust / dealer
+    direction: buy（買超）/ sell（賣超）
+    min_days: 至少要有幾天站在該方向；None 表示不限
+    回傳 [(code, name, 累計張數, 該方向天數, 總天數), ...]
+    """
+    col = {"foreign": "foreign_net_lots",
+           "trust": "trust_net_lots",
+           "dealer": "dealer_net_lots"}.get(investor, "trust_net_lots")
+    sign = ">" if direction == "buy" else "<"
+    order = "DESC" if direction == "buy" else "ASC"
+    having = f"SUM(h.{col}) {sign} 0"
+    if min_days:
+        having += f" AND COUNT(*) FILTER (WHERE h.{col} {sign} 0) >= {int(min_days)}"
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            WITH recent AS (
+                SELECT DISTINCT trade_date FROM inst_history
+                ORDER BY trade_date DESC LIMIT %s
+            )
+            SELECT h.code,
+                   MAX(h.name) AS name,
+                   SUM(h.{col}) AS cum,
+                   COUNT(*) FILTER (WHERE h.{col} {sign} 0) AS hit_days,
+                   COUNT(*) AS total_days
+            FROM inst_history h
+            JOIN recent r ON h.trade_date = r.trade_date
+            WHERE length(h.code) = 4 AND h.code ~ '^[0-9]+$'
+              AND h.code NOT LIKE '00%%'
+            GROUP BY h.code
+            HAVING {having}
+            ORDER BY SUM(h.{col}) {order}
+            LIMIT %s
+            """,
+            (days, top_n),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [(r[0], r[1], r[2] or 0, r[3] or 0, r[4] or 0) for r in rows]
+    except Exception as e:
+        print(f"❌ 查詢 {investor} 排行失敗: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def get_both_side_codes(direction="buy", days=10, top_n=10, min_days=6):
+    """
+    外資與投信「同方向」的標的。
+
+    兩者立場不同卻同時站在同一邊，比單一法人的動作更值得注意——
+    外資的被動調整與投信的主動研究同時指向同一檔，
+    巧合的機率比較低。
+    回傳 [(code, name, 外資張數, 投信張數, 合計), ...]
+    """
+    sign = ">" if direction == "buy" else "<"
+    order = "DESC" if direction == "buy" else "ASC"
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            WITH recent AS (
+                SELECT DISTINCT trade_date FROM inst_history
+                ORDER BY trade_date DESC LIMIT %s
+            )
+            SELECT h.code, MAX(h.name),
+                   SUM(h.foreign_net_lots) AS f,
+                   SUM(h.trust_net_lots) AS t,
+                   COUNT(*) FILTER (
+                       WHERE h.foreign_net_lots {sign} 0
+                         AND h.trust_net_lots {sign} 0) AS both_days
+            FROM inst_history h
+            JOIN recent r ON h.trade_date = r.trade_date
+            WHERE length(h.code) = 4 AND h.code ~ '^[0-9]+$'
+              AND h.code NOT LIKE '00%%'
+            GROUP BY h.code
+            HAVING SUM(h.foreign_net_lots) {sign} 0
+               AND SUM(h.trust_net_lots) {sign} 0
+               AND COUNT(*) FILTER (
+                       WHERE h.foreign_net_lots {sign} 0
+                         AND h.trust_net_lots {sign} 0) >= %s
+            ORDER BY (SUM(h.foreign_net_lots) + SUM(h.trust_net_lots)) {order}
+            LIMIT %s
+            """,
+            (days, min_days, top_n),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [(r[0], r[1], r[2] or 0, r[3] or 0, (r[2] or 0) + (r[3] or 0))
+                for r in rows]
+    except Exception as e:
+        print(f"❌ 查詢雙方同向失敗: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def build_chips_report(days=10):
+    """
+    籌碼超人：依「誰在買」分開列出，而不是把三大法人加在一起。
+
+    黑馬看基本面與估值、雷達看今天的型態，這裡只看籌碼——
+    不評分、不排名綜合分數，就是把「誰在持續買、誰在持續賣」攤開來。
+    """
+    hist_days = get_history_days_count()
+    if hist_days < 3:
+        return ("❌ 法人歷史還不夠。\n"
+                "籌碼超人要看「近 10 日誰在持續買賣」，"
+                "至少需要幾個交易日的累積。\n"
+                "資料每天由排程自動累積，過幾天再試。")
+
+    inst = fetch_institutional_data() or {}
+    ind_map = get_industry_map() or {}
+    actual = min(days, hist_days)
+
+    def fmt(rows, unit="張", show=("cum", "days")):
+        out = []
+        for code, name, cum, hit, total in rows:
+            nm = name or stock_display_name(code, inst)
+            ind = ind_map.get(code)
+            ind_txt = f"　{industry_name(ind)}" if ind else ""
+            out.append(f"・{nm} {code}{ind_txt}\n"
+                       f"　{cum:+,} {unit}（{hit}/{total} 天）")
+        return out
+
+    lines = [f"🦸 籌碼超人（近 {actual} 個交易日）", "─" * 14]
+
+    # 投信認養：要求至少 6 天站在買方，過濾掉單日大買就跑的
+    trust_buy = get_top_by_investor("trust", "buy", actual, 5, min_days=6)
+    lines.append("\n🏦 投信認養")
+    lines.append("（要對基金績效負責，通常做過研究才買）")
+    lines += fmt(trust_buy) if trust_buy else ["・近期無持續買超的標的"]
+
+    foreign_buy = get_top_by_investor("foreign", "buy", actual, 5, min_days=6)
+    lines.append("\n🌐 外資認養")
+    lines.append("（量最大，但可能含指數成分調整）")
+    lines += fmt(foreign_buy) if foreign_buy else ["・近期無持續買超的標的"]
+
+    both_buy = get_both_side_codes("buy", actual, 5, min_days=5)
+    if both_buy:
+        lines.append("\n🔥 外資投信同買")
+        lines.append("（兩種立場不同的資金同時站在買方）")
+        for code, name, f_lots, t_lots, tot in both_buy:
+            nm = name or stock_display_name(code, inst)
+            lines.append(f"・{nm} {code}\n"
+                         f"　外資 {f_lots:+,}　投信 {t_lots:+,}　合計 {tot:+,} 張")
+
+    trust_sell = get_top_by_investor("trust", "sell", actual, 3, min_days=6)
+    lines.append("\n📉 投信持續調節")
+    lines += fmt(trust_sell) if trust_sell else ["・近期無持續賣超的標的"]
+
+    both_sell = get_both_side_codes("sell", actual, 5, min_days=5)
+    if both_sell:
+        lines.append("\n❄️ 外資投信同賣")
+        lines.append("（兩邊同時撤退，通常不是巧合）")
+        for code, name, f_lots, t_lots, tot in both_sell:
+            nm = name or stock_display_name(code, inst)
+            lines.append(f"・{nm} {code}\n"
+                         f"　外資 {f_lots:+,}　投信 {t_lots:+,}　合計 {tot:+,} 張")
+
+    lines += [
+        "\n" + "─" * 14,
+        "只看籌碼，不含基本面與估值——",
+        "法人買不代表便宜，法人賣不代表變壞。",
+        "想看基本面請用「黑馬」，看今日型態用「雷達」。",
+        "※ 僅上市＋上櫃，數據歸納非投資建議",
+    ]
+    report = "\n".join(lines)
+    return report[:4750] + "\n…（已截斷）" if len(report) > 4800 else report
+
+
 def get_cumulative_net_buy_for_codes(codes, days=10):
     """查指定股票近 N 個交易日的累計買超與買超天數。回傳 {code: (累計張數, 買超天數)}。"""
     codes = [str(c).strip() for c in codes]
@@ -3042,6 +3241,14 @@ def score_from_technical(pct, turnover_billion):
 def fmt_resistance(r):
     """壓力為 None 代表股價已突破近60日高點，上方無參考壓力。"""
     return f"{r}" if r is not None else "已突破前高（無壓力參考）"
+
+
+def fmt_support(price):
+    """支撐顯示。近期支撐全跌破時要講清楚，否則只看到一個數字會誤以為還撐得住。"""
+    s = price.get("support")
+    if price.get("broke_support"):
+        return f"{s}（已跌破近期支撐）"
+    return f"{s}"
 
 
 def build_position_desc(price):
@@ -3637,12 +3844,25 @@ def build_watchlist_advice(total, chip_score, pos_score, rev_score, val_score,
         return "⚠️ 營收衰退且法人同步出場，兩個面向一起轉弱，建議重新檢視持有理由"
 
     # 貴 + 弱：本益比偏高但股價已回落一段，通常代表市場在下修對它的成長預期。
-    # 這個組合比「跌破月線」更有資訊量（它說明了為什麼弱），所以排在前面，
-    # 否則同時成立時會被較籠統的那句蓋掉。
-    if (val_score <= 10 and pos is not None and pos <= -20):
+    # 這個組合比「跌破月線」更有資訊量（它說明了為什麼弱），所以排在前面。
+    #
+    # 但不能只看 val_score 低就說「本益比偏高」——分數低有兩種原因：
+    #   (a) 本益比真的高
+    #   (b) 營收年增暴衝導致 PEG 失真，被降分示警（低基期效應）
+    # 情況 (b) 的本益比可能只有 9 倍，硬說「偏高」是明顯錯誤的判讀。
+    # 所以要拿實際的 PE 值把關，不是只信分數。
+    expensive = pe is not None and pe >= 25
+    if expensive and pos is not None and pos <= -20:
         if cum_lots < 0:
             return "🔻 本益比偏高但股價已回落一段，法人同步減碼，市場恐在重新評價其成長性"
         return "🤔 本益比偏高但股價已回落一段，市場可能在重新評價成長性，留意估值是否過去給太高"
+
+    # 低本益比 × 高成長：多半是景氣循環股的獲利高點，或去年基期極低。
+    # 這種組合看起來便宜，實際上最危險，值得單獨講一句。
+    if (pe is not None and pe <= 15 and cum_yoy is not None and cum_yoy >= 80
+            and pos is not None and pos <= -20):
+        return ("⚠️ 本益比低但營收年增暴衝，多為低基期或獲利高點造成的失真；"
+                "股價已回落一段，留意獲利能否延續")
 
     # 籌碼與趨勢同時轉弱
     if cum_lots < 0 and ma_diff is not None and ma_diff < 0:
@@ -3845,7 +4065,7 @@ def build_single_stock_report(code, user_id=None):
     lines.append(f"💰 {stock['close']:.2f}（{stock['pct']:+.2f}%）"
                  f"　高低 {stock['high']:.2f}/{stock['low']:.2f}")
     lines.append(f"📦 {int(stock['volume'] / 1000):,} 張"
-                 f"　🛡️{stock['support']} 🚧{fmt_resistance(stock['resistance'])}")
+                 f"　🛡️{fmt_support(stock)} 🚧{fmt_resistance(stock['resistance'])}")
 
     if s:
         total = s["total"]
@@ -3972,7 +4192,7 @@ def build_healthcheck_report(user_id):
             f"{change_line}"
             f"{stock['close']:.2f}（{stock['pct']:+.2f}%）　{pos_txt}\n"
             f"{note}\n"
-            f"{rev_txt}　{pe_txt}　🛡️{stock['support']} 🚧{fmt_resistance(stock['resistance'])}\n"
+            f"{rev_txt}　{pe_txt}　🛡️{fmt_support(stock)} 🚧{fmt_resistance(stock['resistance'])}\n"
             f"{bd_line}"
             f"{advice}"
         )
@@ -4187,7 +4407,7 @@ def build_digest(user_id):
             light = "🔴" if data['pct'] >= 0 else "🟢"
             lines.append(
                 f"\n{light} {name} {code}｜{data['close']:.2f}（{data['pct']:+.2f}%）\n"
-                f"🛡️ 支撐：{data['support']} | 🚧 壓力：{fmt_resistance(data['resistance'])}"
+                f"🛡️ 支撐：{fmt_support(data)} | 🚧 壓力：{fmt_resistance(data['resistance'])}"
             )
         else:
             lines.append(f"\n⚪ {code} 查無行情")
@@ -5032,6 +5252,7 @@ def backfill_t86():
 # 會跑比較久的指令，送出後先叫載入動畫
 SLOW_COMMANDS = {
     "黑馬", "雷達", "輪動", "產業輪動", "族群", "比較",
+    "籌碼", "籌碼超人", "認養",
     "自選", "WATCHLIST", "健檢", "自選健檢",
     "盤前", "早安", "解盤", "盤後解盤", "盤後", "新聞", "自選新聞",
 }
@@ -5082,6 +5303,7 @@ def build_quick_reply():
         ("🐎 黑馬", "黑馬"),
         ("🚨 雷達", "雷達"),
         ("🔄 輪動", "輪動"),
+        ("🦸 籌碼", "籌碼"),
         ("⚖️ 比較", "比較"),
         ("📂 自選", "自選"),
         ("📊 解盤", "解盤"),
@@ -5110,6 +5332,7 @@ def build_menu_flex():
             ("黑馬", "營收成長＋估值＋產業動能"),
             ("雷達", "帶量突破、法人買超強勢股"),
             ("輪動", "哪些族群排名正在往前或退後"),
+            ("籌碼超人", "投信、外資各自在認養與撤退的標的"),
             ("比較 2330 2454", "並排比較估值、成長與籌碼"),
         ]),
         ("我的自選", "#2E7D5B", "#E6F1EC", [
@@ -8151,6 +8374,10 @@ def handle_message(event):
     # 7.6 產業輪動：看的是「誰在變強」而不是「誰最強」
     elif text in ["輪動", "產業輪動", "族群"]:
         reply = build_rotation_report()
+
+    # 7.65 籌碼超人：把三大法人拆開看誰在認養、誰在撤退
+    elif text in ["籌碼", "籌碼超人", "認養"]:
+        reply = build_chips_report()
 
     # 7.7 個股比較：例如「比較 2330 2454 3661」
     elif text.startswith("比較") or text.startswith("比"):
