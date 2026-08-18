@@ -4309,8 +4309,28 @@ def _job_mark_done(name, result, seconds):
         release_db_connection(conn)
 
 
+def log_trigger_source(name):
+    """
+    記錄是誰觸發了這個端點。
+
+    推播會直接送訊息給使用者，所以「為什麼在我沒排程的時間發出去」
+    必須查得出來。只看得到端點被呼叫、卻不知道來源，就只能猜。
+    User-Agent 通常就足以分辨：cron-job.org 會帶自己的識別，
+    瀏覽器手動打開會帶 Mozilla/…，其他排程服務也各有特徵。
+    """
+    try:
+        ip = (request.headers.get("X-Forwarded-For", "")
+              .split(",")[0].strip() or request.remote_addr or "?")
+        ua = request.headers.get("User-Agent", "(無)")[:120]
+        print(f"🔔 觸發 {name}｜來源 {ip}｜UA {ua}｜"
+              f"時間 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}（伺服器時區）")
+    except Exception as e:
+        print(f"⚠️ 記錄觸發來源失敗: {e}")
+
+
 def run_in_background(name, fn):
     """把耗時工作丟到背景並立刻回應，避免 cron 端 30 秒超時。"""
+    log_trigger_source(name)
     if not _job_mark_start(name):
         return f"{name} 仍在執行中，本次略過。"
 
@@ -4358,7 +4378,15 @@ def job_status():
             "　/cron/warmup?token=...",
             "", "跑完後再回來這一頁就會看到結果。"]), 200
 
-    lines = ["背景工作狀態", "=" * 58, ""]
+    now_srv = datetime.now()
+    tw = datetime.now(timezone(timedelta(hours=8)))
+    lines = ["背景工作狀態", "=" * 58, "",
+             f"伺服器現在時間　{now_srv.strftime('%m/%d %H:%M')}",
+             f"台灣現在時間　　{tw.strftime('%m/%d %H:%M')}",
+             ("（兩者相同，時間可直接對照）" if abs(now_srv.hour - tw.hour) == 0
+              else f"（相差 {(tw.hour - now_srv.hour) % 24} 小時，"
+                   f"下方時間為伺服器時區）"),
+             ""]
     for name, running, started, finished, secs, result in rows:
         if running:
             mins = (datetime.now() - started).total_seconds() / 60 if started else 0
