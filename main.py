@@ -1544,7 +1544,8 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo"):
 
 # --- 三大法人買賣超（TWSE T86，全市場，一天快取一次） ---
 # 快取用「今天日期」當 key，但實際資料可能是往前找到的最近一個交易日
-_t86_cache = {"cache_date": None, "data_date": None, "data": {}}
+_t86_cache = {"cache_date": None, "data_date": None, "data": {},
+              "last_attempt": 0}
 
 def shares_to_lots(shares):
     """
@@ -3041,11 +3042,28 @@ def fetch_institutional_data():
     有資料的交易日，最多往前找 5 天。上櫃端點只給最新一日，不能指定日期。
     一天只需成功抓取一次，之後直接用快取。
     """
-    today = datetime.now().strftime("%Y%m%d")
+    tw_now = datetime.now(timezone(timedelta(hours=8)))
+    today = tw_now.strftime("%Y%m%d")
 
-    if _t86_cache["cache_date"] == today and _t86_cache["data"]:
-        return _t86_cache["data"]
+    # 快取判斷不能只看「今天抓過了嗎」。
+    # 早上抓的時候今天的 T86 還沒公布，往前找會拿到昨天的資料，
+    # 然後這份昨天的資料就被當成「今天抓過了」而沿用一整天——
+    # 即使下午三點半後今天的資料已經出來也不會更新。
+    # 所以還要看「快取裡的資料是不是今天的」：不是的話，
+    # 過了公布時間就定期重試，而不是等隔天。
+    cached = _t86_cache.get("data")
+    cache_fresh = _t86_cache.get("cache_date") == today and cached
+    data_is_today = _t86_cache.get("data_date") == today
+    last_try = _t86_cache.get("last_attempt", 0)
+    # T86 約在收盤後陸續公布，15:00 前不必重試
+    past_publish = tw_now.hour >= 15
+    should_retry = (cache_fresh and not data_is_today and past_publish
+                    and time.time() - last_try > 900)   # 每 15 分鐘重試一次
 
+    if cache_fresh and not should_retry:
+        return cached
+
+    _t86_cache["last_attempt"] = time.time()
     merged, data_date = {}, None
     for days_back in range(0, 6):
         query_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
@@ -3088,6 +3106,14 @@ def fetch_institutional_data():
 
     print("⚠️ 上市往前找了 5 天、上櫃也無資料")
     return _t86_cache["data"]
+
+
+def format_data_date(yyyymmdd):
+    """把 20260818 轉成 08/18；轉不了就原樣回傳，不要因為格式問題就沒有日期。"""
+    d = str(yyyymmdd or "")
+    if len(d) == 8 and d.isdigit():
+        return f"{d[4:6]}/{d[6:8]}"
+    return d or "未知"
 
 # --- 真實評分邏輯 ---
 def score_from_net_lots(lots):
@@ -3504,7 +3530,15 @@ def build_market_recap():
     if not inst_data:
         return "❌ 目前無法取得盤後資料，可能是非交易日或資料尚未公布，請稍後再試。"
 
-    lines = ["📊 盤後解盤", "─" * 14]
+    # 一定要標資料日期。沒有日期的話，非交易日或資料還沒公布時
+    # 看到的是上一個交易日的數字，但畫面長得跟今天的一模一樣，
+    # 使用者只會覺得「怎麼沒更新」而不知道原因。
+    dd = format_data_date(_t86_cache.get("data_date"))
+    tw_today = datetime.now(timezone(timedelta(hours=8))).strftime("%m/%d")
+    stale = "" if dd == tw_today else f"（非今日；今天是 {tw_today}）"
+
+    lines = [f"📊 盤後解盤　{dd} 收盤", stale] if stale else [f"📊 盤後解盤　{dd} 收盤"]
+    lines.append("─" * 14)
 
     taiex = fetch_taiex_summary()
     if taiex and taiex.get("close"):
@@ -3531,13 +3565,18 @@ def build_market_recap():
 
     lines.append("🟢 法人買超前3")
     for code, info in buy_leaders:
-        lines.append(f"{info['name']}({code}) +{info['total_net_lots']:,}張")
+        lines.append(f"{info['name']}（{code}）+{info['total_net_lots']:,}張")
 
     lines.append("")
     lines.append("🔴 法人賣超前3")
     for code, info in sell_leaders:
-        lines.append(f"{info['name']}({code}) {info['total_net_lots']:,}張")
+        lines.append(f"{info['name']}（{code}）{info['total_net_lots']:,}張")
 
+    if stale:
+        lines += ["─" * 14,
+                  "※ 今日資料尚未公布或非交易日，",
+                  "　 以上為最近一個交易日的數字。",
+                  "　 T86 約在收盤後陸續發布。"]
     return "\n".join(lines)
 
 # --- 自選股健檢：用長線指標評估「這檔還健康嗎」，不是評估「今天漲不漲」 ---
