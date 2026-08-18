@@ -1236,7 +1236,14 @@ def normalize_code(raw):
 _suffix_cache = {}
 
 
-def get_realtime_stock(code):
+def get_realtime_stock(code, rng="3mo"):
+    """
+    rng 是 Yahoo 的資料區間。預設 3mo 足夠算位階與均線；
+    持股頁要畫「買進點」時才改用 1y——持有超過三個月的部位，
+    用 3mo 的序列根本涵蓋不到買進日，圖上就只能寫「買進日不在此區間內」，
+    而那正是這張圖唯一比券商 App 多給的東西。
+    只有需要的頁面才付這個成本，選股台掃上百檔時仍用 3mo。
+    """
     code = str(code).strip()
     stock_name = STOCK_NAME_MAP.get(code, code)
 
@@ -1249,7 +1256,8 @@ def get_realtime_stock(code):
     for suffix in suffixes:
         try:
             symbol = f"{code}{suffix}"
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=3mo&interval=1d"
+            url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+                   f"?range={rng}&interval=1d")
             headers = {'User-Agent': 'Mozilla/5.0'}
             res = requests.get(url, headers=headers, timeout=8).json()
 
@@ -1384,19 +1392,20 @@ def get_realtime_stock(code):
                 "pos_vs_60d_high": pos_vs_60d_high,
                 "up_streak": up_streak,
                 "down_streak": down_streak,
-                # 近期收盤序列，供組合頁計算個股之間的相關係數用
-                "closes": [b[1] for b in hist[-60:]] + [float(close)],
+                # 收盤序列。rng 較長時這裡也會比較長，供持股頁畫走勢用；
+                # 相關係數那邊會自己只取近 60 筆，不受影響。
+                "closes": [b[1] for b in hist] + [float(close)],
                 # 對應的日期。畫損益走勢時要靠它標出「你買在哪一天」——
                 # 只有收盤價的話，圖上永遠只能寫「近 N 個交易日」，
                 # 而「什麼時候發生的」正是圖能回答、數字回答不了的問題。
-                "close_dates": [b[0] for b in hist[-60:]] + [today_date],
+                "close_dates": [b[0] for b in hist] + [today_date],
             }
         except:
             continue
     return None
 
 
-def get_realtime_stocks_bulk(codes, workers=12):
+def get_realtime_stocks_bulk(codes, workers=12, rng="3mo"):
     """
     並行抓多檔報價，回傳 {code: data 或 None}。
 
@@ -1412,12 +1421,12 @@ def get_realtime_stocks_bulk(codes, workers=12):
     if not codes:
         return {}
     if len(codes) == 1:  # 只有一檔就不必付出開執行緒池的成本
-        return {codes[0]: get_realtime_stock(codes[0])}
+        return {codes[0]: get_realtime_stock(codes[0], rng)}
 
     def safe_fetch(c):
         # 單檔失敗不能拖垮整批，一律吞掉例外回 None，交由呼叫端顯示「查無行情」
         try:
-            return get_realtime_stock(c)
+            return get_realtime_stock(c, rng)
         except Exception as e:
             print(f"⚠️ 並行抓取失敗 {c}: {e}")
             return None
@@ -6001,7 +6010,9 @@ def web_positions(uid):
     rows_html, total_value, total_cost = [], 0.0, 0.0
     total_day_pl = 0.0
     enriched = []
-    price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
+    # 抓一年而非預設的三個月：損益走勢要能涵蓋買進日才標得出買進點
+    price_map = get_realtime_stocks_bulk(
+        [p["code"] for p in positions], rng="1y")
     for p in positions:
         price = price_map.get(p["code"])
         if price:
@@ -6408,6 +6419,20 @@ def render_stock_sparkline(price, cost, shares, lots=None):
     dates = (price or {}).get("close_dates") or []
     if len(closes) < 5 or not cost or not shares:
         return '<div class="sub">走勢資料不足</div>'
+
+    # 從最早的買進日開始畫。買進之前的「損益」是虛構的——
+    # 那段期間你根本沒持有，畫出來只會讓人誤判自己抱了多久、
+    # 也會把買進前的波動算進最大回檔。
+    first_buy = None
+    if lots:
+        buy_dates = [l["bought_on"] for l in lots if l.get("bought_on")]
+        first_buy = min(buy_dates) if buy_dates else None
+    if first_buy and dates:
+        start = next((i for i, d in enumerate(dates) if d >= first_buy), None)
+        # 留幾根買進前的 K 棒當作視覺參考，但不要多到喧賓奪主
+        if start is not None and len(dates) - start >= 5:
+            start = max(0, start - 3)
+            closes, dates = closes[start:], dates[start:]
 
     pls = [(c - cost) * shares for c in closes]
     lo, hi = min(pls), max(pls)
@@ -6837,7 +6862,9 @@ def daily_returns(closes):
 def avg_correlation(price_map):
     """組合內兩兩相關係數的平均。這是判斷『假分散』的核心指標。"""
     codes = [c for c, p in price_map.items() if p and p.get("closes")]
-    rets = {c: daily_returns(price_map[c]["closes"]) for c in codes}
+    # 只取近 60 筆：持股頁可能抓了一年的序列，但相關係數看的是
+    # 「最近的連動程度」，用一整年會把早就改變的關係也算進來。
+    rets = {c: daily_returns(price_map[c]["closes"][-61:]) for c in codes}
     vals = []
     for i in range(len(codes)):
         for j in range(i + 1, len(codes)):
