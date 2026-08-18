@@ -476,6 +476,101 @@ def list_users():
         release_db_connection(conn)
 
 
+def build_usage_stats_report():
+    """
+    使用狀況統計。
+
+    刻意只給聚合數字，不顯示任何個別使用者的持股明細——
+    使用者輸入持股時預設「作者不會看我買了什麼」，那是個人財務資料。
+    要判斷「這個工具有沒有人在用」，聚合數字已經足夠；
+    看個別持股不會讓判斷更準，只會踩到不該踩的線。
+
+    「最多人持有」列的是被幾個人持有，不是誰持有——
+    3 人以上才顯示，避免只有一個人持有時等於指名道姓。
+    """
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        stats = {}
+
+        cur.execute("SELECT COUNT(*) FROM users")
+        stats["users"] = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM users WHERE last_seen >= NOW() - INTERVAL '7 days'")
+        stats["active7"] = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM users WHERE last_seen >= NOW() - INTERVAL '30 days'")
+        stats["active30"] = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(DISTINCT user_id), COUNT(*) FROM positions")
+        stats["pos_users"], stats["pos_rows"] = cur.fetchone()
+        cur.execute("SELECT COUNT(DISTINCT user_id), COUNT(*) FROM watchlists")
+        stats["wl_users"], stats["wl_rows"] = cur.fetchone()
+        cur.execute("SELECT COUNT(*) FROM user_profile")
+        stats["profiles"] = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(DISTINCT user_id), COUNT(*) FROM realized_trades")
+        stats["tr_users"], stats["tr_rows"] = cur.fetchone()
+
+        # 熱門標的：只算「多少人持有」，不記錄是誰、也不看金額
+        cur.execute("""
+            SELECT code, COUNT(DISTINCT user_id) AS n FROM positions
+            GROUP BY code HAVING COUNT(DISTINCT user_id) >= 3
+            ORDER BY n DESC, code LIMIT 8
+        """)
+        stats["hot_pos"] = cur.fetchall()
+        cur.execute("""
+            SELECT code, COUNT(DISTINCT user_id) AS n FROM watchlists
+            GROUP BY code HAVING COUNT(DISTINCT user_id) >= 3
+            ORDER BY n DESC, code LIMIT 8
+        """)
+        stats["hot_wl"] = cur.fetchall()
+        cur.close()
+    except Exception as e:
+        print(f"❌ 讀取使用統計失敗: {e}")
+        return f"❌ 統計查詢失敗，請看 Render Logs。"
+    finally:
+        release_db_connection(conn)
+
+    inst = fetch_institutional_data() or {}
+    lines = ["📈 使用狀況統計", "─" * 14]
+    lines.append(f"👥 使用者　{stats['users']} 人")
+    lines.append(f"　近 7 天活躍　{stats['active7']} 人")
+    lines.append(f"　近 30 天活躍　{stats['active30']} 人")
+
+    lines.append("")
+    lines.append("📦 功能使用")
+    avg_pos = (stats["pos_rows"] / stats["pos_users"]) if stats["pos_users"] else 0
+    avg_wl = (stats["wl_rows"] / stats["wl_users"]) if stats["wl_users"] else 0
+    lines.append(f"　建立持股　{stats['pos_users']} 人"
+                 + (f"（平均 {avg_pos:.1f} 筆）" if stats["pos_users"] else ""))
+    lines.append(f"　自選清單　{stats['wl_users']} 人"
+                 + (f"（平均 {avg_wl:.1f} 檔）" if stats["wl_users"] else ""))
+    lines.append(f"　填過問卷　{stats['profiles']} 人")
+    lines.append(f"　有賣出紀錄　{stats['tr_users']} 人（共 {stats['tr_rows']} 筆）")
+
+    # 轉換率：註冊了但沒建持股的比例，是判斷「卡在哪一步」的關鍵
+    if stats["users"]:
+        rate = stats["pos_users"] / stats["users"] * 100
+        lines.append(f"　→ {rate:.0f}% 的使用者建立過持股")
+
+    if stats["hot_pos"]:
+        lines.append("")
+        lines.append("🔥 最多人持有（3 人以上才顯示）")
+        for code, n in stats["hot_pos"]:
+            lines.append(f"　{stock_display_name(code, inst)} {code}　{n} 人")
+    if stats["hot_wl"]:
+        lines.append("")
+        lines.append("👀 最多人自選（3 人以上才顯示）")
+        for code, n in stats["hot_wl"]:
+            lines.append(f"　{stock_display_name(code, inst)} {code}　{n} 人")
+
+    lines += [
+        "",
+        "─" * 14,
+        "※ 只顯示聚合數字。個別使用者的持股內容、",
+        "　 股數與金額不會出現在這裡，也不應該去查。",
+    ]
+    return "\n".join(lines)
+
+
 def build_user_list_report():
     rows = list_users()
     if not rows:
@@ -2316,265 +2411,6 @@ def save_industry_momentum(stats):
         release_db_connection(conn)
 
 
-def get_industry_rotation(current_stats, days_back=45):
-    """
-    產業輪動：把目前排名跟一段時間前比，找出正在變強與正在轉弱的族群。
-
-    比的是「排名」而不是成長率本身——全市場營收一起好轉時，
-    每個產業的年增率都會上升，那反映的是景氣不是輪動；
-    排名是相對的，只有真的贏過其他族群才會往前，這才是資金會流去的地方。
-
-    days_back 預設 45 天：月營收一個月一期，跨度要夠才抓得到上一期。
-    回傳 (變強清單, 轉弱清單)，各為 [(產業名, 目前名次, 名次變化, p75)]
-    """
-    if not current_stats:
-        return [], []
-
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT DISTINCT ON (industry) industry, rank, snapshot_date
-            FROM industry_momentum_history
-            WHERE snapshot_date < CURRENT_DATE
-              AND snapshot_date >= CURRENT_DATE - %s
-            ORDER BY industry, snapshot_date ASC
-            """,
-            (days_back,),
-        )
-        rows = cursor.fetchall()
-        cursor.close()
-    except Exception as e:
-        print(f"❌ 讀取產業動能歷史失敗: {e}")
-        return [], []
-    finally:
-        release_db_connection(conn)
-
-    old_rank = {r[0]: r[1] for r in rows if r[1] is not None}
-    if not old_rank:
-        return [], []
-
-    moves = []
-    for ind, s in current_stats.items():
-        cur_rank = s.get("rank")
-        prev = old_rank.get(ind)
-        if cur_rank is None or prev is None:
-            continue
-        delta = prev - cur_rank          # 正數代表名次往前（變強）
-        if abs(delta) < 3:               # 一兩名的變動是雜訊，不值得列
-            continue
-        moves.append((industry_name(ind), cur_rank, delta, s.get("p75")))
-
-    rising = sorted([m for m in moves if m[2] > 0], key=lambda x: -x[2])[:5]
-    falling = sorted([m for m in moves if m[2] < 0], key=lambda x: x[2])[:5]
-    return rising, falling
-
-
-def save_picks(mode, rows, top_n=5):
-    """
-    存下今天這個模式選出的前 N 名。同一天重複跑會覆蓋，cron 跑兩次不會重複。
-    存「當下價格」是關鍵——之後要算報酬得知道推薦當天是多少錢，
-    事後再回頭抓歷史價會對不上（推薦時是盤中價，收盤價又是另一個數字）。
-    """
-    if not rows:
-        return 0
-    picks = [(mode, r["code"], i, r.get("score"), r.get("name"),
-              r.get("industry"), r.get("close"))
-             for i, r in enumerate(rows[:top_n], start=1)]
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        execute_values(
-            cursor,
-            """
-            INSERT INTO pick_history
-                (mode, code, pick_date, rank, score, name, industry, price)
-            VALUES %s
-            ON CONFLICT (mode, code, pick_date) DO UPDATE SET
-                rank = EXCLUDED.rank, score = EXCLUDED.score,
-                name = EXCLUDED.name, industry = EXCLUDED.industry,
-                price = EXCLUDED.price
-            """,
-            picks,
-            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s)",
-            page_size=100,
-        )
-        conn.commit()
-        cursor.close()
-        print(f"💾 已存入 {mode} 選股名單，共 {len(picks)} 檔")
-        return len(picks)
-    except Exception as e:
-        conn.rollback()
-        print(f"❌ 寫入選股名單失敗: {e}")
-        return 0
-    finally:
-        release_db_connection(conn)
-
-
-def get_picks_since(mode, days=90):
-    """取近 N 天的選股名單，供成效計算。"""
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT code, pick_date, rank, score, name, industry, price
-            FROM pick_history
-            WHERE mode = %s AND pick_date >= CURRENT_DATE - %s
-              AND price IS NOT NULL AND price > 0
-            ORDER BY pick_date DESC, rank
-            """,
-            (mode, days),
-        )
-        rows = cursor.fetchall()
-        cursor.close()
-        return [{"code": r[0], "date": r[1], "rank": r[2], "score": r[3],
-                 "name": r[4], "industry": r[5], "price": r[6]} for r in rows]
-    except Exception as e:
-        print(f"❌ 讀取選股名單失敗: {e}")
-        return []
-    finally:
-        release_db_connection(conn)
-
-
-def evaluate_picks(mode, days=90):
-    """
-    計算選股成效：把每一筆推薦的當時價格跟現價比，並依「推薦後經過幾天」分組。
-
-    誠實度的幾個要求：
-    ・只算已經過了該天期的樣本。推薦才 2 天的不能算進「20 日報酬」，
-      否則會混入還沒走完的區間，看起來比實際好或壞。
-    ・同時算大盤同期報酬做對照。多頭時什麼都在漲，沒有對照組的話
-      「平均 +5%」看不出是選股有效還是單純市場好。
-    ・樣本數一併呈現，讓人自己判斷這個數字可不可信。
-
-    回傳 {天期: {avg, median, win_rate, n, vs_market}} 與整體摘要。
-    """
-    picks = get_picks_since(mode, days)
-    if not picks:
-        return None
-
-    price_map = get_realtime_stocks_bulk(
-        list({p["code"] for p in picks}), workers=16)
-    today = date.today()
-
-    # 大盤對照：用快照裡存的加權指數，沒有就退回不比較
-    taiex_by_date = {}
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT DISTINCT snapshot_date, taiex_close FROM portfolio_snapshots
-            WHERE taiex_close IS NOT NULL AND snapshot_date >= CURRENT_DATE - %s
-            """,
-            (days,))
-        taiex_by_date = {r[0]: r[1] for r in cursor.fetchall()}
-        cursor.close()
-    except Exception as e:
-        print(f"⚠️ 讀取大盤對照失敗: {e}")
-    finally:
-        release_db_connection(conn)
-
-    taiex_now = None
-    t = fetch_taiex_summary()
-    if t and t.get("close"):
-        try:
-            taiex_now = float(str(t["close"]).replace(",", ""))
-        except (TypeError, ValueError):
-            taiex_now = None
-
-    # 用「現價」算報酬，所以一筆推薦只能歸入一個天期——
-    # 70 天前的推薦拿現價算，得到的是 70 天的報酬，不是 5 天的。
-    # 因此由長到短判斷，取它已經走過的最長區間，標籤也照實寫成區間而非定點。
-    horizons = [(60, "60 日以上"), (20, "20–59 日"), (5, "5–19 日")]
-    buckets = {label: [] for _d, label in horizons}
-    market = {label: [] for _d, label in horizons}
-
-    for p in picks:
-        cur = price_map.get(p["code"])
-        if not cur:
-            continue
-        elapsed = (today - p["date"]).days
-        ret = (cur["close"] - p["price"]) / p["price"] * 100
-        for d, label in horizons:       # 由長到短，落在第一個符合的區間
-            if elapsed >= d:
-                buckets[label].append((ret, p))
-                base = taiex_by_date.get(p["date"])
-                if base and taiex_now:
-                    market[label].append((taiex_now - base) / base * 100)
-                break
-
-    result = {}
-    for _d, label in reversed(horizons):   # 顯示時由短到長
-        vals = [r for r, _p in buckets[label]]
-        if not vals:
-            continue
-        vals_sorted = sorted(vals)
-        n = len(vals_sorted)
-        median = (vals_sorted[n // 2] if n % 2
-                  else (vals_sorted[n // 2 - 1] + vals_sorted[n // 2]) / 2)
-        mk = market[label]
-        result[label] = {
-            "n": n,
-            "avg": sum(vals) / n,
-            "median": median,
-            "win_rate": len([v for v in vals if v > 0]) / n * 100,
-            "best": max(buckets[label], key=lambda x: x[0]),
-            "worst": min(buckets[label], key=lambda x: x[0]),
-            "market": (sum(mk) / len(mk)) if mk else None,
-        }
-
-    pending = len([p for p in picks if (today - p["date"]).days < 5])
-    return {"horizons": result, "total_picks": len(picks), "pending": pending}
-
-
-def build_rotation_report():
-    """產業輪動報告。歷史不足時老實說，不硬生成看起來有內容的東西。"""
-    revenue = fetch_monthly_revenue() or {}
-    ind_map = get_industry_map() or {}
-    stats = get_industry_momentum(revenue, ind_map)
-    if not stats:
-        return "❌ 目前無法取得月營收或產業別資料，請稍後再試。"
-
-    rising, falling = get_industry_rotation(stats)
-
-    lines = ["🔄 產業輪動", "─" * 14]
-
-    if not rising and not falling:
-        top = sorted(stats.items(), key=lambda x: x[1]["rank"])[:8]
-        lines.append("尚無足夠的歷史可比較排名變化。")
-        lines.append("（每期月營收公布後累積一次，需要兩期以上）\n")
-        lines.append("目前族群動能排名：")
-        for ind, s in top:
-            lines.append(f"{s['rank']:>2}. {industry_name(ind)}　"
-                         f"領先群 {s['p75']:+.0f}%（{s['count']} 家）")
-        lines.append("\n※ 看的是各產業「前 25% 公司」的累計營收年增率")
-        return "\n".join(lines)
-
-    if rising:
-        lines.append("📈 排名往前（資金題材可能正在轉入）")
-        for name, rank, delta, p75 in rising:
-            lines.append(f"・{name}　第 {rank} 名（↑{delta}）"
-                         + (f"　領先群 {p75:+.0f}%" if p75 is not None else ""))
-        lines.append("")
-
-    if falling:
-        lines.append("📉 排名退後（動能相對轉弱）")
-        for name, rank, delta, p75 in falling:
-            lines.append(f"・{name}　第 {rank} 名（↓{abs(delta)}）"
-                         + (f"　領先群 {p75:+.0f}%" if p75 is not None else ""))
-        lines.append("")
-
-    lines.append("─" * 14)
-    lines.append("排名依各產業「前 25% 公司」的累計營收年增率。")
-    lines.append("比的是相對名次而非成長率本身——全市場一起好轉時")
-    lines.append("每個產業的年增率都會上升，那是景氣不是輪動。")
-    lines.append("※ 數據歸納，非投資建議")
-    return "\n".join(lines)
-
-
 def score_from_industry_momentum(ind_stats):
     """
     產業動能分數（0-20）。看的是「這檔股票所在的產業，領先群跑得多快」，
@@ -2864,12 +2700,14 @@ def build_chips_report(days=10):
     """
     籌碼超人：依「誰在買」分開列出，而不是把三大法人加在一起。
 
-    黑馬看基本面與估值、雷達看今天的型態，這裡只看籌碼——
-    不評分、不排名綜合分數，就是把「誰在持續買、誰在持續賣」攤開來。
+    排名改用「金額」而不是「張數」。用張數排會讓低價股整片霸榜——
+    15 元的金融股買 10 萬張只要 15 億，1500 元的股票同樣金額只有 1,000 張，
+    兩者放在同一個排行上比大小沒有意義。實測用張數排時，
+    投信認養前五名全是金融股，那是價格造成的假象不是資金偏好。
     """
     hist_days = get_history_days_count()
     if hist_days < 3:
-        return ("❌ 法人歷史還不夠。\n"
+        return ("❌ 法人歷史還不夠\n\n"
                 "籌碼超人要看「近 10 日誰在持續買賣」，"
                 "至少需要幾個交易日的累積。\n"
                 "資料每天由排程自動累積，過幾天再試。")
@@ -2878,56 +2716,85 @@ def build_chips_report(days=10):
     ind_map = get_industry_map() or {}
     actual = min(days, hist_days)
 
-    def fmt(rows, unit="張", show=("cum", "days")):
-        out = []
+    # 先各取較多筆，抓完報價換算金額後再取前幾名
+    raw = {
+        "trust_buy": get_top_by_investor("trust", "buy", actual, 25, min_days=6),
+        "foreign_buy": get_top_by_investor("foreign", "buy", actual, 25, min_days=6),
+        "trust_sell": get_top_by_investor("trust", "sell", actual, 25, min_days=6),
+    }
+    both_buy = get_both_side_codes("buy", actual, 25, min_days=5)
+    both_sell = get_both_side_codes("sell", actual, 25, min_days=5)
+
+    all_codes = {c for rows in raw.values() for c, *_ in rows}
+    all_codes |= {c for c, *_ in both_buy} | {c for c, *_ in both_sell}
+    prices = get_realtime_stocks_bulk(list(all_codes), workers=16)
+
+    def amount(code, lots):
+        """張數換算成金額（億元）。抓不到報價就回 None，排序時排在最後。"""
+        pr = prices.get(code)
+        return (abs(lots) * 1000 * pr["close"] / 100_000_000) if pr else None
+
+    def rank(rows, top_n=5):
+        scored = []
         for code, name, cum, hit, total in rows:
+            amt = amount(code, cum)
+            if amt is None:
+                continue
+            scored.append((amt, code, name, cum, hit, total))
+        scored.sort(reverse=True)
+        return scored[:top_n]
+
+    def block(title, note, rows):
+        out = [f"\n{title}"]
+        if note:
+            out.append(f"　{note}")
+        if not rows:
+            out.append("　—　近期無符合的標的")
+            return out
+        for amt, code, name, cum, hit, total in rows:
             nm = name or stock_display_name(code, inst)
             ind = ind_map.get(code)
-            ind_txt = f"　{industry_name(ind)}" if ind else ""
-            out.append(f"・{nm} {code}{ind_txt}\n"
-                       f"　{cum:+,} {unit}（{hit}/{total} 天）")
+            pr = prices.get(code)
+            px = f"{pr['close']:,.1f}" if pr else "—"
+            out.append(f"　{nm} {code}　{px}")
+            out.append(f"　　{amt:,.1f} 億　{cum:+,} 張　{hit}/{total} 天"
+                       + (f"　{industry_name(ind)}" if ind else ""))
         return out
 
-    lines = [f"🦸 籌碼超人（近 {actual} 個交易日）", "─" * 14]
-
-    # 投信認養：要求至少 6 天站在買方，過濾掉單日大買就跑的
-    trust_buy = get_top_by_investor("trust", "buy", actual, 5, min_days=6)
-    lines.append("\n🏦 投信認養")
-    lines.append("（要對基金績效負責，通常做過研究才買）")
-    lines += fmt(trust_buy) if trust_buy else ["・近期無持續買超的標的"]
-
-    foreign_buy = get_top_by_investor("foreign", "buy", actual, 5, min_days=6)
-    lines.append("\n🌐 外資認養")
-    lines.append("（量最大，但可能含指數成分調整）")
-    lines += fmt(foreign_buy) if foreign_buy else ["・近期無持續買超的標的"]
-
-    both_buy = get_both_side_codes("buy", actual, 5, min_days=5)
-    if both_buy:
-        lines.append("\n🔥 外資投信同買")
-        lines.append("（兩種立場不同的資金同時站在買方）")
-        for code, name, f_lots, t_lots, tot in both_buy:
+    def block_both(title, note, rows, top_n=5):
+        scored = []
+        for code, name, f_lots, t_lots, tot in rows:
+            amt = amount(code, tot)
+            if amt is None:
+                continue
+            scored.append((amt, code, name, f_lots, t_lots))
+        scored.sort(reverse=True)
+        out = [f"\n{title}", f"　{note}"]
+        if not scored:
+            out.append("　—　近期無符合的標的")
+            return out
+        for amt, code, name, f_lots, t_lots in scored[:top_n]:
             nm = name or stock_display_name(code, inst)
-            lines.append(f"・{nm} {code}\n"
-                         f"　外資 {f_lots:+,}　投信 {t_lots:+,}　合計 {tot:+,} 張")
+            pr = prices.get(code)
+            px = f"{pr['close']:,.1f}" if pr else "—"
+            out.append(f"　{nm} {code}　{px}")
+            out.append(f"　　{amt:,.1f} 億　外資 {f_lots:+,}　投信 {t_lots:+,} 張")
+        return out
 
-    trust_sell = get_top_by_investor("trust", "sell", actual, 3, min_days=6)
-    lines.append("\n📉 投信持續調節")
-    lines += fmt(trust_sell) if trust_sell else ["・近期無持續賣超的標的"]
-
-    both_sell = get_both_side_codes("sell", actual, 5, min_days=5)
-    if both_sell:
-        lines.append("\n❄️ 外資投信同賣")
-        lines.append("（兩邊同時撤退，通常不是巧合）")
-        for code, name, f_lots, t_lots, tot in both_sell:
-            nm = name or stock_display_name(code, inst)
-            lines.append(f"・{nm} {code}\n"
-                         f"　外資 {f_lots:+,}　投信 {t_lots:+,}　合計 {tot:+,} 張")
+    lines = [f"🦸 籌碼超人", f"近 {actual} 個交易日　依金額排名", "═" * 13]
+    lines += block("🏦 投信認養", "做過研究才買，最有參考價值", rank(raw["trust_buy"]))
+    lines += block("🌐 外資認養", "量最大，但可能含指數調整", rank(raw["foreign_buy"]))
+    lines += block_both("🔥 外資投信同買", "兩種立場同時站買方", both_buy)
+    lines += block("📉 投信持續調節", "", rank(raw["trust_sell"]))
+    lines += block_both("❄️ 外資投信同賣", "兩邊同時撤退，通常不是巧合", both_sell)
 
     lines += [
-        "\n" + "─" * 14,
-        "只看籌碼，不含基本面與估值——",
-        "法人買不代表便宜，法人賣不代表變壞。",
-        "想看基本面請用「黑馬」，看今日型態用「雷達」。",
+        "\n" + "═" * 13,
+        "・依金額排名，不是張數——低價股張數天生大，",
+        "　用張數排會讓金融股整片霸榜",
+        "・「認養」要求 6/10 天以上站在同方向，",
+        "　單日爆量隔天就跑的不算",
+        "・只看籌碼，不含基本面與估值",
         "※ 僅上市＋上櫃，數據歸納非投資建議",
     ]
     report = "\n".join(lines)
@@ -3626,109 +3493,6 @@ def fetch_institutional_total():
         return None
 
 # --- 盤後解盤：使用者手動輸入關鍵字才觸發，不自動推播 ---
-def build_compare_report(codes):
-    """
-    並排比較多檔個股。同一個指標把幾檔放在一起看，才知道「PE 30 倍」
-    到底是貴還是便宜——單看一檔永遠缺少參照點。
-    每個指標標出該項最好的一檔，但不給綜合結論：
-    哪一項重要取決於你要長抱還是短打，那不該由程式替你決定。
-    """
-    codes = [normalize_code(c) for c in codes]
-    codes = [c for c in dict.fromkeys(codes) if c][:4]   # 去重，最多四檔
-    if len(codes) < 2:
-        return "請給兩檔以上的代號，例如「比較 2330 2454」"
-
-    inst = fetch_institutional_data() or {}
-    revenue = fetch_monthly_revenue() or {}
-    valuation = fetch_valuation() or {}
-    ind_map = get_industry_map() or {}
-    streaks = get_consecutive_days_batch(codes)
-    cum_map = get_cumulative_net_buy_for_codes(codes, days=10)
-    price_map = get_realtime_stocks_bulk(codes)
-
-    items = []
-    missing = []
-    for code in codes:
-        pr = price_map.get(code)
-        if not pr:
-            missing.append(code)
-            continue
-        val = valuation.get(code, {})
-        rev = revenue.get(code, {})
-        cum_lots, buy_days = cum_map.get(code, (0, 0))
-        ind = ind_map.get(code)
-        items.append({
-            "code": code,
-            "name": short_company_name(stock_display_name(code, inst, pr["name"])),
-            "industry": industry_name(ind) if ind else "未分類",
-            "close": pr["close"], "pct": pr["pct"],
-            "pe": val.get("pe"), "pb": val.get("pb"), "yield": val.get("yield"),
-            "cum_yoy": rev.get("cum_yoy_pct"), "yoy": rev.get("yoy_pct"),
-            "pos": pr.get("pos_vs_60d_high"), "ma20": pr.get("ma20"),
-            "vol_ratio": pr.get("vol_ratio"),
-            "streak": streaks.get(code, 0), "cum_lots": cum_lots,
-            "turnover": calc_turnover_billion(pr["close"], pr["volume"]),
-        })
-
-    if len(items) < 2:
-        return (f"❌ 可比較的標的不足（查無行情：{'、'.join(missing)}）\n"
-                f"請確認代號是否正確。")
-
-    lines = ["⚖️ 個股比較", "─" * 14]
-    for it in items:
-        lines.append(f"{it['name']} {it['code']}　{it['industry']}")
-    lines.append("")
-
-    def row(label, key, fmt, better="high", suffix=""):
-        """
-        列出一個指標，並在該項表現最好的那檔後面加標記。
-        better="low" 代表數字越小越好（例如本益比）；
-        better=None 代表這項沒有好壞之分（例如現價），只列不標記。
-        缺資料的不參與比較，不會因為沒資料就被當成最好或最差。
-        """
-        vals = [(it, it.get(key)) for it in items]
-        best_code = None
-        if better:
-            valid = [(it, v) for it, v in vals if v is not None]
-            if len(valid) >= 2:
-                best = (max if better == "high" else min)(valid, key=lambda x: x[1])
-                best_code = best[0]["code"]
-        lines.append(f"【{label}】")
-        for it, v in vals:
-            mark = " ⬅" if it["code"] == best_code else ""
-            txt = fmt(v) if v is not None else "無資料"
-            lines.append(f"　{it['name']}　{txt}{suffix}{mark}")
-        lines.append("")
-
-    # 現價沒有好壞之分，不標記
-    lines.append("【現價】")
-    for it in items:
-        lines.append(f"　{it['name']}　{it['close']:,.2f}（{it['pct']:+.2f}%）")
-    lines.append("")
-
-    row("累計營收年增", "cum_yoy", lambda v: f"{v:+.1f}%", better="high")
-    row("本益比", "pe", lambda v: f"{v:.1f} 倍", better="low")
-    row("股價淨值比", "pb", lambda v: f"{v:.2f}", better="low")
-    row("殖利率", "yield", lambda v: f"{v:.2f}%", better="high")
-    row("距60日高點", "pos", lambda v: f"{v:+.1f}%", better="high")
-    row("法人連買", "streak", lambda v: f"{v} 日", better="high")
-    row("近10日累計買超", "cum_lots", lambda v: f"{v:+,} 張", better="high")
-    row("成交金額", "turnover", lambda v: f"{v:.1f} 億", better="high")
-
-    if missing:
-        lines.append(f"※ 查無行情：{'、'.join(missing)}")
-    lines += [
-        "─" * 14,
-        "⬅ 標記該項數字較優，不代表整體較好。",
-        "哪一項重要取決於你要長抱還是短打——",
-        "成長股本益比天生偏高，價值股營收成長天生偏低，",
-        "把兩者放在同一個標準下比較會得到誤導性的結論。",
-        "※ 數據整理，非投資建議",
-    ]
-    report = "\n".join(lines)
-    return report[:4750] + "\n…（已截斷）" if len(report) > 4800 else report
-
-
 def build_market_recap():
     inst_data = fetch_institutional_data()
     if not inst_data:
@@ -5251,8 +5015,7 @@ def backfill_t86():
 
 # 會跑比較久的指令，送出後先叫載入動畫
 SLOW_COMMANDS = {
-    "黑馬", "雷達", "輪動", "產業輪動", "族群", "比較",
-    "籌碼", "籌碼超人", "認養",
+    "黑馬", "雷達", "籌碼", "籌碼超人", "認養",
     "自選", "WATCHLIST", "健檢", "自選健檢",
     "盤前", "早安", "解盤", "盤後解盤", "盤後", "新聞", "自選新聞",
 }
@@ -5302,9 +5065,7 @@ def build_quick_reply():
         ("☀️ 盤前", "盤前"),
         ("🐎 黑馬", "黑馬"),
         ("🚨 雷達", "雷達"),
-        ("🔄 輪動", "輪動"),
         ("🦸 籌碼", "籌碼"),
-        ("⚖️ 比較", "比較"),
         ("📂 自選", "自選"),
         ("📊 解盤", "解盤"),
         ("📰 新聞", "新聞"),
@@ -5331,9 +5092,7 @@ def build_menu_flex():
         ("選股策略", "#B5822A", "#F7EFDF", [
             ("黑馬", "營收成長＋估值＋產業動能"),
             ("雷達", "帶量突破、法人買超強勢股"),
-            ("輪動", "哪些族群排名正在往前或退後"),
             ("籌碼超人", "投信、外資各自在認養與撤退的標的"),
-            ("比較 2330 2454", "並排比較估值、成長與籌碼"),
         ]),
         ("我的自選", "#2E7D5B", "#E6F1EC", [
             ("自選", "持股評分、位階與支撐壓力"),
@@ -5462,8 +5221,9 @@ header{padding:30px 0 20px}
   text-transform:uppercase;margin-bottom:8px}
 h1{font-size:27px;letter-spacing:.02em;font-weight:700;line-height:1.25}
 .dateline{margin-top:6px;font-size:12.5px;color:var(--ink-faint)}
-nav{display:flex;gap:18px;padding:14px 0;border-top:1px solid var(--rule);
-  border-bottom:1px solid var(--rule);font-size:13.5px;margin-bottom:8px}
+nav{display:flex;gap:16px;padding:14px 0;border-top:1px solid var(--rule);
+  border-bottom:1px solid var(--rule);font-size:13.5px;margin-bottom:8px;
+  flex-wrap:wrap}
 nav a{color:var(--ink-soft);text-decoration:none}
 nav a.on{color:var(--ink);font-weight:500;border-bottom:2px solid var(--brass);
   padding-bottom:2px}
@@ -5584,6 +5344,26 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
   margin-left:5px}
 .hint{font-size:12px;color:var(--ink-soft);background:var(--paper-2);
   padding:10px 13px;border-left:2px solid var(--brass);margin-top:8px}
+/* ── 比較表 ──
+   欄位數隨標的數變動，手機放不下就橫向捲動，
+   而不是硬把字縮到看不清楚。第一欄固定，捲動時才知道在看哪個指標。 */
+.cmp-wrap{overflow-x:auto;margin-top:4px}
+.cmp{border-collapse:collapse;width:100%;font-size:13.5px;
+  font-variant-numeric:tabular-nums}
+.cmp th,.cmp td{padding:9px 10px;text-align:right;white-space:nowrap;
+  border-bottom:1px solid var(--rule)}
+.cmp thead th{font-weight:600;font-size:13px;border-bottom:1px solid var(--ink)}
+.cmp thead th .code{display:block;font-size:11px;color:var(--ink-faint);
+  margin:2px 0 0}
+.cmp th.rk{text-align:left;font-weight:400;color:var(--ink-soft);
+  position:sticky;left:0;background:var(--paper);min-width:92px}
+.cmp th.rk span{display:block;font-size:10.5px;color:var(--ink-faint)}
+.cmp td.best{background:var(--paper-2);font-weight:600;color:var(--ink)}
+.chips{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0 4px}
+.tagchip{display:inline-block;padding:5px 12px;font-size:12.5px;
+  text-decoration:none;color:var(--ink-soft);background:var(--paper-2);
+  border-radius:2px}
+.tagchip.on{background:var(--brass);color:#FFF}
 .total-label{font-size:12px;color:var(--ink-soft)}
 .total-value{font-size:24px;font-weight:600;margin-top:2px}
 .total-sub{font-size:12.5px}
@@ -5698,7 +5478,7 @@ def rate_limit_ok(key, kind="normal"):
     return True, 0
 
 
-HEAVY_COMMANDS = {"黑馬", "雷達", "輪動", "產業輪動", "族群", "盤前", "早安"}
+HEAVY_COMMANDS = {"黑馬", "雷達", "籌碼", "籌碼超人", "認養", "盤前", "早安"}
 
 
 def render_page(title, body, nav_active=None, user_name=None):
@@ -5714,6 +5494,7 @@ def render_page(title, body, nav_active=None, user_name=None):
                + tab("/web/positions", "持股", "positions")
                + tab("/web/trades", "紀錄", "trades")
                + tab("/web/screener", "選股", "screener")
+               + tab("/web/compare", "比較", "compare")
                + tab("/web/settings", "設定", "settings")
                + "</nav>")
 
@@ -5734,7 +5515,8 @@ def render_page(title, body, nav_active=None, user_name=None):
 {body}
 <footer>
 以上為你輸入之持股的數據整理，不構成投資建議。<br>
-資料來源：臺灣證券交易所、Yahoo Finance。作者：蔡秉軒
+你輸入的持股只用於產生你自己的分析，作者不會查看個別使用者的持股內容。<br>
+資料來源：臺灣證券交易所、櫃買中心、Yahoo Finance。作者：蔡秉軒
 </footer>
 </div></body></html>"""
 
@@ -7026,6 +6808,147 @@ def web_trades(uid):
     return respond_page("交易紀錄", body, "trades")
 
 
+@app.route("/web/compare")
+@web_login_required
+def web_compare(uid):
+    """
+    個股比較。從 LINE 移過來的——並排比較天生是表格，
+    LINE 純文字要用縮排硬排，四檔就爆版；網頁一列一個指標才看得清楚。
+
+    預設帶入使用者的自選股，省得每次重打代號。
+    """
+    raw = request.args.get("codes", "")
+    codes = [normalize_code(c) for c in re.findall(r"\d{4,6}[A-Za-z]?", raw)]
+    codes = [c for c in dict.fromkeys(codes) if c][:4]
+
+    if not wants_fragment():
+        return render_loading_shell(
+            "比較", "compare",
+            ["正在讀取自選清單…", "正在抓報價與估值…", "正在整理對照表…"],
+            note="最多可同時比較 4 檔。")
+
+    watchlist = get_user_watchlist(uid)
+    inst = fetch_institutional_data() or {}
+
+    # 選擇區：自選股一鍵勾選，不必記代號
+    picked = set(codes)
+    chips = []
+    for c in watchlist[:20]:
+        nm = short_company_name(stock_display_name(c, inst))
+        on = " on" if c in picked else ""
+        rest = [x for x in codes if x != c] if c in picked else codes + [c]
+        chips.append(f'<a class="tagchip{on}" '
+                     f'href="/web/compare?codes={"+".join(rest[:4])}">{nm}</a>')
+
+    form = f"""
+<div class="section-head"><h2>選擇比較標的</h2>
+  <span class="section-note">最多 4 檔</span></div>
+{f'<div class="chips">{"".join(chips)}</div>' if chips else ''}
+<form class="add" method="get" action="/web/compare">
+  <div class="fields">
+    <div><label>股票代號（空格分隔）</label>
+      <input name="codes" value="{' '.join(codes)}"
+             placeholder="2330 2454 6669" inputmode="numeric"></div>
+  </div>
+  <button type="submit">比較</button>
+</form>"""
+
+    if len(codes) < 2:
+        return respond_page("比較", form + """
+<div class="empty">選兩檔以上開始比較。<br><br>
+<span style="font-size:12.5px">會並排列出營收成長、估值、籌碼與位階，
+並標出每一項數字較優的那檔。</span></div>""", "compare")
+
+    revenue = fetch_monthly_revenue() or {}
+    valuation = fetch_valuation() or {}
+    ind_map = get_industry_map() or {}
+    streaks = get_consecutive_days_batch(codes)
+    cum_map = get_cumulative_net_buy_for_codes(codes, days=10)
+    price_map = get_realtime_stocks_bulk(codes)
+
+    items, missing = [], []
+    for code in codes:
+        pr = price_map.get(code)
+        if not pr:
+            missing.append(code)
+            continue
+        val = valuation.get(code, {})
+        rev = revenue.get(code, {})
+        cum_lots, _bd = cum_map.get(code, (0, 0))
+        ind = ind_map.get(code)
+        items.append({
+            "code": code,
+            "name": short_company_name(stock_display_name(code, inst, pr["name"])),
+            "industry": industry_name(ind) if ind else "未分類",
+            "close": pr["close"], "pct": pr["pct"],
+            "pe": val.get("pe"), "pb": val.get("pb"), "yield": val.get("yield"),
+            "cum_yoy": rev.get("cum_yoy_pct"),
+            "pos": pr.get("pos_vs_60d_high"), "vol_ratio": pr.get("vol_ratio"),
+            "streak": streaks.get(code, 0), "cum_lots": cum_lots,
+            "turnover": calc_turnover_billion(pr["close"], pr["volume"]),
+        })
+
+    if len(items) < 2:
+        return respond_page("比較", form + f"""
+<div class="empty">可比較的標的不足。<br>
+查無行情：{'、'.join(missing)}</div>""", "compare")
+
+    n = len(items)
+    head = "".join(f'<th>{it["name"]}<span class="code">{it["code"]}</span></th>'
+                   for it in items)
+
+    def row(label, key, fmt, better="high", note=""):
+        """
+        一列一個指標。標出該項較優的那檔，但缺資料的不參與比較——
+        不能因為沒資料就被當成最好或最差。
+        better=None 代表這項沒有好壞之分，只列不標。
+        """
+        vals = [it.get(key) for it in items]
+        best = None
+        if better:
+            valid = [(i, v) for i, v in enumerate(vals) if v is not None]
+            if len(valid) >= 2:
+                best = (max if better == "high" else min)(valid, key=lambda x: x[1])[0]
+        cells = ""
+        for i, v in enumerate(vals):
+            cls = ' class="best"' if i == best else ""
+            cells += f'<td{cls}>{fmt(v) if v is not None else "—"}</td>'
+        return (f'<tr><th class="rk">{label}'
+                f'{f"<span>{note}</span>" if note else ""}</th>{cells}</tr>')
+
+    rows = [
+        row("現價", "close", lambda v: f"{v:,.2f}", better=None),
+        row("今日", "pct", lambda v: f"{v:+.2f}%", better=None),
+        row("產業", "industry", lambda v: v, better=None),
+        row("營收年增", "cum_yoy", lambda v: f"{v:+.1f}%", "high", "累計"),
+        row("本益比", "pe", lambda v: f"{v:.1f}", "low"),
+        row("股價淨值比", "pb", lambda v: f"{v:.2f}", "low"),
+        row("殖利率", "yield", lambda v: f"{v:.2f}%", "high"),
+        row("距60日高", "pos", lambda v: f"{v:+.1f}%", "high"),
+        row("法人連買", "streak", lambda v: f"{v} 日", "high"),
+        row("近10日買超", "cum_lots", lambda v: f"{v:+,}", "high", "張"),
+        row("量能倍數", "vol_ratio", lambda v: f"{v:.2f}", "high", "vs 20日"),
+        row("成交金額", "turnover", lambda v: f"{v:.1f}", "high", "億"),
+    ]
+
+    body = form + f"""
+<div class="section-head"><h2>比較</h2>
+  <span class="section-note">{n} 檔</span></div>
+<div class="cmp-wrap">
+<table class="cmp"><thead><tr><th class="rk"></th>{head}</tr></thead>
+<tbody>{''.join(rows)}</tbody></table>
+</div>
+{f'<div class="sub" style="margin-top:8px">查無行情：{"、".join(missing)}</div>' if missing else ''}
+<div class="callout" style="margin-top:18px">
+  <b>底色</b>代表該項數字較優，但<b>不代表整體較好</b>。<br>
+  <span style="font-size:12.5px;color:var(--ink-faint)">
+  哪一項重要取決於你要長抱還是短打——成長股本益比天生偏高、
+  價值股營收成長天生偏低，把兩者放在同一個標準下比較會得到誤導性的結論。<br>
+  缺資料的欄位不參與比較，不會被當成最好或最差。</span>
+</div>"""
+    return respond_page("比較", body, "compare")
+
+
 @app.route("/web/settings", methods=["GET", "POST"])
 @web_login_required
 def web_settings(uid):
@@ -8159,6 +8082,9 @@ def handle_follow(event):
         "・資料來自證交所、櫃買中心與 Yahoo Finance，"
         "可能延遲或有誤，請以官方公告為準\n"
         "・投資有風險，盈虧由你自己承擔\n\n"
+        "🔒 關於你的資料\n"
+        "自選股與持股只用於產生你自己的分析，"
+        "作者不會查看個別使用者的持股內容。\n\n"
         "看得懂數字背後的意思再做決定，"
         "不要因為看到一個分數就進場。\n"
         "━━━━━━━━━━━━\n\n"
@@ -8245,6 +8171,8 @@ def handle_message(event):
                 "・選股台：黑馬／雷達完整清單與成效回顧",
                 "",
                 f"登入後可維持 {WEB_SESSION_DAYS} 天。",
+                "",
+                "🔒 你輸入的持股只用於產生你自己的分析。",
             ]
             reply = "\n".join(parts)
         else:
@@ -8267,6 +8195,9 @@ def handle_message(event):
 
     elif is_admin(user_id) and text in ["名單", "使用者", "VIP"]:
         reply = build_user_list_report()
+
+    elif is_admin(user_id) and text in ["統計", "數據", "使用統計"]:
+        reply = build_usage_stats_report()
 
     elif is_admin(user_id) and (text.startswith("開通") or text.startswith("停用")):
         turn_on = text.startswith("開通")
@@ -8371,27 +8302,9 @@ def handle_message(event):
     elif text in ["解盤", "盤後解盤", "盤後"]:
         reply = build_market_recap()
 
-    # 7.6 產業輪動：看的是「誰在變強」而不是「誰最強」
-    elif text in ["輪動", "產業輪動", "族群"]:
-        reply = build_rotation_report()
-
     # 7.65 籌碼超人：把三大法人拆開看誰在認養、誰在撤退
     elif text in ["籌碼", "籌碼超人", "認養"]:
         reply = build_chips_report()
-
-    # 7.7 個股比較：例如「比較 2330 2454 3661」
-    elif text.startswith("比較") or text.startswith("比"):
-        # 不能用 pure_code——那只取得到第一個代號。這裡要抓出全部代號。
-        found = re.findall(r"\d{4,6}[A-Za-z]?", text)
-        if len(found) >= 2:
-            reply = build_compare_report(found)
-        else:
-            reply = ("⚖️ 個股比較\n\n"
-                     "輸入兩檔以上的代號，例如：\n"
-                     "　比較 2330 2454\n"
-                     "　比較 2330 2454 3661\n\n"
-                     "最多可比較 4 檔，會並排列出營收成長、估值、"
-                     "籌碼與位階。")
 
     # 8. 黑馬股（不同於雷達：以「月營收年增率」為主軸，找有題材／獲利成長的股票）
     elif text == "黑馬":
