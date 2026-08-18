@@ -1386,6 +1386,10 @@ def get_realtime_stock(code):
                 "down_streak": down_streak,
                 # 近期收盤序列，供組合頁計算個股之間的相關係數用
                 "closes": [b[1] for b in hist[-60:]] + [float(close)],
+                # 對應的日期。畫損益走勢時要靠它標出「你買在哪一天」——
+                # 只有收盤價的話，圖上永遠只能寫「近 N 個交易日」，
+                # 而「什麼時候發生的」正是圖能回答、數字回答不了的問題。
+                "close_dates": [b[0] for b in hist[-60:]] + [today_date],
             }
         except:
             continue
@@ -3170,7 +3174,7 @@ BRIEF_INDICES = [
 ]
 BRIEF_MACRO = [
     ("美10年債殖利率", "^TNX"), ("VIX 恐慌指數", "^VIX"),
-    ("美元指數", "DX-Y.NYB"), ("西德州原油", "CL=F"),
+    ("美元指數", "DX-Y.NYB"), ("布蘭特原油", "BZ=F"),
 ]
 BRIEF_STOCKS = [
     ("輝達 NVDA", "NVDA"), ("博通 AVGO", "AVGO"), ("超微 AMD", "AMD"),
@@ -5243,6 +5247,10 @@ button:hover{background:#000}
   border-radius:2px;font-family:inherit;color:var(--ink)}
 .disclosure{margin-top:10px}
 .disclosure summary{color:var(--brass);cursor:pointer;font-size:12.5px}
+/* .meta 是 flex 容器，裡面的 details 要用 flex-basis 才會獨佔一行；
+   grid-column 在 flex 容器裡不生效，會讓它變成擠在同一行的普通項目。 */
+.meta>.trend{flex:0 0 100%;margin-top:2px}
+.meta>.trend summary{font-size:11.5px}
 .lots{grid-column:1/-1;margin-top:6px;font-size:12px}
 .lots summary{color:var(--brass);cursor:pointer;font-size:11.5px}
 .lot{padding:7px 0 7px 12px;color:var(--ink-soft);
@@ -6044,9 +6052,9 @@ def web_positions(uid):
     <span><em>市值</em> <span class="num">{value:,.0f}</span></span>
     <span><em>權重</em> <span class="num">{weight:.1f}%</span></span>
     {f'<span><em>持有</em> {held} 天</span>' if held is not None else ''}
-    <details class="disclosure" style="grid-column:1/-1;margin-top:4px">
+    <details class="disclosure trend" style="margin-top:2px">
       <summary>損益走勢</summary>
-      {render_stock_sparkline(price, p['cost'], p['shares'])}
+      {render_stock_sparkline(price, p['cost'], p['shares'], p.get('lots'))}
     </details>
     {lots_html(p, name, price['close'])}
   </div>
@@ -6382,16 +6390,22 @@ def render_risk_card(profile, msg=None):
 # ============================================================
 # 已實現損益
 # ============================================================
-def render_stock_sparkline(price, cost, shares):
+def render_stock_sparkline(price, cost, shares, lots=None):
     """
     單檔的損益走勢。用 get_realtime_stock 已經回傳的近 60 日收盤序列來畫——
     那份資料本來就是為了算相關係數而抓的，等於免費多得到一張圖，
     而且今天就有 60 天可看，不必等每日快照累積一兩週。
 
     畫的是「這筆持股的損益金額」而不是股價，因為你關心的是賺賠多少錢，
-    不是這檔漲到幾元。成本線（損益 0）用虛線標出來，一眼看出何時由虧轉盈。
+    不是這檔漲到幾元。
+
+    圖上標三樣券商 App 看不到的東西：
+      ・買進點——你買在相對高點還是低點，這是這張圖獨有的價值
+      ・起訖日期——沒有時間軸的話，看不出低點是上週還是上個月
+      ・最大回檔——從波段高點到低點的落差，那是你實際承受過的帳面痛感
     """
     closes = (price or {}).get("closes") or []
+    dates = (price or {}).get("close_dates") or []
     if len(closes) < 5 or not cost or not shares:
         return '<div class="sub">走勢資料不足</div>'
 
@@ -6402,26 +6416,70 @@ def render_stock_sparkline(price, cost, shares):
     pad = (hi - lo) * 0.12
     lo, hi = lo - pad, hi + pad
 
-    W, H = 600, 84
+    W, H = 600, 96
     n = len(pls)
     x = lambda i: (i / (n - 1)) * W
     y = lambda v: (1 - (v - lo) / (hi - lo)) * H
     path = "M " + " L ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(pls))
 
     # 損益 0 的位置：在範圍內才畫，否則那條線會貼在邊緣造成誤解
-    zero = f'<line x1="0" y1="{y(0):.1f}" x2="{W}" y2="{y(0):.1f}" stroke="var(--rule)" stroke-width="1" stroke-dasharray="3,3"/>' if lo <= 0 <= hi else ""
+    zero = (f'<line x1="0" y1="{y(0):.1f}" x2="{W}" y2="{y(0):.1f}" '
+            f'stroke="var(--rule)" stroke-width="1" stroke-dasharray="3,3"/>'
+            if lo <= 0 <= hi else "")
     color = "var(--up)" if pls[-1] >= 0 else "var(--down)"
+
+    # ── 買進點 ──
+    # 把買進日對應到序列位置。買進日可能落在區間之前（早就買了），
+    # 那就不標——硬標在最左邊會讓人以為那天才買。
+    marks, mark_notes = [], []
+    if dates and lots:
+        for l in lots:
+            bd = l.get("bought_on")
+            if not bd or bd < dates[0] or bd > dates[-1]:
+                continue
+            # 找最接近的交易日（買進日可能是非交易日或資料缺該日）
+            idx = min(range(len(dates)), key=lambda i: abs((dates[i] - bd).days))
+            marks.append(f'<circle cx="{x(idx):.1f}" cy="{y(pls[idx]):.1f}" '
+                         f'r="3.5" fill="var(--paper)" stroke="var(--brass)" '
+                         f'stroke-width="2"/>')
+            mark_notes.append(f"{bd.strftime('%m/%d')} 買 {l['shares']:,} 股 "
+                              f"@{l['cost']:,.2f}")
+
+    # ── 最大回檔 ──
+    # 從歷史高點往後找最低，取最大落差。這是實際承受過的帳面痛感，
+    # 比單純的「區間」更有意義——區間的高低點可能根本不同時序。
+    peak, max_dd, dd_from, dd_to = pls[0], 0.0, 0, 0
+    peak_i = 0
+    for i, v in enumerate(pls):
+        if v > peak:
+            peak, peak_i = v, i
+        elif peak - v > max_dd:
+            max_dd, dd_from, dd_to = peak - v, peak_i, i
+
+    dd_html = ""
+    if max_dd > 0:
+        dd_html = (f'<rect x="{x(dd_from):.1f}" y="0" '
+                   f'width="{max(1, x(dd_to) - x(dd_from)):.1f}" height="{H}" '
+                   f'fill="var(--brass)" opacity="0.07"/>')
+
+    d0 = dates[0].strftime("%m/%d") if dates else ""
+    d1 = dates[-1].strftime("%m/%d") if dates else ""
+    marks_line = ("　".join(mark_notes) if mark_notes
+                  else "買進日不在此區間內" if lots else "")
 
     return f"""
 <svg viewBox="0 0 {W} {H}" width="100%" height="{H}" preserveAspectRatio="none"
      style="display:block;margin-top:8px">
+  {dd_html}
   {zero}
   <path d="{path}" fill="none" stroke="{color}" stroke-width="1.8"/>
+  {''.join(marks)}
 </svg>
-<div class="sub" style="display:flex;justify-content:space-between;margin-top:4px">
-  <span>近 {n} 個交易日</span>
-  <span>區間 {min(pls):+,.0f} ~ {max(pls):+,.0f}</span>
-</div>"""
+<div class="sub" style="display:flex;justify-content:space-between;margin-top:5px">
+  <span>{d0} – {d1}（{n} 個交易日）</span>
+  <span>最大回檔 <span class="num">-{max_dd:,.0f}</span></span>
+</div>
+{f'<div class="sub" style="margin-top:3px"><span style="color:var(--brass)">●</span> {marks_line}</div>' if marks_line else ''}"""
 
 
 def render_realized_summary(user_id, inst_data):
