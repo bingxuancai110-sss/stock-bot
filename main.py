@@ -2700,10 +2700,12 @@ def build_chips_report(days=10):
     """
     籌碼超人：依「誰在買」分開列出，而不是把三大法人加在一起。
 
-    排名改用「金額」而不是「張數」。用張數排會讓低價股整片霸榜——
-    15 元的金融股買 10 萬張只要 15 億，1500 元的股票同樣金額只有 1,000 張，
-    兩者放在同一個排行上比大小沒有意義。實測用張數排時，
-    投信認養前五名全是金融股，那是價格造成的假象不是資金偏好。
+    排名用「金額」不是「張數」。用張數排會讓低價股整片霸榜——
+    15 元的金融股買 10 萬張只要 15 億，1500 元的股票同樣金額只有 1,000 張。
+
+    排版原則：一檔一行、每區只給 3 檔、區塊之間空一行。
+    LINE 是純文字視窗，沒有表格也沒有對齊；一檔佔兩行、每區五檔的話
+    整則訊息超過 50 行，滑到後面就忘了前面在看什麼，等於沒有資訊。
     """
     hist_days = get_history_days_count()
     if hist_days < 3:
@@ -2713,89 +2715,79 @@ def build_chips_report(days=10):
                 "資料每天由排程自動累積，過幾天再試。")
 
     inst = fetch_institutional_data() or {}
-    ind_map = get_industry_map() or {}
     actual = min(days, hist_days)
+    TOP = 3          # 每區只給前 3 名
 
-    # 先各取較多筆，抓完報價換算金額後再取前幾名
     raw = {
-        "trust_buy": get_top_by_investor("trust", "buy", actual, 25, min_days=6),
-        "foreign_buy": get_top_by_investor("foreign", "buy", actual, 25, min_days=6),
-        "trust_sell": get_top_by_investor("trust", "sell", actual, 25, min_days=6),
+        "trust_buy": get_top_by_investor("trust", "buy", actual, 20, min_days=6),
+        "foreign_buy": get_top_by_investor("foreign", "buy", actual, 20, min_days=6),
+        "trust_sell": get_top_by_investor("trust", "sell", actual, 20, min_days=6),
     }
-    both_buy = get_both_side_codes("buy", actual, 25, min_days=5)
-    both_sell = get_both_side_codes("sell", actual, 25, min_days=5)
+    both_buy = get_both_side_codes("buy", actual, 20, min_days=5)
+    both_sell = get_both_side_codes("sell", actual, 20, min_days=5)
 
     all_codes = {c for rows in raw.values() for c, *_ in rows}
     all_codes |= {c for c, *_ in both_buy} | {c for c, *_ in both_sell}
     prices = get_realtime_stocks_bulk(list(all_codes), workers=16)
 
     def amount(code, lots):
-        """張數換算成金額（億元）。抓不到報價就回 None，排序時排在最後。"""
         pr = prices.get(code)
         return (abs(lots) * 1000 * pr["close"] / 100_000_000) if pr else None
 
-    def rank(rows, top_n=5):
+    def name_of(code, name):
+        # 名稱太長會把整行擠爆，截短比對齊重要
+        nm = name or stock_display_name(code, inst)
+        return nm[:5]
+
+    def block(title, rows, top_n=TOP):
         scored = []
         for code, name, cum, hit, total in rows:
             amt = amount(code, cum)
-            if amt is None:
-                continue
-            scored.append((amt, code, name, cum, hit, total))
+            if amt is not None:
+                scored.append((amt, code, name, cum, hit, total))
         scored.sort(reverse=True)
-        return scored[:top_n]
 
-    def block(title, note, rows):
-        out = [f"\n{title}"]
-        if note:
-            out.append(f"　{note}")
-        if not rows:
-            out.append("　—　近期無符合的標的")
-            return out
-        for amt, code, name, cum, hit, total in rows:
-            nm = name or stock_display_name(code, inst)
-            ind = ind_map.get(code)
-            pr = prices.get(code)
-            px = f"{pr['close']:,.1f}" if pr else "—"
-            out.append(f"　{nm} {code}　{px}")
-            out.append(f"　　{amt:,.1f} 億　{cum:+,} 張　{hit}/{total} 天"
-                       + (f"　{industry_name(ind)}" if ind else ""))
+        out = [title]
+        if not scored:
+            out.append("　近期無符合標的")
+        for amt, code, name, cum, hit, total in scored[:top_n]:
+            out.append(f"{name_of(code, name)} {code}"
+                       f"　{amt:,.0f}億　{hit}/{total}天")
+        out.append("")          # 區塊之間空一行
         return out
 
-    def block_both(title, note, rows, top_n=5):
+    def block_both(title, rows, top_n=TOP):
         scored = []
         for code, name, f_lots, t_lots, tot in rows:
             amt = amount(code, tot)
-            if amt is None:
-                continue
-            scored.append((amt, code, name, f_lots, t_lots))
+            if amt is not None:
+                scored.append((amt, code, name, f_lots, t_lots))
         scored.sort(reverse=True)
-        out = [f"\n{title}", f"　{note}"]
+
+        out = [title]
         if not scored:
-            out.append("　—　近期無符合的標的")
-            return out
+            out.append("　近期無符合標的")
         for amt, code, name, f_lots, t_lots in scored[:top_n]:
-            nm = name or stock_display_name(code, inst)
-            pr = prices.get(code)
-            px = f"{pr['close']:,.1f}" if pr else "—"
-            out.append(f"　{nm} {code}　{px}")
-            out.append(f"　　{amt:,.1f} 億　外資 {f_lots:+,}　投信 {t_lots:+,} 張")
+            out.append(f"{name_of(code, name)} {code}　{amt:,.0f}億")
+        out.append("")
         return out
 
-    lines = [f"🦸 籌碼超人", f"近 {actual} 個交易日　依金額排名", "═" * 13]
-    lines += block("🏦 投信認養", "做過研究才買，最有參考價值", rank(raw["trust_buy"]))
-    lines += block("🌐 外資認養", "量最大，但可能含指數調整", rank(raw["foreign_buy"]))
-    lines += block_both("🔥 外資投信同買", "兩種立場同時站買方", both_buy)
-    lines += block("📉 投信持續調節", "", rank(raw["trust_sell"]))
-    lines += block_both("❄️ 外資投信同賣", "兩邊同時撤退，通常不是巧合", both_sell)
+    lines = [f"🦸 籌碼超人　近{actual}日", "依買賣金額排名", ""]
+    lines += block("🏦 投信認養", raw["trust_buy"])
+    lines += block("🌐 外資認養", raw["foreign_buy"])
+    lines += block_both("🔥 外資投信同買", both_buy)
+    lines += block("📉 投信調節", raw["trust_sell"])
+    lines += block_both("❄️ 外資投信同賣", both_sell)
 
     lines += [
-        "\n" + "═" * 13,
-        "・依金額排名，不是張數——低價股張數天生大，",
-        "　用張數排會讓金融股整片霸榜",
-        "・「認養」要求 6/10 天以上站在同方向，",
-        "　單日爆量隔天就跑的不算",
-        "・只看籌碼，不含基本面與估值",
-        "※ 僅上市＋上櫃，數據歸納非投資建議",
+        "─" * 12,
+        "數字＝該法人近10日買賣金額",
+        "天數＝10日內幾天站同方向",
+        "",
+        "認養需 6/10 天以上持續同向，",
+        "單日爆量隔天就跑的不算。",
+        "只看籌碼，不含基本面與估值。",
+        "※ 上市＋上櫃，非投資建議",
     ]
     report = "\n".join(lines)
     return report[:4750] + "\n…（已截斷）" if len(report) > 4800 else report
