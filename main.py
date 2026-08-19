@@ -2412,6 +2412,161 @@ def save_industry_momentum(stats):
         release_db_connection(conn)
 
 
+def save_picks(mode, rows, top_n=5):
+    """
+    存下今天這個模式選出的前 N 名。同一天重複跑會覆蓋，cron 跑兩次不會重複。
+    存「當下價格」是關鍵——之後要算報酬得知道推薦當天是多少錢，
+    事後再回頭抓歷史價會對不上（推薦時是盤中價，收盤價又是另一個數字）。
+    """
+    if not rows:
+        return 0
+    picks = [(mode, r["code"], i, r.get("score"), r.get("name"),
+              r.get("industry"), r.get("close"))
+             for i, r in enumerate(rows[:top_n], start=1)]
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        execute_values(
+            cursor,
+            """
+            INSERT INTO pick_history
+                (mode, code, pick_date, rank, score, name, industry, price)
+            VALUES %s
+            ON CONFLICT (mode, code, pick_date) DO UPDATE SET
+                rank = EXCLUDED.rank, score = EXCLUDED.score,
+                name = EXCLUDED.name, industry = EXCLUDED.industry,
+                price = EXCLUDED.price
+            """,
+            picks,
+            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s)",
+            page_size=100,
+        )
+        conn.commit()
+        cursor.close()
+        print(f"💾 已存入 {mode} 選股名單，共 {len(picks)} 檔")
+        return len(picks)
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 寫入選股名單失敗: {e}")
+        return 0
+    finally:
+        release_db_connection(conn)
+
+
+def get_picks_since(mode, days=90):
+    """取近 N 天的選股名單，供成效計算。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT code, pick_date, rank, score, name, industry, price
+            FROM pick_history
+            WHERE mode = %s AND pick_date >= CURRENT_DATE - %s
+              AND price IS NOT NULL AND price > 0
+            ORDER BY pick_date DESC, rank
+            """,
+            (mode, days),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return [{"code": r[0], "date": r[1], "rank": r[2], "score": r[3],
+                 "name": r[4], "industry": r[5], "price": r[6]} for r in rows]
+    except Exception as e:
+        print(f"❌ 讀取選股名單失敗: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def evaluate_picks(mode, days=90):
+    """
+    計算選股成效：把每一筆推薦的當時價格跟現價比，並依「推薦後經過幾天」分組。
+
+    誠實度的幾個要求：
+    ・用現價算報酬，所以一筆推薦只能歸入一個天期——70 天前的推薦拿現價算，
+      得到的是 70 天的報酬不是 5 天的。因此由長到短判斷，取它已經走過的
+      最長區間，標籤也照實寫成區間而非定點。
+    ・同時算大盤同期報酬做對照。多頭時什麼都在漲，沒有對照組的話
+      「平均 +5%」看不出是選股有效還是單純市場好。
+    ・樣本數一併呈現，讓人自己判斷這個數字可不可信。
+    """
+    picks = get_picks_since(mode, days)
+    if not picks:
+        return None
+
+    price_map = get_realtime_stocks_bulk(
+        list({p["code"] for p in picks}), workers=16)
+    today = date.today()
+
+    # 大盤對照：用快照裡存的加權指數，沒有就退回不比較
+    taiex_by_date = {}
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT snapshot_date, taiex_close FROM portfolio_snapshots
+            WHERE taiex_close IS NOT NULL AND snapshot_date >= CURRENT_DATE - %s
+            """,
+            (days,))
+        taiex_by_date = {r[0]: r[1] for r in cursor.fetchall()}
+        cursor.close()
+    except Exception as e:
+        print(f"⚠️ 讀取大盤對照失敗: {e}")
+    finally:
+        release_db_connection(conn)
+
+    taiex_now = None
+    t = fetch_taiex_summary()
+    if t and t.get("close"):
+        try:
+            taiex_now = float(str(t["close"]).replace(",", ""))
+        except (TypeError, ValueError):
+            taiex_now = None
+
+    horizons = [(60, "60 日以上"), (20, "20–59 日"), (5, "5–19 日")]
+    buckets = {label: [] for _d, label in horizons}
+    market = {label: [] for _d, label in horizons}
+
+    for p in picks:
+        cur = price_map.get(p["code"])
+        if not cur:
+            continue
+        elapsed = (today - p["date"]).days
+        ret = (cur["close"] - p["price"]) / p["price"] * 100
+        for d, label in horizons:       # 由長到短，落在第一個符合的區間
+            if elapsed >= d:
+                buckets[label].append((ret, p))
+                base = taiex_by_date.get(p["date"])
+                if base and taiex_now:
+                    market[label].append((taiex_now - base) / base * 100)
+                break
+
+    result = {}
+    for _d, label in reversed(horizons):   # 顯示時由短到長
+        vals = [r for r, _p in buckets[label]]
+        if not vals:
+            continue
+        vals_sorted = sorted(vals)
+        n = len(vals_sorted)
+        median = (vals_sorted[n // 2] if n % 2
+                  else (vals_sorted[n // 2 - 1] + vals_sorted[n // 2]) / 2)
+        mk = market[label]
+        result[label] = {
+            "n": n,
+            "avg": sum(vals) / n,
+            "median": median,
+            "win_rate": len([v for v in vals if v > 0]) / n * 100,
+            "best": max(buckets[label], key=lambda x: x[0]),
+            "worst": min(buckets[label], key=lambda x: x[0]),
+            "market": (sum(mk) / len(mk)) if mk else None,
+        }
+
+    pending = len([p for p in picks if (today - p["date"]).days < 5])
+    return {"horizons": result, "total_picks": len(picks), "pending": pending}
+
+
 def score_from_industry_momentum(ind_stats):
     """
     產業動能分數（0-20）。看的是「這檔股票所在的產業，領先群跑得多快」，
