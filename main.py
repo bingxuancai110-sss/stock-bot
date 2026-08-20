@@ -1587,6 +1587,7 @@ def build_leaderboard(top_n=20, days=365):
             "days": (curve[-1][0] - curve[0][0]).days,
             "mdd": max_drawdown(curve),
             "excess": (curve[-1][1] - mk[-1][1]) if mk else None,
+            "mkt_ret": mk[-1][1] if mk else None,
             "m30": window_return(curve, 30),
             "m30_days": m30_days,
         })
@@ -7606,7 +7607,12 @@ def web_leaderboard(uid):
                          f'<span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
             if r.get("excess") is not None:
                 w = "贏" if r["excess"] >= 0 else "輸"
-                side += f'<span><em>vs 大盤</em> {w} {abs(r["excess"]):.1f}%</span>'
+                # 把大盤同期報酬也寫出來。只寫「贏 7.2%」會讓人分不清
+                # 那是超額報酬還是大盤自己的報酬率，兩個數字都給就沒有歧義。
+                mkt = r.get("mkt_ret")
+                mkt_txt = f"（大盤 {mkt:+.1f}%）" if mkt is not None else ""
+                side += (f'<span><em>vs 大盤</em> {w} '
+                         f'{abs(r["excess"]):.1f}%{mkt_txt}</span>')
             if r.get("mdd") is not None:
                 side += (f'<span><em>最大回檔</em> '
                          f'<span class="num">-{r["mdd"]:.1f}%</span></span>')
@@ -7698,8 +7704,10 @@ def web_leaderboard(uid):
     輸入三年前買的股票就能直接屠榜。<br>
   ・<b>最大回檔</b>是報酬曲線從高點到低點的最大跌幅。只看報酬會獎勵冒險——
     重壓一檔賭對了就登頂，但那跟操作得好是兩件事。<br>
-  ・<b>vs 大盤</b>是同期贏過加權指數多少。多頭時人人都賺，
-    贏過大盤才是真的有做對事情。<br>
+  ・<b>vs 大盤</b>是<b>超額報酬</b>——你的報酬減掉大盤同期報酬，
+    括號裡是大盤自己的漲跌。例如「贏 7.2%（大盤 +5.2%）」代表
+    你賺了 12.4%，其中 5.2% 是大盤帶上去的、7.2% 才是你自己做出來的。
+    多頭時人人都賺，這個數字才看得出有沒有做對事情。<br>
   ・<b>持股資訊需本人勾選才會顯示</b>，預設不公開，而且只給最大持股、
     最佳持股與最大產業，不會有金額、股數或完整清單。<br>
   ・<b>數據由使用者自行輸入，未經驗證。</b>天數太少的會標「僅 N 天」——
