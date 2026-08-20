@@ -369,6 +369,17 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_pick_history_date
             ON pick_history (pick_date DESC, mode)
         ''')
+        # 排行榜成員。預設不參加，要自己填暱稱加入——
+        # 排行榜會把報酬率給別人看，那跟「持股只用於你自己的分析」是兩件事，
+        # 必須明確 opt-in 才不會違背當初給使用者的承諾。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS leaderboard_members (
+                user_id TEXT PRIMARY KEY,
+                nickname TEXT NOT NULL,
+                joined_on DATE DEFAULT CURRENT_DATE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        ''')
         # 背景工作狀態。
         # 原本只存在記憶體，但那有兩個問題：gunicorn 開多個 worker 時，
         # 工作在 A 執行、查詢卻可能連到 B，看到的是空的；服務一重啟也全沒了。
@@ -1254,6 +1265,203 @@ def save_portfolio_snapshot(user_id, total_value, total_cost, taiex_close):
         return False
     finally:
         release_db_connection(conn)
+
+
+# ── 排行榜 ──
+def get_leaderboard_member(user_id):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT nickname, joined_on FROM leaderboard_members "
+                    "WHERE user_id = %s", (str(user_id).strip(),))
+        r = cur.fetchone()
+        cur.close()
+        return {"nickname": r[0], "joined_on": r[1]} if r else None
+    except Exception as e:
+        print(f"❌ 讀取排行榜成員失敗: {e}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+
+def join_leaderboard(user_id, nickname):
+    """
+    加入排行榜。重新加入時「不」重設起算日——
+    否則賠錢的人可以退出再加入把負報酬洗掉，排行榜就沒有意義了。
+    """
+    nick = str(nickname or "").strip()[:12]
+    if not nick:
+        return False, "請輸入暱稱"
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO leaderboard_members (user_id, nickname)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET nickname = EXCLUDED.nickname
+            """,
+            (str(user_id).strip(), nick))
+        conn.commit()
+        cur.close()
+        return True, None
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 加入排行榜失敗: {e}")
+        return False, "加入失敗，請稍後再試"
+    finally:
+        release_db_connection(conn)
+
+
+def leave_leaderboard(user_id):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM leaderboard_members WHERE user_id = %s",
+                    (str(user_id).strip(),))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 退出排行榜失敗: {e}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def get_realized_by_date(user_id, days=180):
+    """
+    取每日的賣出成本基礎與賣出金額，供 TWR 計算資金流用。
+    回傳 {日期: (賣掉部位的原始成本, 實際賣得金額)}
+    """
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT sold_on,
+                   SUM(shares * buy_cost),
+                   SUM(shares * sell_price)
+            FROM realized_trades
+            WHERE user_id = %s AND sold_on >= CURRENT_DATE - %s
+            GROUP BY sold_on
+            """,
+            (str(user_id).strip(), days))
+        rows = cur.fetchall()
+        cur.close()
+        return {r[0]: (float(r[1] or 0), float(r[2] or 0)) for r in rows}
+    except Exception as e:
+        print(f"❌ 讀取賣出紀錄失敗: {e}")
+        return {}
+    finally:
+        release_db_connection(conn)
+
+
+def compute_twr(snaps, since=None, realized=None):
+    """
+    時間加權報酬率（TWR）。
+
+    為什麼不能直接用「市值變化」：加碼會讓市值變大，但那是你自己投錢進去，
+    不是投資賺來的。要把資金進出扣掉才是真正的報酬：
+
+        單日報酬 = (今日市值 − 昨日市值 − 當日資金淨流入) ÷ 昨日市值
+
+    資金流不能只看成本變化。買進時「成本增加＝當下市值」沒問題，
+    但賣出時你拿回的是「市價」、成本卻是按「原始成本」減少——
+    賺錢的部位一賣，差額會被誤算成虧損（實測 +10% 會變成 0%）。
+    所以賣出的部分改用 realized_trades 裡的實際賣出金額：
+
+        當日買進金額 = 成本變化 + 當日賣掉部位的原始成本
+        資金淨流入   = 當日買進金額 − 當日實際賣得金額
+
+    回傳 [(日期, 累積報酬%)]，資料不足時回傳空清單。
+    """
+    realized = realized or {}
+    pts = [s for s in snaps if s.get("value") and s["value"] > 0]
+    if since:
+        pts = [s for s in pts if s["date"] >= since]
+    if len(pts) < 2:
+        return []
+
+    cum, out = 1.0, [(pts[0]["date"], 0.0)]
+    for prev, cur in zip(pts, pts[1:]):
+        sold_cost, proceeds = realized.get(cur["date"], (0.0, 0.0))
+        d_cost = (cur.get("cost") or 0) - (prev.get("cost") or 0)
+        bought = d_cost + sold_cost          # 還原出當日的買進金額
+        flow = bought - proceeds             # 淨流入（負數代表提領）
+        denom = prev["value"]
+        if denom <= 0:
+            continue
+        r = (cur["value"] - prev["value"] - flow) / denom
+        # 單日 ±50% 以上多半是資料異常（例如整批重輸持股），跳過不計入
+        if abs(r) > 0.5:
+            continue
+        cum *= (1 + r)
+        out.append((cur["date"], (cum - 1) * 100))
+    return out
+
+
+def taiex_series(snaps, since=None):
+    """從快照裡的大盤收盤算同期累積漲跌幅，當作排行榜的對照組。"""
+    pts = [s for s in snaps if s.get("taiex")]
+    if since:
+        pts = [s for s in pts if s["date"] >= since]
+    if len(pts) < 2:
+        return []
+    base = pts[0]["taiex"]
+    return [(s["date"], (s["taiex"] - base) / base * 100) for s in pts]
+
+
+def build_leaderboard(top_n=5, days=180):
+    """
+    算出排行榜。報酬率一律從「加入排行榜那天」起算，不用歷史成本——
+    否則輸入三年前買的股票就能直接屠榜，比的是誰入市早不是誰操作好。
+
+    同時回傳持股檔數與加入天數：只放 1 檔 +80% 跟 12 檔 +15% 可信度差很多，
+    剛加入就衝第一名的也看得出來。數據無法驗證，至少讓人自己判斷。
+    """
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, nickname, joined_on FROM leaderboard_members")
+        members = cur.fetchall()
+        cur.close()
+    except Exception as e:
+        print(f"❌ 讀取排行榜失敗: {e}")
+        return [], []
+    finally:
+        release_db_connection(conn)
+
+    if not members:
+        return [], []
+
+    rows, series_map = [], {}
+    market = []
+    for uid, nick, joined in members:
+        snaps = get_portfolio_snapshots(uid, days=days)
+        curve = compute_twr(snaps, since=joined,
+                            realized=get_realized_by_date(uid, days))
+        if not market:
+            market = taiex_series(snaps, since=joined)
+        if len(curve) < 2:
+            rows.append({"nickname": nick, "ret": None, "days": 0,
+                         "holdings": len(merge_positions(get_positions(uid))),
+                         "joined": joined})
+            continue
+        rows.append({
+            "nickname": nick,
+            "ret": curve[-1][1],
+            "days": (curve[-1][0] - curve[0][0]).days,
+            "holdings": len(merge_positions(get_positions(uid))),
+            "joined": joined,
+        })
+        series_map[nick] = curve
+
+    ranked = sorted([r for r in rows if r["ret"] is not None],
+                    key=lambda r: r["ret"], reverse=True)
+    waiting = [r for r in rows if r["ret"] is None]
+    return (ranked[:top_n], waiting), (series_map, market)
 
 
 def get_portfolio_snapshots(user_id, days=120):
@@ -5754,6 +5962,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     if nav_active:
         nav = ("<nav>"
                + tab("/web/portfolio", "組合", "portfolio")
+               + tab("/web/leaderboard", "排行榜", "leaderboard")
                + tab("/web/positions", "持股", "positions")
                + tab("/web/trades", "紀錄", "trades")
                + tab("/web/screener", "選股", "screener")
@@ -7069,6 +7278,184 @@ def web_trades(uid):
 <div class="rows">{''.join(trade_row(t) for t in trades)}</div>
 """
     return respond_page("交易紀錄", body, "trades")
+
+
+def render_leaderboard_chart(series_map, market, top_names):
+    """
+    排行榜走勢圖：前幾名的累積報酬 vs 大盤，畫在同一張圖。
+    比的是「相對加入日的累積報酬」，所以起點都是 0，不同資金規模也能疊在一起比。
+    """
+    lines = [(nm, series_map[nm]) for nm in top_names if series_map.get(nm)]
+    if not lines and not market:
+        return ('<div class="empty">還沒有足夠的每日快照可以畫圖。<br><br>'
+                '<span style="font-size:12.5px">每個交易日收盤後會存一次快照，'
+                '加入排行榜後累積 2 天以上就會出現走勢。</span></div>')
+
+    all_dates = sorted({d for _n, c in lines for d, _v in c}
+                       | {d for d, _v in market})
+    if len(all_dates) < 2:
+        return ('<div class="empty">資料還在累積中，'
+                '至少需要 2 天以上的快照才能畫出走勢。</div>')
+
+    vals = [v for _n, c in lines for _d, v in c] + [v for _d, v in market]
+    lo, hi = min(vals), max(vals)
+    if hi - lo < 1:
+        lo, hi = lo - 1, hi + 1
+    pad = (hi - lo) * 0.12
+    lo, hi = lo - pad, hi + pad
+
+    W, H = 640, 190
+    xi = {d: i for i, d in enumerate(all_dates)}
+    n = len(all_dates)
+    X = lambda d: (xi[d] / (n - 1)) * W
+    Y = lambda v: (1 - (v - lo) / (hi - lo)) * H
+
+    parts = [f'<line x1="0" y1="{Y(0):.1f}" x2="{W}" y2="{Y(0):.1f}" '
+             f'stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,3"/>']
+    if market:
+        p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in market)
+        parts.append(f'<path d="{p}" fill="none" stroke="var(--ink-faint)" '
+                     f'stroke-width="1.5" stroke-dasharray="4,3"/>')
+
+    tints = ["#6E5228", "#A82A20", "#155C42", "#8A6A3B", "#454C55"]
+    legend = []
+    for i, (nm, curve) in enumerate(lines):
+        color = tints[i % len(tints)]
+        p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in curve)
+        parts.append(f'<path d="{p}" fill="none" stroke="{color}" '
+                     f'stroke-width="2"/>')
+        legend.append(f'<span><i style="background:{color}"></i>{nm} '
+                      f'{curve[-1][1]:+.1f}%</span>')
+    if market:
+        legend.append(f'<span><i style="background:var(--ink-faint)"></i>'
+                      f'大盤 {market[-1][1]:+.1f}%</span>')
+
+    return f"""
+<svg viewBox="0 0 {W} {H}" width="100%" height="{H}" preserveAspectRatio="none"
+     style="display:block">{''.join(parts)}</svg>
+<div class="legend" style="margin-top:8px">{''.join(legend)}
+  <span style="color:var(--ink-faint);margin-left:auto">
+    {all_dates[0].strftime('%m/%d')} – {all_dates[-1].strftime('%m/%d')}</span>
+</div>"""
+
+
+@app.route("/web/leaderboard", methods=["GET", "POST"])
+@web_login_required
+def web_leaderboard(uid):
+    """
+    全站績效排行榜。
+
+    三個刻意的限制：
+    ・預設不參加，要自己填暱稱加入——排行榜會把報酬率給別人看，
+      跟「持股只用於你自己的分析」是兩件事，必須明確 opt-in。
+    ・只顯示報酬率、持股檔數、加入天數，不顯示任何金額與持股內容。
+    ・報酬率從加入那天起算，不用歷史成本，否則比的是誰入市早不是誰操作好。
+    """
+    msg = ""
+    if request.method == "POST":
+        if request.form.get("action") == "leave":
+            leave_leaderboard(uid)
+            msg = "已退出排行榜。"
+        else:
+            ok, err = join_leaderboard(uid, request.form.get("nickname", ""))
+            msg = "已加入排行榜。" if ok else (err or "加入失敗")
+
+    if not wants_fragment():
+        return render_loading_shell(
+            "排行榜", "leaderboard",
+            ["正在讀取成員名單…", "正在計算每人的報酬率…", "正在整理排名…"],
+            note="報酬率以時間加權計算，加碼與贖回不影響結果。")
+
+    me = get_leaderboard_member(uid)
+    (ranked, waiting), (series_map, market) = build_leaderboard(top_n=5)
+
+    # ── 參加／退出 ──
+    if me:
+        joined_txt = me["joined_on"].strftime("%Y/%m/%d") if me["joined_on"] else "—"
+        panel = f"""
+<div class="callout">
+  你以 <b>{me['nickname']}</b> 的身分參加中，起算日 {joined_txt}。
+  <form method="post" style="display:inline;margin-left:10px"
+        onsubmit="return confirm('退出後你的成績會從榜上移除。確定嗎？')">
+    <input type="hidden" name="action" value="leave">
+    <button class="del" type="submit">退出排行榜</button>
+  </form>
+  <div class="sub" style="margin-top:8px">
+    重新加入不會重設起算日——否則賠錢時退出再加入就能把負報酬洗掉。
+  </div>
+</div>"""
+    else:
+        panel = """
+<form class="add" method="post">
+  <h3>參加排行榜</h3>
+  <div class="fields">
+    <div><label>顯示暱稱（其他人看得到）</label>
+      <input name="nickname" maxlength="12" placeholder="例如：阿軒" required></div>
+  </div>
+  <button type="submit">加入</button>
+  <div class="sell-hint">
+    參加後其他成員會看到你的<b>暱稱、報酬率、持股檔數、加入天數</b>。<br>
+    不會顯示任何金額、持股內容或個股明細。隨時可以退出。<br>
+    報酬率從你加入那天起算，之前的損益不列入。
+  </div>
+</form>"""
+
+    # ── 榜單 ──
+    if not ranked and not waiting:
+        board = '<div class="empty">還沒有人參加排行榜。</div>'
+    else:
+        medal = ["🥇", "🥈", "🥉", "4", "5"]
+        rows = []
+        for i, r in enumerate(ranked):
+            mine = ' style="background:var(--paper-2)"' if (
+                me and r["nickname"] == me["nickname"]) else ""
+            cls = "up" if r["ret"] >= 0 else "down"
+            rows.append(f"""
+<div class="row"{mine}>
+  <div><span class="name">{medal[i] if i < 5 else i+1}　{r['nickname']}</span></div>
+  <div class="price num {cls}">{r['ret']:+.2f}%</div>
+  <div class="meta">
+    <span><em>持股</em> {r['holdings']} 檔</span>
+    <span><em>參加</em> {r['days']} 天</span>
+  </div>
+</div>""")
+        for r in waiting:
+            rows.append(f"""
+<div class="row">
+  <div><span class="name">－　{r['nickname']}</span></div>
+  <div class="price flat">計算中</div>
+  <div class="meta"><span>需累積 2 天以上的快照</span></div>
+</div>""")
+        board = f'<div class="rows">{"".join(rows)}</div>'
+
+    chart = render_leaderboard_chart(series_map, market,
+                                     [r["nickname"] for r in ranked])
+
+    body = f"""
+{f'<div class="msg">{msg}</div>' if msg else ''}
+<div class="section-head"><h2>績效排行榜</h2>
+  <span class="section-note">依加入後的累積報酬</span></div>
+{board}
+
+<div class="section-head"><h2>走勢比較</h2>
+  <span class="section-note">前 5 名 vs 大盤</span></div>
+<div class="callout" style="padding:14px 15px 8px">{chart}</div>
+
+{panel}
+
+<div class="callout" style="margin-top:20px">
+  <b>這些數字怎麼來的</b><br>
+  <span style="font-size:12.5px;color:var(--ink-faint)">
+  ・報酬率用<b>時間加權</b>計算：加碼會讓市值變大但那不是賺來的，
+    程式會把資金進出扣掉，所以加碼或贖回都不影響名次。<br>
+  ・一律從<b>加入排行榜那天</b>起算。用歷史成本的話，
+    輸入三年前買的股票就能直接屠榜，比的會是誰入市早而不是誰操作好。<br>
+  ・<b>數據由使用者自行輸入，未經驗證。</b>持股檔數與參加天數一併顯示——
+    只放 1 檔 +80% 跟 12 檔 +15% 可信度差很多，剛加入就衝第一名的也看得出來。<br>
+  ・排行榜是給自己一個參照，不是比賽。看別人的數字之前，
+    先確認自己的操作有沒有理由。</span>
+</div>"""
+    return respond_page("排行榜", body, "leaderboard")
 
 
 @app.route("/web/compare")
