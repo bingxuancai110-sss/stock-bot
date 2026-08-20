@@ -1429,12 +1429,16 @@ def build_leaderboard(top_n=5, days=180):
         cur.close()
     except Exception as e:
         print(f"❌ 讀取排行榜失敗: {e}")
-        return [], []
+        # 回傳結構必須跟正常情況一致：呼叫端是
+        # (ranked, waiting), (series_map, market) = build_leaderboard()
+        # 少一層就會拋 ValueError，而那個例外會讓整頁 500、
+        # 前端只看得到「載入失敗」——完全看不出真正原因。
+        return ([], []), ({}, [])
     finally:
         release_db_connection(conn)
 
     if not members:
-        return [], []
+        return ([], []), ({}, [])
 
     rows, series_map = [], {}
     market = []
@@ -6288,8 +6292,17 @@ def render_loading_shell(title, nav_active, stages, note=""):
     .catch(function (e) {{
       done = true;
       clearInterval(timer);
-      stageEl.textContent = '載入失敗，請重新整理頁面。';
+      // 把錯誤內容顯示出來。只寫「載入失敗」的話，
+      // 伺服器端到底是 500 還是網路斷線完全看不出來，
+      // 每次都得去翻 Render Logs 才知道發生什麼事。
+      stageEl.textContent = '載入失敗：' + (e && e.message ? e.message : e);
       pctEl.textContent = '';
+      var hint = document.createElement('div');
+      hint.className = 'sub';
+      hint.style.marginTop = '8px';
+      hint.textContent = 'HTTP 500 代表伺服器端出錯，請看 Render Logs；'
+                       + '其他多半是網路問題，重新整理即可。';
+      stageEl.parentNode.appendChild(hint);
       console.error(e);
     }});
 }})();
