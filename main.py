@@ -380,6 +380,12 @@ def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         ''')
+        # 是否公開持股內容。獨立於「參加排行榜」之外，預設關閉——
+        # 早期加入的人是在「不會顯示持股內容」的承諾下同意的，
+        # 不能因為後來加了功能就把他們的持股攤開來。
+        cursor.execute(
+            "ALTER TABLE leaderboard_members "
+            "ADD COLUMN IF NOT EXISTS show_holdings BOOLEAN DEFAULT FALSE")
         # 背景工作狀態。
         # 原本只存在記憶體，但那有兩個問題：gunicorn 開多個 worker 時，
         # 工作在 A 執行、查詢卻可能連到 B，看到的是空的；服務一重啟也全沒了。
@@ -1272,11 +1278,13 @@ def get_leaderboard_member(user_id):
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT nickname, joined_on FROM leaderboard_members "
-                    "WHERE user_id = %s", (str(user_id).strip(),))
+        cur.execute("SELECT nickname, joined_on, COALESCE(show_holdings, FALSE) "
+                    "FROM leaderboard_members WHERE user_id = %s",
+                    (str(user_id).strip(),))
         r = cur.fetchone()
         cur.close()
-        return {"nickname": r[0], "joined_on": r[1]} if r else None
+        return ({"nickname": r[0], "joined_on": r[1], "show_holdings": r[2]}
+                if r else None)
     except Exception as e:
         print(f"❌ 讀取排行榜成員失敗: {e}")
         return None
@@ -1284,7 +1292,7 @@ def get_leaderboard_member(user_id):
         release_db_connection(conn)
 
 
-def join_leaderboard(user_id, nickname):
+def join_leaderboard(user_id, nickname, show_holdings=False):
     """
     加入排行榜。重新加入時「不」重設起算日——
     否則賠錢的人可以退出再加入把負報酬洗掉，排行榜就沒有意義了。
@@ -1297,11 +1305,13 @@ def join_leaderboard(user_id, nickname):
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO leaderboard_members (user_id, nickname)
-            VALUES (%s, %s)
-            ON CONFLICT (user_id) DO UPDATE SET nickname = EXCLUDED.nickname
+            INSERT INTO leaderboard_members (user_id, nickname, show_holdings)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET
+                nickname = EXCLUDED.nickname,
+                show_holdings = EXCLUDED.show_holdings
             """,
-            (str(user_id).strip(), nick))
+            (str(user_id).strip(), nick, bool(show_holdings)))
         conn.commit()
         cur.close()
         return True, None
@@ -1413,18 +1423,86 @@ def taiex_series(snaps, since=None):
     return [(s["date"], (s["taiex"] - base) / base * 100) for s in pts]
 
 
+def max_drawdown(curve):
+    """
+    從累積報酬曲線算最大回檔（%）。
+
+    為什麼要列這個：只用報酬率排名會獎勵冒險——重壓一檔賭對了就登頂，
+    但那跟「操作得好」是兩件事。把最大回檔放在旁邊，
+    看得出同樣 +20% 的人，一個中途只回檔 5%、另一個回檔 30%，
+    後者承受的痛苦與運氣成分高得多。
+    """
+    if len(curve) < 2:
+        return None
+    peak, mdd = curve[0][1], 0.0
+    for _d, v in curve:
+        peak = max(peak, v)
+        mdd = max(mdd, peak - v)
+    return mdd
+
+
+def summarize_member_holdings(uid, prices, inst):
+    """
+    整理一位成員的持股摘要：最大持股、表現最好的持股、產業集中度。
+    只有本人勾選「公開持股」時才會被呼叫。
+
+    個股報酬率用「帳面」（現價 vs 成本），不是加入排行榜後的變化——
+    那是這檔對他而言的實際損益，也是他真正在意的數字。
+    """
+    positions = merge_positions(get_positions(uid))
+    if not positions:
+        return None
+
+    ind_map = get_industry_map() or {}
+    rows, total = [], 0.0
+    for p in positions:
+        pr = prices.get(p["code"])
+        if not pr:
+            continue
+        value = pr["close"] * p["shares"]
+        total += value
+        rows.append({
+            "code": p["code"],
+            "name": short_company_name(stock_display_name(p["code"], inst, pr["name"])),
+            "value": value,
+            "ret": (pr["close"] - p["cost"]) / p["cost"] * 100 if p["cost"] else None,
+            "industry": industry_name(ind_map[p["code"]]) if ind_map.get(p["code"]) else None,
+        })
+    if not rows or total <= 0:
+        return None
+
+    for r in rows:
+        r["weight"] = r["value"] / total * 100
+
+    biggest = max(rows, key=lambda r: r["weight"])
+    scored = [r for r in rows if r["ret"] is not None]
+    best = max(scored, key=lambda r: r["ret"]) if scored else None
+
+    # 產業集中度：最大產業佔多少。這比列出個股洩漏的資訊少，
+    # 但同樣看得出風格——重壓單一族群還是分散配置。
+    by_ind = {}
+    for r in rows:
+        if r["industry"]:
+            by_ind[r["industry"]] = by_ind.get(r["industry"], 0) + r["weight"]
+    top_ind = max(by_ind.items(), key=lambda x: x[1]) if by_ind else None
+
+    return {"biggest": biggest, "best": best, "top_industry": top_ind}
+
+
 def build_leaderboard(top_n=5, days=180):
     """
     算出排行榜。報酬率一律從「加入排行榜那天」起算，不用歷史成本——
     否則輸入三年前買的股票就能直接屠榜，比的是誰入市早不是誰操作好。
 
-    同時回傳持股檔數與加入天數：只放 1 檔 +80% 跟 12 檔 +15% 可信度差很多，
-    剛加入就衝第一名的也看得出來。數據無法驗證，至少讓人自己判斷。
+    除了報酬率，一併列出最大回檔與贏過大盤多少：
+    只看報酬會獎勵冒險，加上回檔才看得出那個報酬是怎麼來的；
+    而多頭時人人都賺，贏過大盤才是真的有做對事情。
     """
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT user_id, nickname, joined_on FROM leaderboard_members")
+        cur.execute("SELECT user_id, nickname, joined_on, "
+                    "COALESCE(show_holdings, FALSE) FROM leaderboard_members")
         members = cur.fetchall()
         cur.close()
     except Exception as e:
@@ -1440,25 +1518,41 @@ def build_leaderboard(top_n=5, days=180):
     if not members:
         return ([], []), ({}, [])
 
-    rows, series_map = [], {}
-    market = []
-    for uid, nick, joined in members:
+    # 先收集所有要公開持股的成員的代號，一次並行抓完報價
+    open_uids = [m[0] for m in members if m[3]]
+    codes = set()
+    for uid in open_uids:
+        codes |= {p["code"] for p in merge_positions(get_positions(uid))}
+    prices = get_realtime_stocks_bulk(list(codes), workers=16) if codes else {}
+    inst = fetch_institutional_data() or {} if codes else {}
+
+    rows, series_map, market = [], {}, []
+    for uid, nick, joined, show in members:
         snaps = get_portfolio_snapshots(uid, days=days)
         curve = compute_twr(snaps, since=joined,
                             realized=get_realized_by_date(uid, days))
-        if not market:
-            market = taiex_series(snaps, since=joined)
-        if len(curve) < 2:
-            rows.append({"nickname": nick, "ret": None, "days": 0,
-                         "holdings": len(merge_positions(get_positions(uid))),
-                         "joined": joined})
-            continue
-        rows.append({
+        mk = taiex_series(snaps, since=joined)
+        if not market and mk:
+            market = mk
+
+        holds = summarize_member_holdings(uid, prices, inst) if show else None
+        base = {
             "nickname": nick,
-            "ret": curve[-1][1],
-            "days": (curve[-1][0] - curve[0][0]).days,
             "holdings": len(merge_positions(get_positions(uid))),
             "joined": joined,
+            "show": show,
+            "detail": holds,
+        }
+        if len(curve) < 2:
+            rows.append({**base, "ret": None, "days": 0,
+                         "mdd": None, "excess": None})
+            continue
+        rows.append({
+            **base,
+            "ret": curve[-1][1],
+            "days": (curve[-1][0] - curve[0][0]).days,
+            "mdd": max_drawdown(curve),
+            "excess": (curve[-1][1] - mk[-1][1]) if mk else None,
         })
         series_map[nick] = curve
 
@@ -7370,7 +7464,9 @@ def web_leaderboard(uid):
             leave_leaderboard(uid)
             msg = "已退出排行榜。"
         else:
-            ok, err = join_leaderboard(uid, request.form.get("nickname", ""))
+            ok, err = join_leaderboard(
+                uid, request.form.get("nickname", ""),
+                show_holdings=bool(request.form.get("show_holdings")))
             msg = "已加入排行榜。" if ok else (err or "加入失敗")
 
     if not wants_fragment():
@@ -7385,18 +7481,38 @@ def web_leaderboard(uid):
     # ── 參加／退出 ──
     if me:
         joined_txt = me["joined_on"].strftime("%Y/%m/%d") if me["joined_on"] else "—"
+        chk = " checked" if me.get("show_holdings") else ""
+        state = "公開中" if me.get("show_holdings") else "未公開"
         panel = f"""
 <div class="callout">
   你以 <b>{me['nickname']}</b> 的身分參加中，起算日 {joined_txt}。
-  <form method="post" style="display:inline;margin-left:10px"
-        onsubmit="return confirm('退出後你的成績會從榜上移除。確定嗎？')">
-    <input type="hidden" name="action" value="leave">
-    <button class="del" type="submit">退出排行榜</button>
-  </form>
+  持股內容：<b>{state}</b>
   <div class="sub" style="margin-top:8px">
     重新加入不會重設起算日——否則賠錢時退出再加入就能把負報酬洗掉。
   </div>
-</div>"""
+</div>
+<form class="add" method="post">
+  <h3>修改設定</h3>
+  <div class="fields">
+    <div><label>顯示暱稱</label>
+      <input name="nickname" maxlength="12" value="{me['nickname']}" required></div>
+  </div>
+  <label class="opt" style="margin-top:10px">
+    <input type="checkbox" name="show_holdings"{chk}>
+    公開我的最大持股與最佳持股
+  </label>
+  <div class="sell-hint">
+    勾選後其他人會看到你的<b>最大持股（代號與權重）</b>、
+    <b>報酬最好的一檔</b>與<b>最大產業佔比</b>。<br>
+    仍然不會顯示任何金額、股數或完整持股清單。不勾選就只顯示報酬率。
+  </div>
+  <button type="submit">儲存</button>
+</form>
+<form method="post" style="margin-top:12px"
+      onsubmit="return confirm('退出後你的成績會從榜上移除。確定嗎？')">
+  <input type="hidden" name="action" value="leave">
+  <button class="del" type="submit">退出排行榜</button>
+</form>"""
     else:
         panel = """
 <form class="add" method="post">
@@ -7405,10 +7521,14 @@ def web_leaderboard(uid):
     <div><label>顯示暱稱（其他人看得到）</label>
       <input name="nickname" maxlength="12" placeholder="例如：阿軒" required></div>
   </div>
+  <label class="opt" style="margin-top:10px">
+    <input type="checkbox" name="show_holdings">
+    順便公開我的最大持股與最佳持股（可不勾）
+  </label>
   <button type="submit">加入</button>
   <div class="sell-hint">
-    參加後其他成員會看到你的<b>暱稱、報酬率、持股檔數、加入天數</b>。<br>
-    不會顯示任何金額、持股內容或個股明細。隨時可以退出。<br>
+    參加後其他成員會看到你的<b>暱稱、報酬率、最大回檔、持股檔數、加入天數</b>。<br>
+    <b>不會</b>顯示任何金額、股數或完整持股清單。隨時可以退出。<br>
     報酬率從你加入那天起算，之前的損益不列入。
   </div>
 </form>"""
@@ -7423,6 +7543,35 @@ def web_leaderboard(uid):
             mine = ' style="background:var(--paper-2)"' if (
                 me and r["nickname"] == me["nickname"]) else ""
             cls = "up" if r["ret"] >= 0 else "down"
+
+            extra = ""
+            if r.get("excess") is not None:
+                w = "贏" if r["excess"] >= 0 else "輸"
+                extra += (f'<span><em>vs 大盤</em> '
+                          f'{w} {abs(r["excess"]):.1f}%</span>')
+            if r.get("mdd") is not None:
+                extra += (f'<span><em>最大回檔</em> '
+                          f'<span class="num">-{r["mdd"]:.1f}%</span></span>')
+
+            d = r.get("detail")
+            detail = ""
+            if d:
+                b_ = d["biggest"]
+                detail += (f'<span><em>最大持股</em> {b_["name"]}'
+                           f'（{b_["code"]}）{b_["weight"]:.0f}%</span>')
+                if d["best"]:
+                    bs = d["best"]
+                    bcls = "up" if bs["ret"] >= 0 else "down"
+                    detail += (f'<span><em>最佳</em> {bs["name"]}'
+                               f'（{bs["code"]}）'
+                               f'<span class="num {bcls}">{bs["ret"]:+.1f}%</span>'
+                               f'</span>')
+                if d["top_industry"]:
+                    nm, w2 = d["top_industry"]
+                    detail += f'<span><em>最大產業</em> {nm} {w2:.0f}%</span>'
+            elif r.get("show") is False:
+                detail = '<span class="sub">持股未公開</span>'
+
             rows.append(f"""
 <div class="row"{mine}>
   <div><span class="name">{medal[i] if i < 5 else i+1}　{r['nickname']}</span></div>
@@ -7430,7 +7579,9 @@ def web_leaderboard(uid):
   <div class="meta">
     <span><em>持股</em> {r['holdings']} 檔</span>
     <span><em>參加</em> {r['days']} 天</span>
+    {extra}
   </div>
+  <div class="meta">{detail}</div>
 </div>""")
         for r in waiting:
             rows.append(f"""
@@ -7463,6 +7614,13 @@ def web_leaderboard(uid):
     程式會把資金進出扣掉，所以加碼或贖回都不影響名次。<br>
   ・一律從<b>加入排行榜那天</b>起算。用歷史成本的話，
     輸入三年前買的股票就能直接屠榜，比的會是誰入市早而不是誰操作好。<br>
+  ・<b>最大回檔</b>是報酬曲線從高點到低點的最大跌幅。只看報酬會獎勵冒險——
+    重壓一檔賭對了就登頂，但那跟操作得好是兩件事。同樣 +20%，
+    中途只回檔 5% 跟回檔 30% 完全不同。<br>
+  ・<b>vs 大盤</b>是同期贏過加權指數多少。多頭時人人都賺，
+    贏過大盤才是真的有做對事情。<br>
+  ・<b>持股資訊需本人勾選才會顯示</b>，預設不公開，而且只給最大持股、
+    最佳持股與最大產業，不會有金額、股數或完整清單。<br>
   ・<b>數據由使用者自行輸入，未經驗證。</b>持股檔數與參加天數一併顯示——
     只放 1 檔 +80% 跟 12 檔 +15% 可信度差很多，剛加入就衝第一名的也看得出來。<br>
   ・排行榜是給自己一個參照，不是比賽。看別人的數字之前，
