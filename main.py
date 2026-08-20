@@ -1423,6 +1423,32 @@ def taiex_series(snaps, since=None):
     return [(s["date"], (s["taiex"] - base) / base * 100) for s in pts]
 
 
+def window_return(curve, days=30):
+    """
+    取曲線最後 N 天的報酬率。
+
+    累積報酬曲線是連乘出來的，所以某一段的報酬不能直接相減，
+    要用比值還原：(1 + 期末) ÷ (1 + 期初) − 1。
+    直接相減在報酬率大的時候會明顯失真——
+    例如從 +100% 到 +120%，實際只漲了 10%，相減卻會得到 20%。
+    """
+    if len(curve) < 2:
+        return None
+    # 以「今天」為基準往回算，不能用曲線最後一點——
+    # 那樣 cutoff 會跟著資料一起往前移，永遠都在窗內，
+    # 於是 50 天前就停止更新的曲線也會被當成「近 30 天」而給出數字。
+    cutoff = date.today() - timedelta(days=days)
+    seg = [(d, v) for d, v in curve if d >= cutoff]
+    if len(seg) < 2:
+        return None
+    start, end = seg[0][1] / 100, seg[-1][1] / 100
+    # 期初累積報酬接近 -100% 時分母趨近 0，算出來的百分比會爆掉，
+    # 而那種情況本身就是資料異常，不該硬給一個數字
+    if start <= -0.99:
+        return None
+    return ((1 + end) / (1 + start) - 1) * 100
+
+
 def max_drawdown(curve):
     """
     從累積報酬曲線算最大回檔（%）。
@@ -1553,6 +1579,10 @@ def build_leaderboard(top_n=5, days=180):
             "days": (curve[-1][0] - curve[0][0]).days,
             "mdd": max_drawdown(curve),
             "excess": (curve[-1][1] - mk[-1][1]) if mk else None,
+            # 近 30 天只是一欄參考，不參與排名——
+            # 排名若按月重置，等於在鼓勵「這個月衝一波」，
+            # 那跟這個工具一直在講的紀律與耐心互相矛盾。
+            "m30": window_return(curve, 30),
         })
         series_map[nick] = curve
 
@@ -7545,6 +7575,10 @@ def web_leaderboard(uid):
             cls = "up" if r["ret"] >= 0 else "down"
 
             extra = ""
+            if r.get("m30") is not None:
+                mcls = "up" if r["m30"] >= 0 else "down"
+                extra += (f'<span><em>近30天</em> '
+                          f'<span class="num {mcls}">{r["m30"]:+.1f}%</span></span>')
             if r.get("excess") is not None:
                 w = "贏" if r["excess"] >= 0 else "輸"
                 extra += (f'<span><em>vs 大盤</em> '
@@ -7599,6 +7633,11 @@ def web_leaderboard(uid):
 {f'<div class="msg">{msg}</div>' if msg else ''}
 <div class="section-head"><h2>績效排行榜</h2>
   <span class="section-note">依加入後的累積報酬</span></div>
+<div class="mode-note">
+  排名看累積報酬，不按月重置——一個月的樣本幾乎全是運氣，
+  重壓一檔賭對了就登頂，那跟操作得好是兩件事。
+  「近30天」只是一欄參考，不影響名次。
+</div>
 {board}
 
 <div class="section-head"><h2>走勢比較</h2>
@@ -7619,6 +7658,9 @@ def web_leaderboard(uid):
     中途只回檔 5% 跟回檔 30% 完全不同。<br>
   ・<b>vs 大盤</b>是同期贏過加權指數多少。多頭時人人都賺，
     贏過大盤才是真的有做對事情。<br>
+  ・<b>近30天</b>讓後加入的人看得到自己的近期表現——
+    每個人起算日不同，累積報酬本來就不該直接比大小。
+    但它不參與排名，避免有人為了衝月榜而亂做。<br>
   ・<b>持股資訊需本人勾選才會顯示</b>，預設不公開，而且只給最大持股、
     最佳持股與最大產業，不會有金額、股數或完整清單。<br>
   ・<b>數據由使用者自行輸入，未經驗證。</b>持股檔數與參加天數一併顯示——
