@@ -1515,14 +1515,18 @@ def summarize_member_holdings(uid, prices, inst):
     return {"biggest": biggest, "best": best, "top_industry": top_ind}
 
 
-def build_leaderboard(top_n=5, days=180):
+def build_leaderboard(top_n=20, days=365):
     """
-    算出排行榜。報酬率一律從「加入排行榜那天」起算，不用歷史成本——
-    否則輸入三年前買的股票就能直接屠榜，比的是誰入市早不是誰操作好。
+    算出排行榜。分短線與長線兩榜，因為那本來就是兩種不同的能力——
+    長期穩健和短期爆發硬塞進同一個排行，比的會變成誰先加入。
 
-    除了報酬率，一併列出最大回檔與贏過大盤多少：
-    只看報酬會獎勵冒險，加上回檔才看得出那個報酬是怎麼來的；
-    而多頭時人人都賺，贏過大盤才是真的有做對事情。
+      短線榜：近 30 天報酬。所有人區間一致，最公平，新人也馬上有得比。
+      長線榜：加入後的累積報酬。加得早的人天然佔優，所以一定要把
+              參加天數列在旁邊，讓人自己判斷。
+
+    不設「滿 N 天才能上榜」的門檻：一個要等一個月才看得到自己的功能，
+    多數人第一天就放棄了。改成照實標示天數，天數太少的加註提醒——
+    「顯示得夠清楚」比「擋住不讓進」好。
     """
     conn = get_db_connection()
     try:
@@ -1533,16 +1537,14 @@ def build_leaderboard(top_n=5, days=180):
         cur.close()
     except Exception as e:
         print(f"❌ 讀取排行榜失敗: {e}")
-        # 回傳結構必須跟正常情況一致：呼叫端是
-        # (ranked, waiting), (series_map, market) = build_leaderboard()
-        # 少一層就會拋 ValueError，而那個例外會讓整頁 500、
-        # 前端只看得到「載入失敗」——完全看不出真正原因。
-        return ([], []), ({}, [])
+        # 回傳結構必須跟正常情況一致，少一層會讓呼叫端拋 ValueError、
+        # 整頁 500，而前端只看得到「載入失敗」，完全看不出真正原因。
+        return {"long": [], "short": [], "waiting": []}, ({}, [])
     finally:
         release_db_connection(conn)
 
     if not members:
-        return ([], []), ({}, [])
+        return {"long": [], "short": [], "waiting": []}, ({}, [])
 
     # 先收集所有要公開持股的成員的代號，一次並行抓完報價
     open_uids = [m[0] for m in members if m[3]]
@@ -1570,26 +1572,33 @@ def build_leaderboard(top_n=5, days=180):
             "detail": holds,
         }
         if len(curve) < 2:
-            rows.append({**base, "ret": None, "days": 0,
-                         "mdd": None, "excess": None})
+            rows.append({**base, "ret": None, "days": 0, "mdd": None,
+                         "excess": None, "m30": None, "m30_days": 0})
             continue
+
+        # 近 30 天實際涵蓋幾天，用來標示樣本夠不夠
+        cutoff = date.today() - timedelta(days=30)
+        seg = [d for d, _v in curve if d >= cutoff]
+        m30_days = (seg[-1] - seg[0]).days if len(seg) >= 2 else 0
+
         rows.append({
             **base,
             "ret": curve[-1][1],
             "days": (curve[-1][0] - curve[0][0]).days,
             "mdd": max_drawdown(curve),
             "excess": (curve[-1][1] - mk[-1][1]) if mk else None,
-            # 近 30 天只是一欄參考，不參與排名——
-            # 排名若按月重置，等於在鼓勵「這個月衝一波」，
-            # 那跟這個工具一直在講的紀律與耐心互相矛盾。
             "m30": window_return(curve, 30),
+            "m30_days": m30_days,
         })
         series_map[nick] = curve
 
-    ranked = sorted([r for r in rows if r["ret"] is not None],
-                    key=lambda r: r["ret"], reverse=True)
+    scored = [r for r in rows if r["ret"] is not None]
+    long_board = sorted(scored, key=lambda r: r["ret"], reverse=True)[:top_n]
+    short_board = sorted([r for r in scored if r["m30"] is not None],
+                         key=lambda r: r["m30"], reverse=True)[:top_n]
     waiting = [r for r in rows if r["ret"] is None]
-    return (ranked[:top_n], waiting), (series_map, market)
+    return ({"long": long_board, "short": short_board, "waiting": waiting},
+            (series_map, market))
 
 
 def get_portfolio_snapshots(user_id, days=120):
@@ -7506,7 +7515,8 @@ def web_leaderboard(uid):
             note="報酬率以時間加權計算，加碼與贖回不影響結果。")
 
     me = get_leaderboard_member(uid)
-    (ranked, waiting), (series_map, market) = build_leaderboard(top_n=5)
+    boards, (series_map, market) = build_leaderboard(top_n=20)
+    view = request.args.get("board", "short")   # 預設短線：新人也馬上有得比
 
     # ── 參加／退出 ──
     if me:
@@ -7564,28 +7574,43 @@ def web_leaderboard(uid):
 </form>"""
 
     # ── 榜單 ──
-    if not ranked and not waiting:
-        board = '<div class="empty">還沒有人參加排行榜。</div>'
-    else:
-        medal = ["🥇", "🥈", "🥉", "4", "5"]
-        rows = []
-        for i, r in enumerate(ranked):
+    def board_rows(rows, key):
+        """key: "m30" 排短線、"ret" 排長線。兩榜共用同一套列渲染。"""
+        if not rows:
+            return ('<div class="empty">這個榜還沒有資料。<br><br>'
+                    '<span style="font-size:12.5px">加入後累積 2 天以上的'
+                    '每日快照就會出現。</span></div>')
+        medal = ["🥇", "🥈", "🥉"]
+        out = []
+        for i, r in enumerate(rows):
             mine = ' style="background:var(--paper-2)"' if (
                 me and r["nickname"] == me["nickname"]) else ""
-            cls = "up" if r["ret"] >= 0 else "down"
+            rank = medal[i] if i < 3 else f"{i + 1}"
+            main_v = r[key]
+            cls = "up" if main_v >= 0 else "down"
 
-            extra = ""
-            if r.get("m30") is not None:
-                mcls = "up" if r["m30"] >= 0 else "down"
-                extra += (f'<span><em>近30天</em> '
-                          f'<span class="num {mcls}">{r["m30"]:+.1f}%</span></span>')
+            # 樣本天數。短線榜看近30天實際涵蓋幾天，長線榜看參加幾天。
+            span = r["m30_days"] if key == "m30" else r["days"]
+            thin = ('<span class="badge">僅 %d 天</span>' % span
+                    if span < 10 else f'<span class="sub">{span} 天</span>')
+
+            side = ""
+            if key == "m30" and r["ret"] is not None:
+                sc = "up" if r["ret"] >= 0 else "down"
+                side += (f'<span><em>累計</em> '
+                         f'<span class="num {sc}">{r["ret"]:+.1f}%</span>'
+                         f'（{r["days"]}天）</span>')
+            elif key == "ret" and r["m30"] is not None:
+                sc = "up" if r["m30"] >= 0 else "down"
+                side += (f'<span><em>近30天</em> '
+                         f'<span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
             if r.get("excess") is not None:
                 w = "贏" if r["excess"] >= 0 else "輸"
-                extra += (f'<span><em>vs 大盤</em> '
-                          f'{w} {abs(r["excess"]):.1f}%</span>')
+                side += f'<span><em>vs 大盤</em> {w} {abs(r["excess"]):.1f}%</span>'
             if r.get("mdd") is not None:
-                extra += (f'<span><em>最大回檔</em> '
-                          f'<span class="num">-{r["mdd"]:.1f}%</span></span>')
+                side += (f'<span><em>最大回檔</em> '
+                         f'<span class="num">-{r["mdd"]:.1f}%</span></span>')
+            side += f'<span><em>持股</em> {r["holdings"]} 檔</span>'
 
             d = r.get("detail")
             detail = ""
@@ -7596,49 +7621,64 @@ def web_leaderboard(uid):
                 if d["best"]:
                     bs = d["best"]
                     bcls = "up" if bs["ret"] >= 0 else "down"
-                    detail += (f'<span><em>最佳</em> {bs["name"]}'
-                               f'（{bs["code"]}）'
+                    detail += (f'<span><em>最佳</em> {bs["name"]}（{bs["code"]}）'
                                f'<span class="num {bcls}">{bs["ret"]:+.1f}%</span>'
                                f'</span>')
                 if d["top_industry"]:
                     nm, w2 = d["top_industry"]
                     detail += f'<span><em>最大產業</em> {nm} {w2:.0f}%</span>'
-            elif r.get("show") is False:
+            elif not r.get("show"):
                 detail = '<span class="sub">持股未公開</span>'
 
-            rows.append(f"""
+            out.append(f"""
 <div class="row"{mine}>
-  <div><span class="name">{medal[i] if i < 5 else i+1}　{r['nickname']}</span></div>
-  <div class="price num {cls}">{r['ret']:+.2f}%</div>
-  <div class="meta">
-    <span><em>持股</em> {r['holdings']} 檔</span>
-    <span><em>參加</em> {r['days']} 天</span>
-    {extra}
-  </div>
+  <div><span class="name">{rank}　{r['nickname']}</span> {thin}</div>
+  <div class="price num {cls}">{main_v:+.2f}%</div>
+  <div class="meta">{side}</div>
   <div class="meta">{detail}</div>
 </div>""")
-        for r in waiting:
-            rows.append(f"""
-<div class="row">
-  <div><span class="name">－　{r['nickname']}</span></div>
-  <div class="price flat">計算中</div>
-  <div class="meta"><span>需累積 2 天以上的快照</span></div>
-</div>""")
-        board = f'<div class="rows">{"".join(rows)}</div>'
+        return f'<div class="rows">{"".join(out)}</div>'
 
-    chart = render_leaderboard_chart(series_map, market,
-                                     [r["nickname"] for r in ranked])
+    is_short = view != "long"
+    board = board_rows(boards["short"] if is_short else boards["long"],
+                       "m30" if is_short else "ret")
+
+    waiting_html = ""
+    if boards["waiting"]:
+        items = "".join(
+            f'<div class="row"><div><span class="name">{r["nickname"]}</span></div>'
+            f'<div class="price flat">計算中</div>'
+            f'<div class="meta"><span>需累積 2 天以上的每日快照</span></div></div>'
+            for r in boards["waiting"])
+        waiting_html = f"""
+<div class="section-head"><h2>剛加入</h2>
+  <span class="section-note">尚無足夠快照</span></div>
+<div class="rows">{items}</div>"""
+
+    tabs = f"""
+<div class="tabs">
+  <a href="/web/leaderboard?board=short"
+     class="{'on' if is_short else ''}">短線　近30天</a>
+  <a href="/web/leaderboard?board=long"
+     class="{'' if is_short else 'on'}">長線　累計</a>
+</div>
+<div class="mode-note">{
+  '所有人區間一致，最公平，新人加入隔天就能上榜。'
+  if is_short else
+  '從各自加入那天起算。加得早的人天然佔優，所以旁邊一定要看天數。'}
+　不設上榜門檻，天數太少的會標「僅 N 天」讓你自己判斷。</div>"""
+
+    chart = render_leaderboard_chart(
+        series_map, market,
+        [r["nickname"] for r in (boards["short"] if is_short else boards["long"])][:5])
 
     body = f"""
 {f'<div class="msg">{msg}</div>' if msg else ''}
 <div class="section-head"><h2>績效排行榜</h2>
-  <span class="section-note">依加入後的累積報酬</span></div>
-<div class="mode-note">
-  排名看累積報酬，不按月重置——一個月的樣本幾乎全是運氣，
-  重壓一檔賭對了就登頂，那跟操作得好是兩件事。
-  「近30天」只是一欄參考，不影響名次。
-</div>
+  <span class="section-note">{len(boards['long'])} 位參加中</span></div>
+{tabs}
 {board}
+{waiting_html}
 
 <div class="section-head"><h2>走勢比較</h2>
   <span class="section-note">前 5 名 vs 大盤</span></div>
@@ -7649,22 +7689,21 @@ def web_leaderboard(uid):
 <div class="callout" style="margin-top:20px">
   <b>這些數字怎麼來的</b><br>
   <span style="font-size:12.5px;color:var(--ink-faint)">
+  ・<b>短線榜</b>比近 30 天，所有人區間一致；<b>長線榜</b>比加入後的累計，
+    加得早的人天然佔優，所以務必連天數一起看。兩榜是兩種不同的能力，
+    不該塞進同一個排行。<br>
   ・報酬率用<b>時間加權</b>計算：加碼會讓市值變大但那不是賺來的，
     程式會把資金進出扣掉，所以加碼或贖回都不影響名次。<br>
   ・一律從<b>加入排行榜那天</b>起算。用歷史成本的話，
-    輸入三年前買的股票就能直接屠榜，比的會是誰入市早而不是誰操作好。<br>
+    輸入三年前買的股票就能直接屠榜。<br>
   ・<b>最大回檔</b>是報酬曲線從高點到低點的最大跌幅。只看報酬會獎勵冒險——
-    重壓一檔賭對了就登頂，但那跟操作得好是兩件事。同樣 +20%，
-    中途只回檔 5% 跟回檔 30% 完全不同。<br>
+    重壓一檔賭對了就登頂，但那跟操作得好是兩件事。<br>
   ・<b>vs 大盤</b>是同期贏過加權指數多少。多頭時人人都賺，
     贏過大盤才是真的有做對事情。<br>
-  ・<b>近30天</b>讓後加入的人看得到自己的近期表現——
-    每個人起算日不同，累積報酬本來就不該直接比大小。
-    但它不參與排名，避免有人為了衝月榜而亂做。<br>
   ・<b>持股資訊需本人勾選才會顯示</b>，預設不公開，而且只給最大持股、
     最佳持股與最大產業，不會有金額、股數或完整清單。<br>
-  ・<b>數據由使用者自行輸入，未經驗證。</b>持股檔數與參加天數一併顯示——
-    只放 1 檔 +80% 跟 12 檔 +15% 可信度差很多，剛加入就衝第一名的也看得出來。<br>
+  ・<b>數據由使用者自行輸入，未經驗證。</b>天數太少的會標「僅 N 天」——
+    3 天賺 8% 跟 30 天賺 8% 的可信度完全不同。<br>
   ・排行榜是給自己一個參照，不是比賽。看別人的數字之前，
     先確認自己的操作有沒有理由。</span>
 </div>"""
