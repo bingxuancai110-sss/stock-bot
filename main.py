@@ -6624,7 +6624,8 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .load-note{margin-top:20px;font-size:11.5px;color:var(--ink-faint);
   line-height:1.7}
 /* ── App shell：手機優先的固定導覽與安全區 ── */
-body{background:#F2F3F0;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
+html{background:#F2F3F0}
+body{background:#F2F3F0;overflow-x:hidden;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
 .wrap{max-width:760px;padding:0 16px calc(104px + env(safe-area-inset-bottom))}
 .app-header{position:sticky;top:0;z-index:20;background:rgba(242,243,240,.94);backdrop-filter:blur(14px);padding:12px 0 10px;border-bottom:1px solid rgba(185,189,180,.75)}
 .app-header .eyebrow{margin-bottom:2px;font-size:10px;letter-spacing:.18em}
