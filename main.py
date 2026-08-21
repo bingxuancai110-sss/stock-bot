@@ -7423,7 +7423,7 @@ def render_quote_block():
             f'<div class="quote">{"".join(blocks)}</div>')
 
 
-def render_loading_shell(title, nav_active, stages, note="", fragment_urls=None):
+def render_loading_shell(title, nav_active, stages, note=""):
     """
     先秒回的「殼」：導覽列、進度條、投資語錄都立刻出現，
     真正的內容再由瀏覽器另外去要（fragment=1），回來後替換掉這一塊。
@@ -7436,10 +7436,6 @@ def render_loading_shell(title, nav_active, stages, note="", fragment_urls=None)
     stages 是階段文字清單，會依序顯示。
     """
     stages_js = ",".join(f'"{s}"' for s in stages)
-    fragment_urls = fragment_urls or [None]
-    fragment_urls_js = ",".join(
-        "null" if not url else f'"{html.escape(url, quote=True)}"'
-        for url in fragment_urls)
     shell = f"""
 <div id="loading" class="loading">
   <div class="load-track"><div class="load-bar" id="loadbar"></div></div>
@@ -7492,67 +7488,31 @@ def render_loading_shell(title, nav_active, stages, note="", fragment_urls=None)
     }}, 70);
   }}
 
-  function fail(e) {{
-    done = true;
-    clearInterval(timer);
-    stageEl.textContent = '載入失敗：' + (e && e.message ? e.message : e);
-    pctEl.textContent = '';
-    var hint = document.createElement('div');
-    hint.className = 'sub';
-    hint.style.marginTop = '8px';
-    hint.textContent = 'HTTP 500 代表伺服器端出錯，請看 Render Logs；'
-                     + '其他多半是網路問題，重新整理即可。';
-    stageEl.parentNode.appendChild(hint);
-    console.error(e);
-  }}
+  var url = window.location.pathname + window.location.search
+          + (window.location.search ? '&' : '?') + 'fragment=1';
 
-  var fragmentUrls = [{fragment_urls_js}];
-  if (fragmentUrls[0] === null) {{
-    fragmentUrls = [window.location.pathname + window.location.search
-      + (window.location.search ? '&' : '?') + 'fragment=1'];
-  }}
-
-  function fetchFragment(url) {{
-    return fetch(url, {{ credentials: 'same-origin' }})
-      .then(function (r) {{
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.text();
-      }});
-  }}
-
-  if (fragmentUrls.length === 1) {{
-    fetchFragment(fragmentUrls[0]).then(finish).catch(fail);
-  }} else {{
-    // 今日首頁的第 1 段只讀既有快照、事件與排名；第 2 段才抓持股行情。
-    // 兩段並行請求，但依序插入，先讓「今日值得注意」出現，不必等完整分析。
-    var parts = new Array(fragmentUrls.length);
-    var nextPart = 0;
-    var remaining = fragmentUrls.length;
-    var revealed = false;
-    fragmentUrls.forEach(function (url, index) {{
-      fetchFragment(url).then(function (html) {{
-        parts[index] = html;
-        remaining -= 1;
-        var content = document.getElementById('content');
-        while (parts[nextPart] !== undefined) {{
-          content.insertAdjacentHTML('beforeend', parts[nextPart]);
-          nextPart += 1;
-        }}
-        if (!revealed && parts[0] !== undefined) {{
-          revealed = true;
-          setTimeout(function () {{
-            document.getElementById('loading').style.display = 'none';
-          }}, 70);
-        }}
-        if (remaining === 0) {{
-          done = true;
-          clearInterval(timer);
-          bar.style.width = '100%';
-          pctEl.textContent = '100%';
-        }}
-      }}).catch(fail);
+  fetch(url, {{ credentials: 'same-origin' }})
+    .then(function (r) {{
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }})
+    .then(finish)
+    .catch(function (e) {{
+      done = true;
+      clearInterval(timer);
+      // 把錯誤內容顯示出來。只寫「載入失敗」的話，
+      // 伺服器端到底是 500 還是網路斷線完全看不出來，
+      // 每次都得去翻 Render Logs 才知道發生什麼事。
+      stageEl.textContent = '載入失敗：' + (e && e.message ? e.message : e);
+      pctEl.textContent = '';
+      var hint = document.createElement('div');
+      hint.className = 'sub';
+      hint.style.marginTop = '8px';
+      hint.textContent = 'HTTP 500 代表伺服器端出錯，請看 Render Logs；'
+                       + '其他多半是網路問題，重新整理即可。';
+      stageEl.parentNode.appendChild(hint);
+      console.error(e);
     }});
-  }}
 }})();
 </script>"""
     # 骨架也要走 render_page，才會帶上樣式與導覽列——
@@ -9462,26 +9422,16 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 @app.route("/web/portfolio", methods=["GET", "POST"])
 @web_login_required
 def web_portfolio(uid):
-    # 完成風險問卷後，首頁拆成「快速摘要」與「完整分析」兩個 fragment：
-    # 快速摘要只讀既有快照與排名，完整分析才抓持股行情與計算集中度。
+    # 先恢復穩定的單一 fragment 載入。上一版雙 fragment 會讓某些
+    # LINE WebView 將完整外框重複插入，造成頁首、頁尾與 loading 疊在一起。
+    # 後端行情快取仍保留，速度改善不會被撤回。
     if request.method == "GET" and not wants_fragment():
-        shell_profile = get_profile(uid)
-        if is_profile_complete(shell_profile):
-            return render_loading_shell(
-                "今日", "portfolio",
-                ["正在讀取今日事件與排名…", "正在抓持股即時報價…",
-                 "正在計算集中度與相關係數…", "正在整理提醒…"],
-                note="先顯示今日重點，完整組合分析會在後面補上。",
-                fragment_urls=[
-                    "/web/portfolio?fragment=summary",
-                    "/web/portfolio?fragment=details",
-                ])
         return render_loading_shell(
-            "今日", "portfolio", ["正在讀取風險輪廓…"],
-            note="完成風險輪廓後，首頁會顯示依你設定整理的組合分析。")
-
-    if request.method == "GET" and request.args.get("fragment") == "summary":
-        return render_portfolio_fast_summary(uid)
+            "今日", "portfolio",
+            ["正在讀取你的持股…", "正在抓即時報價…",
+             "正在抓法人與月營收資料…", "正在計算集中度與相關係數…",
+             "正在整理提醒…"],
+            note="組合分析會比對法人籌碼、月營收與估值，資料量較大。")
 
     msg = ""
     if request.method == "POST":
@@ -9671,9 +9621,8 @@ def web_portfolio(uid):
     trend_html = render_trend_chart(get_portfolio_snapshots(uid, days=120))
     realized_html = render_realized_summary(uid, inst)
 
-    daily_top = ("" if request.args.get("fragment") == "details" else
-                 render_daily_home_top(uid, holdings, total_value, total_cost,
-                                       price_map, pl_total))
+    daily_top = render_daily_home_top(uid, holdings, total_value, total_cost,
+                                      price_map, pl_total)
     body = f"""
 {daily_top}
 <details class="risk-collapse"><summary>查看我的風險輪廓</summary>
