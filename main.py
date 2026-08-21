@@ -507,6 +507,37 @@ def get_today_signal_state(user_id=None, snapshot_date=None):
             "detail": f"已偵測 {len(events)} 個變化，首頁顯示優先級最高的 3 個。", "events": events}
 
 
+def get_today_event_timeline(user_id=None, snapshot_date=None):
+    """把今日與前一有效交易日事件比對成回訪時間線，不產生不存在的事件。"""
+    snapshot_date = snapshot_date or date.today()
+    snapshot = get_today_change_snapshot(snapshot_date)
+    if not snapshot or not snapshot.get("previous_trade_date"):
+        return {"new": [], "ongoing": [], "resolved": [],
+                "previous_date": None, "current": [], "previous": []}
+
+    personal = get_today_change_events(user_id, snapshot_date)
+    global_events = get_today_change_events(None, snapshot_date)
+    current = personal or global_events
+    previous_date = date.fromisoformat(snapshot["previous_trade_date"])
+    old_personal = get_today_change_events(user_id, previous_date)
+    old_global = get_today_change_events(None, previous_date)
+    previous = old_personal or old_global
+
+    def key(event):
+        return event.get("event_key") or f"{event.get('category','')}:{event.get('title','')}"
+
+    old_keys = {key(event) for event in previous}
+    current_keys = {key(event) for event in current}
+    return {
+        "new": [event for event in current if key(event) not in old_keys],
+        "ongoing": [event for event in current if key(event) in old_keys],
+        "resolved": [event for event in previous if key(event) not in current_keys],
+        "previous_date": snapshot["previous_trade_date"],
+        "current": current,
+        "previous": previous,
+    }
+
+
 def build_today_change_web_data(user_id):
     """網頁顯示完整快照與事件；LINE 只使用 build_today_attention_push()。"""
     snapshot_date = date.today()
@@ -8834,7 +8865,8 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total):
     # 新版首頁上半部：先講今天，再提供完整分析入口。
     signal_state = get_today_signal_state(uid, date.today())
-    events = signal_state.get("events", [])[:3]
+    timeline = get_today_event_timeline(uid, date.today())
+    events = (timeline["new"] + timeline["ongoing"])[:3]
     taiex = fetch_taiex_summary() or {}
     market_pct = None
     for key in ("pct", "change_pct", "percent"):
@@ -8851,16 +8883,25 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     biggest_loss = min(holdings, key=lambda h: (h["price"] or {}).get("pct") or 999) if holdings else None
     rank_status = get_my_rank_summary(uid)
 
-    event_rows = []
-    for idx, event in enumerate(events[:3], 1):
-        level = event.get("severity", "B")
-        event_rows.append(f'''<div class="daily-event level-{html.escape(level)}">
-          <span class="event-number">{idx}</span>
-          <div><b>{html.escape(event.get("title", ""))}</b>
-          <div class="event-detail">{html.escape(event.get("detail", ""))}</div></div>
-        </div>''')
-    if event_rows:
-        events_html = "".join(event_rows)
+    def timeline_rows(items, status_label, status_class, start=1):
+        rows = []
+        for idx, event in enumerate(items, start):
+            level = html.escape(event.get("severity", "B"))
+            rows.append(f'''<div class="daily-event timeline-{status_class} level-{level}">
+              <span class="event-status">{status_label}</span>
+              <div><b>{html.escape(event.get("title", ""))}</b>
+              <div class="event-detail">{html.escape(event.get("detail", ""))}</div></div>
+            </div>''')
+        return "".join(rows)
+
+    timeline_html = timeline_rows(timeline["new"], "新", "new")
+    timeline_html += timeline_rows(timeline["ongoing"], "續", "ongoing", len(timeline["new"]) + 1)
+    if timeline["resolved"]:
+        timeline_html += '<div class="timeline-divider">✓ 昨日事件已解除</div>'
+        timeline_html += timeline_rows(timeline["resolved"][:2], "解", "resolved")
+
+    if timeline_html:
+        events_html = timeline_html
     else:
         state_icon = "🕘" if signal_state["kind"] == "not_updated" else ("📌" if signal_state["kind"] == "baseline" else "😴")
         events_html = f'''<div class="daily-empty">
@@ -8891,7 +8932,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     portfolio_text = fmt_pct(portfolio_pct) if portfolio_pct is not None else fmt_pct(pl_total)
     relative_text = fmt_pct(relative) if relative is not None else "—"
     return f'''<style>
-.daily-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:26px 24px 22px;margin:-8px -2px 18px;border-bottom:1px solid #d7d4ca}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:13px}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:12px}}.rank-mini b{{display:block;font-size:21px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:14px}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.rank-grid{{grid-template-columns:1fr}}.daily-hero h1{{font-size:26px}}}}
+.daily-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:26px 24px 22px;margin:-8px -2px 18px;border-bottom:1px solid #d7d4ca}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-status{{min-width:28px;height:22px;padding:2px 5px;border-radius:7px;text-align:center;font-size:11px;font-weight:700;line-height:18px;flex:none;background:#eee;color:var(--ink-soft)}}.timeline-new .event-status{{background:#FCE9E6;color:var(--up)}}.timeline-ongoing .event-status{{background:#F3EEE1;color:var(--brass)}}.timeline-resolved .event-status{{background:#E8F2EA;color:var(--down)}}.timeline-divider{{margin:14px 0 0;padding-top:12px;border-top:1px solid #eee;color:var(--ink-soft);font-size:12px;font-weight:600}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:13px}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:12px}}.rank-mini b{{display:block;font-size:21px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:14px}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.rank-grid{{grid-template-columns:1fr}}.daily-hero h1{{font-size:26px}}}}
 </style><section class="daily-hero">
   <div class="eyebrow">TODAY · {date.today().strftime('%Y / %m / %d')}</div>
   <h1>今天你的投資發生了什麼？</h1>
