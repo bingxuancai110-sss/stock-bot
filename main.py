@@ -6989,7 +6989,9 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .rank-card.rank-champion:after{content:'✦  ✦  ✦';position:absolute;right:18px;top:9px;color:#B4862D;
   font-size:10px;letter-spacing:4px;opacity:.7;pointer-events:none}
 .rank-honour{position:relative;display:flex;align-items:center;gap:10px;margin-bottom:12px;color:#6E5228}
-.rank-honour-icon{font-size:31px;line-height:1;filter:drop-shadow(0 2px 2px rgba(110,82,40,.18))}
+.rank-honour-icon{display:grid;place-items:center;width:74px;height:74px;line-height:1;
+  filter:drop-shadow(0 3px 3px rgba(110,82,40,.20))}
+.rank-honour-icon svg{display:block;width:74px;height:74px}
 .rank-honour b{display:block;font-size:14px;letter-spacing:.08em}
 .rank-honour small{display:block;color:#8A6A3B;font-size:11px;margin-top:2px}
 .rank-card.rank-champion .rank-number{font-size:21px;color:#6E5228;font-weight:700}
@@ -6997,7 +6999,8 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .rank-card.rank-champion .rank-return{font-size:24px}
 .rank-card.rank-champion .rank-meta{color:#6B604B}
 .rank-card.rank-champion .rank-honour{justify-content:center;text-align:center;flex-direction:column;gap:4px;margin-bottom:13px}
-.rank-card.rank-champion .rank-honour-icon{font-size:43px}
+.rank-card.rank-champion .rank-honour-icon{width:88px;height:88px}
+.rank-card.rank-champion .rank-honour-icon svg{width:88px;height:88px}
 .rank-card.rank-champion .rank-honour b{font-size:15px}
 .rank-tier{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .rank-tier-medal{font-size:25px;line-height:1;filter:drop-shadow(0 1px 1px rgba(35,39,35,.14))}
@@ -7195,7 +7198,7 @@ background:rgba(242,243,240,.94);backdrop-filter:blur(14px);padding:12px 0 10px;
 
 NEED_LOGIN_HTML = """
 <div class="msg">
-  這個連結已失效或尚未登入。
+  這個網頁登入狀態已失效。從 LINE 開啟時，請回到 LINE 輸入「網頁」重新取得連結；<b>不需要設定帳號密碼</b>。
 </div>
 <div class="section-head"><h2>用登入碼登入</h2>
   <span class="section-note">任何瀏覽器都可以</span></div>
@@ -8874,6 +8877,21 @@ def web_leaderboard(uid):
             return ('<div class="empty">這個榜還沒有資料。<br><br>'
                     '<span style="font-size:12.5px">加入後累積 2 天以上的'
                     '每日快照就會出現。</span></div>')
+        champion_svg = '''<svg viewBox="0 0 120 120" role="img" aria-label="冠軍獎盃" xmlns="http://www.w3.org/2000/svg">
+  <defs><linearGradient id="cupGold" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#FFF3A7"/><stop offset=".32" stop-color="#E8AE32"/>
+    <stop offset=".68" stop-color="#A86713"/><stop offset="1" stop-color="#F7D76A"/>
+  </linearGradient><linearGradient id="cupShadow" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#8E5010"/><stop offset="1" stop-color="#D69B27"/>
+  </linearGradient></defs>
+  <path d="M31 23h58v18c0 18-12 31-29 34C43 72 31 59 31 41V23Z" fill="url(#cupGold)" stroke="#875010" stroke-width="2"/>
+  <path d="M31 28H17c0 20 8 30 23 32M89 28h14c0 20-8 30-23 32" fill="none" stroke="#A96B18" stroke-width="7" stroke-linecap="round"/>
+  <path d="M42 24c8 10 28 10 36 0" fill="none" stroke="#FFF1A0" stroke-width="3" opacity=".9"/>
+  <path d="M60 75v15M40 94h40" stroke="#8A5215" stroke-width="7" stroke-linecap="round"/>
+  <path d="M36 96h48v9H36z" fill="url(#cupShadow)" stroke="#875010" stroke-width="2"/>
+  <path d="M60 9l3 7 8 1-6 5 2 8-7-4-7 4 2-8-6-5 8-1 3-7Z" fill="#F4C84E" stroke="#A66B16" stroke-width="1.5"/>
+  <circle cx="24" cy="48" r="2" fill="#FFF3A7"/><circle cx="96" cy="48" r="2" fill="#FFF3A7"/>
+</svg>'''
         out = []
         for i, r in enumerate(rows):
             mine = " rank-mine" if str(r.get("user_id")) == str(uid) else ""
@@ -8881,8 +8899,8 @@ def web_leaderboard(uid):
             rank = f"#{current_rank}"
             if current_rank == 1:
                 tier_class = " rank-champion"
-                honour = '''<div class="rank-honour">
-  <span class="rank-honour-icon">🏆</span>
+                honour = f'''<div class="rank-honour">
+  <span class="rank-honour-icon">{champion_svg}</span>
   <div><b>冠軍席位</b><small>今日冠軍・目前第一名</small></div>
 </div>'''
             elif current_rank == 2:
