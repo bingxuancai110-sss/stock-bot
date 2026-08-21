@@ -859,6 +859,21 @@ def init_db():
         cursor.execute(
             "ALTER TABLE leaderboard_members "
             "ADD COLUMN IF NOT EXISTS show_holdings BOOLEAN DEFAULT FALSE")
+        # 排行榜每日名次快照：用來顯示昨日到今日的上升／下降與連續天數。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS leaderboard_rank_snapshots (
+                board TEXT NOT NULL,
+                snapshot_date DATE NOT NULL,
+                user_id TEXT NOT NULL,
+                rank INTEGER NOT NULL,
+                return_pct REAL,
+                PRIMARY KEY (board, snapshot_date, user_id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_leaderboard_rank_history
+            ON leaderboard_rank_snapshots (board, user_id, snapshot_date DESC)
+        ''')
         # 背景工作狀態。
         # 原本只存在記憶體，但那有兩個問題：gunicorn 開多個 worker 時，
         # 工作在 A 執行、查詢卻可能連到 B，看到的是空的；服務一重啟也全沒了。
@@ -1988,6 +2003,87 @@ def summarize_member_holdings(uid, prices, inst):
     return {"biggest": biggest, "best": best, "top_industry": top_ind}
 
 
+def save_leaderboard_rank_snapshots(snapshot_date=None):
+    # 每日收盤後保存短線／長線名次；沒有足夠快照不補造排名。
+    snapshot_date = snapshot_date or date.today()
+    boards, _ = build_leaderboard(top_n=100, days=365)
+    rows = []
+    for board_name in ("short", "long"):
+        for rank, row in enumerate(boards.get(board_name, []), start=1):
+            value = row.get("m30") if board_name == "short" else row.get("ret")
+            rows.append((board_name, snapshot_date, row.get("user_id"), rank, value))
+    if not rows:
+        return 0
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        execute_values(cur, '''
+            INSERT INTO leaderboard_rank_snapshots
+                (board, snapshot_date, user_id, rank, return_pct)
+            VALUES %s
+            ON CONFLICT (board, snapshot_date, user_id) DO UPDATE SET
+                rank=EXCLUDED.rank, return_pct=EXCLUDED.return_pct
+        ''', rows)
+        conn.commit()
+        return len(rows)
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ 儲存排行榜名次快照失敗: {e}")
+        return 0
+    finally:
+        release_db_connection(conn)
+
+
+def get_rank_status(user_id, board, current_rank):
+    # 取得最近一次有效排名與連續升降次數；資料不足明確回傳 None。
+    if current_rank is None:
+        return {"rank": None, "previous": None, "delta": None, "streak": 0, "direction": None}
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT rank FROM leaderboard_rank_snapshots
+            WHERE board=%s AND user_id=%s AND snapshot_date < CURRENT_DATE
+            ORDER BY snapshot_date DESC LIMIT 8
+        ''', (board, str(user_id).strip()))
+        previous_rows = [r[0] for r in cur.fetchall()]
+        cur.close()
+    except Exception as e:
+        print(f"❌ 讀取排名變化失敗: {e}")
+        previous_rows = []
+    finally:
+        release_db_connection(conn)
+    if not previous_rows:
+        return {"rank": current_rank, "previous": None, "delta": None, "streak": 0, "direction": None}
+    previous = previous_rows[0]
+    delta = previous - current_rank
+    direction = "up" if delta > 0 else ("down" if delta < 0 else "same")
+    seq = [current_rank] + previous_rows
+    streak = 0
+    last_sign = 1 if delta > 0 else (-1 if delta < 0 else 0)
+    if last_sign:
+        for before, after in zip(seq[1:], seq[:-1]):
+            sign = 1 if before - after > 0 else (-1 if before - after < 0 else 0)
+            if sign != last_sign:
+                break
+            streak += 1
+    return {"rank": current_rank, "previous": previous, "delta": delta,
+            "streak": streak, "direction": direction}
+
+
+def get_my_rank_summary(user_id):
+    # 首頁用的個人排名摘要；短線與長線分開計算。
+    boards, _ = build_leaderboard(top_n=100, days=365)
+    result = {}
+    for board, label in (("short", "短線"), ("long", "長線")):
+        current_rank = next((i for i, row in enumerate(boards.get(board, []), 1)
+                             if row.get("user_id") == str(user_id)), None)
+        status = get_rank_status(user_id, board, current_rank)
+        status["label"] = label
+        result[board] = status
+    return result
+
+
 def build_leaderboard(top_n=20, days=365):
     """
     算出排行榜。分短線與長線兩榜，因為那本來就是兩種不同的能力——
@@ -2038,6 +2134,7 @@ def build_leaderboard(top_n=20, days=365):
 
         holds = summarize_member_holdings(uid, prices, inst) if show else None
         base = {
+            "user_id": str(uid),
             "nickname": nick,
             "holdings": len(merge_positions(get_positions(uid))),
             "joined": joined,
@@ -5580,9 +5677,10 @@ def _do_daily_snapshot():
         except Exception as e:
             print(f"❌ 自選股評分快照失敗 {uid}: {e}")
 
+    rank_saved = save_leaderboard_rank_snapshots()
     return (f"組合 {saved}/{len(user_ids)}（略過 {skipped}）、"
             f"自選 {wl_saved}/{len(wl_users)}、產業 {ind_saved}、"
-            f"選股名單 {picks_saved}、大盤 {taiex_close}")
+            f"選股名單 {picks_saved}、排行榜名次 {rank_saved}、大盤 {taiex_close}")
 
 
 # ── 資料保留期限 ──
@@ -8600,6 +8698,71 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
     return out
 
 
+def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total):
+    # 新版首頁上半部：先講今天，再提供完整分析入口。
+    events = get_today_change_events(uid, date.today(), limit=3)
+    taiex = fetch_taiex_summary() or {}
+    market_pct = None
+    for key in ("pct", "change_pct", "percent"):
+        if taiex.get(key) is not None:
+            try:
+                market_pct = float(taiex[key])
+            except (TypeError, ValueError):
+                pass
+            break
+    portfolio_pct = sum((h["weight"] * float((h["price"] or {}).get("pct") or 0))
+                        for h in holdings) / 100 if holdings else None
+    relative = portfolio_pct - market_pct if portfolio_pct is not None and market_pct is not None else None
+    biggest_gain = max(holdings, key=lambda h: (h["price"] or {}).get("pct") or -999) if holdings else None
+    biggest_loss = min(holdings, key=lambda h: (h["price"] or {}).get("pct") or 999) if holdings else None
+    rank_status = get_my_rank_summary(uid)
+
+    event_rows = []
+    for idx, event in enumerate(events[:3], 1):
+        level = event.get("severity", "B")
+        event_rows.append(f'''<div class="daily-event level-{html.escape(level)}">
+          <span class="event-number">{idx}</span>
+          <div><b>{html.escape(event.get("title", ""))}</b>
+          <div class="event-detail">{html.escape(event.get("detail", ""))}</div></div>
+        </div>''')
+    events_html = "".join(event_rows) if event_rows else '''<div class="daily-empty">
+      <b>😴 今日市場訊號偏少</b><br><span>目前沒有足夠的前一交易日比較資料或明顯變化。</span>
+    </div>'''
+
+    def rank_line(board):
+        s = rank_status[board]
+        if s["rank"] is None:
+            return f'''<div class="rank-mini"><span>{s["label"]}</span><b>尚未上榜</b><small>累積有效快照後開始顯示</small></div>'''
+        if s["delta"] is None:
+            return f'''<div class="rank-mini"><span>{s["label"]}</span><b>#{s["rank"]}</b><small>等待前一日排名快照</small></div>'''
+        if s["direction"] == "up":
+            movement = f'<em class="up">↑ {s["delta"]} 名</em>'
+            streak = f"・連續 {s['streak']} 次上升" if s["streak"] >= 2 else ""
+        elif s["direction"] == "down":
+            movement = f'<em class="down">↓ {abs(s["delta"])} 名</em>'
+            streak = f"・連續 {s['streak']} 次下降" if s["streak"] >= 2 else ""
+        else:
+            movement, streak = '<em class="flat">— 無變化</em>', ""
+        return f'''<div class="rank-mini"><span>{s["label"]}</span><b>#{s["rank"]} {movement}</b><small>昨日 #{s["previous"]}{streak}</small></div>'''
+
+    gain_html = (f"{biggest_gain['name']} {fmt_pct((biggest_gain['price'] or {}).get('pct'))}"
+                 if biggest_gain else "—")
+    loss_html = (f"{biggest_loss['name']} {fmt_pct((biggest_loss['price'] or {}).get('pct'))}"
+                 if biggest_loss else "—")
+    market_text = fmt_pct(market_pct) if market_pct is not None else "資料暫缺"
+    portfolio_text = fmt_pct(portfolio_pct) if portfolio_pct is not None else fmt_pct(pl_total)
+    relative_text = fmt_pct(relative) if relative is not None else "—"
+    return f'''<style>
+.daily-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:26px 24px 22px;margin:-8px -2px 18px;border-bottom:1px solid #d7d4ca}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:#18734b}}.negative,.down{{color:#a54b42}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:13px}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:12px}}.rank-mini b{{display:block;font-size:21px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:14px}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.rank-grid{{grid-template-columns:1fr}}.daily-hero h1{{font-size:26px}}}}
+</style><section class="daily-hero">
+  <div class="eyebrow">TODAY · {date.today().strftime('%Y / %m / %d')}</div>
+  <h1>今天你的投資發生了什麼？</h1>
+  <div class="market-strip"><span>大盤 <b>{market_text}</b></span><span>你的組合 <b>{portfolio_text}</b></span><span>相對大盤 <b>{relative_text}</b></span></div>
+</section>
+<section class="daily-card attention-card"><div class="daily-section-title"><h2>🔥 今日值得注意</h2><a href="/web/premarket">查看完整變化 →</a></div>{events_html}</section>
+<section class="daily-card"><div class="daily-section-title"><h2>我的組合今天怎麼了？</h2><span>即時報價</span></div><div class="portfolio-highlights"><div><small>最大貢獻</small><b class="positive">{gain_html}</b></div><div><small>最大拖累</small><b class="negative">{loss_html}</b></div><div><small>總市值</small><b>{total_value:,.0f}</b></div></div></section>
+<section class="daily-card"><div class="daily-section-title"><h2>🏆 我的排名變化</h2><a href="/web/leaderboard">查看排行榜 →</a></div><div class="rank-grid">{rank_line('short')}{rank_line('long')}</div></section>'''
+
 @app.route("/web/portfolio", methods=["GET", "POST"])
 @web_login_required
 def web_portfolio(uid):
@@ -8799,58 +8962,20 @@ def web_portfolio(uid):
     trend_html = render_trend_chart(get_portfolio_snapshots(uid, days=120))
     realized_html = render_realized_summary(uid, inst)
 
+    daily_top = render_daily_home_top(uid, holdings, total_value, total_cost,
+                                      price_map, pl_total)
     body = f"""
+{daily_top}
+<details class="risk-collapse"><summary>查看我的風險輪廓</summary>
 {risk_card}
-<div class="totals">
-  <div><div class="total-label">總市值</div>
-       <div class="total-value num">{total_value:,.0f}</div>
-       <div class="total-sub">{fmt_pct(pl_total)}</div></div>
-  <div><div class="total-label">持股檔數</div>
-       <div class="total-value num">{len(holdings)}</div>
-       <div class="total-sub" style="color:var(--ink-faint)">
-         {len(by_industry)} 個產業</div></div>
-  <div><div class="total-label">最大單一持股</div>
-       <div class="total-value num">{top['weight']:.1f}%</div>
-       <div class="total-sub" style="color:var(--ink-faint)">{top['name']}</div></div>
-{alert_card}
-</div>
-
-<div class="section-head"><h2>組合走勢</h2>
-  <span class="section-note">相對起始日漲跌幅</span></div>
-<div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
-
-<div class="section-head"><h2>產業集中度</h2>
-  <span class="section-note">寬度即權重</span></div>
-<div class="band">{''.join(band)}</div>
-<div class="legend">{''.join(legend)}</div>
-<div class="callout">{corr_txt}</div>
-
-<div class="section-head"><h2>持股權重</h2>
-  <span class="section-note">依權重排序</span></div>
-<div class="rows">
-{''.join(f'''
-<div class="row">
-  <div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div>
-  <div class="price num">{h['weight']:.1f}%</div>
-  <div class="meta">
-    <span><em>產業</em> {h['industry']}</span>
-    <span><em>損益</em> {fmt_pct(h['pl'])}</span>
-    <span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span>
-    <span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span>
-  </div>
-  <div class="chg">{fmt_pct(h['price']['pct'])}</div>
-  <div class="bar"><div style="width:{h['weight']:.1f}%"></div></div>
-</div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}
-</div>
-
+</details>
+<div class="section-head"><h2>完整組合分析</h2><span class="section-note">往下查看詳細資料</span></div>
+<div class="totals"><div><div class="total-label">總市值</div><div class="total-value num">{total_value:,.0f}</div><div class="total-sub">{fmt_pct(pl_total)}</div></div><div><div class="total-label">持股檔數</div><div class="total-value num">{len(holdings)}</div><div class="total-sub">{len(by_industry)} 個產業</div></div><div><div class="total-label">最大單一持股</div><div class="total-value num">{top['weight']:.1f}%</div><div class="total-sub">{top['name']}</div></div>{alert_card}</div>
+<div class="section-head"><h2>組合走勢</h2><span class="section-note">相對起始日漲跌幅</span></div><div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
+<div class="section-head"><h2>產業集中度</h2><span class="section-note">寬度即權重</span></div><div class="band">{''.join(band)}</div><div class="legend">{''.join(legend)}</div><div class="callout">{corr_txt}</div>
+<div class="section-head"><h2>持股權重</h2><span class="section-note">依權重排序</span></div><div class="rows">{''.join(f'''<div class="row"><div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div><div class="price num">{h['weight']:.1f}%</div><div class="meta"><span><em>產業</em> {h['industry']}</span><span><em>損益</em> {fmt_pct(h['pl'])}</span><span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span><span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span></div><div class="chg">{fmt_pct(h['price']['pct'])}</div><div class="bar"><div style="width:{h['weight']:.1f}%"></div></div></div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}</div>
 {realized_html}
-<div class="section-head" id="alerts"><h2>值得注意</h2>
-  <span class="section-note"><a href="/web/settings" style="color:var(--ink-soft)">調整門檻 →</a></span></div>
-<div class="rows">
-{''.join(f'<div class="alert"><span class="tag">{tag}</span><span>{txt}</span></div>'
-         for tag, txt in alerts) if alerts
- else '<div class="empty">目前沒有觸及門檻的項目。</div>'}
-</div>"""
+<div class="section-head" id="alerts"><h2>值得注意</h2><span class="section-note"><a href="/web/settings" style="color:var(--ink-soft)">調整門檻 →</a></span></div><div class="rows">{''.join(f'<div class="alert"><span class="tag">{tag}</span><span>{txt}</span></div>' for tag, txt in alerts) if alerts else '<div class="empty">目前沒有觸及門檻的項目。</div>'}</div>"""
     return respond_page("組合分析", body, "portfolio")
 
 
