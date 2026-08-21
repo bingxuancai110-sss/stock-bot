@@ -7110,7 +7110,7 @@ def web_login():
     uid = resolve_web_token(token)
     if not uid:
         return render_page("需要登入", NEED_LOGIN_HTML), 401
-    resp = make_response(redirect("/web/positions"))
+    resp = make_response(redirect("/web/portfolio"))
     resp.set_cookie("stockbot_token", token,
                     max_age=WEB_SESSION_DAYS * 86400,
                     httponly=True, samesite="Lax", secure=True)
@@ -7135,7 +7135,7 @@ def web_code_login():
                 '請回 LINE 輸入「登入碼」取得新的一組。</div>' + NEED_LOGIN_HTML)
         return render_page("登入", body), 401
 
-    resp = make_response(redirect("/web/positions"))
+    resp = make_response(redirect("/web/portfolio"))
     resp.set_cookie("stockbot_token", token,
                     max_age=WEB_SESSION_DAYS * 86400,
                     httponly=True, samesite="Lax", secure=True)
@@ -7145,8 +7145,8 @@ def web_code_login():
 @app.route("/web")
 @web_login_required
 def web_home(uid):
-    # 有持股就直接看分析，沒有就先去輸入
-    return redirect("/web/portfolio" if get_positions(uid) else "/web/positions")
+    # 網頁預設入口固定進入「今日」；沒有持股時，今日頁仍會提供新增持股入口。
+    return redirect("/web/portfolio")
 
 
 @app.route("/web/premarket")
