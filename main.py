@@ -1028,6 +1028,7 @@ FEATURE_LABELS = {
     "blackhorse": "黑馬",
     "radar": "雷達",
     "portfolio": "組合分析",
+    "web_entry": "網頁",
     "trades": "紀錄",
     "compare": "比較",
     "positions": "自選",
@@ -1048,8 +1049,8 @@ def infer_line_feature(text):
     exact = {
         "盤前": "premarket", "解盤": "debrief", "黑馬": "blackhorse",
         "雷達": "radar", "籌碼": "chips", "籌碼超人": "chips",
-        "自選": "positions", "新聞": "news", "網頁": "portfolio",
-        "網頁版": "portfolio", "排行榜": "leaderboard", "紀錄": "trades",
+        "自選": "positions", "新聞": "news", "網頁": "web_entry",
+        "網頁版": "web_entry", "排行榜": "leaderboard", "紀錄": "trades",
         "比較": "compare", "管理": "admin", "使用者名單": "admin",
         "今日活躍": "admin", "沉睡使用者": "admin", "功能統計": "admin",
         "流失": "admin", "可能流失": "admin",
@@ -1205,7 +1206,10 @@ def build_admin_dashboard_report():
              f"🟡 3–6天未使用　{dormant3} 人", f"🔴 7天以上未使用　{dormant7} 人",
              "", "━━━━━━━━━━━━", "", "📱 近 7 天功能使用"]
     feature_map = {feature: (people, uses) for feature, people, uses in features}
-    for feature in ("leaderboard", "blackhorse", "radar", "portfolio", "trades", "compare"):
+    for feature in (
+        "premarket", "debrief", "web_entry", "portfolio",
+        "leaderboard", "blackhorse", "radar", "trades", "compare"
+    ):
         people, uses = feature_map.get(feature, (0, 0))
         lines.append(f"{_activity_feature_label(feature):<6}　{people} 人／{uses} 次")
     lines += ["", "━━━━━━━━━━━━", "", "資料更新：" + datetime.now(timezone(timedelta(hours=8))).strftime('%m/%d %H:%M')]
