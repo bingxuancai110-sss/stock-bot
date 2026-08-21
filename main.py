@@ -38,7 +38,7 @@ def _require_dependencies():
     required = ("get_db_connection", "release_db_connection", "compute_screener_rows",
                 "fetch_taiex_summary", "fetch_quotes_bulk", "fetch_stock_news",
                 "get_user_watchlist", "compute_watchlist_scores", "get_notify_users",
-                "stock_display_name")
+                "get_all_watchlist_user_ids", "stock_display_name")
     missing = [name for name in required if name not in globals()]
     if missing:
         raise RuntimeError("每日盤前變化偵測尚未注入既有 bot 函式：" + ", ".join(missing))
@@ -231,9 +231,13 @@ def _pick_events(today, yesterday):
             elif abs(delta_score) >= 8:
                 events.append(_event("A", "blackhorse", f"{new[code]['name']} 黑馬分數 {old_score} → {new_score}",
                     "黑馬分數出現明顯變化。", f"blackhorse_score_{code}", {"code": code, "old": old_score, "new": new_score}))
-        if abs(delta_rank) >= 3:
-            events.append(_event("A", "blackhorse", f"{new[code]['name']} 黑馬排名上升 {delta_rank} 名" if delta_rank > 0 else f"{new[code]['name']} 黑馬排名下降 {abs(delta_rank)} 名",
-                "排名相較前一交易日有明顯變化。", f"blackhorse_rank_{code}", {"code": code, "old": old[code].get("rank"), "new": new[code].get("rank")}))
+            elif abs(delta_score) >= 3:
+                events.append(_event("B", "blackhorse", f"{new[code]['name']} 黑馬分數 {old_score} → {new_score}",
+                    "黑馬分數相較前一交易日有一般變化。", f"blackhorse_score_{code}", {"code": code, "old": old_score, "new": new_score}))
+        if abs(delta_rank) >= 1:
+            level = "A" if abs(delta_rank) >= 3 else "B"
+            events.append(_event(level, "blackhorse", f"{new[code]['name']} 黑馬排名上升 {delta_rank} 名" if delta_rank > 0 else f"{new[code]['name']} 黑馬排名下降 {abs(delta_rank)} 名",
+                "排名相較前一交易日有變化。", f"blackhorse_rank_{code}", {"code": code, "old": old[code].get("rank"), "new": new[code].get("rank")}))
     entered = sorted(set(new) - set(old), key=lambda c: new[c].get("rank") or 999)
     exited = sorted(set(old) - set(new), key=lambda c: old[c].get("rank") or 999)
     if entered:
@@ -276,10 +280,10 @@ def _institutional_events(current, previous):
                 "三大法人合計方向相較前一交易日反轉。", f"institutional_direction_{code}", {"code": code, "old": before, "new": after}))
         old_streak = before.get("streak")
         new_streak = after.get("streak")
-        if old_streak is not None and new_streak is not None and abs(new_streak - old_streak) >= 2:
+        if old_streak is not None and new_streak is not None and abs(new_streak - old_streak) >= 1:
             side = "買超" if (after.get("total_net_lots") or 0) > 0 else "賣超"
             events.append(_event("A", "institutional", f"{after.get('name', code)} 法人連續{side} {old_streak} → {new_streak} 日",
-                "連續買超／賣超天數相較前一交易日變化達 2 日。", f"institutional_streak_{code}", {"code": code, "old": old_streak, "new": new_streak}))
+                "連續買超／賣超天數相較前一交易日有變化。", f"institutional_streak_{code}", {"code": code, "old": old_streak, "new": new_streak}))
     return events
 
 
@@ -294,6 +298,8 @@ def _market_events(market, old_market):
             events.append(_event("S", "market", f"{label} 變化 {old:+.2f}% → {cur:+.2f}%", "大盤或美股主要指數出現重大日間變化。", f"market_{key}", {"old": old, "new": cur}))
         elif abs(delta) >= 1:
             events.append(_event("A", "market", f"{label} 變化 {old:+.2f}% → {cur:+.2f}%", "指數方向相較前一交易日明顯改變。", f"market_{key}", {"old": old, "new": cur}))
+        elif abs(delta) >= 0.5:
+            events.append(_event("B", "market", f"{label} 變化 {old:+.2f}% → {cur:+.2f}%", "指數相較前一交易日有一般變化。", f"market_{key}", {"old": old, "new": cur}))
     return events
 
 
@@ -413,7 +419,10 @@ def run_daily_change_detection(snapshot_date=None):
     events = build_global_events(snapshot, previous)
     snapshot_date = snapshot["snapshot_date"]
     previous_date = snapshot.get("previous_trade_date")
-    for uid in get_notify_users():
+    user_ids = set(get_notify_users() or [])
+    if "get_all_watchlist_user_ids" in globals():
+        user_ids.update(get_all_watchlist_user_ids() or [])
+    for uid in user_ids:
         try:
             user_events = events + _watchlist_events(uid, snapshot_date, previous_date)
             user_events = _sort_events(user_events)
@@ -446,6 +455,8 @@ def get_today_change_events(user_id=None, snapshot_date=None, limit=None):
 
 def build_today_attention_push(user_id):
     events = get_today_change_events(user_id, limit=3)
+    if not events:
+        events = get_today_change_events(None, limit=3)
     lines = ["🔥 今日值得注意"]
     if not events:
         return "😴 今日市場訊號偏少"
@@ -476,15 +487,37 @@ def get_today_change_snapshot(snapshot_date=None):
         release_db_connection(conn)
 
 
+def get_today_signal_state(user_id=None, snapshot_date=None):
+    """首頁用的真實資料狀態；不把尚未更新誤報成市場安靜。"""
+    snapshot_date = snapshot_date or date.today()
+    snapshot = get_today_change_snapshot(snapshot_date)
+    personal_events = get_today_change_events(user_id, snapshot_date)
+    global_events = get_today_change_events(None, snapshot_date)
+    events = personal_events or global_events
+    if not snapshot:
+        return {"kind": "not_updated", "title": "今日盤前資料尚未更新",
+                "detail": "等待每日資料快照與變化偵測完成；目前不顯示推測訊號。", "events": events}
+    if not snapshot.get("previous_trade_date"):
+        return {"kind": "baseline", "title": "已建立今日基準快照",
+                "detail": "從下一個有效交易日開始顯示排名、分數與法人方向變化。", "events": events}
+    if not events:
+        return {"kind": "quiet", "title": "今日市場訊號偏少",
+                "detail": "已完成前一交易日比較，目前沒有達到事件規則的變化。", "events": events}
+    return {"kind": "events", "title": "今日有新的市場變化",
+            "detail": f"已偵測 {len(events)} 個變化，首頁顯示優先級最高的 3 個。", "events": events}
+
+
 def build_today_change_web_data(user_id):
     """網頁顯示完整快照與事件；LINE 只使用 build_today_attention_push()。"""
     snapshot_date = date.today()
     global_events = get_today_change_events(None, snapshot_date)
     user_events = get_today_change_events(user_id, snapshot_date)
+    state = get_today_signal_state(user_id, snapshot_date)
     return {"date": snapshot_date.isoformat(), "levels": LEVEL_LABEL,
             "snapshot": get_today_change_snapshot(snapshot_date),
             "events": _sort_events(user_events or global_events),
-            "global_events": global_events, "all_events": user_events}
+            "global_events": global_events, "all_events": user_events,
+            "state": state}
 
 
 # 在既有 bot 完成所有函式定義後呼叫 configure_daily_change_detector(...)
@@ -6590,6 +6623,24 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
   letter-spacing:.04em}
 .load-note{margin-top:20px;font-size:11.5px;color:var(--ink-faint);
   line-height:1.7}
+/* ── App shell：手機優先的固定導覽與安全區 ── */
+body{background:#F2F3F0;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
+.wrap{max-width:760px;padding:0 16px calc(104px + env(safe-area-inset-bottom))}
+.app-header{position:sticky;top:0;z-index:20;background:rgba(242,243,240,.94);backdrop-filter:blur(14px);padding:12px 0 10px;border-bottom:1px solid rgba(185,189,180,.75)}
+.app-header .eyebrow{margin-bottom:2px;font-size:10px;letter-spacing:.18em}
+.app-header h1{font-size:21px;letter-spacing:.01em}
+.app-header .dateline{font-size:11px;margin-top:2px}
+.top-nav{display:flex;gap:6px;overflow-x:auto;white-space:nowrap;padding:10px 0;margin:0 -2px 4px;border:0;scrollbar-width:none}
+.top-nav::-webkit-scrollbar{display:none}
+.top-nav a{padding:7px 11px;border-radius:999px;background:#E3E5DF;color:var(--ink-soft);font-size:12.5px;text-decoration:none}
+.top-nav a.on{background:var(--ink);color:#FFF;border:0;padding-bottom:7px}
+.app-bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;background:rgba(255,255,255,.95);backdrop-filter:blur(16px);border-top:1px solid #D8DAD4;padding:8px 8px calc(8px + env(safe-area-inset-bottom));box-shadow:0 -5px 18px rgba(18,22,27,.08)}
+.app-bottom-nav .bottom-inner{width:min(760px,100%);display:grid;grid-template-columns:repeat(5,1fr);gap:3px}
+.app-bottom-nav a{display:flex;flex-direction:column;align-items:center;gap:2px;color:var(--ink-faint);font-size:11px;text-decoration:none;padding:3px 0;border-radius:10px}
+.app-bottom-nav a b{font-size:17px;font-weight:500;line-height:1}
+.app-bottom-nav a.on{color:var(--brass);background:#F0EEE8;font-weight:600}
+.daily-card{border-radius:18px;box-shadow:0 4px 18px rgba(18,22,27,.055)}
+@media(min-width:700px){body{padding-bottom:0}.app-bottom-nav{display:none}.wrap{padding-bottom:56px}}
 """
 
 NEED_LOGIN_HTML = """
@@ -6659,14 +6710,19 @@ HEAVY_COMMANDS = {"黑馬", "雷達", "籌碼", "籌碼超人", "認養", "盤�
 
 def render_page(title, body, nav_active=None, user_name=None):
     """所有網頁共用的外框。用字串組裝就好，這個規模不需要模板引擎。"""
+    active_nav = "portfolio" if nav_active == "premarket" else nav_active
     def tab(href, label, key):
-        on = " class=\"on\"" if key == nav_active else ""
+        on = " class=\"on\"" if key == active_nav else ""
         return f'<a href="{href}"{on}>{label}</a>'
+
+    def bottom_tab(href, icon, label, key):
+        on = " on" if key == active_nav else ""
+        return f'<a href="{href}" class="{on.strip()}"><b>{icon}</b>{label}</a>'
 
     nav = ""
     if nav_active:
-        nav = ("<nav>"
-               + tab("/web/portfolio", "組合", "portfolio")
+        nav = ("<nav class=\"top-nav\">"
+               + tab("/web/portfolio", "今日", "portfolio")
                + tab("/web/leaderboard", "排行榜", "leaderboard")
                + tab("/web/positions", "持股", "positions")
                + tab("/web/trades", "紀錄", "trades")
@@ -6675,6 +6731,15 @@ def render_page(title, body, nav_active=None, user_name=None):
                + tab("/web/settings", "設定", "settings")
                + "</nav>")
 
+    more_on = active_nav in {"settings", "trades", "compare"}
+    bottom_nav = ("<div class=\"app-bottom-nav\"><div class=\"bottom-inner\">"
+                  + bottom_tab("/web/portfolio", "⌂", "今日", "portfolio")
+                  + bottom_tab("/web/positions", "▣", "持股", "positions")
+                  + bottom_tab("/web/screener", "⌁", "選股", "screener")
+                  + bottom_tab("/web/leaderboard", "≡", "排行", "leaderboard")
+                  + f'<a href="/web/settings" class="{"on" if more_on else ""}"><b>⋯</b>更多</a>'
+                  + "</div></div>")
+
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
 <meta charset="UTF-8">
@@ -6682,8 +6747,8 @@ def render_page(title, body, nav_active=None, user_name=None):
 <title>{title}｜台股 BOT</title>
 <style>{BASE_CSS}</style>
 </head><body><div class="wrap">
-<header>
-  <div class="eyebrow">Taiwan Stock Bot</div>
+<header class="app-header">
+  <div class="eyebrow">TAIWAN STOCK BOT</div>
   <h1>{title}</h1>
   <div class="dateline">{datetime.now().strftime('%Y / %m / %d')}
     {'　' + user_name if user_name else ''}</div>
@@ -6695,6 +6760,7 @@ def render_page(title, body, nav_active=None, user_name=None):
 你輸入的持股只用於產生你自己的分析，作者不會查看個別使用者的持股內容。<br>
 資料來源：臺灣證券交易所、櫃買中心、Yahoo Finance。作者：蔡秉軒
 </footer>
+{bottom_nav}
 </div></body></html>"""
 
 
@@ -8682,7 +8748,8 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
 
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total):
     # 新版首頁上半部：先講今天，再提供完整分析入口。
-    events = get_today_change_events(uid, date.today(), limit=3)
+    signal_state = get_today_signal_state(uid, date.today())
+    events = signal_state.get("events", [])[:3]
     taiex = fetch_taiex_summary() or {}
     market_pct = None
     for key in ("pct", "change_pct", "percent"):
@@ -8707,8 +8774,12 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
           <div><b>{html.escape(event.get("title", ""))}</b>
           <div class="event-detail">{html.escape(event.get("detail", ""))}</div></div>
         </div>''')
-    events_html = "".join(event_rows) if event_rows else '''<div class="daily-empty">
-      <b>😴 今日市場訊號偏少</b><br><span>目前沒有足夠的前一交易日比較資料或明顯變化。</span>
+    if event_rows:
+        events_html = "".join(event_rows)
+    else:
+        state_icon = "🕘" if signal_state["kind"] == "not_updated" else ("📌" if signal_state["kind"] == "baseline" else "😴")
+        events_html = f'''<div class="daily-empty">
+      <b>{state_icon} {html.escape(signal_state["title"])}</b><br><span>{html.escape(signal_state["detail"])}</span>
     </div>'''
 
     def rank_line(board):
@@ -8750,7 +8821,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 def web_portfolio(uid):
     if request.method == "GET" and not wants_fragment():
         return render_loading_shell(
-            "組合分析", "portfolio",
+            "今日", "portfolio",
             ["正在讀取你的持股…", "正在抓即時報價…",
              "正在抓法人與月營收資料…", "正在計算集中度與相關係數…",
              "正在整理提醒…"],
@@ -8773,7 +8844,7 @@ def web_portfolio(uid):
     # 問卷沒填完就只給問卷。組合分析的價值有一大半來自依你的處境判讀，
     # 少了那些答案，剩下的數字誰看都一樣，沒有必要先給。
     if not is_profile_complete(profile):
-        return respond_page("組合分析", risk_card, "portfolio")
+        return respond_page("今日", risk_card, "portfolio")
 
     positions = merge_positions(get_positions(uid))
     if not positions:
@@ -8791,7 +8862,7 @@ def web_portfolio(uid):
 <div class="section-head"><h2>組合走勢</h2>
   <span class="section-note">相對起始日漲跌幅</span></div>
 <div class="callout" style="padding:14px 15px 4px">{trend_html_empty}</div>"""
-        return respond_page("組合分析", body, "portfolio")
+        return respond_page("今日", body, "portfolio")
 
     th = get_thresholds(profile)
     fee_disc, min_fee = get_fee_settings(profile)
@@ -8958,7 +9029,7 @@ def web_portfolio(uid):
 <div class="section-head"><h2>持股權重</h2><span class="section-note">依權重排序</span></div><div class="rows">{''.join(f'''<div class="row"><div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div><div class="price num">{h['weight']:.1f}%</div><div class="meta"><span><em>產業</em> {h['industry']}</span><span><em>損益</em> {fmt_pct(h['pl'])}</span><span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span><span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span></div><div class="chg">{fmt_pct(h['price']['pct'])}</div><div class="bar"><div style="width:{h['weight']:.1f}%"></div></div></div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}</div>
 {realized_html}
 <div class="section-head" id="alerts"><h2>值得注意</h2><span class="section-note"><a href="/web/settings" style="color:var(--ink-soft)">調整門檻 →</a></span></div><div class="rows">{''.join(f'<div class="alert"><span class="tag">{tag}</span><span>{txt}</span></div>' for tag, txt in alerts) if alerts else '<div class="empty">目前沒有觸及門檻的項目。</div>'}</div>"""
-    return respond_page("組合分析", body, "portfolio")
+    return respond_page("今日", body, "portfolio")
 
 
 CATEGORY_NOTE = {
@@ -9109,6 +9180,7 @@ configure_daily_change_detector(
     get_user_watchlist=get_user_watchlist,
     compute_watchlist_scores=compute_watchlist_scores,
     get_notify_users=get_notify_users,
+    get_all_watchlist_user_ids=get_all_watchlist_user_ids,
     stock_display_name=stock_display_name,
 )
 init_premarket_change_tables()
