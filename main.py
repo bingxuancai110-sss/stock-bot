@@ -688,6 +688,33 @@ def init_db():
         cursor.execute('''
             ALTER TABLE users ADD COLUMN IF NOT EXISTS requested BOOLEAN DEFAULT FALSE
         ''')
+        cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS last_feature TEXT
+        ''')
+        cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS activity_count INTEGER DEFAULT 0
+        ''')
+        # 使用者活動紀錄：只記錄功能與時間，不記錄持股內容。
+        # 未來若要搬到 Web 管理後台，可直接沿用此表查詢。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                feature TEXT NOT NULL,
+                action TEXT NOT NULL DEFAULT 'open',
+                source TEXT NOT NULL DEFAULT 'line',
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                occurred_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_activity_log_user_time
+            ON activity_log(user_id, occurred_at DESC)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_activity_log_feature_time
+            ON activity_log(feature, occurred_at DESC)
+        ''')
         # ── 網頁版：持股、問卷設定、登入權杖 ──
         # 持股與自選股分開存：自選股是「在看的」，持股是「真的買了的」，
         # 只有後者才有股數與成本，組合分析也只該算後者。
@@ -995,6 +1022,234 @@ def add_user_to_db(user_id):
         print(f"❌ 新增使用者錯誤: {e}")
     finally:
         release_db_connection(conn)
+
+FEATURE_LABELS = {
+    "leaderboard": "排行榜",
+    "blackhorse": "黑馬",
+    "radar": "雷達",
+    "portfolio": "組合分析",
+    "trades": "紀錄",
+    "compare": "比較",
+    "positions": "自選",
+    "news": "新聞",
+    "premarket": "盤前",
+    "debrief": "解盤",
+    "chips": "籌碼超人",
+    "quote": "個股查詢",
+    "screener": "選股",
+    "settings": "設定",
+    "more": "更多",
+    "admin": "管理",
+}
+
+
+def infer_line_feature(text):
+    raw = (text or "").strip()
+    exact = {
+        "盤前": "premarket", "解盤": "debrief", "黑馬": "blackhorse",
+        "雷達": "radar", "籌碼": "chips", "籌碼超人": "chips",
+        "自選": "positions", "新聞": "news", "網頁": "portfolio",
+        "網頁版": "portfolio", "排行榜": "leaderboard", "紀錄": "trades",
+        "比較": "compare", "管理": "admin", "使用者名單": "admin",
+        "今日活躍": "admin", "沉睡使用者": "admin", "功能統計": "admin",
+        "流失": "admin", "可能流失": "admin",
+    }
+    if raw in exact:
+        return exact[raw]
+    if raw.startswith(("加 ", "加")) or raw.startswith(("刪 ", "刪")) or raw.startswith("分類"):
+        return "positions"
+    if normalize_code(raw):
+        return "quote"
+    return None
+
+
+def record_activity(user_id, feature, action="open", source="line", metadata=None):
+    """記錄功能使用，不寫入持股內容；失敗時不影響原本功能。"""
+    uid = str(user_id).strip()
+    if not uid or not feature:
+        return
+    meta = metadata if isinstance(metadata, dict) else {}
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO activity_log
+               (user_id, feature, action, source, metadata, occurred_at)
+               VALUES (%s, %s, %s, %s, %s::jsonb, NOW())""",
+            (uid, str(feature), str(action), str(source), json.dumps(meta, ensure_ascii=False)))
+        cur.execute(
+            """UPDATE users
+               SET last_seen = NOW(), last_feature = %s,
+                   activity_count = COALESCE(activity_count, 0) + 1
+               WHERE user_id = %s""",
+            (str(feature), uid))
+        conn.commit()
+        cur.close()
+    except Exception as exc:
+        conn.rollback()
+        print(f"⚠️ 活動紀錄失敗 {uid}/{feature}: {exc}")
+    finally:
+        release_db_connection(conn)
+
+
+def _activity_feature_label(feature):
+    return FEATURE_LABELS.get(str(feature), str(feature))
+
+
+def _admin_user_rows(status="all", limit=10, offset=0):
+    """回傳管理名單摘要，不讀取或顯示個別持股內容。"""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        where = ""
+        if status == "today":
+            where = "WHERE u.last_seen >= CURRENT_DATE"
+        elif status == "dormant":
+            where = "WHERE u.last_seen < NOW() - INTERVAL '3 days'"
+        elif status == "dormant7":
+            where = "WHERE u.last_seen < NOW() - INTERVAL '7 days'"
+        cur.execute(f"""
+            SELECT u.user_id, COALESCE(u.display_name, '(未知)'), u.last_seen,
+                   COALESCE(u.last_feature, ''), COALESCE(u.notify, FALSE),
+                   COALESCE(u.requested, FALSE), COALESCE(u.activity_count, 0)
+            FROM users u {where}
+            ORDER BY u.last_seen DESC NULLS LAST, u.user_id
+            LIMIT %s OFFSET %s
+        """, (int(limit), int(offset)))
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    except Exception as exc:
+        print(f"❌ 管理名單查詢失敗：{exc}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def _admin_recent_features(user_id, days=30, limit=3):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT feature, MAX(occurred_at) AS last_used
+            FROM activity_log
+            WHERE user_id = %s AND occurred_at >= NOW() - (%s * INTERVAL '1 day')
+            GROUP BY feature ORDER BY last_used DESC LIMIT %s
+        """, (str(user_id).strip(), int(days), int(limit)))
+        rows = cur.fetchall()
+        cur.close()
+        return [_activity_feature_label(row[0]) for row in rows]
+    except Exception as exc:
+        print(f"❌ 最近功能查詢失敗：{exc}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def _admin_format_time(value):
+    if not value:
+        return "尚未使用"
+    if getattr(value, "tzinfo", None):
+        local = value.astimezone(timezone(timedelta(hours=8)))
+    else:
+        local = value
+    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    if local.date() == now.date():
+        return f"今天 {local.strftime('%H:%M')}"
+    return local.strftime('%m/%d %H:%M')
+
+
+def _admin_status(value):
+    if not value:
+        return "⚪ 尚未使用"
+    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    days = (now - value.replace(tzinfo=None)).total_seconds() / 86400
+    if days < 1:
+        return "🟢 今日使用"
+    if days < 3:
+        return "🟡 1–2天未使用"
+    if days < 7:
+        return "🟡 3–6天未使用"
+    return "🔴 7天以上未使用"
+
+
+def build_admin_dashboard_report():
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM users")
+        total = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM users WHERE last_seen >= CURRENT_DATE")
+        today = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM users WHERE last_seen >= CURRENT_DATE - INTERVAL '1 day' AND last_seen < CURRENT_DATE")
+        yesterday = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM users WHERE last_seen < NOW() - INTERVAL '3 days' AND last_seen >= NOW() - INTERVAL '7 days'")
+        dormant3 = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM users WHERE last_seen < NOW() - INTERVAL '7 days'")
+        dormant7 = cur.fetchone()[0]
+        cur.execute("""
+            SELECT feature, COUNT(DISTINCT user_id) AS people, COUNT(*) AS uses
+            FROM activity_log WHERE occurred_at >= NOW() - INTERVAL '7 days'
+            GROUP BY feature ORDER BY people DESC, uses DESC
+        """)
+        features = cur.fetchall()
+        cur.close()
+    except Exception as exc:
+        print(f"❌ 管理中心統計失敗：{exc}")
+        return "❌ 管理中心暫時無法讀取，請查看 Render Logs。"
+    finally:
+        release_db_connection(conn)
+
+    lines = ["📊 台股 BOT｜管理中心", "", f"👥 使用者總數　{total} 人",
+             f"🟢 今日活躍　　{today} 人", f"📅 昨日活躍　　{yesterday} 人",
+             f"🟡 3–6天未使用　{dormant3} 人", f"🔴 7天以上未使用　{dormant7} 人",
+             "", "━━━━━━━━━━━━", "", "📱 近 7 天功能使用"]
+    feature_map = {feature: (people, uses) for feature, people, uses in features}
+    for feature in ("leaderboard", "blackhorse", "radar", "portfolio", "trades", "compare"):
+        people, uses = feature_map.get(feature, (0, 0))
+        lines.append(f"{_activity_feature_label(feature):<6}　{people} 人／{uses} 次")
+    lines += ["", "━━━━━━━━━━━━", "", "資料更新：" + datetime.now(timezone(timedelta(hours=8))).strftime('%m/%d %H:%M')]
+    return "\n".join(lines)
+
+
+def build_admin_user_list_report(status="all", limit=10, offset=0):
+    rows = _admin_user_rows(status=status, limit=limit, offset=offset)
+    if not rows:
+        return "目前沒有符合條件的使用者。"
+    labels = {"all": "使用者名單", "today": "今日活躍", "dormant": "沉睡使用者", "dormant7": "7天以上未使用"}
+    lines = [f"👥 {labels.get(status, '使用者名單')}", "─" * 14]
+    for i, (uid, name, last_seen, last_feature, notify, requested, count) in enumerate(rows, offset + 1):
+        features = _admin_recent_features(uid)
+        masked = f"{uid[:4]}••••{uid[-4:]}" if len(uid) > 8 else uid
+        lines += [f"{i}. {name}", f"   {_admin_status(last_seen)}",
+                  f"   最後使用：{_admin_format_time(last_seen)}",
+                  f"   最近使用：{'／'.join(features) if features else _activity_feature_label(last_feature) if last_feature else '—'}",
+                  f"   LINE：{masked}"]
+    return "\n".join(lines)
+
+
+def build_admin_churn_report():
+    rows = _admin_user_rows(status="dormant", limit=50, offset=0)
+    rows = [row for row in rows if row[2]]
+    if not rows:
+        return "⚠️ 可能流失使用者\n\n目前沒有 3 天以上未使用的使用者。"
+    groups = {"3–6天未使用": [], "7天以上未使用": []}
+    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    for row in rows:
+        days = (now - row[2].replace(tzinfo=None)).total_seconds() / 86400
+        group = "7天以上未使用" if days >= 7 else "3–6天未使用"
+        groups[group].append(row)
+    lines = ["⚠️ 可能流失使用者", "", f"目前 3 天以上未回來：{len(rows)} 人"]
+    for label, group in groups.items():
+        if not group:
+            continue
+        lines += ["", ("🔴 " if label.startswith("7") else "🟡 ") + label]
+        for row in group[:10]:
+            features = _admin_recent_features(row[0], days=30, limit=2)
+            lines.append(f"・{row[1]}　最後使用：{_admin_format_time(row[2])}　最近：{'／'.join(features) if features else '—'}")
+    lines += ["", "📌 此名單代表長時間未使用，不代表確定流失。"]
+    return "\n".join(lines)
+
 
 def is_admin(user_id):
     """
@@ -1483,6 +1738,23 @@ def web_login_required(view):
         uid = current_web_user()
         if not uid:
             return render_page("需要登入", NEED_LOGIN_HTML), 401
+        # fragment 請求只是同一頁的載入片段，不重複計算成一次使用。
+        if request.args.get("fragment") != "1":
+            path = request.path
+            feature = {
+                "/web/portfolio": "portfolio",
+                "/web/positions": "positions",
+                "/web/leaderboard": "leaderboard",
+                "/web/trades": "trades",
+                "/web/compare": "compare",
+                "/web/more": "more",
+                "/web/settings": "settings",
+            }.get(path)
+            if path == "/web/screener":
+                mode = request.args.get("mode", "blackhorse")
+                feature = "radar" if mode == "radar" else "blackhorse" if mode == "blackhorse" else "screener"
+            if feature:
+                record_activity(uid, feature, action="open", source="web")
         return view(uid, *args, **kwargs)
     return wrapper
 
@@ -6317,6 +6589,21 @@ def build_quick_reply():
     ])
 
 
+def build_admin_quick_reply():
+    items = [
+        ("使用者名單", "使用者名單"),
+        ("今日活躍", "今日活躍"),
+        ("沉睡使用者", "沉睡使用者"),
+        ("功能統計", "功能統計"),
+        ("可能流失", "流失"),
+        ("回管理中心", "管理"),
+    ]
+    return QuickReply(items=[
+        QuickReplyButton(action=MessageAction(label=label, text=text))
+        for label, text in items
+    ])
+
+
 def build_menu_flex():
     """
     彩色選單（Flex Message）。LINE 純文字無法上色，分色只能用 Flex。
@@ -9864,6 +10151,7 @@ def handle_follow(event):
 def handle_message(event):
     user_id = event.source.user_id
     flex_reply = None  # 若為 Flex 訊息（彩色選單），改用這個回覆
+    admin_quick_reply = None
     text = event.message.text.strip()
     text_upper = text.upper()
     pure_code = normalize_code(text)  # 保留主動式ETF的英文尾碼，如 00981A
@@ -9882,6 +10170,10 @@ def handle_message(event):
             quick_reply=build_quick_reply()))
         return
 
+    feature = infer_line_feature(text)
+    if feature:
+        record_activity(user_id, feature, action="message", source="line")
+
     # 每則訊息都先叫出 LINE 官方的載入動畫（聊天室裡的三點跳動）。
     # 不分指令輕重都叫，是因為使用者無法預期哪個指令會慢——
     # 有些看似簡單的查詢遇到快取失效時一樣要跑十幾秒，
@@ -9890,7 +10182,31 @@ def handle_message(event):
     start_loading_animation(user_id)
 
     # 0. 管理指令（只有 ADMIN_USER_ID 本人可用，其他人輸入等同無效指令）
-    if text in ["我的ID", "我的id", "MYID"]:
+    if is_admin(user_id) and text in ["管理", "管理中心"]:
+        reply = build_admin_dashboard_report()
+        admin_quick_reply = build_admin_quick_reply()
+
+    elif is_admin(user_id) and text in ["使用者名單", "使用者", "名單"]:
+        reply = build_admin_user_list_report(status="all", limit=10)
+        admin_quick_reply = build_admin_quick_reply()
+
+    elif is_admin(user_id) and text in ["今日活躍", "活躍"]:
+        reply = build_admin_user_list_report(status="today", limit=10)
+        admin_quick_reply = build_admin_quick_reply()
+
+    elif is_admin(user_id) and text in ["沉睡使用者", "沉睡"]:
+        reply = build_admin_user_list_report(status="dormant", limit=10)
+        admin_quick_reply = build_admin_quick_reply()
+
+    elif is_admin(user_id) and text in ["功能統計", "使用統計", "統計", "數據"]:
+        reply = build_admin_dashboard_report()
+        admin_quick_reply = build_admin_quick_reply()
+
+    elif is_admin(user_id) and text in ["流失", "可能流失"]:
+        reply = build_admin_churn_report()
+        admin_quick_reply = build_admin_quick_reply()
+
+    elif text in ["我的ID", "我的id", "MYID"]:
         reply = f"你的 user_id：\n{user_id}"
 
     elif text in ["網頁", "WEB", "網頁版"]:
@@ -10290,7 +10606,7 @@ def handle_message(event):
         flex_reply = build_menu_flex()
         reply = None
 
-    qr = build_quick_reply()
+    qr = admin_quick_reply or build_quick_reply()
     if flex_reply is not None:
         flex_reply.quick_reply = qr
         line_bot_api.reply_message(event.reply_token, flex_reply)
