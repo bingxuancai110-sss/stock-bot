@@ -2142,6 +2142,7 @@ def join_leaderboard(user_id, nickname, show_holdings=False):
             (str(user_id).strip(), nick, bool(show_holdings)))
         conn.commit()
         cur.close()
+        clear_leaderboard_cache()
         return True, None
     except Exception as e:
         conn.rollback()
@@ -2159,6 +2160,7 @@ def leave_leaderboard(user_id):
                     (str(user_id).strip(),))
         conn.commit()
         cur.close()
+        clear_leaderboard_cache()
         return True
     except Exception as e:
         conn.rollback()
@@ -2295,7 +2297,7 @@ def max_drawdown(curve):
     return mdd
 
 
-def summarize_member_holdings(uid, prices, inst):
+def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None):
     """
     整理一位成員的持股摘要：最大持股、表現最好的持股、產業集中度。
     只有本人勾選「公開持股」時才會被呼叫。
@@ -2303,11 +2305,12 @@ def summarize_member_holdings(uid, prices, inst):
     個股報酬率用「帳面」（現價 vs 成本），不是加入排行榜後的變化——
     那是這檔對他而言的實際損益，也是他真正在意的數字。
     """
-    positions = merge_positions(get_positions(uid))
+    positions = (positions if positions is not None
+                 else merge_positions(get_positions(uid)))
     if not positions:
         return None
 
-    ind_map = get_industry_map() or {}
+    ind_map = (ind_map if ind_map is not None else get_industry_map() or {})
     rows, total = [], 0.0
     for p in positions:
         pr = prices.get(p["code"])
@@ -2424,6 +2427,17 @@ def get_my_rank_summary(user_id):
     return result
 
 
+_leaderboard_cache = {}
+_leaderboard_cache_lock = threading.Lock()
+LEADERBOARD_CACHE_SECONDS = 30
+
+
+def clear_leaderboard_cache():
+    """成員加入、退出或設定變更後立即清掉排行榜結果。"""
+    with _leaderboard_cache_lock:
+        _leaderboard_cache.clear()
+
+
 def build_leaderboard(top_n=20, days=365):
     """
     算出排行榜。分短線與長線兩榜，因為那本來就是兩種不同的能力——
@@ -2437,6 +2451,13 @@ def build_leaderboard(top_n=20, days=365):
     多數人第一天就放棄了。改成照實標示天數，天數太少的加註提醒——
     「顯示得夠清楚」比「擋住不讓進」好。
     """
+    cache_key = (int(top_n), int(days))
+    now = time.time()
+    with _leaderboard_cache_lock:
+        cached = _leaderboard_cache.get(cache_key)
+        if cached and now - cached["at"] < LEADERBOARD_CACHE_SECONDS:
+            return cached["value"]
+
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -2455,13 +2476,21 @@ def build_leaderboard(top_n=20, days=365):
     if not members:
         return {"long": [], "short": [], "waiting": []}, ({}, [])
 
+    # 同一次排行榜計算中，持股資料只讀一次；原本公開持股成員會在
+    # 收集行情、整理公開摘要、計算持股檔數時重複查詢資料庫。
+    positions_map = {
+        str(m[0]): merge_positions(get_positions(m[0]))
+        for m in members
+    }
+
     # 先收集所有要公開持股的成員的代號，一次並行抓完報價
     open_uids = [m[0] for m in members if m[3]]
     codes = set()
     for uid in open_uids:
-        codes |= {p["code"] for p in merge_positions(get_positions(uid))}
+        codes |= {p["code"] for p in positions_map.get(str(uid), [])}
     prices = get_realtime_stocks_bulk(list(codes), workers=16) if codes else {}
     inst = fetch_institutional_data() or {} if codes else {}
+    ind_map = get_industry_map() or {} if codes else {}
 
     rows, series_map, market = [], {}, []
     for uid, nick, joined, show in members:
@@ -2472,11 +2501,14 @@ def build_leaderboard(top_n=20, days=365):
         if not market and mk:
             market = mk
 
-        holds = summarize_member_holdings(uid, prices, inst) if show else None
+        holds = (summarize_member_holdings(
+            uid, prices, inst,
+            positions=positions_map.get(str(uid), []), ind_map=ind_map)
+                 if show else None)
         base = {
             "user_id": str(uid),
             "nickname": nick,
-            "holdings": len(merge_positions(get_positions(uid))),
+            "holdings": len(positions_map.get(str(uid), [])),
             "joined": joined,
             "show": show,
             "detail": holds,
@@ -2508,8 +2540,11 @@ def build_leaderboard(top_n=20, days=365):
     short_board = sorted([r for r in scored if r["m30"] is not None],
                          key=lambda r: r["m30"], reverse=True)[:top_n]
     waiting = [r for r in rows if r["ret"] is None]
-    return ({"long": long_board, "short": short_board, "waiting": waiting},
-            (series_map, market))
+    value = ({"long": long_board, "short": short_board, "waiting": waiting},
+             (series_map, market))
+    with _leaderboard_cache_lock:
+        _leaderboard_cache[cache_key] = {"at": time.time(), "value": value}
+    return value
 
 
 def get_portfolio_snapshots(user_id, days=120):
@@ -2586,6 +2621,13 @@ def normalize_code(raw):
 # 只存在記憶體，重啟就沒了，但那只是回到原本的行為，不影響正確性。
 _suffix_cache = {}
 
+# 即時行情的外部請求是網頁反覆開啟時最明顯的等待來源。
+# 同一個 Render process 內，90 秒內的重整、頁面切換與 fragment 請求
+# 共用同一份結果；這不會把日線資料永久存死，也不會跨日期沿用昨天的行情。
+_realtime_cache = {}
+_realtime_cache_lock = threading.Lock()
+REALTIME_CACHE_SECONDS = 90
+
 
 def get_realtime_stock(code, rng="3mo"):
     """
@@ -2597,6 +2639,15 @@ def get_realtime_stock(code, rng="3mo"):
     """
     code = str(code).strip()
     stock_name = STOCK_NAME_MAP.get(code, code)
+
+    # 日期納入 key，避免跨午夜把前一交易日的結果沿用到新的一天。
+    cache_day = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+    cache_key = f"{code}:{rng}:{cache_day}"
+    now = time.time()
+    with _realtime_cache_lock:
+        cached = _realtime_cache.get(cache_key)
+        if cached and now - cached["at"] < REALTIME_CACHE_SECONDS:
+            return cached["data"]
 
     # 已知後綴排前面試，未知就照原順序
     known = _suffix_cache.get(code)
@@ -2734,7 +2785,7 @@ def get_realtime_stock(code, rng="3mo"):
 
             _suffix_cache[code] = suffix  # 這個後綴有效，下次直接從它開始
 
-            return {
+            result = {
                 "code": code,
                 "name": stock_name,
                 "close": float(close),
@@ -2763,6 +2814,15 @@ def get_realtime_stock(code, rng="3mo"):
                 # 而「什麼時候發生的」正是圖能回答、數字回答不了的問題。
                 "close_dates": [b[0] for b in hist] + [today_date],
             }
+            with _realtime_cache_lock:
+                _realtime_cache[cache_key] = {"at": now, "data": result}
+                # 控制長期常駐 process 的記憶體，不影響正常短期命中。
+                if len(_realtime_cache) > 4000:
+                    cutoff = time.time() - REALTIME_CACHE_SECONDS * 2
+                    for k, v in list(_realtime_cache.items()):
+                        if v.get("at", 0) < cutoff:
+                            _realtime_cache.pop(k, None)
+            return result
         except:
             continue
     return None
@@ -4861,6 +4921,10 @@ def score_from_revenue_growth(yoy_pct):
     return 0
 
 # --- 大盤指數（TWSE 官方 OpenAPI，固定回傳最新一個交易日收盤資訊） ---
+# 今日首頁與盤前摘要都會用到大盤；短時間內重整不需要重複打外部 API。
+_taiex_cache = {"at": 0, "data": None}
+TAIEX_CACHE_SECONDS = 60
+
 def fetch_taiex_summary():
     """
     抓加權指數。改用 Yahoo 的日K序列（^TWII）而不是 TWSE 的 MI_INDEX。
@@ -4874,6 +4938,10 @@ def fetch_taiex_summary():
     而且跟個股報價同源，畫面上的數字才會一致。
     回傳 dict（含 date），失敗回傳 None。
     """
+    now = time.time()
+    with _realtime_cache_lock:
+        if _taiex_cache["data"] is not None and now - _taiex_cache["at"] < TAIEX_CACHE_SECONDS:
+            return _taiex_cache["data"]
     try:
         url = ("https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII"
                "?range=5d&interval=1d")
@@ -4908,13 +4976,17 @@ def fetch_taiex_summary():
             return None
 
         diff = close - prev
-        return {
+        result = {
             "close": f"{close:,.2f}",
             "sign": "+" if diff > 0 else ("-" if diff < 0 else ""),
             "pts": f"{abs(diff):,.2f}",
             "pct": f"{diff / prev * 100:+.2f}",
             "date": bar_date,
         }
+        with _realtime_cache_lock:
+            _taiex_cache["at"] = time.time()
+            _taiex_cache["data"] = result
+        return result
     except Exception as e:
         print(f"❌ 抓取大盤指數錯誤: {e}")
         return None
@@ -7351,7 +7423,7 @@ def render_quote_block():
             f'<div class="quote">{"".join(blocks)}</div>')
 
 
-def render_loading_shell(title, nav_active, stages, note=""):
+def render_loading_shell(title, nav_active, stages, note="", fragment_urls=None):
     """
     先秒回的「殼」：導覽列、進度條、投資語錄都立刻出現，
     真正的內容再由瀏覽器另外去要（fragment=1），回來後替換掉這一塊。
@@ -7364,6 +7436,10 @@ def render_loading_shell(title, nav_active, stages, note=""):
     stages 是階段文字清單，會依序顯示。
     """
     stages_js = ",".join(f'"{s}"' for s in stages)
+    fragment_urls = fragment_urls or [None]
+    fragment_urls_js = ",".join(
+        "null" if not url else f'"{html.escape(url, quote=True)}"'
+        for url in fragment_urls)
     shell = f"""
 <div id="loading" class="loading">
   <div class="load-track"><div class="load-bar" id="loadbar"></div></div>
@@ -7416,31 +7492,67 @@ def render_loading_shell(title, nav_active, stages, note=""):
     }}, 70);
   }}
 
-  var url = window.location.pathname + window.location.search
-          + (window.location.search ? '&' : '?') + 'fragment=1';
+  function fail(e) {{
+    done = true;
+    clearInterval(timer);
+    stageEl.textContent = '載入失敗：' + (e && e.message ? e.message : e);
+    pctEl.textContent = '';
+    var hint = document.createElement('div');
+    hint.className = 'sub';
+    hint.style.marginTop = '8px';
+    hint.textContent = 'HTTP 500 代表伺服器端出錯，請看 Render Logs；'
+                     + '其他多半是網路問題，重新整理即可。';
+    stageEl.parentNode.appendChild(hint);
+    console.error(e);
+  }}
 
-  fetch(url, {{ credentials: 'same-origin' }})
-    .then(function (r) {{
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.text();
-    }})
-    .then(finish)
-    .catch(function (e) {{
-      done = true;
-      clearInterval(timer);
-      // 把錯誤內容顯示出來。只寫「載入失敗」的話，
-      // 伺服器端到底是 500 還是網路斷線完全看不出來，
-      // 每次都得去翻 Render Logs 才知道發生什麼事。
-      stageEl.textContent = '載入失敗：' + (e && e.message ? e.message : e);
-      pctEl.textContent = '';
-      var hint = document.createElement('div');
-      hint.className = 'sub';
-      hint.style.marginTop = '8px';
-      hint.textContent = 'HTTP 500 代表伺服器端出錯，請看 Render Logs；'
-                       + '其他多半是網路問題，重新整理即可。';
-      stageEl.parentNode.appendChild(hint);
-      console.error(e);
+  var fragmentUrls = [{fragment_urls_js}];
+  if (fragmentUrls[0] === null) {{
+    fragmentUrls = [window.location.pathname + window.location.search
+      + (window.location.search ? '&' : '?') + 'fragment=1'];
+  }}
+
+  function fetchFragment(url) {{
+    return fetch(url, {{ credentials: 'same-origin' }})
+      .then(function (r) {{
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      }});
+  }}
+
+  if (fragmentUrls.length === 1) {{
+    fetchFragment(fragmentUrls[0]).then(finish).catch(fail);
+  }} else {{
+    // 今日首頁的第 1 段只讀既有快照、事件與排名；第 2 段才抓持股行情。
+    // 兩段並行請求，但依序插入，先讓「今日值得注意」出現，不必等完整分析。
+    var parts = new Array(fragmentUrls.length);
+    var nextPart = 0;
+    var remaining = fragmentUrls.length;
+    var revealed = false;
+    fragmentUrls.forEach(function (url, index) {{
+      fetchFragment(url).then(function (html) {{
+        parts[index] = html;
+        remaining -= 1;
+        var content = document.getElementById('content');
+        while (parts[nextPart] !== undefined) {{
+          content.insertAdjacentHTML('beforeend', parts[nextPart]);
+          nextPart += 1;
+        }}
+        if (!revealed && parts[0] !== undefined) {{
+          revealed = true;
+          setTimeout(function () {{
+            document.getElementById('loading').style.display = 'none';
+          }}, 70);
+        }}
+        if (remaining === 0) {{
+          done = true;
+          clearInterval(timer);
+          bar.style.width = '100%';
+          pctEl.textContent = '100%';
+        }}
+      }}).catch(fail);
     }});
+  }}
 }})();
 </script>"""
     # 骨架也要走 render_page，才會帶上樣式與導覽列——
@@ -7697,9 +7809,10 @@ def web_positions(uid):
     rows_html, total_value, total_cost = [], 0.0, 0.0
     total_day_pl = 0.0
     enriched = []
-    # 抓一年而非預設的三個月：損益走勢要能涵蓋買進日才標得出買進點
+    # 首屏先用 3 個月資料，約 60 個交易日已足夠看近期損益與回檔，
+    # 同時明顯小於 1 年資料量；較早買進日由走勢圖誠實標示「不在此區間內」。
     price_map = get_realtime_stocks_bulk(
-        [p["code"] for p in positions], rng="1y")
+        [p["code"] for p in positions], rng="3mo")
     for p in positions:
         price = price_map.get(p["code"])
         if price:
@@ -9187,6 +9300,85 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
     return out
 
 
+def render_portfolio_fast_summary(uid):
+    """今日首頁第一段：只讀既有快照、事件與排名，不抓持股即時報價。"""
+    snapshot_date = date.today()
+    snapshot = get_today_change_snapshot(snapshot_date) or {}
+    timeline = get_today_event_timeline(uid, snapshot_date)
+    events = (timeline.get("new", []) + timeline.get("ongoing", []))[:3]
+    if not snapshot:
+        signal_state = {"kind": "not_updated", "title": "今日盤前資料尚未更新",
+                        "detail": "等待每日資料快照與變化偵測完成；目前不顯示推測訊號。"}
+    elif not snapshot.get("previous_trade_date"):
+        signal_state = {"kind": "baseline", "title": "已建立今日基準快照",
+                        "detail": "從下一個有效交易日開始顯示排名、分數與法人方向變化。"}
+    elif not events:
+        signal_state = {"kind": "quiet", "title": "今日市場訊號偏少",
+                        "detail": "已完成前一交易日比較，目前沒有達到事件規則的變化。"}
+    else:
+        signal_state = {"kind": "events", "title": "今日有新的市場變化",
+                        "detail": f"已偵測 {len(events)} 個變化，首頁顯示優先級最高的 3 個。"}
+
+    if events:
+        event_html = "".join(
+            f'''<div class="daily-fast-event">
+              <span class="daily-fast-number">{idx}</span>
+              <div><b>{html.escape(str(event.get("title", "")))}</b>
+              <div class="daily-fast-detail">{html.escape(str(event.get("detail", "")))}</div></div>
+            </div>'''
+            for idx, event in enumerate(events, 1)
+        )
+    else:
+        icon = "🕘" if signal_state["kind"] == "not_updated" else (
+            "📌" if signal_state["kind"] == "baseline" else "😴")
+        event_html = (f'<div class="daily-fast-empty"><b>{icon} '
+                      f'{html.escape(signal_state["title"])}</b><br>'
+                      f'<span>{html.escape(signal_state["detail"])}</span></div>')
+
+    market = snapshot.get("market") or {}
+    market_items = [("大盤", market.get("taiex_pct")),
+                    ("道瓊", market.get("^DJI_pct")),
+                    ("那斯達克", market.get("^IXIC_pct")),
+                    ("費城半導體", market.get("^SOX_pct"))]
+    market_html = "".join(
+        f'<span>{label}<b>{fmt_pct(value) if value is not None else "資料尚未更新"}</b></span>'
+        for label, value in market_items
+    )
+
+    rank_status = get_my_rank_summary(uid)
+    rank_html = []
+    for board in ("short", "long"):
+        status = rank_status[board]
+        if status.get("rank") is None:
+            value = "尚未上榜"
+            note = "累積有效快照後開始顯示"
+        elif status.get("delta") is None:
+            value = f'#{status["rank"]}'
+            note = "等待前一日排名快照"
+        elif status.get("direction") == "up":
+            value = f'#{status["rank"]}　<span class="up">↑ {status["delta"]} 名</span>'
+            note = f'昨日 #{status["previous"]}'
+        elif status.get("direction") == "down":
+            value = f'#{status["rank"]}　<span class="down">↓ {abs(status["delta"])} 名</span>'
+            note = f'昨日 #{status["previous"]}'
+        else:
+            value = f'#{status["rank"]}　<span class="flat">— 無變化</span>'
+            note = f'昨日 #{status["previous"]}'
+        rank_html.append(
+            f'<div class="daily-fast-rank"><small>{html.escape(str(status["label"]))}</small>'
+            f'<b>{value}</b><span>{note}</span></div>')
+
+    return f'''<style>
+.daily-fast-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:22px 18px 18px;margin:-8px -2px 14px;border-bottom:1px solid #d7d4ca}}.daily-fast-hero .eyebrow{{letter-spacing:.14em;color:var(--brass);font-size:11px}}.daily-fast-hero h1{{font-size:26px;line-height:1.25;margin:8px 0 14px}}.daily-fast-market{{display:flex;gap:8px;flex-wrap:wrap}}.daily-fast-market span{{background:rgba(255,255,255,.72);padding:8px 10px;border-radius:8px;font-size:12px}}.daily-fast-market b{{display:block;font-size:16px;margin-top:3px}}.daily-fast-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:15px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.daily-fast-title{{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}}.daily-fast-title h2{{margin:0;font-size:19px}}.daily-fast-event{{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}}.daily-fast-number{{background:var(--brass);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;flex:none;font-size:12px}}.daily-fast-detail{{font-size:12.5px;color:var(--ink-soft);margin-top:3px}}.daily-fast-empty{{padding:11px 0;color:var(--ink-soft);font-size:13px}}.daily-fast-empty span{{font-size:12px}}.daily-fast-ranks{{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}}.daily-fast-rank{{background:#f5f5f1;border-radius:8px;padding:11px}}.daily-fast-rank small,.daily-fast-rank>span{{display:block;color:var(--ink-soft);font-size:11px}}.daily-fast-rank b{{display:block;font-size:18px;margin:4px 0}}@media(max-width:640px){{.daily-fast-ranks{{grid-template-columns:1fr}}}}
+</style><section class="daily-fast-hero">
+  <div class="eyebrow">TODAY · {snapshot_date.strftime('%Y / %m / %d')}</div>
+  <h1>今天先看最重要的變化</h1>
+  <div class="daily-fast-market">{market_html}</div>
+</section>
+<section class="daily-fast-card"><div class="daily-fast-title"><h2>🔥 今日值得注意</h2><a href="/web/premarket" style="color:var(--brass);font-size:12px">查看完整變化 →</a></div>{event_html}</section>
+<section class="daily-fast-card"><div class="daily-fast-title"><h2>🏆 我的排名變化</h2><a href="/web/leaderboard" style="color:var(--brass);font-size:12px">查看排行榜 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section>'''
+
+
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total):
     # 新版首頁上半部：先講今天，再提供完整分析入口。
     signal_state = get_today_signal_state(uid, date.today())
@@ -9270,14 +9462,26 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 @app.route("/web/portfolio", methods=["GET", "POST"])
 @web_login_required
 def web_portfolio(uid):
-    # 恢復原本的快速 loading shell：先顯示頁面外框，再由 fragment 請求載入完整內容。
+    # 完成風險問卷後，首頁拆成「快速摘要」與「完整分析」兩個 fragment：
+    # 快速摘要只讀既有快照與排名，完整分析才抓持股行情與計算集中度。
     if request.method == "GET" and not wants_fragment():
+        shell_profile = get_profile(uid)
+        if is_profile_complete(shell_profile):
+            return render_loading_shell(
+                "今日", "portfolio",
+                ["正在讀取今日事件與排名…", "正在抓持股即時報價…",
+                 "正在計算集中度與相關係數…", "正在整理提醒…"],
+                note="先顯示今日重點，完整組合分析會在後面補上。",
+                fragment_urls=[
+                    "/web/portfolio?fragment=summary",
+                    "/web/portfolio?fragment=details",
+                ])
         return render_loading_shell(
-            "今日", "portfolio",
-            ["正在讀取你的持股…", "正在抓即時報價…",
-             "正在抓法人與月營收資料…", "正在計算集中度與相關係數…",
-             "正在整理提醒…"],
-            note="組合分析會比對法人籌碼、月營收與估值，資料量較大。")
+            "今日", "portfolio", ["正在讀取風險輪廓…"],
+            note="完成風險輪廓後，首頁會顯示依你設定整理的組合分析。")
+
+    if request.method == "GET" and request.args.get("fragment") == "summary":
+        return render_portfolio_fast_summary(uid)
 
     msg = ""
     if request.method == "POST":
@@ -9467,8 +9671,9 @@ def web_portfolio(uid):
     trend_html = render_trend_chart(get_portfolio_snapshots(uid, days=120))
     realized_html = render_realized_summary(uid, inst)
 
-    daily_top = render_daily_home_top(uid, holdings, total_value, total_cost,
-                                      price_map, pl_total)
+    daily_top = ("" if request.args.get("fragment") == "details" else
+                 render_daily_home_top(uid, holdings, total_value, total_cost,
+                                       price_map, pl_total))
     body = f"""
 {daily_top}
 <details class="risk-collapse"><summary>查看我的風險輪廓</summary>
@@ -9506,20 +9711,23 @@ _screener_cache = {}
 SCREENER_CACHE_SECONDS = 300   # 盤中五分鐘內的報價差異對選股結論沒有影響
 
 
-def compute_screener_rows(mode):
+def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map=None):
     """
     算出某個模式的完整候選清單。回傳 (rows, 因流動性被排除的檔數, 產業動能)。
     結果快取 5 分鐘，讓調整篩選條件變成瞬間反應。
+
+    路由若已經先取過共享資料，可以直接傳入，避免同一個請求
+    在 route 與計算函式之間重複呼叫法人／產業資料。
     """
     now = time.time()
     hit = _screener_cache.get(mode)
     if hit and now - hit["at"] < SCREENER_CACHE_SECONDS:
         return hit["rows"], hit["skipped"], hit["momentum"]
 
-    inst = fetch_institutional_data() or {}
-    revenue = fetch_monthly_revenue() or {}
-    valuation = fetch_valuation() or {}
-    ind_map = get_industry_map() or {}
+    inst = fetch_institutional_data() or {} if inst is None else inst
+    revenue = fetch_monthly_revenue() or {} if revenue is None else revenue
+    valuation = fetch_valuation() or {} if valuation is None else valuation
+    ind_map = get_industry_map() or {} if ind_map is None else ind_map
     momentum = get_industry_momentum(revenue, ind_map)
 
     # ── 候選池 ──
@@ -9789,7 +9997,8 @@ def web_screener(uid):
 可能是非交易時段或資料尚未公布，請稍後再試。</div>""", "screener")
 
     ind_map = get_industry_map() or {}
-    rows, skipped_liquidity, momentum = compute_screener_rows(mode)
+    rows, skipped_liquidity, momentum = compute_screener_rows(
+        mode, inst=inst, ind_map=ind_map)
     rows = list(rows)   # 複製一份再篩選排序，避免就地排序動到快取裡那份
 
     # ── 篩選 ──
