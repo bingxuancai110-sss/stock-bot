@@ -6960,6 +6960,33 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .rank-list-head span{font-size:11.5px;color:var(--ink-faint)}
 .rank-card{padding:16px 0;border-bottom:1px solid #C9CCC4}
 .rank-card:last-child{border-bottom:0}
+.rank-card.rank-champion{position:relative;overflow:hidden;margin:10px -11px 17px;padding:17px 13px 13px;
+  border:1px solid #B4862D;border-radius:15px;background:radial-gradient(circle at 50% 0%,#FFF8DD 0%,#F7EAC0 46%,#F4E6BC 100%);
+  box-shadow:0 8px 22px rgba(110,82,40,.22)}
+.rank-card.rank-champion:before{content:'';position:absolute;inset:5px;border:1px solid rgba(181,137,43,.55);
+  border-radius:11px;pointer-events:none}
+.rank-card.rank-champion:after{content:'✦  ✦  ✦';position:absolute;right:18px;top:9px;color:#B4862D;
+  font-size:10px;letter-spacing:4px;opacity:.7;pointer-events:none}
+.rank-honour{position:relative;display:flex;align-items:center;gap:10px;margin-bottom:12px;color:#6E5228}
+.rank-honour-icon{font-size:31px;line-height:1;filter:drop-shadow(0 2px 2px rgba(110,82,40,.18))}
+.rank-honour b{display:block;font-size:14px;letter-spacing:.08em}
+.rank-honour small{display:block;color:#8A6A3B;font-size:11px;margin-top:2px}
+.rank-card.rank-champion .rank-number{font-size:21px;color:#6E5228;font-weight:700}
+.rank-card.rank-champion .name{font-size:19px;font-weight:700}
+.rank-card.rank-champion .rank-return{font-size:24px}
+.rank-card.rank-champion .rank-meta{color:#6B604B}
+.rank-card.rank-champion .rank-honour{justify-content:center;text-align:center;flex-direction:column;gap:4px;margin-bottom:13px}
+.rank-card.rank-champion .rank-honour-icon{font-size:43px}
+.rank-card.rank-champion .rank-honour b{font-size:15px}
+.rank-tier{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.rank-tier-medal{font-size:25px;line-height:1;filter:drop-shadow(0 1px 1px rgba(35,39,35,.14))}
+.rank-tier b{font-size:12px;letter-spacing:.08em;color:var(--ink-soft)}
+.rank-tier small{font-size:11px;color:var(--ink-faint)}
+.rank-card.rank-silver{margin:0 -11px 10px;padding:14px 11px;background:linear-gradient(135deg,#FAFBFA,#EEF0EE);
+  border:1px solid #B8BEC1;border-radius:12px;box-shadow:0 3px 10px rgba(35,39,35,.08)}
+.rank-card.rank-bronze{margin:0 -11px 10px;padding:14px 11px;background:linear-gradient(135deg,#FFF9F2,#F4E4D6);
+  border:1px solid #B78662;border-radius:12px;box-shadow:0 3px 10px rgba(118,76,46,.10)}
+.rank-champion-prompt{text-align:center;color:#8A6A3B;font-size:12px;letter-spacing:.04em;padding:0 0 5px}
 .rank-row-main{display:grid;grid-template-columns:auto 1fr auto auto;gap:8px;align-items:center}
 .rank-number{font-size:16px;min-width:31px;text-align:center}
 .rank-card .name{font-size:15.5px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -6996,6 +7023,9 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
   .rank-row-main{grid-template-columns:auto minmax(0,1fr) auto;gap:7px}
   .rank-movement{grid-column:2/-1;margin-top:-4px}
   .rank-meta,.rank-detail,.rank-private{margin-left:38px}
+  .rank-card.rank-champion{margin-left:-8px;margin-right:-8px;padding:16px 11px 12px}
+  .rank-card.rank-champion .rank-return{font-size:21px}
+  .rank-card.rank-champion .name{font-size:17px}
 }
 .dist{display:flex;flex-wrap:wrap;gap:14px;padding:11px 13px;
   background:var(--paper-2);font-size:12.5px;color:var(--ink-soft);
@@ -8817,12 +8847,28 @@ def web_leaderboard(uid):
             return ('<div class="empty">這個榜還沒有資料。<br><br>'
                     '<span style="font-size:12.5px">加入後累積 2 天以上的'
                     '每日快照就會出現。</span></div>')
-        medal = ["🥇", "🥈", "🥉"]
         out = []
         for i, r in enumerate(rows):
             mine = " rank-mine" if str(r.get("user_id")) == str(uid) else ""
             current_rank = i + 1
-            rank = medal[i] if i < 3 else f"#{current_rank}"
+            rank = f"#{current_rank}"
+            if current_rank == 1:
+                tier_class = " rank-champion"
+                honour = '''<div class="rank-honour">
+  <span class="rank-honour-icon">🏆</span>
+  <div><b>冠軍席位</b><small>今日冠軍・目前第一名</small></div>
+</div>'''
+            elif current_rank == 2:
+                tier_class = " rank-silver"
+                honour = '''<div class="rank-tier"><span class="rank-tier-medal">🥈</span>
+  <b>亞軍</b><small>第二名</small></div>'''
+            elif current_rank == 3:
+                tier_class = " rank-bronze"
+                honour = '''<div class="rank-tier"><span class="rank-tier-medal">🥉</span>
+  <b>季軍</b><small>第三名</small></div>'''
+            else:
+                tier_class = ""
+                honour = ""
             main_v = r[key]
             cls = "up" if main_v >= 0 else "down"
             rank_state = get_rank_status(
@@ -8875,7 +8921,8 @@ def web_leaderboard(uid):
                 detail = '<span class="rank-private">持股明細未公開</span>'
 
             out.append(f"""
-<div class="rank-card{mine}">
+<div class="rank-card{tier_class}{mine}">
+  {honour}
   <div class="rank-row-main">
     <span class="rank-number">{rank}</span>
     <span class="name">{r['nickname']}</span>
@@ -8885,6 +8932,8 @@ def web_leaderboard(uid):
   <div class="rank-meta">{''.join(supporting)}<span>{span_html}</span></div>
   {detail}
 </div>""")
+            if current_rank == 1:
+                out.append('<div class="rank-champion-prompt">下一個站上這裡的人，會是誰？</div>')
         return f'<div class="rows rank-rows">{"".join(out)}</div>'
 
     board = board_rows(boards[active_board], active_key)
