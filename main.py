@@ -1240,12 +1240,106 @@ def build_admin_dashboard_report():
     return "\n".join(lines)
 
 
+def _admin_system_data_status_report():
+    """使用者名單上方的資料新鮮度摘要；只讀真實資料，不自行推測事件。"""
+    today = taiwan_today()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT MAX(trade_date), COUNT(DISTINCT trade_date)
+            FROM inst_history
+        """)
+        inst_date, inst_days = cur.fetchone()
+
+        cur.execute("""
+            SELECT MAX(snapshot_date)
+            FROM premarket_snapshots
+        """)
+        premarket_date = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM premarket_events
+            WHERE snapshot_date = %s
+        """, (today,))
+        event_count = cur.fetchone()[0] or 0
+
+        cur.execute("""
+            SELECT snapshot_date, COUNT(DISTINCT board)
+            FROM leaderboard_rank_snapshots
+            GROUP BY snapshot_date
+            ORDER BY snapshot_date DESC
+            LIMIT 1
+        """)
+        rank_row = cur.fetchone()
+        rank_date, rank_boards = rank_row if rank_row else (None, 0)
+
+        cur.execute("""
+            SELECT running, started_at, finished_at, result,
+                   progress_stage, progress_index, progress_total
+            FROM job_runs
+            WHERE name = '每日快照'
+        """)
+        job_row = cur.fetchone()
+        cur.close()
+    except Exception as exc:
+        print(f"❌ 管理資料狀態查詢失敗：{exc}")
+        return "📡 系統資料狀態\n⚠️ 暫時無法讀取，請查看 Render Logs。"
+    finally:
+        release_db_connection(conn)
+
+    def fmt_date(value):
+        return value.strftime("%Y/%m/%d") if value else "尚無資料"
+
+    def premarket_status(value):
+        if not value:
+            return "⚪ 尚無快照"
+        return "✅ 今日已更新" if value == today else "ℹ️ 最近資料"
+
+    def rank_status(value):
+        if not value:
+            return "⚪ 尚無快照"
+        return "✅ 今日已更新" if value == today else "ℹ️ 最近交易日"
+
+    inst_status = "✅ 有資料" if inst_date else "⚪ 尚無資料"
+
+    if not job_row:
+        job_text = "⚪ 尚無執行紀錄"
+    else:
+        running, started_at, finished_at, result, stage, index, total = job_row
+        if running:
+            progress = f"{stage or '處理中'} {index or 0}"
+            if total is not None:
+                progress += f"/{total}"
+            job_text = f"⏳ 執行中（{progress}）"
+        elif result and str(result).startswith("失敗："):
+            job_text = f"❌ 失敗：{str(result)[3:][:32]}"
+        elif finished_at:
+            when = _admin_format_time(finished_at)
+            job_text = f"✅ 最後完成：{when}"
+        else:
+            job_text = "⚪ 尚未完成"
+
+    return "\n".join([
+        "📡 系統資料狀態",
+        f"法人資料　最新 {fmt_date(inst_date)}（{inst_days or 0} 個交易日）　{inst_status}",
+        f"盤前快照　最新 {fmt_date(premarket_date)}　{premarket_status(premarket_date)}",
+        f"今日事件　{event_count} 個（以今日快照為準）",
+        f"排行榜快照　最新 {fmt_date(rank_date)}（{rank_boards or 0} 榜）　{rank_status(rank_date)}",
+        f"每日快照　{job_text}",
+    ])
+
+
 def build_admin_user_list_report(status="all", limit=10, offset=0):
     rows = _admin_user_rows(status=status, limit=limit, offset=offset)
-    if not rows:
-        return "目前沒有符合條件的使用者。"
     labels = {"all": "使用者名單", "today": "今日活躍", "dormant": "沉睡使用者", "dormant7": "7天以上未使用"}
     lines = [f"👥 {labels.get(status, '使用者名單')}", "─" * 14]
+    if status == "all":
+        lines += ["", _admin_system_data_status_report(), "", "─" * 14]
+    if not rows:
+        lines.append("目前沒有符合條件的使用者。")
+        return "\n".join(lines)
     for i, (uid, name, last_seen, last_feature, notify, requested, count) in enumerate(rows, offset + 1):
         features = _admin_recent_features(uid)
         masked = f"{uid[:4]}••••{uid[-4:]}" if len(uid) > 8 else uid
