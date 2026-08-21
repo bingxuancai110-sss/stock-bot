@@ -10127,11 +10127,33 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             except (TypeError, ValueError):
                 pass
             break
-    portfolio_pct = sum((h["weight"] * float((h["price"] or {}).get("pct") or 0))
-                        for h in holdings) / 100 if holdings else None
+    def holding_day_pct(holding):
+        try:
+            value = (holding.get("price") or {}).get("pct")
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    holding_changes = [(h, holding_day_pct(h)) for h in holdings]
+    valid_changes = [(h, pct) for h, pct in holding_changes if pct is not None]
+    portfolio_pct = (sum(h["weight"] * pct for h, pct in valid_changes) / 100
+                     if valid_changes else None)
     relative = portfolio_pct - market_pct if portfolio_pct is not None and market_pct is not None else None
-    biggest_gain = max(holdings, key=lambda h: (h["price"] or {}).get("pct") or -999) if holdings else None
-    biggest_loss = min(holdings, key=lambda h: (h["price"] or {}).get("pct") or 999) if holdings else None
+
+    # 「最大貢獻／最大拖累」看的是對組合的實際影響，不是單看個股漲跌幅。
+    # 例如權重 40% 下跌 2%，通常比權重 1% 下跌 10% 更拖累整體組合。
+    gain_entry = max(
+        ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct > 0),
+        key=lambda item: item[2], default=None)
+    loss_entry = min(
+        ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct < 0),
+        key=lambda item: item[2], default=None)
+    biggest_gain = gain_entry[0] if gain_entry else None
+    biggest_gain_pct = gain_entry[1] if gain_entry else None
+    biggest_gain_contribution = gain_entry[2] if gain_entry else None
+    biggest_loss = loss_entry[0] if loss_entry else None
+    biggest_loss_pct = loss_entry[1] if loss_entry else None
+    biggest_loss_contribution = loss_entry[2] if loss_entry else None
     rank_status = get_my_rank_summary(uid)
 
     def timeline_rows(items, status_label, status_class, start=1):
@@ -10175,10 +10197,16 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             movement, streak = '<em class="flat">— 無變化</em>', ""
         return f'''<div class="rank-mini"><span>{s["label"]}</span><b>#{s["rank"]} {movement}</b><small>昨日 #{s["previous"]}{streak}</small></div>'''
 
-    gain_html = (f"{biggest_gain['name']} {fmt_pct((biggest_gain['price'] or {}).get('pct'))}"
-                 if biggest_gain else "—")
-    loss_html = (f"{biggest_loss['name']} {fmt_pct((biggest_loss['price'] or {}).get('pct'))}"
-                 if biggest_loss else "—")
+    gain_html = (
+        f"{html.escape(str(biggest_gain['name']))} {fmt_pct(biggest_gain_pct)}"
+        f"<small class=\"contribution-note\">組合 +{biggest_gain_contribution:.2f} 個百分點</small>"
+        if biggest_gain and biggest_gain_pct is not None and biggest_gain_contribution is not None
+        else "—")
+    loss_html = (
+        f"{html.escape(str(biggest_loss['name']))} {fmt_pct(biggest_loss_pct)}"
+        f"<small class=\"contribution-note\">組合 {biggest_loss_contribution:.2f} 個百分點</small>"
+        if biggest_loss and biggest_loss_pct is not None and biggest_loss_contribution is not None
+        else "—")
 
     # 第一屏只放一個由真實資料決定的「今天先看這裡」，不自行生成訊號。
     # 優先順序：盤前事件 > 持股下跌 > 持股上漲 > 排名變化 > 無重大提醒。
@@ -10189,19 +10217,19 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         focus_title = str(events[0].get("title") or "今日有新的市場變化")
         focus_detail = (f"今日已偵測 {len(events)} 個變化，先看優先級最高的事件。")
     else:
-        loss_pct = ((biggest_loss.get("price") or {}).get("pct")
-                    if biggest_loss else None)
-        gain_pct = ((biggest_gain.get("price") or {}).get("pct")
-                    if biggest_gain else None)
-        if biggest_loss and loss_pct is not None and float(loss_pct) < 0:
+        loss_pct = biggest_loss_pct
+        gain_pct = biggest_gain_pct
+        if biggest_loss and loss_pct is not None and biggest_loss_contribution is not None:
             focus_kicker = "先看你的持股"
-            focus_title = f"{biggest_loss['name']} 今日 {float(loss_pct):+.2f}%"
-            focus_detail = "你的持股出現今日下跌，查看完整持股與提醒。"
+            focus_title = f"{html.escape(str(biggest_loss['name']))} 今日 {loss_pct:+.2f}%"
+            focus_detail = (f"這檔持股對組合拖累 {abs(biggest_loss_contribution):.2f} 個百分點，"
+                            "查看完整持股與提醒。")
             focus_href, focus_cta, focus_class = "/web/positions", "查看持股", "focus-down"
-        elif biggest_gain and gain_pct is not None and float(gain_pct) > 0:
+        elif biggest_gain and gain_pct is not None and biggest_gain_contribution is not None:
             focus_kicker = "你的持股有變化"
-            focus_title = f"{biggest_gain['name']} 今日 {float(gain_pct):+.2f}%"
-            focus_detail = "你的持股出現今日上漲，查看組合貢獻與完整資料。"
+            focus_title = f"{html.escape(str(biggest_gain['name']))} 今日 {gain_pct:+.2f}%"
+            focus_detail = (f"這檔持股對組合貢獻 +{biggest_gain_contribution:.2f} 個百分點，"
+                            "查看組合貢獻與完整資料。")
             focus_href, focus_cta, focus_class = "/web/positions", "查看持股", "focus-up"
         else:
             moved = next((rank_status[b] for b in ("short", "long")
@@ -10229,7 +10257,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     relative_text = fmt_pct(relative) if relative is not None else "—"
     return f'''<style>
 .daily-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:26px 24px 22px;margin:-8px -2px 18px;border-bottom:1px solid #d7d4ca}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-status{{min-width:28px;height:22px;padding:2px 5px;border-radius:7px;text-align:center;font-size:11px;font-weight:700;line-height:18px;flex:none;background:#eee;color:var(--ink-soft)}}.timeline-new .event-status{{background:#FCE9E6;color:var(--up)}}.timeline-ongoing .event-status{{background:#F3EEE1;color:var(--brass)}}.timeline-resolved .event-status{{background:#E8F2EA;color:var(--down)}}.timeline-divider{{margin:14px 0 0;padding-top:12px;border-top:1px solid #eee;color:var(--ink-soft);font-size:12px;font-weight:600}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:13px}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:12px}}.rank-mini b{{display:block;font-size:21px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:14px}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.rank-grid{{grid-template-columns:1fr}}.daily-hero h1{{font-size:26px}}}}
-.daily-focus{{padding:17px 18px;margin:0 0 14px;border-radius:14px;border:1px solid #e1ddd2;background:linear-gradient(135deg,#fffaf0,#f3f5ef);box-shadow:0 5px 18px rgba(35,39,35,.07)}}.daily-focus-head{{display:flex;justify-content:space-between;align-items:center;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}}.daily-focus-head small{{font-size:11px;color:var(--ink-soft);font-weight:400;letter-spacing:0}}.daily-focus h2{{font-size:22px;line-height:1.3;margin:10px 0 5px}}.daily-focus p{{font-size:13px;color:var(--ink-soft);margin:0 0 12px}}.daily-focus a{{display:inline-block;color:#fff;background:var(--brass);border-radius:7px;padding:8px 12px;font-size:12px;font-weight:700}}.daily-focus.focus-down{{border-color:#edc7c2;background:linear-gradient(135deg,#fff7f5,#fffaf0)}}.daily-focus.focus-down .daily-focus-head{{color:var(--up)}}.daily-focus.focus-down a{{background:var(--up)}}.daily-focus.focus-up{{border-color:#c9dfd0;background:linear-gradient(135deg,#f4fbf5,#fffaf0)}}.daily-focus.focus-up .daily-focus-head{{color:var(--down)}}.daily-focus.focus-up a{{background:var(--down)}}.daily-focus.focus-rank{{border-color:#d9c9a7}}.daily-focus.focus-quiet{{background:#f7f7f3;box-shadow:none}}.daily-focus.focus-quiet a{{background:#68705f}} </style><section class="daily-hero">
+.daily-focus{{padding:17px 18px;margin:0 0 14px;border-radius:14px;border:1px solid #e1ddd2;background:linear-gradient(135deg,#fffaf0,#f3f5ef);box-shadow:0 5px 18px rgba(35,39,35,.07)}}.daily-focus-head{{display:flex;justify-content:space-between;align-items:center;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}}.daily-focus-head small{{font-size:11px;color:var(--ink-soft);font-weight:400;letter-spacing:0}}.daily-focus h2{{font-size:22px;line-height:1.3;margin:10px 0 5px}}.daily-focus p{{font-size:13px;color:var(--ink-soft);margin:0 0 12px}}.daily-focus .contribution-note{{display:block;font-size:11px;font-weight:400;color:var(--ink-soft);margin-top:4px}}.daily-focus a{{display:inline-block;color:#fff;background:var(--brass);border-radius:7px;padding:8px 12px;font-size:12px;font-weight:700}}.daily-focus.focus-down{{border-color:#edc7c2;background:linear-gradient(135deg,#fff7f5,#fffaf0)}}.daily-focus.focus-down .daily-focus-head{{color:var(--up)}}.daily-focus.focus-down a{{background:var(--up)}}.daily-focus.focus-up{{border-color:#c9dfd0;background:linear-gradient(135deg,#f4fbf5,#fffaf0)}}.daily-focus.focus-up .daily-focus-head{{color:var(--down)}}.daily-focus.focus-up a{{background:var(--down)}}.daily-focus.focus-rank{{border-color:#d9c9a7}}.daily-focus.focus-quiet{{background:#f7f7f3;box-shadow:none}}.daily-focus.focus-quiet a{{background:#68705f}} </style><section class="daily-hero">
   <div class="eyebrow">TODAY · {taiwan_today().strftime('%Y / %m / %d')}</div>
   <h1>今天你的投資發生了什麼？</h1>
   <div class="market-strip"><span>大盤 <b>{market_text}</b></span><span>你的組合 <b>{portfolio_text}</b></span><span>相對大盤 <b>{relative_text}</b></span></div>
