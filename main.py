@@ -30,6 +30,16 @@ def taiwan_now():
 
 def taiwan_today():
     return taiwan_now().date()
+
+
+def as_taiwan_datetime(value):
+    """將 PostgreSQL 回傳的 aware 或舊版 naive 時間統一成台灣時區。"""
+    if not value:
+        return None
+    if getattr(value, "tzinfo", None):
+        return value.astimezone(TW_TZ)
+    # 舊欄位是 TIMESTAMP WITHOUT TIME ZONE；migration 以前的值按既有 UTC 資料處理。
+    return value.replace(tzinfo=timezone.utc).astimezone(TW_TZ)
 import random
 import math
 import json
@@ -1003,6 +1013,29 @@ def init_db():
         ]:
             cursor.execute(
                 f"ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS {_col} {_type}")
+
+        # 早期欄位是 TIMESTAMP WITHOUT TIME ZONE；當時 Render／Supabase
+        # 可能以 UTC 寫入，導致管理名單看到的時間少 8 小時。只在欄位仍是
+        # 無時區型別時執行一次 migration，避免每次啟動重複轉換。
+        timestamp_targets = {
+            "users": ("last_seen",),
+            "activity_log": ("occurred_at",),
+            "job_runs": ("started_at", "finished_at"),
+        }
+        cursor.execute("""
+            SELECT table_name, column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = ANY(%s)
+              AND column_name = ANY(%s)
+        """, (list(timestamp_targets),
+              [column for columns in timestamp_targets.values() for column in columns]))
+        for _table, _column, _data_type in cursor.fetchall():
+            if _data_type == "timestamp without time zone":
+                cursor.execute(
+                    f'''ALTER TABLE "{_table}" ALTER COLUMN "{_column}"
+                        TYPE TIMESTAMPTZ
+                        USING "{_column}" AT TIME ZONE 'UTC' ''')
         conn.commit()
         cursor.close()
     except Exception as e:
@@ -1172,23 +1205,20 @@ def _admin_recent_features(user_id, days=30, limit=3):
 
 
 def _admin_format_time(value):
-    if not value:
+    local = as_taiwan_datetime(value)
+    if not local:
         return "尚未使用"
-    if getattr(value, "tzinfo", None):
-        local = value.astimezone(timezone(timedelta(hours=8)))
-    else:
-        local = value
-    now = taiwan_now().replace(tzinfo=None)
+    now = taiwan_now()
     if local.date() == now.date():
         return f"今天 {local.strftime('%H:%M')}"
     return local.strftime('%m/%d %H:%M')
 
 
 def _admin_status(value):
-    if not value:
+    when = as_taiwan_datetime(value)
+    if not when:
         return "⚪ 尚未使用"
-    now = taiwan_now().replace(tzinfo=None)
-    days = (now - value.replace(tzinfo=None)).total_seconds() / 86400
+    days = (taiwan_now() - when).total_seconds() / 86400
     if days < 1:
         return "🟢 今日使用"
     if days < 3:
@@ -1356,9 +1386,12 @@ def build_admin_churn_report():
     if not rows:
         return "⚠️ 可能流失使用者\n\n目前沒有 3 天以上未使用的使用者。"
     groups = {"3–6天未使用": [], "7天以上未使用": []}
-    now = taiwan_now().replace(tzinfo=None)
+    now = taiwan_now()
     for row in rows:
-        days = (now - row[2].replace(tzinfo=None)).total_seconds() / 86400
+        when = as_taiwan_datetime(row[2])
+        if not when:
+            continue
+        days = (now - when).total_seconds() / 86400
         group = "7天以上未使用" if days >= 7 else "3–6天未使用"
         groups[group].append(row)
     lines = ["⚠️ 可能流失使用者", "", f"目前 3 天以上未回來：{len(rows)} 人"]
@@ -6325,20 +6358,20 @@ def job_status():
               else f"（相差 {(tw.hour - now_srv.hour) % 24} 小時，"
                    f"下方時間為伺服器時區）"),
              ""]
-    now_naive = taiwan_now().replace(tzinfo=None)
+    now_tw = taiwan_now()
     for (name, running, started, finished, secs, result,
          run_id, progress_stage, progress_index, progress_total) in rows:
         if running:
-            started_naive = started.replace(tzinfo=None) if started and getattr(started, "tzinfo", None) else started
-            mins = ((now_naive - started_naive).total_seconds() / 60
-                    if started_naive else 0)
+            started_tw = as_taiwan_datetime(started)
+            mins = ((now_tw - started_tw).total_seconds() / 60
+                    if started_tw else 0)
             stale = "　⚠️ 疑似當掉" if mins > JOB_STALE_MINUTES else ""
             progress = (f"｜{progress_stage} {progress_index}"
                         + (f"/{progress_total}" if progress_total is not None else ""))
             lines.append(f"[執行中] {name}"
                          f"（已 {mins:.0f} 分鐘）{progress}{stale}")
         else:
-            when = finished.strftime("%m/%d %H:%M") if finished else "?"
+            when = _admin_format_time(finished) if finished else "?"
             progress = (f"｜批次 {run_id}｜{progress_stage}"
                         if run_id or progress_stage else "")
             lines.append(f"[完成] {name}　{when}　耗時 {secs or 0:.1f} 秒{progress}")
