@@ -5277,24 +5277,6 @@ def build_news_digest(user_id):
     return digest
 
 
-# ── 每日盤前變化偵測初始化 ──
-# 必須放在所有既有資料函式已定義後，避免單檔模組的函式尚未存在。
-configure_daily_change_detector(
-    get_db_connection=get_db_connection,
-    release_db_connection=release_db_connection,
-    compute_screener_rows=compute_screener_rows,
-    fetch_taiex_summary=fetch_taiex_summary,
-    fetch_quotes_bulk=fetch_quotes_bulk,
-    fetch_stock_news=fetch_stock_news,
-    fetch_institutional_data=fetch_institutional_data,
-    get_consecutive_days=get_consecutive_days,
-    get_user_watchlist=get_user_watchlist,
-    compute_watchlist_scores=compute_watchlist_scores,
-    get_notify_users=get_notify_users,
-    stock_display_name=stock_display_name,
-)
-init_premarket_change_tables()
-
 # ── 推播額度保護 ──
 # LINE 免費方案每月 200 則「主動推播」（回覆訊息不計入）。
 # 以每人每個交易日 1 則計算，一個月約 20 個交易日 → 最多約 9 人。
@@ -9111,6 +9093,25 @@ def compute_screener_rows(mode):
     _screener_cache[mode] = {"at": now, "rows": rows,
                              "skipped": skipped_liquidity, "momentum": momentum}
     return rows, skipped_liquidity, momentum
+
+
+# ── 每日盤前變化偵測初始化 ──
+# 放在 compute_screener_rows 定義之後，避免單檔主程式啟動時先引用尚未建立的名稱。
+configure_daily_change_detector(
+    get_db_connection=get_db_connection,
+    release_db_connection=release_db_connection,
+    compute_screener_rows=compute_screener_rows,
+    fetch_taiex_summary=fetch_taiex_summary,
+    fetch_quotes_bulk=fetch_quotes_bulk,
+    fetch_stock_news=fetch_stock_news,
+    fetch_institutional_data=fetch_institutional_data,
+    get_consecutive_days=get_consecutive_days,
+    get_user_watchlist=get_user_watchlist,
+    compute_watchlist_scores=compute_watchlist_scores,
+    get_notify_users=get_notify_users,
+    stock_display_name=stock_display_name,
+)
+init_premarket_change_tables()
 
 
 def build_review_body():
