@@ -7608,8 +7608,14 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 html{background:#F2F3F0;touch-action:manipulation}
 body{background:#F2F3F0;overflow-x:hidden;padding-bottom:calc(76px + env(safe-area-inset-bottom));-webkit-tap-highlight-color:transparent}
 a,button,input,select{touch-action:manipulation}
-a,button{transition:transform .12s ease,opacity .12s ease}
-a:active,button:active{transform:scale(.98);opacity:.78}.tap-loading{opacity:.72}
+a,button{transition:transform .12s ease,opacity .12s ease,box-shadow .12s ease,background-color .12s ease}
+a:active,button:active{transform:scale(.98);opacity:.78}.tap-loading{opacity:.72;cursor:wait}
+.tap-pulse{animation:tap-pulse .22s ease-out}
+.feedback-success{border-color:#BBD8C2!important;background:#F3FAF4!important;animation:feedback-in .22s ease-out}
+.feedback-error{border-color:#E5B9B3!important;background:#FFF5F3!important;animation:feedback-in .22s ease-out}
+@keyframes tap-pulse{0%{box-shadow:0 0 0 0 rgba(139,105,52,.28)}100%{box-shadow:0 0 0 7px rgba(139,105,52,0)}}
+@keyframes feedback-in{0%{opacity:.45;transform:translateY(2px)}100%{opacity:1;transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}.tap-pulse,.feedback-success,.feedback-error{animation:none!important}}
 button[disabled],input[disabled],select[disabled]{opacity:.58;cursor:wait}
 .wrap{max-width:760px;padding:94px 16px calc(104px + env(safe-area-inset-bottom))}
 .app-header{position:fixed;top:0;left:0;right:0;width:min(760px,100%);margin:0 auto;z-index:50;
@@ -7782,9 +7788,44 @@ def render_page(title, body, nav_active=None, user_name=None):
     // localStorage 在部分私密 WebView 可能被禁止，仍由 cookie／網址 token 工作。
   }}
 
+  function prefersReducedMotion() {{
+    try {{ return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; }}
+    catch (ignore) {{ return false; }}
+  }}
+
+  // iOS／部分 LINE WebView 不提供 vibrate；不支援時只保留視覺回饋，不報錯。
+  function haptic(kind) {{
+    if (prefersReducedMotion() || !navigator.vibrate) return;
+    try {{
+      var pattern = kind === 'success' ? [8, 35, 8]
+                  : kind === 'error' ? [16, 35, 16]
+                  : kind === 'medium' ? 14 : 7;
+      navigator.vibrate(pattern);
+    }} catch (ignore) {{}}
+  }}
+
+  function pulse(target) {{
+    if (!target || prefersReducedMotion()) return;
+    target.classList.remove('tap-pulse');
+    void target.offsetWidth;
+    target.classList.add('tap-pulse');
+    window.setTimeout(function() {{ target.classList.remove('tap-pulse'); }}, 260);
+  }}
+
+  function isFeedbackTarget(target) {{
+    return target && (target.matches('button,[data-haptic]') ||
+      target.matches('.daily-focus a,.daily-card a,.app-bottom-nav a'));
+  }}
+
   // 點擊後立即給回饋；不攔截錨點、下載與外部連結。
   document.addEventListener('click', function(e) {{
-    var a = e.target.closest ? e.target.closest('a') : null;
+    var target = e.target.closest ? e.target.closest('a,button,[data-haptic]') : null;
+    if (!target || target.dataset.haptic === 'none') return;
+    if (isFeedbackTarget(target)) {{
+      pulse(target);
+      haptic(target.dataset.haptic || 'soft');
+    }}
+    var a = target.matches('a') ? target : (target.closest ? target.closest('a') : null);
     if (!a) return;
     var href = a.getAttribute('href') || '';
     if (!href || href.charAt(0) === '#' || a.target === '_blank' || a.dataset.noBusy === '1') return;
@@ -7799,6 +7840,8 @@ def render_page(title, body, nav_active=None, user_name=None):
       return;
     }}
     form.dataset.submitted = '1';
+    form.classList.add('tap-loading');
+    haptic('medium');
     var button = form.querySelector('button[type="submit"],input[type="submit"]');
     if (button) {{
       button.dataset.oldText = button.textContent || button.value || '';
@@ -7807,6 +7850,16 @@ def render_page(title, body, nav_active=None, user_name=None):
       button.disabled = true;
     }}
   }}, true);
+
+  // 新頁面載入後，讓成功／失敗訊息有一致的顏色、短動畫與觸覺回饋。
+  document.querySelectorAll('.msg,.callout').forEach(function(box) {{
+    var text = box.textContent || '';
+    if (/成功|完成|已儲存|已新增|已刪除/.test(text)) {{
+      box.classList.add('feedback-success'); haptic('success');
+    }} else if (/失敗|錯誤|無法|過期/.test(text)) {{
+      box.classList.add('feedback-error'); haptic('error');
+    }}
+  }});
 }})();
 </script>
 <footer>
