@@ -6640,6 +6640,14 @@ body{background:#F2F3F0;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
 .app-bottom-nav a b{font-size:17px;font-weight:500;line-height:1}
 .app-bottom-nav a.on{color:var(--brass);background:#F0EEE8;font-weight:600}
 .daily-card{border-radius:18px;box-shadow:0 4px 18px rgba(18,22,27,.055)}
+.rank-spotlight{background:#FFF;border:1px solid #E1E3DE;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 4px 18px rgba(18,22,27,.055)}
+.rank-spotlight .daily-section-title span{font-size:12px;color:var(--ink-faint)}
+.my-rank-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.my-rank-card{background:#F5F5F1;border-radius:12px;padding:14px;min-height:112px}
+.my-rank-card small,.my-rank-card span{display:block;color:var(--ink-soft);font-size:12px}
+.my-rank-card b{display:block;font-size:22px;margin:8px 0 4px}
+.rank-move{font-size:13px;font-weight:600;white-space:nowrap}.rank-move.muted{color:var(--ink-faint);font-weight:400}.rank-move.up{color:var(--up)}.rank-move.down{color:var(--down)}
+@media(max-width:640px){.my-rank-grid{grid-template-columns:1fr}}
 @media(min-width:700px){body{padding-bottom:0}.app-bottom-nav{display:none}.wrap{padding-bottom:56px}}
 """
 
@@ -8241,6 +8249,39 @@ def web_leaderboard(uid):
 </form>"""
 
     # ── 榜單 ──
+    my_rank = get_my_rank_summary(uid)
+
+    def render_rank_status(status, compact=False):
+        if status.get("rank") is None:
+            return '<span class="rank-move muted">尚未上榜</span>'
+        if status.get("delta") is None:
+            return '<span class="rank-move muted">等待前一日</span>'
+        delta = status["delta"]
+        if delta > 0:
+            text = f"↑ {delta} 名"
+            if status.get("streak", 0) >= 2:
+                text += f"・連續 {status['streak']} 次上升"
+            return f'<span class="rank-move up">{text}</span>'
+        if delta < 0:
+            text = f"↓ {abs(delta)} 名"
+            if status.get("streak", 0) >= 2:
+                text += f"・連續 {status['streak']} 次下降"
+            return f'<span class="rank-move down">{text}</span>'
+        return '<span class="rank-move flat">— 無變化</span>'
+
+    def render_my_rank_card(board_name, label):
+        status = my_rank[board_name]
+        if status.get("rank") is None:
+            title = "尚未上榜"
+            detail = "有足夠有效快照後會顯示你的排名。"
+        elif status.get("delta") is None:
+            title = f"#{status['rank']}"
+            detail = "已建立目前排名，等待前一日快照比較。"
+        else:
+            title = f"#{status['rank']}　{render_rank_status(status)}"
+            detail = f"昨日 #{status['previous']}"
+        return f'''<div class="my-rank-card"><small>{label}</small><b>{title}</b><span>{detail}</span></div>'''
+
     def board_rows(rows, key):
         """key: "m30" 排短線、"ret" 排長線。兩榜共用同一套列渲染。"""
         if not rows:
@@ -8252,9 +8293,12 @@ def web_leaderboard(uid):
         for i, r in enumerate(rows):
             mine = ' style="background:var(--paper-2)"' if (
                 me and r["nickname"] == me["nickname"]) else ""
-            rank = medal[i] if i < 3 else f"{i + 1}"
+            current_rank = i + 1
+            rank = medal[i] if i < 3 else f"{current_rank}"
             main_v = r[key]
             cls = "up" if main_v >= 0 else "down"
+            rank_state = get_rank_status(r.get("user_id"), "short" if key == "m30" else "long", current_rank)
+            movement = render_rank_status(rank_state)
 
             # 樣本天數。短線榜看近30天實際涵蓋幾天，長線榜看參加幾天。
             span = r["m30_days"] if key == "m30" else r["days"]
@@ -8304,7 +8348,7 @@ def web_leaderboard(uid):
 
             out.append(f"""
 <div class="row"{mine}>
-  <div><span class="name">{rank}　{r['nickname']}</span> {thin}</div>
+  <div><span class="name">{rank}　{r['nickname']}</span> {movement} {thin}</div>
   <div class="price num {cls}">{main_v:+.2f}%</div>
   <div class="meta">{side}</div>
   <div class="meta">{detail}</div>
@@ -8314,6 +8358,7 @@ def web_leaderboard(uid):
     is_short = view != "long"
     board = board_rows(boards["short"] if is_short else boards["long"],
                        "m30" if is_short else "ret")
+    my_rank_html = f'''<section class="rank-spotlight"><div class="daily-section-title"><h2>🏆 我的排名</h2><span>只顯示你的資料</span></div><div class="my-rank-grid">{render_my_rank_card("short", "短線｜近 30 天")}{render_my_rank_card("long", "長線｜加入後累計")}</div></section>'''
 
     waiting_html = ""
     if boards["waiting"]:
@@ -8349,6 +8394,7 @@ def web_leaderboard(uid):
 <div class="section-head"><h2>績效排行榜</h2>
   <span class="section-note">{len(boards['long'])} 位參加中</span></div>
 {tabs}
+{my_rank_html}
 {board}
 {waiting_html}
 
