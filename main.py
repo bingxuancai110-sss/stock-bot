@@ -20,7 +20,18 @@ from linebot.models import (MessageEvent, TextMessage, TextSendMessage,
                             QuickReply, QuickReplyButton, MessageAction)
 from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
+
+TW_TZ = timezone(timedelta(hours=8))
+
+
+def taiwan_now():
+    return datetime.now(TW_TZ)
+
+
+def taiwan_today():
+    return taiwan_now().date()
 import random
+import math
 import json
 from collections import defaultdict
 
@@ -335,7 +346,7 @@ def _current_market():
 
 def collect_daily_snapshot(snapshot_date=None):
     _require_dependencies()
-    snapshot_date = snapshot_date or date.today()
+    snapshot_date = snapshot_date or taiwan_today()
     blackhorse_rows, _, _ = compute_screener_rows("blackhorse")
     radar_rows, _, _ = compute_screener_rows("radar")
     blackhorse = _normalise_pick_rows(sorted(blackhorse_rows or [], key=lambda x: x.get("score") if x.get("score") is not None else -1, reverse=True), "blackhorse")[:20]
@@ -434,7 +445,7 @@ def run_daily_change_detection(snapshot_date=None):
 
 
 def get_today_change_events(user_id=None, snapshot_date=None, limit=None):
-    snapshot_date = snapshot_date or date.today()
+    snapshot_date = snapshot_date or taiwan_today()
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -466,7 +477,7 @@ def build_today_attention_push(user_id):
 
 
 def get_today_change_snapshot(snapshot_date=None):
-    snapshot_date = snapshot_date or date.today()
+    snapshot_date = snapshot_date or taiwan_today()
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -489,7 +500,7 @@ def get_today_change_snapshot(snapshot_date=None):
 
 def get_today_signal_state(user_id=None, snapshot_date=None):
     """首頁用的真實資料狀態；不把尚未更新誤報成市場安靜。"""
-    snapshot_date = snapshot_date or date.today()
+    snapshot_date = snapshot_date or taiwan_today()
     snapshot = get_today_change_snapshot(snapshot_date)
     personal_events = get_today_change_events(user_id, snapshot_date)
     global_events = get_today_change_events(None, snapshot_date)
@@ -509,7 +520,7 @@ def get_today_signal_state(user_id=None, snapshot_date=None):
 
 def get_today_event_timeline(user_id=None, snapshot_date=None):
     """把今日與前一有效交易日事件比對成回訪時間線，不產生不存在的事件。"""
-    snapshot_date = snapshot_date or date.today()
+    snapshot_date = snapshot_date or taiwan_today()
     snapshot = get_today_change_snapshot(snapshot_date)
     if not snapshot or not snapshot.get("previous_trade_date"):
         return {"new": [], "ongoing": [], "resolved": [],
@@ -540,7 +551,7 @@ def get_today_event_timeline(user_id=None, snapshot_date=None):
 
 def build_today_change_web_data(user_id):
     """網頁顯示完整快照與事件；LINE 只使用 build_today_attention_push()。"""
-    snapshot_date = date.today()
+    snapshot_date = taiwan_today()
     global_events = get_today_change_events(None, snapshot_date)
     user_events = get_today_change_events(user_id, snapshot_date)
     state = get_today_signal_state(user_id, snapshot_date)
@@ -595,6 +606,7 @@ connection_pool = psycopg2.pool.ThreadedConnectionPool(
     host=_ipv4_addr,
     port=_url.port,
     sslmode='require',
+    options='-c timezone=Asia/Taipei',
     connect_timeout=10,
     # 連線被 Supabase pooler 中途切斷時，下次借出才會發現而丟出例外。
     # 開啟 keepalive 讓閒置連線不被靜默斷開。
@@ -976,9 +988,21 @@ def init_db():
                 started_at TIMESTAMP,
                 finished_at TIMESTAMP,
                 seconds REAL,
-                result TEXT
+                result TEXT,
+                run_id TEXT,
+                progress_stage TEXT DEFAULT 'industry',
+                progress_index INTEGER DEFAULT 0,
+                progress_total INTEGER
             )
         ''')
+        for _col, _type in [
+            ("run_id", "TEXT"),
+            ("progress_stage", "TEXT DEFAULT 'industry'"),
+            ("progress_index", "INTEGER DEFAULT 0"),
+            ("progress_total", "INTEGER"),
+        ]:
+            cursor.execute(
+                f"ALTER TABLE job_runs ADD COLUMN IF NOT EXISTS {_col} {_type}")
         conn.commit()
         cursor.close()
     except Exception as e:
@@ -1154,7 +1178,7 @@ def _admin_format_time(value):
         local = value.astimezone(timezone(timedelta(hours=8)))
     else:
         local = value
-    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    now = taiwan_now().replace(tzinfo=None)
     if local.date() == now.date():
         return f"今天 {local.strftime('%H:%M')}"
     return local.strftime('%m/%d %H:%M')
@@ -1163,7 +1187,7 @@ def _admin_format_time(value):
 def _admin_status(value):
     if not value:
         return "⚪ 尚未使用"
-    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    now = taiwan_now().replace(tzinfo=None)
     days = (now - value.replace(tzinfo=None)).total_seconds() / 86400
     if days < 1:
         return "🟢 今日使用"
@@ -1212,7 +1236,7 @@ def build_admin_dashboard_report():
     ):
         people, uses = feature_map.get(feature, (0, 0))
         lines.append(f"{_activity_feature_label(feature):<6}　{people} 人／{uses} 次")
-    lines += ["", "━━━━━━━━━━━━", "", "資料更新：" + datetime.now(timezone(timedelta(hours=8))).strftime('%m/%d %H:%M')]
+    lines += ["", "━━━━━━━━━━━━", "", "資料更新：" + taiwan_now().strftime('%m/%d %H:%M')]
     return "\n".join(lines)
 
 
@@ -1238,7 +1262,7 @@ def build_admin_churn_report():
     if not rows:
         return "⚠️ 可能流失使用者\n\n目前沒有 3 天以上未使用的使用者。"
     groups = {"3–6天未使用": [], "7天以上未使用": []}
-    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    now = taiwan_now().replace(tzinfo=None)
     for row in rows:
         days = (now - row[2].replace(tzinfo=None)).total_seconds() / 86400
         group = "7天以上未使用" if days >= 7 else "3–6天未使用"
@@ -1597,10 +1621,54 @@ def get_user_watchlist(user_id):
 # 網頁版：登入權杖、持股、問卷設定
 # ============================================================
 import secrets
+import hmac
+import hashlib
 from functools import wraps
 from flask import make_response, redirect, url_for
 
 WEB_SESSION_DAYS = 30  # 權杖有效天數
+
+
+def _web_csrf_secret():
+    """CSRF 簽章金鑰；正式環境建議設定 WEB_CSRF_SECRET。"""
+    return (os.environ.get("WEB_CSRF_SECRET")
+            or os.environ.get("CRON_SECRET")
+            or "change-this-web-csrf-secret")
+
+
+def current_web_csrf_token():
+    """由登入 token 派生每個登入 session 的 CSRF token，不把新欄位寫進資料庫。"""
+    token = request.args.get("t") or request.cookies.get("stockbot_token")
+    if not token:
+        return ""
+    return hmac.new(_web_csrf_secret().encode("utf-8"),
+                    str(token).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def csrf_hidden_input():
+    token = current_web_csrf_token()
+    return (f'<input type="hidden" name="csrf_token" value="{html.escape(token, quote=True)}">'
+            if token else "")
+
+
+def inject_csrf_inputs(markup):
+    """替所有已登入的 POST 表單加 hidden CSRF 欄位；登入碼表單沒有 session 時不注入。"""
+    if not markup or not current_web_csrf_token():
+        return markup
+    hidden = csrf_hidden_input()
+    pattern = r'(<form\b[^>]*\bmethod=["\']post["\'][^>]*>)'
+    return re.sub(pattern, lambda m: m.group(1) + hidden, markup,
+                  flags=re.IGNORECASE)
+
+
+def valid_web_csrf():
+    expected = current_web_csrf_token()
+    supplied = request.form.get("csrf_token", "")
+    return bool(expected and supplied and hmac.compare_digest(expected, supplied))
+
+
+def safe_html_text(value):
+    return html.escape(str(value or ""), quote=True)
 
 
 def create_web_token(user_id):
@@ -1763,6 +1831,11 @@ def web_login_required(view):
     def wrapper(*args, **kwargs):
         uid = current_web_user()
         if not uid:
+            # fragment 不能回完整 HTML 登入頁；否則 loading shell 會把整頁
+            # 登入畫面塞進既有 content，造成 LINE WebView 看似突然跳頁。
+            if request.args.get("fragment") == "1":
+                return make_response("AUTH_EXPIRED", 401,
+                                     {"X-StockBot-Auth": "expired"})
             return render_page("需要登入", NEED_LOGIN_HTML), 401
         # fragment 請求只是同一頁的載入片段，不重複計算成一次使用。
         if request.args.get("fragment") != "1":
@@ -1840,6 +1913,13 @@ def merge_positions(positions):
 
 
 def add_position(user_id, code, shares, cost, bought_on=None, note=None):
+    try:
+        shares = int(shares)
+        cost = float(cost)
+    except (TypeError, ValueError):
+        return False
+    if shares <= 0 or cost <= 0 or not math.isfinite(cost):
+        return False
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -1864,14 +1944,19 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
 
 def delete_position(user_id, pos_id):
     """一定要同時比對 user_id，否則有人改網址上的 id 就能刪別人的持股。"""
+    try:
+        pos_id = int(pos_id)
+    except (TypeError, ValueError):
+        return False
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM positions WHERE id = %s AND user_id = %s",
                        (int(pos_id), str(user_id).strip()))
+        deleted = cursor.rowcount
         conn.commit()
         cursor.close()
-        return True
+        return deleted > 0
     except Exception as e:
         conn.rollback()
         print(f"❌ 刪除持股失敗: {e}")
@@ -1954,7 +2039,7 @@ def sell_position(user_id, pos_id, sell_shares,
         "code": code, "shares": sell_shares, "sell_price": sell_price,
         "cost": lot_cost, "pl": realized_pl, "pct": realized_pct,
         "fee": fee, "tax": tax,
-        "held_days": ((date.today() - bought_on).days if bought_on else None),
+        "held_days": ((taiwan_today() - bought_on).days if bought_on else None),
     }
 
 
@@ -2289,7 +2374,7 @@ def window_return(curve, days=30):
     # 以「今天」為基準往回算，不能用曲線最後一點——
     # 那樣 cutoff 會跟著資料一起往前移，永遠都在窗內，
     # 於是 50 天前就停止更新的曲線也會被當成「近 30 天」而給出數字。
-    cutoff = date.today() - timedelta(days=days)
+    cutoff = taiwan_today() - timedelta(days=days)
     seg = [(d, v) for d, v in curve if d >= cutoff]
     if len(seg) < 2:
         return None
@@ -2386,7 +2471,7 @@ def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None,
 
 def save_leaderboard_rank_snapshots(snapshot_date=None):
     # 每日收盤後保存短線／長線名次；沒有足夠快照不補造排名。
-    snapshot_date = snapshot_date or date.today()
+    snapshot_date = snapshot_date or taiwan_today()
     boards, _ = build_leaderboard(top_n=100, days=365)
     rows = []
     for board_name in ("short", "long"):
@@ -2452,16 +2537,90 @@ def get_rank_status(user_id, board, current_rank):
             "streak": streak, "direction": direction}
 
 
-def get_my_rank_summary(user_id):
+def _rank_status_from_previous(current_rank, previous_rows):
+    if current_rank is None:
+        return {"rank": None, "previous": None, "delta": None, "streak": 0, "direction": None}
+    if not previous_rows:
+        return {"rank": current_rank, "previous": None, "delta": None, "streak": 0, "direction": None}
+    previous = previous_rows[0]
+    delta = previous - current_rank
+    direction = "up" if delta > 0 else ("down" if delta < 0 else "same")
+    seq = [current_rank] + previous_rows
+    streak = 0
+    last_sign = 1 if delta > 0 else (-1 if delta < 0 else 0)
+    if last_sign:
+        for before, after in zip(seq[1:], seq[:-1]):
+            sign = 1 if before - after > 0 else (-1 if before - after < 0 else 0)
+            if sign != last_sign:
+                break
+            streak += 1
+    return {"rank": current_rank, "previous": previous, "delta": delta,
+            "streak": streak, "direction": direction}
+
+
+def get_rank_status_map(rank_inputs):
+    """一次讀取多位成員的最近排名快照，避免 board_rows 產生 N+1 查詢。"""
+    inputs = [(str(board), str(user_id).strip(), rank)
+              for board, user_id, rank in (rank_inputs or [])]
+    result = {(board, user_id): _rank_status_from_previous(rank, [])
+              for board, user_id, rank in inputs}
+    if not inputs:
+        return result
+    user_ids = sorted({user_id for _board, user_id, _rank in inputs})
+    boards = sorted({board for board, _user_id, _rank in inputs})
+    conn = get_db_connection()
+    previous_map = defaultdict(list)
+    try:
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT board, user_id, rank
+            FROM (
+                SELECT board, user_id, rank,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY board, user_id ORDER BY snapshot_date DESC
+                       ) AS rn
+                FROM leaderboard_rank_snapshots
+                WHERE board = ANY(%s)
+                  AND user_id = ANY(%s)
+                  AND snapshot_date < %s
+            ) ranked
+            WHERE rn <= 8
+            ORDER BY board, user_id, rn
+        ''', (boards, user_ids, taiwan_today()))
+        for board, user_id, rank in cur.fetchall():
+            previous_map[(str(board), str(user_id).strip())].append(rank)
+        cur.close()
+    except Exception as e:
+        print(f"❌ 批次讀取排名變化失敗: {e}")
+    finally:
+        release_db_connection(conn)
+    for board, user_id, rank in inputs:
+        result[(board, user_id)] = _rank_status_from_previous(
+            rank, previous_map.get((board, user_id), []))
+    return result
+
+
+def get_my_rank_summary(user_id, boards=None, rank_status_map=None):
     # 首頁用的個人排名摘要；短線與長線分開計算。
-    boards, _ = build_leaderboard(top_n=100, days=365)
+    boards = boards if boards is not None else build_leaderboard(top_n=100, days=365)[0]
+    if rank_status_map is None:
+        rank_inputs = []
+        for board in ("short", "long"):
+            rows = boards.get(board, [])
+            current_rank = next((i for i, row in enumerate(rows, 1)
+                                 if row.get("user_id") == str(user_id)), None)
+            rank_inputs.append((board, user_id, current_rank))
+        rank_status_map = get_rank_status_map(rank_inputs)
     result = {}
     for board, label in (("short", "短線"), ("long", "長線")):
-        current_row = next((row for row in boards.get(board, [])
+        current_rows = boards.get(board, [])
+        current_row = next((row for row in current_rows
                             if row.get("user_id") == str(user_id)), None)
-        current_rank = next((i for i, row in enumerate(boards.get(board, []), 1)
+        current_rank = next((i for i, row in enumerate(current_rows, 1)
                              if row.get("user_id") == str(user_id)), None)
-        status = get_rank_status(user_id, board, current_rank)
+        status = dict(rank_status_map.get(
+            (board, str(user_id).strip()),
+            _rank_status_from_previous(current_rank, [])))
         # 保留該成員的真實榜單資料，首頁與排行榜 UI 可共用，
         # 不需要再跑一次完整排行榜計算。
         status["row"] = current_row
@@ -2567,7 +2726,7 @@ def build_leaderboard(top_n=20, days=365):
             continue
 
         # 近 30 天實際涵蓋幾天，用來標示樣本夠不夠
-        cutoff = date.today() - timedelta(days=30)
+        cutoff = taiwan_today() - timedelta(days=30)
         seg = [d for d, _v in curve if d >= cutoff]
         m30_days = (seg[-1] - seg[0]).days if len(seg) >= 2 else 0
 
@@ -2581,7 +2740,8 @@ def build_leaderboard(top_n=20, days=365):
             "m30": window_return(curve, 30),
             "m30_days": m30_days,
         })
-        series_map[nick] = curve
+        # 用穩定且唯一的 user_id 作為曲線索引；暱稱可以重複，不能拿來當 key。
+        series_map[str(uid)] = {"nickname": str(nick), "curve": curve}
 
     scored = [r for r in rows if r["ret"] is not None]
     long_board = sorted(scored, key=lambda r: r["ret"], reverse=True)[:top_n]
@@ -2624,7 +2784,7 @@ def get_all_position_user_ids():
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT user_id FROM positions")
+        cursor.execute("SELECT DISTINCT user_id FROM positions ORDER BY user_id")
         ids = [r[0] for r in cursor.fetchall()]
         cursor.close()
         return ids
@@ -2640,7 +2800,7 @@ def get_all_watchlist_user_ids():
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT user_id FROM watchlists")
+        cursor.execute("SELECT DISTINCT user_id FROM watchlists ORDER BY user_id")
         ids = [r[0] for r in cursor.fetchall()]
         cursor.close()
         return ids
@@ -2689,7 +2849,7 @@ def get_realtime_stock(code, rng="3mo"):
     stock_name = STOCK_NAME_MAP.get(code, code)
 
     # 日期納入 key，避免跨午夜把前一交易日的結果沿用到新的一天。
-    cache_day = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+    cache_day = taiwan_now().date().isoformat()
     cache_key = f"{code}:{rng}:{cache_day}"
     now = time.time()
     with _realtime_cache_lock:
@@ -3569,7 +3729,7 @@ def fetch_valuation():
     注意：TWSE 的本益比是用「近四季已申報財報」算的歷史本益比，
     不是分析師預估的未來本益比，看的時候要記得這點。
     """
-    today = datetime.now().strftime("%Y%m%d")
+    today = taiwan_now().strftime("%Y%m%d")
     if _valuation_cache["date"] == today and _valuation_cache["data"]:
         return _valuation_cache["data"]
 
@@ -3861,7 +4021,7 @@ def evaluate_picks(mode, days=90):
 
     price_map = get_realtime_stocks_bulk(
         list({p["code"] for p in picks}), workers=16)
-    today = date.today()
+    today = taiwan_today()
 
     # 大盤對照：用快照裡存的加權指數，沒有就退回不比較
     taiex_by_date = {}
@@ -4561,7 +4721,7 @@ def fetch_institutional_data():
     有資料的交易日，最多往前找 5 天。上櫃端點只給最新一日，不能指定日期。
     一天只需成功抓取一次，之後直接用快取。
     """
-    tw_now = datetime.now(timezone(timedelta(hours=8)))
+    tw_now = taiwan_now()
     today = tw_now.strftime("%Y%m%d")
 
     # 快取判斷不能只看「今天抓過了嗎」。
@@ -4585,7 +4745,7 @@ def fetch_institutional_data():
     _t86_cache["last_attempt"] = time.time()
     merged, data_date = {}, None
     for days_back in range(0, 6):
-        query_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
+        query_date = (taiwan_now() - timedelta(days=days_back)).strftime("%Y%m%d")
         data = _fetch_t86_for_date(query_date)
         if data:
             merged.update(data)
@@ -4839,7 +4999,7 @@ def generate_morning_brief():
     數據全部來自實際報價；CPI／非農這類發布結果與解讀不自行生成，
     改列新聞標題與連結，由你自己判讀。
     """
-    lines = [f"☀️ 盤前總經簡報　{datetime.now().strftime('%m/%d')}", "═" * 13]
+    lines = [f"☀️ 盤前總經簡報　{taiwan_now().strftime('%m/%d')}", "═" * 13]
 
     # 十幾個代號一次並行抓完，取代原本一個一個等的做法
     all_syms = ([s for _l, s in BRIEF_INDICES] + [s for _l, s in BRIEF_MACRO]
@@ -5106,7 +5266,7 @@ def build_market_recap():
     # 一定要標資料日期。沒有日期的話，非交易日或資料還沒公布時
     # 看到的是上一個交易日的數字，但畫面長得跟今天的一模一樣，
     # 使用者只會覺得「怎麼沒更新」而不知道原因。
-    tw_today = datetime.now(timezone(timedelta(hours=8))).strftime("%m/%d")
+    tw_today = taiwan_now().strftime("%m/%d")
     inst_dd = format_data_date(_t86_cache.get("data_date"))
 
     taiex = fetch_taiex_summary()
@@ -5695,7 +5855,7 @@ def build_news_digest(user_id):
         return None
 
     inst_data = fetch_institutional_data()
-    lines = [f"📰 自選股新聞（{datetime.now().strftime('%m/%d')}）", "─" * 14]
+    lines = [f"📰 自選股新聞（{taiwan_now().strftime('%m/%d')}）", "─" * 14]
 
     # 每檔都要打一次 Google News RSS，序列跑加上禮貌等待會很久。
     # 改成小量並行（4 條）：既縮短時間，又不會對 Google News 一次灌太多請求。
@@ -5873,27 +6033,48 @@ def _do_fetch_t86():
 JOB_STALE_MINUTES = 30   # 超過這麼久還標示執行中，視為當掉的殘留
 
 
+def _job_batch_id(name):
+    """以台灣交易日識別批次；同日重試可續跑，隔日會從第一階段重新開始。"""
+    return f"{name}:{taiwan_today().isoformat()}"
+
+
 def _job_mark_start(name):
     """
-    標記工作開始。若同名工作已在執行中且還沒過期，回傳 False 表示不要重複啟動。
-    用 UPDATE ... WHERE 的條件一次判斷並搶佔，兩個 worker 同時觸發時
-    只有一個會成功——先查再寫會有競爭空窗。
+    標記工作開始。若同名工作仍在執行且未逾時，不重複啟動；若是同一交易日
+    的失敗或逾時重試，保留 progress_stage／progress_index 讓工作可以續跑。
     """
+    batch_id = _job_batch_id(name)
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO job_runs (name, running, started_at)
-            VALUES (%s, TRUE, NOW())
+            INSERT INTO job_runs
+                (name, running, started_at, run_id, progress_stage,
+                 progress_index, progress_total)
+            VALUES (%s, TRUE, NOW(), %s, 'industry', 0, NULL)
             ON CONFLICT (name) DO UPDATE SET
                 running = TRUE, started_at = NOW(), result = NULL,
-                finished_at = NULL, seconds = NULL
+                finished_at = NULL, seconds = NULL,
+                run_id = EXCLUDED.run_id,
+                progress_stage = CASE
+                    WHEN job_runs.run_id = EXCLUDED.run_id
+                    THEN COALESCE(job_runs.progress_stage, 'industry')
+                    ELSE 'industry' END,
+                progress_index = CASE
+                    WHEN job_runs.run_id = EXCLUDED.run_id
+                    THEN COALESCE(job_runs.progress_index, 0)
+                    ELSE 0 END,
+                progress_total = CASE
+                    WHEN job_runs.run_id = EXCLUDED.run_id
+                    THEN job_runs.progress_total
+                    ELSE NULL END
             WHERE job_runs.running = FALSE
+               OR job_runs.started_at IS NULL
                OR job_runs.started_at < NOW() - INTERVAL '%s minutes'
             RETURNING name
             """,
-            (name, JOB_STALE_MINUTES),
+            (name, batch_id, JOB_STALE_MINUTES),
         )
         got = cur.fetchone() is not None
         conn.commit()
@@ -5907,6 +6088,46 @@ def _job_mark_start(name):
         release_db_connection(conn)
 
 
+def _job_get_progress(name):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT run_id, COALESCE(progress_stage, 'industry'),
+                   COALESCE(progress_index, 0), progress_total
+            FROM job_runs WHERE name=%s
+        """, (name,))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return None
+        return {"run_id": row[0], "stage": row[1],
+                "index": row[2] or 0, "total": row[3]}
+    except Exception as e:
+        print(f"⚠️ 讀取工作進度失敗: {e}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+
+def _job_mark_progress(name, stage, index=0, total=None):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE job_runs
+            SET progress_stage=%s, progress_index=%s, progress_total=%s
+            WHERE name=%s AND running=TRUE
+        """, (str(stage), int(index), total, name))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"⚠️ 記錄工作進度失敗: {e}")
+    finally:
+        release_db_connection(conn)
+
+
 def _job_mark_done(name, result, seconds):
     conn = get_db_connection()
     try:
@@ -5914,7 +6135,10 @@ def _job_mark_done(name, result, seconds):
         cur.execute(
             """
             UPDATE job_runs SET running = FALSE, finished_at = NOW(),
-                   seconds = %s, result = %s
+                   seconds = %s, result = %s,
+                   progress_stage = CASE WHEN name = '每日快照'
+                                         THEN COALESCE(progress_stage, 'industry')
+                                         ELSE 'done' END
             WHERE name = %s
             """,
             (round(seconds, 1), str(result)[:2000], name),
@@ -5942,7 +6166,7 @@ def log_trigger_source(name):
               .split(",")[0].strip() or request.remote_addr or "?")
         ua = request.headers.get("User-Agent", "(無)")[:120]
         print(f"🔔 觸發 {name}｜來源 {ip}｜UA {ua}｜"
-              f"時間 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}（伺服器時區）")
+              f"時間 {taiwan_now().strftime('%Y-%m-%d %H:%M:%S')}（伺服器時區）")
     except Exception as e:
         print(f"⚠️ 記錄觸發來源失敗: {e}")
 
@@ -5978,7 +6202,8 @@ def job_status():
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT name, running, started_at, finished_at, seconds, result
+            SELECT name, running, started_at, finished_at, seconds, result,
+                   run_id, progress_stage, progress_index, progress_total
             FROM job_runs ORDER BY COALESCE(finished_at, started_at) DESC
             """)
         rows = cur.fetchall()
@@ -5997,8 +6222,8 @@ def job_status():
             "　/cron/warmup?token=...",
             "", "跑完後再回來這一頁就會看到結果。"]), 200
 
-    now_srv = datetime.now()
-    tw = datetime.now(timezone(timedelta(hours=8)))
+    now_srv = taiwan_now()
+    tw = taiwan_now()
     lines = ["背景工作狀態", "=" * 58, "",
              f"伺服器現在時間　{now_srv.strftime('%m/%d %H:%M')}",
              f"台灣現在時間　　{tw.strftime('%m/%d %H:%M')}",
@@ -6006,15 +6231,23 @@ def job_status():
               else f"（相差 {(tw.hour - now_srv.hour) % 24} 小時，"
                    f"下方時間為伺服器時區）"),
              ""]
-    for name, running, started, finished, secs, result in rows:
+    now_naive = taiwan_now().replace(tzinfo=None)
+    for (name, running, started, finished, secs, result,
+         run_id, progress_stage, progress_index, progress_total) in rows:
         if running:
-            mins = (datetime.now() - started).total_seconds() / 60 if started else 0
+            started_naive = started.replace(tzinfo=None) if started and getattr(started, "tzinfo", None) else started
+            mins = ((now_naive - started_naive).total_seconds() / 60
+                    if started_naive else 0)
             stale = "　⚠️ 疑似當掉" if mins > JOB_STALE_MINUTES else ""
+            progress = (f"｜{progress_stage} {progress_index}"
+                        + (f"/{progress_total}" if progress_total is not None else ""))
             lines.append(f"[執行中] {name}"
-                         f"（已 {mins:.0f} 分鐘）{stale}")
+                         f"（已 {mins:.0f} 分鐘）{progress}{stale}")
         else:
             when = finished.strftime("%m/%d %H:%M") if finished else "?"
-            lines.append(f"[完成] {name}　{when}　耗時 {secs or 0:.1f} 秒")
+            progress = (f"｜批次 {run_id}｜{progress_stage}"
+                        if run_id or progress_stage else "")
+            lines.append(f"[完成] {name}　{when}　耗時 {secs or 0:.1f} 秒{progress}")
         if result:
             for chunk in str(result).split("、"):
                 lines.append(f"    {chunk}")
@@ -6042,86 +6275,125 @@ def cron_snapshot_portfolio():
 
 
 def _do_daily_snapshot():
-    """實際的快照工作。回傳一行摘要字串，會記在 /job-status 裡。"""
-    taiex = fetch_taiex_summary()
+    """實際的快照工作；依階段 checkpoint，逾時重試時從上次完成處續跑。"""
+    job_name = "每日快照"
+    progress = _job_get_progress(job_name) or {
+        "stage": "industry", "index": 0, "total": None}
+    stage_order = {"industry": 0, "picks": 1, "portfolio": 2,
+                   "watchlist": 3, "rank": 4, "done": 5}
+    current_stage = progress.get("stage") or "industry"
+    if current_stage == "done":
+        return f"{taiwan_today()} 的每日快照已完成，避免重複抓取。"
+
+    def reached(stage):
+        return stage_order.get(current_stage, 0) > stage_order[stage]
+
     taiex_close = None
-    if taiex and taiex.get("close"):
-        try:
-            taiex_close = float(str(taiex["close"]).replace(",", ""))
-        except (TypeError, ValueError):
-            taiex_close = None
-
-    # 產業動能排名：全市場共用一份，只要存一次
     try:
-        stats = get_industry_momentum(fetch_monthly_revenue() or {},
-                                      get_industry_map() or {})
-        save_industry_momentum(stats)
-        ind_saved = len(stats)
-    except Exception as e:
-        print(f"❌ 產業動能快照失敗: {e}")
-        ind_saved = 0
+        taiex = fetch_taiex_summary()
+        if taiex and taiex.get("close"):
+            taiex_close = float(str(taiex["close"]).replace(",", ""))
+    except (TypeError, ValueError, Exception) as e:
+        print(f"⚠️ 讀取大盤收盤值失敗: {e}")
 
-    # 選股名單：存下今天黑馬與雷達的前 5 名，之後才算得出這套評分有沒有用。
-    # 名單跟使用者無關，全市場共用一份。
-    picks_saved = 0
-    for mode in ("blackhorse", "radar"):
+    ind_saved = 0
+    if not reached("industry"):
         try:
-            rows, _skipped, _mom = compute_screener_rows(mode)
-            if mode == "radar":
-                rows = sorted(rows, key=lambda r: (
-                    2 if r["breakout"] == "季線新高" else (1 if r["breakout"] else 0),
-                    r.get("vol_ratio") or 0, r["streak"], r["pct"]), reverse=True)
-            else:
-                rows = sorted(rows, key=lambda r: (r["score"] if r["score"] is not None else -1),
-                              reverse=True)
-            picks_saved += save_picks(mode, rows, top_n=5)
+            stats = get_industry_momentum(fetch_monthly_revenue() or {},
+                                          get_industry_map() or {})
+            save_industry_momentum(stats)
+            ind_saved = len(stats)
         except Exception as e:
-            print(f"❌ {mode} 選股名單快照失敗: {e}")
+            print(f"❌ 產業動能快照失敗: {e}")
+            raise
+        _job_mark_progress(job_name, "picks", 0, 2)
+        current_stage = "picks"
+
+    picks_saved = 0
+    if not reached("picks"):
+        modes = ("blackhorse", "radar")
+        start = progress.get("index", 0) if current_stage == "picks" else 0
+        for idx, mode in enumerate(modes):
+            if idx < start:
+                continue
+            try:
+                rows, _skipped, _mom = compute_screener_rows(mode)
+                if mode == "radar":
+                    rows = sorted(rows, key=lambda r: (
+                        2 if r["breakout"] == "季線新高" else (1 if r["breakout"] else 0),
+                        r.get("vol_ratio") or 0, r["streak"], r["pct"]), reverse=True)
+                else:
+                    rows = sorted(rows, key=lambda r: (
+                        r["score"] if r["score"] is not None else -1), reverse=True)
+                picks_saved += save_picks(mode, rows, top_n=5)
+            except Exception as e:
+                print(f"❌ {mode} 選股名單快照失敗: {e}")
+                raise
+            _job_mark_progress(job_name, "picks", idx + 1, len(modes))
+        _job_mark_progress(job_name, "portfolio", 0, 0)
+        current_stage = "portfolio"
 
     user_ids = get_all_position_user_ids()
     saved, skipped = 0, 0
-    for uid in user_ids:
-        try:
-            positions = merge_positions(get_positions(uid))
-            if not positions:
-                skipped += 1
+    if not reached("portfolio"):
+        start = progress.get("index", 0) if current_stage == "portfolio" else 0
+        _job_mark_progress(job_name, "portfolio", start, len(user_ids))
+        for idx, uid in enumerate(user_ids):
+            if idx < start:
                 continue
-            total_value, total_cost = 0.0, 0.0
-            price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
-            for p in positions:
-                pr = price_map.get(p["code"])
-                if pr:
-                    total_value += pr["close"] * p["shares"]
-                total_cost += p["cost"] * p["shares"]
-            if total_value <= 0:
+            try:
+                positions = merge_positions(get_positions(uid))
+                if not positions:
+                    skipped += 1
+                else:
+                    total_value, total_cost = 0.0, 0.0
+                    price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
+                    for p in positions:
+                        pr = price_map.get(p["code"])
+                        if pr:
+                            total_value += pr["close"] * p["shares"]
+                        total_cost += p["cost"] * p["shares"]
+                    if total_value <= 0 or not save_portfolio_snapshot(
+                            uid, total_value, total_cost, taiex_close):
+                        skipped += 1
+                    else:
+                        saved += 1
+            except Exception as e:
+                # 單一使用者出錯不該讓其他人的快照一起沒了
+                print(f"❌ 組合快照失敗 {uid}: {e}")
                 skipped += 1
+            _job_mark_progress(job_name, "portfolio", idx + 1, len(user_ids))
+        _job_mark_progress(job_name, "watchlist", 0, 0)
+        current_stage = "watchlist"
+
+    wl_users = get_all_watchlist_user_ids()
+    wl_saved = 0
+    if not reached("watchlist"):
+        start = progress.get("index", 0) if current_stage == "watchlist" else 0
+        _job_mark_progress(job_name, "watchlist", start, len(wl_users))
+        for idx, uid in enumerate(wl_users):
+            if idx < start:
                 continue
-            if save_portfolio_snapshot(uid, total_value, total_cost, taiex_close):
-                saved += 1
-            else:
-                skipped += 1
-        except Exception as e:
-            # 單一使用者出錯不該讓其他人的快照一起沒了
-            print(f"❌ 組合快照失敗 {uid}: {e}")
-            skipped += 1
+            codes = get_user_watchlist(uid)
+            if codes:
+                try:
+                    scores = compute_watchlist_scores(codes)
+                    if scores:
+                        save_watchlist_scores(uid, scores)
+                        wl_saved += 1
+                except Exception as e:
+                    print(f"❌ 自選股評分快照失敗 {uid}: {e}")
+            _job_mark_progress(job_name, "watchlist", idx + 1, len(wl_users))
+        _job_mark_progress(job_name, "rank", 0, 1)
+        current_stage = "rank"
 
-    # 自選股評分：有自選的人都要存，跟有沒有持股無關
-    wl_users, wl_saved = get_all_watchlist_user_ids(), 0
-    for uid in wl_users:
-        codes = get_user_watchlist(uid)
-        if not codes:
-            continue
-        try:
-            scores = compute_watchlist_scores(codes)
-            if scores:
-                save_watchlist_scores(uid, scores)
-                wl_saved += 1
-        except Exception as e:
-            print(f"❌ 自選股評分快照失敗 {uid}: {e}")
+    rank_saved = 0
+    if not reached("rank"):
+        rank_saved = save_leaderboard_rank_snapshots()
+        _job_mark_progress(job_name, "done", 1, 1)
 
-    rank_saved = save_leaderboard_rank_snapshots()
-    return (f"組合 {saved}/{len(user_ids)}（略過 {skipped}）、"
-            f"自選 {wl_saved}/{len(wl_users)}、產業 {ind_saved}、"
+    return (f"組合本次續跑處理 {saved}（略過 {skipped}，共 {len(user_ids)}）、"
+            f"自選本次 {wl_saved}/{len(wl_users)}、產業 {ind_saved}、"
             f"選股名單 {picks_saved}、排行榜名次 {rank_saved}、大盤 {taiex_close}")
 
 
@@ -6142,6 +6414,10 @@ RETENTION_DAYS = {
     "industry_momentum_history": ("snapshot_date", 1095),
     "web_sessions": ("expires_at", 0),           # 過期即可刪
     "web_codes": ("expires_at", 0),
+    "leaderboard_rank_snapshots": ("snapshot_date", 1095),
+    "activity_log": ("occurred_at", 730),
+    "premarket_events": ("created_at", 730),
+    "premarket_snapshots": ("snapshot_date", 730),
 }
 
 
@@ -6630,7 +6906,7 @@ def backfill_t86():
 
     saved, skipped = [], []
     for i in range(offset, offset + days):
-        query_date = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
+        query_date = (taiwan_now() - timedelta(days=i)).strftime("%Y%m%d")
         data = _fetch_t86_for_date(query_date)
         if data:
             save_t86_history(query_date, data)
@@ -7304,6 +7580,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     # LINE WebView 偶爾不保留 cookie；導覽列也必須帶著有效 token，不能只有內容區帶。
     nav = preserve_web_token(nav)
     bottom_nav = preserve_web_token(bottom_nav)
+    body = inject_csrf_inputs(body)
     body = preserve_web_token(body)
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
@@ -7315,7 +7592,7 @@ def render_page(title, body, nav_active=None, user_name=None):
 <header class="app-header">
   <div class="eyebrow">TAIWAN STOCK BOT</div>
   <h1>{title}</h1>
-  <div class="dateline">{datetime.now().strftime('%Y / %m / %d')}
+  <div class="dateline">{taiwan_now().strftime('%Y / %m / %d')}
     {'　' + user_name if user_name else ''}</div>
 </header>
 {nav}
@@ -7665,10 +7942,32 @@ def render_loading_shell(title, nav_active, stages, note=""):
 
   fetch(url, {{ credentials: 'same-origin' }})
     .then(function (r) {{
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (r.status === 401) {{
+        // Cookie 可能被 LINE WebView 清掉。先用同網域保存的 token
+        // 嘗試恢復一次；若仍失效，才回到登入說明，不把完整登入頁
+        // 塞進目前頁面的 content。
+        var q = new URLSearchParams(window.location.search);
+        var saved = null;
+        try {{ saved = localStorage.getItem('stockbot_web_token'); }} catch (_) {{}}
+        if (saved && q.get('auth_recover') !== '1'
+            && window.location.pathname !== '/web/code') {{
+          window.location.replace(window.location.pathname + '?t='
+            + encodeURIComponent(saved) + '&auth_recover=1');
+        }} else {{
+          window.location.replace('/web/login');
+        }}
+        return null;
+      }}
+      if (!r.ok) {{
+        var err = new Error('HTTP ' + r.status);
+        err.status = r.status;
+        throw err;
+      }}
       return r.text();
     }})
-    .then(finish)
+    .then(function (html) {{
+      if (html !== null) finish(html);
+    }})
     .catch(function (e) {{
       done = true;
       clearInterval(timer);
@@ -7704,7 +8003,7 @@ def respond_page(title, body, nav_active):
     畫面仍然是完整可用的，不會變成一段沒有樣式的裸 HTML。
     """
     if wants_fragment():
-        return preserve_web_token(body)
+        return preserve_web_token(inject_csrf_inputs(body))
     return render_page(title, body, nav_active=nav_active)
 
 
@@ -7808,11 +8107,13 @@ def web_positions(uid):
     fee_disc, min_fee = get_fee_settings(get_profile(uid))
 
     msg = ""
+    if request.method == "POST" and not valid_web_csrf():
+        return respond_page("持股", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "positions")
     if request.method == "POST":
         action = request.form.get("action")
         if action == "delete":
-            delete_position(uid, request.form.get("id"))
-            msg = "已刪除。"
+            ok = delete_position(uid, request.form.get("id"))
+            msg = "已刪除。" if ok else "刪除失敗：找不到這筆持股或資料未成功寫入。"
         elif action == "sell":
             def num(field, cast=float):
                 """空字串代表「請幫我算」，回 None；填了才用使用者給的數字。"""
@@ -7867,10 +8168,13 @@ def web_positions(uid):
                     bf = 0.0
                 if bf > 0:
                     cost = (cost * shares + bf) / shares
-                add_position(uid, code, shares, cost,
-                             request.form.get("bought_on") or None)
-                msg = (f"已新增 {code}（含手續費，每股成本 {cost:,.2f}）。"
-                       if bf > 0 else f"已新增 {code}。")
+                ok = add_position(uid, code, shares, cost,
+                                  request.form.get("bought_on") or None)
+                if not ok:
+                    msg = "新增失敗，資料沒有成功寫入，請稍後再試。"
+                else:
+                    msg = (f"已新增 {code}（含手續費，每股成本 {cost:,.2f}）。"
+                           if bf > 0 else f"已新增 {code}。")
 
     positions = merge_positions(get_positions(uid))
     inst = fetch_institutional_data() or {}
@@ -7984,7 +8288,7 @@ def web_positions(uid):
             day_pl = (price["close"] - prev_close) * p["shares"]
             total_day_pl += day_pl
             net_amt = net_amt if net_amt is not None else (value - cost_total)
-            held = ((datetime.now().date() - p["bought_on"]).days
+            held = ((taiwan_now().date() - p["bought_on"]).days
                     if p["bought_on"] else None)
             rows_html.append(f"""
 <div class="row">
@@ -8711,29 +9015,38 @@ def web_trades(uid):
     return respond_page("交易紀錄", body, "trades")
 
 
-def render_leaderboard_chart(series_map, market, top_names, highlight_name=None):
-    """
-    排行榜走勢圖：前幾名的累積報酬 vs 大盤，畫在同一張圖。
-    比的是「相對加入日的累積報酬」，所以起點都是 0，不同資金規模也能疊在一起比。
-    """
-    ordered_names = list(top_names)
-    if highlight_name and series_map.get(highlight_name):
-        ordered_names = [highlight_name] + [
-            nm for nm in ordered_names if nm != highlight_name]
-        ordered_names = ordered_names[:4]
-    lines = [(nm, series_map[nm]) for nm in ordered_names if series_map.get(nm)]
+def render_leaderboard_chart(series_map, market, top_keys, highlight_key=None):
+    """繪製 user_id 索引的排行榜曲線；顯示文字仍使用成員暱稱。"""
+    def entry(key):
+        item = series_map.get(str(key))
+        if isinstance(item, dict):
+            return safe_html_text(item.get("nickname")), item.get("curve") or []
+        # 舊快取在部署切換期間可能仍存在，保留短暫相容性。
+        return safe_html_text(key), item or []
+
+    ordered_keys = [str(k) for k in (top_keys or [])]
+    if highlight_key and series_map.get(str(highlight_key)):
+        highlight_key = str(highlight_key)
+        ordered_keys = [highlight_key] + [
+            k for k in ordered_keys if k != highlight_key]
+        ordered_keys = ordered_keys[:4]
+    lines = []
+    for key in ordered_keys:
+        name, curve = entry(key)
+        if curve:
+            lines.append((key, name, curve))
     if not lines and not market:
         return ('<div class="empty">還沒有足夠的每日快照可以畫圖。<br><br>'
                 '<span style="font-size:12.5px">每個交易日收盤後會存一次快照，'
                 '加入排行榜後累積 2 天以上就會出現走勢。</span></div>')
 
-    all_dates = sorted({d for _n, c in lines for d, _v in c}
+    all_dates = sorted({d for _k, _n, c in lines for d, _v in c}
                        | {d for d, _v in market})
     if len(all_dates) < 2:
         return ('<div class="empty">資料還在累積中，'
                 '至少需要 2 天以上的快照才能畫出走勢。</div>')
 
-    vals = [v for _n, c in lines for _d, v in c] + [v for _d, v in market]
+    vals = [v for _k, _n, c in lines for _d, v in c] + [v for _d, v in market]
     lo, hi = min(vals), max(vals)
     if hi - lo < 1:
         lo, hi = lo - 1, hi + 1
@@ -8755,12 +9068,12 @@ def render_leaderboard_chart(series_map, market, top_names, highlight_name=None)
 
     tints = ["#6E5228", "#A82A20", "#155C42", "#8A6A3B", "#454C55"]
     legend = []
-    for i, (nm, curve) in enumerate(lines):
-        color = "var(--brass)" if nm == highlight_name else tints[i % len(tints)]
+    for i, (key, name, curve) in enumerate(lines):
+        color = "var(--brass)" if str(key) == str(highlight_key) else tints[i % len(tints)]
         p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in curve)
         parts.append(f'<path d="{p}" fill="none" stroke="{color}" '
                      f'stroke-width="2"/>')
-        legend.append(f'<span><i style="background:{color}"></i>{nm} '
+        legend.append(f'<span><i style="background:{color}"></i>{name} '
                       f'{curve[-1][1]:+.1f}%</span>')
     if market:
         legend.append(f'<span><i style="background:var(--ink-faint)"></i>'
@@ -8788,6 +9101,8 @@ def web_leaderboard(uid):
     ・報酬率從加入那天起算，不用歷史成本，否則比的是誰入市早不是誰操作好。
     """
     msg = ""
+    if request.method == "POST" and not valid_web_csrf():
+        return respond_page("排行榜", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "leaderboard")
     if request.method == "POST":
         if request.form.get("action") == "leave":
             leave_leaderboard(uid)
@@ -8806,6 +9121,11 @@ def web_leaderboard(uid):
 
     me = get_leaderboard_member(uid)
     boards, (series_map, market) = build_leaderboard(top_n=20)
+    rank_inputs = []
+    for board_name in ("short", "long"):
+        for current_rank, row in enumerate(boards.get(board_name, []), 1):
+            rank_inputs.append((board_name, row.get("user_id"), current_rank))
+    rank_status_map = get_rank_status_map(rank_inputs)
     view = request.args.get("board", "short")   # 預設短線：新人也馬上有得比
     is_short = view != "long"
     active_board = "short" if is_short else "long"
@@ -8819,7 +9139,7 @@ def web_leaderboard(uid):
         state = "公開中" if me.get("show_holdings") else "未公開"
         panel = f"""
 <div class="callout">
-  你以 <b>{me['nickname']}</b> 的身分參加中，起算日 {joined_txt}。
+  你以 <b>{safe_html_text(me['nickname'])}</b> 的身分參加中，起算日 {joined_txt}。
   持股內容：<b>{state}</b>
   <div class="sub" style="margin-top:8px">
     重新加入不會重設起算日——否則賠錢時退出再加入就能把負報酬洗掉。
@@ -8829,7 +9149,7 @@ def web_leaderboard(uid):
   <h3>修改設定</h3>
   <div class="fields">
     <div><label>顯示暱稱</label>
-      <input name="nickname" maxlength="12" value="{me['nickname']}" required></div>
+      <input name="nickname" maxlength="12" value="{safe_html_text(me['nickname'])}" required></div>
   </div>
   <label class="opt" style="margin-top:10px">
     <input type="checkbox" name="show_holdings"{chk}>
@@ -8868,6 +9188,7 @@ def web_leaderboard(uid):
 </form>"""
 
     # ── 榜單 ──
+    # 個人戰況仍沿用前 100 名摘要；榜單卡片本身則只批次查詢畫面上的前 20 名。
     my_rank = get_my_rank_summary(uid)
 
     def render_rank_status(status, compact=False):
@@ -8901,7 +9222,7 @@ def web_leaderboard(uid):
             detail = f"昨日 #{status['previous']}"
         return f'''<div class="my-rank-card"><small>{label}</small><b>{title}</b><span>{detail}</span></div>'''
 
-    def board_rows(rows, key):
+    def board_rows(rows, key, status_map):
         """用手機優先的簡潔卡片呈現榜單，明細只在使用者主動展開時讀取。"""
         if not rows:
             return ('<div class="empty">這個榜還沒有資料。<br><br>'
@@ -8948,8 +9269,9 @@ def web_leaderboard(uid):
                 honour = ""
             main_v = r[key]
             cls = "up" if main_v >= 0 else "down"
-            rank_state = get_rank_status(
-                r.get("user_id"), "short" if key == "m30" else "long", current_rank)
+            rank_state = status_map.get(
+                ("short" if key == "m30" else "long", str(r.get("user_id")).strip()),
+                _rank_status_from_previous(current_rank, []))
             movement = render_rank_status(rank_state)
 
             # 短線看近 30 天實際涵蓋天數；長線看加入後實際涵蓋天數。
@@ -9002,7 +9324,7 @@ def web_leaderboard(uid):
   {honour}
   <div class="rank-row-main">
     <span class="rank-number">{rank}</span>
-    <span class="name">{r['nickname']}</span>
+    <span class="name">{safe_html_text(r['nickname'])}</span>
     <span class="rank-return num {cls}">{main_v:+.2f}%</span>
     <span class="rank-movement">{movement}</span>
   </div>
@@ -9013,7 +9335,7 @@ def web_leaderboard(uid):
                 out.append('<div class="rank-champion-prompt">下一個站上這裡的人，會是誰？</div>')
         return f'<div class="rows rank-rows">{"".join(out)}</div>'
 
-    board = board_rows(boards[active_board], active_key)
+    board = board_rows(boards[active_board], active_key, rank_status_map)
     active_status = my_rank[active_board]
     active_row = active_status.get("row")
     if active_row:
@@ -9069,7 +9391,7 @@ def web_leaderboard(uid):
     waiting_html = ""
     if boards["waiting"]:
         items = "".join(
-            f'<div class="row"><div><span class="name">{r["nickname"]}</span></div>'
+            f'<div class="row"><div><span class="name">{safe_html_text(r["nickname"])}</span></div>'
             f'<div class="price flat">計算中</div>'
             f'<div class="meta"><span>需累積 2 天以上的每日快照</span></div></div>'
             for r in boards["waiting"])
@@ -9091,13 +9413,12 @@ def web_leaderboard(uid):
   '長線：從各自加入日後累計；加入天數不同，請搭配樣本天數判讀。'}
 </div>"""
 
-    chart_names = [r["nickname"] for r in boards[active_board]][:5]
-    my_curve_name = (me.get("nickname")
-                     if me and me.get("nickname") in series_map else None)
+    chart_keys = [str(r["user_id"]) for r in boards[active_board]][:5]
+    my_curve_key = (str(uid) if me and str(uid) in series_map else None)
     chart_note = ("含我的曲線・前 4 名・大盤"
-                  if my_curve_name else "前 5 名 vs 大盤")
+                  if my_curve_key else "前 5 名 vs 大盤")
     chart = render_leaderboard_chart(
-        series_map, market, chart_names, highlight_name=my_curve_name)
+        series_map, market, chart_keys, highlight_key=my_curve_key)
 
     settings_title = "修改排行榜設定" if me else "加入排行榜"
     settings_note = ("修改暱稱、持股公開範圍或退出排行榜"
@@ -9296,6 +9617,8 @@ def web_compare(uid):
 @web_login_required
 def web_settings(uid):
     msg = ""
+    if request.method == "POST" and not valid_web_csrf():
+        return respond_page("設定", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "settings")
     if request.method == "POST":
         updates = {}
         for k in ("loss_alert_pct", "position_alert_pct"):
@@ -9549,7 +9872,7 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
 
 def render_portfolio_fast_summary(uid):
     """今日首頁第一段：只讀既有快照、事件與排名，不抓持股即時報價。"""
-    snapshot_date = date.today()
+    snapshot_date = taiwan_today()
     snapshot = get_today_change_snapshot(snapshot_date) or {}
     timeline = get_today_event_timeline(uid, snapshot_date)
     events = (timeline.get("new", []) + timeline.get("ongoing", []))[:3]
@@ -9628,8 +9951,8 @@ def render_portfolio_fast_summary(uid):
 
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total):
     # 新版首頁上半部：先講今天，再提供完整分析入口。
-    signal_state = get_today_signal_state(uid, date.today())
-    timeline = get_today_event_timeline(uid, date.today())
+    signal_state = get_today_signal_state(uid, taiwan_today())
+    timeline = get_today_event_timeline(uid, taiwan_today())
     events = (timeline["new"] + timeline["ongoing"])[:3]
     taiex = fetch_taiex_summary() or {}
     market_pct = None
@@ -9698,7 +10021,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     return f'''<style>
 .daily-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:26px 24px 22px;margin:-8px -2px 18px;border-bottom:1px solid #d7d4ca}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-status{{min-width:28px;height:22px;padding:2px 5px;border-radius:7px;text-align:center;font-size:11px;font-weight:700;line-height:18px;flex:none;background:#eee;color:var(--ink-soft)}}.timeline-new .event-status{{background:#FCE9E6;color:var(--up)}}.timeline-ongoing .event-status{{background:#F3EEE1;color:var(--brass)}}.timeline-resolved .event-status{{background:#E8F2EA;color:var(--down)}}.timeline-divider{{margin:14px 0 0;padding-top:12px;border-top:1px solid #eee;color:var(--ink-soft);font-size:12px;font-weight:600}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:13px}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:12px}}.rank-mini b{{display:block;font-size:21px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:14px}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.rank-grid{{grid-template-columns:1fr}}.daily-hero h1{{font-size:26px}}}}
 </style><section class="daily-hero">
-  <div class="eyebrow">TODAY · {date.today().strftime('%Y / %m / %d')}</div>
+  <div class="eyebrow">TODAY · {taiwan_today().strftime('%Y / %m / %d')}</div>
   <h1>今天你的投資發生了什麼？</h1>
   <div class="market-strip"><span>大盤 <b>{market_text}</b></span><span>你的組合 <b>{portfolio_text}</b></span><span>相對大盤 <b>{relative_text}</b></span></div>
 </section>
@@ -9721,6 +10044,8 @@ def web_portfolio(uid):
             note="組合分析會比對法人籌碼、月營收與估值，資料量較大。")
 
     msg = ""
+    if request.method == "POST" and not valid_web_csrf():
+        return respond_page("今日", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "portfolio")
     if request.method == "POST":
         updates = {k: (request.form.get(k) or None) for k, _, _, _ in PROFILE_FIELDS}
         missing = [l for k, l, _r, _o in PROFILE_FIELDS if not updates.get(k)]
