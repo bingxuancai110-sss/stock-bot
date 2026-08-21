@@ -6942,10 +6942,15 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .load-note{margin-top:20px;font-size:11.5px;color:var(--ink-faint);
   line-height:1.7}
 /* ── App shell：手機優先的固定導覽與安全區 ── */
-html{background:#F2F3F0}
-body{background:#F2F3F0;overflow-x:hidden;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
+html{background:#F2F3F0;touch-action:manipulation}
+body{background:#F2F3F0;overflow-x:hidden;padding-bottom:calc(76px + env(safe-area-inset-bottom));-webkit-tap-highlight-color:transparent}
+a,button,input,select{touch-action:manipulation}
+a,button{transition:transform .12s ease,opacity .12s ease}
+a:active,button:active{transform:scale(.98);opacity:.78}.tap-loading{opacity:.72}
+button[disabled],input[disabled],select[disabled]{opacity:.58;cursor:wait}
 .wrap{max-width:760px;padding:0 16px calc(104px + env(safe-area-inset-bottom))}
 .app-header{position:sticky;top:0;z-index:20;background:rgba(242,243,240,.94);backdrop-filter:blur(14px);padding:12px 0 10px;border-bottom:1px solid rgba(185,189,180,.75)}
+@media(max-width:699px){.app-header{backdrop-filter:none;background:#F2F3F0}.app-bottom-nav{backdrop-filter:none;background:rgba(255,255,255,.98)}}
 .app-header .eyebrow{margin-bottom:2px;font-size:10px;letter-spacing:.18em}
 .app-header h1{font-size:21px;letter-spacing:.01em}
 .app-header .dateline{font-size:11px;margin-top:2px}
@@ -7086,6 +7091,35 @@ def render_page(title, body, nav_active=None, user_name=None):
 </header>
 {nav}
 {body}
+<script>
+(function() {{
+  // 點擊後立即給回饋；不攔截錨點、下載與外部連結。
+  document.addEventListener('click', function(e) {{
+    var a = e.target.closest ? e.target.closest('a') : null;
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (!href || href.charAt(0) === '#' || a.target === '_blank' || a.dataset.noBusy === '1') return;
+    a.classList.add('tap-loading');
+  }}, true);
+
+  // POST 表單只允許送出一次，避免新增／賣出／設定被重複點擊。
+  document.addEventListener('submit', function(e) {{
+    var form = e.target;
+    if (!form || form.dataset.submitted === '1') {{
+      e.preventDefault();
+      return;
+    }}
+    form.dataset.submitted = '1';
+    var button = form.querySelector('button[type="submit"],input[type="submit"]');
+    if (button) {{
+      button.dataset.oldText = button.textContent || button.value || '';
+      if (button.tagName === 'INPUT') button.value = '處理中…';
+      else button.textContent = '處理中…';
+      button.disabled = true;
+    }}
+  }}, true);
+}})();
+</script>
 <footer>
 以上為你輸入之持股的數據整理，不構成投資建議。<br>
 你輸入的持股只用於產生你自己的分析，作者不會查看個別使用者的持股內容。<br>
@@ -7375,7 +7409,7 @@ def render_loading_shell(title, nav_active, stages, note=""):
     setTimeout(function () {{
       document.getElementById('content').innerHTML = html;
       document.getElementById('loading').style.display = 'none';
-    }}, 180);
+    }}, 70);
   }}
 
   var url = window.location.pathname + window.location.search
