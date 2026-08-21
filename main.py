@@ -7171,9 +7171,10 @@ a,button,input,select{touch-action:manipulation}
 a,button{transition:transform .12s ease,opacity .12s ease}
 a:active,button:active{transform:scale(.98);opacity:.78}.tap-loading{opacity:.72}
 button[disabled],input[disabled],select[disabled]{opacity:.58;cursor:wait}
-.wrap{max-width:760px;padding:0 16px calc(104px + env(safe-area-inset-bottom))}
-.app-header{position:-webkit-sticky;position:sticky;top:0;z-index:20;
-background:rgba(242,243,240,.94);backdrop-filter:blur(14px);padding:12px 0 10px;border-bottom:1px solid rgba(185,189,180,.75)}
+.wrap{max-width:760px;padding:94px 16px calc(104px + env(safe-area-inset-bottom))}
+.app-header{position:fixed;top:0;left:0;right:0;width:min(760px,100%);margin:0 auto;z-index:50;
+background:rgba(242,243,240,.98);backdrop-filter:blur(14px);padding:12px 16px 10px;border-bottom:1px solid rgba(185,189,180,.85);
+box-shadow:0 3px 12px rgba(18,22,27,.07)}
 @media(max-width:699px){.app-header{backdrop-filter:none;background:#F2F3F0}.app-bottom-nav{backdrop-filter:none;background:rgba(255,255,255,.98)}}
 .app-header .eyebrow{margin-bottom:2px;font-size:10px;letter-spacing:.18em}
 .app-header h1{font-size:21px;letter-spacing:.01em}
