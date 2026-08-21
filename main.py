@@ -6624,8 +6624,9 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .load-note{margin-top:20px;font-size:11.5px;color:var(--ink-faint);
   line-height:1.7}
 /* ── App shell：手機優先的固定導覽與安全區 ── */
-body{background:#F2F3F0;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
-.wrap{max-width:760px;padding:0 16px calc(104px + env(safe-area-inset-bottom))}
+html{min-height:100%;background:#F2F3F0}
+body{background:#F2F3F0;min-height:100vh;min-height:100svh;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
+.wrap{max-width:760px;min-height:100vh;padding:0 16px calc(104px + env(safe-area-inset-bottom))}
 .app-header{position:sticky;top:0;z-index:20;background:rgba(242,243,240,.94);backdrop-filter:blur(14px);padding:12px 0 10px;border-bottom:1px solid rgba(185,189,180,.75)}
 .app-header .eyebrow{margin-bottom:2px;font-size:10px;letter-spacing:.18em}
 .app-header h1{font-size:21px;letter-spacing:.01em}
@@ -6648,7 +6649,7 @@ body{background:#F2F3F0;padding-bottom:calc(76px + env(safe-area-inset-bottom))}
 .my-rank-card b{display:block;font-size:22px;margin:8px 0 4px}
 .rank-move{font-size:13px;font-weight:600;white-space:nowrap}.rank-move.muted{color:var(--ink-faint);font-weight:400}.rank-move.up{color:var(--up)}.rank-move.down{color:var(--down)}
 @media(max-width:640px){.my-rank-grid{grid-template-columns:1fr}}
-@media(min-width:700px){body{padding-bottom:0}.app-bottom-nav{display:none}.wrap{padding-bottom:56px}}
+@media(min-width:700px){html,body{min-height:100%}body{padding-bottom:0}.app-bottom-nav{display:none}.wrap{min-height:100vh;padding-bottom:56px}}
 """
 
 NEED_LOGIN_HTML = """
@@ -8865,13 +8866,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 @app.route("/web/portfolio", methods=["GET", "POST"])
 @web_login_required
 def web_portfolio(uid):
-    if request.method == "GET" and not wants_fragment():
-        return render_loading_shell(
-            "今日", "portfolio",
-            ["正在讀取你的持股…", "正在抓即時報價…",
-             "正在抓法人與月營收資料…", "正在計算集中度與相關係數…",
-             "正在整理提醒…"],
-            note="組合分析會比對法人籌碼、月營收與估值，資料量較大。")
+    # 今日首頁直接回完整內容，不使用非同步 loading shell。
+    # 這可避免 iOS Safari 在滑動、恢復頁面或切換網址列狀態時，
+    # 再次顯示圖二的 loading 外殼。
 
     msg = ""
     if request.method == "POST":
