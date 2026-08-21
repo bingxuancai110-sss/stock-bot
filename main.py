@@ -10026,6 +10026,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map
         streak = streaks.get(code, 0)
         ind_code = ind_map.get(code)
         ind_txt = industry_name(ind_code) if ind_code else "未分類"
+        industry_stats = momentum.get(ind_code) if ind_code else None
 
         sc = score_stock_by_category(
             code, ind_map, price, cum_yoy, valuation.get(code, {}),
@@ -10055,11 +10056,57 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map
             "breakout": breakout, "vol_ratio": price.get("vol_ratio"),
             "pos": price.get("pos_vs_60d_high"),
             "up_streak": price.get("up_streak", 0),
+            "data_quality": build_screener_data_quality(
+                cum_yoy, valuation.get(code, {}), industry_stats,
+                info.get("cum_lots"), price),
+            "radar_state": classify_radar_state(price),
         })
 
     _screener_cache[mode] = {"at": now, "rows": rows,
                              "skipped": skipped_liquidity, "momentum": momentum}
     return rows, skipped_liquidity, momentum
+
+
+def build_screener_data_quality(cum_yoy, valuation, industry_stats,
+                                 cum_lots, price):
+    """只用現有資料標示選股資料完整度，不用缺資料猜測分數。"""
+    checks = [
+        ("營收", cum_yoy is not None),
+        ("估值", any((valuation or {}).get(k) is not None
+                      for k in ("pe", "pb", "yield"))),
+        ("產業", industry_stats is not None),
+        ("法人", cum_lots is not None),
+        ("行情", bool(price and price.get("close") is not None)),
+    ]
+    missing = [label for label, ok in checks if not ok]
+    valid = sum(1 for _, ok in checks if ok)
+    return {
+        "valid": valid,
+        "total": len(checks),
+        "missing": missing,
+        "complete": valid == len(checks),
+    }
+
+
+def classify_radar_state(price):
+    """把雷達訊號拆成突破／量能狀態，避免把普通上漲誤稱為帶量突破。"""
+    price = price or {}
+    close = price.get("close")
+    high_60 = price.get("high_60d")
+    high_20 = price.get("high_20d")
+    vol_ratio = price.get("vol_ratio") or 0
+    breakout = ""
+    if high_60 and close is not None and close >= high_60:
+        breakout = "季線新高"
+    elif high_20 and close is not None and close >= high_20:
+        breakout = "破月高"
+    if breakout and vol_ratio >= 1.5:
+        return "真正帶量突破"
+    if breakout:
+        return "突破但量能普通"
+    if vol_ratio >= 1.5:
+        return "帶量上漲"
+    return "價格強、量能普通"
 
 
 # ── 每日盤前變化偵測初始化 ──
@@ -10345,18 +10392,25 @@ def web_screener(uid):
     def radar_row(r):
         """
         雷達不給綜合分數。雷達回答的是「今天什麼在動、動在什麼位置」，
-        那是型態問題不是估值問題；硬給一個總分只會跟黑馬混淆，
-        而且分數在幾十檔的範圍內拉不開差距，等於噪音。
+        那是型態問題不是估值問題；硬給一個總分只會跟黑馬混淆。
         """
         badge = (f'<span class="badge">{r["breakout"]}</span>'
                  if r["breakout"] else '<span class="badge muted">區間內</span>')
+        state = r.get("radar_state") or "狀態資料不足"
+        state_class = "" if state in ("真正帶量突破", "帶量上漲") else " muted"
+        state_badge = f'<span class="badge{state_class}">{state}</span>'
+        q = r.get("data_quality") or {}
+        missing = "、".join(q.get("missing") or [])
+        quality = f'資料 {q.get("valid", 0)}/{q.get("total", 0)}'
+        if missing:
+            quality += f'・缺 {missing}'
         vr = r.get("vol_ratio")
         vol_txt = f"{vr:.1f} 倍" if vr else "—"
         vol_cls = "hot" if vr and vr >= 2 else ("warm" if vr and vr >= 1.5 else "")
         streak_txt = f"{r['streak']} 日" if r["streak"] else "—"
         return f"""
 <div class="row">
-  <div><span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}</div>
+  <div><span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}{state_badge}</div>
   <div class="price">{fmt_pct(r['pct'])}</div>
   <div class="meta">
     <span><em>價</em> <span class="num">{r['close']:,.2f}</span></span>
@@ -10365,6 +10419,7 @@ def web_screener(uid):
     <span><em>連買</em> {streak_txt}</span>
     <span><em>金額</em> <span class="num">{r['turnover']:.1f}</span> 億</span>
     <span><em>產業</em> {r['industry']}</span>
+    <span><em>資料</em> {quality}</span>
   </div>
 </div>"""
 
@@ -10375,11 +10430,17 @@ def web_screener(uid):
                    f'{CAT_TAG.get(r["category"], "")}</span>')
         badge = (f'<span class="badge">{r["breakout"]}</span>'
                  if r["breakout"] else "")
+        q = r.get("data_quality") or {}
+        missing = "、".join(q.get("missing") or [])
+        quality = f'資料 {q.get("valid", 0)}/{q.get("total", 0)}'
+        if missing:
+            quality += f'・缺 {missing}'
+        quality_badge = f'<span class="badge muted">{quality}</span>'
         if r["score"] is None:
             # 金融股不評分，只列事實
             return f"""
 <div class="row">
-  <div>{cat_tag}<span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}</div>
+  <div>{cat_tag}<span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}{quality_badge}</div>
   <div class="price num">{r['close']:,.2f}</div>
   <div class="meta">
     <span><em>產業</em> {r['industry']}</span>
@@ -10393,11 +10454,11 @@ def web_screener(uid):
   <div class="chg">{fmt_pct(r['pct'])}</div>
 </div>"""
         c = r["caps"]
-        extra = (f'<span><em>PEG</em> {r["peg"]:.2f}</span>' if r["peg"]
+        extra = (f'<span><em>PEG代理</em> {r["peg"]:.2f}</span>' if r["peg"]
                  else (f'<span><em>PB</em> {r["pb"]:.2f}</span>' if r["pb"] else ""))
         return f"""
 <div class="row">
-  <div>{cat_tag}<span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}</div>
+  <div>{cat_tag}<span class="name">{r['name']}</span><span class="code">{r['code']}</span>{badge}{quality_badge}</div>
   <div class="price num">{r['score']}<span class="sub">分</span></div>
   <div class="meta">
     <span><em>價</em> <span class="num">{r['close']:,.2f}</span> {fmt_pct(r['pct'])}</span>
@@ -10861,225 +10922,100 @@ def handle_message(event):
         reply = build_chips_report()
 
     # 8. 黑馬股（不同於雷達：以「月營收年增率」為主軸，找有題材／獲利成長的股票）
-    elif text == "黑馬":
+    elif text in ["黑馬", "雷達"]:
+        mode = "blackhorse" if text == "黑馬" else "radar"
+        sep = chr(10)
         inst_data = fetch_institutional_data()
         if not inst_data:
             reply = "❌ 目前無法取得三大法人資料，可能是非交易時段或非交易日，請稍後再試。"
         else:
-            revenue_data = fetch_monthly_revenue()
-            valuation_data = fetch_valuation()
-            bh_industry_map = get_industry_map()
-            industry_momentum = get_industry_momentum(revenue_data, bh_industry_map)
-            # 候選池改用「近10日累計買超」而非「今日買超前40名」。
-            # 長線佈局常是量小但持續，看單日排行會漏掉每天小買、連買十幾天的股票；
-            # 池子也因此變寬變雜，產業動能那一項才有鑑別度。
-            cum_buyers = get_cumulative_net_buy(days=10, top_n=80)
-            if not cum_buyers:
-                # 歷史資料還沒累積時，退回原本的當日買超排行，功能不會整個斷掉
-                cum_buyers = [
-                    (code, info.get("name", code), info["total_net_lots"], 1)
-                    for code, info in sorted(
-                        inst_data.items(),
-                        key=lambda x: x[1]["total_net_lots"], reverse=True
-                    )
-                    if len(code) == 4 and code.isdigit()
-                    and not code.startswith("00") and info["total_net_lots"] > 0
-                ][:80]
-
-            candidates = [
-                (code, {"name": name, "total_net_lots": inst_data.get(code, {}).get("total_net_lots", 0),
-                        "cum_lots": cum_lots, "buy_days": buy_days})
-                for code, name, cum_lots, buy_days in cum_buyers
-                # 排除金融保險業：銀行的「營收」是利息與手續費收入，
-                # 性質與製造業不同，套用同一套營收成長標準會失真
-                if not is_financial(code, bh_industry_map)
-            ]
-
-            streaks = get_consecutive_days_batch([c for c, _ in candidates])
-            cand_prices = get_realtime_stocks_bulk(
-                [c for c, _ in candidates], workers=16)
-
-            scored = []
-            for code, info in candidates:
-                price = cand_prices.get(code)
-                if not price:
-                    continue
-                if price["close"] < 10:  # 排除低價股，容易被小額資金拉出失真漲幅
-                    continue
-                if abs(price["pct"]) > 10.5:  # 防呆：台股單日漲跌幅上限10%，超過視為資料異常
-                    continue
-                turnover = calc_turnover_billion(price["close"], price["volume"])
-                if turnover < 1:  # 排除成交金額 <1億元，流動性不足
-                    continue
-
-                yoy_pct = revenue_data.get(code, {}).get("yoy_pct")
-                cum_yoy_pct = revenue_data.get(code, {}).get("cum_yoy_pct")
-                # 營收成長壓縮成 0-25（原本 0-40）
-                revenue_score = round(score_from_cum_revenue_growth(cum_yoy_pct) * 25 / 40)
-
-                val = valuation_data.get(code, {})
-                pe = val.get("pe")
-                val_score, peg, val_desc = score_from_valuation(pe, cum_yoy_pct)  # 0-25
-
-                supply_score, supply_desc = score_from_industry_momentum(
-                    industry_momentum.get(bh_industry_map.get(code))
-                )  # 0-20
-
-                streak = streaks.get(code, 0)
-                streak_score = round(score_from_streak(streak) * 20 / 30)  # 0-20
-
-                chip_raw = score_from_net_lots(info.get("cum_lots", 0))
-                tech_raw = score_from_technical(price["pct"], turnover)
-                # 當日籌碼與技術合併壓縮成 0-10，長線選股不該讓單日表現主導
-                chip_tech_score = round((chip_raw / 40 * 5) + (tech_raw / 60 * 5))
-
-                total_score = (revenue_score + val_score + supply_score
-                               + streak_score + chip_tech_score)  # 滿分 100
-                scored.append((total_score, code, info, price, revenue_score,
-                               val_score, val_desc, peg, supply_score, supply_desc,
-                               streak_score, streak, chip_tech_score,
-                               yoy_pct, cum_yoy_pct))
-
-            scored.sort(key=lambda x: x[0], reverse=True)  # 依綜合總分排序，長線指標權重最高
-
-            reports = []
-            industry_map = get_industry_map()
-            for rank, (total_score, code, info, price, revenue_score,
-                       val_score, val_desc, peg, supply_score, supply_desc,
-                       streak_score, streak, chip_tech_score,
-                       yoy_pct, cum_yoy_pct) in enumerate(scored[:5], start=1):
-                # 「高度看好」這種措辭會被當成推薦，但這只是一組數字排序的結果。
-                # 改成描述「這個分數在評分標準裡的位置」，而不是對股票下判斷。
-                grade = ("🔥 各項指標均強" if total_score >= 75
-                         else ("🚀 多數指標偏強" if total_score >= 55
-                               else "📈 指標中性偏強"))
-                cum_text = f"{cum_yoy_pct:+.1f}%" if cum_yoy_pct is not None else "尚無資料"
-                yoy_text = f"{yoy_pct:+.1f}%" if yoy_pct is not None else "尚無資料"
-                streak_text = f"連續{streak}日買超" if streak >= 1 else "近期無連續買超"
-                ind_code = industry_map.get(code)
-                ind_text = industry_name(ind_code) if ind_code else "未分類"
-                report = (
-                    f"🐎 智慧黑馬股 #{rank}\n\n"
-                    f"股票：{info['name']}\n"
-                    f"代號：{code}\n"
-                    f"產業：{ind_text}\n\n"
-                    f"黑馬指數：{total_score}／100\n\n"
-                    f"💡 營收成長：{revenue_score}／25\n"
-                    f"　　累計年增 {cum_text}（單月 {yoy_text}）\n"
-                    f"💰 估值：{val_score}／25\n"
-                    f"　　{val_desc}\n"
-                    f"🏭 產業動能：{supply_score}／20\n"
-                    f"　　{supply_desc}\n"
-                    f"🔁 法人連續性：{streak_score}／20（{streak_text}）\n"
-                    f"📊 籌碼技術：{chip_tech_score}／10\n"
-                    f"　　近10日累計買超 {info.get('cum_lots', 0):,} 張"
-                    f"（{info.get('buy_days', 0)} 天買超）\n\n"
-                    f"【位階】\n"
-                    f"{build_position_desc(price)}\n\n"
-                    f"【評分結果】\n"
-                    f"{grade}\n"
-                    f"-----------------------------------"
-                )
-                reports.append(report)
-            if reports:
-                reply = "\n\n".join(reports) + (
-                    "\n\n※ 以上為依公開資料排序的結果，不是推薦。\n"
-                    "分數高只代表這幾項指標數字好看，"
-                    "不代表會漲、也不代表適合你的狀況。")
+            # LINE 與網頁共用同一份候選池、資料快取、評分與資料完整度欄位，
+            # 避免同一天兩個入口出現不同排名。
+            rows, _skipped, _momentum = compute_screener_rows(
+                mode, inst=inst_data)
+            if mode == "blackhorse":
+                rows = [r for r in rows if r.get("score") is not None]
+                rows.sort(key=lambda r: r.get("score", -1), reverse=True)
+                reports = []
+                for rank, r in enumerate(rows[:5], start=1):
+                    q = r.get("data_quality") or {}
+                    quality = f"{q.get('valid', 0)}/{q.get('total', 0)}"
+                    missing = "、".join(q.get("missing") or [])
+                    quality_line = (f"資料完整度：{quality}"
+                                    + (f"（缺 {missing}）" if missing else ""))
+                    caps = r.get("caps", ("", "", "", "", ""))
+                    growth_line = (f"累計年增 {r['cum_yoy']:+.1f}%"
+                                   if r.get("cum_yoy") is not None
+                                   else "累計年增 尚無資料")
+                    value_line = (f"PE {r['pe']:.1f}"
+                                  if r.get("pe") is not None
+                                  else (f"PB {r['pb']:.2f}"
+                                        if r.get("pb") is not None
+                                        else "估值資料不足"))
+                    proxy_line = (f"營收成長估值代理值 {r['peg']:.2f}"
+                                  if r.get("peg") is not None else "")
+                    report_lines = [
+                        f"🐎 智慧黑馬股 #{rank}", "",
+                        f"股票：{r['name']}",
+                        f"代號：{r['code']}",
+                        f"產業：{r['industry']}", "",
+                        f"黑馬指數：{r['score']}／100", "",
+                        f"💡 營收成長：{r['rev']}／{caps[0]}",
+                        f"　　{growth_line}",
+                        f"　　{proxy_line}" if proxy_line else None,
+                        f"💰 估值：{r['val']}／{caps[1]}",
+                        f"　　{value_line}",
+                        f"🏭 產業動能：{r['mom']}／{caps[2]}",
+                        f"🔁 法人連續性：{r['streak_score']}／{caps[3]}（連續{r['streak']}日買超）",
+                        f"📊 籌碼技術：{r['chip']}／{caps[4]}",
+                        f"　　近10日累計買超 {r.get('cum_lots', 0):,} 張", "",
+                        f"📋 {quality_line}", "",
+                        "【位階】", build_position_desc(r),
+                        "-----------------------------------",
+                    ]
+                    reports.append(sep.join(x for x in report_lines if x is not None))
+                reply = (sep + sep).join(reports) + sep + sep + (
+                    "※ 黑馬與網頁選股台使用同一套公開資料與排序；"
+                    "分數高不代表會漲，也不代表適合你的狀況。"
+                    if reports else "❌ 暫無符合條件的標的。")
             else:
-                reply = "❌ 暫無符合條件的標的。"
+                def line_radar_key(r):
+                    breakout = (2 if r.get("breakout") == "季線新高"
+                                else (1 if r.get("breakout") else 0))
+                    fatigue = -1 if (r.get("up_streak") or 0) >= 5 else 0
+                    return (breakout + fatigue, r.get("vol_ratio") or 0,
+                            r.get("streak", 0), r.get("pct", 0))
 
-    # 9. 盤中雷達（法人買超股票中，依漲幅排序）
-    elif text == "雷達":
-        inst_data = fetch_institutional_data()
-        if not inst_data:
-            reply = "❌ 目前無法取得三大法人資料，可能是非交易時段或非交易日，請稍後再試。"
-        else:
-            candidates = [
-                (code, info) for code, info in inst_data.items()
-                if len(code) == 4 and code.isdigit()
-                and not code.startswith("00")  # 排除 ETF
-                and info["total_net_lots"] > 0
-            ]
-            candidates.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
-
-            priced = []
-            radar_prices = get_realtime_stocks_bulk(
-                [c for c, _ in candidates[:60]], workers=16)
-            for code, info in candidates[:60]:
-                price = radar_prices.get(code)
-                if not price:
-                    continue
-                if price["close"] < 10:  # 排除低價股
-                    continue
-                if price["pct"] < 1.5:  # 還沒發動的先不看；上限不設，漲停也可能是突破的起點
-                    continue
-                if price["pct"] > 10.5:  # 防呆：超過台股漲跌幅上限視為資料異常
-                    continue
-                turnover = calc_turnover_billion(price["close"], price["volume"])
-                if turnover < 1:  # 排除成交金額 <1億元
-                    continue
-                priced.append((code, info, price))
-
-            streaks = get_consecutive_days_batch([c for c, _, _ in priced])
-
-            def radar_rank(item):
-                """
-                排序邏輯：突破位階 > 帶量 > 法人連續買超 > 當日漲幅。
-                目的是讓「帶量突破前高」排在「已連漲多日的追高盤」前面。
-                """
-                code, info, price = item
-                close = price["close"]
-                breakout = 0
-                if price.get("high_60d") and close >= price["high_60d"]:
-                    breakout = 2  # 創季線新高
-                elif price.get("high_20d") and close >= price["high_20d"]:
-                    breakout = 1
-                vol_ratio = price.get("vol_ratio") or 0
-                # 連漲太多天的扣分，避免推薦已經噴到末端的股票
-                fatigue = -1 if price.get("up_streak", 0) >= 5 else 0
-                return (breakout + fatigue, vol_ratio, streaks.get(code, 0), price["pct"])
-
-            priced.sort(key=radar_rank, reverse=True)
-
-            reports = []
-            for code, info, price in priced[:5]:
-                turnover = calc_turnover_billion(price["close"], price["volume"])
-                streak = streaks.get(code, 0)
-                close = price["close"]
-                if price.get("high_60d") and close >= price["high_60d"]:
-                    level = "🚀 帶量突破季線新高"
-                elif price.get("high_20d") and close >= price["high_20d"]:
-                    level = "📈 突破近月高點"
-                elif price.get("up_streak", 0) >= 5:
-                    level = "⚠️ 已連漲多日，位階偏高"
-                else:
-                    level = "👀 區間內上漲"
-                streak_line = f"🔁 法人連續買超：{streak} 日\n" if streak >= 2 else ""
-                report = (
-                    f"🚨【盤中雷達】\n\n"
-                    f"🔥 強勢股票：{info['name']}\n"
-                    f"📌 股票代號：{code}\n\n"
-                    f"💰 現價：{price['close']:.2f}\n"
-                    f"📈 漲幅：{price['pct']:+.2f}%\n"
-                    f"📊 成交金額：{turnover:.1f} 億\n"
-                    f"🏦 三大法人買超：{info['total_net_lots']:,} 張\n"
-                    f"{streak_line}\n"
-                    f"🏆 狀態：{level}\n\n"
-                    f"【位階】\n"
-                    f"{build_position_desc(price)}\n\n"
-                    f"【注意】\n"
-                    f"{build_risk_desc(price['pct'], info['total_net_lots'])}\n"
-                    f"-----------------------------------"
-                )
-                reports.append(report)
-            if reports:
-                reply = "\n\n".join(reports) + (
-                    "\n\n※ 以上為當日帶量上漲且法人買超的標的，不是推薦。\n"
-                    "短線強勢不代表會續強，追高風險自負。")
-            else:
-                reply = "❌ 暫無符合條件的標的。"
-
+                rows.sort(key=line_radar_key, reverse=True)
+                reports = []
+                for r in rows[:5]:
+                    q = r.get("data_quality") or {}
+                    quality = f"{q.get('valid', 0)}/{q.get('total', 0)}"
+                    missing = "、".join(q.get("missing") or [])
+                    quality_line = (f"資料完整度：{quality}"
+                                    + (f"（缺 {missing}）" if missing else ""))
+                    streak_line = (f"🔁 法人連續買超：{r['streak']} 日"
+                                   if r.get("streak", 0) >= 2 else "")
+                    report_lines = [
+                        "🚨【盤中雷達】", "",
+                        f"🔥 強勢股票：{r['name']}",
+                        f"📌 股票代號：{r['code']}", "",
+                        f"💰 現價：{r['close']:.2f}",
+                        f"📈 漲幅：{r['pct']:+.2f}%",
+                        f"📊 成交金額：{r['turnover']:.1f} 億",
+                        f"🏦 三大法人買超：{r.get('cum_lots', 0):,} 張",
+                        streak_line,
+                        f"🏆 狀態：{r.get('radar_state', '狀態資料不足')}",
+                        f"📋 {quality_line}", "",
+                        "【位階】", build_position_desc(r), "",
+                        "【注意】", build_risk_desc(r['pct'], r.get('cum_lots', 0)),
+                        "-----------------------------------",
+                    ]
+                    reports.append(sep.join(x for x in report_lines if x))
+                reply = (sep + sep).join(reports) + sep + sep + (
+                    "※ 雷達與網頁選股台使用同一套公開資料與排序；"
+                    "短線強勢不代表會續強，追高風險自負。"
+                    if reports else "❌ 暫無符合條件的標的。")
     elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
         flex_reply = build_menu_flex()
         reply = None
