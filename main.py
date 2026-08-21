@@ -2435,9 +2435,14 @@ def get_my_rank_summary(user_id):
     boards, _ = build_leaderboard(top_n=100, days=365)
     result = {}
     for board, label in (("short", "短線"), ("long", "長線")):
+        current_row = next((row for row in boards.get(board, [])
+                            if row.get("user_id") == str(user_id)), None)
         current_rank = next((i for i, row in enumerate(boards.get(board, []), 1)
                              if row.get("user_id") == str(user_id)), None)
         status = get_rank_status(user_id, board, current_rank)
+        # 保留該成員的真實榜單資料，首頁與排行榜 UI 可共用，
+        # 不需要再跑一次完整排行榜計算。
+        status["row"] = current_row
         status["label"] = label
         result[board] = status
     return result
@@ -6932,6 +6937,55 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
   color:var(--ink-soft);background:var(--paper-2);border-radius:2px}
 .tabs a.on{background:var(--ink);color:var(--paper);font-weight:500}
 .mode-note{font-size:12px;color:var(--ink-faint);margin-bottom:14px;line-height:1.6}
+/* ── 排行榜 App 化 ── */
+.rank-situation{margin:16px 0 18px;padding:17px 15px;background:#FFF;
+  border:1px solid var(--rule);border-radius:12px;box-shadow:0 3px 14px rgba(35,39,35,.05)}
+.rank-situation-title{display:flex;align-items:center;justify-content:space-between;
+  gap:10px;margin-bottom:14px}
+.rank-situation-title h2{font-size:19px;margin:0}
+.rank-situation-badge{font-size:11px;color:var(--brass);border:1px solid var(--brass);
+  border-radius:5px;padding:3px 7px;white-space:nowrap}
+.rank-situation-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0}
+.rank-situation-item{padding:0 9px;border-left:1px solid var(--rule);min-width:0}
+.rank-situation-item:first-child{padding-left:0;border-left:0}
+.rank-situation-item:last-child{padding-right:0}
+.rank-situation-item small{display:block;color:var(--ink-faint);font-size:11px;white-space:nowrap}
+.rank-situation-item b{display:block;font-size:20px;line-height:1.25;margin-top:5px;white-space:nowrap}
+.rank-situation-item .rank-situation-sub{display:block;font-size:11px;color:var(--ink-faint);margin-top:4px;white-space:nowrap}
+.rank-situation-empty{padding:8px 0;color:var(--ink-soft);font-size:13px}
+.rank-switch-note{font-size:11px;color:var(--ink-faint);margin:7px 0 14px}
+.rank-card{padding:14px 0;border-bottom:1px solid var(--rule)}
+.rank-card:last-child{border-bottom:0}
+.rank-row-main{display:grid;grid-template-columns:auto 1fr auto auto;gap:8px;align-items:center}
+.rank-number{font-size:16px;min-width:31px;text-align:center}
+.rank-card .name{font-size:15.5px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rank-return{text-align:right;font-size:17px;font-weight:600;white-space:nowrap}
+.rank-movement{font-size:12px;white-space:nowrap}
+.rank-meta{display:flex;flex-wrap:wrap;gap:7px 14px;margin:7px 0 0 39px;
+  color:var(--ink-soft);font-size:12px}
+.rank-meta span{white-space:nowrap}
+.rank-meta em{font-style:normal;color:var(--ink-faint)}
+.rank-detail{margin:9px 0 0 39px;border-top:1px solid var(--paper-2);padding-top:7px}
+.rank-detail summary{color:var(--brass);font-size:12px;cursor:pointer;list-style:none}
+.rank-detail summary::-webkit-details-marker{display:none}
+.rank-detail summary:after{content:'⌄';float:right;font-size:16px;line-height:12px}
+.rank-detail[open] summary:after{content:'⌃'}
+.rank-detail-body{display:flex;flex-wrap:wrap;gap:7px 14px;margin-top:8px;color:var(--ink-soft);font-size:12px}
+.rank-detail-body span{white-space:nowrap}
+.rank-detail-body em{font-style:normal;color:var(--ink-faint)}
+.rank-private{display:block;margin:9px 0 0 39px;color:var(--ink-faint);font-size:12px}
+.rank-mine{background:var(--paper-2);border-radius:9px;padding:14px 11px;margin:0 -11px}
+.rank-chart-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.rank-chart-head h2{margin:0}
+@media(max-width:640px){
+  .rank-situation-grid{grid-template-columns:repeat(2,1fr);gap:14px 0}
+  .rank-situation-item:nth-child(3){padding-left:0;border-left:0}
+  .rank-situation-item:nth-child(2){padding-right:0}
+  .rank-situation-item:nth-child(3),.rank-situation-item:nth-child(4){padding-top:10px;border-top:1px solid var(--rule)}
+  .rank-row-main{grid-template-columns:auto minmax(0,1fr) auto;gap:7px}
+  .rank-movement{grid-column:2/-1;margin-top:-4px}
+  .rank-meta,.rank-detail,.rank-private{margin-left:38px}
+}
 .dist{display:flex;flex-wrap:wrap;gap:14px;padding:11px 13px;
   background:var(--paper-2);font-size:12.5px;color:var(--ink-soft);
   border-left:2px solid var(--brass)}
@@ -8556,12 +8610,17 @@ def web_trades(uid):
     return respond_page("交易紀錄", body, "trades")
 
 
-def render_leaderboard_chart(series_map, market, top_names):
+def render_leaderboard_chart(series_map, market, top_names, highlight_name=None):
     """
     排行榜走勢圖：前幾名的累積報酬 vs 大盤，畫在同一張圖。
     比的是「相對加入日的累積報酬」，所以起點都是 0，不同資金規模也能疊在一起比。
     """
-    lines = [(nm, series_map[nm]) for nm in top_names if series_map.get(nm)]
+    ordered_names = list(top_names)
+    if highlight_name and series_map.get(highlight_name):
+        ordered_names = [highlight_name] + [
+            nm for nm in ordered_names if nm != highlight_name]
+        ordered_names = ordered_names[:4]
+    lines = [(nm, series_map[nm]) for nm in ordered_names if series_map.get(nm)]
     if not lines and not market:
         return ('<div class="empty">還沒有足夠的每日快照可以畫圖。<br><br>'
                 '<span style="font-size:12.5px">每個交易日收盤後會存一次快照，'
@@ -8596,7 +8655,7 @@ def render_leaderboard_chart(series_map, market, top_names):
     tints = ["#6E5228", "#A82A20", "#155C42", "#8A6A3B", "#454C55"]
     legend = []
     for i, (nm, curve) in enumerate(lines):
-        color = tints[i % len(tints)]
+        color = "var(--brass)" if nm == highlight_name else tints[i % len(tints)]
         p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in curve)
         parts.append(f'<path d="{p}" fill="none" stroke="{color}" '
                      f'stroke-width="2"/>')
@@ -8647,6 +8706,10 @@ def web_leaderboard(uid):
     me = get_leaderboard_member(uid)
     boards, (series_map, market) = build_leaderboard(top_n=20)
     view = request.args.get("board", "short")   # 預設短線：新人也馬上有得比
+    is_short = view != "long"
+    active_board = "short" if is_short else "long"
+    active_key = "m30" if is_short else "ret"
+    active_label = "短線｜近 30 天" if is_short else "長線｜加入後累計"
 
     # ── 參加／退出 ──
     if me:
@@ -8738,7 +8801,7 @@ def web_leaderboard(uid):
         return f'''<div class="my-rank-card"><small>{label}</small><b>{title}</b><span>{detail}</span></div>'''
 
     def board_rows(rows, key):
-        """key: "m30" 排短線、"ret" 排長線。兩榜共用同一套列渲染。"""
+        """用手機優先的簡潔卡片呈現榜單，明細只在使用者主動展開時讀取。"""
         if not rows:
             return ('<div class="empty">這個榜還沒有資料。<br><br>'
                     '<span style="font-size:12.5px">加入後累積 2 天以上的'
@@ -8746,74 +8809,119 @@ def web_leaderboard(uid):
         medal = ["🥇", "🥈", "🥉"]
         out = []
         for i, r in enumerate(rows):
-            mine = ' style="background:var(--paper-2)"' if (
-                me and r["nickname"] == me["nickname"]) else ""
+            mine = " rank-mine" if str(r.get("user_id")) == str(uid) else ""
             current_rank = i + 1
-            rank = medal[i] if i < 3 else f"{current_rank}"
+            rank = medal[i] if i < 3 else f"#{current_rank}"
             main_v = r[key]
             cls = "up" if main_v >= 0 else "down"
-            rank_state = get_rank_status(r.get("user_id"), "short" if key == "m30" else "long", current_rank)
+            rank_state = get_rank_status(
+                r.get("user_id"), "short" if key == "m30" else "long", current_rank)
             movement = render_rank_status(rank_state)
 
-            # 樣本天數。短線榜看近30天實際涵蓋幾天，長線榜看參加幾天。
+            # 短線看近 30 天實際涵蓋天數；長線看加入後實際涵蓋天數。
             span = r["m30_days"] if key == "m30" else r["days"]
-            thin = ('<span class="badge">僅 %d 天</span>' % span
-                    if span < 10 else f'<span class="sub">{span} 天</span>')
+            span_html = (f'<span class="badge">樣本 {span} 天｜參考排名</span>'
+                         if span < 10 else f'<span>樣本 {span} 天</span>')
 
-            side = ""
-            if key == "m30" and r["ret"] is not None:
+            supporting = []
+            if key == "m30" and r.get("ret") is not None:
                 sc = "up" if r["ret"] >= 0 else "down"
-                side += (f'<span><em>累計</em> '
-                         f'<span class="num {sc}">{r["ret"]:+.1f}%</span>'
-                         f'（{r["days"]}天）</span>')
-            elif key == "ret" and r["m30"] is not None:
+                supporting.append(
+                    f'<span><em>加入後</em> <span class="num {sc}">{r["ret"]:+.1f}%</span></span>')
+            elif key == "ret" and r.get("m30") is not None:
                 sc = "up" if r["m30"] >= 0 else "down"
-                side += (f'<span><em>近30天</em> '
-                         f'<span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
+                supporting.append(
+                    f'<span><em>近30天</em> <span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
             if r.get("excess") is not None:
                 w = "贏" if r["excess"] >= 0 else "輸"
-                # 把大盤同期報酬也寫出來。只寫「贏 7.2%」會讓人分不清
-                # 那是超額報酬還是大盤自己的報酬率，兩個數字都給就沒有歧義。
                 mkt = r.get("mkt_ret")
                 mkt_txt = f"（大盤 {mkt:+.1f}%）" if mkt is not None else ""
-                side += (f'<span><em>vs 大盤</em> {w} '
-                         f'{abs(r["excess"]):.1f}%{mkt_txt}</span>')
+                supporting.append(
+                    f'<span><em>vs 大盤</em> {w} {abs(r["excess"]):.1f}%{mkt_txt}</span>')
             if r.get("mdd") is not None:
-                side += (f'<span><em>最大回檔</em> '
-                         f'<span class="num">-{r["mdd"]:.1f}%</span></span>')
-            side += f'<span><em>持股</em> {r["holdings"]} 檔</span>'
+                supporting.append(
+                    f'<span><em>最大回檔</em> <span class="num">-{r["mdd"]:.1f}%</span></span>')
+            supporting.append(f'<span><em>持股</em> {r["holdings"]} 檔</span>')
 
             d = r.get("detail")
-            detail = ""
             if d:
+                detail_bits = []
                 b_ = d["biggest"]
-                detail += (f'<span><em>最大持股</em> {b_["name"]}'
-                           f'（{b_["code"]}）{b_["weight"]:.0f}%</span>')
-                if d["best"]:
+                detail_bits.append(
+                    f'<span><em>最大持股</em> {b_["name"]}（{b_["code"]}）{b_["weight"]:.0f}%</span>')
+                if d.get("best"):
                     bs = d["best"]
                     bcls = "up" if bs["ret"] >= 0 else "down"
-                    detail += (f'<span><em>最佳</em> {bs["name"]}（{bs["code"]}）'
-                               f'<span class="num {bcls}">{bs["ret"]:+.1f}%</span>'
-                               f'</span>')
-                if d["top_industry"]:
+                    detail_bits.append(
+                        f'<span><em>最佳｜加入後報酬</em> {bs["name"]}（{bs["code"]}）'
+                        f'<span class="num {bcls}">{bs["ret"]:+.1f}%</span></span>')
+                if d.get("top_industry"):
                     nm, w2 = d["top_industry"]
-                    detail += f'<span><em>最大產業</em> {nm} {w2:.0f}%</span>'
-            elif not r.get("show"):
-                detail = '<span class="sub">持股未公開</span>'
+                    detail_bits.append(f'<span><em>最大產業</em> {nm} {w2:.0f}%</span>')
+                detail = (f'<details class="rank-detail"><summary>查看持股明細</summary>'
+                          f'<div class="rank-detail-body">{"".join(detail_bits)}</div></details>')
+            else:
+                detail = '<span class="rank-private">持股明細未公開</span>'
 
             out.append(f"""
-<div class="row"{mine}>
-  <div><span class="name">{rank}　{r['nickname']}</span> {movement} {thin}</div>
-  <div class="price num {cls}">{main_v:+.2f}%</div>
-  <div class="meta">{side}</div>
-  <div class="meta">{detail}</div>
+<div class="rank-card{mine}">
+  <div class="rank-row-main">
+    <span class="rank-number">{rank}</span>
+    <span class="name">{r['nickname']}</span>
+    <span class="rank-return num {cls}">{main_v:+.2f}%</span>
+    <span class="rank-movement">{movement}</span>
+  </div>
+  <div class="rank-meta">{''.join(supporting)}<span>{span_html}</span></div>
+  {detail}
 </div>""")
-        return f'<div class="rows">{"".join(out)}</div>'
+        return f'<div class="rows rank-rows">{"".join(out)}</div>'
 
-    is_short = view != "long"
-    board = board_rows(boards["short"] if is_short else boards["long"],
-                       "m30" if is_short else "ret")
-    my_rank_html = f'''<section class="rank-spotlight"><div class="daily-section-title"><h2>🏆 我的排名</h2><span>只顯示你的資料</span></div><div class="my-rank-grid">{render_my_rank_card("short", "短線｜近 30 天")}{render_my_rank_card("long", "長線｜加入後累計")}</div></section>'''
+    board = board_rows(boards[active_board], active_key)
+    active_status = my_rank[active_board]
+    active_row = active_status.get("row")
+    if active_row:
+        active_value = active_row.get(active_key)
+        active_days = active_row.get("m30_days") if is_short else active_row.get("days")
+        active_days = active_days or 0
+        active_cls = "up" if active_value is not None and active_value >= 0 else (
+            "down" if active_value is not None else "flat")
+        active_txt = (f"{active_value:+.2f}%" if active_value is not None else "—")
+        previous_txt = (f"#{active_status['previous']}"
+                        if active_status.get("previous") else "—")
+        excess = active_row.get("excess")
+        if excess is None:
+            vs_txt, vs_cls = "尚無資料", "flat"
+        else:
+            vs_txt = (f"贏 {abs(excess):.1f}%" if excess >= 0
+                      else f"輸 {abs(excess):.1f}%")
+            vs_cls = "up" if excess >= 0 else "down"
+        rank_title = (f"#{active_status['rank']}"
+                      if active_status.get("rank") else "尚未上榜")
+        rank_move = render_rank_status(active_status)
+        situation_body = f'''<div class="rank-situation-grid">
+  <div class="rank-situation-item"><small>目前排名</small><b>{rank_title}</b>
+    <span class="rank-situation-sub">{rank_move}</span></div>
+  <div class="rank-situation-item"><small>{"近 30 天" if is_short else "加入後"}</small>
+    <b class="num {active_cls}">{active_txt}</b>
+    <span class="rank-situation-sub">樣本 {active_days} 天</span></div>
+  <div class="rank-situation-item"><small>昨日排名</small><b>{previous_txt}</b>
+    <span class="rank-situation-sub">{active_label}</span></div>
+  <div class="rank-situation-item"><small>相對大盤</small><b class="{vs_cls}">{vs_txt}</b>
+    <span class="rank-situation-sub">{f"大盤 {active_row.get('mkt_ret'):+.1f}%" if active_row.get('mkt_ret') is not None else "尚無大盤資料"}</span></div>
+</div>'''
+    elif me:
+        situation_body = '''<div class="rank-situation-empty">
+          已加入排行榜，正在累積有效每日快照；資料不足時不先捏造排名或報酬。
+        </div>'''
+    else:
+        situation_body = '''<div class="rank-situation-empty">
+          你尚未加入排行榜。加入後會從加入日開始累積自己的排名與報酬曲線。
+        </div>'''
+    my_rank_html = f'''<section class="rank-situation">
+  <div class="rank-situation-title"><h2>🏆 我的排名戰況</h2>
+    <span class="rank-situation-badge">{active_label}</span></div>
+  {situation_body}
+</section>'''
 
     waiting_html = ""
     if boards["waiting"]:
@@ -8840,9 +8948,22 @@ def web_leaderboard(uid):
   '從各自加入那天起算。加得早的人天然佔優，所以旁邊一定要看天數。'}
 　不設上榜門檻，天數太少的會標「僅 N 天」讓你自己判斷。</div>"""
 
+    chart_names = [r["nickname"] for r in boards[active_board]][:5]
+    my_curve_name = (me.get("nickname")
+                     if me and me.get("nickname") in series_map else None)
+    chart_note = ("含我的曲線・前 4 名・大盤"
+                  if my_curve_name else "前 5 名 vs 大盤")
     chart = render_leaderboard_chart(
-        series_map, market,
-        [r["nickname"] for r in (boards["short"] if is_short else boards["long"])][:5])
+        series_map, market, chart_names, highlight_name=my_curve_name)
+
+    settings_title = "修改排行榜設定" if me else "加入排行榜"
+    settings_note = ("修改暱稱、持股公開範圍或退出排行榜"
+                     if me else "從今天開始累積你的排名與報酬")
+    settings_html = f'''<section class="leaderboard-settings">
+  <details class="disclosure"><summary>{settings_title}　<span class="sub">{settings_note}</span></summary>
+    {panel}
+  </details>
+</section>'''
 
     body = f"""
 {f'<div class="msg">{msg}</div>' if msg else ''}
@@ -8854,13 +8975,14 @@ def web_leaderboard(uid):
 {waiting_html}
 
 <div class="section-head"><h2>走勢比較</h2>
-  <span class="section-note">前 5 名 vs 大盤</span></div>
+  <span class="section-note">{chart_note}</span></div>
 <div class="callout" style="padding:14px 15px 8px">{chart}</div>
 
-{panel}
+{settings_html}
 
-<div class="callout" style="margin-top:20px">
-  <b>這些數字怎麼來的</b><br>
+<details class="disclosure leaderboard-method"><summary>這些數字怎麼來的</summary>
+<div class="callout" style="margin-top:10px">
+  <b>計算口徑與資料說明</b><br>
   <span style="font-size:12.5px;color:var(--ink-faint)">
   ・<b>短線榜</b>比近 30 天，所有人區間一致；<b>長線榜</b>比加入後的累計，
     加得早的人天然佔優，所以務必連天數一起看。兩榜是兩種不同的能力，
@@ -8881,7 +9003,8 @@ def web_leaderboard(uid):
     3 天賺 8% 跟 30 天賺 8% 的可信度完全不同。<br>
   ・排行榜是給自己一個參照，不是比賽。看別人的數字之前，
     先確認自己的操作有沒有理由。</span>
-</div>"""
+</div>
+</details>"""
     return respond_page("排行榜", body, "leaderboard")
 
 
