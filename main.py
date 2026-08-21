@@ -6938,29 +6938,33 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .tabs a.on{background:var(--ink);color:var(--paper);font-weight:500}
 .mode-note{font-size:12px;color:var(--ink-faint);margin-bottom:14px;line-height:1.6}
 /* ── 排行榜 App 化 ── */
-.rank-situation{margin:16px 0 18px;padding:17px 15px;background:#FFF;
-  border:1px solid var(--rule);border-radius:12px;box-shadow:0 3px 14px rgba(35,39,35,.05)}
+.rank-situation{position:relative;overflow:hidden;margin:18px 0 20px;padding:18px 16px 16px;background:#FFF;
+  border:1px solid #C7C2B5;border-radius:16px;box-shadow:0 7px 20px rgba(35,39,35,.08)}
+.rank-situation:before{content:'';position:absolute;left:0;right:0;top:0;height:4px;background:var(--brass)}
 .rank-situation-title{display:flex;align-items:center;justify-content:space-between;
   gap:10px;margin-bottom:14px}
-.rank-situation-title h2{font-size:19px;margin:0}
-.rank-situation-badge{font-size:11px;color:var(--brass);border:1px solid var(--brass);
-  border-radius:5px;padding:3px 7px;white-space:nowrap}
+.rank-situation-title h2{font-size:20px;margin:0;letter-spacing:.01em}
+.rank-situation-badge{font-size:11px;color:var(--brass);border:1px solid #B7A27B;
+  background:#FBF8F0;border-radius:7px;padding:4px 8px;white-space:nowrap}
 .rank-situation-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0}
 .rank-situation-item{padding:0 9px;border-left:1px solid var(--rule);min-width:0}
 .rank-situation-item:first-child{padding-left:0;border-left:0}
 .rank-situation-item:last-child{padding-right:0}
 .rank-situation-item small{display:block;color:var(--ink-faint);font-size:11px;white-space:nowrap}
-.rank-situation-item b{display:block;font-size:20px;line-height:1.25;margin-top:5px;white-space:nowrap}
+.rank-situation-item b{display:block;font-size:21px;line-height:1.25;margin-top:6px;white-space:nowrap;letter-spacing:.01em}
 .rank-situation-item .rank-situation-sub{display:block;font-size:11px;color:var(--ink-faint);margin-top:4px;white-space:nowrap}
 .rank-situation-empty{padding:8px 0;color:var(--ink-soft);font-size:13px}
 .rank-switch-note{font-size:11px;color:var(--ink-faint);margin:7px 0 14px}
-.rank-card{padding:14px 0;border-bottom:1px solid var(--rule)}
+.rank-list-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:20px 0 7px}
+.rank-list-head h2{font-size:20px;margin:0}
+.rank-list-head span{font-size:11.5px;color:var(--ink-faint)}
+.rank-card{padding:16px 0;border-bottom:1px solid #C9CCC4}
 .rank-card:last-child{border-bottom:0}
 .rank-row-main{display:grid;grid-template-columns:auto 1fr auto auto;gap:8px;align-items:center}
 .rank-number{font-size:16px;min-width:31px;text-align:center}
 .rank-card .name{font-size:15.5px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rank-return{text-align:right;font-size:17px;font-weight:600;white-space:nowrap}
-.rank-movement{font-size:12px;white-space:nowrap}
+.rank-movement{font-size:12px;white-space:nowrap;justify-self:end}
 .rank-meta{display:flex;flex-wrap:wrap;gap:7px 14px;margin:7px 0 0 39px;
   color:var(--ink-soft);font-size:12px}
 .rank-meta span{white-space:nowrap}
@@ -6974,7 +6978,14 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .rank-detail-body span{white-space:nowrap}
 .rank-detail-body em{font-style:normal;color:var(--ink-faint)}
 .rank-private{display:block;margin:9px 0 0 39px;color:var(--ink-faint);font-size:12px}
-.rank-mine{background:var(--paper-2);border-radius:9px;padding:14px 11px;margin:0 -11px}
+.rank-mine{background:#F5F0E5;border-left:3px solid var(--brass);border-radius:10px;
+  padding:14px 11px 14px 9px;margin:0 -11px}
+.rank-tabs{display:flex;gap:4px;margin:18px 0 8px;padding:4px;background:#D7D9D2;
+  border-radius:11px;flex-wrap:nowrap}
+.rank-tabs a{flex:1;text-align:center;padding:8px 7px;background:transparent;border-radius:8px;
+  color:var(--ink-soft);font-size:13px;white-space:nowrap}
+.rank-tabs a.on{background:#FFF;color:var(--ink);font-weight:600;box-shadow:0 2px 7px rgba(35,39,35,.10)}
+.rank-tabs a:hover{background:#F7F7F3;color:var(--ink)}
 .rank-chart-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
 .rank-chart-head h2{margin:0}
 @media(max-width:640px){
@@ -8888,6 +8899,8 @@ def web_leaderboard(uid):
         active_txt = (f"{active_value:+.2f}%" if active_value is not None else "—")
         previous_txt = (f"#{active_status['previous']}"
                         if active_status.get("previous") else "—")
+        previous_note = (active_label if active_status.get("previous")
+                         else "尚無前一日快照")
         excess = active_row.get("excess")
         if excess is None:
             vs_txt, vs_cls = "尚無資料", "flat"
@@ -8897,15 +8910,19 @@ def web_leaderboard(uid):
             vs_cls = "up" if excess >= 0 else "down"
         rank_title = (f"#{active_status['rank']}"
                       if active_status.get("rank") else "尚未上榜")
-        rank_move = render_rank_status(active_status)
+        rank_move = (render_rank_status(active_status)
+                     if active_status.get("delta") is not None
+                     else '<span class="rank-move muted">尚無前一日快照</span>')
+        sample_note = (f"樣本 {active_days} 天｜參考排名"
+                       if active_days < 10 else f"樣本 {active_days} 天")
         situation_body = f'''<div class="rank-situation-grid">
   <div class="rank-situation-item"><small>目前排名</small><b>{rank_title}</b>
     <span class="rank-situation-sub">{rank_move}</span></div>
   <div class="rank-situation-item"><small>{"近 30 天" if is_short else "加入後"}</small>
     <b class="num {active_cls}">{active_txt}</b>
-    <span class="rank-situation-sub">樣本 {active_days} 天</span></div>
+    <span class="rank-situation-sub">{sample_note}</span></div>
   <div class="rank-situation-item"><small>昨日排名</small><b>{previous_txt}</b>
-    <span class="rank-situation-sub">{active_label}</span></div>
+    <span class="rank-situation-sub">{previous_note}</span></div>
   <div class="rank-situation-item"><small>相對大盤</small><b class="{vs_cls}">{vs_txt}</b>
     <span class="rank-situation-sub">{f"大盤 {active_row.get('mkt_ret'):+.1f}%" if active_row.get('mkt_ret') is not None else "尚無大盤資料"}</span></div>
 </div>'''
@@ -8936,17 +8953,17 @@ def web_leaderboard(uid):
 <div class="rows">{items}</div>"""
 
     tabs = f"""
-<div class="tabs">
+<div class="tabs rank-tabs">
   <a href="/web/leaderboard?board=short"
      class="{'on' if is_short else ''}">短線　近30天</a>
   <a href="/web/leaderboard?board=long"
      class="{'' if is_short else 'on'}">長線　累計</a>
 </div>
-<div class="mode-note">{
-  '所有人區間一致，最公平，新人加入隔天就能上榜。'
+<div class="rank-switch-note">{
+  '短線：所有人統一比較近 30 天；樣本少於 10 天會標示為參考排名。'
   if is_short else
-  '從各自加入那天起算。加得早的人天然佔優，所以旁邊一定要看天數。'}
-　不設上榜門檻，天數太少的會標「僅 N 天」讓你自己判斷。</div>"""
+  '長線：從各自加入日後累計；加入天數不同，請搭配樣本天數判讀。'}
+</div>"""
 
     chart_names = [r["nickname"] for r in boards[active_board]][:5]
     my_curve_name = (me.get("nickname")
@@ -8967,10 +8984,10 @@ def web_leaderboard(uid):
 
     body = f"""
 {f'<div class="msg">{msg}</div>' if msg else ''}
-<div class="section-head"><h2>績效排行榜</h2>
-  <span class="section-note">{len(boards['long'])} 位參加中</span></div>
-{tabs}
 {my_rank_html}
+{tabs}
+<div class="rank-list-head"><h2>排行榜</h2>
+  <span>{len(boards['long'])} 位參加中・依報酬排序</span></div>
 {board}
 {waiting_html}
 
