@@ -1,5 +1,6 @@
 import os
 import re
+import html
 import ssl
 import socket
 import time
@@ -20,6 +21,478 @@ from linebot.models import (MessageEvent, TextMessage, TextSendMessage,
 from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 import random
+import json
+from collections import defaultdict
+
+# ===== 每日盤前變化偵測（內嵌版） =====
+CHANGE_LEVEL = {"S": 4, "A": 3, "B": 2, "C": 1}
+LEVEL_LABEL = {"S": "重大變化", "A": "明顯變化", "B": "一般變化", "C": "無明顯變化"}
+
+
+def configure_daily_change_detector(**dependencies):
+    """把既有單檔 bot 的函式注入本模組，避免複製資料抓取與評分邏輯。"""
+    globals().update(dependencies)
+
+
+def _require_dependencies():
+    required = ("get_db_connection", "release_db_connection", "compute_screener_rows",
+                "fetch_taiex_summary", "fetch_quotes_bulk", "fetch_stock_news",
+                "get_user_watchlist", "compute_watchlist_scores", "get_notify_users",
+                "stock_display_name")
+    missing = [name for name in required if name not in globals()]
+    if missing:
+        raise RuntimeError("每日盤前變化偵測尚未注入既有 bot 函式：" + ", ".join(missing))
+
+
+
+def init_premarket_change_tables():
+    _require_dependencies()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS premarket_snapshots (
+            snapshot_date DATE PRIMARY KEY,
+            previous_trade_date DATE,
+            blackhorse JSONB NOT NULL DEFAULT '[]'::jsonb,
+            radar JSONB NOT NULL DEFAULT '[]'::jsonb,
+            market JSONB NOT NULL DEFAULT '{}'::jsonb,
+            news JSONB NOT NULL DEFAULT '[]'::jsonb,
+            institutional JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS premarket_events (
+            id BIGSERIAL PRIMARY KEY,
+            snapshot_date DATE NOT NULL,
+            user_id TEXT,
+            severity CHAR(1) NOT NULL CHECK (severity IN ('S','A','B','C')),
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+            event_key TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(snapshot_date, user_id, event_key)
+        )
+        """)
+        cur.execute("ALTER TABLE premarket_snapshots ADD COLUMN IF NOT EXISTS institutional JSONB NOT NULL DEFAULT '{}'::jsonb")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_events_date ON premarket_events(snapshot_date, severity)")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_db_connection(conn)
+
+
+def _jsonable(value):
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+def _trade_date(rows):
+    dates = []
+    for row in rows or []:
+        for key in ("trade_date", "date", "data_date"):
+            if row.get(key):
+                try:
+                    dates.append(date.fromisoformat(str(row[key])[:10]))
+                except ValueError:
+                    pass
+    return max(dates) if dates else None
+
+
+def _normalise_pick_rows(rows, mode):
+    result = []
+    for rank, row in enumerate(rows or [], 1):
+        code = str(row.get("code") or "").strip()
+        if not code:
+            continue
+        result.append({
+            "code": code,
+            "name": row.get("name") or stock_display_name(code, fallback=code),
+            "rank": int(row.get("rank") or rank),
+            "score": row.get("score"),
+            "breakout": row.get("breakout") or "",
+            "vol_ratio": row.get("vol_ratio"),
+            "streak": row.get("streak"),
+            "pct": row.get("pct"),
+            "mode": mode,
+        })
+    return result
+
+
+def _get_previous_snapshot(snapshot_date):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT snapshot_date, previous_trade_date, blackhorse, radar, market, news, institutional
+            FROM premarket_snapshots
+            WHERE snapshot_date < %s ORDER BY snapshot_date DESC LIMIT 1
+        """, (snapshot_date,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"snapshot_date": row[0], "previous_trade_date": row[1],
+                "blackhorse": row[2] or [], "radar": row[3] or [],
+                "market": row[4] or {}, "news": row[5] or [],
+                "institutional": row[6] or {}}
+    finally:
+        release_db_connection(conn)
+
+
+def _save_snapshot(snapshot):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO premarket_snapshots
+                (snapshot_date, previous_trade_date, blackhorse, radar, market, news, institutional)
+            VALUES (%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb)
+            ON CONFLICT (snapshot_date) DO UPDATE SET
+                previous_trade_date=EXCLUDED.previous_trade_date,
+                blackhorse=EXCLUDED.blackhorse, radar=EXCLUDED.radar,
+                market=EXCLUDED.market, news=EXCLUDED.news,
+                institutional=EXCLUDED.institutional, created_at=NOW()
+        """, (snapshot["snapshot_date"], snapshot.get("previous_trade_date"),
+              json.dumps(_jsonable(snapshot["blackhorse"]), ensure_ascii=False),
+              json.dumps(_jsonable(snapshot["radar"]), ensure_ascii=False),
+              json.dumps(_jsonable(snapshot["market"]), ensure_ascii=False),
+              json.dumps(_jsonable(snapshot["news"]), ensure_ascii=False),
+              json.dumps(_jsonable(snapshot.get("institutional", {})), ensure_ascii=False)))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_db_connection(conn)
+
+
+def _save_events(snapshot_date, user_id, events):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM premarket_events WHERE snapshot_date=%s AND user_id IS NOT DISTINCT FROM %s",
+                    (snapshot_date, user_id))
+        for event in events:
+            cur.execute("""
+                INSERT INTO premarket_events
+                  (snapshot_date,user_id,severity,category,title,detail,evidence,event_key)
+                VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+                ON CONFLICT (snapshot_date,user_id,event_key) DO UPDATE SET
+                  severity=EXCLUDED.severity, category=EXCLUDED.category,
+                  title=EXCLUDED.title, detail=EXCLUDED.detail,
+                  evidence=EXCLUDED.evidence
+            """, (snapshot_date, user_id, event["severity"], event["category"],
+                  event["title"], event["detail"],
+                  json.dumps(_jsonable(event.get("evidence", {})), ensure_ascii=False),
+                  event["event_key"]))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_db_connection(conn)
+
+
+def _event(level, category, title, detail, key, evidence=None):
+    return {"severity": level, "category": category, "title": title,
+            "detail": detail, "event_key": key, "evidence": evidence or {}}
+
+
+def _pick_events(today, yesterday):
+    old = {x["code"]: x for x in yesterday or []}
+    new = {x["code"]: x for x in today or []}
+    events = []
+    old_top = (yesterday or [])[:5]
+    new_top = (today or [])[:5]
+    old1 = old_top[0] if old_top else None
+    new1 = new_top[0] if new_top else None
+    if old1 and new1 and old1["code"] != new1["code"]:
+        events.append(_event("S", "blackhorse", f"黑馬 #1 換人：{new1['name']}",
+            f"{old1['name']} 今日由 #1 變為 #{old1.get('rank','?')}，{new1['name']} 上升至 #1。",
+            "blackhorse_no1_changed", {"old": old1, "new": new1}))
+    for code in sorted(set(new) & set(old)):
+        delta_rank = (old[code].get("rank") or 0) - (new[code].get("rank") or 0)
+        old_score, new_score = old[code].get("score"), new[code].get("score")
+        if old_score is not None and new_score is not None:
+            delta_score = new_score - old_score
+            if abs(delta_score) >= 15:
+                events.append(_event("S", "blackhorse", f"{new[code]['name']} 黑馬分數 {old_score} → {new_score}",
+                    "黑馬分數單日變化達 15 分以上。", f"blackhorse_score_{code}", {"code": code, "old": old_score, "new": new_score}))
+            elif abs(delta_score) >= 8:
+                events.append(_event("A", "blackhorse", f"{new[code]['name']} 黑馬分數 {old_score} → {new_score}",
+                    "黑馬分數出現明顯變化。", f"blackhorse_score_{code}", {"code": code, "old": old_score, "new": new_score}))
+        if abs(delta_rank) >= 3:
+            events.append(_event("A", "blackhorse", f"{new[code]['name']} 黑馬排名上升 {delta_rank} 名" if delta_rank > 0 else f"{new[code]['name']} 黑馬排名下降 {abs(delta_rank)} 名",
+                "排名相較前一交易日有明顯變化。", f"blackhorse_rank_{code}", {"code": code, "old": old[code].get("rank"), "new": new[code].get("rank")}))
+    entered = sorted(set(new) - set(old), key=lambda c: new[c].get("rank") or 999)
+    exited = sorted(set(old) - set(new), key=lambda c: old[c].get("rank") or 999)
+    if entered:
+        level = "S" if len(entered) >= 3 else "A"
+        names = "、".join(new[c]["name"] for c in entered[:3])
+        events.append(_event(level, "blackhorse", f"今日新增 {len(entered)} 檔黑馬", names, "blackhorse_entered", {"codes": entered}))
+    if exited:
+        level = "S" if len(exited) >= 3 else "A"
+        names = "、".join(old[c]["name"] for c in exited[:3])
+        events.append(_event(level, "blackhorse", f"今日掉出 {len(exited)} 檔黑馬", names, "blackhorse_exited", {"codes": exited}))
+    return events
+
+
+def _radar_events(today, yesterday):
+    old = {x["code"]: x for x in yesterday or []}
+    new = {x["code"]: x for x in today or []}
+    events = []
+    entered = sorted(set(new) - set(old))
+    if entered:
+        names = "、".join(new[c]["name"] for c in entered[:4])
+        events.append(_event("A" if len(entered) < 3 else "S", "radar", f"雷達新增 {len(entered)} 檔訊號", names, "radar_entered", {"codes": entered}))
+    for code in sorted(set(new) & set(old)):
+        before, after = old[code].get("breakout"), new[code].get("breakout")
+        if before != after and after:
+            events.append(_event("S" if "跌破" in after else "A", "breakout", f"{new[code]['name']} 出現{after}",
+                "今日雷達型態狀態與前一交易日不同。", f"breakout_{code}", {"code": code, "old": before, "new": after}))
+    return events
+
+
+def _institutional_events(current, previous):
+    events = []
+    old = previous or {}
+    for code in sorted(set(current) & set(old)):
+        before, after = old[code], current[code]
+        old_dir = (before.get("total_net_lots") or 0) > 0
+        new_dir = (after.get("total_net_lots") or 0) > 0
+        if (before.get("total_net_lots") or 0) != 0 and (after.get("total_net_lots") or 0) != 0 and old_dir != new_dir:
+            direction = "買超轉賣超" if old_dir else "賣超轉買超"
+            events.append(_event("S", "institutional", f"{after.get('name', code)} 法人方向：{direction}",
+                "三大法人合計方向相較前一交易日反轉。", f"institutional_direction_{code}", {"code": code, "old": before, "new": after}))
+        old_streak = before.get("streak")
+        new_streak = after.get("streak")
+        if old_streak is not None and new_streak is not None and abs(new_streak - old_streak) >= 2:
+            side = "買超" if (after.get("total_net_lots") or 0) > 0 else "賣超"
+            events.append(_event("A", "institutional", f"{after.get('name', code)} 法人連續{side} {old_streak} → {new_streak} 日",
+                "連續買超／賣超天數相較前一交易日變化達 2 日。", f"institutional_streak_{code}", {"code": code, "old": old_streak, "new": new_streak}))
+    return events
+
+
+def _market_events(market, old_market):
+    events = []
+    for label, key in (("台股大盤", "taiex_pct"), ("道瓊", "^DJI_pct"), ("那斯達克", "^IXIC_pct"), ("S&P 500", "^GSPC_pct"), ("費城半導體", "^SOX_pct")):
+        cur, old = market.get(key), (old_market or {}).get(key)
+        if cur is None or old is None:
+            continue
+        delta = cur - old
+        if abs(delta) >= 2:
+            events.append(_event("S", "market", f"{label} 變化 {old:+.2f}% → {cur:+.2f}%", "大盤或美股主要指數出現重大日間變化。", f"market_{key}", {"old": old, "new": cur}))
+        elif abs(delta) >= 1:
+            events.append(_event("A", "market", f"{label} 變化 {old:+.2f}% → {cur:+.2f}%", "指數方向相較前一交易日明顯改變。", f"market_{key}", {"old": old, "new": cur}))
+    return events
+
+
+def _news_events(news, old_news):
+    events = []
+    count_delta = len(news or []) - len(old_news or [])
+    if count_delta >= 3:
+        events.append(_event("A", "news", f"相關新聞增加 {count_delta} 則", "僅統計現有新聞來源回傳的標題數量。", "news_count", {"old": len(old_news or []), "new": len(news or [])}))
+    important_words = ("台積電", "聯準會", "CPI", "非農", "關稅", "制裁", "併購", "財報", "法說", "停牌", "重大", "警示")
+    matched = [n.get("title", "") for n in news or [] if any(w.lower() in n.get("title", "").lower() for w in important_words)]
+    if matched:
+        events.append(_event("S", "news", "出現重大相關新聞標題", "以下僅列現有來源回傳的標題，不自行生成解讀。", "news_important", {"titles": matched[:5]}))
+    elif count_delta:
+        events.append(_event("B", "news", f"相關新聞數量 {len(old_news or [])} → {len(news or [])}", "新聞數量有變化，但未命中規則式重大關鍵字。", "news_count_minor", {"old": len(old_news or []), "new": len(news or [])}))
+    return events
+
+
+def _current_market():
+    market = {}
+    taiex = fetch_taiex_summary() or {}
+    for key in ("pct", "change_pct", "percent"):
+        if taiex.get(key) is not None:
+            market["taiex_pct"] = float(taiex[key]); break
+    symbols = ["^DJI", "^IXIC", "^GSPC", "^SOX"]
+    quotes = fetch_quotes_bulk(symbols) or {}
+    for symbol in symbols:
+        q = quotes.get(symbol) or {}
+        pct = q.get("pct")
+        if pct is not None:
+            market[f"{symbol}_pct"] = float(pct)
+    return market
+
+
+def collect_daily_snapshot(snapshot_date=None):
+    _require_dependencies()
+    snapshot_date = snapshot_date or date.today()
+    blackhorse_rows, _, _ = compute_screener_rows("blackhorse")
+    radar_rows, _, _ = compute_screener_rows("radar")
+    blackhorse = _normalise_pick_rows(sorted(blackhorse_rows or [], key=lambda x: x.get("score") if x.get("score") is not None else -1, reverse=True), "blackhorse")[:20]
+    radar = _normalise_pick_rows(radar_rows, "radar")[:50]
+    market = _current_market()
+    news = fetch_stock_news("台股 OR 台積電 OR 聯準會", max_items=20, within_hours=36) or []
+    institutional = {}
+    if "fetch_institutional_data" in globals():
+        raw_inst = fetch_institutional_data() or {}
+        relevant = {x["code"] for x in blackhorse + radar}
+        for code in relevant:
+            if code in raw_inst:
+                item = dict(raw_inst[code])
+                if "get_consecutive_days" in globals():
+                    item["streak"] = max(get_consecutive_days(code, "buy"), get_consecutive_days(code, "sell"))
+                institutional[code] = item
+    previous = _get_previous_snapshot(snapshot_date)
+    prev_date = previous["snapshot_date"] if previous else None
+    snapshot = {"snapshot_date": snapshot_date, "previous_trade_date": prev_date,
+                "blackhorse": blackhorse, "radar": radar, "market": market,
+                "news": news, "institutional": institutional}
+    _save_snapshot(snapshot)
+    return snapshot, previous
+
+
+def build_global_events(snapshot, previous):
+    if not previous:
+        return []
+    events = []
+    events += _pick_events(snapshot["blackhorse"], previous.get("blackhorse"))
+    events += _radar_events(snapshot["radar"], previous.get("radar"))
+    events += _market_events(snapshot["market"], previous.get("market"))
+    events += _institutional_events(snapshot.get("institutional", {}), previous.get("institutional", {}))
+    events += _news_events(snapshot["news"], previous.get("news"))
+    return events
+
+
+def _watchlist_events(user_id, snapshot_date, previous_date):
+    _require_dependencies()
+    codes = get_user_watchlist(user_id) or []
+    if not codes or not previous_date:
+        return []
+    current = compute_watchlist_scores(codes) or {}
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+          SELECT code,total,position,close FROM watchlist_scores
+          WHERE user_id=%s AND snapshot_date=%s
+        """, (str(user_id), previous_date))
+        old = {r[0]: {"total": r[1], "position": r[2], "close": r[3]} for r in cur.fetchall()}
+    finally:
+        release_db_connection(conn)
+    events = []
+    for code, row in current.items():
+        if code not in old:
+            continue
+        before, after = old[code], row
+        delta = (after.get("total") or 0) - (before.get("total") or 0)
+        name = row.get("stock", {}).get("name") or stock_display_name(code, fallback=code)
+        if abs(delta) >= 10:
+            events.append(_event("S", "watchlist", f"你的{name}分數 {before['total']} → {after['total']}", "自選股綜合分數出現重大變化。", f"watch_score_{code}", {"code": code, "old": before, "new": after}))
+        elif abs(delta) >= 5:
+            events.append(_event("A", "watchlist", f"你的{name}分數 {before['total']} → {after['total']}", "自選股綜合分數出現明顯變化。", f"watch_score_{code}", {"code": code, "old": before, "new": after}))
+        # 支撐／壓力狀態以既有即時報價函式的真實旗標判斷；缺資料就不產生事件。
+        price = (row.get("stock") or {}).get("close")
+        old_price = before.get("close")
+        if price is not None and old_price is not None:
+            old_pos, new_pos = before.get("position"), after.get("position")
+            if old_pos is not None and new_pos is not None and old_pos != new_pos:
+                events.append(_event("A", "watchlist_position", f"你的{name}支撐／壓力狀態變化", "位階分數相較前一交易日不同。", f"watch_position_{code}", {"code": code, "old": old_pos, "new": new_pos}))
+    return events
+
+
+def _sort_events(events):
+    return sorted(events, key=lambda e: (-CHANGE_LEVEL[e["severity"]], e["category"], e["event_key"]))
+
+
+def run_daily_change_detection(snapshot_date=None):
+    snapshot, previous = collect_daily_snapshot(snapshot_date)
+    events = build_global_events(snapshot, previous)
+    snapshot_date = snapshot["snapshot_date"]
+    previous_date = snapshot.get("previous_trade_date")
+    for uid in get_notify_users():
+        try:
+            user_events = events + _watchlist_events(uid, snapshot_date, previous_date)
+            user_events = _sort_events(user_events)
+            _save_events(snapshot_date, uid, user_events)
+        except Exception as exc:
+            print(f"❌ 盤前變化偵測：使用者 {uid} 失敗：{exc}")
+    _save_events(snapshot_date, None, _sort_events(events))
+    return f"盤前變化偵測完成：{len(events)} 個全市場事件、日期 {snapshot_date}"
+
+
+def get_today_change_events(user_id=None, snapshot_date=None, limit=None):
+    snapshot_date = snapshot_date or date.today()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        sql = """
+          SELECT severity,category,title,detail,evidence,event_key
+          FROM premarket_events
+          WHERE snapshot_date=%s AND user_id IS NOT DISTINCT FROM %s
+          ORDER BY CASE severity WHEN 'S' THEN 4 WHEN 'A' THEN 3 WHEN 'B' THEN 2 ELSE 1 END DESC, id ASC
+        """
+        params = [snapshot_date, user_id]
+        if limit:
+            sql += " LIMIT %s"; params.append(limit)
+        cur.execute(sql, params)
+        return [{"severity": r[0], "category": r[1], "title": r[2], "detail": r[3], "evidence": r[4], "event_key": r[5]} for r in cur.fetchall()]
+    finally:
+        release_db_connection(conn)
+
+
+def build_today_attention_push(user_id):
+    events = get_today_change_events(user_id, limit=3)
+    lines = ["🔥 今日值得注意"]
+    if not events:
+        return "😴 今日市場訊號偏少"
+    for idx, event in enumerate(events, 1):
+        lines.append(f"{['①','②','③'][idx-1]} {event['title']}")
+    return "\n".join(lines)
+
+
+def get_today_change_snapshot(snapshot_date=None):
+    snapshot_date = snapshot_date or date.today()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT snapshot_date, previous_trade_date, blackhorse, radar,
+                   market, news, institutional
+            FROM premarket_snapshots WHERE snapshot_date=%s
+        """, (snapshot_date,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"snapshot_date": row[0].isoformat(),
+                "previous_trade_date": row[1].isoformat() if row[1] else None,
+                "blackhorse": row[2] or [], "radar": row[3] or [],
+                "market": row[4] or {}, "news": row[5] or [],
+                "institutional": row[6] or {}}
+    finally:
+        release_db_connection(conn)
+
+
+def build_today_change_web_data(user_id):
+    """網頁顯示完整快照與事件；LINE 只使用 build_today_attention_push()。"""
+    snapshot_date = date.today()
+    global_events = get_today_change_events(None, snapshot_date)
+    user_events = get_today_change_events(user_id, snapshot_date)
+    return {"date": snapshot_date.isoformat(), "levels": LEVEL_LABEL,
+            "snapshot": get_today_change_snapshot(snapshot_date),
+            "events": _sort_events(user_events or global_events),
+            "global_events": global_events, "all_events": user_events}
+
+
+# 在既有 bot 完成所有函式定義後呼叫 configure_daily_change_detector(...)
+# 再呼叫 init_premarket_change_tables()；不要在 import 區塊直接初始化，
+# 因為這個專案的資料庫 helper 定義在檔案前半段、其餘資料函式定義在後半段。
+# 新增排程端點：run_in_background("盤前變化偵測", run_daily_change_detection)
+# 新的 build_morning_push() 應只呼叫 build_today_attention_push(user_id)。
+# 完整網頁則在既有盤前頁 route 呼叫 build_today_change_web_data(user_id)。
 
 app = Flask(__name__)
 
@@ -4707,6 +5180,24 @@ def build_news_digest(user_id):
     return digest
 
 
+# ── 每日盤前變化偵測初始化 ──
+# 必須放在所有既有資料函式已定義後，避免單檔模組的函式尚未存在。
+configure_daily_change_detector(
+    get_db_connection=get_db_connection,
+    release_db_connection=release_db_connection,
+    compute_screener_rows=compute_screener_rows,
+    fetch_taiex_summary=fetch_taiex_summary,
+    fetch_quotes_bulk=fetch_quotes_bulk,
+    fetch_stock_news=fetch_stock_news,
+    fetch_institutional_data=fetch_institutional_data,
+    get_consecutive_days=get_consecutive_days,
+    get_user_watchlist=get_user_watchlist,
+    compute_watchlist_scores=compute_watchlist_scores,
+    get_notify_users=get_notify_users,
+    stock_display_name=stock_display_name,
+)
+init_premarket_change_tables()
+
 # ── 推播額度保護 ──
 # LINE 免費方案每月 200 則「主動推播」（回覆訊息不計入）。
 # 以每人每個交易日 1 則計算，一個月約 20 個交易日 → 最多約 9 人。
@@ -4787,20 +5278,8 @@ def build_digest(user_id):
     return "\n".join(lines)
 
 def build_morning_push(user_id):
-    """
-    早上推播的完整內容：總經簡報 ＋ 自選股摘要，合併成一則。
-    合併而非分兩則，是因為 LINE 免費方案的推播則數有限，
-    一天一則才撐得住整個月。
-    """
-    parts = [generate_morning_brief()]
-    digest = build_digest(user_id)
-    if digest:
-        parts.append("\n" + "═" * 13 + "\n")
-        parts.append(digest)
-    msg = "\n".join(parts)
-    if len(msg) > 4800:
-        msg = msg[:4750] + "\n\n…（內容過長，已截斷）"
-    return msg
+    """LINE 僅推播由前一交易日比較產生的最多 3 個重點。"""
+    return build_today_attention_push(user_id)
 
 
 @app.route("/cron/push-watchlist", methods=["POST", "GET"])
@@ -4812,6 +5291,14 @@ def cron_push_watchlist():
     return run_in_background(
         "盤前推播",
         lambda: push_to_users(get_notify_users(), build_morning_push, "盤前推播")), 200
+
+@app.route("/cron/detect-premarket-changes", methods=["POST", "GET"])
+def cron_detect_premarket_changes():
+    """盤後資料更新完成後執行，建立下一次盤前推播所需的變化事件。"""
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+    return run_in_background("盤前變化偵測", run_daily_change_detection), 200
 
 @app.route("/cron/fetch-t86", methods=["POST", "GET"])
 def cron_fetch_t86():
@@ -6506,6 +6993,39 @@ def web_code_login():
 def web_home(uid):
     # 有持股就直接看分析，沒有就先去輸入
     return redirect("/web/portfolio" if get_positions(uid) else "/web/positions")
+
+
+@app.route("/web/premarket")
+@web_login_required
+def web_premarket(uid):
+    """顯示完整盤前快照與所有變化事件；LINE 僅取其中前三項。"""
+    data = build_today_change_web_data(uid)
+    snapshot = data.get("snapshot") or {}
+    events = data.get("events") or []
+    esc = html.escape
+    rows = []
+    for event in events:
+        evidence = esc(json.dumps(event.get("evidence") or {}, ensure_ascii=False, indent=2))
+        rows.append(
+            f"<tr><td><b>{esc(event['severity'])}</b></td>"
+            f"<td>{esc(event['category'])}</td><td>{esc(event['title'])}</td>"
+            f"<td>{esc(event['detail'])}<details><summary>比較證據</summary>"
+            f"<pre>{evidence}</pre></details></td></tr>"
+        )
+    if not rows:
+        rows.append('<tr><td colspan="4">今日市場訊號偏少</td></tr>')
+    body = f"""
+    <section class="card">
+      <h1>🔥 今日值得注意</h1>
+      <p>資料日期：{esc(data['date'])}；前一交易日：{esc(str(snapshot.get('previous_trade_date') or '無'))}</p>
+      <table><thead><tr><th>級別</th><th>類別</th><th>事件</th><th>詳細內容</th></tr></thead>
+      <tbody>{''.join(rows)}</tbody></table>
+    </section>
+    <section class="card"><h2>完整盤前快照</h2>
+      <pre>{esc(json.dumps(snapshot, ensure_ascii=False, indent=2, default=str))}</pre>
+    </section>
+    """
+    return render_page("盤前變化", body, nav_active="premarket")
 
 
 @app.route("/web/positions", methods=["GET", "POST"])
