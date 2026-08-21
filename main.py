@@ -6631,7 +6631,7 @@ body{background:#F2F3F0;overflow-x:hidden;padding-bottom:calc(76px + env(safe-ar
 .app-header .eyebrow{margin-bottom:2px;font-size:10px;letter-spacing:.18em}
 .app-header h1{font-size:21px;letter-spacing:.01em}
 .app-header .dateline{font-size:11px;margin-top:2px}
-.top-nav{display:flex;gap:6px;overflow-x:auto;white-space:nowrap;padding:10px 0;margin:0 -2px 4px;border:0;scrollbar-width:none}
+.top-nav{display:none;gap:6px;overflow-x:auto;white-space:nowrap;padding:10px 0;margin:0 -2px 4px;border:0;scrollbar-width:none}
 .top-nav::-webkit-scrollbar{display:none}
 .top-nav a{padding:7px 11px;border-radius:999px;background:#E3E5DF;color:var(--ink-soft);font-size:12.5px;text-decoration:none}
 .top-nav a.on{background:var(--ink);color:#FFF;border:0;padding-bottom:7px}
@@ -6641,6 +6641,10 @@ body{background:#F2F3F0;overflow-x:hidden;padding-bottom:calc(76px + env(safe-ar
 .app-bottom-nav a b{font-size:17px;font-weight:500;line-height:1}
 .app-bottom-nav a.on{color:var(--brass);background:#F0EEE8;font-weight:600}
 .daily-card{border-radius:18px;box-shadow:0 4px 18px rgba(18,22,27,.055)}
+.more-hero{padding:18px 2px 12px}.more-hero .eyebrow{font-size:10px;letter-spacing:.18em;color:var(--brass)}.more-hero h1{margin:6px 0 4px;font-size:30px}.more-hero p{margin:0;color:var(--ink-soft);font-size:13px}
+.more-group{background:#FFF;border:1px solid #E1E3DE;border-radius:18px;padding:6px 14px;margin:12px 0;box-shadow:0 4px 18px rgba(18,22,27,.045)}
+.more-group-title{padding:10px 2px 7px;font-size:12px;color:var(--brass);font-weight:600;letter-spacing:.08em}.more-item{display:flex;align-items:center;gap:11px;padding:13px 2px;border-top:1px solid #ECEDE8;color:var(--ink);text-decoration:none}.more-item:first-of-type{border-top:0}.more-item .more-icon{width:28px;height:28px;display:grid;place-items:center;border-radius:9px;background:#F1F0EA;color:var(--brass);font-size:16px;flex:0 0 28px}.more-item span:nth-child(2){flex:1;min-width:0}.more-item b,.more-item small{display:block}.more-item b{font-size:14px}.more-item small{margin-top:3px;color:var(--ink-soft);font-size:11.5px}.more-item strong{font-size:22px;color:var(--ink-faint);font-weight:400}.more-note{margin:18px 4px;color:var(--ink-faint);font-size:11.5px;line-height:1.7}
+@media(min-width:700px){.top-nav{display:flex}}
 .rank-spotlight{background:#FFF;border:1px solid #E1E3DE;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 4px 18px rgba(18,22,27,.055)}
 .rank-spotlight .daily-section-title span{font-size:12px;color:var(--ink-faint)}
 .my-rank-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
@@ -6740,13 +6744,13 @@ def render_page(title, body, nav_active=None, user_name=None):
                + tab("/web/settings", "設定", "settings")
                + "</nav>")
 
-    more_on = active_nav in {"settings", "trades", "compare"}
+    more_on = active_nav in {"settings", "trades", "compare", "more"}
     bottom_nav = ("<div class=\"app-bottom-nav\"><div class=\"bottom-inner\">"
                   + bottom_tab("/web/portfolio", "⌂", "今日", "portfolio")
                   + bottom_tab("/web/positions", "▣", "持股", "positions")
                   + bottom_tab("/web/screener", "⌁", "選股", "screener")
                   + bottom_tab("/web/leaderboard", "≡", "排行", "leaderboard")
-                  + f'<a href="/web/settings" class="{"on" if more_on else ""}"><b>⋯</b>更多</a>'
+                  + f'<a href="/web/more" class="{"on" if more_on else ""}"><b>⋯</b>更多</a>'
                   + "</div></div>")
 
     return f"""<!DOCTYPE html>
@@ -8631,6 +8635,40 @@ def web_settings(uid):
   請到<a href="/web/portfolio" style="color:var(--brass)">組合分析</a>頁最上方編輯。
 </div>"""
     return render_page("設定", body, nav_active="settings")
+
+
+@app.route("/web/more")
+@web_login_required
+def web_more(uid):
+    """一般使用者的工具與說明中心。"""
+    body = """
+<div class="more-hero">
+  <div class="eyebrow">台股 BOT</div>
+  <h1>更多</h1>
+  <p>把不需要每天查看的工具與說明，整理在這裡。</p>
+</div>
+
+<div class="more-group">
+  <div class="more-group-title">分析工具</div>
+  <a class="more-item" href="/web/trades"><span class="more-icon">▤</span><span><b>交易紀錄</b><small>查看已實現損益與交易統計</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/compare"><span class="more-icon">⌕</span><span><b>股票比較</b><small>一次比較最多 4 檔股票</small></span><strong>›</strong></a>
+</div>
+
+<div class="more-group">
+  <div class="more-group-title">我的設定</div>
+  <a class="more-item" href="/web/portfolio#risk"><span class="more-icon">◌</span><span><b>風險輪廓</b><small>修改投資年期、資產配置與持有習慣</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/settings"><span class="more-icon">⚙</span><span><b>提醒門檻</b><small>調整損失與持股集中度提醒</small></span><strong>›</strong></a>
+</div>
+
+<div class="more-group">
+  <div class="more-group-title">說明</div>
+  <a class="more-item" href="/web/leaderboard#rules"><span class="more-icon">?</span><span><b>排行榜規則</b><small>了解短線、長線與排名變化</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/portfolio#sources"><span class="more-icon">◎</span><span><b>資料來源與使用說明</b><small>資料更新方式、隱私與免責聲明</small></span><strong>›</strong></a>
+</div>
+
+<div class="more-note">部分功能僅在其他入口或管理端使用，不會顯示於此處。</div>
+"""
+    return render_page("更多", body, nav_active="more")
 
 
 # ============================================================
