@@ -1204,6 +1204,42 @@ def _admin_recent_features(user_id, days=30, limit=3):
         release_db_connection(conn)
 
 
+def _admin_recent_features_map(user_ids, days=30, limit=3):
+    """一次讀取多位使用者最近功能，避免使用者名單產生 N+1 查詢。"""
+    ids = [str(uid).strip() for uid in (user_ids or []) if str(uid).strip()]
+    result = {uid: [] for uid in ids}
+    if not ids:
+        return result
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT user_id, feature, last_used
+            FROM (
+                SELECT user_id, feature, MAX(occurred_at) AS last_used,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY user_id ORDER BY MAX(occurred_at) DESC
+                       ) AS rn
+                FROM activity_log
+                WHERE user_id = ANY(%s)
+                  AND occurred_at >= NOW() - (%s * INTERVAL '1 day')
+                GROUP BY user_id, feature
+            ) recent
+            WHERE rn <= %s
+            ORDER BY user_id, last_used DESC
+        """, (ids, int(days), int(limit)))
+        for user_id, feature, _last_used in cur.fetchall():
+            result.setdefault(str(user_id).strip(), []).append(
+                _activity_feature_label(feature))
+        cur.close()
+        return result
+    except Exception as exc:
+        print(f"❌ 批次最近功能查詢失敗：{exc}")
+        return result
+    finally:
+        release_db_connection(conn)
+
+
 def _admin_format_time(value):
     local = as_taiwan_datetime(value)
     if not local:
@@ -1370,8 +1406,9 @@ def build_admin_user_list_report(status="all", limit=10, offset=0):
     if not rows:
         lines.append("目前沒有符合條件的使用者。")
         return "\n".join(lines)
+    recent_features = _admin_recent_features_map([row[0] for row in rows])
     for i, (uid, name, last_seen, last_feature, notify, requested, count) in enumerate(rows, offset + 1):
-        features = _admin_recent_features(uid)
+        features = recent_features.get(str(uid).strip(), [])
         masked = f"{uid[:4]}••••{uid[-4:]}" if len(uid) > 8 else uid
         lines += [f"{i}. {name}", f"   {_admin_status(last_seen)}",
                   f"   最後使用：{_admin_format_time(last_seen)}",
