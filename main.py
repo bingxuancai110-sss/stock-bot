@@ -6998,7 +6998,14 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .rank-card.rank-champion .name{font-size:19px;font-weight:700}
 .rank-card.rank-champion .rank-return{font-size:24px}
 .rank-card.rank-champion .rank-meta{color:#6B604B}
-.rank-card.rank-champion .rank-honour{justify-content:center;text-align:center;flex-direction:column;gap:4px;margin-bottom:13px}
+.rank-card.rank-champion .rank-honour{position:relative;justify-content:center;text-align:center;flex-direction:column;gap:4px;
+  min-height:126px;padding:9px 12px 12px;margin:0 -2px 14px;background:linear-gradient(180deg,#FFF9E1,#F7E5B4);
+  border:1px solid rgba(176,132,45,.58);border-radius:12px;box-shadow:inset 0 0 0 3px rgba(255,255,255,.38),
+  0 3px 10px rgba(125,88,28,.10)}
+.rank-card.rank-champion .rank-honour:before{content:'✦  ✦  ✦';position:absolute;top:7px;left:0;right:0;
+  color:#B4862D;font-size:10px;letter-spacing:7px;opacity:.72}
+.rank-card.rank-champion .rank-honour:after{content:'';position:absolute;left:18%;right:18%;bottom:8px;
+  border-bottom:1px solid rgba(176,132,45,.48)}
 .rank-card.rank-champion .rank-honour-icon{width:88px;height:88px}
 .rank-card.rank-champion .rank-honour-icon svg{width:88px;height:88px}
 .rank-card.rank-champion .rank-honour b{font-size:15px}
@@ -7293,6 +7300,9 @@ def render_page(title, body, nav_active=None, user_name=None):
                   + f'<a href="/web/more" class="{"on" if more_on else ""}"><b>⋯</b>更多</a>'
                   + "</div></div>")
 
+    # LINE WebView 偶爾不保留 cookie；導覽列也必須帶著有效 token，不能只有內容區帶。
+    nav = preserve_web_token(nav)
+    bottom_nav = preserve_web_token(bottom_nav)
     body = preserve_web_token(body)
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
@@ -7311,6 +7321,25 @@ def render_page(title, body, nav_active=None, user_name=None):
 {body}
 <script>
 (function() {{
+  // LINE WebView 可能清掉 cookie；把有效網址 token 保存到同一個網域，
+  // 只有真正進入登入失效頁時才自動恢復，不干擾一般頁面。
+  try {{
+    var query = new URLSearchParams(window.location.search);
+    var incomingToken = query.get('t');
+    if (incomingToken) localStorage.setItem('stockbot_web_token', incomingToken);
+    var loginText = (document.title + ' ' + document.body.innerText).slice(0, 600);
+    var isLoginPage = /需要登入|登入狀態已失效/.test(loginText);
+    var savedToken = localStorage.getItem('stockbot_web_token');
+    var alreadyRecovered = query.get('auth_recover') === '1';
+    if (savedToken && isLoginPage && !alreadyRecovered && window.location.pathname !== '/web/code') {{
+      window.location.replace(window.location.pathname + '?t=' + encodeURIComponent(savedToken) + '&auth_recover=1');
+      return;
+    }}
+    if (isLoginPage && alreadyRecovered) localStorage.removeItem('stockbot_web_token');
+  }} catch (authError) {{
+    // localStorage 在部分私密 WebView 可能被禁止，仍由 cookie／網址 token 工作。
+  }}
+
   // 點擊後立即給回饋；不攔截錨點、下載與外部連結。
   document.addEventListener('click', function(e) {{
     var a = e.target.closest ? e.target.closest('a') : null;
@@ -8890,6 +8919,8 @@ def web_leaderboard(uid):
   <path d="M60 75v15M40 94h40" stroke="#8A5215" stroke-width="7" stroke-linecap="round"/>
   <path d="M36 96h48v9H36z" fill="url(#cupShadow)" stroke="#875010" stroke-width="2"/>
   <path d="M60 9l3 7 8 1-6 5 2 8-7-4-7 4 2-8-6-5 8-1 3-7Z" fill="#F4C84E" stroke="#A66B16" stroke-width="1.5"/>
+  <path d="M18 88c-8-12-7-25 1-36M102 88c8-12 7-25-1-36" fill="none" stroke="#B98222" stroke-width="2" opacity=".8"/>
+  <path d="M20 76l-8-3M20 66l-8-5M22 56l-7-7M100 76l8-3M100 66l8-5M98 56l7-7" stroke="#D39A2C" stroke-width="2" stroke-linecap="round"/>
   <circle cx="24" cy="48" r="2" fill="#FFF3A7"/><circle cx="96" cy="48" r="2" fill="#FFF3A7"/>
 </svg>'''
         out = []
