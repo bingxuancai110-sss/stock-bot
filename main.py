@@ -11,7 +11,7 @@ import psycopg2
 from psycopg2 import pool
 import psycopg2.extensions
 from psycopg2.extras import execute_values
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -1651,6 +1651,28 @@ def resolve_web_token(token):
 def current_web_user():
     """從網址參數或 cookie 取得目前登入者。網址參數優先，方便換裝置。"""
     return resolve_web_token(request.args.get("t") or request.cookies.get("stockbot_token"))
+
+
+def preserve_web_token(markup):
+    """LINE WebView 若不保留 cookie，仍讓同一個有效 token 跟著站內導覽走。"""
+    token = request.args.get("t") or request.cookies.get("stockbot_token")
+    if not token or not markup:
+        return markup
+    encoded = quote(str(token), safe="")
+
+    def add_token(match):
+        prefix, href, closing = match.groups()
+        if not href.startswith("/web") or "t=" in href:
+            return match.group(0)
+        fragment = ""
+        if "#" in href:
+            href, frag = href.split("#", 1)
+            fragment = "#" + frag
+        separator = "&" if "?" in href else "?"
+        return f"{prefix}{href}{separator}t={encoded}{fragment}{closing}"
+
+    return re.sub(r'((?:href|action)=["\'])(/web[^"\']*)(["\'])',
+                  add_token, markup)
 
 
 # ── 一次性登入驗證碼 ──
@@ -6955,9 +6977,8 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .rank-situation-item .rank-situation-sub{display:block;font-size:11px;color:var(--ink-faint);margin-top:4px;white-space:nowrap}
 .rank-situation-empty{padding:8px 0;color:var(--ink-soft);font-size:13px}
 .rank-switch-note{font-size:11px;color:var(--ink-faint);margin:7px 0 14px}
-.rank-list-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:20px 0 7px}
-.rank-list-head h2{font-size:20px;margin:0}
-.rank-list-head span{font-size:11.5px;color:var(--ink-faint)}
+.rank-list-caption{display:flex;justify-content:flex-end;align-items:center;
+  gap:10px;margin:9px 0 4px;color:var(--ink-faint);font-size:11.5px}
 .rank-card{padding:16px 0;border-bottom:1px solid #C9CCC4}
 .rank-card:last-child{border-bottom:0}
 .rank-card.rank-champion{position:relative;overflow:hidden;margin:10px -11px 17px;padding:17px 13px 13px;
@@ -7141,7 +7162,8 @@ a,button{transition:transform .12s ease,opacity .12s ease}
 a:active,button:active{transform:scale(.98);opacity:.78}.tap-loading{opacity:.72}
 button[disabled],input[disabled],select[disabled]{opacity:.58;cursor:wait}
 .wrap{max-width:760px;padding:0 16px calc(104px + env(safe-area-inset-bottom))}
-.app-header{position:sticky;top:0;z-index:20;background:rgba(242,243,240,.94);backdrop-filter:blur(14px);padding:12px 0 10px;border-bottom:1px solid rgba(185,189,180,.75)}
+.app-header{position:-webkit-sticky;position:sticky;top:0;z-index:20;
+background:rgba(242,243,240,.94);backdrop-filter:blur(14px);padding:12px 0 10px;border-bottom:1px solid rgba(185,189,180,.75)}
 @media(max-width:699px){.app-header{backdrop-filter:none;background:#F2F3F0}.app-bottom-nav{backdrop-filter:none;background:rgba(255,255,255,.98)}}
 .app-header .eyebrow{margin-bottom:2px;font-size:10px;letter-spacing:.18em}
 .app-header h1{font-size:21px;letter-spacing:.01em}
@@ -7268,6 +7290,7 @@ def render_page(title, body, nav_active=None, user_name=None):
                   + f'<a href="/web/more" class="{"on" if more_on else ""}"><b>⋯</b>更多</a>'
                   + "</div></div>")
 
+    body = preserve_web_token(body)
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
 <meta charset="UTF-8">
@@ -7648,21 +7671,22 @@ def respond_page(title, body, nav_active):
     畫面仍然是完整可用的，不會變成一段沒有樣式的裸 HTML。
     """
     if wants_fragment():
-        return body
+        return preserve_web_token(body)
     return render_page(title, body, nav_active=nav_active)
 
 
 @app.route("/web/login")
 def web_login():
-    """帶 ?t=權杖 進來，驗證後寫入 cookie，之後就不必每次帶網址參數。"""
+    """帶 ?t=權杖進來；cookie 與網址 token 同時保留，適配 LINE WebView。"""
     token = request.args.get("t", "")
     uid = resolve_web_token(token)
     if not uid:
         return render_page("需要登入", NEED_LOGIN_HTML), 401
-    resp = make_response(redirect("/web/portfolio"))
+    safe_token = quote(token, safe="")
+    resp = make_response(redirect(f"/web/portfolio?t={safe_token}"))
     resp.set_cookie("stockbot_token", token,
                     max_age=WEB_SESSION_DAYS * 86400,
-                    httponly=True, samesite="Lax", secure=True)
+                    path="/", httponly=True, samesite="None", secure=True)
     return resp
 
 
@@ -7684,10 +7708,11 @@ def web_code_login():
                 '請回 LINE 輸入「登入碼」取得新的一組。</div>' + NEED_LOGIN_HTML)
         return render_page("登入", body), 401
 
-    resp = make_response(redirect("/web/portfolio"))
+    safe_token = quote(token, safe="")
+    resp = make_response(redirect(f"/web/portfolio?t={safe_token}"))
     resp.set_cookie("stockbot_token", token,
                     max_age=WEB_SESSION_DAYS * 86400,
-                    httponly=True, samesite="Lax", secure=True)
+                    path="/", httponly=True, samesite="None", secure=True)
     return resp
 
 
@@ -7695,7 +7720,9 @@ def web_code_login():
 @web_login_required
 def web_home(uid):
     # 網頁預設入口固定進入「今日」；沒有持股時，今日頁仍會提供新增持股入口。
-    return redirect("/web/portfolio")
+    token = request.args.get("t")
+    suffix = f"?t={quote(token, safe='')}" if token else ""
+    return redirect(f"/web/portfolio{suffix}")
 
 
 @app.route("/web/premarket")
@@ -9035,7 +9062,7 @@ def web_leaderboard(uid):
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {my_rank_html}
 {tabs}
-<div class="rank-list-head"><h2>排行榜</h2>
+<div class="rank-list-caption">
   <span>{len(boards['long'])} 位參加中・依報酬排序</span></div>
 {board}
 {waiting_html}
