@@ -2297,13 +2297,14 @@ def max_drawdown(curve):
     return mdd
 
 
-def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None):
+def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None,
+                              joined_on=None):
     """
     整理一位成員的持股摘要：最大持股、表現最好的持股、產業集中度。
     只有本人勾選「公開持股」時才會被呼叫。
 
-    個股報酬率用「帳面」（現價 vs 成本），不是加入排行榜後的變化——
-    那是這檔對他而言的實際損益，也是他真正在意的數字。
+    「最佳持股」的報酬率改用加入排行榜日後的歷史收盤價計算，
+    不再使用買進成本；這樣才和排行榜的加入後報酬口徑一致。
     """
     positions = (positions if positions is not None
                  else merge_positions(get_positions(uid)))
@@ -2318,11 +2319,26 @@ def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None):
             continue
         value = pr["close"] * p["shares"]
         total += value
+        # 用加入排行榜日之後的第一個有效交易日收盤價當基準。
+        # 加入日可能是週末或假日，因此不能要求序列一定存在該日，
+        # 要取加入日之後第一根真實日 K；找不到就不捏造報酬率。
+        since_return = None
+        if joined_on and pr.get("close_dates") and pr.get("closes"):
+            start_date = (joined_on.date()
+                          if isinstance(joined_on, datetime) else joined_on)
+            history = [(d, c) for d, c in zip(
+                pr.get("close_dates", []), pr.get("closes", []))
+                       if d >= start_date and c is not None]
+            if history:
+                base_close = history[0][1]
+                if base_close:
+                    since_return = (pr["close"] - base_close) / base_close * 100
+
         rows.append({
             "code": p["code"],
             "name": short_company_name(stock_display_name(p["code"], inst, pr["name"])),
             "value": value,
-            "ret": (pr["close"] - p["cost"]) / p["cost"] * 100 if p["cost"] else None,
+            "ret": since_return,
             "industry": industry_name(ind_map[p["code"]]) if ind_map.get(p["code"]) else None,
         })
     if not rows or total <= 0:
@@ -2488,7 +2504,11 @@ def build_leaderboard(top_n=20, days=365):
     codes = set()
     for uid in open_uids:
         codes |= {p["code"] for p in positions_map.get(str(uid), [])}
-    prices = get_realtime_stocks_bulk(list(codes), workers=16) if codes else {}
+    # 最佳持股要看加入日後的歷史價格，不能只抓預設的近 3 個月。
+    # 1 年足以涵蓋一般排行榜成員的加入期間；超過期間者會顯示資料不足，
+    # 不用買進成本混算成另一種口徑。
+    prices = (get_realtime_stocks_bulk(list(codes), workers=16, rng="1y")
+              if codes else {})
     inst = fetch_institutional_data() or {} if codes else {}
     ind_map = get_industry_map() or {} if codes else {}
 
@@ -2503,7 +2523,8 @@ def build_leaderboard(top_n=20, days=365):
 
         holds = (summarize_member_holdings(
             uid, prices, inst,
-            positions=positions_map.get(str(uid), []), ind_map=ind_map)
+            positions=positions_map.get(str(uid), []), ind_map=ind_map,
+            joined_on=joined)
                  if show else None)
         base = {
             "user_id": str(uid),
