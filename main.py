@@ -7615,7 +7615,7 @@ a:active,button:active{transform:scale(.98);opacity:.78}.tap-loading{opacity:.72
 .feedback-error{border-color:#E5B9B3!important;background:#FFF5F3!important;animation:feedback-in .22s ease-out}
 @keyframes tap-pulse{0%{box-shadow:0 0 0 0 rgba(139,105,52,.28)}100%{box-shadow:0 0 0 7px rgba(139,105,52,0)}}
 @keyframes feedback-in{0%{opacity:.45;transform:translateY(2px)}100%{opacity:1;transform:translateY(0)}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}.tap-pulse,.feedback-success,.feedback-error{animation:none!important}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}.tap-pulse,.feedback-success,.feedback-error{animation:none!important}.quote-item:first-child{opacity:1!important;animation:none!important}}
 button[disabled],input[disabled],select[disabled]{opacity:.58;cursor:wait}
 .wrap{max-width:760px;padding:94px 16px calc(104px + env(safe-area-inset-bottom))}
 .app-header{position:fixed;top:0;left:0;right:0;width:min(760px,100%);margin:0 auto;z-index:50;
@@ -8066,10 +8066,11 @@ def render_quote_block():
     keyframes = []
     for i in range(n):
         start = i * share
+        initial_opacity = 1 if i == 0 else 0
         keyframes.append(f"""
 @keyframes q{i} {{
-  0%{{opacity:0}}
-  {start:.2f}%{{opacity:0}}
+  0%{{opacity:{initial_opacity}}}
+  {start:.2f}%{{opacity:{initial_opacity}}}
   {start + fade:.2f}%{{opacity:1}}
   {start + share - fade:.2f}%{{opacity:1}}
   {start + share:.2f}%{{opacity:0}}
@@ -10207,6 +10208,12 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     biggest_loss = loss_entry[0] if loss_entry else None
     biggest_loss_pct = loss_entry[1] if loss_entry else None
     biggest_loss_contribution = loss_entry[2] if loss_entry else None
+    positive_entries = sorted(
+        ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct > 0),
+        key=lambda item: item[2], reverse=True)[:5]
+    negative_entries = sorted(
+        ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct < 0),
+        key=lambda item: item[2])[:5]
     rank_status = get_my_rank_summary(uid)
 
     def timeline_rows(items, status_label, status_class, start=1):
@@ -10331,9 +10338,34 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <div>{html.escape(interpretation)}</div>
 </section>'''
 
+    def contribution_rows(entries, value_class):
+        if not entries:
+            return '<div class="contribution-empty">目前沒有可用的行情資料。</div>'
+        rows = []
+        for idx, (holding, pct, contribution) in enumerate(entries, 1):
+            rows.append(
+                f'''<div class="contribution-row">
+  <span class="contribution-rank">{idx}</span>
+  <div class="contribution-main"><b>{html.escape(str(holding['name']))}</b>
+    <small>個股 {pct:+.2f}%　權重 {holding['weight']:.1f}%</small></div>
+  <strong class="{value_class}">{contribution:+.2f} 個百分點</strong>
+</div>''')
+        return ''.join(rows)
+
+    contribution_html = f'''<section class="daily-card contribution-card">
+  <div class="daily-section-title"><h2>今天誰影響了你的組合？</h2><span>依組合貢獻排序</span></div>
+  <div class="contribution-columns">
+    <div class="contribution-group"><h3 class="up">正貢獻前 5 檔</h3>
+      {contribution_rows(positive_entries, 'up')}</div>
+    <div class="contribution-group"><h3 class="down">負貢獻前 5 檔</h3>
+      {contribution_rows(negative_entries, 'down')}</div>
+  </div>
+  <div class="contribution-footnote">組合貢獻百分點＝持股權重 × 個股當日漲跌幅；僅呈現資料，不代表買賣建議。</div>
+</section>'''
+
     return f'''<style>
-.daily-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:26px 24px 22px;margin:-8px -2px 18px;border-bottom:1px solid #d7d4ca}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-status{{min-width:28px;height:22px;padding:2px 5px;border-radius:7px;text-align:center;font-size:11px;font-weight:700;line-height:18px;flex:none;background:#eee;color:var(--ink-soft)}}.timeline-new .event-status{{background:#FCE9E6;color:var(--up)}}.timeline-ongoing .event-status{{background:#F3EEE1;color:var(--brass)}}.timeline-resolved .event-status{{background:#E8F2EA;color:var(--down)}}.timeline-divider{{margin:14px 0 0;padding-top:12px;border-top:1px solid #eee;color:var(--ink-soft);font-size:12px;font-weight:600}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:13px}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:12px}}.rank-mini b{{display:block;font-size:21px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:14px}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.rank-grid{{grid-template-columns:1fr}}.daily-hero h1{{font-size:26px}}}}
-.daily-interpretation{{padding:11px 14px;margin:-4px 0 14px;border-left:3px solid var(--brass);background:rgba(255,255,255,.6);color:var(--ink-soft);font-size:13px;line-height:1.65}}.daily-interpretation-label{{font-size:11px;color:var(--brass);font-weight:700;letter-spacing:.08em;margin-bottom:3px}}.daily-focus{{padding:17px 18px;margin:0 0 14px;border-radius:14px;border:1px solid #e1ddd2;background:linear-gradient(135deg,#fffaf0,#f3f5ef);box-shadow:0 5px 18px rgba(35,39,35,.07)}}.daily-focus-head{{display:flex;justify-content:space-between;align-items:center;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}}.daily-focus-head small{{font-size:11px;color:var(--ink-soft);font-weight:400;letter-spacing:0}}.daily-focus h2{{font-size:22px;line-height:1.3;margin:10px 0 5px}}.daily-focus p{{font-size:13px;color:var(--ink-soft);margin:0 0 12px}}.daily-focus .contribution-note{{display:block;font-size:11px;font-weight:400;color:var(--ink-soft);margin-top:4px}}.daily-focus a{{display:inline-block;color:#fff;background:var(--brass);border-radius:7px;padding:8px 12px;font-size:12px;font-weight:700}}.daily-focus.focus-down{{border-color:#edc7c2;background:linear-gradient(135deg,#fff7f5,#fffaf0)}}.daily-focus.focus-down .daily-focus-head{{color:var(--up)}}.daily-focus.focus-down a{{background:var(--up)}}.daily-focus.focus-up{{border-color:#c9dfd0;background:linear-gradient(135deg,#f4fbf5,#fffaf0)}}.daily-focus.focus-up .daily-focus-head{{color:var(--down)}}.daily-focus.focus-up a{{background:var(--down)}}.daily-focus.focus-rank{{border-color:#d9c9a7}}.daily-focus.focus-quiet{{background:#f7f7f3;box-shadow:none}}.daily-focus.focus-quiet a{{background:#68705f}} </style><section class="daily-hero">
+.daily-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:26px 24px 22px;margin:-8px -2px 18px;border-bottom:1px solid #d7d4ca}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-status{{min-width:28px;height:22px;padding:2px 5px;border-radius:7px;text-align:center;font-size:11px;font-weight:700;line-height:18px;flex:none;background:#eee;color:var(--ink-soft)}}.timeline-new .event-status{{background:#FCE9E6;color:var(--up)}}.timeline-ongoing .event-status{{background:#F3EEE1;color:var(--brass)}}.timeline-resolved .event-status{{background:#E8F2EA;color:var(--down)}}.timeline-divider{{margin:14px 0 0;padding-top:12px;border-top:1px solid #eee;color:var(--ink-soft);font-size:12px;font-weight:600}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:13px}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:12px}}.rank-mini b{{display:block;font-size:21px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:14px}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.contribution-columns{{grid-template-columns:1fr}}.rank-grid{{grid-template-columns:1fr}}.daily-hero h1{{font-size:26px}}}}
+.daily-interpretation{{padding:11px 14px;margin:-4px 0 14px;border-left:3px solid var(--brass);background:rgba(255,255,255,.6);color:var(--ink-soft);font-size:13px;line-height:1.65}}.daily-interpretation-label{{font-size:11px;color:var(--brass);font-weight:700;letter-spacing:.08em;margin-bottom:3px}}.contribution-card{{padding:16px 15px}}.contribution-card .daily-section-title span{{font-size:11px;color:var(--ink-faint)}}.contribution-columns{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}}.contribution-group{{border:1px solid #ECEDE8;border-radius:10px;padding:10px}}.contribution-group h3{{font-size:13px;margin:0 0 5px}}.contribution-row{{display:flex;align-items:center;gap:7px;padding:9px 0;border-top:1px solid #F0F0EC}}.contribution-row:first-of-type{{border-top:0}}.contribution-rank{{width:19px;height:19px;border-radius:50%;background:#F0EEE8;color:var(--ink-soft);font-size:11px;text-align:center;line-height:19px;flex:none}}.contribution-main{{min-width:0;flex:1}}.contribution-main b{{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.contribution-main small{{display:block;color:var(--ink-soft);font-size:10.5px;margin-top:2px;white-space:nowrap}}.contribution-row strong{{font-size:11.5px;white-space:nowrap}}.contribution-empty{{padding:10px 2px;color:var(--ink-faint);font-size:11px}}.contribution-footnote{{margin-top:10px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}}.daily-focus{{padding:17px 18px;margin:0 0 14px;border-radius:14px;border:1px solid #e1ddd2;background:linear-gradient(135deg,#fffaf0,#f3f5ef);box-shadow:0 5px 18px rgba(35,39,35,.07)}}.daily-focus-head{{display:flex;justify-content:space-between;align-items:center;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}}.daily-focus-head small{{font-size:11px;color:var(--ink-soft);font-weight:400;letter-spacing:0}}.daily-focus h2{{font-size:22px;line-height:1.3;margin:10px 0 5px}}.daily-focus p{{font-size:13px;color:var(--ink-soft);margin:0 0 12px}}.daily-focus .contribution-note{{display:block;font-size:11px;font-weight:400;color:var(--ink-soft);margin-top:4px}}.daily-focus a{{display:inline-block;color:#fff;background:var(--brass);border-radius:7px;padding:8px 12px;font-size:12px;font-weight:700}}.daily-focus.focus-down{{border-color:#edc7c2;background:linear-gradient(135deg,#fff7f5,#fffaf0)}}.daily-focus.focus-down .daily-focus-head{{color:var(--up)}}.daily-focus.focus-down a{{background:var(--up)}}.daily-focus.focus-up{{border-color:#c9dfd0;background:linear-gradient(135deg,#f4fbf5,#fffaf0)}}.daily-focus.focus-up .daily-focus-head{{color:var(--down)}}.daily-focus.focus-up a{{background:var(--down)}}.daily-focus.focus-rank{{border-color:#d9c9a7}}.daily-focus.focus-quiet{{background:#f7f7f3;box-shadow:none}}.daily-focus.focus-quiet a{{background:#68705f}} </style><section class="daily-hero">
   <div class="eyebrow">TODAY · {taiwan_today().strftime('%Y / %m / %d')}</div>
   <h1>今天你的投資發生了什麼？</h1>
   <div class="market-strip"><span>大盤 <b>{market_text}</b></span><span>你的組合 <b>{portfolio_text}</b></span><span>相對大盤 <b>{relative_text}</b></span></div>
@@ -10342,6 +10374,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 {focus_html}
 <section class="daily-card attention-card"><div class="daily-section-title"><h2>🔥 今日值得注意</h2><a href="/web/premarket">查看完整變化 →</a></div>{events_html}</section>
 <section class="daily-card"><div class="daily-section-title"><h2>我的組合今天怎麼了？</h2><span>即時報價</span></div><div class="portfolio-highlights"><div><small>最大貢獻</small><b class="positive">{gain_html}</b></div><div><small>最大拖累</small><b class="negative">{loss_html}</b></div><div><small>總市值</small><b>{total_value:,.0f}</b></div></div></section>
+{contribution_html}
 <section class="daily-card"><div class="daily-section-title"><h2>🏆 我的排名變化</h2><a href="/web/leaderboard">查看排行榜 →</a></div><div class="rank-grid">{rank_line('short')}{rank_line('long')}</div></section>'''
 
 @app.route("/web/portfolio", methods=["GET", "POST"])
