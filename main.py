@@ -7998,7 +7998,7 @@ def cron_warmup():
 
 
 def _warm_current_position_quotes():
-    """預熱目前持股的 3mo 真實行情，直接填入既有90秒記憶體快取。"""
+    """預熱目前持股主頁需要的 1d 真實行情，直接填入既有90秒快取。"""
     if taiwan_today().weekday() >= 5:
         return 0, 0, 0, "週末略過"
     user_ids = get_all_position_user_ids()
@@ -8013,7 +8013,9 @@ def _warm_current_position_quotes():
             print(f"⚠️ 預熱使用者 {uid} 持股失敗: {exc}")
     if not codes:
         return len(user_ids), 0, 0, "沒有持股"
-    prices = get_realtime_stocks_bulk(sorted(codes), workers=12, rng="3mo")
+    # 主頁的即時價格、今日損益與權重只需要 1d；較重的一年走勢改成
+    # 使用者展開個別持股時才載入，避免每次打開頁面都下載不必要的歷史資料。
+    prices = get_realtime_stocks_bulk(sorted(codes), workers=12, rng="1d")
     valid = sum(1 for value in prices.values() if value)
     return len(user_ids), len(codes), valid, "完成"
 
@@ -9276,6 +9278,36 @@ def render_page(title, body, nav_active=None, user_name=None):
     }}
   }}, true);
 
+  // 持股一年損益走勢只在使用者展開該檔時載入，避免主頁為所有圖表先抓歷史行情。
+  window.loadPositionTrend = function (details) {{
+    if (!details || details.dataset.loaded === '1' || !details.open) return;
+    var code = details.getAttribute('data-code') || '';
+    var target = details.querySelector('.trend-body');
+    if (!code || !target) return;
+    details.dataset.loaded = '1';
+    details.setAttribute('aria-busy', 'true');
+    target.textContent = '正在載入一年損益走勢…';
+    var query = new URLSearchParams(window.location.search);
+    var token = query.get('t');
+    var url = '/web/position-trend?code=' + encodeURIComponent(code) + '&fragment=1';
+    if (token) url += '&t=' + encodeURIComponent(token);
+    fetch(url, {{ credentials: 'same-origin' }})
+      .then(function (r) {{
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      }})
+      .then(function (body) {{
+        target.innerHTML = body;
+        details.removeAttribute('aria-busy');
+      }})
+      .catch(function (e) {{
+        target.textContent = '一年走勢暫時載入失敗，請稍後再試。';
+        details.dataset.loaded = '0';
+        details.removeAttribute('aria-busy');
+        console.error(e);
+      }});
+  }};
+
   // 新頁面載入後，讓成功／失敗訊息有一致的顏色、短動畫與觸覺回饋。
   document.querySelectorAll('.msg,.callout').forEach(function(box) {{
     var text = box.textContent || '';
@@ -9932,6 +9964,7 @@ def render_positions_fast_summary(uid):
 @app.route("/web/positions", methods=["GET", "POST"])
 @web_login_required
 def web_positions(uid):
+    positions_page_started = time.monotonic()
     # GET 且不是要片段時，先秒回骨架讓使用者馬上看到畫面，
     # 真正的抓價工作交給後續的 fragment 請求。
     # POST 不能這樣做——表單送出必須當場處理完，否則新增／賣出會遺失。
@@ -10019,8 +10052,12 @@ def web_positions(uid):
                     msg = (f"已新增 {code}（含手續費，每股成本 {cost:,.2f}）。"
                            if bf > 0 else f"已新增 {code}。")
 
+    positions_data_started = time.monotonic()
     positions = merge_positions(get_positions(uid))
+    positions_data_done = time.monotonic()
+    inst_started = time.monotonic()
     inst = fetch_institutional_data() or {}
+    inst_done = time.monotonic()
 
     def sell_form(lot_id, max_shares, code, cur_price, lot_cost, label="賣出"):
         """
@@ -10093,10 +10130,12 @@ def web_positions(uid):
     rows_html, total_value, total_cost = [], 0.0, 0.0
     total_day_pl = 0.0
     enriched = []
-    # 持股頁的個股走勢改抓 1 年日 K；技術位階仍只用近 20／60 日計算。
-    # 這樣可以看較早買進的部位，不會因約 60 個交易日的 3mo 區間而截斷。
+    # 主頁先抓 1d 即時資料；較重的一年損益走勢在使用者展開個別明細時才抓取，
+    # 所以不會為尚未查看的圖表付出外部請求成本。
+    quote_started = time.monotonic()
     price_map = get_realtime_stocks_bulk(
-        [p["code"] for p in positions], rng="1y")
+        [p["code"] for p in positions], rng="1d")
+    quote_done = time.monotonic()
     for p in positions:
         price = price_map.get(p["code"])
         if price:
@@ -10147,9 +10186,11 @@ def web_positions(uid):
     <span><em>市值</em> <span class="num">{value:,.0f}</span></span>
     <span><em>權重</em> <span class="num">{weight:.1f}%</span></span>
     {f'<span><em>持有</em> {held} 天</span>' if held is not None else ''}
-    <details class="disclosure trend" style="margin-top:2px">
+    <details class="disclosure trend" style="margin-top:2px"
+             data-code="{html.escape(str(p['code']), quote=True)}"
+             ontoggle="window.loadPositionTrend(this)">
       <summary>損益走勢</summary>
-      {render_stock_sparkline(price, p['cost'], p['shares'], p.get('lots'))}
+      <div class="trend-body"><div class="sub">展開後載入一年損益走勢…</div></div>
     </details>
     {lots_html(p, name, price['close'])}
   </div>
@@ -10219,6 +10260,12 @@ def web_positions(uid):
     若填的是純成交價，在手續費欄填實際金額，會自動攤進每股成本。
   </div>
 </form>"""
+    print("⏱️ 持股頁：持股資料 %.0fms、法人 %.0fms、1y行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
+        (positions_data_done - positions_data_started) * 1000,
+        (inst_done - inst_started) * 1000,
+        (quote_done - quote_started) * 1000,
+        (time.monotonic() - quote_done) * 1000,
+        (time.monotonic() - positions_page_started) * 1000))
     return respond_page("持股", body, "positions")
 
 
@@ -10589,6 +10636,30 @@ def render_stock_sparkline(price, cost, shares, lots=None):
   <span>最大回檔 <span class="num">-{max_dd:,.0f}</span></span>
 </div>
 {f'<div class="sub" style="margin-top:3px"><span style="color:var(--brass)">●</span> {marks_line}</div>' if marks_line else ''}"""
+
+
+
+@app.route("/web/position-trend")
+@web_login_required
+def web_position_trend(uid):
+    """只為使用者展開的單一持股載入一年走勢，避免主頁一次抓完所有歷史行情。"""
+    code = normalize_code(request.args.get("code", ""))
+    if not code:
+        return respond_page("持股走勢", '<div class="sub">股票代號不正確。</div>', "positions")
+
+    positions = merge_positions(get_positions(uid))
+    position = next((p for p in positions if str(p.get("code")) == code), None)
+    if not position:
+        return respond_page("持股走勢", '<div class="sub">找不到這檔持股，可能已經被修改。</div>', "positions")
+
+    price = get_realtime_stock(code, rng="1y")
+    if not price:
+        body = (f'<div class="sub">{html.escape(code)} 暫時查無一年走勢資料，'
+                '目前持股頁其他資料不受影響。</div>')
+    else:
+        body = render_stock_sparkline(
+            price, position.get("cost"), position.get("shares"), position.get("lots"))
+    return respond_page("持股走勢", body, "positions")
 
 
 def render_realized_summary(user_id, inst_data):
