@@ -685,10 +685,11 @@ def get_today_signal_state(user_id=None, snapshot_date=None):
             "detail": f"已偵測 {len(events)} 個變化，首頁顯示優先級最高的 3 個。", "events": events}
 
 
-def get_today_event_timeline(user_id=None, snapshot_date=None):
+def get_today_event_timeline(user_id=None, snapshot_date=None, snapshot=None):
     """把今日與前一有效交易日事件比對成回訪時間線，不產生不存在的事件。"""
     snapshot_date = _premarket_display_date(snapshot_date or taiwan_today())
-    snapshot = get_today_change_snapshot(snapshot_date)
+    snapshot = (get_today_change_snapshot(snapshot_date)
+                if snapshot is None else snapshot)
     if not snapshot or not snapshot.get("previous_trade_date"):
         return {"new": [], "ongoing": [], "resolved": [],
                 "previous_date": None, "current": [], "previous": []}
@@ -3023,6 +3024,56 @@ def get_rank_status_map(rank_inputs):
     for board, user_id, rank in inputs:
         result[(board, user_id)] = _rank_status_from_previous(
             rank, previous_map.get((board, user_id), []))
+    return result
+
+
+def get_fast_rank_summary(user_id):
+    """首頁 fast 專用：只讀最近兩次已保存名次，不重算全體排行榜。"""
+    uid = str(user_id).strip()
+    grouped = defaultdict(list)
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT board, snapshot_date, rank
+            FROM leaderboard_rank_snapshots
+            WHERE user_id=%s AND board = ANY(%s)
+            ORDER BY board ASC, snapshot_date DESC
+        ''', (uid, ["short", "long"]))
+        for board, snapshot_date, rank in cur.fetchall():
+            if len(grouped[board]) < 2:
+                grouped[board].append((snapshot_date, rank))
+        cur.close()
+    except Exception as exc:
+        print(f"⚠️ 首頁快速讀取排行榜快照失敗: {exc}")
+    finally:
+        release_db_connection(conn)
+
+    result = {}
+    for board, label in (("short", "短線"), ("long", "長線")):
+        entries = grouped.get(board, [])
+        current = entries[0] if entries else None
+        previous = entries[1] if len(entries) > 1 else None
+        current_rank = current[1] if current else None
+        previous_rank = previous[1] if previous else None
+        if current_rank is None:
+            delta, direction = None, None
+        elif previous_rank is None:
+            delta, direction = None, None
+        else:
+            delta = previous_rank - current_rank
+            direction = "up" if delta > 0 else ("down" if delta < 0 else "same")
+        result[board] = {
+            "rank": current_rank,
+            "previous": previous_rank,
+            "delta": delta,
+            "streak": 0,
+            "direction": direction,
+            "label": label,
+            "snapshot_date": (current[0].isoformat()
+                              if current and hasattr(current[0], "isoformat")
+                              else (str(current[0]) if current else None)),
+        }
     return result
 
 
@@ -10817,9 +10868,12 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
 
 def render_portfolio_fast_summary(uid):
     """今日首頁第一段：先顯示既有快照、事件與排名，並明確提示完整分析仍在整合。"""
+    fast_started = time.monotonic()
     snapshot_date = _premarket_display_date(taiwan_today())
     snapshot = get_today_change_snapshot(snapshot_date) or {}
-    timeline = get_today_event_timeline(uid, snapshot_date)
+    snapshot_done = time.monotonic()
+    timeline = get_today_event_timeline(uid, snapshot_date, snapshot=snapshot)
+    timeline_done = time.monotonic()
     events = (timeline.get("new", []) + timeline.get("ongoing", []))[:3]
     if not snapshot:
         signal_state = {"kind": "not_updated", "title": "今日盤前資料尚未更新",
@@ -10860,7 +10914,12 @@ def render_portfolio_fast_summary(uid):
         for label, value in market_items
     )
 
-    rank_status = get_my_rank_summary(uid)
+    rank_status = get_fast_rank_summary(uid)
+    print("⏱️ 今日首頁 fast：快照 %.0fms、事件 %.0fms、排名 %.0fms、合計 %.0fms" % (
+        (snapshot_done - fast_started) * 1000,
+        (timeline_done - snapshot_done) * 1000,
+        (time.monotonic() - timeline_done) * 1000,
+        (time.monotonic() - fast_started) * 1000))
     rank_html = []
     for board in ("short", "long"):
         status = rank_status[board]
