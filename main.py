@@ -4086,19 +4086,20 @@ _name_cache = {"map": None}
 _STOCK_INFO_FILE_CACHE = "/tmp/stock_bot_stock_info_cache.json"
 _STOCK_INFO_FILE_CACHE_TTL = 86400
 _stock_info_file_lock = threading.Lock()
-_stock_info_file_loaded = False
+_stock_info_file_loaded_mtime = 0.0
 
 
 def _load_stock_info_file_cache():
     """跨 Gunicorn worker 重用已由資料庫／warmup 產生的真實 stock_info 快照。"""
-    global _stock_info_file_loaded
+    global _stock_info_file_loaded_mtime
     with _stock_info_file_lock:
-        if _stock_info_file_loaded:
-            return
-        _stock_info_file_loaded = True
         try:
-            if (not os.path.exists(_STOCK_INFO_FILE_CACHE) or
-                    time.time() - os.path.getmtime(_STOCK_INFO_FILE_CACHE) > _STOCK_INFO_FILE_CACHE_TTL):
+            file_mtime = os.path.getmtime(_STOCK_INFO_FILE_CACHE)
+            if time.time() - file_mtime > _STOCK_INFO_FILE_CACHE_TTL:
+                return
+            # worker 可能在 warmup 寫檔前就已處理過第一次請求；
+            # 只要檔案 mtime 變新，就再次載入，不讓一次未命中永久卡住。
+            if file_mtime <= _stock_info_file_loaded_mtime:
                 return
             with open(_STOCK_INFO_FILE_CACHE, "r", encoding="utf-8") as fh:
                 payload = json.load(fh)
@@ -4108,6 +4109,9 @@ def _load_stock_info_file_cache():
                 _name_cache["map"] = names
             if industries:
                 _industry_cache["map"] = industries
+            _stock_info_file_loaded_mtime = file_mtime
+        except FileNotFoundError:
+            return
         except Exception as exc:
             print(f"⚠️ 讀取 stock_info 檔案快取失敗: {exc}")
 
@@ -4295,6 +4299,43 @@ def get_revenue_growth_months(codes, max_months=12):
 
 # --- 估值資料（TWSE 每日本益比／殖利率／股價淨值比） ---
 _valuation_cache = {"date": None, "data": {}}
+_VALUATION_FILE_CACHE = "/tmp/stock_bot_valuation_cache.json"
+_VALUATION_FILE_CACHE_TTL = 86400
+_valuation_file_lock = threading.Lock()
+
+
+def _load_valuation_file_cache(today):
+    try:
+        with _valuation_file_lock:
+            if (not os.path.exists(_VALUATION_FILE_CACHE) or
+                    time.time() - os.path.getmtime(_VALUATION_FILE_CACHE) > _VALUATION_FILE_CACHE_TTL):
+                return None
+            with open(_VALUATION_FILE_CACHE, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            if payload.get("date") != today or not payload.get("data"):
+                return None
+            return payload["data"]
+    except Exception as exc:
+        print(f"⚠️ 讀取估值檔案快取失敗: {exc}")
+        return None
+
+
+def _write_valuation_file_cache(today, data):
+    temp_path = _VALUATION_FILE_CACHE + f".{os.getpid()}.tmp"
+    try:
+        with _valuation_file_lock:
+            with open(temp_path, "w", encoding="utf-8") as fh:
+                json.dump({"date": today, "data": data}, fh,
+                          ensure_ascii=False, separators=(",", ":"))
+            os.replace(temp_path, _VALUATION_FILE_CACHE)
+    except Exception as exc:
+        print(f"⚠️ 寫入估值檔案快取失敗: {exc}")
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
 
 def fetch_valuation():
     """
@@ -4305,6 +4346,13 @@ def fetch_valuation():
     today = taiwan_now().strftime("%Y%m%d")
     if _valuation_cache["date"] == today and _valuation_cache["data"]:
         return _valuation_cache["data"]
+
+    file_data = _load_valuation_file_cache(today)
+    if file_data:
+        _valuation_cache["date"] = today
+        _valuation_cache["data"] = file_data
+        print("⚡ 估值改讀同日檔案快照，共 %s 筆" % len(file_data))
+        return file_data
 
     def to_float(v):
         try:
@@ -4337,6 +4385,7 @@ def fetch_valuation():
     if result:
         _valuation_cache["date"] = today
         _valuation_cache["data"] = result
+        _write_valuation_file_cache(today, result)
         print(f"✅ 估值資料抓取成功，共 {len(result)} 筆（含上櫃）")
     return result
 
