@@ -6249,37 +6249,84 @@ def public_web_base_url(base_url=None):
             or DEFAULT_WEB_BASE_URL).rstrip("/")
 
 
-def _morning_macro_lines():
-    """取得盤前 LINE 要顯示的美股與總經短摘要；同一天共用一次結果。"""
+def _morning_macro_data():
+    """取得盤前 LINE 的美股與總經資料；同一天共用一次結果。"""
     today = taiwan_today()
     with _morning_macro_cache_lock:
         if (_morning_macro_cache.get("date") == today
-                and _morning_macro_cache.get("lines")):
-            return list(_morning_macro_cache["lines"])
+                and _morning_macro_cache.get("data") is not None):
+            return list(_morning_macro_cache["data"])
 
     symbols = ([s for _label, s in BRIEF_INDICES]
                + [s for _label, s in BRIEF_MACRO])
     quotes = fetch_quotes_bulk(symbols)
-
-    def pct_line(label, symbol):
-        q = quotes.get(symbol)
-        if not q:
-            return f"{label} 資料暫缺"
-        _close, pct, _diff = q
-        arrow = "⚪" if abs(pct) < 0.005 else ("🔴" if pct > 0 else "🟢")
-        return f"{arrow} {label} {pct:+.2f}%"
-
-    lines = [
-        "☀️ 盤前／總經",
-        "美股　" + "　".join(pct_line(label, symbol)
-                            for label, symbol in BRIEF_INDICES),
-        "風險　" + "　".join(pct_line(label, symbol)
-                            for label, symbol in BRIEF_MACRO),
-    ]
+    data = []
+    for group, targets in (("美股指數", BRIEF_INDICES),
+                           ("風險指標", BRIEF_MACRO)):
+        for label, symbol in targets:
+            q = quotes.get(symbol)
+            if q:
+                close, pct, diff = q
+                data.append({"group": group, "label": label, "symbol": symbol,
+                             "close": close, "pct": pct, "diff": diff})
+            else:
+                data.append({"group": group, "label": label, "symbol": symbol,
+                             "close": None, "pct": None, "diff": None})
     with _morning_macro_cache_lock:
         _morning_macro_cache["date"] = today
-        _morning_macro_cache["lines"] = list(lines)
+        _morning_macro_cache["data"] = list(data)
+    return data
+
+
+def _morning_macro_lines():
+    """純文字 fallback 用的盤前美股與總經摘要。"""
+    lines = ["☀️ 盤前／總經"]
+    for group in ("美股指數", "風險指標"):
+        values = []
+        for item in _morning_macro_data():
+            if item["group"] != group:
+                continue
+            if item["pct"] is None:
+                values.append(f"{item['label']} 資料暫缺")
+            else:
+                arrow = "⚪" if abs(item["pct"]) < 0.005 else ("🔴" if item["pct"] > 0 else "🟢")
+                values.append(f"{arrow} {item['label']} {item['pct']:+.2f}%")
+        lines.append(("美股　" if group == "美股指數" else "風險　") + "　".join(values))
     return lines
+
+
+def _macro_metric_box(item):
+    """Flex 的單一指標格，避免多個指標塞在同一行後錯位。"""
+    if item["pct"] is None:
+        value = "資料暫缺"
+        value_color = "#767D85"
+    else:
+        value = f"{item['pct']:+.2f}%"
+        value_color = "#B52F2F" if item["pct"] > 0 else ("#087A4B" if item["pct"] < 0 else "#767D85")
+    return {
+        "type": "box", "layout": "vertical", "flex": 1,
+        "backgroundColor": "#F7F7F3", "cornerRadius": "8px",
+        "paddingAll": "10px", "contents": [
+            {"type": "text", "text": item["label"], "size": "xs",
+             "color": "#454C55", "wrap": True, "maxLines": 2},
+            {"type": "text", "text": value, "size": "sm", "weight": "bold",
+             "color": value_color, "margin": "sm"},
+        ]
+    }
+
+
+def _macro_metric_rows(group):
+    items = [item for item in _morning_macro_data() if item["group"] == group]
+    rows = []
+    for index in range(0, len(items), 2):
+        pair = items[index:index + 2]
+        contents = [_macro_metric_box(item) for item in pair]
+        if len(contents) == 1:
+            contents.append({"type": "box", "layout": "vertical", "flex": 1,
+                             "contents": []})
+        rows.append({"type": "box", "layout": "horizontal", "spacing": "sm",
+                     "margin": "sm" if rows else "none", "contents": contents})
+    return rows
 
 
 def build_morning_push_message(user_id, base_url=None):
@@ -6288,10 +6335,10 @@ def build_morning_push_message(user_id, base_url=None):
     if not events:
         events = get_today_change_events(None, limit=3)
 
-    plain_text = build_today_attention_push(user_id)
+    plain_text = build_today_attention_push(user_id) + "\n\n" + "\n".join(_morning_macro_lines())
     token = create_web_token(user_id)
     if not token:
-        return TextSendMessage(text=plain_text + "\n\n" + "\n".join(_morning_macro_lines()))
+        return TextSendMessage(text=plain_text)
 
     web_url = (f"{public_web_base_url(base_url)}/web/login?t="
                f"{quote(token, safe='')}")
@@ -6317,9 +6364,12 @@ def build_morning_push_message(user_id, base_url=None):
     contents.append({"type": "separator", "margin": "lg", "color": "#E8EAE6"})
     contents.append({"type": "text", "text": "☀️ 盤前／總經", "weight": "bold",
                      "size": "md", "color": "#6E5228", "margin": "lg"})
-    for line in _morning_macro_lines()[1:]:
-        contents.append({"type": "text", "text": line, "size": "xs",
-                         "color": "#454C55", "wrap": True, "margin": "sm"})
+    contents.append({"type": "text", "text": "美股指數", "weight": "bold",
+                     "size": "xs", "color": "#767D85", "margin": "md"})
+    contents.extend(_macro_metric_rows("美股指數"))
+    contents.append({"type": "text", "text": "風險指標", "weight": "bold",
+                     "size": "xs", "color": "#767D85", "margin": "lg"})
+    contents.extend(_macro_metric_rows("風險指標"))
     contents += [
         {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
         {"type": "button", "style": "primary", "height": "sm",
