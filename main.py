@@ -4345,6 +4345,7 @@ _SHARED_SNAPSHOT_MAX_AGE = {
     "screener_blackhorse": 3 * 86400,
     "screener_radar": 3 * 86400,
     "leaderboard_page": 3 * 86400,
+    "chips_superman": 3 * 86400,
 }
 
 
@@ -5474,6 +5475,247 @@ def build_chips_report(days=10):
     ]
     report = "\n".join(lines)
     return report[:4750] + "\n…（已截斷）" if len(report) > 4800 else report
+
+
+
+_CHIPS_CACHE_SECONDS = 300
+_chips_cache = {"at": 0, "result": None}
+_chips_cache_lock = threading.Lock()
+
+
+def _chips_data_date(value):
+    """把法人資料日統一成 ISO 日期字串；無法確認時回傳 None。"""
+    if isinstance(value, datetime):
+        value = value.date()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value or "").strip()
+    if len(text) == 8 and text.isdigit():
+        try:
+            return date(int(text[:4]), int(text[4:6]), int(text[6:8])).isoformat()
+        except ValueError:
+            return None
+    try:
+        return date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def _chips_amount(price, lots):
+    """沿用原本籌碼超人的換算：以整理當下股價將張數換算成億元。"""
+    if not price or lots is None:
+        return None
+    try:
+        return abs(float(lots)) * 1000 * float(price) / 100_000_000
+    except (TypeError, ValueError):
+        return None
+
+
+def _chips_group_rows(rows, prices, both=False):
+    """將法人 SQL 結果轉成可保存、可供 LINE／網頁共用的純 JSON 資料。"""
+    scored = []
+    for row in rows or []:
+        if both:
+            code, name, foreign_lots, trust_lots, total_lots = row
+            lots = total_lots
+            extra = {
+                "foreign_lots": int(foreign_lots or 0),
+                "trust_lots": int(trust_lots or 0),
+            }
+        else:
+            code, name, lots, hit_days, total_days = row
+            extra = {"hit_days": int(hit_days or 0),
+                     "total_days": int(total_days or 0)}
+        price = (prices.get(code) or {}).get("close")
+        amount = _chips_amount(price, lots)
+        if amount is None:
+            continue
+        item = {"code": str(code), "name": str(name or code),
+                "lots": int(lots or 0), "amount_billion": round(amount, 4),
+                **extra}
+        scored.append(item)
+    scored.sort(key=lambda x: (x["amount_billion"], x["code"]), reverse=True)
+    return scored
+
+
+def _chips_result_from_persisted():
+    snapshot = _load_shared_data_snapshot("chips_superman")
+    if not snapshot:
+        return None
+    payload = snapshot.get("payload")
+    if not isinstance(payload, dict) or not payload.get("available"):
+        return None
+    groups = payload.get("groups")
+    if not isinstance(groups, dict):
+        return None
+    return {"payload": payload, "source": "持久化快照",
+            "data_date": _chips_data_date(snapshot.get("data_date") or payload.get("data_date")),
+            "computed_at": snapshot.get("computed_at")}
+
+
+def build_chips_payload(days=10, force_refresh=False, persist=True):
+    """建立籌碼超人共同 payload；快照命中時不重跑五組法人查詢。"""
+    now = time.time()
+    if not force_refresh:
+        cached = _chips_cache.get("result")
+        if cached and now - _chips_cache.get("at", 0) < _CHIPS_CACHE_SECONDS:
+            return cached
+        persisted = _chips_result_from_persisted()
+        if persisted:
+            with _chips_cache_lock:
+                _chips_cache.update({"at": now, "result": persisted})
+            print("⚡ 籌碼超人改讀 Supabase 快照（資料日 %s）" %
+                  (persisted.get("data_date") or "未標日期"))
+            return persisted
+
+    with _chips_cache_lock:
+        if not force_refresh:
+            cached = _chips_cache.get("result")
+            if cached and time.time() - _chips_cache.get("at", 0) < _CHIPS_CACHE_SECONDS:
+                return cached
+        hist_days = get_history_days_count()
+        if hist_days < 3:
+            result = {"payload": {"available": False, "history_days": hist_days,
+                                  "groups": {}},
+                      "source": "資料不足", "data_date": None,
+                      "computed_at": None}
+            _chips_cache.update({"at": time.time(), "result": result})
+            return result
+
+        inst = fetch_institutional_data() or {}
+        actual = min(int(days), hist_days)
+        raw = {
+            "trust_buy": get_top_by_investor("trust", "buy", actual, 20, min_days=6),
+            "foreign_buy": get_top_by_investor("foreign", "buy", actual, 20, min_days=6),
+            "trust_sell": get_top_by_investor("trust", "sell", actual, 20, min_days=6),
+        }
+        both_buy = get_both_side_codes("buy", actual, 20, min_days=5)
+        both_sell = get_both_side_codes("sell", actual, 20, min_days=5)
+        all_codes = {c for rows in raw.values() for c, *_ in rows}
+        all_codes |= {c for c, *_ in both_buy} | {c for c, *_ in both_sell}
+        prices = get_realtime_stocks_bulk(list(all_codes), workers=16) if all_codes else {}
+        groups = {
+            "trust_buy": _chips_group_rows(raw["trust_buy"], prices),
+            "foreign_buy": _chips_group_rows(raw["foreign_buy"], prices),
+            "both_buy": _chips_group_rows(both_buy, prices, both=True),
+            "trust_sell": _chips_group_rows(raw["trust_sell"], prices),
+            "both_sell": _chips_group_rows(both_sell, prices, both=True),
+        }
+        data_date = _chips_data_date(_t86_cache.get("data_date"))
+        payload = {
+            "available": True, "actual_days": actual,
+            "history_days": hist_days, "data_date": data_date,
+            "groups": groups,
+            "amount_note": "金額以整理當下可取得的真實股價換算",
+        }
+        result = {"payload": payload, "source": "本次完整整理",
+                  "data_date": data_date, "computed_at": taiwan_now().isoformat()}
+        _chips_cache.update({"at": time.time(), "result": result})
+        if persist and data_date:
+            saved = _save_shared_data_snapshot(
+                "chips_superman", payload, data_date=data_date,
+                source_meta={"source": "chips_superman", "days": actual,
+                             "group_count": len(groups)},
+            )
+            print("💾 籌碼超人快照%s" % ("已保存" if saved else "保存失敗"))
+        return result
+
+
+def build_line_chips_message(user_id, base_url=None):
+    """LINE 籌碼超人：只顯示三個重點區塊，完整五區資料由網頁查看。"""
+    result = build_chips_payload()
+    payload = result.get("payload") or {}
+    if not payload.get("available"):
+        return TextSendMessage(
+            text="❌ 法人歷史資料還不夠，籌碼超人需要至少幾個交易日的累積；請稍後再試。")
+
+    token = create_web_token(user_id)
+    web_url = None
+    if token:
+        web_url = (f"{public_web_base_url(base_url)}/web/chips?t="
+                   f"{quote(token, safe='')}")
+    data_date = result.get("data_date") or payload.get("data_date") or "未標日期"
+    actual = payload.get("actual_days") or 0
+    contents = [
+        {"type": "text", "text": "🦸 籌碼超人｜今日摘要", "weight": "bold",
+         "size": "xl", "color": "#1B2027"},
+        {"type": "text", "text": f"資料來源：{result.get('source')}・資料日：{data_date}・近 {actual} 日",
+         "size": "xs", "color": "#767D85", "margin": "sm", "wrap": True},
+    ]
+    labels = [
+        ("both_buy", "🔥 外資投信同買", "兩種資金同時站買方"),
+        ("trust_buy", "🏦 投信認養", "至少 6／10 天持續同方向"),
+        ("trust_sell", "📉 今日需留意調節", "投信近十日持續賣超"),
+    ]
+    for key, title, note in labels:
+        contents.append({"type": "separator", "margin": "lg", "color": "#E8EAE6"})
+        contents.append({"type": "text", "text": title, "weight": "bold",
+                         "size": "md", "color": "#6E5228", "margin": "lg"})
+        contents.append({"type": "text", "text": note, "size": "xs",
+                         "color": "#767D85", "margin": "xs", "wrap": True})
+        items = (payload.get("groups") or {}).get(key) or []
+        if not items:
+            contents.append({"type": "text", "text": "近期無符合標的", "size": "sm",
+                             "color": "#767D85", "margin": "sm"})
+        for item in items[:3]:
+            days_text = (f"・{item.get('hit_days', 0)}/{item.get('total_days', 0)}天"
+                         if key == "trust_buy" or key == "trust_sell" else "")
+            contents.append({"type": "text", "text":
+                             f"・{item.get('name')}（{item.get('code')}）"
+                             f" {item.get('amount_billion', 0):,.0f}億{days_text}",
+                             "size": "sm", "color": "#454C55", "margin": "sm", "wrap": True})
+    if web_url:
+        contents += [
+            {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+            {"type": "button", "style": "primary", "height": "sm",
+             "color": "#6E5228", "margin": "lg",
+             "action": {"type": "uri", "label": "查看完整籌碼分析", "uri": web_url}},
+        ]
+    bubble = {"type": "bubble",
+              "body": {"type": "box", "layout": "vertical", "contents": contents,
+                        "paddingAll": "18px", "backgroundColor": "#FFFFFF"},
+              "styles": {"body": {"backgroundColor": "#FFFFFF"}}}
+    alt = f"🦸 籌碼超人｜近 {actual} 日｜資料日 {data_date}"
+    return FlexSendMessage(alt_text=alt, contents=bubble)
+
+
+def render_chips_web_body(result):
+    """網頁籌碼超人完整版：完整五區、資料日期與換算說明。"""
+    payload = result.get("payload") or {}
+    if not payload.get("available"):
+        return '<section class="card"><div class="empty">法人歷史資料還不夠，暫時無法建立近十日籌碼整理。</div></section>'
+    esc = html.escape
+    group_info = [
+        ("trust_buy", "🏦 投信認養", "國內基金持續站在買方，至少 6／10 天才列入認養。"),
+        ("foreign_buy", "🌐 外資認養", "外資近十日持續買超；外資也可能包含指數或 ETF 被動調整。"),
+        ("both_buy", "🔥 外資投信同買", "外資與投信同時站買方，顯示兩類資金方向一致。"),
+        ("trust_sell", "📉 投信調節", "投信近十日持續賣超，作為籌碼面的撤退訊號觀察。"),
+        ("both_sell", "❄️ 外資投信同賣", "外資與投信同時站賣方，顯示兩類資金方向一致轉弱。"),
+    ]
+    sections = []
+    for key, title, note in group_info:
+        rows = []
+        for item in ((payload.get("groups") or {}).get(key) or []):
+            if key in ("trust_buy", "trust_sell"):
+                detail = f"{item.get('hit_days', 0)}/{item.get('total_days', 0)} 天同方向"
+            else:
+                detail = (f"外資 {item.get('foreign_lots', 0):+,} 張・"
+                          f"投信 {item.get('trust_lots', 0):+,} 張")
+            rows.append(
+                f'<div class="chips-row"><div><b>{esc(str(item.get("name") or item.get("code")))}</b>'
+                f'<small>（{esc(str(item.get("code") or ""))}）・{esc(detail)}</small></div>'
+                f'<strong>{float(item.get("amount_billion") or 0):,.0f} 億</strong></div>')
+        if not rows:
+            rows.append('<div class="chips-empty">近期無符合標的</div>')
+        sections.append(
+            f'<section class="chips-section"><h2>{esc(title)}</h2>'
+            f'<p>{esc(note)}</p>{"".join(rows)}</section>')
+    data_date = result.get("data_date") or payload.get("data_date") or "未標日期"
+    source = result.get("source") or "未標來源"
+    return f'''<div class="chips-meta">資料來源：<b>{esc(str(source))}</b>　資料日：<b>{esc(str(data_date))}</b>　近 <b>{int(payload.get("actual_days") or 0)}</b> 個交易日</div>
+<div class="callout">億＝以整理當下可取得的真實股價，將法人近十日累計張數換算為億元；天數＝近十日站同方向的天數。這裡只看法人籌碼，不含基本面與估值。</div>
+{"".join(sections)}
+<div class="callout">認養需至少 6／10 天持續同向；單日爆量隔天就跑的不算。法人買不代表便宜，法人賣不代表公司變壞。以上為公開資料整理，不構成投資建議。</div>'''
 
 
 def get_cumulative_net_buy_for_codes(codes, days=10):
@@ -8198,6 +8440,19 @@ def _do_warmup():
     else:
         done.append("stock_info 快照略過")
 
+    # 籌碼超人與 LINE／網頁共用同一份近十日法人整理。17:00／20:00
+    # 收盤後 warmup 強制刷新；其他時段只讀有效快照，避免重複做五組分類查詢。
+    try:
+        chips_result = build_chips_payload(
+            force_refresh=taiwan_now().hour >= 16, persist=True)
+        chips_payload = chips_result.get("payload") or {}
+        chips_state = ("資料日 " + str(chips_result.get("data_date"))
+                       if chips_result.get("data_date") else "資料不足")
+        done.append(f"籌碼超人 {chips_state}（{chips_result.get('source') or '未知來源'}）")
+    except Exception as e:
+        print(f"❌ 預熱籌碼超人失敗: {e}")
+        done.append("籌碼超人 失敗")
+
     # 今日完整首頁最慢的外部資料是持股即時行情；交易日先預熱到既有
     # 90 秒記憶體快取，使用者開頁時直接命中。週末不把最新收盤誤當成今日行情。
     try:
@@ -8848,6 +9103,14 @@ h2{font-size:16px;font-weight:600;letter-spacing:.02em}
 .section-head{display:flex;align-items:baseline;justify-content:space-between;
   margin:30px 0 10px}
 .section-note{font-size:12px;color:var(--ink-faint)}
+.chips-meta{margin:16px 0 12px;padding:11px 13px;border-left:3px solid var(--brass);background:#F7F6F1;color:var(--ink-soft);font-size:12px;line-height:1.65}
+.chips-section{background:#FFF;border:1px solid #E1E3DE;border-radius:14px;padding:16px 15px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.045)}
+.chips-section h2{font-size:17px;color:var(--ink);margin-bottom:4px}
+.chips-section>p{color:var(--ink-soft);font-size:12px;line-height:1.65;margin-bottom:8px}
+.chips-row{display:flex;justify-content:space-between;align-items:center;gap:12px;border-top:1px solid #ECEDE8;padding:11px 0}
+.chips-row>div{min-width:0}.chips-row b{display:block;font-size:14px;overflow-wrap:anywhere}.chips-row small{display:block;color:var(--ink-soft);font-size:11px;margin-top:2px;line-height:1.5}.chips-row strong{font-size:15px;white-space:nowrap;color:var(--ink)}
+.chips-empty{padding:9px 0;color:var(--ink-faint);font-size:12px}
+.callout{padding:12px 14px;margin:14px 0;background:#F5F5F1;color:var(--ink-soft);font-size:11.5px;line-height:1.7;border-radius:9px}
 .rows{border-top:1px solid var(--rule)}
 .row{display:grid;grid-template-columns:1fr auto;gap:3px 12px;
   padding:15px 0;border-bottom:1px solid var(--rule)}
@@ -9271,7 +9534,7 @@ def render_page(title, body, nav_active=None, user_name=None):
                + tab("/web/settings", "設定", "settings")
                + "</nav>")
 
-    more_on = active_nav in {"settings", "trades", "compare", "more"}
+    more_on = active_nav in {"settings", "trades", "compare", "more", "chips"}
     bottom_nav = ("<div class=\"app-bottom-nav\"><div class=\"bottom-inner\">"
                   + bottom_tab("/web/portfolio", "⌂", "今日", "portfolio")
                   + bottom_tab("/web/positions", "▣", "持股", "positions")
@@ -11733,6 +11996,20 @@ def web_settings(uid):
     return render_page("設定", body, nav_active="settings")
 
 
+@app.route("/web/chips")
+@web_login_required
+def web_chips(uid):
+    """籌碼超人完整網頁版；LINE 按鈕與更多頁都進這裡。"""
+    if not wants_fragment():
+        return render_loading_shell(
+            "籌碼超人", "chips",
+            ["正在讀取法人資料…", "正在整理近十日資金方向…", "正在組裝完整籌碼分析…"],
+            note="LINE 顯示快速摘要；網頁版提供完整五區法人資料與資料日期。",
+            staged=False)
+    result = build_chips_payload()
+    return respond_page("籌碼超人", render_chips_web_body(result), "chips")
+
+
 @app.route("/web/more")
 @web_login_required
 def web_more(uid):
@@ -11748,6 +12025,7 @@ def web_more(uid):
   <div class="more-group-title">分析工具</div>
   <a class="more-item" href="/web/trades"><span class="more-icon">▤</span><span><b>交易紀錄</b><small>查看已實現損益與交易統計</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/compare"><span class="more-icon">⌕</span><span><b>股票比較</b><small>一次比較最多 4 檔股票</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/chips"><span class="more-icon">♢</span><span><b>籌碼超人</b><small>外資、投信認養與同買／同賣</small></span><strong>›</strong></a>
 </div>
 
 <div class="more-group">
@@ -14029,9 +14307,11 @@ def handle_message(event):
             user_id, request.url_root.rstrip("/"))
         reply = None
 
-    # 7.65 籌碼超人：把三大法人拆開看誰在認養、誰在撤退
+    # 7.65 籌碼超人：LINE 只顯示三個重點區塊，完整五區改由網頁查看
     elif text in ["籌碼", "籌碼超人", "認養"]:
-        reply = build_chips_report()
+        flex_reply = build_line_chips_message(
+            user_id, request.url_root.rstrip("/"))
+        reply = None
 
     # 8. 黑馬／雷達：LINE 只做快速摘要與網頁入口，完整分析留在網頁版
     elif text in ["黑馬", "雷達"]:
