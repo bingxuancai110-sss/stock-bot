@@ -6615,7 +6615,7 @@ def build_morning_push_message(user_id, base_url=None):
     if not token:
         return TextSendMessage(text=plain_text)
 
-    web_url = (f"{public_web_base_url(base_url)}/web/login?t="
+    web_url = (f"{public_web_base_url(base_url)}/web/premarket?t="
                f"{quote(token, safe='')}")
     contents = [{
         "type": "text", "text": "🔥 今日值得注意", "weight": "bold",
@@ -6666,7 +6666,7 @@ def build_morning_push_message(user_id, base_url=None):
         {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
         {"type": "button", "style": "primary", "height": "sm",
          "color": "#6E5228", "margin": "lg",
-         "action": {"type": "uri", "label": "查看今日完整分析",
+         "action": {"type": "uri", "label": "查看完整盤前分析",
                     "uri": web_url}}
     ]
     bubble = {
@@ -7270,6 +7270,27 @@ def cron_warmup():
     return run_in_background("預熱快取", _do_warmup), 200
 
 
+def _warm_current_position_quotes():
+    """預熱目前持股的 3mo 真實行情，直接填入既有90秒記憶體快取。"""
+    if taiwan_today().weekday() >= 5:
+        return 0, 0, 0, "週末略過"
+    user_ids = get_all_position_user_ids()
+    codes = set()
+    for uid in user_ids:
+        try:
+            for position in merge_positions(get_positions(uid)):
+                code = str(position.get("code") or "").strip()
+                if code:
+                    codes.add(code)
+        except Exception as exc:
+            print(f"⚠️ 預熱使用者 {uid} 持股失敗: {exc}")
+    if not codes:
+        return len(user_ids), 0, 0, "沒有持股"
+    prices = get_realtime_stocks_bulk(sorted(codes), workers=12, rng="3mo")
+    valid = sum(1 for value in prices.values() if value)
+    return len(user_ids), len(codes), valid, "完成"
+
+
 def _do_warmup():
     done = []
     for label, fn in [
@@ -7285,6 +7306,16 @@ def _do_warmup():
         except Exception as e:
             print(f"❌ 預熱 {label} 失敗: {e}")
             done.append(f"{label} 失敗")
+
+    # 今日完整首頁最慢的外部資料是持股即時行情；交易日先預熱到既有
+    # 90 秒記憶體快取，使用者開頁時直接命中。週末不把最新收盤誤當成今日行情。
+    try:
+        user_count, code_count, valid_count, state = _warm_current_position_quotes()
+        done.append(f"持股行情 {valid_count}/{code_count} 檔（{user_count} 人，{state}）")
+    except Exception as e:
+        print(f"❌ 預熱持股行情失敗: {e}")
+        done.append("持股行情 失敗")
+
     # 順便把選股台的候選池也算好，使用者進來就是快取命中
     for mode in ("blackhorse", "radar"):
         try:
@@ -8291,7 +8322,8 @@ HEAVY_COMMANDS = {"黑馬", "雷達", "籌碼", "籌碼超人", "認養", "盤�
 
 def render_page(title, body, nav_active=None, user_name=None):
     """所有網頁共用的外框。用字串組裝就好，這個規模不需要模板引擎。"""
-    active_nav = "portfolio" if nav_active == "premarket" else nav_active
+    # 盤前是獨立頁面，不能因為底部沒有專屬分頁就誤亮「今日」。
+    active_nav = nav_active
     def tab(href, label, key):
         on = " class=\"on\"" if key == active_nav else ""
         return f'<a href="{href}"{on}>{label}</a>'
