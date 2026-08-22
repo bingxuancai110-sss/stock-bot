@@ -7409,8 +7409,10 @@ def build_line_screener_message(user_id, mode, base_url=None):
     label = "雷達" if mode == "radar" else "黑馬"
     icon = "🚨" if mode == "radar" else "🐎"
 
-    # 先讀 warmup 完整快照；命中時不先抓法人，也不重新掃描候選池。
-    persisted = _load_persisted_screener_snapshot(mode)
+    intraday = mode == "radar" and _is_taiwan_intraday_window()
+    # 盤中雷達不能沿用收盤快照：必須用最新真實行情重算；
+    # 盤前、盤後與週末才優先讀 warmup 完整快照。
+    persisted = (None if intraday else _load_persisted_screener_snapshot(mode))
     persisted_hit = bool(persisted and _screener_snapshot_valid_for_today(persisted))
     source_date = persisted.get("source_date") if persisted_hit else None
     if persisted_hit:
@@ -7422,7 +7424,8 @@ def build_line_screener_message(user_id, mode, base_url=None):
                 text=f"❌ 目前無法取得三大法人資料，暫時無法建立{label}摘要。\n"
                      "可能是非交易時段或資料尚未公布，請稍後再試。")
         rows, _skipped, _momentum = compute_screener_rows(
-            mode, inst=inst_data)
+            mode, inst=inst_data, persist=not intraday,
+            force_refresh=intraday)
         source_date = _screener_source_date()
 
     if mode == "blackhorse":
@@ -7445,7 +7448,12 @@ def build_line_screener_message(user_id, mode, base_url=None):
 
     date_text = (source_date.isoformat() if hasattr(source_date, "isoformat")
                  else str(source_date or "未標日期"))
-    source_text = "warmup 完整快照" if persisted_hit else "本次完整計算"
+    if intraday:
+        source_text = "盤中最新行情（即時重算）"
+        date_text = (f"行情時間 {taiwan_now().strftime('%Y-%m-%d %H:%M')}・"
+                     f"法人資料日 {date_text}")
+    else:
+        source_text = "warmup 完整快照" if persisted_hit else "本次完整計算"
     contents = [
         {"type": "text", "text": f"{icon} {label}｜前 3 名",
          "weight": "bold", "size": "xl", "color": "#1B2027"},
@@ -12668,6 +12676,13 @@ def _screener_source_date():
     return None
 
 
+def _is_taiwan_intraday_window(now=None):
+    """判斷台股平日一般盤中時段；週末與盤前／盤後走收盤快照。"""
+    now = now or taiwan_now()
+    minutes = now.hour * 60 + now.minute
+    return (now.weekday() < 5 and 9 * 60 <= minutes <= 13 * 60 + 30)
+
+
 def _screener_snapshot_valid_for_today(snapshot):
     """只在來源日符合今日或最近週末交易日時使用，避免舊行情冒充今日。"""
     source_date = snapshot.get("source_date") if snapshot else None
@@ -12686,7 +12701,8 @@ def _screener_snapshot_valid_for_today(snapshot):
     return today.weekday() >= 5 and source_date <= today and (today - source_date).days <= 3
 
 
-def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map=None):
+def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
+                          ind_map=None, persist=True, force_refresh=False):
     """
     算出某個模式的完整候選清單。回傳 (rows, 因流動性被排除的檔數, 產業動能)。
     結果快取 5 分鐘，讓調整篩選條件變成瞬間反應。
@@ -12695,14 +12711,15 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map
     在 route 與計算函式之間重複呼叫法人／產業資料。
     """
     now = time.time()
+    cache_ttl = 60 if force_refresh else SCREENER_CACHE_SECONDS
     hit = _screener_cache.get(mode)
-    if hit and now - hit["at"] < SCREENER_CACHE_SECONDS:
+    if hit and now - hit["at"] < cache_ttl:
         return hit["rows"], hit["skipped"], hit["momentum"]
 
     # Render 重啟或切到另一個 worker 時，先讀 warmup 的持久化完整結果。
     # 只有呼叫端沒有明確帶入共享資料時才命中，避免傳入最新法人資料卻被舊快照攔截。
-    can_use_persisted = all(value is None for value in
-                            (inst, revenue, valuation, ind_map))
+    can_use_persisted = (not force_refresh and all(value is None for value in
+                            (inst, revenue, valuation, ind_map)))
     persisted = (_load_persisted_screener_snapshot(mode)
                  if can_use_persisted else None)
     if persisted is not None and _screener_snapshot_valid_for_today(persisted):
@@ -12721,7 +12738,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map
     with _screener_compute_lock:
         now = time.time()
         hit = _screener_cache.get(mode)
-        if hit and now - hit["at"] < SCREENER_CACHE_SECONDS:
+        if hit and now - hit["at"] < cache_ttl:
             return hit["rows"], hit["skipped"], hit["momentum"]
 
         # 另一個請求可能在等待鎖期間剛好保存了持久化快照，再檢查一次。
@@ -12844,10 +12861,11 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map
         _screener_cache[mode] = {"at": now, "rows": rows,
                                  "skipped": skipped_liquidity, "momentum": momentum,
                                  "source_date": source_date}
-        _save_persisted_screener_snapshot(
-            mode, rows, skipped_liquidity, momentum,
-            source_date=source_date,
-        )
+        if persist:
+            _save_persisted_screener_snapshot(
+                mode, rows, skipped_liquidity, momentum,
+                source_date=source_date,
+            )
         return rows, skipped_liquidity, momentum
 
 
