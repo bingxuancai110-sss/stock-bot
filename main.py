@@ -12025,7 +12025,6 @@ def web_more(uid):
   <div class="more-group-title">分析工具</div>
   <a class="more-item" href="/web/trades"><span class="more-icon">▤</span><span><b>交易紀錄</b><small>查看已實現損益與交易統計</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/compare"><span class="more-icon">⌕</span><span><b>股票比較</b><small>一次比較最多 4 檔股票</small></span><strong>›</strong></a>
-  <a class="more-item" href="/web/chips"><span class="more-icon">♢</span><span><b>籌碼超人</b><small>外資、投信認養與同買／同賣</small></span><strong>›</strong></a>
 </div>
 
 <div class="more-group">
@@ -13847,6 +13846,7 @@ def web_screener(uid):
      class="{'on' if mode != 'radar' else ''}">黑馬</a>
   <a href="/web/screener?mode=radar&view={view}&cat={cat_filter}"
      class="{'on' if mode == 'radar' else ''}">雷達</a>
+  <a href="/web/chips">籌碼超人</a>
   <a href="/web/screener?mode=review">成效</a>
   {'' if mode == 'radar' else f'''<span class="tabs-gap"></span>
   <a href="/web/screener?mode={mode}&view=list&cat={cat_filter}"
