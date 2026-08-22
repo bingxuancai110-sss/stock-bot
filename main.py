@@ -6238,7 +6238,7 @@ def build_morning_push(user_id):
 
 
 DEFAULT_WEB_BASE_URL = "https://stock-bot-6xct.onrender.com"
-_morning_macro_cache = {"date": None, "lines": []}
+_morning_macro_cache = {"date": None, "lines": [], "data": None, "news": None}
 _morning_macro_cache_lock = threading.Lock()
 
 
@@ -6295,6 +6295,42 @@ def _morning_macro_lines():
     return lines
 
 
+def _morning_macro_news():
+    """取得最多兩則近期總經新聞；沒有真實新聞就不顯示新聞區塊。"""
+    today = taiwan_today()
+    with _morning_macro_cache_lock:
+        if (_morning_macro_cache.get("date") == today
+                and _morning_macro_cache.get("news") is not None):
+            return list(_morning_macro_cache["news"])
+    try:
+        items = fetch_stock_news(
+            "CPI OR 非農 OR 聯準會 OR 美債殖利率",
+            max_items=2, within_hours=36
+        ) or []
+    except Exception as exc:
+        print(f"⚠️ 盤前總經新聞抓取失敗：{exc}")
+        items = []
+    news = []
+    for item in items[:2]:
+        if not item.get("title"):
+            continue
+        news.append({"title": str(item.get("title")),
+                     "source": str(item.get("source") or ""),
+                     "link": str(item.get("link") or "")})
+    with _morning_macro_cache_lock:
+        _morning_macro_cache["date"] = today
+        _morning_macro_cache["news"] = list(news)
+    return news
+
+
+def _morning_macro_news_lines():
+    lines = []
+    for item in _morning_macro_news():
+        source = f"（{item['source']}）" if item["source"] else ""
+        lines.append(f"・{item['title']}{source}")
+    return lines
+
+
 def _macro_metric_box(item):
     """Flex 的單一指標格，避免多個指標塞在同一行後錯位。"""
     if item["pct"] is None:
@@ -6335,7 +6371,10 @@ def build_morning_push_message(user_id, base_url=None):
     if not events:
         events = get_today_change_events(None, limit=3)
 
+    news_lines = _morning_macro_news_lines()
     plain_text = build_today_attention_push(user_id) + "\n\n" + "\n".join(_morning_macro_lines())
+    if news_lines:
+        plain_text += "\n\n📰 總經焦點\n" + "\n".join(news_lines)
     token = create_web_token(user_id)
     if not token:
         return TextSendMessage(text=plain_text)
@@ -6370,6 +6409,16 @@ def build_morning_push_message(user_id, base_url=None):
     contents.append({"type": "text", "text": "風險指標", "weight": "bold",
                      "size": "xs", "color": "#767D85", "margin": "lg"})
     contents.extend(_macro_metric_rows("風險指標"))
+    news = _morning_macro_news()
+    if news:
+        contents.append({"type": "separator", "margin": "lg", "color": "#E8EAE6"})
+        contents.append({"type": "text", "text": "📰 總經焦點", "weight": "bold",
+                         "size": "xs", "color": "#767D85", "margin": "lg"})
+        for item in news:
+            source = f"（{item['source']}）" if item["source"] else ""
+            contents.append({"type": "text", "text": f"・{item['title']}{source}",
+                             "size": "xs", "color": "#454C55", "wrap": True,
+                             "maxLines": 3, "margin": "sm"})
     contents += [
         {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
         {"type": "button", "style": "primary", "height": "sm",
