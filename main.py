@@ -6323,11 +6323,26 @@ def _morning_macro_news():
     return news
 
 
+def _valid_news_uri(value):
+    """只允許新聞原文的 HTTP／HTTPS 網址進入 LINE URI action。"""
+    try:
+        parsed = urlparse(str(value or "").strip())
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+            return None
+        return parsed.geturl()
+    except Exception:
+        return None
+
+
 def _morning_macro_news_lines():
     lines = []
     for item in _morning_macro_news():
         source = f"（{item['source']}）" if item["source"] else ""
-        lines.append(f"・{item['title']}{source}")
+        line = f"・{item['title']}{source}"
+        uri = _valid_news_uri(item.get("link"))
+        if uri:
+            line += f"\n　{uri}"
+        lines.append(line)
     return lines
 
 
@@ -6416,9 +6431,16 @@ def build_morning_push_message(user_id, base_url=None):
                          "size": "xs", "color": "#767D85", "margin": "lg"})
         for item in news:
             source = f"（{item['source']}）" if item["source"] else ""
-            contents.append({"type": "text", "text": f"・{item['title']}{source}",
-                             "size": "xs", "color": "#454C55", "wrap": True,
-                             "maxLines": 3, "margin": "sm"})
+            news_component = {"type": "text",
+                              "text": f"・{item['title']}{source}",
+                              "size": "xs", "color": "#454C55", "wrap": True,
+                              "maxLines": 3, "margin": "sm"}
+            uri = _valid_news_uri(item.get("link"))
+            if uri:
+                news_component["color"] = "#4A5F7A"
+                news_component["decoration"] = "underline"
+                news_component["action"] = {"type": "uri", "uri": uri}
+            contents.append(news_component)
     contents += [
         {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
         {"type": "button", "style": "primary", "height": "sm",
