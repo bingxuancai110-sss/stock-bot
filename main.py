@@ -2352,6 +2352,7 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
         )
         conn.commit()
         cursor.close()
+        clear_leaderboard_cache()
         return True
     except Exception as e:
         conn.rollback()
@@ -2375,6 +2376,8 @@ def delete_position(user_id, pos_id):
         deleted = cursor.rowcount
         conn.commit()
         cursor.close()
+        if deleted > 0:
+            clear_leaderboard_cache()
         return deleted > 0
     except Exception as e:
         conn.rollback()
@@ -2528,6 +2531,7 @@ def sell_position(user_id, pos_id, sell_shares,
         )
         conn.commit()
         cursor.close()
+        clear_leaderboard_cache()
         return True, None, {
             "code": str(code).strip(), "shares": sell_shares,
             "sell_price": sell_price, "cost": lot_cost,
@@ -2972,7 +2976,10 @@ def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None,
 def save_leaderboard_rank_snapshots(snapshot_date=None):
     # 每日收盤後保存短線／長線名次；沒有足夠快照不補造排名。
     snapshot_date = snapshot_date or taiwan_today()
-    boards, _ = build_leaderboard(top_n=100, days=365)
+    # rank stage 是收盤資料完成後的明確更新點，不能沿用當天稍早的頁面快取。
+    clear_leaderboard_cache()
+    full_value = build_leaderboard(top_n=100, days=365)
+    boards, (series_map, market) = full_value
     rows = []
     for board_name in ("short", "long"):
         for rank, row in enumerate(boards.get(board_name, []), start=1):
@@ -2991,6 +2998,8 @@ def save_leaderboard_rank_snapshots(snapshot_date=None):
                 rank=EXCLUDED.rank, return_pct=EXCLUDED.return_pct
         ''', rows)
         conn.commit()
+        # build_leaderboard() 已在 fresh compute 時保存前100名完整 payload；
+        # 若本次命中既有 payload，也不在這裡用前20名覆蓋它。
         return len(rows)
     except Exception as e:
         conn.rollback()
@@ -3188,6 +3197,126 @@ def clear_leaderboard_cache():
     """成員加入、退出或設定變更後立即清掉排行榜結果。"""
     with _leaderboard_cache_lock:
         _leaderboard_cache.clear()
+    # 成員暱稱、是否公開持股或參加狀態變更後，持久化頁面也必須失效。
+    try:
+        _delete_shared_data_snapshot("leaderboard_page")
+    except Exception as exc:
+        print(f"⚠️ 排行榜快照失效處理失敗: {exc}")
+
+
+def _leaderboard_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if text:
+        try:
+            return date.fromisoformat(text[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _leaderboard_data_date(series_map, market):
+    """從已計算的真實曲線找出頁面可標示的最新資料日。"""
+    dates = []
+    for item in (series_map or {}).values():
+        for point in (item.get("curve") or []):
+            if isinstance(point, (list, tuple)) and point:
+                parsed = _leaderboard_date(point[0])
+                if parsed:
+                    dates.append(parsed)
+    for point in market or []:
+        if isinstance(point, (list, tuple)) and point:
+            parsed = _leaderboard_date(point[0])
+            if parsed:
+                dates.append(parsed)
+    return max(dates) if dates else None
+
+
+def _leaderboard_snapshot_valid(snapshot):
+    """快照仍須接近目前資料日；週末只顯示最近交易日的真實曲線。"""
+    if not snapshot:
+        return False
+    data_date = _leaderboard_date(snapshot.get("data_date"))
+    if not data_date:
+        return False
+    today = taiwan_today()
+    return data_date <= today and (today - data_date).days <= 3
+
+
+def _load_persisted_leaderboard_page():
+    """讀取排行榜完整頁 payload；失敗或過期時回傳 None，讓呼叫端走原流程。"""
+    shared = _load_shared_data_snapshot(
+        "leaderboard_page",
+        max_age_seconds=_SHARED_SNAPSHOT_MAX_AGE.get("leaderboard_page", 3 * 86400),
+    )
+    if not shared or not _leaderboard_snapshot_valid(shared):
+        return None
+    payload = shared.get("payload") or {}
+    boards = payload.get("boards") if isinstance(payload, dict) else None
+    graph = payload.get("graph") if isinstance(payload, dict) else None
+    if not isinstance(boards, dict) or not isinstance(graph, dict):
+        return None
+    raw_series_map = graph.get("series_map")
+    raw_market = graph.get("market")
+    if not isinstance(raw_series_map, dict) or not isinstance(raw_market, list):
+        return None
+
+    # JSONB 會把 date 與 tuple 還原成字串與 list；圖表與既有計算函式
+    # 仍以 date／(date, value) 工作，因此在讀取邊界一次還原，不改 UI 邏輯。
+    series_map = {}
+    for key, item in raw_series_map.items():
+        if not isinstance(item, dict):
+            continue
+        curve = []
+        for point in item.get("curve") or []:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            parsed = _leaderboard_date(point[0])
+            if not parsed:
+                continue
+            try:
+                curve.append((parsed, float(point[1])))
+            except (TypeError, ValueError):
+                continue
+        series_map[str(key)] = {"nickname": str(item.get("nickname") or ""),
+                                "curve": curve}
+    market = []
+    for point in raw_market:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        parsed = _leaderboard_date(point[0])
+        if not parsed:
+            continue
+        try:
+            market.append((parsed, float(point[1])))
+        except (TypeError, ValueError):
+            continue
+    return {
+        "value": (boards, (series_map, market)),
+        "data_date": shared.get("data_date"),
+        "computed_at": shared.get("computed_at"),
+        "source_meta": shared.get("source_meta") or {},
+    }
+
+
+def _save_persisted_leaderboard_page(value, data_date=None):
+    """保存與網頁 top20／365 日口徑完全相同的排行榜 payload。"""
+    if not value or not data_date:
+        return False
+    boards, graph = value
+    series_map, market = graph
+    return _save_shared_data_snapshot(
+        "leaderboard_page",
+        {"boards": boards,
+         "graph": {"series_map": series_map, "market": market}},
+        data_date=data_date,
+        source_meta={"source": "leaderboard_build", "top_n": 100,
+                     "days": 365, "member_count": len(boards.get("waiting", [])) +
+                     len(boards.get("long", []))},
+    )
 
 
 def build_leaderboard(top_n=20, days=365):
@@ -3204,11 +3333,38 @@ def build_leaderboard(top_n=20, days=365):
     「顯示得夠清楚」比「擋住不讓進」好。
     """
     cache_key = (int(top_n), int(days))
+    build_started = time.monotonic()
     now = time.time()
     with _leaderboard_cache_lock:
         cached = _leaderboard_cache.get(cache_key)
         if cached and now - cached["at"] < LEADERBOARD_CACHE_SECONDS:
+            print("⏱️ 排行榜計算：記憶體快取 %.0fms" %
+                  ((time.monotonic() - build_started) * 1000))
             return cached["value"]
+
+    # 排行榜的內容只依賴已保存的每日組合快照與成員公開設定；
+    # Render 重啟或切換 worker 後，先讀完整頁 payload，避免重新抓所有公開持股的一年行情。
+    if cache_key in ((20, 365), (100, 365)):
+        persisted = _load_persisted_leaderboard_page()
+        if persisted:
+            stored_boards, stored_graph = persisted["value"]
+            # 網頁顯示前 20 名，但保留前 100 名給 get_my_rank_summary()，
+            # 與原本排行榜頁面「前20顯示、前100個人摘要」的功能完全一致。
+            value = (
+                {"long": (stored_boards.get("long") or [])[:int(top_n)],
+                 "short": (stored_boards.get("short") or [])[:int(top_n)],
+                 "waiting": stored_boards.get("waiting") or []},
+                stored_graph,
+            )
+            with _leaderboard_cache_lock:
+                _leaderboard_cache[cache_key] = {
+                    "at": now, "value": value, "source": "persisted",
+                    "data_date": persisted.get("data_date"),
+                }
+            print("⚡ 排行榜改讀 Supabase 完整快照（資料日 %s），目前取前 %s 名；耗時 %.0fms" %
+                  (persisted.get("data_date") or "未標日期", top_n,
+                   (time.monotonic() - build_started) * 1000))
+            return value
 
     conn = get_db_connection()
     try:
@@ -3294,14 +3450,32 @@ def build_leaderboard(top_n=20, days=365):
         series_map[str(uid)] = {"nickname": str(nick), "curve": curve}
 
     scored = [r for r in rows if r["ret"] is not None]
-    long_board = sorted(scored, key=lambda r: r["ret"], reverse=True)[:top_n]
-    short_board = sorted([r for r in scored if r["m30"] is not None],
-                         key=lambda r: r["m30"], reverse=True)[:top_n]
+    long_all = sorted(scored, key=lambda r: r["ret"], reverse=True)
+    short_all = sorted([r for r in scored if r["m30"] is not None],
+                       key=lambda r: r["m30"], reverse=True)
+    long_board = long_all[:top_n]
+    short_board = short_all[:top_n]
     waiting = [r for r in rows if r["ret"] is None]
     value = ({"long": long_board, "short": short_board, "waiting": waiting},
              (series_map, market))
+    data_date = _leaderboard_data_date(series_map, market)
     with _leaderboard_cache_lock:
-        _leaderboard_cache[cache_key] = {"at": time.time(), "value": value}
+        _leaderboard_cache[cache_key] = {
+            "at": time.time(), "value": value, "source": "computed",
+            "data_date": data_date,
+        }
+    if cache_key in ((20, 365), (100, 365)) and data_date:
+        persisted_value = (
+            {"long": long_all[:100], "short": short_all[:100],
+             "waiting": waiting},
+            (series_map, market),
+        )
+        saved_page = _save_persisted_leaderboard_page(
+            persisted_value, data_date=data_date)
+        print("⚡ 排行榜完整頁快照%s（資料日 %s）" %
+              ("已保存" if saved_page else "保存失敗", data_date))
+    print("⏱️ 排行榜計算：完整計算 %.0fms" %
+          ((time.monotonic() - build_started) * 1000))
     return value
 
 
@@ -4170,6 +4344,7 @@ _SHARED_SNAPSHOT_MAX_AGE = {
     "valuation": 2 * 86400,
     "screener_blackhorse": 3 * 86400,
     "screener_radar": 3 * 86400,
+    "leaderboard_page": 3 * 86400,
 }
 
 
@@ -4203,6 +4378,27 @@ def _save_shared_data_snapshot(snapshot_key, payload, data_date=None,
     except Exception as exc:
         conn.rollback()
         print(f"⚠️ 保存共享資料快照失敗 {snapshot_key}: {exc}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def _delete_shared_data_snapshot(snapshot_key):
+    """刪除需要立即失效的共享快照；失敗只記錄，不阻塞原本寫入。"""
+    if not snapshot_key:
+        return False
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM shared_data_snapshots WHERE snapshot_key = %s",
+                    (str(snapshot_key),))
+        deleted = cur.rowcount
+        conn.commit()
+        cur.close()
+        return deleted > 0
+    except Exception as exc:
+        conn.rollback()
+        print(f"⚠️ 刪除共享資料快照失敗 {snapshot_key}: {exc}")
         return False
     finally:
         release_db_connection(conn)
@@ -7613,6 +7809,9 @@ def _do_daily_snapshot():
                 print(f"❌ 組合快照失敗 {uid}: {e}")
                 skipped += 1
             _job_mark_progress(job_name, "portfolio", idx + 1, len(user_ids))
+        # 所有使用者的每日組合快照完成後才失效一次，避免在迴圈內每人重複操作資料庫。
+        # 下一個 rank stage 會依最新每日快照重新計算 TWR，再保存排行榜完整頁 payload。
+        clear_leaderboard_cache()
         _job_mark_progress(job_name, "watchlist", 0, 0)
         current_stage = "watchlist"
 
@@ -7908,6 +8107,29 @@ def _do_warmup():
         except Exception as e:
             print(f"❌ 預熱 {mode} 失敗: {e}")
             done.append(f"{mode} 失敗")
+
+    # 排行榜只在收盤後／週末晚間整合，沿用現有 17:00／20:00 warmup；
+    # 早上 07:00／中午 12:00 不為了排行榜額外重算一年行情。
+    if taiwan_now().hour >= 16:
+        try:
+            # 若持久化頁面的曲線最新日還不是今天，收盤 warmup 必須重建一次；
+            # 不能因快照仍在有效期限內就把前一交易日排名當成今日排名。
+            persisted_rank = _load_persisted_leaderboard_page()
+            persisted_date = (_leaderboard_date(persisted_rank.get("data_date"))
+                              if persisted_rank else None)
+            if taiwan_today().weekday() < 5 and persisted_date != taiwan_today():
+                clear_leaderboard_cache()
+            build_leaderboard(top_n=100, days=365)
+            with _leaderboard_cache_lock:
+                rank_meta = dict(_leaderboard_cache.get((100, 365)) or {})
+            done.append("排行榜 %s（資料日 %s）" % (
+                "快照已整合" if rank_meta.get("data_date") else "資料日不足",
+                rank_meta.get("data_date") or "未標日期"))
+        except Exception as e:
+            print(f"❌ 預熱排行榜失敗: {e}")
+            done.append("排行榜 失敗")
+    else:
+        done.append("排行榜 快照略過（等待收盤）")
     return "、".join(done)
 
 
@@ -8608,7 +8830,9 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .rank-situation-item .rank-situation-sub{display:block;font-size:11px;color:var(--ink-faint);margin-top:4px;white-space:nowrap}
 .rank-situation-empty{padding:8px 0;color:var(--ink-soft);font-size:13px}
 .rank-switch-note{font-size:11px;color:var(--ink-faint);margin:7px 0 14px}
+ .rank-source-note{font-size:11px;color:var(--ink-faint);margin:0 0 9px;text-align:right}
 .rank-list-caption{display:flex;justify-content:flex-end;align-items:center;
+
   gap:10px;margin:9px 0 4px;color:var(--ink-faint);font-size:11.5px}
 .rank-card{padding:16px 0;border-bottom:1px solid #C9CCC4}
 .rank-card:last-child{border-bottom:0}
@@ -10723,6 +10947,7 @@ def web_leaderboard(uid):
     ・只顯示報酬率、持股檔數、加入天數，不顯示任何金額與持股內容。
     ・報酬率從加入那天起算，不用歷史成本，否則比的是誰入市早不是誰操作好。
     """
+    page_started = time.monotonic()
     msg = ""
     if request.method == "POST" and not valid_web_csrf():
         return respond_page("排行榜", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "leaderboard")
@@ -10743,12 +10968,30 @@ def web_leaderboard(uid):
             note="報酬率以時間加權計算，加碼與贖回不影響結果。")
 
     me = get_leaderboard_member(uid)
-    boards, (series_map, market) = build_leaderboard(top_n=20)
+    board_started = time.monotonic()
+    all_boards, (series_map, market) = build_leaderboard(top_n=100, days=365)
+    board_done = time.monotonic()
+    boards = {
+        "long": (all_boards.get("long") or [])[:20],
+        "short": (all_boards.get("short") or [])[:20],
+        "waiting": all_boards.get("waiting") or [],
+    }
+    with _leaderboard_cache_lock:
+        leaderboard_meta = dict(_leaderboard_cache.get((100, 365)) or {})
+    leaderboard_source = ("Supabase 持久化快照"
+                          if leaderboard_meta.get("source") == "persisted"
+                          else "本次完整計算")
+    leaderboard_data_date = leaderboard_meta.get("data_date") or _leaderboard_data_date(
+        series_map, market)
+    leaderboard_data_date = (leaderboard_data_date.isoformat()
+                             if isinstance(leaderboard_data_date, (date, datetime))
+                             else str(leaderboard_data_date or "未標日期"))
     rank_inputs = []
     for board_name in ("short", "long"):
-        for current_rank, row in enumerate(boards.get(board_name, []), 1):
+        for current_rank, row in enumerate(all_boards.get(board_name, []), 1):
             rank_inputs.append((board_name, row.get("user_id"), current_rank))
     rank_status_map = get_rank_status_map(rank_inputs)
+    rank_status_done = time.monotonic()
     view = request.args.get("board", "short")   # 預設短線：新人也馬上有得比
     is_short = view != "long"
     active_board = "short" if is_short else "long"
@@ -10812,7 +11055,10 @@ def web_leaderboard(uid):
 
     # ── 榜單 ──
     # 個人戰況仍沿用前 100 名摘要；榜單卡片本身則只批次查詢畫面上的前 20 名。
-    my_rank = get_my_rank_summary(uid)
+    # 已有本頁 top20 與排名狀態，直接重用；避免 get_my_rank_summary()
+    # 預設再呼叫 build_leaderboard(top_n=100) 造成第二次重型計算。
+    my_rank = get_my_rank_summary(uid, boards=all_boards,
+                                  rank_status_map=rank_status_map)
 
     def render_rank_status(status, compact=False):
         if status.get("rank") is None:
@@ -11058,6 +11304,7 @@ def web_leaderboard(uid):
 {tabs}
 <div class="rank-list-caption">
   <span>{len(boards['long'])} 位參加中・依報酬排序</span></div>
+<div class="rank-source-note">資料來源：{leaderboard_source}・資料日：{html.escape(leaderboard_data_date)}</div>
 {board}
 {waiting_html}
 
@@ -11092,6 +11339,11 @@ def web_leaderboard(uid):
     先確認自己的操作有沒有理由。</span>
 </div>
 </details>"""
+    print("⏱️ 排行榜頁：榜單 %.0fms、排名狀態 %.0fms、HTML %.0fms、合計 %.0fms" % (
+        (board_done - board_started) * 1000,
+        (rank_status_done - board_done) * 1000,
+        (time.monotonic() - rank_status_done) * 1000,
+        (time.monotonic() - page_started) * 1000))
     return respond_page("排行榜", body, "leaderboard")
 
 
