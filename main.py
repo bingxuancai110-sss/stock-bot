@@ -382,8 +382,15 @@ def _current_market():
     symbols = ["^DJI", "^IXIC", "^GSPC", "^SOX"]
     quotes = fetch_quotes_bulk(symbols) or {}
     for symbol in symbols:
-        q = quotes.get(symbol) or {}
-        pct = q.get("pct")
+        q = quotes.get(symbol)
+        if isinstance(q, dict):
+            pct = q.get("pct")
+        elif isinstance(q, (tuple, list)) and len(q) >= 2:
+            # fetch_quotes_bulk() 的既有格式是 (close, pct, diff)，
+            # 與部分其他報價 helper 的 dict 格式不同；盤前偵測要兼容兩者。
+            pct = q[1]
+        else:
+            pct = None
         if pct is not None:
             market[f"{symbol}_pct"] = float(pct)
     return market
