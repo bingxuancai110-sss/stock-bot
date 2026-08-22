@@ -4083,6 +4083,53 @@ def fetch_and_save_industry():
 
 _industry_cache = {"map": None}
 _name_cache = {"map": None}
+_STOCK_INFO_FILE_CACHE = "/tmp/stock_bot_stock_info_cache.json"
+_STOCK_INFO_FILE_CACHE_TTL = 86400
+_stock_info_file_lock = threading.Lock()
+_stock_info_file_loaded = False
+
+
+def _load_stock_info_file_cache():
+    """跨 Gunicorn worker 重用已由資料庫／warmup 產生的真實 stock_info 快照。"""
+    global _stock_info_file_loaded
+    with _stock_info_file_lock:
+        if _stock_info_file_loaded:
+            return
+        _stock_info_file_loaded = True
+        try:
+            if (not os.path.exists(_STOCK_INFO_FILE_CACHE) or
+                    time.time() - os.path.getmtime(_STOCK_INFO_FILE_CACHE) > _STOCK_INFO_FILE_CACHE_TTL):
+                return
+            with open(_STOCK_INFO_FILE_CACHE, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            names = payload.get("names") or {}
+            industries = payload.get("industries") or {}
+            if names:
+                _name_cache["map"] = names
+            if industries:
+                _industry_cache["map"] = industries
+        except Exception as exc:
+            print(f"⚠️ 讀取 stock_info 檔案快取失敗: {exc}")
+
+
+def _write_stock_info_file_cache():
+    """以原子替換寫入 stock_info 快照，避免 worker 讀到半份 JSON。"""
+    payload = {"names": _name_cache.get("map") or {},
+               "industries": _industry_cache.get("map") or {},
+               "saved_at": taiwan_now().isoformat()}
+    temp_path = _STOCK_INFO_FILE_CACHE + f".{os.getpid()}.tmp"
+    try:
+        with _stock_info_file_lock:
+            with open(temp_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"))
+            os.replace(temp_path, _STOCK_INFO_FILE_CACHE)
+    except Exception as exc:
+        print(f"⚠️ 寫入 stock_info 檔案快取失敗: {exc}")
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
 
 
 def get_name_map(force_reload=False):
@@ -4090,6 +4137,7 @@ def get_name_map(force_reload=False):
     代號→公司名稱。來自 stock_info（含上市、上櫃、興櫃），
     比程式裡那份只有十幾檔的寫死對照表完整得多。
     """
+    _load_stock_info_file_cache()
     if _name_cache["map"] is not None and not force_reload:
         return _name_cache["map"]
     conn = get_db_connection()
@@ -4098,6 +4146,7 @@ def get_name_map(force_reload=False):
         cursor.execute("SELECT code, name FROM stock_info WHERE name IS NOT NULL AND name <> ''")
         _name_cache["map"] = {c: n for c, n in cursor.fetchall()}
         cursor.close()
+        _write_stock_info_file_cache()
         return _name_cache["map"]
     except Exception as e:
         print(f"❌ 讀取名稱對照失敗: {e}")
@@ -4137,7 +4186,8 @@ def stock_display_name(code, inst_data=None, fallback=None):
     return fallback or STOCK_NAME_MAP.get(code, code)
 
 def get_industry_map(force_reload=False):
-    """回傳 {代號: 產業別}。讀一次就快取在記憶體，避免每次選股都查資料庫。"""
+    """回傳 {代號: 產業別}。讀一次就快取在記憶體，並跨 worker 重用檔案快照。"""
+    _load_stock_info_file_cache()
     if _industry_cache["map"] is not None and not force_reload:
         return _industry_cache["map"]
 
@@ -4148,6 +4198,7 @@ def get_industry_map(force_reload=False):
         rows = cursor.fetchall()
         cursor.close()
         _industry_cache["map"] = {code: ind for code, ind in rows}
+        _write_stock_info_file_cache()
         return _industry_cache["map"]
     except Exception as e:
         print(f"❌ 讀取產業別失敗: {e}")
