@@ -8613,7 +8613,7 @@ def render_quote_block():
             f'<div class="quote">{"".join(blocks)}</div>')
 
 
-def render_loading_shell(title, nav_active, stages, note=""):
+def render_loading_shell(title, nav_active, stages, note="", staged=False):
     """
     先秒回的「殼」：導覽列、進度條、投資語錄都立刻出現，
     真正的內容再由瀏覽器另外去要（fragment=1），回來後替換掉這一塊。
@@ -8626,6 +8626,12 @@ def render_loading_shell(title, nav_active, stages, note=""):
     stages 是階段文字清單，會依序顯示。
     """
     stages_js = ",".join(f'"{s}"' for s in stages)
+    staged_literal = "true" if staged else "false"
+    fast_suffix = "\n          + '&fast=1'" if staged else ""
+    detail_status_html = (
+        '<div id="detail-status" class="load-note" '
+        'style="display:none;margin:8px 0 0">正在補上即時持股分析…</div>'
+        if staged else "")
     shell = f"""
 <div id="loading" class="loading">
   <div class="load-track"><div class="load-bar" id="loadbar"></div></div>
@@ -8637,6 +8643,7 @@ def render_loading_shell(title, nav_active, stages, note=""):
   <div class="load-note">{note}</div>
 </div>
 <div id="content"></div>
+{detail_status_html}
 <script>
 (function () {{
   var stages = [{stages_js}];
@@ -8673,13 +8680,35 @@ def render_loading_shell(title, nav_active, stages, note=""):
     bar.style.width = '100%';
     pctEl.textContent = '100%';
     setTimeout(function () {{
-      document.getElementById('content').innerHTML = html;
+      var content = document.getElementById('content');
+      content.innerHTML = html;
       document.getElementById('loading').style.display = 'none';
+      if ({staged_literal}) {{
+        var status = document.getElementById('detail-status');
+        if (status) status.style.display = 'block';
+        var detailUrl = window.location.pathname + window.location.search
+                      + (window.location.search ? '&' : '?') + 'fragment=1&detail=1';
+        fetch(detailUrl, {{ credentials: 'same-origin' }})
+          .then(function (r) {{
+            if (r.status === 401) throw new Error('登入狀態已失效');
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.text();
+          }})
+          .then(function (detailHtml) {{
+            content.innerHTML = detailHtml;
+            if (status) status.style.display = 'none';
+          }})
+          .catch(function (e) {{
+            // 首屏快照已經可用；深度分析失敗只提示，不把首屏清空。
+            if (status) status.textContent = '完整持股分析暫時載入失敗，請稍後重新整理。';
+            console.error(e);
+          }});
+      }}
     }}, 70);
   }}
 
   var url = window.location.pathname + window.location.search
-          + (window.location.search ? '&' : '?') + 'fragment=1';
+          + (window.location.search ? '&' : '?') + 'fragment=1'{fast_suffix};
 
   fetch(url, {{ credentials: 'same-origin' }})
     .then(function (r) {{
@@ -8961,6 +8990,43 @@ def web_premarket(uid):
     return render_page("盤前變化", body, nav_active="premarket")
 
 
+
+def render_positions_fast_summary(uid):
+    """持股頁首屏只讀資料庫，避免等待外部報價才顯示已有持股。"""
+    positions = merge_positions(get_positions(uid))
+    style = '''<style>
+.position-fast-card{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}
+.position-fast-card h2{margin:0 0 12px;font-size:20px}
+.position-fast-row{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}
+.position-fast-row:first-of-type{border-top:0}
+.position-fast-row b{display:block;font-size:15px}
+.position-fast-row small,.position-fast-note{color:var(--ink-soft);font-size:12px}
+.position-fast-empty{padding:10px 0;color:var(--ink-soft);line-height:1.6}
+</style>'''
+    if not positions:
+        return style + '''<section class="position-fast-card">
+  <h2>我的持股</h2>
+  <div class="position-fast-empty"><b>目前還沒有持股紀錄</b><br>
+    可以到持股頁新增股票；即時價格與損益會在有資料後顯示。</div>
+</section>'''
+    rows = []
+    for p in positions:
+        code = html.escape(str(p.get("code", "")))
+        name = html.escape(str(stock_display_name(p.get("code", ""))))
+        shares = int(p.get("shares") or 0)
+        cost = float(p.get("cost") or 0)
+        rows.append(
+            f'''<div class="position-fast-row">
+  <div><b>{name} <span class="code">{code}</span></b>
+    <small>{shares:,} 股・成本 {cost:,.2f}／股・即時報價載入中…</small></div>
+</div>''')
+    return style + f'''<section class="position-fast-card">
+  <h2>我的持股 <small class="position-fast-note">先顯示已儲存資料</small></h2>
+  {"".join(rows)}
+  <div class="position-fast-empty">正在補上即時價格、損益與走勢資料…</div>
+</section>'''
+
+
 @app.route("/web/positions", methods=["GET", "POST"])
 @web_login_required
 def web_positions(uid):
@@ -8971,7 +9037,11 @@ def web_positions(uid):
         return render_loading_shell(
             "持股", "positions",
             ["正在讀取你的持股…", "正在抓即時報價…", "正在計算損益與權重…"],
-            note="報價來自 Yahoo Finance，逐檔抓取需要一點時間。")
+            note="先顯示已儲存持股，再補上即時價格與損益。",
+            staged=True)
+
+    if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1":
+        return respond_page("持股", render_positions_fast_summary(uid), "positions")
 
     # 手續費設定要在處理賣出之前先讀出來，賣出當下記錄的已實現損益
     # 才能用使用者自己的折扣／最低收費計算，跟畫面上其他地方口徑一致。
@@ -10824,7 +10894,7 @@ def render_portfolio_fast_summary(uid):
 <section class="daily-fast-card"><div class="daily-fast-title"><h2>🏆 我的排名變化</h2><a href="/web/leaderboard" style="color:var(--brass);font-size:12px">查看排行榜 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section>'''
 
 
-def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total):
+def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total, taiex=None):
     # 新版首頁上半部：先講今天，再提供完整分析入口。
     calendar_today = taiwan_today()
     display_date = _premarket_display_date(calendar_today)
@@ -10832,7 +10902,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     timeline = get_today_event_timeline(uid, display_date)
     display_snapshot = get_today_change_snapshot(display_date) or {}
     events = (timeline["new"] + timeline["ongoing"])[:3]
-    taiex = fetch_taiex_summary() or {}
+    taiex = (fetch_taiex_summary() if taiex is None else taiex) or {}
     market_pct = None
     for key in ("pct", "change_pct", "percent"):
         if taiex.get(key) is not None:
@@ -11088,7 +11158,8 @@ def web_portfolio(uid):
             ["正在讀取你的持股…", "正在抓即時報價…",
              "正在抓法人與月營收資料…", "正在計算集中度與相關係數…",
              "正在整理提醒…"],
-            note="組合分析會比對法人籌碼、月營收與估值，資料量較大。")
+            note="先顯示已完成快照，再補上即時持股分析。",
+            staged=True)
 
     msg = ""
     if request.method == "POST" and not valid_web_csrf():
@@ -11105,6 +11176,12 @@ def web_portfolio(uid):
 
     profile = get_profile(uid)
     risk_card = render_risk_card(profile, msg)
+
+    # 快速片段只讀資料庫快照與排名，讓今日首頁先可用；完整片段再補即時行情。
+    if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1":
+        if not is_profile_complete(profile):
+            return respond_page("今日", risk_card, "portfolio")
+        return respond_page("今日", render_portfolio_fast_summary(uid), "portfolio")
 
     # 問卷沒填完就只給問卷。組合分析的價值有一大半來自依你的處境判讀，
     # 少了那些答案，剩下的數字誰看都一樣，沒有必要先給。
@@ -11131,10 +11208,27 @@ def web_portfolio(uid):
 
     th = get_thresholds(profile)
     fee_disc, min_fee = get_fee_settings(profile)
-    inst = fetch_institutional_data() or {}
-    revenue = fetch_monthly_revenue() or {}
-    valuation = fetch_valuation() or {}
-    ind_map = get_industry_map() or {}
+
+    # 這五份共享資料彼此獨立；並行抓取可把等待時間從各次網路延遲總和
+    # 降到最慢的一次。每個 loader 失敗只回空資料，不影響其他分析區塊。
+    def safe_shared_loader(label, loader):
+        try:
+            return loader() or {}
+        except Exception as exc:
+            print(f"⚠️ 今日共享資料載入失敗 {label}: {exc}")
+            return {}
+
+    shared_loaders = [
+        ("法人", fetch_institutional_data),
+        ("月營收", fetch_monthly_revenue),
+        ("估值", fetch_valuation),
+        ("產業", get_industry_map),
+        ("大盤", fetch_taiex_summary),
+    ]
+    with ThreadPoolExecutor(max_workers=len(shared_loaders)) as ex:
+        shared_values = list(ex.map(
+            lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
+    inst, revenue, valuation, ind_map, taiex = shared_values
 
     price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
     total_value, total_cost = 0.0, 0.0
@@ -11281,7 +11375,7 @@ def web_portfolio(uid):
     realized_html = render_realized_summary(uid, inst)
 
     daily_top = render_daily_home_top(uid, holdings, total_value, total_cost,
-                                      price_map, pl_total)
+                                      price_map, pl_total, taiex=taiex)
     body = f"""
 {daily_top}
 <details class="risk-collapse"><summary>查看我的風險輪廓</summary>
@@ -11317,6 +11411,7 @@ CATEGORY_NOTE = {
 # 那才是最勸退的地方：第一次慢還能接受，每調一個條件都慢就不會有人用了。
 _screener_cache = {}
 SCREENER_CACHE_SECONDS = 300   # 盤中五分鐘內的報價差異對選股結論沒有影響
+_screener_compute_lock = threading.Lock()
 
 
 def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map=None):
@@ -11332,111 +11427,119 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map
     if hit and now - hit["at"] < SCREENER_CACHE_SECONDS:
         return hit["rows"], hit["skipped"], hit["momentum"]
 
-    inst = fetch_institutional_data() or {} if inst is None else inst
-    revenue = fetch_monthly_revenue() or {} if revenue is None else revenue
-    valuation = fetch_valuation() or {} if valuation is None else valuation
-    ind_map = get_industry_map() or {} if ind_map is None else ind_map
-    momentum = get_industry_momentum(revenue, ind_map)
+    # 快取失效時只允許一個 worker 進行全量選股；其他請求等候後重新命中快取，
+    # 避免朋友同時開啟選股台時重複打 Yahoo／資料庫並放大延遲。
+    with _screener_compute_lock:
+        now = time.time()
+        hit = _screener_cache.get(mode)
+        if hit and now - hit["at"] < SCREENER_CACHE_SECONDS:
+            return hit["rows"], hit["skipped"], hit["momentum"]
 
-    # ── 候選池 ──
-    if mode == "radar":
-        # 雷達看的是「今天什麼在動」，不分類股——
-        # 傳產或金融只要帶量突破一樣值得注意，沒有理由先切掉。
-        pool = [(c, i) for c, i in inst.items()
-                if len(c) == 4 and c.isdigit() and not c.startswith("00")
-                and i["total_net_lots"] > 0]
-        pool.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
-        pool = [(c, {"name": i.get("name", c), "total_net_lots": i["total_net_lots"],
-                     "cum_lots": i["total_net_lots"], "buy_days": 1})
-                for c, i in pool[:120]]
-    else:
-        # 候選池＝三類各自取前 N 名後合併成一份排行。
-        # 不用單一全市場排行：電子股的買超量級遠大於傳產與金融，
-        # 混在一起排名時非電子類會被整批擠掉；
-        # 但也不該讓使用者自己切類別，切到空頁面同樣沒有意義。
-        # 各類取完再合併，既保證每類都有代表，又只需要看一份清單。
-        quota = {"電子": 90, "傳產": 60, "金融": 30}
-        pool = []
-        for cat, n_take in quota.items():
-            cat_codes = [c for c in ind_map if stock_category(c, ind_map) == cat]
-            if not cat_codes:
+        inst = fetch_institutional_data() or {} if inst is None else inst
+        revenue = fetch_monthly_revenue() or {} if revenue is None else revenue
+        valuation = fetch_valuation() or {} if valuation is None else valuation
+        ind_map = get_industry_map() or {} if ind_map is None else ind_map
+        momentum = get_industry_momentum(revenue, ind_map)
+
+        # ── 候選池 ──
+        if mode == "radar":
+            # 雷達看的是「今天什麼在動」，不分類股——
+            # 傳產或金融只要帶量突破一樣值得注意，沒有理由先切掉。
+            pool = [(c, i) for c, i in inst.items()
+                    if len(c) == 4 and c.isdigit() and not c.startswith("00")
+                    and i["total_net_lots"] > 0]
+            pool.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
+            pool = [(c, {"name": i.get("name", c), "total_net_lots": i["total_net_lots"],
+                         "cum_lots": i["total_net_lots"], "buy_days": 1})
+                    for c, i in pool[:120]]
+        else:
+            # 候選池＝三類各自取前 N 名後合併成一份排行。
+            # 不用單一全市場排行：電子股的買超量級遠大於傳產與金融，
+            # 混在一起排名時非電子類會被整批擠掉；
+            # 但也不該讓使用者自己切類別，切到空頁面同樣沒有意義。
+            # 各類取完再合併，既保證每類都有代表，又只需要看一份清單。
+            quota = {"電子": 90, "傳產": 60, "金融": 30}
+            pool = []
+            for cat, n_take in quota.items():
+                cat_codes = [c for c in ind_map if stock_category(c, ind_map) == cat]
+                if not cat_codes:
+                    continue
+                for c, nm, cl, bd in get_cumulative_net_buy(
+                        days=10, top_n=n_take, codes=cat_codes):
+                    pool.append((c, {
+                        "name": nm,
+                        "total_net_lots": inst.get(c, {}).get("total_net_lots", 0),
+                        "cum_lots": cl, "buy_days": bd}))
+
+        streaks = get_consecutive_days_batch([c for c, _ in pool])
+
+        # 流動性門檻依「個股所屬類別」判斷：
+        # 傳產與金融的成交金額天生低於電子股，用同一組門檻會整批被濾掉。
+        LIQUIDITY = {"電子": (10, 1.0), "傳產": (8, 0.3), "金融": (8, 0.3)}
+
+        rows, skipped_liquidity = [], 0
+        # 選股台的候選池動輒上百檔，序列請求是這一頁最大的延遲來源。
+        # 這裡開比較多執行緒——一次把整池抓完，總時間才不會隨檔數線性增加。
+        pool_prices = get_realtime_stocks_bulk([c for c, _ in pool], workers=16)
+        for code, info in pool:
+            price = pool_prices.get(code)
+            if not price or abs(price["pct"]) > 10.5:
                 continue
-            for c, nm, cl, bd in get_cumulative_net_buy(
-                    days=10, top_n=n_take, codes=cat_codes):
-                pool.append((c, {
-                    "name": nm,
-                    "total_net_lots": inst.get(c, {}).get("total_net_lots", 0),
-                    "cum_lots": cl, "buy_days": bd}))
+            min_close, min_turnover = LIQUIDITY.get(
+                stock_category(code, ind_map), (8, 0.3))
+            if price["close"] < min_close:
+                skipped_liquidity += 1
+                continue
+            turnover = calc_turnover_billion(price["close"], price["volume"])
+            if turnover < min_turnover:
+                skipped_liquidity += 1
+                continue
+            if mode == "radar" and price["pct"] < 1.5:
+                continue
 
-    streaks = get_consecutive_days_batch([c for c, _ in pool])
+            cum_yoy = revenue.get(code, {}).get("cum_yoy_pct")
+            streak = streaks.get(code, 0)
+            ind_code = ind_map.get(code)
+            ind_txt = industry_name(ind_code) if ind_code else "未分類"
+            industry_stats = momentum.get(ind_code) if ind_code else None
 
-    # 流動性門檻依「個股所屬類別」判斷：
-    # 傳產與金融的成交金額天生低於電子股，用同一組門檻會整批被濾掉。
-    LIQUIDITY = {"電子": (10, 1.0), "傳產": (8, 0.3), "金融": (8, 0.3)}
+            sc = score_stock_by_category(
+                code, ind_map, price, cum_yoy, valuation.get(code, {}),
+                streak, info["cum_lots"], turnover, momentum)
+            pe, pb, dy = sc["pe"], sc["pb"], sc["yield"]
+            peg = sc.get("peg")
+            total = sc["total"]
+            rev_score = sc.get("rev", 0); val_score = sc.get("val", 0)
+            mom_score = sc.get("mom", 0); streak_score = sc.get("streak_score", 0)
+            chip_tech = sc.get("chip", 0); caps = sc.get("caps", ("", "", "", "", ""))
 
-    rows, skipped_liquidity = [], 0
-    # 選股台的候選池動輒上百檔，序列請求是這一頁最大的延遲來源。
-    # 這裡開比較多執行緒——一次把整池抓完，總時間才不會隨檔數線性增加。
-    pool_prices = get_realtime_stocks_bulk([c for c, _ in pool], workers=16)
-    for code, info in pool:
-        price = pool_prices.get(code)
-        if not price or abs(price["pct"]) > 10.5:
-            continue
-        min_close, min_turnover = LIQUIDITY.get(
-            stock_category(code, ind_map), (8, 0.3))
-        if price["close"] < min_close:
-            skipped_liquidity += 1
-            continue
-        turnover = calc_turnover_billion(price["close"], price["volume"])
-        if turnover < min_turnover:
-            skipped_liquidity += 1
-            continue
-        if mode == "radar" and price["pct"] < 1.5:
-            continue
+            breakout = ""
+            if price.get("high_60d") and price["close"] >= price["high_60d"]:
+                breakout = "季線新高"
+            elif price.get("high_20d") and price["close"] >= price["high_20d"]:
+                breakout = "破月高"
 
-        cum_yoy = revenue.get(code, {}).get("cum_yoy_pct")
-        streak = streaks.get(code, 0)
-        ind_code = ind_map.get(code)
-        ind_txt = industry_name(ind_code) if ind_code else "未分類"
-        industry_stats = momentum.get(ind_code) if ind_code else None
+            rows.append({
+                "code": code, "name": info["name"], "industry": ind_txt,
+                "close": price["close"], "pct": price["pct"], "score": total,
+                "rev": rev_score, "val": val_score, "mom": mom_score,
+                "streak": streak, "streak_score": streak_score, "chip": chip_tech,
+                "cum_yoy": cum_yoy, "pe": pe, "pb": pb, "yield": dy,
+                "peg": peg, "turnover": turnover, "caps": caps,
+                "category": sc["category"],
+                "cum_lots": info["cum_lots"], "buy_days": info["buy_days"],
+                "breakout": breakout, "vol_ratio": price.get("vol_ratio"),
+                "pos": price.get("pos_vs_60d_high"),
+                "up_streak": price.get("up_streak", 0),
+                "data_quality": build_screener_data_quality(
+                    cum_yoy, valuation.get(code, {}), industry_stats,
+                    info.get("cum_lots"), price),
+                "radar_state": classify_radar_state(price),
+            })
 
-        sc = score_stock_by_category(
-            code, ind_map, price, cum_yoy, valuation.get(code, {}),
-            streak, info["cum_lots"], turnover, momentum)
-        pe, pb, dy = sc["pe"], sc["pb"], sc["yield"]
-        peg = sc.get("peg")
-        total = sc["total"]
-        rev_score = sc.get("rev", 0); val_score = sc.get("val", 0)
-        mom_score = sc.get("mom", 0); streak_score = sc.get("streak_score", 0)
-        chip_tech = sc.get("chip", 0); caps = sc.get("caps", ("", "", "", "", ""))
-
-        breakout = ""
-        if price.get("high_60d") and price["close"] >= price["high_60d"]:
-            breakout = "季線新高"
-        elif price.get("high_20d") and price["close"] >= price["high_20d"]:
-            breakout = "破月高"
-
-        rows.append({
-            "code": code, "name": info["name"], "industry": ind_txt,
-            "close": price["close"], "pct": price["pct"], "score": total,
-            "rev": rev_score, "val": val_score, "mom": mom_score,
-            "streak": streak, "streak_score": streak_score, "chip": chip_tech,
-            "cum_yoy": cum_yoy, "pe": pe, "pb": pb, "yield": dy,
-            "peg": peg, "turnover": turnover, "caps": caps,
-            "category": sc["category"],
-            "cum_lots": info["cum_lots"], "buy_days": info["buy_days"],
-            "breakout": breakout, "vol_ratio": price.get("vol_ratio"),
-            "pos": price.get("pos_vs_60d_high"),
-            "up_streak": price.get("up_streak", 0),
-            "data_quality": build_screener_data_quality(
-                cum_yoy, valuation.get(code, {}), industry_stats,
-                info.get("cum_lots"), price),
-            "radar_state": classify_radar_state(price),
-        })
-
-    _screener_cache[mode] = {"at": now, "rows": rows,
-                             "skipped": skipped_liquidity, "momentum": momentum}
-    return rows, skipped_liquidity, momentum
+        _screener_cache[mode] = {"at": now, "rows": rows,
+                                 "skipped": skipped_liquidity, "momentum": momentum}
+        return rows, skipped_liquidity, momentum
 
 
 def build_screener_data_quality(cum_yoy, valuation, industry_stats,
@@ -11605,6 +11708,89 @@ def build_review_body():
 </div>"""
 
 
+def _latest_pick_history_rows(mode, limit=5):
+    """選股冷啟動時只讀最近成功快照，明確標示資料日，不冒充即時結果。"""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT pick_date, code, name, rank, score, price
+            FROM pick_history
+            WHERE mode = %s
+            ORDER BY pick_date DESC, rank ASC
+            LIMIT %s
+            """,
+            (str(mode).strip(), int(limit)),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    except Exception as exc:
+        print(f"⚠️ 讀取最近選股快照失敗 {mode}: {exc}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def render_screener_fast_summary(mode):
+    """選股台首屏：快取命中顯示當前結果，否則顯示最近成功快照並等待完整更新。"""
+    label = "雷達" if mode == "radar" else "黑馬"
+    cached = _screener_cache.get(mode)
+    cached_rows = []
+    if cached and time.time() - cached.get("at", 0) < SCREENER_CACHE_SECONDS:
+        cached_rows = list(cached.get("rows") or [])[:5]
+
+    rows = []
+    if cached_rows:
+        source_label = "目前快取結果"
+        source_date = "目前快取"
+        for i, row in enumerate(cached_rows):
+            rank = int(row.get("rank") or i + 1)
+            name = html.escape(str(row.get("name") or row.get("code") or ""))
+            code = html.escape(str(row.get("code") or ""))
+            if mode != "radar":
+                detail = f"分數 {row.get('score')}"
+            else:
+                detail = str(row.get("breakout") or "雷達訊號")
+            rows.append(
+                '<div class="position-fast-row"><div><b>#' + str(rank) + ' ' + name
+                + ' <span class="code">' + code + '</span></b><small>'
+                + html.escape(detail) + '・完整結果載入中…</small></div></div>')
+    else:
+        history = _latest_pick_history_rows(mode, limit=5)
+        source_label = "最近成功快照"
+        source_date = str(history[0][0]) if history else "尚無歷史快照"
+        for i, (pick_date, code, name, rank, score, price) in enumerate(history):
+            display_rank = int(rank or i + 1)
+            display_name = html.escape(str(name or code or ""))
+            display_code = html.escape(str(code or ""))
+            detail = (f"分數 {score}" if score is not None and mode != "radar"
+                      else "最近成功結果")
+            rows.append(
+                '<div class="position-fast-row"><div><b>#' + str(display_rank)
+                + ' ' + display_name + ' <span class="code">' + display_code
+                + '</span></b><small>' + html.escape(detail)
+                + '・完整結果載入中…</small></div></div>')
+
+    if not rows:
+        rows = ['<div class="position-fast-empty">目前沒有可先顯示的快照，正在建立最新選股結果…</div>']
+    style = """<style>
+.screener-fast-card{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}
+.screener-fast-card h2{margin:0 0 5px;font-size:20px}
+.screener-fast-card .position-fast-row{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}
+.screener-fast-card .position-fast-row:first-of-type{border-top:0}
+.screener-fast-card .position-fast-row b{display:block;font-size:15px}
+.screener-fast-card .position-fast-row small,.screener-fast-note{color:var(--ink-soft);font-size:12px}
+.screener-fast-empty{padding:10px 0;color:var(--ink-soft);line-height:1.6}
+</style>"""
+    return style + f"""<section class="screener-fast-card">
+  <h2>{label}先看</h2>
+  <div class="screener-fast-note">{source_label}・資料日：{html.escape(source_date)}・正在補上完整結果</div>
+  {''.join(rows)}
+</section>"""
+
+
 @app.route("/web/screener")
 @web_login_required
 def web_screener(uid):
@@ -11622,7 +11808,11 @@ def web_screener(uid):
               "正在評分與排序…"]),
             note=("回頭比對過去推薦過的名單，需要抓這些股票的現價。"
                   if mode == "review" else
-                  "候選池涵蓋電子、傳產、金融三類，需要逐檔取得報價與量能。"))
+                  "先顯示最近成功快照，再補上最新選股結果。"),
+            staged=(mode != "review"))
+
+    if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1" and mode != "review":
+        return respond_page("選股台", render_screener_fast_summary(mode), "screener")
 
     limit = request.args.get("limit", "20")
     limit = int(limit) if limit.isdigit() and int(limit) in (10, 20, 50) else 20
