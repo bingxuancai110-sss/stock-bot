@@ -1171,6 +1171,19 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_pick_history_date
             ON pick_history (pick_date DESC, mode)
         ''')
+        # 選股完整結果快照：pick_history 只保存前5名供成效追蹤；
+        # 這張表保存 warmup 已完成的完整黑馬／雷達清單，供各 worker 快速讀取。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS screener_result_snapshots (
+                mode TEXT PRIMARY KEY,
+                snapshot_date DATE NOT NULL,
+                computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                rows_json JSONB NOT NULL,
+                skipped_liquidity INTEGER NOT NULL DEFAULT 0,
+                momentum_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                source_meta JSONB NOT NULL DEFAULT '{}'::jsonb
+            )
+        ''')
         # 排行榜成員。預設不參加，要自己填暱稱加入——
         # 排行榜會把報酬率給別人看，那跟「持股只用於你自己的分析」是兩件事，
         # 必須明確 opt-in 才不會違背當初給使用者的承諾。
@@ -1202,6 +1215,21 @@ def init_db():
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_leaderboard_rank_history
             ON leaderboard_rank_snapshots (board, user_id, snapshot_date DESC)
+        ''')
+        # 共享資料快照：跨 Gunicorn worker／重啟保存非即時、可追溯的來源資料。
+        # 網頁優先讀這裡的完整 JSON；資料日與 computed_at 一起保存，避免把舊資料冒充今天。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS shared_data_snapshots (
+                snapshot_key TEXT PRIMARY KEY,
+                data_date DATE,
+                computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                payload JSONB NOT NULL,
+                source_meta JSONB NOT NULL DEFAULT '{}'::jsonb
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_shared_data_snapshots_computed
+            ON shared_data_snapshots (computed_at DESC)
         ''')
         # 背景工作狀態。
         # 原本只存在記憶體，但那有兩個問題：gunicorn 開多個 worker 時，
@@ -4136,6 +4164,109 @@ def _write_stock_info_file_cache():
             pass
 
 
+_SHARED_SNAPSHOT_MAX_AGE = {
+    "stock_info_map": 7 * 86400,
+    "monthly_revenue": 3 * 86400,
+    "valuation": 2 * 86400,
+    "screener_blackhorse": 3 * 86400,
+    "screener_radar": 3 * 86400,
+}
+
+
+def _save_shared_data_snapshot(snapshot_key, payload, data_date=None,
+                               source_meta=None):
+    """把可追溯的非即時資料保存到 Supabase；失敗不可阻塞原本流程。"""
+    if not snapshot_key or payload is None:
+        return False
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO shared_data_snapshots
+                (snapshot_key, data_date, computed_at, payload, source_meta)
+            VALUES (%s, %s, NOW(), CAST(%s AS JSONB), CAST(%s AS JSONB))
+            ON CONFLICT (snapshot_key) DO UPDATE SET
+                data_date = EXCLUDED.data_date,
+                computed_at = EXCLUDED.computed_at,
+                payload = EXCLUDED.payload,
+                source_meta = EXCLUDED.source_meta
+            """,
+            (str(snapshot_key), data_date,
+             json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+             json.dumps(source_meta or {}, ensure_ascii=False,
+                        separators=(",", ":"))),
+        )
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as exc:
+        conn.rollback()
+        print(f"⚠️ 保存共享資料快照失敗 {snapshot_key}: {exc}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def _load_shared_data_snapshot(snapshot_key, max_age_seconds=None):
+    """讀取 Supabase 共享快照；過期、空資料或資料庫錯誤都回傳 None。"""
+    max_age = (_SHARED_SNAPSHOT_MAX_AGE.get(str(snapshot_key), 86400)
+               if max_age_seconds is None else float(max_age_seconds))
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT data_date, computed_at, payload, source_meta
+            FROM shared_data_snapshots
+            WHERE snapshot_key = %s
+            LIMIT 1
+            """,
+            (str(snapshot_key),),
+        )
+        row = cur.fetchone()
+        cur.close()
+    except Exception as exc:
+        print(f"⚠️ 讀取共享資料快照失敗 {snapshot_key}: {exc}")
+        row = None
+    finally:
+        release_db_connection(conn)
+    if not row:
+        return None
+    data_date, computed_at, payload, source_meta = row
+    try:
+        if computed_at:
+            computed_at = (computed_at if computed_at.tzinfo
+                           else computed_at.replace(tzinfo=timezone.utc))
+            age = (datetime.now(timezone.utc) - computed_at).total_seconds()
+            if age < 0 or age > max_age:
+                return None
+        if not payload:
+            return None
+        return {"data_date": data_date, "computed_at": computed_at,
+                "payload": payload, "source_meta": source_meta or {}}
+    except Exception as exc:
+        print(f"⚠️ 解析共享資料快照失敗 {snapshot_key}: {exc}")
+        return None
+
+
+def _stock_info_from_shared_snapshot():
+    snapshot = _load_shared_data_snapshot("stock_info_map")
+    if not snapshot:
+        return False
+    payload = snapshot.get("payload") or {}
+    names = payload.get("names") or {}
+    industries = payload.get("industries") or {}
+    if names:
+        _name_cache["map"] = names
+    if industries:
+        _industry_cache["map"] = industries
+    loaded = bool(names or industries)
+    if loaded:
+        print(f"⚡ stock_info 改讀 Supabase 快照（{snapshot.get('data_date') or '未標日期'}）")
+    return loaded
+
+
 def get_name_map(force_reload=False):
     """
     代號→公司名稱。來自 stock_info（含上市、上櫃、興櫃），
@@ -4144,6 +4275,9 @@ def get_name_map(force_reload=False):
     _load_stock_info_file_cache()
     if _name_cache["map"] is not None and not force_reload:
         return _name_cache["map"]
+    if not force_reload and _stock_info_from_shared_snapshot():
+        if _name_cache.get("map") is not None:
+            return _name_cache["map"]
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -4151,6 +4285,13 @@ def get_name_map(force_reload=False):
         _name_cache["map"] = {c: n for c, n in cursor.fetchall()}
         cursor.close()
         _write_stock_info_file_cache()
+        _save_shared_data_snapshot(
+            "stock_info_map",
+            {"names": _name_cache.get("map") or {},
+             "industries": _industry_cache.get("map") or {}},
+            data_date=taiwan_today(),
+            source_meta={"source": "stock_info", "kind": "names"},
+        )
         return _name_cache["map"]
     except Exception as e:
         print(f"❌ 讀取名稱對照失敗: {e}")
@@ -4190,12 +4331,15 @@ def stock_display_name(code, inst_data=None, fallback=None):
     return fallback or STOCK_NAME_MAP.get(code, code)
 
 def get_industry_map(force_reload=False):
-    """回傳 {代號: 產業別}。讀一次就快取在記憶體，並跨 worker 重用檔案快照。"""
+    """回傳 {代號: 產業別}。讀一次就快取在記憶體，並跨 worker 重用快照。"""
     _load_stock_info_file_cache()
     if _industry_cache["map"] is not None and not force_reload:
         return _industry_cache["map"]
-
+    if not force_reload and _stock_info_from_shared_snapshot():
+        if _industry_cache.get("map") is not None:
+            return _industry_cache["map"]
     conn = get_db_connection()
+
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT code, industry FROM stock_info WHERE industry IS NOT NULL AND industry <> ''")
@@ -4203,6 +4347,13 @@ def get_industry_map(force_reload=False):
         cursor.close()
         _industry_cache["map"] = {code: ind for code, ind in rows}
         _write_stock_info_file_cache()
+        _save_shared_data_snapshot(
+            "stock_info_map",
+            {"names": _name_cache.get("map") or {},
+             "industries": _industry_cache.get("map") or {}},
+            data_date=taiwan_today(),
+            source_meta={"source": "stock_info", "kind": "industries"},
+        )
         return _industry_cache["map"]
     except Exception as e:
         print(f"❌ 讀取產業別失敗: {e}")
@@ -4298,7 +4449,8 @@ def get_revenue_growth_months(codes, max_months=12):
 
 
 # --- 估值資料（TWSE 每日本益比／殖利率／股價淨值比） ---
-_valuation_cache = {"date": None, "data": {}}
+_valuation_cache = {"date": None, "data": {},
+                    "source": "none", "source_date": None}
 _VALUATION_FILE_CACHE = "/tmp/stock_bot_valuation_cache.json"
 _VALUATION_FILE_CACHE_TTL = 86400
 _valuation_file_lock = threading.Lock()
@@ -4351,8 +4503,21 @@ def fetch_valuation():
     if file_data:
         _valuation_cache["date"] = today
         _valuation_cache["data"] = file_data
+        _valuation_cache["source"] = "file"
+        _valuation_cache["source_date"] = today
         print("⚡ 估值改讀同日檔案快照，共 %s 筆" % len(file_data))
         return file_data
+
+    shared = _load_shared_data_snapshot("valuation")
+    shared_data = (shared.get("payload") if shared else None) or {}
+    if isinstance(shared_data, dict) and shared_data:
+        _valuation_cache["date"] = today
+        _valuation_cache["data"] = shared_data
+        _valuation_cache["source"] = "shared"
+        _valuation_cache["source_date"] = shared.get("data_date")
+        print("⚡ 估值改讀 Supabase 快照（來源日 %s），共 %s 筆" %
+              (shared.get("data_date") or "未標日期", len(shared_data)))
+        return shared_data
 
     def to_float(v):
         try:
@@ -4385,7 +4550,13 @@ def fetch_valuation():
     if result:
         _valuation_cache["date"] = today
         _valuation_cache["data"] = result
+        _valuation_cache["source"] = "external"
+        _valuation_cache["source_date"] = taiwan_today()
         _write_valuation_file_cache(today, result)
+        _save_shared_data_snapshot(
+            "valuation", result, data_date=taiwan_today(),
+            source_meta={"source": "TWSE+TPEx", "retrieved_on": today},
+        )
         print(f"✅ 估值資料抓取成功，共 {len(result)} 筆（含上櫃）")
     return result
 
@@ -5732,7 +5903,8 @@ def generate_morning_brief():
 
 
 # --- 月營收（TWSE OpenAPI t187ap05_L，全上市公司，一個月只有一期，用「資料年月」當快取key） ---
-_revenue_cache = {"period": None, "data": {}, "checked_at": 0}
+_revenue_cache = {"period": None, "data": {}, "checked_at": 0,
+                  "source": "none", "source_date": None}
 REVENUE_CACHE_CHECK_SECONDS = 600
 
 
@@ -5785,14 +5957,32 @@ def fetch_monthly_revenue():
             now - _revenue_cache.get("checked_at", 0) < REVENUE_CACHE_CHECK_SECONDS):
         return _revenue_cache["data"]
 
-    # Render 多 worker 或重啟後，記憶體快取可能是空的；先讀已保存的最新月份。
-    # 這能避免使用者請求重新等待三個外部端點，並在10分鐘後再正常確認新月份。
+    # Render 多 worker 或重啟後，記憶體快取可能是空的；先讀 Supabase
+    # 共享快照。來源月份另存在 source_meta，資料日期不拿來冒充月份。
     if not _revenue_cache["data"]:
+        shared = _load_shared_data_snapshot("monthly_revenue")
+        shared_data = (shared.get("payload") if shared else None) or {}
+        shared_period = ((shared.get("source_meta") or {}).get("period")
+                         if shared else None)
+        if isinstance(shared_data, dict) and shared_data and shared_period:
+            _revenue_cache["period"] = str(shared_period)
+            _revenue_cache["data"] = shared_data
+            _revenue_cache["checked_at"] = now
+            _revenue_cache["source"] = "shared"
+            _revenue_cache["source_date"] = shared.get("data_date")
+            print("⚡ 月營收改讀 Supabase 快照（月份 %s，來源日 %s），共 %s 筆" %
+                  (shared_period, shared.get("data_date") or "未標日期",
+                   len(shared_data)))
+            return shared_data
+
+        # 沒有共享快照時，沿用原本已保存的最新月份資料庫 fallback。
         history_data, history_period = _load_latest_revenue_history()
         if history_data:
             _revenue_cache["period"] = history_period
             _revenue_cache["data"] = history_data
             _revenue_cache["checked_at"] = now
+            _revenue_cache["source"] = "history"
+            _revenue_cache["source_date"] = None
             print("⚡ 月營收改讀資料庫最新快照（%s），共 %s 筆" %
                   (history_period or "未知月份", len(history_data)))
             return history_data
@@ -5840,8 +6030,14 @@ def fetch_monthly_revenue():
 
     _revenue_cache["period"] = period
     _revenue_cache["data"] = result
+    _revenue_cache["source"] = "external"
+    _revenue_cache["source_date"] = taiwan_today()
     print(f"✅ 月營收抓取成功（{period}），共 {len(result)} 筆（含上櫃、興櫃）")
     save_revenue_history(period, result)
+    _save_shared_data_snapshot(
+        "monthly_revenue", result, data_date=taiwan_today(),
+        source_meta={"source": "TWSE+TPEx", "period": str(period)},
+    )
     return result
 
 
@@ -7625,6 +7821,7 @@ def _warm_current_position_quotes():
 
 def _do_warmup():
     done = []
+    shared_data = {}
     for label, fn in [
         ("法人", fetch_institutional_data),
         ("月營收", fetch_monthly_revenue),
@@ -7634,10 +7831,60 @@ def _do_warmup():
     ]:
         try:
             data = fn()
+            shared_data[label] = data or {}
             done.append(f"{label} {len(data) if data else 0}")
         except Exception as e:
             print(f"❌ 預熱 {label} 失敗: {e}")
+            shared_data[label] = {}
             done.append(f"{label} 失敗")
+
+    # warmup 明確把共享資料保存一次，跨 Render worker／重啟可直接讀取。
+    # 各 loader 本身也有保存與資料庫 fallback；這裡的再次保存只在有完整資料時執行，
+    # 失敗不得讓既有 warmup 或網站功能中斷。
+    snapshot_jobs = [
+        ("monthly_revenue", shared_data.get("月營收"),
+         _revenue_cache.get("source"), _revenue_cache.get("source_date"),
+         {"period": str(_revenue_cache.get("period") or "")}),
+        ("valuation", shared_data.get("估值"),
+         _valuation_cache.get("source"), _valuation_cache.get("source_date"),
+         {}),
+    ]
+    for snapshot_key, payload, source_kind, source_date, meta in snapshot_jobs:
+        if not isinstance(payload, dict) or not payload:
+            done.append(f"{snapshot_key} 快照略過")
+            continue
+        # shared/history 是既有資料的 fallback，不刷新 computed_at，避免來源中斷時
+        # 每次 warmup 都讓舊資料永久延命；external/file 才代表本次可確認的新資料。
+        if source_kind not in ("external", "file"):
+            done.append(f"{snapshot_key} 快照保留原來源（{source_kind or '未知'}）")
+            continue
+        try:
+            saved = _save_shared_data_snapshot(
+                snapshot_key, payload, data_date=source_date or taiwan_today(),
+                source_meta={"source": f"warmup:{source_kind}", **{
+                    k: v for k, v in meta.items() if v}},
+            )
+            done.append(f"{snapshot_key} 快照{'已保存' if saved else '未保存'}")
+        except Exception as e:
+            print(f"⚠️ 預熱保存共享快照 {snapshot_key} 失敗: {e}")
+            done.append(f"{snapshot_key} 快照失敗")
+
+    names = shared_data.get("名稱對照") or {}
+    industries = shared_data.get("產業別") or {}
+    if names or industries:
+        try:
+            saved = _save_shared_data_snapshot(
+                "stock_info_map", {"names": names, "industries": industries},
+                data_date=taiwan_today(),
+                source_meta={"source": "warmup", "name_count": len(names),
+                             "industry_count": len(industries)},
+            )
+            done.append(f"stock_info 快照{'已保存' if saved else '未保存'}")
+        except Exception as e:
+            print(f"⚠️ 預熱保存 stock_info 快照失敗: {e}")
+            done.append("stock_info 快照失敗")
+    else:
+        done.append("stock_info 快照略過")
 
     # 今日完整首頁最慢的外部資料是持股即時行情；交易日先預熱到既有
     # 90 秒記憶體快取，使用者開頁時直接命中。週末不把最新收盤誤當成今日行情。
@@ -7648,13 +7895,19 @@ def _do_warmup():
         print(f"❌ 預熱持股行情失敗: {e}")
         done.append("持股行情 失敗")
 
-    # 順便把選股台的候選池也算好，使用者進來就是快取命中
+    # 順便把選股台的候選池也算好，使用者進來就是快取命中；
+    # compute_screener_rows 會在完整計算後保存 rows，若已命中持久化快照則不重掃 Yahoo。
     for mode in ("blackhorse", "radar"):
         try:
             rows, _s, _m = compute_screener_rows(mode)
-            done.append(f"{mode} {len(rows)} 檔")
+            persisted = _load_persisted_screener_snapshot(mode)
+            if persisted and _screener_snapshot_valid_for_today(persisted):
+                done.append(f"{mode} {len(rows)} 檔（快照 {persisted.get('source_date') or '未標日期'}）")
+            else:
+                done.append(f"{mode} {len(rows)} 檔（快照未命中）")
         except Exception as e:
             print(f"❌ 預熱 {mode} 失敗: {e}")
+            done.append(f"{mode} 失敗")
     return "、".join(done)
 
 
@@ -11864,6 +12117,107 @@ CATEGORY_NOTE = {
 # 選股台：黑馬／雷達的完整版
 # LINE 受限於訊息長度只能給 5 檔；網頁可以給 20 檔並支援排序篩選。
 # ============================================================
+def _load_persisted_screener_snapshot(mode):
+    """讀取專用選股完整快照；過期、格式不符或資料庫錯誤就回傳 None。"""
+    mode = str(mode).strip()
+    if mode not in ("blackhorse", "radar"):
+        return None
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT snapshot_date, computed_at, rows_json, skipped_liquidity,
+                   momentum_json, source_meta
+            FROM screener_result_snapshots
+            WHERE mode = %s
+            LIMIT 1
+            """,
+            (mode,),
+        )
+        row = cur.fetchone()
+        cur.close()
+    except Exception as exc:
+        print(f"⚠️ 讀取選股持久化快照失敗 {mode}: {exc}")
+        row = None
+    finally:
+        release_db_connection(conn)
+    if not row:
+        return None
+
+    snapshot_date, computed_at, rows, skipped, momentum, source_meta = row
+    try:
+        if computed_at:
+            computed_at = (computed_at if computed_at.tzinfo
+                           else computed_at.replace(tzinfo=timezone.utc))
+            age = (datetime.now(timezone.utc) - computed_at).total_seconds()
+            if age < 0 or age > _SHARED_SNAPSHOT_MAX_AGE.get(
+                    "screener_" + mode, 3 * 86400):
+                return None
+        if not isinstance(rows, list):
+            return None
+
+        return {
+            "rows": rows,
+            "skipped": int(skipped or 0),
+            "momentum": momentum if isinstance(momentum, dict) else {},
+            "source_date": snapshot_date,
+            "computed_at": computed_at,
+            "source_meta": source_meta or {},
+        }
+    except Exception as exc:
+        print(f"⚠️ 解析選股持久化快照失敗 {mode}: {exc}")
+        return None
+
+
+def _save_persisted_screener_snapshot(mode, rows, skipped, momentum,
+                                      source_date=None):
+    """保存 warmup 的完整選股結果；失敗不阻塞既有記憶體快取。"""
+    mode = str(mode).strip()
+    if mode not in ("blackhorse", "radar") or rows is None:
+        return False
+    effective_date = source_date or _screener_source_date()
+    if not effective_date:
+        print(f"⚠️ 選股快照 {mode} 缺少可確認的資料日，略過保存")
+        return False
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO screener_result_snapshots
+                (mode, snapshot_date, computed_at, rows_json,
+                 skipped_liquidity, momentum_json, source_meta)
+            VALUES (%s, %s, NOW(), CAST(%s AS JSONB), %s,
+                    CAST(%s AS JSONB), CAST(%s AS JSONB))
+            ON CONFLICT (mode) DO UPDATE SET
+                snapshot_date = EXCLUDED.snapshot_date,
+                computed_at = EXCLUDED.computed_at,
+                rows_json = EXCLUDED.rows_json,
+                skipped_liquidity = EXCLUDED.skipped_liquidity,
+                momentum_json = EXCLUDED.momentum_json,
+                source_meta = EXCLUDED.source_meta
+            """,
+            (mode, effective_date,
+             json.dumps(_jsonable(rows), ensure_ascii=False,
+                        separators=(",", ":")), int(skipped or 0),
+             json.dumps(_jsonable(momentum if isinstance(momentum, dict) else {}),
+                        ensure_ascii=False, separators=(",", ":")),
+             json.dumps({"source": "warmup_or_screener", "mode": mode,
+                         "row_count": len(rows)}, ensure_ascii=False,
+                        separators=(",", ":"))),
+        )
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as exc:
+        conn.rollback()
+        print(f"⚠️ 保存選股持久化快照失敗 {mode}: {exc}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
 # 選股結果快取。每個 mode 一份，存的是「還沒套使用者篩選條件」的完整清單。
 # 這一頁真正花時間的是抓上百檔報價與評分，而那份結果對所有使用者、
 # 所有篩選條件都是同一份——排序、筆數、產業、類股全是在既有清單上做取捨。
@@ -11872,6 +12226,38 @@ CATEGORY_NOTE = {
 _screener_cache = {}
 SCREENER_CACHE_SECONDS = 300   # 盤中五分鐘內的報價差異對選股結論沒有影響
 _screener_compute_lock = threading.Lock()
+
+
+def _screener_source_date():
+    """以法人實際資料日作為選股快照來源日；無法判斷時才退回台灣今日。"""
+    raw = _t86_cache.get("data_date") if isinstance(_t86_cache, dict) else None
+    if isinstance(raw, date):
+        return raw
+    text = str(raw or "").strip()
+    if len(text) == 8 and text.isdigit():
+        try:
+            return date(int(text[:4]), int(text[4:6]), int(text[6:8]))
+        except ValueError:
+            pass
+    return None
+
+
+def _screener_snapshot_valid_for_today(snapshot):
+    """只在來源日符合今日或最近週末交易日時使用，避免舊行情冒充今日。"""
+    source_date = snapshot.get("source_date") if snapshot else None
+    if isinstance(source_date, datetime):
+        source_date = source_date.date()
+    if isinstance(source_date, str):
+        try:
+            source_date = date.fromisoformat(source_date[:10])
+        except ValueError:
+            return False
+    if not isinstance(source_date, date):
+        return False
+    today = taiwan_today()
+    if source_date == today:
+        return True
+    return today.weekday() >= 5 and source_date <= today and (today - source_date).days <= 3
 
 
 def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map=None):
@@ -11887,6 +12273,23 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map
     if hit and now - hit["at"] < SCREENER_CACHE_SECONDS:
         return hit["rows"], hit["skipped"], hit["momentum"]
 
+    # Render 重啟或切到另一個 worker 時，先讀 warmup 的持久化完整結果。
+    # 只有呼叫端沒有明確帶入共享資料時才命中，避免傳入最新法人資料卻被舊快照攔截。
+    can_use_persisted = all(value is None for value in
+                            (inst, revenue, valuation, ind_map))
+    persisted = (_load_persisted_screener_snapshot(mode)
+                 if can_use_persisted else None)
+    if persisted is not None and _screener_snapshot_valid_for_today(persisted):
+        _screener_cache[mode] = {
+            "at": now, "rows": persisted["rows"],
+            "skipped": persisted["skipped"], "momentum": persisted["momentum"],
+            "source_date": persisted.get("source_date"),
+        }
+        print("⚡ %s 改讀 Supabase 完整快照（來源日 %s），共 %s 檔" %
+              (mode, persisted.get("source_date") or "未標日期",
+               len(persisted["rows"])))
+        return persisted["rows"], persisted["skipped"], persisted["momentum"]
+
     # 快取失效時只允許一個 worker 進行全量選股；其他請求等候後重新命中快取，
     # 避免朋友同時開啟選股台時重複打 Yahoo／資料庫並放大延遲。
     with _screener_compute_lock:
@@ -11894,6 +12297,20 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map
         hit = _screener_cache.get(mode)
         if hit and now - hit["at"] < SCREENER_CACHE_SECONDS:
             return hit["rows"], hit["skipped"], hit["momentum"]
+
+        # 另一個請求可能在等待鎖期間剛好保存了持久化快照，再檢查一次。
+        persisted = (_load_persisted_screener_snapshot(mode)
+                     if can_use_persisted else None)
+        if persisted is not None and _screener_snapshot_valid_for_today(persisted):
+            _screener_cache[mode] = {
+                "at": now, "rows": persisted["rows"],
+                "skipped": persisted["skipped"], "momentum": persisted["momentum"],
+                "source_date": persisted.get("source_date"),
+            }
+            print("⚡ %s 鎖內改讀 Supabase 完整快照（來源日 %s），共 %s 檔" %
+                  (mode, persisted.get("source_date") or "未標日期",
+                   len(persisted["rows"])))
+            return persisted["rows"], persisted["skipped"], persisted["momentum"]
 
         inst = fetch_institutional_data() or {} if inst is None else inst
         revenue = fetch_monthly_revenue() or {} if revenue is None else revenue
@@ -11997,8 +12414,14 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None, ind_map
                 "radar_state": classify_radar_state(price),
             })
 
+        source_date = _screener_source_date()
         _screener_cache[mode] = {"at": now, "rows": rows,
-                                 "skipped": skipped_liquidity, "momentum": momentum}
+                                 "skipped": skipped_liquidity, "momentum": momentum,
+                                 "source_date": source_date}
+        _save_persisted_screener_snapshot(
+            mode, rows, skipped_liquidity, momentum,
+            source_date=source_date,
+        )
         return rows, skipped_liquidity, momentum
 
 
@@ -12198,13 +12621,21 @@ def render_screener_fast_summary(mode):
     label = "雷達" if mode == "radar" else "黑馬"
     cached = _screener_cache.get(mode)
     cached_rows = []
+    persisted = None
     if cached and time.time() - cached.get("at", 0) < SCREENER_CACHE_SECONDS:
         cached_rows = list(cached.get("rows") or [])[:5]
+    if not cached_rows:
+        candidate = _load_persisted_screener_snapshot(mode)
+        if candidate and _screener_snapshot_valid_for_today(candidate):
+            persisted = candidate
+            cached_rows = list(candidate.get("rows") or [])[:5]
 
     rows = []
-    if cached_rows:
-        source_label = "目前快取結果"
-        source_date = "目前快取"
+    if cached_rows or persisted is not None:
+        source_label = "目前快取結果" if not persisted else "warmup 完整快照"
+        source_date = (str(cached.get("source_date") or "未標日期")
+                       if not persisted else
+                       str(persisted.get("source_date") or "未標日期"))
         for i, row in enumerate(cached_rows):
             rank = int(row.get("rank") or i + 1)
             name = html.escape(str(row.get("name") or row.get("code") or ""))
@@ -12323,15 +12754,27 @@ def web_screener(uid):
 <span style="font-size:12.5px">選股台每次要掃描上百檔股票並逐檔取得報價，
 短時間內重複查詢會影響其他使用者。</span></div>""", "screener")
 
-    inst = fetch_institutional_data()
-    if not inst:
-        return respond_page("選股台", """
+    # 先嘗試跨 worker 的完整快照；命中時不再先抓法人或逐檔 Yahoo 行情。
+    # 若快照不存在、過期或來源日不合規，才走原本完整掃描流程。
+    persisted = _load_persisted_screener_snapshot(mode)
+    persisted_hit = bool(persisted and _screener_snapshot_valid_for_today(persisted))
+    inst = None
+    ind_map = {}
+    if persisted_hit:
+        rows, skipped_liquidity, momentum = compute_screener_rows(mode)
+        source_note = (f'資料來源：warmup 完成快照，資料日 '
+                       f'{persisted.get("source_date") or "未標日期"}')
+    else:
+        inst = fetch_institutional_data()
+        if not inst:
+            return respond_page("選股台", """
 <div class="empty">目前無法取得三大法人資料。<br>
 可能是非交易時段或資料尚未公布，請稍後再試。</div>""", "screener")
-
-    ind_map = get_industry_map() or {}
-    rows, skipped_liquidity, momentum = compute_screener_rows(
-        mode, inst=inst, ind_map=ind_map)
+        ind_map = get_industry_map() or {}
+        rows, skipped_liquidity, momentum = compute_screener_rows(
+            mode, inst=inst, ind_map=ind_map)
+        source_note = (f'資料來源：本次完整計算，資料日 '
+                       f'{_screener_source_date()}')
     rows = list(rows)   # 複製一份再篩選排序，避免就地排序動到快取裡那份
 
     # ── 篩選 ──
@@ -12638,6 +13081,28 @@ def web_screener(uid):
     per_sector = 2 if limit >= 20 else 1
     if mode == "radar":
         view = "list"   # 雷達不看產業動能，依產業檢視對它沒有意義
+    if view == "sector" and not ind_map:
+        # 持久化 rows 已含產業名稱；只有依產業檢視需要補讀產業代碼對照，
+        # 不讓預設總排行為了非必要資訊再等待共享資料。
+        ind_map = get_industry_map() or {}
+        by_ind = {}
+        for r in rows:
+            by_ind.setdefault(r["industry"], []).append(r)
+        ranked_inds = []
+        for ind_txt, members in by_ind.items():
+            members.sort(key=lambda x: (x["score"] or -1), reverse=True)
+            code_of = next((c for c, v in ind_map.items()
+                            if industry_name(v) == ind_txt), None)
+            st = momentum.get(ind_map.get(code_of)) if code_of else None
+            ranked_inds.append({"name": ind_txt, "p75": st["p75"] if st else None,
+                                "median": st["median"] if st else None,
+                                "count": st["count"] if st else None,
+                                "members": members})
+        ranked_inds.sort(key=lambda x: (x["p75"] is not None,
+                                        x["p75"] if x["p75"] is not None else 0),
+                         reverse=True)
+        sector_blocks = ranked_inds
+
     if view == "sector":
         main_html = ("".join(sector_block(b, per_sector) for b in sector_blocks)
                      or '<div class="empty">沒有符合條件的標的，試著放寬篩選。</div>')
@@ -12674,7 +13139,8 @@ def web_screener(uid):
   if mode != 'radar' else
   '當日法人買超且漲幅 1.5% 以上，涵蓋全部類股。雷達看的是型態與位階，'
   '不給綜合分數——「今天什麼在動」跟「什麼值得抱幾個月」是兩個問題。'}{
-  '　產業依「領先群營收年增率」由高至低排列。' if view == 'sector' else ''}</div>
+  '　產業依「領先群營收年增率」由高至低排列。' if view == 'sector' else ''}<br>
+  <span class="source-note">{html.escape(source_note)}</span></div>
 
 <div class="dist">{radar_dist if mode == "radar" else (fin_dist if cat_filter == "金融" else dist_html + cat_html)}<span class="dist-note">{count_note}</span></div>
 {controls}
