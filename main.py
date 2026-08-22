@@ -11158,8 +11158,7 @@ def web_portfolio(uid):
             ["正在讀取你的持股…", "正在抓即時報價…",
              "正在抓法人與月營收資料…", "正在計算集中度與相關係數…",
              "正在整理提醒…"],
-            note="先顯示已完成快照，再補上即時持股分析。",
-            staged=True)
+            note="一次整理完整今日內容：持股、即時行情、今日判讀與排名。")
 
     msg = ""
     if request.method == "POST" and not valid_web_csrf():
@@ -11177,12 +11176,8 @@ def web_portfolio(uid):
     profile = get_profile(uid)
     risk_card = render_risk_card(profile, msg)
 
-    # 快速片段只讀資料庫快照與排名，讓今日首頁先可用；完整片段再補即時行情。
-    if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1":
-        if not is_profile_complete(profile):
-            return respond_page("今日", risk_card, "portfolio")
-        return respond_page("今日", render_portfolio_fast_summary(uid), "portfolio")
-
+    # 今日首頁恢復一次取得完整內容；後端的行情短快取與共享資料平行載入仍保留。
+    # 這樣使用者不會先看到一個只有摘要的首頁，再等第二次 fragment 替換。
     # 問卷沒填完就只給問卷。組合分析的價值有一大半來自依你的處境判讀，
     # 少了那些答案，剩下的數字誰看都一樣，沒有必要先給。
     if not is_profile_complete(profile):
@@ -11734,7 +11729,7 @@ def _latest_pick_history_rows(mode, limit=5):
 
 
 def render_screener_fast_summary(mode):
-    """選股台首屏：快取命中顯示當前結果，否則顯示最近成功快照並等待完整更新。"""
+    """選股台首屏：清楚標示這是前五名預覽，完整清單仍會自動載入。"""
     label = "雷達" if mode == "radar" else "黑馬"
     cached = _screener_cache.get(mode)
     cached_rows = []
@@ -11756,7 +11751,7 @@ def render_screener_fast_summary(mode):
             rows.append(
                 '<div class="position-fast-row"><div><b>#' + str(rank) + ' ' + name
                 + ' <span class="code">' + code + '</span></b><small>'
-                + html.escape(detail) + '・完整結果載入中…</small></div></div>')
+                + html.escape(detail) + '</small></div></div>')
     else:
         history = _latest_pick_history_rows(mode, limit=5)
         source_label = "最近成功快照"
@@ -11771,23 +11766,51 @@ def render_screener_fast_summary(mode):
                 '<div class="position-fast-row"><div><b>#' + str(display_rank)
                 + ' ' + display_name + ' <span class="code">' + display_code
                 + '</span></b><small>' + html.escape(detail)
-                + '・完整結果載入中…</small></div></div>')
+                + '</small></div></div>')
 
     if not rows:
-        rows = ['<div class="position-fast-empty">目前沒有可先顯示的快照，正在建立最新選股結果…</div>']
+        rows = ['<div class="position-fast-empty">目前沒有可先顯示的快照；完整選股分析仍在建立中。</div>']
+
     style = """<style>
 .screener-fast-card{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}
 .screener-fast-card h2{margin:0 0 5px;font-size:20px}
 .screener-fast-card .position-fast-row{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}
 .screener-fast-card .position-fast-row:first-of-type{border-top:0}
 .screener-fast-card .position-fast-row b{display:block;font-size:15px}
-.screener-fast-card .position-fast-row small,.screener-fast-note{color:var(--ink-soft);font-size:12px}
+.screener-fast-card .position-fast-row small{color:var(--ink-soft);font-size:12px}
+.screener-fast-note{color:var(--ink-soft);font-size:12px;line-height:1.6}
+.screener-fast-state{display:flex;gap:10px;align-items:flex-start;margin:14px 0;padding:12px;border-radius:9px;background:#F5F0E5;border-left:3px solid var(--brass)}
+.screener-fast-state-mark{width:9px;height:9px;margin-top:5px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 4px rgba(139,105,52,.12)}
+.screener-fast-state b{display:block;color:var(--ink);font-size:14px}
+.screener-fast-state span{display:block;margin-top:3px;color:var(--ink-soft);font-size:12px;line-height:1.6}
+.screener-fast-preview{margin-top:16px;padding-top:12px;border-top:1px solid #e9e7e0}
+.screener-fast-preview-title{display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-bottom:3px}
+.screener-fast-preview-title b{font-size:14px;color:var(--ink)}
+.screener-fast-preview-title span{font-size:11px;color:var(--ink-faint)}
+.screener-fast-features{margin-top:14px;padding:11px 12px;background:#FAFAF7;border:1px dashed #d9d6ca;border-radius:8px;color:var(--ink-soft);font-size:12px;line-height:1.7}
+.screener-fast-features b{display:block;color:var(--ink);font-size:12.5px;margin-bottom:3px}
+.screener-fast-skeleton{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.screener-fast-skeleton span{height:20px;width:70px;border-radius:999px;background:#EDEDE8}
 .screener-fast-empty{padding:10px 0;color:var(--ink-soft);line-height:1.6}
 </style>"""
-    return style + f"""<section class="screener-fast-card">
-  <h2>{label}先看</h2>
-  <div class="screener-fast-note">{source_label}・資料日：{html.escape(source_date)}・正在補上完整結果</div>
-  {''.join(rows)}
+    return style + f"""<section class="screener-fast-card" aria-live="polite">
+  <h2>{label}選股分析</h2>
+  <div class="screener-fast-note">{source_label}・資料日：{html.escape(source_date)}</div>
+  <div class="screener-fast-state">
+    <span class="screener-fast-state-mark" aria-hidden="true"></span>
+    <div><b>完整{label}分析載入中</b>
+      <span>目前先顯示前 5 名預覽；系統正在補上完整清單、評分、型態、篩選、排序與產業分布。</span>
+    </div>
+  </div>
+  <div class="screener-fast-preview">
+    <div class="screener-fast-preview-title"><b>前 5 名預覽</b><span>不是完整選股結果</span></div>
+    {''.join(rows)}
+  </div>
+  <div class="screener-fast-features">
+    <b>完整選股頁稍後會顯示</b>
+    完整清單 ・ 分數與資料完整度 ・ 黑馬／雷達條件 ・ 篩選與排序 ・ 產業分布
+    <div class="screener-fast-skeleton" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+  </div>
 </section>"""
 
 
