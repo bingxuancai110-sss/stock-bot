@@ -5635,6 +5635,43 @@ def generate_morning_brief():
 _revenue_cache = {"period": None, "data": {}, "checked_at": 0}
 REVENUE_CACHE_CHECK_SECONDS = 600
 
+
+def _load_latest_revenue_history():
+    """讀取資料庫已保存的最新月營收快照，不把資料庫內容冒充成今日更新。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT r.code, r.period, r.yoy_pct, r.cum_yoy_pct,
+                   r.mom_pct, r.month_revenue
+            FROM revenue_history r
+            JOIN (SELECT MAX(period) AS latest_period FROM revenue_history) p
+              ON r.period = p.latest_period
+            ORDER BY r.code
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+    except Exception as exc:
+        print(f"⚠️ 讀取最新月營收歷史快照失敗: {exc}")
+        return {}, None
+    finally:
+        release_db_connection(conn)
+
+    if not rows:
+        return {}, None
+    period = str(rows[0][1]) if rows[0][1] is not None else None
+    data = {
+        row[0]: {
+            "yoy_pct": row[2],
+            "cum_yoy_pct": row[3],
+            "mom_pct": row[4],
+            "month_revenue": row[5],
+        }
+        for row in rows
+    }
+    return data, period
+
+
 def fetch_monthly_revenue():
     """
     抓最新一期月營收，涵蓋上市、上櫃、興櫃。
@@ -5647,6 +5684,19 @@ def fetch_monthly_revenue():
     if (_revenue_cache["data"] and
             now - _revenue_cache.get("checked_at", 0) < REVENUE_CACHE_CHECK_SECONDS):
         return _revenue_cache["data"]
+
+    # Render 多 worker 或重啟後，記憶體快取可能是空的；先讀已保存的最新月份。
+    # 這能避免使用者請求重新等待三個外部端點，並在10分鐘後再正常確認新月份。
+    if not _revenue_cache["data"]:
+        history_data, history_period = _load_latest_revenue_history()
+        if history_data:
+            _revenue_cache["period"] = history_period
+            _revenue_cache["data"] = history_data
+            _revenue_cache["checked_at"] = now
+            print("⚡ 月營收改讀資料庫最新快照（%s），共 %s 筆" %
+                  (history_period or "未知月份", len(history_data)))
+            return history_data
+
     _revenue_cache["checked_at"] = now
 
     def to_float(v):
