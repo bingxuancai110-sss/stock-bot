@@ -5581,13 +5581,23 @@ def generate_morning_brief():
 
 
 # --- 月營收（TWSE OpenAPI t187ap05_L，全上市公司，一個月只有一期，用「資料年月」當快取key） ---
-_revenue_cache = {"period": None, "data": {}}
+_revenue_cache = {"period": None, "data": {}, "checked_at": 0}
+REVENUE_CACHE_CHECK_SECONDS = 600
 
 def fetch_monthly_revenue():
     """
     抓最新一期月營收，涵蓋上市、上櫃、興櫃。
     證交所只給上市，上櫃與興櫃在櫃買中心，缺了就會出現「營收無資料」。
     """
+    # 月營收通常一天只需確認一次；原本雖然有 period 快取，
+    # 但檢查快取前仍會先打三個外部端點，導致每次完整首頁都重做網路等待。
+    # 以短期檢查節流保留資料更新能力，也避免同一程序內重複抓取。
+    now = time.time()
+    if (_revenue_cache["data"] and
+            now - _revenue_cache.get("checked_at", 0) < REVENUE_CACHE_CHECK_SECONDS):
+        return _revenue_cache["data"]
+    _revenue_cache["checked_at"] = now
+
     def to_float(v):
         try:
             return float(str(v).replace(",", ""))
