@@ -6524,10 +6524,34 @@ def cron_push_watchlist():
 
 @app.route("/cron/detect-premarket-changes", methods=["POST", "GET"])
 def cron_detect_premarket_changes():
-    """盤後資料更新完成後執行，建立下一次盤前推播所需的變化事件。"""
+    """執行盤前變化偵測；可由管理者指定一個平日資料日做安全補抓。"""
     secret = request.args.get("token")
     if secret != os.environ.get("CRON_SECRET"):
         abort(403)
+
+    requested_raw = (request.args.get("date") or "").strip()
+    today = taiwan_today()
+    if requested_raw:
+        try:
+            requested_date = date.fromisoformat(requested_raw)
+        except ValueError:
+            return "date 必須使用 YYYY-MM-DD 格式。", 400
+        if requested_date.weekday() >= 5:
+            return "指定資料日必須是台股平日，週六日不執行台股資料 Job。", 400
+        if requested_date > today:
+            return "指定資料日不能晚於台灣今天。", 400
+        # 測試只允許補抓近期資料，避免把過舊日期誤當成日常盤後批次。
+        if (today - requested_date).days > 14:
+            return "指定資料日距離今天超過 14 天，請確認日期後再試。", 400
+        job_name = f"盤前變化測試 {requested_date.isoformat()}"
+        result = run_in_background(
+            job_name,
+            lambda d=requested_date: run_daily_change_detection(d))
+        return f"已排入指定資料日測試：{requested_date.isoformat()}（不會觸發 LINE 推播）\n{result}", 200
+
+    # 正式排程若在週末被手動觸發，直接拒絕，不建立週末快照。
+    if today.weekday() >= 5:
+        return "今天不是台股交易日，未啟動盤前變化偵測；如需補抓平日，請加上 date=YYYY-MM-DD。", 400
     return run_in_background("盤前變化偵測", run_daily_change_detection), 200
 
 @app.route("/cron/fetch-t86", methods=["POST", "GET"])
