@@ -714,6 +714,51 @@ def get_today_event_timeline(user_id=None, snapshot_date=None, snapshot=None):
     }
 
 
+# 今日首頁的 fast fragment 與完整 fragment 會在數秒內連續到達；
+# 將同一位使用者、同一顯示日的快照與事件時間線短暫共用，
+# 避免兩次 fragment 重複查詢資料庫。這不是行情快取，也不改資料日期。
+_DAILY_HOME_CONTEXT_TTL = 60
+_daily_home_context_cache = {}
+_daily_home_context_lock = threading.Lock()
+
+
+def _get_daily_home_context(user_id, display_date):
+    display_date = _premarket_display_date(display_date)
+    key = (str(user_id).strip(), display_date.isoformat())
+    now = time.time()
+    with _daily_home_context_lock:
+        cached = _daily_home_context_cache.get(key)
+        if cached and now - cached.get("at", 0) < _DAILY_HOME_CONTEXT_TTL:
+            return cached["value"]
+
+    snapshot = get_today_change_snapshot(display_date)
+    timeline = get_today_event_timeline(user_id, display_date, snapshot=snapshot)
+    value = {"snapshot": snapshot, "timeline": timeline}
+    with _daily_home_context_lock:
+        _daily_home_context_cache[key] = {"at": now, "value": value}
+        if len(_daily_home_context_cache) > 500:
+            cutoff = now - _DAILY_HOME_CONTEXT_TTL * 2
+            for cache_key, entry in list(_daily_home_context_cache.items()):
+                if entry.get("at", 0) < cutoff:
+                    _daily_home_context_cache.pop(cache_key, None)
+    return value
+
+
+def _daily_signal_state(snapshot, timeline):
+    events = (timeline.get("new", []) + timeline.get("ongoing", []))
+    if not snapshot:
+        return {"kind": "not_updated", "title": "今日盤前資料尚未更新",
+                "detail": "等待每日資料快照與變化偵測完成；目前不顯示推測訊號。"}
+    if not snapshot.get("previous_trade_date"):
+        return {"kind": "baseline", "title": "已建立今日基準快照",
+                "detail": "從下一個有效交易日開始顯示排名、分數與法人方向變化。"}
+    if not events:
+        return {"kind": "quiet", "title": "今日市場訊號偏少",
+                "detail": "已完成前一交易日比較，目前沒有達到事件規則的變化。"}
+    return {"kind": "events", "title": "今日有新的市場變化",
+            "detail": f"已偵測 {len(events)} 個變化，首頁顯示優先級最高的 3 個。"}
+
+
 def build_today_change_web_data(user_id):
     """網頁顯示最近可用盤前日的完整快照與事件；LINE 只取前三項摘要。"""
     requested_date = taiwan_today()
@@ -10988,23 +11033,12 @@ def render_portfolio_fast_summary(uid):
     """今日首頁第一段：先顯示既有快照、事件與排名，並明確提示完整分析仍在整合。"""
     fast_started = time.monotonic()
     snapshot_date = _premarket_display_date(taiwan_today())
-    snapshot = get_today_change_snapshot(snapshot_date) or {}
-    snapshot_done = time.monotonic()
-    timeline = get_today_event_timeline(uid, snapshot_date, snapshot=snapshot)
-    timeline_done = time.monotonic()
+    context = _get_daily_home_context(uid, snapshot_date)
+    context_done = time.monotonic()
+    snapshot = context.get("snapshot") or {}
+    timeline = context.get("timeline") or {}
     events = (timeline.get("new", []) + timeline.get("ongoing", []))[:3]
-    if not snapshot:
-        signal_state = {"kind": "not_updated", "title": "今日盤前資料尚未更新",
-                        "detail": "等待每日資料快照與變化偵測完成；目前不顯示推測訊號。"}
-    elif not snapshot.get("previous_trade_date"):
-        signal_state = {"kind": "baseline", "title": "已建立今日基準快照",
-                        "detail": "從下一個有效交易日開始顯示排名、分數與法人方向變化。"}
-    elif not events:
-        signal_state = {"kind": "quiet", "title": "今日市場訊號偏少",
-                        "detail": "已完成前一交易日比較，目前沒有達到事件規則的變化。"}
-    else:
-        signal_state = {"kind": "events", "title": "今日有新的市場變化",
-                        "detail": f"已偵測 {len(events)} 個變化，首頁顯示優先級最高的 3 個。"}
+    signal_state = _daily_signal_state(snapshot, timeline)
 
     if events:
         event_html = "".join(
@@ -11033,10 +11067,9 @@ def render_portfolio_fast_summary(uid):
     )
 
     rank_status = get_fast_rank_summary(uid)
-    print("⏱️ 今日首頁 fast：快照 %.0fms、事件 %.0fms、排名 %.0fms、合計 %.0fms" % (
-        (snapshot_done - fast_started) * 1000,
-        (timeline_done - snapshot_done) * 1000,
-        (time.monotonic() - timeline_done) * 1000,
+    print("⏱️ 今日首頁 fast：快照＋事件 %.0fms、排名 %.0fms、合計 %.0fms" % (
+        (context_done - fast_started) * 1000,
+        (time.monotonic() - context_done) * 1000,
         (time.monotonic() - fast_started) * 1000))
     rank_html = []
     for board in ("short", "long"):
@@ -11081,10 +11114,11 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     # 新版首頁上半部：先講今天，再提供完整分析入口。
     calendar_today = taiwan_today()
     display_date = _premarket_display_date(calendar_today)
-    signal_state = get_today_signal_state(uid, display_date)
-    timeline = get_today_event_timeline(uid, display_date)
-    display_snapshot = get_today_change_snapshot(display_date) or {}
-    events = (timeline["new"] + timeline["ongoing"])[:3]
+    context = _get_daily_home_context(uid, display_date)
+    display_snapshot = context.get("snapshot") or {}
+    timeline = context.get("timeline") or {}
+    signal_state = _daily_signal_state(display_snapshot, timeline)
+    events = (timeline.get("new", []) + timeline.get("ongoing", []))[:3]
     taiex = (fetch_taiex_summary() if taiex is None else taiex) or {}
     market_pct = None
     for key in ("pct", "change_pct", "percent"):
@@ -11405,10 +11439,15 @@ def web_portfolio(uid):
     # 這五份共享資料彼此獨立；並行抓取可把等待時間從各次網路延遲總和
     # 降到最慢的一次。每個 loader 失敗只回空資料，不影響其他分析區塊。
     def safe_shared_loader(label, loader):
+        loader_started = time.monotonic()
         try:
-            return loader() or {}
+            value = loader() or {}
+            print("⏱️ 今日共享資料：%s %.0fms" % (
+                label, (time.monotonic() - loader_started) * 1000))
+            return value
         except Exception as exc:
-            print(f"⚠️ 今日共享資料載入失敗 {label}: {exc}")
+            print("⚠️ 今日共享資料載入失敗 %s（%.0fms）：%s" % (
+                label, (time.monotonic() - loader_started) * 1000, exc))
             return {}
 
     shared_loaders = [
