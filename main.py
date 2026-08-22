@@ -8095,6 +8095,10 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .sellpanel .row-actions{display:flex;gap:9px;align-items:center;
   margin-top:11px;flex-wrap:wrap}
 .sellpanel button{margin:0;padding:8px 18px;font-size:13.5px}
+.sellpanel .cancel-link{display:inline-block;margin:0;padding:8px 16px;
+  border:1px solid var(--line);border-radius:6px;color:var(--ink-faint);
+  background:var(--paper);font-size:13.5px;text-decoration:none}
+.sellpanel .cancel-link:hover{color:var(--ink);border-color:var(--brass)}
 .sell-hint{font-size:11px;color:var(--ink-faint);margin-top:9px;line-height:1.65}
 .lot-actions{display:flex;gap:8px;margin-top:7px;flex-wrap:wrap}
 
@@ -9074,6 +9078,7 @@ def web_positions(uid):
       <input type="number" step="1" name="tax" placeholder="{est_tax}"></div>
   </div>
   <div class="row-actions">
+    <a class="cancel-link" href="/web/positions" data-no-busy="1">返回／取消</a>
     <button type="submit">確認賣出</button>
   </div>
   <div class="sell-hint">
