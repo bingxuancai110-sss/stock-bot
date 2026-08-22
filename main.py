@@ -5235,6 +5235,44 @@ def fetch_tpex_institutional():
     return result, data_date
 
 
+def _load_latest_institutional_history():
+    """從 inst_history 讀最近一個已保存的真實法人交易日。"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT h.code, h.trade_date, h.name,
+                   h.foreign_net_lots, h.trust_net_lots,
+                   h.dealer_net_lots, h.total_net_lots
+            FROM inst_history h
+            JOIN (SELECT MAX(trade_date) AS latest_date FROM inst_history) d
+              ON h.trade_date = d.latest_date
+            ORDER BY h.code
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+    except Exception as exc:
+        print(f"⚠️ 讀取最新法人歷史快照失敗: {exc}")
+        return {}, None
+    finally:
+        release_db_connection(conn)
+
+    if not rows:
+        return {}, None
+    data_date = rows[0][1].strftime("%Y%m%d") if rows[0][1] else None
+    data = {
+        row[0]: {
+            "name": row[2] or row[0],
+            "foreign_net_lots": row[3] or 0,
+            "trust_net_lots": row[4] or 0,
+            "dealer_net_lots": row[5] or 0,
+            "total_net_lots": row[6] or 0,
+        }
+        for row in rows
+    }
+    return data, data_date
+
+
 def fetch_institutional_data():
     """
     抓當日三大法人買賣超，涵蓋上市（TWSE T86）與上櫃（TPEx）。
@@ -5256,13 +5294,26 @@ def fetch_institutional_data():
     cache_fresh = _t86_cache.get("cache_date") == today and cached
     data_is_today = _t86_cache.get("data_date") == today
     last_try = _t86_cache.get("last_attempt", 0)
+
     # T86 約在收盤後陸續公布，15:00 前不必重試
     past_publish = tw_now.hour >= 15
     should_retry = (cache_fresh and not data_is_today and past_publish
                     and time.time() - last_try > 900)   # 每 15 分鐘重試一次
 
+    # 同一程序已命中且尚未進入重試窗口時直接返回，不多做資料庫查詢。
     if cache_fresh and not should_retry:
         return cached
+
+    # warmup 可能在另一個 Render worker 完成；若 DB 已有最新真實快照，
+    # 不必因為程序記憶體是空的就再次打 TWSE／TPEx。週末更不應重試外部端點，
+    # 因為資料不會在週末變成新的交易日。
+    history_data, history_date = _load_latest_institutional_history()
+    if history_data and (tw_now.weekday() >= 5 or history_date == today):
+        _t86_cache["cache_date"] = today
+        _t86_cache["data_date"] = history_date
+        _t86_cache["data"] = history_data
+        print(f"⚡ 法人改讀資料庫最新快照（{history_date}），共 {len(history_data)} 檔")
+        return history_data
 
     _t86_cache["last_attempt"] = time.time()
     merged, data_date = {}, None
