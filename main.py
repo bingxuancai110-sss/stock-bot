@@ -12466,6 +12466,44 @@ def _claim_line_event(event_key):
         release_db_connection(conn)
 
 
+_FAST_LINE_EVENT_TTL = 120
+_fast_line_event_seen = {}
+_fast_line_event_lock = threading.Lock()
+
+
+def _line_payload_is_menu(raw_body):
+    """只判斷純選單文字事件；其他 webhook 仍走資料庫跨 worker 去重。"""
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+        events = payload.get("events") or []
+        if not events:
+            return False
+        for item in events:
+            message = item.get("message") if isinstance(item, dict) else None
+            if not isinstance(message, dict) or message.get("type") != "text":
+                return False
+            if str(message.get("text", "")).strip().upper() not in {
+                    "MENU", "選單", "幫助", "HELP"}:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _claim_fast_line_event(event_key):
+    """純選單事件的短期進程內去重；避免為靜態選單回覆等待 DB。"""
+    now = time.time()
+    with _fast_line_event_lock:
+        expired = [key for key, seen_at in _fast_line_event_seen.items()
+                   if now - seen_at >= _FAST_LINE_EVENT_TTL]
+        for key in expired:
+            _fast_line_event_seen.pop(key, None)
+        if event_key in _fast_line_event_seen:
+            return False
+        _fast_line_event_seen[event_key] = now
+        return True
+
+
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -12474,7 +12512,11 @@ def callback():
         abort(400)
     try:
         event_key = _line_event_dedup_key(raw_body, signature)
-        if not _claim_line_event(event_key):
+        if _line_payload_is_menu(raw_body):
+            claimed = _claim_fast_line_event(event_key)
+        else:
+            claimed = _claim_line_event(event_key)
+        if not claimed:
             print(f"ℹ️ 忽略重複 LINE webhook：{event_key[:80]}")
             return "OK"
         handler.handle(raw_body.decode("utf-8"), signature)
@@ -12544,7 +12586,45 @@ def handle_message(event):
     text_upper = text.upper()
     pure_code = normalize_code(text)  # 保留主動式ETF的英文尾碼，如 00981A
 
+    # 「選單」是純靜態回覆，不應先等待 LINE 個人資料、使用者 upsert
+    # 或活動紀錄寫入；否則資料庫池／Supabase 短暫延遲就會讓使用者
+    # 看到訊息已送出，卻要按第二、第三次才收到選單。
+    # 先回覆，再把非必要的紀錄放到背景執行緒，維持快速且不改變功能。
+    if text_upper in ["MENU", "選單", "幫助", "HELP"]:
+        allowed, wait = rate_limit_ok(user_id, "normal")
+        if not allowed:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(
+                text=f"⏳ 選單請稍等 {wait} 秒再試。", quick_reply=build_quick_reply()))
+            return
+        try:
+            menu_reply = build_menu_flex(is_admin(user_id))
+            menu_reply.quick_reply = build_quick_reply()
+            line_bot_api.reply_message(event.reply_token, menu_reply)
+        except Exception as exc:
+            print(f"❌ 選單快速回覆失敗 {user_id}: {type(exc).__name__}: {exc}")
+            try:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="選單載入失敗，請稍後再試。", quick_reply=build_quick_reply()))
+            except Exception as fallback_exc:
+                print(f"❌ 選單 fallback 回覆失敗 {user_id}: {fallback_exc}")
+            return
+
+        def _record_menu_activity():
+            try:
+                add_user_to_db(user_id)
+                record_activity(user_id, "more", action="message", source="line")
+            except Exception as exc:
+                print(f"⚠️ 選單背景紀錄失敗 {user_id}: {exc}")
+
+        try:
+            threading.Thread(target=_record_menu_activity, daemon=True).start()
+        except Exception as exc:
+            print(f"⚠️ 選單背景紀錄執行緒啟動失敗 {user_id}: {exc}")
+        return
+
     add_user_to_db(user_id)
+
 
     # 濫用防護：耗時指令有較嚴格的上限。擋下時明確告知還要等多久，
     # 而不是靜默忽略——後者會讓人以為機器人壞了而狂點，反而更糟。
