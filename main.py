@@ -1546,10 +1546,17 @@ def build_admin_user_list_report(status="all", limit=10, offset=0):
     for i, (uid, name, last_seen, last_feature, notify, requested, count) in enumerate(rows, offset + 1):
         features = recent_features.get(str(uid).strip(), [])
         masked = f"{uid[:4]}••••{uid[-4:]}" if len(uid) > 8 else uid
+        push_state = ("🔔 盤前推播：開啟" if notify else
+                      "📮 盤前推播：申請中，待管理者開通" if requested else
+                      "🔕 盤前推播：關閉")
         lines += [f"{i}. {name}", f"   {_admin_status(last_seen)}",
                   f"   最後使用：{_admin_format_time(last_seen)}",
                   f"   最近使用：{'／'.join(features) if features else _activity_feature_label(last_feature) if last_feature else '—'}",
-                  f"   LINE：{masked}"]
+                  f"   {push_state}", f"   LINE：{masked}"]
+    if status == "all":
+        lines += ["", "─" * 14,
+                  "推播管理：輸入「開通 編號」或「停用 編號」",
+                  "例如：開通 3　／　停用 3"]
     return "\n".join(lines)
 
 
@@ -1607,8 +1614,8 @@ def set_requested(user_id, flag=True):
 
 def list_users():
     """
-    回傳所有使用者，順序固定（依 user_id 排序），
-    這樣「名單」顯示的編號跟「開通 N」用的編號才會一致。
+    回傳所有使用者，順序與管理者看到的名單一致，
+    這樣「開通 N／停用 N」的編號才不會對錯人。
     """
     conn = get_db_connection()
     try:
@@ -1616,7 +1623,7 @@ def list_users():
         cursor.execute("""
             SELECT user_id, COALESCE(display_name, '(未知)'),
                    COALESCE(notify, FALSE), COALESCE(requested, FALSE)
-            FROM users ORDER BY user_id
+            FROM users ORDER BY last_seen DESC NULLS LAST, user_id
         """)
         rows = cursor.fetchall()
         cursor.close()
@@ -1777,9 +1784,10 @@ def set_notify(user_id, flag: bool):
             "UPDATE users SET notify = %s WHERE user_id = %s",
             (flag, str(user_id).strip())
         )
+        changed = cursor.rowcount == 1
         conn.commit()
         cursor.close()
-        return True
+        return changed
     except Exception as e:
         conn.rollback()
         print(f"❌ 更新通知設定錯誤: {e}")
@@ -12045,11 +12053,14 @@ def handle_message(event):
                 ambiguous = "、".join(m[1] for m in matches[:5])
 
         if target:
-            set_notify(target[0], turn_on)
-            if turn_on:
-                set_requested(target[0], False)
-            reply = (f"{'🔔 已開通' if turn_on else '🔕 已停用'}：{target[1]}\n\n"
-                     + build_user_list_report())
+            changed = set_notify(target[0], turn_on)
+            if changed:
+                if turn_on:
+                    set_requested(target[0], False)
+                reply = (f"{'🔔 已開通' if turn_on else '🔕 已停用'}：{target[1]}\n\n"
+                         + build_admin_user_list_report(status="all", limit=10))
+            else:
+                reply = "❌ 推播設定沒有成功寫入，請稍後再試。\n\n" + build_admin_user_list_report(status="all", limit=10)
         elif ambiguous:
             reply = f"符合「{arg}」的有多人：{ambiguous}\n請改用編號，例如「開通 3」"
         else:
