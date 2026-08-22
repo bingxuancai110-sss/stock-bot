@@ -10816,7 +10816,7 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
 
 
 def render_portfolio_fast_summary(uid):
-    """今日首頁第一段：只讀既有快照、事件與排名，不抓持股即時報價。"""
+    """今日首頁第一段：先顯示既有快照、事件與排名，並明確提示完整分析仍在整合。"""
     snapshot_date = _premarket_display_date(taiwan_today())
     snapshot = get_today_change_snapshot(snapshot_date) or {}
     timeline = get_today_event_timeline(uid, snapshot_date)
@@ -10884,8 +10884,14 @@ def render_portfolio_fast_summary(uid):
             f'<b>{value}</b><span>{note}</span></div>')
 
     return f'''<style>
-.daily-fast-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:22px 18px 18px;margin:-8px -2px 14px;border-bottom:1px solid #d7d4ca}}.daily-fast-hero .eyebrow{{letter-spacing:.14em;color:var(--brass);font-size:11px}}.daily-fast-hero h1{{font-size:26px;line-height:1.25;margin:8px 0 14px}}.daily-fast-market{{display:flex;gap:8px;flex-wrap:wrap}}.daily-fast-market span{{background:rgba(255,255,255,.72);padding:8px 10px;border-radius:8px;font-size:12px}}.daily-fast-market b{{display:block;font-size:16px;margin-top:3px}}.daily-fast-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:15px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.daily-fast-title{{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}}.daily-fast-title h2{{margin:0;font-size:19px}}.daily-fast-event{{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}}.daily-fast-number{{background:var(--brass);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;flex:none;font-size:12px}}.daily-fast-detail{{font-size:12.5px;color:var(--ink-soft);margin-top:3px}}.daily-fast-empty{{padding:11px 0;color:var(--ink-soft);font-size:13px}}.daily-fast-empty span{{font-size:12px}}.daily-fast-ranks{{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}}.daily-fast-rank{{background:#f5f5f1;border-radius:8px;padding:11px}}.daily-fast-rank small,.daily-fast-rank>span{{display:block;color:var(--ink-soft);font-size:11px}}.daily-fast-rank b{{display:block;font-size:18px;margin:4px 0}}@media(max-width:640px){{.daily-fast-ranks{{grid-template-columns:1fr}}}}
-</style><section class="daily-fast-hero">
+.daily-fast-sync{{display:flex;gap:11px;align-items:flex-start;background:#F5F0E5;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:14px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-fast-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 4px rgba(139,105,52,.12);flex:none}}.daily-fast-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-fast-sync-copy span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.65}}.daily-fast-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:22px 18px 18px;margin:-8px -2px 14px;border-bottom:1px solid #d7d4ca}}.daily-fast-hero .eyebrow{{letter-spacing:.14em;color:var(--brass);font-size:11px}}.daily-fast-hero h1{{font-size:26px;line-height:1.25;margin:8px 0 14px}}.daily-fast-market{{display:flex;gap:8px;flex-wrap:wrap}}.daily-fast-market span{{background:rgba(255,255,255,.72);padding:8px 10px;border-radius:8px;font-size:12px}}.daily-fast-market b{{display:block;font-size:16px;margin-top:3px}}.daily-fast-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:15px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.daily-fast-title{{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}}.daily-fast-title h2{{margin:0;font-size:19px}}.daily-fast-event{{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}}.daily-fast-number{{background:var(--brass);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;flex:none;font-size:12px}}.daily-fast-detail{{font-size:12.5px;color:var(--ink-soft);margin-top:3px}}.daily-fast-empty{{padding:11px 0;color:var(--ink-soft);font-size:13px}}.daily-fast-empty span{{font-size:12px}}.daily-fast-ranks{{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}}.daily-fast-rank{{background:#f5f5f1;border-radius:8px;padding:11px}}.daily-fast-rank small,.daily-fast-rank>span{{display:block;color:var(--ink-soft);font-size:11px}}.daily-fast-rank b{{display:block;font-size:18px;margin:4px 0}}@media(max-width:640px){{.daily-fast-ranks{{grid-template-columns:1fr}}}}
+</style><section class="daily-fast-sync" aria-live="polite">
+  <span class="daily-fast-sync-dot" aria-hidden="true"></span>
+  <div class="daily-fast-sync-copy"><b>系統正在跑・正在整合完整首頁</b>
+    <span>這是先行摘要，不是完整首頁；即時持股、損益、貢獻／拖累與今日判讀完成後會自動補上。</span>
+  </div>
+</section>
+<section class="daily-fast-hero">
   <div class="eyebrow">TODAY · {snapshot_date.strftime('%Y / %m / %d')}</div>
   <h1>今天先看最重要的變化</h1>
   <div class="daily-fast-market">{market_html}</div>
@@ -11149,16 +11155,16 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 @app.route("/web/portfolio", methods=["GET", "POST"])
 @web_login_required
 def web_portfolio(uid):
-    # 先恢復穩定的單一 fragment 載入。上一版雙 fragment 會讓某些
-    # LINE WebView 將完整外框重複插入，造成頁首、頁尾與 loading 疊在一起。
-    # 後端行情快取仍保留，速度改善不會被撤回。
+    # 今日首頁採用單一 shell、先行摘要再完整內容的分段流程。
+    # 兩次回應都只替換同一個 content，不重複插入外框，避免 LINE WebView 疊頁。
     if request.method == "GET" and not wants_fragment():
         return render_loading_shell(
             "今日", "portfolio",
-            ["正在讀取你的持股…", "正在抓即時報價…",
-             "正在抓法人與月營收資料…", "正在計算集中度與相關係數…",
-             "正在整理提醒…"],
-            note="一次整理完整今日內容：持股、即時行情、今日判讀與排名。")
+            ["正在讀取今日摘要…", "正在整合持股與即時報價…",
+             "正在整合法人與月營收資料…", "正在計算集中度與相關係數…",
+             "正在整理完整判讀與提醒…"],
+            note="先顯示今日摘要；系統正在跑，正在整合完整即時分析。",
+            staged=True)
 
     msg = ""
     if request.method == "POST" and not valid_web_csrf():
@@ -11176,8 +11182,12 @@ def web_portfolio(uid):
     profile = get_profile(uid)
     risk_card = render_risk_card(profile, msg)
 
-    # 今日首頁恢復一次取得完整內容；後端的行情短快取與共享資料平行載入仍保留。
-    # 這樣使用者不會先看到一個只有摘要的首頁，再等第二次 fragment 替換。
+    # fast 片段只讀既有快照與排名，讓首頁先可用；完整片段再補即時行情與判讀。
+    if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1":
+        if not is_profile_complete(profile):
+            return respond_page("今日", risk_card, "portfolio")
+        return respond_page("今日", render_portfolio_fast_summary(uid), "portfolio")
+
     # 問卷沒填完就只給問卷。組合分析的價值有一大半來自依你的處境判讀，
     # 少了那些答案，剩下的數字誰看都一樣，沒有必要先給。
     if not is_profile_complete(profile):
