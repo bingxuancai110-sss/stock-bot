@@ -32,6 +32,14 @@ def taiwan_today():
     return taiwan_now().date()
 
 
+def next_taiwan_trading_day(source_date):
+    """由資料日取得下一個平日顯示日；週五會跳到下週一。"""
+    d = source_date + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
+
+
 def as_taiwan_datetime(value):
     """將 PostgreSQL 回傳的 aware 或舊版 naive 時間統一成台灣時區。"""
     if not value:
@@ -80,6 +88,7 @@ def init_premarket_change_tables():
             market JSONB NOT NULL DEFAULT '{}'::jsonb,
             news JSONB NOT NULL DEFAULT '[]'::jsonb,
             institutional JSONB NOT NULL DEFAULT '{}'::jsonb,
+            briefing_date DATE,
             created_at TIMESTAMP DEFAULT NOW()
         )
         """)
@@ -94,12 +103,36 @@ def init_premarket_change_tables():
             detail TEXT NOT NULL,
             evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
             event_key TEXT NOT NULL,
+            briefing_date DATE,
             created_at TIMESTAMP DEFAULT NOW(),
             UNIQUE(snapshot_date, user_id, event_key)
         )
         """)
         cur.execute("ALTER TABLE premarket_snapshots ADD COLUMN IF NOT EXISTS institutional JSONB NOT NULL DEFAULT '{}'::jsonb")
+        cur.execute("ALTER TABLE premarket_snapshots ADD COLUMN IF NOT EXISTS briefing_date DATE")
+        cur.execute("ALTER TABLE premarket_events ADD COLUMN IF NOT EXISTS briefing_date DATE")
+        # 舊資料以平日規則補上顯示日；新資料由程式明確寫入下一交易日。
+        cur.execute("""
+            UPDATE premarket_snapshots
+            SET briefing_date = CASE EXTRACT(ISODOW FROM snapshot_date)
+                WHEN 5 THEN snapshot_date + 3
+                WHEN 6 THEN snapshot_date + 2
+                ELSE snapshot_date + 1
+            END
+            WHERE briefing_date IS NULL
+        """)
+        cur.execute("""
+            UPDATE premarket_events
+            SET briefing_date = CASE EXTRACT(ISODOW FROM snapshot_date)
+                WHEN 5 THEN snapshot_date + 3
+                WHEN 6 THEN snapshot_date + 2
+                ELSE snapshot_date + 1
+            END
+            WHERE briefing_date IS NULL
+        """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_events_date ON premarket_events(snapshot_date, severity)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_events_briefing ON premarket_events(briefing_date, severity)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_snapshots_briefing ON premarket_snapshots(briefing_date)")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -176,19 +209,21 @@ def _save_snapshot(snapshot):
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO premarket_snapshots
-                (snapshot_date, previous_trade_date, blackhorse, radar, market, news, institutional)
-            VALUES (%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb)
+                (snapshot_date, previous_trade_date, blackhorse, radar, market, news, institutional, briefing_date)
+            VALUES (%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s)
             ON CONFLICT (snapshot_date) DO UPDATE SET
                 previous_trade_date=EXCLUDED.previous_trade_date,
                 blackhorse=EXCLUDED.blackhorse, radar=EXCLUDED.radar,
                 market=EXCLUDED.market, news=EXCLUDED.news,
-                institutional=EXCLUDED.institutional, created_at=NOW()
+                institutional=EXCLUDED.institutional,
+                briefing_date=EXCLUDED.briefing_date, created_at=NOW()
         """, (snapshot["snapshot_date"], snapshot.get("previous_trade_date"),
               json.dumps(_jsonable(snapshot["blackhorse"]), ensure_ascii=False),
               json.dumps(_jsonable(snapshot["radar"]), ensure_ascii=False),
               json.dumps(_jsonable(snapshot["market"]), ensure_ascii=False),
               json.dumps(_jsonable(snapshot["news"]), ensure_ascii=False),
-              json.dumps(_jsonable(snapshot.get("institutional", {})), ensure_ascii=False)))
+              json.dumps(_jsonable(snapshot.get("institutional", {})), ensure_ascii=False),
+              snapshot.get("briefing_date")))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -197,7 +232,7 @@ def _save_snapshot(snapshot):
         release_db_connection(conn)
 
 
-def _save_events(snapshot_date, user_id, events):
+def _save_events(snapshot_date, user_id, events, briefing_date=None):
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -206,16 +241,16 @@ def _save_events(snapshot_date, user_id, events):
         for event in events:
             cur.execute("""
                 INSERT INTO premarket_events
-                  (snapshot_date,user_id,severity,category,title,detail,evidence,event_key)
-                VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+                  (snapshot_date,user_id,severity,category,title,detail,evidence,event_key,briefing_date)
+                VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
                 ON CONFLICT (snapshot_date,user_id,event_key) DO UPDATE SET
                   severity=EXCLUDED.severity, category=EXCLUDED.category,
                   title=EXCLUDED.title, detail=EXCLUDED.detail,
-                  evidence=EXCLUDED.evidence
+                  evidence=EXCLUDED.evidence, briefing_date=EXCLUDED.briefing_date
             """, (snapshot_date, user_id, event["severity"], event["category"],
                   event["title"], event["detail"],
                   json.dumps(_jsonable(event.get("evidence", {})), ensure_ascii=False),
-                  event["event_key"]))
+                  event["event_key"], briefing_date))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -375,8 +410,8 @@ def collect_daily_snapshot(snapshot_date=None):
                 institutional[code] = item
     previous = _get_previous_snapshot(snapshot_date)
     prev_date = previous["snapshot_date"] if previous else None
-    snapshot = {"snapshot_date": snapshot_date, "previous_trade_date": prev_date,
-                "blackhorse": blackhorse, "radar": radar, "market": market,
+    snapshot = {"snapshot_date": snapshot_date, "briefing_date": next_taiwan_trading_day(snapshot_date),
+                "previous_trade_date": prev_date, "blackhorse": blackhorse, "radar": radar, "market": market,
                 "news": news, "institutional": institutional}
     _save_snapshot(snapshot)
     return snapshot, previous
@@ -439,6 +474,7 @@ def run_daily_change_detection(snapshot_date=None):
     snapshot, previous = collect_daily_snapshot(snapshot_date)
     events = build_global_events(snapshot, previous)
     snapshot_date = snapshot["snapshot_date"]
+    briefing_date = snapshot.get("briefing_date") or next_taiwan_trading_day(snapshot_date)
     previous_date = snapshot.get("previous_trade_date")
     user_ids = set(get_notify_users() or [])
     if "get_all_watchlist_user_ids" in globals():
@@ -447,25 +483,48 @@ def run_daily_change_detection(snapshot_date=None):
         try:
             user_events = events + _watchlist_events(uid, snapshot_date, previous_date)
             user_events = _sort_events(user_events)
-            _save_events(snapshot_date, uid, user_events)
+            _save_events(snapshot_date, uid, user_events, briefing_date)
         except Exception as exc:
             print(f"❌ 盤前變化偵測：使用者 {uid} 失敗：{exc}")
-    _save_events(snapshot_date, None, _sort_events(events))
-    return f"盤前變化偵測完成：{len(events)} 個全市場事件、日期 {snapshot_date}"
+    _save_events(snapshot_date, None, _sort_events(events), briefing_date)
+    return (f"盤前變化偵測完成：{len(events)} 個全市場事件、"
+            f"資料日 {snapshot_date}、顯示日 {briefing_date}")
+
+
+def _premarket_source_date(display_date):
+    """由盤前顯示日找到收盤後產生這批事件的資料日。"""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT snapshot_date FROM premarket_snapshots
+            WHERE briefing_date=%s ORDER BY snapshot_date DESC LIMIT 1
+        """, (display_date,))
+        row = cur.fetchone()
+        if not row:
+            cur.execute("""
+                SELECT snapshot_date FROM premarket_events
+                WHERE briefing_date=%s ORDER BY snapshot_date DESC LIMIT 1
+            """, (display_date,))
+            row = cur.fetchone()
+        # 舊部署或手動補資料時，保留同日查詢作為相容 fallback。
+        return row[0] if row else display_date
+    finally:
+        release_db_connection(conn)
 
 
 def get_today_change_events(user_id=None, snapshot_date=None, limit=None):
-    snapshot_date = snapshot_date or taiwan_today()
+    display_date = snapshot_date or taiwan_today()
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         sql = """
           SELECT severity,category,title,detail,evidence,event_key
           FROM premarket_events
-          WHERE snapshot_date=%s AND user_id IS NOT DISTINCT FROM %s
+          WHERE briefing_date=%s AND user_id IS NOT DISTINCT FROM %s
           ORDER BY CASE severity WHEN 'S' THEN 4 WHEN 'A' THEN 3 WHEN 'B' THEN 2 ELSE 1 END DESC, id ASC
         """
-        params = [snapshot_date, user_id]
+        params = [display_date, user_id]
         if limit:
             sql += " LIMIT %s"; params.append(limit)
         cur.execute(sql, params)
@@ -487,23 +546,26 @@ def build_today_attention_push(user_id):
 
 
 def get_today_change_snapshot(snapshot_date=None):
-    snapshot_date = snapshot_date or taiwan_today()
+    display_date = snapshot_date or taiwan_today()
+    source_date = _premarket_source_date(display_date)
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT snapshot_date, previous_trade_date, blackhorse, radar,
-                   market, news, institutional
+            SELECT snapshot_date, briefing_date, previous_trade_date,
+                   blackhorse, radar, market, news, institutional
             FROM premarket_snapshots WHERE snapshot_date=%s
-        """, (snapshot_date,))
+        """, (source_date,))
         row = cur.fetchone()
         if not row:
             return None
         return {"snapshot_date": row[0].isoformat(),
-                "previous_trade_date": row[1].isoformat() if row[1] else None,
-                "blackhorse": row[2] or [], "radar": row[3] or [],
-                "market": row[4] or {}, "news": row[5] or [],
-                "institutional": row[6] or {}}
+                "source_date": row[0].isoformat(),
+                "briefing_date": row[1].isoformat() if row[1] else display_date.isoformat(),
+                "previous_trade_date": row[2].isoformat() if row[2] else None,
+                "blackhorse": row[3] or [], "radar": row[4] or [],
+                "market": row[5] or {}, "news": row[6] or [],
+                "institutional": row[7] or {}}
     finally:
         release_db_connection(conn)
 
@@ -539,9 +601,10 @@ def get_today_event_timeline(user_id=None, snapshot_date=None):
     personal = get_today_change_events(user_id, snapshot_date)
     global_events = get_today_change_events(None, snapshot_date)
     current = personal or global_events
-    previous_date = date.fromisoformat(snapshot["previous_trade_date"])
-    old_personal = get_today_change_events(user_id, previous_date)
-    old_global = get_today_change_events(None, previous_date)
+    # 目前顯示日的事件來自 source_date；上一批事件的顯示日就是目前 source_date。
+    previous_display_date = date.fromisoformat(snapshot["source_date"])
+    old_personal = get_today_change_events(user_id, previous_display_date)
+    old_global = get_today_change_events(None, previous_display_date)
     previous = old_personal or old_global
 
     def key(event):
@@ -560,13 +623,14 @@ def get_today_event_timeline(user_id=None, snapshot_date=None):
 
 
 def build_today_change_web_data(user_id):
-    """網頁顯示完整快照與事件；LINE 只使用 build_today_attention_push()。"""
+    """網頁顯示下一盤前日的完整快照與事件；LINE 只取前三項摘要。"""
     snapshot_date = taiwan_today()
     global_events = get_today_change_events(None, snapshot_date)
     user_events = get_today_change_events(user_id, snapshot_date)
     state = get_today_signal_state(user_id, snapshot_date)
+    current_snapshot = get_today_change_snapshot(snapshot_date)
     return {"date": snapshot_date.isoformat(), "levels": LEVEL_LABEL,
-            "snapshot": get_today_change_snapshot(snapshot_date),
+            "snapshot": current_snapshot,
             "events": _sort_events(user_events or global_events),
             "global_events": global_events, "all_events": user_events,
             "state": state}
@@ -576,7 +640,7 @@ def build_today_change_web_data(user_id):
 # 再呼叫 init_premarket_change_tables()；不要在 import 區塊直接初始化，
 # 因為這個專案的資料庫 helper 定義在檔案前半段、其餘資料函式定義在後半段。
 # 新增排程端點：run_in_background("盤前變化偵測", run_daily_change_detection)
-# 新的 build_morning_push() 應只呼叫 build_today_attention_push(user_id)。
+# 盤前 LINE 由 build_morning_push_message() 提供短摘要與今日網頁入口。
 # 完整網頁則在既有盤前頁 route 呼叫 build_today_change_web_data(user_id)。
 
 app = Flask(__name__)
@@ -1327,7 +1391,7 @@ def _admin_system_data_status_report():
         cur.execute("""
             SELECT COUNT(*)
             FROM premarket_events
-            WHERE snapshot_date = %s
+            WHERE briefing_date = %s
         """, (today,))
         event_count = cur.fetchone()[0] or 0
 
@@ -1391,7 +1455,7 @@ def _admin_system_data_status_report():
         "📡 系統資料狀態",
         f"法人資料　最新 {fmt_date(inst_date)}（{inst_days or 0} 個交易日）　{inst_status}",
         f"盤前快照　最新 {fmt_date(premarket_date)}　{premarket_status(premarket_date)}",
-        f"今日事件　{event_count} 個（以今日快照為準）",
+        f"今日事件　{event_count} 個（以今日盤前顯示日為準）",
         f"排行榜快照　最新 {fmt_date(rank_date)}（{rank_boards or 0} 榜）　{rank_status(rank_date)}",
         f"每日快照　{job_text}",
     ])
@@ -8346,7 +8410,7 @@ def web_home(uid):
 @app.route("/web/premarket")
 @web_login_required
 def web_premarket(uid):
-    """顯示完整盤前快照與所有變化事件；LINE 僅取其中前三項。"""
+    """顯示下一盤前日的完整快照與所有變化事件；LINE 僅取其中前三項。"""
     data = build_today_change_web_data(uid)
     snapshot = data.get("snapshot") or {}
     events = data.get("events") or []
@@ -8365,7 +8429,7 @@ def web_premarket(uid):
     body = f"""
     <section class="card">
       <h1>🔥 今日值得注意</h1>
-      <p>資料日期：{esc(data['date'])}；前一交易日：{esc(str(snapshot.get('previous_trade_date') or '無'))}</p>
+      <p>盤前顯示日：{esc(data['date'])}；資料來源日：{esc(str(snapshot.get('source_date') or snapshot.get('snapshot_date') or '無'))}；前一交易日：{esc(str(snapshot.get('previous_trade_date') or '無'))}</p>
       <table><thead><tr><th>級別</th><th>類別</th><th>事件</th><th>詳細內容</th></tr></thead>
       <tbody>{''.join(rows)}</tbody></table>
     </section>
