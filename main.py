@@ -1,6 +1,7 @@
 import os
 import re
 import html
+import base64
 import ssl
 import socket
 import time
@@ -589,10 +590,37 @@ def get_today_change_events(user_id=None, snapshot_date=None, limit=None):
         release_db_connection(conn)
 
 
+def _change_event_identity(event):
+    """事件去重鍵；優先使用寫入時的 event_key，避免全域與個人列重複。"""
+    if not isinstance(event, dict):
+        return ""
+    return str(event.get("event_key") or (
+        f"{event.get('category', '')}:{event.get('title', '')}"
+    )).strip()
+
+
+def merge_change_events(user_id=None, snapshot_date=None, limit=None):
+    """合併全域市場事件與使用者事件，再依優先級排序。
+
+    目前資料庫為了讓每位使用者都能取得同一批市場事件，個人列有時已包含
+    全域事件；這裡仍明確合併並以 event_key 去重，兼容舊資料與未來改成只存
+    個人事件的寫入方式。全域事件先放入，保留市場事件的原始內容。
+    """
+    global_events = get_today_change_events(None, snapshot_date)
+    scoped_events = get_today_change_events(user_id, snapshot_date) if user_id else []
+    merged, seen = [], set()
+    for event in (global_events or []) + (scoped_events or []):
+        key = _change_event_identity(event)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(event))
+    merged = _sort_events(merged)
+    return merged[:limit] if limit else merged
+
+
 def build_today_attention_push(user_id):
-    events = get_today_change_events(user_id, limit=3)
-    if not events:
-        events = get_today_change_events(None, limit=3)
+    events = merge_change_events(user_id, limit=3)
     lines = ["🔥 今日值得注意"]
     if not events:
         return "😴 今日市場訊號偏少"
@@ -643,9 +671,7 @@ def get_today_signal_state(user_id=None, snapshot_date=None):
     """首頁用的真實資料狀態；不把尚未更新誤報成市場安靜。"""
     snapshot_date = _premarket_display_date(snapshot_date or taiwan_today())
     snapshot = get_today_change_snapshot(snapshot_date)
-    personal_events = get_today_change_events(user_id, snapshot_date)
-    global_events = get_today_change_events(None, snapshot_date)
-    events = personal_events or global_events
+    events = merge_change_events(user_id, snapshot_date)
     if not snapshot:
         return {"kind": "not_updated", "title": "今日盤前資料尚未更新",
                 "detail": "等待每日資料快照與變化偵測完成；目前不顯示推測訊號。", "events": events}
@@ -667,14 +693,10 @@ def get_today_event_timeline(user_id=None, snapshot_date=None):
         return {"new": [], "ongoing": [], "resolved": [],
                 "previous_date": None, "current": [], "previous": []}
 
-    personal = get_today_change_events(user_id, snapshot_date)
-    global_events = get_today_change_events(None, snapshot_date)
-    current = personal or global_events
+    current = merge_change_events(user_id, snapshot_date)
     # 目前顯示日的事件來自 source_date；上一批事件的顯示日就是目前 source_date。
     previous_display_date = date.fromisoformat(snapshot["source_date"])
-    old_personal = get_today_change_events(user_id, previous_display_date)
-    old_global = get_today_change_events(None, previous_display_date)
-    previous = old_personal or old_global
+    previous = merge_change_events(user_id, previous_display_date)
 
     def key(event):
         return event.get("event_key") or f"{event.get('category','')}:{event.get('title','')}"
@@ -697,13 +719,14 @@ def build_today_change_web_data(user_id):
     display_date = _premarket_display_date(requested_date)
     global_events = get_today_change_events(None, display_date)
     user_events = get_today_change_events(user_id, display_date)
+    merged_events = merge_change_events(user_id, display_date)
     state = get_today_signal_state(user_id, display_date)
     current_snapshot = get_today_change_snapshot(display_date)
     return {"date": display_date.isoformat(),
             "requested_date": requested_date.isoformat(),
             "is_weekend": requested_date.weekday() >= 5,
             "levels": LEVEL_LABEL, "snapshot": current_snapshot,
-            "events": _sort_events(user_events or global_events),
+            "events": merged_events,
             "global_events": global_events, "all_events": user_events,
             "state": state}
 
@@ -868,6 +891,17 @@ def init_db():
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_activity_log_user_time
             ON activity_log(user_id, occurred_at DESC)
+        ''')
+        # LINE 可能因網路或回應逾時重送同一 webhook；用資料庫唯一鍵跨 worker 去重。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS line_event_dedup (
+                event_id TEXT PRIMARY KEY,
+                received_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_line_event_dedup_received
+            ON line_event_dedup(received_at DESC)
         ''')
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_activity_log_feature_time
@@ -1597,19 +1631,38 @@ def is_admin(user_id):
     return str(user_id).strip() in admins if admins else False
 
 
-def set_requested(user_id, flag=True):
+def set_push_flags(user_id, notify=None, requested=None):
+    """在同一個 transaction 更新主動推播與申請狀態。"""
+    fields, values = [], []
+    if notify is not None:
+        fields.append("notify = %s")
+        values.append(bool(notify))
+    if requested is not None:
+        fields.append("requested = %s")
+        values.append(bool(requested))
+    if not fields:
+        return False
+    values.append(str(user_id).strip())
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET requested = %s WHERE user_id = %s",
-                       (flag, str(user_id).strip()))
+        cursor.execute(
+            f"UPDATE users SET {', '.join(fields)} WHERE user_id = %s",
+            values)
+        changed = cursor.rowcount == 1
         conn.commit()
         cursor.close()
+        return changed
     except Exception as e:
         conn.rollback()
-        print(f"❌ 更新申請狀態錯誤: {e}")
+        print(f"❌ 更新推播狀態錯誤: {e}")
+        return False
     finally:
         release_db_connection(conn)
+
+
+def set_requested(user_id, flag=True):
+    return set_push_flags(user_id, requested=flag)
 
 
 def list_users():
@@ -1777,23 +1830,7 @@ def build_user_list_report():
 
 
 def set_notify(user_id, flag: bool):
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE users SET notify = %s WHERE user_id = %s",
-            (flag, str(user_id).strip())
-        )
-        changed = cursor.rowcount == 1
-        conn.commit()
-        cursor.close()
-        return changed
-    except Exception as e:
-        conn.rollback()
-        print(f"❌ 更新通知設定錯誤: {e}")
-        return False
-    finally:
-        release_db_connection(conn)
+    return set_push_flags(user_id, notify=flag)
 
 def get_notify_users():
     conn = get_db_connection()
@@ -2275,80 +2312,161 @@ def delete_position(user_id, pos_id):
 
 def sell_position(user_id, pos_id, sell_shares,
                   sell_price=None, fee=None, tax=None):
+    """原子化賣出：持股更新與已實現損益必須同時成功或同時回滾。
+
+    賣價、手續費與證交稅由使用者提供時以實際對帳單為準；留空賣價才
+    使用即時市價，留空費用／稅才使用既有估算公式。資料庫交易內會以
+    FOR UPDATE 鎖定持股，避免同一筆持股被並行賣出兩次。
     """
-    賣出持股。賣出股數等於整筆數量時直接刪除該筆；
-    小於時只減少股數，每股成本不變──賣出不影響剩餘股份的成本基礎。
+    try:
+        pos_id = int(pos_id)
+        sell_shares = int(sell_shares)
+    except (TypeError, ValueError):
+        return False, "賣出資料格式不正確", None
+    if pos_id <= 0:
+        return False, "找不到這筆持股", None
+    if sell_shares <= 0:
+        return False, "賣出股數必須大於 0", None
 
-    賣價、手續費、證交稅都由使用者填寫，因為只有他知道實際成交的數字：
-    折扣、最低收費、當沖減半各券商不同，程式算出來的永遠只是估計值，
-    存進交易紀錄的數字應該要能跟對帳單對得起來。
-    留空的欄位才用市價與公式試算，當作方便而非準確來源。
+    def parse_nonnegative(value, label):
+        if value is None or value == "":
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{label}必須是有效數字")
+        if not math.isfinite(parsed) or parsed < 0:
+            raise ValueError(f"{label}必須是有效的非負數字")
+        return parsed
 
-    已實現損益 =（賣出股數 × 賣價 − 手續費 − 證交稅）− 賣出股數 × 成本價
-    成本價沿用券商口徑（已含買進手續費），所以這裡不再另外扣買進費用。
+    try:
+        sell_price = parse_nonnegative(sell_price, "賣出價格")
+        fee = parse_nonnegative(fee, "手續費")
+        tax = parse_nonnegative(tax, "證交稅")
+    except ValueError as exc:
+        return False, str(exc), None
+    if sell_price is not None and sell_price <= 0:
+        return False, "賣出價格必須大於 0", None
 
-    回傳 (成功與否, 錯誤訊息或 None, 這筆的損益摘要或 None)
-    """
+    uid = str(user_id).strip()
+    # 先只讀取代號再抓市價；真正扣股與寫入紀錄時會重新 FOR UPDATE 驗證。
+    code = None
+    if sell_price is None:
+        lookup_conn = get_db_connection()
+        try:
+            lookup_cur = lookup_conn.cursor()
+            lookup_cur.execute(
+                "SELECT code FROM positions WHERE id = %s AND user_id = %s",
+                (pos_id, uid))
+            lookup_row = lookup_cur.fetchone()
+            lookup_cur.close()
+            lookup_conn.rollback()
+            if not lookup_row:
+                return False, "找不到這筆持股", None
+            code = str(lookup_row[0]).strip()
+        except Exception as exc:
+            lookup_conn.rollback()
+            print(f"❌ 讀取賣出股票失敗: {exc}")
+            return False, "系統錯誤，請稍後再試", None
+        finally:
+            release_db_connection(lookup_conn)
+
+        try:
+            price_data = get_realtime_stock(code)
+            sell_price = price_data.get("close") if isinstance(price_data, dict) else None
+            sell_price = float(sell_price) if sell_price is not None else None
+        except Exception as exc:
+            print(f"⚠️ 取得賣出市價失敗 {code}: {exc}")
+            sell_price = None
+        if sell_price is None or not math.isfinite(sell_price) or sell_price <= 0:
+            return False, "目前查不到有效賣價，持股未變更；請稍後再試或手動輸入成交價", None
+
+    if not math.isfinite(float(sell_price)) or float(sell_price) <= 0:
+        return False, "賣出價格必須是有效且大於 0 的數字", None
+    sell_price = float(sell_price)
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT code, shares, cost, bought_on FROM positions "
-            "WHERE id = %s AND user_id = %s",
-            (int(pos_id), str(user_id).strip()))
+            "WHERE id = %s AND user_id = %s FOR UPDATE",
+            (pos_id, uid))
         row = cursor.fetchone()
         if not row:
-            cursor.close()
+            conn.rollback()
             return False, "找不到這筆持股", None
+
         code, current_shares, lot_cost, bought_on = row
-        if sell_shares <= 0:
-            cursor.close()
-            return False, "賣出股數必須大於 0", None
+        try:
+            current_shares = int(current_shares)
+            lot_cost = float(lot_cost)
+        except (TypeError, ValueError):
+            conn.rollback()
+            return False, "持股資料格式錯誤，未執行賣出", None
+        if current_shares <= 0 or not math.isfinite(lot_cost) or lot_cost <= 0:
+            conn.rollback()
+            return False, "持股成本或股數資料異常，未執行賣出", None
         if sell_shares > current_shares:
-            cursor.close()
+            conn.rollback()
             return False, f"賣出股數不能超過持有股數（{current_shares:,} 股）", None
 
+        gross = sell_shares * sell_price
+        if fee is None:
+            fee = float(broker_fee(gross))
+        if tax is None:
+            tax = float(gross * (TAX_RATE_ETF if is_etf(code) else TAX_RATE_STOCK))
+        if (not math.isfinite(fee) or fee < 0 or
+                not math.isfinite(tax) or tax < 0):
+            conn.rollback()
+            return False, "手續費或證交稅計算結果異常，未執行賣出", None
+
+        cost_total = sell_shares * lot_cost
+        realized_pl = (gross - fee - tax) - cost_total
+        realized_pct = (realized_pl / cost_total * 100) if cost_total else None
+        if not math.isfinite(realized_pl) or (realized_pct is not None and not math.isfinite(realized_pct)):
+            conn.rollback()
+            return False, "損益計算結果異常，未執行賣出", None
+
         if sell_shares == current_shares:
-            cursor.execute("DELETE FROM positions WHERE id = %s AND user_id = %s",
-                           (int(pos_id), str(user_id).strip()))
+            cursor.execute(
+                "DELETE FROM positions WHERE id = %s AND user_id = %s",
+                (pos_id, uid))
         else:
             cursor.execute(
-                "UPDATE positions SET shares = shares - %s WHERE id = %s AND user_id = %s",
-                (sell_shares, int(pos_id), str(user_id).strip()))
+                "UPDATE positions SET shares = shares - %s "
+                "WHERE id = %s AND user_id = %s AND shares >= %s",
+                (sell_shares, pos_id, uid, sell_shares))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return False, "持股在處理期間已變更，請重新整理後再試", None
+
+        # 與 positions 更新共用同一個 cursor／transaction，不能只成功一半。
+        cursor.execute(
+            """
+            INSERT INTO realized_trades
+                (user_id, code, shares, buy_cost, sell_price,
+                 realized_pl, realized_pct, bought_on, sold_on, fee, tax)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (uid, str(code).strip(), sell_shares, lot_cost, sell_price,
+             realized_pl, realized_pct, bought_on or None, taiwan_today(), fee, tax),
+        )
         conn.commit()
         cursor.close()
-    except Exception as e:
+        return True, None, {
+            "code": str(code).strip(), "shares": sell_shares,
+            "sell_price": sell_price, "cost": lot_cost,
+            "pl": realized_pl, "pct": realized_pct,
+            "fee": fee, "tax": tax,
+            "held_days": ((taiwan_today() - bought_on).days if bought_on else None),
+        }
+    except Exception as exc:
         conn.rollback()
-        print(f"❌ 賣出持股失敗: {e}")
-        return False, "系統錯誤，請稍後再試", None
+        print(f"❌ 賣出持股與已實現損益交易失敗: {exc}")
+        return False, "賣出未完成，持股與已實現損益均未變更", None
     finally:
         release_db_connection(conn)
-
-    # 沒填賣價就用當下市價；連市價都抓不到，這筆就沒有損益數字可記
-    if sell_price is None:
-        price_data = get_realtime_stock(code)
-        sell_price = price_data["close"] if price_data else None
-    if sell_price is None:
-        return True, None, None
-
-    gross = sell_shares * sell_price
-    if fee is None:
-        fee = broker_fee(gross)                                  # 未填則以牌價試算
-    if tax is None:
-        tax = gross * (TAX_RATE_ETF if is_etf(code) else TAX_RATE_STOCK)
-
-    cost_total = sell_shares * lot_cost
-    realized_pl = (gross - fee - tax) - cost_total
-    realized_pct = (realized_pl / cost_total * 100) if cost_total else None
-
-    record_realized_trade(user_id, code, sell_shares, lot_cost, sell_price,
-                          realized_pl, realized_pct, bought_on, fee, tax)
-    return True, None, {
-        "code": code, "shares": sell_shares, "sell_price": sell_price,
-        "cost": lot_cost, "pl": realized_pl, "pct": realized_pct,
-        "fee": fee, "tax": tax,
-        "held_days": ((taiwan_today() - bought_on).days if bought_on else None),
-    }
 
 
 def record_realized_trade(user_id, code, shares, buy_cost, sell_price,
@@ -6436,9 +6554,7 @@ def _macro_metric_rows(group):
 
 def build_morning_push_message(user_id, base_url=None):
     """建立盤前 LINE 訊息：事件、美股與總經摘要，完整分析由按鈕導向今日網頁。"""
-    events = get_today_change_events(user_id, limit=3)
-    if not events:
-        events = get_today_change_events(None, limit=3)
+    events = merge_change_events(user_id, limit=3)
 
     news_lines = _morning_macro_news_lines()
     plain_text = build_today_attention_push(user_id) + "\n\n" + "\n".join(_morning_macro_lines())
@@ -6971,6 +7087,7 @@ RETENTION_DAYS = {
     "web_codes": ("expires_at", 0),
     "leaderboard_rank_snapshots": ("snapshot_date", 1095),
     "activity_log": ("occurred_at", 730),
+    "line_event_dedup": ("received_at", 14),
     "premarket_events": ("created_at", 730),
     "premarket_snapshots": ("snapshot_date", 730),
 }
@@ -7559,7 +7676,7 @@ def build_admin_quick_reply():
     ])
 
 
-def build_menu_flex():
+def build_menu_flex(is_admin_user=False):
     """
     彩色選單（Flex Message）。LINE 純文字無法上色，分色只能用 Flex。
     版面上把「按鈕」與「說明」左右並排，比上下堆疊省一半高度，
@@ -7588,6 +7705,9 @@ def build_menu_flex():
             ("推播關", "停止自動發送"),
         ]),
     ]
+    # 盤前手動查詢對所有人開放；主動推播的開通／停用控制只放在管理者選單。
+    if not is_admin_user:
+        groups = [group for group in groups if group[0] != "推播設定"]
 
     def row(label, desc, tint):
         """一列＝左邊指令按鈕（該分區的淡色底），右邊說明文字。"""
@@ -11881,14 +12001,73 @@ def web_screener(uid):
 
 
 # --- LINE Bot 訊息接收與路由分派 ---
+def _line_signature_valid(raw_body, signature):
+    """在寫入去重表前先驗證 LINE 簽章，避免偽造請求污染去重資料。"""
+    secret = os.environ.get("LINE_CHANNEL_SECRET", "")
+    if not secret or not signature:
+        return False
+    digest = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).digest()
+    expected = base64.b64encode(digest).decode("ascii")
+    return hmac.compare_digest(expected, str(signature).strip())
+
+
+def _line_event_dedup_key(raw_body, signature):
+    """優先使用 LINE webhook event id；舊 payload 則以 body+signature fallback。"""
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+        event_ids = []
+        for item in payload.get("events") or []:
+            if not isinstance(item, dict):
+                continue
+            value = item.get("webhookEventId") or item.get("eventId")
+            if value:
+                event_ids.append(str(value).strip())
+        if event_ids:
+            return "event:" + ",".join(event_ids)
+    except Exception:
+        pass
+    digest = hashlib.sha256(raw_body + b"\\0" + str(signature).encode("utf-8")).hexdigest()
+    return "payload:" + digest
+
+
+def _claim_line_event(event_key):
+    """跨 worker 原子領取 webhook；資料庫暫時故障時 fail-open，避免整個 Bot 停擺。"""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO line_event_dedup (event_id) VALUES (%s) "
+            "ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+            (event_key,))
+        claimed = cur.fetchone() is not None
+        conn.commit()
+        cur.close()
+        return claimed
+    except Exception as exc:
+        conn.rollback()
+        print(f"⚠️ LINE webhook 去重寫入失敗，採放行處理：{exc}")
+        return True
+    finally:
+        release_db_connection(conn)
+
+
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
-    body = request.get_data(as_text=True)
+    raw_body = request.get_data(cache=True)
+    if not _line_signature_valid(raw_body, signature):
+        abort(400)
     try:
-        handler.handle(body, signature)
+        event_key = _line_event_dedup_key(raw_body, signature)
+        if not _claim_line_event(event_key):
+            print(f"ℹ️ 忽略重複 LINE webhook：{event_key[:80]}")
+            return "OK"
+        handler.handle(raw_body.decode("utf-8"), signature)
     except InvalidSignatureError:
         abort(400)
+    except Exception as exc:
+        # 已驗證且已領取的事件不再讓平台反覆重送；完整錯誤留在 Render Logs。
+        print(f"❌ LINE webhook 處理失敗：{type(exc).__name__}: {exc}")
     return "OK"
 
 @handler.add(FollowEvent)
@@ -11931,7 +12110,7 @@ def handle_follow(event):
         "作者：蔡秉軒　敬上"
     ))
     try:
-        menu = build_menu_flex()
+        menu = build_menu_flex(is_admin(user_id))
         menu.quick_reply = build_quick_reply()
         line_bot_api.reply_message(event.reply_token, [welcome, menu])
     except Exception as e:
@@ -12077,10 +12256,8 @@ def handle_message(event):
                 ambiguous = "、".join(m[1] for m in matches[:5])
 
         if target:
-            changed = set_notify(target[0], turn_on)
+            changed = set_push_flags(target[0], notify=turn_on, requested=False)
             if changed:
-                if turn_on:
-                    set_requested(target[0], False)
                 reply = (f"{'🔔 已開通' if turn_on else '🔕 已停用'}：{target[1]}\n\n"
                          + build_admin_user_list_report(status="all", limit=10))
             else:
@@ -12132,17 +12309,21 @@ def handle_message(event):
         # 每日推播為名額制：LINE 免費方案每月僅 200 則主動訊息，
         # 以每人每個交易日 1 則計算，最多只能服務約 9 人，
         # 因此改為申請制，由管理者在後台開通，使用者無法自行啟用。
-        set_requested(user_id, True)
-        reply = (
-            "📮 已收到每日推播的申請\n\n"
-            "每日盤前推播為名額制，需由管理者開通。\n"
-            "已收到你的申請，開通後隔天早上就會自動收到。\n\n"
-            "在此之前，隨時輸入「盤前」都能看到相同內容。"
-        )
+        if set_requested(user_id, True):
+            reply = (
+                "📮 已收到每日推播的申請\n\n"
+                "每日盤前推播為名額制，需由管理者開通。\n"
+                "已收到你的申請，開通後隔天早上就會自動收到。\n\n"
+                "在此之前，隨時輸入「盤前」都能看到相同內容。"
+            )
+        else:
+            reply = "❌ 推播申請沒有成功寫入，請稍後再試。"
     elif text in ["推播關", "關閉推播", "取消訂閱"]:
-        # 關閉不需要審核，使用者隨時可以自己退出
-        set_notify(user_id, False)
-        reply = "🔕 已關閉每日推播。想再開啟請輸入「申請推播」。"
+        # 關閉不需要審核，使用者隨時可以自己退出；同時清掉未處理申請。
+        if set_push_flags(user_id, notify=False, requested=False):
+            reply = "🔕 已關閉每日推播。想再開啟請輸入「申請推播」。"
+        else:
+            reply = "❌ 推播狀態沒有成功更新，請稍後再試。"
 
     # 4+5. 自選清單與健檢已合併——兩者原本都在列自選股，差別只在有沒有評分，
     # 併成同一份報告，「自選」與「健檢」都指向它
@@ -12269,12 +12450,12 @@ def handle_message(event):
                     "短線強勢不代表會續強，追高風險自負。"
                     if reports else "❌ 暫無符合條件的標的。")
     elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
-        flex_reply = build_menu_flex()
+        flex_reply = build_menu_flex(is_admin(user_id))
         reply = None
 
     else:
         # 指令沒對上時直接把選單給他，不要只回一句「請輸入選單」
-        flex_reply = build_menu_flex()
+        flex_reply = build_menu_flex(is_admin(user_id))
         reply = None
 
     qr = admin_quick_reply or build_quick_reply()
