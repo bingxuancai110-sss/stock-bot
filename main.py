@@ -5812,7 +5812,7 @@ def build_market_recap():
 
 
 def build_market_recap_line_message(user_id, base_url=None):
-    """LINE 盤後摘要：保留文字摘要，並附按鈕開啟網頁完整組合分析。"""
+    """LINE 盤後摘要：保留真實資料，改用分區卡片呈現並附網頁完整分析按鈕。"""
     recap_text = build_market_recap()
     token = create_web_token(user_id)
     if not token:
@@ -5820,20 +5820,64 @@ def build_market_recap_line_message(user_id, base_url=None):
 
     web_url = (f"{public_web_base_url(base_url)}/web/portfolio?t="
                f"{quote(token, safe='')}")
+    raw_lines = [line.rstrip() for line in recap_text.splitlines()]
+    clean_lines = [line for line in raw_lines if line.strip("─").strip()]
+    if clean_lines and clean_lines[0].startswith("📊"):
+        clean_lines = clean_lines[1:]
+
+    def find_line(prefix, start=0):
+        return next((idx for idx in range(start, len(clean_lines))
+                     if clean_lines[idx].startswith(prefix)), len(clean_lines))
+
+    buy_idx = find_line("🟢")
+    sell_idx = find_line("🔴", buy_idx)
+    note_idx = find_line("※", sell_idx)
+    top_lines = clean_lines[:buy_idx]
+    buy_lines = clean_lines[buy_idx + 1:sell_idx] if buy_idx < len(clean_lines) else []
+    sell_lines = clean_lines[sell_idx + 1:note_idx] if sell_idx < len(clean_lines) else []
+    note_lines = clean_lines[note_idx:] if note_idx < len(clean_lines) else []
+
+    def text_block(text, color="#454C55", size="sm", margin="none"):
+        return {"type": "text", "text": text or "資料暫缺", "size": size,
+                "color": color, "wrap": True, "margin": margin,
+                "lineSpacing": "3px"}
+
+    def recap_section(title, lines, color):
+        if not lines:
+            return None
+        return {"type": "box", "layout": "vertical", "spacing": "xs",
+                "margin": "md", "paddingAll": "12px", "cornerRadius": "10px",
+                "backgroundColor": "#F7F7F3", "contents": [
+                    {"type": "text", "text": title, "weight": "bold", "size": "sm",
+                     "color": color},
+                    text_block("\n".join(lines), margin="sm")
+                ]}
+
+    sections = []
+    top_block = recap_section("收盤與法人資料", top_lines, "#6E5228")
+    buy_block = recap_section("🟢 法人買超前 3", buy_lines, "#155C42")
+    sell_block = recap_section("🔴 法人賣超前 3", sell_lines, "#A82A20")
+    for block in (top_block, buy_block, sell_block):
+        if block:
+            sections.append(block)
+    if note_lines:
+        sections.append(text_block("\n".join(note_lines), color="#767D85", size="xs", margin="md"))
+
     bubble = {
         "type": "bubble",
-        "body": {"type": "box", "layout": "vertical", "spacing": "md",
+        "body": {"type": "box", "layout": "vertical", "spacing": "none",
                  "paddingAll": "18px", "contents": [
             {"type": "text", "text": "📊 盤後收盤摘要", "weight": "bold",
              "size": "xl", "color": "#1B2027"},
-            {"type": "separator", "margin": "sm", "color": "#E8EAE6"},
-            {"type": "text", "text": recap_text, "size": "sm", "color": "#454C55",
-             "wrap": True, "maxLines": 30},
+            {"type": "text", "text": "資料依公開來源日期整理", "size": "xs",
+             "color": "#767D85", "margin": "xs"},
             {"type": "separator", "margin": "md", "color": "#E8EAE6"},
+            *sections,
+            {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
             {"type": "text", "text": "想看完整持股損益、今日判讀、走勢與風險分析，請開啟網頁版。",
-             "size": "xs", "color": "#767D85", "wrap": True},
+             "size": "xs", "color": "#767D85", "wrap": True, "margin": "md"},
             {"type": "button", "style": "primary", "height": "sm",
-             "color": "#6E5228", "margin": "sm",
+             "color": "#6E5228", "margin": "md",
              "action": {"type": "uri", "label": "查看網頁版完整分析",
                         "uri": web_url}}
         ]},
@@ -11292,7 +11336,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 <section class="daily-card attention-card"><div class="daily-section-title"><h2>🔥 今日值得注意</h2><a href="/web/premarket">查看完整變化 →</a></div>{events_html}</section>
 <section class="daily-card"><div class="daily-section-title"><h2>我的組合今天怎麼了？</h2><span>即時報價</span></div><div class="portfolio-highlights"><div><small>最大貢獻</small><b class="positive">{gain_html}</b></div><div><small>最大拖累</small><b class="negative">{loss_html}</b></div><div><small>總市值</small><b>{total_value:,.0f}</b></div></div></section>
 {home_judgement_html}
-<details class="home-detail-collapse" id="home-contribution"><summary>查看完整正／負貢獻明細</summary>{contribution_html}</details>
+<details class="home-detail-collapse" id="home-contribution" open><summary>查看完整正／負貢獻明細</summary>{contribution_html}</details>
 <section class="daily-card"><div class="daily-section-title"><h2>🏆 我的排名變化</h2><a href="/web/leaderboard">查看排行榜 →</a></div><div class="rank-grid">{rank_line('short')}{rank_line('long')}</div></section>'''
 
 @app.route("/web/portfolio", methods=["GET", "POST"])
@@ -12452,11 +12496,14 @@ def handle_follow(event):
     add_user_to_db(user_id)
 
     welcome = TextSendMessage(text=(
-        "歡迎使用台股 BOT 📈\n\n"
-        "這裡可以查台股行情、法人籌碼、營收與估值，"
-        "也能建立自己的自選股清單。\n\n"
-        "━━━━━━━━━━━━\n"
-        "⚠️ 請先了解這件事\n\n"
+        "歡迎加入台股 BOT 📈\n\n"
+        "我是你的台股公開資料整理助手，可以查行情、法人籌碼、"
+        "營收、估值，也能建立自己的自選股清單。\n\n"
+        "接下來會先送上功能選單，再補上使用前的重要說明；"
+        "你可以先從選單開始探索。"
+    ))
+    usage_notice = TextSendMessage(text=(
+        "⚠️ 使用前請先了解\n\n"
         "本服務只做「公開資料的整理與呈現」，"
         "不是投資建議，也不推薦任何個股。\n\n"
         "・「黑馬」「雷達」是依公開數據排序的結果，"
@@ -12468,22 +12515,22 @@ def handle_follow(event):
         "🔒 關於你的資料\n"
         "自選股與持股只用於產生你自己的分析，"
         "作者不會查看個別使用者的持股內容。\n\n"
+        "📌 操作小提醒\n"
+        "每個指令都會即時抓取最新行情、法人與財務資料，"
+        "通常需要約 10-20 秒才會回覆。\n"
+        "如果按鈕按下後沒有立即反應，請先等 5 秒；"
+        "仍沒有反應再按一次，不要連續快速點擊，避免同一查詢重複執行。\n\n"
         "看得懂數字背後的意思再做決定，"
-        "不要因為看到一個分數就進場。\n"
-        "━━━━━━━━━━━━\n\n"
-        "下面是可用的功能，直接點按鈕就能執行。\n"
-        "隨時輸入「選單」都能再叫出來。\n\n"
-        "⏳ 小提醒\n"
-        "每個指令都會即時去抓最新的行情、法人與財務資料，"
-        "大約需要 10-20 秒才會回覆。送出後請稍等一下，"
-        "不用重複點擊，謝謝包涵。\n\n"
+        "不要因為看到一個分數就進場。\n\n"
+        "隨時輸入「選單」都能再叫出功能選單。\n\n"
         "———\n"
         "作者：蔡秉軒　敬上"
     ))
     try:
         menu = build_menu_flex(is_admin(user_id))
         menu.quick_reply = build_quick_reply()
-        line_bot_api.reply_message(event.reply_token, [welcome, menu])
+        # 順序固定為：歡迎文字 → 大型功能選單 → 使用前警語與操作建議。
+        line_bot_api.reply_message(event.reply_token, [welcome, menu, usage_notice])
     except Exception as e:
         print(f"❌ 歡迎訊息發送失敗 {user_id}: {e}")
 
