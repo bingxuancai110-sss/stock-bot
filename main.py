@@ -11398,6 +11398,7 @@ def web_portfolio(uid):
 <div class="callout" style="padding:14px 15px 4px">{trend_html_empty}</div>"""
         return respond_page("今日", body, "portfolio")
 
+    full_started = time.monotonic()
     th = get_thresholds(profile)
     fee_disc, min_fee = get_fee_settings(profile)
 
@@ -11421,8 +11422,10 @@ def web_portfolio(uid):
         shared_values = list(ex.map(
             lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
     inst, revenue, valuation, ind_map, taiex = shared_values
+    shared_done = time.monotonic()
 
     price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
+    price_done = time.monotonic()
     total_value, total_cost = 0.0, 0.0
     for p in positions:
         pr = price_map.get(p["code"])
@@ -11533,6 +11536,7 @@ def web_portfolio(uid):
                        f"（涵蓋組合的 {covered:.0f}%，ETF 無本益比故未計入）。"))
 
     pl_total = ((total_value - total_cost) / total_cost * 100) if total_cost else None
+    calc_done = time.monotonic()
 
     # 提醒的入口放在總市值那一列。
     # 提醒本身留在頁面下方（要先看完數據才有判讀的基礎），但「有沒有東西要看」
@@ -11563,11 +11567,25 @@ def web_portfolio(uid):
                 if avg_corr is not None and eff else
                 "持股數不足或資料不齊，尚無法計算相關係數。")
 
+    trend_started = time.monotonic()
     trend_html = render_trend_chart(get_portfolio_snapshots(uid, days=120))
+    trend_done = time.monotonic()
+    realized_started = time.monotonic()
     realized_html = render_realized_summary(uid, inst)
+    realized_done = time.monotonic()
 
+    daily_top_started = time.monotonic()
     daily_top = render_daily_home_top(uid, holdings, total_value, total_cost,
                                       price_map, pl_total, taiex=taiex)
+    daily_top_done = time.monotonic()
+    print("⏱️ 今日完整頁：共享 %.0fms、持股行情 %.0fms、組合計算 %.0fms、走勢 %.0fms、實現損益 %.0fms、首頁判讀 %.0fms、合計 %.0fms" % (
+        (shared_done - full_started) * 1000,
+        (price_done - shared_done) * 1000,
+        (calc_done - price_done) * 1000,
+        (trend_done - trend_started) * 1000,
+        (realized_done - realized_started) * 1000,
+        (daily_top_done - daily_top_started) * 1000,
+        (daily_top_done - full_started) * 1000))
     body = f"""
 {daily_top}
 <details class="risk-collapse"><summary>查看我的風險輪廓</summary>
