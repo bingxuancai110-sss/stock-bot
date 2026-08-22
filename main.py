@@ -11009,7 +11009,11 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     negative_entries = sorted(
         ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct < 0),
         key=lambda item: item[2])[:5]
-    rank_status = get_my_rank_summary(uid)
+    # 首頁只需要顯示自己的排名與升降，不需要為此阻塞整個完整排行榜重算。
+    # 使用最近兩次已保存的收盤快照；排行榜頁本身仍保留完整即時計算。
+    rank_started = time.monotonic()
+    rank_status = get_fast_rank_summary(uid)
+    print("⏱️ 今日完整頁：排名摘要 %.0fms" % ((time.monotonic() - rank_started) * 1000))
 
     def timeline_rows(items, status_label, status_class, start=1):
         rows = []
@@ -11042,6 +11046,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             return f'''<div class="rank-mini"><span>{s["label"]}</span><b>尚未上榜</b><small>累積有效快照後開始顯示</small></div>'''
         if s["delta"] is None:
             return f'''<div class="rank-mini"><span>{s["label"]}</span><b>#{s["rank"]}</b><small>收盤快照後更新排名變化</small></div>'''
+        previous_label = "前次收盤"
         if s["direction"] == "up":
             movement = f'<em class="up">↑ {s["delta"]} 名</em>'
             streak = f"・連續 {s['streak']} 次上升" if s["streak"] >= 2 else ""
@@ -11050,7 +11055,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             streak = f"・連續 {s['streak']} 次下降" if s["streak"] >= 2 else ""
         else:
             movement, streak = '<em class="flat">— 無變化</em>', ""
-        return f'''<div class="rank-mini"><span>{s["label"]}</span><b>#{s["rank"]} {movement}</b><small>昨日 #{s["previous"]}{streak}</small></div>'''
+        return f'''<div class="rank-mini"><span>{s["label"]}</span><b>#{s["rank"]} {movement}</b><small>{previous_label} #{s["previous"]}{streak}</small></div>'''
 
     gain_html = (
         f"{html.escape(str(biggest_gain['name']))} {fmt_pct(biggest_gain_pct)}"
