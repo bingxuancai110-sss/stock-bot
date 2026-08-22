@@ -491,6 +491,32 @@ def run_daily_change_detection(snapshot_date=None):
             f"資料日 {snapshot_date}、顯示日 {briefing_date}")
 
 
+def _premarket_display_date(display_date=None):
+    """週末若已有下一盤前批次，顯示下一個已建立的盤前日。"""
+    requested = display_date or taiwan_today()
+    if requested.weekday() < 5:
+        return requested
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT MIN(briefing_date)
+            FROM premarket_snapshots
+            WHERE briefing_date >= %s
+        """, (requested,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            cur.execute("""
+                SELECT MIN(briefing_date)
+                FROM premarket_events
+                WHERE briefing_date >= %s
+            """, (requested,))
+            row = cur.fetchone()
+        return row[0] if row and row[0] else requested
+    finally:
+        release_db_connection(conn)
+
+
 def _premarket_source_date(display_date):
     """由盤前顯示日找到收盤後產生這批事件的資料日。"""
     conn = get_db_connection()
@@ -514,7 +540,7 @@ def _premarket_source_date(display_date):
 
 
 def get_today_change_events(user_id=None, snapshot_date=None, limit=None):
-    display_date = snapshot_date or taiwan_today()
+    display_date = _premarket_display_date(snapshot_date or taiwan_today())
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -546,7 +572,7 @@ def build_today_attention_push(user_id):
 
 
 def get_today_change_snapshot(snapshot_date=None):
-    display_date = snapshot_date or taiwan_today()
+    display_date = _premarket_display_date(snapshot_date or taiwan_today())
     source_date = _premarket_source_date(display_date)
     conn = get_db_connection()
     try:
@@ -572,7 +598,7 @@ def get_today_change_snapshot(snapshot_date=None):
 
 def get_today_signal_state(user_id=None, snapshot_date=None):
     """首頁用的真實資料狀態；不把尚未更新誤報成市場安靜。"""
-    snapshot_date = snapshot_date or taiwan_today()
+    snapshot_date = _premarket_display_date(snapshot_date or taiwan_today())
     snapshot = get_today_change_snapshot(snapshot_date)
     personal_events = get_today_change_events(user_id, snapshot_date)
     global_events = get_today_change_events(None, snapshot_date)
@@ -592,7 +618,7 @@ def get_today_signal_state(user_id=None, snapshot_date=None):
 
 def get_today_event_timeline(user_id=None, snapshot_date=None):
     """把今日與前一有效交易日事件比對成回訪時間線，不產生不存在的事件。"""
-    snapshot_date = snapshot_date or taiwan_today()
+    snapshot_date = _premarket_display_date(snapshot_date or taiwan_today())
     snapshot = get_today_change_snapshot(snapshot_date)
     if not snapshot or not snapshot.get("previous_trade_date"):
         return {"new": [], "ongoing": [], "resolved": [],
@@ -623,8 +649,8 @@ def get_today_event_timeline(user_id=None, snapshot_date=None):
 
 
 def build_today_change_web_data(user_id):
-    """網頁顯示下一盤前日的完整快照與事件；LINE 只取前三項摘要。"""
-    snapshot_date = taiwan_today()
+    """網頁顯示最近可用盤前日的完整快照與事件；LINE 只取前三項摘要。"""
+    snapshot_date = _premarket_display_date(taiwan_today())
     global_events = get_today_change_events(None, snapshot_date)
     user_events = get_today_change_events(user_id, snapshot_date)
     state = get_today_signal_state(user_id, snapshot_date)
@@ -6212,6 +6238,8 @@ def build_morning_push(user_id):
 
 
 DEFAULT_WEB_BASE_URL = "https://stock-bot-6xct.onrender.com"
+_morning_macro_cache = {"date": None, "lines": []}
+_morning_macro_cache_lock = threading.Lock()
 
 
 def public_web_base_url(base_url=None):
@@ -6221,8 +6249,41 @@ def public_web_base_url(base_url=None):
             or DEFAULT_WEB_BASE_URL).rstrip("/")
 
 
+def _morning_macro_lines():
+    """取得盤前 LINE 要顯示的美股與總經短摘要；同一天共用一次結果。"""
+    today = taiwan_today()
+    with _morning_macro_cache_lock:
+        if (_morning_macro_cache.get("date") == today
+                and _morning_macro_cache.get("lines")):
+            return list(_morning_macro_cache["lines"])
+
+    symbols = ([s for _label, s in BRIEF_INDICES]
+               + [s for _label, s in BRIEF_MACRO])
+    quotes = fetch_quotes_bulk(symbols)
+
+    def pct_line(label, symbol):
+        q = quotes.get(symbol)
+        if not q:
+            return f"{label} 資料暫缺"
+        _close, pct, _diff = q
+        arrow = "⚪" if abs(pct) < 0.005 else ("🔴" if pct > 0 else "🟢")
+        return f"{arrow} {label} {pct:+.2f}%"
+
+    lines = [
+        "☀️ 盤前／總經",
+        "美股　" + "　".join(pct_line(label, symbol)
+                            for label, symbol in BRIEF_INDICES),
+        "風險　" + "　".join(pct_line(label, symbol)
+                            for label, symbol in BRIEF_MACRO),
+    ]
+    with _morning_macro_cache_lock:
+        _morning_macro_cache["date"] = today
+        _morning_macro_cache["lines"] = list(lines)
+    return lines
+
+
 def build_morning_push_message(user_id, base_url=None):
-    """建立盤前 LINE 訊息：事件保持短文字，完整分析由按鈕導向今日網頁。"""
+    """建立盤前 LINE 訊息：事件、美股與總經摘要，完整分析由按鈕導向今日網頁。"""
     events = get_today_change_events(user_id, limit=3)
     if not events:
         events = get_today_change_events(None, limit=3)
@@ -6230,7 +6291,7 @@ def build_morning_push_message(user_id, base_url=None):
     plain_text = build_today_attention_push(user_id)
     token = create_web_token(user_id)
     if not token:
-        return TextSendMessage(text=plain_text)
+        return TextSendMessage(text=plain_text + "\n\n" + "\n".join(_morning_macro_lines()))
 
     web_url = (f"{public_web_base_url(base_url)}/web/login?t="
                f"{quote(token, safe='')}")
@@ -6252,6 +6313,13 @@ def build_morning_push_message(user_id, base_url=None):
             "size": "sm", "color": "#767D85", "wrap": True,
             "margin": "md"
         })
+
+    contents.append({"type": "separator", "margin": "lg", "color": "#E8EAE6"})
+    contents.append({"type": "text", "text": "☀️ 盤前／總經", "weight": "bold",
+                     "size": "md", "color": "#6E5228", "margin": "lg"})
+    for line in _morning_macro_lines()[1:]:
+        contents.append({"type": "text", "text": line, "size": "xs",
+                         "color": "#454C55", "wrap": True, "margin": "sm"})
     contents += [
         {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
         {"type": "button", "style": "primary", "height": "sm",
@@ -10225,7 +10293,7 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
 
 def render_portfolio_fast_summary(uid):
     """今日首頁第一段：只讀既有快照、事件與排名，不抓持股即時報價。"""
-    snapshot_date = taiwan_today()
+    snapshot_date = _premarket_display_date(taiwan_today())
     snapshot = get_today_change_snapshot(snapshot_date) or {}
     timeline = get_today_event_timeline(uid, snapshot_date)
     events = (timeline.get("new", []) + timeline.get("ongoing", []))[:3]
@@ -10304,8 +10372,11 @@ def render_portfolio_fast_summary(uid):
 
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total):
     # 新版首頁上半部：先講今天，再提供完整分析入口。
-    signal_state = get_today_signal_state(uid, taiwan_today())
-    timeline = get_today_event_timeline(uid, taiwan_today())
+    calendar_today = taiwan_today()
+    display_date = _premarket_display_date(calendar_today)
+    signal_state = get_today_signal_state(uid, display_date)
+    timeline = get_today_event_timeline(uid, display_date)
+    display_snapshot = get_today_change_snapshot(display_date) or {}
     events = (timeline["new"] + timeline["ongoing"])[:3]
     taiex = fetch_taiex_summary() or {}
     market_pct = None
@@ -10531,10 +10602,16 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <div class="contribution-footnote">「增加／減少」是依你的持股比例換算出的組合影響，不是個股報酬率，也不代表買賣建議。</div>
 </section>'''
 
+    if display_date != calendar_today and display_snapshot.get("source_date"):
+        hero_eyebrow = (f"最近交易日 {display_snapshot['source_date']}　·　"
+                        f"下次盤前 {display_snapshot.get('briefing_date') or display_date}")
+    else:
+        hero_eyebrow = f"TODAY · {display_date.strftime('%Y / %m / %d')}"
+
     return f'''<style>
 .daily-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:26px 24px 22px;margin:-8px -2px 18px;border-bottom:1px solid #d7d4ca}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-status{{min-width:28px;height:22px;padding:2px 5px;border-radius:7px;text-align:center;font-size:11px;font-weight:700;line-height:18px;flex:none;background:#eee;color:var(--ink-soft)}}.timeline-new .event-status{{background:#FCE9E6;color:var(--up)}}.timeline-ongoing .event-status{{background:#F3EEE1;color:var(--brass)}}.timeline-resolved .event-status{{background:#E8F2EA;color:var(--down)}}.timeline-divider{{margin:14px 0 0;padding-top:12px;border-top:1px solid #eee;color:var(--ink-soft);font-size:12px;font-weight:600}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:13px}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:12px}}.rank-mini b{{display:block;font-size:21px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:14px}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.impact-leads{{grid-template-columns:1fr}}.rank-grid{{grid-template-columns:1fr}}.daily-hero h1{{font-size:26px}}}}
 .daily-interpretation{{padding:11px 14px;margin:-4px 0 14px;border-left:3px solid var(--brass);background:rgba(255,255,255,.6);color:var(--ink-soft);font-size:13px;line-height:1.65}}.daily-interpretation-label{{font-size:11px;color:var(--brass);font-weight:700;letter-spacing:.08em;margin-bottom:3px}}.contribution-card{{padding:16px 15px}}.contribution-card .daily-section-title span{{font-size:11px;color:var(--ink-faint)}}.impact-sentence{{margin:0 0 12px;color:var(--ink-soft);font-size:13px;line-height:1.6}}.impact-leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.impact-lead{{padding:13px;border-radius:11px;background:#F7F7F3;border:1px solid #ECEDE8}}.impact-lead small{{display:block;font-size:11px;font-weight:700;color:var(--ink-soft)}}.impact-lead h3{{font-size:20px;line-height:1.3;margin:7px 0 4px;overflow-wrap:anywhere}}.impact-lead p{{margin:0 0 8px;color:var(--ink-soft);font-size:11px}}.impact-lead strong{{font-size:12px}}.impact-up{{border-color:#EDC7C2;background:#FFF7F5}}.impact-up strong{{color:var(--up)}}.impact-down{{border-color:#C9DFD0;background:#F4FBF5}}.impact-down strong{{color:var(--down)}}.impact-muted{{color:var(--ink-faint)}}.impact-details{{margin-top:10px;border-top:1px solid #ECEDE8}}.impact-details summary{{padding:11px 2px 4px;cursor:pointer;color:var(--brass);font-size:12px;font-weight:600}}.impact-detail-row{{display:flex;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid #F0F0EC}}.impact-rank{{width:20px;height:20px;border-radius:50%;background:#F0EEE8;color:var(--ink-soft);font-size:11px;text-align:center;line-height:20px;flex:none}}.impact-detail-name{{min-width:0;flex:1}}.impact-detail-name b{{display:block;font-size:14px;overflow-wrap:anywhere}}.impact-detail-name small{{display:block;color:var(--ink-soft);font-size:10.5px;margin-top:2px}}.impact-detail-row strong{{font-size:12px;white-space:nowrap}}.impact-empty{{padding:9px 2px;color:var(--ink-faint);font-size:11px}}.contribution-footnote{{margin-top:10px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}}.daily-focus{{padding:17px 18px;margin:0 0 14px;border-radius:14px;border:1px solid #e1ddd2;background:linear-gradient(135deg,#fffaf0,#f3f5ef);box-shadow:0 5px 18px rgba(35,39,35,.07)}}.daily-focus-head{{display:flex;justify-content:space-between;align-items:center;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}}.daily-focus-head small{{font-size:11px;color:var(--ink-soft);font-weight:400;letter-spacing:0}}.daily-focus h2{{font-size:22px;line-height:1.3;margin:10px 0 5px}}.daily-focus p{{font-size:13px;color:var(--ink-soft);margin:0 0 12px}}.daily-focus .contribution-note{{display:block;font-size:11px;font-weight:400;color:var(--ink-soft);margin-top:4px}}.daily-focus a{{display:inline-block;color:#fff;background:var(--brass);border-radius:7px;padding:8px 12px;font-size:12px;font-weight:700}}.daily-focus.focus-down{{border-color:#edc7c2;background:linear-gradient(135deg,#fff7f5,#fffaf0)}}.daily-focus.focus-down .daily-focus-head{{color:var(--up)}}.daily-focus.focus-down a{{background:var(--up)}}.daily-focus.focus-up{{border-color:#c9dfd0;background:linear-gradient(135deg,#f4fbf5,#fffaf0)}}.daily-focus.focus-up .daily-focus-head{{color:var(--down)}}.daily-focus.focus-up a{{background:var(--down)}}.daily-focus.focus-rank{{border-color:#d9c9a7}}.daily-focus.focus-quiet{{background:#f7f7f3;box-shadow:none}}.daily-focus.focus-quiet a{{background:#68705f}} </style><section class="daily-hero">
-  <div class="eyebrow">TODAY · {taiwan_today().strftime('%Y / %m / %d')}</div>
+  <div class="eyebrow">{hero_eyebrow}</div>
   <h1>今天你的投資發生了什麼？</h1>
   <div class="market-strip"><span>大盤 <b>{market_text}</b></span><span>你的組合 <b>{portfolio_text}</b></span><span>相對大盤 <b>{relative_text}</b></span></div>
 </section>
