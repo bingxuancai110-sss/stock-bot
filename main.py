@@ -7403,6 +7403,109 @@ def build_morning_push_message(user_id, base_url=None):
     return FlexSendMessage(alt_text=plain_text, contents=bubble)
 
 
+def build_line_screener_message(user_id, mode, base_url=None):
+    """LINE 黑馬／雷達只回前 3 檔；完整清單由按鈕導向網頁。"""
+    mode = "radar" if str(mode).strip() == "radar" else "blackhorse"
+    label = "雷達" if mode == "radar" else "黑馬"
+    icon = "🚨" if mode == "radar" else "🐎"
+
+    # 先讀 warmup 完整快照；命中時不先抓法人，也不重新掃描候選池。
+    persisted = _load_persisted_screener_snapshot(mode)
+    persisted_hit = bool(persisted and _screener_snapshot_valid_for_today(persisted))
+    source_date = persisted.get("source_date") if persisted_hit else None
+    if persisted_hit:
+        rows = list(persisted.get("rows") or [])
+    else:
+        inst_data = fetch_institutional_data()
+        if not inst_data:
+            return TextSendMessage(
+                text=f"❌ 目前無法取得三大法人資料，暫時無法建立{label}摘要。\n"
+                     "可能是非交易時段或資料尚未公布，請稍後再試。")
+        rows, _skipped, _momentum = compute_screener_rows(
+            mode, inst=inst_data)
+        source_date = _screener_source_date()
+
+    if mode == "blackhorse":
+        rows = [r for r in rows if r.get("score") is not None]
+        rows.sort(key=lambda r: r.get("score", -1), reverse=True)
+    else:
+        def line_radar_key(r):
+            breakout = (2 if r.get("breakout") == "季線新高"
+                        else (1 if r.get("breakout") else 0))
+            fatigue = -1 if (r.get("up_streak") or 0) >= 5 else 0
+            return (breakout + fatigue, r.get("vol_ratio") or 0,
+                    r.get("streak", 0), r.get("pct", 0))
+        rows.sort(key=line_radar_key, reverse=True)
+
+    token = create_web_token(user_id)
+    web_url = None
+    if token:
+        web_url = (f"{public_web_base_url(base_url)}/web/screener?mode={mode}"
+                   f"&view=list&t={quote(token, safe='')}")
+
+    date_text = (source_date.isoformat() if hasattr(source_date, "isoformat")
+                 else str(source_date or "未標日期"))
+    source_text = "warmup 完整快照" if persisted_hit else "本次完整計算"
+    contents = [
+        {"type": "text", "text": f"{icon} {label}｜前 3 名",
+         "weight": "bold", "size": "xl", "color": "#1B2027"},
+        {"type": "text", "text": f"資料來源：{source_text}・資料日：{date_text}",
+         "size": "xs", "color": "#767D85", "margin": "sm", "wrap": True},
+    ]
+
+    if not rows:
+        contents.append({"type": "text", "text": f"目前沒有符合條件的{label}標的。",
+                         "size": "sm", "color": "#767D85", "margin": "lg", "wrap": True})
+    else:
+        for rank, row in enumerate(rows[:3], 1):
+            name = str(row.get("name") or row.get("code") or "未命名")
+            code = str(row.get("code") or "")
+            if mode == "blackhorse":
+                score = row.get("score")
+                score_text = f"黑馬指數 {score}／100" if score is not None else "黑馬指數尚無資料"
+                growth = (f"・累計年增 {row['cum_yoy']:+.1f}%"
+                          if row.get("cum_yoy") is not None else "")
+                detail = f"{score_text}{growth}・法人連買 {row.get('streak', 0)} 日"
+            else:
+                pct = row.get("pct")
+                pct_text = f"{pct:+.2f}%" if pct is not None else "漲跌尚無資料"
+                state = row.get("radar_state") or row.get("breakout") or "雷達訊號"
+                detail = f"{pct_text}・{state}・法人連買 {row.get('streak', 0)} 日"
+            contents.append({
+                "type": "box", "layout": "vertical", "margin": "lg",
+                "contents": [
+                    {"type": "text", "text": f"#{rank} {name}（{code}）",
+                     "weight": "bold", "size": "md", "color": "#1B2027", "wrap": True},
+                    {"type": "text", "text": detail, "size": "sm",
+                     "color": "#454C55", "margin": "xs", "wrap": True},
+                ],
+            })
+
+    if web_url:
+        contents += [
+            {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+            {"type": "button", "style": "primary", "height": "sm",
+             "color": "#6E5228", "margin": "lg",
+             "action": {"type": "uri", "label": f"查看完整{label}分析",
+                        "uri": web_url}},
+        ]
+    else:
+        contents.append({"type": "text", "text": "網頁入口暫時無法建立，請稍後再試。",
+                         "size": "xs", "color": "#767D85", "margin": "lg", "wrap": True})
+
+    alt_lines = [f"{icon} {label}｜前 3 名｜資料日 {date_text}"]
+    for rank, row in enumerate(rows[:3], 1):
+        alt_lines.append(f"#{rank} {row.get('name') or row.get('code')}")
+    plain_text = "\n".join(alt_lines)
+    bubble = {
+        "type": "bubble",
+        "body": {"type": "box", "layout": "vertical", "contents": contents,
+                  "paddingAll": "18px", "backgroundColor": "#FFFFFF"},
+        "styles": {"body": {"backgroundColor": "#FFFFFF"}},
+    }
+    return FlexSendMessage(alt_text=plain_text[:400], contents=bubble)
+
+
 @app.route("/cron/push-watchlist", methods=["POST", "GET"])
 def cron_push_watchlist():
     """早上推播盤前簡報＋自選股摘要。受 PUSH_MAX_USERS 額度保護。"""
@@ -13912,101 +14015,12 @@ def handle_message(event):
     elif text in ["籌碼", "籌碼超人", "認養"]:
         reply = build_chips_report()
 
-    # 8. 黑馬股（不同於雷達：以「月營收年增率」為主軸，找有題材／獲利成長的股票）
+    # 8. 黑馬／雷達：LINE 只做快速摘要與網頁入口，完整分析留在網頁版
     elif text in ["黑馬", "雷達"]:
         mode = "blackhorse" if text == "黑馬" else "radar"
-        sep = chr(10)
-        inst_data = fetch_institutional_data()
-        if not inst_data:
-            reply = "❌ 目前無法取得三大法人資料，可能是非交易時段或非交易日，請稍後再試。"
-        else:
-            # LINE 與網頁共用同一份候選池、資料快取、評分與資料完整度欄位，
-            # 避免同一天兩個入口出現不同排名。
-            rows, _skipped, _momentum = compute_screener_rows(
-                mode, inst=inst_data)
-            if mode == "blackhorse":
-                rows = [r for r in rows if r.get("score") is not None]
-                rows.sort(key=lambda r: r.get("score", -1), reverse=True)
-                reports = []
-                for rank, r in enumerate(rows[:5], start=1):
-                    q = r.get("data_quality") or {}
-                    quality = f"{q.get('valid', 0)}/{q.get('total', 0)}"
-                    missing = "、".join(q.get("missing") or [])
-                    quality_line = (f"資料完整度：{quality}"
-                                    + (f"（缺 {missing}）" if missing else ""))
-                    caps = r.get("caps", ("", "", "", "", ""))
-                    growth_line = (f"累計年增 {r['cum_yoy']:+.1f}%"
-                                   if r.get("cum_yoy") is not None
-                                   else "累計年增 尚無資料")
-                    value_line = (f"PE {r['pe']:.1f}"
-                                  if r.get("pe") is not None
-                                  else (f"PB {r['pb']:.2f}"
-                                        if r.get("pb") is not None
-                                        else "估值資料不足"))
-                    proxy_line = (f"營收成長估值代理值 {r['peg']:.2f}"
-                                  if r.get("peg") is not None else "")
-                    report_lines = [
-                        f"🐎 智慧黑馬股 #{rank}", "",
-                        f"股票：{r['name']}",
-                        f"代號：{r['code']}",
-                        f"產業：{r['industry']}", "",
-                        f"黑馬指數：{r['score']}／100", "",
-                        f"💡 營收成長：{r['rev']}／{caps[0]}",
-                        f"　　{growth_line}",
-                        f"　　{proxy_line}" if proxy_line else None,
-                        f"💰 估值：{r['val']}／{caps[1]}",
-                        f"　　{value_line}",
-                        f"🏭 產業動能：{r['mom']}／{caps[2]}",
-                        f"🔁 法人連續性：{r['streak_score']}／{caps[3]}（連續{r['streak']}日買超）",
-                        f"📊 籌碼技術：{r['chip']}／{caps[4]}",
-                        f"　　近10日累計買超 {r.get('cum_lots', 0):,} 張", "",
-                        f"📋 {quality_line}", "",
-                        "【位階】", build_position_desc(r),
-                        "-----------------------------------",
-                    ]
-                    reports.append(sep.join(x for x in report_lines if x is not None))
-                reply = (sep + sep).join(reports) + sep + sep + (
-                    "※ 黑馬與網頁選股台使用同一套公開資料與排序；"
-                    "分數高不代表會漲，也不代表適合你的狀況。"
-                    if reports else "❌ 暫無符合條件的標的。")
-            else:
-                def line_radar_key(r):
-                    breakout = (2 if r.get("breakout") == "季線新高"
-                                else (1 if r.get("breakout") else 0))
-                    fatigue = -1 if (r.get("up_streak") or 0) >= 5 else 0
-                    return (breakout + fatigue, r.get("vol_ratio") or 0,
-                            r.get("streak", 0), r.get("pct", 0))
-
-                rows.sort(key=line_radar_key, reverse=True)
-                reports = []
-                for r in rows[:5]:
-                    q = r.get("data_quality") or {}
-                    quality = f"{q.get('valid', 0)}/{q.get('total', 0)}"
-                    missing = "、".join(q.get("missing") or [])
-                    quality_line = (f"資料完整度：{quality}"
-                                    + (f"（缺 {missing}）" if missing else ""))
-                    streak_line = (f"🔁 法人連續買超：{r['streak']} 日"
-                                   if r.get("streak", 0) >= 2 else "")
-                    report_lines = [
-                        "🚨【盤中雷達】", "",
-                        f"🔥 強勢股票：{r['name']}",
-                        f"📌 股票代號：{r['code']}", "",
-                        f"💰 現價：{r['close']:.2f}",
-                        f"📈 漲幅：{r['pct']:+.2f}%",
-                        f"📊 成交金額：{r['turnover']:.1f} 億",
-                        f"🏦 三大法人買超：{r.get('cum_lots', 0):,} 張",
-                        streak_line,
-                        f"🏆 狀態：{r.get('radar_state', '狀態資料不足')}",
-                        f"📋 {quality_line}", "",
-                        "【位階】", build_position_desc(r), "",
-                        "【注意】", build_risk_desc(r['pct'], r.get('cum_lots', 0)),
-                        "-----------------------------------",
-                    ]
-                    reports.append(sep.join(x for x in report_lines if x))
-                reply = (sep + sep).join(reports) + sep + sep + (
-                    "※ 雷達與網頁選股台使用同一套公開資料與排序；"
-                    "短線強勢不代表會續強，追高風險自負。"
-                    if reports else "❌ 暫無符合條件的標的。")
+        flex_reply = build_line_screener_message(
+            user_id, mode, request.url_root.rstrip("/"))
+        reply = None
     elif text_upper in ["MENU", "選單", "幫助", "HELP"]:
         flex_reply = build_menu_flex(is_admin(user_id))
         reply = None
