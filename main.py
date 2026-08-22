@@ -6092,7 +6092,9 @@ def push_to_users(users, build_fn, label):
             empty += 1
             continue
         try:
-            line_bot_api.push_message(uid, TextSendMessage(text=msg))
+            outbound = (msg if isinstance(msg, (TextSendMessage, FlexSendMessage))
+                        else TextSendMessage(text=str(msg)))
+            line_bot_api.push_message(uid, outbound)
             sent += 1
         except Exception as e:
             print(f"❌ {label}推播失敗 {uid}: {e}")
@@ -6141,8 +6143,66 @@ def build_digest(user_id):
     return "\n".join(lines)
 
 def build_morning_push(user_id):
-    """LINE 僅推播由前一交易日比較產生的最多 3 個重點。"""
+    """保留純文字版本，供沒有網頁入口時的相容 fallback 使用。"""
     return build_today_attention_push(user_id)
+
+
+DEFAULT_WEB_BASE_URL = "https://stock-bot-6xct.onrender.com"
+
+
+def public_web_base_url(base_url=None):
+    """取得 LINE 推播可開啟的公開網址；背景 cron 沒有 request context。"""
+    return (base_url or os.environ.get("WEB_BASE_URL")
+            or os.environ.get("RENDER_EXTERNAL_URL")
+            or DEFAULT_WEB_BASE_URL).rstrip("/")
+
+
+def build_morning_push_message(user_id, base_url=None):
+    """建立盤前 LINE 訊息：事件保持短文字，完整分析由按鈕導向今日網頁。"""
+    events = get_today_change_events(user_id, limit=3)
+    if not events:
+        events = get_today_change_events(None, limit=3)
+
+    plain_text = build_today_attention_push(user_id)
+    token = create_web_token(user_id)
+    if not token:
+        return TextSendMessage(text=plain_text)
+
+    web_url = (f"{public_web_base_url(base_url)}/web/login?t="
+               f"{quote(token, safe='')}")
+    contents = [{
+        "type": "text", "text": "🔥 今日值得注意", "weight": "bold",
+        "size": "xl", "color": "#1B2027"
+    }]
+    if events:
+        for idx, event in enumerate(events[:3], 1):
+            contents.append({
+                "type": "text",
+                "text": f"{['①', '②', '③'][idx - 1]} {event['title']}",
+                "size": "sm", "color": "#454C55", "wrap": True,
+                "margin": "md"
+            })
+    else:
+        contents.append({
+            "type": "text", "text": "😴 今日市場訊號偏少",
+            "size": "sm", "color": "#767D85", "wrap": True,
+            "margin": "md"
+        })
+    contents += [
+        {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+        {"type": "button", "style": "primary", "height": "sm",
+         "color": "#6E5228", "margin": "lg",
+         "action": {"type": "uri", "label": "查看今日完整分析",
+                    "uri": web_url}}
+    ]
+    bubble = {
+        "type": "bubble",
+        "body": {"type": "box", "layout": "vertical",
+                  "contents": contents, "paddingAll": "18px",
+                  "backgroundColor": "#FFFFFF"},
+        "styles": {"body": {"backgroundColor": "#FFFFFF"}}
+    }
+    return FlexSendMessage(alt_text=plain_text, contents=bubble)
 
 
 @app.route("/cron/push-watchlist", methods=["POST", "GET"])
@@ -6153,7 +6213,7 @@ def cron_push_watchlist():
         abort(403)
     return run_in_background(
         "盤前推播",
-        lambda: push_to_users(get_notify_users(), build_morning_push, "盤前推播")), 200
+        lambda: push_to_users(get_notify_users(), build_morning_push_message, "盤前推播")), 200
 
 @app.route("/cron/detect-premarket-changes", methods=["POST", "GET"])
 def cron_detect_premarket_changes():
@@ -7303,7 +7363,15 @@ BASE_CSS = """
 body{background:var(--paper);color:var(--ink);line-height:1.55;
   font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
   -webkit-font-smoothing:antialiased}
-.wrap{max-width:720px;margin:0 auto;padding:0 20px 80px}
+  .wrap{max-width:720px;margin:0 auto;padding:0 20px 80px}
+  .realized-collapse{margin:22px 0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+  .realized-collapse>summary{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:15px 0;cursor:pointer;list-style:none;font-weight:700;color:var(--ink)}
+  .realized-collapse>summary::-webkit-details-marker{display:none}
+  .realized-collapse>summary::before{content:'＋';display:inline-block;width:22px;color:var(--brass);font-size:18px}
+  .realized-collapse[open]>summary::before{content:'−'}
+  .realized-collapse>summary small{margin-left:auto;color:var(--ink-faint);font-size:12px;font-weight:400}
+  .realized-body{padding:2px 0 14px}
+
 .num{font-variant-numeric:tabular-nums;
   font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
 .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--ink-faint)}
@@ -8467,10 +8535,10 @@ def web_positions(uid):
     rows_html, total_value, total_cost = [], 0.0, 0.0
     total_day_pl = 0.0
     enriched = []
-    # 首屏先用 3 個月資料，約 60 個交易日已足夠看近期損益與回檔，
-    # 同時明顯小於 1 年資料量；較早買進日由走勢圖誠實標示「不在此區間內」。
+    # 持股頁的個股走勢改抓 1 年日 K；技術位階仍只用近 20／60 日計算。
+    # 這樣可以看較早買進的部位，不會因約 60 個交易日的 3mo 區間而截斷。
     price_map = get_realtime_stocks_bulk(
-        [p["code"] for p in positions], rng="3mo")
+        [p["code"] for p in positions], rng="1y")
     for p in positions:
         price = price_map.get(p["code"])
         if price:
@@ -9004,20 +9072,23 @@ def render_realized_summary(user_id, inst_data):
 </div>"""
 
     return f"""
-<div class="section-head"><h2>已實現損益</h2>
-  <span class="section-note">共 {len(trades)} 筆交易</span></div>
-<div class="totals">
-  <div><div class="total-label">累計已實現損益</div>
-       <div class="total-value num {'up' if total_pl >= 0 else 'down'}">{total_pl:+,.0f}</div>
-       <div class="total-sub" style="color:var(--ink-faint)">已扣交易成本</div></div>
-  <div><div class="total-label">勝率</div>
-       <div class="total-value num">{f"{win_rate:.0f}%" if win_rate is not None else '—'}</div>
-       <div class="total-sub" style="color:var(--ink-faint)">{len(priced)} 筆有損益資料</div></div>
-  <div><div class="total-label">平均持有天數</div>
-       <div class="total-value num">{f"{avg_hold:.0f} 天" if avg_hold is not None else '—'}</div></div>
-</div>
-<div class="rows">{''.join(trade_row(t) for t in trades[:10])}</div>
-{f'<div class="section-note" style="margin-top:8px">僅顯示最近 10 筆</div>' if len(trades) > 10 else ''}
+<details class="realized-collapse">
+  <summary><span>已實現損益</span><small>共 {len(trades)} 筆交易・點開查看</small></summary>
+  <div class="realized-body">
+    <div class="totals">
+      <div><div class="total-label">累計已實現損益</div>
+           <div class="total-value num {'up' if total_pl >= 0 else 'down'}">{total_pl:+,.0f}</div>
+           <div class="total-sub" style="color:var(--ink-faint)">已扣交易成本</div></div>
+      <div><div class="total-label">勝率</div>
+           <div class="total-value num">{f"{win_rate:.0f}%" if win_rate is not None else '—'}</div>
+           <div class="total-sub" style="color:var(--ink-faint)">{len(priced)} 筆有損益資料</div></div>
+      <div><div class="total-label">平均持有天數</div>
+           <div class="total-value num">{f"{avg_hold:.0f} 天" if avg_hold is not None else '—'}</div></div>
+    </div>
+    <div class="rows">{''.join(trade_row(t) for t in trades[:10])}</div>
+    {f'<div class="section-note" style="margin-top:8px">僅顯示最近 10 筆</div>' if len(trades) > 10 else ''}
+  </div>
+</details>
 """
 
 
@@ -11617,7 +11688,9 @@ def handle_message(event):
 
     # 7. 盤前速覽
     elif text in ["盤前", "早安"]:
-        reply = build_morning_push(user_id)
+        # 手動輸入也使用同一張短訊息＋今日網頁按鈕；網址沿用目前 request 網域。
+        flex_reply = build_morning_push_message(user_id, request.url_root.rstrip("/"))
+        reply = None
 
     # 7.5 盤後解盤（使用者手動輸入才觸發，不自動推播）
     elif text in ["解盤", "盤後解盤", "盤後"]:
