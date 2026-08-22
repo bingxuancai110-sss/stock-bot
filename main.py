@@ -492,13 +492,14 @@ def run_daily_change_detection(snapshot_date=None):
 
 
 def _premarket_display_date(display_date=None):
-    """週末若已有下一盤前批次，顯示下一個已建立的盤前日。"""
+    """取得盤前資料的顯示日；週末優先找下一批，找不到就回退最近交易日批次。"""
     requested = display_date or taiwan_today()
     if requested.weekday() < 5:
         return requested
     conn = get_db_connection()
     try:
         cur = conn.cursor()
+        # 週末若已建立下週盤前批次，優先使用其 briefing_date。
         cur.execute("""
             SELECT MIN(briefing_date)
             FROM premarket_snapshots
@@ -510,6 +511,28 @@ def _premarket_display_date(display_date=None):
                 SELECT MIN(briefing_date)
                 FROM premarket_events
                 WHERE briefing_date >= %s
+            """, (requested,))
+            row = cur.fetchone()
+        if row and row[0]:
+            return row[0]
+
+        # 若 briefing_date 尚未補齊或下一批尚未建立，改用最近一筆
+        # 已存在的交易日資料；不能因為週末查不到下一批就退回空快照。
+        cur.execute("""
+            SELECT briefing_date
+            FROM premarket_snapshots
+            WHERE snapshot_date <= %s
+            ORDER BY snapshot_date DESC
+            LIMIT 1
+        """, (requested,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            cur.execute("""
+                SELECT briefing_date
+                FROM premarket_events
+                WHERE snapshot_date <= %s
+                ORDER BY snapshot_date DESC
+                LIMIT 1
             """, (requested,))
             row = cur.fetchone()
         return row[0] if row and row[0] else requested
@@ -572,7 +595,8 @@ def build_today_attention_push(user_id):
 
 
 def get_today_change_snapshot(snapshot_date=None):
-    display_date = _premarket_display_date(snapshot_date or taiwan_today())
+    requested = snapshot_date or taiwan_today()
+    display_date = _premarket_display_date(requested)
     source_date = _premarket_source_date(display_date)
     conn = get_db_connection()
     try:
@@ -583,6 +607,18 @@ def get_today_change_snapshot(snapshot_date=None):
             FROM premarket_snapshots WHERE snapshot_date=%s
         """, (source_date,))
         row = cur.fetchone()
+        # 舊資料可能只有 snapshot_date、沒有 briefing_date；週末仍應顯示
+        # 最近一筆不超過今天的真實快照，而不是把 None 變成空字典。
+        if not row and requested.weekday() >= 5:
+            cur.execute("""
+                SELECT snapshot_date, briefing_date, previous_trade_date,
+                       blackhorse, radar, market, news, institutional
+                FROM premarket_snapshots
+                WHERE snapshot_date <= %s
+                ORDER BY snapshot_date DESC
+                LIMIT 1
+            """, (requested,))
+            row = cur.fetchone()
         if not row:
             return None
         return {"snapshot_date": row[0].isoformat(),
@@ -650,13 +686,16 @@ def get_today_event_timeline(user_id=None, snapshot_date=None):
 
 def build_today_change_web_data(user_id):
     """網頁顯示最近可用盤前日的完整快照與事件；LINE 只取前三項摘要。"""
-    snapshot_date = _premarket_display_date(taiwan_today())
-    global_events = get_today_change_events(None, snapshot_date)
-    user_events = get_today_change_events(user_id, snapshot_date)
-    state = get_today_signal_state(user_id, snapshot_date)
-    current_snapshot = get_today_change_snapshot(snapshot_date)
-    return {"date": snapshot_date.isoformat(), "levels": LEVEL_LABEL,
-            "snapshot": current_snapshot,
+    requested_date = taiwan_today()
+    display_date = _premarket_display_date(requested_date)
+    global_events = get_today_change_events(None, display_date)
+    user_events = get_today_change_events(user_id, display_date)
+    state = get_today_signal_state(user_id, display_date)
+    current_snapshot = get_today_change_snapshot(display_date)
+    return {"date": display_date.isoformat(),
+            "requested_date": requested_date.isoformat(),
+            "is_weekend": requested_date.weekday() >= 5,
+            "levels": LEVEL_LABEL, "snapshot": current_snapshot,
             "events": _sort_events(user_events or global_events),
             "global_events": global_events, "all_events": user_events,
             "state": state}
@@ -8599,31 +8638,161 @@ def web_home(uid):
 @app.route("/web/premarket")
 @web_login_required
 def web_premarket(uid):
-    """顯示下一盤前日的完整快照與所有變化事件；LINE 僅取其中前三項。"""
+    """顯示最近可用盤前批次的完整資料；沒有快照時清楚呈現資料狀態。"""
     data = build_today_change_web_data(uid)
-    snapshot = data.get("snapshot") or {}
+    snapshot = data.get("snapshot")
+    state = data.get("state") or {}
     events = data.get("events") or []
     esc = html.escape
+
+    category_labels = {
+        "blackhorse": "黑馬", "radar": "雷達", "breakout": "突破／跌破",
+        "institutional": "法人", "market": "大盤／美股", "news": "新聞",
+        "watchlist": "自選股", "watchlist_position": "自選股位階"
+    }
+
+    def text(value, fallback="尚無資料"):
+        return esc(str(value)) if value not in (None, "", []) else fallback
+
+    def pct_text(value):
+        if value is None:
+            return "尚無資料"
+        try:
+            number = float(value)
+            color = "#B52F2F" if number > 0 else ("#087A4B" if number < 0 else "#767D85")
+            return f'<span style="color:{color};font-weight:700">{number:+.2f}%</span>'
+        except (TypeError, ValueError):
+            return text(value)
+
     rows = []
     for event in events:
-        evidence = esc(json.dumps(event.get("evidence") or {}, ensure_ascii=False, indent=2))
+        evidence = esc(json.dumps(event.get("evidence") or {}, ensure_ascii=False, indent=2, default=str))
+        category = category_labels.get(event.get("category"), event.get("category") or "其他")
         rows.append(
-            f"<tr><td><b>{esc(event['severity'])}</b></td>"
-            f"<td>{esc(event['category'])}</td><td>{esc(event['title'])}</td>"
-            f"<td>{esc(event['detail'])}<details><summary>比較證據</summary>"
+            f"<tr><td><b>{text(event.get('severity'))}</b></td>"
+            f"<td>{text(category)}</td><td>{text(event.get('title'))}</td>"
+            f"<td>{text(event.get('detail'))}<details><summary>比較證據</summary>"
             f"<pre>{evidence}</pre></details></td></tr>"
         )
     if not rows:
-        rows.append('<tr><td colspan="4">今日市場訊號偏少</td></tr>')
+        empty_events = ("目前尚未建立盤前事件資料。" if not snapshot else
+                        (state.get("title") or "今日沒有符合條件的新事件。"))
+        rows.append(f'<tr><td colspan="4">{text(empty_events)}</td></tr>')
+
+    display_date = data.get("date")
+    requested_date = data.get("requested_date")
+    state_title = state.get("title") or ("盤前資料已載入" if snapshot else "盤前資料尚未建立")
+    state_detail = state.get("detail") or ("以下內容來自最近可用的真實盤前快照。" if snapshot else
+                                             "完成盤後資料更新與變化偵測後，這裡會顯示完整內容。")
+    if data.get("is_weekend") and snapshot:
+        state_detail = f"目前是週末，以下顯示最近可用的盤前批次；{state_detail}"
+    status_color = "#6E5228" if snapshot else "#767D85"
+
+    meta = (f'<div class="premarket-meta">盤前顯示日：<b>{text(display_date)}</b>'
+            f'　資料來源日：<b>{text(snapshot.get("source_date") if snapshot else None)}</b>'
+            f'　前一交易日：<b>{text(snapshot.get("previous_trade_date") if snapshot else None)}</b></div>')
+
+    if snapshot:
+        blackhorse = snapshot.get("blackhorse") or []
+        blackhorse_items = []
+        for item in blackhorse[:5]:
+            score = item.get("score")
+            score_text = f"分數 {score}" if score is not None else "分數尚無資料"
+            extra = item.get("breakout") or ""
+            blackhorse_items.append(
+                f'<div class="premarket-row"><b>#{text(item.get("rank"))} {text(item.get("name"))} '
+                f'<small>({text(item.get("code"))})</small></b><span>{esc(score_text)}'
+                f'{"　" + esc(str(extra)) if extra else ""}</span></div>')
+        radar = snapshot.get("radar") or []
+        radar_items = []
+        for item in radar[:8]:
+            extra = item.get("breakout") or "雷達訊號"
+            radar_items.append(
+                f'<div class="premarket-row"><b>{text(item.get("name"))} '
+                f'<small>({text(item.get("code"))})</small></b><span>{text(extra)}</span></div>')
+        market_labels = {
+            "taiex_pct": "台股大盤", "^DJI_pct": "道瓊", "^IXIC_pct": "那斯達克",
+            "^GSPC_pct": "S&P 500", "^SOX_pct": "費城半導體"
+        }
+        market_items = []
+        for key, label in market_labels.items():
+            if key in (snapshot.get("market") or {}):
+                market_items.append(f'<div class="premarket-metric"><span>{esc(label)}</span>'
+                                    f'<b>{pct_text((snapshot.get("market") or {}).get(key))}</b></div>')
+        news_items = []
+        for item in (snapshot.get("news") or [])[:5]:
+            title = text(item.get("title"))
+            source = f' <small>（{text(item.get("source"), "") }）</small>' if item.get("source") else ""
+            uri = _valid_news_uri(item.get("link"))
+            if uri:
+                news_items.append(f'<div class="premarket-news"><a href="{esc(uri, quote=True)}" target="_blank" rel="noopener">{title}</a>{source}</div>')
+            else:
+                news_items.append(f'<div class="premarket-news">{title}{source}</div>')
+        inst_items = []
+        for code, item in list((snapshot.get("institutional") or {}).items())[:8]:
+            name = item.get("name") or stock_display_name(code, fallback=code)
+            net = item.get("total_net_lots")
+            streak = item.get("streak")
+            suffix = []
+            if net is not None:
+                suffix.append(f"法人合計 {net:+,} 張")
+            if streak is not None:
+                suffix.append(f"連續 {streak} 日")
+            inst_items.append(f'<div class="premarket-row"><b>{text(name)} '
+                              f'<small>({text(code)})</small></b><span>{esc("　".join(suffix) or "已有法人資料")}</span></div>')
+
+        def section(title, content, empty="尚無資料"):
+            inner = content or f'<div class="premarket-empty">{esc(empty)}</div>'
+            return f'<div class="premarket-section"><h3>{esc(title)}</h3>{inner}</div>'
+
+        snapshot_sections = (
+            section("🔥 黑馬前 5", "".join(blackhorse_items), "目前快照沒有黑馬資料") +
+            section("🚨 雷達訊號", "".join(radar_items), "目前快照沒有雷達資料") +
+            section("📈 大盤／美股", "".join(market_items), "目前快照沒有大盤資料") +
+            section("📰 相關新聞", "".join(news_items), "目前快照沒有新聞資料") +
+            section("🏦 法人資料", "".join(inst_items), "目前快照沒有法人資料")
+        )
+        raw_snapshot = ("<details class=\"premarket-raw\"><summary>查看原始快照資料</summary>"
+                        f"<pre>{esc(json.dumps(snapshot, ensure_ascii=False, indent=2, default=str))}</pre></details>")
+    else:
+        snapshot_sections = (
+            '<div class="premarket-empty-state"><b>目前沒有可顯示的盤前快照</b>'
+            '<p>系統尚未找到這個顯示日對應的真實盤前資料，因此不顯示空白 JSON，也不自行推測市場訊號。</p>'
+            '<p>請確認盤後資料更新與「盤前變化偵測」工作已完成；完成後重新整理本頁即可。</p></div>'
+        )
+        raw_snapshot = ""
+
     body = f"""
+    <style>
+      .premarket-meta {{ color:#767D85; font-size:.92rem; line-height:1.8; margin:.5rem 0 1rem; }}
+      .premarket-status {{ border-left:4px solid {status_color}; background:#F7F5EF; padding:14px 16px; margin:14px 0 18px; border-radius:10px; }}
+      .premarket-status b {{ color:{status_color}; font-size:1.05rem; }}
+      .premarket-status p {{ margin:.35rem 0 0; color:#5B6066; }}
+      .premarket-section {{ margin:14px 0; padding:13px 14px; background:#FAFAF7; border:1px solid #E8E6DF; border-radius:11px; }}
+      .premarket-section h3 {{ margin:0 0 9px; color:#6E5228; font-size:1rem; }}
+      .premarket-row, .premarket-metric {{ display:flex; justify-content:space-between; gap:14px; padding:8px 0; border-top:1px solid #ECEBE6; line-height:1.55; }}
+      .premarket-row:first-of-type, .premarket-metric:first-of-type {{ border-top:0; }}
+      .premarket-row span, .premarket-metric span {{ color:#626970; text-align:right; }}
+      .premarket-row small {{ color:#8A8F94; font-weight:400; }}
+      .premarket-news {{ padding:8px 0; border-top:1px solid #ECEBE6; line-height:1.6; }}
+      .premarket-news:first-of-type {{ border-top:0; }}
+      .premarket-news a {{ color:#4A5F7A; text-decoration:underline; }}
+      .premarket-empty, .premarket-empty-state {{ color:#767D85; line-height:1.7; }}
+      .premarket-empty-state {{ padding:18px; background:#F7F7F3; border-radius:11px; }}
+      .premarket-empty-state b {{ color:#6E5228; font-size:1.05rem; }}
+      .premarket-empty-state p {{ margin:.55rem 0 0; }}
+      .premarket-raw {{ margin-top:14px; }}
+    </style>
     <section class="card">
       <h1>🔥 今日值得注意</h1>
-      <p>盤前顯示日：{esc(data['date'])}；資料來源日：{esc(str(snapshot.get('source_date') or snapshot.get('snapshot_date') or '無'))}；前一交易日：{esc(str(snapshot.get('previous_trade_date') or '無'))}</p>
+      {meta}
+      <div class="premarket-status"><b>{text(state_title)}</b><p>{text(state_detail)}</p></div>
       <table><thead><tr><th>級別</th><th>類別</th><th>事件</th><th>詳細內容</th></tr></thead>
       <tbody>{''.join(rows)}</tbody></table>
     </section>
     <section class="card"><h2>完整盤前快照</h2>
-      <pre>{esc(json.dumps(snapshot, ensure_ascii=False, indent=2, default=str))}</pre>
+      {snapshot_sections}
+      {raw_snapshot}
     </section>
     """
     return render_page("盤前變化", body, nav_active="premarket")
