@@ -12007,7 +12007,8 @@ def web_chips(uid):
             note="LINE 顯示快速摘要；網頁版提供完整五區法人資料與資料日期。",
             staged=False)
     result = build_chips_payload()
-    return respond_page("籌碼超人", render_chips_web_body(result), "chips")
+    # 籌碼超人是選股分析區的一員；從 LINE 進入也應亮「選股」，不亮「更多」。
+    return respond_page("籌碼超人", render_chips_web_body(result), "screener")
 
 
 @app.route("/web/more")
