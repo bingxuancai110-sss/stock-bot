@@ -7142,7 +7142,7 @@ def _flex_report_contents(text):
             "wrap": True,
             "margin": "none" if first else "xs",
         }
-        if line.startswith("📊"):
+        if line.startswith("📊") or (line.startswith("【") and "📊" in line[:12]):
             component.update({"size": "md", "weight": "bold", "color": "#1B2027",
                               "margin": "none" if first else "sm"})
         elif line.startswith("💰"):
