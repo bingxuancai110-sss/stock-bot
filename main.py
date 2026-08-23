@@ -7198,13 +7198,13 @@ def build_healthcheck_report(user_id):
         if trust and trust["streak"] >= 3:
             note = f"投信連 {trust['streak']} 日買超（累計 {trust['cum']:+,} 張）"
         elif cum_lots < 0:
-            note = f"法人近10日賣超 {abs(cum_lots):,} 張"
+            note = f"近10日賣超 {abs(cum_lots):,} 張"
         elif streak >= 3:
-            note = f"法人連 {streak} 日買超"
+            note = f"連續買超 {streak} 天"
         elif cum_lots > 0:
-            note = f"法人近10日買超 {cum_lots:,} 張（{buy_days} 天）"
+            note = f"近10日買超 {cum_lots:,} 張（{buy_days} 天）"
         else:
-            note = "法人近期無明顯動作"
+            note = "近期無明顯動作"
 
         pos_txt = (f"距高點 {stock['pos_vs_60d_high']:+.1f}%"
                    if stock.get("pos_vs_60d_high") is not None else "位階資料不足")
@@ -7330,13 +7330,13 @@ def render_watchlist_web_body(user_id):
         if trust and trust["streak"] >= 3:
             note = f"投信連 {trust['streak']} 日買超（累計 {trust['cum']:+,} 張）"
         elif cum_lots < 0:
-            note = f"法人近10日賣超 {abs(cum_lots):,} 張"
+            note = f"近10日賣超 {abs(cum_lots):,} 張"
         elif streak >= 3:
-            note = f"法人連 {streak} 日買超"
+            note = f"連續買超 {streak} 天"
         elif cum_lots > 0:
-            note = f"法人近10日買超 {cum_lots:,} 張（{buy_days} 天）"
+            note = f"近10日買超 {cum_lots:,} 張（{buy_days} 天）"
         else:
-            note = "法人近期無明顯動作"
+            note = "近期無明顯動作"
 
         pos_txt = (f"距高點 {stock['pos_vs_60d_high']:+.1f}%"
                    if stock.get("pos_vs_60d_high") is not None else "位階資料不足")
