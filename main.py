@@ -4439,6 +4439,7 @@ _SHARED_SNAPSHOT_MAX_AGE = {
     "leaderboard_page": 3 * 86400,
     "chips_superman": 3 * 86400,
     "etf_catalog": 86400,
+    "turning_observation": 900,
 }
 
 
@@ -5619,10 +5620,13 @@ def get_institutional_shift_candidates(prior_days=5, top_n=12):
 
 
 _TURNING_OBSERVATION_CACHE = {"at": 0, "data": None}
-TURNING_OBSERVATION_CACHE_SECONDS = 300
+# 轉折頁需要比一般即時報價更穩定的批次快取；T86 與收盤資料更新後由 warmup 重建。
+TURNING_OBSERVATION_CACHE_SECONDS = 900
+TURNING_OBSERVATION_SHARED_MAX_AGE = 900
+TURNING_OBSERVATION_SNAPSHOT_KEY = "turning_observation"
 
 
-def build_turning_observation(limit=60, prior_days=5):
+def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
     """以真實法人轉向搭配價格、均線與量能，建立轉折觀察三狀態。"""
     try:
         limit = max(10, min(int(limit), 120))
@@ -5632,8 +5636,22 @@ def build_turning_observation(limit=60, prior_days=5):
     now = time.time()
     with _realtime_cache_lock:
         cached = _TURNING_OBSERVATION_CACHE.get("data")
-        if cached is not None and now - _TURNING_OBSERVATION_CACHE.get("at", 0) < TURNING_OBSERVATION_CACHE_SECONDS:
+        if (not force_refresh and cached is not None and
+                now - _TURNING_OBSERVATION_CACHE.get("at", 0) < TURNING_OBSERVATION_CACHE_SECONDS):
             return cached
+
+    # 多 worker／重啟後先讀共享快照；這一步避免每個使用者重新並行抓數十檔 3mo 行情。
+    try:
+        shared = (None if force_refresh else _load_shared_data_snapshot(
+            TURNING_OBSERVATION_SNAPSHOT_KEY,
+            max_age_seconds=TURNING_OBSERVATION_SHARED_MAX_AGE))
+        shared_payload = (shared.get("payload") if shared else None) or {}
+        if isinstance(shared_payload, dict) and isinstance(shared_payload.get("items"), list):
+            with _realtime_cache_lock:
+                _TURNING_OBSERVATION_CACHE.update({"at": now, "data": shared_payload})
+            return shared_payload
+    except Exception as exc:
+        print(f"⚠️ 讀取轉折觀察共享快照失敗: {exc}")
 
     institutional = get_institutional_shift_candidates(prior_days=prior_days, top_n=limit)
     if not institutional:
@@ -5641,10 +5659,22 @@ def build_turning_observation(limit=60, prior_days=5):
         with _realtime_cache_lock:
             _TURNING_OBSERVATION_CACHE["at"] = time.time()
             _TURNING_OBSERVATION_CACHE["data"] = result
+        try:
+            _save_shared_data_snapshot(
+                TURNING_OBSERVATION_SNAPSHOT_KEY, result,
+                data_date=taiwan_today(),
+                source_meta={"source": "turning_observation", "item_count": 0})
+        except Exception as exc:
+            print(f"⚠️ 保存轉折觀察空快照失敗: {exc}")
         return result
 
     codes = [item.get("code") for item in institutional if item.get("code")]
-    prices = get_realtime_stocks_bulk(codes, workers=16, rng="3mo")
+    # 1mo 已涵蓋 20 日均線與近期位階；只有少數新上市／資料缺口標的才回補 3mo。
+    prices = get_realtime_stocks_bulk(codes, workers=16, rng="1mo")
+    fallback_codes = [code for code in codes
+                      if len((prices.get(code) or {}).get("closes") or []) < 20]
+    if fallback_codes:
+        prices.update(get_realtime_stocks_bulk(fallback_codes, workers=12, rng="3mo"))
     items = []
     state_order = {"confirmed": 3, "observing": 2, "invalid": 1}
     for inst_item in institutional:
@@ -5735,6 +5765,14 @@ def build_turning_observation(limit=60, prior_days=5):
     with _realtime_cache_lock:
         _TURNING_OBSERVATION_CACHE["at"] = time.time()
         _TURNING_OBSERVATION_CACHE["data"] = result
+    try:
+        _save_shared_data_snapshot(
+            TURNING_OBSERVATION_SNAPSHOT_KEY, result,
+            data_date=result.get("data_date") or taiwan_today(),
+            source_meta={"source": "turning_observation", "item_count": len(items),
+                         "limit": limit, "prior_days": prior_days})
+    except Exception as exc:
+        print(f"⚠️ 保存轉折觀察共享快照失敗: {exc}")
     return result
 
 
@@ -9552,6 +9590,17 @@ def _do_warmup():
     except Exception as e:
         print(f"❌ 預熱籌碼超人失敗: {e}")
         done.append("籌碼超人 失敗")
+
+    # 轉折觀察與籌碼超人共用 T86 與行情來源；在 warmup 先建立共享結果，
+    # 避免第一位使用者進頁面時才並行抓取數十檔 3mo 行情。
+    try:
+        turning_result = build_turning_observation(
+            limit=60, prior_days=5, force_refresh=taiwan_now().hour >= 16)
+        turning_date = turning_result.get("data_date") or "資料不足"
+        done.append(f"轉折觀察 {len(turning_result.get('items') or [])} 檔（資料日 {turning_date}）")
+    except Exception as e:
+        print(f"❌ 預熱轉折觀察失敗: {e}")
+        done.append("轉折觀察 失敗")
 
     # 今日完整首頁最慢的外部資料是持股即時行情；交易日先預熱到既有
     # 90 秒記憶體快取，使用者開頁時直接命中。週末不把最新收盤誤當成今日行情。
@@ -13412,6 +13461,66 @@ def web_chips(uid):
     return respond_page("籌碼超人", render_chips_web_body(result), "screener")
 
 
+def render_etf_inline_detail(code, meta, quote=None):
+    """在 ETF 商品卡片下方直接呈現預設收合的商品詳情，不另開頁面。"""
+    esc = html.escape
+    code = str(code or "").strip().upper()
+    name = str(meta.get("name") or code)
+    policy = _etf_distribution_label(meta.get("distribution_policy"))
+    lines = [
+        f'<div class="etf-inline-grid">'
+        f'<div><span>管理方式</span><b>{esc(str(meta.get("management_style") or "待確認"))}</b></div>'
+        f'<div><span>策略分類</span><b>{esc(str(meta.get("category") or "待分類"))}</b></div>'
+        f'<div><span>配息政策</span><b>{esc(policy)}</b></div>'
+        f'<div><span>上市日</span><b>{esc(str(meta.get("listing_date") or "待確認"))}</b></div>'
+        f'<div><span>發行人</span><b>{esc(str(meta.get("issuer") or "待確認"))}</b></div>'
+        f'<div><span>追蹤基準</span><b>{esc(str(meta.get("benchmark") or "待確認"))}</b></div>'
+        f'</div>'
+    ]
+    if meta.get("distribution_frequency"):
+        lines.append(f'<div class="etf-inline-note">配息頻率：{esc(str(meta["distribution_frequency"]))}</div>')
+    if meta.get("policy_note"):
+        lines.append(f'<div class="etf-inline-note">配息備註：{esc(str(meta["policy_note"]))}</div>')
+    if meta.get("classification_basis"):
+        lines.append(f'<div class="etf-inline-note">歸類依據：{esc(str(meta["classification_basis"]))}</div>')
+
+    if quote:
+        close = quote.get("close")
+        pct = quote.get("pct")
+        if close is not None:
+            close_text = f"{float(close):,.2f}"
+            change_text = f"（{float(pct):+.2f}%）" if pct is not None else "（漲跌資料不足）"
+            lines.append(f'<div class="etf-inline-quote">最新價格：<b>{close_text}</b> {esc(change_text)}</div>')
+        if quote.get("volume") is not None:
+            lines.append(f'<div class="etf-inline-note">成交量：{int(float(quote["volume"]) / 1000):,} 張</div>')
+        closes = [float(value) for value in (quote.get("closes") or []) if value not in (None, 0)]
+        close_dates = quote.get("close_dates") or []
+        if len(closes) >= 2 and closes[0] > 0:
+            return_pct = (closes[-1] / closes[0] - 1) * 100
+            period = f"{close_dates[0]} 至 {close_dates[-1]}" if close_dates else "可取得價格期間"
+            lines.append(f'<div class="etf-inline-note">可取得期間價格變化：{return_pct:+.2f}%・觀測期間：{esc(str(period))}</div>')
+        drawdown = _etf_price_drawdown_summary(closes, close_dates)
+        if drawdown:
+            dd = float(drawdown.get("max_drawdown") or 0)
+            recovery_date = drawdown.get("recovery_date")
+            if recovery_date:
+                recovery = f"已於 {recovery_date} 回到前高"
+            elif dd:
+                recovery = "截至目前尚未回到前高"
+            else:
+                recovery = "觀測期間尚無明顯回撤"
+            lines.append(f'<div class="etf-inline-note">可取得價格期間最大回撤：{dd:+.1f}%・{esc(recovery)}</div>')
+    else:
+        lines.append('<div class="etf-inline-note">目前只先顯示官方商品資料；完整行情尚在載入或暫時無法取得。</div>')
+
+    return (
+        f'<details class="etf-inline-detail">'
+        f'<summary>查看 {esc(code)} {esc(name)} 詳情</summary>'
+        f'<div class="etf-inline-detail-body">{"".join(lines)}</div>'
+        f'</details>'
+    )
+
+
 @app.route("/web/etf")
 @web_login_required
 def web_etf(uid):
@@ -13459,33 +13568,18 @@ def web_etf(uid):
             pct_txt = f"{pct:+.2f}%" if pct is not None else "漲跌資料不足"
             price_html = f'<div class="etf-price">{close_txt} <span>{pct_txt}</span></div>'
         else:
-            price_html = '<div class="etf-price etf-price-muted">商品資料已列出；即時價格請開啟詳情</div>'
+            price_html = '<div class="etf-price etf-price-muted">商品資料已列出；完整行情暫缺</div>'
+        inline_detail = render_etf_inline_detail(code, meta, quote)
         cards.append(f'''<div class="etf-row">
   <div><b>{html.escape(str(meta.get("name") or code))}</b><span class="etf-code">{html.escape(code)}</span></div>
   {price_html}
   <div class="etf-meta">上市日：{html.escape(str(meta.get("listing_date") or "待確認"))}・發行人：{html.escape(str(meta.get("issuer") or "待確認"))}</div>
   <div class="etf-meta">{html.escape(policy)}・{html.escape(maturity)}・基準：{html.escape(str(meta.get("benchmark") or "待確認"))}</div>
   <div class="etf-meta">歸類依據：{html.escape(str(meta.get("classification_basis") or "待確認"))}</div>
-  <div class="etf-links"><a href="/web/etf?category={selected}&code={html.escape(code)}">查看 ETF 詳情</a></div>
+  {inline_detail}
 </div>''')
     if not cards:
         cards.append('<div class="etf-empty">官方清單目前沒有屬於此分類的上市商品。</div>')
-
-    detail = ""
-    detail_code = request.args.get("code", "").strip().upper()
-    if detail_code in catalog and is_etf(detail_code):
-        detail_reply = build_single_etf_report(detail_code, uid)
-        if isinstance(detail_reply, FlexSendMessage):
-            detail_parts = detail_reply.contents.get("body", {}).get("contents", [])
-            detail_lines = "".join(
-                f'<div class="etf-detail-line">{html.escape(str(item.get("text", "")))}</div>'
-                for item in detail_parts
-                if isinstance(item, dict) and item.get("type") == "text")
-        elif isinstance(detail_reply, TextSendMessage):
-            detail_lines = f'<div class="etf-detail-line">{html.escape(detail_reply.text)}</div>'
-        else:
-            detail_lines = f'<div class="etf-detail-line">{html.escape(str(detail_reply or "詳情資料暫缺"))}</div>'
-        detail = f'<section class="etf-detail"><h2>ETF 詳情</h2>{detail_lines}</section>'
 
     body = f'''<style>
 .etf-hero{{padding:4px 0 14px}}
@@ -13507,8 +13601,14 @@ def web_etf(uid):
 .etf-links{{margin-top:7px;font-size:13px}}
 .etf-links a{{color:var(--brass);font-weight:700}}
 .etf-empty{{color:var(--ink-soft);line-height:1.7;padding:8px 0}}
-.etf-detail-line{{font-size:13px;line-height:1.75;border-top:1px solid #f0eee8;padding:4px 0}}
-.etf-detail-line:first-of-type{{border-top:0;font-weight:700;font-size:17px}}
+.etf-inline-detail{{margin-top:10px;border-top:1px solid #eee;padding-top:8px}}
+.etf-inline-detail summary{{cursor:pointer;color:var(--brass);font-size:13px;font-weight:700;padding:4px 0}}
+.etf-inline-detail-body{{margin-top:8px;padding:10px 11px;background:#faf9f5;border:1px solid #eee9dd;border-radius:10px}}
+.etf-inline-grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}}
+.etf-inline-grid div{{display:flex;flex-direction:column;gap:2px}}
+.etf-inline-grid span,.etf-inline-note{{color:var(--ink-soft);font-size:12px;line-height:1.6}}
+.etf-inline-grid b{{font-size:13px;color:var(--ink);line-height:1.55}}
+.etf-inline-quote{{margin-top:8px;padding-top:8px;border-top:1px solid #e7e2d6;font-size:13px;color:var(--ink)}}
 </style>
 <div class="tabs">
   <a href="/web/screener?mode=blackhorse">黑馬</a>
@@ -13520,8 +13620,7 @@ def web_etf(uid):
 </div>
 <div class="etf-hero"><div class="eyebrow">台股 BOT</div><h1>ETF 專區</h1><p class="etf-note">官方 TWSE 上市清單目前載入 {len(catalog)} 檔；依名稱／標的關鍵字作第一版策略分組。ETF 不套用個股黑馬、雷達或籌碼超人邏輯，未知配息政策顯示為待確認。</p></div>
 <div class="etf-tabs">{tabs}</div>
-<section class="etf-card"><h2>{html.escape(selected_label)}（{len(products)} 檔）</h2><div class="etf-note">完整列出官方已上市商品；前 20 檔批次顯示即時價格，其餘先顯示上市日、發行人、標的與配息政策。分類是可解釋規則候選，不代表官方策略認證。</div>{"".join(cards)}</section>
-{detail}'''
+<section class="etf-card"><h2>{html.escape(selected_label)}（{len(products)} 檔）</h2><div class="etf-note">完整列出官方已上市商品；每檔詳情都直接放在卡片下方，預設收合，點擊「查看 ETF 詳情」即可展開。分類是可解釋規則候選，不代表官方策略認證。</div>{"".join(cards)}</section>'''
     return respond_page("ETF 專區", body, "screener")
 
 
