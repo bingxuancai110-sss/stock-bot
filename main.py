@@ -7242,8 +7242,215 @@ def build_healthcheck_report(user_id):
         report = report[:4750] + "\n\n…（清單過長，已截斷）"
     return report
 
+
+def render_watchlist_web_body(user_id):
+    """自選股健檢完整網頁版；沿用 LINE 健檢的同一份評分與判讀邏輯。"""
+    codes = get_user_watchlist(user_id)
+    if not codes:
+        return ('<div class="tabs">'
+                '<a href="/web/screener?mode=blackhorse&view=list">黑馬</a>'
+                '<a href="/web/screener?mode=radar&view=list">雷達</a>'
+                '<a href="/web/chips">籌碼超人</a>'
+                '<a href="/web/watchlist" class="on">我的自選</a>'
+                '<a href="/web/screener?mode=review">成效</a></div>'
+                '<section class="card"><div class="empty">自選股清單是空的。<br><br>'
+                '請回 LINE 輸入「加 2330」新增自選股。</div></section>')
+
+    fetch_institutional_data()
+    scores = compute_watchlist_scores(codes)
+    prev_scores = get_previous_scores(user_id, codes)
+    tags = get_watchlist_tags(user_id)
+    breakdowns = get_investor_breakdown(codes)
+
+    def data_date_text():
+        value = _t86_cache.get("data_date")
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        return str(value or "未標日期")
+
+    grouped = {tag: [] for tag in WATCHLIST_TAGS}
+    grouped[None] = []
+    for code in codes:
+        tag = tags.get(code)
+        s = scores.get(code)
+        if not s:
+            grouped.setdefault(tag, []).append(
+                '<div class="watchlist-card watchlist-muted"><h3>⚪ '
+                f'{html.escape(str(code))}</h3><p>查無目前行情，暫不計算健檢分數。</p></div>')
+            continue
+
+        stock = s["stock"]
+        name = s["name"]
+        cum_lots, buy_days, streak = s["cum_lots"], s["buy_days"], s["streak"]
+        chip_score, pos_score = s["chip"], s["position"]
+        rev_score, val_score = s["revenue"], s["valuation"]
+        cum_yoy, pe = s["cum_yoy"], s["pe"]
+        total = s["total"]
+        flag = "🟢" if total >= 70 else ("🟡" if total >= 45 else "🔴")
+        score_class = "watchlist-good" if total >= 70 else ("watchlist-mid" if total >= 45 else "watchlist-low")
+
+        bd = breakdowns.get(code)
+        trust = bd["trust"] if bd else None
+        if trust and trust["streak"] >= 3:
+            note = f"投信連 {trust['streak']} 日買超（累計 {trust['cum']:+,} 張）"
+        elif cum_lots < 0:
+            note = f"法人近10日賣超 {abs(cum_lots):,} 張"
+        elif streak >= 3:
+            note = f"法人連 {streak} 日買超"
+        elif cum_lots > 0:
+            note = f"法人近10日買超 {cum_lots:,} 張（{buy_days} 天）"
+        else:
+            note = "法人近期無明顯動作"
+
+        pos_txt = (f"距高點 {stock['pos_vs_60d_high']:+.1f}%"
+                   if stock.get("pos_vs_60d_high") is not None else "位階資料不足")
+        rev_txt = f"營收年增 {cum_yoy:+.1f}%" if cum_yoy is not None else "營收無資料"
+        pe_txt = f"PE {pe:.1f}" if pe else "PE 無"
+        advice = build_watchlist_advice(total, chip_score, pos_score, rev_score,
+                                        val_score, cum_lots, streak, stock, cum_yoy, pe)
+        arrow, change_txt = describe_score_change(s, prev_scores.get(code))
+        bd_desc = describe_investor_breakdown(bd)
+        breakdown_html = (f'<p class="watchlist-breakdown">{html.escape(bd_desc)}</p>'
+                          if bd_desc else "")
+        change_html = (f'<span class="watchlist-change">{html.escape(arrow)} '
+                       f'{html.escape(change_txt)}</span>' if arrow else "")
+        stock_name = html.escape(str(name or code))
+        card = f'''<article class="watchlist-card {score_class}">
+  <div class="watchlist-card-head"><div><h3>{flag} {stock_name}</h3>
+    <span class="watchlist-code">{html.escape(str(code))}　{change_html}</span></div>
+    <strong class="watchlist-score">{int(total)}<small>分</small></strong></div>
+  <div class="watchlist-metrics"><span>現價 <b>{float(stock.get("close") or 0):,.2f}</b></span>
+    <span>今日 <b class="{'up' if (stock.get('pct') or 0) > 0 else ('down' if (stock.get('pct') or 0) < 0 else 'flat')}">{float(stock.get("pct") or 0):+.2f}%</b></span>
+    <span>{html.escape(pos_txt)}</span></div>
+  <div class="watchlist-facts"><span>{html.escape(note)}</span>
+    <span>{html.escape(rev_txt)}　{html.escape(pe_txt)}</span>
+    <span>🛡️{html.escape(fmt_support(stock))}　🚧{html.escape(fmt_resistance(stock.get("resistance")))}</span></div>
+  {breakdown_html}
+  <div class="watchlist-advice">{html.escape(advice).replace(chr(10), "<br>")}</div>
+</article>'''
+        grouped.setdefault(tag, []).append(card)
+
+    tag_order = [tag for tag in WATCHLIST_TAGS if grouped.get(tag)]
+    if grouped.get(None):
+        tag_order.append(None)
+    sections = []
+    for tag in tag_order:
+        label = tag or "未分類"
+        icon = TAG_ICONS.get(tag, "📌")
+        cards = "".join(grouped[tag])
+        sections.append(f'<section class="watchlist-group"><h2>{icon} {html.escape(label)}'
+                        f'<small>（{len(grouped[tag])}）</small></h2>{cards}</section>')
+
+    return f'''<style>
+.watchlist-meta{{padding:13px 15px;margin:0 0 14px;border-left:3px solid var(--brass);background:#F7F4EC;color:var(--ink-soft);font-size:12px;line-height:1.6}}
+.watchlist-intro{{color:var(--ink-soft);font-size:13px;line-height:1.7;margin:0 0 15px}}
+.watchlist-group{{margin:20px 0 0}}.watchlist-group>h2{{font-size:19px;margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid var(--rule)}}.watchlist-group>h2 small{{font-size:12px;color:var(--ink-faint);font-weight:400;margin-left:5px}}
+.watchlist-card{{background:#FFF;border:1px solid #E3E2DC;border-left:4px solid #B8B5AB;border-radius:12px;padding:15px;margin:10px 0;box-shadow:0 3px 13px rgba(35,39,35,.05)}}.watchlist-card.watchlist-good{{border-left-color:#087A4B}}.watchlist-card.watchlist-mid{{border-left-color:#B18A39}}.watchlist-card.watchlist-low{{border-left-color:#B52F2F}}.watchlist-card-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}}.watchlist-card h3{{font-size:18px;margin:0 0 3px;line-height:1.35}}.watchlist-code{{color:var(--ink-soft);font-size:12px}}.watchlist-change{{color:var(--brass);margin-left:6px}}.watchlist-score{{font-size:25px;line-height:1;color:var(--ink);white-space:nowrap}}.watchlist-score small{{font-size:12px;font-weight:400;margin-left:2px}}.watchlist-metrics{{display:flex;flex-wrap:wrap;gap:8px;margin:13px 0 9px;padding:9px 0;border-top:1px solid #ECEDE8;border-bottom:1px solid #ECEDE8;color:var(--ink-soft);font-size:12px}}.watchlist-metrics span{{padding-right:10px;border-right:1px solid #E2E1DB}}.watchlist-metrics span:last-child{{border-right:0}}.watchlist-metrics b{{color:var(--ink);margin-left:3px}}.watchlist-facts{{display:grid;gap:4px;color:var(--ink-soft);font-size:12px;line-height:1.55}}.watchlist-breakdown{{margin:10px 0 0;padding-top:9px;border-top:1px solid #ECEDE8;color:var(--ink-soft);font-size:12px;line-height:1.55}}.watchlist-advice{{margin-top:10px;padding:10px 11px;background:#F7F7F3;border-radius:8px;color:var(--ink-soft);font-size:12px;line-height:1.65}}.watchlist-muted{{color:var(--ink-soft)}}.watchlist-muted h3{{color:var(--ink)}}
+@media(max-width:640px){{.watchlist-metrics{{gap:6px}}.watchlist-metrics span{{padding-right:6px}}.watchlist-card h3{{font-size:17px}}}}
+</style>
+<div class="tabs"><a href="/web/screener?mode=blackhorse&view=list">黑馬</a><a href="/web/screener?mode=radar&view=list">雷達</a><a href="/web/chips">籌碼超人</a><a href="/web/watchlist" class="on">我的自選</a><a href="/web/screener?mode=review">成效</a></div>
+<div class="watchlist-meta">資料來源：即時健檢計算　法人資料日：<b>{html.escape(data_date_text())}</b>　共 <b>{len(codes)}</b> 檔</div>
+<p class="watchlist-intro">評分＝籌碼 30＋位階 25＋營收 25＋估值 20。這裡是公開資料整理，提供檢視線索，不構成買賣建議。</p>
+{"".join(sections)}'''
+
+
+def build_line_watchlist_message(user_id, base_url=None):
+    """LINE 自選股健檢：顯示前三檔摘要，完整內容由網頁入口查看。"""
+    report = build_healthcheck_report(user_id)
+    if not report:
+        return TextSendMessage(text="📂 自選股清單是空的\n輸入「加 3081」新增自選")
+    if report.startswith("📂"):
+        return TextSendMessage(text=report)
+
+    token = create_web_token(user_id)
+    if not token:
+        return TextSendMessage(text=report)
+    web_url = (f"{public_web_base_url(base_url)}/web/watchlist?t="
+               f"{quote(token, safe='')}")
+    preview = []
+    for line in report.splitlines():
+        if line[:1] in ("🟢", "🟡", "🔴", "⚪") and "分" in line:
+            preview.append(line.strip())
+        if len(preview) >= 3:
+            break
+    if not preview:
+        preview = ["完整分數與法人、營收、估值、位階資料已整理完成。"]
+
+    contents = [
+        {"type": "text", "text": "📋 自選股健檢", "weight": "bold",
+         "size": "xl", "color": "#1B2027"},
+        {"type": "text", "text": "LINE 顯示前三檔摘要；完整健檢請按下方按鈕。",
+         "size": "xs", "color": "#767D85", "margin": "sm", "wrap": True},
+        {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+    ]
+    contents.extend({"type": "text", "text": item, "size": "sm",
+                     "color": "#454C55", "margin": "md", "wrap": True}
+                    for item in preview)
+    contents += [
+        {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+        {"type": "button", "style": "primary", "height": "sm",
+         "color": "#6E5228", "margin": "lg",
+         "action": {"type": "uri", "label": "查看完整自選健檢",
+                    "uri": web_url}},
+    ]
+    bubble = {"type": "bubble",
+              "body": {"type": "box", "layout": "vertical",
+                        "contents": contents, "paddingAll": "18px",
+                        "backgroundColor": "#FFFFFF"},
+              "styles": {"body": {"backgroundColor": "#FFFFFF"}}}
+    return FlexSendMessage(alt_text="📋 自選股健檢｜" + "；".join(preview),
+                           contents=bubble)
+
 # --- 個股新聞（Google News RSS，免費、可帶關鍵字查詢） ---
-def fetch_stock_news(keyword, max_items=2, within_hours=30):
+def _news_subject_relevant(title, subject_name, known_names=None):
+    """用可解釋的規則判斷標題主體，避免只因提到自選股就收進來。"""
+    title = str(title or "").strip()
+    subject = short_company_name(subject_name or "").strip()
+    if not title or not subject or subject.casefold() not in title.casefold():
+        return False
+
+    # 沒有其他已知公司名稱時，標題已明確包含目標股，保留結果。
+    known = {short_company_name(name).strip() for name in (known_names or [])
+             if str(name or "").strip()}
+    others = [name for name in known
+              if len(name) >= 2 and name.casefold() != subject.casefold()
+              and name.casefold() in title.casefold()]
+    if not others:
+        return True
+
+    # 「台積電｜群創法說……」這類標題通常是其他公司的事件，
+    # 台積電只是搜尋上下文或被提及對象；若另一家公司緊接財經事件詞，排除。
+    match = re.search(r"[|｜:：／/—–-]", title)
+    if match:
+        head, tail = title[:match.start()], title[match.end():]
+        if subject.casefold() in head.casefold() and subject.casefold() not in tail.casefold():
+            event_terms = ("法說", "財報", "營收", "股價", "獲利", "展望", "股東會",
+                           "公告", "接單", "產能", "配息", "除息")
+            for other in others:
+                pos = tail.casefold().find(other.casefold())
+                if pos >= 0 and any(term in tail[pos:pos + 24] for term in event_terms):
+                    return False
+
+    # 另一家公司才是主詞，而目標股只出現在「未回應／提及／供應／影響」等
+    # 關係語句後面時，視為延伸提及，不列入該自選股新聞。
+    relation_terms = ("未回應", "未提及", "提及", "提到", "談及", "受惠", "供應",
+                      "供應鏈", "客戶", "影響", "連帶", "旗下", "比較")
+    title_lower = title.casefold()
+    subject_lower = subject.casefold()
+    start = 0
+    while True:
+        pos = title_lower.find(subject_lower, start)
+        if pos < 0:
+            break
+        before = title[max(0, pos - 14):pos]
+        if any(term.casefold() in before for term in relation_terms):
+            return False
+        start = pos + len(subject_lower)
+    return True
+
+
+def fetch_stock_news(keyword, max_items=2, within_hours=30, subject_name=None,
+                     known_names=None):
     """
     抓取最新新聞，只保留標題、來源、連結與發布時間。
 
@@ -7304,6 +7511,8 @@ def fetch_stock_news(keyword, max_items=2, within_hours=30):
             continue
         if len(query_terms) == 1 and not any(term in title for term in finance_terms):
             continue
+        if subject_name and not _news_subject_relevant(title, subject_name, known_names):
+            continue
 
         if pub:
             try:
@@ -7337,7 +7546,9 @@ def build_news_digest(user_id):
 
     def fetch_one(code):
         try:
-            return fetch_stock_news(names[code], max_items=2, within_hours=36)
+            return fetch_stock_news(
+                names[code], max_items=2, within_hours=36,
+                subject_name=names[code], known_names=names.values())
         except Exception as e:
             print(f"⚠️ 並行抓新聞失敗 {code}: {e}")
             return []
@@ -12083,6 +12294,19 @@ def web_settings(uid):
     return render_page("設定", body, nav_active="settings")
 
 
+@app.route("/web/watchlist")
+@web_login_required
+def web_watchlist(uid):
+    """自選股健檢完整網頁版；LINE 與選股分析列都可直接進入。"""
+    if not wants_fragment():
+        return render_loading_shell(
+            "自選股健檢", "screener",
+            ["正在讀取你的自選股…", "正在計算健檢分數…", "正在整理法人、營收與位階…"],
+            note="LINE 先顯示摘要；網頁版提供完整自選股健檢。",
+            staged=False)
+    return respond_page("自選股健檢", render_watchlist_web_body(uid), "screener")
+
+
 @app.route("/web/chips")
 @web_login_required
 def web_chips(uid):
@@ -14367,7 +14591,9 @@ def handle_message(event):
     # 4+5. 自選清單與健檢已合併——兩者原本都在列自選股，差別只在有沒有評分，
     # 併成同一份報告，「自選」與「健檢」都指向它
     elif text in ["自選", "WATCHLIST", "健檢", "自選健檢"]:
-        reply = build_healthcheck_report(user_id)
+        flex_reply = build_line_watchlist_message(
+            user_id, request.url_root.rstrip("/"))
+        reply = None
 
     # 6. 單獨查代號 → 直接給完整健檢
     # 原本只回報價與位階，要看評分還得先加進自選再查健檢。
