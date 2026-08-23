@@ -5384,6 +5384,144 @@ def get_both_side_codes(direction="buy", days=10, top_n=10, min_days=6):
         release_db_connection(conn)
 
 
+def get_institutional_shift_candidates(prior_days=5, top_n=12):
+    """找出近幾日法人方向反轉或異常放大的標的；只使用已保存的 T86 歷史。"""
+    try:
+        prior_days = max(3, int(prior_days))
+        top_n = max(1, int(top_n))
+    except (TypeError, ValueError):
+        prior_days, top_n = 5, 12
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT trade_date
+            FROM inst_history
+            ORDER BY trade_date DESC
+            LIMIT %s
+            """,
+            (prior_days + 1,),
+        )
+        dates = [row[0] for row in cursor.fetchall()]
+        if len(dates) < prior_days + 1:
+            cursor.close()
+            return []
+        latest_date = dates[0]
+        cursor.execute(
+            """
+            SELECT code, MAX(name) AS name, trade_date,
+                   COALESCE(foreign_net_lots, 0),
+                   COALESCE(trust_net_lots, 0),
+                   COALESCE(dealer_net_lots, 0),
+                   COALESCE(total_net_lots, 0)
+            FROM inst_history
+            WHERE trade_date = ANY(%s)
+              AND length(code) = 4 AND code ~ '^[0-9]+$'
+              AND code NOT LIKE '00%%'
+            GROUP BY code, trade_date,
+                     foreign_net_lots, trust_net_lots,
+                     dealer_net_lots, total_net_lots
+            ORDER BY code, trade_date DESC
+            """,
+            (dates,),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+    except Exception as exc:
+        print(f"❌ 查詢法人方向突變失敗: {exc}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+    by_code = {}
+    for code, name, trade_date, foreign, trust, dealer, total in rows:
+        item = by_code.setdefault(str(code), {"name": name or code, "rows": {}})
+        item["rows"][trade_date] = {
+            "foreign": int(foreign or 0),
+            "trust": int(trust or 0),
+            "dealer": int(dealer or 0),
+            "total": int(total or 0),
+        }
+
+    investor_names = {"foreign": "外資", "trust": "投信", "dealer": "自營商"}
+    candidates = []
+    for code, item in by_code.items():
+        latest = item["rows"].get(latest_date)
+        prior = [item["rows"][d] for d in dates[1:] if d in item["rows"]]
+        if not latest or len(prior) < prior_days:
+            continue
+
+        prior_avg = {
+            key: sum(row[key] for row in prior) / len(prior)
+            for key in ("foreign", "trust", "dealer", "total")
+        }
+        current_total = latest["total"]
+        prior_total = prior_avg["total"]
+        changed = []
+        for key in ("foreign", "trust", "dealer"):
+            current = latest[key]
+            before = prior_avg[key]
+            if current > 0 and before < 0:
+                changed.append(f"{investor_names[key]}轉買")
+            elif current < 0 and before > 0:
+                changed.append(f"{investor_names[key]}轉賣")
+
+        total_reversal = ((current_total > 0 and prior_total < 0) or
+                          (current_total < 0 and prior_total > 0))
+        avg_abs_total = sum(abs(row["total"]) for row in prior) / len(prior)
+        magnitude_ratio = (abs(current_total) / avg_abs_total
+                           if avg_abs_total > 0 else 0.0)
+        magnitude_spike = (current_total != 0 and avg_abs_total > 0 and
+                           magnitude_ratio >= 2.5)
+        if not total_reversal and not changed and not magnitude_spike:
+            continue
+
+        current_signs = [latest[key] > 0 for key in ("foreign", "trust", "dealer")]
+        current_neg_signs = [latest[key] < 0 for key in ("foreign", "trust", "dealer")]
+        if all(current_signs):
+            consensus = "三方同步買超"
+        elif all(current_neg_signs):
+            consensus = "三方同步賣超"
+        elif ((latest["foreign"] > 0 and latest["trust"] > 0) or
+              (latest["foreign"] < 0 and latest["trust"] < 0)):
+            consensus = "外資、投信同向"
+        else:
+            consensus = "法人分歧"
+
+        if total_reversal:
+            event_type = "賣轉買" if current_total > 0 else "買轉賣"
+            priority = 3
+        elif changed:
+            event_type = "單一法人轉向"
+            priority = 2
+        else:
+            event_type = "買超放大" if current_total > 0 else "賣超放大"
+            priority = 1
+        priority += min(len(changed), 2)
+        if magnitude_spike:
+            priority += 1
+
+        candidates.append({
+            "code": code,
+            "name": str(item["name"] or code),
+            "event_type": event_type,
+            "current_total_lots": current_total,
+            "prior_avg_total_lots": round(prior_total, 1),
+            "magnitude_ratio": round(magnitude_ratio, 2),
+            "investor_changes": changed[:3],
+            "consensus": consensus,
+            "current": {key: latest[key] for key in ("foreign", "trust", "dealer", "total")},
+            "prior_avg": {key: round(prior_avg[key], 1) for key in ("foreign", "trust", "dealer", "total")},
+            "prior_days": len(prior),
+            "priority": priority,
+        })
+
+    candidates.sort(key=lambda x: (x["priority"], abs(x["current_total_lots"]), x["code"]),
+                    reverse=True)
+    for item in candidates:
+        item.pop("priority", None)
+    return candidates[:top_n]
 def build_chips_report(days=10):
     """
     籌碼超人：依「誰在買」分開列出，而不是把三大法人加在一起。
@@ -5566,6 +5704,9 @@ def _chips_result_from_persisted():
     groups = payload.get("groups")
     if not isinstance(groups, dict):
         return None
+    # 新版快照需包含法人突變欄位；舊快照命中時強制重算一次，避免新功能不顯示。
+    if "institutional_shifts" not in payload:
+        return None
     return {"payload": payload, "source": "持久化快照",
             "data_date": _chips_data_date(snapshot.get("data_date") or payload.get("data_date")),
             "computed_at": snapshot.get("computed_at")}
@@ -5609,6 +5750,8 @@ def build_chips_payload(days=10, force_refresh=False, persist=True):
         }
         both_buy = get_both_side_codes("buy", actual, 20, min_days=5)
         both_sell = get_both_side_codes("sell", actual, 20, min_days=5)
+        institutional_shifts = get_institutional_shift_candidates(
+            prior_days=min(5, max(3, actual - 1)), top_n=12)
         all_codes = {c for rows in raw.values() for c, *_ in rows}
         all_codes |= {c for c, *_ in both_buy} | {c for c, *_ in both_sell}
         prices = get_realtime_stocks_bulk(list(all_codes), workers=16) if all_codes else {}
@@ -5622,9 +5765,12 @@ def build_chips_payload(days=10, force_refresh=False, persist=True):
         data_date = _chips_data_date(_t86_cache.get("data_date"))
         payload = {
             "available": True, "actual_days": actual,
-            "history_days": hist_days, "data_date": data_date,
+            "history_days": hist_days,             "data_date": data_date,
             "groups": groups,
+            "institutional_shifts": institutional_shifts,
+            "shift_prior_days": min(5, max(3, actual - 1)),
             "amount_note": "金額以整理當下可取得的真實股價換算",
+
         }
         result = {"payload": payload, "source": "本次完整整理",
                   "data_date": data_date, "computed_at": taiwan_now().isoformat()}
@@ -5633,7 +5779,8 @@ def build_chips_payload(days=10, force_refresh=False, persist=True):
             saved = _save_shared_data_snapshot(
                 "chips_superman", payload, data_date=data_date,
                 source_meta={"source": "chips_superman", "days": actual,
-                             "group_count": len(groups)},
+                             "group_count": len(groups),
+                             "shift_count": len(institutional_shifts)},
             )
             print("💾 籌碼超人快照%s" % ("已保存" if saved else "保存失敗"))
         return result
@@ -5660,6 +5807,24 @@ def build_line_chips_message(user_id, base_url=None):
         {"type": "text", "text": f"資料來源：{result.get('source')}・資料日：{data_date}・近 {actual} 日",
          "size": "xs", "color": "#767D85", "margin": "sm", "wrap": True},
     ]
+    shift_items = (payload.get("institutional_shifts") or [])[:3]
+    contents.append({"type": "separator", "margin": "lg", "color": "#E8EAE6"})
+    contents.append({"type": "text", "text": "⚡ 法人籌碼突變", "weight": "bold",
+                     "size": "md", "color": "#6E5228", "margin": "lg"})
+    contents.append({"type": "text", "text": "比較最新 T86 與前幾個交易日方向，不代表即時法人資料。",
+                     "size": "xs", "color": "#767D85", "margin": "xs", "wrap": True})
+    if not shift_items:
+        contents.append({"type": "text", "text": "目前沒有符合方向反轉或異常放大條件的標的。",
+                         "size": "sm", "color": "#767D85", "margin": "sm", "wrap": True})
+    for item in shift_items:
+        changes = "、".join(item.get("investor_changes") or []) or "三大法人合計方向變化"
+        current_total = int(item.get("current_total_lots") or 0)
+        ratio = float(item.get("magnitude_ratio") or 0)
+        ratio_text = f"・約前期平均 {ratio:.1f} 倍" if ratio >= 2.5 else ""
+        contents.append({"type": "text", "text":
+                         f"・{item.get('name')}（{item.get('code')}） {item.get('event_type')}｜"
+                         f"{changes}｜今日 {current_total:+,} 張{ratio_text}｜{item.get('consensus')}",
+                         "size": "sm", "color": "#454C55", "margin": "sm", "wrap": True})
     labels = [
         ("both_buy", "🔥 外資投信同買", "兩種資金同時站買方"),
         ("trust_buy", "🏦 投信認養", "至少 6／10 天持續同方向"),
@@ -5711,6 +5876,27 @@ def render_chips_web_body(result):
         ("both_sell", "❄️ 外資投信同賣", "外資與投信同時站賣方，顯示兩類資金方向一致轉弱。"),
     ]
     sections = []
+    shift_items = payload.get("institutional_shifts") or []
+    shift_prior_days = int(payload.get("shift_prior_days") or 5)
+    shift_rows = []
+    for item in shift_items:
+        changes = "、".join(item.get("investor_changes") or []) or "三大法人合計方向變化"
+        current_total = int(item.get("current_total_lots") or 0)
+        ratio = float(item.get("magnitude_ratio") or 0)
+        ratio_text = f"；約前{shift_prior_days}日平均絕對值 {ratio:.1f} 倍" if ratio >= 2.5 else ""
+        detail = (f"{item.get('event_type')}・{changes}・今日三大法人 {current_total:+,} 張"
+                  f"・{item.get('consensus')}{ratio_text}")
+        shift_rows.append(
+            f'<div class="chips-row"><div><b>{esc(str(item.get("name") or item.get("code")))}</b>'
+            f'<small>（{esc(str(item.get("code") or ""))}）・{esc(detail)}</small></div>'
+            f'<strong>{esc(str(item.get("event_type") or "方向變化"))}</strong></div>')
+    if not shift_rows:
+        shift_rows.append('<div class="chips-empty">目前沒有符合「方向反轉或異常放大」條件的標的</div>')
+    shift_section = (
+        '<section class="chips-section chips-shift-section">'
+        '<h2>⚡ 法人籌碼突變</h2>'
+        f'<p>比較最新 T86 與前 {shift_prior_days} 個交易日平均方向；只列出方向反轉或異常放大的標的。</p>'
+        f'{"".join(shift_rows)}</section>')
     for key, title, note in group_info:
         rows = []
         for item in ((payload.get("groups") or {}).get(key) or []):
@@ -5735,6 +5921,7 @@ def render_chips_web_body(result):
     source = result.get("source") or "未標來源"
     return f'''<div class="tabs">\n  <a href="/web/screener?mode=blackhorse&view=list">黑馬</a>\n  <a href="/web/screener?mode=radar&view=list">雷達</a>\n  <a href="/web/chips" class="on">籌碼超人</a>\n  <a href="/web/screener?mode=review">成效</a>\n</div>\n<div class="chips-meta">資料來源：<b>{esc(str(source))}</b>　資料日：<b>{esc(str(data_date))}</b>　近 <b>{int(payload.get("actual_days") or 0)}</b> 個交易日</div>
 <div class="callout">億＝以整理當下可取得的真實股價，將法人近十日累計張數換算為億元；天數＝近十日站同方向的天數。這裡只看法人籌碼，不含基本面與估值。</div>
+{shift_section}
 {"".join(sections)}
 <div class="callout">認養需至少 6／10 天持續同向；單日爆量隔天就跑的不算。法人買不代表便宜，法人賣不代表公司變壞。以上為公開資料整理，不構成投資建議。</div>'''
 
