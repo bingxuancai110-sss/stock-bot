@@ -11999,10 +11999,10 @@ def web_settings(uid):
 @app.route("/web/chips")
 @web_login_required
 def web_chips(uid):
-    """籌碼超人完整網頁版；LINE 按鈕與更多頁都進這裡。"""
+    """籌碼超人完整網頁版；LINE 按鈕與選股模式列都進這裡。"""
     if not wants_fragment():
         return render_loading_shell(
-            "籌碼超人", "chips",
+            "籌碼超人", "screener",
             ["正在讀取法人資料…", "正在整理近十日資金方向…", "正在組裝完整籌碼分析…"],
             note="LINE 顯示快速摘要；網頁版提供完整五區法人資料與資料日期。",
             staged=False)
