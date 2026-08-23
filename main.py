@@ -838,12 +838,42 @@ STOCK_NAME_MAP = {
     "3037": "欣興", "2382": "廣達", "3231": "緯創", "4931": "新日興",
     "3081": "聯亞", "6442": "光聖", "3529": "力旺", "3443": "創意",
     "6173": "信昌電", "1503": "士電",
+    "0050": "元大台灣50", "00981A": "主動統一台股增長",
     "009816": "凱基台灣TOP50"
 }
 
 # ETF 商品屬性只放已由官方產品頁核實的資料；未知 ETF 不猜測配息政策。
-# 009816 官方：凱基投信產品頁與證交所 ETF 商品頁（查閱日 2026-08-23）。
+# 官方產品頁與證交所 ETF 商品頁已核實的 ETF metadata；未知 ETF 不猜測配息政策。
+# 0050、00981A、009816 的資料查閱日：2026-08-23。
 ETF_PRODUCT_METADATA = {
+    "0050": {
+        "name": "元大台灣50",
+        "category": "市值型",
+        "management_style": "被動式",
+        "distribution_policy": "distributing",
+        "distribution_frequency": "半年配（依官方公告）",
+        "listing_date": "2003-06-30",
+        "inception_date": "2003-06-25",
+        "benchmark": "FTSE TWSE Taiwan 50 Index（臺灣50指數）",
+        "source_urls": [
+            "https://www.yuantaetfs.com/product/detail/0050/Basic_information",
+        ],
+    },
+    "00981A": {
+        "name": "主動統一台股增長",
+        "category": "主動式",
+        "management_style": "主動式",
+        "distribution_policy": "distributing",
+        "distribution_frequency": "季配息（依官方公告）",
+        "policy_note": "基金之配息來源可能為收益平準金",
+        "listing_date": "2025-05-27",
+        "inception_date": "2025-05-15",
+        "benchmark": "臺灣證券交易所發行量加權股價報酬指數",
+        "source_urls": [
+            "https://www.twse.com.tw/zh/ETFortune/etfInfo/00981A",
+            "https://www.ezmoney.com.tw/ETF/Fund/Info?fundCode=63YTW",
+        ],
+    },
     "009816": {
         "name": "凱基台灣TOP50",
         "category": "市值型",
@@ -5576,6 +5606,7 @@ def get_institutional_shift_candidates(prior_days=5, top_n=12):
             "current": {key: latest[key] for key in ("foreign", "trust", "dealer", "total")},
             "prior_avg": {key: round(prior_avg[key], 1) for key in ("foreign", "trust", "dealer", "total")},
             "prior_days": len(prior),
+            "data_date": str(latest_date),
             "priority": priority,
         })
 
@@ -5584,6 +5615,128 @@ def get_institutional_shift_candidates(prior_days=5, top_n=12):
     for item in candidates:
         item.pop("priority", None)
     return candidates[:top_n]
+
+
+_TURNING_OBSERVATION_CACHE = {"at": 0, "data": None}
+TURNING_OBSERVATION_CACHE_SECONDS = 300
+
+
+def build_turning_observation(limit=60, prior_days=5):
+    """以真實法人轉向搭配價格、均線與量能，建立轉折觀察三狀態。"""
+    try:
+        limit = max(10, min(int(limit), 120))
+        prior_days = max(3, min(int(prior_days), 10))
+    except (TypeError, ValueError):
+        limit, prior_days = 60, 5
+    now = time.time()
+    with _realtime_cache_lock:
+        cached = _TURNING_OBSERVATION_CACHE.get("data")
+        if cached is not None and now - _TURNING_OBSERVATION_CACHE.get("at", 0) < TURNING_OBSERVATION_CACHE_SECONDS:
+            return cached
+
+    institutional = get_institutional_shift_candidates(prior_days=prior_days, top_n=limit)
+    if not institutional:
+        result = {"data_date": None, "prior_days": prior_days, "items": []}
+        with _realtime_cache_lock:
+            _TURNING_OBSERVATION_CACHE["at"] = time.time()
+            _TURNING_OBSERVATION_CACHE["data"] = result
+        return result
+
+    codes = [item.get("code") for item in institutional if item.get("code")]
+    prices = get_realtime_stocks_bulk(codes, workers=16, rng="3mo")
+    items = []
+    state_order = {"confirmed": 3, "observing": 2, "invalid": 1}
+    for inst_item in institutional:
+        code = str(inst_item.get("code") or "")
+        stock = prices.get(code) or {}
+        close = stock.get("close")
+        if close is None:
+            continue
+        series = [float(x) for x in (stock.get("closes") or []) if x not in (None, 0)]
+        if len(series) < 3:
+            continue
+        prev_close = series[-2]
+        ma20 = stock.get("ma20")
+        prev_window = series[:-1][-20:]
+        prev_ma20 = sum(prev_window) / len(prev_window) if prev_window else None
+        cross_up = bool(prev_ma20 and ma20 and prev_close < prev_ma20 <= close)
+        cross_down = bool(prev_ma20 and ma20 and prev_close > prev_ma20 >= close)
+        up_streak = int(stock.get("up_streak") or 0)
+        down_streak = int(stock.get("down_streak") or 0)
+        vol_ratio = float(stock.get("vol_ratio") or 0)
+        broke_support = bool(stock.get("broke_support"))
+        current_total = int(inst_item.get("current_total_lots") or 0)
+        changes = inst_item.get("investor_changes") or []
+        inst_up = current_total > 0 and (
+            inst_item.get("event_type") == "賣轉買" or any("轉買" in str(x) for x in changes))
+        inst_down = current_total < 0 and (
+            inst_item.get("event_type") == "買轉賣" or any("轉賣" in str(x) for x in changes))
+        direction = "up" if current_total > 0 else "down" if current_total < 0 else "neutral"
+        if direction == "neutral":
+            continue
+
+        reasons = []
+        score = 0
+        if inst_up or inst_down:
+            reasons.append("法人方向反轉")
+            score += 1
+        if cross_up or cross_down:
+            reasons.append("站回20日均線" if cross_up else "跌破20日均線")
+            score += 1
+        if (direction == "up" and up_streak >= 2) or (direction == "down" and down_streak >= 2):
+            reasons.append(f"連續{'上漲' if direction == 'up' else '下跌'} {up_streak if direction == 'up' else down_streak} 天")
+            score += 1
+        if vol_ratio >= 1.3:
+            reasons.append(f"量能約20日均量 {vol_ratio:.1f} 倍")
+            score += 1
+        if (direction == "up" and not broke_support and close > (stock.get("low_20d") or close)):
+            reasons.append("價格未跌破近期支撐")
+            score += 1
+        if direction == "down" and broke_support:
+            reasons.append("近期支撐已跌破")
+            score += 1
+
+        invalid = ((direction == "up" and (broke_support or down_streak >= 3)) or
+                   (direction == "down" and (cross_up and up_streak >= 3)))
+        if invalid:
+            state = "invalid"
+            state_label = "已失效"
+        elif score >= 3:
+            state = "confirmed"
+            state_label = "已確認"
+        else:
+            state = "observing"
+            state_label = "觀察中"
+        direction_label = "轉強" if direction == "up" else "轉弱"
+        items.append({
+            "code": code,
+            "name": inst_item.get("name") or stock_display_name(code, fallback=code),
+            "direction": direction,
+            "direction_label": direction_label,
+            "state": state,
+            "state_label": state_label,
+            "event_type": inst_item.get("event_type") or "法人方向變化",
+            "consensus": inst_item.get("consensus") or "法人分歧",
+            "current_total_lots": current_total,
+            "magnitude_ratio": inst_item.get("magnitude_ratio"),
+            "reasons": reasons[:5] or ["法人資料出現方向變化"],
+            "close": close,
+            "pct": stock.get("pct"),
+            "support": stock.get("support"),
+            "resistance": stock.get("resistance"),
+            "vol_ratio": vol_ratio,
+            "data_date": inst_item.get("data_date"),
+            "score": score,
+        })
+    items.sort(key=lambda x: (state_order.get(x["state"], 0), x["score"], abs(x["current_total_lots"])), reverse=True)
+    result = {"data_date": next((x.get("data_date") for x in items if x.get("data_date")), None),
+              "prior_days": prior_days, "items": items[:limit]}
+    with _realtime_cache_lock:
+        _TURNING_OBSERVATION_CACHE["at"] = time.time()
+        _TURNING_OBSERVATION_CACHE["data"] = result
+    return result
+
+
 def build_chips_report(days=10):
     """
     籌碼超人：依「誰在買」分開列出，而不是把三大法人加在一起。
@@ -5981,7 +6134,7 @@ def render_chips_web_body(result):
             f'<p>{esc(note)}</p>{"".join(rows)}</section>')
     data_date = result.get("data_date") or payload.get("data_date") or "未標日期"
     source = result.get("source") or "未標來源"
-    return f'''<div class="tabs">\n  <a href="/web/screener?mode=blackhorse&view=list">黑馬</a>\n  <a href="/web/screener?mode=radar&view=list">雷達</a>\n  <a href="/web/chips" class="on">籌碼超人</a>\n  <a href="/web/screener?mode=review">成效</a>\n</div>\n<div class="chips-meta">資料來源：<b>{esc(str(source))}</b>　資料日：<b>{esc(str(data_date))}</b>　近 <b>{int(payload.get("actual_days") or 0)}</b> 個交易日</div>
+    return f'''<div class="tabs">\n  <a href="/web/screener?mode=blackhorse&view=list">黑馬</a>\n  <a href="/web/screener?mode=radar&view=list">雷達</a>\n  <a href="/web/chips" class="on">籌碼超人</a>\n  <a href="/web/screener?mode=review">成效</a>\n  <a href="/web/screener?mode=turning">轉折觀察</a>\n  <a href="/web/etf">ETF 專區</a>\n</div>\n<div class="chips-meta">資料來源：<b>{esc(str(source))}</b>　資料日：<b>{esc(str(data_date))}</b>　近 <b>{int(payload.get("actual_days") or 0)}</b> 個交易日</div>
 <div class="callout">億＝以整理當下可取得的真實股價，將法人近十日累計張數換算為億元；天數＝近十日站同方向的天數。這裡只看法人籌碼，不含基本面與估值。</div>
 {shift_section}
 {"".join(sections)}
@@ -7586,6 +7739,54 @@ def build_single_stock_report(code, user_id=None):
                            "backgroundColor": "#FFFFFF"},
                   "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
 
+def _etf_price_drawdown_summary(closes, close_dates):
+    """用可取得的價格序列計算觀測期間最大回撤與是否回到前高。"""
+    values = []
+    for index, value in enumerate(closes or []):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number <= 0:
+            continue
+        date_value = close_dates[index] if index < len(close_dates) else None
+        values.append((number, date_value))
+    if len(values) < 3:
+        return None
+    peak_value, peak_date = values[0]
+    peak_index = 0
+    max_drawdown = 0.0
+    trough_index = 0
+    trough_value = peak_value
+    for index, (value, date_value) in enumerate(values):
+        if value > peak_value:
+            peak_value, peak_date = value, date_value
+            peak_index = index
+        drawdown = value / peak_value - 1.0 if peak_value else 0.0
+        if drawdown < max_drawdown:
+            max_drawdown = drawdown
+            trough_index = index
+            trough_value = value
+    if max_drawdown >= 0:
+        return {"max_drawdown": 0.0, "peak_date": peak_date,
+                "trough_date": peak_date, "recovery_date": peak_date,
+                "recovery_days": 0, "latest_gap": 0.0}
+    recovery_index = None
+    for index in range(trough_index + 1, len(values)):
+        if values[index][0] >= peak_value:
+            recovery_index = index
+            break
+    latest_gap = values[-1][0] / peak_value - 1.0 if peak_value else None
+    return {
+        "max_drawdown": max_drawdown * 100,
+        "peak_date": peak_date,
+        "trough_date": values[trough_index][1],
+        "recovery_date": values[recovery_index][1] if recovery_index is not None else None,
+        "recovery_days": (recovery_index - trough_index) if recovery_index is not None else None,
+        "latest_gap": latest_gap * 100 if latest_gap is not None else None,
+    }
+
+
 def build_single_etf_report(code, user_id=None):
     """ETF 單檔摘要；不套用個股營收、PE 或法人籌碼評分。"""
     code = str(code).strip()
@@ -7614,10 +7815,16 @@ def build_single_etf_report(code, user_id=None):
               f"策略分類：{meta.get('category', '待分類')}",
               f"追蹤基準：{meta.get('benchmark') or '資料待確認'}",
               f"配息政策：{_etf_distribution_label(meta.get('distribution_policy'))}"]
+    if meta.get("distribution_frequency"):
+        lines.append(f"配息頻率：{meta['distribution_frequency']}")
+    if meta.get("policy_note"):
+        lines.append(f"配息備註：{meta['policy_note']}")
     if meta.get("distribution_policy") == "non_distributing":
         lines.append("配息率：不適用（不分配／累積型）")
+    elif meta.get("distribution_policy") == "distributing":
+        lines.append("配息率：需依完整實際配息紀錄計算")
     else:
-        lines.append("配息率：第一版待取得完整實際配息紀錄")
+        lines.append("配息率：配息政策待確認")
 
     closes = [float(x) for x in (stock.get("closes") or []) if x not in (None, 0)]
     close_dates = stock.get("close_dates") or []
@@ -7630,6 +7837,20 @@ def build_single_etf_report(code, user_id=None):
                   "※ 第一版先顯示可追溯的價格序列，不把價格變化冒充完整含息總報酬。"]
     else:
         lines += ["", "【目前可計算】", "價格歷史資料不足，暫不計算報酬"]
+
+    drawdown = _etf_price_drawdown_summary(closes, close_dates)
+    if drawdown:
+        dd = float(drawdown.get("max_drawdown") or 0)
+        lines += ["", "【風險觀察】", f"可取得價格期間最大回撤：{dd:+.1f}%"]
+        if dd == 0:
+            lines.append("恢復狀態：觀測期間尚無明顯回撤")
+        elif drawdown.get("recovery_date"):
+            lines.append(f"恢復狀態：已於 {drawdown['recovery_date']} 回到前高（{drawdown['recovery_days']} 個交易日）")
+        else:
+            latest_gap = drawdown.get("latest_gap")
+            gap_text = f"；目前仍低於前高 {abs(float(latest_gap)):.1f}%" if latest_gap is not None and latest_gap < 0 else ""
+            lines.append(f"恢復狀態：尚未回到前高，截至 {close_dates[-1] if close_dates else '資料日'}{gap_text}")
+        lines.append("※ 目前使用價格序列計算，未把配息調整成含息總報酬回撤。")
 
     lines += ["", "【資料成熟度】",
               _etf_maturity_label(meta.get("listing_date")),
@@ -8391,6 +8612,60 @@ def build_push_request_message(user_id, base_url=None):
         "styles": {"body": {"backgroundColor": "#FFFFFF"}},
     }
     return FlexSendMessage(alt_text=plain_text, contents=bubble)
+
+
+def build_turning_observation_line_message(user_id, base_url=None):
+    """LINE 轉折觀察摘要；只顯示真實 T86 與行情形成的三狀態。"""
+    result = build_turning_observation(limit=60, prior_days=5)
+    items = result.get("items") or []
+    data_date = result.get("data_date") or "未標日期"
+    token = create_web_token(user_id)
+    web_url = None
+    if token:
+        web_url = (f"{public_web_base_url(base_url)}/web/screener?mode=turning"
+                   f"&t={quote(token, safe='')}")
+    contents = [
+        {"type": "text", "text": "🔄 轉折觀察", "weight": "bold",
+         "size": "xl", "color": "#1B2027"},
+        {"type": "text", "text": f"法人資料日：{data_date}・只列觀察、確認或失效狀態",
+         "size": "xs", "color": "#767D85", "margin": "sm", "wrap": True},
+    ]
+    state_labels = (("confirmed", "✅ 已確認"), ("observing", "👀 觀察中"),
+                    ("invalid", "⚠️ 已失效"))
+    shown = 0
+    for state, state_label in state_labels:
+        group = [item for item in items if item.get("state") == state]
+        if not group:
+            continue
+        contents.append({"type": "text", "text": state_label, "weight": "bold",
+                         "size": "sm", "color": "#6E5228", "margin": "lg"})
+        for item in group[:3]:
+            direction = item.get("direction_label") or "方向變化"
+            reasons = "、".join(item.get("reasons") or [])
+            current = item.get("current_total_lots")
+            current_text = f"法人 {current:+,} 張" if current is not None else "法人資料待確認"
+            contents.append({"type": "text",
+                             "text": f"・{item.get('name') or item.get('code')}（{item.get('code')}）｜{direction}\n"
+                                      f"  {item.get('event_type') or '方向變化'}・{current_text}\n"
+                                      f"  {reasons or '資料出現方向變化'}",
+                             "size": "sm", "color": "#454C55", "wrap": True,
+                             "margin": "sm"})
+            shown += 1
+    if not shown:
+        contents.append({"type": "text", "text": "目前沒有足夠的法人與行情資料建立轉折觀察。",
+                         "size": "sm", "color": "#767D85", "margin": "lg", "wrap": True})
+    contents.append({"type": "separator", "margin": "lg", "color": "#E8EAE6"})
+    contents.append({"type": "text", "text": "※ 轉折觀察是規則式資料整理，不代表確定反轉或買賣建議。",
+                     "size": "xs", "color": "#767D85", "wrap": True, "margin": "md"})
+    if web_url:
+        contents.append({"type": "button", "style": "link", "height": "sm",
+                         "color": "#6E5228", "margin": "md",
+                         "action": {"type": "uri", "label": "查看完整轉折觀察",
+                                    "uri": web_url}})
+    return FlexSendMessage(alt_text="🔄 轉折觀察", contents={
+        "type": "bubble", "body": {"type": "box", "layout": "vertical",
+        "contents": contents, "paddingAll": "18px", "backgroundColor": "#FFFFFF"},
+        "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
 
 
 def build_line_screener_message(user_id, mode, base_url=None):
@@ -11029,7 +11304,8 @@ def web_premarket(uid):
             streak = item.get("streak")
             suffix = []
             if net is not None:
-                suffix.append(f"法人合計 {net:+,} 張")
+                suffix.append(              f"法人合計 {net:+,} 張")
+
             if streak is not None:
                 suffix.append(f"連續 {streak} 日")
             inst_items.append(f'<div class="premarket-row"><b>{text(name)} '
@@ -12869,7 +13145,7 @@ def web_etf(uid):
     """ETF 專區第一版：四類入口與已核實商品清單，不混入個股選股排名。"""
     if not wants_fragment():
         return render_loading_shell(
-            "ETF 專區", "more",
+            "ETF 專區", "screener",
             ["正在讀取 ETF 商品資料…", "正在取得最新價格…", "正在整理配息政策與資料成熟度…"],
             note="ETF 依商品策略分組；資料尚未核實的產品不會被硬分類。",
             staged=False)
@@ -12948,11 +13224,19 @@ def web_etf(uid):
 .etf-detail-line{{font-size:13px;line-height:1.75;border-top:1px solid #f0eee8;padding:4px 0}}
 .etf-detail-line:first-of-type{{border-top:0;font-weight:700;font-size:17px}}
 </style>
+<div class="tabs">
+  <a href="/web/screener?mode=blackhorse">黑馬</a>
+  <a href="/web/screener?mode=radar">雷達</a>
+  <a href="/web/chips">籌碼超人</a>
+  <a href="/web/screener?mode=review">成效</a>
+  <a href="/web/screener?mode=turning">轉折觀察</a>
+  <a href="/web/etf" class="on">ETF 專區</a>
+</div>
 <div class="etf-hero"><div class="eyebrow">台股 BOT</div><h1>ETF 專區</h1><p class="etf-note">依管理方式與投資策略分組；ETF 不套用個股黑馬、雷達或籌碼超人邏輯。第一版只列已核實的商品資料。</p></div>
 <div class="etf-tabs">{tabs}</div>
 <section class="etf-card"><h2>{html.escape(selected_label)}</h2><div class="etf-note">同類產品比較；不分配／累積型 ETF 的配息率顯示為不適用。</div>{"".join(cards)}</section>
 {detail}'''
-    return respond_page("ETF 專區", body, "more")
+    return respond_page("ETF 專區", body, "screener")
 
 
 @app.route("/web/more")
@@ -14278,6 +14562,8 @@ def build_review_body():
   <a href="/web/screener?mode=radar">雷達</a>
   <a href="/web/chips">籌碼超人</a>
   <a href="/web/screener?mode=review" class="on">成效</a>
+  <a href="/web/screener?mode=turning">轉折觀察</a>
+  <a href="/web/etf">ETF 專區</a>
 </div>
 <div class="mode-note">
   把過去推薦過的名單拿現價回頭比對，看這套評分實際上有沒有用。
@@ -14414,10 +14700,78 @@ def render_screener_fast_summary(mode):
 </section>"""
 
 
+def render_turning_observation_web_body(result):
+    """轉折觀察完整網頁：三狀態清單與每檔觸發依據。"""
+    items = result.get("items") or []
+    data_date = result.get("data_date") or "未標日期"
+    prior_days = int(result.get("prior_days") or 5)
+    esc = html.escape
+    state_defs = (("confirmed", "✅ 已確認", "價格、量能與法人方向已有多項同步"),
+                  ("observing", "👀 觀察中", "已出現部分改變，尚未達確認門檻"),
+                  ("invalid", "⚠️ 已失效", "原本轉折條件被目前價格結構破壞"))
+    sections = []
+    for state, label, note in state_defs:
+        rows = []
+        for item in [x for x in items if x.get("state") == state]:
+            close = item.get("close")
+            pct = item.get("pct")
+            close_text = f"{float(close):,.2f}" if close is not None else "—"
+            pct_text = f"{float(pct):+.2f}%" if pct is not None else "漲跌資料不足"
+            current = item.get("current_total_lots")
+            ratio = item.get("magnitude_ratio")
+            inst_text = f"法人 {int(current):+,} 張" if current is not None else "法人資料不足"
+            ratio_text = f"・前{prior_days}日平均絕對值 {float(ratio):.1f} 倍" if ratio and float(ratio) >= 2.5 else ""
+            reasons = "、".join(item.get("reasons") or []) or "資料出現方向變化"
+            rows.append(f'''<div class="turning-row">
+  <div class="turning-row-head"><b>{esc(str(item.get("name") or item.get("code")))}</b>
+    <span>{esc(str(item.get("code") or ""))}・{esc(str(item.get("direction_label") or "方向變化"))}</span></div>
+  <div class="turning-price">{close_text} <span>{pct_text}</span></div>
+  <div class="turning-detail">{esc(str(item.get("event_type") or "法人方向變化"))}・{esc(inst_text)}{esc(ratio_text)}・{esc(str(item.get("consensus") or "法人分歧"))}</div>
+  <div class="turning-detail">依據：{esc(reasons)}</div>
+  <div class="turning-detail">支撐 {esc(str(item.get("support") or "資料不足"))}・壓力 {esc(str(item.get("resistance") or "資料不足"))}</div>
+</div>''')
+        content = "".join(rows) or '<div class="turning-empty">目前沒有符合此狀態的標的。</div>'
+        sections.append(f'<section class="turning-section"><h2>{label}</h2><p>{note}</p>{content}</section>')
+    return f'''<div class="tabs">
+  <a href="/web/screener?mode=blackhorse">黑馬</a>
+  <a href="/web/screener?mode=radar">雷達</a>
+  <a href="/web/chips">籌碼超人</a>
+  <a href="/web/screener?mode=review">成效</a>
+  <a href="/web/screener?mode=turning" class="on">轉折觀察</a>
+  <a href="/web/etf">ETF 專區</a>
+</div>
+<div class="turning-meta">法人資料日：<b>{esc(str(data_date))}</b>　前 <b>{prior_days}</b> 個交易日平均作為方向比較</div>
+<div class="mode-note">轉折觀察不預測未來，只整理現有真實價格、均線、量能與 T86 法人方向是否出現改變。第一次出現時可能只是觀察中；條件被破壞時標示為已失效。</div>
+<style>
+.turning-section{{background:#fff;border:1px solid #e4e1d8;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}
+.turning-section h2{{margin:0 0 4px;font-size:20px}}
+.turning-section>p{{margin:0 0 8px;color:var(--ink-soft);font-size:12.5px}}
+.turning-row{{padding:12px 0;border-top:1px solid #eee;line-height:1.55}}
+.turning-row-head{{display:flex;justify-content:space-between;gap:10px;align-items:baseline}}
+.turning-row-head b{{font-size:16px}}
+.turning-row-head span,.turning-detail{{color:var(--ink-soft);font-size:12.5px}}
+.turning-price{{font-size:18px;font-weight:700;margin-top:3px}}
+.turning-price span{{font-size:14px;color:var(--red);margin-left:5px}}
+.turning-empty{{color:var(--ink-soft);padding:8px 0}}
+.turning-meta{{font-size:12.5px;color:var(--ink-soft);padding:8px 0}}
+</style>
+{"".join(sections)}
+<div class="callout"><b>資料限制</b><br><span style="font-size:12.5px;color:var(--ink-faint)">法人資料需等 T86 更新；資料不足時不建立訊號。轉折狀態是規則式觀察，不構成投資建議。</span></div>'''
+
+
 @app.route("/web/screener")
 @web_login_required
 def web_screener(uid):
     mode = request.args.get("mode", "blackhorse")
+    if mode == "turning":
+        if not wants_fragment():
+            return render_loading_shell(
+                "轉折觀察", "screener",
+                ["正在讀取法人方向…", "正在比對價格結構…", "正在整理轉折狀態…"],
+                note="轉折觀察只使用現有真實行情與 T86 法人資料。",
+                staged=False)
+        return respond_page("轉折觀察", render_turning_observation_web_body(
+            build_turning_observation()), "screener")
     if not wants_fragment():
         # 選股台是全站最重的一頁（候選池上百檔），先秒回骨架再慢慢填
         return render_loading_shell(
@@ -14831,6 +15185,8 @@ def web_screener(uid):
      class="{'on' if mode == 'radar' else ''}">雷達</a>
   <a href="/web/chips">籌碼超人</a>
   <a href="/web/screener?mode=review">成效</a>
+  <a href="/web/screener?mode=turning">轉折觀察</a>
+  <a href="/web/etf">ETF 專區</a>
   {'' if mode == 'radar' else f'''<span class="tabs-gap"></span>
   <a href="/web/screener?mode={mode}&view=list&cat={cat_filter}"
      class="{'on' if view != 'sector' else ''}">總排行</a>
@@ -15321,6 +15677,12 @@ def handle_message(event):
     # 7.65 籌碼超人：LINE 只顯示三個重點區塊，完整五區改由網頁查看
     elif text in ["籌碼", "籌碼超人", "認養"]:
         flex_reply = build_line_chips_message(
+            user_id, request.url_root.rstrip("/"))
+        reply = None
+
+    # 7.8 轉折觀察：獨立於黑馬與雷達，分為觀察、確認、失效三狀態。
+    elif text in ["轉折", "轉折觀察"]:
+        flex_reply = build_turning_observation_line_message(
             user_id, request.url_root.rstrip("/"))
         reply = None
 
