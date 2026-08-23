@@ -7225,14 +7225,19 @@ def build_healthcheck_report(user_id):
         if bd_desc and "→" in bd_desc:
             bd_line = bd_desc.split("→")[-1].strip() + "\n"
 
+        pct = stock.get("pct") or 0
+        price_signal = "🔴" if pct > 0 else ("🟢" if pct < 0 else "⚪")
+        breakdown_text = bd_line.strip()
         text = (
             f"{flag} {name} {code}　{total}分\n"
             f"{change_line}"
-            f"{stock['close']:.2f}（{stock['pct']:+.2f}%）　{pos_txt}\n"
-            f"{note}\n"
-            f"{rev_txt}　{pe_txt}　🛡️{fmt_support(stock)} 🚧{fmt_resistance(stock['resistance'])}\n"
-            f"{bd_line}"
-            f"{advice}"
+            f"{price_signal} 股價 {stock['close']:.2f}（{pct:+.2f}%）　{pos_txt}\n"
+            f"分項　籌碼{chip_score}/30　位階{pos_score}/20　營收{rev_score}/30　估值{val_score}/20\n"
+            f"法人　{note}\n"
+            f"基本　{rev_txt}　{pe_txt}\n"
+            f"關卡　🛡️{fmt_support(stock)}　🚧{fmt_resistance(stock['resistance'])}\n"
+            f"{('法人拆解　' + breakdown_text + chr(10)) if breakdown_text else ''}"
+            f"判讀　{advice}"
         )
         rows.append((tag, total, text))
 
@@ -7251,11 +7256,14 @@ def build_healthcheck_report(user_id):
     has_tags = any(t is not None for t in grouped)
     for tag in order:
         items = sorted(grouped[tag], key=lambda x: x[0], reverse=True)
+        numbered = [f"【{index}】 {text}" for index, (_, text) in enumerate(items, start=1)]
+        item_block = "\n\n────────────\n\n".join(numbered)
         if has_tags:
             icon = TAG_ICONS.get(tag, "📌")
             label = tag or "未分類"
-            blocks.append(f"{icon}　{label}（{len(items)}）\n" + "─" * 12)
-        blocks.append("\n\n".join(text for _, text in items))
+            blocks.append(f"{icon}　{label}（{len(items)}）\n" + item_block)
+        else:
+            blocks.append(item_block)
 
     body = "\n\n".join(blocks)
     tag_hint = ("" if has_tags else
