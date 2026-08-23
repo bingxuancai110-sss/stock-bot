@@ -7048,13 +7048,83 @@ def describe_score_change(cur, prev):
     return arrow, f"{prev['total']}→{cur['total']} 分（{diff:+d}）{reason}"
 
 
+def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
+                               industry_label=None, score_change=None,
+                               watchlist_status=None):
+    """單檔與自選股共用的手機版股票詳情格式。
+
+    所有會因長度造成 LINE 自動折行的欄位都拆成固定直向行；
+    只改顯示層，不改任何真實資料、評分或判讀計算。
+    """
+    lines = [f"📊 {code} {name}"]
+    if industry_label:
+        lines.append(industry_label)
+    lines.append("─" * 14)
+
+    close = stock.get("close")
+    pct = stock.get("pct")
+    if close is not None and pct is not None:
+        lines.append(f"💰 {close:.2f}（{pct:+.2f}%）")
+    elif close is not None:
+        lines.append(f"💰 {close:.2f}（漲跌資料不足）")
+    else:
+        lines.append("💰 股價資料不足")
+
+    high, low = stock.get("high"), stock.get("low")
+    if high is not None and low is not None:
+        lines.append(f"高低 {high:.2f}/{low:.2f}")
+    else:
+        lines.append("高低資料不足")
+
+    volume = stock.get("volume")
+    if volume is not None:
+        lines.append(f"📦 {int(volume / 1000):,} 張")
+    else:
+        lines.append("📦 成交量資料不足")
+    lines.append(f"🛡️ 支撐 {fmt_support(stock)}")
+    lines.append(f"🚧 壓力 {fmt_resistance(stock.get('resistance'))}")
+
+    if score:
+        total = score["total"]
+        flag = "🟢" if total >= 70 else ("🟡" if total >= 45 else "🔴")
+        lines += [
+            "",
+            f"{flag} 綜合評分：{total}／100",
+            f"　籌碼{score['chip']}/30　位階{score['position']}/20",
+            f"　營收{score['revenue']}/30　估值{score['valuation']}/20",
+        ]
+        if score_change:
+            lines.append(score_change)
+        cum_yoy, pe = score["cum_yoy"], score["pe"]
+        lines.append(
+            f"　營收年增 {cum_yoy:+.1f}%" if cum_yoy is not None
+            else "　營收年增資料不足")
+        lines.append(f"　PE {pe:.1f}" if pe else "　PE 無")
+
+    lines += ["", "【法人籌碼】近10日"]
+    desc = describe_investor_breakdown(bd)
+    lines.append(desc if desc else "　尚無法人歷史資料")
+    lines += ["", "【位階】", build_position_desc(stock)]
+
+    if score:
+        lines += [
+            "",
+            "【觀察】",
+            build_watchlist_advice(
+                score["total"], score["chip"], score["position"],
+                score["revenue"], score["valuation"], score["cum_lots"],
+                score["streak"], stock, score["cum_yoy"], score["pe"]),
+        ]
+
+    if watchlist_status:
+        lines += ["", watchlist_status]
+    return lines
+
+
 def build_single_stock_report(code, user_id=None):
     """
     單檔完整健檢。LINE 直接輸入代號就走這裡——
-    原本只顯示報價與位階，要看評分還得先加進自選再查健檢，多了兩個步驟。
-    查詢一檔股票時想知道的本來就是「這檔現在如何」，沒理由分散在兩個指令。
-
-    user_id 有給時會一併顯示是否已在自選、以及分數變化。
+    單檔與多檔自選股共用同一套手機版欄位，避免相同功能出現兩種格式。
     """
     stock = get_realtime_stock(code)
     if not stock:
@@ -7062,74 +7132,40 @@ def build_single_stock_report(code, user_id=None):
 
     inst = fetch_institutional_data() or {}
     scores = compute_watchlist_scores([code])
-    s = scores.get(code)
+    score = scores.get(code)
     ind_map = get_industry_map() or {}
-    ind = ind_map.get(code)
+    industry = ind_map.get(code)
     name = short_company_name(stock_display_name(code, inst, stock["name"]))
 
-    lines = [f"📊 {code} {name}"]
-    if ind:
-        lines[0] += f"　{industry_name(ind)}"
-    lines.append("─" * 14)
-    lines.append(f"💰 {stock['close']:.2f}（{stock['pct']:+.2f}%）"
-                 f"　高低 {stock['high']:.2f}/{stock['low']:.2f}")
-    lines.append(f"📦 {int(stock['volume'] / 1000):,} 張"
-                 f"　🛡️{fmt_support(stock)} 🚧{fmt_resistance(stock['resistance'])}")
+    score_change = None
+    if score and user_id:
+        prev = get_previous_scores(user_id, [code]).get(code)
+        arrow, change_txt = describe_score_change(score, prev)
+        if arrow:
+            score_change = f"{arrow} {change_txt}"
 
-    if s:
-        total = s["total"]
-        flag = "🟢" if total >= 70 else ("🟡" if total >= 45 else "🔴")
-        lines.append("")
-        lines.append(f"{flag} 綜合評分：{total}／100")
-        lines.append(f"　籌碼{s['chip']}/30　位階{s['position']}/20　"
-                     f"營收{s['revenue']}/30　估值{s['valuation']}/20")
-
-        # 分數變化：只有自選股才有歷史快照可比
-        if user_id:
-            prev = get_previous_scores(user_id, [code]).get(code)
-            arrow, change_txt = describe_score_change(s, prev)
-            if arrow:
-                lines.append(f"{arrow} {change_txt}")
-
-        cum_yoy, pe = s["cum_yoy"], s["pe"]
-        rev_txt = f"營收年增 {cum_yoy:+.1f}%" if cum_yoy is not None else "營收無資料"
-        pe_txt = f"PE {pe:.1f}" if pe else "PE 無"
-        lines.append(f"　{rev_txt}　{pe_txt}")
-
-    lines.append("")
-    lines.append("【法人籌碼】近10日")
     bd = get_investor_breakdown([code]).get(code)
-    desc = describe_investor_breakdown(bd)
-    lines.append(desc if desc else "　尚無法人歷史資料")
+    watchlist_status = None
+    if user_id:
+        in_wl = code in get_user_watchlist(user_id)
+        watchlist_status = ("※ 已在自選清單" if in_wl
+                            else f"※ 輸入「加 {code}」加入自選")
 
-    lines.append("")
-    lines.append("【位階】")
-    lines.append(build_position_desc(stock))
-
-    if s:
-        lines.append("")
-        lines.append("【觀察】")
-        lines.append(build_watchlist_advice(
-            s["total"], s["chip"], s["position"], s["revenue"], s["valuation"],
-            s["cum_lots"], s["streak"], stock, s["cum_yoy"], s["pe"]))
+    lines = _format_stock_detail_lines(
+        code, name, stock, score=score, bd=bd,
+        industry_label=industry_name(industry) if industry else None,
+        score_change=score_change, watchlist_status=watchlist_status)
 
     news = fetch_stock_news(
         name, max_items=2, within_hours=36,
         subject_name=name, known_names=_news_company_names([name]))
-
-    if user_id:
-        in_wl = code in get_user_watchlist(user_id)
-        lines.append("")
-        lines.append(f"※ 已在自選清單" if in_wl
-                     else f"※ 輸入「加 {code}」加入自選")
-
     core_report = "\n".join(lines)
     if not news:
         core_report += ("\n\n📰 相關新聞\n"
                         f"目前沒有抓到以{name}為主體的相關新聞。")
         return core_report[:4750] + "\n…（已截斷）" if len(core_report) > 4800 else core_report
 
-    # 單檔查詢保留完整健檢文字，但新聞標題改成 Flex 可點擊元件，
+    # 單檔查詢保留完整健檢文字，但新聞標題使用可點擊 Flex 元件，
     # 不把 Google News 的長網址直接顯示在聊天室。
     contents = [{"type": "text", "text": core_report, "size": "sm",
                  "color": "#454C55", "wrap": True}]
@@ -7161,9 +7197,8 @@ def build_single_stock_report(code, user_id=None):
                            "backgroundColor": "#FFFFFF"},
                   "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
 
-
 def build_healthcheck_report(user_id):
-    """LINE 多檔自選健檢；每檔採用單檔 2330 詳細版的同一套版面。"""
+    """LINE 多檔自選健檢；每檔與單檔查詢共用同一套手機版面。"""
     codes = get_user_watchlist(user_id)
     if not codes:
         return "📂 自選股清單是空的\n輸入「加 3081」新增自選"
@@ -7177,71 +7212,22 @@ def build_healthcheck_report(user_id):
     rows = []
     for code in codes:
         tag = tags.get(code)
-        s = scores.get(code)
-        if not s:
+        score = scores.get(code)
+        if not score:
             rows.append((tag, -1, f"⚪ {code} 查無行情"))
             continue
 
-        stock = s["stock"]
-        name = s["name"]
-        cum_lots, streak = s["cum_lots"], s["streak"]
-        chip_score, pos_score = s["chip"], s["position"]
-        rev_score, val_score = s["revenue"], s["valuation"]
-        cum_yoy, pe = s["cum_yoy"], s["pe"]
-        total = s["total"]
-        flag = "🟢" if total >= 70 else ("🟡" if total >= 45 else "🔴")
-        pct = stock.get("pct") or 0
-        high, low = stock.get("high"), stock.get("low")
-        volume = stock.get("volume")
+        stock = score["stock"]
+        name = score["name"]
+        arrow, change_txt = describe_score_change(score, prev_scores.get(code))
+        score_change = f"{arrow} {change_txt}" if arrow else None
         industry = industry_map.get(code)
-
-        header = f"📊 {code} {name}"
-        if industry:
-            header += f"　{industry_name(industry)}"
-        high_low = (f"高低 {high:.2f}/{low:.2f}"
-                    if high is not None and low is not None else "高低資料不足")
-        volume_line = (f"📦 {int(volume / 1000):,} 張　🛡️{fmt_support(stock)} "
-                       f"🚧{fmt_resistance(stock.get('resistance'))}"
-                       if volume is not None else
-                       f"📦 成交量資料不足　🛡️{fmt_support(stock)} "
-                       f"🚧{fmt_resistance(stock.get('resistance'))}")
-
-        lines = [
-            header,
-            "─" * 14,
-            f"💰 {stock['close']:.2f}（{pct:+.2f}%）　{high_low}",
-            volume_line,
-        ]
-
-        arrow, change_txt = describe_score_change(s, prev_scores.get(code))
-        if s:
-            lines += [
-                "",
-                f"{flag} 綜合評分：{total}／100",
-                f"　籌碼{chip_score}/30　位階{pos_score}/20　"
-                f"營收{rev_score}/30　估值{val_score}/20",
-            ]
-            if arrow:
-                lines.append(f"{arrow} {change_txt}")
-            rev_txt = (f"營收年增 {cum_yoy:+.1f}%"
-                       if cum_yoy is not None else "營收無資料")
-            pe_txt = f"PE {pe:.1f}" if pe else "PE 無"
-            lines.append(f"　{rev_txt}　{pe_txt}")
-
-        lines += ["", "【法人籌碼】近10日"]
-        bd_desc = describe_investor_breakdown(breakdowns.get(code))
-        lines.append(bd_desc if bd_desc else "　尚無法人歷史資料")
-        lines += ["", "【位階】", build_position_desc(stock)]
-
-        if s:
-            lines += [
-                "", "【觀察】",
-                build_watchlist_advice(
-                    total, chip_score, pos_score, rev_score, val_score,
-                    cum_lots, streak, stock, cum_yoy, pe),
-                "", "※ 已在自選清單",
-            ]
-        rows.append((tag, total, "\n".join(lines)))
+        lines = _format_stock_detail_lines(
+            code, name, stock, score=score, bd=breakdowns.get(code),
+            industry_label=industry_name(industry) if industry else None,
+            score_change=score_change,
+            watchlist_status="※ 已在自選清單")
+        rows.append((tag, score["total"], "\n".join(lines)))
 
     grouped = {}
     for tag, total, text in rows:
@@ -7277,7 +7263,6 @@ def build_healthcheck_report(user_id):
     if len(report) > 4800:
         report = report[:4750] + "\n\n…（清單過長，已截斷）"
     return report
-
 
 def render_watchlist_web_body(user_id):
     """保留的內部舊版 renderer；目前不由 LINE 或網頁導覽使用，自選健檢留在 LINE。"""
