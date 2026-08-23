@@ -3346,6 +3346,10 @@ def _load_persisted_leaderboard_page():
     )
     if not shared or not _leaderboard_snapshot_valid(shared):
         return None
+    source_meta = shared.get("source_meta") or {}
+    # ETF 持股統計加入後，舊版快照沒有 etf_holdings，首次讀取時強制重算一次。
+    if source_meta.get("schema_version") != 2:
+        return None
     payload = shared.get("payload") or {}
     boards = payload.get("boards") if isinstance(payload, dict) else None
     graph = payload.get("graph") if isinstance(payload, dict) else None
@@ -3405,8 +3409,8 @@ def _save_persisted_leaderboard_page(value, data_date=None):
         {"boards": boards,
          "graph": {"series_map": series_map, "market": market}},
         data_date=data_date,
-        source_meta={"source": "leaderboard_build", "top_n": 100,
-                     "days": 365, "member_count": len(boards.get("waiting", [])) +
+        source_meta={"source": "leaderboard_build", "schema_version": 2,
+                     "top_n": 100, "days": 365, "member_count": len(boards.get("waiting", [])) +
                      len(boards.get("long", []))},
     )
 
@@ -3505,15 +3509,19 @@ def build_leaderboard(top_n=20, days=365):
         if not market and mk:
             market = mk
 
+        member_positions = positions_map.get(str(uid), [])
+        etf_holdings = sum(1 for position in member_positions
+                           if is_etf(position.get("code")))
         holds = (summarize_member_holdings(
             uid, prices, inst,
-            positions=positions_map.get(str(uid), []), ind_map=ind_map,
+            positions=member_positions, ind_map=ind_map,
             joined_on=joined)
                  if show else None)
         base = {
             "user_id": str(uid),
             "nickname": nick,
-            "holdings": len(positions_map.get(str(uid), [])),
+            "holdings": len(member_positions),
+            "etf_holdings": etf_holdings,
             "joined": joined,
             "show": show,
             "detail": holds,
@@ -5774,6 +5782,64 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
     except Exception as exc:
         print(f"⚠️ 保存轉折觀察共享快照失敗: {exc}")
     return result
+
+
+_TURNING_REFRESH_LOCK = threading.Lock()
+_TURNING_REFRESH_RUNNING = False
+TURNING_STALE_SNAPSHOT_MAX_AGE_SECONDS = 7 * 86400
+
+
+def _turning_snapshot_status(payload):
+    """回傳轉折快照與是否為近三日資料；過舊資料只作暫存畫面並明示日期。"""
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        return False
+    data_date = _leaderboard_date(payload.get("data_date"))
+    today = taiwan_today()
+    return bool(data_date and data_date <= today and (today - data_date).days <= 3)
+
+
+def _get_turning_web_snapshot():
+    """網頁先取可用快照，不在 request 內執行完整轉折計算。"""
+    now = time.time()
+    with _realtime_cache_lock:
+        cached = _TURNING_OBSERVATION_CACHE.get("data")
+        cached_at = _TURNING_OBSERVATION_CACHE.get("at", 0)
+        if cached is not None and now - cached_at < TURNING_OBSERVATION_CACHE_SECONDS:
+            return cached, _turning_snapshot_status(cached), "記憶體快取"
+    try:
+        shared = _load_shared_data_snapshot(
+            TURNING_OBSERVATION_SNAPSHOT_KEY,
+            max_age_seconds=TURNING_STALE_SNAPSHOT_MAX_AGE_SECONDS)
+        payload = (shared.get("payload") if shared else None) or {}
+        if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+            with _realtime_cache_lock:
+                _TURNING_OBSERVATION_CACHE.update({"at": now, "data": payload})
+            return payload, _turning_snapshot_status(payload), "共享快照"
+    except Exception as exc:
+        print(f"⚠️ 讀取轉折網頁快照失敗: {exc}")
+    return None, False, "尚未建立快照"
+
+
+def _start_turning_background_refresh():
+    """每個 process 最多同時執行一個轉折刷新，避免多個使用者重複打外部行情。"""
+    global _TURNING_REFRESH_RUNNING
+    with _TURNING_REFRESH_LOCK:
+        if _TURNING_REFRESH_RUNNING:
+            return False
+        _TURNING_REFRESH_RUNNING = True
+
+    def worker():
+        global _TURNING_REFRESH_RUNNING
+        try:
+            build_turning_observation(limit=60, prior_days=5, force_refresh=True)
+        except Exception as exc:
+            print(f"⚠️ 背景刷新轉折觀察失敗: {exc}")
+        finally:
+            with _TURNING_REFRESH_LOCK:
+                _TURNING_REFRESH_RUNNING = False
+
+    threading.Thread(target=worker, name="turning-refresh", daemon=True).start()
+    return True
 
 
 def build_chips_report(days=10):
@@ -12860,7 +12926,7 @@ def web_leaderboard(uid):
         return render_loading_shell(
             "排行榜", "leaderboard",
             ["正在讀取成員名單…", "正在計算每人的報酬率…", "正在整理排名…"],
-            note="報酬率以時間加權計算，加碼與贖回不影響結果。")
+                note="報酬率以時間加權計算，加碼與贖回不影響結果；個股與 ETF 持股都會納入。")
 
     me = get_leaderboard_member(uid)
     board_started = time.monotonic()
@@ -13061,7 +13127,10 @@ def web_leaderboard(uid):
             if r.get("mdd") is not None:
                 supporting.append(
                     f'<span><em>最大回檔</em> <span class="num">-{r["mdd"]:.1f}%</span></span>')
-            supporting.append(f'<span><em>持股</em> {r["holdings"]} 檔</span>')
+            holdings_text = f'{r["holdings"]} 檔'
+            if r.get("etf_holdings"):
+                holdings_text += f'（含 ETF {r["etf_holdings"]} 檔）'
+            supporting.append(f'<span><em>持股</em> {holdings_text}</span>')
 
             d = r.get("detail")
             if d:
@@ -13200,6 +13269,7 @@ def web_leaderboard(uid):
 <div class="rank-list-caption">
   <span>{len(boards['long'])} 位參加中・依報酬排序</span></div>
 <div class="rank-source-note">資料來源：{leaderboard_source}・資料日：{html.escape(leaderboard_data_date)}</div>
+<div class="mode-note">個股與 ETF 持股都納入會員整體績效；ETF 只計入實際價格／市值變化，不套用個股營收、PE 或法人評分。</div>
 {board}
 {waiting_html}
 
@@ -13222,6 +13292,7 @@ def web_leaderboard(uid):
     輸入三年前買的股票就能直接屠榜。<br>
   ・<b>最大回檔</b>是報酬曲線從高點到低點的最大跌幅。只看報酬會獎勵冒險——
     重壓一檔賭對了就登頂，但那跟操作得好是兩件事。<br>
+  ・個股與 ETF 都可納入持股市值與時間加權報酬；ETF 不套用個股營收、PE 或法人評分，避免兩種商品口徑混在一起。<br>
   ・<b>vs 大盤</b>是<b>超額報酬</b>——你的報酬減掉大盤同期報酬，
     括號裡是大盤自己的漲跌。例如「贏 7.2%（大盤 +5.2%）」代表
     你賺了 12.4%，其中 5.2% 是大盤帶上去的、7.2% 才是你自己做出來的。
@@ -15085,7 +15156,7 @@ def render_screener_fast_summary(mode):
 </section>"""
 
 
-def render_turning_observation_web_body(result):
+def render_turning_observation_web_body(result, status_note=None):
     """轉折觀察完整網頁：三狀態清單與每檔觸發依據。"""
     items = result.get("items") or []
     data_date = result.get("data_date") or "未標日期"
@@ -15137,6 +15208,7 @@ def render_turning_observation_web_body(result):
   <a href="/web/etf">ETF 專區</a>
 </div>
 <div class="turning-meta">法人資料日：<b>{esc(str(data_date))}</b>　前 <b>{prior_days}</b> 個交易日平均作為方向比較</div>
+{f'<div class="turning-refresh-note">{esc(str(status_note))}</div>' if status_note else ''}
 <div class="mode-note">轉折觀察不預測未來，只整理現有真實價格、均線、量能與 T86 法人方向是否出現改變。第一次出現時可能只是觀察中；條件被破壞時標示為已失效。</div>
 <style>
 .turning-section{{background:#fff;border:1px solid #e4e1d8;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}
@@ -15153,6 +15225,7 @@ def render_turning_observation_web_body(result):
 .turning-price span{{font-size:14px;color:var(--red);margin-left:5px}}
 .turning-empty{{color:var(--ink-soft);padding:8px 0}}
 .turning-meta{{font-size:12.5px;color:var(--ink-soft);padding:8px 0}}
+.turning-refresh-note{{padding:9px 11px;background:#FAF5E9;border-left:3px solid var(--brass);border-radius:8px;color:var(--ink-soft);font-size:12.5px;line-height:1.6}}
 </style>
 {"".join(sections)}
 <div class="callout"><b>資料限制</b><br><span style="font-size:12.5px;color:var(--ink-faint)">法人資料需等 T86 更新；資料不足時不建立訊號。轉折狀態是規則式觀察，不構成投資建議。</span></div>'''
@@ -15166,11 +15239,22 @@ def web_screener(uid):
         if not wants_fragment():
             return render_loading_shell(
                 "轉折觀察", "screener",
-                ["正在讀取法人方向…", "正在比對價格結構…", "正在整理轉折狀態…"],
-                note="轉折觀察只使用現有真實行情與 T86 法人資料。",
+                ["正在讀取最近一次轉折快照…", "若需更新，背景整理法人與行情…"],
+                note="先顯示最近可用的真實快照；完整刷新不阻塞頁面。",
                 staged=False)
+        snapshot, fresh, source = _get_turning_web_snapshot()
+        if snapshot is None:
+            _start_turning_background_refresh()
+            snapshot = {"data_date": None, "prior_days": 5, "items": []}
+            note = "目前尚未建立轉折快照；系統已在背景整理，稍後重新整理即可看到結果。"
+        elif fresh:
+            note = None
+        else:
+            _start_turning_background_refresh()
+            note = (f"目前先顯示{source}的最近結果（資料日 {snapshot.get('data_date') or '未標日期'}）；"
+                    "最新法人與行情正在背景更新，不會阻塞本頁。")
         return respond_page("轉折觀察", render_turning_observation_web_body(
-            build_turning_observation()), "screener")
+            snapshot, status_note=note), "screener")
     if not wants_fragment():
         # 選股台是全站最重的一頁（候選池上百檔），先秒回骨架再慢慢填
         return render_loading_shell(
