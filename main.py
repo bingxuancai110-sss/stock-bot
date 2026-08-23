@@ -4438,6 +4438,7 @@ _SHARED_SNAPSHOT_MAX_AGE = {
     "screener_radar": 3 * 86400,
     "leaderboard_page": 3 * 86400,
     "chips_superman": 3 * 86400,
+    "etf_catalog": 86400,
 }
 
 
@@ -6927,72 +6928,148 @@ _taifex_night_cache = {"at": 0, "data": None}
 TAIFEX_NIGHT_CACHE_SECONDS = 300
 
 
+TAIFEX_NIGHT_URL = "https://www.taifex.com.tw/cht/3/futDailyMarketReport"
+TAIFEX_NIGHT_MAX_AGE_DAYS = 3
+
+
 def _taifex_number(value):
-    """把 TAIFEX JSON 的數字字串轉成 float；-、NULL 與空值視為缺值。"""
+    """把 TAIFEX HTML／JSON 的數字字串轉成 float；箭頭與缺值視為格式，不是數字。"""
     if value in (None, "", "-", "NULL", "null"):
         return None
     try:
-        return float(str(value).replace(",", "").replace("%", "").strip())
+        text = str(value).replace(",", "").replace("%", "").replace("−", "-")
+        text = re.sub(r"[^0-9+\-.]", "", text).strip()
+        if not text or text in ("-", "+", "."):
+            return None
+        return float(text)
     except (TypeError, ValueError):
         return None
 
 
+def _taifex_clean_html_text(value):
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _taifex_expiration_date(year, month):
+    """TAIFEX 月台指期的第三個星期三，用來排除資料日後仍殘留的到期月。"""
+    first = date(year, month, 1)
+    days_to_wednesday = (2 - first.weekday()) % 7
+    return first + timedelta(days=days_to_wednesday + 14)
+
+
+def _taifex_month_is_expired(month_text, data_date):
+    if not re.fullmatch(r"\d{6}", str(month_text or "")):
+        return True
+    try:
+        year, month = int(month_text[:4]), int(month_text[4:6])
+        month_date = date(year, month, 1)
+        data_month = date(data_date.year, data_date.month, 1)
+        if month_date < data_month:
+            return True
+        if month_date == data_month and data_date >= _taifex_expiration_date(year, month):
+            return True
+        return False
+    except (TypeError, ValueError):
+        return True
+
+
+def _parse_taifex_night_html(page_text):
+    """解析官方 futDailyMarketReport 的 TX 盤後主表，回傳候選列與資料日。"""
+    heading = re.search(
+        r"(\d{4}/\d{1,2}/\d{1,2})(?:\s|&nbsp;|&#160;)+15:00~次日05:00\s*盤後交易時段行情表",
+        page_text or "", flags=re.IGNORECASE)
+    if not heading:
+        return None
+    try:
+        data_date = date.fromisoformat(heading.group(1).replace("/", "-"))
+    except ValueError:
+        return None
+
+    table_match = re.search(
+        r"盤後交易時段行情表.*?<table\b[^>]*>(.*?)</table>",
+        page_text or "", flags=re.IGNORECASE | re.DOTALL)
+    if not table_match:
+        return None
+    rows = []
+    for row_html in re.findall(r"<tr\b[^>]*>(.*?)</tr>", table_match.group(1),
+                               flags=re.IGNORECASE | re.DOTALL):
+        cells = [
+            _taifex_clean_html_text(cell)
+            for cell in re.findall(r"<td\b[^>]*>(.*?)</td>", row_html,
+                                   flags=re.IGNORECASE | re.DOTALL)
+        ]
+        if len(cells) < 8:
+            continue
+        contract_month = cells[1].strip()
+        # 只接受單一月份；202609/202610 等價差列不能冒充近月。
+        if not re.fullmatch(r"\d{6}", contract_month):
+            continue
+        last = _taifex_number(cells[5])
+        if last is None or _taifex_month_is_expired(contract_month, data_date):
+            continue
+        rows.append({
+            "month": contract_month,
+            "close": last,
+            "diff": _taifex_number(cells[6]),
+            "pct": _taifex_number(cells[7]),
+        })
+    if not rows:
+        return None
+    return {"data_date": data_date, "rows": rows}
+
+
 def fetch_taifex_night_summary():
-    """取得 TAIFEX TX 近月盤後最後價、漲跌與漲跌幅；失敗回傳 None。"""
+    """取得官方 TX 近月盤後資料；以夜盤歸屬日查詢，過舊或解析失敗不顯示舊值。"""
     now = time.time()
     with _realtime_cache_lock:
         cached = _taifex_night_cache.get("data")
         if cached is not None and now - _taifex_night_cache.get("at", 0) < TAIFEX_NIGHT_CACHE_SECONDS:
             return cached
+
+    today = taiwan_today()
+    # 夜盤 15:00 至次日 05:00 的資料，官方要求以次日歸屬日期查詢。
+    query_dates = [today + timedelta(days=1)] + [today - timedelta(days=offset) for offset in range(0, 8)]
+    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "zh-TW,zh;q=0.9"}
     try:
-        url = "https://openapi.taifex.com.tw/v1/DailyMarketReportFut"
-        response = requests.get(url, timeout=12,
-                                headers={"User-Agent": "Mozilla/5.0"})
-        response.raise_for_status()
-        rows = response.json()
-        if not isinstance(rows, list):
-            return None
-
-        candidates = []
-        for row in rows:
-            if not isinstance(row, dict):
+        for query_date in query_dates:
+            params = {
+                "queryDate": query_date.strftime("%Y/%m/%d"),
+                "marketCode": "1",
+                "MarketCode": "1",
+                "commodity_id": "TX",
+                "commodity_id2": "",
+            }
+            response = requests.get(TAIFEX_NIGHT_URL, params=params,
+                                    headers=headers, timeout=15)
+            response.raise_for_status()
+            parsed = _parse_taifex_night_html(response.text)
+            if not parsed:
                 continue
-            if str(row.get("Contract") or "").strip().upper() != "TX":
+            data_date = parsed["data_date"]
+            if data_date > today or (today - data_date).days > TAIFEX_NIGHT_MAX_AGE_DAYS:
                 continue
-            if str(row.get("TradingSession") or "").strip() not in ("盤後", "After-hours"):
-                continue
-            last = _taifex_number(row.get("Last"))
-            if last is None:
-                continue
-            trade_date = str(row.get("Date") or "").strip()
-            month_text = str(row.get("ContractMonth(Week)") or "").strip()
-            if len(month_text) < 6 or not month_text[:6].isdigit():
-                continue
-            candidates.append((trade_date, month_text[:6], row, last))
-        if not candidates:
-            return None
-
-        # 先取官方資料中最新交易日，再取該日尚未到期的最接近月 TX。
-        latest_date = max(item[0] for item in candidates)
-        same_day = [item for item in candidates if item[0] == latest_date]
-        _, contract_month, row, last = min(same_day, key=lambda item: item[1])
-        change = _taifex_number(row.get("Change"))
-        pct = _taifex_number(row.get("%"))
-        result = {
-            "close": last,
-            "diff": change,
-            "pct": pct,
-            "date": latest_date,
-            "contract": f"TX {contract_month}",
-            "source": "TAIFEX DailyMarketReportFut",
-        }
-        with _realtime_cache_lock:
-            _taifex_night_cache["at"] = time.time()
-            _taifex_night_cache["data"] = result
-        return result
+            row = min(parsed["rows"], key=lambda item: item["month"])
+            result = {
+                "close": row["close"],
+                "diff": row.get("diff"),
+                "pct": row.get("pct"),
+                "date": data_date.strftime("%Y/%m/%d"),
+                "contract": f"TX {row['month']}",
+                "source": "TAIFEX futDailyMarketReport（官方盤後歸屬日）",
+            }
+            with _realtime_cache_lock:
+                _taifex_night_cache["at"] = time.time()
+                _taifex_night_cache["data"] = result
+            return result
     except Exception as exc:
-        print(f"⚠️ 抓取台指期夜盤資料失敗: {exc}")
-        return None
+        print(f"⚠️ 抓取台指期夜盤官方資料失敗: {exc}")
+    # 不使用過時 OpenAPI 或舊快照填補，以免再次顯示錯價。
+    with _realtime_cache_lock:
+        _taifex_night_cache["at"] = time.time()
+        _taifex_night_cache["data"] = None
+    return None
 
 
 def fetch_taiex_summary():
@@ -11257,10 +11334,21 @@ def web_premarket(uid):
             ("LITE", "Lumentum LITE", "LITE", "LITE_close", "LITE_diff", "LITE_pct", "收盤"),
         ]
         market_data = snapshot.get("market") or {}
+        night_date_text = market_data.get("taiex_night_date")
+        night_fresh = False
+        if night_date_text:
+            try:
+                night_date = date.fromisoformat(str(night_date_text).replace("/", "-")[:10])
+                today = taiwan_today()
+                night_fresh = night_date <= today and (today - night_date).days <= TAIFEX_NIGHT_MAX_AGE_DAYS
+            except (TypeError, ValueError):
+                night_fresh = False
         for _key, label, symbol, close_key, diff_key, pct_key, period_label in market_definitions:
             close = market_data.get(close_key)
             diff = market_data.get(diff_key)
             pct = market_data.get(pct_key)
+            if _key == "taiex_night" and not night_fresh:
+                close = diff = pct = None
             # 夜盤是使用者指定的固定市場欄位；即使官方資料暫時未更新，
             # 也要保留卡片並明確顯示資料不足，不能讓使用者誤以為功能消失。
             if close is None and diff is None and pct is None and _key != "taiex_night":
@@ -11280,13 +11368,22 @@ def web_premarket(uid):
                 diff_text = "—"
             pct_html = pct_text(pct) if pct is not None else '<span style="color:#767D85">尚無漲跌幅</span>'
             movement = f'{diff_text}　{pct_html}'
+            display_symbol = symbol
+            display_period_label = period_label
+            if _key == "taiex_night":
+                if night_fresh:
+                    display_symbol = str(market_data.get("taiex_night_contract") or "TX 近月")
+                    display_period_label = f"盤後資料日 {night_date_text}"
+                else:
+                    display_symbol = "TX 近月"
+                    display_period_label = "官方資料暫缺"
             market_cards.append(
                 f'<div class="premarket-market-quote"><div class="premarket-market-label">'
-                f'<b>{esc(label)}</b><small>{esc(symbol)}　{esc(period_label)}</small></div>'
+                f'<b>{esc(label)}</b><small>{esc(display_symbol)}　{esc(display_period_label)}</small></div>'
                 f'<div class="premarket-market-value"><strong>{close_text}</strong>'
                 f'<span>{movement}</span></div></div>')
             market_items.append(
-                f'<div class="premarket-metric"><span>{esc(label)}<small>（{esc(symbol)} {esc(period_label)}）</small></span>'
+                f'<div class="premarket-metric"><span>{esc(label)}<small>（{esc(display_symbol)} {esc(display_period_label)}）</small></span>'
                 f'<b>{close_text}<br>{movement}</b></div>')
         news_items = []
         for item in (snapshot.get("news") or [])[:5]:
@@ -11850,17 +11947,193 @@ def is_active_etf(code):
     return is_etf(code) and code[-1:].isalpha()
 
 
+ETF_CATALOG_URL = "https://www.twse.com.tw/rwd/zh/ETF/list"
+ETF_CATALOG_CACHE_SECONDS = 86400
+_etf_catalog_cache = {"at": 0, "data": None}
+
+
+def _split_twse_etf_cell(value):
+    """拆開證交所 ETF 清單中的 <br> 多商品儲存格，避免多幣別代號錯配。"""
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    pieces = []
+    for chunk in re.split(r"[\r\n]+", text):
+        chunk = re.sub(r"\s+", " ", chunk).strip()
+        if chunk:
+            pieces.append(chunk)
+    return pieces
+
+
+def _parse_twse_etf_date(value):
+    """將 TWSE 上市日期（YYYY.MM.DD／YYYY-MM-DD）轉成 ISO 日期。"""
+    match = re.search(r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})", str(value or ""))
+    if not match:
+        return None
+    try:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3))).isoformat()
+    except ValueError:
+        return None
+
+
+def _etf_catalog_classification(code, name, benchmark, override=None):
+    """用透明規則作第一版策略分組；這不是基金公司或證交所的策略認證。"""
+    override = override or {}
+    verified_category = override.get("category")
+    if verified_category in ("主動式", "高股息", "市值型", "主題型"):
+        return verified_category, "已核實 ETF metadata 覆寫"
+
+    text = f"{name or ''} {benchmark or ''}"
+    blocked_terms = (
+        "槓桿", "反向", "正2", "正二", "反1", "反二", "期貨",
+        "債券", "公司債", "公債", "多資產", "多重資產", "平衡",
+        "貨幣", "原物料", "黃金", "白銀", "石油"
+    )
+    if any(term in text for term in blocked_terms):
+        return "其他", "名稱／標的關鍵字：非第一版四大股票策略"
+    if "主動" in text or str(code).upper().endswith("A"):
+        return "主動式", "官方名稱／代號尾碼 A 規則候選"
+    if any(term in text for term in ("高股息", "高息", "優息", "股利", "收益")):
+        return "高股息", "名稱／標的關鍵字規則候選；不代表配息政策"
+    if any(term in text for term in ("50", "大型", "龍頭", "市值", "加權", "TOP")):
+        return "市值型", "名稱／標的關鍵字規則候選"
+    return "主題型", "其餘一般股票型／產業主題規則候選"
+
+
+def _fallback_etf_catalog():
+    """官方清單暫時不可用時，只回傳已核實覆寫，且不把它宣稱成完整商品池。"""
+    fallback = {}
+    for code, override in ETF_PRODUCT_METADATA.items():
+        item = dict(override)
+        item.setdefault("source", "已核實 ETF metadata（官方清單暫時不可用）")
+        item.setdefault("classification_basis", "已核實 ETF metadata 覆寫")
+        fallback[code] = item
+    return fallback
+
+
+def fetch_twse_etf_catalog(force_reload=False):
+    """取得 TWSE 官方上市 ETF 清單，按上市日過濾並跨 worker 快取。"""
+    now = time.time()
+    with _realtime_cache_lock:
+        cached = _etf_catalog_cache.get("data")
+        if (cached and not force_reload and
+                now - _etf_catalog_cache.get("at", 0) < ETF_CATALOG_CACHE_SECONDS):
+            return cached
+
+    if not force_reload:
+        try:
+            shared = _load_shared_data_snapshot(
+                "etf_catalog", max_age_seconds=ETF_CATALOG_CACHE_SECONDS)
+            payload = (shared.get("payload") if shared else None) or {}
+            if isinstance(payload, dict) and payload:
+                with _realtime_cache_lock:
+                    _etf_catalog_cache.update({"at": now, "data": payload})
+                return payload
+        except Exception as exc:
+            print(f"⚠️ 讀取 ETF 清單共享快照失敗: {exc}")
+
+    try:
+        response = requests.get(
+            ETF_CATALOG_URL, timeout=15,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        response.raise_for_status()
+        raw = response.json()
+        fields = raw.get("fields") if isinstance(raw, dict) else None
+        rows = raw.get("data") if isinstance(raw, dict) else None
+        if not isinstance(fields, list) or not isinstance(rows, list):
+            raise ValueError("TWSE ETF 清單格式不完整")
+        field_index = {str(field).strip(): index for index, field in enumerate(fields)}
+        required = ("上市日期", "證券代號", "證券簡稱", "發行人", "標的指數")
+        if any(field not in field_index for field in required):
+            raise ValueError("TWSE ETF 清單缺少必要欄位")
+
+        today = taiwan_today()
+        catalog = {}
+        for row in rows:
+            if not isinstance(row, list):
+                continue
+            def cell(field):
+                index = field_index[field]
+                return row[index] if index < len(row) else ""
+
+            code_parts = _split_twse_etf_cell(cell("證券代號"))
+            date_parts = _split_twse_etf_cell(cell("上市日期"))
+            name_parts = _split_twse_etf_cell(cell("證券簡稱"))
+            issuer = re.sub(r"\s+", " ", html.unescape(str(cell("發行人") or ""))).strip()
+            benchmark = re.sub(r"\s+", " ", html.unescape(str(cell("標的指數") or ""))).strip()
+            if not code_parts:
+                continue
+            for index, raw_code in enumerate(code_parts):
+                code_match = re.search(r"(?<!\d)(\d{4,6}[A-Za-z]?)(?!\d)", raw_code)
+                if not code_match:
+                    continue
+                code = code_match.group(1).upper()
+                if not code.startswith("00"):
+                    continue
+                listing_date = _parse_twse_etf_date(
+                    date_parts[index] if index < len(date_parts) else (date_parts[0] if date_parts else ""))
+                if not listing_date:
+                    continue
+                try:
+                    if date.fromisoformat(listing_date) > today:
+                        continue
+                except ValueError:
+                    continue
+                name = (name_parts[index] if index < len(name_parts)
+                        else (name_parts[0] if name_parts else code))
+                category, basis = _etf_catalog_classification(
+                    code, name, benchmark, ETF_PRODUCT_METADATA.get(code))
+                catalog[code] = {
+                    "name": name,
+                    "listing_date": listing_date,
+                    "issuer": issuer or "待確認",
+                    "benchmark": benchmark or "待確認",
+                    "category": category,
+                    "classification_basis": basis,
+                    "distribution_policy": "unknown",
+                    "source": "TWSE ETF 上市清單",
+                    "source_url": ETF_CATALOG_URL,
+                    "catalog_retrieved_date": today.isoformat(),
+                }
+        if not catalog:
+            raise ValueError("TWSE ETF 清單沒有可用商品")
+
+        with _realtime_cache_lock:
+            _etf_catalog_cache.update({"at": time.time(), "data": catalog})
+        _save_shared_data_snapshot(
+            "etf_catalog", catalog, data_date=today,
+            source_meta={"source": "TWSE ETF 上市清單", "count": len(catalog),
+                         "url": ETF_CATALOG_URL})
+        return catalog
+    except Exception as exc:
+        print(f"⚠️ 抓取 TWSE ETF 上市清單失敗: {exc}")
+        fallback = _fallback_etf_catalog()
+        with _realtime_cache_lock:
+            _etf_catalog_cache.update({"at": time.time(), "data": fallback})
+        return fallback
+
+
 def get_etf_metadata(code):
-    """回傳已核實的 ETF 商品屬性；未核實的欄位一律保留待確認。"""
-    code = str(code).strip()
-    meta = dict(ETF_PRODUCT_METADATA.get(code) or {})
-    if is_active_etf(code) and not meta.get("management_style"):
-        meta["management_style"] = "主動式"
+    """合併官方上市清單與已核實覆寫；未知配息政策維持待確認。"""
+    code = str(code).strip().upper()
+    catalog = fetch_twse_etf_catalog()
+    meta = dict(catalog.get(code) or {})
+    override = dict(ETF_PRODUCT_METADATA.get(code) or {})
+    if override:
+        meta.update(override)
+        meta["classification_basis"] = "已核實 ETF metadata 覆寫"
     meta.setdefault("name", STOCK_NAME_MAP.get(code, code))
     meta.setdefault("category", "待分類")
     meta.setdefault("management_style", "待確認")
     meta.setdefault("distribution_policy", "unknown")
+    if meta.get("category") == "主動式" and not override.get("management_style"):
+        meta["management_style"] = "主動式"
     return meta
+
+
+def get_etf_catalog_products():
+    """回傳網頁 ETF 專區使用的完整官方商品池，逐檔套用核實覆寫。"""
+    return {code: get_etf_metadata(code) for code in fetch_twse_etf_catalog().keys()}
 
 
 def _etf_distribution_label(policy):
@@ -13153,7 +13426,8 @@ def web_etf(uid):
     categories = [("active", "主動式 ETF", "主動式"),
                   ("dividend", "高股息 ETF", "高股息"),
                   ("market", "市值型 ETF", "市值型"),
-                  ("theme", "主題型 ETF", "主題型")]
+                  ("theme", "主題型 ETF", "主題型"),
+                  ("other", "其他／待分類", "其他")]
     selected = request.args.get("category", "market")
     valid_keys = {item[0] for item in categories}
     selected = selected if selected in valid_keys else "market"
@@ -13163,43 +13437,55 @@ def web_etf(uid):
         f'<a class="{"on" if key == selected else ""}" href="/web/etf?category={key}">{html.escape(label)}</a>'
         for key, label, _category in categories)
 
+    catalog = get_etf_catalog_products()
+    products = sorted(
+        [(code, meta) for code, meta in catalog.items()
+         if meta.get("category") == selected_category],
+        key=lambda pair: (str(pair[1].get("listing_date") or ""), pair[0]),
+        reverse=True)
+    # 商品池完整列出；即時價格只抓前 20 檔，避免商品數增加後拖慢整個網頁。
+    price_codes = {code for code, _meta in products[:20]}
+    price_codes.update(code for code in ("0050", "00981A", "009816")
+                       if any(product_code == code for product_code, _meta in products))
     cards = []
-    for code, meta in ETF_PRODUCT_METADATA.items():
-        if meta.get("category") != selected_category:
-            continue
-        quote = get_realtime_stock(code, rng="1y")
-        if not quote:
-            cards.append(
-                f'<div class="etf-row"><b>{html.escape(meta.get("name", code))}</b>'
-                f'<span class="etf-code">{html.escape(code)}</span>'
-                '<small>價格資料暫時無法取得</small></div>')
-            continue
-        close = quote.get("close")
-        pct = quote.get("pct")
-        close_txt = f"{close:,.2f}" if close is not None else "—"
-        pct_txt = f"{pct:+.2f}%" if pct is not None else "漲跌資料不足"
-        maturity = _etf_maturity_label(meta.get("listing_date")).replace("資料成熟度：", "")
+    for code, meta in products:
+        quote = get_realtime_stock(code, rng="1y") if code in price_codes else None
         policy = _etf_distribution_label(meta.get("distribution_policy"))
+        maturity = _etf_maturity_label(meta.get("listing_date")).replace("資料成熟度：", "")
+        if quote:
+            close = quote.get("close")
+            pct = quote.get("pct")
+            close_txt = f"{close:,.2f}" if close is not None else "—"
+            pct_txt = f"{pct:+.2f}%" if pct is not None else "漲跌資料不足"
+            price_html = f'<div class="etf-price">{close_txt} <span>{pct_txt}</span></div>'
+        else:
+            price_html = '<div class="etf-price etf-price-muted">商品資料已列出；即時價格請開啟詳情</div>'
         cards.append(f'''<div class="etf-row">
-  <div><b>{html.escape(meta.get("name", code))}</b><span class="etf-code">{html.escape(code)}</span></div>
-  <div class="etf-price">{close_txt} <span>{pct_txt}</span></div>
-  <div class="etf-meta">{html.escape(policy)}・{html.escape(maturity)}・基準：{html.escape(meta.get("benchmark") or "待確認")}</div>
+  <div><b>{html.escape(str(meta.get("name") or code))}</b><span class="etf-code">{html.escape(code)}</span></div>
+  {price_html}
+  <div class="etf-meta">上市日：{html.escape(str(meta.get("listing_date") or "待確認"))}・發行人：{html.escape(str(meta.get("issuer") or "待確認"))}</div>
+  <div class="etf-meta">{html.escape(policy)}・{html.escape(maturity)}・基準：{html.escape(str(meta.get("benchmark") or "待確認"))}</div>
+  <div class="etf-meta">歸類依據：{html.escape(str(meta.get("classification_basis") or "待確認"))}</div>
   <div class="etf-links"><a href="/web/etf?category={selected}&code={html.escape(code)}">查看 ETF 詳情</a></div>
 </div>''')
     if not cards:
-        cards.append('<div class="etf-empty">目前沒有已核實且屬於此分類的商品資料。未核實的 ETF 不會自行猜測分類或配息政策。</div>')
+        cards.append('<div class="etf-empty">官方清單目前沒有屬於此分類的上市商品。</div>')
 
     detail = ""
-    detail_code = request.args.get("code", "").strip()
-    if detail_code in ETF_PRODUCT_METADATA:
+    detail_code = request.args.get("code", "").strip().upper()
+    if detail_code in catalog and is_etf(detail_code):
         detail_reply = build_single_etf_report(detail_code, uid)
         if isinstance(detail_reply, FlexSendMessage):
             detail_parts = detail_reply.contents.get("body", {}).get("contents", [])
             detail_lines = "".join(
-                f'<div class="etf-detail-line">{html.escape(item.get("text", ""))}</div>'
+                f'<div class="etf-detail-line">{html.escape(str(item.get("text", "")))}</div>'
                 for item in detail_parts
                 if isinstance(item, dict) and item.get("type") == "text")
-            detail = f'<section class="etf-detail"><h2>ETF 詳情</h2>{detail_lines}</section>'
+        elif isinstance(detail_reply, TextSendMessage):
+            detail_lines = f'<div class="etf-detail-line">{html.escape(detail_reply.text)}</div>'
+        else:
+            detail_lines = f'<div class="etf-detail-line">{html.escape(str(detail_reply or "詳情資料暫缺"))}</div>'
+        detail = f'<section class="etf-detail"><h2>ETF 詳情</h2>{detail_lines}</section>'
 
     body = f'''<style>
 .etf-hero{{padding:4px 0 14px}}
@@ -13232,9 +13518,9 @@ def web_etf(uid):
   <a href="/web/screener?mode=turning">轉折觀察</a>
   <a href="/web/etf" class="on">ETF 專區</a>
 </div>
-<div class="etf-hero"><div class="eyebrow">台股 BOT</div><h1>ETF 專區</h1><p class="etf-note">依管理方式與投資策略分組；ETF 不套用個股黑馬、雷達或籌碼超人邏輯。第一版只列已核實的商品資料。</p></div>
+<div class="etf-hero"><div class="eyebrow">台股 BOT</div><h1>ETF 專區</h1><p class="etf-note">官方 TWSE 上市清單目前載入 {len(catalog)} 檔；依名稱／標的關鍵字作第一版策略分組。ETF 不套用個股黑馬、雷達或籌碼超人邏輯，未知配息政策顯示為待確認。</p></div>
 <div class="etf-tabs">{tabs}</div>
-<section class="etf-card"><h2>{html.escape(selected_label)}</h2><div class="etf-note">同類產品比較；不分配／累積型 ETF 的配息率顯示為不適用。</div>{"".join(cards)}</section>
+<section class="etf-card"><h2>{html.escape(selected_label)}（{len(products)} 檔）</h2><div class="etf-note">完整列出官方已上市商品；前 20 檔批次顯示即時價格，其餘先顯示上市日、發行人、標的與配息政策。分類是可解釋規則候選，不代表官方策略認證。</div>{"".join(cards)}</section>
 {detail}'''
     return respond_page("ETF 專區", body, "screener")
 
@@ -14711,8 +14997,9 @@ def render_turning_observation_web_body(result):
                   ("invalid", "⚠️ 已失效", "原本轉折條件被目前價格結構破壞"))
     sections = []
     for state, label, note in state_defs:
-        rows = []
-        for item in [x for x in items if x.get("state") == state]:
+        state_items = [x for x in items if x.get("state") == state]
+
+        def render_turning_row(item, rank):
             close = item.get("close")
             pct = item.get("pct")
             close_text = f"{float(close):,.2f}" if close is not None else "—"
@@ -14722,15 +15009,25 @@ def render_turning_observation_web_body(result):
             inst_text = f"法人 {int(current):+,} 張" if current is not None else "法人資料不足"
             ratio_text = f"・前{prior_days}日平均絕對值 {float(ratio):.1f} 倍" if ratio and float(ratio) >= 2.5 else ""
             reasons = "、".join(item.get("reasons") or []) or "資料出現方向變化"
-            rows.append(f'''<div class="turning-row">
-  <div class="turning-row-head"><b>{esc(str(item.get("name") or item.get("code")))}</b>
+            return f'''<div class="turning-row">
+  <div class="turning-row-head"><b>#{rank} {esc(str(item.get("name") or item.get("code")))}</b>
     <span>{esc(str(item.get("code") or ""))}・{esc(str(item.get("direction_label") or "方向變化"))}</span></div>
   <div class="turning-price">{close_text} <span>{pct_text}</span></div>
   <div class="turning-detail">{esc(str(item.get("event_type") or "法人方向變化"))}・{esc(inst_text)}{esc(ratio_text)}・{esc(str(item.get("consensus") or "法人分歧"))}</div>
   <div class="turning-detail">依據：{esc(reasons)}</div>
   <div class="turning-detail">支撐 {esc(str(item.get("support") or "資料不足"))}・壓力 {esc(str(item.get("resistance") or "資料不足"))}</div>
-</div>''')
-        content = "".join(rows) or '<div class="turning-empty">目前沒有符合此狀態的標的。</div>'
+</div>'''
+
+        visible_rows = [render_turning_row(item, rank)
+                        for rank, item in enumerate(state_items[:3], 1)]
+        hidden_items = state_items[3:]
+        if hidden_items:
+            hidden_rows = [render_turning_row(item, rank)
+                           for rank, item in enumerate(hidden_items, 4)]
+            visible_rows.append(
+                f'<details class="turning-more"><summary>查看其餘 {len(hidden_items)} 檔</summary>'
+                f'{"".join(hidden_rows)}</details>')
+        content = "".join(visible_rows) or '<div class="turning-empty">目前沒有符合此狀態的標的。</div>'
         sections.append(f'<section class="turning-section"><h2>{label}</h2><p>{note}</p>{content}</section>')
     return f'''<div class="tabs">
   <a href="/web/screener?mode=blackhorse">黑馬</a>
@@ -14751,6 +15048,9 @@ def render_turning_observation_web_body(result):
 .turning-row-head b{{font-size:16px}}
 .turning-row-head span,.turning-detail{{color:var(--ink-soft);font-size:12.5px}}
 .turning-price{{font-size:18px;font-weight:700;margin-top:3px}}
+.turning-more{{margin-top:8px;border-top:1px solid #eee;padding-top:8px}}
+.turning-more summary{{cursor:pointer;color:var(--brass);font-weight:700;font-size:13px;padding:4px 0}}
+.turning-more .turning-row:first-child{{border-top:1px solid #eee}}
 .turning-price span{{font-size:14px;color:var(--red);margin-left:5px}}
 .turning-empty{{color:var(--ink-soft);padding:8px 0}}
 .turning-meta{{font-size:12.5px;color:var(--ink-soft);padding:8px 0}}
