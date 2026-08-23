@@ -375,25 +375,51 @@ def _news_events(news, old_news):
 
 
 def _current_market():
+    """保存盤前頁需要的真實收盤資料；事件偵測仍只讀 *_pct 欄位。"""
     market = {}
     taiex = fetch_taiex_summary() or {}
-    for key in ("pct", "change_pct", "percent"):
-        if taiex.get(key) is not None:
-            market["taiex_pct"] = float(taiex[key]); break
-    symbols = ["^DJI", "^IXIC", "^GSPC", "^SOX"]
+    if taiex:
+        for key in ("pct", "change_pct", "percent"):
+            if taiex.get(key) is not None:
+                try:
+                    market["taiex_pct"] = float(taiex[key])
+                except (TypeError, ValueError):
+                    pass
+                break
+        for source_key, target_key in (("close", "taiex_close"),
+                                       ("pts", "taiex_diff"),
+                                       ("date", "taiex_date")):
+            value = taiex.get(source_key)
+            if value not in (None, ""):
+                if target_key.endswith("_date"):
+                    market[target_key] = str(value)
+                else:
+                    try:
+                        numeric = float(str(value).replace(",", ""))
+                        if source_key == "pts" and str(taiex.get("sign") or "") == "-":
+                            numeric = -abs(numeric)
+                        market[target_key] = numeric
+                    except (TypeError, ValueError):
+                        pass
+    # MU 與 LITE 是盤前頁要直接看的個股，不改變原本的指數事件偵測範圍。
+    symbols = ["^DJI", "^IXIC", "^GSPC", "^SOX", "MU", "LITE"]
     quotes = fetch_quotes_bulk(symbols) or {}
     for symbol in symbols:
         q = quotes.get(symbol)
         if isinstance(q, dict):
-            pct = q.get("pct")
-        elif isinstance(q, (tuple, list)) and len(q) >= 2:
-            # fetch_quotes_bulk() 的既有格式是 (close, pct, diff)，
-            # 與部分其他報價 helper 的 dict 格式不同；盤前偵測要兼容兩者。
-            pct = q[1]
+            close, pct, diff = q.get("close"), q.get("pct"), q.get("diff")
+        elif isinstance(q, (tuple, list)) and len(q) >= 3:
+            # fetch_quotes_bulk() 的既有格式是 (close, pct, diff)。
+            close, pct, diff = q[0], q[1], q[2]
         else:
-            pct = None
-        if pct is not None:
-            market[f"{symbol}_pct"] = float(pct)
+            close = pct = diff = None
+        for suffix, value in (("close", close), ("pct", pct), ("diff", diff)):
+            if value is None:
+                continue
+            try:
+                market[f"{symbol}_{suffix}"] = float(value)
+            except (TypeError, ValueError):
+                pass
     return market
 
 
@@ -10734,6 +10760,8 @@ def web_premarket(uid):
             return text(value)
 
     rows = []
+    market_cards = []
+    market_items = []
     for event in events:
         evidence = esc(json.dumps(event.get("evidence") or {}, ensure_ascii=False, indent=2, default=str))
         category = category_labels.get(event.get("category"), event.get("category") or "其他")
@@ -10779,15 +10807,45 @@ def web_premarket(uid):
             radar_items.append(
                 f'<div class="premarket-row"><b>{text(item.get("name"))} '
                 f'<small>({text(item.get("code"))})</small></b><span>{text(extra)}</span></div>')
-        market_labels = {
-            "taiex_pct": "台股大盤", "^DJI_pct": "道瓊", "^IXIC_pct": "那斯達克",
-            "^GSPC_pct": "S&P 500", "^SOX_pct": "費城半導體"
-        }
-        market_items = []
-        for key, label in market_labels.items():
-            if key in (snapshot.get("market") or {}):
-                market_items.append(f'<div class="premarket-metric"><span>{esc(label)}</span>'
-                                    f'<b>{pct_text((snapshot.get("market") or {}).get(key))}</b></div>')
+        market_definitions = [
+            ("taiex", "台股大盤", "taiex_close", "taiex_diff", "taiex_pct"),
+            ("^DJI", "道瓊", "^DJI_close", "^DJI_diff", "^DJI_pct"),
+            ("^IXIC", "那斯達克", "^IXIC_close", "^IXIC_diff", "^IXIC_pct"),
+            ("^GSPC", "S&P 500", "^GSPC_close", "^GSPC_diff", "^GSPC_pct"),
+            ("^SOX", "費城半導體", "^SOX_close", "^SOX_diff", "^SOX_pct"),
+            ("MU", "美光 MU", "MU_close", "MU_diff", "MU_pct"),
+            ("LITE", "Lumentum LITE", "LITE_close", "LITE_diff", "LITE_pct"),
+        ]
+        market_data = snapshot.get("market") or {}
+        for symbol, label, close_key, diff_key, pct_key in market_definitions:
+            close = market_data.get(close_key)
+            diff = market_data.get(diff_key)
+            pct = market_data.get(pct_key)
+            if close is None and diff is None and pct is None:
+                continue
+            try:
+                close_text = f"{float(close):,.2f}" if close is not None else "收盤點位尚無資料"
+            except (TypeError, ValueError):
+                close_text = esc(str(close)) if close not in (None, "") else "收盤點位尚無資料"
+            if diff is not None:
+                try:
+                    diff_num = float(diff)
+                    diff_color = "#B52F2F" if diff_num > 0 else ("#087A4B" if diff_num < 0 else "#767D85")
+                    diff_text = f'<span style="color:{diff_color};font-weight:700">{diff_num:+,.2f}</span>'
+                except (TypeError, ValueError):
+                    diff_text = esc(str(diff))
+            else:
+                diff_text = "—"
+            pct_html = pct_text(pct) if pct is not None else '<span style="color:#767D85">尚無漲跌幅</span>'
+            movement = f'{diff_text}　{pct_html}'
+            market_cards.append(
+                f'<div class="premarket-market-quote"><div class="premarket-market-label">'
+                f'<b>{esc(label)}</b><small>{esc(symbol)}　收盤</small></div>'
+                f'<div class="premarket-market-value"><strong>{close_text}</strong>'
+                f'<span>{movement}</span></div></div>')
+            market_items.append(
+                f'<div class="premarket-metric"><span>{esc(label)}<small>（{esc(symbol)} 收盤）</small></span>'
+                f'<b>{close_text}<br>{movement}</b></div>')
         news_items = []
         for item in (snapshot.get("news") or [])[:5]:
             title = text(item.get("title"))
@@ -10817,13 +10875,14 @@ def web_premarket(uid):
         snapshot_sections = (
             section("🔥 黑馬前 5", "".join(blackhorse_items), "目前快照沒有黑馬資料") +
             section("🚨 雷達訊號", "".join(radar_items), "目前快照沒有雷達資料") +
-            section("📈 大盤／美股", "".join(market_items), "目前快照沒有大盤資料") +
             section("📰 相關新聞", "".join(news_items), "目前快照沒有新聞資料") +
             section("🏦 法人資料", "".join(inst_items), "目前快照沒有法人資料")
         )
         raw_snapshot = ("<details class=\"premarket-raw\"><summary>查看原始快照資料</summary>"
                         f"<pre>{esc(json.dumps(snapshot, ensure_ascii=False, indent=2, default=str))}</pre></details>")
     else:
+        market_cards = []
+        market_items = []
         snapshot_sections = (
             '<div class="premarket-empty-state"><b>目前沒有可顯示的盤前快照</b>'
             '<p>系統尚未找到這個顯示日對應的真實盤前資料，因此不顯示空白 JSON，也不自行推測市場訊號。</p>'
@@ -10842,16 +10901,31 @@ def web_premarket(uid):
       .premarket-row, .premarket-metric {{ display:flex; justify-content:space-between; gap:14px; padding:8px 0; border-top:1px solid #ECEBE6; line-height:1.55; }}
       .premarket-row:first-of-type, .premarket-metric:first-of-type {{ border-top:0; }}
       .premarket-row span, .premarket-metric span {{ color:#626970; text-align:right; }}
+      .premarket-metric small {{ color:#8A8F94; font-weight:400; font-size:.78em; }}
       .premarket-row small {{ color:#8A8F94; font-weight:400; }}
+      .premarket-market-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; margin-top:10px; }}
+      .premarket-market-quote {{ display:flex; flex-direction:column; justify-content:space-between; gap:8px; padding:12px 11px; background:#FAFAF7; border:1px solid #E8E6DF; border-radius:10px; min-width:0; }}
+      .premarket-market-label b {{ display:block; color:#30353A; font-size:.98rem; }}
+      .premarket-market-label small {{ display:block; color:#8A8F94; font-size:.75rem; margin-top:2px; }}
+      .premarket-market-value strong {{ display:block; color:#20252A; font-size:1.15rem; letter-spacing:.01em; white-space:nowrap; }}
+      .premarket-market-value span {{ display:block; margin-top:4px; font-size:.82rem; white-space:nowrap; }}
+      .premarket-market-empty {{ padding:12px 0; color:#767D85; line-height:1.7; }}
+      @media(max-width:420px) {{ .premarket-market-grid {{ grid-template-columns:1fr; }} }}
       .premarket-news {{ padding:8px 0; border-top:1px solid #ECEBE6; line-height:1.6; }}
       .premarket-news:first-of-type {{ border-top:0; }}
       .premarket-news a {{ color:#4A5F7A; text-decoration:underline; }}
       .premarket-empty, .premarket-empty-state {{ color:#767D85; line-height:1.7; }}
+      .premarket-market-note {{ color:#767D85; font-size:.84rem; line-height:1.6; margin:4px 0 0; }}
       .premarket-empty-state {{ padding:18px; background:#F7F7F3; border-radius:11px; }}
       .premarket-empty-state b {{ color:#6E5228; font-size:1.05rem; }}
       .premarket-empty-state p {{ margin:.55rem 0 0; }}
       .premarket-raw {{ margin-top:14px; }}
     </style>
+    <section class="card premarket-market-card">
+      <h2>📈 大盤／美股收盤</h2>
+      <p class="premarket-market-note">先看最近可取得的真實收盤數字；紅色代表上漲，綠色代表下跌。</p>
+      <div class="premarket-market-grid">{"".join(market_cards) if market_cards else '<div class="premarket-market-empty">目前沒有可顯示的大盤或美股收盤資料。</div>'}</div>
+    </section>
     <section class="card">
       <h1>🔥 今日值得注意</h1>
       {meta}
@@ -10859,7 +10933,7 @@ def web_premarket(uid):
       <table><thead><tr><th>級別</th><th>類別</th><th>事件</th><th>詳細內容</th></tr></thead>
       <tbody>{''.join(rows)}</tbody></table>
     </section>
-    <section class="card"><h2>完整盤前快照</h2>
+    <section class="card"><h2>其他盤前快照</h2>
       {snapshot_sections}
       {raw_snapshot}
     </section>
