@@ -5697,10 +5697,13 @@ def render_chips_web_body(result):
         rows = []
         for item in ((payload.get("groups") or {}).get(key) or []):
             if key in ("trust_buy", "trust_sell"):
-                detail = f"{item.get('hit_days', 0)}/{item.get('total_days', 0)} 天同方向"
+                detail = (f"投信 {int(item.get('lots') or 0):+,} 張・"
+                          f"{item.get('hit_days', 0)}/{item.get('total_days', 0)} 天同方向")
+            elif key == "foreign_buy":
+                detail = f"外資 {int(item.get('lots') or 0):+,} 張"
             else:
-                detail = (f"外資 {item.get('foreign_lots', 0):+,} 張・"
-                          f"投信 {item.get('trust_lots', 0):+,} 張")
+                detail = (f"外資 {int(item.get('foreign_lots') or 0):+,} 張・"
+                          f"投信 {int(item.get('trust_lots') or 0):+,} 張")
             rows.append(
                 f'<div class="chips-row"><div><b>{esc(str(item.get("name") or item.get("code")))}</b>'
                 f'<small>（{esc(str(item.get("code") or ""))}）・{esc(detail)}</small></div>'
@@ -7242,14 +7245,30 @@ def build_healthcheck_report(user_id):
 # --- 個股新聞（Google News RSS，免費、可帶關鍵字查詢） ---
 def fetch_stock_news(keyword, max_items=2, within_hours=30):
     """
-    抓某個關鍵字的最新新聞。只回傳標題、來源、連結、發布時間——
-    不抓內文也不轉貼全文，版權上安全，實務上你也只需要標題判斷要不要點進去。
-    within_hours 用來過濾掉舊聞，預設只看 30 小時內的。
+    抓取最新新聞，只保留標題、來源、連結與發布時間。
+
+    這裡不抓新聞內文、不自行解讀，也不把網址直接塞進 LINE 文字；
+    呼叫端可以把標題做成可點擊的 URI。查詢同時加入股票／財經主題詞，
+    並對標題做關鍵字、財經語境與重複過濾，降低無關結果。
     """
     import xml.etree.ElementTree as ET
     from urllib.parse import quote
 
-    query = quote(f"{keyword} 股價 OR 營收 OR 法人")
+    keyword_text = str(keyword or "").strip()
+    query_terms = [part.strip() for part in keyword_text.split(" OR ")
+                   if part.strip()]
+    finance_terms = (
+        "股價", "營收", "法人", "財報", "法說", "業績", "獲利", "展望",
+        "訂單", "產能", "供應鏈", "股利", "配息", "除息", "投資", "併購",
+        "增資", "減資", "公告", "買超", "賣超", "漲停", "跌停", "新高", "新低",
+    )
+    if len(query_terms) > 1:
+        query_text = (f"({' OR '.join(query_terms)}) "
+                      f"({' OR '.join(finance_terms[:16])})")
+    else:
+        one_term = query_terms[0] if query_terms else keyword_text
+        query_text = f'"{one_term}" ({" OR ".join(finance_terms[:16])})'
+    query = quote(query_text)
     url = (f"https://news.google.com/rss/search?q={query}"
            f"&hl=zh-TW&gl=TW&ceid=TW:zh-Hant")
     try:
@@ -7261,28 +7280,44 @@ def fetch_stock_news(keyword, max_items=2, within_hours=30):
 
     now = datetime.now(timezone.utc)
     items = []
+    seen_titles = set()
     for item in root.findall(".//item"):
         title = (item.findtext("title") or "").strip()
         link = (item.findtext("link") or "").strip()
         source = (item.findtext("source") or "").strip()
         pub = item.findtext("pubDate")
-
         if not title:
             continue
 
-        # Google News 的標題格式是「標題 - 媒體名」，把媒體名切出來
+        # Google News 常把媒體名放在標題末端；只在 source 欄位空白時切出來。
         if " - " in title and not source:
             title, source = title.rsplit(" - ", 1)
+        title = title.strip()
+        title_key = title.casefold()
+        if title_key in seen_titles:
+            continue
+
+        # 股票查詢至少要在標題中出現股票名稱；OR 查詢則至少命中一個主題詞。
+        title_lower = title.casefold()
+        if query_terms and not any(term.casefold() in title_lower
+                                   for term in query_terms):
+            continue
+        if len(query_terms) == 1 and not any(term in title for term in finance_terms):
+            continue
 
         if pub:
             try:
-                pub_dt = datetime.strptime(pub, "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
-                if (now - pub_dt).total_seconds() > within_hours * 3600:
+                pub_dt = datetime.strptime(
+                    pub, "%a, %d %b %Y %H:%M:%S %Z"
+                ).replace(tzinfo=timezone.utc)
+                age_seconds = (now - pub_dt).total_seconds()
+                if age_seconds < -7200 or age_seconds > within_hours * 3600:
                     continue
             except ValueError:
                 pass
 
-        items.append({"title": title.strip(), "source": source.strip(), "link": link})
+        seen_titles.add(title_key)
+        items.append({"title": title, "source": source.strip(), "link": link})
         if len(items) >= max_items:
             break
     return items
@@ -7290,23 +7325,19 @@ def fetch_stock_news(keyword, max_items=2, within_hours=30):
 
 def build_news_digest(user_id):
     """
-    盤後新聞摘要：只推跟使用者自選股有關的新聞。
-    沒有新聞的股票直接略過，不硬湊版面。
+    自選股新聞摘要：LINE 只顯示相關新聞標題，標題本身可點擊查看原文。
+    不在聊天室顯示完整網址，也不把新聞內文或 AI 解讀帶進來。
     """
     codes = get_user_watchlist(user_id)
     if not codes:
         return None
 
-    inst_data = fetch_institutional_data()
-    lines = [f"📰 自選股新聞（{taiwan_now().strftime('%m/%d')}）", "─" * 14]
-
-    # 每檔都要打一次 Google News RSS，序列跑加上禮貌等待會很久。
-    # 改成小量並行（4 條）：既縮短時間，又不會對 Google News 一次灌太多請求。
-    names = {code: stock_display_name(code, inst_data) for code in codes}
+    # 名稱不必先重新抓整份法人行情，避免新聞指令被不必要的外部查詢拖慢。
+    names = {code: stock_display_name(code) for code in codes}
 
     def fetch_one(code):
         try:
-            return fetch_stock_news(names[code], max_items=2)
+            return fetch_stock_news(names[code], max_items=2, within_hours=36)
         except Exception as e:
             print(f"⚠️ 並行抓新聞失敗 {code}: {e}")
             return []
@@ -7314,30 +7345,52 @@ def build_news_digest(user_id):
     with ThreadPoolExecutor(max_workers=min(4, len(codes))) as ex:
         news_map = dict(zip(codes, ex.map(fetch_one, codes)))
 
-    found = 0
+    records = []
+    seen = set()
     for code in codes:
-        name = names[code]
-        news = news_map.get(code) or []
-        if not news:
-            continue
-        found += 1
-        lines.append(f"\n🔹 {name} {code}")
-        for n in news:
-            src = f"（{n['source']}）" if n["source"] else ""
-            lines.append(f"・{n['title']}{src}")
-            if n["link"]:
-                lines.append(f"　{n['link']}")
+        for item in (news_map.get(code) or []):
+            title = str(item.get("title") or "").strip()
+            if not title or title.casefold() in seen:
+                continue
+            seen.add(title.casefold())
+            records.append({"code": code, "name": names[code], **item})
 
-    if not found:
-        lines.append("今日自選股無相關新聞")
-    else:
-        lines.append("\n─" * 1)
-        lines.append("※ 僅列標題與連結，詳情請點原文")
+    if not records:
+        return TextSendMessage(text="📰 自選股新聞\n\n今日沒有抓到符合自選股與財經主題的相關新聞。")
 
-    digest = "\n".join(lines)
-    if len(digest) > 4800:
-        digest = digest[:4750] + "\n\n…（內容過長，已截斷）"
-    return digest
+    # LINE 只做入口，最多顯示 8 個標題，避免又變成長篇報告。
+    records = records[:8]
+    token = create_web_token(user_id)
+    contents = [
+        {"type": "text", "text": f"📰 自選股新聞｜{taiwan_now().strftime('%m/%d')}",
+         "weight": "bold", "size": "xl", "color": "#1B2027"},
+        {"type": "text", "text": "只顯示相關新聞標題；點擊標題即可查看原文。",
+         "size": "xs", "color": "#767D85", "margin": "sm", "wrap": True},
+    ]
+    for index, item in enumerate(records):
+        uri = _valid_news_uri(item.get("link"))
+        component = {
+            "type": "text",
+            "text": f"・{item['name']}｜{item['title']}",
+            "size": "sm", "color": "#4A5F7A", "wrap": True,
+            "maxLines": 3, "margin": "md" if index else "lg",
+        }
+        if uri:
+            component["decoration"] = "underline"
+            component["action"] = {"type": "uri", "uri": uri}
+        contents.append(component)
+
+    alt_text = "📰 自選股新聞｜" + "；".join(item["title"] for item in records[:3])
+    return FlexSendMessage(
+        alt_text=alt_text[:400],
+        contents={
+            "type": "bubble",
+            "body": {"type": "box", "layout": "vertical",
+                     "contents": contents, "paddingAll": "18px",
+                     "backgroundColor": "#FFFFFF"},
+            "styles": {"body": {"backgroundColor": "#FFFFFF"}},
+        },
+    )
 
 
 # ── 推播額度保護 ──
@@ -7641,6 +7694,40 @@ def build_morning_push_message(user_id, base_url=None):
                   "contents": contents, "paddingAll": "18px",
                   "backgroundColor": "#FFFFFF"},
         "styles": {"body": {"backgroundColor": "#FFFFFF"}}
+    }
+    return FlexSendMessage(alt_text=plain_text, contents=bubble)
+
+
+def build_push_request_message(user_id, base_url=None):
+    """推播申請回覆：確認申請已收到，並提供盤前總經頁的直接入口。"""
+    plain_text = (
+        "📮 已收到每日推播的申請\n\n"
+        "每日盤前推播為名額制，需由管理者開通。\n"
+        "已收到你的申請，開通後隔天早上就會自動收到。\n\n"
+        "在此之前，請按下「盤前」查看總體經濟面與今日盤前內容。"
+    )
+    token = create_web_token(user_id)
+    if not token:
+        return TextSendMessage(text=plain_text)
+    web_url = (f"{public_web_base_url(base_url)}/web/premarket?t="
+               f"{quote(token, safe='')}")
+    bubble = {
+        "type": "bubble",
+        "body": {"type": "box", "layout": "vertical", "contents": [
+            {"type": "text", "text": "📮 已收到每日推播的申請",
+             "weight": "bold", "size": "xl", "color": "#1B2027"},
+            {"type": "text", "text":
+             "每日盤前推播為名額制，需由管理者開通。\n"
+             "已收到你的申請，開通後隔天早上就會自動收到。\n\n"
+             "在此之前，請按下「盤前」查看總體經濟面與今日盤前內容。",
+             "size": "sm", "color": "#454C55", "wrap": True, "margin": "md"},
+            {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+            {"type": "button", "style": "primary", "height": "sm",
+             "color": "#6E5228", "margin": "lg",
+             "action": {"type": "uri", "label": "☀️ 開啟盤前",
+                        "uri": web_url}},
+        ], "paddingAll": "18px", "backgroundColor": "#FFFFFF"},
+        "styles": {"body": {"backgroundColor": "#FFFFFF"}},
     }
     return FlexSendMessage(alt_text=plain_text, contents=bubble)
 
@@ -14265,12 +14352,9 @@ def handle_message(event):
         # 以每人每個交易日 1 則計算，最多只能服務約 9 人，
         # 因此改為申請制，由管理者在後台開通，使用者無法自行啟用。
         if set_requested(user_id, True):
-            reply = (
-                "📮 已收到每日推播的申請\n\n"
-                "每日盤前推播為名額制，需由管理者開通。\n"
-                "已收到你的申請，開通後隔天早上就會自動收到。\n\n"
-                "在此之前，隨時輸入「盤前」都能看到相同內容。"
-            )
+            flex_reply = build_push_request_message(
+                user_id, request.url_root.rstrip("/"))
+            reply = None
         else:
             reply = "❌ 推播申請沒有成功寫入，請稍後再試。"
     elif text in ["推播關", "關閉推播", "取消訂閱"]:
@@ -14291,9 +14375,16 @@ def handle_message(event):
     elif 4 <= len(pure_code) <= 7 and len(text) <= 8 and " " not in text:
         reply = build_single_stock_report(pure_code, user_id)
 
-    # 6.5 自選股新聞（手動查詢，跟盤後推播同一份內容）
+    # 6.5 自選股新聞：LINE 顯示可點擊標題，完整網址不直接塞在訊息內
     elif text in ["新聞", "自選新聞"]:
-        reply = build_news_digest(user_id) or "📂 自選清單是空的，先用「加 2330」新增自選"
+        news_reply = build_news_digest(user_id)
+        if isinstance(news_reply, FlexSendMessage):
+            flex_reply = news_reply
+            reply = None
+        elif isinstance(news_reply, TextSendMessage):
+            reply = news_reply.text
+        else:
+            reply = news_reply or "📂 自選清單是空的，先用「加 2330」新增自選"
 
     # 7. 盤前速覽
     elif text in ["盤前", "早安"]:
