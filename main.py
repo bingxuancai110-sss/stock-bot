@@ -5067,6 +5067,23 @@ def evaluate_picks(mode, days=90):
         median = (vals_sorted[n // 2] if n % 2
                   else (vals_sorted[n // 2 - 1] + vals_sorted[n // 2]) / 2)
         mk = market[label]
+        samples = []
+        for sample_ret, sample_pick in buckets[label]:
+            sample_base = taiex_by_date.get(sample_pick["date"])
+            sample_market = None
+            if sample_base and taiex_now:
+                sample_market = (taiex_now - sample_base) / sample_base * 100
+            samples.append({
+                "date": sample_pick["date"],
+                "code": sample_pick["code"],
+                "name": sample_pick.get("name") or sample_pick["code"],
+                "rank": sample_pick.get("rank"),
+                "score": sample_pick.get("score"),
+                "ret": sample_ret,
+                "market": sample_market,
+                "excess": (sample_ret - sample_market)
+                          if sample_market is not None else None,
+            })
         result[label] = {
             "n": n,
             "avg": sum(vals) / n,
@@ -5075,6 +5092,7 @@ def evaluate_picks(mode, days=90):
             "best": max(buckets[label], key=lambda x: x[0]),
             "worst": min(buckets[label], key=lambda x: x[0]),
             "market": (sum(mk) / len(mk)) if mk else None,
+            "samples": samples,
         }
 
     pending = len([p for p in picks if (today - p["date"]).days < 5])
@@ -9477,6 +9495,17 @@ h2{font-size:16px;font-weight:600;letter-spacing:.02em}
 .sub{color:var(--ink-faint);font-size:11px;margin-left:3px}
 .bar{grid-column:1/-1;height:3px;background:var(--paper-2);margin-top:8px}
 .bar div{height:100%;background:var(--brass-2)}
+.review-details{margin-top:14px;border:1px solid #E1E3DE;border-radius:10px;background:#FFF;overflow:hidden}
+.review-details>summary{cursor:pointer;padding:12px 14px;color:var(--brass);font-size:13px;font-weight:600;background:#F7F6F1}
+.review-samples{border-top:1px solid #ECEDE8}
+.review-sample{padding:11px 14px;border-bottom:1px solid #ECEDE8}
+.review-sample:last-child{border-bottom:0}
+.review-sample-title{display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-size:13px}
+.review-sample-title b{font-weight:600;color:var(--ink)}
+.review-sample-title small{font-size:11px;color:var(--ink-faint);white-space:nowrap}
+.review-sample-metrics{display:flex;flex-wrap:wrap;gap:5px 14px;margin-top:5px;color:var(--ink-soft);font-size:12px;line-height:1.55}
+.review-sample-metrics span{white-space:nowrap}
+.review-sample-metrics b{font-weight:600}
 form.add{margin-top:26px;padding:18px;background:var(--paper-2)}
 form.add h3{font-size:14px;font-weight:600;margin-bottom:12px}
 .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
@@ -13631,6 +13660,43 @@ def build_review_body():
       <span class="num down">{w:+.1f}%</span></span>
   </div>
 </div>""")
+
+            sample_rows = []
+            for sample in s.get("samples") or []:
+                sample_date = sample.get("date")
+                if hasattr(sample_date, "strftime"):
+                    sample_date = sample_date.strftime("%m/%d")
+                else:
+                    sample_date = str(sample_date or "—")
+                sample_name = html.escape(str(sample.get("name") or sample.get("code") or "未知"))
+                sample_code = html.escape(str(sample.get("code") or "—"))
+                sample_rank = sample.get("rank")
+                rank_text = f"推薦 #{sample_rank}" if sample_rank else ""
+                sample_ret = sample.get("ret")
+                sample_market = sample.get("market")
+                sample_excess = sample.get("excess")
+                ret_text = f"{float(sample_ret):+.1f}%" if sample_ret is not None else "—"
+                market_text = f"{float(sample_market):+.1f}%" if sample_market is not None else "無大盤快照"
+                excess_text = f"{float(sample_excess):+.1f}%" if sample_excess is not None else "無法比較"
+                ret_cls = "up" if sample_ret is not None and sample_ret >= 0 else "down" if sample_ret is not None else "flat"
+                market_cls = "up" if sample_market is not None and sample_market >= 0 else "down" if sample_market is not None else "flat"
+                excess_cls = "up" if sample_excess is not None and sample_excess >= 0 else "down" if sample_excess is not None else "flat"
+                sample_rows.append(f"""
+<div class="review-sample">
+  <div class="review-sample-title"><b>{html.escape(str(sample_date))}　{sample_name}（{sample_code}）</b>
+    <small>{rank_text}</small></div>
+  <div class="review-sample-metrics">
+    <span>個股 <b class="num {ret_cls}">{ret_text}</b></span>
+    <span>大盤 <b class="num {market_cls}">{market_text}</b></span>
+    <span>超額 <b class="num {excess_cls}">{excess_text}</b></span>
+  </div>
+</div>""")
+            if sample_rows:
+                rows_html.append(f"""
+<details class="review-details">
+  <summary>查看全部 {len(sample_rows)} 筆樣本（含大盤比較）</summary>
+  <div class="review-samples">{"".join(sample_rows)}</div>
+</details>""")
 
         pending = (f"　另有 {ev['pending']} 筆推薦未滿 5 日，尚未計入"
                    if ev["pending"] else "")
