@@ -4448,6 +4448,7 @@ _SHARED_SNAPSHOT_MAX_AGE = {
     "chips_superman": 3 * 86400,
     "etf_catalog": 86400,
     "turning_observation": 900,
+    "etf_product_rankings": 3 * 86400,
 }
 
 
@@ -5735,18 +5736,32 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
             reasons.append("近期支撐已跌破")
             score += 1
 
-        invalid = ((direction == "up" and (broke_support or down_streak >= 3)) or
-                   (direction == "down" and (cross_up and up_streak >= 3)))
+        invalid_reasons = []
+        if direction == "up" and broke_support:
+            invalid_reasons.append("現價已跌破近期支撐")
+        if direction == "up" and down_streak >= 3:
+            invalid_reasons.append(f"已連續下跌 {down_streak} 天")
+        if direction == "down" and cross_up and up_streak >= 3:
+            invalid_reasons.append(
+                f"價格站回20日均線且已連續上漲 {up_streak} 天")
+        invalid = bool(invalid_reasons)
         if invalid:
             state = "invalid"
             state_label = "已失效"
+            direction_label = "狀態已失效"
+            state_reason = "；".join(invalid_reasons)
         elif score >= 3:
             state = "confirmed"
             state_label = "已確認"
+            direction_label = "轉強" if direction == "up" else "轉弱"
+            state_reason = f"已符合 {score} 項轉折條件，達到確認門檻"
         else:
             state = "observing"
             state_label = "觀察中"
-        direction_label = "轉強" if direction == "up" else "轉弱"
+            direction_label = "轉強" if direction == "up" else "轉弱"
+            state_reason = f"目前符合 {score} 項條件，尚未達 3 項確認門檻"
+        if invalid_reasons:
+            reasons.extend(invalid_reasons)
         items.append({
             "code": code,
             "name": inst_item.get("name") or stock_display_name(code, fallback=code),
@@ -5754,6 +5769,8 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
             "direction_label": direction_label,
             "state": state,
             "state_label": state_label,
+            "state_reason": state_reason,
+            "invalid_reasons": invalid_reasons,
             "event_type": inst_item.get("event_type") or "法人方向變化",
             "consensus": inst_item.get("consensus") or "法人分歧",
             "current_total_lots": current_total,
@@ -8828,8 +8845,9 @@ def build_turning_observation_line_message(user_id, base_url=None):
             contents.append({"type": "text",
                              "text": f"・{item.get('name') or item.get('code')}（{item.get('code')}）｜{direction}\n"
                                       f"  {item.get('event_type') or '方向變化'}・{current_text}\n"
-                                      f"  {reasons or '資料出現方向變化'}",
-                             "size": "sm", "color": "#454C55", "wrap": True,
+                                       f"  {reasons or '資料出現方向變化'}\n"
+                                       f"  狀態原因：{item.get('state_reason') or '資料出現方向變化'}",
+                              "size": "sm", "color": "#454C55", "wrap": True,
                              "margin": "sm"})
             shown += 1
     if not shown:
@@ -9656,6 +9674,20 @@ def _do_warmup():
     except Exception as e:
         print(f"❌ 預熱籌碼超人失敗: {e}")
         done.append("籌碼超人 失敗")
+
+    # ETF 商品排名使用真實日收盤序列，在固定 warmup 建立，避免進入 ETF 專區時
+    # 才同步抓取全市場商品；排名快照另存共享資料，跨 Render worker 可直接使用。
+    if taiwan_now().hour >= 16:
+        try:
+            _existing_ranking, ranking_fresh, _ranking_source = _load_etf_product_ranking_snapshot()
+            ranking_payload = build_etf_product_rankings(
+                force_refresh=not ranking_fresh)
+            done.append("ETF排名 %s（資料日 %s）" % (
+                "已整合" if ranking_payload.get("categories") else "資料不足",
+                ranking_payload.get("market_data_date") or "未標日期"))
+        except Exception as e:
+            print(f"❌ 預熱 ETF 商品排名失敗: {e}")
+            done.append("ETF排名 失敗")
 
     # 轉折觀察與籌碼超人共用 T86 與行情來源；在 warmup 先建立共享結果，
     # 避免第一位使用者進頁面時才並行抓取數十檔 3mo 行情。
@@ -12280,6 +12312,271 @@ def _etf_maturity_label(listing_date):
         return "資料成熟度：上市日格式待確認"
 
 
+# ── ETF 商品績效排名 ──
+# 商品排名和會員績效排行榜是兩件事：這裡比較 ETF 本身，會員排行榜則比較使用者持股 TWR。
+# 先採價格報酬，因為完整配息紀錄尚未對所有上市 ETF 核實；不把價格報酬冒充含息總報酬。
+ETF_PRODUCT_RANKING_SNAPSHOT_KEY = "etf_product_rankings"
+ETF_PRODUCT_RANKING_CACHE_SECONDS = 900
+ETF_PRODUCT_RANKING_SHARED_MAX_AGE = 3 * 86400
+ETF_PRODUCT_RANKING_PERIODS = {
+    "short": {"label": "短期（近 40 個交易日，約 2 個月）", "days": 40},
+    "long": {"label": "長期（近 250 個交易日，約 1 年）", "days": 250},
+}
+_etf_product_ranking_cache = {"at": 0, "data": None}
+_ETF_RANKING_REFRESH_LOCK = threading.Lock()
+_ETF_RANKING_REFRESH_RUNNING = False
+
+
+def _parse_history_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    try:
+        return date.fromisoformat(text[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _history_from_quote(quote):
+    """從既有行情結果整理有效日期／收盤價，排除重複日期與非正價格。"""
+    dates = quote.get("close_dates") or [] if isinstance(quote, dict) else []
+    closes = quote.get("closes") or [] if isinstance(quote, dict) else []
+    pairs = []
+    seen = set()
+    for raw_date, raw_close in zip(dates, closes):
+        parsed = _parse_history_date(raw_date)
+        try:
+            close = float(raw_close)
+        except (TypeError, ValueError):
+            continue
+        if not parsed or close <= 0 or parsed in seen:
+            continue
+        seen.add(parsed)
+        pairs.append((parsed, close))
+    pairs.sort(key=lambda item: item[0])
+    return pairs
+
+
+def _fetch_taiex_history(rng="2y"):
+    """取得與 ETF 價格同口徑的加權指數日收盤序列；失敗就回傳空清單。"""
+    try:
+        url = ("https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII"
+               f"?range={quote(str(rng), safe='')}&interval=1d")
+        response = requests.get(url, timeout=10,
+                                headers={"User-Agent": "Mozilla/5.0"})
+        response.raise_for_status()
+        result = (response.json().get("chart", {}).get("result") or [None])[0]
+        if not result:
+            return []
+        timestamps = result.get("timestamp") or []
+        closes = ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+        tw_tz = timezone(timedelta(hours=8))
+        pairs, seen = [], set()
+        for timestamp, raw_close in zip(timestamps, closes):
+            try:
+                parsed = datetime.fromtimestamp(timestamp, tw_tz).date()
+                close = float(raw_close)
+            except (TypeError, ValueError, OSError):
+                continue
+            if close <= 0 or parsed in seen:
+                continue
+            seen.add(parsed)
+            pairs.append((parsed, close))
+        return sorted(pairs, key=lambda item: item[0])
+    except Exception as exc:
+        print(f"⚠️ 取得 ETF 排名大盤序列失敗: {exc}")
+        return []
+
+
+def _market_return_for_window(market_history, start_date, end_date):
+    """用 ETF 自己的觀測起訖日找同期大盤，避免不同上市日直接硬對陣列。"""
+    if not market_history or not start_date or not end_date:
+        return None
+    start = next(((d, value) for d, value in market_history if d >= start_date), None)
+    end_candidates = [(d, value) for d, value in market_history if d <= end_date]
+    end = end_candidates[-1] if end_candidates else None
+    if not start or not end or start[1] <= 0:
+        return None
+    return (end[1] / start[1] - 1) * 100
+
+
+def _etf_ranking_comment(category, period_key, item, market_return):
+    """四種類別各自使用不同的事實型評論；不把報酬結果寫成預測。"""
+    excess = item.get("excess_pct")
+    if excess is None:
+        comparison = "同期大盤資料不足"
+    elif excess >= 3:
+        comparison = f"跑贏同期大盤 {excess:+.1f} 個百分點"
+    elif excess <= -3:
+        comparison = f"落後同期大盤 {abs(excess):.1f} 個百分點"
+    else:
+        comparison = f"與同期大盤接近（{excess:+.1f} 個百分點）"
+
+    if category == "主動式":
+        return (f"主動式：{period_key}以價格報酬觀察，{comparison}；"
+                "這只代表該期間結果，不等於經理人長期能力已被證明。")
+    if category == "高股息":
+        return (f"高股息：{period_key}先看價格報酬，{comparison}；"
+                "配息資料尚未完整核實，未把配息率或配息假設混入排名。")
+    if category == "市值型":
+        return (f"市值型：{period_key}與加權指數比較，{comparison}；"
+                "主要用來看是否跟上核心市場，不代表未來一定超額。")
+    return (f"主題型：{period_key}以價格報酬與大盤差異觀察，{comparison}；"
+            "主題集中度與波動可能較高，不能只看名次。")
+
+
+def _etf_ranking_snapshot_is_current(payload):
+    if not isinstance(payload, dict):
+        return False
+    data_date = _parse_history_date(payload.get("market_data_date") or payload.get("data_date"))
+    today = taiwan_today()
+    if not data_date or data_date > today:
+        return False
+    # 交易日要等到當日資料完成；週末／假日沿用最近交易日快照即可。
+    return data_date == today if today.weekday() < 5 else (today - data_date).days <= 3
+
+
+def _load_etf_product_ranking_snapshot():
+    now = time.time()
+    with _realtime_cache_lock:
+        cached = _etf_product_ranking_cache.get("data")
+        if cached is not None and now - _etf_product_ranking_cache.get("at", 0) < ETF_PRODUCT_RANKING_CACHE_SECONDS:
+            return cached, _etf_ranking_snapshot_is_current(cached), "記憶體快取"
+    try:
+        shared = _load_shared_data_snapshot(
+            ETF_PRODUCT_RANKING_SNAPSHOT_KEY,
+            max_age_seconds=ETF_PRODUCT_RANKING_SHARED_MAX_AGE)
+        payload = (shared.get("payload") if shared else None) or {}
+        if isinstance(payload, dict) and isinstance(payload.get("categories"), dict):
+            with _realtime_cache_lock:
+                _etf_product_ranking_cache.update({"at": now, "data": payload})
+            return payload, _etf_ranking_snapshot_is_current(payload), "共享快照"
+    except Exception as exc:
+        print(f"⚠️ 讀取 ETF 商品排名快照失敗: {exc}")
+    return None, False, "尚未建立快照"
+
+
+def build_etf_product_rankings(force_refresh=False):
+    """建立四類 ETF 的短／長期價格報酬排名與同期大盤對照。"""
+    now = time.time()
+    with _realtime_cache_lock:
+        cached = _etf_product_ranking_cache.get("data")
+        if (not force_refresh and cached is not None and
+                now - _etf_product_ranking_cache.get("at", 0) < ETF_PRODUCT_RANKING_CACHE_SECONDS):
+            return cached
+    if not force_refresh:
+        shared, _fresh, _source = _load_etf_product_ranking_snapshot()
+        if shared:
+            return shared
+
+    catalog = get_etf_catalog_products()
+    market_history = _fetch_taiex_history("2y")
+    codes = [code for code, meta in catalog.items()
+             if meta.get("category") in ("主動式", "高股息", "市值型", "主題型")]
+    quotes = get_realtime_stocks_bulk(codes, workers=18, rng="2y") if codes else {}
+    period_rows = {key: {"active": [], "dividend": [], "market": [], "theme": []}
+                   for key in ETF_PRODUCT_RANKING_PERIODS}
+    category_key = {"主動式": "active", "高股息": "dividend",
+                    "市值型": "market", "主題型": "theme"}
+
+    for code, meta in catalog.items():
+        category = meta.get("category")
+        key = category_key.get(category)
+        if not key:
+            continue
+        history = _history_from_quote(quotes.get(code) or {})
+        if not history:
+            continue
+        for period_key, period in ETF_PRODUCT_RANKING_PERIODS.items():
+            required = int(period["days"])
+            # 短期至少要有完整 40 日、長期至少要有完整 250 日，
+            # 不把剛上市商品用較短的歷史硬塞進不同期間排名。
+            if len(history) < required:
+                continue
+            window = history[-required:]
+            start_date, start_close = window[0]
+            end_date, end_close = window[-1]
+            if start_close <= 0:
+                continue
+            return_pct = (end_close / start_close - 1) * 100
+            market_return = _market_return_for_window(
+                market_history, start_date, end_date)
+            excess = (return_pct - market_return
+                       if market_return is not None else None)
+            item = {
+                "code": code,
+                "name": str(meta.get("name") or code),
+                "category": category,
+                "return_pct": round(return_pct, 2),
+                "market_return_pct": (round(market_return, 2)
+                                       if market_return is not None else None),
+                "excess_pct": round(excess, 2) if excess is not None else None,
+                "observations": len(window),
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "comment": _etf_ranking_comment(
+                    category,
+                    "短期" if period_key == "short" else "長期",
+                    {"excess_pct": excess}, market_return),
+            }
+            period_rows[period_key][key].append(item)
+
+    for period_key in period_rows:
+        for key in period_rows[period_key]:
+            period_rows[period_key][key].sort(
+                key=lambda item: (item.get("return_pct", -999999), item.get("code", "")),
+                reverse=True)
+            for rank, item in enumerate(period_rows[period_key][key], 1):
+                item["rank"] = rank
+
+    market_data_date = market_history[-1][0].isoformat() if market_history else None
+    result = {
+        "data_date": market_data_date,
+        "market_data_date": market_data_date,
+        "periods": ETF_PRODUCT_RANKING_PERIODS,
+        "categories": period_rows,
+        "source": "Yahoo Finance 日收盤序列／TWSE ETF 官方上市清單",
+        "source_note": "價格報酬未含配息；大盤為同期間台灣加權指數價格報酬。",
+    }
+    with _realtime_cache_lock:
+        _etf_product_ranking_cache.update({"at": time.time(), "data": result})
+    try:
+        _save_shared_data_snapshot(
+            ETF_PRODUCT_RANKING_SNAPSHOT_KEY, result,
+            data_date=market_data_date or taiwan_today(),
+            source_meta={"source": "ETF product ranking", "schema_version": 1,
+                         "short_days": 40, "long_days": 250,
+                         "category_counts": {key: len(period_rows["short"].get(key) or [])
+                                             for key in period_rows["short"]}})
+    except Exception as exc:
+        print(f"⚠️ 保存 ETF 商品排名快照失敗: {exc}")
+    return result
+
+
+def _start_etf_product_ranking_refresh():
+    """排名缺快照時只啟動一個背景刷新，頁面本身不等待全市場行情。"""
+    global _ETF_RANKING_REFRESH_RUNNING
+    with _ETF_RANKING_REFRESH_LOCK:
+        if _ETF_RANKING_REFRESH_RUNNING:
+            return False
+        _ETF_RANKING_REFRESH_RUNNING = True
+
+    def worker():
+        global _ETF_RANKING_REFRESH_RUNNING
+        try:
+            build_etf_product_rankings(force_refresh=True)
+        except Exception as exc:
+            print(f"⚠️ 背景建立 ETF 商品排名失敗: {exc}")
+        finally:
+            with _ETF_RANKING_REFRESH_LOCK:
+                _ETF_RANKING_REFRESH_RUNNING = False
+
+    threading.Thread(target=worker, name="etf-ranking-refresh", daemon=True).start()
+    return True
+
+
 def broker_fee(amount, discount=DEFAULT_FEE_DISCOUNT, min_fee=DEFAULT_MIN_FEE):
     """單筆手續費。小額交易會被最低收費拉高，這對零股影響很大。"""
     if amount <= 0:
@@ -13532,6 +13829,54 @@ def web_chips(uid):
     return respond_page("籌碼超人", render_chips_web_body(result), "screener")
 
 
+def render_etf_product_ranking_html(payload, category_key, category_label):
+    """渲染單一 ETF 類別的短／長期排名；排名只用真實可取得價格序列。"""
+    esc = html.escape
+    if not isinstance(payload, dict) or not isinstance(payload.get("categories"), dict):
+        return '''<section class="etf-ranking-card etf-ranking-empty">
+  <h2>ETF 商品排名</h2><p>排名資料尚在背景整理；稍後重新整理即可看到具體名次。</p></section>'''
+
+    market_date = payload.get("market_data_date") or payload.get("data_date") or "未標日期"
+    source_note = payload.get("source_note") or "價格報酬未含配息；大盤為同期價格報酬。"
+    sections = []
+    for period_key in ("short", "long"):
+        period = (payload.get("periods") or {}).get(period_key) or {}
+        label = period.get("label") or ("短期" if period_key == "short" else "長期")
+        rows = (((payload.get("categories") or {}).get(period_key) or {})
+                .get(category_key) or [])
+        if not rows:
+            sections.append(
+                f'<div class="etf-ranking-period"><h3>{esc(label)}</h3>'
+                '<div class="etf-ranking-empty-line">資料不足，未把不完整期間硬列入排名。</div></div>')
+            continue
+
+        rendered = []
+        for row in rows[:10]:
+            rank = int(row.get("rank") or len(rendered) + 1)
+            return_pct = row.get("return_pct")
+            market_pct = row.get("market_return_pct")
+            excess = row.get("excess_pct")
+            ret_text = f'{float(return_pct):+.2f}%' if return_pct is not None else "資料不足"
+            market_text = f'{float(market_pct):+.2f}%' if market_pct is not None else "資料不足"
+            excess_text = f'{float(excess):+.2f} 個百分點' if excess is not None else "資料不足"
+            ret_cls = "up" if return_pct is not None and float(return_pct) >= 0 else "down"
+            rendered.append(f'''<div class="etf-ranking-row">
+  <div class="etf-ranking-rank">#{rank}</div>
+  <div class="etf-ranking-main"><b>{esc(str(row.get("name") or row.get("code")))}</b><span>{esc(str(row.get("code") or ""))}</span>
+    <small>{esc(str(row.get("comment") or "資料整理完成，請搭配觀測期間判讀。"))}</small></div>
+  <div class="etf-ranking-numbers"><b class="{ret_cls}">{ret_text}</b><span>同期大盤 {market_text}</span><span>超額 {excess_text}</span><small>{int(row.get("observations") or 0)} 個交易日・{esc(str(row.get("start_date") or ""))}～{esc(str(row.get("end_date") or ""))}</small></div>
+</div>''')
+        extra = len(rows) - 10
+        extra_note = f'<div class="etf-ranking-more-note">本類別共 {len(rows)} 檔符合此期間資料門檻，頁面先列前 10 名。</div>' if extra > 0 else ''
+        sections.append(f'<div class="etf-ranking-period"><h3>{esc(label)}</h3>{"".join(rendered)}{extra_note}</div>')
+
+    return f'''<section class="etf-ranking-card">
+  <div class="etf-ranking-head"><h2>{esc(category_label)}商品排名</h2><span>大盤資料日 {esc(str(market_date))}</span></div>
+  <p class="etf-ranking-note">{esc(source_note)}　目前排名只列滿足完整期間門檻的商品；上市未滿期間者顯示資料不足，不和其他期間混比。</p>
+  {"".join(sections)}
+</section>'''
+
+
 def render_etf_inline_detail(code, meta, quote=None):
     """在 ETF 商品卡片下方直接呈現預設收合的商品詳情，不另開頁面。"""
     esc = html.escape
@@ -13623,6 +13968,23 @@ def web_etf(uid):
          if meta.get("category") == selected_category],
         key=lambda pair: (str(pair[1].get("listing_date") or ""), pair[0]),
         reverse=True)
+    ranking_keys = {"active", "dividend", "market", "theme"}
+    if selected in ranking_keys:
+        ranking_payload, ranking_fresh, ranking_source = _load_etf_product_ranking_snapshot()
+        if ranking_payload is None or not ranking_fresh:
+            _start_etf_product_ranking_refresh()
+        ranking_html = render_etf_product_ranking_html(
+            ranking_payload, selected, selected_label.replace(" ETF", ""))
+        if ranking_payload and not ranking_fresh:
+            ranking_html = (f'<div class="etf-ranking-status">目前先顯示{html.escape(ranking_source)}的最近排名；'
+                            '最新行情正在背景更新。</div>' + ranking_html)
+        elif ranking_payload is None:
+            ranking_html = ('<div class="etf-ranking-status">排名資料正在背景建立；'
+                            '本頁先列出官方商品，稍後重新整理即可看到具體名次。</div>' + ranking_html)
+    else:
+        ranking_html = '''<section class="etf-ranking-card etf-ranking-empty">
+  <h2>其他／待分類</h2><p>第一版不把債券、槓桿／反向、期貨與多資產商品混入四類股票型 ETF 排名。</p></section>'''
+
     # 商品池完整列出；即時價格只抓前 20 檔，避免商品數增加後拖慢整個網頁。
     price_codes = {code for code, _meta in products[:20]}
     price_codes.update(code for code in ("0050", "00981A", "009816")
@@ -13672,6 +14034,24 @@ def web_etf(uid):
 .etf-links{{margin-top:7px;font-size:13px}}
 .etf-links a{{color:var(--brass);font-weight:700}}
 .etf-empty{{color:var(--ink-soft);line-height:1.7;padding:8px 0}}
+.etf-ranking-card{{background:#fff;border:1px solid #e4e1d8;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}
+.etf-ranking-head{{display:flex;justify-content:space-between;gap:10px;align-items:baseline}}
+.etf-ranking-head h2{{margin:0;font-size:20px}}
+.etf-ranking-head span{{font-size:11px;color:var(--ink-faint)}}
+.etf-ranking-note,.etf-ranking-status{{color:var(--ink-soft);font-size:12.5px;line-height:1.65}}
+.etf-ranking-status{{padding:10px 12px;background:#FAF5E9;border-left:3px solid var(--brass);border-radius:8px;margin:12px 0}}
+.etf-ranking-period{{margin-top:14px}}
+.etf-ranking-period h3{{margin:0 0 5px;font-size:16px;color:var(--ink)}}
+.etf-ranking-row{{display:grid;grid-template-columns:34px 1fr auto;gap:8px;padding:10px 0;border-top:1px solid #eee;align-items:start}}
+.etf-ranking-rank{{font-size:17px;font-weight:800;color:var(--brass)}}
+.etf-ranking-main b{{font-size:14px;color:var(--ink)}}
+.etf-ranking-main span{{margin-left:6px;color:var(--ink-faint);font-size:11px}}
+.etf-ranking-main small,.etf-ranking-numbers span,.etf-ranking-numbers small{{display:block;color:var(--ink-soft);font-size:11px;line-height:1.5;margin-top:2px}}
+.etf-ranking-numbers{{text-align:right;min-width:116px}}
+.etf-ranking-numbers b{{display:block;font-size:17px}}
+.etf-ranking-numbers b.up{{color:var(--red)}}
+.etf-ranking-numbers b.down{{color:var(--green)}}
+.etf-ranking-more-note,.etf-ranking-empty-line{{color:var(--ink-soft);font-size:12px;line-height:1.6;padding:7px 0}}
 .etf-inline-detail{{margin-top:10px;border-top:1px solid #eee;padding-top:8px}}
 .etf-inline-detail summary{{cursor:pointer;color:var(--brass);font-size:13px;font-weight:700;padding:4px 0}}
 .etf-inline-detail-body{{margin-top:8px;padding:10px 11px;background:#faf9f5;border:1px solid #eee9dd;border-radius:10px}}
@@ -13691,6 +14071,7 @@ def web_etf(uid):
 </div>
 <div class="etf-hero"><div class="eyebrow">台股 BOT</div><h1>ETF 專區</h1><p class="etf-note">官方 TWSE 上市清單目前載入 {len(catalog)} 檔；依名稱／標的關鍵字作第一版策略分組。ETF 不套用個股黑馬、雷達或籌碼超人邏輯，未知配息政策顯示為待確認。</p></div>
 <div class="etf-tabs">{tabs}</div>
+{ranking_html}
 <section class="etf-card"><h2>{html.escape(selected_label)}（{len(products)} 檔）</h2><div class="etf-note">完整列出官方已上市商品；每檔詳情都直接放在卡片下方，預設收合，點擊「查看 ETF 詳情」即可展開。分類是可解釋規則候選，不代表官方策略認證。</div>{"".join(cards)}</section>'''
     return respond_page("ETF 專區", body, "screener")
 
@@ -15185,6 +15566,7 @@ def render_turning_observation_web_body(result, status_note=None):
   <div class="turning-price">{close_text} <span>{pct_text}</span></div>
   <div class="turning-detail">{esc(str(item.get("event_type") or "法人方向變化"))}・{esc(inst_text)}{esc(ratio_text)}・{esc(str(item.get("consensus") or "法人分歧"))}</div>
   <div class="turning-detail">依據：{esc(reasons)}</div>
+  <div class="turning-state-reason">狀態原因：{esc(str(item.get("state_reason") or "資料出現方向變化"))}</div>
   <div class="turning-detail">支撐 {esc(str(item.get("support") or "資料不足"))}・壓力 {esc(str(item.get("resistance") or "資料不足"))}</div>
 </div>'''
 
@@ -15223,6 +15605,7 @@ def render_turning_observation_web_body(result, status_note=None):
 .turning-more summary{{cursor:pointer;color:var(--brass);font-weight:700;font-size:13px;padding:4px 0}}
 .turning-more .turning-row:first-child{{border-top:1px solid #eee}}
 .turning-price span{{font-size:14px;color:var(--red);margin-left:5px}}
+.turning-state-reason{{margin-top:4px;color:var(--ink);font-size:12.5px;line-height:1.6}}
 .turning-empty{{color:var(--ink-soft);padding:8px 0}}
 .turning-meta{{font-size:12.5px;color:var(--ink-soft);padding:8px 0}}
 .turning-refresh-note{{padding:9px 11px;background:#FAF5E9;border-left:3px solid var(--brass);border-radius:8px;color:var(--ink-soft);font-size:12.5px;line-height:1.6}}
