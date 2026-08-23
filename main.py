@@ -5715,7 +5715,7 @@ def render_chips_web_body(result):
             f'<p>{esc(note)}</p>{"".join(rows)}</section>')
     data_date = result.get("data_date") or payload.get("data_date") or "未標日期"
     source = result.get("source") or "未標來源"
-    return f'''<div class="chips-meta">資料來源：<b>{esc(str(source))}</b>　資料日：<b>{esc(str(data_date))}</b>　近 <b>{int(payload.get("actual_days") or 0)}</b> 個交易日</div>
+    return f'''<div class="tabs">\n  <a href="/web/screener?mode=blackhorse&view=list">黑馬</a>\n  <a href="/web/screener?mode=radar&view=list">雷達</a>\n  <a href="/web/chips" class="on">籌碼超人</a>\n  <a href="/web/screener?mode=review">成效</a>\n</div>\n<div class="chips-meta">資料來源：<b>{esc(str(source))}</b>　資料日：<b>{esc(str(data_date))}</b>　近 <b>{int(payload.get("actual_days") or 0)}</b> 個交易日</div>
 <div class="callout">億＝以整理當下可取得的真實股價，將法人近十日累計張數換算為億元；天數＝近十日站同方向的天數。這裡只看法人籌碼，不含基本面與估值。</div>
 {"".join(sections)}
 <div class="callout">認養需至少 6／10 天持續同向；單日爆量隔天就跑的不算。法人買不代表便宜，法人賣不代表公司變壞。以上為公開資料整理，不構成投資建議。</div>'''
@@ -13647,7 +13647,7 @@ def build_review_body():
 <div class="tabs">
   <a href="/web/screener?mode=blackhorse">黑馬</a>
   <a href="/web/screener?mode=radar">雷達</a>
-  <span class="tabs-gap"></span>
+  <a href="/web/chips">籌碼超人</a>
   <a href="/web/screener?mode=review" class="on">成效</a>
 </div>
 <div class="mode-note">
