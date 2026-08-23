@@ -7163,15 +7163,16 @@ def build_single_stock_report(code, user_id=None):
 
 
 def build_healthcheck_report(user_id):
+    """LINE 多檔自選健檢；每檔採用單檔 2330 詳細版的同一套版面。"""
     codes = get_user_watchlist(user_id)
     if not codes:
         return "📂 自選股清單是空的\n輸入「加 3081」新增自選"
 
-    institutional_data = fetch_institutional_data()
     scores = compute_watchlist_scores(codes)
     prev_scores = get_previous_scores(user_id, codes)
     tags = get_watchlist_tags(user_id)
     breakdowns = get_investor_breakdown(codes)
+    industry_map = get_industry_map() or {}
 
     rows = []
     for code in codes:
@@ -7183,67 +7184,65 @@ def build_healthcheck_report(user_id):
 
         stock = s["stock"]
         name = s["name"]
-        cum_lots, buy_days, streak = s["cum_lots"], s["buy_days"], s["streak"]
+        cum_lots, streak = s["cum_lots"], s["streak"]
         chip_score, pos_score = s["chip"], s["position"]
         rev_score, val_score = s["revenue"], s["valuation"]
         cum_yoy, pe = s["cum_yoy"], s["pe"]
         total = s["total"]
         flag = "🟢" if total >= 70 else ("🟡" if total >= 45 else "🔴")
-
-        # 一句話點出目前最該注意的事實。
-        # 優先講投信——三大法人合計會把投信的動作稀釋掉，
-        # 但投信要對基金績效負責，連續買通常比合計數字更有參考價值。
-        bd = breakdowns.get(code)
-        trust = bd["trust"] if bd else None
-        if trust and trust["streak"] >= 3:
-            note = f"投信連 {trust['streak']} 日買超（累計 {trust['cum']:+,} 張）"
-        elif cum_lots < 0:
-            note = f"近10日賣超 {abs(cum_lots):,} 張"
-        elif streak >= 3:
-            note = f"連續買超 {streak} 天"
-        elif cum_lots > 0:
-            note = f"近10日買超 {cum_lots:,} 張（{buy_days} 天）"
-        else:
-            note = "近期無明顯動作"
-
-        pos_txt = (f"距高點 {stock['pos_vs_60d_high']:+.1f}%"
-                   if stock.get("pos_vs_60d_high") is not None else "位階資料不足")
-        rev_txt = f"營收年增 {cum_yoy:+.1f}%" if cum_yoy is not None else "營收無資料"
-        pe_txt = f"PE {pe:.1f}" if pe else "PE 無"
-
-        advice = build_watchlist_advice(total, chip_score, pos_score, rev_score,
-                                        val_score, cum_lots, streak, stock, cum_yoy, pe)
-
-        # 分數變化：跟最近一次快照比。變化比絕對分數更有訊號價值——
-        # 「一直都是 70 分」跟「從 55 分升上來」是完全不同的兩件事。
-        arrow, change_txt = describe_score_change(s, prev_scores.get(code))
-        change_line = f"{arrow} {change_txt}\n" if arrow else ""
-
-        # 法人三方拆解，只在有明確主導方或分歧時才佔一行版面
-        bd_desc = describe_investor_breakdown(bd)
-        bd_line = ""
-        if bd_desc and "→" in bd_desc:
-            bd_line = bd_desc.split("→")[-1].strip() + "\n"
-
         pct = stock.get("pct") or 0
-        price_signal = "🔴" if pct > 0 else ("🟢" if pct < 0 else "⚪")
-        breakdown_text = bd_line.strip()
-        text = (
-            f"{flag} {name} {code}　{total}分\n"
-            f"{change_line}"
-            f"{price_signal} 股價 {stock['close']:.2f}（{pct:+.2f}%）　{pos_txt}\n"
-            f"分項　籌碼{chip_score}/30　位階{pos_score}/20　營收{rev_score}/30　估值{val_score}/20\n"
-            f"法人　{note}\n"
-            f"基本　{rev_txt}　{pe_txt}\n"
-            f"關卡　🛡️{fmt_support(stock)}　🚧{fmt_resistance(stock['resistance'])}\n"
-            f"{('法人拆解　' + breakdown_text + chr(10)) if breakdown_text else ''}"
-            f"判讀　{advice}"
-        )
-        rows.append((tag, total, text))
+        high, low = stock.get("high"), stock.get("low")
+        volume = stock.get("volume")
+        industry = industry_map.get(code)
 
-    # 依分類分組。長線與短線該用不同標準判讀——長線在意營收與估值，
-    # 短線在意籌碼與位階——分開列才不會混著看。
-    # 組內仍依分數排序；未分類的放最後。
+        header = f"📊 {code} {name}"
+        if industry:
+            header += f"　{industry_name(industry)}"
+        high_low = (f"高低 {high:.2f}/{low:.2f}"
+                    if high is not None and low is not None else "高低資料不足")
+        volume_line = (f"📦 {int(volume / 1000):,} 張　🛡️{fmt_support(stock)} "
+                       f"🚧{fmt_resistance(stock.get('resistance'))}"
+                       if volume is not None else
+                       f"📦 成交量資料不足　🛡️{fmt_support(stock)} "
+                       f"🚧{fmt_resistance(stock.get('resistance'))}")
+
+        lines = [
+            header,
+            "─" * 14,
+            f"💰 {stock['close']:.2f}（{pct:+.2f}%）　{high_low}",
+            volume_line,
+        ]
+
+        arrow, change_txt = describe_score_change(s, prev_scores.get(code))
+        if s:
+            lines += [
+                "",
+                f"{flag} 綜合評分：{total}／100",
+                f"　籌碼{chip_score}/30　位階{pos_score}/20　"
+                f"營收{rev_score}/30　估值{val_score}/20",
+            ]
+            if arrow:
+                lines.append(f"{arrow} {change_txt}")
+            rev_txt = (f"營收年增 {cum_yoy:+.1f}%"
+                       if cum_yoy is not None else "營收無資料")
+            pe_txt = f"PE {pe:.1f}" if pe else "PE 無"
+            lines.append(f"　{rev_txt}　{pe_txt}")
+
+        lines += ["", "【法人籌碼】近10日"]
+        bd_desc = describe_investor_breakdown(breakdowns.get(code))
+        lines.append(bd_desc if bd_desc else "　尚無法人歷史資料")
+        lines += ["", "【位階】", build_position_desc(stock)]
+
+        if s:
+            lines += [
+                "", "【觀察】",
+                build_watchlist_advice(
+                    total, chip_score, pos_score, rev_score, val_score,
+                    cum_lots, streak, stock, cum_yoy, pe),
+                "", "※ 已在自選清單",
+            ]
+        rows.append((tag, total, "\n".join(lines)))
+
     grouped = {}
     for tag, total, text in rows:
         grouped.setdefault(tag, []).append((total, text))
@@ -7256,12 +7255,13 @@ def build_healthcheck_report(user_id):
     has_tags = any(t is not None for t in grouped)
     for tag in order:
         items = sorted(grouped[tag], key=lambda x: x[0], reverse=True)
-        numbered = [f"【{index}】 {text}" for index, (_, text) in enumerate(items, start=1)]
+        numbered = [f"【{index}】 {text}"
+                    for index, (_, text) in enumerate(items, start=1)]
         item_block = "\n\n────────────\n\n".join(numbered)
         if has_tags:
             icon = TAG_ICONS.get(tag, "📌")
             label = tag or "未分類"
-            blocks.append(f"{icon}　{label}（{len(items)}）\n" + item_block)
+            blocks.append(f"{icon}　{label}（{len(items)}）\n\n" + item_block)
         else:
             blocks.append(item_block)
 
@@ -7274,7 +7274,6 @@ def build_healthcheck_report(user_id):
         f"🟢70+ 🟡45-69 🔴<45{tag_hint}\n"
         f"※ 觀察為數據歸納，非投資建議，請自行判斷"
     )
-
     if len(report) > 4800:
         report = report[:4750] + "\n\n…（清單過長，已截斷）"
     return report
