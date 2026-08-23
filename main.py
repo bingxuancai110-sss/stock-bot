@@ -7121,15 +7121,52 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
     return lines
 
 
+def _flex_report_contents(text):
+    """把報告逐行轉成 Flex 元件，讓重點字級與粗細一致。"""
+    contents = []
+    first = True
+    for raw_line in str(text or "").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if set(line) == {"─"}:
+            contents.append({"type": "separator", "margin": "sm", "color": "#D9DDE2"})
+            first = False
+            continue
+
+        component = {
+            "type": "text",
+            "text": line,
+            "size": "sm",
+            "color": "#454C55",
+            "wrap": True,
+            "margin": "none" if first else "xs",
+        }
+        if line.startswith("📊"):
+            component.update({"size": "md", "weight": "bold", "color": "#1B2027",
+                              "margin": "none" if first else "sm"})
+        elif line.startswith("💰"):
+            component.update({"size": "md", "weight": "bold", "color": "#1B2027",
+                              "margin": "md"})
+        elif "綜合評分" in line:
+            component.update({"size": "md", "weight": "bold", "color": "#1B2027",
+                              "margin": "md"})
+        elif line.startswith("【"):
+            component.update({"weight": "bold", "color": "#1B2027", "margin": "md"})
+        elif line.startswith("※"):
+            component.update({"size": "xs", "color": "#6F7782", "margin": "md"})
+        contents.append(component)
+        first = False
+    return contents
+
+
 def _build_text_flex_message(text, alt_text=None):
     """把沒有可點擊元件的報告也放進與新聞版相同的 Flex 卡片。"""
     return FlexSendMessage(
         alt_text=(alt_text or text)[:400],
         contents={"type": "bubble",
                   "body": {"type": "box", "layout": "vertical",
-                           "contents": [{"type": "text", "text": text,
-                                         "size": "sm", "color": "#454C55",
-                                         "wrap": True}],
+                           "contents": _flex_report_contents(text),
                            "paddingAll": "18px",
                            "backgroundColor": "#FFFFFF"},
                   "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
@@ -7181,8 +7218,7 @@ def build_single_stock_report(code, user_id=None):
 
     # 單檔查詢保留完整健檢文字，但新聞標題使用可點擊 Flex 元件，
     # 不把 Google News 的長網址直接顯示在聊天室。
-    contents = [{"type": "text", "text": core_report, "size": "sm",
-                 "color": "#454C55", "wrap": True}]
+    contents = _flex_report_contents(core_report)
     contents += [
         {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
         {"type": "text", "text": "📰 相關新聞", "weight": "bold",
