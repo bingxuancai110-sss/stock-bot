@@ -7121,6 +7121,20 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
     return lines
 
 
+def _build_text_flex_message(text, alt_text=None):
+    """把沒有可點擊元件的報告也放進與新聞版相同的 Flex 卡片。"""
+    return FlexSendMessage(
+        alt_text=(alt_text or text)[:400],
+        contents={"type": "bubble",
+                  "body": {"type": "box", "layout": "vertical",
+                           "contents": [{"type": "text", "text": text,
+                                         "size": "sm", "color": "#454C55",
+                                         "wrap": True}],
+                           "paddingAll": "18px",
+                           "backgroundColor": "#FFFFFF"},
+                  "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
+
+
 def build_single_stock_report(code, user_id=None):
     """
     單檔完整健檢。LINE 直接輸入代號就走這裡——
@@ -7163,7 +7177,7 @@ def build_single_stock_report(code, user_id=None):
     if not news:
         core_report += ("\n\n📰 相關新聞\n"
                         f"目前沒有抓到以{name}為主體的相關新聞。")
-        return core_report[:4750] + "\n…（已截斷）" if len(core_report) > 4800 else core_report
+        return _build_text_flex_message(core_report)
 
     # 單檔查詢保留完整健檢文字，但新聞標題使用可點擊 Flex 元件，
     # 不把 Google News 的長網址直接顯示在聊天室。
@@ -7379,7 +7393,7 @@ def build_line_watchlist_message(user_id, base_url=None):
     report = build_healthcheck_report(user_id)
     if not report:
         return TextSendMessage(text="📂 自選股清單是空的\n輸入「加 3081」新增自選")
-    return TextSendMessage(text=report)
+    return _build_text_flex_message(report, alt_text=report)
 
 # --- 個股新聞（Google News RSS，免費、可帶關鍵字查詢） ---
 def _news_company_names(extra=None):
