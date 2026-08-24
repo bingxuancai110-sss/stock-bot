@@ -3661,7 +3661,7 @@ _realtime_cache_lock = threading.Lock()
 REALTIME_CACHE_SECONDS = 90
 
 
-def get_realtime_stock(code, rng="3mo"):
+def get_realtime_stock(code, rng="3mo", market_suffix=None):
     """
     rng 是 Yahoo 的資料區間。預設 3mo 足夠算位階與均線；
     持股頁要畫「買進點」時才改用 1y——持有超過三個月的部位，
@@ -3683,7 +3683,10 @@ def get_realtime_stock(code, rng="3mo"):
 
     # 已知後綴排前面試，未知就照原順序
     known = _suffix_cache.get(code)
-    suffixes = [known, ".TW", ".TWO"] if known else [".TW", ".TWO"]
+    if market_suffix in (".TW", ".TWO"):
+        suffixes = [market_suffix]
+    else:
+        suffixes = [known, ".TW", ".TWO"] if known else [".TW", ".TWO"]
     seen = set()
     suffixes = [s for s in suffixes if not (s in seen or seen.add(s))]
 
@@ -3860,7 +3863,7 @@ def get_realtime_stock(code, rng="3mo"):
     return None
 
 
-def get_realtime_stocks_bulk(codes, workers=12, rng="3mo"):
+def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None):
     """
     並行抓多檔報價，回傳 {code: data 或 None}。
 
@@ -3876,12 +3879,12 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo"):
     if not codes:
         return {}
     if len(codes) == 1:  # 只有一檔就不必付出開執行緒池的成本
-        return {codes[0]: get_realtime_stock(codes[0], rng)}
+        return {codes[0]: get_realtime_stock(codes[0], rng, market_suffix=market_suffix)}
 
     def safe_fetch(c):
         # 單檔失敗不能拖垮整批，一律吞掉例外回 None，交由呼叫端顯示「查無行情」
         try:
-            return get_realtime_stock(c, rng)
+            return get_realtime_stock(c, rng, market_suffix=market_suffix)
         except Exception as e:
             print(f"⚠️ 並行抓取失敗 {c}: {e}")
             return None
@@ -5633,6 +5636,116 @@ _TURNING_OBSERVATION_CACHE = {"at": 0, "data": None}
 TURNING_OBSERVATION_CACHE_SECONDS = 900
 TURNING_OBSERVATION_SHARED_MAX_AGE = 900
 TURNING_OBSERVATION_SNAPSHOT_KEY = "turning_observation"
+TURNING_OBSERVATION_SCHEMA_VERSION = 2
+
+
+def _turning_reason_details(inst_item, stock, direction, cross_up, cross_down,
+                            up_streak, down_streak, vol_ratio, broke_support,
+                            prior_days=5):
+    """把轉折判斷用到的原始數值轉成逐項事實；不使用泛化的方向變化文案。"""
+    current = inst_item.get("current") or {}
+    prior_avg = inst_item.get("prior_avg") or {}
+    investor_names = {"foreign": "外資", "trust": "投信", "dealer": "自營商"}
+
+    def fmt_lots(value):
+        try:
+            return f"{float(value):+,.0f} 張"
+        except (TypeError, ValueError):
+            return "資料不足"
+
+    def fmt_abs_lots(value):
+        try:
+            return f"{abs(float(value)):,.0f} 張"
+        except (TypeError, ValueError):
+            return "資料不足"
+
+    def side_text(value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return "方向不明"
+        if value > 0:
+            return "買超"
+        if value < 0:
+            return "賣超"
+        return "接近中性"
+
+    def fmt_price(value):
+        try:
+            return f"{float(value):,.2f}"
+        except (TypeError, ValueError):
+            return "資料不足"
+
+    details = []
+    for key in ("foreign", "trust", "dealer"):
+        current_value = current.get(key)
+        prior_value = prior_avg.get(key)
+        if current_value is None or prior_value is None:
+            continue
+        name = investor_names[key]
+        try:
+            current_number = float(current_value)
+            prior_number = float(prior_value)
+        except (TypeError, ValueError):
+            continue
+        if current_number > 0 and prior_number < 0:
+            details.append(
+                f"{name}由前{prior_days}日平均賣超 {abs(prior_number):,.0f} 張，"
+                f"轉為今日買超 {current_number:,.0f} 張")
+        elif current_number < 0 and prior_number > 0:
+            details.append(
+                f"{name}由前{prior_days}日平均買超 {prior_number:,.0f} 張，"
+                f"轉為今日賣超 {abs(current_number):,.0f} 張")
+
+    total = current.get("total", inst_item.get("current_total_lots"))
+    prior_total = prior_avg.get("total", inst_item.get("prior_avg_total_lots"))
+    if total is not None:
+        total_text = (f"三大法人今日{side_text(total)} {fmt_abs_lots(total)}")
+        if prior_total is not None:
+            total_text += f"；前{prior_days}日平均{side_text(prior_total)} {fmt_abs_lots(prior_total)}"
+        details.append(total_text)
+
+    ratio = inst_item.get("magnitude_ratio")
+    try:
+        if ratio is not None and float(ratio) >= 2.5:
+            details.append(f"今日合計絕對值約為前{prior_days}日平均的 {float(ratio):.1f} 倍")
+    except (TypeError, ValueError):
+        pass
+
+    close = stock.get("close")
+    ma20 = stock.get("ma20")
+    if cross_up and close is not None and ma20 is not None:
+        details.append(f"收盤 {fmt_price(close)} 站回20日均線 {fmt_price(ma20)}")
+    elif cross_down and close is not None and ma20 is not None:
+        details.append(f"收盤 {fmt_price(close)} 跌破20日均線 {fmt_price(ma20)}")
+    elif close is not None and ma20 is not None:
+        relation = "高於" if float(close) >= float(ma20) else "低於"
+        details.append(f"收盤 {fmt_price(close)}，目前{relation}20日均線 {fmt_price(ma20)}，本日未形成均線穿越")
+    else:
+        details.append("20日均線資料不足，無法判定站回或跌破")
+
+    if direction == "up":
+        details.append(f"連續上漲 {up_streak} 天" if up_streak else "今日未形成連續上漲")
+    elif direction == "down":
+        details.append(f"連續下跌 {down_streak} 天" if down_streak else "今日未形成連續下跌")
+
+    if vol_ratio > 0:
+        details.append(f"成交量約為20日均量 {vol_ratio:.1f} 倍")
+    else:
+        details.append("20日均量資料不足")
+
+    support = stock.get("support")
+    resistance = stock.get("resistance")
+    if support is not None:
+        if broke_support:
+            details.append(f"現價 {fmt_price(close)} 已跌破近期支撐參考 {fmt_price(support)}")
+        else:
+            details.append(f"現價 {fmt_price(close)} 尚在近期支撐 {fmt_price(support)} 上方")
+    else:
+        details.append("近期支撐資料不足")
+    if resistance is not None:
+        details.append(f"近期壓力參考 {fmt_price(resistance)}")
+    return details[:10]
 
 
 def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
@@ -5655,7 +5768,10 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
             TURNING_OBSERVATION_SNAPSHOT_KEY,
             max_age_seconds=TURNING_OBSERVATION_SHARED_MAX_AGE))
         shared_payload = (shared.get("payload") if shared else None) or {}
-        if isinstance(shared_payload, dict) and isinstance(shared_payload.get("items"), list):
+        if (isinstance(shared_payload, dict) and isinstance(shared_payload.get("items"), list)
+                and int(shared_payload.get("schema_version") or 0) >= TURNING_OBSERVATION_SCHEMA_VERSION
+                and all(isinstance(item, dict) and item.get("reason_details")
+                        for item in shared_payload.get("items") or [])):
             with _realtime_cache_lock:
                 _TURNING_OBSERVATION_CACHE.update({"at": now, "data": shared_payload})
             return shared_payload
@@ -5738,13 +5854,30 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
 
         invalid_reasons = []
         if direction == "up" and broke_support:
-            invalid_reasons.append("現價已跌破近期支撐")
+            support_reference = (stock.get("low_20d") or stock.get("low_60d")
+                                 or stock.get("support"))
+            try:
+                if support_reference is not None and float(support_reference) >= float(close):
+                    invalid_reasons.append(
+                        f"現價 {float(close):,.2f} 已跌破近期支撐參考 {float(support_reference):,.2f}")
+                else:
+                    invalid_reasons.append(
+                        f"現價 {float(close):,.2f} 下方未找到有效的近期支撐，支撐條件已失效")
+            except (TypeError, ValueError):
+                invalid_reasons.append(
+                    f"現價 {float(close):,.2f} 已跌破近期支撐，支撐數值資料不足")
         if direction == "up" and down_streak >= 3:
-            invalid_reasons.append(f"已連續下跌 {down_streak} 天")
+            invalid_reasons.append(f"法人仍偏買方，但價格已連續下跌 {down_streak} 天")
         if direction == "down" and cross_up and up_streak >= 3:
             invalid_reasons.append(
-                f"價格站回20日均線且已連續上漲 {up_streak} 天")
+                f"原本偏空，但收盤 {float(close):,.2f} 已站回20日均線 {float(ma20):,.2f}，且連續上漲 {up_streak} 天")
+        if direction == "down" and cross_up and up_streak < 3:
+            invalid_reasons.append(
+                f"原本偏空，但收盤 {float(close):,.2f} 站回20日均線 {float(ma20):,.2f}")
         invalid = bool(invalid_reasons)
+        reason_details = _turning_reason_details(
+            inst_item, stock, direction, cross_up, cross_down,
+            up_streak, down_streak, vol_ratio, broke_support, prior_days)
         if invalid:
             state = "invalid"
             state_label = "已失效"
@@ -5754,14 +5887,14 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
             state = "confirmed"
             state_label = "已確認"
             direction_label = "轉強" if direction == "up" else "轉弱"
-            state_reason = f"已符合 {score} 項轉折條件，達到確認門檻"
+            state_reason = "；".join(reason_details[:3]) or "已符合轉折確認條件"
         else:
             state = "observing"
             state_label = "觀察中"
             direction_label = "轉強" if direction == "up" else "轉弱"
-            state_reason = f"目前符合 {score} 項條件，尚未達 3 項確認門檻"
+            state_reason = "；".join(reason_details[:3]) or "目前資料不足以形成完整判讀"
         if invalid_reasons:
-            reasons.extend(invalid_reasons)
+            reason_details = invalid_reasons + reason_details
         items.append({
             "code": code,
             "name": inst_item.get("name") or stock_display_name(code, fallback=code),
@@ -5775,7 +5908,8 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
             "consensus": inst_item.get("consensus") or "法人分歧",
             "current_total_lots": current_total,
             "magnitude_ratio": inst_item.get("magnitude_ratio"),
-            "reasons": reasons[:5] or ["法人資料出現方向變化"],
+            "reasons": reason_details[:4] or ["轉折細節資料不足，請以原始行情與法人明細核對"],
+            "reason_details": reason_details[:10],
             "close": close,
             "pct": stock.get("pct"),
             "support": stock.get("support"),
@@ -5785,7 +5919,8 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
             "score": score,
         })
     items.sort(key=lambda x: (state_order.get(x["state"], 0), x["score"], abs(x["current_total_lots"])), reverse=True)
-    result = {"data_date": next((x.get("data_date") for x in items if x.get("data_date")), None),
+    result = {"schema_version": TURNING_OBSERVATION_SCHEMA_VERSION,
+              "data_date": next((x.get("data_date") for x in items if x.get("data_date")), None),
               "prior_days": prior_days, "items": items[:limit]}
     with _realtime_cache_lock:
         _TURNING_OBSERVATION_CACHE["at"] = time.time()
@@ -5794,7 +5929,8 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
         _save_shared_data_snapshot(
             TURNING_OBSERVATION_SNAPSHOT_KEY, result,
             data_date=result.get("data_date") or taiwan_today(),
-            source_meta={"source": "turning_observation", "item_count": len(items),
+            source_meta={"source": "turning_observation", "schema_version": TURNING_OBSERVATION_SCHEMA_VERSION,
+                         "item_count": len(items),
                          "limit": limit, "prior_days": prior_days})
     except Exception as exc:
         print(f"⚠️ 保存轉折觀察共享快照失敗: {exc}")
@@ -5828,10 +5964,15 @@ def _get_turning_web_snapshot():
             TURNING_OBSERVATION_SNAPSHOT_KEY,
             max_age_seconds=TURNING_STALE_SNAPSHOT_MAX_AGE_SECONDS)
         payload = (shared.get("payload") if shared else None) or {}
-        if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+        if (isinstance(payload, dict) and isinstance(payload.get("items"), list)
+                and int(payload.get("schema_version") or 0) >= TURNING_OBSERVATION_SCHEMA_VERSION
+                and all(isinstance(item, dict) and item.get("reason_details")
+                        for item in payload.get("items") or [])):
             with _realtime_cache_lock:
                 _TURNING_OBSERVATION_CACHE.update({"at": now, "data": payload})
             return payload, _turning_snapshot_status(payload), "共享快照"
+        if isinstance(payload, dict) and payload:
+            return None, False, "舊版轉折快照"
     except Exception as exc:
         print(f"⚠️ 讀取轉折網頁快照失敗: {exc}")
     return None, False, "尚未建立快照"
@@ -8845,8 +8986,8 @@ def build_turning_observation_line_message(user_id, base_url=None):
             contents.append({"type": "text",
                              "text": f"・{item.get('name') or item.get('code')}（{item.get('code')}）｜{direction}\n"
                                       f"  {item.get('event_type') or '方向變化'}・{current_text}\n"
-                                       f"  {reasons or '資料出現方向變化'}\n"
-                                       f"  狀態原因：{item.get('state_reason') or '資料出現方向變化'}",
+                                       f"  {reasons or '轉折細節資料不足，請核對原始法人與行情資料'}\n"
+                                       f"  狀態原因：{item.get('state_reason') or '轉折細節資料不足，請核對原始法人與行情資料'}",
                               "size": "sm", "color": "#454C55", "wrap": True,
                              "margin": "sm"})
             shown += 1
@@ -12318,6 +12459,7 @@ def _etf_maturity_label(listing_date):
 ETF_PRODUCT_RANKING_SNAPSHOT_KEY = "etf_product_rankings"
 ETF_PRODUCT_RANKING_CACHE_SECONDS = 900
 ETF_PRODUCT_RANKING_SHARED_MAX_AGE = 3 * 86400
+ETF_PRODUCT_RANKING_SCHEMA_VERSION = 2
 ETF_PRODUCT_RANKING_PERIODS = {
     "short": {"label": "短期（近 40 個交易日，約 2 個月）", "days": 40},
     "long": {"label": "長期（近 250 個交易日，約 1 年）", "days": 250},
@@ -12415,20 +12557,105 @@ def _etf_ranking_comment(category, period_key, item, market_return):
         comparison = f"與同期大盤接近（{excess:+.1f} 個百分點）"
 
     if category == "主動式":
-        return (f"主動式：{period_key}以價格報酬觀察，{comparison}；"
-                "這只代表該期間結果，不等於經理人長期能力已被證明。")
+        return (f"主動式｜{period_key}價格報酬{comparison}；僅代表本期結果，不能推論長期經理人能力。")
     if category == "高股息":
-        return (f"高股息：{period_key}先看價格報酬，{comparison}；"
-                "配息資料尚未完整核實，未把配息率或配息假設混入排名。")
+        return (f"高股息｜{period_key}價格報酬{comparison}；配息資料未完整核實，未把配息率混入評分。")
     if category == "市值型":
-        return (f"市值型：{period_key}與加權指數比較，{comparison}；"
-                "主要用來看是否跟上核心市場，不代表未來一定超額。")
-    return (f"主題型：{period_key}以價格報酬與大盤差異觀察，{comparison}；"
-            "主題集中度與波動可能較高，不能只看名次。")
+        return (f"市值型｜{period_key}相對加權指數{comparison}；用來觀察跟隨核心市場的程度。")
+    return (f"主題型｜{period_key}價格報酬{comparison}；主題集中與波動風險需一併觀察。")
+
+
+def _etf_window_risk_stats(window):
+    """從同一觀測窗計算最大回撤與日報酬波動；不足資料時回傳 None。"""
+    values = []
+    for _day, raw_value in window or []:
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            values.append(value)
+    if len(values) < 3:
+        return {"max_drawdown_pct": None, "volatility_pct": None}
+    peak = values[0]
+    max_drawdown = 0.0
+    for value in values:
+        peak = max(peak, value)
+        if peak > 0:
+            max_drawdown = min(max_drawdown, (value / peak - 1.0) * 100)
+    returns = [(values[index] / values[index - 1] - 1.0) * 100
+               for index in range(1, len(values)) if values[index - 1] > 0]
+    if len(returns) < 2:
+        volatility = None
+    else:
+        mean = sum(returns) / len(returns)
+        variance = sum((value - mean) ** 2 for value in returns) / len(returns)
+        volatility = math.sqrt(variance)
+    return {"max_drawdown_pct": round(max_drawdown, 2),
+            "volatility_pct": round(volatility, 2) if volatility is not None else None}
+
+
+def _etf_percentile_score(value, values, higher_is_better=True):
+    """同類別橫截面百分位，單一商品給中性 50 分，不製造虛假優勢。"""
+    valid = []
+    for raw in values or []:
+        try:
+            number = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            valid.append(number)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not valid or not math.isfinite(number):
+        return None
+    if len(valid) == 1 or max(valid) == min(valid):
+        return 50.0
+    better = sum(1 for candidate in valid if candidate < number)
+    equal = sum(1 for candidate in valid if candidate == number)
+    percentile = (better + 0.5 * equal) / len(valid)
+    if not higher_is_better:
+        percentile = 1.0 - percentile
+    return round(max(0.0, min(100.0, percentile * 100)), 1)
+
+
+def _apply_etf_period_scores(rows, required_days):
+    """在單一類別／期間內計算 100 分制；名次以分數，另保留報酬名次。"""
+    if not rows:
+        return
+    excess_values = [item.get("excess_pct") for item in rows]
+    return_values = [item.get("return_pct") for item in rows]
+    drawdown_values = [item.get("max_drawdown_pct") for item in rows]
+    volatility_values = [item.get("volatility_pct") for item in rows]
+    for item in rows:
+        excess_score = _etf_percentile_score(item.get("excess_pct"), excess_values, True)
+        absolute_score = _etf_percentile_score(item.get("return_pct"), return_values, True)
+        drawdown_score = _etf_percentile_score(item.get("max_drawdown_pct"), drawdown_values, True)
+        volatility_score = _etf_percentile_score(item.get("volatility_pct"), volatility_values, False)
+        # 五項合計 100：超額 40、絕對報酬 30、回撤 10、波動 10、資料完整 10。
+        components = {
+            "同期超額報酬": round((excess_score or 0) * 0.40, 1),
+            "絕對價格報酬": round((absolute_score or 0) * 0.30, 1),
+            "回撤控制": round((drawdown_score or 0) * 0.10, 1),
+            "波動控制": round((volatility_score or 0) * 0.10, 1),
+            "資料完整度": 10.0 if item.get("observations", 0) >= required_days else 0.0,
+        }
+        item["score"] = round(sum(components.values()), 1)
+        item["score_breakdown"] = components
+    return_ranked = sorted(rows, key=lambda item: (item.get("return_pct", -999999), item.get("code", "")), reverse=True)
+    for rank, item in enumerate(return_ranked, 1):
+        item["return_rank"] = rank
+    rows.sort(key=lambda item: (item.get("score", -999999), item.get("return_pct", -999999), item.get("code", "")), reverse=True)
+    for rank, item in enumerate(rows, 1):
+        item["rank"] = rank
 
 
 def _etf_ranking_snapshot_is_current(payload):
     if not isinstance(payload, dict):
+        return False
+    if int(payload.get("schema_version") or 0) < ETF_PRODUCT_RANKING_SCHEMA_VERSION:
         return False
     data_date = _parse_history_date(payload.get("market_data_date") or payload.get("data_date"))
     today = taiwan_today()
@@ -12449,10 +12676,13 @@ def _load_etf_product_ranking_snapshot():
             ETF_PRODUCT_RANKING_SNAPSHOT_KEY,
             max_age_seconds=ETF_PRODUCT_RANKING_SHARED_MAX_AGE)
         payload = (shared.get("payload") if shared else None) or {}
-        if isinstance(payload, dict) and isinstance(payload.get("categories"), dict):
+        if (isinstance(payload, dict) and isinstance(payload.get("categories"), dict)
+                and int(payload.get("schema_version") or 0) >= ETF_PRODUCT_RANKING_SCHEMA_VERSION):
             with _realtime_cache_lock:
                 _etf_product_ranking_cache.update({"at": now, "data": payload})
             return payload, _etf_ranking_snapshot_is_current(payload), "共享快照"
+        if isinstance(payload, dict) and payload:
+            return None, False, "舊版排名快照"
     except Exception as exc:
         print(f"⚠️ 讀取 ETF 商品排名快照失敗: {exc}")
     return None, False, "尚未建立快照"
@@ -12472,10 +12702,24 @@ def build_etf_product_rankings(force_refresh=False):
             return shared
 
     catalog = get_etf_catalog_products()
-    market_history = _fetch_taiex_history("2y")
+    # 先用一年日線同時滿足大多數短期榜與成熟 ETF 的長期榜，
+    # 不再對全市場每一檔直接抓 2 年；只有長期候選且一年資料不足者才回補。
+    market_history = _fetch_taiex_history("1y")
     codes = [code for code, meta in catalog.items()
              if meta.get("category") in ("主動式", "高股息", "市值型", "主題型")]
-    quotes = get_realtime_stocks_bulk(codes, workers=18, rng="2y") if codes else {}
+    quotes = get_realtime_stocks_bulk(
+        codes, workers=24, rng="1y", market_suffix=".TW") if codes else {}
+    cutoff = taiwan_today() - timedelta(days=320)
+    long_candidates = []
+    for code in codes:
+        listing = _parse_history_date((catalog.get(code) or {}).get("listing_date"))
+        if listing and listing <= cutoff:
+            long_candidates.append(code)
+    long_fallback_codes = [code for code in long_candidates
+                           if len(_history_from_quote(quotes.get(code) or {})) < 250]
+    if long_fallback_codes:
+        quotes.update(get_realtime_stocks_bulk(
+            long_fallback_codes, workers=16, rng="2y", market_suffix=".TW"))
     period_rows = {key: {"active": [], "dividend": [], "market": [], "theme": []}
                    for key in ETF_PRODUCT_RANKING_PERIODS}
     category_key = {"主動式": "active", "高股息": "dividend",
@@ -12505,6 +12749,7 @@ def build_etf_product_rankings(force_refresh=False):
                 market_history, start_date, end_date)
             excess = (return_pct - market_return
                        if market_return is not None else None)
+            risk_stats = _etf_window_risk_stats(window)
             item = {
                 "code": code,
                 "name": str(meta.get("name") or code),
@@ -12513,6 +12758,8 @@ def build_etf_product_rankings(force_refresh=False):
                 "market_return_pct": (round(market_return, 2)
                                        if market_return is not None else None),
                 "excess_pct": round(excess, 2) if excess is not None else None,
+                "max_drawdown_pct": risk_stats.get("max_drawdown_pct"),
+                "volatility_pct": risk_stats.get("volatility_pct"),
                 "observations": len(window),
                 "start_date": start_date.isoformat(),
                 "end_date": end_date.isoformat(),
@@ -12523,16 +12770,14 @@ def build_etf_product_rankings(force_refresh=False):
             }
             period_rows[period_key][key].append(item)
 
-    for period_key in period_rows:
-        for key in period_rows[period_key]:
-            period_rows[period_key][key].sort(
-                key=lambda item: (item.get("return_pct", -999999), item.get("code", "")),
-                reverse=True)
-            for rank, item in enumerate(period_rows[period_key][key], 1):
-                item["rank"] = rank
+    for period_key, period in ETF_PRODUCT_RANKING_PERIODS.items():
+        required_days = int(period.get("days") or 0)
+        for key, rows in period_rows[period_key].items():
+            _apply_etf_period_scores(rows, required_days)
 
     market_data_date = market_history[-1][0].isoformat() if market_history else None
     result = {
+        "schema_version": ETF_PRODUCT_RANKING_SCHEMA_VERSION,
         "data_date": market_data_date,
         "market_data_date": market_data_date,
         "periods": ETF_PRODUCT_RANKING_PERIODS,
@@ -12546,7 +12791,7 @@ def build_etf_product_rankings(force_refresh=False):
         _save_shared_data_snapshot(
             ETF_PRODUCT_RANKING_SNAPSHOT_KEY, result,
             data_date=market_data_date or taiwan_today(),
-            source_meta={"source": "ETF product ranking", "schema_version": 1,
+            source_meta={"source": "ETF product ranking", "schema_version": ETF_PRODUCT_RANKING_SCHEMA_VERSION,
                          "short_days": 40, "long_days": 250,
                          "category_counts": {key: len(period_rows["short"].get(key) or [])
                                              for key in period_rows["short"]}})
@@ -13860,11 +14105,22 @@ def render_etf_product_ranking_html(payload, category_key, category_label):
             market_text = f'{float(market_pct):+.2f}%' if market_pct is not None else "資料不足"
             excess_text = f'{float(excess):+.2f} 個百分點' if excess is not None else "資料不足"
             ret_cls = "up" if return_pct is not None and float(return_pct) >= 0 else "down"
+            score = row.get("score")
+            score_text = f'{float(score):.0f} 分' if score is not None else "評分資料不足"
+            return_rank = row.get("return_rank")
+            return_rank_text = f'・報酬名次 #{int(return_rank)}' if return_rank and int(return_rank) != rank else ''
+            breakdown = row.get("score_breakdown") or {}
+            breakdown_text = (f'評分拆解：超額 {float(breakdown.get("同期超額報酬") or 0):.1f}/40・'
+                              f'報酬 {float(breakdown.get("絕對價格報酬") or 0):.1f}/30・'
+                              f'回撤 {float(breakdown.get("回撤控制") or 0):.1f}/10・'
+                              f'波動 {float(breakdown.get("波動控制") or 0):.1f}/10・'
+                              f'完整 {float(breakdown.get("資料完整度") or 0):.1f}/10')
             rendered.append(f'''<div class="etf-ranking-row">
   <div class="etf-ranking-rank">#{rank}</div>
-  <div class="etf-ranking-main"><b>{esc(str(row.get("name") or row.get("code")))}</b><span>{esc(str(row.get("code") or ""))}</span>
-    <small>{esc(str(row.get("comment") or "資料整理完成，請搭配觀測期間判讀。"))}</small></div>
-  <div class="etf-ranking-numbers"><b class="{ret_cls}">{ret_text}</b><span>同期大盤 {market_text}</span><span>超額 {excess_text}</span><small>{int(row.get("observations") or 0)} 個交易日・{esc(str(row.get("start_date") or ""))}～{esc(str(row.get("end_date") or ""))}</small></div>
+  <div class="etf-ranking-main"><b>{esc(str(row.get("name") or row.get("code")))}</b><span>{esc(str(row.get("code") or ""))}</span></div>
+  <div class="etf-ranking-numbers"><b class="{ret_cls}">{score_text}</b><span>價格報酬 {ret_text}{return_rank_text}</span><span>同期大盤 {market_text}</span><span>超額 {excess_text}</span></div>
+  <div class="etf-ranking-comment">{esc(str(row.get("comment") or "資料整理完成，請搭配觀測期間判讀。"))}<small>{esc(breakdown_text)}</small></div>
+  <div class="etf-ranking-dates">{int(row.get("observations") or 0)} 個交易日・{esc(str(row.get("start_date") or ""))}～{esc(str(row.get("end_date") or ""))}</div>
 </div>''')
         extra = len(rows) - 10
         extra_note = f'<div class="etf-ranking-more-note">本類別共 {len(rows)} 檔符合此期間資料門檻，頁面先列前 10 名。</div>' if extra > 0 else ''
@@ -13872,7 +14128,10 @@ def render_etf_product_ranking_html(payload, category_key, category_label):
 
     return f'''<section class="etf-ranking-card">
   <div class="etf-ranking-head"><h2>{esc(category_label)}商品排名</h2><span>大盤資料日 {esc(str(market_date))}</span></div>
-  <p class="etf-ranking-note">{esc(source_note)}　目前排名只列滿足完整期間門檻的商品；上市未滿期間者顯示資料不足，不和其他期間混比。</p>
+  <p class="etf-ranking-note">{esc(source_note)}　名次依同類別綜合分數排序；價格報酬名次另行標示。上市未滿期間者顯示資料不足，不和其他期間混比。</p>
+  <details class="etf-score-method"><summary>查看 ETF 評分方式（預設收合）</summary>
+    <div>同期超額報酬 40 分・絕對價格報酬 30 分・回撤控制 10 分・波動控制 10 分・資料完整度 10 分。各項先在同類別、同期間內做百分位比較；配息政策未核實不會當作 0% 加入評分。</div>
+  </details>
   {"".join(sections)}
 </section>'''
 
@@ -14042,16 +14301,23 @@ def web_etf(uid):
 .etf-ranking-status{{padding:10px 12px;background:#FAF5E9;border-left:3px solid var(--brass);border-radius:8px;margin:12px 0}}
 .etf-ranking-period{{margin-top:14px}}
 .etf-ranking-period h3{{margin:0 0 5px;font-size:16px;color:var(--ink)}}
-.etf-ranking-row{{display:grid;grid-template-columns:34px 1fr auto;gap:8px;padding:10px 0;border-top:1px solid #eee;align-items:start}}
+.etf-ranking-row{{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:8px;padding:11px 0;border-top:1px solid #eee;align-items:start}}
 .etf-ranking-rank{{font-size:17px;font-weight:800;color:var(--brass)}}
-.etf-ranking-main b{{font-size:14px;color:var(--ink)}}
-.etf-ranking-main span{{margin-left:6px;color:var(--ink-faint);font-size:11px}}
-.etf-ranking-main small,.etf-ranking-numbers span,.etf-ranking-numbers small{{display:block;color:var(--ink-soft);font-size:11px;line-height:1.5;margin-top:2px}}
-.etf-ranking-numbers{{text-align:right;min-width:116px}}
+.etf-ranking-main{{min-width:0}}
+.etf-ranking-main b{{font-size:15px;color:var(--ink);word-break:break-word}}
+.etf-ranking-main span{{margin-left:6px;color:var(--ink-faint);font-size:11px;white-space:nowrap}}
+.etf-ranking-numbers{{text-align:right;min-width:132px}}
+.etf-ranking-numbers span{{display:block;color:var(--ink-soft);font-size:11px;line-height:1.5;margin-top:2px;white-space:nowrap}}
+.etf-ranking-comment{{grid-column:2 / -1;color:var(--ink-soft);font-size:12px;line-height:1.55;padding-top:4px;word-break:break-word}}
+.etf-ranking-comment small{{display:block;color:var(--ink-faint);font-size:10.5px;line-height:1.45;margin-top:3px}}
+.etf-ranking-dates{{grid-column:2 / -1;color:var(--ink-faint);font-size:11px;line-height:1.45}}
 .etf-ranking-numbers b{{display:block;font-size:17px}}
 .etf-ranking-numbers b.up{{color:var(--red)}}
 .etf-ranking-numbers b.down{{color:var(--green)}}
 .etf-ranking-more-note,.etf-ranking-empty-line{{color:var(--ink-soft);font-size:12px;line-height:1.6;padding:7px 0}}
+.etf-score-method{{margin:8px 0 12px;border:1px solid #eee9dd;border-radius:9px;padding:7px 10px;color:var(--ink-soft);font-size:11.5px;line-height:1.55;background:#fcfbf8}}
+.etf-score-method summary{{cursor:pointer;color:var(--brass);font-weight:700}}
+@media (max-width:480px){{.etf-ranking-row{{grid-template-columns:32px minmax(0,1fr) auto;gap:7px}}.etf-ranking-numbers{{min-width:122px}}.etf-ranking-numbers b{{font-size:16px}}.etf-ranking-comment{{font-size:12px}}}}
 .etf-inline-detail{{margin-top:10px;border-top:1px solid #eee;padding-top:8px}}
 .etf-inline-detail summary{{cursor:pointer;color:var(--brass);font-size:13px;font-weight:700;padding:4px 0}}
 .etf-inline-detail-body{{margin-top:8px;padding:10px 11px;background:#faf9f5;border:1px solid #eee9dd;border-radius:10px}}
@@ -15559,14 +15825,15 @@ def render_turning_observation_web_body(result, status_note=None):
             ratio = item.get("magnitude_ratio")
             inst_text = f"法人 {int(current):+,} 張" if current is not None else "法人資料不足"
             ratio_text = f"・前{prior_days}日平均絕對值 {float(ratio):.1f} 倍" if ratio and float(ratio) >= 2.5 else ""
-            reasons = "、".join(item.get("reasons") or []) or "資料出現方向變化"
+            reason_details = item.get("reason_details") or item.get("reasons") or []
+            reasons = "、".join(reason_details) or "轉折細節資料不足，請核對原始法人與行情資料"
             return f'''<div class="turning-row">
   <div class="turning-row-head"><b>#{rank} {esc(str(item.get("name") or item.get("code")))}</b>
     <span>{esc(str(item.get("code") or ""))}・{esc(str(item.get("direction_label") or "方向變化"))}</span></div>
   <div class="turning-price">{close_text} <span>{pct_text}</span></div>
   <div class="turning-detail">{esc(str(item.get("event_type") or "法人方向變化"))}・{esc(inst_text)}{esc(ratio_text)}・{esc(str(item.get("consensus") or "法人分歧"))}</div>
   <div class="turning-detail">依據：{esc(reasons)}</div>
-  <div class="turning-state-reason">狀態原因：{esc(str(item.get("state_reason") or "資料出現方向變化"))}</div>
+  <div class="turning-state-reason">狀態原因：{esc(str(item.get("state_reason") or "轉折細節資料不足，請核對原始法人與行情資料"))}</div>
   <div class="turning-detail">支撐 {esc(str(item.get("support") or "資料不足"))}・壓力 {esc(str(item.get("resistance") or "資料不足"))}</div>
 </div>'''
 
