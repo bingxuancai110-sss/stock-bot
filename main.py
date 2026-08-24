@@ -14974,9 +14974,34 @@ def _etf_distribution_display_text(row):
     return "官方配息資料待確認・年化配息不列名次"
 
 
-def render_etf_product_ranking_html(payload, category_key, category_label):
-    """渲染單一 ETF 類別的短／長期排名；排名只用真實可取得價格序列。"""
+def render_etf_product_ranking_html(payload, category_key, category_label,
+                                     sort_key="score", sort_order="desc"):
+    """渲染 ETF 短／長期排名；預設依綜合分數降冪，可切換四種指標。"""
     esc = html.escape
+    sort_options = {
+        "score": ("綜合分數", "score"),
+        "return": ("價格報酬率", "return_pct"),
+        "excess": ("超額報酬", "excess_pct"),
+        "yield": ("殖利率／年化配息率", "distribution_annualized_yield_pct"),
+    }
+    selected_sort = sort_key if sort_key in sort_options else "score"
+    selected_order = sort_order if sort_order in ("asc", "desc") else "desc"
+    selected_sort_label, selected_field = sort_options[selected_sort]
+    selected_arrow = "↓" if selected_order == "desc" else "↑"
+    selected_direction = "高到低" if selected_order == "desc" else "低到高"
+
+    def sort_link(key, label):
+        active = key == selected_sort
+        next_order = ("asc" if selected_order == "desc" else "desc") if active else "desc"
+        arrow = selected_arrow if active else "↓"
+        active_class = " active" if active else ""
+        href = (f"/web/etf?category={esc(str(category_key), quote=True)}"
+                f"&sort={key}&order={next_order}")
+        aria = f"目前{label}{selected_direction}，按一下切換" if active else f"依{label}由高到低排序"
+        return (f'<a class="etf-sort-link{active_class}" href="{href}" '
+                f'aria-label="{esc(aria, quote=True)}"><span>{esc(label)}</span>'
+                f'<b aria-hidden="true">{arrow}</b></a>')
+
     if not isinstance(payload, dict) or not isinstance(payload.get("categories"), dict):
         return '''<section class="etf-ranking-card etf-ranking-empty">
   <h2>ETF 商品排名</h2><p>排名資料尚在背景整理；稍後重新整理即可看到具體名次。</p></section>'''
@@ -14995,9 +15020,30 @@ def render_etf_product_ranking_html(payload, category_key, category_label):
                 '<div class="etf-ranking-empty-line">資料不足，未把不完整期間硬列入排名。</div></div>')
             continue
 
+        # 排序只使用已存在且可核實的數值；缺值永遠排在有數值之後，
+        # 不把待確認／不適用轉成 0，也不會把不同期間混在一起。
+        sortable_rows, missing_rows = [], []
+        for row in rows:
+            raw_value = row.get(selected_field)
+            try:
+                numeric_value = float(raw_value)
+                if not math.isfinite(numeric_value):
+                    raise ValueError
+            except (TypeError, ValueError):
+                missing_rows.append(row)
+            else:
+                sortable_rows.append((row, numeric_value))
+        if selected_order == "desc":
+            sortable_rows.sort(key=lambda item: (-item[1], str(item[0].get("code") or "")))
+        else:
+            sortable_rows.sort(key=lambda item: (item[1], str(item[0].get("code") or "")))
+        ordered_items = ([(row, True) for row, _value in sortable_rows] +
+                         [(row, False) for row in missing_rows])
+
         rendered = []
-        for row in rows[:10]:
-            rank = int(row.get("rank") or len(rendered) + 1)
+        for display_rank, (row, sort_value_available) in enumerate(ordered_items, 1):
+            rank = display_rank
+            display_rank_text = f'#{rank}' if sort_value_available else '—'
             return_pct = row.get("return_pct")
             market_pct = row.get("market_return_pct")
             excess = row.get("excess_pct")
@@ -15045,23 +15091,54 @@ def render_etf_product_ranking_html(payload, category_key, category_label):
                              if turnover is not None else '年初至今均成交待確認')
             metric_date = row.get("official_metrics_retrieved_date")
             metric_date_text = (f'官方欄位擷取日 {metric_date}' if metric_date else '官方欄位擷取日待確認')
+            observations = row.get("observations")
+            observation_text = (f'{int(float(observations))} 個交易日・'
+                                f'{row.get("start_date") or "未標起日"}～{row.get("end_date") or "未標迄日"}'
+                                if observations is not None else '價格觀察日數待確認')
+            score_rank = row.get("rank")
+            score_rank_text = (f'綜合排名 #{int(score_rank)}'
+                               if score_rank is not None else '綜合排名 待確認')
+            current_rank_text = ('綜合排名' if selected_sort == 'score'
+                                 else f'{selected_sort_label}排名')
+            if sort_value_available:
+                rank_badges = [f'<span>{esc(current_rank_text)} #{rank}</span>']
+            else:
+                rank_badges = [f'<span>{esc(selected_sort_label)} 待確認／不適用</span>']
+            if selected_sort != 'score' and score_rank is not None:
+                rank_badges.append(f'<span>{esc(score_rank_text)}</span>')
+            rank_badges.extend([
+                f'<span>{esc(performance_rank_text)}</span>',
+                f'<span>{esc(dividend_rank_text)}</span>',
+            ])
             rendered.append(f'''<div class="etf-ranking-row">
-  <div class="etf-ranking-rank">#{rank}</div>
+  <div class="etf-ranking-rank">{display_rank_text}</div>
   <div class="etf-ranking-main"><div class="etf-ranking-name"><b>{esc(str(row.get("name") or row.get("code")))}</b><span>{esc(str(row.get("code") or ""))}</span></div><strong class="etf-ranking-score {ret_cls}">{score_text}</strong></div>
-  <div class="etf-ranking-ranks"><span>綜合排名 #{rank}</span><span>{esc(performance_rank_text)}</span><span>{esc(dividend_rank_text)}</span></div>
+  <div class="etf-ranking-ranks">{"".join(rank_badges)}</div>
   <div class="etf-ranking-numbers"><span>{esc(asset_text)}</span><span>價格報酬 {ret_text}</span><span>同期大盤 {market_text}</span><span>超額 {excess_text}</span><span>配息 {esc(distribution_text)}</span><span>{esc(risk_text)}</span><span>{esc(holders_text)}</span><span>{esc(turnover_text)}</span></div>
-  <div class="etf-ranking-dates">{esc(metric_date_text)}</div>
   <div class="etf-ranking-comment">{esc(str(row.get("comment") or "資料整理完成，請搭配觀測期間判讀。"))}<small>{esc(breakdown_text)}</small></div>
-  <div class="etf-ranking-dates">{int(row.get("observations") or 0)} 個交易日・{esc(str(row.get("start_date") or ""))}～{esc(str(row.get("end_date") or ""))}</div>
+  <div class="etf-ranking-provenance"><span>{esc(metric_date_text)}</span><span>{esc(observation_text)}</span></div>
 </div>''')
-        extra = len(rows) - 10
-        extra_note = f'<div class="etf-ranking-more-note">本類別共 {len(rows)} 檔符合此期間資料門檻，頁面先列前 10 名。</div>' if extra > 0 else ''
-        sections.append(f'<div class="etf-ranking-period"><h3>{esc(label)}</h3>{"".join(rendered)}{extra_note}</div>')
+        visible_html = "".join(rendered[:3])
+        hidden_html = "".join(rendered[3:])
+        ordered_count = len(ordered_items)
+        missing_count = len(missing_rows)
+        more_html = (f'<details class="etf-ranking-more">'
+                     f'<summary>查看其餘 {ordered_count - 3} 檔（預設收合）</summary>'
+                     f'<div class="etf-ranking-more-body">{hidden_html}</div></details>'
+                     if hidden_html else '')
+        missing_note = (f'另有 {missing_count} 檔因該排序欄位待確認／不適用而置後。'
+                        if missing_count else '')
+        extra_note = (f'<div class="etf-ranking-more-note">本期間共 {ordered_count} 檔符合資料門檻；'
+                      f'目前依{esc(selected_sort_label)}{esc(selected_arrow)}排序，預設顯示前 3 名，其餘 {ordered_count - 3} 檔收合。'
+                      f'{esc(missing_note)}</div>'
+                      if ordered_count > 3 else '')
+        sections.append(f'<div class="etf-ranking-period"><div class="etf-ranking-period-head"><h3>{esc(label)}</h3><span>依{esc(selected_sort_label)}{esc(selected_arrow)}・{esc(selected_direction)}</span></div>{visible_html}{more_html}{extra_note}</div>')
 
     return f'''<section class="etf-ranking-card">
   <div class="etf-ranking-head"><h2>{esc(category_label)}商品排名</h2><span>大盤資料日 {esc(str(market_date))}</span></div>
   <p class="etf-ranking-note">{esc(source_note)}　名次只在「{esc(category_label)}」類別內比較，分數不可跨類別解讀；上市未滿期間者顯示資料不足，不和其他期間混比。</p>
-  <div class="etf-ranking-rank-guide"><b>本頁三種排名：</b>綜合排名＝類別專屬評分；績效排名＝觀測期價格報酬；年化配息排名＝官方已發生配息且資料覆蓋滿約 12 個月的參考殖利率。三者不互相取代。</div>
+  <div class="etf-ranking-rank-guide"><b>本頁可依四種指標排序：</b>綜合分數、價格報酬率、超額報酬、殖利率／年化配息率。預設綜合分數由高到低；殖利率只比較官方資料完整者，待確認／不適用會排在最後。</div>
+  <div class="etf-ranking-sortbar"><span class="etf-ranking-sort-title">排序</span>{sort_link("score", "綜合分數")}{sort_link("return", "價格報酬率")}{sort_link("excess", "超額報酬")}{sort_link("yield", "殖利率／年化配息率")}<small>目前：{esc(selected_sort_label)} {selected_arrow}（{esc(selected_direction)}）</small></div>
   <details class="etf-score-method"><summary>查看 {esc(category_label)} 評分方式（預設收合）</summary>
     <div>{esc(_etf_score_method_text(category_label))}。各項先在同類別、同期間內做百分位比較；官方配息金額空白或未核實時，配息數值維持待確認，不會假設為 0%。高股息的配息因子使用截至資料日近 12 個月已發生現金配息總額／期末價格，並非含息總報酬。</div>
   </details>
@@ -15213,8 +15290,15 @@ def web_etf(uid):
         ranking_payload, ranking_fresh, ranking_source = _load_etf_product_ranking_snapshot()
         if ranking_payload is None or not ranking_fresh:
             _start_etf_product_ranking_refresh()
+        sort_key = request.args.get("sort", "score").strip().lower()
+        sort_order = request.args.get("order", "desc").strip().lower()
+        if sort_key not in {"score", "return", "excess", "yield"}:
+            sort_key = "score"
+        if sort_order not in {"asc", "desc"}:
+            sort_order = "desc"
         ranking_html = render_etf_product_ranking_html(
-            ranking_payload, selected, selected_label.replace(" ETF", ""))
+            ranking_payload, selected, selected_label.replace(" ETF", ""),
+            sort_key=sort_key, sort_order=sort_order)
         if ranking_payload and not ranking_fresh:
             ranking_html = (f'<div class="etf-ranking-status">目前先顯示{html.escape(ranking_source)}的最近排名；'
                             '最新行情正在背景更新。</div>' + ranking_html)
@@ -15374,6 +15458,15 @@ def web_etf(uid):
 .etf-ranking-rank-guide b{{color:var(--brass)}}
 .etf-ranking-status{{padding:10px 12px;background:#FAF5E9;border-left:3px solid var(--brass);border-radius:8px;margin:12px 0}}
 .etf-ranking-period{{margin-top:14px}}
+.etf-ranking-period-head{{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:5px}}
+.etf-ranking-period-head h3{{margin:0;font-size:16px;color:var(--ink)}}
+.etf-ranking-period-head span{{color:var(--ink-faint);font-size:10.5px;line-height:1.4;overflow-wrap:anywhere}}
+.etf-ranking-sortbar{{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0 12px;padding:9px 10px;background:#fbfaf6;border:1px solid #eee9dd;border-radius:10px}}
+.etf-ranking-sort-title{{color:var(--ink-soft);font-size:11.5px;font-weight:700;margin-right:2px}}
+.etf-sort-link{{display:inline-flex;align-items:center;gap:4px;padding:5px 7px;border:1px solid #e4dfd2;border-radius:999px;background:#fff;color:var(--ink-soft);font-size:11px;line-height:1.25;text-decoration:none;white-space:normal}}
+.etf-sort-link b{{color:var(--brass);font-size:13px;line-height:1}}
+.etf-sort-link.active{{background:#f5efe3;border-color:#d9c39b;color:var(--ink);font-weight:700}}
+.etf-ranking-sortbar small{{flex-basis:100%;color:var(--ink-faint);font-size:10.5px;line-height:1.4}}
 .etf-ranking-period h3{{margin:0 0 5px;font-size:16px;color:var(--ink)}}
 .etf-ranking-row{{display:grid;grid-template-columns:30px minmax(0,1fr);gap:0 9px;padding:13px 0;border-top:1px solid #eee;align-items:start}}
 .etf-ranking-rank{{font-size:16px;font-weight:800;color:var(--brass);padding-top:3px}}
@@ -15390,11 +15483,18 @@ def web_etf(uid):
 .etf-ranking-numbers span{{display:block;color:var(--ink-soft);font-size:11.5px;line-height:1.5;white-space:normal;overflow-wrap:anywhere}}
 .etf-ranking-comment{{grid-column:2;color:var(--ink-soft);font-size:12.5px;line-height:1.55;padding-top:7px;overflow-wrap:anywhere}}
 .etf-ranking-comment small{{display:block;color:var(--ink-faint);font-size:10.5px;line-height:1.45;margin-top:4px;overflow-wrap:anywhere}}
-.etf-ranking-dates{{grid-column:2;color:var(--ink-faint);font-size:11px;line-height:1.45;margin-top:4px;overflow-wrap:anywhere}}
+.etf-ranking-provenance{{grid-column:2;display:flex;gap:8px;flex-wrap:wrap;color:var(--ink-faint);font-size:10.5px;line-height:1.45;margin-top:5px;overflow-wrap:anywhere}}
+.etf-ranking-provenance span{{min-width:0;overflow-wrap:anywhere}}
 .etf-ranking-more-note,.etf-ranking-empty-line{{color:var(--ink-soft);font-size:12px;line-height:1.6;padding:7px 0}}
+.etf-ranking-more{{margin:4px 0 0;border-top:1px solid #eee9dd}}
+.etf-ranking-more summary{{cursor:pointer;padding:10px 2px 7px;color:var(--brass);font-size:12px;font-weight:700;line-height:1.45;list-style-position:inside}}
+.etf-ranking-more summary::marker{{color:var(--brass)}}
+.etf-ranking-more-body{{padding:0 8px;border-left:2px solid #f0e6d2;background:#fdfcf9}}
+.etf-ranking-more-body .etf-ranking-row:first-child{{border-top:0}}
+.etf-ranking-more-note{{font-size:10.5px;color:var(--ink-faint);padding-top:4px}}
 .etf-score-method{{margin:8px 0 12px;border:1px solid #eee9dd;border-radius:9px;padding:7px 10px;color:var(--ink-soft);font-size:11.5px;line-height:1.55;background:#fcfbf8}}
 .etf-score-method summary{{cursor:pointer;color:var(--brass);font-weight:700}}
-@media (max-width:480px){{.etf-overview-grid{{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}}.etf-overview-item{{padding:9px 8px}}.etf-overview-item b{{font-size:16px}}.etf-key-metrics{{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 10px}}.etf-ranking-row{{grid-template-columns:27px minmax(0,1fr);gap:0 7px}}.etf-ranking-main{{gap:5px}}.etf-ranking-name b{{font-size:16px}}.etf-ranking-score{{font-size:17px}}.etf-ranking-ranks{{gap:4px;margin-top:5px}}.etf-ranking-ranks span{{font-size:10.5px;padding:3px 6px}}.etf-ranking-numbers{{grid-template-columns:1fr;gap:1px;margin-top:5px}}.etf-ranking-comment{{font-size:12px}}}}
+@media (max-width:480px){{.etf-overview-grid{{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}}.etf-overview-item{{padding:9px 8px}}.etf-overview-item b{{font-size:16px}}.etf-key-metrics{{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 10px}}.etf-ranking-sortbar{{align-items:flex-start;gap:5px;padding:8px}}.etf-sort-link{{font-size:10.5px;padding:5px 6px}}.etf-ranking-period-head span{{font-size:10px}}.etf-ranking-row{{grid-template-columns:27px minmax(0,1fr);gap:0 7px}}.etf-ranking-main{{gap:5px}}.etf-ranking-name b{{font-size:16px}}.etf-ranking-score{{font-size:17px}}.etf-ranking-ranks{{gap:4px;margin-top:5px}}.etf-ranking-ranks span{{font-size:10.5px;padding:3px 6px}}.etf-ranking-numbers{{grid-template-columns:1fr;gap:1px;margin-top:5px}}.etf-ranking-comment{{font-size:12px}}.etf-ranking-provenance{{display:block}}.etf-ranking-provenance span{{display:block;margin-top:2px}}.etf-ranking-more-body{{padding:0 5px}}}}
 .etf-inline-detail{{margin-top:10px;border-top:1px solid #eee;padding-top:8px}}
 .etf-inline-detail summary{{cursor:pointer;color:var(--brass);font-size:13px;font-weight:700;padding:4px 0}}
 .etf-inline-detail-body{{margin-top:8px;padding:10px 11px;background:#faf9f5;border:1px solid #eee9dd;border-radius:10px}}
