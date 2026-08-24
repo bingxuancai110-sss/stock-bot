@@ -2959,29 +2959,33 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
             code = str(log.get("code") or "")
             name = html.escape(str(stock_display_name(code, inst_data)))
             action = "加碼" if log.get("action") == "add" else "減碼"
-            action_cls = "add" if action == "加碼" else "reduce"
             delta = int(log.get("shares_delta") or 0)
+            before = int(log.get("shares_before") or 0)
+            status_label = "新增" if action == "加碼" and before == 0 else action
+            status_cls = "new" if status_label == "新增" else ("add" if action == "加碼" else "reduce")
             delta_text = f"{delta:+,} 股"
             delta_class = "up" if delta > 0 else "down"
-            before = int(log.get("shares_before") or 0)
             after = int(log.get("shares_after") or 0)
             change_pct = log.get("change_pct")
-            change_text = (f"{change_pct:+.2f}%" if change_pct is not None else
-                           ("新增" if before == 0 and delta > 0 else "待確認"))
+            change_text = ("100%" if status_label == "新增" else
+                           (f"{change_pct:+.2f}%" if change_pct is not None else "待確認"))
             weight = log.get("current_weight")
             weight_text = f"{weight:.2f}%" if weight is not None else "待確認"
             event_weight = log.get("event_weight")
-            event_weight_text = (f"本次影響 {event_weight:+.2f}%"
-                                 if event_weight is not None else "本次占比待確認")
+            event_weight_text = (f"{event_weight:+.2f}%"
+                                 if event_weight is not None else "待確認")
+            event_weight_class = ("up" if event_weight is not None and event_weight > 0 else
+                                  "down" if event_weight is not None and event_weight < 0 else "flat")
             price = log.get("trade_price")
             price_text = f"成交／成本 {price:,.2f}" if price is not None else "成交價待確認"
             note = html.escape(str(log.get("note") or ""))
             note_html = f'<small>{note}</small>' if note else ''
             row_parts.append(f'''<div class="position-journal-row">
-  <div class="position-journal-name"><span class="position-journal-badge {action_cls}">{action}</span><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
-  <div class="position-journal-cell"><small>持股變動</small><b class="{delta_class}">{delta_text}</b><small>{before:,} → {after:,} 股</small></div>
-  <div class="position-journal-cell"><small>變動幅度</small><b>{html.escape(change_text)}</b><small>相對操作前</small></div>
-  <div class="position-journal-cell"><small>目前權重</small><b>{html.escape(weight_text)}</b><small>{html.escape(event_weight_text)}</small>{note_html}</div>
+  <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
+  <div class="position-journal-status"><span class="position-journal-badge {status_cls}">{status_label}</span></div>
+  <div class="position-journal-cell"><b class="{delta_class}">{delta_text}</b><small>{before:,} → {after:,} 股</small></div>
+  <div class="position-journal-cell"><b>{html.escape(change_text)}</b><small>相對操作前</small></div>
+  <div class="position-journal-cell"><b>{html.escape(weight_text)}</b><small class="{event_weight_class}">{html.escape(event_weight_text)}</small>{note_html}</div>
 </div>''')
         day_sections.append(f'<div class="position-journal-day">{day_text}</div>{"".join(row_parts)}')
 
@@ -2989,6 +2993,7 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
     return f'''<section class="position-journal">
   <div class="position-journal-head"><h2>操作日報</h2><small>{len(enriched)} 筆操作<br>{html.escape(filter_text)}</small></div>
   <div class="position-journal-note">記錄加碼／減碼後的持股變化。<b>目前權重</b>＝最新可得價格 × 目前持股 ÷ 目前持股總市值；未輸入的現金與其他資產不會被假設加入分母。</div>
+  <div class="position-journal-table-head"><span>標的</span><span>狀態</span><span>持股變動</span><span>變動幅度</span><span>目前權重<br>變動 %</span></div>
   {"".join(day_sections)}
   <div class="position-journal-foot">本次影響是以成交／成本價 × 股數變動估算，占目前已登錄持股總市值；不是個人化買賣建議。價格若查無有效資料，相關欄位維持待確認。</div>
 </section>'''
@@ -11127,14 +11132,18 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
   .position-journal-head small{color:var(--ink-faint);font-size:11.5px;line-height:1.5;text-align:right}
   .position-journal-note{padding:9px 15px;background:#F7F4EC;color:var(--ink-soft);font-size:11.5px;line-height:1.6}
   .position-journal-day{padding:10px 15px 4px;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}
-  .position-journal-row{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:9px;align-items:center;padding:12px 15px;border-top:1px solid #EEEAE1}
-  .position-journal-name{min-width:0}
+  .position-journal-table-head{display:grid;grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:9px;align-items:end;padding:9px 15px 7px;background:#F8F7F2;color:var(--ink-soft);font-size:11px;font-weight:700;line-height:1.25;border-bottom:1px solid #E8E3D8}
+  .position-journal-table-head span:not(:first-child){text-align:right}
+  .position-journal-row{display:grid;grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:9px;align-items:center;padding:12px 15px;border-top:1px solid #EEEAE1}
+  .position-journal-name,.position-journal-status{min-width:0}
   .position-journal-name b{display:block;font-size:15px;overflow-wrap:anywhere}
-  .position-journal-name small{display:block;color:var(--ink-soft);font-size:11px;margin-top:2px}
-  .position-journal-cell{min-width:0;color:var(--ink-soft);font-size:11px;line-height:1.45}
+  .position-journal-name small{display:block;color:var(--ink-soft);font-size:11px;margin-top:2px;overflow-wrap:anywhere}
+  .position-journal-status{text-align:right}
+  .position-journal-cell{min-width:0;color:var(--ink-soft);font-size:11px;line-height:1.45;text-align:right}
   .position-journal-cell b{display:block;color:var(--ink);font-size:14px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
   .position-journal-cell small{display:block;color:var(--ink-faint);font-size:10.5px;overflow-wrap:anywhere}
   .position-journal-badge{display:inline-block;padding:3px 7px;border-radius:999px;font-size:11px;font-weight:700;line-height:1.25}
+  .position-journal-badge.new{background:#F6F0D7;color:#927A12}
   .position-journal-badge.add{background:#FCE9E6;color:var(--up)}
   .position-journal-badge.reduce{background:#E8F2EA;color:var(--down)}
   .position-journal-foot{padding:10px 15px 13px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}
@@ -11143,10 +11152,16 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
     .position-journal-head{padding:13px 12px 10px}
     .position-journal-head h2{font-size:17px}
     .position-journal-head small{text-align:right;font-size:10.5px}
-    .position-journal-row{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:9px 10px;padding:12px}
-    .position-journal-name{grid-column:1/-1}
-    .position-journal-cell b{font-size:13px}
-    .position-journal-note,.position-journal-day,.position-journal-foot{padding-left:12px;padding-right:12px}
+    .position-journal-table-head{grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:5px;padding:8px 8px 6px;font-size:9.5px}
+    .position-journal-row{grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:6px 5px;padding:10px 8px}
+    .position-journal-name b{font-size:13px}
+    .position-journal-name small{font-size:9.5px}
+    .position-journal-cell{font-size:9.5px}
+    .position-journal-cell b{font-size:12px}
+    .position-journal-cell small{font-size:9px}
+    .position-journal-status{font-size:9px}
+    .position-journal-badge{padding:3px 5px;font-size:9.5px}
+    .position-journal-note,.position-journal-day,.position-journal-foot{padding-left:8px;padding-right:8px}
   }
 
 .num{font-variant-numeric:tabular-nums;
@@ -16062,7 +16077,9 @@ def render_portfolio_fast_summary(uid):
 <section class="daily-fast-card"><div class="daily-fast-title"><h2>🏆 我的排名變化</h2><a href="/web/leaderboard" style="color:var(--brass);font-size:12px">查看排行榜 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section>'''
 
 
-def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total, taiex=None):
+def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total,
+                          taiex=None, position_journal_html=""):
+
     # 新版首頁上半部：先講今天，再提供完整分析入口。
     calendar_today = taiwan_today()
     display_date = _premarket_display_date(calendar_today)
@@ -16319,6 +16336,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <h1>今天你的投資發生了什麼？</h1>
   <div class="market-strip"><span>大盤 <b>{market_text}</b></span><span>你的組合 <b>{portfolio_text}</b></span><span>相對大盤 <b>{relative_text}</b></span></div>
 </section>
+{position_journal_html}
 <section class="daily-card attention-card"><div class="daily-section-title"><h2>🔥 今日值得注意</h2><a href="/web/premarket">查看完整變化 →</a></div>{events_html}</section>
 <section class="daily-card"><div class="daily-section-title"><h2>我的組合今天怎麼了？</h2><span>即時報價</span></div><div class="portfolio-highlights"><div><small>最大貢獻</small><b class="positive">{gain_html}</b></div><div><small>最大拖累</small><b class="negative">{loss_html}</b></div><div><small>總市值</small><b>{total_value:,.0f}</b></div></div></section>
 {home_judgement_html}
@@ -16565,9 +16583,17 @@ def web_portfolio(uid):
     realized_html = render_realized_summary(uid, inst)
     realized_done = time.monotonic()
 
+    journal_logs = get_position_change_logs(uid, limit=5000)
+    journal_dates = [_position_change_date(log.get("trade_date")) for log in journal_logs]
+    latest_journal_date = max((d for d in journal_dates if d), default=None)
+    journal_html = render_position_change_journal(
+        uid, current_positions=positions, price_map=price_map, inst_data=inst,
+        logs=journal_logs, trade_date=latest_journal_date, display_limit=20)
+
     daily_top_started = time.monotonic()
     daily_top = render_daily_home_top(uid, holdings, total_value, total_cost,
-                                      price_map, pl_total, taiex=taiex)
+                                      price_map, pl_total, taiex=taiex,
+                                      position_journal_html=journal_html)
     daily_top_done = time.monotonic()
     print("⏱️ 今日完整頁：共享 %.0fms、持股行情 %.0fms、組合計算 %.0fms、走勢 %.0fms、實現損益 %.0fms、首頁判讀 %.0fms、合計 %.0fms" % (
         (shared_done - full_started) * 1000,
