@@ -3880,16 +3880,21 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
     codes = list(dict.fromkeys(str(c).strip() for c in codes if c))
     if not codes:
         return {}
+    def suffix_for(code):
+        if isinstance(market_suffix, dict):
+            return market_suffix.get(code)
+        return market_suffix
+
     if len(codes) == 1:  # 只有一檔就不必付出開執行緒池的成本
         return {codes[0]: get_realtime_stock(
-            codes[0], rng, market_suffix=market_suffix,
+            codes[0], rng, market_suffix=suffix_for(codes[0]),
             force_refresh=force_refresh)}
 
     def safe_fetch(c):
         # 單檔失敗不能拖垮整批，一律吞掉例外回 None，交由呼叫端顯示「查無行情」
         try:
             return get_realtime_stock(
-                c, rng, market_suffix=market_suffix,
+                c, rng, market_suffix=suffix_for(c),
                 force_refresh=force_refresh)
         except Exception as e:
             print(f"⚠️ 並行抓取失敗 {c}: {e}")
@@ -9262,8 +9267,23 @@ def build_turning_observation_line_message(user_id, base_url=None):
 
 
 def _line_screener_snapshot(mode, intraday=False):
-    """LINE 只讀已完成結果；盤中僅把五分鐘內的記憶體結果稱為即時。"""
+    """LINE 只讀已完成結果；盤中優先使用最近的 radar_live 快照。"""
     now = time.time()
+    if intraday and mode == "radar" and "_load_recent_live_radar_snapshot" in globals():
+        live = _load_recent_live_radar_snapshot()
+        if live and isinstance(live.get("rows"), list):
+            live_meta = live.get("source_meta") or {}
+            live_cache = {
+                "at": now, "rows": live.get("rows") or [],
+                "skipped": live.get("skipped", 0),
+                "momentum": live.get("momentum") or {},
+                "source_date": live.get("source_date"),
+                "scan_universe_count": live.get("scan_universe_count") or live_meta.get("scan_universe_count"),
+                "scan_finished_at": live.get("scan_finished_at") or live_meta.get("scan_finished_at"),
+                "radar_diagnostics": live.get("radar_diagnostics") or live_meta.get("radar_diagnostics") or {},
+            }
+            _screener_cache[mode] = live_cache
+            return live_cache, "盤中跨 worker 即時快照", True
     cached = _screener_cache.get(mode)
     if cached and isinstance(cached.get("rows"), list):
         age = now - float(cached.get("at") or 0)
@@ -9281,45 +9301,72 @@ def _line_screener_snapshot(mode, intraday=False):
     return None, "尚無可用快照", False
 
 
-def build_line_screener_message(user_id, mode, base_url=None):
-    """LINE 黑馬／雷達只回前 3 檔；完整清單由按鈕導向網頁，絕不在 webhook 同步掃全市場。"""
+def _build_line_radar_pending_message(user_id, base_url=None,
+                                      already_running=False):
+    """LINE 盤中雷達的立即回覆；真正掃描在背景完成後另行推送。"""
+    token = create_web_token(user_id)
+    web_url = None
+    if token:
+        web_url = (f"{public_web_base_url(base_url)}/web/screener?mode=radar"
+                   f"&view=list&t={quote(token, safe='')}")
+    state = ("已有另一個即時全市場掃描正在處理，完成後請重新輸入「雷達」查看。"
+             if already_running else
+             "已啟動即時全市場行情掃描；完成後會再推送本次真實前三名。")
+    contents = [
+        {"type": "text", "text": "🚨 雷達｜即時掃描已啟動",
+         "weight": "bold", "size": "xl", "color": "#1B2027"},
+        {"type": "text", "text": state, "size": "sm", "color": "#454C55",
+         "margin": "md", "wrap": True},
+        {"type": "text", "text": "LINE 不再卡住等待；掃描期間不展示舊報酬率，也不以舊快照冒充即時結果。",
+         "size": "xs", "color": "#767D85", "margin": "sm", "wrap": True},
+    ]
+    if web_url:
+        contents += [
+            {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+            {"type": "button", "style": "primary", "height": "sm",
+             "color": "#6E5228", "margin": "lg",
+             "action": {"type": "uri", "label": "查看雷達網頁入口",
+                        "uri": web_url}},
+        ]
+    return FlexSendMessage(
+        alt_text="🚨 雷達即時全市場掃描已啟動",
+        contents={"type": "bubble",
+                  "body": {"type": "box", "layout": "vertical",
+                           "contents": contents, "paddingAll": "18px",
+                           "backgroundColor": "#FFFFFF"},
+                  "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
+
+
+def build_line_screener_message(user_id, mode, base_url=None,
+                                _completed_live_scan=False):
+    """LINE 黑馬／雷達只回前 3 檔；盤中雷達先立即回覆，完成後再推送結果。"""
     mode = "radar" if str(mode).strip() == "radar" else "blackhorse"
     label = "雷達" if mode == "radar" else "黑馬"
     icon = "🚨" if mode == "radar" else "🐎"
 
     intraday = mode == "radar" and _is_taiwan_intraday_window()
+    if intraday and not _completed_live_scan:
+        started = _start_screener_background_refresh(
+            "radar", intraday=True, radar_deep_limit=48,
+            on_complete=lambda: line_bot_api.push_message(
+                user_id, build_line_screener_message(
+                    user_id, "radar", base_url, _completed_live_scan=True)),
+            on_failure=lambda _exc: line_bot_api.push_message(
+                user_id, TextSendMessage(
+                    text="❌ 雷達即時掃描未完成，公開行情資料源暫時無法回應；請稍後再輸入「雷達」重試。")))
+        return _build_line_radar_pending_message(
+            user_id, base_url, already_running=not started)
+
     snapshot, snapshot_source, is_realtime_memory = _line_screener_snapshot(
         mode, intraday=intraday)
-    is_realtime_scan = False
+    is_realtime_scan = bool(_completed_live_scan and mode == "radar" and snapshot)
     live_scan_error = None
     background_started = False
-    if intraday:
-        # 盤中雷達的定義就是重新掃描全市場；5 分鐘記憶體快取只能作為
-        # 其他頁面的加速，不能拿來冒充這次即時雷達。spark 先掃完整
-        # stock_info/T86 universe，再只對排名候選補抓 3mo 技術序列。
-        try:
-            live_inst = fetch_institutional_data()
-            live_ind_map = get_industry_map() or {}
-            if live_inst and live_ind_map:
-                live_rows, live_skipped, live_momentum = compute_screener_rows(
-                    "radar", inst=live_inst, ind_map=live_ind_map,
-                    persist=False, force_refresh=True, radar_deep_limit=48)
-                live_cache = _screener_cache.get("radar") or {}
-                scan_count = int(live_cache.get("scan_universe_count") or 0)
-                snapshot = {
-                    "rows": live_rows,
-                    "skipped": live_skipped,
-                    "momentum": live_momentum,
-                    "source_date": _screener_source_date(),
-                    "scan_finished_at": live_cache.get("scan_finished_at"),
-                    "scan_universe_count": scan_count,
-                }
-                snapshot_source = f"盤中即時全市場掃描（{scan_count or '全市場'}檔）"
-                is_realtime_memory = False
-                is_realtime_scan = True
-        except Exception as exc:
-            live_scan_error = str(exc)
-            print(f"⚠️ LINE 盤中雷達即時掃描失敗，改顯示明示日期快照: {exc}")
+    if is_realtime_scan:
+        scan_count = int((snapshot or {}).get("scan_universe_count") or
+                         (_screener_cache.get("radar") or {}).get("scan_universe_count") or 0)
+        snapshot_source = f"盤中即時全市場掃描（{scan_count or '全市場'}檔）"
+        is_realtime_memory = False
     if snapshot is not None:
         rows = list(snapshot.get("rows") or [])
         source_date = snapshot.get("source_date")
@@ -9388,8 +9435,14 @@ def build_line_screener_message(user_id, mode, base_url=None):
     ]
 
     if not rows:
-        empty_text = (f"目前沒有符合條件的{label}標的。" if snapshot is not None else
-                      f"{label}完整快照正在背景整理，這則訊息不等待全市場計算；請稍後重新輸入或點下方網頁入口。")
+        if mode == "radar" and snapshot is not None:
+            diagnostics = (snapshot.get("radar_diagnostics") or
+                           (_screener_cache.get("radar") or {}).get("radar_diagnostics") or {})
+            empty_text = "目前這次即時掃描沒有可列入雷達的標的。\n" + _radar_empty_summary(
+                diagnostics, skipped_liquidity=snapshot.get("skipped", 0))
+        else:
+            empty_text = (f"目前沒有符合條件的{label}標的。" if snapshot is not None else
+                          f"{label}完整快照正在背景整理，這則訊息不等待全市場計算；請稍後重新輸入或點下方網頁入口。")
         contents.append({"type": "text", "text": empty_text,
                          "size": "sm", "color": "#767D85", "margin": "lg", "wrap": True})
     else:
@@ -11732,22 +11785,49 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
         var detailParams = new URLSearchParams(window.location.search);
         detailParams.set('fragment', '1');
         detailParams.set('detail', '1');
+        // detail 請求不能沿用 fast=1，否則後端會再次回傳預覽殼，
+        // 永遠不會進入完整內容／背景完成判斷。
+        detailParams.delete('fast');
         var detailUrl = window.location.pathname + '?' + detailParams.toString();
-        fetchWithTimeout(detailUrl, 30000)
-          .then(function (r) {{
-            if (r.status === 401) throw new Error('登入狀態已失效');
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            return r.text();
-          }})
-          .then(function (detailHtml) {{
-            content.innerHTML = detailHtml;
-            if (status) status.style.display = 'none';
-          }})
-          .catch(function (e) {{
-            // 首屏快照已經可用；深度分析失敗只提示，不把首屏清空。
-            if (status) status.textContent = '完整選股分析暫時載入失敗，請稍後重新整理。';
-            console.error(e);
-          }});
+        var detailAttempt = 0;
+        function loadDetail() {{
+          detailAttempt += 1;
+          fetchWithTimeout(detailUrl, 15000)
+            .then(function (r) {{
+              if (r.status === 401) throw new Error('登入狀態已失效');
+              if (!r.ok) throw new Error('HTTP ' + r.status);
+              return r.text();
+            }})
+            .then(function (detailHtml) {{
+              content.innerHTML = detailHtml;
+              var pending = content.querySelector('[data-screener-pending="1"]');
+              if (pending && detailAttempt < 24) {{
+                if (status) {{
+                  status.style.display = 'block';
+                  status.textContent = '即時資料仍在背景整理，頁面會自動再次檢查（第 ' + detailAttempt + ' 次）…';
+                }}
+                window.setTimeout(loadDetail, 5000);
+              }} else if (status) {{
+                status.style.display = pending ? 'block' : 'none';
+              }}
+            }})
+            .catch(function (e) {{
+              // 首屏快照已經可用；背景結果尚未完成時繼續輪詢，
+              // 不把使用者卡在一次逾時或短暫 5xx。
+              if (detailAttempt < 24) {{
+                if (status) {{
+                  status.style.display = 'block';
+                  status.textContent = '完整分析暫時未回應，5 秒後自動重試（第 ' + detailAttempt + ' 次）…';
+                }}
+                window.setTimeout(loadDetail, 5000);
+              }} else if (status) {{
+                status.style.display = 'block';
+                status.textContent = '完整分析仍未完成，請稍後重新整理查看最新狀態。';
+              }}
+              console.error(e);
+            }});
+        }}
+        loadDetail();
       }}
     }}, 70);
   }}
@@ -12870,7 +12950,7 @@ def fetch_twse_etf_distribution_history(force_reload=False):
     params = {"startDate": str(start_year), "endDate": str(today.year)}
     try:
         response = requests.get(
-            ETF_DISTRIBUTION_URL, params=params, timeout=20,
+            ETF_DISTRIBUTION_URL, params=params, timeout=6,
             headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "zh-TW,zh;q=0.9"})
         response.raise_for_status()
         # TWSE 的 onclick 屬性通常是雙引號包住、內部 document.location
@@ -14910,8 +14990,26 @@ def render_etf_inline_detail(code, meta, quote=None):
     )
 
 
+def _etf_route_guard(func):
+    """ETF fragment 的最後防線：單一來源異常不得把整頁變成 HTTP 500。"""
+    def guarded(uid):
+        try:
+            return func(uid)
+        except Exception as exc:
+            print(f"❌ ETF 專區路由失敗: {type(exc).__name__}: {exc}")
+            body = '''<section class="etf-ranking-card etf-ranking-empty">
+  <h2>ETF 專區暫時無法完成</h2>
+  <p>官方商品、配息或行情資料來源目前未完整回應；本頁沒有用虛構數字補值。請稍後重新整理，若仍失敗請查看 Render Logs。</p>
+</section>'''
+            return respond_page("ETF 專區", body, "screener")
+    guarded.__name__ = getattr(func, "__name__", "web_etf")
+    guarded.__doc__ = getattr(func, "__doc__", None)
+    return guarded
+
+
 @app.route("/web/etf")
 @web_login_required
+@_etf_route_guard
 def web_etf(uid):
     """ETF 專區第一版：四類入口與已核實商品清單，不混入個股選股排名。"""
     if not wants_fragment():
@@ -14958,13 +15056,20 @@ def web_etf(uid):
         ranking_html = '''<section class="etf-ranking-card etf-ranking-empty">
   <h2>其他／待分類</h2><p>第一版不把債券、槓桿／反向、期貨與多資產商品混入四類股票型 ETF 排名。</p></section>'''
 
-    # 商品池完整列出；即時價格只抓前 20 檔，避免商品數增加後拖慢整個網頁。
+    # 商品池完整列出；即時價格只抓前 20 檔，並行批次取得，避免 20 檔
+    # 逐檔等待 Yahoo timeout 累積成數分鐘。價格缺失只影響該卡，不影響整頁。
     price_codes = {code for code, _meta in products[:20]}
     price_codes.update(code for code in ("0050", "00981A", "009816")
                        if any(product_code == code for product_code, _meta in products))
+    try:
+        price_quotes = get_realtime_stocks_bulk(
+            sorted(price_codes), workers=16, rng="1y", market_suffix=".TW") if price_codes else {}
+    except Exception as exc:
+        print(f"⚠️ ETF 商品批次行情失敗: {exc}")
+        price_quotes = {}
     cards = []
     for code, meta in products:
-        quote = get_realtime_stock(code, rng="1y") if code in price_codes else None
+        quote = price_quotes.get(code) if code in price_codes else None
         policy = _etf_distribution_label(meta.get("distribution_policy"))
         maturity = _etf_maturity_label(meta.get("listing_date")).replace("資料成熟度：", "")
         if quote:
@@ -15884,7 +15989,7 @@ CATEGORY_NOTE = {
 def _load_persisted_screener_snapshot(mode):
     """讀取專用選股完整快照；過期、格式不符或資料庫錯誤就回傳 None。"""
     mode = str(mode).strip()
-    if mode not in ("blackhorse", "radar"):
+    if mode not in ("blackhorse", "radar", "radar_live"):
         return None
     conn = get_db_connection()
     try:
@@ -15934,11 +16039,34 @@ def _load_persisted_screener_snapshot(mode):
         return None
 
 
+def _load_recent_live_radar_snapshot(max_age_seconds=90):
+    """讀取獨立盤中雷達快照；不把它混進收盤 radar 快照。"""
+    snapshot = _load_persisted_screener_snapshot("radar_live")
+    if not snapshot:
+        return None
+    computed_at = snapshot.get("computed_at")
+    if computed_at:
+        try:
+            if computed_at.tzinfo is None:
+                computed_at = computed_at.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - computed_at).total_seconds()
+            if age < 0 or age > float(max_age_seconds):
+                return None
+        except (AttributeError, TypeError, ValueError):
+            return None
+    meta = snapshot.get("source_meta") or {}
+    if isinstance(meta, dict):
+        snapshot["scan_universe_count"] = meta.get("scan_universe_count")
+        snapshot["scan_finished_at"] = meta.get("scan_finished_at")
+        snapshot["radar_diagnostics"] = meta.get("radar_diagnostics") or {}
+    return snapshot
+
+
 def _save_persisted_screener_snapshot(mode, rows, skipped, momentum,
                                       source_date=None, source_meta=None):
     """保存 warmup 的完整選股結果；失敗不阻塞既有記憶體快取。"""
     mode = str(mode).strip()
-    if mode not in ("blackhorse", "radar") or rows is None:
+    if mode not in ("blackhorse", "radar", "radar_live") or rows is None:
         return False
     effective_date = source_date or _screener_source_date()
     if not effective_date:
@@ -16033,7 +16161,7 @@ def _screener_snapshot_valid_for_today(snapshot):
 
 def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                           ind_map=None, persist=True, force_refresh=False,
-                          radar_deep_limit=None):
+                          radar_deep_limit=None, persist_live=False):
     """
     算出某個模式的完整候選清單。回傳 (rows, 因流動性被排除的檔數, 產業動能)。
     結果快取 5 分鐘，讓調整篩選條件變成瞬間反應。
@@ -16191,7 +16319,9 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
         # 這裡開比較多執行緒——一次把整池抓完，總時間才不會隨檔數線性增加。
         pool_prices = get_realtime_stocks_bulk(
             [c for c, _ in pool], workers=24 if mode == "radar" else 16,
-            rng="3mo", force_refresh=(force_refresh or mode == "radar"))
+            rng="3mo",
+            market_suffix=(market_map if mode == "radar" else None),
+            force_refresh=(force_refresh or mode == "radar"))
         for code, info in pool:
             price = pool_prices.get(code)
             if not price:
@@ -16272,12 +16402,17 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             cache_item["scan_finished_at"] = taiwan_now().isoformat()
             cache_item["radar_diagnostics"] = radar_diagnostics
         _screener_cache[mode] = cache_item
-        if persist:
+        if persist or (mode == "radar" and persist_live):
             persisted_meta = {}
+            persisted_mode = mode
             if mode == "radar":
                 persisted_meta["radar_diagnostics"] = radar_diagnostics
+                persisted_meta["scan_universe_count"] = radar_universe_count
+                persisted_meta["scan_finished_at"] = cache_item.get("scan_finished_at")
+                if persist_live and not persist:
+                    persisted_mode = "radar_live"
             _save_persisted_screener_snapshot(
-                mode, rows, skipped_liquidity, momentum,
+                persisted_mode, rows, skipped_liquidity, momentum,
                 source_date=source_date, source_meta=persisted_meta,
             )
         return rows, skipped_liquidity, momentum
@@ -16325,8 +16460,14 @@ def _screener_recent_snapshot(mode):
     return None, "尚未建立可用快照"
 
 
-def _start_screener_background_refresh(mode, intraday=False):
-    """每個 process 每個模式只允許一個全量刷新，盤中結果不覆蓋收盤快照。"""
+def _start_screener_background_refresh(mode, intraday=False,
+                                      radar_deep_limit=None, on_complete=None,
+                                      on_failure=None):
+    """每個 process 每個模式只允許一個全量刷新，盤中結果不覆蓋收盤快照。
+
+    `on_complete` 僅在計算成功後執行，供 LINE 在 webhook 已立即回覆後
+    推送完成的真實結果；回呼失敗不能影響快照寫入或背景 worker 收尾。
+    """
     mode = str(mode or "").strip()
     if mode not in ("blackhorse", "radar"):
         return False
@@ -16336,15 +16477,33 @@ def _start_screener_background_refresh(mode, intraday=False):
         _SCREENER_REFRESH_RUNNING[mode] = True
 
     def worker():
+        completed = False
+        failure = None
         try:
-            compute_screener_rows(mode, persist=not intraday, force_refresh=True)
+            kwargs = {"persist": not intraday, "force_refresh": True,
+                      "persist_live": bool(intraday and mode == "radar")}
+            if radar_deep_limit is not None and mode == "radar":
+                kwargs["radar_deep_limit"] = radar_deep_limit
+            compute_screener_rows(mode, **kwargs)
+            completed = True
             print("✅ 選股背景刷新完成 %s%s" %
                   (mode, "（盤中不寫入收盤快照）" if intraday else ""))
         except Exception as exc:
+            failure = exc
             print("⚠️ 選股背景刷新失敗 %s: %s" % (mode, exc))
         finally:
             with _SCREENER_REFRESH_LOCK:
                 _SCREENER_REFRESH_RUNNING[mode] = False
+            if completed and callable(on_complete):
+                try:
+                    on_complete()
+                except Exception as exc:
+                    print("⚠️ 選股背景完成回呼失敗 %s: %s" % (mode, exc))
+            elif failure is not None and callable(on_failure):
+                try:
+                    on_failure(failure)
+                except Exception as exc:
+                    print("⚠️ 選股背景失敗回呼失敗 %s: %s" % (mode, exc))
 
     threading.Thread(target=worker, name="screener-%s-refresh" % mode,
                      daemon=True).start()
@@ -16355,7 +16514,7 @@ def _screener_building_fragment(mode, source_date=None):
     """無快照時的立即回應；只報告狀態與資料入口，不假造股票數字。"""
     label = "雷達" if mode == "radar" else "黑馬"
     date_text = str(source_date or "尚無")
-    return f'''<section class="screener-fast-card">
+    return f'''<section class="screener-fast-card" data-screener-pending="1">
   <div class="screener-fast-state"><span class="screener-fast-state-mark"></span><div>
     <b>{label}完整分析正在背景整理</b>
     <div class="screener-fast-note">目前沒有可使用的完整快照（最近資料日：{html.escape(date_text)}）。本頁已立即回應；整理完成後重新整理即可看到真實排名。</div>
@@ -16411,6 +16570,41 @@ def _render_radar_empty_state(diagnostics=None, skipped_liquidity=0,
   <p>{html.escape(reason)}</p>
   <span style="font-size:12.5px">雷達條件：法人買超、當日漲幅至少 1.5%，再檢查價格位階、量能與流動性；目前沒有把舊快照當成即時結果。</span>
 </div>'''
+
+
+def _radar_empty_summary(diagnostics=None, skipped_liquidity=0):
+    """LINE 用的雷達零結果簡版漏斗；沒有診斷資料就明示未保存，不補猜數字。"""
+    if not isinstance(diagnostics, dict) or not diagnostics:
+        return "雷達本次沒有結果；詳細淘汰漏斗尚未保存，請查看網頁完成狀態。"
+    d = diagnostics
+    universe = int(d.get("universe_count") or 0)
+    buy_count = int(d.get("institution_buy_count") or 0)
+    pct_below = int(d.get("spark_pct_below_threshold_count") or 0)
+    pct_missing = int(d.get("spark_pct_missing_count") or 0)
+    quote_missing = int(d.get("quote_missing_count") or 0)
+    qualified = int(d.get("spark_qualified_count") or 0)
+    deep = int(d.get("deep_candidate_count") or 0)
+    price_missing = int(d.get("price_missing_count") or 0)
+    daily_limit = int(d.get("daily_limit_rejected_count") or 0)
+    liquidity = int(d.get("liquidity_rejected_count") or skipped_liquidity or 0)
+    final_count = int(d.get("final_count") or 0)
+    if universe <= 0:
+        reason = "沒有可用股票代號 universe"
+    elif buy_count <= 0:
+        reason = "法人資料沒有買超標的"
+    elif qualified <= 0:
+        reason = (f"法人買超 {buy_count} 檔中，{pct_below} 檔漲幅低於 1.5%，"
+                  f"{pct_missing + quote_missing} 檔缺即時行情／漲幅")
+    elif deep <= 0:
+        reason = f"即時漲幅達門檻的 {qualified} 檔沒有技術候選"
+    elif final_count <= 0:
+        reason = (f"技術候選 {deep} 檔中，缺價格 {price_missing} 檔、"
+                  f"超過單日範圍 {daily_limit} 檔、流動性排除 {liquidity} 檔")
+    else:
+        reason = "完成掃描後沒有標的通過最後條件"
+    return (f"全市場 {universe} 檔・法人買超 {buy_count} 檔・"
+            f"即時漲幅≥1.5% {qualified} 檔・技術候選 {deep} 檔・"
+            f"最終 {final_count} 檔\n主要原因：{reason}")
 
 
 def build_screener_data_quality(cum_yoy, valuation, industry_stats,
@@ -16971,22 +17165,54 @@ def web_screener(uid):
                        f'{source_date or "未標日期"}；最新資料若尚未完成，背景會更新')
     else:
         if live_radar_request:
-            inst = fetch_institutional_data()
-            if not inst:
-                return respond_page("選股台", """
-<div class="empty">目前無法取得最新法人資料，雷達不會用舊快照冒充即時結果。<br>
-請稍後重新整理；Yahoo 即時行情與 T86 法人資料需在公開後才能完成全市場掃描。</div>""", "screener")
-            ind_map = get_industry_map() or {}
-            rows, skipped_liquidity, momentum = compute_screener_rows(
-                mode, inst=inst, ind_map=ind_map, persist=False,
-                force_refresh=True)
+            # 盤中 detail 不能把全市場行情與深度技術計算放在 HTTP request 內；
+            # 否則 Render 會先等到 request timeout，前端再也拿不到完成結果。
+            # 由單例背景 worker 直接更新記憶體快取，前端以 detail 輪詢取得。
             radar_cache = _screener_cache.get("radar") or {}
+            if "_load_recent_live_radar_snapshot" in globals():
+                live_snapshot = _load_recent_live_radar_snapshot()
+                if live_snapshot:
+                    live_meta = live_snapshot.get("source_meta") or {}
+                    radar_cache = {
+                        "at": time.time(),
+                        "rows": live_snapshot.get("rows") or [],
+                        "skipped": live_snapshot.get("skipped", 0),
+                        "momentum": live_snapshot.get("momentum") or {},
+                        "source_date": live_snapshot.get("source_date"),
+                        "scan_universe_count": live_snapshot.get("scan_universe_count") or live_meta.get("scan_universe_count"),
+                        "scan_finished_at": live_snapshot.get("scan_finished_at") or live_meta.get("scan_finished_at"),
+                        "radar_diagnostics": live_snapshot.get("radar_diagnostics") or live_meta.get("radar_diagnostics") or {},
+                    }
+                    _screener_cache["radar"] = radar_cache
+            finished_at = radar_cache.get("scan_finished_at")
+            scan_is_recent = False
+            if finished_at:
+                try:
+                    finished_dt = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00"))
+                    if finished_dt.tzinfo is None:
+                        finished_dt = finished_dt.replace(tzinfo=TW_TZ)
+                    scan_is_recent = (taiwan_now() - finished_dt.astimezone(TW_TZ)).total_seconds() < 90
+                except (TypeError, ValueError):
+                    scan_is_recent = False
+            if not scan_is_recent:
+                _start_screener_background_refresh(
+                    "radar", intraday=True, radar_deep_limit=RADAR_DEEP_SCAN_LIMIT)
+                return respond_page("選股台", f'''<section class="screener-fast-card" data-screener-pending="1">
+  <div class="screener-fast-state"><span class="screener-fast-state-mark"></span><div>
+    <b>即時雷達全市場掃描中</b>
+    <div class="screener-fast-note">正在取得全市場最新行情與雷達訊號；完成後本頁會自動更新，不展示舊報酬率。</div>
+  </div></div>
+  <div class="screener-fast-note">本次掃描由背景單例執行，避免網頁請求逾時；若資料源失敗，完成後會明示真實原因。</div>
+</section>''', "screener")
+            rows = list(radar_cache.get("rows") or [])
+            skipped_liquidity = radar_cache.get("skipped", 0)
+            momentum = radar_cache.get("momentum") or {}
             radar_diagnostics = radar_cache.get("radar_diagnostics") or {}
-            source_date = _screener_source_date()
+            source_date = radar_cache.get("source_date") or _screener_source_date()
             scan_count = int(radar_cache.get("scan_universe_count") or 0)
+            finished_text = str(finished_at).replace("T", " ")[:19]
             source_note = (f'資料來源：雷達即時全市場掃描，已掃 {scan_count or "全市場"} 檔；'
-                           f'行情更新時間 {taiwan_now().strftime("%Y-%m-%d %H:%M:%S")}；'
-                           f'法人資料日 {source_date or "未標日期"}')
+                           f'行情更新時間 {finished_text}；法人資料日 {source_date or "未標日期"}')
         else:
             persisted = _load_persisted_screener_snapshot(mode)
             persisted_hit = bool(persisted and _screener_snapshot_valid_for_today(persisted))
