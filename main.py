@@ -3456,9 +3456,19 @@ def get_rank_status_map(rank_inputs):
     return result
 
 
+_FAST_RANK_SUMMARY_CACHE_SECONDS = 30
+_fast_rank_summary_cache = {}
+_fast_rank_summary_cache_lock = threading.Lock()
+
+
 def get_fast_rank_summary(user_id):
     """首頁 fast 專用：只讀最近兩次已保存名次，不重算全體排行榜。"""
     uid = str(user_id).strip()
+    now = time.time()
+    with _fast_rank_summary_cache_lock:
+        cached = _fast_rank_summary_cache.get(uid)
+        if cached and now - cached.get("at", 0) < _FAST_RANK_SUMMARY_CACHE_SECONDS:
+            return cached["value"]
     grouped = defaultdict(list)
     conn = get_db_connection()
     try:
@@ -3503,6 +3513,13 @@ def get_fast_rank_summary(user_id):
                               if current and hasattr(current[0], "isoformat")
                               else (str(current[0]) if current else None)),
         }
+    with _fast_rank_summary_cache_lock:
+        _fast_rank_summary_cache[uid] = {"at": time.time(), "value": result}
+        if len(_fast_rank_summary_cache) > 1000:
+            cutoff = time.time() - _FAST_RANK_SUMMARY_CACHE_SECONDS * 2
+            for cache_key, entry in list(_fast_rank_summary_cache.items()):
+                if entry.get("at", 0) < cutoff:
+                    _fast_rank_summary_cache.pop(cache_key, None)
     return result
 
 
@@ -8666,6 +8683,37 @@ def build_single_etf_report(code, user_id=None):
     if distribution_records:
         recent_records = _etf_recent_distribution_records(meta, limit=4)
         lines.append(_format_recent_distribution_records(recent_records))
+
+    # 單檔報告只讀取既有 ranking snapshot，不為了顯示對照而重掃全市場。
+    ranking_row = None
+    ranking_period_label = None
+    try:
+        ranking_payload, _ranking_fresh, _ranking_source = _load_etf_product_ranking_snapshot()
+        for period_key in ("short", "long"):
+            period_rows = ((ranking_payload or {}).get("categories") or {}) \
+                          .get(period_key, {})
+            found = []
+            for rows in period_rows.values() if isinstance(period_rows, dict) else []:
+                if isinstance(rows, list):
+                    found.extend(rows)
+            ranking_row = next((item for item in found
+                                if str(item.get("code") or "").strip().upper() == code.upper()), None)
+            if ranking_row:
+                period_info = ((ranking_payload or {}).get("periods") or {}).get(period_key) or {}
+                ranking_period_label = period_info.get("label") or ("短期" if period_key == "short" else "長期")
+                break
+    except Exception as exc:
+        print(f"⚠️ 單檔 ETF 報酬對照快照待確認: {exc}")
+
+    if ranking_row:
+        performance = _etf_performance_comparison(ranking_row)
+        lines += ["", f"【報酬對照｜{ranking_period_label}】",
+                  "價格報酬不含配息",
+                  f"ETF 價格報酬：{performance['return_text']}",
+                  f"同期大盤：{performance['market_text']}",
+                  f"超額報酬：{performance['excess_text']}（{performance['verdict_text']}）"]
+    else:
+        lines += ["", "【報酬對照】", "ETF／同期大盤／超額報酬：待排名快照確認"]
 
     closes = [float(x) for x in (stock.get("closes") or []) if x not in (None, 0)]
     close_dates = stock.get("close_dates") or []
@@ -14179,13 +14227,11 @@ def _format_etf_watchlist_lines(code, score, score_change=None,
                 parts.append(f"{label}待確認")
         if parts:
             lines.append("　分項貢獻　" + "　".join(parts))
-    if row.get("return_pct") is not None:
-        lines.append(f"📈 價格報酬 {float(row['return_pct']):+.2f}%")
-    if row.get("excess_pct") is not None:
-        market = row.get("market_return_pct")
-        market_text = (f"；同期大盤 {float(market):+.2f}%"
-                       if market is not None else "；同期大盤待確認")
-        lines.append(f"⚖️ 超額報酬 {float(row['excess_pct']):+.2f}%{market_text}")
+    performance = _etf_performance_comparison(row)
+    lines += ["", "【績效對照】", "價格報酬不含配息",
+              f"ETF 價格報酬：{performance['return_text']}",
+              f"同期大盤：{performance['market_text']}",
+              f"超額報酬：{performance['excess_text']}（{performance['verdict_text']}）"]
     distribution_status = row.get("distribution_status")
     yield_pct = row.get("distribution_annualized_yield_pct")
     if distribution_status == "verified" and yield_pct is not None:
@@ -15696,6 +15742,44 @@ def _etf_score_method_text(category_label):
     return "・".join(parts)
 
 
+def _etf_performance_comparison(row):
+    """統一整理 ETF 價格報酬、同期大盤與超額報酬；缺值不補零。"""
+    row = row or {}
+
+    def finite_number(value):
+        try:
+            number = float(value)
+            return number if math.isfinite(number) else None
+        except (TypeError, ValueError):
+            return None
+
+    return_pct = finite_number(row.get("return_pct"))
+    market_pct = finite_number(row.get("market_return_pct"))
+    excess_pct = finite_number(row.get("excess_pct"))
+    result = {
+        "return_pct": return_pct,
+        "market_return_pct": market_pct,
+        "excess_pct": excess_pct,
+        "return_text": f"{return_pct:+.2f}%" if return_pct is not None else "待確認",
+        "market_text": f"{market_pct:+.2f}%" if market_pct is not None else "待確認",
+        "excess_text": (f"{excess_pct:+.2f} 個百分點"
+                        if excess_pct is not None else "待確認"),
+        "direction": "unknown",
+        "verdict_text": "同期大盤或超額報酬待確認",
+    }
+    if excess_pct is not None:
+        if excess_pct > 0:
+            result["direction"] = "better"
+            result["verdict_text"] = f"勝過同期大盤 {excess_pct:.2f} 個百分點"
+        elif excess_pct < 0:
+            result["direction"] = "worse"
+            result["verdict_text"] = f"落後同期大盤 {abs(excess_pct):.2f} 個百分點"
+        else:
+            result["direction"] = "same"
+            result["verdict_text"] = "與同期大盤相同"
+    return result
+
+
 def _etf_distribution_display_text(row):
     status = row.get("distribution_status")
     amount = row.get("distribution_amount")
@@ -15800,13 +15884,16 @@ def render_etf_product_ranking_html(payload, category_key, category_label,
         for display_rank, (row, sort_value_available) in enumerate(ordered_items, 1):
             rank = display_rank
             display_rank_text = f'#{rank}' if sort_value_available else '—'
-            return_pct = row.get("return_pct")
-            market_pct = row.get("market_return_pct")
-            excess = row.get("excess_pct")
-            ret_text = f'{float(return_pct):+.2f}%' if return_pct is not None else "資料不足"
-            market_text = f'{float(market_pct):+.2f}%' if market_pct is not None else "資料不足"
-            excess_text = f'{float(excess):+.2f} 個百分點' if excess is not None else "資料不足"
-            ret_cls = "up" if return_pct is not None and float(return_pct) >= 0 else "down"
+            performance = _etf_performance_comparison(row)
+            return_pct = performance.get("return_pct")
+            market_pct = performance.get("market_return_pct")
+            excess = performance.get("excess_pct")
+            ret_text = performance.get("return_text") or "待確認"
+            market_text = performance.get("market_text") or "待確認"
+            excess_text = performance.get("excess_text") or "待確認"
+            ret_cls = "up" if return_pct is not None and return_pct >= 0 else "down"
+            performance_direction = performance.get("direction") or "unknown"
+            performance_verdict = performance.get("verdict_text") or "同期大盤或超額報酬待確認"
             score = row.get("score")
             score_text = f'綜合 {float(score):.0f} 分' if score is not None else "綜合評分資料不足"
             return_rank = row.get("return_rank")
@@ -15884,7 +15971,17 @@ def render_etf_product_ranking_html(payload, category_key, category_label,
   <div class="etf-ranking-rank">{display_rank_text}</div>
   <div class="etf-ranking-main"><div class="etf-ranking-name"><b>{esc(str(row.get("name") or row.get("code")))}</b><span>{esc(str(row.get("code") or ""))}</span></div><strong class="etf-ranking-score {ret_cls}">{score_text}</strong></div>
   <div class="etf-ranking-ranks">{"".join(rank_badges)}</div>
-  <div class="etf-ranking-numbers"><span>{esc(asset_text)}</span><span>價格報酬 {ret_text}</span><span>同期大盤 {market_text}</span><span>超額 {excess_text}</span><span>配息 {esc(distribution_text)}</span><span>{esc(risk_text)}</span><span>{esc(holders_text)}</span><span>{esc(turnover_text)}</span></div>
+  <div class="etf-performance-compare">
+    <div class="etf-performance-head"><b>績效對照（本期間）</b><span>價格報酬不含配息</span></div>
+    <div class="etf-performance-grid">
+      <div class="etf-performance-item"><span>ETF 價格報酬</span><strong class="{ret_cls}">{esc(ret_text)}</strong></div>
+      <div class="etf-performance-item"><span>同期大盤</span><strong>{esc(market_text)}</strong></div>
+      <div class="etf-performance-item"><span>超額報酬</span><strong class="etf-excess-{performance_direction}">{esc(excess_text)}</strong></div>
+    </div>
+    <div class="etf-performance-verdict etf-excess-{performance_direction}">{esc(performance_verdict)}</div>
+  </div>
+  <div class="etf-ranking-distribution"><b>配息資料</b><span>{esc(distribution_text)}</span></div>
+  <div class="etf-ranking-support"><span><em>風險</em><b>{esc(risk_text)}</b></span><span><em>資產規模</em><b>{esc(asset_text)}</b></span><span><em>受益人次</em><b>{esc(holders_text)}</b></span><span><em>年初至今均成交</em><b>{esc(turnover_text)}</b></span></div>
   <div class="etf-ranking-comment">{esc(str(row.get("comment") or "資料整理完成，請搭配觀測期間判讀。"))}<small>{esc(breakdown_text)}</small></div>
   <div class="etf-ranking-provenance"><span>{esc(metric_date_text)}</span><span>{esc(observation_text)}</span></div>
 </div>''')
@@ -15916,8 +16013,8 @@ def render_etf_product_ranking_html(payload, category_key, category_label,
 </section>'''
 
 
-def render_etf_inline_detail(code, meta, quote=None):
-    """在 ETF 商品卡片下方直接呈現預設收合的商品詳情，不另開頁面。"""
+def render_etf_inline_detail(code, meta, quote=None, ranking_row=None):
+    """在 ETF 商品卡片下方呈現預設收合詳情，並可帶入既有排名快照的同期大盤對照。"""
     esc = html.escape
     code = str(code or "").strip().upper()
     name = str(meta.get("name") or code)
@@ -15988,6 +16085,18 @@ def render_etf_inline_detail(code, meta, quote=None):
                     f'近4次中位數／平均值調整；原始年化值僅作參考</div>')
             else:
                 lines.append('<div class="etf-inline-note">評分用穩定殖利率：待近4次官方配息資料完整</div>')
+        if ranking_row:
+            performance = _etf_performance_comparison(ranking_row)
+            period_label = ranking_row.get("period_label") or "排名觀測期"
+            lines.append(
+                f'<div class="etf-inline-performance">'
+                f'<div class="etf-inline-performance-head"><b>報酬對照｜{esc(str(period_label))}</b>'
+                f'<span>價格報酬不含配息</span></div>'
+                f'<div class="etf-inline-performance-grid">'
+                f'<div><span>ETF 價格報酬</span><b class="{performance["direction"]}">{esc(performance["return_text"])}</b></div>'
+                f'<div><span>同期大盤</span><b>{esc(performance["market_text"])}</b></div>'
+                f'<div><span>超額報酬</span><b class="{performance["direction"]}">{esc(performance["excess_text"])}</b></div>'
+                f'</div><strong class="etf-inline-verdict {performance["direction"]}">{esc(performance["verdict_text"])}</strong></div>')
         if len(closes) >= 2 and closes[0] > 0:
             return_pct = (closes[-1] / closes[0] - 1) * 100
             period = f"{close_dates[0]} 至 {close_dates[-1]}" if close_dates else "可取得價格期間"
@@ -16096,10 +16205,13 @@ def web_etf(uid):
     if isinstance(ranking_payload, dict):
         for period_key in ("short", "long"):
             period_rows = ((ranking_payload.get("categories") or {}).get(period_key) or {}).get(selected) or []
+            period_label = ((ranking_payload.get("periods") or {}).get(period_key) or {}).get("label") or period_key
             for ranking_row in period_rows:
                 code = str(ranking_row.get("code") or "").upper()
                 if code and code not in ranking_lookup:
-                    ranking_lookup[code] = ranking_row
+                    ranking_item = dict(ranking_row)
+                    ranking_item["period_label"] = period_label
+                    ranking_lookup[code] = ranking_item
 
     # CMoney 風格的上方摘要：每個數字都來自本類商品與官方／排名快照，
     # 只有存在真實數值才顯示，不以 0 代替未知。
@@ -16167,8 +16279,8 @@ def web_etf(uid):
             price_html = f'<div class="etf-price">{close_txt} <span>{pct_txt}</span></div>'
         else:
             price_html = '<div class="etf-price etf-price-muted">商品資料已列出；完整行情暫缺</div>'
-        inline_detail = render_etf_inline_detail(code, meta, quote)
-        ranking_row = ranking_lookup.get(code) or {}
+        ranking_row = dict(ranking_lookup.get(code) or {})
+        inline_detail = render_etf_inline_detail(code, meta, quote, ranking_row)
         official_metrics = meta.get("official_metrics") or {}
         asset_size = official_metrics.get("asset_size_billion")
         asset_text = f"{float(asset_size):,.0f} 億" if asset_size is not None else "待確認"
@@ -16253,15 +16365,34 @@ def web_etf(uid):
 .etf-ranking-rank{{font-size:16px;font-weight:800;color:var(--brass);padding-top:3px}}
 .etf-ranking-main{{min-width:0;display:flex;justify-content:space-between;align-items:flex-start;gap:8px}}
 .etf-ranking-name{{min-width:0;display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}}
-.etf-ranking-name b{{font-size:17px;line-height:1.35;color:var(--ink);word-break:keep-all;overflow-wrap:break-word}}
-.etf-ranking-name span{{color:var(--ink-faint);font-size:12px;white-space:nowrap}}
-.etf-ranking-score{{flex:none;font-size:18px;line-height:1.3;text-align:right;white-space:nowrap}}
+.etf-ranking-name b{{font-size:19px;line-height:1.35;color:var(--ink);font-weight:800;word-break:keep-all;overflow-wrap:break-word}}
+.etf-ranking-name span{{color:var(--ink-soft);font-size:13px;font-weight:700;white-space:nowrap}}
+.etf-ranking-score{{flex:none;font-size:20px;line-height:1.3;font-weight:800;text-align:right;white-space:nowrap}}
 .etf-ranking-score.up{{color:var(--red)}}
 .etf-ranking-score.down{{color:var(--green)}}
 .etf-ranking-ranks{{grid-column:2;display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;min-width:0}}
 .etf-ranking-ranks span{{display:inline-block;padding:3px 7px;border:1px solid #e6dfd1;border-radius:999px;background:#fcfaf4;color:var(--brass);font-size:11px;line-height:1.35;white-space:normal}}
 .etf-ranking-numbers{{grid-column:2;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 12px;margin-top:6px;min-width:0}}
 .etf-ranking-numbers span{{display:block;color:var(--ink-soft);font-size:11.5px;line-height:1.5;white-space:normal;overflow-wrap:anywhere}}
+.etf-performance-compare{{grid-column:2;margin-top:9px;padding:10px 11px;border:1px solid #e5ddcf;border-radius:10px;background:#fbfaf6;min-width:0}}
+.etf-performance-head{{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:7px}}
+.etf-performance-head b{{font-size:14px;line-height:1.4;color:var(--ink)}}
+.etf-performance-head span{{font-size:10.5px;line-height:1.4;color:var(--ink-faint)}}
+.etf-performance-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}}
+.etf-performance-item{{min-width:0;padding:6px 7px;border-left:3px solid #d9d2c4;background:#fff}}
+.etf-performance-item span{{display:block;font-size:10.5px;line-height:1.4;color:var(--ink-soft)}}
+.etf-performance-item strong{{display:block;margin-top:2px;font-size:16px;line-height:1.3;font-weight:800;overflow-wrap:anywhere}}
+.etf-performance-verdict{{margin-top:7px;font-size:12px;line-height:1.45;font-weight:700;overflow-wrap:anywhere}}
+.etf-excess-better{{color:var(--red)}}
+.etf-excess-worse{{color:var(--green)}}
+.etf-excess-same,.etf-excess-unknown{{color:var(--ink-soft)}}
+.etf-ranking-distribution{{grid-column:2;margin-top:8px;padding:8px 10px;border-left:3px solid #d4b16c;background:#fffdf8;min-width:0}}
+.etf-ranking-distribution b{{display:block;margin-bottom:3px;color:var(--ink);font-size:13.5px;line-height:1.4}}
+.etf-ranking-distribution span{{display:block;color:var(--ink-soft);font-size:12px;line-height:1.6;overflow-wrap:anywhere}}
+.etf-ranking-support{{grid-column:2;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:8px;min-width:0}}
+.etf-ranking-support span{{min-width:0;display:flex;flex-direction:column;gap:2px}}
+.etf-ranking-support em{{font-style:normal;color:var(--ink-faint);font-size:10.5px;line-height:1.35}}
+.etf-ranking-support b{{color:var(--ink-soft);font-size:11.5px;line-height:1.45;overflow-wrap:anywhere}}
 .etf-ranking-comment{{grid-column:2;color:var(--ink-soft);font-size:12.5px;line-height:1.55;padding-top:7px;overflow-wrap:anywhere}}
 .etf-ranking-comment small{{display:block;color:var(--ink-faint);font-size:10.5px;line-height:1.45;margin-top:4px;overflow-wrap:anywhere}}
 .etf-ranking-provenance{{grid-column:2;display:flex;gap:8px;flex-wrap:wrap;color:var(--ink-faint);font-size:10.5px;line-height:1.45;margin-top:5px;overflow-wrap:anywhere}}
@@ -16275,7 +16406,7 @@ def web_etf(uid):
 .etf-ranking-more-note{{font-size:10.5px;color:var(--ink-faint);padding-top:4px}}
 .etf-score-method{{margin:8px 0 12px;border:1px solid #eee9dd;border-radius:9px;padding:7px 10px;color:var(--ink-soft);font-size:11.5px;line-height:1.55;background:#fcfbf8}}
 .etf-score-method summary{{cursor:pointer;color:var(--brass);font-weight:700}}
-@media (max-width:480px){{.etf-overview-grid{{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}}.etf-overview-item{{padding:9px 8px}}.etf-overview-item b{{font-size:16px}}.etf-key-metrics{{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 10px}}.etf-ranking-sortbar{{align-items:flex-start;gap:5px;padding:8px}}.etf-sort-link{{font-size:10.5px;padding:5px 6px}}.etf-ranking-period-head span{{font-size:10px}}.etf-ranking-row{{grid-template-columns:27px minmax(0,1fr);gap:0 7px}}.etf-ranking-main{{gap:5px}}.etf-ranking-name b{{font-size:16px}}.etf-ranking-score{{font-size:17px}}.etf-ranking-ranks{{gap:4px;margin-top:5px}}.etf-ranking-ranks span{{font-size:10.5px;padding:3px 6px}}.etf-ranking-numbers{{grid-template-columns:1fr;gap:1px;margin-top:5px}}.etf-ranking-comment{{font-size:12px}}.etf-ranking-provenance{{display:block}}.etf-ranking-provenance span{{display:block;margin-top:2px}}.etf-ranking-more-body{{padding:0 5px}}}}
+@media (max-width:480px){{.etf-overview-grid{{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}}.etf-overview-item{{padding:9px 8px}}.etf-overview-item b{{font-size:16px}}.etf-key-metrics{{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 10px}}.etf-ranking-sortbar{{align-items:flex-start;gap:5px;padding:8px}}.etf-sort-link{{font-size:10.5px;padding:5px 6px}}.etf-ranking-period-head span{{font-size:10px}}.etf-ranking-row{{grid-template-columns:27px minmax(0,1fr);gap:0 7px}}.etf-ranking-main{{gap:5px}}.etf-ranking-name b{{font-size:18px}}.etf-ranking-name span{{font-size:12px}}.etf-ranking-score{{font-size:19px}}.etf-ranking-ranks{{gap:4px;margin-top:5px}}.etf-ranking-ranks span{{font-size:10.5px;padding:3px 6px}}.etf-performance-compare{{padding:9px 9px}}.etf-performance-head b{{font-size:13.5px}}.etf-performance-grid{{grid-template-columns:1fr;gap:5px}}.etf-performance-item{{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:6px 7px}}.etf-performance-item span{{font-size:11px}}.etf-performance-item strong{{font-size:17px;text-align:right}}.etf-performance-verdict{{font-size:12.5px}}.etf-ranking-distribution{{padding:8px 9px}}.etf-ranking-distribution span{{font-size:12.5px}}.etf-ranking-support{{grid-template-columns:repeat(2,minmax(0,1fr));gap:5px 8px}}.etf-ranking-numbers{{grid-template-columns:1fr;gap:1px;margin-top:5px}}.etf-ranking-comment{{font-size:12px}}.etf-ranking-provenance{{display:block}}.etf-ranking-provenance span{{display:block;margin-top:2px}}.etf-ranking-more-body{{padding:0 5px}}.etf-inline-performance{{padding:9px}}.etf-inline-performance-head b{{font-size:13.5px}}.etf-inline-performance-grid{{grid-template-columns:1fr;gap:5px}}.etf-inline-performance-grid div{{flex-direction:row;justify-content:space-between;align-items:baseline;gap:8px}}.etf-inline-performance-grid b{{font-size:17px;text-align:right}}}}
 .etf-inline-detail{{margin-top:10px;border-top:1px solid #eee;padding-top:8px}}
 .etf-inline-detail summary{{cursor:pointer;color:var(--brass);font-size:13px;font-weight:700;padding:4px 0}}
 .etf-inline-detail-body{{margin-top:8px;padding:10px 11px;background:#faf9f5;border:1px solid #eee9dd;border-radius:10px}}
@@ -16284,6 +16415,18 @@ def web_etf(uid):
 .etf-inline-grid span,.etf-inline-note{{color:var(--ink-soft);font-size:12px;line-height:1.6}}
 .etf-inline-grid b{{font-size:13px;color:var(--ink);line-height:1.55}}
 .etf-inline-quote{{margin-top:8px;padding-top:8px;border-top:1px solid #e7e2d6;font-size:13px;color:var(--ink)}}
+.etf-inline-performance{{margin-top:10px;padding:10px;border:1px solid #e5ddcf;border-radius:9px;background:#fffdf8}}
+.etf-inline-performance-head{{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:6px}}
+.etf-inline-performance-head b{{font-size:14px;line-height:1.4;color:var(--ink)}}
+.etf-inline-performance-head span{{font-size:10.5px;color:var(--ink-faint)}}
+.etf-inline-performance-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}}
+.etf-inline-performance-grid div{{min-width:0;display:flex;flex-direction:column;gap:2px;padding:5px 6px;background:#fff;border-left:3px solid #d9d2c4}}
+.etf-inline-performance-grid span{{font-size:10.5px;color:var(--ink-soft);line-height:1.35}}
+.etf-inline-performance-grid b{{font-size:16px;line-height:1.3;font-weight:800;overflow-wrap:anywhere}}
+.etf-inline-verdict{{display:block;margin-top:6px;font-size:12px;line-height:1.45;font-weight:700;overflow-wrap:anywhere}}
+.etf-inline-performance .better,.etf-inline-verdict.better{{color:var(--red)}}
+.etf-inline-performance .worse,.etf-inline-verdict.worse{{color:var(--green)}}
+.etf-inline-performance .same,.etf-inline-performance .unknown,.etf-inline-verdict.same,.etf-inline-verdict.unknown{{color:var(--ink-soft)}}
 </style>
 <div class="tabs">
   <a href="/web/screener?mode=blackhorse">黑馬</a>
@@ -16578,13 +16721,17 @@ def render_portfolio_fast_summary(uid):
 
 
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total,
-                          taiex=None, position_journal_html=""):
+                          taiex=None, position_journal_html="", daily_context=None,
+                          rank_status=None):
 
 
     # 新版首頁上半部：先講今天，再提供完整分析入口。
     calendar_today = taiwan_today()
     display_date = _premarket_display_date(calendar_today)
-    context = _get_daily_home_context(uid, display_date)
+    has_context = (isinstance(daily_context, dict)
+                   and ("snapshot" in daily_context or "timeline" in daily_context))
+    context = (daily_context if has_context
+               else _get_daily_home_context(uid, display_date)) or {}
     display_snapshot = context.get("snapshot") or {}
     timeline = context.get("timeline") or {}
     signal_state = _daily_signal_state(display_snapshot, timeline)
@@ -16632,10 +16779,11 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct < 0),
         key=lambda item: item[2])[:5]
     # 首頁只需要顯示自己的排名與升降，不需要為此阻塞整個完整排行榜重算。
-    # 使用最近兩次已保存的收盤快照；排行榜頁本身仍保留完整即時計算。
-    rank_started = time.monotonic()
-    rank_status = get_fast_rank_summary(uid)
-    print("⏱️ 今日完整頁：排名摘要 %.0fms" % ((time.monotonic() - rank_started) * 1000))
+    # 使用最近兩次已保存的收盤快照；若外層已平行取得就直接重用。
+    if rank_status is None:
+        rank_started = time.monotonic()
+        rank_status = get_fast_rank_summary(uid)
+        print("⏱️ 今日完整頁：排名摘要 %.0fms" % ((time.monotonic() - rank_started) * 1000))
 
     def timeline_rows(items, status_label, status_class, start=1):
         rows = []
@@ -16924,11 +17072,14 @@ def web_portfolio(uid):
         ("估值", fetch_valuation),
         ("產業", get_industry_map),
         ("大盤", fetch_taiex_summary),
+        # 今日事件上下文與五份共享資料互相獨立；併行取得後，
+        # render_daily_home_top 不必在完整頁尾端再次查詢同一份快照。
+        ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today())),
     ]
     with ThreadPoolExecutor(max_workers=len(shared_loaders)) as ex:
         shared_values = list(ex.map(
             lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
-    inst, revenue, valuation, ind_map, taiex = shared_values
+    inst, revenue, valuation, ind_map, taiex, daily_context = shared_values
     shared_done = time.monotonic()
 
     price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
@@ -17074,10 +17225,20 @@ def web_portfolio(uid):
                 if avg_corr is not None and eff else
                 "持股數不足或資料不齊，尚無法計算相關係數。")
 
-    trend_started = time.monotonic()
-    trend_html = render_trend_chart(get_portfolio_snapshots(uid, days=120))
-    trend_done = time.monotonic()
-    journal_logs = get_position_change_logs(uid, limit=5000)
+    # 走勢、操作日誌與首頁排名摘要彼此獨立，尾端同時查詢，
+    # 避免三個約 0.6 秒的 I/O 依序堆疊在完整頁回應時間上。
+    aux_started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=3) as aux_executor:
+        trend_future = aux_executor.submit(
+            lambda: render_trend_chart(get_portfolio_snapshots(uid, days=120)))
+        journal_future = aux_executor.submit(
+            get_position_change_logs, uid, 5000)
+        rank_future = aux_executor.submit(get_fast_rank_summary, uid)
+        trend_html = trend_future.result()
+        journal_logs = journal_future.result()
+        page_rank_status = rank_future.result()
+    aux_done = time.monotonic()
+    trend_done = aux_done
     journal_dates = [_position_change_date(log.get("trade_date")) for log in journal_logs]
     latest_journal_date = max((d for d in journal_dates if d), default=None)
     journal_html = render_position_change_journal(
@@ -17087,13 +17248,15 @@ def web_portfolio(uid):
     daily_top_started = time.monotonic()
     daily_top = render_daily_home_top(uid, holdings, total_value, total_cost,
                                       price_map, pl_total, taiex=taiex,
-                                      position_journal_html=journal_html)
+                                      position_journal_html=journal_html,
+                                      daily_context=daily_context,
+                                      rank_status=page_rank_status)
     daily_top_done = time.monotonic()
-    print("⏱️ 今日完整頁：共享 %.0fms、持股行情 %.0fms、組合計算 %.0fms、走勢 %.0fms、首頁判讀 %.0fms、合計 %.0fms" % (
+    print("⏱️ 今日完整頁：共享 %.0fms、持股行情 %.0fms、組合計算 %.0fms、走勢／日誌／排名並行 %.0fms、首頁判讀 %.0fms、合計 %.0fms" % (
         (shared_done - full_started) * 1000,
         (price_done - shared_done) * 1000,
         (calc_done - price_done) * 1000,
-        (trend_done - trend_started) * 1000,
+        (aux_done - calc_done) * 1000,
         (daily_top_done - daily_top_started) * 1000,
         (daily_top_done - full_started) * 1000))
     body = f"""
