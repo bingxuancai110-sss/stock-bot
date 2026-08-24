@@ -33,6 +33,114 @@ def taiwan_today():
     return taiwan_now().date()
 
 
+# 首頁佳句只使用本機固定文字；依台灣日期選擇，同一天重整仍維持同一句。
+# 分成四組輪替，讓風險、進退、市場觀察與心態提醒依序出現。
+HOMEPAGE_QUOTE_GROUPS = {
+    "風險控管": (
+        "未雨綢繆，防患未然。",
+        "居安思危，未雨綢繆。",
+        "防微杜漸，慎終如始。",
+        "謹小慎微，安不忘危。",
+        "如履薄冰，如臨深淵。",
+        "三思而後行，謀定而後動。",
+        "量力而為，適可而止。",
+        "知止不殆，知足不辱。",
+        "穩紮穩打，步步為營。",
+        "小心駛得萬年船。",
+        "留有餘地，方能轉圜。",
+        "先求不敗，再圖勝局。",
+        "審慎而行，穩中求進。",
+        "防患未萌，未雨先備。",
+        "安不忘危，治不忘亂。",
+        "履霜知冰，見微知著。",
+        "慎始慎終，行穩致遠。",
+        "欲思其利，必慮其害。",
+        "明者防禍於未萌，智者圖患於未然。",
+        "輕諾必寡信，躁進易失守。",
+    ),
+    "進退紀律": (
+        "知進知退，方能久勝。",
+        "見好就收，落袋為安。",
+        "當斷則斷，不斷則亂。",
+        "能屈能伸，方成大器。",
+        "急流勇退，明哲保身。",
+        "去留有度，取捨有方。",
+        "欲速不達，戒急用忍。",
+        "進可攻，退可守。",
+        "得意不忘形，失意不失志。",
+        "取捨之間，見其格局。",
+        "退一步海闊天空。",
+        "事緩則圓，心定則明。",
+        "勝不驕，敗不餒。",
+        "寵辱不驚，去留無意。",
+        "靜觀其變，伺機而動。",
+        "能進能退，方可長久。",
+        "過猶不及，適可而止。",
+        "不疾不徐，從容應對。",
+        "欲進先退，欲取先予。",
+        "藏器於身，待時而動。",
+    ),
+    "市場觀察": (
+        "審時度勢，順勢而為。",
+        "因時制宜，因勢利導。",
+        "見微知著，洞燭機先。",
+        "風起於青萍之末。",
+        "山雨欲來風滿樓。",
+        "盛極必衰，物極必反。",
+        "否極泰來，泰極否來。",
+        "潮起潮落，盈虧有時。",
+        "人無千日好，花無百日紅。",
+        "水到渠成，瓜熟蒂落。",
+        "螳螂捕蟬，黃雀在後。",
+        "兼聽則明，偏信則暗。",
+        "以靜制動，後發先至。",
+        "先見之明，未雨之備。",
+        "運籌帷幄，決勝千里。",
+        "察勢而動，順勢而行。",
+        "日中則昃，月滿則虧。",
+        "長江後浪推前浪。",
+        "海納百川，有容乃大。",
+        "逆水行舟，不進則退。",
+    ),
+    "投資心態": (
+        "戒貪戒躁，量力而為。",
+        "淡泊明志，寧靜致遠。",
+        "不以物喜，不以己悲。",
+        "心平氣和，從容應對。",
+        "厚積薄發，水到渠成。",
+        "守拙藏鋒，韜光養晦。",
+        "積小勝為大勝。",
+        "一鼓作氣，再而衰，三而竭。",
+        "失之東隅，收之桑榆。",
+        "塞翁失馬，焉知非福。",
+        "勝固欣然，敗亦可喜。",
+        "吃得苦中苦，方為人上人。",
+        "行穩致遠，久久為功。",
+        "千里之行，始於足下。",
+        "不忘初心，方得始終。",
+        "精誠所至，金石為開。",
+        "功不唐捐，玉汝於成。",
+        "守正出奇，厚德載物。",
+        "慢工出細活，磨刀不誤砍柴工。",
+        "靜水流深，大智若愚。",
+    ),
+}
+
+
+def _homepage_quote_for(display_date=None):
+    """依台灣日期固定選句；不使用 random、不查資料，也不產生外部請求。"""
+    groups = tuple(HOMEPAGE_QUOTE_GROUPS.values())
+    if not groups:
+        return "知進知退，方能久勝。"
+    try:
+        day = display_date if isinstance(display_date, date) else taiwan_today()
+        ordinal = day.toordinal()
+    except (AttributeError, TypeError, ValueError):
+        ordinal = taiwan_today().toordinal()
+    group = groups[ordinal % len(groups)]
+    return group[(ordinal // len(groups)) % len(group)]
+
+
 def next_taiwan_trading_day(source_date):
     """由資料日取得下一個平日顯示日；週五會跳到下週一。"""
     d = source_date + timedelta(days=1)
@@ -419,7 +527,7 @@ def _current_market():
                     pass
 
     # MU 與 LITE 是盤前頁要直接看的個股，不改變原本的指數事件偵測範圍。
-    symbols = ["^DJI", "^IXIC", "^GSPC", "^SOX", "^N225", "^KS11", "MU", "LITE"]
+    symbols = ["^DJI", "^IXIC", "^GSPC", "^SOX", "MU", "LITE"]
     quotes = fetch_quotes_bulk(symbols) or {}
     for symbol in symbols:
         q = quotes.get(symbol)
@@ -12996,9 +13104,38 @@ def web_positions(uid):
        <div class="total-value num">{len(positions)}</div></div>
 </div>""" if positions else ""
 
+    # 使用者目前所在的「持股」頁也要直接看得到兩張圖；不能只把圖放在
+    # 另一個完整分析 route。配置圖只用有有效現價的市值，走勢圖沿用
+    # get_portfolio_snapshots/render_trend_chart 的既有組合對加權指數口徑。
+    chart_holdings = []
+    for p, price, value, _cost_total in enriched:
+        if not price or not value or not math.isfinite(float(value)):
+            continue
+        chart_holdings.append({
+            "code": p["code"],
+            "name": stock_display_name(p["code"], inst, price.get("name")),
+            "value": value,
+        })
+    allocation_html_positions = render_portfolio_allocation_chart(chart_holdings)
+    try:
+        position_snapshots = get_portfolio_snapshots(uid, days=120)
+        position_trend_html = render_trend_chart(position_snapshots)
+    except Exception as exc:
+        print(f"⚠️ 持股頁組合走勢載入失敗: {exc}")
+        position_trend_html = '<div class="empty">組合走勢暫時無法載入，請稍後再試。</div>'
+    portfolio_trend_html = f"""
+<section class="portfolio-chart-card portfolio-trend-card" id="portfolio-trend">
+  <div class="section-head"><h2>組合 vs 加權指數</h2>
+    <span class="section-note">相對起始日漲跌幅</span></div>
+  <p class="portfolio-chart-note">同一張圖比較你的組合與台灣加權指數；若快照不足兩天，會明確顯示資料累積狀態。</p>
+  <div class="portfolio-trend-body">{position_trend_html}</div>
+</section>"""
+
     body = f"""
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {totals}
+{allocation_html_positions}
+{portfolio_trend_html}
 <div class="section-head"><h2>持股明細</h2>
   <span class="section-note">依市值排序　·　<a href="/web/trades" style="color:var(--brass)">操作日報 →</a></span></div>
 <div class="rows">
@@ -14909,15 +15046,15 @@ def render_trend_chart(snapshots):
     svg = f"""
 <svg viewBox="0 0 {W} {H}" width="100%" height="{H}" preserveAspectRatio="none">
   <line x1="{ML}" y1="{zero_y:.1f}" x2="{W - MR}" y2="{zero_y:.1f}"
-        stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,3"/>
-  {f'<path d="{taiex_path}" fill="none" stroke="var(--ink-faint)" stroke-width="1.5" stroke-dasharray="4,3"/>' if taiex_path else ''}
-  <path d="{port_path}" fill="none" stroke="var(--brass)" stroke-width="2"/>
+        stroke="#D7D6D0" stroke-width="1" stroke-dasharray="2,3"/>
+  {f'<path d="{taiex_path}" fill="none" stroke="#9AA19C" stroke-width="1.5" stroke-dasharray="4,3"/>' if taiex_path else ''}
+  <path d="{port_path}" fill="none" stroke="#8B6934" stroke-width="2"/>
 </svg>"""
 
     legend = f"""
 <div class="legend" style="margin-top:6px">
-  <span><i style="background:var(--brass)"></i>組合 {port_last:+.1f}%</span>
-  {f'<span><i style="background:var(--ink-faint)"></i>加權指數 {taiex_last:+.1f}%</span>' if taiex_last is not None else ''}
+  <span><i style="background:#8B6934"></i>組合 {port_last:+.1f}%</span>
+  {f'<span><i style="background:#9AA19C"></i>加權指數 {taiex_last:+.1f}%</span>' if taiex_last is not None else ''}
   <span style="color:var(--ink-faint);margin-left:auto">
     {pts[0]['date'].strftime('%m/%d')} – {pts[-1]['date'].strftime('%m/%d')}</span>
 </div>"""
@@ -16733,28 +16870,7 @@ def render_portfolio_fast_summary(uid):
         for label, value in market_items
     )
 
-    def fast_external_row(label, symbol):
-        close, pct = market.get(f"{symbol}_close"), market.get(f"{symbol}_pct")
-        close_text = f"{float(close):,.2f}" if close is not None else "價格待確認"
-        if pct is None:
-            pct_text, cls = "漲跌待確認", "flat"
-        else:
-            try:
-                pct_value = float(pct)
-                pct_text = fmt_pct(pct_value)
-                cls = "up" if pct_value > 0 else ("down" if pct_value < 0 else "flat")
-            except (TypeError, ValueError):
-                pct_text, cls = "漲跌待確認", "flat"
-        if close is None and pct is None:
-            return f'<div class="daily-fast-index-row"><b>{html.escape(label)}</b><span class="flat">尚未更新</span></div>'
-        return f'<div class="daily-fast-index-row"><b>{html.escape(label)}</b><span><strong>{close_text}</strong> <em class="{cls}">{pct_text}</em></span></div>'
-
-    fast_external_html = "".join([
-        fast_external_row("費城半導體", "^SOX"),
-        fast_external_row("日經225", "^N225"),
-        fast_external_row("韓國指數", "^KS11"),
-    ])
-
+    fast_quote_text = html.escape(_homepage_quote_for(snapshot_date))
     rank_status = get_fast_rank_summary(uid)
     print("⏱️ 今日首頁 fast：快照＋事件 %.0fms、排名 %.0fms、合計 %.0fms" % (
         (context_done - fast_started) * 1000,
@@ -16783,7 +16899,7 @@ def render_portfolio_fast_summary(uid):
             f'<b>{value}</b><span>{note}</span></div>')
 
     return f'''<style>
-.daily-fast-sync{{display:flex;gap:11px;align-items:flex-start;background:#F5F0E5;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:14px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-fast-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 4px rgba(139,105,52,.12);flex:none}}.daily-fast-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-fast-sync-copy span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.65}}.daily-fast-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:22px 18px 18px;margin:-8px -2px 14px;border-bottom:1px solid #d7d4ca}}.daily-fast-hero .eyebrow{{letter-spacing:.14em;color:var(--brass);font-size:11px}}.daily-fast-hero h1{{font-size:26px;line-height:1.25;margin:8px 0 14px}}.daily-fast-market{{display:flex;gap:8px;flex-wrap:wrap}}.daily-fast-market span{{background:rgba(255,255,255,.72);padding:8px 10px;border-radius:8px;font-size:12px}}.daily-fast-market b{{display:block;font-size:16px;margin-top:3px}}.daily-fast-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:15px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.daily-fast-title{{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}}.daily-fast-title h2{{margin:0;font-size:19px}}.daily-fast-event{{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}}.daily-fast-number{{background:var(--brass);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;flex:none;font-size:12px}}.daily-fast-detail{{font-size:12.5px;color:var(--ink-soft);margin-top:3px}}.daily-fast-empty{{padding:11px 0;color:var(--ink-soft);font-size:13px}}.daily-fast-empty span{{font-size:12px}}.daily-fast-ranks{{display:grid;grid-template-columns:1fr;gap:0}}.daily-fast-rank{{background:transparent;border-bottom:1px solid #e3e2dc;border-radius:0;padding:9px 0}}.daily-fast-rank:last-child{{border-bottom:0}}.daily-fast-rank small,.daily-fast-rank>span{{display:block;color:var(--ink-soft);font-size:11px}}.daily-fast-rank b{{display:block;font-size:18px;margin:4px 0}}.daily-fast-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px}}.daily-fast-panel{{min-width:0;min-height:145px;padding:11px 10px;border:1px solid rgba(139,105,52,.24);border-radius:9px;background:rgba(255,255,255,.58)}}.daily-fast-panel-title{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding-bottom:7px;border-bottom:1px solid rgba(139,105,52,.16)}}.daily-fast-panel-title b{{font-size:12px}}.daily-fast-panel-title a,.daily-fast-panel-title span{{font-size:8px;color:var(--brass);white-space:nowrap}}.daily-fast-index-row{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding:8px 0;border-bottom:1px solid #e3e2dc}}.daily-fast-index-row:last-child{{border-bottom:0}}.daily-fast-index-row b{{font-size:10px}}.daily-fast-index-row span{{font-size:9px;text-align:right;white-space:nowrap}}.daily-fast-index-row strong{{display:block;font-size:10px;color:var(--ink)}}.daily-fast-index-row em{{font-style:normal;font-size:9px}}@media (max-width:640px){{.daily-fast-panels{{grid-template-columns:1fr}}.daily-fast-panel{{min-height:auto}}}}
+.daily-fast-sync{{display:flex;gap:11px;align-items:flex-start;background:#F5F0E5;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:14px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-fast-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 4px rgba(139,105,52,.12);flex:none}}.daily-fast-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-fast-sync-copy span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.65}}.daily-fast-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:22px 18px 18px;margin:-8px -2px 14px;border-bottom:1px solid #d7d4ca}}.daily-fast-hero .eyebrow{{letter-spacing:.14em;color:var(--brass);font-size:11px}}.daily-fast-hero h1{{font-size:26px;line-height:1.25;margin:8px 0 14px}}.daily-fast-market{{display:flex;gap:8px;flex-wrap:wrap}}.daily-fast-market span{{background:rgba(255,255,255,.72);padding:8px 10px;border-radius:8px;font-size:12px}}.daily-fast-market b{{display:block;font-size:16px;margin-top:3px}}.daily-fast-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:15px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.daily-fast-title{{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}}.daily-fast-title h2{{margin:0;font-size:19px}}.daily-fast-event{{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}}.daily-fast-number{{background:var(--brass);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;flex:none;font-size:12px}}.daily-fast-detail{{font-size:12.5px;color:var(--ink-soft);margin-top:3px}}.daily-fast-empty{{padding:11px 0;color:var(--ink-soft);font-size:13px}}.daily-fast-empty span{{font-size:12px}}.daily-fast-ranks{{display:grid;grid-template-columns:1fr;gap:0}}.daily-fast-rank{{background:transparent;border-bottom:1px solid #e3e2dc;border-radius:0;padding:9px 0}}.daily-fast-rank:last-child{{border-bottom:0}}.daily-fast-rank small,.daily-fast-rank>span{{display:block;color:var(--ink-soft);font-size:11px}}.daily-fast-rank b{{display:block;font-size:18px;margin:4px 0}}.daily-fast-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px}}.daily-fast-panel{{min-width:0;padding:11px 10px;border:1px solid rgba(139,105,52,.24);border-radius:9px;background:rgba(255,255,255,.58)}}.daily-fast-panel-title{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding-bottom:7px;border-bottom:1px solid rgba(139,105,52,.16)}}.daily-fast-panel-title b{{font-size:12px}}.daily-fast-panel-title a,.daily-fast-panel-title span{{font-size:8px;color:var(--brass);white-space:nowrap}}.daily-fast-index-row{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding:8px 0;border-bottom:1px solid #e3e2dc}}.daily-fast-index-row:last-child{{border-bottom:0}}.daily-fast-index-row b{{font-size:10px}}.daily-fast-index-row span{{font-size:9px;text-align:right;white-space:nowrap}}.daily-fast-index-row strong{{display:block;font-size:10px;color:var(--ink)}}.daily-fast-index-row em{{font-style:normal;font-size:9px}}@media (max-width:640px){{.daily-fast-panels{{grid-template-columns:1fr}}}}.daily-fast-summary-stack{{display:block;margin-top:11px}}.daily-fast-rank-panel{{padding:10px 13px}}.daily-fast-rank-panel .daily-fast-panel-title{{padding-bottom:6px}}.daily-fast-rank-panel .daily-fast-ranks{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.daily-fast-rank-panel .daily-fast-rank{{border:0;padding:8px 0}}.daily-fast-rank-panel .daily-fast-rank b{{font-size:16px;margin:3px 0}}.daily-fast-quote{{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:8px;padding:12px 13px;border:1px solid rgba(139,105,52,.22);border-radius:9px;background:#F8F5ED}}.daily-fast-quote strong{{color:var(--ink);font-family:"Kaiti TC","BiauKai","DFKai-SB","STKaiti","Noto Serif CJK TC","Noto Serif TC",serif;font-size:16px;font-weight:700;letter-spacing:.12em;line-height:1.5;text-align:center;white-space:nowrap}}@media (max-width:640px){{.daily-fast-rank-panel .daily-fast-ranks{{gap:6px}}.daily-fast-quote{{align-items:center;display:flex}}.daily-fast-quote strong{{display:block;margin-top:0;text-align:center;font-size:17px}}}}
 </style><section class="daily-fast-sync" aria-live="polite">
   <span class="daily-fast-sync-dot" aria-hidden="true"></span>
   <div class="daily-fast-sync-copy"><b>系統正在跑・正在整合完整首頁</b>
@@ -16796,12 +16912,12 @@ def render_portfolio_fast_summary(uid):
   <div class="daily-fast-market">{market_html}</div>
 </section>
 <section class="daily-fast-card"><div class="daily-fast-title"><h2>🔥 今日值得注意</h2><a href="/web/premarket" style="color:var(--brass);font-size:12px">查看完整變化 →</a></div>{event_html}</section>
-<div class="daily-fast-panels"><section class="daily-fast-panel"><div class="daily-fast-panel-title"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section><section class="daily-fast-panel"><div class="daily-fast-panel-title"><b>🌏 外部指數</b><span>同步觀察</span></div>{fast_external_html}<div style="color:var(--ink-faint);font-size:8px;line-height:1.4;margin-top:7px">有有效快照時顯示收盤與漲跌</div></section></div>'''
+<div class="daily-fast-summary-stack"><section class="daily-fast-panel daily-fast-rank-panel"><div class="daily-fast-panel-title"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section><section class="daily-fast-quote"><strong>{fast_quote_text}</strong></section></div>'''
 
 
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total,
-                          taiex=None, position_journal_html="", daily_context=None,
-                          rank_status=None, external_market=None):
+                           taiex=None, position_journal_html="", daily_context=None,
+                           rank_status=None):
 
 
     # 新版首頁上半部：先講今天，再提供完整分析入口。
@@ -16816,7 +16932,6 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     signal_state = _daily_signal_state(display_snapshot, timeline)
     events = (timeline.get("new", []) + timeline.get("ongoing", []))[:3]
     taiex = (fetch_taiex_summary() if taiex is None else taiex) or {}
-    external_market = external_market if isinstance(external_market, dict) else {}
     market_pct = None
     for key in ("pct", "change_pct", "percent"):
         if taiex.get(key) is not None:
@@ -16966,33 +17081,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     portfolio_text = fmt_pct(portfolio_pct) if portfolio_pct is not None else fmt_pct(pl_total)
     relative_text = fmt_pct(relative) if relative is not None else "—"
 
-    def external_quote_row(label, symbol):
-        quote = external_market.get(symbol)
-        close = pct = None
-        if isinstance(quote, dict):
-            close, pct = quote.get("close"), quote.get("pct")
-        elif isinstance(quote, (tuple, list)) and len(quote) >= 2:
-            close, pct = quote[0], quote[1]
-        try:
-            close = float(close) if close is not None else None
-        except (TypeError, ValueError):
-            close = None
-        try:
-            pct = float(pct) if pct is not None else None
-        except (TypeError, ValueError):
-            pct = None
-        if close is None and pct is None:
-            return f'<div class="external-index-row"><b>{html.escape(label)}</b><span class="external-index-missing">尚未更新</span></div>'
-        close_text = f"{close:,.2f}" if close is not None else "價格待確認"
-        pct_text = fmt_pct(pct) if pct is not None else "漲跌待確認"
-        cls = "up" if pct is not None and pct > 0 else ("down" if pct is not None and pct < 0 else "flat")
-        return f'<div class="external-index-row"><b>{html.escape(label)}</b><span><strong>{close_text}</strong> <em class="{cls}">{pct_text}</em></span></div>'
-
-    external_index_html = "".join([
-        external_quote_row("費城半導體", "^SOX"),
-        external_quote_row("日經225", "^N225"),
-        external_quote_row("韓國指數", "^KS11"),
-    ])
+    quote_text = _homepage_quote_for(display_date)
 
     # 只解釋「組合相對大盤的差異」，不對大盤漲跌原因做無資料推測。
     if relative is None:
@@ -17084,7 +17173,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         hero_eyebrow = f"TODAY · {display_date.strftime('%Y / %m / %d')}"
 
     return f'''<style>
-.daily-complete-sync{{display:flex;gap:11px;align-items:flex-start;background:#F5F0E5;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:13px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-complete-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:#087A4B;box-shadow:0 0 0 4px rgba(8,122,75,.12);flex:none}}.daily-complete-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-complete-sync span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.6}}.daily-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:26px 24px 22px;margin:-8px -2px 18px;border-bottom:1px solid #d7d4ca}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-status{{min-width:28px;height:22px;padding:2px 5px;border-radius:7px;text-align:center;font-size:11px;font-weight:700;line-height:18px;flex:none;background:#eee;color:var(--ink-soft)}}.timeline-new .event-status{{background:#FCE9E6;color:var(--up)}}.timeline-ongoing .event-status{{background:#F3EEE1;color:var(--brass)}}.timeline-resolved .event-status{{background:#E8F2EA;color:var(--down)}}.timeline-divider{{margin:14px 0 0;padding-top:12px;border-top:1px solid #eee;color:var(--ink-soft);font-size:12px;font-weight:600}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:11px;min-width:0}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:11px}}.rank-mini b{{display:block;font-size:18px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:12px}}.hero-summary-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.hero-summary-panel{{min-width:0;min-height:176px;padding:13px;border:1px solid rgba(139,105,52,.25);border-radius:11px;background:rgba(255,255,255,.58);box-shadow:0 2px 8px rgba(35,39,35,.04)}}.hero-summary-panel-head{{display:flex;justify-content:space-between;align-items:center;gap:6px;min-height:27px;padding-bottom:8px;border-bottom:1px solid rgba(139,105,52,.18)}}.hero-summary-panel-head b{{font-size:14px}}.hero-summary-panel-head a{{font-size:10px;color:var(--brass);white-space:nowrap}}.hero-summary-panel-head span{{font-size:10px;color:var(--ink-soft);white-space:nowrap}}.hero-rank-panel .rank-grid{{grid-template-columns:1fr;gap:0}}.hero-rank-panel .rank-mini{{background:transparent;border-bottom:1px solid rgba(227,226,220,.88);border-radius:0;padding:11px 0}}.hero-rank-panel .rank-mini:last-child{{border-bottom:0}}.external-index-row{{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:10px 0;border-bottom:1px solid rgba(227,226,220,.88)}}.external-index-row b{{font-size:11px}}.external-index-row span{{font-size:10px;text-align:right;white-space:nowrap}}.external-index-row strong{{display:block;font-size:11px;color:var(--ink)}}.external-index-row em{{font-style:normal;font-size:10px}}.external-index-missing{{color:var(--ink-faint)}}.external-index-foot{{color:var(--ink-faint);font-size:9px;line-height:1.45;margin-top:9px}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}.home-judgement-card{{padding:16px 15px}}.judgement-row{{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid #ECEDE8;font-size:13px}}.judgement-row:first-of-type{{border-top:0}}.judgement-row span{{color:var(--ink-soft)}}.judgement-row b{{text-align:right}}.home-judgement-copy{{margin:10px 0 0;padding-top:10px;border-top:1px solid #ECEDE8;color:var(--ink-soft);font-size:12px;line-height:1.65}}.home-detail-collapse{{margin:14px 0;border:1px solid #E3E2DC;border-radius:12px;background:#fff;box-shadow:0 3px 14px rgba(35,39,35,.04)}}.home-detail-collapse>summary{{cursor:pointer;padding:14px 16px;color:var(--brass);font-size:13px;font-weight:700}}.home-detail-collapse .contribution-card{{margin:0;border:0;border-top:1px solid #ECEDE8;border-radius:0;box-shadow:none}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.impact-leads{{grid-template-columns:1fr}}.rank-grid{{grid-template-columns:1fr}}.hero-summary-panels{{gap:7px}}.hero-summary-panel{{min-height:185px;padding:11px 9px}}.hero-summary-panel-head b{{font-size:12px}}.hero-summary-panel-head a,.hero-summary-panel-head span{{font-size:8px}}.rank-mini span,.rank-mini small{{font-size:10px}}.rank-mini b{{font-size:17px}}.external-index-row{{padding:9px 0;display:block}}.external-index-row b,.external-index-row span{{display:block;text-align:left}}.external-index-row span{{margin-top:2px;font-size:9px}}.daily-hero h1{{font-size:26px}}}}
+.daily-complete-sync{{display:flex;gap:11px;align-items:flex-start;background:#F5F0E5;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:13px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-complete-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:#087A4B;box-shadow:0 0 0 4px rgba(8,122,75,.12);flex:none}}.daily-complete-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-complete-sync span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.6}}.daily-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:26px 24px 22px;margin:-8px -2px 18px;border-bottom:1px solid #d7d4ca}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-status{{min-width:28px;height:22px;padding:2px 5px;border-radius:7px;text-align:center;font-size:11px;font-weight:700;line-height:18px;flex:none;background:#eee;color:var(--ink-soft)}}.timeline-new .event-status{{background:#FCE9E6;color:var(--up)}}.timeline-ongoing .event-status{{background:#F3EEE1;color:var(--brass)}}.timeline-resolved .event-status{{background:#E8F2EA;color:var(--down)}}.timeline-divider{{margin:14px 0 0;padding-top:12px;border-top:1px solid #eee;color:var(--ink-soft);font-size:12px;font-weight:600}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:11px;min-width:0}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:11px}}.rank-mini b{{display:block;font-size:18px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:12px}}.hero-summary-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.hero-summary-panel{{min-width:0;padding:13px;border:1px solid rgba(139,105,52,.25);border-radius:11px;background:rgba(255,255,255,.58);box-shadow:0 2px 8px rgba(35,39,35,.04)}}.hero-summary-panel-head{{display:flex;justify-content:space-between;align-items:center;gap:6px;min-height:27px;padding-bottom:8px;border-bottom:1px solid rgba(139,105,52,.18)}}.hero-summary-panel-head b{{font-size:14px}}.hero-summary-panel-head a{{font-size:10px;color:var(--brass);white-space:nowrap}}.hero-summary-panel-head span{{font-size:10px;color:var(--ink-soft);white-space:nowrap}}.hero-summary-stack{{display:block;margin-top:14px}}.hero-summary-stack .hero-summary-panel{{padding:10px 13px}}.hero-rank-panel .rank-grid{{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.hero-rank-panel .rank-mini{{background:transparent;border:0;border-right:1px solid rgba(227,226,220,.88);border-radius:0;padding:8px 10px 8px 0}}.hero-rank-panel .rank-mini:last-child{{border-right:0;padding-right:0;padding-left:10px}}.hero-summary-stack .hero-summary-panel-head{{min-height:0;padding-bottom:6px}}.hero-summary-stack .hero-summary-panel-head b{{font-size:13px}}.hero-quote-panel{{margin-top:8px;border-color:rgba(139,105,52,.22);background:#F8F5ED}}.hero-quote-text{{margin:8px 0 1px;color:var(--ink);font-family:"Kaiti TC","BiauKai","DFKai-SB","STKaiti","Noto Serif CJK TC","Noto Serif TC",serif;font-size:19px;font-weight:700;line-height:1.5;text-align:center;letter-spacing:.12em;white-space:nowrap}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}.home-judgement-card{{padding:16px 15px}}.judgement-row{{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid #ECEDE8;font-size:13px}}.judgement-row:first-of-type{{border-top:0}}.judgement-row span{{color:var(--ink-soft)}}.judgement-row b{{text-align:right}}.home-judgement-copy{{margin:10px 0 0;padding-top:10px;border-top:1px solid #ECEDE8;color:var(--ink-soft);font-size:12px;line-height:1.65}}.home-detail-collapse{{margin:14px 0;border:1px solid #E3E2DC;border-radius:12px;background:#fff;box-shadow:0 3px 14px rgba(35,39,35,.04)}}.home-detail-collapse>summary{{cursor:pointer;padding:14px 16px;color:var(--brass);font-size:13px;font-weight:700}}.home-detail-collapse .contribution-card{{margin:0;border:0;border-top:1px solid #ECEDE8;border-radius:0;box-shadow:none}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.impact-leads{{grid-template-columns:1fr}}.rank-grid{{grid-template-columns:1fr}}.hero-summary-stack{{gap:7px}}.hero-summary-panel{{padding:10px 11px}}.hero-summary-panel-head b{{font-size:12px}}.hero-summary-panel-head a,.hero-summary-panel-head span{{font-size:8px}}.rank-mini span,.rank-mini small{{font-size:10px}}.rank-mini b{{font-size:16px}}.hero-quote-text{{font-size:18px;text-align:center}}.daily-hero h1{{font-size:26px}}}}
 .daily-interpretation{{padding:11px 14px;margin:-4px 0 14px;border-left:3px solid var(--brass);background:rgba(255,255,255,.6);color:var(--ink-soft);font-size:13px;line-height:1.65}}.daily-interpretation-label{{font-size:11px;color:var(--brass);font-weight:700;letter-spacing:.08em;margin-bottom:3px}}.contribution-card{{padding:16px 15px}}.contribution-card .daily-section-title span{{font-size:11px;color:var(--ink-faint)}}.impact-sentence{{margin:0 0 12px;color:var(--ink-soft);font-size:13px;line-height:1.6}}.impact-leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.impact-lead{{padding:13px;border-radius:11px;background:#F7F7F3;border:1px solid #ECEDE8}}.impact-lead small{{display:block;font-size:11px;font-weight:700;color:var(--ink-soft)}}.impact-lead h3{{font-size:20px;line-height:1.3;margin:7px 0 4px;overflow-wrap:anywhere}}.impact-lead p{{margin:0 0 8px;color:var(--ink-soft);font-size:11px}}.impact-lead strong{{font-size:12px}}.impact-up{{border-color:#EDC7C2;background:#FFF7F5}}.impact-up strong{{color:var(--up)}}.impact-down{{border-color:#C9DFD0;background:#F4FBF5}}.impact-down strong{{color:var(--down)}}.impact-muted{{color:var(--ink-faint)}}.impact-details{{margin-top:10px;border-top:1px solid #ECEDE8}}.impact-details summary{{padding:11px 2px 4px;cursor:pointer;color:var(--brass);font-size:12px;font-weight:600}}.impact-detail-row{{display:flex;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid #F0F0EC}}.impact-rank{{width:20px;height:20px;border-radius:50%;background:#F0EEE8;color:var(--ink-soft);font-size:11px;text-align:center;line-height:20px;flex:none}}.impact-detail-name{{min-width:0;flex:1}}.impact-detail-name b{{display:block;font-size:14px;overflow-wrap:anywhere}}.impact-detail-name small{{display:block;color:var(--ink-soft);font-size:10.5px;margin-top:2px}}.impact-detail-row strong{{font-size:12px;white-space:nowrap}}.impact-empty{{padding:9px 2px;color:var(--ink-faint);font-size:11px}}.contribution-footnote{{margin-top:10px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}} </style><div class="daily-complete-sync" aria-live="polite">
   <span class="daily-complete-sync-dot" aria-hidden="true"></span>
   <div><b>今日資料已整合完成</b><span>即時行情、今日事件與排名摘要已載入；詳細貢獻明細可往下展開查看。</span></div>
@@ -17092,7 +17181,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <div class="eyebrow">{hero_eyebrow}</div>
   <h1>今天你的投資發生了什麼？</h1>
   <div class="market-strip"><span>大盤 <b>{market_text}</b></span><span>你的組合 <b>{portfolio_text}</b></span><span>相對大盤 <b>{relative_text}</b></span></div>
-  <div class="hero-summary-panels"><section class="hero-summary-panel hero-rank-panel"><div class="hero-summary-panel-head"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="rank-grid">{rank_line('short')}{rank_line('long')}</div></section><section class="hero-summary-panel external-index-panel"><div class="hero-summary-panel-head"><b>🌏 外部指數</b><span>同步觀察</span></div>{external_index_html}<div class="external-index-foot">有有效快照時顯示收盤與漲跌</div></section></div>
+  <div class="hero-summary-stack"><section class="hero-summary-panel hero-rank-panel"><div class="hero-summary-panel-head"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="rank-grid">{rank_line('short')}{rank_line('long')}</div></section><section class="hero-quote-panel"><p class="hero-quote-text">{html.escape(quote_text)}</p></section></div>
 </section>
 {position_journal_html}
 <section class="daily-card attention-card"><div class="daily-section-title"><h2>🔥 今日值得注意</h2><a href="/web/premarket">查看完整變化 →</a></div>{events_html}</section>
@@ -17184,13 +17273,11 @@ def web_portfolio(uid):
         # 今日事件上下文與五份共享資料互相獨立；併行取得後，
         # render_daily_home_top 不必在完整頁尾端再次查詢同一份快照。
         ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today())),
-        # 右側外部指數沿用同一批批次行情查詢；缺值由 renderer 顯示尚未更新。
-        ("外部指數", lambda: fetch_quotes_bulk(["^SOX", "^N225", "^KS11"], workers=3)),
     ]
     with ThreadPoolExecutor(max_workers=len(shared_loaders)) as ex:
         shared_values = list(ex.map(
             lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
-    inst, revenue, valuation, ind_map, taiex, daily_context, external_market = shared_values
+    inst, revenue, valuation, ind_map, taiex, daily_context = shared_values
     shared_done = time.monotonic()
 
     price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
@@ -17361,8 +17448,7 @@ def web_portfolio(uid):
                                       price_map, pl_total, taiex=taiex,
                                       position_journal_html=journal_html,
                                       daily_context=daily_context,
-                                      rank_status=page_rank_status,
-                                      external_market=external_market)
+                                      rank_status=page_rank_status)
     daily_top_done = time.monotonic()
     print("⏱️ 今日完整頁：共享 %.0fms、持股行情 %.0fms、組合計算 %.0fms、走勢／日誌／排名並行 %.0fms、首頁判讀 %.0fms、合計 %.0fms" % (
         (shared_done - full_started) * 1000,
