@@ -2919,7 +2919,7 @@ def enrich_position_change_logs(logs, current_positions, price_map, total_value)
 
 def render_position_change_journal(user_id, current_positions=None, price_map=None,
                                   inst_data=None, logs=None, trade_date=None,
-                                  display_limit=100):
+                                  display_limit=100, realized_trades=None):
     """呈現操作日報；總資產口徑是目前已登錄持股的最新可得市值，不含未輸入的現金／其他資產。"""
     all_logs = logs if logs is not None else get_position_change_logs(user_id, limit=5000)
     if not all_logs:
@@ -2935,6 +2935,16 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
         for p in current_positions if price_map.get(p.get("code"))
     )
     enriched = enrich_position_change_logs(all_logs, current_positions, price_map, total_value)
+    realized_trades = (list(realized_trades) if realized_trades is not None
+                       else get_realized_trades(user_id, limit=500))
+    realized_by_key = {}
+    for trade in realized_trades:
+        sold_date = _position_change_date(trade.get("sold_on"))
+        trade_code = str(trade.get("code") or "").strip()
+        realized_pl = trade.get("realized_pl")
+        if sold_date and trade_code and realized_pl is not None:
+            key = (trade_code, sold_date)
+            realized_by_key[key] = realized_by_key.get(key, 0.0) + float(realized_pl)
     selected_date = _position_change_date(trade_date) if trade_date else None
     if selected_date:
         enriched = [log for log in enriched
@@ -2955,6 +2965,7 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
     for day, day_logs in grouped.items():
         day_text = day.strftime("%Y/%m/%d") if day else "日期待確認"
         row_parts = []
+        attached_pnl_keys = set()
         for log in day_logs:
             code = str(log.get("code") or "")
             name = html.escape(str(stock_display_name(code, inst_data)))
@@ -2980,12 +2991,25 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
             price_text = f"成交／成本 {price:,.2f}" if price is not None else "成交價待確認"
             note = html.escape(str(log.get("note") or ""))
             note_html = f'<small>{note}</small>' if note else ''
+            pnl_key = (code, day)
+            realized_pl = realized_by_key.get(pnl_key)
+            if pnl_key in attached_pnl_keys:
+                pnl_html = ''
+            elif action == "減碼" and realized_pl is not None:
+                attached_pnl_keys.add(pnl_key)
+                pnl_cls = "up" if realized_pl >= 0 else "down"
+                pnl_html = (f'<small class="position-journal-pnl {pnl_cls}">'
+                             f'已實現損益 {realized_pl:+,.0f}</small>')
+            elif action == "減碼":
+                pnl_html = '<small class="position-journal-pnl flat">已實現損益 待確認</small>'
+            else:
+                pnl_html = '<small class="position-journal-pnl flat">已實現損益 —</small>'
             row_parts.append(f'''<div class="position-journal-row">
   <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
   <div class="position-journal-status"><span class="position-journal-badge {status_cls}">{status_label}</span></div>
   <div class="position-journal-cell"><b class="{delta_class}">{delta_text}</b><small>{before:,} → {after:,} 股</small></div>
   <div class="position-journal-cell"><b>{html.escape(change_text)}</b><small>相對操作前</small></div>
-  <div class="position-journal-cell"><b>{html.escape(weight_text)}</b><small class="{event_weight_class}">{html.escape(event_weight_text)}</small>{note_html}</div>
+  <div class="position-journal-cell"><b>{html.escape(weight_text)}</b><small class="{event_weight_class}">{html.escape(event_weight_text)}</small>{pnl_html}{note_html}</div>
 </div>''')
         day_sections.append(f'<div class="position-journal-day">{day_text}</div>{"".join(row_parts)}')
 
@@ -11142,6 +11166,7 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
   .position-journal-cell{min-width:0;color:var(--ink-soft);font-size:11px;line-height:1.45;text-align:right}
   .position-journal-cell b{display:block;color:var(--ink);font-size:14px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
   .position-journal-cell small{display:block;color:var(--ink-faint);font-size:10.5px;overflow-wrap:anywhere}
+  .position-journal-pnl{margin-top:2px;font-weight:700}
   .position-journal-badge{display:inline-block;padding:3px 7px;border-radius:999px;font-size:11px;font-weight:700;line-height:1.25}
   .position-journal-badge.new{background:#F6F0D7;color:#927A12}
   .position-journal-badge.add{background:#FCE9E6;color:var(--up)}
@@ -14231,12 +14256,14 @@ def web_position_trend(uid):
     return respond_page("持股走勢", body, "positions")
 
 
-def render_realized_summary(user_id, inst_data):
+def render_realized_summary(user_id, inst_data, summary_label="已實現損益",
+                            trades=None):
     """
     已實現損益摘要＋最近交易明細。沒有任何賣出紀錄時回傳空字串，
     組合分析頁就不會多出一個空蕩蕩的區塊。
     """
-    trades = get_realized_trades(user_id, limit=100)
+    trades = (list(trades) if trades is not None
+              else get_realized_trades(user_id, limit=100))
     if not trades:
         return ""
 
@@ -14271,7 +14298,7 @@ def render_realized_summary(user_id, inst_data):
 
     return f"""
 <details class="realized-collapse">
-  <summary><span>已實現損益</span><small>共 {len(trades)} 筆交易・點開查看</small></summary>
+  <summary><span>{html.escape(summary_label)}</span><small>共 {len(trades)} 筆交易・點開查看</small></summary>
   <div class="realized-body">
     <div class="totals">
       <div><div class="total-label">累計已實現損益</div>
@@ -16080,6 +16107,7 @@ def render_portfolio_fast_summary(uid):
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total,
                           taiex=None, position_journal_html=""):
 
+
     # 新版首頁上半部：先講今天，再提供完整分析入口。
     calendar_today = taiwan_today()
     display_date = _premarket_display_date(calendar_today)
@@ -16388,14 +16416,11 @@ def web_portfolio(uid):
     if not positions:
         # 沒有目前持股，但可能有賣光的歷史紀錄或組合快照可看，
         # 不能因為現在空手就把已實現損益跟走勢圖也一起藏起來。
-        inst_empty = fetch_institutional_data() or {}
-        realized_html_empty = render_realized_summary(uid, inst_empty)
         trend_html_empty = render_trend_chart(get_portfolio_snapshots(uid, days=120))
         body = risk_card + f"""
 <div class="empty">還沒有持股紀錄。<br><br>
-<a href="/web/positions" style="color:var(--brass)">先去新增持股 →</a></div>
-{realized_html_empty}"""
-        if realized_html_empty or trend_html_empty:
+<a href="/web/positions" style="color:var(--brass)">先去新增持股 →</a></div>"""
+        if trend_html_empty:
             body += f"""
 <div class="section-head"><h2>組合走勢</h2>
   <span class="section-note">相對起始日漲跌幅</span></div>
@@ -16579,10 +16604,6 @@ def web_portfolio(uid):
     trend_started = time.monotonic()
     trend_html = render_trend_chart(get_portfolio_snapshots(uid, days=120))
     trend_done = time.monotonic()
-    realized_started = time.monotonic()
-    realized_html = render_realized_summary(uid, inst)
-    realized_done = time.monotonic()
-
     journal_logs = get_position_change_logs(uid, limit=5000)
     journal_dates = [_position_change_date(log.get("trade_date")) for log in journal_logs]
     latest_journal_date = max((d for d in journal_dates if d), default=None)
@@ -16595,12 +16616,11 @@ def web_portfolio(uid):
                                       price_map, pl_total, taiex=taiex,
                                       position_journal_html=journal_html)
     daily_top_done = time.monotonic()
-    print("⏱️ 今日完整頁：共享 %.0fms、持股行情 %.0fms、組合計算 %.0fms、走勢 %.0fms、實現損益 %.0fms、首頁判讀 %.0fms、合計 %.0fms" % (
+    print("⏱️ 今日完整頁：共享 %.0fms、持股行情 %.0fms、組合計算 %.0fms、走勢 %.0fms、首頁判讀 %.0fms、合計 %.0fms" % (
         (shared_done - full_started) * 1000,
         (price_done - shared_done) * 1000,
         (calc_done - price_done) * 1000,
         (trend_done - trend_started) * 1000,
-        (realized_done - realized_started) * 1000,
         (daily_top_done - daily_top_started) * 1000,
         (daily_top_done - full_started) * 1000))
     body = f"""
@@ -16613,7 +16633,6 @@ def web_portfolio(uid):
 <div class="section-head"><h2>組合走勢</h2><span class="section-note">相對起始日漲跌幅</span></div><div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
 <div class="section-head"><h2>產業集中度</h2><span class="section-note">寬度即權重</span></div><div class="band">{''.join(band)}</div><div class="legend">{''.join(legend)}</div><div class="callout">{corr_txt}</div>
 <div class="section-head"><h2>持股權重</h2><span class="section-note">依權重排序</span></div><div class="rows">{''.join(f'''<div class="row"><div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div><div class="price num">{h['weight']:.1f}%</div><div class="meta"><span><em>產業</em> {h['industry']}</span><span><em>損益</em> {fmt_pct(h['pl'])}</span><span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span><span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span></div><div class="chg">{fmt_pct(h['price']['pct'])}</div><div class="bar"><div style="width:{h['weight']:.1f}%"></div></div></div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}</div>
-{realized_html}
 <div class="section-head" id="alerts"><h2>值得注意</h2><span class="section-note"><a href="/web/settings" style="color:var(--ink-soft)">調整門檻 →</a></span></div><div class="rows">{''.join(f'<div class="alert"><span class="tag">{tag}</span><span>{txt}</span></div>' for tag, txt in alerts) if alerts else '<div class="empty">目前沒有觸及門檻的項目。</div>'}</div>"""
     return respond_page("今日", body, "portfolio")
 
