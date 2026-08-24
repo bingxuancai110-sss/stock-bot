@@ -1245,8 +1245,13 @@ def init_db():
                 revenue INTEGER,
                 valuation INTEGER,
                 close REAL,
+                asset_type TEXT NOT NULL DEFAULT 'stock',
                 PRIMARY KEY (user_id, code, snapshot_date)
             )
+        ''')
+        cursor.execute('''
+            ALTER TABLE watchlist_scores
+            ADD COLUMN IF NOT EXISTS asset_type TEXT NOT NULL DEFAULT 'stock'
         ''')
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_watchlist_scores_lookup
@@ -8192,7 +8197,7 @@ def build_watchlist_advice(total, chip_score, pos_score, rev_score, val_score,
     return "😐 各面向訊號中性，暫無明顯方向，續觀察法人動向與月線支撐"
 
 
-def compute_watchlist_scores(codes):
+def _compute_stock_watchlist_scores(codes):
     """
     算一批股票的自選股評分。抽成獨立函式，讓「顯示報告」與「每日存快照」
     共用同一套算法——分數若兩邊各算各的，隔天比對出來的變化就沒有意義了。
@@ -8241,12 +8246,30 @@ def compute_watchlist_scores(codes):
     return result
 
 
+def compute_watchlist_scores(codes):
+    """自選股評分總入口：個股與 ETF 分流，避免用錯商品模型。"""
+    normalized = list(dict.fromkeys(
+        str(code).strip().upper() for code in (codes or []) if str(code).strip()))
+    if not normalized:
+        return {}
+    stock_codes = [code for code in normalized if not is_etf(code)]
+    etf_codes = [code for code in normalized if is_etf(code)]
+    result = {}
+    if stock_codes:
+        result.update(_compute_stock_watchlist_scores(stock_codes))
+    if etf_codes:
+        result.update(_compute_etf_watchlist_scores(etf_codes))
+    return result
+
+
 def save_watchlist_scores(user_id, scores):
     """存下今天的自選股分數。同一天重複寫入會覆蓋，cron 跑兩次也不會重複。"""
     if not scores:
         return
-    rows = [(str(user_id).strip(), s["code"], s["total"], s["chip"],
-             s["position"], s["revenue"], s["valuation"], s["stock"]["close"])
+    rows = [(str(user_id).strip(), s["code"], s.get("total"), s.get("chip"),
+             s.get("position"), s.get("revenue"), s.get("valuation"),
+             (s.get("stock") or {}).get("close"),
+             s.get("asset_type") or ("etf" if is_etf(s.get("code")) else "stock"))
             for s in scores.values()]
     conn = get_db_connection()
     try:
@@ -8256,15 +8279,16 @@ def save_watchlist_scores(user_id, scores):
             """
             INSERT INTO watchlist_scores
                 (user_id, code, snapshot_date, total, chip, position,
-                 revenue, valuation, close)
+                 revenue, valuation, close, asset_type)
             VALUES %s
             ON CONFLICT (user_id, code, snapshot_date) DO UPDATE SET
                 total = EXCLUDED.total, chip = EXCLUDED.chip,
                 position = EXCLUDED.position, revenue = EXCLUDED.revenue,
-                valuation = EXCLUDED.valuation, close = EXCLUDED.close
+                valuation = EXCLUDED.valuation, close = EXCLUDED.close,
+                asset_type = EXCLUDED.asset_type
             """,
             rows,
-            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s)",
+            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s)",
             page_size=200,
         )
         conn.commit()
@@ -8291,7 +8315,8 @@ def get_previous_scores(user_id, codes, days_back=7):
         cursor.execute(
             """
             SELECT DISTINCT ON (code)
-                   code, snapshot_date, total, chip, position, revenue, valuation
+                   code, snapshot_date, total, chip, position, revenue, valuation,
+                   asset_type
             FROM watchlist_scores
             WHERE user_id = %s AND code = ANY(%s)
               AND snapshot_date < CURRENT_DATE
@@ -8303,7 +8328,8 @@ def get_previous_scores(user_id, codes, days_back=7):
         rows = cursor.fetchall()
         cursor.close()
         return {r[0]: {"date": r[1], "total": r[2], "chip": r[3],
-                       "position": r[4], "revenue": r[5], "valuation": r[6]}
+                       "position": r[4], "revenue": r[5], "valuation": r[6],
+                       "asset_type": r[7] or "stock"}
                 for r in rows}
     except Exception as e:
         print(f"❌ 讀取歷史評分失敗: {e}")
@@ -8319,17 +8345,28 @@ def describe_score_change(cur, prev):
     每檔都報一次會讓真正重要的變化被淹沒。
     回傳 (箭頭符號, 說明文字) 或 (None, None)
     """
-    if not prev:
+    if not prev or cur.get("total") is None or prev.get("total") is None:
+        return None, None
+    cur_type = cur.get("asset_type") or ("etf" if is_etf(cur.get("code")) else "stock")
+    prev_type = prev.get("asset_type") or ("etf" if is_etf(cur.get("code")) else "stock")
+    # 模型切換時不拿個股舊分項與 ETF 新分項硬比，等下一筆同模型快照。
+    if cur_type != prev_type:
         return None, None
     diff = cur["total"] - prev["total"]
     if abs(diff) < 5:
         return None, None
 
-    # 找出貢獻最多的面向，讓「為什麼變」有依據而不只是報數字
-    parts = [("籌碼", cur["chip"] - prev["chip"]),
-             ("位階", cur["position"] - prev["position"]),
-             ("營收", cur["revenue"] - prev["revenue"]),
-             ("估值", cur["valuation"] - prev["valuation"])]
+    # 找出貢獻最多的面向，讓「為什麼變」有依據而不只是報數字。
+    if cur_type == "etf":
+        parts = [("同期超額報酬", (cur.get("chip") or 0) - (prev.get("chip") or 0)),
+                 ("價格報酬", (cur.get("position") or 0) - (prev.get("position") or 0)),
+                 ("配息殖利率", (cur.get("revenue") or 0) - (prev.get("revenue") or 0)),
+                 ("風險控制", (cur.get("valuation") or 0) - (prev.get("valuation") or 0))]
+    else:
+        parts = [("籌碼", cur["chip"] - prev["chip"]),
+                 ("位階", cur["position"] - prev["position"]),
+                 ("營收", cur["revenue"] - prev["revenue"]),
+                 ("估值", cur["valuation"] - prev["valuation"])]
     driver, dval = max(parts, key=lambda x: abs(x[1]))
     reason = f"，主要來自{driver}{dval:+d}" if abs(dval) >= 3 else ""
     arrow = "📈" if diff > 0 else "📉"
@@ -8626,15 +8663,23 @@ def build_single_etf_report(code, user_id=None):
         lines.append("配息率：官方已發生配息金額待確認；空白不視為 0 元")
     else:
         lines.append("配息率：官方配息政策或金額待確認")
+    if distribution_records:
+        recent_records = _etf_recent_distribution_records(meta, limit=4)
+        lines.append(_format_recent_distribution_records(recent_records))
 
     closes = [float(x) for x in (stock.get("closes") or []) if x not in (None, 0)]
     close_dates = stock.get("close_dates") or []
     if distribution_records and close is not None:
         end_date = _parse_history_date(close_dates[-1]) if close_dates else taiwan_today()
         trailing = _etf_trailing_distribution_metrics(meta, end_date, close)
+        stability = _etf_distribution_stability_metrics(meta, end_date, close)
         if trailing.get("status") == "verified":
             lines.append(f"近12個月官方現金配息：{float(trailing['amount']):.2f} 元")
-            lines.append(f"近12個月參考殖利率：{float(trailing['yield_pct']):.2f}%（以期末價格估算，非含息總報酬）")
+            lines.append(f"原始近12個月參考殖利率：{float(trailing['yield_pct']):.2f}%（以期末價格估算，非含息總報酬）")
+            if stability.get("stability_status") == "verified_four_records":
+                lines.append(f"評分用穩定殖利率：{float(stability['score_yield_pct']):.2f}%（近4次中位數／平均值調整，避免單次高配息直接灌高分）")
+            else:
+                lines.append("評分用穩定殖利率：待近4次官方配息資料完整")
         elif trailing.get("status") == "partial":
             observed = trailing.get("observed_yield_pct")
             observed_text = (f"；觀察期率 {float(observed):.2f}%"
@@ -8686,7 +8731,8 @@ def build_healthcheck_report(user_id):
     scores = compute_watchlist_scores(codes)
     prev_scores = get_previous_scores(user_id, codes)
     tags = get_watchlist_tags(user_id)
-    breakdowns = get_investor_breakdown(codes)
+    stock_codes = [code for code in codes if not is_etf(code)]
+    breakdowns = get_investor_breakdown(stock_codes) if stock_codes else {}
     industry_map = get_industry_map() or {}
 
     rows = []
@@ -8694,13 +8740,23 @@ def build_healthcheck_report(user_id):
         tag = tags.get(code)
         score = scores.get(code)
         if not score:
-            rows.append((tag, -1, f"⚪ {code} 查無行情"))
+            missing_label = (f"⚪ {code} ETF 資料待確認，暫不套用個股評分"
+                             if is_etf(code) else f"⚪ {code} 查無行情")
+            rows.append((tag, -1, missing_label))
+            continue
+
+        arrow, change_txt = describe_score_change(score, prev_scores.get(code))
+        score_change = f"{arrow} {change_txt}" if arrow else None
+        if score.get("asset_type") == "etf":
+            lines = _format_etf_watchlist_lines(
+                code, score, score_change=score_change,
+                watchlist_status="※ 已在自選清單")
+            sort_score = score.get("total") if score.get("total") is not None else -1
+            rows.append((tag, sort_score, "\n".join(lines)))
             continue
 
         stock = score["stock"]
         name = score["name"]
-        arrow, change_txt = describe_score_change(score, prev_scores.get(code))
-        score_change = f"{arrow} {change_txt}" if arrow else None
         industry = industry_map.get(code)
         lines = _format_stock_detail_lines(
             code, name, stock, score=score, bd=breakdowns.get(code),
@@ -8734,11 +8790,19 @@ def build_healthcheck_report(user_id):
     body = "\n\n".join(blocks)
     tag_hint = ("" if has_tags else
                 "\n分類：輸入「加 2330 長線」或「分類 2330 短線」")
+    has_stock = any(not is_etf(code) for code in codes)
+    has_etf = any(is_etf(code) for code in codes)
+    formula_lines = []
+    if has_stock:
+        formula_lines.append("評分＝籌碼30＋位階20＋營收30＋估值20")
+    if has_etf:
+        formula_lines.append("ETF評分＝依類別權重計算超額報酬、價格報酬、配息殖利率、回撤、波動與資料完整度")
+    formula_text = "\n".join(formula_lines)
     report = (
         f"📋 自選股健檢（{len(codes)}檔）\n\n{body}\n\n"
-        f"評分＝籌碼30＋位階20＋營收30＋估值20\n"
+        f"{formula_text}\n"
         f"🟢70+ 🟡45-69 🔴<45{tag_hint}\n"
-        f"※ 觀察為數據歸納，非投資建議，請自行判斷"
+        f"※ ETF 與個股使用不同模型；觀察為數據歸納，非投資建議，請自行判斷"
     )
     if len(report) > 4800:
         report = report[:4750] + "\n\n…（清單過長，已截斷）"
@@ -8777,6 +8841,27 @@ def render_watchlist_web_body(user_id):
             grouped.setdefault(tag, []).append(
                 '<div class="watchlist-card watchlist-muted"><h3>⚪ '
                 f'{html.escape(str(code))}</h3><p>查無目前行情，暫不計算健檢分數。</p></div>')
+            continue
+
+        if s.get("asset_type") == "etf":
+            arrow, change_txt = describe_score_change(s, prev_scores.get(code))
+            score_change = f"{arrow} {change_txt}" if arrow else None
+            etf_lines = _format_etf_watchlist_lines(
+                code, s, score_change=score_change,
+                watchlist_status="※ 已在自選清單")
+            total = s.get("total")
+            flag = ("🟢" if total is not None and total >= 70
+                    else "🟡" if total is not None and total >= 45 else "⚪")
+            score_class = ("watchlist-good" if total is not None and total >= 70
+                           else "watchlist-mid" if total is not None and total >= 45
+                           else "watchlist-muted")
+            card = f'''<article class="watchlist-card {score_class} watchlist-etf-card">
+  <div class="watchlist-card-head"><div><h3>{flag} {html.escape(str(s.get("name") or code))}</h3>
+    <span class="watchlist-code">{html.escape(str(code))}　ETF 專用健檢</span></div>
+    <strong class="watchlist-score">{html.escape(str(total)) if total is not None else "待確認"}<small>{"分" if total is not None else ""}</small></strong></div>
+  <div class="watchlist-etf-lines">{"<br>".join(html.escape(str(line)) for line in etf_lines)}</div>
+</article>'''
+            grouped.setdefault(tag, []).append(card)
             continue
 
         stock = s["stock"]
@@ -8830,6 +8915,13 @@ def render_watchlist_web_body(user_id):
 </article>'''
         grouped.setdefault(tag, []).append(card)
 
+    formula_lines = []
+    if any(not is_etf(code) for code in codes):
+        formula_lines.append("個股：籌碼 30＋位階 20＋營收 30＋估值 20")
+    if any(is_etf(code) for code in codes):
+        formula_lines.append("ETF：依類別權重計算超額報酬、價格報酬、配息殖利率、回撤、波動與資料完整度")
+    formula_text = "<br>".join(html.escape(text) for text in formula_lines)
+
     tag_order = [tag for tag in WATCHLIST_TAGS if grouped.get(tag)]
     if grouped.get(None):
         tag_order.append(None)
@@ -8850,7 +8942,7 @@ def render_watchlist_web_body(user_id):
 </style>
 <div class="tabs"><a href="/web/screener?mode=blackhorse&view=list">黑馬</a><a href="/web/screener?mode=radar&view=list">雷達</a><a href="/web/chips">籌碼超人</a><a href="/web/screener?mode=review">成效</a></div>
 <div class="watchlist-meta">資料來源：即時健檢計算　法人資料日：<b>{html.escape(data_date_text())}</b>　共 <b>{len(codes)}</b> 檔</div>
-    <p class="watchlist-intro">評分＝籌碼 30＋位階 20＋營收 30＋估值 20。這裡是公開資料整理，提供檢視線索，不構成買賣建議。</p>
+    <p class="watchlist-intro">{formula_text}。這裡是公開資料整理，提供檢視線索，不構成買賣建議。</p>
 {"".join(sections)}'''
 
 
@@ -11636,11 +11728,13 @@ def render_page(title, body, nav_active=None, user_name=None):
     active_nav = nav_active
     def tab(href, label, key):
         on = " class=\"on\"" if key == active_nav else ""
-        return f'<a href="{href}"{on}>{label}</a>'
+        refresh = ' data-fresh-nav="1"' if href == "/web/portfolio" else ""
+        return f'<a href="{href}"{on}{refresh}>{label}</a>'
 
     def bottom_tab(href, icon, label, key):
         on = " on" if key == active_nav else ""
-        return f'<a href="{href}" class="{on.strip()}"><b>{icon}</b>{label}</a>'
+        refresh = ' data-fresh-nav="1"' if href == "/web/portfolio" else ""
+        return f'<a href="{href}" class="{on.strip()}"{refresh}><b>{icon}</b>{label}</a>'
 
     nav = ""
     if nav_active:
@@ -11671,7 +11765,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     page_back = ""
     if nav_active and nav_active != "portfolio":
         page_back = preserve_web_token(
-            '<div class="page-back"><a href="/web/portfolio">‹ 回首頁</a></div>')
+            '<div class="page-back"><a href="/web/portfolio" data-fresh-nav="1">‹ 回首頁</a></div>')
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
 <meta charset="UTF-8">
@@ -11737,6 +11831,22 @@ def render_page(title, body, nav_active=None, user_name=None):
     return target && (target.matches('button,[data-haptic]') ||
       target.matches('.daily-focus a,.daily-card a,.app-bottom-nav a'));
   }}
+
+  // 回首頁不沿用持股頁的舊殼：加入時間戳後重新走首頁 shell，
+  // 再由 shell 取得最新 fragment。這只套用回首頁，不改其他分頁流程。
+  document.addEventListener('click', function(e) {{
+    var freshLink = e.target.closest ? e.target.closest('a[data-fresh-nav="1"]') : null;
+    if (freshLink) {{
+      e.preventDefault();
+      var freshUrl = new URL(freshLink.href, window.location.href);
+      freshUrl.searchParams.set('_nav', String(Date.now()));
+      window.location.assign(freshUrl.pathname + freshUrl.search);
+      return;
+    }}
+  }}, true);
+  window.addEventListener('pageshow', function(e) {{
+    if (e.persisted && window.location.pathname === '/web/portfolio') window.location.reload();
+  }});
 
   // 點擊後立即給回饋；不攔截錨點、下載與外部連結。
   document.addEventListener('click', function(e) {{
@@ -13489,6 +13599,84 @@ def _etf_distribution_metrics(meta, start_date, end_date, start_close):
             "count": len(records), "status": "verified"}
 
 
+def _etf_recent_distribution_records(meta, limit=4):
+    """回傳最近幾次已核實現金配息；沿用 TWSE 官方紀錄，不自行預估下次配息。"""
+    records = []
+    for raw in (meta or {}).get("distribution_records") or []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            ex_date = date.fromisoformat(str(raw.get("ex_date") or "")[:10])
+            amount = float(raw.get("amount"))
+        except (TypeError, ValueError):
+            continue
+        if amount <= 0:
+            continue
+        records.append({
+            "ex_date": ex_date.isoformat(),
+            "amount": round(amount, 6),
+            "base_date": raw.get("base_date"),
+            "payment_date": raw.get("payment_date"),
+        })
+    records.sort(key=lambda item: item["ex_date"], reverse=True)
+    return records[:max(0, int(limit or 0))]
+
+
+def _etf_distribution_stability_metrics(meta, end_date, end_close):
+    """把原始年化參考殖利率與近四次配息穩定性分開，避免單次高配息直接灌高分。"""
+    trailing = _etf_trailing_distribution_metrics(meta, end_date, end_close)
+    recent = _etf_recent_distribution_records(meta, limit=4)
+    raw_yield = trailing.get("yield_pct")
+    status = trailing.get("status", "unknown")
+    result = {
+        "raw_yield_pct": raw_yield,
+        "score_yield_pct": None,
+        "stability_status": status,
+        "recent_records": recent,
+        "recent_count": len(recent),
+        "recent_mean_amount": None,
+        "recent_median_amount": None,
+    }
+    if status == "non_distributing":
+        return result
+    if raw_yield is None:
+        result["stability_status"] = "partial_or_unknown"
+        return result
+    if len(recent) < 4:
+        # 不足四次時不把單筆／少數筆配息拿來給殖利率分數；原始參考值仍照實顯示。
+        result["stability_status"] = "insufficient_recent_records"
+        return result
+    amounts = sorted(float(item["amount"]) for item in recent)
+    mean_amount = sum(amounts) / len(amounts)
+    middle = len(amounts) // 2
+    median_amount = (amounts[middle - 1] + amounts[middle]) / 2
+    result["recent_mean_amount"] = round(mean_amount, 6)
+    result["recent_median_amount"] = round(median_amount, 6)
+    if mean_amount <= 0:
+        result["stability_status"] = "insufficient_recent_records"
+        return result
+    # 以近四次中位數／平均值作穩定性折減；四次接近時不改變，單次異常高時會降低。
+    adjusted = float(raw_yield) * (median_amount / mean_amount)
+    result["score_yield_pct"] = round(adjusted, 4)
+    result["stability_status"] = "verified_four_records"
+    return result
+
+
+def _format_recent_distribution_records(records, prefix="近4次官方配息"):
+    """將官方最近四次除息日／每單位金額整理成可換行閱讀的文字。"""
+    if not records:
+        return f"{prefix}：待確認"
+    records = list(records[:4])
+    pieces = []
+    for record in records:
+        ex_date = str(record.get("ex_date") or "未標日期")
+        amount = record.get("amount")
+        amount_text = f"{float(amount):.4f} 元" if amount is not None else "金額待確認"
+        pieces.append(f"{ex_date} {amount_text}")
+    label = prefix if len(records) >= 4 else f"{prefix}（目前 {len(records)} 筆）"
+    return f"{label}：" + "、".join(pieces)
+
+
 def _etf_trailing_distribution_metrics(meta, end_date, end_close, days=365):
     """用官方除息紀錄計算近12月現金配息；資料未滿一整年不硬算年化殖利率。"""
     policy = str((meta or {}).get("distribution_policy") or "unknown")
@@ -13558,7 +13746,7 @@ def _etf_maturity_label(listing_date):
 ETF_PRODUCT_RANKING_SNAPSHOT_KEY = "etf_product_rankings"
 ETF_PRODUCT_RANKING_CACHE_SECONDS = 900
 ETF_PRODUCT_RANKING_SHARED_MAX_AGE = 3 * 86400
-ETF_PRODUCT_RANKING_SCHEMA_VERSION = 4
+ETF_PRODUCT_RANKING_SCHEMA_VERSION = 5
 ETF_PRODUCT_RANKING_PERIODS = {
     "short": {"label": "短期（近 40 個交易日，約 2 個月）", "days": 40},
     "long": {"label": "長期（近 250 個交易日，約 1 年）", "days": 250},
@@ -13757,15 +13945,18 @@ def _apply_etf_period_scores(rows, required_days):
     weights = ETF_CATEGORY_SCORE_WEIGHTS.get(category, ETF_CATEGORY_SCORE_WEIGHTS["主題型"])
     excess_values = [item.get("excess_pct") for item in rows]
     return_values = [item.get("return_pct") for item in rows]
-    # 配息排名只採「年化窗口」；partial 的新 ETF 只顯示已發生金額，不硬與滿一年商品混排。
-    dividend_values = [item.get("distribution_annualized_yield_pct") for item in rows]
+    # 配息排名仍只採「年化窗口」；綜合評分的配息因子更嚴格，
+    # 只採近四次官方紀錄的穩定性調整值；不足四次不給配息因子分數，
+    # 不把單次高配息直接當成下一期可持續收益。
+    dividend_values = [item.get("distribution_score_yield_pct") for item in rows]
     drawdown_values = [item.get("max_drawdown_pct") for item in rows]
     volatility_values = [item.get("volatility_pct") for item in rows]
     for item in rows:
         score_values = {
             "同期超額報酬": _etf_percentile_score(item.get("excess_pct"), excess_values, True),
             "絕對價格報酬": _etf_percentile_score(item.get("return_pct"), return_values, True),
-            "配息殖利率": _etf_percentile_score(item.get("distribution_annualized_yield_pct"), dividend_values, True),
+            "配息殖利率": _etf_percentile_score(
+                item.get("distribution_score_yield_pct"), dividend_values, True),
             "回撤控制": _etf_percentile_score(item.get("max_drawdown_pct"), drawdown_values, True),
             "波動控制": _etf_percentile_score(item.get("volatility_pct"), volatility_values, False),
         }
@@ -13792,6 +13983,240 @@ def _apply_etf_period_scores(rows, required_days):
     rows.sort(key=lambda item: (item.get("score", -999999), item.get("return_pct", -999999), item.get("code", "")), reverse=True)
     for rank, item in enumerate(rows, 1):
         item["rank"] = rank
+
+
+def _etf_watchlist_rank_rows(codes):
+    """從既有 ETF 商品排名快照取自選 ETF 的短／長期資料，不重掃全市場。"""
+    wanted = {str(code).strip().upper() for code in (codes or [])}
+    if not wanted:
+        return {}, "無自選 ETF"
+    try:
+        payload, _fresh, source = _load_etf_product_ranking_snapshot()
+    except Exception as exc:
+        print(f"⚠️ 讀取自選 ETF 排名快照失敗: {exc}")
+        return {}, "ETF 排名快照待確認"
+    categories = (payload or {}).get("categories") if isinstance(payload, dict) else None
+    if not isinstance(categories, dict):
+        return {}, source or "ETF 排名快照待確認"
+    found = {code: {} for code in wanted}
+    for period_key in ETF_PRODUCT_RANKING_PERIODS:
+        period_rows = categories.get(period_key) or {}
+        if not isinstance(period_rows, dict):
+            continue
+        for rows in period_rows.values():
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                code = str(row.get("code") or "").strip().upper()
+                if code in wanted:
+                    found[code][period_key] = dict(row)
+    return found, source or "ETF 排名快照"
+
+
+def _etf_component_point(breakdown, labels):
+    """把 ETF 排名的事實型分項貢獻轉成快照欄位；完全缺資料仍回 None。"""
+    values = []
+    for label in labels:
+        raw = (breakdown or {}).get(label)
+        try:
+            values.append(float(raw))
+        except (TypeError, ValueError):
+            continue
+    if not values:
+        return None
+    return int(round(sum(values)))
+
+
+def _compute_etf_watchlist_scores(codes):
+    """ETF 自選健檢：只使用 ETF 商品排名模型，不套用個股法人／營收／PE。"""
+    codes = list(dict.fromkeys(str(code).strip().upper() for code in (codes or [])
+                               if str(code).strip()))
+    if not codes:
+        return {}
+    rank_map, rank_source = _etf_watchlist_rank_rows(codes)
+    try:
+        price_map = get_realtime_stocks_bulk(
+            codes, workers=min(12, max(1, len(codes))), rng="3mo", market_suffix=".TW")
+    except Exception as exc:
+        print(f"⚠️ 取得自選 ETF 行情失敗: {exc}")
+        price_map = {}
+    try:
+        distribution_map = fetch_twse_etf_distribution_history()
+    except Exception as exc:
+        print(f"⚠️ 取得自選 ETF 配息資料失敗: {exc}")
+        distribution_map = {}
+
+    result = {}
+    for code in codes:
+        periods = rank_map.get(code) or {}
+        selected_period = "long" if periods.get("long") else ("short" if periods.get("short") else None)
+        selected = periods.get(selected_period) if selected_period else None
+        selected = dict(selected) if isinstance(selected, dict) else None
+        try:
+            meta = get_etf_metadata(code, distribution_map=distribution_map)
+        except Exception as exc:
+            print(f"⚠️ 讀取自選 ETF metadata 失敗 {code}: {exc}")
+            meta = {}
+        quote = price_map.get(code)
+        category = str((selected or {}).get("category") or meta.get("category") or "待分類")
+        name = str(meta.get("name") or (selected or {}).get("name") or
+                    stock_display_name(code, fallback=code))
+        breakdown = (selected or {}).get("score_breakdown") or {}
+        total_raw = (selected or {}).get("score") if selected else None
+        try:
+            total = int(round(float(total_raw))) if total_raw is not None else None
+        except (TypeError, ValueError):
+            total = None
+        result[code] = {
+            "code": code,
+            "name": name,
+            "asset_type": "etf",
+            "stock": quote or {"close": None, "pct": None},
+            "total": total,
+            # 舊 watchlist_scores schema 的四個欄位改存 ETF 分項貢獻，
+            # 顯示與變化說明會依 asset_type 使用 ETF 名稱，不再誤稱法人／營收。
+            "chip": _etf_component_point(breakdown, ["同期超額報酬"]),
+            "position": _etf_component_point(breakdown, ["絕對價格報酬"]),
+            "revenue": _etf_component_point(breakdown, ["配息殖利率"]),
+            "valuation": _etf_component_point(
+                breakdown, ["回撤控制", "波動控制", "資料完整度"]),
+            "cum_lots": None, "buy_days": None, "streak": None,
+            "cum_yoy": None, "pe": None,
+            "etf_category": category,
+            "etf_period": selected_period,
+            "etf_selected": selected,
+            "etf_periods": periods,
+            "etf_score_status": ("ranked" if selected else "pending"),
+            "etf_rank_source": rank_source,
+            "etf_data_date": ((selected or {}).get("end_date") or
+                              (selected or {}).get("data_date")),
+        }
+    return result
+
+
+def _etf_watchlist_advice(score):
+    """將 ETF 已計算出的事實欄位整理成簡短判讀，不做價格預測。"""
+    row = score.get("etf_selected") or {}
+    if not row:
+        return "⏳ ETF 同類排名快照尚未建立，暫不把資料不足誤標成低分"
+    notes = []
+    excess = row.get("excess_pct")
+    if excess is not None:
+        try:
+            excess = float(excess)
+            if excess >= 3:
+                notes.append(f"同期超額報酬 {excess:+.2f} 個百分點")
+            elif excess <= -3:
+                notes.append(f"同期落後大盤 {abs(excess):.2f} 個百分點")
+            else:
+                notes.append(f"同期超額報酬 {excess:+.2f} 個百分點，與大盤接近")
+        except (TypeError, ValueError):
+            pass
+    drawdown = row.get("max_drawdown_pct")
+    if drawdown is not None:
+        try:
+            if float(drawdown) <= -20:
+                notes.append(f"觀測期間最大回撤 {float(drawdown):+.2f}%，波動需留意")
+            else:
+                notes.append(f"觀測期間最大回撤 {float(drawdown):+.2f}%")
+        except (TypeError, ValueError):
+            pass
+    distribution_status = row.get("distribution_status")
+    yield_pct = row.get("distribution_annualized_yield_pct")
+    if distribution_status == "verified" and yield_pct is not None:
+        notes.append(f"官方近12月年化參考殖利率 {float(yield_pct):.2f}%")
+    elif distribution_status == "partial":
+        notes.append("官方配息紀錄未滿約12個月，暫不年化")
+    elif distribution_status == "non_distributing":
+        notes.append("不分配／累積型，現金殖利率不適用")
+    return "；".join(notes) if notes else "目前可取得 ETF 指標沒有明顯方向，持續觀察"
+
+
+def _format_etf_watchlist_lines(code, score, score_change=None,
+                                watchlist_status="※ 已在自選清單"):
+    """ETF 自選健檢的 LINE 版面；與個股格式分開，缺值不補零。"""
+    row = score.get("etf_selected") or {}
+    name = score.get("name") or code
+    category = score.get("etf_category") or "待分類"
+    period = "長期" if score.get("etf_period") == "long" else "短期" if score.get("etf_period") == "short" else "待排名"
+    lines = [f"📦 {code} {name}", f"{category} ETF｜ETF 專用健檢（{period}）", "─" * 14]
+    quote = score.get("stock") or {}
+    close, pct = quote.get("close"), quote.get("pct")
+    if close is not None and pct is not None:
+        lines.append(f"💰 最新價格 {float(close):,.2f}（{float(pct):+.2f}%）")
+    elif close is not None:
+        lines.append(f"💰 最新價格 {float(close):,.2f}（漲跌資料待確認）")
+    else:
+        lines.append("💰 最新價格待確認")
+
+    total = score.get("total")
+    if total is None:
+        lines.append("🟡 ETF 綜合評分：待建立同類排名（不是低分）")
+    else:
+        flag = "🟢" if total >= 70 else ("🟡" if total >= 45 else "🔴")
+        lines.append(f"{flag} ETF 綜合評分：{int(total)}／100")
+        breakdown = (row.get("score_breakdown") or {})
+        metric_available = {
+            "同期超額報酬": row.get("excess_pct") is not None,
+            "絕對價格報酬": row.get("return_pct") is not None,
+            "配息殖利率": row.get("distribution_annualized_yield_pct") is not None,
+            "回撤控制": row.get("max_drawdown_pct") is not None,
+            "波動控制": row.get("volatility_pct") is not None,
+            "資料完整度": row.get("observations") is not None,
+        }
+        parts = []
+        for label in ("同期超額報酬", "絕對價格報酬", "配息殖利率", "回撤控制", "波動控制", "資料完整度"):
+            if label not in breakdown:
+                continue
+            if not metric_available.get(label):
+                parts.append(f"{label}待確認")
+                continue
+            try:
+                parts.append(f"{label}{float(breakdown[label]):.1f}")
+            except (TypeError, ValueError):
+                parts.append(f"{label}待確認")
+        if parts:
+            lines.append("　分項貢獻　" + "　".join(parts))
+    if row.get("return_pct") is not None:
+        lines.append(f"📈 價格報酬 {float(row['return_pct']):+.2f}%")
+    if row.get("excess_pct") is not None:
+        market = row.get("market_return_pct")
+        market_text = (f"；同期大盤 {float(market):+.2f}%"
+                       if market is not None else "；同期大盤待確認")
+        lines.append(f"⚖️ 超額報酬 {float(row['excess_pct']):+.2f}%{market_text}")
+    distribution_status = row.get("distribution_status")
+    yield_pct = row.get("distribution_annualized_yield_pct")
+    if distribution_status == "verified" and yield_pct is not None:
+        lines.append(f"💰 年化參考殖利率 {float(yield_pct):.2f}%")
+    elif distribution_status == "partial":
+        observed = row.get("distribution_observed_yield_pct")
+        observed_text = f"；觀察期率 {float(observed):.2f}%" if observed is not None else ""
+        lines.append(f"💰 配息年化待確認{observed_text}（官方資料未滿約12個月）")
+    elif distribution_status == "non_distributing":
+        lines.append("💰 殖利率不適用（不分配／累積型）")
+    else:
+        lines.append("💰 年化參考殖利率待確認")
+    lines.append(_format_recent_distribution_records(
+        row.get("distribution_recent_records") or []))
+    if row.get("distribution_stability_status") == "verified_four_records" and row.get("distribution_score_yield_pct") is not None:
+        lines.append(f"評分用穩定殖利率 {float(row['distribution_score_yield_pct']):.2f}%（近4次中位數／平均值調整）")
+    elif distribution_status != "non_distributing":
+        lines.append("評分用穩定殖利率待近4次官方配息資料完整")
+    if row.get("max_drawdown_pct") is not None or row.get("volatility_pct") is not None:
+        dd = (f"最大回撤 {float(row['max_drawdown_pct']):+.2f}%"
+              if row.get("max_drawdown_pct") is not None else "最大回撤待確認")
+        vol = (f"波動 {float(row['volatility_pct']):.2f}%"
+               if row.get("volatility_pct") is not None else "波動待確認")
+        lines.append(f"📉 {dd}　{vol}")
+    if score_change:
+        lines.append(f"分數變化　{score_change}")
+    lines += [f"判讀　{_etf_watchlist_advice(score)}"]
+    if watchlist_status:
+        lines.append(watchlist_status)
+    lines.append("※ ETF 不套用個股法人、營收、PE、支撐／壓力評分；配息與報酬採官方／既有價格資料。")
+    return lines
 
 
 def _etf_ranking_snapshot_is_current(payload):
@@ -13895,6 +14320,8 @@ def build_etf_product_rankings(force_refresh=False):
             distribution = _etf_trailing_distribution_metrics(meta, end_date, end_close)
             window_distribution = _etf_distribution_metrics(
                 meta, start_date, end_date, start_close)
+            distribution_stability = _etf_distribution_stability_metrics(
+                meta, end_date, end_close)
             official_metrics = meta.get("official_metrics") or {}
             item = {
                 "code": code,
@@ -13916,6 +14343,12 @@ def build_etf_product_rankings(force_refresh=False):
                 "distribution_yield_pct": distribution.get("yield_pct"),
                 "distribution_annualized_yield_pct": distribution.get("yield_pct"),
                 "distribution_observed_yield_pct": distribution.get("observed_yield_pct"),
+                "distribution_score_yield_pct": distribution_stability.get("score_yield_pct"),
+                "distribution_stability_status": distribution_stability.get("stability_status", "unknown"),
+                "distribution_recent_records": distribution_stability.get("recent_records") or [],
+                "distribution_recent_count": distribution_stability.get("recent_count", 0),
+                "distribution_recent_mean_amount": distribution_stability.get("recent_mean_amount"),
+                "distribution_recent_median_amount": distribution_stability.get("recent_median_amount"),
                 "distribution_coverage_days": distribution.get("coverage_days", 0),
                 "distribution_count": distribution.get("count", 0),
                 "distribution_status": distribution.get("status", "unknown"),
@@ -13945,7 +14378,7 @@ def build_etf_product_rankings(force_refresh=False):
         "periods": ETF_PRODUCT_RANKING_PERIODS,
         "categories": period_rows,
         "source": "Yahoo Finance 日收盤序列／TWSE ETF 官方上市清單／TWSE ETF 配息清單",
-        "source_note": "價格報酬取 Yahoo 日收盤且不含配息；現金配息取 TWSE 官方已發生且金額有效紀錄。年化配息排名只採官方紀錄覆蓋滿約 12 個月者，近12月年化參考殖利率＝已發配息加總／期末價格；大盤為同期間台灣加權指數價格報酬。",
+        "source_note": "價格報酬取 Yahoo 日收盤且不含配息；現金配息取 TWSE 官方已發生且金額有效紀錄。原始近12月參考殖利率＝已發配息加總／期末價格；年化配息排名只採官方紀錄覆蓋滿約 12 個月者，綜合評分的配息因子只採最近四次官方配息的中位數／平均值穩定性調整值，不足四次不給配息因子分數；大盤為同期間台灣加權指數價格報酬。",
     }
     with _realtime_cache_lock:
         _etf_product_ranking_cache.update({"at": time.time(), "data": result})
@@ -15271,15 +15704,30 @@ def _etf_distribution_display_text(row):
     count = int(row.get("distribution_count") or 0)
     coverage = int(row.get("distribution_coverage_days") or 0)
     if status == "verified" and amount is not None and yield_pct is not None:
-        return (f"年化配息 {float(yield_pct):.2f}%・近12月已發 {float(amount):.2f} 元"
+        base = (f"原始年化參考 {float(yield_pct):.2f}%・近12月已發 {float(amount):.2f} 元"
                 f"（{count} 次）")
-    if status == "partial" and amount is not None:
+    elif status == "partial" and amount is not None:
         observed_text = f"・觀察期率 {float(observed):.2f}%" if observed is not None else ""
-        return (f"已發配息 {float(amount):.2f} 元（{count} 次）{observed_text}；"
+        base = (f"已發配息 {float(amount):.2f} 元（{count} 次）{observed_text}；"
                 f"資料覆蓋 {coverage} 日，年化待滿 12 個月")
-    if status == "non_distributing":
-        return "不分配／累積型・現金配息不適用"
-    return "官方配息資料待確認・年化配息不列名次"
+    elif status == "non_distributing":
+        base = "不分配／累積型・現金配息不適用"
+    else:
+        base = "官方配息資料待確認・年化配息不列名次"
+
+    recent_text = _format_recent_distribution_records(
+        row.get("distribution_recent_records") or [])
+    stability_status = row.get("distribution_stability_status")
+    score_yield = row.get("distribution_score_yield_pct")
+    if stability_status == "verified_four_records" and score_yield is not None:
+        stability_text = f"評分用穩定殖利率 {float(score_yield):.2f}%（近4次中位數／平均值調整）"
+    elif status == "non_distributing":
+        stability_text = "評分配息因子不適用"
+    elif row.get("distribution_recent_count", 0) < 4:
+        stability_text = "評分用穩定殖利率待近4次資料完整"
+    else:
+        stability_text = "評分用殖利率待確認"
+    return f"{base}；{recent_text}；{stability_text}"
 
 
 def render_etf_product_ranking_html(payload, category_key, category_label,
@@ -15378,9 +15826,23 @@ def render_etf_product_ranking_html(payload, category_key, category_label,
             breakdown = row.get("score_breakdown") or {}
             weights = ETF_CATEGORY_SCORE_WEIGHTS.get(category_label) or {}
             breakdown_parts = []
+            metric_available = {
+                "同期超額報酬": row.get("excess_pct") is not None,
+                "絕對價格報酬": row.get("return_pct") is not None,
+                "配息殖利率": row.get("distribution_score_yield_pct") is not None,
+                "回撤控制": row.get("max_drawdown_pct") is not None,
+                "波動控制": row.get("volatility_pct") is not None,
+                "資料完整度": row.get("observations") is not None,
+            }
             for score_label, weight in weights.items():
-                breakdown_parts.append(
-                    f'{score_label} {float(breakdown.get(score_label) or 0):.1f}/{int(weight)}')
+                if not metric_available.get(score_label, True):
+                    breakdown_parts.append(f'{score_label}待確認/{int(weight)}')
+                else:
+                    try:
+                        point = float(breakdown.get(score_label))
+                        breakdown_parts.append(f'{score_label} {point:.1f}/{int(weight)}')
+                    except (TypeError, ValueError):
+                        breakdown_parts.append(f'{score_label}待確認/{int(weight)}')
             breakdown_text = '評分拆解：' + '・'.join(breakdown_parts)
             distribution_text = _etf_distribution_display_text(row)
             max_dd = row.get("max_drawdown_pct")
@@ -15486,6 +15948,9 @@ def render_etf_inline_detail(code, meta, quote=None):
         latest_text = (f"最近一次除息日 {latest_date}・每單位 {float(latest_amount):.4f} 元"
                        if latest_amount is not None else f"最近一次除息日 {latest_date}・金額待確認")
         lines.append(f'<div class="etf-inline-note">官方配息：{esc(latest_text)}・已核實 {len(distribution_records)} 筆</div>')
+        recent_text = _format_recent_distribution_records(
+            _etf_recent_distribution_records(meta, limit=4))
+        lines.append(f'<div class="etf-inline-note">{esc(recent_text)}</div>')
     elif meta.get("distribution_policy") == "non_distributing":
         lines.append('<div class="etf-inline-note">官方商品資料標示為不分配／累積型；現金配息不適用。</div>')
     else:
@@ -15515,6 +15980,14 @@ def render_etf_inline_detail(code, meta, quote=None):
                     f'<div class="etf-inline-note">已發生現金配息：{float(trailing["amount"]):.2f} 元・'
                     f'官方紀錄覆蓋 {int(trailing.get("coverage_days") or 0)} 日{esc(observed_text)}；'
                     f'未滿 12 個月，暫不年化、不列入年化配息排名</div>')
+        if distribution_records:
+            stability = _etf_distribution_stability_metrics(meta, end_date, close)
+            if stability.get("stability_status") == "verified_four_records":
+                lines.append(
+                    f'<div class="etf-inline-note">評分用穩定殖利率：{float(stability["score_yield_pct"]):.2f}%・'
+                    f'近4次中位數／平均值調整；原始年化值僅作參考</div>')
+            else:
+                lines.append('<div class="etf-inline-note">評分用穩定殖利率：待近4次官方配息資料完整</div>')
         if len(closes) >= 2 and closes[0] > 0:
             return_pct = (closes[-1] / closes[0] - 1) * 100
             period = f"{close_dates[0]} 至 {close_dates[-1]}" if close_dates else "可取得價格期間"
