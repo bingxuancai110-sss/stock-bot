@@ -3661,7 +3661,7 @@ _realtime_cache_lock = threading.Lock()
 REALTIME_CACHE_SECONDS = 90
 
 
-def get_realtime_stock(code, rng="3mo", market_suffix=None):
+def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False):
     """
     rng 是 Yahoo 的資料區間。預設 3mo 足夠算位階與均線；
     持股頁要畫「買進點」時才改用 1y——持有超過三個月的部位，
@@ -3678,7 +3678,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None):
     now = time.time()
     with _realtime_cache_lock:
         cached = _realtime_cache.get(cache_key)
-        if cached and now - cached["at"] < REALTIME_CACHE_SECONDS:
+        if (cached and not force_refresh and
+                now - cached["at"] < REALTIME_CACHE_SECONDS):
             return cached["data"]
 
     # 已知後綴排前面試，未知就照原順序
@@ -3863,7 +3864,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None):
     return None
 
 
-def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None):
+def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
+                             force_refresh=False):
     """
     並行抓多檔報價，回傳 {code: data 或 None}。
 
@@ -3879,18 +3881,115 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None):
     if not codes:
         return {}
     if len(codes) == 1:  # 只有一檔就不必付出開執行緒池的成本
-        return {codes[0]: get_realtime_stock(codes[0], rng, market_suffix=market_suffix)}
+        return {codes[0]: get_realtime_stock(
+            codes[0], rng, market_suffix=market_suffix,
+            force_refresh=force_refresh)}
 
     def safe_fetch(c):
         # 單檔失敗不能拖垮整批，一律吞掉例外回 None，交由呼叫端顯示「查無行情」
         try:
-            return get_realtime_stock(c, rng, market_suffix=market_suffix)
+            return get_realtime_stock(
+                c, rng, market_suffix=market_suffix,
+                force_refresh=force_refresh)
         except Exception as e:
             print(f"⚠️ 並行抓取失敗 {c}: {e}")
             return None
 
     with ThreadPoolExecutor(max_workers=min(workers, len(codes))) as ex:
         return dict(zip(codes, ex.map(safe_fetch, codes)))
+
+
+_RADAR_SPARK_CACHE = {"at": 0, "day": None, "data": {}}
+_RADAR_SPARK_CACHE_LOCK = threading.Lock()
+RADAR_SPARK_CACHE_SECONDS = 15
+RADAR_SPARK_BATCH_SIZE = 100
+RADAR_DEEP_SCAN_LIMIT = 240
+
+
+def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False):
+    """用 Yahoo spark 分批取全市場輕量即時報價；完整技術欄位再由候選股補抓。"""
+    codes = list(dict.fromkeys(str(code).strip().upper() for code in codes
+                              if re.fullmatch(r"\d{4}", str(code).strip())))
+    if not codes:
+        return {}
+    cache_day = taiwan_now().date().isoformat()
+    now = time.time()
+    with _RADAR_SPARK_CACHE_LOCK:
+        if (not force_refresh and _RADAR_SPARK_CACHE.get("day") == cache_day and
+                now - _RADAR_SPARK_CACHE.get("at", 0) < RADAR_SPARK_CACHE_SECONDS):
+            cached = _RADAR_SPARK_CACHE.get("data") or {}
+            return {code: cached[code] for code in codes if code in cached}
+
+    def fetch_batch(batch, suffix):
+        symbols = ",".join(f"{code}{suffix}" for code in batch)
+        try:
+            response = requests.get(
+                "https://query1.finance.yahoo.com/v7/finance/spark",
+                params={"symbols": symbols, "range": rng, "interval": "1d"},
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            response.raise_for_status()
+            payload = response.json().get("spark", {}).get("result") or []
+        except Exception as exc:
+            print(f"⚠️ Yahoo spark 批次行情失敗 {suffix} {len(batch)} 檔: {exc}")
+            return {}
+        parsed = {}
+        for item in payload:
+            response_list = item.get("response") or []
+            if not response_list:
+                continue
+            raw = response_list[0] or {}
+            symbol = str(item.get("symbol") or raw.get("meta", {}).get("symbol") or "")
+            match = re.match(r"^(\d{4})\.(?:TW|TWO)$", symbol.upper())
+            if not match:
+                continue
+            code = match.group(1)
+            meta = raw.get("meta") or {}
+            quote = ((raw.get("indicators") or {}).get("quote") or [{}])[0] or {}
+            closes = [float(value) for value in (quote.get("close") or [])
+                      if value is not None and float(value) > 0]
+            close = meta.get("regularMarketPrice") or (closes[-1] if closes else None)
+            previous = meta.get("chartPreviousClose")
+            if previous is None and len(closes) >= 2:
+                previous = closes[-2]
+            if close is None or previous in (None, 0):
+                continue
+            volume = meta.get("regularMarketVolume") or 0
+            try:
+                close = float(close)
+                previous = float(previous)
+                volume = int(float(volume or 0))
+            except (TypeError, ValueError):
+                continue
+            parsed[code] = {
+                "close": close,
+                "pct": (close - previous) / previous * 100,
+                "volume": volume,
+                "previous_close": previous,
+                "updated_at": meta.get("regularMarketTime"),
+                "source": "Yahoo spark 批次行情",
+            }
+        return parsed
+
+    # 先試上市後綴；找不到的代號再以同一批次試上櫃後綴，避免每檔雙倍請求。
+    batches = [codes[index:index + RADAR_SPARK_BATCH_SIZE]
+               for index in range(0, len(codes), RADAR_SPARK_BATCH_SIZE)]
+    parsed = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(batches))) as executor:
+        futures = [executor.submit(fetch_batch, batch, ".TW") for batch in batches]
+        for future in futures:
+            parsed.update(future.result())
+    missing = [code for code in codes if code not in parsed]
+    if missing:
+        batches = [missing[index:index + RADAR_SPARK_BATCH_SIZE]
+                   for index in range(0, len(missing), RADAR_SPARK_BATCH_SIZE)]
+        with ThreadPoolExecutor(max_workers=min(8, len(batches))) as executor:
+            futures = [executor.submit(fetch_batch, batch, ".TWO") for batch in batches]
+            for future in futures:
+                parsed.update(future.result())
+
+    with _RADAR_SPARK_CACHE_LOCK:
+        _RADAR_SPARK_CACHE.update({"at": time.time(), "day": cache_day, "data": parsed})
+    return parsed
 
 
 # --- 三大法人買賣超（TWSE T86，全市場，一天快取一次） ---
@@ -9004,10 +9103,20 @@ def build_push_request_message(user_id, base_url=None):
 
 
 def build_turning_observation_line_message(user_id, base_url=None):
-    """LINE 轉折觀察摘要；只顯示真實 T86 與行情形成的三狀態。"""
-    result = build_turning_observation(limit=60, prior_days=5)
+    """LINE 轉折摘要只讀完成快照；沒有快照時背景刷新，不阻塞 webhook。"""
+    result, fresh, snapshot_source = _get_turning_web_snapshot()
+    status_note = None
+    if result is None:
+        _start_turning_background_refresh()
+        result = {"items": [], "data_date": None, "prior_days": 5}
+        status_note = "轉折快照正在背景整理，這則訊息不等待完整計算。"
+    elif not fresh:
+        _start_turning_background_refresh()
+        status_note = (f"先顯示{snapshot_source}（資料日 {result.get('data_date') or '未標日期'}）；"
+                       "最新資料正在背景更新。")
     items = result.get("items") or []
     data_date = result.get("data_date") or "未標日期"
+    prior_days = int(result.get("prior_days") or 5)
     token = create_web_token(user_id)
     web_url = None
     if token:
@@ -9016,9 +9125,12 @@ def build_turning_observation_line_message(user_id, base_url=None):
     contents = [
         {"type": "text", "text": "🔄 轉折觀察", "weight": "bold",
          "size": "xl", "color": "#1B2027"},
-        {"type": "text", "text": f"法人資料日：{data_date}・只列觀察、確認或失效狀態",
+        {"type": "text", "text": f"資料來源：{snapshot_source}・法人資料日：{data_date}",
          "size": "xs", "color": "#767D85", "margin": "sm", "wrap": True},
     ]
+    if status_note:
+        contents.append({"type": "text", "text": status_note,
+                         "size": "xs", "color": "#8A6A32", "margin": "sm", "wrap": True})
     state_labels = (("confirmed", "✅ 已確認"), ("observing", "👀 觀察中"),
                     ("invalid", "⚠️ 已失效"))
     shown = 0
@@ -9029,17 +9141,41 @@ def build_turning_observation_line_message(user_id, base_url=None):
         contents.append({"type": "text", "text": state_label, "weight": "bold",
                          "size": "sm", "color": "#6E5228", "margin": "lg"})
         for item in group[:3]:
-            direction = item.get("direction_label") or "方向變化"
-            reasons = "、".join(item.get("reasons") or [])
+            state = str(item.get("state") or state)
+            state_text = "已確認" if state == "confirmed" else "觀察中" if state == "observing" else "已失效"
+            details = [str(value) for value in
+                       (item.get("reason_details") or item.get("reasons") or [])
+                       if str(value).strip()]
+
+            def pick_fact(prefixes, fallback):
+                for value in details:
+                    if any(value.startswith(prefix) for prefix in prefixes):
+                        return value
+                return fallback
+
             current = item.get("current_total_lots")
-            current_text = f"法人 {current:+,} 張" if current is not None else "法人資料待確認"
+            institutional = pick_fact(("三大法人今日", "外資由", "投信由", "自營由"),
+                                      f"法人今日{('買超' if item.get('direction') == 'up' else '賣超')} "
+                                      f"{int(current or 0):+,} 張")
+            price_fact = pick_fact(("收盤",), "價格／20日均線資料不足")
+            volume_fact = pick_fact(("成交量",), "成交量資料不足")
+            streak_fact = pick_fact(("連續上漲", "連續下跌", "今日為近期", "今日翻黑"), "")
+            facts = [institutional, price_fact, volume_fact]
+            if streak_fact:
+                facts.append(streak_fact)
+            if state == "invalid":
+                conclusion = str(item.get("state_reason") or "失效原因資料不足")
+            else:
+                score = int(item.get("score") or 0)
+                conclusion = (f"{item.get('event_type') or '法人方向變化'}；"
+                              f"符合 {score}/5 個條件，"
+                              f"{'已達確認門檻' if state == 'confirmed' else '尚未達確認門檻'}")
             contents.append({"type": "text",
-                             "text": f"・{item.get('name') or item.get('code')}（{item.get('code')}）｜{direction}\n"
-                                      f"  {item.get('event_type') or '方向變化'}・{current_text}\n"
-                                       f"  {reasons or '轉折細節資料不足，請核對原始法人與行情資料'}\n"
-                                       f"  狀態原因：{item.get('state_reason') or '轉折細節資料不足，請核對原始法人與行情資料'}",
+                             "text": f"・{item.get('name') or item.get('code')}（{item.get('code')}）｜{state_text}\n"
+                                      f"  判讀：{conclusion}\n"
+                                      f"  " + "\n  ".join(facts),
                               "size": "sm", "color": "#454C55", "wrap": True,
-                             "margin": "sm"})
+                              "margin": "sm"})
             shown += 1
     if not shown:
         contents.append({"type": "text", "text": "目前沒有足夠的法人與行情資料建立轉折觀察。",
@@ -9087,18 +9223,47 @@ def build_line_screener_message(user_id, mode, base_url=None):
     intraday = mode == "radar" and _is_taiwan_intraday_window()
     snapshot, snapshot_source, is_realtime_memory = _line_screener_snapshot(
         mode, intraday=intraday)
+    is_realtime_scan = False
+    live_scan_error = None
     background_started = False
+    if intraday:
+        # 盤中雷達的定義就是重新掃描全市場；5 分鐘記憶體快取只能作為
+        # 其他頁面的加速，不能拿來冒充這次即時雷達。spark 先掃完整
+        # stock_info/T86 universe，再只對排名候選補抓 3mo 技術序列。
+        try:
+            live_inst = fetch_institutional_data()
+            live_ind_map = get_industry_map() or {}
+            if live_inst and live_ind_map:
+                live_rows, live_skipped, live_momentum = compute_screener_rows(
+                    "radar", inst=live_inst, ind_map=live_ind_map,
+                    persist=False, force_refresh=True, radar_deep_limit=48)
+                live_cache = _screener_cache.get("radar") or {}
+                scan_count = int(live_cache.get("scan_universe_count") or 0)
+                snapshot = {
+                    "rows": live_rows,
+                    "skipped": live_skipped,
+                    "momentum": live_momentum,
+                    "source_date": _screener_source_date(),
+                    "scan_finished_at": live_cache.get("scan_finished_at"),
+                    "scan_universe_count": scan_count,
+                }
+                snapshot_source = f"盤中即時全市場掃描（{scan_count or '全市場'}檔）"
+                is_realtime_memory = False
+                is_realtime_scan = True
+        except Exception as exc:
+            live_scan_error = str(exc)
+            print(f"⚠️ LINE 盤中雷達即時掃描失敗，改顯示明示日期快照: {exc}")
     if snapshot is not None:
         rows = list(snapshot.get("rows") or [])
         source_date = snapshot.get("source_date")
-        # 非今日的快照只作明示日期的暫時結果；盤中也必須繼續背景更新。
+        # 非今日的快照只作明示日期的暫時結果；即時掃描成功時不啟動背景重算。
         source_date_obj = source_date
         if isinstance(source_date_obj, str):
             try:
                 source_date_obj = date.fromisoformat(source_date_obj[:10])
             except ValueError:
                 source_date_obj = None
-        if ((intraday and not is_realtime_memory) or
+        if ((intraday and not (is_realtime_memory or is_realtime_scan)) or
                 (not intraday and
                  (not source_date_obj or source_date_obj != taiwan_today()))):
             background_started = _start_screener_background_refresh(
@@ -9129,7 +9294,14 @@ def build_line_screener_message(user_id, mode, base_url=None):
 
     date_text = (source_date.isoformat() if hasattr(source_date, "isoformat")
                  else str(source_date or "未標日期"))
-    if intraday and is_realtime_memory:
+    if intraday and is_realtime_scan:
+        source_text = snapshot_source or "盤中即時全市場掃描"
+        finished_at = snapshot.get("scan_finished_at") if snapshot else None
+        if finished_at:
+            date_text = f"掃描完成 {str(finished_at)[:16].replace('T', ' ')}・法人資料日 {date_text}"
+        else:
+            date_text = f"掃描完成・法人資料日 {date_text}"
+    elif intraday and is_realtime_memory:
         source_text = "盤中記憶體快取（5分鐘內）"
         date_text = (f"行情快取時間 {taiwan_now().strftime('%Y-%m-%d %H:%M')}・"
                      f"法人資料日 {date_text}")
@@ -14495,8 +14667,8 @@ def render_etf_product_ranking_html(payload, category_key, category_label):
                 risk_text += f'・日波動 {float(vol):.2f}%'
             rendered.append(f'''<div class="etf-ranking-row">
   <div class="etf-ranking-rank">#{rank}</div>
-  <div class="etf-ranking-main"><b>{esc(str(row.get("name") or row.get("code")))}</b><span>{esc(str(row.get("code") or ""))}</span></div>
-  <div class="etf-ranking-numbers"><b class="{ret_cls}">{score_text}</b><span>價格報酬 {ret_text}{return_rank_text}</span><span>同期大盤 {market_text}</span><span>超額 {excess_text}</span><span>配息 {esc(distribution_text)}</span><span>{esc(risk_text)}</span></div>
+  <div class="etf-ranking-main"><div class="etf-ranking-name"><b>{esc(str(row.get("name") or row.get("code")))}</b><span>{esc(str(row.get("code") or ""))}</span></div><strong class="etf-ranking-score {ret_cls}">{score_text}</strong></div>
+  <div class="etf-ranking-numbers"><span>價格報酬 {ret_text}{return_rank_text}</span><span>同期大盤 {market_text}</span><span>超額 {excess_text}</span><span>配息 {esc(distribution_text)}</span><span>{esc(risk_text)}</span></div>
   <div class="etf-ranking-comment">{esc(str(row.get("comment") or "資料整理完成，請搭配觀測期間判讀。"))}<small>{esc(breakdown_text)}</small></div>
   <div class="etf-ranking-dates">{int(row.get("observations") or 0)} 個交易日・{esc(str(row.get("start_date") or ""))}～{esc(str(row.get("end_date") or ""))}</div>
 </div>''')
@@ -14689,31 +14861,32 @@ def web_etf(uid):
 .etf-links{{margin-top:7px;font-size:13px}}
 .etf-links a{{color:var(--brass);font-weight:700}}
 .etf-empty{{color:var(--ink-soft);line-height:1.7;padding:8px 0}}
-.etf-ranking-card{{background:#fff;border:1px solid #e4e1d8;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}
-.etf-ranking-head{{display:flex;justify-content:space-between;gap:10px;align-items:baseline}}
-.etf-ranking-head h2{{margin:0;font-size:20px}}
-.etf-ranking-head span{{font-size:11px;color:var(--ink-faint)}}
+.etf-ranking-card{{background:#fff;border:1px solid #e4e1d8;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05);max-width:100%;overflow:hidden;box-sizing:border-box}}
+.etf-ranking-head{{display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap;min-width:0}}
+.etf-ranking-head h2{{margin:0;font-size:20px;line-height:1.35}}
+.etf-ranking-head span{{font-size:11px;color:var(--ink-faint);white-space:normal;overflow-wrap:anywhere}}
 .etf-ranking-note,.etf-ranking-status{{color:var(--ink-soft);font-size:12.5px;line-height:1.65}}
 .etf-ranking-status{{padding:10px 12px;background:#FAF5E9;border-left:3px solid var(--brass);border-radius:8px;margin:12px 0}}
 .etf-ranking-period{{margin-top:14px}}
 .etf-ranking-period h3{{margin:0 0 5px;font-size:16px;color:var(--ink)}}
-.etf-ranking-row{{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:8px;padding:11px 0;border-top:1px solid #eee;align-items:start}}
-.etf-ranking-rank{{font-size:17px;font-weight:800;color:var(--brass)}}
-.etf-ranking-main{{min-width:0}}
-.etf-ranking-main b{{font-size:15px;color:var(--ink);word-break:break-word}}
-.etf-ranking-main span{{margin-left:6px;color:var(--ink-faint);font-size:11px;white-space:nowrap}}
-.etf-ranking-numbers{{text-align:right;min-width:132px}}
-.etf-ranking-numbers span{{display:block;color:var(--ink-soft);font-size:11px;line-height:1.5;margin-top:2px;white-space:nowrap}}
-.etf-ranking-comment{{grid-column:2 / -1;color:var(--ink-soft);font-size:12px;line-height:1.55;padding-top:4px;word-break:break-word}}
-.etf-ranking-comment small{{display:block;color:var(--ink-faint);font-size:10.5px;line-height:1.45;margin-top:3px}}
-.etf-ranking-dates{{grid-column:2 / -1;color:var(--ink-faint);font-size:11px;line-height:1.45}}
-.etf-ranking-numbers b{{display:block;font-size:17px}}
-.etf-ranking-numbers b.up{{color:var(--red)}}
-.etf-ranking-numbers b.down{{color:var(--green)}}
+.etf-ranking-row{{display:grid;grid-template-columns:30px minmax(0,1fr);gap:0 9px;padding:13px 0;border-top:1px solid #eee;align-items:start}}
+.etf-ranking-rank{{font-size:16px;font-weight:800;color:var(--brass);padding-top:3px}}
+.etf-ranking-main{{min-width:0;display:flex;justify-content:space-between;align-items:flex-start;gap:8px}}
+.etf-ranking-name{{min-width:0;display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}}
+.etf-ranking-name b{{font-size:17px;line-height:1.35;color:var(--ink);word-break:keep-all;overflow-wrap:break-word}}
+.etf-ranking-name span{{color:var(--ink-faint);font-size:12px;white-space:nowrap}}
+.etf-ranking-score{{flex:none;font-size:18px;line-height:1.3;text-align:right;white-space:nowrap}}
+.etf-ranking-score.up{{color:var(--red)}}
+.etf-ranking-score.down{{color:var(--green)}}
+.etf-ranking-numbers{{grid-column:2;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 12px;margin-top:6px;min-width:0}}
+.etf-ranking-numbers span{{display:block;color:var(--ink-soft);font-size:11.5px;line-height:1.5;white-space:normal;overflow-wrap:anywhere}}
+.etf-ranking-comment{{grid-column:2;color:var(--ink-soft);font-size:12.5px;line-height:1.55;padding-top:7px;overflow-wrap:anywhere}}
+.etf-ranking-comment small{{display:block;color:var(--ink-faint);font-size:10.5px;line-height:1.45;margin-top:4px;overflow-wrap:anywhere}}
+.etf-ranking-dates{{grid-column:2;color:var(--ink-faint);font-size:11px;line-height:1.45;margin-top:4px;overflow-wrap:anywhere}}
 .etf-ranking-more-note,.etf-ranking-empty-line{{color:var(--ink-soft);font-size:12px;line-height:1.6;padding:7px 0}}
 .etf-score-method{{margin:8px 0 12px;border:1px solid #eee9dd;border-radius:9px;padding:7px 10px;color:var(--ink-soft);font-size:11.5px;line-height:1.55;background:#fcfbf8}}
 .etf-score-method summary{{cursor:pointer;color:var(--brass);font-weight:700}}
-@media (max-width:480px){{.etf-ranking-row{{grid-template-columns:32px minmax(0,1fr) auto;gap:7px}}.etf-ranking-numbers{{min-width:122px}}.etf-ranking-numbers b{{font-size:16px}}.etf-ranking-comment{{font-size:12px}}}}
+@media (max-width:480px){{.etf-ranking-row{{grid-template-columns:27px minmax(0,1fr);gap:0 7px}}.etf-ranking-main{{gap:5px}}.etf-ranking-name b{{font-size:16px}}.etf-ranking-score{{font-size:17px}}.etf-ranking-numbers{{grid-template-columns:1fr;gap:1px;margin-top:5px}}.etf-ranking-comment{{font-size:12px}}}}
 .etf-inline-detail{{margin-top:10px;border-top:1px solid #eee;padding-top:8px}}
 .etf-inline-detail summary{{cursor:pointer;color:var(--brass);font-size:13px;font-weight:700;padding:4px 0}}
 .etf-inline-detail-body{{margin-top:8px;padding:10px 11px;background:#faf9f5;border:1px solid #eee9dd;border-radius:10px}}
@@ -15708,7 +15881,8 @@ def _screener_snapshot_valid_for_today(snapshot):
 
 
 def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
-                          ind_map=None, persist=True, force_refresh=False):
+                          ind_map=None, persist=True, force_refresh=False,
+                          radar_deep_limit=None):
     """
     算出某個模式的完整候選清單。回傳 (rows, 因流動性被排除的檔數, 產業動能)。
     結果快取 5 分鐘，讓調整篩選條件變成瞬間反應。
@@ -15719,7 +15893,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
     now = time.time()
     cache_ttl = 60 if force_refresh else SCREENER_CACHE_SECONDS
     hit = _screener_cache.get(mode)
-    if hit and now - hit["at"] < cache_ttl:
+    if hit and not force_refresh and now - hit["at"] < cache_ttl:
         return hit["rows"], hit["skipped"], hit["momentum"]
 
     # Render 重啟或切到另一個 worker 時，先讀 warmup 的持久化完整結果。
@@ -15744,7 +15918,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
     with _screener_compute_lock:
         now = time.time()
         hit = _screener_cache.get(mode)
-        if hit and now - hit["at"] < cache_ttl:
+        if hit and not force_refresh and now - hit["at"] < cache_ttl:
             return hit["rows"], hit["skipped"], hit["momentum"]
 
         # 另一個請求可能在等待鎖期間剛好保存了持久化快照，再檢查一次。
@@ -15762,23 +15936,49 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             return persisted["rows"], persisted["skipped"], persisted["momentum"]
 
         inst = fetch_institutional_data() or {} if inst is None else inst
-        revenue = fetch_monthly_revenue() or {} if revenue is None else revenue
-        valuation = fetch_valuation() or {} if valuation is None else valuation
         ind_map = get_industry_map() or {} if ind_map is None else ind_map
-        momentum = get_industry_momentum(revenue, ind_map)
-
-        # ── 候選池 ──
+        radar_universe_count = 0
         if mode == "radar":
-            # 雷達看的是「今天什麼在動」，不分類股——
-            # 傳產或金融只要帶量突破一樣值得注意，沒有理由先切掉。
-            pool = [(c, i) for c, i in inst.items()
-                    if len(c) == 4 and c.isdigit() and not c.startswith("00")
-                    and i["total_net_lots"] > 0]
-            pool.sort(key=lambda x: x[1]["total_net_lots"], reverse=True)
-            pool = [(c, {"name": i.get("name", c), "total_net_lots": i["total_net_lots"],
-                         "cum_lots": i["total_net_lots"], "buy_days": 1})
-                    for c, i in pool[:120]]
+            # 雷達不需要營收／估值分數；先用一次 spark 批次行情掃過
+            # stock_info 與 T86 出現過的完整股票 universe，再對真正候選補抓
+            # high/low/20 日量能等技術欄位。這樣不是只從法人買超前120檔取樣。
+            revenue = {} if revenue is None else revenue
+            valuation = {} if valuation is None else valuation
+            momentum = {}
+            universe_codes = sorted({str(code).strip() for code in set(ind_map) | set(inst)
+                                     if re.fullmatch(r"\d{4}", str(code).strip())})
+            radar_universe_count = len(universe_codes)
+            spark_quotes = _fetch_yahoo_spark_bulk(
+                universe_codes, rng="3mo", force_refresh=force_refresh)
+            pool = []
+            for code in universe_codes:
+                investor = inst.get(code) or {}
+                quote = spark_quotes.get(code) or {}
+                total_lots = investor.get("total_net_lots")
+                if total_lots is None or float(total_lots) <= 0:
+                    continue
+                if quote.get("pct") is None or float(quote["pct"]) < 1.5:
+                    continue
+                turnover = calc_turnover_billion(quote.get("close"), quote.get("volume"))
+                pool.append((code, {
+                    "name": investor.get("name") or stock_display_name(code, inst_data=inst, fallback=code),
+                    "total_net_lots": int(total_lots),
+                    "cum_lots": int(total_lots), "buy_days": 1,
+                    "spark_pct": float(quote.get("pct") or 0),
+                    "spark_turnover": turnover,
+                }))
+            # 全市場掃描後只對最有機會成為雷達訊號的有限候選補抓 3mo
+            # 技術序列；候選限制是深度計算上限，不是即時 universe 上限。
+            pool.sort(key=lambda x: (x[1].get("spark_pct", 0),
+                                     x[1].get("spark_turnover", 0),
+                                     x[1].get("total_net_lots", 0)), reverse=True)
+            deep_limit = (int(radar_deep_limit) if radar_deep_limit else
+                          RADAR_DEEP_SCAN_LIMIT)
+            pool = pool[:max(12, min(deep_limit, RADAR_DEEP_SCAN_LIMIT))]
         else:
+            revenue = fetch_monthly_revenue() or {} if revenue is None else revenue
+            valuation = fetch_valuation() or {} if valuation is None else valuation
+            momentum = get_industry_momentum(revenue, ind_map)
             # 候選池＝三類各自取前 N 名後合併成一份排行。
             # 不用單一全市場排行：電子股的買超量級遠大於傳產與金融，
             # 混在一起排名時非電子類會被整批擠掉；
@@ -15806,7 +16006,9 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
         rows, skipped_liquidity = [], 0
         # 選股台的候選池動輒上百檔，序列請求是這一頁最大的延遲來源。
         # 這裡開比較多執行緒——一次把整池抓完，總時間才不會隨檔數線性增加。
-        pool_prices = get_realtime_stocks_bulk([c for c, _ in pool], workers=16)
+        pool_prices = get_realtime_stocks_bulk(
+            [c for c, _ in pool], workers=24 if mode == "radar" else 16,
+            rng="3mo", force_refresh=(force_refresh or mode == "radar"))
         for code, info in pool:
             price = pool_prices.get(code)
             if not price or abs(price["pct"]) > 10.5:
@@ -15828,6 +16030,9 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             ind_code = ind_map.get(code)
             ind_txt = industry_name(ind_code) if ind_code else "未分類"
             industry_stats = momentum.get(ind_code) if ind_code else None
+            if mode == "radar" and ind_code:
+                # 雷達只需確認產業對照存在，不必為完整度再抓產業動能統計。
+                industry_stats = {"industry_code": ind_code}
 
             sc = score_stock_by_category(
                 code, ind_map, price, cum_yoy, valuation.get(code, {}),
@@ -15859,14 +16064,18 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                 "up_streak": price.get("up_streak", 0),
                 "data_quality": build_screener_data_quality(
                     cum_yoy, valuation.get(code, {}), industry_stats,
-                    info.get("cum_lots"), price),
+                    info.get("cum_lots"), price, mode=mode),
                 "radar_state": classify_radar_state(price),
             })
 
         source_date = _screener_source_date()
-        _screener_cache[mode] = {"at": now, "rows": rows,
-                                 "skipped": skipped_liquidity, "momentum": momentum,
-                                 "source_date": source_date}
+        cache_item = {"at": now, "rows": rows,
+                      "skipped": skipped_liquidity, "momentum": momentum,
+                      "source_date": source_date}
+        if mode == "radar":
+            cache_item["scan_universe_count"] = radar_universe_count
+            cache_item["scan_finished_at"] = taiwan_now().isoformat()
+        _screener_cache[mode] = cache_item
         if persist:
             _save_persisted_screener_snapshot(
                 mode, rows, skipped_liquidity, momentum,
@@ -15957,16 +16166,26 @@ def _screener_building_fragment(mode, source_date=None):
 
 
 def build_screener_data_quality(cum_yoy, valuation, industry_stats,
-                                 cum_lots, price):
+                                 cum_lots, price, mode=None):
     """只用現有資料標示選股資料完整度，不用缺資料猜測分數。"""
-    checks = [
-        ("營收", cum_yoy is not None),
-        ("估值", any((valuation or {}).get(k) is not None
-                      for k in ("pe", "pb", "yield"))),
-        ("產業", industry_stats is not None),
-        ("法人", cum_lots is not None),
-        ("行情", bool(price and price.get("close") is not None)),
-    ]
+    if mode == "radar":
+        checks = [
+            ("行情", bool(price and price.get("close") is not None)),
+            ("量能", bool(price and price.get("vol_ratio") is not None)),
+            ("位階", bool(price and any(price.get(k) is not None
+                                        for k in ("high_20d", "high_60d", "ma20")))),
+            ("法人", cum_lots is not None),
+            ("產業", industry_stats is not None),
+        ]
+    else:
+        checks = [
+            ("營收", cum_yoy is not None),
+            ("估值", any((valuation or {}).get(k) is not None
+                          for k in ("pe", "pb", "yield"))),
+            ("產業", industry_stats is not None),
+            ("法人", cum_lots is not None),
+            ("行情", bool(price and price.get("close") is not None)),
+        ]
     missing = [label for label, ok in checks if not ok]
     valid = sum(1 for _, ok in checks if ok)
     return {
@@ -16192,16 +16411,21 @@ def render_screener_fast_summary(mode):
     cached = _screener_cache.get(mode)
     cached_rows = []
     persisted = None
-    if cached and time.time() - cached.get("at", 0) < SCREENER_CACHE_SECONDS:
-        cached_rows = list(cached.get("rows") or [])[:5]
-    if not cached_rows:
-        candidate = _load_persisted_screener_snapshot(mode)
-        if candidate and _screener_snapshot_is_recent(candidate, 3):
-            persisted = candidate
-            cached_rows = list(candidate.get("rows") or [])[:5]
+    radar_live_preview = mode == "radar"
+    if not radar_live_preview:
+        if cached and time.time() - cached.get("at", 0) < SCREENER_CACHE_SECONDS:
+            cached_rows = list(cached.get("rows") or [])[:5]
+        if not cached_rows:
+            candidate = _load_persisted_screener_snapshot(mode)
+            if candidate and _screener_snapshot_is_recent(candidate, 3):
+                persisted = candidate
+                cached_rows = list(candidate.get("rows") or [])[:5]
 
     rows = []
-    if cached_rows or persisted is not None:
+    if radar_live_preview:
+        source_label = "即時全市場掃描啟動中"
+        source_date = f"行情請求時間 {taiwan_now().strftime('%Y-%m-%d %H:%M:%S')}"
+    elif cached_rows or persisted is not None:
         source_label = ("目前快取結果" if not persisted else
                         "warmup 完整快照（最近資料）")
         source_date = (str(cached.get("source_date") or "未標日期")
@@ -16219,7 +16443,7 @@ def render_screener_fast_summary(mode):
                 '<div class="position-fast-row"><div><b>#' + str(rank) + ' ' + name
                 + ' <span class="code">' + code + '</span></b><small>'
                 + html.escape(detail) + '</small></div></div>')
-    else:
+    elif not radar_live_preview:
         history = _latest_pick_history_rows(mode, limit=5)
         source_label = "最近成功快照"
         source_date = str(history[0][0]) if history else "尚無歷史快照"
@@ -16265,12 +16489,12 @@ def render_screener_fast_summary(mode):
   <div class="screener-fast-note">{source_label}・資料日：{html.escape(source_date)}</div>
   <div class="screener-fast-state">
     <span class="screener-fast-state-mark" aria-hidden="true"></span>
-    <div><b>完整{label}分析載入中</b>
-      <span>目前先顯示前 5 名預覽；系統正在補上完整清單、評分、型態、篩選、排序與產業分布。</span>
+    <div><b>{'即時雷達全市場掃描中' if radar_live_preview else f'完整{label}分析載入中'}</b>
+      <span>{'正在重新取得全市場最新行情與雷達訊號；此階段不展示舊報酬率，完成後才列出本次即時結果。' if radar_live_preview else '目前先顯示前 5 名預覽；系統正在補上完整清單、評分、型態、篩選、排序與產業分布。'}</span>
     </div>
   </div>
   <div class="screener-fast-preview">
-    <div class="screener-fast-preview-title"><b>前 5 名預覽</b><span>不是完整選股結果</span></div>
+    <div class="screener-fast-preview-title"><b>{'即時掃描完成後顯示結果' if radar_live_preview else '前 5 名預覽'}</b><span>{'不展示舊報酬率' if radar_live_preview else '不是完整選股結果'}</span></div>
     {''.join(rows)}
   </div>
   <div class="screener-fast-features">
@@ -16299,20 +16523,50 @@ def render_turning_observation_web_body(result, status_note=None):
             pct = item.get("pct")
             close_text = f"{float(close):,.2f}" if close is not None else "—"
             pct_text = f"{float(pct):+.2f}%" if pct is not None else "漲跌資料不足"
-            current = item.get("current_total_lots")
-            ratio = item.get("magnitude_ratio")
-            inst_text = f"法人 {int(current):+,} 張" if current is not None else "法人資料不足"
-            ratio_text = f"・前{prior_days}日平均絕對值 {float(ratio):.1f} 倍" if ratio and float(ratio) >= 2.5 else ""
-            reason_details = item.get("reason_details") or item.get("reasons") or []
-            reasons = "、".join(reason_details) or "轉折細節資料不足，請核對原始法人與行情資料"
-            return f'''<div class="turning-row">
+            state = str(item.get("state") or "observing")
+            direction = str(item.get("direction") or "neutral")
+            if state == "invalid":
+                state_text = "已失效"
+                conclusion_label = "為何失效"
+                conclusion = str(item.get("state_reason") or "失效原因資料不足")
+            else:
+                state_text = "已確認" if state == "confirmed" else "觀察中"
+                conclusion_label = "目前判讀"
+                event = str(item.get("event_type") or "法人方向變化")
+                score = int(item.get("score") or 0)
+                conclusion = (f"{event}；目前符合 {score}/5 個轉折條件，"
+                              f"{'已達確認門檻' if state == 'confirmed' else '尚未達確認門檻'}")
+            details = [str(value) for value in
+                       (item.get("reason_details") or item.get("reasons") or [])
+                       if str(value).strip()]
+
+            def first_fact(prefixes, fallback=None):
+                for value in details:
+                    if any(value.startswith(prefix) for prefix in prefixes):
+                        return value
+                return fallback or "資料不足"
+
+            institutional = first_fact(("三大法人今日",),
+                                       f"法人今日{('買超' if direction == 'up' else '賣超')} "
+                                       f"{int(item.get('current_total_lots') or 0):+,} 張")
+            price_fact = first_fact(("收盤",),
+                                    f"收盤 {close_text}，20日均線資料不足")
+            volume_fact = first_fact(("成交量",), "成交量資料不足")
+            streak_fact = first_fact(("連續上漲", "連續下跌", "今日為近期", "今日翻黑"), None)
+            support = str(item.get("support") or "資料不足")
+            resistance = str(item.get("resistance") or "資料不足")
+            return f'''<div class="turning-row turning-state-{esc(state)}">
   <div class="turning-row-head"><b>#{rank} {esc(str(item.get("name") or item.get("code")))}</b>
-    <span>{esc(str(item.get("code") or ""))}・{esc(str(item.get("direction_label") or "方向變化"))}</span></div>
+    <span>{esc(str(item.get("code") or ""))}・<strong>{esc(state_text)}</strong></span></div>
   <div class="turning-price">{close_text} <span>{pct_text}</span></div>
-  <div class="turning-detail">{esc(str(item.get("event_type") or "法人方向變化"))}・{esc(inst_text)}{esc(ratio_text)}・{esc(str(item.get("consensus") or "法人分歧"))}</div>
-  <div class="turning-detail">依據：{esc(reasons)}</div>
-  <div class="turning-state-reason">狀態原因：{esc(str(item.get("state_reason") or "轉折細節資料不足，請核對原始法人與行情資料"))}</div>
-  <div class="turning-detail">支撐 {esc(str(item.get("support") or "資料不足"))}・壓力 {esc(str(item.get("resistance") or "資料不足"))}</div>
+  <div class="turning-conclusion"><b>{esc(conclusion_label)}</b><span>{esc(conclusion)}</span></div>
+  <div class="turning-facts">
+    <div class="turning-fact"><b>法人</b><span>{esc(institutional)}</span></div>
+    <div class="turning-fact"><b>價格</b><span>{esc(price_fact)}</span></div>
+    <div class="turning-fact"><b>量能</b><span>{esc(volume_fact)}</span></div>
+    {f'<div class="turning-fact"><b>連續</b><span>{esc(streak_fact)}</span></div>' if streak_fact else ''}
+  </div>
+  <div class="turning-levels"><span>支撐</span> {esc(support)}　<span>壓力</span> {esc(resistance)}</div>
 </div>'''
 
         visible_rows = [render_turning_row(item, rank)
@@ -16338,22 +16592,32 @@ def render_turning_observation_web_body(result, status_note=None):
 {f'<div class="turning-refresh-note">{esc(str(status_note))}</div>' if status_note else ''}
 <div class="mode-note">轉折觀察不預測未來，只整理現有真實價格、均線、量能與 T86 法人方向是否出現改變。第一次出現時可能只是觀察中；條件被破壞時標示為已失效。</div>
 <style>
-.turning-section{{background:#fff;border:1px solid #e4e1d8;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}
-.turning-section h2{{margin:0 0 4px;font-size:20px}}
-.turning-section>p{{margin:0 0 8px;color:var(--ink-soft);font-size:12.5px}}
-.turning-row{{padding:12px 0;border-top:1px solid #eee;line-height:1.55}}
-.turning-row-head{{display:flex;justify-content:space-between;gap:10px;align-items:baseline}}
-.turning-row-head b{{font-size:16px}}
-.turning-row-head span,.turning-detail{{color:var(--ink-soft);font-size:12.5px}}
-.turning-price{{font-size:18px;font-weight:700;margin-top:3px}}
+.turning-section{{background:#fff;border:1px solid #e4e1d8;border-radius:14px;padding:14px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}
+.turning-section h2{{margin:0 0 4px;font-size:20px;line-height:1.3}}
+.turning-section>p{{margin:0 0 4px;color:var(--ink-soft);font-size:12px;line-height:1.5}}
+.turning-row{{padding:13px 0;border-top:1px solid #eee;line-height:1.5}}
+.turning-row-head{{display:flex;justify-content:space-between;gap:8px;align-items:baseline}}
+.turning-row-head b{{font-size:17px;overflow-wrap:anywhere}}
+.turning-row-head span{{color:var(--ink-soft);font-size:12px;white-space:nowrap}}
+.turning-row-head strong{{color:var(--brass)}}
+.turning-price{{font-size:20px;font-weight:700;margin-top:3px}}
+.turning-price span{{font-size:14px;color:var(--red);margin-left:5px}}
+.turning-conclusion{{display:flex;gap:8px;align-items:flex-start;padding:9px 10px;margin-top:8px;background:#FAF5E9;border-left:3px solid var(--brass);border-radius:8px;font-size:12.5px;line-height:1.55}}
+.turning-conclusion b{{flex:none;color:var(--brass)}}
+.turning-conclusion span{{color:var(--ink);overflow-wrap:anywhere}}
+.turning-facts{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:9px}}
+.turning-fact{{display:flex;gap:6px;align-items:flex-start;padding:8px 9px;background:#F7F7F3;border:1px solid #ECEDE8;border-radius:8px;font-size:12px;line-height:1.45;min-width:0}}
+.turning-fact b{{color:var(--brass);flex:none;font-size:11px}}
+.turning-fact span{{color:var(--ink-soft);overflow-wrap:anywhere}}
+.turning-levels{{margin-top:8px;color:var(--ink-soft);font-size:12px;overflow-wrap:anywhere}}
+.turning-levels span{{color:var(--brass);font-weight:700}}
 .turning-more{{margin-top:8px;border-top:1px solid #eee;padding-top:8px}}
 .turning-more summary{{cursor:pointer;color:var(--brass);font-weight:700;font-size:13px;padding:4px 0}}
 .turning-more .turning-row:first-child{{border-top:1px solid #eee}}
-.turning-price span{{font-size:14px;color:var(--red);margin-left:5px}}
-.turning-state-reason{{margin-top:4px;color:var(--ink);font-size:12.5px;line-height:1.6}}
 .turning-empty{{color:var(--ink-soft);padding:8px 0}}
-.turning-meta{{font-size:12.5px;color:var(--ink-soft);padding:8px 0}}
+.turning-meta{{font-size:12px;color:var(--ink-soft);padding:8px 0;line-height:1.5}}
 .turning-refresh-note{{padding:9px 11px;background:#FAF5E9;border-left:3px solid var(--brass);border-radius:8px;color:var(--ink-soft);font-size:12.5px;line-height:1.6}}
+@media (max-width:480px){{.turning-facts{{grid-template-columns:1fr}}.turning-row-head b{{font-size:16px}}}}
 </style>
 {"".join(sections)}
 <div class="callout"><b>資料限制</b><br><span style="font-size:12.5px;color:var(--ink-faint)">法人資料需等 T86 更新；資料不足時不建立訊號。轉折狀態是規則式觀察，不構成投資建議。</span></div>'''
@@ -16410,8 +16674,9 @@ def web_screener(uid):
     snapshot_skipped = 0
     snapshot_momentum = {}
     snapshot_source = None
+    live_radar_request = (mode == "radar" and detail_request)
     if (request.method == "GET" and wants_fragment()
-            and mode in ("blackhorse", "radar")):
+            and mode in ("blackhorse", "radar") and not live_radar_request):
         recent, snapshot_source = _screener_recent_snapshot(mode)
         if recent is None:
             _start_screener_background_refresh(mode)
@@ -16453,23 +16718,40 @@ def web_screener(uid):
         source_note = (f'資料來源：{snapshot_source or "最近完整快照"}，資料日 '
                        f'{source_date or "未標日期"}；最新資料若尚未完成，背景會更新')
     else:
-        persisted = _load_persisted_screener_snapshot(mode)
-        persisted_hit = bool(persisted and _screener_snapshot_valid_for_today(persisted))
-        if persisted_hit:
-            rows, skipped_liquidity, momentum = compute_screener_rows(mode)
-            source_note = (f'資料來源：warmup 完成快照，資料日 '
-                           f'{persisted.get("source_date") or "未標日期"}')
-        else:
+        if live_radar_request:
             inst = fetch_institutional_data()
             if not inst:
                 return respond_page("選股台", """
-<div class="empty">目前無法取得三大法人資料。<br>
-可能是非交易時段或資料尚未公布，請稍後再試。</div>""", "screener")
+<div class="empty">目前無法取得最新法人資料，雷達不會用舊快照冒充即時結果。<br>
+請稍後重新整理；Yahoo 即時行情與 T86 法人資料需在公開後才能完成全市場掃描。</div>""", "screener")
             ind_map = get_industry_map() or {}
             rows, skipped_liquidity, momentum = compute_screener_rows(
-                mode, inst=inst, ind_map=ind_map)
-            source_note = (f'資料來源：本次完整計算，資料日 '
-                           f'{_screener_source_date()}')
+                mode, inst=inst, ind_map=ind_map, persist=False,
+                force_refresh=True)
+            radar_cache = _screener_cache.get("radar") or {}
+            source_date = _screener_source_date()
+            scan_count = int(radar_cache.get("scan_universe_count") or 0)
+            source_note = (f'資料來源：雷達即時全市場掃描，已掃 {scan_count or "全市場"} 檔；'
+                           f'行情更新時間 {taiwan_now().strftime("%Y-%m-%d %H:%M:%S")}；'
+                           f'法人資料日 {source_date or "未標日期"}')
+        else:
+            persisted = _load_persisted_screener_snapshot(mode)
+            persisted_hit = bool(persisted and _screener_snapshot_valid_for_today(persisted))
+            if persisted_hit:
+                rows, skipped_liquidity, momentum = compute_screener_rows(mode)
+                source_note = (f'資料來源：warmup 完成快照，資料日 '
+                               f'{persisted.get("source_date") or "未標日期"}')
+            else:
+                inst = fetch_institutional_data()
+                if not inst:
+                    return respond_page("選股台", """
+<div class="empty">目前無法取得三大法人資料。<br>
+可能是非交易時段或資料尚未公布，請稍後再試。</div>""", "screener")
+                ind_map = get_industry_map() or {}
+                rows, skipped_liquidity, momentum = compute_screener_rows(
+                    mode, inst=inst, ind_map=ind_map)
+                source_note = (f'資料來源：本次完整計算，資料日 '
+                               f'{_screener_source_date()}')
     rows = list(rows)   # 複製一份再篩選排序，避免就地排序動到快取裡那份
 
     # ── 篩選 ──
