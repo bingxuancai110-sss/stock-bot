@@ -3912,6 +3912,9 @@ RADAR_SPARK_CACHE_SECONDS = 15
 RADAR_SPARK_BATCH_SIZE = 20
 RADAR_SPARK_MAX_WORKERS = 12
 RADAR_DEEP_SCAN_LIMIT = 240
+# 定時 producer 以全市場 spark 初篩為主；深度技術補抓只處理前 48 檔，
+# 讓十分鐘快照週期有機會穩定完成，網頁仍可用手動完整分析上限 240。
+RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 48
 
 
 def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
@@ -4577,6 +4580,7 @@ _SHARED_SNAPSHOT_MAX_AGE = {
     "leaderboard_page": 3 * 86400,
     "chips_superman": 3 * 86400,
     "etf_catalog": 86400,
+    "etf_product_metrics": 3 * 86400,
     "etf_distribution_history": 3 * 86400,
     "turning_observation": 900,
     "etf_product_rankings": 3 * 86400,
@@ -9266,6 +9270,25 @@ def build_turning_observation_line_message(user_id, base_url=None):
         "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
 
 
+def _radar_live_cache_is_fresh(snapshot, max_age_seconds=None):
+    """檢查記憶體內盤中快取的完成時間，避免把過期即時資料當新資料。"""
+    if not isinstance(snapshot, dict) or not snapshot.get("radar_live"):
+        return True
+    finished = snapshot.get("scan_finished_at")
+    if not finished:
+        return False
+    try:
+        text = str(finished).replace("Z", "+00:00")
+        computed_at = datetime.fromisoformat(text)
+        if computed_at.tzinfo is None:
+            computed_at = computed_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - computed_at).total_seconds()
+        limit = float(max_age_seconds or RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS)
+        return 0 <= age <= limit
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def _line_screener_snapshot(mode, intraday=False):
     """LINE 只讀已完成結果；盤中優先使用最近的 radar_live 快照。"""
     now = time.time()
@@ -9275,6 +9298,7 @@ def _line_screener_snapshot(mode, intraday=False):
             live_meta = live.get("source_meta") or {}
             live_cache = {
                 "at": now, "rows": live.get("rows") or [],
+                "radar_live": True,
                 "skipped": live.get("skipped", 0),
                 "momentum": live.get("momentum") or {},
                 "source_date": live.get("source_date"),
@@ -9287,7 +9311,8 @@ def _line_screener_snapshot(mode, intraday=False):
     cached = _screener_cache.get(mode)
     if cached and isinstance(cached.get("rows"), list):
         age = now - float(cached.get("at") or 0)
-        if intraday and age <= SCREENER_CACHE_SECONDS:
+        if (intraday and age <= SCREENER_CACHE_SECONDS and
+                _radar_live_cache_is_fresh(cached)):
             return cached, "盤中記憶體快取（5分鐘內）", True
         if not intraday and _screener_snapshot_is_recent(cached, 3):
             return cached, "最近完整快照", False
@@ -9346,6 +9371,15 @@ def build_line_screener_message(user_id, mode, base_url=None,
 
     intraday = mode == "radar" and _is_taiwan_intraday_window()
     if intraday and not _completed_live_scan:
+        # 正常點擊只讀最近 10 分鐘定時快照；不因同一使用者再次輸入而重掃。
+        live_snapshot = None
+        if "_load_recent_live_radar_snapshot" in globals():
+            live_snapshot = _load_recent_live_radar_snapshot(
+                max_age_seconds=globals().get("RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS", 10 * 60))
+        if live_snapshot and isinstance(live_snapshot.get("rows"), list):
+            return build_line_screener_message(
+                user_id, "radar", base_url, _completed_live_scan=True)
+        # 尚未有定時快照時只允許一次冷啟動；之後由排程接手每 10 分鐘更新。
         started = _start_screener_background_refresh(
             "radar", intraday=True, radar_deep_limit=48,
             on_complete=lambda: line_bot_api.push_message(
@@ -10194,6 +10228,16 @@ def _do_warmup():
     except Exception as e:
         print(f"❌ 預熱籌碼超人失敗: {e}")
         done.append("籌碼超人 失敗")
+
+    # ETF 商品指標先批次抓取並跨 worker 保存；不可讓每張商品卡片各自打 TWSE。
+    # 這些欄位包含官方資產規模、官方收盤價、年初至今均成交與受益人次。
+    try:
+        metrics_payload = fetch_twse_etf_product_metrics(
+            force_reload=taiwan_now().hour >= 16)
+        done.append("ETF官方商品指標 %s 檔" % len(metrics_payload or {}))
+    except Exception as e:
+        print(f"❌ 預熱 ETF 官方商品指標失敗: {e}")
+        done.append("ETF官方商品指標 失敗")
 
     # ETF 配息資料先批次抓取並跨 worker 保存；不可讓每張商品卡片各自打 TWSE。
     # 若官方頁暫時不可用，保留既有快取／unknown，不把失敗當作零配息。
@@ -12667,6 +12711,14 @@ ETF_CATALOG_URL = "https://www.twse.com.tw/rwd/zh/ETF/list"
 ETF_CATALOG_CACHE_SECONDS = 86400
 _etf_catalog_cache = {"at": 0, "data": None}
 
+# TWSE ETF 投資篩選器提供逐檔官方資產規模與市場欄位；
+# 只在快照過期時抓一次，不讓每個 ETF 卡片各自打官方端點。
+ETF_PRODUCT_METRICS_URL = "https://www.twse.com.tw/zh/ETFortune/ajaxProductsResult"
+ETF_PRODUCT_METRICS_CACHE_SECONDS = 86400
+ETF_PRODUCT_METRICS_SHARED_MAX_AGE = 3 * 86400
+ETF_PRODUCT_METRICS_SNAPSHOT_KEY = "etf_product_metrics"
+_etf_product_metrics_cache = {"at": 0, "data": None}
+
 
 def _split_twse_etf_cell(value):
     """拆開證交所 ETF 清單中的 <br> 多商品儲存格，避免多幣別代號錯配。"""
@@ -12838,6 +12890,94 @@ def fetch_twse_etf_catalog(force_reload=False):
         return fallback
 
 
+def _parse_etf_metric_number(value, integer=False):
+    """解析 TWSE 商品指標；破折號、空白與非數字維持 None，不轉成 0。"""
+    text = html.unescape(str(value or "")).replace(",", "").strip()
+    if text in ("", "-", "—", "N/A", "NA"):
+        return None
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return int(number) if integer else number
+
+
+def fetch_twse_etf_product_metrics(force_reload=False):
+    """取得 TWSE ETF 篩選器的逐檔官方市場欄位並跨 worker 快取。"""
+    now = time.time()
+    with _realtime_cache_lock:
+        cached = _etf_product_metrics_cache.get("data")
+        if (isinstance(cached, dict) and not force_reload and
+                now - _etf_product_metrics_cache.get("at", 0) < ETF_PRODUCT_METRICS_CACHE_SECONDS):
+            return cached
+
+    if not force_reload:
+        try:
+            shared = _load_shared_data_snapshot(
+                ETF_PRODUCT_METRICS_SNAPSHOT_KEY,
+                max_age_seconds=ETF_PRODUCT_METRICS_SHARED_MAX_AGE)
+            payload = (shared.get("payload") if shared else None) or {}
+            if isinstance(payload, dict) and payload:
+                with _realtime_cache_lock:
+                    _etf_product_metrics_cache.update({"at": now, "data": payload})
+                return payload
+        except Exception as exc:
+            print(f"⚠️ 讀取 ETF 官方指標共享快照失敗: {exc}")
+
+    try:
+        response = requests.post(
+            ETF_PRODUCT_METRICS_URL, data={}, timeout=8,
+            headers={"User-Agent": "Mozilla/5.0",
+                     "X-Requested-With": "XMLHttpRequest",
+                     "Accept-Language": "zh-TW,zh;q=0.9"})
+        response.raise_for_status()
+        raw = response.json()
+        rows = raw.get("data") if isinstance(raw, dict) else None
+        if not isinstance(rows, list) or raw.get("status") != "success":
+            raise ValueError("TWSE ETF 商品指標格式不完整")
+        retrieved_date = taiwan_today().isoformat()
+        result = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            code_match = re.search(r"(?<!\d)(\d{4,6}[A-Za-z]?)(?!\d)",
+                                   str(row.get("stockNo") or ""))
+            if not code_match:
+                continue
+            code = code_match.group(1).upper()
+            if not code.startswith("00"):
+                continue
+            result[code] = {
+                "asset_size_billion": _parse_etf_metric_number(row.get("totalAv")),
+                "official_close": _parse_etf_metric_number(row.get("close1")),
+                "ytd_avg_turnover_million": _parse_etf_metric_number(row.get("valueYTD")),
+                "ytd_volume_shares": _parse_etf_metric_number(row.get("volumeYTD"), integer=True),
+                "holders": _parse_etf_metric_number(
+                    str(row.get("holders") or "").replace(",", ""), integer=True),
+                "retrieved_date": retrieved_date,
+                "source": "TWSE ETF 投資篩選器",
+                "source_url": "https://www.twse.com.tw/zh/ETFortune/products",
+            }
+        if not result:
+            raise ValueError("TWSE ETF 商品指標沒有可用資料")
+        with _realtime_cache_lock:
+            _etf_product_metrics_cache.update({"at": time.time(), "data": result})
+        _save_shared_data_snapshot(
+            ETF_PRODUCT_METRICS_SNAPSHOT_KEY, result, data_date=taiwan_today(),
+            source_meta={"source": "TWSE ETF 投資篩選器",
+                         "url": "https://www.twse.com.tw/zh/ETFortune/products",
+                         "count": len(result),
+                         "data_date_basis": "官方動態篩選 endpoint 回應日／擷取日"})
+        return result
+    except Exception as exc:
+        print(f"⚠️ 抓取 TWSE ETF 官方商品指標失敗: {exc}")
+        with _realtime_cache_lock:
+            cached = _etf_product_metrics_cache.get("data")
+        return cached if isinstance(cached, dict) else {}
+
+
 def get_etf_metadata(code, distribution_map=None):
     """合併官方上市清單、核實覆寫與官方已發生配息紀錄。"""
     code = str(code).strip().upper()
@@ -12891,8 +13031,15 @@ def get_etf_catalog_products():
     """回傳網頁 ETF 專區使用的完整官方商品池，逐檔套用核實覆寫。"""
     catalog = fetch_twse_etf_catalog()
     distribution_map = fetch_twse_etf_distribution_history()
-    return {code: get_etf_metadata(code, distribution_map=distribution_map)
-            for code in catalog.keys()}
+    metrics_map = fetch_twse_etf_product_metrics()
+    products = {}
+    for code in catalog.keys():
+        meta = get_etf_metadata(code, distribution_map=distribution_map)
+        official_metrics = metrics_map.get(code) if isinstance(metrics_map, dict) else None
+        if isinstance(official_metrics, dict):
+            meta["official_metrics"] = official_metrics
+        products[code] = meta
+    return products
 
 
 # 證交所 ETF 配息清單是官方公告資料；只採已發生且有每單位金額的紀錄。
@@ -13456,10 +13603,17 @@ def build_etf_product_rankings(force_refresh=False):
             distribution = _etf_trailing_distribution_metrics(meta, end_date, end_close)
             window_distribution = _etf_distribution_metrics(
                 meta, start_date, end_date, start_close)
+            official_metrics = meta.get("official_metrics") or {}
             item = {
                 "code": code,
                 "name": str(meta.get("name") or code),
                 "category": category,
+                "asset_size_billion": official_metrics.get("asset_size_billion"),
+                "official_close": official_metrics.get("official_close"),
+                "ytd_avg_turnover_million": official_metrics.get("ytd_avg_turnover_million"),
+                "ytd_volume_shares": official_metrics.get("ytd_volume_shares"),
+                "holders": official_metrics.get("holders"),
+                "official_metrics_retrieved_date": official_metrics.get("retrieved_date"),
                 "return_pct": round(return_pct, 2),
                 "market_return_pct": (round(market_return, 2)
                                        if market_return is not None else None),
@@ -14880,11 +15034,23 @@ def render_etf_product_ranking_html(payload, category_key, category_label):
             risk_text = (f'最大回撤 {float(max_dd):.2f}%' if max_dd is not None else '最大回撤資料不足')
             if vol is not None:
                 risk_text += f'・日波動 {float(vol):.2f}%'
+            asset_size = row.get("asset_size_billion")
+            asset_text = (f'資產規模 {float(asset_size):,.0f} 億'
+                          if asset_size is not None else '資產規模待確認')
+            holders = row.get("holders")
+            holders_text = (f'受益人次 {int(float(holders)):,}'
+                            if holders is not None else '受益人次待確認')
+            turnover = row.get("ytd_avg_turnover_million")
+            turnover_text = (f'年初至今均成交 {float(turnover):,.3f} 百萬元'
+                             if turnover is not None else '年初至今均成交待確認')
+            metric_date = row.get("official_metrics_retrieved_date")
+            metric_date_text = (f'官方欄位擷取日 {metric_date}' if metric_date else '官方欄位擷取日待確認')
             rendered.append(f'''<div class="etf-ranking-row">
   <div class="etf-ranking-rank">#{rank}</div>
   <div class="etf-ranking-main"><div class="etf-ranking-name"><b>{esc(str(row.get("name") or row.get("code")))}</b><span>{esc(str(row.get("code") or ""))}</span></div><strong class="etf-ranking-score {ret_cls}">{score_text}</strong></div>
   <div class="etf-ranking-ranks"><span>綜合排名 #{rank}</span><span>{esc(performance_rank_text)}</span><span>{esc(dividend_rank_text)}</span></div>
-  <div class="etf-ranking-numbers"><span>價格報酬 {ret_text}</span><span>同期大盤 {market_text}</span><span>超額 {excess_text}</span><span>配息 {esc(distribution_text)}</span><span>{esc(risk_text)}</span></div>
+  <div class="etf-ranking-numbers"><span>{esc(asset_text)}</span><span>價格報酬 {ret_text}</span><span>同期大盤 {market_text}</span><span>超額 {excess_text}</span><span>配息 {esc(distribution_text)}</span><span>{esc(risk_text)}</span><span>{esc(holders_text)}</span><span>{esc(turnover_text)}</span></div>
+  <div class="etf-ranking-dates">{esc(metric_date_text)}</div>
   <div class="etf-ranking-comment">{esc(str(row.get("comment") or "資料整理完成，請搭配觀測期間判讀。"))}<small>{esc(breakdown_text)}</small></div>
   <div class="etf-ranking-dates">{int(row.get("observations") or 0)} 個交易日・{esc(str(row.get("start_date") or ""))}～{esc(str(row.get("end_date") or ""))}</div>
 </div>''')
@@ -15040,6 +15206,9 @@ def web_etf(uid):
         key=lambda pair: (str(pair[1].get("listing_date") or ""), pair[0]),
         reverse=True)
     ranking_keys = {"active", "dividend", "market", "theme"}
+    ranking_payload = None
+    ranking_fresh = False
+    ranking_source = ""
     if selected in ranking_keys:
         ranking_payload, ranking_fresh, ranking_source = _load_etf_product_ranking_snapshot()
         if ranking_payload is None or not ranking_fresh:
@@ -15055,6 +15224,59 @@ def web_etf(uid):
     else:
         ranking_html = '''<section class="etf-ranking-card etf-ranking-empty">
   <h2>其他／待分類</h2><p>第一版不把債券、槓桿／反向、期貨與多資產商品混入四類股票型 ETF 排名。</p></section>'''
+
+    # 排名 payload 與商品卡共用同一份類別資料；短期列在前，
+    # 沒有短期排名時才用長期資料做卡片摘要，不跨類別混用。
+    ranking_lookup = {}
+    if isinstance(ranking_payload, dict):
+        for period_key in ("short", "long"):
+            period_rows = ((ranking_payload.get("categories") or {}).get(period_key) or {}).get(selected) or []
+            for ranking_row in period_rows:
+                code = str(ranking_row.get("code") or "").upper()
+                if code and code not in ranking_lookup:
+                    ranking_lookup[code] = ranking_row
+
+    # CMoney 風格的上方摘要：每個數字都來自本類商品與官方／排名快照，
+    # 只有存在真實數值才顯示，不以 0 代替未知。
+    def overview_value(label, value, sub=""):
+        return (f'<div class="etf-overview-item"><span>{html.escape(label)}</span>'
+                f'<b>{html.escape(str(value))}</b>'
+                f'{f"<small>{html.escape(str(sub))}</small>" if sub else ""}</div>')
+
+    size_rows = [(code, meta) for code, meta in products
+                 if (meta.get("official_metrics") or {}).get("asset_size_billion") is not None]
+    size_leader = max(size_rows,
+                      key=lambda pair: float((pair[1].get("official_metrics") or {}).get("asset_size_billion")),
+                      default=None)
+    short_rows = (((ranking_payload or {}).get("categories") or {}).get("short") or {}).get(selected) or []
+    performance_leader = next((row for row in short_rows if row.get("return_rank") == 1), None)
+    dividend_leader = next((row for row in short_rows if row.get("distribution_rank") == 1), None)
+    overview = [overview_value("本類商品", f"{len(products)} 檔", selected_label)]
+    if size_leader:
+        size_code, size_meta = size_leader
+        size_value = (size_meta.get("official_metrics") or {}).get("asset_size_billion")
+        overview.append(overview_value("最大資產規模", f"{float(size_value):,.0f} 億",
+                                       f"{size_meta.get('name') or size_code}（{size_code}）"))
+    else:
+        overview.append(overview_value("最大資產規模", "待確認", "TWSE 官方欄位尚未取得"))
+    if performance_leader:
+        perf_value = performance_leader.get("return_pct")
+        perf_text = f"{performance_leader.get('name') or performance_leader.get('code')}"
+        overview.append(overview_value("績效排名 #1",
+                                       f"{float(perf_value):+.2f}%" if perf_value is not None else "待確認",
+                                       f"{perf_text}（價格報酬）"))
+    else:
+        overview.append(overview_value("績效排名 #1", "待確認", "完整期間資料尚在整理"))
+    if dividend_leader:
+        div_value = dividend_leader.get("distribution_annualized_yield_pct")
+        div_text = f"{dividend_leader.get('name') or dividend_leader.get('code')}"
+        overview.append(overview_value("年化配息排名 #1",
+                                       f"{float(div_value):.2f}%" if div_value is not None else "待確認",
+                                       f"{div_text}（官方紀錄滿約 12 個月）"))
+    else:
+        overview.append(overview_value("年化配息排名 #1", "待確認", "未滿約 12 個月者不列名次"))
+    overview_html = (f'<div class="etf-overview-grid">{"".join(overview)}</div>'
+                     '<div class="etf-overview-note">上方摘要只在目前選定類別內比較；每檔卡片另列資產規模、價格報酬、同期大盤、配息與風險。官方商品欄位採擷取日標示，缺值維持待確認。</div>')
 
     # 商品池完整列出；即時價格只抓前 20 檔，並行批次取得，避免 20 檔
     # 逐檔等待 Yahoo timeout 累積成數分鐘。價格缺失只影響該卡，不影響整頁。
@@ -15081,8 +15303,28 @@ def web_etf(uid):
         else:
             price_html = '<div class="etf-price etf-price-muted">商品資料已列出；完整行情暫缺</div>'
         inline_detail = render_etf_inline_detail(code, meta, quote)
+        ranking_row = ranking_lookup.get(code) or {}
+        official_metrics = meta.get("official_metrics") or {}
+        asset_size = official_metrics.get("asset_size_billion")
+        asset_text = f"{float(asset_size):,.0f} 億" if asset_size is not None else "待確認"
+        performance_value = ranking_row.get("return_pct")
+        performance_text = (f"{float(performance_value):+.2f}%" if performance_value is not None else "待確認")
+        distribution_value = ranking_row.get("distribution_annualized_yield_pct")
+        distribution_observed = ranking_row.get("distribution_observed_yield_pct")
+        distribution_status = ranking_row.get("distribution_status")
+        if distribution_value is not None:
+            distribution_text = f"{float(distribution_value):.2f}%"
+        elif distribution_status == "partial" and distribution_observed is not None:
+            distribution_text = f"觀察 {float(distribution_observed):.2f}%"
+        elif distribution_status == "non_distributing":
+            distribution_text = "不適用"
+        else:
+            distribution_text = "待確認"
+        holders_value = official_metrics.get("holders")
+        holders_text = f"{int(float(holders_value)):,}" if holders_value is not None else "待確認"
         cards.append(f'''<div class="etf-row">
   <div><b>{html.escape(str(meta.get("name") or code))}</b><span class="etf-code">{html.escape(code)}</span></div>
+  <div class="etf-key-metrics"><span><em>資產規模</em><b>{html.escape(asset_text)}</b></span><span><em>績效</em><b>{html.escape(performance_text)}</b></span><span><em>{'年化殖利率' if distribution_value is not None else '殖利率'}</em><b>{html.escape(distribution_text)}</b></span><span><em>受益人次</em><b>{html.escape(holders_text)}</b></span></div>
   {price_html}
   <div class="etf-meta">上市日：{html.escape(str(meta.get("listing_date") or "待確認"))}・發行人：{html.escape(str(meta.get("issuer") or "待確認"))}</div>
   <div class="etf-meta">{html.escape(policy)}・{html.escape(maturity)}・{html.escape(str(meta.get("asset_class") or "待確認"))}</div>
@@ -15113,6 +15355,16 @@ def web_etf(uid):
 .etf-links{{margin-top:7px;font-size:13px}}
 .etf-links a{{color:var(--brass);font-weight:700}}
 .etf-empty{{color:var(--ink-soft);line-height:1.7;padding:8px 0}}
+.etf-overview-grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0 8px}}
+.etf-overview-item{{min-width:0;background:#fff;border:1px solid #e4e1d8;border-radius:12px;padding:11px 10px;box-shadow:0 3px 14px rgba(35,39,35,.04)}}
+.etf-overview-item span{{display:block;color:var(--ink-soft);font-size:11.5px;line-height:1.45}}
+.etf-overview-item b{{display:block;margin-top:4px;color:var(--ink);font-size:18px;line-height:1.25;overflow-wrap:anywhere}}
+.etf-overview-item small{{display:block;margin-top:4px;color:var(--ink-faint);font-size:10.5px;line-height:1.45;overflow-wrap:anywhere}}
+.etf-overview-note{{color:var(--ink-faint);font-size:11.5px;line-height:1.55;margin:0 2px 10px}}
+.etf-key-metrics{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin:10px 0 4px;padding:9px 0;border-top:1px solid #eee;border-bottom:1px solid #eee}}
+.etf-key-metrics span{{min-width:0;display:flex;flex-direction:column;gap:2px}}
+.etf-key-metrics em{{font-style:normal;color:var(--ink-soft);font-size:11px;line-height:1.35}}
+.etf-key-metrics b{{font-size:14px;line-height:1.35;overflow-wrap:anywhere}}
 .etf-ranking-card{{background:#fff;border:1px solid #e4e1d8;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05);max-width:100%;overflow:hidden;box-sizing:border-box}}
 .etf-ranking-head{{display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap;min-width:0}}
 .etf-ranking-head h2{{margin:0;font-size:20px;line-height:1.35}}
@@ -15142,7 +15394,7 @@ def web_etf(uid):
 .etf-ranking-more-note,.etf-ranking-empty-line{{color:var(--ink-soft);font-size:12px;line-height:1.6;padding:7px 0}}
 .etf-score-method{{margin:8px 0 12px;border:1px solid #eee9dd;border-radius:9px;padding:7px 10px;color:var(--ink-soft);font-size:11.5px;line-height:1.55;background:#fcfbf8}}
 .etf-score-method summary{{cursor:pointer;color:var(--brass);font-weight:700}}
-@media (max-width:480px){{.etf-ranking-row{{grid-template-columns:27px minmax(0,1fr);gap:0 7px}}.etf-ranking-main{{gap:5px}}.etf-ranking-name b{{font-size:16px}}.etf-ranking-score{{font-size:17px}}.etf-ranking-ranks{{gap:4px;margin-top:5px}}.etf-ranking-ranks span{{font-size:10.5px;padding:3px 6px}}.etf-ranking-numbers{{grid-template-columns:1fr;gap:1px;margin-top:5px}}.etf-ranking-comment{{font-size:12px}}}}
+@media (max-width:480px){{.etf-overview-grid{{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}}.etf-overview-item{{padding:9px 8px}}.etf-overview-item b{{font-size:16px}}.etf-key-metrics{{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 10px}}.etf-ranking-row{{grid-template-columns:27px minmax(0,1fr);gap:0 7px}}.etf-ranking-main{{gap:5px}}.etf-ranking-name b{{font-size:16px}}.etf-ranking-score{{font-size:17px}}.etf-ranking-ranks{{gap:4px;margin-top:5px}}.etf-ranking-ranks span{{font-size:10.5px;padding:3px 6px}}.etf-ranking-numbers{{grid-template-columns:1fr;gap:1px;margin-top:5px}}.etf-ranking-comment{{font-size:12px}}}}
 .etf-inline-detail{{margin-top:10px;border-top:1px solid #eee;padding-top:8px}}
 .etf-inline-detail summary{{cursor:pointer;color:var(--brass);font-size:13px;font-weight:700;padding:4px 0}}
 .etf-inline-detail-body{{margin-top:8px;padding:10px 11px;background:#faf9f5;border:1px solid #eee9dd;border-radius:10px}}
@@ -15162,6 +15414,7 @@ def web_etf(uid):
 </div>
 <div class="etf-hero"><div class="eyebrow">台股 BOT</div><h1>ETF 專區</h1><p class="etf-note">官方 TWSE 上市清單目前載入 {len(catalog)} 檔；依名稱／標的關鍵字作第一版策略分組。ETF 不套用個股黑馬、雷達或籌碼超人邏輯，未知配息政策顯示為待確認。</p></div>
 <div class="etf-tabs">{tabs}</div>
+{overview_html}
 {ranking_html}
 <section class="etf-card"><h2>{html.escape(selected_label)}（{len(products)} 檔）</h2><div class="etf-note">完整列出官方已上市商品；每檔詳情都直接放在卡片下方，預設收合，點擊「查看 ETF 詳情」即可展開。分類是可解釋規則候選，不代表官方策略認證。</div>{"".join(cards)}</section>'''
     return respond_page("ETF 專區", body, "screener")
@@ -16039,7 +16292,11 @@ def _load_persisted_screener_snapshot(mode):
         return None
 
 
-def _load_recent_live_radar_snapshot(max_age_seconds=90):
+RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS = 10 * 60
+RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS = RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS
+
+
+def _load_recent_live_radar_snapshot(max_age_seconds=RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS):
     """讀取獨立盤中雷達快照；不把它混進收盤 radar 快照。"""
     snapshot = _load_persisted_screener_snapshot("radar_live")
     if not snapshot:
@@ -16445,7 +16702,8 @@ def _screener_recent_snapshot(mode):
     """優先取 process 記憶體，再取共享持久化快照；回傳可明示來源日的資料。"""
     mode = str(mode or "").strip()
     cached = _screener_cache.get(mode)
-    if cached and _screener_snapshot_is_recent(cached, 3):
+    if (cached and _screener_snapshot_is_recent(cached, 3) and
+            _radar_live_cache_is_fresh(cached)):
         return cached, "記憶體快照"
     persisted = _load_persisted_screener_snapshot(mode)
     if persisted and _screener_snapshot_is_recent(persisted, 3):
@@ -16508,6 +16766,38 @@ def _start_screener_background_refresh(mode, intraday=False,
     threading.Thread(target=worker, name="screener-%s-refresh" % mode,
                      daemon=True).start()
     return True
+
+
+def _do_scheduled_radar_live_snapshot():
+    """排程用盤中雷達 producer；結果只寫 radar_live，不覆蓋收盤 radar。"""
+    if not _is_taiwan_intraday_window():
+        return "目前非台股一般盤中時段，未抓取盤中雷達快照"
+    with _SCREENER_REFRESH_LOCK:
+        if _SCREENER_REFRESH_RUNNING.get("radar"):
+            return "已有雷達背景掃描正在執行，本次略過"
+        _SCREENER_REFRESH_RUNNING["radar"] = True
+    try:
+        rows, skipped, _momentum = compute_screener_rows(
+            "radar", persist=False, force_refresh=True,
+            radar_deep_limit=RADAR_SCHEDULED_DEEP_SCAN_LIMIT, persist_live=True)
+        return (f"已完成盤中雷達快照：掃描 {len(rows) + int(skipped or 0)} 檔候選、"
+                f"輸出 {len(rows)} 檔；有效期 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘")
+    finally:
+        with _SCREENER_REFRESH_LOCK:
+            _SCREENER_REFRESH_RUNNING["radar"] = False
+
+
+@app.route("/cron/radar-live", methods=["POST", "GET"])
+def cron_radar_live():
+    """Render Cron 每 10 分鐘呼叫；只在盤中背景建立 radar_live 快照。"""
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+    if not _is_taiwan_intraday_window():
+        return "目前非台股一般盤中時段，未啟動盤中雷達快照。", 200
+    if _load_recent_live_radar_snapshot():
+        return (f"最近 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘已有盤中雷達快照，本次略過。", 200)
+    return run_in_background("盤中雷達快照", _do_scheduled_radar_live_snapshot), 200
 
 
 def _screener_building_fragment(mode, source_date=None):
@@ -16853,8 +17143,17 @@ def render_screener_fast_summary(mode):
     cached = _screener_cache.get(mode)
     cached_rows = []
     persisted = None
-    radar_live_preview = mode == "radar"
-    if not radar_live_preview:
+    radar_snapshot = None
+    if mode == "radar":
+        radar_snapshot = _load_recent_live_radar_snapshot(
+            max_age_seconds=RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS)
+    if radar_snapshot:
+        # 盤中快照即使 rows 為空也代表掃描已完成；不能因零結果回退舊歷史。
+        persisted = radar_snapshot
+    radar_live_preview = mode == "radar" and not radar_snapshot
+    if radar_snapshot:
+        cached_rows = list(radar_snapshot.get("rows") or [])[:5]
+    elif not radar_live_preview:
         if cached and time.time() - cached.get("at", 0) < SCREENER_CACHE_SECONDS:
             cached_rows = list(cached.get("rows") or [])[:5]
         if not cached_rows:
@@ -16868,11 +17167,15 @@ def render_screener_fast_summary(mode):
         source_label = "即時全市場掃描啟動中"
         source_date = f"行情請求時間 {taiwan_now().strftime('%Y-%m-%d %H:%M:%S')}"
     elif cached_rows or persisted is not None:
-        source_label = ("目前快取結果" if not persisted else
-                        "warmup 完整快照（最近資料）")
-        source_date = (str(cached.get("source_date") or "未標日期")
-                       if not persisted else
-                       str(persisted.get("source_date") or "未標日期"))
+        source_label = ("盤中定時快照" if radar_snapshot else
+                        ("目前快取結果" if not persisted else
+                         "warmup 完整快照（最近資料）"))
+        source_date = (str(radar_snapshot.get("scan_finished_at") or
+                           radar_snapshot.get("source_date") or "未標日期")
+                       if radar_snapshot else
+                       (str(cached.get("source_date") or "未標日期")
+                        if not persisted else
+                        str(persisted.get("source_date") or "未標日期")))
         for i, row in enumerate(cached_rows):
             rank = int(row.get("rank") or i + 1)
             name = html.escape(str(row.get("name") or row.get("code") or ""))
@@ -16904,6 +17207,23 @@ def render_screener_fast_summary(mode):
     if not rows:
         rows = ['<div class="position-fast-empty">目前沒有可先顯示的快照；完整選股分析仍在建立中。</div>']
 
+    if radar_snapshot:
+        state_title = "已顯示最近一次盤中雷達快照"
+        state_note = (f"每 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘由背景排程更新；"
+                      "本次點擊直接讀快照，不重新掃描全市場。")
+        preview_title = "盤中快照前 5 名"
+        preview_note = "下一輪排程完成後自動更新"
+    elif radar_live_preview:
+        state_title = "即時雷達全市場掃描中"
+        state_note = "正在重新取得全市場最新行情與雷達訊號；完成後才列出本次結果。"
+        preview_title = "即時掃描完成後顯示結果"
+        preview_note = "不展示舊報酬率"
+    else:
+        state_title = f"完整{label}分析載入中"
+        state_note = "目前先顯示前 5 名預覽；系統正在補上完整清單、評分、型態、篩選、排序與產業分布。"
+        preview_title = "前 5 名預覽"
+        preview_note = "不是完整選股結果"
+
     style = """<style>
 .screener-fast-card{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}
 .screener-fast-card h2{margin:0 0 5px;font-size:20px}
@@ -16931,12 +17251,12 @@ def render_screener_fast_summary(mode):
   <div class="screener-fast-note">{source_label}・資料日：{html.escape(source_date)}</div>
   <div class="screener-fast-state">
     <span class="screener-fast-state-mark" aria-hidden="true"></span>
-    <div><b>{'即時雷達全市場掃描中' if radar_live_preview else f'完整{label}分析載入中'}</b>
-      <span>{'正在重新取得全市場最新行情與雷達訊號；此階段不展示舊報酬率，完成後才列出本次即時結果。' if radar_live_preview else '目前先顯示前 5 名預覽；系統正在補上完整清單、評分、型態、篩選、排序與產業分布。'}</span>
+    <div><b>{state_title}</b>
+      <span>{state_note}</span>
     </div>
   </div>
   <div class="screener-fast-preview">
-    <div class="screener-fast-preview-title"><b>{'即時掃描完成後顯示結果' if radar_live_preview else '前 5 名預覽'}</b><span>{'不展示舊報酬率' if radar_live_preview else '不是完整選股結果'}</span></div>
+    <div class="screener-fast-preview-title"><b>{preview_title}</b><span>{preview_note}</span></div>
     {''.join(rows)}
   </div>
   <div class="screener-fast-features">
@@ -17111,9 +17431,10 @@ def web_screener(uid):
     if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1" and mode != "review":
         return respond_page("選股台", render_screener_fast_summary(mode), "screener")
 
-    # 完整片段（包含黑馬／雷達預覽後的 detail=1）也必須先讀快照，
-    # 不可因為第二次 fetch 又在 webhook/request 內同步掃描全市場。
-    # 有最近快照就立即呈現並明示資料日；沒有就回狀態，交由背景單例刷新。
+    # 完整片段（包含黑馬／雷達預覽後的 detail=1）一律先讀快照，
+    # 不可因為使用者再次點擊或前端輪詢，又在 HTTP request 內同步掃描全市場。
+    # 雷達盤中優先讀最近 10 分鐘定時 radar_live；只有完全沒有任何快照時，
+    # 才做一次冷啟動背景工作，之後由 Render Cron 固定更新。
     snapshot_rows = None
     snapshot_skipped = 0
     snapshot_momentum = {}
@@ -17121,15 +17442,68 @@ def web_screener(uid):
     radar_diagnostics = {}
     live_radar_request = (mode == "radar" and detail_request)
     if (request.method == "GET" and wants_fragment()
-            and mode in ("blackhorse", "radar") and not live_radar_request):
-        recent, snapshot_source = _screener_recent_snapshot(mode)
-        if recent is None:
-            _start_screener_background_refresh(mode)
-            return respond_page("選股台", _screener_building_fragment(mode), "screener")
-        snapshot_rows = list(recent.get("rows") or [])
-        snapshot_skipped = recent.get("skipped", 0)
-        snapshot_momentum = recent.get("momentum") or {}
-        radar_diagnostics = recent.get("radar_diagnostics") or {}
+            and mode in ("blackhorse", "radar")):
+        if mode == "radar":
+            live_snapshot = _load_recent_live_radar_snapshot(
+                max_age_seconds=RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS)
+            if live_snapshot:
+                live_meta = live_snapshot.get("source_meta") or {}
+                live_cache = {
+                    "at": time.time(),
+                    "rows": live_snapshot.get("rows") or [],
+                    "radar_live": True,
+                    "skipped": live_snapshot.get("skipped", 0),
+                    "momentum": live_snapshot.get("momentum") or {},
+                    "source_date": live_snapshot.get("source_date"),
+                    "scan_universe_count": live_snapshot.get("scan_universe_count") or live_meta.get("scan_universe_count"),
+                    "scan_finished_at": live_snapshot.get("scan_finished_at") or live_meta.get("scan_finished_at"),
+                    "radar_diagnostics": live_snapshot.get("radar_diagnostics") or live_meta.get("radar_diagnostics") or {},
+                }
+                _screener_cache["radar"] = live_cache
+                snapshot_source = "盤中定時快照"
+                snapshot_rows = list(live_cache.get("rows") or [])
+                snapshot_skipped = live_cache.get("skipped", 0)
+                snapshot_momentum = live_cache.get("momentum") or {}
+                radar_diagnostics = live_cache.get("radar_diagnostics") or {}
+            else:
+                # 定時快照尚未到下一輪時，先顯示最近收盤結果，但明示不是盤中即時資料。
+                recent, snapshot_source = _screener_recent_snapshot("radar")
+                if recent is not None:
+                    recent_cache = {
+                        "at": time.time(),
+                        "rows": recent.get("rows") or [],
+                        "skipped": recent.get("skipped", 0),
+                        "momentum": recent.get("momentum") or {},
+                        "source_date": recent.get("source_date"),
+                        "radar_diagnostics": recent.get("radar_diagnostics") or {},
+                    }
+                    _screener_cache["radar"] = recent_cache
+                    snapshot_rows = list(recent_cache.get("rows") or [])
+                    snapshot_skipped = recent_cache.get("skipped", 0)
+                    snapshot_momentum = recent_cache.get("momentum") or {}
+                    radar_diagnostics = recent_cache.get("radar_diagnostics") or {}
+                else:
+                    started = _start_screener_background_refresh(
+                        "radar", intraday=True,
+                        radar_deep_limit=RADAR_DEEP_SCAN_LIMIT)
+                    state = ("已啟動一次冷啟動背景掃描；完成後本頁會自動顯示結果。"
+                             if started else "已有背景掃描正在處理；完成後本頁會自動顯示結果。")
+                    return respond_page("選股台", f'''<section class="screener-fast-card" data-screener-pending="1">
+  <div class="screener-fast-state"><span class="screener-fast-state-mark"></span><div>
+    <b>等待盤中雷達定時快照</b>
+    <div class="screener-fast-note">{html.escape(state)}之後由每 10 分鐘排程更新；不在網頁請求中等待全市場掃描。</div>
+  </div></div>
+  <div class="screener-fast-note">資料源失敗時會保留真實錯誤狀態，不用空白或虛構數字代替。</div>
+</section>''', "screener")
+        else:
+            recent, snapshot_source = _screener_recent_snapshot(mode)
+            if recent is None:
+                _start_screener_background_refresh(mode)
+                return respond_page("選股台", _screener_building_fragment(mode), "screener")
+            snapshot_rows = list(recent.get("rows") or [])
+            snapshot_skipped = recent.get("skipped", 0)
+            snapshot_momentum = recent.get("momentum") or {}
+            radar_diagnostics = recent.get("radar_diagnostics") or {}
 
     limit = request.args.get("limit", "20")
     limit = int(limit) if limit.isdigit() and int(limit) in (10, 20, 50) else 20
@@ -17160,9 +17534,16 @@ def web_screener(uid):
         rows = snapshot_rows
         skipped_liquidity = snapshot_skipped
         momentum = snapshot_momentum
-        source_date = (_screener_cache.get(mode) or {}).get("source_date")
-        source_note = (f'資料來源：{snapshot_source or "最近完整快照"}，資料日 '
-                       f'{source_date or "未標日期"}；最新資料若尚未完成，背景會更新')
+        current_cache = _screener_cache.get(mode) or {}
+        source_date = current_cache.get("source_date")
+        if mode == "radar" and snapshot_source == "盤中定時快照":
+            finished_at = current_cache.get("scan_finished_at") or "未標時間"
+            source_note = (f'資料來源：盤中定時快照（每 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘更新）；'
+                           f'掃描完成 {str(finished_at).replace("T", " ")[:19]}；'
+                           f'法人資料日 {source_date or "未標日期"}')
+        else:
+            source_note = (f'資料來源：{snapshot_source or "最近完整快照"}，資料日 '
+                           f'{source_date or "未標日期"}；最新資料若尚未完成，背景會更新')
     else:
         if live_radar_request:
             # 盤中 detail 不能把全市場行情與深度技術計算放在 HTTP request 內；
@@ -17170,12 +17551,14 @@ def web_screener(uid):
             # 由單例背景 worker 直接更新記憶體快取，前端以 detail 輪詢取得。
             radar_cache = _screener_cache.get("radar") or {}
             if "_load_recent_live_radar_snapshot" in globals():
-                live_snapshot = _load_recent_live_radar_snapshot()
+                live_snapshot = _load_recent_live_radar_snapshot(
+                    max_age_seconds=RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS)
                 if live_snapshot:
                     live_meta = live_snapshot.get("source_meta") or {}
                     radar_cache = {
                         "at": time.time(),
                         "rows": live_snapshot.get("rows") or [],
+                        "radar_live": True,
                         "skipped": live_snapshot.get("skipped", 0),
                         "momentum": live_snapshot.get("momentum") or {},
                         "source_date": live_snapshot.get("source_date"),
@@ -17191,7 +17574,7 @@ def web_screener(uid):
                     finished_dt = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00"))
                     if finished_dt.tzinfo is None:
                         finished_dt = finished_dt.replace(tzinfo=TW_TZ)
-                    scan_is_recent = (taiwan_now() - finished_dt.astimezone(TW_TZ)).total_seconds() < 90
+                    scan_is_recent = (taiwan_now() - finished_dt.astimezone(TW_TZ)).total_seconds() <= RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS
                 except (TypeError, ValueError):
                     scan_is_recent = False
             if not scan_is_recent:
