@@ -6444,11 +6444,28 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
             state_reason = "；".join(reason_details[:3]) or "目前資料不足以形成完整判讀"
         if invalid_reasons:
             reason_details = invalid_reasons + reason_details
+
+        # 把「法人方向反轉」轉成使用者一眼可辨識的買賣流程；
+        # event_type 與各法人 investor_changes 都來自已保存的 T86，不自行推測。
+        event_type = str(inst_item.get("event_type") or "")
+        if event_type == "賣轉買" or any("轉買" in str(x) for x in changes):
+            direction_flow, direction_flow_label = "sell_to_buy", "賣轉買"
+        elif event_type == "買轉賣" or any("轉賣" in str(x) for x in changes):
+            direction_flow, direction_flow_label = "buy_to_sell", "買轉賣"
+        elif current_total > 0:
+            direction_flow, direction_flow_label = "buying_strength", "買方增強"
+        elif current_total < 0:
+            direction_flow, direction_flow_label = "selling_strength", "賣方增強"
+        else:
+            direction_flow, direction_flow_label = "unknown", "方向不明"
+
         items.append({
             "code": code,
             "name": inst_item.get("name") or stock_display_name(code, fallback=code),
             "direction": direction,
             "direction_label": direction_label,
+            "direction_flow": direction_flow,
+            "direction_flow_label": direction_flow_label,
             "state": state,
             "state_label": state_label,
             "state_reason": state_reason,
@@ -9717,6 +9734,20 @@ def build_turning_observation_line_message(user_id, base_url=None):
         for item in group[:3]:
             state = str(item.get("state") or state)
             state_text = "已確認" if state == "confirmed" else "觀察中" if state == "observing" else "已失效"
+            flow_label = str(item.get("direction_flow_label") or "")
+            if flow_label not in {"賣轉買", "買轉賣", "買方增強", "賣方增強"}:
+                legacy_label = str(item.get("direction_label") or "")
+                event_type_fallback = str(item.get("event_type") or "")
+                if legacy_label == "賣轉買" or event_type_fallback == "賣轉買" or "轉買" in event_type_fallback:
+                    flow_label = "賣轉買"
+                elif legacy_label == "買轉賣" or event_type_fallback == "買轉賣" or "轉賣" in event_type_fallback:
+                    flow_label = "買轉賣"
+                elif item.get("direction") == "up":
+                    flow_label = "買方增強"
+                elif item.get("direction") == "down":
+                    flow_label = "賣方增強"
+                else:
+                    flow_label = "方向不明"
             details = [str(value) for value in
                        (item.get("reason_details") or item.get("reasons") or [])
                        if str(value).strip()]
@@ -9745,7 +9776,7 @@ def build_turning_observation_line_message(user_id, base_url=None):
                               f"符合 {score}/5 個條件，"
                               f"{'已達確認門檻' if state == 'confirmed' else '尚未達確認門檻'}")
             contents.append({"type": "text",
-                             "text": f"・{item.get('name') or item.get('code')}（{item.get('code')}）｜{state_text}\n"
+                             "text": f"・{item.get('name') or item.get('code')}（{item.get('code')}）｜{flow_label}｜{state_text}\n"
                                       f"  判讀：{conclusion}\n"
                                       f"  " + "\n  ".join(facts),
                               "size": "sm", "color": "#454C55", "wrap": True,
@@ -18534,16 +18565,31 @@ def render_turning_observation_web_body(result, status_note=None):
             pct_text = f"{float(pct):+.2f}%" if pct is not None else "漲跌資料不足"
             state = str(item.get("state") or "observing")
             direction = str(item.get("direction") or "neutral")
+            flow_key = str(item.get("direction_flow") or "")
+            flow_label = str(item.get("direction_flow_label") or "")
+            if flow_key not in {"sell_to_buy", "buy_to_sell", "buying_strength", "selling_strength"}:
+                legacy_label = str(item.get("direction_label") or "")
+                event_type_fallback = str(item.get("event_type") or "")
+                if legacy_label == "賣轉買" or event_type_fallback == "賣轉買" or "轉買" in event_type_fallback:
+                    flow_key, flow_label = "sell_to_buy", "賣轉買"
+                elif legacy_label == "買轉賣" or event_type_fallback == "買轉賣" or "轉賣" in event_type_fallback:
+                    flow_key, flow_label = "buy_to_sell", "買轉賣"
+                elif direction == "up":
+                    flow_key, flow_label = "buying_strength", "買方增強"
+                elif direction == "down":
+                    flow_key, flow_label = "selling_strength", "賣方增強"
+                else:
+                    flow_key, flow_label = "unknown", "方向不明"
             if state == "invalid":
                 state_text = "已失效"
                 conclusion_label = "為何失效"
-                conclusion = str(item.get("state_reason") or "失效原因資料不足")
+                conclusion = f"{flow_label}；{item.get('state_reason') or '失效原因資料不足'}"
             else:
                 state_text = "已確認" if state == "confirmed" else "觀察中"
                 conclusion_label = "目前判讀"
                 event = str(item.get("event_type") or "法人方向變化")
                 score = int(item.get("score") or 0)
-                conclusion = (f"{event}；目前符合 {score}/5 個轉折條件，"
+                conclusion = (f"{flow_label}；{event}；目前符合 {score}/5 個轉折條件，"
                               f"{'已達確認門檻' if state == 'confirmed' else '尚未達確認門檻'}")
             details = [str(value) for value in
                        (item.get("reason_details") or item.get("reasons") or [])
@@ -18568,7 +18614,7 @@ def render_turning_observation_web_body(result, status_note=None):
                           else str(raw_resistance))
             return f'''<div class="turning-row turning-state-{esc(state)}">
   <div class="turning-row-head"><b>#{rank} {esc(str(item.get("name") or item.get("code")))}</b>
-    <span>{esc(str(item.get("code") or ""))}・<strong>{esc(state_text)}</strong></span></div>
+    <span>{esc(str(item.get("code") or ""))}・<b class="turning-flow turning-flow-{esc(flow_key)}">{esc(flow_label)}</b>・<strong>{esc(state_text)}</strong></span></div>
   <div class="turning-price">{close_text} <span>{pct_text}</span></div>
   <div class="turning-conclusion"><b>{esc(conclusion_label)}</b><span>{esc(conclusion)}</span></div>
   <div class="turning-facts">
@@ -18608,6 +18654,11 @@ def render_turning_observation_web_body(result, status_note=None):
 .turning-section>p{{margin:0 0 4px;color:var(--ink-soft);font-size:12px;line-height:1.5}}
 .turning-row{{padding:13px 0;border-top:1px solid #eee;line-height:1.5}}
 .turning-row-head{{display:flex;justify-content:space-between;gap:8px;align-items:baseline}}
+.turning-flow{{font-size:13px;font-weight:800;white-space:nowrap}}
+.turning-flow-sell_to_buy{{color:#A82A20}}
+.turning-flow-buy_to_sell{{color:#155C42}}
+.turning-flow-buying_strength{{color:#A82A20}}
+.turning-flow-selling_strength{{color:#155C42}}
 .turning-row-head b{{font-size:17px;overflow-wrap:anywhere}}
 .turning-row-head span{{color:var(--ink-soft);font-size:12px;white-space:nowrap}}
 .turning-row-head strong{{color:var(--brass)}}
