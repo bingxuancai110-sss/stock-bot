@@ -1063,6 +1063,34 @@ def init_db():
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_positions_user ON positions (user_id)
         ''')
+        # 持股操作日誌：獨立於目前庫存與已實現損益，保留每次加碼／減碼事件。
+        # shares_delta 正數代表加碼，負數代表減碼；成交價與備註由使用者輸入或由既有交易流程帶入。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS position_change_logs (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                action TEXT NOT NULL,
+                shares_delta INTEGER NOT NULL,
+                trade_price REAL,
+                trade_date DATE NOT NULL DEFAULT CURRENT_DATE,
+                note TEXT,
+                source TEXT NOT NULL DEFAULT 'web',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT position_change_logs_action_ck
+                    CHECK (action IN ('add', 'reduce')),
+                CONSTRAINT position_change_logs_shares_ck
+                    CHECK (shares_delta <> 0)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_position_change_logs_user_date
+            ON position_change_logs (user_id, trade_date DESC, id DESC)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_position_change_logs_user_code
+            ON position_change_logs (user_id, code, trade_date DESC, id DESC)
+        ''')
         # 問卷與門檻設定。前四題必填，其餘可略過，所以全部允許 NULL。
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_profile (
@@ -2442,6 +2470,15 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
             (str(user_id).strip(), str(code).strip(), int(shares),
              float(cost), bought_on or None, note or None),
         )
+        cursor.execute(
+            """
+            INSERT INTO position_change_logs
+                (user_id, code, action, shares_delta, trade_price, trade_date, note, source)
+            VALUES (%s, %s, 'add', %s, %s, %s, %s, 'web')
+            """,
+            (str(user_id).strip(), str(code).strip(), int(shares), float(cost),
+             bought_on or taiwan_today(), note or None),
+        )
         conn.commit()
         cursor.close()
         clear_leaderboard_cache()
@@ -2621,6 +2658,15 @@ def sell_position(user_id, pos_id, sell_shares,
             (uid, str(code).strip(), sell_shares, lot_cost, sell_price,
              realized_pl, realized_pct, bought_on or None, taiwan_today(), fee, tax),
         )
+        cursor.execute(
+            """
+            INSERT INTO position_change_logs
+                (user_id, code, action, shares_delta, trade_price, trade_date, note, source)
+            VALUES (%s, %s, 'reduce', %s, %s, %s, %s, 'web')
+            """,
+            (uid, str(code).strip(), -int(sell_shares), float(sell_price),
+             taiwan_today(), "賣出"),
+        )
         conn.commit()
         cursor.close()
         clear_leaderboard_cache()
@@ -2726,8 +2772,13 @@ def get_trade_filters(user_id):
             (str(user_id).strip(),))
         months = [r[0] for r in cursor.fetchall()]
         cursor.execute(
-            "SELECT DISTINCT code FROM realized_trades WHERE user_id = %s ORDER BY code",
-            (str(user_id).strip(),))
+            """
+            SELECT code FROM realized_trades WHERE user_id = %s
+            UNION
+            SELECT code FROM position_change_logs WHERE user_id = %s
+            ORDER BY code
+            """,
+            (str(user_id).strip(), str(user_id).strip()))
         codes = [r[0] for r in cursor.fetchall()]
         cursor.close()
         return months, codes
@@ -2771,6 +2822,176 @@ def summarize_trades(trades):
         "avg_hold": (sum(hold) / len(hold)) if hold else None,
         "costs": costs,
     }
+
+
+def get_position_change_logs(user_id, limit=5000, code=None, trade_date=None):
+    """讀取使用者的加碼／減碼日誌；缺少成交價時維持 None，不補猜價格。"""
+    where, params = ["user_id = %s"], [str(user_id).strip()]
+    if code:
+        where.append("code = %s")
+        params.append(str(code).strip())
+    if trade_date:
+        where.append("trade_date = %s")
+        params.append(trade_date)
+    params.append(int(limit))
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT id, code, action, shares_delta, trade_price,
+                   trade_date, note, created_at
+            FROM position_change_logs
+            WHERE {' AND '.join(where)}
+            ORDER BY trade_date DESC NULLS LAST, id DESC
+            LIMIT %s
+            """, tuple(params))
+        rows = cur.fetchall()
+        cur.close()
+        return [{
+            "id": r[0], "code": str(r[1]).strip(), "action": r[2],
+            "shares_delta": int(r[3]), "trade_price": float(r[4]) if r[4] is not None else None,
+            "trade_date": r[5], "note": r[6], "created_at": r[7],
+        } for r in rows]
+    except Exception as exc:
+        print(f"❌ 讀取持股操作日誌失敗: {exc}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def _position_change_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    try:
+        return date.fromisoformat(text[:10]) if text else None
+    except ValueError:
+        return None
+
+
+def enrich_position_change_logs(logs, current_positions, price_map, total_value):
+    """以目前庫存反推功能上線前的基準股數，再逐筆重建加減碼前後狀態。
+
+    這樣既有使用者不會因為功能上線前沒有歷史日誌，而把第一筆新日誌誤標成從 0 股開始。
+    """
+    current_by_code = {
+        str(p.get("code")).strip(): int(p.get("shares") or 0)
+        for p in (current_positions or []) if p.get("code")
+    }
+    all_delta = {}
+    for log in logs or []:
+        code = str(log.get("code") or "").strip()
+        all_delta[code] = all_delta.get(code, 0) + int(log.get("shares_delta") or 0)
+    state = {code: current_by_code.get(code, 0) - all_delta.get(code, 0)
+             for code in set(current_by_code) | set(all_delta)}
+    chronological = sorted(
+        logs or [], key=lambda item: (_position_change_date(item.get("trade_date")) or date.min,
+                                      int(item.get("id") or 0)))
+    enriched_by_id = {}
+    for log in chronological:
+        code = str(log.get("code") or "").strip()
+        delta = int(log.get("shares_delta") or 0)
+        before = int(state.get(code, 0))
+        after = before + delta
+        trade_price = log.get("trade_price")
+        event_value = (abs(delta) * float(trade_price)
+                       if trade_price is not None else None)
+        current_price = (price_map.get(code) or {}).get("close") if price_map else None
+        current_shares = current_by_code.get(code, 0)
+        current_weight = ((float(current_price) * current_shares / total_value * 100)
+                          if current_price is not None and total_value > 0 else None)
+        event_weight = ((delta * float(trade_price) / total_value * 100)
+                        if trade_price is not None and total_value > 0 else None)
+        change_pct = (delta / before * 100) if before > 0 else None
+        item = dict(log)
+        item.update({
+            "shares_before": before, "shares_after": after,
+            "change_pct": change_pct, "event_value": event_value,
+            "current_weight": current_weight, "event_weight": event_weight,
+        })
+        enriched_by_id[item.get("id")] = item
+        state[code] = after
+    return [enriched_by_id.get(log.get("id"), log) for log in logs or []]
+
+
+def render_position_change_journal(user_id, current_positions=None, price_map=None,
+                                  inst_data=None, logs=None, trade_date=None,
+                                  display_limit=100):
+    """呈現操作日報；總資產口徑是目前已登錄持股的最新可得市值，不含未輸入的現金／其他資產。"""
+    all_logs = logs if logs is not None else get_position_change_logs(user_id, limit=5000)
+    if not all_logs:
+        return ""
+    current_positions = (current_positions if current_positions is not None
+                         else merge_positions(get_positions(user_id)))
+    codes = sorted({str(p.get("code")).strip() for p in current_positions if p.get("code")} |
+                   {str(log.get("code")).strip() for log in all_logs if log.get("code")})
+    if price_map is None:
+        price_map = get_realtime_stocks_bulk(codes, rng="1d") if codes else {}
+    total_value = sum(
+        float((price_map.get(p.get("code")) or {}).get("close") or 0) * int(p.get("shares") or 0)
+        for p in current_positions if price_map.get(p.get("code"))
+    )
+    enriched = enrich_position_change_logs(all_logs, current_positions, price_map, total_value)
+    selected_date = _position_change_date(trade_date) if trade_date else None
+    if selected_date:
+        enriched = [log for log in enriched
+                    if _position_change_date(log.get("trade_date")) == selected_date]
+    enriched = enriched[:max(1, int(display_limit))]
+    if not enriched:
+        label = selected_date.strftime("%Y/%m/%d") if selected_date else "這個範圍"
+        return (f'<section class="position-journal"><div class="position-journal-head">'
+                f'<h2>操作日報</h2><small>{html.escape(label)}<br>沒有操作紀錄</small></div>'
+                f'<div class="position-journal-empty">這個日期範圍內沒有加碼／減碼紀錄。</div></section>')
+
+    inst_data = inst_data or {}
+    grouped = {}
+    for log in enriched:
+        grouped.setdefault(_position_change_date(log.get("trade_date")), []).append(log)
+
+    day_sections = []
+    for day, day_logs in grouped.items():
+        day_text = day.strftime("%Y/%m/%d") if day else "日期待確認"
+        row_parts = []
+        for log in day_logs:
+            code = str(log.get("code") or "")
+            name = html.escape(str(stock_display_name(code, inst_data)))
+            action = "加碼" if log.get("action") == "add" else "減碼"
+            action_cls = "add" if action == "加碼" else "reduce"
+            delta = int(log.get("shares_delta") or 0)
+            delta_text = f"{delta:+,} 股"
+            delta_class = "up" if delta > 0 else "down"
+            before = int(log.get("shares_before") or 0)
+            after = int(log.get("shares_after") or 0)
+            change_pct = log.get("change_pct")
+            change_text = (f"{change_pct:+.2f}%" if change_pct is not None else
+                           ("新增" if before == 0 and delta > 0 else "待確認"))
+            weight = log.get("current_weight")
+            weight_text = f"{weight:.2f}%" if weight is not None else "待確認"
+            event_weight = log.get("event_weight")
+            event_weight_text = (f"本次影響 {event_weight:+.2f}%"
+                                 if event_weight is not None else "本次占比待確認")
+            price = log.get("trade_price")
+            price_text = f"成交／成本 {price:,.2f}" if price is not None else "成交價待確認"
+            note = html.escape(str(log.get("note") or ""))
+            note_html = f'<small>{note}</small>' if note else ''
+            row_parts.append(f'''<div class="position-journal-row">
+  <div class="position-journal-name"><span class="position-journal-badge {action_cls}">{action}</span><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
+  <div class="position-journal-cell"><small>持股變動</small><b class="{delta_class}">{delta_text}</b><small>{before:,} → {after:,} 股</small></div>
+  <div class="position-journal-cell"><small>變動幅度</small><b>{html.escape(change_text)}</b><small>相對操作前</small></div>
+  <div class="position-journal-cell"><small>目前權重</small><b>{html.escape(weight_text)}</b><small>{html.escape(event_weight_text)}</small>{note_html}</div>
+</div>''')
+        day_sections.append(f'<div class="position-journal-day">{day_text}</div>{"".join(row_parts)}')
+
+    filter_text = (selected_date.strftime("%Y/%m/%d") if selected_date else "全部日期")
+    return f'''<section class="position-journal">
+  <div class="position-journal-head"><h2>操作日報</h2><small>{len(enriched)} 筆操作<br>{html.escape(filter_text)}</small></div>
+  <div class="position-journal-note">記錄加碼／減碼後的持股變化。<b>目前權重</b>＝最新可得價格 × 目前持股 ÷ 目前持股總市值；未輸入的現金與其他資產不會被假設加入分母。</div>
+  {"".join(day_sections)}
+  <div class="position-journal-foot">本次影響是以成交／成本價 × 股數變動估算，占目前已登錄持股總市值；不是個人化買賣建議。價格若查無有效資料，相關欄位維持待確認。</div>
+</section>'''
 
 
 def save_portfolio_snapshot(user_id, total_value, total_cost, taiex_close):
@@ -10900,6 +11121,33 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
   .realized-collapse[open]>summary::before{content:'−'}
   .realized-collapse>summary small{margin-left:auto;color:var(--ink-faint);font-size:12px;font-weight:400}
   .realized-body{padding:2px 0 14px}
+  .position-journal{margin:22px 0;border:1px solid #D9D5C9;border-radius:12px;background:#FFFDF8;overflow:hidden}
+  .position-journal-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:15px 15px 11px;border-bottom:1px solid #E8E3D8}
+  .position-journal-head h2{margin:0;font-size:18px}
+  .position-journal-head small{color:var(--ink-faint);font-size:11.5px;line-height:1.5;text-align:right}
+  .position-journal-note{padding:9px 15px;background:#F7F4EC;color:var(--ink-soft);font-size:11.5px;line-height:1.6}
+  .position-journal-day{padding:10px 15px 4px;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}
+  .position-journal-row{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:9px;align-items:center;padding:12px 15px;border-top:1px solid #EEEAE1}
+  .position-journal-name{min-width:0}
+  .position-journal-name b{display:block;font-size:15px;overflow-wrap:anywhere}
+  .position-journal-name small{display:block;color:var(--ink-soft);font-size:11px;margin-top:2px}
+  .position-journal-cell{min-width:0;color:var(--ink-soft);font-size:11px;line-height:1.45}
+  .position-journal-cell b{display:block;color:var(--ink);font-size:14px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+  .position-journal-cell small{display:block;color:var(--ink-faint);font-size:10.5px;overflow-wrap:anywhere}
+  .position-journal-badge{display:inline-block;padding:3px 7px;border-radius:999px;font-size:11px;font-weight:700;line-height:1.25}
+  .position-journal-badge.add{background:#FCE9E6;color:var(--up)}
+  .position-journal-badge.reduce{background:#E8F2EA;color:var(--down)}
+  .position-journal-foot{padding:10px 15px 13px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}
+  .position-journal-empty{padding:14px 15px;color:var(--ink-soft);font-size:12.5px}
+  @media(max-width:640px){
+    .position-journal-head{padding:13px 12px 10px}
+    .position-journal-head h2{font-size:17px}
+    .position-journal-head small{text-align:right;font-size:10.5px}
+    .position-journal-row{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:9px 10px;padding:12px}
+    .position-journal-name{grid-column:1/-1}
+    .position-journal-cell b{font-size:13px}
+    .position-journal-note,.position-journal-day,.position-journal-foot{padding-left:12px;padding-right:12px}
+  }
 
 .num{font-variant-numeric:tabular-nums;
   font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
@@ -12361,8 +12609,10 @@ def web_positions(uid):
                     bf = 0.0
                 if bf > 0:
                     cost = (cost * shares + bf) / shares
+                note = (request.form.get("position_note") or "").strip()[:200]
                 ok = add_position(uid, code, shares, cost,
-                                  request.form.get("bought_on") or None)
+                                  request.form.get("bought_on") or None,
+                                  note=note or None)
                 if not ok:
                     msg = "新增失敗，資料沒有成功寫入，請稍後再試。"
                 else:
@@ -12552,7 +12802,7 @@ def web_positions(uid):
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {totals}
 <div class="section-head"><h2>持股明細</h2>
-  <span class="section-note">依市值排序</span></div>
+  <span class="section-note">依市值排序　·　<a href="/web/trades" style="color:var(--brass)">操作日報 →</a></span></div>
 <div class="rows">
 {''.join(rows_html) if rows_html else '<div class="empty">還沒有持股紀錄，用下方表單新增。</div>'}
 </div>
@@ -12570,11 +12820,13 @@ def web_positions(uid):
       <input name="buy_fee" inputmode="numeric" placeholder="0"></div>
     <div><label>買進日期（可略）</label>
       <input name="bought_on" type="date"></div>
+    <div><label>操作備註（可略）</label>
+      <input name="position_note" maxlength="200" placeholder="例如：調整權重"></div>
   </div>
-  <button type="submit">新增</button>
+  <button type="submit">新增並記錄加碼</button>
   <div class="sell-hint">
     直接抄券商庫存頁的「成本價」就好，那個數字已含買進手續費，手續費欄留空即可。<br>
-    若填的是純成交價，在手續費欄填實際金額，會自動攤進每股成本。
+    新增後會同步記入操作日報；備註只保存你自己輸入的內容。若填的是純成交價，在手續費欄填實際金額，會自動攤進每股成本。
   </div>
 </form>"""
     print("⏱️ 持股頁：持股資料 %.0fms、法人 %.0fms、1y行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
@@ -14111,16 +14363,27 @@ def web_trades(uid):
 
     month = request.args.get("month", "")
     code = request.args.get("code", "")
+    journal_date = request.args.get("journal_date", "")
     months, codes = get_trade_filters(uid)
     trades = get_realized_trades(uid, limit=500,
                                  code=code or None, month=month or None)
+    journal_logs = get_position_change_logs(uid, limit=5000, code=code or None)
     inst = fetch_institutional_data() or {}
+    current_positions = merge_positions(get_positions(uid))
+    journal_codes = (sorted({str(p.get("code")).strip() for p in current_positions if p.get("code")} |
+                            {str(log.get("code")).strip() for log in journal_logs if log.get("code")})
+                     if journal_logs else [])
+    journal_prices = (get_realtime_stocks_bulk(journal_codes, rng="1d")
+                      if journal_codes else {})
+    journal_html = render_position_change_journal(
+        uid, current_positions=current_positions, price_map=journal_prices,
+        inst_data=inst, logs=journal_logs, trade_date=journal_date or None)
 
-    if not trades and not months:
+    if not trades and not months and not journal_logs:
         return respond_page("交易紀錄", """
-<div class="empty">還沒有任何交易紀錄。<br><br>
-<span style="font-size:12.5px">在持股頁按「賣出」並填入賣價後，
-這筆交易就會記錄在這裡。</span><br><br>
+<div class="empty">還沒有任何交易或操作日誌。<br><br>
+<span style="font-size:12.5px">在持股頁新增持股會記錄加碼；按「賣出」並填入賣價後，
+會同時記錄減碼與已實現損益。</span><br><br>
 <a href="/web/positions" style="color:var(--brass)">前往持股 →</a></div>""",
                             "trades")
 
@@ -14140,11 +14403,13 @@ def web_trades(uid):
       {opt('', '全部', code)}
       {''.join(opt(c, f"{stock_display_name(c, inst)} {c}", code) for c in codes)}
     </select></div>
+    <div><label>加減碼日期</label>
+      <input type="date" name="journal_date" value="{html.escape(journal_date)}" onchange="this.form.submit()"></div>
   </div>
 </form>"""
 
     if not st:
-        body = controls + '<div class="empty">這個範圍內沒有交易紀錄。</div>'
+        body = controls + journal_html + '<div class="empty">這個範圍內沒有已實現損益紀錄；若有加碼／減碼，請查看上方操作日報。</div>'
         return respond_page("交易紀錄", body, "trades")
 
     payoff_txt = f"{st['payoff']:.2f}" if st["payoff"] else "—"
@@ -14194,6 +14459,7 @@ def web_trades(uid):
 
     body = f"""
 {controls}
+{journal_html}
 <div class="totals">
   <div><div class="total-label">已實現損益</div>
        <div class="total-value num {'up' if st['total_pl'] >= 0 else 'down'}">
