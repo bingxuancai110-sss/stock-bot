@@ -3841,6 +3841,12 @@ def clear_leaderboard_cache():
     """成員加入、退出或設定變更後立即清掉排行榜結果。"""
     with _leaderboard_cache_lock:
         _leaderboard_cache.clear()
+    # 每日收盤快照完成後，首頁 fast 不能繼續拿舊的個人名次摘要。
+    fast_cache_lock = globals().get("_fast_rank_summary_cache_lock")
+    fast_cache = globals().get("_fast_rank_summary_cache")
+    if fast_cache_lock is not None and fast_cache is not None:
+        with fast_cache_lock:
+            fast_cache.clear()
     # 成員暱稱、是否公開持股或參加狀態變更後，持久化頁面也必須失效。
     try:
         _delete_shared_data_snapshot("leaderboard_page")
@@ -4167,6 +4173,36 @@ def get_all_position_user_ids():
     except Exception as e:
         print(f"❌ 讀取持股使用者清單失敗: {e}")
         return []
+    finally:
+        release_db_connection(conn)
+
+
+def get_missing_portfolio_snapshot_user_ids(snapshot_date=None):
+    """找出有持股但指定資料日尚未保存 portfolio snapshot 的使用者。
+
+    每日快照可能在某一位使用者處理後逾時或失敗，checkpoint 會讓下一次從
+    中間續跑；若工作最後被標成完成，仍要能辨識漏掉的 user，不能把「完成」
+    當成所有使用者都已保存。
+    """
+    snapshot_date = snapshot_date or taiwan_today()
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT p.user_id
+            FROM positions p
+            LEFT JOIN portfolio_snapshots s
+              ON s.user_id = p.user_id AND s.snapshot_date = %s
+            WHERE s.user_id IS NULL
+            ORDER BY p.user_id
+        """, (snapshot_date,))
+        ids = [r[0] for r in cursor.fetchall()]
+        cursor.close()
+        return ids
+    except Exception as e:
+        print(f"⚠️ 檢查缺少每日組合快照失敗: {e}")
+        # 檢查失敗時不捏造「完整」；回傳 None 讓呼叫端保守維持既有狀態。
+        return None
     finally:
         release_db_connection(conn)
 
@@ -10712,7 +10748,18 @@ def _do_daily_snapshot():
                    "watchlist": 3, "rank": 4, "done": 5}
     current_stage = progress.get("stage") or "industry"
     if current_stage == "done":
-        return f"{taiwan_today()} 的每日快照已完成，避免重複抓取。"
+        missing_users = get_missing_portfolio_snapshot_user_ids(taiwan_today())
+        if missing_users:
+            # 之前可能在 portfolio index=1 後逾時，卻仍完成了後續 rank；
+            # 不能直接回報完成，改由同一個 job 在下一次重跑補齊所有使用者。
+            print(f"⚠️ 每日快照完成完整性檢查：缺少 {len(missing_users)} 位使用者，重新補跑 portfolio stage")
+            progress = {"stage": "portfolio", "index": 0,
+                        "total": len(get_all_position_user_ids())}
+            current_stage = "portfolio"
+        elif missing_users == []:
+            return f"{taiwan_today()} 的每日快照已完成，避免重複抓取。"
+        else:
+            return f"{taiwan_today()} 的每日快照已完成，但無法確認所有使用者快照，請稍後重試。"
 
     def reached(stage):
         return stage_order.get(current_stage, 0) > stage_order[stage]
@@ -10827,12 +10874,20 @@ def _do_daily_snapshot():
         rank_saved = save_leaderboard_rank_snapshots()
         _job_mark_progress(job_name, "done", 1, 1)
 
+    missing_after = get_missing_portfolio_snapshot_user_ids(taiwan_today())
+    if missing_after is None:
+        portfolio_status = "；持股快照完整性待確認"
+    elif missing_after:
+        portfolio_status = (f"；持股快照尚缺 {len(missing_after)} 位，下一次會自動補跑："
+                            f"{','.join(str(uid) for uid in missing_after[:5])}")
+    else:
+        portfolio_status = f"；持股快照完整 {len(user_ids)}/{len(user_ids)}"
     pick_status = (f"；選股失敗但未阻斷後續：{','.join(pick_failures)}"
                    if pick_failures else "")
     return (f"組合本次續跑處理 {saved}（略過 {skipped}，共 {len(user_ids)}）、"
             f"自選本次 {wl_saved}/{len(wl_users)}、產業 {ind_saved}、"
             f"選股名單 {picks_saved}、排行榜名次 {rank_saved}、大盤 {taiex_close}"
-            f"{pick_status}")
+            f"{portfolio_status}{pick_status}")
 
 
 # ── 資料保留期限 ──
