@@ -2668,6 +2668,7 @@ def web_login_required(view):
                 "/web/portfolio": "portfolio",
                 "/web/positions": "positions",
                 "/web/leaderboard": "leaderboard",
+                "/web/workbench": "screener",
                 "/web/trades": "trades",
                 "/web/compare": "compare",
                 "/web/more": "more",
@@ -12319,7 +12320,7 @@ def render_page(title, body, nav_active=None, user_name=None):
                + tab("/web/leaderboard", "排行榜", "leaderboard")
                + tab("/web/positions", "持股", "positions")
                + tab("/web/trades", "紀錄", "trades")
-               + tab("/web/screener", "選股", "screener")
+               + tab("/web/workbench", "選股", "screener")
                + tab("/web/compare", "比較", "compare")
                + tab("/web/settings", "設定", "settings")
                + "</nav>")
@@ -12328,7 +12329,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     bottom_nav = ("<div class=\"app-bottom-nav\"><div class=\"bottom-inner\">"
                   + bottom_tab("/web/portfolio", "⌂", "今日", "portfolio")
                   + bottom_tab("/web/positions", "▣", "持股", "positions")
-                  + bottom_tab("/web/screener", "⌁", "選股", "screener")
+                  + bottom_tab("/web/workbench", "⌁", "選股", "screener")
                   + bottom_tab("/web/leaderboard", "≡", "排行", "leaderboard")
                   + f'<a href="/web/more" class="{"on" if more_on else ""}"><b>⋯</b>更多</a>'
                   + "</div></div>")
@@ -19223,6 +19224,328 @@ def render_turning_observation_web_body(result, status_note=None):
 <div class="callout"><b>資料限制</b><br><span style="font-size:12.5px;color:var(--ink-faint)">法人資料需等 T86 更新；資料不足時不建立訊號。轉折狀態是規則式觀察，不構成投資建議。</span></div>'''
 
 
+def _workbench_number(value, digits=2):
+    """將既有快照中的數值安全轉為 JSON 欄位；未知值保留 None，不以 0 冒充。"""
+    try:
+        value = float(value)
+        if not math.isfinite(value):
+            return None
+        return round(value, digits)
+    except (TypeError, ValueError):
+        return None
+
+
+def _workbench_text(value, fallback="未標示"):
+    text = str(value or "").strip()
+    return text if text else fallback
+
+
+def _workbench_screener_rows(mode, snapshot=None):
+    """把黑馬／雷達已保存列轉為前端工作台資料，不呼叫完整選股計算。"""
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    rows = snapshot.get("rows") if isinstance(snapshot.get("rows"), list) else []
+    normalized = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        code = str(raw.get("code") or "").strip()
+        if not re.fullmatch(r"\d{4}", code):
+            continue
+        quality = raw.get("data_quality")
+        if isinstance(quality, dict):
+            quality = quality.get("score") or quality.get("filled") or quality.get("label")
+        quality_num = _workbench_number(quality, 0)
+        source_label = "黑馬" if mode == "blackhorse" else "雷達"
+        signal = (raw.get("radar_state") if mode == "radar" else raw.get("breakout"))
+        if not signal:
+            signal = "近期快照"
+        normalized.append({
+            "source": source_label,
+            "code": code,
+            "name": _workbench_text(raw.get("name"), code),
+            "industry": _workbench_text(raw.get("industry"), "未分類"),
+            "score": _workbench_number(raw.get("score"), 0),
+            "price": _workbench_number(raw.get("close")),
+            "change_pct": _workbench_number(raw.get("pct")),
+            "metric_label": "當日漲跌",
+            "institutional_lots": _workbench_number(raw.get("cum_lots"), 0),
+            "signal": _workbench_text(signal, "近期快照"),
+            "quality": quality_num,
+            "detail": {
+                "source_date": str(snapshot.get("source_date") or "未標日期"),
+                "breakout": _workbench_text(raw.get("breakout"), "未建立突破標示"),
+                "streak": _workbench_number(raw.get("streak"), 0),
+                "vol_ratio": _workbench_number(raw.get("vol_ratio")),
+                "support": _workbench_number(raw.get("support")),
+                "resistance": _workbench_number(raw.get("resistance")),
+                "data_quality": quality_num,
+            },
+        })
+    return normalized
+
+
+def _workbench_turning_rows(snapshot):
+    """轉折觀察只讀共享快照；保留方向與確認狀態，不把規則訊號改寫成買賣建議。"""
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    rows = []
+    for raw in snapshot.get("items") or []:
+        if not isinstance(raw, dict):
+            continue
+        code = str(raw.get("code") or "").strip()
+        if not re.fullmatch(r"\d{4}", code):
+            continue
+        state = str(raw.get("state") or "").strip()
+        flow = _workbench_text(raw.get("direction_flow_label") or raw.get("direction_label"), "方向待確認")
+        details = raw.get("reason_details") if isinstance(raw.get("reason_details"), list) else []
+        rows.append({
+            "source": "轉折",
+            "code": code,
+            "name": _workbench_text(raw.get("name"), code),
+            "industry": _workbench_text(raw.get("industry"), "轉折觀察"),
+            "score": _workbench_number(raw.get("score"), 0),
+            "price": _workbench_number(raw.get("close") or raw.get("current_close") or raw.get("price")),
+            "change_pct": _workbench_number(raw.get("pct") or raw.get("change_pct")),
+            "metric_label": "當日漲跌",
+            "institutional_lots": _workbench_number(raw.get("current_total_lots"), 0),
+            "signal": f"{flow}／{({'confirmed': '已確認', 'observing': '觀察中', 'invalid': '已失效'}.get(state, '狀態待確認'))}",
+            "quality": _workbench_number(raw.get("score"), 0),
+            "detail": {
+                "source_date": str(snapshot.get("data_date") or "未標日期"),
+                "state": state or "未標示",
+                "flow": flow,
+                "reasons": [str(item) for item in details if str(item).strip()][:4],
+            },
+        })
+    return rows
+
+
+def _workbench_etf_rows(payload):
+    """ETF 工作台只讀既有商品排名快照；短期／長期指標都保留原始口徑標籤。"""
+    payload = payload if isinstance(payload, dict) else {}
+    categories = payload.get("categories") if isinstance(payload.get("categories"), dict) else {}
+    periods = payload.get("periods") if isinstance(payload.get("periods"), dict) else {}
+    period_key = "short" if isinstance(categories.get("short"), dict) else "long"
+    period_rows = categories.get(period_key) if isinstance(categories.get(period_key), dict) else {}
+    period_label = ((periods.get(period_key) or {}).get("label") or
+                    ("短期價格報酬" if period_key == "short" else "長期價格報酬"))
+    rows, seen = [], set()
+    for category, values in period_rows.items():
+        if not isinstance(values, list):
+            continue
+        for raw in values:
+            if not isinstance(raw, dict):
+                continue
+            code = str(raw.get("code") or "").strip()
+            if not re.fullmatch(r"\d{4,6}", code) or code in seen:
+                continue
+            seen.add(code)
+            rows.append({
+                "source": "ETF",
+                "code": code,
+                "name": _workbench_text(raw.get("name"), code),
+                "industry": _workbench_text(category, "ETF"),
+                "score": _workbench_number(raw.get("score"), 0),
+                "price": _workbench_number(raw.get("close") or raw.get("price")),
+                "change_pct": _workbench_number(raw.get("return_pct")),
+                "metric_label": period_label,
+                "institutional_lots": None,
+                "signal": _workbench_text(raw.get("comment") or raw.get("period_label"), "商品排名"),
+                "quality": _workbench_number(raw.get("observations"), 0),
+                "detail": {
+                    "source_date": str(payload.get("market_data_date") or payload.get("data_date") or "未標日期"),
+                    "category": _workbench_text(category, "ETF"),
+                    "return_pct": _workbench_number(raw.get("return_pct")),
+                    "excess_pct": _workbench_number(raw.get("excess_pct")),
+                    "annualized_yield_pct": _workbench_number(raw.get("distribution_annualized_yield_pct")),
+                    "period_label": period_label,
+                },
+            })
+    return rows
+
+
+def build_workbench_snapshot_payload(uid=None):
+    """組合互動選股台所需的已保存資料。整個函式不得啟動全市場掃描或背景重算。"""
+    sources, rows = {}, []
+    blackhorse = _load_persisted_screener_snapshot("blackhorse")
+    if blackhorse:
+        rows.extend(_workbench_screener_rows("blackhorse", blackhorse))
+        sources["黑馬"] = {"date": str(blackhorse.get("source_date") or "未標日期"),
+                         "computed_at": str(blackhorse.get("computed_at") or "")}
+
+    radar = (_load_recent_live_radar_snapshot()
+             if _is_taiwan_intraday_window() else _load_persisted_screener_snapshot("radar"))
+    if radar:
+        rows.extend(_workbench_screener_rows("radar", radar))
+        sources["雷達"] = {"date": str(radar.get("source_date") or "未標日期"),
+                         "computed_at": str(radar.get("scan_finished_at") or radar.get("computed_at") or ""),
+                         "intraday": bool(_is_taiwan_intraday_window() and radar.get("scan_finished_at"))}
+
+    turning, turning_fresh, turning_source = _get_turning_web_snapshot()
+    if turning:
+        rows.extend(_workbench_turning_rows(turning))
+        sources["轉折"] = {"date": str(turning.get("data_date") or "未標日期"),
+                         "fresh": bool(turning_fresh), "source": turning_source}
+
+    etf_payload, etf_fresh, etf_source = _load_etf_product_ranking_snapshot()
+    if etf_payload:
+        rows.extend(_workbench_etf_rows(etf_payload))
+        sources["ETF"] = {"date": str(etf_payload.get("market_data_date") or etf_payload.get("data_date") or "未標日期"),
+                         "fresh": bool(etf_fresh), "source": etf_source}
+
+    personal = {"positions": [], "rank_summary": {}}
+    if uid:
+        # 只讀取目前登入者的庫存與既有排行榜快照；不讀取其他使用者持股，也不重算排行榜。
+        for position in merge_positions(get_positions(uid)):
+            code = str(position.get("code") or "").strip()
+            if not re.fullmatch(r"\d{4,6}", code):
+                continue
+            shares = _workbench_number(position.get("shares"), 0)
+            cost = _workbench_number(position.get("cost"))
+            personal["positions"].append({"code": code, "shares": shares, "cost": cost})
+            rows.append({
+                "source": "持股",
+                "code": code,
+                "name": _workbench_text(position.get("name"), code),
+                "industry": "個人庫存",
+                "score": None,
+                "price": None,
+                "change_pct": None,
+                "metric_label": "當日漲跌",
+                "institutional_lots": None,
+                "signal": f"持有 {int(shares or 0):,} 股",
+                "quality": None,
+                "detail": {
+                    "average_cost": cost,
+                    "position_shares": shares,
+                    "bought_on": str(position.get("bought_on") or "待確認"),
+                },
+            })
+        personal["rank_summary"] = get_fast_rank_summary(uid) or {}
+
+    seen, deduped = set(), []
+    for row in rows:
+        key = (row.get("source"), row.get("code"))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(row)
+    return {
+        "ok": True,
+        "rows": deduped,
+        "sources": sources,
+        "personal": personal,
+        "market_open": bool(_is_taiwan_intraday_window()),
+        "server_time": taiwan_now().isoformat(),
+        "note": ("開盤期間只更新目前可見標的的行情；黑馬、雷達、轉折與 ETF 排名仍依既有快照更新。"
+                 if _is_taiwan_intraday_window() else
+                 "目前顯示最近有效快照；收盤後固定採用既有正式收盤校正。"),
+    }
+
+
+def _workbench_json_response(payload, status=200):
+    response = make_response(json.dumps(_jsonable(payload), ensure_ascii=False), status)
+    response.headers["Content-Type"] = "application/json; charset=utf-8"
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
+def render_workbench_body():
+    """正式工作台只回傳前端殼；真實資料由同源、權杖保護的快照 API 局部載入。"""
+    return r'''
+<section class="wb-shell" id="stockbot-workbench" data-workbench="snapshot-first-v1">
+  <div class="wb-intro"><div><p class="wb-kicker">選股工作台 · 快照優先</p><h2>選股工作台</h2><p class="wb-sub">先讀取最近有效快照；排序、篩選與個股詳情都不重新掃描市場。</p></div><div class="wb-status" id="wb-status">讀取最近有效快照…</div></div>
+  <div class="wb-pulse" id="wb-pulse"><span>市場脈搏</span><b>資料狀態待確認</b><i></i><i></i><em>工作台準備中</em></div>
+  <div class="wb-tabs" id="wb-tabs" aria-label="選股資料來源"></div>
+  <div class="wb-tools"><label><span>⌕</span><input id="wb-search" placeholder="搜尋代號、名稱或產業" autocomplete="off"></label><button type="button" id="wb-filter">篩選條件</button><button type="button" id="wb-refresh">重新整理</button></div>
+  <div class="wb-filter-panel" id="wb-filter-panel" hidden><div><b>標的</b><button type="button" data-kind="all" class="on">全部</button><button type="button" data-kind="stock">個股</button><button type="button" data-kind="etf">ETF</button></div><div><b>當日漲跌</b><button type="button" data-dir="all" class="on">不限</button><button type="button" data-dir="up">上漲</button><button type="button" data-dir="down">下跌</button></div></div>
+  <div class="wb-meta"><span id="wb-count">正在讀取…</span><span id="wb-note"></span></div>
+  <div class="wb-table" id="wb-table" aria-live="polite"><div class="wb-head"><span>標的</span><button type="button" data-sort="score">綜合分數</button><button type="button" data-sort="change_pct">報酬／漲跌</button><button type="button" data-sort="institutional_lots">法人方向</button><span>訊號</span><span></span></div><div id="wb-rows"><div class="wb-skeleton"></div><div class="wb-skeleton"></div><div class="wb-skeleton"></div></div></div>
+  <p class="wb-disclaimer">資料來源僅限已保存的黑馬、雷達、轉折與 ETF 快照；資料缺漏維持待確認，不以推測數字補足。</p>
+</section>
+<aside class="wb-drawer" id="wb-drawer" aria-hidden="true"><button type="button" id="wb-close" aria-label="關閉">×</button><div id="wb-detail"></div></aside><div class="wb-mask" id="wb-mask" hidden></div>
+<style>
+.wb-shell{margin:16px 0 28px;color:#25231e}.wb-intro{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:2px solid #2b2923;padding:4px 0 16px}.wb-kicker{margin:0;color:#8a6d3b;font-size:11px;font-weight:800;letter-spacing:.08em}.wb-intro h2{margin:5px 0 4px;font-size:28px;letter-spacing:.02em}.wb-sub{margin:0;color:var(--ink-soft);font-size:13px}.wb-status{border:1px solid #ddd5c8;background:#fffdf8;padding:9px 11px;color:#6d665b;font-size:11px;white-space:nowrap}.wb-pulse{display:grid;grid-template-columns:130px 180px 1fr 1fr 180px;align-items:center;gap:14px;border-bottom:1px solid #cfc7ba;padding:14px 10px;border-left:3px solid #8a6d3b;background:#fffefa;font-size:12px}.wb-pulse span{font-weight:800}.wb-pulse b{font-family:monospace;font-size:12px}.wb-pulse i{height:3px;background:#a84538}.wb-pulse i:nth-of-type(2){background:#247052}.wb-pulse em{font-style:normal;color:#6c665b}.wb-tabs{display:flex;gap:20px;border-bottom:1px solid #ddd5c8;padding:15px 10px 0}.wb-tabs button{border:0;background:transparent;color:#71695e;padding:0 0 12px;font-size:13px;font-weight:700;border-bottom:2px solid transparent}.wb-tabs button.on{color:#685027;border-color:#8a6d3b}.wb-tools{display:grid;grid-template-columns:1fr auto auto;gap:8px;padding:16px 0}.wb-tools label{display:flex;gap:8px;align-items:center;border:1px solid #cfc7ba;background:#fff;padding:0 11px}.wb-tools input{width:100%;border:0;outline:0;padding:11px 0;font:inherit}.wb-tools button,.wb-filter-panel button{border:1px solid #cfc7ba;background:#fffdf8;padding:9px 12px;color:#4a4439;font:inherit;font-size:12px}.wb-tools button:hover,.wb-filter-panel button.on{border-color:#8a6d3b;color:#685027}.wb-filter-panel{display:flex;gap:24px;margin:-8px 0 12px;padding:12px;border:1px solid #e1dacd;background:#faf7f0;font-size:12px}.wb-filter-panel div{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wb-filter-panel b{margin-right:5px;color:#71695e}.wb-filter-panel button{padding:5px 9px}.wb-meta{display:flex;justify-content:space-between;gap:12px;padding:7px 0 10px;color:#746d61;font-size:11px}.wb-meta b{color:#2b2923}.wb-table{border:1px solid #d8d1c5;background:#fff}.wb-head,.wb-row{display:grid;grid-template-columns:minmax(190px,2fr) minmax(110px,1fr) minmax(110px,1fr) minmax(120px,1fr) minmax(145px,1.25fr) 22px;gap:10px;align-items:center;padding:12px 14px}.wb-head{background:#f5f1e9;border-bottom:1px solid #d8d1c5;color:#6e675c;font-size:11px}.wb-head button{border:0;background:transparent;color:inherit;text-align:left;font:inherit;font-weight:800;padding:0}.wb-head button.on{color:#8a6d3b}.wb-row{border-bottom:1px solid #eee9df;text-align:left;cursor:pointer}.wb-row:hover{background:#fffcf6;box-shadow:inset 3px 0 #8a6d3b}.wb-name{font-weight:800;font-size:15px}.wb-code,.wb-small{display:block;color:#8b8378;font-size:10px;margin-top:2px}.wb-num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800}.wb-up{color:#a74135}.wb-down{color:#1e7253}.wb-flat{color:#777}.wb-tag{display:inline-block;font-size:10px;padding:3px 5px;background:#f0e8d9;color:#755c2e;margin-right:5px}.wb-tag.ETF{background:#e5efe5;color:#35633e}.wb-tag.雷達{background:#e7f0ef;color:#2d6965}.wb-tag.轉折{background:#eee8f5;color:#66517b}.wb-skeleton{height:54px;margin:0 14px;border-bottom:1px solid #eee9df;background:linear-gradient(90deg,#fff 20%,#f2eee7 45%,#fff 70%);background-size:220% 100%;animation:wbscan 1.1s linear infinite}@keyframes wbscan{to{background-position:-120% 0}}.wb-disclaimer{margin:12px 0;color:#82796e;font-size:11px;line-height:1.55}.wb-mask{position:fixed;inset:0;background:rgba(30,28,23,.28);z-index:30}.wb-drawer{position:fixed;z-index:31;right:0;top:0;bottom:0;width:min(430px,92vw);padding:22px;background:#fffdf8;box-shadow:-12px 0 32px rgba(30,28,23,.15);transform:translateX(110%);transition:transform .18s ease-out;overflow:auto}.wb-drawer.open{transform:translateX(0)}.wb-drawer>button{float:right;border:0;background:transparent;font-size:26px;color:#655d52}.wb-detail h3{margin:5px 0;font-size:25px}.wb-detail p{color:#726a5e;font-size:12px}.wb-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#ded7cc;margin:18px 0}.wb-detail-grid div{background:#fffdf8;padding:11px}.wb-detail-grid small{display:block;color:#867d71}.wb-detail-grid b{display:block;margin-top:5px;font-family:ui-monospace,monospace}.wb-facts{padding:0;margin:0;list-style:none}.wb-facts li{border-top:1px solid #e7e1d7;padding:10px 0;font-size:12px;line-height:1.55}@media(max-width:620px){.wb-intro{display:block}.wb-status{display:inline-block;margin-top:12px}.wb-pulse{grid-template-columns:1fr 1fr;padding:12px}.wb-pulse i{grid-column:span 1}.wb-pulse em{grid-column:1/-1;border-top:1px solid #ded7cc;padding-top:8px}.wb-tabs{gap:14px;overflow:auto}.wb-tools{grid-template-columns:1fr auto}.wb-tools label{grid-column:1/-1}.wb-filter-panel{display:block}.wb-filter-panel div+div{margin-top:10px}.wb-meta{display:block}.wb-meta span{display:block;margin-top:4px}.wb-head{display:none}.wb-row{grid-template-columns:1.6fr 1fr 1fr 18px;gap:8px;padding:12px}.wb-row .wb-institutional,.wb-row .wb-signal{display:none}.wb-row .wb-name{font-size:14px}.wb-row .wb-tag{font-size:9px}.wb-drawer{width:100%;}.wb-detail-grid{grid-template-columns:1fr 1fr}}
+</style>
+<style>
+.wb-tag.持股{background:#f5e8df;color:#85513a}.wb-rank-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:#ded7cc}.wb-rank-card{background:#fffdf8;padding:18px}.wb-rank-card small,.wb-rank-card em{display:block;color:#857d71;font-size:11px;font-style:normal}.wb-rank-card b{display:block;font-family:ui-monospace,monospace;font-size:23px;margin:7px 0}.wb-rank-card span{font-size:12px;font-weight:800}@media(max-width:620px){.wb-rank-grid{grid-template-columns:1fr}}
+</style>
+<script>
+(function(){
+  var root=document.getElementById('stockbot-workbench'); if(!root) return;
+  var state={rows:[],source:'全部',query:'',kind:'all',dir:'all',sort:'score',desc:true,marketOpen:false,timer:null};
+  var tabs=document.getElementById('wb-tabs'), rowsEl=document.getElementById('wb-rows'), note=document.getElementById('wb-note'), count=document.getElementById('wb-count'), status=document.getElementById('wb-status'), pulse=document.getElementById('wb-pulse'), drawer=document.getElementById('wb-drawer'), mask=document.getElementById('wb-mask');
+  function token(){try{return new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||''}catch(e){return ''}}
+  function api(path){return path+(path.indexOf('?')>-1?'&':'?')+'fragment=1'+(token()?'&t='+encodeURIComponent(token()):'')}
+  function esc(v){return String(v==null?'—':v).replace(/[&<>'"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[c]})}
+  function pct(v){if(v==null||isNaN(v))return '<span class="wb-flat">—</span>';return '<span class="'+(v>0?'wb-up':v<0?'wb-down':'wb-flat')+'">'+(v>0?'+':'')+Number(v).toFixed(2)+'%</span>'}
+  function money(v){return v==null?'—':Number(v).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2})}
+  function sources(){var list=['全部'];state.rows.forEach(function(r){if(list.indexOf(r.source)<0)list.push(r.source)});if(state.personal&&Object.keys(state.personal.rank_summary||{}).length)list.push('我的排行');return list}
+  function renderTabs(){tabs.innerHTML=sources().map(function(s){var n=s==='全部'?state.rows.length:s==='我的排行'?'':state.rows.filter(function(r){return r.source===s}).length;return '<button type="button" class="'+(state.source===s?'on':'')+'" data-source="'+esc(s)+'">'+esc(s)+(n===''?'':' <small>'+n+'</small>')+'</button>'}).join('');}
+  function filtered(){var q=state.query.trim().toLowerCase();return state.rows.filter(function(r){var etf=r.source==='ETF';return (state.source==='全部'||r.source===state.source)&&(!q||[r.code,r.name,r.industry].join(' ').toLowerCase().indexOf(q)>-1)&&(state.kind==='all'||(state.kind==='etf'?etf:!etf))&&(state.dir==='all'||(state.dir==='up'&&Number(r.change_pct)>0)||(state.dir==='down'&&Number(r.change_pct)<0));}).sort(function(a,b){var av=a[state.sort],bv=b[state.sort];av=av==null?-Infinity:Number(av);bv=bv==null?-Infinity:Number(bv);return state.desc?bv-av:av-bv;});}
+  function render(){var list=filtered();renderTabs();document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var html=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta+' 名':r.delta<0?'↓ '+Math.abs(r.delta)+' 名':'— 名次不變');return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(html||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';rowsEl.innerHTML=list.length?list.map(function(r){var tag='<span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>';var inst=r.institutional_lots==null?'—':(r.institutional_lots>0?'+':'')+Number(r.institutional_lots).toLocaleString('zh-TW')+' 張';var metric=r.metric_label==='當日漲跌'?pct(r.change_pct):pct(r.change_pct)+'<span class="wb-small">'+esc(r.metric_label)+'</span>';return '<button type="button" class="wb-row" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'"><span>'+tag+'<b class="wb-name">'+esc(r.name)+'</b><small class="wb-code">'+esc(r.code)+' · '+esc(r.industry)+'</small></span><span class="wb-num">'+(r.score==null?'—':esc(r.score))+'<small class="wb-small">'+(r.source==='持股'?'個人庫存':'/100'+(r.quality!=null?' · '+esc(r.quality):''))+'</small></span><span class="wb-num">'+money(r.price)+'<small class="wb-small">'+metric+'</small></span><span class="wb-institutional wb-num">'+esc(inst)+'</span><span class="wb-signal">'+esc(r.signal)+'</span><span>›</span></button>';}).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}
+  function showDetail(row){var d=row.detail||{},facts=[];Object.keys(d).forEach(function(k){var v=d[k];if(v==null||v===''||(Array.isArray(v)&&!v.length))return;facts.push('<li><b>'+esc({source_date:'資料日',breakout:'型態',streak:'連續天數',vol_ratio:'量能倍數',support:'支撐',resistance:'壓力',state:'轉折狀態',flow:'方向',category:'ETF 類別',return_pct:'價格報酬',excess_pct:'同期超額',annualized_yield_pct:'年化配息殖利率',period_label:'比較期間'}[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):v)+'</li>');});document.getElementById('wb-detail').innerHTML='<p>'+esc(row.source)+' · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>最新快照價格</small><b>'+money(row.price)+'</b></div><div><small>'+esc(row.metric_label||'當日漲跌')+'</small><b>'+pct(row.change_pct)+'</b></div><div><small>綜合分數</small><b>'+esc(row.score==null?'—':row.score)+'</b></div><div><small>訊號</small><b>'+esc(row.signal)+'</b></div></div><ul class="wb-facts">'+(facts.join('')||'<li>目前沒有更多已確認的快照欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;}
+  function updateQuotes(){if(!state.marketOpen||document.hidden)return;var codes=filtered().slice(0,30).map(function(r){return r.code}).join(',');if(!codes)return;fetch(api('/web/api/workbench/quotes?codes='+encodeURIComponent(codes)),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');return r.json()}).then(function(data){(data.updates||[]).forEach(function(q){state.rows.forEach(function(r){if(r.code===q.code&&q.price!=null){r.price=q.price;r.change_pct=q.change_pct;r.metric_label='當日漲跌';}});});if(data.note)note.textContent=data.note;render();}).catch(function(e){if(e.message==='AUTH')location.reload();});}
+  function load(){status.textContent='讀取最近有效快照…';fetch(api('/web/api/workbench/snapshot'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){state.rows=Array.isArray(data.rows)?data.rows:[];state.personal=data.personal||{positions:[],rank_summary:{}};state.marketOpen=!!data.market_open;status.textContent=state.marketOpen?'盤中行情局部更新中':'最近有效快照已載入';note.textContent=data.note||'';pulse.innerHTML='<span>市場脈搏</span><b>'+esc(state.marketOpen?'開盤中':'收盤快照')+'</b><i></i><i></i><em>'+esc(state.marketOpen?'價格每 90 秒局部更新':'收盤後固定採正式收盤快照')+'</em>';render();if(state.timer)clearInterval(state.timer);if(state.marketOpen)state.timer=setInterval(updateQuotes,90000);}).catch(function(e){status.textContent='快照暫時無法載入';rowsEl.innerHTML='<div class="wb-skeleton" style="animation:none;background:#fff;color:#8b4034;padding:18px">資料暫時無法載入，請稍後重新整理。沒有顯示推測標的。</div>';if(e.message==='AUTH')location.reload();});}
+  document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){load();};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};document.querySelector('.wb-head').onclick=function(e){var b=e.target.closest('button[data-sort]');if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;render();};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};document.getElementById('wb-close').onclick=function(){drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;};mask.onclick=function(){document.getElementById('wb-close').click();};document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
+})();
+</script>'''
+
+
+@app.route("/web/workbench")
+@web_login_required
+def web_workbench(uid):
+    """正式互動選股工作台：頁面本身秒回，資料僅透過受保護的快照 API 局部載入。"""
+    return render_page("選股工作台", render_workbench_body(), nav_active="screener")
+
+
+@app.route("/web/api/workbench/snapshot")
+@web_login_required
+def web_workbench_snapshot(uid):
+    try:
+        return _workbench_json_response(build_workbench_snapshot_payload(uid))
+    except Exception as exc:
+        print(f"❌ 工作台快照 API 失敗（uid={uid}）：{exc}")
+        return _workbench_json_response({"ok": False,
+                                         "error": "快照暫時無法載入，不顯示推測資料。"}, 503)
+
+
+@app.route("/web/api/workbench/quotes")
+@web_login_required
+def web_workbench_quotes(uid):
+    if not _is_taiwan_intraday_window():
+        return _workbench_json_response({"ok": True, "updates": [],
+                                         "market_open": False,
+                                         "note": "目前非一般盤中時段；維持既有正式收盤快照。"})
+    requested = [code for code in str(request.args.get("codes") or "").split(",")
+                 if re.fullmatch(r"\d{4,6}", code.strip())]
+    requested = list(dict.fromkeys(code.strip() for code in requested))[:30]
+    if not requested:
+        return _workbench_json_response({"ok": True, "updates": [], "market_open": True})
+    # 限制只能查工作台目前已有的快照標的，不讓權杖變成任意行情查詢 API。
+    allowed = {str(row.get("code")) for row in build_workbench_snapshot_payload(uid).get("rows") or []}
+    codes = [code for code in requested if code in allowed]
+    if not codes:
+        return _workbench_json_response({"ok": True, "updates": [], "market_open": True})
+    try:
+        quotes = get_realtime_stocks_bulk(codes, workers=min(12, len(codes)), rng="3mo")
+        updates = []
+        for code in codes:
+            quote_data = quotes.get(code) if isinstance(quotes, dict) else None
+            if not isinstance(quote_data, dict):
+                continue
+            price = _workbench_number(quote_data.get("close"))
+            pct = _workbench_number(quote_data.get("pct"))
+            if price is not None:
+                updates.append({"code": code, "price": price, "change_pct": pct,
+                                "updated_at": quote_data.get("close_time"),
+                                "source": quote_data.get("source") or "既有批次行情"})
+        return _workbench_json_response({"ok": True, "updates": updates, "market_open": True,
+                                         "note": "盤中價格已局部更新；選股判斷維持最近完成快照。"})
+    except Exception as exc:
+        print(f"⚠️ 工作台盤中行情更新失敗（uid={uid}）：{exc}")
+        return _workbench_json_response({"ok": False, "updates": [], "market_open": True,
+                                         "note": "盤中行情暫時無法更新；保留最近有效快照。"}, 503)
+
+
 @app.route("/web/screener")
 @web_login_required
 def web_screener(uid):
@@ -20100,6 +20423,17 @@ def handle_message(event):
     elif text in ["我的ID", "我的id", "MYID"]:
         reply = f"你的 user_id：\n{user_id}"
 
+    elif text in ["選股台", "選股工作台", "工作台"]:
+        token = create_web_token(user_id)
+        base = request.url_root.rstrip("/")
+        if token:
+            reply = ("🧰 選股工作台\n\n"
+                     "黑馬、雷達、轉折與 ETF 會先顯示最近有效快照；\n"
+                     "開盤期間只局部更新價格，不會重新掃全市場。\n\n"
+                     f"{base}/web/workbench?t={token}")
+        else:
+            reply = "❌ 產生選股工作台連結失敗，請稍後再試。"
+
     elif text in ["網頁", "WEB", "網頁版"]:
         # 連結與登入碼一次都給：兩者用途不同，但使用者不該為了換瀏覽器
         # 而需要知道要再打一次別的指令。
@@ -20113,6 +20447,9 @@ def handle_message(event):
                 "",
                 "【在 LINE 裡開啟】直接點：",
                 f"{base}/web/login?t={token}",
+                "",
+                "【選股工作台】黑馬／雷達／轉折／ETF：",
+                f"{base}/web/workbench?t={token}",
                 "",
             ]
             if code:
