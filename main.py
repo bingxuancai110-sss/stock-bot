@@ -4684,12 +4684,12 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
                 "volume": volume,
                 "previous_close": previous,
                 "updated_at": meta.get("regularMarketTime"),
-                "source": (official_quote.get("source") if official_quote else
-                            "Yahoo Finance 日線行情"),
-                "close_is_final": bool(official_quote),
-                "close_date": (official_quote.get("close_date") if official_quote else
-                               today_date.strftime("%Y%m%d")),
-                "close_time": (official_quote.get("close_time") if official_quote else None),
+                # spark 是盤中／輕量行情，不共享個股收盤 MIS 變數；
+                # 這裡不能引用 get_realtime_stock 作用域內的 official_quote 或 today_date。
+                "source": "Yahoo spark 批次行情",
+                "close_is_final": False,
+                "close_date": None,
+                "close_time": None,
             }
         return parsed
 
@@ -10739,6 +10739,7 @@ def _do_daily_snapshot():
         current_stage = "picks"
 
     picks_saved = 0
+    pick_failures = []
     if not reached("picks"):
         modes = ("blackhorse", "radar")
         start = progress.get("index", 0) if current_stage == "picks" else 0
@@ -10756,8 +10757,10 @@ def _do_daily_snapshot():
                         r["score"] if r["score"] is not None else -1), reverse=True)
                 picks_saved += save_picks(mode, rows, top_n=5)
             except Exception as e:
-                print(f"❌ {mode} 選股名單快照失敗: {e}")
-                raise
+                # 選股資料失敗不能阻止收盤後的持股、自選與排行榜快照；
+                # 記錄失敗並前進 checkpoint，避免每次重跑都卡在同一個 mode。
+                print(f"❌ {mode} 選股名單快照失敗，繼續後續階段: {e}")
+                pick_failures.append(mode)
             _job_mark_progress(job_name, "picks", idx + 1, len(modes))
         _job_mark_progress(job_name, "portfolio", 0, 0)
         current_stage = "portfolio"
@@ -10824,9 +10827,12 @@ def _do_daily_snapshot():
         rank_saved = save_leaderboard_rank_snapshots()
         _job_mark_progress(job_name, "done", 1, 1)
 
+    pick_status = (f"；選股失敗但未阻斷後續：{','.join(pick_failures)}"
+                   if pick_failures else "")
     return (f"組合本次續跑處理 {saved}（略過 {skipped}，共 {len(user_ids)}）、"
             f"自選本次 {wl_saved}/{len(wl_users)}、產業 {ind_saved}、"
-            f"選股名單 {picks_saved}、排行榜名次 {rank_saved}、大盤 {taiex_close}")
+            f"選股名單 {picks_saved}、排行榜名次 {rank_saved}、大盤 {taiex_close}"
+            f"{pick_status}")
 
 
 # ── 資料保留期限 ──
@@ -20278,4 +20284,3 @@ def handle_message(event):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
