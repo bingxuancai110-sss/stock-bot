@@ -12718,7 +12718,25 @@ def web_home(uid):
 @web_login_required
 def web_premarket(uid):
     """顯示最近可用盤前批次的完整資料；沒有快照時清楚呈現資料狀態。"""
-    data = build_today_change_web_data(uid)
+    try:
+        data = build_today_change_web_data(uid)
+    except Exception as exc:
+        # 完整變化頁不能因單一使用者快照、舊資料庫欄位或外部資料
+        # 暫時失敗而回 500；保留可讀狀態頁，並把真正例外留在 Render Logs。
+        print(f"❌ 盤前完整變化頁載入失敗（uid={uid}）：{exc}")
+        requested_date = taiwan_today()
+        data = {
+            "date": requested_date.isoformat(),
+            "requested_date": requested_date.isoformat(),
+            "is_weekend": requested_date.weekday() >= 5,
+            "snapshot": None,
+            "events": [],
+            "state": {
+                "title": "盤前資料暫時無法載入",
+                "detail": "完整資料整理遇到暫時性問題，請稍後重新整理；目前不顯示推測訊號。",
+            },
+            "load_error": True,
+        }
     snapshot = data.get("snapshot")
     state = data.get("state") or {}
     events = data.get("events") or []
@@ -12743,7 +12761,7 @@ def web_premarket(uid):
         except (TypeError, ValueError):
             return text(value)
 
-    rows = []
+    all_rows = []
     market_cards = []
     market_items = []
     for event in events:
@@ -12752,7 +12770,7 @@ def web_premarket(uid):
         severity_label = LEVEL_LABEL.get(severity, "一般變化")
         category = category_labels.get(event.get("category"), event.get("category") or "其他")
         evidence_text = _format_premarket_event_evidence(event)
-        rows.append(
+        all_rows.append(
             f'<article class="premarket-event-card severity-{severity}">'
             f'<div class="premarket-event-head">'
             f'<span class="premarket-event-severity">{text(severity)}・{esc(severity_label)}</span>'
@@ -12763,10 +12781,20 @@ def web_premarket(uid):
             f'<div class="premarket-evidence">{text(evidence_text)}</div></details>'
             f'</article>'
         )
-    if not rows:
+    if not all_rows:
         empty_events = ("目前尚未建立盤前事件資料。" if not snapshot else
                         (state.get("title") or "今日沒有符合條件的新事件。"))
-        rows.append(f'<div class="premarket-events-empty">{text(empty_events)}</div>')
+        all_rows.append(f'<div class="premarket-events-empty">{text(empty_events)}</div>')
+    rows = all_rows[:3]
+    extra_rows = all_rows[3:]
+    event_list_html = ''.join(rows)
+    if extra_rows:
+        event_list_html += (
+            f'<details class="premarket-more-events">'
+            f'<summary>查看其餘 {len(extra_rows)} 個變化</summary>'
+            f'<div class="premarket-event-list premarket-event-list-extra">'
+            f'{"".join(extra_rows)}</div></details>'
+        )
 
     display_date = data.get("date")
     requested_date = data.get("requested_date")
@@ -12775,7 +12803,7 @@ def web_premarket(uid):
                                              "完成盤後資料更新與變化偵測後，這裡會顯示完整內容。")
     if data.get("is_weekend") and snapshot:
         state_detail = f"目前是週末，以下顯示最近可用的盤前批次；{state_detail}"
-    status_color = "#6E5228" if snapshot else "#767D85"
+    status_color = "#9A3A30" if data.get("load_error") else ("#6E5228" if snapshot else "#767D85")
 
     meta = (f'<div class="premarket-meta">盤前顯示日：<b>{text(display_date)}</b>'
             f'　資料來源日：<b>{text(snapshot.get("source_date") if snapshot else None)}</b>'
@@ -12932,6 +12960,9 @@ def web_premarket(uid):
       .premarket-event-card summary {{ color:#6E5228; cursor:pointer; font-weight:700; }}
       .premarket-evidence {{ margin-top:8px; padding:9px 10px; border-radius:8px; background:#F7F7F3; color:#4F565C; line-height:1.65; white-space:pre-line; }}
       .premarket-events-empty {{ padding:15px; color:#767D85; line-height:1.7; background:#F7F7F3; border-radius:10px; }}
+      .premarket-more-events {{ margin-top:12px; border-top:1px solid #E6E4DE; padding-top:10px; }}
+      .premarket-more-events > summary {{ color:#6E5228; cursor:pointer; font-weight:800; padding:5px 0; }}
+      .premarket-event-list-extra {{ margin-top:10px; }}
       .premarket-metric small {{ color:#8A8F94; font-weight:400; font-size:.78em; }}
       .premarket-row small {{ color:#8A8F94; font-weight:400; }}
       .premarket-market-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; margin-top:10px; }}
@@ -12961,7 +12992,7 @@ def web_premarket(uid):
       <h1>🔥 今日值得注意</h1>
       {meta}
       <div class="premarket-status"><b>{text(state_title)}</b><p>{text(state_detail)}</p></div>
-      <div class="premarket-event-list">{''.join(rows)}</div>
+      <div class="premarket-event-list">{event_list_html}</div>
     </section>
     <section class="card"><h2>其他盤前快照</h2>
       {snapshot_sections}
