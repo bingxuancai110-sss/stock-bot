@@ -373,6 +373,77 @@ def _event(level, category, title, detail, key, evidence=None):
             "detail": detail, "event_key": key, "evidence": evidence or {}}
 
 
+def _numeric_value_changed(old_value, new_value, tolerance=0.005):
+    """比較兩個可能為 None 的數值；未知值不等於 0，也不誤判為變化。"""
+    if old_value is None or new_value is None:
+        return old_value != new_value
+    try:
+        return abs(float(new_value) - float(old_value)) > tolerance
+    except (TypeError, ValueError):
+        return str(old_value) != str(new_value)
+
+
+def _format_level_price(value):
+    """格式化支撐／壓力價位；缺值保留為待確認，不補零。"""
+    if value is None:
+        return "未保存有效參考"
+    try:
+        return f"{float(value):,.2f}"
+    except (TypeError, ValueError):
+        return "資料待確認"
+
+
+def _format_watchlist_level_change_detail(evidence):
+    """把自選股位階事件轉成人可讀的支撐／壓力前後比較。"""
+    evidence = evidence or {}
+    old = evidence.get("old") or {}
+    new = evidence.get("new") or {}
+    parts = []
+    old_support, new_support = old.get("support"), new.get("support")
+    old_resistance, new_resistance = old.get("resistance"), new.get("resistance")
+    if old_support is not None or new_support is not None:
+        if old_support is not None and new_support is not None:
+            parts.append(f"支撐 {_format_level_price(old_support)} → {_format_level_price(new_support)}")
+        elif new_support is not None:
+            parts.append(f"支撐：前一日未保存 → 今日 {_format_level_price(new_support)}（自今日起開始記錄）")
+        else:
+            parts.append(f"支撐：前一日 {_format_level_price(old_support)} → 今日無有效參考")
+    if old_resistance is not None or new_resistance is not None:
+        if old_resistance is not None and new_resistance is not None:
+            parts.append(f"壓力 {_format_level_price(old_resistance)} → {_format_level_price(new_resistance)}")
+        elif new_resistance is not None:
+            parts.append(f"壓力：前一日未保存 → 今日 {_format_level_price(new_resistance)}（自今日起開始記錄）")
+        else:
+            parts.append(f"壓力：前一日 {_format_level_price(old_resistance)} → 今日無有效參考")
+    old_pos, new_pos = old.get("position"), new.get("position")
+    if old_pos is not None and new_pos is not None and old_pos != new_pos:
+        parts.append(f"位階分數 {old_pos} → {new_pos}")
+    old_close, new_close = old.get("close"), new.get("close")
+    if old_close is not None and new_close is not None:
+        parts.append(f"收盤 { _format_level_price(old_close) } → { _format_level_price(new_close) }")
+    return "；".join(parts) or "支撐／壓力有效參考不足，請以當日個股詳情核對。"
+
+
+def _format_premarket_event_evidence(event):
+    """顯示人話比較依據；保留資料可追溯性，但不把原始 JSON 直接丟給使用者。"""
+    event = event or {}
+    category = event.get("category")
+    evidence = event.get("evidence") or {}
+    if category == "watchlist_position":
+        return _format_watchlist_level_change_detail(evidence)
+    if category == "watchlist":
+        old = evidence.get("old") or {}
+        new = evidence.get("new") or {}
+        if old.get("total") is not None or new.get("total") is not None:
+            return f"自選股綜合分數 {old.get('total', '待確認')} → {new.get('total', '待確認')}"
+    if category == "market":
+        old = evidence.get("old") or {}
+        new = evidence.get("new") or {}
+        return f"前一交易日：{old.get('pct', '待確認')}；今日：{new.get('pct', '待確認')}"
+    detail = str(event.get("detail") or "")
+    return detail or "依事件明細中的既有資料比較。"
+
+
 def _pick_events(today, yesterday):
     old = {x["code"]: x for x in yesterday or []}
     new = {x["code"]: x for x in today or []}
@@ -598,10 +669,11 @@ def _watchlist_events(user_id, snapshot_date, previous_date):
     try:
         cur = conn.cursor()
         cur.execute("""
-          SELECT code,total,position,close FROM watchlist_scores
+          SELECT code,total,position,close,support,resistance FROM watchlist_scores
           WHERE user_id=%s AND snapshot_date=%s
         """, (str(user_id), previous_date))
-        old = {r[0]: {"total": r[1], "position": r[2], "close": r[3]} for r in cur.fetchall()}
+        old = {r[0]: {"total": r[1], "position": r[2], "close": r[3],
+                      "support": r[4], "resistance": r[5]} for r in cur.fetchall()}
     finally:
         release_db_connection(conn)
     events = []
@@ -615,13 +687,33 @@ def _watchlist_events(user_id, snapshot_date, previous_date):
             events.append(_event("S", "watchlist", f"你的{name}分數 {before['total']} → {after['total']}", "自選股綜合分數出現重大變化。", f"watch_score_{code}", {"code": code, "old": before, "new": after}))
         elif abs(delta) >= 5:
             events.append(_event("A", "watchlist", f"你的{name}分數 {before['total']} → {after['total']}", "自選股綜合分數出現明顯變化。", f"watch_score_{code}", {"code": code, "old": before, "new": after}))
-        # 支撐／壓力狀態以既有即時報價函式的真實旗標判斷；缺資料就不產生事件。
-        price = (row.get("stock") or {}).get("close")
+        # 支撐／壓力只使用既有即時報價中的實際近期高低點與均線參考；
+        # 舊快照若尚未保存價位，不把缺值猜成 0，也不製造「由多少變多少」。
+        stock = row.get("stock") or {}
+        price = stock.get("close")
         old_price = before.get("close")
-        if price is not None and old_price is not None:
-            old_pos, new_pos = before.get("position"), after.get("position")
-            if old_pos is not None and new_pos is not None and old_pos != new_pos:
-                events.append(_event("A", "watchlist_position", f"你的{name}支撐／壓力狀態變化", "位階分數相較前一交易日不同。", f"watch_position_{code}", {"code": code, "old": old_pos, "new": new_pos}))
+        old_pos, new_pos = before.get("position"), after.get("position")
+        old_support, new_support = before.get("support"), stock.get("support")
+        old_resistance, new_resistance = before.get("resistance"), stock.get("resistance")
+        support_changed = _numeric_value_changed(old_support, new_support)
+        resistance_changed = _numeric_value_changed(old_resistance, new_resistance)
+        position_changed = (old_pos is not None and new_pos is not None and old_pos != new_pos)
+        if price is not None and old_price is not None and (support_changed or resistance_changed):
+            evidence = {"code": code,
+                        "old": {"close": old_price, "position": old_pos,
+                                "support": old_support, "resistance": old_resistance},
+                        "new": {"close": price, "position": new_pos,
+                                "support": new_support, "resistance": new_resistance}}
+            events.append(_event("A", "watchlist_position", f"你的{name}支撐／壓力參考變化",
+                                 _format_watchlist_level_change_detail(evidence),
+                                 f"watch_position_{code}", evidence))
+        elif price is not None and old_price is not None and position_changed:
+            evidence = {"code": code,
+                        "old": {"close": old_price, "position": old_pos},
+                        "new": {"close": price, "position": new_pos}}
+            events.append(_event("A", "watchlist_position", f"你的{name}位階評分變化",
+                                 f"位階分數 {old_pos} → {new_pos}；前一交易日尚未保存完整支撐／壓力價位，暫不虛構價位變化。",
+                                 f"watch_position_{code}", evidence))
     return events
 
 
@@ -1353,6 +1445,8 @@ def init_db():
                 revenue INTEGER,
                 valuation INTEGER,
                 close REAL,
+                support REAL,
+                resistance REAL,
                 asset_type TEXT NOT NULL DEFAULT 'stock',
                 PRIMARY KEY (user_id, code, snapshot_date)
             )
@@ -1360,6 +1454,14 @@ def init_db():
         cursor.execute('''
             ALTER TABLE watchlist_scores
             ADD COLUMN IF NOT EXISTS asset_type TEXT NOT NULL DEFAULT 'stock'
+        ''')
+        cursor.execute('''
+            ALTER TABLE watchlist_scores
+            ADD COLUMN IF NOT EXISTS support REAL
+        ''')
+        cursor.execute('''
+            ALTER TABLE watchlist_scores
+            ADD COLUMN IF NOT EXISTS resistance REAL
         ''')
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_watchlist_scores_lookup
@@ -7898,8 +8000,9 @@ def fetch_taifex_night_summary():
     # 夜盤 15:00 至次日 05:00 的資料，官方要求以次日歸屬日期查詢。
     query_dates = [today + timedelta(days=1)] + [today - timedelta(days=offset) for offset in range(0, 8)]
     headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "zh-TW,zh;q=0.9"}
-    try:
-        for query_date in query_dates:
+    request_errors = []
+    for query_date in query_dates:
+        try:
             params = {
                 "queryDate": query_date.strftime("%Y/%m/%d"),
                 "marketCode": "1",
@@ -7907,8 +8010,10 @@ def fetch_taifex_night_summary():
                 "commodity_id": "TX",
                 "commodity_id2": "",
             }
-            response = requests.get(TAIFEX_NIGHT_URL, params=params,
-                                    headers=headers, timeout=15)
+            # 官方 futDailyMarketReport 的查詢表單是 POST；使用 GET 可能只回傳
+            # 預設頁面，導致日期／夜盤資料沒有跟著 queryDate 更新。
+            response = requests.post(TAIFEX_NIGHT_URL, data=params,
+                                     headers=headers, timeout=15)
             response.raise_for_status()
             parsed = _parse_taifex_night_html(response.text)
             if not parsed:
@@ -7929,8 +8034,11 @@ def fetch_taifex_night_summary():
                 _taifex_night_cache["at"] = time.time()
                 _taifex_night_cache["data"] = result
             return result
-    except Exception as exc:
-        print(f"⚠️ 抓取台指期夜盤官方資料失敗: {exc}")
+        except Exception as exc:
+            request_errors.append(f"{query_date.isoformat()}: {exc}")
+            continue
+    if request_errors:
+        print(f"⚠️ 抓取台指期夜盤官方資料部分日期失敗，已繼續回退：{request_errors[-1]}")
     # 不使用過時 OpenAPI 或舊快照填補，以免再次顯示錯價。
     with _realtime_cache_lock:
         _taifex_night_cache["at"] = time.time()
@@ -8411,6 +8519,8 @@ def save_watchlist_scores(user_id, scores):
     rows = [(str(user_id).strip(), s["code"], s.get("total"), s.get("chip"),
              s.get("position"), s.get("revenue"), s.get("valuation"),
              (s.get("stock") or {}).get("close"),
+             (s.get("stock") or {}).get("support"),
+             (s.get("stock") or {}).get("resistance"),
              s.get("asset_type") or ("etf" if is_etf(s.get("code")) else "stock"))
             for s in scores.values()]
     conn = get_db_connection()
@@ -8421,16 +8531,17 @@ def save_watchlist_scores(user_id, scores):
             """
             INSERT INTO watchlist_scores
                 (user_id, code, snapshot_date, total, chip, position,
-                 revenue, valuation, close, asset_type)
+                 revenue, valuation, close, support, resistance, asset_type)
             VALUES %s
             ON CONFLICT (user_id, code, snapshot_date) DO UPDATE SET
                 total = EXCLUDED.total, chip = EXCLUDED.chip,
                 position = EXCLUDED.position, revenue = EXCLUDED.revenue,
                 valuation = EXCLUDED.valuation, close = EXCLUDED.close,
+                support = EXCLUDED.support, resistance = EXCLUDED.resistance,
                 asset_type = EXCLUDED.asset_type
             """,
             rows,
-            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s)",
+            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             page_size=200,
         )
         conn.commit()
@@ -12636,18 +12747,26 @@ def web_premarket(uid):
     market_cards = []
     market_items = []
     for event in events:
-        evidence = esc(json.dumps(event.get("evidence") or {}, ensure_ascii=False, indent=2, default=str))
+        severity = str(event.get("severity") or "C").strip().upper()
+        severity = severity if severity in CHANGE_LEVEL else "C"
+        severity_label = LEVEL_LABEL.get(severity, "一般變化")
         category = category_labels.get(event.get("category"), event.get("category") or "其他")
+        evidence_text = _format_premarket_event_evidence(event)
         rows.append(
-            f"<tr><td><b>{text(event.get('severity'))}</b></td>"
-            f"<td>{text(category)}</td><td>{text(event.get('title'))}</td>"
-            f"<td>{text(event.get('detail'))}<details><summary>比較證據</summary>"
-            f"<pre>{evidence}</pre></details></td></tr>"
+            f'<article class="premarket-event-card severity-{severity}">'
+            f'<div class="premarket-event-head">'
+            f'<span class="premarket-event-severity">{text(severity)}・{esc(severity_label)}</span>'
+            f'<span class="premarket-event-category">{text(category)}</span></div>'
+            f'<h3>{text(event.get("title"))}</h3>'
+            f'<p>{text(event.get("detail"))}</p>'
+            f'<details><summary>查看比較依據</summary>'
+            f'<div class="premarket-evidence">{text(evidence_text)}</div></details>'
+            f'</article>'
         )
     if not rows:
         empty_events = ("目前尚未建立盤前事件資料。" if not snapshot else
                         (state.get("title") or "今日沒有符合條件的新事件。"))
-        rows.append(f'<tr><td colspan="4">{text(empty_events)}</td></tr>')
+        rows.append(f'<div class="premarket-events-empty">{text(empty_events)}</div>')
 
     display_date = data.get("date")
     requested_date = data.get("requested_date")
@@ -12798,6 +12917,21 @@ def web_premarket(uid):
       .premarket-row, .premarket-metric {{ display:flex; justify-content:space-between; gap:14px; padding:8px 0; border-top:1px solid #ECEBE6; line-height:1.55; }}
       .premarket-row:first-of-type, .premarket-metric:first-of-type {{ border-top:0; }}
       .premarket-row span, .premarket-metric span {{ color:#626970; text-align:right; }}
+      .premarket-event-list {{ display:grid; gap:12px; margin-top:12px; }}
+      .premarket-event-card {{ padding:14px 15px; border:1px solid #E4E4DE; border-left:4px solid #9A9A91; border-radius:12px; background:#FFF; overflow-wrap:anywhere; }}
+      .premarket-event-card.severity-S {{ border-left-color:#9A3A30; background:#FFF9F7; }}
+      .premarket-event-card.severity-A {{ border-left-color:#A6782C; background:#FFFCF5; }}
+      .premarket-event-card.severity-B {{ border-left-color:#58735F; }}
+      .premarket-event-card.severity-C {{ border-left-color:#9A9A91; }}
+      .premarket-event-head {{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:7px; flex-wrap:wrap; }}
+      .premarket-event-severity {{ font-weight:800; color:#6E5228; }}
+      .premarket-event-category {{ color:#767D85; font-size:.9rem; }}
+      .premarket-event-card h3 {{ margin:0; font-size:1.05rem; line-height:1.45; color:#252A2F; }}
+      .premarket-event-card p {{ margin:7px 0 0; color:#545B61; line-height:1.65; }}
+      .premarket-event-card details {{ margin-top:10px; border-top:1px solid #ECEBE6; padding-top:8px; }}
+      .premarket-event-card summary {{ color:#6E5228; cursor:pointer; font-weight:700; }}
+      .premarket-evidence {{ margin-top:8px; padding:9px 10px; border-radius:8px; background:#F7F7F3; color:#4F565C; line-height:1.65; white-space:pre-line; }}
+      .premarket-events-empty {{ padding:15px; color:#767D85; line-height:1.7; background:#F7F7F3; border-radius:10px; }}
       .premarket-metric small {{ color:#8A8F94; font-weight:400; font-size:.78em; }}
       .premarket-row small {{ color:#8A8F94; font-weight:400; }}
       .premarket-market-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; margin-top:10px; }}
@@ -12827,8 +12961,7 @@ def web_premarket(uid):
       <h1>🔥 今日值得注意</h1>
       {meta}
       <div class="premarket-status"><b>{text(state_title)}</b><p>{text(state_detail)}</p></div>
-      <table><thead><tr><th>級別</th><th>類別</th><th>事件</th><th>詳細內容</th></tr></thead>
-      <tbody>{''.join(rows)}</tbody></table>
+      <div class="premarket-event-list">{''.join(rows)}</div>
     </section>
     <section class="card"><h2>其他盤前快照</h2>
       {snapshot_sections}
