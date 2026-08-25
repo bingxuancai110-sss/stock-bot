@@ -395,9 +395,11 @@ def _format_level_price(value):
 
 def _format_watchlist_level_change_detail(evidence):
     """把自選股位階事件轉成人可讀的支撐／壓力前後比較。"""
-    evidence = evidence or {}
+    evidence = evidence if isinstance(evidence, dict) else {}
     old = evidence.get("old") or {}
     new = evidence.get("new") or {}
+    old = old if isinstance(old, dict) else {}
+    new = new if isinstance(new, dict) else {}
     parts = []
     old_support, new_support = old.get("support"), new.get("support")
     old_resistance, new_resistance = old.get("resistance"), new.get("resistance")
@@ -426,9 +428,9 @@ def _format_watchlist_level_change_detail(evidence):
 
 def _format_premarket_event_evidence(event):
     """顯示人話比較依據；保留資料可追溯性，但不把原始 JSON 直接丟給使用者。"""
-    event = event or {}
+    event = event if isinstance(event, dict) else {}
     category = event.get("category")
-    evidence = event.get("evidence") or {}
+    evidence = event.get("evidence") if isinstance(event.get("evidence"), dict) else {}
     if category == "watchlist_position":
         return _format_watchlist_level_change_detail(evidence)
     if category == "watchlist":
@@ -718,7 +720,14 @@ def _watchlist_events(user_id, snapshot_date, previous_date):
 
 
 def _sort_events(events):
-    return sorted(events, key=lambda e: (-CHANGE_LEVEL[e["severity"]], e["category"], e["event_key"]))
+    """依優先級排序，兼容舊快照缺少 event_key 或 severity 型別不完整。"""
+    def sort_key(event):
+        event = event if isinstance(event, dict) else {}
+        severity = str(event.get("severity") or "C").strip().upper()
+        return (-CHANGE_LEVEL.get(severity, CHANGE_LEVEL["C"]),
+                str(event.get("category") or ""),
+                str(event.get("event_key") or event.get("title") or ""))
+    return sorted(events or [], key=sort_key)
 
 
 def run_daily_change_detection(snapshot_date=None):
@@ -2450,24 +2459,44 @@ def create_web_token(user_id):
 
 
 def resolve_web_token(token):
-    """驗證權杖並回傳 user_id；過期或不存在回傳 None。"""
+    """驗證權杖並回傳 user_id；過期或不存在回傳 None。
+
+    Render／Supabase pooler 偶爾會把閒置 TLS 連線切斷；遇到 bad record
+    mac 時關閉該連線並只重試一次，避免把壞連線留給下一個請求。
+    """
     if not token:
         return None
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT user_id FROM web_sessions WHERE token = %s AND expires_at > NOW()",
-            (token,),
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        return row[0] if row else None
-    except Exception as e:
-        print(f"❌ 驗證網頁權杖失敗: {e}")
-        return None
-    finally:
-        release_db_connection(conn)
+    for attempt in range(2):
+        conn = None
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT user_id FROM web_sessions WHERE token = %s AND expires_at > NOW()",
+                (token,),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            release_db_connection(conn)
+            conn = None
+            return row[0] if row else None
+        except Exception as e:
+            print(f"❌ 驗證網頁權杖失敗（第 {attempt + 1} 次）: {e}")
+            # SSL／連線例外後不要把壞連線放回 pool；下一次從 pool
+            # 借用新連線再試一次。這裡不把例外內容回傳給使用者。
+            if conn is not None:
+                try:
+                    connection_pool.putconn(conn, close=True)
+                    conn = None
+                except Exception:
+                    pass
+            if attempt == 0:
+                continue
+            return None
+        finally:
+            if conn is not None:
+                release_db_connection(conn)
+    return None
 
 
 def current_web_user():
@@ -12739,7 +12768,7 @@ def web_premarket(uid):
         }
     snapshot = data.get("snapshot")
     state = data.get("state") or {}
-    events = data.get("events") or []
+    events = [event for event in (data.get("events") or []) if isinstance(event, dict)]
     esc = html.escape
 
     category_labels = {
