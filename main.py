@@ -8788,23 +8788,34 @@ def build_single_etf_report(code, user_id=None):
     lines += ["", "【ETF 商品】",
               f"管理方式：{meta.get('management_style', '待確認')}",
               f"策略分類：{meta.get('category', '待分類')}",
-              f"追蹤基準：{meta.get('benchmark') or '資料待確認'}",
+              f"追蹤基準：{meta.get('benchmark') or '資料待確認'}"]
+    if meta.get("policy_note"):
+        # 配息來源備註屬於配息區塊，避免和商品基本資料混在一起。
+        policy_note = f"配息備註：{meta['policy_note']}"
+    else:
+        policy_note = None
+
+    distribution_records = meta.get("distribution_records") or []
+    lines += ["", "【配息明細】",
               f"配息政策：{_etf_distribution_label(meta.get('distribution_policy'))}"]
     if meta.get("distribution_frequency"):
         lines.append(f"配息頻率：{meta['distribution_frequency']}")
-    if meta.get("policy_note"):
-        lines.append(f"配息備註：{meta['policy_note']}")
-    distribution_records = meta.get("distribution_records") or []
+    if policy_note:
+        lines.append(policy_note)
     if meta.get("distribution_policy") == "non_distributing":
-        lines.append("配息率：不適用（不分配／累積型）")
+        lines.append("現金配息：不適用（不分配／累積型）")
     elif distribution_records:
-        latest = distribution_records[0]
-        lines.append(f"最近一次除息：{latest.get('ex_date') or '未標日期'}・每單位 {float(latest.get('amount') or 0):.4f} 元")
-        lines.append(f"官方已核實配息紀錄：{len(distribution_records)} 筆")
+        latest = _etf_recent_distribution_records(meta, limit=1)
+        latest = latest[0] if latest else distribution_records[0]
+        latest_amount = latest.get("amount")
+        latest_amount_text = (f"每單位 {float(latest_amount):.4f} 元"
+                              if latest_amount is not None else "金額待確認")
+        lines.append(f"最近一次除息：{latest.get('ex_date') or '未標日期'}・{latest_amount_text}")
+        lines.append(f"官方已核實配息：{len(distribution_records)} 筆")
     elif meta.get("distribution_policy") == "distributing":
-        lines.append("配息率：官方已發生配息金額待確認；空白不視為 0 元")
+        lines.append("現金配息：官方已發生金額待確認；空白不視為 0 元")
     else:
-        lines.append("配息率：官方配息政策或金額待確認")
+        lines.append("現金配息：官方配息政策或金額待確認")
     if distribution_records:
         recent_records = _etf_recent_distribution_records(meta, limit=4)
         lines.append(_format_recent_distribution_records(recent_records))
@@ -8843,6 +8854,7 @@ def build_single_etf_report(code, user_id=None):
     closes = [float(x) for x in (stock.get("closes") or []) if x not in (None, 0)]
     close_dates = stock.get("close_dates") or []
     if distribution_records and close is not None:
+        lines += ["", "【配息統計】"]
         end_date = _parse_history_date(close_dates[-1]) if close_dates else taiwan_today()
         trailing = _etf_trailing_distribution_metrics(meta, end_date, close)
         stability = _etf_distribution_stability_metrics(meta, end_date, close)
@@ -13878,8 +13890,8 @@ def _etf_distribution_stability_metrics(meta, end_date, end_close):
     return result
 
 
-def _format_recent_distribution_records(records, prefix="近4次官方配息"):
-    """將官方最近四次除息日／每單位金額整理成可換行閱讀的文字。"""
+def _format_recent_distribution_records(records, prefix="近4次官方配息", multiline=True):
+    """將官方最近四次除息日／每單位金額整理成 LINE 可讀的逐列文字。"""
     if not records:
         return f"{prefix}：待確認"
     records = list(records[:4])
@@ -13887,10 +13899,12 @@ def _format_recent_distribution_records(records, prefix="近4次官方配息"):
     for record in records:
         ex_date = str(record.get("ex_date") or "未標日期")
         amount = record.get("amount")
-        amount_text = f"{float(amount):.4f} 元" if amount is not None else "金額待確認"
-        pieces.append(f"{ex_date} {amount_text}")
+        amount_text = f"每單位 {float(amount):.4f} 元" if amount is not None else "金額待確認"
+        pieces.append(f"・{ex_date}　{amount_text}")
     label = prefix if len(records) >= 4 else f"{prefix}（目前 {len(records)} 筆）"
-    return f"{label}：" + "、".join(pieces)
+    if multiline:
+        return f"{label}：\n" + "\n".join(pieces)
+    return f"{label}：" + "、".join(piece.lstrip("・").strip() for piece in pieces)
 
 
 def _etf_trailing_distribution_metrics(meta, end_date, end_close, days=365):
@@ -16025,7 +16039,7 @@ def _etf_distribution_display_text(row):
         base = "官方配息資料待確認・年化配息不列名次"
 
     recent_text = _format_recent_distribution_records(
-        row.get("distribution_recent_records") or [])
+        row.get("distribution_recent_records") or [], multiline=False)
     stability_status = row.get("distribution_stability_status")
     score_yield = row.get("distribution_score_yield_pct")
     if stability_status == "verified_four_records" and score_yield is not None:
@@ -16271,7 +16285,7 @@ def render_etf_inline_detail(code, meta, quote=None, ranking_row=None):
                        if latest_amount is not None else f"最近一次除息日 {latest_date}・金額待確認")
         lines.append(f'<div class="etf-inline-note">官方配息：{esc(latest_text)}・已核實 {len(distribution_records)} 筆</div>')
         recent_text = _format_recent_distribution_records(
-            _etf_recent_distribution_records(meta, limit=4))
+            _etf_recent_distribution_records(meta, limit=4), multiline=False)
         lines.append(f'<div class="etf-inline-note">{esc(recent_text)}</div>')
     elif meta.get("distribution_policy") == "non_distributing":
         lines.append('<div class="etf-inline-note">官方商品資料標示為不分配／累積型；現金配息不適用。</div>')
