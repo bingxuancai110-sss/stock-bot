@@ -1068,6 +1068,17 @@ def build_today_change_web_data(user_id):
 
 app = Flask(__name__)
 
+
+@app.after_request
+def _disable_web_page_cache(response):
+    """行情、持股與盤前頁不可由瀏覽器／代理沿用上一個收盤時點的 HTML。"""
+    if request.path.startswith("/web"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
@@ -4200,9 +4211,106 @@ _suffix_cache = {}
 _realtime_cache = {}
 _realtime_cache_lock = threading.Lock()
 REALTIME_CACHE_SECONDS = 90
+_TWSE_MIS_CACHE = {"day": None, "at": 0, "data": {}}
+_TWSE_MIS_CACHE_SECONDS = 15
+_TWSE_MIS_BATCH_SIZE = 80
 
 
-def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False):
+def _taiwan_post_close(now=None):
+    """13:30 後才可把官方 MIS 的最後成交價視為當日正式收盤口徑。"""
+    current = now if now is not None else taiwan_now()
+    return current.weekday() < 5 and (current.hour > 13 or
+                                      (current.hour == 13 and current.minute >= 30))
+
+
+def _twse_mis_quote_symbols(codes, market_suffix=None):
+    symbols = []
+    for code in codes:
+        suffix = market_suffix.get(code) if isinstance(market_suffix, dict) else market_suffix
+        suffix = str(suffix or "").upper()
+        if suffix == ".TW":
+            symbols.append(f"tse_{code}.tw")
+        elif suffix == ".TWO":
+            symbols.append(f"otc_{code}.tw")
+        else:
+            # 未知市場才查兩種；已知市場只查一種，避免端點與結果重複。
+            symbols.extend((f"tse_{code}.tw", f"otc_{code}.tw"))
+    return symbols
+
+
+def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False):
+    """批次讀 TWSE MIS；13:30 後取 z/y，確保使用最後市撮／正式收盤價。
+
+    回傳格式與 realtime quote 可合併，但只保留官方明確回傳且日期為台灣
+    今日的項目。查不到時回空 dict，呼叫端繼續使用既有 Yahoo 降級路徑。
+    """
+    codes = list(dict.fromkeys(str(code).strip() for code in (codes or []) if code))
+    if not codes or not _taiwan_post_close():
+        return {}
+    today = taiwan_today().isoformat()
+    now = time.time()
+    with _realtime_cache_lock:
+        if (not force_refresh and _TWSE_MIS_CACHE.get("day") == today and
+                now - _TWSE_MIS_CACHE.get("at", 0) < _TWSE_MIS_CACHE_SECONDS):
+            cached = _TWSE_MIS_CACHE.get("data") or {}
+            if all(code in cached for code in codes):
+                return {code: cached[code] for code in codes}
+            # 只要有任一代號尚未進入快取，就重新查詢這一批，
+            # 不讓缺少的代號回退到 Yahoo 可能停在 13:30 前的舊價。
+
+    symbols = _twse_mis_quote_symbols(codes, market_suffix)
+    parsed = {}
+    for start in range(0, len(symbols), _TWSE_MIS_BATCH_SIZE):
+        batch = symbols[start:start + _TWSE_MIS_BATCH_SIZE]
+        try:
+            response = requests.get(
+                "https://mis.twse.com.tw/stock/api/getStockInfo.jsp",
+                params={"ex_ch": "|".join(batch), "json": "1", "delay": "0",
+                        "_": int(time.time() * 1000)},
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            payload = response.json()
+        except Exception as exc:
+            print(f"⚠️ TWSE MIS 收盤快照失敗（{len(batch)} 檔）: {exc}")
+            continue
+        for item in payload.get("msgArray") or []:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("c") or "").strip()
+            if code not in codes or str(item.get("d") or "") != today.replace("-", ""):
+                continue
+            def number(key):
+                try:
+                    value = str(item.get(key) or "").replace(",", "").strip()
+                    return None if value in ("", "-", "--") else float(value)
+                except (TypeError, ValueError):
+                    return None
+            close = number("z") or number("pz")
+            previous = number("y")
+            if close is None or close <= 0 or previous is None or previous <= 0:
+                continue
+            volume_lots = number("v")
+            parsed[code] = {
+                "close": close,
+                "previous_close": previous,
+                "pct": (close - previous) / previous * 100,
+                "high": number("h") or close,
+                "low": number("l") or close,
+                "volume": int(volume_lots * 1000) if volume_lots is not None else 0,
+                "updated_at": f"{item.get('d')} {item.get('t')}".strip(),
+                "source": "TWSE MIS 最後成交／收盤集合競價",
+                "close_is_final": True,
+                "close_date": item.get("d"),
+                "close_time": item.get("t"),
+            }
+    with _realtime_cache_lock:
+        merged = dict(_TWSE_MIS_CACHE.get("data") or {})
+        merged.update(parsed)
+        _TWSE_MIS_CACHE.update({"day": today, "at": time.time(), "data": merged})
+    return {code: merged[code] for code in codes if code in merged}
+
+
+def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
+                       official_quote=None):
     """
     rng 是 Yahoo 的資料區間。預設 3mo 足夠算位階與均線；
     持股頁要畫「買進點」時才改用 1y——持有超過三個月的部位，
@@ -4215,7 +4323,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False)
 
     # 日期納入 key，避免跨午夜把前一交易日的結果沿用到新的一天。
     cache_day = taiwan_now().date().isoformat()
-    cache_key = f"{code}:{rng}:{cache_day}"
+    cache_session = "postclose" if _taiwan_post_close() else "intraday"
+    cache_key = f"{code}:{rng}:{cache_day}:{cache_session}"
     now = time.time()
     with _realtime_cache_lock:
         cached = _realtime_cache.get(cache_key)
@@ -4267,7 +4376,18 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False)
 
             today_date = datetime.now(tw_tz).date()
 
-            close = meta.get('regularMarketPrice', 0.0)
+            # 13:30 後官方 MIS 的 z/y 優先於 Yahoo regularMarketPrice；
+            # Yahoo 在收盤集合競價後可能仍停在盤中最後成交，不能拿來代表正式收盤。
+            official_quote = official_quote or (
+                _fetch_twse_mis_quotes([code], {code: suffix}).get(code)
+                if _taiwan_post_close() else None)
+            close = (official_quote.get("close") if official_quote else
+                     meta.get('regularMarketPrice', 0.0))
+            # 官方 MIS 偶爾短暫沒有回傳個別代號；收盤後若 Yahoo 日 K
+            # 已經有今天的最後一根，使用該日 K close，不能退回盤中 meta 價。
+            if (not official_quote and _taiwan_post_close() and bars and
+                    bars[-1][0] == today_date):
+                close = bars[-1][1]
             if not close or close == 0:
                 close = bars[-1][1] if bars else 0.0
 
@@ -4276,7 +4396,10 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False)
             # - 還停在昨天（Yahoo 資料還沒更新到今天）→ 倒數第一筆本身才是昨收，
             #   不能再往前抓倒數第二筆，不然會變成抓到前天，算出兩天以上的
             #   累積漲幅，誤標成「當日漲幅」。
-            if bars and bars[-1][0] == today_date:
+            if official_quote:
+                prev_close = official_quote.get("previous_close") or meta.get("chartPreviousClose", close)
+                hist = bars[:-1] if bars and bars[-1][0] == today_date else bars
+            elif bars and bars[-1][0] == today_date:
                 prev_close = bars[-2][1] if len(bars) >= 2 else meta.get('chartPreviousClose', close)
                 hist = bars[:-1]  # 計算位階時排除今天，避免今天自己抬高自己的高點
             elif bars:
@@ -4297,9 +4420,12 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False)
                 continue
 
             pct = ((close - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
-            high = meta.get('regularMarketDayHigh', close) or close
-            low = meta.get('regularMarketDayLow', close) or close
-            volume = meta.get('regularMarketVolume', 0) or 0
+            high = ((official_quote.get("high") if official_quote else None) or
+                    meta.get('regularMarketDayHigh', close) or close)
+            low = ((official_quote.get("low") if official_quote else None) or
+                   meta.get('regularMarketDayLow', close) or close)
+            volume = ((official_quote.get("volume") if official_quote else None) or
+                      meta.get('regularMarketVolume', 0) or 0)
 
             # --- 位階與量能：判斷「這根K棒站在什麼位置」 ---
             h20 = [b[2] for b in hist[-20:]]
@@ -4370,6 +4496,14 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False)
                 "high": float(high),
                 "low": float(low),
                 "volume": int(volume),
+                "source": (official_quote.get("source") if official_quote else
+                            ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
+                             if _taiwan_post_close() and bars and bars[-1][0] == today_date
+                             else "Yahoo Finance 日線行情")),
+                "close_is_final": bool(official_quote),
+                "close_date": (official_quote.get("close_date") if official_quote else
+                               today_date.strftime("%Y%m%d")),
+                "close_time": (official_quote.get("close_time") if official_quote else None),
                 "resistance": resistance,
                 "support": support,
                 # 近期支撐全數跌破時要讓顯示端說明，不能只丟一個數字
@@ -4426,17 +4560,24 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
             return market_suffix.get(code)
         return market_suffix
 
+    # 收盤後先批次取得官方 MIS 最後成交／市撮價格；同一次頁面請求的
+    # 所有檔案共用這份 map，避免首頁與持股頁各自落到不同的 Yahoo 時點。
+    official_quotes = _fetch_twse_mis_quotes(
+        codes, market_suffix=market_suffix, force_refresh=force_refresh)
+
     if len(codes) == 1:  # 只有一檔就不必付出開執行緒池的成本
         return {codes[0]: get_realtime_stock(
             codes[0], rng, market_suffix=suffix_for(codes[0]),
-            force_refresh=force_refresh)}
+            force_refresh=force_refresh,
+            official_quote=official_quotes.get(codes[0]))}
 
     def safe_fetch(c):
         # 單檔失敗不能拖垮整批，一律吞掉例外回 None，交由呼叫端顯示「查無行情」
         try:
             return get_realtime_stock(
                 c, rng, market_suffix=suffix_for(c),
-                force_refresh=force_refresh)
+                force_refresh=force_refresh,
+                official_quote=official_quotes.get(c))
         except Exception as e:
             print(f"⚠️ 並行抓取失敗 {c}: {e}")
             return None
@@ -4543,7 +4684,12 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
                 "volume": volume,
                 "previous_close": previous,
                 "updated_at": meta.get("regularMarketTime"),
-                "source": "Yahoo spark 批次行情",
+                "source": (official_quote.get("source") if official_quote else
+                            "Yahoo Finance 日線行情"),
+                "close_is_final": bool(official_quote),
+                "close_date": (official_quote.get("close_date") if official_quote else
+                               today_date.strftime("%Y%m%d")),
+                "close_time": (official_quote.get("close_time") if official_quote else None),
             }
         return parsed
 
@@ -17444,6 +17590,22 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         interpretation = f"今日組合略領先大盤，主要貢獻來自 {biggest_gain['name']}。"
     else:
         interpretation = "今日組合與大盤已有差異，但目前缺少足夠個股資料說明來源。"
+    quote_rows = [h.get("price") for h in holdings
+                  if isinstance(h.get("price"), dict)]
+    final_quote_rows = [p for p in quote_rows if p.get("close_is_final")]
+    if _taiwan_post_close() and quote_rows:
+        if len(final_quote_rows) == len(quote_rows):
+            close_sync_note = (f"收盤後已同步官方最後成交／市撮價：{len(final_quote_rows)} 檔，"
+                               "資料時間以各檔回傳的 13:30 收盤撮合為準。")
+        elif final_quote_rows:
+            close_sync_note = (f"收盤資料部分同步：官方最後成交／市撮價 {len(final_quote_rows)}／"
+                               f"{len(quote_rows)} 檔，其餘資料待官方回傳，未把盤中價標成正式收盤。")
+        else:
+            close_sync_note = ("官方收盤資料尚未回傳；目前不把盤中報價冒充正式收盤，"
+                               "請稍後重新整理。")
+    else:
+        close_sync_note = "盤中行情會隨市場更新；收盤後切換至官方最後成交／市撮價。"
+
     home_judgement_html = f'''<section class="daily-card home-judgement-card">
   <div class="daily-section-title"><h2>今日判讀</h2><span>依目前資料</span></div>
   <div class="judgement-row"><span>上漲／下跌持股</span><b>{sum(1 for _h, p in valid_changes if p > 0)}／{sum(1 for _h, p in valid_changes if p < 0)} 檔</b></div>
@@ -17528,7 +17690,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <div class="hero-summary-stack"><section class="hero-summary-panel hero-rank-panel"><div class="hero-summary-panel-head"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="rank-grid">{rank_line('short')}{rank_line('long')}</div></section><section class="hero-quote-panel"><p class="hero-quote-text">{html.escape(quote_text)}</p></section></div>
 </section>
 {position_journal_html}
-<section class="daily-card attention-card" data-home-events="top3-collapsed-v20260825"><div class="daily-section-title"><h2>🔥 今日值得注意</h2><a href="/web/premarket">查看完整變化 →</a></div>{events_html}</section>
+<section class="daily-card daily-close-status" data-close-sync="official-mis-v20260825"><div class="daily-section-title"><h2>收盤資料</h2><span>與持股頁同口徑</span></div><p>{html.escape(close_sync_note)}</p></section>
+<section class="daily-card attention-card" data-home-events="top3-collapsed-v20260825">
+<div class="daily-section-title"><h2>🔥 今日值得注意</h2><a href="/web/premarket">查看完整變化 →</a></div>{events_html}</section>
 <section class="daily-card"><div class="daily-section-title"><h2>我的組合今天怎麼了？</h2><span>即時報價</span></div><div class="portfolio-highlights"><div><small>最大貢獻</small><b class="positive">{gain_html}</b></div><div><small>最大拖累</small><b class="negative">{loss_html}</b></div><div><small>總市值</small><b>{total_value:,.0f}</b></div></div></section>
 {home_judgement_html}
 <details class="home-detail-collapse" id="home-contribution" open><summary>查看完整正／負貢獻明細</summary>{contribution_html}</details>'''
@@ -20114,3 +20278,4 @@ def handle_message(event):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
