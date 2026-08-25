@@ -393,6 +393,34 @@ def _format_level_price(value):
         return "資料待確認"
 
 
+def _premarket_json_value(value, expected):
+    """把 JSONB／舊部署可能回傳的 JSON 字串轉成安全容器；不猜測缺失資料。"""
+    parsed = value
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = None
+    if expected == "list":
+        return list(parsed) if isinstance(parsed, (list, tuple)) else []
+    if expected == "dict":
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return parsed
+
+
+def _premarket_record_list(value):
+    """只保留盤前清單中的 dict 記錄，丟棄無法安全渲染的舊 scalar。"""
+    return [item for item in _premarket_json_value(value, "list")
+            if isinstance(item, dict)]
+
+
+def _premarket_record_map(value):
+    """只保留法人 map 中 value 為 dict 的記錄，避免舊資料污染整頁渲染。"""
+    parsed = _premarket_json_value(value, "dict")
+    return {str(code): item for code, item in parsed.items()
+            if isinstance(item, dict)}
+
+
 def _format_watchlist_level_change_detail(evidence):
     """把自選股位階事件轉成人可讀的支撐／壓力前後比較。"""
     evidence = evidence if isinstance(evidence, dict) else {}
@@ -434,13 +462,13 @@ def _format_premarket_event_evidence(event):
     if category == "watchlist_position":
         return _format_watchlist_level_change_detail(evidence)
     if category == "watchlist":
-        old = evidence.get("old") or {}
-        new = evidence.get("new") or {}
+        old = evidence.get("old") if isinstance(evidence.get("old"), dict) else {}
+        new = evidence.get("new") if isinstance(evidence.get("new"), dict) else {}
         if old.get("total") is not None or new.get("total") is not None:
             return f"自選股綜合分數 {old.get('total', '待確認')} → {new.get('total', '待確認')}"
     if category == "market":
-        old = evidence.get("old") or {}
-        new = evidence.get("new") or {}
+        old = evidence.get("old") if isinstance(evidence.get("old"), dict) else {}
+        new = evidence.get("new") if isinstance(evidence.get("new"), dict) else {}
         return f"前一交易日：{old.get('pct', '待確認')}；今日：{new.get('pct', '待確認')}"
     detail = str(event.get("detail") or "")
     return detail or "依事件明細中的既有資料比較。"
@@ -912,9 +940,11 @@ def get_today_change_snapshot(snapshot_date=None):
                 "source_date": row[0].isoformat(),
                 "briefing_date": row[1].isoformat() if row[1] else display_date.isoformat(),
                 "previous_trade_date": row[2].isoformat() if row[2] else None,
-                "blackhorse": row[3] or [], "radar": row[4] or [],
-                "market": row[5] or {}, "news": row[6] or [],
-                "institutional": row[7] or {}}
+                "blackhorse": _premarket_record_list(row[3]),
+                "radar": _premarket_record_list(row[4]),
+                "market": _premarket_json_value(row[5], "dict"),
+                "news": _premarket_record_list(row[6]),
+                "institutional": _premarket_record_map(row[7])}
     finally:
         release_db_connection(conn)
 
@@ -12766,9 +12796,31 @@ def web_premarket(uid):
             },
             "load_error": True,
         }
-    snapshot = data.get("snapshot")
-    state = data.get("state") or {}
-    events = [event for event in (data.get("events") or []) if isinstance(event, dict)]
+    if not isinstance(data, dict):
+        print(f"❌ 盤前完整變化頁資料型別異常（uid={uid}）：{type(data).__name__}")
+        requested_date = taiwan_today()
+        data = {
+            "date": requested_date.isoformat(),
+            "requested_date": requested_date.isoformat(),
+            "is_weekend": requested_date.weekday() >= 5,
+            "snapshot": None,
+            "events": [],
+            "state": {"title": "盤前資料暫時無法載入",
+                      "detail": "完整資料格式暫時無法辨識，請稍後重新整理；目前不顯示推測訊號。"},
+            "load_error": True,
+        }
+    snapshot = data.get("snapshot") if isinstance(data.get("snapshot"), dict) else None
+    if snapshot:
+        snapshot = dict(snapshot)
+        snapshot["blackhorse"] = _premarket_record_list(snapshot.get("blackhorse"))
+        snapshot["radar"] = _premarket_record_list(snapshot.get("radar"))
+        snapshot["market"] = _premarket_json_value(snapshot.get("market"), "dict")
+        snapshot["news"] = _premarket_record_list(snapshot.get("news"))
+        snapshot["institutional"] = _premarket_record_map(snapshot.get("institutional"))
+    state = data.get("state") if isinstance(data.get("state"), dict) else {}
+    event_source = data.get("events")
+    events = [event for event in event_source
+              if isinstance(event, dict)] if isinstance(event_source, (list, tuple)) else []
     esc = html.escape
 
     category_labels = {
@@ -13028,7 +13080,26 @@ def web_premarket(uid):
       {raw_snapshot}
     </section>
     """
-    return render_page("盤前變化", body, nav_active="premarket")
+    try:
+        return render_page("盤前變化", body, nav_active="premarket")
+    except Exception as exc:
+        # route 的資料 fallback 之後仍可能遇到極舊快照或模板資料型別；
+        # 不讓使用者看到 Flask 原生 500，並保留不含 token／資料內容的錯誤類型供 Logs 定位。
+        print(f"❌ 盤前完整變化頁渲染失敗（uid={uid}，{type(exc).__name__}）：{exc}")
+        if request.args.get("fragment") == "1":
+            return make_response("PREMARKET_TEMPORARILY_UNAVAILABLE", 503,
+                                 {"X-StockBot-Error": "premarket-render"})
+        safe_body = ('<section class="card"><h1>盤前資料暫時無法顯示</h1>'
+                     '<p>頁面整理遇到暫時性問題，資料沒有被推測或補造；請稍後重新整理。</p>'
+                     '</section>')
+        try:
+            return render_page("盤前變化", safe_body, nav_active="premarket"), 503
+        except Exception as fallback_exc:
+            print(f"❌ 盤前安全頁渲染失敗（{type(fallback_exc).__name__}）：{fallback_exc}")
+            return make_response(
+                '<!doctype html><meta charset="utf-8"><title>盤前資料暫時無法顯示</title>'
+                "<main><h1>盤前資料暫時無法顯示</h1>"
+                "<p>請稍後重新整理；系統沒有自行補造市場資料。</p></main>", 503)
 
 
 
