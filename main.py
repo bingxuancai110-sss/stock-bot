@@ -19347,9 +19347,8 @@ def _workbench_screener_rows(mode, snapshot=None):
         code = str(raw.get("code") or "").strip()
         if not re.fullmatch(r"\d{4}", code):
             continue
-        quality = raw.get("data_quality")
-        if isinstance(quality, dict):
-            quality = quality.get("score") or quality.get("filled") or quality.get("label")
+        quality_detail = raw.get("data_quality") if isinstance(raw.get("data_quality"), dict) else {}
+        quality = (quality_detail.get("valid") if quality_detail else raw.get("data_quality"))
         quality_num = _workbench_number(quality, 0)
         source_label = "黑馬" if mode == "blackhorse" else "雷達"
         signal = (raw.get("radar_state") if mode == "radar" else raw.get("breakout"))
@@ -19360,21 +19359,61 @@ def _workbench_screener_rows(mode, snapshot=None):
             "code": code,
             "name": _workbench_display_name(raw, code),
             "industry": _workbench_text(raw.get("industry"), "未分類"),
-            "score": _workbench_number(raw.get("score"), 0),
+            "score": _workbench_number(raw.get("score")),
             "price": _workbench_number(raw.get("close")),
             "change_pct": _workbench_number(raw.get("pct")),
             "metric_label": "當日漲跌",
-            "institutional_lots": _workbench_number(raw.get("cum_lots"), 0),
+            "institutional_lots": _workbench_number(raw.get("cum_lots")),
+            "institutional_amount": _workbench_number(raw.get("institutional_amount") or raw.get("cum_amount") or raw.get("institution_amount")),
+            "foreign_lots": _workbench_number(raw.get("foreign_lots") or raw.get("foreign_cum_lots")),
+            "trust_lots": _workbench_number(raw.get("trust_lots") or raw.get("investment_trust_lots")),
             "signal": _workbench_text(signal, "近期快照"),
             "quality": quality_num,
+            "rev": _workbench_number(raw.get("rev")),
+            "val": _workbench_number(raw.get("val")),
+            "mom": _workbench_number(raw.get("mom")),
+            "streak_score": _workbench_number(raw.get("streak_score")),
+            "chip": _workbench_number(raw.get("chip")),
+            "caps": list(raw.get("caps")) if isinstance(raw.get("caps"), (list, tuple)) else None,
+            "val_desc": _workbench_text(raw.get("val_desc"), ""),
+            "mom_desc": _workbench_text(raw.get("mom_desc"), ""),
+            "radar_state": _workbench_text(raw.get("radar_state"), ""),
+            "turnover": _workbench_number(raw.get("turnover")),
+            "pe": _workbench_number(raw.get("pe")),
+            "peg": _workbench_number(raw.get("peg")),
+            "yield": _workbench_number(raw.get("yield")),
+            "pb": _workbench_number(raw.get("pb")),
+            "pos": _workbench_number(raw.get("pos")),
+            "category": _workbench_text(raw.get("category"), "未分類"),
+            "score_policy": ("金融股不評分，僅列事實供判讀"
+                             if raw.get("category") == "金融" and raw.get("score") is None else ""),
+            "buy_days": _workbench_number(raw.get("buy_days"), 0),
+            "up_streak": _workbench_number(raw.get("up_streak"), 0),
+            "cum_yoy": _workbench_number(raw.get("cum_yoy")),
             "detail": {
                 "source_date": str(snapshot.get("source_date") or "未標日期"),
-                "breakout": _workbench_text(raw.get("breakout"), "未建立突破標示"),
-                "streak": _workbench_number(raw.get("streak"), 0),
+                "breakout": _workbench_text(raw.get("breakout"), ""),
+                "high_status": _workbench_text(raw.get("high_status") or raw.get("position_status"), ""),
+                "radar_state": _workbench_text(raw.get("radar_state"), ""),
+                "category": _workbench_text(raw.get("category"), ""),
+                "score_policy": ("金融股不評分，僅列事實供判讀"
+                                 if raw.get("category") == "金融" and raw.get("score") is None else ""),
+                "caps": list(raw.get("caps")) if isinstance(raw.get("caps"), (list, tuple)) else None,
+                "val_desc": _workbench_text(raw.get("val_desc"), ""),
+                "mom_desc": _workbench_text(raw.get("mom_desc"), ""),
+                "streak": _workbench_number(raw.get("streak") or raw.get("up_streak")),
+                "buy_days": _workbench_number(raw.get("buy_days"), 0),
                 "vol_ratio": _workbench_number(raw.get("vol_ratio")),
                 "support": _workbench_number(raw.get("support")),
                 "resistance": _workbench_number(raw.get("resistance")),
-                "data_quality": quality_num,
+                "institutional_amount": _workbench_number(raw.get("institutional_amount") or raw.get("cum_amount") or raw.get("institution_amount")),
+                "foreign_lots": _workbench_number(raw.get("foreign_lots") or raw.get("foreign_cum_lots")),
+                "trust_lots": _workbench_number(raw.get("trust_lots") or raw.get("investment_trust_lots")),
+                "pe": _workbench_number(raw.get("pe")),
+                "peg": _workbench_number(raw.get("peg")),
+                "turnover": _workbench_number(raw.get("turnover")),
+                "score_breakdown": "營收／估值／產業／連續性／籌碼技術" if any(raw.get(k) is not None for k in ("rev", "val", "mom", "streak_score", "chip")) else "",
+                "data_quality": quality_detail,
             },
         })
     return normalized
@@ -19417,21 +19456,29 @@ def _workbench_turning_rows(snapshot):
             "code": code,
             "name": _workbench_display_name(raw, code),
             "industry": _workbench_text(raw.get("industry"), "轉折觀察"),
-            "score": _workbench_number(raw.get("score"), 0),
+            "score": _workbench_number(raw.get("score")),
             "price": _workbench_number(raw.get("close") or raw.get("current_close") or raw.get("price")),
             "change_pct": _workbench_number(raw.get("pct") or raw.get("change_pct")),
             "metric_label": "當日漲跌",
-            "institutional_lots": _workbench_number(raw.get("current_total_lots"), 0),
+            "institutional_lots": _workbench_number(raw.get("current_total_lots")),
             "signal": f"{flow}／{state_label}",
-            "quality": _workbench_number(raw.get("score"), 0),
+            "quality": _workbench_number(raw.get("score")),
             "detail": {
                 "source_date": str(snapshot.get("data_date") or "未標日期"),
                 "state": state or "未標示",
                 "state_label": state_label,
                 "flow": flow,
                 "flow_key": flow_key,
-                "state_reason": _workbench_text(raw.get("state_reason"), "尚無具體原因"),
-                "reasons": [str(item) for item in details if str(item).strip()][:4],
+                "event_type": _workbench_text(raw.get("event_type"), ""),
+                "consensus": _workbench_text(raw.get("consensus"), ""),
+                "state_reason": _workbench_text(raw.get("state_reason"), ""),
+                "reasons": [str(item) for item in details if str(item).strip()],
+                "invalid_reasons": [str(item) for item in (raw.get("invalid_reasons") or []) if str(item).strip()],
+                "current_total_lots": _workbench_number(raw.get("current_total_lots")),
+                "magnitude_ratio": _workbench_number(raw.get("magnitude_ratio")),
+                "support": _workbench_number(raw.get("support")),
+                "resistance": _workbench_number(raw.get("resistance")),
+                "vol_ratio": _workbench_number(raw.get("vol_ratio")),
             },
         })
     return rows
@@ -19442,42 +19489,64 @@ def _workbench_etf_rows(payload):
     payload = payload if isinstance(payload, dict) else {}
     categories = payload.get("categories") if isinstance(payload.get("categories"), dict) else {}
     periods = payload.get("periods") if isinstance(payload.get("periods"), dict) else {}
-    period_key = "short" if isinstance(categories.get("short"), dict) else "long"
-    period_rows = categories.get(period_key) if isinstance(categories.get(period_key), dict) else {}
-    period_label = ((periods.get(period_key) or {}).get("label") or
-                    ("短期價格報酬" if period_key == "short" else "長期價格報酬"))
     rows, seen = [], set()
-    for category, values in period_rows.items():
-        if not isinstance(values, list):
+    for period_key, period_rows in categories.items():
+        if not isinstance(period_rows, dict):
             continue
-        for raw in values:
-            if not isinstance(raw, dict):
+        period_label = ((periods.get(period_key) or {}).get("label") or
+                        ("短期價格報酬" if period_key == "short" else "長期價格報酬"))
+        for category_key, values in period_rows.items():
+            if not isinstance(values, list):
                 continue
-            code = str(raw.get("code") or "").strip()
-            if not re.fullmatch(r"\d{4,6}", code) or code in seen:
-                continue
-            seen.add(code)
-            rows.append({
-                "source": "ETF",
-                "code": code,
-                "name": _workbench_display_name(raw, code),
-                "industry": _workbench_text(category, "ETF"),
-                "score": _workbench_number(raw.get("score"), 0),
-                "price": _workbench_number(raw.get("close") or raw.get("price")),
-                "change_pct": _workbench_number(raw.get("return_pct")),
-                "metric_label": period_label,
-                "institutional_lots": None,
-                "signal": _workbench_text(raw.get("comment") or raw.get("period_label"), "商品排名"),
-                "quality": _workbench_number(raw.get("observations"), 0),
-                "detail": {
+            for raw in values:
+                if not isinstance(raw, dict):
+                    continue
+                code = str(raw.get("code") or "").strip()
+                unique_key = (period_key, category_key, code)
+                if not re.fullmatch(r"\d{4,6}|\d{4,5}[A-Za-z]", code) or unique_key in seen:
+                    continue
+                seen.add(unique_key)
+                category = _workbench_text(raw.get("category"), category_key)
+                detail = {
                     "source_date": str(payload.get("market_data_date") or payload.get("data_date") or "未標日期"),
-                    "category": _workbench_text(category, "ETF"),
+                    "period_key": period_key,
+                    "period_label": period_label,
+                    "category": category,
+                    "return_pct": _workbench_number(raw.get("return_pct")),
+                    "market_return_pct": _workbench_number(raw.get("market_return_pct")),
+                    "excess_pct": _workbench_number(raw.get("excess_pct")),
+                    "max_drawdown_pct": _workbench_number(raw.get("max_drawdown_pct")),
+                    "volatility_pct": _workbench_number(raw.get("volatility_pct")),
+                    "annualized_yield_pct": _workbench_number(raw.get("distribution_annualized_yield_pct")),
+                    "distribution_status": _workbench_text(raw.get("distribution_status"), ""),
+                    "distribution_stability_status": _workbench_text(raw.get("distribution_stability_status"), ""),
+                    "distribution_recent_records": raw.get("distribution_recent_records") or [],
+                    "asset_size_billion": _workbench_number(raw.get("asset_size_billion")),
+                    "holders": _workbench_number(raw.get("holders")),
+                    "ytd_avg_turnover_million": _workbench_number(raw.get("ytd_avg_turnover_million")),
+                    "observations": _workbench_number(raw.get("observations")),
+                    "start_date": _workbench_text(raw.get("start_date"), ""),
+                    "end_date": _workbench_text(raw.get("end_date"), ""),
+                    "comment": _workbench_text(raw.get("comment"), ""),
+                }
+                rows.append({
+                    "source": "ETF",
+                    "row_key": f"ETF:{period_key}:{category_key}:{code}",
+                    "code": code,
+                    "name": _workbench_display_name(raw, code),
+                    "industry": category,
+                    "score": _workbench_number(raw.get("score")),
+                    "price": _workbench_number(raw.get("official_close") or raw.get("close") or raw.get("price")),
+                    "change_pct": _workbench_number(raw.get("return_pct")),
+                    "metric_label": period_label,
+                    "institutional_lots": None,
+                    "signal": _workbench_text(raw.get("comment"), "商品排名"),
+                    "quality": _workbench_number(raw.get("observations"), 0),
                     "return_pct": _workbench_number(raw.get("return_pct")),
                     "excess_pct": _workbench_number(raw.get("excess_pct")),
                     "annualized_yield_pct": _workbench_number(raw.get("distribution_annualized_yield_pct")),
-                    "period_label": period_label,
-                },
-            })
+                    "detail": detail,
+                })
     return rows
 
 
@@ -19493,6 +19562,13 @@ def _workbench_chips_rows(result):
         "both_buy": "外資投信同買", "trust_sell": "投信調節",
         "both_sell": "外資投信同賣",
     }
+    group_notes = {
+        "投信認養": "國內基金持續站在買方，至少 6／10 天才列入認養。",
+        "外資認養": "外資近十日持續買超；外資也可能包含指數或 ETF 被動調整。",
+        "外資投信同買": "外資與投信同時站買方，顯示兩類資金方向一致。",
+        "投信調節": "投信近十日持續賣超，作為籌碼面的撤退訊號觀察。",
+        "外資投信同賣": "外資與投信同時站賣方，顯示兩類資金方向一致轉弱。",
+    }
     rows = []
     for group_key, label in group_labels.items():
         for raw in (payload.get("groups") or {}).get(group_key) or []:
@@ -19502,6 +19578,13 @@ def _workbench_chips_rows(result):
             if not re.fullmatch(r"\d{4}", code):
                 continue
             lots = _workbench_number(raw.get("lots"), 0)
+            trust_lots = _workbench_number(raw.get("trust_lots"))
+            foreign_lots = _workbench_number(raw.get("foreign_lots"))
+            if group_key in {"trust_buy", "trust_sell"} and trust_lots is None:
+                trust_lots = lots
+            if group_key == "foreign_buy" and foreign_lots is None:
+                foreign_lots = lots
+            group_lots = lots if group_key in {"both_buy", "both_sell"} else None
             detail = {
                 "source_date": data_date,
                 "group": label,
@@ -19509,8 +19592,10 @@ def _workbench_chips_rows(result):
                 "amount_billion": _workbench_number(raw.get("amount_billion")),
                 "hit_days": _workbench_number(raw.get("hit_days")),
                 "total_days": _workbench_number(raw.get("total_days")),
-                "foreign_lots": _workbench_number(raw.get("foreign_lots")),
-                "trust_lots": _workbench_number(raw.get("trust_lots")),
+                "foreign_lots": foreign_lots,
+                "trust_lots": trust_lots,
+                "group_lots": group_lots,
+                "plain_note": group_notes.get(label, "依已保存法人資料整理，未補入推測訊號。"),
             }
             rows.append({
                 "source": "籌碼", "code": code,
@@ -19518,7 +19603,10 @@ def _workbench_chips_rows(result):
                 "industry": "法人籌碼", "score": None,
                 "price": None, "change_pct": None,
                 "metric_label": "近十日金額",
-                "institutional_lots": lots, "signal": label,
+                "institutional_lots": lots,
+                "institutional_amount": _workbench_number(raw.get("amount_billion")),
+                "turnover": _workbench_number(raw.get("amount_billion")),
+                "signal": label,
                 "quality": _workbench_number(raw.get("hit_days")), "detail": detail,
             })
     for raw in payload.get("institutional_shifts") or []:
@@ -19535,6 +19623,7 @@ def _workbench_chips_rows(result):
             "price": None, "change_pct": None,
             "metric_label": "法人方向變化",
             "institutional_lots": lots,
+            "institutional_amount": _workbench_number(raw.get("amount_billion")),
             "signal": _workbench_text(raw.get("event_type"), "法人方向變化"),
             "quality": _workbench_number(raw.get("magnitude_ratio")),
             "detail": {
@@ -19544,6 +19633,7 @@ def _workbench_chips_rows(result):
                 "consensus": _workbench_text(raw.get("consensus"), "待確認"),
                 "institutional_lots": lots,
                 "magnitude_ratio": _workbench_number(raw.get("magnitude_ratio")),
+                "plain_note": "依投資人方向變化與已保存強度資料整理；不是即時預測。",
             },
         })
     return rows
@@ -19624,7 +19714,7 @@ def build_workbench_snapshot_payload(uid=None):
 
     seen, deduped = set(), []
     for row in rows:
-        key = (row.get("source"), row.get("code"))
+        key = row.get("row_key") or (row.get("source"), row.get("code"))
         if key not in seen:
             seen.add(key)
             deduped.append(row)
@@ -19699,10 +19789,11 @@ def render_workbench_body(initial_tab=""):
     body = r'''
 <section class="wb-shell" id="stockbot-workbench" data-workbench="snapshot-first-v1" data-initial-tab="__INITIAL_TAB__">
   <div class="wb-intro"><div><p class="wb-kicker">選股工作台 · 快照優先</p><h2>選股工作台</h2><p class="wb-sub">先讀取最近有效快照；排序、篩選與個股詳情都不重新掃描市場。</p></div><div class="wb-status" id="wb-status">讀取最近有效快照…</div></div>
-  <div class="wb-pulse" id="wb-pulse"><span>資料狀態</span><b>快照優先</b><i></i><i></i><em>顯示資料時間與更新方式，不會重新掃描全市場</em></div>
+  <div class="wb-pulse" id="wb-pulse"><span>資料狀態</span><b>快照優先</b><i></i><i></i><em>先看已保存資料；個股與 ETF 分開比較，不混在同一榜單。</em></div>
+  <div class="wb-asset-tabs" id="wb-asset-tabs" aria-label="資產類型"><button type="button" class="on" data-asset="stock">個股</button><button type="button" data-asset="etf">ETF 專區</button></div>
   <div class="wb-tabs" id="wb-tabs" aria-label="選股資料來源"></div>
   <div class="wb-tools"><label><span>⌕</span><input id="wb-search" placeholder="搜尋代號、名稱或產業" autocomplete="off"></label><button type="button" id="wb-filter">篩選條件</button><button type="button" id="wb-refresh">重新整理</button></div>
-  <div class="wb-filter-panel" id="wb-filter-panel" hidden><div><b>標的</b><button type="button" data-kind="all" class="on">全部</button><button type="button" data-kind="stock">個股</button><button type="button" data-kind="etf">ETF</button></div><div><b>當日漲跌</b><button type="button" data-dir="all" class="on">不限</button><button type="button" data-dir="up">上漲</button><button type="button" data-dir="down">下跌</button></div></div><div class="wb-mobile-sort" id="wb-mobile-sort" aria-label="排序方式"><span>排序</span><button type="button" data-sort="score" class="on">分數</button><button type="button" data-sort="change_pct">漲跌</button><button type="button" data-sort="institutional_lots">法人</button></div>
+  <div class="wb-filter-panel" id="wb-filter-panel" hidden><div><b>當日漲跌</b><button type="button" data-dir="all" class="on">不限</button><button type="button" data-dir="up">上漲</button><button type="button" data-dir="down">下跌</button></div></div><div class="wb-mobile-sort" id="wb-mobile-sort" aria-label="排序方式"><span>排序</span><button type="button" data-sort="score" class="on">分數</button><button type="button" data-sort="change_pct">漲跌</button><button type="button" data-sort="institutional_lots">法人</button></div>
   <div class="wb-meta"><span id="wb-count">正在讀取…</span><span id="wb-note"></span></div>
   <div class="wb-table" id="wb-table" aria-live="polite"><div class="wb-head"><span>標的</span><button type="button" data-sort="score">綜合分數</button><button type="button" data-sort="change_pct">報酬／漲跌</button><button type="button" data-sort="institutional_lots">法人方向</button><span>訊號</span><span></span></div><div id="wb-rows"><div class="wb-skeleton"></div><div class="wb-skeleton"></div><div class="wb-skeleton"></div></div></div>
   <p class="wb-disclaimer">資料來源僅限已保存的黑馬、雷達、轉折、ETF 與籌碼快照；成效只在開啟分頁時讀取既有推薦紀錄。資料缺漏維持待確認，不以推測數字補足。</p>
@@ -19712,13 +19803,15 @@ def render_workbench_body(initial_tab=""):
 .wb-shell{margin:16px 0 28px;color:#1d2939}.wb-intro{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:2px solid #27364a;padding:4px 0 16px}.wb-kicker{margin:0;color:#526b84;font-size:11px;font-weight:800;letter-spacing:.08em}.wb-intro h2{margin:5px 0 4px;font-size:28px;letter-spacing:.02em}.wb-sub{margin:0;color:#667085;font-size:13px}.wb-status{border:1px solid #d4dce6;background:#f8fbff;padding:9px 11px;color:#526b84;font-size:11px;white-space:nowrap}.wb-pulse{display:grid;grid-template-columns:130px 180px 1fr 1fr 180px;align-items:center;gap:14px;border:1px solid #d7e0ea;border-left:3px solid #52718d;padding:14px 10px;background:#f7fbff;font-size:12px}.wb-pulse span{font-weight:800}.wb-pulse b{font-family:monospace;font-size:12px}.wb-pulse i{height:3px;background:#c94d45}.wb-pulse i:nth-of-type(2){background:#23795a}.wb-pulse em{font-style:normal;color:#667085}.wb-tabs{display:flex;gap:20px;border-bottom:1px solid #d7e0ea;padding:15px 10px 0}.wb-tabs button{border:0;background:transparent;color:#667085;padding:0 0 12px;font-size:13px;font-weight:700;border-bottom:2px solid transparent}.wb-tabs button.on{color:#274c77;border-color:#52718d}.wb-tools{display:grid;grid-template-columns:1fr auto auto;gap:8px;padding:16px 0}.wb-tools label{display:flex;gap:8px;align-items:center;border:1px solid #cfd9e5;background:#fff;padding:0 11px}.wb-tools input{width:100%;border:0;outline:0;padding:11px 0;font:inherit}.wb-tools button,.wb-filter-panel button{border:1px solid #cfd9e5;background:#fff;padding:9px 12px;color:#344054;font:inherit;font-size:12px}.wb-tools button:hover,.wb-filter-panel button.on{border-color:#52718d;color:#274c77;background:#f1f7fc}.wb-filter-panel{display:flex;gap:24px;margin:-8px 0 12px;padding:12px;border:1px solid #d9e3ed;background:#f7faff;font-size:12px}.wb-filter-panel div{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wb-filter-panel b{margin-right:5px;color:#526b84}.wb-filter-panel button{padding:5px 9px}.wb-meta{display:flex;justify-content:space-between;gap:12px;padding:7px 0 10px;color:#667085;font-size:11px}.wb-meta b{color:#1d2939}.wb-table{border:1px solid #d7e0ea;background:#fff;border-radius:12px;overflow:hidden}.wb-head,.wb-row{display:grid;grid-template-columns:minmax(190px,2fr) minmax(110px,1fr) minmax(110px,1fr) minmax(120px,1fr) minmax(145px,1.25fr) 22px;gap:10px;align-items:center;padding:12px 14px}.wb-head{background:#f3f7fb;border-bottom:1px solid #d7e0ea;color:#526b84;font-size:11px}.wb-head button{border:0;background:transparent;color:inherit;text-align:left;font:inherit;font-weight:800;padding:0}.wb-head button.on{color:#274c77}.wb-row{border-bottom:1px solid #edf1f5;text-align:left;cursor:pointer;background:#fff}.wb-row:hover{background:#f7fbff;box-shadow:inset 3px 0 #52718d}.wb-name{display:block;font-weight:800;font-size:19px;line-height:1.35;color:#182b3e}.wb-code,.wb-small{display:block;color:#66788a;font-size:13px;font-weight:700;line-height:1.35;margin-top:3px}.wb-industry{display:inline-flex;align-items:center;margin-top:6px;padding:3px 7px;border:1px solid #cad8e6;border-radius:999px;background:#f4f8fc;color:#41617e;font-size:11px;font-weight:800;line-height:1.25}.wb-mobile-sort{display:none;align-items:center;gap:6px;margin:-4px 0 12px;color:#526b84;font-size:12px;font-weight:800}.wb-mobile-sort button{border:1px solid #cfd9e5;background:#fff;border-radius:6px;padding:6px 10px;color:#526b84;font:inherit;font-size:11px}.wb-mobile-sort button.on{border-color:#52718d;background:#edf5fb;color:#274c77}.wb-turning-flow{display:inline-flex;margin-top:5px;padding:3px 6px;border-radius:5px;font-size:10px;font-weight:800;line-height:1.25}.wb-turning-flow.sell_to_buy,.wb-turning-flow.buying_strength{background:#fceceb;color:#b42318}.wb-turning-flow.buy_to_sell,.wb-turning-flow.selling_strength{background:#e9f6ef;color:#13734c}.wb-turning-flow.unknown{background:#eef2f6;color:#667085}.wb-num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800}.wb-up{color:#b42318}.wb-down{color:#13734c}.wb-flat{color:#7b8795}.wb-tag{display:inline-block;font-size:10px;padding:3px 5px;background:#edf3f8;color:#345673;margin-right:5px}.wb-tag.ETF{background:#e8f4ed;color:#227052}.wb-tag.雷達{background:#e8f5f5;color:#256d6c}.wb-tag.轉折{background:#f0ebf8;color:#674d8c}.wb-tag.籌碼{background:#fff0df;color:#9a5b17}.wb-skeleton{height:54px;margin:0 14px;border-bottom:1px solid #edf1f5;background:linear-gradient(90deg,#fff 20%,#f2f6fa 45%,#fff 70%);background-size:220% 100%;animation:wbscan 1.1s linear infinite}@keyframes wbscan{to{background-position:-120% 0}}.wb-review-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:14px}.wb-review-card{border:1px solid #d7e0ea;background:#fff;border-radius:10px;padding:14px}.wb-review-card h3{margin:0 0 5px;font-size:18px}.wb-review-card p{margin:0 0 10px;color:#667085;font-size:12px}.wb-review-row{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:8px;padding:10px 0;border-top:1px solid #edf1f5;font-size:12px}.wb-review-row b{display:block;font-family:ui-monospace,monospace}.wb-disclaimer{margin:12px 0;color:#7b8795;font-size:11px;line-height:1.55}.wb-mask{position:fixed;inset:0;background:rgba(23,42,58,.22);z-index:30}.wb-drawer{position:fixed;z-index:31;right:0;top:0;bottom:0;width:min(430px,92vw);padding:22px;background:#fff;box-shadow:-12px 0 32px rgba(23,42,58,.16);transform:translateX(110%);transition:transform .18s ease-out;overflow:auto}.wb-drawer.open{transform:translateX(0)}.wb-drawer>button{float:right;border:0;background:transparent;font-size:26px;color:#526b84}.wb-detail h3{margin:5px 0;font-size:25px}.wb-detail p{color:#667085;font-size:12px}.wb-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#dbe4ec;margin:18px 0}.wb-detail-grid div{background:#f9fbfd;padding:11px}.wb-detail-grid small{display:block;color:#7b8795}.wb-detail-grid b{display:block;margin-top:5px;font-family:ui-monospace,monospace}.wb-facts{padding:0;margin:0;list-style:none}.wb-facts li{border-top:1px solid #e4ebf1;padding:10px 0;font-size:12px;line-height:1.55}@media(max-width:620px){.wb-intro{display:block}.wb-status{display:inline-block;margin-top:12px}.wb-pulse{grid-template-columns:1fr 1fr;padding:12px}.wb-pulse i{grid-column:span 1}.wb-pulse em{grid-column:1/-1;border-top:1px solid #d7e0ea;padding-top:8px}.wb-tabs{gap:14px;overflow:auto}.wb-tools{grid-template-columns:1fr auto}.wb-tools label{grid-column:1/-1}.wb-filter-panel{display:block}.wb-filter-panel div+div{margin-top:10px}.wb-meta{display:block}.wb-meta span{display:block;margin-top:4px}.wb-head{display:none}.wb-row{grid-template-columns:1.6fr 1fr 1fr 18px;gap:8px;padding:12px}.wb-row .wb-institutional,.wb-row .wb-signal{display:none}.wb-mobile-sort{display:flex}.wb-row .wb-name{font-size:18px}.wb-row .wb-code{font-size:13px}.wb-row .wb-industry{font-size:11px}.wb-row .wb-tag{font-size:10px}.wb-review-grid{grid-template-columns:1fr;padding:10px}.wb-drawer{width:100%;}.wb-detail-grid{grid-template-columns:1fr 1fr}}
 </style>
 <style>
-.wb-tag.持股{background:#f5e8df;color:#85513a}.wb-rank-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:#ded7cc}.wb-rank-card{background:#fffdf8;padding:18px}.wb-rank-card small,.wb-rank-card em{display:block;color:#857d71;font-size:11px;font-style:normal}.wb-rank-card b{display:block;font-family:ui-monospace,monospace;font-size:23px;margin:7px 0}.wb-rank-card span{font-size:12px;font-weight:800}@media(max-width:620px){.wb-rank-grid{grid-template-columns:1fr}}
+.wb-asset-tabs{display:flex;gap:8px;margin:16px 0 4px;border-bottom:1px solid #d7e0ea}.wb-asset-tabs button{border:1px solid #cfd9e5;border-bottom:0;border-radius:8px 8px 0 0;background:#fff;padding:10px 18px;color:#526b84;font:inherit;font-weight:800}.wb-asset-tabs button.on{background:#edf5fb;border-color:#52718d;color:#274c77}.wb-rich-row{min-height:155px}.wb-row-main{min-width:0}.wb-score-block,.wb-price-block{display:flex;flex-direction:column;gap:5px}.wb-score{font-size:23px;color:#1d2939}.wb-score small{font-size:11px;color:#667085;margin-left:4px}.wb-score-parts,.wb-fact-line{display:block;color:#667085;font-size:11px;line-height:1.5;overflow-wrap:anywhere}.wb-breakout{display:inline-block;margin:5px 5px 0 0;padding:3px 7px;border:1px solid #8a6a35;border-radius:4px;background:#fffaf0;color:#72541e;font-size:11px;font-weight:800}.wb-high-status{display:inline-block;margin:5px 5px 0 0;padding:3px 7px;border:1px solid #52718d;border-radius:4px;background:#edf5fb;color:#274c77;font-size:11px;font-weight:800}.wb-chip-group,.wb-turning-group{margin:12px 0;padding:12px;border:1px solid #d7e0ea;border-radius:12px;background:#f9fbfd}.wb-chip-group h3,.wb-turning-group h3{margin:0 0 7px;font-size:17px;color:#1d2939}.wb-chip-group h3 small,.wb-turning-group h3 small{font-size:11px;color:#667085;font-weight:600}.wb-turning-buy{border-left:4px solid #23795a}.wb-turning-sell{border-left:4px solid #b42318}.wb-turning-invalid{border-left:4px solid #b4a78d;background:#fffdf5}.wb-empty{padding:22px;color:#667085}.wb-tag.持股{background:#f5e8df;color:#85513a}.wb-rank-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:#ded7cc}.wb-rank-card{background:#fffdf8;padding:18px}.wb-rank-card small,.wb-rank-card em{display:block;color:#857d71;font-size:11px;font-style:normal}.wb-rank-card b{display:block;font-family:ui-monospace,monospace;font-size:23px;margin:7px 0}.wb-rank-card span{font-size:12px;font-weight:800}@media(max-width:620px){.wb-rank-grid{grid-template-columns:1fr}}
+.wb-rich-row{align-items:start}.wb-rich-row .wb-row-main{grid-column:1 / span 2}.wb-rich-row .wb-score-block,.wb-rich-row .wb-price-block{align-self:start}.wb-rich-row .wb-institutional,.wb-rich-row .wb-signal{display:flex;flex-direction:column;gap:4px;color:#344054}.wb-rich-row .wb-institutional small,.wb-rich-row .wb-signal small{font-size:11px;color:#667085}.wb-chip-group .wb-rich-row{border:0;border-top:1px solid #e8edf2}.wb-turning-group .wb-rich-row{border:0;border-top:1px solid #e8edf2}.wb-turning-group .wb-row-main{grid-column:1 / span 2}.wb-turning-group .wb-score-block{display:none}.wb-turning-group .wb-price-block{grid-column:3}.wb-turning-group .wb-institutional,.wb-turning-group .wb-signal{display:none}
+@media(max-width:620px){.wb-rich-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:14px 10px}.wb-rich-row .wb-row-main{grid-column:1/-1}.wb-rich-row .wb-score-block,.wb-rich-row .wb-price-block,.wb-rich-row .wb-institutional,.wb-rich-row .wb-signal{display:flex;grid-column:auto}.wb-rich-row .wb-score-block{grid-column:1}.wb-rich-row .wb-price-block{grid-column:2}.wb-rich-row .wb-institutional{grid-column:1}.wb-rich-row .wb-signal{grid-column:2}.wb-turning-group .wb-rich-row .wb-institutional,.wb-turning-group .wb-rich-row .wb-signal{display:none}.wb-turning-group .wb-rich-row .wb-price-block{grid-column:2}.wb-name{font-size:21px}}
 </style>
 <script>
 (function(){
   var root=document.getElementById('stockbot-workbench'); if(!root) return;
   var initialTab=(root.dataset.initialTab||new URLSearchParams(location.search).get('tab')||'').trim();
-  var state={rows:[],sources:{},source:'全部',query:'',kind:'all',dir:'all',sort:'score',desc:true,marketOpen:false,timer:null,review:null,reviewLoading:false};
+  var state={rows:[],sources:{},personal:{},assetMode:'stock',source:'黑馬',query:'',kind:'all',dir:'all',sort:'score',desc:true,marketOpen:false,timer:null,review:null,reviewLoading:false};
   var tabs=document.getElementById('wb-tabs'), rowsEl=document.getElementById('wb-rows'), note=document.getElementById('wb-note'), count=document.getElementById('wb-count'), status=document.getElementById('wb-status'), pulse=document.getElementById('wb-pulse'), drawer=document.getElementById('wb-drawer'), mask=document.getElementById('wb-mask');
   function token(){try{return new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||''}catch(e){return ''}}
   function api(path){return path+(path.indexOf('?')>-1?'&':'?')+'fragment=1'+(token()?'&t='+encodeURIComponent(token()):'')}
@@ -19727,16 +19820,19 @@ def render_workbench_body(initial_tab=""):
   function money(v){return v==null?'—':Number(v).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2})}
   function latestSourceDate(data){var sourceDates=Object.keys((data&&data.sources)||{}).map(function(k){var s=data.sources[k]||{};return s.date||s.computed_at||'';}).filter(Boolean);return sourceDates.length?sourceDates.sort().slice(-1)[0]:'未標日期';}
   function workbenchStatusText(data, marketOpen){return '最近資料：'+latestSourceDate(data)+'｜'+(marketOpen?'只更新目前可見標的，每 90 秒一次；排名仍依快照':'價格不再輪詢，固定使用已確認的正式收盤校正');}
-  function sources(){var order=['全部','黑馬','雷達','轉折','ETF','籌碼','成效','持股','我的排行'];return order.filter(function(s){return s==='全部'||s==='成效'||s==='我的排行'?(s==='全部'||s==='成效'||(state.personal&&Object.keys(state.personal.rank_summary||{}).length)):state.rows.some(function(r){return r.source===s})||!!state.sources[s];});}
-  function renderTabs(){tabs.innerHTML=sources().map(function(s){var n=s==='全部'?state.rows.length:s==='我的排行'?'':state.rows.filter(function(r){return r.source===s}).length;return '<button type="button" class="'+(state.source===s?'on':'')+'" data-source="'+esc(s)+'">'+esc(s)+(n===''?'':' <small>'+n+'</small>')+'</button>'}).join('');}
+  function isEtf(row){return row&&row.source==='ETF';}
+  function sources(){var order=state.assetMode==='etf'?['ETF']:['黑馬','雷達','轉折','籌碼','成效','持股','我的排行'];return order.filter(function(s){if(s==='成效'||s==='我的排行')return s==='成效'||(state.personal&&Object.keys(state.personal.rank_summary||{}).length);return state.rows.some(function(r){return r.source===s&&((state.assetMode==='etf')===isEtf(r));})||!!state.sources[s];});}
+  function renderAssetTabs(){document.querySelectorAll('#wb-asset-tabs button').forEach(function(b){b.classList.toggle('on',b.dataset.asset===state.assetMode);});}
+  function renderTabs(){var list=sources();if(list.indexOf(state.source)<0)state.source=list[0]||'';tabs.innerHTML=list.map(function(s){var n=s==='成效'||s==='我的排行'?'':state.rows.filter(function(r){return r.source===s}).length;return '<button type="button" class="'+(state.source===s?'on':'')+'" data-source="'+esc(s)+'">'+esc(s)+(n===''?'':' <small>'+n+'</small>')+'</button>'}).join('');}
   function filtered(){var q=state.query.trim().toLowerCase();return state.rows.filter(function(r){var etf=r.source==='ETF';return (state.source==='全部'||r.source===state.source)&&(!q||[r.code,r.name,r.industry].join(' ').toLowerCase().indexOf(q)>-1)&&(state.kind==='all'||(state.kind==='etf'?etf:!etf))&&(state.dir==='all'||(state.dir==='up'&&Number(r.change_pct)>0)||(state.dir==='down'&&Number(r.change_pct)<0));}).sort(function(a,b){var av=a[state.sort],bv=b[state.sort];av=av==null?-Infinity:Number(av);bv=bv==null?-Infinity:Number(bv);return state.desc?bv-av:av-bv;});}
   function reviewPct(v){return v==null?'待確認':(Number(v)>0?'+':'')+Number(v).toFixed(1)+'%';}
-  function renderReview(){count.textContent='成效只在開啟此分頁時讀取既有推薦紀錄';if(!state.review){rowsEl.innerHTML='<div class="wb-skeleton"></div><div class="wb-skeleton"></div>';if(!state.reviewLoading){state.reviewLoading=true;fetch(api('/web/api/workbench/review'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){state.review=data;state.reviewLoading=false;note.textContent=data.note||'';render();}).catch(function(e){state.reviewLoading=false;rowsEl.innerHTML='<div class="wb-skeleton" style="animation:none;background:#fff;color:#8b4034;padding:18px">成效資料暫時無法載入，請稍後再試。</div>';if(e.message==='AUTH')location.reload();});}return;}var modes=state.review.modes||[];rowsEl.innerHTML='<div class="wb-review-grid">'+modes.map(function(m){var rows=(m.horizons||[]).map(function(h){return '<div class="wb-review-row"><span><b>'+esc(h.period)+'</b><small>'+esc(h.samples)+' 筆・勝率 '+esc(reviewPct(h.win_rate))+'</small></span><span><small>平均／中位</small><b>'+esc(reviewPct(h.average_pct))+'／'+esc(reviewPct(h.median_pct))+'</b></span><span><small>相對大盤</small><b class="'+(Number(h.excess_pct)>0?'wb-up':Number(h.excess_pct)<0?'wb-down':'wb-flat')+'">'+esc(reviewPct(h.excess_pct))+'</b></span></div>';}).join('');return '<section class="wb-review-card"><h3>'+esc(m.label)+'</h3><p>'+esc(m.note||'尚無資料')+'</p>'+(rows||'<p>目前尚無走完期間的樣本。</p>')+'</section>';}).join('')+'</div>';}
-  function render(){renderTabs();if(state.source==='成效'){renderReview();return;}var list=filtered();document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var html=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(html||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';rowsEl.innerHTML=list.length?list.map(function(r){var tag='<span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>';var flow=r.source==='轉折'?'<small class="wb-turning-flow '+esc((r.detail||{}).flow_key||'unknown')+'">'+esc(r.signal)+'</small>':'';var inst=r.institutional_lots==null?'—':(r.institutional_lots>0?'+':'')+Number(r.institutional_lots).toLocaleString('zh-TW')+' 張';var metric=r.metric_label==='當日漲跌'?pct(r.change_pct):pct(r.change_pct)+'<span class="wb-small">'+esc(r.metric_label)+'</span>';return '<button type="button" class="wb-row" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'"><span>'+tag+'<b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><small class="wb-industry">'+esc(r.industry)+'</small>'+flow+'</span><span class="wb-num">'+(r.score==null?'—':esc(r.score))+'<small class="wb-small">'+(r.source==='持股'?'個人庫存':r.source==='籌碼'?'法人快照':'/100'+(r.quality!=null?' · '+esc(r.quality):''))+'</small></span><span class="wb-num">'+money(r.price)+'<small class="wb-small">'+metric+'</small></span><span class="wb-institutional wb-num">'+esc(inst)+'</span><span class="wb-signal">'+esc(r.signal)+'</span><span>›</span></button>';}).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}
-  function showDetail(row){var d=row.detail||{},facts=[];Object.keys(d).forEach(function(k){var v=d[k];if(v==null||v===''||(Array.isArray(v)&&!v.length))return;facts.push('<li><b>'+esc({source_date:'資料日',breakout:'型態',streak:'連續天數',vol_ratio:'量能倍數',support:'支撐',resistance:'壓力',state:'轉折狀態',flow:'方向',category:'ETF 類別',return_pct:'價格報酬',excess_pct:'同期超額',annualized_yield_pct:'年化配息殖利率',period_label:'比較期間'}[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):v)+'</li>');});document.getElementById('wb-detail').innerHTML='<p>'+esc(row.source)+' · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>最新快照價格</small><b>'+money(row.price)+'</b></div><div><small>'+esc(row.metric_label||'當日漲跌')+'</small><b>'+pct(row.change_pct)+'</b></div><div><small>綜合分數</small><b>'+esc(row.score==null?'—':row.score)+'</b></div><div><small>訊號</small><b>'+esc(row.signal)+'</b></div></div><ul class="wb-facts">'+(facts.join('')||'<li>目前沒有更多已確認的快照欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;}
+  function valueText(v,suffix){return v==null?'待確認':esc(v)+(suffix||'');}
+  function renderRichRow(r){var d=r.detail||{},highStatus=d.high_status&&d.high_status!=='待確認'?'<span class="wb-high-status">'+esc(d.high_status)+'</span>':'',breakout=d.breakout&&d.breakout!=='未建立突破標示'?'<span class="wb-breakout">'+esc(d.breakout)+'</span>':'';var amount=r.institutional_amount==null?null:Number(r.institutional_amount);var inst=r.institutional_lots==null?'待確認':(r.institutional_lots>0?'+':'')+Number(r.institutional_lots).toLocaleString('zh-TW')+' 張';var legacyCaps=Array.isArray(r.caps)?r.caps:(r.category==='電子'?['25','25','20','20','10']:r.category==='傳產'?['20','25','25','20','10']:null),scoreParts=[];[['營收',r.rev,legacyCaps&&legacyCaps[0]],['估值',r.val,legacyCaps&&legacyCaps[1]],['產業',r.mom,legacyCaps&&legacyCaps[2]],['連續性',r.streak_score,legacyCaps&&legacyCaps[3]],['籌碼技術',r.chip,legacyCaps&&legacyCaps[4]]].forEach(function(x){if(x[1]!=null)scoreParts.push(x[0]+esc(x[1])+(x[2]?'/'+x[2]:''));});var basics=r.source==='籌碼'?('法人張數 '+valueText(r.institutional_lots,' 張')+'　近十日金額 '+valueText(r.institutional_amount,' 億')+'　'+esc(d.plain_note||'依已保存法人資料整理')):r.source==='雷達'?('法人近十日 '+valueText(r.institutional_lots,' 張')+'　原始雷達狀態 '+esc(r.radar_state||r.signal||'雷達訊號')):('營收年增 '+valueText(r.cum_yoy,'%')+'　PE '+valueText(r.pe)+'　PEG '+valueText(r.peg)+'　殖利率 '+valueText(r.yield,'%')+'　PB '+valueText(r.pb));var turnover=r.turnover==null?null:Number(r.turnover);var chipTrust=r.trust_lots??d.trust_lots,chipForeign=r.foreign_lots??d.foreign_lots,chipGroup=d.group_lots??r.group_lots;var trend=r.source==='籌碼'?('投信 '+valueText(chipTrust==null&&chipGroup==null?null:chipTrust==null?'合計 '+chipGroup:chipTrust,' 張')+'　外資 '+valueText(chipForeign==null&&chipGroup==null?null:chipForeign==null?'合計 '+chipGroup:chipForeign,' 張')+'　連續 '+valueText(d.hit_days||d.total_days,' 日')):r.source==='雷達'?('連買 '+valueText(d.streak||r.up_streak,' 日')+'　量能 '+valueText(d.vol_ratio,' 倍')+'　成交金額 '+(turnover==null?'待確認':turnover.toFixed(1)+' 億')):('法人近十日 '+valueText(r.institutional_lots,' 張')+'　連買 '+valueText(r.buy_days||d.streak,' 日')+'　成交金額 '+(turnover==null?'待確認':turnover.toFixed(1)+' 億'));var flow=r.source==='轉折'?'<small class="wb-turning-flow '+esc(d.flow_key||'unknown')+'">'+esc(r.signal)+'</small>':'';return '<button type="button" class="wb-row wb-rich-row" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'" data-row-key="'+esc(r.row_key||'')+'"><span class="wb-row-main"><span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b>'+highStatus+breakout+'<small class="wb-industry">'+esc(r.industry)+'</small>'+flow+'<small class="wb-fact-line">'+basics+'</small><small class="wb-fact-line">'+trend+'</small></span><span class="wb-score-block"><b class="wb-score">'+(r.category==='金融'&&r.score==null?'金融股不評分':(r.score==null?'待確認':esc(r.score)+'<small>/100 分</small>'))+'</b><small class="wb-score-parts">'+(r.score_policy||d.score_policy||(scoreParts.length?scoreParts.join(' · '):'舊版未提供評分拆解'))+'</small></span><span class="wb-price-block"><b class="wb-num">'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span><span class="wb-institutional wb-num"><b>'+esc(inst)+'</b><small>法人近十日</small></span><span class="wb-signal"><b>'+esc(r.signal)+'</b><small>'+valueText(r.turnover,' 成交額')+'</small></span><span>›</span></button>'}   function renderTurningGrouped(){var groups=[['buy_to_sell','買轉賣','wb-turning-buy'],['sell_to_buy','賣轉買','wb-turning-sell'],['invalid','失效','wb-turning-invalid']];var html=groups.map(function(g){var list=state.rows.filter(function(r){return r.source==='轉折'&&((g[0]==='invalid'?(r.detail||{}).state==='invalid':(g[0]==='sell_to_buy'?['sell_to_buy','buying_strength'].indexOf((r.detail||{}).flow_key)>=0:['buy_to_sell','selling_strength'].indexOf((r.detail||{}).flow_key)>=0)));}).slice().sort(function(a,b){return (b.score||-1)-(a.score||-1)});if(!list.length)return '';var visible=list.slice(0,3).map(renderRichRow).join('');var more=list.slice(3).map(renderRichRow).join('');return '<section class="wb-turning-group '+g[2]+'"><h3>'+g[1]+' <small>'+list.length+' 檔</small></h3>'+visible+(more?'<details class="wb-turning-more"><summary>其餘 '+(list.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}).join('');rowsEl.innerHTML=html||'<div class="wb-empty">目前沒有已保存的轉折資料。</div>';count.textContent='轉折依買轉賣、賣轉買、失效分組；每組先顯示 3 檔';}   function renderChipsGrouped(list){var groups=['投信認養','外資認養','外資投信同買','投信調節','外資投信同賣'];var html=groups.map(function(label){var xs=list.filter(function(r){return r.signal===label;});if(!xs.length)return '';return '<section class="wb-chip-group"><h3>'+esc(label)+' <small>'+xs.length+' 檔</small></h3>'+xs.map(renderRichRow).join('')+'</section>';}).join('');var shifts=list.filter(function(r){return groups.indexOf(r.signal)<0;});if(shifts.length)html+='<section class="wb-chip-group wb-chip-shifts"><h3>法人籌碼突變 <small>'+shifts.length+' 檔</small></h3>'+shifts.map(renderRichRow).join('')+'</section>';rowsEl.innerHTML=html||'<div class="wb-empty">目前沒有符合舊版近十日籌碼規則的資料。</div>';count.textContent='近十日籌碼：投信認養、外資認養、同買、投信調節、同賣與法人籌碼突變';}   function renderEtfGrouped(list){var periods=[['short','短期'],['long','長期']],categories=['主動式','高股息','市值型','主題型'];var html=periods.map(function(p){var periodRows=list.filter(function(r){return (r.detail||{}).period_key===p[0];});if(!periodRows.length)return '';var blocks=categories.map(function(category){var xs=periodRows.filter(function(r){return r.industry===category;});if(!xs.length)return '';var visible=xs.slice(0,3).map(renderRichRow).join(''),more=xs.slice(3).map(renderRichRow).join('');return '<section class="wb-etf-category"><h4>'+esc(category)+' <small>'+xs.length+' 檔</small></h4>'+visible+(more?'<details class="wb-turning-more"><summary>其餘 '+(xs.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}).join('');return '<section class="wb-etf-period"><h3>'+esc(p[1])+'排名</h3>'+blocks+'</section>';}).join('');rowsEl.innerHTML=html||'<div class="wb-empty">目前沒有已保存的 ETF 短期／長期排名資料。</div>';count.textContent='ETF 依舊版短期／長期及四種類別分組；每類先顯示 3 檔';}   function renderReview(){count.textContent='成效只在開啟此分頁時讀取既有推薦紀錄';if(!state.review){rowsEl.innerHTML='<div class="wb-skeleton"></div><div class="wb-skeleton"></div>';if(!state.reviewLoading){state.reviewLoading=true;fetch(api('/web/api/workbench/review'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){state.review=data;state.reviewLoading=false;note.textContent=data.note||'';render();}).catch(function(e){state.reviewLoading=false;rowsEl.innerHTML='<div class="wb-skeleton" style="animation:none;background:#fff;color:#8b4034;padding:18px">成效資料暫時無法載入，請稍後再試。</div>';if(e.message==='AUTH')location.reload();});}return;}var modes=state.review.modes||[];rowsEl.innerHTML='<div class="wb-review-grid">'+modes.map(function(m){var rows=(m.horizons||[]).map(function(h){return '<div class="wb-review-row"><span><b>'+esc(h.period)+'</b><small>'+esc(h.samples)+' 筆・勝率 '+esc(reviewPct(h.win_rate))+'</small></span><span><small>平均／中位</small><b>'+esc(reviewPct(h.average_pct))+'／'+esc(reviewPct(h.median_pct))+'</b></span><span><small>相對大盤</small><b class="'+(Number(h.excess_pct)>0?'wb-up':Number(h.excess_pct)<0?'wb-down':'wb-flat')+'">'+esc(reviewPct(h.excess_pct))+'</b></span></div>';}).join('');return '<section class="wb-review-card"><h3>'+esc(m.label)+'</h3><p>'+esc(m.note||'尚無資料')+'</p>'+(rows||'<p>目前尚無走完期間的樣本。</p>')+'</section>';}).join('')+'</div>';}
+  function render(){renderAssetTabs();renderTabs();if(state.source==='成效'){renderReview();return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var html=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(html||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}
+  function showDetail(row){var d=row.detail||{},facts=[];Object.keys(d).forEach(function(k){var v=d[k];if(v==null||v===''||(Array.isArray(v)&&!v.length))return;facts.push('<li><b>'+esc({source_date:'資料日',breakout:'突破狀態',high_status:'高點狀態',radar_state:'雷達狀態',category:'股票分類',caps:'原始各項上限',val_desc:'估值說明',mom_desc:'產業動能說明',streak:'法人連買天數',buy_days:'近十日買超天數',vol_ratio:'量能倍數',support:'支撐',resistance:'壓力',state:'轉折狀態',flow:'方向',score_breakdown:'分數組成',data_quality:'資料完整度',group:'籌碼分組',institutional_lots:'近十日法人張數',amount_billion:'近十日法人金額',hit_days:'同方向天數',total_days:'統計交易日',foreign_lots:'外資張數',trust_lots:'投信張數',group_lots:'同向法人張數',plain_note:'原始判讀',return_pct:'價格報酬',excess_pct:'同期超額',annualized_yield_pct:'年化配息殖利率',period_label:'比較期間'}[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):typeof v==='object'?JSON.stringify(v):v)+'</li>');});document.getElementById('wb-detail').innerHTML='<p>'+esc(row.source)+' · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>最新快照價格</small><b>'+money(row.price)+'</b></div><div><small>'+esc(row.metric_label||'當日漲跌')+'</small><b>'+pct(row.change_pct)+'</b></div><div><small>綜合分數</small><b>'+esc(row.score==null?'—':row.score)+'</b></div><div><small>訊號</small><b>'+esc(row.signal)+'</b></div></div><ul class="wb-facts">'+(facts.join('')||'<li>目前沒有更多已確認的快照欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;}
   function updateQuotes(){if(!state.marketOpen||document.hidden)return;var codes=filtered().slice(0,30).map(function(r){return r.code}).join(',');if(!codes)return;fetch(api('/web/api/workbench/quotes?codes='+encodeURIComponent(codes)),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');return r.json()}).then(function(data){(data.updates||[]).forEach(function(q){state.rows.forEach(function(r){if(r.code===q.code&&q.price!=null){r.price=q.price;r.change_pct=q.change_pct;r.metric_label='當日漲跌';}});});if(data.note)note.textContent=data.note;render();}).catch(function(e){if(e.message==='AUTH')location.reload();});}
   function load(){status.textContent='讀取最近有效快照…';fetch(api('/web/api/workbench/snapshot'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){state.rows=Array.isArray(data.rows)?data.rows:[];state.sources=data.sources||{};state.personal=data.personal||{positions:[],rank_summary:{}};state.marketOpen=!!data.market_open;if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}status.textContent=state.marketOpen?'盤中行情局部更新中':'最近有效快照已載入';note.textContent=data.note||'';pulse.innerHTML='<span>資料狀態</span><b>'+esc(state.marketOpen?'盤中局部更新':'收盤正式快照')+'</b><i></i><i></i><em>'+esc(workbenchStatusText(data,state.marketOpen))+'</em>';render();if(state.timer)clearInterval(state.timer);if(state.marketOpen)state.timer=setInterval(updateQuotes,90000);}).catch(function(e){status.textContent='快照暫時無法載入';rowsEl.innerHTML='<div class="wb-skeleton" style="animation:none;background:#fff;color:#8b4034;padding:18px">資料暫時無法載入，請稍後重新整理。沒有顯示推測標的。</div>';if(e.message==='AUTH')location.reload();});}
-  document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){load();};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};document.getElementById('wb-close').onclick=function(){drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;};mask.onclick=function(){document.getElementById('wb-close').click();};document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
+  document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':'黑馬';state.query='';render();};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){load();};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};document.getElementById('wb-close').onclick=function(){drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;};mask.onclick=function(){document.getElementById('wb-close').click();};document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
 })();
 </script>'''
     return body.replace("__INITIAL_TAB__", html.escape(initial_tab, quote=True))
