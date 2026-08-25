@@ -11802,10 +11802,11 @@ def build_menu_flex(is_admin_user=False):
 # 紅綠「只」用於漲跌，不用在按鈕或標籤，避免語意混淆。
 # ============================================================
 BASE_CSS = """
+/* 視覺方向：明亮霧藍資料工作台；深墨文字、台股紅漲綠跌、低裝飾高可讀性。 */
 :root{
-  --paper:#E8E9E4; --paper-2:#DBDDD6; --ink:#12161B;
-  --ink-soft:#454C55; --ink-faint:#767D85; --rule:#B9BDB4;
-  --up:#A82A20; --down:#155C42; --brass:#6E5228; --brass-2:#8A6A3B;
+  --paper:#F6F8FB; --paper-2:#ECF1F6; --ink:#1D2939;
+  --ink-soft:#475467; --ink-faint:#7B8794; --rule:#D4DEE8;
+  --up:#C0443C; --down:#197653; --brass:#355B7B; --brass-2:#6E8BA8;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--paper);color:var(--ink);line-height:1.55;
@@ -12189,8 +12190,8 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .load-note{margin-top:20px;font-size:11.5px;color:var(--ink-faint);
   line-height:1.7}
 /* ── App shell：手機優先的固定導覽與安全區 ── */
-html{background:#F2F3F0;touch-action:manipulation}
-body{background:#F2F3F0;overflow-x:hidden;padding-bottom:calc(76px + env(safe-area-inset-bottom));-webkit-tap-highlight-color:transparent}
+	html{background:#F6F8FB;touch-action:manipulation}
+	body{background:#F6F8FB;overflow-x:hidden;padding-bottom:calc(76px + env(safe-area-inset-bottom));-webkit-tap-highlight-color:transparent}
 a,button,input,select{touch-action:manipulation}
 a,button{transition:transform .12s ease,opacity .12s ease,box-shadow .12s ease,background-color .12s ease}
 a:active,button:active{transform:scale(.98);opacity:.78}.tap-loading{opacity:.72;cursor:wait}
@@ -12202,22 +12203,22 @@ a:active,button:active{transform:scale(.98);opacity:.78}.tap-loading{opacity:.72
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}.tap-pulse,.feedback-success,.feedback-error{animation:none!important}.quote-item:first-child{opacity:1!important;animation:none!important}}
 button[disabled],input[disabled],select[disabled]{opacity:.58;cursor:wait}
 .wrap{max-width:760px;padding:94px 16px calc(104px + env(safe-area-inset-bottom))}
-.app-header{position:fixed;top:0;left:0;right:0;width:min(760px,100%);margin:0 auto;z-index:50;
-background:rgba(242,243,240,.98);backdrop-filter:blur(14px);padding:12px 16px 10px;border-bottom:1px solid rgba(185,189,180,.85);
-box-shadow:0 3px 12px rgba(18,22,27,.07)}
-@media(max-width:699px){.app-header{backdrop-filter:none;background:#F2F3F0}.app-bottom-nav{backdrop-filter:none;background:rgba(255,255,255,.98)}}
+	.app-header{position:fixed;top:0;left:0;right:0;width:min(760px,100%);margin:0 auto;z-index:50;
+	background:rgba(246,248,251,.98);backdrop-filter:blur(14px);padding:12px 16px 10px;border-bottom:1px solid rgba(212,222,232,.95);
+	box-shadow:0 3px 12px rgba(29,41,57,.06)}
+	@media(max-width:699px){.app-header{backdrop-filter:none;background:#F6F8FB}.app-bottom-nav{backdrop-filter:none;background:rgba(255,255,255,.98)}}
 .app-header .eyebrow{margin-bottom:2px;font-size:10px;letter-spacing:.18em}
 .app-header h1{font-size:21px;letter-spacing:.01em}
 .app-header .dateline{font-size:11px;margin-top:2px}
 .top-nav{display:none;gap:6px;overflow-x:auto;white-space:nowrap;padding:10px 0;margin:0 -2px 4px;border:0;scrollbar-width:none}
 .top-nav::-webkit-scrollbar{display:none}
-.top-nav a{padding:7px 11px;border-radius:999px;background:#E3E5DF;color:var(--ink-soft);font-size:12.5px;text-decoration:none}
-.top-nav a.on{background:var(--ink);color:#FFF;border:0;padding-bottom:7px}
-.app-bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;background:rgba(255,255,255,.95);backdrop-filter:blur(16px);border-top:1px solid #D8DAD4;padding:8px 8px calc(8px + env(safe-area-inset-bottom));box-shadow:0 -5px 18px rgba(18,22,27,.08)}
+	.top-nav a{padding:7px 11px;border-radius:999px;background:#EAF0F6;color:var(--ink-soft);font-size:12.5px;text-decoration:none}
+	.top-nav a.on{background:#355B7B;color:#FFF;border:0;padding-bottom:7px}
+	.app-bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;background:rgba(255,255,255,.96);backdrop-filter:blur(16px);border-top:1px solid #D4DEE8;padding:8px 8px calc(8px + env(safe-area-inset-bottom));box-shadow:0 -5px 18px rgba(29,41,57,.07)}
 .app-bottom-nav .bottom-inner{width:min(760px,100%);display:grid;grid-template-columns:repeat(5,1fr);gap:3px}
 .app-bottom-nav a{display:flex;flex-direction:column;align-items:center;gap:2px;color:var(--ink-faint);font-size:11px;text-decoration:none;padding:3px 0;border-radius:10px}
 .app-bottom-nav a b{font-size:17px;font-weight:500;line-height:1}
-.app-bottom-nav a.on{color:var(--brass);background:#F0EEE8;font-weight:600}
+	.app-bottom-nav a.on{color:#355B7B;background:#EAF1F7;font-weight:700}
 .daily-card{border-radius:18px;box-shadow:0 4px 18px rgba(18,22,27,.055)}
 .more-hero{padding:18px 2px 12px}.more-hero .eyebrow{font-size:10px;letter-spacing:.18em;color:var(--brass)}.more-hero h1{margin:6px 0 4px;font-size:30px}.more-hero p{margin:0;color:var(--ink-soft);font-size:13px}
 .more-group{background:#FFF;border:1px solid #E1E3DE;border-radius:18px;padding:6px 14px;margin:12px 0;box-shadow:0 4px 18px rgba(18,22,27,.045)}
@@ -12231,7 +12232,21 @@ box-shadow:0 3px 12px rgba(18,22,27,.07)}
 .my-rank-card b{display:block;font-size:22px;margin:8px 0 4px}
 .rank-move{font-size:13px;font-weight:600;white-space:nowrap}.rank-move.muted{color:var(--ink-faint);font-weight:400}.rank-move.up{color:var(--up)}.rank-move.down{color:var(--down)}
 @media(max-width:640px){.my-rank-grid{grid-template-columns:1fr}}
-@media(min-width:700px){body{padding-bottom:0}.app-bottom-nav{display:none}.wrap{padding-bottom:56px}}
+	/* 全站共用的明亮資料介面層：讓舊 renderer 也有一致卡片、表格與表單層級。 */
+	.daily-card,.more-group,.rank-spotlight,.chips-section,.position-journal,.rank-situation,.review-details{border-color:#D9E2EC!important;background:#FFF!important;box-shadow:0 5px 18px rgba(29,41,57,.045)}
+	.daily-card,.rank-spotlight,.more-group{border-radius:14px}
+	.app-page-content{min-width:0}.app-page-loading{opacity:.58;transition:opacity .16s ease}
+	.section-head{margin-top:26px}.section-head h2{font-size:18px;font-weight:800;color:var(--ink)}
+	.callout,.chips-meta,.hint,.msg,.dist{background:#EEF5FB;border-left-color:#527A9B;color:var(--ink-soft)}
+	input,select{background:#FFF;border-color:#CAD7E5;border-radius:7px}input:focus,select:focus{outline-color:#6E8BA8}
+	button{background:#355B7B;color:#FFF;border-radius:7px}button:hover{background:#274865}
+	.form.add,form.add,.sellpanel{background:#EEF3F8;border-radius:12px;border:1px solid #D9E2EC}
+	.rows,.row,.rank-card,.chips-row,.more-item{border-color:#E5EBF1}
+	.rank-tabs{background:#E8EFF6}.rank-tabs a.on{background:#FFF;color:#274865}.rank-mine{background:#EEF5FB;border-left-color:#527A9B}
+	.profile-grid{background:#D9E2EC;border-color:#D9E2EC}.pf{background:#F9FBFD}
+	.cmp th.rk{background:#F6F8FB}.cmp td.best{background:#EEF5FB}
+	@media(max-width:640px){.wrap{padding-left:12px;padding-right:12px}.app-header{padding-left:12px;padding-right:12px}.section-head h2{font-size:17px}.daily-card,.rank-spotlight,.more-group{border-radius:12px}}
+	@media(min-width:700px){body{padding-bottom:0}.app-bottom-nav{display:none}.wrap{padding-bottom:56px}}
 """
 
 NEED_LOGIN_HTML = """
@@ -12306,12 +12321,12 @@ def render_page(title, body, nav_active=None, user_name=None):
     def tab(href, label, key):
         on = " class=\"on\"" if key == active_nav else ""
         refresh = ' data-fresh-nav="1"' if href == "/web/portfolio" else ""
-        return f'<a href="{href}"{on}{refresh}>{label}</a>'
+        return f'<a href="{href}"{on}{refresh} data-app-nav="1">{label}</a>'
 
     def bottom_tab(href, icon, label, key):
         on = " on" if key == active_nav else ""
         refresh = ' data-fresh-nav="1"' if href == "/web/portfolio" else ""
-        return f'<a href="{href}" class="{on.strip()}"{refresh}><b>{icon}</b>{label}</a>'
+        return f'<a href="{href}" class="{on.strip()}"{refresh} data-app-nav="1"><b>{icon}</b>{label}</a>'
 
     nav = ""
     if nav_active:
@@ -12331,7 +12346,7 @@ def render_page(title, body, nav_active=None, user_name=None):
                   + bottom_tab("/web/positions", "▣", "持股", "positions")
                   + bottom_tab("/web/workbench", "⌁", "選股", "screener")
                   + bottom_tab("/web/leaderboard", "≡", "排行", "leaderboard")
-                  + f'<a href="/web/more" class="{"on" if more_on else ""}"><b>⋯</b>更多</a>'
+                  + f'<a href="/web/more" class="{"on" if more_on else ""}" data-app-nav="1"><b>⋯</b>更多</a>'
                   + "</div></div>")
 
     # LINE WebView 偶爾不保留 cookie；導覽列也必須帶著有效 token，不能只有內容區帶。
@@ -12342,7 +12357,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     page_back = ""
     if nav_active and nav_active != "portfolio":
         page_back = preserve_web_token(
-            '<div class="page-back"><a href="/web/portfolio" data-fresh-nav="1">‹ 回首頁</a></div>')
+            '<div class="page-back"><a href="/web/portfolio" data-fresh-nav="1" data-app-nav="1">‹ 回首頁</a></div>')
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
 <meta charset="UTF-8">
@@ -12358,7 +12373,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     {'　' + user_name if user_name else ''}</div>
 </header>
 {nav}
-{body}
+<main id="app-page-content" class="app-page-content">{body}</main>
 <script>
 (function() {{
   // LINE WebView 可能清掉 cookie；把有效網址 token 保存到同一個網域，
@@ -12409,20 +12424,85 @@ def render_page(title, body, nav_active=None, user_name=None):
       target.matches('.daily-focus a,.daily-card a,.app-bottom-nav a'));
   }}
 
-  // 回首頁不沿用持股頁的舊殼：加入時間戳後重新走首頁 shell，
-  // 再由 shell 取得最新 fragment。這只套用回首頁，不改其他分頁流程。
+  // 主導覽改為只替換內容 fragment：LINE WebView 不必每次切今日、持股、選股、排行
+  // 都重建整張頁面。資料仍由每個既有 route／權杖 decorator 提供，未更改任何計算流程。
+  var appContent = document.getElementById('app-page-content');
+  var appRouteKeys = {{
+    '/web/portfolio':'portfolio','/web/positions':'positions','/web/workbench':'screener',
+    '/web/leaderboard':'leaderboard','/web/trades':'trades','/web/compare':'compare',
+    '/web/settings':'settings','/web/more':'more','/web/chips':'more','/web/etf':'more'
+  }};
+  var appTitles = {{
+    '/web/portfolio':'今日','/web/positions':'持股','/web/workbench':'選股工作台',
+    '/web/leaderboard':'排行榜','/web/trades':'紀錄','/web/compare':'比較',
+    '/web/settings':'設定','/web/more':'更多功能','/web/chips':'籌碼超人','/web/etf':'ETF 專區'
+  }};
+  function executeFragmentScripts(container) {{
+    container.querySelectorAll('script').forEach(function(oldScript) {{
+      var replacement = document.createElement('script');
+      Array.prototype.slice.call(oldScript.attributes).forEach(function(attr) {{
+        replacement.setAttribute(attr.name, attr.value);
+      }});
+      replacement.text = oldScript.text || oldScript.textContent || '';
+      oldScript.parentNode.replaceChild(replacement, oldScript);
+    }});
+  }}
+  function setAppNavState(path) {{
+    var key = appRouteKeys[path] || '';
+    document.querySelectorAll('[data-app-nav="1"]').forEach(function(link) {{
+      var linkPath = new URL(link.href, window.location.href).pathname;
+      var linkKey = appRouteKeys[linkPath] || '';
+      link.classList.toggle('on', !!key && linkKey === key);
+    }});
+    var h1 = document.querySelector('.app-header h1');
+    if (h1 && appTitles[path]) h1.textContent = appTitles[path];
+    if (appTitles[path]) document.title = appTitles[path] + '｜台股 BOT';
+  }}
+  function switchAppPage(rawHref, pushState) {{
+    if (!appContent) {{ window.location.assign(rawHref); return; }}
+    var target = new URL(rawHref, window.location.href);
+    if (!appRouteKeys[target.pathname]) {{ window.location.assign(target.pathname + target.search); return; }}
+    target.searchParams.set('fragment', '1');
+    target.searchParams.delete('fast');
+    if (target.pathname === '/web/portfolio') target.searchParams.set('_nav', String(Date.now()));
+    var requestUrl = target.pathname + '?' + target.searchParams.toString();
+    appContent.setAttribute('aria-busy', 'true');
+    appContent.classList.add('app-page-loading');
+    fetch(requestUrl, {{credentials:'same-origin', cache:'no-store'}})
+      .then(function(response) {{
+        if (response.status === 401) {{ window.location.assign(target.pathname + target.search.replace(/([?&])fragment=1&?/, '$1').replace(/[?&]$/, '')); return null; }}
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.text();
+      }})
+      .then(function(fragment) {{
+        if (fragment === null) return;
+        if (fragment.indexOf('AUTH_EXPIRED') >= 0) {{ window.location.assign(target.pathname + target.search); return; }}
+        document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
+        appContent.innerHTML = fragment;
+        executeFragmentScripts(appContent);
+        appContent.removeAttribute('aria-busy');
+        appContent.classList.remove('app-page-loading');
+        target.searchParams.delete('fragment');
+        if (pushState) history.pushState({{stockbotApp:true}}, '', target.pathname + target.search);
+        setAppNavState(target.pathname);
+        window.scrollTo({{top:0, behavior: prefersReducedMotion() ? 'auto' : 'smooth'}});
+      }})
+      .catch(function(error) {{
+        appContent.removeAttribute('aria-busy');
+        appContent.classList.remove('app-page-loading');
+        appContent.innerHTML = '<div class="msg">頁面暫時無法切換：' + String(error.message || error) + '。請稍後再試。</div>';
+        console.error(error);
+      }});
+  }}
+  window.stockBotSwitchPage = switchAppPage;
   document.addEventListener('click', function(e) {{
-    var freshLink = e.target.closest ? e.target.closest('a[data-fresh-nav="1"]') : null;
-    if (freshLink) {{
-      e.preventDefault();
-      var freshUrl = new URL(freshLink.href, window.location.href);
-      freshUrl.searchParams.set('_nav', String(Date.now()));
-      window.location.assign(freshUrl.pathname + freshUrl.search);
-      return;
-    }}
+    var appLink = e.target.closest ? e.target.closest('a[data-app-nav="1"]') : null;
+    if (!appLink || appLink.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    switchAppPage(appLink.href, true);
   }}, true);
-  window.addEventListener('pageshow', function(e) {{
-    if (e.persisted && window.location.pathname === '/web/portfolio') window.location.reload();
+  window.addEventListener('popstate', function() {{
+    if (appRouteKeys[window.location.pathname]) switchAppPage(window.location.href, false);
   }});
 
   // 點擊後立即給回饋；不攔截錨點、下載與外部連結。
@@ -19295,7 +19375,26 @@ def _workbench_turning_rows(snapshot):
         if not re.fullmatch(r"\d{4}", code):
             continue
         state = str(raw.get("state") or "").strip()
-        flow = _workbench_text(raw.get("direction_flow_label") or raw.get("direction_label"), "方向待確認")
+        direction = str(raw.get("direction") or "").strip()
+        flow_key = str(raw.get("direction_flow") or "").strip()
+        flow = str(raw.get("direction_flow_label") or "").strip()
+        # 舊轉折快照尚未一定有 direction_flow；與既有轉折頁使用同一套
+        # event_type／方向相容規則，不能把「轉強／轉弱」泛稱成唯一可見資訊。
+        if flow_key not in {"sell_to_buy", "buy_to_sell", "buying_strength", "selling_strength"}:
+            legacy_label = str(raw.get("direction_label") or "")
+            event_type = str(raw.get("event_type") or "")
+            if legacy_label == "賣轉買" or event_type == "賣轉買" or "轉買" in event_type:
+                flow_key, flow = "sell_to_buy", "賣轉買"
+            elif legacy_label == "買轉賣" or event_type == "買轉賣" or "轉賣" in event_type:
+                flow_key, flow = "buy_to_sell", "買轉賣"
+            elif direction == "up":
+                flow_key, flow = "buying_strength", "買方增強"
+            elif direction == "down":
+                flow_key, flow = "selling_strength", "賣方增強"
+            else:
+                flow_key, flow = "unknown", "方向待確認"
+        state_label = str(raw.get("state_label") or {
+            "confirmed": "已確認", "observing": "觀察中", "invalid": "已失效"}.get(state, "狀態待確認"))
         details = raw.get("reason_details") if isinstance(raw.get("reason_details"), list) else []
         rows.append({
             "source": "轉折",
@@ -19307,12 +19406,15 @@ def _workbench_turning_rows(snapshot):
             "change_pct": _workbench_number(raw.get("pct") or raw.get("change_pct")),
             "metric_label": "當日漲跌",
             "institutional_lots": _workbench_number(raw.get("current_total_lots"), 0),
-            "signal": f"{flow}／{({'confirmed': '已確認', 'observing': '觀察中', 'invalid': '已失效'}.get(state, '狀態待確認'))}",
+            "signal": f"{flow}／{state_label}",
             "quality": _workbench_number(raw.get("score"), 0),
             "detail": {
                 "source_date": str(snapshot.get("data_date") or "未標日期"),
                 "state": state or "未標示",
+                "state_label": state_label,
                 "flow": flow,
+                "flow_key": flow_key,
+                "state_reason": _workbench_text(raw.get("state_reason"), "尚無具體原因"),
                 "reasons": [str(item) for item in details if str(item).strip()][:4],
             },
         })
@@ -19463,7 +19565,7 @@ def render_workbench_body():
 </section>
 <aside class="wb-drawer" id="wb-drawer" aria-hidden="true"><button type="button" id="wb-close" aria-label="關閉">×</button><div id="wb-detail"></div></aside><div class="wb-mask" id="wb-mask" hidden></div>
 <style>
-.wb-shell{margin:16px 0 28px;color:#25231e}.wb-intro{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:2px solid #2b2923;padding:4px 0 16px}.wb-kicker{margin:0;color:#8a6d3b;font-size:11px;font-weight:800;letter-spacing:.08em}.wb-intro h2{margin:5px 0 4px;font-size:28px;letter-spacing:.02em}.wb-sub{margin:0;color:var(--ink-soft);font-size:13px}.wb-status{border:1px solid #ddd5c8;background:#fffdf8;padding:9px 11px;color:#6d665b;font-size:11px;white-space:nowrap}.wb-pulse{display:grid;grid-template-columns:130px 180px 1fr 1fr 180px;align-items:center;gap:14px;border-bottom:1px solid #cfc7ba;padding:14px 10px;border-left:3px solid #8a6d3b;background:#fffefa;font-size:12px}.wb-pulse span{font-weight:800}.wb-pulse b{font-family:monospace;font-size:12px}.wb-pulse i{height:3px;background:#a84538}.wb-pulse i:nth-of-type(2){background:#247052}.wb-pulse em{font-style:normal;color:#6c665b}.wb-tabs{display:flex;gap:20px;border-bottom:1px solid #ddd5c8;padding:15px 10px 0}.wb-tabs button{border:0;background:transparent;color:#71695e;padding:0 0 12px;font-size:13px;font-weight:700;border-bottom:2px solid transparent}.wb-tabs button.on{color:#685027;border-color:#8a6d3b}.wb-tools{display:grid;grid-template-columns:1fr auto auto;gap:8px;padding:16px 0}.wb-tools label{display:flex;gap:8px;align-items:center;border:1px solid #cfc7ba;background:#fff;padding:0 11px}.wb-tools input{width:100%;border:0;outline:0;padding:11px 0;font:inherit}.wb-tools button,.wb-filter-panel button{border:1px solid #cfc7ba;background:#fffdf8;padding:9px 12px;color:#4a4439;font:inherit;font-size:12px}.wb-tools button:hover,.wb-filter-panel button.on{border-color:#8a6d3b;color:#685027}.wb-filter-panel{display:flex;gap:24px;margin:-8px 0 12px;padding:12px;border:1px solid #e1dacd;background:#faf7f0;font-size:12px}.wb-filter-panel div{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wb-filter-panel b{margin-right:5px;color:#71695e}.wb-filter-panel button{padding:5px 9px}.wb-meta{display:flex;justify-content:space-between;gap:12px;padding:7px 0 10px;color:#746d61;font-size:11px}.wb-meta b{color:#2b2923}.wb-table{border:1px solid #d8d1c5;background:#fff}.wb-head,.wb-row{display:grid;grid-template-columns:minmax(190px,2fr) minmax(110px,1fr) minmax(110px,1fr) minmax(120px,1fr) minmax(145px,1.25fr) 22px;gap:10px;align-items:center;padding:12px 14px}.wb-head{background:#f5f1e9;border-bottom:1px solid #d8d1c5;color:#6e675c;font-size:11px}.wb-head button{border:0;background:transparent;color:inherit;text-align:left;font:inherit;font-weight:800;padding:0}.wb-head button.on{color:#8a6d3b}.wb-row{border-bottom:1px solid #eee9df;text-align:left;cursor:pointer}.wb-row:hover{background:#fffcf6;box-shadow:inset 3px 0 #8a6d3b}.wb-name{font-weight:800;font-size:15px}.wb-code,.wb-small{display:block;color:#8b8378;font-size:10px;margin-top:2px}.wb-num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800}.wb-up{color:#a74135}.wb-down{color:#1e7253}.wb-flat{color:#777}.wb-tag{display:inline-block;font-size:10px;padding:3px 5px;background:#f0e8d9;color:#755c2e;margin-right:5px}.wb-tag.ETF{background:#e5efe5;color:#35633e}.wb-tag.雷達{background:#e7f0ef;color:#2d6965}.wb-tag.轉折{background:#eee8f5;color:#66517b}.wb-skeleton{height:54px;margin:0 14px;border-bottom:1px solid #eee9df;background:linear-gradient(90deg,#fff 20%,#f2eee7 45%,#fff 70%);background-size:220% 100%;animation:wbscan 1.1s linear infinite}@keyframes wbscan{to{background-position:-120% 0}}.wb-disclaimer{margin:12px 0;color:#82796e;font-size:11px;line-height:1.55}.wb-mask{position:fixed;inset:0;background:rgba(30,28,23,.28);z-index:30}.wb-drawer{position:fixed;z-index:31;right:0;top:0;bottom:0;width:min(430px,92vw);padding:22px;background:#fffdf8;box-shadow:-12px 0 32px rgba(30,28,23,.15);transform:translateX(110%);transition:transform .18s ease-out;overflow:auto}.wb-drawer.open{transform:translateX(0)}.wb-drawer>button{float:right;border:0;background:transparent;font-size:26px;color:#655d52}.wb-detail h3{margin:5px 0;font-size:25px}.wb-detail p{color:#726a5e;font-size:12px}.wb-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#ded7cc;margin:18px 0}.wb-detail-grid div{background:#fffdf8;padding:11px}.wb-detail-grid small{display:block;color:#867d71}.wb-detail-grid b{display:block;margin-top:5px;font-family:ui-monospace,monospace}.wb-facts{padding:0;margin:0;list-style:none}.wb-facts li{border-top:1px solid #e7e1d7;padding:10px 0;font-size:12px;line-height:1.55}@media(max-width:620px){.wb-intro{display:block}.wb-status{display:inline-block;margin-top:12px}.wb-pulse{grid-template-columns:1fr 1fr;padding:12px}.wb-pulse i{grid-column:span 1}.wb-pulse em{grid-column:1/-1;border-top:1px solid #ded7cc;padding-top:8px}.wb-tabs{gap:14px;overflow:auto}.wb-tools{grid-template-columns:1fr auto}.wb-tools label{grid-column:1/-1}.wb-filter-panel{display:block}.wb-filter-panel div+div{margin-top:10px}.wb-meta{display:block}.wb-meta span{display:block;margin-top:4px}.wb-head{display:none}.wb-row{grid-template-columns:1.6fr 1fr 1fr 18px;gap:8px;padding:12px}.wb-row .wb-institutional,.wb-row .wb-signal{display:none}.wb-row .wb-name{font-size:14px}.wb-row .wb-tag{font-size:9px}.wb-drawer{width:100%;}.wb-detail-grid{grid-template-columns:1fr 1fr}}
+.wb-shell{margin:16px 0 28px;color:#1d2939}.wb-intro{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:2px solid #27364a;padding:4px 0 16px}.wb-kicker{margin:0;color:#526b84;font-size:11px;font-weight:800;letter-spacing:.08em}.wb-intro h2{margin:5px 0 4px;font-size:28px;letter-spacing:.02em}.wb-sub{margin:0;color:#667085;font-size:13px}.wb-status{border:1px solid #d4dce6;background:#f8fbff;padding:9px 11px;color:#526b84;font-size:11px;white-space:nowrap}.wb-pulse{display:grid;grid-template-columns:130px 180px 1fr 1fr 180px;align-items:center;gap:14px;border:1px solid #d7e0ea;border-left:3px solid #52718d;padding:14px 10px;background:#f7fbff;font-size:12px}.wb-pulse span{font-weight:800}.wb-pulse b{font-family:monospace;font-size:12px}.wb-pulse i{height:3px;background:#c94d45}.wb-pulse i:nth-of-type(2){background:#23795a}.wb-pulse em{font-style:normal;color:#667085}.wb-tabs{display:flex;gap:20px;border-bottom:1px solid #d7e0ea;padding:15px 10px 0}.wb-tabs button{border:0;background:transparent;color:#667085;padding:0 0 12px;font-size:13px;font-weight:700;border-bottom:2px solid transparent}.wb-tabs button.on{color:#274c77;border-color:#52718d}.wb-tools{display:grid;grid-template-columns:1fr auto auto;gap:8px;padding:16px 0}.wb-tools label{display:flex;gap:8px;align-items:center;border:1px solid #cfd9e5;background:#fff;padding:0 11px}.wb-tools input{width:100%;border:0;outline:0;padding:11px 0;font:inherit}.wb-tools button,.wb-filter-panel button{border:1px solid #cfd9e5;background:#fff;padding:9px 12px;color:#344054;font:inherit;font-size:12px}.wb-tools button:hover,.wb-filter-panel button.on{border-color:#52718d;color:#274c77;background:#f1f7fc}.wb-filter-panel{display:flex;gap:24px;margin:-8px 0 12px;padding:12px;border:1px solid #d9e3ed;background:#f7faff;font-size:12px}.wb-filter-panel div{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wb-filter-panel b{margin-right:5px;color:#526b84}.wb-filter-panel button{padding:5px 9px}.wb-meta{display:flex;justify-content:space-between;gap:12px;padding:7px 0 10px;color:#667085;font-size:11px}.wb-meta b{color:#1d2939}.wb-table{border:1px solid #d7e0ea;background:#fff;border-radius:12px;overflow:hidden}.wb-head,.wb-row{display:grid;grid-template-columns:minmax(190px,2fr) minmax(110px,1fr) minmax(110px,1fr) minmax(120px,1fr) minmax(145px,1.25fr) 22px;gap:10px;align-items:center;padding:12px 14px}.wb-head{background:#f3f7fb;border-bottom:1px solid #d7e0ea;color:#526b84;font-size:11px}.wb-head button{border:0;background:transparent;color:inherit;text-align:left;font:inherit;font-weight:800;padding:0}.wb-head button.on{color:#274c77}.wb-row{border-bottom:1px solid #edf1f5;text-align:left;cursor:pointer;background:#fff}.wb-row:hover{background:#f7fbff;box-shadow:inset 3px 0 #52718d}.wb-name{font-weight:800;font-size:15px}.wb-code,.wb-small{display:block;color:#7b8795;font-size:10px;margin-top:2px}.wb-turning-flow{display:inline-flex;margin-top:5px;padding:3px 6px;border-radius:5px;font-size:10px;font-weight:800;line-height:1.25}.wb-turning-flow.sell_to_buy,.wb-turning-flow.buying_strength{background:#fceceb;color:#b42318}.wb-turning-flow.buy_to_sell,.wb-turning-flow.selling_strength{background:#e9f6ef;color:#13734c}.wb-turning-flow.unknown{background:#eef2f6;color:#667085}.wb-num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800}.wb-up{color:#b42318}.wb-down{color:#13734c}.wb-flat{color:#7b8795}.wb-tag{display:inline-block;font-size:10px;padding:3px 5px;background:#edf3f8;color:#345673;margin-right:5px}.wb-tag.ETF{background:#e8f4ed;color:#227052}.wb-tag.雷達{background:#e8f5f5;color:#256d6c}.wb-tag.轉折{background:#f0ebf8;color:#674d8c}.wb-skeleton{height:54px;margin:0 14px;border-bottom:1px solid #edf1f5;background:linear-gradient(90deg,#fff 20%,#f2f6fa 45%,#fff 70%);background-size:220% 100%;animation:wbscan 1.1s linear infinite}@keyframes wbscan{to{background-position:-120% 0}}.wb-disclaimer{margin:12px 0;color:#7b8795;font-size:11px;line-height:1.55}.wb-mask{position:fixed;inset:0;background:rgba(23,42,58,.22);z-index:30}.wb-drawer{position:fixed;z-index:31;right:0;top:0;bottom:0;width:min(430px,92vw);padding:22px;background:#fff;box-shadow:-12px 0 32px rgba(23,42,58,.16);transform:translateX(110%);transition:transform .18s ease-out;overflow:auto}.wb-drawer.open{transform:translateX(0)}.wb-drawer>button{float:right;border:0;background:transparent;font-size:26px;color:#526b84}.wb-detail h3{margin:5px 0;font-size:25px}.wb-detail p{color:#667085;font-size:12px}.wb-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#dbe4ec;margin:18px 0}.wb-detail-grid div{background:#f9fbfd;padding:11px}.wb-detail-grid small{display:block;color:#7b8795}.wb-detail-grid b{display:block;margin-top:5px;font-family:ui-monospace,monospace}.wb-facts{padding:0;margin:0;list-style:none}.wb-facts li{border-top:1px solid #e4ebf1;padding:10px 0;font-size:12px;line-height:1.55}@media(max-width:620px){.wb-intro{display:block}.wb-status{display:inline-block;margin-top:12px}.wb-pulse{grid-template-columns:1fr 1fr;padding:12px}.wb-pulse i{grid-column:span 1}.wb-pulse em{grid-column:1/-1;border-top:1px solid #d7e0ea;padding-top:8px}.wb-tabs{gap:14px;overflow:auto}.wb-tools{grid-template-columns:1fr auto}.wb-tools label{grid-column:1/-1}.wb-filter-panel{display:block}.wb-filter-panel div+div{margin-top:10px}.wb-meta{display:block}.wb-meta span{display:block;margin-top:4px}.wb-head{display:none}.wb-row{grid-template-columns:1.6fr 1fr 1fr 18px;gap:8px;padding:12px}.wb-row .wb-institutional,.wb-row .wb-signal{display:none}.wb-row .wb-name{font-size:14px}.wb-row .wb-tag{font-size:9px}.wb-drawer{width:100%;}.wb-detail-grid{grid-template-columns:1fr 1fr}}
 </style>
 <style>
 .wb-tag.持股{background:#f5e8df;color:#85513a}.wb-rank-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:#ded7cc}.wb-rank-card{background:#fffdf8;padding:18px}.wb-rank-card small,.wb-rank-card em{display:block;color:#857d71;font-size:11px;font-style:normal}.wb-rank-card b{display:block;font-family:ui-monospace,monospace;font-size:23px;margin:7px 0}.wb-rank-card span{font-size:12px;font-weight:800}@media(max-width:620px){.wb-rank-grid{grid-template-columns:1fr}}
@@ -19481,7 +19583,7 @@ def render_workbench_body():
   function sources(){var list=['全部'];state.rows.forEach(function(r){if(list.indexOf(r.source)<0)list.push(r.source)});if(state.personal&&Object.keys(state.personal.rank_summary||{}).length)list.push('我的排行');return list}
   function renderTabs(){tabs.innerHTML=sources().map(function(s){var n=s==='全部'?state.rows.length:s==='我的排行'?'':state.rows.filter(function(r){return r.source===s}).length;return '<button type="button" class="'+(state.source===s?'on':'')+'" data-source="'+esc(s)+'">'+esc(s)+(n===''?'':' <small>'+n+'</small>')+'</button>'}).join('');}
   function filtered(){var q=state.query.trim().toLowerCase();return state.rows.filter(function(r){var etf=r.source==='ETF';return (state.source==='全部'||r.source===state.source)&&(!q||[r.code,r.name,r.industry].join(' ').toLowerCase().indexOf(q)>-1)&&(state.kind==='all'||(state.kind==='etf'?etf:!etf))&&(state.dir==='all'||(state.dir==='up'&&Number(r.change_pct)>0)||(state.dir==='down'&&Number(r.change_pct)<0));}).sort(function(a,b){var av=a[state.sort],bv=b[state.sort];av=av==null?-Infinity:Number(av);bv=bv==null?-Infinity:Number(bv);return state.desc?bv-av:av-bv;});}
-  function render(){var list=filtered();renderTabs();document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var html=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta+' 名':r.delta<0?'↓ '+Math.abs(r.delta)+' 名':'— 名次不變');return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(html||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';rowsEl.innerHTML=list.length?list.map(function(r){var tag='<span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>';var inst=r.institutional_lots==null?'—':(r.institutional_lots>0?'+':'')+Number(r.institutional_lots).toLocaleString('zh-TW')+' 張';var metric=r.metric_label==='當日漲跌'?pct(r.change_pct):pct(r.change_pct)+'<span class="wb-small">'+esc(r.metric_label)+'</span>';return '<button type="button" class="wb-row" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'"><span>'+tag+'<b class="wb-name">'+esc(r.name)+'</b><small class="wb-code">'+esc(r.code)+' · '+esc(r.industry)+'</small></span><span class="wb-num">'+(r.score==null?'—':esc(r.score))+'<small class="wb-small">'+(r.source==='持股'?'個人庫存':'/100'+(r.quality!=null?' · '+esc(r.quality):''))+'</small></span><span class="wb-num">'+money(r.price)+'<small class="wb-small">'+metric+'</small></span><span class="wb-institutional wb-num">'+esc(inst)+'</span><span class="wb-signal">'+esc(r.signal)+'</span><span>›</span></button>';}).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}
+  function render(){var list=filtered();renderTabs();document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var html=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta+' 名':r.delta<0?'↓ '+Math.abs(r.delta)+' 名':'— 名次不變');return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(html||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';rowsEl.innerHTML=list.length?list.map(function(r){var tag='<span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>';var flow=r.source==='轉折'?'<small class="wb-turning-flow '+esc((r.detail||{}).flow_key||'unknown')+'">'+esc(r.signal)+'</small>':'';var inst=r.institutional_lots==null?'—':(r.institutional_lots>0?'+':'')+Number(r.institutional_lots).toLocaleString('zh-TW')+' 張';var metric=r.metric_label==='當日漲跌'?pct(r.change_pct):pct(r.change_pct)+'<span class="wb-small">'+esc(r.metric_label)+'</span>';return '<button type="button" class="wb-row" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'"><span>'+tag+'<b class="wb-name">'+esc(r.name)+'</b><small class="wb-code">'+esc(r.code)+' · '+esc(r.industry)+'</small>'+flow+'</span><span class="wb-num">'+(r.score==null?'—':esc(r.score))+'<small class="wb-small">'+(r.source==='持股'?'個人庫存':'/100'+(r.quality!=null?' · '+esc(r.quality):''))+'</small></span><span class="wb-num">'+money(r.price)+'<small class="wb-small">'+metric+'</small></span><span class="wb-institutional wb-num">'+esc(inst)+'</span><span class="wb-signal">'+esc(r.signal)+'</span><span>›</span></button>';}).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}
   function showDetail(row){var d=row.detail||{},facts=[];Object.keys(d).forEach(function(k){var v=d[k];if(v==null||v===''||(Array.isArray(v)&&!v.length))return;facts.push('<li><b>'+esc({source_date:'資料日',breakout:'型態',streak:'連續天數',vol_ratio:'量能倍數',support:'支撐',resistance:'壓力',state:'轉折狀態',flow:'方向',category:'ETF 類別',return_pct:'價格報酬',excess_pct:'同期超額',annualized_yield_pct:'年化配息殖利率',period_label:'比較期間'}[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):v)+'</li>');});document.getElementById('wb-detail').innerHTML='<p>'+esc(row.source)+' · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>最新快照價格</small><b>'+money(row.price)+'</b></div><div><small>'+esc(row.metric_label||'當日漲跌')+'</small><b>'+pct(row.change_pct)+'</b></div><div><small>綜合分數</small><b>'+esc(row.score==null?'—':row.score)+'</b></div><div><small>訊號</small><b>'+esc(row.signal)+'</b></div></div><ul class="wb-facts">'+(facts.join('')||'<li>目前沒有更多已確認的快照欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;}
   function updateQuotes(){if(!state.marketOpen||document.hidden)return;var codes=filtered().slice(0,30).map(function(r){return r.code}).join(',');if(!codes)return;fetch(api('/web/api/workbench/quotes?codes='+encodeURIComponent(codes)),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');return r.json()}).then(function(data){(data.updates||[]).forEach(function(q){state.rows.forEach(function(r){if(r.code===q.code&&q.price!=null){r.price=q.price;r.change_pct=q.change_pct;r.metric_label='當日漲跌';}});});if(data.note)note.textContent=data.note;render();}).catch(function(e){if(e.message==='AUTH')location.reload();});}
   function load(){status.textContent='讀取最近有效快照…';fetch(api('/web/api/workbench/snapshot'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){state.rows=Array.isArray(data.rows)?data.rows:[];state.personal=data.personal||{positions:[],rank_summary:{}};state.marketOpen=!!data.market_open;status.textContent=state.marketOpen?'盤中行情局部更新中':'最近有效快照已載入';note.textContent=data.note||'';pulse.innerHTML='<span>市場脈搏</span><b>'+esc(state.marketOpen?'開盤中':'收盤快照')+'</b><i></i><i></i><em>'+esc(state.marketOpen?'價格每 90 秒局部更新':'收盤後固定採正式收盤快照')+'</em>';render();if(state.timer)clearInterval(state.timer);if(state.marketOpen)state.timer=setInterval(updateQuotes,90000);}).catch(function(e){status.textContent='快照暫時無法載入';rowsEl.innerHTML='<div class="wb-skeleton" style="animation:none;background:#fff;color:#8b4034;padding:18px">資料暫時無法載入，請稍後重新整理。沒有顯示推測標的。</div>';if(e.message==='AUTH')location.reload();});}
