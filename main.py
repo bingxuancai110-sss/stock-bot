@@ -2,6 +2,8 @@ import os
 import re
 import html
 import base64
+import csv
+import io
 import ssl
 import socket
 import time
@@ -3203,9 +3205,99 @@ def enrich_position_change_logs(logs, current_positions, price_map, total_value)
     return [enriched_by_id.get(log.get("id"), log) for log in logs or []]
 
 
+def _position_change_journal_status(log):
+    """依既有加減碼日誌判定日報分類；只將正股數完整歸零標為刪除。"""
+    action = str(log.get("action") or "").strip()
+    before = int(log.get("shares_before") or 0)
+    after = int(log.get("shares_after") or 0)
+    if action == "add":
+        return ("新增", "new") if before == 0 else ("加碼", "add")
+    if action == "reduce" and before > 0 and after == 0:
+        return "刪除", "delete"
+    return "減碼", "reduce"
+
+
+def build_position_journal_csv(user_id, current_positions=None, price_map=None,
+                               inst_data=None, logs=None, trade_date=None,
+                               code=None, realized_trades=None):
+    """輸出操作日報的原始數值 CSV；欄位與網頁日報的分類及已實現損益口徑一致。"""
+    all_logs = (list(logs) if logs is not None else
+                get_position_change_logs(user_id, limit=5000, code=code or None))
+    selected_date = _position_change_date(trade_date) if trade_date else None
+    if selected_date:
+        all_logs = [log for log in all_logs
+                    if _position_change_date(log.get("trade_date")) == selected_date]
+    current_positions = (current_positions if current_positions is not None
+                         else merge_positions(get_positions(user_id)))
+    journal_codes = sorted({str(p.get("code")).strip() for p in current_positions if p.get("code")} |
+                           {str(log.get("code")).strip() for log in all_logs if log.get("code")})
+    if price_map is None:
+        price_map = get_realtime_stocks_bulk(journal_codes, rng="1d") if journal_codes else {}
+    total_value = sum(
+        float((price_map.get(p.get("code")) or {}).get("close") or 0) * int(p.get("shares") or 0)
+        for p in current_positions if price_map.get(p.get("code"))
+    )
+    enriched = enrich_position_change_logs(all_logs, current_positions, price_map, total_value)
+    realized_trades = (list(realized_trades) if realized_trades is not None
+                       else get_realized_trades(user_id, limit=500))
+    realized_by_key = {}
+    for trade in realized_trades:
+        sold_date = _position_change_date(trade.get("sold_on"))
+        trade_code = str(trade.get("code") or "").strip()
+        realized_pl = trade.get("realized_pl")
+        if sold_date and trade_code and realized_pl is not None:
+            key = (trade_code, sold_date)
+            realized_by_key[key] = realized_by_key.get(key, 0.0) + float(realized_pl)
+
+    grouped = {}
+    for log in enriched:
+        grouped.setdefault(_position_change_date(log.get("trade_date")), []).append(log)
+    group_order = ("新增", "加碼", "減碼", "刪除")
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(["交易日期", "標的代號", "標的名稱", "狀態", "交易股數", "操作前持股",
+                     "操作後持股", "變動幅度 (%)", "成交／成本價", "目前權重 (%)",
+                     "權重變動 (%)", "已實現損益", "備註"])
+    attached_pnl_keys = set()
+    for day in sorted(grouped, key=lambda value: value or date.min, reverse=True):
+        status_groups = {label: [] for label in group_order}
+        for log in grouped[day]:
+            label, _cls = _position_change_journal_status(log)
+            status_groups[label].append(log)
+        for label in group_order:
+            for log in status_groups[label]:
+                item_code = str(log.get("code") or "").strip()
+                pnl_key = (item_code, day)
+                realized_pl = None
+                if log.get("action") == "reduce" and pnl_key not in attached_pnl_keys:
+                    realized_pl = realized_by_key.get(pnl_key)
+                    if realized_pl is not None:
+                        attached_pnl_keys.add(pnl_key)
+                change_pct = log.get("change_pct")
+                if label == "新增":
+                    change_pct = 100.0
+                writer.writerow([
+                    day.isoformat() if day else "",
+                    item_code,
+                    stock_display_name(item_code, inst_data or {}),
+                    label,
+                    int(log.get("shares_delta") or 0),
+                    int(log.get("shares_before") or 0),
+                    int(log.get("shares_after") or 0),
+                    change_pct if change_pct is not None else "",
+                    log.get("trade_price") if log.get("trade_price") is not None else "",
+                    log.get("current_weight") if log.get("current_weight") is not None else "",
+                    log.get("event_weight") if log.get("event_weight") is not None else "",
+                    realized_pl if realized_pl is not None else "",
+                    str(log.get("note") or ""),
+                ])
+    # UTF-8 BOM 讓 Windows 版 Excel 開啟時可直接辨識中文欄名與標的名稱。
+    return "\ufeff" + output.getvalue()
+
+
 def render_position_change_journal(user_id, current_positions=None, price_map=None,
                                   inst_data=None, logs=None, trade_date=None,
-                                  display_limit=100, realized_trades=None):
+                                  display_limit=100, realized_trades=None, export_code=None):
     """呈現操作日報；總資產口徑是目前已登錄持股的最新可得市值，不含未輸入的現金／其他資產。"""
     all_logs = logs if logs is not None else get_position_change_logs(user_id, limit=5000)
     if not all_logs:
@@ -3247,50 +3339,62 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
     for log in enriched:
         grouped.setdefault(_position_change_date(log.get("trade_date")), []).append(log)
 
+    journal_group_order = (("新增", "new"), ("加碼", "add"),
+                           ("減碼", "reduce"), ("刪除", "delete"))
     day_sections = []
-    for day, day_logs in grouped.items():
+    for day in sorted(grouped, key=lambda value: value or date.min, reverse=True):
+        day_logs = grouped[day]
         day_text = day.strftime("%Y/%m/%d") if day else "日期待確認"
         row_parts = []
         attached_pnl_keys = set()
+        status_groups = {label: [] for label, _cls in journal_group_order}
         for log in day_logs:
-            code = str(log.get("code") or "")
-            name = html.escape(str(stock_display_name(code, inst_data)))
-            action = "加碼" if log.get("action") == "add" else "減碼"
-            delta = int(log.get("shares_delta") or 0)
-            before = int(log.get("shares_before") or 0)
-            status_label = "新增" if action == "加碼" and before == 0 else action
-            status_cls = "new" if status_label == "新增" else ("add" if action == "加碼" else "reduce")
-            delta_text = f"{delta:+,} 股"
-            delta_class = "up" if delta > 0 else "down"
-            after = int(log.get("shares_after") or 0)
-            change_pct = log.get("change_pct")
-            change_text = ("100%" if status_label == "新增" else
-                           (f"{change_pct:+.2f}%" if change_pct is not None else "待確認"))
-            weight = log.get("current_weight")
-            weight_text = f"{weight:.2f}%" if weight is not None else "待確認"
-            event_weight = log.get("event_weight")
-            event_weight_text = (f"{event_weight:+.2f}%"
-                                 if event_weight is not None else "待確認")
-            event_weight_class = ("up" if event_weight is not None and event_weight > 0 else
-                                  "down" if event_weight is not None and event_weight < 0 else "flat")
-            price = log.get("trade_price")
-            price_text = f"成交／成本 {price:,.2f}" if price is not None else "成交價待確認"
-            note = html.escape(str(log.get("note") or ""))
-            note_html = f'<small>{note}</small>' if note else ''
-            pnl_key = (code, day)
-            realized_pl = realized_by_key.get(pnl_key)
-            if pnl_key in attached_pnl_keys:
-                pnl_html = ''
-            elif action == "減碼" and realized_pl is not None:
-                attached_pnl_keys.add(pnl_key)
-                pnl_cls = "up" if realized_pl >= 0 else "down"
-                pnl_html = (f'<small class="position-journal-pnl {pnl_cls}">'
-                             f'已實現損益 {realized_pl:+,.0f}</small>')
-            elif action == "減碼":
-                pnl_html = '<small class="position-journal-pnl flat">已實現損益 待確認</small>'
-            else:
-                pnl_html = '<small class="position-journal-pnl flat">已實現損益 —</small>'
-            row_parts.append(f'''<div class="position-journal-row">
+            status_label, status_cls = _position_change_journal_status(log)
+            status_groups[status_label].append((log, status_label, status_cls))
+        for group_label, group_cls in journal_group_order:
+            logs_in_group = status_groups[group_label]
+            if not logs_in_group:
+                continue
+            row_parts.append(
+                f'<div class="position-journal-category {group_cls}"><b>{group_label}</b>'
+                f'<small>{len(logs_in_group)} 筆</small></div>')
+            for log, status_label, status_cls in logs_in_group:
+                code = str(log.get("code") or "")
+                name = html.escape(str(stock_display_name(code, inst_data)))
+                action = "加碼" if log.get("action") == "add" else "減碼"
+                delta = int(log.get("shares_delta") or 0)
+                before = int(log.get("shares_before") or 0)
+                delta_text = f"{delta:+,} 股"
+                delta_class = "up" if delta > 0 else "down"
+                after = int(log.get("shares_after") or 0)
+                change_pct = log.get("change_pct")
+                change_text = ("100%" if status_label == "新增" else
+                               (f"{change_pct:+.2f}%" if change_pct is not None else "待確認"))
+                weight = log.get("current_weight")
+                weight_text = f"{weight:.2f}%" if weight is not None else "待確認"
+                event_weight = log.get("event_weight")
+                event_weight_text = (f"{event_weight:+.2f}%"
+                                     if event_weight is not None else "待確認")
+                event_weight_class = ("up" if event_weight is not None and event_weight > 0 else
+                                      "down" if event_weight is not None and event_weight < 0 else "flat")
+                price = log.get("trade_price")
+                price_text = f"成交／成本 {price:,.2f}" if price is not None else "成交價待確認"
+                note = html.escape(str(log.get("note") or ""))
+                note_html = f'<small>{note}</small>' if note else ''
+                pnl_key = (code, day)
+                realized_pl = realized_by_key.get(pnl_key)
+                if pnl_key in attached_pnl_keys:
+                    pnl_html = ''
+                elif action == "減碼" and realized_pl is not None:
+                    attached_pnl_keys.add(pnl_key)
+                    pnl_cls = "up" if realized_pl >= 0 else "down"
+                    pnl_html = (f'<small class="position-journal-pnl {pnl_cls}">'
+                                 f'已實現損益 {realized_pl:+,.0f}</small>')
+                elif action == "減碼":
+                    pnl_html = '<small class="position-journal-pnl flat">已實現損益 待確認</small>'
+                else:
+                    pnl_html = '<small class="position-journal-pnl flat">已實現損益 —</small>'
+                row_parts.append(f'''<div class="position-journal-row">
   <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
   <div class="position-journal-status"><span class="position-journal-badge {status_cls}">{status_label}</span></div>
   <div class="position-journal-cell"><b class="{delta_class}">{delta_text}</b><small>{before:,} → {after:,} 股</small></div>
@@ -3300,9 +3404,15 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
         day_sections.append(f'<div class="position-journal-day">{day_text}</div>{"".join(row_parts)}')
 
     filter_text = (selected_date.strftime("%Y/%m/%d") if selected_date else "全部日期")
+    export_params = []
+    if selected_date:
+        export_params.append("journal_date=" + quote(selected_date.isoformat(), safe=""))
+    if export_code:
+        export_params.append("code=" + quote(str(export_code), safe=""))
+    export_url = "/web/position-journal.csv" + ("?" + "&".join(export_params) if export_params else "")
     return f'''<section class="position-journal">
-  <div class="position-journal-head"><h2>操作日報</h2><small>{len(enriched)} 筆操作<br>{html.escape(filter_text)}</small></div>
-  <div class="position-journal-note">記錄加碼／減碼後的持股變化。<b>目前權重</b>＝最新可得價格 × 目前持股 ÷ 目前持股總市值；未輸入的現金與其他資產不會被假設加入分母。</div>
+  <div class="position-journal-head"><div class="position-journal-title-actions"><h2>操作日報</h2><a class="position-journal-export" href="{html.escape(export_url, quote=True)}">匯出 CSV</a></div><small>{len(enriched)} 筆操作<br>{html.escape(filter_text)}</small></div>
+  <div class="position-journal-note">同日依<b>新增 → 加碼 → 減碼 → 刪除</b>分類排列；刪除表示該筆操作已將持股完整減碼至 0 股。<b>目前權重</b>＝最新可得價格 × 目前持股 ÷ 目前持股總市值；未輸入的現金與其他資產不會被假設加入分母。</div>
   <div class="position-journal-table-head"><span>標的</span><span>狀態</span><span>持股變動</span><span>變動幅度</span><span>目前權重<br>變動 %</span></div>
   {"".join(day_sections)}
   <div class="position-journal-foot">本次影響是以成交／成本價 × 股數變動估算，占目前已登錄持股總市值；不是個人化買賣建議。價格若查無有效資料，相關欄位維持待確認。</div>
@@ -4412,7 +4522,9 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 v = raw_volumes[i] if i < len(raw_volumes) and raw_volumes[i] is not None else 0
                 bars.append((bar_date, c, h, l, v))
 
-            today_date = datetime.now(tw_tz).date()
+            # 統一使用既有的台灣交易日時鐘；這可避免收盤同步、快取與
+            # 官方 MIS／Yahoo 日K 的「今天」判斷在測試或跨時區環境不一致。
+            today_date = taiwan_today()
 
             # 13:30 後官方 MIS 的 z/y 優先於 Yahoo regularMarketPrice；
             # Yahoo 在收盤集合競價後可能仍停在盤中最後成交，不能拿來代表正式收盤。
@@ -4572,7 +4684,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                         if v.get("at", 0) < cutoff:
                             _realtime_cache.pop(k, None)
             return result
-        except:
+        except Exception:
             continue
     return None
 
@@ -11930,6 +12042,7 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
   .position-journal-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:15px 15px 11px;border-bottom:1px solid #E8E3D8}
   .position-journal-head h2{margin:0;font-size:18px}
   .position-journal-head small{color:var(--ink-faint);font-size:11.5px;line-height:1.5;text-align:right}
+  .position-journal-title-actions{display:flex;align-items:center;gap:9px;min-width:0}.position-journal-export{display:inline-flex;align-items:center;padding:5px 8px;border:1px solid #B8CBDC;border-radius:6px;background:#F7FBFF;color:#345673;font-size:11px;font-weight:800;line-height:1;text-decoration:none;white-space:nowrap}.position-journal-export:hover{border-color:#527A9B;background:#EEF5FB}
   .position-journal-note{padding:9px 15px;background:#F7F4EC;color:var(--ink-soft);font-size:11.5px;line-height:1.6}
   .position-journal-day{padding:10px 15px 4px;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}
   .position-journal-table-head{display:grid;grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:9px;align-items:end;padding:9px 15px 7px;background:#F8F7F2;color:var(--ink-soft);font-size:11px;font-weight:700;line-height:1.25;border-bottom:1px solid #E8E3D8}
@@ -11947,12 +12060,17 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
   .position-journal-badge.new{background:#F6F0D7;color:#927A12}
   .position-journal-badge.add{background:#FCE9E6;color:var(--up)}
   .position-journal-badge.reduce{background:#E8F2EA;color:var(--down)}
+  .position-journal-badge.delete{background:#EDF0F3;color:#667085}
+  .position-journal-category{display:flex;align-items:center;gap:7px;padding:10px 15px 6px;background:#F8F7F2;color:var(--ink-soft);border-top:1px solid #E8E3D8;font-size:12px;letter-spacing:.04em}
+  .position-journal-category:first-of-type{border-top:0}.position-journal-category b{font-size:12px}.position-journal-category small{color:var(--ink-faint);font-size:10.5px}
+  .position-journal-category.new b{color:#927A12}.position-journal-category.add b{color:var(--up)}.position-journal-category.reduce b{color:var(--down)}.position-journal-category.delete b{color:#667085}
   .position-journal-foot{padding:10px 15px 13px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}
   .position-journal-empty{padding:14px 15px;color:var(--ink-soft);font-size:12.5px}
   @media(max-width:640px){
     .position-journal-head{padding:13px 12px 10px}
     .position-journal-head h2{font-size:17px}
     .position-journal-head small{text-align:right;font-size:10.5px}
+    .position-journal-title-actions{gap:6px}.position-journal-export{padding:5px 7px;font-size:10px}
     .position-journal-table-head{grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:5px;padding:8px 8px 6px;font-size:9.5px}
     .position-journal-row{grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:6px 5px;padding:10px 8px}
     .position-journal-name b{font-size:13px}
@@ -11962,6 +12080,7 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
     .position-journal-cell small{font-size:9px}
     .position-journal-status{font-size:9px}
     .position-journal-badge{padding:3px 5px;font-size:9.5px}
+    .position-journal-category{padding:9px 8px 5px;font-size:11px}.position-journal-category b{font-size:11px}.position-journal-category small{font-size:9.5px}
     .position-journal-note,.position-journal-day,.position-journal-foot{padding-left:8px;padding-right:8px}
   }
 
@@ -15783,6 +15902,23 @@ def render_trend_chart(snapshots):
     return svg + legend
 
 
+@app.route("/web/position-journal.csv")
+@web_login_required
+def web_position_journal_csv(uid):
+    """下載目前使用者、目前篩選範圍的操作日報；不提供跨使用者或任意資料查詢。"""
+    code = str(request.args.get("code") or "").strip()
+    journal_date = str(request.args.get("journal_date") or "").strip()
+    inst = fetch_institutional_data() or {}
+    csv_text = build_position_journal_csv(
+        uid, inst_data=inst, trade_date=journal_date or None, code=code or None)
+    suffix = _position_change_date(journal_date).strftime("%Y%m%d") if _position_change_date(journal_date) else taiwan_today().strftime("%Y%m%d")
+    response = make_response(csv_text)
+    response.headers["Content-Type"] = "text/csv; charset=utf-8"
+    response.headers["Content-Disposition"] = f'attachment; filename="position_journal_{suffix}.csv"'
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
 @app.route("/web/trades")
 @web_login_required
 def web_trades(uid):
@@ -15813,7 +15949,8 @@ def web_trades(uid):
                       if journal_codes else {})
     journal_html = render_position_change_journal(
         uid, current_positions=current_positions, price_map=journal_prices,
-        inst_data=inst, logs=journal_logs, trade_date=journal_date or None)
+        inst_data=inst, logs=journal_logs, trade_date=journal_date or None,
+        export_code=code or None)
 
     if not trades and not months and not journal_logs:
         return respond_page("交易紀錄", """
