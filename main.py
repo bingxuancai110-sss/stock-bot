@@ -3217,16 +3217,31 @@ def _position_change_journal_status(log):
     return "減碼", "reduce"
 
 
+def _filter_position_change_logs(logs, trade_date=None, start_date=None, end_date=None):
+    """先重建完整持股歷程再篩選輸出範圍，確保期間起點的前後持股正確。"""
+    exact = _position_change_date(trade_date) if trade_date else None
+    start = _position_change_date(start_date) if start_date else None
+    end = _position_change_date(end_date) if end_date else None
+    result = []
+    for log in logs or []:
+        log_date = _position_change_date(log.get("trade_date"))
+        if exact and log_date != exact:
+            continue
+        if start and (not log_date or log_date < start):
+            continue
+        if end and (not log_date or log_date > end):
+            continue
+        result.append(log)
+    return result
+
+
 def build_position_journal_csv(user_id, current_positions=None, price_map=None,
                                inst_data=None, logs=None, trade_date=None,
-                               code=None, realized_trades=None):
+                               code=None, realized_trades=None,
+                               start_date=None, end_date=None):
     """輸出操作日報的原始數值 CSV；欄位與網頁日報的分類及已實現損益口徑一致。"""
     all_logs = (list(logs) if logs is not None else
                 get_position_change_logs(user_id, limit=5000, code=code or None))
-    selected_date = _position_change_date(trade_date) if trade_date else None
-    if selected_date:
-        all_logs = [log for log in all_logs
-                    if _position_change_date(log.get("trade_date")) == selected_date]
     current_positions = (current_positions if current_positions is not None
                          else merge_positions(get_positions(user_id)))
     journal_codes = sorted({str(p.get("code")).strip() for p in current_positions if p.get("code")} |
@@ -3238,6 +3253,8 @@ def build_position_journal_csv(user_id, current_positions=None, price_map=None,
         for p in current_positions if price_map.get(p.get("code"))
     )
     enriched = enrich_position_change_logs(all_logs, current_positions, price_map, total_value)
+    enriched = _filter_position_change_logs(
+        enriched, trade_date=trade_date, start_date=start_date, end_date=end_date)
     realized_trades = (list(realized_trades) if realized_trades is not None
                        else get_realized_trades(user_id, limit=500))
     realized_by_key = {}
@@ -3293,6 +3310,90 @@ def build_position_journal_csv(user_id, current_positions=None, price_map=None,
                 ])
     # UTF-8 BOM 讓 Windows 版 Excel 開啟時可直接辨識中文欄名與標的名稱。
     return "\ufeff" + output.getvalue()
+
+
+def render_position_change_history(user_id, current_positions=None, price_map=None,
+                                   inst_data=None, logs=None, start_date=None, end_date=None,
+                                   export_code=None):
+    """交易紀錄頁使用跨日期完整操作歷程；首頁仍使用逐日操作日報。"""
+    all_logs = (list(logs) if logs is not None else
+                get_position_change_logs(user_id, limit=5000, code=export_code or None))
+    if not all_logs:
+        return ""
+    current_positions = (current_positions if current_positions is not None
+                         else merge_positions(get_positions(user_id)))
+    codes = sorted({str(p.get("code")).strip() for p in current_positions if p.get("code")} |
+                   {str(log.get("code")).strip() for log in all_logs if log.get("code")})
+    if price_map is None:
+        price_map = get_realtime_stocks_bulk(codes, rng="1d") if codes else {}
+    total_value = sum(
+        float((price_map.get(p.get("code")) or {}).get("close") or 0) * int(p.get("shares") or 0)
+        for p in current_positions if price_map.get(p.get("code"))
+    )
+    enriched = enrich_position_change_logs(all_logs, current_positions, price_map, total_value)
+    enriched = _filter_position_change_logs(enriched, start_date=start_date, end_date=end_date)
+    if not enriched:
+        return ('<section class="position-history"><div class="position-history-head"><h2>完整操作歷程</h2></div>'
+                '<div class="position-journal-empty">這個日期區間沒有操作紀錄。</div></section>')
+
+    group_order = (("新增", "new"), ("加碼", "add"), ("減碼", "reduce"), ("刪除", "delete"))
+    groups = {label: [] for label, _cls in group_order}
+    for log in enriched:
+        label, _cls = _position_change_journal_status(log)
+        groups[label].append(log)
+    summary_parts = []
+    for label, cls in group_order:
+        items = groups[label]
+        shares = sum(abs(int(item.get("shares_delta") or 0)) for item in items)
+        amounts = [abs(int(item.get("shares_delta") or 0)) * float(item.get("trade_price"))
+                   for item in items if item.get("trade_price") is not None]
+        amount_text = f"{sum(amounts):,.0f}" if amounts else "待確認"
+        summary_parts.append(
+            f'<div class="position-history-summary {cls}"><b>{label}</b><strong>{shares:,} 股</strong>'
+            f'<small>{len(items)} 筆　成交／成本 {amount_text}</small></div>')
+
+    row_parts = []
+    for log in sorted(enriched, key=lambda item: (
+            _position_change_date(item.get("trade_date")) or date.min,
+            int(item.get("id") or 0)), reverse=True):
+        code = str(log.get("code") or "")
+        name = html.escape(str(stock_display_name(code, inst_data or {})))
+        label, cls = _position_change_journal_status(log)
+        delta = int(log.get("shares_delta") or 0)
+        before = int(log.get("shares_before") or 0)
+        after = int(log.get("shares_after") or 0)
+        log_day = _position_change_date(log.get("trade_date"))
+        price = log.get("trade_price")
+        price_text = f"成交／成本 {price:,.2f}" if price is not None else "成交價待確認"
+        note = html.escape(str(log.get("note") or ""))
+        delta_cls = "up" if delta > 0 else "down"
+        row_parts.append(f'''<div class="position-history-row">
+  <div class="position-history-date">{log_day.strftime("%Y/%m/%d") if log_day else "日期待確認"}</div>
+  <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
+  <div class="position-journal-status"><span class="position-journal-badge {cls}">{label}</span></div>
+  <div class="position-journal-cell"><b class="{delta_cls}">{delta:+,} 股</b><small>{before:,} → {after:,} 股</small></div>
+  <div class="position-journal-cell"><small>{note}</small></div>
+</div>''')
+    start = _position_change_date(start_date)
+    end = _position_change_date(end_date)
+    range_text = (f"{start.strftime('%Y/%m/%d')} – {end.strftime('%Y/%m/%d')}" if start and end else
+                  f"{start.strftime('%Y/%m/%d')} 起" if start else
+                  f"截至 {end.strftime('%Y/%m/%d')}" if end else "全部操作歷程")
+    export_params = []
+    if start:
+        export_params.append("journal_start=" + quote(start.isoformat(), safe=""))
+    if end:
+        export_params.append("journal_end=" + quote(end.isoformat(), safe=""))
+    if export_code:
+        export_params.append("code=" + quote(str(export_code), safe=""))
+    export_url = "/web/position-journal.csv" + ("?" + "&".join(export_params) if export_params else "")
+    return f'''<section class="position-history">
+  <div class="position-history-head"><div class="position-journal-title-actions"><h2>完整操作歷程</h2><a class="position-journal-export" href="{html.escape(export_url, quote=True)}">匯出明細 CSV</a></div><small>{len(enriched)} 筆操作<br>{html.escape(range_text)}</small></div>
+  <div class="position-history-note">此頁彙總目前篩選區間的所有操作；首頁維持最新一天的逐日操作日報。</div>
+  <div class="position-history-summary-grid">{"".join(summary_parts)}</div>
+  <div class="position-history-table-head"><span>日期</span><span>標的</span><span>狀態</span><span>持股變動</span><span>備註</span></div>
+  {"".join(row_parts)}
+</section>'''
 
 
 def render_position_change_journal(user_id, current_positions=None, price_map=None,
@@ -12039,7 +12140,9 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
   .realized-collapse>summary small{margin-left:auto;color:var(--ink-faint);font-size:12px;font-weight:400}
   .realized-body{padding:2px 0 14px}
   .position-journal{margin:22px 0;border:1px solid #D9D5C9;border-radius:12px;background:#FFFDF8;overflow:hidden}
+  .position-history{margin:22px 0;border:1px solid #D9D5C9;border-radius:12px;background:#FFFDF8;overflow:hidden}
   .position-journal-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:15px 15px 11px;border-bottom:1px solid #E8E3D8}
+  .position-history-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:15px 15px 11px;border-bottom:1px solid #E8E3D8}.position-history-head h2{margin:0;font-size:18px}.position-history-head small{color:var(--ink-faint);font-size:11.5px;line-height:1.5;text-align:right}
   .position-journal-head h2{margin:0;font-size:18px}
   .position-journal-head small{color:var(--ink-faint);font-size:11.5px;line-height:1.5;text-align:right}
   .position-journal-title-actions{display:flex;align-items:center;gap:9px;min-width:0}.position-journal-export{display:inline-flex;align-items:center;padding:5px 8px;border:1px solid #B8CBDC;border-radius:6px;background:#F7FBFF;color:#345673;font-size:11px;font-weight:800;line-height:1;text-decoration:none;white-space:nowrap}.position-journal-export:hover{border-color:#527A9B;background:#EEF5FB}
@@ -12064,12 +12167,14 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
   .position-journal-category{display:flex;align-items:center;gap:7px;padding:10px 15px 6px;background:#F8F7F2;color:var(--ink-soft);border-top:1px solid #E8E3D8;font-size:12px;letter-spacing:.04em}
   .position-journal-category:first-of-type{border-top:0}.position-journal-category b{font-size:12px}.position-journal-category small{color:var(--ink-faint);font-size:10.5px}
   .position-journal-category.new b{color:#927A12}.position-journal-category.add b{color:var(--up)}.position-journal-category.reduce b{color:var(--down)}.position-journal-category.delete b{color:#667085}
+  .position-history-note{padding:9px 15px;background:#F7F4EC;color:var(--ink-soft);font-size:11.5px;line-height:1.6}.position-history-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:11px 15px;border-bottom:1px solid #E8E3D8}.position-history-summary{min-width:0;padding:9px;border-radius:8px;background:#F6F4EE}.position-history-summary b,.position-history-summary strong,.position-history-summary small{display:block}.position-history-summary b{font-size:11px}.position-history-summary strong{margin-top:3px;color:var(--ink);font-size:16px;font-variant-numeric:tabular-nums}.position-history-summary small{margin-top:3px;color:var(--ink-faint);font-size:10px;line-height:1.4}.position-history-summary.new b{color:#927A12}.position-history-summary.add b{color:var(--up)}.position-history-summary.reduce b{color:var(--down)}.position-history-summary.delete b{color:#667085}.position-history-table-head,.position-history-row{display:grid;grid-template-columns:.74fr minmax(0,1.3fr) .68fr minmax(0,.95fr) minmax(0,1.05fr);gap:9px;align-items:center;padding:9px 15px}.position-history-table-head{background:#F8F7F2;color:var(--ink-soft);font-size:11px;font-weight:700;line-height:1.25}.position-history-table-head span:not(:nth-child(2)){text-align:right}.position-history-row{border-top:1px solid #EEEAE1}.position-history-date{color:var(--ink-soft);font-size:11px;font-variant-numeric:tabular-nums}.position-history-row .position-journal-cell:last-child{text-align:right}
   .position-journal-foot{padding:10px 15px 13px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}
   .position-journal-empty{padding:14px 15px;color:var(--ink-soft);font-size:12.5px}
   @media(max-width:640px){
     .position-journal-head{padding:13px 12px 10px}
     .position-journal-head h2{font-size:17px}
     .position-journal-head small{text-align:right;font-size:10.5px}
+    .position-history-head{padding:13px 12px 10px}.position-history-head h2{font-size:17px}.position-history-head small{font-size:10.5px}.position-history-note{padding:9px 12px;font-size:10.5px}.position-history-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:9px 8px}.position-history-summary{padding:8px}.position-history-summary strong{font-size:14px}.position-history-summary small{font-size:9px}.position-history-table-head,.position-history-row{grid-template-columns:.7fr minmax(0,1.12fr) .58fr minmax(0,.85fr) minmax(0,.85fr);gap:5px;padding:8px}.position-history-table-head{font-size:9px}.position-history-row{padding:9px 8px}.position-history-date{font-size:9px}
     .position-journal-title-actions{gap:6px}.position-journal-export{padding:5px 7px;font-size:10px}
     .position-journal-table-head{grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:5px;padding:8px 8px 6px;font-size:9.5px}
     .position-journal-row{grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:6px 5px;padding:10px 8px}
@@ -15908,10 +16013,21 @@ def web_position_journal_csv(uid):
     """下載目前使用者、目前篩選範圍的操作日報；不提供跨使用者或任意資料查詢。"""
     code = str(request.args.get("code") or "").strip()
     journal_date = str(request.args.get("journal_date") or "").strip()
+    requested_start = str(request.args.get("journal_start") or "").strip()
+    requested_end = str(request.args.get("journal_end") or "").strip()
+    journal_start = requested_start or journal_date
+    journal_end = requested_end or journal_date
     inst = fetch_institutional_data() or {}
     csv_text = build_position_journal_csv(
-        uid, inst_data=inst, trade_date=journal_date or None, code=code or None)
-    suffix = _position_change_date(journal_date).strftime("%Y%m%d") if _position_change_date(journal_date) else taiwan_today().strftime("%Y%m%d")
+        uid, inst_data=inst, trade_date=journal_date or None, code=code or None,
+        start_date=journal_start or None, end_date=journal_end or None)
+    start = _position_change_date(journal_start)
+    end = _position_change_date(journal_end)
+    exact = _position_change_date(journal_date) if journal_date and not (requested_start or requested_end) else None
+    suffix = (exact.strftime('%Y%m%d') if exact else
+              f"{start.strftime('%Y%m%d')}-{end.strftime('%Y%m%d')}" if start and end else
+              start.strftime('%Y%m%d') if start else end.strftime('%Y%m%d') if end else
+              taiwan_today().strftime("%Y%m%d"))
     response = make_response(csv_text)
     response.headers["Content-Type"] = "text/csv; charset=utf-8"
     response.headers["Content-Disposition"] = f'attachment; filename="position_journal_{suffix}.csv"'
@@ -15936,6 +16052,8 @@ def web_trades(uid):
     month = request.args.get("month", "")
     code = request.args.get("code", "")
     journal_date = request.args.get("journal_date", "")
+    journal_start = request.args.get("journal_start", "") or journal_date
+    journal_end = request.args.get("journal_end", "") or journal_date
     months, codes = get_trade_filters(uid)
     trades = get_realized_trades(uid, limit=500,
                                  code=code or None, month=month or None)
@@ -15947,9 +16065,10 @@ def web_trades(uid):
                      if journal_logs else [])
     journal_prices = (get_realtime_stocks_bulk(journal_codes, rng="1d")
                       if journal_codes else {})
-    journal_html = render_position_change_journal(
+    journal_html = render_position_change_history(
         uid, current_positions=current_positions, price_map=journal_prices,
-        inst_data=inst, logs=journal_logs, trade_date=journal_date or None,
+        inst_data=inst, logs=journal_logs, start_date=journal_start or None,
+        end_date=journal_end or None,
         export_code=code or None)
 
     if not trades and not months and not journal_logs:
@@ -15976,8 +16095,10 @@ def web_trades(uid):
       {opt('', '全部', code)}
       {''.join(opt(c, f"{stock_display_name(c, inst)} {c}", code) for c in codes)}
     </select></div>
-    <div><label>加減碼日期</label>
-      <input type="date" name="journal_date" value="{html.escape(journal_date)}" onchange="this.form.submit()"></div>
+    <div><label>操作起日</label>
+      <input type="date" name="journal_start" value="{html.escape(journal_start)}" onchange="this.form.submit()"></div>
+    <div><label>操作迄日</label>
+      <input type="date" name="journal_end" value="{html.escape(journal_end)}" onchange="this.form.submit()"></div>
   </div>
 </form>"""
 
