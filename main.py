@@ -8808,6 +8808,57 @@ def fetch_taiex_intraday(force_refresh=False, now=None):
         return None
 
 
+def fetch_taiex_official_close(now=None):
+    """取得 TWSE MIS 同日加權指數正式收盤；資料不完整時回傳 None，不降級冒充收盤。
+
+    Yahoo 日K在集合競價後可能仍停在盤中最後一筆（例如 2026/08/27 回 45,969），
+    不能與前一日正式收盤相除後標為當日收盤漲跌。收盤後優先以 TWSE MIS 的
+    t00 z/y 與收盤時間為唯一首頁收盤口徑。
+    """
+    current = now or taiwan_now()
+    if not _taiwan_post_close(current):
+        return None
+    expected = current.strftime("%Y%m%d")
+    try:
+        response = requests.get(
+            "https://mis.twse.com.tw/stock/api/getStockInfo.jsp",
+            params={"ex_ch": "tse_t00.tw", "json": "1", "delay": "0",
+                    "_": int(time.time() * 1000)},
+            headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "zh-TW,zh;q=0.9"},
+            timeout=6)
+        response.raise_for_status()
+        rows = response.json().get("msgArray") or []
+        row = next((item for item in rows if isinstance(item, dict) and
+                    str(item.get("c") or "").lower() == "t00"), None)
+        if not row or str(row.get("d") or "") != expected:
+            raise ValueError("TWSE MIS 未回傳同日 t00 收盤資料")
+        close = _taiex_live_number(row.get("z"))
+        previous = _taiex_live_number(row.get("y"))
+        close_time = str(row.get("t") or "").strip()
+        try:
+            hour, minute = (int(part) for part in close_time.split(":")[:2])
+        except (TypeError, ValueError):
+            hour = minute = -1
+        if (close is None or close <= 0 or previous is None or previous <= 0 or
+                (hour, minute) < (13, 30)):
+            raise ValueError("TWSE MIS 正式收盤價格、昨收或收盤時間缺失")
+        diff = close - previous
+        return {
+            "close": f"{close:,.2f}",
+            "sign": "+" if diff > 0 else ("-" if diff < 0 else ""),
+            "pts": f"{abs(diff):,.2f}",
+            "pct": f"{diff / previous * 100:+.2f}",
+            "date": expected,
+            "previous_close": f"{previous:,.2f}",
+            "updated_at": f"{expected[:4]}-{expected[4:6]}-{expected[6:]} {close_time}",
+            "source": "TWSE MIS 加權指數正式收盤",
+            "close_is_final": True,
+        }
+    except Exception as exc:
+        print(f"⚠️ 抓取 TWSE MIS 正式 TAIEX 收盤失敗：{exc}")
+        return None
+
+
 _taifex_night_cache = {"at": 0, "data": None}
 TAIFEX_NIGHT_CACHE_SECONDS = 300
 
@@ -8983,17 +9034,24 @@ def fetch_taifex_night_summary():
 
 def fetch_taiex_summary():
     """
-    抓加權指數。改用 Yahoo 的日K序列（^TWII）而不是 TWSE 的 MI_INDEX。
+    抓加權指數。收盤後以 TWSE MIS t00 的同日正式收盤優先；其他時段才使用
+    Yahoo 的日K序列（^TWII）提供最新可驗證交易日收盤資訊。
 
-    原因是「日期對得起來」：MI_INDEX 這個 OpenAPI 端點不回傳資料日期，
-    更新時間也跟 T86 不同步——大盤停在昨天、法人已經是今天的時候，
-    畫面會把兩者標成同一天，使用者只看得到「數字跟收盤對不上」
-    卻不知道是哪個環節的問題。
-
-    Yahoo 的日K有時間戳，可以明確知道這個收盤是哪一天的，
-    而且跟個股報價同源，畫面上的數字才會一致。
+    Yahoo 日K有時間戳，適合辨識一般交易日資料日；但集合競價後若其日K尚未
+    寫入正式收盤，則不能拿日K的盤中最後一筆與昨日正式收盤混算為今日收盤報酬。
+    當日官方 MIS 收盤暫缺時回傳 None，呼叫端必須明示資料尚未確認。
     回傳 dict（含 date），失敗回傳 None。
     """
+    current = taiwan_now()
+    if _taiwan_post_close(current):
+        official_close = fetch_taiex_official_close(current)
+        if official_close is not None:
+            with _realtime_cache_lock:
+                _taiex_cache["at"] = time.time()
+                _taiex_cache["data"] = official_close
+            return official_close
+        # 收盤後不可退回可能尚未反映市撮價的 Yahoo 日K；寧可顯示資料待確認。
+        return None
     now = time.time()
     with _realtime_cache_lock:
         if _taiex_cache["data"] is not None and now - _taiex_cache["at"] < TAIEX_CACHE_SECONDS:
@@ -9032,6 +9090,7 @@ def fetch_taiex_summary():
             "date": bar_date,
             "previous_close": f"{float(prev):,.2f}",
             "source": "Yahoo ^TWII 日K最後兩筆收盤",
+            "close_is_final": False,
         }
         with _realtime_cache_lock:
             _taiex_cache["at"] = time.time()
@@ -18325,7 +18384,22 @@ def render_portfolio_fast_summary(uid):
     market = snapshot.get("market") or {}
     intraday_window = _is_taiwan_intraday_window()
     intraday_taiex = fetch_taiex_intraday() if intraday_window else None
-    if intraday_window:
+    if _taiwan_post_close():
+        # 先行摘要不能因為每日快照較早用 Yahoo 日K 擷取，而在收盤後顯示
+        # 盤中最後一筆；完整首頁與先行摘要均以同一個官方正式收盤口徑重取。
+        close_taiex = fetch_taiex_summary() or {}
+        if _market_date_matches(close_taiex.get("date"), snapshot_date):
+            try:
+                taiex_pct = float(close_taiex.get("pct"))
+            except (TypeError, ValueError):
+                taiex_pct = None
+            taiex_note = (f"{close_taiex.get('source')}・更新 {close_taiex.get('updated_at')}"
+                          if close_taiex.get("updated_at") else
+                          f"{close_taiex.get('source') or '正式收盤資料'} {close_taiex.get('date')}")
+        else:
+            taiex_pct = None
+            taiex_note = "大盤正式收盤資料尚未確認，未使用快照"
+    elif intraday_window:
         taiex_pct = intraday_taiex.get("pct") if intraday_taiex else None
         taiex_note = (f"即時 TAIEX・更新 {intraday_taiex.get('updated_at')}"
                       if intraday_taiex else "即時 TAIEX 暫時無法取得；未使用日K快照")
@@ -18431,8 +18505,13 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
                     except (TypeError, ValueError):
                         pass
                     break
-        market_status_text = (f"收盤日K {taiex.get('date')}"
-                              if market_pct is not None else "大盤資料日未確認，未使用舊快照")
+        if market_pct is not None:
+            source = str(taiex.get("source") or "收盤資料")
+            updated_at = taiex.get("updated_at")
+            market_status_text = (f"{source}・更新 {updated_at}"
+                                  if updated_at else f"{source} {taiex.get('date')}")
+        else:
+            market_status_text = "大盤正式收盤資料尚未確認，未使用舊快照"
         home_sync_title = "今日資料已整合完成"
         home_sync_detail = "收盤資料、今日事件與排名摘要已載入；詳細貢獻明細可往下展開查看。"
     def holding_day_pct(holding):
