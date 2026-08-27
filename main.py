@@ -3332,6 +3332,124 @@ def _today_realized_by_code(realized_trades, today=None):
     return result
 
 
+def _build_home_intraday_payload(uid):
+    """建立首頁盤中局部更新資料；只讀取必要行情與今日操作，不重算完整首頁。"""
+    if not _is_taiwan_intraday_window():
+        return {"ok": True, "market_open": False, "updates": [],
+                "note": "目前非一般盤中時段；首頁已停止行情輪詢。"}
+    positions = merge_positions(get_positions(uid))
+    if not positions:
+        return {"ok": True, "market_open": True, "updates": [],
+                "note": "目前沒有可更新的持股。"}
+    codes = [str(position.get("code") or "").strip() for position in positions]
+    codes = [code for code in codes if code]
+    try:
+        # 跟持股頁一樣強制刷新，先讓官方 MIS 覆寫同日快取；缺值時才保留既有可驗證來源。
+        price_map = get_realtime_stocks_bulk(
+            codes, workers=min(12, len(codes)), rng="1d", force_refresh=True)
+        today_logs = get_position_change_logs(uid, 5000, trade_date=taiwan_today())
+        reduced_codes = {
+            str(log.get("code") or "").strip() for log in today_logs
+            if str(log.get("action") or "").strip() == "reduce" and
+            int(log.get("shares_delta") or 0) < 0
+        }
+        missing_reduced = sorted(code for code in reduced_codes if code and code not in price_map)
+        if missing_reduced:
+            price_map.update(get_realtime_stocks_bulk(
+                missing_reduced, workers=min(12, len(missing_reduced)),
+                rng="1d", force_refresh=True))
+
+        total_value = sum(
+            float((price_map.get(str(position.get("code") or "").strip()) or {}).get("close") or 0) *
+            int(position.get("shares") or 0)
+            for position in positions)
+        holdings = []
+        for position in positions:
+            code = str(position.get("code") or "").strip()
+            quote_data = price_map.get(code)
+            if not code or not isinstance(quote_data, dict):
+                continue
+            try:
+                close = float(quote_data.get("close"))
+            except (TypeError, ValueError):
+                continue
+            if close <= 0:
+                continue
+            shares = int(position.get("shares") or 0)
+            holdings.append({
+                "code": code,
+                "name": stock_display_name(code, {}, quote_data.get("name")),
+                "shares": shares,
+                "weight": (close * shares / total_value * 100) if total_value > 0 else 0.0,
+                "price": quote_data,
+            })
+        if not holdings:
+            return {"ok": False, "market_open": True, "updates": [],
+                    "note": "盤中持股行情暫時無法更新；保留頁面最後有效資料。"}
+
+        exposure_rows = _build_daily_pretrade_exposure(holdings, price_map, today_logs)
+        realized_by_code = (_today_realized_by_code(get_realized_trades(uid, 100))
+                            if reduced_codes else {})
+
+        def exposure_label(row):
+            current_weight = float(row.get("current_weight") or 0)
+            if not row.get("reduced_today"):
+                return f"佔你的組合 {float(row.get('daily_weight') or 0):.1f}%"
+            current_text = ("目前已刪除（0.0%）" if row.get("fully_reduced_today")
+                            else f"目前權重 {current_weight:.1f}%")
+            if row.get("basis") == "pretrade":
+                return f"今日基準：操作前 {float(row.get('daily_weight') or 0):.1f}%／{current_text}"
+            return f"今日基準資料不足，暫用目前權重 {current_weight:.1f}%"
+
+        contribution_rows = []
+        for row in exposure_rows:
+            quote_data = ((row.get("holding") or {}).get("price") or
+                          price_map.get(row.get("code")) or {})
+            try:
+                pct = float(quote_data.get("pct"))
+            except (TypeError, ValueError):
+                continue
+            contribution = float(row.get("daily_weight") or 0) * pct / 100
+            code = str(row.get("code") or "").strip()
+            realized_value = realized_by_code.get(code)
+            contribution_rows.append({
+                "code": code,
+                "name": row.get("name") or code,
+                "pct": pct,
+                "contribution": contribution,
+                "basis_text": exposure_label(row),
+                "realized_pl": realized_value,
+            })
+        portfolio_pct = (sum(item["contribution"] for item in contribution_rows)
+                         if contribution_rows else None)
+        positive = sorted((item for item in contribution_rows if item["contribution"] > 0),
+                          key=lambda item: item["contribution"], reverse=True)[:5]
+        negative = sorted((item for item in contribution_rows if item["contribution"] < 0),
+                          key=lambda item: item["contribution"])[:5]
+        taiex = fetch_taiex_intraday(force_refresh=True)
+        try:
+            market_pct = float(taiex.get("pct")) if taiex and taiex.get("pct") is not None else None
+        except (TypeError, ValueError):
+            market_pct = None
+        relative = (portfolio_pct - market_pct
+                    if portfolio_pct is not None and market_pct is not None else None)
+        return {
+            "ok": True, "market_open": True,
+            "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
+            "market": ({"pct": market_pct, "source": taiex.get("source"),
+                        "updated_at": taiex.get("updated_at")}
+                       if market_pct is not None else None),
+            "portfolio": {"pct": portfolio_pct, "relative": relative,
+                          "positive": positive, "negative": negative},
+            "note": ("首頁盤中行情已局部更新；大盤採 TWSE MIS 當日即時指數，"
+                     "組合與正負貢獻採最新持股行情，不重整操作日報。"),
+        }
+    except Exception as exc:
+        print(f"⚠️ 首頁盤中行情更新失敗（uid={uid}）：{exc}")
+        return {"ok": False, "market_open": True, "updates": [],
+                "note": "首頁盤中行情暫時無法更新；保留頁面最後有效資料。"}
+
+
 def _position_change_journal_status(log):
     """依既有加減碼日誌判定日報分類；只將正股數完整歸零標為刪除。"""
     action = str(log.get("action") or "").strip()
@@ -18787,7 +18905,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     home_judgement_html = f'''<section class="daily-card home-judgement-card">
   <div class="daily-section-title"><h2>今日判讀</h2><span>依目前資料</span></div>
   <div class="judgement-row"><span>上漲／下跌持股</span><b>{sum(1 for _h, p in valid_changes if p > 0)}／{sum(1 for _h, p in valid_changes if p < 0)} 檔</b></div>
-  <div class="judgement-row"><span>組合相對大盤</span><b>{fmt_pct(relative) if relative is not None else '資料不足'}</b></div>
+  <div class="judgement-row"><span>組合相對大盤</span><b data-home-judgement-relative>{fmt_pct(relative) if relative is not None else '資料不足'}</b></div>
   <div class="judgement-row"><span>主要貢獻／拖累</span><b>{'已計算' if positive_entries or negative_entries else '行情資料不足'}</b></div>
   <p class="home-judgement-copy">{html.escape(interpretation)}</p>
 </section>'''
@@ -18853,14 +18971,14 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <div class="daily-section-title"><h2>今天誰影響了你的組合？</h2><span>今日貢獻基準</span></div>{basis_notice}
   <p class="impact-sentence">{html.escape(impact_sentence)}</p>
   <div class="impact-leads">
-    {impact_lead_card(positive_lead, "幫你撐住組合", "impact-up")}
-    {impact_lead_card(negative_lead, "主要拖累組合", "impact-down")}
+    <div data-home-impact-lead="positive">{impact_lead_card(positive_lead, "幫你撐住組合", "impact-up")}</div>
+    <div data-home-impact-lead="negative">{impact_lead_card(negative_lead, "主要拖累組合", "impact-down")}</div>
   </div>
-  <details class="impact-details" open><summary>查看正貢獻明細（{positive_count} 檔）</summary>
-    {contribution_detail_rows(positive_entries, 'up')}
+  <details class="impact-details" open><summary>查看正貢獻明細（<span data-home-positive-count>{positive_count}</span> 檔）</summary>
+    <div data-home-contribution-rows="positive">{contribution_detail_rows(positive_entries, 'up')}</div>
   </details>
-  <details class="impact-details" open><summary>查看負貢獻明細（{negative_count} 檔）</summary>
-    {contribution_detail_rows(negative_entries, 'down')}
+  <details class="impact-details" open><summary>查看負貢獻明細（<span data-home-negative-count>{negative_count}</span> 檔）</summary>
+    <div data-home-contribution-rows="negative">{contribution_detail_rows(negative_entries, 'down')}</div>
   </details>
   <div class="contribution-footnote">「增加／減少」是依今日貢獻基準換算出的組合影響，不是個股報酬率，也不代表買賣建議。已實現損益與百分比貢獻為不同單位，不互相加總。</div>
 </section>'''
@@ -18872,24 +18990,64 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         hero_eyebrow = f"TODAY · {display_date.strftime('%Y / %m / %d')}"
 
     portfolio_label = "你的組合（今日基準）" if has_pretrade_basis else "你的組合"
+    home_intraday_script = ""
+    if intraday_window:
+        home_intraday_script = r'''<script>
+(function(){
+  var timer=null,busy=false,stopped=false,marketEl=document.querySelector('[data-home-market-pct]');
+  if(!marketEl)return;
+  function token(){try{return new URLSearchParams(window.location.search).get('t')||localStorage.getItem('stockbot_web_token')||''}catch(e){return ''}}
+  function esc(v){return String(v==null?'—':v).replace(/[&<>'"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[c]})}
+  function pct(v){var n=Number(v);if(!Number.isFinite(n))return '資料尚未更新';return '<span class="'+(n>0?'up':n<0?'down':'flat')+'">'+(n>0?'+':'')+n.toFixed(2)+'%</span>'}
+  function schedule(){if(timer)clearTimeout(timer);if(!stopped)timer=setTimeout(refresh,15000);}
+  function setHtml(selector,value){var el=document.querySelector(selector);if(el)el.innerHTML=value;}
+  function realized(item){if(item.realized_pl==null)return '';var n=Number(item.realized_pl);if(!Number.isFinite(n))return '';return '<small class="impact-realized '+(n>=0?'up':'down')+'">今日已實現損益：'+(n>=0?'+':'')+n.toLocaleString('zh-TW',{maximumFractionDigits:0})+' 元</small>';}
+  function leadHtml(item,title,kind){if(!item)return '<div class="impact-lead impact-muted"><small>'+esc(title)+'</small><b>目前沒有資料</b></div>';var change=item.pct>0?'上漲':'下跌',amount=item.contribution>0?'增加約 ':'減少約 ';return '<div class="impact-lead '+kind+'"><small>'+esc(title)+'</small><h3>'+esc(item.name)+'</h3><p>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%・'+esc(item.basis_text)+'</p>'+realized(item)+'<strong>對整體組合'+amount+Math.abs(Number(item.contribution)).toFixed(2)+'%</strong></div>';}
+  function rowsHtml(items,kind){if(!items||!items.length)return '<div class="impact-empty">目前沒有可用的行情資料。</div>';return items.map(function(item,index){var positive=item.contribution>0,change=item.pct>0?'上漲':'下跌',direction=positive?'增加':'減少';return '<div class="impact-detail-row"><span class="impact-rank">'+(index+1)+'</span><div class="impact-detail-name"><b>'+esc(item.name)+'</b><small>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%　'+esc(item.basis_text)+'</small>'+realized(item)+'</div><strong class="'+kind+'">'+direction+'約 '+Math.abs(Number(item.contribution)).toFixed(2)+'%</strong></div>';}).join('');}
+  function refresh(){
+    if(stopped||document.hidden||busy){schedule();return;}
+    busy=true;
+    var url='/web/api/portfolio/intraday',t=token();if(t)url+='?t='+encodeURIComponent(t);
+    fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
+      if(!data.market_open){stopped=true;if(timer)clearTimeout(timer);var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');if(title)title.textContent='盤中已結束';if(note)note.textContent=data.note||'目前非一般盤中時段；首頁已停止行情輪詢。';return;}
+      var market=data.market,portfolio=data.portfolio||{};
+      if(market&&market.pct!=null){marketEl.innerHTML=pct(market.pct);var freshness=document.querySelector('[data-home-market-freshness]');if(freshness)freshness.textContent=(market.source||'TWSE MIS 即時加權指數')+(market.updated_at?'・更新 '+market.updated_at:'');}
+      else {marketEl.textContent='資料尚未更新';var missing=document.querySelector('[data-home-market-freshness]');if(missing)missing.textContent='即時 TAIEX 暫時無法取得，未使用日K快照';}
+      if(portfolio.pct!=null)setHtml('[data-home-portfolio-pct]',pct(portfolio.pct));
+      setHtml('[data-home-relative]',portfolio.relative!=null?pct(portfolio.relative):'—');
+      setHtml('[data-home-judgement-relative]',portfolio.relative!=null?pct(portfolio.relative):'資料不足');
+      var positive=portfolio.positive||[],negative=portfolio.negative||[];
+      setHtml('[data-home-max-gain]',positive.length?(esc(positive[0].name)+' '+pct(positive[0].pct)+'<small class="contribution-note">組合 +'+Math.abs(Number(positive[0].contribution)).toFixed(2)+' 個百分點・'+esc(positive[0].basis_text)+'</small>'):'—');
+      setHtml('[data-home-max-loss]',negative.length?(esc(negative[0].name)+' '+pct(negative[0].pct)+'<small class="contribution-note">組合 '+Number(negative[0].contribution).toFixed(2)+' 個百分點・'+esc(negative[0].basis_text)+'</small>'):'—');
+      var positiveLead=document.querySelector('[data-home-impact-lead="positive"]'),negativeLead=document.querySelector('[data-home-impact-lead="negative"]');if(positiveLead)positiveLead.innerHTML=leadHtml(positive[0],'幫你撐住組合','impact-up');if(negativeLead)negativeLead.innerHTML=leadHtml(negative[0],'主要拖累組合','impact-down');
+      var positiveRows=document.querySelector('[data-home-contribution-rows="positive"]'),negativeRows=document.querySelector('[data-home-contribution-rows="negative"]');if(positiveRows)positiveRows.innerHTML=rowsHtml(positive,'up');if(negativeRows)negativeRows.innerHTML=rowsHtml(negative,'down');
+      var positiveCount=document.querySelector('[data-home-positive-count]'),negativeCount=document.querySelector('[data-home-negative-count]');if(positiveCount)positiveCount.textContent=positive.length;if(negativeCount)negativeCount.textContent=negative.length;
+      var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');if(title)title.textContent='盤中行情已局部更新';if(note)note.textContent=data.note||('已於 '+(data.fetched_at||'剛剛')+' 更新；操作日報未重新載入。');
+    }).catch(function(){var note=document.querySelector('[data-home-live-note]');if(note)note.textContent='首頁盤中行情暫時無法更新；保留頁面最後有效資料。';}).finally(function(){busy=false;schedule();});
+  }
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
+  document.addEventListener('stockbot:pageleaving',function(){stopped=true;if(timer)clearTimeout(timer);timer=null;});
+  schedule();
+})();
+</script>'''
     return f'''<style>
 .daily-complete-sync{{display:flex;gap:11px;align-items:flex-start;background:#F5F0E5;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:13px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-complete-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:#087A4B;box-shadow:0 0 0 4px rgba(8,122,75,.12);flex:none}}.daily-complete-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-complete-sync span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.6}}.daily-hero{{background:#f7fbff;padding:26px 24px 22px;margin:-8px -2px 18px;border:1px solid #d7e0ea;border-radius:14px;margin-top:0;box-shadow:0 3px 14px rgba(35,39,35,.04)}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.market-freshness{{display:block;margin-top:4px;color:var(--ink-soft);font-size:9px;line-height:1.35}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.home-more-events{{margin-top:10px;border-top:1px solid #eee;padding-top:9px}}.home-more-events>summary{{cursor:pointer;color:var(--brass);font-size:13px;font-weight:700;padding:5px 0}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-status{{min-width:28px;height:22px;padding:2px 5px;border-radius:7px;text-align:center;font-size:11px;font-weight:700;line-height:18px;flex:none;background:#eee;color:var(--ink-soft)}}.timeline-new .event-status{{background:#FCE9E6;color:var(--up)}}.timeline-ongoing .event-status{{background:#F3EEE1;color:var(--brass)}}.timeline-resolved .event-status{{background:#E8F2EA;color:var(--down)}}.timeline-divider{{margin:14px 0 0;padding-top:12px;border-top:1px solid #eee;color:var(--ink-soft);font-size:12px;font-weight:600}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:11px;min-width:0}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:11px}}.rank-mini b{{display:block;font-size:18px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:12px}}.hero-summary-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.hero-summary-panel{{min-width:0;padding:13px;border:1px solid rgba(139,105,52,.25);border-radius:11px;background:rgba(255,255,255,.58);box-shadow:0 2px 8px rgba(35,39,35,.04)}}.hero-summary-panel-head{{display:flex;justify-content:space-between;align-items:center;gap:6px;min-height:27px;padding-bottom:8px;border-bottom:1px solid rgba(139,105,52,.18)}}.hero-summary-panel-head b{{font-size:14px}}.hero-summary-panel-head a{{font-size:10px;color:var(--brass);white-space:nowrap}}.hero-summary-panel-head span{{font-size:10px;color:var(--ink-soft);white-space:nowrap}}.hero-summary-stack{{display:block;margin-top:14px}}.hero-summary-stack .hero-summary-panel{{padding:10px 13px}}.hero-rank-panel .rank-grid{{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.hero-rank-panel .rank-mini{{background:transparent;border:0;border-right:1px solid rgba(227,226,220,.88);border-radius:0;padding:8px 10px 8px 0}}.hero-rank-panel .rank-mini:last-child{{border-right:0;padding-right:0;padding-left:10px}}.hero-summary-stack .hero-summary-panel-head{{min-height:0;padding-bottom:6px}}.hero-summary-stack .hero-summary-panel-head b{{font-size:13px}}.hero-quote-panel{{margin-top:8px;border-color:rgba(139,105,52,.22);background:#F8F5ED}}.hero-quote-text{{margin:8px 0 1px;color:var(--ink);font-family:"Kaiti TC","BiauKai","DFKai-SB","STKaiti","Noto Serif CJK TC","Noto Serif TC",serif;font-size:19px;font-weight:700;line-height:1.5;text-align:center;letter-spacing:.12em;white-space:nowrap}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}.home-judgement-card{{padding:16px 15px}}.judgement-row{{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid #ECEDE8;font-size:13px}}.judgement-row:first-of-type{{border-top:0}}.judgement-row span{{color:var(--ink-soft)}}.judgement-row b{{text-align:right}}.home-judgement-copy{{margin:10px 0 0;padding-top:10px;border-top:1px solid #ECEDE8;color:var(--ink-soft);font-size:12px;line-height:1.65}}.home-detail-collapse{{margin:14px 0;border:1px solid #E3E2DC;border-radius:12px;background:#fff;box-shadow:0 3px 14px rgba(35,39,35,.04)}}.home-detail-collapse>summary{{cursor:pointer;padding:14px 16px;color:var(--brass);font-size:13px;font-weight:700}}.home-detail-collapse .contribution-card{{margin:0;border:0;border-top:1px solid #ECEDE8;border-radius:0;box-shadow:none}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.impact-leads{{grid-template-columns:1fr}}.rank-grid{{grid-template-columns:1fr}}.hero-summary-stack{{gap:7px}}.hero-summary-panel{{padding:10px 11px}}.hero-summary-panel-head b{{font-size:12px}}.hero-summary-panel-head a,.hero-summary-panel-head span{{font-size:8px}}.rank-mini span,.rank-mini small{{font-size:10px}}.rank-mini b{{font-size:16px}}.hero-quote-text{{font-size:18px;text-align:center}}.daily-hero h1{{font-size:26px}}}}
 	.daily-interpretation{{padding:11px 14px;margin:-4px 0 14px;border-left:3px solid var(--brass);background:rgba(255,255,255,.6);color:var(--ink-soft);font-size:13px;line-height:1.65}}.daily-interpretation-label{{font-size:11px;color:var(--brass);font-weight:700;letter-spacing:.08em;margin-bottom:3px}}.contribution-card{{padding:16px 15px}}.contribution-card .daily-section-title span{{font-size:11px;color:var(--ink-faint)}}.contribution-basis-notice{{margin:-1px 0 12px;padding:10px 11px;border-left:3px solid var(--brass);border-radius:7px;background:#F8F5ED;color:var(--ink-soft);font-size:12px;line-height:1.6}}.contribution-basis-notice b{{color:var(--ink)}}.contribution-basis-notice.fallback{{border-left-color:#8b8f88;background:#f5f5f3}}.impact-sentence{{margin:0 0 12px;color:var(--ink-soft);font-size:13px;line-height:1.6}}.impact-leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.impact-lead{{padding:13px;border-radius:11px;background:#F7F7F3;border:1px solid #ECEDE8}}.impact-lead small{{display:block;font-size:11px;font-weight:700;color:var(--ink-soft)}}.impact-lead h3{{font-size:20px;line-height:1.3;margin:7px 0 4px;overflow-wrap:anywhere}}.impact-lead p{{margin:0 0 8px;color:var(--ink-soft);font-size:11px}}.impact-lead strong{{font-size:12px}}.impact-realized{{display:block!important;margin:0 0 7px;font-size:11px!important;font-weight:800!important}}.impact-up{{border-color:#EDC7C2;background:#FFF7F5}}.impact-up strong{{color:var(--up)}}.impact-down{{border-color:#C9DFD0;background:#F4FBF5}}.impact-down strong{{color:var(--down)}}.impact-muted{{color:var(--ink-faint)}}.impact-details{{margin-top:10px;border-top:1px solid #ECEDE8}}.impact-details summary{{padding:11px 2px 4px;cursor:pointer;color:var(--brass);font-size:12px;font-weight:600}}.impact-detail-row{{display:flex;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid #F0F0EC}}.impact-rank{{width:20px;height:20px;border-radius:50%;background:#F0EEE8;color:var(--ink-soft);font-size:11px;text-align:center;line-height:20px;flex:none}}.impact-detail-name{{min-width:0;flex:1}}.impact-detail-name b{{display:block;font-size:14px;overflow-wrap:anywhere}}.impact-detail-name small{{display:block;color:var(--ink-soft);font-size:10.5px;margin-top:2px}}.impact-detail-row strong{{font-size:12px;white-space:nowrap}}.impact-empty{{padding:9px 2px;color:var(--ink-faint);font-size:11px}}.contribution-footnote{{margin-top:10px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}} </style><div class="daily-complete-sync" aria-live="polite">
   <span class="daily-complete-sync-dot" aria-hidden="true"></span>
-  <div><b>{html.escape(home_sync_title)}</b><span>{html.escape(home_sync_detail)}</span></div>
+  <div><b data-home-live-title>{html.escape(home_sync_title)}</b><span data-home-live-note>{html.escape(home_sync_detail)}</span></div>
 </div><section class="daily-hero">
   <div class="eyebrow">{hero_eyebrow}</div>
   <h1>今天你的投資發生了什麼？</h1>
-	  <div class="market-strip"><span>大盤 <b>{market_text}</b><small class="market-freshness">{html.escape(market_status_text)}</small></span><span>{portfolio_label} <b>{portfolio_text}</b></span><span>相對大盤 <b>{relative_text}</b></span></div>
+	  <div class="market-strip"><span>大盤 <b data-home-market-pct>{market_text}</b><small class="market-freshness" data-home-market-freshness>{html.escape(market_status_text)}</small></span><span>{portfolio_label} <b data-home-portfolio-pct>{portfolio_text}</b></span><span>相對大盤 <b data-home-relative>{relative_text}</b></span></div>
   <div class="hero-summary-stack"><section class="hero-summary-panel hero-rank-panel"><div class="hero-summary-panel-head"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="rank-grid">{rank_line('short')}{rank_line('long')}</div></section><section class="hero-quote-panel"><p class="hero-quote-text">{html.escape(quote_text)}</p></section></div>
 </section>
 {position_journal_html}
 <section class="daily-card daily-close-status" data-close-sync="official-mis-v20260825"><div class="daily-section-title"><h2>收盤資料</h2><span>與持股頁同口徑</span></div><p>{html.escape(close_sync_note)}</p></section>
 <section class="daily-card attention-card" data-home-events="top3-collapsed-v20260825">
 <div class="daily-section-title"><h2>🔥 今日值得注意</h2><a href="/web/premarket">查看完整變化 →</a></div>{events_html}</section>
-<section class="daily-card"><div class="daily-section-title"><h2>我的組合今天怎麼了？</h2><span>即時報價</span></div><div class="portfolio-highlights"><div><small>最大貢獻</small><b class="positive">{gain_html}</b></div><div><small>最大拖累</small><b class="negative">{loss_html}</b></div><div><small>總市值</small><b>{total_value:,.0f}</b></div></div></section>
+	<section class="daily-card"><div class="daily-section-title"><h2>我的組合今天怎麼了？</h2><span>即時報價</span></div><div class="portfolio-highlights"><div><small>最大貢獻</small><b class="positive" data-home-max-gain>{gain_html}</b></div><div><small>最大拖累</small><b class="negative" data-home-max-loss>{loss_html}</b></div><div><small>總市值</small><b>{total_value:,.0f}</b></div></div></section>
 {home_judgement_html}
-<details class="home-detail-collapse" id="home-contribution" open><summary>查看完整正／負貢獻明細</summary>{contribution_html}</details>'''
+	<details class="home-detail-collapse" id="home-contribution" open><summary>查看完整正／負貢獻明細</summary>{contribution_html}</details>{home_intraday_script}'''
 
 
 @app.route("/web/portfolio", methods=["GET", "POST"])
@@ -19195,6 +19353,13 @@ def web_portfolio(uid):
 <div class="section-head"><h2>持股權重</h2><span class="section-note">依權重排序</span></div><div class="rows">{''.join(f'''<div class="row"><div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div><div class="price num">{h['weight']:.1f}%</div><div class="meta"><span><em>產業</em> {h['industry']}</span><span><em>損益</em> {fmt_pct(h['pl'])}</span><span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span><span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span></div><div class="chg">{fmt_pct(h['price']['pct'])}</div><div class="bar"><div style="width:{h['weight']:.1f}%"></div></div></div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}</div>
 <div class="section-head" id="alerts"><h2>值得注意</h2><span class="section-note"><a href="/web/settings" style="color:var(--ink-soft)">調整門檻 →</a></span></div><div class="rows">{''.join(f'<div class="alert"><span class="tag">{tag}</span><span>{txt}</span></div>' for tag, txt in alerts) if alerts else '<div class="empty">目前沒有觸及門檻的項目。</div>'}</div>"""
     return respond_page("今日", body, "portfolio")
+
+
+@app.route("/web/api/portfolio/intraday")
+@web_login_required
+def web_portfolio_intraday(uid):
+    """首頁盤中局部行情；不回傳完整頁面、日報或非本人持股資料。"""
+    return _workbench_json_response(_build_home_intraday_payload(uid))
 
 
 CATEGORY_NOTE = {
