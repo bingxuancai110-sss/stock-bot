@@ -3206,6 +3206,132 @@ def enrich_position_change_logs(logs, current_positions, price_map, total_value)
     return [enriched_by_id.get(log.get("id"), log) for log in logs or []]
 
 
+def _build_daily_pretrade_exposure(holdings, price_map, today_logs, inst_data=None):
+    """建立首頁「今日貢獻」的日初持股曝險，僅在當日有正式減碼日誌時套用。
+
+    操作日誌沒有成交時點與逐筆分時市值，故這是日報閱讀用的日初曝險基準：
+    以當日全部加減碼反推日初股數，再用可驗證的前一收盤價做權重分母。這不會
+    寫回資料庫，也不會變更 TWR、已實現損益、排行榜或持股頁既有的計算口徑。
+    """
+    calendar_today = taiwan_today()
+    inst_data = inst_data or {}
+    holding_by_code = {
+        str(item.get("code") or "").strip(): item
+        for item in (holdings or []) if item.get("code")
+    }
+    current_shares = {
+        code: int(item.get("shares") or 0)
+        for code, item in holding_by_code.items()
+    }
+    daily_deltas, reduced_codes = {}, set()
+    for raw in today_logs or []:
+        if _position_change_date(raw.get("trade_date")) != calendar_today:
+            continue
+        code = str(raw.get("code") or "").strip()
+        if not code:
+            continue
+        delta = int(raw.get("shares_delta") or 0)
+        daily_deltas[code] = daily_deltas.get(code, 0) + delta
+        if str(raw.get("action") or "").strip() == "reduce" and delta < 0:
+            reduced_codes.add(code)
+
+    def price_for(code, holding=None):
+        return ((price_map or {}).get(code) or
+                ((holding or {}).get("price") if holding else None) or {})
+
+    # 沒有減碼時完全沿用原本「目前持股權重」的畫面與計算；當日新增不會倒灌
+    # 成為開盤前曝險，只有發生減碼才需要把整體日初配置還原。
+    if not reduced_codes:
+        return [{
+            "code": code, "holding": holding, "name": holding.get("name") or code,
+            "pct": (price_for(code, holding).get("pct")),
+            "daily_weight": float(holding.get("weight") or 0),
+            "current_weight": float(holding.get("weight") or 0),
+            "daily_opening_shares": int(holding.get("shares") or 0),
+            "current_shares": int(holding.get("shares") or 0),
+            "reduced_today": False, "fully_reduced_today": False,
+            "basis": "current", "basis_available": True,
+        } for code, holding in holding_by_code.items()]
+
+    all_codes = set(holding_by_code) | set(daily_deltas)
+    opening_shares = {
+        code: max(0, int(current_shares.get(code, 0)) - int(daily_deltas.get(code, 0)))
+        for code in all_codes
+    }
+    active_codes = {code for code in all_codes if opening_shares.get(code, 0) > 0}
+    prior_values = {}
+    for code in active_codes:
+        holding = holding_by_code.get(code)
+        quote = price_for(code, holding)
+        try:
+            close, pct = float(quote.get("close")), float(quote.get("pct"))
+            prior_close = close / (1 + pct / 100)
+        except (TypeError, ValueError, ZeroDivisionError):
+            prior_close = None
+        if prior_close is None or prior_close <= 0:
+            # 如果缺任一日初部位的可驗證今日行情，不能把不完整分母包裝成精確
+            # 操作前權重；安全退回原本目前權重，並在首頁明示資料不足。
+            return [{
+                "code": item_code, "holding": item_holding,
+                "name": item_holding.get("name") or item_code,
+                "pct": price_for(item_code, item_holding).get("pct"),
+                "daily_weight": float(item_holding.get("weight") or 0),
+                "current_weight": float(item_holding.get("weight") or 0),
+                "daily_opening_shares": int(item_holding.get("shares") or 0),
+                "current_shares": int(item_holding.get("shares") or 0),
+                "reduced_today": item_code in reduced_codes,
+                "fully_reduced_today": False,
+                "basis": "current_fallback", "basis_available": False,
+            } for item_code, item_holding in holding_by_code.items()]
+        prior_values[code] = prior_close * opening_shares[code]
+    opening_total_value = sum(prior_values.values())
+    if opening_total_value <= 0:
+        return []
+
+    rows = []
+    for code in sorted(active_codes):
+        holding = holding_by_code.get(code)
+        quote = price_for(code, holding)
+        if holding is None:
+            # 全數賣出仍是當日開始時的曝險，應保留在「今日貢獻」；但目前權重必為 0。
+            holding = {
+                "code": code,
+                "name": stock_display_name(code, inst_data, quote.get("name")),
+                "weight": 0.0, "shares": 0, "price": quote,
+            }
+        current = int(current_shares.get(code, 0))
+        rows.append({
+            "code": code, "holding": holding,
+            "name": holding.get("name") or stock_display_name(code, inst_data, quote.get("name")),
+            "pct": quote.get("pct"),
+            "daily_weight": prior_values[code] / opening_total_value * 100,
+            "current_weight": float(holding.get("weight") or 0),
+            "daily_opening_shares": int(opening_shares[code]),
+            "current_shares": current,
+            "reduced_today": code in reduced_codes,
+            "fully_reduced_today": code in reduced_codes and current == 0,
+            "basis": "pretrade", "basis_available": True,
+        })
+    return rows
+
+
+def _today_realized_by_code(realized_trades, today=None):
+    """僅彙總正式 realized_trades 的當日賣出損益；手動刪除持股絕不視為已實現。"""
+    target_day = today or taiwan_today()
+    result = {}
+    for trade in realized_trades or []:
+        code = str(trade.get("code") or "").strip()
+        sold_on = _position_change_date(trade.get("sold_on"))
+        value = trade.get("realized_pl")
+        if not code or sold_on != target_day or value is None:
+            continue
+        try:
+            result[code] = result.get(code, 0.0) + float(value)
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
 def _position_change_journal_status(log):
     """依既有加減碼日誌判定日報分類；只將正股數完整歸零標為刪除。"""
     action = str(log.get("action") or "").strip()
@@ -18264,7 +18390,8 @@ def render_portfolio_fast_summary(uid):
 
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total,
                            taiex=None, position_journal_html="", daily_context=None,
-                           rank_status=None):
+                           rank_status=None, daily_pretrade_exposure=None,
+                           realized_by_code=None):
 
 
     # 新版首頁上半部：先講今天，再提供完整分析入口。
@@ -18315,7 +18442,33 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         except (TypeError, ValueError):
             return None
 
-    holding_changes = [(h, holding_day_pct(h)) for h in holdings]
+    raw_exposure = (daily_pretrade_exposure if daily_pretrade_exposure is not None
+                    else _build_daily_pretrade_exposure(holdings, price_map, [], {}))
+    realized_by_code = realized_by_code or {}
+    contribution_holdings = []
+    for exposure in raw_exposure:
+        source_holding = exposure.get("holding") or {}
+        contribution_holding = dict(source_holding)
+        contribution_holding.update({
+            "code": exposure.get("code") or source_holding.get("code"),
+            "name": exposure.get("name") or source_holding.get("name"),
+            # 僅供本 renderer 的今日貢獻計算；原始 holdings 仍保留目前權重，
+            # 供下方完整持股頁與所有其他既有功能使用。
+            "weight": float(exposure.get("daily_weight") or 0),
+            "contribution_weight": float(exposure.get("daily_weight") or 0),
+            "current_weight": float(exposure.get("current_weight") or 0),
+            "daily_opening_shares": int(exposure.get("daily_opening_shares") or 0),
+            "current_shares": int(exposure.get("current_shares") or 0),
+            "reduced_today": bool(exposure.get("reduced_today")),
+            "fully_reduced_today": bool(exposure.get("fully_reduced_today")),
+            "contribution_basis": exposure.get("basis") or "current",
+            "basis_available": bool(exposure.get("basis_available", True)),
+        })
+        code = str(contribution_holding.get("code") or "").strip()
+        if code in realized_by_code:
+            contribution_holding["today_realized_pl"] = realized_by_code[code]
+        contribution_holdings.append(contribution_holding)
+    holding_changes = [(h, holding_day_pct(h)) for h in contribution_holdings]
     valid_changes = [(h, pct) for h, pct in holding_changes if pct is not None]
     portfolio_pct = (sum(h["weight"] * pct for h, pct in valid_changes) / 100
                      if valid_changes else None)
@@ -18341,6 +18494,12 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     negative_entries = sorted(
         ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct < 0),
         key=lambda item: item[2])[:5]
+    reduced_contribution_holdings = [h for h in contribution_holdings if h.get("reduced_today")]
+    has_pretrade_basis = any(h.get("contribution_basis") == "pretrade"
+                             for h in reduced_contribution_holdings)
+    basis_fallback = any(not h.get("basis_available", True)
+                         for h in reduced_contribution_holdings)
+    realized_today_total = sum(float(value) for value in realized_by_code.values()) if realized_by_code else 0.0
     # 首頁只需要顯示自己的排名與升降，不需要為此阻塞整個完整排行榜重算。
     # 使用最近兩次已保存的收盤快照；若外層已平行取得就直接重用。
     if rank_status is None:
@@ -18425,14 +18584,41 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             movement, streak = '<em class="flat">— 無變化</em>', ""
         return f'''<div class="rank-mini"><span>{s["label"]}</span><b>#{s["rank"]} {movement}</b><small>{previous_label} #{s["previous"]}{streak}</small></div>'''
 
+    def contribution_basis_text(holding, compact=False):
+        if not holding.get("reduced_today"):
+            return f"佔你的組合 {holding['weight']:.1f}%"
+        current_text = ("目前已刪除（0.0%）" if holding.get("fully_reduced_today")
+                        else f"目前權重 {holding.get('current_weight', 0):.1f}%")
+        if holding.get("contribution_basis") == "pretrade":
+            return (f"今日基準：操作前 {holding['weight']:.1f}%／{current_text}"
+                    if compact else
+                    f"今日貢獻以操作前 {holding['daily_opening_shares']:,} 股、"
+                    f"{holding['weight']:.1f}% 為基準；{current_text}")
+        return (f"今日基準資料不足，暫用目前權重 {holding.get('current_weight', 0):.1f}%"
+                if compact else
+                f"今日操作前基準資料不足，暫以目前權重 {holding.get('current_weight', 0):.1f}% 顯示")
+
+    def realized_today_text(holding):
+        if not holding.get("reduced_today"):
+            return ""
+        value = holding.get("today_realized_pl")
+        if value is None:
+            return "今日已實現損益：無正式賣出紀錄"
+        try:
+            return f"今日已實現損益：{float(value):+,.0f} 元"
+        except (TypeError, ValueError):
+            return "今日已實現損益：資料待確認"
+
     gain_html = (
         f"{html.escape(str(biggest_gain['name']))} {fmt_pct(biggest_gain_pct)}"
-        f"<small class=\"contribution-note\">組合 +{biggest_gain_contribution:.2f} 個百分點</small>"
+        f"<small class=\"contribution-note\">組合 +{biggest_gain_contribution:.2f} 個百分點・"
+        f"{html.escape(contribution_basis_text(biggest_gain, compact=True))}</small>"
         if biggest_gain and biggest_gain_pct is not None and biggest_gain_contribution is not None
         else "—")
     loss_html = (
         f"{html.escape(str(biggest_loss['name']))} {fmt_pct(biggest_loss_pct)}"
-        f"<small class=\"contribution-note\">組合 {biggest_loss_contribution:.2f} 個百分點</small>"
+        f"<small class=\"contribution-note\">組合 {biggest_loss_contribution:.2f} 個百分點・"
+        f"{html.escape(contribution_basis_text(biggest_loss, compact=True))}</small>"
         if biggest_loss and biggest_loss_pct is not None and biggest_loss_contribution is not None
         else "—")
 
@@ -18534,11 +18720,14 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         for idx, (holding, pct, contribution) in enumerate(entries, 1):
             direction = "增加" if contribution > 0 else "減少"
             change_word = "上漲" if pct > 0 else "下跌"
+            realized_text = realized_today_text(holding)
+            realized_html = (f'<small class="impact-realized {"up" if holding.get("today_realized_pl", 0) >= 0 else "down"}">'
+                             f'{html.escape(realized_text)}</small>' if realized_text else "")
             rows.append(
                 f'''<div class="impact-detail-row">
   <span class="impact-rank">{idx}</span>
   <div class="impact-detail-name"><b>{html.escape(str(holding['name']))}</b>
-    <small>今天{change_word} {abs(pct):.2f}%　佔你的組合 {holding['weight']:.1f}%</small></div>
+    <small>今天{change_word} {abs(pct):.2f}%　{html.escape(contribution_basis_text(holding))}</small>{realized_html}</div>
   <strong class="{value_class}">{direction}約 {abs(contribution):.2f}%</strong>
 </div>''')
         return ''.join(rows)
@@ -18561,16 +18750,28 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         holding, pct, contribution = entry
         amount_text = f"增加約 {abs(contribution):.2f}%" if contribution > 0 else f"減少約 {abs(contribution):.2f}%"
         change_word = "上漲" if pct > 0 else "下跌"
+        realized_text = realized_today_text(holding)
+        realized_html = (f'<small class="impact-realized {"up" if holding.get("today_realized_pl", 0) >= 0 else "down"}">'
+                         f'{html.escape(realized_text)}</small>' if realized_text else "")
         return f'''<div class="impact-lead {value_class}">
   <small>{title}</small><h3>{html.escape(str(holding['name']))}</h3>
-  <p>今天{change_word} {abs(pct):.2f}%・佔你的組合 {holding['weight']:.1f}%</p>
+  <p>今天{change_word} {abs(pct):.2f}%・{html.escape(contribution_basis_text(holding, compact=True))}</p>{realized_html}
   <strong>對整體組合{amount_text}</strong>
 </div>'''
 
     positive_count = len(positive_entries)
     negative_count = len(negative_entries)
+    basis_notice = ""
+    if has_pretrade_basis:
+        realized_summary = (f"・今日正式已實現損益 {realized_today_total:+,.0f} 元"
+                            if realized_by_code else "・今日已實現損益僅列正式賣出紀錄")
+        basis_notice = (f'<div class="contribution-basis-notice"><b>今日有 {len(reduced_contribution_holdings)} 檔減碼：</b>'
+                        f'貢獻先按操作前／開盤曝險計算，明日才改用目前權重{html.escape(realized_summary)}</div>')
+    elif basis_fallback:
+        basis_notice = ('<div class="contribution-basis-notice fallback"><b>今日有減碼，但操作前基準資料不足：</b>'
+                        '目前暫以減碼後權重顯示，未將不完整資料包裝為精確日內報酬。</div>')
     contribution_html = f'''<section class="daily-card contribution-card">
-  <div class="daily-section-title"><h2>今天誰影響了你的組合？</h2><span>先看重點</span></div>
+  <div class="daily-section-title"><h2>今天誰影響了你的組合？</h2><span>今日貢獻基準</span></div>{basis_notice}
   <p class="impact-sentence">{html.escape(impact_sentence)}</p>
   <div class="impact-leads">
     {impact_lead_card(positive_lead, "幫你撐住組合", "impact-up")}
@@ -18582,7 +18783,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <details class="impact-details" open><summary>查看負貢獻明細（{negative_count} 檔）</summary>
     {contribution_detail_rows(negative_entries, 'down')}
   </details>
-  <div class="contribution-footnote">「增加／減少」是依你的持股比例換算出的組合影響，不是個股報酬率，也不代表買賣建議。</div>
+  <div class="contribution-footnote">「增加／減少」是依今日貢獻基準換算出的組合影響，不是個股報酬率，也不代表買賣建議。已實現損益與百分比貢獻為不同單位，不互相加總。</div>
 </section>'''
 
     if display_date != calendar_today and display_snapshot.get("source_date"):
@@ -18591,15 +18792,16 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     else:
         hero_eyebrow = f"TODAY · {display_date.strftime('%Y / %m / %d')}"
 
+    portfolio_label = "你的組合（今日基準）" if has_pretrade_basis else "你的組合"
     return f'''<style>
 .daily-complete-sync{{display:flex;gap:11px;align-items:flex-start;background:#F5F0E5;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:13px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-complete-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:#087A4B;box-shadow:0 0 0 4px rgba(8,122,75,.12);flex:none}}.daily-complete-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-complete-sync span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.6}}.daily-hero{{background:#f7fbff;padding:26px 24px 22px;margin:-8px -2px 18px;border:1px solid #d7e0ea;border-radius:14px;margin-top:0;box-shadow:0 3px 14px rgba(35,39,35,.04)}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.market-freshness{{display:block;margin-top:4px;color:var(--ink-soft);font-size:9px;line-height:1.35}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.home-more-events{{margin-top:10px;border-top:1px solid #eee;padding-top:9px}}.home-more-events>summary{{cursor:pointer;color:var(--brass);font-size:13px;font-weight:700;padding:5px 0}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-status{{min-width:28px;height:22px;padding:2px 5px;border-radius:7px;text-align:center;font-size:11px;font-weight:700;line-height:18px;flex:none;background:#eee;color:var(--ink-soft)}}.timeline-new .event-status{{background:#FCE9E6;color:var(--up)}}.timeline-ongoing .event-status{{background:#F3EEE1;color:var(--brass)}}.timeline-resolved .event-status{{background:#E8F2EA;color:var(--down)}}.timeline-divider{{margin:14px 0 0;padding-top:12px;border-top:1px solid #eee;color:var(--ink-soft);font-size:12px;font-weight:600}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:11px;min-width:0}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:11px}}.rank-mini b{{display:block;font-size:18px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:12px}}.hero-summary-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.hero-summary-panel{{min-width:0;padding:13px;border:1px solid rgba(139,105,52,.25);border-radius:11px;background:rgba(255,255,255,.58);box-shadow:0 2px 8px rgba(35,39,35,.04)}}.hero-summary-panel-head{{display:flex;justify-content:space-between;align-items:center;gap:6px;min-height:27px;padding-bottom:8px;border-bottom:1px solid rgba(139,105,52,.18)}}.hero-summary-panel-head b{{font-size:14px}}.hero-summary-panel-head a{{font-size:10px;color:var(--brass);white-space:nowrap}}.hero-summary-panel-head span{{font-size:10px;color:var(--ink-soft);white-space:nowrap}}.hero-summary-stack{{display:block;margin-top:14px}}.hero-summary-stack .hero-summary-panel{{padding:10px 13px}}.hero-rank-panel .rank-grid{{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.hero-rank-panel .rank-mini{{background:transparent;border:0;border-right:1px solid rgba(227,226,220,.88);border-radius:0;padding:8px 10px 8px 0}}.hero-rank-panel .rank-mini:last-child{{border-right:0;padding-right:0;padding-left:10px}}.hero-summary-stack .hero-summary-panel-head{{min-height:0;padding-bottom:6px}}.hero-summary-stack .hero-summary-panel-head b{{font-size:13px}}.hero-quote-panel{{margin-top:8px;border-color:rgba(139,105,52,.22);background:#F8F5ED}}.hero-quote-text{{margin:8px 0 1px;color:var(--ink);font-family:"Kaiti TC","BiauKai","DFKai-SB","STKaiti","Noto Serif CJK TC","Noto Serif TC",serif;font-size:19px;font-weight:700;line-height:1.5;text-align:center;letter-spacing:.12em;white-space:nowrap}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}.home-judgement-card{{padding:16px 15px}}.judgement-row{{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid #ECEDE8;font-size:13px}}.judgement-row:first-of-type{{border-top:0}}.judgement-row span{{color:var(--ink-soft)}}.judgement-row b{{text-align:right}}.home-judgement-copy{{margin:10px 0 0;padding-top:10px;border-top:1px solid #ECEDE8;color:var(--ink-soft);font-size:12px;line-height:1.65}}.home-detail-collapse{{margin:14px 0;border:1px solid #E3E2DC;border-radius:12px;background:#fff;box-shadow:0 3px 14px rgba(35,39,35,.04)}}.home-detail-collapse>summary{{cursor:pointer;padding:14px 16px;color:var(--brass);font-size:13px;font-weight:700}}.home-detail-collapse .contribution-card{{margin:0;border:0;border-top:1px solid #ECEDE8;border-radius:0;box-shadow:none}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.impact-leads{{grid-template-columns:1fr}}.rank-grid{{grid-template-columns:1fr}}.hero-summary-stack{{gap:7px}}.hero-summary-panel{{padding:10px 11px}}.hero-summary-panel-head b{{font-size:12px}}.hero-summary-panel-head a,.hero-summary-panel-head span{{font-size:8px}}.rank-mini span,.rank-mini small{{font-size:10px}}.rank-mini b{{font-size:16px}}.hero-quote-text{{font-size:18px;text-align:center}}.daily-hero h1{{font-size:26px}}}}
-.daily-interpretation{{padding:11px 14px;margin:-4px 0 14px;border-left:3px solid var(--brass);background:rgba(255,255,255,.6);color:var(--ink-soft);font-size:13px;line-height:1.65}}.daily-interpretation-label{{font-size:11px;color:var(--brass);font-weight:700;letter-spacing:.08em;margin-bottom:3px}}.contribution-card{{padding:16px 15px}}.contribution-card .daily-section-title span{{font-size:11px;color:var(--ink-faint)}}.impact-sentence{{margin:0 0 12px;color:var(--ink-soft);font-size:13px;line-height:1.6}}.impact-leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.impact-lead{{padding:13px;border-radius:11px;background:#F7F7F3;border:1px solid #ECEDE8}}.impact-lead small{{display:block;font-size:11px;font-weight:700;color:var(--ink-soft)}}.impact-lead h3{{font-size:20px;line-height:1.3;margin:7px 0 4px;overflow-wrap:anywhere}}.impact-lead p{{margin:0 0 8px;color:var(--ink-soft);font-size:11px}}.impact-lead strong{{font-size:12px}}.impact-up{{border-color:#EDC7C2;background:#FFF7F5}}.impact-up strong{{color:var(--up)}}.impact-down{{border-color:#C9DFD0;background:#F4FBF5}}.impact-down strong{{color:var(--down)}}.impact-muted{{color:var(--ink-faint)}}.impact-details{{margin-top:10px;border-top:1px solid #ECEDE8}}.impact-details summary{{padding:11px 2px 4px;cursor:pointer;color:var(--brass);font-size:12px;font-weight:600}}.impact-detail-row{{display:flex;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid #F0F0EC}}.impact-rank{{width:20px;height:20px;border-radius:50%;background:#F0EEE8;color:var(--ink-soft);font-size:11px;text-align:center;line-height:20px;flex:none}}.impact-detail-name{{min-width:0;flex:1}}.impact-detail-name b{{display:block;font-size:14px;overflow-wrap:anywhere}}.impact-detail-name small{{display:block;color:var(--ink-soft);font-size:10.5px;margin-top:2px}}.impact-detail-row strong{{font-size:12px;white-space:nowrap}}.impact-empty{{padding:9px 2px;color:var(--ink-faint);font-size:11px}}.contribution-footnote{{margin-top:10px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}} </style><div class="daily-complete-sync" aria-live="polite">
+	.daily-interpretation{{padding:11px 14px;margin:-4px 0 14px;border-left:3px solid var(--brass);background:rgba(255,255,255,.6);color:var(--ink-soft);font-size:13px;line-height:1.65}}.daily-interpretation-label{{font-size:11px;color:var(--brass);font-weight:700;letter-spacing:.08em;margin-bottom:3px}}.contribution-card{{padding:16px 15px}}.contribution-card .daily-section-title span{{font-size:11px;color:var(--ink-faint)}}.contribution-basis-notice{{margin:-1px 0 12px;padding:10px 11px;border-left:3px solid var(--brass);border-radius:7px;background:#F8F5ED;color:var(--ink-soft);font-size:12px;line-height:1.6}}.contribution-basis-notice b{{color:var(--ink)}}.contribution-basis-notice.fallback{{border-left-color:#8b8f88;background:#f5f5f3}}.impact-sentence{{margin:0 0 12px;color:var(--ink-soft);font-size:13px;line-height:1.6}}.impact-leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.impact-lead{{padding:13px;border-radius:11px;background:#F7F7F3;border:1px solid #ECEDE8}}.impact-lead small{{display:block;font-size:11px;font-weight:700;color:var(--ink-soft)}}.impact-lead h3{{font-size:20px;line-height:1.3;margin:7px 0 4px;overflow-wrap:anywhere}}.impact-lead p{{margin:0 0 8px;color:var(--ink-soft);font-size:11px}}.impact-lead strong{{font-size:12px}}.impact-realized{{display:block!important;margin:0 0 7px;font-size:11px!important;font-weight:800!important}}.impact-up{{border-color:#EDC7C2;background:#FFF7F5}}.impact-up strong{{color:var(--up)}}.impact-down{{border-color:#C9DFD0;background:#F4FBF5}}.impact-down strong{{color:var(--down)}}.impact-muted{{color:var(--ink-faint)}}.impact-details{{margin-top:10px;border-top:1px solid #ECEDE8}}.impact-details summary{{padding:11px 2px 4px;cursor:pointer;color:var(--brass);font-size:12px;font-weight:600}}.impact-detail-row{{display:flex;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid #F0F0EC}}.impact-rank{{width:20px;height:20px;border-radius:50%;background:#F0EEE8;color:var(--ink-soft);font-size:11px;text-align:center;line-height:20px;flex:none}}.impact-detail-name{{min-width:0;flex:1}}.impact-detail-name b{{display:block;font-size:14px;overflow-wrap:anywhere}}.impact-detail-name small{{display:block;color:var(--ink-soft);font-size:10.5px;margin-top:2px}}.impact-detail-row strong{{font-size:12px;white-space:nowrap}}.impact-empty{{padding:9px 2px;color:var(--ink-faint);font-size:11px}}.contribution-footnote{{margin-top:10px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}} </style><div class="daily-complete-sync" aria-live="polite">
   <span class="daily-complete-sync-dot" aria-hidden="true"></span>
   <div><b>{html.escape(home_sync_title)}</b><span>{html.escape(home_sync_detail)}</span></div>
 </div><section class="daily-hero">
   <div class="eyebrow">{hero_eyebrow}</div>
   <h1>今天你的投資發生了什麼？</h1>
-  <div class="market-strip"><span>大盤 <b>{market_text}</b><small class="market-freshness">{html.escape(market_status_text)}</small></span><span>你的組合 <b>{portfolio_text}</b></span><span>相對大盤 <b>{relative_text}</b></span></div>
+	  <div class="market-strip"><span>大盤 <b>{market_text}</b><small class="market-freshness">{html.escape(market_status_text)}</small></span><span>{portfolio_label} <b>{portfolio_text}</b></span><span>相對大盤 <b>{relative_text}</b></span></div>
   <div class="hero-summary-stack"><section class="hero-summary-panel hero-rank-panel"><div class="hero-summary-panel-head"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="rank-grid">{rank_line('short')}{rank_line('long')}</div></section><section class="hero-quote-panel"><p class="hero-quote-text">{html.escape(quote_text)}</p></section></div>
 </section>
 {position_journal_html}
@@ -18701,7 +18903,24 @@ def web_portfolio(uid):
     inst, revenue, valuation, ind_map, taiex, daily_context = shared_values
     shared_done = time.monotonic()
 
-    price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
+    # 日內首頁同時需要目前持股行情與當日操作日誌。兩者互不相依，並行讀取；
+    # 若當天已全部賣出某標的，再補抓該代號行情，保留它在日初至減碼前的貢獻。
+    position_codes = [p["code"] for p in positions]
+    with ThreadPoolExecutor(max_workers=2) as exposure_executor:
+        price_future = exposure_executor.submit(get_realtime_stocks_bulk, position_codes)
+        journal_future = exposure_executor.submit(get_position_change_logs, uid, 5000)
+        price_map = price_future.result()
+        journal_logs = journal_future.result()
+    reduced_today_codes = {
+        str(log.get("code") or "").strip() for log in journal_logs
+        if (_position_change_date(log.get("trade_date")) == taiwan_today() and
+            str(log.get("action") or "").strip() == "reduce" and
+            int(log.get("shares_delta") or 0) < 0)
+    }
+    missing_reduced_quotes = sorted(code for code in reduced_today_codes
+                                   if code and code not in price_map)
+    if missing_reduced_quotes:
+        price_map.update(get_realtime_stocks_bulk(missing_reduced_quotes))
     price_done = time.monotonic()
     total_value, total_cost = 0.0, 0.0
     for p in positions:
@@ -18733,7 +18952,7 @@ def web_portfolio(uid):
         name = stock_display_name(p["code"], inst, pr["name"])
         holdings.append({
             "code": p["code"], "name": name, "weight": weight, "value": value,
-            "cost": p["cost"], "price": pr,
+            "cost": p["cost"], "shares": int(p.get("shares") or 0), "price": pr,
             "pl": (net_profit(p["code"], p["shares"], p["cost"], pr["close"],
                               p.get("lots"), fee_disc, min_fee)[1]
                    or (pr["close"] - p["cost"]) / p["cost"] * 100),
@@ -18844,17 +19063,16 @@ def web_portfolio(uid):
                 if avg_corr is not None and eff else
                 "持股數不足或資料不齊，尚無法計算相關係數。")
 
-    # 走勢、操作日誌與首頁排名摘要彼此獨立，尾端同時查詢，
-    # 避免三個約 0.6 秒的 I/O 依序堆疊在完整頁回應時間上。
+    # 走勢、已實現損益與首頁排名摘要彼此獨立，尾端同時查詢。操作日誌已在
+    # 行情階段讀取並供日初曝險與日報共用，避免同頁重複讀取資料庫。
     aux_started = time.monotonic()
     with ThreadPoolExecutor(max_workers=3) as aux_executor:
         trend_future = aux_executor.submit(
             lambda: render_trend_chart(get_portfolio_snapshots(uid, days=120)))
-        journal_future = aux_executor.submit(
-            get_position_change_logs, uid, 5000)
+        realized_future = aux_executor.submit(get_realized_trades, uid, 500)
         rank_future = aux_executor.submit(get_fast_rank_summary, uid)
         trend_html = trend_future.result()
-        journal_logs = journal_future.result()
+        realized_trades = realized_future.result()
         page_rank_status = rank_future.result()
     aux_done = time.monotonic()
     trend_done = aux_done
@@ -18862,16 +19080,22 @@ def web_portfolio(uid):
     latest_journal_date = max((d for d in journal_dates if d), default=None)
     journal_html = render_position_change_journal(
         uid, current_positions=positions, price_map=price_map, inst_data=inst,
-        logs=journal_logs, trade_date=latest_journal_date, display_limit=20)
+        logs=journal_logs, trade_date=latest_journal_date, display_limit=20,
+        realized_trades=realized_trades)
+    daily_pretrade_exposure = _build_daily_pretrade_exposure(
+        holdings, price_map, journal_logs, inst)
+    realized_by_code = _today_realized_by_code(realized_trades)
 
     daily_top_started = time.monotonic()
     daily_top = render_daily_home_top(uid, holdings, total_value, total_cost,
                                       price_map, pl_total, taiex=taiex,
                                       position_journal_html=journal_html,
                                       daily_context=daily_context,
-                                      rank_status=page_rank_status)
+                                      rank_status=page_rank_status,
+                                      daily_pretrade_exposure=daily_pretrade_exposure,
+                                      realized_by_code=realized_by_code)
     daily_top_done = time.monotonic()
-    print("⏱️ 今日完整頁：共享 %.0fms、持股行情 %.0fms、組合計算 %.0fms、走勢／日誌／排名並行 %.0fms、首頁判讀 %.0fms、合計 %.0fms" % (
+    print("⏱️ 今日完整頁：共享 %.0fms、持股行情／日誌 %.0fms、組合計算 %.0fms、走勢／損益／排名並行 %.0fms、首頁判讀 %.0fms、合計 %.0fms" % (
         (shared_done - full_started) * 1000,
         (price_done - shared_done) * 1000,
         (calc_done - price_done) * 1000,
