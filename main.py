@@ -1,5 +1,6 @@
 import os
 import re
+import calendar
 import html
 import base64
 import csv
@@ -3396,6 +3397,188 @@ def render_position_change_history(user_id, current_positions=None, price_map=No
 </section>'''
 
 
+def _month_review_bounds(month_key, today=None):
+    """回傳 YYYY-MM 的日曆月範圍；無效月份不推測，直接回傳 None。"""
+    try:
+        parsed = datetime.strptime(str(month_key or ""), "%Y-%m")
+        start = date(parsed.year, parsed.month, 1)
+    except (TypeError, ValueError):
+        return None, None
+    last_day = calendar.monthrange(start.year, start.month)[1]
+    end = date(start.year, start.month, last_day)
+    reference = today or taiwan_today()
+    return start, min(end, reference)
+
+
+def _month_review_key(user_id, month_key):
+    return f"monthly_review:{str(user_id).strip()}:{str(month_key).strip()}"
+
+
+def _is_last_calendar_day(day_value=None):
+    day_value = day_value or taiwan_today()
+    return (day_value + timedelta(days=1)).month != day_value.month
+
+
+def get_monthly_review_user_ids():
+    """回顧不只限於現有持股；已全數賣出者仍應保有當月操作與已實現損益。"""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT user_id FROM positions
+            UNION SELECT user_id FROM position_change_logs
+            UNION SELECT user_id FROM realized_trades
+            ORDER BY user_id
+        """)
+        ids = [row[0] for row in cur.fetchall()]
+        cur.close()
+        return ids
+    except Exception as exc:
+        print(f"⚠️ 讀取月度回顧使用者清單失敗: {exc}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def build_monthly_review_payload(user_id, month_key, logs=None, realized_trades=None,
+                                 snapshots=None, today=None):
+    """月度回顧只整理已保存紀錄；快照不足時保留 None，不推估組合或大盤報酬。"""
+    start, end = _month_review_bounds(month_key, today=today)
+    if not start or not end or end < start:
+        return None
+    all_logs = list(logs) if logs is not None else get_position_change_logs(user_id, limit=5000)
+    period_logs = _filter_position_change_logs(all_logs, start_date=start, end_date=end)
+    statuses = (("新增", "new"), ("加碼", "add"), ("減碼", "reduce"), ("刪除", "delete"))
+    actions = []
+    for label, key in statuses:
+        matches = [item for item in period_logs
+                   if _position_change_journal_status(item)[0] == label]
+        shares = sum(abs(int(item.get("shares_delta") or 0)) for item in matches)
+        known_amounts = [abs(int(item.get("shares_delta") or 0)) * float(item["trade_price"])
+                         for item in matches if item.get("trade_price") is not None]
+        actions.append({"label": label, "key": key, "count": len(matches),
+                        "shares": shares,
+                        "amount": sum(known_amounts) if known_amounts else None,
+                        "amount_known_count": len(known_amounts)})
+
+    all_realized = (list(realized_trades) if realized_trades is not None
+                    else get_realized_trades(user_id, limit=5000))
+    period_realized = [item for item in all_realized
+                       if start <= (_position_change_date(item.get("sold_on")) or date.min) <= end]
+    priced_realized = [float(item["realized_pl"]) for item in period_realized
+                       if item.get("realized_pl") is not None]
+
+    all_snapshots = (list(snapshots) if snapshots is not None
+                     else get_portfolio_snapshots(user_id, days=1095))
+    ordered_snapshots = sorted(all_snapshots, key=lambda item: item.get("date") or date.min)
+    in_month = [item for item in ordered_snapshots
+                if start <= (item.get("date") or date.min) <= end]
+    preceding = [item for item in ordered_snapshots
+                 if (item.get("date") or date.min) < start]
+    calculation_points = (preceding[-1:] + in_month) if in_month else []
+    realized_by_date = get_realized_by_date(user_id, days=1095)
+    portfolio_curve = compute_twr(calculation_points, realized=realized_by_date)
+    market_curve = taiex_series(calculation_points)
+    portfolio_pct = portfolio_curve[-1][1] if len(portfolio_curve) >= 2 else None
+    market_pct = market_curve[-1][1] if len(market_curve) >= 2 else None
+    last_snapshot = in_month[-1] if in_month else None
+
+    return {
+        "month": str(month_key), "start_date": start.isoformat(), "end_date": end.isoformat(),
+        "actions": actions, "operation_count": len(period_logs),
+        "realized_count": len(priced_realized),
+        "realized_pl": sum(priced_realized) if priced_realized else None,
+        "portfolio_pct": portfolio_pct, "market_pct": market_pct,
+        "excess_pct": (portfolio_pct - market_pct
+                       if portfolio_pct is not None and market_pct is not None else None),
+        "snapshot_count": len(in_month),
+        "last_snapshot_date": (last_snapshot.get("date").isoformat()
+                               if last_snapshot and last_snapshot.get("date") else None),
+        "last_portfolio_value": (float(last_snapshot.get("value"))
+                                 if last_snapshot and last_snapshot.get("value") is not None else None),
+    }
+
+
+def save_monthly_review_snapshot(user_id, month_key, today=None):
+    """相同使用者與月份採 upsert，排程重試不會產生重複月度回顧。"""
+    payload = build_monthly_review_payload(user_id, month_key, today=today)
+    if not payload:
+        return False
+    source_date = payload.get("last_snapshot_date") or payload.get("end_date")
+    return _save_shared_data_snapshot(
+        _month_review_key(user_id, month_key), payload, data_date=source_date,
+        source_meta={"kind": "monthly_review", "month": month_key,
+                     "rule": "last_calendar_day", "version": 1})
+
+
+def load_monthly_review_payload(user_id, month_key, today=None):
+    """已封存月份優先讀取月末結果；本月或未封存月份按既有原始資料即時計算。"""
+    current_month = (today or taiwan_today()).strftime("%Y-%m")
+    if str(month_key) != current_month:
+        saved = _load_shared_data_snapshot(_month_review_key(user_id, month_key),
+                                           max_age_seconds=4 * 366 * 86400)
+        if saved and isinstance(saved.get("payload"), dict):
+            payload = dict(saved["payload"])
+            payload["archived"] = True
+            payload["archived_at"] = (saved.get("computed_at").isoformat()
+                                      if saved.get("computed_at") else None)
+            return payload
+    payload = build_monthly_review_payload(user_id, month_key, today=today)
+    if payload:
+        payload["archived"] = False
+    return payload
+
+
+def render_monthly_review(user_id, month_key, today=None):
+    """交易紀錄頁頂部的月度回顧；不放首頁，避免混淆今日操作與跨日成果。"""
+    payload = load_monthly_review_payload(user_id, month_key, today=today)
+    title = str(month_key or "本月").replace("-", " / ")
+    if not payload:
+        return f'''<section class="monthly-review"><div class="monthly-review-head"><div><h2>本月回顧</h2><small>{html.escape(title)}・資料不足</small></div></div><div class="position-journal-empty">月份格式或可用資料不足，未產生推估數字。</div></section>'''
+
+    def amount_text(value, known_count):
+        return f"{value:,.0f}" if value is not None else ("待確認" if known_count == 0 else "部分待確認")
+
+    action_html = "".join(
+        f'<div class="monthly-action {item["key"]}"><small>{item["label"]}</small><b>{item["shares"]:,} 股</b><span>{item["count"]} 筆</span><em>成交／成本 {amount_text(item["amount"], item["amount_known_count"])}</em></div>'
+        for item in payload.get("actions", []))
+
+    def metric(label, value, suffix="%", neutral="資料不足"):
+        if value is None:
+            return f'<div class="monthly-metric"><small>{label}</small><b class="flat">{neutral}</b></div>'
+        cls = "up" if value >= 0 else "down"
+        return f'<div class="monthly-metric"><small>{label}</small><b class="{cls}">{value:+,.1f}{suffix}</b></div>'
+
+    performance = (
+        metric("組合時間加權報酬", payload.get("portfolio_pct")) +
+        metric("同期大盤", payload.get("market_pct")) +
+        metric("超額報酬", payload.get("excess_pct")) +
+        metric("已實現損益", payload.get("realized_pl"), suffix=" 元", neutral="尚無賣出紀錄"))
+    status = ("已於月末封存" if payload.get("archived") else "本月累積中")
+    snapshot_note = (f'組合快照 {payload.get("snapshot_count", 0)} 筆・最新 {payload.get("last_snapshot_date")}'
+                     if payload.get("last_snapshot_date") else "尚無足夠組合快照，不顯示報酬比較")
+    return f'''<section class="monthly-review">
+  <div class="monthly-review-head"><div><h2>本月回顧</h2><small>{html.escape(title)}・{html.escape(status)}</small></div><span>{payload.get("operation_count", 0)} 筆操作</span></div>
+  <div class="monthly-review-note">每月最後一個日曆日更新。操作彙總取自操作日誌；組合與大盤只在已有連續收盤快照時依既有時間加權口徑計算。</div>
+  <div class="monthly-action-grid">{action_html}</div>
+  <div class="monthly-metrics">{performance}</div>
+  <div class="monthly-review-foot">{html.escape(snapshot_note)}</div>
+</section><style>
+.monthly-review{{margin:0 0 16px;padding:16px;border:1px solid #cbd9e4;border-top:4px solid #3d6382;border-radius:12px;background:#fbfdff;box-shadow:0 4px 14px rgba(35,55,74,.06)}}.monthly-review-head{{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}}.monthly-review h2{{margin:0;color:#1d3348;font-size:22px;line-height:1.2}}.monthly-review-head small,.monthly-review-foot{{display:block;margin-top:4px;color:#617486;font-size:12px;font-weight:700}}.monthly-review-head>span{{padding:5px 8px;border-radius:99px;background:#e8f1f7;color:#315a78;font-size:12px;font-weight:900;white-space:nowrap}}.monthly-review-note{{margin:12px 0;color:#536b7d;font-size:13px;line-height:1.65}}.monthly-action-grid,.monthly-metrics{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}}.monthly-action,.monthly-metric{{min-width:0;padding:10px;border:1px solid #e2e9ee;border-radius:8px;background:#fff}}.monthly-action small,.monthly-action span,.monthly-action em,.monthly-metric small{{display:block;color:#667788;font-size:11px;font-style:normal;line-height:1.4}}.monthly-action b,.monthly-metric b{{display:block;margin:4px 0 2px;font-size:16px;color:#1d2939;white-space:nowrap}}.monthly-action em{{margin-top:4px;overflow-wrap:anywhere}}.monthly-action.add b{{color:#b42318}}.monthly-action.reduce b{{color:#13734c}}.monthly-action.delete b{{color:#667085}}.monthly-review-foot{{margin-top:11px;padding-top:9px;border-top:1px solid #e2e9ee}}@media(max-width:640px){{.monthly-review{{padding:14px 12px}}.monthly-review h2{{font-size:21px}}.monthly-action-grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}.monthly-metrics{{grid-template-columns:repeat(2,minmax(0,1fr))}}.monthly-action b,.monthly-metric b{{font-size:15px}}}}
+</style>'''
+
+
+def archive_monthly_reviews_if_due(today=None):
+    """只在每月最後一日封存；相同鍵的 upsert 使重試與多次觸發安全。"""
+    today = today or taiwan_today()
+    if not _is_last_calendar_day(today):
+        return "月度回顧非月末，不執行"
+    month_key = today.strftime("%Y-%m")
+    user_ids = get_monthly_review_user_ids()
+    saved = sum(1 for uid in user_ids if save_monthly_review_snapshot(uid, month_key, today=today))
+    return f"月度回顧 {month_key} 已封存 {saved}/{len(user_ids)} 位"
+
+
 def render_position_change_journal(user_id, current_positions=None, price_map=None,
                                   inst_data=None, logs=None, trade_date=None,
                                   display_limit=100, realized_trades=None, export_code=None):
@@ -4577,9 +4760,48 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
     now = time.time()
     with _realtime_cache_lock:
         cached = _realtime_cache.get(cache_key)
-        if (cached and not force_refresh and
-                now - cached["at"] < REALTIME_CACHE_SECONDS):
-            return cached["data"]
+        if cached and not force_refresh and now - cached["at"] < REALTIME_CACHE_SECONDS:
+            # 同一次持股／首頁請求已經先取得官方 MIS 報價時，不能讓先前的
+            # Yahoo／快照快取直接返回；否則會出現「其他檔已更新、單一檔仍舊價」。
+            # 已有日線技術欄位時直接以官方成交價覆寫，避免再等一次 Yahoo。
+            try:
+                official_close = float(official_quote.get("close")) if official_quote else None
+            except (TypeError, ValueError):
+                official_close = None
+            if official_close and official_close > 0:
+                refreshed = dict(cached["data"])
+                previous_close = official_quote.get("previous_close")
+                try:
+                    previous_close = float(previous_close) if previous_close else None
+                except (TypeError, ValueError):
+                    previous_close = None
+                official_pct = official_quote.get("pct")
+                try:
+                    official_pct = (float(official_pct) if official_pct is not None else
+                                    ((official_close - previous_close) / previous_close * 100
+                                     if previous_close else refreshed.get("pct", 0.0)))
+                except (TypeError, ValueError):
+                    official_pct = refreshed.get("pct", 0.0)
+                refreshed.update({
+                    "code": code, "close": official_close, "pct": official_pct,
+                    "high": official_quote.get("high") or refreshed.get("high") or official_close,
+                    "low": official_quote.get("low") or refreshed.get("low") or official_close,
+                    "volume": official_quote.get("volume") or refreshed.get("volume") or 0,
+                    "source": official_quote.get("source") or "TWSE MIS 盤中最後成交",
+                    "updated_at": official_quote.get("updated_at"),
+                    "close_is_final": bool(official_quote.get("close_is_final")),
+                    "close_date": official_quote.get("close_date"),
+                    "close_time": official_quote.get("close_time"),
+                })
+                close_dates = refreshed.get("close_dates") or []
+                closes = list(refreshed.get("closes") or [])
+                if closes and close_dates and close_dates[-1] == taiwan_today():
+                    closes[-1] = official_close
+                    refreshed["closes"] = closes
+                _realtime_cache[cache_key] = {"at": now, "data": refreshed}
+                return refreshed
+            if official_quote is None:
+                return cached["data"]
 
     # 已知後綴排前面試，未知就照原順序
     known = _suffix_cache.get(code)
@@ -4751,7 +4973,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                             ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
                              if _taiwan_post_close() and bars and bars[-1][0] == today_date
                              else "Yahoo Finance 日線行情")),
-                "close_is_final": bool(official_quote),
+                "updated_at": (official_quote.get("updated_at") if official_quote else None),
+                "close_is_final": bool(official_quote and official_quote.get("close_is_final")),
                 "close_date": (official_quote.get("close_date") if official_quote else
                                today_date.strftime("%Y%m%d")),
                 "close_time": (official_quote.get("close_time") if official_quote else None),
@@ -11077,7 +11300,8 @@ def _do_daily_snapshot():
                         "total": len(get_all_position_user_ids())}
             current_stage = "portfolio"
         elif missing_users == []:
-            return f"{taiwan_today()} 的每日快照已完成，避免重複抓取。"
+            monthly_status = archive_monthly_reviews_if_due(taiwan_today())
+            return f"{taiwan_today()} 的每日快照已完成，避免重複抓取；{monthly_status}。"
         else:
             return f"{taiwan_today()} 的每日快照已完成，但無法確認所有使用者快照，請稍後重試。"
 
@@ -11194,6 +11418,10 @@ def _do_daily_snapshot():
         rank_saved = save_leaderboard_rank_snapshots()
         _job_mark_progress(job_name, "done", 1, 1)
 
+    # 月度回顧不另開一條 Render／CRON 工作；沿用每日快照的既有安全觸發。
+    # 當月最後一日才封存，且使用同月快照鍵 upsert，所以重試不會累積重複紀錄。
+    monthly_status = archive_monthly_reviews_if_due(taiwan_today())
+
     missing_after = get_missing_portfolio_snapshot_user_ids(taiwan_today())
     if missing_after is None:
         portfolio_status = "；持股快照完整性待確認"
@@ -11207,7 +11435,7 @@ def _do_daily_snapshot():
     return (f"組合本次續跑處理 {saved}（略過 {skipped}，共 {len(user_ids)}）、"
             f"自選本次 {wl_saved}/{len(wl_users)}、產業 {ind_saved}、"
             f"選股名單 {picks_saved}、排行榜名次 {rank_saved}、大盤 {taiex_close}"
-            f"{portfolio_status}{pick_status}")
+            f"{portfolio_status}{pick_status}；{monthly_status}")
 
 
 # ── 資料保留期限 ──
@@ -12670,7 +12898,7 @@ def render_page(title, body, nav_active=None, user_name=None):
                + tab("/web/settings", "設定", "settings")
                + "</nav>")
 
-    more_on = active_nav in {"settings", "trades", "compare", "more"}
+    more_on = active_nav in {"settings", "trades", "compare", "watchlist", "more"}
     bottom_nav = ("<div class=\"app-bottom-nav\"><div class=\"bottom-inner\">"
                   + bottom_tab("/web/portfolio", "⌂", "今日", "portfolio")
                   + bottom_tab("/web/positions", "▣", "持股", "positions")
@@ -12760,12 +12988,12 @@ def render_page(title, body, nav_active=None, user_name=None):
   var appRouteKeys = {{
     '/web/portfolio':'portfolio','/web/positions':'positions','/web/workbench':'screener',
     '/web/leaderboard':'leaderboard','/web/trades':'trades','/web/compare':'compare',
-    '/web/settings':'settings','/web/more':'more','/web/chips':'screener','/web/etf':'more'
+    '/web/settings':'settings','/web/more':'more','/web/chips':'screener','/web/etf':'more','/web/watchlist':'watchlist'
   }};
   var appTitles = {{
     '/web/portfolio':'今日','/web/positions':'持股','/web/workbench':'選股工作台',
     '/web/leaderboard':'排行榜','/web/trades':'紀錄','/web/compare':'比較',
-    '/web/settings':'設定','/web/more':'更多功能','/web/chips':'籌碼超人','/web/etf':'ETF 專區'
+    '/web/settings':'設定','/web/more':'更多功能','/web/chips':'籌碼超人','/web/etf':'ETF 專區','/web/watchlist':'名單儀表板'
   }};
   function executeFragmentScripts(container) {{
     container.querySelectorAll('script').forEach(function(oldScript) {{
@@ -13989,14 +14217,18 @@ def web_positions(uid):
             net_amt = net_amt if net_amt is not None else (value - cost_total)
             held = ((taiwan_now().date() - p["bought_on"]).days
                     if p["bought_on"] else None)
+            quote_stamp = html.escape(str(price.get("source") or "最近有效行情"))
+            if price.get("updated_at"):
+                quote_stamp += "・" + html.escape(str(price.get("updated_at")))
             rows_html.append(f"""
-<div class="row">
+<div class="row" data-position-code="{html.escape(str(p['code']), quote=True)}">
   <div><span class="name">{name}</span><span class="code">{p['code']}</span></div>
-  <div class="price num">{price['close']:,.2f}</div>
+  <div class="price num" data-position-price="1">{price['close']:,.2f}</div>
+  <div class="sub position-quote-stamp" data-position-stamp="1">{quote_stamp}</div>
   <div class="meta">
     <span><em>持有</em> <span class="num">{p['shares']:,}</span> 股</span>
     <span><em>成本</em> <span class="num">{p['cost']:,.2f}</span></span>
-    <span><em>今日</em> <span class="num {'up' if day_pl >= 0 else 'down'}">{day_pl:+,.0f}</span></span>
+    <span><em>今日</em> <span class="num {'up' if day_pl >= 0 else 'down'}" data-position-day-pl="1">{day_pl:+,.0f}</span></span>
     <span><em>累計</em> <span class="num {'up' if net_amt >= 0 else 'down'}">{net_amt:+,.0f}</span>
       {fmt_pct(pl)}<span class="sub">帳面 {gross_pl:+.2f}%</span></span>
     <span><em>市值</em> <span class="num">{value:,.0f}</span></span>
@@ -14010,20 +14242,21 @@ def web_positions(uid):
     </details>
     {lots_html(p, name, price['close'])}
   </div>
-  <div class="chg">{fmt_pct(price['pct'])}</div>
+  <div class="chg" data-position-pct="1">{fmt_pct(price['pct'])}</div>
   <div class="bar"><div style="width:{weight:.1f}%"></div></div>
 </div>""")
         else:
             rows_html.append(f"""
-<div class="row">
+<div class="row" data-position-code="{html.escape(str(p['code']), quote=True)}">
   <div><span class="name">{p['code']}</span>
        <span class="code">查無行情</span></div>
-  <div class="price flat">—</div>
+  <div class="price flat" data-position-price="1">—</div>
+  <div class="sub position-quote-stamp" data-position-stamp="1">暫無可驗證行情</div>
   <div class="meta">
     <span><em>持有</em> <span class="num">{p['shares']:,}</span> 股</span>
     {lots_html(p, p['code'], None)}
   </div>
-  <div class="chg"></div>
+  <div class="chg" data-position-pct="1"></div>
 </div>""")
 
     pl_total = (((total_value - total_fee - total_cost) / total_cost * 100)
@@ -14077,6 +14310,7 @@ def web_positions(uid):
     body = f"""
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {totals}
+{f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px">盤中持股行情已於 {taiwan_now().strftime("%H:%M:%S")} 取得；開盤期間每 15 秒局部更新，個別來源暫缺時保留最後有效價格並標示來源。</div>' if positions and _is_taiwan_intraday_window() else ''}
 {allocation_html_positions}
 {portfolio_trend_html}
 <div class="section-head"><h2>持股明細</h2>
@@ -14107,6 +14341,29 @@ def web_positions(uid):
     新增後會同步記入操作日報；備註只保存你自己輸入的內容。若填的是純成交價，在手續費欄填實際金額，會自動攤進每股成本。
   </div>
 </form>"""
+    if positions and _is_taiwan_intraday_window():
+        body += '''<script>
+(function(){
+  var timer=null,busy=false,root=document.getElementById('positions-quote-status');
+  if(!root)return;
+  function numberText(value,digits){var n=Number(value);return Number.isFinite(n)?n.toLocaleString('zh-TW',{minimumFractionDigits:digits,maximumFractionDigits:digits}):'—';}
+  function signedText(value,digits){var n=Number(value);return Number.isFinite(n)?(n>=0?'+':'')+numberText(n,digits):'—';}
+  function schedule(){if(timer)clearTimeout(timer);timer=setTimeout(refresh,15000);}
+  function refresh(){
+    if(document.hidden||busy){schedule();return;}
+    busy=true;
+    var query=new URLSearchParams(window.location.search),token=query.get('t'),url='/web/api/positions/quotes';
+    if(token)url+='?t='+encodeURIComponent(token);
+    fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
+      (data.updates||[]).forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
+      root.textContent=data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。');
+    }).catch(function(){root.textContent='盤中行情暫時無法更新；保留最後有效價格與各檔來源。';}).finally(function(){busy=false;schedule();});
+  }
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
+  document.addEventListener('stockbot:pageleaving',function(){if(timer)clearTimeout(timer);timer=null;});
+  schedule();
+})();
+</script>'''
     print("⏱️ 持股頁：持股資料 %.0fms、法人 %.0fms、1y行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
         (positions_data_done - positions_data_started) * 1000,
         (inst_done - inst_started) * 1000,
@@ -16051,6 +16308,7 @@ def web_trades(uid):
 
     month = request.args.get("month", "")
     code = request.args.get("code", "")
+    review_month = request.args.get("review_month", "") or taiwan_today().strftime("%Y-%m")
     journal_date = request.args.get("journal_date", "")
     journal_start = request.args.get("journal_start", "") or journal_date
     journal_end = request.args.get("journal_end", "") or journal_date
@@ -16070,6 +16328,7 @@ def web_trades(uid):
         inst_data=inst, logs=journal_logs, start_date=journal_start or None,
         end_date=journal_end or None,
         export_code=code or None)
+    monthly_review_html = render_monthly_review(uid, review_month)
 
     if not trades and not months and not journal_logs:
         return respond_page("交易紀錄", """
@@ -16099,11 +16358,13 @@ def web_trades(uid):
       <input type="date" name="journal_start" value="{html.escape(journal_start)}" onchange="this.form.submit()"></div>
     <div><label>操作迄日</label>
       <input type="date" name="journal_end" value="{html.escape(journal_end)}" onchange="this.form.submit()"></div>
+    <div><label>回顧月份</label>
+      <input type="month" name="review_month" value="{html.escape(review_month)}" onchange="this.form.submit()"></div>
   </div>
 </form>"""
 
     if not st:
-        body = controls + journal_html + '<div class="empty">這個範圍內沒有已實現損益紀錄；若有加碼／減碼，請查看上方操作日報。</div>'
+        body = controls + monthly_review_html + journal_html + '<div class="empty">這個範圍內沒有已實現損益紀錄；若有加碼／減碼，請查看上方完整操作歷程。</div>'
         return respond_page("交易紀錄", body, "trades")
 
     payoff_txt = f"{st['payoff']:.2f}" if st["payoff"] else "—"
@@ -16153,6 +16414,7 @@ def web_trades(uid):
 
     body = f"""
 {controls}
+{monthly_review_html}
 {journal_html}
 <div class="totals">
   <div><div class="total-label">已實現損益</div>
@@ -16305,7 +16567,7 @@ def web_leaderboard(uid):
     all_boards, (series_map, market) = build_leaderboard(top_n=100, days=365)
     board_done = time.monotonic()
     boards = {
-        "long": (all_boards.get("long") or [])[:20],
+        "long": (all_boards.get("long") or [])[:3],
         "short": (all_boards.get("short") or [])[:20],
         "waiting": all_boards.get("waiting") or [],
     }
@@ -16639,7 +16901,7 @@ def web_leaderboard(uid):
 {my_rank_html}
 {tabs}
 <div class="rank-list-caption">
-  <span>{len(boards['long'])} 位參加中・依報酬排序</span></div>
+  <span>{len(boards[active_board])} 位顯示中・依報酬排序</span></div>
 <div class="rank-source-note">資料來源：{leaderboard_source}・資料日：{html.escape(leaderboard_data_date)}</div>
 <div class="mode-note">個股與 ETF 持股都納入會員整體績效；ETF 只計入實際價格／市值變化，不套用個股營收、PE 或法人評分。</div>
 {board}
@@ -17636,6 +17898,7 @@ def web_more(uid):
 
 <div class="more-group">
   <div class="more-group-title">分析工具</div>
+  <a class="more-item" href="/web/watchlist"><span class="more-icon">▤</span><span><b>名單儀表板</b><small>輸入或帶入自選名單，一次看完既有資料</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/trades"><span class="more-icon">▤</span><span><b>交易紀錄</b><small>查看已實現損益與交易統計</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/compare"><span class="more-icon">⌕</span><span><b>股票比較</b><small>一次比較最多 4 檔股票</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/etf"><span class="more-icon">▦</span><span><b>ETF 專區</b><small>主動式、高股息、市值型、主題型</small></span><strong>›</strong></a>
@@ -17656,6 +17919,54 @@ def web_more(uid):
 <div class="more-note">部分功能僅在其他入口或管理端使用，不會顯示於此處。</div>
 """
     return render_page("更多", body, nav_active="more")
+
+
+@app.route("/web/watchlist")
+@web_login_required
+def web_watchlist_dashboard(uid):
+    """名單儀表板只讀取現有自選／行情／ETF評分資料，不建立另一套選股規則。"""
+    if not wants_fragment():
+        return render_loading_shell(
+            "名單儀表板", "watchlist",
+            ["正在讀取輸入名單…", "正在整理既有評分與行情…"],
+            note="最多一次查看 20 檔；不會自動新增到自選股。")
+    raw = request.args.get("codes", "")
+    entered = [normalize_code(value) for value in re.findall(r"\d{4,6}[A-Za-z]?", raw)]
+    entered = [code for code in dict.fromkeys(entered) if code][:20]
+    saved = get_user_watchlist(uid)
+    codes = entered or saved[:20]
+    chips = "".join(
+        f'<a class="tagchip" href="/web/watchlist?codes={quote(code, safe="")}">{html.escape(code)}</a>'
+        for code in saved[:20])
+    form = f'''<section class="watch-dashboard-intro"><div><h2>名單儀表板</h2><p>輸入代號後，以同一張表看既有個股／ETF資料；不會自動存入自選股。</p></div></section>
+<form method="get" class="add watch-dashboard-form"><div class="fields"><div><label>股票或 ETF 代號（空格、逗號分隔）</label><input name="codes" value="{html.escape(' '.join(codes))}" placeholder="2330 0050 00919" inputmode="text"></div></div><button type="submit">整理名單</button></form>
+{f'<div class="chips watch-dashboard-chips"><small>我的自選：</small>{chips}</div>' if chips else ''}'''
+    if not codes:
+        return respond_page("名單儀表板", form + '<div class="empty">輸入股票或 ETF 代號後，即可在同一頁查看既有分數、價格與關卡。</div>', "watchlist")
+    scores = compute_watchlist_scores(codes)
+    rows = []
+    for code in codes:
+        item = scores.get(code)
+        if not item:
+            rows.append(f'<div class="watch-dashboard-row"><div><b>{html.escape(code)}</b><small>查無可用行情或既有評分資料</small></div><span class="flat">—</span></div>')
+            continue
+        stock = item.get("stock") or {}
+        asset_type = item.get("asset_type") or ("ETF" if is_etf(code) else "個股")
+        score = item.get("total")
+        close = stock.get("close")
+        change = stock.get("pct")
+        support, resistance = stock.get("support"), stock.get("resistance")
+        score_text = f'{float(score):.0f} 分' if score is not None else "尚無分數"
+        price_text = f'{float(close):,.2f}' if close is not None else "尚無價格"
+        change_text = f'{float(change):+.2f}%' if change is not None else "尚無漲跌"
+        change_cls = "up" if change is not None and change >= 0 else "down" if change is not None else "flat"
+        gate_text = (f'支撐 {float(support):,.2f}　壓力 {float(resistance):,.2f}'
+                     if support is not None and resistance is not None else "關卡資料尚未提供")
+        rows.append(f'''<div class="watch-dashboard-row"><div class="watch-dashboard-name"><span class="wb-tag {'ETF' if asset_type == 'ETF' else '持股'}">{html.escape(asset_type)}</span><b>{html.escape(str(item.get('name') or code))}</b><small>{html.escape(code)}・{html.escape(gate_text)}</small></div><div class="watch-dashboard-score"><small>既有評分</small><b>{html.escape(score_text)}</b></div><div class="watch-dashboard-price"><b>{html.escape(price_text)}</b><small class="{change_cls}">{html.escape(change_text)}</small></div></div>''')
+    body = form + f'''<section class="watch-dashboard"><div class="watch-dashboard-head"><h2>名單一覽</h2><small>{len(codes)} 檔・依輸入順序</small></div><div class="watch-dashboard-note">個股沿用既有自選股評分；ETF 沿用 ETF 專屬計算，兩者不互相比較。</div>{''.join(rows)}</section><style>
+.watch-dashboard-intro{{margin:0 0 12px;padding:15px 16px;border-left:4px solid #3d6382;background:#f2f7fb}}.watch-dashboard-intro h2,.watch-dashboard h2{{margin:0;color:#1d3348;font-size:21px}}.watch-dashboard-intro p,.watch-dashboard-note{{margin:6px 0 0;color:#5e7080;font-size:13px;line-height:1.6}}.watch-dashboard-chips{{margin:12px 0}}.watch-dashboard-chips small{{align-self:center;color:#667085;font-size:12px;font-weight:800}}.watch-dashboard{{margin-top:15px;border:1px solid #cbd9e4;border-radius:12px;overflow:hidden;background:#fff}}.watch-dashboard-head{{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:15px 16px;background:#edf5fb;border-bottom:1px solid #cbd9e4}}.watch-dashboard-head small{{color:#526b84;font-size:12px;font-weight:800}}.watch-dashboard-note{{margin:0;padding:10px 16px;background:#fbfdff;border-bottom:1px solid #e6edf2}}.watch-dashboard-row{{display:grid;grid-template-columns:minmax(0,1fr) 92px 90px;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid #e6edf2}}.watch-dashboard-row:last-child{{border-bottom:0}}.watch-dashboard-name{{min-width:0}}.watch-dashboard-name .wb-tag{{margin-right:7px;vertical-align:middle}}.watch-dashboard-name b{{font-size:16px;color:#1d2939;overflow-wrap:anywhere}}.watch-dashboard-name small,.watch-dashboard-score small,.watch-dashboard-price small{{display:block;margin-top:4px;color:#667085;font-size:11px;line-height:1.35}}.watch-dashboard-score,.watch-dashboard-price{{text-align:right;min-width:0}}.watch-dashboard-score b,.watch-dashboard-price b{{font-size:15px;color:#1d2939;white-space:nowrap}}.watch-dashboard-price .up{{color:#b42318;font-weight:900}}.watch-dashboard-price .down{{color:#13734c;font-weight:900}}@media(max-width:640px){{.watch-dashboard-row{{grid-template-columns:minmax(0,1fr) 78px;gap:7px;padding:13px 12px}}.watch-dashboard-price{{grid-column:2;grid-row:1}}.watch-dashboard-score{{grid-column:2;grid-row:2}}.watch-dashboard-score small{{display:none}}.watch-dashboard-name{{grid-row:1 / span 2}}.watch-dashboard-name b{{font-size:17px}}}}
+</style>'''
+    return respond_page("名單儀表板", body, "watchlist")
 
 
 # ============================================================
@@ -20497,6 +20808,33 @@ def render_workbench_body(initial_tab=""):
   document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':'黑馬';state.query='';render();};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){load();};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};function closeDrawer(){drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;window.setTimeout(function(){window.scrollTo(0,state.returnScroll||0);},0);}document.getElementById('wb-close').onclick=closeDrawer;document.getElementById('wb-back').onclick=closeDrawer;mask.onclick=closeDrawer;document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
 })();
 </script>'''
+    # ETF 原始資料仍依短期／長期及四類分組；只在結果渲染完成後加入橫向類別選擇器。
+    # 這樣不會改變既有分組、排名、前三檔與其餘收合的資料邏輯。
+    body += '''<style>
+.wb-etf-category-tabs{display:flex;gap:8px;padding:12px 14px;overflow-x:auto;overscroll-behavior-x:contain;border-bottom:1px solid #dfe8ef;background:#fff;scrollbar-width:none}.wb-etf-category-tabs::-webkit-scrollbar{display:none}.wb-etf-category-tab{flex:0 0 auto;border:1px solid #b9cad8;border-radius:9px;background:#fff;color:#526b84;padding:9px 12px;font-size:14px;font-weight:900;white-space:nowrap}.wb-etf-category-tab.active{border-color:#405d77;background:#edf5fb;color:#1d496c;box-shadow:inset 0 -2px #405d77}.wb-etf-category[hidden]{display:none}@media(max-width:640px){.wb-etf-category-tabs{padding:11px 12px}.wb-etf-category-tab{padding:9px 11px;font-size:15px}}
+</style><script>
+(function(){
+  var rows=document.getElementById('wb-rows');
+  if(!rows)return;
+  function arrange(period){
+    if(!period||period.dataset.etfTabsReady==='1')return;
+    var categories=Array.prototype.slice.call(period.querySelectorAll('.wb-etf-category'));
+    if(!categories.length)return;
+    period.dataset.etfTabsReady='1';
+    var tabs=document.createElement('div');tabs.className='wb-etf-category-tabs';tabs.setAttribute('aria-label','ETF 類別');
+    categories.forEach(function(category,index){
+      var heading=category.querySelector('h4'),label=(heading&&heading.childNodes[0]&&heading.childNodes[0].textContent||'ETF 類別').trim();
+      var button=document.createElement('button');button.type='button';button.className='wb-etf-category-tab'+(index===0?' active':'');button.textContent=label;button.dataset.etfCategory=String(index);button.setAttribute('aria-selected',index===0?'true':'false');
+      button.onclick=function(){categories.forEach(function(item,itemIndex){var active=itemIndex===index;item.hidden=!active;tabs.children[itemIndex].classList.toggle('active',active);tabs.children[itemIndex].setAttribute('aria-selected',active?'true':'false');});};
+      tabs.appendChild(button);if(index>0)category.hidden=true;
+    });
+    period.insertBefore(tabs,categories[0]);
+  }
+  function arrangeAll(){Array.prototype.slice.call(rows.querySelectorAll('.wb-etf-period')).forEach(arrange);}
+  new MutationObserver(arrangeAll).observe(rows,{childList:true});
+  arrangeAll();
+})();
+</script>'''
     return body.replace("__INITIAL_TAB__", html.escape(initial_tab, quote=True))
 
 
@@ -20560,6 +20898,51 @@ def web_workbench_quotes(uid):
         print(f"⚠️ 工作台盤中行情更新失敗（uid={uid}）：{exc}")
         return _workbench_json_response({"ok": False, "updates": [], "market_open": True,
                                          "note": "盤中行情暫時無法更新；保留最近有效快照。"}, 503)
+
+
+@app.route("/web/api/positions/quotes")
+@web_login_required
+def web_positions_quotes(uid):
+    """持股頁盤中局部更新；僅限登入者目前持有的代號，不開放任意行情查詢。"""
+    if not _is_taiwan_intraday_window():
+        return _workbench_json_response({"ok": True, "updates": [], "market_open": False,
+                                         "note": "目前非一般盤中時段；維持最近正式收盤或有效行情。"})
+    positions = merge_positions(get_positions(uid))
+    shares_by_code = {}
+    for position in positions:
+        code = str(position.get("code") or "").strip()
+        shares_by_code[code] = shares_by_code.get(code, 0) + int(position.get("shares") or 0)
+    codes = [code for code, shares in shares_by_code.items()
+             if re.fullmatch(r"\d{4,6}[A-Za-z]?", code) and shares > 0][:50]
+    if not codes:
+        return _workbench_json_response({"ok": True, "updates": [], "market_open": True,
+                                         "note": "目前沒有可更新的持股。"})
+    try:
+        quotes = get_realtime_stocks_bulk(codes, workers=min(12, len(codes)), rng="1d")
+        updates = []
+        for code in codes:
+            quote_data = quotes.get(code)
+            if not isinstance(quote_data, dict):
+                continue
+            try:
+                price = float(quote_data.get("close"))
+                pct = float(quote_data.get("pct"))
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
+                continue
+            previous = price / (1 + pct / 100) if pct != -100 else price
+            updates.append({"code": code, "price": price, "pct": pct,
+                            "day_pl": (price - previous) * shares_by_code[code],
+                            "updated_at": quote_data.get("updated_at") or quote_data.get("close_time"),
+                            "source": quote_data.get("source") or "最近有效行情"})
+        return _workbench_json_response({"ok": True, "updates": updates, "market_open": True,
+                                         "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
+                                         "note": "盤中持股行情已局部更新；官方個別最後成交暫缺時保留可驗證來源，不以昨日價格冒充即時。"})
+    except Exception as exc:
+        print(f"⚠️ 持股盤中行情更新失敗（uid={uid}）：{exc}")
+        return _workbench_json_response({"ok": False, "updates": [], "market_open": True,
+                                         "note": "盤中持股行情暫時無法更新；保留最後有效價格與資料來源。"}, 503)
 
 
 @app.route("/web/api/workbench/review")
