@@ -3936,8 +3936,9 @@ def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None,
     整理一位成員的持股摘要：最大持股、表現最好的持股、產業集中度。
     只有本人勾選「公開持股」時才會被呼叫。
 
-    「最佳持股」的報酬率改用加入排行榜日後的歷史收盤價計算，
-    不再使用買進成本；這樣才和排行榜的加入後報酬口徑一致。
+    「最佳持股」的報酬率從「加入排行榜日」與「該持股最早買入日」
+    中較晚者起算。這樣保留加入後績效口徑，又不會把實際買入前的
+    漲幅誤算到後來才持有的標的。
     """
     positions = (positions if positions is not None
                  else merge_positions(get_positions(uid)))
@@ -3952,13 +3953,18 @@ def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None,
             continue
         value = pr["close"] * p["shares"]
         total += value
-        # 用加入排行榜日之後的第一個有效交易日收盤價當基準。
-        # 加入日可能是週末或假日，因此不能要求序列一定存在該日，
-        # 要取加入日之後第一根真實日 K；找不到就不捏造報酬率。
+        # 用「加入排行榜日／最早買入日」中較晚者之後的第一個有效
+        # 交易日收盤價當基準。加入日或買入日可能是週末／假日，
+        # 所以不要求序列一定有該日；找不到就不捏造報酬率。
         since_return = None
         if joined_on and pr.get("close_dates") and pr.get("closes"):
             start_date = (joined_on.date()
                           if isinstance(joined_on, datetime) else joined_on)
+            bought_on = p.get("bought_on")
+            bought_on = (bought_on.date()
+                         if isinstance(bought_on, datetime) else bought_on)
+            if bought_on and bought_on > start_date:
+                start_date = bought_on
             history = [(d, c) for d, c in zip(
                 pr.get("close_dates", []), pr.get("closes", []))
                        if d >= start_date and c is not None]
@@ -3982,10 +3988,10 @@ def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None,
 
     biggest = max(rows, key=lambda r: r["weight"])
     scored = [r for r in rows if r["ret"] is not None]
-    # 只依既有「加入排行榜後」報酬排序，前端顯示前三名；不混用買進成本、
+    # 只依既有「加入排行榜後」報酬排序，前端顯示前兩名；不混用買進成本、
     # 不加入新分數。保留 best 供既有讀取端相容使用。
-    best_three = sorted(scored, key=lambda r: r["ret"], reverse=True)[:3]
-    best = best_three[0] if best_three else None
+    best_two = sorted(scored, key=lambda r: r["ret"], reverse=True)[:2]
+    best = best_two[0] if best_two else None
 
     # 產業集中度：最大產業佔多少。這比列出個股洩漏的資訊少，
     # 但同樣看得出風格——重壓單一族群還是分散配置。
@@ -3995,7 +4001,7 @@ def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None,
             by_ind[r["industry"]] = by_ind.get(r["industry"], 0) + r["weight"]
     top_ind = max(by_ind.items(), key=lambda x: x[1]) if by_ind else None
 
-    return {"biggest": biggest, "best": best, "best_three": best_three,
+    return {"biggest": biggest, "best": best, "best_two": best_two,
             "top_industry": top_ind}
 
 
@@ -16799,10 +16805,13 @@ def web_leaderboard(uid):
                 b_ = d["biggest"]
                 detail_bits.append(
                     f'<span><em>最大持股</em> {b_["name"]}（{b_["code"]}）{b_["weight"]:.0f}%</span>')
-                best_three = d.get("best_three")
-                if not isinstance(best_three, list):
-                    best_three = [d["best"]] if d.get("best") else []
-                for best_rank, bs in enumerate(best_three[:3], 1):
+                best_two = d.get("best_two")
+                if not isinstance(best_two, list):
+                    # 相容舊快取 payload；新資料一律由 best_two 產生。
+                    best_two = d.get("best_three")
+                if not isinstance(best_two, list):
+                    best_two = [d["best"]] if d.get("best") else []
+                for best_rank, bs in enumerate(best_two[:2], 1):
                     if not isinstance(bs, dict) or bs.get("ret") is None:
                         continue
                     bcls = "up" if bs["ret"] >= 0 else "down"
