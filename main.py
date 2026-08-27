@@ -3982,7 +3982,10 @@ def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None,
 
     biggest = max(rows, key=lambda r: r["weight"])
     scored = [r for r in rows if r["ret"] is not None]
-    best = max(scored, key=lambda r: r["ret"]) if scored else None
+    # 只依既有「加入排行榜後」報酬排序，前端顯示前三名；不混用買進成本、
+    # 不加入新分數。保留 best 供既有讀取端相容使用。
+    best_three = sorted(scored, key=lambda r: r["ret"], reverse=True)[:3]
+    best = best_three[0] if best_three else None
 
     # 產業集中度：最大產業佔多少。這比列出個股洩漏的資訊少，
     # 但同樣看得出風格——重壓單一族群還是分散配置。
@@ -3992,7 +3995,8 @@ def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None,
             by_ind[r["industry"]] = by_ind.get(r["industry"], 0) + r["weight"]
     top_ind = max(by_ind.items(), key=lambda x: x[1]) if by_ind else None
 
-    return {"biggest": biggest, "best": best, "top_industry": top_ind}
+    return {"biggest": biggest, "best": best, "best_three": best_three,
+            "top_industry": top_ind}
 
 
 def save_leaderboard_rank_snapshots(snapshot_date=None):
@@ -4835,19 +4839,30 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             # 把「日期」跟「收盤價」配對起來，過濾掉沒有成交/資料缺失的那幾筆，
             # 同時保留正確的日期對應，不能只看陣列位置。
             tw_tz = timezone(timedelta(hours=8))
+            # 統一使用既有的台灣交易日時鐘；這可避免收盤同步、快取與
+            # 官方 MIS／Yahoo 日K 的「今天」判斷在測試或跨時區環境不一致。
+            today_date = taiwan_today()
             bars = []
+            today_raw_index = None
             for i, (ts, c) in enumerate(zip(timestamps, raw_closes)):
+                bar_date = datetime.fromtimestamp(ts, tw_tz).date()
+                if bar_date == today_date:
+                    today_raw_index = i
                 if c is None:
                     continue
-                bar_date = datetime.fromtimestamp(ts, tw_tz).date()
                 h = raw_highs[i] if i < len(raw_highs) and raw_highs[i] is not None else c
                 l = raw_lows[i] if i < len(raw_lows) and raw_lows[i] is not None else c
                 v = raw_volumes[i] if i < len(raw_volumes) and raw_volumes[i] is not None else 0
                 bars.append((bar_date, c, h, l, v))
 
-            # 統一使用既有的台灣交易日時鐘；這可避免收盤同步、快取與
-            # 官方 MIS／Yahoo 日K 的「今天」判斷在測試或跨時區環境不一致。
-            today_date = taiwan_today()
+            # Yahoo 長區間日線偶爾把「前一交易日」列為 null；先過濾 null 後
+            # 若直接用 bars[-2]，會跳到更早一日並把當日漲幅大幅放大。
+            # 只有這個明確缺值情況才以同一來源 1d 回應的 chartPreviousClose 校正，
+            # 正常連續日線仍維持既有 bars[-2] 口徑，避免被舊 chartPreviousClose 影響。
+            prior_raw_missing = bool(
+                today_raw_index is not None and today_raw_index > 0 and
+                (today_raw_index - 1 >= len(raw_closes) or
+                 raw_closes[today_raw_index - 1] is None))
 
             # 13:30 後官方 MIS 的 z/y 優先於 Yahoo regularMarketPrice；
             # Yahoo 在收盤集合競價後可能仍停在盤中最後成交，不能拿來代表正式收盤。
@@ -4875,6 +4890,18 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             elif bars and bars[-1][0] == today_date:
                 prev_close = bars[-2][1] if len(bars) >= 2 else meta.get('chartPreviousClose', close)
                 hist = bars[:-1]  # 計算位階時排除今天，避免今天自己抬高自己的高點
+                if prior_raw_missing and not _taiwan_post_close():
+                    try:
+                        prior_res = requests.get(
+                            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1d",
+                            headers=headers, timeout=8).json()
+                        prior_meta = ((prior_res.get("chart", {}).get("result") or [{}])[0]
+                                      .get("meta", {}))
+                        verified_prev = float(prior_meta.get("chartPreviousClose") or 0)
+                        if verified_prev > 0:
+                            prev_close = verified_prev
+                    except Exception as exc:
+                        print(f"⚠️ Yahoo 前一日收盤校正失敗 {code}: {exc}")
             elif bars:
                 # 序列停在昨天（或更早）——可能是盤前、假日、非交易日。
                 # 若目前報價就等於最後一根K的收盤，代表這根K就是「最新收盤」，
@@ -16772,11 +16799,15 @@ def web_leaderboard(uid):
                 b_ = d["biggest"]
                 detail_bits.append(
                     f'<span><em>最大持股</em> {b_["name"]}（{b_["code"]}）{b_["weight"]:.0f}%</span>')
-                if d.get("best"):
-                    bs = d["best"]
+                best_three = d.get("best_three")
+                if not isinstance(best_three, list):
+                    best_three = [d["best"]] if d.get("best") else []
+                for best_rank, bs in enumerate(best_three[:3], 1):
+                    if not isinstance(bs, dict) or bs.get("ret") is None:
+                        continue
                     bcls = "up" if bs["ret"] >= 0 else "down"
                     detail_bits.append(
-                        f'<span><em>最佳｜加入後報酬</em> {bs["name"]}（{bs["code"]}）'
+                        f'<span><em>最佳 {best_rank}｜加入後報酬</em> {bs["name"]}（{bs["code"]}）'
                         f'<span class="num {bcls}">{bs["ret"]:+.1f}%</span></span>')
                 if d.get("top_industry"):
                     nm, w2 = d["top_industry"]
