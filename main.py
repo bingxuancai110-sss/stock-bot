@@ -16890,7 +16890,9 @@ def web_leaderboard(uid):
             ok, err = join_leaderboard(
                 uid, request.form.get("nickname", ""),
                 show_holdings=bool(request.form.get("show_holdings")))
-            msg = "已加入排行榜。" if ok else (err or "加入失敗")
+            msg = ("已完成排行榜報名；目前先進入排隊觀察中，"
+                   "有效資料達標後會依既有規則正式納入。" if ok
+                   else (err or "加入失敗"))
 
     if not wants_fragment():
         return render_loading_shell(
@@ -16930,13 +16932,17 @@ def web_leaderboard(uid):
     active_label = "短線｜近 30 天" if is_short else "長線｜加入後累計"
 
     # ── 參加／退出 ──
+    waiting_user_ids = {str(r.get("user_id")) for r in (boards.get("waiting") or [])}
+    me_is_waiting = bool(me and str(uid) in waiting_user_ids)
     if me:
         joined_txt = me["joined_on"].strftime("%Y/%m/%d") if me["joined_on"] else "—"
         chk = " checked" if me.get("show_holdings") else ""
         state = "公開中" if me.get("show_holdings") else "未公開"
+        member_state = "排隊觀察中" if me_is_waiting else "正式參賽中"
         panel = f"""
 <div class="callout">
-  你以 <b>{safe_html_text(me['nickname'])}</b> 的身分參加中，起算日 {joined_txt}。
+  <b>{member_state}</b>：你以 <b>{safe_html_text(me['nickname'])}</b> 的身分報名，起算日 {joined_txt}。
+  <div class="sub" style="margin-top:8px">{"有效每日快照尚不足，達標後自動納入正式名次。" if me_is_waiting else "已符合目前資料條件，沿用既有規則計算。"}</div>
   持股內容：<b>{state}</b>
   <div class="sub" style="margin-top:8px">
     重新加入不會重設起算日——否則賠錢時退出再加入就能把負報酬洗掉。
@@ -17026,8 +17032,8 @@ def web_leaderboard(uid):
         """用手機優先的簡潔卡片呈現榜單，明細只在使用者主動展開時讀取。"""
         if not rows:
             return ('<div class="empty">這個榜還沒有資料。<br><br>'
-                    '<span style="font-size:12.5px">加入後累積 2 天以上的'
-                    '每日快照就會出現。</span></div>')
+                    '<span style="font-size:12.5px">加入後會先進入排隊觀察；'
+                    '有效資料達標後才會出現正式名次。</span></div>')
         champion_svg = '''<svg viewBox="0 0 120 120" role="img" aria-label="冠軍獎盃" xmlns="http://www.w3.org/2000/svg">
   <defs><linearGradient id="cupGold" x1="0" y1="0" x2="1" y2="1">
     <stop offset="0" stop-color="#FFF3A7"/><stop offset=".32" stop-color="#E8AE32"/>
@@ -17185,9 +17191,12 @@ def web_leaderboard(uid):
     <span class="rank-situation-sub">{f"大盤 {active_row.get('mkt_ret'):+.1f}%" if active_row.get('mkt_ret') is not None else "尚無大盤資料"}</span></div>
 </div>'''
     elif me:
-        situation_body = '''<div class="rank-situation-empty">
+        situation_body = ('''<div class="rank-situation-empty">
+          已報名，現在是<b>排隊觀察中</b>；有效每日快照達標前不列正式名次，
+          也不會提前計算或公開最佳持股。
+        </div>''' if me_is_waiting else '''<div class="rank-situation-empty">
           已加入排行榜，正在累積有效每日快照；資料不足時不先捏造排名或報酬。
-        </div>'''
+        </div>''')
     else:
         situation_body = '''<div class="rank-situation-empty">
           你尚未加入排行榜。加入後會從加入日開始累積自己的排名與報酬曲線。
@@ -17203,7 +17212,7 @@ def web_leaderboard(uid):
         items = "".join(
             f'<div class="row"><div><span class="name">{safe_html_text(r["nickname"])}</span></div>'
             f'<div class="price flat">計算中</div>'
-            f'<div class="meta"><span>需累積 2 天以上的每日快照</span></div></div>'
+            f'<div class="meta"><span>排隊觀察中｜有效資料達標後正式納入</span></div></div>'
             for r in boards["waiting"])
         waiting_html = f"""
 <div class="section-head"><h2>剛加入</h2>
