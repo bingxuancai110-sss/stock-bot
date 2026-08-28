@@ -1458,6 +1458,12 @@ def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         ''')
+        # 賣出理由（選填）。用 ALTER 而非改 CREATE：
+        # CREATE TABLE IF NOT EXISTS 對既有的表不會補欄位，
+        # 舊使用者的 realized_trades 早就建好了，只靠 CREATE 這欄永遠不會出現。
+        cursor.execute('''
+            ALTER TABLE realized_trades ADD COLUMN IF NOT EXISTS sell_reason TEXT
+        ''')
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_realized_trades_user
             ON realized_trades (user_id, sold_on DESC)
@@ -2805,8 +2811,20 @@ def delete_position(user_id, pos_id):
         release_db_connection(conn)
 
 
+# 賣出理由。刻意做成固定選項而非自由輸入——
+# 自由輸入會變成「停利／獲利了結／停利出場」三種寫法指同一件事，
+# 之後根本沒辦法分組統計。選填，不填就是未填。
+SELL_REASONS = ["停利", "停損", "換股", "需要用錢", "看法改變", "其他"]
+
+
+def normalize_sell_reason(raw):
+    """只接受清單內的值，其餘一律視為未填，避免髒資料進資料庫。"""
+    v = str(raw or "").strip()
+    return v if v in SELL_REASONS else None
+
+
 def sell_position(user_id, pos_id, sell_shares,
-                  sell_price=None, fee=None, tax=None):
+                  sell_price=None, fee=None, tax=None, sell_reason=None):
     """原子化賣出：持股更新與已實現損益必須同時成功或同時回滾。
 
     賣價、手續費與證交稅由使用者提供時以實際對帳單為準；留空賣價才
@@ -2941,11 +2959,13 @@ def sell_position(user_id, pos_id, sell_shares,
             """
             INSERT INTO realized_trades
                 (user_id, code, shares, buy_cost, sell_price,
-                 realized_pl, realized_pct, bought_on, sold_on, fee, tax)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 realized_pl, realized_pct, bought_on, sold_on, fee, tax,
+                 sell_reason)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (uid, str(code).strip(), sell_shares, lot_cost, sell_price,
-             realized_pl, realized_pct, bought_on or None, taiwan_today(), fee, tax),
+             realized_pl, realized_pct, bought_on or None, taiwan_today(), fee, tax,
+             normalize_sell_reason(sell_reason)),
         )
         cursor.execute(
             """
@@ -3025,7 +3045,7 @@ def get_realized_trades(user_id, limit=100, code=None, month=None):
         cursor.execute(
             f"""
             SELECT code, shares, buy_cost, sell_price, realized_pl,
-                   realized_pct, bought_on, sold_on, fee, tax
+                   realized_pct, bought_on, sold_on, fee, tax, sell_reason
             FROM realized_trades WHERE {' AND '.join(where)}
             ORDER BY sold_on DESC, id DESC LIMIT %s
             """,
@@ -3037,7 +3057,7 @@ def get_realized_trades(user_id, limit=100, code=None, month=None):
             {"code": r[0], "shares": r[1], "buy_cost": r[2], "sell_price": r[3],
              "realized_pl": r[4], "realized_pct": r[5],
              "bought_on": r[6], "sold_on": r[7],
-             "fee": r[8], "tax": r[9]}
+             "fee": r[8], "tax": r[9], "sell_reason": r[10]}
             for r in rows
         ]
     except Exception as e:
@@ -3045,6 +3065,116 @@ def get_realized_trades(user_id, limit=100, code=None, month=None):
         return []
     finally:
         release_db_connection(conn)
+
+
+def summarize_trade_habits(uid, with_after=False):
+    """
+    操作習慣統計。全部由既有的 realized_trades 與 position_change_logs 算出，
+    不產生任何新的訊號、分數或建議——只是把「你實際做了什麼」攤開來。
+
+    刻意分成兩段：預設只跑資料庫查詢（毫秒級），
+    with_after=True 時才另外抓報價算「賣出後走勢」。
+    交易紀錄頁本來就慢，這一塊做成點開才算，不影響原本的載入時間。
+    """
+    trades = get_realized_trades(uid, limit=1000)
+    scored = [t for t in trades if t.get("realized_pl") is not None]
+    logs = get_position_change_logs(uid, limit=5000)
+    out = {"n": len(scored), "n_logs": len(logs)}
+
+    # ── 1. 賺錢與賠錢的持有天數 ──
+    # 多數人賺一點就跑、賠了拗很久。這兩個數字擺在一起會直接顯示出來。
+    win_days, lose_days = [], []
+    for t in scored:
+        if not (t.get("bought_on") and t.get("sold_on")):
+            continue
+        d = (t["sold_on"] - t["bought_on"]).days
+        (win_days if t["realized_pl"] >= 0 else lose_days).append(d)
+    out["hold"] = {
+        "win_avg": (sum(win_days) / len(win_days)) if win_days else None,
+        "lose_avg": (sum(lose_days) / len(lose_days)) if lose_days else None,
+        "win_n": len(win_days), "lose_n": len(lose_days),
+    }
+
+    # ── 2. 賣出理由分布與各自的結果 ──
+    by_reason = {}
+    for t in scored:
+        r = t.get("sell_reason") or "未填"
+        b = by_reason.setdefault(r, {"n": 0, "pl": 0.0, "pcts": []})
+        b["n"] += 1
+        b["pl"] += t["realized_pl"]
+        if t.get("realized_pct") is not None:
+            b["pcts"].append(t["realized_pct"])
+    for b in by_reason.values():
+        b["avg_pct"] = (sum(b["pcts"]) / len(b["pcts"])) if b["pcts"] else None
+        b["win_rate"] = None
+    for r, b in by_reason.items():
+        wins = len([t for t in scored
+                    if (t.get("sell_reason") or "未填") == r and t["realized_pl"] > 0])
+        b["win_rate"] = wins / b["n"] * 100 if b["n"] else None
+    out["reasons"] = sorted(by_reason.items(), key=lambda x: x[1]["n"], reverse=True)
+
+    # ── 3. 往上加碼 vs 往下攤平 ──
+    # 用同一檔前後兩次「加碼」的成交價比較：後買的比較便宜就是往下攤平。
+    # 這只是描述行為，不判斷對錯——攤平本身沒有好壞，
+    # 但「說自己不攤平卻一直在攤平」值得自己知道。
+    adds = {}
+    for lg in sorted(logs, key=lambda x: (x.get("trade_date") or date.min,
+                                          x.get("id") or 0)):
+        if lg.get("action") != "add" or not lg.get("trade_price"):
+            continue
+        adds.setdefault(str(lg["code"]).strip(), []).append(float(lg["trade_price"]))
+    up, down = 0, 0
+    down_codes = set()
+    for code, prices in adds.items():
+        for prev, cur in zip(prices, prices[1:]):
+            if cur < prev:
+                down += 1
+                down_codes.add(code)
+            elif cur > prev:
+                up += 1
+    out["adds"] = {"up": up, "down": down, "codes": sorted(down_codes)}
+
+    # 往下攤平過的標的，最後賣出的結果如何
+    if down_codes:
+        rel = [t for t in scored if str(t["code"]).strip() in down_codes]
+        out["adds"]["closed_n"] = len(rel)
+        out["adds"]["closed_pl"] = sum(t["realized_pl"] for t in rel) if rel else None
+
+    # ── 4. 最常交易的產業 ──
+    ind_map = get_industry_map() or {}
+    by_ind = {}
+    for t in scored:
+        raw = ind_map.get(str(t["code"]).strip())
+        if not raw:
+            continue
+        nm = industry_name(raw)
+        b = by_ind.setdefault(nm, {"n": 0, "pl": 0.0})
+        b["n"] += 1
+        b["pl"] += t["realized_pl"]
+    out["industries"] = sorted(by_ind.items(), key=lambda x: x[1]["n"], reverse=True)[:5]
+
+    # ── 5. 賣出後走勢（需要抓報價，只有明確要求時才算）──
+    if with_after and scored:
+        codes = sorted({str(t["code"]).strip() for t in scored})
+        prices = get_realtime_stocks_bulk(codes, rng="1d")
+        higher, lower, rows = 0, 0, []
+        for t in scored:
+            pr = prices.get(str(t["code"]).strip())
+            if not pr or not t.get("sell_price"):
+                continue
+            chg = (pr["close"] - t["sell_price"]) / t["sell_price"] * 100
+            rows.append((t, chg))
+            if chg > 0:
+                higher += 1
+            elif chg < 0:
+                lower += 1
+        rows.sort(key=lambda x: x[1], reverse=True)
+        out["after"] = {
+            "higher": higher, "lower": lower, "n": len(rows),
+            "best": rows[0] if rows else None,
+            "worst": rows[-1] if rows else None,
+        }
+    return out
 
 
 def get_trade_filters(user_id):
@@ -4622,6 +4752,14 @@ def _save_persisted_leaderboard_page(value, data_date=None):
     )
 
 
+# 進入正式名次所需的有效每日快照筆數。
+# 用「快照筆數」而不是「加入後幾個日曆日」：遇到連假時可能過了三天
+# 卻只有一筆快照，那種報酬率算得出來但不可信。
+# 未達標的人仍然立刻出現在「排隊觀察中」，只是不佔正式名次——
+# 目的是不讓人覺得「要等三天才能加入」，而是「已經加入、還在暖身」。
+LEADERBOARD_MIN_SNAPSHOTS = 3
+
+
 def build_leaderboard(top_n=20, days=365):
     """
     算出排行榜。分短線與長線兩榜，因為那本來就是兩種不同的能力——
@@ -4735,7 +4873,8 @@ def build_leaderboard(top_n=20, days=365):
         }
         if len(curve) < 2:
             rows.append({**base, "ret": None, "days": 0, "mdd": None,
-                         "excess": None, "m30": None, "m30_days": 0})
+                         "excess": None, "m30": None, "m30_days": 0,
+                         "points": len(curve)})
             continue
 
         # 近 30 天實際涵蓋幾天，用來標示樣本夠不夠
@@ -4752,17 +4891,24 @@ def build_leaderboard(top_n=20, days=365):
             "mkt_ret": mk[-1][1] if mk else None,
             "m30": window_return(curve, 30),
             "m30_days": m30_days,
+            "points": len(curve),
         })
         # 用穩定且唯一的 user_id 作為曲線索引；暱稱可以重複，不能拿來當 key。
         series_map[str(uid)] = {"nickname": str(nick), "curve": curve}
 
-    scored = [r for r in rows if r["ret"] is not None]
+    # 快照筆數不足的先留在排隊區。算得出報酬不代表那個報酬可信——
+    # 兩個資料點就排進正式榜，會讓剛加入的人壓在累積很久的人上面。
+    scored = [r for r in rows
+              if r["ret"] is not None
+              and (r.get("points") or 0) >= LEADERBOARD_MIN_SNAPSHOTS]
     long_all = sorted(scored, key=lambda r: r["ret"], reverse=True)
     short_all = sorted([r for r in scored if r["m30"] is not None],
                        key=lambda r: r["m30"], reverse=True)
     long_board = long_all[:top_n]
     short_board = short_all[:top_n]
-    waiting = [r for r in rows if r["ret"] is None]
+    waiting = [r for r in rows
+               if r["ret"] is None
+               or (r.get("points") or 0) < LEADERBOARD_MIN_SNAPSHOTS]
     value = ({"long": long_board, "short": short_board, "waiting": waiting},
              (series_map, market))
     data_date = _leaderboard_data_date(series_map, market)
@@ -14383,7 +14529,8 @@ def web_positions(uid):
             ok, err, summary = sell_position(
                 uid, request.form.get("id"), sell_shares,
                 sell_price=num("sell_price"),
-                fee=num("fee"), tax=num("tax"))
+                fee=num("fee"), tax=num("tax"),
+                sell_reason=request.form.get("sell_reason"))
             if not ok:
                 msg = err or "賣出失敗，請稍後再試。"
             elif summary:
@@ -14465,6 +14612,11 @@ def web_positions(uid):
       <input type="number" step="1" name="fee" placeholder="{est_fee}"></div>
     <div><label>證交稅</label>
       <input type="number" step="1" name="tax" placeholder="{est_tax}"></div>
+    <div><label>賣出理由（選填）</label>
+      <select name="sell_reason">
+        <option value="">未填</option>
+        {"".join(f'<option value="{r}">{r}</option>' for r in SELL_REASONS)}
+      </select></div>
   </div>
   <div class="row-actions">
     <a class="cancel-link" href="/web/positions" data-no-busy="1">返回／取消</a>
@@ -14473,7 +14625,8 @@ def web_positions(uid):
   <div class="sell-hint">
     成本 {lot_cost:,.2f}／股，全部賣出 {max_shares:,} 股。
     手續費與證交稅留空會用牌價試算（{est_fee:,} 與 {est_tax:,}）；
-    填入對帳單上的實際金額，已實現損益才會跟券商對得起來。
+    填入對帳單上的實際金額，已實現損益才會跟券商對得起來。<br>
+    賣出理由不影響任何計算，只用於之後回顧「哪一種理由的賣出事後看是對的」。
   </div>
 </form>
 </details>"""
@@ -16387,6 +16540,136 @@ def render_stock_sparkline(price, cost, shares, lots=None):
 
 
 
+def render_trade_habits(h):
+    """把操作習慣統計畫成 HTML。只描述已經發生的事，不給任何建議或評分。"""
+    if not h or h.get("n", 0) == 0:
+        return ('<div class="sub">還沒有已實現損益紀錄。'
+                '賣出並填入賣價後就會開始累積。</div>')
+
+    parts = []
+
+    # 持有天數
+    hd = h["hold"]
+    if hd["win_avg"] is not None or hd["lose_avg"] is not None:
+        w = f'{hd["win_avg"]:.0f} 天' if hd["win_avg"] is not None else "—"
+        l = f'{hd["lose_avg"]:.0f} 天' if hd["lose_avg"] is not None else "—"
+        note = ""
+        if hd["win_avg"] is not None and hd["lose_avg"] is not None:
+            if hd["lose_avg"] > hd["win_avg"] * 1.5:
+                note = ("　賠錢的抱得比賺錢的久很多——"
+                        "這是常見的型態，值得想想是不是捨不得認賠。")
+            elif hd["win_avg"] > hd["lose_avg"] * 1.5:
+                note = "　賺錢的抱得比賠錢的久。"
+        parts.append(f"""
+<div class="row">
+  <div><span class="name">持有天數</span></div>
+  <div class="price"></div>
+  <div class="meta">
+    <span><em>賺錢</em> <span class="num up">{w}</span>（{hd["win_n"]} 筆）</span>
+    <span><em>賠錢</em> <span class="num down">{l}</span>（{hd["lose_n"]} 筆）</span>
+  </div>
+  <div class="meta"><span class="sub">{note}</span></div>
+</div>""")
+
+    # 賣出理由
+    if h["reasons"]:
+        items = "".join(
+            f'<span><em>{r}</em> {b["n"]} 筆'
+            + (f'　平均 <span class="num {"up" if b["avg_pct"] >= 0 else "down"}">'
+               f'{b["avg_pct"]:+.1f}%</span>' if b["avg_pct"] is not None else "")
+            + (f'　勝率 {b["win_rate"]:.0f}%' if b["win_rate"] is not None else "")
+            + "</span>"
+            for r, b in h["reasons"])
+        parts.append(f"""
+<div class="row">
+  <div><span class="name">賣出理由</span></div>
+  <div class="price"></div>
+  <div class="meta">{items}</div>
+  <div class="meta"><span class="sub">
+    賣出時可選填。累積之後就看得出哪一種理由的賣出事後看是對的。</span></div>
+</div>""")
+
+    # 加碼行為
+    ad = h["adds"]
+    if ad["up"] or ad["down"]:
+        extra = ""
+        if ad.get("closed_n"):
+            pl = ad["closed_pl"]
+            cls = "up" if pl >= 0 else "down"
+            extra = (f'<span><em>攤平過並已賣出</em> {ad["closed_n"]} 筆　'
+                     f'合計 <span class="num {cls}">{pl:+,.0f}</span></span>')
+        parts.append(f"""
+<div class="row">
+  <div><span class="name">加碼方式</span></div>
+  <div class="price"></div>
+  <div class="meta">
+    <span><em>往上加碼</em> {ad["up"]} 次</span>
+    <span><em>往下攤平</em> {ad["down"]} 次</span>
+    {extra}
+  </div>
+  <div class="meta"><span class="sub">
+    比較同一檔前後兩次加碼的成交價，後買較便宜即計為往下攤平。
+    攤平本身沒有好壞，只是把實際做法列出來。</span></div>
+</div>""")
+
+    # 產業分布
+    if h["industries"]:
+        items = "".join(
+            f'<span><em>{nm}</em> {b["n"]} 筆　'
+            f'<span class="num {"up" if b["pl"] >= 0 else "down"}">{b["pl"]:+,.0f}</span></span>'
+            for nm, b in h["industries"])
+        parts.append(f"""
+<div class="row">
+  <div><span class="name">最常交易的產業</span></div>
+  <div class="price"></div>
+  <div class="meta">{items}</div>
+</div>""")
+
+    # 賣出後走勢（只有帶 after=1 時才有）
+    af = h.get("after")
+    if af and af["n"]:
+        b, w = af.get("best"), af.get("worst")
+        detail = ""
+        if b:
+            detail += (f'<span><em>賣後漲最多</em> {b[0]["code"]} '
+                       f'<span class="num up">{b[1]:+.1f}%</span></span>')
+        if w:
+            detail += (f'<span><em>賣後跌最多</em> {w[0]["code"]} '
+                       f'<span class="num down">{w[1]:+.1f}%</span></span>')
+        parts.append(f"""
+<div class="row">
+  <div><span class="name">賣出後的走勢</span></div>
+  <div class="price"></div>
+  <div class="meta">
+    <span><em>賣完還漲</em> {af["higher"]} 筆</span>
+    <span><em>賣完就跌</em> {af["lower"]} 筆</span>
+  </div>
+  <div class="meta">{detail}</div>
+  <div class="meta"><span class="sub">
+    以目前價格與當初賣價比較。賣完還漲不代表賣錯——
+    當時的理由可能仍然成立，這裡只呈現事實。</span></div>
+</div>""")
+
+    return f'<div class="rows">{"".join(parts)}</div>'
+
+
+@app.route("/web/api/trade-habits")
+@web_login_required
+def web_trade_habits(uid):
+    """
+    操作習慣統計。做成獨立端點、由前端展開時才呼叫——
+    交易紀錄頁本來就慢，這一塊不該讓每個人都先等它算完。
+    after=1 才另外抓報價算「賣出後走勢」。
+    """
+    with_after = request.args.get("after") == "1"
+    try:
+        h = summarize_trade_habits(uid, with_after=with_after)
+        return render_trade_habits(h)
+    except Exception as e:
+        print(f"❌ 操作習慣統計失敗 {uid}: {e}")
+        return '<div class="sub">統計暫時無法計算，請稍後再試。</div>'
+
+
 @app.route("/web/position-trend")
 @web_login_required
 def web_position_trend(uid):
@@ -16772,6 +17055,45 @@ def web_trades(uid):
 </div>
 
 <div class="band" style="height:34px">{''.join(band)}</div>
+
+<details class="disclosure" id="habits" style="margin-top:14px">
+  <summary>我的操作習慣</summary>
+  <div id="habitsBox" class="sub" style="margin-top:8px">點開後才計算，不影響本頁載入速度。</div>
+  <label class="opt" style="margin-top:8px">
+    <input type="checkbox" id="habitsAfter"> 一併計算「賣出後的走勢」（需另外抓報價，較慢）
+  </label>
+</details>
+<script>
+(function () {{
+  // 這一段刻意做成「展開才算」：交易紀錄頁本來就要跑月度回顧、操作歷程與報價，
+  // 再多一組統計會讓所有人都先等它算完，而多數人開這頁只是想看某一筆交易。
+  var d = document.getElementById('habits');
+  var box = document.getElementById('habitsBox');
+  var chk = document.getElementById('habitsAfter');
+  if (!d || !box) return;
+  var loadedKey = null;
+
+  function load() {{
+    var key = chk && chk.checked ? '1' : '0';
+    if (loadedKey === key) return;
+    loadedKey = key;
+    box.textContent = '計算中…';
+    fetch('/web/api/trade-habits?after=' + key, {{ credentials: 'same-origin' }})
+      .then(function (r) {{
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      }})
+      .then(function (html) {{ box.innerHTML = html; }})
+      .catch(function (e) {{
+        loadedKey = null;
+        box.textContent = '統計載入失敗：' + (e && e.message ? e.message : e);
+      }});
+  }}
+
+  d.addEventListener('toggle', function () {{ if (d.open) load(); }});
+  if (chk) chk.addEventListener('change', function () {{ if (d.open) load(); }});
+}})();
+</script>
 <div class="callout">
   {exp_txt}<br>
   <span style="font-size:12.5px;color:var(--ink-faint)">
@@ -16934,6 +17256,18 @@ def web_leaderboard(uid):
     # ── 參加／退出 ──
     waiting_user_ids = {str(r.get("user_id")) for r in (boards.get("waiting") or [])}
     me_is_waiting = bool(me and str(uid) in waiting_user_ids)
+    # 自己在排隊時，講清楚還差幾筆——只說「尚不足」會讓人不知道要等多久
+    my_wait_note = "有效每日快照尚不足，達標後自動納入正式名次。"
+    if me_is_waiting:
+        mine = next((r for r in (boards.get("waiting") or [])
+                     if str(r.get("user_id")) == str(uid)), None)
+        if mine is not None:
+            pts = int(mine.get("points") or 0)
+            need = max(0, LEADERBOARD_MIN_SNAPSHOTS - pts)
+            my_wait_note = (
+                f"已加入，目前累積 {pts}/{LEADERBOARD_MIN_SNAPSHOTS} 筆每日快照。"
+                + (f"再 {need} 個交易日收盤後自動納入正式名次。" if need
+                   else "資料已達標，下次更新後納入正式名次。"))
     if me:
         joined_txt = me["joined_on"].strftime("%Y/%m/%d") if me["joined_on"] else "—"
         chk = " checked" if me.get("show_holdings") else ""
@@ -16942,7 +17276,7 @@ def web_leaderboard(uid):
         panel = f"""
 <div class="callout">
   <b>{member_state}</b>：你以 <b>{safe_html_text(me['nickname'])}</b> 的身分報名，起算日 {joined_txt}。
-  <div class="sub" style="margin-top:8px">{"有效每日快照尚不足，達標後自動納入正式名次。" if me_is_waiting else "已符合目前資料條件，沿用既有規則計算。"}</div>
+  <div class="sub" style="margin-top:8px">{my_wait_note if me_is_waiting else "已符合目前資料條件，沿用既有規則計算。"}</div>
   持股內容：<b>{state}</b>
   <div class="sub" style="margin-top:8px">
     重新加入不會重設起算日——否則賠錢時退出再加入就能把負報酬洗掉。
@@ -17207,16 +17541,32 @@ def web_leaderboard(uid):
   {situation_body}
 </section>'''
 
+    # 排隊區要顯示進度，不能只寫「計算中」。
+    # 使用者最想知道的是「還要多久」，看不到進度就會以為卡住或壞了。
     waiting_html = ""
     if boards["waiting"]:
-        items = "".join(
-            f'<div class="row"><div><span class="name">{safe_html_text(r["nickname"])}</span></div>'
-            f'<div class="price flat">計算中</div>'
-            f'<div class="meta"><span>排隊觀察中｜有效資料達標後正式納入</span></div></div>'
-            for r in boards["waiting"])
+        def waiting_row(r):
+            pts = int(r.get("points") or 0)
+            need = max(0, LEADERBOARD_MIN_SNAPSHOTS - pts)
+            prog = f"{pts}/{LEADERBOARD_MIN_SNAPSHOTS}"
+            tail = ("再 %d 個交易日收盤後納入正式名次" % need if need
+                    else "資料已達標，下次更新後納入")
+            return (f'<div class="row">'
+                    f'<div><span class="name">{safe_html_text(r["nickname"])}</span>'
+                    f' <span class="badge">排隊觀察中</span></div>'
+                    f'<div class="price flat">{prog}</div>'
+                    f'<div class="meta"><span>{tail}</span>'
+                    f'<span><em>持股</em> {r.get("holdings", 0)} 檔</span></div>'
+                    f'</div>')
+        items = "".join(waiting_row(r) for r in boards["waiting"])
         waiting_html = f"""
-<div class="section-head"><h2>剛加入</h2>
-  <span class="section-note">尚無足夠快照</span></div>
+<div class="section-head"><h2>排隊觀察中</h2>
+  <span class="section-note">已加入・等待資料達標</span></div>
+<div class="mode-note">
+  加入後就在這裡，不必等三天才能報名。每個交易日收盤會存一筆快照，
+  累積 {LEADERBOARD_MIN_SNAPSHOTS} 筆後自動進入正式名次——
+  兩個資料點算出來的報酬不夠可信，先不佔別人的名次。
+</div>
 <div class="rows">{items}</div>"""
 
     tabs = f"""
@@ -17239,13 +17589,34 @@ def web_leaderboard(uid):
     chart = render_leaderboard_chart(
         series_map, market, chart_keys, highlight_key=my_curve_key)
 
+    # 已加入的人：設定收在下方，不佔版面。
+    # 還沒加入的人：把加入表單直接攤開放在最上面——
+    # 原本它是頁面最底下一個收合的 <details>，要滑過整份榜單與走勢圖
+    # 才看得到，而且看起來像一個不起眼的連結。實際發生過新成員
+    # 「找不到哪裡可以加入」而以為功能壞掉。
     settings_title = "修改排行榜設定" if me else "加入排行榜"
     settings_note = ("修改暱稱、持股公開範圍或退出排行榜"
                      if me else "從今天開始累積你的排名與報酬")
-    settings_html = f'''<section class="leaderboard-settings">
+    if me:
+        settings_html = f'''<section class="leaderboard-settings">
   <details class="disclosure"><summary>{settings_title}　<span class="sub">{settings_note}</span></summary>
     {panel}
   </details>
+</section>'''
+        join_top_html = ""
+    else:
+        settings_html = ""
+        join_top_html = f'''<section class="leaderboard-settings join-top">
+  <div class="section-head"><h2>加入排行榜</h2>
+    <span class="section-note">隨時可以加入</span></div>
+  <div class="callout" style="margin-bottom:12px">
+    取個暱稱就能加入，<b>不需要先有持股</b>。<br>
+    <span style="font-size:12.5px;color:var(--ink-faint)">
+    加入後會先進「排隊觀察中」，等每日快照累積到
+    {LEADERBOARD_MIN_SNAPSHOTS} 筆才納入正式名次——
+    資料點太少算出來的報酬不可信，但你從加入當天就看得到自己在名單裡。</span>
+  </div>
+  {panel}
 </section>'''
 
     body = f"""
@@ -17258,6 +17629,7 @@ def web_leaderboard(uid):
 <div class="mode-note">個股與 ETF 持股都納入會員整體績效；ETF 只計入實際價格／市值變化，不套用個股營收、PE 或法人評分。</div>
 {board}
 {waiting_html}
+{join_top_html}
 
 <div class="section-head"><h2>走勢比較</h2>
   <span class="section-note">{chart_note}</span></div>
