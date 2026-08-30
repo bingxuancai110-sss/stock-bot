@@ -5231,6 +5231,15 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             raw_highs = indicators.get('high', [])
             raw_lows = indicators.get('low', [])
             raw_volumes = indicators.get('volume', [])
+            # 還原權值收盤。除權息當天股價會機械性下跌，但那不是虧損——
+            # 配息進了持有人口袋。選股成效若用未還原價比較，
+            # 8～9 月除權息旺季的推薦會被系統性記成虧損。
+            # Yahoo 在 interval=1d 時會一併回傳 adjclose；缺漏時退回未還原價。
+            try:
+                raw_adjs = ((result_meta[0].get('indicators', {})
+                             .get('adjclose') or [{}])[0].get('adjclose') or [])
+            except (IndexError, AttributeError, TypeError):
+                raw_adjs = []
 
             # 把「日期」跟「收盤價」配對起來，過濾掉沒有成交/資料缺失的那幾筆，
             # 同時保留正確的日期對應，不能只看陣列位置。
@@ -5249,7 +5258,9 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 h = raw_highs[i] if i < len(raw_highs) and raw_highs[i] is not None else c
                 l = raw_lows[i] if i < len(raw_lows) and raw_lows[i] is not None else c
                 v = raw_volumes[i] if i < len(raw_volumes) and raw_volumes[i] is not None else 0
-                bars.append((bar_date, c, h, l, v))
+                adj = (raw_adjs[i] if i < len(raw_adjs)
+                       and raw_adjs[i] is not None else c)
+                bars.append((bar_date, c, h, l, v, adj))
 
             # Yahoo 長區間日線偶爾把「前一交易日」列為 null；先過濾 null 後
             # 若直接用 bars[-2]，會跳到更早一日並把當日漲幅大幅放大。
@@ -5421,6 +5432,10 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 # 只有收盤價的話，圖上永遠只能寫「近 N 個交易日」，
                 # 而「什麼時候發生的」正是圖能回答、數字回答不了的問題。
                 "close_dates": [b[0] for b in hist] + [today_date],
+                # 還原權值序列，供選股成效計算除權息調整後的報酬。
+                # 最後一筆用當前收盤：今天若已除息，Yahoo 的當日 adjclose
+                # 與 close 相同，不需要再調整。
+                "adj_closes": [b[5] for b in hist] + [float(close)],
             }
             with _realtime_cache_lock:
                 _realtime_cache[cache_key] = {"at": now, "data": result}
@@ -6868,9 +6883,32 @@ def evaluate_picks(mode, days=90):
     if not picks:
         return None
 
+    # 抓長一點的區間：要能涵蓋最舊一筆推薦的日期，才找得到那天的還原價。
+    # 除權息當天股價機械性下跌，用未還原價比較會把配息記成虧損，
+    # 而 8～9 月正是台股除權息旺季，不修正會系統性低估成效。
+    span = "1y" if days > 120 else "6mo"
     price_map = get_realtime_stocks_bulk(
-        list({p["code"] for p in picks}), workers=16)
+        list({p["code"] for p in picks}), workers=16, rng=span)
     today = taiwan_today()
+
+    def pick_return(code, pick_date, raw_price):
+        """
+        推薦至今的報酬。優先用還原權值：把推薦日與最新的 adjclose 相除，
+        除權息造成的價格落差就會被抵銷。
+        找不到推薦日的還原價時（例如該日無交易、或 Yahoo 未提供），
+        退回未還原價的算法，並回報 False 讓呼叫端知道這筆沒調整過。
+        """
+        cur = price_map.get(code)
+        if not cur or not raw_price:
+            return None, False
+        dates = cur.get("close_dates") or []
+        adjs = cur.get("adj_closes") or []
+        if dates and adjs and len(dates) == len(adjs):
+            # 找推薦日當天或之後最近的一個交易日
+            idx = next((i for i, d in enumerate(dates) if d >= pick_date), None)
+            if idx is not None and adjs[idx] and adjs[-1]:
+                return (adjs[-1] - adjs[idx]) / adjs[idx] * 100, True
+        return (cur["close"] - raw_price) / raw_price * 100, False
 
     # 大盤對照：用快照裡存的加權指數，沒有就退回不比較
     taiex_by_date = {}
@@ -6907,7 +6945,10 @@ def evaluate_picks(mode, days=90):
         if not cur:
             continue
         elapsed = (today - p["date"]).days
-        ret = (cur["close"] - p["price"]) / p["price"] * 100
+        ret, adjusted = pick_return(p["code"], p["date"], p["price"])
+        if ret is None:
+            continue
+        p = {**p, "adjusted": adjusted}
         for d, label in horizons:       # 由長到短，落在第一個符合的區間
             if elapsed >= d:
                 buckets[label].append((ret, p))
@@ -6939,6 +6980,7 @@ def evaluate_picks(mode, days=90):
                 "rank": sample_pick.get("rank"),
                 "score": sample_pick.get("score"),
                 "ret": sample_ret,
+                "adjusted": bool(sample_pick.get("adjusted")),
                 "market": sample_market,
                 "excess": (sample_ret - sample_market)
                           if sample_market is not None else None,
@@ -6955,7 +6997,12 @@ def evaluate_picks(mode, days=90):
         }
 
     pending = len([p for p in picks if (today - p["date"]).days < 5])
-    return {"horizons": result, "total_picks": len(picks), "pending": pending}
+    # 有多少筆真的用了還原價。若這個數字是 0，代表 Yahoo 沒回傳 adjclose，
+    # 那結果就跟修正前一樣，不該以為除權息已經處理好了。
+    counted = [pk for _lbl, rows in buckets.items() for _r, pk in rows]
+    adjusted_n = len([pk for pk in counted if pk.get("adjusted")])
+    return {"horizons": result, "total_picks": len(picks), "pending": pending,
+            "adjusted_n": adjusted_n, "counted_n": len(counted)}
 
 
 def score_from_industry_momentum(ind_stats):
@@ -21465,6 +21512,9 @@ def _workbench_merge_evaluations(mode_keys, days=90):
             "win_rate": sum(1 for value in values if value > 0) / count * 100,
             "market": sum(market_values) / len(market_values) if market_values else None,
             "samples": samples,
+            # 有多少筆真的用了還原權值。Yahoo 沒回傳 adjclose 時會退回未還原價，
+            # 那結果跟修正前一樣——把筆數顯示出來才知道除權息到底有沒有被處理。
+            "adjusted_n": sum(1 for item in samples if item.get("adjusted")),
         }
     picks = _workbench_review_mode_picks(mode_keys, days)
     today = taiwan_today()
@@ -21537,6 +21587,9 @@ def build_workbench_review_payload():
                 "average_pct": average, "median_pct": _workbench_number(stats.get("median")),
                 "win_rate": _workbench_number(stats.get("win_rate")), "market_pct": market,
                 "excess_pct": round(average - market, 2) if average is not None and market is not None else None,
+                # 幾筆用了還原權值。Yahoo 沒給 adjclose 時會退回未還原價，
+                # 那樣除權息仍會被算成虧損，必須讓人看得出來。
+                "adjusted_n": _workbench_number(stats.get("adjusted_n"), 0),
                 "sample_rows": sample_rows})
         recent = []
         for pick in picks[:5]:
@@ -21683,6 +21736,14 @@ def render_workbench_body(initial_tab=""):
     }
     var rows=(m.horizons||[]).map(function(h){
       var sampleMeta=esc(h.samples)+' 筆・勝率 '+esc(reviewPct(h.win_rate));
+      // 標示有多少筆用了還原權值。除權息當天股價機械性下跌，用未還原價
+      // 會把配息記成虧損；Yahoo 沒提供 adjclose 時會退回未還原價，
+      // 這個數字讓人看得出這批統計到底有沒有被除權息汙染。
+      if(h.adjusted_n!=null&&h.samples){
+        sampleMeta+=h.adjusted_n>0
+          ?'・'+esc(h.adjusted_n)+'/'+esc(h.samples)+' 筆已還原權值'
+          :'・未取得還原權值（除權息可能低估報酬）';
+      }
       var allSamples=h.sample_rows||[], visible=allSamples.slice(0,5).map(sampleRow).join(''), more=allSamples.slice(5).map(sampleRow).join('');
       var samples=allSamples.length?'<div class="wb-review-samples"><b>逐檔對照 <small>先顯示 5 檔</small></b>'+visible+(more?'<details class="wb-review-more"><summary>其餘 '+(allSamples.length-5)+' 檔</summary>'+more+'</details>':'')+'</div>':'';
       return '<section class="wb-review-horizon"><header><b>'+esc(h.period)+'</b><small>'+sampleMeta+'</small></header><div class="wb-review-metrics">'+reviewMetric('個股平均報酬',h.average_pct,'stock','中位 '+reviewPct(h.median_pct))+reviewMetric('同期大盤報酬',h.market_pct,'market',h.market_pct==null?'同期大盤資料未提供':'')+reviewMetric('超額報酬',h.excess_pct,'excess',h.excess_pct==null?'無同期大盤基準':'')+'</div>'+samples+'</section>';
