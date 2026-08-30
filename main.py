@@ -3177,6 +3177,107 @@ def summarize_trade_habits(uid, with_after=False):
     return out
 
 
+def analyze_pick_factors(mode, days=90):
+    """
+    選股因子分析：把既有推薦紀錄按不同維度切開，看哪一群表現好、哪一群拖累。
+
+    只做分組統計，不產生新的訊號、分數或排序規則——
+    目的是提供調整既有規則的依據，而不是自己發明規則。
+
+    能回答的問題（受限於 pick_history 目前存的欄位）：
+      ・分數高的真的比較會漲嗎（黑馬的評分有沒有預測力）
+      ・第 1 名真的比第 5 名好嗎（名次排序有沒有意義）
+      ・哪些產業在拖累
+      ・報酬是不是集中在某幾個推薦日（樣本獨立性）
+
+    還不能回答「哪個評分維度該加重」——子分數（籌碼/位階/營收/估值）
+    沒有存進 pick_history，只有加總後的 score。
+    """
+    picks = get_picks_since(mode, days)
+    if not picks:
+        return None
+
+    span = "1y" if days > 120 else "6mo"
+    price_map = get_realtime_stocks_bulk(
+        list({p["code"] for p in picks}), workers=16, rng=span)
+    today = taiwan_today()
+
+    rows = []
+    for p in picks:
+        cur = price_map.get(p["code"])
+        if not cur or not p.get("price"):
+            continue
+        elapsed = (today - p["date"]).days
+        if elapsed < 5:                      # 未滿 5 日的不納入，跟成效頁一致
+            continue
+        dates = cur.get("close_dates") or []
+        adjs = cur.get("adj_closes") or []
+        ret = None
+        if dates and adjs and len(dates) == len(adjs):
+            idx = next((i for i, d in enumerate(dates) if d >= p["date"]), None)
+            if idx is not None and adjs[idx] and adjs[-1]:
+                ret = (adjs[-1] - adjs[idx]) / adjs[idx] * 100
+        if ret is None:
+            ret = (cur["close"] - p["price"]) / p["price"] * 100
+        rows.append({**p, "ret": ret, "elapsed": elapsed})
+
+    if len(rows) < 5:
+        return {"n": len(rows), "groups": [], "days_spread": 0}
+
+    def stat(items):
+        vals = sorted(r["ret"] for r in items)
+        n = len(vals)
+        med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+        return {"n": n, "avg": sum(vals) / n, "median": med,
+                "win": len([v for v in vals if v > 0]) / n * 100}
+
+    groups = []
+
+    # ── 依名次 ──
+    # 如果排序有意義，前段名次的報酬應該系統性優於後段。
+    front = [r for r in rows if (r.get("rank") or 99) <= 2]
+    back = [r for r in rows if (r.get("rank") or 99) >= 3]
+    if front and back:
+        groups.append(("依名次", [("第 1–2 名", stat(front)), ("第 3–5 名", stat(back))]))
+
+    # ── 依分數 ──（雷達沒有分數，只有黑馬適用）
+    scored = [r for r in rows if r.get("score") is not None]
+    if len(scored) >= 8:
+        cut = sorted(r["score"] for r in scored)[len(scored) // 2]
+        hi = [r for r in scored if r["score"] >= cut]
+        lo = [r for r in scored if r["score"] < cut]
+        if hi and lo:
+            groups.append((f"依分數（以 {cut} 分為界）",
+                           [(f"高分組 ≥{cut}", stat(hi)), (f"低分組 <{cut}", stat(lo))]))
+
+    # ── 依產業 ──（樣本 ≥3 才列，否則是雜訊）
+    by_ind = {}
+    ind_map = get_industry_map() or {}
+    for r in rows:
+        raw = r.get("industry") or ind_map.get(str(r["code"]).strip())
+        if not raw:
+            continue
+        nm = industry_name(raw) if len(str(raw)) <= 3 else str(raw)
+        by_ind.setdefault(nm, []).append(r)
+    ind_rows = [(nm, stat(v)) for nm, v in by_ind.items() if len(v) >= 3]
+    ind_rows.sort(key=lambda x: x[1]["avg"], reverse=True)
+    if ind_rows:
+        groups.append(("依產業（樣本 ≥3）", ind_rows[:6]))
+
+    # ── 依推薦日 ──
+    # 同一天的推薦會一起受當天盤勢影響。若報酬集中在少數幾天，
+    # 那實際的獨立觀察數遠少於樣本數，統計可信度要打折。
+    by_day = {}
+    for r in rows:
+        by_day.setdefault(r["date"], []).append(r)
+    day_rows = [(d.strftime("%m/%d"), stat(v)) for d, v in sorted(by_day.items())]
+    if len(day_rows) >= 2:
+        groups.append((f"依推薦日（共 {len(day_rows)} 天）", day_rows[-8:]))
+
+    return {"n": len(rows), "groups": groups, "days_spread": len(by_day),
+            "overall": stat(rows)}
+
+
 def get_trade_filters(user_id):
     """回傳這位使用者交易紀錄裡出現過的月份與股票代號，用來產生篩選選項。"""
     conn = get_db_connection()
@@ -16700,6 +16801,69 @@ def render_trade_habits(h):
     return f'<div class="rows">{"".join(parts)}</div>'
 
 
+def render_pick_factors(mode_label, fa):
+    """把因子分析畫成 HTML。只呈現分組數字，不下結論、不給建議。"""
+    if not fa:
+        return f'<div class="sub">{mode_label}：還沒有推薦紀錄。</div>'
+    if not fa.get("groups"):
+        return (f'<div class="sub">{mode_label}：成熟樣本只有 {fa["n"]} 筆，'
+                f'還不足以分組比較。</div>')
+
+    ov = fa["overall"]
+    out = [f'<div class="mode-note">{mode_label}　成熟樣本 {fa["n"]} 筆・'
+           f'涵蓋 {fa["days_spread"]} 個推薦日・'
+           f'整體平均 {ov["avg"]:+.1f}%・中位 {ov["median"]:+.1f}%・'
+           f'勝率 {ov["win"]:.0f}%</div>']
+
+    for title, items in fa["groups"]:
+        rows = ""
+        for name, st in items:
+            cls = "up" if st["avg"] >= 0 else "down"
+            mcls = "up" if st["median"] >= 0 else "down"
+            rows += (f'<div class="row">'
+                     f'<div><span class="name">{name}</span></div>'
+                     f'<div class="price num {cls}">{st["avg"]:+.1f}%</div>'
+                     f'<div class="meta">'
+                     f'<span><em>中位</em> <span class="num {mcls}">'
+                     f'{st["median"]:+.1f}%</span></span>'
+                     f'<span><em>勝率</em> {st["win"]:.0f}%</span>'
+                     f'<span><em>樣本</em> {st["n"]} 筆</span>'
+                     f'</div></div>')
+        out.append(f'<div class="section-head"><h2>{title}</h2></div>'
+                   f'<div class="rows">{rows}</div>')
+
+    out.append(
+        '<div class="callout" style="margin-top:16px">'
+        '<b>怎麼讀這些數字</b><br>'
+        '<span style="font-size:12.5px;color:var(--ink-faint)">'
+        '・<b>依名次</b>：如果排序有意義，第 1–2 名應該系統性優於第 3–5 名。'
+        '兩組差不多，代表名次只是分數的排列，沒有額外資訊。<br>'
+        '・<b>依分數</b>：高分組贏不過低分組，代表這套評分對後續報酬沒有預測力。<br>'
+        '・<b>依推薦日</b>：同一天的推薦會一起受當天盤勢影響。報酬若集中在少數幾天，'
+        '實際的獨立觀察數遠少於樣本數，統計可信度要打折。<br>'
+        '・任何一組樣本少於 10 筆，差異多半是運氣而非規律。<br>'
+        '・這裡只做分組統計，不會自動調整任何評分或排序規則。'
+        '</span></div>')
+    return "".join(out)
+
+
+@app.route("/web/api/pick-factors")
+@web_login_required
+def web_pick_factors(uid):
+    """
+    選股因子分析。獨立端點、展開才呼叫——它要抓所有推薦過的標的報價，
+    比成效頁本身還重，不該讓每個人開頁面都先等它算完。
+    """
+    try:
+        parts = []
+        for mode, label in (("blackhorse", "黑馬"), ("radar", "雷達")):
+            parts.append(render_pick_factors(label, analyze_pick_factors(mode)))
+        return "".join(parts)
+    except Exception as e:
+        print(f"❌ 因子分析失敗: {e}")
+        return '<div class="sub">分析暫時無法計算，請稍後再試。</div>'
+
+
 @app.route("/web/api/trade-habits")
 @web_login_required
 def web_trade_habits(uid):
@@ -21751,7 +21915,30 @@ def render_workbench_body(initial_tab=""):
     var recent=(m.recent||[]).filter(function(p){return p.elapsed_days==null||p.elapsed_days<5;}).map(function(p){return '<li><b>'+esc(p.name)+' '+esc(p.code)+'</b><span>'+esc(p.date)+'・第 '+esc(p.rank==null?'—':p.rank)+' 名・'+(p.elapsed_days==null?'天期未確認':esc(p.elapsed_days)+' 日')+'</span></li>';}).join('');
     var result=rows||(state.review.statistics_building?'<p>成熟樣本統計正在更新；完成後會依原始公式逐檔列出個股、同期大盤與超額報酬。</p>':'<p>目前尚無走完期間的樣本；近期推薦仍會保留在下方。</p>');
     return '<section class="wb-review-card"><h3>'+esc(m.label)+'</h3><p>'+esc(m.note||'尚無資料')+'</p>'+bestWorst+result+(recent?'<div class="wb-review-recent"><b>未滿 5 日推薦</b><ul>'+recent+'</ul></div>':'')+'</section>';
-  }).join('')+'</div>';
+  }).join('')+'</div>'
+    // 因子分析放在成效卡片之後，收合、展開才載入。
+    // 它要抓所有推薦過標的的報價，比成效頁本身更重，
+    // 不該讓每個開成效頁的人都先等它算完。
+    +'<details class="wb-factors" id="wbFactors">'
+    +'<summary>因子分析　<small>哪一組推薦在拖累？展開才計算</small></summary>'
+    +'<div id="wbFactorsBox" class="wb-empty">點開後才計算，不影響本頁載入速度。</div>'
+    +'</details>';
+  bindFactors();
+}
+function bindFactors(){
+  var d=document.getElementById('wbFactors');
+  var box=document.getElementById('wbFactorsBox');
+  if(!d||!box||d.dataset.bound)return;
+  d.dataset.bound='1';
+  d.addEventListener('toggle',function(){
+    if(!d.open||d.dataset.loaded)return;
+    d.dataset.loaded='1';
+    box.textContent='計算中…';
+    fetch(api('/web/api/pick-factors'),{credentials:'same-origin'})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text();})
+      .then(function(html){box.innerHTML=html;})
+      .catch(function(e){d.dataset.loaded='';box.textContent='因子分析載入失敗：'+(e&&e.message?e.message:e);});
+  });
 }function render(){renderAssetTabs();renderTabs();document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','持股','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}if(state.source==='持股'){count.textContent='你的庫存；沒有同日分析快照時不顯示評分或待確認欄位';rowsEl.innerHTML=list.length?list.map(renderHoldingRow).join(''):'<div class="wb-empty">目前沒有已保存的持股。</div>';return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){state.returnScroll=window.scrollY||0;if(row.source==='ETF'){var ed=row.detail||{},scoreText=row.score==null?'尚無資料':Number(row.score).toFixed(1)+' 分',etfFacts=[];[['比較期間',ed.period_label],['價格報酬',ed.return_pct==null?null:(Number(ed.return_pct)>0?'+':'')+Number(ed.return_pct).toFixed(1)+'%'],['同期大盤',ed.market_return_pct==null?null:(Number(ed.market_return_pct)>0?'+':'')+Number(ed.market_return_pct).toFixed(1)+'%'],['相對大盤',ed.excess_pct==null?null:(Number(ed.excess_pct)>0?'+':'')+Number(ed.excess_pct).toFixed(1)+' 個百分點'],['年化配息殖利率',ed.annualized_yield_pct==null?null:(Number(ed.annualized_yield_pct)>0?'+':'')+Number(ed.annualized_yield_pct).toFixed(1)+'%'],['原始評論',ed.comment],['資料日',ed.source_date]].forEach(function(x){if(x[1]!=null&&x[1]!=='')etfFacts.push('<li><b>'+esc(x[0])+'</b><br>'+esc(x[1])+'</li>');});document.getElementById('wb-detail').innerHTML='<p>ETF · 已保存排名</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>分類</small><b>'+esc(row.industry)+'</b></div><div><small>原始排名分數</small><b>'+esc(scoreText)+'</b></div></div><ul class="wb-facts">'+(etfFacts.join('')||'<li>目前沒有更多已確認的 ETF 排名欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;return;}if(row.source==='轉折'){var td=row.detail||{},turningFacts=Object.keys(td).filter(function(k){return ['state_label','flow','state_reason','reasons','invalid_reasons','consensus','current_total_lots','magnitude_ratio','support','resistance','vol_ratio','source_date'].indexOf(k)>=0&&td[k]!=null&&td[k]!=='';}).map(function(k){var labels={state_label:'轉折狀態',flow:'方向',state_reason:'原始判讀',reasons:'條件明細',invalid_reasons:'失效原因',consensus:'法人共識',current_total_lots:'法人張數',magnitude_ratio:'變化強度',support:'支撐',resistance:'壓力',vol_ratio:'量能倍數',source_date:'資料日'};var v=td[k];return '<li><b>'+esc(labels[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):v)+'</li>';}).join('');document.getElementById('wb-detail').innerHTML='<p>轉折 · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>現價</small><b>'+money(row.price)+'</b></div><div><small>當日漲跌</small><b>'+pct(row.change_pct)+'</b></div><div><small>方向／狀態</small><b>'+esc(row.signal)+'</b></div><div><small>轉折條件</small><b>'+esc(td.turning_score==null?'—':td.turning_score+'/5')+'</b></div></div><ul class="wb-facts">'+(turningFacts||'<li>目前沒有更多已確認的轉折欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;return;}var d=row.detail||{},facts=[];Object.keys(d).forEach(function(k){var v=d[k];if(v==null||v===''||(Array.isArray(v)&&!v.length))return;facts.push('<li><b>'+esc({source_date:'資料日',breakout:'突破狀態',high_status:'高點狀態',radar_state:'雷達狀態',category:'股票分類',caps:'原始各項上限',val_desc:'估值說明',mom_desc:'產業動能說明',streak:'法人連買天數',buy_days:'近十日買超天數',vol_ratio:'量能倍數',support:'支撐',resistance:'壓力',state:'轉折狀態',flow:'方向',score_breakdown:'分數組成',data_quality:'資料完整度',group:'籌碼分組',institutional_lots:'近十日法人張數',amount_billion:'近十日法人金額',hit_days:'同方向天數',total_days:'統計交易日',foreign_lots:'外資張數',trust_lots:'投信張數',group_lots:'同向法人張數',plain_note:'原始判讀',return_pct:'價格報酬',excess_pct:'同期超額',annualized_yield_pct:'年化配息殖利率',period_label:'比較期間'}[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):typeof v==='object'?JSON.stringify(v):v)+'</li>');});document.getElementById('wb-detail').innerHTML='<p>'+esc(row.source)+' · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>最新快照價格</small><b>'+money(row.price)+'</b></div><div><small>'+esc(row.metric_label||'當日漲跌')+'</small><b>'+pct(row.change_pct)+'</b></div><div><small>綜合分數</small><b>'+esc(row.score==null?'—':row.score)+'</b></div><div><small>訊號</small><b>'+esc(row.signal)+'</b></div></div><ul class="wb-facts">'+(facts.join('')||'<li>目前沒有更多已確認的快照欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;}
   function updateQuotes(){if(!state.marketOpen||document.hidden||state.quoteLoading)return;var codes=filtered().slice(0,30).map(function(r){return r.code}).join(',');if(!codes)return;state.quoteLoading=true;fetch(api('/web/api/workbench/quotes?codes='+encodeURIComponent(codes)),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){(data.updates||[]).forEach(function(q){state.rows.forEach(function(r){if(r.code===q.code&&q.price!=null){r.price=q.price;r.change_pct=q.change_pct;r.metric_label='當日漲跌';}});});state.quoteUpdatedAt=data.fetched_at||'';if(data.note)note.textContent=data.note+(state.quoteUpdatedAt?' 最後取得 '+state.quoteUpdatedAt+'。':'');status.textContent=state.quoteUpdatedAt?'盤中行情已更新 '+state.quoteUpdatedAt:'盤中行情局部更新中';render();}).catch(function(e){if(e.message==='AUTH')location.reload();}).finally(function(){state.quoteLoading=false;});}
   function load(){status.textContent='讀取最近有效快照…';fetch(api('/web/api/workbench/snapshot'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){state.rows=Array.isArray(data.rows)?data.rows:[];state.sources=data.sources||{};state.personal=data.personal||{positions:[],rank_summary:{}};state.marketOpen=!!data.market_open;requestReview();if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}status.textContent=state.marketOpen?'盤中行情局部更新中':'最近有效快照已載入';note.textContent=data.note||'';pulse.innerHTML='<span>資料狀態</span><b>'+esc(state.marketOpen?'盤中局部更新':'收盤正式快照')+'</b><i></i><i></i><em>'+esc(workbenchStatusText(data,state.marketOpen))+'</em>';render();if(state.timer)clearInterval(state.timer);if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}}).catch(function(e){status.textContent='快照暫時無法載入';rowsEl.innerHTML='<div class="wb-skeleton" style="animation:none;background:#fff;color:#8b4034;padding:18px">資料暫時無法載入，請稍後重新整理。沒有顯示推測標的。</div>';if(e.message==='AUTH')location.reload();});}
