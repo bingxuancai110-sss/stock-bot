@@ -22814,9 +22814,6 @@ def handle_message(event):
                 "【在 LINE 裡開啟】直接點：",
                 f"{base}/web/login?t={token}",
                 "",
-                "【選股工作台】黑馬／雷達／轉折／ETF：",
-                f"{base}/web/workbench?t={token}",
-                "",
             ]
             if code:
                 parts += [
