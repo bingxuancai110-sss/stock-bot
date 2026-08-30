@@ -3264,6 +3264,27 @@ def analyze_pick_factors(mode, days=90):
     if ind_rows:
         groups.append(("依產業（樣本 ≥3）", ind_rows[:6]))
 
+    # ── 產業 × 推薦日 ──
+    # 「某產業勝率 7%」可能是規律，也可能只是那幾檔都在同一天被推薦、
+    # 而那天正好整個族群回檔。同一天的標的會一起漲跌，
+    # 分散在越多天仍然表現差，才比較像是規律而不是巧合。
+    spread_rows = []
+    for nm, items in by_ind.items():
+        if len(items) < 3:
+            continue
+        days_of = {}
+        for r in items:
+            days_of.setdefault(r["date"], []).append(r["ret"])
+        neg_days = len([1 for v in days_of.values() if sum(v) / len(v) < 0])
+        st = stat(items)
+        spread_rows.append((
+            f"{nm}（{len(days_of)} 天，其中 {neg_days} 天為負）",
+            {**st, "days": len(days_of), "neg_days": neg_days}))
+    # 按「分散在幾天」排序：天數多的結論比較可信，排前面方便判讀
+    spread_rows.sort(key=lambda x: (-x[1]["days"], x[1]["avg"]))
+    if spread_rows:
+        groups.append(("產業 × 推薦日分散度", spread_rows[:6]))
+
     # ── 依推薦日 ──
     # 同一天的推薦會一起受當天盤勢影響。若報酬集中在少數幾天，
     # 那實際的獨立觀察數遠少於樣本數，統計可信度要打折。
@@ -16841,6 +16862,10 @@ def render_pick_factors(mode_label, fa):
         '・<b>依分數</b>：高分組贏不過低分組，代表這套評分對後續報酬沒有預測力。<br>'
         '・<b>依推薦日</b>：同一天的推薦會一起受當天盤勢影響。報酬若集中在少數幾天，'
         '實際的獨立觀察數遠少於樣本數，統計可信度要打折。<br>'
+        '・<b>產業 × 推薦日分散度</b>：一個產業表現差，可能是規律，'
+        '也可能只是那幾檔都在同一天被推薦、而那天整個族群剛好回檔。'
+        '括號裡的天數越多、其中為負的天數佔比越高，才越像是規律。'
+        '只分散在 1–2 天的結論不要當真。<br>'
         '・任何一組樣本少於 10 筆，差異多半是運氣而非規律。<br>'
         '・這裡只做分組統計，不會自動調整任何評分或排序規則。'
         '</span></div>')
