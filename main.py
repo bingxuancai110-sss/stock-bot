@@ -3299,6 +3299,191 @@ def analyze_pick_factors(mode, days=90):
             "overall": stat(rows)}
 
 
+# 產業近期表現的顯示門檻。樣本或天數太少時不顯示——
+# 「某產業 1 筆勝率 0%」只是雜訊，標出來反而誤導。
+INDUSTRY_PERF_MIN_PICKS = 5
+INDUSTRY_PERF_MIN_DAYS = 3
+INDUSTRY_PERF_KEY = "industry_recent_perf"
+
+
+def compute_industry_recent_performance(days=90):
+    """
+    以既有推薦紀錄統計各產業近期表現，供清單上標示參考。
+
+    合併黑馬與雷達的樣本——「這個產業近期怎麼樣」跟是哪個模式選出來的無關，
+    合併後樣本較多，結論比較穩。
+
+    只做分組統計，不改變任何評分或排序；純粹把已經發生的事實整理出來，
+    讓看清單的人自己判斷。
+    """
+    all_rows, dates_seen = [], set()
+    for mode in ("blackhorse", "radar"):
+        picks = get_picks_since(mode, days)
+        if not picks:
+            continue
+        span = "1y" if days > 120 else "6mo"
+        price_map = get_realtime_stocks_bulk(
+            list({p["code"] for p in picks}), workers=16, rng=span)
+        today = taiwan_today()
+        for p in picks:
+            cur = price_map.get(p["code"])
+            if not cur or not p.get("price"):
+                continue
+            if (today - p["date"]).days < 5:      # 未滿 5 日不納入，與成效頁一致
+                continue
+            d_list = cur.get("close_dates") or []
+            adjs = cur.get("adj_closes") or []
+            ret = None
+            if d_list and adjs and len(d_list) == len(adjs):
+                idx = next((i for i, d in enumerate(d_list) if d >= p["date"]), None)
+                if idx is not None and adjs[idx] and adjs[-1]:
+                    ret = (adjs[-1] - adjs[idx]) / adjs[idx] * 100
+            if ret is None:
+                ret = (cur["close"] - p["price"]) / p["price"] * 100
+            all_rows.append({"industry": p.get("industry"), "date": p["date"],
+                             "ret": ret})
+            dates_seen.add(p["date"])
+
+    if not all_rows:
+        return None
+
+    ind_map = get_industry_map() or {}
+    by_ind = {}
+    for r in all_rows:
+        raw = r.get("industry")
+        if not raw:
+            continue
+        nm = industry_name(raw) if len(str(raw)) <= 3 else str(raw)
+        by_ind.setdefault(nm, []).append(r)
+
+    out = {}
+    for nm, items in by_ind.items():
+        day_map = {}
+        for r in items:
+            day_map.setdefault(r["date"], []).append(r["ret"])
+        if (len(items) < INDUSTRY_PERF_MIN_PICKS
+                or len(day_map) < INDUSTRY_PERF_MIN_DAYS):
+            continue
+        wins = len([r for r in items if r["ret"] > 0])
+        neg_days = len([1 for v in day_map.values() if sum(v) / len(v) < 0])
+        out[nm] = {
+            "n": len(items),
+            "days": len(day_map),
+            "neg_days": neg_days,
+            "avg": round(sum(r["ret"] for r in items) / len(items), 2),
+            "win": round(wins / len(items) * 100),
+        }
+    if not out:
+        return None
+
+    span_dates = sorted(dates_seen)
+    return {
+        "industries": out,
+        "start": span_dates[0].isoformat(),
+        "end": span_dates[-1].isoformat(),
+        "total_days": len(span_dates),
+    }
+
+
+def save_turning_picks(top_n=5):
+    """
+    把轉折的「已確認」標的存進 pick_history，之後才有成效可以回頭驗證。
+
+    只存已確認：觀察中還沒達門檻、已失效是條件已被破壞，
+    兩者都不是轉折在主張的結論，混進去會讓成效數字失去意義。
+
+    沿用既有的 pick_history 欄位（score 存轉折分數、industry 存產業），
+    不新增資料表，也不改變轉折本身的判斷與排序。
+    """
+    try:
+        # _get_turning_web_snapshot() 回傳 (payload, is_fresh, source_note)
+        result, is_fresh, _source = _get_turning_web_snapshot()
+        if not result:
+            return 0
+        # 過舊的快照不存：那會把前幾天的判斷記成今天的推薦，
+        # 之後算成效時起算日就是錯的。
+        if not is_fresh:
+            print("⚠️ 轉折快照非近期資料，本次不納入成效追蹤")
+            return 0
+        items = result.get("items") or []
+    except Exception as exc:
+        print(f"⚠️ 讀取轉折快照失敗（成效追蹤）: {exc}")
+        return 0
+
+    confirmed = [x for x in items if x.get("state") == "confirmed"]
+    if not confirmed:
+        return 0
+
+    rows = []
+    for item in confirmed[:top_n]:
+        close = item.get("close")
+        if close is None:
+            continue
+        rows.append({
+            "code": str(item.get("code") or "").strip(),
+            "name": item.get("name"),
+            "industry": item.get("industry"),
+            "score": item.get("score"),
+            "close": close,
+        })
+    if not rows:
+        return 0
+    return save_picks("turning", rows, top_n=top_n)
+
+
+def save_industry_recent_performance(days=90):
+    """每日快照時算一次並保存，讓選股台只讀不算。"""
+    try:
+        data = compute_industry_recent_performance(days)
+        if not data:
+            return 0
+        _save_shared_data_snapshot(INDUSTRY_PERF_KEY, data,
+                                   data_date=taiwan_today())
+        return len(data.get("industries") or {})
+    except Exception as exc:
+        print(f"❌ 產業近期表現快照失敗: {exc}")
+        return 0
+
+
+def get_industry_recent_performance():
+    """
+    讀取已保存的產業近期表現。讀不到就回 None，呼叫端不顯示標示——
+    寧可不標，也不要在清單上放一個現算的、會拖慢頁面的數字。
+    """
+    try:
+        snap = _load_shared_data_snapshot(INDUSTRY_PERF_KEY)
+        if not snap:
+            return None
+        payload = snap.get("payload") if isinstance(snap, dict) else None
+        return payload or (snap if isinstance(snap, dict)
+                           and snap.get("industries") else None)
+    except Exception as exc:
+        print(f"⚠️ 讀取產業近期表現失敗: {exc}")
+        return None
+
+
+def industry_perf_note(industry_label, perf=None):
+    """
+    產出一行產業近期表現的說明文字，例如：
+      建材營造　08/17–08/25 推薦 14 筆・勝率 7%・7 天中 7 天為負
+
+    刻意把區間日期寫出來：這只是這段期間的表現，不是長期規律，
+    沒有日期的話看的人容易當成「這個產業本來就不行」。
+    """
+    if not industry_label:
+        return None
+    perf = perf if perf is not None else get_industry_recent_performance()
+    if not perf:
+        return None
+    st = (perf.get("industries") or {}).get(str(industry_label))
+    if not st:
+        return None
+    start = str(perf.get("start", ""))[5:].replace("-", "/")
+    end = str(perf.get("end", ""))[5:].replace("-", "/")
+    return (f"{start}–{end} 推薦 {st['n']} 筆・勝率 {st['win']}%・"
+            f"{st['days']} 天中 {st['neg_days']} 天為負")
+
+
 def get_trade_filters(user_id):
     """回傳這位使用者交易紀錄裡出現過的月份與股票代號，用來產生篩選選項。"""
     conn = get_db_connection()
@@ -7558,7 +7743,10 @@ _TURNING_OBSERVATION_CACHE = {"at": 0, "data": None}
 TURNING_OBSERVATION_CACHE_SECONDS = 900
 TURNING_OBSERVATION_SHARED_MAX_AGE = 900
 TURNING_OBSERVATION_SNAPSHOT_KEY = "turning_observation"
-TURNING_OBSERVATION_SCHEMA_VERSION = 2
+# 3：轉折項目新增 breakout（價格突破狀態）欄位。
+# 版本要往上加，否則舊快照（沒有該欄位）會通過驗證被直接沿用，
+# 畫面就永遠看不到新標示，而且不會有任何錯誤訊息。
+TURNING_OBSERVATION_SCHEMA_VERSION = 3
 
 
 def _turning_reason_details(inst_item, stock, direction, cross_up, cross_down,
@@ -7668,6 +7856,29 @@ def _turning_reason_details(inst_item, stock, direction, cross_up, cross_down,
     if resistance is not None:
         details.append(f"近期壓力參考 {fmt_price(resistance)}")
     return details[:10]
+
+
+def _breakout_label(stock):
+    """
+    以既有的位階欄位判斷價格突破狀態，不做新的計算。
+
+    resistance 為 None 代表已突破近 60 日高點（既有 fmt_resistance 的口徑）；
+    pos_vs_60d_high 貼近 0 表示就在高點附近；跌破近期低點則反向標示。
+    判斷不到就回 None，畫面不顯示，不硬給一個模稜兩可的字。
+    """
+    if not stock:
+        return None
+    if stock.get("resistance") is None and stock.get("close"):
+        return "突破60日高"
+    pos = stock.get("pos_vs_60d_high")
+    if pos is not None:
+        if pos >= -1:
+            return "逼近60日高"
+        if pos <= -30:
+            return "距高點逾三成"
+    if stock.get("broke_support"):
+        return "跌破近期支撐"
+    return None
 
 
 def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
@@ -7856,6 +8067,11 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
             "vol_ratio": vol_ratio,
             "data_date": inst_item.get("data_date"),
             "score": score,
+            # 價格突破狀態。轉折本身只看法人方向，價格是否同步突破是另一回事——
+            # 標出來讓人看得到「法人轉買而且價格也站上新高」跟
+            # 「法人轉買但價格還在原地」的差別。
+            # 只描述既有的位階事實，不新增篩選條件、不影響排序。
+            "breakout": _breakout_label(stock),
         })
     items.sort(key=lambda x: (state_order.get(x["state"], 0), x["score"], abs(x["current_total_lots"])), reverse=True)
     result = {"schema_version": TURNING_OBSERVATION_SCHEMA_VERSION,
@@ -11983,12 +12199,18 @@ def _do_daily_snapshot():
     picks_saved = 0
     pick_failures = []
     if not reached("picks"):
-        modes = ("blackhorse", "radar")
+        # turning 一併納入：轉折的核心主張是「已確認 > 觀察中 > 已失效」，
+        # 但那個排序從來沒被驗證過。黑馬雷達每天都存進 pick_history，
+        # 所以有成效可看；轉折不存就永遠是盲區。
+        modes = ("blackhorse", "radar", "turning")
         start = progress.get("index", 0) if current_stage == "picks" else 0
         for idx, mode in enumerate(modes):
             if idx < start:
                 continue
             try:
+                if mode == "turning":
+                    picks_saved += save_turning_picks()
+                    continue
                 rows, _skipped, _mom = compute_screener_rows(mode)
                 if mode == "radar":
                     rows = sorted(rows, key=lambda r: (
@@ -12065,8 +12287,18 @@ def _do_daily_snapshot():
         current_stage = "rank"
 
     rank_saved = 0
+    # 先給預設值：這兩個變數在下面的回報字串會用到，
+    # 但續跑時整個 if 區塊會被跳過，沒有預設就會 NameError。
+    ind_perf_saved = 0
     if not reached("rank"):
         rank_saved = save_leaderboard_rank_snapshots()
+        # 產業近期表現：清單上要標，但它得抓所有推薦過標的的報價，
+        # 放在選股台現算會拖慢每一次載入。這裡算一次存起來，頁面只讀不算。
+        try:
+            ind_perf_saved = save_industry_recent_performance()
+        except Exception as exc:
+            print(f"❌ 產業近期表現快照失敗: {exc}")
+            ind_perf_saved = 0
         _job_mark_progress(job_name, "done", 1, 1)
 
     # 月度回顧不另開一條 Render／CRON 工作；沿用每日快照的既有安全觸發。
@@ -12085,7 +12317,8 @@ def _do_daily_snapshot():
                    if pick_failures else "")
     return (f"組合本次續跑處理 {saved}（略過 {skipped}，共 {len(user_ids)}）、"
             f"自選本次 {wl_saved}/{len(wl_users)}、產業 {ind_saved}、"
-            f"選股名單 {picks_saved}、排行榜名次 {rank_saved}、大盤 {taiex_close}"
+            f"選股名單 {picks_saved}、排行榜名次 {rank_saved}、"
+            f"產業近期表現 {ind_perf_saved}、大盤 {taiex_close}"
             f"{portfolio_status}{pick_status}；{monthly_status}")
 
 
@@ -16881,7 +17114,8 @@ def web_pick_factors(uid):
     """
     try:
         parts = []
-        for mode, label in (("blackhorse", "黑馬"), ("radar", "雷達")):
+        for mode, label in (("blackhorse", "黑馬"), ("radar", "雷達"),
+                            ("turning", "轉折")):
             parts.append(render_pick_factors(label, analyze_pick_factors(mode)))
         return "".join(parts)
     except Exception as e:
@@ -20735,6 +20969,8 @@ def build_review_body():
          "長線評分：營收成長＋估值＋產業動能＋法人連續性"),
         ("radar", "雷達",
          "短線型態：帶量突破、法人買超"),
+        ("turning", "轉折",
+         "法人方向轉變且已達確認門檻的標的"),
     ]:
         ev = evaluate_picks(mode)
         if not ev:
@@ -21026,12 +21262,24 @@ def render_turning_observation_web_body(result, status_note=None):
     data_date = result.get("data_date") or "未標日期"
     prior_days = int(result.get("prior_days") or 5)
     esc = html.escape
+    # 突破組：法人已轉向、而且價格同步站上新高。
+    # 兩個獨立訊號同時出現，比單一訊號有意義，所以獨立列在最前面。
+    # 挑出來的標的會從原本的狀態區移走，不重複顯示——
+    # 同一檔出現兩次會讓人第二次看到時愣一下，而突破區的標題已經帶了狀態資訊。
+    # 已失效的不納入：那是條件已被破壞的標的，就算價格突破也不該擺在最上面。
+    breakout_items = [x for x in items
+                      if str(x.get("breakout") or "").startswith("突破")
+                      and x.get("state") in ("confirmed", "observing")]
+    breakout_codes = {str(x.get("code")) for x in breakout_items}
+
     state_defs = (("confirmed", "✅ 已確認", "價格、量能與法人方向已有多項同步"),
                   ("observing", "👀 觀察中", "已出現部分改變，尚未達確認門檻"),
                   ("invalid", "⚠️ 已失效", "原本轉折條件被目前價格結構破壞"))
     sections = []
     for state, label, note in state_defs:
-        state_items = [x for x in items if x.get("state") == state]
+        state_items = [x for x in items
+                       if x.get("state") == state
+                       and str(x.get("code")) not in breakout_codes]
 
         def render_turning_row(item, rank):
             close = item.get("close")
@@ -21087,6 +21335,11 @@ def render_turning_observation_web_body(result, status_note=None):
             raw_resistance = item.get("resistance")
             resistance = ("無壓力位" if raw_resistance in (None, "", "資料不足", "—", "-")
                           else str(raw_resistance))
+            # 價格突破狀態。轉折判斷只看法人方向，價格有沒有同步突破是另一回事；
+            # 標出來才分得出「法人轉買且價格站上新高」與「法人轉買但價格沒動」。
+            breakout = str(item.get("breakout") or "")
+            breakout_html = (f'　<span>價位</span> {esc(breakout)}'
+                             if breakout else "")
             return f'''<div class="turning-row turning-state-{esc(state)}">
   <div class="turning-row-head"><b>#{rank} {esc(str(item.get("name") or item.get("code")))}</b>
     <span>{esc(str(item.get("code") or ""))}・<b class="turning-flow turning-flow-{esc(flow_key)}">{esc(flow_label)}</b>・<strong>{esc(state_text)}</strong></span></div>
@@ -21098,7 +21351,7 @@ def render_turning_observation_web_body(result, status_note=None):
     <div class="turning-fact"><b>量能</b><span>{esc(volume_fact)}</span></div>
     {f'<div class="turning-fact"><b>連續</b><span>{esc(streak_fact)}</span></div>' if streak_fact else ''}
   </div>
-  <div class="turning-levels"><span>支撐</span> {esc(support)}　<span>壓力</span> {esc(resistance)}</div>
+  <div class="turning-levels"><span>支撐</span> {esc(support)}　<span>壓力</span> {esc(resistance)}{breakout_html}</div>
 </div>'''
 
         visible_rows = [render_turning_row(item, rank)
@@ -21112,6 +21365,32 @@ def render_turning_observation_web_body(result, status_note=None):
                 f'{"".join(hidden_rows)}</details>')
         content = "".join(visible_rows) or '<div class="turning-empty">目前沒有符合此狀態的標的。</div>'
         sections.append(f'<section class="turning-section"><h2>{label}</h2><p>{note}</p>{content}</section>')
+
+    # 突破區組完後插到最前面。與狀態區一樣前三檔直接顯示、其餘收合。
+    def render_breakout_section():
+        if not breakout_items:
+            return ('<section class="turning-section turning-breakout">'
+                    '<h2>🚀 突破</h2>'
+                    '<p>法人已轉向，且價格同步站上近 60 日新高</p>'
+                    '<div class="turning-empty">今日沒有同時符合的標的。'
+                    '兩個條件要同時發生本來就不常見，空白是正常的。</div>'
+                    '</section>')
+        rows = [render_turning_row(item, rank)
+                for rank, item in enumerate(breakout_items[:3], 1)]
+        rest = breakout_items[3:]
+        if rest:
+            hidden = [render_turning_row(item, rank)
+                      for rank, item in enumerate(rest, 4)]
+            rows.append(
+                f'<details class="turning-more"><summary>查看其餘 {len(rest)} 檔</summary>'
+                f'{"".join(hidden)}</details>')
+        return ('<section class="turning-section turning-breakout">'
+                '<h2>🚀 突破</h2>'
+                '<p>法人已轉向，且價格同步站上近 60 日新高'
+                f'（{len(breakout_items)} 檔，已從下方狀態區移入）</p>'
+                f'{"".join(rows)}</section>')
+
+    sections.insert(0, render_breakout_section())
     return f'''<div class="tabs">
   <a href="/web/screener?mode=blackhorse">黑馬</a>
   <a href="/web/screener?mode=radar">雷達</a>
@@ -21126,6 +21405,9 @@ def render_turning_observation_web_body(result, status_note=None):
 <style>
 .turning-section{{background:#fff;border:1px solid #e4e1d8;border-radius:14px;padding:14px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}
 .turning-section h2{{margin:0 0 4px;font-size:20px;line-height:1.3}}
+/* 突破區排在最前面，用黃銅左框與淡底跟其他狀態區區隔，
+   但不放大字體或加重色塊——它只是把交集挑出來，不是更強的訊號。 */
+.turning-breakout{{border-left:3px solid var(--brass);background:#fdfcf9}}
 .turning-section>p{{margin:0 0 4px;color:var(--ink-soft);font-size:12px;line-height:1.5}}
 .turning-row{{padding:13px 0;border-top:1px solid #eee;line-height:1.5}}
 .turning-row-head{{display:flex;justify-content:space-between;gap:8px;align-items:baseline}}
@@ -21333,10 +21615,14 @@ def _workbench_turning_rows(snapshot):
             "change_pct": _workbench_number(raw.get("pct") or raw.get("change_pct")),
             "metric_label": "當日漲跌",
             "institutional_lots": _workbench_number(raw.get("current_total_lots")),
-            "signal": f"{flow}／{state_label}",
+            "signal": (f"{flow}／{state_label}"
+                       + (f"・{raw.get('breakout')}" if raw.get("breakout") else "")),
             "quality": _workbench_number(raw.get("score")),
             "detail": {
                 "source_date": str(snapshot.get("data_date") or "未標日期"),
+                # 價格突破狀態。轉折只判斷法人方向，價格是否同步突破是另一回事，
+                # 標出來才分得出「法人轉買且價格站上新高」與「法人轉買但價格沒動」。
+                "breakout": str(raw.get("breakout") or "—"),
                 "state": state or "未標示",
                 "state_label": state_label,
                 "flow": flow,
@@ -21746,7 +22032,10 @@ def build_workbench_review_payload():
     today = taiwan_today()
     modes = []
     for key, label, source_modes in (("blackhorse", "黑馬", ("blackhorse",)),
-                                     ("radar", "雷達", ("radar", "radar_live"))):
+                                     ("radar", "雷達", ("radar", "radar_live")),
+                                     # 轉折只存「已確認」，成效反映的就是
+                                     # 「已確認」這個結論準不準。
+                                     ("turning", "轉折", ("turning",))):
         picks = _workbench_review_mode_picks(source_modes, 90)
         evaluation = (cached.get("evaluations") or {}).get(key) if fresh else None
         horizon_rows = []
