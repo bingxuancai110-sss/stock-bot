@@ -649,6 +649,10 @@ def _current_market():
                 market[f"{symbol}_{suffix}"] = float(value)
             except (TypeError, ValueError):
                 pass
+        # 資料日一起存。美股跟台股的交易日不同步，遇到美股休市時
+        # 快照裡會是前一個交易日的數字，沒有日期就看不出來。
+        if _QUOTE_DATES.get(symbol):
+            market[f"{symbol}_date"] = _QUOTE_DATES[symbol]
     return market
 
 
@@ -2746,6 +2750,227 @@ def merge_positions(positions):
     return merged
 
 
+# 除權偵測。Yahoo 的 adjclose 是還原權值後的收盤，close 是未還原；
+# 平常兩者比值穩定，除權（配股）當天會跳到接近整數倍——
+# 1 股變 2 股比值約 2.0、變 3 股約 3.0。
+#
+# 只在比值很接近整數倍時才提示（誤差 2% 內），寧可漏掉也不亂改：
+# 判斷錯會把使用者的股數改壞，而且他不一定馬上發現。
+# 而且一律只提示、不自動套用，由使用者對照券商後自己按確認。
+EXRIGHT_MIN_RATIO = 1.4          # 低於此視為配息或雜訊，不提示
+EXRIGHT_TOLERANCE = 0.02         # 與整數倍的容許誤差
+EXRIGHT_LOOKBACK_DAYS = 10       # 只看近期，避免翻出很久以前的除權
+
+
+def _exright_cache_key(user_id):
+    return f"exright_found:{str(user_id).strip()}"
+
+
+def _exright_ignore_key(user_id):
+    return f"exright_ignored:{str(user_id).strip()}"
+
+
+def get_exright_ignored(user_id):
+    """讀取使用者按過「忽略」的除權提示，格式 {code: multiple}。"""
+    try:
+        snap = _load_shared_data_snapshot(_exright_ignore_key(user_id))
+        payload = (snap or {}).get("payload") if isinstance(snap, dict) else None
+        data = payload if isinstance(payload, dict) else (snap if isinstance(snap, dict) else None)
+        return {str(k): int(v) for k, v in (data or {}).items()
+                if str(k).isdigit() or str(k)[:4].isdigit()}
+    except Exception:
+        return {}
+
+
+def set_exright_ignored(user_id, code, multiple):
+    """記下忽略。之後若偵測到不同倍數會重新提示，不會被永久蓋掉。"""
+    try:
+        data = get_exright_ignored(user_id)
+        data[str(code).strip()] = int(multiple)
+        _save_shared_data_snapshot(_exright_ignore_key(user_id), data,
+                                   data_date=taiwan_today())
+        return True
+    except Exception as exc:
+        print(f"⚠️ 記錄除權忽略失敗: {exc}")
+        return False
+
+
+def detect_exright_adjustments(positions, price_map):
+    """
+    比對還原價與未還原價，找出可能已除權、但股數還沒更新的持股。
+
+    回傳 [{code, name, ratio, multiple, shares, cost,
+           new_shares, new_cost, close, adj_close}]
+    找不到就回空清單。這裡只做偵測與試算，不寫入任何資料。
+    """
+    out = []
+    for position in positions or []:
+        code = str(position.get("code") or "").strip()
+        quote = (price_map or {}).get(code)
+        if not quote:
+            continue
+        closes = quote.get("closes") or []
+        adjs = quote.get("adj_closes") or []
+        dates = quote.get("close_dates") or []
+        if len(closes) < 3 or len(adjs) != len(closes):
+            continue
+
+        # 只看最近幾個交易日的比值變化，避免翻出很久以前的除權
+        window = min(EXRIGHT_LOOKBACK_DAYS, len(closes) - 1)
+        recent, earlier = None, None
+        try:
+            recent = closes[-1] / adjs[-1] if adjs[-1] else None
+            earlier = closes[-1 - window] / adjs[-1 - window] if adjs[-1 - window] else None
+        except (TypeError, ZeroDivisionError):
+            continue
+        if not recent or not earlier or recent <= 0 or earlier <= 0:
+            continue
+
+        # 除權後：近期的還原比值會比先前小（adjclose 把舊價往下調），
+        # 兩者相除就是這段期間的配股倍數。
+        ratio = earlier / recent
+        if ratio < EXRIGHT_MIN_RATIO:
+            continue
+        multiple = round(ratio)
+        if multiple < 2 or abs(ratio - multiple) > EXRIGHT_TOLERANCE * multiple:
+            continue
+
+        shares = int(position.get("shares") or 0)
+        cost = float(position.get("cost") or 0)
+        if shares <= 0 or cost <= 0:
+            continue
+
+        out.append({
+            "code": code,
+            "name": position.get("name") or quote.get("name") or code,
+            "ratio": round(ratio, 4),
+            "multiple": multiple,
+            "shares": shares,
+            "cost": round(cost, 2),
+            "new_shares": shares * multiple,
+            "new_cost": round(cost / multiple, 2),
+            "close": quote.get("close"),
+            "ex_date": (dates[-1].isoformat() if dates and hasattr(dates[-1], "isoformat")
+                        else None),
+        })
+    return out
+
+
+def render_exright_cards(items, csrf_html=""):
+    """
+    除權提示卡。刻意把「目前」與「建議」並排顯示——
+    使用者要能對照券商庫存頁的數字，確認無誤才按套用。
+    程式不會自己動手改，按了才改。
+    """
+    if not items:
+        return ""
+    cards = []
+    for it in items:
+        cards.append(f"""
+<div class="exright-card">
+  <div class="exright-head">
+    <b>{html.escape(str(it['name']))}</b>
+    <span class="code">{html.escape(str(it['code']))}</span>
+    <span class="badge">1 股變 {it['multiple']} 股</span>
+  </div>
+  <div class="exright-cmp">
+    <div><small>目前</small><b>{it['shares']:,} 股</b>
+         <span>成本 {it['cost']:,.2f}</span></div>
+    <div class="exright-arrow">→</div>
+    <div><small>調整後</small><b>{it['new_shares']:,} 股</b>
+         <span>成本 {it['new_cost']:,.2f}</span></div>
+  </div>
+  <div class="sub">請先對照券商庫存頁的股數與成本，確認一致再套用。</div>
+  <form method="post" action="/web/positions" style="display:inline"
+        onsubmit="return confirm('確定將 {html.escape(str(it['name']))}（{html.escape(str(it['code']))}）調整為 {it['new_shares']:,} 股、成本 {it['new_cost']:,.2f}？');">
+    {csrf_html}
+    <input type="hidden" name="action" value="exright_apply">
+    <input type="hidden" name="code" value="{html.escape(str(it['code']), quote=True)}">
+    <input type="hidden" name="multiple" value="{it['multiple']}">
+    <button type="submit">套用調整</button>
+  </form>
+  <form method="post" action="/web/positions" style="display:inline;margin-left:8px">
+    {csrf_html}
+    <input type="hidden" name="action" value="exright_ignore">
+    <input type="hidden" name="code" value="{html.escape(str(it['code']), quote=True)}">
+    <input type="hidden" name="multiple" value="{it['multiple']}">
+    <button class="del" type="submit">忽略</button>
+  </form>
+</div>""")
+    return f"""
+<section class="exright-wrap">
+  <div class="section-head"><h2>⚠️ 偵測到可能已除權</h2>
+    <span class="section-note">{len(items)} 檔・需要你確認</span></div>
+  <div class="mode-note">
+    股價已因除權下跌，但你的持股股數還是原本的，所以損益會顯示成大幅虧損。
+    確認券商的數字後按套用即可修正；不套用就不會有任何變動。
+  </div>
+  {''.join(cards)}
+</section>"""
+
+
+def apply_exright_adjustment(user_id, code, multiple):
+    """
+    套用除權調整：同一代號的每一筆買進都乘以倍數、成本除以倍數。
+
+    刻意逐筆調整而不是合併成一筆——使用者的分批買進紀錄要保留，
+    合併掉的話「分 9 筆買進」那些歷史就沒了。
+
+    寫一筆操作日誌，並把原始數字寫進備註，之後對得回來。
+    """
+    try:
+        multiple = int(multiple)
+    except (TypeError, ValueError):
+        return False, "倍數格式不正確"
+    if multiple < 2 or multiple > 20:
+        return False, "倍數超出合理範圍"
+
+    code = str(code).strip()
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, shares, cost FROM positions WHERE user_id = %s AND code = %s",
+            (str(user_id).strip(), code))
+        rows = cursor.fetchall()
+        if not rows:
+            cursor.close()
+            return False, "找不到這檔持股"
+
+        total_before = sum(int(r[1] or 0) for r in rows)
+        for pid, shares, cost in rows:
+            shares = int(shares or 0)
+            cost = float(cost or 0)
+            if shares <= 0 or cost <= 0:
+                continue
+            cursor.execute(
+                "UPDATE positions SET shares = %s, cost = %s, "
+                "note = COALESCE(note || ' / ', '') || %s WHERE id = %s",
+                (shares * multiple, round(cost / multiple, 4),
+                 f"除權調整 {shares}股@{cost:.2f}→{shares * multiple}股@{cost / multiple:.2f}",
+                 pid))
+
+        total_after = total_before * multiple
+        cursor.execute(
+            """
+            INSERT INTO position_change_logs
+                (user_id, code, action, shares_delta, trade_price, trade_date, note, source)
+            VALUES (%s, %s, 'add', %s, NULL, %s, %s, 'exright')
+            """,
+            (str(user_id).strip(), code, total_after - total_before, taiwan_today(),
+             f"除權調整：1 股變 {multiple} 股（{total_before:,} → {total_after:,} 股）"))
+        conn.commit()
+        cursor.close()
+        clear_leaderboard_cache()
+        return True, {"multiple": multiple, "before": total_before, "after": total_after}
+    except Exception as exc:
+        conn.rollback()
+        print(f"❌ 除權調整失敗 {code}: {exc}")
+        return False, "調整失敗，持股未變更"
+    finally:
+        release_db_connection(conn)
+
+
 def add_position(user_id, code, shares, cost, bought_on=None, note=None):
     try:
         shares = int(shares)
@@ -4548,8 +4773,16 @@ def compute_twr(snaps, since=None, realized=None):
         if denom <= 0:
             continue
         r = (cur["value"] - prev["value"] - flow) / denom
-        # 單日 ±50% 以上多半是資料異常（例如整批重輸持股），跳過不計入
-        if abs(r) > 0.5:
+        # 單日 ±35% 以上跳過不計入。
+        # 原本是 50%，但除權（配股）會讓股價機械性下跌而股數未同步更新：
+        # 1 股配 1 股跌 50% 恰在舊門檻邊界上，可能漏接；1 配 2 跌 67%。
+        # 那不是虧損，是股數還沒調整造成的假跌幅，計入會直接毀掉當期報酬。
+        # 代價是真實的單日大跌也會被跳過，但單日超過 35% 的真實波動極罕見，
+        # 而且那種日子本來就算不出可信的報酬。
+        if abs(r) > 0.35:
+            print(f"⚠️ TWR 跳過異常單日變化 {r * 100:.1f}%"
+                  f"（{prev.get('date')} → {cur.get('date')}）；"
+                  f"可能為除權息或持股資料變更")
             continue
         cum *= (1 + r)
         out.append((cur["date"], (cum - 1) * 100))
@@ -9120,11 +9353,26 @@ def fetch_quote(symbol):
             prev = meta.get('chartPreviousClose')
         if not prev:
             return None
+        # 順手記下這筆報價的日期。回傳值維持既有的三元組（很多地方在用），
+        # 日期改放進模組層的小字典，需要的頁面自己去查。
+        # 沒有日期的話，畫面只能寫「既有收盤資料」，
+        # 使用者分不出那是昨天的還是前天的——實際發生過。
+        try:
+            stamp = meta.get('regularMarketTime')
+            if stamp:
+                _QUOTE_DATES[symbol] = datetime.fromtimestamp(
+                    int(stamp), timezone(timedelta(hours=-4))).strftime("%m/%d")
+        except (TypeError, ValueError, OSError):
+            pass
         return close, (close - prev) / prev * 100, close - prev
     except Exception as e:
         print(f"❌ 抓取 {symbol} 失敗: {e}")
         return None
 
+
+# 各代號最近一次取得報價的日期（美東時間），供畫面標示資料日。
+# 只是顯示用的輔助資料，抓不到就不標，不影響任何計算。
+_QUOTE_DATES = {}
 
 # 盤前簡報要看的標的。想增減直接改這裡，格式是 (顯示名稱, Yahoo代號)
 BRIEF_INDICES = [
@@ -12831,6 +13079,91 @@ def check_source():
     return plain_text_page(lines), 200
 
 
+@app.route("/check-mis", methods=["POST", "GET"])
+def check_mis():
+    """
+    診斷 TWSE MIS 盤中報價。用法：/check-mis?token=...&codes=6488,3532,2308
+
+    為什麼需要：實測發現同一時間有些持股拿得到盤中價、有些停在昨收，
+    而且不是流動性問題（成交量很大的也會）。程式端只知道「MIS 沒回可用值」，
+    看不出是沒回、回了但欄位是 '-'、還是日期對不上。
+    這裡直接把原始回應攤開，才有辦法判斷。
+    """
+    if request.args.get("token") != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    raw = request.args.get("codes", "")
+    codes = [c for c in re.findall(r"\d{4,6}[A-Za-z]?", raw)][:20]
+    if not codes:
+        return plain_text_page(["請帶 codes 參數，例如：",
+                                "/check-mis?token=...&codes=6488,3532,2308"]), 200
+
+    lines = [f"TWSE MIS 原始回應診斷　{taiwan_now().strftime('%Y-%m-%d %H:%M:%S')}",
+             f"盤中時段：{_is_taiwan_intraday_window()}　"
+             f"收盤後：{_taiwan_post_close()}",
+             "=" * 62, ""]
+
+    symbols = []
+    for code in codes:
+        symbols.extend((f"tse_{code}.tw", f"otc_{code}.tw"))
+
+    today_key = taiwan_today().strftime("%Y%m%d")
+    got = {}
+    try:
+        response = requests.get(
+            "https://mis.twse.com.tw/stock/api/getStockInfo.jsp",
+            params={"ex_ch": "|".join(symbols), "json": "1", "delay": "0",
+                    "_": int(time.time() * 1000)},
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        payload = response.json()
+        lines.append(f"HTTP {response.status_code}　rtcode={payload.get('rtcode')}　"
+                     f"msgArray {len(payload.get('msgArray') or [])} 筆")
+        lines.append("")
+        for item in payload.get("msgArray") or []:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("c") or "").strip()
+            got.setdefault(code, []).append(item)
+    except Exception as exc:
+        lines.append(f"❌ 查詢失敗：{type(exc).__name__}: {exc}")
+        return plain_text_page(lines), 200
+
+    lines.append("代號    市場  日期      時間      z(成交)   y(昨收)  v(量)  判定")
+    lines.append("-" * 62)
+    for code in codes:
+        items = got.get(code)
+        if not items:
+            lines.append(f"{code:<7} —     MIS 完全沒有回這個代號")
+            continue
+        for item in items:
+            ch = str(item.get("ch") or "")
+            market = "上市" if ch.startswith("tse") or "tse" in ch else "上櫃"
+            d = str(item.get("d") or "-")
+            t = str(item.get("t") or "-")
+            z = str(item.get("z") or "-")
+            y = str(item.get("y") or "-")
+            v = str(item.get("v") or "-")
+            # 重現程式的判定條件，看它為什麼被略過
+            why = "採用"
+            if d != today_key:
+                why = f"略過：日期非今日（{d}）"
+            elif z in ("", "-", "--"):
+                pz = str(item.get("pz") or "-")
+                why = ("採用 pz 備援" if pz not in ("", "-", "--")
+                       else "略過：z 與 pz 都無值")
+            elif y in ("", "-", "--"):
+                why = "略過：無昨收 y"
+            lines.append(f"{code:<7} {market}  {d:<9} {t:<9} {z:<9} {y:<8} {v:<6} {why}")
+
+    lines += ["", "-" * 62,
+              "判讀：",
+              "・「MIS 完全沒有回這個代號」→ 市場別可能查錯（上市查成上櫃或反之）",
+              "・「日期非今日」→ MIS 給的是上一個交易日，通常是開盤前",
+              "・「z 與 pz 都無值」→ 該檔當下真的沒有成交價",
+              "・「採用」卻在畫面看到昨收 → 問題在快取或前端，不在抓取"]
+    return plain_text_page(lines), 200
+
+
 @app.route("/check-inst", methods=["POST", "GET"])
 def check_inst():
     """
@@ -13577,6 +13910,20 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
   text-decoration:none;color:var(--ink-soft);background:var(--paper-2);
   border-radius:2px}
 .tagchip.on{background:var(--brass);color:#FFF}
+/* 除權提示卡：用黃銅左框標示需要處理，但不用紅色——
+   這不是錯誤，只是需要你確認一次的例行調整。 */
+.exright-wrap{margin:4px 0 14px}
+.exright-card{border:1px solid var(--rule);border-left:3px solid var(--brass);
+  background:#fdfcf9;border-radius:2px;padding:12px 14px;margin:10px 0}
+.exright-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.exright-head b{font-size:15px}
+.exright-head .code{color:var(--ink-faint);font-size:12.5px}
+.exright-cmp{display:flex;align-items:center;gap:14px;margin:10px 0 6px;flex-wrap:wrap}
+.exright-cmp>div{display:flex;flex-direction:column}
+.exright-cmp small{font-size:11px;color:var(--ink-faint)}
+.exright-cmp b{font-size:15px;font-variant-numeric:tabular-nums}
+.exright-cmp span{font-size:12px;color:var(--ink-soft)}
+.exright-arrow{color:var(--brass);font-size:17px}
 .total-label{font-size:12px;color:var(--ink-soft)}
 .total-value{font-size:24px;font-weight:600;margin-top:2px}
 .total-sub{font-size:12.5px}
@@ -14913,7 +15260,20 @@ def web_positions(uid):
         return respond_page("持股", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "positions")
     if request.method == "POST":
         action = request.form.get("action")
-        if action == "delete":
+        if action == "exright_apply":
+            ok, info = apply_exright_adjustment(
+                uid, request.form.get("code"), request.form.get("multiple"))
+            if ok:
+                msg = (f"✅ 已完成除權調整：1 股變 {info['multiple']} 股，"
+                       f"股數 {info['before']:,} → {info['after']:,}，"
+                       f"成本已同步除以 {info['multiple']}。已記入操作日誌。")
+            else:
+                msg = f"除權調整失敗：{info}"
+        elif action == "exright_ignore":
+            set_exright_ignored(uid, request.form.get("code"),
+                                request.form.get("multiple"))
+            msg = "已忽略這筆除權提示；若之後偵測到不同倍數會再提醒。"
+        elif action == "delete":
             ok = delete_position(uid, request.form.get("id"))
             msg = "已刪除。" if ok else "刪除失敗：找不到這筆持股或資料未成功寫入。"
         elif action == "sell":
@@ -15198,8 +15558,23 @@ def web_positions(uid):
   <div class="portfolio-trend-body">{position_trend_html}</div>
 </section>"""
 
+    # 除權偵測：股價已因除權下跌但股數還沒更新時，損益會顯示成大幅虧損。
+    # 只提示不自動改——判斷錯會把使用者的持股資料弄壞，而他不一定馬上發現。
+    exright_html = ""
+    try:
+        ignored = get_exright_ignored(uid)
+        detected = detect_exright_adjustments(positions, price_map)
+        found = [x for x in detected if ignored.get(x["code"]) != x["multiple"]]
+        exright_html = render_exright_cards(found, csrf_hidden_input())
+        # 存一份給首頁用。首頁的 fast 摘要不抓報價，沒有這份快取就無從提示。
+        _save_shared_data_snapshot(_exright_cache_key(uid),
+                                   {"items": detected}, data_date=taiwan_today())
+    except Exception as exc:
+        print(f"⚠️ 除權偵測失敗: {exc}")
+
     body = f"""
 {f'<div class="msg">{msg}</div>' if msg else ''}
+{exright_html}
 {totals}
 {f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px">盤中持股行情已於 {taiwan_now().strftime("%H:%M:%S")} 取得；開盤期間每 15 秒局部更新，個別來源暫缺時保留最後有效價格並標示來源。</div>' if positions and _is_taiwan_intraday_window() else ''}
 {allocation_html_positions}
@@ -15252,7 +15627,10 @@ def web_positions(uid):
   }
   document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
   document.addEventListener('stockbot:pageleaving',function(){if(timer)clearTimeout(timer);timer=null;});
-  schedule();
+  // 立刻抓一次，不要等第一個 15 秒。
+  // 頁面本身要載入十幾秒，再等 15 秒才第一次更新的話，
+  // 使用者開頁後約半分鐘內看到的都是昨收，會以為行情沒更新。
+  refresh();
 })();
 </script>'''
     print("⏱️ 持股頁：持股資料 %.0fms、法人 %.0fms、1y行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
@@ -19377,10 +19755,42 @@ def render_portfolio_fast_summary(uid):
                      if _market_date_matches(market.get("taiex_date"), snapshot_date) else None)
         taiex_note = (f"收盤日K {market.get('taiex_date')}"
                       if taiex_pct is not None else "收盤大盤資料尚未更新")
+    def us_note(symbol):
+        """美股指數的資料日。標不出來時明說，不要用「既有收盤資料」含混帶過。"""
+        day = market.get(f"{symbol}_date")
+        return f"美股收盤 {day}" if day else "既有收盤資料（日期未標示）"
+
+    # 除權提示：使用者打開就是首頁，提示放這裡才看得到；
+    # 但套用要在持股頁做，那裡才有完整的股數與成本可以對照。
+    exright_banner = ""
+    try:
+        ignored = get_exright_ignored(uid)
+        # fast 摘要刻意不抓報價（那是它快的原因），所以這裡用持股頁
+        # 最近一次偵測的結果。沒有結果就不提示——寧可晚一步提醒，
+        # 也不要為了首頁的一行字讓整頁多等好幾秒。
+        cached = _load_shared_data_snapshot(_exright_cache_key(uid)) or {}
+        payload = cached.get("payload") if isinstance(cached, dict) else None
+        pending = [x for x in (payload or {}).get("items", [])
+                   if ignored.get(x.get("code")) != x.get("multiple")]
+        if pending:
+            names = "、".join(
+                f"{html.escape(str(x['name']))}（{html.escape(str(x['code']))}）"
+                for x in pending[:3])
+            more = f" 等 {len(pending)} 檔" if len(pending) > 3 else ""
+            exright_banner = f"""
+<div class="home-exright">
+  <b>⚠️ 偵測到 {names}{more} 可能已除權</b>
+  <p>股價已下跌但股數尚未更新，目前損益會顯示成大幅虧損。
+     到持股頁對照券商數字後即可修正。</p>
+  <a class="home-exright-go" href="/web/positions">去處理</a>
+</div>"""
+    except Exception as exc:
+        print(f"⚠️ 首頁除權提示失敗: {exc}")
+
     market_items = [("大盤", taiex_pct, taiex_note),
-                    ("道瓊", market.get("^DJI_pct"), "既有收盤資料"),
-                    ("那斯達克", market.get("^IXIC_pct"), "既有收盤資料"),
-                    ("費城半導體", market.get("^SOX_pct"), "既有收盤資料")]
+                    ("道瓊", market.get("^DJI_pct"), us_note("^DJI")),
+                    ("那斯達克", market.get("^IXIC_pct"), us_note("^IXIC")),
+                    ("費城半導體", market.get("^SOX_pct"), us_note("^SOX"))]
     market_html = "".join(
         f'<span>{label}<b>{fmt_pct(value) if value is not None else "資料尚未更新"}</b><small>{html.escape(note)}</small></span>'
         for label, value, note in market_items
@@ -19416,7 +19826,8 @@ def render_portfolio_fast_summary(uid):
 
     return f'''<style>
 .daily-fast-sync{{display:flex;gap:11px;align-items:flex-start;background:#F5F0E5;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:14px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-fast-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 4px rgba(139,105,52,.12);flex:none}}.daily-fast-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-fast-sync-copy span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.65}}.daily-fast-hero{{background:linear-gradient(135deg,#f4f0e7,#e7ece8);padding:22px 18px 18px;margin:-8px -2px 14px;border-bottom:1px solid #d7d4ca}}.daily-fast-hero .eyebrow{{letter-spacing:.14em;color:var(--brass);font-size:11px}}.daily-fast-hero h1{{font-size:26px;line-height:1.25;margin:8px 0 14px}}.daily-fast-market{{display:flex;gap:8px;flex-wrap:wrap}}.daily-fast-market span{{background:rgba(255,255,255,.72);padding:8px 10px;border-radius:8px;font-size:12px}}.daily-fast-market b{{display:block;font-size:16px;margin-top:3px}}.daily-fast-market small{{display:block;margin-top:3px;color:var(--ink-soft);font-size:9px;line-height:1.35}}.daily-fast-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:15px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.daily-fast-title{{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}}.daily-fast-title h2{{margin:0;font-size:19px}}.daily-fast-event{{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}}.daily-fast-number{{background:var(--brass);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;flex:none;font-size:12px}}.daily-fast-detail{{font-size:12.5px;color:var(--ink-soft);margin-top:3px}}.daily-fast-empty{{padding:11px 0;color:var(--ink-soft);font-size:13px}}.daily-fast-empty span{{font-size:12px}}.daily-fast-ranks{{display:grid;grid-template-columns:1fr;gap:0}}.daily-fast-rank{{background:transparent;border-bottom:1px solid #e3e2dc;border-radius:0;padding:9px 0}}.daily-fast-rank:last-child{{border-bottom:0}}.daily-fast-rank small,.daily-fast-rank>span{{display:block;color:var(--ink-soft);font-size:11px}}.daily-fast-rank b{{display:block;font-size:18px;margin:4px 0}}.daily-fast-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px}}.daily-fast-panel{{min-width:0;padding:11px 10px;border:1px solid rgba(139,105,52,.24);border-radius:9px;background:rgba(255,255,255,.58)}}.daily-fast-panel-title{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding-bottom:7px;border-bottom:1px solid rgba(139,105,52,.16)}}.daily-fast-panel-title b{{font-size:12px}}.daily-fast-panel-title a,.daily-fast-panel-title span{{font-size:8px;color:var(--brass);white-space:nowrap}}.daily-fast-index-row{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding:8px 0;border-bottom:1px solid #e3e2dc}}.daily-fast-index-row:last-child{{border-bottom:0}}.daily-fast-index-row b{{font-size:10px}}.daily-fast-index-row span{{font-size:9px;text-align:right;white-space:nowrap}}.daily-fast-index-row strong{{display:block;font-size:10px;color:var(--ink)}}.daily-fast-index-row em{{font-style:normal;font-size:9px}}@media (max-width:640px){{.daily-fast-panels{{grid-template-columns:1fr}}}}.daily-fast-summary-stack{{display:block;margin-top:11px}}.daily-fast-rank-panel{{padding:10px 13px}}.daily-fast-rank-panel .daily-fast-panel-title{{padding-bottom:6px}}.daily-fast-rank-panel .daily-fast-ranks{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.daily-fast-rank-panel .daily-fast-rank{{border:0;padding:8px 0}}.daily-fast-rank-panel .daily-fast-rank b{{font-size:16px;margin:3px 0}}.daily-fast-quote{{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:8px;padding:12px 13px;border:1px solid rgba(139,105,52,.22);border-radius:9px;background:#F8F5ED}}.daily-fast-quote strong{{color:var(--ink);font-family:"Kaiti TC","BiauKai","DFKai-SB","STKaiti","Noto Serif CJK TC","Noto Serif TC",serif;font-size:16px;font-weight:700;letter-spacing:.12em;line-height:1.5;text-align:center;white-space:nowrap}}@media (max-width:640px){{.daily-fast-rank-panel .daily-fast-ranks{{gap:6px}}.daily-fast-quote{{align-items:center;display:flex}}.daily-fast-quote strong{{display:block;margin-top:0;text-align:center;font-size:17px}}}}
-</style><section class="daily-fast-sync" aria-live="polite">
+.home-exright{{border:1px solid #D9C9A7;border-left:4px solid var(--brass);background:#FDF9F1;border-radius:10px;padding:13px 15px;margin:0 0 12px}}.home-exright b{{display:block;font-size:14.5px;line-height:1.4}}.home-exright p{{margin:5px 0 9px;color:var(--ink-soft);font-size:12px;line-height:1.6}}.home-exright-go{{display:inline-block;padding:7px 16px;background:var(--brass);color:#fff;border-radius:6px;font-size:13px;text-decoration:none}}
+</style>{exright_banner}<section class="daily-fast-sync" aria-live="polite">
   <span class="daily-fast-sync-dot" aria-hidden="true"></span>
   <div class="daily-fast-sync-copy"><b>系統正在跑・正在整合完整首頁</b>
     <span>這是先行摘要，不是完整首頁；即時持股、損益、貢獻／拖累與今日判讀完成後會自動補上。</span>
@@ -19483,6 +19894,24 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             market_status_text = "大盤正式收盤資料尚未確認，未使用舊快照"
         home_sync_title = "今日資料已整合完成"
         home_sync_detail = "收盤資料、今日事件與排名摘要已載入；詳細貢獻明細可往下展開查看。"
+    def holding_day_word(holding):
+        """
+        逐檔判斷該說「今天」還是「最近交易日」。
+
+        不能用整頁一個值：MIS 是逐檔回報，同一時間可能有些標的已有盤中價、
+        有些還停在昨收（實測 13 檔裡 7 檔盤中、6 檔昨收）。整頁統一寫「今天」
+        會把昨天的跌幅講成今天的——實際發生過：09/01 早盤顯示
+        「環球晶今天下跌 6.17%」，那其實是 08/31 的跌幅。
+
+        updated_at 形如 "20260901 09:59:34"；取前 8 碼跟今天比對。
+        取不到日期時保守顯示「最近交易日」，不假設它是今天的。
+        """
+        stamp = str(((holding.get("price") or {}).get("updated_at")) or "")
+        day = stamp[:8]
+        if len(day) == 8 and day.isdigit():
+            return "今天" if day == calendar_today.strftime("%Y%m%d") else "最近交易日"
+        return "今天" if intraday_window else "最近交易日"
+
     def holding_day_pct(holding):
         try:
             value = (holding.get("price") or {}).get("pct")
@@ -19761,6 +20190,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <p class="home-judgement-copy">{html.escape(interpretation)}</p>
 </section>'''
 
+
     def contribution_detail_rows(entries, value_class):
         if not entries:
             return '<div class="impact-empty">目前沒有可用的行情資料。</div>'
@@ -19775,7 +20205,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
                 f'''<div class="impact-detail-row">
   <span class="impact-rank">{idx}</span>
   <div class="impact-detail-name"><b>{html.escape(str(holding['name']))}</b>
-    <small>今天{change_word} {abs(pct):.2f}%　{html.escape(contribution_basis_text(holding))}</small>{realized_html}</div>
+    <small>{holding_day_word(holding)}{change_word} {abs(pct):.2f}%　{html.escape(contribution_basis_text(holding))}</small>{realized_html}</div>
   <strong class="{value_class}">{direction}約 {abs(contribution):.2f}%</strong>
 </div>''')
         return ''.join(rows)
@@ -19803,7 +20233,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
                          f'{html.escape(realized_text)}</small>' if realized_text else "")
         return f'''<div class="impact-lead {value_class}">
   <small>{title}</small><h3>{html.escape(str(holding['name']))}</h3>
-  <p>今天{change_word} {abs(pct):.2f}%・{html.escape(contribution_basis_text(holding, compact=True))}</p>{realized_html}
+  <p>{holding_day_word(holding)}{change_word} {abs(pct):.2f}%・{html.escape(contribution_basis_text(holding, compact=True))}</p>{realized_html}
   <strong>對整體組合{amount_text}</strong>
 </div>'''
 
