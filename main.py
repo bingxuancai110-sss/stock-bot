@@ -586,6 +586,63 @@ def _news_events(news, old_news):
     return events
 
 
+US_INDEX_SNAPSHOT_KEY = "us_indices"
+
+
+def refresh_us_indices():
+    """
+    單獨更新美股四大指數，存進共享快照。
+
+    為什麼要分開存：首頁讀的是「前一交易日收盤後」建立的盤前快照，
+    那份快照在台灣時間 18:xx 建立，當時抓到的是那天凌晨收盤的美股。
+    等到隔天早上使用者打開首頁，美股又收了一盤，
+    但畫面還是顯示前一晚的數字——看起來就是「前天的」。
+
+    改由 warmup（交易日 07:50）另外更新一次：那時美股已經收盤（約 04:00），
+    抓到的就是最新一盤。首頁只讀快照不抓網路，載入速度不受影響。
+    """
+    symbols = [sym for _label, sym in BRIEF_INDICES]
+    quotes = fetch_quotes_bulk(symbols) or {}
+    payload = {}
+    for symbol in symbols:
+        quote = quotes.get(symbol)
+        if not quote:
+            continue
+        close, pct, diff = quote
+        for suffix, value in (("close", close), ("pct", pct), ("diff", diff)):
+            if value is None:
+                continue
+            try:
+                payload[f"{symbol}_{suffix}"] = float(value)
+            except (TypeError, ValueError):
+                pass
+        if _QUOTE_DATES.get(symbol):
+            payload[f"{symbol}_date"] = _QUOTE_DATES[symbol]
+    if not payload:
+        return 0
+    payload["captured_at"] = taiwan_now().strftime("%Y-%m-%d %H:%M")
+    _save_shared_data_snapshot(US_INDEX_SNAPSHOT_KEY, payload,
+                               data_date=taiwan_today())
+    return len([k for k in payload if k.endswith("_pct")])
+
+
+def get_us_indices_override():
+    """
+    取回最近一次單獨更新的美股指數；沒有就回空字典，
+    呼叫端會沿用盤前快照裡的舊值（至少還有東西可看）。
+    """
+    try:
+        snap = _load_shared_data_snapshot(US_INDEX_SNAPSHOT_KEY)
+        if not snap:
+            return {}
+        payload = snap.get("payload") if isinstance(snap, dict) else None
+        data = payload if isinstance(payload, dict) else snap
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        print(f"⚠️ 讀取美股指數快照失敗: {exc}")
+        return {}
+
+
 def _current_market():
     """保存盤前頁需要的真實收盤資料；事件偵測仍只讀 *_pct 欄位。"""
     market = {}
@@ -4046,9 +4103,12 @@ def _build_home_intraday_payload(uid):
     codes = [str(position.get("code") or "").strip() for position in positions]
     codes = [code for code in codes if code]
     try:
-        # 跟持股頁一樣強制刷新，先讓官方 MIS 覆寫同日快取；缺值時才保留既有可驗證來源。
+        # 繞過 get_realtime_stock 的 90 秒快取（否則輪詢六次有五次拿到同一份），
+        # 但保留 MIS 自己的 15 秒節流——兩層一起繞過的話，
+        # 每個使用者每 15 秒都會真的打一次 MIS，人一多就放大請求量。
         price_map = get_realtime_stocks_bulk(
-            codes, workers=min(12, len(codes)), rng="1d", force_refresh=True)
+            codes, workers=min(12, len(codes)), rng="1d",
+            force_refresh=True, mis_force=False)
         today_logs = get_position_change_logs(uid, 5000, trade_date=taiwan_today())
         reduced_codes = {
             str(log.get("code") or "").strip() for log in today_logs
@@ -4059,7 +4119,7 @@ def _build_home_intraday_payload(uid):
         if missing_reduced:
             price_map.update(get_realtime_stocks_bulk(
                 missing_reduced, workers=min(12, len(missing_reduced)),
-                rng="1d", force_refresh=True))
+                rng="1d", force_refresh=True, mis_force=False))
 
         total_value = sum(
             float((price_map.get(str(position.get("code") or "").strip()) or {}).get("close") or 0) *
@@ -4124,9 +4184,27 @@ def _build_home_intraday_payload(uid):
             })
         portfolio_pct = (sum(item["contribution"] for item in contribution_rows)
                          if contribution_rows else None)
-        positive = sorted((item for item in contribution_rows if item["contribution"] > 0),
+        # 只納入報價確實是今天的持股。
+        #
+        # 首頁初次載入已經這樣過濾了，但輪詢這條路徑原本沒有——
+        # 結果是第一次載入乾淨，15 秒後又把昨收的漲跌混進來，
+        # 清單照樣每次重整都換一批成員。兩條路徑要用同一個標準。
+        today_key = taiwan_today().strftime("%Y%m%d")
+
+        def quote_is_today(item):
+            quote = price_map.get(str(item.get("code") or "").strip()) or {}
+            stamp = str(quote.get("updated_at") or "")
+            if len(stamp) >= 8 and stamp[:8].isdigit():
+                return stamp[:8] == today_key
+            # 沒有時間戳時不猜，保守當成非今日，寧可少列也不要混入昨天的數字
+            return False
+
+        fresh_rows = [item for item in contribution_rows if quote_is_today(item)]
+        stale_names = [str(item.get("name") or item.get("code"))
+                       for item in contribution_rows if not quote_is_today(item)]
+        positive = sorted((item for item in fresh_rows if item["contribution"] > 0),
                           key=lambda item: item["contribution"], reverse=True)[:5]
-        negative = sorted((item for item in contribution_rows if item["contribution"] < 0),
+        negative = sorted((item for item in fresh_rows if item["contribution"] < 0),
                           key=lambda item: item["contribution"])[:5]
         taiex = fetch_taiex_intraday(force_refresh=True)
         try:
@@ -4142,7 +4220,9 @@ def _build_home_intraday_payload(uid):
                         "updated_at": taiex.get("updated_at")}
                        if market_pct is not None else None),
             "portfolio": {"pct": portfolio_pct, "relative": relative,
-                          "positive": positive, "negative": negative},
+                          "positive": positive, "negative": negative,
+                    "stale_names": stale_names[:6],
+                    "stale_count": len(stale_names)},
             "note": ("首頁盤中行情已局部更新；大盤採 TWSE MIS 當日即時指數，"
                      "組合與正負貢獻採最新持股行情，不重整操作日報。"),
         }
@@ -6053,7 +6133,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
 
 
 def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
-                             force_refresh=False):
+                             force_refresh=False, mis_force=None):
     """
     並行抓多檔報價，回傳 {code: data 或 None}。
 
@@ -6075,8 +6155,13 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
 
     # 收盤後先批次取得官方 MIS 最後成交／市撮價格；同一次頁面請求的
     # 所有檔案共用這份 map，避免首頁與持股頁各自落到不同的 Yahoo 時點。
+    # MIS 那層自己有 15 秒快取，跟盤中輪詢的間隔一致，本來就不會給到太舊的值。
+    # 盤中輪詢要繞過的是 get_realtime_stock 的 90 秒快取，不是 MIS 這層——
+    # 兩層一起繞過的話，每個使用者每 15 秒都會真的打一次 MIS，
+    # 人一多就等於放大請求量。所以這裡分開控制。
     official_quotes = _fetch_twse_mis_quotes(
-        codes, market_suffix=market_suffix, force_refresh=force_refresh)
+        codes, market_suffix=market_suffix,
+        force_refresh=(force_refresh if mis_force is None else mis_force))
 
     if len(codes) == 1:  # 只有一檔就不必付出開執行緒池的成本
         return {codes[0]: get_realtime_stock(
@@ -13018,6 +13103,17 @@ def _do_warmup():
             done.append("排行榜 失敗")
     else:
         done.append("排行榜 快照略過（等待收盤）")
+
+    # 美股指數單獨更新一次。首頁讀的盤前快照是前一晚 18:xx 建立的，
+    # 那時抓到的美股是「再前一晚」收盤；warmup 在 07:50 跑，
+    # 美股已於約 04:00 收盤，這時抓到的才是最新一盤。
+    try:
+        us_count = refresh_us_indices()
+        done.append(f"美股指數 {us_count}")
+    except Exception as e:
+        print(f"❌ 預熱美股指數失敗: {e}")
+        done.append("美股指數 失敗")
+
     return "、".join(done)
 
 
@@ -19889,9 +19985,17 @@ def render_portfolio_fast_summary(uid):
                      if _market_date_matches(market.get("taiex_date"), snapshot_date) else None)
         taiex_note = (f"收盤日K {market.get('taiex_date')}"
                       if taiex_pct is not None else "收盤大盤資料尚未更新")
+    # 美股指數優先用單獨更新的那份：盤前快照是前一晚 18:xx 建立的，
+    # 裡面的美股其實是「再前一晚」收盤，早上打開首頁就會看到前天的數字。
+    us_override = get_us_indices_override()
+
+    def us_value(symbol):
+        v = us_override.get(f"{symbol}_pct")
+        return v if v is not None else market.get(f"{symbol}_pct")
+
     def us_note(symbol):
         """美股指數的資料日。標不出來時明說，不要用「既有收盤資料」含混帶過。"""
-        day = market.get(f"{symbol}_date")
+        day = us_override.get(f"{symbol}_date") or market.get(f"{symbol}_date")
         return f"美股收盤 {day}" if day else "既有收盤資料（日期未標示）"
 
     # 除權提示：使用者打開就是首頁，提示放這裡才看得到；
@@ -19923,9 +20027,9 @@ def render_portfolio_fast_summary(uid):
         print(f"⚠️ 首頁除權提示失敗: {exc}")
 
     market_items = [("大盤", taiex_pct, taiex_note),
-                    ("道瓊", market.get("^DJI_pct"), us_note("^DJI")),
-                    ("那斯達克", market.get("^IXIC_pct"), us_note("^IXIC")),
-                    ("費城半導體", market.get("^SOX_pct"), us_note("^SOX"))]
+                    ("道瓊", us_value("^DJI"), us_note("^DJI")),
+                    ("那斯達克", us_value("^IXIC"), us_note("^IXIC")),
+                    ("費城半導體", us_value("^SOX"), us_note("^SOX"))]
     market_html = "".join(
         f'<span>{label}<b>{fmt_pct(value) if value is not None else "資料尚未更新"}</b><small>{html.escape(note)}</small></span>'
         for label, value, note in market_items
@@ -20463,6 +20567,20 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       setHtml('[data-home-max-loss]',negative.length?(esc(negative[0].name)+' '+pct(negative[0].pct)+'<small class="contribution-note">組合 '+Number(negative[0].contribution).toFixed(2)+' 個百分點・'+esc(negative[0].basis_text)+'</small>'):'—');
       var positiveLead=document.querySelector('[data-home-impact-lead="positive"]'),negativeLead=document.querySelector('[data-home-impact-lead="negative"]');if(positiveLead)positiveLead.innerHTML=leadHtml(positive[0],'幫你撐住組合','impact-up');if(negativeLead)negativeLead.innerHTML=leadHtml(negative[0],'主要拖累組合','impact-down');
       var positiveRows=document.querySelector('[data-home-contribution-rows="positive"]'),negativeRows=document.querySelector('[data-home-contribution-rows="negative"]');if(positiveRows)positiveRows.innerHTML=rowsHtml(positive,'up');if(negativeRows)negativeRows.innerHTML=rowsHtml(negative,'down');
+      // 尚未取得今日報價的檔要說出來，不能讓它們無聲消失——
+      // 使用者會以為自己看漏了，或以為那幾檔今天沒動。
+      var staleEl=document.querySelector('.impact-stale');
+      var staleNames=portfolio.stale_names||[],staleCount=Number(portfolio.stale_count||0);
+      if(staleEl){
+        if(staleCount){
+          staleEl.textContent=staleNames.map(esc).join('、')
+            +(staleCount>staleNames.length?(' 等 '+staleCount+' 檔'):'')
+            +' 尚未取得今日報價，暫不計入今日貢獻；官方逐檔更新後會自動補上。';
+          staleEl.style.display='';
+        }else{
+          staleEl.style.display='none';
+        }
+      }
       var positiveCount=document.querySelector('[data-home-positive-count]'),negativeCount=document.querySelector('[data-home-negative-count]');if(positiveCount)positiveCount.textContent=positive.length;if(negativeCount)negativeCount.textContent=negative.length;
       var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');if(title)title.textContent='盤中行情已局部更新';if(note)note.textContent=data.note||('已於 '+(data.fetched_at||'剛剛')+' 更新；操作日報未重新載入。');
     }).catch(function(){var note=document.querySelector('[data-home-live-note]');if(note)note.textContent='首頁盤中行情暫時無法更新；保留頁面最後有效資料。';}).finally(function(){busy=false;schedule();});
@@ -22961,7 +23079,14 @@ def web_positions_quotes(uid):
         return _workbench_json_response({"ok": True, "updates": [], "market_open": True,
                                          "note": "目前沒有可更新的持股。"})
     try:
-        quotes = get_realtime_stocks_bulk(codes, workers=min(12, len(codes)), rng="1d")
+        # 盤中輪詢每 15 秒打一次，但 get_realtime_stock 的快取是 90 秒——
+        # 不帶 force_refresh 的話，六次裡有五次拿到的是同一份快取，
+        # 畫面看起來就像「價格不會動」。
+        # 真正的節流在下一層：_fetch_twse_mis_quotes 自己有 15 秒快取，
+        # 所以這裡強制刷新不會變成每 15 秒真的打爆 MIS。
+        quotes = get_realtime_stocks_bulk(
+            codes, workers=min(12, len(codes)), rng="1d",
+            force_refresh=_is_taiwan_intraday_window(), mis_force=False)
         updates = []
         for code in codes:
             quote_data = quotes.get(code)
