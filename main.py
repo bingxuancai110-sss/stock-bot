@@ -5906,6 +5906,24 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             if not close or close == 0:
                 continue
 
+            # 盤中 MIS 暫缺時，沿用今天稍早已取得的有效報價，
+            # 而不是倒退回 Yahoo 日線（那是昨收）。
+            # 沒有這一段的話，同一檔會在「今日漲跌」與「昨天的數字」之間跳，
+            # 首頁的貢獻清單就會每次重整都換一批成員。
+            #
+            # 位置很重要：必須在 pct、支撐壓力、位階、走勢序列算出來「之前」覆寫。
+            # 放在後面的話，畫面顯示的是今日價，但距高點百分比與支撐卻是用昨收算的，
+            # 兩個數字互相矛盾。
+            sticky = None
+            if official_quote and official_quote.get("updated_at"):
+                _sticky_quote_put(code, float(close),
+                                  official_quote.get("updated_at"),
+                                  official_quote.get("source"))
+            elif _is_taiwan_intraday_window():
+                sticky = _sticky_quote_get(code)
+                if sticky and sticky.get("close"):
+                    close = float(sticky["close"])
+
             pct = ((close - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
             high = ((official_quote.get("high") if official_quote else None) or
                     meta.get('regularMarketDayHigh', close) or close)
@@ -5974,21 +5992,6 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 broke_support = True
 
             _suffix_cache[code] = suffix  # 這個後綴有效，下次直接從它開始
-
-            # 盤中 MIS 暫缺時，沿用今天稍早已取得的有效報價，
-            # 而不是倒退回 Yahoo 日線（那是昨收）。
-            # 沒有這一段的話，同一檔會在「今日漲跌」與「昨天的數字」之間跳，
-            # 首頁的貢獻清單就會每次重整都換一批成員。
-            sticky = None
-            if official_quote and official_quote.get("updated_at"):
-                _sticky_quote_put(code, float(close), float(pct),
-                                  official_quote.get("updated_at"),
-                                  official_quote.get("source"))
-            elif _is_taiwan_intraday_window():
-                sticky = _sticky_quote_get(code)
-                if sticky and sticky.get("close"):
-                    close = sticky["close"]
-                    pct = sticky.get("pct", pct)
 
             result = {
                 "code": code,
@@ -9451,16 +9454,20 @@ def _sticky_quote_get(code):
         return _STICKY_QUOTES.get(str(code).strip())
 
 
-def _sticky_quote_put(code, close, pct, updated_at, source):
-    """記下今天的有效報價。日期一換就先清空，避免沿用昨天的數字。"""
+def _sticky_quote_put(code, close, updated_at, source):
+    """
+    記下今天的有效收盤價。日期一換就先清空，避免沿用昨天的數字。
+
+    只存收盤價不存漲跌幅：漲跌幅要拿當下的昨收去算，
+    存起來之後若昨收基準有調整（例如除權），沿用舊的 pct 就會錯。
+    """
     today = taiwan_today().isoformat()
     with _STICKY_QUOTE_LOCK:
         if _STICKY_QUOTE_DAY["day"] != today:
             _STICKY_QUOTES.clear()
             _STICKY_QUOTE_DAY["day"] = today
         _STICKY_QUOTES[str(code).strip()] = {
-            "close": close, "pct": pct,
-            "updated_at": updated_at, "source": source,
+            "close": close, "updated_at": updated_at, "source": source,
         }
 
 
