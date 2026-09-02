@@ -2758,7 +2758,7 @@ def merge_positions(positions):
 # 判斷錯會把使用者的股數改壞，而且他不一定馬上發現。
 # 而且一律只提示、不自動套用，由使用者對照券商後自己按確認。
 EXRIGHT_MIN_RATIO = 1.4          # 低於此視為配息或雜訊，不提示
-EXRIGHT_TOLERANCE = 0.02         # 與整數倍的容許誤差
+EXRIGHT_MAX_RATIO = 20.0         # 超過此多半是資料異常，不是配股
 EXRIGHT_LOOKBACK_DAYS = 10       # 只看近期，避免翻出很久以前的除權
 
 
@@ -2771,22 +2771,28 @@ def _exright_ignore_key(user_id):
 
 
 def get_exright_ignored(user_id):
-    """讀取使用者按過「忽略」的除權提示，格式 {code: multiple}。"""
+    """讀取使用者按過「忽略」的除權提示，格式 {code: 配股率}。"""
     try:
         snap = _load_shared_data_snapshot(_exright_ignore_key(user_id))
         payload = (snap or {}).get("payload") if isinstance(snap, dict) else None
         data = payload if isinstance(payload, dict) else (snap if isinstance(snap, dict) else None)
-        return {str(k): int(v) for k, v in (data or {}).items()
-                if str(k).isdigit() or str(k)[:4].isdigit()}
+        # 存的是配股率（浮點），不是整數倍——台股配股率很少是整數。
+        out = {}
+        for k, v in (data or {}).items():
+            try:
+                out[str(k)] = round(float(v), 4)
+            except (TypeError, ValueError):
+                continue
+        return out
     except Exception:
         return {}
 
 
-def set_exright_ignored(user_id, code, multiple):
-    """記下忽略。之後若偵測到不同倍數會重新提示，不會被永久蓋掉。"""
+def set_exright_ignored(user_id, code, ratio):
+    """記下忽略。之後若偵測到不同的配股率會重新提示，不會被永久蓋掉。"""
     try:
         data = get_exright_ignored(user_id)
-        data[str(code).strip()] = int(multiple)
+        data[str(code).strip()] = round(float(ratio), 4)
         _save_shared_data_snapshot(_exright_ignore_key(user_id), data,
                                    data_date=taiwan_today())
         return True
@@ -2799,7 +2805,7 @@ def detect_exright_adjustments(positions, price_map):
     """
     比對還原價與未還原價，找出可能已除權、但股數還沒更新的持股。
 
-    回傳 [{code, name, ratio, multiple, shares, cost,
+    回傳 [{code, name, ratio, shares, cost, fraction,
            new_shares, new_cost, close, adj_close}]
     找不到就回空清單。這裡只做偵測與試算，不寫入任何資料。
     """
@@ -2829,10 +2835,10 @@ def detect_exright_adjustments(positions, price_map):
         # 除權後：近期的還原比值會比先前小（adjclose 把舊價往下調），
         # 兩者相除就是這段期間的配股倍數。
         ratio = earlier / recent
-        if ratio < EXRIGHT_MIN_RATIO:
-            continue
-        multiple = round(ratio)
-        if multiple < 2 or abs(ratio - multiple) > EXRIGHT_TOLERANCE * multiple:
+        # 配股率不必是整數。緯穎 2026 年是每仟股配 1,984.22578 股，
+        # 也就是 1 股變 2.984 股——先前只認整數倍的寫法會直接漏掉這種，
+        # 而台股的配股率本來就很少剛好是整數。
+        if not (EXRIGHT_MIN_RATIO <= ratio <= EXRIGHT_MAX_RATIO):
             continue
 
         shares = int(position.get("shares") or 0)
@@ -2840,15 +2846,24 @@ def detect_exright_adjustments(positions, price_map):
         if shares <= 0 or cost <= 0:
             continue
 
+        # 畸零股不會發，券商是無條件捨去後折現，所以這裡也捨去。
+        new_shares = int(shares * ratio)
+        if new_shares <= shares:
+            continue
+        # 總成本不變，只是分攤到更多股上。用總額回推而不是 cost/ratio，
+        # 因為捨去畸零股之後股數跟 shares*ratio 不完全相等。
+        new_cost = round(shares * cost / new_shares, 2)
+        fraction = round(shares * ratio - new_shares, 4)
+
         out.append({
             "code": code,
             "name": position.get("name") or quote.get("name") or code,
             "ratio": round(ratio, 4),
-            "multiple": multiple,
             "shares": shares,
             "cost": round(cost, 2),
-            "new_shares": shares * multiple,
-            "new_cost": round(cost / multiple, 2),
+            "new_shares": new_shares,
+            "new_cost": new_cost,
+            "fraction": fraction,
             "close": quote.get("close"),
             "ex_date": (dates[-1].isoformat() if dates and hasattr(dates[-1], "isoformat")
                         else None),
@@ -2871,7 +2886,7 @@ def render_exright_cards(items, csrf_html=""):
   <div class="exright-head">
     <b>{html.escape(str(it['name']))}</b>
     <span class="code">{html.escape(str(it['code']))}</span>
-    <span class="badge">1 股變 {it['multiple']} 股</span>
+    <span class="badge">1 股變 {it['ratio']:.3f} 股</span>
   </div>
   <div class="exright-cmp">
     <div><small>目前</small><b>{it['shares']:,} 股</b>
@@ -2880,20 +2895,22 @@ def render_exright_cards(items, csrf_html=""):
     <div><small>調整後</small><b>{it['new_shares']:,} 股</b>
          <span>成本 {it['new_cost']:,.2f}</span></div>
   </div>
-  <div class="sub">請先對照券商庫存頁的股數與成本，確認一致再套用。</div>
+  <div class="sub">請先對照券商庫存頁的股數與成本，確認一致再套用。
+    {f"畸零股 {it['fraction']:.3f} 股不會發放，券商會折現，這裡一併捨去。" if it.get('fraction') else ""}
+  </div>
   <form method="post" action="/web/positions" style="display:inline"
         onsubmit="return confirm('確定將 {html.escape(str(it['name']))}（{html.escape(str(it['code']))}）調整為 {it['new_shares']:,} 股、成本 {it['new_cost']:,.2f}？');">
     {csrf_html}
     <input type="hidden" name="action" value="exright_apply">
     <input type="hidden" name="code" value="{html.escape(str(it['code']), quote=True)}">
-    <input type="hidden" name="multiple" value="{it['multiple']}">
+    <input type="hidden" name="ratio" value="{it['ratio']}">
     <button type="submit">套用調整</button>
   </form>
   <form method="post" action="/web/positions" style="display:inline;margin-left:8px">
     {csrf_html}
     <input type="hidden" name="action" value="exright_ignore">
     <input type="hidden" name="code" value="{html.escape(str(it['code']), quote=True)}">
-    <input type="hidden" name="multiple" value="{it['multiple']}">
+    <input type="hidden" name="ratio" value="{it['ratio']}">
     <button class="del" type="submit">忽略</button>
   </form>
 </div>""")
@@ -2909,48 +2926,70 @@ def render_exright_cards(items, csrf_html=""):
 </section>"""
 
 
-def apply_exright_adjustment(user_id, code, multiple):
+def apply_exright_adjustment(user_id, code, ratio):
     """
-    套用除權調整：同一代號的每一筆買進都乘以倍數、成本除以倍數。
+    套用除權調整：依配股率放大股數、同步稀釋成本。
 
-    刻意逐筆調整而不是合併成一筆——使用者的分批買進紀錄要保留，
-    合併掉的話「分 9 筆買進」那些歷史就沒了。
+    配股率不必是整數（台股很少剛好是整數，例如緯穎 2026 年是 1 股變 2.984 股），
+    所以這裡吃浮點數。畸零股不會發，一律無條件捨去，跟券商的作法一致。
 
-    寫一筆操作日誌，並把原始數字寫進備註，之後對得回來。
+    先算總股數再分攤回各筆，而不是逐筆各自捨去——逐筆捨去會讓總數
+    比券商少（每一筆都掉一點畸零），對不起來。
+
+    刻意保留分批買進的筆數，不合併成一筆：使用者的「分 9 筆買進」
+    那些歷史合併掉就沒了。
+
+    寫一筆操作日誌，原始數字寫進備註，之後對得回來。
     """
     try:
-        multiple = int(multiple)
+        ratio = float(ratio)
     except (TypeError, ValueError):
-        return False, "倍數格式不正確"
-    if multiple < 2 or multiple > 20:
-        return False, "倍數超出合理範圍"
+        return False, "配股率格式不正確"
+    if not (1.0 < ratio <= 20.0):
+        return False, "配股率超出合理範圍"
 
     code = str(code).strip()
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, shares, cost FROM positions WHERE user_id = %s AND code = %s",
+            "SELECT id, shares, cost FROM positions WHERE user_id = %s AND code = %s "
+            "ORDER BY shares DESC, id",
             (str(user_id).strip(), code))
-        rows = cursor.fetchall()
+        rows = [(r[0], int(r[1] or 0), float(r[2] or 0)) for r in cursor.fetchall()]
+        rows = [r for r in rows if r[1] > 0 and r[2] > 0]
         if not rows:
             cursor.close()
             return False, "找不到這檔持股"
 
-        total_before = sum(int(r[1] or 0) for r in rows)
-        for pid, shares, cost in rows:
-            shares = int(shares or 0)
-            cost = float(cost or 0)
-            if shares <= 0 or cost <= 0:
+        total_before = sum(r[1] for r in rows)
+        total_after = int(total_before * ratio)
+        if total_after <= total_before:
+            cursor.close()
+            return False, "配股率過低，調整後股數沒有增加"
+
+        # 依原持股比例分配新股數，餘數給最大的一筆（已依股數排序）
+        assigned, allocated = [], 0
+        for idx, (pid, shares, cost) in enumerate(rows):
+            if idx == len(rows) - 1:
+                new_shares = total_after - allocated
+            else:
+                new_shares = int(total_after * shares / total_before)
+                allocated += new_shares
+            assigned.append((pid, shares, cost, max(new_shares, 0)))
+
+        for pid, shares, cost, new_shares in assigned:
+            if new_shares <= 0:
                 continue
+            # 總成本不變，只是攤到更多股上
+            new_cost = round(shares * cost / new_shares, 4)
             cursor.execute(
                 "UPDATE positions SET shares = %s, cost = %s, "
                 "note = COALESCE(note || ' / ', '') || %s WHERE id = %s",
-                (shares * multiple, round(cost / multiple, 4),
-                 f"除權調整 {shares}股@{cost:.2f}→{shares * multiple}股@{cost / multiple:.2f}",
+                (new_shares, new_cost,
+                 f"除權調整 {shares}股@{cost:.2f}→{new_shares}股@{new_cost:.2f}",
                  pid))
 
-        total_after = total_before * multiple
         cursor.execute(
             """
             INSERT INTO position_change_logs
@@ -2958,11 +2997,12 @@ def apply_exright_adjustment(user_id, code, multiple):
             VALUES (%s, %s, 'add', %s, NULL, %s, %s, 'exright')
             """,
             (str(user_id).strip(), code, total_after - total_before, taiwan_today(),
-             f"除權調整：1 股變 {multiple} 股（{total_before:,} → {total_after:,} 股）"))
+             f"除權調整：1 股變 {ratio:.3f} 股"
+             f"（{total_before:,} → {total_after:,} 股，畸零股捨去）"))
         conn.commit()
         cursor.close()
         clear_leaderboard_cache()
-        return True, {"multiple": multiple, "before": total_before, "after": total_after}
+        return True, {"ratio": ratio, "before": total_before, "after": total_after}
     except Exception as exc:
         conn.rollback()
         print(f"❌ 除權調整失敗 {code}: {exc}")
@@ -5935,6 +5975,21 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
 
             _suffix_cache[code] = suffix  # 這個後綴有效，下次直接從它開始
 
+            # 盤中 MIS 暫缺時，沿用今天稍早已取得的有效報價，
+            # 而不是倒退回 Yahoo 日線（那是昨收）。
+            # 沒有這一段的話，同一檔會在「今日漲跌」與「昨天的數字」之間跳，
+            # 首頁的貢獻清單就會每次重整都換一批成員。
+            sticky = None
+            if official_quote and official_quote.get("updated_at"):
+                _sticky_quote_put(code, float(close), float(pct),
+                                  official_quote.get("updated_at"),
+                                  official_quote.get("source"))
+            elif _is_taiwan_intraday_window():
+                sticky = _sticky_quote_get(code)
+                if sticky and sticky.get("close"):
+                    close = sticky["close"]
+                    pct = sticky.get("pct", pct)
+
             result = {
                 "code": code,
                 "name": stock_name,
@@ -5944,10 +5999,13 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 "low": float(low),
                 "volume": int(volume),
                 "source": (official_quote.get("source") if official_quote else
+                           (f"{sticky.get('source') or 'TWSE MIS'}（本次 MIS 暫缺，"
+                            f"沿用今日稍早報價）" if sticky else
                             ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
                              if _taiwan_post_close() and bars and bars[-1][0] == today_date
-                             else "Yahoo Finance 日線行情")),
-                "updated_at": (official_quote.get("updated_at") if official_quote else None),
+                             else "Yahoo Finance 日線行情"))),
+                "updated_at": (official_quote.get("updated_at") if official_quote else
+                               (sticky.get("updated_at") if sticky else None)),
                 "close_is_final": bool(official_quote and official_quote.get("close_is_final")),
                 "close_date": (official_quote.get("close_date") if official_quote else
                                today_date.strftime("%Y%m%d")),
@@ -9368,6 +9426,42 @@ def fetch_quote(symbol):
     except Exception as e:
         print(f"❌ 抓取 {symbol} 失敗: {e}")
         return None
+
+
+# 今日已成功取得過官方盤中報價的標的。
+#
+# MIS 是逐檔回報，同一分鐘內不同次請求拿到的標的可能不一樣。
+# 沒拿到的會退回 Yahoo 日線（那是昨收），於是同一檔在畫面上
+# 一下有今日漲跌、一下變昨天的——實測同一分鐘兩次載入，
+# 首頁正貢獻從 4 檔變 2 檔，旺矽、緯穎、禾伸堂整批消失。
+#
+# 這裡記住「今天已經拿到過的最後有效報價」，之後 MIS 暫缺時沿用它，
+# 而不是倒退回昨收。日期換了就整批清空，不會把昨天的沿用到今天。
+_STICKY_QUOTE_LOCK = threading.Lock()
+_STICKY_QUOTES = {}
+_STICKY_QUOTE_DAY = {"day": None}
+
+
+def _sticky_quote_get(code):
+    """取回今天已記住的報價；跨日會自動失效。"""
+    today = taiwan_today().isoformat()
+    with _STICKY_QUOTE_LOCK:
+        if _STICKY_QUOTE_DAY["day"] != today:
+            return None
+        return _STICKY_QUOTES.get(str(code).strip())
+
+
+def _sticky_quote_put(code, close, pct, updated_at, source):
+    """記下今天的有效報價。日期一換就先清空，避免沿用昨天的數字。"""
+    today = taiwan_today().isoformat()
+    with _STICKY_QUOTE_LOCK:
+        if _STICKY_QUOTE_DAY["day"] != today:
+            _STICKY_QUOTES.clear()
+            _STICKY_QUOTE_DAY["day"] = today
+        _STICKY_QUOTES[str(code).strip()] = {
+            "close": close, "pct": pct,
+            "updated_at": updated_at, "source": source,
+        }
 
 
 # 各代號最近一次取得報價的日期（美東時間），供畫面標示資料日。
@@ -15262,17 +15356,18 @@ def web_positions(uid):
         action = request.form.get("action")
         if action == "exright_apply":
             ok, info = apply_exright_adjustment(
-                uid, request.form.get("code"), request.form.get("multiple"))
+                uid, request.form.get("code"), request.form.get("ratio"))
             if ok:
-                msg = (f"✅ 已完成除權調整：1 股變 {info['multiple']} 股，"
+                msg = (f"✅ 已完成除權調整：1 股變 {info['ratio']:.3f} 股，"
                        f"股數 {info['before']:,} → {info['after']:,}，"
-                       f"成本已同步除以 {info['multiple']}。已記入操作日誌。")
+                       f"總成本不變、已攤到新的股數上（畸零股捨去）。"
+                       f"已記入操作日誌。")
             else:
                 msg = f"除權調整失敗：{info}"
         elif action == "exright_ignore":
             set_exright_ignored(uid, request.form.get("code"),
-                                request.form.get("multiple"))
-            msg = "已忽略這筆除權提示；若之後偵測到不同倍數會再提醒。"
+                                request.form.get("ratio"))
+            msg = "已忽略這筆除權提示；若之後偵測到不同的配股率會再提醒。"
         elif action == "delete":
             ok = delete_position(uid, request.form.get("id"))
             msg = "已刪除。" if ok else "刪除失敗：找不到這筆持股或資料未成功寫入。"
@@ -15554,7 +15649,7 @@ def web_positions(uid):
 <section class="portfolio-chart-card portfolio-trend-card" id="portfolio-trend">
   <div class="section-head"><h2>組合 vs 加權指數</h2>
     <span class="section-note">相對起始日漲跌幅</span></div>
-  <p class="portfolio-chart-note">同一張圖比較你的組合與台灣加權指數；若快照不足兩天，會明確顯示資料累積狀態。</p>
+  <p class="portfolio-chart-note">同一張圖比較你的組合與台灣加權指數。組合採時間加權報酬，加碼與贖回不影響曲線；除權當天股價機械性下跌但股數尚未調整，那一天會持平不計入。若快照不足兩天，會明確顯示資料累積狀態。</p>
   <div class="portfolio-trend-body">{position_trend_html}</div>
 </section>"""
 
@@ -15564,7 +15659,10 @@ def web_positions(uid):
     try:
         ignored = get_exright_ignored(uid)
         detected = detect_exright_adjustments(positions, price_map)
-        found = [x for x in detected if ignored.get(x["code"]) != x["multiple"]]
+        # 浮點不能用等號比：忽略時存的 2.9842 和這次算出的 2.9843
+        # 其實是同一次除權，差 0.001 以內就當作同一筆。
+        found = [x for x in detected
+                 if abs((ignored.get(x["code"]) or 0) - x["ratio"]) > 0.001]
         exright_html = render_exright_cards(found, csrf_hidden_input())
         # 存一份給首頁用。首頁的 fast 摘要不抓報價，沒有這份快取就無從提示。
         _save_shared_data_snapshot(_exright_cache_key(uid),
@@ -17673,8 +17771,37 @@ def render_trend_chart(snapshots):
         return ('<div class="empty">資料還在累積中，'
                 '至少需要 2 天以上的快照才能畫出走勢，明天再回來看看。</div>')
 
-    base_value = pts[0]["value"]
-    port_series = [(p["value"] / base_value - 1) * 100 for p in pts]
+    # 組合曲線改用時間加權報酬（TWR），跟排行榜同一套算法。
+    #
+    # 原本是市值直接相除，那有兩個問題：
+    # 一是加碼會讓市值變大，看起來像賺；
+    # 二是除權當天股價機械性下跌、股數還沒調整，市值瞬間掉 2/3，
+    #    圖上就出現一道懸崖（實際發生過：緯穎除權後畫成 −60.6%）。
+    # TWR 會扣掉資金進出，也會跳過單日超過 35% 的異常變化，
+    # 兩張圖的數字才會一致。
+    #
+    # compute_twr 回傳 [(日期, 累積報酬%)]；算不出來時退回原本的市值相除，
+    # 至少還有東西可看，而不是整張圖消失。
+    twr_curve = []
+    try:
+        twr_curve = compute_twr(
+            [{"date": p["date"], "value": p["value"], "cost": p.get("cost")}
+             for p in pts])
+    except Exception as exc:
+        print(f"⚠️ 走勢圖 TWR 計算失敗，改用市值變化: {exc}")
+
+    if len(twr_curve) >= 2:
+        # 被跳過的那一天在曲線裡沒有對應點。把它畫成「與前一天持平」，
+        # 而不是讓點數對不上就整條退回舊算法——那樣除權懸崖又會回來。
+        by_date = {d: v for d, v in twr_curve}
+        port_series, last = [], 0.0
+        for p in pts:
+            if p["date"] in by_date:
+                last = by_date[p["date"]]
+            port_series.append(last)
+    else:
+        base_value = pts[0]["value"]
+        port_series = [(p["value"] / base_value - 1) * 100 for p in pts]
 
     taiex_vals = [p["taiex"] for p in pts if p["taiex"]]
     base_taiex = taiex_vals[0] if taiex_vals else None
@@ -19771,7 +19898,8 @@ def render_portfolio_fast_summary(uid):
         cached = _load_shared_data_snapshot(_exright_cache_key(uid)) or {}
         payload = cached.get("payload") if isinstance(cached, dict) else None
         pending = [x for x in (payload or {}).get("items", [])
-                   if ignored.get(x.get("code")) != x.get("multiple")]
+                   if abs((ignored.get(x.get("code")) or 0)
+                          - float(x.get("ratio") or 0)) > 0.001]
         if pending:
             names = "、".join(
                 f"{html.escape(str(x['name']))}（{html.escape(str(x['code']))}）"
@@ -19950,6 +20078,32 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     portfolio_pct = (sum(h["weight"] * pct for h, pct in valid_changes) / 100
                      if valid_changes else None)
     relative = portfolio_pct - market_pct if portfolio_pct is not None and market_pct is not None else None
+
+    # 只納入「報價確實是今天」的持股。
+    #
+    # MIS 是逐檔回報，同一分鐘內不同次載入拿到的標的可能不一樣；
+    # 拿不到的會退回昨收，那筆的「今日漲跌」其實是昨天的數字。
+    # 混在一起的結果是清單每次重整都在跳——實測同一分鐘兩次載入，
+    # 正貢獻從 4 檔變 2 檔，旺矽、緯穎、禾伸堂整個消失、柏承跑進來。
+    #
+    # 寧可少列幾檔，也不要讓昨天的漲跌混進今日貢獻裡。
+    stale_holdings = [h for h, _pct in valid_changes
+                      if holding_day_word(h) != "今天"]
+    stale_codes = {str(h.get("code")) for h in stale_holdings}
+    valid_changes = [(h, pct) for h, pct in valid_changes
+                     if str(h.get("code")) not in stale_codes]
+
+    # 被排除的標的要說出來，不能讓它們無聲消失——
+    # 使用者會以為自己看漏了，或以為那幾檔今天沒動。
+    stale_notice = ""
+    if stale_holdings:
+        names = "、".join(
+            html.escape(str(h.get("name") or h.get("code")))
+            for h in stale_holdings[:4])
+        more = f" 等 {len(stale_holdings)} 檔" if len(stale_holdings) > 4 else ""
+        stale_notice = (
+            f'<p class="impact-stale">{names}{more} 尚未取得今日報價，'
+            f'暫不計入今日貢獻；官方逐檔更新後會自動補上。</p>')
 
     # 「最大貢獻／最大拖累」看的是對組合的實際影響，不是單看個股漲跌幅。
     # 例如權重 40% 下跌 2%，通常比權重 1% 下跌 10% 更拖累整體組合。
@@ -20249,7 +20403,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         basis_notice = ('<div class="contribution-basis-notice fallback"><b>今日有減碼，但操作前基準資料不足：</b>'
                         '目前暫以減碼後權重顯示，未將不完整資料包裝為精確日內報酬。</div>')
     contribution_html = f'''<section class="daily-card contribution-card">
-  <div class="daily-section-title"><h2>今天誰影響了你的組合？</h2><span>今日貢獻基準</span></div>{basis_notice}
+  <div class="daily-section-title"><h2>今天誰影響了你的組合？</h2><span>今日貢獻基準</span></div>{basis_notice}{stale_notice}
   <p class="impact-sentence">{html.escape(impact_sentence)}</p>
   <div class="impact-leads">
     <div data-home-impact-lead="positive">{impact_lead_card(positive_lead, "幫你撐住組合", "impact-up")}</div>
@@ -20313,7 +20467,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 </script>'''
     return f'''<style>
 .daily-complete-sync{{display:flex;gap:11px;align-items:flex-start;background:#F5F0E5;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:13px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-complete-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:#087A4B;box-shadow:0 0 0 4px rgba(8,122,75,.12);flex:none}}.daily-complete-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-complete-sync span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.6}}.daily-hero{{background:#f7fbff;padding:26px 24px 22px;margin:-8px -2px 18px;border:1px solid #d7e0ea;border-radius:14px;margin-top:0;box-shadow:0 3px 14px rgba(35,39,35,.04)}}.daily-hero .eyebrow{{letter-spacing:.16em;color:var(--brass);font-size:12px}}.daily-hero h1{{font-size:30px;line-height:1.2;margin:10px 0 18px}}.market-strip{{display:flex;gap:12px;flex-wrap:wrap}}.market-strip span{{background:rgba(255,255,255,.7);padding:9px 11px;border-radius:8px;font-size:13px}}.market-strip b{{display:block;font-size:18px;margin-top:3px}}.market-freshness{{display:block;margin-top:4px;color:var(--ink-soft);font-size:9px;line-height:1.35}}.daily-card{{background:#fff;border:1px solid #e3e2dc;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.attention-card{{border-left:4px solid var(--brass)}}.daily-section-title{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}}.daily-section-title h2{{margin:0;font-size:20px}}.daily-section-title a{{font-size:13px;color:var(--brass)}}.daily-event{{display:flex;gap:11px;padding:12px 0;border-top:1px solid #eee}}.home-more-events{{margin-top:10px;border-top:1px solid #eee;padding-top:9px}}.home-more-events>summary{{cursor:pointer;color:var(--brass);font-size:13px;font-weight:700;padding:5px 0}}.event-number{{background:var(--brass);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;flex:none}}.event-status{{min-width:28px;height:22px;padding:2px 5px;border-radius:7px;text-align:center;font-size:11px;font-weight:700;line-height:18px;flex:none;background:#eee;color:var(--ink-soft)}}.timeline-new .event-status{{background:#FCE9E6;color:var(--up)}}.timeline-ongoing .event-status{{background:#F3EEE1;color:var(--brass)}}.timeline-resolved .event-status{{background:#E8F2EA;color:var(--down)}}.timeline-divider{{margin:14px 0 0;padding-top:12px;border-top:1px solid #eee;color:var(--ink-soft);font-size:12px;font-weight:600}}.event-detail{{font-size:13px;color:var(--ink-soft);margin-top:4px}}.daily-empty{{padding:16px 0;color:var(--ink-soft)}}.daily-empty span{{font-size:13px}}.portfolio-highlights{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}}.portfolio-highlights>div{{background:#f5f5f1;padding:12px;border-radius:8px}}.portfolio-highlights small{{display:block;color:var(--ink-soft);font-size:12px}}.portfolio-highlights b{{display:block;margin-top:6px;font-size:17px}}.positive,.up{{color:var(--up)}}.negative,.down{{color:var(--down)}}.flat{{color:var(--ink-soft)}}.rank-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.rank-mini{{background:#f5f5f1;border-radius:8px;padding:11px;min-width:0}}.rank-mini span,.rank-mini small{{display:block;color:var(--ink-soft);font-size:11px}}.rank-mini b{{display:block;font-size:18px;margin:5px 0}}.rank-mini em{{font-style:normal;font-size:12px}}.hero-summary-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}}.hero-summary-panel{{min-width:0;padding:13px;border:1px solid rgba(139,105,52,.25);border-radius:11px;background:rgba(255,255,255,.58);box-shadow:0 2px 8px rgba(35,39,35,.04)}}.hero-summary-panel-head{{display:flex;justify-content:space-between;align-items:center;gap:6px;min-height:27px;padding-bottom:8px;border-bottom:1px solid rgba(139,105,52,.18)}}.hero-summary-panel-head b{{font-size:14px}}.hero-summary-panel-head a{{font-size:10px;color:var(--brass);white-space:nowrap}}.hero-summary-panel-head span{{font-size:10px;color:var(--ink-soft);white-space:nowrap}}.hero-summary-stack{{display:block;margin-top:14px}}.hero-summary-stack .hero-summary-panel{{padding:10px 13px}}.hero-rank-panel .rank-grid{{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.hero-rank-panel .rank-mini{{background:transparent;border:0;border-right:1px solid rgba(227,226,220,.88);border-radius:0;padding:8px 10px 8px 0}}.hero-rank-panel .rank-mini:last-child{{border-right:0;padding-right:0;padding-left:10px}}.hero-summary-stack .hero-summary-panel-head{{min-height:0;padding-bottom:6px}}.hero-summary-stack .hero-summary-panel-head b{{font-size:13px}}.hero-quote-panel{{margin-top:8px;border-color:rgba(139,105,52,.22);background:#F8F5ED}}.hero-quote-text{{margin:8px 0 1px;color:var(--ink);font-family:"Kaiti TC","BiauKai","DFKai-SB","STKaiti","Noto Serif CJK TC","Noto Serif TC",serif;font-size:19px;font-weight:700;line-height:1.5;text-align:center;letter-spacing:.12em;white-space:nowrap}}.risk-collapse{{margin:16px 0}}.risk-collapse>summary{{cursor:pointer;color:var(--brass);font-weight:600;padding:8px 0}}.risk-collapse .card{{margin-top:10px}}.home-judgement-card{{padding:16px 15px}}.judgement-row{{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid #ECEDE8;font-size:13px}}.judgement-row:first-of-type{{border-top:0}}.judgement-row span{{color:var(--ink-soft)}}.judgement-row b{{text-align:right}}.home-judgement-copy{{margin:10px 0 0;padding-top:10px;border-top:1px solid #ECEDE8;color:var(--ink-soft);font-size:12px;line-height:1.65}}.home-detail-collapse{{margin:14px 0;border:1px solid #E3E2DC;border-radius:12px;background:#fff;box-shadow:0 3px 14px rgba(35,39,35,.04)}}.home-detail-collapse>summary{{cursor:pointer;padding:14px 16px;color:var(--brass);font-size:13px;font-weight:700}}.home-detail-collapse .contribution-card{{margin:0;border:0;border-top:1px solid #ECEDE8;border-radius:0;box-shadow:none}}@media(max-width:640px){{.portfolio-highlights{{grid-template-columns:1fr 1fr}}.portfolio-highlights>div:last-child{{grid-column:span 2}}.impact-leads{{grid-template-columns:1fr}}.rank-grid{{grid-template-columns:1fr}}.hero-summary-stack{{gap:7px}}.hero-summary-panel{{padding:10px 11px}}.hero-summary-panel-head b{{font-size:12px}}.hero-summary-panel-head a,.hero-summary-panel-head span{{font-size:8px}}.rank-mini span,.rank-mini small{{font-size:10px}}.rank-mini b{{font-size:16px}}.hero-quote-text{{font-size:18px;text-align:center}}.daily-hero h1{{font-size:26px}}}}
-	.daily-interpretation{{padding:11px 14px;margin:-4px 0 14px;border-left:3px solid var(--brass);background:rgba(255,255,255,.6);color:var(--ink-soft);font-size:13px;line-height:1.65}}.daily-interpretation-label{{font-size:11px;color:var(--brass);font-weight:700;letter-spacing:.08em;margin-bottom:3px}}.contribution-card{{padding:16px 15px}}.contribution-card .daily-section-title span{{font-size:11px;color:var(--ink-faint)}}.contribution-basis-notice{{margin:-1px 0 12px;padding:10px 11px;border-left:3px solid var(--brass);border-radius:7px;background:#F8F5ED;color:var(--ink-soft);font-size:12px;line-height:1.6}}.contribution-basis-notice b{{color:var(--ink)}}.contribution-basis-notice.fallback{{border-left-color:#8b8f88;background:#f5f5f3}}.impact-sentence{{margin:0 0 12px;color:var(--ink-soft);font-size:13px;line-height:1.6}}.impact-leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.impact-lead{{padding:13px;border-radius:11px;background:#F7F7F3;border:1px solid #ECEDE8}}.impact-lead small{{display:block;font-size:11px;font-weight:700;color:var(--ink-soft)}}.impact-lead h3{{font-size:20px;line-height:1.3;margin:7px 0 4px;overflow-wrap:anywhere}}.impact-lead p{{margin:0 0 8px;color:var(--ink-soft);font-size:11px}}.impact-lead strong{{font-size:12px}}.impact-realized{{display:block!important;margin:0 0 7px;font-size:11px!important;font-weight:800!important}}.impact-up{{border-color:#EDC7C2;background:#FFF7F5}}.impact-up strong{{color:var(--up)}}.impact-down{{border-color:#C9DFD0;background:#F4FBF5}}.impact-down strong{{color:var(--down)}}.impact-muted{{color:var(--ink-faint)}}.impact-details{{margin-top:10px;border-top:1px solid #ECEDE8}}.impact-details summary{{padding:11px 2px 4px;cursor:pointer;color:var(--brass);font-size:12px;font-weight:600}}.impact-detail-row{{display:flex;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid #F0F0EC}}.impact-rank{{width:20px;height:20px;border-radius:50%;background:#F0EEE8;color:var(--ink-soft);font-size:11px;text-align:center;line-height:20px;flex:none}}.impact-detail-name{{min-width:0;flex:1}}.impact-detail-name b{{display:block;font-size:14px;overflow-wrap:anywhere}}.impact-detail-name small{{display:block;color:var(--ink-soft);font-size:10.5px;margin-top:2px}}.impact-detail-row strong{{font-size:12px;white-space:nowrap}}.impact-empty{{padding:9px 2px;color:var(--ink-faint);font-size:11px}}.contribution-footnote{{margin-top:10px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}} </style><div class="daily-complete-sync" aria-live="polite">
+	.daily-interpretation{{padding:11px 14px;margin:-4px 0 14px;border-left:3px solid var(--brass);background:rgba(255,255,255,.6);color:var(--ink-soft);font-size:13px;line-height:1.65}}.daily-interpretation-label{{font-size:11px;color:var(--brass);font-weight:700;letter-spacing:.08em;margin-bottom:3px}}.contribution-card{{padding:16px 15px}}.contribution-card .daily-section-title span{{font-size:11px;color:var(--ink-faint)}}.contribution-basis-notice{{margin:-1px 0 12px;padding:10px 11px;border-left:3px solid var(--brass);border-radius:7px;background:#F8F5ED;color:var(--ink-soft);font-size:12px;line-height:1.6}}.contribution-basis-notice b{{color:var(--ink)}}.contribution-basis-notice.fallback{{border-left-color:#8b8f88;background:#f5f5f3}}.impact-sentence{{margin:0 0 12px;color:var(--ink-soft);font-size:13px;line-height:1.6}}.impact-leads{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.impact-lead{{padding:13px;border-radius:11px;background:#F7F7F3;border:1px solid #ECEDE8}}.impact-lead small{{display:block;font-size:11px;font-weight:700;color:var(--ink-soft)}}.impact-lead h3{{font-size:20px;line-height:1.3;margin:7px 0 4px;overflow-wrap:anywhere}}.impact-lead p{{margin:0 0 8px;color:var(--ink-soft);font-size:11px}}.impact-lead strong{{font-size:12px}}.impact-stale{margin:6px 0 0;padding:8px 11px;background:#F4F5F2;border-radius:6px;color:#667085;font-size:12px;line-height:1.6}
+.impact-realized{{display:block!important;margin:0 0 7px;font-size:11px!important;font-weight:800!important}}.impact-up{{border-color:#EDC7C2;background:#FFF7F5}}.impact-up strong{{color:var(--up)}}.impact-down{{border-color:#C9DFD0;background:#F4FBF5}}.impact-down strong{{color:var(--down)}}.impact-muted{{color:var(--ink-faint)}}.impact-details{{margin-top:10px;border-top:1px solid #ECEDE8}}.impact-details summary{{padding:11px 2px 4px;cursor:pointer;color:var(--brass);font-size:12px;font-weight:600}}.impact-detail-row{{display:flex;align-items:center;gap:8px;padding:9px 2px;border-top:1px solid #F0F0EC}}.impact-rank{{width:20px;height:20px;border-radius:50%;background:#F0EEE8;color:var(--ink-soft);font-size:11px;text-align:center;line-height:20px;flex:none}}.impact-detail-name{{min-width:0;flex:1}}.impact-detail-name b{{display:block;font-size:14px;overflow-wrap:anywhere}}.impact-detail-name small{{display:block;color:var(--ink-soft);font-size:10.5px;margin-top:2px}}.impact-detail-row strong{{font-size:12px;white-space:nowrap}}.impact-empty{{padding:9px 2px;color:var(--ink-faint);font-size:11px}}.contribution-footnote{{margin-top:10px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}} </style><div class="daily-complete-sync" aria-live="polite">
   <span class="daily-complete-sync-dot" aria-hidden="true"></span>
   <div><b data-home-live-title>{html.escape(home_sync_title)}</b><span data-home-live-note>{html.escape(home_sync_detail)}</span></div>
 </div><section class="daily-hero">
