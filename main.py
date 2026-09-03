@@ -14485,7 +14485,12 @@ def render_page(title, body, nav_active=None, user_name=None):
         if (navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
         var retryNotice = document.createElement('div');
         retryNotice.className = 'app-fragment-status app-fragment-error';
-        retryNotice.textContent = '頁面暫時無法切換，已保留原內容；請稍後再試。';
+        // 把錯誤內容顯示出來。只寫「請稍後再試」的話，
+        // 到底是伺服器 500、逾時、還是網路斷線完全看不出來，
+        // 每次都要去翻 Render Logs 才知道發生什麼事。
+        var reason = (error && error.message) ? error.message : String(error || '');
+        retryNotice.textContent = '頁面暫時無法切換：' + reason
+          + '（HTTP 500 代表伺服器端出錯，請看 Render Logs；其他多半是逾時或網路問題）';
         if (appContent.parentNode) {{
           appContent.parentNode.insertBefore(retryNotice, appContent);
           window.setTimeout(function() {{ if (retryNotice.parentNode) retryNotice.parentNode.removeChild(retryNotice); }}, 4200);
@@ -20198,11 +20203,23 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     # 正貢獻從 4 檔變 2 檔，旺矽、緯穎、禾伸堂整個消失、柏承跑進來。
     #
     # 寧可少列幾檔，也不要讓昨天的漲跌混進今日貢獻裡。
-    stale_holdings = [h for h, _pct in valid_changes
-                      if holding_day_word(h) != "今天"]
-    stale_codes = {str(h.get("code")) for h in stale_holdings}
-    valid_changes = [(h, pct) for h, pct in valid_changes
-                     if str(h.get("code")) not in stale_codes]
+    # 包 try：這只是「哪幾檔不列入」的顯示層過濾，
+    # 不該因為它出錯就讓整個首頁打不開。壞了就退回不過濾。
+    stale_holdings = []
+    try:
+        stale_holdings = [h for h, _pct in valid_changes
+                          if holding_day_word(h) != "今天"]
+        stale_codes = {str(h.get("code")) for h in stale_holdings}
+        if len(stale_codes) < len(valid_changes):
+            # 全部都被判定為非今日時不過濾——那多半是判斷有問題，
+            # 而不是真的每一檔都沒行情；整片空白比列出舊資料更糟。
+            valid_changes = [(h, pct) for h, pct in valid_changes
+                             if str(h.get("code")) not in stale_codes]
+        else:
+            stale_holdings = []
+    except Exception as exc:
+        print(f"⚠️ 今日貢獻過濾失敗，改為不過濾: {exc}")
+        stale_holdings = []
 
     # 被排除的標的要說出來，不能讓它們無聲消失——
     # 使用者會以為自己看漏了，或以為那幾檔今天沒動。
