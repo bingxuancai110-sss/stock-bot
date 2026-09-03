@@ -4365,27 +4365,60 @@ def render_position_change_history(user_id, current_positions=None, price_map=No
             f'<div class="position-history-summary {cls}"><b>{label}</b><strong>{shares:,} 股</strong>'
             f'<small>{len(items)} 筆　成交／成本 {amount_text}</small></div>')
 
+    # 依股票分組，而不是把所有操作依時間混在一起。
+    #
+    # 混在一起時看不出「這一檔我到底進出幾次、現在是加碼還是在減」，
+    # 而那才是回頭看交易紀錄時最想知道的事。分組後每一檔上方直接寫出
+    # 淨變動與筆數，底下才是它自己的逐筆歷程。
+    #
+    # 首頁維持既有的逐日操作日報（render_position_change_journal），
+    # 那裡要看的是「今天做了什麼」，跟這裡的用途不同，不共用。
+    groups = {}
+    for log in enriched:
+        code = str(log.get("code") or "").strip()
+        groups.setdefault(code, []).append(log)
+
+    def group_sort_key(item):
+        """依該檔最近一次操作的日期排序，最近動過的排前面。"""
+        _code, logs_of = item
+        newest = max((_position_change_date(x.get("trade_date")) or date.min)
+                     for x in logs_of)
+        return newest
+
     row_parts = []
-    for log in sorted(enriched, key=lambda item: (
-            _position_change_date(item.get("trade_date")) or date.min,
-            int(item.get("id") or 0)), reverse=True):
-        code = str(log.get("code") or "")
+    for code, logs_of in sorted(groups.items(), key=group_sort_key, reverse=True):
         name = html.escape(str(stock_display_name(code, inst_data or {})))
-        label, cls = _position_change_journal_status(log)
-        delta = int(log.get("shares_delta") or 0)
-        before = int(log.get("shares_before") or 0)
-        after = int(log.get("shares_after") or 0)
-        log_day = _position_change_date(log.get("trade_date"))
-        price = log.get("trade_price")
-        price_text = f"成交／成本 {price:,.2f}" if price is not None else "成交價待確認"
-        note = html.escape(str(log.get("note") or ""))
-        delta_cls = "up" if delta > 0 else "down"
-        row_parts.append(f'''<div class="position-history-row">
-  <div class="position-history-date">{log_day.strftime("%Y/%m/%d") if log_day else "日期待確認"}</div>
-  <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
-  <div class="position-journal-status"><span class="position-journal-badge {cls}">{label}</span></div>
-  <div class="position-journal-cell"><b class="{delta_cls}">{delta:+,} 股</b><small>{before:,} → {after:,} 股</small></div>
-  <div class="position-journal-cell"><small>{note}</small></div>
+        net = sum(int(x.get("shares_delta") or 0) for x in logs_of)
+        net_cls = "up" if net > 0 else ("down" if net < 0 else "flat")
+        inner = []
+        for log in sorted(logs_of, key=lambda item: (
+                _position_change_date(item.get("trade_date")) or date.min,
+                int(item.get("id") or 0)), reverse=True):
+            label, cls = _position_change_journal_status(log)
+            delta = int(log.get("shares_delta") or 0)
+            before = int(log.get("shares_before") or 0)
+            after = int(log.get("shares_after") or 0)
+            log_day = _position_change_date(log.get("trade_date"))
+            price = log.get("trade_price")
+            price_text = f"{price:,.2f}" if price is not None else "待確認"
+            note = html.escape(str(log.get("note") or ""))
+            delta_cls = "up" if delta > 0 else "down"
+            weekday = "一二三四五六日"[log_day.weekday()] if log_day else "—"
+            inner.append(f'''<div class="stock-log-row">
+  <span class="stock-log-date">{log_day.strftime("%m/%d") if log_day else "日期待確認"}</span>
+  <span class="stock-log-week">週{weekday}</span>
+  <span class="position-journal-badge {cls}">{label}</span>
+  <span class="stock-log-delta {delta_cls}">{delta:+,} 股</span>
+  <span class="stock-log-shares">{before:,} → {after:,}</span>
+  <span class="stock-log-price">{price_text}</span>
+  <span class="stock-log-note">{note}</span>
+</div>''')
+        row_parts.append(f'''<div class="stock-group">
+  <div class="stock-group-head">
+    <div><b>{name}</b><span class="code">{html.escape(code)}</span></div>
+    <div class="stock-group-net {net_cls}">淨 {net:+,} 股・{len(logs_of)} 筆</div>
+  </div>
+  {"".join(inner)}
 </div>''')
     start = _position_change_date(start_date)
     end = _position_change_date(end_date)
@@ -4404,7 +4437,7 @@ def render_position_change_history(user_id, current_positions=None, price_map=No
   <div class="position-history-head"><div class="position-journal-title-actions"><h2>完整操作歷程</h2><a class="position-journal-export" href="{html.escape(export_url, quote=True)}">匯出明細 CSV</a></div><small>{len(enriched)} 筆操作<br>{html.escape(range_text)}</small></div>
   <div class="position-history-note">此頁彙總目前篩選區間的所有操作；首頁維持最新一天的逐日操作日報。</div>
   <div class="position-history-summary-grid">{"".join(summary_parts)}</div>
-  <div class="position-history-table-head"><span>日期</span><span>標的</span><span>狀態</span><span>持股變動</span><span>備註</span></div>
+  <div class="position-history-note" style="background:transparent;padding:0 2px 6px">依股票分組，最近動過的排前面；每一檔上方是淨變動與筆數。</div>
   {"".join(row_parts)}
 </section>'''
 
@@ -13795,14 +13828,14 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
   .position-journal-category{display:flex;align-items:center;gap:7px;padding:10px 15px 6px;background:#F8F7F2;color:var(--ink-soft);border-top:1px solid #E8E3D8;font-size:12px;letter-spacing:.04em}
   .position-journal-category:first-of-type{border-top:0}.position-journal-category b{font-size:12px}.position-journal-category small{color:var(--ink-faint);font-size:10.5px}
   .position-journal-category.new b{color:#927A12}.position-journal-category.add b{color:var(--up)}.position-journal-category.reduce b{color:var(--down)}.position-journal-category.delete b{color:#667085}
-  .position-history-note{padding:9px 15px;background:#F7F4EC;color:var(--ink-soft);font-size:11.5px;line-height:1.6}.position-history-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:11px 15px;border-bottom:1px solid #E8E3D8}.position-history-summary{min-width:0;padding:9px;border-radius:8px;background:#F6F4EE}.position-history-summary b,.position-history-summary strong,.position-history-summary small{display:block}.position-history-summary b{font-size:11px}.position-history-summary strong{margin-top:3px;color:var(--ink);font-size:16px;font-variant-numeric:tabular-nums}.position-history-summary small{margin-top:3px;color:var(--ink-faint);font-size:10px;line-height:1.4}.position-history-summary.new b{color:#927A12}.position-history-summary.add b{color:var(--up)}.position-history-summary.reduce b{color:var(--down)}.position-history-summary.delete b{color:#667085}.position-history-table-head,.position-history-row{display:grid;grid-template-columns:.74fr minmax(0,1.3fr) .68fr minmax(0,.95fr) minmax(0,1.05fr);gap:9px;align-items:center;padding:9px 15px}.position-history-table-head{background:#F8F7F2;color:var(--ink-soft);font-size:11px;font-weight:700;line-height:1.25}.position-history-table-head span:not(:nth-child(2)){text-align:right}.position-history-row{border-top:1px solid #EEEAE1}.position-history-date{color:var(--ink-soft);font-size:11px;font-variant-numeric:tabular-nums}.position-history-row .position-journal-cell:last-child{text-align:right}
+  .position-history-note{padding:9px 15px;background:#F7F4EC;color:var(--ink-soft);font-size:11.5px;line-height:1.6}.position-history-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:11px 15px;border-bottom:1px solid #E8E3D8}.position-history-summary{min-width:0;padding:9px;border-radius:8px;background:#F6F4EE}.position-history-summary b,.position-history-summary strong,.position-history-summary small{display:block}.position-history-summary b{font-size:11px}.position-history-summary strong{margin-top:3px;color:var(--ink);font-size:16px;font-variant-numeric:tabular-nums}.position-history-summary small{margin-top:3px;color:var(--ink-faint);font-size:10px;line-height:1.4}.position-history-summary.new b{color:#927A12}.position-history-summary.add b{color:var(--up)}.position-history-summary.reduce b{color:var(--down)}.position-history-summary.delete b{color:#667085}.position-history-table-head,.position-history-row{display:grid;grid-template-columns:.74fr minmax(0,1.3fr) .68fr minmax(0,.95fr) minmax(0,1.05fr);gap:9px;align-items:center;padding:9px 15px}.position-history-table-head{background:#F8F7F2;color:var(--ink-soft);font-size:11px;font-weight:700;line-height:1.25}.position-history-table-head span:not(:nth-child(2)){text-align:right}.position-history-row{border-top:1px solid #EEEAE1}.stock-group{border-top:1px solid #EEEAE1;padding:12px 15px 6px}.stock-group-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:6px;flex-wrap:wrap}.stock-group-head b{font-size:17px;color:var(--ink)}.stock-group-head .code{margin-left:7px;color:var(--ink-faint);font-size:12px}.stock-group-net{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}.stock-log-row{display:grid;grid-template-columns:52px 40px 54px 84px 96px 78px minmax(0,1fr);gap:8px;align-items:center;padding:7px 0 7px 12px;border-left:2px solid #EFEDE6}.stock-log-date{color:var(--ink-soft);font-size:12.5px;font-variant-numeric:tabular-nums}.stock-log-week,.stock-log-note{color:var(--ink-faint);font-size:11.5px}.stock-log-delta{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;text-align:right}.stock-log-shares{color:var(--ink-faint);font-size:11.5px;font-variant-numeric:tabular-nums}.stock-log-price{color:var(--ink-soft);font-size:12.5px;font-variant-numeric:tabular-nums;text-align:right}.position-history-date{color:var(--ink-soft);font-size:11px;font-variant-numeric:tabular-nums}.position-history-row .position-journal-cell:last-child{text-align:right}
   .position-journal-foot{padding:10px 15px 13px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}
   .position-journal-empty{padding:14px 15px;color:var(--ink-soft);font-size:12.5px}
   @media(max-width:640px){
     .position-journal-head{padding:13px 12px 10px}
     .position-journal-head h2{font-size:17px}
     .position-journal-head small{text-align:right;font-size:10.5px}
-    .position-history-head{padding:13px 12px 10px}.position-history-head h2{font-size:17px}.position-history-head small{font-size:10.5px}.position-history-note{padding:9px 12px;font-size:10.5px}.position-history-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:9px 8px}.position-history-summary{padding:8px}.position-history-summary strong{font-size:14px}.position-history-summary small{font-size:9px}.position-history-table-head,.position-history-row{grid-template-columns:.7fr minmax(0,1.12fr) .58fr minmax(0,.85fr) minmax(0,.85fr);gap:5px;padding:8px}.position-history-table-head{font-size:9px}.position-history-row{padding:9px 8px}.position-history-date{font-size:9px}
+    .position-history-head{padding:13px 12px 10px}.position-history-head h2{font-size:17px}.position-history-head small{font-size:10.5px}.position-history-note{padding:9px 12px;font-size:10.5px}.position-history-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;padding:9px 8px}.position-history-summary{padding:8px}.position-history-summary strong{font-size:14px}.position-history-summary small{font-size:9px}.position-history-table-head,.position-history-row{grid-template-columns:.7fr minmax(0,1.12fr) .58fr minmax(0,.85fr) minmax(0,.85fr);gap:5px;padding:8px}.position-history-table-head{font-size:9px}.position-history-row{padding:9px 8px}.position-history-date{font-size:9px}.stock-group{padding:11px 10px 4px}.stock-group-head b{font-size:15.5px}.stock-group-net{font-size:12px}.stock-log-row{grid-template-columns:46px 46px 74px minmax(0,1fr);gap:6px;row-gap:2px;padding:7px 0 7px 9px}.stock-log-week{display:none}.stock-log-shares{grid-column:2/4;font-size:10.5px}.stock-log-price{grid-column:4;text-align:right;font-size:11.5px}.stock-log-note{grid-column:1/5;font-size:10.5px}
     .position-journal-title-actions{gap:6px}.position-journal-export{padding:5px 7px;font-size:10px}
     .position-journal-table-head{grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:5px;padding:8px 8px 6px;font-size:9.5px}
     .position-journal-row{grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:6px 5px;padding:10px 8px}
@@ -14019,10 +14052,11 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
   padding:14px 11px 14px 9px;margin:0 -11px}
 .rank-tabs{display:flex;gap:4px;margin:18px 0 8px;padding:4px;background:#D7D9D2;
   border-radius:11px;flex-wrap:nowrap}
-.rank-tabs a{flex:1;text-align:center;padding:8px 7px;background:transparent;border-radius:8px;
-  color:var(--ink-soft);font-size:13px;white-space:nowrap}
-.rank-tabs a.on{background:#FFF;color:var(--ink);font-weight:600;box-shadow:0 2px 7px rgba(35,39,35,.10)}
-.rank-tabs a:hover{background:#F7F7F3;color:var(--ink)}
+.rank-tabs a,.rank-tabs button{flex:1;text-align:center;padding:8px 7px;background:transparent;border-radius:8px;
+  color:var(--ink-soft);font-size:13px;white-space:nowrap;
+  border:0;font-family:inherit;cursor:pointer;-webkit-appearance:none;appearance:none}
+.rank-tabs a.on,.rank-tabs button.on{background:#FFF;color:var(--ink);font-weight:600;box-shadow:0 2px 7px rgba(35,39,35,.10)}
+.rank-tabs a:hover,.rank-tabs button:hover{background:#F7F7F3;color:var(--ink)}
 .rank-chart-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
 .rank-chart-head h2{margin:0}
 @media(max-width:640px){
@@ -18248,12 +18282,66 @@ def render_leaderboard_chart(series_map, market, top_keys, highlight_key=None):
         legend.append(f'<span><i style="background:var(--ink-faint)"></i>'
                       f'大盤 {market[-1][1]:+.1f}%</span>')
 
+    # X 軸刻度：依涵蓋期間自動切換單位。
+    #
+    # 只寫「08/20 – 09/03」的話，資料一長就看不出中間哪一段在漲跌——
+    # 使用者要的是「幾月到幾月」。但現在只有十幾天，硬標月份會變成
+    # 「8月、9月」兩個字擠在一起，反而更難看，所以依跨度自動決定：
+    #   < 2 個月  → 標日期（現況）
+    #   2 個月～2 年 → 標月份
+    #   > 2 年    → 標年份
+    span_days = (all_dates[-1] - all_dates[0]).days
+    ticks = []
+    if span_days < 60:
+        unit, fmt = "day", "%m/%d"
+        keys = [d.strftime(fmt) for d in all_dates]
+    elif span_days < 730:
+        unit, fmt = "month", "%Y-%m"
+        keys = [d.strftime(fmt) for d in all_dates]
+    else:
+        unit, fmt = "year", "%Y"
+        keys = [d.strftime(fmt) for d in all_dates]
+
+    # 每個單位取第一個出現的位置當刻度
+    seen = set()
+    for d, key in zip(all_dates, keys):
+        if key in seen:
+            continue
+        seen.add(key)
+        label = (d.strftime("%m/%d") if unit == "day" else
+                 (f"{d.month}月" if unit == "month" else str(d.year)))
+        ticks.append((d, label))
+    # 刻度太密就抽稀，避免文字互相重疊
+    max_ticks = 6
+    if len(ticks) > max_ticks:
+        step = (len(ticks) + max_ticks - 1) // max_ticks
+        ticks = ticks[::step]
+    # 月份刻度跨年時，第一個補上年份才不會誤會
+    if unit == "month" and ticks:
+        first_d, first_label = ticks[0]
+        if len({d.year for d, _l in ticks}) > 1:
+            ticks[0] = (first_d, f"{first_d.year} {first_label}")
+
+    axis_parts = []
+    for d, label in ticks:
+        x = X(d)
+        axis_parts.append(
+            f'<line x1="{x:.1f}" y1="0" x2="{x:.1f}" y2="{H}" '
+            f'stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,4" '
+            f'opacity="0.55"/>')
+    axis_html = "".join(
+        f'<span style="position:absolute;left:{X(d) / W * 100:.2f}%;'
+        f'transform:translateX(-50%);white-space:nowrap">{label}</span>'
+        for d, label in ticks)
+
     return f"""
 <svg viewBox="0 0 {W} {H}" width="100%" height="{H}" preserveAspectRatio="none"
-     style="display:block">{''.join(parts)}</svg>
-<div class="legend" style="margin-top:8px">{''.join(legend)}
+     style="display:block">{''.join(axis_parts)}{''.join(parts)}</svg>
+<div class="chart-axis" style="position:relative;height:16px;margin-top:3px;
+     color:var(--ink-faint);font-size:10.5px">{axis_html}</div>
+<div class="legend" style="margin-top:6px">{''.join(legend)}
   <span style="color:var(--ink-faint);margin-left:auto">
-    {all_dates[0].strftime('%m/%d')} – {all_dates[-1].strftime('%m/%d')}</span>
+    {all_dates[0].strftime('%Y/%m/%d')} – {all_dates[-1].strftime('%Y/%m/%d')}</span>
 </div>"""
 
 
@@ -18554,7 +18642,15 @@ def web_leaderboard(uid):
                 out.append('<div class="rank-champion-prompt">下一個站上這裡的人，會是誰？</div>')
         return f'<div class="rows rank-rows">{"".join(out)}</div>'
 
-    board = board_rows(boards[active_board], active_key, rank_status_map)
+    # 兩榜都先渲染好。資料本來就都算過了（build_leaderboard 同時回 short/long），
+    # 原本卻只挑一榜輸出、切換靠 <a> 重新載入整頁——等於為了換個排序
+    # 重跑一次完整計算與整頁渲染。改成兩榜都輸出、前端切換顯示，
+    # 跟選股台的分頁一樣即點即換。
+    board_html = {
+        "short": board_rows(boards["short"], "m30", rank_status_map),
+        "long": board_rows(boards["long"], "ret", rank_status_map),
+    }
+    board = board_html[active_board]
     active_status = my_rank[active_board]
     active_row = active_status.get("row")
     if active_row:
@@ -18638,17 +18734,22 @@ def web_leaderboard(uid):
 </div>
 <div class="rows">{items}</div>"""
 
+    # 用 button 而非 <a>：連結會觸發整頁重新載入，那正是要避免的事。
+    # 保留 data-board 讓 JS 知道該顯示哪一組。
     tabs = f"""
-<div class="tabs rank-tabs">
-  <a href="/web/leaderboard?board=short"
-     class="{'on' if is_short else ''}">短線　近30天</a>
-  <a href="/web/leaderboard?board=long"
-     class="{'' if is_short else 'on'}">長線　累計</a>
+<div class="tabs rank-tabs" id="rankTabs">
+  <button type="button" data-board="short"
+          class="{'on' if is_short else ''}">短線　近30天</button>
+  <button type="button" data-board="long"
+          class="{'' if is_short else 'on'}">長線　累計</button>
 </div>
-<div class="rank-switch-note">{
-  '短線：所有人統一比較近 30 天；樣本少於 10 天會標示為參考排名。'
-  if is_short else
-  '長線：從各自加入日後累計；加入天數不同，請搭配樣本天數判讀。'}
+<div class="rank-switch-note" data-board-note="short"
+     style="{'' if is_short else 'display:none'}">
+  短線：所有人統一比較近 30 天；樣本少於 10 天會標示為參考排名。
+</div>
+<div class="rank-switch-note" data-board-note="long"
+     style="{'display:none' if is_short else ''}">
+  長線：從各自加入日後累計；加入天數不同，請搭配樣本天數判讀。
 </div>"""
 
     chart_keys = [str(r["user_id"]) for r in boards[active_board]][:5]
@@ -18692,11 +18793,16 @@ def web_leaderboard(uid):
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {my_rank_html}
 {tabs}
-<div class="rank-list-caption">
-  <span>{len(boards[active_board])} 位顯示中・依報酬排序</span></div>
+<div class="rank-list-caption" data-board-caption="short"
+     style="{'' if is_short else 'display:none'}">
+  <span>{len(boards["short"])} 位顯示中・依報酬排序</span></div>
+<div class="rank-list-caption" data-board-caption="long"
+     style="{'display:none' if is_short else ''}">
+  <span>{len(boards["long"])} 位顯示中・依報酬排序</span></div>
 <div class="rank-source-note">資料來源：{leaderboard_source}・資料日：{html.escape(leaderboard_data_date)}</div>
 <div class="mode-note">個股與 ETF 持股都納入會員整體績效；ETF 只計入實際價格／市值變化，不套用個股營收、PE 或法人評分。</div>
-{board}
+<div data-board-panel="short" style="{'' if is_short else 'display:none'}">{board_html["short"]}</div>
+<div data-board-panel="long" style="{'display:none' if is_short else ''}">{board_html["long"]}</div>
 {waiting_html}
 {join_top_html}
 
@@ -18705,6 +18811,38 @@ def web_leaderboard(uid):
 <div class="callout" style="padding:14px 15px 8px">{chart}</div>
 
 {settings_html}
+
+<script>
+(function () {{
+  // 短線／長線切換：兩榜的 HTML 都已經在頁面上，這裡只切換顯示，
+  // 不重新請求。原本用 <a href> 會整頁重載，為了換個排序
+  // 重跑一次完整計算，開一次要等好幾秒。
+  var tabs = document.getElementById('rankTabs');
+  if (!tabs) return;
+  tabs.addEventListener('click', function (e) {{
+    var btn = e.target.closest('button[data-board]');
+    if (!btn) return;
+    var board = btn.getAttribute('data-board');
+    Array.prototype.forEach.call(tabs.querySelectorAll('button'), function (b) {{
+      b.className = (b === btn) ? 'on' : '';
+    }});
+    ['panel', 'note', 'caption'].forEach(function (kind) {{
+      Array.prototype.forEach.call(
+        document.querySelectorAll('[data-board-' + kind + ']'), function (el) {{
+          el.style.display =
+            (el.getAttribute('data-board-' + kind) === board) ? '' : 'none';
+        }});
+    }});
+    // 網址同步更新，重新整理或分享連結時停在同一榜；
+    // 用 replaceState 不留歷史紀錄，返回鍵才不會卡在切換上。
+    try {{
+      var u = new URL(window.location.href);
+      u.searchParams.set('board', board);
+      window.history.replaceState(null, '', u.toString());
+    }} catch (ignore) {{}}
+  }});
+}})();
+</script>
 
 <details class="disclosure leaderboard-method"><summary>這些數字怎麼來的</summary>
 <div class="callout" style="margin-top:10px">
