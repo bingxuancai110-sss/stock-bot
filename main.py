@@ -4184,27 +4184,13 @@ def _build_home_intraday_payload(uid):
             })
         portfolio_pct = (sum(item["contribution"] for item in contribution_rows)
                          if contribution_rows else None)
-        # 只納入報價確實是今天的持股。
-        #
-        # 首頁初次載入已經這樣過濾了，但輪詢這條路徑原本沒有——
-        # 結果是第一次載入乾淨，15 秒後又把昨收的漲跌混進來，
-        # 清單照樣每次重整都換一批成員。兩條路徑要用同一個標準。
-        today_key = taiwan_today().strftime("%Y%m%d")
-
-        def quote_is_today(item):
-            quote = price_map.get(str(item.get("code") or "").strip()) or {}
-            stamp = str(quote.get("updated_at") or "")
-            if len(stamp) >= 8 and stamp[:8].isdigit():
-                return stamp[:8] == today_key
-            # 沒有時間戳時不猜，保守當成非今日，寧可少列也不要混入昨天的數字
-            return False
-
-        fresh_rows = [item for item in contribution_rows if quote_is_today(item)]
-        stale_names = [str(item.get("name") or item.get("code"))
-                       for item in contribution_rows if not quote_is_today(item)]
-        positive = sorted((item for item in fresh_rows if item["contribution"] > 0),
+        # 這裡曾經加過「只列今日報價」的過濾，已移除——理由同首頁：
+        # updated_at 只有官方 MIS 來源才有，走 Yahoo 的會被整批誤判成
+        # 非今日而排除，清單反而更空、跳得更嚴重。
+        stale_names = []
+        positive = sorted((item for item in contribution_rows if item["contribution"] > 0),
                           key=lambda item: item["contribution"], reverse=True)[:5]
-        negative = sorted((item for item in fresh_rows if item["contribution"] < 0),
+        negative = sorted((item for item in contribution_rows if item["contribution"] < 0),
                           key=lambda item: item["contribution"])[:5]
         taiex = fetch_taiex_intraday(force_refresh=True)
         try:
@@ -20203,23 +20189,16 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     # 正貢獻從 4 檔變 2 檔，旺矽、緯穎、禾伸堂整個消失、柏承跑進來。
     #
     # 寧可少列幾檔，也不要讓昨天的漲跌混進今日貢獻裡。
-    # 包 try：這只是「哪幾檔不列入」的顯示層過濾，
-    # 不該因為它出錯就讓整個首頁打不開。壞了就退回不過濾。
+    # 這裡曾經加過「只列今日報價」的過濾，已移除。
+    #
+    # 原意是解決清單每次重整換一批成員的問題，但判斷依據用的是
+    # updated_at，而那個欄位只有官方 MIS 來源才有值——走 Yahoo 的
+    # 一律沒有，於是被整批判成「非今日」排除掉，13 檔持股只剩 1 檔，
+    # 摘要句子還會提到清單裡看不到的標的。修出來的問題比原本的大。
+    #
+    # 跳動由 get_realtime_stock 的同日黏著快取處理：今天拿過的報價
+    # 就記住，MIS 暫缺時沿用而不是倒退回昨收。
     stale_holdings = []
-    try:
-        stale_holdings = [h for h, _pct in valid_changes
-                          if holding_day_word(h) != "今天"]
-        stale_codes = {str(h.get("code")) for h in stale_holdings}
-        if len(stale_codes) < len(valid_changes):
-            # 全部都被判定為非今日時不過濾——那多半是判斷有問題，
-            # 而不是真的每一檔都沒行情；整片空白比列出舊資料更糟。
-            valid_changes = [(h, pct) for h, pct in valid_changes
-                             if str(h.get("code")) not in stale_codes]
-        else:
-            stale_holdings = []
-    except Exception as exc:
-        print(f"⚠️ 今日貢獻過濾失敗，改為不過濾: {exc}")
-        stale_holdings = []
 
     # 被排除的標的要說出來，不能讓它們無聲消失——
     # 使用者會以為自己看漏了，或以為那幾檔今天沒動。
