@@ -20902,13 +20902,29 @@ def web_portfolio(uid):
     realized_by_code = _today_realized_by_code(realized_trades)
 
     daily_top_started = time.monotonic()
-    daily_top = render_daily_home_top(uid, holdings, total_value, total_cost,
-                                      price_map, pl_total, taiex=taiex,
-                                      position_journal_html=journal_html,
-                                      daily_context=daily_context,
-                                      rank_status=page_rank_status,
-                                      daily_pretrade_exposure=daily_pretrade_exposure,
-                                      realized_by_code=realized_by_code)
+    try:
+        daily_top = render_daily_home_top(uid, holdings, total_value, total_cost,
+                                          price_map, pl_total, taiex=taiex,
+                                          position_journal_html=journal_html,
+                                          daily_context=daily_context,
+                                          rank_status=page_rank_status,
+                                          daily_pretrade_exposure=daily_pretrade_exposure,
+                                          realized_by_code=realized_by_code)
+    except Exception as exc:
+        # 首頁上半部渲染失敗時，不要讓整頁回 500。
+        # 整頁 500 的話畫面只會顯示「頁面暫時無法切換」，
+        # 使用者看不到原因，我也只能靠猜——把例外訊息與位置直接顯示出來，
+        # 下半部（持股、日誌、走勢）仍然照常呈現。
+        import traceback
+        tb = traceback.format_exc()
+        print(f"❌ 首頁上半部渲染失敗: {exc}\n{tb}")
+        last = [ln.strip() for ln in tb.strip().split("\n")
+                if ln.strip().startswith("File ")]
+        where = last[-1] if last else "位置不明"
+        daily_top = (
+            '<div class="msg">首頁上半部暫時無法產生，下方內容仍可使用。<br>'
+            f'<span style="font-size:12px">{html.escape(type(exc).__name__)}: '
+            f'{html.escape(str(exc))}<br>{html.escape(where)}</span></div>')
     daily_top_done = time.monotonic()
     print("⏱️ 今日完整頁：共享 %.0fms、持股行情／日誌 %.0fms、組合計算 %.0fms、走勢／損益／排名並行 %.0fms、首頁判讀 %.0fms、合計 %.0fms" % (
         (shared_done - full_started) * 1000,
