@@ -3117,9 +3117,30 @@ def delete_position(user_id, pos_id):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
+        # 先讀出這筆的內容，刪掉之後就查不到了。
+        # 沒有這一步的話操作日誌不會知道「刪了什麼」，
+        # 而日報是用目前持股往回推算前後股數的——
+        # 少了刪除這筆，推出來的會是「−3 → 0 股」這種不可能的負數
+        # （實際發生過：誤加 3 股後刪除，日報顯示 加碼 +3 股、−3 → 0 股）。
+        cursor.execute(
+            "SELECT code, shares, cost FROM positions WHERE id = %s AND user_id = %s",
+            (int(pos_id), str(user_id).strip()))
+        row = cursor.fetchone()
         cursor.execute("DELETE FROM positions WHERE id = %s AND user_id = %s",
                        (int(pos_id), str(user_id).strip()))
         deleted = cursor.rowcount
+        if deleted > 0 and row:
+            code, shares, cost = str(row[0]).strip(), int(row[1] or 0), row[2]
+            cursor.execute(
+                """
+                INSERT INTO position_change_logs
+                    (user_id, code, action, shares_delta, trade_price,
+                     trade_date, note, source)
+                VALUES (%s, %s, 'delete', %s, %s, %s, %s, 'web')
+                """,
+                (str(user_id).strip(), code, -shares,
+                 float(cost) if cost is not None else None,
+                 taiwan_today(), "刪除持股（未產生已實現損益）"))
         conn.commit()
         cursor.close()
         if deleted > 0:
@@ -4010,6 +4031,15 @@ def enrich_position_change_logs(logs, current_positions, price_map, total_value)
         delta = int(log.get("shares_delta") or 0)
         before = int(state.get(code, 0))
         after = before + delta
+        # 還原出來的股數不可能是負的。舊資料若缺了某些操作紀錄
+        # （例如刪除持股在補寫日誌之前發生），往回推會推出負數，
+        # 畫面就會出現「−3 → 0 股」這種看不懂的數字。
+        # 這裡把區間夾回 0 以上，並讓變動幅度在基準不合理時顯示待確認。
+        if before < 0:
+            before = max(0, after - delta) if after >= 0 else 0
+            after = max(0, before + delta)
+        if after < 0:
+            after = 0
         trade_price = log.get("trade_price")
         event_value = (abs(delta) * float(trade_price)
                        if trade_price is not None else None)
@@ -4740,6 +4770,31 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
     for day in sorted(grouped, key=lambda value: value or date.min, reverse=True):
         day_logs = grouped[day]
         day_text = day.strftime("%Y/%m/%d") if day else "日期待確認"
+        # 同一天加了又刪、淨變動為零的，視為「加錯又撤掉」，
+        # 摺疊起來不佔正常操作的版面——那件事等於沒發生過。
+        #
+        # 只合併同一天：隔天才刪通常是真的改變主意，那是有意義的
+        # 操作決定，不該被藏起來。
+        #
+        # 紀錄本身不刪除，仍可展開查看；日報只是不把它混在正常操作裡。
+        cancelled_logs = []
+        by_code_delta = {}
+        for log in day_logs:
+            code_key = str(log.get("code") or "").strip()
+            by_code_delta.setdefault(code_key, []).append(log)
+        cancelled_codes = set()
+        for code_key, logs_of_code in by_code_delta.items():
+            actions = {str(x.get("action") or "") for x in logs_of_code}
+            net = sum(int(x.get("shares_delta") or 0) for x in logs_of_code)
+            # 需要同時出現「進場」與「刪除」，且當天淨變動為零
+            if net == 0 and "delete" in actions and actions & {"add"}:
+                cancelled_codes.add(code_key)
+        if cancelled_codes:
+            cancelled_logs = [x for x in day_logs
+                              if str(x.get("code") or "").strip() in cancelled_codes]
+            day_logs = [x for x in day_logs
+                        if str(x.get("code") or "").strip() not in cancelled_codes]
+
         row_parts = []
         attached_pnl_keys = set()
         status_groups = {label: [] for label, _cls in journal_group_order}
@@ -4796,7 +4851,35 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
   <div class="position-journal-cell"><b>{html.escape(change_text)}</b><small>相對操作前</small></div>
   <div class="position-journal-cell"><b>{html.escape(weight_text)}</b><small class="{event_weight_class}">{html.escape(event_weight_text)}</small>{pnl_html}{note_html}</div>
 </div>''')
-        day_sections.append(f'<div class="position-journal-day">{day_text}</div>{"".join(row_parts)}')
+        # 當天被判定為「加錯又撤掉」的，收在一行裡，預設不展開。
+        cancelled_html = ""
+        if cancelled_logs:
+            names = []
+            for code_key in sorted(cancelled_codes):
+                nm = str(stock_display_name(code_key, inst_data))
+                names.append(f"{html.escape(nm)}（{html.escape(code_key)}）")
+            detail_rows = []
+            for log in sorted(cancelled_logs, key=lambda x: int(x.get("id") or 0)):
+                lbl, _cls = _position_change_journal_status(log)
+                dlt = int(log.get("shares_delta") or 0)
+                nm = html.escape(str(stock_display_name(
+                    str(log.get("code") or "").strip(), inst_data)))
+                detail_rows.append(
+                    f'<div class="journal-cancel-row">{nm}　{lbl}　{dlt:+,} 股</div>')
+            cancelled_html = (
+                f'<details class="journal-cancelled">'
+                f'<summary>{"、".join(names)} 當天加入後又刪除，已不列入操作統計'
+                f'（{len(cancelled_logs)} 筆）</summary>'
+                f'{"".join(detail_rows)}'
+                f'<div class="journal-cancel-note">同一天加入又刪除、淨變動為零，'
+                f'視為輸入後撤回；紀錄仍保留在交易紀錄頁的完整操作歷程。</div>'
+                f'</details>')
+
+        if not row_parts and not cancelled_html:
+            continue
+        day_sections.append(
+            f'<div class="position-journal-day">{day_text}</div>'
+            f'{"".join(row_parts)}{cancelled_html}')
 
     filter_text = (selected_date.strftime("%Y/%m/%d") if selected_date else "全部日期")
     export_params = []
@@ -13874,7 +13957,7 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
   .position-journal-head small{color:var(--ink-faint);font-size:11.5px;line-height:1.5;text-align:right}
   .position-journal-title-actions{display:flex;align-items:center;gap:9px;min-width:0}.position-journal-export{display:inline-flex;align-items:center;padding:5px 8px;border:1px solid #B8CBDC;border-radius:6px;background:#F7FBFF;color:#345673;font-size:11px;font-weight:800;line-height:1;text-decoration:none;white-space:nowrap}.position-journal-export:hover{border-color:#527A9B;background:#EEF5FB}
   .position-journal-note{padding:9px 15px;background:#F7F4EC;color:var(--ink-soft);font-size:11.5px;line-height:1.6}
-  .position-journal-day{padding:10px 15px 4px;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}
+  .position-journal-day{padding:10px 15px 4px;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}.journal-cancelled{margin:2px 15px 10px;padding:8px 11px;background:#F5F5F2;border-radius:7px;color:var(--ink-faint);font-size:11.5px;line-height:1.6}.journal-cancelled>summary{cursor:pointer;list-style:none}.journal-cancel-row{margin-top:5px;color:var(--ink-soft)}.journal-cancel-note{margin-top:6px;font-size:10.5px}
   .position-journal-table-head{display:grid;grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:9px;align-items:end;padding:9px 15px 7px;background:#F8F7F2;color:var(--ink-soft);font-size:11px;font-weight:700;line-height:1.25;border-bottom:1px solid #E8E3D8}
   .position-journal-table-head span:not(:first-child){text-align:right}
   .position-journal-row{display:grid;grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:9px;align-items:center;padding:12px 15px;border-top:1px solid #EEEAE1}
