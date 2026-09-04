@@ -3139,6 +3139,72 @@ def delete_position(user_id, pos_id):
 SELL_REASONS = ["停利", "停損", "換股", "需要用錢", "看法改變", "其他"]
 
 
+def sell_position_all(user_id, code, sell_price=None, fee=None, tax=None,
+                      sell_reason=None):
+    """
+    把同一檔的所有買進筆數一次賣光。
+
+    為什麼需要：分批買進的股票會拆成多筆，原本每一筆都要各自展開賣出面板
+    再送一次表單——9 筆就要操作 9 次，而實際上券商是一次賣掉的。
+
+    刻意逐筆呼叫既有的 sell_position，而不是另寫一套結算：
+    已實現損益要用「各筆自己的成本」計算，合併成一筆平均成本會算錯，
+    而且分批的歷史紀錄也會消失。
+
+    手續費與證交稅依各筆的賣出金額比例分攤，總額仍等於使用者填的數字。
+    任何一筆失敗就中止，並回報已完成幾筆——不會讓部分成功卻無聲無息。
+    """
+    code = str(code or "").strip()
+    if not code:
+        return False, "股票代號不正確"
+
+    lots = [l for p in merge_positions(get_positions(user_id))
+            if str(p.get("code")).strip() == code
+            for l in (p.get("lots") or [])
+            if int(l.get("shares") or 0) > 0]
+    if not lots:
+        return False, "找不到這檔持股"
+
+    total_shares = sum(int(l["shares"]) for l in lots)
+    if total_shares <= 0:
+        return False, "持股股數為 0"
+
+    done, results = 0, []
+    remain_fee = fee
+    remain_tax = tax
+    for idx, lot in enumerate(lots):
+        shares = int(lot["shares"])
+        # 依股數比例分攤；最後一筆吃掉餘數，總額才不會因四捨五入而短少
+        if fee is None:
+            lot_fee = None
+        elif idx == len(lots) - 1:
+            lot_fee = round(remain_fee, 2)
+        else:
+            lot_fee = round(float(fee) * shares / total_shares, 2)
+            remain_fee -= lot_fee
+        if tax is None:
+            lot_tax = None
+        elif idx == len(lots) - 1:
+            lot_tax = round(remain_tax, 2)
+        else:
+            lot_tax = round(float(tax) * shares / total_shares, 2)
+            remain_tax -= lot_tax
+
+        ok, err, summary = sell_position(
+            user_id, lot["id"], shares, sell_price=sell_price,
+            fee=lot_fee, tax=lot_tax, sell_reason=sell_reason)
+        if not ok:
+            return False, (f"已完成 {done} 筆後中止：{err}"
+                           if done else (err or "賣出失敗"))
+        done += 1
+        if summary:
+            results.append(summary)
+
+    # sell_position 的 summary 用的鍵是 pl（不是 realized_pl）
+    total_pl = sum(float(r.get("pl") or 0) for r in results)
+    return True, {"lots": done, "shares": total_shares, "realized_pl": total_pl}
+
+
 def normalize_sell_reason(raw):
     """只接受清單內的值，其餘一律視為未填，避免髒資料進資料庫。"""
     v = str(raw or "").strip()
@@ -14147,7 +14213,7 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 /* ── 賣出面板 ──
    賣出要填四個欄位（股數、賣價、手續費、稅），全部攤在列表上會把版面撐爆，
    所以收在 details 裡，需要時才展開。 */
-.sellbox{grid-column:1/-1;margin-top:8px}
+.sellbox{grid-column:1/-1;margin-top:8px}.sellbox-all>summary{color:var(--down);font-weight:600}
 .sellbox>summary{display:inline-block;font-size:11.5px;color:var(--ink-soft);
   background:#FFF;border:1px solid var(--rule);border-radius:2px;
   padding:3px 12px;cursor:pointer;list-style:none}
@@ -15482,7 +15548,25 @@ def web_positions(uid):
         return respond_page("持股", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "positions")
     if request.method == "POST":
         action = request.form.get("action")
-        if action == "exright_apply":
+        if action == "sell_all":
+            def numv(field, cast=float):
+                v = (request.form.get(field) or "").strip()
+                if not v:
+                    return None
+                try:
+                    return cast(v)
+                except ValueError:
+                    return None
+            ok, info = sell_position_all(
+                uid, request.form.get("code"),
+                sell_price=numv("sell_price"), fee=numv("fee"), tax=numv("tax"),
+                sell_reason=request.form.get("sell_reason"))
+            if ok:
+                msg = (f"✅ 已全部賣出：{info['lots']} 筆共 {info['shares']:,} 股，"
+                       f"已實現損益 {info['realized_pl']:+,.0f} 元。")
+            else:
+                msg = f"全部賣出失敗：{info}"
+        elif action == "exright_apply":
             ok, info = apply_exright_adjustment(
                 uid, request.form.get("code"), request.form.get("ratio"))
             if ok:
@@ -15624,6 +15708,51 @@ def web_positions(uid):
                 f'<input type="hidden" name="id" value="{lot_id}">'
                 f'<button class="del" type="submit">刪除</button></form>')
 
+    def sell_all_form(p, name, cur_price):
+        """
+        整檔一次賣出。分批買進的股票原本每一筆都要各自展開面板送一次表單，
+        9 筆就要操作 9 次，但券商實際上是一次賣掉的。
+
+        後端仍逐筆結算（各筆用自己的成本算已實現損益），
+        所以分批的歷史與損益都不會失真，只是操作合併成一次。
+        """
+        code = p["code"]
+        total = int(p.get("shares") or 0)
+        tax_rate = TAX_RATE_ETF if is_etf(code) else TAX_RATE_STOCK
+        px = f"{cur_price:.2f}" if cur_price else ""
+        gross = (cur_price or 0) * total
+        est_fee = round(broker_fee(gross)) if gross else 0
+        est_tax = round(gross * tax_rate) if gross else 0
+        return f'''
+<details class="sellbox sellbox-all"><summary>全部賣出（{len(p.get("lots", []))} 筆・{total:,} 股）</summary>
+<form method="post" class="sellpanel"
+      onsubmit="return confirm('確定將 {html.escape(str(name))} 的 {total:,} 股全部賣出？');">
+  {csrf_hidden_input()}
+  <input type="hidden" name="action" value="sell_all">
+  <input type="hidden" name="code" value="{html.escape(str(code), quote=True)}">
+  <div class="fields">
+    <div><label>賣出價</label>
+      <input type="number" step="0.01" name="sell_price" placeholder="{px}"></div>
+    <div><label>手續費</label>
+      <input type="number" step="1" name="fee" placeholder="{est_fee}"></div>
+    <div><label>證交稅</label>
+      <input type="number" step="1" name="tax" placeholder="{est_tax}"></div>
+    <div><label>賣出理由（選填）</label>
+      <select name="sell_reason">
+        <option value="">未填</option>
+        {"".join(f'<option value="{r}">{r}</option>' for r in SELL_REASONS)}
+      </select></div>
+  </div>
+  <button type="submit">全部賣出</button>
+  <div class="sell-hint">
+    一次賣掉這檔的全部 {len(p.get("lots", []))} 筆買進。
+    手續費與證交稅會依各筆股數比例分攤，總額等於你填的數字；
+    留空則以牌價試算（{est_fee:,} 與 {est_tax:,}）。<br>
+    已實現損益仍以各筆自己的成本計算，分批紀錄不會消失。
+  </div>
+</form>
+</details>'''
+
     def lots_html(p, name, cur_price):
         """單筆就一組賣出面板＋刪除鍵；分批買進則每一筆各自可賣出或刪除。"""
         lots = p.get("lots", [])
@@ -15642,8 +15771,9 @@ def web_positions(uid):
             f'<div class="lot-actions">{delete_form(l["id"], name)}</div>'
             f'{sell_form(l["id"], l["shares"], p["code"], cur_price, l["cost"], "賣出這筆")}'
             f'</div>' for l in lots)
-        return (f'<details class="lots"><summary>分 {len(lots)} 筆買進</summary>'
-                f'{items}</details>')
+        return (sell_all_form(p, name, cur_price)
+                + f'<details class="lots"><summary>分 {len(lots)} 筆買進</summary>'
+                  f'{items}</details>')
 
     rows_html, total_value, total_cost = [], 0.0, 0.0
     total_day_pl = 0.0
@@ -15802,7 +15932,7 @@ def web_positions(uid):
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {exright_html}
 {totals}
-{f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px">盤中持股行情已於 {taiwan_now().strftime("%H:%M:%S")} 取得；開盤期間每 15 秒局部更新，個別來源暫缺時保留最後有效價格並標示來源。</div>' if positions and _is_taiwan_intraday_window() else ''}
+{f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px;{"" if _is_taiwan_intraday_window() else "display:none"}">盤中持股行情已於 {taiwan_now().strftime("%H:%M:%S")} 取得；開盤期間每 15 秒局部更新，個別來源暫缺時保留最後有效價格並標示來源。</div>' if positions else ''}
 {allocation_html_positions}
 {portfolio_trend_html}
 <div class="section-head"><h2>持股明細</h2>
@@ -15840,9 +15970,23 @@ def web_positions(uid):
   if(!root)return;
   function numberText(value,digits){var n=Number(value);return Number.isFinite(n)?n.toLocaleString('zh-TW',{minimumFractionDigits:digits,maximumFractionDigits:digits}):'—';}
   function signedText(value,digits){var n=Number(value);return Number.isFinite(n)?(n>=0?'+':'')+numberText(n,digits):'—';}
+  // 盤中判斷改在前端做，而不是靠渲染當下的狀態。
+  // 原本狀態列只在「渲染那一刻是盤中」才輸出，元素不存在就整段不啟動；
+  // 於是開盤前開的頁面、或從別頁切換過來的，之後即使進入盤中也永遠不會跳，
+  // 只能手動刷新。改成一律啟動，由這裡決定要不要真的去抓。
+  function inMarket(){
+    var now=new Date();
+    // 以使用者裝置的台北時間判斷；週末與非交易時段只排程不請求。
+    var tw=new Date(now.toLocaleString('en-US',{timeZone:'Asia/Taipei'}));
+    var day=tw.getDay();
+    if(day===0||day===6)return false;
+    var mins=tw.getHours()*60+tw.getMinutes();
+    return mins>=(9*60-5) && mins<=(13*60+35);   // 08:55–13:35，涵蓋開盤前後
+  }
   function schedule(){if(timer)clearTimeout(timer);timer=setTimeout(refresh,15000);}
   function refresh(){
-    if(document.hidden||busy){schedule();return;}
+    if(document.hidden||busy||!inMarket()){schedule();return;}
+    if(root.style.display==='none')root.style.display='';
     busy=true;
     var query=new URLSearchParams(window.location.search),token=query.get('t'),url='/web/api/positions/quotes';
     if(token)url+='?t='+encodeURIComponent(token);
