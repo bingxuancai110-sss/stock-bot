@@ -6328,6 +6328,10 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 # 只有收盤價的話，圖上永遠只能寫「近 N 個交易日」，
                 # 而「什麼時候發生的」正是圖能回答、數字回答不了的問題。
                 "close_dates": [b[0] for b in hist] + [today_date],
+                # 逐日成交量，供籌碼分布估算使用。
+                # 只有日總量、沒有盤中分價量，所以那是近似值——
+                # 呼叫端要把限制標明出來，不能當成券商等級的籌碼分布。
+                "volumes": [b[4] for b in hist] + [int(volume or 0)],
                 # 還原權值序列，供選股成效計算除權息調整後的報酬。
                 # 最後一筆用當前收盤：今天若已除息，Yahoo 的當日 adjclose
                 # 與 close 相同，不需要再調整。
@@ -8457,6 +8461,64 @@ def _turning_reason_details(inst_item, stock, direction, cross_up, cross_down,
     return details[:10]
 
 
+def compute_chip_bins(stock, bins=10):
+    """
+    以日K的收盤價與成交量做價格區間分布，估計套牢籌碼落在哪些價位帶。
+
+    重要限制：Yahoo 只給日收盤與當日總量，沒有盤中每個價位的成交明細。
+    所以這裡是「把整天的量都算在當天收盤價上」的近似——
+    一天內震盪 5% 的股票，那天的量其實分散在很多價位，
+    這個做法會全歸到收盤價，位置就會失真。
+    震盪小的標的誤差小，一天漲停的那種誤差明顯。
+    畫面必須標明這個限制，否則會被當成券商等級的籌碼分布。
+
+    回傳 {"bins": [{"low","high","mid","ratio","above"}...],
+          "days", "max_ratio"}；資料不足回 None。
+    """
+    closes = (stock or {}).get("closes") or []
+    volumes = (stock or {}).get("volumes") or []
+    if len(closes) < 20 or len(volumes) != len(closes):
+        return None
+    price_now = closes[-1]
+    lo, hi = min(closes), max(closes)
+    if not price_now or hi <= lo:
+        return None
+
+    step = (hi - lo) / bins
+    buckets = [0.0] * bins
+    total = 0.0
+    for price, vol in zip(closes, volumes):
+        v = float(vol or 0)
+        if v <= 0:
+            continue
+        idx = int((price - lo) / step)
+        idx = min(max(idx, 0), bins - 1)
+        buckets[idx] += v
+        total += v
+    if total <= 0:
+        return None
+
+    out = []
+    for i, v in enumerate(buckets):
+        b_lo = lo + step * i
+        b_hi = b_lo + step
+        out.append({
+            "low": round(b_lo, 2), "high": round(b_hi, 2),
+            "mid": round((b_lo + b_hi) / 2, 2),
+            "ratio": v / total,
+            # 「上方套牢」要看整段區間都在現價之上。
+            # 用中點判斷的話，包含現價的那一格也會被標成套牢
+            # （例如現價 270 落在 265–282.5，中點 273.75 > 270），
+            # 但那一格裡有一半的人其實是賺的，講成套牢不對。
+            "above": b_lo >= price_now,
+            "current": b_lo <= price_now <= b_hi,
+        })
+    return {"bins": out, "days": len(closes),
+            "max_ratio": max(b["ratio"] for b in out),
+            "price": round(price_now, 2),
+            "low": round(lo, 2), "high": round(hi, 2)}
+
+
 def macd_cross_state(stock, fast=12, slow=26, signal=9, recent_days=5):
     """
     MACD 交叉判斷（DIF 穿越 MACD 訊號線）。
@@ -8637,7 +8699,15 @@ def build_turning_observation(limit=60, prior_days=5, force_refresh=False):
 
     codes = [item.get("code") for item in institutional if item.get("code")]
     # 1mo 已涵蓋 20 日均線與近期位階；只有少數新上市／資料缺口標的才回補 3mo。
-    prices = get_realtime_stocks_bulk(codes, workers=16, rng="1mo")
+    # 抓 3mo 而不是 1mo：壓力位要用近 60 日高點判斷，
+    # 只抓 20 根日K 時 high_60d 永遠是 None，程式就會走到
+    # 「無壓力位」那條分支——但那不是真的沒有壓力，是根本沒看到。
+    #
+    # 實際發生過：良維 6290 收 270、頭上 6 月有 375、7 月有 320 的套牢區，
+    # 畫面卻寫「無壓力位」。20 日的視野看不到三個月前的高點。
+    #
+    # 同時也讓 20/60 均線交叉與 MACD 算得出來（都需要 60 根以上）。
+    prices = get_realtime_stocks_bulk(codes, workers=16, rng="3mo")
     fallback_codes = [code for code in codes
                       if len((prices.get(code) or {}).get("closes") or []) < 20]
     if fallback_codes:
@@ -9691,8 +9761,12 @@ def score_from_technical(pct, turnover_billion):
     return round(pct_score + vol_score)
 
 def fmt_resistance(r):
-    """壓力為 None 代表目前沒有可用的上方壓力參考，直接標示無壓力位。"""
-    return f"{r}" if r is not None else "無壓力位"
+    """
+    壓力為 None 代表「近 60 日內找不到更高的價位」，不等於上方真的沒有賣壓——
+    更早之前的套牢區這個窗口看不到。寫「無壓力位」會讓人以為頭上淨空，
+    所以改成明講判斷範圍。
+    """
+    return f"{r}" if r is not None else "近60日創高（更早的套牢區未納入）"
 
 
 def fmt_support(price):
@@ -18106,6 +18180,75 @@ def render_pick_factors(mode_label, fa):
     return "".join(out)
 
 
+def render_chip_bins(code, name, data):
+    """
+    籌碼分布橫條圖。上方套牢用紅、現價那格用黃銅、下方用綠。
+
+    必須把限制寫在圖下面：這是用日收盤價近似的，不是券商的分價量。
+    不寫的話會被當成真的籌碼分布，而那會誤導判斷。
+    """
+    if not data or not data.get("bins"):
+        return ('<div class="sub">這檔的日K資料不足，無法估算籌碼分布。</div>')
+
+    price = data["price"]
+    max_ratio = data["max_ratio"] or 1
+    above_total = sum(b["ratio"] for b in data["bins"] if b["above"])
+    rows = []
+    for b in reversed(data["bins"]):
+        width = max(1.5, b["ratio"] / max_ratio * 100)
+        if b.get("current"):
+            color, tag = "var(--brass)", "現價"
+        elif b["above"]:
+            color, tag = "#A82A20", ""
+        else:
+            color, tag = "#155C42", ""
+        rows.append(f"""
+<div class="chip-row">
+  <span class="chip-price">{b['low']:,.1f}–{b['high']:,.1f}</span>
+  <span class="chip-bar"><i style="width:{width:.1f}%;background:{color}"></i></span>
+  <span class="chip-pct">{b['ratio'] * 100:.1f}%</span>
+  <span class="chip-tag">{tag}</span>
+</div>""")
+
+    return f"""
+<div class="chip-head">
+  <b>{html.escape(str(name))}</b>
+  <span class="sub">{html.escape(str(code))}・現價 {price:,.2f}・
+    近 {data['days']} 個交易日</span>
+</div>
+<div class="chip-summary">現價上方尚未解套的籌碼約 <b>{above_total * 100:.0f}%</b>
+  （不含現價所在區間）。比重高的價位帶，反彈到那裡時通常會遇到較多賣壓。</div>
+{''.join(rows)}
+<div class="chip-note">
+  以每日收盤價與當日總量估算，不是券商的分價量表。
+  同一天內震盪大的標的，當天的量其實分散在多個價位，
+  這裡全部歸到收盤價，位置會失真——請當成大致的區域參考，不是精確價位。
+</div>"""
+
+
+@app.route("/web/api/chip-bins")
+@web_login_required
+def web_chip_bins(uid):
+    """
+    單一標的的籌碼分布。點開才呼叫——它要重抓那一檔的三個月日K，
+    放在列表載入時算會拖慢整頁，而多數人只會點開其中一兩檔。
+    """
+    code = normalize_code(request.args.get("code", ""))
+    if not code:
+        return '<div class="sub">股票代號不正確。</div>'
+    try:
+        quote = get_realtime_stock(code, rng="3mo")
+        if not quote:
+            return '<div class="sub">暫時查不到這檔的行情，請稍後再試。</div>'
+        data = compute_chip_bins(quote)
+        name = stock_display_name(code, fetch_institutional_data() or {},
+                                  quote.get("name"))
+        return render_chip_bins(code, name, data)
+    except Exception as exc:
+        print(f"❌ 籌碼分布失敗 {code}: {exc}")
+        return '<div class="sub">籌碼分布暫時無法計算，請稍後再試。</div>'
+
+
 @app.route("/web/api/pick-factors")
 @web_login_required
 def web_pick_factors(uid):
@@ -22596,7 +22739,9 @@ def render_turning_observation_web_body(result, status_note=None):
             streak_fact = first_fact(("連續上漲", "連續下跌", "今日為近期", "今日翻黑"), None)
             support = str(item.get("support") or "資料不足")
             raw_resistance = item.get("resistance")
-            resistance = ("無壓力位" if raw_resistance in (None, "", "資料不足", "—", "-")
+            # 「無壓力位」會讓人以為頭上淨空，但那只代表近 60 日內沒有更高價，
+            # 更早的套牢區這個窗口看不到（實例：良維 270，6 月高點 375）。
+            resistance = ("近60日創高" if raw_resistance in (None, "", "資料不足", "—", "-")
                           else str(raw_resistance))
             # 價格突破狀態。轉折判斷只看法人方向，價格有沒有同步突破是另一回事；
             # 標出來才分得出「法人轉買且價格站上新高」與「法人轉買但價格沒動」。
@@ -23391,7 +23536,7 @@ def render_workbench_body(initial_tab=""):
 .wb-rich-row{align-items:start}.wb-rich-row .wb-row-main{grid-column:1 / span 2}.wb-rich-row .wb-score-block,.wb-rich-row .wb-price-block{align-self:start}.wb-rich-row .wb-institutional,.wb-rich-row .wb-signal{display:flex;flex-direction:column;gap:4px;color:#344054}.wb-rich-row .wb-institutional small,.wb-rich-row .wb-signal small{font-size:11px;color:#667085}.wb-radar-rank{display:inline-block;margin:0 7px 5px 0;padding:4px 8px;border-radius:5px;background:#e8f5f5;color:#256d6c;font-size:14px;font-weight:900;line-height:1.25}.wb-radar-rule{font-size:13px;color:#526b84}.wb-chip-row{grid-template-columns:minmax(240px,2fr) minmax(130px,1fr) minmax(130px,1fr) 22px;gap:12px;align-items:center;min-height:144px}.wb-chip-note,.wb-chip-split{display:block;margin-top:8px;color:#526b84;font-size:14px;line-height:1.55;overflow-wrap:anywhere}.wb-chip-split{font-weight:800;color:#344054}.wb-chip-amount,.wb-chip-meta{display:flex;flex-direction:column;gap:6px;color:#344054}.wb-chip-amount b{font-family:ui-monospace,monospace;font-size:20px}.wb-chip-meta b{font-size:14px}.wb-chip-amount small,.wb-chip-meta small{font-size:12px;color:#667085}.wb-turning-row{grid-template-columns:minmax(280px,2fr) minmax(110px,1fr) 22px;gap:14px;align-items:start;min-height:170px}.wb-turning-reason{margin:10px 0 7px;padding:8px 10px;border-left:3px solid #7b619b;background:#faf8fd;color:#344054;font-size:14px;font-weight:600;line-height:1.55}.wb-turning-reason b{display:block;margin-bottom:2px;color:#674d8c;font-size:12px}.wb-turning-fact{display:block;margin-top:5px;color:#526b84;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.wb-turning-reasons{margin:8px 0 0;padding-left:18px;color:#667085;font-size:12px;line-height:1.55}.wb-turning-price{display:flex;flex-direction:column;gap:5px;align-items:flex-end}.wb-turning-price b{font-family:ui-monospace,monospace;font-size:21px;color:#1d2939}.wb-chip-group .wb-rich-row{border:0;border-top:1px solid #e8edf2}.wb-turning-group .wb-rich-row{border:0;border-top:1px solid #e8edf2}.wb-turning-group .wb-row-main{grid-column:1 / span 2}.wb-turning-group .wb-score-block{display:none}.wb-turning-group .wb-price-block{grid-column:3}.wb-turning-group .wb-institutional,.wb-turning-group .wb-signal{display:none}
 @media(max-width:620px){.wb-rich-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:14px 10px}.wb-chip-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:16px 12px}.wb-chip-row .wb-row-main{grid-column:1/-1}.wb-chip-row .wb-chip-amount{grid-column:1}.wb-chip-row .wb-chip-meta{grid-column:2;text-align:right}.wb-chip-row .wb-chip-note,.wb-chip-row .wb-chip-split{font-size:15px}.wb-chip-row .wb-name{font-size:23px}.wb-turning-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:15px 12px}.wb-turning-row .wb-row-main{grid-column:1/-1}.wb-turning-row .wb-turning-price{grid-column:2;grid-row:2;align-self:start}.wb-turning-reason{font-size:15px}.wb-turning-fact{font-size:14px}.wb-rich-row .wb-row-main{grid-column:1/-1}.wb-rich-row .wb-score-block,.wb-rich-row .wb-price-block,.wb-rich-row .wb-institutional,.wb-rich-row .wb-signal{display:flex;grid-column:auto}.wb-rich-row .wb-score-block{grid-column:1}.wb-rich-row .wb-price-block{grid-column:2}.wb-rich-row .wb-institutional{grid-column:1}.wb-rich-row .wb-signal{grid-column:2}.wb-turning-group .wb-rich-row .wb-institutional,.wb-turning-group .wb-rich-row .wb-signal{display:none}.wb-turning-group .wb-rich-row .wb-price-block{grid-column:2}.wb-name{font-size:21px}}
 .wb-etf-period{margin:18px 0 26px;border:1px solid #b9cad8;border-radius:12px;overflow:hidden;background:#fff}.wb-etf-period>h3{display:flex;align-items:baseline;gap:10px;margin:0;padding:15px 16px;border-bottom:2px solid #405d77;background:#edf5fb;color:#1d3348;font-size:24px;font-weight:900;line-height:1.2}.wb-etf-period>h3 small{font-size:13px;color:#526b84;font-weight:800}.wb-etf-category{padding:14px 14px 0}.wb-etf-category h4{margin:0 0 8px;color:#344054;font-size:18px;font-weight:900}.wb-etf-category h4 small{font-size:12px;color:#667085;font-weight:800}.wb-etf-row{display:block;min-height:0;padding:16px;border:0;border-top:1px solid #dfe8ef;background:#fff}.wb-etf-row:hover{background:#f7fbff;box-shadow:inset 3px 0 #52718d}.wb-etf-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.wb-etf-title{display:block;min-width:0}.wb-etf-title .wb-name{display:inline;font-size:22px}.wb-etf-score{text-align:right;white-space:nowrap}.wb-etf-score small,.wb-etf-metric small,.wb-etf-comment small{display:block;color:#667085;font-size:12px;font-weight:700}.wb-etf-score b{display:block;color:#1d2939;font-family:ui-monospace,monospace;font-size:25px;font-weight:900}.wb-etf-score b em{font-family:inherit;font-size:12px;font-style:normal;color:#667085}.wb-etf-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}.wb-etf-metric{padding:9px 10px;border-left:3px solid #b7c8d8;background:#f7fafc}.wb-etf-metric b{display:block;margin-top:3px;font-size:16px;line-height:1.3}.wb-etf-comment{margin:12px 0 0;padding:10px 11px;border-left:3px solid #52718d;background:#f6faff;color:#344054;font-size:15px;font-weight:700;line-height:1.55}.wb-etf-period-note{display:block;margin-top:8px;color:#667085;font-size:12px;font-weight:700}.wb-result-more{display:block;margin:0;background:#f8fbfd;border-top:1px solid #d7e0ea}.wb-result-more summary{cursor:pointer;padding:14px 16px;color:#274c77;font-size:15px;font-weight:900}.wb-result-more[open] summary{border-bottom:1px solid #d7e0ea}@media(max-width:620px){.wb-etf-period{margin:14px 0 22px;border-radius:10px}.wb-etf-period>h3{padding:15px 14px;font-size:25px}.wb-etf-category{padding:14px 0 0}.wb-etf-category h4{padding:0 14px;font-size:20px}.wb-etf-row{padding:16px 14px}.wb-etf-title .wb-name{font-size:23px}.wb-etf-score b{font-size:25px}.wb-etf-metrics{grid-template-columns:1fr 1fr}.wb-etf-metric:last-child:nth-child(odd){grid-column:1/-1}.wb-etf-metric b{font-size:17px}.wb-etf-comment{font-size:16px}.wb-result-more summary{padding:16px;font-size:16px}}
-.wb-turning-confirmed{border-left:4px solid #405d77}.wb-turning-observing{border-left:4px solid #b7791f;background:#fffdf7}.wb-turning-invalid{border-left:4px solid #7d8792;background:#f5f6f7}.wb-turning-flow.buy_to_sell,.wb-turning-flow.selling_strength{background:#e9f6ef;color:#13734c}.wb-turning-flow.sell_to_buy,.wb-turning-flow.buying_strength{background:#fceceb;color:#b42318}.wb-turning-flow.invalid{background:#eceff2;color:#525f6b}.wb-turning-failure-reason{border-left-color:#687482;background:#f0f2f4}.wb-chip-direction{display:inline-flex;align-items:center;margin-top:7px;padding:4px 8px;border-radius:5px;font-size:13px;font-weight:900;line-height:1.25}.wb-chip-direction.chip-buy-to-sell{background:#e9f6ef;color:#13734c}.wb-chip-direction.chip-sell-to-buy{background:#fceceb;color:#b42318}.wb-chip-direction.chip-neutral{background:#eef2f6;color:#526b84}.wb-review-loading{display:flex;flex-direction:column;gap:5px;margin:14px;padding:16px;border-left:4px solid #52718d;background:#f4f9fd;color:#344054}.wb-review-loading b{font-size:16px}.wb-review-loading span{font-size:13px;line-height:1.5;color:#526b84}.wb-drawer{top:calc(68px + env(safe-area-inset-top,0px));padding:16px 22px 22px;padding-bottom:calc(22px + env(safe-area-inset-bottom,0px));overscroll-behavior:contain}.wb-drawer-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;position:sticky;top:0;z-index:3;margin:0 -22px 14px;padding:12px 22px;min-height:50px;background:#fff;border-bottom:1px solid #d7e0ea;box-shadow:0 2px 8px rgba(23,42,58,.06);touch-action:manipulation}.wb-drawer-actions #wb-back{border:0;background:transparent;color:#274c77;font:inherit;font-size:15px;font-weight:900;padding:8px 0;min-height:40px}.wb-drawer-actions #wb-close{float:none;border:0;background:transparent;font-size:28px;line-height:1;color:#526b84;padding:6px;min-width:40px;min-height:40px;touch-action:manipulation}@media(max-width:620px){.wb-drawer{top:calc(64px + env(safe-area-inset-top,0px));width:100%;padding:14px 16px 24px;padding-bottom:calc(24px + env(safe-area-inset-bottom,0px))}.wb-drawer-actions{top:0;margin:0 -16px 14px;padding:12px 16px;min-height:52px}.wb-drawer h3{font-size:24px;line-height:1.3}.wb-turning-group h3{font-size:22px;font-weight:900}.wb-turning-group h3 small{font-size:14px}.wb-chip-direction{font-size:15px}}
+.wb-turning-confirmed{border-left:4px solid #405d77}.wb-turning-observing{border-left:4px solid #b7791f;background:#fffdf7}.wb-turning-invalid{border-left:4px solid #7d8792;background:#f5f6f7}.wb-turning-flow.buy_to_sell,.wb-turning-flow.selling_strength{background:#e9f6ef;color:#13734c}.wb-turning-flow.sell_to_buy,.wb-turning-flow.buying_strength{background:#fceceb;color:#b42318}.wb-turning-flow.invalid{background:#eceff2;color:#525f6b}.wb-turning-failure-reason{border-left-color:#687482;background:#f0f2f4}.wb-chip-dist{margin:16px 0 4px;border-top:1px solid #e4ebf1;padding-top:12px}.wb-chip-dist>summary{cursor:pointer;font-size:13px;font-weight:800;color:#274c77}.wb-chip-dist>summary small{color:#7b8795;font-weight:400}.wb-chip-dist-body{margin-top:10px;font-size:12px;color:#344054}.wb-chip-dist-hint{color:#7b8795;font-size:11px}.chip-head b{font-size:17px}.chip-head .sub{display:block;color:#7b8795;font-size:11px;margin-top:2px}.chip-summary{margin:9px 0 11px;padding:8px 10px;background:#f4f8fc;border-radius:6px;color:#41617e;font-size:11.5px;line-height:1.6}.chip-row{display:grid;grid-template-columns:96px 1fr 46px 40px;gap:7px;align-items:center;padding:3px 0;font-size:11px}.chip-price{color:#667085;font-family:ui-monospace,monospace}.chip-bar{background:#eef2f6;height:13px;border-radius:3px;overflow:hidden}.chip-bar i{display:block;height:100%}.chip-pct{text-align:right;font-family:ui-monospace,monospace;color:#344054}.chip-tag{color:#9a5b17;font-weight:800;font-size:10px}.chip-note{margin-top:11px;color:#7b8795;font-size:10.5px;line-height:1.6}.wb-chip-direction{display:inline-flex;align-items:center;margin-top:7px;padding:4px 8px;border-radius:5px;font-size:13px;font-weight:900;line-height:1.25}.wb-chip-direction.chip-buy-to-sell{background:#e9f6ef;color:#13734c}.wb-chip-direction.chip-sell-to-buy{background:#fceceb;color:#b42318}.wb-chip-direction.chip-neutral{background:#eef2f6;color:#526b84}.wb-review-loading{display:flex;flex-direction:column;gap:5px;margin:14px;padding:16px;border-left:4px solid #52718d;background:#f4f9fd;color:#344054}.wb-review-loading b{font-size:16px}.wb-review-loading span{font-size:13px;line-height:1.5;color:#526b84}.wb-drawer{top:calc(68px + env(safe-area-inset-top,0px));padding:16px 22px 22px;padding-bottom:calc(22px + env(safe-area-inset-bottom,0px));overscroll-behavior:contain}.wb-drawer-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;position:sticky;top:0;z-index:3;margin:0 -22px 14px;padding:12px 22px;min-height:50px;background:#fff;border-bottom:1px solid #d7e0ea;box-shadow:0 2px 8px rgba(23,42,58,.06);touch-action:manipulation}.wb-drawer-actions #wb-back{border:0;background:transparent;color:#274c77;font:inherit;font-size:15px;font-weight:900;padding:8px 0;min-height:40px}.wb-drawer-actions #wb-close{float:none;border:0;background:transparent;font-size:28px;line-height:1;color:#526b84;padding:6px;min-width:40px;min-height:40px;touch-action:manipulation}@media(max-width:620px){.wb-drawer{top:calc(64px + env(safe-area-inset-top,0px));width:100%;padding:14px 16px 24px;padding-bottom:calc(24px + env(safe-area-inset-bottom,0px))}.wb-drawer-actions{top:0;margin:0 -16px 14px;padding:12px 16px;min-height:52px}.wb-drawer h3{font-size:24px;line-height:1.3}.wb-turning-group h3{font-size:22px;font-weight:900}.wb-turning-group h3 small{font-size:14px}.wb-chip-direction{font-size:15px}}
 
 .wb-turning-row{display:grid;grid-template-columns:minmax(0,1fr) 22px;gap:10px;align-items:start;min-height:0}.wb-turning-card{display:block;min-width:0}.wb-turning-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.wb-turning-title{display:block;min-width:0}.wb-turning-title .wb-name{margin-top:2px}.wb-turning-price{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;gap:3px}.wb-turning-price b{font-family:ui-monospace,monospace;font-size:22px;color:#1d2939}.wb-row-chevron{align-self:center;color:#667085;font-size:22px}.wb-turning-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px}.wb-turning-facts>span{min-width:0;padding:8px 10px;border-left:3px solid #b7c8d8;background:#f7fafc}.wb-turning-facts small{display:block;color:#667085;font-size:11px;font-weight:800}.wb-turning-facts b{display:block;margin-top:3px;color:#344054;font-size:14px;line-height:1.45;overflow-wrap:anywhere}.wb-turning-reason{margin:11px 0 0;padding:10px 12px;border-left:3px solid #7b619b;background:#faf8fd;color:#344054;font-size:15px;line-height:1.65}.wb-turning-reason b,.wb-turning-reason span{display:block}.wb-turning-reason b{margin-bottom:4px;color:#674d8c;font-size:12px}.wb-turning-reasons{display:block;margin:9px 0 0;padding:0;list-style:none;color:#526b84;font-size:14px;line-height:1.6}.wb-turning-reasons li{display:block;padding:6px 10px;border-top:1px solid #edf1f5;overflow-wrap:anywhere}.wb-turning-reasons-title{font-weight:900;color:#344054;background:#f8fafc}.wb-turning-judgement{background:#faf8fd}.wb-turning-inst-lines{margin-top:10px}.wb-turning-inst-line{padding:10px 0;border-top:1px solid #e6e3ec}.wb-turning-inst-line:first-child{border-top:0;padding-top:0}.wb-turning-inst-line strong,.wb-turning-inst-total strong{display:block;color:#1d2939;font-size:18px;font-weight:900;line-height:1.25}.wb-turning-inst-line span,.wb-turning-inst-total span{display:block;margin-top:4px;color:#344054;font-size:15px;font-weight:700;line-height:1.65}.wb-turning-inst-total{margin-top:10px;padding:10px 11px;border-left:4px solid #52718d;background:#f4f8fc}.wb-turning-inst-total i{font-style:normal;color:#7b8795}.wb-inst-buy{color:#b42318;font-style:normal;font-weight:900}.wb-inst-sell{color:#13734c;font-style:normal;font-weight:900}.wb-etf-row{min-width:0;max-width:100%;overflow:hidden}.wb-etf-period-title{display:block;margin-bottom:10px;color:#526b84;font-size:13px;font-weight:900;line-height:1.45;overflow-wrap:anywhere}.wb-etf-top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:start}.wb-etf-title{min-width:0}.wb-etf-title .wb-name{display:block;margin-top:6px;overflow-wrap:anywhere;word-break:normal}.wb-etf-score{min-width:78px}.wb-etf-score small{white-space:nowrap}.wb-etf-score b{white-space:nowrap}.wb-review-horizon{margin-top:11px;padding-top:11px;border-top:1px solid #edf1f5}.wb-review-horizon header{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.wb-review-horizon header>b{font-size:14px}.wb-review-horizon header small{color:#667085;font-size:11px;font-weight:700}.wb-review-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px}.wb-review-metric{min-width:0;padding:8px;border-left:3px solid #b7c8d8;background:#f7fafc}.wb-review-metric small,.wb-review-metric em{display:block;color:#667085;font-size:10px;font-style:normal;line-height:1.4}.wb-review-metric b{display:block;margin:3px 0 2px;font-family:ui-monospace,monospace;font-size:15px;overflow-wrap:anywhere}.wb-review-samples{margin-top:12px;border-top:1px solid #edf1f5;padding-top:10px}.wb-review-samples>b{display:block;color:#344054;font-size:12px;margin-bottom:4px}.wb-review-sample{display:grid;grid-template-columns:minmax(110px,1.4fr) repeat(3,minmax(65px,1fr));gap:7px;align-items:center;border-top:1px solid #edf1f5;padding:8px 0;font-size:11px}.wb-review-sample>div{min-width:0}.wb-review-sample b{display:block;font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere}.wb-review-sample small{display:block;color:#667085;font-size:10px;line-height:1.35}.wb-review-sample span{text-align:right;min-width:0}@media(max-width:620px){.wb-turning-row{display:grid;grid-template-columns:minmax(0,1fr) 18px;gap:7px;padding:14px 12px}.wb-turning-title .wb-name{font-size:22px}.wb-turning-facts{grid-template-columns:1fr;gap:6px}.wb-turning-facts>span{padding:8px 9px}.wb-turning-facts b{font-size:15px}.wb-turning-reason{font-size:16px;line-height:1.6}.wb-turning-reasons{font-size:15px}.wb-turning-inst-line strong,.wb-turning-inst-total strong{font-size:21px}.wb-turning-inst-line span,.wb-turning-inst-total span{font-size:16px;line-height:1.7}.wb-etf-period-title{font-size:14px;margin-bottom:9px}.wb-etf-top{gap:9px}.wb-etf-title .wb-name{font-size:22px;line-height:1.35}.wb-etf-score{min-width:72px}.wb-etf-score b{font-size:23px}.wb-etf-metrics{grid-template-columns:1fr;gap:6px}.wb-etf-metric{min-width:0}.wb-etf-metric:last-child:nth-child(odd){grid-column:auto}.wb-review-horizon header{display:block}.wb-review-horizon header small{display:block;margin-top:2px}.wb-review-metrics{grid-template-columns:1fr;gap:6px}.wb-review-metric{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:4px 8px;padding:9px}.wb-review-metric small{grid-column:1}.wb-review-metric b{grid-column:2;grid-row:1 / span 2;text-align:right;font-size:16px}.wb-review-metric em{grid-column:1}.wb-review-sample{grid-template-columns:1fr 1fr;gap:5px 8px;padding:10px 0}.wb-review-sample>div{grid-column:1/-1}.wb-review-sample span{display:grid;grid-template-columns:1fr auto;gap:4px;text-align:left}.wb-review-sample span small{align-self:center}.wb-review-sample span b{text-align:right;font-size:13px}}
 
@@ -23434,7 +23579,7 @@ def render_workbench_body(initial_tab=""):
   function renderTurningRow(r){
     var d=r.detail||{},state=d.state||'observing',stateLabel=state==='invalid'?'失敗':(state==='confirmed'?'已確認':'觀察中'),invalidReasons=Array.isArray(d.invalid_reasons)?d.invalid_reasons.filter(Boolean):[],reasons=(state==='invalid'&&invalidReasons.length?invalidReasons:(Array.isArray(d.reasons)?d.reasons:[])),reason=(state==='invalid'?(invalidReasons[0]||d.state_reason||'原始快照尚未提供具體失敗原因'):(d.state_reason||'轉折細節資料不足'));
     var flow=d.flow||r.signal||'方向不明',flowClass=state==='invalid'?'invalid':(d.flow_key||'unknown'),lots=r.institutional_lots==null?'法人張數未提供':(Number(r.institutional_lots)>0?'買超 ':'賣超 ')+(Number(r.institutional_lots)>0?'+':'')+Number(r.institutional_lots).toLocaleString('zh-TW')+' 張';
-    var support=d.support==null?'未建立':money(d.support),resistance=d.resistance==null?'無壓力位':money(d.resistance),volume=d.vol_ratio==null?'資料未提供':Number(d.vol_ratio).toFixed(1)+' 倍',reasonList=reasons.slice(0,3).map(function(x){return '<li>'+esc(x)+'</li>';}).join('');
+    var support=d.support==null?'未建立':money(d.support),resistance=d.resistance==null?'近60日創高':money(d.resistance),volume=d.vol_ratio==null?'資料未提供':Number(d.vol_ratio).toFixed(1)+' 倍',reasonList=reasons.slice(0,3).map(function(x){return '<li>'+esc(x)+'</li>';}).join('');
     function colourBuySell(value){var safe=esc(String(value||''));return safe.replace(/(買超\s*[+\-]?[\d,]+(?:\.\d+)?\s*張)/g,'<em class="wb-inst-buy">$1</em>').replace(/(賣超\s*[+\-]?[\d,]+(?:\.\d+)?\s*張)/g,'<em class="wb-inst-sell">$1</em>');}
     function factFor(label){var found=(Array.isArray(d.reasons)?d.reasons:[]).find(function(item){return String(item||'').indexOf(label+'由前')===0;});return found?String(found):'';}
     function institutionLine(label){var raw=factFor(label);if(!raw)return '';return '<div class="wb-turning-inst-line"><strong>'+esc(label)+'</strong><span>'+colourBuySell(raw.slice(label.length))+'</span></div>';}
@@ -23532,7 +23677,27 @@ function bindFactors(){
       .then(function(html){box.innerHTML=html;})
       .catch(function(e){d.dataset.loaded='';box.textContent='因子分析載入失敗：'+(e&&e.message?e.message:e);});
   });
-}function render(){renderAssetTabs();renderTabs();document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','持股','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}if(state.source==='持股'){count.textContent='你的庫存；沒有同日分析快照時不顯示評分或待確認欄位';rowsEl.innerHTML=list.length?list.map(renderHoldingRow).join(''):'<div class="wb-empty">目前沒有已保存的持股。</div>';return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){state.returnScroll=window.scrollY||0;if(row.source==='ETF'){var ed=row.detail||{},scoreText=row.score==null?'尚無資料':Number(row.score).toFixed(1)+' 分',etfFacts=[];[['比較期間',ed.period_label],['價格報酬',ed.return_pct==null?null:(Number(ed.return_pct)>0?'+':'')+Number(ed.return_pct).toFixed(1)+'%'],['同期大盤',ed.market_return_pct==null?null:(Number(ed.market_return_pct)>0?'+':'')+Number(ed.market_return_pct).toFixed(1)+'%'],['相對大盤',ed.excess_pct==null?null:(Number(ed.excess_pct)>0?'+':'')+Number(ed.excess_pct).toFixed(1)+' 個百分點'],['年化配息殖利率',ed.annualized_yield_pct==null?null:(Number(ed.annualized_yield_pct)>0?'+':'')+Number(ed.annualized_yield_pct).toFixed(1)+'%'],['原始評論',ed.comment],['資料日',ed.source_date]].forEach(function(x){if(x[1]!=null&&x[1]!=='')etfFacts.push('<li><b>'+esc(x[0])+'</b><br>'+esc(x[1])+'</li>');});document.getElementById('wb-detail').innerHTML='<p>ETF · 已保存排名</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>分類</small><b>'+esc(row.industry)+'</b></div><div><small>原始排名分數</small><b>'+esc(scoreText)+'</b></div></div><ul class="wb-facts">'+(etfFacts.join('')||'<li>目前沒有更多已確認的 ETF 排名欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;return;}if(row.source==='轉折'){var td=row.detail||{},turningFacts=Object.keys(td).filter(function(k){return ['state_label','flow','state_reason','reasons','invalid_reasons','consensus','current_total_lots','magnitude_ratio','support','resistance','vol_ratio','source_date'].indexOf(k)>=0&&td[k]!=null&&td[k]!=='';}).map(function(k){var labels={state_label:'轉折狀態',flow:'方向',state_reason:'原始判讀',reasons:'條件明細',invalid_reasons:'失效原因',consensus:'法人共識',current_total_lots:'法人張數',magnitude_ratio:'變化強度',support:'支撐',resistance:'壓力',vol_ratio:'量能倍數',source_date:'資料日'};var v=td[k];return '<li><b>'+esc(labels[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):v)+'</li>';}).join('');document.getElementById('wb-detail').innerHTML='<p>轉折 · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>現價</small><b>'+money(row.price)+'</b></div><div><small>當日漲跌</small><b>'+pct(row.change_pct)+'</b></div><div><small>方向／狀態</small><b>'+esc(row.signal)+'</b></div><div><small>轉折條件</small><b>'+esc(td.turning_score==null?'—':td.turning_score+'/5')+'</b></div></div><ul class="wb-facts">'+(turningFacts||'<li>目前沒有更多已確認的轉折欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;return;}var d=row.detail||{},facts=[];Object.keys(d).forEach(function(k){var v=d[k];if(v==null||v===''||(Array.isArray(v)&&!v.length))return;facts.push('<li><b>'+esc({source_date:'資料日',breakout:'突破狀態',high_status:'高點狀態',radar_state:'雷達狀態',category:'股票分類',caps:'原始各項上限',val_desc:'估值說明',mom_desc:'產業動能說明',streak:'法人連買天數',buy_days:'近十日買超天數',vol_ratio:'量能倍數',support:'支撐',resistance:'壓力',state:'轉折狀態',flow:'方向',score_breakdown:'分數組成',data_quality:'資料完整度',group:'籌碼分組',institutional_lots:'近十日法人張數',amount_billion:'近十日法人金額',hit_days:'同方向天數',total_days:'統計交易日',foreign_lots:'外資張數',trust_lots:'投信張數',group_lots:'同向法人張數',plain_note:'原始判讀',return_pct:'價格報酬',excess_pct:'同期超額',annualized_yield_pct:'年化配息殖利率',period_label:'比較期間'}[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):typeof v==='object'?JSON.stringify(v):v)+'</li>');});document.getElementById('wb-detail').innerHTML='<p>'+esc(row.source)+' · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>最新快照價格</small><b>'+money(row.price)+'</b></div><div><small>'+esc(row.metric_label||'當日漲跌')+'</small><b>'+pct(row.change_pct)+'</b></div><div><small>綜合分數</small><b>'+esc(row.score==null?'—':row.score)+'</b></div><div><small>訊號</small><b>'+esc(row.signal)+'</b></div></div><ul class="wb-facts">'+(facts.join('')||'<li>目前沒有更多已確認的快照欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;}
+}function render(){renderAssetTabs();renderTabs();document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','持股','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}if(state.source==='持股'){count.textContent='你的庫存；沒有同日分析快照時不顯示評分或待確認欄位';rowsEl.innerHTML=list.length?list.map(renderHoldingRow).join(''):'<div class="wb-empty">目前沒有已保存的持股。</div>';return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){state.returnScroll=window.scrollY||0;if(row.source==='ETF'){var ed=row.detail||{},scoreText=row.score==null?'尚無資料':Number(row.score).toFixed(1)+' 分',etfFacts=[];[['比較期間',ed.period_label],['價格報酬',ed.return_pct==null?null:(Number(ed.return_pct)>0?'+':'')+Number(ed.return_pct).toFixed(1)+'%'],['同期大盤',ed.market_return_pct==null?null:(Number(ed.market_return_pct)>0?'+':'')+Number(ed.market_return_pct).toFixed(1)+'%'],['相對大盤',ed.excess_pct==null?null:(Number(ed.excess_pct)>0?'+':'')+Number(ed.excess_pct).toFixed(1)+' 個百分點'],['年化配息殖利率',ed.annualized_yield_pct==null?null:(Number(ed.annualized_yield_pct)>0?'+':'')+Number(ed.annualized_yield_pct).toFixed(1)+'%'],['原始評論',ed.comment],['資料日',ed.source_date]].forEach(function(x){if(x[1]!=null&&x[1]!=='')etfFacts.push('<li><b>'+esc(x[0])+'</b><br>'+esc(x[1])+'</li>');});document.getElementById('wb-detail').innerHTML='<p>ETF · 已保存排名</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>分類</small><b>'+esc(row.industry)+'</b></div><div><small>原始排名分數</small><b>'+esc(scoreText)+'</b></div></div><ul class="wb-facts">'+(etfFacts.join('')||'<li>目前沒有更多已確認的 ETF 排名欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;return;}if(row.source==='轉折'){var td=row.detail||{},turningFacts=Object.keys(td).filter(function(k){return ['state_label','flow','state_reason','reasons','invalid_reasons','consensus','current_total_lots','magnitude_ratio','support','resistance','vol_ratio','source_date'].indexOf(k)>=0&&td[k]!=null&&td[k]!=='';}).map(function(k){var labels={state_label:'轉折狀態',flow:'方向',state_reason:'原始判讀',reasons:'條件明細',invalid_reasons:'失效原因',consensus:'法人共識',current_total_lots:'法人張數',magnitude_ratio:'變化強度',support:'支撐',resistance:'壓力',vol_ratio:'量能倍數',source_date:'資料日'};var v=td[k];return '<li><b>'+esc(labels[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):v)+'</li>';}).join('');document.getElementById('wb-detail').innerHTML='<p>轉折 · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>現價</small><b>'+money(row.price)+'</b></div><div><small>當日漲跌</small><b>'+pct(row.change_pct)+'</b></div><div><small>方向／狀態</small><b>'+esc(row.signal)+'</b></div><div><small>轉折條件</small><b>'+esc(td.turning_score==null?'—':td.turning_score+'/5')+'</b></div></div><ul class="wb-facts">'+(turningFacts||'<li>目前沒有更多已確認的轉折欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;return;}var d=row.detail||{},facts=[];Object.keys(d).forEach(function(k){var v=d[k];if(v==null||v===''||(Array.isArray(v)&&!v.length))return;facts.push('<li><b>'+esc({source_date:'資料日',breakout:'突破狀態',high_status:'高點狀態',radar_state:'雷達狀態',category:'股票分類',caps:'原始各項上限',val_desc:'估值說明',mom_desc:'產業動能說明',streak:'法人連買天數',buy_days:'近十日買超天數',vol_ratio:'量能倍數',support:'支撐',resistance:'壓力',state:'轉折狀態',flow:'方向',score_breakdown:'分數組成',data_quality:'資料完整度',group:'籌碼分組',institutional_lots:'近十日法人張數',amount_billion:'近十日法人金額',hit_days:'同方向天數',total_days:'統計交易日',foreign_lots:'外資張數',trust_lots:'投信張數',group_lots:'同向法人張數',plain_note:'原始判讀',return_pct:'價格報酬',excess_pct:'同期超額',annualized_yield_pct:'年化配息殖利率',period_label:'比較期間'}[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):typeof v==='object'?JSON.stringify(v):v)+'</li>');});document.getElementById('wb-detail').innerHTML='<p>'+esc(row.source)+' · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>最新快照價格</small><b>'+money(row.price)+'</b></div><div><small>'+esc(row.metric_label||'當日漲跌')+'</small><b>'+pct(row.change_pct)+'</b></div><div><small>綜合分數</small><b>'+esc(row.score==null?'—':row.score)+'</b></div><div><small>訊號</small><b>'+esc(row.signal)+'</b></div></div><ul class="wb-facts">'+(facts.join('')||'<li>目前沒有更多已確認的快照欄位。</li>')+'</ul>';appendChipSection(row);drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;}
+  // 籌碼分布：點開才抓那一檔的三個月日K再算。
+  // 放在清單載入時算會拖慢整頁，而多數人只會點開其中一兩檔。
+  function appendChipSection(row){
+    if(!row||!row.code||row.source==='ETF')return;
+    var host=document.getElementById('wb-detail');if(!host)return;
+    var box=document.createElement('details');
+    box.className='wb-chip-dist';
+    box.innerHTML='<summary>套牢籌碼分布　<small>點開後載入</small></summary><div class="wb-chip-dist-body"><span class="wb-chip-dist-hint">以近三個月日K估算，展開才計算。</span></div>';
+    host.appendChild(box);
+    box.addEventListener('toggle',function(){
+      if(!box.open||box.dataset.loaded)return;
+      box.dataset.loaded='1';
+      var body=box.querySelector('.wb-chip-dist-body');
+      body.textContent='計算中…';
+      fetch(api('/web/api/chip-bins?code='+encodeURIComponent(row.code)),{credentials:'same-origin'})
+        .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text();})
+        .then(function(html){body.innerHTML=html;})
+        .catch(function(e){box.dataset.loaded='';body.textContent='籌碼分布載入失敗：'+(e&&e.message?e.message:e);});
+    });
+  }
   function updateQuotes(){if(!state.marketOpen||document.hidden||state.quoteLoading)return;var codes=filtered().slice(0,30).map(function(r){return r.code}).join(',');if(!codes)return;state.quoteLoading=true;fetch(api('/web/api/workbench/quotes?codes='+encodeURIComponent(codes)),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){(data.updates||[]).forEach(function(q){state.rows.forEach(function(r){if(r.code===q.code&&q.price!=null){r.price=q.price;r.change_pct=q.change_pct;r.metric_label='當日漲跌';}});});state.quoteUpdatedAt=data.fetched_at||'';if(data.note)note.textContent=data.note+(state.quoteUpdatedAt?' 最後取得 '+state.quoteUpdatedAt+'。':'');status.textContent=state.quoteUpdatedAt?'盤中行情已更新 '+state.quoteUpdatedAt:'盤中行情局部更新中';render();}).catch(function(e){if(e.message==='AUTH')location.reload();}).finally(function(){state.quoteLoading=false;});}
   function load(){status.textContent='讀取最近有效快照…';fetch(api('/web/api/workbench/snapshot'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){state.rows=Array.isArray(data.rows)?data.rows:[];state.sources=data.sources||{};state.personal=data.personal||{positions:[],rank_summary:{}};state.marketOpen=!!data.market_open;requestReview();if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}status.textContent=state.marketOpen?'盤中行情局部更新中':'最近有效快照已載入';note.textContent=data.note||'';pulse.innerHTML='<span>資料狀態</span><b>'+esc(state.marketOpen?'盤中局部更新':'收盤正式快照')+'</b><i></i><i></i><em>'+esc(workbenchStatusText(data,state.marketOpen))+'</em>';render();if(state.timer)clearInterval(state.timer);if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}}).catch(function(e){status.textContent='快照暫時無法載入';rowsEl.innerHTML='<div class="wb-skeleton" style="animation:none;background:#fff;color:#8b4034;padding:18px">資料暫時無法載入，請稍後重新整理。沒有顯示推測標的。</div>';if(e.message==='AUTH')location.reload();});}
   document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':'黑馬';state.query='';render();};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){load();};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};function closeDrawer(){drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;window.setTimeout(function(){window.scrollTo(0,state.returnScroll||0);},0);}document.getElementById('wb-close').onclick=closeDrawer;document.getElementById('wb-back').onclick=closeDrawer;mask.onclick=closeDrawer;document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
