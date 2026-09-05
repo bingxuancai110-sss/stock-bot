@@ -1622,6 +1622,19 @@ def init_db():
                 PRIMARY KEY (mode, code, pick_date)
             )
         ''')
+        # 推薦當下的技術面訊號。用 ALTER 而非改 CREATE：
+        # CREATE TABLE IF NOT EXISTS 對既有的表不會補欄位。
+        #
+        # 為什麼要存：現在無法回答「有黃金交叉的推薦是不是真的比較好」，
+        # 因為既有的 51 筆紀錄沒有記下當時有沒有交叉。
+        # 不存的話，兩週後想驗證仍然沒有資料，只能繼續憑感覺調權重——
+        # 而雷達的分數已經證明過「聽起來合理的指標實際上可能是反向的」。
+        cursor.execute('''
+            ALTER TABLE pick_history ADD COLUMN IF NOT EXISTS ma_cross TEXT
+        ''')
+        cursor.execute('''
+            ALTER TABLE pick_history ADD COLUMN IF NOT EXISTS macd_cross TEXT
+        ''')
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_pick_history_date
             ON pick_history (pick_date DESC, mode)
@@ -3659,6 +3672,20 @@ def analyze_pick_factors(mode, days=90):
             groups.append((f"依分數（以 {cut} 分為界）",
                            [(f"高分組 ≥{cut}", stat(hi)), (f"低分組 <{cut}", stat(lo))]))
 
+    # ── 依技術訊號 ──
+    # 這是「加分之前」該先看的：有黃金交叉的推薦，後續報酬是不是真的比較好？
+    # 沒有這組數字就調權重，等於憑「大家都說黃金交叉是好訊號」在改。
+    # 雷達的分數已經證明過，聽起來合理的指標實際上可能是反向的。
+    for field, label in (("ma_cross", "20/60 均線交叉"), ("macd_cross", "MACD 交叉")):
+        buckets_of = {}
+        for r in rows:
+            tag = str(r.get(field) or "").strip() or "無訊號"
+            buckets_of.setdefault(tag, []).append(r)
+        items = [(tag, stat(v)) for tag, v in buckets_of.items() if len(v) >= 3]
+        if len(items) >= 2:
+            items.sort(key=lambda x: x[1]["avg"], reverse=True)
+            groups.append((f"依{label}（樣本 ≥3）", items))
+
     # ── 依產業 ──（樣本 ≥3 才列，否則是雜訊）
     by_ind = {}
     ind_map = get_industry_map() or {}
@@ -4782,12 +4809,32 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
         for log in day_logs:
             code_key = str(log.get("code") or "").strip()
             by_code_delta.setdefault(code_key, []).append(log)
+        # 舊資料的補救：刪除持股在「刪除會寫日誌」這個修正之前發生的，
+        # 資料庫裡只有 add、沒有對應的 delete，上面的條件永遠不成立，
+        # 那些誤加就會一直卡在日報的新增／加碼裡。
+        #
+        # 判斷方式：這檔目前完全沒有持股，而且整份日誌裡從來沒有
+        # 任何 reduce／delete 紀錄——真正賣光的標的一定留得下賣出紀錄，
+        # 所以只有「刪除但沒記到」會落入這個情況。
+        ever_exit = set()
+        for log in enriched:
+            if str(log.get("action") or "") in ("reduce", "delete"):
+                ever_exit.add(str(log.get("code") or "").strip())
+        held_now = {str(p.get("code") or "").strip()
+                    for p in (current_positions or [])
+                    if int(p.get("shares") or 0) > 0}
+
         cancelled_codes = set()
         for code_key, logs_of_code in by_code_delta.items():
             actions = {str(x.get("action") or "") for x in logs_of_code}
             net = sum(int(x.get("shares_delta") or 0) for x in logs_of_code)
             # 需要同時出現「進場」與「刪除」，且當天淨變動為零
             if net == 0 and "delete" in actions and actions & {"add"}:
+                cancelled_codes.add(code_key)
+            # 舊資料：只有進場、目前無持股、且從未有過任何出場紀錄
+            elif (actions <= {"add"} and net > 0
+                    and code_key not in held_now
+                    and code_key not in ever_exit):
                 cancelled_codes.add(code_key)
         if cancelled_codes:
             cancelled_logs = [x for x in day_logs
@@ -7663,7 +7710,8 @@ def save_picks(mode, rows, top_n=5):
     if not rows:
         return 0
     picks = [(mode, r["code"], i, r.get("score"), r.get("name"),
-              r.get("industry"), r.get("close"))
+              r.get("industry"), r.get("close"),
+              r.get("ma_cross"), r.get("macd_cross"))
              for i, r in enumerate(rows[:top_n], start=1)]
     conn = get_db_connection()
     try:
@@ -7672,15 +7720,17 @@ def save_picks(mode, rows, top_n=5):
             cursor,
             """
             INSERT INTO pick_history
-                (mode, code, pick_date, rank, score, name, industry, price)
+                (mode, code, pick_date, rank, score, name, industry, price,
+                 ma_cross, macd_cross)
             VALUES %s
             ON CONFLICT (mode, code, pick_date) DO UPDATE SET
                 rank = EXCLUDED.rank, score = EXCLUDED.score,
                 name = EXCLUDED.name, industry = EXCLUDED.industry,
-                price = EXCLUDED.price
+                price = EXCLUDED.price,
+                ma_cross = EXCLUDED.ma_cross, macd_cross = EXCLUDED.macd_cross
             """,
             picks,
-            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s)",
+            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s)",
             page_size=100,
         )
         conn.commit()
@@ -7702,7 +7752,8 @@ def get_picks_since(mode, days=90):
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT code, pick_date, rank, score, name, industry, price
+            SELECT code, pick_date, rank, score, name, industry, price,
+                   ma_cross, macd_cross
             FROM pick_history
             WHERE mode = %s AND pick_date >= CURRENT_DATE - %s
               AND price IS NOT NULL AND price > 0
@@ -7713,7 +7764,8 @@ def get_picks_since(mode, days=90):
         rows = cursor.fetchall()
         cursor.close()
         return [{"code": r[0], "date": r[1], "rank": r[2], "score": r[3],
-                 "name": r[4], "industry": r[5], "price": r[6]} for r in rows]
+                 "name": r[4], "industry": r[5], "price": r[6],
+                 "ma_cross": r[7], "macd_cross": r[8]} for r in rows]
     except Exception as e:
         print(f"❌ 讀取選股名單失敗: {e}")
         return []
@@ -8403,6 +8455,116 @@ def _turning_reason_details(inst_item, stock, direction, cross_up, cross_down,
     if resistance is not None:
         details.append(f"近期壓力參考 {fmt_price(resistance)}")
     return details[:10]
+
+
+def macd_cross_state(stock, fast=12, slow=26, signal=9, recent_days=5):
+    """
+    MACD 交叉判斷（DIF 穿越 MACD 訊號線）。
+
+    DIF   = EMA(12) − EMA(26)
+    MACD  = DIF 的 EMA(9)
+    柱狀體 = DIF − MACD
+
+    只描述事實，不加分、不改變雷達的篩選與排序。
+
+    回傳 "MACD 金叉" / "MACD 死叉" / None。
+    需要至少 slow + signal + recent_days 根日K；不足回 None，
+    不用較短區間硬算——樣本不夠時 EMA 還沒收斂，算出來的交叉不可信。
+    """
+    closes = (stock or {}).get("closes") or []
+    need = slow + signal + recent_days
+    if len(closes) < need:
+        return None
+
+    def ema_series(values, period):
+        """回傳與輸入等長的 EMA 序列；前 period 筆用簡單平均起步。"""
+        if len(values) < period:
+            return []
+        k = 2.0 / (period + 1)
+        seed = sum(values[:period]) / period
+        out = [None] * (period - 1) + [seed]
+        prev = seed
+        for v in values[period:]:
+            prev = v * k + prev * (1 - k)
+            out.append(prev)
+        return out
+
+    fast_ema = ema_series(closes, fast)
+    slow_ema = ema_series(closes, slow)
+    if not fast_ema or not slow_ema:
+        return None
+
+    dif = [(f - s_) if (f is not None and s_ is not None) else None
+           for f, s_ in zip(fast_ema, slow_ema)]
+    dif_valid = [x for x in dif if x is not None]
+    if len(dif_valid) < signal + recent_days:
+        return None
+
+    sig = ema_series(dif_valid, signal)
+    if not sig:
+        return None
+    # 對齊：sig 對應 dif_valid 的尾段
+    pairs = [(d, m) for d, m in zip(dif_valid, sig) if m is not None]
+    if len(pairs) < recent_days + 1:
+        return None
+
+    today_dif, today_sig = pairs[-1]
+    for back in range(1, recent_days + 1):
+        if len(pairs) <= back:
+            break
+        prev_dif, prev_sig = pairs[-1 - back]
+        if prev_dif <= prev_sig and today_dif > today_sig:
+            return "MACD 金叉"
+        if prev_dif >= prev_sig and today_dif < today_sig:
+            return "MACD 死叉"
+    return None
+
+
+def golden_cross_state(stock, short_n=20, long_n=60, recent_days=5):
+    """
+    判斷 20 日均線與 60 日均線（季線）的黃金／死亡交叉。
+
+    只描述事實，不加分、不改變雷達的篩選與排序——
+    交接文件明訂不可因畫面需求自行改分數或排序，
+    所以這裡只回傳一個標籤，讓使用者自己判斷。
+
+    回傳：
+      "黃金交叉" —— 近 N 日內 20MA 由下向上穿過 60MA
+      "死亡交叉" —— 近 N 日內 20MA 由上向下穿過 60MA
+      "站上季線" —— 沒有剛交叉，但 20MA 已在 60MA 上方
+      None      —— 資料不足或不符合上述任一種
+
+    需要至少 long_n + recent_days 根日K；不足就回 None，
+    不用較短的區間硬算——那算出來的「季線」不是季線。
+    """
+    closes = (stock or {}).get("closes") or []
+    need = long_n + recent_days
+    if len(closes) < need:
+        return None
+
+    def ma(values, n, offset):
+        """offset=0 是最新一日，往前推 offset 日的 n 日均線。"""
+        end = len(values) - offset
+        if end - n < 0:
+            return None
+        window = values[end - n:end]
+        return sum(window) / n if window else None
+
+    today_short, today_long = ma(closes, short_n, 0), ma(closes, long_n, 0)
+    if today_short is None or today_long is None:
+        return None
+
+    # 往前找 recent_days 天內有沒有發生穿越
+    for back in range(1, recent_days + 1):
+        prev_short, prev_long = ma(closes, short_n, back), ma(closes, long_n, back)
+        if prev_short is None or prev_long is None:
+            break
+        if prev_short <= prev_long and today_short > today_long:
+            return "黃金交叉"
+        if prev_short >= prev_long and today_short < today_long:
+            return "死亡交叉"
+
+    return "站上季線" if today_short > today_long else None
 
 
 def _breakout_label(stock):
@@ -12398,7 +12560,12 @@ def build_line_screener_message(user_id, mode, base_url=None,
                 pct = row.get("pct")
                 pct_text = f"{pct:+.2f}%" if pct is not None else "漲跌尚無資料"
                 state = row.get("radar_state") or row.get("breakout") or "雷達訊號"
-                detail = f"{pct_text}・{state}・法人連買 {row.get('streak', 0)} 日"
+                tags = [t for t in (str(row.get("ma_cross") or ""),
+                                    str(row.get("macd_cross") or ""))
+                        if t in ("黃金交叉", "死亡交叉", "MACD 金叉", "MACD 死叉")]
+                cross_text = ("・" + "・".join(tags)) if tags else ""
+                detail = (f"{pct_text}・{state}{cross_text}・"
+                          f"法人連買 {row.get('streak', 0)} 日")
             contents.append({
                 "type": "box", "layout": "vertical", "margin": "lg",
                 "contents": [
@@ -17924,6 +18091,9 @@ def render_pick_factors(mode_label, fa):
         '・<b>依名次</b>：如果排序有意義，第 1–2 名應該系統性優於第 3–5 名。'
         '兩組差不多，代表名次只是分數的排列，沒有額外資訊。<br>'
         '・<b>依分數</b>：高分組贏不過低分組，代表這套評分對後續報酬沒有預測力。<br>'
+        '・<b>依技術訊號</b>：有黃金交叉／MACD 金叉的推薦，後續報酬是否系統性優於無訊號組。'
+        '兩組差不多就代表那個訊號沒有加分的價值。要等每組累積 10 筆以上、'
+        '且涵蓋多個推薦日，才適合據此決定要不要納入評分。<br>'
         '・<b>依推薦日</b>：同一天的推薦會一起受當天盤勢影響。報酬若集中在少數幾天，'
         '實際的獨立觀察數遠少於樣本數，統計可信度要打折。<br>'
         '・<b>產業 × 推薦日分散度</b>：一個產業表現差，可能是規律，'
@@ -21714,6 +21884,13 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                 "category": sc["category"],
                 "cum_lots": info["cum_lots"], "buy_days": info["buy_days"],
                 "breakout": breakout, "vol_ratio": price.get("vol_ratio"),
+                # 20 日／60 日均線交叉。只標示不加分——
+                # 交接文件明訂不可因畫面需求自行改分數或排序，
+                # 所以雷達的篩選與名次完全不受影響，這只是多一個看得到的事實。
+                "ma_cross": golden_cross_state(price),
+                # MACD 交叉。同樣只標示不加分——
+                # 單看 MACD 在強勢股上太常見，跟 20/60 均線一起看才有分量。
+                "macd_cross": macd_cross_state(price),
                 "pos": price.get("pos_vs_60d_high"),
                 "up_streak": price.get("up_streak", 0),
                 "data_quality": build_screener_data_quality(
@@ -22577,6 +22754,22 @@ def _workbench_screener_rows(mode, snapshot=None):
         display_radar_state = ("" if raw_radar_state == "價格強、量能普通" and not raw_breakout
                                else raw_radar_state)
         signal = (display_radar_state if mode == "radar" else raw_breakout)
+        # 技術面標籤接在訊號後面。只標真正少見的：
+        # 20/60 均線的黃金／死亡交叉，以及 MACD 金叉／死叉。
+        # 「站上季線」不標——多頭時大半標的都符合，標了等於沒標。
+        #
+        # 兩個同時出現時會併排顯示（例如「黃金交叉・MACD 金叉」），
+        # 那是兩個獨立指標同步，比單一訊號有分量。
+        tech_tags = []
+        ma_cross = str(raw.get("ma_cross") or "")
+        if ma_cross in ("黃金交叉", "死亡交叉"):
+            tech_tags.append(ma_cross)
+        macd_cross = str(raw.get("macd_cross") or "")
+        if macd_cross in ("MACD 金叉", "MACD 死叉"):
+            tech_tags.append(macd_cross)
+        if tech_tags:
+            joined = "・".join(tech_tags)
+            signal = f"{signal}・{joined}" if signal else joined
         normalized.append({
             "source": source_label,
             "code": code,
