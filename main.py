@@ -14961,6 +14961,8 @@ def render_page(title, body, nav_active=None, user_name=None):
     window.setTimeout(function () {{
       var box = document.getElementById('habitsBox');
       if (!box) return;
+      // 操作習慣已改由伺服器端渲染，正常情況下不會停在「準備載入」。
+      // 這個備援留著只為了萬一有舊快取的頁面，條件不符就直接跳過。
       if (String(box.textContent || '').indexOf('準備載入') < 0) return;
       var tk = '';
       try {{
@@ -18794,6 +18796,25 @@ def web_trades(uid):
         export_code=code or None)
     monthly_review_html = render_monthly_review(uid, review_month)
 
+    # 操作習慣改成伺服器端直接算好，跟頁面一起送出。
+    #
+    # 原本做成「前端 fetch 才載入」，但實測在 LINE WebView 裡那段內嵌腳本
+    # 始終沒有執行，畫面永遠停在靜態文字。前後修了三版（補 token、預設展開、
+    # 殼層備援）都沒解決，代表問題不在腳本內容本身。
+    #
+    # 這個統計只查資料庫（realized_trades 與 position_change_logs），
+    # 不抓任何報價，本來就是毫秒級——沒有理由為了它承擔前端載入的風險。
+    # 只有「賣出後走勢」要另外抓報價，那個維持勾選才算。
+    habits_started = time.monotonic()
+    try:
+        habits_html = render_trade_habits(summarize_trade_habits(uid))
+        print("⏱️ 操作習慣（伺服器端）%.0fms" %
+              ((time.monotonic() - habits_started) * 1000))
+    except Exception as exc:
+        print(f"❌ 操作習慣統計失敗: {exc}")
+        habits_html = ('<div class="sub">統計暫時無法計算：'
+                       + html.escape(type(exc).__name__) + '</div>')
+
     if not trades and not months and not journal_logs:
         return respond_page("交易紀錄", """
 <div class="empty">還沒有任何交易或操作日誌。<br><br>
@@ -18957,13 +18978,13 @@ def web_trades(uid):
 
 <div class="band" style="height:34px">{''.join(band)}</div>
 
-<details class="disclosure" id="habits" style="margin-top:14px" open>
-  <summary>我的操作習慣</summary>
-  <div id="habitsBox" class="sub" style="margin-top:8px">準備載入…（若持續停在這一行，代表頁面腳本沒有執行，請重新整理）</div>
-  <label class="opt" style="margin-top:8px">
+<section class="disclosure" id="habits" style="margin-top:14px">
+  <h2 style="font-size:15px;margin-bottom:8px">我的操作習慣</h2>
+  <div id="habitsBox">{habits_html}</div>
+  <label class="opt" style="margin-top:10px">
     <input type="checkbox" id="habitsAfter"> 一併計算「賣出後的走勢」（需另外抓報價，較慢）
   </label>
-</details>
+</section>
 <script>
 (function () {{
   // 這一段刻意做成「展開才算」：交易紀錄頁本來就要跑月度回顧、操作歷程與報價，
@@ -19028,15 +19049,11 @@ def web_trades(uid):
       }});
   }}
 
-  d.addEventListener('toggle', function () {{ if (d.open) load(); }});
-  if (chk) chk.addEventListener('change', function () {{ if (d.open) load(); }});
-  // 預設就載入，不必再點一次。
-  // 「賣出後走勢」仍維持勾選才算——那個要另外抓報價，是真正慢的部分。
-  //
-  // 不看 d.open：details 的 open 屬性在某些 WebView（LINE 內建瀏覽器）
-  // 讀取時機不一致，判斷成 false 就整個不載入，畫面停在靜態文字。
-  // 這一塊本來就要顯示，直接載入即可，不必先問它展開了沒。
-  load();
+  if (chk) chk.addEventListener('change', load);
+  // 基礎統計已由伺服器端算好、隨頁面送出，這裡不必再載入一次。
+  // 只有勾選「賣出後走勢」時才重抓——那個要另外打報價 API，是真正慢的部分。
+  // 這樣即使這段腳本沒有執行，使用者仍然看得到統計。
+  loadedKey = '0';
 }})();
 </script>
 <div class="callout">
