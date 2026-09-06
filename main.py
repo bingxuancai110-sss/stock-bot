@@ -8461,6 +8461,12 @@ def _turning_reason_details(inst_item, stock, direction, cross_up, cross_down,
     return details[:10]
 
 
+# 籌碼分布的下方價格底線：低於現價這個倍數的交易日不列入統計。
+# 飆股早期的低價天量會稀釋上方套牢比例，而那些人早已獲利，
+# 不會因為「解套」而賣，計入只會讓數字失真。
+CHIP_PRICE_FLOOR_RATIO = 0.5
+
+
 def chip_above_ratio(stock):
     """
     現價上方尚未解套的籌碼比例（0~1）。只回傳一個數字，不做分箱與繪圖。
@@ -8479,8 +8485,15 @@ def chip_above_ratio(stock):
     price_now = closes[-1]
     if not price_now:
         return None
+    # 口徑必須與 compute_chip_bins 一致，否則清單上的百分比
+    # 會跟展開後的圖對不起來。
+    floor_price = price_now * CHIP_PRICE_FLOOR_RATIO
+    pairs = [(c, v) for c, v in zip(closes, volumes)
+             if c is not None and c >= floor_price]
+    if len(pairs) < 20:
+        pairs = [(c, v) for c, v in zip(closes, volumes) if c is not None]
     total = above = 0.0
-    for price, vol in zip(closes, volumes):
+    for price, vol in pairs:
         v = float(vol or 0)
         if v <= 0:
             continue
@@ -8511,14 +8524,39 @@ def compute_chip_bins(stock, bins=14):
     if len(closes) < 20 or len(volumes) != len(closes):
         return None
     price_now = closes[-1]
-    lo, hi = min(closes), max(closes)
-    if not price_now or hi <= lo:
+    if not price_now:
+        return None
+
+    # 排除「收盤價低於現價一半」的交易日。
+    #
+    # 上方壓力不設時間上限——套牢的人可能是半年前買的，
+    # 光聖 6442 的 2,540 高點就在三個月窗口之外，砍掉時間會漏掉。
+    #
+    # 但下方要設價格底線：飆股一年內可能從 200 漲到 2,000，
+    # 早期低價區的天量會把分母灌大，把上方套牢比例稀釋掉，
+    # 而那些人早就獲利了結，對現在的賣壓沒有意義。
+    #
+    # 一半是個判斷，不是推導出來的數字：低於現價一半代表帳面已獲利一倍以上，
+    # 那些籌碼幾乎不會因為「解套」而賣。要調整改這個常數即可。
+    floor_price = price_now * CHIP_PRICE_FLOOR_RATIO
+    pairs = [(c, v) for c, v in zip(closes, volumes)
+             if c is not None and c >= floor_price]
+    if len(pairs) < 20:
+        # 濾完剩太少就不濾，寧可看到含雜訊的分布，也不要因為樣本不足而整個消失
+        pairs = [(c, v) for c, v in zip(closes, volumes) if c is not None]
+        floor_price = None
+    if len(pairs) < 20:
+        return None
+
+    kept_closes = [c for c, _v in pairs]
+    lo, hi = min(kept_closes), max(kept_closes)
+    if hi <= lo:
         return None
 
     step = (hi - lo) / bins
     buckets = [0.0] * bins
     total = 0.0
-    for price, vol in zip(closes, volumes):
+    for price, vol in pairs:
         v = float(vol or 0)
         if v <= 0:
             continue
@@ -8544,10 +8582,13 @@ def compute_chip_bins(stock, bins=14):
             "above": b_lo >= price_now,
             "current": b_lo <= price_now <= b_hi,
         })
-    return {"bins": out, "days": len(closes),
+    return {"bins": out, "days": len(pairs),
             "max_ratio": max(b["ratio"] for b in out),
             "price": round(price_now, 2),
-            "low": round(lo, 2), "high": round(hi, 2)}
+            "low": round(lo, 2), "high": round(hi, 2),
+            # 有濾掉低價日時記下門檻與筆數，畫面才說得出「排除了什麼」
+            "floor": round(floor_price, 2) if floor_price else None,
+            "dropped": len(closes) - len(pairs)}
 
 
 def macd_cross_state(stock, fast=12, slow=26, signal=9, recent_days=5):
@@ -18319,6 +18360,9 @@ def render_chip_bins(code, name, data):
   （不含現價所在區間）。比重高的價位帶，反彈到那裡時通常會遇到較多賣壓。</div>
 {''.join(rows)}
 <div class="chip-note">
+  {f"已排除收盤價低於 {data['floor']:,.0f}（現價一半）的 {data['dropped']} 個交易日——"
+     f"那些籌碼帳面已獲利一倍以上，不會因為解套而賣，計入只會稀釋上方比例。<br>"
+     if data.get("floor") and data.get("dropped") else ""}
   以每日收盤價與當日總量估算，不是券商的分價量表。
   同一天內震盪大的標的，當天的量其實分散在多個價位，
   這裡全部歸到收盤價，位置會失真——請當成大致的區域參考，不是精確價位。
