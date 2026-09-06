@@ -18858,9 +18858,9 @@ def web_trades(uid):
 
 <div class="band" style="height:34px">{''.join(band)}</div>
 
-<details class="disclosure" id="habits" style="margin-top:14px">
+<details class="disclosure" id="habits" style="margin-top:14px" open>
   <summary>我的操作習慣</summary>
-  <div id="habitsBox" class="sub" style="margin-top:8px">點開後才計算，不影響本頁載入速度。</div>
+  <div id="habitsBox" class="sub" style="margin-top:8px">計算中…</div>
   <label class="opt" style="margin-top:8px">
     <input type="checkbox" id="habitsAfter"> 一併計算「賣出後的走勢」（需另外抓報價，較慢）
   </label>
@@ -18880,7 +18880,17 @@ def web_trades(uid):
     if (loadedKey === key) return;
     loadedKey = key;
     box.textContent = '計算中…';
-    fetch('/web/api/trade-habits?after=' + key, {{ credentials: 'same-origin' }})
+    // 網址一定要帶 token：LINE WebView 常常不會把 cookie 帶進 fetch，
+    // 只靠 credentials:'same-origin' 會被 web_login_required 擋成 401，
+    // 畫面就永遠停在「載入失敗」。其他端點都是這樣帶的，這裡漏了。
+    var tk = '';
+    try {{
+      tk = new URLSearchParams(window.location.search).get('t')
+           || localStorage.getItem('stockbot_web_token') || '';
+    }} catch (ignore) {{ tk = ''; }}
+    var url = '/web/api/trade-habits?after=' + key
+              + (tk ? ('&t=' + encodeURIComponent(tk)) : '');
+    fetch(url, {{ credentials: 'same-origin' }})
       .then(function (r) {{
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.text();
@@ -18894,6 +18904,9 @@ def web_trades(uid):
 
   d.addEventListener('toggle', function () {{ if (d.open) load(); }});
   if (chk) chk.addEventListener('change', function () {{ if (d.open) load(); }});
+  // 預設就載入，不必再點一次。
+  // 「賣出後走勢」仍維持勾選才算——那個要另外抓報價，是真正慢的部分。
+  if (d.open) load();
 }})();
 </script>
 <div class="callout">
