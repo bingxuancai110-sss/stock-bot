@@ -15,7 +15,7 @@ import psycopg2
 from psycopg2 import pool
 import psycopg2.extensions
 from psycopg2.extras import execute_values
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -14402,6 +14402,12 @@ h2{font-size:16px;font-weight:600;letter-spacing:.02em}
     background:var(--paper-2);overflow:hidden}
   .wbar-track i{display:block;height:100%;border-radius:5px;
     background:var(--brass-2);min-width:6px}
+  /* 「計算賣出後走勢」做成連結而不是 JS 按鈕——這個環境的內嵌腳本不執行。
+     樣式做成按鈕的樣子，行為仍然是普通連結。 */
+  .habits-after-btn{display:inline-block;margin-top:10px;padding:8px 16px;
+    background:var(--card);border:1px solid var(--rule);border-radius:8px;
+    color:var(--brass);font-size:13px;font-weight:600;text-decoration:none}
+  .habits-after-btn:active{background:var(--paper-2)}
   .wbar em{flex:0 0 auto;font-style:normal;font-size:11.5px;
     color:var(--ink-soft);font-variant-numeric:tabular-nums}
 .bar div{height:100%;background:var(--brass-2)}
@@ -18805,15 +18811,32 @@ def web_trades(uid):
     # 這個統計只查資料庫（realized_trades 與 position_change_logs），
     # 不抓任何報價，本來就是毫秒級——沒有理由為了它承擔前端載入的風險。
     # 只有「賣出後走勢」要另外抓報價，那個維持勾選才算。
+    # 「賣出後走勢」要另外打報價 API，所以維持按下去才算。
+    # 做成連結而不是 JS 按鈕：這個環境的內嵌腳本不執行（前面修過三版都沒用），
+    # 連結不需要 JS，按下去伺服器直接算好再送回來。
+    habits_after = request.args.get("habits_after") == "1"
     habits_started = time.monotonic()
     try:
-        habits_html = render_trade_habits(summarize_trade_habits(uid))
-        print("⏱️ 操作習慣（伺服器端）%.0fms" %
-              ((time.monotonic() - habits_started) * 1000))
+        habits_html = render_trade_habits(
+            summarize_trade_habits(uid, with_after=habits_after))
+        print("⏱️ 操作習慣（伺服器端）%.0fms（含賣出後走勢=%s）" %
+              ((time.monotonic() - habits_started) * 1000, habits_after))
     except Exception as exc:
         print(f"❌ 操作習慣統計失敗: {exc}")
         habits_html = ('<div class="sub">統計暫時無法計算：'
                        + html.escape(type(exc).__name__) + '</div>')
+
+    # 連結要帶著目前的篩選條件，按下去才不會把月份、股票那些重設掉。
+    _habit_args = {k: v for k, v in request.args.items()
+                   if k not in ("habits_after", "fragment")}
+    _habit_args["habits_after"] = "0" if habits_after else "1"
+    habits_after_url = "/web/trades?" + urlencode(_habit_args)
+    habits_after_control = (
+        f'<a class="habits-after-btn" href="{html.escape(habits_after_url, quote=True)}">'
+        + ("收起「賣出後的走勢」" if habits_after else "計算「賣出後的走勢」")
+        + "</a>"
+        + ('<div class="sub" style="margin-top:6px">'
+           "需另外抓每一檔的報價，會比較慢。</div>" if not habits_after else ""))
 
     if not trades and not months and not journal_logs:
         return respond_page("交易紀錄", """
@@ -18981,9 +19004,7 @@ def web_trades(uid):
 <section class="disclosure" id="habits" style="margin-top:14px">
   <h2 style="font-size:15px;margin-bottom:8px">我的操作習慣</h2>
   <div id="habitsBox">{habits_html}</div>
-  <label class="opt" style="margin-top:10px">
-    <input type="checkbox" id="habitsAfter"> 一併計算「賣出後的走勢」（需另外抓報價，較慢）
-  </label>
+  {habits_after_control}
 </section>
 <script>
 (function () {{
