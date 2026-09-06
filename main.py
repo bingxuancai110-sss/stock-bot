@@ -18435,12 +18435,25 @@ def web_trade_habits(uid):
     after=1 才另外抓報價算「賣出後走勢」。
     """
     with_after = request.args.get("after") == "1"
+    started = time.monotonic()
     try:
         h = summarize_trade_habits(uid, with_after=with_after)
-        return render_trade_habits(h)
+        html_out = render_trade_habits(h)
+        # 計時寫進 Render Logs。使用者回報「一直停在計算中」時，
+        # 這一行能分辨「伺服器根本沒收到請求」與「算太久」——
+        # 沒有它就只能猜。
+        print("⏱️ 操作習慣 %s：%.0fms（交易 %s 筆、日誌 %s 筆、含賣出後走勢=%s）" %
+              (str(uid)[-6:], (time.monotonic() - started) * 1000,
+               h.get("n"), h.get("n_logs"), with_after))
+        return html_out
     except Exception as e:
-        print(f"❌ 操作習慣統計失敗 {uid}: {e}")
-        return '<div class="sub">統計暫時無法計算，請稍後再試。</div>'
+        import traceback
+        print("❌ 操作習慣統計失敗 %s（%.0fms）: %s" %
+              (str(uid)[-6:], (time.monotonic() - started) * 1000, e))
+        traceback.print_exc()
+        return ('<div class="sub">統計暫時無法計算：'
+                + html.escape(type(e).__name__)
+                + '。詳細原因已寫入伺服器日誌。</div>')
 
 
 @app.route("/web/position-trend")
@@ -18916,7 +18929,7 @@ def web_trades(uid):
 
 <details class="disclosure" id="habits" style="margin-top:14px" open>
   <summary>我的操作習慣</summary>
-  <div id="habitsBox" class="sub" style="margin-top:8px">計算中…</div>
+  <div id="habitsBox" class="sub" style="margin-top:8px">準備載入…（若持續停在這一行，代表頁面腳本沒有執行，請重新整理）</div>
   <label class="opt" style="margin-top:8px">
     <input type="checkbox" id="habitsAfter"> 一併計算「賣出後的走勢」（需另外抓報價，較慢）
   </label>
@@ -18935,6 +18948,8 @@ def web_trades(uid):
     var key = chk && chk.checked ? '1' : '0';
     if (loadedKey === key) return;
     loadedKey = key;
+    // 這行由腳本寫入。若畫面停在靜態的「準備載入…」，代表腳本根本沒跑；
+    // 停在「計算中…」才是請求真的送出去了。兩者要分得開，否則無從判斷。
     box.textContent = '計算中…';
     // 網址一定要帶 token：LINE WebView 常常不會把 cookie 帶進 fetch，
     // 只靠 credentials:'same-origin' 會被 web_login_required 擋成 401，
