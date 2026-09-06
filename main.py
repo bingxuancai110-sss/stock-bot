@@ -14954,6 +14954,32 @@ def render_page(title, body, nav_active=None, user_name=None):
     '/web/leaderboard':'排行榜','/web/trades':'紀錄','/web/compare':'比較',
     '/web/settings':'設定','/web/more':'更多功能','/web/chips':'籌碼超人','/web/etf':'ETF 專區','/web/watchlist':'名單儀表板'
   }};
+  function retryPendingLoaders() {{
+    // 保險機制：內嵌腳本若因任何原因沒有執行（片段插入時序、WebView 差異），
+    // 畫面會停在靜態的「準備載入…」。這裡在導覽完成後檢查一次，
+    // 還停在那個狀態就直接補送請求，不讓使用者對著一行字乾等。
+    window.setTimeout(function () {{
+      var box = document.getElementById('habitsBox');
+      if (!box) return;
+      if (String(box.textContent || '').indexOf('準備載入') < 0) return;
+      var tk = '';
+      try {{
+        tk = new URLSearchParams(window.location.search).get('t')
+             || localStorage.getItem('stockbot_web_token') || '';
+      }} catch (ignore) {{ tk = ''; }}
+      box.textContent = '計算中…（由備援載入）';
+      fetch('/web/api/trade-habits?after=0' + (tk ? ('&t=' + encodeURIComponent(tk)) : ''),
+            {{ credentials: 'same-origin' }})
+        .then(function (r) {{
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.text();
+        }})
+        .then(function (html) {{ box.innerHTML = html; }})
+        .catch(function (e) {{
+          box.textContent = '統計載入失敗：' + (e && e.message ? e.message : e);
+        }});
+    }}, 1200);
+  }}
   function executeFragmentScripts(container) {{
     container.querySelectorAll('script').forEach(function(oldScript) {{
       var replacement = document.createElement('script');
@@ -15002,6 +15028,7 @@ def render_page(title, body, nav_active=None, user_name=None):
         document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
         appContent.innerHTML = fragment;
         executeFragmentScripts(appContent);
+        retryPendingLoaders();
         if (navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
@@ -15137,6 +15164,9 @@ def render_page(title, body, nav_active=None, user_name=None):
       box.classList.add('feedback-error'); haptic('error');
     }}
   }});
+  // 首次整頁載入也要跑一次備援。片段導覽有 retryPendingLoaders()，
+  // 但直接開網址或從 LINE 進來是整頁載入，不會經過那條路徑。
+  if (typeof retryPendingLoaders === 'function') retryPendingLoaders();
 }})();
 </script>
 <footer>
@@ -18941,7 +18971,13 @@ def web_trades(uid):
   var d = document.getElementById('habits');
   var box = document.getElementById('habitsBox');
   var chk = document.getElementById('habitsAfter');
-  if (!d || !box) return;
+  // 原本這裡是靜默 return，元素找不到時畫面就永遠停在靜態文字，
+  // 完全看不出是「腳本沒跑」還是「元素不見了」。
+  if (!box) return;
+  if (!d) {{
+    box.textContent = '找不到操作習慣區塊（habits），請重新整理頁面。';
+    return;
+  }}
   var loadedKey = null;
 
   function load() {{
@@ -18996,7 +19032,11 @@ def web_trades(uid):
   if (chk) chk.addEventListener('change', function () {{ if (d.open) load(); }});
   // 預設就載入，不必再點一次。
   // 「賣出後走勢」仍維持勾選才算——那個要另外抓報價，是真正慢的部分。
-  if (d.open) load();
+  //
+  // 不看 d.open：details 的 open 屬性在某些 WebView（LINE 內建瀏覽器）
+  // 讀取時機不一致，判斷成 false 就整個不載入，畫面停在靜態文字。
+  // 這一塊本來就要顯示，直接載入即可，不必先問它展開了沒。
+  load();
 }})();
 </script>
 <div class="callout">
