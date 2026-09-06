@@ -18764,25 +18764,81 @@ def web_trades(uid):
     def opt(v, t, cur):
         return f'<option value="{v}"{" selected" if str(cur) == str(v) else ""}>{t}</option>'
 
+    # 篩選器改成前端切換：原本每個 onchange 都 this.form.submit()，
+    # 換一個月份就整頁重載，等於把月度回顧、操作歷程、報價全部重跑一次。
+    # 改成只抓 fragment 換掉內容區，速度差很多。
     controls = f"""
-<form method="get" class="controls">
+<form method="get" class="controls" id="tradeFilters">
   <div class="fields">
-    <div><label>月份</label><select name="month" onchange="this.form.submit()">
+    <div><label>月份</label><select name="month">
       {opt('', '全部', month)}
       {''.join(opt(m, m.replace('-', ' / '), month) for m in months)}
     </select></div>
-    <div><label>股票</label><select name="code" onchange="this.form.submit()">
+    <div><label>股票</label><select name="code">
       {opt('', '全部', code)}
       {''.join(opt(c, f"{stock_display_name(c, inst)} {c}", code) for c in codes)}
     </select></div>
     <div><label>操作起日</label>
-      <input type="date" name="journal_start" value="{html.escape(journal_start)}" onchange="this.form.submit()"></div>
+      <input type="date" name="journal_start" value="{html.escape(journal_start)}"></div>
     <div><label>操作迄日</label>
-      <input type="date" name="journal_end" value="{html.escape(journal_end)}" onchange="this.form.submit()"></div>
+      <input type="date" name="journal_end" value="{html.escape(journal_end)}"></div>
     <div><label>回顧月份</label>
-      <input type="month" name="review_month" value="{html.escape(review_month)}" onchange="this.form.submit()"></div>
+      <input type="month" name="review_month" value="{html.escape(review_month)}"></div>
   </div>
-</form>"""
+  <noscript><button type="submit">套用篩選</button></noscript>
+</form>
+<script>
+(function () {{
+  var form = document.getElementById('tradeFilters');
+  if (!form) return;
+  var busy = false;
+  function token() {{
+    try {{
+      return new URLSearchParams(window.location.search).get('t')
+             || localStorage.getItem('stockbot_web_token') || '';
+    }} catch (ignore) {{ return ''; }}
+  }}
+  function apply() {{
+    if (busy) return;
+    busy = true;
+    var params = new URLSearchParams(new FormData(form));
+    var tk = token();
+    if (tk) params.set('t', tk);
+    params.set('fragment', '1');
+    var target = document.getElementById('app-page-content') || document.body;
+    target.style.opacity = '0.55';
+    fetch('/web/trades?' + params.toString(), {{ credentials: 'same-origin' }})
+      .then(function (r) {{
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      }})
+      .then(function (html) {{
+        if (html.indexOf('AUTH_EXPIRED') >= 0) {{
+          window.location.reload();
+          return;
+        }}
+        target.innerHTML = html;
+        // 換掉網址但不留下一堆歷史紀錄，返回鍵才不會卡在篩選之間
+        var shown = new URLSearchParams(new FormData(form));
+        try {{
+          window.history.replaceState(null, '',
+            window.location.pathname + '?' + shown.toString());
+        }} catch (ignore) {{}}
+      }})
+      .catch(function (e) {{
+        // 前端切換失敗就退回整頁送出，不要讓使用者卡住
+        form.submit();
+      }})
+      .finally(function () {{
+        busy = false;
+        target.style.opacity = '';
+      }});
+  }}
+  form.addEventListener('change', function (e) {{
+    if (e.target && e.target.name) apply();
+  }});
+}})();
+</script>"""
 
     if not st:
         body = controls + monthly_review_html + journal_html + '<div class="empty">這個範圍內沒有已實現損益紀錄；若有加碼／減碼，請查看上方完整操作歷程。</div>'
@@ -18890,15 +18946,34 @@ def web_trades(uid):
     }} catch (ignore) {{ tk = ''; }}
     var url = '/web/api/trade-habits?after=' + key
               + (tk ? ('&t=' + encodeURIComponent(tk)) : '');
-    fetch(url, {{ credentials: 'same-origin' }})
+    // 加逾時：這個統計本身是純資料庫查詢（毫秒級），
+    // 等超過 30 秒就不是「在算」，是請求卡住了——
+    // 沒有逾時的話畫面會永遠停在「計算中…」，看不出到底發生什麼事。
+    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timedOut = false;
+    var timer = window.setTimeout(function () {{
+      timedOut = true;
+      if (ctrl) ctrl.abort();
+    }}, 30000);
+    fetch(url, ctrl ? {{ credentials: 'same-origin', signal: ctrl.signal }}
+                    : {{ credentials: 'same-origin' }})
       .then(function (r) {{
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.text();
       }})
-      .then(function (html) {{ box.innerHTML = html; }})
+      .then(function (html) {{
+        window.clearTimeout(timer);
+        box.innerHTML = html;
+      }})
       .catch(function (e) {{
+        window.clearTimeout(timer);
         loadedKey = null;
-        box.textContent = '統計載入失敗：' + (e && e.message ? e.message : e);
+        box.innerHTML = timedOut
+          ? '統計逾時（超過 30 秒沒有回應）。這個統計只查資料庫，'
+            + '正常是一瞬間就好，逾時通常代表伺服器正忙——'
+            + '請稍後再點一次「我的操作習慣」。'
+          : ('統計載入失敗：' + (e && e.message ? e.message : e)
+             + '（HTTP 401 代表登入已過期，請從 LINE 重新開啟頁面）');
       }});
   }}
 
