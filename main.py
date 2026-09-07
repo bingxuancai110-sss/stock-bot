@@ -3591,10 +3591,85 @@ def summarize_trade_habits(uid, with_after=False):
             elif chg < 0:
                 lower += 1
         rows.sort(key=lambda x: x[1], reverse=True)
+
+        # 扣掉同期大盤。
+        #
+        # 「賣完還漲 14 筆」本身說明不了什麼——如果那段期間大盤漲 10%，
+        # 你不賣它也只是跟著大盤走。要判斷賣得對不對，得看「相對大盤」。
+        taiex_hist = {}
+        try:
+            for d, close in (_fetch_taiex_history("1y") or []):
+                if close:
+                    taiex_hist[d] = float(close)
+        except Exception as exc:
+            print(f"⚠️ 賣出後走勢取大盤基準失敗: {exc}")
+        taiex_now = None
+        if taiex_hist:
+            taiex_now = taiex_hist[max(taiex_hist)]
+
+        def market_change_since(sold_on):
+            """從賣出日到現在的大盤漲跌幅；查不到當天就往前找最近的交易日。"""
+            if not sold_on or not taiex_hist or not taiex_now:
+                return None
+            base = taiex_hist.get(sold_on)
+            if base is None:
+                earlier = [d for d in taiex_hist if d <= sold_on]
+                if not earlier:
+                    return None
+                base = taiex_hist[max(earlier)]
+            if not base:
+                return None
+            return (taiex_now - base) / base * 100
+
+        detail = []
+        for t, chg in rows:
+            mkt = market_change_since(t.get("sold_on"))
+            detail.append({
+                "code": str(t["code"]).strip(),
+                "name": t.get("name") or str(t["code"]).strip(),
+                "sold_on": t.get("sold_on"),
+                "sell_price": t.get("sell_price"),
+                "chg": chg,
+                "market": mkt,
+                "excess": (chg - mkt) if mkt is not None else None,
+                # 賣出理由是分組的依據；沒填的歸「未填理由」，
+                # 不併進其他組，否則會汙染那組的結論。
+                "reason": (str(t.get("sell_reason") or "").strip() or "未填理由"),
+            })
+
+        # 依理由分組。這是這個統計真正的用途：
+        # 停利組若「賣後相對大盤還漲很多」＝賣太早；
+        # 停損組若「賣後相對大盤繼續跌」＝賣對了。
+        groups = {}
+        for r in detail:
+            groups.setdefault(r["reason"], []).append(r)
+        by_reason = []
+        for reason, items in groups.items():
+            withm = [x for x in items if x["excess"] is not None]
+            by_reason.append({
+                "reason": reason,
+                "n": len(items),
+                "avg_chg": sum(x["chg"] for x in items) / len(items),
+                "avg_market": (sum(x["market"] for x in withm) / len(withm)
+                               if withm else None),
+                "avg_excess": (sum(x["excess"] for x in withm) / len(withm)
+                               if withm else None),
+                # 每組只列前 5 檔，其餘收合——一千筆的話整頁會捲不完。
+                # 依「相對大盤」絕對值排序：最極端的那幾筆才有參考價值，
+                # 中間接近 0 的看了也不會改變任何判斷。
+                "items": sorted(items,
+                                key=lambda x: abs(x["excess"] or 0),
+                                reverse=True),
+            })
+        by_reason.sort(key=lambda g: g["n"], reverse=True)
+
         out["after"] = {
             "higher": higher, "lower": lower, "n": len(rows),
             "best": rows[0] if rows else None,
             "worst": rows[-1] if rows else None,
+            "rows": detail,
+            "by_reason": by_reason,
+            "has_market": bool(taiex_hist),
         }
     return out
 
@@ -14404,6 +14479,57 @@ h2{font-size:16px;font-weight:600;letter-spacing:.02em}
     background:var(--brass-2);min-width:6px}
   /* 「計算賣出後走勢」做成連結而不是 JS 按鈕——這個環境的內嵌腳本不執行。
      樣式做成按鈕的樣子，行為仍然是普通連結。 */
+  /* 賣出後走勢的逐筆長條圖。中線＝賣出價，漲往右、跌往左，
+     一眼看得出是多數小漲，還是少數大漲把平均拉起來。
+     純 HTML 畫，不用 JS——這個環境的內嵌腳本不執行。 */
+  .after-chart{grid-column:1/-1;margin:10px 0 4px}
+  .after-row{display:grid;grid-template-columns:96px 1fr 58px;gap:8px;
+    align-items:center;padding:2px 0}
+  .after-name{font-size:11.5px;color:var(--ink);overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .after-name small{margin-left:4px;color:var(--ink-faint);font-size:10px}
+  .after-track{position:relative;height:12px;background:var(--paper-2);
+    border-radius:3px;overflow:hidden}
+  .after-track i{position:absolute;top:0;height:100%;border-radius:2px}
+  .after-track i.up{background:var(--up)}
+  .after-track i.down{background:var(--down)}
+  .after-track u{position:absolute;left:50%;top:0;width:1px;height:100%;
+    background:var(--ink-faint);opacity:.45}
+  .after-pct{text-align:right;font-size:11.5px;font-variant-numeric:tabular-nums}
+  .after-pct.up{color:var(--up)} .after-pct.down{color:var(--down)}
+  .after-axis{display:grid;grid-template-columns:96px 1fr 58px;gap:8px;
+    margin-top:5px;font-size:10px;color:var(--ink-faint)}
+  .after-axis span:nth-child(2){text-align:center}
+  /* 賣出後走勢：依賣出理由分組。
+     主角是「相對大盤」——絕對漲跌會被大盤帶著走，判斷不了賣得對不對。 */
+  .after-wrap{margin-top:10px}
+  .after-verdict{padding:10px 12px;background:#FFF4F3;border-radius:9px;
+    margin-bottom:12px;font-size:12.5px;line-height:1.65;color:#8A2A22}
+  .after-cols{display:flex;justify-content:flex-end;gap:14px;
+    font-size:9.5px;color:var(--ink-faint);padding:0 2px 4px}
+  .after-cols span:first-child{width:58px;text-align:right}
+  .after-cols span:last-child{width:62px;text-align:right}
+  .after-group{padding:10px 0;border-top:1px solid var(--sep)}
+  .after-g-head{display:flex;justify-content:space-between;align-items:baseline}
+  .after-g-title{font-size:14px;font-weight:600}
+  .after-g-title small{margin-left:7px;color:var(--ink-faint);
+    font-size:10.5px;font-weight:400}
+  .after-g-val{text-align:right}
+  .after-g-main{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
+  .after-g-main.up{color:var(--up)} .after-g-main.down{color:var(--down)}
+  .after-g-val small{display:block;font-size:9px;color:var(--ink-faint)}
+  .after-g-sub{margin:2px 0 7px;font-size:10.5px;color:var(--ink-soft)}
+  .after-item{display:grid;grid-template-columns:1fr 56px 58px 62px;
+    gap:6px;align-items:center;padding:3px 0 3px 12px;font-size:11px}
+  .after-i-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .after-i-name small{margin-left:5px;color:var(--ink-faint);font-size:9.5px}
+  .after-i-date{color:var(--ink-faint);font-size:9.5px;text-align:right}
+  .after-i-chg,.after-i-exc{text-align:right;font-variant-numeric:tabular-nums}
+  .after-i-chg.up,.after-i-exc.up{color:var(--up)}
+  .after-i-chg.down,.after-i-exc.down{color:var(--down)}
+  .after-i-exc{font-weight:600}
+  .after-more{margin:4px 0 0 12px}
+  .after-more>summary{cursor:pointer;font-size:10.5px;color:var(--brass)}
   .habits-after-btn{display:inline-block;margin-top:10px;padding:8px 16px;
     background:var(--card);border:1px solid var(--rule);border-radius:8px;
     color:var(--brass);font-size:13px;font-weight:600;text-decoration:none}
@@ -14960,34 +15086,39 @@ def render_page(title, body, nav_active=None, user_name=None):
     '/web/leaderboard':'排行榜','/web/trades':'紀錄','/web/compare':'比較',
     '/web/settings':'設定','/web/more':'更多功能','/web/chips':'籌碼超人','/web/etf':'ETF 專區','/web/watchlist':'名單儀表板'
   }};
-  function retryPendingLoaders() {{
-    // 保險機制：內嵌腳本若因任何原因沒有執行（片段插入時序、WebView 差異），
-    // 畫面會停在靜態的「準備載入…」。這裡在導覽完成後檢查一次，
-    // 還停在那個狀態就直接補送請求，不讓使用者對著一行字乾等。
-    window.setTimeout(function () {{
-      var box = document.getElementById('habitsBox');
-      if (!box) return;
-      // 操作習慣已改由伺服器端渲染，正常情況下不會停在「準備載入」。
-      // 這個備援留著只為了萬一有舊快取的頁面，條件不符就直接跳過。
-      if (String(box.textContent || '').indexOf('準備載入') < 0) return;
-      var tk = '';
-      try {{
-        tk = new URLSearchParams(window.location.search).get('t')
-             || localStorage.getItem('stockbot_web_token') || '';
-      }} catch (ignore) {{ tk = ''; }}
-      box.textContent = '計算中…（由備援載入）';
-      fetch('/web/api/trade-habits?after=0' + (tk ? ('&t=' + encodeURIComponent(tk)) : ''),
-            {{ credentials: 'same-origin' }})
-        .then(function (r) {{
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.text();
-        }})
-        .then(function (html) {{ box.innerHTML = html; }})
-        .catch(function (e) {{
-          box.textContent = '統計載入失敗：' + (e && e.message ? e.message : e);
-        }});
-    }}, 1200);
-  }}
+  // 賣出後走勢：定義在殼層而不是片段裡。
+  // 片段內的腳本標籤在這個環境不會執行（實測過三版都沒用）。
+  // 但殼層腳本一定會跑——籌碼分布的 window.loadPositionChips 就是這樣做的，
+  // 而那個是能用的。所以照同一套來。
+  window.loadTradeHabitsAfter = function (btn) {{
+    var box = document.getElementById('habitsAfterBox');
+    if (!box || box.dataset.loaded === '1') return;
+    box.dataset.loaded = '1';
+    if (btn) {{ btn.disabled = true; btn.textContent = '計算中…'; }}
+    box.innerHTML = '<div class="sub" style="margin-top:8px">'
+      + '正在抓取每一檔的目前報價…</div>';
+    var tk = '';
+    try {{
+      tk = new URLSearchParams(window.location.search).get('t')
+           || localStorage.getItem('stockbot_web_token') || '';
+    }} catch (ignore) {{ tk = ''; }}
+    fetch('/web/api/trade-habits?after=1' + (tk ? ('&t=' + encodeURIComponent(tk)) : ''),
+          {{ credentials: 'same-origin' }})
+      .then(function (r) {{
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      }})
+      .then(function (html) {{
+        box.innerHTML = html;
+        if (btn) btn.parentNode.removeChild(btn);
+      }})
+      .catch(function (e) {{
+        box.dataset.loaded = '';
+        if (btn) {{ btn.disabled = false; btn.textContent = '計算「賣出後的走勢」'; }}
+        box.innerHTML = '<div class="sub" style="margin-top:8px">載入失敗：'
+          + (e && e.message ? e.message : e) + '</div>';
+      }});
+  }};
   function executeFragmentScripts(container) {{
     container.querySelectorAll('script').forEach(function(oldScript) {{
       var replacement = document.createElement('script');
@@ -15036,7 +15167,6 @@ def render_page(title, body, nav_active=None, user_name=None):
         document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
         appContent.innerHTML = fragment;
         executeFragmentScripts(appContent);
-        retryPendingLoaders();
         if (navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
@@ -15172,9 +15302,6 @@ def render_page(title, body, nav_active=None, user_name=None):
       box.classList.add('feedback-error'); haptic('error');
     }}
   }});
-  // 首次整頁載入也要跑一次備援。片段導覽有 retryPendingLoaders()，
-  // 但直接開網址或從 LINE 進來是整頁載入，不會經過那條路徑。
-  if (typeof retryPendingLoaders === 'function') retryPendingLoaders();
 }})();
 </script>
 <footer>
@@ -18288,33 +18415,106 @@ def render_trade_habits(h):
   <div class="meta">{items}</div>
 </div>""")
 
-    # 賣出後走勢（只有帶 after=1 時才有）
-    af = h.get("after")
-    if af and af["n"]:
-        b, w = af.get("best"), af.get("worst")
-        detail = ""
-        if b:
-            detail += (f'<span><em>賣後漲最多</em> {b[0]["code"]} '
-                       f'<span class="num up">{b[1]:+.1f}%</span></span>')
-        if w:
-            detail += (f'<span><em>賣後跌最多</em> {w[0]["code"]} '
-                       f'<span class="num down">{w[1]:+.1f}%</span></span>')
-        parts.append(f"""
-<div class="row">
-  <div><span class="name">賣出後的走勢</span></div>
-  <div class="price"></div>
-  <div class="meta">
-    <span><em>賣完還漲</em> {af["higher"]} 筆</span>
-    <span><em>賣完就跌</em> {af["lower"]} 筆</span>
-  </div>
-  <div class="meta">{detail}</div>
-  <div class="meta"><span class="sub">
-    以目前價格與當初賣價比較。賣完還漲不代表賣錯——
-    當時的理由可能仍然成立，這裡只呈現事實。</span></div>
-</div>""")
-
     return f'<div class="rows">{"".join(parts)}</div>'
 
+
+def render_trade_habits_after(h):
+    """
+    賣出後的走勢，依賣出理由分組。
+
+    為什麼要分組：整體「賣完還漲 14 筆」說明不了什麼——
+    停利之後還漲代表賣太早，停損之後繼續跌反而代表賣對了，
+    兩者混在一起看不出任何可以改進的地方。
+
+    為什麼要扣大盤：那段期間大盤若本來就在漲，不賣它也會跟著漲。
+    判斷賣得對不對要看「相對大盤」，不是絕對漲跌。
+
+    每組只列前 5 檔（依相對大盤絕對值排序），其餘收合——
+    交易累積上千筆時整頁會捲不完，而中間接近 0 的那些看了也不會改變判斷。
+    """
+    af = h.get("after")
+    if not af or not af.get("n"):
+        return ('<div class="sub" style="margin-top:8px">'
+                "沒有可比較的已賣出紀錄（需要有賣出價才能算）。</div>")
+
+    groups = af.get("by_reason") or []
+    has_market = af.get("has_market")
+
+    # 結論句：只在停利與停損都有樣本時才下判斷，
+    # 樣本太少就不要講得像結論——那會誤導。
+    verdict = ""
+    g_by = {g["reason"]: g for g in groups}
+    tp, sl = g_by.get("停利"), g_by.get("停損")
+    if (has_market and tp and sl and tp["n"] >= 3 and sl["n"] >= 3
+            and tp.get("avg_excess") is not None
+            and sl.get("avg_excess") is not None):
+        lines = []
+        if tp["avg_excess"] > 3:
+            lines.append(f"停利後平均還漲 {tp['avg_excess']:+.1f}%（相對大盤），"
+                         "可能賣得太早")
+        if sl["avg_excess"] < -3:
+            lines.append(f"停損後平均再跌 {sl['avg_excess']:+.1f}%（相對大盤），"
+                         "這幾筆停損是對的")
+        if lines:
+            verdict = (f'<div class="after-verdict">'
+                       f'<b>{"；".join(lines)}。</b></div>')
+
+    blocks = []
+    for g in groups:
+        exc = g.get("avg_excess")
+        exc_html = (f'<span class="after-g-main {"up" if exc >= 0 else "down"}">'
+                    f'{exc:+.1f}%</span><small>相對大盤</small>'
+                    if exc is not None else
+                    '<span class="after-g-main">—</span><small>缺大盤基準</small>')
+        sub = f"賣後 {g['avg_chg']:+.1f}%"
+        if g.get("avg_market") is not None:
+            sub += f"　同期大盤 {g['avg_market']:+.1f}%"
+
+        items = g["items"]
+        def row(r):
+            e = r.get("excess")
+            e_html = (f'<span class="after-i-exc {"up" if e >= 0 else "down"}">'
+                      f'{e:+.1f}%</span>' if e is not None else
+                      '<span class="after-i-exc">—</span>')
+            sold = (r["sold_on"].strftime("%m/%d")
+                    if hasattr(r.get("sold_on"), "strftime") else "—")
+            return (f'<div class="after-item">'
+                    f'<span class="after-i-name">{html.escape(str(r["name"]))}'
+                    f'<small>{html.escape(str(r["code"]))}</small></span>'
+                    f'<span class="after-i-date">{sold} 賣</span>'
+                    f'<span class="after-i-chg '
+                    f'{"up" if r["chg"] >= 0 else "down"}">{r["chg"]:+.1f}%</span>'
+                    f'{e_html}</div>')
+
+        shown = "".join(row(r) for r in items[:5])
+        rest = ""
+        if len(items) > 5:
+            rest = (f'<details class="after-more"><summary>還有 '
+                    f'{len(items) - 5} 檔</summary>'
+                    f'{"".join(row(r) for r in items[5:])}</details>')
+
+        blocks.append(
+            f'<div class="after-group">'
+            f'<div class="after-g-head">'
+            f'<span class="after-g-title">{html.escape(g["reason"])}'
+            f'<small>{g["n"]} 筆</small></span>'
+            f'<span class="after-g-val">{exc_html}</span></div>'
+            f'<div class="after-g-sub">{sub}</div>'
+            f'{shown}{rest}</div>')
+
+    note = ("以目前價格與當初賣價比較，並扣掉同期大盤。"
+            "停利後仍上漲代表可能賣早了；停損後繼續下跌代表那次停損是對的。"
+            if has_market else
+            "以目前價格與當初賣價比較。大盤基準暫時取不到，"
+            "只能看絕對漲跌，無法判斷是不是大盤帶動的。")
+
+    return f"""
+<div class="after-wrap">
+  {verdict}
+  <div class="after-cols"><span>賣後</span><span>相對大盤</span></div>
+  {''.join(blocks)}
+  <div class="sub" style="margin-top:10px;line-height:1.6">{note}</div>
+</div>"""
 
 def render_pick_factors(mode_label, fa):
     """把因子分析畫成 HTML。只呈現分組數字，不下結論、不給建議。"""
@@ -18476,7 +18676,10 @@ def web_trade_habits(uid):
     started = time.monotonic()
     try:
         h = summarize_trade_habits(uid, with_after=with_after)
-        html_out = render_trade_habits(h)
+        # after=1 只回傳「賣出後走勢」那一段：基礎統計已經隨頁面送出了，
+        # 整份重送會讓畫面上出現兩份一樣的內容。
+        html_out = (render_trade_habits_after(h) if with_after
+                    else render_trade_habits(h))
         # 計時寫進 Render Logs。使用者回報「一直停在計算中」時，
         # 這一行能分辨「伺服器根本沒收到請求」與「算太久」——
         # 沒有它就只能猜。
@@ -18814,29 +19017,17 @@ def web_trades(uid):
     # 「賣出後走勢」要另外打報價 API，所以維持按下去才算。
     # 做成連結而不是 JS 按鈕：這個環境的內嵌腳本不執行（前面修過三版都沒用），
     # 連結不需要 JS，按下去伺服器直接算好再送回來。
-    habits_after = request.args.get("habits_after") == "1"
+    # 賣出後走勢要多打一次報價 API，維持按下去才算，不拖慢頁面載入。
     habits_started = time.monotonic()
     try:
-        habits_html = render_trade_habits(
-            summarize_trade_habits(uid, with_after=habits_after))
-        print("⏱️ 操作習慣（伺服器端）%.0fms（含賣出後走勢=%s）" %
-              ((time.monotonic() - habits_started) * 1000, habits_after))
+        habits_html = render_trade_habits(summarize_trade_habits(uid))
+        print("⏱️ 操作習慣（伺服器端）%.0fms" %
+              ((time.monotonic() - habits_started) * 1000))
     except Exception as exc:
         print(f"❌ 操作習慣統計失敗: {exc}")
         habits_html = ('<div class="sub">統計暫時無法計算：'
                        + html.escape(type(exc).__name__) + '</div>')
 
-    # 連結要帶著目前的篩選條件，按下去才不會把月份、股票那些重設掉。
-    _habit_args = {k: v for k, v in request.args.items()
-                   if k not in ("habits_after", "fragment")}
-    _habit_args["habits_after"] = "0" if habits_after else "1"
-    habits_after_url = "/web/trades?" + urlencode(_habit_args)
-    habits_after_control = (
-        f'<a class="habits-after-btn" href="{html.escape(habits_after_url, quote=True)}">'
-        + ("收起「賣出後的走勢」" if habits_after else "計算「賣出後的走勢」")
-        + "</a>"
-        + ('<div class="sub" style="margin-top:6px">'
-           "需另外抓每一檔的報價，會比較慢。</div>" if not habits_after else ""))
 
     if not trades and not months and not journal_logs:
         return respond_page("交易紀錄", """
@@ -19004,79 +19195,11 @@ def web_trades(uid):
 <section class="disclosure" id="habits" style="margin-top:14px">
   <h2 style="font-size:15px;margin-bottom:8px">我的操作習慣</h2>
   <div id="habitsBox">{habits_html}</div>
-  {habits_after_control}
+  <button type="button" class="habits-after-btn" id="habitsAfterBtn"
+          onclick="window.loadTradeHabitsAfter(this)">計算「賣出後的走勢」</button>
+  <div id="habitsAfterBox"></div>
 </section>
-<script>
-(function () {{
-  // 這一段刻意做成「展開才算」：交易紀錄頁本來就要跑月度回顧、操作歷程與報價，
-  // 再多一組統計會讓所有人都先等它算完，而多數人開這頁只是想看某一筆交易。
-  var d = document.getElementById('habits');
-  var box = document.getElementById('habitsBox');
-  var chk = document.getElementById('habitsAfter');
-  // 原本這裡是靜默 return，元素找不到時畫面就永遠停在靜態文字，
-  // 完全看不出是「腳本沒跑」還是「元素不見了」。
-  if (!box) return;
-  if (!d) {{
-    box.textContent = '找不到操作習慣區塊（habits），請重新整理頁面。';
-    return;
-  }}
-  var loadedKey = null;
 
-  function load() {{
-    var key = chk && chk.checked ? '1' : '0';
-    if (loadedKey === key) return;
-    loadedKey = key;
-    // 這行由腳本寫入。若畫面停在靜態的「準備載入…」，代表腳本根本沒跑；
-    // 停在「計算中…」才是請求真的送出去了。兩者要分得開，否則無從判斷。
-    box.textContent = '計算中…';
-    // 網址一定要帶 token：LINE WebView 常常不會把 cookie 帶進 fetch，
-    // 只靠 credentials:'same-origin' 會被 web_login_required 擋成 401，
-    // 畫面就永遠停在「載入失敗」。其他端點都是這樣帶的，這裡漏了。
-    var tk = '';
-    try {{
-      tk = new URLSearchParams(window.location.search).get('t')
-           || localStorage.getItem('stockbot_web_token') || '';
-    }} catch (ignore) {{ tk = ''; }}
-    var url = '/web/api/trade-habits?after=' + key
-              + (tk ? ('&t=' + encodeURIComponent(tk)) : '');
-    // 加逾時：這個統計本身是純資料庫查詢（毫秒級），
-    // 等超過 30 秒就不是「在算」，是請求卡住了——
-    // 沒有逾時的話畫面會永遠停在「計算中…」，看不出到底發生什麼事。
-    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-    var timedOut = false;
-    var timer = window.setTimeout(function () {{
-      timedOut = true;
-      if (ctrl) ctrl.abort();
-    }}, 30000);
-    fetch(url, ctrl ? {{ credentials: 'same-origin', signal: ctrl.signal }}
-                    : {{ credentials: 'same-origin' }})
-      .then(function (r) {{
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.text();
-      }})
-      .then(function (html) {{
-        window.clearTimeout(timer);
-        box.innerHTML = html;
-      }})
-      .catch(function (e) {{
-        window.clearTimeout(timer);
-        loadedKey = null;
-        box.innerHTML = timedOut
-          ? '統計逾時（超過 30 秒沒有回應）。這個統計只查資料庫，'
-            + '正常是一瞬間就好，逾時通常代表伺服器正忙——'
-            + '請稍後再點一次「我的操作習慣」。'
-          : ('統計載入失敗：' + (e && e.message ? e.message : e)
-             + '（HTTP 401 代表登入已過期，請從 LINE 重新開啟頁面）');
-      }});
-  }}
-
-  if (chk) chk.addEventListener('change', load);
-  // 基礎統計已由伺服器端算好、隨頁面送出，這裡不必再載入一次。
-  // 只有勾選「賣出後走勢」時才重抓——那個要另外打報價 API，是真正慢的部分。
-  // 這樣即使這段腳本沒有執行，使用者仍然看得到統計。
-  loadedKey = '0';
-}})();
-</script>
 <div class="callout">
   {exp_txt}<br>
   <span style="font-size:12.5px;color:var(--ink-faint)">
