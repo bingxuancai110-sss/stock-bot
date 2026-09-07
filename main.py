@@ -13893,6 +13893,73 @@ def check_source():
     return plain_text_page(lines), 200
 
 
+@app.route("/check-revenue", methods=["POST", "GET"])
+def check_revenue():
+    """
+    診斷月營收：直接顯示證交所／櫃買回的最新月份，以及快照存的月份。
+
+    使用者回報「營收沒更新」時，光看程式碼分不出是：
+      (a) 官方還沒公布　(b) 抓到了但沒存　(c) 存了但畫面讀舊快照
+    這三種。把三邊的月份並排列出來就一目了然。
+    """
+    if request.args.get("token") != os.environ.get("CRON_SECRET"):
+        abort(403)
+    lines = [f"月營收診斷　{taiwan_now().strftime('%Y-%m-%d %H:%M:%S')}", "=" * 56, ""]
+
+    snap = _load_shared_data_snapshot("monthly_revenue")
+    if snap:
+        lines.append("【Supabase 快照】")
+        lines.append(f"  月份　{(snap.get('source_meta') or {}).get('period')}")
+        lines.append(f"  資料日　{snap.get('data_date')}")
+        lines.append(f"  筆數　{len(snap.get('payload') or {})}")
+    else:
+        lines.append("【Supabase 快照】無或已過期")
+    lines.append("")
+
+    lines.append("【記憶體快取】")
+    lines.append(f"  月份　{_revenue_cache.get('period')}")
+    lines.append(f"  來源　{_revenue_cache.get('source')}")
+    lines.append(f"  筆數　{len(_revenue_cache.get('data') or {})}")
+    lines.append("")
+
+    lines.append("【官方端點目前回的最新月份】")
+    endpoints = [(f"{TWSE_BASE}/opendata/t187ap05_L", "上市"),
+                 ("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O", "上櫃"),
+                 ("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_R", "興櫃")]
+    for url, label in endpoints:
+        try:
+            r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, list) or not data:
+                lines.append(f"  {label}：回傳空資料")
+                continue
+            periods = set()
+            sample = None
+            for row in data[:400]:
+                y = str(row.get("年度") or row.get("Year") or "").strip()
+                m = str(row.get("月份") or row.get("Month") or "").strip()
+                if y and m:
+                    periods.add(f"{y}-{int(m):02d}")
+                if sample is None and str(row.get("公司代號") or
+                                          row.get("CompanyCode") or "") == "8996":
+                    sample = row
+            lines.append(f"  {label}：{sorted(periods) or '無法解析月份'}"
+                         f"（共 {len(data)} 筆）")
+            if sample:
+                rev = (sample.get("營業收入-當月營收")
+                       or sample.get("當月營收") or "?")
+                lines.append(f"    高力 8996 當月營收 {rev}")
+        except Exception as exc:
+            lines.append(f"  {label}：查詢失敗 {type(exc).__name__}: {exc}")
+
+    lines += ["", "-" * 56, "判讀：",
+              "・官方月份＝快照月份＝記憶體月份 → 官方本來就還沒公布新的",
+              "・官方比快照新 → 抓取或寫入有問題",
+              "・快照比記憶體新 → 該重啟或等快取過期"]
+    return plain_text_page(lines), 200
+
+
 @app.route("/check-mis", methods=["POST", "GET"])
 def check_mis():
     """
@@ -22454,6 +22521,33 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                           RADAR_DEEP_SCAN_LIMIT)
             pool = pool[:max(12, min(deep_limit, RADAR_DEEP_SCAN_LIMIT))]
             radar_diagnostics["deep_candidate_count"] = len(pool)
+
+            # 補上真正的近十日買超天數與累計張數。
+            #
+            # 這條即時掃描路徑先前把 buy_days 寫死成 1、cum_lots 直接用當日張數，
+            # 因為它只看當天的法人資料。結果畫面上每一檔的「近十日買超天數」
+            # 都是 1，那個欄位等於沒有意義。
+            #
+            # 放在收斂成候選池之後才查：全市場幾千檔都查會很慢，
+            # 這裡只剩幾十檔，一次查詢就補齊。
+            if pool:
+                try:
+                    cum_map = {c: (cl, bd) for c, _nm, cl, bd
+                               in get_cumulative_net_buy(
+                                   days=10, top_n=len(pool) * 3,
+                                   codes=[c for c, _ in pool])}
+                    for code, info in pool:
+                        cl, bd = cum_map.get(code, (None, None))
+                        if cl is not None:
+                            info["cum_lots"] = int(cl)
+                        if bd is not None:
+                            info["buy_days"] = int(bd)
+                except Exception as exc:
+                    # 查不到就保留當日值，並標明那不是十日統計，
+                    # 不要讓畫面顯示一個看起來像十日、其實是當日的數字。
+                    print(f"⚠️ 補查近十日買超天數失敗: {exc}")
+                    for _code, info in pool:
+                        info["buy_days"] = None
         else:
             revenue = fetch_monthly_revenue() or {} if revenue is None else revenue
             valuation = fetch_valuation() or {} if valuation is None else valuation
