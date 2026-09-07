@@ -10343,16 +10343,30 @@ def fetch_monthly_revenue():
                   (today.day, snap_date or "未標日期", shared_period))
 
         # 沒有共享快照時，沿用原本已保存的最新月份資料庫 fallback。
+        #
+        # 這裡原本也是無條件 return，跟上面的共享快照同一個毛病：
+        # 讀到舊月份就直接用，永遠不會去看官方有沒有公布新的。
+        # 實測就是卡在這條路徑——共享快照過期後落到這裡，
+        # 讀到 11507（民國 115 年 7 月）就一直回傳，8 月出來也不知道。
         history_data, history_period = _load_latest_revenue_history()
         if history_data:
+            today = taiwan_today()
+            if today.day > 15:
+                # 過了公布期就安心沿用，不必為此多打三個外部端點。
+                _revenue_cache["period"] = history_period
+                _revenue_cache["data"] = history_data
+                _revenue_cache["checked_at"] = now
+                _revenue_cache["source"] = "history"
+                _revenue_cache["source_date"] = None
+                print("⚡ 月營收改讀資料庫最新快照（%s），共 %s 筆" %
+                      (history_period or "未知月份", len(history_data)))
+                return history_data
+            # 公布期內先往下抓；抓失敗時下方的 `if not result` 會退回這份，
+            # 所以不會變成沒有資料。
             _revenue_cache["period"] = history_period
             _revenue_cache["data"] = history_data
-            _revenue_cache["checked_at"] = now
-            _revenue_cache["source"] = "history"
-            _revenue_cache["source_date"] = None
-            print("⚡ 月營收改讀資料庫最新快照（%s），共 %s 筆" %
-                  (history_period or "未知月份", len(history_data)))
-            return history_data
+            print("🔄 月營收公布期（%s 日），已保存月份 %s，先嘗試抓取最新" %
+                  (today.day, history_period or "未知"))
 
     _revenue_cache["checked_at"] = now
 
@@ -13934,24 +13948,48 @@ def check_revenue():
             if not isinstance(data, list) or not data:
                 lines.append(f"  {label}：回傳空資料")
                 continue
-            periods = set()
+            # 欄位名要跟 fetch_monthly_revenue 用的一致：
+            # 月份在「資料年月」（民國格式，例如 11507 ＝ 115 年 7 月），
+            # 不是「年度」「月份」——先前用錯鍵，所以一直顯示「無法解析」。
+            periods = {}
             sample = None
-            for row in data[:400]:
-                y = str(row.get("年度") or row.get("Year") or "").strip()
-                m = str(row.get("月份") or row.get("Month") or "").strip()
-                if y and m:
-                    periods.add(f"{y}-{int(m):02d}")
-                if sample is None and str(row.get("公司代號") or
-                                          row.get("CompanyCode") or "") == "8996":
+            for row in data:
+                per = str(row.get("資料年月") or row.get("Period") or "").strip()
+                if per:
+                    periods[per] = periods.get(per, 0) + 1
+                code = str(row.get("公司代號") or row.get("SecuritiesCompanyCode")
+                           or row.get("Code") or "").strip()
+                if sample is None and code == "8996":
                     sample = row
-            lines.append(f"  {label}：{sorted(periods) or '無法解析月份'}"
-                         f"（共 {len(data)} 筆）")
+            if periods:
+                shown = "、".join(f"{p}（{n} 筆）" for p, n
+                                  in sorted(periods.items(), reverse=True)[:3])
+                lines.append(f"  {label}：{shown}")
+            else:
+                keys = list(data[0].keys())[:8] if data else []
+                lines.append(f"  {label}：無法解析月份，欄位有 {keys}")
             if sample:
-                rev = (sample.get("營業收入-當月營收")
-                       or sample.get("當月營收") or "?")
-                lines.append(f"    高力 8996 當月營收 {rev}")
+                lines.append(f"    高力 8996：資料年月 "
+                             f"{sample.get('資料年月')}　"
+                             f"當月營收 {sample.get('營業收入-當月營收')}　"
+                             f"年增 {sample.get('營業收入-去年同月增減(%)')}%")
+            elif label == "上市":
+                lines.append("    （這批資料裡沒有 8996）")
         except Exception as exc:
             lines.append(f"  {label}：查詢失敗 {type(exc).__name__}: {exc}")
+
+    def roc_to_ad(p):
+        """11507 → 2026-07。民國年直接看不出是哪一年，換算後才好比對。"""
+        t = str(p or "").strip()
+        if len(t) == 5 and t.isdigit():
+            return f"{int(t[:3]) + 1911}-{t[3:]}"
+        return t
+
+    lines.append("")
+    lines.append("【換算成西元】")
+    lines.append(f"  記憶體　{roc_to_ad(_revenue_cache.get('period'))}")
+    if snap:
+        lines.append(f"  快照　　{roc_to_ad((snap.get('source_meta') or {}).get('period'))}")
 
     lines += ["", "-" * 56, "判讀：",
               "・官方月份＝快照月份＝記憶體月份 → 官方本來就還沒公布新的",
