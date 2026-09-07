@@ -3621,21 +3621,57 @@ def summarize_trade_habits(uid, with_after=False):
                 return None
             return (taiex_now - base) / base * 100
 
-        detail = []
+        # 同一檔可能分好幾次賣出，逐筆列會變成同一個名字出現十次。
+        # 依「代號＋賣出理由」合併成一列：理由不同代表是不同的決策，
+        # 混在一起就看不出哪個理由賣得準，所以理由不合併。
+        #
+        # 合併時用股數加權：賣 1000 股和賣 1 股不該算同樣的份量。
+        merged = {}
         for t, chg in rows:
+            code = str(t["code"]).strip()
+            reason = str(t.get("sell_reason") or "").strip() or "未填理由"
+            key = (code, reason)
             mkt = market_change_since(t.get("sold_on"))
+            sh = abs(int(t.get("shares") or 0)) or 1
+            m = merged.setdefault(key, {
+                "code": code, "reason": reason, "lots": 0, "shares": 0,
+                "chg_w": 0.0, "mkt_w": 0.0, "mkt_shares": 0,
+                "first_sold": None, "last_sold": None,
+            })
+            m["lots"] += 1
+            m["shares"] += sh
+            m["chg_w"] += chg * sh
+            if mkt is not None:
+                m["mkt_w"] += mkt * sh
+                m["mkt_shares"] += sh
+            sold = t.get("sold_on")
+            if sold:
+                if m["first_sold"] is None or sold < m["first_sold"]:
+                    m["first_sold"] = sold
+                if m["last_sold"] is None or sold > m["last_sold"]:
+                    m["last_sold"] = sold
+
+        # 名稱要另外查：realized_trades 沒有存 name 欄位，
+        # 先前寫 t.get("name") 永遠是 None，畫面上就只剩一排數字代號。
+        inst_for_name = fetch_institutional_data() or {}
+
+        detail = []
+        for (code, reason), m in merged.items():
+            chg = m["chg_w"] / m["shares"]
+            mkt = (m["mkt_w"] / m["mkt_shares"]) if m["mkt_shares"] else None
             detail.append({
-                "code": str(t["code"]).strip(),
-                "name": t.get("name") or str(t["code"]).strip(),
-                "sold_on": t.get("sold_on"),
-                "sell_price": t.get("sell_price"),
+                "code": code,
+                "name": str(stock_display_name(code, inst_for_name)),
+                "sold_on": m["last_sold"],
+                "first_sold": m["first_sold"],
+                "lots": m["lots"],
+                "shares": m["shares"],
                 "chg": chg,
                 "market": mkt,
                 "excess": (chg - mkt) if mkt is not None else None,
-                # 賣出理由是分組的依據；沒填的歸「未填理由」，
-                # 不併進其他組，否則會汙染那組的結論。
-                "reason": (str(t.get("sell_reason") or "").strip() or "未填理由"),
+                "reason": reason,
             })
+        detail.sort(key=lambda x: x["chg"], reverse=True)
 
         # 依理由分組。這是這個統計真正的用途：
         # 停利組若「賣後相對大盤還漲很多」＝賣太早；
@@ -10273,15 +10309,38 @@ def fetch_monthly_revenue():
         shared_period = ((shared.get("source_meta") or {}).get("period")
                          if shared else None)
         if isinstance(shared_data, dict) and shared_data and shared_period:
-            _revenue_cache["period"] = str(shared_period)
-            _revenue_cache["data"] = shared_data
-            _revenue_cache["checked_at"] = now
-            _revenue_cache["source"] = "shared"
-            _revenue_cache["source_date"] = shared.get("data_date")
-            print("⚡ 月營收改讀 Supabase 快照（月份 %s，來源日 %s），共 %s 筆" %
-                  (shared_period, shared.get("data_date") or "未標日期",
-                   len(shared_data)))
-            return shared_data
+            # 快照的月份若已經落後，就不能直接沿用。
+            #
+            # 這裡原本無條件 return，加上快照 TTL 是 3 天、而排程每天都會
+            # 重新寫入，等於永遠不會過期——證交所公布新月份之後，
+            # 程式也不會去查，畫面就一直停在舊月份。
+            #
+            # 每月 1–15 日是公布期：法規要求 10 日前公布上月營收，
+            # 但實務上多數公司提早幾天就送出，且不是同一天全部到齊。
+            # 這段期間只要快照不是今天寫的就重抓，才不會卡在舊月份。
+            #
+            # 用「猜哪個月份該有了」是不夠的——公布日期本來就參差，
+            # 猜早了會一直重抓、猜晚了就漏掉先公布的那些。
+            today = taiwan_today()
+            snap_date = shared.get("data_date")
+            in_release_window = today.day <= 15
+            snapshot_is_today = (snap_date == today)
+
+            if not (in_release_window and not snapshot_is_today):
+                _revenue_cache["period"] = str(shared_period)
+                _revenue_cache["data"] = shared_data
+                _revenue_cache["checked_at"] = now
+                _revenue_cache["source"] = "shared"
+                _revenue_cache["source_date"] = shared.get("data_date")
+                print("⚡ 月營收改讀 Supabase 快照（月份 %s，來源日 %s），共 %s 筆" %
+                      (shared_period, shared.get("data_date") or "未標日期",
+                       len(shared_data)))
+                return shared_data
+
+            # 公布期內且快照不是今天的，往下走去證交所與櫃買中心重抓。
+            # 抓失敗時後面的流程仍會退回既有資料，不會變成沒有營收。
+            print("🔄 月營收公布期（%s 日），快照為 %s 的 %s 月，重新抓取" %
+                  (today.day, snap_date or "未標日期", shared_period))
 
         # 沒有共享快照時，沿用原本已保存的最新月份資料庫 fallback。
         history_data, history_period = _load_latest_revenue_history()
@@ -18478,10 +18537,13 @@ def render_trade_habits_after(h):
                       '<span class="after-i-exc">—</span>')
             sold = (r["sold_on"].strftime("%m/%d")
                     if hasattr(r.get("sold_on"), "strftime") else "—")
+            # 同一檔分多次賣出時標明次數，否則會誤以為只賣過一次
+            lots = int(r.get("lots") or 1)
+            when = f"{sold} 賣" + (f"·{lots}次" if lots > 1 else "")
             return (f'<div class="after-item">'
                     f'<span class="after-i-name">{html.escape(str(r["name"]))}'
                     f'<small>{html.escape(str(r["code"]))}</small></span>'
-                    f'<span class="after-i-date">{sold} 賣</span>'
+                    f'<span class="after-i-date">{when}</span>'
                     f'<span class="after-i-chg '
                     f'{"up" if r["chg"] >= 0 else "down"}">{r["chg"]:+.1f}%</span>'
                     f'{e_html}</div>')
