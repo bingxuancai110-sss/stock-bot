@@ -13937,12 +13937,20 @@ def check_revenue():
     lines.append("")
 
     lines.append("【官方端點目前回的最新月份】")
+    # 網址必須跟 fetch_monthly_revenue 用的完全一致，
+    # 否則診斷測的是另一組端點，結果不代表實際抓取的狀況。
+    # 先前診斷把興櫃寫成 mopsfin_t187ap05_R（正式用的是 t187ap05_R），
+    # 又用 requests.get 而不是 _session，才會出現「上櫃查詢失敗」的假警報。
     endpoints = [(f"{TWSE_BASE}/opendata/t187ap05_L", "上市"),
-                 ("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O", "上櫃"),
-                 ("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_R", "興櫃")]
+                 (f"{TPEX_BASE}/mopsfin_t187ap05_O", "上櫃"),
+                 (f"{TPEX_BASE}/t187ap05_R", "興櫃")]
     for url, label in endpoints:
         try:
-            r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+            # 一定要用 _session：櫃買中心的憑證缺少 Subject Key Identifier，
+            # 直接 requests.get 會被新版 OpenSSL 拒絕。
+            # 正式抓取本來就走 _session，診斷用 requests.get 只會產生
+            # 「上櫃查詢失敗」的假警報——先前就是這樣誤判成真的抓不到。
+            r = _session.get(url, timeout=12)
             r.raise_for_status()
             data = r.json()
             if not isinstance(data, list) or not data:
