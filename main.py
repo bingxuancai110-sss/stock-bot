@@ -6049,12 +6049,14 @@ def build_leaderboard(top_n=20, days=365):
             base = 1 + recent[0][1] / 100
             if base:
                 bot_m30 = ((1 + recent[-1][1] / 100) / base - 1) * 100
-        peak, mdd = None, 0.0
-        for _d, v in bot_curve:
-            nav = 1 + v / 100
-            peak = nav if peak is None else max(peak, nav)
-            if peak:
-                mdd = min(mdd, (nav / peak - 1) * 100)
+        # 用既有的 max_drawdown，不要自己算——它回傳的是正數，
+        # 顯示端寫的是 f'-{mdd:.1f}%'，自己算成負數會顯示成 "--3.2%"。
+        # 口徑也必須跟真人一致，否則兩邊的回檔不能直接比較。
+        mdd = max_drawdown(bot_curve)
+        # 欄位要跟真人列完全一致：顯示端有幾處是直接索引 r["days"]、
+        # r["m30_days"]、r["excess"]，缺一個就 KeyError，整個排行榜頁 500。
+        # 這正是加入機器人後排行榜進不去的原因。
+        bot_mkt = market[-1][1] if market else None
         rows.append({
             "user_id": f"bot:{bot_mode}",
             "nickname": bot_name,
@@ -6066,6 +6068,10 @@ def build_leaderboard(top_n=20, days=365):
             "ret": bot_ret,
             "m30": bot_m30,
             "mdd": mdd,
+            "days": len(bot_curve),
+            "m30_days": len(recent),
+            "excess": (bot_ret - bot_mkt) if bot_mkt is not None else None,
+            "mkt_ret": bot_mkt,
             "points": len(bot_curve),
             "is_bot": True,
             "bot_mode": bot_mode,
