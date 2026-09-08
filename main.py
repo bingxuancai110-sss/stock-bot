@@ -1805,6 +1805,7 @@ FEATURE_LABELS = {
     "premarket": "盤前",
     "debrief": "解盤",
     "chips": "籌碼超人",
+    "positions_export": "持股匯出",
     "quote": "個股查詢",
     "screener": "選股",
     "settings": "設定",
@@ -1819,6 +1820,8 @@ def infer_line_feature(text):
         "盤前": "premarket", "解盤": "debrief", "黑馬": "blackhorse",
         "雷達": "radar", "籌碼": "chips", "籌碼超人": "chips",
         "自選": "positions", "新聞": "news", "網頁": "web_entry",
+        "持股": "positions_export", "庫存": "positions_export",
+        "匯出持股": "positions_export", "持股匯出": "positions_export",
         "網頁版": "web_entry", "排行榜": "leaderboard", "紀錄": "trades",
         "比較": "compare", "管理": "admin", "使用者名單": "admin",
         "今日活躍": "admin", "沉睡使用者": "admin", "功能統計": "admin",
@@ -6656,6 +6659,11 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 # 只有收盤價的話，圖上永遠只能寫「近 N 個交易日」，
                 # 而「什麼時候發生的」正是圖能回答、數字回答不了的問題。
                 "close_dates": [b[0] for b in hist] + [today_date],
+                # 逐日高低價，供籌碼分布把當日成交量攤到價格區間。
+                # 只有收盤價的話，整天的量會全部歸在收盤那一格——
+                # 一天內震盪 5% 的標的，位置就會明顯偏掉。
+                "highs": [b[2] for b in hist] + [float(high or close)],
+                "lows": [b[3] for b in hist] + [float(low or close)],
                 # 逐日成交量，供籌碼分布估算使用。
                 # 只有日總量、沒有盤中分價量，所以那是近似值——
                 # 呼叫端要把限制標明出來，不能當成券商等級的籌碼分布。
@@ -8797,127 +8805,152 @@ CHIP_PRICE_FLOOR_RATIO = 0.5
 
 def chip_above_ratio(stock):
     """
-    現價上方尚未解套的籌碼比例（0~1）。只回傳一個數字，不做分箱與繪圖。
+    現價上方估算歷史成交量的比例（0~1）。給清單列顯示用。
 
-    給清單列用：完整的分布圖要點開才算（要重抓日K），
-    但這個比例在建快照時就算得出來——日K本來就在手上，
-    多跑一次 66 筆的加總，成本可以忽略。
-
-    定義與 compute_chip_bins 一致：只算「整段區間都在現價之上」的量，
-    現價所在的價位帶不計入（那一格裡有一半的人其實是賺的）。
+    直接呼叫 compute_chip_bins 取結果，不另外寫一套。
+    先前這裡是獨立實作（用收盤價、不做區間分攤），
+    跟展開後的圖是兩種算法，同一檔會出現兩個不同的百分比。
     """
-    closes = (stock or {}).get("closes") or []
-    volumes = (stock or {}).get("volumes") or []
-    if len(closes) < 20 or len(volumes) != len(closes):
+    data = compute_chip_bins(stock)
+    if not data:
         return None
-    price_now = closes[-1]
-    if not price_now:
-        return None
-    # 口徑必須與 compute_chip_bins 一致，否則清單上的百分比
-    # 會跟展開後的圖對不起來。
-    floor_price = price_now * CHIP_PRICE_FLOOR_RATIO
-    pairs = [(c, v) for c, v in zip(closes, volumes)
-             if c is not None and c >= floor_price]
-    if len(pairs) < 20:
-        pairs = [(c, v) for c, v in zip(closes, volumes) if c is not None]
-    total = above = 0.0
-    for price, vol in pairs:
-        v = float(vol or 0)
-        if v <= 0:
-            continue
-        total += v
-        if price > price_now:
-            above += v
-    if total <= 0:
-        return None
-    return above / total
-
+    return data.get("above_ratio")
 
 def compute_chip_bins(stock, bins=14):
     """
-    以日K的收盤價與成交量做價格區間分布，估計套牢籌碼落在哪些價位帶。
+    以每日成交量攤到當日高低價區間，估算歷史成交量的價格分布。
 
-    重要限制：Yahoo 只給日收盤與當日總量，沒有盤中每個價位的成交明細。
-    所以這裡是「把整天的量都算在當天收盤價上」的近似——
-    一天內震盪 5% 的股票，那天的量其實分散在很多價位，
-    這個做法會全歸到收盤價，位置就會失真。
-    震盪小的標的誤差小，一天漲停的那種誤差明顯。
-    畫面必須標明這個限制，否則會被當成券商等級的籌碼分布。
+    這不是券商的分價量表。Yahoo 只給日 OHLCV，沒有盤中逐筆成交，
+    所以無法知道每一筆成交發生在哪個價位。這裡的做法是：
+    把當天的成交量，依「價格區間與當日 low~high 的重疊長度」按比例分攤。
 
-    回傳 {"bins": [{"low","high","mid","ratio","above"}...],
-          "days", "max_ratio"}；資料不足回 None。
+    舉例：某天 low=100、high=140、volume=1000
+      區間 100~110 佔 low~high 的 10/40 → 分到 250
+      區間 110~140 佔 30/40             → 分到 750
+      合計仍是 1000，成交量守恆。
+
+    先前的做法是把整天的量全歸到收盤價那一格，一天內震盪大的標的
+    位置會明顯偏掉——這是改用區間分攤的原因。
+
+    價格底線（CHIP_PRICE_FLOOR_RATIO）改成「只裁掉低於門檻的那一段」，
+    不再因為收盤價低於門檻就整天丟棄：
+    某天 low=590、high=630、現價一半=612.5 時，
+    612.5 以上那段的成交量仍然是有效的成本區。
+
+    回傳 {"bins": [...], "days", "max_ratio", "price", "low", "high",
+          "floor", "valid_volume", "above_volume", "above_ratio"}
+    資料不足回 None。
     """
     closes = (stock or {}).get("closes") or []
     volumes = (stock or {}).get("volumes") or []
-    if len(closes) < 20 or len(volumes) != len(closes):
+    highs = (stock or {}).get("highs") or []
+    lows = (stock or {}).get("lows") or []
+    n = len(closes)
+    if n < 20 or len(volumes) != n:
         return None
+    # 沒有高低價時退回用收盤價（等於舊行為），至少還算得出東西
+    if len(highs) != n or len(lows) != n:
+        highs, lows = list(closes), list(closes)
+
     price_now = closes[-1]
     if not price_now:
         return None
-
-    # 排除「收盤價低於現價一半」的交易日。
-    #
-    # 上方壓力不設時間上限——套牢的人可能是半年前買的，
-    # 光聖 6442 的 2,540 高點就在三個月窗口之外，砍掉時間會漏掉。
-    #
-    # 但下方要設價格底線：飆股一年內可能從 200 漲到 2,000，
-    # 早期低價區的天量會把分母灌大，把上方套牢比例稀釋掉，
-    # 而那些人早就獲利了結，對現在的賣壓沒有意義。
-    #
-    # 一半是個判斷，不是推導出來的數字：低於現價一半代表帳面已獲利一倍以上，
-    # 那些籌碼幾乎不會因為「解套」而賣。要調整改這個常數即可。
     floor_price = price_now * CHIP_PRICE_FLOOR_RATIO
-    pairs = [(c, v) for c, v in zip(closes, volumes)
-             if c is not None and c >= floor_price]
-    if len(pairs) < 20:
-        # 濾完剩太少就不濾，寧可看到含雜訊的分布，也不要因為樣本不足而整個消失
-        pairs = [(c, v) for c, v in zip(closes, volumes) if c is not None]
+
+    # 有效的日資料：把每天的價格區間裁到門檻之上
+    days = []
+    for c, h, l, v in zip(closes, highs, lows, volumes):
+        try:
+            v = float(v or 0)
+        except (TypeError, ValueError):
+            continue
+        if v <= 0 or c is None:
+            continue
+        hi_d = float(h if h is not None else c)
+        lo_d = float(l if l is not None else c)
+        if hi_d < lo_d:
+            hi_d, lo_d = lo_d, hi_d
+        if hi_d <= floor_price:
+            continue                      # 整天都在門檻之下，全數排除
+        kept_lo = max(lo_d, floor_price)  # 只裁掉低於門檻的那一段
+        span = hi_d - lo_d
+        if span > 0:
+            v = v * (hi_d - kept_lo) / span   # 成交量按保留比例縮減
+        days.append((kept_lo, hi_d, v))
+    if len(days) < 20:
+        # 濾完剩太少就不設門檻，寧可看到含雜訊的分布，也不要整個消失
+        days = []
+        for c, h, l, v in zip(closes, highs, lows, volumes):
+            try:
+                v = float(v or 0)
+            except (TypeError, ValueError):
+                continue
+            if v <= 0 or c is None:
+                continue
+            hi_d = float(h if h is not None else c)
+            lo_d = float(l if l is not None else c)
+            if hi_d < lo_d:
+                hi_d, lo_d = lo_d, hi_d
+            days.append((lo_d, hi_d, v))
         floor_price = None
-    if len(pairs) < 20:
+    if len(days) < 20:
         return None
 
-    kept_closes = [c for c, _v in pairs]
-    lo, hi = min(kept_closes), max(kept_closes)
+    lo = min(d[0] for d in days)
+    hi = max(d[1] for d in days)
     if hi <= lo:
         return None
-
     step = (hi - lo) / bins
+
     buckets = [0.0] * bins
     total = 0.0
-    for price, vol in pairs:
-        v = float(vol or 0)
-        if v <= 0:
+    for d_lo, d_hi, vol in days:
+        total += vol
+        d_span = d_hi - d_lo
+        if d_span <= 0:
+            # 一字板：整天只有一個價位，全部歸到那一格
+            k = min(max(int((d_lo - lo) / step), 0), bins - 1)
+            buckets[k] += vol
             continue
-        idx = int((price - lo) / step)
-        idx = min(max(idx, 0), bins - 1)
-        buckets[idx] += v
-        total += v
+        # 只走與當日區間重疊的那幾格，不必掃全部
+        k0 = min(max(int((d_lo - lo) / step), 0), bins - 1)
+        k1 = min(max(int((d_hi - lo) / step), 0), bins - 1)
+        for k in range(k0, k1 + 1):
+            b_lo = lo + step * k
+            b_hi = b_lo + step
+            overlap = min(d_hi, b_hi) - max(d_lo, b_lo)
+            if overlap > 0:
+                buckets[k] += vol * overlap / d_span
     if total <= 0:
         return None
 
-    out = []
-    for i, v in enumerate(buckets):
-        b_lo = lo + step * i
+    out, above_volume = [], 0.0
+    for k, v in enumerate(buckets):
+        b_lo = lo + step * k
         b_hi = b_lo + step
+        # 「上方」要整段都在現價之上：包含現價的那一格裡有一半的人是賺的，
+        # 算成套牢並不正確。
+        is_above = b_lo >= price_now
+        if is_above:
+            above_volume += v
         out.append({
             "low": round(b_lo, 2), "high": round(b_hi, 2),
             "mid": round((b_lo + b_hi) / 2, 2),
+            "volume": v,
             "ratio": v / total,
-            # 「上方套牢」要看整段區間都在現價之上。
-            # 用中點判斷的話，包含現價的那一格也會被標成套牢
-            # （例如現價 270 落在 265–282.5，中點 273.75 > 270），
-            # 但那一格裡有一半的人其實是賺的，講成套牢不對。
-            "above": b_lo >= price_now,
+            "above": is_above,
             "current": b_lo <= price_now <= b_hi,
         })
-    return {"bins": out, "days": len(pairs),
+
+    return {"bins": out, "days": len(days),
             "max_ratio": max(b["ratio"] for b in out),
             "price": round(price_now, 2),
             "low": round(lo, 2), "high": round(hi, 2),
-            # 有濾掉低價日時記下門檻與筆數，畫面才說得出「排除了什麼」
             "floor": round(floor_price, 2) if floor_price else None,
-            "dropped": len(closes) - len(pairs)}
-
+            "dropped": n - len(days),
+            "valid_volume": total,
+            "above_volume": above_volume,
+            "above_ratio": above_volume / total}
 
 def macd_cross_state(stock, fast=12, slow=26, signal=9, recent_days=5):
     """
@@ -9334,6 +9367,139 @@ def _start_turning_background_refresh():
 
     threading.Thread(target=worker, name="turning-refresh", daemon=True).start()
     return True
+
+
+def build_holdings_text(uid):
+    """
+    把持股整理成純文字，供使用者複製後貼給其他 AI 檢視。
+
+    為什麼是純文字而不是 Flex 卡片：卡片是圖形介面，複製不了內容。
+    這個功能的用途就是「拿出去給別人／別的工具讀」，格式必須可複製。
+
+    欄位用空白分隔而不是 CSV 的逗號——股價本來就有千分位逗號，
+    兩者混在一起 AI 反而容易切錯欄。
+
+    刻意不放黑馬／雷達分數與套牢籌碼比例：
+    那是本專案自己的評分邏輯與估算值，外部 AI 無從判斷怎麼解讀，
+    放進去只會被當成客觀指標，反而誤導。
+    """
+    positions = merge_positions(get_positions(uid))
+    if not positions:
+        return "目前沒有持股資料。到網頁的持股頁新增之後再試一次。"
+
+    codes = [p["code"] for p in positions]
+    prices = get_realtime_stocks_bulk(codes, workers=12, rng="3mo") or {}
+    inst = fetch_institutional_data() or {}
+    rev = fetch_monthly_revenue() or {}
+    val = fetch_valuation() or {}
+    ind_map = get_industry_map() or {}
+    cum_map = {}
+    try:
+        cum_map = {c: (cl, bd) for c, _n, cl, bd
+                   in (get_cumulative_net_buy(days=10, top_n=len(codes) * 3,
+                                              codes=codes) or [])}
+    except Exception as exc:
+        print(f"⚠️ 持股匯出取法人資料失敗: {exc}")
+
+    # 最近一次操作：從操作日誌取每檔最新一筆
+    last_action = {}
+    try:
+        for log in (get_position_change_logs(uid, limit=2000) or []):
+            code = str(log.get("code") or "").strip()
+            d = log.get("trade_date")
+            if not code or not d:
+                continue
+            cur = last_action.get(code)
+            if cur is None or d > cur[0]:
+                label, _cls = _position_change_journal_status(log)
+                last_action[code] = (d, label, int(log.get("shares_delta") or 0))
+    except Exception as exc:
+        print(f"⚠️ 持股匯出取操作日誌失敗: {exc}")
+
+    total_value = 0.0
+    total_cost = 0.0
+    enriched = []
+    for p in positions:
+        code = p["code"]
+        q = prices.get(code) or {}
+        px = q.get("close")
+        sh = int(p["shares"])
+        cost = float(p["cost"])
+        value = (px * sh) if px else None
+        if value:
+            total_value += value
+        total_cost += cost * sh
+        enriched.append((p, q, px, sh, cost, value))
+
+    total_pl = total_value - total_cost if total_value else None
+    lines = [f"台股持股　{taiwan_today().strftime('%Y/%m/%d')}"]
+    if total_value:
+        pct = (total_pl / total_cost * 100) if total_cost else 0
+        lines.append(f"總市值 {total_value:,.0f}　成本 {total_cost:,.0f}　"
+                     f"未實現 {total_pl:+,.0f}（{pct:+.2f}%）　{len(positions)} 檔")
+    lines.append("")
+
+    enriched.sort(key=lambda x: -(x[5] or 0))
+    for p, q, px, sh, cost, value in enriched:
+        code = p["code"]
+        name = stock_display_name(code, inst)
+        industry = ind_map.get(code) or "產業未分類"
+        lines.append(f"{code} {name}｜{industry}")
+        if px:
+            pl = (px - cost) * sh
+            pl_pct = (px / cost - 1) * 100 if cost else 0
+            weight = (value / total_value * 100) if total_value else 0
+            lines.append(f"  {sh:,}股 成本{cost:,.2f} 現價{px:,.2f}")
+            lines.append(f"  損益 {pl:+,.0f}（{pl_pct:+.1f}%）"
+                         f" 權重 {weight:.1f}%"
+                         + (f" 持有 {(taiwan_today() - p['bought_on']).days}天"
+                            if p.get("bought_on") else ""))
+        else:
+            lines.append(f"  {sh:,}股 成本{cost:,.2f} 現價查無資料")
+
+        # 基本面與籌碼：缺值就整段不寫，不要填 0 或「無」造成誤讀
+        facts = []
+        pe = (val.get(code) or {}).get("pe")
+        if pe:
+            facts.append(f"PE {pe:.1f}")
+        yoy = (rev.get(code) or {}).get("yoy_pct")
+        if yoy is not None:
+            facts.append(f"營收年增 {yoy:+.1f}%")
+        cl, _bd = cum_map.get(code, (None, None))
+        if cl is not None:
+            facts.append(f"法人十日 {int(cl):+,}張")
+        if facts:
+            lines.append("  " + " ".join(facts))
+
+        pos60 = q.get("pos_vs_60d_high")
+        if pos60 is not None:
+            lines.append(f"  距60日高 {pos60:+.1f}%")
+
+        act = last_action.get(code)
+        if act:
+            d, label, delta = act
+            lines.append(f"  最近 {d.strftime('%m/%d')} {label} {abs(delta):,}股")
+        lines.append("")
+
+    lines.append("以上為個人輸入之持股整理，不構成投資建議。")
+    out = "\n".join(lines).rstrip()
+
+    # LINE 單則訊息上限 5000 字。超過會被整則拒收（不是截斷），
+    # 所以這裡自己截，並明確告訴使用者少了幾檔——
+    # 悄悄少掉幾檔比講出來危險，貼給別人分析時會漏掉部位。
+    limit = 4800
+    if len(out) > limit:
+        keep, used = [], 0
+        for block in out.split("\n\n"):
+            if used + len(block) > limit - 200:
+                break
+            keep.append(block)
+            used += len(block) + 2
+        shown = max(0, len(keep) - 1)
+        out = ("\n\n".join(keep)
+               + f"\n\n（訊息長度上限，僅列出前 {shown} 檔，共 {len(positions)} 檔。"
+                 f"完整清單請到網頁的持股頁查看。）")
+    return out
 
 
 def build_chips_report(days=10):
@@ -14740,7 +14906,17 @@ body{background:var(--paper);color:var(--ink);line-height:1.55;
   /* 籌碼分布的橫條圖。原本只寫在選股工作台的樣式表裡，
      持股頁沒有那段 CSS，長條就整個不見、變成一行行純文字。
      移到共用樣式，兩邊才會長一樣。 */
+  /* 損益走勢下方的買進紀錄：一列一筆、三欄對齊。
+     先前用全形空白串成一行，換行會斷在「@1,709.00 08/17」這種位置，
+     分批買六七次就完全看不出斷點。 */
+  .lotmarks{margin-top:6px;border-top:1px solid var(--sep);padding-top:5px}
+  .lotmark{display:grid;grid-template-columns:54px 1fr 84px;gap:8px;
+    padding:3px 0;font-size:11px;color:var(--ink-soft)}
+  .lotmark-date{color:var(--ink-faint);font-variant-numeric:tabular-nums}
+  .lotmark-sh{font-variant-numeric:tabular-nums}
+  .lotmark-px{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink)}
   .chip-head b{font-size:16px}
+  .chip-sub-tag{margin-left:7px;padding:2px 7px;background:var(--paper-2);border-radius:4px;color:var(--ink-faint);font-size:10px;vertical-align:middle}
   .chip-head .sub{display:block;color:var(--ink-faint);font-size:11px;margin-top:2px}
   .chip-summary{margin:9px 0 11px;padding:8px 10px;background:var(--paper-2);
     border-radius:8px;color:var(--ink-soft);font-size:11.5px;line-height:1.6}
@@ -18699,8 +18875,7 @@ def render_stock_sparkline(price, cost, shares, lots=None):
             marks.append(f'<circle cx="{x(idx):.1f}" cy="{y(pls[idx]):.1f}" '
                          f'r="3.5" fill="var(--paper)" stroke="var(--brass)" '
                          f'stroke-width="2"/>')
-            mark_notes.append(f"{bd.strftime('%m/%d')} 買 {l['shares']:,} 股 "
-                              f"@{l['cost']:,.2f}")
+            mark_notes.append((bd, int(l["shares"]), float(l["cost"])))
 
     # ── 最大回檔 ──
     # 從歷史高點往後找最低，取最大落差。這是實際承受過的帳面痛感，
@@ -18721,8 +18896,21 @@ def render_stock_sparkline(price, cost, shares, lots=None):
 
     d0 = dates[0].strftime("%m/%d") if dates else ""
     d1 = dates[-1].strftime("%m/%d") if dates else ""
-    marks_line = ("　".join(mark_notes) if mark_notes
-                  else "買進日不在此區間內" if lots else "")
+    # 買進紀錄排成表格，不要用「　」串成一長串。
+    # 串在一起時換行會斷在奇怪的位置（例如「@1,709.00 08/17」黏在一起），
+    # 分批買了六七次就完全看不出斷點。
+    if mark_notes:
+        rows = []
+        for bd, sh, cost in sorted(mark_notes):
+            rows.append(f'<div class="lotmark">'
+                        f'<span class="lotmark-date">{bd.strftime("%m/%d")}</span>'
+                        f'<span class="lotmark-sh">{sh:,} 股</span>'
+                        f'<span class="lotmark-px">@{cost:,.2f}</span></div>')
+        marks_line = f'<div class="lotmarks">{"".join(rows)}</div>'
+    elif lots:
+        marks_line = '<div class="sub">買進日不在此區間內</div>'
+    else:
+        marks_line = ""
 
     return f"""
 <svg viewBox="0 0 {W} {H}" width="100%" height="{H}" preserveAspectRatio="none"
@@ -18736,7 +18924,7 @@ def render_stock_sparkline(price, cost, shares, lots=None):
   <span>{d0} – {d1}（{n} 個交易日）</span>
   <span>最大回檔 <span class="num">-{max_dd:,.0f}</span></span>
 </div>
-{f'<div class="sub" style="margin-top:3px"><span style="color:var(--brass)">●</span> {marks_line}</div>' if marks_line else ''}"""
+{marks_line}"""
 
 
 
@@ -19015,19 +19203,23 @@ def render_chip_bins(code, name, data):
     return f"""
 <div class="chip-head">
   <b>{html.escape(str(name))}</b>
+  <span class="chip-sub-tag">依歷史成交量估算</span>
   <span class="sub">{html.escape(str(code))}・現價 {price:,.2f}・
     近 {data['days']} 個交易日</span>
 </div>
-<div class="chip-summary">現價上方尚未解套的籌碼約 <b>{above_total * 100:.0f}%</b>
-  （不含現價所在區間）。比重高的價位帶，反彈到那裡時通常會遇到較多賣壓。</div>
+<div class="chip-summary">現價上方估算有約 <b>{above_total * 100:.0f}%</b> 的歷史成交量
+  （不含現價所在區間）。股價反彈至這些區域時，可能遇到較多解套賣壓。</div>
 {''.join(rows)}
 <div class="chip-note">
-  {f"已排除收盤價低於 {data['floor']:,.0f}（現價一半）的 {data['dropped']} 個交易日——"
-     f"那些籌碼帳面已獲利一倍以上，不會因為解套而賣，計入只會稀釋上方比例。<br>"
-     if data.get("floor") and data.get("dropped") else ""}
-  以每日收盤價與當日總量估算，不是券商的分價量表。
-  同一天內震盪大的標的，當天的量其實分散在多個價位，
-  這裡全部歸到收盤價，位置會失真——請當成大致的區域參考，不是精確價位。
+  {f"低於 {data['floor']:,.0f}（現價一半）的價格區段不列入——"
+     f"那些成交帳面已獲利一倍以上，不會因為解套而賣，計入只會稀釋上方比例。"
+     f"（完整排除 {data['dropped']} 個交易日）<br>"
+     if data.get("floor") else ""}
+  這是<b>估算</b>的成本分布，不是券商的分價量表。
+  資料源只有每日的開高低收與總量，沒有盤中逐筆成交，
+  所以無法知道每一筆成交發生在哪個價位；
+  這裡是把當天的成交量，依價格區間與當日最高最低價的重疊比例分攤。
+  請當成大致的區域參考，不是精確價位。
 </div>"""
 
 
@@ -25925,6 +26117,14 @@ def handle_message(event):
         else:
             reply = (f"❌ 自選清單裡沒有 {pure_code}\n"
                      f"先輸入「加 {pure_code} {tag}」新增")
+
+    # 1.6 持股匯出：純文字，供使用者複製後貼給其他工具檢視
+    elif text in ("持股", "庫存", "匯出持股", "持股匯出"):
+        try:
+            reply = build_holdings_text(user_id)
+        except Exception as exc:
+            print(f"❌ 持股匯出失敗 {user_id}: {exc}")
+            reply = "持股匯出暫時失敗，請稍後再試。"
 
     # 2. 刪自選
     elif "刪" in text and 4 <= len(pure_code) <= 7:
