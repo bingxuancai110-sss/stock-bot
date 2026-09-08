@@ -5887,12 +5887,22 @@ def simulate_bot_portfolio(mode, days=365):
             h["first_pick"] = lot["pick_date"]
         # 剩餘天數取最久的那一筆，那才是這檔真正還要抱多久
         h["days_left"] = max(h["days_left"], lot["target_i"] - last_i)
+    # 權重：每一筆買進的份量相同，所以某檔的權重就是
+    # 「它的買進筆數 ÷ 目前所有持倉的買進筆數」。
+    #
+    # 這個數字要顯示出來，因為它不是我設計的加碼規則，
+    # 而是「每個推薦日都買前 5 名」自然產生的結果——
+    # 一檔連續上榜就會被買很多次，權重跟著變高。
+    # 不寫出來的話，使用者看到「7 次買進」不會意識到它佔了多少。
+    total_lots = sum(h["lots"] for h in merged.values()) or 1
     holdings = []
     for h in merged.values():
         h["pct"] = h["pct_sum"] / h["lots"]
+        h["weight"] = h["lots"] / total_lots * 100
         h.pop("pct_sum")
         holdings.append(h)
-    holdings.sort(key=lambda x: -x["pct"])
+    # 依權重排序：先看「機器人重壓在哪」，再看那幾檔賺賠多少。
+    holdings.sort(key=lambda x: (-x["weight"], -x["pct"]))
 
     return {"curve": curve, "holdings": holdings, "picks_days": len(by_date)}
 
@@ -15077,8 +15087,16 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .bot-rule{margin-bottom:10px;padding:9px 11px;background:#EEF2F6;border-radius:7px;
   color:#4A5C70;font-size:11px;line-height:1.7}
 .bot-hold-list{display:block}
-.bot-hold{display:grid;grid-template-columns:1fr 62px;gap:4px 10px;
+.bot-hold{display:grid;grid-template-columns:1fr 52px 62px;gap:3px 8px;
   align-items:baseline;padding:7px 0;border-top:1px solid #EDF0F4}
+.bot-hold-head{border-top:0;padding-bottom:3px;color:#8E959D;font-size:10px}
+.bot-hold-head span{text-align:right}
+.bot-hold-head span:first-child{text-align:left}
+.bot-hold-wt{text-align:right;font-size:12.5px;color:#4A5C70;font-weight:600;
+  font-variant-numeric:tabular-nums}
+.bot-hold-bar{grid-column:1/-1;height:5px;border-radius:3px;background:#EDF0F4;
+  overflow:hidden;margin-top:2px}
+.bot-hold-bar i{display:block;height:100%;background:#8FA8C4;border-radius:3px}
 .bot-hold:first-of-type{border-top:0}
 .bot-hold-name{font-size:13px;color:#1B2027;font-weight:600}
 .bot-hold-name small{margin-left:6px;color:#8E959D;font-size:10.5px;font-weight:400}
@@ -20003,8 +20021,11 @@ def web_leaderboard(uid):
             bot_detail = None
             if r.get("is_bot"):
                 bh = r.get("bot_holdings") or []
+                max_wt = max((x.get("weight") or 0) for x in bh) if bh else 0
                 bits = [f'<div class="bot-rule">'
                         f'{html.escape(str(r.get("bot_rule") or ""))}<br>'
+                        f'同一檔連續上榜就會被重複買進，權重跟著變高——'
+                        f'那是規則本身的結果，不是另外設定的加碼。<br>'
                         f'這是機械化模擬，沒有滑價與零股限制，也不會臨時改變主意；'
                         f'跟真人並列僅供對照，不是投資建議。</div>']
                 for x in bh:
@@ -20012,16 +20033,32 @@ def web_leaderboard(uid):
                     cls = "up" if (pct or 0) >= 0 else "down"
                     left = int(x.get("days_left") or 0)
                     lots_n = int(x.get("lots") or 1)
+                    wt = x.get("weight")
                     meta = f'{lots_n} 次買進'
                     meta += f'・還有 {left} 個交易日' if left > 0 else '・已到期'
+                    # 權重條：刻度用這批持倉的最大權重當滿格。
+                    # 不用固定刻度——實測連續上榜的標的可以到 39%，
+                    # 用 20% 當滿格會撐爆、用 100% 則所有條都很短。
+                    bar = ''
+                    if wt is not None and max_wt:
+                        bar = (f'<span class="bot-hold-bar">'
+                               f'<i style="width:{min(100.0, wt / max_wt * 100):.1f}%">'
+                               f'</i></span>')
                     bits.append(
                         f'<div class="bot-hold">'
                         f'<span class="bot-hold-name">'
                         f'{html.escape(str(x.get("name") or x["code"]))}'
                         f'<small>{html.escape(str(x["code"]))}</small></span>'
+                        f'<span class="bot-hold-wt">'
+                        f'{("%.1f%%" % wt) if wt is not None else "—"}</span>'
                         f'<span class="bot-hold-pct num {cls}">{pct:+.1f}%</span>'
+                        f'{bar}'
                         f'<span class="bot-hold-meta">{meta}</span></div>')
-                if len(bits) == 1:
+                if len(bits) > 1:
+                    bits.insert(1, '<div class="bot-hold bot-hold-head">'
+                                   '<span>標的</span><span>權重</span>'
+                                   '<span>報酬</span><span></span></div>')
+                else:
                     bits.append('<div class="sub">目前沒有持倉（全部已到期賣出）。</div>')
                 bot_detail = (f'<details class="rank-detail">'
                               f'<summary>查看機器人目前持股（{len(bh)} 檔）</summary>'
