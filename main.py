@@ -5823,11 +5823,17 @@ def simulate_bot_portfolio(mode, days=365):
         if pick_day not in idx:
             continue
         i0 = idx[pick_day]
-        i1 = min(i0 + BOT_HOLD_DAYS, len(trading_days) - 1)
+        # target_i 是「原本打算賣出的那一天」，可能超出目前已有的交易日；
+        # sell_i 才是實際能算到的最後一天。兩者必須分開：
+        # 資料還不滿 20 個交易日時，每一筆都會被夾到最後一天，
+        # 畫面上就變成全部「剩 0 個交易日」，看起來像全數到期。
+        target_i = i0 + BOT_HOLD_DAYS
+        i1 = min(target_i, len(trading_days) - 1)
         for it in items:
             code = str(it["code"]).strip()
             if code in series:
                 lots.append({"code": code, "buy_i": i0, "sell_i": i1,
+                             "target_i": target_i,
                              "name": it.get("name") or code,
                              "pick_date": pick_day})
     if not lots:
@@ -5872,14 +5878,15 @@ def simulate_bot_portfolio(mode, days=365):
         h = merged.setdefault(lot["code"], {
             "code": lot["code"], "name": lot["name"],
             "lots": 0, "pct_sum": 0.0,
-            "first_pick": lot["pick_date"], "days_left": lot["sell_i"] - last_i,
+            "first_pick": lot["pick_date"],
+            "days_left": lot["target_i"] - last_i,
         })
         h["lots"] += 1
         h["pct_sum"] += (now_p / buy_p - 1) * 100
         if lot["pick_date"] < h["first_pick"]:
             h["first_pick"] = lot["pick_date"]
         # 剩餘天數取最久的那一筆，那才是這檔真正還要抱多久
-        h["days_left"] = max(h["days_left"], lot["sell_i"] - last_i)
+        h["days_left"] = max(h["days_left"], lot["target_i"] - last_i)
     holdings = []
     for h in merged.values():
         h["pct"] = h["pct_sum"] / h["lots"]
@@ -15065,11 +15072,19 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .rank-private{display:block;margin:9px 0 0 39px;color:var(--ink-faint);font-size:12px}
 .rank-mine{background:#F2F2F7;border-left:3px solid var(--brass);border-radius:10px;
   padding:14px 11px 14px 9px;margin:0 -11px}
-/* 機器人列：用虛線框跟真人區隔，避免被當成真實績效。 */
-.rank-bot{border:1px dashed #B9C2CC;background:#FAFBFD}
-.rank-bot .rank-name{color:#3C4A5A}
-.bot-rule{margin-bottom:8px;padding:8px 10px;background:#EEF2F6;border-radius:6px;
-  color:#4A5C70;font-size:11px;line-height:1.65}
+/* 機器人的持股明細：三欄對齊，一列一檔。
+   先前是把每一檔塞成一長串 span，31 檔就擠成一團看不出斷點。 */
+.bot-rule{margin-bottom:10px;padding:9px 11px;background:#EEF2F6;border-radius:7px;
+  color:#4A5C70;font-size:11px;line-height:1.7}
+.bot-hold-list{display:block}
+.bot-hold{display:grid;grid-template-columns:1fr 62px;gap:4px 10px;
+  align-items:baseline;padding:7px 0;border-top:1px solid #EDF0F4}
+.bot-hold:first-of-type{border-top:0}
+.bot-hold-name{font-size:13px;color:#1B2027;font-weight:600}
+.bot-hold-name small{margin-left:6px;color:#8E959D;font-size:10.5px;font-weight:400}
+.bot-hold-pct{text-align:right;font-size:13px;font-weight:700;
+  font-variant-numeric:tabular-nums}
+.bot-hold-meta{grid-column:1/-1;color:#8E959D;font-size:10.5px}
 .rank-tabs{display:flex;gap:4px;margin:18px 0 8px;padding:4px;background:#D7D9D2;
   border-radius:11px;flex-wrap:nowrap}
 .rank-tabs a,.rank-tabs button{flex:1;text-align:center;padding:8px 7px;background:transparent;border-radius:8px;
@@ -19982,43 +19997,36 @@ def web_leaderboard(uid):
                 holdings_text += f'（含 ETF {r["etf_holdings"]} 檔）'
             supporting.append(f'<span><em>持股</em> {holdings_text}</span>')
 
-            # 機器人：公開目前持倉，並標明是機械化模擬。
-            # 真人有滑價、零股限制、以及「看到跌 5% 就手癢賣掉」，
-            # 機器人沒有——不標清楚會被當成可以照抄的績效。
+            # 機器人：只準備明細內容，卡片本身沿用真人那一套。
+            # 先前另外寫了一份卡片 HTML，版面就跟真人不一致，
+            # 而且多維護一份沒有好處——差異只在明細裡放什麼。
+            bot_detail = None
             if r.get("is_bot"):
                 bh = r.get("bot_holdings") or []
-                bits = []
+                bits = [f'<div class="bot-rule">'
+                        f'{html.escape(str(r.get("bot_rule") or ""))}<br>'
+                        f'這是機械化模擬，沒有滑價與零股限制，也不會臨時改變主意；'
+                        f'跟真人並列僅供對照，不是投資建議。</div>']
                 for x in bh:
                     pct = x.get("pct")
                     cls = "up" if (pct or 0) >= 0 else "down"
-                    left = x.get("days_left")
+                    left = int(x.get("days_left") or 0)
+                    lots_n = int(x.get("lots") or 1)
+                    meta = f'{lots_n} 次買進'
+                    meta += f'・還有 {left} 個交易日' if left > 0 else '・已到期'
                     bits.append(
-                        f'<span><em>{html.escape(str(x.get("name") or x["code"]))}'
-                        f'（{html.escape(str(x["code"]))}）</em>'
-                        f'<span class="num {cls}">'
-                        f'{pct:+.1f}%</span>'
-                        f'　買進 {x.get("lots", 1)} 次・剩 {left} 個交易日</span>')
-                if not bits:
-                    bits.append('<span>目前沒有持倉（全部已到期賣出）。</span>')
-                detail = (f'<details class="rank-detail">'
-                          f'<summary>查看機器人目前持股（{len(bh)} 檔）</summary>'
-                          f'<div class="rank-detail-body">'
-                          f'<div class="bot-rule">{html.escape(str(r.get("bot_rule") or ""))}'
-                          f'<br>這是機械化模擬，沒有滑價與零股限制，'
-                          f'也不會臨時改變主意；跟真人並列僅供對照，不是投資建議。</div>'
-                          f'{"".join(bits)}</div></details>')
-                out.append(f"""
-<div class="rank-card rank-bot{mine}">
-  <div class="rank-row">
-    <span class="rank-no">#{i}</span>
-    <span class="rank-name">🤖 {html.escape(str(r["nickname"]))}</span>
-    <span class="rank-ret {'up' if (r.get(key) or 0) >= 0 else 'down'}">
-      {(r.get(key) or 0):+.2f}%</span>
-  </div>
-  <div class="rank-support">{''.join(supporting)}</div>
-  {detail}
-</div>""")
-                continue
+                        f'<div class="bot-hold">'
+                        f'<span class="bot-hold-name">'
+                        f'{html.escape(str(x.get("name") or x["code"]))}'
+                        f'<small>{html.escape(str(x["code"]))}</small></span>'
+                        f'<span class="bot-hold-pct num {cls}">{pct:+.1f}%</span>'
+                        f'<span class="bot-hold-meta">{meta}</span></div>')
+                if len(bits) == 1:
+                    bits.append('<div class="sub">目前沒有持倉（全部已到期賣出）。</div>')
+                bot_detail = (f'<details class="rank-detail">'
+                              f'<summary>查看機器人目前持股（{len(bh)} 檔）</summary>'
+                              f'<div class="rank-detail-body bot-hold-list">'
+                              f'{"".join(bits)}</div></details>')
 
             d = r.get("detail")
             if d:
@@ -20046,6 +20054,8 @@ def web_leaderboard(uid):
                           f'<div class="rank-detail-body">{"".join(detail_bits)}</div></details>')
             else:
                 detail = '<span class="rank-private">持股明細未公開</span>'
+            if bot_detail:
+                detail = bot_detail
 
             out.append(f"""
 <div class="rank-card{tier_class}{mine}">
