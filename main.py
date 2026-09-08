@@ -5746,6 +5746,150 @@ def _save_persisted_leaderboard_page(value, data_date=None):
 LEADERBOARD_MIN_SNAPSHOTS = 3
 
 
+# 機器人組合的模擬參數。全部寫死並公開，讓人看得出結果是怎麼來的。
+BOT_TOP_N = 5            # 每個推薦日等權買進前幾名
+BOT_HOLD_DAYS = 20       # 持有幾個交易日後賣出
+BOT_MODES = (("blackhorse", "黑馬機器人"), ("radar", "雷達機器人"))
+
+
+def simulate_bot_portfolio(mode, days=365):
+    """
+    模擬「每個推薦日等權買進前 5 名、持有 20 個交易日」的組合。
+
+    為什麼要有這個：使用者無法回答「我自己操作，比無腦跟著推薦買還好嗎」。
+    排行榜上的大盤不是他的替代選項——他的替代選項是照這個 app 的名單買。
+
+    算法刻意用「每日等權再平衡」而不是模擬現金帳戶：
+      當日報酬 = 當天所有持倉的漲跌幅平均
+      淨值 = 逐日連乘
+    這樣不必處理資金分配、零股、餘額不足這些跟選股無關的問題，
+    而且跟使用者自己的 TWR 是同一個口徑，可以直接並排比較。
+
+    為什麼不加碼：加碼要決定「加在哪一檔」，而因子分析已經顯示
+    雷達的分數是反向的（高分組 −3.6%、低分組 +4.3%）。
+    照分數或名次加碼沒有依據，等權是唯一不需要編數字的做法。
+
+    手續費與證交稅在買賣當天各扣一次，真人有這些成本，
+    不扣的話機器人天生佔便宜，跟真人並排就不公平。
+
+    回傳 {"curve": [(date, 累積報酬%)], "holdings": [目前持倉], "picks_days": n}
+    失敗或資料不足回 None。
+    """
+    picks = get_picks_since(mode, days=days) or []
+    if not picks:
+        return None
+
+    by_date = {}
+    for p in picks:
+        d = p.get("date")
+        if not d:
+            continue
+        by_date.setdefault(d, []).append(p)
+    if not by_date:
+        return None
+    # 每個推薦日只取前 N 名；rank 缺漏時用既有順序遞補
+    for d in list(by_date):
+        by_date[d] = sorted(by_date[d],
+                            key=lambda x: (x.get("rank") or 999))[:BOT_TOP_N]
+
+    codes = sorted({str(p["code"]).strip() for v in by_date.values() for p in v})
+    if not codes:
+        return None
+    quotes = get_realtime_stocks_bulk(codes, workers=16, rng="1y") or {}
+
+    # 以還原價計算：期間內若有除權息，未還原的價格會把配息記成虧損。
+    series = {}
+    for code in codes:
+        q = quotes.get(code) or {}
+        dates = q.get("close_dates") or []
+        closes = q.get("adj_closes") or q.get("closes") or []
+        if len(dates) != len(closes) or len(dates) < 2:
+            continue
+        series[code] = {d: c for d, c in zip(dates, closes) if c}
+    if not series:
+        return None
+
+    # 交易日軸取自實際行情，不自己造日曆——假日與補班日不能用推的
+    all_days = sorted({d for m in series.values() for d in m})
+    first_pick = min(by_date)
+    trading_days = [d for d in all_days if d >= first_pick]
+    if len(trading_days) < 2:
+        return None
+    idx = {d: i for i, d in enumerate(trading_days)}
+
+    # 建立持倉區間：買進日的收盤買、持有 N 個交易日後的收盤賣
+    lots = []
+    for pick_day, items in by_date.items():
+        if pick_day not in idx:
+            continue
+        i0 = idx[pick_day]
+        i1 = min(i0 + BOT_HOLD_DAYS, len(trading_days) - 1)
+        for it in items:
+            code = str(it["code"]).strip()
+            if code in series:
+                lots.append({"code": code, "buy_i": i0, "sell_i": i1,
+                             "name": it.get("name") or code,
+                             "pick_date": pick_day})
+    if not lots:
+        return None
+
+    fee_rate = broker_fee(1_000_000) / 1_000_000  # 依既有手續費設定換算成比率
+    curve, nav = [], 1.0
+    for i in range(1, len(trading_days)):
+        today, prev = trading_days[i], trading_days[i - 1]
+        rets = []
+        for lot in lots:
+            if not (lot["buy_i"] < i <= lot["sell_i"]):
+                continue
+            m = series[lot["code"]]
+            a, b = m.get(prev), m.get(today)
+            if not a or not b:
+                continue
+            r = b / a - 1.0
+            # 買進日與賣出日各扣一次成本
+            if i == lot["buy_i"] + 1:
+                r -= fee_rate
+            if i == lot["sell_i"]:
+                r -= fee_rate + (TAX_RATE_STOCK)
+            rets.append(r)
+        if rets:
+            nav *= (1.0 + sum(rets) / len(rets))
+        curve.append((today, (nav - 1.0) * 100))
+
+    # 目前仍在持有的部位（公開給使用者看，才知道機器人現在抱著什麼）
+    last_i = len(trading_days) - 1
+    # 同一檔可能在好幾個推薦日都被買進，逐筆列會出現同名多次。
+    # 合併成一列，報酬取等權平均（每一筆的權重本來就相同）。
+    merged = {}
+    for lot in lots:
+        if not (lot["buy_i"] < last_i <= lot["sell_i"]):
+            continue
+        m = series[lot["code"]]
+        buy_p = m.get(trading_days[lot["buy_i"]])
+        now_p = m.get(trading_days[last_i])
+        if not buy_p or not now_p:
+            continue
+        h = merged.setdefault(lot["code"], {
+            "code": lot["code"], "name": lot["name"],
+            "lots": 0, "pct_sum": 0.0,
+            "first_pick": lot["pick_date"], "days_left": lot["sell_i"] - last_i,
+        })
+        h["lots"] += 1
+        h["pct_sum"] += (now_p / buy_p - 1) * 100
+        if lot["pick_date"] < h["first_pick"]:
+            h["first_pick"] = lot["pick_date"]
+        # 剩餘天數取最久的那一筆，那才是這檔真正還要抱多久
+        h["days_left"] = max(h["days_left"], lot["sell_i"] - last_i)
+    holdings = []
+    for h in merged.values():
+        h["pct"] = h["pct_sum"] / h["lots"]
+        h.pop("pct_sum")
+        holdings.append(h)
+    holdings.sort(key=lambda x: -x["pct"])
+
+    return {"curve": curve, "holdings": holdings, "picks_days": len(by_date)}
+
+
 def build_leaderboard(top_n=20, days=365):
     """
     算出排行榜。分短線與長線兩榜，因為那本來就是兩種不同的能力——
@@ -5881,6 +6025,56 @@ def build_leaderboard(top_n=20, days=365):
         })
         # 用穩定且唯一的 user_id 作為曲線索引；暱稱可以重複，不能拿來當 key。
         series_map[str(uid)] = {"nickname": str(nick), "curve": curve}
+
+    # 機器人組合：讓使用者看得出「我自己操作，比無腦跟著推薦買還好嗎」。
+    #
+    # 條件刻意跟真人一致：同樣扣手續費與證交稅、同樣用時間加權報酬。
+    # 但仍要標示為模擬，因為它沒有滑價、沒有零股限制，
+    # 也不會因為看到跌 5% 就手癢賣掉——那些是真人才有的摩擦。
+    for bot_mode, bot_name in BOT_MODES:
+        try:
+            sim = simulate_bot_portfolio(bot_mode, days=days)
+        except Exception as exc:
+            print(f"⚠️ 機器人組合模擬失敗 {bot_mode}: {exc}")
+            continue
+        if not sim or len(sim["curve"]) < 2:
+            continue
+        bot_curve = sim["curve"]
+        bot_ret = bot_curve[-1][1]
+        # 近 30 天：與真人同一套口徑，取 30 天前那一點當基準重新換算
+        cutoff = taiwan_today() - timedelta(days=30)
+        recent = [(d, v) for d, v in bot_curve if d >= cutoff]
+        bot_m30 = None
+        if len(recent) >= 2:
+            base = 1 + recent[0][1] / 100
+            if base:
+                bot_m30 = ((1 + recent[-1][1] / 100) / base - 1) * 100
+        peak, mdd = None, 0.0
+        for _d, v in bot_curve:
+            nav = 1 + v / 100
+            peak = nav if peak is None else max(peak, nav)
+            if peak:
+                mdd = min(mdd, (nav / peak - 1) * 100)
+        rows.append({
+            "user_id": f"bot:{bot_mode}",
+            "nickname": bot_name,
+            "holdings": len(sim["holdings"]),
+            "etf_holdings": 0,
+            "joined": bot_curve[0][0],
+            "show": True,
+            "detail": None,
+            "ret": bot_ret,
+            "m30": bot_m30,
+            "mdd": mdd,
+            "points": len(bot_curve),
+            "is_bot": True,
+            "bot_mode": bot_mode,
+            "bot_holdings": sim["holdings"],
+            "bot_rule": (f"每個推薦日等權買進前 {BOT_TOP_N} 名，"
+                         f"持有 {BOT_HOLD_DAYS} 個交易日後賣出；"
+                         f"已扣手續費與證交稅。共 {sim['picks_days']} 個推薦日。"),
+        })
+        series_map[f"bot:{bot_mode}"] = {"nickname": bot_name, "curve": bot_curve}
 
     # 快照筆數不足的先留在排隊區。算得出報酬不代表那個報酬可信——
     # 兩個資料點就排進正式榜，會讓剛加入的人壓在累積很久的人上面。
@@ -14865,6 +15059,11 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .rank-private{display:block;margin:9px 0 0 39px;color:var(--ink-faint);font-size:12px}
 .rank-mine{background:#F2F2F7;border-left:3px solid var(--brass);border-radius:10px;
   padding:14px 11px 14px 9px;margin:0 -11px}
+/* 機器人列：用虛線框跟真人區隔，避免被當成真實績效。 */
+.rank-bot{border:1px dashed #B9C2CC;background:#FAFBFD}
+.rank-bot .rank-name{color:#3C4A5A}
+.bot-rule{margin-bottom:8px;padding:8px 10px;background:#EEF2F6;border-radius:6px;
+  color:#4A5C70;font-size:11px;line-height:1.65}
 .rank-tabs{display:flex;gap:4px;margin:18px 0 8px;padding:4px;background:#D7D9D2;
   border-radius:11px;flex-wrap:nowrap}
 .rank-tabs a,.rank-tabs button{flex:1;text-align:center;padding:8px 7px;background:transparent;border-radius:8px;
@@ -19776,6 +19975,44 @@ def web_leaderboard(uid):
             if r.get("etf_holdings"):
                 holdings_text += f'（含 ETF {r["etf_holdings"]} 檔）'
             supporting.append(f'<span><em>持股</em> {holdings_text}</span>')
+
+            # 機器人：公開目前持倉，並標明是機械化模擬。
+            # 真人有滑價、零股限制、以及「看到跌 5% 就手癢賣掉」，
+            # 機器人沒有——不標清楚會被當成可以照抄的績效。
+            if r.get("is_bot"):
+                bh = r.get("bot_holdings") or []
+                bits = []
+                for x in bh:
+                    pct = x.get("pct")
+                    cls = "up" if (pct or 0) >= 0 else "down"
+                    left = x.get("days_left")
+                    bits.append(
+                        f'<span><em>{html.escape(str(x.get("name") or x["code"]))}'
+                        f'（{html.escape(str(x["code"]))}）</em>'
+                        f'<span class="num {cls}">'
+                        f'{pct:+.1f}%</span>'
+                        f'　買進 {x.get("lots", 1)} 次・剩 {left} 個交易日</span>')
+                if not bits:
+                    bits.append('<span>目前沒有持倉（全部已到期賣出）。</span>')
+                detail = (f'<details class="rank-detail">'
+                          f'<summary>查看機器人目前持股（{len(bh)} 檔）</summary>'
+                          f'<div class="rank-detail-body">'
+                          f'<div class="bot-rule">{html.escape(str(r.get("bot_rule") or ""))}'
+                          f'<br>這是機械化模擬，沒有滑價與零股限制，'
+                          f'也不會臨時改變主意；跟真人並列僅供對照，不是投資建議。</div>'
+                          f'{"".join(bits)}</div></details>')
+                out.append(f"""
+<div class="rank-card rank-bot{mine}">
+  <div class="rank-row">
+    <span class="rank-no">#{i}</span>
+    <span class="rank-name">🤖 {html.escape(str(r["nickname"]))}</span>
+    <span class="rank-ret {'up' if (r.get(key) or 0) >= 0 else 'down'}">
+      {(r.get(key) or 0):+.2f}%</span>
+  </div>
+  <div class="rank-support">{''.join(supporting)}</div>
+  {detail}
+</div>""")
+                continue
 
             d = r.get("detail")
             if d:
