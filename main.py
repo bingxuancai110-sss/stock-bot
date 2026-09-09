@@ -9443,7 +9443,12 @@ def build_holdings_text(uid):
     for p, q, px, sh, cost, value in enriched:
         code = p["code"]
         name = stock_display_name(code, inst)
-        industry = ind_map.get(code) or "產業未分類"
+        # get_industry_map 回的是產業「代碼」（例如 27、28），要轉成中文。
+        # 專案其他地方都是這樣做的（長度 ≤3 才轉，否則已經是名稱），
+        # 這裡先前直接印代碼，輸出就變成「光聖｜27」。
+        raw_ind = ind_map.get(code)
+        industry = (industry_name(raw_ind) if raw_ind and len(str(raw_ind)) <= 3
+                    else (str(raw_ind) if raw_ind else "產業未分類"))
         lines.append(f"{code} {name}｜{industry}")
         if px:
             pl = (px - cost) * sh
@@ -9474,6 +9479,13 @@ def build_holdings_text(uid):
         pos60 = q.get("pos_vs_60d_high")
         if pos60 is not None:
             lines.append(f"  距60日高 {pos60:+.1f}%")
+
+        # 除權提醒：股價已因配股下跌、但股數還沒更新時，損益會顯示成大幅虧損。
+        # 不標的話，貼給其他 AI 分析會被當成真的虧了六成
+        # （實例：緯穎成本 6,178、現價 2,340，比值 2.64，是 1 股配股後的結果）。
+        if px and cost and cost / px >= 1.4:
+            lines.append("  ⚠ 成本約為現價的 %.1f 倍，可能是除權配股後股數尚未更新，"
+                         "此處損益不代表實際虧損" % (cost / px))
 
         act = last_action.get(code)
         if act:
@@ -15705,6 +15717,52 @@ def render_page(title, body, nav_active=None, user_name=None):
           + (e && e.message ? e.message : e) + '</div>';
       }});
   }};
+  // 持股盤中輪詢：定義在殼層，不放在持股頁的片段裡。
+  //
+  // 片段內的腳本標籤在這個環境不會執行（操作習慣那次確認過），
+  // 所以輪詢從來沒有真的啟動——使用者盤中看到的一直是昨天的收盤價。
+  // 籌碼分布之所以能用，正是因為它的函式定義在這裡。
+  //
+  // 每次導覽完成後呼叫一次；不在持股頁時找不到狀態列，會自己結束。
+  var _posPollTimer = null;
+  var _posPollBusy = false;
+  window.startPositionPolling = function () {{
+
+    var root=document.getElementById('positions-quote-status');
+    if(!root)return;
+    function numberText(value,digits){{var n=Number(value);return Number.isFinite(n)?n.toLocaleString('zh-TW',{{minimumFractionDigits:digits,maximumFractionDigits:digits}}):'—';}}
+    function signedText(value,digits){{var n=Number(value);return Number.isFinite(n)?(n>=0?'+':'')+numberText(n,digits):'—';}}
+    // 盤中判斷改在前端做，而不是靠渲染當下的狀態。
+    // 原本狀態列只在「渲染那一刻是盤中」才輸出，元素不存在就整段不啟動；
+    // 於是開盤前開的頁面、或從別頁切換過來的，之後即使進入盤中也永遠不會跳，
+    // 只能手動刷新。改成一律啟動，由這裡決定要不要真的去抓。
+    function inMarket(){{
+      var now=new Date();
+      // 以使用者裝置的台北時間判斷；週末與非交易時段只排程不請求。
+      var tw=new Date(now.toLocaleString('en-US',{{timeZone:'Asia/Taipei'}}));
+      var day=tw.getDay();
+      if(day===0||day===6)return false;
+      var mins=tw.getHours()*60+tw.getMinutes();
+      return mins>=(9*60-5) && mins<=(13*60+35);   // 08:55–13:35，涵蓋開盤前後
+    }}
+    function schedule(){{if(_posPollTimer)clearTimeout(_posPollTimer);_posPollTimer=setTimeout(refresh,15000);}}
+    function refresh(){{
+      if(document.hidden||_posPollBusy||!inMarket()){{schedule();return;}}
+      if(root.style.display==='none')root.style.display='';
+      _posPollBusy=true;
+      var query=new URLSearchParams(window.location.search),token=query.get('t'),url='/web/api/positions/quotes';
+      if(token)url+='?t='+encodeURIComponent(token);
+      fetch(url,{{credentials:'same-origin',cache:'no-store'}}).then(function(response){{if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}}).then(function(data){{
+        (data.updates||[]).forEach(function(item){{var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){{price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){{day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');}});
+        root.textContent=data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。');
+      }}).catch(function(){{root.textContent='盤中行情暫時無法更新；保留最後有效價格與各檔來源。';}}).finally(function(){{_posPollBusy=false;schedule();}});
+    }}
+    document.addEventListener('visibilitychange',function(){{if(!document.hidden)refresh();}});
+    document.addEventListener('stockbot:pageleaving',function(){{if(_posPollTimer)clearTimeout(_posPollTimer);_posPollTimer=null;}});
+    refresh();
+
+  }};
+
   function executeFragmentScripts(container) {{
     container.querySelectorAll('script').forEach(function(oldScript) {{
       var replacement = document.createElement('script');
@@ -15753,6 +15811,7 @@ def render_page(title, body, nav_active=None, user_name=None):
         document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
         appContent.innerHTML = fragment;
         executeFragmentScripts(appContent);
+        if (window.startPositionPolling) window.startPositionPolling();
         if (navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
@@ -15888,6 +15947,9 @@ def render_page(title, body, nav_active=None, user_name=None):
       box.classList.add('feedback-error'); haptic('error');
     }}
   }});
+  // 首次整頁載入也要啟動輪詢。片段導覽走 executeFragmentScripts 之後的那一次，
+  // 但直接開網址或從 LINE 進來是整頁載入，不會經過那條路徑。
+  if (window.startPositionPolling) window.startPositionPolling();
 }})();
 </script>
 <footer>
@@ -17190,45 +17252,7 @@ def web_positions(uid):
   </div>
 </form>"""
     if positions and _is_taiwan_intraday_window():
-        body += '''<script>
-(function(){
-  var timer=null,busy=false,root=document.getElementById('positions-quote-status');
-  if(!root)return;
-  function numberText(value,digits){var n=Number(value);return Number.isFinite(n)?n.toLocaleString('zh-TW',{minimumFractionDigits:digits,maximumFractionDigits:digits}):'—';}
-  function signedText(value,digits){var n=Number(value);return Number.isFinite(n)?(n>=0?'+':'')+numberText(n,digits):'—';}
-  // 盤中判斷改在前端做，而不是靠渲染當下的狀態。
-  // 原本狀態列只在「渲染那一刻是盤中」才輸出，元素不存在就整段不啟動；
-  // 於是開盤前開的頁面、或從別頁切換過來的，之後即使進入盤中也永遠不會跳，
-  // 只能手動刷新。改成一律啟動，由這裡決定要不要真的去抓。
-  function inMarket(){
-    var now=new Date();
-    // 以使用者裝置的台北時間判斷；週末與非交易時段只排程不請求。
-    var tw=new Date(now.toLocaleString('en-US',{timeZone:'Asia/Taipei'}));
-    var day=tw.getDay();
-    if(day===0||day===6)return false;
-    var mins=tw.getHours()*60+tw.getMinutes();
-    return mins>=(9*60-5) && mins<=(13*60+35);   // 08:55–13:35，涵蓋開盤前後
-  }
-  function schedule(){if(timer)clearTimeout(timer);timer=setTimeout(refresh,15000);}
-  function refresh(){
-    if(document.hidden||busy||!inMarket()){schedule();return;}
-    if(root.style.display==='none')root.style.display='';
-    busy=true;
-    var query=new URLSearchParams(window.location.search),token=query.get('t'),url='/web/api/positions/quotes';
-    if(token)url+='?t='+encodeURIComponent(token);
-    fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
-      (data.updates||[]).forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
-      root.textContent=data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。');
-    }).catch(function(){root.textContent='盤中行情暫時無法更新；保留最後有效價格與各檔來源。';}).finally(function(){busy=false;schedule();});
-  }
-  document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
-  document.addEventListener('stockbot:pageleaving',function(){if(timer)clearTimeout(timer);timer=null;});
-  // 立刻抓一次，不要等第一個 15 秒。
-  // 頁面本身要載入十幾秒，再等 15 秒才第一次更新的話，
-  // 使用者開頁後約半分鐘內看到的都是昨收，會以為行情沒更新。
-  refresh();
-})();
-</script>'''
+        body += ''''''
     print("⏱️ 持股頁：持股資料 %.0fms、法人 %.0fms、1y行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
         (positions_data_done - positions_data_started) * 1000,
         (inst_done - inst_started) * 1000,
