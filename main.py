@@ -14302,6 +14302,95 @@ def check_source():
     return plain_text_page(lines), 200
 
 
+@app.route("/check-js", methods=["GET"])
+def check_js():
+    """
+    最小測試頁：確認這個環境裡哪一種 JS 寫法會執行。
+
+    為什麼需要：目前的判斷是矛盾的——
+      籌碼分布（殼層函式 + onclick）可以用
+      操作習慣（片段內的 script 標籤）不能用
+      持股輪詢（也是片段內的 script）不能用
+    照理說程式裡有 executeFragmentScripts 會重建 script 標籤並執行，
+    片段腳本應該要能跑。兩者必有一個判斷是錯的。
+
+    這頁刻意不碰任何正式邏輯，只放四種寫法各一個，
+    打開就知道哪些會變成「✅ 有執行」。
+    """
+    if request.args.get("token") != os.environ.get("CRON_SECRET"):
+        abort(403)
+
+    body = """
+<div class="callout">
+  <b>JS 執行測試</b><br>
+  下面四項，有執行的會變成綠色「✅ 有執行」。
+  請把畫面截圖回報，這決定盤中輪詢該用哪一種寫法。
+</div>
+
+<div class="card" style="margin-top:12px">
+  <div class="jsrow"><b>1. 片段內的 script 標籤</b>
+    <span id="t1" class="jsbad">❌ 沒執行</span></div>
+  <div class="sub">最常見的寫法。持股輪詢、操作習慣都是這一種。</div>
+</div>
+<script>
+  var e1 = document.getElementById('t1');
+  if (e1) { e1.textContent = '✅ 有執行'; e1.className = 'jsok'; }
+</script>
+
+<div class="card" style="margin-top:10px">
+  <div class="jsrow"><b>2. 片段內的 script（延遲 1 秒）</b>
+    <span id="t2" class="jsbad">❌ 沒執行</span></div>
+  <div class="sub">若第 1 項失敗但這項成功，代表是執行時機問題，不是不執行。</div>
+</div>
+<script>
+  window.setTimeout(function () {
+    var e2 = document.getElementById('t2');
+    if (e2) { e2.textContent = '✅ 有執行'; e2.className = 'jsok'; }
+  }, 1000);
+</script>
+
+<div class="card" style="margin-top:10px">
+  <div class="jsrow"><b>3. 內嵌 onclick 屬性</b>
+    <span id="t3" class="jsbad">❌ 沒執行</span></div>
+  <div class="sub">籌碼分布用的就是這種。
+    <button type="button" class="jsbtn"
+            onclick="var e=document.getElementById('t3');e.textContent='✅ 有執行';e.className='jsok';">
+      點我測試
+    </button></div>
+</div>
+
+<div class="card" style="margin-top:10px">
+  <div class="jsrow"><b>4. 殼層函式是否存在</b>
+    <span id="t4" class="jsbad">❌ 找不到</span></div>
+  <div class="sub">檢查 window.loadPositionChips（殼層定義的函式）在不在。
+    <button type="button" class="jsbtn"
+            onclick="var e=document.getElementById('t4');var ok=(typeof window.loadPositionChips==='function');e.textContent=ok?'✅ 存在':'❌ 不存在';e.className=ok?'jsok':'jsbad';">
+      點我檢查
+    </button></div>
+</div>
+
+<div class="card" style="margin-top:10px">
+  <div class="jsrow"><b>5. fetch 能不能打自家 API</b>
+    <span id="t5" class="jsbad">尚未測試</span></div>
+  <div class="sub">輪詢要靠 fetch。這裡打操作習慣那個端點——它先前疑似不回應，正好一起確認。
+    <button type="button" class="jsbtn"
+            onclick="var e=document.getElementById('t5');e.textContent='請求中…';fetch('/web/api/trade-habits?after=0',{credentials:'same-origin'}).then(function(r){e.textContent='✅ HTTP '+r.status;e.className='jsok';}).catch(function(x){e.textContent='❌ '+x;e.className='jsbad';});">
+      點我測試
+    </button></div>
+</div>
+
+<style>
+  .jsrow{display:flex;justify-content:space-between;align-items:center;
+    margin-bottom:4px}
+  .jsok{color:#197653;font-weight:700}
+  .jsbad{color:#C0443C;font-weight:700}
+  .jsbtn{margin-left:8px;padding:5px 12px;border:1px solid var(--rule);
+    background:var(--card);border-radius:6px;font-size:12px}
+</style>
+"""
+    return respond_page("JS 測試", body, "more")
+
+
 @app.route("/check-revenue", methods=["POST", "GET"])
 def check_revenue():
     """
@@ -15717,52 +15806,6 @@ def render_page(title, body, nav_active=None, user_name=None):
           + (e && e.message ? e.message : e) + '</div>';
       }});
   }};
-  // 持股盤中輪詢：定義在殼層，不放在持股頁的片段裡。
-  //
-  // 片段內的腳本標籤在這個環境不會執行（操作習慣那次確認過），
-  // 所以輪詢從來沒有真的啟動——使用者盤中看到的一直是昨天的收盤價。
-  // 籌碼分布之所以能用，正是因為它的函式定義在這裡。
-  //
-  // 每次導覽完成後呼叫一次；不在持股頁時找不到狀態列，會自己結束。
-  var _posPollTimer = null;
-  var _posPollBusy = false;
-  window.startPositionPolling = function () {{
-
-    var root=document.getElementById('positions-quote-status');
-    if(!root)return;
-    function numberText(value,digits){{var n=Number(value);return Number.isFinite(n)?n.toLocaleString('zh-TW',{{minimumFractionDigits:digits,maximumFractionDigits:digits}}):'—';}}
-    function signedText(value,digits){{var n=Number(value);return Number.isFinite(n)?(n>=0?'+':'')+numberText(n,digits):'—';}}
-    // 盤中判斷改在前端做，而不是靠渲染當下的狀態。
-    // 原本狀態列只在「渲染那一刻是盤中」才輸出，元素不存在就整段不啟動；
-    // 於是開盤前開的頁面、或從別頁切換過來的，之後即使進入盤中也永遠不會跳，
-    // 只能手動刷新。改成一律啟動，由這裡決定要不要真的去抓。
-    function inMarket(){{
-      var now=new Date();
-      // 以使用者裝置的台北時間判斷；週末與非交易時段只排程不請求。
-      var tw=new Date(now.toLocaleString('en-US',{{timeZone:'Asia/Taipei'}}));
-      var day=tw.getDay();
-      if(day===0||day===6)return false;
-      var mins=tw.getHours()*60+tw.getMinutes();
-      return mins>=(9*60-5) && mins<=(13*60+35);   // 08:55–13:35，涵蓋開盤前後
-    }}
-    function schedule(){{if(_posPollTimer)clearTimeout(_posPollTimer);_posPollTimer=setTimeout(refresh,15000);}}
-    function refresh(){{
-      if(document.hidden||_posPollBusy||!inMarket()){{schedule();return;}}
-      if(root.style.display==='none')root.style.display='';
-      _posPollBusy=true;
-      var query=new URLSearchParams(window.location.search),token=query.get('t'),url='/web/api/positions/quotes';
-      if(token)url+='?t='+encodeURIComponent(token);
-      fetch(url,{{credentials:'same-origin',cache:'no-store'}}).then(function(response){{if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}}).then(function(data){{
-        (data.updates||[]).forEach(function(item){{var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){{price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){{day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');}});
-        root.textContent=data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。');
-      }}).catch(function(){{root.textContent='盤中行情暫時無法更新；保留最後有效價格與各檔來源。';}}).finally(function(){{_posPollBusy=false;schedule();}});
-    }}
-    document.addEventListener('visibilitychange',function(){{if(!document.hidden)refresh();}});
-    document.addEventListener('stockbot:pageleaving',function(){{if(_posPollTimer)clearTimeout(_posPollTimer);_posPollTimer=null;}});
-    refresh();
-
-  }};
-
   function executeFragmentScripts(container) {{
     container.querySelectorAll('script').forEach(function(oldScript) {{
       var replacement = document.createElement('script');
@@ -15811,7 +15854,6 @@ def render_page(title, body, nav_active=None, user_name=None):
         document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
         appContent.innerHTML = fragment;
         executeFragmentScripts(appContent);
-        if (window.startPositionPolling) window.startPositionPolling();
         if (navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
@@ -15947,9 +15989,6 @@ def render_page(title, body, nav_active=None, user_name=None):
       box.classList.add('feedback-error'); haptic('error');
     }}
   }});
-  // 首次整頁載入也要啟動輪詢。片段導覽走 executeFragmentScripts 之後的那一次，
-  // 但直接開網址或從 LINE 進來是整頁載入，不會經過那條路徑。
-  if (window.startPositionPolling) window.startPositionPolling();
 }})();
 </script>
 <footer>
@@ -16769,7 +16808,8 @@ def web_premarket(uid):
 
 
 def render_positions_fast_summary(uid):
-    """持股頁首屏只讀資料庫，避免等待外部報價才顯示已有持股。"""
+    """持股頁首屏只讀資料庫，避免等待外部報價才顯示已有持股。
+"""
     positions = merge_positions(get_positions(uid))
     style = '''<style>
 .position-fast-card{background:#fff;border:1px solid #E5E5EA;border-radius:12px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}
@@ -17251,6 +17291,46 @@ def web_positions(uid):
     新增後會同步記入操作日報；備註只保存你自己輸入的內容。若填的是純成交價，在手續費欄填實際金額，會自動攤進每股成本。
   </div>
 </form>"""
+    body += '''<script>
+(function(){
+  var timer=null,busy=false,root=document.getElementById('positions-quote-status');
+  if(!root)return;
+  function numberText(value,digits){var n=Number(value);return Number.isFinite(n)?n.toLocaleString('zh-TW',{minimumFractionDigits:digits,maximumFractionDigits:digits}):'—';}
+  function signedText(value,digits){var n=Number(value);return Number.isFinite(n)?(n>=0?'+':'')+numberText(n,digits):'—';}
+  // 盤中判斷改在前端做，而不是靠渲染當下的狀態。
+  // 原本狀態列只在「渲染那一刻是盤中」才輸出，元素不存在就整段不啟動；
+  // 於是開盤前開的頁面、或從別頁切換過來的，之後即使進入盤中也永遠不會跳，
+  // 只能手動刷新。改成一律啟動，由這裡決定要不要真的去抓。
+  function inMarket(){
+    var now=new Date();
+    // 以使用者裝置的台北時間判斷；週末與非交易時段只排程不請求。
+    var tw=new Date(now.toLocaleString('en-US',{timeZone:'Asia/Taipei'}));
+    var day=tw.getDay();
+    if(day===0||day===6)return false;
+    var mins=tw.getHours()*60+tw.getMinutes();
+    return mins>=(9*60-5) && mins<=(13*60+35);   // 08:55–13:35，涵蓋開盤前後
+  }
+  function schedule(){if(timer)clearTimeout(timer);timer=setTimeout(refresh,15000);}
+  function refresh(){
+    if(document.hidden||busy||!inMarket()){schedule();return;}
+    if(root.style.display==='none')root.style.display='';
+    busy=true;
+    var query=new URLSearchParams(window.location.search),token=query.get('t'),url='/web/api/positions/quotes';
+    if(token)url+='?t='+encodeURIComponent(token);
+    fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
+      (data.updates||[]).forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
+      root.textContent=data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。');
+    }).catch(function(){root.textContent='盤中行情暫時無法更新；保留最後有效價格與各檔來源。';}).finally(function(){busy=false;schedule();});
+  }
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
+  document.addEventListener('stockbot:pageleaving',function(){if(timer)clearTimeout(timer);timer=null;});
+  // 立刻抓一次，不要等第一個 15 秒。
+  // 頁面本身要載入十幾秒，再等 15 秒才第一次更新的話，
+  // 使用者開頁後約半分鐘內看到的都是昨收，會以為行情沒更新。
+  refresh();
+})();
+</script>'''
+
     if positions and _is_taiwan_intraday_window():
         body += ''''''
     print("⏱️ 持股頁：持股資料 %.0fms、法人 %.0fms、1y行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
