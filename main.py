@@ -22469,17 +22469,27 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   function token(){try{return new URLSearchParams(window.location.search).get('t')||localStorage.getItem('stockbot_web_token')||''}catch(e){return ''}}
   function esc(v){return String(v==null?'—':v).replace(/[&<>'"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[c]})}
   function pct(v){var n=Number(v);if(!Number.isFinite(n))return '資料尚未更新';return '<span class="'+(n>0?'up':n<0?'down':'flat')+'">'+(n>0?'+':'')+n.toFixed(2)+'%</span>'}
-  function schedule(){if(timer)clearTimeout(timer);if(!stopped)timer=setTimeout(refresh,15000);}
+  function schedule(){
+    if(timer)clearTimeout(timer);
+    // 停掉之後改成每 5 分鐘探一次，而不是永久停止。
+    // 原本 stopped=true 就再也不排程，收盤後開著的頁面隔天開盤也不會恢復，
+    // 使用者只會看到「盤中已結束」而價格永遠不動。
+    timer=setTimeout(refresh, stopped ? 300000 : 15000);
+  }
   function setHtml(selector,value){var el=document.querySelector(selector);if(el)el.innerHTML=value;}
   function realized(item){if(item.realized_pl==null)return '';var n=Number(item.realized_pl);if(!Number.isFinite(n))return '';return '<small class="impact-realized '+(n>=0?'up':'down')+'">今日已實現損益：'+(n>=0?'+':'')+n.toLocaleString('zh-TW',{maximumFractionDigits:0})+' 元</small>';}
   function leadHtml(item,title,kind){if(!item)return '<div class="impact-lead impact-muted"><small>'+esc(title)+'</small><b>目前沒有資料</b></div>';var change=item.pct>0?'上漲':'下跌',amount=item.contribution>0?'增加約 ':'減少約 ';return '<div class="impact-lead '+kind+'"><small>'+esc(title)+'</small><h3>'+esc(item.name)+'</h3><p>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%・'+esc(item.basis_text)+'</p>'+realized(item)+'<strong>對整體組合'+amount+Math.abs(Number(item.contribution)).toFixed(2)+'%</strong></div>';}
   function rowsHtml(items,kind){if(!items||!items.length)return '<div class="impact-empty">目前沒有可用的行情資料。</div>';return items.map(function(item,index){var positive=item.contribution>0,change=item.pct>0?'上漲':'下跌',direction=positive?'增加':'減少';return '<div class="impact-detail-row"><span class="impact-rank">'+(index+1)+'</span><div class="impact-detail-name"><b>'+esc(item.name)+'</b><small>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%　'+esc(item.basis_text)+'</small>'+realized(item)+'</div><strong class="'+kind+'">'+direction+'約 '+Math.abs(Number(item.contribution)).toFixed(2)+'%</strong></div>';}).join('');}
   function refresh(){
-    if(stopped||document.hidden||busy){schedule();return;}
+    // stopped 時仍然要送出請求（間隔已拉長到 5 分鐘），
+    // 由伺服器的 market_open 決定要不要恢復——判斷時段的事交給伺服器，
+    // 前端自己算時區在 iOS Safari 上出過事（持股頁那個 bug）。
+    if(document.hidden||busy){schedule();return;}
     busy=true;
     var url='/web/api/portfolio/intraday',t=token();if(t)url+='?t='+encodeURIComponent(t);
     fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
-      if(!data.market_open){stopped=true;if(timer)clearTimeout(timer);var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');if(title)title.textContent='盤中已結束';if(note)note.textContent=data.note||'目前非一般盤中時段；首頁已停止行情輪詢。';return;}
+      if(!data.market_open){stopped=true;var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');if(title)title.textContent='盤中已結束';if(note)note.textContent=data.note||'目前非一般盤中時段；開盤後會自動恢復更新。';schedule();return;}
+      if(stopped){stopped=false;var t0=document.querySelector('[data-home-live-title]');if(t0)t0.textContent='盤中更新中';}
       var market=data.market,portfolio=data.portfolio||{};
       if(market&&market.pct!=null){marketEl.innerHTML=pct(market.pct);var freshness=document.querySelector('[data-home-market-freshness]');if(freshness)freshness.textContent=(market.source||'TWSE MIS 即時加權指數')+(market.updated_at?'・更新 '+market.updated_at:'');}
       else {marketEl.textContent='資料尚未更新';var missing=document.querySelector('[data-home-market-freshness]');if(missing)missing.textContent='即時 TAIEX 暫時無法取得，未使用日K快照';}
