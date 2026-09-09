@@ -17301,10 +17301,19 @@ def web_positions(uid):
   // 原本狀態列只在「渲染那一刻是盤中」才輸出，元素不存在就整段不啟動；
   // 於是開盤前開的頁面、或從別頁切換過來的，之後即使進入盤中也永遠不會跳，
   // 只能手動刷新。改成一律啟動，由這裡決定要不要真的去抓。
+  function twNow(){
+    // 用 UTC 加固定時差算台北時間，不要用 toLocaleString 再 new Date()。
+    //
+    // 那種寫法產生的字串（例如 "9/9/2026, 10:30:45 AM"）在 iOS Safari
+    // 解析不了，會得到 Invalid Date，getDay() 變成 NaN，
+    // 所有比較都成立為 false —— inMarket() 於是永遠回傳 false，
+    // 輪詢從不發送請求，而且是靜默失敗，畫面上看不出任何異常。
+    // 盤中價格一直停在昨收就是這個原因。
+    var d=new Date();
+    return new Date(d.getTime()+(8*60+d.getTimezoneOffset())*60000);
+  }
   function inMarket(){
-    var now=new Date();
-    // 以使用者裝置的台北時間判斷；週末與非交易時段只排程不請求。
-    var tw=new Date(now.toLocaleString('en-US',{timeZone:'Asia/Taipei'}));
+    var tw=twNow();
     var day=tw.getDay();
     if(day===0||day===6)return false;
     var mins=tw.getHours()*60+tw.getMinutes();
@@ -17312,15 +17321,32 @@ def web_positions(uid):
   }
   function schedule(){if(timer)clearTimeout(timer);timer=setTimeout(refresh,15000);}
   function refresh(){
-    if(document.hidden||busy||!inMarket()){schedule();return;}
+    if(document.hidden||busy){schedule();return;}
+    if(!inMarket()){
+      // 把判斷結果寫出來。先前這裡是靜默 return，
+      // 判斷錯了也看不出來——這正是上一個 bug 拖那麼久的原因。
+      var t=twNow();
+      root.textContent='目前非交易時段（台北 '
+        +('0'+t.getHours()).slice(-2)+':'+('0'+t.getMinutes()).slice(-2)
+        +'），顯示最近一次收盤價；09:00–13:30 會自動更新。';
+      root.style.display='';
+      schedule();return;
+    }
     if(root.style.display==='none')root.style.display='';
     busy=true;
-    var query=new URLSearchParams(window.location.search),token=query.get('t'),url='/web/api/positions/quotes';
+    // token 也要看 localStorage：片段導覽會用 replaceState 改寫網址，
+    // 只從 window.location.search 取的話會拿不到，端點就回 401。
+    var token='';
+    try{
+      token=new URLSearchParams(window.location.search).get('t')
+            ||localStorage.getItem('stockbot_web_token')||'';
+    }catch(ignore){token='';}
+    var url='/web/api/positions/quotes';
     if(token)url+='?t='+encodeURIComponent(token);
     fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
       (data.updates||[]).forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
       root.textContent=data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。');
-    }).catch(function(){root.textContent='盤中行情暫時無法更新；保留最後有效價格與各檔來源。';}).finally(function(){busy=false;schedule();});
+    }).catch(function(e){root.textContent='盤中行情暫時無法更新：'+(e&&e.message?e.message:e)+'（HTTP 401 代表登入已過期，請從 LINE 重新開啟）；保留最後有效價格。';}).finally(function(){busy=false;schedule();});
   }
   document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
   document.addEventListener('stockbot:pageleaving',function(){if(timer)clearTimeout(timer);timer=null;});
