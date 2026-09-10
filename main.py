@@ -1635,6 +1635,14 @@ def init_db():
         cursor.execute('''
             ALTER TABLE pick_history ADD COLUMN IF NOT EXISTS macd_cross TEXT
         ''')
+        # 各評分成分。只存總分的話，成效分析只能得出「總分沒有預測力」，
+        # 卻看不出是哪一項沒用——五項混在一起，
+        # 可能其中兩項有效卻被另外三項的雜訊蓋掉。
+        for _col in ("score_rev", "score_val", "score_mom",
+                     "score_streak", "score_chip"):
+            cursor.execute(
+                "ALTER TABLE pick_history ADD COLUMN IF NOT EXISTS %s NUMERIC"
+                % _col)
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_pick_history_date
             ON pick_history (pick_date DESC, mode)
@@ -3785,6 +3793,33 @@ def analyze_pick_factors(mode, days=90):
         if hi and lo:
             groups.append((f"依分數（以 {cut} 分為界）",
                            [(f"高分組 ≥{cut}", stat(hi)), (f"低分組 <{cut}", stat(lo))]))
+
+    # ── 依各評分成分 ──
+    #
+    # 只看總分只能得出「這套評分沒有預測力」，卻不知道是哪一項沒用。
+    # 黑馬總分是五項相加，可能其中兩項有效、被另外三項的雜訊蓋掉；
+    # 也可能有某一項是反向的，正在扣分。逐項拆開才看得出來。
+    #
+    # 每一項用該項自己的中位數切兩組（不是用滿分比例）——
+    # 各項的滿分不同（營收 25、籌碼技術 10），用固定門檻會切得很不平均。
+    for field, label, cap in (("score_rev", "營收", 25),
+                              ("score_val", "估值", 20),
+                              ("score_mom", "產業動能", 20),
+                              ("score_streak", "連續性", 20),
+                              ("score_chip", "籌碼技術", 10)):
+        have = [r for r in rows if r.get(field) is not None]
+        if len(have) < 8:
+            continue
+        vals = sorted(float(r[field]) for r in have)
+        cut = vals[len(vals) // 2]
+        hi = [r for r in have if float(r[field]) >= cut]
+        lo = [r for r in have if float(r[field]) < cut]
+        # 切完若有一邊太少（例如該項大多數人同分），這組沒有比較意義
+        if len(hi) < 3 or len(lo) < 3:
+            continue
+        groups.append((f"依{label}得分（滿分 {cap}，以 {cut:g} 分為界）",
+                       [(f"{label}高分 ≥{cut:g}", stat(hi)),
+                        (f"{label}低分 <{cut:g}", stat(lo))]))
 
     # ── 依技術訊號 ──
     # 這是「加分之前」該先看的：有黃金交叉的推薦，後續報酬是不是真的比較好？
@@ -8049,9 +8084,17 @@ def save_picks(mode, rows, top_n=5):
     """
     if not rows:
         return 0
+    # 一併存下各評分成分。
+    #
+    # 先前只存總分，成效分析就只能得出「總分沒有預測力」這種結論，
+    # 卻看不出是哪一項沒用——五個成分混在一起，
+    # 可能其中兩項有效、被另外三項的雜訊蓋掉。
+    # 要據以調整權重，就得逐項對照後續報酬。
     picks = [(mode, r["code"], i, r.get("score"), r.get("name"),
               r.get("industry"), r.get("close"),
-              r.get("ma_cross"), r.get("macd_cross"))
+              r.get("ma_cross"), r.get("macd_cross"),
+              r.get("rev"), r.get("val"), r.get("mom"),
+              r.get("streak_score"), r.get("chip"))
              for i, r in enumerate(rows[:top_n], start=1)]
     conn = get_db_connection()
     try:
@@ -8061,13 +8104,18 @@ def save_picks(mode, rows, top_n=5):
             """
             INSERT INTO pick_history
                 (mode, code, pick_date, rank, score, name, industry, price,
-                 ma_cross, macd_cross)
+                 ma_cross, macd_cross,
+                 score_rev, score_val, score_mom, score_streak, score_chip)
             VALUES %s
             ON CONFLICT (mode, code, pick_date) DO UPDATE SET
                 rank = EXCLUDED.rank, score = EXCLUDED.score,
                 name = EXCLUDED.name, industry = EXCLUDED.industry,
                 price = EXCLUDED.price,
-                ma_cross = EXCLUDED.ma_cross, macd_cross = EXCLUDED.macd_cross
+                ma_cross = EXCLUDED.ma_cross, macd_cross = EXCLUDED.macd_cross,
+                score_rev = EXCLUDED.score_rev, score_val = EXCLUDED.score_val,
+                score_mom = EXCLUDED.score_mom,
+                score_streak = EXCLUDED.score_streak,
+                score_chip = EXCLUDED.score_chip
             """,
             picks,
             template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s)",
@@ -8093,7 +8141,8 @@ def get_picks_since(mode, days=90):
         cursor.execute(
             """
             SELECT code, pick_date, rank, score, name, industry, price,
-                   ma_cross, macd_cross
+                   ma_cross, macd_cross,
+                   score_rev, score_val, score_mom, score_streak, score_chip
             FROM pick_history
             WHERE mode = %s AND pick_date >= CURRENT_DATE - %s
               AND price IS NOT NULL AND price > 0
@@ -8105,7 +8154,9 @@ def get_picks_since(mode, days=90):
         cursor.close()
         return [{"code": r[0], "date": r[1], "rank": r[2], "score": r[3],
                  "name": r[4], "industry": r[5], "price": r[6],
-                 "ma_cross": r[7], "macd_cross": r[8]} for r in rows]
+                 "ma_cross": r[7], "macd_cross": r[8],
+                 "score_rev": r[9], "score_val": r[10], "score_mom": r[11],
+                 "score_streak": r[12], "score_chip": r[13]} for r in rows]
     except Exception as e:
         print(f"❌ 讀取選股名單失敗: {e}")
         return []
@@ -19337,6 +19388,13 @@ def render_pick_factors(mode_label, fa):
         '・<b>依名次</b>：如果排序有意義，第 1–2 名應該系統性優於第 3–5 名。'
         '兩組差不多，代表名次只是分數的排列，沒有額外資訊。<br>'
         '・<b>依分數</b>：高分組贏不過低分組，代表這套評分對後續報酬沒有預測力。<br>'
+        '・<b>依各評分成分</b>：總分是五項相加，只看總分只知道「有沒有用」，'
+        '不知道是<b>哪一項</b>沒用。可能其中兩項有效、被另外三項的雜訊蓋掉；'
+        '也可能有某一項是<b>反向</b>的，正在扣分。<br>'
+        '　　高分組明顯優於低分組 → 那一項值得加重；'
+        '高分組明顯較差 → 那一項是反指標，該減碼甚至反向；'
+        '兩組差不多 → 那一項沒有作用，權重可以讓給其他項。<br>'
+        '　　同樣要每組 10 筆以上、涵蓋多個推薦日才作數。<br>'
         '・<b>依技術訊號</b>：有黃金交叉／MACD 金叉的推薦，後續報酬是否系統性優於無訊號組。'
         '兩組差不多就代表那個訊號沒有加分的價值。要等每組累積 10 筆以上、'
         '且涵蓋多個推薦日，才適合據此決定要不要納入評分。<br>'
