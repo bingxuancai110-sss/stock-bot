@@ -15806,6 +15806,50 @@ def render_page(title, body, nav_active=None, user_name=None):
           + (e && e.message ? e.message : e) + '</div>';
       }});
   }};
+  function upgradePreviewFragment(pathname, search) {{
+    // 片段導覽沒有「先給預覽、再補完整」的機制——拿到什麼就顯示什麼。
+    // 首次整頁載入的殼層有這套（finish() 裡的 detail 請求），
+    // 但那段抓的是 #content，片段導覽用的是 #app-page-content，走不到。
+    //
+    // 結果是：只要伺服器回了預覽殼，畫面就永遠停在
+    // 「系統正在跑・正在整合完整首頁」，即時貢獻與輪詢腳本都不會出現。
+    //
+    // 這裡在插入後檢查一次：還是預覽就自己去要完整版。
+    var preview = appContent.querySelector('.daily-fast-sync, [data-fast-preview]');
+    if (!preview) return;
+    var params = new URLSearchParams(search || window.location.search);
+    params.set('fragment', '1');
+    params.delete('fast');          // 關鍵：不帶 fast 才會拿到完整內容
+    var full = pathname + '?' + params.toString();
+    var tries = 0;
+    function load() {{
+      tries += 1;
+      fetch(full, {{credentials: 'same-origin', cache: 'no-store'}})
+        .then(function (r) {{
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.text();
+        }})
+        .then(function (html) {{
+          if (html.indexOf('AUTH_EXPIRED') >= 0) return;
+          appContent.innerHTML = html;
+          executeFragmentScripts(appContent);
+        }})
+        .catch(function (e) {{
+          // 完整內容比較慢，逾時或短暫 5xx 都重試；
+          // 但要把狀態寫出來，不要讓人對著「正在整合」乾等。
+          var note = appContent.querySelector('.daily-fast-sync p, .daily-fast-sync div');
+          if (tries < 6) {{
+            if (note) note.textContent = '完整內容尚未回應，5 秒後自動重試（第 '
+              + tries + ' 次）…';
+            window.setTimeout(load, 5000);
+          }} else if (note) {{
+            note.textContent = '完整內容載入失敗：'
+              + (e && e.message ? e.message : e) + '，請下拉重新整理。';
+          }}
+        }});
+    }}
+    load();
+  }}
   function executeFragmentScripts(container) {{
     container.querySelectorAll('script').forEach(function(oldScript) {{
       var replacement = document.createElement('script');
@@ -15854,6 +15898,7 @@ def render_page(title, body, nav_active=None, user_name=None):
         document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
         appContent.innerHTML = fragment;
         executeFragmentScripts(appContent);
+        upgradePreviewFragment(target.pathname, target.search);
         if (navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
@@ -15989,6 +16034,13 @@ def render_page(title, body, nav_active=None, user_name=None):
       box.classList.add('feedback-error'); haptic('error');
     }}
   }});
+  // 首次整頁載入若拿到的是預覽殼，也要自動補完整內容。
+  // 殼層的 finish() 只在 staged 模式處理，直接開網址走不到那條。
+  if (appContent) {{
+    window.setTimeout(function () {{
+      upgradePreviewFragment(window.location.pathname, window.location.search);
+    }}, 300);
+  }}
 }})();
 </script>
 <footer>
@@ -22520,8 +22572,14 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     }).catch(function(){var note=document.querySelector('[data-home-live-note]');if(note)note.textContent='首頁盤中行情暫時無法更新；保留頁面最後有效資料。';}).finally(function(){busy=false;schedule();});
   }
   document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
-  document.addEventListener('stockbot:pageleaving',function(){stopped=true;if(timer)clearTimeout(timer);timer=null;});
-  schedule();
+  // 離開頁面時只停計時器，不要設 stopped。
+  // stopped 是「伺服器說非盤中」的旗標，被離開頁面借去用之後，
+  // 再導覽回首頁時它仍是 true，輪詢就再也不會恢復。
+  document.addEventListener('stockbot:pageleaving',function(){if(timer)clearTimeout(timer);timer=null;});
+  // 立刻抓一次，不要等第一個 15 秒。
+  // 持股頁本來就是這樣做的；首頁只呼叫 schedule()，
+  // 使用者進來後要盯著舊數字看 15 秒才會更新，會以為沒在動。
+  refresh();
 })();
 </script>'''
     return f'''<style>
