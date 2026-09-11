@@ -3734,8 +3734,8 @@ def analyze_pick_factors(mode, days=90):
       ・哪些產業在拖累
       ・報酬是不是集中在某幾個推薦日（樣本獨立性）
 
-    還不能回答「哪個評分維度該加重」——子分數（籌碼/位階/營收/估值）
-    沒有存進 pick_history，只有加總後的 score。
+    注意：五個子分數現在已存進 pick_history；但樣本仍在累積，不能只靠小樣本調權重。
+    另外提供「推薦日等權」統計，避免同一天 5 檔被當成 5 個獨立實驗。
     """
     picks = get_picks_since(mode, days)
     if not picks:
@@ -3769,13 +3769,32 @@ def analyze_pick_factors(mode, days=90):
         return {"n": len(rows), "groups": [], "days_spread": 0}
 
     def stat(items):
-        vals = sorted(r["ret"] for r in items)
+        vals = [r["ret"] for r in items if r.get("ret") is not None]
+        if not vals:
+            return {"n": 0, "avg": None, "median": None, "win": None}
+        vals = sorted(vals)
+        n = len(vals)
+        med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+        return {"n": n, "avg": sum(vals) / n, "median": med,
+                "win": len([v for v in vals if v > 0]) / n * 100}
+
+    def day_equal_stat(items):
+        # 同一天先平均，再讓每個推薦日各占 1 票。
+        by_day = {}
+        for r in items:
+            if r.get("ret") is not None:
+                by_day.setdefault(r["date"], []).append(r["ret"])
+        day_vals = [sum(v) / len(v) for v in by_day.values() if v]
+        if not day_vals:
+            return {"n": 0, "avg": None, "median": None, "win": None}
+        vals = sorted(day_vals)
         n = len(vals)
         med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
         return {"n": n, "avg": sum(vals) / n, "median": med,
                 "win": len([v for v in vals if v > 0]) / n * 100}
 
     groups = []
+    groups.append(("整體（推薦日等權）", [("每個推薦日先平均", day_equal_stat(rows))]))
 
     # ── 依名次 ──
     # 如果排序有意義，前段名次的報酬應該系統性優於後段。
@@ -3842,7 +3861,8 @@ def analyze_pick_factors(mode, days=90):
         raw = r.get("industry") or ind_map.get(str(r["code"]).strip())
         if not raw:
             continue
-        nm = industry_name(raw) if len(str(raw)) <= 3 else str(raw)
+        raw_s = str(raw).strip()
+        nm = industry_name(raw_s) if raw_s.isdigit() else raw_s
         by_ind.setdefault(nm, []).append(r)
     ind_rows = [(nm, stat(v)) for nm, v in by_ind.items() if len(v) >= 3]
     ind_rows.sort(key=lambda x: x[1]["avg"], reverse=True)
@@ -3938,7 +3958,8 @@ def compute_industry_recent_performance(days=90):
         raw = r.get("industry")
         if not raw:
             continue
-        nm = industry_name(raw) if len(str(raw)) <= 3 else str(raw)
+        raw_s = str(raw).strip()
+        nm = industry_name(raw_s) if raw_s.isdigit() else raw_s
         by_ind.setdefault(nm, []).append(r)
 
     out = {}
@@ -23257,9 +23278,9 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             "final_count": 0,
         }
         if mode == "radar":
-            # 雷達不需要營收／估值分數；先用一次 spark 批次行情掃過
-            # stock_info 與 T86 出現過的完整股票 universe，再對真正候選補抓
-            # high/low/20 日量能等技術欄位。這樣不是只從法人買超前120檔取樣。
+            # 實驗版多訊號候選池：不再先用「法人買超 > 0」及「當日漲幅 >= 1.5%」雙重門檻排除股票。
+            # 原版會天然偏向「今天已經大漲、且法人也買」的樣本，深度技術分析反而變成事後確認。
+            # 這次只改候選池，不改評分權重與技術指標分數。
             revenue = {} if revenue is None else revenue
             valuation = {} if valuation is None else valuation
             momentum = {}
@@ -23270,56 +23291,61 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             spark_quotes = _fetch_yahoo_spark_bulk(
                 universe_codes, rng="3mo", force_refresh=force_refresh,
                 market_map=market_map)
-            pool = []
+            candidates = []
             for code in universe_codes:
-                investor = inst.get(code) or {}
                 quote = spark_quotes.get(code) or {}
-                total_lots = investor.get("total_net_lots")
-                if total_lots is None or float(total_lots) <= 0:
-                    continue
-                radar_diagnostics["institution_buy_count"] += 1
                 if not quote:
                     radar_diagnostics["quote_missing_count"] += 1
                     continue
-                if quote.get("pct") is None:
+                pct = quote.get("pct")
+                if pct is None:
                     radar_diagnostics["spark_pct_missing_count"] += 1
                     continue
-                if float(quote["pct"]) < 1.5:
-                    radar_diagnostics["spark_pct_below_threshold_count"] += 1
-                    continue
-                radar_diagnostics["spark_qualified_count"] += 1
+                pct = float(pct)
+                investor = inst.get(code) or {}
+                raw_lots = investor.get("total_net_lots")
+                try:
+                    total_lots = int(float(raw_lots or 0))
+                except Exception:
+                    total_lots = 0
                 turnover = calc_turnover_billion(quote.get("close"), quote.get("volume"))
-                pool.append((code, {
+                candidates.append((code, {
                     "name": investor.get("name") or stock_display_name(code, inst_data=inst, fallback=code),
-                    "total_net_lots": int(total_lots),
-                    "cum_lots": int(total_lots), "buy_days": 1,
-                    "spark_pct": float(quote.get("pct") or 0),
-                    "spark_turnover": turnover,
+                    "total_net_lots": total_lots,
+                    "cum_lots": total_lots, "buy_days": 1,
+                    "spark_pct": pct, "spark_turnover": turnover,
                 }))
-            # 全市場掃描後只對最有機會成為雷達訊號的有限候選補抓 3mo
-            # 技術序列；候選限制是深度計算上限，不是即時 universe 上限。
-            pool.sort(key=lambda x: (x[1].get("spark_pct", 0),
-                                     x[1].get("spark_turnover", 0),
-                                     x[1].get("total_net_lots", 0)), reverse=True)
-            deep_limit = (int(radar_deep_limit) if radar_deep_limit else
-                          RADAR_DEEP_SCAN_LIMIT)
-            pool = pool[:max(12, min(deep_limit, RADAR_DEEP_SCAN_LIMIT))]
+            radar_diagnostics["spark_qualified_count"] = len(candidates)
+            radar_diagnostics["institution_buy_count"] = sum(
+                1 for _c, info in candidates if info.get("total_net_lots", 0) > 0)
+            radar_diagnostics["spark_pct_below_threshold_count"] = sum(
+                1 for _c, info in candidates if info.get("spark_pct", 0) < 1.5)
+            deep_limit = (int(radar_deep_limit) if radar_deep_limit else RADAR_DEEP_SCAN_LIMIT)
+            deep_limit = max(12, min(deep_limit, RADAR_DEEP_SCAN_LIMIT))
+            by_code = {c: info for c, info in candidates}
+            # 三桶輪流取：價格強勢／成交金額／法人買超，避免前 48 檔被單一訊號壟斷。
+            buckets = [
+                sorted(candidates, key=lambda x: x[1].get("spark_pct", 0), reverse=True),
+                sorted(candidates, key=lambda x: x[1].get("spark_turnover", 0), reverse=True),
+                sorted(candidates, key=lambda x: x[1].get("total_net_lots", 0), reverse=True),
+            ]
+            pool, seen, pos = [], set(), 0
+            while len(pool) < deep_limit and pos < max((len(b) for b in buckets), default=0):
+                for bucket in buckets:
+                    if pos >= len(bucket):
+                        continue
+                    code, _info = bucket[pos]
+                    if code not in seen:
+                        pool.append((code, by_code[code]))
+                        seen.add(code)
+                        if len(pool) >= deep_limit:
+                            break
+                pos += 1
             radar_diagnostics["deep_candidate_count"] = len(pool)
-
-            # 補上真正的近十日買超天數與累計張數。
-            #
-            # 這條即時掃描路徑先前把 buy_days 寫死成 1、cum_lots 直接用當日張數，
-            # 因為它只看當天的法人資料。結果畫面上每一檔的「近十日買超天數」
-            # 都是 1，那個欄位等於沒有意義。
-            #
-            # 放在收斂成候選池之後才查：全市場幾千檔都查會很慢，
-            # 這裡只剩幾十檔，一次查詢就補齊。
             if pool:
                 try:
-                    cum_map = {c: (cl, bd) for c, _nm, cl, bd
-                               in get_cumulative_net_buy(
-                                   days=10, top_n=len(pool) * 3,
-                                   codes=[c for c, _ in pool])}
+                    cum_map = {c: (cl, bd) for c, _nm, cl, bd in get_cumulative_net_buy(
+                        days=10, top_n=len(pool) * 3, codes=[c for c, _ in pool])}
                     for code, info in pool:
                         cl, bd = cum_map.get(code, (None, None))
                         if cl is not None:
@@ -23327,8 +23353,6 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                         if bd is not None:
                             info["buy_days"] = int(bd)
                 except Exception as exc:
-                    # 查不到就保留當日值，並標明那不是十日統計，
-                    # 不要讓畫面顯示一個看起來像十日、其實是當日的數字。
                     print(f"⚠️ 補查近十日買超天數失敗: {exc}")
                     for _code, info in pool:
                         info["buy_days"] = None
