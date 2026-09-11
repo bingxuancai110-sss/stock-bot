@@ -3751,16 +3751,30 @@ def analyze_pick_factors(mode, days=90):
         cur = price_map.get(p["code"])
         if not cur or not p.get("price"):
             continue
-        elapsed = (today - p["date"]).days
+        # PostgreSQL DATE 通常回傳 datetime.date，但部分部署／驅動可能回傳
+        # datetime 或 ISO 字串。統一成 date，避免因「date 與 datetime 不可比較」
+        # 讓整個因子分析三種模式一起失敗。
+        pick_date = p.get("date")
+        if isinstance(pick_date, datetime):
+            pick_date = pick_date.date()
+        elif isinstance(pick_date, str):
+            try:
+                pick_date = datetime.fromisoformat(pick_date[:10]).date()
+            except (TypeError, ValueError):
+                try:
+                    pick_date = datetime.strptime(pick_date[:10], "%Y-%m-%d").date()
+                except (TypeError, ValueError):
+                    continue
+        if not isinstance(pick_date, date):
+            continue
+        elapsed = (today - pick_date).days
         if elapsed < 5:                      # 未滿 5 日的不納入，跟成效頁一致
             continue
-        dates = cur.get("close_dates") or []
-        adjs = cur.get("adj_closes") or []
         ret, _adjusted, _split_detected = _pick_return_split_safe(
-            cur, p["date"], p["price"])
+            cur, pick_date, p["price"])
         if ret is None:
             continue
-        rows.append({**p, "ret": ret, "elapsed": elapsed,
+        rows.append({**p, "date": pick_date, "ret": ret, "elapsed": elapsed,
                      "split_adjusted": _split_detected})
 
     if len(rows) < 5:
@@ -8245,6 +8259,18 @@ def _pick_return_split_safe(cur, pick_date, raw_price):
     也同步跳變時視為結構性縮放；一般大跌不會因為只是跌很多就自動修正。
     """
     if not cur or not raw_price:
+        return None, False, False
+    if isinstance(pick_date, datetime):
+        pick_date = pick_date.date()
+    elif isinstance(pick_date, str):
+        try:
+            pick_date = datetime.fromisoformat(pick_date[:10]).date()
+        except (TypeError, ValueError):
+            try:
+                pick_date = datetime.strptime(pick_date[:10], "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                return None, False, False
+    if not isinstance(pick_date, date):
         return None, False, False
     dates = cur.get("close_dates") or []
     closes = cur.get("closes") or []
