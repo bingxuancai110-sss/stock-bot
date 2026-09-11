@@ -3770,16 +3770,29 @@ def analyze_pick_factors(mode, days=90):
         elapsed = (today - pick_date).days
         if elapsed < 5:                      # 未滿 5 日的不納入，跟成效頁一致
             continue
-        ret, _adjusted, _split_detected = _pick_return_split_safe(
-            cur, pick_date, p["price"])
-        if ret is None:
+        try:
+            ret, _adjusted, _split_detected = _pick_return_split_safe(
+                cur, pick_date, p["price"])
+        except Exception as exc:
+            print(f"⚠️ 因子分析單筆報酬計算失敗 {p.get('code')}: {type(exc).__name__}: {exc}")
+            continue
+        # 成效統計只接受真正的數值。若歷史資料某欄意外變成 dict/list，
+        # 不可以讓 sum()/median 把整個模式打死，也不能把 dict 猜成數字。
+        try:
+            if isinstance(ret, bool) or ret is None:
+                continue
+            ret = float(ret)
+            if not math.isfinite(ret):
+                continue
+        except (TypeError, ValueError, OverflowError):
+            print(f"⚠️ 因子分析忽略非數值報酬 {p.get('code')}: {type(ret).__name__}")
             continue
         rows.append({**p, "date": pick_date, "ret": ret, "elapsed": elapsed,
                      "split_adjusted": _split_detected})
 
     if len(rows) < 5:
         # 保持回傳結構完整，避免「樣本不足」被 render_pick_factors 誤報成資料格式錯誤。
-        vals = sorted(r["ret"] for r in rows if r.get("ret") is not None)
+        vals = sorted(_numeric_returns(rows))
         if vals:
             n0 = len(vals)
             med0 = vals[n0 // 2] if n0 % 2 else (vals[n0 // 2 - 1] + vals[n0 // 2]) / 2
@@ -3791,8 +3804,22 @@ def analyze_pick_factors(mode, days=90):
                 "days_spread": len(set(r["date"] for r in rows)),
                 "overall": overall0}
 
+    def _numeric_returns(items):
+        vals = []
+        for r in items:
+            v = r.get("ret") if isinstance(r, dict) else None
+            try:
+                if isinstance(v, bool) or v is None:
+                    continue
+                v = float(v)
+                if math.isfinite(v):
+                    vals.append(v)
+            except (TypeError, ValueError, OverflowError):
+                continue
+        return vals
+
     def stat(items):
-        vals = [r["ret"] for r in items if r.get("ret") is not None]
+        vals = _numeric_returns(items)
         if not vals:
             return {"n": 0, "avg": None, "median": None, "win": None}
         vals = sorted(vals)
@@ -3807,7 +3834,8 @@ def analyze_pick_factors(mode, days=90):
         for r in items:
             if r.get("ret") is not None:
                 by_day.setdefault(r["date"], []).append(r["ret"])
-        day_vals = [sum(v) / len(v) for v in by_day.values() if v]
+        day_vals = [sum(_numeric_returns([{"ret": x} for x in v])) / len(_numeric_returns([{"ret": x} for x in v]))
+                    for v in by_day.values() if _numeric_returns([{"ret": x} for x in v])]
         if not day_vals:
             return {"n": 0, "avg": None, "median": None, "win": None}
         vals = sorted(day_vals)
@@ -3917,7 +3945,11 @@ def analyze_pick_factors(mode, days=90):
         days_of = {}
         for r in items:
             days_of.setdefault(r["date"], []).append(r["ret"])
-        neg_days = len([1 for v in days_of.values() if sum(v) / len(v) < 0])
+        neg_days = 0
+        for v in days_of.values():
+            rv = _numeric_returns([{"ret": x} for x in v])
+            if rv and sum(rv) / len(rv) < 0:
+                neg_days += 1
         st = stat(items)
         spread_rows.append((
             f"{nm}（{len(days_of)} 天，其中 {neg_days} 天為負）",
@@ -3939,7 +3971,11 @@ def analyze_pick_factors(mode, days=90):
 
     # ── 整體穩定度／尾端分布 ──
     # 平均報酬可能被少數暴漲股拉高，所以另外看「推薦日勝率」與上下尾端。
-    day_vals = [sum(v) / len(v) for v in by_day.values() if v]
+    day_vals = []
+    for v in by_day.values():
+        rv = _numeric_returns(v)
+        if rv:
+            day_vals.append(sum(rv) / len(rv))
     overall = stat(rows)
     if day_vals:
         pos_days = sum(1 for v in day_vals if v > 0)
