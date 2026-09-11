@@ -16,6 +16,7 @@ from psycopg2 import pool
 import psycopg2.extensions
 from psycopg2.extras import execute_values
 from urllib.parse import quote, urlencode, urlparse
+from html.parser import HTMLParser
 from flask import Flask, abort, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -10933,6 +10934,185 @@ def _load_latest_revenue_history():
     return data, period
 
 
+
+class _RevenueHTMLTableParser(HTMLParser):
+    """輕量解析 MOPS 月營收歷史 HTML；不依賴 pandas/lxml。"""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows = []
+        self._row = None
+        self._cell = None
+        self._in_cell = False
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag == "tr":
+            self._row = []
+        elif tag in ("td", "th") and self._row is not None:
+            self._cell = []
+            self._in_cell = True
+
+    def handle_data(self, data):
+        if self._in_cell and self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in ("td", "th") and self._in_cell and self._row is not None:
+            text = re.sub(r"\s+", " ", "".join(self._cell)).strip()
+            self._row.append(text)
+            self._cell = None
+            self._in_cell = False
+        elif tag == "tr" and self._row is not None:
+            if any(str(x).strip() for x in self._row):
+                self.rows.append(self._row)
+            self._row = None
+
+
+def _parse_mops_revenue_html(text, target_period):
+    """解析 MOPS t21sc03 月營收表，回傳與 OpenAPI 相同的資料結構。"""
+    parser = _RevenueHTMLTableParser()
+    try:
+        parser.feed(text or "")
+        parser.close()
+    except Exception as exc:
+        print(f"⚠️ MOPS 月營收 HTML 解析失敗: {exc}")
+        return {}
+
+    def norm(s):
+        return re.sub(r"\s+", "", str(s or "")).replace("\u3000", "")
+
+    def number(v):
+        t = str(v or "").strip().replace(",", "").replace("%", "")
+        if t in ("", "-", "--", "—", "－", "N/A", "NA"):
+            return None
+        # HTML 可能出現括號負數
+        if t.startswith("(") and t.endswith(")"):
+            t = "-" + t[1:-1]
+        try:
+            return float(t)
+        except (ValueError, TypeError):
+            return None
+
+    result = {}
+    target_label = _revenue_period_label(target_period)
+
+    for row in parser.rows:
+        cells = [str(x).strip() for x in row]
+        nc = [norm(x) for x in cells]
+        if len(cells) < 7:
+            continue
+        if not any("公司代號" in x for x in nc):
+            continue
+        if not any("當月營收" in x or "營業收入" in x for x in nc):
+            continue
+
+        # 這個頁面的欄位是固定且公開的；優先依標題找欄位，找不到才用標準順序。
+        def find_col(*keywords):
+            for i, x in enumerate(nc):
+                if all(k in x for k in keywords):
+                    return i
+            return None
+
+        code_i = find_col("公司代號")
+        month_i = find_col("當月營收")
+        yoy_i = find_col("去年同月增減")
+        cum_i = find_col("累計營收")
+        cum_yoy_i = find_col("累計營收增減")
+        mom_i = find_col("前月比較增減")
+
+        # 若標題列因 rowspan/colspan 被拆成多列，使用 MOPS 標準欄位順序。
+        if code_i is None:
+            code_i = 0
+        if month_i is None:
+            month_i = 2
+        if yoy_i is None:
+            yoy_i = 3
+        if cum_i is None:
+            cum_i = 4
+        if cum_yoy_i is None:
+            cum_yoy_i = 5
+        if mom_i is None:
+            mom_i = 6
+
+        header_positions = (code_i, month_i, yoy_i, cum_i, cum_yoy_i, mom_i)
+        if max(header_positions) >= len(cells):
+            continue
+
+        # 找到標題後，往後掃描同一 HTML 的資料列。
+        header_pos = parser.rows.index(row)
+        for data_row in parser.rows[header_pos + 1:]:
+            vals = [str(x).strip() for x in data_row]
+            if len(vals) <= max(header_positions):
+                continue
+            code = re.sub(r"\s+", "", vals[code_i])
+            # MOPS 可能有「合計」或分類列，不要塞進個股資料。
+            if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code):
+                continue
+            if code in ("合計", "總計"):
+                continue
+            result[code] = {
+                "yoy_pct": number(vals[yoy_i]),
+                "cum_yoy_pct": number(vals[cum_yoy_i]),
+                "mom_pct": number(vals[mom_i]),
+                "month_revenue": number(vals[month_i]),
+            }
+        if result:
+            break
+
+    if result:
+        print(f"✅ MOPS {target_label} 歷史月營收解析成功，共 {len(result)} 檔")
+    return result
+
+
+def _fetch_mops_revenue_fallback(target_key):
+    """官方 OpenAPI 落後時，直接讀 MOPS 的 115/08 等歷史月營收頁。
+
+    這不是第三方資料；t21sc03 是公開資訊觀測站的歷史月營收頁。
+    三個市場分開抓，成功的市場先合併；單一市場失敗不會讓其他市場一起失效。
+    """
+    key = _normalize_revenue_period(target_key)
+    if not key:
+        return {}, None
+    roc_year = key // 100 - 1911
+    month = key % 100
+    period_text = f"{roc_year:03d}{month:02d}"
+
+    endpoints = [
+        ("上市", f"https://mopsov.twse.com.tw/nas/t21/sii/t21sc03_{roc_year}_{month}_0.html"),
+        ("上櫃", f"https://mopsov.twse.com.tw/nas/t21/otc/t21sc03_{roc_year}_{month}_0.html"),
+        ("興櫃", f"https://mopsov.twse.com.tw/nas/t21/rotc/t21sc03_{roc_year}_{month}_0.html"),
+    ]
+    combined = {}
+    successful = []
+    for label, url in endpoints:
+        try:
+            r = _session.get(url, timeout=20, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+                "Referer": "https://mops.twse.com.tw/",
+            })
+            r.raise_for_status()
+            raw = r.content
+            # MOPS 歷史頁可能是 big5/CP950；先試 UTF-8，再用 CP950。
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("cp950", errors="replace")
+            data = _parse_mops_revenue_html(text, key)
+            if data:
+                combined.update(data)
+                successful.append(f"{label}:{len(data)}")
+            else:
+                print(f"⚠️ MOPS {label} {period_text} 頁面沒有解析到個股資料")
+        except Exception as exc:
+            print(f"⚠️ MOPS {label} {period_text} fallback 失敗: {exc}")
+
+    if combined:
+        print(f"🛟 MOPS 月營收 fallback 成功（{period_text}；{'、'.join(successful)}），共 {len(combined)} 檔")
+        return combined, period_text
+    return {}, None
+
+
 def fetch_monthly_revenue(force_refresh=False):
     """抓最新一期月營收，涵蓋上市、上櫃、興櫃。
 
@@ -11059,13 +11239,22 @@ def fetch_monthly_revenue(force_refresh=False):
     if today.month == 1:
         expected_key = (today.year - 1) * 100 + 12
     if release_window and latest_key < expected_key:
-        print("⚠️ 月營收官方端點仍停在 %s，預期至少 %s；保留舊資料，不覆蓋快照" %
+        print("⚠️ 月營收官方 OpenAPI 仍停在 %s，預期至少 %s；啟動 MOPS 歷史頁 fallback" %
               (_revenue_period_label(latest_key), _revenue_period_label(expected_key)))
-        return fallback_data
+        mops_data, mops_period = _fetch_mops_revenue_fallback(expected_key)
+        if mops_data:
+            latest_period = mops_period
+            result = mops_data
+            print("✅ 已使用 MOPS 歷史頁取得 %s 月營收，取代舊的 %s 月快照" %
+                  (_revenue_period_label(expected_key), _revenue_period_label(latest_key)))
+        else:
+            print("⚠️ MOPS 歷史頁也無法取得 %s，保留舊資料，不猜測新月份" %
+                  _revenue_period_label(expected_key))
+            return fallback_data
 
     _revenue_cache["period"] = latest_period
     _revenue_cache["data"] = result
-    _revenue_cache["source"] = "external"
+    _revenue_cache["source"] = "mops_history" if _normalize_revenue_period(latest_period) != latest_key else "external"
     _revenue_cache["source_date"] = today
     _revenue_cache["checked_at"] = now
     print("✅ 月營收抓取成功（%s；各來源 %s），共 %s 檔" %
