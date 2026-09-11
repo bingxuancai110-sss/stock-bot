@@ -10868,10 +10868,33 @@ def generate_morning_brief():
     return brief[:4750] + "\n…（已截斷）" if len(brief) > 4800 else brief
 
 
-# --- 月營收（TWSE OpenAPI t187ap05_L，全上市公司，一個月只有一期，用「資料年月」當快取key） ---
+# --- 月營收（TWSE OpenAPI t187ap05_L，全上市公司；TPEx 補上櫃／興櫃） ---
 _revenue_cache = {"period": None, "data": {}, "checked_at": 0,
                   "source": "none", "source_date": None}
 REVENUE_CACHE_CHECK_SECONDS = 600
+
+
+def _normalize_revenue_period(raw):
+    """把月營收的民國年月轉成可比較的 YYYYMM 整數。
+
+    官方常見格式是 11508；也容忍 115/08、115-08、202608 等格式。
+    回傳 None 表示資料年月欄位異常，絕不把異常值當成有效月份。
+    """
+    t = str(raw or "").strip().replace("/", "").replace("-", "")
+    if len(t) == 5 and t.isdigit():
+        y, m = int(t[:3]), int(t[3:])
+        if 1 <= m <= 12:
+            return (y + 1911) * 100 + m
+    if len(t) == 6 and t.isdigit():
+        y, m = int(t[:4]), int(t[4:])
+        if 2000 <= y <= 2100 and 1 <= m <= 12:
+            return y * 100 + m
+    return None
+
+
+def _revenue_period_label(period):
+    key = _normalize_revenue_period(period)
+    return f"{key // 100:04d}-{key % 100:02d}" if key else str(period or "")
 
 
 def _load_latest_revenue_history():
@@ -10910,85 +10933,54 @@ def _load_latest_revenue_history():
     return data, period
 
 
-def fetch_monthly_revenue():
+def fetch_monthly_revenue(force_refresh=False):
+    """抓最新一期月營收，涵蓋上市、上櫃、興櫃。
+
+    重要原則：
+    1. 以「所有回傳列中最大的資料年月」判定最新月份，不能拿第一列當月份。
+    2. 每月 1～15 日是新月份公布高峰，這段期間即使有舊快照也必須重新問官方。
+    3. warmup 可用 force_refresh=True，避免 Render worker 的 10 分鐘記憶體快取
+       讓新月份卡住。
+    4. 若官方端點暫時失敗，保留舊資料；但不把舊資料的月份偽裝成新月份。
     """
-    抓最新一期月營收，涵蓋上市、上櫃、興櫃。
-    證交所只給上市，上櫃與興櫃在櫃買中心，缺了就會出現「營收無資料」。
-    """
-    # 月營收通常一天只需確認一次；原本雖然有 period 快取，
-    # 但檢查快取前仍會先打三個外部端點，導致每次完整首頁都重做網路等待。
-    # 以短期檢查節流保留資料更新能力，也避免同一程序內重複抓取。
     now = time.time()
-    if (_revenue_cache["data"] and
+    today = taiwan_today()
+    release_window = today.day <= 15
+
+    if (not force_refresh and _revenue_cache["data"] and
             now - _revenue_cache.get("checked_at", 0) < REVENUE_CACHE_CHECK_SECONDS):
         return _revenue_cache["data"]
 
-    # Render 多 worker 或重啟後，記憶體快取可能是空的；先讀 Supabase
-    # 共享快照。來源月份另存在 source_meta，資料日期不拿來冒充月份。
-    if not _revenue_cache["data"]:
+    # 非公布期可以使用共享快照；公布期必須先問官方，避免卡在上個月。
+    if not force_refresh and not release_window and not _revenue_cache["data"]:
         shared = _load_shared_data_snapshot("monthly_revenue")
         shared_data = (shared.get("payload") if shared else None) or {}
         shared_period = ((shared.get("source_meta") or {}).get("period")
                          if shared else None)
         if isinstance(shared_data, dict) and shared_data and shared_period:
-            # 快照的月份若已經落後，就不能直接沿用。
-            #
-            # 這裡原本無條件 return，加上快照 TTL 是 3 天、而排程每天都會
-            # 重新寫入，等於永遠不會過期——證交所公布新月份之後，
-            # 程式也不會去查，畫面就一直停在舊月份。
-            #
-            # 每月 1–15 日是公布期：法規要求 10 日前公布上月營收，
-            # 但實務上多數公司提早幾天就送出，且不是同一天全部到齊。
-            # 這段期間只要快照不是今天寫的就重抓，才不會卡在舊月份。
-            #
-            # 用「猜哪個月份該有了」是不夠的——公布日期本來就參差，
-            # 猜早了會一直重抓、猜晚了就漏掉先公布的那些。
-            today = taiwan_today()
-            snap_date = shared.get("data_date")
-            in_release_window = today.day <= 15
-            snapshot_is_today = (snap_date == today)
+            _revenue_cache.update({
+                "period": str(shared_period), "data": shared_data,
+                "checked_at": now, "source": "shared",
+                "source_date": shared.get("data_date"),
+            })
+            print("⚡ 月營收改讀 Supabase 快照（月份 %s），共 %s 筆" %
+                  (shared_period, len(shared_data)))
+            return shared_data
 
-            if not (in_release_window and not snapshot_is_today):
-                _revenue_cache["period"] = str(shared_period)
-                _revenue_cache["data"] = shared_data
-                _revenue_cache["checked_at"] = now
-                _revenue_cache["source"] = "shared"
-                _revenue_cache["source_date"] = shared.get("data_date")
-                print("⚡ 月營收改讀 Supabase 快照（月份 %s，來源日 %s），共 %s 筆" %
-                      (shared_period, shared.get("data_date") or "未標日期",
-                       len(shared_data)))
-                return shared_data
-
-            # 公布期內且快照不是今天的，往下走去證交所與櫃買中心重抓。
-            # 抓失敗時後面的流程仍會退回既有資料，不會變成沒有營收。
-            print("🔄 月營收公布期（%s 日），快照為 %s 的 %s 月，重新抓取" %
-                  (today.day, snap_date or "未標日期", shared_period))
-
-        # 沒有共享快照時，沿用原本已保存的最新月份資料庫 fallback。
-        #
-        # 這裡原本也是無條件 return，跟上面的共享快照同一個毛病：
-        # 讀到舊月份就直接用，永遠不會去看官方有沒有公布新的。
-        # 實測就是卡在這條路徑——共享快照過期後落到這裡，
-        # 讀到 11507（民國 115 年 7 月）就一直回傳，8 月出來也不知道。
+    # 若記憶體尚未有資料，先保留資料庫舊快照作為失敗 fallback。
+    # 公布期不直接 return；仍會往下打官方端點。
+    fallback_data = _revenue_cache.get("data") or {}
+    fallback_period = _revenue_cache.get("period")
+    if not fallback_data:
         history_data, history_period = _load_latest_revenue_history()
         if history_data:
-            today = taiwan_today()
-            if today.day > 15:
-                # 過了公布期就安心沿用，不必為此多打三個外部端點。
-                _revenue_cache["period"] = history_period
-                _revenue_cache["data"] = history_data
-                _revenue_cache["checked_at"] = now
-                _revenue_cache["source"] = "history"
-                _revenue_cache["source_date"] = None
-                print("⚡ 月營收改讀資料庫最新快照（%s），共 %s 筆" %
-                      (history_period or "未知月份", len(history_data)))
-                return history_data
-            # 公布期內先往下抓；抓失敗時下方的 `if not result` 會退回這份，
-            # 所以不會變成沒有資料。
+            fallback_data, fallback_period = history_data, history_period
             _revenue_cache["period"] = history_period
             _revenue_cache["data"] = history_data
-            print("🔄 月營收公布期（%s 日），已保存月份 %s，先嘗試抓取最新" %
-                  (today.day, history_period or "未知"))
+            _revenue_cache["source"] = "history"
+            _revenue_cache["source_date"] = None
+            print("🔄 月營收先保留資料庫舊快照（%s），繼續檢查官方新月份" %
+                  (history_period or "未知月份"))
 
     _revenue_cache["checked_at"] = now
 
@@ -11004,17 +10996,48 @@ def fetch_monthly_revenue():
         f"{TPEX_BASE}/t187ap05_R",            # 興櫃
     ]
 
-    # 三個端點並行抓：序列跑的話光是等就要三次來回（每次 timeout 20 秒），
-    # 這是「當天第一個使用者」等特別久的主因之一。
     fetched = fetch_json_bulk(sources, timeout=20)
 
-    result, period = {}, None
+    source_rows = {}
+    source_periods = {}
     for url in sources:
         rows = fetched.get(url)
-        if not rows:
+        if not isinstance(rows, list) or not rows:
             continue
-        period = period or _pick(rows[0], "資料年月", "Period")
+
+        # 不再使用 rows[0] 判斷月份；同一批資料若排序改變，舊寫法會 silent failure。
+        periods = []
         for row in rows:
+            per = _pick(row, "資料年月", "Period")
+            key = _normalize_revenue_period(per)
+            if key:
+                periods.append(key)
+        if periods:
+            source_rows[url] = rows
+            source_periods[url] = max(periods)
+
+    if not source_periods:
+        print("⚠️ 月營收官方端點本次沒有有效資料，沿用既有月份 %s" %
+              (fallback_period or "未知"))
+        return fallback_data
+
+    latest_key = max(source_periods.values())
+    latest_period = f"{latest_key // 100 - 1911:03d}{latest_key % 100:02d}"
+
+    # 三個市場必須以同一個資料年月組合；若某市場還停在上月，寧可暫時缺資料，
+    # 也不能把 7 月與 8 月混在同一份「最新營收」快照裡。
+    result = {}
+    included_sources = []
+    for url, source_key in source_periods.items():
+        if source_key != latest_key:
+            print("⚠️ 月營收來源落後，暫不混入：%s=%s（最新=%s）" %
+                  (url, _revenue_period_label(source_key), _revenue_period_label(latest_key)))
+            continue
+        included_sources.append(url)
+        for row in source_rows.get(url, []):
+            per = _pick(row, "資料年月", "Period")
+            if _normalize_revenue_period(per) != latest_key:
+                continue
             code = _pick(row, "公司代號", "SecuritiesCompanyCode", "Code")
             if not code:
                 continue
@@ -11025,24 +11048,36 @@ def fetch_monthly_revenue():
                 "month_revenue": to_float(_pick(row, "營業收入-當月營收")),
             }
 
-    if not result:
-        return _revenue_cache["data"]
+    if not result or not included_sources:
+        print("⚠️ 月營收官方端點本次沒有有效資料，沿用既有月份 %s" %
+              (fallback_period or "未知"))
+        return fallback_data
 
-    if _revenue_cache["period"] == period and len(_revenue_cache["data"]) >= len(result):
-        return _revenue_cache["data"]
+    # 8 月營收在 9 月公布期，若官方仍只回 7 月，不可以把它當成新資料。
+    # 這裡只拒絕「明顯舊於上一個完整月份」的結果，不自行捏造 8 月數字。
+    expected_key = (today.year * 100 + today.month) - 1
+    if today.month == 1:
+        expected_key = (today.year - 1) * 100 + 12
+    if release_window and latest_key < expected_key:
+        print("⚠️ 月營收官方端點仍停在 %s，預期至少 %s；保留舊資料，不覆蓋快照" %
+              (_revenue_period_label(latest_key), _revenue_period_label(expected_key)))
+        return fallback_data
 
-    _revenue_cache["period"] = period
+    _revenue_cache["period"] = latest_period
     _revenue_cache["data"] = result
     _revenue_cache["source"] = "external"
-    _revenue_cache["source_date"] = taiwan_today()
-    print(f"✅ 月營收抓取成功（{period}），共 {len(result)} 筆（含上櫃、興櫃）")
-    save_revenue_history(period, result)
+    _revenue_cache["source_date"] = today
+    _revenue_cache["checked_at"] = now
+    print("✅ 月營收抓取成功（%s；各來源 %s），共 %s 檔" %
+          (_revenue_period_label(latest_key),
+           ", ".join(_revenue_period_label(v) for v in source_periods.values()),
+           len(result)))
+    save_revenue_history(latest_period, result)
     _save_shared_data_snapshot(
-        "monthly_revenue", result, data_date=taiwan_today(),
-        source_meta={"source": "TWSE+TPEx", "period": str(period)},
+        "monthly_revenue", result, data_date=today,
+        source_meta={"source": "TWSE+TPEx", "period": latest_period},
     )
     return result
-
 
 def score_from_revenue_growth(yoy_pct):
     """依營收年增率評分，作為「有題材／獲利」的量化依據（0-50分）。"""
@@ -14188,7 +14223,7 @@ def _do_warmup():
     shared_data = {}
     for label, fn in [
         ("法人", fetch_institutional_data),
-        ("月營收", fetch_monthly_revenue),
+        ("月營收", lambda: fetch_monthly_revenue(force_refresh=True)),
         ("估值", fetch_valuation),
         ("產業別", get_industry_map),
         ("名稱對照", get_name_map),
@@ -22931,7 +22966,7 @@ def web_portfolio(uid):
 
     shared_loaders = [
         ("法人", fetch_institutional_data),
-        ("月營收", fetch_monthly_revenue),
+        ("月營收", lambda: fetch_monthly_revenue(force_refresh=True)),
         ("估值", fetch_valuation),
         ("產業", get_industry_map),
         ("大盤", fetch_taiex_summary),
