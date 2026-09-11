@@ -3804,11 +3804,18 @@ def analyze_pick_factors(mode, days=90):
         groups.append(("依名次", [("第 1–2 名", stat(front)), ("第 3–5 名", stat(back))]))
 
     # ── 依分數 ──（雷達沒有分數，只有黑馬適用）
-    scored = [r for r in rows if r.get("score") is not None]
+    scored = []
+    for r in rows:
+        try:
+            if r.get("score") is not None and str(r.get("score")).strip() != "":
+                r["_score_num"] = float(r.get("score"))
+                scored.append(r)
+        except (TypeError, ValueError):
+            continue
     if len(scored) >= 8:
-        cut = sorted(r["score"] for r in scored)[len(scored) // 2]
-        hi = [r for r in scored if r["score"] >= cut]
-        lo = [r for r in scored if r["score"] < cut]
+        cut = sorted(r["_score_num"] for r in scored)[len(scored) // 2]
+        hi = [r for r in scored if r["_score_num"] >= cut]
+        lo = [r for r in scored if r["_score_num"] < cut]
         if hi and lo:
             groups.append((f"依分數（以 {cut} 分為界）",
                            [(f"高分組 ≥{cut}", stat(hi)), (f"低分組 <{cut}", stat(lo))]))
@@ -3826,13 +3833,20 @@ def analyze_pick_factors(mode, days=90):
                               ("score_mom", "產業動能", 20),
                               ("score_streak", "連續性", 20),
                               ("score_chip", "籌碼技術", 10)):
-        have = [r for r in rows if r.get(field) is not None]
+        have = []
+        for r in rows:
+            try:
+                if r.get(field) is not None and str(r.get(field)).strip() != "":
+                    r[f"_{field}_num"] = float(r.get(field))
+                    have.append(r)
+            except (TypeError, ValueError):
+                continue
         if len(have) < 8:
             continue
-        vals = sorted(float(r[field]) for r in have)
+        vals = sorted(r[f"_{field}_num"] for r in have)
         cut = vals[len(vals) // 2]
-        hi = [r for r in have if float(r[field]) >= cut]
-        lo = [r for r in have if float(r[field]) < cut]
+        hi = [r for r in have if r[f"_{field}_num"] >= cut]
+        lo = [r for r in have if r[f"_{field}_num"] < cut]
         # 切完若有一邊太少（例如該項大多數人同分），這組沒有比較意義
         if len(hi) < 3 or len(lo) < 3:
             continue
@@ -19555,15 +19569,16 @@ def web_pick_factors(uid):
     選股因子分析。獨立端點、展開才呼叫——它要抓所有推薦過的標的報價，
     比成效頁本身還重，不該讓每個人開頁面都先等它算完。
     """
-    try:
-        parts = []
-        for mode, label in (("blackhorse", "黑馬"), ("radar", "雷達"),
-                            ("turning", "轉折")):
+    parts = []
+    for mode, label in (("blackhorse", "黑馬"), ("radar", "雷達"),
+                        ("turning", "轉折")):
+        try:
             parts.append(render_pick_factors(label, analyze_pick_factors(mode)))
-        return "".join(parts)
-    except Exception as e:
-        print(f"❌ 因子分析失敗: {e}")
-        return '<div class="sub">分析暫時無法計算，請稍後再試。</div>'
+        except Exception as e:
+            # 三個模式分開計算：某一組舊資料格式異常時，不應把整個因子分析一起打死。
+            print(f"❌ 因子分析失敗 {label}: {type(e).__name__}: {e}")
+            parts.append(f'<div class="sub">{label}：資料格式暫時無法計算，其他分析仍可查看。</div>')
+    return "".join(parts)
 
 
 @app.route("/web/api/trade-habits")
