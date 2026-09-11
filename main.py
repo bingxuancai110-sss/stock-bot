@@ -3900,8 +3900,32 @@ def analyze_pick_factors(mode, days=90):
     if len(day_rows) >= 2:
         groups.append((f"依推薦日（共 {len(day_rows)} 天）", day_rows[-8:]))
 
+    # ── 整體穩定度／尾端分布 ──
+    # 平均報酬可能被少數暴漲股拉高，所以另外看「推薦日勝率」與上下尾端。
+    day_vals = [sum(v) / len(v) for v in by_day.values() if v]
+    overall = stat(rows)
+    if day_vals:
+        pos_days = sum(1 for v in day_vals if v > 0)
+        overall["positive_days"] = pos_days
+        overall["day_win"] = pos_days / len(day_vals) * 100
+        overall["best_day"] = max(day_vals)
+        overall["worst_day"] = min(day_vals)
+    else:
+        overall.update({"positive_days": 0, "day_win": None,
+                        "best_day": None, "worst_day": None})
+
+    vals = sorted(r["ret"] for r in rows if r.get("ret") is not None)
+    if vals:
+        k = max(1, int(len(vals) * 0.2))
+        overall["top20_avg"] = sum(vals[-k:]) / k
+        overall["bottom20_avg"] = sum(vals[:k]) / k
+        overall["top20_n"] = k
+    else:
+        overall["top20_avg"] = overall["bottom20_avg"] = None
+        overall["top20_n"] = 0
+
     return {"n": len(rows), "groups": groups, "days_spread": len(by_day),
-            "overall": stat(rows)}
+            "overall": overall}
 
 
 # 產業近期表現的顯示門檻。樣本或天數太少時不顯示——
@@ -19380,10 +19404,22 @@ def render_pick_factors(mode_label, fa):
                 f'還不足以分組比較。</div>')
 
     ov = fa["overall"]
+    day_win = ov.get("day_win")
+    best_day = ov.get("best_day")
+    worst_day = ov.get("worst_day")
+    top20 = ov.get("top20_avg")
+    bot20 = ov.get("bottom20_avg")
     out = [f'<div class="mode-note">{mode_label}　成熟樣本 {fa["n"]} 筆・'
            f'涵蓋 {fa["days_spread"]} 個推薦日・'
            f'整體平均 {ov["avg"]:+.1f}%・中位 {ov["median"]:+.1f}%・'
-           f'勝率 {ov["win"]:.0f}%</div>']
+           f'勝率 {ov["win"]:.0f}%</div>',
+           '<div class="callout" style="margin-top:10px">'
+           '<b>成效摘要</b><br>'
+           '<span style="font-size:12.5px;color:var(--ink-faint)">'
+           f'推薦日勝率 {day_win:.0f}%（{ov.get("positive_days", 0)}/{fa["days_spread"]} 天）・'
+           f'最好推薦日 {best_day:+.1f}%・最差推薦日 {worst_day:+.1f}%・'
+           f'前 20% 樣本平均 {top20:+.1f}%・後 20% 樣本平均 {bot20:+.1f}%'
+           '</span></div>']
 
     for title, items in fa["groups"]:
         rows = ""
