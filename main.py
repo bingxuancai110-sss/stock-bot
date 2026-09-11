@@ -3756,17 +3756,26 @@ def analyze_pick_factors(mode, days=90):
             continue
         dates = cur.get("close_dates") or []
         adjs = cur.get("adj_closes") or []
-        ret = None
-        if dates and adjs and len(dates) == len(adjs):
-            idx = next((i for i, d in enumerate(dates) if d >= p["date"]), None)
-            if idx is not None and adjs[idx] and adjs[-1]:
-                ret = (adjs[-1] - adjs[idx]) / adjs[idx] * 100
+        ret, _adjusted, _split_detected = _pick_return_split_safe(
+            cur, p["date"], p["price"])
         if ret is None:
-            ret = (cur["close"] - p["price"]) / p["price"] * 100
-        rows.append({**p, "ret": ret, "elapsed": elapsed})
+            continue
+        rows.append({**p, "ret": ret, "elapsed": elapsed,
+                     "split_adjusted": _split_detected})
 
     if len(rows) < 5:
-        return {"n": len(rows), "groups": [], "days_spread": 0}
+        # 保持回傳結構完整，避免「樣本不足」被 render_pick_factors 誤報成資料格式錯誤。
+        vals = sorted(r["ret"] for r in rows if r.get("ret") is not None)
+        if vals:
+            n0 = len(vals)
+            med0 = vals[n0 // 2] if n0 % 2 else (vals[n0 // 2 - 1] + vals[n0 // 2]) / 2
+            overall0 = {"n": n0, "avg": sum(vals) / n0, "median": med0,
+                        "win": sum(1 for v in vals if v > 0) / n0 * 100}
+        else:
+            overall0 = {"n": 0, "avg": None, "median": None, "win": None}
+        return {"n": len(rows), "groups": [],
+                "days_spread": len(set(r["date"] for r in rows)),
+                "overall": overall0}
 
     def stat(items):
         vals = [r["ret"] for r in items if r.get("ret") is not None]
@@ -8223,6 +8232,66 @@ def get_picks_since(mode, days=90):
         release_db_connection(conn)
 
 
+def _pick_return_split_safe(cur, pick_date, raw_price):
+    """
+    計算推薦至今報酬，額外處理股票面額變更／換股造成的機械性價格縮放。
+
+    Yahoo adjclose 主要處理除權息，但不一定會把台股面額變更
+    （例如 10 元面額改 0.5 元、1 股換 20 股）當成 split 修正。
+    這類事件會讓價格看起來瞬間變成 1/20，但投資人的經濟價值沒有
+    瞬間剩 1/20，因此不能把它當成 -95%/-96% 的選股虧損。
+
+    只在價格跳變接近常見整數倍／分割倍數，而且 Yahoo adjclose
+    也同步跳變時視為結構性縮放；一般大跌不會因為只是跌很多就自動修正。
+    """
+    if not cur or not raw_price:
+        return None, False, False
+    dates = cur.get("close_dates") or []
+    closes = cur.get("closes") or []
+    adjs = cur.get("adj_closes") or []
+    if not (dates and closes and len(dates) == len(closes)):
+        return None, False, False
+    idx = next((i for i, d in enumerate(dates) if d >= pick_date), None)
+    if idx is None or idx >= len(closes) or not closes[idx] or not closes[-1]:
+        return None, False, False
+
+    start_adj = (adjs[idx] if len(adjs) == len(dates) and adjs[idx]
+                 else closes[idx])
+    end_adj = (adjs[-1] if len(adjs) == len(dates) and adjs[-1]
+               else closes[-1])
+    use_yahoo_adj = len(adjs) == len(dates) and bool(adjs[idx]) and bool(adjs[-1])
+
+    scale = 1.0
+    common_ratios = (0.05, 0.1, 0.2, 0.25, 1/3, 0.5, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0)
+    split_detected = False
+    for j in range(max(idx + 1, 1), len(closes)):
+        prev = closes[j - 1]
+        cur_close = closes[j]
+        if not prev or not cur_close:
+            continue
+        rr = cur_close / prev
+        if rr <= 0.25 or rr >= 4.0:
+            nearest = min(common_ratios, key=lambda x: abs(x - rr))
+            if abs(rr / nearest - 1.0) <= 0.03:
+                adj_ok = True
+                if len(adjs) == len(dates) and j > 0 and adjs[j] and adjs[j - 1]:
+                    ar = adjs[j] / adjs[j - 1]
+                    adj_ok = abs(ar / rr - 1.0) <= 0.03
+                if adj_ok:
+                    split_detected = True
+                    if rr < 1:
+                        scale /= rr
+                    else:
+                        scale *= rr
+
+    if split_detected:
+        end_adj *= scale
+        return (end_adj - start_adj) / start_adj * 100, True, True
+    if use_yahoo_adj:
+        return (end_adj - start_adj) / start_adj * 100, True, False
+    return (closes[-1] - raw_price) / raw_price * 100, False, False
+
+
 def evaluate_picks(mode, days=90):
     """
     計算選股成效：把每一筆推薦的當時價格跟現價比，並依「推薦後經過幾天」分組。
@@ -8248,23 +8317,9 @@ def evaluate_picks(mode, days=90):
     today = taiwan_today()
 
     def pick_return(code, pick_date, raw_price):
-        """
-        推薦至今的報酬。優先用還原權值：把推薦日與最新的 adjclose 相除，
-        除權息造成的價格落差就會被抵銷。
-        找不到推薦日的還原價時（例如該日無交易、或 Yahoo 未提供），
-        退回未還原價的算法，並回報 False 讓呼叫端知道這筆沒調整過。
-        """
-        cur = price_map.get(code)
-        if not cur or not raw_price:
-            return None, False
-        dates = cur.get("close_dates") or []
-        adjs = cur.get("adj_closes") or []
-        if dates and adjs and len(dates) == len(adjs):
-            # 找推薦日當天或之後最近的一個交易日
-            idx = next((i for i, d in enumerate(dates) if d >= pick_date), None)
-            if idx is not None and adjs[idx] and adjs[-1]:
-                return (adjs[-1] - adjs[idx]) / adjs[idx] * 100, True
-        return (cur["close"] - raw_price) / raw_price * 100, False
+        ret, adjusted, _split_detected = _pick_return_split_safe(
+            price_map.get(code), pick_date, raw_price)
+        return ret, adjusted
 
     # 大盤對照：用快照裡存的加權指數，沒有就退回不比較
     taiex_by_date = {}
@@ -19417,7 +19472,7 @@ def render_pick_factors(mode_label, fa):
         return (f'<div class="sub">{mode_label}：成熟樣本只有 {fa["n"]} 筆，'
                 f'還不足以分組比較。</div>')
 
-    ov = fa["overall"]
+    ov = fa.get("overall") or {"n": fa.get("n", 0), "avg": 0.0, "median": 0.0, "win": 0.0}
     day_win = ov.get("day_win")
     best_day = ov.get("best_day")
     worst_day = ov.get("worst_day")
@@ -19425,14 +19480,14 @@ def render_pick_factors(mode_label, fa):
     bot20 = ov.get("bottom20_avg")
     out = [f'<div class="mode-note">{mode_label}　成熟樣本 {fa["n"]} 筆・'
            f'涵蓋 {fa["days_spread"]} 個推薦日・'
-           f'整體平均 {ov["avg"]:+.1f}%・中位 {ov["median"]:+.1f}%・'
-           f'勝率 {ov["win"]:.0f}%</div>',
+           f'整體平均 {(ov.get("avg") if ov.get("avg") is not None else 0):+.1f}%・中位 {(ov.get("median") if ov.get("median") is not None else 0):+.1f}%・'
+           f'勝率 {(ov.get("win") if ov.get("win") is not None else 0):.0f}%</div>',
            '<div class="callout" style="margin-top:10px">'
            '<b>成效摘要</b><br>'
            '<span style="font-size:12.5px;color:var(--ink-faint)">'
-           f'推薦日勝率 {day_win:.0f}%（{ov.get("positive_days", 0)}/{fa["days_spread"]} 天）・'
-           f'最好推薦日 {best_day:+.1f}%・最差推薦日 {worst_day:+.1f}%・'
-           f'前 20% 樣本平均 {top20:+.1f}%・後 20% 樣本平均 {bot20:+.1f}%'
+           f'推薦日勝率 {(day_win if day_win is not None else 0):.0f}%（{ov.get("positive_days", 0)}/{fa["days_spread"]} 天）・'
+           f'最好推薦日 {(best_day if best_day is not None else 0):+.1f}%・最差推薦日 {(worst_day if worst_day is not None else 0):+.1f}%・'
+           f'前 20% 樣本平均 {(top20 if top20 is not None else 0):+.1f}%・後 20% 樣本平均 {(bot20 if bot20 is not None else 0):+.1f}%'
            '</span></div>']
 
     for title, items in fa["groups"]:
