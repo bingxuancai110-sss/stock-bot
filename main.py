@@ -19656,9 +19656,15 @@ def web_pick_factors(uid):
         try:
             parts.append(render_pick_factors(label, analyze_pick_factors(mode)))
         except Exception as e:
-            # 三個模式分開計算：某一組舊資料格式異常時，不應把整個因子分析一起打死。
-            print(f"❌ 因子分析失敗 {label}: {type(e).__name__}: {e}")
-            parts.append(f'<div class="sub">{label}：資料格式暫時無法計算，其他分析仍可查看。</div>')
+            # 暫時把實際錯誤顯示在已登入的選股工作台，停止盲猜。
+            # 下一版確認根因後會移除這個診斷文字。
+            err_type = type(e).__name__
+            err_msg = str(e) or "（沒有錯誤訊息）"
+            print(f"❌ 因子分析失敗 {label}: {err_type}: {err_msg}")
+            parts.append(
+                f'<div class="sub">{html.escape(label)}：因子分析發生錯誤。'
+                f'<br><small>診斷：{html.escape(err_type)}：{html.escape(err_msg)[:500]}</small></div>'
+            )
     return "".join(parts)
 
 
