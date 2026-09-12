@@ -20485,12 +20485,32 @@ def web_trades(uid):
     return respond_page("交易紀錄", body, "trades")
 
 
-def render_leaderboard_chart(series_map, market, top_keys, highlight_key=None):
-    """繪製 user_id 索引的排行榜曲線；顯示文字仍使用成員暱稱。"""
+def render_leaderboard_chart(series_map, chart_market, top_keys, highlight_key=None, days_window=None):
+    """繪製 user_id 索引的排行榜曲線。
+
+    短線榜若顯示「近 30 天」，走勢圖也必須使用完全相同的 30 天區間，
+    並把區間第一個有效點重新設為 0%，否則圖表會顯示加入日以來累計報酬，
+    造成排行榜 +4.2% 卻在圖上看到 +1.7% 的口徑不一致。
+    長線榜不傳 days_window，維持加入後累計口徑。
+    """
+    def rebase_curve(curve):
+        curve = list(curve or [])
+        if days_window is None or len(curve) < 2:
+            return curve
+        cutoff = taiwan_today() - timedelta(days=int(days_window))
+        seg = [(d, v) for d, v in curve if d >= cutoff]
+        if len(seg) < 2:
+            return []
+        base = seg[0][1]
+        if base <= -99.0:
+            return []
+        return [(d, ((1 + v / 100.0) / (1 + base / 100.0) - 1) * 100.0)
+                for d, v in seg]
+
     def entry(key):
         item = series_map.get(str(key))
         if isinstance(item, dict):
-            return safe_html_text(item.get("nickname")), item.get("curve") or []
+            return safe_html_text(item.get("nickname")), rebase_curve(item.get("curve") or [])
         # 舊快取在部署切換期間可能仍存在，保留短暫相容性。
         return safe_html_text(key), item or []
 
@@ -20505,18 +20525,19 @@ def render_leaderboard_chart(series_map, market, top_keys, highlight_key=None):
         name, curve = entry(key)
         if curve:
             lines.append((key, name, curve))
-    if not lines and not market:
+    if not lines and not chart_market:
         return ('<div class="empty">還沒有足夠的每日快照可以畫圖。<br><br>'
                 '<span style="font-size:12.5px">每個交易日收盤後會存一次快照，'
                 '加入排行榜後累積 2 天以上就會出現走勢。</span></div>')
 
+    chart_market = rebase_curve(chart_market)
     all_dates = sorted({d for _k, _n, c in lines for d, _v in c}
-                       | {d for d, _v in market})
+                       | {d for d, _v in chart_market})
     if len(all_dates) < 2:
         return ('<div class="empty">資料還在累積中，'
                 '至少需要 2 天以上的快照才能畫出走勢。</div>')
 
-    vals = [v for _k, _n, c in lines for _d, v in c] + [v for _d, v in market]
+    vals = [v for _k, _n, c in lines for _d, v in c] + [v for _d, v in chart_market]
     lo, hi = min(vals), max(vals)
     if hi - lo < 1:
         lo, hi = lo - 1, hi + 1
@@ -20531,8 +20552,8 @@ def render_leaderboard_chart(series_map, market, top_keys, highlight_key=None):
 
     parts = [f'<line x1="0" y1="{Y(0):.1f}" x2="{W}" y2="{Y(0):.1f}" '
              f'stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,3"/>']
-    if market:
-        p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in market)
+    if chart_market:
+        p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in chart_market)
         parts.append(f'<path d="{p}" fill="none" stroke="var(--ink-faint)" '
                      f'stroke-width="1.5" stroke-dasharray="4,3"/>')
 
@@ -20545,9 +20566,9 @@ def render_leaderboard_chart(series_map, market, top_keys, highlight_key=None):
                      f'stroke-width="2"/>')
         legend.append(f'<span><i style="background:{color}"></i>{name} '
                       f'{curve[-1][1]:+.1f}%</span>')
-    if market:
+    if chart_market:
         legend.append(f'<span><i style="background:var(--ink-faint)"></i>'
-                      f'大盤 {market[-1][1]:+.1f}%</span>')
+                      f'大盤 {chart_market[-1][1]:+.1f}%</span>')
 
     # X 軸刻度：依涵蓋期間自動切換單位。
     #
@@ -21076,7 +21097,8 @@ def web_leaderboard(uid):
     chart_note = ("含我的曲線・前 4 名・大盤"
                   if my_curve_key else "前 5 名 vs 大盤")
     chart = render_leaderboard_chart(
-        series_map, market, chart_keys, highlight_key=my_curve_key)
+        series_map, market, chart_keys, highlight_key=my_curve_key,
+        days_window=30 if is_short else None)
 
     # 已加入的人：設定收在下方，不佔版面。
     # 還沒加入的人：把加入表單直接攤開放在最上面——
