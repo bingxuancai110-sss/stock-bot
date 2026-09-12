@@ -5725,6 +5725,28 @@ def get_fast_rank_summary(user_id):
     return result
 
 
+_LEADERBOARD_STATUS_CACHE_SECONDS = 60
+_leaderboard_status_cache = {}
+_leaderboard_status_cache_lock = threading.Lock()
+
+def _get_leaderboard_rank_status_cached(rank_inputs):
+    key = tuple(sorted((str(b), str(u).strip(), int(r) if r is not None else None)
+                       for b, u, r in (rank_inputs or [])))
+    now = time.time()
+    with _leaderboard_status_cache_lock:
+        cached = _leaderboard_status_cache.get(key)
+        if cached and now - cached[0] < _LEADERBOARD_STATUS_CACHE_SECONDS:
+            return cached[1]
+    value = get_rank_status_map(rank_inputs)
+    with _leaderboard_status_cache_lock:
+        _leaderboard_status_cache[key] = (time.time(), value)
+        if len(_leaderboard_status_cache) > 8:
+            oldest = sorted(_leaderboard_status_cache.items(), key=lambda kv: kv[1][0])[:4]
+            for k, _v in oldest:
+                _leaderboard_status_cache.pop(k, None)
+    return value
+
+
 def get_my_rank_summary(user_id, boards=None, rank_status_map=None):
     # 首頁用的個人排名摘要；短線與長線分開計算。
     boards = boards if boards is not None else build_leaderboard(top_n=100, days=365)[0]
@@ -5735,7 +5757,7 @@ def get_my_rank_summary(user_id, boards=None, rank_status_map=None):
             current_rank = next((i for i, row in enumerate(rows, 1)
                                  if row.get("user_id") == str(user_id)), None)
             rank_inputs.append((board, user_id, current_rank))
-        rank_status_map = get_rank_status_map(rank_inputs)
+        rank_status_map = _get_leaderboard_rank_status_cached(rank_inputs)
     result = {}
     for board, label in (("short", "短線"), ("long", "長線")):
         current_rows = boards.get(board, [])
@@ -20722,14 +20744,47 @@ def web_leaderboard(uid):
                 "source": "persisted_stale",
                 "data_date": persisted_for_page.get("data_date"),
             }
-        refresh_started = _maybe_refresh_leaderboard_background()
+        # 使用者開頁時絕不啟動重型排行榜重算。
+        # 最新快照由 warmup／既有排程負責建立；這裡只負責把最後一份
+        # 完整結果快速送出，避免背景工作與 HTTP 請求搶 DB／CPU。
         board_done = time.monotonic()
-        print("⚡ 排行榜頁面直接使用快照：%.0fms；背景更新=%s" %
-              ((board_done - board_started) * 1000, refresh_started))
+        print("⚡ 排行榜頁面只讀 Supabase 快照：%.0fms" %
+              ((board_done - board_started) * 1000))
     else:
-        # 第一次完全沒有快照時才同步建立；成功後後續請求都走快照。
-        all_boards, (series_map, market) = build_leaderboard(top_n=100, days=365)
-        board_done = time.monotonic()
+        # 沒有任何持久化快照時，也不能讓使用者卡在一年行情＋機器人模擬。
+        # 先啟動一次背景建立，HTTP 立即回傳「整理中」，瀏覽器每 3 秒重試；
+        # 一旦快照完成就直接顯示。這是唯一允許由頁面觸發背景重算的情況。
+        _maybe_refresh_leaderboard_background(force=False)
+        pending_html = """
+<div class="msg">排行榜正在建立最新快照，頁面會自動更新。<br>
+<span class="sub">不需要停留等待，約數秒後會自動重新整理。</span></div>
+<script>
+(function(){
+  var n=0;
+  function retry(){
+    n++;
+    if(n>40) return;
+    var u=new URL(window.location.href);
+    u.searchParams.set('fragment','1');
+    fetch(u.toString(), {credentials:'same-origin'})
+      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); })
+      .then(function(html){
+        if(html.indexOf('排行榜正在建立最新快照') >= 0){
+          setTimeout(retry,3000);
+        }else{
+          var c=document.getElementById('content');
+          if(c) c.innerHTML=html;
+        }
+      })
+      .catch(function(){ setTimeout(retry,3000); });
+  }
+  setTimeout(retry,3000);
+})();
+</script>
+"""
+        if wants_fragment():
+            return preserve_web_token(inject_csrf_inputs(pending_html))
+        return render_page("排行榜", pending_html, nav_active="leaderboard")
     boards = {
         "long": (all_boards.get("long") or [])[:3],
         "short": (all_boards.get("short") or [])[:20],
