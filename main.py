@@ -5859,14 +5859,26 @@ def _load_persisted_leaderboard_page(allow_stale=False):
     if not allow_stale and not _leaderboard_snapshot_valid(shared):
         return None
     source_meta = shared.get("source_meta") or {}
-    # ETF 持股統計加入後，舊版快照沒有 etf_holdings，首次讀取時強制重算一次。
-    if source_meta.get("schema_version") != 2:
+    # 相容舊版排行榜快照：舊快照沒有 etf_holdings，但排行榜核心欄位
+    # （報酬、天數、回檔、曲線）仍然完整可用。
+    # 不應因為 schema 版本變更就把既有快照判成「不存在」，否則新 worker
+    # 會立刻進入重型一年行情＋機器人模擬，使用者反而卡在「建立最新快照」。
+    schema_version = source_meta.get("schema_version")
+    if schema_version not in (None, 1, 2, "1", "2"):
         return None
     payload = shared.get("payload") or {}
     boards = payload.get("boards") if isinstance(payload, dict) else None
     graph = payload.get("graph") if isinstance(payload, dict) else None
     if not isinstance(boards, dict) or not isinstance(graph, dict):
         return None
+    # 舊版 payload 缺少 ETF 檔數欄位時，補 0 即可維持既有排行榜顯示。
+    # 不需要為了這個欄位把整個排行榜重新計算一次。
+    for board_name in ("long", "short", "waiting"):
+        board_rows = boards.get(board_name)
+        if isinstance(board_rows, list):
+            for row in board_rows:
+                if isinstance(row, dict):
+                    row.setdefault("etf_holdings", 0)
     raw_series_map = graph.get("series_map")
     raw_market = graph.get("market")
     if not isinstance(raw_series_map, dict) or not isinstance(raw_market, list):
