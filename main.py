@@ -7677,9 +7677,11 @@ def _save_shared_data_snapshot(snapshot_key, payload, data_date=None,
                 source_meta = EXCLUDED.source_meta
             """,
             (str(snapshot_key), data_date,
-             json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+             json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                         default=lambda obj: obj.isoformat() if hasattr(obj, "isoformat") else str(obj)),
              json.dumps(source_meta or {}, ensure_ascii=False,
-                        separators=(",", ":"))),
+                        separators=(",", ":"),
+                        default=lambda obj: obj.isoformat() if hasattr(obj, "isoformat") else str(obj))),
         )
         conn.commit()
         cur.close()
@@ -14648,11 +14650,15 @@ def _do_warmup():
             if taiwan_today().weekday() < 5 and persisted_date != taiwan_today():
                 clear_leaderboard_cache()
             build_leaderboard(top_n=100, days=365)
+            persisted_after = _load_persisted_leaderboard_page(allow_stale=True)
             with _leaderboard_cache_lock:
                 rank_meta = dict(_leaderboard_cache.get((100, 365)) or {})
-            done.append("排行榜 %s（資料日 %s）" % (
-                "快照已整合" if rank_meta.get("data_date") else "資料日不足",
-                rank_meta.get("data_date") or "未標日期"))
+            if persisted_after:
+                rank_date = persisted_after.get("data_date") or rank_meta.get("data_date")
+                done.append("排行榜 快照已寫入（資料日 %s）" %
+                            (rank_date or "未標日期"))
+            else:
+                done.append("排行榜 計算完成但快照未寫入（請看 Logs）")
         except Exception as e:
             print(f"❌ 預熱排行榜失敗: {e}")
             done.append("排行榜 失敗")
