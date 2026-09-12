@@ -5758,6 +5758,11 @@ _leaderboard_cache = {}
 _leaderboard_cache_lock = threading.Lock()
 LEADERBOARD_CACHE_SECONDS = 30
 
+# 排行榜頁面採「快照優先、背景重算」，避免使用者每次進頁都等待重型計算。
+_LEADERBOARD_REFRESH_MIN_SECONDS = 300
+_leaderboard_refresh_lock = threading.Lock()
+_leaderboard_refresh_state = {"started_at": 0.0, "thread": None}
+
 
 def clear_leaderboard_cache():
     """成員加入、退出或設定變更後立即清掉排行榜結果。"""
@@ -5769,11 +5774,12 @@ def clear_leaderboard_cache():
     if fast_cache_lock is not None and fast_cache is not None:
         with fast_cache_lock:
             fast_cache.clear()
-    # 成員暱稱、是否公開持股或參加狀態變更後，持久化頁面也必須失效。
+    # 不刪除最後一份完整快照。成員設定變更後仍先顯示上一版，
+    # 再由背景重算更新，避免下一次開排行榜被迫等待完整計算。
     try:
-        _delete_shared_data_snapshot("leaderboard_page")
+        _maybe_refresh_leaderboard_background(force=True)
     except Exception as exc:
-        print(f"⚠️ 排行榜快照失效處理失敗: {exc}")
+        print(f"⚠️ 排行榜背景更新啟動失敗: {exc}")
 
 
 def _leaderboard_date(value):
@@ -5818,13 +5824,17 @@ def _leaderboard_snapshot_valid(snapshot):
     return data_date <= today and (today - data_date).days <= 3
 
 
-def _load_persisted_leaderboard_page():
-    """讀取排行榜完整頁 payload；失敗或過期時回傳 None，讓呼叫端走原流程。"""
-    shared = _load_shared_data_snapshot(
-        "leaderboard_page",
-        max_age_seconds=_SHARED_SNAPSHOT_MAX_AGE.get("leaderboard_page", 3 * 86400),
-    )
-    if not shared or not _leaderboard_snapshot_valid(shared):
+def _load_persisted_leaderboard_page(allow_stale=False):
+    """讀取排行榜完整頁 payload。
+
+    allow_stale=True 時，過期快照仍可先拿來顯示；呼叫端會另外啟動背景更新。
+    """
+    max_age = (30 * 86400 if allow_stale else
+               _SHARED_SNAPSHOT_MAX_AGE.get("leaderboard_page", 3 * 86400))
+    shared = _load_shared_data_snapshot("leaderboard_page", max_age_seconds=max_age)
+    if not shared:
+        return None
+    if not allow_stale and not _leaderboard_snapshot_valid(shared):
         return None
     source_meta = shared.get("source_meta") or {}
     # ETF 持股統計加入後，舊版快照沒有 etf_holdings，首次讀取時強制重算一次。
@@ -6064,7 +6074,39 @@ def simulate_bot_portfolio(mode, days=365):
     return {"curve": curve, "holdings": holdings, "picks_days": len(by_date)}
 
 
-def build_leaderboard(top_n=20, days=365):
+def _leaderboard_refresh_worker():
+    """背景重算完整排行榜；失敗不影響目前已顯示的快照。"""
+    try:
+        started = time.monotonic()
+        build_leaderboard(top_n=100, days=365, force_rebuild=True)
+        print("⚡ 排行榜背景更新完成：%.1fs" % (time.monotonic() - started))
+    except Exception as exc:
+        print(f"⚠️ 排行榜背景更新失敗: {exc}")
+    finally:
+        with _leaderboard_refresh_lock:
+            _leaderboard_refresh_state["thread"] = None
+
+
+def _maybe_refresh_leaderboard_background(force=False):
+    """最多每 5 分鐘啟動一次背景更新，避免多人同時重算。"""
+    now = time.time()
+    with _leaderboard_refresh_lock:
+        thread = _leaderboard_refresh_state.get("thread")
+        if thread is not None and thread.is_alive():
+            return False
+        last = float(_leaderboard_refresh_state.get("started_at") or 0)
+        if not force and now - last < _LEADERBOARD_REFRESH_MIN_SECONDS:
+            return False
+        _leaderboard_refresh_state["started_at"] = now
+        thread = threading.Thread(target=_leaderboard_refresh_worker,
+                                  name="leaderboard-refresh", daemon=True)
+        _leaderboard_refresh_state["thread"] = thread
+        thread.start()
+        print("⚡ 已啟動排行榜背景更新")
+        return True
+
+
+def build_leaderboard(top_n=20, days=365, force_rebuild=False):
     """
     算出排行榜。分短線與長線兩榜，因為那本來就是兩種不同的能力——
     長期穩健和短期爆發硬塞進同一個排行，比的會變成誰先加入。
@@ -6089,7 +6131,7 @@ def build_leaderboard(top_n=20, days=365):
 
     # 排行榜的內容只依賴已保存的每日組合快照與成員公開設定；
     # Render 重啟或切換 worker 後，先讀完整頁 payload，避免重新抓所有公開持股的一年行情。
-    if cache_key in ((20, 365), (100, 365)):
+    if not force_rebuild and cache_key in ((20, 365), (100, 365)):
         persisted = _load_persisted_leaderboard_page()
         if persisted:
             stored_boards, stored_graph = persisted["value"]
@@ -20669,8 +20711,25 @@ def web_leaderboard(uid):
 
     me = get_leaderboard_member(uid)
     board_started = time.monotonic()
-    all_boards, (series_map, market) = build_leaderboard(top_n=100, days=365)
-    board_done = time.monotonic()
+
+    # HTTP request 只讀最後一份完整快照；一年行情與機器人模擬改在背景更新。
+    persisted_for_page = _load_persisted_leaderboard_page(allow_stale=True)
+    if persisted_for_page:
+        all_boards, (series_map, market) = persisted_for_page["value"]
+        with _leaderboard_cache_lock:
+            _leaderboard_cache[(100, 365)] = {
+                "at": time.time(), "value": persisted_for_page["value"],
+                "source": "persisted_stale",
+                "data_date": persisted_for_page.get("data_date"),
+            }
+        refresh_started = _maybe_refresh_leaderboard_background()
+        board_done = time.monotonic()
+        print("⚡ 排行榜頁面直接使用快照：%.0fms；背景更新=%s" %
+              ((board_done - board_started) * 1000, refresh_started))
+    else:
+        # 第一次完全沒有快照時才同步建立；成功後後續請求都走快照。
+        all_boards, (series_map, market) = build_leaderboard(top_n=100, days=365)
+        board_done = time.monotonic()
     boards = {
         "long": (all_boards.get("long") or [])[:3],
         "short": (all_boards.get("short") or [])[:20],
@@ -20678,9 +20737,12 @@ def web_leaderboard(uid):
     }
     with _leaderboard_cache_lock:
         leaderboard_meta = dict(_leaderboard_cache.get((100, 365)) or {})
-    leaderboard_source = ("Supabase 持久化快照"
-                          if leaderboard_meta.get("source") == "persisted"
-                          else "本次完整計算")
+    if leaderboard_meta.get("source") == "persisted_stale":
+        leaderboard_source = "Supabase 快照（背景更新中）"
+    elif leaderboard_meta.get("source") == "persisted":
+        leaderboard_source = "Supabase 持久化快照"
+    else:
+        leaderboard_source = "本次完整計算"
     leaderboard_data_date = leaderboard_meta.get("data_date") or _leaderboard_data_date(
         series_map, market)
     leaderboard_data_date = (leaderboard_data_date.isoformat()
