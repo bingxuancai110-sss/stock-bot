@@ -16457,7 +16457,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     navProgress.className = 'app-nav-loading';
     navProgress.setAttribute('aria-hidden','true');
     document.body.appendChild(navProgress);
-    var loadStageMap = {
+    var loadStageMap = {{
       '/web/portfolio':['市場資料','持股資料','今日重點','整理畫面'],
       '/web/positions':['持股資料','目前報價','績效分析','整理畫面'],
       '/web/workbench':['市場資料','營收資料','籌碼資料','計算排名'],
@@ -16469,14 +16469,14 @@ def render_page(title, body, nav_active=None, user_name=None):
       '/web/chips':['籌碼快照','法人資料','排序結果','整理畫面'],
       '/web/etf':['ETF資料','報酬資料','分類排名','整理畫面'],
       '/web/watchlist':['自選資料','目前報價','異動整理','整理畫面']
-    };
+    }};
     var loadSteps = loadStageMap[target.pathname] || ['頁面資料','分析資料','整理畫面'];
-    var loadTitleMap = {
+    var loadTitleMap = {{
       '/web/portfolio':'正在載入今日資料…','/web/positions':'正在載入持股資料…','/web/workbench':'正在載入選股結果…',
       '/web/leaderboard':'正在載入排行榜…','/web/trades':'正在載入交易紀錄…','/web/compare':'正在載入比較結果…',
       '/web/settings':'正在載入設定…','/web/more':'正在載入功能…','/web/chips':'正在載入籌碼資料…',
       '/web/etf':'正在載入 ETF 資料…','/web/watchlist':'正在載入自選資料…'
-    };
+    }};
     var loadTitle = loadTitleMap[target.pathname] || '正在載入頁面…';
     var stepTimer = null;
     var stepIndex = 0;
