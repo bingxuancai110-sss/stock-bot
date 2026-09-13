@@ -3893,14 +3893,25 @@ def analyze_pick_factors(mode, days=90):
                     have.append(r)
             except (TypeError, ValueError):
                 continue
-        if len(have) < 8:
+        # 權重調整前的最低門檻：兩組都至少 10 筆。
+        # 不足時也要把該因子列出來，明確告訴使用者「還不能判斷」，
+        # 不能因為程式直接跳過而讓人誤以為這個因子沒有資料。
+        if len(have) < 20:
+            groups.append((f"依{label}得分（滿分 {cap}）",
+                           [(f"{label}：樣本不足，暫不判斷",
+                             {"n": len(have), "avg": None, "median": None,
+                              "win": None, "insufficient": True})]))
             continue
         vals = sorted(r[f"_{field}_num"] for r in have)
         cut = vals[len(vals) // 2]
         hi = [r for r in have if r[f"_{field}_num"] >= cut]
         lo = [r for r in have if r[f"_{field}_num"] < cut]
-        # 切完若有一邊太少（例如該項大多數人同分），這組沒有比較意義
-        if len(hi) < 3 or len(lo) < 3:
+        # 權重調整要求每一組至少 10 筆，且最好分散在多個推薦日。
+        if len(hi) < 10 or len(lo) < 10:
+            groups.append((f"依{label}得分（滿分 {cap}）",
+                           [(f"{label}：切組後樣本不足，暫不判斷",
+                             {"n": len(have), "avg": None, "median": None,
+                              "win": None, "insufficient": True})]))
             continue
         groups.append((f"依{label}得分（滿分 {cap}，以 {cut:g} 分為界）",
                        [(f"{label}高分 ≥{cut:g}", stat(hi)),
@@ -19863,15 +19874,26 @@ def render_pick_factors(mode_label, fa):
     for title, items in fa["groups"]:
         rows = ""
         for name, st in items:
-            cls = "up" if st["avg"] >= 0 else "down"
-            mcls = "up" if st["median"] >= 0 else "down"
+            if st.get("insufficient"):
+                rows += (f'<div class="row">'
+                         f'<div><span class="name">{html.escape(name)}</span></div>'
+                         f'<div class="price num">—</div>'
+                         f'<div class="meta"><span><em>目前</em> {st.get("n", 0)} 筆</span>'
+                         f'<span><em>要求</em> 每組至少 10 筆</span>'
+                         f'</div></div>')
+                continue
+            avg = st.get("avg")
+            median = st.get("median")
+            win = st.get("win")
+            cls = "up" if (avg or 0) >= 0 else "down"
+            mcls = "up" if (median or 0) >= 0 else "down"
             rows += (f'<div class="row">'
-                     f'<div><span class="name">{name}</span></div>'
-                     f'<div class="price num {cls}">{st["avg"]:+.1f}%</div>'
+                     f'<div><span class="name">{html.escape(name)}</span></div>'
+                     f'<div class="price num {cls}">{avg:+.1f}%</div>'
                      f'<div class="meta">'
                      f'<span><em>中位</em> <span class="num {mcls}">'
-                     f'{st["median"]:+.1f}%</span></span>'
-                     f'<span><em>勝率</em> {st["win"]:.0f}%</span>'
+                     f'{median:+.1f}%</span></span>'
+                     f'<span><em>勝率</em> {win:.0f}%</span>'
                      f'<span><em>樣本</em> {st["n"]} 筆</span>'
                      f'</div></div>')
         out.append(f'<div class="section-head"><h2>{title}</h2></div>'
@@ -19890,7 +19912,7 @@ def render_pick_factors(mode_label, fa):
         '　　高分組明顯優於低分組 → 那一項值得加重；'
         '高分組明顯較差 → 那一項是反指標，該減碼甚至反向；'
         '兩組差不多 → 那一項沒有作用，權重可以讓給其他項。<br>'
-        '　　同樣要每組 10 筆以上、涵蓋多個推薦日才作數。<br>'
+        '　　同樣要每組至少 10 筆，且最好涵蓋多個推薦日才作數。<br>'
         '・<b>依技術訊號</b>：有黃金交叉／MACD 金叉的推薦，後續報酬是否系統性優於無訊號組。'
         '兩組差不多就代表那個訊號沒有加分的價值。要等每組累積 10 筆以上、'
         '且涵蓋多個推薦日，才適合據此決定要不要納入評分。<br>'
