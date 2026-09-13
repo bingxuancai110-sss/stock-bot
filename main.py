@@ -16135,6 +16135,104 @@ button[disabled],input[disabled],select[disabled]{opacity:.58;cursor:wait}
 	.cmp th.rk{background:#F6F8FB}.cmp td.best{background:#EEF5FB}
 	@media(max-width:640px){.wrap{padding-left:12px;padding-right:12px}.app-header{padding-left:12px;padding-right:12px}.section-head h2{font-size:17px}.daily-card,.rank-spotlight,.more-group{border-radius:12px}}
 	@media(min-width:700px){body{padding-bottom:0}.app-bottom-nav{display:none}.wrap{padding-bottom:56px}}
+
+/* ============================================================
+   UI REDESIGN PREVIEW — 深藍投資終端
+   只改視覺層，不改任何資料／計算邏輯。
+   ============================================================ */
+:root{
+  --paper:#07111F!important; --paper-2:#0B1727!important; --card:#0E1D30!important;
+  --ink:#F4F7FB!important; --ink-soft:#B9C7D8!important; --ink-faint:#7F91A7!important;
+  --rule:#20344A!important; --sep:#20344A!important;
+  --up:#FF6B61!important; --down:#36C98F!important;
+  --brass:#4D91FF!important; --brass-2:#72AEFF!important;
+  --radius:16px!important;
+}
+html{background:#07111F!important}
+body{background:linear-gradient(180deg,#07111F 0%,#091625 48%,#07111F 100%)!important;color:var(--ink)!important}
+.wrap{max-width:760px!important;padding-top:94px!important}
+.app-header{background:rgba(7,17,31,.94)!important;border-bottom:1px solid #1D3248!important;box-shadow:0 8px 24px rgba(0,0,0,.20)!important}
+.app-header .eyebrow{color:#4D91FF!important;font-weight:700!important}
+.app-header h1{color:#F7FAFF!important;font-size:23px!important}
+.app-header .dateline{color:#71859D!important}
+.top-nav a{background:#102238!important;color:#91A5BC!important;border:1px solid #1B344D!important}
+.top-nav a.on{background:#1D4F91!important;color:#FFF!important;border-color:#2F75D0!important}
+.app-bottom-nav{background:rgba(7,17,31,.94)!important;border-top:1px solid #1D3248!important;box-shadow:0 -10px 30px rgba(0,0,0,.28)!important}
+.app-bottom-nav a{color:#71859D!important}
+.app-bottom-nav a.on{color:#78B0FF!important;background:#102B49!important}
+.app-bottom-nav a b{color:inherit!important}
+
+/* 所有主要資訊容器 */
+.daily-card,.more-group,.rank-spotlight,.chips-section,.position-journal,.position-history,.rank-situation,.review-details,.portfolio-chart-card,.contribution-card,.callout,.rank-champion,.rank-honour,.rank-mine,.exright-card{
+  background:linear-gradient(180deg,#102238 0%,#0D1C2E 100%)!important;
+  border:1px solid #203A55!important;
+  border-radius:18px!important;
+  box-shadow:0 12px 32px rgba(0,0,0,.20)!important;
+  color:var(--ink)!important;
+}
+.daily-card h2,.daily-card h3,.daily-card b,.more-group b,.rank-spotlight h2,.position-journal h2,.position-history h2,.section-head h2{color:#F4F7FB!important}
+.section-head{color:#F4F7FB!important}
+.section-head h2{font-size:19px!important;letter-spacing:.01em}
+.section-note,.daily-card small,.more-item small,.position-history-head small,.position-journal-head small{color:#8195AB!important}
+
+/* 摘要數字區 */
+.summary-grid,.metrics,.metric-grid,.stat-grid{gap:10px!important}
+.metric,.stat,.summary-item,.metric-card{background:#0C1B2D!important;border:1px solid #1E3650!important;border-radius:14px!important}
+.metric b,.stat b,.summary-item b,.metric-card b{color:#F7FAFF!important}
+
+/* 股票列：讓主要數字跳出來 */
+.rows,.row,.rank-card,.chips-row,.more-item{background:transparent!important;border-color:#1D334A!important;color:#EAF0F7!important}
+.row:hover,.rank-card:hover,.more-item:hover{background:#122841!important}
+.row b,.rank-card b,.more-item b{color:#F3F7FB!important}
+.row small,.rank-card small{color:#8195AB!important}
+
+/* 圖表與資料區 */
+.chart,.chart-wrap,.table-wrap{background:#0A1828!important;border-radius:14px!important}
+.profile-grid{background:#1A3046!important;border-color:#1A3046!important}
+.pf{background:#0D1D30!important;color:#EAF0F7!important}
+.cmp th.rk{background:#11263C!important;color:#B9C7D8!important}
+.cmp td.best{background:#12355B!important}
+
+/* 表單／操作 */
+input,select,textarea{background:#0A192A!important;color:#F3F7FB!important;border-color:#29445E!important}
+input::placeholder{color:#647991!important}
+input:focus,select:focus,textarea:focus{outline:2px solid rgba(77,145,255,.35)!important;border-color:#4D91FF!important}
+button{background:linear-gradient(180deg,#3277D6,#2359A7)!important;color:#FFF!important;border:1px solid #4D91FF!important;border-radius:10px!important;box-shadow:0 6px 16px rgba(29,93,177,.24)!important}
+button:hover{background:linear-gradient(180deg,#3B86EB,#2865BA)!important}
+.form.add,form.add,.sellpanel{background:#0D1D30!important;border-color:#203A55!important;color:#EAF0F7!important}
+
+/* 提示／Loading：改成同一套深色語言，但保留目前已確認舒服的節奏 */
+.app-fragment-status,.app-sync-float{background:rgba(11,28,47,.97)!important;border-color:#31577B!important;color:#B9C7D8!important;box-shadow:0 16px 38px rgba(0,0,0,.32)!important}
+.app-sync-float b{color:#DCEBFF!important}
+.app-sync-spinner{border-color:#31506D!important;border-top-color:#66A7FF!important}
+.app-load-step{color:#70869E!important}
+.app-load-step.done{color:#7AC5A7!important}
+.app-load-step.done .step-icon{color:#4ED29A!important}
+.app-load-step.active{color:#D8E9FF!important}
+.app-load-step.active .step-icon{border-color:#6EA9E8!important;border-right-color:transparent!important}
+.app-load-step.pending .step-icon{border-color:#31485F!important}
+.app-load-step.pending .step-icon::after{background:#526B83!important}
+.app-nav-loading{background:#4D91FF!important;box-shadow:0 1px 8px rgba(77,145,255,.55)!important}
+
+/* 更多頁／排行榜 */
+.more-item .more-icon{background:#132D49!important;color:#6FAAFF!important}
+.my-rank-card{background:#0C1B2D!important;border:1px solid #203A55!important;color:#EAF0F7!important}
+.rank-tabs{background:#0A1A2C!important;border:1px solid #203A55!important}
+.rank-tabs a{color:#91A5BC!important}
+.rank-tabs a.on{background:#1B4F91!important;color:#FFF!important}
+.rank-mine{background:#0E2A46!important;border-left-color:#4D91FF!important}
+
+/* 連結／標籤 */
+a{color:#72AEFF}
+.page-back a{color:#72AEFF!important}
+.chip-tag,.daily-section-title span{color:#72AEFF!important}
+
+@media(max-width:640px){
+  .wrap{padding-left:12px!important;padding-right:12px!important}
+  .daily-card,.more-group,.rank-spotlight,.position-journal,.position-history{border-radius:17px!important}
+  .app-header h1{font-size:22px!important}
+}
+
 """
 
 NEED_LOGIN_HTML = """
