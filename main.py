@@ -16457,20 +16457,22 @@ def render_page(title, body, nav_active=None, user_name=None):
     navProgress.className = 'app-nav-loading';
     navProgress.setAttribute('aria-hidden','true');
     document.body.appendChild(navProgress);
+    // 只顯示「載入內容」的階段，不放無法由前端確認的「整理畫面」假進度。
+    // fetch 真正回來後，才把目前最後階段一次標成完成。
     var loadStageMap = {{
-      '/web/portfolio':['市場資料','持股資料','今日重點','整理畫面'],
-      '/web/positions':['持股資料','目前報價','績效分析','整理畫面'],
+      '/web/portfolio':['市場資料','持股資料','今日重點'],
+      '/web/positions':['持股資料','目前報價','績效分析'],
       '/web/workbench':['市場資料','營收資料','籌碼資料','計算排名'],
-      '/web/leaderboard':['排行榜快照','個人績效','趨勢資料','整理畫面'],
-      '/web/trades':['交易紀錄','績效計算','趨勢分析','整理畫面'],
-      '/web/compare':['比較資料','報酬計算','風險資料','整理畫面'],
-      '/web/settings':['設定資料','偏好設定','儲存狀態','整理畫面'],
-      '/web/more':['功能資料','狀態檢查','整理畫面'],
-      '/web/chips':['籌碼快照','法人資料','排序結果','整理畫面'],
-      '/web/etf':['ETF資料','報酬資料','分類排名','整理畫面'],
-      '/web/watchlist':['自選資料','目前報價','異動整理','整理畫面']
+      '/web/leaderboard':['排行榜快照','個人績效','趨勢資料'],
+      '/web/trades':['交易紀錄','績效計算','趨勢分析'],
+      '/web/compare':['比較資料','報酬計算','風險資料'],
+      '/web/settings':['設定資料','偏好設定','儲存狀態'],
+      '/web/more':['功能資料','狀態檢查'],
+      '/web/chips':['籌碼快照','法人資料','排序結果'],
+      '/web/etf':['ETF資料','報酬資料','分類排名'],
+      '/web/watchlist':['自選資料','目前報價','異動整理']
     }};
-    var loadSteps = loadStageMap[target.pathname] || ['頁面資料','分析資料','整理畫面'];
+    var loadSteps = loadStageMap[target.pathname] || ['頁面資料','分析資料'];
     var loadTitleMap = {{
       '/web/portfolio':'正在載入今日資料…','/web/positions':'正在載入持股資料…','/web/workbench':'正在載入選股結果…',
       '/web/leaderboard':'正在載入排行榜…','/web/trades':'正在載入交易紀錄…','/web/compare':'正在載入比較結果…',
@@ -16480,6 +16482,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     var loadTitle = loadTitleMap[target.pathname] || '正在載入頁面…';
     var stepTimer = null;
     var stepIndex = 0;
+    var stageElapsed = 0;
     var noticeTimer = null;
     function ensureNavNotice() {{
       if (navNotice) return;
@@ -16513,9 +16516,21 @@ def render_page(title, body, nav_active=None, user_name=None):
       }}
     }}
     stepTimer = window.setInterval(function() {{
-      if (stepIndex < loadSteps.length - 1) {{ stepIndex += 1; setLoadStep(stepIndex, false); }}
+      stageElapsed += 1;
+      if (stepIndex < loadSteps.length - 1) {{
+        stepIndex += 1;
+        setLoadStep(stepIndex, false);
+      }} else if (navNotice) {{
+        // 最後一階不是「整理畫面」；資料還沒回來時維持最後階段，
+        // 但讓文字持續變化，避免看起來像卡死。
+        var active = navNotice.querySelector('.app-load-step.active span:last-child');
+        if (active) {{
+          var dots = '.'.repeat((stageElapsed % 3) + 1);
+          active.textContent = loadSteps[loadSteps.length - 1] + dots;
+        }}
+      }}
       if (navProgress.classList.contains('show')) navProgress.classList.add('mid');
-    }}, 850);
+    }}, 1000);
     navProgress.classList.add('show');
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
