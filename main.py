@@ -15530,10 +15530,10 @@ BASE_CSS = """
      卡片浮不出來，所以底色壓深、卡片維持純白。
      漲跌色沿用既有的紅綠——那兩個顏色代表的是意義，
      換掉會讓看慣的人一時反應不過來，不屬於「換風格」的範圍。 */
-  --paper:#F2F2F7; --paper-2:#EFEFF4; --card:#FFFFFF;
-  --ink:#000000; --ink-soft:#3C3C43; --ink-faint:#8E8E93;
-  --rule:#E5E5EA; --sep:#E5E5EA;
-  --up:#C0443C; --down:#197653; --brass:#007AFF; --brass-2:#5AA9FF;
+  --paper:#0B1220; --paper-2:#111827; --card:#151F2E;
+  --ink:#F8FAFC; --ink-soft:#D7E0EA; --ink-faint:#9AA9BA;
+  --rule:#263548; --sep:#263548;
+  --up:#FF6B63; --down:#42D39A; --brass:#5EA7FF; --brass-2:#8BC2FF;
   --radius:12px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -16233,6 +16233,13 @@ a{color:#72AEFF}
   .app-header h1{font-size:22px!important}
 }
 
+
+/* 高對比可讀性層：深藍底上使用高對比文字，避免淺灰字難以閱讀。 */
+.card,.panel,.box,.section,.stock-card,.metric-card,.daily-card,.portfolio-card,.callout,.position-journal,.position-history,.chips-section,.rank-champion,.rank-honour,.rank-mine,.exright-card,.portfolio-chart-card,.contribution-card,.monthly-review,.watchlist-card{background:var(--card)!important;color:var(--ink);border-color:var(--rule)!important}
+input,select,textarea{background:#0F1928!important;color:var(--ink)!important;border-color:var(--rule)!important}
+small,.muted,.sub,.note,.hint{color:var(--ink-faint)}
+a{color:var(--brass)}
+.position-journal-note,.position-history-note,.position-journal-table-head,.position-history-table-head,.position-journal-category,.chip-summary,.watchlist-advice{background:#101A29!important;color:var(--ink-soft)!important}
 """
 
 NEED_LOGIN_HTML = """
