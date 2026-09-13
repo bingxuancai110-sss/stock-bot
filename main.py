@@ -16076,7 +16076,7 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 	body{background:#F2F2F7;overflow-x:hidden;padding-bottom:calc(76px + env(safe-area-inset-bottom));-webkit-tap-highlight-color:transparent}
 a,button,input,select{touch-action:manipulation}
 a,button{transition:transform .12s ease,opacity .12s ease,box-shadow .12s ease,background-color .12s ease}
-a:active,button:active{transform:scale(.98);opacity:.78}.tap-loading{opacity:.72;cursor:wait}
+a:active,button:active{transform:scale(.98);opacity:.78}.tap-loading{opacity:.72;cursor:wait}.app-ux-toast{position:fixed;z-index:10020;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:calc(100vw - 32px);padding:10px 14px;border:1px solid #c8d8e5;border-radius:999px;background:rgba(255,255,255,.97);box-shadow:0 7px 22px rgba(29,41,57,.16);font-size:13px;font-weight:800;color:#274c77;pointer-events:none;animation:toast-in .18s ease-out}.app-ux-toast.error{color:#a33b2e;border-color:#e5c5bf;background:#fff8f6}@keyframes toast-in{from{opacity:0;transform:translate(-50%,6px)}to{opacity:1;transform:translate(-50%,0)}}
 .tap-pulse{animation:tap-pulse .22s ease-out}
 .feedback-success{border-color:#BBD8C2!important;background:#F3FAF4!important;animation:feedback-in .22s ease-out}
 .feedback-error{border-color:#E5B9B3!important;background:#FFF5F3!important;animation:feedback-in .22s ease-out}
@@ -16309,6 +16309,10 @@ def render_page(title, body, nav_active=None, user_name=None):
   // 主導覽改為只替換內容 fragment：LINE WebView 不必每次切今日、持股、選股、排行
   // 都重建整張頁面。資料仍由每個既有 route／權杖 decorator 提供，未更改任何計算流程。
   var appContent = document.getElementById('app-page-content');
+  var appNavBusy = false;
+  var appNavSeq = 0;
+  var appNavController = null;
+  var appScrollRestore = {{}};
   var appRouteKeys = {{
     '/web/portfolio':'portfolio','/web/positions':'positions','/web/workbench':'screener',
     '/web/leaderboard':'leaderboard','/web/trades':'trades','/web/compare':'compare',
@@ -16417,12 +16421,29 @@ def render_page(title, body, nav_active=None, user_name=None):
     if (h1 && appTitles[path]) h1.textContent = appTitles[path];
     if (appTitles[path]) document.title = appTitles[path] + '｜台股 BOT';
   }}
+  function showAppToast(message, kind) {{
+    var old = document.querySelector('.app-ux-toast');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var toast = document.createElement('div');
+    toast.className = 'app-ux-toast ' + (kind === 'error' ? 'error' : 'success');
+    toast.setAttribute('role','status');
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    window.setTimeout(function() {{ if (toast.parentNode) toast.parentNode.removeChild(toast); }}, 1800);
+  }}
   function switchAppPage(rawHref, pushState) {{
     if (!appContent) {{ window.location.assign(rawHref); return; }}
+    if (appNavBusy) return;
     var target = new URL(rawHref, window.location.href);
     if (!appRouteKeys[target.pathname]) {{ window.location.assign(target.pathname + target.search); return; }}
     target.searchParams.set('fragment', '1');
     target.searchParams.delete('fast');
+    var navSeq = ++appNavSeq;
+    appNavBusy = true;
+    if (appNavController) {{ try {{ appNavController.abort(); }} catch (ignore) {{}} }}
+    appNavController = window.AbortController ? new AbortController() : null;
+    var previousScroll = window.scrollY || 0;
+    if (pushState) appScrollRestore[window.location.pathname + window.location.search] = previousScroll;
     if (target.pathname === '/web/portfolio') target.searchParams.set('_nav', String(Date.now()));
     var requestUrl = target.pathname + '?' + target.searchParams.toString();
     var navNotice = document.createElement('div');
@@ -16432,7 +16453,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     document.body.appendChild(navNotice);
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
-    fetch(requestUrl, {{credentials:'same-origin', cache:'no-store'}})
+    fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, appNavController ? {{signal:appNavController.signal}} : {{}}))
       .then(function(response) {{
         if (response.status === 401) {{ window.location.assign(target.pathname + target.search.replace(/([?&])fragment=1&?/, '$1').replace(/[?&]$/, '')); return null; }}
         if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -16440,6 +16461,7 @@ def render_page(title, body, nav_active=None, user_name=None):
       }})
       .then(function(fragment) {{
         if (fragment === null) return;
+        if (navSeq !== appNavSeq) return;
         if (fragment.indexOf('AUTH_EXPIRED') >= 0) {{ window.location.assign(target.pathname + target.search); return; }}
         document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
         appContent.innerHTML = fragment;
@@ -16449,11 +16471,14 @@ def render_page(title, body, nav_active=None, user_name=None):
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
         target.searchParams.delete('fragment');
-        if (pushState) history.pushState({{stockbotApp:true}}, '', target.pathname + target.search);
+        if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', target.pathname + target.search);
         setAppNavState(target.pathname);
+        showAppToast('✓ 頁面已更新','success');
         window.scrollTo({{top:0, behavior: prefersReducedMotion() ? 'auto' : 'smooth'}});
       }})
       .catch(function(error) {{
+        if (error && error.name === 'AbortError') return;
+        appNavBusy = false;
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
         if (navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
@@ -16469,7 +16494,11 @@ def render_page(title, body, nav_active=None, user_name=None):
           appContent.parentNode.insertBefore(retryNotice, appContent);
           window.setTimeout(function() {{ if (retryNotice.parentNode) retryNotice.parentNode.removeChild(retryNotice); }}, 4200);
         }}
+        showAppToast('頁面切換失敗，請再試一次','error');
         console.error(error);
+      }})
+      .finally(function() {{
+        if (navSeq === appNavSeq) appNavBusy = false;
       }});
   }}
   window.stockBotSwitchPage = switchAppPage;
@@ -16480,7 +16509,13 @@ def render_page(title, body, nav_active=None, user_name=None):
     switchAppPage(appLink.href, true);
   }}, true);
   window.addEventListener('popstate', function() {{
-    if (appRouteKeys[window.location.pathname]) switchAppPage(window.location.href, false);
+    if (appRouteKeys[window.location.pathname]) {{
+      switchAppPage(window.location.href, false);
+      window.setTimeout(function() {{
+        var key = window.location.pathname + window.location.search;
+        if (Object.prototype.hasOwnProperty.call(appScrollRestore, key)) window.scrollTo(0, appScrollRestore[key]);
+      }}, 80);
+    }}
   }});
 
   // 點擊後立即給回饋；不攔截錨點、下載與外部連結。
