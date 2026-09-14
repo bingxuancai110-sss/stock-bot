@@ -16083,10 +16083,10 @@ a:active,button:active{transform:scale(.975);opacity:.82}.tap-loading{opacity:.6
 .app-nav-loading.show{width:42%}.app-nav-loading.mid{width:72%}.app-nav-loading.done{width:100%;opacity:0}
 .app-load-card{display:flex;align-items:flex-start;gap:10px;margin:0 0 12px;padding:13px 14px;border:1px solid #c8d8e5;border-radius:14px;background:rgba(248,252,255,.98);box-shadow:0 6px 20px rgba(29,41,57,.10);animation:load-card-in .16s ease-out}
 /* 載入提示固定在視窗中，使用者滑到頁面任何位置都看得到；實際 top 由 JS 依固定標題列高度定位。 */
-.app-load-card{position:fixed;z-index:10025;left:50%;top:88px;width:min(420px,calc(100vw - 28px));margin:0;transform:translateX(-50%);max-height:min(58vh,430px);overflow:auto;overscroll-behavior:contain;box-sizing:border-box;box-shadow:0 10px 28px rgba(29,41,57,.16)}
-.app-load-card::-webkit-scrollbar{width:4px}.app-load-card::-webkit-scrollbar-thumb{background:#C8D5E2;border-radius:4px}
-@media(max-width:640px){.app-load-card{width:min(390px,calc(100vw - 24px));top:82px;padding:12px 14px}}
-.app-load-card b{display:block;color:#274c77;font-size:14px;line-height:1.35}.app-load-card small{display:block;margin-top:3px;color:#6c8095;font-size:11.5px}.app-load-card .app-load-steps{margin-top:8px}.app-load-card .app-load-step{font-size:12px}
+.app-load-card{position:fixed!important;z-index:10025;left:50%;top:88px!important;width:min(420px,calc(100vw - 28px));margin:0;transform:translateX(-50%);max-height:min(58vh,430px);overflow:auto;overscroll-behavior:contain;box-sizing:border-box;box-shadow:0 10px 28px rgba(29,41,57,.16)}
+.app-load-card{contain:layout paint;pointer-events:none}.app-load-card::-webkit-scrollbar{width:4px}.app-load-card::-webkit-scrollbar-thumb{background:#C8D5E2;border-radius:4px}
+@media(max-width:640px){.app-load-card{width:min(390px,calc(100vw - 24px));top:82px!important;padding:12px 14px}}
+.app-load-card{border-left:4px solid #5B8FC6}.app-load-card b{display:block;color:#274c77;font-size:14px;line-height:1.35}.app-load-card small{display:block;margin-top:3px;color:#6c8095;font-size:11.5px}.app-load-card .app-load-steps{margin-top:8px}.app-load-card .app-load-step{font-size:12px}
 .app-load-card .app-sync-spinner{width:18px;height:18px;margin-top:1px}
 @keyframes toast-in{from{opacity:0;transform:translate(-50%,6px)}to{opacity:1;transform:translate(-50%,0)}}
 @keyframes load-card-in{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
@@ -16139,29 +16139,44 @@ button[disabled],input[disabled],select[disabled]{opacity:.58;cursor:wait}
 	.cmp th.rk{background:#F6F8FB}.cmp td.best{background:#EEF5FB}
 	@media(max-width:640px){.wrap{padding-left:12px;padding-right:12px}.app-header{padding-left:12px;padding-right:12px}.section-head h2{font-size:17px}.daily-card,.rank-spotlight,.more-group{border-radius:12px}}
 	@media(min-width:700px){body{padding-bottom:0}.app-bottom-nav{display:none}.wrap{padding-bottom:56px}}
-/* ── 2.0 美術微升級：保留原本結構，只統一層次、間距與互動質感 ── */
-body{background:#F4F6F8}
+/* ── 2.1 美術升級：不改結構，提升層次、可讀性與 App 質感 ── */
+body{background:#F3F6F9;color:#182433}
 .wrap{max-width:760px}
-.app-header{background:rgba(247,249,252,.97);border-bottom-color:#DCE4EC;box-shadow:0 4px 18px rgba(29,41,57,.055)}
-.app-header h1{font-weight:800;letter-spacing:.015em}
-.daily-card,.more-group,.rank-spotlight,.chips-section,.position-journal,.position-history,.review-details{border-color:#DCE4EC!important;box-shadow:0 6px 22px rgba(29,41,57,.055)!important}
-.daily-card,.more-group,.rank-spotlight{border-radius:16px}
-.section-head{margin-top:28px}
-.section-head h2{font-weight:800;letter-spacing:.01em}
-.section-note{color:#77889A}
-.rows{border-top-color:#E2E8EE}
-.row{border-bottom-color:#E2E8EE;transition:background-color .16s ease,transform .12s ease}
-.row:hover{background:#F8FAFC}
-.name{font-weight:650}
-.price{font-weight:650}
-button{box-shadow:0 2px 7px rgba(39,72,101,.12)}
-button:active{box-shadow:0 1px 3px rgba(39,72,101,.10)}
-.top-nav a,.app-bottom-nav a{transition:background-color .16s ease,color .16s ease,transform .12s ease}
-.app-bottom-nav{border-top-color:#DCE4EC;box-shadow:0 -6px 20px rgba(29,41,57,.065)}
-.app-bottom-nav a.on{box-shadow:inset 0 0 0 1px rgba(53,91,123,.06)}
-.callout,.chips-meta,.hint,.msg,.dist{border-radius:10px}
-input,select{box-shadow:inset 0 1px 2px rgba(29,41,57,.025)}
-@media(max-width:640px){.daily-card,.more-group,.rank-spotlight{border-radius:14px}}
+.app-header{background:rgba(248,250,252,.98);border-bottom:1px solid #D8E2EC;box-shadow:0 5px 18px rgba(25,45,65,.075)}
+.app-header .eyebrow{color:#4B78A4;font-weight:800}
+.app-header h1{font-weight:850;letter-spacing:.01em;color:#142231}
+.app-header .dateline{color:#66788B}
+.daily-card,.more-group,.rank-spotlight,.chips-section,.position-journal,.position-history,.review-details,.portfolio-chart-card,.contribution-card{
+  border:1px solid #D7E1EA!important;background:#FFF!important;
+  box-shadow:0 7px 24px rgba(29,52,73,.065)!important;
+}
+.daily-card,.more-group,.rank-spotlight,.portfolio-chart-card,.contribution-card{border-radius:16px}
+.section-head{margin-top:30px;margin-bottom:12px;padding-left:11px;border-left:3px solid #527A9B}
+.section-head h2{font-weight:850;letter-spacing:.005em;color:#172636}
+.section-note{color:#6B7C8E}
+.daily-section-title h2,.daily-section-title h3{color:#172636}
+.daily-section-title span,.section-note{color:#718397}
+.rows{border-top:1px solid #DCE5ED}
+.row{border-bottom:1px solid #E3E9EF;transition:background-color .16s ease,transform .12s ease,box-shadow .16s ease}
+.row:hover{background:#F7FAFC;box-shadow:inset 3px 0 0 #7DA1C1}
+.name{font-weight:750;color:#172636}
+.price{font-weight:750;color:#182433}
+button{box-shadow:0 3px 9px rgba(39,72,101,.14);font-weight:750}
+button:active{box-shadow:0 1px 4px rgba(39,72,101,.12)}
+a{color:#356EAA}
+.top-nav a{border:1px solid #D8E3EC;background:#F1F5F8;color:#53687C;font-weight:700}
+.top-nav a.on{background:#355B7B;color:#FFF;box-shadow:0 3px 9px rgba(53,91,123,.18)}
+.app-bottom-nav{border-top-color:#D7E1EA;box-shadow:0 -7px 22px rgba(29,52,73,.085)}
+.app-bottom-nav a{font-weight:650;color:#718092}
+.app-bottom-nav a.on{color:#2F5E88;background:#EDF4FA;box-shadow:inset 0 0 0 1px #D6E5F1}
+.callout,.chips-meta,.hint,.msg,.dist{border-radius:11px;box-shadow:0 2px 9px rgba(29,52,73,.035)}
+input,select{box-shadow:inset 0 1px 2px rgba(29,41,57,.035)}
+input:focus,select:focus{box-shadow:0 0 0 3px rgba(82,122,155,.13)}
+.badge{font-weight:750}
+@media(max-width:640px){
+  .daily-card,.more-group,.rank-spotlight,.portfolio-chart-card,.contribution-card{border-radius:14px}
+  .section-head{margin-top:25px;padding-left:9px}
+}
 """
 
 NEED_LOGIN_HTML = """
@@ -16524,14 +16539,16 @@ def render_page(title, body, nav_active=None, user_name=None):
             return '<span class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span class="step-icon" aria-hidden="true"></span><span>' + label + '</span></span>';
           }}).join('')
         + '</span></span>';
-      if (appContent && appContent.parentNode) appContent.parentNode.insertBefore(navNotice, appContent);
-      else document.body.appendChild(navNotice);
+      // 一律掛在 body 最外層，避免被 .wrap / .app-content 等祖先元素的
+      // overflow、transform 或 stacking context 影響；fixed 才是真正跟著視窗走。
+      document.body.appendChild(navNotice);
       function positionNavNotice() {{
         if (!navNotice) return;
         var header = document.querySelector('.app-header');
         var headerBottom = header ? header.getBoundingClientRect().bottom : 72;
         var top = Math.max(headerBottom + 10, 12);
-        navNotice.style.top = top + 'px';
+        navNotice.style.setProperty('top', top + 'px', 'important');
+        navNotice.style.setProperty('position', 'fixed', 'important');
       }}
       positionNavNotice();
       window.addEventListener('resize', positionNavNotice, {{passive:true}});
