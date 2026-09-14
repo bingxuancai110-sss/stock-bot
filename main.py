@@ -16082,6 +16082,10 @@ a:active,button:active{transform:scale(.975);opacity:.82}.tap-loading{opacity:.6
 .app-nav-loading{position:fixed;z-index:10030;top:0;left:0;height:3px;width:0;background:#3f6f91;box-shadow:0 1px 5px rgba(63,111,145,.25);transition:width .28s ease,opacity .2s ease;pointer-events:none}
 .app-nav-loading.show{width:42%}.app-nav-loading.mid{width:72%}.app-nav-loading.done{width:100%;opacity:0}
 .app-load-card{display:flex;align-items:flex-start;gap:10px;margin:0 0 12px;padding:13px 14px;border:1px solid #c8d8e5;border-radius:14px;background:rgba(248,252,255,.98);box-shadow:0 6px 20px rgba(29,41,57,.10);animation:load-card-in .16s ease-out}
+/* 載入提示固定在視窗中，使用者滑到頁面任何位置都看得到；實際 top 由 JS 依固定標題列高度定位。 */
+.app-load-card{position:fixed;z-index:10025;left:50%;top:88px;width:min(420px,calc(100vw - 28px));margin:0;transform:translateX(-50%);max-height:min(58vh,430px);overflow:auto;overscroll-behavior:contain;box-sizing:border-box;box-shadow:0 10px 28px rgba(29,41,57,.16)}
+.app-load-card::-webkit-scrollbar{width:4px}.app-load-card::-webkit-scrollbar-thumb{background:#C8D5E2;border-radius:4px}
+@media(max-width:640px){.app-load-card{width:min(390px,calc(100vw - 24px));top:82px;padding:12px 14px}}
 .app-load-card b{display:block;color:#274c77;font-size:14px;line-height:1.35}.app-load-card small{display:block;margin-top:3px;color:#6c8095;font-size:11.5px}.app-load-card .app-load-steps{margin-top:8px}.app-load-card .app-load-step{font-size:12px}
 .app-load-card .app-sync-spinner{width:18px;height:18px;margin-top:1px}
 @keyframes toast-in{from{opacity:0;transform:translate(-50%,6px)}to{opacity:1;transform:translate(-50%,0)}}
@@ -16135,6 +16139,29 @@ button[disabled],input[disabled],select[disabled]{opacity:.58;cursor:wait}
 	.cmp th.rk{background:#F6F8FB}.cmp td.best{background:#EEF5FB}
 	@media(max-width:640px){.wrap{padding-left:12px;padding-right:12px}.app-header{padding-left:12px;padding-right:12px}.section-head h2{font-size:17px}.daily-card,.rank-spotlight,.more-group{border-radius:12px}}
 	@media(min-width:700px){body{padding-bottom:0}.app-bottom-nav{display:none}.wrap{padding-bottom:56px}}
+/* ── 2.0 美術微升級：保留原本結構，只統一層次、間距與互動質感 ── */
+body{background:#F4F6F8}
+.wrap{max-width:760px}
+.app-header{background:rgba(247,249,252,.97);border-bottom-color:#DCE4EC;box-shadow:0 4px 18px rgba(29,41,57,.055)}
+.app-header h1{font-weight:800;letter-spacing:.015em}
+.daily-card,.more-group,.rank-spotlight,.chips-section,.position-journal,.position-history,.review-details{border-color:#DCE4EC!important;box-shadow:0 6px 22px rgba(29,41,57,.055)!important}
+.daily-card,.more-group,.rank-spotlight{border-radius:16px}
+.section-head{margin-top:28px}
+.section-head h2{font-weight:800;letter-spacing:.01em}
+.section-note{color:#77889A}
+.rows{border-top-color:#E2E8EE}
+.row{border-bottom-color:#E2E8EE;transition:background-color .16s ease,transform .12s ease}
+.row:hover{background:#F8FAFC}
+.name{font-weight:650}
+.price{font-weight:650}
+button{box-shadow:0 2px 7px rgba(39,72,101,.12)}
+button:active{box-shadow:0 1px 3px rgba(39,72,101,.10)}
+.top-nav a,.app-bottom-nav a{transition:background-color .16s ease,color .16s ease,transform .12s ease}
+.app-bottom-nav{border-top-color:#DCE4EC;box-shadow:0 -6px 20px rgba(29,41,57,.065)}
+.app-bottom-nav a.on{box-shadow:inset 0 0 0 1px rgba(53,91,123,.06)}
+.callout,.chips-meta,.hint,.msg,.dist{border-radius:10px}
+input,select{box-shadow:inset 0 1px 2px rgba(29,41,57,.025)}
+@media(max-width:640px){.daily-card,.more-group,.rank-spotlight{border-radius:14px}}
 """
 
 NEED_LOGIN_HTML = """
@@ -16499,6 +16526,16 @@ def render_page(title, body, nav_active=None, user_name=None):
         + '</span></span>';
       if (appContent && appContent.parentNode) appContent.parentNode.insertBefore(navNotice, appContent);
       else document.body.appendChild(navNotice);
+      function positionNavNotice() {{
+        if (!navNotice) return;
+        var header = document.querySelector('.app-header');
+        var headerBottom = header ? header.getBoundingClientRect().bottom : 72;
+        var top = Math.max(headerBottom + 10, 12);
+        navNotice.style.top = top + 'px';
+      }}
+      positionNavNotice();
+      window.addEventListener('resize', positionNavNotice, {{passive:true}});
+      navNotice._positionNavNotice = positionNavNotice;
     }}
     noticeTimer = window.setTimeout(ensureNavNotice, 180);
     function setLoadStep(nextIndex, doneAll) {{
@@ -16557,7 +16594,10 @@ def render_page(title, body, nav_active=None, user_name=None):
           var loadSub = navNotice.querySelector('small');
           if (loadTitleEl) loadTitleEl.textContent = '✓ 載入完成';
           if (loadSub) loadSub.textContent = '畫面已更新';
-          window.setTimeout(function() {{ if (navNotice && navNotice.parentNode) navNotice.parentNode.removeChild(navNotice); }}, 380);
+          window.setTimeout(function() {{
+            if (navNotice && navNotice._positionNavNotice) window.removeEventListener('resize', navNotice._positionNavNotice);
+            if (navNotice && navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
+          }}, 380);
         }}
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
@@ -16575,6 +16615,7 @@ def render_page(title, body, nav_active=None, user_name=None):
         appNavBusy = false;
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
+        if (navNotice && navNotice._positionNavNotice) window.removeEventListener('resize', navNotice._positionNavNotice);
         if (navNotice && navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
         var retryNotice = document.createElement('div');
         retryNotice.className = 'app-fragment-status app-fragment-error';
