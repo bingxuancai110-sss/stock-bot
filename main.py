@@ -16234,6 +16234,102 @@ a{color:#72AEFF}
 }
 
 
+
+/* 最終可讀性修正：淺色區塊一律使用深色文字。
+   原則：背景可以是白／淺灰，但文字不能沿用深色底用的 --ink-soft / --ink-faint。 */
+.light-surface,
+.daily-hero,.daily-fast-hero,.daily-fast-card,.daily-fast-panel,
+.daily-card,.rank-spotlight,.more-group,
+.portfolio-chart-card,.contribution-card,.home-judgement-card,
+.home-detail-collapse,.monthly-review,.watchlist-card,
+.position-journal,.position-history,.chips-section,
+.position-journal-note,.position-history-note,
+.position-journal-table-head,.position-history-table-head,
+.position-journal-category,.daily-interpretation,
+.contribution-basis-notice,.impact-lead,.portfolio-highlights>div,
+.hero-summary-panel,.hero-quote-panel,.rank-mini,
+.daily-close-status,.attention-card{
+  color:#182231!important;
+}
+.daily-hero h1,.daily-fast-hero h1,
+.daily-card h2,.daily-card h3,.daily-card b,
+.daily-fast-card h2,.daily-fast-card h3,.daily-fast-card b,
+.daily-section-title h2,.rank-spotlight h2,
+.more-group h2,.more-group h3,.more-group b,
+.position-journal h2,.position-history h2,
+.position-journal-name b,.position-history-row b,
+.portfolio-chart-card h2,.contribution-card h2,
+.home-judgement-card h2,.home-detail-collapse>summary,
+.monthly-review h2,.watchlist-card h3,
+.chips-section h2,.chips-section b,
+.hero-summary-panel b,.hero-quote-text,
+.rank-mini b,.portfolio-highlights b{
+  color:#182231!important;
+}
+.daily-hero p,.daily-hero small,.daily-fast-hero p,.daily-fast-hero small,
+.daily-fast-detail,.daily-fast-empty,.daily-event,.event-detail,
+.daily-card p,.daily-card small,.daily-card span,
+.daily-card .daily-section-title span,
+.daily-fast-card small,.daily-fast-card span,
+.daily-fast-panel span,.daily-fast-panel small,
+.rank-spotlight small,.rank-mini span,.rank-mini small,
+.more-group small,.more-item small,
+.position-journal-head small,.position-history-head small,
+.position-journal-note,.position-history-note,
+.position-journal-table-head,.position-history-table-head,
+.position-journal-category,.position-journal-name small,
+.position-journal-cell,.position-history-date,
+.position-history-summary small,
+.portfolio-chart-note,.portfolio-chart-footnote,
+.contribution-card p,.contribution-basis-notice,
+.impact-sentence,.impact-lead small,.impact-lead p,
+.impact-detail-name small,.home-judgement-copy,
+.judgement-row span,.daily-interpretation,
+.monthly-review-note,.monthly-action small,.monthly-action span,
+.monthly-action em,.monthly-metric small,
+.watchlist-meta,.watchlist-intro,.watchlist-code,
+.watchlist-metrics,.watchlist-facts,.watchlist-breakdown,
+.watchlist-advice,.chips-section>p,.chips-row small,
+.chips-empty,.callout,.section-note{
+  color:#4A596A!important;
+}
+.daily-hero .market-strip span,
+.daily-fast-market span,
+.hero-summary-panel,
+.hero-quote-panel,
+.portfolio-highlights>div,
+.rank-mini,
+.impact-lead,
+.contribution-basis-notice,
+.position-journal-note,.position-history-note,
+.daily-interpretation{
+  background:#F7F9FC!important;
+}
+.daily-hero,.daily-fast-hero{background:#F7F9FC!important;border-color:#D9E2EC!important}
+.daily-hero .market-strip span{border:1px solid #E2E8F0}
+.daily-hero .market-strip small,.daily-fast-market small{color:#657487!important}
+.daily-section-title a,.daily-card a,.home-detail-collapse>summary,
+.position-journal-export,.daily-fast-card a,.hero-summary-panel-head a,
+.more-item strong,.watchlist-group>h2 small{
+  color:#2F78D6!important;
+}
+.position-journal,.position-history,.portfolio-chart-card,.daily-card,.rank-spotlight,
+.more-group,.chips-section,.monthly-review,.watchlist-card,.home-detail-collapse{
+  background:#FFFFFF!important;border-color:#E1E7EF!important;
+}
+.position-journal-head,.position-history-head{border-bottom-color:#E1E7EF!important}
+.position-journal-table-head,.position-history-table-head,.position-journal-category{background:#F7F9FC!important;border-bottom-color:#E1E7EF!important}
+.position-journal-note,.position-history-note{background:#F7F9FC!important}
+.position-journal-row,.position-history-row,.stock-group{border-top-color:#E6EBF2!important}
+.position-journal-cell b,.position-history-summary strong,.stock-group-head b,.stock-log-price,.lotmark-px{color:#182231!important}
+.position-journal-cell small,.position-history-summary small,.stock-log-week,.stock-log-note,.lotmark-date,.code,.sub{color:#657487!important}
+.position-journal-badge.new{background:#FFF4D6!important;color:#8A6A00!important}
+.position-journal-badge.add{background:#FFF0EE!important;color:#B42318!important}
+.position-journal-badge.reduce{background:#EAF8F1!important;color:#087A4B!important}
+.position-journal-badge.delete{background:#EEF1F5!important;color:#667085!important}
+
+a{ -webkit-tap-highlight-color:rgba(47,120,214,.12); }
+
 /* 高對比可讀性層：深藍底上使用高對比文字，避免淺灰字難以閱讀。 */
 .card,.panel,.box,.section,.stock-card,.metric-card,.daily-card,.portfolio-card,.callout,.position-journal,.position-history,.chips-section,.rank-champion,.rank-honour,.rank-mine,.exright-card,.portfolio-chart-card,.contribution-card,.monthly-review,.watchlist-card{background:var(--card)!important;color:var(--ink);border-color:var(--rule)!important}
 input,select,textarea{background:#0F1928!important;color:var(--ink)!important;border-color:var(--rule)!important}
