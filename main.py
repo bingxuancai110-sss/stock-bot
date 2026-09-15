@@ -8444,6 +8444,124 @@ def _pick_return_split_safe(cur, pick_date, raw_price):
     return (closes[-1] - raw_price) / raw_price * 100, False, False
 
 
+
+def _score_validation_horizon_return(cur, pick_date, raw_price, horizon):
+    """以推薦日後第 N 個交易日收盤計算價格報酬；只使用推薦當下已知的 score。"""
+    if not cur or not raw_price:
+        return None
+    dates=cur.get("close_dates") or []
+    closes=cur.get("closes") or []
+    if not dates or not closes or len(dates)!=len(closes):
+        return None
+    if isinstance(pick_date, datetime):
+        pick_date=pick_date.date()
+    elif isinstance(pick_date,str):
+        try: pick_date=datetime.fromisoformat(pick_date[:10]).date()
+        except Exception: return None
+    if not isinstance(pick_date,date):
+        return None
+    idx=None
+    for i,d in enumerate(dates):
+        try:
+            dd=d.date() if isinstance(d,datetime) else (datetime.fromisoformat(str(d)[:10]).date() if isinstance(d,str) else d)
+            if dd>=pick_date:
+                idx=i; break
+        except Exception:
+            continue
+    if idx is None or idx+horizon>=len(closes):
+        return None
+    try:
+        start=float(raw_price); end=float(closes[idx+horizon])
+    except (TypeError,ValueError):
+        return None
+    if start<=0 or end<=0:
+        return None
+    # 還原面額變更／split，避免把機械性 1/20 變價當成真實虧損。
+    scale=1.0; split=False
+    ratios=(0.05,0.1,0.2,0.25,1/3,0.5,2.0,3.0,4.0,5.0,10.0,20.0)
+    for j in range(idx+1,idx+horizon+1):
+        try: prev=float(closes[j-1]); now=float(closes[j])
+        except (TypeError,ValueError): continue
+        if prev<=0 or now<=0: continue
+        rr=now/prev
+        if rr<=0.25 or rr>=4.0:
+            nearest=min(ratios,key=lambda x:abs(x-rr))
+            if abs(rr/nearest-1.0)<=0.03:
+                split=True
+                scale *= (1.0/rr if rr<1 else rr)
+    if split:
+        end*=scale
+    ret=(end-start)/start*100.0
+    return ret if math.isfinite(ret) else None
+
+
+def _score_validation(mode, days=180, code=None):
+    """驗證「推薦當下分數」與後續 5/10/20 個交易日價格報酬的關聯。
+    不改任何選股規則；只做 out-of-sample 回看，並明確排除尚未成熟樣本。
+    """
+    picks=get_picks_since(mode,days)
+    if code:
+        code=normalize_code(code)
+        picks=[p for p in picks if normalize_code(p.get('code',''))==code]
+    if not picks:
+        return {"mode":mode,"n_total":0,"mature":{},"history":[]}
+    price_map=get_realtime_stocks_bulk(list({p['code'] for p in picks}),workers=16,rng='1y')
+    today=taiwan_today()
+    horizons=(5,10,20)
+    all_rows=[]
+    for p in picks:
+        pd=p.get('date')
+        if isinstance(pd,datetime): pd=pd.date()
+        if isinstance(pd,str):
+            try: pd=datetime.fromisoformat(pd[:10]).date()
+            except Exception: continue
+        if not isinstance(pd,date): continue
+        score=None
+        try:
+            if p.get('score') is not None and str(p.get('score')).strip()!='': score=float(p['score'])
+        except Exception: score=None
+        row={"code":p.get('code'),"name":p.get('name'),"date":pd.isoformat(),"rank":p.get('rank'),"score":score,"price":p.get('price')}
+        cur=price_map.get(p.get('code'))
+        for h in horizons:
+            row[f'r{h}']=_score_validation_horizon_return(cur,pd,p.get('price'),h)
+        all_rows.append(row)
+    def nums(key, rows):
+        return [r[key] for r in rows if isinstance(r.get(key),(int,float)) and not isinstance(r.get(key),bool) and math.isfinite(float(r[key]))]
+    def med(vals):
+        if not vals:return None
+        a=sorted(float(x) for x in vals); n=len(a)
+        return a[n//2] if n%2 else (a[n//2-1]+a[n//2])/2
+    def pearson(rows,key):
+        pairs=[]
+        for r in rows:
+            if r.get('score') is None or r.get(key) is None: continue
+            pairs.append((float(r['score']),float(r[key])))
+        n=len(pairs)
+        if n<5:return None
+        mx=sum(x for x,y in pairs)/n; my=sum(y for x,y in pairs)/n
+        denx=sum((x-mx)**2 for x,y in pairs); deny=sum((y-my)**2 for x,y in pairs)
+        if denx<=0 or deny<=0:return None
+        return sum((x-mx)*(y-my) for x,y in pairs)/(denx*deny)**0.5
+    result={"mode":mode,"n_total":len(all_rows),"history":all_rows if code else [],"mature":{}}
+    for h in horizons:
+        key=f'r{h}'; mature=[r for r in all_rows if r.get(key) is not None]
+        scored=[r for r in mature if r.get('score') is not None]
+        if scored:
+            cut=sorted(r['score'] for r in scored)[len(scored)//2]
+            hi=[r for r in scored if r['score']>=cut]; lo=[r for r in scored if r['score']<cut]
+            hiavg=sum(r[key] for r in hi)/len(hi) if hi else None
+            loavg=sum(r[key] for r in lo)/len(lo) if lo else None
+            gap=hiavg-loavg if hiavg is not None and loavg is not None else None
+            avg=sum(r[key] for r in mature)/len(mature)
+            result['mature'][str(h)]={"n":len(mature),"score_n":len(scored),"days":len(set(r['date'] for r in mature)),"avg":avg,"median":med(nums(key,mature)),"win":sum(1 for r in mature if r[key]>0)/len(mature)*100,"corr":pearson(scored,key),"cut":cut,"high_avg":hiavg,"low_avg":loavg,"gap":gap,"high_n":len(hi),"low_n":len(lo)}
+        else:
+            result['mature'][str(h)]={"n":len(mature),"score_n":0,"days":len(set(r['date'] for r in mature)),"avg":None,"median":med(nums(key,mature)),"win":sum(1 for r in mature if r[key]>0)/len(mature)*100 if mature else None,"corr":None}
+    if code:
+        result['verdict']='個股歷史樣本僅供觀察；樣本少於10筆不做準確度結論。'
+    else:
+        result['verdict']='只有在成熟樣本、推薦日分散且高低分組各至少10筆時，才把分數差異當成調權重依據。'
+    return result
+
 def evaluate_picks(mode, days=90):
     """
     計算選股成效：把每一筆推薦的當時價格跟現價比，並依「推薦後經過幾天」分組。
@@ -20245,6 +20363,20 @@ def web_pick_factors(uid):
     return "".join(parts)
 
 
+@app.route("/web/api/score-validation")
+@web_login_required
+def web_score_validation(uid):
+    mode=str(request.args.get("mode") or "blackhorse").strip()
+    if mode not in ("blackhorse","radar","turning"):
+        mode="blackhorse"
+    code=str(request.args.get("code") or "").strip()
+    try:
+        data=_score_validation(mode, days=180, code=code or None)
+        return jsonify(data)
+    except Exception as e:
+        print(f"❌ 分數驗證失敗 {mode} {code}: {type(e).__name__}: {e}")
+        return jsonify({"error":f"{type(e).__name__}: {e}"}),500
+
 @app.route("/web/api/trade-habits")
 @web_login_required
 def web_trade_habits(uid):
@@ -26067,12 +26199,48 @@ function bindFactors(){
         explainItem('原始說明',d.plain_note||d.comment||d.signal);
       }
       var explanationHtml=explain.length?explain.join(''):'<p class="wb-d-note">目前這筆已保存快照沒有額外的文字說明欄位；不自行推測。</p>';
-      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p></div>'+scoreHtml+'</div><div class="wb-d-price"><b>'+esc(txt(price))+'</b><span>'+esc(ch==null?'—':pctv(ch))+'</span></div></div>'+(factorHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>評分拆解</h4><small>只顯示已保存的原始分項，不重新計算</small></div>'+factorHtml+'</section>':'')+(facts?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>關鍵資料</h4></div><div class="wb-d-facts">'+facts+'</div></section>':'')+(reasonHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>入選／判斷依據</h4></div>'+reasonHtml+'</section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>資料說明</h4><small>使用這檔目前已保存的原始欄位</small></div><div class="wb-d-explain">'+explanationHtml+'</div></section></div>';
+      var validationMode=(src==='黑馬'?'blackhorse':src==='雷達'?'radar':src==='轉折'?'turning':'');
+      var validationHtml=validationMode?'<details class="wb-score-validation" id="wbScoreValidation"><summary><span><b>歷史分數 × 後續股價</b><small>測試這套分數到底準不準</small></span><em>展開驗證</em></summary><div class="wb-score-validation-body"><div class="wb-sv-loading">點開後才計算，避免拖慢選股台。</div></div></details>':'';
+      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p></div>'+scoreHtml+'</div><div class="wb-d-price"><b>'+esc(txt(price))+'</b><span>'+esc(ch==null?'—':pctv(ch))+'</span></div></div>'+(factorHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>評分拆解</h4><small>只顯示已保存的原始分項，不重新計算</small></div>'+factorHtml+'</section>':'')+(facts?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>關鍵資料</h4></div><div class="wb-d-facts">'+facts+'</div></section>':'')+(reasonHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>入選／判斷依據</h4></div>'+reasonHtml+'</section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>資料說明</h4><small>使用這檔目前已保存的原始欄位</small></div><div class="wb-d-explain">'+explanationHtml+'</div></section>'+validationHtml+'</div>';
       if(typeof appendChipSection==='function')appendChipSection(row);
+      bindScoreValidation(validationMode,row);
     }catch(err){
       console.error('showDetail error',err);
       host.innerHTML='<div class="wb-d-container"><div class="wb-d-error"><b>詳細資料整理失敗</b><small>'+esc(err&&err.message?err.message:String(err))+'</small></div></div>';
     }
+  }
+  function bindScoreValidation(mode,row){
+    if(!mode)return;
+    var box=document.getElementById('wbScoreValidation');
+    if(!box||box.dataset.bound)return;
+    box.dataset.bound='1';
+    box.addEventListener('toggle',function(){
+      if(!box.open||box.dataset.loaded)return;
+      box.dataset.loaded='1';
+      var body=box.querySelector('.wb-score-validation-body');
+      body.innerHTML='<div class="wb-sv-loading">正在計算歷史推薦的 5／10／20 個交易日報酬…</div>';
+      var url=api('/web/api/score-validation?mode='+encodeURIComponent(mode)+(row&&row.code?'&code='+encodeURIComponent(row.code):''));
+      fetch(url,{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){
+        if(data.error)throw new Error(data.error);
+        var m=data.mature||{};
+        function f(v){if(v==null||isNaN(Number(v)))return '—';var n=Number(v);return (n>0?'+':'')+n.toFixed(1)+'%';}
+        function n(v){return v==null?'—':String(v);}
+        function verdict(x){
+          if(!x||x.corr==null||x.gap==null)return '<span class="wb-sv-neutral">樣本不足，暫不判斷</span>';
+          if(x.high_n<10||x.low_n<10)return '<span class="wb-sv-neutral">兩組未各滿 10 筆</span>';
+          if(x.gap>=3&&x.corr>0.15)return '<span class="wb-sv-good">有初步正向關聯</span>';
+          if(x.gap<=-3&&x.corr<-0.15)return '<span class="wb-sv-bad">可能為反向訊號</span>';
+          return '<span class="wb-sv-neutral">關聯偏弱</span>';
+        }
+        var cards=[5,10,20].map(function(h){var x=m[String(h)]||{};return '<div class="wb-sv-card"><div class="wb-sv-card-head"><b>'+h+' 日</b>'+verdict(x)+'</div><div class="wb-sv-grid"><div><small>成熟樣本</small><b>'+n(x.n)+'</b></div><div><small>推薦日</small><b>'+n(x.days)+'</b></div><div><small>平均報酬</small><b>'+f(x.avg)+'</b></div><div><small>中位數</small><b>'+f(x.median)+'</b></div><div><small>勝率</small><b>'+((x.win==null)?'—':Number(x.win).toFixed(0)+'%')+'</b></div><div><small>分數相關 r</small><b>'+((x.corr==null)?'—':Number(x.corr).toFixed(2))+'</b></div></div>'+(x.gap!=null?'<div class="wb-sv-gap">高分組 '+f(x.high_avg)+'　vs　低分組 '+f(x.low_avg)+'　差 '+f(x.gap)+'</div>':'')+'</div>';}).join('');
+        var hist=(data.history||[]).slice().sort(function(a,b){return String(a.date).localeCompare(String(b.date));});
+        var histHtml='';
+        if(hist.length){
+          histHtml='<div class="wb-sv-history"><div class="wb-sv-history-title">這一檔的歷史推薦</div>'+hist.slice(-12).map(function(r){return '<div class="wb-sv-history-row"><span>'+esc(r.date||'—')+'</span><b>分數 '+(r.score==null?'—':esc(r.score))+'</b><i>第 '+esc(r.rank==null?'—':r.rank)+' 名</i><em>5日 '+f(r.r5)+'</em><em>10日 '+f(r.r10)+'</em><em>20日 '+f(r.r20)+'</em></div>';}).join('')+'</div>';
+        }else if(row&&row.code){histHtml='<div class="wb-sv-note">這檔目前沒有足夠的歷史推薦紀錄；整體驗證仍可參考上面的成熟樣本。</div>';}
+        body.innerHTML='<div class="wb-sv-note">只用推薦當下已保存的分數，並觀察推薦後第 5／10／20 個交易日的價格報酬；尚未走滿天期的推薦不會硬算。這是回測驗證，不會自動改權重。</div><div class="wb-sv-cards">'+cards+'</div>'+histHtml+'<div class="wb-sv-foot">判讀門檻：高低分組各至少 10 筆、且涵蓋多個推薦日，才值得拿來調整權重。相關係數接近 0 代表線性關聯弱，不代表一定完全沒有非線性關係。</div>';
+      }).catch(function(e){box.dataset.loaded='';body.innerHTML='<div class="wb-sv-note">分數驗證載入失敗：'+esc(e&&e.message?e.message:e)+'</div>';});
+    });
   }
   function appendChipSection(row){
     if(!row||!row.code||row.source==='ETF')return;
@@ -26143,6 +26311,8 @@ function bindFactors(){
 .wb-d-empty{padding:14px;border-radius:9px;background:#f7f9fb;color:#8a96a3;font-size:11px;text-align:center}
 @media(max-width:620px){.wb-d-hero{padding:15px;border-radius:12px}.wb-d-hero h3{font-size:22px!important}.wb-d-price b{font-size:25px}.wb-d-facts{grid-template-columns:1fr 1fr}.wb-d-inst-grid{grid-template-columns:1fr}.wb-d-section{padding:13px}.wb-d-insight-grid{gap:7px}}
 
+
+.wb-score-validation{margin:0 0 17px;border:1px solid #d7e1ea;border-radius:12px;background:#fff;overflow:hidden}.wb-score-validation>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 15px;background:linear-gradient(135deg,#f7fbff,#eef5fb)}.wb-score-validation>summary::-webkit-details-marker{display:none}.wb-score-validation>summary span{display:flex;flex-direction:column;gap:3px}.wb-score-validation>summary b{font-size:15px;color:#213b54}.wb-score-validation>summary small{font-size:10.5px;color:#8491a0}.wb-score-validation>summary em{font-style:normal;font-size:10px;font-weight:800;color:#52708c}.wb-score-validation-body{padding:13px}.wb-sv-loading,.wb-sv-note,.wb-sv-foot{padding:10px 11px;border-radius:9px;background:#f6f9fb;color:#667788;font-size:11px;line-height:1.65}.wb-sv-cards{display:grid;gap:9px;margin-top:10px}.wb-sv-card{padding:11px;border:1px solid #e0e7ee;border-radius:10px;background:#fbfcfd}.wb-sv-card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.wb-sv-card-head>b{font-size:13px;color:#244a6c}.wb-sv-good,.wb-sv-bad,.wb-sv-neutral{font-size:10px;font-weight:800}.wb-sv-good{color:#18794e}.wb-sv-bad{color:#a84646}.wb-sv-neutral{color:#7a8794}.wb-sv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.wb-sv-grid>div{padding:7px 8px;background:#f5f8fa;border-radius:7px}.wb-sv-grid small{display:block;color:#8793a0;font-size:9px}.wb-sv-grid b{display:block;margin-top:2px;color:#334e64;font-size:11px;font-family:ui-monospace,monospace}.wb-sv-gap{margin-top:8px;padding-top:8px;border-top:1px solid #e9eef2;color:#526879;font-size:10.5px;font-weight:700}.wb-sv-history{margin-top:11px;border-top:1px solid #e6ebef}.wb-sv-history-title{padding:10px 0 7px;font-size:11px;font-weight:800;color:#405a70}.wb-sv-history-row{display:grid;grid-template-columns:1.1fr .8fr .65fr 1fr 1fr 1fr;gap:5px;padding:7px 0;border-top:1px solid #eef1f4;font-size:9.5px;color:#66798a;align-items:center}.wb-sv-history-row b{color:#34536d}.wb-sv-history-row em{font-style:normal;font-family:ui-monospace,monospace}.wb-sv-foot{margin-top:10px;font-size:10px}@media(max-width:620px){.wb-sv-grid{grid-template-columns:repeat(2,1fr)}.wb-sv-history-row{grid-template-columns:1fr 1fr 1fr;row-gap:5px}.wb-sv-history-row em{font-size:9px}}
 .wb-d-explain{display:grid;gap:10px}.wb-d-explain-item{padding:10px 12px;border:1px solid #e5eaf0;border-radius:10px;background:#f8fafc}.wb-d-explain-item b{display:block;color:#274c77;font-size:12px;margin-bottom:4px}.wb-d-explain-item p{margin:0;color:#475467;font-size:12px;line-height:1.65;word-break:break-word}.wb-d-explain .wb-d-note{margin:0;color:#667085;font-size:12px;line-height:1.65}</style><script>
 (function(){
   var rows=document.getElementById('wb-rows');
