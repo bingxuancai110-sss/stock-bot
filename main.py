@@ -26343,74 +26343,83 @@ function bindFactors(){
     var y=window.scrollY||window.pageYOffset||0;
     state.returnScroll=y;
     document.body.dataset.wbScroll=String(y);
-    document.body.style.position='fixed';
-    document.body.style.top=(-y)+'px';
-    document.body.style.left='0';
-    document.body.style.right='0';
-    document.body.style.width='100%';
-    dr.classList.add('open'); dr.setAttribute('aria-hidden','false'); if(mk)mk.hidden=false;
-    host.innerHTML='<div class="wb-d-container"><div class="wb-d-loading"><div class="wb-d-loading-dot"></div><b>正在整理 '+esc(row&&row.name?row.name:'標的')+' 的詳細資料…</b><small>正在載入已保存資料</small></div></div>';
+    document.body.style.position='fixed';document.body.style.top=(-y)+'px';document.body.style.left='0';document.body.style.right='0';document.body.style.width='100%';
+    dr.classList.add('open');dr.setAttribute('aria-hidden','false');if(mk)mk.hidden=false;
+    host.innerHTML='<div class="wb-d-container"><div class="wb-d-loading"><div class="wb-d-loading-dot"></div><b>正在整理詳細資料…</b><small>正在讀取已保存快照</small></div></div>';
     try{
-      row=row||{}; var d=(row.detail&&typeof row.detail==='object')?row.detail:{};
-      function txt(v){if(v==null||v==='')return '—'; if(typeof v==='object'){try{return JSON.stringify(v)}catch(e){return String(v)}} return String(v)}
-      function fact(label,v){if(v==null||v==='')return '';return '<div class="wb-d-fact"><small>'+esc(label)+'</small><b>'+esc(txt(v))+'</b></div>';}
-      function pctv(v){if(v==null||v===''||isNaN(Number(v)))return '—';var n=Number(v);return (n>0?'+':'')+n.toFixed(1)+'%';}
-      var src=txt(row.source||'選股'), name=txt(row.name||'—'), code=txt(row.code||'—');
-      var score=(row.score!=null?row.score:(d.score!=null?d.score:null));
-      var title=src+'｜'+code+' '+name;
-      var price=row.price!=null?row.price:d.price, ch=row.change_pct!=null?row.change_pct:d.change_pct;
-      var facts='';
-      [['產業',row.industry||d.industry],['目前價格',price],['今日變化',ch==null?null:pctv(ch)],['法人近十日',row.institutional_lots!=null?row.institutional_lots:d.institutional_lots],['狀態',d.state||d.status||d.high_status||d.breakout],['法人共識',d.consensus],['量能',d.volume],['支撐',d.support],['壓力',d.resistance],['方向變化',d.direction_change],['快照價格',d.snapshot_price]].forEach(function(x){facts+=fact(x[0],x[1]);});
-      var reasons=Array.isArray(d.reasons)?d.reasons:Array.isArray(d.reason)?d.reason:[];
-      var reasonHtml=reasons.length?'<ul class="wb-d-list">'+reasons.slice(0,8).map(function(x){return '<li>'+esc(txt(x))+'</li>';}).join('')+'</ul>':'';
-      var scoreHtml=score!=null&&score!==''&&!isNaN(Number(score))?'<div class="wb-d-score"><span>綜合分數</span><b>'+esc(Number(score).toFixed(0))+'</b></div>':'';
-      var factorHtml='';
-      [['營收',d.score_rev!=null?d.score_rev:row.rev,25],['估值',d.score_val!=null?d.score_val:row.val,25],['動能',d.score_mom!=null?d.score_mom:row.mom,20],['連續性',d.score_streak!=null?d.score_streak:row.streak_score,20],['籌碼／技術',d.score_chip!=null?d.score_chip:row.chip,10]].forEach(function(x){if(x[1]==null||isNaN(Number(x[1])))return;var n=Number(x[1]),w=Math.max(0,Math.min(100,n/Number(x[2])*100));factorHtml+='<div class="wb-d-score-row"><div><span>'+x[0]+'</span><b>'+n+'/'+x[2]+'</b></div><div class="wb-d-bar"><i style="width:'+w.toFixed(1)+'%"></i></div></div>';});
-      var scoreChange=d.score_change||null;
+      row=row||{};var d=(row.detail&&typeof row.detail==='object')?row.detail:{};
+      function txt(v){if(v==null||v==='')return '—';if(typeof v==='object'){try{return JSON.stringify(v)}catch(e){return String(v)}}return String(v)}
+      function escv(v){return esc(txt(v))}
+      function num(v){return v==null||v===''||isNaN(Number(v))?null:Number(v)}
+      function pct(v){var n=num(v);return n==null?'—':(n>0?'+':'')+n.toFixed(1)+'%'}
+      function signed(v){var n=num(v);return n==null?'—':(n>0?'+':'')+n.toFixed(1)}
+      function fact(label,v,cls){if(v==null||v==='')return '';return '<div class="wb-d-fact '+(cls||'')+'"><small>'+esc(label)+'</small><b>'+escv(v)+'</b></div>'}
+      function section(title,sub,body,cls){return '<section class="wb-d-section '+(cls||'')+'"><div class="wb-d-section-head"><h4>'+esc(title)+'</h4>'+(sub?'<small>'+esc(sub)+'</small>':'')+'</div>'+body+'</section>'}
+      function list(items){var a=Array.isArray(items)?items.filter(function(x){return x!=null&&String(x).trim()}).slice(0,10):[];return a.length?'<ul class="wb-d-list">'+a.map(function(x){return '<li>'+escv(x)+'</li>'}).join('')+'</ul>':''}
+      var src=txt(row.source||'選股'),name=txt(row.name||row.code||'標的'),code=txt(row.code||'—');
+      var score=num(row.score!=null?row.score:d.score),price=num(row.price!=null?row.price:d.price),ch=num(row.change_pct!=null?row.change_pct:d.change_pct);
+      var titleScore=score==null?'未評分':score.toFixed(0)+' 分';
+      var scoreChange=d.score_change||null,oldScore=scoreChange?num(scoreChange.old_score):null,newScore=scoreChange?num(scoreChange.new_score):score;
+      var delta=oldScore!=null&&newScore!=null?newScore-oldScore:null;
+      var scoreBadge=scoreChange&&delta!=null?'<span class="wb-d-hero-delta '+(delta>0?'up':delta<0?'down':'flat')+'">'+(delta>0?'+':'')+delta.toFixed(0)+' 分</span>':'';
+
+      /* 1. Hero */
+      var hero='<div class="wb-d-hero wb-d-hero-premium"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p><div class="wb-d-hero-meta"><span>資料日期 '+esc(txt(d.source_date||'未標日期'))+'</span>'+(row.radar_rank?' <span>雷達 #'+escv(row.radar_rank)+'</span>':'')+'</div></div><div class="wb-d-score"><span>綜合分數</span><b>'+esc(titleScore)+'</b>'+scoreBadge+'</div></div><div class="wb-d-price"><b>'+esc(price==null?'—':price)+'</b><span class="'+(ch!=null&&ch>0?'wb-up':ch!=null&&ch<0?'wb-down':'wb-flat')+'">'+esc(pct(ch))+'</span></div></div>';
+
+      /* 2. Today's score change */
       var changeHtml='';
       if(src==='黑馬'){
-        var chRows=[];
         if(scoreChange){
-          var of=scoreChange.old_factors||{}, nf=scoreChange.new_factors||{};
-          [['營收','rev',25],['估值','val',25],['產業動能','mom',20],['連續性','streak_score',20],['籌碼／技術','chip',10]].forEach(function(x){
-            var ov=of[x[1]], nv=nf[x[1]];
-            if(String(ov)===String(nv))return;
-            chRows.push('<div class=\"wb-d-change-row\"><span>'+esc(x[0])+'</span><b>'+esc(ov==null?'—':String(ov))+'</b><i>→</i><b>'+esc(nv==null?'—':String(nv))+'</b></div>');
-          });
-          var os=scoreChange.old_score, ns=scoreChange.new_score;
-          changeHtml='<section class=\"wb-d-section wb-d-score-change\"><div class=\"wb-d-section-head\"><h4>今日分數變化</h4><small>上次快照 → 最新快照</small></div><div class=\"wb-d-change-summary\"><b>'+esc(os==null?'—':String(os))+' → '+esc(ns==null?'—':String(ns))+' 分</b><span class=\"'+(Number(ns)>Number(os)?'wb-up':Number(ns)<Number(os)?'wb-down':'wb-flat')+'\">'+(os!=null&&ns!=null?(Number(ns)-Number(os)>0?'+':'')+(Number(ns)-Number(os)).toFixed(1)+' 分':'—')+'</span></div>'+(chRows.length?'<div class=\"wb-d-change-list\">'+chRows.join('')+'</div>':'<p class=\"wb-d-note\">總分有變化，但目前保存的五項分項沒有可辨識差異。</p>')+'<small class=\"wb-d-change-time\">變化紀錄：'+esc(scoreChange.changed_at||'今日')+'</small></section>';
+          var of=scoreChange.old_factors||{},nf=scoreChange.new_factors||{},items=[];
+          [['營收','rev',25],['估值','val',25],['產業動能','mom',20],['連續性','streak_score',20],['籌碼／技術','chip',10]].forEach(function(x){var ov=num(of[x[1]]),nv=num(nf[x[1]]);if(ov==null&&nv==null)return;var dd=(ov!=null&&nv!=null)?nv-ov:null;items.push('<div class="wb-d-change-row"><span>'+esc(x[0])+'</span><b>'+esc(ov==null?'—':ov.toFixed(0))+'</b><i>→</i><b>'+esc(nv==null?'—':nv.toFixed(0))+'</b><em class="'+(dd>0?'up':dd<0?'down':'flat')+'">'+(dd==null?'—':(dd>0?'+':'')+dd.toFixed(0))+'</em></div>')});
+          changeHtml=section('今日分數變化','上次快照 → 最新快照','<div class="wb-d-change-summary"><b>'+esc(oldScore==null?'—':oldScore.toFixed(0))+' → '+esc(newScore==null?'—':newScore.toFixed(0))+' 分</b><span class="'+(delta>0?'wb-up':delta<0?'wb-down':'wb-flat')+'">'+esc(delta==null?'—':(delta>0?'+':'')+delta.toFixed(0)+' 分')+'</span></div>'+(items.length?'<div class="wb-d-change-list">'+items.join('')+'</div>':'<p class="wb-d-note">總分有變化，但五項分項沒有可辨識差異。</p>')+'<small class="wb-d-change-time">紀錄時間：'+escv(scoreChange.changed_at||'今日')+'</small>','wb-d-score-change');
         }else{
-          changeHtml='<section class=\"wb-d-section wb-d-score-change wb-d-score-change-none\"><div class=\"wb-d-section-head\"><h4>今日分數變化</h4></div><p class=\"wb-d-note\">今天目前沒有偵測到這檔黑馬的分數變化。</p></section>';
+          changeHtml=section('今日分數變化','目前沒有第二次可比較快照','<div class="wb-d-empty-mini">今天目前沒有偵測到這檔黑馬的分數變化。第一次快照不會被當成變化。</div>','wb-d-score-change wb-d-score-change-none');
         }
       }
+
+      /* 3. Factor chart */
+      var factors=[],factorBars='';
+      [['營收','score_rev','rev',25],['估值','score_val','val',25],['產業動能','score_mom','mom',20],['連續性','score_streak','streak_score',20],['籌碼／技術','score_chip','chip',10]].forEach(function(x){var v=num(d[x[1]]!=null?d[x[1]]:row[x[2]]);if(v==null)return;factors.push({name:x[0],v:v,max:x[3]});var w=Math.max(0,Math.min(100,v/x[3]*100));factorBars+='<div class="wb-d-factor"><div><span>'+esc(x[0])+'</span><b>'+v.toFixed(0)+' / '+x[3]+'</b></div><div class="wb-d-factor-track"><i style="width:'+w.toFixed(1)+'%"></i></div></div>';});
+      var factorHtml=factors.length?section('五大因子評分','目前保存值；不在前端重新計算',factorBars,'wb-d-factor-section'):'';
+
+      /* 4. Score vs price / validation */
+      var validationMode=src==='黑馬'?'blackhorse':src==='雷達'?'radar':src==='轉折'?'turning':'';
+      var validationHtml=validationMode?'<details class="wb-score-validation" id="wbScoreValidation"><summary><span><b>分數 × 歷史股價表現</b><small>用實際歷史推薦測試這套分數</small></span><em>展開驗證</em></summary><div class="wb-score-validation-body"><div class="wb-sv-loading">點開後才計算，避免拖慢選股台。</div></div></details>':'';
+
+      /* 5. Why selected / decision basis */
+      var reasons=Array.isArray(d.reasons)?d.reasons:(Array.isArray(row.reasons)?row.reasons:[]);
+      var reasonParts=[];
+      if(d.val_desc)reasonParts.push('估值：'+d.val_desc);
+      if(d.mom_desc)reasonParts.push('產業動能：'+d.mom_desc);
+      if(d.signal)reasonParts.push('訊號：'+d.signal);
+      if(row.signal)reasonParts.push('訊號：'+row.signal);
+      var why=list(reasonParts.concat(reasons));
+      var whyHtml=why?section('為什麼進入／出現在這裡','只整理已保存的判斷依據',why):'';
+
+      /* 6. Fundamentals */
+      var fundamentalFacts='';
+      [['最新營收 YoY',d.revenue_yoy!=null?d.revenue_yoy:(row.revenue_yoy!=null?row.revenue_yoy:null)],['累計營收 YoY',d.cum_yoy!=null?d.cum_yoy:row.cum_yoy],['PE',d.pe!=null?d.pe:row.pe],['PEG',d.peg!=null?d.peg:row.peg],['殖利率',d.yield!=null?d.yield:row.yield],['PB',d.pb!=null?d.pb:row.pb],['成交金額',d.turnover!=null?d.turnover:row.turnover]].forEach(function(x){if(x[1]!=null&&x[1]!=='')fundamentalFacts+=fact(x[0],x[1]);});
+      var fundamentalHtml=fundamentalFacts?section('基本面','只顯示目前快照已有的欄位','<div class="wb-d-facts wb-d-facts-compact">'+fundamentalFacts+'</div>'):'';
+
+      /* 7. Chips */
+      var chipFacts='';
+      [['法人近十日',row.institutional_lots!=null?row.institutional_lots:d.institutional_lots],['外資',d.foreign_lots],['投信',d.trust_lots],['法人金額',d.institutional_amount],['方向變化',d.direction_change],['快照價格',d.snapshot_price]].forEach(function(x){if(x[1]!=null&&x[1]!=='')chipFacts+=fact(x[0],x[1]);});
+      if(d.consensus)chipFacts+=fact('法人共識',d.consensus);
+      var chipHtml=chipFacts?section('籌碼變化','法人資料依已保存快照整理','<div class="wb-d-facts wb-d-facts-compact">'+chipFacts+'</div>'):'';
+
+      /* 8. Price position */
+      var posFacts='';
+      [['目前價格',price],['今日漲跌',pct(ch)],['距離近期高點',d.high_distance_pct!=null?d.high_distance_pct:(row.high_distance_pct!=null?row.high_distance_pct:null)],['支撐',d.support],['壓力',d.resistance],['量能倍率',d.vol_ratio],['成交量',d.volume]].forEach(function(x){if(x[1]!=null&&x[1]!=='')posFacts+=fact(x[0],x[1]);});
+      var posHtml=posFacts?section('股價位置','幫你把分數與價格位置放在一起看','<div class="wb-d-facts wb-d-facts-compact">'+posFacts+'</div>'):'';
+
+      /* Data explanation */
       var explain=[];
-      function explainItem(title,text){if(text==null||text==='')return;explain.push('<div class="wb-d-explain-item"><b>'+esc(title)+'</b><p>'+esc(txt(text))+'</p></div>');}
-      if(src==='黑馬'||src==='雷達'){
-        explainItem('資料日期',d.source_date);
-        explainItem('估值說明',d.val_desc);
-        explainItem('產業動能說明',d.mom_desc);
-        explainItem('分數組成',d.score_breakdown);
-        if(d.data_quality&&typeof d.data_quality==='object')explainItem('資料完整度',d.data_quality);
-        if(d.caps)explainItem('各項評分上限',Array.isArray(d.caps)?d.caps.join('／'):'');
-        explainItem('資料原則','只使用目前已保存的選股快照；沒有保存的資料不補猜。');
-      }else if(src==='籌碼'){
-        explainItem('資料日期',d.source_date);
-        explainItem('法人分組說明',d.plain_note);
-        explainItem('法人方向',d.consensus);
-        explainItem('資料原則','籌碼欄位依已保存的法人資料整理，不代表即時預測。');
-      }else if(src==='轉折'){
-        explainItem('資料日期',d.source_date);
-        explainItem('原始判讀',d.state_reason||d.plain_note);
-        explainItem('條件明細',Array.isArray(d.reasons)?d.reasons.join('；'):d.reasons);
-        explainItem('失效原因',Array.isArray(d.invalid_reasons)?d.invalid_reasons.join('；'):d.invalid_reasons);
-      }else{
-        explainItem('資料日期',d.source_date);
-        explainItem('原始說明',d.plain_note||d.comment||d.signal);
-      }
-      var explanationHtml=explain.length?explain.join(''):'<p class="wb-d-note">目前這筆已保存快照沒有額外的文字說明欄位；不自行推測。</p>';
-      var validationMode=(src==='黑馬'?'blackhorse':src==='雷達'?'radar':src==='轉折'?'turning':'');
-      var validationHtml=validationMode?'<details class="wb-score-validation" id="wbScoreValidation"><summary><span><b>歷史分數 × 後續股價</b><small>測試這套分數到底準不準</small></span><em>展開驗證</em></summary><div class="wb-score-validation-body"><div class="wb-sv-loading">點開後才計算，避免拖慢選股台。</div></div></details>':'';
-      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p></div>'+scoreHtml+'</div><div class="wb-d-price"><b>'+esc(txt(price))+'</b><span>'+esc(ch==null?'—':pctv(ch))+'</span></div></div>'+changeHtml+(factorHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>評分拆解</h4><small>只顯示已保存的原始分項，不重新計算</small></div>'+factorHtml+'</section>':'')+(facts?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>關鍵資料</h4></div><div class="wb-d-facts">'+facts+'</div></section>':'')+(reasonHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>入選／判斷依據</h4></div>'+reasonHtml+'</section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>資料說明</h4><small>使用這檔目前已保存的原始欄位</small></div><div class="wb-d-explain">'+explanationHtml+'</div></section>'+validationHtml+'</div>';
+      function ex(title,v){if(v==null||v==='')return;explain.push('<div class="wb-d-explain-item"><b>'+esc(title)+'</b><p>'+escv(v)+'</p></div>')}
+      ex('資料日期',d.source_date);ex('估值說明',d.val_desc);ex('產業動能說明',d.mom_desc);ex('分數組成',d.score_breakdown);ex('資料完整度',d.data_quality);ex('資料原則','只使用目前已保存的原始資料；沒有保存的欄位不自行推測。');
+      var explainHtml=section('資料說明','這些內容來自目前保存快照',explain.length?'<div class="wb-d-explain">'+explain.join('')+'</div>':'<p class="wb-d-note">目前沒有額外文字說明。</p>');
+
+      host.innerHTML='<div class="wb-d-container">'+hero+changeHtml+factorHtml+whyHtml+fundamentalHtml+chipHtml+posHtml+explainHtml+validationHtml+'</div>';
       if(typeof appendChipSection==='function')appendChipSection(row);
       bindScoreValidation(validationMode,row);
     }catch(err){
@@ -26556,6 +26565,14 @@ function bindFactors(){
 @media(max-width:620px){.wb-d-hero{padding:15px;border-radius:12px}.wb-d-hero h3{font-size:22px!important}.wb-d-price b{font-size:25px}.wb-d-facts{grid-template-columns:1fr 1fr}.wb-d-inst-grid{grid-template-columns:1fr}.wb-d-section{padding:13px}.wb-d-insight-grid{gap:7px}}
 
 
+
+/* V10: 個股詳細頁 1~8 區塊，只升級抽屜內部，不改外部選股台 */
+.wb-d-hero-premium{background:linear-gradient(135deg,#163b5c,#285c82 58%,#3b7597);color:#fff;border:0;box-shadow:0 12px 28px rgba(24,61,91,.18)}
+.wb-d-hero-premium .wb-d-label{color:#d8edf9}.wb-d-hero-premium h3{color:#fff}.wb-d-hero-premium h3 small,.wb-d-hero-premium p,.wb-d-hero-meta{color:#d4e6f0}.wb-d-hero-premium .wb-d-score{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22);backdrop-filter:blur(8px)}
+.wb-d-hero-premium .wb-d-score span,.wb-d-hero-premium .wb-d-score b{color:#fff}.wb-d-hero-premium .wb-d-price b{color:#fff}.wb-d-hero-premium .wb-d-price span{font-weight:900}.wb-d-hero-delta{display:block;margin-top:4px;font-size:11px;font-weight:900}.wb-d-hero-delta.up{color:#9af0c2}.wb-d-hero-delta.down{color:#ffb0b0}.wb-d-hero-delta.flat{color:#dbe8ef}
+.wb-d-factor-section{background:linear-gradient(180deg,#fff,#f8fbfd)}.wb-d-factor{margin:11px 0}.wb-d-factor>div:first-child{display:flex;justify-content:space-between;align-items:center;font-size:11px}.wb-d-factor>div:first-child span{font-weight:800;color:#405b70}.wb-d-factor>div:first-child b{font-family:ui-monospace,monospace;color:#274d69}.wb-d-factor-track{height:9px;background:#e9f0f4;border-radius:99px;overflow:hidden;margin-top:5px}.wb-d-factor-track i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#397aa0,#1f5477)}
+.wb-d-facts-compact{grid-template-columns:repeat(2,minmax(0,1fr))}.wb-d-empty-mini{padding:12px;border:1px dashed #d8e3ea;border-radius:10px;background:#f8fafb;color:#778895;font-size:11px;line-height:1.6}.wb-d-explain{display:grid;gap:8px}.wb-d-explain-item{padding:9px 10px;border:1px solid #e6edf2;border-radius:9px;background:#fbfcfd}.wb-d-explain-item b{display:block;font-size:10px;color:#4a6578}.wb-d-explain-item p{margin:3px 0 0;font-size:10.5px;line-height:1.55;color:#687a87;word-break:break-word}.wb-d-section{box-shadow:0 2px 9px rgba(30,61,82,.035)}
+@media(max-width:620px){.wb-d-facts-compact{grid-template-columns:1fr 1fr}.wb-d-hero-premium h3{font-size:21px}.wb-d-hero-meta{font-size:9px}}
 .wb-score-validation{margin:0 0 17px;border:1px solid #d7e1ea;border-radius:12px;background:#fff;overflow:hidden}.wb-score-validation>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 15px;background:linear-gradient(135deg,#f7fbff,#eef5fb)}.wb-score-validation>summary::-webkit-details-marker{display:none}.wb-score-validation>summary span{display:flex;flex-direction:column;gap:3px}.wb-score-validation>summary b{font-size:15px;color:#213b54}.wb-score-validation>summary small{font-size:10.5px;color:#8491a0}.wb-score-validation>summary em{font-style:normal;font-size:10px;font-weight:800;color:#52708c}.wb-score-validation-body{padding:13px}.wb-sv-loading,.wb-sv-note,.wb-sv-foot{padding:10px 11px;border-radius:9px;background:#f6f9fb;color:#667788;font-size:11px;line-height:1.65}.wb-sv-cards{display:grid;gap:9px;margin-top:10px}.wb-sv-card{padding:11px;border:1px solid #e0e7ee;border-radius:10px;background:#fbfcfd}.wb-sv-card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.wb-sv-card-head>b{font-size:13px;color:#244a6c}.wb-sv-good,.wb-sv-bad,.wb-sv-neutral{font-size:10px;font-weight:800}.wb-sv-good{color:#18794e}.wb-sv-bad{color:#a84646}.wb-sv-neutral{color:#7a8794}.wb-sv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.wb-sv-grid>div{padding:7px 8px;background:#f5f8fa;border-radius:7px}.wb-sv-grid small{display:block;color:#8793a0;font-size:9px}.wb-sv-grid b{display:block;margin-top:2px;color:#334e64;font-size:11px;font-family:ui-monospace,monospace}.wb-sv-gap{margin-top:8px;padding-top:8px;border-top:1px solid #e9eef2;color:#526879;font-size:10.5px;font-weight:700}.wb-sv-history{margin-top:11px;border-top:1px solid #e6ebef}.wb-sv-history-title{padding:10px 0 7px;font-size:11px;font-weight:800;color:#405a70}.wb-sv-history-row{display:grid;grid-template-columns:1.1fr .8fr .65fr 1fr 1fr 1fr;gap:5px;padding:7px 0;border-top:1px solid #eef1f4;font-size:9.5px;color:#66798a;align-items:center}.wb-sv-history-row b{color:#34536d}.wb-sv-history-row em{font-style:normal;font-family:ui-monospace,monospace}.wb-sv-foot{margin-top:10px;font-size:10px}.wb-sv-tabs{display:flex;gap:6px;margin:10px 0}.wb-sv-tab{border:1px solid #d7e1ea;background:#f7fafc;color:#64788a;border-radius:8px;padding:6px 12px;font-size:10px;font-weight:800;cursor:pointer}.wb-sv-tab.active{background:#244f70;color:#fff;border-color:#244f70}.wb-sv-chart-title{margin:13px 0 7px;font-size:12px;font-weight:900;color:#304e65}.wb-sv-chart-wrap{border:1px solid #dfe7ed;border-radius:12px;background:linear-gradient(180deg,#fbfdff,#f7fafc);padding:10px 10px 8px;overflow:hidden}.wb-sv-chart-wrap svg{display:block;width:100%;height:285px}.wb-sv-chart-legend{display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:8px 13px;margin-top:5px;color:#7c8c99;font-size:9.5px;line-height:1.5}.wb-sv-chart-legend span{display:inline-flex;align-items:center;gap:4px}.wb-sv-chart-legend i{width:7px;height:7px;border-radius:50%;display:inline-block}.wb-sv-chart-legend i.pos{background:#12a150}.wb-sv-chart-legend i.neg{background:#e53935}.wb-sv-chart-legend b{color:#536b7e}.wb-sv-chart-empty{padding:30px 12px;text-align:center;border:1px dashed #dce5eb;border-radius:10px;background:#fafcfd;color:#8997a4;font-size:11px;line-height:1.7}@media(max-width:620px){.wb-sv-grid{grid-template-columns:repeat(2,1fr)}.wb-sv-history-row{grid-template-columns:1fr 1fr 1fr;row-gap:5px}.wb-sv-history-row em{font-size:9px}}
 .wb-d-score-change{border:1px solid rgba(37,99,235,.18);background:linear-gradient(180deg,#f8fbff,#fff)}.wb-d-change-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-radius:12px;background:#f4f7fb}.wb-d-change-summary b{font-size:18px}.wb-d-change-summary span{font-weight:800}.wb-d-change-list{display:grid;gap:8px;margin-top:10px}.wb-d-change-row{display:grid;grid-template-columns:1fr auto auto auto;align-items:center;gap:8px;padding:9px 10px;border-radius:10px;background:#fff;border:1px solid #e8edf4}.wb-d-change-row span{font-weight:700;color:#334155}.wb-d-change-row b{font-size:14px}.wb-d-change-row i{font-style:normal;color:#64748b}.wb-d-change-time{display:block;margin-top:9px;color:#94a3b8}.wb-d-score-change-none{border-color:#e5e7eb;background:#fff}.wb-d-explain{display:grid;gap:10px}.wb-d-explain-item{padding:10px 12px;border:1px solid #e5eaf0;border-radius:10px;background:#f8fafc}.wb-d-explain-item b{display:block;color:#274c77;font-size:12px;margin-bottom:4px}.wb-d-explain-item p{margin:0;color:#475467;font-size:12px;line-height:1.65;word-break:break-word}.wb-d-explain .wb-d-note{margin:0;color:#667085;font-size:12px;line-height:1.65}</style><script>
 (function(){
