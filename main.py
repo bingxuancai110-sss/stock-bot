@@ -17,7 +17,7 @@ import psycopg2.extensions
 from psycopg2.extras import execute_values
 from urllib.parse import quote, urlencode, urlparse
 from html.parser import HTMLParser
-from flask import Flask, abort, request
+from flask import Flask, abort, request, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (MessageEvent, TextMessage, TextSendMessage,
