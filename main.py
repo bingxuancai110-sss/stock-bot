@@ -8505,7 +8505,15 @@ def _score_validation(mode, days=180, code=None):
         picks=[p for p in picks if normalize_code(p.get('code',''))==code]
     if not picks:
         return {"mode":mode,"n_total":0,"mature":{},"history":[]}
-    price_map=get_realtime_stocks_bulk(list({p['code'] for p in picks}),workers=16,rng='1y')
+    # 個股展開時只抓這一檔，不能把 180 天全部推薦股票一起抓；否則一個詳情抽屜就可能觸發數十／上百檔 Yahoo 請求，容易造成 HTTP 500 或逾時。
+    pick_codes={normalize_code(p.get('code')) for p in picks if p.get('code')}
+    if code:
+        pick_codes={code}
+    try:
+        price_map=get_realtime_stocks_bulk(sorted(pick_codes),workers=8,rng='1y') if pick_codes else {}
+    except Exception as e:
+        print(f'⚠️ 分數驗證行情抓取失敗 {mode} {code}: {type(e).__name__}: {e}')
+        price_map={}
     today=taiwan_today()
     horizons=(5,10,20)
     all_rows=[]
