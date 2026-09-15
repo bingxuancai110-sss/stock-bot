@@ -26001,6 +26001,11 @@ function bindFactors(){
     state.returnScroll=window.scrollY||0;
     var host=document.getElementById('wb-detail');
     if(!host)return;
+    // 先開抽屜，再處理任何詳細資料。這樣即使某個欄位資料異常，使用者也不會看到「完全沒反應」。
+    drawer.classList.add('open');
+    drawer.setAttribute('aria-hidden','false');
+    mask.hidden=false;
+    host.innerHTML='<div class="wb-d-loading"><div class="wb-d-loading-dot"></div><b>正在整理 '+esc(row&&row.name?row.name:'標的')+' 的詳細資料…</b><small>外部選股結果不變，僅載入詳細資訊</small></div>';
     var d=row.detail||{};
 
     function val(v, suffix){
@@ -26139,9 +26144,6 @@ function bindFactors(){
     if(!html)html='<div class="wb-d-empty">目前沒有可顯示的詳細資料。</div>';
     host.innerHTML='<div class="wb-d-container">'+html+'</div>';
     appendChipSection(row);
-    drawer.classList.add('open');
-    drawer.setAttribute('aria-hidden','false');
-    mask.hidden=false;
 }
   // 籌碼分布：點開才抓那一檔的三個月日K再算。
   // 放在清單載入時算會拖慢整頁，而多數人只會點開其中一兩檔。
@@ -26182,6 +26184,7 @@ function bindFactors(){
     # 這樣不會改變既有分組、排名、前三檔與其餘收合的資料邏輯。
     body += '''<style>
 .wb-etf-category-tabs{display:flex;gap:8px;padding:12px 14px;overflow-x:auto;overscroll-behavior-x:contain;border-bottom:1px solid #dfe8ef;background:#fff;scrollbar-width:none}.wb-etf-category-tabs::-webkit-scrollbar{display:none}.wb-etf-category-tab{flex:0 0 auto;border:1px solid #b9cad8;border-radius:9px;background:#fff;color:#526b84;padding:9px 12px;font-size:14px;font-weight:900;white-space:nowrap}.wb-etf-category-tab.active{border-color:#405d77;background:#edf5fb;color:#1d496c;box-shadow:inset 0 -2px #405d77}.wb-etf-category[hidden]{display:none}@media(max-width:640px){.wb-etf-category-tabs{padding:11px 12px}.wb-etf-category-tab{padding:9px 11px;font-size:15px}}
+.wb-d-loading{min-height:220px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:9px;color:#344054}.wb-d-loading b{font-size:17px}.wb-d-loading small{color:#7b8795;font-size:11px}.wb-d-loading-dot{width:28px;height:28px;border:3px solid #dbe7f1;border-top-color:#52718d;border-radius:50%;animation:wbdspin .75s linear infinite}@keyframes wbdspin{to{transform:rotate(360deg)}}
 /* 選股卡片內部詳情：外部工作台不改，只升級抽屜內容 */
 .wb-d-container{padding:4px 2px 30px}
 .wb-d-hero{margin:0 -4px 18px;padding:18px;border:1px solid #dbe4ec;border-radius:14px;background:linear-gradient(145deg,#f7fbff,#eef5fb);box-shadow:0 6px 18px rgba(39,76,119,.08)}
