@@ -10022,6 +10022,7 @@ def _chips_group_rows(rows, prices, both=False):
             continue
         item = {"code": str(code), "name": str(name or code),
                 "lots": int(lots or 0), "amount_billion": round(amount, 4),
+                "snapshot_price": float(price) if price is not None else None,
                 **extra}
         scored.append(item)
     scored.sort(key=lambda x: (x["amount_billion"], x["code"]), reverse=True)
@@ -15530,16 +15531,27 @@ BASE_CSS = """
      卡片浮不出來，所以底色壓深、卡片維持純白。
      漲跌色沿用既有的紅綠——那兩個顏色代表的是意義，
      換掉會讓看慣的人一時反應不過來，不屬於「換風格」的範圍。 */
-  --paper:#F2F2F7; --paper-2:#EFEFF4; --card:#FFFFFF;
-  --ink:#000000; --ink-soft:#3C3C43; --ink-faint:#8E8E93;
-  --rule:#E5E5EA; --sep:#E5E5EA;
-  --up:#C0443C; --down:#197653; --brass:#007AFF; --brass-2:#5AA9FF;
+  --paper:#F3F6FA; --paper-2:#E9EFF5; --card:#FFFFFF;
+  --ink:#14263D; --ink-soft:#4B6078; --ink-faint:#7D8EA3;
+  --rule:#D7E1EB; --sep:#E2E9F0;
+  --up:#C4473F; --down:#187653; --brass:#1769B0; --brass-2:#4D97D1;
   --radius:12px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--paper);color:var(--ink);line-height:1.55;
   font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
   -webkit-font-smoothing:antialiased}
+/* B 美術第一階段：只升級共用視覺，不改資料／計算／操作日報。 */
+.card{background:var(--card);border:1px solid var(--rule);border-radius:14px;box-shadow:0 4px 16px rgba(32,58,84,.06)}
+.section-head{border-left:4px solid var(--brass);padding-left:11px}
+.section-head h2{color:#173A5E;font-weight:750;letter-spacing:.01em}
+.tabs a{background:#E7EEF5;color:#35536F;border:1px solid transparent;border-radius:9px;padding:8px 14px;font-weight:600;transition:.18s ease}
+.tabs a.on{background:#1769B0;color:#fff;border-color:#1769B0;box-shadow:0 3px 9px rgba(23,105,176,.20)}
+button{border-radius:9px;background:#173A5E;box-shadow:0 2px 6px rgba(23,58,94,.12)}
+button:hover{background:#0F2E4D}
+input,select{border-radius:8px;border-color:#CFDCE8;background:#FBFDFF}
+input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#1769B0}
+.callout{border-left:4px solid var(--brass);background:#F7FAFD;border-radius:10px}
   .wrap{max-width:720px;margin:0 auto;padding:0 16px 80px}
   /* iOS 分組列表：卡片是白的、圓角較大、不用外框——
      灰底本身就把卡片分出來了，再加邊框會顯得雜。
@@ -16502,7 +16514,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     // 只顯示「載入內容」的階段，不放無法由前端確認的「整理畫面」假進度。
     // fetch 真正回來後，才把目前最後階段一次標成完成。
     var loadStageMap = {{
-      '/web/portfolio':['市場資料','國際市場','我的持股','今日行情','今日市場焦點','今日重要事件','選股結果','我的績效'],
+      '/web/portfolio':['市場資料','國際市場','大盤環境','我的持股','目前報價','今日損益','今日市場焦點','今日重要事件','選股結果','選股排名','風險檢查','我的績效'],
       '/web/positions':['持股資料','目前報價','今日損益','持股分析','組合配置','風險檢查','今日重點','績效整理'],
       '/web/workbench':['市場資料','營收資料','籌碼資料','計算排名'],
       '/web/leaderboard':['排行榜快照','個人績效','趨勢資料'],
@@ -25435,12 +25447,14 @@ def _workbench_chips_rows(result):
                 "trust_lots": trust_lots,
                 "group_lots": group_lots,
                 "plain_note": group_notes.get(label, "依已保存法人資料整理，未補入推測訊號。"),
+                "snapshot_price": _workbench_number(raw.get("snapshot_price")),
+                "direction_change": label,
             }
             rows.append({
                 "source": "籌碼", "code": code,
                 "name": _workbench_display_name(raw, code),
                 "industry": "法人籌碼", "score": None,
-                "price": None, "change_pct": None,
+                "price": _workbench_number(raw.get("snapshot_price")), "change_pct": _workbench_number(raw.get("change_pct")),
                 "metric_label": "近十日金額",
                 "institutional_lots": lots,
                 "institutional_amount": _workbench_number(raw.get("amount_billion")),
@@ -25464,7 +25478,7 @@ def _workbench_chips_rows(result):
             "source": "籌碼", "code": code,
             "name": _workbench_display_name(raw, code),
             "industry": "法人籌碼", "score": None,
-            "price": None, "change_pct": None,
+            "price": _workbench_number(raw.get("snapshot_price")), "change_pct": _workbench_number(raw.get("change_pct")),
             "metric_label": "法人方向變化",
             "institutional_lots": lots,
             "institutional_amount": _workbench_number(raw.get("amount_billion")),
@@ -25482,6 +25496,8 @@ def _workbench_chips_rows(result):
                 "split_available": split_available,
                 "magnitude_ratio": _workbench_number(raw.get("magnitude_ratio")),
                 "plain_note": "依投資人方向變化與已保存強度資料整理；不是即時預測。",
+                "direction_change": _workbench_text(raw.get("event_type"), "法人方向變化"),
+                "snapshot_price": _workbench_number(raw.get("snapshot_price")),
             },
         })
     return rows
@@ -25887,7 +25903,7 @@ def render_workbench_body(initial_tab=""):
     if(d.group_lots!=null) split.push('同向法人 '+(Number(d.group_lots)>0?'+':'')+Number(d.group_lots).toLocaleString('zh-TW')+' 張');
     var days=d.hit_days!=null&&d.total_days!=null?('近 '+esc(d.hit_days)+'／'+esc(d.total_days)+' 日同向'):'',amount=d.amount_billion!=null?Number(d.amount_billion).toFixed(2)+' 億':'',sourceNote=split.length?'':'舊快照正在重建法人拆分';
     var signal=String(r.signal||''),directionClass=signal==='買轉賣'?'chip-buy-to-sell':signal==='賣轉買'?'chip-sell-to-buy':'chip-neutral';
-    return '<button type="button" class="wb-row wb-chip-row" data-code="'+esc(r.code)+'" data-source="籌碼"><span class="wb-row-main"><span class="wb-tag 籌碼">籌碼</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><small class="wb-chip-direction '+directionClass+'">'+esc(signal||'籌碼異動')+'</small><small class="wb-chip-note">'+esc(d.plain_note||'依已保存法人資料整理')+'</small><small class="wb-chip-split">'+esc(split.join('　')||sourceNote)+'</small></span><span class="wb-chip-amount"><b>'+(r.institutional_lots==null?'—':(Number(r.institutional_lots)>0?'+':'')+Number(r.institutional_lots).toLocaleString('zh-TW')+' 張')+'</b><small>近十日法人張數</small></span><span class="wb-chip-meta"><b>'+esc(days||'已保存快照')+'</b><small>'+esc(amount||'金額未提供')+'</small></span><span>›</span></button>'
+    return '<button type="button" class="wb-row wb-chip-row" data-code="'+esc(r.code)+'" data-source="籌碼"><span class="wb-row-main"><span class="wb-tag 籌碼">籌碼</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><small class="wb-chip-direction '+directionClass+'">方向變化：'+esc(signal||'籌碼異動')+'</small><small class="wb-chip-note">'+esc(d.plain_note||'依已保存法人資料整理')+'</small><small class="wb-chip-split">'+esc(split.join('　')||sourceNote)+'</small></span><span class="wb-chip-amount"><b>'+(r.price==null?'快照價格 —':money(r.price))+'</b><small>最新快照價格</small></span><span class="wb-chip-meta"><b>'+(r.score==null?'綜合分數：不評分':esc(r.score))+'</b><small>'+esc(days||'已保存快照')+'　'+esc(amount||'金額未提供')+'</small></span><span>›</span></button>'
   }
   function renderEtfRow(r){
     var d=r.detail||{},score=r.score==null?null:Number(r.score),period=d.period_label||r.metric_label||'既有比較期間',returnPct=d.return_pct!=null?Number(d.return_pct):Number(r.return_pct),excess=d.excess_pct!=null?Number(d.excess_pct):Number(r.excess_pct),yieldPct=d.annualized_yield_pct==null?null:Number(d.annualized_yield_pct);
@@ -25981,7 +25997,7 @@ function bindFactors(){
       .then(function(html){box.innerHTML=html;})
       .catch(function(e){d.dataset.loaded='';box.textContent='因子分析載入失敗：'+(e&&e.message?e.message:e);});
   });
-}function render(){renderAssetTabs();renderTabs();document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','持股','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}if(state.source==='持股'){count.textContent='你的庫存；沒有同日分析快照時不顯示評分或待確認欄位';rowsEl.innerHTML=list.length?list.map(renderHoldingRow).join(''):'<div class="wb-empty">目前沒有已保存的持股。</div>';return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){state.returnScroll=window.scrollY||0;if(row.source==='ETF'){var ed=row.detail||{},scoreText=row.score==null?'尚無資料':Number(row.score).toFixed(1)+' 分',etfFacts=[];[['比較期間',ed.period_label],['價格報酬',ed.return_pct==null?null:(Number(ed.return_pct)>0?'+':'')+Number(ed.return_pct).toFixed(1)+'%'],['同期大盤',ed.market_return_pct==null?null:(Number(ed.market_return_pct)>0?'+':'')+Number(ed.market_return_pct).toFixed(1)+'%'],['相對大盤',ed.excess_pct==null?null:(Number(ed.excess_pct)>0?'+':'')+Number(ed.excess_pct).toFixed(1)+' 個百分點'],['年化配息殖利率',ed.annualized_yield_pct==null?null:(Number(ed.annualized_yield_pct)>0?'+':'')+Number(ed.annualized_yield_pct).toFixed(1)+'%'],['原始評論',ed.comment],['資料日',ed.source_date]].forEach(function(x){if(x[1]!=null&&x[1]!=='')etfFacts.push('<li><b>'+esc(x[0])+'</b><br>'+esc(x[1])+'</li>');});document.getElementById('wb-detail').innerHTML='<p>ETF · 已保存排名</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>分類</small><b>'+esc(row.industry)+'</b></div><div><small>原始排名分數</small><b>'+esc(scoreText)+'</b></div></div><ul class="wb-facts">'+(etfFacts.join('')||'<li>目前沒有更多已確認的 ETF 排名欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;return;}if(row.source==='轉折'){var td=row.detail||{},turningFacts=Object.keys(td).filter(function(k){return ['state_label','flow','state_reason','reasons','invalid_reasons','consensus','current_total_lots','magnitude_ratio','support','resistance','vol_ratio','source_date'].indexOf(k)>=0&&td[k]!=null&&td[k]!=='';}).map(function(k){var labels={state_label:'轉折狀態',flow:'方向',state_reason:'原始判讀',reasons:'條件明細',invalid_reasons:'失效原因',consensus:'法人共識',current_total_lots:'法人張數',magnitude_ratio:'變化強度',support:'支撐',resistance:'壓力',vol_ratio:'量能倍數',source_date:'資料日'};var v=td[k];return '<li><b>'+esc(labels[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):v)+'</li>';}).join('');document.getElementById('wb-detail').innerHTML='<p>轉折 · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>現價</small><b>'+money(row.price)+'</b></div><div><small>當日漲跌</small><b>'+pct(row.change_pct)+'</b></div><div><small>方向／狀態</small><b>'+esc(row.signal)+'</b></div><div><small>轉折條件</small><b>'+esc(td.turning_score==null?'—':td.turning_score+'/5')+'</b></div></div><ul class="wb-facts">'+(turningFacts||'<li>目前沒有更多已確認的轉折欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;return;}var d=row.detail||{},facts=[];Object.keys(d).forEach(function(k){var v=d[k];if(v==null||v===''||(Array.isArray(v)&&!v.length))return;facts.push('<li><b>'+esc({source_date:'資料日',breakout:'突破狀態',high_status:'高點狀態',radar_state:'雷達狀態',category:'股票分類',caps:'原始各項上限',val_desc:'估值說明',mom_desc:'產業動能說明',streak:'法人連買天數',buy_days:'近十日買超天數',vol_ratio:'量能倍數',support:'支撐',resistance:'壓力',state:'轉折狀態',flow:'方向',score_breakdown:'分數組成',data_quality:'資料完整度',group:'籌碼分組',institutional_lots:'近十日法人張數',amount_billion:'近十日法人金額',hit_days:'同方向天數',total_days:'統計交易日',foreign_lots:'外資張數',trust_lots:'投信張數',group_lots:'同向法人張數',plain_note:'原始判讀',return_pct:'價格報酬',excess_pct:'同期超額',annualized_yield_pct:'年化配息殖利率',period_label:'比較期間'}[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):typeof v==='object'?JSON.stringify(v):v)+'</li>');});document.getElementById('wb-detail').innerHTML='<p>'+esc(row.source)+' · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>最新快照價格</small><b>'+money(row.price)+'</b></div><div><small>'+esc(row.metric_label||'當日漲跌')+'</small><b>'+pct(row.change_pct)+'</b></div><div><small>綜合分數</small><b>'+esc(row.score==null?'—':row.score)+'</b></div><div><small>訊號</small><b>'+esc(row.signal)+'</b></div></div><ul class="wb-facts">'+(facts.join('')||'<li>目前沒有更多已確認的快照欄位。</li>')+'</ul>';appendChipSection(row);drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;}
+}function render(){renderAssetTabs();renderTabs();document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','持股','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}if(state.source==='持股'){count.textContent='你的庫存；沒有同日分析快照時不顯示評分或待確認欄位';rowsEl.innerHTML=list.length?list.map(renderHoldingRow).join(''):'<div class="wb-empty">目前沒有已保存的持股。</div>';return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){state.returnScroll=window.scrollY||0;if(row.source==='ETF'){var ed=row.detail||{},scoreText=row.score==null?'尚無資料':Number(row.score).toFixed(1)+' 分',etfFacts=[];[['比較期間',ed.period_label],['價格報酬',ed.return_pct==null?null:(Number(ed.return_pct)>0?'+':'')+Number(ed.return_pct).toFixed(1)+'%'],['同期大盤',ed.market_return_pct==null?null:(Number(ed.market_return_pct)>0?'+':'')+Number(ed.market_return_pct).toFixed(1)+'%'],['相對大盤',ed.excess_pct==null?null:(Number(ed.excess_pct)>0?'+':'')+Number(ed.excess_pct).toFixed(1)+' 個百分點'],['年化配息殖利率',ed.annualized_yield_pct==null?null:(Number(ed.annualized_yield_pct)>0?'+':'')+Number(ed.annualized_yield_pct).toFixed(1)+'%'],['原始評論',ed.comment],['資料日',ed.source_date]].forEach(function(x){if(x[1]!=null&&x[1]!=='')etfFacts.push('<li><b>'+esc(x[0])+'</b><br>'+esc(x[1])+'</li>');});document.getElementById('wb-detail').innerHTML='<p>ETF · 已保存排名</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>分類</small><b>'+esc(row.industry)+'</b></div><div><small>原始排名分數</small><b>'+esc(scoreText)+'</b></div></div><ul class="wb-facts">'+(etfFacts.join('')||'<li>目前沒有更多已確認的 ETF 排名欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;return;}if(row.source==='轉折'){var td=row.detail||{},turningFacts=Object.keys(td).filter(function(k){return ['state_label','flow','state_reason','reasons','invalid_reasons','consensus','current_total_lots','magnitude_ratio','support','resistance','vol_ratio','source_date'].indexOf(k)>=0&&td[k]!=null&&td[k]!=='';}).map(function(k){var labels={state_label:'轉折狀態',flow:'方向',state_reason:'原始判讀',reasons:'條件明細',invalid_reasons:'失效原因',consensus:'法人共識',current_total_lots:'法人張數',magnitude_ratio:'變化強度',support:'支撐',resistance:'壓力',vol_ratio:'量能倍數',source_date:'資料日'};var v=td[k];return '<li><b>'+esc(labels[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):v)+'</li>';}).join('');document.getElementById('wb-detail').innerHTML='<p>轉折 · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>現價</small><b>'+money(row.price)+'</b></div><div><small>當日漲跌</small><b>'+pct(row.change_pct)+'</b></div><div><small>方向／狀態</small><b>'+esc(row.signal)+'</b></div><div><small>轉折條件</small><b>'+esc(td.turning_score==null?'—':td.turning_score+'/5')+'</b></div></div><ul class="wb-facts">'+(turningFacts||'<li>目前沒有更多已確認的轉折欄位。</li>')+'</ul>';drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;return;}var d=row.detail||{},facts=[];Object.keys(d).forEach(function(k){var v=d[k];if(v==null||v===''||(Array.isArray(v)&&!v.length))return;facts.push('<li><b>'+esc({source_date:'資料日',snapshot_price:'最新快照價格',direction_change:'方向變化',breakout:'突破狀態',high_status:'高點狀態',radar_state:'雷達狀態',category:'股票分類',caps:'原始各項上限',val_desc:'估值說明',mom_desc:'產業動能說明',streak:'法人連買天數',buy_days:'近十日買超天數',vol_ratio:'量能倍數',support:'支撐',resistance:'壓力',state:'轉折狀態',flow:'方向',score_breakdown:'分數組成',data_quality:'資料完整度',group:'籌碼分組',institutional_lots:'近十日法人張數',amount_billion:'近十日法人金額',hit_days:'同方向天數',total_days:'統計交易日',foreign_lots:'外資張數',trust_lots:'投信張數',group_lots:'同向法人張數',plain_note:'原始判讀',return_pct:'價格報酬',excess_pct:'同期超額',annualized_yield_pct:'年化配息殖利率',period_label:'比較期間'}[k]||k)+'</b><br>'+esc(Array.isArray(v)?v.join('；'):typeof v==='object'?JSON.stringify(v):v)+'</li>');});document.getElementById('wb-detail').innerHTML='<p>'+esc(row.source)+' · 已保存快照</p><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><div class="wb-detail-grid"><div><small>最新快照價格</small><b>'+money(row.price)+'</b></div><div><small>'+esc(row.metric_label||'當日漲跌')+'</small><b>'+pct(row.change_pct)+'</b></div><div><small>綜合分數</small><b>'+esc(row.source==='籌碼'?'不評分':(row.score==null?'—':row.score))+'</b></div><div><small>訊號</small><b>'+esc(row.signal)+'</b></div></div><ul class="wb-facts">'+(facts.join('')||'<li>目前沒有更多已確認的快照欄位。</li>')+'</ul>';appendChipSection(row);drawer.classList.add('open');drawer.setAttribute('aria-hidden','false');mask.hidden=false;}
   // 籌碼分布：點開才抓那一檔的三個月日K再算。
   // 放在清單載入時算會拖慢整頁，而多數人只會點開其中一兩檔。
   function appendChipSection(row){
