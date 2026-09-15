@@ -8528,8 +8528,19 @@ def _score_validation(mode, days=180, code=None):
         try:
             if p.get('score') is not None and str(p.get('score')).strip()!='': score=float(p['score'])
         except Exception: score=None
-        row={"code":p.get('code'),"name":p.get('name'),"date":pd.isoformat(),"rank":p.get('rank'),"score":score,"price":p.get('price')}
-        cur=price_map.get(p.get('code'))
+        raw_code=p.get("code")
+        raw_rank=p.get("rank")
+        raw_price=p.get("price")
+        try:
+            safe_rank=int(raw_rank) if raw_rank is not None else None
+        except Exception:
+            safe_rank=None
+        try:
+            safe_price=float(raw_price) if raw_price is not None else None
+        except Exception:
+            safe_price=None
+        row={"code":normalize_code(raw_code) if raw_code else "","name":str(p.get("name") or ""),"date":pd.isoformat(),"rank":safe_rank,"score":score,"price":safe_price}
+        cur=price_map.get(normalize_code(p.get("code")))
         for h in horizons:
             row[f'r{h}']=_score_validation_horizon_return(cur,pd,p.get('price'),h)
         all_rows.append(row)
