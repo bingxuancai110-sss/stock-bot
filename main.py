@@ -25891,7 +25891,7 @@ def render_workbench_body(initial_tab=""):
     var flow=r.source==='轉折'?'<small class="wb-turning-flow '+esc(d.flow_key||'unknown')+'">'+esc(r.signal)+'</small>':'',radarRank=r.source==='雷達'?'<span class="wb-radar-rank">雷達第 '+esc(r.radar_rank||'—')+' 名</span>':'';
     var scoreHtml=r.source==='雷達'?'<b class="wb-radar-rule">排序依據</b><small class="wb-score-parts">突破／量能／法人連買／當日漲幅</small>':(r.category==='金融'&&r.score==null?'<b class="wb-score">金融股不評分</b><small class="wb-score-parts">舊版僅列事實供判讀</small>':(r.score==null?'<b class="wb-score">—</b><small class="wb-score-parts">舊版未提供評分拆解</small>':'<b class="wb-score">'+esc(r.score)+'<small>/100 分</small></b><small class="wb-score-parts">'+esc(r.score_policy||d.score_policy||(scoreParts.length?scoreParts.join(' · '):'舊版未提供評分拆解'))+'</small>'));
     var signalBlock=r.signal?'<span class="wb-signal"><b>'+esc(r.signal)+'</b><small>'+valueText(r.turnover,' 成交額')+'</small></span>':'<span class="wb-signal"></span>';
-    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-rich-row" onclick="return window.__wbOpenWorkbenchDetail(this)" ontouchend="return window.__wbOpenWorkbenchDetail(this)" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'" data-row-key="'+esc(r.row_key||'')+'"><span class="wb-row-main"><span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>'+radarRank+'<b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b>'+highStatus+breakout+'<small class="wb-industry">'+esc(r.industry)+'</small>'+flow+'<small class="wb-fact-line">'+basics+'</small><small class="wb-fact-line">'+trend+'</small></span><span class="wb-score-block">'+scoreHtml+'</span><span class="wb-price-block"><b class="wb-num">'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span><span class="wb-institutional wb-num"><b>'+esc(inst)+'</b><small>法人近十日</small></span>'+signalBlock+'<span>›</span></button>'+chipBlock(r.code)+'</div>'
+    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-rich-row" onclick="return window.__wbOpenWorkbenchDetail(this)" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'" data-row-key="'+esc(r.row_key||'')+'"><span class="wb-row-main"><span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>'+radarRank+'<b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b>'+highStatus+breakout+'<small class="wb-industry">'+esc(r.industry)+'</small>'+flow+'<small class="wb-fact-line">'+basics+'</small><small class="wb-fact-line">'+trend+'</small></span><span class="wb-score-block">'+scoreHtml+'</span><span class="wb-price-block"><b class="wb-num">'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span><span class="wb-institutional wb-num"><b>'+esc(inst)+'</b><small>法人近十日</small></span>'+signalBlock+'<span>›</span></button>'+chipBlock(r.code)+'</div>'
   }
   function renderTurningRow(r){
     var d=r.detail||{},state=d.state||'observing',stateLabel=state==='invalid'?'失敗':(state==='confirmed'?'已確認':'觀察中'),invalidReasons=Array.isArray(d.invalid_reasons)?d.invalid_reasons.filter(Boolean):[],reasons=(state==='invalid'&&invalidReasons.length?invalidReasons:(Array.isArray(d.reasons)?d.reasons:[])),reason=(state==='invalid'?(invalidReasons[0]||d.state_reason||'原始快照尚未提供具體失敗原因'):(d.state_reason||'轉折細節資料不足'));
@@ -25910,7 +25910,7 @@ def render_workbench_body(initial_tab=""):
     }else{
       judgement='<section class="wb-turning-reason"><b>目前判讀</b><span>'+esc(reason)+'</span></section>';
     }
-    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-turning-row" onclick="return window.__wbOpenWorkbenchDetail(this)" ontouchend="return window.__wbOpenWorkbenchDetail(this)" data-code="'+esc(r.code)+'" data-source="轉折"><span class="wb-turning-card"><span class="wb-turning-top"><span class="wb-turning-title"><span class="wb-tag 轉折">轉折</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><span class="wb-turning-flow '+esc(flowClass)+'">'+esc(state==='invalid'?'失敗／'+flow:flow+'／'+stateLabel)+'</span></span><span class="wb-turning-price"><b>'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span></span><span class="wb-turning-facts"><span><small>法人淨額</small><b>'+esc(lots)+'</b></span><span><small>法人共識</small><b>'+esc(d.consensus||'未提供')+'</b></span><span><small>量能</small><b>'+esc(volume)+'</b></span><span><small>支撐／壓力</small><b>'+esc(support)+' ／ '+esc(resistance)+'</b></span></span>'+judgement+(reasonList?'<ul class="wb-turning-reasons"><li class="wb-turning-reasons-title">'+(state==='invalid'?'失效條件明細':'條件明細')+'</li>'+reasonList+'</ul>':'')+'</span><span class="wb-row-chevron">›</span></button>'+chipBlock(r.code)+'</div>';
+    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-turning-row" onclick="return window.__wbOpenWorkbenchDetail(this)" data-code="'+esc(r.code)+'" data-source="轉折"><span class="wb-turning-card"><span class="wb-turning-top"><span class="wb-turning-title"><span class="wb-tag 轉折">轉折</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><span class="wb-turning-flow '+esc(flowClass)+'">'+esc(state==='invalid'?'失敗／'+flow:flow+'／'+stateLabel)+'</span></span><span class="wb-turning-price"><b>'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span></span><span class="wb-turning-facts"><span><small>法人淨額</small><b>'+esc(lots)+'</b></span><span><small>法人共識</small><b>'+esc(d.consensus||'未提供')+'</b></span><span><small>量能</small><b>'+esc(volume)+'</b></span><span><small>支撐／壓力</small><b>'+esc(support)+' ／ '+esc(resistance)+'</b></span></span>'+judgement+(reasonList?'<ul class="wb-turning-reasons"><li class="wb-turning-reasons-title">'+(state==='invalid'?'失效條件明細':'條件明細')+'</li>'+reasonList+'</ul>':'')+'</span><span class="wb-row-chevron">›</span></button>'+chipBlock(r.code)+'</div>';
   }
   function renderChipRow(r){
     var d=r.detail||{},split=[];
@@ -26014,155 +26014,41 @@ function bindFactors(){
       .catch(function(e){d.dataset.loaded='';box.textContent='因子分析載入失敗：'+(e&&e.message?e.message:e);});
   });
 }function render(){renderAssetTabs();renderTabs();document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','持股','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}if(state.source==='持股'){count.textContent='你的庫存；沒有同日分析快照時不顯示評分或待確認欄位';rowsEl.innerHTML=list.length?list.map(renderHoldingRow).join(''):'<div class="wb-empty">目前沒有已保存的持股。</div>';return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
-    state.returnScroll=window.scrollY||0;
-    var host=document.getElementById('wb-detail');
-    if(!host)return;
-    // 先開抽屜，再處理任何詳細資料。這樣即使某個欄位資料異常，使用者也不會看到「完全沒反應」。
-    drawer.classList.add('open');
-    drawer.setAttribute('aria-hidden','false');
-    mask.hidden=false;
-    host.innerHTML='<div class="wb-d-loading"><div class="wb-d-loading-dot"></div><b>正在整理 '+esc(row&&row.name?row.name:'標的')+' 的詳細資料…</b><small>外部選股結果不變，僅載入詳細資訊</small></div>';
-    var d=row.detail||{};
-
-    function val(v, suffix){
-      if(v==null||v==='')return '—';
-      if(typeof v==='number' && !isFinite(v))return '—';
-      return esc(String(v)+(suffix||''));
+    var host=document.getElementById('wb-detail'), dr=document.getElementById('wb-drawer'), mk=document.getElementById('wb-mask');
+    if(!host||!dr)return;
+    var y=window.scrollY||window.pageYOffset||0;
+    state.returnScroll=y;
+    document.body.dataset.wbScroll=String(y);
+    document.body.style.position='fixed';
+    document.body.style.top=(-y)+'px';
+    document.body.style.left='0';
+    document.body.style.right='0';
+    document.body.style.width='100%';
+    dr.classList.add('open'); dr.setAttribute('aria-hidden','false'); if(mk)mk.hidden=false;
+    host.innerHTML='<div class="wb-d-container"><div class="wb-d-loading"><div class="wb-d-loading-dot"></div><b>正在整理 '+esc(row&&row.name?row.name:'標的')+' 的詳細資料…</b><small>正在載入已保存資料</small></div></div>';
+    try{
+      row=row||{}; var d=(row.detail&&typeof row.detail==='object')?row.detail:{};
+      function txt(v){if(v==null||v==='')return '—'; if(typeof v==='object'){try{return JSON.stringify(v)}catch(e){return String(v)}} return String(v)}
+      function fact(label,v){if(v==null||v==='')return '';return '<div class="wb-d-fact"><small>'+esc(label)+'</small><b>'+esc(txt(v))+'</b></div>';}
+      function pctv(v){if(v==null||v===''||isNaN(Number(v)))return '—';var n=Number(v);return (n>0?'+':'')+n.toFixed(1)+'%';}
+      var src=txt(row.source||'選股'), name=txt(row.name||'—'), code=txt(row.code||'—');
+      var score=(row.score!=null?row.score:(d.score!=null?d.score:null));
+      var title=src+'｜'+code+' '+name;
+      var price=row.price!=null?row.price:d.price, ch=row.change_pct!=null?row.change_pct:d.change_pct;
+      var facts='';
+      [['產業',row.industry||d.industry],['目前價格',price],['今日變化',ch==null?null:pctv(ch)],['法人近十日',row.institutional_lots!=null?row.institutional_lots:d.institutional_lots],['狀態',d.state||d.status||d.high_status||d.breakout],['法人共識',d.consensus],['量能',d.volume],['支撐',d.support],['壓力',d.resistance],['方向變化',d.direction_change],['快照價格',d.snapshot_price]].forEach(function(x){facts+=fact(x[0],x[1]);});
+      var reasons=Array.isArray(d.reasons)?d.reasons:Array.isArray(d.reason)?d.reason:[];
+      var reasonHtml=reasons.length?'<ul class="wb-d-list">'+reasons.slice(0,8).map(function(x){return '<li>'+esc(txt(x))+'</li>';}).join('')+'</ul>':'';
+      var scoreHtml=score!=null&&score!==''&&!isNaN(Number(score))?'<div class="wb-d-score"><span>綜合分數</span><b>'+esc(Number(score).toFixed(0))+'</b></div>':'';
+      var factorHtml='';
+      [['營收',d.score_rev,25],['估值',d.score_val,25],['動能',d.score_mom,20],['連續性',d.score_streak,20],['籌碼／技術',d.score_chip,10]].forEach(function(x){if(x[1]==null||isNaN(Number(x[1])))return;var n=Number(x[1]),w=Math.max(0,Math.min(100,n/Number(x[2])*100));factorHtml+='<div class="wb-d-score-row"><div><span>'+x[0]+'</span><b>'+n+'/'+x[2]+'</b></div><div class="wb-d-bar"><i style="width:'+w.toFixed(1)+'%"></i></div></div>';});
+      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p></div>'+scoreHtml+'</div><div class="wb-d-price"><b>'+esc(txt(price))+'</b><span>'+esc(ch==null?'—':pctv(ch))+'</span></div></div>'+(factorHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>評分拆解</h4><small>只顯示已保存的原始分項，不重新計算</small></div>'+factorHtml+'</section>':'')+(facts?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>關鍵資料</h4></div><div class="wb-d-facts">'+facts+'</div></section>':'')+(reasonHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>入選／判斷依據</h4></div>'+reasonHtml+'</section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>資料說明</h4></div><p class="wb-d-note">以上內容來自目前選股台已保存資料；沒有資料的欄位不會自行推測。</p></section></div>';
+      if(typeof appendChipSection==='function')appendChipSection(row);
+    }catch(err){
+      console.error('showDetail error',err);
+      host.innerHTML='<div class="wb-d-container"><div class="wb-d-error"><b>詳細資料整理失敗</b><small>'+esc(err&&err.message?err.message:String(err))+'</small></div></div>';
     }
-    function signedPct(v){
-      if(v==null||v===''||isNaN(Number(v)))return '—';
-      var n=Number(v); return esc((n>0?'+':'')+n.toFixed(1)+'%');
-    }
-    function fact(label,value, cls){
-      if(value==null||value===''||(Array.isArray(value)&&!value.length))return '';
-      var text=Array.isArray(value)?value.join('；'):typeof value==='object'?JSON.stringify(value):String(value);
-      return '<div class="wb-d-fact '+(cls||'')+'"><small>'+esc(label)+'</small><b>'+esc(text)+'</b></div>';
-    }
-    function section(title, subtitle, body, cls){
-      if(!body)return '';
-      return '<section class="wb-d-section '+(cls||'')+'"><div class="wb-d-section-head"><div><h4>'+esc(title)+'</h4>'+(subtitle?'<small>'+esc(subtitle)+'</small>':'')+'</div></div>'+body+'</section>';
-    }
-    function factGrid(items){
-      var html=items.map(function(x){return fact(x[0],x[1],x[2]);}).join('');
-      return html?'<div class="wb-d-facts">'+html+'</div>':'';
-    }
-    function scoreBar(label, value, max){
-      if(value==null||value===''||isNaN(Number(value)))return '';
-      var n=Number(value), m=Number(max)||100, pctv=Math.max(0,Math.min(100,n/m*100));
-      return '<div class="wb-d-score-row"><div><span>'+esc(label)+'</span><b>'+esc(n)+(max?'/'+esc(max):'')+'</b></div><div class="wb-d-bar"><i style="width:'+pctv.toFixed(1)+'%"></i></div></div>';
-    }
-    function reasonList(arr){
-      if(!Array.isArray(arr)||!arr.length)return '';
-      return '<ul class="wb-d-list">'+arr.slice(0,6).map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul>';
-    }
-
-    var html='';
-
-    /* 黑馬：把「為什麼入選」放在最前面，細節再往下 */
-    if(row.source==='黑馬'){
-      var caps=Array.isArray(row.caps)?row.caps:(row.category==='電子'?['25','25','20','20','10']:row.category==='傳產'?['20','25','25','20','10']:null);
-      var factors=[
-        ['營收',row.rev,caps&&caps[0],'score_rev'],
-        ['估值',row.val,caps&&caps[1],'score_val'],
-        ['產業動能',row.mom,caps&&caps[2],'score_mom'],
-        ['連續性',row.streak_score,caps&&caps[3],'score_streak'],
-        ['籌碼技術',row.chip,caps&&caps[4],'score_chip']
-      ];
-      var scoreRows=factors.map(function(x){return scoreBar(x[0],x[1],x[2]);}).join('');
-      var strongest=factors.filter(function(x){return x[1]!=null&&!isNaN(Number(x[1]));}).sort(function(a,b){return Number(b[1])-Number(a[1]);})[0];
-      var weakest=factors.filter(function(x){return x[1]!=null&&!isNaN(Number(x[1]));}).sort(function(a,b){return Number(a[1])-Number(b[1]);})[0];
-      var total=row.score==null?'—':String(row.score);
-      html='<div class="wb-d-hero">'
-        +'<div class="wb-d-hero-top"><div><span class="wb-d-label">智慧黑馬 · 已保存快照</span><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><p>'+esc(row.industry||row.category||'')+'</p></div><div class="wb-d-score"><b>'+esc(total)+'</b><small>綜合分數</small></div></div>'
-        +'<div class="wb-d-price"><b>'+money(row.price)+'</b><span>'+signedPct(row.change_pct)+'</span></div>'
-        +'</div>'
-        +section('為什麼進入黑馬','這裡只呈現快照中已存在的評分資料',scoreRows?'<div class="wb-d-score-list">'+scoreRows+'</div>':'<div class="wb-d-empty">這筆舊快照沒有完整的五項評分拆解。</div>')
-        +((strongest||weakest)?'<div class="wb-d-insight-grid">'+(strongest?'<div><small>目前最強項</small><b>'+esc(strongest[0])+'</b><span>'+esc(strongest[1])+(strongest[2]?'/'+esc(strongest[2]):'')+'</span></div>':'')+(weakest?'<div><small>目前最弱項</small><b>'+esc(weakest[0])+'</b><span>'+esc(weakest[1])+(weakest[2]?'/'+esc(weakest[2]):'')+'</span></div>':'')+'</div>':'')
-        +section('基本面','快照已保存的事實',factGrid([
-          ['營收年增',row.cum_yoy==null?null:signedPct(row.cum_yoy)],
-          ['本益比 PE',row.pe],['PEG',row.peg],['殖利率',row.yield==null?null:String(row.yield)+'%'],['PB',row.pb],['產業',row.industry],['資料日',d.source_date]
-        ]))
-        +section('籌碼與位置','只顯示已有資料',factGrid([
-          ['近十日法人',row.institutional_lots==null?null:String(row.institutional_lots)+' 張'],
-          ['近十日買超天數',row.buy_days==null?d.buy_days:null],
-          ['量能倍數',d.vol_ratio==null?null:String(d.vol_ratio)+' 倍'],
-          ['成交金額',row.turnover==null?null:Number(row.turnover).toFixed(1)+' 億'],
-          ['支撐',d.support],['壓力',d.resistance],['距60日高點',d.high_status||null]
-        ]))
-        +section('系統判讀','原始快照中的補充說明',reasonList(d.reasons)||((d.plain_note)?'<div class="wb-d-note">'+esc(d.plain_note)+'</div>':''));
-    }
-    /* 雷達 */
-    else if(row.source==='雷達'){
-      html='<div class="wb-d-hero wb-d-hero-radar">'
-        +'<div class="wb-d-hero-top"><div><span class="wb-d-label">雷達 · 已保存快照</span><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><p>'+esc(row.industry||'')+'</p></div><div class="wb-d-rank"><small>雷達排名</small><b>#'+esc(row.radar_rank||'—')+'</b></div></div>'
-        +'<div class="wb-d-price"><b>'+money(row.price)+'</b><span>'+signedPct(row.change_pct)+'</span></div></div>'
-        +section('雷達現在看到什麼','排序依據不是綜合評分',factGrid([
-          ['突破狀態',d.breakout],['雷達狀態',d.radar_state||row.radar_state],
-          ['高點狀態',d.high_status],['法人近十日',row.institutional_lots==null?null:String(row.institutional_lots)+' 張'],
-          ['連買天數',d.streak||row.up_streak],['量能倍數',d.vol_ratio==null?null:String(d.vol_ratio)+' 倍'],
-          ['成交金額',row.turnover==null?null:Number(row.turnover).toFixed(1)+' 億'],['資料日',d.source_date]
-        ]))
-        +section('價格位置','用現有快照判斷位置',factGrid([
-          ['目前價格',row.price],['當日漲跌',signedPct(row.change_pct)],
-          ['支撐',d.support],['壓力',d.resistance]
-        ]))
-        +section('法人與動能','只呈現已有欄位',factGrid([
-          ['法人方向',row.institutional_lots==null?null:String(row.institutional_lots)+' 張'],
-          ['連續買超',d.streak||row.up_streak],['量能',d.vol_ratio==null?null:String(d.vol_ratio)+' 倍'],
-          ['原始判讀',d.plain_note||d.state_reason]
-        ]));
-    }
-    /* 籌碼 */
-    else if(row.source==='籌碼'){
-      var chipSignal=String(row.signal||'籌碼異動'), chipClass=chipSignal==='買轉賣'?'chip-buy-to-sell':chipSignal==='賣轉買'?'chip-sell-to-buy':'chip-neutral';
-      var split=[
-        fact('外資',d.foreign_lots==null?null:String(d.foreign_lots)+' 張'),
-        fact('投信',d.trust_lots==null?null:String(d.trust_lots)+' 張'),
-        fact('同向法人',d.group_lots==null?null:String(d.group_lots)+' 張')
-      ].join('');
-      html='<div class="wb-d-hero wb-d-hero-chip">'
-        +'<div class="wb-d-hero-top"><div><span class="wb-d-label">籌碼 · 已保存快照</span><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><p>'+esc(row.industry||'法人籌碼異動')+'</p></div><span class="wb-d-chip-signal '+chipClass+'">'+esc(chipSignal)+'</span></div>'
-        +'<div class="wb-d-price"><b>'+money(row.price)+'</b><span>'+signedPct(row.change_pct)+'</span></div></div>'
-        +section('先看這檔籌碼發生什麼','方向變化與快照價格',factGrid([
-          ['方向變化',chipSignal],['最新快照價格',row.price],['同方向天數',d.hit_days!=null&&d.total_days!=null?'近 '+d.hit_days+'／'+d.total_days+' 日':null],
-          ['近十日法人張數',d.institutional_lots==null?null:String(d.institutional_lots)+' 張'],
-          ['近十日法人金額',d.amount_billion==null?null:Number(d.amount_billion).toFixed(2)+' 億'],
-          ['資料日',d.source_date]
-        ]))
-        +(split?section('法人拆分','已保存資料', '<div class="wb-d-inst-grid">'+split+'</div>'):'')
-        +section('原始判讀','不重新解讀快照，只整理原有文字',d.plain_note?'<div class="wb-d-note">'+esc(d.plain_note)+'</div>':'<div class="wb-d-empty">沒有保存原始判讀文字。</div>');
-    }
-    /* 轉折 */
-    else if(row.source==='轉折'){
-      var state=d.state||'observing', stateLabel=state==='confirmed'?'已確認':state==='invalid'?'失敗':'觀察中';
-      var flow=d.flow||row.signal||'方向不明';
-      var reasons=Array.isArray(d.reasons)?d.reasons:[], invalid=Array.isArray(d.invalid_reasons)?d.invalid_reasons:[];
-      html='<div class="wb-d-hero wb-d-hero-turning">'
-        +'<div class="wb-d-hero-top"><div><span class="wb-d-label">轉折 · 已保存快照</span><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><p>'+esc(row.industry||'')+'</p></div><div class="wb-d-state '+(state==='invalid'?'bad':state==='confirmed'?'good':'wait')+'">'+esc(stateLabel)+'</div></div>'
-        +'<div class="wb-d-price"><b>'+money(row.price)+'</b><span>'+signedPct(row.change_pct)+'</span></div></div>'
-        +section('轉折狀態','先判斷目前在哪個階段',factGrid([
-          ['狀態',stateLabel],['方向',flow],['法人共識',d.consensus],['變化強度',d.magnitude_ratio],
-          ['法人張數',d.current_total_lots==null?null:String(d.current_total_lots)+' 張'],
-          ['量能倍數',d.vol_ratio==null?null:String(d.vol_ratio)+' 倍'],['支撐',d.support],['壓力',d.resistance]
-        ]))
-        +section(state==='invalid'?'為什麼失敗':'轉折條件','來自原始快照的條件明細',reasonList(state==='invalid'&&invalid.length?invalid:reasons)||((d.state_reason)?'<div class="wb-d-note">'+esc(d.state_reason)+'</div>':'<div class="wb-d-empty">目前沒有更多已確認的條件資料。</div>'));
-    }
-    else if(row.source==='ETF'){
-      html='<div class="wb-d-hero"><div class="wb-d-hero-top"><div><span class="wb-d-label">ETF · 已保存排名</span><h3>'+esc(row.name)+' <small>'+esc(row.code)+'</small></h3><p>'+esc(row.industry||'')+'</p></div><div class="wb-d-score"><b>'+esc(row.score==null?'—':Number(row.score).toFixed(1))+'</b><small>排名分數</small></div></div></div>'
-      +section('績效比較','只顯示既有比較資料',factGrid([
-        ['比較期間',d.period_label],['價格報酬',d.return_pct==null?null:signedPct(d.return_pct)],
-        ['同期大盤',d.market_return_pct==null?null:signedPct(d.market_return_pct)],['相對大盤',d.excess_pct==null?null:signedPct(d.excess_pct)],
-        ['年化配息殖利率',d.annualized_yield_pct==null?null:signedPct(d.annualized_yield_pct)],['資料日',d.source_date]
-      ]))
-      +section('原始評論','已保存內容',d.comment?'<div class="wb-d-note">'+esc(d.comment)+'</div>':'');
-    }
-
-    if(!html)html='<div class="wb-d-empty">目前沒有可顯示的詳細資料。</div>';
-    host.innerHTML='<div class="wb-d-container">'+html+'</div>';
-    appendChipSection(row);
-}
-  // 籌碼分布：點開才抓那一檔的三個月日K再算。
-  // 放在清單載入時算會拖慢整頁，而多數人只會點開其中一兩檔。
+  }
   function appendChipSection(row){
     if(!row||!row.code||row.source==='ETF')return;
     var host=document.getElementById('wb-detail');if(!host)return;
@@ -26193,7 +26079,7 @@ function bindFactors(){
     e.preventDefault();
     e.stopPropagation();
     showDetail(row);
-  },true);function closeDrawer(){drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;window.setTimeout(function(){window.scrollTo(0,state.returnScroll||0);},0);}document.getElementById('wb-close').onclick=closeDrawer;document.getElementById('wb-back').onclick=closeDrawer;mask.onclick=closeDrawer;document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
+  },true);function closeDrawer(){var y=Number(document.body.dataset.wbScroll||state.returnScroll||0);drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;document.body.style.position='';document.body.style.top='';document.body.style.left='';document.body.style.right='';document.body.style.width='';delete document.body.dataset.wbScroll;window.scrollTo(0,y);}document.getElementById('wb-close').onclick=closeDrawer;document.getElementById('wb-back').onclick=closeDrawer;mask.onclick=closeDrawer;document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
 })();
 </script>'''
     # ETF 原始資料仍依短期／長期及四類分組；只在結果渲染完成後加入橫向類別選擇器。
