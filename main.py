@@ -1661,6 +1661,25 @@ def init_db():
                 source_meta JSONB NOT NULL DEFAULT '{}'::jsonb
             )
         ''')
+        # 選股盤中分數變化歷史：保留同一天前後兩次快照的差異，
+        # 讓使用者點進今日黑馬時能直接看到「哪一項變了」。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS screener_score_change_history (
+                change_id BIGSERIAL PRIMARY KEY,
+                mode TEXT NOT NULL,
+                code TEXT NOT NULL,
+                snapshot_date DATE NOT NULL,
+                changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                old_score NUMERIC,
+                new_score NUMERIC,
+                old_factors JSONB NOT NULL DEFAULT '{}'::jsonb,
+                new_factors JSONB NOT NULL DEFAULT '{}'::jsonb
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_screener_score_change_today
+            ON screener_score_change_history (mode, code, snapshot_date, changed_at DESC)
+        ''')
         # 排行榜成員。預設不參加，要自己填暱稱加入——
         # 排行榜會把報酬率給別人看，那跟「持股只用於你自己的分析」是兩件事，
         # 必須明確 opt-in 才不會違背當初給使用者的承諾。
@@ -24018,6 +24037,41 @@ def _load_persisted_screener_snapshot(mode):
         return None
 
 
+def _load_today_screener_score_changes(mode):
+    """讀取今日同一標的最新一次分數變化；只供詳細頁顯示，不參與評分。"""
+    if str(mode).strip() not in ("blackhorse", "radar"):
+        return {}
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT code, changed_at, old_score, new_score, old_factors, new_factors
+            FROM screener_score_change_history
+            WHERE mode = %s AND snapshot_date = %s
+            ORDER BY changed_at DESC, change_id DESC
+        """, (str(mode).strip(), taiwan_today()))
+        rows = cur.fetchall()
+        cur.close()
+    except Exception as exc:
+        print(f"⚠️ 讀取今日選股分數變化失敗 {mode}: {exc}")
+        rows = []
+    finally:
+        release_db_connection(conn)
+    out = {}
+    for code, changed_at, old_score, new_score, old_factors, new_factors in rows:
+        key = str(code or '').strip()
+        if not key or key in out:
+            continue
+        out[key] = {
+            "changed_at": str(changed_at or ""),
+            "old_score": _workbench_number(old_score),
+            "new_score": _workbench_number(new_score),
+            "old_factors": old_factors if isinstance(old_factors, dict) else {},
+            "new_factors": new_factors if isinstance(new_factors, dict) else {},
+        }
+    return out
+
+
 RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS = 10 * 60
 RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS = RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS
 
@@ -24055,7 +24109,48 @@ def _save_persisted_screener_snapshot(mode, rows, skipped, momentum,
     if not effective_date:
         print(f"⚠️ 選股快照 {mode} 缺少可確認的資料日，略過保存")
         return False
+    old_rows = []
     conn = get_db_connection()
+    try:
+        old_cur = conn.cursor()
+        old_cur.execute("SELECT rows_json FROM screener_result_snapshots WHERE mode = %s", (mode,))
+        old_rec = old_cur.fetchone()
+        old_cur.close()
+        if old_rec and isinstance(old_rec[0], list):
+            old_rows = old_rec[0]
+    except Exception as exc:
+        print(f"⚠️ 讀取舊選股快照供分數差異比較失敗 {mode}: {exc}")
+        old_rows = []
+    try:
+        old_by_code = {str(x.get("code") or ""): x for x in old_rows if isinstance(x, dict)}
+        for new_row in rows if isinstance(rows, list) else []:
+            if not isinstance(new_row, dict):
+                continue
+            code = str(new_row.get("code") or "").strip()
+            if not code or code not in old_by_code:
+                continue
+            old_row = old_by_code.get(code) or {}
+            keys = ("rev", "val", "mom", "streak_score", "chip")
+            old_f = {k: old_row.get(k) for k in keys}
+            new_f = {k: new_row.get(k) for k in keys}
+            old_score = old_row.get("score")
+            new_score = new_row.get("score")
+            changed = (old_score != new_score or any(old_f[k] != new_f[k] for k in keys))
+            if not changed:
+                continue
+            cur2 = conn.cursor()
+            cur2.execute("""
+                INSERT INTO screener_score_change_history
+                    (mode, code, snapshot_date, old_score, new_score, old_factors, new_factors)
+                VALUES (%s, %s, %s, %s, %s, CAST(%s AS JSONB), CAST(%s AS JSONB))
+            """, (mode, code, effective_date, old_score, new_score,
+                    json.dumps(_jsonable(old_f), ensure_ascii=False),
+                    json.dumps(_jsonable(new_f), ensure_ascii=False)))
+            cur2.close()
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        print(f"⚠️ 保存選股分數變化歷史失敗 {mode}: {exc}")
     try:
         cur = conn.cursor()
         cur.execute(
@@ -25661,7 +25756,13 @@ def build_workbench_snapshot_payload(uid=None):
     sources, rows = {}, []
     blackhorse = _load_persisted_screener_snapshot("blackhorse")
     if blackhorse:
-        rows.extend(_workbench_screener_rows("blackhorse", blackhorse))
+        bh_rows = _workbench_screener_rows("blackhorse", blackhorse)
+        change_map = _load_today_screener_score_changes("blackhorse")
+        for item in bh_rows:
+            chg = change_map.get(str(item.get("code") or ""))
+            if chg:
+                item.setdefault("detail", {})["score_change"] = chg
+        rows.extend(bh_rows)
         sources["黑馬"] = {"date": str(blackhorse.get("source_date") or "未標日期"),
                          "computed_at": str(blackhorse.get("computed_at") or "")}
 
@@ -26195,6 +26296,23 @@ function bindFactors(){
       var scoreHtml=score!=null&&score!==''&&!isNaN(Number(score))?'<div class="wb-d-score"><span>綜合分數</span><b>'+esc(Number(score).toFixed(0))+'</b></div>':'';
       var factorHtml='';
       [['營收',d.score_rev!=null?d.score_rev:row.rev,25],['估值',d.score_val!=null?d.score_val:row.val,25],['動能',d.score_mom!=null?d.score_mom:row.mom,20],['連續性',d.score_streak!=null?d.score_streak:row.streak_score,20],['籌碼／技術',d.score_chip!=null?d.score_chip:row.chip,10]].forEach(function(x){if(x[1]==null||isNaN(Number(x[1])))return;var n=Number(x[1]),w=Math.max(0,Math.min(100,n/Number(x[2])*100));factorHtml+='<div class="wb-d-score-row"><div><span>'+x[0]+'</span><b>'+n+'/'+x[2]+'</b></div><div class="wb-d-bar"><i style="width:'+w.toFixed(1)+'%"></i></div></div>';});
+      var scoreChange=d.score_change||null;
+      var changeHtml='';
+      if(src==='黑馬'){
+        var chRows=[];
+        if(scoreChange){
+          var of=scoreChange.old_factors||{}, nf=scoreChange.new_factors||{};
+          [['營收','rev',25],['估值','val',25],['產業動能','mom',20],['連續性','streak_score',20],['籌碼／技術','chip',10]].forEach(function(x){
+            var ov=of[x[1]], nv=nf[x[1]];
+            if(String(ov)===String(nv))return;
+            chRows.push('<div class=\"wb-d-change-row\"><span>'+esc(x[0])+'</span><b>'+esc(ov==null?'—':String(ov))+'</b><i>→</i><b>'+esc(nv==null?'—':String(nv))+'</b></div>');
+          });
+          var os=scoreChange.old_score, ns=scoreChange.new_score;
+          changeHtml='<section class=\"wb-d-section wb-d-score-change\"><div class=\"wb-d-section-head\"><h4>今日分數變化</h4><small>上次快照 → 最新快照</small></div><div class=\"wb-d-change-summary\"><b>'+esc(os==null?'—':String(os))+' → '+esc(ns==null?'—':String(ns))+' 分</b><span class=\"'+(Number(ns)>Number(os)?'wb-up':Number(ns)<Number(os)?'wb-down':'wb-flat')+'\">'+(os!=null&&ns!=null?(Number(ns)-Number(os)>0?'+':'')+(Number(ns)-Number(os)).toFixed(1)+' 分':'—')+'</span></div>'+(chRows.length?'<div class=\"wb-d-change-list\">'+chRows.join('')+'</div>':'<p class=\"wb-d-note\">總分有變化，但目前保存的五項分項沒有可辨識差異。</p>')+'<small class=\"wb-d-change-time\">變化紀錄：'+esc(scoreChange.changed_at||'今日')+'</small></section>';
+        }else{
+          changeHtml='<section class=\"wb-d-section wb-d-score-change wb-d-score-change-none\"><div class=\"wb-d-section-head\"><h4>今日分數變化</h4></div><p class=\"wb-d-note\">今天目前沒有偵測到這檔黑馬的分數變化。</p></section>';
+        }
+      }
       var explain=[];
       function explainItem(title,text){if(text==null||text==='')return;explain.push('<div class="wb-d-explain-item"><b>'+esc(title)+'</b><p>'+esc(txt(text))+'</p></div>');}
       if(src==='黑馬'||src==='雷達'){
@@ -26222,7 +26340,7 @@ function bindFactors(){
       var explanationHtml=explain.length?explain.join(''):'<p class="wb-d-note">目前這筆已保存快照沒有額外的文字說明欄位；不自行推測。</p>';
       var validationMode=(src==='黑馬'?'blackhorse':src==='雷達'?'radar':src==='轉折'?'turning':'');
       var validationHtml=validationMode?'<details class="wb-score-validation" id="wbScoreValidation"><summary><span><b>歷史分數 × 後續股價</b><small>測試這套分數到底準不準</small></span><em>展開驗證</em></summary><div class="wb-score-validation-body"><div class="wb-sv-loading">點開後才計算，避免拖慢選股台。</div></div></details>':'';
-      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p></div>'+scoreHtml+'</div><div class="wb-d-price"><b>'+esc(txt(price))+'</b><span>'+esc(ch==null?'—':pctv(ch))+'</span></div></div>'+(factorHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>評分拆解</h4><small>只顯示已保存的原始分項，不重新計算</small></div>'+factorHtml+'</section>':'')+(facts?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>關鍵資料</h4></div><div class="wb-d-facts">'+facts+'</div></section>':'')+(reasonHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>入選／判斷依據</h4></div>'+reasonHtml+'</section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>資料說明</h4><small>使用這檔目前已保存的原始欄位</small></div><div class="wb-d-explain">'+explanationHtml+'</div></section>'+validationHtml+'</div>';
+      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p></div>'+scoreHtml+'</div><div class="wb-d-price"><b>'+esc(txt(price))+'</b><span>'+esc(ch==null?'—':pctv(ch))+'</span></div></div>'+changeHtml+(factorHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>評分拆解</h4><small>只顯示已保存的原始分項，不重新計算</small></div>'+factorHtml+'</section>':'')+(facts?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>關鍵資料</h4></div><div class="wb-d-facts">'+facts+'</div></section>':'')+(reasonHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>入選／判斷依據</h4></div>'+reasonHtml+'</section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>資料說明</h4><small>使用這檔目前已保存的原始欄位</small></div><div class="wb-d-explain">'+explanationHtml+'</div></section>'+validationHtml+'</div>';
       if(typeof appendChipSection==='function')appendChipSection(row);
       bindScoreValidation(validationMode,row);
     }catch(err){
@@ -26365,7 +26483,7 @@ function bindFactors(){
 
 
 .wb-score-validation{margin:0 0 17px;border:1px solid #d7e1ea;border-radius:12px;background:#fff;overflow:hidden}.wb-score-validation>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 15px;background:linear-gradient(135deg,#f7fbff,#eef5fb)}.wb-score-validation>summary::-webkit-details-marker{display:none}.wb-score-validation>summary span{display:flex;flex-direction:column;gap:3px}.wb-score-validation>summary b{font-size:15px;color:#213b54}.wb-score-validation>summary small{font-size:10.5px;color:#8491a0}.wb-score-validation>summary em{font-style:normal;font-size:10px;font-weight:800;color:#52708c}.wb-score-validation-body{padding:13px}.wb-sv-loading,.wb-sv-note,.wb-sv-foot{padding:10px 11px;border-radius:9px;background:#f6f9fb;color:#667788;font-size:11px;line-height:1.65}.wb-sv-cards{display:grid;gap:9px;margin-top:10px}.wb-sv-card{padding:11px;border:1px solid #e0e7ee;border-radius:10px;background:#fbfcfd}.wb-sv-card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.wb-sv-card-head>b{font-size:13px;color:#244a6c}.wb-sv-good,.wb-sv-bad,.wb-sv-neutral{font-size:10px;font-weight:800}.wb-sv-good{color:#18794e}.wb-sv-bad{color:#a84646}.wb-sv-neutral{color:#7a8794}.wb-sv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.wb-sv-grid>div{padding:7px 8px;background:#f5f8fa;border-radius:7px}.wb-sv-grid small{display:block;color:#8793a0;font-size:9px}.wb-sv-grid b{display:block;margin-top:2px;color:#334e64;font-size:11px;font-family:ui-monospace,monospace}.wb-sv-gap{margin-top:8px;padding-top:8px;border-top:1px solid #e9eef2;color:#526879;font-size:10.5px;font-weight:700}.wb-sv-history{margin-top:11px;border-top:1px solid #e6ebef}.wb-sv-history-title{padding:10px 0 7px;font-size:11px;font-weight:800;color:#405a70}.wb-sv-history-row{display:grid;grid-template-columns:1.1fr .8fr .65fr 1fr 1fr 1fr;gap:5px;padding:7px 0;border-top:1px solid #eef1f4;font-size:9.5px;color:#66798a;align-items:center}.wb-sv-history-row b{color:#34536d}.wb-sv-history-row em{font-style:normal;font-family:ui-monospace,monospace}.wb-sv-foot{margin-top:10px;font-size:10px}.wb-sv-tabs{display:flex;gap:6px;margin:10px 0}.wb-sv-tab{border:1px solid #d7e1ea;background:#f7fafc;color:#64788a;border-radius:8px;padding:6px 12px;font-size:10px;font-weight:800;cursor:pointer}.wb-sv-tab.active{background:#244f70;color:#fff;border-color:#244f70}.wb-sv-chart-title{margin:13px 0 7px;font-size:12px;font-weight:900;color:#304e65}.wb-sv-chart-wrap{border:1px solid #dfe7ed;border-radius:12px;background:linear-gradient(180deg,#fbfdff,#f7fafc);padding:10px 10px 8px;overflow:hidden}.wb-sv-chart-wrap svg{display:block;width:100%;height:285px}.wb-sv-chart-legend{display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:8px 13px;margin-top:5px;color:#7c8c99;font-size:9.5px;line-height:1.5}.wb-sv-chart-legend span{display:inline-flex;align-items:center;gap:4px}.wb-sv-chart-legend i{width:7px;height:7px;border-radius:50%;display:inline-block}.wb-sv-chart-legend i.pos{background:#12a150}.wb-sv-chart-legend i.neg{background:#e53935}.wb-sv-chart-legend b{color:#536b7e}.wb-sv-chart-empty{padding:30px 12px;text-align:center;border:1px dashed #dce5eb;border-radius:10px;background:#fafcfd;color:#8997a4;font-size:11px;line-height:1.7}@media(max-width:620px){.wb-sv-grid{grid-template-columns:repeat(2,1fr)}.wb-sv-history-row{grid-template-columns:1fr 1fr 1fr;row-gap:5px}.wb-sv-history-row em{font-size:9px}}
-.wb-d-explain{display:grid;gap:10px}.wb-d-explain-item{padding:10px 12px;border:1px solid #e5eaf0;border-radius:10px;background:#f8fafc}.wb-d-explain-item b{display:block;color:#274c77;font-size:12px;margin-bottom:4px}.wb-d-explain-item p{margin:0;color:#475467;font-size:12px;line-height:1.65;word-break:break-word}.wb-d-explain .wb-d-note{margin:0;color:#667085;font-size:12px;line-height:1.65}</style><script>
+.wb-d-score-change{border:1px solid rgba(37,99,235,.18);background:linear-gradient(180deg,#f8fbff,#fff)}.wb-d-change-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-radius:12px;background:#f4f7fb}.wb-d-change-summary b{font-size:18px}.wb-d-change-summary span{font-weight:800}.wb-d-change-list{display:grid;gap:8px;margin-top:10px}.wb-d-change-row{display:grid;grid-template-columns:1fr auto auto auto;align-items:center;gap:8px;padding:9px 10px;border-radius:10px;background:#fff;border:1px solid #e8edf4}.wb-d-change-row span{font-weight:700;color:#334155}.wb-d-change-row b{font-size:14px}.wb-d-change-row i{font-style:normal;color:#64748b}.wb-d-change-time{display:block;margin-top:9px;color:#94a3b8}.wb-d-score-change-none{border-color:#e5e7eb;background:#fff}.wb-d-explain{display:grid;gap:10px}.wb-d-explain-item{padding:10px 12px;border:1px solid #e5eaf0;border-radius:10px;background:#f8fafc}.wb-d-explain-item b{display:block;color:#274c77;font-size:12px;margin-bottom:4px}.wb-d-explain-item p{margin:0;color:#475467;font-size:12px;line-height:1.65;word-break:break-word}.wb-d-explain .wb-d-note{margin:0;color:#667085;font-size:12px;line-height:1.65}</style><script>
 (function(){
   var rows=document.getElementById('wb-rows');
   if(!rows)return;
