@@ -25865,6 +25865,22 @@ def render_workbench_body(initial_tab=""):
           body.textContent='籌碼分布載入失敗：'+(err&&err.message?err.message:err);});
     },true);
   }
+  window.__wbOpenWorkbenchDetail=function(b){
+    try{
+      if(!b)return false;
+      var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return String(x.code)===String(b.dataset.code)&&String(x.source)===String(b.dataset.source)});
+      if(!row)return false;
+      showDetail(row);
+      return false;
+    }catch(err){
+      console.error('workbench detail open error',err);
+      var dr=document.getElementById('wb-drawer'),mk=document.getElementById('wb-mask'),hs=document.getElementById('wb-detail');
+      if(dr){dr.classList.add('open');dr.setAttribute('aria-hidden','false');}
+      if(mk)mk.hidden=false;
+      if(hs)hs.innerHTML='<div class=\"wb-d-error\"><b>詳細資料開啟失敗</b><small>'+esc(err&&err.message?err.message:String(err))+'</small></div>';
+      return false;
+    }
+  };
   function renderRichRow(r){
     var d=r.detail||{},highStatus=d.high_status&&d.high_status!=='待確認'?'<span class="wb-high-status">'+esc(d.high_status)+'</span>':'',breakout=d.breakout&&d.breakout!=='未建立突破標示'?'<span class="wb-breakout">'+esc(d.breakout)+'</span>':'';
     var amount=r.institutional_amount==null?null:Number(r.institutional_amount),inst=r.institutional_lots==null?'—':(r.institutional_lots>0?'+':'')+Number(r.institutional_lots).toLocaleString('zh-TW')+' 張';
@@ -25875,7 +25891,7 @@ def render_workbench_body(initial_tab=""):
     var flow=r.source==='轉折'?'<small class="wb-turning-flow '+esc(d.flow_key||'unknown')+'">'+esc(r.signal)+'</small>':'',radarRank=r.source==='雷達'?'<span class="wb-radar-rank">雷達第 '+esc(r.radar_rank||'—')+' 名</span>':'';
     var scoreHtml=r.source==='雷達'?'<b class="wb-radar-rule">排序依據</b><small class="wb-score-parts">突破／量能／法人連買／當日漲幅</small>':(r.category==='金融'&&r.score==null?'<b class="wb-score">金融股不評分</b><small class="wb-score-parts">舊版僅列事實供判讀</small>':(r.score==null?'<b class="wb-score">—</b><small class="wb-score-parts">舊版未提供評分拆解</small>':'<b class="wb-score">'+esc(r.score)+'<small>/100 分</small></b><small class="wb-score-parts">'+esc(r.score_policy||d.score_policy||(scoreParts.length?scoreParts.join(' · '):'舊版未提供評分拆解'))+'</small>'));
     var signalBlock=r.signal?'<span class="wb-signal"><b>'+esc(r.signal)+'</b><small>'+valueText(r.turnover,' 成交額')+'</small></span>':'<span class="wb-signal"></span>';
-    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-rich-row" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'" data-row-key="'+esc(r.row_key||'')+'"><span class="wb-row-main"><span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>'+radarRank+'<b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b>'+highStatus+breakout+'<small class="wb-industry">'+esc(r.industry)+'</small>'+flow+'<small class="wb-fact-line">'+basics+'</small><small class="wb-fact-line">'+trend+'</small></span><span class="wb-score-block">'+scoreHtml+'</span><span class="wb-price-block"><b class="wb-num">'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span><span class="wb-institutional wb-num"><b>'+esc(inst)+'</b><small>法人近十日</small></span>'+signalBlock+'<span>›</span></button>'+chipBlock(r.code)+'</div>'
+    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-rich-row" onclick="return window.__wbOpenWorkbenchDetail(this)" ontouchend="return window.__wbOpenWorkbenchDetail(this)" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'" data-row-key="'+esc(r.row_key||'')+'"><span class="wb-row-main"><span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>'+radarRank+'<b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b>'+highStatus+breakout+'<small class="wb-industry">'+esc(r.industry)+'</small>'+flow+'<small class="wb-fact-line">'+basics+'</small><small class="wb-fact-line">'+trend+'</small></span><span class="wb-score-block">'+scoreHtml+'</span><span class="wb-price-block"><b class="wb-num">'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span><span class="wb-institutional wb-num"><b>'+esc(inst)+'</b><small>法人近十日</small></span>'+signalBlock+'<span>›</span></button>'+chipBlock(r.code)+'</div>'
   }
   function renderTurningRow(r){
     var d=r.detail||{},state=d.state||'observing',stateLabel=state==='invalid'?'失敗':(state==='confirmed'?'已確認':'觀察中'),invalidReasons=Array.isArray(d.invalid_reasons)?d.invalid_reasons.filter(Boolean):[],reasons=(state==='invalid'&&invalidReasons.length?invalidReasons:(Array.isArray(d.reasons)?d.reasons:[])),reason=(state==='invalid'?(invalidReasons[0]||d.state_reason||'原始快照尚未提供具體失敗原因'):(d.state_reason||'轉折細節資料不足'));
@@ -25894,7 +25910,7 @@ def render_workbench_body(initial_tab=""):
     }else{
       judgement='<section class="wb-turning-reason"><b>目前判讀</b><span>'+esc(reason)+'</span></section>';
     }
-    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-turning-row" data-code="'+esc(r.code)+'" data-source="轉折"><span class="wb-turning-card"><span class="wb-turning-top"><span class="wb-turning-title"><span class="wb-tag 轉折">轉折</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><span class="wb-turning-flow '+esc(flowClass)+'">'+esc(state==='invalid'?'失敗／'+flow:flow+'／'+stateLabel)+'</span></span><span class="wb-turning-price"><b>'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span></span><span class="wb-turning-facts"><span><small>法人淨額</small><b>'+esc(lots)+'</b></span><span><small>法人共識</small><b>'+esc(d.consensus||'未提供')+'</b></span><span><small>量能</small><b>'+esc(volume)+'</b></span><span><small>支撐／壓力</small><b>'+esc(support)+' ／ '+esc(resistance)+'</b></span></span>'+judgement+(reasonList?'<ul class="wb-turning-reasons"><li class="wb-turning-reasons-title">'+(state==='invalid'?'失效條件明細':'條件明細')+'</li>'+reasonList+'</ul>':'')+'</span><span class="wb-row-chevron">›</span></button>'+chipBlock(r.code)+'</div>';
+    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-turning-row" onclick="return window.__wbOpenWorkbenchDetail(this)" ontouchend="return window.__wbOpenWorkbenchDetail(this)" data-code="'+esc(r.code)+'" data-source="轉折"><span class="wb-turning-card"><span class="wb-turning-top"><span class="wb-turning-title"><span class="wb-tag 轉折">轉折</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><span class="wb-turning-flow '+esc(flowClass)+'">'+esc(state==='invalid'?'失敗／'+flow:flow+'／'+stateLabel)+'</span></span><span class="wb-turning-price"><b>'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span></span><span class="wb-turning-facts"><span><small>法人淨額</small><b>'+esc(lots)+'</b></span><span><small>法人共識</small><b>'+esc(d.consensus||'未提供')+'</b></span><span><small>量能</small><b>'+esc(volume)+'</b></span><span><small>支撐／壓力</small><b>'+esc(support)+' ／ '+esc(resistance)+'</b></span></span>'+judgement+(reasonList?'<ul class="wb-turning-reasons"><li class="wb-turning-reasons-title">'+(state==='invalid'?'失效條件明細':'條件明細')+'</li>'+reasonList+'</ul>':'')+'</span><span class="wb-row-chevron">›</span></button>'+chipBlock(r.code)+'</div>';
   }
   function renderChipRow(r){
     var d=r.detail||{},split=[];
