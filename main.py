@@ -26041,8 +26041,33 @@ function bindFactors(){
       var reasonHtml=reasons.length?'<ul class="wb-d-list">'+reasons.slice(0,8).map(function(x){return '<li>'+esc(txt(x))+'</li>';}).join('')+'</ul>':'';
       var scoreHtml=score!=null&&score!==''&&!isNaN(Number(score))?'<div class="wb-d-score"><span>綜合分數</span><b>'+esc(Number(score).toFixed(0))+'</b></div>':'';
       var factorHtml='';
-      [['營收',d.score_rev,25],['估值',d.score_val,25],['動能',d.score_mom,20],['連續性',d.score_streak,20],['籌碼／技術',d.score_chip,10]].forEach(function(x){if(x[1]==null||isNaN(Number(x[1])))return;var n=Number(x[1]),w=Math.max(0,Math.min(100,n/Number(x[2])*100));factorHtml+='<div class="wb-d-score-row"><div><span>'+x[0]+'</span><b>'+n+'/'+x[2]+'</b></div><div class="wb-d-bar"><i style="width:'+w.toFixed(1)+'%"></i></div></div>';});
-      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p></div>'+scoreHtml+'</div><div class="wb-d-price"><b>'+esc(txt(price))+'</b><span>'+esc(ch==null?'—':pctv(ch))+'</span></div></div>'+(factorHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>評分拆解</h4><small>只顯示已保存的原始分項，不重新計算</small></div>'+factorHtml+'</section>':'')+(facts?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>關鍵資料</h4></div><div class="wb-d-facts">'+facts+'</div></section>':'')+(reasonHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>入選／判斷依據</h4></div>'+reasonHtml+'</section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>資料說明</h4></div><p class="wb-d-note">以上內容來自目前選股台已保存資料；沒有資料的欄位不會自行推測。</p></section></div>';
+      [['營收',d.score_rev!=null?d.score_rev:row.rev,25],['估值',d.score_val!=null?d.score_val:row.val,25],['動能',d.score_mom!=null?d.score_mom:row.mom,20],['連續性',d.score_streak!=null?d.score_streak:row.streak_score,20],['籌碼／技術',d.score_chip!=null?d.score_chip:row.chip,10]].forEach(function(x){if(x[1]==null||isNaN(Number(x[1])))return;var n=Number(x[1]),w=Math.max(0,Math.min(100,n/Number(x[2])*100));factorHtml+='<div class="wb-d-score-row"><div><span>'+x[0]+'</span><b>'+n+'/'+x[2]+'</b></div><div class="wb-d-bar"><i style="width:'+w.toFixed(1)+'%"></i></div></div>';});
+      var explain=[];
+      function explainItem(title,text){if(text==null||text==='')return;explain.push('<div class="wb-d-explain-item"><b>'+esc(title)+'</b><p>'+esc(txt(text))+'</p></div>');}
+      if(src==='黑馬'||src==='雷達'){
+        explainItem('資料日期',d.source_date);
+        explainItem('估值說明',d.val_desc);
+        explainItem('產業動能說明',d.mom_desc);
+        explainItem('分數組成',d.score_breakdown);
+        if(d.data_quality&&typeof d.data_quality==='object')explainItem('資料完整度',d.data_quality);
+        if(d.caps)explainItem('各項評分上限',Array.isArray(d.caps)?d.caps.join('／'):'');
+        explainItem('資料原則','只使用目前已保存的選股快照；沒有保存的資料不補猜。');
+      }else if(src==='籌碼'){
+        explainItem('資料日期',d.source_date);
+        explainItem('法人分組說明',d.plain_note);
+        explainItem('法人方向',d.consensus);
+        explainItem('資料原則','籌碼欄位依已保存的法人資料整理，不代表即時預測。');
+      }else if(src==='轉折'){
+        explainItem('資料日期',d.source_date);
+        explainItem('原始判讀',d.state_reason||d.plain_note);
+        explainItem('條件明細',Array.isArray(d.reasons)?d.reasons.join('；'):d.reasons);
+        explainItem('失效原因',Array.isArray(d.invalid_reasons)?d.invalid_reasons.join('；'):d.invalid_reasons);
+      }else{
+        explainItem('資料日期',d.source_date);
+        explainItem('原始說明',d.plain_note||d.comment||d.signal);
+      }
+      var explanationHtml=explain.length?explain.join(''):'<p class="wb-d-note">目前這筆已保存快照沒有額外的文字說明欄位；不自行推測。</p>';
+      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p></div>'+scoreHtml+'</div><div class="wb-d-price"><b>'+esc(txt(price))+'</b><span>'+esc(ch==null?'—':pctv(ch))+'</span></div></div>'+(factorHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>評分拆解</h4><small>只顯示已保存的原始分項，不重新計算</small></div>'+factorHtml+'</section>':'')+(facts?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>關鍵資料</h4></div><div class="wb-d-facts">'+facts+'</div></section>':'')+(reasonHtml?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>入選／判斷依據</h4></div>'+reasonHtml+'</section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>資料說明</h4><small>使用這檔目前已保存的原始欄位</small></div><div class="wb-d-explain">'+explanationHtml+'</div></section></div>';
       if(typeof appendChipSection==='function')appendChipSection(row);
     }catch(err){
       console.error('showDetail error',err);
@@ -26118,7 +26143,7 @@ function bindFactors(){
 .wb-d-empty{padding:14px;border-radius:9px;background:#f7f9fb;color:#8a96a3;font-size:11px;text-align:center}
 @media(max-width:620px){.wb-d-hero{padding:15px;border-radius:12px}.wb-d-hero h3{font-size:22px!important}.wb-d-price b{font-size:25px}.wb-d-facts{grid-template-columns:1fr 1fr}.wb-d-inst-grid{grid-template-columns:1fr}.wb-d-section{padding:13px}.wb-d-insight-grid{gap:7px}}
 
-</style><script>
+.wb-d-explain{display:grid;gap:10px}.wb-d-explain-item{padding:10px 12px;border:1px solid #e5eaf0;border-radius:10px;background:#f8fafc}.wb-d-explain-item b{display:block;color:#274c77;font-size:12px;margin-bottom:4px}.wb-d-explain-item p{margin:0;color:#475467;font-size:12px;line-height:1.65;word-break:break-word}.wb-d-explain .wb-d-note{margin:0;color:#667085;font-size:12px;line-height:1.65}</style><script>
 (function(){
   var rows=document.getElementById('wb-rows');
   if(!rows)return;
