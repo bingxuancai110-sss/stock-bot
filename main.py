@@ -6012,33 +6012,25 @@ LEADERBOARD_MIN_SNAPSHOTS = 3
 
 # 機器人組合的模擬參數。全部寫死並公開，讓人看得出結果是怎麼來的。
 BOT_TOP_N = 5            # 每個推薦日等權買進前幾名
-BOT_HOLD_DAYS = 20       # 持有幾個交易日後賣出
+BOT_HOLD_DAYS = 20       # D 方案最大持有天數
+BOT_SCORE_DROP_POINTS = 15.0  # 自持有後最高分回落 15 分視為大幅下降（實驗門檻）
 BOT_INITIAL_CAPITAL = 1_000_000.0  # 虛擬帳戶固定初始資產；不途中補資金
 BOT_MODES = (("blackhorse", "黑馬機器人"), ("radar", "雷達機器人"))
 
 
 def simulate_bot_portfolio(mode, days=365):
     """
-    模擬「每個推薦日等權買進前 5 名、持有 20 個交易日」的組合。
+    D 方案實驗版機器人：
+      1) 每個推薦日取前 BOT_TOP_N 名、等權買進；
+      2) 訊號消失（下一個有推薦紀錄的交易日不再位於前 N 名） -> 賣出；
+      3) 分數自持有後最高分回落至少 BOT_SCORE_DROP_POINTS 分 -> 賣出；
+      4) 最多持有 BOT_HOLD_DAYS 個交易日 -> 到期賣出。
 
-    為什麼要有這個：使用者無法回答「我自己操作，比無腦跟著推薦買還好嗎」。
-    排行榜上的大盤不是他的替代選項——他的替代選項是照這個 app 的名單買。
+    這是「實驗規則」，不是宣告它一定比固定 20 日更好。排行榜目前以此
+    作為 D 方案觀察線；成效資料累積後再比較 A/B/C/D。
 
-    算法刻意用「每日等權再平衡」而不是模擬現金帳戶：
-      當日報酬 = 當天所有持倉的漲跌幅平均
-      淨值 = 逐日連乘
-    這樣不必處理資金分配、零股、餘額不足這些跟選股無關的問題，
-    而且跟使用者自己的 TWR 是同一個口徑，可以直接並排比較。
-
-    為什麼不加碼：加碼要決定「加在哪一檔」，而因子分析已經顯示
-    雷達的分數是反向的（高分組 −3.6%、低分組 +4.3%）。
-    照分數或名次加碼沒有依據，等權是唯一不需要編數字的做法。
-
-    手續費與證交稅在買賣當天各扣一次，真人有這些成本，
-    不扣的話機器人天生佔便宜，跟真人並排就不公平。
-
-    回傳 {"curve": [(date, 累積報酬%)], "holdings": [目前持倉], "picks_days": n}
-    失敗或資料不足回 None。
+    注意：pick_history 只保存前 N 名，因此「訊號消失」的定義是「在下一個
+    有保存的推薦日不再出現在前 N 名」。如果中間沒有推薦快照，不自行推測。
     """
     picks = get_picks_since(mode, days=days) or []
     if not picks:
@@ -6052,17 +6044,20 @@ def simulate_bot_portfolio(mode, days=365):
         by_date.setdefault(d, []).append(p)
     if not by_date:
         return None
-    # 每個推薦日只取前 N 名；rank 缺漏時用既有順序遞補
     for d in list(by_date):
-        by_date[d] = sorted(by_date[d],
-                            key=lambda x: (x.get("rank") or 999))[:BOT_TOP_N]
+        by_date[d] = sorted(by_date[d], key=lambda x: (x.get("rank") or 999))[:BOT_TOP_N]
+
+    # 每個推薦日的 top-N lookup，用於 D 方案的「訊號是否仍存在」與分數追蹤。
+    daily_lookup = {}
+    for d, items in by_date.items():
+        daily_lookup[d] = {str(x.get("code") or "").strip(): x for x in items
+                           if str(x.get("code") or "").strip()}
 
     codes = sorted({str(p["code"]).strip() for v in by_date.values() for p in v})
     if not codes:
         return None
     quotes = get_realtime_stocks_bulk(codes, workers=16, rng="1y") or {}
 
-    # 以還原價計算：期間內若有除權息，未還原的價格會把配息記成虧損。
     series = {}
     for code in codes:
         q = quotes.get(code) or {}
@@ -6074,97 +6069,141 @@ def simulate_bot_portfolio(mode, days=365):
     if not series:
         return None
 
-    # 交易日軸取自實際行情，不自己造日曆——假日與補班日不能用推的
     all_days = sorted({d for m in series.values() for d in m})
     first_pick = min(by_date)
     trading_days = [d for d in all_days if d >= first_pick]
     if len(trading_days) < 2:
         return None
     idx = {d: i for i, d in enumerate(trading_days)}
+    pick_days_sorted = sorted(d for d in by_date if d in idx)
+    if not pick_days_sorted:
+        return None
 
-    # 建立持倉區間：買進日的收盤買、持有 N 個交易日後的收盤賣
+    # 每一筆 lot 先建立「最晚」到期日；再沿交易日往後走，讓 B/C 可以提前退出。
     lots = []
-    for pick_day, items in by_date.items():
-        if pick_day not in idx:
-            continue
+    for pick_day in pick_days_sorted:
         i0 = idx[pick_day]
-        # target_i 是「原本打算賣出的那一天」，可能超出目前已有的交易日；
-        # sell_i 才是實際能算到的最後一天。兩者必須分開：
-        # 資料還不滿 20 個交易日時，每一筆都會被夾到最後一天，
-        # 畫面上就變成全部「剩 0 個交易日」，看起來像全數到期。
         target_i = i0 + BOT_HOLD_DAYS
-        i1 = min(target_i, len(trading_days) - 1)
-        for it in items:
+        for it in by_date[pick_day]:
             code = str(it["code"]).strip()
-            if code in series:
-                lots.append({"code": code, "buy_i": i0, "sell_i": i1,
-                             "target_i": target_i,
-                             "name": it.get("name") or code,
-                             "pick_date": pick_day})
+            if code not in series:
+                continue
+            lots.append({
+                "code": code, "buy_i": i0, "target_i": target_i,
+                "sell_i": None, "exit_reason": "",
+                "name": it.get("name") or code, "pick_date": pick_day,
+                "buy_score": _workbench_number(it.get("score")),
+                "peak_score": _workbench_number(it.get("score")),
+            })
     if not lots:
         return None
 
-    fee_rate = broker_fee(1_000_000) / 1_000_000  # 依既有手續費設定換算成比率
+    fee_rate = broker_fee(1_000_000) / 1_000_000
     curve, nav = [], 1.0
-    for i in range(1, len(trading_days)):
+    open_lots = []
+    # buy lots on their recommendation day; purchases affect returns from next trading day.
+    lots_by_buy = {}
+    for lot in lots:
+        lots_by_buy.setdefault(lot["buy_i"], []).append(lot)
+
+    for i in range(len(trading_days)):
+        # Activate today's buys.
+        for lot in lots_by_buy.get(i, []):
+            open_lots.append(lot)
+
+        if i == 0:
+            continue
         today, prev = trading_days[i], trading_days[i - 1]
         rets = []
-        for lot in lots:
-            if not (lot["buy_i"] < i <= lot["sell_i"]):
+        survivors = []
+        for lot in open_lots:
+            if lot.get("sell_i") is not None:
                 continue
-            m = series[lot["code"]]
+            if not (lot["buy_i"] < i):
+                survivors.append(lot)
+                continue
+
+            code = lot["code"]
+            # 在「推薦日序列」中找這筆買進後第一個有保存的推薦日。
+            signal_state = None
+            for d in pick_days_sorted:
+                j = idx[d]
+                if j <= lot["buy_i"]:
+                    continue
+                if j > i:
+                    break
+                signal_state = daily_lookup.get(d, {}).get(code)
+                # 有一個後續推薦日即可判斷：有 -> 仍有訊號；無 -> 訊號消失。
+                if signal_state is None:
+                    lot["sell_i"] = i
+                    lot["exit_reason"] = "訊號消失"
+                    break
+
+                score_now = _workbench_number(signal_state.get("score"))
+                if score_now is not None:
+                    if lot.get("peak_score") is None:
+                        lot["peak_score"] = score_now
+                    else:
+                        lot["peak_score"] = max(float(lot["peak_score"]), float(score_now))
+                    if (lot.get("peak_score") is not None and
+                            float(lot["peak_score"]) - float(score_now) >= BOT_SCORE_DROP_POINTS):
+                        lot["sell_i"] = i
+                        lot["exit_reason"] = f"分數較持有後高點下降 {BOT_SCORE_DROP_POINTS:.0f} 分"
+                        break
+
+            if lot.get("sell_i") is None and i >= lot["target_i"]:
+                lot["sell_i"] = i
+                lot["exit_reason"] = f"持有 {BOT_HOLD_DAYS} 個交易日到期"
+
+            m = series.get(code) or {}
             a, b = m.get(prev), m.get(today)
             if not a or not b:
+                # 行情缺口不拿不存在的價格推估；若今天是退出日，仍保留到下一次可驗證日。
+                if lot.get("sell_i") is None:
+                    survivors.append(lot)
                 continue
             r = b / a - 1.0
-            # 買進日與賣出日各扣一次成本
             if i == lot["buy_i"] + 1:
                 r -= fee_rate
-            if i == lot["sell_i"]:
-                r -= fee_rate + (TAX_RATE_STOCK)
+            if lot.get("sell_i") == i:
+                r -= fee_rate + TAX_RATE_STOCK
+            # 賣出日當天仍計入到收盤退出，然後不再放回 survivors。
             rets.append(r)
+            if lot.get("sell_i") is None:
+                survivors.append(lot)
+
+        open_lots = survivors
         if rets:
             nav *= (1.0 + sum(rets) / len(rets))
         curve.append((today, (nav - 1.0) * 100))
 
-    # 把同一條淨值曲線換算成固定 100 萬元虛擬帳戶。
-    # 這不改變原本報酬率算法，只把百分比轉成可追蹤的資產金額。
-    virtual_curve = [(d, BOT_INITIAL_CAPITAL * (1.0 + ret / 100.0))
-                     for d, ret in curve]
-    virtual_asset = (virtual_curve[-1][1] if virtual_curve else BOT_INITIAL_CAPITAL)
+    virtual_curve = [(d, BOT_INITIAL_CAPITAL * (1.0 + ret / 100.0)) for d, ret in curve]
+    virtual_asset = virtual_curve[-1][1] if virtual_curve else BOT_INITIAL_CAPITAL
 
-    # 目前仍在持有的部位（公開給使用者看，才知道機器人現在抱著什麼）
+    # 最後交易日仍開放的部位；已退出 lot 不顯示為目前持股。
     last_i = len(trading_days) - 1
-    # 同一檔可能在好幾個推薦日都被買進，逐筆列會出現同名多次。
-    # 合併成一列，報酬取等權平均（每一筆的權重本來就相同）。
     merged = {}
     for lot in lots:
-        if not (lot["buy_i"] < last_i <= lot["sell_i"]):
+        sell_i = lot.get("sell_i")
+        if sell_i is not None and sell_i <= last_i:
             continue
-        m = series[lot["code"]]
+        m = series.get(lot["code"]) or {}
         buy_p = m.get(trading_days[lot["buy_i"]])
         now_p = m.get(trading_days[last_i])
         if not buy_p or not now_p:
             continue
         h = merged.setdefault(lot["code"], {
-            "code": lot["code"], "name": lot["name"],
-            "lots": 0, "pct_sum": 0.0,
-            "first_pick": lot["pick_date"],
-            "days_left": lot["target_i"] - last_i,
+            "code": lot["code"], "name": lot["name"], "lots": 0,
+            "pct_sum": 0.0, "first_pick": lot["pick_date"],
+            "days_left": max(0, lot["target_i"] - last_i),
+            "exit_reason": "",
         })
         h["lots"] += 1
         h["pct_sum"] += (now_p / buy_p - 1) * 100
         if lot["pick_date"] < h["first_pick"]:
             h["first_pick"] = lot["pick_date"]
-        # 剩餘天數取最久的那一筆，那才是這檔真正還要抱多久
-        h["days_left"] = max(h["days_left"], lot["target_i"] - last_i)
-    # 權重：每一筆買進的份量相同，所以某檔的權重就是
-    # 「它的買進筆數 ÷ 目前所有持倉的買進筆數」。
-    #
-    # 這個數字要顯示出來，因為它不是我設計的加碼規則，
-    # 而是「每個推薦日都買前 5 名」自然產生的結果——
-    # 一檔連續上榜就會被買很多次，權重跟著變高。
-    # 不寫出來的話，使用者看到「7 次買進」不會意識到它佔了多少。
+        h["days_left"] = max(h["days_left"], max(0, lot["target_i"] - last_i))
+
     total_lots = sum(h["lots"] for h in merged.values()) or 1
     holdings = []
     for h in merged.values():
@@ -6172,13 +6211,14 @@ def simulate_bot_portfolio(mode, days=365):
         h["weight"] = h["lots"] / total_lots * 100
         h.pop("pct_sum")
         holdings.append(h)
-    # 依權重排序：先看「機器人重壓在哪」，再看那幾檔賺賠多少。
     holdings.sort(key=lambda x: (-x["weight"], -x["pct"]))
 
-    return {"curve": curve, "virtual_curve": virtual_curve,
-            "initial_capital": BOT_INITIAL_CAPITAL,
-            "virtual_asset": virtual_asset,
-            "holdings": holdings, "picks_days": len(by_date)}
+    return {
+        "curve": curve, "virtual_curve": virtual_curve,
+        "initial_capital": BOT_INITIAL_CAPITAL, "virtual_asset": virtual_asset,
+        "holdings": holdings, "picks_days": len(by_date),
+        "strategy_code": "D", "strategy_label": "訊號消失／分數大幅下降／20日到期，先到先賣",
+    }
 
 
 def _leaderboard_refresh_worker():
@@ -6402,9 +6442,10 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             "initial_capital": sim.get("initial_capital", BOT_INITIAL_CAPITAL),
             "virtual_asset": sim.get("virtual_asset"),
             "virtual_curve": sim.get("virtual_curve") or [],
-            "bot_rule": (f"每個推薦日等權買進前 {BOT_TOP_N} 名，"
-                         f"持有 {BOT_HOLD_DAYS} 個交易日後賣出；"
-                         f"已扣手續費與證交稅。共 {sim['picks_days']} 個推薦日。"),
+            "bot_rule": (f"D 方案：每個推薦日等權買進前 {BOT_TOP_N} 名；"
+                         f"訊號消失或分數自持有後高點下降 {BOT_SCORE_DROP_POINTS:.0f} 分即賣出，"
+                         f"最晚持有 {BOT_HOLD_DAYS} 個交易日；已扣手續費與證交稅。"
+                         f"共 {sim['picks_days']} 個推薦日。"),
         })
         series_map[f"bot:{bot_mode}"] = {"nickname": bot_name, "curve": bot_curve}
 
@@ -8412,7 +8453,7 @@ def save_picks(mode, rows, top_n=5):
                 score_chip = COALESCE(EXCLUDED.score_chip, pick_history.score_chip)
             """,
             picks,
-            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s)",
+            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             page_size=100,
         )
         conn.commit()
@@ -25862,10 +25903,29 @@ def _workbench_chips_rows(result):
     return rows
 
 
+_WORKBENCH_SNAPSHOT_CACHE_SECONDS = 30
+_workbench_snapshot_cache = {}
+_workbench_snapshot_cache_lock = threading.Lock()
+
+
 def build_workbench_snapshot_payload(uid=None):
-    """組合互動選股台所需的已保存資料。整個函式不得啟動全市場掃描或背景重算。"""
+    """組合互動選股台所需的已保存資料。只讀快照；任何單一來源失敗都不得拖垮整個選股台。"""
+    cache_key = str(uid or "anonymous")
+    now = time.time()
+    with _workbench_snapshot_cache_lock:
+        cached = _workbench_snapshot_cache.get(cache_key)
+        if cached and now - cached.get("at", 0) < _WORKBENCH_SNAPSHOT_CACHE_SECONDS:
+            return cached.get("value")
     sources, rows = {}, []
-    blackhorse = _load_persisted_screener_snapshot("blackhorse")
+    score_changes = []
+    def safe(label, fn, fallback=None):
+        try:
+            return fn()
+        except Exception as exc:
+            print(f"⚠️ 工作台來源 {label} 失敗：{exc}")
+            sources.setdefault(label, {"available": False, "note": "此來源暫時無法載入，其他分頁仍可使用。"})
+            return fallback
+    blackhorse = safe("黑馬", lambda: _load_persisted_screener_snapshot("blackhorse"))
     if blackhorse:
         bh_rows = _workbench_screener_rows("blackhorse", blackhorse)
         change_map = _load_today_screener_score_changes("blackhorse")
@@ -25896,9 +25956,9 @@ def build_workbench_snapshot_payload(uid=None):
         sources["黑馬"] = {"date": str(blackhorse.get("source_date") or "未標日期"),
                          "computed_at": str(blackhorse.get("computed_at") or "")}
 
-    radar_live = _load_recent_live_radar_snapshot() if _is_taiwan_intraday_window() else None
+    radar_live = safe("雷達盤中", lambda: _load_recent_live_radar_snapshot()) if _is_taiwan_intraday_window() else None
     # 盤中 live radar 還沒產生／暫時過期時，仍須保留已保存 radar；不能把入口整個移除。
-    radar = radar_live or _load_persisted_screener_snapshot("radar")
+    radar = radar_live or safe("雷達", lambda: _load_persisted_screener_snapshot("radar"))
     if radar:
         rows.extend(_workbench_screener_rows("radar", radar))
         sources["雷達"] = {"date": str(radar.get("source_date") or "未標日期"),
@@ -25910,19 +25970,19 @@ def build_workbench_snapshot_payload(uid=None):
         sources["雷達"] = {"date": "未標日期", "available": False,
                          "note": "目前尚無可用雷達快照，入口保留並等待既有掃描完成。"}
 
-    turning, turning_fresh, turning_source = _get_turning_web_snapshot()
+    turning, turning_fresh, turning_source = safe("轉折", _get_turning_web_snapshot, (None, False, "尚未建立快照"))
     if turning:
         rows.extend(_workbench_turning_rows(turning))
         sources["轉折"] = {"date": str(turning.get("data_date") or "未標日期"),
                          "fresh": bool(turning_fresh), "source": turning_source}
 
-    etf_payload, etf_fresh, etf_source = _load_etf_product_ranking_snapshot()
+    etf_payload, etf_fresh, etf_source = safe("ETF", _load_etf_product_ranking_snapshot, (None, False, "尚未建立快照"))
     if etf_payload:
         rows.extend(_workbench_etf_rows(etf_payload))
         sources["ETF"] = {"date": str(etf_payload.get("market_data_date") or etf_payload.get("data_date") or "未標日期"),
                          "fresh": bool(etf_fresh), "source": etf_source}
 
-    chips = build_chips_payload(allow_compute=False)
+    chips = safe("籌碼", lambda: build_chips_payload(allow_compute=False), {"payload": {"available": False, "building": True}})
     chips_payload = chips.get("payload") if isinstance(chips, dict) else {}
     if isinstance(chips_payload, dict) and chips_payload.get("building"):
         # 舊快照若未保存法人拆分，立即由既有背景機制重建；不新增 CRON。
@@ -26036,18 +26096,21 @@ def build_workbench_snapshot_payload(uid=None):
     for metadata in sources.values():
         if isinstance(metadata, dict):
             metadata.setdefault("server_time", workbench_server_time)
-    return {
+    value = {
         "ok": True,
         "rows": deduped,
         "sources": sources,
         "personal": personal,
-        "score_changes": score_changes if 'score_changes' in locals() else [],
+        "score_changes": score_changes,
         "market_open": bool(_is_taiwan_intraday_window()),
         "server_time": workbench_server_time,
         "note": ("開盤期間只更新目前可見標的的行情；黑馬、雷達、轉折與 ETF 排名仍依既有快照更新。"
                  if _is_taiwan_intraday_window() else
                  "目前顯示最近有效快照；收盤後固定採用既有正式收盤校正。"),
     }
+    with _workbench_snapshot_cache_lock:
+        _workbench_snapshot_cache[cache_key] = {"at": time.time(), "value": value}
+    return value
 
 
 def _workbench_json_response(payload, status=200):
@@ -26720,7 +26783,7 @@ function bindFactors(){
     });
   }
   function updateQuotes(){if(!state.marketOpen||document.hidden||state.quoteLoading)return;var codes=filtered().slice(0,30).map(function(r){return r.code}).join(',');if(!codes)return;state.quoteLoading=true;fetch(api('/web/api/workbench/quotes?codes='+encodeURIComponent(codes)),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){(data.updates||[]).forEach(function(q){state.rows.forEach(function(r){if(r.code===q.code&&q.price!=null){r.price=q.price;r.change_pct=q.change_pct;r.metric_label='當日漲跌';}});});state.quoteUpdatedAt=data.fetched_at||'';if(data.note)note.textContent=data.note+(state.quoteUpdatedAt?' 最後取得 '+state.quoteUpdatedAt+'。':'');status.textContent=state.quoteUpdatedAt?'盤中行情已更新 '+state.quoteUpdatedAt:'盤中行情局部更新中';render();}).catch(function(e){if(e.message==='AUTH')location.reload();}).finally(function(){state.quoteLoading=false;});}
-  function load(){status.textContent='讀取最近有效快照…';fetch(api('/web/api/workbench/snapshot'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){state.rows=Array.isArray(data.rows)?data.rows:[];state.sources=data.sources||{};state.personal=data.personal||{positions:[],rank_summary:{}};state.scoreChanges=Array.isArray(data.score_changes)?data.score_changes:[];state.marketOpen=!!data.market_open;requestReview();if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}status.textContent=state.marketOpen?'盤中行情局部更新中':'最近有效快照已載入';note.textContent=data.note||'';pulse.innerHTML='<span>資料狀態</span><b>'+esc(state.marketOpen?'盤中局部更新':'收盤正式快照')+'</b><i></i><i></i><em>'+esc(workbenchStatusText(data,state.marketOpen))+'</em>';render();if(state.timer)clearInterval(state.timer);if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}}).catch(function(e){status.textContent='快照暫時無法載入';rowsEl.innerHTML='<div class="wb-skeleton" style="animation:none;background:#fff;color:#8b4034;padding:18px">資料暫時無法載入，請稍後重新整理。沒有顯示推測標的。</div>';if(e.message==='AUTH')location.reload();});}
+  function load(){status.textContent='讀取最近有效快照…';var controller=window.AbortController?new AbortController():null;var timer=controller?setTimeout(function(){controller.abort();},12000):null;var fetchOpt={credentials:'same-origin'};if(controller)fetchOpt.signal=controller.signal;fetch(api('/web/api/workbench/snapshot'),fetchOpt).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){if(timer)clearTimeout(timer);state.rows=Array.isArray(data.rows)?data.rows:[];state.sources=data.sources||{};state.personal=data.personal||{positions:[],rank_summary:{}};state.scoreChanges=Array.isArray(data.score_changes)?data.score_changes:[];state.marketOpen=!!data.market_open;requestReview();if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}status.textContent=state.marketOpen?'盤中行情局部更新中':'最近有效快照已載入';note.textContent=data.note||'';pulse.innerHTML='<span>資料狀態</span><b>'+esc(state.marketOpen?'盤中局部更新':'收盤正式快照')+'</b><i></i><i></i><em>'+esc(workbenchStatusText(data,state.marketOpen))+'</em>';render();if(state.timer)clearInterval(state.timer);if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}}).catch(function(e){if(timer)clearTimeout(timer);status.textContent='快照暫時無法載入';rowsEl.innerHTML='<div class="wb-skeleton" style="animation:none;background:#fff;color:#8b4034;padding:18px">選股快照載入逾時或暫時失敗。請按「重新整理」；其他頁面不受影響。沒有顯示推測標的。</div>';if(e.message==='AUTH')location.reload();});}
   document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':'黑馬';state.query='';render();};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){load();};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
   // 點擊保險：即使 rowsEl 被其他重新渲染／事件處理影響，仍由捕獲階段直接開啟詳情。
   document.addEventListener('click',function(e){
