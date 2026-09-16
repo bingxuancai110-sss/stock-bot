@@ -5980,6 +5980,7 @@ LEADERBOARD_MIN_SNAPSHOTS = 3
 # 機器人組合的模擬參數。全部寫死並公開，讓人看得出結果是怎麼來的。
 BOT_TOP_N = 5            # 每個推薦日等權買進前幾名
 BOT_HOLD_DAYS = 20       # 持有幾個交易日後賣出
+BOT_INITIAL_CAPITAL = 1_000_000.0  # 虛擬帳戶固定初始資產；不途中補資金
 BOT_MODES = (("blackhorse", "黑馬機器人"), ("radar", "雷達機器人"))
 
 
@@ -6093,6 +6094,12 @@ def simulate_bot_portfolio(mode, days=365):
             nav *= (1.0 + sum(rets) / len(rets))
         curve.append((today, (nav - 1.0) * 100))
 
+    # 把同一條淨值曲線換算成固定 100 萬元虛擬帳戶。
+    # 這不改變原本報酬率算法，只把百分比轉成可追蹤的資產金額。
+    virtual_curve = [(d, BOT_INITIAL_CAPITAL * (1.0 + ret / 100.0))
+                     for d, ret in curve]
+    virtual_asset = (virtual_curve[-1][1] if virtual_curve else BOT_INITIAL_CAPITAL)
+
     # 目前仍在持有的部位（公開給使用者看，才知道機器人現在抱著什麼）
     last_i = len(trading_days) - 1
     # 同一檔可能在好幾個推薦日都被買進，逐筆列會出現同名多次。
@@ -6135,7 +6142,10 @@ def simulate_bot_portfolio(mode, days=365):
     # 依權重排序：先看「機器人重壓在哪」，再看那幾檔賺賠多少。
     holdings.sort(key=lambda x: (-x["weight"], -x["pct"]))
 
-    return {"curve": curve, "holdings": holdings, "picks_days": len(by_date)}
+    return {"curve": curve, "virtual_curve": virtual_curve,
+            "initial_capital": BOT_INITIAL_CAPITAL,
+            "virtual_asset": virtual_asset,
+            "holdings": holdings, "picks_days": len(by_date)}
 
 
 def _leaderboard_refresh_worker():
@@ -6356,6 +6366,9 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             "is_bot": True,
             "bot_mode": bot_mode,
             "bot_holdings": sim["holdings"],
+            "initial_capital": sim.get("initial_capital", BOT_INITIAL_CAPITAL),
+            "virtual_asset": sim.get("virtual_asset"),
+            "virtual_curve": sim.get("virtual_curve") or [],
             "bot_rule": (f"每個推薦日等權買進前 {BOT_TOP_N} 名，"
                          f"持有 {BOT_HOLD_DAYS} 個交易日後賣出；"
                          f"已扣手續費與證交稅。共 {sim['picks_days']} 個推薦日。"),
@@ -18113,50 +18126,60 @@ def web_positions(uid):
             quote_stamp = html.escape(str(price.get("source") or "最近有效行情"))
             if price.get("updated_at"):
                 quote_stamp += "・" + html.escape(str(price.get("updated_at")))
+            net_pct_text = fmt_pct(pl)
+            gross_pct_text = fmt_pct(gross_pl)
+            day_cls = 'up' if day_pl >= 0 else 'down'
+            net_cls = 'up' if net_amt >= 0 else 'down'
+            quote_stamp_safe = quote_stamp
             rows_html.append(f"""
-<div class="row" data-position-code="{html.escape(str(p['code']), quote=True)}">
-  <div><span class="name">{name}</span><span class="code">{p['code']}</span></div>
-  <div class="price num" data-position-price="1">{price['close']:,.2f}</div>
-  <div class="sub position-quote-stamp" data-position-stamp="1">{quote_stamp}</div>
-  <div class="meta">
-    <span><em>持有</em> <span class="num">{p['shares']:,}</span> 股</span>
-    <span><em>成本</em> <span class="num">{p['cost']:,.2f}</span></span>
-    <span><em>今日</em> <span class="num {'up' if day_pl >= 0 else 'down'}" data-position-day-pl="1">{day_pl:+,.0f}</span></span>
-    <span><em>累計</em> <span class="num {'up' if net_amt >= 0 else 'down'}">{net_amt:+,.0f}</span>
-      {fmt_pct(pl)}<span class="sub">帳面 {gross_pl:+.2f}%</span></span>
-    <span><em>市值</em> <span class="num">{value:,.0f}</span></span>
-    <span><em>權重</em> <span class="num">{weight:.1f}%</span></span>
-    {f'<span><em>持有</em> {held} 天</span>' if held is not None else ''}
-    <details class="disclosure trend" style="margin-top:2px"
-             data-code="{html.escape(str(p['code']), quote=True)}"
-             ontoggle="window.loadPositionTrend(this)">
-      <summary>損益走勢</summary>
+<article class="position-card" data-position-code="{html.escape(str(p['code']), quote=True)}">
+  <div class="position-card-top">
+    <div class="position-card-title">
+      <span class="position-card-code">{html.escape(str(p['code']))}</span>
+      <div><h3>{name}</h3><small>{p['shares']:,} 股 · {f'持有 {held} 天' if held is not None else '持有天數未提供'}</small></div>
+    </div>
+    <div class="position-card-price">
+      <b data-position-price="1">{price['close']:,.2f}</b>
+      <span class="{day_cls}" data-position-pct="1">{fmt_pct(price['pct'])}</span>
+    </div>
+  </div>
+  <div class="position-card-primary">
+    <div><small>今日損益</small><b class="{day_cls}" data-position-day-pl="1">{day_pl:+,.0f}</b></div>
+    <div><small>估算賣出淨損益</small><b class="{net_cls}">{net_amt:+,.0f}</b><em>{net_pct_text}</em></div>
+    <div><small>市值</small><b>{value:,.0f}</b></div>
+  </div>
+  <div class="position-card-grid">
+    <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
+    <div><small>價格報酬</small><b class="{'up' if gross_pl >= 0 else 'down'}">{gross_pct_text}</b></div>
+    <div><small>目前權重</small><b>{weight:.1f}%</b></div>
+    <div><small>行情</small><b class="position-quote-stamp" data-position-stamp="1">{quote_stamp_safe}</b></div>
+  </div>
+  <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b>{weight:.1f}%</b></div>
+  <div class="position-card-actions">
+    <details class="disclosure trend" data-code="{html.escape(str(p['code']), quote=True)}" ontoggle="window.loadPositionTrend(this)">
+      <summary>📈 損益走勢</summary>
       <div class="trend-body"><div class="sub">展開後載入一年損益走勢…</div></div>
     </details>
-    <details class="disclosure chipdist" style="margin-top:2px"
-             data-code="{html.escape(str(p['code']), quote=True)}"
-             ontoggle="window.loadPositionChips(this)">
-      <summary>套牢籌碼分布</summary>
+    <details class="disclosure chipdist" data-code="{html.escape(str(p['code']), quote=True)}" ontoggle="window.loadPositionChips(this)">
+      <summary>🧱 套牢籌碼分布</summary>
       <div class="chipdist-body"><div class="sub">展開後載入近三個月分布…</div></div>
     </details>
     {lots_html(p, name, price['close'])}
   </div>
-  <div class="chg" data-position-pct="1">{fmt_pct(price['pct'])}</div>
-  <div class="wbar"><span class="wbar-track"><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></span><em>{weight:.1f}%</em></div>
-</div>""")
+</article>""")
         else:
             rows_html.append(f"""
-<div class="row" data-position-code="{html.escape(str(p['code']), quote=True)}">
-  <div><span class="name">{p['code']}</span>
-       <span class="code">查無行情</span></div>
-  <div class="price flat" data-position-price="1">—</div>
-  <div class="sub position-quote-stamp" data-position-stamp="1">暫無可驗證行情</div>
-  <div class="meta">
-    <span><em>持有</em> <span class="num">{p['shares']:,}</span> 股</span>
-    {lots_html(p, p['code'], None)}
+<article class="position-card position-card-noquote" data-position-code="{html.escape(str(p['code']), quote=True)}">
+  <div class="position-card-top">
+    <div class="position-card-title"><span class="position-card-code">{html.escape(str(p['code']))}</span><div><h3>{html.escape(str(p['code']))}</h3><small>{p['shares']:,} 股 · 查無行情</small></div></div>
+    <div class="position-card-price"><b data-position-price="1">—</b><span class="flat" data-position-pct="1">—</span></div>
   </div>
-  <div class="chg" data-position-pct="1"></div>
-</div>""")
+  <div class="position-card-grid">
+    <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
+    <div><small>行情狀態</small><b class="flat position-quote-stamp" data-position-stamp="1">暫無可驗證行情</b></div>
+  </div>
+  <div class="position-card-actions">{lots_html(p, p['code'], None)}</div>
+</article>""")
 
     pl_total = (((total_value - total_fee - total_cost) / total_cost * 100)
                 if total_cost else None)
@@ -18223,7 +18246,16 @@ def web_positions(uid):
     except Exception as exc:
         print(f"⚠️ 除權偵測失敗: {exc}")
 
+    holding_card_css = """<style>
+.position-card{background:#fff;border:1px solid rgba(31,71,107,.14);border-radius:22px;padding:18px 18px 14px;margin:14px 0;box-shadow:0 10px 28px rgba(27,62,92,.07);overflow:hidden}
+.position-card-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+.position-card-title{display:flex;gap:10px;min-width:0;align-items:flex-start}.position-card-title h3{margin:0;font-size:22px;line-height:1.2;color:#173b5d}.position-card-title small{display:block;margin-top:5px;color:#71859a;font-size:12px}.position-card-code{display:inline-flex;align-items:center;justify-content:center;min-width:44px;height:28px;padding:0 8px;border-radius:9px;background:#edf5fb;color:#1e5a86;font-size:12px;font-weight:800}.position-card-price{text-align:right;white-space:nowrap}.position-card-price b{display:block;font-size:26px;color:#173b5d;line-height:1.05}.position-card-price span{display:block;margin-top:5px;font-size:14px;font-weight:800}.position-card-primary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0 10px}.position-card-primary>div,.position-card-grid>div{background:#f7fafc;border-radius:13px;padding:10px}.position-card-primary small,.position-card-grid small{display:block;color:#7a8ea0;font-size:11px;margin-bottom:4px}.position-card-primary b{display:block;font-size:16px;color:#173b5d}.position-card-primary em{display:block;margin-top:2px;font-size:11px;font-style:normal;color:#7a8ea0}.position-card-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.position-card-grid b{font-size:14px;color:#294e6d;line-height:1.35;word-break:break-word}.position-card-weight{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;margin:12px 0 4px;color:#71859a;font-size:11px}.position-card-weight>div{height:7px;background:#e8eef3;border-radius:99px;overflow:hidden}.position-card-weight i{display:block;height:100%;background:linear-gradient(90deg,#4b88b1,#1d5f88);border-radius:99px}.position-card-weight b{font-size:12px;color:#294e6d}.position-card-actions{margin-top:8px}.position-card-actions>details{border-top:1px solid #edf1f4;padding:10px 0}.position-card-actions summary{color:#2a5b7f;font-weight:700;cursor:pointer}.position-card-noquote{opacity:.9}.position-quote-stamp{font-size:11px!important;color:#7a8ea0!important;font-weight:500!important}
+.bot-virtual-card{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;background:linear-gradient(135deg,#eff7fc,#f8fbfd);border:1px solid #d8e8f2;border-radius:16px;padding:12px;margin-bottom:10px}.bot-virtual-card small{display:block;color:#71859a;font-size:10px}.bot-virtual-card b{display:block;margin-top:3px;color:#173b5d;font-size:15px}.bot-virtual-card .up{color:#16814c}.bot-virtual-card .down{color:#c63b3b}
+@media(max-width:520px){.position-card{border-radius:19px;padding:15px}.position-card-title h3{font-size:20px}.position-card-price b{font-size:23px}.position-card-primary{grid-template-columns:1fr 1fr}.position-card-primary>div:last-child{grid-column:1/-1}.bot-virtual-card{grid-template-columns:1fr}.position-card-grid{grid-template-columns:1fr 1fr}}
+</style>"""
+
     body = f"""
+{holding_card_css}
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {exright_html}
 {totals}
@@ -21436,12 +21468,23 @@ def web_leaderboard(uid):
             if r.get("is_bot"):
                 bh = r.get("bot_holdings") or []
                 max_wt = max((x.get("weight") or 0) for x in bh) if bh else 0
-                bits = [f'<div class="bot-rule">'
-                        f'{html.escape(str(r.get("bot_rule") or ""))}<br>'
-                        f'同一檔連續上榜就會被重複買進，權重跟著變高——'
-                        f'那是規則本身的結果，不是另外設定的加碼。<br>'
-                        f'這是機械化模擬，沒有滑價與零股限制，也不會臨時改變主意；'
-                        f'跟真人並列僅供對照，不是投資建議。</div>']
+                initial_capital = float(r.get("initial_capital") or BOT_INITIAL_CAPITAL)
+                virtual_asset = r.get("virtual_asset")
+                asset_text = (f"{virtual_asset:,.0f}" if virtual_asset is not None else "資料不足")
+                asset_ret = r.get("ret")
+                asset_ret_text = (f"{asset_ret:+.2f}%" if asset_ret is not None else "—")
+                bits = [
+                    f'<div class="bot-virtual-card">'
+                    f'<div><small>固定虛擬本金</small><b>NT$ {initial_capital:,.0f}</b></div>'
+                    f'<div><small>目前虛擬資產</small><b>NT$ {asset_text}</b></div>'
+                    f'<div><small>累積報酬</small><b class="num {"up" if (asset_ret or 0) >= 0 else "down"}">{asset_ret_text}</b></div>'
+                    f'</div>',
+                    f'<div class="bot-rule">'
+                    f'{html.escape(str(r.get("bot_rule") or ""))}<br>'
+                    f'虛擬帳戶只用來把同一套報酬率換算成資產金額，不途中補資金；'
+                    f'不改變原本排行榜的報酬率口徑。<br>'
+                    f'同一檔連續上榜就會被重複買進，權重跟著變高——那是規則本身的結果。<br>'
+                    f'這是機械化模擬，沒有滑價與零股限制，跟真人並列僅供對照。</div>']
                 for x in bh:
                     pct = x.get("pct")
                     cls = "up" if (pct or 0) >= 0 else "down"
