@@ -26388,6 +26388,13 @@ function bindFactors(){
     document.body.dataset.wbScroll=String(y);
     document.body.style.position='fixed';document.body.style.top=(-y)+'px';document.body.style.left='0';document.body.style.right='0';document.body.style.width='100%';
     dr.classList.add('open');dr.setAttribute('aria-hidden','false');if(mk)mk.hidden=false;
+    /* 每次開啟新的詳細頁，抽屜本身都從最頂端開始；
+       底層選股台／頁面位置則由 body fixed + returnScroll 保留。 */
+    dr.scrollTop=0;
+    host.scrollTop=0;
+    if(window.requestAnimationFrame){
+      window.requestAnimationFrame(function(){dr.scrollTop=0;host.scrollTop=0;});
+    }
     host.innerHTML='<div class="wb-d-container"><div class="wb-d-loading"><div class="wb-d-loading-dot"></div><b>正在整理詳細資料…</b><small>正在讀取已保存快照</small></div></div>';
     try{
       row=row||{};var d=(row.detail&&typeof row.detail==='object')?row.detail:{};
@@ -26465,6 +26472,9 @@ function bindFactors(){
       host.innerHTML='<div class="wb-d-container">'+hero+changeHtml+factorHtml+whyHtml+fundamentalHtml+chipHtml+posHtml+explainHtml+validationHtml+'</div>';
       if(typeof appendChipSection==='function')appendChipSection(row);
       bindScoreValidation(validationMode,row);
+      /* 內容完成後再保證詳細頁仍在頂端。 */
+      dr.scrollTop=0;
+      host.scrollTop=0;
     }catch(err){
       console.error('showDetail error',err);
       host.innerHTML='<div class="wb-d-container"><div class="wb-d-error"><b>詳細資料整理失敗</b><small>'+esc(err&&err.message?err.message:String(err))+'</small></div></div>';
