@@ -3761,6 +3761,27 @@ def analyze_pick_factors(mode, days=90):
     if not picks:
         return None
 
+    # 已保存資料與成熟可驗證資料分開計算。
+    # 今天重新快照的資料已可用來做「因子保存」實驗，但尚未滿 5 日，
+    # 不能把未成熟報酬拿來算成效。因此畫面會明確顯示「已保存／成熟可驗證」。
+    factor_fields = ("score_rev", "score_val", "score_mom", "score_streak", "score_chip")
+    stored_factor_counts = {}
+    stored_factor_days = {}
+    for field in factor_fields:
+        valid = []
+        for p in picks:
+            try:
+                v = p.get(field)
+                if v is None or v == "" or isinstance(v, bool):
+                    continue
+                v = float(v)
+                if math.isfinite(v):
+                    valid.append(p)
+            except (TypeError, ValueError, OverflowError):
+                continue
+        stored_factor_counts[field] = len(valid)
+        stored_factor_days[field] = len(set(str(x.get("date"))[:10] for x in valid))
+
     span = "1y" if days > 120 else "6mo"
     price_map = get_realtime_stocks_bulk(
         list({p["code"] for p in picks}), workers=16, rng=span)
@@ -3822,7 +3843,11 @@ def analyze_pick_factors(mode, days=90):
             overall0 = {"n": 0, "avg": None, "median": None, "win": None}
         return {"n": len(rows), "groups": [],
                 "days_spread": len(set(r["date"] for r in rows)),
-                "overall": overall0}
+                "overall": overall0,
+                "stored_n": len(picks),
+                "stored_days": len(set(str(x.get("date"))[:10] for x in picks)),
+                "stored_factor_counts": stored_factor_counts,
+                "stored_factor_days": stored_factor_days}
 
     def _numeric_returns(items):
         vals = []
@@ -3919,7 +3944,9 @@ def analyze_pick_factors(mode, days=90):
             groups.append((f"依{label}得分（滿分 {cap}）",
                            [(f"{label}：樣本不足，暫不判斷",
                              {"n": len(have), "avg": None, "median": None,
-                              "win": None, "insufficient": True})]))
+                              "win": None, "insufficient": True,
+                              "stored_n": stored_factor_counts.get(field, 0),
+                              "stored_days": stored_factor_days.get(field, 0)})]))
             continue
         vals = sorted(r[f"_{field}_num"] for r in have)
         cut = vals[len(vals) // 2]
@@ -3930,7 +3957,9 @@ def analyze_pick_factors(mode, days=90):
             groups.append((f"依{label}得分（滿分 {cap}）",
                            [(f"{label}：切組後樣本不足，暫不判斷",
                              {"n": len(have), "avg": None, "median": None,
-                              "win": None, "insufficient": True})]))
+                              "win": None, "insufficient": True,
+                              "stored_n": stored_factor_counts.get(field, 0),
+                              "stored_days": stored_factor_days.get(field, 0)})]))
             continue
         groups.append((f"依{label}得分（滿分 {cap}，以 {cut:g} 分為界）",
                        [(f"{label}高分 ≥{cut:g}", stat(hi)),
@@ -4029,7 +4058,11 @@ def analyze_pick_factors(mode, days=90):
         overall["top20_n"] = 0
 
     return {"n": len(rows), "groups": groups, "days_spread": len(by_day),
-            "overall": overall}
+            "overall": overall,
+            "stored_n": len(picks),
+            "stored_days": len(set(str(x.get("date"))[:10] for x in picks)),
+            "stored_factor_counts": stored_factor_counts,
+            "stored_factor_days": stored_factor_days}
 
 
 # 產業近期表現的顯示門檻。樣本或天數太少時不顯示——
@@ -8330,12 +8363,32 @@ def save_picks(mode, rows, top_n=5):
     # 卻看不出是哪一項沒用——五個成分混在一起，
     # 可能其中兩項有效、被另外三項的雜訊蓋掉。
     # 要據以調整權重，就得逐項對照後續報酬。
-    picks = [(mode, r["code"], i, r.get("score"), r.get("name"),
-              r.get("industry"), r.get("close"),
-              r.get("ma_cross"), r.get("macd_cross"),
-              r.get("rev"), r.get("val"), r.get("mom"),
-              r.get("streak_score"), r.get("chip"))
-             for i, r in enumerate(rows[:top_n], start=1)]
+    def _pick_num(r, *keys):
+        # 相容不同版本的欄位名稱；非數字維持 NULL，不猜值。
+        for key in keys:
+            v = r.get(key) if isinstance(r, dict) else None
+            if v is None or v == "" or isinstance(v, bool):
+                continue
+            try:
+                v = float(v)
+                if math.isfinite(v):
+                    return v
+            except (TypeError, ValueError, OverflowError):
+                continue
+        return None
+
+    picks = []
+    for i, r in enumerate(rows[:top_n], start=1):
+        picks.append((
+            mode, r["code"], i, r.get("score"), r.get("name"),
+            r.get("industry"), r.get("close"),
+            r.get("ma_cross"), r.get("macd_cross"),
+            _pick_num(r, "score_rev", "rev"),
+            _pick_num(r, "score_val", "val"),
+            _pick_num(r, "score_mom", "mom"),
+            _pick_num(r, "score_streak", "streak_score"),
+            _pick_num(r, "score_chip", "chip"),
+        ))
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -8352,10 +8405,11 @@ def save_picks(mode, rows, top_n=5):
                 name = EXCLUDED.name, industry = EXCLUDED.industry,
                 price = EXCLUDED.price,
                 ma_cross = EXCLUDED.ma_cross, macd_cross = EXCLUDED.macd_cross,
-                score_rev = EXCLUDED.score_rev, score_val = EXCLUDED.score_val,
-                score_mom = EXCLUDED.score_mom,
-                score_streak = EXCLUDED.score_streak,
-                score_chip = EXCLUDED.score_chip
+                score_rev = COALESCE(EXCLUDED.score_rev, pick_history.score_rev),
+                score_val = COALESCE(EXCLUDED.score_val, pick_history.score_val),
+                score_mom = COALESCE(EXCLUDED.score_mom, pick_history.score_mom),
+                score_streak = COALESCE(EXCLUDED.score_streak, pick_history.score_streak),
+                score_chip = COALESCE(EXCLUDED.score_chip, pick_history.score_chip)
             """,
             picks,
             template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s)",
@@ -20260,10 +20314,13 @@ def render_pick_factors(mode_label, fa):
     worst_day = ov.get("worst_day")
     top20 = ov.get("top20_avg")
     bot20 = ov.get("bottom20_avg")
+    stored_n = fa.get("stored_n", fa.get("n", 0))
+    stored_days = fa.get("stored_days", fa.get("days_spread", 0))
     out = [f'<div class="mode-note">{mode_label}　成熟樣本 {fa["n"]} 筆・'
            f'涵蓋 {fa["days_spread"]} 個推薦日・'
            f'整體平均 {(ov.get("avg") if ov.get("avg") is not None else 0):+.1f}%・中位 {(ov.get("median") if ov.get("median") is not None else 0):+.1f}%・'
            f'勝率 {(ov.get("win") if ov.get("win") is not None else 0):.0f}%</div>',
+           f'<div class="wb-factor-experiment-status"><b>實驗資料狀態</b><span>已保存推薦 {stored_n} 筆・涵蓋 {stored_days} 個推薦日</span><small>成效只使用滿 5 日的成熟樣本；新快照會先進入實驗資料，不會被誤算成 0 筆。</small></div>',
            '<div class="callout" style="margin-top:10px">'
            '<b>成效摘要</b><br>'
            '<span style="font-size:12.5px;color:var(--ink-faint)">'
@@ -20276,10 +20333,16 @@ def render_pick_factors(mode_label, fa):
         rows = ""
         for name, st in items:
             if st.get("insufficient"):
+                stored_n = st.get("stored_n", st.get("n", 0))
+                stored_days = st.get("stored_days")
+                extra = (f'<span><em>已保存</em> {stored_n} 筆'
+                         + (f'／{stored_days} 個推薦日' if stored_days is not None else '')
+                         + '</span>')
                 rows += (f'<div class="row">'
                          f'<div><span class="name">{html.escape(name)}</span></div>'
                          f'<div class="price num">—</div>'
-                         f'<div class="meta"><span><em>目前</em> {st.get("n", 0)} 筆</span>'
+                         f'<div class="meta"><span><em>成熟可驗證</em> {st.get("n", 0)} 筆</span>'
+                         f'{extra}'
                          f'<span><em>要求</em> 每組至少 10 筆</span>'
                          f'</div></div>')
                 continue
@@ -25879,32 +25942,86 @@ def build_workbench_snapshot_payload(uid=None):
     personal = {"positions": [], "rank_summary": {}}
     if uid:
         # 只讀取目前登入者的庫存與既有排行榜快照；不讀取其他使用者持股，也不重算排行榜。
+        positions = []
         for position in merge_positions(get_positions(uid)):
             code = str(position.get("code") or "").strip()
             if not re.fullmatch(r"\d{4,6}", code):
                 continue
+            positions.append(position)
+
+        # 持股詳細頁原本把 score 固定成 None，所以點進去永遠顯示「未評分」。
+        # 這裡只讀取該使用者自己已保存的自選股評分快照，不在工作台重新計算。
+        # 若今天沒有快照，取最近一筆已保存資料並標示評分日期；完全沒有快照則維持未評分。
+        holding_scores = {}
+        if positions:
+            codes = [str(x.get("code") or "").strip() for x in positions]
+            conn = None
+            try:
+                conn = get_db_connection()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT DISTINCT ON (code)
+                           code, snapshot_date, total, chip, position, revenue, valuation,
+                           close, support, resistance, asset_type
+                    FROM watchlist_scores
+                    WHERE user_id = %s
+                      AND code = ANY(%s)
+                    ORDER BY code, snapshot_date DESC
+                """, (str(uid), codes))
+                for rr in cur.fetchall():
+                    holding_scores[str(rr[0])] = {
+                        "source_date": str(rr[1] or ""), "total": rr[2], "chip": rr[3],
+                        "position": rr[4], "revenue": rr[5], "valuation": rr[6],
+                        "close": rr[7], "support": rr[8], "resistance": rr[9],
+                        "asset_type": rr[10],
+                    }
+            except Exception as e:
+                print(f"⚠️ 工作台讀取持股評分快照失敗：{e}")
+            finally:
+                if conn is not None:
+                    try:
+                        release_db_connection(conn)
+                    except Exception:
+                        pass
+
+        for position in positions:
+            code = str(position.get("code") or "").strip()
             shares = _workbench_number(position.get("shares"), 0)
             cost = _workbench_number(position.get("cost"))
+            saved = holding_scores.get(code) or {}
+            score = _workbench_number(saved.get("total")) if saved.get("total") is not None else None
+            saved_close = _workbench_number(saved.get("close")) if saved.get("close") is not None else None
+            score_date = str(saved.get("source_date") or "")
             personal["positions"].append({"code": code, "shares": shares, "cost": cost})
             rows.append({
                 "source": "持股",
                 "code": code,
                 "name": _workbench_display_name(position, code),
                 "industry": "個人庫存",
-                "score": None,
-                "price": None,
+                "score": score,
+                "price": saved_close,
                 "change_pct": None,
-                "metric_label": "當日漲跌",
+                "metric_label": "快照價格",
                 "institutional_lots": None,
                 "signal": f"持有 {int(shares or 0):,} 股",
-                "quality": None,
-                "analysis_available": False,
+                "quality": "已有自選股評分快照" if score is not None else None,
+                "analysis_available": score is not None,
                 "detail": {
                     "average_cost": cost,
                     "position_shares": shares,
                     "bought_on": str(position.get("bought_on") or ""),
-                    "analysis_available": False,
-                    "analysis_note": "此庫存尚未有同日分析快照",
+                    "analysis_available": score is not None,
+                    "analysis_note": (f"自選股評分快照：{score_date}" if score is not None else "此庫存尚未有已保存的自選股評分快照"),
+                    "source_date": score_date,
+                    "score": score,
+                    "chip": saved.get("chip"),
+                    "position": saved.get("position"),
+                    "revenue": saved.get("revenue"),
+                    "valuation": saved.get("valuation"),
+                    "snapshot_price": saved_close,
+                    "support": saved.get("support"),
+                    "resistance": saved.get("resistance"),
+                    "asset_type": saved.get("asset_type"),
                 },
             })
         personal["rank_summary"] = get_fast_rank_summary(uid) or {}
@@ -26130,6 +26247,45 @@ def render_workbench_body(initial_tab=""):
 </section>
 <aside class="wb-drawer" id="wb-drawer" aria-hidden="true"><div class="wb-drawer-actions"><button type="button" id="wb-back">‹ 回到選股清單</button><button type="button" id="wb-close" aria-label="關閉">×</button></div><div id="wb-detail"></div></aside><div class="wb-mask" id="wb-mask" hidden></div>
 <style>
+/* v13 選股工作台視覺層：不改資料架構，只提升層次、可讀性與手機觸控回饋。 */
+.wb-shell{position:relative;margin:20px 0 34px;padding:18px 18px 22px;border:1px solid #dbe5ef;border-radius:18px;background:linear-gradient(180deg,#f7fbff 0,#fff 190px);box-shadow:0 14px 38px rgba(39,76,119,.09);overflow:hidden}
+.wb-shell:before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:linear-gradient(90deg,#24486e,#6e99bd,#24486e)}
+.wb-intro{padding-top:5px}
+.wb-kicker{letter-spacing:.15em;color:#3f6689}
+.wb-intro h2{font-size:30px;letter-spacing:.01em}
+.wb-status{border-radius:10px;box-shadow:0 4px 14px rgba(39,76,119,.05)}
+.wb-pulse{border-radius:12px;background:linear-gradient(90deg,#f1f7fc,#fff);box-shadow:0 5px 16px rgba(39,76,119,.04)}
+.wb-asset-tabs{display:flex;gap:6px;width:max-content;margin:15px 0 4px;padding:5px;border:1px solid #d7e3ee;border-radius:12px;background:#edf4fa}
+.wb-asset-tabs button{border:0;border-radius:9px;padding:8px 16px;background:transparent;color:#5c7185;font-weight:800;transition:.16s}
+.wb-asset-tabs button.on{background:#fff;color:#24486e;box-shadow:0 3px 11px rgba(39,76,119,.11)}
+.wb-tabs{padding-left:4px;gap:24px}
+.wb-tools{padding:18px 0 12px}
+.wb-tools label,.wb-tools button{border-radius:10px;transition:.16s}
+.wb-tools label:focus-within{border-color:#52718d;box-shadow:0 0 0 3px rgba(82,113,141,.10)}
+.wb-tools button:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(39,76,119,.08)}
+.wb-table{border-radius:14px;box-shadow:0 8px 24px rgba(23,42,58,.06)}
+.wb-head{background:linear-gradient(180deg,#edf4fa,#f8fbfe)}
+.wb-row{min-height:82px;transition:background .14s,transform .12s,box-shadow .14s}
+.wb-row:hover{background:#f7fbff;box-shadow:inset 4px 0 #52718d,0 3px 12px rgba(39,76,119,.05);transform:translateX(1px)}
+.wb-row:active{background:#eef6fd;transform:scale(.998)}
+.wb-result-more{background:#fbfdff;border-top:1px solid #e6edf4}
+.wb-result-more summary{padding:13px 16px;color:#3f6689;font-weight:900}
+.wb-score-change-panel{border-radius:14px!important;box-shadow:0 6px 20px rgba(39,76,119,.06)!important;background:linear-gradient(135deg,#f4f8fc,#fff)!important}
+.wb-factor-experiment-status{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;margin:10px 0;padding:12px 14px;border:1px solid #d6e2ed;border-left:4px solid #52718d;border-radius:10px;background:#f6faff;color:#344054}
+.wb-factor-experiment-status b{font-size:13px;color:#24486e}
+.wb-factor-experiment-status span{font-size:12px;font-weight:800}
+.wb-factor-experiment-status small{width:100%;color:#667085;font-size:11px;line-height:1.5}
+.wb-disclaimer{padding:10px 4px 0}
+@media(max-width:620px){
+ .wb-shell{margin:12px -2px 24px;padding:15px 12px 18px;border-radius:15px}
+ .wb-intro h2{font-size:27px}
+ .wb-pulse{grid-template-columns:1fr 1fr;gap:9px;padding:11px}
+ .wb-asset-tabs{width:100%;display:grid;grid-template-columns:1fr 1fr}
+ .wb-asset-tabs button{width:100%}
+ .wb-factor-experiment-status{display:grid;gap:4px;padding:11px 12px}
+}
+</style>
+<style>
 .wb-shell{margin:16px 0 28px;color:#1d2939}.wb-intro{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:2px solid #27364a;padding:4px 0 16px}.wb-kicker{margin:0;color:#526b84;font-size:11px;font-weight:800;letter-spacing:.08em}.wb-intro h2{margin:5px 0 4px;font-size:28px;letter-spacing:.02em}.wb-sub{margin:0;color:#667085;font-size:13px}.wb-status{border:1px solid #d4dce6;background:#f8fbff;padding:9px 11px;color:#526b84;font-size:11px;white-space:nowrap}.wb-pulse{display:grid;grid-template-columns:130px 180px 1fr 1fr 180px;align-items:center;gap:14px;border:1px solid #d7e0ea;border-left:3px solid #52718d;padding:14px 10px;background:#f7fbff;font-size:12px}.wb-pulse span{font-weight:800}.wb-pulse b{font-family:monospace;font-size:12px}.wb-pulse i{height:3px;background:#c94d45}.wb-pulse i:nth-of-type(2){background:#23795a}.wb-pulse em{font-style:normal;color:#667085}.wb-tabs{display:flex;gap:20px;border-bottom:1px solid #d7e0ea;padding:15px 10px 0}.wb-tabs button{border:0;background:transparent;color:#667085;padding:0 0 12px;font-size:13px;font-weight:700;border-bottom:2px solid transparent}.wb-tabs button.on{color:#274c77;border-color:#52718d}.wb-tools{display:grid;grid-template-columns:1fr auto auto;gap:8px;padding:16px 0}.wb-tools label{display:flex;gap:8px;align-items:center;border:1px solid #cfd9e5;background:#fff;padding:0 11px}.wb-tools input{width:100%;border:0;outline:0;padding:11px 0;font:inherit}.wb-tools button,.wb-filter-panel button{border:1px solid #cfd9e5;background:#fff;padding:9px 12px;color:#344054;font:inherit;font-size:12px}.wb-tools button:hover,.wb-filter-panel button.on{border-color:#52718d;color:#274c77;background:#f1f7fc}.wb-filter-panel{display:flex;gap:24px;margin:-8px 0 12px;padding:12px;border:1px solid #d9e3ed;background:#f7faff;font-size:12px}.wb-filter-panel div{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wb-filter-panel b{margin-right:5px;color:#526b84}.wb-filter-panel button{padding:5px 9px}.wb-meta{display:flex;justify-content:space-between;gap:12px;padding:7px 0 10px;color:#667085;font-size:11px}.wb-meta b{color:#1d2939}.wb-table{border:1px solid #d7e0ea;background:#fff;border-radius:12px;overflow:hidden}.wb-head,.wb-row{display:grid;grid-template-columns:minmax(190px,2fr) minmax(110px,1fr) minmax(110px,1fr) minmax(120px,1fr) minmax(145px,1.25fr) 22px;gap:10px;align-items:center;padding:12px 14px}.wb-head{background:#f3f7fb;border-bottom:1px solid #d7e0ea;color:#526b84;font-size:11px}.wb-head button{border:0;background:transparent;color:inherit;text-align:left;font:inherit;font-weight:800;padding:0}.wb-head button.on{color:#274c77}.wb-row{border-bottom:1px solid #edf1f5;text-align:left;cursor:pointer;background:#fff}.wb-row:hover{background:#f7fbff;box-shadow:inset 3px 0 #52718d}.wb-name{display:block;font-weight:800;font-size:19px;line-height:1.35;color:#182b3e}.wb-code,.wb-small{display:block;color:#66788a;font-size:13px;font-weight:700;line-height:1.35;margin-top:3px}.wb-industry{display:inline-flex;align-items:center;margin-top:6px;padding:3px 7px;border:1px solid #cad8e6;border-radius:999px;background:#f4f8fc;color:#41617e;font-size:11px;font-weight:800;line-height:1.25}.wb-mobile-sort{display:none;align-items:center;gap:6px;margin:-4px 0 12px;color:#526b84;font-size:12px;font-weight:800}.wb-mobile-sort button{border:1px solid #cfd9e5;background:#fff;border-radius:6px;padding:6px 10px;color:#526b84;font:inherit;font-size:11px}.wb-mobile-sort button.on{border-color:#52718d;background:#edf5fb;color:#274c77}.wb-turning-breakout{border-left:3px solid #9a5b17;background:#fffaf3}.wb-turning-note{margin:2px 0 8px;color:#667085;font-size:11px;line-height:1.5}.wb-turning-flow{display:inline-flex;margin-top:5px;padding:3px 6px;border-radius:5px;font-size:10px;font-weight:800;line-height:1.25}.wb-turning-flow.sell_to_buy,.wb-turning-flow.buying_strength{background:#fceceb;color:#b42318}.wb-turning-flow.buy_to_sell,.wb-turning-flow.selling_strength{background:#e9f6ef;color:#13734c}.wb-turning-flow.unknown{background:#eef2f6;color:#667085}.wb-num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800}.wb-up{color:#b42318}.wb-down{color:#13734c}.wb-flat{color:#7b8795}.wb-tag{display:inline-block;font-size:10px;padding:3px 5px;background:#edf3f8;color:#345673;margin-right:5px}.wb-tag.ETF{background:#e8f4ed;color:#227052}.wb-tag.雷達{background:#e8f5f5;color:#256d6c}.wb-tag.轉折{background:#f0ebf8;color:#674d8c}.wb-tag.籌碼{background:#fff0df;color:#9a5b17}.wb-skeleton{height:54px;margin:0 14px;border-bottom:1px solid #edf1f5;background:linear-gradient(90deg,#fff 20%,#f2f6fa 45%,#fff 70%);background-size:220% 100%;animation:wbscan 1.1s linear infinite}@keyframes wbscan{to{background-position:-120% 0}}.wb-review-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:14px}.wb-review-card{border:1px solid #d7e0ea;background:#fff;border-radius:10px;padding:14px}.wb-review-card h3{margin:0 0 5px;font-size:18px}.wb-review-card h3 small{font-size:11px;color:#667085;font-weight:700}.wb-review-card p{margin:0 0 10px;color:#667085;font-size:12px}.wb-review-recent{margin-top:10px;border-top:1px solid #edf1f5}.wb-review-recent summary{padding:10px 0 5px;cursor:pointer;color:#345673;font-size:12px;font-weight:800}.wb-review-recent ul{margin:0;padding:0;list-style:none}.wb-review-recent li{padding:7px 0;border-top:1px solid #edf1f5;font-size:12px;font-weight:700}.wb-review-recent li small{display:block;margin-top:2px;color:#667085;font-weight:400}.wb-review-row{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:8px;padding:10px 0;border-top:1px solid #edf1f5;font-size:12px}.wb-review-row b{display:block;font-family:ui-monospace,monospace}.wb-review-recent{margin-top:12px;padding-top:10px;border-top:1px solid #edf1f5;font-size:12px}.wb-review-recent>b{display:block;color:#344054}.wb-review-recent ul{margin:7px 0 0;padding:0;list-style:none}.wb-review-recent li{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid #f0f3f6}.wb-review-recent li span{color:#667085;font-size:11px;text-align:right}.wb-disclaimer{margin:12px 0;color:#7b8795;font-size:11px;line-height:1.55}.wb-mask{position:fixed;inset:0;background:rgba(23,42,58,.22);z-index:1000}.wb-drawer{position:fixed;z-index:1001;right:0;top:0;bottom:0;width:min(430px,92vw);padding:22px;background:#fff;box-shadow:-12px 0 32px rgba(23,42,58,.16);transform:translateX(110%);transition:transform .18s ease-out;overflow:auto}.wb-drawer.open{transform:translateX(0)}.wb-drawer>button{float:right;border:0;background:transparent;font-size:26px;color:#526b84}.wb-detail h3{margin:5px 0;font-size:25px}.wb-detail p{color:#667085;font-size:12px}.wb-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#dbe4ec;margin:18px 0}.wb-detail-grid div{background:#f9fbfd;padding:11px}.wb-detail-grid small{display:block;color:#7b8795}.wb-detail-grid b{display:block;margin-top:5px;font-family:ui-monospace,monospace}.wb-facts{padding:0;margin:0;list-style:none}.wb-facts li{border-top:1px solid #e4ebf1;padding:10px 0;font-size:12px;line-height:1.55}@media(max-width:620px){.wb-intro{display:block}.wb-status{display:inline-block;margin-top:12px}.wb-pulse{grid-template-columns:1fr 1fr;padding:12px}.wb-pulse i{grid-column:span 1}.wb-pulse em{grid-column:1/-1;border-top:1px solid #d7e0ea;padding-top:8px}.wb-tabs{gap:14px;overflow:auto}.wb-tools{grid-template-columns:1fr auto}.wb-tools label{grid-column:1/-1}.wb-filter-panel{display:block}.wb-filter-panel div+div{margin-top:10px}.wb-meta{display:block}.wb-meta span{display:block;margin-top:4px}.wb-head{display:none}.wb-row{grid-template-columns:1.6fr 1fr 1fr 18px;gap:8px;padding:12px}.wb-row .wb-institutional,.wb-row .wb-signal{display:none}.wb-mobile-sort{display:flex}.wb-row .wb-name{font-size:18px}.wb-row .wb-code{font-size:13px}.wb-row .wb-industry{font-size:11px}.wb-row .wb-tag{font-size:10px}.wb-review-grid{grid-template-columns:1fr;padding:10px}.wb-drawer{width:100%;}.wb-detail-grid{grid-template-columns:1fr 1fr}}
 </style>
 <style>
@@ -26276,7 +26432,7 @@ def render_workbench_body(initial_tab=""):
     var comment=d.comment||r.signal||'尚無原始評論',range=(d.start_date||d.end_date)?('比較區間：'+(d.start_date||'—')+' 至 '+(d.end_date||'—')):period;
     return '<button type="button" class="wb-row wb-etf-row" data-code="'+esc(r.code)+'" data-source="ETF" data-row-key="'+esc(r.row_key||'')+'"><small class="wb-etf-period-title">'+esc(period)+'</small><span class="wb-etf-top"><span class="wb-etf-title"><span class="wb-tag ETF">ETF</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><small class="wb-industry">'+esc(r.industry)+'</small></span><span class="wb-etf-score"><small>排名分數</small><b>'+(score==null?'尚無資料':esc(score.toFixed(1)))+(score==null?'':'<em> 分</em>')+'</b></span></span>'+(d.score_breakdown?('<small class="wb-etf-breakdown">'+esc(d.score_breakdown)+'</small>'):'')+'<span class="wb-etf-metrics">'+metrics+'</span><p class="wb-etf-comment"><small>原始評論</small>'+esc(comment)+'</p><small class="wb-etf-period-note">'+esc(range)+'</small></button>';
   }
-  function renderHoldingRow(r){var d=r.detail||{},shares=Number(d.position_shares||0),noteText=d.analysis_note||'此庫存尚未有同日分析快照';return '<button type="button" class="wb-row wb-holding-row" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'"><span class="wb-row-main"><span class="wb-tag 持股">持股</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><small class="wb-industry">個人庫存</small><small class="wb-fact-line">'+esc(noteText)+'</small></span><span class="wb-holding-shares"><b>持有 '+shares.toLocaleString('zh-TW')+' 股</b><small>尚未連結同日分析</small></span><span>›</span></button>';}   function renderTurningGrouped(){var isBreakout=function(r){var d=r.detail||{};return r.source==='轉折'&&String(d.breakout||'').indexOf('突破')===0&&['confirmed','observing'].indexOf(String(d.state||''))>=0;};var bo=state.rows.filter(isBreakout).slice().sort(function(a,b){return Number(b.turning_score||0)-Number(a.turning_score||0);});var boCodes={};bo.forEach(function(r){boCodes[r.code]=1;});var boHtml='';if(bo.length){var bv=bo.slice(0,3).map(renderTurningRow).join(''),bm=bo.slice(3).map(renderTurningRow).join('');boHtml='<section class="wb-turning-group wb-turning-breakout"><h3>🚀 突破 <small>'+bo.length+' 檔</small></h3><p class="wb-turning-note">法人已轉向，且價格同步站上近 60 日新高；已從下方狀態組移入</p>'+bv+(bm?'<details class="wb-turning-more"><summary>其餘 '+(bo.length-3)+' 檔</summary>'+bm+'</details>':'')+'</section>';}else{boHtml='<section class="wb-turning-group wb-turning-breakout"><h3>🚀 突破 <small>0 檔</small></h3><p class="wb-turning-note">今日沒有同時符合的標的。兩個條件要同時發生本來就不常見，空白是正常的。</p></section>';}var groups=[['confirmed','已確認','wb-turning-confirmed'],['observing','觀察中','wb-turning-observing'],['invalid','失敗','wb-turning-invalid']];var html=boHtml+groups.map(function(g){var list=state.rows.filter(function(r){return r.source==='轉折'&&!boCodes[r.code]&&String((r.detail||{}).state||'observing')===g[0];}).slice().sort(function(a,b){return Number(b.turning_score||0)-Number(a.turning_score||0)||Math.abs(Number(b.institutional_lots||0))-Math.abs(Number(a.institutional_lots||0));});if(!list.length)return '';var visible=list.slice(0,3).map(renderTurningRow).join('');var more=list.slice(3).map(renderTurningRow).join('');return '<section class="wb-turning-group '+g[2]+'"><h3>'+g[1]+' <small>'+list.length+' 檔</small></h3>'+visible+(more?'<details class="wb-turning-more"><summary>其餘 '+(list.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}).join('');rowsEl.innerHTML=state.rows.some(function(r){return r.source==='轉折';})?html:'<div class="wb-empty">目前沒有已保存的轉折資料。</div>';count.textContent='突破組置頂；其餘依已確認、觀察中、失敗分組；買轉賣與賣轉買以不同方向顏色標示；每組先顯示 3 檔';}   function renderChipsGrouped(list){var groups=['投信認養','外資認養','外資投信同買','投信調節','外資投信同賣'];function section(label,xs,extraClass){if(!xs.length)return '';var visible=xs.slice(0,3).map(renderChipRow).join(''),more=xs.slice(3).map(renderChipRow).join('');return '<section class="wb-chip-group '+(extraClass||'')+'"><h3>'+esc(label)+' <small>'+xs.length+' 檔</small></h3>'+visible+(more?'<details class="wb-turning-more"><summary>其餘 '+(xs.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}var shifts=list.filter(function(r){return groups.indexOf(r.signal)<0;});var html=section('法人籌碼突變',shifts,'wb-chip-shifts');html+=groups.map(function(label){return section(label,list.filter(function(r){return r.signal===label;}));}).join('');rowsEl.innerHTML=html||'<div class="wb-empty">目前沒有符合舊版近十日籌碼規則的資料。</div>';count.textContent='近十日籌碼：法人籌碼突變置頂；其後依投信認養、外資認養、同買、投信調節、同賣分組，每組先顯示 3 檔';}   function renderEtfGrouped(list){var periods=[['short','短期'],['long','長期']],categories=['主動式','高股息','市值型','主題型'];var html=periods.map(function(p){var periodRows=list.filter(function(r){return (r.detail||{}).period_key===p[0];});if(!periodRows.length)return '';var label=(periodRows[0].detail||{}).period_label||p[1]+'價格報酬';var blocks=categories.map(function(category){var xs=periodRows.filter(function(r){return r.industry===category;});if(!xs.length)return '';var visible=xs.slice(0,3).map(renderEtfRow).join(''),more=xs.slice(3).map(renderEtfRow).join('');return '<section class="wb-etf-category"><h4>'+esc(category)+' <small>'+xs.length+' 檔</small></h4>'+visible+(more?'<details class="wb-result-more"><summary>其餘 '+(xs.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}).join('');return '<section class="wb-etf-period"><h3><strong>'+esc(p[1])+'排名</strong><small>'+esc(label)+'</small></h3>'+blocks+'</section>';}).join('');rowsEl.innerHTML=html||'<div class="wb-empty">目前沒有已保存的 ETF 短期／長期排名資料。</div>';count.textContent='ETF 依舊版短期／長期及四種類別分組；每類先顯示 3 檔';}   function reviewCacheKey(){return 'stockbot_workbench_review_v3';}function restoreReviewCache(){if(state.review)return;try{var saved=JSON.parse(sessionStorage.getItem(reviewCacheKey())||'null');if(saved&&saved.at&&Date.now()-saved.at<300000&&saved.data&&Array.isArray(saved.data.modes)&&!saved.data.statistics_building)state.review=saved.data;}catch(e){}}function requestReview(force){if(state.reviewLoading)return;restoreReviewCache();if(!force&&state.review){if(state.source==='成效')render();return;}state.reviewLoading=true;fetch(api('/web/api/workbench/review'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){state.review=data;state.reviewLoading=false;if(!data.statistics_building){try{sessionStorage.setItem(reviewCacheKey(),JSON.stringify({at:Date.now(),data:data}));}catch(e){}}if(state.source==='成效')render();if(data.statistics_building){window.setTimeout(function(){requestReview(true);},3500);}}).catch(function(e){state.reviewLoading=false;if(state.source==='成效'){rowsEl.innerHTML='<div class="wb-empty" style="color:#8b4034">成效資料暫時無法載入，請稍後再試。</div>';}if(e.message==='AUTH')location.reload();});}function reviewMetric(label,value,kind,sub){var cls=value==null?'wb-flat':Number(value)>0?'wb-up':Number(value)<0?'wb-down':'wb-flat',text=value==null?'未提供':reviewPct(value);return '<span class="wb-review-metric"><small>'+esc(label)+'</small><b class="'+cls+'">'+esc(text)+'</b>'+(sub?'<em>'+esc(sub)+'</em>':'')+'</span>';}function renderReview(){
+  function renderHoldingRow(r){var d=r.detail||{},shares=Number(d.position_shares||0),score=r.score!=null?Number(r.score):null,scoreText=score==null?'未評分':'綜合 '+score.toFixed(0)+' 分',scoreClass=score==null?'wb-flat':'wb-score',noteText=d.analysis_note||'此庫存尚未有已保存的自選股評分快照';return '<button type="button" class="wb-row wb-holding-row" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'"><span class="wb-row-main"><span class="wb-tag 持股">持股</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><small class="wb-industry">個人庫存</small><small class="wb-fact-line">'+esc(noteText)+'</small></span><span class="wb-holding-shares"><b>持有 '+shares.toLocaleString('zh-TW')+' 股</b><small class="'+scoreClass+'">'+esc(scoreText)+'</small></span><span>›</span></button>;}function renderTurningGrouped(){var isBreakout=function(r){var d=r.detail||{};return r.source==='轉折'&&String(d.breakout||'').indexOf('突破')===0&&['confirmed','observing'].indexOf(String(d.state||''))>=0;};var bo=state.rows.filter(isBreakout).slice().sort(function(a,b){return Number(b.turning_score||0)-Number(a.turning_score||0);});var boCodes={};bo.forEach(function(r){boCodes[r.code]=1;});var boHtml='';if(bo.length){var bv=bo.slice(0,3).map(renderTurningRow).join(''),bm=bo.slice(3).map(renderTurningRow).join('');boHtml='<section class="wb-turning-group wb-turning-breakout"><h3>🚀 突破 <small>'+bo.length+' 檔</small></h3><p class="wb-turning-note">法人已轉向，且價格同步站上近 60 日新高；已從下方狀態組移入</p>'+bv+(bm?'<details class="wb-turning-more"><summary>其餘 '+(bo.length-3)+' 檔</summary>'+bm+'</details>':'')+'</section>';}else{boHtml='<section class="wb-turning-group wb-turning-breakout"><h3>🚀 突破 <small>0 檔</small></h3><p class="wb-turning-note">今日沒有同時符合的標的。兩個條件要同時發生本來就不常見，空白是正常的。</p></section>';}var groups=[['confirmed','已確認','wb-turning-confirmed'],['observing','觀察中','wb-turning-observing'],['invalid','失敗','wb-turning-invalid']];var html=boHtml+groups.map(function(g){var list=state.rows.filter(function(r){return r.source==='轉折'&&!boCodes[r.code]&&String((r.detail||{}).state||'observing')===g[0];}).slice().sort(function(a,b){return Number(b.turning_score||0)-Number(a.turning_score||0)||Math.abs(Number(b.institutional_lots||0))-Math.abs(Number(a.institutional_lots||0));});if(!list.length)return '';var visible=list.slice(0,3).map(renderTurningRow).join('');var more=list.slice(3).map(renderTurningRow).join('');return '<section class="wb-turning-group '+g[2]+'"><h3>'+g[1]+' <small>'+list.length+' 檔</small></h3>'+visible+(more?'<details class="wb-turning-more"><summary>其餘 '+(list.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}).join('');rowsEl.innerHTML=state.rows.some(function(r){return r.source==='轉折';})?html:'<div class="wb-empty">目前沒有已保存的轉折資料。</div>';count.textContent='突破組置頂；其餘依已確認、觀察中、失敗分組；買轉賣與賣轉買以不同方向顏色標示；每組先顯示 3 檔';}   function renderChipsGrouped(list){var groups=['投信認養','外資認養','外資投信同買','投信調節','外資投信同賣'];function section(label,xs,extraClass){if(!xs.length)return '';var visible=xs.slice(0,3).map(renderChipRow).join(''),more=xs.slice(3).map(renderChipRow).join('');return '<section class="wb-chip-group '+(extraClass||'')+'"><h3>'+esc(label)+' <small>'+xs.length+' 檔</small></h3>'+visible+(more?'<details class="wb-turning-more"><summary>其餘 '+(xs.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}var shifts=list.filter(function(r){return groups.indexOf(r.signal)<0;});var html=section('法人籌碼突變',shifts,'wb-chip-shifts');html+=groups.map(function(label){return section(label,list.filter(function(r){return r.signal===label;}));}).join('');rowsEl.innerHTML=html||'<div class="wb-empty">目前沒有符合舊版近十日籌碼規則的資料。</div>';count.textContent='近十日籌碼：法人籌碼突變置頂；其後依投信認養、外資認養、同買、投信調節、同賣分組，每組先顯示 3 檔';}   function renderEtfGrouped(list){var periods=[['short','短期'],['long','長期']],categories=['主動式','高股息','市值型','主題型'];var html=periods.map(function(p){var periodRows=list.filter(function(r){return (r.detail||{}).period_key===p[0];});if(!periodRows.length)return '';var label=(periodRows[0].detail||{}).period_label||p[1]+'價格報酬';var blocks=categories.map(function(category){var xs=periodRows.filter(function(r){return r.industry===category;});if(!xs.length)return '';var visible=xs.slice(0,3).map(renderEtfRow).join(''),more=xs.slice(3).map(renderEtfRow).join('');return '<section class="wb-etf-category"><h4>'+esc(category)+' <small>'+xs.length+' 檔</small></h4>'+visible+(more?'<details class="wb-result-more"><summary>其餘 '+(xs.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}).join('');return '<section class="wb-etf-period"><h3><strong>'+esc(p[1])+'排名</strong><small>'+esc(label)+'</small></h3>'+blocks+'</section>';}).join('');rowsEl.innerHTML=html||'<div class="wb-empty">目前沒有已保存的 ETF 短期／長期排名資料。</div>';count.textContent='ETF 依舊版短期／長期及四種類別分組；每類先顯示 3 檔';}   function reviewCacheKey(){return 'stockbot_workbench_review_v3';}function restoreReviewCache(){if(state.review)return;try{var saved=JSON.parse(sessionStorage.getItem(reviewCacheKey())||'null');if(saved&&saved.at&&Date.now()-saved.at<300000&&saved.data&&Array.isArray(saved.data.modes)&&!saved.data.statistics_building)state.review=saved.data;}catch(e){}}function requestReview(force){if(state.reviewLoading)return;restoreReviewCache();if(!force&&state.review){if(state.source==='成效')render();return;}state.reviewLoading=true;fetch(api('/web/api/workbench/review'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){state.review=data;state.reviewLoading=false;if(!data.statistics_building){try{sessionStorage.setItem(reviewCacheKey(),JSON.stringify({at:Date.now(),data:data}));}catch(e){}}if(state.source==='成效')render();if(data.statistics_building){window.setTimeout(function(){requestReview(true);},3500);}}).catch(function(e){state.reviewLoading=false;if(state.source==='成效'){rowsEl.innerHTML='<div class="wb-empty" style="color:#8b4034">成效資料暫時無法載入，請稍後再試。</div>';}if(e.message==='AUTH')location.reload();});}function reviewMetric(label,value,kind,sub){var cls=value==null?'wb-flat':Number(value)>0?'wb-up':Number(value)<0?'wb-down':'wb-flat',text=value==null?'未提供':reviewPct(value);return '<span class="wb-review-metric"><small>'+esc(label)+'</small><b class="'+cls+'">'+esc(text)+'</b>'+(sub?'<em>'+esc(sub)+'</em>':'')+'</span>';}function renderReview(){
   count.textContent='成效依原始推薦價格逐檔對照同期大盤；成熟樣本才顯示報酬';
   restoreReviewCache();
   if(!state.review){
@@ -26450,7 +26606,8 @@ function bindFactors(){
       /* 6. Fundamentals */
       var fundamentalFacts='';
       [['最新營收 YoY',d.revenue_yoy!=null?d.revenue_yoy:(row.revenue_yoy!=null?row.revenue_yoy:null)],['累計營收 YoY',d.cum_yoy!=null?d.cum_yoy:row.cum_yoy],['PE',d.pe!=null?d.pe:row.pe],['PEG',d.peg!=null?d.peg:row.peg],['殖利率',d.yield!=null?d.yield:row.yield],['PB',d.pb!=null?d.pb:row.pb],['成交金額',d.turnover!=null?d.turnover:row.turnover]].forEach(function(x){if(x[1]!=null&&x[1]!=='')fundamentalFacts+=fact(x[0],x[1]);});
-      var fundamentalHtml=fundamentalFacts?section('基本面','只顯示目前快照已有的欄位','<div class="wb-d-facts wb-d-facts-compact">'+fundamentalFacts+'</div>'):'';
+       if(src==='持股'){var holdingFacts='';[['持有股數',d.position_shares],['平均成本',d.average_cost],['評分日期',d.source_date],['自選股綜合分數',d.score],['營收評分',d.revenue],['估值評分',d.valuation],['位階評分',d.position],['籌碼評分',d.chip],['快照價格',d.snapshot_price],['支撐',d.support],['壓力',d.resistance]].forEach(function(x){if(x[1]!=null&&x[1]!=='')holdingFacts+=fact(x[0],x[1]);});if(holdingFacts)fundamentalFacts=holdingFacts;}
+       var fundamentalHtml=fundamentalFacts?section(src==='持股'?'持股與自選股評分':'基本面',src==='持股'?'分數來自已保存的自選股評分快照；沒有快照不自行補算':'只顯示目前快照已有的欄位','<div class="wb-d-facts wb-d-facts-compact">'+fundamentalFacts+'</div>'):'';
 
       /* 7. Chips */
       var chipFacts='';
