@@ -23976,19 +23976,27 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     elif basis_fallback:
         basis_notice = ('<div class="contribution-basis-notice fallback"><b>今日有減碼，但操作前基準資料不足：</b>'
                         '目前暫以減碼後權重顯示，未將不完整資料包裝為精確日內報酬。</div>')
-    # +/- 貢獻：恢復原本首頁的兩張小卡片樣式。只替換資料內容，不改其他首頁區塊。
-    contribution_html = f'''<div class="portfolio-highlights contribution-old-cards" style="margin-top:12px">
-  <div class="portfolio-impact-card impact-positive">
-    <small>今天幫你撐住</small>
-    <b class="up contribution-stock" data-home-max-gain>{gain_html}</b>
-    <strong class="contribution-points up">+{biggest_gain_contribution:.2f} 個百分點</strong>
+    # +/- 貢獻：主卡 + 正負各 5 檔明細。只改這一區，其餘首頁維持原樣。
+    positive_rows_html = contribution_detail_rows(positive_entries, "up")
+    negative_rows_html = contribution_detail_rows(negative_entries, "down")
+    contribution_html = f'''<section class="daily-card contribution-card" aria-label="我的正負貢獻">
+  <div class="impact-leads">
+    <div data-home-impact-lead="positive">
+      {impact_lead_card(positive_lead, "幫你撐住組合", "impact-up")}
+    </div>
+    <div data-home-impact-lead="negative">
+      {impact_lead_card(negative_lead, "主要拖累組合", "impact-down")}
+    </div>
   </div>
-  <div class="portfolio-impact-card impact-negative">
-    <small>今天主要拖累</small>
-    <b class="down contribution-stock" data-home-max-loss>{loss_html}</b>
-    <strong class="contribution-points down">{biggest_loss_contribution:.2f} 個百分點</strong>
-  </div>
-</div>'''
+  <details class="impact-details" open>
+    <summary>查看正貢獻明細（{positive_count} 檔）</summary>
+    <div data-home-contribution-rows="positive">{positive_rows_html}</div>
+  </details>
+  <details class="impact-details" open>
+    <summary>查看負貢獻明細（{negative_count} 檔）</summary>
+    <div data-home-contribution-rows="negative">{negative_rows_html}</div>
+  </details>
+</section>'''
 
 
     if display_date != calendar_today and display_snapshot.get("source_date"):
@@ -25933,7 +25941,7 @@ def render_turning_observation_web_body(result, status_note=None):
 .daily-hero{{position:relative!important;min-height:430px!important;margin:0 -1px 0!important;padding:28px 19px 18px!important;border-radius:0 0 26px 26px!important;overflow:hidden!important;color:#fff!important;background:#102B45!important;box-shadow:0 12px 30px rgba(20,39,58,.20)!important}}
 .hero-101-photo{{position:absolute!important;right:0!important;bottom:0!important;width:62%!important;height:100%!important;object-fit:cover!important;object-position:58% center!important;display:block!important;z-index:1!important;opacity:1!important}}
 .daily-hero>.hero-101-photo{{z-index:1!important}}
-.daily-hero:before{{content:""!important;position:absolute!important;inset:0!important;z-index:0!important;pointer-events:none!important;background:linear-gradient(180deg,rgba(255,210,150,.03) 0%,rgba(8,23,39,.05) 42%,rgba(8,20,34,.58) 100%)!important}}
+.daily-hero:before{{content:""!important;position:absolute!important;inset:0!important;z-index:0!important;pointer-events:none!important;background:linear-gradient(90deg,rgba(7,25,43,.78) 0%,rgba(7,25,43,.48) 36%,rgba(7,25,43,.08) 68%,rgba(7,25,43,.02) 100%),linear-gradient(180deg,rgba(7,25,43,.02) 35%,rgba(7,25,43,.52) 100%)!important}}
 .daily-hero:after{{content:none!important}}
 .daily-hero>*{{position:relative!important;z-index:2!important}}
 .daily-hero h1{{font-size:31px!important;font-weight:800!important;letter-spacing:-.03em!important;text-shadow:0 2px 14px rgba(0,0,0,.30)!important}}
