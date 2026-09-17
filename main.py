@@ -24191,6 +24191,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     <div class="eyebrow">{hero_eyebrow}</div>
     <h1>今天你的投資發生了什麼？</h1>
     <p>市場、組合與排名，一眼掌握今天最重要的變化。</p>
+    <div class="taipei101-silhouette" aria-hidden="true"></div>
     <div class="market-strip">
       <span>大盤 <b data-home-market-pct>{market_text}</b><small class="market-freshness" data-home-market-freshness>{html.escape(market_status_text)}</small></span>
       <span>{portfolio_label} <b data-home-portfolio-pct>{portfolio_text}</b></span>
@@ -25926,6 +25927,9 @@ def render_turning_observation_web_body(result, status_note=None):
 .daily-hero>*{{position:relative!important;z-index:2!important}}
 .daily-hero h1{{font-size:31px!important;font-weight:800!important;letter-spacing:-.03em!important;text-shadow:0 2px 14px rgba(0,0,0,.30)!important}}
 .daily-hero>p{{font-size:14px!important;color:#F2F7FB!important;text-shadow:0 1px 8px rgba(0,0,0,.28)!important}}
+.taipei101-silhouette{{position:absolute!important;z-index:1!important;right:8%!important;bottom:0!important;width:112px!important;height:300px!important;background:repeating-linear-gradient(180deg,rgba(20,42,61,.98) 0 7px,rgba(36,62,82,.92) 7px 10px)!important;clip-path:polygon(42% 0,58% 0,58% 7%,64% 7%,64% 14%,61% 14%,66% 22%,61% 22%,65% 30%,59% 30%,63% 38%,57% 38%,61% 46%,55% 46%,59% 54%,53% 54%,57% 62%,51% 62%,51% 100%,25% 100%,25% 62%,19% 62%,23% 54%,17% 54%,21% 46%,15% 46%,19% 38%,13% 38%,17% 30%,11% 30%,15% 22%,10% 22%,14% 14%,8% 14%,8% 7%,42% 7%)!important;filter:drop-shadow(0 5px 10px rgba(0,0,0,.28))!important;opacity:.96!important}}
+.taipei101-silhouette:before{{content:""!important;position:absolute!important;left:47%!important;top:-32px!important;width:6px!important;height:38px!important;background:#DCE7EF!important;border-radius:3px!important;box-shadow:0 0 8px rgba(255,220,160,.75)!important}}
+.taipei101-silhouette:after{{content:"101"!important;position:absolute!important;left:50%!important;top:45%!important;transform:translate(-50%,-50%)!important;color:rgba(232,242,248,.88)!important;font-size:18px!important;font-weight:900!important;letter-spacing:-.08em!important;text-shadow:0 1px 4px rgba(0,0,0,.55)!important}}
 .market-strip>span{{background:rgba(255,255,255,.95)!important;border:1px solid rgba(255,255,255,.8)!important;box-shadow:0 6px 18px rgba(0,0,0,.14)!important}}
 .hero-summary-panel,.hero-quote-panel{{background:rgba(8,29,48,.56)!important;border-color:rgba(255,255,255,.22)!important;backdrop-filter:blur(9px)!important}}
 /* 不重複顯示另一套貢獻卡 */
@@ -25933,26 +25937,27 @@ def render_turning_observation_web_body(result, status_note=None):
 /* 我的投資 → 今天誰影響了你的組合 */
 .contribution-card{{margin:10px 0 12px!important;padding:15px!important;background:#fff!important;border:1px solid #E0E7EE!important;border-radius:14px!important;box-shadow:0 4px 16px rgba(23,52,79,.055)!important}}
 .contribution-card .daily-section-title{{margin-bottom:7px!important}}
+.contribution-card .daily-section-title h2{{font-size:21px!important}}
 .impact-sentence{{margin:0 0 12px!important;padding:10px 12px!important;border-radius:9px!important;background:#F7FAFD!important;color:#53687C!important;font-size:12px!important;line-height:1.55!important}}
-.impact-leads{{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important;margin-bottom:8px!important}}
-.impact-lead{{min-width:0!important;padding:15px 14px 14px!important;border-radius:14px!important;border:1px solid transparent!important}}
+.impact-leads{{display:grid!important;grid-template-columns:1fr 1fr!important;gap:12px!important;margin:2px 0 8px!important}}
+.impact-lead{{min-width:0!important;min-height:170px!important;padding:17px 16px 15px!important;border-radius:16px!important;border:1px solid transparent!important;display:flex!important;flex-direction:column!important;justify-content:flex-start!important}}
 .impact-lead.impact-up{{background:#FFF5F3!important;border-color:#F2D8D3!important}}
 .impact-lead.impact-down{{background:#F2FAF6!important;border-color:#D6E9DF!important}}
-.impact-lead small{{display:block!important;margin-bottom:5px!important;color:#718096!important;font-size:11px!important;font-weight:700!important}}
-.impact-lead h3{{margin:0 0 5px!important;font-size:22px!important;line-height:1.25!important;font-weight:800!important;color:#1A2D43!important;letter-spacing:-.02em!important}}
-.impact-lead p{{margin:0!important;color:#718096!important;font-size:11px!important;line-height:1.5!important}}
-.impact-lead>strong{{display:block!important;margin-top:15px!important;font-size:15px!important;line-height:1.3!important;font-weight:800!important}}
+.impact-lead small{{display:block!important;margin-bottom:7px!important;color:#718096!important;font-size:11px!important;line-height:1.3!important;font-weight:700!important}}
+.impact-lead h3{{margin:0 0 7px!important;font-size:24px!important;line-height:1.2!important;font-weight:800!important;color:#1A2D43!important;letter-spacing:-.03em!important}}
+.impact-lead p{{margin:0!important;color:#7B8793!important;font-size:11.5px!important;line-height:1.55!important}}
+.impact-lead>strong{{display:block!important;margin-top:auto!important;padding-top:17px!important;font-size:16px!important;line-height:1.35!important;font-weight:800!important}}
 .impact-up>strong{{color:#D74B43!important}}.impact-down>strong{{color:#159B68!important}}
 .impact-details{{margin:0!important;border-top:1px solid #E8EDF2!important}}
-.impact-details summary{{list-style:none!important;cursor:pointer!important;padding:13px 3px!important;color:#536B81!important;font-size:13px!important;font-weight:800!important}}
+.impact-details summary{{list-style:none!important;cursor:pointer!important;padding:14px 3px!important;color:#536B81!important;font-size:14px!important;font-weight:800!important}}
 .impact-details summary::-webkit-details-marker{{display:none!important}}
 .impact-details summary:before{{content:'⌄';display:inline-block;margin-right:6px;color:#7890A4;transform:translateY(-1px)}}
 .impact-details[open] summary:before{{content:'⌃'}}
-.impact-detail-row{{display:grid!important;grid-template-columns:28px minmax(0,1fr) auto!important;gap:9px!important;align-items:center!important;padding:12px 3px!important;border-top:1px solid #EDF1F4!important}}
+.impact-detail-row{{display:grid!important;grid-template-columns:30px minmax(0,1fr) auto!important;gap:10px!important;align-items:center!important;padding:13px 3px!important;border-top:1px solid #EDF1F4!important;min-height:68px!important}}
 .impact-rank{{width:26px!important;height:26px!important;display:flex!important;align-items:center!important;justify-content:center!important;border-radius:50%!important;background:#F5F6F8!important;color:#8291A0!important;font-size:11px!important;font-weight:700!important}}
-.impact-detail-name b{{display:block!important;color:#25384C!important;font-size:16px!important;line-height:1.25!important;font-weight:750!important}}
-.impact-detail-name small{{display:block!important;margin-top:3px!important;color:#8A98A7!important;font-size:10.5px!important;line-height:1.45!important}}
-.impact-detail-row>strong{{white-space:nowrap!important;font-size:13px!important;font-weight:800!important}}
+.impact-detail-name b{{display:block!important;color:#25384C!important;font-size:17px!important;line-height:1.25!important;font-weight:750!important}}
+.impact-detail-name small{{display:block!important;margin-top:4px!important;color:#8A98A7!important;font-size:11px!important;line-height:1.45!important}}
+.impact-detail-row>strong{{white-space:nowrap!important;font-size:14px!important;font-weight:800!important}}
 .impact-detail-row>strong.up{{color:#D74B43!important}}.impact-detail-row>strong.down{{color:#159B68!important}}
 .impact-realized{{display:block!important;margin-top:2px!important;font-size:10px!important}}
 .contribution-footnote{{margin-top:10px!important;padding:9px 3px 0!important;border-top:1px solid #EEF2F5!important;color:#8A98A7!important;font-size:9.5px!important;line-height:1.55!important}}
