@@ -6071,6 +6071,7 @@ BOT_TOP_N = 10           # 每個推薦日納入前 10 名
 BOT_HOLD_DAYS = 20       # D 方案最大持有天數
 BOT_MAX_WEIGHT = 0.20    # 單一股票持倉權重上限 20%
 BOT_SCORE_DROP_POINTS = 15.0  # 自持有後最高分回落 15 分視為大幅下降（實驗門檻）
+BOT_STOP_LOSS_PCT = -20.0  # D 方案：單筆自買進價跌幅達 -20% 即停損
 BOT_INITIAL_CAPITAL = 1_000_000.0  # 虛擬帳戶固定初始資產；不途中補資金
 BOT_MODES = (("blackhorse", "黑馬機器人"), ("radar", "雷達機器人"))
 
@@ -6081,7 +6082,8 @@ def simulate_bot_portfolio(mode, days=365):
       1) 每個推薦日取前 BOT_TOP_N 名；基準配置為等權，且單一股票權重上限 BOT_MAX_WEIGHT；
       2) 訊號消失（下一個有推薦紀錄的交易日不再位於前 N 名） -> 賣出；
       3) 分數自持有後最高分回落至少 BOT_SCORE_DROP_POINTS 分 -> 賣出；
-      4) 最多持有 BOT_HOLD_DAYS 個交易日 -> 到期賣出。
+      4) 單筆自買進價跌幅達 BOT_STOP_LOSS_PCT -> 停損賣出；
+      5) 最多持有 BOT_HOLD_DAYS 個交易日 -> 到期賣出。
 
     這是「實驗規則」，不是宣告它一定比固定 20 日更好。排行榜目前以此
     作為 D 方案觀察線；成效資料累積後再比較 A/B/C/D。
@@ -6181,7 +6183,20 @@ def simulate_bot_portfolio(mode, days=365):
                 continue
 
             code = lot["code"]
-            # 在「推薦日序列」中找這筆買進後第一個有保存的推薦日。
+            m = series.get(code) or {}
+            buy_price = m.get(trading_days[lot["buy_i"]])
+            today_price = m.get(today)
+            # D10 停損：以這一筆 lot 的實際買進價為基準，跌幅達 -20% 當日收盤退出。
+            if (lot.get("sell_i") is None and buy_price and today_price):
+                try:
+                    stop_ret = (float(today_price) / float(buy_price) - 1.0) * 100.0
+                    if stop_ret <= BOT_STOP_LOSS_PCT:
+                        lot["sell_i"] = i
+                        lot["exit_reason"] = f"停損：自買進價 {stop_ret:.1f}%（門檻 {BOT_STOP_LOSS_PCT:.0f}%）"
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+
+            # 尚未因停損退出的 lot 才繼續檢查後續訊號與分數。
             signal_state = None
             for d in pick_days_sorted:
                 j = idx[d]
@@ -6212,7 +6227,6 @@ def simulate_bot_portfolio(mode, days=365):
                 lot["sell_i"] = i
                 lot["exit_reason"] = f"持有 {BOT_HOLD_DAYS} 個交易日到期"
 
-            m = series.get(code) or {}
             a, b = m.get(prev), m.get(today)
             if not a or not b:
                 # 行情缺口不拿不存在的價格推估；若今天是退出日，仍保留到下一次可驗證日。
@@ -6311,7 +6325,7 @@ def simulate_bot_portfolio(mode, days=365):
         "curve": curve, "virtual_curve": virtual_curve,
         "initial_capital": BOT_INITIAL_CAPITAL, "virtual_asset": virtual_asset,
         "holdings": holdings, "history": history, "picks_days": len(by_date),
-        "strategy_code": "D10", "strategy_label": "前10名／單股上限20%／訊號消失或分數下降15分／20日到期，先到先賣",
+        "strategy_code": "D10", "strategy_label": "前10名／單股上限20%／-20%停損／訊號消失或分數下降15分／20日到期，先到先賣",
     }
 
 
@@ -16282,7 +16296,7 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
    先前是把每一檔塞成一長串 span，31 檔就擠成一團看不出斷點。 */
 .bot-rule{margin-bottom:10px;padding:9px 11px;background:#EEF2F6;border-radius:7px;
   color:#4A5C70;font-size:11px;line-height:1.7}
-.bot-hold-list{display:block}
+.bot-hold-list{display:block;margin-top:10px}.bot-hold-list>summary,.bot-history-list>summary{cursor:pointer;list-style:none;color:#2776b8;font-weight:800;padding:9px 0}.bot-hold-list>summary::-webkit-details-marker,.bot-history-list>summary::-webkit-details-marker{display:none}.bot-hold-list>summary:after,.bot-history-list>summary:after{content:"⌄";float:right}.bot-hold-list[open]>summary:after,.bot-history-list[open]>summary:after{content:"⌃"}
 .bot-hold{display:grid;grid-template-columns:1fr 52px 62px;gap:3px 8px;
   align-items:baseline;padding:7px 0;border-top:1px solid #EDF0F4}
 .bot-hold-head{border-top:0;padding-bottom:3px;color:#8E959D;font-size:10px}
@@ -21696,7 +21710,7 @@ def web_leaderboard(uid):
                     f'{html.escape(str(r.get("bot_rule") or ""))}<br>'
                     f'虛擬帳戶只用來把同一套報酬率換算成資產金額，不途中補資金；'
                     f'不改變原本排行榜的報酬率口徑。<br>'
-                    f'同一檔連續上榜時，基準新倉位仍以每檔 10% 計，單一股票顯示權重最多 20%；剩餘資金保留為現金。<br>'
+                    f'跌幅達 {BOT_STOP_LOSS_PCT:.0f}% 即停損；同一檔連續上榜時，基準新倉位仍以每檔 10% 計，單一股票顯示權重最多 20%；剩餘資金保留為現金。<br>'
                     f'這是機械化模擬，沒有滑價與零股限制，跟真人並列僅供對照。</div>']
                 for x in bh:
                     pct = x.get("pct")
@@ -21730,9 +21744,9 @@ def web_leaderboard(uid):
                                    '<span>報酬</span><span></span></div>')
                 else:
                     bits.append('<div class="sub">目前沒有持倉（全部已到期賣出）。</div>')
-                current_holdings_html = (f'<div class="rank-detail rank-detail-open bot-hold-list">'
-                              f'<div class="rank-detail-title">目前持股（{len(bh)} 檔）</div>'
-                              f'<div class="rank-detail-body">{"".join(bits)}</div></div>')
+                current_holdings_html = (f'<details class="rank-detail bot-hold-list" data-default-collapsed="1">'
+                              f'<summary>查看機器人目前持股（{len(bh)} 檔）</summary>'
+                              f'<div class="rank-detail-body"><div class="rank-detail-title">目前持股（{len(bh)} 檔）</div>{"".join(bits)}</div></details>')
 
                 hist = sim_history = r.get("bot_history") or []
                 hist_rows = []
@@ -21754,13 +21768,13 @@ def web_leaderboard(uid):
                         f'<div class="bot-history-reason">{html.escape(str(tx.get("exit_reason") or "—"))}</div>'
                         f'</div>')
                 if hist_rows:
-                    history_html = (f'<div class="rank-detail rank-detail-open bot-history-list">'
-                                    f'<div class="rank-detail-title">歷史操作（{len(hist_rows)} 筆）</div>'
-                                    f'<div class="rank-detail-body">{"".join(hist_rows)}</div></div>')
+                    history_html = (f'<details class="rank-detail bot-history-list" data-default-collapsed="1">'
+                                    f'<summary>查看歷史操作（{len(hist_rows)} 筆）</summary>'
+                                    f'<div class="rank-detail-body"><div class="rank-detail-title">歷史操作（{len(hist_rows)} 筆）</div>{"".join(hist_rows)}</div></details>')
                 else:
-                    history_html = (f'<div class="rank-detail rank-detail-open bot-history-list">'
-                                    f'<div class="rank-detail-title">歷史操作（0 筆）</div>'
-                                    f'<div class="rank-detail-body"><div class="sub">目前尚無已完成賣出交易；新的 D10 交易完成後會直接列在這裡。</div></div></div>')
+                    history_html = (f'<details class="rank-detail bot-history-list" data-default-collapsed="1">'
+                                    f'<summary>查看歷史操作（0 筆）</summary>'
+                                    f'<div class="rank-detail-body"><div class="rank-detail-title">歷史操作（0 筆）</div><div class="sub">目前尚無已完成賣出交易；新的 D10 交易完成後會直接列在這裡。</div></div></details>')
                 bot_detail = current_holdings_html + history_html
 
             d = r.get("detail")
@@ -26443,7 +26457,7 @@ def render_workbench_body(initial_tab=""):
   <div class="wb-filter-panel" id="wb-filter-panel" hidden><div><b>當日漲跌</b><button type="button" data-dir="all" class="on">不限</button><button type="button" data-dir="up">上漲</button><button type="button" data-dir="down">下跌</button></div></div><div class="wb-mobile-sort" id="wb-mobile-sort" aria-label="排序方式"><span>排序</span><button type="button" data-sort="score" class="on">分數</button><button type="button" data-sort="change_pct">漲跌</button><button type="button" data-sort="institutional_lots">法人</button></div>
   <div class="wb-meta"><span id="wb-count">正在讀取…</span><span id="wb-note"></span></div>
   <div class="wb-table" id="wb-table" aria-live="polite"><div class="wb-head"><span>標的</span><button type="button" data-sort="score">綜合分數</button><button type="button" data-sort="change_pct">報酬／漲跌</button><button type="button" data-sort="institutional_lots">法人方向</button><span>訊號</span><span></span></div><div id="wb-rows"><div class="wb-skeleton"></div><div class="wb-skeleton"></div><div class="wb-skeleton"></div></div></div>
-  <p class="wb-disclaimer">資料來源僅限已保存的黑馬、雷達、轉折、ETF 與籌碼快照；成效只在開啟分頁時讀取既有推薦紀錄。資料缺漏維持待確認，不以推測數字補足。</p>
+  <p class="wb-disclaimer">進入選股台後會並行預載黑馬、雷達、持股、轉折、籌碼、ETF 與成效資料；全部只讀已保存快照／推薦紀錄，不因切換分頁重新掃描市場。資料缺漏維持待確認，不以推測數字補足。</p>
 </section>
 <aside class="wb-drawer" id="wb-drawer" aria-hidden="true"><div class="wb-drawer-actions"><button type="button" id="wb-back">‹ 回到選股清單</button><button type="button" id="wb-close" aria-label="關閉">×</button></div><div id="wb-detail"></div></aside><div class="wb-mask" id="wb-mask" hidden></div>
 
@@ -26882,43 +26896,76 @@ function bindFactors(){
         state.loadedSources[source]=true;state.loadingSource='';status.textContent='已載入 '+source;render();
       }).catch(function(e){state.loadingSource='';status.textContent=source+' 暫時無法載入';rowsEl.innerHTML='<div class="wb-empty" style="color:#8b4034">'+esc(source)+' 暫時無法載入。請稍後再試；其他分頁不受影響。</div>';});
   }
-  function load(){
-    status.textContent='正在讀取黑馬快照…';
-    var endpoints=['黑馬','雷達'],done=0;
-    function one(source){
-      status.textContent='正在讀取'+source+'快照…';
-      var controller=(window.AbortController?new AbortController():null);
-      var timer=controller?setTimeout(function(){try{controller.abort();}catch(_){ }},12000):null;
-      var opts={credentials:'same-origin'}; if(controller)opts.signal=controller.signal;
-      fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),opts)
+  // 進入選股台後一次並行預載所有分頁；使用者不需要逐一點擊。
+  function preloadSource(source){
+    if(!source||source==='黑馬'||source==='雷達'||source==='成效'||source==='我的排行'||state.loadedSources[source])return;
+    fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),{credentials:'same-origin'})
       .then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
       .then(function(data){
         if(!data.ok)throw new Error(data.error||'載入失敗');
         state.rows=state.rows.filter(function(x){return x.source!==source;}).concat(Array.isArray(data.rows)?data.rows:[]);
         state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{available:true});
         state.loadedSources[source]=true;
-        done++;
-        status.textContent=done===2?'黑馬／雷達快照已載入':'已載入 '+source+'，繼續讀取另一份快照…';
-        render();
-        if(done<2){one(endpoints[done]);return;}
-        state.marketOpen=!!(state.sources['雷達']&&state.sources['雷達'].intraday);
-        requestReview();
-        if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}
-        else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}
-        render();
-        if(state.timer)clearInterval(state.timer);
-        if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}
+        renderTabs();
+        if(state.source===source)render();
       })
       .catch(function(e){
-        state.loadedSources[source]=false;
-        if(e.message==='AUTH'){location.reload();return;}
-        status.textContent=source+'快照暫時無法載入（12 秒逾時或伺服器錯誤）';
-        render();
-        if(done<2){one(endpoints[done]);return;}
-      })
-      .finally(function(){if(timer)clearTimeout(timer);});
+        console.warn('工作台預載 '+source+' 失敗',e);
+        if(e&&e.message==='AUTH')location.reload();
+      });
+  }
+  function preloadAllWorkbench(){
+    ['持股','轉折','籌碼','ETF'].forEach(preloadSource);
+    requestReview();
+  }
+
+  function load(){
+    // 進入選股台時，所有資料源一次並行讀取；不再要求使用者逐一點分頁才載入。
+    var allSources=['黑馬','雷達','持股','轉折','籌碼','ETF'];
+    var total=allSources.length, done=0, failed=0, finished=false;
+    status.textContent='正在一次載入選股台全部快照…';
+    rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
+
+    function one(source){
+      var controller=(window.AbortController?new AbortController():null);
+      var timer=controller?setTimeout(function(){try{controller.abort();}catch(_){ }},12000):null;
+      var opts={credentials:'same-origin'}; if(controller)opts.signal=controller.signal;
+      return fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),opts)
+        .then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+        .then(function(data){
+          if(!data.ok)throw new Error(data.error||'載入失敗');
+          state.rows=state.rows.filter(function(x){return x.source!==source;}).concat(Array.isArray(data.rows)?data.rows:[]);
+          state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{available:true});
+          state.loadedSources[source]=true;
+          done++;
+          status.textContent='選股台資料載入中… '+done+'/'+total;
+          renderTabs();
+          if(state.source===source)render();
+          return true;
+        })
+        .catch(function(e){
+          state.loadedSources[source]=false;
+          failed++;
+          if(e&&e.message==='AUTH'){location.reload();return false;}
+          console.warn('工作台載入 '+source+' 失敗',e);
+          return false;
+        })
+        .finally(function(){if(timer)clearTimeout(timer);});
     }
-    one(endpoints[0]);
+
+    // 成效統計同時啟動；它不再阻塞六個快照。
+    requestReview();
+    Promise.all(allSources.map(one)).then(function(){
+      if(finished)return;
+      finished=true;
+      state.marketOpen=!!(state.sources['雷達']&&state.sources['雷達'].intraday);
+      if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}
+      else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}
+      status.textContent=failed?'選股台已載入（'+failed+' 個資料源暫時失敗）':'選股台全部資料已載入';
+      render();
+      if(state.timer)clearInterval(state.timer);
+      if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}
+    });
   }
   document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':'黑馬';state.query='';render();loadSource(state.source);};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){load();};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();loadSource(state.source);}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
   // 點擊保險：即使 rowsEl 被其他重新渲染／事件處理影響，仍由捕獲階段直接開啟詳情。
