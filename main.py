@@ -23800,14 +23800,12 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 
     gain_html = (
         f"{html.escape(str(biggest_gain['name']))} {fmt_pct(biggest_gain_pct)}"
-        f"<small class=\"contribution-note\">組合 +{biggest_gain_contribution:.2f} 個百分點・"
-        f"{html.escape(contribution_basis_text(biggest_gain, compact=True))}</small>"
+        f"<small class=\"contribution-note\">{html.escape(contribution_basis_text(biggest_gain, compact=True))}</small>"
         if biggest_gain and biggest_gain_pct is not None and biggest_gain_contribution is not None
         else "—")
     loss_html = (
         f"{html.escape(str(biggest_loss['name']))} {fmt_pct(biggest_loss_pct)}"
-        f"<small class=\"contribution-note\">組合 {biggest_loss_contribution:.2f} 個百分點・"
-        f"{html.escape(contribution_basis_text(biggest_loss, compact=True))}</small>"
+        f"<small class=\"contribution-note\">{html.escape(contribution_basis_text(biggest_loss, compact=True))}</small>"
         if biggest_loss and biggest_loss_pct is not None and biggest_loss_contribution is not None
         else "—")
 
@@ -23982,11 +23980,13 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     contribution_html = f'''<div class="portfolio-highlights contribution-old-cards" style="margin-top:12px">
   <div class="portfolio-impact-card impact-positive">
     <small>今天幫你撐住</small>
-    <b class="up" data-home-max-gain>{gain_html}</b>
+    <b class="up contribution-stock" data-home-max-gain>{gain_html}</b>
+    <strong class="contribution-points up">+{biggest_gain_contribution:.2f} 個百分點</strong>
   </div>
   <div class="portfolio-impact-card impact-negative">
     <small>今天主要拖累</small>
-    <b class="down" data-home-max-loss>{loss_html}</b>
+    <b class="down contribution-stock" data-home-max-loss>{loss_html}</b>
+    <strong class="contribution-points down">{biggest_loss_contribution:.2f} 個百分點</strong>
   </div>
 </div>'''
 
@@ -24192,12 +24192,14 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .portfolio-highlights.contribution-old-cards small{{display:block!important;margin-bottom:5px!important;color:#7B8998!important;font-size:10px!important;line-height:1.3!important;font-weight:600!important}}
 .portfolio-highlights.contribution-old-cards>b{{display:block!important;margin:0!important;font-size:15px!important;line-height:1.45!important;font-weight:750!important;word-break:break-word!important}}
 .portfolio-highlights.contribution-old-cards .contribution-note{{display:block!important;margin-top:3px!important;font-size:9.5px!important;line-height:1.4!important;color:#8B99A8!important;font-weight:400!important}}
+.portfolio-highlights.contribution-old-cards .contribution-points{{display:block!important;margin-top:7px!important;font-size:18px!important;line-height:1.1!important;font-weight:800!important;letter-spacing:-.02em!important}}
 .portfolio-highlights.contribution-old-cards .up{{color:#E53935!important}}
 .portfolio-highlights.contribution-old-cards .down{{color:#0A9B63!important}}
-@media(max-width:640px){{.portfolio-highlights.contribution-old-cards{{grid-template-columns:1fr 1fr!important;gap:7px!important}}.portfolio-highlights.contribution-old-cards>div{{padding:11px 10px!important}}.portfolio-highlights.contribution-old-cards>b{{font-size:14px!important}}}}
+@media(max-width:640px){{.portfolio-highlights.contribution-old-cards{{grid-template-columns:1fr 1fr!important;gap:7px!important}}.portfolio-highlights.contribution-old-cards>div{{padding:11px 10px!important}}.portfolio-highlights.contribution-old-cards>b{{font-size:14px!important}}.portfolio-highlights.contribution-old-cards .contribution-points{{font-size:17px!important}}}}
 </style>
 <div class="daily-home">
   <section class="daily-hero" aria-label="台北 101 城市主視覺">
+    <img class="hero-101-photo" src="{hero_101_data_uri}" alt="台北 101">
     <div class="eyebrow">{hero_eyebrow}</div>
     <h1>今天你的投資發生了什麼？</h1>
     <p>市場、組合與排名，一眼掌握今天最重要的變化。</p>
@@ -25928,7 +25930,9 @@ def render_turning_observation_web_body(result, status_note=None):
 
 /* V35 FINAL: Hero uses an embedded real Taipei 101 photo; +/- contribution follows the reference card/table layout. */
 .daily-home{{max-width:760px!important;margin:0 auto!important;padding:0 0 96px!important;background:#F4F7FA!important;color:#172B43!important}}
-.daily-hero{{position:relative!important;min-height:430px!important;margin:0 -1px 0!important;padding:28px 19px 18px!important;border-radius:0 0 26px 26px!important;overflow:hidden!important;color:#fff!important;background-image:linear-gradient(90deg,rgba(8,25,43,.72) 0%,rgba(8,25,43,.36) 46%,rgba(8,25,43,.08) 100%),url("{hero_101_data_uri}")!important;background-size:cover!important;background-position:67% center!important;box-shadow:0 12px 30px rgba(20,39,58,.20)!important}}
+.daily-hero{{position:relative!important;min-height:430px!important;margin:0 -1px 0!important;padding:28px 19px 18px!important;border-radius:0 0 26px 26px!important;overflow:hidden!important;color:#fff!important;background:#102B45!important;box-shadow:0 12px 30px rgba(20,39,58,.20)!important}}
+.hero-101-photo{{position:absolute!important;right:0!important;bottom:0!important;width:62%!important;height:100%!important;object-fit:cover!important;object-position:58% center!important;display:block!important;z-index:1!important;opacity:1!important}}
+.daily-hero>.hero-101-photo{{z-index:1!important}}
 .daily-hero:before{{content:""!important;position:absolute!important;inset:0!important;z-index:0!important;pointer-events:none!important;background:linear-gradient(180deg,rgba(255,210,150,.03) 0%,rgba(8,23,39,.05) 42%,rgba(8,20,34,.58) 100%)!important}}
 .daily-hero:after{{content:none!important}}
 .daily-hero>*{{position:relative!important;z-index:2!important}}
