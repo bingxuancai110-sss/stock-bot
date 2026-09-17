@@ -5983,7 +5983,7 @@ def _load_persisted_leaderboard_page(allow_stale=False):
     # 不應因為 schema 版本變更就把既有快照判成「不存在」，否則新 worker
     # 會立刻進入重型一年行情＋機器人模擬，使用者反而卡在「建立最新快照」。
     schema_version = source_meta.get("schema_version")
-    if schema_version not in (3, "3"):
+    if schema_version not in (4, "4"):
         return None
     payload = shared.get("payload") or {}
     boards = payload.get("boards") if isinstance(payload, dict) else None
@@ -6052,7 +6052,7 @@ def _save_persisted_leaderboard_page(value, data_date=None):
         {"boards": boards,
          "graph": {"series_map": series_map, "market": market}},
         data_date=data_date,
-        source_meta={"source": "leaderboard_build", "schema_version": 3,
+        source_meta={"source": "leaderboard_build", "schema_version": 4,
                      "top_n": 100, "days": 365, "member_count": len(boards.get("waiting", [])) +
                      len(boards.get("long", []))},
     )
@@ -26854,7 +26854,39 @@ function bindFactors(){
         state.loadedSources[source]=true;state.loadingSource='';status.textContent='已載入 '+source;render();
       }).catch(function(e){state.loadingSource='';status.textContent=source+' 暫時無法載入';rowsEl.innerHTML='<div class="wb-empty" style="color:#8b4034">'+esc(source)+' 暫時無法載入。請稍後再試；其他分頁不受影響。</div>';});
   }
-  function load(){status.textContent='讀取最近有效快照…';var controller=window.AbortController?new AbortController():null;var timer=controller?setTimeout(function(){controller.abort();},12000):null;var fetchOpt={credentials:'same-origin'};if(controller)fetchOpt.signal=controller.signal;fetch(api('/web/api/workbench/snapshot'),fetchOpt).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){if(timer)clearTimeout(timer);state.rows=Array.isArray(data.rows)?data.rows:[];state.sources=data.sources||{};state.personal=data.personal||{positions:[],rank_summary:{}};state.scoreChanges=Array.isArray(data.score_changes)?data.score_changes:[];state.marketOpen=!!data.market_open;requestReview();if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}status.textContent=state.marketOpen?'盤中行情局部更新中':'最近有效快照已載入';note.textContent=data.note||'';pulse.innerHTML='<span>資料狀態</span><b>'+esc(state.marketOpen?'盤中局部更新':'收盤正式快照')+'</b><i></i><i></i><em>'+esc(workbenchStatusText(data,state.marketOpen))+'</em>';render();if(state.timer)clearInterval(state.timer);if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}}).catch(function(e){if(timer)clearTimeout(timer);status.textContent='快照暫時無法載入';rowsEl.innerHTML='<div class="wb-skeleton" style="animation:none;background:#fff;color:#8b4034;padding:18px">選股快照載入逾時或暫時失敗。請按「重新整理」；其他頁面不受影響。沒有顯示推測標的。</div>';if(e.message==='AUTH')location.reload();});}
+  function load(){
+    status.textContent='正在讀取黑馬／雷達快照…';
+    var endpoints=['黑馬','雷達'],done=0;
+    function one(source){
+      fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),{credentials:'same-origin'})
+      .then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        if(!data.ok)throw new Error(data.error||'載入失敗');
+        state.rows=state.rows.filter(function(x){return x.source!==source;}).concat(Array.isArray(data.rows)?data.rows:[]);
+        state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{available:true});
+        state.loadedSources[source]=true;
+        done++;
+        status.textContent=done===2?'黑馬／雷達快照已載入':'已載入 '+source+'，等待另一份快照…';
+        render();
+        if(done===2){
+          state.marketOpen=!!(state.sources['雷達']&&state.sources['雷達'].intraday);
+          requestReview();
+          if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}
+          else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}
+          render();
+          if(state.timer)clearInterval(state.timer);
+          if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}
+        }
+      })
+      .catch(function(e){
+        if(e.message==='AUTH'){location.reload();return;}
+        state.loadedSources[source]=false;
+        status.textContent=source+'快照暫時無法載入';
+        render();
+      });
+    }
+    endpoints.forEach(one);
+  }
   document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':'黑馬';state.query='';render();loadSource(state.source);};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){load();};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();loadSource(state.source);}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
   // 點擊保險：即使 rowsEl 被其他重新渲染／事件處理影響，仍由捕獲階段直接開啟詳情。
   document.addEventListener('click',function(e){
@@ -26868,7 +26900,7 @@ function bindFactors(){
   },true);function closeDrawer(){var y=Number(document.body.dataset.wbScroll||state.returnScroll||0);drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;document.body.style.position='';document.body.style.top='';document.body.style.left='';document.body.style.right='';document.body.style.width='';delete document.body.dataset.wbScroll;window.scrollTo(0,y);}document.getElementById('wb-close').onclick=closeDrawer;document.getElementById('wb-back').onclick=closeDrawer;mask.onclick=closeDrawer;document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
 })();
 </script>'''
-    body += '''
+    body += '''<style>
 /* V15：選股工作台視覺升級——保留原本結構，只提高金融資訊層級與可讀性 */
 .wb-shell{--wb-navy:#183b5c;--wb-blue:#3e78a6;--wb-line:#d9e4ee;--wb-bg:#f3f7fb;}
 .wb-intro{padding:8px 0 18px;border-bottom:0;position:relative}.wb-intro:after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:linear-gradient(90deg,#294f70,#78a9cb,transparent);border-radius:3px}
@@ -26881,7 +26913,7 @@ function bindFactors(){
 .wb-score-change-panel{box-shadow:0 7px 22px rgba(35,73,103,.08)!important}.wb-score-change-head{background:linear-gradient(135deg,#edf5fb,#f8fbfe)!important}
 .wb-drawer{padding:20px 20px 30px}.wb-drawer.open{box-shadow:-18px 0 40px rgba(22,52,77,.18)}
 @media(max-width:620px){.wb-shell{margin-top:10px}.wb-intro h2{font-size:26px}.wb-tabs{gap:5px}.wb-tabs button{padding:8px 10px 10px;font-size:12px}.wb-row{border-radius:0}.wb-table{border-radius:13px}.wb-rich-row{min-height:150px}}
-'''
+</style>'''
 
     # ETF 原始資料仍依短期／長期及四類分組；只在結果渲染完成後加入橫向類別選擇器。
     # 這樣不會改變既有分組、排名、前三檔與其餘收合的資料邏輯。
