@@ -1211,7 +1211,11 @@ def home():
 
 # --- Supabase 連線池（程式啟動時建立一次，取代每次呼叫都開新連線） ---
 _db_url = os.environ.get("DATABASE_URL")
+if not _db_url:
+    raise RuntimeError("DATABASE_URL 未設定，無法啟動 Stock Bot。")
 _url = urlparse(_db_url)
+if not _url.hostname:
+    raise RuntimeError("DATABASE_URL 格式錯誤：缺少 hostname。")
 _ipv4_addr = socket.gethostbyname(_url.hostname)
 
 # 一定要用 ThreadedConnectionPool 而不是 SimpleConnectionPool。
@@ -1220,8 +1224,13 @@ _ipv4_addr = socket.gethostbyname(_url.hostname)
 # 「SSL error: decryption failed or bad record mac」——
 # 錯誤訊息看起來像憑證問題，實際上是併發問題，很容易查錯方向。
 # 單執行緒時永遠不會發生，所以加上 --threads 之前都相安無事。
+DB_POOL_MIN = int(os.environ.get("DB_POOL_MIN", "1"))
+DB_POOL_MAX = int(os.environ.get("DB_POOL_MAX", "10"))
+if DB_POOL_MAX < DB_POOL_MIN:
+    raise RuntimeError("DB_POOL_MAX 不可小於 DB_POOL_MIN。")
+
 connection_pool = psycopg2.pool.ThreadedConnectionPool(
-    1, 20,          # 上限要 ≥ gunicorn 的 threads 數，否則執行緒會卡在等連線
+    DB_POOL_MIN, DB_POOL_MAX,
     database=_url.path[1:],
     user=_url.username,
     password=_url.password,
@@ -1245,7 +1254,14 @@ def get_db_connection():
     直接丟棄再借一條——把壞連線放回池子只會讓下一個人也踩到。
     """
     for _attempt in range(3):
-        conn = connection_pool.getconn()
+        try:
+            conn = connection_pool.getconn()
+        except pool.PoolError as e:
+            print(f"⚠️ DB 連線池暫滿（第 {_attempt + 1}/3 次）：{e}")
+            if _attempt < 2:
+                time.sleep(0.1 * (_attempt + 1))
+                continue
+            raise
         try:
             if conn.closed:
                 connection_pool.putconn(conn, close=True)
@@ -1257,7 +1273,9 @@ def get_db_connection():
                 connection_pool.putconn(conn, close=True)
             except Exception:
                 pass
-    return connection_pool.getconn()
+            if _attempt < 2:
+                time.sleep(0.1 * (_attempt + 1))
+    raise RuntimeError("無法取得資料庫連線")
 
 
 def release_db_connection(conn):
@@ -6743,13 +6761,20 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False):
     today = taiwan_today().isoformat()
     now = time.time()
     with _realtime_cache_lock:
-        if (not force_refresh and _TWSE_MIS_CACHE.get("day") == today and
+        # 跨交易日絕對不能沿用昨天的代號資料；day 只是快取版本，
+        # data 必須同步清空，否則昨天有、今天沒回傳的股票會被誤當成今日行情。
+        if _TWSE_MIS_CACHE.get("day") != today:
+            _TWSE_MIS_CACHE.update({"day": today, "at": 0, "data": {}})
+        if (not force_refresh and
                 now - _TWSE_MIS_CACHE.get("at", 0) < _TWSE_MIS_CACHE_SECONDS):
             cached = _TWSE_MIS_CACHE.get("data") or {}
-            if all(code in cached for code in codes):
-                return {code: cached[code] for code in codes}
-            # 只要有任一代號尚未進入快取，就重新查詢這一批，
-            # 不讓缺少的代號回退到 Yahoo 可能停在 13:30 前的舊價。
+            valid_cached = {
+                code: item for code, item in cached.items()
+                if isinstance(item, dict) and str(item.get("close_date") or "") == today.replace("-", "")
+            }
+            if all(code in valid_cached for code in codes):
+                return {code: valid_cached[code] for code in codes}
+            # 只要有任一代號尚未進入當日快取，就重新查詢這一批。
 
     symbols = _twse_mis_quote_symbols(codes, market_suffix)
     parsed = {}
@@ -7318,6 +7343,7 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
 # 快取用「今天日期」當 key，但實際資料可能是往前找到的最近一個交易日
 _t86_cache = {"cache_date": None, "data_date": None, "data": {},
               "last_attempt": 0}
+_T86_REFRESH_LOCK = threading.Lock()
 
 def shares_to_lots(shares):
     """
@@ -8224,6 +8250,7 @@ _valuation_cache = {"date": None, "data": {},
 _VALUATION_FILE_CACHE = "/tmp/stock_bot_valuation_cache.json"
 _VALUATION_FILE_CACHE_TTL = 86400
 _valuation_file_lock = threading.Lock()
+_VALUATION_REFRESH_LOCK = threading.Lock()
 
 
 def _load_valuation_file_cache(today):
@@ -11337,6 +11364,7 @@ def generate_morning_brief():
 # --- 月營收（TWSE OpenAPI t187ap05_L，全上市公司；TPEx 補上櫃／興櫃） ---
 _revenue_cache = {"period": None, "data": {}, "checked_at": 0,
                   "source": "none", "source_date": None}
+_REVENUE_REFRESH_LOCK = threading.Lock()
 REVENUE_CACHE_CHECK_SECONDS = 600
 
 
@@ -15906,10 +15934,11 @@ BASE_CSS = """
      卡片浮不出來，所以底色壓深、卡片維持純白。
      漲跌色沿用既有的紅綠——那兩個顏色代表的是意義，
      換掉會讓看慣的人一時反應不過來，不屬於「換風格」的範圍。 */
-  --paper:#F3F6FA; --paper-2:#E9EFF5; --card:#FFFFFF;
-  --ink:#14263D; --ink-soft:#4B6078; --ink-faint:#7D8EA3;
-  --rule:#D7E1EB; --sep:#E2E9F0;
-  --up:#C4473F; --down:#187653; --brass:#1769B0; --brass-2:#4D97D1;
+  --paper:#F5F7FA; --paper-2:#E9EEF4; --card:#FFFFFF;
+  --ink:#10243E; --ink-soft:#52657A; --ink-faint:#8997A8;
+  --rule:#D9E1EA; --sep:#E7ECF1;
+  --up:#D64A3A; --down:#16815D; --brass:#1769B0; --brass-2:#5A9BD0;
+  --hero:#10243E; --hero-soft:#183A5D; --gold:#C79A45;
   --radius:12px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -16024,7 +16053,21 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
     .position-journal-note,.position-journal-day,.position-journal-foot{padding-left:8px;padding-right:8px}
   }
 
-.num{font-variant-numeric:tabular-nums;
+/* v14 Premium investment workbench: unified visual system */
+:root{--shadow-soft:0 8px 24px rgba(16,36,62,.055);--shadow-card:0 2px 10px rgba(16,36,62,.045)}
+.card{box-shadow:var(--shadow-card);border-color:#E1E7EE}
+.wrap{padding-bottom:88px}
+header{padding:26px 0 16px}
+header h1{font-weight:760;letter-spacing:-.02em}
+nav{border-color:#DCE4EC;gap:6px;padding:8px 0;margin-bottom:14px}
+nav a{padding:8px 10px;border-radius:8px;transition:background .16s ease,color .16s ease}
+nav a.on{background:#E8F0F8;color:#145B91;border-bottom:0;padding-bottom:8px}
+.tabs{gap:7px!important}
+.tabs a{box-shadow:none!important}
+button{font-weight:700}
+section,.daily-card,.contribution-card,.portfolio-chart-card{scroll-margin-top:12px}
+.num{letter-spacing:-.02em}
+
   font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
 .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--ink-faint)}
 header{padding:30px 0 20px}
@@ -23376,6 +23419,29 @@ def render_portfolio_fast_summary(uid):
     return f'''<style>
 .daily-fast-sync{{display:flex;gap:11px;align-items:flex-start;background:#F2F2F7;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:14px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-fast-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 4px rgba(139,105,52,.12);flex:none}}.daily-fast-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-fast-sync-copy span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.65}}.daily-fast-hero{{background:linear-gradient(135deg,#F9F9FB,#e7ece8);padding:22px 18px 18px;margin:-8px -2px 14px;border-bottom:1px solid #d7d4ca}}.daily-fast-hero .eyebrow{{letter-spacing:.14em;color:var(--brass);font-size:11px}}.daily-fast-hero h1{{font-size:26px;line-height:1.25;margin:8px 0 14px}}.daily-fast-market{{display:flex;gap:8px;flex-wrap:wrap}}.daily-fast-market span{{background:rgba(255,255,255,.72);padding:8px 10px;border-radius:8px;font-size:12px}}.daily-fast-market b{{display:block;font-size:16px;margin-top:3px}}.daily-fast-market small{{display:block;margin-top:3px;color:var(--ink-soft);font-size:9px;line-height:1.35}}.daily-fast-card{{background:#fff;border:1px solid #E5E5EA;border-radius:12px;padding:15px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.daily-fast-title{{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}}.daily-fast-title h2{{margin:0;font-size:19px}}.daily-fast-event{{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}}.daily-fast-number{{background:var(--brass);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;flex:none;font-size:12px}}.daily-fast-detail{{font-size:12.5px;color:var(--ink-soft);margin-top:3px}}.daily-fast-empty{{padding:11px 0;color:var(--ink-soft);font-size:13px}}.daily-fast-empty span{{font-size:12px}}.daily-fast-ranks{{display:grid;grid-template-columns:1fr;gap:0}}.daily-fast-rank{{background:transparent;border-bottom:1px solid #E5E5EA;border-radius:0;padding:9px 0}}.daily-fast-rank:last-child{{border-bottom:0}}.daily-fast-rank small,.daily-fast-rank>span{{display:block;color:var(--ink-soft);font-size:11px}}.daily-fast-rank b{{display:block;font-size:18px;margin:4px 0}}.daily-fast-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px}}.daily-fast-panel{{min-width:0;padding:11px 10px;border:1px solid rgba(139,105,52,.24);border-radius:9px;background:rgba(255,255,255,.58)}}.daily-fast-panel-title{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding-bottom:7px;border-bottom:1px solid rgba(139,105,52,.16)}}.daily-fast-panel-title b{{font-size:12px}}.daily-fast-panel-title a,.daily-fast-panel-title span{{font-size:8px;color:var(--brass);white-space:nowrap}}.daily-fast-index-row{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding:8px 0;border-bottom:1px solid #E5E5EA}}.daily-fast-index-row:last-child{{border-bottom:0}}.daily-fast-index-row b{{font-size:10px}}.daily-fast-index-row span{{font-size:9px;text-align:right;white-space:nowrap}}.daily-fast-index-row strong{{display:block;font-size:10px;color:var(--ink)}}.daily-fast-index-row em{{font-style:normal;font-size:9px}}@media (max-width:640px){{.daily-fast-panels{{grid-template-columns:1fr}}}}.daily-fast-summary-stack{{display:block;margin-top:11px}}.daily-fast-rank-panel{{padding:10px 13px}}.daily-fast-rank-panel .daily-fast-panel-title{{padding-bottom:6px}}.daily-fast-rank-panel .daily-fast-ranks{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.daily-fast-rank-panel .daily-fast-rank{{border:0;padding:8px 0}}.daily-fast-rank-panel .daily-fast-rank b{{font-size:16px;margin:3px 0}}.daily-fast-quote{{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:8px;padding:12px 13px;border:1px solid rgba(139,105,52,.22);border-radius:9px;background:#F9F9FB}}.daily-fast-quote strong{{color:var(--ink);font-family:"Kaiti TC","BiauKai","DFKai-SB","STKaiti","Noto Serif CJK TC","Noto Serif TC",serif;font-size:16px;font-weight:700;letter-spacing:.12em;line-height:1.5;text-align:center;white-space:nowrap}}@media (max-width:640px){{.daily-fast-rank-panel .daily-fast-ranks{{gap:6px}}.daily-fast-quote{{align-items:center;display:flex}}.daily-fast-quote strong{{display:block;margin-top:0;text-align:center;font-size:17px}}}}
 .home-exright{{border:1px solid #D9C9A7;border-left:4px solid var(--brass);background:#FFFFFF;border-radius:10px;padding:13px 15px;margin:0 0 12px}}.home-exright b{{display:block;font-size:14.5px;line-height:1.4}}.home-exright p{{margin:5px 0 9px;color:var(--ink-soft);font-size:12px;line-height:1.6}}.home-exright-go{{display:inline-block;padding:7px 16px;background:var(--brass);color:#fff;border-radius:6px;font-size:13px;text-decoration:none}}
+/* v14 首頁儀表板：建立「今天 → 市場 → 我的排名 → 事件」閱讀順序 */
+.daily-fast-sync{background:#EEF5FB;border:1px solid #D6E5F2;border-left:3px solid #1769B0;border-radius:14px;padding:11px 14px;margin:-2px 0 12px;box-shadow:none}
+.daily-fast-sync-dot{width:8px;height:8px;background:#1769B0;box-shadow:0 0 0 4px rgba(23,105,176,.10)}
+.daily-fast-sync b{font-size:13px}.daily-fast-sync-copy span{font-size:11.5px}
+.daily-fast-hero{position:relative;background:linear-gradient(145deg,#10243E 0%,#183A5D 62%,#1D4B73 100%);color:#fff;padding:25px 18px 18px;margin:-6px 0 13px;border:0;border-radius:18px;box-shadow:0 12px 28px rgba(16,36,62,.16);overflow:hidden}
+.daily-fast-hero:after{content:"";position:absolute;width:180px;height:180px;right:-70px;top:-90px;border:1px solid rgba(255,255,255,.10);border-radius:50%;box-shadow:0 0 0 26px rgba(255,255,255,.025),0 0 0 52px rgba(255,255,255,.018)}
+.daily-fast-hero .eyebrow{color:#AFC7DD;font-size:10px;letter-spacing:.18em}
+.daily-fast-hero h1{position:relative;font-size:27px;letter-spacing:-.025em;margin:6px 0 4px;color:#fff;z-index:1}
+.daily-fast-hero:before{content:"MARKET DASHBOARD";position:absolute;right:17px;top:17px;color:rgba(255,255,255,.38);font-size:8px;letter-spacing:.18em;z-index:1}
+.daily-fast-market{position:relative;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;z-index:1}
+.daily-fast-market span{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.10);padding:9px 9px;border-radius:10px;font-size:10px;color:#BFD0DF;backdrop-filter:blur(5px)}
+.daily-fast-market b{font-size:15px;color:#fff;margin-top:3px}.daily-fast-market small{color:#91A9BF;font-size:8px}
+.daily-fast-card{border:1px solid #E0E7EE;border-radius:14px;padding:15px;margin:11px 0;box-shadow:var(--shadow-soft)}
+.daily-fast-title{margin-bottom:8px}.daily-fast-title h2{font-size:17px;font-weight:750}
+.daily-fast-event{padding:12px 0;border-top:1px solid #EDF1F5}.daily-fast-number{background:#1769B0}
+.daily-fast-summary-stack{gap:10px}.daily-fast-panel{border:1px solid #E0E7EE!important;border-radius:14px!important;background:#fff!important;box-shadow:var(--shadow-soft)}
+.daily-fast-rank-panel .daily-fast-panel-title{padding-bottom:8px}.daily-fast-rank-panel .daily-fast-ranks{gap:0}
+.daily-fast-rank{padding:11px 4px!important;border-bottom:1px solid #EDF1F5!important}
+.daily-fast-rank b{font-size:19px}.daily-fast-rank small{font-weight:650;color:#68798B}
+.daily-fast-quote{border:1px solid #E0E7EE;background:#F8FAFC;box-shadow:none;border-radius:12px;padding:13px}
+.daily-fast-quote strong{font-size:15px;letter-spacing:.08em}
+.home-exright{border-color:#E2D5B9;border-left-color:#C79A45;background:#FFFCF5}
+@media(max-width:640px){{.daily-fast-market{{grid-template-columns:repeat(2,minmax(0,1fr))}}.daily-fast-hero{{padding-top:23px}}.daily-fast-hero:before{{display:none}}.daily-fast-hero h1{{font-size:25px}}}}
 </style>{exright_banner}<section class="daily-fast-sync" aria-live="polite">
   <span class="daily-fast-sync-dot" aria-hidden="true"></span>
   <div class="daily-fast-sync-copy"><b>系統正在跑・正在整合完整首頁</b>
@@ -23384,10 +23450,10 @@ def render_portfolio_fast_summary(uid):
 </section>
 <section class="daily-fast-hero">
   <div class="eyebrow">TODAY · {snapshot_date.strftime('%Y / %m / %d')}</div>
-  <h1>今天先看最重要的變化</h1>
+  <h1>今天市場發生什麼？</h1>
   <div class="daily-fast-market">{market_html}</div>
 </section>
-<section class="daily-fast-card"><div class="daily-fast-title"><h2>🔥 今日值得注意</h2><a href="/web/premarket" style="color:var(--brass);font-size:12px">查看完整變化 →</a></div>{event_html}</section>
+<section class="daily-fast-card"><div class="daily-fast-title"><h2>今日值得注意</h2><a href="/web/premarket" style="color:var(--brass);font-size:12px">查看完整變化 →</a></div>{event_html}</section>
 <div class="daily-fast-summary-stack"><section class="daily-fast-panel daily-fast-rank-panel"><div class="daily-fast-panel-title"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section><section class="daily-fast-quote"><strong>{fast_quote_text}</strong></section></div>'''
 
 
@@ -24114,6 +24180,16 @@ def web_portfolio(uid):
     # ── 提醒 ──
     alerts = []
     top = max(holdings, key=lambda h: h["weight"]) if holdings else None
+    if not holdings:
+        body = risk_card + """
+<div class="empty-state">
+  <div class="empty-state-icon">◌</div>
+  <h2>目前無法取得持股行情</h2>
+  <p>你的持股資料仍然存在，但目前公開行情來源沒有回傳有效價格。</p>
+  <p class="sub">請稍後重新整理；系統不會把舊價格冒充成今日行情。</p>
+</div>
+"""
+        return respond_page("今日", body, "portfolio")
     if top and top["weight"] > th["position"]:
         second = sorted(holdings, key=lambda h: h["weight"], reverse=True)
         ratio = (f"，是第二大持股的 {top['weight'] / second[1]['weight']:.1f} 倍"
@@ -28093,8 +28169,10 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     except Exception as exc:
-        # 已驗證且已領取的事件不再讓平台反覆重送；完整錯誤留在 Render Logs。
+        # handler 失敗時回 500，讓 LINE 有機會依 webhook 重試機制再次送達；
+        # 已成功處理的事件仍由 dedup 表避免重複執行。
         print(f"❌ LINE webhook 處理失敗：{type(exc).__name__}: {exc}")
+        return "Webhook processing failed", 500
     return "OK"
 
 @handler.add(FollowEvent)
