@@ -23677,8 +23677,10 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     biggest_loss = loss_entry[0] if loss_entry else None
     biggest_loss_pct = loss_entry[1] if loss_entry else None
     biggest_loss_contribution = loss_entry[2] if loss_entry else None
+    # 首頁貢獻明細固定以「前 5 名」呈現；不虛構不存在的正貢獻。
+    # 正向包含 0.00% 的中性持股，讓接近五檔時仍保持穩定版型；負向同理只取真正拖累。
     positive_entries = sorted(
-        ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct > 0),
+        ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct >= 0),
         key=lambda item: item[2], reverse=True)[:5]
     negative_entries = sorted(
         ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct < 0),
@@ -23967,6 +23969,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 
     positive_count = len(positive_entries)
     negative_count = len(negative_entries)
+    positive_display_count = min(positive_count, 5)
+    negative_display_count = min(negative_count, 5)
     basis_notice = ""
     if has_pretrade_basis:
         realized_summary = (f"・今日正式已實現損益 {realized_today_total:+,.0f} 元"
@@ -23989,11 +23993,11 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     </div>
   </div>
   <details class="impact-details" open>
-    <summary>查看正貢獻明細（{positive_count} 檔）</summary>
+    <summary>查看正貢獻明細（前 {min(positive_count, 5)} 檔）</summary>
     <div data-home-contribution-rows="positive">{positive_rows_html}</div>
   </details>
   <details class="impact-details" open>
-    <summary>查看負貢獻明細（{negative_count} 檔）</summary>
+    <summary>查看負貢獻明細（前 {min(negative_count, 5)} 檔）</summary>
     <div data-home-contribution-rows="negative">{negative_rows_html}</div>
   </details>
 </section>'''
@@ -25938,8 +25942,8 @@ def render_turning_observation_web_body(result, status_note=None):
 
 /* V35 FINAL: Hero uses an embedded real Taipei 101 photo; +/- contribution follows the reference card/table layout. */
 .daily-home{{max-width:760px!important;margin:0 auto!important;padding:0 0 96px!important;background:#F4F7FA!important;color:#172B43!important}}
-.daily-hero{{position:relative!important;min-height:430px!important;margin:0 -1px 0!important;padding:28px 19px 18px!important;border-radius:0 0 26px 26px!important;overflow:hidden!important;color:#fff!important;background:#102B45!important;box-shadow:0 12px 30px rgba(20,39,58,.20)!important}}
-.hero-101-photo{{position:absolute!important;right:0!important;bottom:0!important;width:62%!important;height:100%!important;object-fit:cover!important;object-position:58% center!important;display:block!important;z-index:1!important;opacity:1!important}}
+.daily-hero{{position:relative!important;min-height:335px!important;height:335px!important;margin:0 -1px 0!important;padding:24px 19px 16px!important;border-radius:0 0 26px 26px!important;overflow:hidden!important;color:#fff!important;background:#102B45!important;box-shadow:0 12px 30px rgba(20,39,58,.20)!important}}
+.hero-101-photo{{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;object-fit:cover!important;object-position:62% 53%!important;display:block!important;z-index:1!important;opacity:1!important;transform:none!important}}
 .daily-hero>.hero-101-photo{{z-index:1!important}}
 .daily-hero:before{{content:""!important;position:absolute!important;inset:0!important;z-index:0!important;pointer-events:none!important;background:linear-gradient(90deg,rgba(7,25,43,.78) 0%,rgba(7,25,43,.48) 36%,rgba(7,25,43,.08) 68%,rgba(7,25,43,.02) 100%),linear-gradient(180deg,rgba(7,25,43,.02) 35%,rgba(7,25,43,.52) 100%)!important}}
 .daily-hero:after{{content:none!important}}
@@ -25955,7 +25959,7 @@ def render_turning_observation_web_body(result, status_note=None):
 .contribution-card .contribution-basis-notice,.contribution-card .impact-stale{{display:none!important}}
 .impact-leads{{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:9px!important;margin:0 0 6px!important}}
 .impact-leads>div{{min-width:0!important}}
-.impact-lead{{box-sizing:border-box!important;min-width:0!important;height:188px!important;padding:16px 14px 14px!important;border-radius:15px!important;border:1px solid transparent!important;display:flex!important;flex-direction:column!important;justify-content:flex-start!important;background:#fff!important}}
+.impact-lead{{box-sizing:border-box!important;min-width:0!important;height:176px!important;padding:15px 14px 13px!important;border-radius:14px!important;border:1px solid transparent!important;display:flex!important;flex-direction:column!important;justify-content:flex-start!important;background:#fff!important}}
 .impact-lead.impact-up{{background:#FFF3F1!important;border-color:#F2D4CF!important}}
 .impact-lead.impact-down{{background:#F1F9F5!important;border-color:#D4E9DE!important}}
 .impact-lead small{{display:block!important;margin:0 0 8px!important;color:#788797!important;font-size:11px!important;line-height:1.25!important;font-weight:700!important}}
@@ -25971,7 +25975,7 @@ def render_turning_observation_web_body(result, status_note=None):
 .impact-details summary::-webkit-details-marker{{display:none!important}}
 .impact-details summary:before{{content:'⌄';display:inline-block;margin-right:6px;color:#7C8FA2!important;transform:translateY(-1px)!important}}
 .impact-details[open] summary:before{{content:'⌃'!important}}
-.impact-detail-row{{display:grid!important;grid-template-columns:28px minmax(0,1fr) auto!important;gap:9px!important;align-items:center!important;padding:12px 4px!important;border-top:1px solid #EDF1F4!important;min-height:68px!important}}
+.impact-detail-row{{display:grid!important;grid-template-columns:28px minmax(0,1fr) auto!important;gap:9px!important;align-items:center!important;padding:11px 4px!important;border-top:1px solid #EDF1F4!important;min-height:62px!important;background:#fff!important}}
 .impact-rank{{width:26px!important;height:26px!important;display:flex!important;align-items:center!important;justify-content:center!important;border-radius:50%!important;background:#F1F3F5!important;color:#8291A0!important;font-size:11px!important;font-weight:700!important}}
 .impact-detail-name{{min-width:0!important}}
 .impact-detail-name b{{display:block!important;color:#25384C!important;font-size:16px!important;line-height:1.25!important;font-weight:750!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}}
@@ -25981,10 +25985,11 @@ def render_turning_observation_web_body(result, status_note=None):
 .impact-realized{{display:none!important}}
 .contribution-footnote{{display:none!important}}
 @media(max-width:640px){{
- .daily-hero{{min-height:430px!important;padding:21px 15px 15px!important;background-position:67% center!important}}
+ .daily-hero{{min-height:330px!important;height:330px!important;padding:21px 15px 15px!important}}
+ .hero-101-photo{{object-position:61% 52%!important}}
  .daily-hero h1{{font-size:27px!important}}
  .impact-leads{{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:7px!important}}
- .impact-lead{{height:178px!important;padding:14px 11px 12px!important;border-radius:14px!important}}
+ .impact-lead{{height:170px!important;padding:13px 11px 11px!important;border-radius:13px!important}}
  .impact-lead small{{font-size:10px!important;margin-bottom:7px!important}}
  .impact-lead h3{{font-size:18px!important;margin-bottom:7px!important}}
  .impact-lead p{{font-size:9.5px!important;line-height:1.5!important}}
