@@ -6261,11 +6261,13 @@ def simulate_bot_portfolio(mode, days=365):
             h["first_pick"] = lot["pick_date"]
         h["days_left"] = max(h["days_left"], max(0, lot["target_i"] - last_i))
 
-    total_lots = sum(h["lots"] for h in merged.values()) or 1
+    # D 方案的持倉顯示必須真正遵守「單一股票最多 20%」。
+    # 每個推薦日 10 檔等權，基準新倉位為 10%；同一股票重複上榜不再無限加碼，
+    # 其顯示權重最多 20%。這裡不把剩餘現金硬塞給其他股票。
     holdings = []
     for h in merged.values():
         h["pct"] = h["pct_sum"] / h["lots"]
-        h["weight"] = h["lots"] / total_lots * 100
+        h["weight"] = min(BOT_MAX_WEIGHT * 100.0, h["lots"] * (100.0 / BOT_TOP_N))
         h.pop("pct_sum")
         holdings.append(h)
     holdings.sort(key=lambda x: (-x["weight"], -x["pct"]))
@@ -21650,7 +21652,7 @@ def web_leaderboard(uid):
                     f'{html.escape(str(r.get("bot_rule") or ""))}<br>'
                     f'虛擬帳戶只用來把同一套報酬率換算成資產金額，不途中補資金；'
                     f'不改變原本排行榜的報酬率口徑。<br>'
-                    f'同一檔連續上榜就會被重複買進，權重跟著變高——那是規則本身的結果。<br>'
+                    f'同一檔連續上榜時，基準新倉位仍以每檔 10% 計，單一股票顯示權重最多 20%；剩餘資金保留為現金。<br>'
                     f'這是機械化模擬，沒有滑價與零股限制，跟真人並列僅供對照。</div>']
                 for x in bh:
                     pct = x.get("pct")
@@ -26808,10 +26810,14 @@ function bindFactors(){
       }).catch(function(e){state.loadingSource='';status.textContent=source+' 暫時無法載入';rowsEl.innerHTML='<div class="wb-empty" style="color:#8b4034">'+esc(source)+' 暫時無法載入。請稍後再試；其他分頁不受影響。</div>';});
   }
   function load(){
-    status.textContent='正在讀取黑馬／雷達快照…';
+    status.textContent='正在讀取黑馬快照…';
     var endpoints=['黑馬','雷達'],done=0;
     function one(source){
-      fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),{credentials:'same-origin'})
+      status.textContent='正在讀取'+source+'快照…';
+      var controller=(window.AbortController?new AbortController():null);
+      var timer=controller?setTimeout(function(){try{controller.abort();}catch(_){ }},12000):null;
+      var opts={credentials:'same-origin'}; if(controller)opts.signal=controller.signal;
+      fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),opts)
       .then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
       .then(function(data){
         if(!data.ok)throw new Error(data.error||'載入失敗');
@@ -26819,26 +26825,27 @@ function bindFactors(){
         state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{available:true});
         state.loadedSources[source]=true;
         done++;
-        status.textContent=done===2?'黑馬／雷達快照已載入':'已載入 '+source+'，等待另一份快照…';
+        status.textContent=done===2?'黑馬／雷達快照已載入':'已載入 '+source+'，繼續讀取另一份快照…';
         render();
-        if(done===2){
-          state.marketOpen=!!(state.sources['雷達']&&state.sources['雷達'].intraday);
-          requestReview();
-          if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}
-          else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}
-          render();
-          if(state.timer)clearInterval(state.timer);
-          if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}
-        }
+        if(done<2){one(endpoints[done]);return;}
+        state.marketOpen=!!(state.sources['雷達']&&state.sources['雷達'].intraday);
+        requestReview();
+        if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}
+        else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}
+        render();
+        if(state.timer)clearInterval(state.timer);
+        if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}
       })
       .catch(function(e){
-        if(e.message==='AUTH'){location.reload();return;}
         state.loadedSources[source]=false;
-        status.textContent=source+'快照暫時無法載入';
+        if(e.message==='AUTH'){location.reload();return;}
+        status.textContent=source+'快照暫時無法載入（12 秒逾時或伺服器錯誤）';
         render();
-      });
+        if(done<2){one(endpoints[done]);return;}
+      })
+      .finally(function(){if(timer)clearTimeout(timer);});
     }
-    endpoints.forEach(one);
+    one(endpoints[0]);
   }
   document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':'黑馬';state.query='';render();loadSource(state.source);};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){load();};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();loadSource(state.source);}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
   // 點擊保險：即使 rowsEl 被其他重新渲染／事件處理影響，仍由捕獲階段直接開啟詳情。
