@@ -3799,6 +3799,22 @@ def _sync_today_pick_factors_from_screener_snapshot(mode):
                     score_chip = COALESCE(score_chip, %s)
                 WHERE mode = %s AND code = %s AND pick_date = %s
             """, (*vals, mode, code, today))
+            if cur.rowcount == 0 and any(v is not None for v in vals):
+                # 保險帶：今日快照已有推薦，但 pick_history 缺這一列時，
+                # 直接補建；單純 UPDATE 永遠補不到缺漏的列。
+                cur.execute("""
+                    INSERT INTO pick_history
+                        (mode, code, pick_date, rank, score, name, industry, price,
+                         score_rev, score_val, score_mom, score_streak, score_chip)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (mode, code, pick_date) DO UPDATE SET
+                        score_rev = COALESCE(pick_history.score_rev, EXCLUDED.score_rev),
+                        score_val = COALESCE(pick_history.score_val, EXCLUDED.score_val),
+                        score_mom = COALESCE(pick_history.score_mom, EXCLUDED.score_mom),
+                        score_streak = COALESCE(pick_history.score_streak, EXCLUDED.score_streak),
+                        score_chip = COALESCE(pick_history.score_chip, EXCLUDED.score_chip)
+                """, (mode, code, today, int(rank), r.get("score"), r.get("name"),
+                        r.get("industry"), r.get("close"), *vals))
             updated += cur.rowcount
         conn.commit()
         cur.close()
@@ -8560,11 +8576,11 @@ def save_picks(mode, rows, top_n=5):
             mode, r["code"], i, r.get("score"), r.get("name"),
             r.get("industry"), r.get("close"),
             r.get("ma_cross"), r.get("macd_cross"),
-            _pick_num(r, "score_rev", "rev"),
-            _pick_num(r, "score_val", "val"),
-            _pick_num(r, "score_mom", "mom"),
-            _pick_num(r, "score_streak", "streak_score"),
-            _pick_num(r, "score_chip", "chip"),
+            _pick_num(r, "score_rev", "rev", "revenue_score", "revenue"),
+            _pick_num(r, "score_val", "val", "valuation_score", "valuation"),
+            _pick_num(r, "score_mom", "mom", "industry_score", "momentum_score"),
+            _pick_num(r, "score_streak", "streak_score", "continuity_score", "streak"),
+            _pick_num(r, "score_chip", "chip", "chip_score", "technical_score"),
         ))
     conn = get_db_connection()
     try:
@@ -16363,7 +16379,19 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .bot-history-main b{display:block;color:#1B2027;font-size:12.5px}
 .bot-history-main small{color:#8E959D;font-size:10px}
 .bot-history-reason{color:#66788B;line-height:1.5}
-@media(max-width:640px){.bot-history-row{grid-template-columns:1fr 1fr;gap:5px 8px}.bot-history-main{grid-column:1/-1}.bot-history-reason{grid-column:1/-1}}
+.bot-history-timeline{position:relative;margin:4px 0 2px;padding-left:12px}
+.bot-history-timeline:before{content:"";position:absolute;left:3px;top:7px;bottom:7px;width:1px;background:#D9DEE5}
+.bot-history-timeline-item{position:relative;padding:0 0 9px 14px}
+.bot-history-dot{position:absolute;left:-1px;top:7px;width:7px;height:7px;border-radius:50%;background:#8FA8C4;border:2px solid #FFF;box-shadow:0 0 0 1px #C9D1DA}
+.bot-history-date{font-size:10.5px;font-weight:800;color:#6B7785;letter-spacing:.02em;margin:0 0 2px}
+.bot-history-timeline-item .bot-history-row{border-top:0;padding:5px 0 7px}
+.bot-history-all{margin-top:8px;border-top:1px solid #E5E9EE;padding-top:8px}
+.bot-history-all>summary{cursor:pointer;list-style:none;color:#2776b8;font-size:11.5px;font-weight:800;padding:6px 0}
+.bot-history-all>summary::-webkit-details-marker{display:none}
+.bot-history-all>summary:after{content:"⌄";float:right;font-size:15px}
+.bot-history-all[open]>summary:after{content:"⌃"}
+.bot-history-all-body{margin-top:5px}
+@media(max-width:640px){.bot-history-row{grid-template-columns:1fr 1fr;gap:5px 8px}.bot-history-main{grid-column:1/-1}.bot-history-reason{grid-column:1/-1}.bot-history-timeline-item .bot-history-row{padding-top:4px}}
 .rank-tabs{display:flex;gap:4px;margin:18px 0 8px;padding:4px;background:#D7D9D2;
   border-radius:11px;flex-wrap:nowrap}
 .rank-tabs a,.rank-tabs button{flex:1;text-align:center;padding:8px 7px;background:transparent;border-radius:8px;
@@ -21792,8 +21820,12 @@ def web_leaderboard(uid):
                               f'<div class="rank-detail-body"><div class="rank-detail-title">目前持股（{len(bh)} 檔）</div>{"".join(bits)}</div></details>')
 
                 hist = sim_history = r.get("bot_history") or []
-                hist_rows = []
-                for tx in hist:
+                # 歷史操作：最新賣出日 → 最舊，預設只呈現最近 5 筆；
+                # 完整紀錄再放進第二層展開，避免 80+ 筆交易擠成流水帳。
+                hist = sorted(hist, key=lambda tx: (str(tx.get("sell_date") or ""),
+                                                     str(tx.get("buy_date") or ""),
+                                                     str(tx.get("code") or "")), reverse=True)
+                def _render_history_tx(tx):
                     hcls = "up" if (tx.get("return_pct") or 0) >= 0 else "down"
                     bp = tx.get("buy_price")
                     sp = tx.get("sell_price")
@@ -21801,19 +21833,35 @@ def web_leaderboard(uid):
                     btxt = f'{bp:,.2f}' if isinstance(bp, (int,float)) else '—'
                     stxt = f'{sp:,.2f}' if isinstance(sp, (int,float)) else '—'
                     rtxt = f'{rp:+.2f}%' if isinstance(rp, (int,float)) else '—'
-                    hist_rows.append(
+                    sell_date = html.escape(str(tx.get("sell_date") or "—"))
+                    return (
+                        f'<div class="bot-history-timeline-item">'
+                        f'<div class="bot-history-dot"></div>'
+                        f'<div class="bot-history-date">{sell_date}</div>'
                         f'<div class="bot-history-row">'
                         f'<div class="bot-history-main"><b>{html.escape(str(tx.get("name") or tx.get("code") or ""))}</b>'
                         f'<small>{html.escape(str(tx.get("code") or ""))}</small></div>'
-                        f'<div><span>{html.escape(str(tx.get("buy_date") or "—"))}</span> → <span>{html.escape(str(tx.get("sell_date") or "—"))}</span></div>'
+                        f'<div><span>{html.escape(str(tx.get("buy_date") or "—"))}</span> → <span>{sell_date}</span></div>'
                         f'<div><span>買 {btxt}</span>／<span>賣 {stxt}</span></div>'
                         f'<div><span>持有 {int(tx.get("hold_days") or 0)} 日</span> · <span class="num {hcls}">{rtxt}</span></div>'
                         f'<div class="bot-history-reason">{html.escape(str(tx.get("exit_reason") or "—"))}</div>'
-                        f'</div>')
-                if hist_rows:
+                        f'</div></div>')
+                recent_hist = hist[:5]
+                recent_rows = [_render_history_tx(tx) for tx in recent_hist]
+                all_rows = [_render_history_tx(tx) for tx in hist]
+                if hist:
+                    full_details = (
+                        f'<details class="bot-history-all">'
+                        f'<summary>查看全部歷史（{len(hist)} 筆）</summary>'
+                        f'<div class="bot-history-all-body">{"".join(all_rows)}</div>'
+                        f'</details>') if len(hist) > 5 else ''
                     history_html = (f'<details class="rank-detail bot-history-list" data-default-collapsed="1">'
-                                    f'<summary>查看歷史操作（{len(hist_rows)} 筆）</summary>'
-                                    f'<div class="rank-detail-body"><div class="rank-detail-title">歷史操作（{len(hist_rows)} 筆）</div>{"".join(hist_rows)}</div></details>')
+                                    f'<summary>查看歷史操作（{len(hist)} 筆）</summary>'
+                                    f'<div class="rank-detail-body">'
+                                    f'<div class="rank-detail-title">最近 5 筆・最新賣出 → 最舊</div>'
+                                    f'<div class="bot-history-timeline">{"".join(recent_rows)}</div>'
+                                    f'{full_details}'
+                                    f'</div></details>')
                 else:
                     history_html = (f'<details class="rank-detail bot-history-list" data-default-collapsed="1">'
                                     f'<summary>查看歷史操作（0 筆）</summary>'
