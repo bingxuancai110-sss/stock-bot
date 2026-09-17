@@ -27059,9 +27059,29 @@ def _build_workbench_core_payload(uid):
 def _workbench_source_payload(uid, source):
     source=str(source or "").strip()
     if source in ("黑馬","雷達"):
-        mode="blackhorse" if source=="黑馬" else "radar";snap=_load_persisted_screener_snapshot(mode)
+        mode="blackhorse" if source=="黑馬" else "radar"
+        snap = None
+        snap_source = ""
+        # 選股台必須先吃既有的程序內快照；只有沒有記憶體快取時才落到 Supabase。
+        # 這是入口效能的關鍵：warmup 已經算好的結果不應再次建立 DB 讀取瓶頸。
+        if mode == "radar" and _is_taiwan_intraday_window():
+            try:
+                snap = _load_recent_live_radar_snapshot(max_age_seconds=RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS)
+                if snap:
+                    snap_source = "盤中雷達快照"
+            except Exception as exc:
+                print(f"⚠️ 工作台讀取盤中雷達快照失敗：{exc}")
+        if not snap:
+            try:
+                snap, snap_source = _screener_recent_snapshot(mode)
+            except Exception as exc:
+                print(f"⚠️ 工作台讀取{source}最近快照失敗：{exc}")
+                snap = None
         rows,changes=_workbench_score_changes_and_rows(snap,mode) if snap else ([],[])
-        return {"ok":True,"source":source,"rows":rows,"score_changes":changes,"meta":{"available":bool(snap),"date":str((snap or {}).get("source_date") or "未標日期")}}
+        return {"ok":True,"source":source,"rows":rows,"score_changes":changes,
+                "meta":{"available":bool(snap),
+                        "date":str((snap or {}).get("source_date") or "未標日期"),
+                        "source":snap_source or "最近已保存快照"}}
     if source=="持股":
         rows,meta=_workbench_holding_rows(uid);return {"ok":True,"source":source,"rows":rows,"score_changes":[],"meta":meta}
     if source=="籌碼":
