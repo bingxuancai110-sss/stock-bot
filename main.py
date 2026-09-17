@@ -23919,9 +23919,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     else:
         close_sync_note = "盤中行情會隨市場更新；收盤後切換至官方最後成交／市撮價。"
 
-    # 首頁額外提供雷達／黑馬的「前三／第一名」預覽；只讀既有快照，不重新掃描全市場。
-    radar_home_html = render_screener_fast_summary("radar")
-    blackhorse_home_html = render_screener_fast_summary("blackhorse")
+    # 首頁不再預覽雷達／智慧黑馬；需要時直接從「選股」頁查看完整工具。
     market_focus_items = []
     for key, label in (("^DJI", "道瓊"), ("^IXIC", "那斯達克"), ("^SOX", "費城半導體")):
         value = display_snapshot.get("market", {}).get(f"{key}_pct")
@@ -24294,10 +24292,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     {contribution_html}
   </section>
   {position_journal_html}
-  <div class="home-screener-pair">
-    <section class="daily-card home-screener-card"><div class="daily-section-title"><div><h2>🎯 今日雷達</h2><span>市場現在有哪些股票正在發生事情？</span></div><a href="/web/screener?mode=radar">查看全部 →</a></div>{radar_home_html}</section>
-    <section class="daily-card home-screener-card"><div class="daily-section-title"><div><h2>🐎 今日智慧黑馬</h2><span>AI 精選 · 潛力股追蹤</span></div><a href="/web/screener?mode=blackhorse">查看完整分析 →</a></div>{blackhorse_home_html}</section>
-  </div>
+  <!-- 首頁精簡：雷達／智慧黑馬保留在「選股」頁，不在今日首頁重複展示。 -->
   <section class="daily-card home-market-focus">
     <div class="daily-section-title"><div><h2>🌎 今日市場焦點</h2><span>國際 → 台股 · 掌握關鍵影響</span></div><a href="/web/premarket">查看完整簡報 →</a></div>
     <div class="home-us-list">{market_focus_html}</div>
@@ -26128,10 +26123,11 @@ def render_turning_observation_web_body(result, status_note=None):
 .daily-fast-hero-copy .daily-fast-market span{{background:rgba(255,255,255,.94)!important}}
 .hero-finance-visual{{display:none!important}}
 
-/* V46: contribution cards are equal boxes on mobile and desktop. */
-.impact-leads{{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;align-items:stretch!important;gap:12px!important;width:100%!important}}
-.impact-leads>div{{min-width:0!important;width:100%!important;display:flex!important;align-items:stretch!important}}
-.impact-lead{{width:100%!important;height:180px!important;min-height:180px!important;box-sizing:border-box!important;overflow:hidden!important}}
+/* V47: financial hero stays; contribution cards are truly equal-height at every breakpoint. */
+.impact-leads{{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;grid-auto-rows:1fr!important;align-items:stretch!important;gap:12px!important;width:100%!important}}
+.impact-leads>div{{min-width:0!important;width:100%!important;height:100%!important;display:flex!important;align-items:stretch!important;align-self:stretch!important}}
+.impact-lead{{width:100%!important;height:100%!important;min-height:176px!important;box-sizing:border-box!important;overflow:hidden!important;display:flex!important;flex-direction:column!important}}
+.impact-lead>strong{{margin-top:auto!important}}
 @media(max-width:760px){{
  .daily-fast-hero{{border-radius:0 0 18px 18px!important}}
  .daily-fast-hero-copy{{padding:70px 14px 13px!important}}
@@ -26139,8 +26135,9 @@ def render_turning_observation_web_body(result, status_note=None):
  .daily-fast-hero-copy .daily-fast-market{{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px!important}}
  .finance-chart{{right:2%!important;width:58%!important;height:48%!important;bottom:15%!important;gap:6px!important;opacity:.66!important}}
  .finance-watermark{{right:4%!important;top:9%!important;font-size:7px!important}}
- .impact-leads{{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:9px!important}}
- .impact-lead{{height:164px!important;min-height:164px!important;padding:14px 11px 12px!important}}
+ .impact-leads{{grid-template-columns:repeat(2,minmax(0,1fr))!important;grid-auto-rows:1fr!important;gap:9px!important}}
+ .impact-leads>div{{height:100%!important}}
+ .impact-lead{{height:100%!important;min-height:176px!important;padding:14px 11px 12px!important}}
 }}
 </style>
 {"".join(sections)}
