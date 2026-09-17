@@ -24095,12 +24095,45 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .contribution-card{{padding:15px!important;border:0!important;box-shadow:none!important;margin:0!important}}.impact-leads{{display:grid;grid-template-columns:1fr 1fr;gap:9px}}.impact-lead{{padding:12px;border-radius:10px}}.impact-lead h3{{font-size:18px}}.impact-detail-row{{padding:8px 2px}}
 .positive,.up{{color:#E53935!important}}.negative,.down{{color:#0A9B63!important}}.flat{{color:#71839A!important}}
 @media(max-width:760px){{.daily-home{{padding:0 0 82px}}.daily-hero{{border-radius:0 0 16px 16px;margin-left:-8px;margin-right:-8px;padding:21px 17px 17px}}.daily-hero h1{{font-size:27px}}.market-strip{{grid-template-columns:1fr 1fr 1fr;gap:6px}}.market-strip>span{{padding:9px 8px;font-size:10px}}.market-strip b{{font-size:18px}}.market-freshness{{font-size:7px}}.hero-summary-stack{{grid-template-columns:1fr 1fr}}.hero-summary-panel,.hero-quote-panel{{padding:8px 9px}}.hero-quote-text{{font-size:13px}}.daily-card{{padding:14px;margin:10px 0;border-radius:12px}}.daily-section-title h2{{font-size:18px}}.home-portfolio-grid{{grid-template-columns:1fr 1fr}}.home-metric-main{{grid-column:span 2}}.home-screener-pair{{grid-template-columns:1fr}}.home-market-focus .home-us-list{{grid-template-columns:1fr 1fr}}.home-us-list>span:last-child{{grid-column:span 2}}.impact-leads{{grid-template-columns:1fr}}.position-journal{{margin:10px 0!important;border-radius:12px!important}}.position-journal-table-head,.position-journal-row{{font-size:10px!important}}}}
+
+/* V29 visual polish: Taipei sunset hero + lighter information hierarchy. */
+.daily-home{{max-width:760px;margin:0 auto;padding:0 0 96px;background:#F4F7FA}}
+.daily-hero{{min-height:390px;margin:0 -1px 0!important;padding:24px 20px 18px!important;border-radius:0 0 26px 26px!important;background-image:linear-gradient(180deg,rgba(4,24,47,.18),rgba(4,24,47,.72)),url('/static/taipei-sunset.png')!important;background-size:cover!important;background-position:center 34%!important;box-shadow:0 10px 28px rgba(9,39,69,.22)!important}}
+.daily-hero:after{{background:radial-gradient(circle at 78% 25%,rgba(255,220,151,.18),transparent 32%),linear-gradient(0deg,rgba(3,20,37,.2),transparent 55%)!important;right:0!important;bottom:0!important;width:100%!important;height:100%!important;border-radius:0!important}}
+.daily-hero h1{{font-size:32px!important;font-weight:800!important;max-width:650px;text-shadow:0 2px 12px rgba(0,0,0,.28)}}
+.daily-hero>p{{max-width:620px;font-size:14px!important;text-shadow:0 1px 7px rgba(0,0,0,.28)}}
+.market-strip{{margin-top:20px!important;gap:9px!important}}
+.market-strip>span{{background:rgba(255,255,255,.94)!important;border:1px solid rgba(255,255,255,.75)!important;box-shadow:0 7px 20px rgba(0,0,0,.13)!important}}
+.hero-summary-stack{{margin-top:10px!important}}
+.hero-summary-panel,.hero-quote-panel{{background:rgba(7,29,52,.48)!important;border-color:rgba(255,255,255,.22)!important;backdrop-filter:blur(8px)}}
+.daily-complete-sync{{margin:10px 12px 2px!important;border:0!important;border-radius:999px!important;background:#FFFFFF!important;box-shadow:0 2px 10px rgba(16,36,62,.06)!important;padding:8px 12px!important}}
+.daily-complete-sync-dot{{width:7px!important;height:7px!important;margin-top:5px!important}}
+.daily-complete-sync b{{font-size:11px!important}}.daily-complete-sync span{{font-size:9.5px!important}}
+.daily-card{{margin:10px 10px!important;border:1px solid #E4EAF0!important;border-radius:18px!important;box-shadow:0 5px 18px rgba(22,49,78,.055)!important;padding:15px!important}}
+.daily-section-title{{margin-bottom:12px!important}}.daily-section-title h2{{font-size:19px!important;font-weight:800!important}}.daily-section-title a{{font-size:11px!important}}
+.home-portfolio-grid{{grid-template-columns:1.35fr 1fr 1fr 1fr!important}}
+.home-metric{{padding:12px!important;background:#F8FAFC!important;border:0!important}}.home-metric-main{{background:#EFF6FC!important}}.home-metric-main b{{font-size:26px!important}}
+.portfolio-highlights{{grid-template-columns:1fr 1fr!important;gap:8px!important}}.portfolio-highlights>div{{padding:11px!important;border-radius:11px!important;background:#F7F9FB!important}}.portfolio-highlights>div:last-child{{grid-column:span 2}}
+.position-journal{{margin:10px 10px!important;border:1px solid #E3AFA7!important;border-radius:18px!important;box-shadow:0 6px 20px rgba(180,70,55,.07)!important}}
+.position-journal-head{{padding:14px 15px!important}}.position-journal-note{{max-height:72px;overflow:auto!important;background:#FCFCFD!important}}
+.position-journal-table-head{{font-size:9.5px!important}}.position-journal-row{{padding:13px 12px!important}}.position-journal-name b{{font-size:14px!important}}.position-journal-cell b{{font-size:13px!important}}
+.home-screener-pair{{grid-template-columns:1fr 1fr!important;gap:10px!important;margin:0 10px}}.home-screener-pair>.daily-card{{margin:0!important}}.home-screener-card{{min-height:240px}}
+.home-screener-card .screener-fast-preview{{font-size:11px}}.home-screener-card .screener-fast-preview-row{{padding:8px 0!important}}
+.home-market-focus{{margin-top:10px!important}}.home-market-focus .home-us-list{{grid-template-columns:repeat(3,1fr)!important}}.home-us-list>span{{min-height:54px}}
+.home-detail-collapse{{margin:10px!important}}
+@media(max-width:640px){{
+ .daily-hero{{min-height:0;padding:20px 15px 15px!important;border-radius:0 0 22px 22px!important}}
+ .daily-hero h1{{font-size:27px!important;margin-top:7px!important}}
+ .market-strip>span{{padding:9px 7px!important}}.market-strip b{{font-size:18px!important}}
+ .hero-summary-stack{{grid-template-columns:1fr!important}}.hero-quote-panel{{display:none}}
+ .daily-card{{margin:9px 8px!important;padding:13px!important;border-radius:15px!important}}
+ .home-portfolio-grid{{grid-template-columns:1fr 1fr!important}}.home-metric-main{{grid-column:span 2}}.home-metric-main b{{font-size:24px!important}}
+ .home-screener-pair{{grid-template-columns:1fr!important;margin:0}}.home-screener-pair>.daily-card{{margin:9px 8px!important;min-height:0}}
+ .home-market-focus .home-us-list{{grid-template-columns:1fr 1fr!important}}.home-us-list>span:last-child{{grid-column:span 2}}
+ .position-journal{{margin:9px 8px!important}}.position-journal-note{{max-height:96px}}
+}}
 </style>
 <div class="daily-home">
-  <div class="daily-complete-sync" aria-live="polite">
-    <span class="daily-complete-sync-dot" aria-hidden="true"></span>
-    <div><b data-home-live-title>{html.escape(home_sync_title)}</b><span data-home-live-note>{html.escape(home_sync_detail)}</span></div>
-  </div>
   <section class="daily-hero">
     <div class="eyebrow">{hero_eyebrow}</div>
     <h1>今天你的投資發生了什麼？</h1>
@@ -24115,6 +24148,10 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       <section class="hero-quote-panel"><p class="hero-quote-text">{html.escape(quote_text)}</p></section>
     </div>
   </section>
+  <div class="daily-complete-sync" aria-live="polite">
+    <span class="daily-complete-sync-dot" aria-hidden="true"></span>
+    <div><b data-home-live-title>{html.escape(home_sync_title)}</b><span data-home-live-note>{html.escape(home_sync_detail)}</span></div>
+  </div>
   <section class="daily-card home-portfolio-card">
     <div class="daily-section-title"><div><h2>💰 我的投資</h2><span>你現在的組合狀態</span></div><a href="/web/positions">查看持股明細 →</a></div>
     <div class="home-portfolio-grid">
