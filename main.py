@@ -26352,7 +26352,7 @@ def build_workbench_review_payload():
 def render_workbench_body(initial_tab=""):
     """正式工作台只回傳前端殼；真實資料由同源、權杖保護的快照 API 局部載入。"""
     initial_tab = str(initial_tab or "").strip()
-    if initial_tab not in {"籌碼", "成效", "ETF"}:
+    if initial_tab not in {"持股", "雷達", "轉折", "籌碼", "成效", "我的排行", "ETF"}:
         initial_tab = ""
     body = r'''
 <section class="wb-shell" id="stockbot-workbench" data-workbench="snapshot-first-v1" data-initial-tab="__INITIAL_TAB__">
@@ -26391,9 +26391,9 @@ def render_workbench_body(initial_tab=""):
   function latestSourceDate(data){var sourceDates=Object.keys((data&&data.sources)||{}).map(function(k){var s=data.sources[k]||{};return s.date||s.computed_at||'';}).filter(Boolean);return sourceDates.length?sourceDates.sort().slice(-1)[0]:'未標日期';}
   function workbenchStatusText(data, marketOpen){return '最近資料：'+latestSourceDate(data)+'｜'+(marketOpen?'只更新目前可見標的，每 15 秒一次；排名仍依快照':'價格不再輪詢，固定使用已確認的正式收盤校正');}
   function isEtf(row){return row&&row.source==='ETF';}
-  function sources(){var order=state.assetMode==='etf'?['ETF']:['黑馬','持股','雷達','轉折','籌碼','成效','我的排行'];return order.filter(function(s){if(s==='成效'||s==='我的排行')return s==='成效'||(state.personal&&Object.keys(state.personal.rank_summary||{}).length);return state.rows.some(function(r){return r.source===s&&((state.assetMode==='etf')===isEtf(r));})||!!state.sources[s];});}
+  function sources(){var order=state.assetMode==='etf'?['ETF']:['黑馬','持股','雷達','轉折','籌碼','成效','我的排行'];return order.filter(function(s){if(s==='成效')return true;if(s==='我的排行')return !!(state.personal&&Object.keys(state.personal.rank_summary||{}).length);return true;});}
   function renderAssetTabs(){document.querySelectorAll('#wb-asset-tabs button').forEach(function(b){b.classList.toggle('on',b.dataset.asset===state.assetMode);});}
-  function renderTabs(){var list=sources();if(list.indexOf(state.source)<0)state.source=list[0]||'';tabs.innerHTML=list.map(function(s){var n=s==='成效'||s==='我的排行'?'':state.rows.filter(function(r){return r.source===s}).length;return '<button type="button" class="'+(state.source===s?'on':'')+'" data-source="'+esc(s)+'">'+esc(s)+(n===''?'':' <small>'+n+'</small>')+'</button>'}).join('');}
+  function renderTabs(){var list=sources();if(list.indexOf(state.source)<0)state.source=list[0]||'';tabs.innerHTML=list.map(function(s){var loaded=!!state.loadedSources[s];var n=s==='成效'||s==='我的排行'?'':(loaded?' <small>'+state.rows.filter(function(r){return r.source===s}).length+'</small>':'');return '<button type="button" class="'+(state.source===s?'on':'')+'" data-source="'+esc(s)+'">'+esc(s)+n+'</button>'}).join('');}
   function filtered(){var q=state.query.trim().toLowerCase();return state.rows.filter(function(r){var etf=r.source==='ETF';return (state.source==='全部'||r.source===state.source)&&(!q||[r.code,r.name,r.industry].join(' ').toLowerCase().indexOf(q)>-1)&&(state.kind==='all'||(state.kind==='etf'?etf:!etf))&&(state.dir==='all'||(state.dir==='up'&&Number(r.change_pct)>0)||(state.dir==='down'&&Number(r.change_pct)<0));}).sort(function(a,b){var av=a[state.sort],bv=b[state.sort];av=av==null?-Infinity:Number(av);bv=bv==null?-Infinity:Number(bv);return state.desc?bv-av:av-bv;});}
   function reviewPct(v){return v==null?'待確認':(Number(v)>0?'+':'')+Number(v).toFixed(1)+'%';}
   function valueText(v,suffix){return v==null?'待確認':esc(v)+(suffix||'');}
