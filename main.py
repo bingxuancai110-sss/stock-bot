@@ -16379,19 +16379,32 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .bot-history-main b{display:block;color:#1B2027;font-size:12.5px}
 .bot-history-main small{color:#8E959D;font-size:10px}
 .bot-history-reason{color:#66788B;line-height:1.5}
-.bot-history-timeline{position:relative;margin:4px 0 2px;padding-left:12px}
-.bot-history-timeline:before{content:"";position:absolute;left:3px;top:7px;bottom:7px;width:1px;background:#D9DEE5}
-.bot-history-timeline-item{position:relative;padding:0 0 9px 14px}
-.bot-history-dot{position:absolute;left:-1px;top:7px;width:7px;height:7px;border-radius:50%;background:#8FA8C4;border:2px solid #FFF;box-shadow:0 0 0 1px #C9D1DA}
-.bot-history-date{font-size:10.5px;font-weight:800;color:#6B7785;letter-spacing:.02em;margin:0 0 2px}
-.bot-history-timeline-item .bot-history-row{border-top:0;padding:5px 0 7px}
+.bot-history-timeline{position:relative;margin:6px 0 2px;padding-left:0}
+.bot-history-timeline:before{content:"";position:absolute;left:73px;top:12px;bottom:12px;width:2px;background:#E3E8EE}
+.bot-history-timeline-item{position:relative;display:grid;grid-template-columns:64px minmax(0,1fr);column-gap:18px;padding:0 0 12px;min-height:72px}
+.bot-history-dot{position:absolute;left:69px;top:12px;width:8px;height:8px;border-radius:50%;background:#8FA8C4;border:2px solid #FFF;box-shadow:0 0 0 1px #C9D1DA;z-index:2}
+.bot-history-left{grid-column:1;grid-row:1;min-width:0;text-align:right;padding-top:1px}
+.bot-history-date{font-size:10px;font-weight:800;color:#6B7785;letter-spacing:.01em;line-height:1.25;margin:0 0 5px;white-space:nowrap}
+.bot-history-pnl{display:block;font-size:16px;font-weight:900;line-height:1.1;letter-spacing:-.03em;font-variant-numeric:tabular-nums;white-space:nowrap}
+.bot-history-pnl.up{color:#D93025}.bot-history-pnl.down{color:#0B8F55}.bot-history-pnl.flat{color:#667085}
+.bot-history-left small{display:block;margin-top:4px;color:#8E959D;font-size:9.5px;line-height:1.25}
+.bot-history-content{grid-column:2;grid-row:1;min-width:0;padding:0 0 1px}
+.bot-history-row{display:flex!important;flex-direction:column;gap:3px;padding:0!important;border-top:0!important;align-items:flex-start!important;font-size:11px;color:#5D6C7C}
+.bot-history-main{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.bot-history-main b{display:inline!important;color:#1B2027;font-size:13px}
+.bot-history-main small{color:#8E959D;font-size:10px}
+.bot-history-price{color:#66788B;font-size:10.5px;font-variant-numeric:tabular-nums}
+.bot-history-hold{font-size:10.5px;color:#66788B}
+.bot-history-reason{display:inline-block;margin-top:2px;padding:3px 7px;border-radius:5px;background:#F4F6F8;color:#66788B;font-size:10px;line-height:1.35}
+.bot-history-reason.up{background:#FFF1F0;color:#B42318}.bot-history-reason.down{background:#EEF9F2;color:#087A4B}
 .bot-history-all{margin-top:8px;border-top:1px solid #E5E9EE;padding-top:8px}
 .bot-history-all>summary{cursor:pointer;list-style:none;color:#2776b8;font-size:11.5px;font-weight:800;padding:6px 0}
 .bot-history-all>summary::-webkit-details-marker{display:none}
 .bot-history-all>summary:after{content:"⌄";float:right;font-size:15px}
 .bot-history-all[open]>summary:after{content:"⌃"}
 .bot-history-all-body{margin-top:5px}
-@media(max-width:640px){.bot-history-row{grid-template-columns:1fr 1fr;gap:5px 8px}.bot-history-main{grid-column:1/-1}.bot-history-reason{grid-column:1/-1}.bot-history-timeline-item .bot-history-row{padding-top:4px}}
+@media(max-width:640px){.bot-history-timeline:before{left:64px}.bot-history-timeline-item{grid-template-columns:56px minmax(0,1fr);column-gap:17px}.bot-history-dot{left:60px}.bot-history-pnl{font-size:15px}.bot-history-date{font-size:9.5px}.bot-history-content{padding-top:0}}
+
 .rank-tabs{display:flex;gap:4px;margin:18px 0 8px;padding:4px;background:#D7D9D2;
   border-radius:11px;flex-wrap:nowrap}
 .rank-tabs a,.rank-tabs button{flex:1;text-align:center;padding:8px 7px;background:transparent;border-radius:8px;
@@ -21834,18 +21847,23 @@ def web_leaderboard(uid):
                     stxt = f'{sp:,.2f}' if isinstance(sp, (int,float)) else '—'
                     rtxt = f'{rp:+.2f}%' if isinstance(rp, (int,float)) else '—'
                     sell_date = html.escape(str(tx.get("sell_date") or "—"))
+                    reason = html.escape(str(tx.get("exit_reason") or "—"))
                     return (
                         f'<div class="bot-history-timeline-item">'
-                        f'<div class="bot-history-dot"></div>'
+                        f'<div class="bot-history-dot" style="background:{"#D93025" if hcls == "up" else "#0B8F55" if hcls == "down" else "#8FA8C4"}"></div>'
+                        f'<div class="bot-history-left">'
                         f'<div class="bot-history-date">{sell_date}</div>'
+                        f'<strong class="bot-history-pnl {hcls}">{rtxt}</strong>'
+                        f'<small>本筆報酬</small>'
+                        f'</div>'
+                        f'<div class="bot-history-content">'
                         f'<div class="bot-history-row">'
                         f'<div class="bot-history-main"><b>{html.escape(str(tx.get("name") or tx.get("code") or ""))}</b>'
                         f'<small>{html.escape(str(tx.get("code") or ""))}</small></div>'
-                        f'<div><span>{html.escape(str(tx.get("buy_date") or "—"))}</span> → <span>{sell_date}</span></div>'
-                        f'<div><span>買 {btxt}</span>／<span>賣 {stxt}</span></div>'
-                        f'<div><span>持有 {int(tx.get("hold_days") or 0)} 日</span> · <span class="num {hcls}">{rtxt}</span></div>'
-                        f'<div class="bot-history-reason">{html.escape(str(tx.get("exit_reason") or "—"))}</div>'
-                        f'</div></div>')
+                        f'<div class="bot-history-price">{html.escape(str(tx.get("buy_date") or "—"))} → {sell_date}　｜　買 {btxt} ／ 賣 {stxt}</div>'
+                        f'<div class="bot-history-hold">持有 {int(tx.get("hold_days") or 0)} 日</div>'
+                        f'<div class="bot-history-reason {hcls}">{reason}</div>'
+                        f'</div></div></div>')
                 recent_hist = hist[:5]
                 recent_rows = [_render_history_tx(tx) for tx in recent_hist]
                 all_rows = [_render_history_tx(tx) for tx in hist]
