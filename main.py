@@ -23810,19 +23810,6 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         except (TypeError, ValueError):
             return "今日已實現損益：資料待確認"
 
-    gain_html = (
-        f"{html.escape(str(biggest_gain['name']))} {fmt_pct(biggest_gain_pct)}"
-        f"<small class=\"contribution-note\">組合 +{biggest_gain_contribution:.2f} 個百分點・"
-        f"{html.escape(contribution_basis_text(biggest_gain, compact=True))}</small>"
-        if biggest_gain and biggest_gain_pct is not None and biggest_gain_contribution is not None
-        else "—")
-    loss_html = (
-        f"{html.escape(str(biggest_loss['name']))} {fmt_pct(biggest_loss_pct)}"
-        f"<small class=\"contribution-note\">組合 {biggest_loss_contribution:.2f} 個百分點・"
-        f"{html.escape(contribution_basis_text(biggest_loss, compact=True))}</small>"
-        if biggest_loss and biggest_loss_pct is not None and biggest_loss_contribution is not None
-        else "—")
-
     # 第一屏只放一個由真實資料決定的「今天先看這裡」，不自行生成訊號。
     # 優先順序：盤前事件 > 持股下跌 > 持股上漲 > 排名變化 > 無重大提醒。
     focus_href, focus_cta = "/web/premarket", "查看今日變化"
@@ -24145,6 +24132,17 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
  .position-journal{{margin:9px 8px!important}}.position-journal-note{{max-height:96px}}
 }}
 
+/* V32: 將正／負貢獻直接整合進「我的投資」，沿用既有貢獻明細元件。 */
+.portfolio-relative-row{{display:flex;justify-content:space-between;align-items:center;margin:10px 0 0;padding:10px 12px;background:#F7F9FB;border-radius:10px;color:#71839A;font-size:12px}}
+.portfolio-relative-row b{{font-size:15px;font-weight:700}}
+.portfolio-impact-inline{{margin-top:10px;border-top:1px solid #E9EEF3;padding-top:2px}}
+.portfolio-impact-inline .contribution-card{{background:transparent!important}}
+.portfolio-impact-inline .impact-leads{{gap:8px}}
+.portfolio-impact-inline .impact-lead{{background:#FAFBFC}}
+.portfolio-impact-inline .impact-details{{margin-top:8px}}
+.home-detail-collapse{{display:none!important}}
+@media(max-width:640px){{.portfolio-relative-row{{margin-top:9px}}.portfolio-impact-inline{{margin-top:9px}}.portfolio-impact-inline .impact-lead h3{{font-size:17px}}}}
+
 /* V30 typography polish: iOS-native Chinese typography, cleaner hierarchy, less report-like. */
 .daily-home, .daily-home *{{
   font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","PingFang SC","Noto Sans TC","Microsoft JhengHei",sans-serif!important;
@@ -24224,7 +24222,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       <div class="home-metric"><small>持倉損益</small><b class="{pl_class}">{fmt_pct(pl_total)}</b></div>
       <div class="home-metric"><small>持股檔數</small><b>{len(holdings)} 檔</b></div>
     </div>
-    <div class="portfolio-highlights" style="margin-top:9px"><div><small>最大貢獻</small><b class="up" data-home-max-gain>{gain_html}</b></div><div><small>最大拖累</small><b class="down" data-home-max-loss>{loss_html}</b></div><div><small>相對大盤</small><b class="{portfolio_pct_class}" data-home-relative>{relative_text}</b></div></div>
+    <div class="portfolio-relative-row"><span>相對大盤</span><b class="{portfolio_pct_class}" data-home-relative>{relative_text}</b></div>
+    <div class="portfolio-impact-inline">{contribution_html}</div>
   </section>
   {position_journal_html}
   <div class="home-screener-pair">
@@ -24236,7 +24235,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     <div class="home-us-list">{market_focus_html}</div>
     <div class="home-focus-events"><b>今天值得注意</b>{events_html}</div>
   </section>
-  <details class="home-detail-collapse"><summary>查看完整組合判讀與貢獻明細 →</summary>{home_judgement_html}{contribution_html}</details>
+  {home_judgement_html}
   {home_intraday_script}
 </div>'''
 
