@@ -23967,6 +23967,10 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <strong><span>對整體組合{amount_label}</span><b>{amount_value}</b></strong>
  </div>'''
 
+    # Reference layout: each side displays up to five real entries.
+    # Zero-contribution / unchanged holdings are excluded from both ranked lists.
+    positive_entries = [e for e in positive_entries if e[2] > 0][:5]
+    negative_entries = [e for e in negative_entries if e[2] < 0][:5]
     positive_count = len(positive_entries)
     negative_count = len(negative_entries)
     positive_display_count = min(positive_count, 5)
@@ -25942,10 +25946,10 @@ def render_turning_observation_web_body(result, status_note=None):
 
 /* V35 FINAL: Hero uses an embedded real Taipei 101 photo; +/- contribution follows the reference card/table layout. */
 .daily-home{{max-width:760px!important;margin:0 auto!important;padding:0 0 96px!important;background:#F4F7FA!important;color:#172B43!important;overflow:visible!important}}
-.daily-hero{{position:relative!important;min-height:335px!important;height:335px!important;margin:0!important;padding:24px 19px 16px!important;border-radius:0 0 26px 26px!important;overflow:hidden!important;color:#fff!important;background:#102B45!important;box-shadow:0 12px 30px rgba(20,39,58,.20)!important}}
-.hero-101-photo{{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;object-fit:cover!important;object-position:50% 50%!important;display:block!important;z-index:1!important;opacity:1!important;transform:none!important}}
+.daily-hero{{position:relative!important;min-height:0!important;height:auto!important;margin:0!important;padding:0!important;border-radius:0 0 26px 26px!important;overflow:hidden!important;color:#fff!important;background:#102B45!important;box-shadow:0 12px 30px rgba(20,39,58,.20)!important}}
+.hero-101-photo{{position:relative!important;inset:auto!important;width:100%!important;height:auto!important;aspect-ratio:1000 / 633!important;object-fit:contain!important;object-position:center!important;display:block!important;z-index:1!important;opacity:1!important;transform:none!important;background:#102B45!important}}
 .daily-hero>.hero-101-photo{{z-index:1!important}}
-.daily-hero:before{{content:""!important;position:absolute!important;inset:0!important;z-index:0!important;pointer-events:none!important;background:linear-gradient(90deg,rgba(7,25,43,.78) 0%,rgba(7,25,43,.48) 36%,rgba(7,25,43,.08) 68%,rgba(7,25,43,.02) 100%),linear-gradient(180deg,rgba(7,25,43,.02) 35%,rgba(7,25,43,.52) 100%)!important}}
+.daily-hero:before{{content:""!important;position:absolute!important;inset:0!important;z-index:2!important;pointer-events:none!important;background:linear-gradient(90deg,rgba(7,25,43,.72) 0%,rgba(7,25,43,.42) 34%,rgba(7,25,43,.04) 68%),linear-gradient(180deg,rgba(7,25,43,0) 45%,rgba(7,25,43,.66) 100%)!important}}
 .daily-hero:after{{content:none!important}}
 .daily-hero>*{{position:relative!important;z-index:2!important}}
 .daily-hero h1{{font-size:31px!important;font-weight:800!important;letter-spacing:-.03em!important;text-shadow:0 2px 14px rgba(0,0,0,.30)!important}}
@@ -25955,11 +25959,11 @@ def render_turning_observation_web_body(result, status_note=None):
 .portfolio-highlights{{display:none!important}}
 
 /* +/- 貢獻：只改這一區；兩張主卡固定並排，下方才是明細。 */
-.contribution-card{{margin:10px 10px 12px!important;padding:0!important;background:#fff!important;border:0!important;border-radius:18px!important;box-shadow:none!important;overflow:hidden!important}}
+.contribution-card{{margin:0!important;padding:0 0 4px!important;background:#fff!important;border:0!important;border-radius:0!important;box-shadow:none!important;overflow:hidden!important}}
 .contribution-card .contribution-basis-notice,.contribution-card .impact-stale{{display:none!important}}
 .impact-leads{{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:9px!important;margin:0 0 6px!important}}
 .impact-leads>div{{min-width:0!important}}
-.impact-lead{{box-sizing:border-box!important;min-width:0!important;height:176px!important;padding:15px 14px 13px!important;border-radius:14px!important;border:1px solid transparent!important;display:flex!important;flex-direction:column!important;justify-content:flex-start!important;background:#fff!important}}
+.impact-lead{{box-sizing:border-box!important;min-width:0!important;height:160px!important;padding:15px 14px 13px!important;border-radius:14px!important;border:1px solid transparent!important;display:flex!important;flex-direction:column!important;justify-content:flex-start!important;background:#fff!important}}
 .impact-lead.impact-up{{background:#FFF3F1!important;border-color:#F2D4CF!important}}
 .impact-lead.impact-down{{background:#F1F9F5!important;border-color:#D4E9DE!important}}
 .impact-lead small{{display:block!important;margin:0 0 8px!important;color:#788797!important;font-size:11px!important;line-height:1.25!important;font-weight:700!important}}
@@ -25967,7 +25971,7 @@ def render_turning_observation_web_body(result, status_note=None):
 .impact-lead p{{margin:0!important;color:#7B8793!important;font-size:10.5px!important;line-height:1.55!important}}
 .impact-lead>strong{{display:block!important;margin-top:auto!important;padding-top:10px!important;color:inherit!important;font-size:11px!important;line-height:1.2!important;font-weight:700!important}}
 .impact-lead>strong span{{display:block!important;font-size:11px!important;font-weight:700!important}}
-.impact-lead>strong b{{display:block!important;margin-top:3px!important;font-size:25px!important;line-height:1!important;font-weight:850!important;letter-spacing:-.04em!important}}
+.impact-lead>strong b{{display:block!important;margin-top:3px!important;font-size:23px!important;line-height:1!important;font-weight:850!important;letter-spacing:-.04em!important}}
 .impact-lead.impact-up>strong,.impact-up>strong b{{color:#D74B43!important}}
 .impact-lead.impact-down>strong,.impact-down>strong b{{color:#159B68!important}}
 .impact-details{{margin:0!important;border-top:1px solid #E8EDF2!important}}
@@ -25985,11 +25989,11 @@ def render_turning_observation_web_body(result, status_note=None):
 .impact-realized{{display:none!important}}
 .contribution-footnote{{display:none!important}}
 @media(max-width:640px){{
- .daily-hero{{min-height:330px!important;height:330px!important;padding:21px 15px 15px!important}}
- .hero-101-photo{{object-position:50% 50%!important}}
+ .daily-hero{{min-height:0!important;height:auto!important;padding:0!important}}
+ .hero-101-photo{{width:100%!important;height:auto!important;aspect-ratio:1000 / 633!important;object-fit:contain!important;object-position:center!important}}
  .daily-hero h1{{font-size:27px!important}}
  .impact-leads{{grid-template-columns:1fr 1fr!important;gap:10px!important}}
- .impact-lead{{height:178px!important;padding:14px 13px 12px!important;border-radius:14px!important}}
+ .impact-lead{{height:160px!important;padding:14px 12px 12px!important;border-radius:14px!important}}
  .impact-lead small{{font-size:10px!important;margin-bottom:7px!important}}
  .impact-lead h3{{font-size:18px!important;margin-bottom:7px!important}}
  .impact-lead p{{font-size:9.5px!important;line-height:1.5!important}}
