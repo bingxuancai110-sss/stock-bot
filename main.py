@@ -18446,27 +18446,32 @@ def web_positions(uid):
   </div>
   <div class="position-card-primary">
     <div><small>今日損益</small><b class="{day_cls}" data-position-day-pl="1">{day_pl:+,.0f}</b></div>
-    <div><small>估算賣出淨損益</small><b class="{net_cls}">{net_amt:+,.0f}</b><em>{net_pct_text}</em></div>
     <div><small>市值</small><b>{value:,.0f}</b></div>
+    <div><small>持有報酬</small><b class="{'up' if gross_pl >= 0 else 'down'}">{gross_pct_text}</b></div>
   </div>
-  <div class="position-card-grid">
-    <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
-    <div><small>價格報酬</small><b class="{'up' if gross_pl >= 0 else 'down'}">{gross_pct_text}</b></div>
-    <div><small>目前權重</small><b>{weight:.1f}%</b></div>
-    <div><small>行情</small><b class="position-quote-stamp" data-position-stamp="1">{quote_stamp_safe}</b></div>
-  </div>
-  <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b>{weight:.1f}%</b></div>
-  <div class="position-card-actions">
-    <details class="disclosure trend" data-code="{html.escape(str(p['code']), quote=True)}" ontoggle="window.loadPositionTrend(this)">
-      <summary>📈 損益走勢</summary>
-      <div class="trend-body"><div class="sub">展開後載入一年損益走勢…</div></div>
-    </details>
-    <details class="disclosure chipdist" data-code="{html.escape(str(p['code']), quote=True)}" ontoggle="window.loadPositionChips(this)">
-      <summary>🧱 套牢籌碼分布</summary>
-      <div class="chipdist-body"><div class="sub">展開後載入近三個月分布…</div></div>
-    </details>
-    {lots_html(p, name, price['close'])}
-  </div>
+  <details class="position-more">
+    <summary>查看詳細資料</summary>
+    <div class="position-detail-body">
+      <div class="position-card-grid">
+        <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
+        <div><small>估算賣出淨損益</small><b class="{net_cls}">{net_amt:+,.0f}</b><em>{net_pct_text}</em></div>
+        <div><small>目前權重</small><b>{weight:.1f}%</b></div>
+        <div><small>行情</small><b class="position-quote-stamp" data-position-stamp="1">{quote_stamp_safe}</b></div>
+      </div>
+      <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b>{weight:.1f}%</b></div>
+      <div class="position-card-actions">
+        <details class="disclosure trend" data-code="{html.escape(str(p['code']), quote=True)}" ontoggle="window.loadPositionTrend(this)">
+          <summary>📈 損益走勢</summary>
+          <div class="trend-body"><div class="sub">展開後載入一年損益走勢…</div></div>
+        </details>
+        <details class="disclosure chipdist" data-code="{html.escape(str(p['code']), quote=True)}" ontoggle="window.loadPositionChips(this)">
+          <summary>🧱 套牢籌碼分布</summary>
+          <div class="chipdist-body"><div class="sub">展開後載入近三個月分布…</div></div>
+        </details>
+        {lots_html(p, name, price['close'])}
+      </div>
+    </div>
+  </details>
 </article>""")
         else:
             rows_html.append(f"""
@@ -18475,11 +18480,21 @@ def web_positions(uid):
     <div class="position-card-title"><span class="position-card-code">{html.escape(str(p['code']))}</span><div><h3>{html.escape(str(p['code']))}</h3><small>{p['shares']:,} 股 · 查無行情</small></div></div>
     <div class="position-card-price"><b data-position-price="1">—</b><span class="flat" data-position-pct="1">—</span></div>
   </div>
-  <div class="position-card-grid">
+  <div class="position-card-primary">
     <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
-    <div><small>行情狀態</small><b class="flat position-quote-stamp" data-position-stamp="1">暫無可驗證行情</b></div>
+    <div><small>市值</small><b>—</b></div>
+    <div><small>行情</small><b class="flat">暫無</b></div>
   </div>
-  <div class="position-card-actions">{lots_html(p, p['code'], None)}</div>
+  <details class="position-more">
+    <summary>查看詳細資料</summary>
+    <div class="position-detail-body">
+      <div class="position-card-grid">
+        <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
+        <div><small>行情狀態</small><b class="flat position-quote-stamp" data-position-stamp="1">暫無可驗證行情</b></div>
+      </div>
+      <div class="position-card-actions">{lots_html(p, p['code'], None)}</div>
+    </div>
+  </details>
 </article>""")
 
     pl_total = (((total_value - total_fee - total_cost) / total_cost * 100)
@@ -18552,7 +18567,9 @@ def web_positions(uid):
 .position-card-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
 .position-card-title{display:flex;gap:10px;min-width:0;align-items:flex-start}.position-card-title h3{margin:0;font-size:22px;line-height:1.2;color:#173b5d}.position-card-title small{display:block;margin-top:5px;color:#71859a;font-size:12px}.position-card-code{display:inline-flex;align-items:center;justify-content:center;min-width:44px;height:28px;padding:0 8px;border-radius:9px;background:#edf5fb;color:#1e5a86;font-size:12px;font-weight:800}.position-card-price{text-align:right;white-space:nowrap}.position-card-price b{display:block;font-size:26px;color:#173b5d;line-height:1.05}.position-card-price span{display:block;margin-top:5px;font-size:14px;font-weight:800}.position-card-primary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0 10px}.position-card-primary>div,.position-card-grid>div{background:#f7fafc;border-radius:13px;padding:10px}.position-card-primary small,.position-card-grid small{display:block;color:#7a8ea0;font-size:11px;margin-bottom:4px}.position-card-primary b{display:block;font-size:16px;color:#173b5d}.position-card-primary em{display:block;margin-top:2px;font-size:11px;font-style:normal;color:#7a8ea0}.position-card-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.position-card-grid b{font-size:14px;color:#294e6d;line-height:1.35;word-break:break-word}.position-card-weight{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;margin:12px 0 4px;color:#71859a;font-size:11px}.position-card-weight>div{height:7px;background:#e8eef3;border-radius:99px;overflow:hidden}.position-card-weight i{display:block;height:100%;background:linear-gradient(90deg,#4b88b1,#1d5f88);border-radius:99px}.position-card-weight b{font-size:12px;color:#294e6d}.position-card-actions{margin-top:8px}.position-card-actions>details{border-top:1px solid #edf1f4;padding:10px 0}.position-card-actions summary{color:#2a5b7f;font-weight:700;cursor:pointer}.position-card-noquote{opacity:.9}.position-quote-stamp{font-size:11px!important;color:#7a8ea0!important;font-weight:500!important}
 .bot-virtual-card{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;background:linear-gradient(135deg,#eff7fc,#f8fbfd);border:1px solid #d8e8f2;border-radius:16px;padding:12px;margin-bottom:10px}.bot-virtual-card small{display:block;color:#71859a;font-size:10px}.bot-virtual-card b{display:block;margin-top:3px;color:#173b5d;font-size:15px}.bot-virtual-card .up{color:#16814c}.bot-virtual-card .down{color:#c63b3b}
-@media(max-width:520px){.position-card{border-radius:19px;padding:15px}.position-card-title h3{font-size:20px}.position-card-price b{font-size:23px}.position-card-primary{grid-template-columns:1fr 1fr}.position-card-primary>div:last-child{grid-column:1/-1}.bot-virtual-card{grid-template-columns:1fr}.position-card-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:520px){.position-card{border-radius:19px;padding:15px}.position-card-title h3{font-size:20px}.position-card-price b{font-size:23px}.position-card-primary{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}.position-card-primary>div:last-child{grid-column:auto}.bot-virtual-card{grid-template-columns:1fr}.position-card-grid{grid-template-columns:1fr 1fr}}
+.position-more{margin-top:8px;border-top:1px solid #edf1f4}.position-more>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:space-between}.position-more>summary::-webkit-details-marker{display:none}.position-more>summary:after{content:'＋';font-size:16px;font-weight:500;color:#8294a6}.position-more[open]>summary:after{content:'−'}.position-detail-body{padding:2px 0 4px}.position-card-grid{margin-top:8px!important}.position-card-actions{margin-top:8px!important}.position-card-primary>div{min-width:0!important;min-height:58px!important;display:flex!important;flex-direction:column!important;justify-content:center!important}.position-card-primary b{font-size:17px!important;line-height:1.15!important;overflow-wrap:anywhere}
+@media(max-width:520px){.position-card-primary>div{padding:8px 6px!important;min-height:54px!important;border-radius:11px!important}.position-card-primary small{font-size:10px!important;white-space:nowrap}.position-card-primary b{font-size:14px!important}}
 </style>"""
 
     body = f"""
@@ -26052,6 +26069,26 @@ def render_turning_observation_web_body(result, status_note=None):
  .impact-detail-row>strong{{font-size:12px!important}}
 }}
 
+/* V48 UI upgrade: one authoritative contribution geometry + first-layer MACD. */
+.impact-leads{{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;align-items:stretch!important;gap:10px!important}}
+.impact-leads>div{{display:flex!important;min-width:0!important;height:184px!important}}
+.impact-lead{{width:100%!important;height:184px!important;min-height:184px!important;max-height:184px!important;box-sizing:border-box!important;display:flex!important;flex-direction:column!important}}
+.impact-lead>strong{{margin-top:auto!important}}
+.wb-macd{{display:inline-flex;align-items:center;margin:5px 5px 0 0;padding:3px 7px;border-radius:999px;font-size:10px;font-weight:900;line-height:1.2;letter-spacing:.01em}}
+.wb-macd.up{{background:#FDEBE9;color:#C9362E;border:1px solid #F3C8C4}}
+.wb-macd.down{{background:#E9F6EF;color:#08784D;border:1px solid #C8E6D7}}
+.wb-macd.flat{{background:#EEF2F5;color:#687888;border:1px solid #DDE4EA}}
+@media(max-width:640px){{
+ .impact-leads{{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}}
+ .impact-leads>div{{height:168px!important}}
+ .impact-lead{{height:168px!important;min-height:168px!important;max-height:168px!important;padding:13px 11px 11px!important}}
+ .impact-lead h3{{font-size:18px!important}}
+ .impact-lead p{{font-size:10px!important;line-height:1.45!important}}
+ .impact-lead>strong{{padding-top:7px!important}}
+ .impact-lead>strong b{{font-size:20px!important}}
+ .wb-macd{{font-size:9px;padding:3px 6px}}
+}}
+
 /* V45 RESPONSIVE: 同一份首頁同時適配手機與電腦，不再把桌面版縮成手機窄欄。 */
 .daily-home{{width:100%!important;max-width:1180px!important;margin:0 auto!important;box-sizing:border-box!important;padding:0 18px 96px!important;background:#F4F7FA!important;overflow-x:hidden!important}}
 .daily-home *{{box-sizing:border-box}}
@@ -26224,6 +26261,8 @@ def _workbench_screener_rows(mode, snapshot=None):
             "foreign_lots": _workbench_number(raw.get("foreign_lots") or raw.get("foreign_cum_lots")),
             "trust_lots": _workbench_number(raw.get("trust_lots") or raw.get("investment_trust_lots")),
             "signal": _workbench_text(signal, ""),
+            "macd_cross": macd_cross if macd_cross in ("MACD 金叉", "MACD 死叉") else "",
+            "ma_cross": ma_cross if ma_cross in ("黃金交叉", "死亡交叉") else "",
             "quality": quality_num,
             "rev": _workbench_number(raw.get("rev")),
             "val": _workbench_number(raw.get("val")),
@@ -27060,8 +27099,12 @@ def render_workbench_body(initial_tab=""):
     var turnover=r.turnover==null?null:Number(r.turnover),trend=r.source==='雷達'?('連買 '+valueText(d.streak||r.up_streak,' 日')+'　量能 '+valueText(d.vol_ratio,' 倍')+'　成交金額 '+(turnover==null?'—':turnover.toFixed(1)+' 億')):('法人近十日 '+valueText(r.institutional_lots,' 張')+'　連買 '+valueText(r.buy_days||d.streak,' 日')+'　成交金額 '+(turnover==null?'—':turnover.toFixed(1)+' 億'));
     var flow=r.source==='轉折'?'<small class="wb-turning-flow '+esc(d.flow_key||'unknown')+'">'+esc(r.signal)+'</small>':'',radarRank=r.source==='雷達'?'<span class="wb-radar-rank">雷達第 '+esc(r.radar_rank||'—')+' 名</span>':'';
     var scoreHtml=r.source==='雷達'?'<b class="wb-radar-rule">排序依據</b><small class="wb-score-parts">突破／量能／法人連買／當日漲幅</small>':(r.category==='金融'&&r.score==null?'<b class="wb-score">金融股不評分</b><small class="wb-score-parts">舊版僅列事實供判讀</small>':(r.score==null?'<b class="wb-score">—</b><small class="wb-score-parts">舊版未提供評分拆解</small>':'<b class="wb-score">'+esc(r.score)+'<small>/100 分</small></b><small class="wb-score-parts">'+esc(r.score_policy||d.score_policy||(scoreParts.length?scoreParts.join(' · '):'舊版未提供評分拆解'))+'</small>'));
-    var signalBlock=r.signal?'<span class="wb-signal"><b>'+esc(r.signal)+'</b><small>'+valueText(r.turnover,' 成交額')+'</small></span>':'<span class="wb-signal"></span>';
-    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-rich-row" onclick="return window.__wbOpenWorkbenchDetail(this)" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'" data-row-key="'+esc(r.row_key||'')+'"><span class="wb-row-main"><span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>'+radarRank+'<b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b>'+highStatus+breakout+'<small class="wb-industry">'+esc(r.industry)+'</small>'+flow+'<small class="wb-fact-line">'+basics+'</small><small class="wb-fact-line">'+trend+'</small></span><span class="wb-score-block">'+scoreHtml+'</span><span class="wb-price-block"><b class="wb-num">'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span><span class="wb-institutional wb-num"><b>'+esc(inst)+'</b><small>法人近十日</small></span>'+signalBlock+'<span>›</span></button>'+chipBlock(r.code)+'</div>'
+    var macdLabel=(r.macd_cross||'');
+    var macdClass=macdLabel==='MACD 金叉'?'up':(macdLabel==='MACD 死叉'?'down':'flat');
+    var cleanSignal=String(r.signal||'').replace(/(?:・)?MACD (?:金叉|死叉)/g,'').replace(/^・|・$/g,'').trim();
+    var signalBlock=cleanSignal?'<span class="wb-signal"><b>'+esc(cleanSignal)+'</b><small>'+valueText(r.turnover,' 成交額')+'</small></span>':'<span class="wb-signal"></span>';
+    var macdTag=macdLabel?'<span class="wb-macd '+macdClass+'">'+esc(macdLabel)+'</span>':'';
+    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-rich-row" onclick="return window.__wbOpenWorkbenchDetail(this)" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'" data-row-key="'+esc(r.row_key||'')+'"><span class="wb-row-main"><span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>'+radarRank+'<b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b>'+highStatus+breakout+macdTag+'<small class="wb-industry">'+esc(r.industry)+'</small>'+flow+'<small class="wb-fact-line">'+basics+'</small><small class="wb-fact-line">'+trend+'</small></span><span class="wb-score-block">'+scoreHtml+'</span><span class="wb-price-block"><b class="wb-num">'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span><span class="wb-institutional wb-num"><b>'+esc(inst)+'</b><small>法人近十日</small></span>'+signalBlock+'<span>›</span></button>'+chipBlock(r.code)+'</div>'
   }
   function renderTurningRow(r){
     var d=r.detail||{},state=d.state||'observing',stateLabel=state==='invalid'?'失敗':(state==='confirmed'?'已確認':'觀察中'),invalidReasons=Array.isArray(d.invalid_reasons)?d.invalid_reasons.filter(Boolean):[],reasons=(state==='invalid'&&invalidReasons.length?invalidReasons:(Array.isArray(d.reasons)?d.reasons:[])),reason=(state==='invalid'?(invalidReasons[0]||d.state_reason||'原始快照尚未提供具體失敗原因'):(d.state_reason||'轉折細節資料不足'));
