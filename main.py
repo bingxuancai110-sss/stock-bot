@@ -23936,13 +23936,6 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     <small>{holding_day_word(holding)}{change_word} {abs(pct):.2f}%　{html.escape(contribution_basis_text(holding))}</small>{realized_html}</div>
   <strong class="{value_class}">{direction}約 {abs(contribution):.2f}%</strong>
 </div>''')
-        if len(entries) < 5:
-            for idx in range(len(entries) + 1, 6):
-                rows.append(f"""<div class=\"impact-detail-row impact-detail-placeholder\">
-  <span class=\"impact-rank\">{idx}</span>
-  <div class=\"impact-detail-name\"><b>—</b><small>目前沒有第 {idx} 檔可用的貢獻資料</small></div>
-  <strong class=\"{value_class}\">—</strong>
-</div>""")
         return ''.join(rows)
 
     positive_lead = positive_entries[0] if positive_entries else None
@@ -23988,8 +23981,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         basis_notice = ('<div class="contribution-basis-notice fallback"><b>今日有減碼，但操作前基準資料不足：</b>'
                         '目前暫以減碼後權重顯示，未將不完整資料包裝為精確日內報酬。</div>')
     # +/- 貢獻：主卡 + 正負各 5 檔明細。只改這一區，其餘首頁維持原樣。
-    positive_rows_html = contribution_detail_rows(positive_entries[:5], "up")
-    negative_rows_html = contribution_detail_rows(negative_entries[:5], "down")
+    positive_rows_html = contribution_detail_rows(positive_entries, "up")
+    negative_rows_html = contribution_detail_rows(negative_entries, "down")
     contribution_html = f'''<section class="daily-card contribution-card" aria-label="我的正負貢獻">
   <div class="impact-leads">
     <div data-home-impact-lead="positive">
@@ -24036,7 +24029,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   function setHtml(selector,value){var el=document.querySelector(selector);if(el)el.innerHTML=value;}
   function realized(item){if(item.realized_pl==null)return '';var n=Number(item.realized_pl);if(!Number.isFinite(n))return '';return '<small class="impact-realized '+(n>=0?'up':'down')+'">今日已實現損益：'+(n>=0?'+':'')+n.toLocaleString('zh-TW',{maximumFractionDigits:0})+' 元</small>';}
   function leadHtml(item,title,kind){if(!item)return '<div class="impact-lead impact-muted"><small>'+esc(title)+'</small><b>目前沒有資料</b></div>';var change=item.pct>0?'上漲':'下跌',amount=item.contribution>0?'增加約':'減少約';return '<div class="impact-lead '+kind+'"><small>'+esc(title)+'</small><h3>'+esc(item.name)+'</h3><p>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%・'+esc(item.basis_text)+'</p><strong><span>對整體組合'+amount+'</span><b>'+Math.abs(Number(item.contribution)).toFixed(2)+'%</b></strong></div>'; }
-  function rowsHtml(items,kind){var rows=items||[];if(!rows.length)return '<div class="impact-empty">目前沒有可用的行情資料。</div>';var html=rows.slice(0,5).map(function(item,index){var positive=Number(item.contribution)>0,change=Number(item.pct)>0?'上漲':'下跌',direction=positive?'增加':'減少';return '<div class="impact-detail-row"><span class="impact-rank">'+(index+1)+'</span><div class="impact-detail-name"><b>'+esc(item.name)+'</b><small>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%　'+esc(item.basis_text)+'</small>'+realized(item)+'</div><strong class="'+kind+'">'+direction+'約 '+Math.abs(Number(item.contribution)).toFixed(2)+'%</strong></div>';}).join('');for(var i=rows.length+1;i<=5;i++)html+='<div class="impact-detail-row impact-detail-placeholder"><span class="impact-rank">'+i+'</span><div class="impact-detail-name"><b>—</b><small>目前沒有第 '+i+' 檔可用的貢獻資料</small></div><strong class="'+kind+'">—</strong></div>';return html;}
+  function rowsHtml(items,kind){if(!items||!items.length)return '<div class="impact-empty">目前沒有可用的行情資料。</div>';return items.map(function(item,index){var positive=item.contribution>0,change=item.pct>0?'上漲':'下跌',direction=positive?'增加':'減少';return '<div class="impact-detail-row"><span class="impact-rank">'+(index+1)+'</span><div class="impact-detail-name"><b>'+esc(item.name)+'</b><small>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%　'+esc(item.basis_text)+'</small>'+realized(item)+'</div><strong class="'+kind+'">'+direction+'約 '+Math.abs(Number(item.contribution)).toFixed(2)+'%</strong></div>';}).join('');}
   function refresh(){
     // stopped 時仍然要送出請求（間隔已拉長到 5 分鐘），
     // 由伺服器的 market_open 決定要不要恢復——判斷時段的事交給伺服器，
@@ -25947,63 +25940,67 @@ def render_turning_observation_web_body(result, status_note=None):
 .turning-refresh-note{{padding:9px 11px;background:#F9F9FB;border-left:3px solid var(--brass);border-radius:8px;color:var(--ink-soft);font-size:12.5px;line-height:1.6}}
 @media (max-width:480px){{.turning-facts{{grid-template-columns:1fr}}.turning-row-head b{{font-size:16px}}}}
 
-/* V39 FINAL: reference-locked Hero + +/- contribution layout. */
-.daily-home{{width:100%!important;max-width:none!important;margin:0!important;padding:0 0 96px!important;background:#F4F7FA!important;color:#172B43!important;overflow-x:hidden!important}}
-.daily-hero{{position:relative!important;width:100%!important;min-height:0!important;height:auto!important;aspect-ratio:1000 / 633!important;margin:0!important;padding:0!important;border-radius:0 0 20px 20px!important;overflow:hidden!important;color:#fff!important;background:#102B45!important;box-shadow:0 10px 26px rgba(20,39,58,.16)!important}}
-.hero-101-photo{{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;object-fit:cover!important;object-position:center center!important;display:block!important;z-index:1!important;opacity:1!important;transform:none!important}}
-.daily-hero:before{{content:""!important;position:absolute!important;inset:0!important;z-index:2!important;pointer-events:none!important;background:linear-gradient(90deg,rgba(7,25,43,.72) 0%,rgba(7,25,43,.34) 38%,rgba(7,25,43,.04) 72%,rgba(7,25,43,.01) 100%),linear-gradient(180deg,rgba(7,25,43,0) 45%,rgba(7,25,43,.62) 100%)!important}}
+/* V35 FINAL: Hero uses an embedded real Taipei 101 photo; +/- contribution follows the reference card/table layout. */
+.daily-home{{max-width:760px!important;margin:0 auto!important;padding:0 0 96px!important;background:#F4F7FA!important;color:#172B43!important;overflow:visible!important}}
+.daily-hero{{position:relative!important;min-height:335px!important;height:335px!important;margin:0!important;padding:24px 19px 16px!important;border-radius:0 0 26px 26px!important;overflow:hidden!important;color:#fff!important;background:#102B45!important;box-shadow:0 12px 30px rgba(20,39,58,.20)!important}}
+.hero-101-photo{{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;object-fit:cover!important;object-position:50% 50%!important;display:block!important;z-index:1!important;opacity:1!important;transform:none!important}}
+.daily-hero>.hero-101-photo{{z-index:1!important}}
+.daily-hero:before{{content:""!important;position:absolute!important;inset:0!important;z-index:0!important;pointer-events:none!important;background:linear-gradient(90deg,rgba(7,25,43,.78) 0%,rgba(7,25,43,.48) 36%,rgba(7,25,43,.08) 68%,rgba(7,25,43,.02) 100%),linear-gradient(180deg,rgba(7,25,43,.02) 35%,rgba(7,25,43,.52) 100%)!important}}
 .daily-hero:after{{content:none!important}}
-.daily-hero>.hero-101-photo{{position:absolute!important;z-index:1!important}}
-.daily-hero .eyebrow,.daily-hero h1,.daily-hero>p,.daily-hero .market-strip,.daily-hero .hero-summary-stack{{position:relative!important;z-index:4!important}}
+.daily-hero>*{{position:relative!important;z-index:2!important}}
 .daily-hero h1{{font-size:31px!important;font-weight:800!important;letter-spacing:-.03em!important;text-shadow:0 2px 14px rgba(0,0,0,.30)!important}}
 .daily-hero>p{{font-size:14px!important;color:#F2F7FB!important;text-shadow:0 1px 8px rgba(0,0,0,.28)!important}}
-.market-strip>span{{background:rgba(255,255,255,.94)!important;border:1px solid rgba(255,255,255,.82)!important;box-shadow:0 6px 18px rgba(0,0,0,.14)!important}}
-.hero-summary-panel,.hero-quote-panel{{background:rgba(8,29,48,.52)!important;border-color:rgba(255,255,255,.22)!important;backdrop-filter:blur(8px)!important}}
+.market-strip>span{{background:rgba(255,255,255,.95)!important;border:1px solid rgba(255,255,255,.8)!important;box-shadow:0 6px 18px rgba(0,0,0,.14)!important}}
+.hero-summary-panel,.hero-quote-panel{{background:rgba(8,29,48,.56)!important;border-color:rgba(255,255,255,.22)!important;backdrop-filter:blur(9px)!important}}
+.portfolio-highlights{{display:none!important}}
 
-/* +/- 貢獻：完全照參考圖，兩張主卡永遠並排，下面各 5 個位置。 */
-.contribution-card{{margin:0!important;padding:0 7.3%!important;background:#fff!important;border:0!important;border-radius:0!important;box-shadow:none!important;overflow:visible!important}}
+/* +/- 貢獻：只改這一區；兩張主卡固定並排，下方才是明細。 */
+.contribution-card{{margin:10px 10px 12px!important;padding:0!important;background:#fff!important;border:0!important;border-radius:18px!important;box-shadow:none!important;overflow:hidden!important}}
 .contribution-card .contribution-basis-notice,.contribution-card .impact-stale{{display:none!important}}
-.impact-leads{{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:14px!important;margin:0 0 12px!important}}
+.impact-leads{{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:9px!important;margin:0 0 6px!important}}
 .impact-leads>div{{min-width:0!important}}
-.impact-lead{{box-sizing:border-box!important;width:100%!important;height:177px!important;padding:15px 14px 13px!important;border-radius:14px!important;border:1px solid transparent!important;display:flex!important;flex-direction:column!important;justify-content:flex-start!important;background:#fff!important}}
-.impact-lead.impact-up{{background:#FFF4F2!important;border-color:#EED8D3!important}}
-.impact-lead.impact-down{{background:#F1F9F5!important;border-color:#D8E8DF!important}}
-.impact-lead small{{display:block!important;margin:0 0 8px!important;color:#6E7F90!important;font-size:11px!important;line-height:1.25!important;font-weight:700!important}}
-.impact-lead h3{{margin:0 0 8px!important;color:#24384C!important;font-size:21px!important;line-height:1.18!important;font-weight:800!important;letter-spacing:-.035em!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}}
-.impact-lead p{{margin:0!important;color:#7C8792!important;font-size:10.5px!important;line-height:1.55!important}}
-.impact-lead>strong{{display:block!important;margin-top:auto!important;padding-top:10px!important;color:inherit!important;font-size:10.5px!important;line-height:1.2!important;font-weight:700!important}}
-.impact-lead>strong span{{display:block!important;font-size:10.5px!important;font-weight:700!important}}
-.impact-lead>strong b{{display:block!important;margin-top:4px!important;font-size:23px!important;line-height:1!important;font-weight:850!important;letter-spacing:-.04em!important}}
-.impact-lead.impact-up>strong,.impact-up>strong b{{color:#D65A52!important}}
-.impact-lead.impact-down>strong,.impact-down>strong b{{color:#15986A!important}}
-.impact-details{{margin:0!important;border-top:1px solid #E6EBEF!important}}
-.impact-details summary{{list-style:none!important;cursor:pointer!important;padding:14px 2px!important;color:#53697C!important;font-size:14px!important;font-weight:800!important;line-height:1.25!important}}
+.impact-lead{{box-sizing:border-box!important;min-width:0!important;height:176px!important;padding:15px 14px 13px!important;border-radius:14px!important;border:1px solid transparent!important;display:flex!important;flex-direction:column!important;justify-content:flex-start!important;background:#fff!important}}
+.impact-lead.impact-up{{background:#FFF3F1!important;border-color:#F2D4CF!important}}
+.impact-lead.impact-down{{background:#F1F9F5!important;border-color:#D4E9DE!important}}
+.impact-lead small{{display:block!important;margin:0 0 8px!important;color:#788797!important;font-size:11px!important;line-height:1.25!important;font-weight:700!important}}
+.impact-lead h3{{margin:0 0 8px!important;color:#1B2F45!important;font-size:21px!important;line-height:1.2!important;font-weight:800!important;letter-spacing:-.035em!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}}
+.impact-lead p{{margin:0!important;color:#7B8793!important;font-size:10.5px!important;line-height:1.55!important}}
+.impact-lead>strong{{display:block!important;margin-top:auto!important;padding-top:10px!important;color:inherit!important;font-size:11px!important;line-height:1.2!important;font-weight:700!important}}
+.impact-lead>strong span{{display:block!important;font-size:11px!important;font-weight:700!important}}
+.impact-lead>strong b{{display:block!important;margin-top:3px!important;font-size:25px!important;line-height:1!important;font-weight:850!important;letter-spacing:-.04em!important}}
+.impact-lead.impact-up>strong,.impact-up>strong b{{color:#D74B43!important}}
+.impact-lead.impact-down>strong,.impact-down>strong b{{color:#159B68!important}}
+.impact-details{{margin:0!important;border-top:1px solid #E8EDF2!important}}
+.impact-details summary{{list-style:none!important;cursor:pointer!important;padding:14px 4px!important;color:#526B82!important;font-size:13px!important;font-weight:800!important;line-height:1.25!important}}
 .impact-details summary::-webkit-details-marker{{display:none!important}}
-.impact-details summary:before{{content:'⌄';display:inline-block;margin-right:7px;color:#7A8C9D!important;transform:translateY(-1px)!important}}
+.impact-details summary:before{{content:'⌄';display:inline-block;margin-right:6px;color:#7C8FA2!important;transform:translateY(-1px)!important}}
 .impact-details[open] summary:before{{content:'⌃'!important}}
-.impact-detail-row{{display:grid!important;grid-template-columns:29px minmax(0,1fr) auto!important;gap:9px!important;align-items:center!important;padding:12px 1px!important;border-top:1px solid #EDF1F4!important;min-height:66px!important;background:#fff!important}}
-.impact-rank{{width:27px!important;height:27px!important;display:flex!important;align-items:center!important;justify-content:center!important;border-radius:50%!important;background:#F3F4F5!important;color:#84909B!important;font-size:11px!important;font-weight:700!important}}
+.impact-detail-row{{display:grid!important;grid-template-columns:28px minmax(0,1fr) auto!important;gap:9px!important;align-items:center!important;padding:11px 4px!important;border-top:1px solid #EDF1F4!important;min-height:62px!important;background:#fff!important}}
+.impact-rank{{width:26px!important;height:26px!important;display:flex!important;align-items:center!important;justify-content:center!important;border-radius:50%!important;background:#F1F3F5!important;color:#8291A0!important;font-size:11px!important;font-weight:700!important}}
 .impact-detail-name{{min-width:0!important}}
-.impact-detail-name b{{display:block!important;color:#263A4D!important;font-size:16px!important;line-height:1.25!important;font-weight:750!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}}
-.impact-detail-name small{{display:block!important;margin-top:4px!important;color:#8995A1!important;font-size:10.5px!important;line-height:1.45!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}}
+.impact-detail-name b{{display:block!important;color:#25384C!important;font-size:16px!important;line-height:1.25!important;font-weight:750!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}}
+.impact-detail-name small{{display:block!important;margin-top:4px!important;color:#8A98A7!important;font-size:10.5px!important;line-height:1.45!important}}
 .impact-detail-row>strong{{white-space:nowrap!important;text-align:right!important;font-size:13px!important;font-weight:800!important}}
-.impact-detail-row>strong.up{{color:#D65A52!important}}.impact-detail-row>strong.down{{color:#15986A!important}}
-.impact-detail-placeholder{{opacity:.48!important}}
-.impact-detail-placeholder .impact-rank{{background:#F6F7F8!important}}
-.impact-detail-placeholder .impact-detail-name b,.impact-detail-placeholder>strong{{color:#A5AFB8!important}}
+.impact-detail-row>strong.up{{color:#D74B43!important}}.impact-detail-row>strong.down{{color:#159B68!important}}
 .impact-realized{{display:none!important}}
 .contribution-footnote{{display:none!important}}
 @media(max-width:640px){{
- .daily-home{{width:100vw!important;max-width:100vw!important;margin-left:calc(50% - 50vw)!important;margin-right:calc(50% - 50vw)!important}}
- .daily-hero{{aspect-ratio:1000 / 633!important;height:auto!important;min-height:0!important}}
- .hero-101-photo{{object-position:center center!important}}
+ .daily-hero{{min-height:330px!important;height:330px!important;padding:21px 15px 15px!important}}
+ .hero-101-photo{{object-position:50% 50%!important}}
  .daily-hero h1{{font-size:27px!important}}
- .impact-leads{{grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;gap:12px!important}}
- .contribution-card{{padding:0 7.3%!important}}
- .impact-lead{{height:177px!important;padding:15px 13px 13px!important}}
- .impact-lead h3{{font-size:20px!important}}
- .impact-lead p{{font-size:10px!important}}
- .impact-lead>strong b{{font-size:22px!important}}
+ .impact-leads{{grid-template-columns:1fr 1fr!important;gap:10px!important}}
+ .impact-lead{{height:178px!important;padding:14px 13px 12px!important;border-radius:14px!important}}
+ .impact-lead small{{font-size:10px!important;margin-bottom:7px!important}}
+ .impact-lead h3{{font-size:18px!important;margin-bottom:7px!important}}
+ .impact-lead p{{font-size:9.5px!important;line-height:1.5!important}}
+ .impact-lead>strong{{font-size:10px!important;padding-top:8px!important}}
+ .impact-lead>strong span{{font-size:10px!important}}
+ .impact-lead>strong b{{font-size:21px!important}}
+ .impact-details summary{{padding:13px 3px!important;font-size:13px!important}}
+ .impact-detail-row{{grid-template-columns:26px minmax(0,1fr) auto!important;gap:7px!important;padding:11px 2px!important}}
+ .impact-detail-name b{{font-size:15px!important}}
+ .impact-detail-name small{{font-size:10px!important}}
+ .impact-detail-row>strong{{font-size:12px!important}}
 }}
 </style>
 {"".join(sections)}
