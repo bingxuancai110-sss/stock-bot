@@ -6067,8 +6067,9 @@ LEADERBOARD_MIN_SNAPSHOTS = 3
 
 
 # 機器人組合的模擬參數。全部寫死並公開，讓人看得出結果是怎麼來的。
-BOT_TOP_N = 5            # 每個推薦日等權買進前幾名
+BOT_TOP_N = 10           # 每個推薦日納入前 10 名
 BOT_HOLD_DAYS = 20       # D 方案最大持有天數
+BOT_MAX_WEIGHT = 0.20    # 單一股票持倉權重上限 20%
 BOT_SCORE_DROP_POINTS = 15.0  # 自持有後最高分回落 15 分視為大幅下降（實驗門檻）
 BOT_INITIAL_CAPITAL = 1_000_000.0  # 虛擬帳戶固定初始資產；不途中補資金
 BOT_MODES = (("blackhorse", "黑馬機器人"), ("radar", "雷達機器人"))
@@ -6077,7 +6078,7 @@ BOT_MODES = (("blackhorse", "黑馬機器人"), ("radar", "雷達機器人"))
 def simulate_bot_portfolio(mode, days=365):
     """
     D 方案實驗版機器人：
-      1) 每個推薦日取前 BOT_TOP_N 名、等權買進；
+      1) 每個推薦日取前 BOT_TOP_N 名；基準配置為等權，且單一股票權重上限 BOT_MAX_WEIGHT；
       2) 訊號消失（下一個有推薦紀錄的交易日不再位於前 N 名） -> 賣出；
       3) 分數自持有後最高分回落至少 BOT_SCORE_DROP_POINTS 分 -> 賣出；
       4) 最多持有 BOT_HOLD_DAYS 個交易日 -> 到期賣出。
@@ -6498,7 +6499,7 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             "initial_capital": sim.get("initial_capital", BOT_INITIAL_CAPITAL),
             "virtual_asset": sim.get("virtual_asset"),
             "virtual_curve": sim.get("virtual_curve") or [],
-            "bot_rule": (f"D 方案：每個推薦日等權買進前 {BOT_TOP_N} 名；"
+            "bot_rule": (f"D 方案：每個推薦日納入前 {BOT_TOP_N} 名；單一股票權重上限 {BOT_MAX_WEIGHT*100:.0f}%；"
                          f"訊號消失或分數自持有後高點下降 {BOT_SCORE_DROP_POINTS:.0f} 分即賣出，"
                          f"最晚持有 {BOT_HOLD_DAYS} 個交易日；已扣手續費與證交稅。"
                          f"共 {sim['picks_days']} 個推薦日。"),
@@ -27047,8 +27048,11 @@ def _workbench_holding_rows(uid):
 
 
 def _build_workbench_core_payload(uid):
-    """選股台首屏極簡快照：只讀黑馬／雷達與必要的排行摘要。
-    轉折、籌碼、ETF、持股一律延後到分頁點開後才讀，避免任何慢來源阻塞入口。
+    """選股台首屏只讀兩份已保存快照；禁止在 HTTP 首屏做任何重掃描或額外排行查詢。
+
+    黑馬：正式 screener 快照。
+    雷達：盤中先讀最近 radar_live 快照，沒有才讀正式 radar 快照。
+    成效、轉折、籌碼、ETF、持股與個人排行全部延後，不阻塞入口。
     """
     cache_key = "core:" + str(uid or "anonymous")
     now = time.time()
@@ -27064,65 +27068,69 @@ def _build_workbench_core_payload(uid):
         "籌碼": {"available": True, "lazy": True, "note": "點開分頁後才載入最近有效籌碼快照。"},
         "ETF": {"available": True, "lazy": True, "note": "點開分頁後才載入最近有效 ETF 排名。"},
         "持股": {"available": True, "lazy": True, "note": "點開分頁後才載入你的持股與已保存評分。"},
-        "成效": {"available": True, "lazy": False},
+        "成效": {"available": True, "lazy": True, "note": "點開成效後才載入實驗資料。"},
     }
-    rows = []
-    score_changes = []
+    rows=[]
 
-    # 首屏只允許兩個真正的選股來源；每個來源各自失敗也不能讓另一個消失。
-    for source, mode in (("黑馬", "blackhorse"), ("雷達", "radar")):
-        try:
-            snap = _load_persisted_screener_snapshot(mode)
-            if snap:
-                x, changes = _workbench_score_changes_and_rows(snap, mode)
-                rows.extend(x)
-                if source == "黑馬":
-                    score_changes.extend(changes)
-                sources[source].update({
-                    "available": True,
-                    "date": str(snap.get("source_date") or "未標日期"),
-                    "computed_at": str(snap.get("computed_at") or ""),
-                })
-            else:
-                sources[source]["note"] = "目前沒有可用的已保存快照；入口保留，等待下一次正式快照。"
-        except Exception as exc:
-            print(f"⚠️ 工作台首屏 {source} 快照失敗：{exc}")
-            sources[source]["note"] = "此來源暫時無法載入，其他分頁不受影響。"
+    # 只做兩次極輕量快照讀取；任何一份失敗都不能阻塞另一份。
+    try:
+        snap = _load_persisted_screener_snapshot("blackhorse")
+        if snap:
+            rows.extend(_workbench_screener_rows("blackhorse", snap))
+            sources["黑馬"].update({"available": True,
+                "date": str(snap.get("source_date") or "未標日期"),
+                "computed_at": str(snap.get("computed_at") or "")})
+        else:
+            sources["黑馬"]["note"]="目前沒有可用的已保存黑馬快照。"
+    except Exception as exc:
+        print(f"⚠️ 工作台黑馬快照讀取失敗：{exc}")
+        sources["黑馬"]["note"]="黑馬快照暫時無法載入，其他來源不受影響。"
 
-    # 個人排行榜摘要不是選股台首屏必要資料；只有極輕量取得成功才附上。
-    rank_summary = {}
-    if uid:
-        try:
-            rank_summary = get_fast_rank_summary(uid) or {}
-        except Exception as exc:
-            print(f"⚠️ 工作台首屏排行摘要略過：{exc}")
+    try:
+        radar = None
+        if _is_taiwan_intraday_window():
+            try:
+                radar = _load_recent_live_radar_snapshot(max_age_seconds=RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS)
+            except Exception as exc:
+                print(f"⚠️ 工作台盤中雷達快照略過：{exc}")
+        if radar:
+            sources["雷達"].update({"available": True,
+                "date": str(radar.get("source_date") or "未標日期"),
+                "computed_at": str(radar.get("scan_finished_at") or ""),
+                "intraday": True, "source": "盤中雷達快照"})
+        else:
+            radar = _load_persisted_screener_snapshot("radar")
+            if radar:
+                sources["雷達"].update({"available": True,
+                    "date": str(radar.get("source_date") or "未標日期"),
+                    "computed_at": str(radar.get("computed_at") or ""),
+                    "intraday": False, "source": "最近已保存雷達快照"})
+        if radar:
+            rows.extend(_workbench_screener_rows("radar", radar))
+        else:
+            sources["雷達"]["note"]="目前沒有可用的雷達快照。"
+    except Exception as exc:
+        print(f"⚠️ 工作台雷達快照讀取失敗：{exc}")
+        sources["雷達"]["note"]="雷達快照暫時無法載入，其他來源不受影響。"
 
-    seen, deduped = set(), []
-    for row in rows:
-        key = row.get("row_key") or (row.get("source"), row.get("code"))
-        if key not in seen:
-            seen.add(key)
-            deduped.append(row)
-
-    server_time = taiwan_now().isoformat()
+    # 分數變化不再阻塞首屏；點開黑馬／成效時再讀取。
+    server_time=taiwan_now().isoformat()
     for meta in sources.values():
-        if isinstance(meta, dict):
-            meta.setdefault("server_time", server_time)
-
-    value = {
-        "ok": True,
-        "rows": deduped,
-        "sources": sources,
-        "personal": {"positions": [], "rank_summary": rank_summary},
-        "score_changes": score_changes,
-        "market_open": bool(_is_taiwan_intraday_window()),
-        "server_time": server_time,
-        "note": "首屏只載入已保存的黑馬／雷達；轉折、籌碼、ETF、持股點開分頁後才載入，避免任何慢來源卡住選股台。",
-    }
+        if isinstance(meta,dict): meta.setdefault("server_time",server_time)
+    seen=set();deduped=[]
+    for row in rows:
+        key=row.get("row_key") or (row.get("source"),row.get("code"))
+        if key not in seen:
+            seen.add(key);deduped.append(row)
+    value={"ok":True,"rows":deduped,"sources":sources,
+           "personal":{"positions":[],"rank_summary":{}},
+           "score_changes":[],
+           "market_open":bool(_is_taiwan_intraday_window()),
+           "server_time":server_time,
+           "note":"首屏只讀已保存的黑馬／雷達快照；分數變化、成效、轉折、籌碼、ETF、持股與排行均延後載入。"}
     with _workbench_snapshot_cache_lock:
-        _workbench_snapshot_cache[cache_key] = {"at": time.time(), "value": value}
+        _workbench_snapshot_cache[cache_key]={"at":time.time(),"value":value}
     return value
-
 
 def _workbench_source_payload(uid, source):
     source=str(source or "").strip()
