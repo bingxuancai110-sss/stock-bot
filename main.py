@@ -26052,6 +26052,63 @@ def render_turning_observation_web_body(result, status_note=None):
  .impact-detail-name small{{font-size:10px!important}}
  .impact-detail-row>strong{{font-size:12px!important}}
 }}
+
+/* V45 RESPONSIVE: 同一份首頁同時適配手機與電腦，不再把桌面版縮成手機窄欄。 */
+.daily-home{{width:100%!important;max-width:1180px!important;margin:0 auto!important;box-sizing:border-box!important;padding:0 18px 96px!important;background:#F4F7FA!important;overflow-x:hidden!important}}
+.daily-home *{{box-sizing:border-box}}
+.daily-hero{{width:100%!important}}
+.hero-101-photo{{width:100%!important;display:block!important}}
+.home-portfolio-card,.daily-card,.position-journal,.home-detail-collapse{{width:100%!important}}
+.home-portfolio-grid{{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:10px!important}}
+.impact-leads{{width:100%!important}}
+.impact-details{{width:100%!important}}
+.position-journal-table{{width:100%!important;overflow-x:auto!important}}
+@media(min-width:900px){{
+ .daily-home{{padding-left:24px!important;padding-right:24px!important}}
+ .daily-hero{{border-radius:0 0 28px 28px!important}}
+ .hero-101-photo{{aspect-ratio:16/7!important;object-fit:cover!important;object-position:center 52%!important}}
+ .daily-hero h1{{font-size:clamp(30px,3vw,40px)!important}}
+ .market-strip{{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:10px!important}}
+ .market-strip>span{{padding:13px 15px!important}}
+ .market-strip b{{font-size:21px!important}}
+ .home-portfolio-card{{padding:20px!important;border-radius:16px!important}}
+ .home-portfolio-grid{{gap:12px!important}}
+ .impact-leads{{gap:12px!important}}
+ .impact-lead{{min-height:176px!important;height:auto!important;padding:18px!important}}
+ .impact-lead h3{{font-size:24px!important}}
+ .impact-lead p{{font-size:12px!important}}
+ .impact-lead>strong b{{font-size:27px!important}}
+ .impact-detail-row{{min-height:68px!important;padding:12px 8px!important}}
+ .impact-detail-name b{{font-size:17px!important}}
+ .impact-detail-name small{{font-size:11.5px!important}}
+ .daily-card{{padding:18px!important;border-radius:16px!important}}
+ .daily-section-title h2{{font-size:20px!important}}
+ .position-journal-head{{padding:17px 20px!important}}
+}}
+@media(min-width:1280px){{
+ .daily-home{{max-width:1240px!important;padding-left:30px!important;padding-right:30px!important}}
+ .daily-hero{{display:grid!important;grid-template-columns:minmax(0,1.35fr) minmax(360px,.65fr)!important;align-items:end!important}}
+ .hero-101-photo{{grid-column:1/-1;grid-row:1;aspect-ratio:16/6!important}}
+ .daily-hero:before{{z-index:2!important}}
+ .daily-hero>*:not(.hero-101-photo){{position:relative!important;z-index:3!important}}
+ .daily-hero .market-strip{{max-width:620px!important}}
+}}
+@media(max-width:899px){{
+ .daily-home{{max-width:760px!important;padding-left:12px!important;padding-right:12px!important}}
+}}
+@media(max-width:640px){{
+ .daily-home{{width:100%!important;max-width:100%!important;padding-left:0!important;padding-right:0!important;padding-bottom:82px!important}}
+ .daily-hero{{width:100%!important;border-radius:0 0 18px 18px!important}}
+ .hero-101-photo{{width:100%!important;aspect-ratio:1000/633!important;object-fit:cover!important;object-position:center 48%!important}}
+ .home-portfolio-card,.daily-card{{border-radius:12px!important;margin-left:0!important;margin-right:0!important}}
+ .home-portfolio-grid{{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+ .home-metric-main{{grid-column:span 2!important}}
+ .impact-leads{{grid-template-columns:1fr 1fr!important;gap:9px!important}}
+ .impact-lead{{height:160px!important;min-height:160px!important;padding:14px 11px 12px!important}}
+ .impact-lead h3{{font-size:18px!important}}
+ .impact-lead p{{font-size:9.5px!important}}
+ .impact-detail-row{{grid-template-columns:26px minmax(0,1fr) auto!important;gap:7px!important}}
+}}
 </style>
 {"".join(sections)}
 <div class="callout"><b>資料限制</b><br><span style="font-size:12.5px;color:var(--ink-faint)">法人資料需等 T86 更新；資料不足時不建立訊號。轉折狀態是規則式觀察，不構成投資建議。</span></div>'''
