@@ -6237,8 +6237,43 @@ def simulate_bot_portfolio(mode, days=365):
     virtual_curve = [(d, BOT_INITIAL_CAPITAL * (1.0 + ret / 100.0)) for d, ret in curve]
     virtual_asset = virtual_curve[-1][1] if virtual_curve else BOT_INITIAL_CAPITAL
 
-    # 最後交易日仍開放的部位；已退出 lot 不顯示為目前持股。
+    # 歷史操作帳本：每一筆 lot 都保留買入、賣出、持有天數、原因與淨報酬。
+    # 這裡只整理模擬過程中「實際已退出」的 lot，不另造交易；虛擬資產本身
+    # 仍以同一條 NAV 曲線計算，避免畫面上的歷史明細與資產數字使用不同口徑。
     last_i = len(trading_days) - 1
+    history = []
+    for lot in lots:
+        sell_i = lot.get("sell_i")
+        if sell_i is None or sell_i > last_i:
+            continue
+        code = lot["code"]
+        m = series.get(code) or {}
+        buy_i = lot.get("buy_i")
+        if buy_i is None or buy_i >= len(trading_days) or sell_i >= len(trading_days):
+            continue
+        buy_date = trading_days[buy_i]
+        sell_date = trading_days[sell_i]
+        buy_p = m.get(buy_date)
+        sell_p = m.get(sell_date)
+        if not buy_p or not sell_p:
+            continue
+        gross_pct = (sell_p / buy_p - 1.0) * 100.0
+        net_pct = gross_pct - fee_rate * 100.0 - TAX_RATE_STOCK * 100.0
+        if sell_i == buy_i + 1:
+            # 買入日的手續費已在 NAV 的隔日報酬扣除；賣出日再扣一次。
+            net_pct = gross_pct - fee_rate * 200.0 - TAX_RATE_STOCK * 100.0
+        history.append({
+            "code": code, "name": lot.get("name") or code,
+            "buy_date": buy_date, "sell_date": sell_date,
+            "buy_price": float(buy_p), "sell_price": float(sell_p),
+            "hold_days": max(0, sell_i - buy_i),
+            "buy_score": lot.get("buy_score"),
+            "exit_reason": lot.get("exit_reason") or "—",
+            "return_pct": net_pct,
+        })
+    history.sort(key=lambda x: (x["sell_date"], x["buy_date"], str(x["code"])), reverse=True)
+
+    # 最後交易日仍開放的部位；已退出 lot 不顯示為目前持股。
     merged = {}
     for lot in lots:
         sell_i = lot.get("sell_i")
@@ -6275,7 +6310,7 @@ def simulate_bot_portfolio(mode, days=365):
     return {
         "curve": curve, "virtual_curve": virtual_curve,
         "initial_capital": BOT_INITIAL_CAPITAL, "virtual_asset": virtual_asset,
-        "holdings": holdings, "picks_days": len(by_date),
+        "holdings": holdings, "history": history, "picks_days": len(by_date),
         "strategy_code": "D10", "strategy_label": "前10名／單股上限20%／訊號消失或分數下降15分／20日到期，先到先賣",
     }
 
@@ -6498,6 +6533,7 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             "is_bot": True,
             "bot_mode": bot_mode,
             "bot_holdings": sim["holdings"],
+            "bot_history": sim.get("history") or [],
             "initial_capital": sim.get("initial_capital", BOT_INITIAL_CAPITAL),
             "virtual_asset": sim.get("virtual_asset"),
             "virtual_curve": sim.get("virtual_curve") or [],
@@ -16263,6 +16299,14 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .bot-hold-pct{text-align:right;font-size:13px;font-weight:700;
   font-variant-numeric:tabular-nums}
 .bot-hold-meta{grid-column:1/-1;color:#8E959D;font-size:10.5px}
+.bot-history-list{display:block;margin-top:14px;padding-top:12px;border-top:1px solid #E5E9EE}
+.rank-detail-open .rank-detail-title{font-weight:700;color:var(--ink);font-size:13px;margin-bottom:6px}
+.bot-history-row{display:grid;grid-template-columns:1.1fr 1fr 1fr .8fr 1.3fr;gap:7px;padding:8px 0;border-top:1px solid #EDF0F4;align-items:center;font-size:11px;color:#5D6C7C}
+.bot-history-row:first-child{border-top:0}
+.bot-history-main b{display:block;color:#1B2027;font-size:12.5px}
+.bot-history-main small{color:#8E959D;font-size:10px}
+.bot-history-reason{color:#66788B;line-height:1.5}
+@media(max-width:640px){.bot-history-row{grid-template-columns:1fr 1fr;gap:5px 8px}.bot-history-main{grid-column:1/-1}.bot-history-reason{grid-column:1/-1}}
 .rank-tabs{display:flex;gap:4px;margin:18px 0 8px;padding:4px;background:#D7D9D2;
   border-radius:11px;flex-wrap:nowrap}
 .rank-tabs a,.rank-tabs button{flex:1;text-align:center;padding:8px 7px;background:transparent;border-radius:8px;
@@ -21686,10 +21730,38 @@ def web_leaderboard(uid):
                                    '<span>報酬</span><span></span></div>')
                 else:
                     bits.append('<div class="sub">目前沒有持倉（全部已到期賣出）。</div>')
-                bot_detail = (f'<details class="rank-detail">'
-                              f'<summary>查看機器人目前持股（{len(bh)} 檔）</summary>'
-                              f'<div class="rank-detail-body bot-hold-list">'
-                              f'{"".join(bits)}</div></details>')
+                current_holdings_html = (f'<div class="rank-detail rank-detail-open bot-hold-list">'
+                              f'<div class="rank-detail-title">目前持股（{len(bh)} 檔）</div>'
+                              f'<div class="rank-detail-body">{"".join(bits)}</div></div>')
+
+                hist = sim_history = r.get("bot_history") or []
+                hist_rows = []
+                for tx in hist:
+                    hcls = "up" if (tx.get("return_pct") or 0) >= 0 else "down"
+                    bp = tx.get("buy_price")
+                    sp = tx.get("sell_price")
+                    rp = tx.get("return_pct")
+                    btxt = f'{bp:,.2f}' if isinstance(bp, (int,float)) else '—'
+                    stxt = f'{sp:,.2f}' if isinstance(sp, (int,float)) else '—'
+                    rtxt = f'{rp:+.2f}%' if isinstance(rp, (int,float)) else '—'
+                    hist_rows.append(
+                        f'<div class="bot-history-row">'
+                        f'<div class="bot-history-main"><b>{html.escape(str(tx.get("name") or tx.get("code") or ""))}</b>'
+                        f'<small>{html.escape(str(tx.get("code") or ""))}</small></div>'
+                        f'<div><span>{html.escape(str(tx.get("buy_date") or "—"))}</span> → <span>{html.escape(str(tx.get("sell_date") or "—"))}</span></div>'
+                        f'<div><span>買 {btxt}</span>／<span>賣 {stxt}</span></div>'
+                        f'<div><span>持有 {int(tx.get("hold_days") or 0)} 日</span> · <span class="num {hcls}">{rtxt}</span></div>'
+                        f'<div class="bot-history-reason">{html.escape(str(tx.get("exit_reason") or "—"))}</div>'
+                        f'</div>')
+                if hist_rows:
+                    history_html = (f'<div class="rank-detail rank-detail-open bot-history-list">'
+                                    f'<div class="rank-detail-title">歷史操作（{len(hist_rows)} 筆）</div>'
+                                    f'<div class="rank-detail-body">{"".join(hist_rows)}</div></div>')
+                else:
+                    history_html = (f'<div class="rank-detail rank-detail-open bot-history-list">'
+                                    f'<div class="rank-detail-title">歷史操作（0 筆）</div>'
+                                    f'<div class="rank-detail-body"><div class="sub">目前尚無已完成賣出交易；新的 D10 交易完成後會直接列在這裡。</div></div></div>')
+                bot_detail = current_holdings_html + history_html
 
             d = r.get("detail")
             if d:
