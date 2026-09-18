@@ -23373,7 +23373,8 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
 
 
 
-
+@app.route("/web/portfolio", methods=["GET", "POST"])
+@web_login_required
 def render_portfolio_fast_summary(uid):
     """今日首頁第一段：先顯示既有快照、事件與排名，並明確提示完整分析仍在整合。"""
     fast_started = time.monotonic()
