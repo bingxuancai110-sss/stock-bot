@@ -1250,38 +1250,41 @@ connection_pool = psycopg2.pool.ThreadedConnectionPool(
 
 def get_db_connection():
     """
-    借一條連線。若借到的是已經壞掉的連線（例如被伺服器中途切斷），
-    直接丟棄再借一條——把壞連線放回池子只會讓下一個人也踩到。
+    借一條可用的資料庫連線。
+
+    只檢查 conn.closed 不夠：Supabase／PostgreSQL 的 SSL socket 可能已被
+    遠端切斷，但 psycopg2 仍把連線物件標成「未 closed」。這會造成
+    `SSL SYSCALL ... EOF`／`bad record mac`，而且之後 rollback 還會再炸一次。
+    因此借出前先做 SELECT 1；健康檢查失敗就把該連線關掉，讓 pool 下一次
+    getconn 時建立新的連線。
     """
-    for _attempt in range(3):
+    last_error = None
+    for _attempt in range(4):
+        conn = None
         try:
             conn = connection_pool.getconn()
-        except pool.PoolError as e:
-            print(f"⚠️ DB 連線池暫滿（第 {_attempt + 1}/3 次）：{e}")
-            if _attempt < 2:
-                time.sleep(0.1 * (_attempt + 1))
-                continue
-            raise
-        try:
             if conn.closed:
                 connection_pool.putconn(conn, close=True)
                 continue
-            # 不只檢查 conn.closed：Supabase pooler 可能把閒置 TLS 連線
-            # 關掉，但 psycopg2 本身仍把 closed 標成 False。先做極輕量
-            # health check，發現 SSL EOF / bad record mac 就立即丟棄並重建。
-            with conn.cursor() as health_cur:
-                health_cur.execute("SELECT 1")
-                health_cur.fetchone()
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+            cur.close()
             return conn
+        except pool.PoolError as e:
+            last_error = e
+            print(f"⚠️ DB 連線池暫滿（第 {_attempt + 1}/4 次）：{e}")
         except Exception as e:
-            print(f"⚠️ DB 連線健康檢查失敗，丟棄重試（第 {_attempt + 1}/3 次）: {e}")
-            try:
-                connection_pool.putconn(conn, close=True)
-            except Exception:
-                pass
-            if _attempt < 2:
-                time.sleep(0.2 * (_attempt + 1))
-    raise RuntimeError("無法取得資料庫連線")
+            last_error = e
+            print(f"⚠️ DB 連線健康檢查失敗，丟棄重建（第 {_attempt + 1}/4 次）：{e}")
+            if conn is not None:
+                try:
+                    connection_pool.putconn(conn, close=True)
+                except Exception:
+                    pass
+        if _attempt < 3:
+            time.sleep(0.15 * (_attempt + 1))
+    raise RuntimeError(f"無法取得健康的資料庫連線：{last_error}")
 
 
 def release_db_connection(conn):
@@ -14367,11 +14370,8 @@ def _job_mark_start(name):
             print(f"⏭️ 背景工作 {name} 已在執行中，本次觸發略過，不會重開第二份。")
         return got
     except Exception as e:
-        # SSL EOF / bad record mac 後 psycopg2 可能已把連線關掉，
-        # 此時再 conn.rollback() 會產生第二個「connection already closed」，
-        # 反而掩蓋真正原因。只對仍開啟的連線 rollback。
         try:
-            if conn is not None and not conn.closed:
+            if conn and not conn.closed:
                 conn.rollback()
         except Exception:
             pass
@@ -14685,6 +14685,7 @@ def _do_daily_snapshot():
 
     wl_users = get_all_watchlist_user_ids()
     wl_saved = 0
+    print(f"📋 每日快照 watchlist：取得 {len(wl_users)} 位自選股使用者")
     if not reached("watchlist"):
         start = progress.get("index", 0) if current_stage == "watchlist" else 0
         _job_mark_progress(job_name, "watchlist", start, len(wl_users))
@@ -15081,7 +15082,9 @@ def _do_warmup():
     # 最近一個交易日的已保存快照建立排行榜。這樣週末 warmup 也能
     # 產生 leaderboard_page，使用者開頁時就只需讀快照，不會卡在「建立最新快照」。
     # 平日早上／中午仍不為了排行榜額外重算一年行情。
-    if taiwan_today().weekday() >= 5 or taiwan_now().hour >= 16:
+    # 台股現貨 13:30 收盤；13:30 後即可建立今日排行榜快照。
+    # 16:00 才判斷會讓 13:30～15:59 的 warmup 明明已收盤卻錯誤顯示「等待收盤」。
+    if taiwan_today().weekday() >= 5 or _taiwan_post_close():
         try:
             # 若持久化頁面的曲線最新日還不是今天，收盤 warmup 必須重建一次；
             # 不能因快照仍在有效期限內就把前一交易日排名當成今日排名。
@@ -15104,7 +15107,7 @@ def _do_warmup():
             print(f"❌ 預熱排行榜失敗: {e}")
             done.append("排行榜 失敗")
     else:
-        done.append("排行榜 快照略過（等待收盤）")
+        done.append("排行榜 快照略過（台股尚未收盤）")
 
     # 美股指數單獨更新一次。首頁讀的盤前快照是前一晚 18:xx 建立的，
     # 那時抓到的美股是「再前一晚」收盤；warmup 在 07:50 跑，
