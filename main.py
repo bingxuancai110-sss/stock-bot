@@ -17598,16 +17598,13 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
         '<div id="detail-status" class="load-note" '
         'style="display:none;margin:8px 0 0">正在補上即時持股分析…</div>'
         if staged else "")
+    market_loader = title == "今日"
     shell = f"""
-<div id="loading" class="loading">
-  <div class="load-stage">
-    <span id="loadstage">正在準備…</span>
-  </div>
-  {render_quote_block()}
-  <div class="load-note">{note}</div>
+<div id="loading" class="loading{' market-loading-screen' if market_loader else ''}">
+  {('<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET</div><div class="market-loader-orbit" aria-hidden="true"><div class="market-loader-ring"></div><div class="market-loader-dot"></div></div><div class="market-loader-title">正在整理今日市場</div><div class="market-loader-status" id="market-loader-status">正在連接市場資料…</div><div class="market-loader-bar"><i></i></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>市場資料</span></div><div class="app-load-step pending"><span>○</span><span>法人與估值</span></div><div class="app-load-step pending"><span>○</span><span>你的持股行情</span></div><div class="app-load-step pending"><span>○</span><span>今日市場判讀</span></div></div></div>') if market_loader else ('<div class="load-stage"><span id="loadstage">正在準備…</span></div>' + render_quote_block() + '<div class="load-note">' + note + '</div>')}
 </div>
-<div id="content" class="loading-content" aria-live="polite"><div class="loading-preview"><b>正在讀取最近有效資料…</b><span>先顯示頁面結構，不會重新掃描全市場</span><i></i><i></i><i></i></div></div>
-<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.loading-preview{{margin:14px 0;padding:18px 16px;border:1px solid #d7e0ea;border-radius:12px;background:#fff;color:#526b84}}.loading-preview b,.loading-preview span{{display:block}}.loading-preview b{{font-size:15px;color:#1d2939}}.loading-preview span{{margin-top:5px;font-size:12px}}.loading-preview i{{display:block;height:13px;margin-top:13px;border-radius:5px;background:linear-gradient(90deg,#eef3f7 20%,#dfeaf2 45%,#eef3f7 70%);background-size:220% 100%;animation:loading-scan 1.1s linear infinite}}.loading-preview i:nth-of-type(2){{width:82%}}.loading-preview i:nth-of-type(3){{width:64%}}@keyframes loading-scan{{to{{background-position:-120% 0}}}}</style>
+<div id="content" class="loading-content" aria-live="polite" style="display:none"></div>
+<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.market-loading-screen{{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483000!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:#F7F3EA!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;color:#18283A!important}}.market-loader-inner{{width:min(88vw,390px);text-align:center}}.market-loader-brand{{font-size:11px;letter-spacing:.22em;font-weight:800;color:#6E5228;margin-bottom:28px}}.market-loader-orbit{{width:92px;height:92px;margin:0 auto 28px;position:relative;display:grid;place-items:center}}.market-loader-ring{{position:absolute;inset:0;border:3px solid #D8E1E8;border-top-color:#356B91;border-right-color:#356B91;border-radius:50%;animation:market-spin 1.05s linear infinite}}.market-loader-dot{{width:15px;height:15px;border-radius:50%;background:#356B91;box-shadow:0 0 0 0 rgba(53,107,145,.24);animation:market-pulse 1.5s ease-out infinite}}.market-loader-title{{font-size:25px;font-weight:800;letter-spacing:.03em;color:#18283A}}.market-loader-status{{margin-top:10px;font-size:13px;color:#718092;min-height:22px}}.market-loader-bar{{height:4px;background:#E1E6EA;border-radius:99px;overflow:hidden;margin:24px auto 22px;width:100%}}.market-loader-bar i{{display:block;height:100%;width:32%;background:#356B91;border-radius:99px;animation:market-progress 2.4s ease-in-out infinite}}.market-loader-steps{{display:grid;gap:9px;text-align:left;width:82%;margin:0 auto}}.market-loader-steps .app-load-step{{display:flex;align-items:center;gap:9px;font-size:12px;color:#9AA3AC;transition:all .25s ease}}.market-loader-steps .app-load-step.active{{color:#356B91;font-weight:800}}.market-loader-steps .app-load-step.done{{color:#5D7765;font-weight:700}}@keyframes market-spin{{to{{transform:rotate(360deg)}}}}@keyframes market-pulse{{0%{{transform:scale(.85);box-shadow:0 0 0 0 rgba(53,107,145,.25)}}70%{{transform:scale(1);box-shadow:0 0 0 16px rgba(53,107,145,0)}}100%{{transform:scale(.85);box-shadow:0 0 0 0 rgba(53,107,145,0)}}}}@keyframes market-progress{{0%{{transform:translateX(-120%)}}50%{{transform:translateX(120%)}}100%{{transform:translateX(330%)}}}}@media(prefers-reduced-motion:reduce){{.market-loader-ring,.market-loader-dot,.market-loader-bar i{{animation:none}}}}@media(max-width:420px){{.market-loader-title{{font-size:22px}}.market-loader-steps{{width:90%}}}}</style>
 {detail_status_html}
 <script>
 (function () {{
@@ -17633,6 +17630,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     setTimeout(function () {{
       var content = document.getElementById('content');
       content.innerHTML = html;
+      content.style.display = '';
       document.getElementById('loading').style.display = 'none';
       if ({staged_literal}) {{
         var status = document.getElementById('detail-status');
@@ -24465,6 +24463,16 @@ def web_portfolio(uid):
 <div class="callout" style="padding:14px 15px 4px">{trend_html_empty}</div>"""
         return respond_page("今日", body, "portfolio")
 
+    # 首次直接開啟「今日」時先秒回全螢幕市場 Loading。
+    # 真正完整資料由同一個 endpoint 的 fragment=1 請求計算，
+    # 避免 iPhone／LINE WebView 在後端計算期間看到整片白畫面。
+    if request.method == "GET" and not wants_fragment():
+        return render_loading_shell(
+            "今日", "portfolio",
+            ["市場資料", "法人與估值", "你的持股行情", "今日市場判讀"],
+            note="正在整理你的台股首頁，資料完成後會自動顯示。",
+            staged=False)
+
     full_started = time.monotonic()
     th = get_thresholds(profile)
     fee_disc, min_fee = get_fee_settings(profile)
@@ -24485,7 +24493,9 @@ def web_portfolio(uid):
 
     shared_loaders = [
         ("法人", fetch_institutional_data),
-        ("月營收", lambda: fetch_monthly_revenue(force_refresh=True)),
+        # 首頁只讀既有月營收快照；官方最新月份由背景 warmup 更新，
+        # 絕對不能讓 10~15 秒的官方抓取卡住首頁首屏。
+        ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
         ("估值", fetch_valuation),
         ("產業", get_industry_map),
         ("大盤", fetch_taiex_summary),
