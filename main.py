@@ -17638,9 +17638,9 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
       // 首次開啟時 Render／資料庫剛喚醒，第一個 fragment 偶爾會短暫回 5xx。
       // 不要求使用者自己重新整理：同一頁自動重試，成功後照原流程替換內容。
       var status = e && e.status ? Number(e.status) : 0;
-      if (!done && {staged_literal} && fragmentAttempt < 5 && (status >= 500 || status === 0)) {{
+      if (!done && {staged_literal} && fragmentAttempt < 12 && (status >= 500 || status === 0)) {{
         stageEl.textContent = '首次載入資料中，正在自動重試…';
-        window.setTimeout(loadFragment, 1600);
+        window.setTimeout(loadFragment, 1800);
         console.warn('首頁 fragment 首次載入失敗，將自動重試：', e);
         return;
       }}
@@ -17650,7 +17650,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
       var hint = document.createElement('div');
       hint.className = 'sub';
       hint.style.marginTop = '8px';
-      hint.textContent = '伺服器暫時未回應，系統已完成自動重試；若仍失敗再重新整理。';
+      hint.textContent = '伺服器暫時未回應，系統會持續自動重試；若仍失敗才需要重新整理。';
       stageEl.parentNode.appendChild(hint);
       console.error(e);
     }});
@@ -23496,43 +23496,43 @@ def render_portfolio_fast_summary(uid):
 .daily-fast-sync{{display:flex;gap:11px;align-items:flex-start;background:#F2F2F7;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:14px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-fast-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 4px rgba(139,105,52,.12);flex:none}}.daily-fast-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-fast-sync-copy span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.65}}.daily-fast-hero{{background:linear-gradient(135deg,#F9F9FB,#e7ece8);padding:22px 18px 18px;margin:-8px -2px 14px;border-bottom:1px solid #d7d4ca}}.daily-fast-hero .eyebrow{{letter-spacing:.14em;color:var(--brass);font-size:11px}}.daily-fast-hero h1{{font-size:26px;line-height:1.25;margin:8px 0 14px}}.daily-fast-market{{display:flex;gap:8px;flex-wrap:wrap}}.daily-fast-market span{{background:rgba(255,255,255,.72);padding:8px 10px;border-radius:8px;font-size:12px}}.daily-fast-market b{{display:block;font-size:16px;margin-top:3px}}.daily-fast-market small{{display:block;margin-top:3px;color:var(--ink-soft);font-size:9px;line-height:1.35}}.daily-fast-card{{background:#fff;border:1px solid #E5E5EA;border-radius:12px;padding:15px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.daily-fast-title{{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}}.daily-fast-title h2{{margin:0;font-size:19px}}.daily-fast-event{{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}}.daily-fast-number{{background:var(--brass);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;flex:none;font-size:12px}}.daily-fast-detail{{font-size:12.5px;color:var(--ink-soft);margin-top:3px}}.daily-fast-empty{{padding:11px 0;color:var(--ink-soft);font-size:13px}}.daily-fast-empty span{{font-size:12px}}.daily-fast-ranks{{display:grid;grid-template-columns:1fr;gap:0}}.daily-fast-rank{{background:transparent;border-bottom:1px solid #E5E5EA;border-radius:0;padding:9px 0}}.daily-fast-rank:last-child{{border-bottom:0}}.daily-fast-rank small,.daily-fast-rank>span{{display:block;color:var(--ink-soft);font-size:11px}}.daily-fast-rank b{{display:block;font-size:18px;margin:4px 0}}.daily-fast-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px}}.daily-fast-panel{{min-width:0;padding:11px 10px;border:1px solid rgba(139,105,52,.24);border-radius:9px;background:rgba(255,255,255,.58)}}.daily-fast-panel-title{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding-bottom:7px;border-bottom:1px solid rgba(139,105,52,.16)}}.daily-fast-panel-title b{{font-size:12px}}.daily-fast-panel-title a,.daily-fast-panel-title span{{font-size:8px;color:var(--brass);white-space:nowrap}}.daily-fast-index-row{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding:8px 0;border-bottom:1px solid #E5E5EA}}.daily-fast-index-row:last-child{{border-bottom:0}}.daily-fast-index-row b{{font-size:10px}}.daily-fast-index-row span{{font-size:9px;text-align:right;white-space:nowrap}}.daily-fast-index-row strong{{display:block;font-size:10px;color:var(--ink)}}.daily-fast-index-row em{{font-style:normal;font-size:9px}}@media (max-width:640px){{.daily-fast-panels{{grid-template-columns:1fr}}}}.daily-fast-summary-stack{{display:block;margin-top:11px}}.daily-fast-rank-panel{{padding:10px 13px}}.daily-fast-rank-panel .daily-fast-panel-title{{padding-bottom:6px}}.daily-fast-rank-panel .daily-fast-ranks{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.daily-fast-rank-panel .daily-fast-rank{{border:0;padding:8px 0}}.daily-fast-rank-panel .daily-fast-rank b{{font-size:16px;margin:3px 0}}.daily-fast-quote{{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:8px;padding:12px 13px;border:1px solid rgba(139,105,52,.22);border-radius:9px;background:#F9F9FB}}.daily-fast-quote strong{{color:var(--ink);font-family:"Kaiti TC","BiauKai","DFKai-SB","STKaiti","Noto Serif CJK TC","Noto Serif TC",serif;font-size:16px;font-weight:700;letter-spacing:.12em;line-height:1.5;text-align:center;white-space:nowrap}}@media (max-width:640px){{.daily-fast-rank-panel .daily-fast-ranks{{gap:6px}}.daily-fast-quote{{align-items:center;display:flex}}.daily-fast-quote strong{{display:block;margin-top:0;text-align:center;font-size:17px}}}}
 .home-exright{{border:1px solid #D9C9A7;border-left:4px solid var(--brass);background:#FFFFFF;border-radius:10px;padding:13px 15px;margin:0 0 12px}}.home-exright b{{display:block;font-size:14.5px;line-height:1.4}}.home-exright p{{margin:5px 0 9px;color:var(--ink-soft);font-size:12px;line-height:1.6}}.home-exright-go{{display:inline-block;padding:7px 16px;background:var(--brass);color:#fff;border-radius:6px;font-size:13px;text-decoration:none}}
 /* v14 首頁儀表板：建立「今天 → 市場 → 我的排名 → 事件」閱讀順序 */
-.daily-fast-sync{background:#EEF5FB;border:1px solid #D6E5F2;border-left:3px solid #1769B0;border-radius:14px;padding:11px 14px;margin:-2px 0 12px;box-shadow:none}
-.daily-fast-sync-dot{width:8px;height:8px;background:#1769B0;box-shadow:0 0 0 4px rgba(23,105,176,.10)}
-.daily-fast-sync b{font-size:13px}.daily-fast-sync-copy span{font-size:11.5px}
-.daily-fast-hero{position:relative;background:linear-gradient(145deg,#10243E 0%,#183A5D 62%,#1D4B73 100%);color:#fff;padding:25px 18px 18px;margin:-6px 0 13px;border:0;border-radius:18px;box-shadow:0 12px 28px rgba(16,36,62,.16);overflow:hidden}
-.daily-fast-hero:after{content:"";position:absolute;width:180px;height:180px;right:-70px;top:-90px;border:1px solid rgba(255,255,255,.10);border-radius:50%;box-shadow:0 0 0 26px rgba(255,255,255,.025),0 0 0 52px rgba(255,255,255,.018)}
-.daily-fast-hero .eyebrow{color:#AFC7DD;font-size:10px;letter-spacing:.18em}
-.daily-fast-hero h1{position:relative;font-size:27px;letter-spacing:-.025em;margin:6px 0 4px;color:#fff;z-index:1}
-.daily-fast-hero:before{content:"MARKET DASHBOARD";position:absolute;right:17px;top:17px;color:rgba(255,255,255,.38);font-size:8px;letter-spacing:.18em;z-index:1}
-.daily-fast-market{position:relative;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;z-index:1}
-.daily-fast-market span{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.10);padding:9px 9px;border-radius:10px;font-size:10px;color:#BFD0DF;backdrop-filter:blur(5px)}
-.daily-fast-market b{font-size:15px;color:#fff;margin-top:3px}.daily-fast-market small{color:#91A9BF;font-size:8px}
-.daily-fast-card{border:1px solid #E0E7EE;border-radius:14px;padding:15px;margin:11px 0;box-shadow:var(--shadow-soft)}
-.daily-fast-title{margin-bottom:8px}.daily-fast-title h2{font-size:17px;font-weight:750}
-.daily-fast-event{padding:12px 0;border-top:1px solid #EDF1F5}.daily-fast-number{background:#1769B0}
-.daily-fast-summary-stack{gap:10px}.daily-fast-panel{border:1px solid #E0E7EE!important;border-radius:14px!important;background:#fff!important;box-shadow:var(--shadow-soft)}
-.daily-fast-rank-panel .daily-fast-panel-title{padding-bottom:8px}.daily-fast-rank-panel .daily-fast-ranks{gap:0}
-.daily-fast-rank{padding:11px 4px!important;border-bottom:1px solid #EDF1F5!important}
-.daily-fast-rank b{font-size:19px}.daily-fast-rank small{font-weight:650;color:#68798B}
-.daily-fast-quote{border:1px solid #E0E7EE;background:#F8FAFC;box-shadow:none;border-radius:12px;padding:13px}
-.daily-fast-quote strong{font-size:15px;letter-spacing:.08em}
-.home-exright{border-color:#E2D5B9;border-left-color:#C79A45;background:#FFFCF5}
-@media(max-width:640px){{.daily-fast-market{{grid-template-columns:repeat(2,minmax(0,1fr))}}.daily-fast-hero{{padding-top:23px}}.daily-fast-hero:before{{display:none}}.daily-fast-hero h1{{font-size:25px}}}}
+.daily-fast-sync{{background:#EEF5FB;border:1px solid #D6E5F2;border-left:3px solid #1769B0;border-radius:14px;padding:11px 14px;margin:-2px 0 12px;box-shadow:none}}
+.daily-fast-sync-dot{{width:8px;height:8px;background:#1769B0;box-shadow:0 0 0 4px rgba(23,105,176,.10)}}
+.daily-fast-sync b{{font-size:13px}}.daily-fast-sync-copy span{{font-size:11.5px}}
+.daily-fast-hero{{position:relative;background:linear-gradient(145deg,#10243E 0%,#183A5D 62%,#1D4B73 100%);color:#fff;padding:25px 18px 18px;margin:-6px 0 13px;border:0;border-radius:18px;box-shadow:0 12px 28px rgba(16,36,62,.16);overflow:hidden}}
+.daily-fast-hero:after{{content:"";position:absolute;width:180px;height:180px;right:-70px;top:-90px;border:1px solid rgba(255,255,255,.10);border-radius:50%;box-shadow:0 0 0 26px rgba(255,255,255,.025),0 0 0 52px rgba(255,255,255,.018)}}
+.daily-fast-hero .eyebrow{{color:#AFC7DD;font-size:10px;letter-spacing:.18em}}
+.daily-fast-hero h1{{position:relative;font-size:27px;letter-spacing:-.025em;margin:6px 0 4px;color:#fff;z-index:1}}
+.daily-fast-hero:before{{content:"MARKET DASHBOARD";position:absolute;right:17px;top:17px;color:rgba(255,255,255,.38);font-size:8px;letter-spacing:.18em;z-index:1}}
+.daily-fast-market{{position:relative;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;z-index:1}}
+.daily-fast-market span{{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.10);padding:9px 9px;border-radius:10px;font-size:10px;color:#BFD0DF;backdrop-filter:blur(5px)}}
+.daily-fast-market b{{font-size:15px;color:#fff;margin-top:3px}}.daily-fast-market small{{color:#91A9BF;font-size:8px}}
+.daily-fast-card{{border:1px solid #E0E7EE;border-radius:14px;padding:15px;margin:11px 0;box-shadow:var(--shadow-soft)}}
+.daily-fast-title{{margin-bottom:8px}}.daily-fast-title h2{{font-size:17px;font-weight:750}}
+.daily-fast-event{{padding:12px 0;border-top:1px solid #EDF1F5}}.daily-fast-number{{background:#1769B0}}
+.daily-fast-summary-stack{{gap:10px}}.daily-fast-panel{{border:1px solid #E0E7EE!important;border-radius:14px!important;background:#fff!important;box-shadow:var(--shadow-soft)}}
+.daily-fast-rank-panel .daily-fast-panel-title{{padding-bottom:8px}}.daily-fast-rank-panel .daily-fast-ranks{{gap:0}}
+.daily-fast-rank{{padding:11px 4px!important;border-bottom:1px solid #EDF1F5!important}}
+.daily-fast-rank b{{font-size:19px}}.daily-fast-rank small{{font-weight:650;color:#68798B}}
+.daily-fast-quote{{border:1px solid #E0E7EE;background:#F8FAFC;box-shadow:none;border-radius:12px;padding:13px}}
+.daily-fast-quote strong{{font-size:15px;letter-spacing:.08em}}
+.home-exright{{border-color:#E2D5B9;border-left-color:#C79A45;background:#FFFCF5}}
+@media(max-width:640px){{{{.daily-fast-market{{{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}.daily-fast-hero{{{{padding-top:23px}}}}.daily-fast-hero:before{{{{display:none}}}}.daily-fast-hero h1{{{{font-size:25px}}}}}}}}
 
 /* V42: this is the ACTUAL first-screen hero. Use the supplied Taipei 101 photo directly. */
-.daily-fast-hero{{position:relative!important;overflow:hidden!important;min-height:0!important;height:auto!important;padding:0!important;margin:0 -16px 14px!important;border-radius:0 0 22px 22px!important;background:#142B45!important;box-shadow:0 10px 28px rgba(20,39,58,.18)!important;color:#fff!important}}
-.daily-fast-hero-photo{{display:block!important;width:100%!important;height:auto!important;aspect-ratio:1000 / 578!important;object-fit:cover!important;object-position:center center!important;background:#142B45!important}}
-.daily-fast-hero-copy{{position:absolute!important;left:0!important;right:0!important;bottom:0!important;padding:76px 18px 16px!important;z-index:3!important;background:linear-gradient(180deg,rgba(9,25,43,0) 0%,rgba(9,25,43,.12) 20%,rgba(9,25,43,.82) 100%)!important}}
-.daily-fast-hero-copy .eyebrow{{color:#DCEAF6!important;font-size:10px!important;letter-spacing:.18em!important}}
-.daily-fast-hero-copy h1{{margin:5px 0 5px!important;font-size:27px!important;line-height:1.18!important;color:#fff!important;text-shadow:0 2px 10px rgba(0,0,0,.28)!important}}
-.daily-fast-hero-copy .daily-fast-market{{margin-top:10px!important;grid-template-columns:repeat(4,minmax(0,1fr))!important}}
-.daily-fast-hero-copy .daily-fast-market span{{background:rgba(255,255,255,.92)!important;color:#183450!important;backdrop-filter:blur(4px)!important}}
-.daily-fast-hero-copy .daily-fast-market b{{color:#183450!important}}
-.daily-fast-hero-copy .daily-fast-market small{{color:#65788B!important}}
-.daily-fast-hero:before,.daily-fast-hero:after{{display:none!important}}
-@media(max-width:640px){{.daily-fast-hero{{margin:0 -16px 12px!important;border-radius:0 0 18px 18px!important}}.daily-fast-hero-copy{{padding:70px 14px 13px!important}}.daily-fast-hero-copy h1{{font-size:25px!important}}.daily-fast-hero-copy .daily-fast-market{{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px!important}}.daily-fast-hero-copy .daily-fast-market span{{padding:7px 8px!important}}.daily-fast-hero-copy .daily-fast-market b{{font-size:14px!important}}}}
+.daily-fast-hero{{{{position:relative!important;overflow:hidden!important;min-height:0!important;height:auto!important;padding:0!important;margin:0 -16px 14px!important;border-radius:0 0 22px 22px!important;background:#142B45!important;box-shadow:0 10px 28px rgba(20,39,58,.18)!important;color:#fff!important}}}}
+.daily-fast-hero-photo{{{{display:block!important;width:100%!important;height:auto!important;aspect-ratio:1000 / 578!important;object-fit:cover!important;object-position:center center!important;background:#142B45!important}}}}
+.daily-fast-hero-copy{{{{position:absolute!important;left:0!important;right:0!important;bottom:0!important;padding:76px 18px 16px!important;z-index:3!important;background:linear-gradient(180deg,rgba(9,25,43,0) 0%,rgba(9,25,43,.12) 20%,rgba(9,25,43,.82) 100%)!important}}}}
+.daily-fast-hero-copy .eyebrow{{{{color:#DCEAF6!important;font-size:10px!important;letter-spacing:.18em!important}}}}
+.daily-fast-hero-copy h1{{{{margin:5px 0 5px!important;font-size:27px!important;line-height:1.18!important;color:#fff!important;text-shadow:0 2px 10px rgba(0,0,0,.28)!important}}}}
+.daily-fast-hero-copy .daily-fast-market{{{{margin-top:10px!important;grid-template-columns:repeat(4,minmax(0,1fr))!important}}}}
+.daily-fast-hero-copy .daily-fast-market span{{{{background:rgba(255,255,255,.92)!important;color:#183450!important;backdrop-filter:blur(4px)!important}}}}
+.daily-fast-hero-copy .daily-fast-market b{{{{color:#183450!important}}}}
+.daily-fast-hero-copy .daily-fast-market small{{{{color:#65788B!important}}}}
+.daily-fast-hero:before,.daily-fast-hero:after{{{{display:none!important}}}}
+@media(max-width:640px){{{{.daily-fast-hero{{{{margin:0 -16px 12px!important;border-radius:0 0 18px 18px!important}}}}.daily-fast-hero-copy{{{{padding:70px 14px 13px!important}}}}.daily-fast-hero-copy h1{{{{font-size:25px!important}}}}.daily-fast-hero-copy .daily-fast-market{{{{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px!important}}}}.daily-fast-hero-copy .daily-fast-market span{{{{padding:7px 8px!important}}}}.daily-fast-hero-copy .daily-fast-market b{{{{font-size:14px!important}}}}}}}}
 /* The full renderer used to append a second Hero after the detailed sections. */
-.daily-home > .daily-hero{{display:none!important}}
+.daily-home > .daily-hero{{{{display:none!important}}}}
 </style>{exright_banner}<section class="daily-fast-sync" aria-live="polite">
   <span class="daily-fast-sync-dot" aria-hidden="true"></span>
   <div class="daily-fast-sync-copy"><b>系統正在跑・正在整合完整首頁</b>
