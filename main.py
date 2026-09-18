@@ -1266,15 +1266,21 @@ def get_db_connection():
             if conn.closed:
                 connection_pool.putconn(conn, close=True)
                 continue
+            # 不只檢查 conn.closed：Supabase pooler 可能把閒置 TLS 連線
+            # 關掉，但 psycopg2 本身仍把 closed 標成 False。先做極輕量
+            # health check，發現 SSL EOF / bad record mac 就立即丟棄並重建。
+            with conn.cursor() as health_cur:
+                health_cur.execute("SELECT 1")
+                health_cur.fetchone()
             return conn
         except Exception as e:
-            print(f"⚠️ 取得連線異常，丟棄重試: {e}")
+            print(f"⚠️ DB 連線健康檢查失敗，丟棄重試（第 {_attempt + 1}/3 次）: {e}")
             try:
                 connection_pool.putconn(conn, close=True)
             except Exception:
                 pass
             if _attempt < 2:
-                time.sleep(0.1 * (_attempt + 1))
+                time.sleep(0.2 * (_attempt + 1))
     raise RuntimeError("無法取得資料庫連線")
 
 
@@ -14361,7 +14367,14 @@ def _job_mark_start(name):
             print(f"⏭️ 背景工作 {name} 已在執行中，本次觸發略過，不會重開第二份。")
         return got
     except Exception as e:
-        conn.rollback()
+        # SSL EOF / bad record mac 後 psycopg2 可能已把連線關掉，
+        # 此時再 conn.rollback() 會產生第二個「connection already closed」，
+        # 反而掩蓋真正原因。只對仍開啟的連線 rollback。
+        try:
+            if conn is not None and not conn.closed:
+                conn.rollback()
+        except Exception:
+            pass
         print(f"⚠️ 標記工作開始失敗（照樣執行）: {e}")
         return True      # 記錄失敗不該擋住真正的工作
     finally:
