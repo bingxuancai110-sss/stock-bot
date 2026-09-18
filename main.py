@@ -1250,41 +1250,32 @@ connection_pool = psycopg2.pool.ThreadedConnectionPool(
 
 def get_db_connection():
     """
-    借一條可用的資料庫連線。
-
-    只檢查 conn.closed 不夠：Supabase／PostgreSQL 的 SSL socket 可能已被
-    遠端切斷，但 psycopg2 仍把連線物件標成「未 closed」。這會造成
-    `SSL SYSCALL ... EOF`／`bad record mac`，而且之後 rollback 還會再炸一次。
-    因此借出前先做 SELECT 1；健康檢查失敗就把該連線關掉，讓 pool 下一次
-    getconn 時建立新的連線。
+    借一條連線。若借到的是已經壞掉的連線（例如被伺服器中途切斷），
+    直接丟棄再借一條——把壞連線放回池子只會讓下一個人也踩到。
     """
-    last_error = None
-    for _attempt in range(4):
-        conn = None
+    for _attempt in range(3):
         try:
             conn = connection_pool.getconn()
+        except pool.PoolError as e:
+            print(f"⚠️ DB 連線池暫滿（第 {_attempt + 1}/3 次）：{e}")
+            if _attempt < 2:
+                time.sleep(0.1 * (_attempt + 1))
+                continue
+            raise
+        try:
             if conn.closed:
                 connection_pool.putconn(conn, close=True)
                 continue
-            cur = conn.cursor()
-            cur.execute("SELECT 1")
-            cur.fetchone()
-            cur.close()
             return conn
-        except pool.PoolError as e:
-            last_error = e
-            print(f"⚠️ DB 連線池暫滿（第 {_attempt + 1}/4 次）：{e}")
         except Exception as e:
-            last_error = e
-            print(f"⚠️ DB 連線健康檢查失敗，丟棄重建（第 {_attempt + 1}/4 次）：{e}")
-            if conn is not None:
-                try:
-                    connection_pool.putconn(conn, close=True)
-                except Exception:
-                    pass
-        if _attempt < 3:
-            time.sleep(0.15 * (_attempt + 1))
-    raise RuntimeError(f"無法取得健康的資料庫連線：{last_error}")
+            print(f"⚠️ 取得連線異常，丟棄重試: {e}")
+            try:
+                connection_pool.putconn(conn, close=True)
+            except Exception:
+                pass
+            if _attempt < 2:
+                time.sleep(0.1 * (_attempt + 1))
+    raise RuntimeError("無法取得資料庫連線")
 
 
 def release_db_connection(conn):
@@ -14370,11 +14361,7 @@ def _job_mark_start(name):
             print(f"⏭️ 背景工作 {name} 已在執行中，本次觸發略過，不會重開第二份。")
         return got
     except Exception as e:
-        try:
-            if conn and not conn.closed:
-                conn.rollback()
-        except Exception:
-            pass
+        conn.rollback()
         print(f"⚠️ 標記工作開始失敗（照樣執行）: {e}")
         return True      # 記錄失敗不該擋住真正的工作
     finally:
@@ -14685,7 +14672,6 @@ def _do_daily_snapshot():
 
     wl_users = get_all_watchlist_user_ids()
     wl_saved = 0
-    print(f"📋 每日快照 watchlist：取得 {len(wl_users)} 位自選股使用者")
     if not reached("watchlist"):
         start = progress.get("index", 0) if current_stage == "watchlist" else 0
         _job_mark_progress(job_name, "watchlist", start, len(wl_users))
@@ -15082,9 +15068,7 @@ def _do_warmup():
     # 最近一個交易日的已保存快照建立排行榜。這樣週末 warmup 也能
     # 產生 leaderboard_page，使用者開頁時就只需讀快照，不會卡在「建立最新快照」。
     # 平日早上／中午仍不為了排行榜額外重算一年行情。
-    # 台股現貨 13:30 收盤；13:30 後即可建立今日排行榜快照。
-    # 16:00 才判斷會讓 13:30～15:59 的 warmup 明明已收盤卻錯誤顯示「等待收盤」。
-    if taiwan_today().weekday() >= 5 or _taiwan_post_close():
+    if taiwan_today().weekday() >= 5 or taiwan_now().hour >= 16:
         try:
             # 若持久化頁面的曲線最新日還不是今天，收盤 warmup 必須重建一次；
             # 不能因快照仍在有效期限內就把前一交易日排名當成今日排名。
@@ -15107,7 +15091,7 @@ def _do_warmup():
             print(f"❌ 預熱排行榜失敗: {e}")
             done.append("排行榜 失敗")
     else:
-        done.append("排行榜 快照略過（台股尚未收盤）")
+        done.append("排行榜 快照略過（等待收盤）")
 
     # 美股指數單獨更新一次。首頁讀的盤前快照是前一晚 18:xx 建立的，
     # 那時抓到的美股是「再前一晚」收盤；warmup 在 07:50 跑，
@@ -23522,7 +23506,9 @@ def render_portfolio_fast_summary(uid):
             f'<div class="daily-fast-rank"><small>{html.escape(str(status["label"]))}</small>'
             f'<b>{value}</b><span>{note}</span></div>')
 
-    return f'''<style>
+    return f'''<div data-fast-preview="1">
+<style>
+.home-detail-status{display:flex;align-items:center;gap:8px;margin:10px 0 14px;padding:9px 12px;border:1px solid #D6E5F2;border-radius:10px;background:#F6FAFD;color:#5F7489;font-size:12px;line-height:1.5}.home-detail-status .app-sync-spinner{width:13px;height:13px;border:2px solid #C9D8E5;border-top-color:#1769B0;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}
 .daily-fast-sync{{display:flex;gap:11px;align-items:flex-start;background:#F2F2F7;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:14px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-fast-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 4px rgba(139,105,52,.12);flex:none}}.daily-fast-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-fast-sync-copy span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.65}}.daily-fast-hero{{background:linear-gradient(135deg,#F9F9FB,#e7ece8);padding:22px 18px 18px;margin:-8px -2px 14px;border-bottom:1px solid #d7d4ca}}.daily-fast-hero .eyebrow{{letter-spacing:.14em;color:var(--brass);font-size:11px}}.daily-fast-hero h1{{font-size:26px;line-height:1.25;margin:8px 0 14px}}.daily-fast-market{{display:flex;gap:8px;flex-wrap:wrap}}.daily-fast-market span{{background:rgba(255,255,255,.72);padding:8px 10px;border-radius:8px;font-size:12px}}.daily-fast-market b{{display:block;font-size:16px;margin-top:3px}}.daily-fast-market small{{display:block;margin-top:3px;color:var(--ink-soft);font-size:9px;line-height:1.35}}.daily-fast-card{{background:#fff;border:1px solid #E5E5EA;border-radius:12px;padding:15px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.daily-fast-title{{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}}.daily-fast-title h2{{margin:0;font-size:19px}}.daily-fast-event{{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}}.daily-fast-number{{background:var(--brass);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;flex:none;font-size:12px}}.daily-fast-detail{{font-size:12.5px;color:var(--ink-soft);margin-top:3px}}.daily-fast-empty{{padding:11px 0;color:var(--ink-soft);font-size:13px}}.daily-fast-empty span{{font-size:12px}}.daily-fast-ranks{{display:grid;grid-template-columns:1fr;gap:0}}.daily-fast-rank{{background:transparent;border-bottom:1px solid #E5E5EA;border-radius:0;padding:9px 0}}.daily-fast-rank:last-child{{border-bottom:0}}.daily-fast-rank small,.daily-fast-rank>span{{display:block;color:var(--ink-soft);font-size:11px}}.daily-fast-rank b{{display:block;font-size:18px;margin:4px 0}}.daily-fast-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px}}.daily-fast-panel{{min-width:0;padding:11px 10px;border:1px solid rgba(139,105,52,.24);border-radius:9px;background:rgba(255,255,255,.58)}}.daily-fast-panel-title{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding-bottom:7px;border-bottom:1px solid rgba(139,105,52,.16)}}.daily-fast-panel-title b{{font-size:12px}}.daily-fast-panel-title a,.daily-fast-panel-title span{{font-size:8px;color:var(--brass);white-space:nowrap}}.daily-fast-index-row{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding:8px 0;border-bottom:1px solid #E5E5EA}}.daily-fast-index-row:last-child{{border-bottom:0}}.daily-fast-index-row b{{font-size:10px}}.daily-fast-index-row span{{font-size:9px;text-align:right;white-space:nowrap}}.daily-fast-index-row strong{{display:block;font-size:10px;color:var(--ink)}}.daily-fast-index-row em{{font-style:normal;font-size:9px}}@media (max-width:640px){{.daily-fast-panels{{grid-template-columns:1fr}}}}.daily-fast-summary-stack{{display:block;margin-top:11px}}.daily-fast-rank-panel{{padding:10px 13px}}.daily-fast-rank-panel .daily-fast-panel-title{{padding-bottom:6px}}.daily-fast-rank-panel .daily-fast-ranks{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.daily-fast-rank-panel .daily-fast-rank{{border:0;padding:8px 0}}.daily-fast-rank-panel .daily-fast-rank b{{font-size:16px;margin:3px 0}}.daily-fast-quote{{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:8px;padding:12px 13px;border:1px solid rgba(139,105,52,.22);border-radius:9px;background:#F9F9FB}}.daily-fast-quote strong{{color:var(--ink);font-family:"Kaiti TC","BiauKai","DFKai-SB","STKaiti","Noto Serif CJK TC","Noto Serif TC",serif;font-size:16px;font-weight:700;letter-spacing:.12em;line-height:1.5;text-align:center;white-space:nowrap}}@media (max-width:640px){{.daily-fast-rank-panel .daily-fast-ranks{{gap:6px}}.daily-fast-quote{{align-items:center;display:flex}}.daily-fast-quote strong{{display:block;margin-top:0;text-align:center;font-size:17px}}}}
 .home-exright{{border:1px solid #D9C9A7;border-left:4px solid var(--brass);background:#FFFFFF;border-radius:10px;padding:13px 15px;margin:0 0 12px}}.home-exright b{{display:block;font-size:14.5px;line-height:1.4}}.home-exright p{{margin:5px 0 9px;color:var(--ink-soft);font-size:12px;line-height:1.6}}.home-exright-go{{display:inline-block;padding:7px 16px;background:var(--brass);color:#fff;border-radius:6px;font-size:13px;text-decoration:none}}
 /* v14 首頁儀表板：建立「今天 → 市場 → 我的排名 → 事件」閱讀順序 */
@@ -23583,7 +23569,8 @@ def render_portfolio_fast_summary(uid):
   </div>
 </section>
 <section class="daily-fast-card"><div class="daily-fast-title"><h2>今日值得注意</h2><a href="/web/premarket" style="color:var(--brass);font-size:12px">查看完整變化 →</a></div>{event_html}</section>
-<div class="daily-fast-summary-stack"><section class="daily-fast-panel daily-fast-rank-panel"><div class="daily-fast-panel-title"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section><section class="daily-fast-quote"><strong>{fast_quote_text}</strong></section></div>'''
+<div class="daily-fast-summary-stack"><section class="daily-fast-panel daily-fast-rank-panel"><div class="daily-fast-panel-title"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section><section class="daily-fast-quote"><strong>{fast_quote_text}</strong></section></div>
+</div>'''
 
 
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total,
@@ -23960,12 +23947,21 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     # 首頁不再預覽雷達／智慧黑馬；需要時直接從「選股」頁查看完整工具。
     # 國際盤勢在收盤後直接抓最新市場資料，避免沿用早先建立的舊快照。
     market_focus_items = []
-    try:
-        fresh_market = _current_market() or {}
-    except Exception:
-        fresh_market = {}
+    # 完整首頁不要每次重算都重新打外部市場 API。
+    # fast 摘要與 warmup 已經把今日市場資料帶進 snapshot；只有快照沒有
+    # 今日市場資料時才補抓一次，避免使用者每次切回首頁都多等數秒。
+    fresh_market = {}
+    snapshot_market = display_snapshot.get("market") or {}
+    snapshot_market_date = (snapshot_market.get("taiex_date") or
+                            snapshot_market.get("data_date"))
+    market_is_today = _market_date_matches(snapshot_market_date, calendar_today)
+    if not market_is_today:
+        try:
+            fresh_market = _current_market() or {}
+        except Exception:
+            fresh_market = {}
     if fresh_market:
-        merged_market = dict(display_snapshot.get("market") or {})
+        merged_market = dict(snapshot_market)
         merged_market.update(fresh_market)
         display_snapshot["market"] = merged_market
     market_focus_definitions = [
@@ -24374,13 +24370,52 @@ def web_portfolio(uid):
     # 今日首頁採用單一 shell、先行摘要再完整內容的分段流程。
     # 兩次回應都只替換同一個 content，不重複插入外框，避免 LINE WebView 疊頁。
     if request.method == "GET" and not wants_fragment():
-        return render_loading_shell(
-            "今日", "portfolio",
-            ["正在讀取今日摘要…", "正在整合持股與即時報價…",
-             "正在整合法人與月營收資料…", "正在計算集中度與相關係數…",
-             "正在整理完整判讀與提醒…"],
-            note="先顯示今日摘要；系統正在跑，正在整合完整即時分析。",
-            staged=True)
+        # V58：取消整頁暖身殼。先直接顯示快照／既有資料，完整分析在背景補上。
+        fast_html = render_portfolio_fast_summary(uid)
+        detail_script = """<script>
+(function () {
+  var preview = document.querySelector('[data-fast-preview=\"1\"]');
+  if (!preview) return;
+  var params = new URLSearchParams(window.location.search);
+  params.set('fragment', '1');
+  params.set('detail', '1');
+  params.delete('fast');
+  var url = window.location.pathname + '?' + params.toString();
+  var tries = 0, busy = false;
+  var status = document.createElement('div');
+  status.className = 'home-detail-status';
+  status.innerHTML = '<span class=\"app-sync-spinner\" aria-hidden=\"true\"></span><span>正在補上即時持股、損益與完整判讀…</span>';
+  preview.appendChild(status);
+  function load() {
+    if (busy) return;
+    busy = true; tries += 1;
+    fetchWithTimeout(url, 45000)
+      .then(function (r) {
+        if (r.status === 401) throw new Error('登入狀態已失效');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      })
+      .then(function (html) {
+        if (html.indexOf('AUTH_EXPIRED') >= 0) return;
+        var content = document.getElementById('content');
+        if (!content) return;
+        content.innerHTML = html;
+        executeFragmentScripts(content);
+      })
+      .catch(function () {
+        busy = false;
+        if (tries < 4) {
+          status.innerHTML = '<span class=\"app-sync-spinner\" aria-hidden=\"true\"></span><span>完整分析還在整理，將自動重試（第 ' + tries + ' 次）…</span>';
+          window.setTimeout(load, 3000);
+        } else {
+          status.innerHTML = '<span>摘要已可使用；完整分析暫時載入較慢，請稍後重新整理。</span>';
+        }
+      });
+  }
+  window.setTimeout(load, 120);
+})();
+</script>"""
+        return render_page("今日", fast_html + detail_script, "portfolio")
 
     msg = ""
     if request.method == "POST" and not valid_web_csrf():
@@ -24428,7 +24463,22 @@ def web_portfolio(uid):
     th = get_thresholds(profile)
     fee_disc, min_fee = get_fee_settings(profile)
 
-    # 這五份共享資料彼此獨立；並行抓取可把等待時間從各次網路延遲總和
+    # 首頁完整分析優先讀「今日已完成的共享快照」，避免每次開首頁再次抓
+    # 全市場 2,000+ 檔月營收、估值等資料。只有沒有可用快照時才回退到原本
+    # 的即時 loader；因此不犧牲資料來源與正確性，卻能大幅縮短首屏後的等待。
+    def homepage_snapshot_or_loader(snapshot_key, loader, max_age_seconds=None):
+        try:
+            snap = _load_shared_data_snapshot(snapshot_key, max_age_seconds=max_age_seconds)
+            payload = (snap.get("payload") if snap else None)
+            if payload:
+                print("⚡ 今日首頁：沿用共享快照 %s（資料日 %s），跳過重新抓取" % (
+                    snapshot_key, snap.get("data_date") or "未標日期"))
+                return payload
+        except Exception as exc:
+            print("⚠️ 今日首頁共享快照讀取失敗 %s：%s" % (snapshot_key, exc))
+        return loader() or {}
+
+    # 這些資料彼此獨立；並行抓取可把等待時間從各次網路延遲總和
     # 降到最慢的一次。每個 loader 失敗只回空資料，不影響其他分析區塊。
     def safe_shared_loader(label, loader):
         loader_started = time.monotonic()
@@ -24443,9 +24493,13 @@ def web_portfolio(uid):
             return {}
 
     shared_loaders = [
-        ("法人", fetch_institutional_data),
-        ("月營收", lambda: fetch_monthly_revenue(force_refresh=True)),
-        ("估值", fetch_valuation),
+        # 法人歷史表本身就是每日快照來源；首頁不需要再打 TWSE/TPEx。
+        ("法人", lambda: (_load_latest_institutional_history()[0] or fetch_institutional_data())),
+        # 月營收與估值已有每日共享快照；這兩項是首頁過去最容易變慢的來源。
+        ("月營收", lambda: homepage_snapshot_or_loader(
+            "monthly_revenue", lambda: fetch_monthly_revenue(force_refresh=False))),
+        ("估值", lambda: homepage_snapshot_or_loader(
+            "valuation", fetch_valuation)),
         ("產業", get_industry_map),
         ("大盤", fetch_taiex_summary),
         # 今日事件上下文與五份共享資料互相獨立；併行取得後，
