@@ -16598,7 +16598,24 @@ a:active,button:active{transform:scale(.975);opacity:.82}.tap-loading{opacity:.6
 .app-load-card{position:fixed!important;z-index:10025;left:50%;top:88px!important;width:min(420px,calc(100vw - 28px));margin:0;transform:translateX(-50%);max-height:min(58vh,430px);overflow:auto;overscroll-behavior:contain;box-sizing:border-box;box-shadow:0 10px 28px rgba(29,41,57,.16)}
 .app-load-card{contain:layout paint;pointer-events:none}.app-load-card::-webkit-scrollbar{width:4px}.app-load-card::-webkit-scrollbar-thumb{background:#C8D5E2;border-radius:4px}
 @media(max-width:640px){.app-load-card{width:min(390px,calc(100vw - 24px));top:82px!important;padding:12px 14px}}
-.app-load-card{border-left:4px solid #5B8FC6}.app-load-card b{display:block;color:#274c77;font-size:14px;line-height:1.35}.app-load-card small{display:block;margin-top:3px;color:#6c8095;font-size:11.5px}.app-load-card .app-load-steps{margin-top:8px}.app-load-card .app-load-step{font-size:12px}
+.app-load-card{border-left:4px solid #5B8FC6}.app-load-card.market-full-loader{inset:0!important;left:0!important;top:0!important;width:100vw!important;max-width:none!important;height:100vh!important;max-height:none!important;transform:none!important;margin:0!important;border:0!important;border-radius:0!important;display:flex!important;align-items:center!important;justify-content:center!important;padding:24px!important;background:rgba(250,248,243,.985)!important;box-shadow:none!important;pointer-events:auto!important;overflow:hidden!important;box-sizing:border-box!important}
+.app-load-card.market-full-loader .market-loader-inner{width:min(410px,88vw);text-align:center;color:#102a43}
+.app-load-card.market-full-loader .market-loader-brand{font-size:11px;letter-spacing:.24em;font-weight:800;opacity:.55;margin-bottom:20px}
+.app-load-card.market-full-loader .market-loader-orbit{position:relative;width:94px;height:94px;margin:0 auto 20px}
+.app-load-card.market-full-loader .market-loader-ring{position:absolute;inset:6px;border:2px solid rgba(16,42,67,.11);border-top-color:#3f6f91;border-right-color:#3f6f91;border-radius:50%;animation:market-loader-spin 1.05s linear infinite}
+.app-load-card.market-full-loader .market-loader-dot{position:absolute;left:50%;top:50%;width:9px;height:9px;margin:-4.5px;border-radius:50%;background:#3f6f91;box-shadow:0 0 0 8px rgba(63,111,145,.08);animation:market-loader-pulse 1.15s ease-in-out infinite}
+.app-load-card.market-full-loader .market-loader-title{font-size:20px;font-weight:800;line-height:1.35}
+.app-load-card.market-full-loader .market-loader-status{font-size:13px;opacity:.62;margin-top:7px;min-height:20px}
+.app-load-card.market-full-loader .market-loader-bar{height:5px;border-radius:999px;background:rgba(16,42,67,.08);overflow:hidden;margin:19px 0 15px}
+.app-load-card.market-full-loader .market-loader-bar i{display:block;width:16%;height:100%;border-radius:999px;background:#3f6f91;animation:market-loader-progress 3.4s ease-in-out infinite}
+.app-load-card.market-full-loader .market-loader-steps{display:grid;gap:8px;text-align:left;font-size:12px}
+.app-load-card.market-full-loader .market-loader-step{display:flex;gap:8px;align-items:center;opacity:.32;transition:opacity .2s ease}
+.app-load-card.market-full-loader .market-loader-step.active,.app-load-card.market-full-loader .market-loader-step.done{opacity:.88}
+.app-load-card.market-full-loader .market-loader-step b{width:15px;text-align:center;font-size:10px}
+@keyframes market-loader-spin{to{transform:rotate(360deg)}}
+@keyframes market-loader-pulse{0%,100%{transform:scale(.78);opacity:.55}50%{transform:scale(1.08);opacity:1}}
+@keyframes market-loader-progress{0%{width:12%}45%{width:57%}75%{width:78%}100%{width:91%}}
+@media (prefers-reduced-motion:reduce){.app-load-card.market-full-loader .market-loader-ring,.app-load-card.market-full-loader .market-loader-dot,.app-load-card.market-full-loader .market-loader-bar i{animation:none}}.app-load-card b{display:block;color:#274c77;font-size:14px;line-height:1.35}.app-load-card small{display:block;margin-top:3px;color:#6c8095;font-size:11.5px}.app-load-card .app-load-steps{margin-top:8px}.app-load-card .app-load-step{font-size:12px}
 .app-load-card .app-sync-spinner{width:18px;height:18px;margin-top:1px}
 @keyframes toast-in{from{opacity:0;transform:translate(-50%,6px)}to{opacity:1;transform:translate(-50%,0)}}
 @keyframes load-card-in{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
@@ -17046,16 +17063,30 @@ def render_page(title, body, nav_active=None, user_name=None):
     function ensureNavNotice() {{
       if (navNotice) return;
       navNotice = document.createElement('div');
-      navNotice.className = 'app-load-card';
+      navNotice.className = 'app-load-card' + (target.pathname === '/web/portfolio' ? ' market-full-loader' : '');
       navNotice.setAttribute('role','status');
-      navNotice.innerHTML = '<span class="app-sync-spinner" aria-hidden="true"></span>'
-        + '<span style="min-width:0;flex:1"><b>' + loadTitle + '</b>'
-        + '<small>資料較多時會逐步完成，請不用重複點擊</small>'
-        + '<span class="app-load-steps">'
-        + loadSteps.map(function(label, i) {{
-            return '<span class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span class="step-icon" aria-hidden="true"></span><span>' + label + '</span></span>';
-          }}).join('')
-        + '</span></span>';
+      if (target.pathname === '/web/portfolio') {{
+        navNotice.innerHTML = '<div class="market-loader-inner">'
+          + '<div class="market-loader-brand">TAIWAN MARKET</div>'
+          + '<div class="market-loader-orbit" aria-hidden="true"><div class="market-loader-ring"></div><div class="market-loader-dot"></div></div>'
+          + '<div class="market-loader-title">正在整理今日市場</div>'
+          + '<div class="market-loader-status" id="market-loader-status">正在連接市場資料…</div>'
+          + '<div class="market-loader-bar" aria-hidden="true"><i></i></div>'
+          + '<div class="market-loader-steps">'
+          + ['市場資料','法人與估值','你的持股行情','今日市場判讀'].map(function(label, i) {{
+              return '<div class="market-loader-step ' + (i === 0 ? 'active' : '') + '"><b>' + (i === 0 ? '●' : '○') + '</b><span>' + label + '</span></div>';
+            }}).join('')
+          + '</div></div>';
+      }} else {{
+        navNotice.innerHTML = '<span class="app-sync-spinner" aria-hidden="true"></span>'
+          + '<span style="min-width:0;flex:1"><b>' + loadTitle + '</b>'
+          + '<small>資料較多時會逐步完成，請不用重複點擊</small>'
+          + '<span class="app-load-steps">'
+          + loadSteps.map(function(label, i) {{
+              return '<span class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span class="step-icon" aria-hidden="true"></span><span>' + label + '</span></span>';
+            }}).join('')
+          + '</span></span>';
+      }}
       // 一律掛在 body 最外層，避免被 .wrap / .app-content 等祖先元素的
       // overflow、transform 或 stacking context 影響；fixed 才是真正跟著視窗走。
       document.body.appendChild(navNotice);
@@ -17099,6 +17130,19 @@ def render_page(title, body, nav_active=None, user_name=None):
           var dots = '.'.repeat((stageElapsed % 3) + 1);
           active.textContent = loadSteps[loadSteps.length - 1] + dots;
         }}
+      }}
+      if (target.pathname === '/web/portfolio') {{
+        var marketStatus = document.getElementById('market-loader-status');
+        var marketLabels = ['正在連接市場資料…','正在整理法人與估值…','正在更新你的持股行情…','正在整理今日市場判讀…'];
+        var marketSteps = navNotice ? navNotice.querySelectorAll('.market-loader-step') : [];
+        var mi = Math.min(stepIndex, marketLabels.length - 1);
+        if (marketStatus) marketStatus.textContent = marketLabels[mi];
+        marketSteps.forEach(function(step, i) {{
+          step.classList.toggle('active', i === mi);
+          step.classList.toggle('done', i < mi);
+          var b = step.querySelector('b');
+          if (b) b.textContent = i < mi ? '✓' : (i === mi ? '●' : '○');
+        }});
       }}
       if (navProgress.classList.contains('show')) navProgress.classList.add('mid');
     }}, 1000);
