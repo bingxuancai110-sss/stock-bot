@@ -17082,7 +17082,9 @@ def render_page(title, body, nav_active=None, user_name=None):
         document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
         appContent.innerHTML = fragment;
         executeFragmentScripts(appContent);
-        upgradePreviewFragment(target.pathname, target.search);
+        if (target.pathname !== '/web/portfolio') {{
+            upgradePreviewFragment(target.pathname, target.search);
+        }}
         if (stepTimer) {{ window.clearInterval(stepTimer); stepTimer = null; }}
         if (noticeTimer) {{ window.clearTimeout(noticeTimer); noticeTimer = null; }}
         setLoadStep(loadSteps.length, true);
