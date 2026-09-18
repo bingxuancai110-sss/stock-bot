@@ -11622,7 +11622,7 @@ def _fetch_mops_revenue_fallback(target_key):
     return {}, None
 
 
-def fetch_monthly_revenue(force_refresh=False):
+def fetch_monthly_revenue(force_refresh=False, homepage=False):
     """抓最新一期月營收，涵蓋上市、上櫃、興櫃。
 
     重要原則：
@@ -11639,6 +11639,37 @@ def fetch_monthly_revenue(force_refresh=False):
     if (not force_refresh and _revenue_cache["data"] and
             now - _revenue_cache.get("checked_at", 0) < REVENUE_CACHE_CHECK_SECONDS):
         return _revenue_cache["data"]
+
+    # 首頁同步渲染不能等待官方月營收 API。
+    # 首頁只讀既有共享快照／歷史快照；官方最新月份由 warmup／背景流程更新。
+    if homepage:
+        shared = _load_shared_data_snapshot("monthly_revenue")
+        shared_data = (shared.get("payload") if shared else None) or {}
+        shared_period = ((shared.get("source_meta") or {}).get("period")
+                         if shared else None)
+        if isinstance(shared_data, dict) and shared_data and shared_period:
+            _revenue_cache.update({
+                "period": str(shared_period), "data": shared_data,
+                "checked_at": now, "source": "shared",
+                "source_date": shared.get("data_date"),
+            })
+            print("⚡ 首頁月營收只讀 Supabase 快照（月份 %s），共 %s 筆" %
+                  (shared_period, len(shared_data)))
+            return shared_data
+
+        history_data, history_period = _load_latest_revenue_history()
+        if history_data:
+            _revenue_cache.update({
+                "period": history_period, "data": history_data,
+                "checked_at": now, "source": "history",
+                "source_date": None,
+            })
+            print("⚡ 首頁月營收改讀歷史快照（月份 %s），共 %s 筆" %
+                  (history_period or "未知月份", len(history_data)))
+            return history_data
+
+        print("⚠️ 首頁沒有可用月營收快照，跳過官方抓取，避免阻塞首頁")
+        return {}
 
     # 非公布期可以使用共享快照；公布期必須先問官方，避免卡在上個月。
     if not force_refresh and not release_window and not _revenue_cache["data"]:
@@ -14923,7 +14954,7 @@ def _do_warmup():
     shared_data = {}
     for label, fn in [
         ("法人", fetch_institutional_data),
-        ("月營收", lambda: fetch_monthly_revenue(force_refresh=True)),
+        ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
         ("估值", fetch_valuation),
         ("產業別", get_industry_map),
         ("名稱對照", get_name_map),
