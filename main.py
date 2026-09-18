@@ -14308,7 +14308,7 @@ def _do_fetch_t86():
 #
 # 狀態存資料庫而不是記憶體：gunicorn 開多個 worker 時，工作在 A 執行、
 # 查詢卻可能連到 B，記憶體版本會看到空的；服務重啟也會全部消失。
-JOB_STALE_MINUTES = 30   # 超過這麼久還標示執行中，視為當掉的殘留
+JOB_STALE_MINUTES = 60   # 長工作最多容許 60 分鐘；避免排程重疊造成同一批快照同時跑兩份
 
 
 def _job_batch_id(name):
@@ -14357,6 +14357,8 @@ def _job_mark_start(name):
         got = cur.fetchone() is not None
         conn.commit()
         cur.close()
+        if not got:
+            print(f"⏭️ 背景工作 {name} 已在執行中，本次觸發略過，不會重開第二份。")
         return got
     except Exception as e:
         conn.rollback()
@@ -14694,14 +14696,26 @@ def _do_daily_snapshot():
     # 但續跑時整個 if 區塊會被跳過，沒有預設就會 NameError。
     ind_perf_saved = 0
     if not reached("rank"):
+        # rank stage 內部有兩個可能耗時的步驟；原本只顯示 0/1，
+        # 卡在其中任何一步時管理頁看不出到底卡在哪裡。改成 0/3、1/3、2/3、3/3。
+        _job_mark_progress(job_name, "rank", 0, 3)
+        rank_t0 = time.monotonic()
         rank_saved = save_leaderboard_rank_snapshots()
-        # 產業近期表現：清單上要標，但它得抓所有推薦過標的的報價，
-        # 放在選股台現算會拖慢每一次載入。這裡算一次存起來，頁面只讀不算。
+        print(f"⏱️ 每日快照 rank：排行榜名次完成 {time.monotonic() - rank_t0:.1f}s")
+        _job_mark_progress(job_name, "rank", 1, 3)
+
+        # 產業近期表現會掃近 90 天推薦紀錄並抓歷史行情，是每日快照裡
+        # 最容易出現長耗時的步驟之一；獨立記時，管理頁可直接看到卡在哪裡。
+        ind_t0 = time.monotonic()
         try:
             ind_perf_saved = save_industry_recent_performance()
         except Exception as exc:
             print(f"❌ 產業近期表現快照失敗: {exc}")
             ind_perf_saved = 0
+        print(f"⏱️ 每日快照 rank：產業近期表現完成 {time.monotonic() - ind_t0:.1f}s")
+        _job_mark_progress(job_name, "rank", 2, 3)
+
+        _job_mark_progress(job_name, "rank", 3, 3)
         _job_mark_progress(job_name, "done", 1, 1)
 
     # 月度回顧不另開一條 Render／CRON 工作；沿用每日快照的既有安全觸發。
