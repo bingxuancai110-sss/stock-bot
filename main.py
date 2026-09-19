@@ -1434,6 +1434,79 @@ _ipv4_addr = socket.gethostbyname(_url.hostname)
 # 「SSL error: decryption failed or bad record mac」——
 # 錯誤訊息看起來像憑證問題，實際上是併發問題，很容易查錯方向。
 # 單執行緒時永遠不會發生，所以加上 --threads 之前都相安無事。
+
+# ===== DB 診斷模式（只記錄慢的連線／SQL，不改資料） =====
+DB_DIAG_ENABLED = os.environ.get("DB_DIAG_ENABLED", "1") != "0"
+DB_DIAG_CONN_WARN_MS = float(os.environ.get("DB_DIAG_CONN_WARN_MS", "100"))
+DB_DIAG_SQL_WARN_MS = float(os.environ.get("DB_DIAG_SQL_WARN_MS", "500"))
+DB_DIAG_HOLD_WARN_MS = float(os.environ.get("DB_DIAG_HOLD_WARN_MS", "1000"))
+_DB_DIAG_LOCAL = threading.local()
+_DB_CONN_CHECKOUT = {}
+_DB_CONN_LOCK = threading.Lock()
+
+
+def _db_diag_set(operation=None, request_id=None):
+    if operation is not None:
+        _DB_DIAG_LOCAL.operation = str(operation)
+    if request_id is not None:
+        _DB_DIAG_LOCAL.request_id = str(request_id)
+
+
+def _db_diag_context():
+    return (getattr(_DB_DIAG_LOCAL, "operation", "-"),
+            getattr(_DB_DIAG_LOCAL, "request_id", "-"))
+
+
+def _db_diag_sql(sql):
+    try:
+        text = re.sub(r"\s+", " ", str(sql)).strip()
+        if len(text) > 220:
+            text = text[:220] + "…"
+        return text
+    except Exception:
+        return "<sql-format-error>"
+
+
+class _TimedCursor(psycopg2.extensions.cursor):
+    def execute(self, query, vars=None):
+        if not DB_DIAG_ENABLED:
+            return super().execute(query, vars)
+        started = time.monotonic()
+        try:
+            return super().execute(query, vars)
+        finally:
+            elapsed_ms = (time.monotonic() - started) * 1000
+            if elapsed_ms >= DB_DIAG_SQL_WARN_MS:
+                operation, request_id = _db_diag_context()
+                print(
+                    "🐢 DB慢SQL %.0fms | op=%s | req=%s | sql=%s" %
+                    (elapsed_ms, operation, request_id, _db_diag_sql(query)),
+                    flush=True,
+                )
+
+    def fetchall(self):
+        if not DB_DIAG_ENABLED:
+            return super().fetchall()
+        started = time.monotonic()
+        try:
+            return super().fetchall()
+        finally:
+            elapsed_ms = (time.monotonic() - started) * 1000
+            if elapsed_ms >= DB_DIAG_SQL_WARN_MS:
+                operation, request_id = _db_diag_context()
+                print(
+                    "🐢 DB慢fetchall %.0fms | op=%s | req=%s" %
+                    (elapsed_ms, operation, request_id),
+                    flush=True,
+                )
+
+
+class _TimedConnection(psycopg2.extensions.connection):
+    def cursor(self, *args, **kwargs):
+        kwargs.setdefault("cursor_factory", _TimedCursor)
+        return super().cursor(*args, **kwargs)
+
+
 DB_POOL_MIN = int(os.environ.get("DB_POOL_MIN", "1"))
 DB_POOL_MAX = int(os.environ.get("DB_POOL_MAX", "10"))
 if DB_POOL_MAX < DB_POOL_MIN:
@@ -1455,15 +1528,17 @@ connection_pool = psycopg2.pool.ThreadedConnectionPool(
     keepalives_idle=30,
     keepalives_interval=10,
     keepalives_count=3,
+    connection_factory=_TimedConnection,
 )
 
 
 def get_db_connection():
     """
-    借一條連線。若借到的是已經壞掉的連線（例如被伺服器中途切斷），
-    直接丟棄再借一條——把壞連線放回池子只會讓下一個人也踩到。
+    借一條連線。診斷模式會量測「排隊等 connection」的時間，
+    這是目前要確認首頁 6~10 秒波動是否來自 connection pool 的關鍵。
     """
     for _attempt in range(3):
+        checkout_started = time.monotonic()
         try:
             conn = connection_pool.getconn()
         except pool.PoolError as e:
@@ -1476,6 +1551,20 @@ def get_db_connection():
             if conn.closed:
                 connection_pool.putconn(conn, close=True)
                 continue
+            wait_ms = (time.monotonic() - checkout_started) * 1000
+            with _DB_CONN_LOCK:
+                _DB_CONN_CHECKOUT[id(conn)] = time.monotonic()
+            if DB_DIAG_ENABLED and wait_ms >= DB_DIAG_CONN_WARN_MS:
+                operation, request_id = _db_diag_context()
+                try:
+                    in_use = len(connection_pool._used)
+                except Exception:
+                    in_use = "?"
+                print(
+                    "⏳ DB等連線 %.0fms | in_use=%s/%s | op=%s | req=%s" %
+                    (wait_ms, in_use, DB_POOL_MAX, operation, request_id),
+                    flush=True,
+                )
             return conn
         except Exception as e:
             print(f"⚠️ 取得連線異常，丟棄重試: {e}")
@@ -1489,6 +1578,25 @@ def get_db_connection():
 
 
 def release_db_connection(conn):
+    """
+    歸還連線。診斷模式同時量測一條 connection 被持有多久，
+    避免「SQL 很快，但連線被某段 Python 工作長時間佔住」被誤判成 DB 慢。
+    """
+    hold_ms = None
+    try:
+        with _DB_CONN_LOCK:
+            checkout_ts = _DB_CONN_CHECKOUT.pop(id(conn), None)
+        if checkout_ts is not None:
+            hold_ms = (time.monotonic() - checkout_ts) * 1000
+    except Exception:
+        pass
+    if DB_DIAG_ENABLED and hold_ms is not None and hold_ms >= DB_DIAG_HOLD_WARN_MS:
+        operation, request_id = _db_diag_context()
+        print(
+            "🔒 DB連線持有 %.0fms | op=%s | req=%s" %
+            (hold_ms, operation, request_id),
+            flush=True,
+        )
     """
     歸還連線。交易若停在異常狀態，必須先 rollback 再放回，
     否則下一個借到這條連線的人會直接收到
@@ -24206,18 +24314,130 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         rank_status = get_fast_rank_summary(uid)
         print("⏱️ 今日完整頁：排名摘要 %.0fms" % ((time.monotonic() - rank_started) * 1000))
 
+    # 首頁事件視覺化：代號永遠有名稱；支撐／壓力／收盤價格用漲跌語意著色。
+    # 紅＝數值往上、綠＝數值往下；不是單純依事件 severity 上色。
+    position_name_map = {}
+    for p in positions:
+        code = str(p.get("code") or "").strip()
+        if code:
+            position_name_map[code] = stock_display_name(code, fallback=code)
+
+    def event_code_and_name(event):
+        event = event if isinstance(event, dict) else {}
+        evidence = event.get("evidence") if isinstance(event.get("evidence"), dict) else {}
+        code = ""
+        name = ""
+        for source in (evidence,):
+            for k in ("code", "stock_code", "symbol", "ticker"):
+                value = source.get(k)
+                if value:
+                    code = str(value).strip()
+                    break
+            if source.get("name"):
+                name = str(source.get("name")).strip()
+        if not code:
+            for side in ("new", "old", "current", "previous"):
+                nested = evidence.get(side)
+                if isinstance(nested, dict):
+                    for k in ("code", "stock_code", "symbol", "ticker"):
+                        if nested.get(k):
+                            code = str(nested[k]).strip()
+                            break
+                    if not name and nested.get("name"):
+                        name = str(nested.get("name")).strip()
+                if code:
+                    break
+        if not code:
+            import re as _re
+            blob = f"{event.get('title') or ''} {event.get('detail') or ''}"
+            m = _re.search(r"(?<!\d)(\d{4})(?!\d)", blob)
+            code = m.group(1) if m else ""
+        if code and not name:
+            name = position_name_map.get(code) or stock_display_name(code, fallback=code)
+        return code, name
+
+    def price_span(value, direction="flat", extra_class=""):
+        if value in (None, ""):
+            return ""
+        cls = "daily-price-up" if direction == "up" else ("daily-price-down" if direction == "down" else "daily-price-flat")
+        if extra_class:
+            cls += " " + extra_class
+        return f'<span class="{cls}">{html.escape(_format_level_price(value))}</span>'
+
+    def colored_compare(label, old_value, new_value):
+        if old_value is None and new_value is None:
+            return ""
+        if old_value is None:
+            return f'<span class="daily-level-label">{html.escape(label)}</span> <span class="daily-level-new">今日 {price_span(new_value, "up", "daily-price-new")}</span>'
+        if new_value is None:
+            return f'<span class="daily-level-label">{html.escape(label)}</span> <span class="daily-level-old">前日 {price_span(old_value, "flat")}</span> <span class="daily-level-muted">→ 無有效參考</span>'
+        try:
+            old_num, new_num = float(old_value), float(new_value)
+            direction = "up" if new_num > old_num else ("down" if new_num < old_num else "flat")
+        except (TypeError, ValueError):
+            direction = "flat"
+        return (f'<span class="daily-level-label">{html.escape(label)}</span> '
+                f'{price_span(old_value, "flat", "daily-price-old")} '
+                f'<span class="daily-level-arrow">→</span> '
+                f'{price_span(new_value, direction, "daily-price-new")}')
+
+    def event_detail_html(event):
+        event = event if isinstance(event, dict) else {}
+        category = str(event.get("category") or "")
+        evidence = event.get("evidence") if isinstance(event.get("evidence"), dict) else {}
+        if category == "watchlist_position":
+            old = evidence.get("old") if isinstance(evidence.get("old"), dict) else {}
+            new = evidence.get("new") if isinstance(evidence.get("new"), dict) else {}
+            parts = []
+            support = colored_compare("支撐", old.get("support"), new.get("support"))
+            resistance = colored_compare("壓力", old.get("resistance"), new.get("resistance"))
+            close = colored_compare("收盤", old.get("close"), new.get("close"))
+            if support: parts.append(support)
+            if resistance: parts.append(resistance)
+            if close: parts.append(close)
+            old_pos, new_pos = old.get("position"), new.get("position")
+            if old_pos is not None and new_pos is not None and old_pos != new_pos:
+                pos_dir = "daily-score-up" if float(new_pos) > float(old_pos) else "daily-score-down"
+                parts.append(f'<span class="daily-score-change">位階 <b>{html.escape(str(old_pos))}</b> → <b class="{pos_dir}">{html.escape(str(new_pos))}</b></span>')
+            return ''.join(f'<div class="daily-event-line">{x}</div>' for x in parts) or '<div class="daily-event-line daily-level-muted">支撐／壓力有效參考不足</div>'
+        if category == "watchlist":
+            old = evidence.get("old") if isinstance(evidence.get("old"), dict) else {}
+            new = evidence.get("new") if isinstance(evidence.get("new"), dict) else {}
+            if old.get("total") is not None or new.get("total") is not None:
+                try:
+                    ov, nv = float(old.get("total")), float(new.get("total"))
+                    cls = "daily-score-up" if nv > ov else ("daily-score-down" if nv < ov else "daily-score-flat")
+                except (TypeError, ValueError):
+                    cls = "daily-score-flat"
+                return f'<div class="daily-event-line"><span class="daily-level-label">綜合分數</span> <b>{html.escape(str(old.get("total", "待確認")))}</b> → <b class="{cls}">{html.escape(str(new.get("total", "待確認")))}</b></div>'
+        return f'<div class="daily-event-line">{html.escape(str(event.get("detail") or "依事件明細中的既有資料比較。"))}</div>'
+
     def timeline_rows(items, status_label, status_class, start=1):
         rows = []
         for idx, raw_event in enumerate(items or [], start):
             event = raw_event if isinstance(raw_event, dict) else {}
             level = html.escape(str(event.get("severity") or "B"))
-            title = html.escape(str(event.get("title") or ""))
-            detail = html.escape(str(event.get("detail") or ""))
-            rows.append(f'''<div class="daily-event timeline-{status_class} level-{level}">
-              <span class="event-status">{status_label}</span>
-              <div><b>{title}</b>
-              <div class="event-detail">{detail}</div></div>
-            </div>''')
+            title_raw = str(event.get("title") or "")
+            code, name = event_code_and_name(event)
+            # 若事件標題本身只有「你的8996...」，把它改成「8996｜股票名稱」層級，
+            # 讓使用者第一眼先看到是哪一檔，再看發生什麼事。
+            clean_title = title_raw
+            if code and name:
+                clean_title = clean_title.replace(f"你的{code}", "").strip(" ：:｜|")
+                if not clean_title:
+                    clean_title = "今日變化"
+            else:
+                clean_title = title_raw
+            stock_html = ""
+            if code:
+                stock_html = f'<div class="daily-event-stock"><span class="daily-event-code">{html.escape(code)}</span><b>{html.escape(name or code)}</b></div>'
+            title_html = f'<div class="daily-event-title"><strong>{html.escape(clean_title)}</strong></div>'
+            detail_html = event_detail_html(event)
+            rows.append(f'''<article class="daily-event timeline-{status_class} level-{level}">
+              <div class="daily-event-top"><span class="event-status event-status-{status_class}">{status_label}</span>{stock_html}</div>
+              {title_html}
+              <div class="daily-event-detail">{detail_html}</div>
+            </article>''')
         return "".join(rows)
 
     # 首頁與盤前完整頁採同一資訊層級：先給最高優先級 3 項，
@@ -24712,8 +24932,43 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .home-screener-card .screener-fast-preview-row small{{font-size:10.5px!important;color:#8290A0!important}}
 .home-us-list>span{{font-weight:500!important}}
 .home-us-list strong{{font-weight:700!important;letter-spacing:-.02em!important}}
-.home-focus-events,.home-focus-events *{{font-weight:400!important}}
-.home-focus-events>b{{font-weight:700!important}}
+/* V40：今日事件改成「股票 → 事件 → 價格變化」三層閱讀結構。 */
+.home-focus-events{{margin-top:14px!important;padding-top:14px!important}}
+.home-focus-events>b{{display:block!important;margin-bottom:9px!important;font-size:13px!important;font-weight:800!important;color:#173653!important}}
+.home-focus-events .daily-event{{position:relative!important;margin:8px 0!important;padding:11px 12px 12px!important;border:1px solid #E5EBF1!important;border-radius:12px!important;background:#FCFDFE!important;box-shadow:0 2px 8px rgba(25,54,84,.035)!important}}
+.home-focus-events .daily-event.timeline-new{{border-left:3px solid #E53935!important}}
+.home-focus-events .daily-event.timeline-ongoing{{border-left:3px solid #1685D6!important}}
+.home-focus-events .daily-event.timeline-resolved{{border-left:3px solid #8B98A6!important}}
+.daily-event-top{{display:flex!important;align-items:center!important;gap:8px!important;min-width:0!important}}
+.daily-event-stock{{display:flex!important;align-items:center!important;gap:6px!important;min-width:0!important}}
+.daily-event-stock b{{font-size:14px!important;font-weight:800!important;color:#132B45!important;letter-spacing:-.02em!important}}
+.daily-event-code{{display:inline-flex!important;align-items:center!important;padding:2px 6px!important;border-radius:5px!important;background:#EEF3F7!important;color:#64788C!important;font-size:9px!important;font-weight:700!important;letter-spacing:.03em!important}}
+.event-status{{flex:none!important;font-size:9px!important;font-weight:800!important}}
+.event-status-new{{color:#D7352A!important}}
+.event-status-ongoing{{color:#1473BD!important}}
+.event-status-resolved{{color:#7A8794!important}}
+.daily-event-title{{margin:7px 0 5px!important;color:#142B45!important;line-height:1.45!important}}
+.daily-event-title strong{{font-size:13px!important;font-weight:800!important;letter-spacing:-.01em!important}}
+.daily-event-detail{{color:#586C80!important;font-size:11px!important;line-height:1.75!important;font-weight:400!important}}
+.daily-event-line{{display:flex!important;align-items:center!important;flex-wrap:wrap!important;gap:3px!important;min-height:22px!important}}
+.daily-level-label{{display:inline-block!important;min-width:30px!important;color:#74869A!important;font-size:10px!important;font-weight:600!important}}
+.daily-price-old,.daily-price-flat{{color:#718092!important;font-weight:500!important}}
+.daily-price-up{{color:#E53935!important;font-weight:800!important}}
+.daily-price-down{{color:#07966A!important;font-weight:800!important}}
+.daily-price-new{{font-size:12px!important}}
+.daily-level-arrow{{color:#A1ACB7!important;font-weight:500!important;margin:0 2px!important}}
+.daily-level-muted{{color:#97A2AD!important;font-weight:400!important}}
+.daily-score-change{{margin-left:1px!important;color:#6D7C8C!important;font-size:10px!important}}
+.daily-score-up{{color:#E53935!important;font-weight:800!important}}
+.daily-score-down{{color:#07966A!important;font-weight:800!important}}
+.daily-score-flat{{color:#6D7C8C!important;font-weight:700!important}}
+@media(max-width:640px){{
+  .home-focus-events .daily-event{{padding:10px 10px 11px!important}}
+  .daily-event-stock b{{font-size:14px!important}}
+  .daily-event-title strong{{font-size:13px!important}}
+  .daily-event-detail{{font-size:11px!important;line-height:1.72!important}}
+}}
+
 /* 桌面與手機一致的閱讀寬度 */
 @media(max-width:640px){{
   .daily-home{{font-size:14px!important}}
@@ -24865,6 +25120,8 @@ def web_portfolio(uid):
         )
 
     full_started = time.monotonic()
+    home_diag_request = "home-%x-%s" % (int(time.time() * 1000) & 0xfffffff, threading.get_ident() % 10000)
+    _db_diag_set(operation="homepage", request_id=home_diag_request)
     th = get_thresholds(profile)
     fee_disc, min_fee = get_fee_settings(profile)
 
@@ -24893,6 +25150,7 @@ def web_portfolio(uid):
         # 降到最慢的一次。每個 loader 失敗只回空資料，不影響其他分析區塊。
         def safe_shared_loader(label, loader):
             loader_started = time.monotonic()
+            _db_diag_set(operation="homepage/%s" % label, request_id=home_diag_request)
             try:
                 value = loader() or {}
                 print("⏱️ 今日共享資料：%s %.0fms" % (
@@ -24909,7 +25167,7 @@ def web_portfolio(uid):
             ("估值", fetch_valuation),
             ("產業", get_industry_map),
             ("大盤", fetch_taiex_summary),
-            ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today())),
+            ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today(), position_codes)),
         ]
         with ThreadPoolExecutor(max_workers=len(shared_loaders)) as ex:
             shared_values = list(ex.map(
@@ -24920,6 +25178,13 @@ def web_portfolio(uid):
             })
     inst, revenue, valuation, ind_map, taiex, daily_context = shared_values
     shared_done = time.monotonic()
+    if DB_DIAG_ENABLED:
+        print(
+            "🔎 首頁DB診斷：共享資料完成 %.0fms | req=%s | pool=%s/%s" %
+            ((shared_done - full_started) * 1000, home_diag_request,
+             len(getattr(connection_pool, "_used", {})), DB_POOL_MAX),
+            flush=True,
+        )
 
     # 日內首頁同時需要目前持股行情與當日操作日誌。兩者互不相依，並行讀取；
     # 若當天已全部賣出某標的，再補抓該代號行情，保留它在日初至減碼前的貢獻。
