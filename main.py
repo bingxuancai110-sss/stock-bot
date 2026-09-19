@@ -17243,7 +17243,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     // 只顯示「載入內容」的階段，不放無法由前端確認的「整理畫面」假進度。
     // fetch 真正回來後，才把目前最後階段一次標成完成。
     var loadStageMap = {{
-      '/web/portfolio':['持股資料','目前報價','今日損益','持股分析','組合配置','風險檢查','今日重點','市場環境','法人與今日事件','績效整理'],
+      '/web/portfolio':['持股資料','目前行情','今日損益','組合分析','今日事件','績效整理'],
       '/web/positions':['持股資料','目前報價','今日損益','持股分析','組合配置','風險檢查','今日重點','績效整理'],
       '/web/workbench':['市場資料','營收資料','籌碼資料','計算排名'],
       '/web/leaderboard':['排行榜快照','個人績效','趨勢資料'],
@@ -26987,6 +26987,8 @@ def build_workbench_snapshot_payload(uid=None):
         if cached and now - cached.get("at", 0) < _WORKBENCH_SNAPSHOT_CACHE_SECONDS:
             return cached.get("value")
     sources, rows = {}, []
+    # 分數變化已從工作台首屏移除；不要在首屏查第二次快照，避免拖慢入口。
+    # 後端相關 helper 保留，之後若需要可改成點開個股時再 lazy load。
     score_changes = []
     def safe(label, fn, fallback=None):
         try:
@@ -26998,30 +27000,7 @@ def build_workbench_snapshot_payload(uid=None):
     blackhorse = safe("黑馬", lambda: _load_persisted_screener_snapshot("blackhorse"))
     if blackhorse:
         bh_rows = _workbench_screener_rows("blackhorse", blackhorse)
-        change_map = _load_today_screener_score_changes("blackhorse")
-        score_changes = []
-        for item in bh_rows:
-            chg = change_map.get(str(item.get("code") or ""))
-            if chg:
-                item.setdefault("detail", {})["score_change"] = chg
-                of = chg.get("old_factors") or {}; nf = chg.get("new_factors") or {}
-                labels = (("rev", "營收"), ("val", "估值"), ("mom", "產業動能"), ("streak_score", "連續性"), ("chip", "籌碼／技術"))
-                factor_changes = []
-                for fk, label in labels:
-                    ov, nv = of.get(fk), nf.get(fk)
-                    if ov != nv:
-                        factor_changes.append({"key": fk, "label": label, "old": ov, "new": nv})
-                old_score, new_score = chg.get("old_score"), chg.get("new_score")
-                delta = None
-                try:
-                    if old_score is not None and new_score is not None:
-                        delta = float(new_score) - float(old_score)
-                except (TypeError, ValueError):
-                    pass
-                score_changes.append({"code": str(item.get("code") or ""), "name": str(item.get("name") or item.get("code") or ""),
-                                      "old_score": old_score, "new_score": new_score, "delta": delta,
-                                      "changed_at": chg.get("changed_at"), "factors": factor_changes})
-        score_changes.sort(key=lambda x: str(x.get("changed_at") or ""), reverse=True)
+        # 首屏只讀黑馬正式快照；分數變化不再阻塞入口。
         rows.extend(bh_rows)
         sources["黑馬"] = {"date": str(blackhorse.get("source_date") or "未標日期"),
                          "computed_at": str(blackhorse.get("computed_at") or "")}
@@ -27365,13 +27344,6 @@ def render_workbench_body(initial_tab=""):
   <div class="wb-pulse" id="wb-pulse"><span>資料狀態</span><b>快照優先</b><i></i><i></i><em>先看已保存資料；個股與 ETF 分開比較，不混在同一榜單。</em></div>
   <div class="wb-asset-tabs" id="wb-asset-tabs" aria-label="資產類型"><button type="button" class="on" data-asset="stock">個股</button><button type="button" data-asset="etf">ETF 專區</button></div>
   <div class="wb-tabs" id="wb-tabs" aria-label="選股資料來源"></div>
-  <section class="wb-score-change-panel" id="wb-score-change-panel">
-  <div class="wb-score-change-head">
-    <div><div class="wb-score-change-title">今日黑馬分數變化</div><div class="wb-score-change-sub">正在讀取今天的分數快照…</div></div>
-    <span class="wb-score-change-count">—</span>
-  </div>
-  <div class="wb-score-change-empty">正在載入今天的分數變化資料…</div>
-</section>
   <div class="wb-tools"><label><span>⌕</span><input id="wb-search" placeholder="搜尋代號、名稱或產業" autocomplete="off"></label><button type="button" id="wb-filter">篩選條件</button><button type="button" id="wb-refresh">重新整理</button></div>
   <div class="wb-filter-panel" id="wb-filter-panel" hidden><div><b>當日漲跌</b><button type="button" data-dir="all" class="on">不限</button><button type="button" data-dir="up">上漲</button><button type="button" data-dir="down">下跌</button></div></div><div class="wb-mobile-sort" id="wb-mobile-sort" aria-label="排序方式"><span>排序</span><button type="button" data-sort="score" class="on">分數</button><button type="button" data-sort="change_pct">漲跌</button><button type="button" data-sort="institutional_lots">法人</button></div>
   <div class="wb-meta"><span id="wb-count">正在讀取…</span><span id="wb-note"></span></div>
