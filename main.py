@@ -4819,6 +4819,10 @@ def _build_home_intraday_payload(uid):
         return {"ok": True, "market_open": False, "updates": [],
                 "note": "目前非一般盤中時段；首頁已停止行情輪詢。"}
     positions = merge_positions(get_positions(uid))
+    # position_codes 必須在後續即時行情與首頁共享資料載入前建立。
+    # 內部 fragment 導航也會直接走這條完整首頁路徑，因此不能等到
+    # shared loader 區塊裡才初始化，否則回首頁可能觸發 UnboundLocalError。
+    position_codes = [p["code"] for p in positions]
     if not positions:
         return {"ok": True, "market_open": True, "updates": [],
                 "note": "目前沒有可更新的持股。"}
@@ -24899,8 +24903,6 @@ def web_portfolio(uid):
                 print("⚠️ 今日共享資料載入失敗 %s（%.0fms）：%s" % (
                     label, (time.monotonic() - loader_started) * 1000, exc))
                 return {}
-
-        position_codes = [p["code"] for p in positions]
 
         def load_homepage_snapshot_bundle():
             # 首頁只會用到自己的持股；不要從 Supabase 搬回 1,000~2,000 筆完整 JSONB。
