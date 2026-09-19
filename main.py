@@ -17261,13 +17261,6 @@ def render_page(title, body, nav_active=None, user_name=None):
   }}
   window.stockBotFinishPageLoading = finishTopNavLoading;
 
-  try {{
-    if (sessionStorage.getItem('stockbot_pending_nav_loading') === 'workbench' && window.location.pathname === '/web/workbench') {{
-      sessionStorage.removeItem('stockbot_pending_nav_loading');
-      ensureTopNavLoadingForFullNavigation('正在載入選股結果…', ['市場資料','營收資料','籌碼資料','計算排名']);
-    }}
-  }} catch (ignore) {{}}
-
   function switchAppPage(rawHref, pushState) {{
     if (!appContent) {{ window.location.assign(rawHref); return; }}
     if (appNavBusy) return;
@@ -17277,15 +17270,20 @@ def render_page(title, body, nav_active=None, user_name=None):
     // 情況下動態 script 不會穩定執行，會只留下「讀取最近有效快照…」骨架。
     // 因此選股工作台改走一次正常文件導覽；仍保留上方小型 Loading，而不是全頁動畫。
     if (target.pathname === '/web/workbench') {{
-      try {{ sessionStorage.setItem('stockbot_pending_nav_loading', 'workbench'); }} catch (ignore) {{}}
-      ensureTopNavLoadingForFullNavigation('正在載入選股結果…', ['市場資料','營收資料','籌碼資料','計算排名']);
+      // 工作台保留正常文件導覽，避免大量原生腳本在 fragment 插入後失效；
+      // 但內頁切換只顯示最上方細進度條，不再跳出大型 Loading 卡。
+      var wbNavProgress = document.createElement('div');
+      wbNavProgress.className = 'app-nav-loading show';
+      wbNavProgress.setAttribute('aria-hidden','true');
+      document.body.appendChild(wbNavProgress);
+      window.setTimeout(function() {{ wbNavProgress.classList.add('mid'); }}, 180);
       target.searchParams.delete('fragment');
       window.location.assign(target.pathname + (target.search ? '?' + target.searchParams.toString() : ''));
       return;
     }}
     // 只有「第一次進站」使用全螢幕市場 Loading。
     // 已經在 App 裡的頁面切換（包含回到今日首頁）一律走 SPA，
-    // 顯示上方滑入的小型 Loading 卡，避免每次切頁都重新蓋滿整個畫面。
+    // 只顯示最上方細進度條，不覆蓋頁面內容。
     target.searchParams.set('fragment', '1');
     target.searchParams.delete('fast');
     var navSeq = ++appNavSeq;
@@ -17296,100 +17294,11 @@ def render_page(title, body, nav_active=None, user_name=None):
     if (pushState) appScrollRestore[window.location.pathname + window.location.search] = previousScroll;
     if (target.pathname === '/web/portfolio') target.searchParams.set('_nav', String(Date.now()));
     var requestUrl = target.pathname + '?' + target.searchParams.toString();
-    var navNotice = null;
     var navProgress = document.createElement('div');
     navProgress.className = 'app-nav-loading';
     navProgress.setAttribute('aria-hidden','true');
     document.body.appendChild(navProgress);
-    // 只顯示「載入內容」的階段，不放無法由前端確認的「整理畫面」假進度。
-    // fetch 真正回來後，才把目前最後階段一次標成完成。
-    var loadStageMap = {{
-      '/web/portfolio':['持股資料','目前行情','今日損益','組合分析','今日事件','績效整理'],
-      '/web/positions':['持股資料','目前報價','今日損益','持股分析','組合配置','風險檢查','今日重點','績效整理'],
-      '/web/workbench':['市場資料','營收資料','籌碼資料','計算排名'],
-      '/web/leaderboard':['排行榜快照','個人績效','趨勢資料'],
-      '/web/trades':['交易紀錄','績效計算','趨勢分析'],
-      '/web/compare':['比較資料','報酬計算','風險資料'],
-      '/web/settings':['設定資料','偏好設定','儲存狀態'],
-      '/web/more':['功能資料','狀態檢查'],
-      '/web/chips':['籌碼快照','法人資料','排序結果'],
-      '/web/etf':['ETF資料','報酬資料','分類排名'],
-      '/web/watchlist':['自選資料','目前報價','異動整理']
-    }};
-    var loadSteps = loadStageMap[target.pathname] || ['頁面資料','分析資料'];
-    var loadTitleMap = {{
-      '/web/portfolio':'正在載入今日資料…','/web/positions':'正在載入持股資料…','/web/workbench':'正在載入選股結果…',
-      '/web/leaderboard':'正在載入排行榜…','/web/trades':'正在載入交易紀錄…','/web/compare':'正在載入比較結果…',
-      '/web/settings':'正在載入設定…','/web/more':'正在載入功能…','/web/chips':'正在載入籌碼資料…',
-      '/web/etf':'正在載入 ETF 資料…','/web/watchlist':'正在載入自選資料…'
-    }};
-    var loadTitle = loadTitleMap[target.pathname] || '正在載入頁面…';
-    var stepTimer = null;
-    var stepIndex = 0;
-    var stageElapsed = 0;
-    var noticeTimer = null;
-    function ensureNavNotice() {{
-      if (navNotice) return;
-      navNotice = document.createElement('div');
-      navNotice.className = 'app-load-card';
-      navNotice.setAttribute('role','status');
-      navNotice.innerHTML = '<span class="app-sync-spinner" aria-hidden="true"></span>'
-        + '<span style="min-width:0;flex:1"><b>' + loadTitle + '</b>'
-        + '<small>資料較多時會逐步完成，請不用重複點擊</small>'
-        + '<span class="app-load-steps">'
-        + loadSteps.map(function(label, i) {{
-            return '<span class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span class="step-icon" aria-hidden="true"></span><span>' + label + '</span></span>';
-          }}).join('')
-        + '</span></span>';
-      // 一律掛在 body 最外層，避免被 .wrap / .app-content 等祖先元素的
-      // overflow、transform 或 stacking context 影響；fixed 才是真正跟著視窗走。
-      document.body.appendChild(navNotice);
-      function positionNavNotice() {{
-        if (!navNotice) return;
-        var header = document.querySelector('.app-header');
-        var headerBottom = header ? header.getBoundingClientRect().bottom : 72;
-        var top = Math.max(headerBottom + 10, 12);
-        navNotice.style.setProperty('top', top + 'px', 'important');
-        navNotice.style.setProperty('position', 'fixed', 'important');
-      }}
-      positionNavNotice();
-      window.addEventListener('resize', positionNavNotice, {{passive:true}});
-      navNotice._positionNavNotice = positionNavNotice;
-    }}
-    // App 內所有頁面（包含今日首頁）統一使用上方滑入 Loading 卡。
-    // 只有第一次進站的 render_loading_shell 才使用全螢幕動畫。
-    noticeTimer = window.setTimeout(ensureNavNotice, 80);
-    function setLoadStep(nextIndex, doneAll) {{
-      if (!navNotice) return;
-      var steps = navNotice.querySelectorAll('.app-load-step');
-      steps.forEach(function(step, i) {{
-        step.classList.remove('done','active','pending');
-        if (doneAll || i < nextIndex) step.classList.add('done');
-        else if (i === nextIndex) step.classList.add('active');
-        else step.classList.add('pending');
-      }});
-      if (doneAll) {{
-        var spinner = navNotice.querySelector('.app-sync-spinner');
-        if (spinner) spinner.style.display = 'none';
-      }}
-    }}
-    stepTimer = window.setInterval(function() {{
-      stageElapsed += 1;
-      if (stepIndex < loadSteps.length - 1) {{
-        stepIndex += 1;
-        setLoadStep(stepIndex, false);
-      }} else if (navNotice) {{
-        // 最後一階不是「整理畫面」；資料還沒回來時維持最後階段，
-        // 但讓文字持續變化，避免看起來像卡死。
-        var active = navNotice.querySelector('.app-load-step.active span:last-child');
-        if (active) {{
-          var dots = '.'.repeat((stageElapsed % 3) + 1);
-          active.textContent = loadSteps[loadSteps.length - 1] + dots;
-        }}
-      }}
-
-      if (navProgress.classList.contains('show')) navProgress.classList.add('mid');
-    }}, 1000);
+    // 內頁切換不建立大型 Loading 卡，只使用上方細進度條。
     navProgress.classList.add('show');
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
@@ -17409,20 +17318,7 @@ def render_page(title, body, nav_active=None, user_name=None):
         if (target.pathname !== '/web/portfolio') {{
             upgradePreviewFragment(target.pathname, target.search);
         }}
-        if (stepTimer) {{ window.clearInterval(stepTimer); stepTimer = null; }}
-        if (noticeTimer) {{ window.clearTimeout(noticeTimer); noticeTimer = null; }}
-        setLoadStep(loadSteps.length, true);
           if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
-          if (navNotice) {{
-            var loadTitleEl = navNotice.querySelector('b');
-            var loadSub = navNotice.querySelector('small');
-            if (loadTitleEl) loadTitleEl.textContent = '✓ 載入完成';
-            if (loadSub) loadSub.textContent = '畫面已更新';
-            window.setTimeout(function() {{
-              if (navNotice && navNotice._positionNavNotice) window.removeEventListener('resize', navNotice._positionNavNotice);
-              if (navNotice && navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
-            }}, 380);
-          }}
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
         target.searchParams.delete('fragment');
@@ -17433,14 +17329,10 @@ def render_page(title, body, nav_active=None, user_name=None):
       }})
       .catch(function(error) {{
         if (error && error.name === 'AbortError') return;
-        if (stepTimer) {{ window.clearInterval(stepTimer); stepTimer = null; }}
-        if (noticeTimer) {{ window.clearTimeout(noticeTimer); noticeTimer = null; }}
         if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
         appNavBusy = false;
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
-        if (navNotice && navNotice._positionNavNotice) window.removeEventListener('resize', navNotice._positionNavNotice);
-        if (navNotice && navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
         var retryNotice = document.createElement('div');
         retryNotice.className = 'app-fragment-status app-fragment-error';
         // 把錯誤內容顯示出來。只寫「請稍後再試」的話，
