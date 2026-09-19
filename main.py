@@ -34,7 +34,7 @@ TW_TZ = timezone(timedelta(hours=8))
 _HOMEPAGE_SHARED_CACHE = {"key": None, "ts": 0.0, "value": None}
 _HOMEPAGE_JOURNAL_CACHE = {}
 _HOMEPAGE_CACHE_LOCK = threading.RLock()
-_HOMEPAGE_SHARED_TTL = 12.0
+_HOMEPAGE_SHARED_TTL = 60.0  # 首頁共享快照 60 秒短快取，避免內部返回重打 Supabase
 _HOMEPAGE_JOURNAL_TTL = 8.0
 
 
@@ -17421,6 +17421,10 @@ def render_page(title, body, nav_active=None, user_name=None):
             upgradePreviewFragment(target.pathname, target.search);
         }}
           if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
+        // 頁面內容已真正插入並完成 fragment scripts 後，才結束頂部導航動畫。
+        // 避免「內容已經好了，但仍卡著『正在開啟持股／選股台』」。
+        if (window.finishPageNavLoader) window.finishPageNavLoader();
+        appNavBusy = false;
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
         target.searchParams.delete('fragment');
@@ -17432,6 +17436,7 @@ def render_page(title, body, nav_active=None, user_name=None):
       .catch(function(error) {{
         if (error && error.name === 'AbortError') return;
         if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
+        if (window.finishPageNavLoader) window.finishPageNavLoader();
         appNavBusy = false;
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
