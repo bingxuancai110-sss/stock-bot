@@ -24317,7 +24317,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     # 首頁事件視覺化：代號永遠有名稱；支撐／壓力／收盤價格用漲跌語意著色。
     # 紅＝數值往上、綠＝數值往下；不是單純依事件 severity 上色。
     position_name_map = {}
-    for p in positions:
+    for p in holdings:
         code = str(p.get("code") or "").strip()
         if code:
             position_name_map[code] = stock_display_name(code, fallback=code)
