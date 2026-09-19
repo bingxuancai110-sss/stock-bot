@@ -17217,11 +17217,72 @@ def render_page(title, body, nav_active=None, user_name=None):
     document.body.appendChild(toast);
     window.setTimeout(function() {{ if (toast.parentNode) toast.parentNode.removeChild(toast); }}, 1800);
   }}
+  function ensureTopNavLoadingForFullNavigation(title, steps) {{
+    try {{
+      var old = document.querySelector('.app-full-nav-loading');
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+      var card = document.createElement('div');
+      card.className = 'app-load-card app-sync-float app-full-nav-loading';
+      card.setAttribute('role','status');
+      card.innerHTML = '<span class="app-sync-spinner" aria-hidden="true"></span>'
+        + '<span style="min-width:0;flex:1"><b>' + title + '</b>'
+        + '<small>資料較多時會逐步完成，請不用重複點擊</small>'
+        + '<span class="app-load-steps">' + (steps || []).map(function(label, i) {{
+            return '<span class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span class="step-icon" aria-hidden="true"></span><span>' + label + '</span></span>';
+          }}).join('') + '</span></span>';
+      document.body.appendChild(card);
+      var i = 0;
+      card._timer = window.setInterval(function() {{
+        var all = card.querySelectorAll('.app-load-step');
+        if (i < all.length - 1) i += 1;
+        all.forEach(function(step, idx) {{
+          step.classList.remove('done','active','pending');
+          if (idx < i) step.classList.add('done');
+          else if (idx === i) step.classList.add('active');
+          else step.classList.add('pending');
+        }});
+      }}, 650);
+    }} catch (ignore) {{}}
+  }}
+
+  function finishTopNavLoading() {{
+    try {{
+      var card = document.querySelector('.app-full-nav-loading');
+      if (!card) return;
+      if (card._timer) window.clearInterval(card._timer);
+      var steps = card.querySelectorAll('.app-load-step');
+      steps.forEach(function(step) {{ step.classList.remove('active','pending'); step.classList.add('done'); }});
+      var title = card.querySelector('b');
+      var sub = card.querySelector('small');
+      if (title) title.textContent = '✓ 載入完成';
+      if (sub) sub.textContent = '畫面已更新';
+      window.setTimeout(function() {{ if (card.parentNode) card.parentNode.removeChild(card); }}, 280);
+    }} catch (ignore) {{}}
+  }}
+  window.stockBotFinishPageLoading = finishTopNavLoading;
+
+  try {{
+    if (sessionStorage.getItem('stockbot_pending_nav_loading') === 'workbench' && window.location.pathname === '/web/workbench') {{
+      sessionStorage.removeItem('stockbot_pending_nav_loading');
+      ensureTopNavLoadingForFullNavigation('正在載入選股結果…', ['市場資料','營收資料','籌碼資料','計算排名']);
+    }}
+  }} catch (ignore) {{}}
+
   function switchAppPage(rawHref, pushState) {{
     if (!appContent) {{ window.location.assign(rawHref); return; }}
     if (appNavBusy) return;
     var target = new URL(rawHref, window.location.href);
     if (!appRouteKeys[target.pathname]) {{ window.location.assign(target.pathname + target.search); return; }}
+    // 選股工作台含有大量原生頁面腳本；SPA fragment 插入後，部分 WebView/Safari
+    // 情況下動態 script 不會穩定執行，會只留下「讀取最近有效快照…」骨架。
+    // 因此選股工作台改走一次正常文件導覽；仍保留上方小型 Loading，而不是全頁動畫。
+    if (target.pathname === '/web/workbench') {{
+      try {{ sessionStorage.setItem('stockbot_pending_nav_loading', 'workbench'); }} catch (ignore) {{}}
+      ensureTopNavLoadingForFullNavigation('正在載入選股結果…', ['市場資料','營收資料','籌碼資料','計算排名']);
+      target.searchParams.delete('fragment');
+      window.location.assign(target.pathname + (target.search ? '?' + target.searchParams.toString() : ''));
+      return;
+    }}
     // 只有「第一次進站」使用全螢幕市場 Loading。
     // 已經在 App 裡的頁面切換（包含回到今日首頁）一律走 SPA，
     // 顯示上方滑入的小型 Loading 卡，避免每次切頁都重新蓋滿整個畫面。
@@ -27859,6 +27920,7 @@ function bindFactors(){
       else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}
       status.textContent=failed?'選股台已載入（'+failed+' 個資料源暫時失敗）':'選股台全部資料已載入';
       render();
+      if(window.stockBotFinishPageLoading) window.stockBotFinishPageLoading();
       if(state.timer)clearInterval(state.timer);
       if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}
     });
