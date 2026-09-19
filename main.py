@@ -436,6 +436,23 @@ def _premarket_record_map(value):
             if isinstance(item, dict)}
 
 
+def _level_score_label(score):
+    """把內部位階分數翻成人話，避免首頁直接丟 8→11 給一般使用者。"""
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return "資料待確認"
+    if value <= 3:
+        return "弱勢"
+    if value <= 6:
+        return "偏弱"
+    if value <= 9:
+        return "中性"
+    if value <= 12:
+        return "偏強"
+    return "強勢"
+
+
 def _format_watchlist_level_change_detail(evidence):
     """把自選股位階事件轉成人可讀的支撐／壓力前後比較。"""
     evidence = evidence if isinstance(evidence, dict) else {}
@@ -462,7 +479,7 @@ def _format_watchlist_level_change_detail(evidence):
             parts.append(f"壓力：前一日 {_format_level_price(old_resistance)} → 今日無有效參考")
     old_pos, new_pos = old.get("position"), new.get("position")
     if old_pos is not None and new_pos is not None and old_pos != new_pos:
-        parts.append(f"位階分數 {old_pos} → {new_pos}")
+        parts.append(f"位階 {_level_score_label(old_pos)} → {_level_score_label(new_pos)}（分數 {old_pos} → {new_pos}）")
     old_close, new_close = old.get("close"), new.get("close")
     if old_close is not None and new_close is not None:
         parts.append(f"收盤 { _format_level_price(old_close) } → { _format_level_price(new_close) }")
@@ -16436,6 +16453,14 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
   .position-history-note{padding:9px 15px;background:#F9F9FB;color:var(--ink-soft);font-size:11.5px;line-height:1.6}.position-history-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:11px 15px;border-bottom:1px solid #E5E5EA}.position-history-summary{min-width:0;padding:9px;border-radius:8px;background:#F6F4EE}.position-history-summary b,.position-history-summary strong,.position-history-summary small{display:block}.position-history-summary b{font-size:11px}.position-history-summary strong{margin-top:3px;color:var(--ink);font-size:16px;font-variant-numeric:tabular-nums}.position-history-summary small{margin-top:3px;color:var(--ink-faint);font-size:10px;line-height:1.4}.position-history-summary.new b{color:#927A12}.position-history-summary.add b{color:var(--up)}.position-history-summary.reduce b{color:var(--down)}.position-history-summary.delete b{color:#667085}.position-history-table-head,.position-history-row{display:grid;grid-template-columns:.74fr minmax(0,1.3fr) .68fr minmax(0,.95fr) minmax(0,1.05fr);gap:9px;align-items:center;padding:9px 15px}.position-history-table-head{background:#F9F9FB;color:var(--ink-soft);font-size:11px;font-weight:700;line-height:1.25}.position-history-table-head span:not(:nth-child(2)){text-align:right}.position-history-row{border-top:1px solid #E5E5EA}.stock-group{border-top:1px solid #E5E5EA;padding:12px 15px 6px}.stock-group-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:6px;flex-wrap:wrap}.stock-group-head b{font-size:17px;color:var(--ink)}.stock-group-head .code{margin-left:7px;color:var(--ink-faint);font-size:12px}.stock-group-net{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}.stock-log-row{display:grid;grid-template-columns:52px 40px 54px 84px 96px 78px minmax(0,1fr);gap:8px;align-items:center;padding:7px 0 7px 12px;border-left:2px solid #EFEDE6}.stock-log-date{color:var(--ink-soft);font-size:12.5px;font-variant-numeric:tabular-nums}.stock-log-week,.stock-log-note{color:var(--ink-faint);font-size:11.5px}.stock-log-delta{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;text-align:right}.stock-log-shares{color:var(--ink-faint);font-size:11.5px;font-variant-numeric:tabular-nums}.stock-log-price{color:var(--ink-soft);font-size:12.5px;font-variant-numeric:tabular-nums;text-align:right}.position-history-date{color:var(--ink-soft);font-size:11px;font-variant-numeric:tabular-nums}.position-history-row .position-journal-cell:last-child{text-align:right}
   .position-journal-foot{padding:10px 15px 13px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}
   .position-journal-empty{padding:14px 15px;color:var(--ink-soft);font-size:12.5px}
+  .position-journal-no-trade .position-journal-head{background:#FAFBFC}
+  .position-journal-no-trade .position-journal-head small{color:var(--ink-soft);font-weight:600}
+  .home-journal-history{border-top:1px solid #E5E5EA;background:#FAFBFC}
+  .home-journal-history>summary{cursor:pointer;list-style:none;padding:11px 15px;color:#48657E;font-size:12px;font-weight:700}
+  .home-journal-history>summary::-webkit-details-marker{display:none}
+  .home-journal-history>summary span{float:right;color:#91A0AF}
+  .home-journal-history .position-journal{margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}
+  .home-journal-history-empty{padding:11px 15px;border-top:1px solid #E5E5EA;color:var(--ink-faint);font-size:11.5px}
   @media(max-width:640px){
     .position-journal-head{padding:13px 12px 10px}
     .position-journal-head h2{font-size:17px}
@@ -24397,8 +24422,17 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             if close: parts.append(close)
             old_pos, new_pos = old.get("position"), new.get("position")
             if old_pos is not None and new_pos is not None and old_pos != new_pos:
-                pos_dir = "daily-score-up" if float(new_pos) > float(old_pos) else "daily-score-down"
-                parts.append(f'<span class="daily-score-change">位階 <b>{html.escape(str(old_pos))}</b> → <b class="{pos_dir}">{html.escape(str(new_pos))}</b></span>')
+                try:
+                    pos_dir = "daily-score-up" if float(new_pos) > float(old_pos) else "daily-score-down"
+                except (TypeError, ValueError):
+                    pos_dir = "daily-score-flat"
+                old_label = _level_score_label(old_pos)
+                new_label = _level_score_label(new_pos)
+                parts.append(
+                    f'<span class="daily-score-change">位階 <b>{html.escape(old_label)}</b>'
+                    f' → <b class="{pos_dir}">{html.escape(new_label)}</b>'
+                    f' <small>（分數 {html.escape(str(old_pos))} → {html.escape(str(new_pos))}）</small></span>'
+                )
             return ''.join(f'<div class="daily-event-line">{x}</div>' for x in parts) or '<div class="daily-event-line daily-level-muted">支撐／壓力有效參考不足</div>'
         if category == "watchlist":
             old = evidence.get("old") if isinstance(evidence.get("old"), dict) else {}
@@ -24962,6 +24996,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .daily-score-up{{color:#E53935!important;font-weight:800!important}}
 .daily-score-down{{color:#07966A!important;font-weight:800!important}}
 .daily-score-flat{{color:#6D7C8C!important;font-weight:700!important}}
+.daily-score-change small{{font-size:9px!important;color:#91A0AF!important;font-weight:500!important}}
 @media(max-width:640px){{
   .home-focus-events .daily-event{{padding:10px 10px 11px!important}}
   .daily-event-stock b{{font-size:14px!important}}
@@ -25161,22 +25196,31 @@ def web_portfolio(uid):
                     label, (time.monotonic() - loader_started) * 1000, exc))
                 return {}
 
+        # 重要：不要讓 6 份共享資料一次搶滿 DB pool。
+        # 首頁前段另有 3 個 aux DB 工作；舊版 6+3 幾乎會把 10 條
+        # connection 吃滿，最後進來的「今日事件」因此會在 getconn()
+        # 排隊約 5～9 秒。診斷已證實今日事件 SQL 本身只有約 0.6 秒。
+        # 改成 3 個共享 worker，且把今日事件放在第一批，讓它先完成；
+        # 第二批再跑其餘共享資料。這不是單純降低並行度，而是避免
+        # connection pool 爭用，把 8 秒的「等連線」直接消掉。
         shared_loaders = [
+            ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today(), position_codes)),
             ("法人", lambda: fetch_institutional_data(position_codes)),
             ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
             ("估值", fetch_valuation),
             ("產業", get_industry_map),
             ("大盤", fetch_taiex_summary),
-            ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today(), position_codes)),
         ]
-        with ThreadPoolExecutor(max_workers=len(shared_loaders)) as ex:
+        with ThreadPoolExecutor(max_workers=3) as ex:
             shared_values = list(ex.map(
                 lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
         with _HOMEPAGE_CACHE_LOCK:
             _HOMEPAGE_SHARED_CACHE.update({
                 "key": shared_key, "ts": time.monotonic(), "value": shared_values
             })
-    inst, revenue, valuation, ind_map, taiex, daily_context = shared_values
+    # shared_loaders 的順序是「今日事件、法人、月營收、估值、產業、大盤」，
+    # 但後續首頁變數維持原本的語意順序，避免其他渲染邏輯跟著改。
+    daily_context, inst, revenue, valuation, ind_map, taiex = shared_values
     shared_done = time.monotonic()
     if DB_DIAG_ENABLED:
         print(
@@ -25378,11 +25422,51 @@ def web_portfolio(uid):
     aux_done = time.monotonic()
     trend_done = aux_done
     journal_dates = [_position_change_date(log.get("trade_date")) for log in journal_logs]
-    latest_journal_date = max((d for d in journal_dates if d), default=None)
-    journal_html = render_position_change_journal(
-        uid, current_positions=positions, price_map=price_map, inst_data=inst,
-        logs=journal_logs, trade_date=latest_journal_date, display_limit=20,
-        realized_trades=realized_trades)
+    today_date = taiwan_today()
+    today_journal_logs = [
+        log for log in journal_logs
+        if _position_change_date(log.get("trade_date")) == today_date
+    ]
+    previous_journal_date = max(
+        (d for d in journal_dates if d and d < today_date),
+        default=None,
+    )
+    if today_journal_logs:
+        # 今天有操作：照原本方式直接顯示今天的操作日報。
+        journal_html = render_position_change_journal(
+            uid, current_positions=positions, price_map=price_map, inst_data=inst,
+            logs=today_journal_logs, trade_date=today_date, display_limit=20,
+            realized_trades=realized_trades)
+    else:
+        # 今天沒有操作：首頁預設收合，只露出「今日無操作」。
+        # 歷史資料不消失，點開「查看前一次操作」才載入／顯示最近一次有操作的日期。
+        history_html = ""
+        if previous_journal_date:
+            history_logs = [
+                log for log in journal_logs
+                if _position_change_date(log.get("trade_date")) == previous_journal_date
+            ]
+            history_inner = render_position_change_journal(
+                uid, current_positions=positions, price_map=price_map, inst_data=inst,
+                logs=history_logs, trade_date=previous_journal_date, display_limit=20,
+                realized_trades=realized_trades)
+            history_html = (
+                f'<details class="home-journal-history"><summary>'
+                f'查看前一次操作・{previous_journal_date.strftime("%Y/%m/%d")} <span>⌄</span></summary>'
+                f'{history_inner}'
+                f'</details>'
+            )
+        else:
+            history_html = '<div class="home-journal-history-empty">目前沒有更早的操作紀錄。</div>'
+        journal_html = (
+            '<section class="position-journal position-journal-no-trade">'
+            '<div class="position-journal-head">'
+            '<div class="position-journal-title-actions"><h2>操作日報</h2></div>'
+            '<small>今日無操作</small></div>'
+            '<div class="position-journal-empty">今天沒有加碼／減碼操作，日報已預設收合。</div>'
+            f'{history_html}'
+            '</section>'
+        )
     daily_pretrade_exposure = _build_daily_pretrade_exposure(
         holdings, price_map, journal_logs, inst)
     realized_by_code = _today_realized_by_code(realized_trades)
