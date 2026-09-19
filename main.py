@@ -1070,6 +1070,7 @@ _daily_home_context_lock = threading.Lock()
 
 
 def _get_daily_home_context(user_id, display_date):
+    """首頁專用的盤前上下文，盡量只建立一次遠端 DB 連線。"""
     display_date = _premarket_display_date(display_date)
     key = (str(user_id).strip(), display_date.isoformat())
     now = time.time()
@@ -1078,8 +1079,84 @@ def _get_daily_home_context(user_id, display_date):
         if cached and now - cached.get("at", 0) < _DAILY_HOME_CONTEXT_TTL:
             return cached["value"]
 
-    snapshot = get_today_change_snapshot(display_date)
-    timeline = get_today_event_timeline(user_id, display_date, snapshot=snapshot)
+    source_date = _premarket_source_date(display_date)
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT snapshot_date, briefing_date, previous_trade_date,
+                   blackhorse, radar, market, news, institutional
+            FROM premarket_snapshots WHERE snapshot_date=%s
+        """, (source_date,))
+        row = cur.fetchone()
+        if not row and display_date.weekday() >= 5:
+            cur.execute("""
+                SELECT snapshot_date, briefing_date, previous_trade_date,
+                       blackhorse, radar, market, news, institutional
+                FROM premarket_snapshots
+                WHERE snapshot_date <= %s
+                ORDER BY snapshot_date DESC LIMIT 1
+            """, (display_date,))
+            row = cur.fetchone()
+
+        snapshot = None
+        if row:
+            snapshot = {
+                "snapshot_date": row[0].isoformat(),
+                "source_date": row[0].isoformat(),
+                "briefing_date": row[1].isoformat() if row[1] else display_date.isoformat(),
+                "previous_trade_date": row[2].isoformat() if row[2] else None,
+                "blackhorse": _premarket_record_list(row[3]),
+                "radar": _premarket_record_list(row[4]),
+                "market": _premarket_json_value(row[5], "dict"),
+                "news": _premarket_record_list(row[6]),
+                "institutional": _premarket_record_map(row[7]),
+            }
+
+        previous_display_date = (
+            date.fromisoformat(snapshot["source_date"])
+            if snapshot and snapshot.get("source_date") else display_date
+        )
+        cur.execute("""
+            SELECT briefing_date, user_id, severity, category, title, detail, evidence, event_key
+            FROM premarket_events
+            WHERE briefing_date = ANY(%s)
+              AND (user_id IS NULL OR user_id = %s)
+            ORDER BY briefing_date DESC,
+                     CASE severity WHEN 'S' THEN 4 WHEN 'A' THEN 3 WHEN 'B' THEN 2 ELSE 1 END DESC,
+                     id ASC
+        """, ([display_date, previous_display_date], user_id))
+        rows = cur.fetchall()
+    finally:
+        release_db_connection(conn)
+
+    def merge_event_rows(items):
+        merged, seen = [], set()
+        for scoped_user, event in sorted(items, key=lambda x: 0 if x[0] is None else 1):
+            k = _change_event_identity(event)
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            merged.append(event)
+        return _sort_events(merged)
+
+    current_rows, previous_rows = [], []
+    for briefing_date, event_user_id, severity, category, title, detail, evidence, ev_key in rows:
+        event = {"severity": severity, "category": category, "title": title,
+                 "detail": detail, "evidence": evidence, "event_key": ev_key}
+        (current_rows if briefing_date == display_date else previous_rows).append((event_user_id, event))
+    current = merge_event_rows(current_rows)
+    previous = merge_event_rows(previous_rows)
+    current_keys = {_change_event_identity(e) for e in current}
+    previous_keys = {_change_event_identity(e) for e in previous}
+    timeline = {
+        "new": [e for e in current if _change_event_identity(e) not in previous_keys],
+        "ongoing": [e for e in current if _change_event_identity(e) in previous_keys],
+        "resolved": [e for e in previous if _change_event_identity(e) not in current_keys],
+        "previous_date": snapshot.get("previous_trade_date") if snapshot else None,
+        "current": current,
+        "previous": previous,
+    }
     value = {"snapshot": snapshot, "timeline": timeline}
     with _daily_home_context_lock:
         _daily_home_context_cache[key] = {"at": now, "value": value}
@@ -10960,7 +11037,7 @@ def _load_latest_institutional_history():
     return data, data_date
 
 
-def fetch_institutional_data():
+def fetch_institutional_data(codes=None):
     """
     抓當日三大法人買賣超，涵蓋上市（TWSE T86）與上櫃（TPEx）。
 
@@ -10970,6 +11047,41 @@ def fetch_institutional_data():
     """
     tw_now = taiwan_now()
     today = tw_now.strftime("%Y%m%d")
+    requested_codes = sorted({str(c).strip() for c in (codes or []) if str(c).strip()})
+
+    # 首頁只需要自己的持股法人資料；不要為 12 檔持股讀完整 1.8 萬筆，
+    # 更不要在首頁查不到快照時再打外部 T86/TPEx API。
+    if requested_codes:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT h.code, h.trade_date, h.name,
+                       h.foreign_net_lots, h.trust_net_lots,
+                       h.dealer_net_lots, h.total_net_lots
+                FROM inst_history h
+                JOIN (SELECT MAX(trade_date) AS latest_date FROM inst_history) d
+                  ON h.trade_date = d.latest_date
+                WHERE h.code = ANY(%s)
+                ORDER BY h.code
+            """, (requested_codes,))
+            rows = cur.fetchall()
+        except Exception as exc:
+            print(f"⚠️ 首頁持股法人快照讀取失敗: {exc}")
+            return {}
+        finally:
+            release_db_connection(conn)
+        result = {}
+        for row in rows:
+            result[str(row[0]).strip()] = {
+                "name": row[2] or row[0],
+                "foreign_net_lots": row[3] or 0,
+                "trust_net_lots": row[4] or 0,
+                "dealer_net_lots": row[5] or 0,
+                "total_net_lots": row[6] or 0,
+            }
+        print(f"⚡ 首頁法人只讀持股快照：{len(result)}/{len(requested_codes)} 檔")
+        return result
 
     # 快取判斷不能只看「今天抓過了嗎」。
     # 早上抓的時候今天的 T86 還沒公布，往前找會拿到昨天的資料，
@@ -14953,7 +15065,7 @@ def _do_warmup():
     done = []
     shared_data = {}
     for label, fn in [
-        ("法人", fetch_institutional_data),
+        ("法人", lambda: fetch_institutional_data(codes=position_codes)),
         ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
         ("估值", fetch_valuation),
         ("產業別", get_industry_map),
@@ -17601,10 +17713,10 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     market_loader = title == "今日"
     shell = f"""
 <div id="loading" class="loading{' market-loading-screen' if market_loader else ''}">
-  {('<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div><div class="market-loader-visual" aria-hidden="true"><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="market-loader-title">正在整理今日市場</div><div class="market-loader-status" id="market-loader-status">正在連接市場資料…</div><div class="market-loader-bar"><i></i></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>市場資料</span></div><div class="app-load-step pending"><span>○</span><span>法人與估值</span></div><div class="app-load-step pending"><span>○</span><span>你的持股行情</span></div><div class="app-load-step pending"><span>○</span><span>今日市場判讀</span></div></div><div class="market-loader-foot">完整分析完成後自動進入首頁</div></div>') if market_loader else ('<div class="load-stage"><span id="loadstage">正在準備…</span></div>' + render_quote_block() + '<div class="load-note">' + note + '</div>')}
+  {('<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div><div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="market-loader-title">正在整理今日市場</div><div class="market-loader-status" id="market-loader-status">正在連接市場資料…</div><div class="market-loader-progress-row"><div class="market-loader-bar"><i></i></div><span id="market-loader-percent">0%</span></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>市場資料</span></div><div class="app-load-step pending"><span>○</span><span>法人與估值</span></div><div class="app-load-step pending"><span>○</span><span>你的持股行情</span></div><div class="app-load-step pending"><span>○</span><span>今日市場判讀</span></div></div><div class="market-loader-foot">完整分析完成後自動進入首頁</div></div>') if market_loader else ('<div class="load-stage"><span id="loadstage">正在準備…</span></div>' + render_quote_block() + '<div class="load-note">' + note + '</div>')}
 </div>
 <div id="content" class="loading-content" aria-live="polite" style="display:none"></div>
-<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.market-loading-screen{{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483000!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:#F7F3EA!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;color:#18283A!important}}.market-loader-inner{{width:min(88vw,390px);text-align:center}}.market-loader-brand{{font-size:10px;letter-spacing:.22em;font-weight:900;color:#6E5228;margin-bottom:18px}}.market-loader-brand span{{opacity:.45;font-weight:700}}.market-loader-visual{{height:132px;position:relative;margin:0 auto 22px;display:flex;align-items:center;justify-content:center}}.market-loader-glow{{position:absolute;width:150px;height:150px;border-radius:50%;background:radial-gradient(circle,rgba(53,107,145,.13),rgba(53,107,145,0) 68%);animation:market-glow 2.4s ease-in-out infinite}}.market-loader-orbit{{width:92px;height:92px;position:relative;display:grid;place-items:center;z-index:2}}.market-loader-ring{{position:absolute;inset:0;border:3px solid #D8E1E8;border-top-color:#356B91;border-right-color:#356B91;border-radius:50%;animation:market-spin 1.15s linear infinite;filter:drop-shadow(0 3px 8px rgba(53,107,145,.12))}}.market-loader-ring.ring-2{{inset:9px;border:1px dashed rgba(53,107,145,.22);border-left-color:#B99A67;animation:market-spin-reverse 2.4s linear infinite}}.market-loader-dot{{width:15px;height:15px;border-radius:50%;background:#356B91;box-shadow:0 0 0 0 rgba(53,107,145,.24);animation:market-pulse 1.55s ease-in-out infinite}}.market-loader-chart{{position:absolute;right:12%;bottom:4px;width:115px;height:58px;display:flex;align-items:flex-end;gap:5px;opacity:.72;transform:skewY(-7deg)}}.market-loader-chart i{{display:block;flex:1;border-radius:4px 4px 1px 1px;background:linear-gradient(to top,#356B91,rgba(53,107,145,.22));animation:market-bars 1.8s ease-in-out infinite}}.market-loader-chart i:nth-child(1){{height:22%}}.market-loader-chart i:nth-child(2){{height:42%;animation-delay:.08s}}.market-loader-chart i:nth-child(3){{height:34%;animation-delay:.16s}}.market-loader-chart i:nth-child(4){{height:58%;animation-delay:.24s}}.market-loader-chart i:nth-child(5){{height:48%;animation-delay:.32s}}.market-loader-chart i:nth-child(6){{height:72%;animation-delay:.40s}}.market-loader-chart i:nth-child(7){{height:63%;animation-delay:.48s}}.market-loader-chart i:nth-child(8){{height:88%;animation-delay:.56s}}.market-loader-title{{font-size:25px;font-weight:850;letter-spacing:.03em;color:#18283A}}.market-loader-status{{margin-top:9px;font-size:13px;color:#718092;min-height:22px}}.market-loader-bar{{height:5px;background:#E1E6EA;border-radius:99px;overflow:hidden;margin:20px auto 20px;width:100%;box-shadow:inset 0 1px 2px rgba(0,0,0,.04)}}.market-loader-bar i{{display:block;height:100%;width:28%;background:linear-gradient(90deg,#356B91,#B99A67,#356B91);background-size:200% 100%;border-radius:99px;animation:market-progress 2.5s ease-in-out infinite,market-shimmer 1.5s linear infinite;will-change:transform}}.market-loader-steps{{display:grid;gap:9px;text-align:left;width:82%;margin:0 auto}}.market-loader-steps .app-load-step{{display:flex;align-items:center;gap:9px;font-size:12px;color:#9AA3AC;transition:all .3s ease}}.market-loader-steps .app-load-step span:first-child{{width:15px;text-align:center}}.market-loader-steps .app-load-step.active{{color:#356B91;font-weight:800;transform:translateX(3px)}}.market-loader-steps .app-load-step.done{{color:#5D7765;font-weight:700}}.market-loader-foot{{margin-top:18px;font-size:10px;color:#A3A9AE;letter-spacing:.04em}}@keyframes market-spin{{to{{transform:rotate(360deg)}}}}@keyframes market-spin-reverse{{to{{transform:rotate(-360deg)}}}}@keyframes market-pulse{{0%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,.25)}}70%{{transform:scale(1);box-shadow:0 0 0 16px rgba(53,107,145,0)}}100%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,0)}}}}@keyframes market-glow{{0%,100%{{transform:scale(.88);opacity:.65}}50%{{transform:scale(1.08);opacity:1}}}}@keyframes market-bars{{0%,100%{{transform:scaleY(.72);transform-origin:bottom}}50%{{transform:scaleY(1);transform-origin:bottom}}}}@keyframes market-progress{{0%{{transform:translateX(-140%)}}50%{{transform:translateX(170%)}}100%{{transform:translateX(420%)}}}}@keyframes market-shimmer{{to{{background-position:200% 0}}}}@media(max-width:420px){{.market-loader-title{{font-size:22px}}.market-loader-steps{{width:90%}}.market-loader-chart{{right:2%;width:100px}}}}.market-loading-screen.is-hidden{{display:none!important}}</style>
+<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.market-loading-screen{{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483000!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:#F7F3EA!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;color:#18283A!important}}.market-loader-inner{{width:min(88vw,390px);text-align:center}}.market-loader-brand{{font-size:10px;letter-spacing:.22em;font-weight:900;color:#6E5228;margin-bottom:18px}}.market-loader-brand span{{opacity:.45;font-weight:700}}.market-loader-visual{{height:132px;position:relative;margin:0 auto 22px;display:flex;align-items:center;justify-content:center}}.market-loader-grid{{position:absolute;inset:10px 18%;background:linear-gradient(rgba(53,107,145,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(53,107,145,.06) 1px,transparent 1px);background-size:18px 18px;mask-image:radial-gradient(circle,black 15%,transparent 72%);animation:market-grid-drift 5s linear infinite}}.market-loader-scan{{position:absolute;width:150px;height:2px;background:linear-gradient(90deg,transparent,rgba(185,154,103,.65),transparent);filter:blur(.2px);animation:market-scan 2.6s ease-in-out infinite}}.market-loader-glow{{position:absolute;width:150px;height:150px;border-radius:50%;background:radial-gradient(circle,rgba(53,107,145,.13),rgba(53,107,145,0) 68%);animation:market-glow 2.4s ease-in-out infinite}}.market-loader-orbit{{width:92px;height:92px;position:relative;display:grid;place-items:center;z-index:2}}.market-loader-ring{{position:absolute;inset:0;border:3px solid #D8E1E8;border-top-color:#356B91;border-right-color:#356B91;border-radius:50%;animation:market-spin 1.15s linear infinite;filter:drop-shadow(0 3px 8px rgba(53,107,145,.12))}}.market-loader-ring.ring-2{{inset:9px;border:1px dashed rgba(53,107,145,.22);border-left-color:#B99A67;animation:market-spin-reverse 2.4s linear infinite}}.market-loader-dot{{width:15px;height:15px;border-radius:50%;background:#356B91;box-shadow:0 0 0 0 rgba(53,107,145,.24);animation:market-pulse 1.55s ease-in-out infinite}}.market-loader-chart{{position:absolute;right:12%;bottom:4px;width:115px;height:58px;display:flex;align-items:flex-end;gap:5px;opacity:.72;transform:skewY(-7deg)}}.market-loader-chart i{{display:block;flex:1;border-radius:4px 4px 1px 1px;background:linear-gradient(to top,#356B91,rgba(53,107,145,.22));animation:market-bars 1.8s ease-in-out infinite}}.market-loader-chart i:nth-child(1){{height:22%}}.market-loader-chart i:nth-child(2){{height:42%;animation-delay:.08s}}.market-loader-chart i:nth-child(3){{height:34%;animation-delay:.16s}}.market-loader-chart i:nth-child(4){{height:58%;animation-delay:.24s}}.market-loader-chart i:nth-child(5){{height:48%;animation-delay:.32s}}.market-loader-chart i:nth-child(6){{height:72%;animation-delay:.40s}}.market-loader-chart i:nth-child(7){{height:63%;animation-delay:.48s}}.market-loader-chart i:nth-child(8){{height:88%;animation-delay:.56s}}.market-loader-title{{font-size:25px;font-weight:850;letter-spacing:.03em;color:#18283A}}.market-loader-status{{margin-top:9px;font-size:13px;color:#718092;min-height:22px}}.market-loader-progress-row{{display:flex;align-items:center;gap:10px;margin:20px auto 20px;width:100%}}.market-loader-progress-row>span{{font-size:11px;font-weight:800;letter-spacing:.08em;color:#356B91;min-width:32px;text-align:right}}.market-loader-bar{{height:5px;background:#E1E6EA;border-radius:99px;overflow:hidden;margin:20px auto 20px;width:100%;box-shadow:inset 0 1px 2px rgba(0,0,0,.04)}}.market-loader-bar i{{display:block;height:100%;width:0;background:linear-gradient(90deg,#356B91,#B99A67,#356B91);background-size:200% 100%;border-radius:99px;animation:market-progress 2.5s ease-in-out infinite,market-shimmer 1.5s linear infinite;will-change:transform}}.market-loader-steps{{display:grid;gap:9px;text-align:left;width:82%;margin:0 auto}}.market-loader-steps .app-load-step{{display:flex;align-items:center;gap:9px;font-size:12px;color:#9AA3AC;transition:all .3s ease}}.market-loader-steps .app-load-step span:first-child{{width:15px;text-align:center}}.market-loader-steps .app-load-step.active{{color:#356B91;font-weight:800;transform:translateX(3px)}}.market-loader-steps .app-load-step.done{{color:#5D7765;font-weight:700}}.market-loader-foot{{margin-top:18px;font-size:10px;color:#A3A9AE;letter-spacing:.04em}}@keyframes market-spin{{to{{transform:rotate(360deg)}}}}@keyframes market-grid-drift{{to{{background-position:0 18px,18px 0}}}}@keyframes market-scan{{0%,100%{{transform:translateY(-45px);opacity:0}}50%{{transform:translateY(45px);opacity:1}}}}@keyframes market-spin-reverse{{to{{transform:rotate(-360deg)}}}}@keyframes market-pulse{{0%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,.25)}}70%{{transform:scale(1);box-shadow:0 0 0 16px rgba(53,107,145,0)}}100%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,0)}}}}@keyframes market-glow{{0%,100%{{transform:scale(.88);opacity:.65}}50%{{transform:scale(1.08);opacity:1}}}}@keyframes market-bars{{0%,100%{{transform:scaleY(.72);transform-origin:bottom}}50%{{transform:scaleY(1);transform-origin:bottom}}}}@keyframes market-progress{{0%{{transform:translateX(-140%)}}50%{{transform:translateX(170%)}}100%{{transform:translateX(420%)}}}}@keyframes market-shimmer{{to{{background-position:200% 0}}}}@media(max-width:420px){{.market-loader-title{{font-size:22px}}.market-loader-steps{{width:90%}}.market-loader-chart{{right:2%;width:100px}}}}.market-loading-screen.is-complete{{opacity:0;transform:scale(1.015);transition:opacity .42s ease,transform .42s ease}}.market-loading-screen.is-hidden{{display:none!important}}</style>
 {detail_status_html}
 <script>
 (function () {{
@@ -17612,65 +17724,68 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   var stageEl = document.getElementById('loadstage');
   var done = false, elapsed = 0, stageIndex = 0;
 
-  // 只輪換真實的處理階段，不顯示沒有後端回報依據的預估百分比。
+  // 體感進度：前段較快、後段逐漸放慢，最高停在 94%，真正完成才到 100%。
+  // 這樣即使後端跑 20～40 秒，也不會很早就卡在「最後一步」。
+  var startedAt = Date.now();
   var visualFrame = 0;
+  var statusMessages = [
+    '正在掃描市場資料…', '正在比對法人與估值…', '正在整理你的持股行情…',
+    '正在計算組合變化…', '正在建立今日市場判讀…', '正在完成最後資料校驗…'
+  ];
+  var timer = null;
   var visualTimer = setInterval(function () {{
     if (done) return;
     visualFrame += 1;
-    var ring = document.querySelector('.market-loader-ring');
-    if (ring) ring.style.transform = 'rotate(' + (visualFrame * 9) + 'deg)';
-    var dot = document.querySelector('.market-loader-dot');
-    if (dot) {{
-      var pulse = 0.82 + 0.18 * (0.5 + 0.5 * Math.sin(visualFrame * 0.22));
-      dot.style.transform = 'scale(' + pulse.toFixed(3) + ')';
-    }}
+    var elapsedSec = (Date.now() - startedAt) / 1000;
+    var progress = Math.min(94, 94 * (1 - Math.exp(-elapsedSec / 18)));
     var bar = document.querySelector('.market-loader-bar i');
-    if (bar) {{
-      var phase = (visualFrame % 120) / 120;
-      bar.style.transform = 'translateX(' + (-120 + phase * 450) + '%)';
-    }}
-  }}, 50);
-
-  var timer = setInterval(function () {{
-    if (done) return;
-    elapsed += 2.6;
-    stageIndex = Math.min(stages.length - 1, stageIndex + 1);
-    var label = stages[stageIndex] || '正在處理…';
-    if (elapsed > 60) label = '資料量較大，正在完成最後整理…';
-    else if (elapsed > 35) label = stages[stages.length - 1] + '（即將完成）';
-    else if (elapsed > 20) label = stages[stages.length - 1] + '（仍在處理）';
-    else if (elapsed > 10) label = '正在整合多項市場資料…';
-    if (stageEl) stageEl.textContent = label;
+    var pct = document.getElementById('market-loader-percent');
+    if (bar) bar.style.width = progress.toFixed(1) + '%';
+    if (pct) pct.textContent = Math.round(progress) + '%';
+    var messageIndex = Math.min(statusMessages.length - 1, Math.floor(elapsedSec / 5));
     var marketStatus = document.getElementById('market-loader-status');
-    if (marketStatus) marketStatus.textContent = label + '…';
+    if (marketStatus && elapsedSec > 3) marketStatus.textContent = statusMessages[messageIndex];
+    var targetStage = Math.min(stages.length - 1, Math.floor(progress / 24));
+    if (elapsedSec > 28) targetStage = stages.length - 1;
+    stageIndex = Math.max(stageIndex, targetStage);
     var steps = document.querySelectorAll('.market-loader-steps .app-load-step');
     for (var si = 0; si < steps.length; si++) {{
       steps[si].classList.remove('active');
       steps[si].classList.remove('done');
       var icon = steps[si].querySelector('span:first-child');
-      if (si < stageIndex) {{
-        steps[si].classList.add('done');
-        if (icon) icon.textContent = '✓';
-      }} else if (si === stageIndex) {{
-        steps[si].classList.add('active');
-        if (icon) icon.textContent = '●';
-      }} else if (icon) {{
-        icon.textContent = '○';
-      }}
+      if (si < stageIndex) {{ steps[si].classList.add('done'); if (icon) icon.textContent = '✓'; }}
+      else if (si === stageIndex) {{ steps[si].classList.add('active'); if (icon) icon.textContent = '●'; }}
+      else if (icon) icon.textContent = '○';
     }}
-  }}, 2600);
+  }}, 80);
 
   function finish(html) {{
     done = true;
     clearInterval(timer);
     clearInterval(visualTimer);
+    var bar = document.querySelector('.market-loader-bar i');
+    var pct = document.getElementById('market-loader-percent');
+    if (bar) bar.style.width = '100%';
+    if (pct) pct.textContent = '100%';
+    var marketStatus = document.getElementById('market-loader-status');
+    if (marketStatus) marketStatus.textContent = '分析完成，正在開啟今日首頁…';
+    var steps = document.querySelectorAll('.market-loader-steps .app-load-step');
+    for (var si = 0; si < steps.length; si++) {{
+      steps[si].classList.remove('active');
+      steps[si].classList.add('done');
+      var icon = steps[si].querySelector('span:first-child');
+      if (icon) icon.textContent = '✓';
+    }}
     setTimeout(function () {{
       var content = document.getElementById('content');
       content.innerHTML = html;
       content.style.display = '';
       var loadingEl = document.getElementById('loading');
-      if (loadingEl) loadingEl.classList.add('is-hidden');
-      if (loadingEl) loadingEl.style.setProperty('display', 'none', 'important');
+      if (loadingEl) loadingEl.classList.add('is-complete');
+      setTimeout(function () {{
+        if (loadingEl) loadingEl.classList.add('is-hidden');
+        if (loadingEl) loadingEl.style.setProperty('display', 'none', 'important');
+      }}, 420);
       if ({staged_literal}) {{
         var status = document.getElementById('detail-status');
         if (status) status.style.display = 'block';
@@ -24053,17 +24168,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     else:
         close_sync_note = "盤中行情會隨市場更新；收盤後切換至官方最後成交／市撮價。"
 
-    # 首頁不再預覽雷達／智慧黑馬；需要時直接從「選股」頁查看完整工具。
-    # 國際盤勢在收盤後直接抓最新市場資料，避免沿用早先建立的舊快照。
+    # 首頁不要在最後階段重新抓一輪台指期／美股。前面的共享資料已經提供市場資料；
+    # 重複呼叫 _current_market() 會把首頁判讀拖到十幾秒，外部 API 異常時更嚴重。
     market_focus_items = []
-    try:
-        fresh_market = _current_market() or {}
-    except Exception:
-        fresh_market = {}
-    if fresh_market:
-        merged_market = dict(display_snapshot.get("market") or {})
-        merged_market.update(fresh_market)
-        display_snapshot["market"] = merged_market
     market_focus_definitions = [
         ("taiex_night", "台指期夜盤"),
         ("^DJI", "道瓊"),
