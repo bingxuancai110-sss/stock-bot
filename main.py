@@ -17604,7 +17604,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   {('<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET</div><div class="market-loader-orbit" aria-hidden="true"><div class="market-loader-ring"></div><div class="market-loader-dot"></div></div><div class="market-loader-title">正在整理今日市場</div><div class="market-loader-status" id="market-loader-status">正在連接市場資料…</div><div class="market-loader-bar"><i></i></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>市場資料</span></div><div class="app-load-step pending"><span>○</span><span>法人與估值</span></div><div class="app-load-step pending"><span>○</span><span>你的持股行情</span></div><div class="app-load-step pending"><span>○</span><span>今日市場判讀</span></div></div></div>') if market_loader else ('<div class="load-stage"><span id="loadstage">正在準備…</span></div>' + render_quote_block() + '<div class="load-note">' + note + '</div>')}
 </div>
 <div id="content" class="loading-content" aria-live="polite" style="display:none"></div>
-<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.market-loading-screen{{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483000!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:#F7F3EA!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;color:#18283A!important}}.market-loader-inner{{width:min(88vw,390px);text-align:center}}.market-loader-brand{{font-size:11px;letter-spacing:.22em;font-weight:800;color:#6E5228;margin-bottom:28px}}.market-loader-orbit{{width:92px;height:92px;margin:0 auto 28px;position:relative;display:grid;place-items:center}}.market-loader-ring{{position:absolute;inset:0;border:3px solid #D8E1E8;border-top-color:#356B91;border-right-color:#356B91;border-radius:50%;animation:market-spin 1.05s linear infinite}}.market-loader-dot{{width:15px;height:15px;border-radius:50%;background:#356B91;box-shadow:0 0 0 0 rgba(53,107,145,.24);animation:market-pulse 1.5s ease-out infinite}}.market-loader-title{{font-size:25px;font-weight:800;letter-spacing:.03em;color:#18283A}}.market-loader-status{{margin-top:10px;font-size:13px;color:#718092;min-height:22px}}.market-loader-bar{{height:4px;background:#E1E6EA;border-radius:99px;overflow:hidden;margin:24px auto 22px;width:100%}}.market-loader-bar i{{display:block;height:100%;width:32%;background:#356B91;border-radius:99px;animation:market-progress 2.4s ease-in-out infinite}}.market-loader-steps{{display:grid;gap:9px;text-align:left;width:82%;margin:0 auto}}.market-loader-steps .app-load-step{{display:flex;align-items:center;gap:9px;font-size:12px;color:#9AA3AC;transition:all .25s ease}}.market-loader-steps .app-load-step.active{{color:#356B91;font-weight:800}}.market-loader-steps .app-load-step.done{{color:#5D7765;font-weight:700}}@keyframes market-spin{{to{{transform:rotate(360deg)}}}}@keyframes market-pulse{{0%{{transform:scale(.85);box-shadow:0 0 0 0 rgba(53,107,145,.25)}}70%{{transform:scale(1);box-shadow:0 0 0 16px rgba(53,107,145,0)}}100%{{transform:scale(.85);box-shadow:0 0 0 0 rgba(53,107,145,0)}}}}@keyframes market-progress{{0%{{transform:translateX(-120%)}}50%{{transform:translateX(120%)}}100%{{transform:translateX(330%)}}}}@media(prefers-reduced-motion:reduce){{.market-loader-ring,.market-loader-dot,.market-loader-bar i{{animation:none}}}}@media(max-width:420px){{.market-loader-title{{font-size:22px}}.market-loader-steps{{width:90%}}}}</style>
+<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.market-loading-screen{{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483000!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:#F7F3EA!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;color:#18283A!important}}.market-loader-inner{{width:min(88vw,390px);text-align:center}}.market-loader-brand{{font-size:11px;letter-spacing:.22em;font-weight:800;color:#6E5228;margin-bottom:28px}}.market-loader-orbit{{width:92px;height:92px;margin:0 auto 28px;position:relative;display:grid;place-items:center}}.market-loader-ring{{position:absolute;inset:0;border:3px solid #D8E1E8;border-top-color:#356B91;border-right-color:#356B91;border-radius:50%;animation:none}}.market-loader-dot{{width:15px;height:15px;border-radius:50%;background:#356B91;box-shadow:0 0 0 0 rgba(53,107,145,.24);animation:none}}.market-loader-title{{font-size:25px;font-weight:800;letter-spacing:.03em;color:#18283A}}.market-loader-status{{margin-top:10px;font-size:13px;color:#718092;min-height:22px}}.market-loader-bar{{height:4px;background:#E1E6EA;border-radius:99px;overflow:hidden;margin:24px auto 22px;width:100%}}.market-loader-bar i{{display:block;height:100%;width:32%;background:#356B91;border-radius:99px;animation:none}}.market-loader-steps{{display:grid;gap:9px;text-align:left;width:82%;margin:0 auto}}.market-loader-steps .app-load-step{{display:flex;align-items:center;gap:9px;font-size:12px;color:#9AA3AC;transition:all .25s ease}}.market-loader-steps .app-load-step.active{{color:#356B91;font-weight:800}}.market-loader-steps .app-load-step.done{{color:#5D7765;font-weight:700}}@keyframes market-spin{{to{{transform:rotate(360deg)}}}}@keyframes market-pulse{{0%{{transform:scale(.85);box-shadow:0 0 0 0 rgba(53,107,145,.25)}}70%{{transform:scale(1);box-shadow:0 0 0 16px rgba(53,107,145,0)}}100%{{transform:scale(.85);box-shadow:0 0 0 0 rgba(53,107,145,0)}}}}@keyframes market-progress{{0%{{transform:translateX(-120%)}}50%{{transform:translateX(120%)}}100%{{transform:translateX(330%)}}}}@media(max-width:420px){{.market-loader-title{{font-size:22px}}.market-loader-steps{{width:90%}}}}</style>
 {detail_status_html}
 <script>
 (function () {{
@@ -17613,6 +17613,24 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   var done = false, elapsed = 0, stageIndex = 0;
 
   // 只輪換真實的處理階段，不顯示沒有後端回報依據的預估百分比。
+  var visualFrame = 0;
+  var visualTimer = setInterval(function () {{
+    if (done) return;
+    visualFrame += 1;
+    var ring = document.querySelector('.market-loader-ring');
+    if (ring) ring.style.transform = 'rotate(' + (visualFrame * 9) + 'deg)';
+    var dot = document.querySelector('.market-loader-dot');
+    if (dot) {{
+      var pulse = 0.82 + 0.18 * (0.5 + 0.5 * Math.sin(visualFrame * 0.22));
+      dot.style.transform = 'scale(' + pulse.toFixed(3) + ')';
+    }}
+    var bar = document.querySelector('.market-loader-bar i');
+    if (bar) {{
+      var phase = (visualFrame % 120) / 120;
+      bar.style.transform = 'translateX(' + (-120 + phase * 450) + '%)';
+    }}
+  }}, 50);
+
   var timer = setInterval(function () {{
     if (done) return;
     elapsed += 2.6;
@@ -17627,6 +17645,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   function finish(html) {{
     done = true;
     clearInterval(timer);
+    clearInterval(visualTimer);
     setTimeout(function () {{
       var content = document.getElementById('content');
       content.innerHTML = html;
@@ -17729,6 +17748,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     .catch(function (e) {{
       done = true;
       clearInterval(timer);
+      clearInterval(visualTimer);
       // 把錯誤內容顯示出來。只寫「載入失敗」的話，
       // 伺服器端到底是 500 還是網路斷線完全看不出來，
       // 每次都得去翻 Render Logs 才知道發生什麼事。
@@ -24471,7 +24491,88 @@ def web_portfolio(uid):
             "今日", "portfolio",
             ["市場資料", "法人與估值", "你的持股行情", "今日市場判讀"],
             note="正在整理你的台股首頁，資料完成後會自動顯示。",
-            staged=False)
+            staged=True)
+
+    # 首屏快速模式：先回傳「可用的輕量首頁」，完整分析改由 detail=1 在背景補齊。
+    # 這條路徑刻意不碰法人／月營收／估值／事件／Yahoo 行情，避免使用者先等 10~30 秒。
+    if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1":
+        fast_started = time.monotonic()
+        latest_snapshot = get_portfolio_snapshots(uid, days=1)
+        snap = latest_snapshot[-1] if latest_snapshot else None
+        total_cost_fast = sum(
+            float(p.get("cost") or 0) * int(p.get("shares") or 0)
+            for p in positions
+        )
+        rows = []
+        for p in positions:
+            code = html.escape(str(p.get("code") or ""))
+            name = html.escape(STOCK_NAME_MAP.get(str(p.get("code") or ""), str(p.get("code") or "")))
+            shares = int(p.get("shares") or 0)
+            cost = float(p.get("cost") or 0)
+            rows.append(
+                f'<div class="fast-holding-row"><span><b>{name}</b><small>{code}・{shares} 股</small></span>'
+                f'<strong>{cost:,.2f}</strong></div>'
+            )
+        snapshot_card = ""
+        if snap:
+            try:
+                snap_value = float(snap.get("value") or 0)
+                snap_cost = float(snap.get("cost") or 0)
+                snap_pl = snap_value - snap_cost
+                snapshot_card = (
+                    f'<div class="fast-stat"><small>最近收盤快照</small>'
+                    f'<b>{snap_value:,.0f}</b><span class="{"gain" if snap_pl >= 0 else "loss"}">'
+                    f'{"+" if snap_pl >= 0 else ""}{snap_pl:,.0f}</span></div>'
+                )
+            except Exception:
+                snapshot_card = ""
+        fast_body = f"""
+<div class="fast-home">
+  <div class="fast-home-head">
+    <div><span class="eyebrow">TAIWAN MARKET</span><h1>今日市場</h1>
+    <p>核心資料已先載入，完整分析正在背景整理。</p></div>
+    <div class="fast-live"><i></i>整理中</div>
+  </div>
+  <div class="fast-stats">
+    <div class="fast-stat"><small>持股檔數</small><b>{len(positions)}</b><span>目前持有</span></div>
+    <div class="fast-stat"><small>投入成本</small><b>{total_cost_fast:,.0f}</b><span>依目前持股</span></div>
+    {snapshot_card}
+  </div>
+  <div class="fast-panel">
+    <div class="section-head"><h2>我的持股</h2><span class="section-note">完整行情稍後更新</span></div>
+    {''.join(rows)}
+  </div>
+  <div class="fast-progress"><i></i></div>
+  <div class="fast-wait">正在整理法人、估值、今日事件與市場判讀…</div>
+</div>
+<style>
+.fast-home{{padding:4px 0 90px}}
+.fast-home-head{{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin:8px 0 18px}}
+.fast-home .eyebrow{{font-size:10px;letter-spacing:.2em;font-weight:800;color:#6E5228}}
+.fast-home h1{{margin:5px 0 5px;font-size:28px;color:#18283A}}
+.fast-home p{{margin:0;color:#718092;font-size:13px}}
+.fast-live{{white-space:nowrap;border:1px solid #D8E1E8;border-radius:999px;padding:6px 9px;font-size:11px;color:#356B91;background:#F7FAFC}}
+.fast-live i{{display:inline-block;width:7px;height:7px;border-radius:50%;background:#356B91;margin-right:5px;animation:fast-live-pulse 1s ease-in-out infinite}}
+.fast-stats{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}}
+.fast-stat{{padding:13px;border:1px solid #E1E6EA;border-radius:14px;background:#fff}}
+.fast-stat small,.fast-stat span{{display:block;color:#8A96A3;font-size:10px}}
+.fast-stat b{{display:block;font-size:19px;color:#18283A;margin:4px 0}}
+.fast-stat .gain{{color:#B54A4A}} .fast-stat .loss{{color:#4D8A62}}
+.fast-panel{{border:1px solid #E1E6EA;border-radius:16px;background:#fff;padding:14px}}
+.fast-holding-row{{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #EEF1F3}}
+.fast-holding-row:last-child{{border-bottom:0}}
+.fast-holding-row b{{font-size:14px;color:#18283A}} .fast-holding-row small{{display:block;color:#8A96A3;font-size:10px;margin-top:2px}}
+.fast-holding-row strong{{font-size:13px;color:#34495E}}
+.fast-progress{{height:4px;background:#E1E6EA;border-radius:99px;overflow:hidden;margin:16px 0 8px}}
+.fast-progress i{{display:block;width:35%;height:100%;background:#356B91;animation:fast-progress 2s ease-in-out infinite}}
+.fast-wait{{font-size:11px;color:#8A96A3;text-align:center}}
+@keyframes fast-live-pulse{{0%,100%{{opacity:.35;transform:scale(.8)}}50%{{opacity:1;transform:scale(1)}}}}
+@keyframes fast-progress{{0%{{transform:translateX(-120%)}}100%{{transform:translateX(300%)}}}}
+@media(max-width:520px){{.fast-stats{{grid-template-columns:1fr 1fr}}.fast-stats .fast-stat:last-child:has(small){{grid-column:1/-1}}}}
+</style>
+"""
+        print("⚡ 今日首屏快速模式 %.0fms" % ((time.monotonic() - fast_started) * 1000))
+        return respond_page("今日", fast_body, "portfolio")
 
     full_started = time.monotonic()
     th = get_thresholds(profile)
