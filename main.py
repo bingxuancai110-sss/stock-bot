@@ -4819,10 +4819,6 @@ def _build_home_intraday_payload(uid):
         return {"ok": True, "market_open": False, "updates": [],
                 "note": "目前非一般盤中時段；首頁已停止行情輪詢。"}
     positions = merge_positions(get_positions(uid))
-    # position_codes 必須在後續即時行情與首頁共享資料載入前建立。
-    # 內部 fragment 導航也會直接走這條完整首頁路徑，因此不能等到
-    # shared loader 區塊裡才初始化，否則回首頁可能觸發 UnboundLocalError。
-    position_codes = [p["code"] for p in positions]
     if not positions:
         return {"ok": True, "market_open": True, "updates": [],
                 "note": "目前沒有可更新的持股。"}
@@ -8094,7 +8090,6 @@ def _write_stock_info_file_cache():
 _SHARED_SNAPSHOT_MAX_AGE = {
     "stock_info_map": 7 * 86400,
     "monthly_revenue": 3 * 86400,
-    "homepage_institutional": 2 * 86400,
     "valuation": 2 * 86400,
     "screener_blackhorse": 3 * 86400,
     "screener_radar": 3 * 86400,
@@ -8206,75 +8201,6 @@ def _load_shared_data_snapshot(snapshot_key, max_age_seconds=None):
     except Exception as exc:
         print(f"⚠️ 解析共享資料快照失敗 {snapshot_key}: {exc}")
         return None
-
-
-def _load_shared_data_snapshots_batch(snapshot_keys, selected_codes=None):
-    """一次 DB round-trip 讀共享快照；首頁可只取持股代號，避免搬運整份 JSONB。"""
-    keys = [str(k).strip() for k in (snapshot_keys or []) if str(k).strip()]
-    if not keys:
-        return {}
-    codes = sorted({str(c).strip() for c in (selected_codes or []) if str(c).strip()})
-    now_utc = datetime.now(timezone.utc)
-    conn = get_db_connection()
-    try:
-        cur = conn.cursor()
-        if codes:
-            cur.execute("""
-                SELECT snapshot_key, data_date, computed_at, source_meta,
-                       CASE
-                         WHEN snapshot_key = 'stock_info_map' THEN jsonb_build_object(
-                           'names', COALESCE((
-                               SELECT jsonb_object_agg(e.key, e.value)
-                               FROM jsonb_each(COALESCE(payload->'names','{}'::jsonb)) e
-                               WHERE e.key = ANY(%s)
-                           ), '{}'::jsonb),
-                           'industries', COALESCE((
-                               SELECT jsonb_object_agg(e.key, e.value)
-                               FROM jsonb_each(COALESCE(payload->'industries','{}'::jsonb)) e
-                               WHERE e.key = ANY(%s)
-                           ), '{}'::jsonb),
-                           'markets', COALESCE((
-                               SELECT jsonb_object_agg(e.key, e.value)
-                               FROM jsonb_each(COALESCE(payload->'markets','{}'::jsonb)) e
-                               WHERE e.key = ANY(%s)
-                           ), '{}'::jsonb)
-                         )
-                         ELSE COALESCE((
-                           SELECT jsonb_object_agg(e.key, e.value)
-                           FROM jsonb_each(COALESCE(payload,'{}'::jsonb)) e
-                           WHERE e.key = ANY(%s)
-                         ), '{}'::jsonb)
-                       END AS payload
-                FROM shared_data_snapshots
-                WHERE snapshot_key = ANY(%s)
-            """, (codes, codes, codes, codes, keys))
-        else:
-            cur.execute("""
-                SELECT snapshot_key, data_date, computed_at, source_meta, payload
-                FROM shared_data_snapshots
-                WHERE snapshot_key = ANY(%s)
-            """, (keys,))
-        rows = cur.fetchall()
-        cur.close()
-    except Exception as exc:
-        print(f"⚠️ 批次讀取共享資料快照失敗: {exc}")
-        return {}
-    finally:
-        release_db_connection(conn)
-    result = {}
-    for snapshot_key, data_date, computed_at, source_meta, payload in rows:
-        try:
-            if computed_at:
-                computed_at = (computed_at if computed_at.tzinfo else computed_at.replace(tzinfo=timezone.utc))
-                age = (now_utc - computed_at).total_seconds()
-                if age < 0 or age > float(_SHARED_SNAPSHOT_MAX_AGE.get(str(snapshot_key), 86400)):
-                    continue
-            if payload:
-                result[str(snapshot_key)] = {"data_date": data_date, "computed_at": computed_at,
-                                             "payload": payload, "source_meta": source_meta or {}}
-        except Exception as exc:
-            print(f"⚠️ 解析共享資料快照失敗 {snapshot_key}: {exc}")
-    return result
 
 
 def _stock_info_from_shared_snapshot():
@@ -15265,9 +15191,6 @@ def _do_warmup():
         ("valuation", shared_data.get("估值"),
          _valuation_cache.get("source"), _valuation_cache.get("source_date"),
          {}),
-        ("homepage_institutional", shared_data.get("法人"),
-         "warmup", taiwan_today(),
-         {"source": "warmup:institutional_holdings"}),
     ]
     for snapshot_key, payload, source_kind, source_date, meta in snapshot_jobs:
         if not isinstance(payload, dict) or not payload:
@@ -17932,7 +17855,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   var stageEl = document.getElementById('loadstage');
   var done = false, elapsed = 0, stageIndex = 0;
 
-  // 體感進度：前段較快、後段逐漸放慢，最高停在 94%，真正完成才到 100%。
+  // 體感進度：前段較快、後段逐漸放慢，最高停在 97%，真正完成才到 100%。
   // 這樣即使後端跑 20～40 秒，也不會很早就卡在「最後一步」。
   var startedAt = Date.now();
   var visualFrame = 0;
@@ -17943,7 +17866,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   var timer = null;
   // 這不是假裝「精準知道後端進度」，而是用最近幾次首頁實測的中位數
   // 做體感基準。首頁現在通常約 5~10 秒，進度會跟著這個速度走；
-  // 如果某次外部資料源突然變慢，92% 之後會改成非常緩慢的呼吸式等待，
+  // 如果某次外部資料源突然變慢，90% 之後會改成非常緩慢的等待，60 秒與 75 秒會提示目前仍在同步，
   // 不會再讓進度條早早跑完後卡死。
   var expectedSec = 8;
   function visualProgress(sec) {{
@@ -17974,7 +17897,15 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     if (pct) pct.textContent = Math.round(progress) + '%';
     var messageIndex = Math.min(statusMessages.length - 1, Math.floor(elapsedSec / 4));
     var marketStatus = document.getElementById('market-loader-status');
-    if (marketStatus && elapsedSec > 2.5) marketStatus.textContent = statusMessages[messageIndex];
+    if (marketStatus && elapsedSec > 2.5) {{
+      if (elapsedSec >= 75) {{
+        marketStatus.textContent = '資料同步時間較久，正在完成最後校驗…';
+      }} else if (elapsedSec >= 60) {{
+        marketStatus.textContent = '市場資料仍在整理中，請再等一下…';
+      }} else {{
+        marketStatus.textContent = statusMessages[messageIndex];
+      }}
+    }}
     var stageStops = [2, 4, 6, 8];
     var targetStage = 0;
     for (var si2 = 0; si2 < stageStops.length; si2++) {{
@@ -18118,17 +18049,49 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     .catch(function (e) {{
       done = true;
       clearInterval(timer);
-      clearInterval(visualTimer);
-      // 把錯誤內容顯示出來。只寫「載入失敗」的話，
-      // 伺服器端到底是 500 還是網路斷線完全看不出來，
-      // 每次都得去翻 Render Logs 才知道發生什麼事。
-      stageEl.textContent = '載入失敗：' + (e && e.message ? e.message : e);
-      var hint = document.createElement('div');
-      hint.className = 'sub';
-      hint.style.marginTop = '8px';
-      hint.textContent = 'HTTP 500 代表伺服器端出錯，請看 Render Logs；'
-                       + '其他多半是網路問題，重新整理即可。';
-      stageEl.parentNode.appendChild(hint);
+      if (visualTimer) window.cancelAnimationFrame(visualTimer);
+      var message = (e && e.message ? e.message : String(e || '未知錯誤'));
+      var marketStatus = document.getElementById('market-loader-status');
+      var marketFoot = document.querySelector('.market-loader-foot');
+      var loadingEl = document.getElementById('loading');
+      var marketMode = !!document.querySelector('.market-loading-screen');
+
+      // 今日首頁使用全螢幕市場 Loader；其他頁面仍沿用原本的 loadstage。
+      // 不要再假設 stageEl 一定存在，否則市場 Loader 出錯時會二次 TypeError，
+      // 讓使用者只看到 90% 卡住，卻看不到真正原因。
+      if (marketMode) {{
+        if (marketStatus) {{
+          marketStatus.textContent = message.indexOf('逾時') >= 0
+            ? '分析時間較久，首頁尚未收到完整資料。'
+            : '首頁分析暫時未完成，請重新載入。';
+        }}
+        var bar = document.querySelector('.market-loader-bar i');
+        var pct = document.getElementById('market-loader-percent');
+        if (bar) bar.style.width = '97%';
+        if (pct) pct.textContent = '97%';
+        if (marketFoot) marketFoot.textContent =
+          '可重新載入首頁；若持續發生，請檢查伺服器日誌。';
+        if (loadingEl) {{
+          var oldRetry = loadingEl.querySelector('.market-loader-retry');
+          if (!oldRetry) {{
+            oldRetry = document.createElement('button');
+            oldRetry.className = 'market-loader-retry';
+            oldRetry.type = 'button';
+            oldRetry.textContent = '重新載入首頁';
+            oldRetry.style.cssText = 'margin-top:16px;border:1px solid #b9c8d4;background:#fff;border-radius:999px;padding:9px 18px;color:#356B91;font-weight:800;font-size:12px;box-shadow:0 4px 12px rgba(53,107,145,.10);';
+            oldRetry.onclick = function() {{ window.location.reload(); }};
+            var inner = loadingEl.querySelector('.market-loader-inner');
+            if (inner) inner.appendChild(oldRetry);
+          }}
+        }}
+      }} else if (stageEl) {{
+        stageEl.textContent = '載入失敗：' + message;
+        var hint = document.createElement('div');
+        hint.className = 'sub';
+        hint.style.marginTop = '8px';
+        hint.textContent = 'HTTP 500 代表伺服器端出錯，其他多半是網路問題，重新整理即可。';
+        if (stageEl.parentNode) stageEl.parentNode.appendChild(hint);
+      }}
       console.error(e);
     }});
 }})();
@@ -24835,6 +24798,10 @@ def web_portfolio(uid):
         return respond_page("今日", risk_card, "portfolio")
 
     positions = merge_positions(get_positions(uid))
+    # 位置代號在所有首頁共享資料與即時行情流程都會使用。
+    # 必須在進入 shared cache 分支前就建立，否則 shared cache 命中時
+    # 會跳過原本的初始化，導致首頁／內部返回首頁出現 NameError。
+    position_codes = [str(p.get("code") or "").strip() for p in positions]
     if not positions:
         # 沒有目前持股，但可能有賣光的歷史紀錄或組合快照可看，
         # 不能因為現在空手就把已實現損益跟走勢圖也一起藏起來。
@@ -24904,41 +24871,11 @@ def web_portfolio(uid):
                     label, (time.monotonic() - loader_started) * 1000, exc))
                 return {}
 
-        def load_homepage_snapshot_bundle():
-            # 首頁只會用到自己的持股；不要從 Supabase 搬回 1,000~2,000 筆完整 JSONB。
-            bundle = _load_shared_data_snapshots_batch(
-                ["monthly_revenue", "valuation", "stock_info_map"],
-                selected_codes=position_codes,
-            )
-            revenue_snap = bundle.get("monthly_revenue") or {}
-            valuation_snap = bundle.get("valuation") or {}
-            stock_snap = bundle.get("stock_info_map") or {}
-            revenue = revenue_snap.get("payload") or {}
-            valuation = valuation_snap.get("payload") or {}
-            stock_payload = stock_snap.get("payload") or {}
-            industries = stock_payload.get("industries") or {} if isinstance(stock_payload, dict) else {}
-            if isinstance(stock_payload, dict):
-                if stock_payload.get("names"):
-                    _name_cache["map"] = stock_payload["names"]
-                if industries:
-                    _industry_cache["map"] = industries
-                if stock_payload.get("markets"):
-                    _market_cache["map"] = stock_payload["markets"]
-            return {"revenue": revenue, "valuation": valuation, "industries": industries}
-
-        def load_homepage_institutional():
-            # warmup 已把首頁持股法人保存成小型共享快照；優先讀它，避免每次首頁
-            # 都掃 inst_history 的最新交易日。若快照不存在才回退舊查詢。
-            bundle = _load_shared_data_snapshots_batch(["homepage_institutional"])
-            snap = bundle.get("homepage_institutional") or {}
-            data = snap.get("payload") or {}
-            if data:
-                return data
-            return fetch_institutional_data(position_codes)
-
         shared_loaders = [
-            ("法人", load_homepage_institutional),
-            ("基本面共享快照", load_homepage_snapshot_bundle),
+            ("法人", lambda: fetch_institutional_data(position_codes)),
+            ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
+            ("估值", fetch_valuation),
+            ("產業", get_industry_map),
             ("大盤", fetch_taiex_summary),
             ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today())),
         ]
@@ -24949,11 +24886,7 @@ def web_portfolio(uid):
             _HOMEPAGE_SHARED_CACHE.update({
                 "key": shared_key, "ts": time.monotonic(), "value": shared_values
             })
-    inst, homepage_bundle, taiex, daily_context = shared_values
-    homepage_bundle = homepage_bundle or {}
-    revenue = homepage_bundle.get("revenue") or {}
-    valuation = homepage_bundle.get("valuation") or {}
-    ind_map = homepage_bundle.get("industries") or {}
+    inst, revenue, valuation, ind_map, taiex, daily_context = shared_values
     shared_done = time.monotonic()
 
     # 日內首頁同時需要目前持股行情與當日操作日誌。兩者互不相依，並行讀取；
