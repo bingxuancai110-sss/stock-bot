@@ -17222,18 +17222,9 @@ def render_page(title, body, nav_active=None, user_name=None):
     if (appNavBusy) return;
     var target = new URL(rawHref, window.location.href);
     if (!appRouteKeys[target.pathname]) {{ window.location.assign(target.pathname + target.search); return; }}
-    // 今日首頁是全站唯一需要「先看到完整市場 Loading，再開始重算」的入口。
-    // 其他頁面切回首頁時若繼續走 SPA fragment，某些瀏覽器／快速快取情況下會
-    // 直接把 fragment 填進 appContent，導致首頁自己的全螢幕 Loading shell 根本沒有
-    // 機會出現。改成回首頁時走一次正常 GET：伺服器立即回 Loading shell，
-    // shell 再自行抓 fragment；因此不論從持股、工作台、排行或瀏覽器返回，
-    // 都會看到同一套「TAIWAN MARKET · LIVE ANALYSIS」。
-    if (target.pathname === '/web/portfolio') {{
-      target.searchParams.delete('fragment');
-      target.searchParams.delete('fast');
-      window.location.assign(target.pathname + target.search);
-      return;
-    }}
+    // 只有「第一次進站」使用全螢幕市場 Loading。
+    // 已經在 App 裡的頁面切換（包含回到今日首頁）一律走 SPA，
+    // 顯示上方滑入的小型 Loading 卡，避免每次切頁都重新蓋滿整個畫面。
     target.searchParams.set('fragment', '1');
     target.searchParams.delete('fast');
     var navSeq = ++appNavSeq;
@@ -17252,7 +17243,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     // 只顯示「載入內容」的階段，不放無法由前端確認的「整理畫面」假進度。
     // fetch 真正回來後，才把目前最後階段一次標成完成。
     var loadStageMap = {{
-      '/web/portfolio':['市場資料','國際市場','大盤環境','我的持股','目前報價','今日損益','今日市場焦點','今日重要事件','選股結果','選股排名','風險檢查','我的績效'],
+      '/web/portfolio':['持股資料','目前報價','今日損益','持股分析','組合配置','風險檢查','今日重點','市場環境','法人與今日事件','績效整理'],
       '/web/positions':['持股資料','目前報價','今日損益','持股分析','組合配置','風險檢查','今日重點','績效整理'],
       '/web/workbench':['市場資料','營收資料','籌碼資料','計算排名'],
       '/web/leaderboard':['排行榜快照','個人績效','趨勢資料'],
@@ -17279,35 +17270,21 @@ def render_page(title, body, nav_active=None, user_name=None):
     function ensureNavNotice() {{
       if (navNotice) return;
       navNotice = document.createElement('div');
-      navNotice.className = target.pathname === '/web/portfolio' ? 'market-loading-screen' : 'app-load-card';
+      navNotice.className = 'app-load-card';
       navNotice.setAttribute('role','status');
-      if (target.pathname === '/web/portfolio') {{
-        navNotice.innerHTML = '<div class="market-loader-inner">'
-          + '<div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div>'
-          + '<div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>'
-          + '<div class="market-loader-title">正在整理今日市場</div>'
-          + '<div class="market-loader-status" id="market-loader-status">正在連接市場資料…</div>'
-          + '<div class="market-loader-progress-row"><div class="market-loader-bar"><i></i></div><span id="market-loader-percent">0%</span></div>'
-          + '<div class="market-loader-steps">'
-          + ['市場資料','法人與估值','你的持股行情','今日市場判讀'].map(function(label, i) {{
-              return '<div class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span>' + (i === 0 ? '●' : '○') + '</span><span>' + label + '</span></div>';
-            }}).join('')
-          + '</div><div class="market-loader-foot">完整分析完成後自動進入首頁</div></div>';
-      }} else {{
-        navNotice.innerHTML = '<span class="app-sync-spinner" aria-hidden="true"></span>'
-          + '<span style="min-width:0;flex:1"><b>' + loadTitle + '</b>'
-          + '<small>資料較多時會逐步完成，請不用重複點擊</small>'
-          + '<span class="app-load-steps">'
-          + loadSteps.map(function(label, i) {{
-              return '<span class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span class="step-icon" aria-hidden="true"></span><span>' + label + '</span></span>';
-            }}).join('')
-          + '</span></span>';
-      }}
+      navNotice.innerHTML = '<span class="app-sync-spinner" aria-hidden="true"></span>'
+        + '<span style="min-width:0;flex:1"><b>' + loadTitle + '</b>'
+        + '<small>資料較多時會逐步完成，請不用重複點擊</small>'
+        + '<span class="app-load-steps">'
+        + loadSteps.map(function(label, i) {{
+            return '<span class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span class="step-icon" aria-hidden="true"></span><span>' + label + '</span></span>';
+          }}).join('')
+        + '</span></span>';
       // 一律掛在 body 最外層，避免被 .wrap / .app-content 等祖先元素的
       // overflow、transform 或 stacking context 影響；fixed 才是真正跟著視窗走。
       document.body.appendChild(navNotice);
       function positionNavNotice() {{
-        if (!navNotice || target.pathname === '/web/portfolio') return;
+        if (!navNotice) return;
         var header = document.querySelector('.app-header');
         var headerBottom = header ? header.getBoundingClientRect().bottom : 72;
         var top = Math.max(headerBottom + 10, 12);
@@ -17318,14 +17295,9 @@ def render_page(title, body, nav_active=None, user_name=None):
       window.addEventListener('resize', positionNavNotice, {{passive:true}});
       navNotice._positionNavNotice = positionNavNotice;
     }}
-    // 今日首頁一定顯示完整市場 Loading；從其他頁面切回首頁時，
-    // 若 fragment 回應很快，原本 180ms 延遲會讓內容先回來、提示還沒建立，
-    // 造成『有時有動畫、有時沒有動畫』。首頁改為立即建立，其餘頁面維持延遲避免閃爍。
-    if (target.pathname === '/web/portfolio') {{
-      ensureNavNotice();
-    }} else {{
-      noticeTimer = window.setTimeout(ensureNavNotice, 180);
-    }}
+    // App 內所有頁面（包含今日首頁）統一使用上方滑入 Loading 卡。
+    // 只有第一次進站的 render_loading_shell 才使用全螢幕動畫。
+    noticeTimer = window.setTimeout(ensureNavNotice, 80);
     function setLoadStep(nextIndex, doneAll) {{
       if (!navNotice) return;
       var steps = navNotice.querySelectorAll('.app-load-step');
@@ -17354,39 +17326,7 @@ def render_page(title, body, nav_active=None, user_name=None):
           active.textContent = loadSteps[loadSteps.length - 1] + dots;
         }}
       }}
-      if (target.pathname === '/web/portfolio') {{
-        var marketStatus = document.getElementById('market-loader-status');
-        var marketLabels = ['正在連接市場資料…','正在比對法人與估值…','正在整理你的持股行情…','正在建立今日市場判讀…'];
-        var marketSteps = navNotice ? navNotice.querySelectorAll('.market-loader-steps .app-load-step') : [];
-        var mi = Math.min(stepIndex, marketLabels.length - 1);
-        var navElapsedSec = stageElapsed;
-        var navStops = [[0,0],[3,12],[6,27],[10,45],[14,63],[18,78],[22,90]];
-        var navProgressPct = 0;
-        if (navElapsedSec <= 22) {{
-          for (var npi = 1; npi < navStops.length; npi++) {{
-            if (navElapsedSec <= navStops[npi][0]) {{
-              var na = navStops[npi - 1], nb = navStops[npi];
-              var nt = (navElapsedSec - na[0]) / (nb[0] - na[0]);
-              nt = nt * nt * (3 - 2 * nt);
-              navProgressPct = na[1] + (nb[1] - na[1]) * nt;
-              break;
-            }}
-          }}
-        }} else {{
-          navProgressPct = Math.min(97, 90 + (navElapsedSec - 22) * 0.12);
-        }}
-        var marketBar = navNotice ? navNotice.querySelector('.market-loader-bar i') : null;
-        var marketPct = navNotice ? navNotice.querySelector('#market-loader-percent') : null;
-        if (marketBar) marketBar.style.width = navProgressPct.toFixed(1) + '%';
-        if (marketPct) marketPct.textContent = Math.round(navProgressPct) + '%';
-        if (marketStatus) marketStatus.textContent = marketLabels[mi];
-        marketSteps.forEach(function(step, i) {{
-          step.classList.toggle('active', i === mi);
-          step.classList.toggle('done', i < mi);
-          var icon = step.querySelector('span:first-child');
-          if (icon) icon.textContent = i < mi ? '✓' : (i === mi ? '●' : '○');
-        }});
-      }}
+
       if (navProgress.classList.contains('show')) navProgress.classList.add('mid');
     }}, 1000);
     navProgress.classList.add('show');
@@ -17411,29 +17351,6 @@ def render_page(title, body, nav_active=None, user_name=None):
         if (stepTimer) {{ window.clearInterval(stepTimer); stepTimer = null; }}
         if (noticeTimer) {{ window.clearTimeout(noticeTimer); noticeTimer = null; }}
         setLoadStep(loadSteps.length, true);
-        if (target.pathname === '/web/portfolio') {{
-          var finishBar = navNotice ? navNotice.querySelector('.market-loader-bar i') : null;
-          var finishPct = navNotice ? navNotice.querySelector('#market-loader-percent') : null;
-          var finishStatus = navNotice ? navNotice.querySelector('#market-loader-status') : null;
-          var finishSteps = navNotice ? navNotice.querySelectorAll('.market-loader-steps .app-load-step') : [];
-          if (finishBar) finishBar.style.width = '100%';
-          if (finishPct) finishPct.textContent = '100%';
-          if (finishStatus) finishStatus.textContent = '分析完成，正在開啟今日首頁…';
-          finishSteps.forEach(function(step) {{
-            step.classList.remove('active');
-            step.classList.add('done');
-            var icon = step.querySelector('span:first-child');
-            if (icon) icon.textContent = '✓';
-          }});
-          if (navProgress && navProgress.parentNode) navProgress.parentNode.removeChild(navProgress);
-          window.setTimeout(function() {{
-            if (navNotice) navNotice.classList.add('is-complete');
-          }}, 70);
-          window.setTimeout(function() {{
-            if (navNotice && navNotice._positionNavNotice) window.removeEventListener('resize', navNotice._positionNavNotice);
-            if (navNotice && navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
-          }}, 520);
-        }} else {{
           if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
           if (navNotice) {{
             var loadTitleEl = navNotice.querySelector('b');
@@ -17445,7 +17362,6 @@ def render_page(title, body, nav_active=None, user_name=None):
               if (navNotice && navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
             }}, 380);
           }}
-        }}
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
         target.searchParams.delete('fragment');
