@@ -17123,7 +17123,8 @@ def render_page(title, body, nav_active=None, user_name=None):
     if(u.href===location.href)return;
     const labels={{
       '/web/':'正在開啟首頁',
-      '/web/portfolio':'正在開啟持股',
+      '/web/portfolio':'正在開啟首頁',
+      '/web/positions':'正在開啟持股',
       '/web/workbench':'正在開啟選股台'
     }};
     showPageNavLoader(labels[u.pathname]||'正在開啟頁面');
@@ -18639,7 +18640,10 @@ def web_positions(uid):
     positions = merge_positions(get_positions(uid))
     positions_data_done = time.monotonic()
     inst_started = time.monotonic()
-    inst = fetch_institutional_data() or {}
+    # 持股頁只需要目前持股的法人資料與股票名稱，不需要把全市場法人快照
+    # 載入進來。指定 codes 會直接走 Supabase 的持股快照查詢。
+    position_codes_for_page = [str(p.get("code") or "").strip() for p in positions]
+    inst = fetch_institutional_data(position_codes_for_page) if position_codes_for_page else {}
     inst_done = time.monotonic()
 
     def sell_form(lot_id, max_shares, code, cur_price, lot_cost, label="賣出"):
@@ -18765,11 +18769,12 @@ def web_positions(uid):
     rows_html, total_value, total_cost = [], 0.0, 0.0
     total_day_pl = 0.0
     enriched = []
-    # 主頁先抓 1d 即時資料；較重的一年損益走勢在使用者展開個別明細時才抓取，
-    # 所以不會為尚未查看的圖表付出外部請求成本。
+    # 主頁抓 3mo 日線：這已足夠計算近 60 日位階／均線，且能直接重用
+    # 首頁剛取得的同代號報價快取；原本使用 1d 會建立另一份 cache key，
+    # 從首頁切到持股時又重新打 Yahoo，容易把切頁拖到 20～30 秒。
     quote_started = time.monotonic()
     price_map = get_realtime_stocks_bulk(
-        [p["code"] for p in positions], rng="1d")
+        [p["code"] for p in positions], rng="3mo")
     quote_done = time.monotonic()
     for p in positions:
         price = price_map.get(p["code"])
@@ -19060,7 +19065,7 @@ def web_positions(uid):
 
     if positions and _is_taiwan_intraday_window():
         body += ''''''
-    print("⏱️ 持股頁：持股資料 %.0fms、法人 %.0fms、1y行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
+    print("⏱️ 持股頁：持股資料 %.0fms、法人(持股) %.0fms、3mo行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
         (positions_data_done - positions_data_started) * 1000,
         (inst_done - inst_started) * 1000,
         (quote_done - quote_started) * 1000,
