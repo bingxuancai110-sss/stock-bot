@@ -24679,6 +24679,15 @@ def web_portfolio(uid):
     th = get_thresholds(profile)
     fee_disc, min_fee = get_fee_settings(profile)
 
+    # 這三項只依賴 user_id，與首頁前段的共享資料、持股行情彼此獨立。
+    # 提前啟動，讓「走勢／已實現損益／排名」在等待行情與共享資料時就一起跑，
+    # 避免原本固定排在最後、額外再增加約 2～3 秒的尾端等待。
+    aux_executor = ThreadPoolExecutor(max_workers=3)
+    aux_trend_future = aux_executor.submit(
+        lambda: render_trend_chart(get_portfolio_snapshots(uid, days=120)))
+    aux_realized_future = aux_executor.submit(get_realized_trades, uid, 500)
+    aux_rank_future = aux_executor.submit(get_fast_rank_summary, uid)
+
     # 這五份共享資料彼此獨立；並行抓取可把等待時間從各次網路延遲總和
     # 降到最慢的一次。每個 loader 失敗只回空資料，不影響其他分析區塊。
     def safe_shared_loader(label, loader):
@@ -24881,17 +24890,15 @@ def web_portfolio(uid):
                 if avg_corr is not None and eff else
                 "持股數不足或資料不齊，尚無法計算相關係數。")
 
-    # 走勢、已實現損益與首頁排名摘要彼此獨立，尾端同時查詢。操作日誌已在
-    # 行情階段讀取並供日初曝險與日報共用，避免同頁重複讀取資料庫。
+    # 走勢、已實現損益與首頁排名摘要已在前段提前並行；此處只等待結果。
+    # 操作日誌已在行情階段讀取並供日初曝險與日報共用，避免同頁重複讀取資料庫。
     aux_started = time.monotonic()
-    with ThreadPoolExecutor(max_workers=3) as aux_executor:
-        trend_future = aux_executor.submit(
-            lambda: render_trend_chart(get_portfolio_snapshots(uid, days=120)))
-        realized_future = aux_executor.submit(get_realized_trades, uid, 500)
-        rank_future = aux_executor.submit(get_fast_rank_summary, uid)
-        trend_html = trend_future.result()
-        realized_trades = realized_future.result()
-        page_rank_status = rank_future.result()
+    try:
+        trend_html = aux_trend_future.result()
+        realized_trades = aux_realized_future.result()
+        page_rank_status = aux_rank_future.result()
+    finally:
+        aux_executor.shutdown(wait=True)
     aux_done = time.monotonic()
     trend_done = aux_done
     journal_dates = [_position_change_date(log.get("trade_date")) for log in journal_logs]
