@@ -17306,7 +17306,14 @@ def render_page(title, body, nav_active=None, user_name=None):
       window.addEventListener('resize', positionNavNotice, {{passive:true}});
       navNotice._positionNavNotice = positionNavNotice;
     }}
-    noticeTimer = window.setTimeout(ensureNavNotice, 180);
+    // 今日首頁一定顯示完整市場 Loading；從其他頁面切回首頁時，
+    // 若 fragment 回應很快，原本 180ms 延遲會讓內容先回來、提示還沒建立，
+    // 造成『有時有動畫、有時沒有動畫』。首頁改為立即建立，其餘頁面維持延遲避免閃爍。
+    if (target.pathname === '/web/portfolio') {{
+      ensureNavNotice();
+    }} else {{
+      noticeTimer = window.setTimeout(ensureNavNotice, 180);
+    }}
     function setLoadStep(nextIndex, doneAll) {{
       if (!navNotice) return;
       var steps = navNotice.querySelectorAll('.app-load-step');
