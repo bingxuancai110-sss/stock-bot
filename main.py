@@ -17222,6 +17222,18 @@ def render_page(title, body, nav_active=None, user_name=None):
     if (appNavBusy) return;
     var target = new URL(rawHref, window.location.href);
     if (!appRouteKeys[target.pathname]) {{ window.location.assign(target.pathname + target.search); return; }}
+    // 今日首頁是全站唯一需要「先看到完整市場 Loading，再開始重算」的入口。
+    // 其他頁面切回首頁時若繼續走 SPA fragment，某些瀏覽器／快速快取情況下會
+    // 直接把 fragment 填進 appContent，導致首頁自己的全螢幕 Loading shell 根本沒有
+    // 機會出現。改成回首頁時走一次正常 GET：伺服器立即回 Loading shell，
+    // shell 再自行抓 fragment；因此不論從持股、工作台、排行或瀏覽器返回，
+    // 都會看到同一套「TAIWAN MARKET · LIVE ANALYSIS」。
+    if (target.pathname === '/web/portfolio') {{
+      target.searchParams.delete('fragment');
+      target.searchParams.delete('fast');
+      window.location.assign(target.pathname + target.search);
+      return;
+    }}
     target.searchParams.set('fragment', '1');
     target.searchParams.delete('fast');
     var navSeq = ++appNavSeq;
