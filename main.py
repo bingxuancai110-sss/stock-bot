@@ -15388,55 +15388,7 @@ def plain_text_page(lines):
     return f"""<!DOCTYPE html><html lang="zh-Hant"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>診斷</title>
-<style id="internal-top-loading">
-/* INTERNAL_TOP_LOADING_PATCH */
-#page-nav-loader{
-  position:fixed;left:0;right:0;top:0;z-index:99999;
-  transform:translateY(-110%);opacity:0;
-  transition:transform .22s ease,opacity .18s ease;
-  pointer-events:none;
-  display:flex;justify-content:center;
-}
-#page-nav-loader.show{transform:translateY(0);opacity:1}
-#page-nav-loader .nav-loader-card{
-  width:min(520px,calc(100vw - 24px));margin:8px 12px 0;
-  padding:10px 14px 11px;border-radius:0 0 14px 14px;
-  background:rgba(255,255,255,.96);
-  box-shadow:0 8px 28px rgba(0,0,0,.12);
-  border:1px solid rgba(37,99,235,.12);
-  backdrop-filter:blur(12px);
-}
-#page-nav-loader .nav-loader-head{
-  display:flex;align-items:center;justify-content:space-between;
-  gap:12px;font-size:13px;font-weight:700;color:#1e3a8a;
-}
-#page-nav-loader .nav-loader-title{display:flex;align-items:center;gap:8px}
-#page-nav-loader .nav-loader-spinner{
-  width:14px;height:14px;border-radius:50%;
-  border:2px solid rgba(37,99,235,.18);
-  border-top-color:#2563eb;animation:navspin .7s linear infinite;
-}
-#page-nav-loader.done .nav-loader-spinner{
-  animation:none;border-color:#16a34a;position:relative;
-}
-#page-nav-loader.done .nav-loader-spinner:after{
-  content:"✓";position:absolute;left:1px;top:-4px;
-  font-size:12px;color:#16a34a;font-weight:900;
-}
-#page-nav-loader .nav-loader-percent{font-variant-numeric:tabular-nums}
-#page-nav-loader .nav-loader-track{
-  height:4px;margin-top:8px;border-radius:999px;
-  overflow:hidden;background:#e8eefc;
-}
-#page-nav-loader .nav-loader-bar{
-  height:100%;width:0;border-radius:999px;
-  background:linear-gradient(90deg,#2563eb,#60a5fa);
-  transition:width .12s linear;
-}
-@keyframes navspin{to{transform:rotate(360deg)}}
-
-</head>
+<title>診斷</title></head>
 <body style="margin:0;background:#12161B;color:#D8DBD4">
 <pre style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
  font-size:12px;line-height:1.6;padding:14px;margin:0;
@@ -17089,8 +17041,21 @@ def render_page(title, body, nav_active=None, user_name=None):
 <title>{title}｜台股 BOT</title>
 <style>{BASE_CSS}</style>
 <style>{page_extra_css}</style>
+<style id="internal-top-loading">
+#page-nav-loader{{position:fixed;left:0;right:0;top:0;z-index:99999;transform:translateY(-110%);opacity:0;transition:transform .22s ease,opacity .18s ease;pointer-events:none;display:flex;justify-content:center}}
+#page-nav-loader.show{{transform:translateY(0);opacity:1}}
+#page-nav-loader .nav-loader-card{{width:min(520px,calc(100vw - 24px));margin:8px 12px 0;padding:10px 14px 11px;border-radius:0 0 14px 14px;background:rgba(255,255,255,.96);box-shadow:0 8px 28px rgba(0,0,0,.12);border:1px solid rgba(37,99,235,.12);backdrop-filter:blur(12px)}}
+#page-nav-loader .nav-loader-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;font-weight:700;color:#1e3a8a}}
+#page-nav-loader .nav-loader-title{{display:flex;align-items:center;gap:8px}}
+#page-nav-loader .nav-loader-spinner{{width:14px;height:14px;border-radius:50%;border:2px solid rgba(37,99,235,.18);border-top-color:#2563eb;animation:navspin .7s linear infinite}}
+#page-nav-loader.done .nav-loader-spinner{{animation:none;border-color:#16a34a;position:relative}}
+#page-nav-loader.done .nav-loader-spinner:after{{content:"✓";position:absolute;left:1px;top:-4px;font-size:12px;color:#16a34a;font-weight:900}}
+#page-nav-loader .nav-loader-percent{{font-variant-numeric:tabular-nums}}
+#page-nav-loader .nav-loader-track{{height:4px;margin-top:8px;border-radius:999px;overflow:hidden;background:#e8eefc}}
+#page-nav-loader .nav-loader-bar{{height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,#2563eb,#60a5fa);transition:width .12s linear}}
+@keyframes navspin{{to{{transform:rotate(360deg)}}}}
+</style>
 </head><body>
-
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
     <div class="nav-loader-head">
@@ -17103,10 +17068,8 @@ def render_page(title, body, nav_active=None, user_name=None):
     <div class="nav-loader-track"><div class="nav-loader-bar" id="page-nav-loader-bar"></div></div>
   </div>
 </div>
-
-
 <script id="internal-top-loading-js">
-(function(){
+(function(){{
   const loader=document.getElementById('page-nav-loader');
   if(!loader)return;
   const bar=document.getElementById('page-nav-loader-bar');
@@ -17114,67 +17077,63 @@ def render_page(title, body, nav_active=None, user_name=None):
   const title=document.getElementById('page-nav-loader-title');
   let raf=0,start=0,target=0,current=0,active=false;
 
-  function frame(now){
+  function frame(now){{
     if(!active)return;
     const elapsed=(now-start)/1000;
-    // Visual progress: quick at first, deliberately eases near 90%.
-    const visual=Math.min(90, 8 + elapsed*18 + Math.sqrt(elapsed)*18);
+    const visual=Math.min(90,8+elapsed*18+Math.sqrt(elapsed)*18);
     target=Math.max(target,visual);
-    current += (target-current)*0.18;
+    current+=(target-current)*0.18;
     if(current>89)current=89;
     bar.style.width=current.toFixed(1)+'%';
     pct.textContent=Math.floor(current)+'%';
     raf=requestAnimationFrame(frame);
-  }
+  }}
 
-  window.showPageNavLoader=function(label){
-    active=true; start=performance.now(); target=0; current=0;
+  window.showPageNavLoader=function(label){{
+    active=true;start=performance.now();target=0;current=0;
     title.textContent=label||'正在開啟頁面';
     loader.classList.remove('done');
     loader.classList.add('show');
     cancelAnimationFrame(raf);
     raf=requestAnimationFrame(frame);
-  };
+  }};
 
-  window.finishPageNavLoader=function(){
+  window.finishPageNavLoader=function(){{
     if(!active)return;
-    active=false; cancelAnimationFrame(raf);
-    current=100; bar.style.width='100%'; pct.textContent='100%';
+    active=false;cancelAnimationFrame(raf);
+    current=100;bar.style.width='100%';pct.textContent='100%';
     loader.classList.add('done');
-    setTimeout(function(){
+    setTimeout(function(){{
       loader.classList.remove('show');
-      setTimeout(function(){
+      setTimeout(function(){{
         loader.classList.remove('done');
-        bar.style.width='0%'; pct.textContent='0%';
-      },240);
-    },180);
-  };
+        bar.style.width='0%';pct.textContent='0%';
+      }},240);
+    }},180);
+  }};
 
-  // Intercept same-site navigation links without touching the initial full-page loader.
-  document.addEventListener('click',function(e){
+  document.addEventListener('click',function(e){{
     const a=e.target.closest('a[href]');
-    if(!a || e.defaultPrevented) return;
-    if(a.target && a.target!=='_self') return;
-    if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey) return;
+    if(!a||e.defaultPrevented)return;
+    if(a.target&&a.target!=='_self')return;
+    if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
     const u=new URL(a.href,location.href);
-    if(u.origin!==location.origin) return;
-    if(!u.pathname.startsWith('/web/')) return;
-    if(u.href===location.href) return;
-    const labels={
+    if(u.origin!==location.origin)return;
+    if(!u.pathname.startsWith('/web/'))return;
+    if(u.href===location.href)return;
+    const labels={{
       '/web/':'正在開啟首頁',
       '/web/portfolio':'正在開啟持股',
       '/web/workbench':'正在開啟選股台'
-    };
+    }};
     showPageNavLoader(labels[u.pathname]||'正在開啟頁面');
-    // Do not prevent navigation; loader runs while the next document loads.
-  },true);
+  }},true);
 
-  window.addEventListener('pageshow',function(){
+  window.addEventListener('pageshow',function(){{
     if(active)finishPageNavLoader();
-  });
-})();
-</script>
-<div class="wrap">
+  }});
+}})();
+</script><div class="wrap">
 <header class="app-header">
   {page_back}
   <div class="eyebrow">TAIWAN STOCK BOT</div>
