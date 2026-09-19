@@ -28,6 +28,15 @@ from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
 
+# 首頁短 TTL 快取：避免使用者在首頁／持股／首頁間快速切換時，
+# 每次都重新查相同的共享快照與操作日誌。這些資料本身就不是毫秒級變動；
+# 即時股價仍每次重新抓，不經這個快取。
+_HOMEPAGE_SHARED_CACHE = {"key": None, "ts": 0.0, "value": None}
+_HOMEPAGE_JOURNAL_CACHE = {}
+_HOMEPAGE_CACHE_LOCK = threading.RLock()
+_HOMEPAGE_SHARED_TTL = 12.0
+_HOMEPAGE_JOURNAL_TTL = 8.0
+
 
 def taiwan_now():
     return datetime.now(TW_TZ)
@@ -17758,13 +17767,13 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   ];
   var timer = null;
   // 這不是假裝「精準知道後端進度」，而是用最近幾次首頁實測的中位數
-  // 做體感基準。首頁現在通常約 20~25 秒，進度會跟著這個速度走；
+  // 做體感基準。首頁現在通常約 5~10 秒，進度會跟著這個速度走；
   // 如果某次外部資料源突然變慢，92% 之後會改成非常緩慢的呼吸式等待，
   // 不會再讓進度條早早跑完後卡死。
-  var expectedSec = 22;
+  var expectedSec = 8;
   function visualProgress(sec) {{
     var stops = [
-      [0, 0], [3, 12], [6, 27], [10, 45], [14, 63], [18, 78], [22, 90]
+      [0, 0], [2, 15], [4, 35], [6, 60], [8, 90]
     ];
     if (sec <= expectedSec) {{
       for (var pi = 1; pi < stops.length; pi++) {{
@@ -17791,7 +17800,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     var messageIndex = Math.min(statusMessages.length - 1, Math.floor(elapsedSec / 4));
     var marketStatus = document.getElementById('market-loader-status');
     if (marketStatus && elapsedSec > 2.5) marketStatus.textContent = statusMessages[messageIndex];
-    var stageStops = [3, 8, 14, 20];
+    var stageStops = [2, 4, 6, 8];
     var targetStage = 0;
     for (var si2 = 0; si2 < stageStops.length; si2++) {{
       if (elapsedSec >= stageStops[si2]) targetStage = Math.min(stages.length - 1, si2 + 1);
@@ -24688,39 +24697,48 @@ def web_portfolio(uid):
     aux_realized_future = aux_executor.submit(get_realized_trades, uid, 500)
     aux_rank_future = aux_executor.submit(get_fast_rank_summary, uid)
 
-    # 這五份共享資料彼此獨立；並行抓取可把等待時間從各次網路延遲總和
-    # 降到最慢的一次。每個 loader 失敗只回空資料，不影響其他分析區塊。
-    def safe_shared_loader(label, loader):
-        loader_started = time.monotonic()
-        try:
-            value = loader() or {}
-            print("⏱️ 今日共享資料：%s %.0fms" % (
-                label, (time.monotonic() - loader_started) * 1000))
-            return value
-        except Exception as exc:
-            print("⚠️ 今日共享資料載入失敗 %s（%.0fms）：%s" % (
-                label, (time.monotonic() - loader_started) * 1000, exc))
-            return {}
+    # 六份共享資料在短時間內會被首頁反覆使用；用 12 秒短 TTL 快取，
+    # 避免首頁重新整理／內部返回時再次打 Supabase。市場即時行情不走這個快取。
+    shared_key = (uid, taiwan_today())
+    shared_values = None
+    with _HOMEPAGE_CACHE_LOCK:
+        if (_HOMEPAGE_SHARED_CACHE.get("key") == shared_key and
+                time.monotonic() - _HOMEPAGE_SHARED_CACHE.get("ts", 0.0) < _HOMEPAGE_SHARED_TTL):
+            shared_values = _HOMEPAGE_SHARED_CACHE.get("value")
+            if shared_values is not None:
+                print("⚡ 首頁共享資料命中短快取")
 
-    # 首頁只會用到「目前持股」的法人名稱／法人資料；不要每次把全市場約 1.8 萬筆法人快照搬進首頁。
-    # 這也是共享資料延遲波動最大的來源之一：結果越大，Supabase 傳輸與 JSON 解析越容易被放大。
-    position_codes = [p["code"] for p in positions]
+    if shared_values is None:
+        # 這六份共享資料彼此獨立；並行抓取可把等待時間從各次網路延遲總和
+        # 降到最慢的一次。每個 loader 失敗只回空資料，不影響其他分析區塊。
+        def safe_shared_loader(label, loader):
+            loader_started = time.monotonic()
+            try:
+                value = loader() or {}
+                print("⏱️ 今日共享資料：%s %.0fms" % (
+                    label, (time.monotonic() - loader_started) * 1000))
+                return value
+            except Exception as exc:
+                print("⚠️ 今日共享資料載入失敗 %s（%.0fms）：%s" % (
+                    label, (time.monotonic() - loader_started) * 1000, exc))
+                return {}
 
-    shared_loaders = [
-        ("法人", lambda: fetch_institutional_data(position_codes)),
-        # 首頁只讀既有月營收快照；官方最新月份由背景 warmup 更新，
-        # 絕對不能讓 10~15 秒的官方抓取卡住首頁首屏。
-        ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
-        ("估值", fetch_valuation),
-        ("產業", get_industry_map),
-        ("大盤", fetch_taiex_summary),
-        # 今日事件上下文與五份共享資料互相獨立；併行取得後，
-        # render_daily_home_top 不必在完整頁尾端再次查詢同一份快照。
-        ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today())),
-    ]
-    with ThreadPoolExecutor(max_workers=len(shared_loaders)) as ex:
-        shared_values = list(ex.map(
-            lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
+        position_codes = [p["code"] for p in positions]
+        shared_loaders = [
+            ("法人", lambda: fetch_institutional_data(position_codes)),
+            ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
+            ("估值", fetch_valuation),
+            ("產業", get_industry_map),
+            ("大盤", fetch_taiex_summary),
+            ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today())),
+        ]
+        with ThreadPoolExecutor(max_workers=len(shared_loaders)) as ex:
+            shared_values = list(ex.map(
+                lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
+        with _HOMEPAGE_CACHE_LOCK:
+            _HOMEPAGE_SHARED_CACHE.update({
+                "key": shared_key, "ts": time.monotonic(), "value": shared_values
+            })
     inst, revenue, valuation, ind_map, taiex, daily_context = shared_values
     shared_done = time.monotonic()
 
@@ -24728,9 +24746,20 @@ def web_portfolio(uid):
     # 若當天已全部賣出某標的，再補抓該代號行情，保留它在日初至減碼前的貢獻。
     with ThreadPoolExecutor(max_workers=2) as exposure_executor:
         price_future = exposure_executor.submit(get_realtime_stocks_bulk, position_codes)
-        journal_future = exposure_executor.submit(get_position_change_logs, uid, 5000)
+        journal_key = (uid, taiwan_today())
+        with _HOMEPAGE_CACHE_LOCK:
+            journal_cached = _HOMEPAGE_JOURNAL_CACHE.get(journal_key)
+            journal_fresh = (journal_cached and
+                             time.monotonic() - journal_cached[0] < _HOMEPAGE_JOURNAL_TTL)
+        journal_future = None if journal_fresh else exposure_executor.submit(get_position_change_logs, uid, 5000)
         price_map = price_future.result()
-        journal_logs = journal_future.result()
+        if journal_fresh:
+            journal_logs = journal_cached[1]
+            print("⚡ 首頁操作日誌命中短快取")
+        else:
+            journal_logs = journal_future.result()
+            with _HOMEPAGE_CACHE_LOCK:
+                _HOMEPAGE_JOURNAL_CACHE[journal_key] = (time.monotonic(), journal_logs)
     reduced_today_codes = {
         str(log.get("code") or "").strip() for log in journal_logs
         if (_position_change_date(log.get("trade_date")) == taiwan_today() and
