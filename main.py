@@ -8203,6 +8203,43 @@ def _load_shared_data_snapshot(snapshot_key, max_age_seconds=None):
         return None
 
 
+def _load_shared_data_snapshots_batch(snapshot_keys):
+    """一次 DB round-trip 讀多份共享快照，降低首頁 Supabase 查詢數量。"""
+    keys = [str(k).strip() for k in (snapshot_keys or []) if str(k).strip()]
+    if not keys:
+        return {}
+    now_utc = datetime.now(timezone.utc)
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT snapshot_key, data_date, computed_at, payload, source_meta
+            FROM shared_data_snapshots
+            WHERE snapshot_key = ANY(%s)
+        """, (keys,))
+        rows = cur.fetchall()
+        cur.close()
+    except Exception as exc:
+        print(f"⚠️ 批次讀取共享資料快照失敗: {exc}")
+        return {}
+    finally:
+        release_db_connection(conn)
+    result = {}
+    for snapshot_key, data_date, computed_at, payload, source_meta in rows:
+        try:
+            if computed_at:
+                computed_at = (computed_at if computed_at.tzinfo else computed_at.replace(tzinfo=timezone.utc))
+                age = (now_utc - computed_at).total_seconds()
+                if age < 0 or age > float(_SHARED_SNAPSHOT_MAX_AGE.get(str(snapshot_key), 86400)):
+                    continue
+            if payload:
+                result[str(snapshot_key)] = {"data_date": data_date, "computed_at": computed_at,
+                                             "payload": payload, "source_meta": source_meta or {}}
+        except Exception as exc:
+            print(f"⚠️ 解析共享資料快照失敗 {snapshot_key}: {exc}")
+    return result
+
+
 def _stock_info_from_shared_snapshot():
     snapshot = _load_shared_data_snapshot("stock_info_map")
     if not snapshot:
@@ -24828,11 +24865,28 @@ def web_portfolio(uid):
                 return {}
 
         position_codes = [p["code"] for p in positions]
+
+        def load_homepage_snapshot_bundle():
+            bundle = _load_shared_data_snapshots_batch(["monthly_revenue", "valuation", "stock_info_map"])
+            revenue_snap = bundle.get("monthly_revenue") or {}
+            valuation_snap = bundle.get("valuation") or {}
+            stock_snap = bundle.get("stock_info_map") or {}
+            revenue = revenue_snap.get("payload") or {}
+            valuation = valuation_snap.get("payload") or {}
+            stock_payload = stock_snap.get("payload") or {}
+            industries = stock_payload.get("industries") or {} if isinstance(stock_payload, dict) else {}
+            if isinstance(stock_payload, dict):
+                if stock_payload.get("names"):
+                    _name_cache["map"] = stock_payload["names"]
+                if industries:
+                    _industry_cache["map"] = industries
+                if stock_payload.get("markets"):
+                    _market_cache["map"] = stock_payload["markets"]
+            return {"revenue": revenue, "valuation": valuation, "industries": industries}
+
         shared_loaders = [
             ("法人", lambda: fetch_institutional_data(position_codes)),
-            ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
-            ("估值", fetch_valuation),
-            ("產業", get_industry_map),
+            ("基本面共享快照", load_homepage_snapshot_bundle),
             ("大盤", fetch_taiex_summary),
             ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today())),
         ]
@@ -24843,7 +24897,11 @@ def web_portfolio(uid):
             _HOMEPAGE_SHARED_CACHE.update({
                 "key": shared_key, "ts": time.monotonic(), "value": shared_values
             })
-    inst, revenue, valuation, ind_map, taiex, daily_context = shared_values
+    inst, homepage_bundle, taiex, daily_context = shared_values
+    homepage_bundle = homepage_bundle or {}
+    revenue = homepage_bundle.get("revenue") or {}
+    valuation = homepage_bundle.get("valuation") or {}
+    ind_map = homepage_bundle.get("industries") or {}
     shared_done = time.monotonic()
 
     # 日內首頁同時需要目前持股行情與當日操作日誌。兩者互不相依，並行讀取；
