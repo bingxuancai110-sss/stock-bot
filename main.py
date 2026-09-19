@@ -24702,8 +24702,12 @@ def web_portfolio(uid):
                 label, (time.monotonic() - loader_started) * 1000, exc))
             return {}
 
+    # 首頁只會用到「目前持股」的法人名稱／法人資料；不要每次把全市場約 1.8 萬筆法人快照搬進首頁。
+    # 這也是共享資料延遲波動最大的來源之一：結果越大，Supabase 傳輸與 JSON 解析越容易被放大。
+    position_codes = [p["code"] for p in positions]
+
     shared_loaders = [
-        ("法人", fetch_institutional_data),
+        ("法人", lambda: fetch_institutional_data(position_codes)),
         # 首頁只讀既有月營收快照；官方最新月份由背景 warmup 更新，
         # 絕對不能讓 10~15 秒的官方抓取卡住首頁首屏。
         ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
@@ -24722,7 +24726,6 @@ def web_portfolio(uid):
 
     # 日內首頁同時需要目前持股行情與當日操作日誌。兩者互不相依，並行讀取；
     # 若當天已全部賣出某標的，再補抓該代號行情，保留它在日初至減碼前的貢獻。
-    position_codes = [p["code"] for p in positions]
     with ThreadPoolExecutor(max_workers=2) as exposure_executor:
         price_future = exposure_executor.submit(get_realtime_stocks_bulk, position_codes)
         journal_future = exposure_executor.submit(get_position_change_logs, uid, 5000)
