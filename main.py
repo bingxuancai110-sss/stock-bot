@@ -254,6 +254,8 @@ def init_premarket_change_tables():
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_events_date ON premarket_events(snapshot_date, severity)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_events_briefing ON premarket_events(briefing_date, severity)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_events_home_user_key ON premarket_events(briefing_date, user_id, event_key)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_events_home_sort ON premarket_events(briefing_date, user_id, severity, id DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_snapshots_briefing ON premarket_snapshots(briefing_date)")
         conn.commit()
     except Exception:
@@ -1078,41 +1080,46 @@ _daily_home_context_cache = {}
 _daily_home_context_lock = threading.Lock()
 
 
-def _get_daily_home_context(user_id, display_date):
-    """首頁專用盤前上下文：一次 DB round-trip 取回快照、顯示日與事件時間線。"""
+def _get_daily_home_context(user_id, display_date, position_codes=None):
+    """首頁專用盤前上下文：只取最值得看的事件，優先自己的持股。
+
+    設計原則：
+    1. 首頁不需要 100 筆事件，只需要最相關的少量事件。
+    2. 自己持股的重大變化優先。
+    3. 其他重大／劇烈市場變化作為補充。
+    4. DB 端先縮小候選集，再做少量 Python 排序，避免大型
+       ROW_NUMBER/jsonb_agg 對整張 premarket_events 做重運算。
+    """
     requested = display_date or taiwan_today()
-    key = (str(user_id).strip(), requested.isoformat())
+    key = (str(user_id).strip(), requested.isoformat(),
+           tuple(sorted(str(c).strip() for c in (position_codes or []) if str(c).strip())))
     now = time.time()
     with _daily_home_context_lock:
         cached = _daily_home_context_cache.get(key)
         if cached and now - cached.get("at", 0) < _DAILY_HOME_CONTEXT_TTL:
             return cached["value"]
 
-    # 舊版流程在週末會先查 _premarket_display_date、再查
-    # _premarket_source_date，最後才查 snapshot + events；一次首頁可能因此
-    # 產生 4~6 次 Supabase round-trip。首頁只需要「目前顯示批次」的資料，
-    # 所以把日期解析、快照、目前／上一批事件合併成一個 SQL。
+    codes = sorted({str(c).strip() for c in (position_codes or []) if str(c).strip()})
     is_weekend = requested.weekday() >= 5
+
     conn = get_db_connection()
     try:
         cur = conn.cursor()
+
+        # 日期解析仍與原版相容，但事件本身只抓「必要候選」。
         cur.execute("""
             WITH resolved_display AS (
                 SELECT CASE
                     WHEN NOT %s THEN %s::date
                     ELSE COALESCE(
-                        (SELECT MIN(briefing_date)
-                         FROM premarket_snapshots
+                        (SELECT MIN(briefing_date) FROM premarket_snapshots
                          WHERE briefing_date >= %s),
-                        (SELECT MIN(briefing_date)
-                         FROM premarket_events
+                        (SELECT MIN(briefing_date) FROM premarket_events
                          WHERE briefing_date >= %s),
-                        (SELECT briefing_date
-                         FROM premarket_snapshots
+                        (SELECT briefing_date FROM premarket_snapshots
                          WHERE snapshot_date <= %s
                          ORDER BY snapshot_date DESC LIMIT 1),
-                        (SELECT briefing_date
-                         FROM premarket_events
+                        (SELECT briefing_date FROM premarket_events
                          WHERE snapshot_date <= %s
                          ORDER BY snapshot_date DESC LIMIT 1),
                         %s::date
@@ -1122,142 +1129,167 @@ def _get_daily_home_context(user_id, display_date):
             resolved_source AS (
                 SELECT r.display_date,
                        COALESCE(
-                           (SELECT snapshot_date
-                            FROM premarket_snapshots
+                           (SELECT snapshot_date FROM premarket_snapshots
                             WHERE briefing_date = r.display_date
                             ORDER BY snapshot_date DESC LIMIT 1),
-                           (SELECT snapshot_date
-                            FROM premarket_events
+                           (SELECT snapshot_date FROM premarket_events
                             WHERE briefing_date = r.display_date
                             ORDER BY snapshot_date DESC LIMIT 1),
                            r.display_date
                        ) AS source_date
                 FROM resolved_display r
-            ),
-            event_rows AS (
-                SELECT
-                    e.briefing_date,
-                    e.severity,
-                    e.category,
-                    e.title,
-                    e.detail,
-                    e.evidence,
-                    e.event_key,
-                    e.id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY e.briefing_date, COALESCE(e.event_key, e.category || ':' || e.title)
-                        ORDER BY CASE WHEN e.user_id IS NULL THEN 0 ELSE 1 END, e.id
-                    ) AS rn
-                FROM premarket_events e
-                CROSS JOIN resolved_source r
-                WHERE e.briefing_date IN (r.display_date, r.source_date)
-                  AND (e.user_id IS NULL OR e.user_id = %s)
-            ),
-            current_events AS (
-                SELECT COALESCE(
-                    jsonb_agg(
-                        jsonb_build_object(
-                            'severity', severity,
-                            'category', category,
-                            'title', title,
-                            'detail', detail,
-                            'evidence', evidence,
-                            'event_key', event_key
-                        )
-                        ORDER BY CASE severity WHEN 'S' THEN 4 WHEN 'A' THEN 3 WHEN 'B' THEN 2 ELSE 1 END DESC,
-                                 id ASC
-                    ) FILTER (WHERE rn = 1),
-                    '[]'::jsonb
-                ) AS events
-                FROM event_rows e
-                CROSS JOIN resolved_source r
-                WHERE e.briefing_date = r.display_date
-            ),
-            previous_events AS (
-                SELECT COALESCE(
-                    jsonb_agg(
-                        jsonb_build_object(
-                            'severity', severity,
-                            'category', category,
-                            'title', title,
-                            'detail', detail,
-                            'evidence', evidence,
-                            'event_key', event_key
-                        )
-                        ORDER BY CASE severity WHEN 'S' THEN 4 WHEN 'A' THEN 3 WHEN 'B' THEN 2 ELSE 1 END DESC,
-                                 id ASC
-                    ) FILTER (WHERE rn = 1),
-                    '[]'::jsonb
-                ) AS events
-                FROM event_rows e
-                CROSS JOIN resolved_source r
-                WHERE e.briefing_date = r.source_date
             )
-            SELECT
-                r.display_date,
-                r.source_date,
-                s.snapshot_date,
-                s.briefing_date,
-                s.previous_trade_date,
-                s.blackhorse,
-                s.radar,
-                s.market,
-                s.news,
-                s.institutional,
-                c.events AS current_events,
-                p.events AS previous_events
+            SELECT r.display_date, r.source_date,
+                   s.snapshot_date, s.briefing_date, s.previous_trade_date,
+                   s.blackhorse, s.radar, s.market, s.news, s.institutional
             FROM resolved_source r
             LEFT JOIN premarket_snapshots s ON s.snapshot_date = r.source_date
-            CROSS JOIN current_events c
-            CROSS JOIN previous_events p
         """, (
-            is_weekend,
-            requested,
+            is_weekend, requested,
             requested, requested, requested, requested, requested,
-            str(user_id).strip(),
         ))
-        row = cur.fetchone()
+        base = cur.fetchone()
+
+        if not base:
+            value = {
+                "snapshot": None,
+                "timeline": {
+                    "new": [], "ongoing": [], "resolved": [],
+                    "previous_date": None, "current": [], "previous": []
+                }
+            }
+        else:
+            (resolved_display_date, source_date, snapshot_date, briefing_date,
+             previous_trade_date, blackhorse, radar, market, news,
+             institutional) = base
+
+            snapshot = None
+            if snapshot_date:
+                snapshot = {
+                    "snapshot_date": snapshot_date.isoformat(),
+                    "source_date": source_date.isoformat() if source_date else snapshot_date.isoformat(),
+                    "briefing_date": briefing_date.isoformat() if briefing_date else (
+                        resolved_display_date.isoformat() if resolved_display_date else requested.isoformat()
+                    ),
+                    "previous_trade_date": previous_trade_date.isoformat() if previous_trade_date else None,
+                    "blackhorse": _premarket_record_list(blackhorse),
+                    "radar": _premarket_record_list(radar),
+                    "market": _premarket_json_value(market, "dict"),
+                    "news": _premarket_record_list(news),
+                    "institutional": _premarket_record_map(institutional),
+                }
+
+            # 只抓兩個日期、目前使用者/全域事件；最多帶回一個小候選集。
+            # event_key + severity + id 有對應索引時可直接縮小掃描範圍。
+            cur.execute("""
+                SELECT briefing_date, severity, category, title, detail,
+                       evidence, event_key, id
+                FROM premarket_events
+                WHERE briefing_date IN (%s, %s)
+                  AND (user_id IS NULL OR user_id = %s)
+                ORDER BY
+                  CASE severity WHEN 'S' THEN 4 WHEN 'A' THEN 3
+                       WHEN 'B' THEN 2 ELSE 1 END DESC,
+                  id DESC
+                LIMIT 80
+            """, (resolved_display_date, source_date, str(user_id).strip()))
+            rows = cur.fetchall()
+
+            current = []
+            previous = []
+            for row in rows:
+                event = {
+                    "severity": row[1],
+                    "category": row[2],
+                    "title": row[3],
+                    "detail": row[4],
+                    "evidence": row[5] or {},
+                    "event_key": row[6],
+                }
+                if row[0] == resolved_display_date:
+                    current.append(event)
+                elif row[0] == source_date:
+                    previous.append(event)
+
+            # 事件本身已經是少量候選；這裡只做「持股相關」與「劇烈程度」
+            # 的輕量排序，不再建立整張事件表的 ROW_NUMBER。
+            code_set = set(codes)
+
+            def event_code(event):
+                evidence = event.get("evidence")
+                if not isinstance(evidence, dict):
+                    return ""
+                for k in ("code", "stock_code", "symbol", "ticker"):
+                    value = evidence.get(k)
+                    if value:
+                        return str(value).strip()
+                # 部分舊事件把 code 放在 nested old/new 結構。
+                for side in ("new", "old", "current", "previous"):
+                    value = evidence.get(side)
+                    if isinstance(value, dict):
+                        for k in ("code", "stock_code", "symbol", "ticker"):
+                            if value.get(k):
+                                return str(value[k]).strip()
+                return ""
+
+            def severity_score(event):
+                return {"S": 4, "A": 3, "B": 2, "C": 1}.get(
+                    str(event.get("severity") or "").upper(), 0
+                )
+
+            def relevance_score(event):
+                code = event_code(event)
+                category = str(event.get("category") or "")
+                title = str(event.get("title") or "")
+                detail = str(event.get("detail") or "")
+                text_blob = f"{title} {detail}"
+                score = severity_score(event) * 100
+                if code and code in code_set:
+                    score += 1000
+                if category in ("watchlist_position", "watchlist"):
+                    score += 250
+                # 明確的劇烈變化字樣優先，但不取代持股重大事件。
+                if any(term in text_blob for term in (
+                    "暴漲", "暴跌", "大漲", "大跌", "漲停", "跌停",
+                    "新高", "新低", "劇烈", "重大", "突破", "失守"
+                )):
+                    score += 80
+                return score
+
+            def dedupe_and_pick(events, limit=6):
+                seen = set()
+                result = []
+                for event in sorted(events, key=lambda e: (
+                    -relevance_score(e),
+                    -severity_score(e)
+                )):
+                    identity = _change_event_identity(event)
+                    if not identity or identity in seen:
+                        continue
+                    seen.add(identity)
+                    result.append(event)
+                    if len(result) >= limit:
+                        break
+                return result
+
+            # 首頁只需要少量 current/previous，timeline 比對也因此非常輕。
+            current = dedupe_and_pick(current, 6)
+            previous = dedupe_and_pick(previous, 6)
+
+            current_keys = {_change_event_identity(e) for e in current}
+            previous_keys = {_change_event_identity(e) for e in previous}
+            timeline = {
+                "new": [e for e in current if _change_event_identity(e) not in previous_keys],
+                "ongoing": [e for e in current if _change_event_identity(e) in previous_keys],
+                "resolved": [e for e in previous if _change_event_identity(e) not in current_keys],
+                "previous_date": snapshot.get("previous_trade_date") if snapshot else None,
+                "current": current,
+                "previous": previous,
+            }
+            value = {"snapshot": snapshot, "timeline": timeline}
+
     finally:
         release_db_connection(conn)
-
-    if not row:
-        value = {"snapshot": None,
-                 "timeline": {"new": [], "ongoing": [], "resolved": [],
-                              "previous_date": None, "current": [], "previous": []}}
-    else:
-        (resolved_display_date, source_date, snapshot_date, briefing_date,
-         previous_trade_date, blackhorse, radar, market, news, institutional,
-         current_events, previous_events) = row
-
-        snapshot = None
-        if snapshot_date:
-            snapshot = {
-                "snapshot_date": snapshot_date.isoformat(),
-                "source_date": source_date.isoformat() if source_date else snapshot_date.isoformat(),
-                "briefing_date": briefing_date.isoformat() if briefing_date else (
-                    resolved_display_date.isoformat() if resolved_display_date else requested.isoformat()
-                ),
-                "previous_trade_date": previous_trade_date.isoformat() if previous_trade_date else None,
-                "blackhorse": _premarket_record_list(blackhorse),
-                "radar": _premarket_record_list(radar),
-                "market": _premarket_json_value(market, "dict"),
-                "news": _premarket_record_list(news),
-                "institutional": _premarket_record_map(institutional),
-            }
-
-        current = current_events or []
-        previous = previous_events or []
-        current_keys = {_change_event_identity(e) for e in current}
-        previous_keys = {_change_event_identity(e) for e in previous}
-        timeline = {
-            "new": [e for e in current if _change_event_identity(e) not in previous_keys],
-            "ongoing": [e for e in current if _change_event_identity(e) in previous_keys],
-            "resolved": [e for e in previous if _change_event_identity(e) not in current_keys],
-            "previous_date": snapshot.get("previous_trade_date") if snapshot else None,
-            "current": current,
-            "previous": previous,
-        }
-        value = {"snapshot": snapshot, "timeline": timeline}
 
     with _daily_home_context_lock:
         _daily_home_context_cache[key] = {"at": now, "value": value}
@@ -23807,7 +23839,7 @@ def render_portfolio_fast_summary(uid):
     """今日首頁第一段：先顯示既有快照、事件與排名，並明確提示完整分析仍在整合。"""
     fast_started = time.monotonic()
     snapshot_date = _premarket_display_date(taiwan_today())
-    context = _get_daily_home_context(uid, snapshot_date)
+    context = _get_daily_home_context(uid, snapshot_date, position_codes)
     context_done = time.monotonic()
     snapshot = context.get("snapshot") or {}
     timeline = context.get("timeline") or {}
