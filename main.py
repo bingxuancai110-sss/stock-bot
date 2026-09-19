@@ -34,8 +34,8 @@ TW_TZ = timezone(timedelta(hours=8))
 _HOMEPAGE_SHARED_CACHE = {"key": None, "ts": 0.0, "value": None}
 _HOMEPAGE_JOURNAL_CACHE = {}
 _HOMEPAGE_CACHE_LOCK = threading.RLock()
-_HOMEPAGE_SHARED_TTL = 12.0
-_HOMEPAGE_JOURNAL_TTL = 8.0
+_HOMEPAGE_SHARED_TTL = 60.0
+_HOMEPAGE_JOURNAL_TTL = 30.0
 
 
 def taiwan_now():
@@ -24697,8 +24697,9 @@ def web_portfolio(uid):
     aux_realized_future = aux_executor.submit(get_realized_trades, uid, 500)
     aux_rank_future = aux_executor.submit(get_fast_rank_summary, uid)
 
-    # 六份共享資料在短時間內會被首頁反覆使用；用 12 秒短 TTL 快取，
-    # 避免首頁重新整理／內部返回時再次打 Supabase。市場即時行情不走這個快取。
+    # 六份共享資料在短時間內會被首頁反覆使用；用 60 秒短 TTL 快取，
+    # 避免首頁重新整理／內部返回時再次打 Supabase。法人、今日事件等共享資料
+    # 不需要每十幾秒重新查；市場即時行情仍不走這個快取。
     shared_key = (uid, taiwan_today())
     shared_values = None
     with _HOMEPAGE_CACHE_LOCK:
@@ -24923,7 +24924,8 @@ def web_portfolio(uid):
                 "持股數不足或資料不齊，尚無法計算相關係數。")
 
     # 走勢、已實現損益與首頁排名摘要已在前段提前並行；此處只等待結果。
-    # 操作日誌已在行情階段讀取並供日初曝險與日報共用，避免同頁重複讀取資料庫。
+    # 操作日誌已在行情階段讀取並供日初曝險與日報共用，避免同頁重複讀取資料庫；
+    # 30 秒內重整也直接共用，不讓 DB 被同一位使用者連續刷新打爆。
     aux_started = time.monotonic()
     try:
         trend_html = aux_trend_future.result()
