@@ -27409,7 +27409,7 @@ def render_workbench_body(initial_tab=""):
   <div class="wb-filter-panel" id="wb-filter-panel" hidden><div><b>當日漲跌</b><button type="button" data-dir="all" class="on">不限</button><button type="button" data-dir="up">上漲</button><button type="button" data-dir="down">下跌</button></div></div><div class="wb-mobile-sort" id="wb-mobile-sort" aria-label="排序方式"><span>排序</span><button type="button" data-sort="score" class="on">分數</button><button type="button" data-sort="change_pct">漲跌</button><button type="button" data-sort="institutional_lots">法人</button></div>
   <div class="wb-meta"><span id="wb-count">正在讀取…</span><span id="wb-note"></span></div>
   <div class="wb-table" id="wb-table" aria-live="polite"><div class="wb-head"><span>標的</span><button type="button" data-sort="score">綜合分數</button><button type="button" data-sort="change_pct">報酬／漲跌</button><button type="button" data-sort="institutional_lots">法人方向</button><span>訊號</span><span></span></div><div id="wb-rows"><div class="wb-skeleton"></div><div class="wb-skeleton"></div><div class="wb-skeleton"></div></div></div>
-  <p class="wb-disclaimer">進入選股台後會並行預載黑馬、雷達、持股、轉折、籌碼、ETF 與成效資料；全部只讀已保存快照／推薦紀錄，不因切換分頁重新掃描市場。資料缺漏維持待確認，不以推測數字補足。</p>
+  <p class="wb-disclaimer">進入選股台先顯示黑馬快照；其他分頁點到哪裡才讀哪一份已保存快照／推薦紀錄，不因切換分頁重新掃描市場。資料缺漏維持待確認，不以推測數字補足。</p>
 </section>
 <aside class="wb-drawer" id="wb-drawer" aria-hidden="true"><div class="wb-drawer-actions"><button type="button" id="wb-back">‹ 回到選股清單</button><button type="button" id="wb-close" aria-label="關閉">×</button></div><div id="wb-detail"></div></aside><div class="wb-mask" id="wb-mask" hidden></div>
 
@@ -27419,7 +27419,7 @@ def render_workbench_body(initial_tab=""):
 (function(){
   var root=document.getElementById('stockbot-workbench'); if(!root) return;
   var initialTab=(root.dataset.initialTab||new URLSearchParams(location.search).get('tab')||'').trim();
-  var state={rows:[],sources:{},personal:{},scoreChanges:[],scoreChangeSort:'score_desc',assetMode:'stock',source:'黑馬',query:'',kind:'all',dir:'all',sort:'score',desc:true,marketOpen:false,timer:null,review:null,reviewLoading:false,quoteLoading:false,quoteUpdatedAt:'',returnScroll:0,loadedSources:{'黑馬':true,'雷達':true},loadingSource:''};
+  var state={rows:[],sources:{},personal:{},scoreChanges:[],scoreChangeSort:'score_desc',assetMode:'stock',source:'黑馬',query:'',kind:'all',dir:'all',sort:'score',desc:true,marketOpen:false,timer:null,review:null,reviewLoading:false,quoteLoading:false,quoteUpdatedAt:'',returnScroll:0,loadedSources:{},loadingSource:''};
   var tabs=document.getElementById('wb-tabs'), scoreChangePanel=document.getElementById('wb-score-change-panel'), rowsEl=document.getElementById('wb-rows'), note=document.getElementById('wb-note'), count=document.getElementById('wb-count'), status=document.getElementById('wb-status'), pulse=document.getElementById('wb-pulse'), drawer=document.getElementById('wb-drawer'), mask=document.getElementById('wb-mask');
   function token(){try{return new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||''}catch(e){return ''}}
   function api(path){return path+(path.indexOf('?')>-1?'&':'?')+'fragment=1'+(token()?'&t='+encodeURIComponent(token()):'')}
@@ -27839,90 +27839,117 @@ function bindFactors(){
     });
   }
   function updateQuotes(){if(!state.marketOpen||document.hidden||state.quoteLoading)return;var codes=filtered().slice(0,30).map(function(r){return r.code}).join(',');if(!codes)return;state.quoteLoading=true;fetch(api('/web/api/workbench/quotes?codes='+encodeURIComponent(codes)),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){(data.updates||[]).forEach(function(q){state.rows.forEach(function(r){if(r.code===q.code&&q.price!=null){r.price=q.price;r.change_pct=q.change_pct;r.metric_label='當日漲跌';}});});state.quoteUpdatedAt=data.fetched_at||'';if(data.note)note.textContent=data.note+(state.quoteUpdatedAt?' 最後取得 '+state.quoteUpdatedAt+'。':'');status.textContent=state.quoteUpdatedAt?'盤中行情已更新 '+state.quoteUpdatedAt:'盤中行情局部更新中';render();}).catch(function(e){if(e.message==='AUTH')location.reload();}).finally(function(){state.quoteLoading=false;});}
-  function loadSource(source){
-    if(!source||source==='成效'||source==='我的排行'||state.loadedSources[source]||state.loadingSource)return;
-    state.loadingSource=source;status.textContent='正在載入 '+source+'…';rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
-    fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),{credentials:'same-origin'})
-      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+  // 選股台採「一次並行載入」：黑馬先顯示，但其他快照同時在背景載入，
+  // 不採用「點哪頁才載哪頁」，避免使用者切頁時才開始等待。
+  state.loadingSources = state.loadingSources || {};
+  var workbenchSources = ['黑馬','雷達','持股','轉折','籌碼','ETF'];
+
+  function fetchWorkbenchSource(source){
+    if(!source || source==='成效' || source==='我的排行') return Promise.resolve(null);
+    if(state.loadedSources[source]) return Promise.resolve({source:source,loaded:true});
+    if(state.loadingSources[source]) return state.loadingSources[source];
+
+    var promise = fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),{credentials:'same-origin',cache:'no-store'})
+      .then(function(r){
+        if(r.status===401)throw new Error('AUTH');
+        if(!r.ok)throw new Error('HTTP '+r.status);
+        return r.json();
+      })
       .then(function(data){
         if(!data.ok)throw new Error(data.error||'載入失敗');
         state.rows=state.rows.filter(function(r){return r.source!==source;}).concat(Array.isArray(data.rows)?data.rows:[]);
-        if(source==='黑馬')state.scoreChanges=Array.isArray(data.score_changes)?data.score_changes:state.scoreChanges;
-        if(source==='持股'){note.textContent='持股已載入：優先使用最近已保存的自選股評分快照。';}
-        state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{});
-        state.loadedSources[source]=true;state.loadingSource='';status.textContent='已載入 '+source;render();
-      }).catch(function(e){state.loadingSource='';status.textContent=source+' 暫時無法載入';rowsEl.innerHTML='<div class="wb-empty" style="color:#8b4034">'+esc(source)+' 暫時無法載入。請稍後再試；其他分頁不受影響。</div>';});
-  }
-  // 進入選股台後一次並行預載所有分頁；使用者不需要逐一點擊。
-  function preloadSource(source){
-    if(!source||source==='黑馬'||source==='雷達'||source==='成效'||source==='我的排行'||state.loadedSources[source])return;
-    fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),{credentials:'same-origin'})
-      .then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
-      .then(function(data){
-        if(!data.ok)throw new Error(data.error||'載入失敗');
-        state.rows=state.rows.filter(function(x){return x.source!==source;}).concat(Array.isArray(data.rows)?data.rows:[]);
+        if(source==='黑馬') state.scoreChanges=Array.isArray(data.score_changes)?data.score_changes:state.scoreChanges;
+        if(source==='持股') note.textContent='持股已載入：優先使用最近已保存的自選股評分快照。';
         state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{available:true});
         state.loadedSources[source]=true;
+        delete state.loadingSources[source];
         renderTabs();
-        if(state.source===source)render();
+        if(state.source===source) render();
+        return data;
       })
       .catch(function(e){
-        console.warn('工作台預載 '+source+' 失敗',e);
-        if(e&&e.message==='AUTH')location.reload();
+        delete state.loadingSources[source];
+        if(e&&e.message==='AUTH'){location.reload();return null;}
+        console.warn('工作台快照 '+source+' 載入失敗',e);
+        state.sources[source]=Object.assign({},state.sources[source]||{},{available:false,error:String(e&&e.message||e)});
+        renderTabs();
+        return null;
       });
+    state.loadingSources[source]=promise;
+    return promise;
   }
+
+  function loadSource(source){
+    if(!source||source==='成效'||source==='我的排行')return;
+    state.source=source;
+    if(source==='ETF')state.assetMode='etf';
+    else if(source!=='ETF')state.assetMode='stock';
+    render();
+    if(state.loadedSources[source])return;
+    status.textContent='正在載入 '+source+' 快照…';
+    rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
+    fetchWorkbenchSource(source).then(function(){
+      if(state.source===source){
+        status.textContent=state.loadedSources[source]?'已載入 '+source:'正在等待 '+source+' 快照…';
+        render();
+      }
+    });
+  }
+
+  function preloadSource(source){ return fetchWorkbenchSource(source); }
+
   function preloadAllWorkbench(){
-    ['持股','轉折','籌碼','ETF'].forEach(preloadSource);
+    // 所有資料源一次並行請求；黑馬只是 UI 優先顯示，不會阻塞其他快照。
+    workbenchSources.forEach(function(source){fetchWorkbenchSource(source);});
     requestReview();
   }
 
   function load(){
-    // 進入選股台時，所有資料源一次並行讀取；不再要求使用者逐一點分頁才載入。
-    var allSources=['黑馬','雷達','持股','轉折','籌碼','ETF'];
-    var total=allSources.length, done=0, failed=0, finished=false;
-    status.textContent='正在一次載入選股台全部快照…';
+    status.textContent='正在載入黑馬快照…';
     rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
 
-    function one(source){
-      var controller=(window.AbortController?new AbortController():null);
-      var timer=controller?setTimeout(function(){try{controller.abort();}catch(_){ }},12000):null;
-      var opts={credentials:'same-origin'}; if(controller)opts.signal=controller.signal;
-      return fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),opts)
-        .then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
-        .then(function(data){
-          if(!data.ok)throw new Error(data.error||'載入失敗');
-          state.rows=state.rows.filter(function(x){return x.source!==source;}).concat(Array.isArray(data.rows)?data.rows:[]);
-          state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{available:true});
-          state.loadedSources[source]=true;
-          done++;
-          status.textContent='選股台資料載入中… '+done+'/'+total;
-          renderTabs();
-          if(state.source===source)render();
-          return true;
-        })
-        .catch(function(e){
-          state.loadedSources[source]=false;
-          failed++;
-          if(e&&e.message==='AUTH'){location.reload();return false;}
-          console.warn('工作台載入 '+source+' 失敗',e);
-          return false;
-        })
-        .finally(function(){if(timer)clearTimeout(timer);});
-    }
+    var target=initialTab;
+    if(target==='ETF')state.assetMode='etf';
+    if(target&&target!=='ETF'&&sources().indexOf(target)>=0)state.source=target;
 
-    // 成效統計同時啟動；它不再阻塞六個快照。
+    // 黑馬與其他所有快照同時發出請求；黑馬完成後立即把首屏畫出來。
+    var blackHorse = fetchWorkbenchSource('黑馬');
+    workbenchSources.filter(function(source){return source!=='黑馬';}).forEach(function(source){fetchWorkbenchSource(source);});
     requestReview();
-    Promise.all(allSources.map(one)).then(function(){
-      if(finished)return;
-      finished=true;
-      state.marketOpen=!!(state.sources['雷達']&&state.sources['雷達'].intraday);
-      if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}
-      else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}
-      status.textContent=failed?'選股台已載入（'+failed+' 個資料源暫時失敗）':'選股台全部資料已載入';
+
+    blackHorse.then(function(data){
+      if(!data)return;
+      state.marketOpen=!!(data.meta&&data.meta.intraday);
+      state.source='黑馬';
+      state.assetMode='stock';
+      status.textContent='黑馬快照已載入，其他資料同步載入中…';
+      renderTabs();
       render();
       if(window.stockBotFinishPageLoading) window.stockBotFinishPageLoading();
-      if(state.timer)clearInterval(state.timer);
-      if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}
+      if(state.marketOpen){
+        updateQuotes();
+        if(state.timer)clearInterval(state.timer);
+        state.timer=setInterval(updateQuotes,15000);
+      }
+      // 若是指定分頁進入，黑馬先出現，指定分頁的快照完成後會自動切過去。
+      if(target && target!=='黑馬' && target!=='成效' && target!=='我的排行'){
+        state.source=target;
+        if(target==='ETF')state.assetMode='etf';
+        render();
+      }
+      initialTab='';
+    });
+
+    // 不是等黑馬完成才載其他資料；所有 Promise 已在上面同時啟動。
+    workbenchSources.filter(function(source){return source!=='黑馬';}).forEach(function(source){
+      fetchWorkbenchSource(source).then(function(){
+        if(target && target===source){
+          state.source=source;
+          state.assetMode=(source==='ETF'?'etf':'stock');
+          initialTab='';
+        }
+        if(state.source===source) render();
+      });
     });
   }
   document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':'黑馬';state.query='';render();loadSource(state.source);};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){load();};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();loadSource(state.source);}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
@@ -28175,7 +28202,9 @@ def _workbench_source_payload(uid, source):
             except Exception as exc:
                 print(f"⚠️ 工作台讀取{source}最近快照失敗：{exc}")
                 snap = None
-        rows,changes=_workbench_score_changes_and_rows(snap,mode) if snap else ([],[])
+        rows=_workbench_screener_rows(mode, snap) if snap else []
+        # 黑馬首屏只讀快照；今日分數變化需要額外資料庫比對，不能阻塞首屏。
+        changes=[]
         return {"ok":True,"source":source,"rows":rows,"score_changes":changes,
                 "meta":{"available":bool(snap),
                         "date":str((snap or {}).get("source_date") or "未標日期"),
