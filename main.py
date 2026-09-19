@@ -1070,94 +1070,186 @@ _daily_home_context_lock = threading.Lock()
 
 
 def _get_daily_home_context(user_id, display_date):
-    """首頁專用的盤前上下文，盡量只建立一次遠端 DB 連線。"""
-    display_date = _premarket_display_date(display_date)
-    key = (str(user_id).strip(), display_date.isoformat())
+    """首頁專用盤前上下文：一次 DB round-trip 取回快照、顯示日與事件時間線。"""
+    requested = display_date or taiwan_today()
+    key = (str(user_id).strip(), requested.isoformat())
     now = time.time()
     with _daily_home_context_lock:
         cached = _daily_home_context_cache.get(key)
         if cached and now - cached.get("at", 0) < _DAILY_HOME_CONTEXT_TTL:
             return cached["value"]
 
-    source_date = _premarket_source_date(display_date)
+    # 舊版流程在週末會先查 _premarket_display_date、再查
+    # _premarket_source_date，最後才查 snapshot + events；一次首頁可能因此
+    # 產生 4~6 次 Supabase round-trip。首頁只需要「目前顯示批次」的資料，
+    # 所以把日期解析、快照、目前／上一批事件合併成一個 SQL。
+    is_weekend = requested.weekday() >= 5
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT snapshot_date, briefing_date, previous_trade_date,
-                   blackhorse, radar, market, news, institutional
-            FROM premarket_snapshots WHERE snapshot_date=%s
-        """, (source_date,))
+            WITH resolved_display AS (
+                SELECT CASE
+                    WHEN NOT %s THEN %s::date
+                    ELSE COALESCE(
+                        (SELECT MIN(briefing_date)
+                         FROM premarket_snapshots
+                         WHERE briefing_date >= %s),
+                        (SELECT MIN(briefing_date)
+                         FROM premarket_events
+                         WHERE briefing_date >= %s),
+                        (SELECT briefing_date
+                         FROM premarket_snapshots
+                         WHERE snapshot_date <= %s
+                         ORDER BY snapshot_date DESC LIMIT 1),
+                        (SELECT briefing_date
+                         FROM premarket_events
+                         WHERE snapshot_date <= %s
+                         ORDER BY snapshot_date DESC LIMIT 1),
+                        %s::date
+                    )
+                END AS display_date
+            ),
+            resolved_source AS (
+                SELECT r.display_date,
+                       COALESCE(
+                           (SELECT snapshot_date
+                            FROM premarket_snapshots
+                            WHERE briefing_date = r.display_date
+                            ORDER BY snapshot_date DESC LIMIT 1),
+                           (SELECT snapshot_date
+                            FROM premarket_events
+                            WHERE briefing_date = r.display_date
+                            ORDER BY snapshot_date DESC LIMIT 1),
+                           r.display_date
+                       ) AS source_date
+                FROM resolved_display r
+            ),
+            event_rows AS (
+                SELECT
+                    e.briefing_date,
+                    e.severity,
+                    e.category,
+                    e.title,
+                    e.detail,
+                    e.evidence,
+                    e.event_key,
+                    e.id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY e.briefing_date, COALESCE(e.event_key, e.category || ':' || e.title)
+                        ORDER BY CASE WHEN e.user_id IS NULL THEN 0 ELSE 1 END, e.id
+                    ) AS rn
+                FROM premarket_events e
+                CROSS JOIN resolved_source r
+                WHERE e.briefing_date IN (r.display_date, r.source_date)
+                  AND (e.user_id IS NULL OR e.user_id = %s)
+            ),
+            current_events AS (
+                SELECT COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'severity', severity,
+                            'category', category,
+                            'title', title,
+                            'detail', detail,
+                            'evidence', evidence,
+                            'event_key', event_key
+                        )
+                        ORDER BY CASE severity WHEN 'S' THEN 4 WHEN 'A' THEN 3 WHEN 'B' THEN 2 ELSE 1 END DESC,
+                                 id ASC
+                    ) FILTER (WHERE rn = 1),
+                    '[]'::jsonb
+                ) AS events
+                FROM event_rows e
+                CROSS JOIN resolved_source r
+                WHERE e.briefing_date = r.display_date
+            ),
+            previous_events AS (
+                SELECT COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'severity', severity,
+                            'category', category,
+                            'title', title,
+                            'detail', detail,
+                            'evidence', evidence,
+                            'event_key', event_key
+                        )
+                        ORDER BY CASE severity WHEN 'S' THEN 4 WHEN 'A' THEN 3 WHEN 'B' THEN 2 ELSE 1 END DESC,
+                                 id ASC
+                    ) FILTER (WHERE rn = 1),
+                    '[]'::jsonb
+                ) AS events
+                FROM event_rows e
+                CROSS JOIN resolved_source r
+                WHERE e.briefing_date = r.source_date
+            )
+            SELECT
+                r.display_date,
+                r.source_date,
+                s.snapshot_date,
+                s.briefing_date,
+                s.previous_trade_date,
+                s.blackhorse,
+                s.radar,
+                s.market,
+                s.news,
+                s.institutional,
+                c.events AS current_events,
+                p.events AS previous_events
+            FROM resolved_source r
+            LEFT JOIN premarket_snapshots s ON s.snapshot_date = r.source_date
+            CROSS JOIN current_events c
+            CROSS JOIN previous_events p
+        """, (
+            is_weekend,
+            requested,
+            requested, requested, requested, requested, requested,
+            str(user_id).strip(),
+        ))
         row = cur.fetchone()
-        if not row and display_date.weekday() >= 5:
-            cur.execute("""
-                SELECT snapshot_date, briefing_date, previous_trade_date,
-                       blackhorse, radar, market, news, institutional
-                FROM premarket_snapshots
-                WHERE snapshot_date <= %s
-                ORDER BY snapshot_date DESC LIMIT 1
-            """, (display_date,))
-            row = cur.fetchone()
-
-        snapshot = None
-        if row:
-            snapshot = {
-                "snapshot_date": row[0].isoformat(),
-                "source_date": row[0].isoformat(),
-                "briefing_date": row[1].isoformat() if row[1] else display_date.isoformat(),
-                "previous_trade_date": row[2].isoformat() if row[2] else None,
-                "blackhorse": _premarket_record_list(row[3]),
-                "radar": _premarket_record_list(row[4]),
-                "market": _premarket_json_value(row[5], "dict"),
-                "news": _premarket_record_list(row[6]),
-                "institutional": _premarket_record_map(row[7]),
-            }
-
-        previous_display_date = (
-            date.fromisoformat(snapshot["source_date"])
-            if snapshot and snapshot.get("source_date") else display_date
-        )
-        cur.execute("""
-            SELECT briefing_date, user_id, severity, category, title, detail, evidence, event_key
-            FROM premarket_events
-            WHERE briefing_date = ANY(%s)
-              AND (user_id IS NULL OR user_id = %s)
-            ORDER BY briefing_date DESC,
-                     CASE severity WHEN 'S' THEN 4 WHEN 'A' THEN 3 WHEN 'B' THEN 2 ELSE 1 END DESC,
-                     id ASC
-        """, ([display_date, previous_display_date], user_id))
-        rows = cur.fetchall()
     finally:
         release_db_connection(conn)
 
-    def merge_event_rows(items):
-        merged, seen = [], set()
-        for scoped_user, event in sorted(items, key=lambda x: 0 if x[0] is None else 1):
-            k = _change_event_identity(event)
-            if not k or k in seen:
-                continue
-            seen.add(k)
-            merged.append(event)
-        return _sort_events(merged)
+    if not row:
+        value = {"snapshot": None,
+                 "timeline": {"new": [], "ongoing": [], "resolved": [],
+                              "previous_date": None, "current": [], "previous": []}}
+    else:
+        (resolved_display_date, source_date, snapshot_date, briefing_date,
+         previous_trade_date, blackhorse, radar, market, news, institutional,
+         current_events, previous_events) = row
 
-    current_rows, previous_rows = [], []
-    for briefing_date, event_user_id, severity, category, title, detail, evidence, ev_key in rows:
-        event = {"severity": severity, "category": category, "title": title,
-                 "detail": detail, "evidence": evidence, "event_key": ev_key}
-        (current_rows if briefing_date == display_date else previous_rows).append((event_user_id, event))
-    current = merge_event_rows(current_rows)
-    previous = merge_event_rows(previous_rows)
-    current_keys = {_change_event_identity(e) for e in current}
-    previous_keys = {_change_event_identity(e) for e in previous}
-    timeline = {
-        "new": [e for e in current if _change_event_identity(e) not in previous_keys],
-        "ongoing": [e for e in current if _change_event_identity(e) in previous_keys],
-        "resolved": [e for e in previous if _change_event_identity(e) not in current_keys],
-        "previous_date": snapshot.get("previous_trade_date") if snapshot else None,
-        "current": current,
-        "previous": previous,
-    }
-    value = {"snapshot": snapshot, "timeline": timeline}
+        snapshot = None
+        if snapshot_date:
+            snapshot = {
+                "snapshot_date": snapshot_date.isoformat(),
+                "source_date": source_date.isoformat() if source_date else snapshot_date.isoformat(),
+                "briefing_date": briefing_date.isoformat() if briefing_date else (
+                    resolved_display_date.isoformat() if resolved_display_date else requested.isoformat()
+                ),
+                "previous_trade_date": previous_trade_date.isoformat() if previous_trade_date else None,
+                "blackhorse": _premarket_record_list(blackhorse),
+                "radar": _premarket_record_list(radar),
+                "market": _premarket_json_value(market, "dict"),
+                "news": _premarket_record_list(news),
+                "institutional": _premarket_record_map(institutional),
+            }
+
+        current = current_events or []
+        previous = previous_events or []
+        current_keys = {_change_event_identity(e) for e in current}
+        previous_keys = {_change_event_identity(e) for e in previous}
+        timeline = {
+            "new": [e for e in current if _change_event_identity(e) not in previous_keys],
+            "ongoing": [e for e in current if _change_event_identity(e) in previous_keys],
+            "resolved": [e for e in previous if _change_event_identity(e) not in current_keys],
+            "previous_date": snapshot.get("previous_trade_date") if snapshot else None,
+            "current": current,
+            "previous": previous,
+        }
+        value = {"snapshot": snapshot, "timeline": timeline}
+
     with _daily_home_context_lock:
         _daily_home_context_cache[key] = {"at": now, "value": value}
         if len(_daily_home_context_cache) > 500:
