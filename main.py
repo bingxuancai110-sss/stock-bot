@@ -17267,20 +17267,20 @@ def render_page(title, body, nav_active=None, user_name=None):
     function ensureNavNotice() {{
       if (navNotice) return;
       navNotice = document.createElement('div');
-      navNotice.className = 'app-load-card' + (target.pathname === '/web/portfolio' ? ' market-full-loader' : '');
+      navNotice.className = target.pathname === '/web/portfolio' ? 'market-loading-screen' : 'app-load-card';
       navNotice.setAttribute('role','status');
       if (target.pathname === '/web/portfolio') {{
         navNotice.innerHTML = '<div class="market-loader-inner">'
-          + '<div class="market-loader-brand">TAIWAN MARKET</div>'
-          + '<div class="market-loader-orbit" aria-hidden="true"><div class="market-loader-ring"></div><div class="market-loader-dot"></div></div>'
+          + '<div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div>'
+          + '<div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>'
           + '<div class="market-loader-title">正在整理今日市場</div>'
           + '<div class="market-loader-status" id="market-loader-status">正在連接市場資料…</div>'
-          + '<div class="market-loader-bar" aria-hidden="true"><i></i></div>'
+          + '<div class="market-loader-progress-row"><div class="market-loader-bar"><i></i></div><span id="market-loader-percent">0%</span></div>'
           + '<div class="market-loader-steps">'
           + ['市場資料','法人與估值','你的持股行情','今日市場判讀'].map(function(label, i) {{
-              return '<div class="market-loader-step ' + (i === 0 ? 'active' : '') + '"><b>' + (i === 0 ? '●' : '○') + '</b><span>' + label + '</span></div>';
+              return '<div class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span>' + (i === 0 ? '●' : '○') + '</span><span>' + label + '</span></div>';
             }}).join('')
-          + '</div></div>';
+          + '</div><div class="market-loader-foot">完整分析完成後自動進入首頁</div></div>';
       }} else {{
         navNotice.innerHTML = '<span class="app-sync-spinner" aria-hidden="true"></span>'
           + '<span style="min-width:0;flex:1"><b>' + loadTitle + '</b>'
@@ -17295,7 +17295,7 @@ def render_page(title, body, nav_active=None, user_name=None):
       // overflow、transform 或 stacking context 影響；fixed 才是真正跟著視窗走。
       document.body.appendChild(navNotice);
       function positionNavNotice() {{
-        if (!navNotice) return;
+        if (!navNotice || target.pathname === '/web/portfolio') return;
         var header = document.querySelector('.app-header');
         var headerBottom = header ? header.getBoundingClientRect().bottom : 72;
         var top = Math.max(headerBottom + 10, 12);
@@ -17337,15 +17337,35 @@ def render_page(title, body, nav_active=None, user_name=None):
       }}
       if (target.pathname === '/web/portfolio') {{
         var marketStatus = document.getElementById('market-loader-status');
-        var marketLabels = ['正在連接市場資料…','正在整理法人與估值…','正在更新你的持股行情…','正在整理今日市場判讀…'];
-        var marketSteps = navNotice ? navNotice.querySelectorAll('.market-loader-step') : [];
+        var marketLabels = ['正在連接市場資料…','正在比對法人與估值…','正在整理你的持股行情…','正在建立今日市場判讀…'];
+        var marketSteps = navNotice ? navNotice.querySelectorAll('.market-loader-steps .app-load-step') : [];
         var mi = Math.min(stepIndex, marketLabels.length - 1);
+        var navElapsedSec = stageElapsed;
+        var navStops = [[0,0],[3,12],[6,27],[10,45],[14,63],[18,78],[22,90]];
+        var navProgressPct = 0;
+        if (navElapsedSec <= 22) {{
+          for (var npi = 1; npi < navStops.length; npi++) {{
+            if (navElapsedSec <= navStops[npi][0]) {{
+              var na = navStops[npi - 1], nb = navStops[npi];
+              var nt = (navElapsedSec - na[0]) / (nb[0] - na[0]);
+              nt = nt * nt * (3 - 2 * nt);
+              navProgressPct = na[1] + (nb[1] - na[1]) * nt;
+              break;
+            }}
+          }}
+        }} else {{
+          navProgressPct = Math.min(97, 90 + (navElapsedSec - 22) * 0.12);
+        }}
+        var marketBar = navNotice ? navNotice.querySelector('.market-loader-bar i') : null;
+        var marketPct = navNotice ? navNotice.querySelector('#market-loader-percent') : null;
+        if (marketBar) marketBar.style.width = navProgressPct.toFixed(1) + '%';
+        if (marketPct) marketPct.textContent = Math.round(navProgressPct) + '%';
         if (marketStatus) marketStatus.textContent = marketLabels[mi];
         marketSteps.forEach(function(step, i) {{
           step.classList.toggle('active', i === mi);
           step.classList.toggle('done', i < mi);
-          var b = step.querySelector('b');
-          if (b) b.textContent = i < mi ? '✓' : (i === mi ? '●' : '○');
+          var icon = step.querySelector('span:first-child');
+          if (icon) icon.textContent = i < mi ? '✓' : (i === mi ? '●' : '○');
         }});
       }}
       if (navProgress.classList.contains('show')) navProgress.classList.add('mid');
@@ -17372,16 +17392,40 @@ def render_page(title, body, nav_active=None, user_name=None):
         if (stepTimer) {{ window.clearInterval(stepTimer); stepTimer = null; }}
         if (noticeTimer) {{ window.clearTimeout(noticeTimer); noticeTimer = null; }}
         setLoadStep(loadSteps.length, true);
-        if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
-        if (navNotice) {{
-          var loadTitleEl = navNotice.querySelector('b');
-          var loadSub = navNotice.querySelector('small');
-          if (loadTitleEl) loadTitleEl.textContent = '✓ 載入完成';
-          if (loadSub) loadSub.textContent = '畫面已更新';
+        if (target.pathname === '/web/portfolio') {{
+          var finishBar = navNotice ? navNotice.querySelector('.market-loader-bar i') : null;
+          var finishPct = navNotice ? navNotice.querySelector('#market-loader-percent') : null;
+          var finishStatus = navNotice ? navNotice.querySelector('#market-loader-status') : null;
+          var finishSteps = navNotice ? navNotice.querySelectorAll('.market-loader-steps .app-load-step') : [];
+          if (finishBar) finishBar.style.width = '100%';
+          if (finishPct) finishPct.textContent = '100%';
+          if (finishStatus) finishStatus.textContent = '分析完成，正在開啟今日首頁…';
+          finishSteps.forEach(function(step) {{
+            step.classList.remove('active');
+            step.classList.add('done');
+            var icon = step.querySelector('span:first-child');
+            if (icon) icon.textContent = '✓';
+          }});
+          if (navProgress && navProgress.parentNode) navProgress.parentNode.removeChild(navProgress);
+          window.setTimeout(function() {{
+            if (navNotice) navNotice.classList.add('is-complete');
+          }}, 70);
           window.setTimeout(function() {{
             if (navNotice && navNotice._positionNavNotice) window.removeEventListener('resize', navNotice._positionNavNotice);
             if (navNotice && navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
-          }}, 380);
+          }}, 520);
+        }} else {{
+          if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
+          if (navNotice) {{
+            var loadTitleEl = navNotice.querySelector('b');
+            var loadSub = navNotice.querySelector('small');
+            if (loadTitleEl) loadTitleEl.textContent = '✓ 載入完成';
+            if (loadSub) loadSub.textContent = '畫面已更新';
+            window.setTimeout(function() {{
+              if (navNotice && navNotice._positionNavNotice) window.removeEventListener('resize', navNotice._positionNavNotice);
+              if (navNotice && navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
+            }}, 380);
+          }}
         }}
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
