@@ -18382,7 +18382,19 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
             oldRetry.type = 'button';
             oldRetry.textContent = '重新載入首頁';
             oldRetry.style.cssText = 'margin-top:16px;border:1px solid #b9c8d4;background:#fff;border-radius:999px;padding:9px 18px;color:#356B91;font-weight:800;font-size:12px;box-shadow:0 4px 12px rgba(53,107,145,.10);';
-            oldRetry.onclick = function() {{ window.location.reload(); }};
+            oldRetry.onclick = function() {{
+              try {{
+                var u = new URL(window.location.href);
+                u.searchParams.delete('fragment');
+                u.searchParams.delete('_nav');
+                u.searchParams.set('_retry', String(Date.now()));
+                oldRetry.disabled = true;
+                oldRetry.textContent = '重新載入中…';
+                window.location.replace(u.pathname + (u.search ? '?' + u.searchParams.toString() : ''));
+              }} catch (ignore) {{
+                window.location.href = window.location.pathname + '?_retry=' + Date.now();
+              }}
+            }};
             var inner = loadingEl.querySelector('.market-loader-inner');
             if (inner) inner.appendChild(oldRetry);
           }}
@@ -28953,10 +28965,12 @@ _POSITION_FACTOR_CACHE_LOCK = threading.Lock()
 _POSITION_FACTOR_CACHE_TTL = 300
 
 def _position_factor_snapshot(code):
-    """Lazy-load the same five-factor screener snapshot used by the Workbench.
-    This is intentionally NOT called while rendering the positions list; it only
-    runs after the user expands a position, so it does not add to positions-page
-    initial latency.
+    """Lazy-load the canonical web five-factor score for one holding.
+
+    The positions page and LINE must not read different historical snapshots.
+    When the user expands a holding, calculate that one stock through the same
+    _compute_stock_watchlist_scores() core used by LINE/workbench.  This keeps
+    the initial positions page fast while guaranteeing identical factor values.
     """
     code = normalize_code(code or "")
     if not code:
@@ -28968,7 +28982,6 @@ def _position_factor_snapshot(code):
         if cached and now - cached[0] < _POSITION_FACTOR_CACHE_TTL:
             return cached[1]
 
-    # ETFs do not use the individual-stock five-factor model.
     if is_etf(code):
         result = {"ok": True, "code": code, "asset_type": "ETF",
                   "scored": False, "note": "ETF 不套用個股五大因子模型。"}
@@ -28976,164 +28989,41 @@ def _position_factor_snapshot(code):
             _POSITION_FACTOR_CACHE[key] = (now, result)
         return result
 
-    conn = None
-    row = None
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        # The snapshot is already the canonical five-factor result.  Query only
-        # the matching JSON element; this is lazy and therefore never blocks the
-        # initial positions page.
-        cur.execute("""
-            SELECT mode, snapshot_date, elem
-            FROM screener_result_snapshots s,
-                 LATERAL jsonb_array_elements(s.rows_json) elem
-            WHERE s.mode IN ('blackhorse','radar')
-              AND elem->>'code' = %s
-            ORDER BY s.snapshot_date DESC,
-                     CASE WHEN s.mode='blackhorse' THEN 0 ELSE 1 END
-            LIMIT 1
-        """, (code,))
-        row = cur.fetchone()
-        cur.close()
-    except Exception as exc:
-        print(f"⚠️ 持股五大因子讀取失敗 {code}: {exc}")
-    finally:
-        if conn:
-            release_db_connection(conn)
-
-    if not row:
-        result = {"ok": True, "code": code, "scored": False,
-                  "note": "目前沒有可用的最新五大因子快照。"}
-    else:
-        mode, snapshot_date, raw = row
-        raw = raw if isinstance(raw, dict) else {}
-        # 持股頁與 LINE 現在統一使用「網頁五大因子模型」。
-        # 分類也必須走 BOT 自訂分類，不能直接沿用舊快照的官方產業文字。
-        industry_map = get_industry_map() or {}
-        category = stock_category(code, industry_map)
-
-        # V15：若自訂分類與舊快照分類不同，直接用目前資料重算整套五大因子。
-        # 這是懶載入，只發生在使用者展開該檔持股，不增加持股頁首屏時間。
-        snapshot_category = str(raw.get("category") or "")
-        if category != snapshot_category:
-            try:
-                rev_data = fetch_monthly_revenue() or {}
-                val_data = fetch_valuation() or {}
-                streaks = get_consecutive_days_batch([code])
-                cum_map = get_cumulative_net_buy_for_codes([code], days=10)
-                quote = (get_realtime_stocks_bulk([code]) or {}).get(code) or {}
-                cum_yoy_now = rev_data.get(code, {}).get("cum_yoy_pct")
-                cum_lots_now, _buy_days_now = cum_map.get(code, (0, 0))
-                turnover_now = calc_turnover_billion(quote.get("close"), quote.get("volume"))
-                momentum_now = get_industry_momentum(rev_data, industry_map)
-                model_now = score_stock_by_category(
-                    code, industry_map, quote, cum_yoy_now, val_data.get(code) or {},
-                    streaks.get(code, 0), cum_lots_now, turnover_now, momentum_now
-                )
-                if model_now.get("total") is not None:
-                    raw.update({
-                        "category": model_now.get("category"),
-                        "score": model_now.get("total"),
-                        "rev": model_now.get("rev"), "val": model_now.get("val"),
-                        "mom": model_now.get("mom"), "streak_score": model_now.get("streak_score"),
-                        "chip": model_now.get("chip"), "caps": model_now.get("caps"),
-                        "cum_yoy": cum_yoy_now, "pe": model_now.get("pe"),
-                        "pb": model_now.get("pb"), "yield": model_now.get("yield"),
-                        "val_desc": model_now.get("val_desc"), "mom_desc": model_now.get("mom_desc"),
-                    })
-                    category = model_now.get("category") or category
-                    raw["full_model_refreshed"] = True
-            except Exception as exc:
-                print(f"⚠️ 持股五大因子完整模型重算失敗 {code}: {exc}")
-
-        # V13：五大因子中的「營收成長」不能直接相信舊選股快照。
-        # 選股快照可能是在最新月營收公告前產生，導致像 6442/8996
-        # 這種近期營收暴增的持股仍顯示舊分數。持股頁是使用者查看
-        # 「目前狀況」的地方，因此只在展開時用 revenue_history 的最新
-        # 累計年增率校正營收因子；其他四項仍沿用同一份選股快照，
-        # 避免展開持股時重新跑整套全市場選股。
-        latest_cum_yoy = None
-        try:
-            rconn = get_db_connection()
-            rcur = rconn.cursor()
-            rcur.execute("""
-                SELECT cum_yoy_pct
-                FROM revenue_history
-                WHERE code = %s
-                ORDER BY period DESC
-                LIMIT 1
-            """, (code,))
-            rrow = rcur.fetchone()
-            rcur.close()
-            if rrow and rrow[0] is not None:
-                latest_cum_yoy = float(rrow[0])
-        except Exception as exc:
-            print(f"⚠️ 持股五大因子最新營收讀取失敗 {code}: {exc}")
-        finally:
-            if 'rconn' in locals() and rconn:
-                release_db_connection(rconn)
-
-        old_rev = raw.get("rev")
-        old_total = raw.get("score")
-        if latest_cum_yoy is not None and category != "金融":
-            try:
-                if category == "電子":
-                    new_rev = round(score_from_cum_revenue_growth(latest_cum_yoy) * 25 / 40)
-                    rev_cap = 25
-                else:
-                    new_rev = score_revenue_traditional(latest_cum_yoy)
-                    rev_cap = 20
-                raw["rev"] = new_rev
-                if old_total is not None and old_rev is not None:
-                    raw["score"] = float(old_total) - float(old_rev) + float(new_rev)
-                raw["cum_yoy"] = latest_cum_yoy
-                raw["revenue_refreshed"] = True
-                raw["revenue_source"] = "revenue_history_latest"
-            except (TypeError, ValueError) as exc:
-                print(f"⚠️ 持股五大因子營收校正失敗 {code}: {exc}")
-        if category == "金融" and raw.get("score") is None:
+        scored = _compute_stock_watchlist_scores([code]) or {}
+        item = scored.get(code) or scored.get(str(code).strip())
+        if not item:
             result = {"ok": True, "code": code, "scored": False,
-                      "category": category,
-                      "source_date": str(snapshot_date or ""),
+                      "note": "目前沒有可用的最新五大因子評分。"}
+        elif item.get("total") is None:
+            result = {"ok": True, "code": code, "scored": False,
+                      "category": item.get("category"),
                       "note": "金融股目前不套用五大因子分數；保留事實資料供判讀。"}
         else:
-            caps = raw.get("caps") if isinstance(raw.get("caps"), (list, tuple)) else None
-            try:
-                caps = [float(x) for x in caps] if caps and len(caps) == 5 else [25,25,20,20,10]
-            except (TypeError, ValueError):
-                caps = [25,25,20,20,10]
-            vals = [raw.get("rev"), raw.get("val"), raw.get("mom"),
-                    raw.get("streak_score"), raw.get("chip")]
-            labels = ["營收成長", "估值", "產業動能", "法人連續性", "籌碼／技術"]
-            factors = []
-            for label, value, cap in zip(labels, vals, caps):
-                try:
-                    value = float(value) if value is not None else None
-                except (TypeError, ValueError):
-                    value = None
-                factors.append({"name": label, "value": value, "max": cap})
-            total = raw.get("score")
-            try:
-                total = float(total) if total is not None else None
-            except (TypeError, ValueError):
-                total = None
-            result = {"ok": True, "code": code, "scored": True,
-                      "category": category, "mode": mode,
-                      "source_date": str(snapshot_date or ""),
-                      "score": total, "factors": factors,
-                      "val_desc": raw.get("val_desc"),
-                      "mom_desc": raw.get("mom_desc"),
-                      "cum_yoy": raw.get("cum_yoy"),
-                      "pe": raw.get("pe"), "pb": raw.get("pb"),
-                      "yield": raw.get("yield"),
-                      "note": ("已套用目前網頁五大因子模型；自訂類別與最新營收資料均已校正。"
-                               if raw.get("full_model_refreshed") else
-                               ("營收因子已用最新月營收資料校正；其餘因子沿用最近保存的網頁五大因子快照。"
-                                if raw.get("revenue_refreshed") else
-                                "分數來自最近保存的網頁五大因子快照；展開後才讀取，不影響持股頁首屏。")),
-                      "revenue_refreshed": bool(raw.get("revenue_refreshed")),
-                      "revenue_cum_yoy": raw.get("cum_yoy")}
+            factors = item.get("factors") or []
+            result = {
+                "ok": True,
+                "code": code,
+                "scored": True,
+                "category": item.get("category"),
+                "mode": "web_unified",
+                "source_date": str(taiwan_today()),
+                "score": float(item.get("total")),
+                "factors": factors,
+                "val_desc": item.get("val_desc"),
+                "mom_desc": item.get("mom_desc"),
+                "cum_yoy": item.get("cum_yoy"),
+                "pe": item.get("pe"),
+                "pb": item.get("pb"),
+                "yield": item.get("yield"),
+                "note": "持股頁與 LINE 共用同一套網頁五大因子計算核心；展開後才計算，不影響持股頁首屏。",
+                "revenue_refreshed": True,
+                "revenue_cum_yoy": item.get("cum_yoy"),
+            }
+    except Exception as exc:
+        print(f"⚠️ 持股五大因子統一模型計算失敗 {code}: {exc}")
+        result = {"ok": False, "code": code, "error": "五大因子計算失敗，請稍後再試"}
+
     with _POSITION_FACTOR_CACHE_LOCK:
         _POSITION_FACTOR_CACHE[key] = (now, result)
     return result
