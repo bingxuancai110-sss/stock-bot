@@ -7421,13 +7421,23 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             h60 = [b[2] for b in hist[-60:]]
             l60 = [b[3] for b in hist[-60:]]
             c20 = [b[1] for b in hist[-20:]]
+            c60 = [b[1] for b in hist[-60:]]
             v20 = [b[4] for b in hist[-20:] if b[4]]
+            recent10 = hist[-10:]
+            low_10d = min([b[3] for b in recent10]) if recent10 else None
+            avg_price_10d = (sum(b[1] for b in recent10) / len(recent10)) if recent10 else None
+            turnover_10d_billion = (sum((b[1] or 0) * (b[4] or 0) for b in recent10) / 100_000_000) if recent10 else None
 
             high_20d = max(h20) if h20 else None
             low_20d = min(l20) if l20 else None
             high_60d = max(h60) if h60 else None
             low_60d = min(l60) if l60 else None
             ma20 = round(sum(c20) / len(c20), 2) if c20 else None
+            ma20_prev_window = [b[1] for b in hist[-21:-1]]
+            ma20_prev = (sum(ma20_prev_window) / len(ma20_prev_window)) if ma20_prev_window else None
+            ma60 = round(sum(c60) / len(c60), 2) if len(c60) >= 60 else None
+            ma60_prev_window = [b[1] for b in hist[-61:-1]]
+            ma60_prev = (sum(ma60_prev_window) / len(ma60_prev_window)) if len(ma60_prev_window) >= 60 else None
             avg_vol_20 = (sum(v20) / len(v20)) if v20 else None
             vol_ratio = round(volume / avg_vol_20, 2) if avg_vol_20 else None
 
@@ -7505,6 +7515,12 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 "high_60d": high_60d,
                 "low_60d": low_60d,
                 "ma20": ma20,
+                "ma20_prev": round(ma20_prev, 2) if ma20_prev is not None else None,
+                "ma60": ma60,
+                "ma60_prev": round(ma60_prev, 2) if ma60_prev is not None else None,
+                "low_10d": low_10d,
+                "avg_price_10d": avg_price_10d,
+                "turnover_10d_billion": turnover_10d_billion,
                 "vol_ratio": vol_ratio,
                 "pos_vs_60d_high": pos_vs_60d_high,
                 "up_streak": up_streak,
@@ -8796,8 +8812,11 @@ def score_stock_by_category(code, ind_map, price, cum_yoy, val, streak,
     mom_score, mom_desc = score_from_industry_momentum(
         momentum_stats.get(ind_map.get(str(code).strip())))
     streak_score_raw = score_from_streak(streak)
-    chip_tech = round((score_from_net_lots(cum_lots) / 40 * 5)
-                      + (score_from_technical(price["pct"], turnover) / 60 * 5))
+    chip_amount = score_from_chip_amount(
+        cum_lots, price.get("avg_price_10d"), price.get("turnover_10d_billion")
+    )
+    technical_score = score_from_technical_structure(price)
+    chip_tech = round(chip_amount + technical_score)
 
     if cat == "電子":
         rev = round(score_from_cum_revenue_growth(cum_yoy) * 25 / 40)   # 0-25
@@ -8818,6 +8837,11 @@ def score_stock_by_category(code, ind_map, price, cum_yoy, val, streak,
         "total": rev + val_score + mom + streak_score + chip_tech,
         "rev": rev, "val": val_score, "mom": mom,
         "streak_score": streak_score, "chip": chip_tech,
+        "chip_amount_score": round(chip_amount, 1),
+        "technical_score": round(technical_score, 1),
+        "net_amount_billion": (round(float(cum_lots) * float(price.get("avg_price_10d")) / 100_000.0, 2)
+                                if cum_lots is not None and price.get("avg_price_10d") is not None else None),
+        "turnover_10d_billion": price.get("turnover_10d_billion"),
         "caps": caps, "peg": peg, "pe": pe, "pb": pb, "yield": dy,
         "val_desc": val_desc, "mom_desc": mom_desc,
     }
@@ -11459,6 +11483,7 @@ def format_data_date(yyyymmdd):
 
 # --- 真實評分邏輯 ---
 def score_from_net_lots(lots):
+    """保留舊函式供相容舊畫面；五大因子不再用張數直接計分。"""
     if lots >= 5000: return 40
     if lots >= 2000: return 35
     if lots >= 1000: return 28
@@ -11468,15 +11493,102 @@ def score_from_net_lots(lots):
     return 0
 
 def calc_turnover_billion(close, volume_shares):
-    """成交金額（億元）。改用金額而非「張數」評分，避免高價股（如緯穎）
-    因為一張要價高、成交張數天生偏少，在量能分數上被系統性低估。"""
+    """成交金額（億元）。"""
     if not close or not volume_shares:
         return 0.0
     return (close * volume_shares) / 100_000_000
 
+def score_from_chip_amount(net_lots, avg_price_10d, turnover_10d_billion):
+    """
+    籌碼 0-5 分：用「近10日法人淨買超金額 / 近10日成交金額」評估資金強度。
+    不直接用張數，避免 10 元股與 10,000 元股的張數不可比。
+    """
+    if net_lots is None or avg_price_10d is None or turnover_10d_billion is None:
+        return 0.0
+    if turnover_10d_billion <= 0 or net_lots <= 0:
+        return 0.0
+    net_amount_billion = float(net_lots) * float(avg_price_10d) / 100_000.0
+    ratio_pct = net_amount_billion / float(turnover_10d_billion) * 100.0
+    if ratio_pct >= 15:
+        return 5.0
+    if ratio_pct >= 10:
+        return 4.2
+    if ratio_pct >= 5:
+        return 3.2
+    if ratio_pct >= 2:
+        return 2.0
+    if ratio_pct > 0:
+        return 0.8
+    return 0.0
+
+def score_from_technical_structure(price):
+    """
+    技術 0-5 分：看趨勢、均線位置、回踩支撐、突破與量價確認，
+    不再用「今日漲跌幅」直接代表技術強弱。
+    """
+    if not price:
+        return 0.0
+    close = price.get("close")
+    ma20 = price.get("ma20")
+    ma20_prev = price.get("ma20_prev")
+    ma60 = price.get("ma60")
+    ma60_prev = price.get("ma60_prev")
+    low_10d = price.get("low_10d")
+    high_20d = price.get("high_20d")
+    high_60d = price.get("high_60d")
+    support = price.get("support")
+    broke_support = bool(price.get("broke_support"))
+    vol_ratio = price.get("vol_ratio") or 0
+
+    if close is None:
+        return 0.0
+
+    score = 0.0
+
+    # 1) 趨勢結構：價格站在均線之上，且均線本身向上。
+    if ma20 and close >= ma20:
+        score += 0.75
+    if ma20 and ma20_prev and ma20 > ma20_prev:
+        score += 0.75
+
+    # 2) 均線位置：避免只因離20MA太遠就被當成「更強」。
+    if ma20:
+        diff20 = (close - ma20) / ma20 * 100
+        if 0 <= diff20 <= 15:
+            score += 0.5
+        elif diff20 > 15:
+            score += 0.3
+    if ma60 and close >= ma60:
+        score += 0.5
+
+    # 3) 回踩支撐後守住：最近10日曾靠近20MA／支撐，現在重新站上。
+    pullback = False
+    if ma20 and low_10d is not None and close >= ma20:
+        pullback = low_10d <= ma20 * 1.03
+    if support and close >= support and not broke_support:
+        if low_10d is not None and low_10d <= support * 1.03:
+            pullback = True
+    if pullback:
+        score += 1.0
+
+    # 4) 突破結構：近20日／60日高點，不用今天漲幅判斷。
+    if high_20d and close > high_20d:
+        score += 0.6
+    if high_60d and close >= high_60d:
+        score += 0.4
+
+    # 5) 量價確認：只有在突破或明確上攻時才給量能加分。
+    if high_20d and close > high_20d and vol_ratio >= 1.3:
+        score += 0.5
+    elif vol_ratio >= 1.5 and close >= (ma20 or close):
+        score += 0.3
+
+    return round(min(5.0, score), 1)
+
 def score_from_technical(pct, turnover_billion):
-    pct_score = max(0, min(30, pct * 3))  # 貼近台股±10%漲跌停，10%封頂拿滿分
-    vol_score = max(0, min(30, turnover_billion))  # 1億元＝1分，30億元封頂
+    """舊介面相容函式；五大因子不再使用此舊的單日量價算法。"""
+    pct_score = max(0, min(30, pct * 3))
+    vol_score = max(0, min(30, turnover_billion))
     return round(pct_score + vol_score)
 
 def fmt_resistance(r):
