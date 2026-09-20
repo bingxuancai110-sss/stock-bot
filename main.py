@@ -28587,8 +28587,31 @@ def render_workbench_body(initial_tab=""):
       else { var zeroY=y(0); svg+='<line x1="'+p+'" y1="'+zeroY+'" x2="'+(w-p)+'" y2="'+zeroY+'" stroke="#cbd5e1" stroke-dasharray="4 4"/>'; data.forEach(function(d,i){var v=Number(d.net)||0;var xx=p+i*xstep;var yy=y(v);var base=zeroY;svg+='<line x1="'+xx+'" y1="'+base+'" x2="'+xx+'" y2="'+yy+'" stroke="'+(v>=0?'#4f78a6':'#a65a5a')+'" stroke-width="8" stroke-linecap="round"/>';}); }
       svg+='</svg>'; host.innerHTML='<div class="wb-d-chart-wrap">'+svg+'</div><div class="wb-d-chart-legend">'+(kind==='revenue'?'<span><i></i>今年營收</span><span><i class="alt"></i>去年同期（由 YoY 還原）</span>':'<span><i></i>淨買超</span>')+'</div><div class="wb-d-chart-note">'+(kind==='revenue'?'圖表使用已保存月營收快照；不重新抓外部 API。':'正值為淨買超、負值為淨賣超；資料來自已保存法人歷史。')+'</div>';
     }
+    var lazyChartCache = {};
     function bindLazyCharts(host){
-      host.querySelectorAll('[data-lazy-chart]').forEach(function(btn){btn.addEventListener('click',function(){var kind=btn.dataset.lazyChart,code=btn.dataset.code,box=btn.parentElement;btn.disabled=true;var st=box.querySelector('.wb-d-chart-status');if(st)st.textContent='正在載入歷史資料…';fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'force-cache'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(d){if(!d.ok)throw new Error(d.error||'載入失敗');drawLazyChart(box,d.data,kind);}).catch(function(e){btn.disabled=false;if(st)st.textContent='載入失敗：'+esc(String(e.message||e));});});});
+      host.querySelectorAll('[data-lazy-chart]').forEach(function(btn){
+        btn.addEventListener('click',function(){
+          var kind=btn.dataset.lazyChart,code=btn.dataset.code,box=btn.parentElement,key=code+'|'+kind;
+          var st=box.querySelector('.wb-d-chart-status');
+          if(lazyChartCache[key]){
+            drawLazyChart(box,lazyChartCache[key],kind);
+            return;
+          }
+          btn.disabled=true;
+          if(st)st.textContent='正在載入歷史資料…';
+          fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'force-cache'})
+            .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+            .then(function(d){
+              if(!d.ok)throw new Error(d.error||'載入失敗');
+              lazyChartCache[key]=d.data;
+              drawLazyChart(box,d.data,kind);
+            })
+            .catch(function(e){
+              btn.disabled=false;
+              if(st)st.textContent='載入失敗：'+esc(String(e.message||e));
+            });
+        });
+      });
     }
     function showLabResearchDetail(x,key){
       var host=document.getElementById('wb-detail'),dr=document.getElementById('wb-drawer'),mk=document.getElementById('wb-mask');
@@ -29129,10 +29152,21 @@ function bindFactors(){
     if(target&&target!=='ETF'&&target!=='策略研究'&&sources().indexOf(target)>=0)state.source=target;
     if(target==='策略研究'){state.source='策略研究';render();initialTab='';return;}
 
-    // 黑馬與其他所有快照同時發出請求；黑馬完成後立即把首屏畫出來。
+    // 每個資料源只啟動一次請求；黑馬完成後立即畫首屏，其餘資料在背景載入。
+    // 成效頁才需要 review，避免一般進入選股台時多打一支後端查詢。
     var blackHorse = fetchWorkbenchSource('黑馬');
-    workbenchSources.filter(function(source){return source!=='黑馬';}).forEach(function(source){fetchWorkbenchSource(source);});
-    requestReview();
+    if(target==='成效') requestReview();
+
+    workbenchSources.filter(function(source){return source!=='黑馬';}).forEach(function(source){
+      fetchWorkbenchSource(source).then(function(){
+        if(target && target===source){
+          state.source=source;
+          state.assetMode=(source==='ETF'?'etf':'stock');
+          initialTab='';
+        }
+        if(state.source===source) render();
+      });
+    });
 
     blackHorse.then(function(data){
       if(!data)return;
@@ -29157,17 +29191,6 @@ function bindFactors(){
       initialTab='';
     });
 
-    // 不是等黑馬完成才載其他資料；所有 Promise 已在上面同時啟動。
-    workbenchSources.filter(function(source){return source!=='黑馬';}).forEach(function(source){
-      fetchWorkbenchSource(source).then(function(){
-        if(target && target===source){
-          state.source=source;
-          state.assetMode=(source==='ETF'?'etf':'stock');
-          initialTab='';
-        }
-        if(state.source===source) render();
-      });
-    });
   }
   document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':(state.assetMode==='lab'?'策略研究':'黑馬');state.query='';render();if(state.assetMode!=='lab')loadSource(state.source);};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){if(state.assetMode==='lab'){loadStrategyLab(true);}else load();};document.getElementById('wb-lab-refresh').onclick=function(){loadStrategyLab(true);};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();loadSource(state.source);}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
   // 點擊保險：即使 rowsEl 被其他重新渲染／事件處理影響，仍由捕獲階段直接開啟詳情。
