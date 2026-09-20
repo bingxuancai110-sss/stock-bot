@@ -28488,6 +28488,7 @@ def render_workbench_body(initial_tab=""):
 </div>
 <style>
 .wb-strategy-lab{padding:4px 0 28px}.wb-lab-hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;padding:18px;border:1px solid rgba(39,76,119,.12);border-radius:18px;background:linear-gradient(135deg,#f7fbff,#fff);margin-bottom:14px}.wb-lab-kicker{font-size:11px;letter-spacing:.14em;color:#4f78a6;font-weight:800}.wb-lab-hero h3{margin:5px 0 5px;font-size:22px}.wb-lab-hero p{margin:0;color:#657487;line-height:1.6}.wb-lab-hero button{border:0;border-radius:10px;padding:9px 13px;background:#274c77;color:#fff;font-weight:700;white-space:nowrap}.wb-lab-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.wb-lab-card{background:#fff;border:1px solid #e7edf4;border-radius:16px;padding:16px;box-shadow:0 4px 18px rgba(25,55,90,.05)}.wb-lab-card h4{margin:0 0 9px;font-size:16px}.wb-lab-muted{color:#738197;font-size:13px;line-height:1.6}.wb-lab-factor{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #eef2f6}.wb-lab-factor:first-of-type{border-top:0}.wb-lab-factor b{min-width:74px}.wb-lab-weight{margin-left:auto;font-weight:800}.wb-lab-status{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;background:#eef3f8;color:#4b647d}.wb-lab-status.ready{background:#e9f7ef;color:#19733b}.wb-lab-status.wait{background:#fff6df;color:#8a6815}.wb-lab-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.wb-lab-metric{padding:10px;border-radius:12px;background:#f6f8fb}.wb-lab-metric small{display:block;color:#78879a}.wb-lab-metric b{display:block;margin-top:3px;font-size:17px}.wb-lab-compare{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.wb-lab-compare .wb-lab-card{min-height:120px}.wb-lab-note{padding:12px 14px;border-radius:12px;background:#f8fafc;color:#657487;line-height:1.65;font-size:13px}.wb-lab-table{width:100%;border-collapse:collapse;margin-top:10px}.wb-lab-table th,.wb-lab-table td{text-align:left;padding:9px 7px;border-bottom:1px solid #edf1f5;font-size:13px}.wb-lab-table th{color:#738197;font-weight:700} .wb-lab-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:12px}.wb-lab-strategy{border:1px solid #e2e9f1;background:#fff;border-radius:14px;padding:12px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:4px}.wb-lab-strategy.active{border-color:#4f78a6;box-shadow:0 0 0 2px rgba(79,120,166,.10)}.wb-lab-strategy b{font-size:14px}.wb-lab-strategy small{color:#738197;line-height:1.45}.wb-lab-strategy em{font-style:normal;font-size:10px;color:#4f78a6;font-weight:800}.wb-lab-picks{display:flex;flex-direction:column}.wb-lab-pick{display:grid;grid-template-columns:30px minmax(0,1fr) auto minmax(0,1fr) 16px;gap:8px;align-items:center;border:0;border-top:1px solid #edf1f5;background:#fff;padding:10px 0;text-align:left;cursor:pointer}.wb-lab-rank{font-weight:900;color:#58799a}.wb-lab-pick b{display:block}.wb-lab-pick small{display:block;color:#78879a;margin-top:2px}.wb-lab-pick strong{font-size:15px}.wb-lab-pick-tags{display:flex;gap:4px;flex-wrap:wrap}.wb-lab-chip{font-size:10px;background:#f1f5f9;border-radius:999px;padding:3px 6px;color:#50657a}.wb-lab-category-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.wb-lab-category{padding:11px;border-radius:12px;background:#f7f9fc}.wb-lab-category b{display:block;margin-bottom:4px}.wb-lab-category span{font-size:12px;color:#718096;line-height:1.55}.wb-lab-active .wb-tabs{display:none!important}.wb-lab-active .wb-tools,.wb-lab-active .wb-filter-panel,.wb-lab-active .wb-mobile-sort,.wb-lab-active .wb-meta,.wb-lab-active .wb-table,.wb-lab-active .wb-intro,.wb-lab-active .wb-pulse{display:none!important}.wb-lab-nav{grid-template-columns:repeat(4,minmax(0,1fr));}.wb-lab-strategy{min-height:92px}.wb-lab-strategy:disabled{opacity:.55;cursor:not-allowed} .wb-lab-section-head h4,#wb-lab-picks-title{color:#1f3348!important;font-weight:850!important}.wb-lab-strategy b{color:#1f3348!important}.wb-lab-strategy.active{background:#f5f9fd;border-color:#8fb4d8}.wb-lab-strategy.active b{color:#24547f!important}.wb-lab-strategy small{color:#6b7d91!important}.wb-lab-pick-main b{color:#1d3348!important}.wb-lab-pick-metric strong{color:#b44a4a!important}.wb-lab-empty b{color:#334b63}.wb-lab-card h4{color:#203449}.wb-lab-muted{color:#687b91}.wb-lab-factor b{color:#2a4057}.wb-lab-picks-card{padding:0;overflow:hidden}.wb-lab-section-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:16px 16px 12px;border-bottom:1px solid #e9eef4}.wb-lab-section-head h4{margin:0 0 5px}.wb-lab-count{white-space:nowrap;padding:5px 9px;border-radius:999px;background:#eef4fa;color:#456784;font-size:12px;font-weight:800}.wb-lab-picks{padding:0 14px}.wb-lab-pick{grid-template-columns:30px minmax(130px,1.2fr) minmax(90px,.65fr) minmax(150px,1.5fr) 18px;padding:13px 6px;gap:10px}.wb-lab-pick-main small,.wb-lab-pick-metric small{color:#66778c}.wb-lab-pick-main b{font-size:15px;color:#1f3348;font-weight:850}.wb-lab-pick-main{min-width:0}.wb-lab-pick-main b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick{color:#1f3348}.wb-lab-pick:hover{background:#f8fbfe}.wb-lab-pick:active{background:#eef5fb}.wb-lab-pick-metric{display:flex;flex-direction:column;align-items:flex-end}.wb-lab-pick-metric strong{font-size:16px}.wb-lab-pick-reason{font-size:12px;color:#657487;line-height:1.45}.wb-lab-empty{padding:22px 16px;text-align:center;color:#657487}.wb-lab-empty b,.wb-lab-empty small{display:block}.wb-lab-empty small{margin-top:5px}@media(max-width:700px){.wb-lab-nav{grid-template-columns:1fr 1fr}.wb-lab-pick{grid-template-columns:25px minmax(110px,1fr) auto 16px}.wb-lab-pick-reason{display:none}.wb-lab-pick-metric{align-items:flex-end}.wb-lab-section-head{display:block}.wb-lab-count{display:inline-flex;margin-top:8px}}@media(max-width:700px){.wb-lab-nav{grid-template-columns:1fr 1fr}.wb-lab-category-grid{grid-template-columns:1fr}.wb-lab-pick{grid-template-columns:26px minmax(0,1fr) auto 16px}.wb-lab-pick-tags{display:flex}.wb-lab-pick-main b{font-size:15px}.wb-lab-pick-main small{font-size:11px}.wb-lab-pick-reason-mobile{display:block;margin-top:4px;font-size:11px;line-height:1.35;color:#718096;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}@media(max-width:700px){.wb-lab-hero{display:block}.wb-lab-hero button{margin-top:12px}.wb-lab-grid,.wb-lab-compare{grid-template-columns:1fr}.wb-lab-metrics{grid-template-columns:repeat(2,1fr)}}
+.wb-d-lazy-chart{margin-top:12px;padding:12px;border:1px solid #e6edf4;border-radius:14px;background:#fbfdff}.wb-d-lazy-chart button{border:1px solid #cbd9e6;background:#fff;color:#315b82;border-radius:10px;padding:9px 12px;font-weight:800;cursor:pointer}.wb-d-chart-status{margin-top:8px;color:#718096;font-size:12px}.wb-d-chart-wrap{margin-top:10px;overflow:hidden}.wb-d-chart-wrap svg{width:100%;height:220px;display:block}.wb-d-chart-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:#64748b;margin-top:5px}.wb-d-chart-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;background:#4f78a6;margin-right:4px}.wb-d-chart-legend i.alt{background:#a8b7c7}.wb-d-chart-note{font-size:11px;color:#7a8796;line-height:1.5;margin-top:6px}
 .wb-lab-pick{min-height:72px}.wb-lab-pick-main{min-width:0}.wb-lab-pick-main small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-metric-mobile,.wb-lab-pick-reason-mobile{display:none}.wb-d-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.wb-d-chip{display:inline-flex;padding:4px 8px;border-radius:999px;background:#eef4fa;color:#4f6f8e;font-size:11px;font-weight:700}@media(max-width:700px){.wb-lab-pick{display:grid;grid-template-columns:24px minmax(0,1fr) 18px;grid-template-areas:"rank main arrow";gap:8px;padding:13px 4px;min-height:88px}.wb-lab-rank{grid-area:rank}.wb-lab-pick-main{grid-area:main}.wb-lab-pick-metric,.wb-lab-pick-reason{display:none}.wb-lab-pick-metric-mobile{display:flex;align-items:baseline;gap:6px;margin-top:6px}.wb-lab-pick-metric-mobile strong{font-size:17px;color:#274c77}.wb-lab-pick-metric-mobile em{font-style:normal;font-size:11px;color:#7a899a}.wb-lab-pick-reason-mobile{display:block;margin-top:5px;font-size:11px;line-height:1.4;color:#657487;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-tags{margin-top:5px}.wb-lab-chip{font-size:9px}.wb-lab-arrow{grid-area:arrow;align-self:center;font-size:24px;color:#4f78a6}.wb-lab-section-head{padding:14px}.wb-lab-picks{padding:0 12px}}
 .wb-lab-strategy-title{display:block!important;color:#1f3348!important;font-size:16px!important;font-weight:850!important;line-height:1.35!important;margin:0 0 2px!important}.wb-lab-strategy.active{background:#274c77!important;border-color:#274c77!important;color:#fff!important;box-shadow:0 8px 18px rgba(39,76,119,.18)!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy.active *{color:inherit!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy:focus-visible{outline:3px solid rgba(79,120,166,.28);outline-offset:2px}.wb-lab-pick:focus-visible{outline:2px solid rgba(79,120,166,.35);outline-offset:-2px}
 .wb-d-factor-list{display:flex;flex-direction:column;gap:7px;margin-top:12px}.wb-d-factor-row{display:flex;justify-content:space-between;gap:12px;padding:9px 11px;border-radius:10px;background:#f6f9fc;border:1px solid #e8eef4;color:#4f6174}.wb-d-factor-row b{color:#274c77}.wb-d-score-note{font-size:12px;color:#718096;margin-top:10px}
@@ -28571,6 +28572,24 @@ def render_workbench_body(initial_tab=""):
         });
       });
     }
+    function lazyChartBlock(x,key){
+      if(key==='營收動能') return '<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="revenue" data-code="'+esc(x.code)+'">查看近12個月營收圖</button><div class="wb-d-chart-status">點開後才載入歷史資料，不影響研究室首屏速度。</div></div>';
+      if(key==='籌碼') return '<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="institutional" data-code="'+esc(x.code)+'">查看近20日法人動向</button><div class="wb-d-chart-status">點開後才讀取已保存的法人歷史。</div></div>';
+      return '';
+    }
+    function drawLazyChart(host,data,kind){
+      if(!Array.isArray(data)||!data.length){host.innerHTML='<div class="wb-d-chart-status">目前沒有足夠的歷史資料可畫圖。</div>';return;}
+      var w=640,h=220,p=32; var vals=[]; data.forEach(function(d){vals.push(Number(d.net)||0); if(kind==='revenue'){if(d.current!=null)vals.push(Number(d.current));if(d.previous!=null)vals.push(Number(d.previous));}}); var min=Math.min.apply(null,vals),max=Math.max.apply(null,vals); if(min===max){min-=1;max+=1;} var xstep=(w-2*p)/Math.max(1,data.length-1);
+      function y(v){return h-p-(Number(v)-min)/(max-min)*(h-2*p)} function pts(k){return data.map(function(d,i){return (p+i*xstep).toFixed(1)+','+y(Number(d[k])||0).toFixed(1)}).join(' ')}
+      var title=kind==='revenue'?'近12個月營收趨勢':'近20日法人淨買超';
+      var svg='<svg viewBox="0 0 '+w+' '+h+'" role="img" aria-label="'+title+'"><line x1="'+p+'" y1="'+(h-p)+'" x2="'+(w-p)+'" y2="'+(h-p)+'" stroke="#dbe4ec"/><line x1="'+p+'" y1="'+p+'" x2="'+p+'" y2="'+(h-p)+'" stroke="#dbe4ec"/>';
+      if(kind==='revenue') svg+='<polyline fill="none" stroke="#4f78a6" stroke-width="3" points="'+pts('current')+'"/><polyline fill="none" stroke="#a8b7c7" stroke-width="2.5" stroke-dasharray="6 5" points="'+pts('previous')+'"/>';
+      else { var zeroY=y(0); svg+='<line x1="'+p+'" y1="'+zeroY+'" x2="'+(w-p)+'" y2="'+zeroY+'" stroke="#cbd5e1" stroke-dasharray="4 4"/>'; data.forEach(function(d,i){var v=Number(d.net)||0;var xx=p+i*xstep;var yy=y(v);var base=zeroY;svg+='<line x1="'+xx+'" y1="'+base+'" x2="'+xx+'" y2="'+yy+'" stroke="'+(v>=0?'#4f78a6':'#a65a5a')+'" stroke-width="8" stroke-linecap="round"/>';}); }
+      svg+='</svg>'; host.innerHTML='<div class="wb-d-chart-wrap">'+svg+'</div><div class="wb-d-chart-legend">'+(kind==='revenue'?'<span><i></i>今年營收</span><span><i class="alt"></i>去年同期（由 YoY 還原）</span>':'<span><i></i>淨買超</span>')+'</div><div class="wb-d-chart-note">'+(kind==='revenue'?'圖表使用已保存月營收快照；不重新抓外部 API。':'正值為淨買超、負值為淨賣超；資料來自已保存法人歷史。')+'</div>';
+    }
+    function bindLazyCharts(host){
+      host.querySelectorAll('[data-lazy-chart]').forEach(function(btn){btn.addEventListener('click',function(){var kind=btn.dataset.lazyChart,code=btn.dataset.code,box=btn.parentElement;btn.disabled=true;var st=box.querySelector('.wb-d-chart-status');if(st)st.textContent='正在載入歷史資料…';fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'force-cache'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(d){if(!d.ok)throw new Error(d.error||'載入失敗');drawLazyChart(box,d.data,kind);}).catch(function(e){btn.disabled=false;if(st)st.textContent='載入失敗：'+esc(String(e.message||e));});});});
+    }
     function showLabResearchDetail(x,key){
       var host=document.getElementById('wb-detail'),dr=document.getElementById('wb-drawer'),mk=document.getElementById('wb-mask');
       if(!host||!dr)return;
@@ -28607,7 +28626,9 @@ def render_workbench_body(initial_tab=""):
         conclusion='這是研究候選，不代表正式買進訊號；建議搭配其他條件一起查看。';
       }
       var scoreNote=(key==='混合'||key==='四因子複合')?(x.score_explanation||'這個數字是研究排序用的共識分數，不是報酬率，也不是百分比。'):'';
-      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero wb-d-hero-premium"><div class="wb-d-hero-top"><div><span class="wb-d-label">策略研究 · '+esc(labName(key))+'</span><h3>'+esc(x.name)+' <small>'+esc(x.code)+'</small></h3><p>'+esc(x.industry||'未分類')+'</p></div><div class="wb-d-score"><span>'+esc(x.metric_label||'研究值')+'</span><b>'+esc(metric)+'</b></div></div></div><section class="wb-d-section wb-d-noteworthy"><div class="wb-d-section-head"><h4>① 值得注意</h4><small>先看這檔股票為什麼值得研究</small></div><div class="wb-d-highlight">'+esc(noteworthy||'目前沒有額外亮點說明。')+'</div></section><section class="wb-d-section"><div class="wb-d-section-head"><h4>② 為什麼入選</h4><small>研究候選，不代表正式買進訊號</small></div><p class="wb-d-note">'+esc(x.reason||'目前沒有額外說明。')+'</p>'+detailMetricHtml+'<div class="wb-d-why-highlight">'+esc(highlight)+'</div>'+(factorRows?'<div class="wb-d-factor-list">'+factorRows+'</div>':'')+(scoreNote?'<p class="wb-d-note wb-d-score-note">'+esc(scoreNote)+'</p>':'')+'<div class="wb-d-tags">'+chips+'</div></section>'+(bars?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>③ 條件強弱</h4><small>排名越前，代表在該條件中的位置越前</small></div>'+bars+'</section>':'')+(caution?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>'+ (bars?'④ 需要注意':'③ 需要注意') +'</h4></div><div class="wb-d-caution">'+esc(caution)+'</div></section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>'+ (bars?'⑤ 研究結論':(caution?'④ 研究結論':'③ 研究結論')) +'</h4></div><div class="wb-d-conclusion">'+esc(conclusion)+'</div></section><section class="wb-d-section"><div class="wb-d-section-head"><h4>資料範圍</h4><small>只顯示目前 BOT 可驗證資料</small></div><p class="wb-d-note">'+esc(x.data_scope||'本次研究批次計算結果。')+'</p></section></div>';
+      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero wb-d-hero-premium"><div class="wb-d-hero-top"><div><span class="wb-d-label">策略研究 · '+esc(labName(key))+'</span><h3>'+esc(x.name)+' <small>'+esc(x.code)+'</small></h3><p>'+esc(x.industry||'未分類')+'</p></div><div class="wb-d-score"><span>'+esc(x.metric_label||'研究值')+'</span><b>'+esc(metric)+'</b></div></div></div><section class="wb-d-section wb-d-noteworthy"><div class="wb-d-section-head"><h4>① 值得注意</h4><small>先看這檔股票為什麼值得研究</small></div><div class="wb-d-highlight">'+esc(noteworthy||'目前沒有額外亮點說明。')+'</div></section><section class="wb-d-section"><div class="wb-d-section-head"><h4>② 為什麼入選</h4><small>研究候選，不代表正式買進訊號</small></div><p class="wb-d-note">'+esc(x.reason||'目前沒有額外說明。')+'</p>'+detailMetricHtml+'<div class="wb-d-why-highlight">'+esc(highlight)+'</div>'+(factorRows?'<div class="wb-d-factor-list">'+factorRows+'</div>':'')+(scoreNote?'<p class="wb-d-note wb-d-score-note">'+esc(scoreNote)+'</p>':'')+lazyChartBlock(x,key)+'<div class="wb-d-tags">'+chips+'</div></section>'+(bars?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>③ 條件強弱</h4><small>排名越前，代表在該條件中的位置越前</small></div>'+bars+'</section>':'')+(caution?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>'+ (bars?'④ 需要注意':'③ 需要注意') +'</h4></div><div class="wb-d-caution">'+esc(caution)+'</div></section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>'+ (bars?'⑤ 研究結論':(caution?'④ 研究結論':'③ 研究結論')) +'</h4></div><div class="wb-d-conclusion">'+esc(conclusion)+'</div></section><section class="wb-d-section"><div class="wb-d-section-head"><h4>資料範圍</h4><small>只顯示目前 BOT 可驗證資料</small></div><p class="wb-d-note">'+esc(x.data_scope||'本次研究批次計算結果。')+'</p></section></div>';
+    }
+      bindLazyCharts(host);
     }
     var strategies=(data.strategies||[]).map(function(x){return '<div class="wb-lab-card"><h4>'+esc(x.name)+' <span class="wb-lab-status '+(x.status==='ready'?'ready':'wait')+'">'+esc(x.status_label)+'</span></h4><p class="wb-lab-muted">'+esc(x.description)+'</p><div class="wb-lab-note">'+esc(x.note)+'</div></div>';}).join('');
     var categories=(data.categories||[]).map(function(x){return '<div class="wb-lab-category"><b>'+esc(x.name)+'</b><span>'+esc(x.items.join('・'))+'</span></div>';}).join('');
@@ -29424,7 +29445,7 @@ def _workbench_source_payload(uid, source):
 
 _STRATEGY_LAB_CACHE = {"at": 0.0, "data": None}
 _STRATEGY_LAB_CACHE_TTL = 12 * 3600  # 12 小時；研究室每日預熱一次，白天直接讀快照
-_STRATEGY_LAB_SCHEMA_VERSION = 7  # ROE＋經典四項實際複合＋研究卡詳細資料
+_STRATEGY_LAB_SCHEMA_VERSION = 8  # ROE＋經典四項＋按需圖表＋估值門檻
 _STRATEGY_LAB_CACHE_LOCK = threading.Lock()
 
 def _normalize_strategy_lab_payload(payload):
@@ -30005,7 +30026,7 @@ def _build_strategy_lab_payload():
         if pb is not None:facts.append(f"PB {float(pb):.2f}")
         if pe is not None:facts.append(f"PE {float(pe):.1f}")
         if dy is not None:facts.append(f"殖利率 {float(dy):.2f}%")
-        value_recs.append(make_rec(c,r.get("name"),r.get("industry"),score,"價值綜合排名",["低PB/PE","高殖利率"],"、".join(facts),extra={"rank":i,"pb":pb,"pe":pe,"yield":dy}))
+        value_recs.append(make_rec(c,r.get("name"),r.get("industry"),score,"價值綜合排名",["低PB/PE","高殖利率"],"、".join(facts),extra={"rank":i,"pb":pb,"pe":pe,"yield":dy,"detail_metrics":[("本益比 PE",f"{float(pe):.1f} 倍" if pe is not None else "待確認"),("PE 研究門檻","≤ 15 倍"),("股價淨值比 PB",f"{float(pb):.2f} 倍" if pb is not None else "待確認"),("PB 研究門檻","≤ 1.5 倍"),("殖利率",f"{float(dy):.2f}%" if dy is not None else "待確認"),("殖利率研究門檻","≥ 4%"),("符合估值條件",f"{sum([pe is not None and float(pe)<=15,pb is not None and float(pb)<=1.5,dy is not None and float(dy)>=4])}/3")]}))
 
     # 5. 籌碼：用「法人淨買超張數／當日成交張數」衡量強度，避免單純比張數。
     chip_items=[]
@@ -30019,7 +30040,7 @@ def _build_strategy_lab_payload():
     chip_items.sort(key=lambda x:x[1],reverse=True)
     chip_recs=[]
     for i,(c,v,lots) in enumerate(chip_items[:25],1):
-        r=by_code[c]; chip_recs.append(make_rec(c,r.get("name"),r.get("industry"),v,"法人／成交強度",["法人淨買超" if lots>0 else "法人淨賣超"],f"法人淨額 {lots:+,} 張，約占當日成交量 {v:+.2f}%",extra={"rank":i,"net_lots":lots,"detail_metrics":[("法人淨買超",f"{lots:+,} 張"),("占當日成交量",f"{v:+.2f}%"),("資料口徑","最新可用法人快照")]}))
+        r=by_code[c]; chip_recs.append(make_rec(c,r.get("name"),r.get("industry"),v,"法人／成交強度",["法人淨買超" if lots>0 else "法人淨賣超"],f"法人淨額 {lots:+,} 張，約占當日成交量 {v:+.2f}%",extra={"rank":i,"net_lots":lots,"detail_metrics":[("今日法人淨買超",f"{lots:+,} 張"),("占當日成交量",f"{v:+.2f}%"),("估算名目金額",f"約 {abs(float(lots))*float((spark.get(c) or {}).get("close") or 0)*1000/1e8:.2f} 億元" if (spark.get(c) or {}).get("close") else "待確認"),("計算方式","股價 × 淨買超張數 × 1,000；不代表實際資金流入"),("資料口徑","最新可用法人快照；詳細20日圖表按需載入")]}))
 
     # 6. 成長：營收＋營收加速度，先以目前可驗證的月營收資料運作。
     growth_items=[]
@@ -30170,6 +30191,46 @@ def web_workbench(uid):
     """正式互動選股工作台：頁面本身秒回，資料僅透過受保護的快照 API 局部載入。"""
     return render_page("選股工作台", render_workbench_body(request.args.get("tab")), nav_active="screener")
 
+
+
+@app.route("/web/api/workbench/strategy-detail")
+@web_login_required
+def web_workbench_strategy_detail(uid):
+    """按需載入研究圖表資料；首屏不呼叫。只讀既有 DB 快照，避免拖慢工作台。"""
+    code = str(request.args.get("code") or "").strip()
+    kind = str(request.args.get("kind") or "").strip()
+    if not re.fullmatch(r"\d{4,6}", code) or kind not in {"revenue", "institutional"}:
+        return _workbench_json_response({"ok": False, "error": "參數不正確。"}, 400)
+    try:
+        conn = get_db_connection(); cur = conn.cursor()
+        if kind == "revenue":
+            cur.execute("""
+                SELECT period, month_revenue, yoy_pct, cum_yoy_pct, mom_pct
+                FROM revenue_history WHERE code=%s
+                ORDER BY period DESC LIMIT 12
+            """, (code,))
+            rows = cur.fetchall()
+            cur.close(); release_db_connection(conn)
+            rows=list(reversed(rows))
+            data=[]
+            for period, rev, yoy, cum_yoy, mom in rows:
+                current=float(rev) if rev is not None else None
+                prior=(current/(1+float(yoy)/100.0)) if current is not None and yoy is not None and float(yoy)>-100 else None
+                data.append({"period":str(period),"current":current,"previous":prior,"yoy":float(yoy) if yoy is not None else None,"cum_yoy":float(cum_yoy) if cum_yoy is not None else None,"mom":float(mom) if mom is not None else None})
+            return _workbench_json_response({"ok":True,"kind":kind,"code":code,"data":data,"note":"去年同期由當月營收與 YoY 還原；不需重新呼叫外部 API。"})
+        cur.execute("""
+            SELECT trade_date, foreign_net_lots, trust_net_lots, dealer_net_lots, total_net_lots
+            FROM inst_history WHERE code=%s
+            ORDER BY trade_date DESC LIMIT 20
+        """, (code,))
+        rows=list(reversed(cur.fetchall())); cur.close(); release_db_connection(conn)
+        data=[{"day":str(d),"foreign":float(f or 0),"trust":float(t or 0),"dealer":float(de or 0),"net":float(total or 0)} for d,f,t,de,total in rows]
+        return _workbench_json_response({"ok":True,"kind":kind,"code":code,"data":data,"note":"使用已保存法人歷史快照；點開才查詢，不影響研究室首屏。"})
+    except Exception as exc:
+        try: release_db_connection(conn)
+        except Exception: pass
+        print(f"⚠️ 研究圖表按需資料失敗（{kind}/{code}）：{exc}")
+        return _workbench_json_response({"ok":False,"error":"詳細圖表資料暫時無法取得。"},503)
 
 @app.route("/web/api/workbench/strategy-lab")
 @web_login_required
