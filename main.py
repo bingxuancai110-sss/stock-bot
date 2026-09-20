@@ -28555,7 +28555,7 @@ def render_workbench_body(initial_tab=""):
         var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
         var metric='—';
         if(n!=null){
-          if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} metric=hc+'/4';}
+          if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<=0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\/\s*4/);if(mm)hc=Number(mm[1]);} metric=hc+'/4';}
           else{var digits=(key==='低波動'||key==='ROE品質')?2:1;metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');}
         }
         return '<button type="button" class="wb-lab-pick" data-lab-code="'+esc(x.code)+'" data-lab-key="'+esc(key)+'"><span class="wb-lab-rank">'+(i+1)+'</span><span class="wb-lab-pick-main"><b>'+esc(x.code)+'　'+esc(x.name)+'</b><small>'+esc(x.industry||'未分類')+'</small><span class="wb-lab-pick-metric-mobile"><strong>'+esc(metric)+'</strong><em>'+esc(x.metric_label||'研究值')+'</em></span><span class="wb-lab-pick-tags">'+chips+'</span><span class="wb-lab-pick-reason-mobile">'+esc(x.reason||'')+'</span></span><span class="wb-lab-pick-metric"><strong>'+esc(metric)+'</strong><small>'+esc(x.metric_label||'研究值')+'</small></span><span class="wb-lab-pick-reason">'+esc(x.reason||'')+'</span><span class="wb-lab-arrow">›</span></button>';
@@ -28578,7 +28578,7 @@ def render_workbench_body(initial_tab=""):
       document.body.style.position='fixed';document.body.style.top=(-y)+'px';document.body.style.left='0';document.body.style.right='0';document.body.style.width='100%';
       dr.classList.add('open');dr.setAttribute('aria-hidden','false');if(mk)mk.hidden=false;dr.scrollTop=0;host.scrollTop=0;
       var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
-      var metric=n==null?'—':((key==='混合'||key==='四因子複合')?((Number(x.hit_count)||((x.factor_names||[]).length||Object.keys(x.factor_rank_map||{}).length||0))+'/4'):n.toFixed(key==='低波動'||key==='ROE品質'?2:1)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':''));
+      var metric=n==null?'—':((key==='混合'||key==='四因子複合')?(function(){var hc=Number(x.hit_count);if(!hc)hc=(x.factor_names||[]).length||Object.keys(x.factor_rank_map||{}).length||0;if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\/\s*4/);if(mm)hc=Number(mm[1]);}return hc+'/4';})():n.toFixed(key==='低波動'||key==='ROE品質'?2:1)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':''));
       var chips=(x.tags||[]).map(function(t){return '<span class="wb-d-chip">'+esc(t)+'</span>';}).join('');
       var factorRows=''; var bars=''; var caution=''; var highlight=''; var conclusion=''; var noteworthy='';
       var isComposite=(key==='混合'||key==='四因子複合');
@@ -28605,7 +28605,7 @@ def render_workbench_body(initial_tab=""):
         conclusion='這是研究候選，不代表正式買進訊號；建議搭配其他條件一起查看。';
       }
       var scoreNote=(key==='混合'||key==='四因子複合')?(x.score_explanation||'這個數字是研究排序用的共識分數，不是報酬率，也不是百分比。'):'';
-      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero wb-d-hero-premium"><div class="wb-d-hero-top"><div><span class="wb-d-label">策略研究 · '+esc(key)+'</span><h3>'+esc(x.name)+' <small>'+esc(x.code)+'</small></h3><p>'+esc(x.industry||'未分類')+'</p></div><div class="wb-d-score"><span>'+esc(x.metric_label||'研究值')+'</span><b>'+esc(metric)+'</b></div></div></div><section class="wb-d-section wb-d-noteworthy"><div class="wb-d-section-head"><h4>① 值得注意</h4><small>先看這檔股票為什麼值得研究</small></div><div class="wb-d-highlight">'+esc(noteworthy||'目前沒有額外亮點說明。')+'</div></section><section class="wb-d-section"><div class="wb-d-section-head"><h4>② 為什麼入選</h4><small>研究候選，不代表正式買進訊號</small></div><p class="wb-d-note">'+esc(x.reason||'目前沒有額外說明。')+'</p><div class="wb-d-why-highlight">'+esc(highlight)+'</div>'+(factorRows?'<div class="wb-d-factor-list">'+factorRows+'</div>':'')+(scoreNote?'<p class="wb-d-note wb-d-score-note">'+esc(scoreNote)+'</p>':'')+'<div class="wb-d-tags">'+chips+'</div></section>'+(bars?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>③ 條件強弱</h4><small>排名越前，代表在該條件中的位置越前</small></div>'+bars+'</section>':'')+(caution?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>'+ (bars?'④ 需要注意':'③ 需要注意') +'</h4></div><div class="wb-d-caution">'+esc(caution)+'</div></section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>'+ (bars?'⑤ 研究結論':(caution?'④ 研究結論':'③ 研究結論')) +'</h4></div><div class="wb-d-conclusion">'+esc(conclusion)+'</div></section><section class="wb-d-section"><div class="wb-d-section-head"><h4>資料範圍</h4><small>只顯示目前 BOT 可驗證資料</small></div><p class="wb-d-note">'+esc(x.data_scope||'本次研究批次計算結果。')+'</p></section></div>';
+      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero wb-d-hero-premium"><div class="wb-d-hero-top"><div><span class="wb-d-label">策略研究 · '+esc(labName(key))+'</span><h3>'+esc(x.name)+' <small>'+esc(x.code)+'</small></h3><p>'+esc(x.industry||'未分類')+'</p></div><div class="wb-d-score"><span>'+esc(x.metric_label||'研究值')+'</span><b>'+esc(metric)+'</b></div></div></div><section class="wb-d-section wb-d-noteworthy"><div class="wb-d-section-head"><h4>① 值得注意</h4><small>先看這檔股票為什麼值得研究</small></div><div class="wb-d-highlight">'+esc(noteworthy||'目前沒有額外亮點說明。')+'</div></section><section class="wb-d-section"><div class="wb-d-section-head"><h4>② 為什麼入選</h4><small>研究候選，不代表正式買進訊號</small></div><p class="wb-d-note">'+esc(x.reason||'目前沒有額外說明。')+'</p><div class="wb-d-why-highlight">'+esc(highlight)+'</div>'+(factorRows?'<div class="wb-d-factor-list">'+factorRows+'</div>':'')+(scoreNote?'<p class="wb-d-note wb-d-score-note">'+esc(scoreNote)+'</p>':'')+'<div class="wb-d-tags">'+chips+'</div></section>'+(bars?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>③ 條件強弱</h4><small>排名越前，代表在該條件中的位置越前</small></div>'+bars+'</section>':'')+(caution?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>'+ (bars?'④ 需要注意':'③ 需要注意') +'</h4></div><div class="wb-d-caution">'+esc(caution)+'</div></section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>'+ (bars?'⑤ 研究結論':(caution?'④ 研究結論':'③ 研究結論')) +'</h4></div><div class="wb-d-conclusion">'+esc(conclusion)+'</div></section><section class="wb-d-section"><div class="wb-d-section-head"><h4>資料範圍</h4><small>只顯示目前 BOT 可驗證資料</small></div><p class="wb-d-note">'+esc(x.data_scope||'本次研究批次計算結果。')+'</p></section></div>';
     }
     var strategies=(data.strategies||[]).map(function(x){return '<div class="wb-lab-card"><h4>'+esc(x.name)+' <span class="wb-lab-status '+(x.status==='ready'?'ready':'wait')+'">'+esc(x.status_label)+'</span></h4><p class="wb-lab-muted">'+esc(x.description)+'</p><div class="wb-lab-note">'+esc(x.note)+'</div></div>';}).join('');
     var categories=(data.categories||[]).map(function(x){return '<div class="wb-lab-category"><b>'+esc(x.name)+'</b><span>'+esc(x.items.join('・'))+'</span></div>';}).join('');
@@ -29422,7 +29422,53 @@ def _workbench_source_payload(uid, source):
 
 _STRATEGY_LAB_CACHE = {"at": 0.0, "data": None}
 _STRATEGY_LAB_CACHE_TTL = 12 * 3600  # 12 小時；研究室每日預熱一次，白天直接讀快照
+_STRATEGY_LAB_SCHEMA_VERSION = 3  # 綜合條件欄位修正版：hit_count / factor_rank_map 必須存在
 _STRATEGY_LAB_CACHE_LOCK = threading.Lock()
+
+def _normalize_strategy_lab_payload(payload):
+    """把舊版策略研究快照升級成目前格式，避免舊快取把綜合條件顯示成 0/4。"""
+    if not isinstance(payload, dict):
+        return payload
+    payload["strategy_lab_schema"] = _STRATEGY_LAB_SCHEMA_VERSION
+    data = payload.get("strategy_data")
+    if not isinstance(data, dict):
+        return payload
+    for key in ("混合", "四因子複合"):
+        recs = data.get(key)
+        if not isinstance(recs, list):
+            continue
+        for rec in recs:
+            if not isinstance(rec, dict):
+                continue
+            # 先用新欄位；舊快照若沒有，從 tags / reason / matched_factors 補回。
+            fmap = rec.get("factor_rank_map")
+            if not isinstance(fmap, dict):
+                fmap = {}
+            names = rec.get("factor_names") or rec.get("matched_factors") or list(fmap.keys())
+            if not isinstance(names, list):
+                names = []
+            try:
+                hc = int(rec.get("hit_count"))
+            except Exception:
+                hc = 0
+            if hc <= 0:
+                for t in (rec.get("tags") or []):
+                    m = re.search(r"(\d+)\s*/\s*4", str(t))
+                    if m:
+                        hc = int(m.group(1)); break
+            if hc <= 0:
+                m = re.search(r"(\d+)\s*/\s*4", str(rec.get("reason") or ""))
+                if m: hc = int(m.group(1))
+            if hc <= 0:
+                hc = len(names) or len(fmap)
+            rec["factor_rank_map"] = fmap
+            rec["factor_names"] = list(names)
+            rec["matched_factors"] = list(names)
+            rec["hit_count"] = max(0, min(4, hc))
+            # 舊版只有模糊的「3/4」時，至少讓使用者看到正確數量；新快照會提供具體條件。
+            if rec.get("reason") and "符合" not in str(rec["reason"]):
+                rec["reason"] = f"符合 {rec['hit_count']}/4 個研究條件"
+    return payload
 
 def _load_strategy_lab_shared_cache(force_refresh=False):
     """讀取研究室完整結果快照；避免每次進頁都重新掃 Yahoo／DB。"""
@@ -29431,12 +29477,17 @@ def _load_strategy_lab_shared_cache(force_refresh=False):
         with _STRATEGY_LAB_CACHE_LOCK:
             data = _STRATEGY_LAB_CACHE.get("data")
             at = float(_STRATEGY_LAB_CACHE.get("at") or 0)
-            if data and now - at < _STRATEGY_LAB_CACHE_TTL:
-                return data
+            if data and now - at < _STRATEGY_LAB_CACHE_TTL and data.get("strategy_lab_schema") == _STRATEGY_LAB_SCHEMA_VERSION:
+                return _normalize_strategy_lab_payload(data)
         try:
             shared = _load_shared_data_snapshot("strategy_lab", max_age_seconds=_STRATEGY_LAB_CACHE_TTL)
             payload = (shared.get("payload") if shared else None) or {}
             if isinstance(payload, dict) and payload.get("ok"):
+                raw_schema = payload.get("strategy_lab_schema")
+                # 舊共享快照沒有目前 schema，直接失效，讓 API 重新計算一次。
+                if raw_schema != _STRATEGY_LAB_SCHEMA_VERSION:
+                    return None
+                payload = _normalize_strategy_lab_payload(payload)
                 with _STRATEGY_LAB_CACHE_LOCK:
                     _STRATEGY_LAB_CACHE.update({"at": time.time(), "data": payload})
                 return payload
@@ -29447,6 +29498,7 @@ def _load_strategy_lab_shared_cache(force_refresh=False):
 def _save_strategy_lab_shared_cache(payload):
     if not isinstance(payload, dict) or not payload.get("ok"):
         return False
+    payload = _normalize_strategy_lab_payload(payload)
     with _STRATEGY_LAB_CACHE_LOCK:
         _STRATEGY_LAB_CACHE.update({"at": time.time(), "data": payload})
     try:
@@ -29929,6 +29981,7 @@ def web_workbench_strategy_lab(uid):
         if cached:
             return _workbench_json_response(cached)
         payload = _build_strategy_lab_payload()
+        payload = _normalize_strategy_lab_payload(payload)
         _save_strategy_lab_shared_cache(payload)
         return _workbench_json_response(payload)
     except Exception as exc:
