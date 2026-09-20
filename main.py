@@ -9373,14 +9373,23 @@ ELECTRONIC_INDUSTRIES = {
     "36",  # 數位雲端
 }
 
+# ── BOT 自訂類股歸類 ──
+# 這裡不是覆蓋證交所官方產業分類，而是「五大因子評分模型」的分析分組。
+# 例如 8996 高力官方產業分類屬電機機械／傳統產業，
+# 但因使用者希望在本 BOT 中把它視為電子股，因此套用電子股評分規則。
+CUSTOM_ELECTRONIC_CODES = {
+    "8996",  # 高力：BOT 分析上歸入電子股
+}
+
 
 def stock_category(code, ind_map):
-    """回傳 電子 / 金融 / 傳產。查不到產業別時歸為傳產（保守）。"""
-    raw = ind_map.get(str(code).strip())
+    """回傳 電子 / 金融 / 傳產；BOT 可用自訂代碼覆蓋官方產業分類。"""
+    code = str(code).strip()
+    raw = ind_map.get(code)
     ind = str(raw).strip().zfill(2) if raw else ""
     if ind == "17":
         return "金融"
-    if ind in ELECTRONIC_INDUSTRIES:
+    if code in CUSTOM_ELECTRONIC_CODES or ind in ELECTRONIC_INDUSTRIES:
         return "電子"
     return "傳產"
 
@@ -19217,7 +19226,7 @@ def web_positions(uid):
 @media(max-width:520px){.position-card{border-radius:19px;padding:15px}.position-card-title h3{font-size:20px}.position-card-price b{font-size:23px}.position-card-primary{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}.position-card-primary>div:last-child{grid-column:auto}.bot-virtual-card{grid-template-columns:1fr}.position-card-grid{grid-template-columns:1fr 1fr}}
 .position-more{margin-top:8px;border-top:1px solid #edf1f4}.position-more>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:space-between}.position-more>summary::-webkit-details-marker{display:none}.position-more>summary:after{content:'＋';font-size:16px;font-weight:500;color:#8294a6}.position-more[open]>summary:after{content:'−'}.position-detail-body{padding:2px 0 4px}.position-card-grid{margin-top:8px!important}.position-card-actions{margin-top:8px!important}.position-card-primary>div{min-width:0!important;min-height:58px!important;display:flex!important;flex-direction:column!important;justify-content:center!important}.position-card-primary b{font-size:17px!important;line-height:1.15!important;overflow-wrap:anywhere}
 @media(max-width:520px){.position-card-primary>div{padding:8px 6px!important;min-height:54px!important;border-radius:11px!important}.position-card-primary small{font-size:10px!important;white-space:nowrap}.position-card-primary b{font-size:14px!important}}
-.position-card{position:relative;border-left:4px solid #d9e3ec;transition:border-color .18s,box-shadow .18s;background:#fff}.position-card:has(.position-card-primary .up){border-left-color:#d93025}.position-card:has(.position-card-primary .down){border-left-color:#0b8f55}.position-card .up{color:#d93025!important}.position-card .down{color:#0b8f55!important}.position-factors{margin-top:10px;border-top:1px solid #edf1f4;padding-top:2px}.position-factors>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:13px;font-weight:850;display:flex;align-items:center;justify-content:space-between}.position-factors>summary::-webkit-details-marker{display:none}.position-factors>summary:after{content:'＋';font-size:17px;font-weight:500;color:#8294a6}.position-factors[open]>summary:after{content:'−'}.position-factors-body{padding:4px 0 10px}.position-factor-loading,.position-factor-empty{padding:11px 12px;border:1px dashed #d7e2ea;border-radius:11px;background:#f8fafc;color:#71808f;font-size:12px;line-height:1.6}.position-factor-overview{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-radius:12px;background:#f5f9fc;border:1px solid #dfe9f1;margin-bottom:9px}.position-factor-overview small{display:block;color:#71808f;font-size:10px}.position-factor-overview b{display:block;margin-top:2px;color:#173b5d;font-size:22px;line-height:1}.position-factor-overview em{font-style:normal;color:#607789;font-size:11px;line-height:1.45;text-align:right}.position-factor-list{display:grid;gap:7px}.position-factor-item{padding:9px 10px;border:1px solid #e4ebf0;border-radius:10px;background:#fff}.position-factor-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-factor-head span{font-size:12px;font-weight:850;color:#294e6d}.position-factor-head b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.position-factor-track{height:8px;margin-top:6px;background:#e9eff3;border-radius:99px;overflow:hidden}.position-factor-track i{display:block;height:100%;border-radius:99px}.position-factor-item.strong .position-factor-head b{color:#1f638f}.position-factor-item.strong .position-factor-track i{background:#2d78a8}.position-factor-item.mid .position-factor-head b{color:#a66b18}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral .position-factor-head b{color:#667788}.position-factor-item.neutral .position-factor-track i{background:#91a2af}.position-factor-item.weak .position-factor-head b{color:#a14d4d}.position-factor-item.weak .position-factor-track i{background:#c56b6b}.position-factor-note{margin:8px 0 0;padding:9px 10px;border-radius:9px;background:#f8fafc;color:#526879;font-size:11px;line-height:1.6}.position-factor-note b{color:#244f70}.position-factor-source{margin-top:7px;color:#8997a4;font-size:10px}.position-factor-status{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.position-factor-status span{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;background:#eef4f8;color:#45647a}.position-factor-status span.good{background:#eaf4fb;color:#1f638f}.position-factor-status span.warn{background:#fff4e4;color:#9a651d}.position-factor-status span.weak{background:#fff0f0;color:#a14d4d}.position-factor-item.strong{border-color:#bfe3cf;background:#f3fbf6}.position-factor-item.strong .position-factor-head b{color:#087443}.position-factor-item.strong .position-factor-track i{background:#0b8f55}.position-factor-item.mid{border-color:#f1d8a7;background:#fffaf0}.position-factor-item.mid .position-factor-head b{color:#9a651d}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral{border-color:#d9e1e8;background:#f8fafc}.position-factor-item.weak{border-color:#efc3c3;background:#fff5f5}.position-factor-item.weak .position-factor-head b{color:#c62828}.position-factor-item.weak .position-factor-track i{background:#d93025}.position-factor-note{border-left:4px solid #52718d}.position-factor-note b{color:#244f70}
+.position-card{position:relative;border-left:4px solid #d9e3ec;transition:border-color .18s,box-shadow .18s;background:#fff}.position-card:has(.position-card-primary .up){border-left-color:#d93025}.position-card:has(.position-card-primary .down){border-left-color:#0b8f55}.position-card .up{color:#d93025!important}.position-card .down{color:#0b8f55!important}.position-factors{margin-top:10px;border-top:1px solid #edf1f4;padding-top:2px}.position-factors>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:13px;font-weight:850;display:flex;align-items:center;justify-content:space-between}.position-factors>summary::-webkit-details-marker{display:none}.position-factors>summary:after{content:'＋';font-size:17px;font-weight:500;color:#8294a6}.position-factors[open]>summary:after{content:'−'}.position-factors-body{padding:4px 0 10px}.position-factor-loading,.position-factor-empty{padding:11px 12px;border:1px dashed #d7e2ea;border-radius:11px;background:#f8fafc;color:#71808f;font-size:12px;line-height:1.6}.position-factor-overview{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-radius:12px;background:#f5f9fc;border:1px solid #dfe9f1;margin-bottom:9px}.position-factor-overview small{display:block;color:#71808f;font-size:10px}.position-factor-overview b{display:block;margin-top:2px;color:#173b5d;font-size:22px;line-height:1}.position-factor-overview em{font-style:normal;color:#607789;font-size:11px;line-height:1.45;text-align:right}.position-factor-list{display:grid;gap:7px}.position-factor-item{padding:9px 10px;border:1px solid #e4ebf0;border-radius:10px;background:#fff}.position-factor-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-factor-head span{font-size:12px;font-weight:850;color:#294e6d}.position-factor-head b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.position-factor-track{height:8px;margin-top:6px;background:#e9eff3;border-radius:99px;overflow:hidden}.position-factor-track i{display:block;height:100%;border-radius:99px}.position-factor-item.strong .position-factor-head b{color:#1f638f}.position-factor-item.strong .position-factor-track i{background:#2d78a8}.position-factor-item.mid .position-factor-head b{color:#a66b18}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral .position-factor-head b{color:#667788}.position-factor-item.neutral .position-factor-track i{background:#91a2af}.position-factor-item.weak .position-factor-head b{color:#a14d4d}.position-factor-item.weak .position-factor-track i{background:#c56b6b}.position-factor-note{margin:8px 0 0;padding:9px 10px;border-radius:9px;background:#f8fafc;color:#526879;font-size:11px;line-height:1.6}.position-factor-note b{color:#244f70}.position-factor-source{margin-top:7px;color:#8997a4;font-size:10px}.position-factor-status{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.position-factor-status span{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;background:#eef4f8;color:#45647a}.position-factor-status span.good{background:#fff0f0;color:#c62828}.position-factor-status span.warn{background:#fff4e4;color:#9a651d}.position-factor-status span.weak{background:#eaf4ef;color:#087443}.position-factor-item.strong{border-color:#efc3c3;background:#fff5f5}.position-factor-item.strong .position-factor-head b{color:#c62828}.position-factor-item.strong .position-factor-track i{background:#d93025}.position-factor-item.mid{border-color:#f1d8a7;background:#fffaf0}.position-factor-item.mid .position-factor-head b{color:#9a651d}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral{border-color:#d9e1e8;background:#f8fafc}.position-factor-item.weak{border-color:#bfe3cf;background:#f3fbf6}.position-factor-item.weak .position-factor-head b{color:#087443}.position-factor-item.weak .position-factor-track i{background:#0b8f55}.position-factor-note{border-left:4px solid #52718d}.position-factor-note b{color:#244f70}
 </style>"""
 
     body = f"""
@@ -28908,6 +28917,52 @@ def _position_factor_snapshot(code):
         mode, snapshot_date, raw = row
         raw = raw if isinstance(raw, dict) else {}
         category = str(raw.get("category") or "")
+
+        # V13：五大因子中的「營收成長」不能直接相信舊選股快照。
+        # 選股快照可能是在最新月營收公告前產生，導致像 6442/8996
+        # 這種近期營收暴增的持股仍顯示舊分數。持股頁是使用者查看
+        # 「目前狀況」的地方，因此只在展開時用 revenue_history 的最新
+        # 累計年增率校正營收因子；其他四項仍沿用同一份選股快照，
+        # 避免展開持股時重新跑整套全市場選股。
+        latest_cum_yoy = None
+        try:
+            rconn = get_db_connection()
+            rcur = rconn.cursor()
+            rcur.execute("""
+                SELECT cum_yoy_pct
+                FROM revenue_history
+                WHERE code = %s
+                ORDER BY period DESC
+                LIMIT 1
+            """, (code,))
+            rrow = rcur.fetchone()
+            rcur.close()
+            if rrow and rrow[0] is not None:
+                latest_cum_yoy = float(rrow[0])
+        except Exception as exc:
+            print(f"⚠️ 持股五大因子最新營收讀取失敗 {code}: {exc}")
+        finally:
+            if 'rconn' in locals() and rconn:
+                release_db_connection(rconn)
+
+        old_rev = raw.get("rev")
+        old_total = raw.get("score")
+        if latest_cum_yoy is not None and category != "金融":
+            try:
+                if category == "電子":
+                    new_rev = round(score_from_cum_revenue_growth(latest_cum_yoy) * 25 / 40)
+                    rev_cap = 25
+                else:
+                    new_rev = score_revenue_traditional(latest_cum_yoy)
+                    rev_cap = 20
+                raw["rev"] = new_rev
+                if old_total is not None and old_rev is not None:
+                    raw["score"] = float(old_total) - float(old_rev) + float(new_rev)
+                raw["cum_yoy"] = latest_cum_yoy
+                raw["revenue_refreshed"] = True
+                raw["revenue_source"] = "revenue_history_latest"
+            except (TypeError, ValueError) as exc:
+                print(f"⚠️ 持股五大因子營收校正失敗 {code}: {exc}")
         if category == "金融" and raw.get("score") is None:
             result = {"ok": True, "code": code, "scored": False,
                       "category": category,
@@ -28943,7 +28998,11 @@ def _position_factor_snapshot(code):
                       "cum_yoy": raw.get("cum_yoy"),
                       "pe": raw.get("pe"), "pb": raw.get("pb"),
                       "yield": raw.get("yield"),
-                      "note": "分數來自最近保存的選股快照；展開後才讀取，不影響持股頁首屏。"}
+                      "note": ("營收因子已用最新月營收資料校正；其餘因子沿用最近保存的選股快照。"
+                               if raw.get("revenue_refreshed") else
+                               "分數來自最近保存的選股快照；展開後才讀取，不影響持股頁首屏。"),
+                      "revenue_refreshed": bool(raw.get("revenue_refreshed")),
+                      "revenue_cum_yoy": raw.get("cum_yoy")}
     with _POSITION_FACTOR_CACHE_LOCK:
         _POSITION_FACTOR_CACHE[key] = (now, result)
     return result
