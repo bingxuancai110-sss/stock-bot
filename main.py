@@ -1833,6 +1833,10 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_inst_history_code_date
             ON inst_history (code, trade_date DESC)
         ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_inst_history_trade_date_code
+            ON inst_history (trade_date DESC, code)
+        ''')
         # 上市公司基本資料（產業別）：抓一次即可，用來做「產業趨勢」分析
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS stock_info (
@@ -11318,9 +11322,8 @@ def fetch_institutional_data(codes=None):
                        h.foreign_net_lots, h.trust_net_lots,
                        h.dealer_net_lots, h.total_net_lots
                 FROM inst_history h
-                JOIN (SELECT MAX(trade_date) AS latest_date FROM inst_history) d
-                  ON h.trade_date = d.latest_date
-                WHERE h.code = ANY(%s)
+                WHERE h.trade_date = (SELECT MAX(trade_date) FROM inst_history)
+                  AND h.code = ANY(%s)
                 ORDER BY h.code
             """, (requested_codes,))
             rows = cur.fetchall()
@@ -19058,7 +19061,7 @@ def web_positions(uid):
         <div><small>行情</small><b class="position-quote-stamp" data-position-stamp="1">{quote_stamp_safe}</b></div>
       </div>
       <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b>{weight:.1f}%</b></div>
-      <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}">
+      <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}" ontoggle="window.loadPositionFactors(this)">
         <summary>🧭 查看五大因子與目前狀況</summary>
         <div class="position-factors-body"><div class="position-factor-loading">展開後載入最近保存的五大因子…</div></div>
       </details>
@@ -19095,7 +19098,7 @@ def web_positions(uid):
         <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
         <div><small>行情狀態</small><b class="flat position-quote-stamp" data-position-stamp="1">暫無可驗證行情</b></div>
       </div>
-      <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}">
+      <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}" ontoggle="window.loadPositionFactors(this)">
         <summary>🧭 查看五大因子與目前狀況</summary>
         <div class="position-factors-body"><div class="position-factor-loading">展開後載入最近保存的五大因子…</div></div>
       </details>
@@ -19293,19 +19296,22 @@ def web_positions(uid):
     return '<div class="position-factor-overview"><div><small>五大因子綜合分數</small><b>'+escText(total)+'</b></div><em>'+escText(data.category||'個股')+'<br>資料日 '+escText(data.source_date||'未標日期')+'</em></div><div class="position-factor-list">'+bars+'</div>'+(note?'<div class="position-factor-note">'+note+'</div>':'')+'<div class="position-factor-source">分數沿用選股模型最近保存快照；不在手機端重新計算。</div>';
   }
   function escText(v){return String(v==null?'':v).replace(/[&<>'"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[c]});}
+  function loadPositionFactors(box){
+    if(!box||!box.open||box.dataset.loaded)return;
+    box.dataset.loaded='1';
+    var code=box.getAttribute('data-factor-code'),body=box.querySelector('.position-factors-body');
+    if(!code||!body)return;
+    body.innerHTML='<div class="position-factor-loading">正在載入五大因子…</div>';
+    var token='';try{token=new URLSearchParams(window.location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}catch(ignore){token='';}
+    var url='/web/api/positions/factors?code='+encodeURIComponent(code);if(token)url+='&t='+encodeURIComponent(token);
+    fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){body.innerHTML=renderPositionFactors(data);}).catch(function(e){box.dataset.loaded='';body.innerHTML='<div class="position-factor-empty">五大因子載入失敗：'+escText(e&&e.message?e.message:e)+'</div>';});
+  }
+  window.loadPositionFactors=loadPositionFactors;
   function bindFactorDetails(){
     document.querySelectorAll('.position-factors').forEach(function(box){
       if(box.dataset.bound)return;box.dataset.bound='1';
-      box.addEventListener('toggle',function(){
-        if(!box.open||box.dataset.loaded)return;
-        box.dataset.loaded='1';
-        var code=box.getAttribute('data-factor-code'),body=box.querySelector('.position-factors-body');
-        if(!code||!body)return;
-        body.innerHTML='<div class="position-factor-loading">正在載入五大因子…</div>';
-        var token='';try{token=new URLSearchParams(window.location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}catch(ignore){token='';}
-        var url='/web/api/positions/factors?code='+encodeURIComponent(code);if(token)url+='&t='+encodeURIComponent(token);
-        fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){body.innerHTML=renderPositionFactors(data);}).catch(function(e){box.dataset.loaded='';body.innerHTML='<div class="position-factor-empty">五大因子載入失敗：'+escText(e&&e.message?e.message:e)+'</div>';});
-      });
+      var summary=box.querySelector('summary');
+      if(summary)summary.addEventListener('click',function(){ window.setTimeout(function(){ loadPositionFactors(box); },0); });
     });
   }
   bindFactorDetails();
@@ -25208,7 +25214,7 @@ def web_portfolio(uid):
     # 這三項只依賴 user_id，與首頁前段的共享資料、持股行情彼此獨立。
     # 提前啟動，讓「走勢／已實現損益／排名」在等待行情與共享資料時就一起跑，
     # 避免原本固定排在最後、額外再增加約 2～3 秒的尾端等待。
-    aux_executor = ThreadPoolExecutor(max_workers=3)
+    aux_executor = ThreadPoolExecutor(max_workers=2)
     aux_trend_future = aux_executor.submit(
         lambda: render_trend_chart(get_portfolio_snapshots(uid, days=120)))
     aux_realized_future = aux_executor.submit(get_realized_trades, uid, 500)
@@ -25249,8 +25255,8 @@ def web_portfolio(uid):
         # 第二批再跑其餘共享資料。這不是單純降低並行度，而是避免
         # connection pool 爭用，把 8 秒的「等連線」直接消掉。
         shared_loaders = [
-            ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today(), position_codes)),
             ("法人", lambda: fetch_institutional_data(position_codes)),
+            ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today(), position_codes)),
             ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
             ("估值", fetch_valuation),
             ("產業", get_industry_map),
@@ -25265,7 +25271,7 @@ def web_portfolio(uid):
             })
     # shared_loaders 的順序是「今日事件、法人、月營收、估值、產業、大盤」，
     # 但後續首頁變數維持原本的語意順序，避免其他渲染邏輯跟著改。
-    daily_context, inst, revenue, valuation, ind_map, taiex = shared_values
+    inst, daily_context, revenue, valuation, ind_map, taiex = shared_values
     shared_done = time.monotonic()
     if DB_DIAG_ENABLED:
         print(
