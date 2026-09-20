@@ -1934,6 +1934,27 @@ def init_db():
             ADD COLUMN IF NOT EXISTS asset_type TEXT NOT NULL DEFAULT 'stock'
         ''')
         cursor.execute('''
+            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS category TEXT
+        ''')
+        cursor.execute('''
+            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_revenue INTEGER
+        ''')
+        cursor.execute('''
+            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_valuation INTEGER
+        ''')
+        cursor.execute('''
+            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_momentum INTEGER
+        ''')
+        cursor.execute('''
+            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_streak INTEGER
+        ''')
+        cursor.execute('''
+            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_chip_tech INTEGER
+        ''')
+        cursor.execute('''
+            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_caps TEXT
+        ''')
+        cursor.execute('''
             ALTER TABLE watchlist_scores
             ADD COLUMN IF NOT EXISTS support REAL
         ''')
@@ -12933,9 +12954,8 @@ def build_watchlist_advice(total, chip_score, pos_score, rev_score, val_score,
 
 def _compute_stock_watchlist_scores(codes):
     """
-    算一批股票的自選股評分。抽成獨立函式，讓「顯示報告」與「每日存快照」
-    共用同一套算法——分數若兩邊各算各的，隔天比對出來的變化就沒有意義了。
-    回傳 {code: {各項分數與當下的數據}}，查無行情的代號不會出現在結果裡。
+    計算個股自選評分；LINE、持股頁、選股台共用「網頁五大因子模型」。
+    這裡只統一模型，不調整五大因子的權重／門檻，待成效資料累積後再評估。
     """
     codes = [str(c).strip() for c in codes if c]
     if not codes:
@@ -12944,9 +12964,11 @@ def _compute_stock_watchlist_scores(codes):
     institutional_data = fetch_institutional_data() or {}
     revenue_data = fetch_monthly_revenue() or {}
     valuation_data = fetch_valuation() or {}
+    industry_map = get_industry_map() or {}
+    momentum_stats = get_industry_momentum(revenue_data, industry_map)
     streaks = get_consecutive_days_batch(codes)
     cum_map = get_cumulative_net_buy_for_codes(codes, days=10)
-    price_map = get_realtime_stocks_bulk(codes)   # 並行抓，取代逐檔序列請求
+    price_map = get_realtime_stocks_bulk(codes)
 
     result = {}
     for code in codes:
@@ -12956,26 +12978,59 @@ def _compute_stock_watchlist_scores(codes):
 
         cum_lots, buy_days = cum_map.get(code, (0, 0))
         streak = streaks.get(code, 0)
-
-        chip_score = score_watchlist_chips(cum_lots, buy_days, streak)   # 0-30
-        pos_score = score_watchlist_position(stock)                       # 0-20
-
         cum_yoy = revenue_data.get(code, {}).get("cum_yoy_pct")
-        rev_score = round(score_from_cum_revenue_growth(cum_yoy) * 30 / 40)  # 0-30
+        val = valuation_data.get(code, {}) or {}
+        turnover = calc_turnover_billion(stock.get("close"), stock.get("volume"))
 
-        pe = valuation_data.get(code, {}).get("pe")
-        val_raw, peg, _desc = score_from_valuation(pe, cum_yoy)
-        val_score = round(val_raw * 20 / 25)                              # 0-20
+        model = score_stock_by_category(
+            code, industry_map, stock, cum_yoy, val, streak,
+            cum_lots, turnover, momentum_stats
+        )
+        category = model.get("category")
+        total = model.get("total")
+        if total is None:
+            result[code] = {
+                "code": code,
+                "name": stock_display_name(code, institutional_data, stock.get("name")),
+                "stock": stock,
+                "total": None,
+                "asset_type": "stock",
+                "category": category,
+                "factors": [],
+                "cum_lots": cum_lots, "buy_days": buy_days, "streak": streak,
+                "cum_yoy": cum_yoy, "pe": val.get("pe"),
+            }
+            continue
 
+        caps = [float(x) for x in model.get("caps", (25,25,20,20,10))]
+        factors = [
+            {"name": "營收成長", "value": model.get("rev"), "max": caps[0]},
+            {"name": "估值", "value": model.get("val"), "max": caps[1]},
+            {"name": "產業動能", "value": model.get("mom"), "max": caps[2]},
+            {"name": "法人連續性", "value": model.get("streak_score"), "max": caps[3]},
+            {"name": "籌碼／技術", "value": model.get("chip"), "max": caps[4]},
+        ]
         result[code] = {
             "code": code,
-            "name": stock_display_name(code, institutional_data, stock["name"]),
+            "name": stock_display_name(code, institutional_data, stock.get("name")),
             "stock": stock,
-            "total": chip_score + pos_score + rev_score + val_score,
-            "chip": chip_score, "position": pos_score,
-            "revenue": rev_score, "valuation": val_score,
+            "total": int(round(total)),
+            "asset_type": "stock",
+            "category": category,
+            "factors": factors,
+            "chip": model.get("chip"),
+            "position": model.get("chip"),  # 舊欄位相容；顯示層不再稱為位階
+            "revenue": model.get("rev"),
+            "valuation": model.get("val"),
+            "momentum": model.get("mom"),
+            "streak_score": model.get("streak_score"),
+            "chip_tech": model.get("chip"),
+            "caps": caps,
             "cum_lots": cum_lots, "buy_days": buy_days, "streak": streak,
-            "cum_yoy": cum_yoy, "pe": pe,
+            "cum_yoy": cum_yoy, "pe": model.get("pe"), "pb": model.get("pb"),
+            "yield": model.get("yield"), "peg": model.get("peg"),
+            "val_desc": model.get("val_desc"), "mom_desc": model.get("mom_desc"),
+            "turnover": turnover,
         }
     return result
 
@@ -13000,13 +13055,22 @@ def save_watchlist_scores(user_id, scores):
     """存下今天的自選股分數。同一天重複寫入會覆蓋，cron 跑兩次也不會重複。"""
     if not scores:
         return
-    rows = [(str(user_id).strip(), s["code"], s.get("total"), s.get("chip"),
-             s.get("position"), s.get("revenue"), s.get("valuation"),
-             (s.get("stock") or {}).get("close"),
-             (s.get("stock") or {}).get("support"),
-             (s.get("stock") or {}).get("resistance"),
-             s.get("asset_type") or ("etf" if is_etf(s.get("code")) else "stock"))
-            for s in scores.values()]
+    rows = []
+    for s in scores.values():
+        factors = s.get("factors") or []
+        by_name = {str(x.get("name")): x.get("value") for x in factors if isinstance(x, dict)}
+        caps = s.get("caps") or []
+        rows.append((
+            str(user_id).strip(), s["code"], s.get("total"), s.get("chip"),
+            s.get("position"), s.get("revenue"), s.get("valuation"),
+            (s.get("stock") or {}).get("close"),
+            (s.get("stock") or {}).get("support"),
+            (s.get("stock") or {}).get("resistance"),
+            s.get("asset_type") or ("etf" if is_etf(s.get("code")) else "stock"),
+            s.get("category"), by_name.get("營收成長"), by_name.get("估值"),
+            by_name.get("產業動能"), by_name.get("法人連續性"),
+            by_name.get("籌碼／技術"), json.dumps(caps, ensure_ascii=False),
+        ))
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -13015,17 +13079,25 @@ def save_watchlist_scores(user_id, scores):
             """
             INSERT INTO watchlist_scores
                 (user_id, code, snapshot_date, total, chip, position,
-                 revenue, valuation, close, support, resistance, asset_type)
+                 revenue, valuation, close, support, resistance, asset_type,
+                 category, factor_revenue, factor_valuation, factor_momentum,
+                 factor_streak, factor_chip_tech, factor_caps)
             VALUES %s
             ON CONFLICT (user_id, code, snapshot_date) DO UPDATE SET
                 total = EXCLUDED.total, chip = EXCLUDED.chip,
                 position = EXCLUDED.position, revenue = EXCLUDED.revenue,
                 valuation = EXCLUDED.valuation, close = EXCLUDED.close,
                 support = EXCLUDED.support, resistance = EXCLUDED.resistance,
-                asset_type = EXCLUDED.asset_type
+                asset_type = EXCLUDED.asset_type, category = EXCLUDED.category,
+                factor_revenue = EXCLUDED.factor_revenue,
+                factor_valuation = EXCLUDED.factor_valuation,
+                factor_momentum = EXCLUDED.factor_momentum,
+                factor_streak = EXCLUDED.factor_streak,
+                factor_chip_tech = EXCLUDED.factor_chip_tech,
+                factor_caps = EXCLUDED.factor_caps
             """,
             rows,
-            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             page_size=200,
         )
         conn.commit()
@@ -13110,6 +13182,23 @@ def describe_score_change(cur, prev):
     return arrow, f"{prev['total']}→{cur['total']} 分（{diff:+d}）{reason}"
 
 
+def build_web_factor_observation(score):
+    """以網頁五大因子做純資料歸納；不沿用舊版四因子買賣話術。"""
+    factors = [x for x in (score.get("factors") or []) if isinstance(x, dict) and x.get("max")]
+    if not factors:
+        return "目前沒有足夠的五大因子分項資料。"
+    ranked = sorted(factors, key=lambda x: (float(x.get("value") or 0) / float(x.get("max") or 1)), reverse=True)
+    strong = ranked[0]
+    weak = ranked[-1]
+    def label(x):
+        ratio = float(x.get("value") or 0) / float(x.get("max") or 1)
+        return "偏強" if ratio >= 0.8 else ("中上" if ratio >= 0.6 else ("中性" if ratio >= 0.4 else "偏弱"))
+    cat = score.get("category") or "個股"
+    return (f"📌 {cat}｜目前相對較強：{strong.get('name')}（{label(strong)}）；"
+            f"主要較弱：{weak.get('name')}（{label(weak)}）。"
+            "目前先沿用網頁五大因子模型，待成效資料累積後再評估是否調整因子。")
+
+
 def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
                                industry_label=None, score_change=None,
                                watchlist_status=None):
@@ -13152,12 +13241,15 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
         lines += [
             "",
             f"{flag} 綜合評分：{total}／100",
-            f"　籌碼{score['chip']}/30　位階{score['position']}/20",
-            f"　營收{score['revenue']}/30　估值{score['valuation']}/20",
+            f"　營收成長 {score.get('revenue', 0):.0f}/{score.get('caps',[25,25,20,20,10])[0]:.0f}",
+            f"　估值 {score.get('valuation', 0):.0f}/{score.get('caps',[25,25,20,20,10])[1]:.0f}",
+            f"　產業動能 {score.get('momentum', 0):.0f}/{score.get('caps',[25,25,20,20,10])[2]:.0f}",
+            f"　法人連續性 {score.get('streak_score', 0):.0f}/{score.get('caps',[25,25,20,20,10])[3]:.0f}",
+            f"　籌碼／技術 {score.get('chip_tech', 0):.0f}/{score.get('caps',[25,25,20,20,10])[4]:.0f}",
         ]
         if score_change:
             lines.append(score_change)
-        cum_yoy, pe = score["cum_yoy"], score["pe"]
+        cum_yoy, pe = score.get("cum_yoy"), score.get("pe")
         lines.append(
             f"　營收年增 {cum_yoy:+.1f}%" if cum_yoy is not None
             else "　營收年增資料不足")
@@ -13172,10 +13264,7 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
         lines += [
             "",
             "【觀察】",
-            build_watchlist_advice(
-                score["total"], score["chip"], score["position"],
-                score["revenue"], score["valuation"], score["cum_lots"],
-                score["streak"], stock, score["cum_yoy"], score["pe"]),
+            build_web_factor_observation(score),
         ]
 
     if watchlist_status:
@@ -13266,7 +13355,7 @@ def build_single_stock_report(code, user_id=None):
 
     lines = _format_stock_detail_lines(
         code, name, stock, score=score, bd=bd,
-        industry_label=industry_name(industry) if industry else None,
+        industry_label=(f"📌 {score.get('category') or '個股'}" + (f"｜{industry_name(industry)}" if industry else "")) if score else (industry_name(industry) if industry else None),
         score_change=score_change, watchlist_status=watchlist_status)
 
     news = fetch_stock_news(
@@ -13540,7 +13629,7 @@ def build_healthcheck_report(user_id):
         industry = industry_map.get(code)
         lines = _format_stock_detail_lines(
             code, name, stock, score=score, bd=breakdowns.get(code),
-            industry_label=industry_name(industry) if industry else None,
+            industry_label=(f"📌 {score.get('category') or '個股'}" + (f"｜{industry_name(industry)}" if industry else "")) if score else (industry_name(industry) if industry else None),
             score_change=score_change,
             watchlist_status="※ 已在自選清單")
         rows.append((tag, score["total"], "\n".join(lines)))
@@ -13574,7 +13663,7 @@ def build_healthcheck_report(user_id):
     has_etf = any(is_etf(code) for code in codes)
     formula_lines = []
     if has_stock:
-        formula_lines.append("評分＝籌碼30＋位階20＋營收30＋估值20")
+        formula_lines.append("個股評分＝營收成長25＋估值25＋產業動能20＋法人連續性20＋籌碼／技術10")
     if has_etf:
         formula_lines.append("ETF評分＝依類別權重計算超額報酬、價格報酬、配息殖利率、回撤、波動與資料完整度")
     formula_text = "\n".join(formula_lines)
@@ -13697,7 +13786,7 @@ def render_watchlist_web_body(user_id):
 
     formula_lines = []
     if any(not is_etf(code) for code in codes):
-        formula_lines.append("個股：籌碼 30＋位階 20＋營收 30＋估值 20")
+        formula_lines.append("個股：營收成長 25＋估值 25＋產業動能 20＋法人連續性 20＋籌碼／技術 10")
     if any(is_etf(code) for code in codes):
         formula_lines.append("ETF：依類別權重計算超額報酬、價格報酬、配息殖利率、回撤、波動與資料完整度")
     formula_text = "<br>".join(html.escape(text) for text in formula_lines)
@@ -28602,7 +28691,8 @@ def _workbench_holding_rows(uid):
         conn=get_db_connection();cur=conn.cursor()
         cur.execute("""
             SELECT DISTINCT ON (code) code, snapshot_date, total, chip, position, revenue, valuation,
-                   close, support, resistance, asset_type
+                   close, support, resistance, asset_type, category, factor_revenue, factor_valuation,
+                   factor_momentum, factor_streak, factor_chip_tech, factor_caps
             FROM watchlist_scores
             WHERE user_id=%s AND code=ANY(%s)
             ORDER BY code, snapshot_date DESC
@@ -28610,7 +28700,9 @@ def _workbench_holding_rows(uid):
         for rr in cur.fetchall():
             holding_scores[str(rr[0])] = {"source_date":str(rr[1] or ""),"total":rr[2],"chip":rr[3],
                 "position":rr[4],"revenue":rr[5],"valuation":rr[6],"close":rr[7],
-                "support":rr[8],"resistance":rr[9],"asset_type":rr[10]}
+                "support":rr[8],"resistance":rr[9],"asset_type":rr[10],"category":rr[11],
+                "factor_revenue":rr[12],"factor_valuation":rr[13],"factor_momentum":rr[14],
+                "factor_streak":rr[15],"factor_chip_tech":rr[16],"factor_caps":rr[17]}
         cur.close()
     except Exception as exc:
         print(f"⚠️ 工作台讀取持股評分快照失敗：{exc}")
@@ -28648,7 +28740,7 @@ def _workbench_holding_rows(uid):
     rows=[]
     for x in value_rows:
         position=x["position"];code=x["code"];score=x["score"];score_date=x["score_date"];shares=x["shares"];cost=x["cost"];saved_close=x["saved_close"];live_close=x["live_close"];live_pct=x["live_pct"]
-        rows.append({"source":"持股","code":code,"name":_workbench_display_name(position,code),"industry":"個人庫存","score":score,"price":live_close,"change_pct":live_pct,"metric_label":"今日漲跌","institutional_lots":None,"signal":f"持有 {int(shares or 0):,} 股","quality":"已有自選股評分快照" if score is not None else None,"analysis_available":score is not None,"weight":x["current_weight"],"weight_delta":x["weight_delta"],"detail":{"average_cost":cost,"position_shares":shares,"bought_on":str(position.get("bought_on") or ""),"analysis_available":score is not None,"analysis_note":(f"自選股評分快照：{score_date}" if score is not None else "此庫存尚未有已保存的自選股評分快照"),"source_date":score_date,"score":score,"chip":saved.get("chip"),"position":saved.get("position"),"revenue":saved.get("revenue"),"valuation":saved.get("valuation"),"snapshot_price":saved_close,"support":saved.get("support"),"resistance":saved.get("resistance"),"asset_type":saved.get("asset_type"),"live_price":live_close,"live_change_pct":live_pct,"weight":x["current_weight"],"weight_delta":x["weight_delta"]}})
+        rows.append({"source":"持股","code":code,"name":_workbench_display_name(position,code),"industry":"個人庫存","score":score,"price":live_close,"change_pct":live_pct,"metric_label":"今日漲跌","institutional_lots":None,"signal":f"持有 {int(shares or 0):,} 股","quality":"已有自選股評分快照" if score is not None else None,"analysis_available":score is not None,"weight":x["current_weight"],"weight_delta":x["weight_delta"],"detail":{"average_cost":cost,"position_shares":shares,"bought_on":str(position.get("bought_on") or ""),"analysis_available":score is not None,"analysis_note":(f"自選股評分快照：{score_date}" if score is not None else "此庫存尚未有已保存的自選股評分快照"),"source_date":score_date,"score":score,"chip":saved.get("chip"),"position":saved.get("position"),"revenue":saved.get("revenue"),"valuation":saved.get("valuation"),"category":saved.get("category"),"factor_revenue":saved.get("factor_revenue"),"factor_valuation":saved.get("factor_valuation"),"factor_momentum":saved.get("factor_momentum"),"factor_streak":saved.get("factor_streak"),"factor_chip_tech":saved.get("factor_chip_tech"),"factor_caps":saved.get("factor_caps"),"snapshot_price":saved_close,"support":saved.get("support"),"resistance":saved.get("resistance"),"asset_type":saved.get("asset_type"),"live_price":live_close,"live_change_pct":live_pct,"weight":x["current_weight"],"weight_delta":x["weight_delta"]}})
     return rows,{"available":True,"date":max((r["detail"]["source_date"] for r in rows if r["detail"]["source_date"]),default="未標日期")}
 
 
@@ -28916,7 +29008,44 @@ def _position_factor_snapshot(code):
     else:
         mode, snapshot_date, raw = row
         raw = raw if isinstance(raw, dict) else {}
-        category = str(raw.get("category") or "")
+        # 持股頁與 LINE 現在統一使用「網頁五大因子模型」。
+        # 分類也必須走 BOT 自訂分類，不能直接沿用舊快照的官方產業文字。
+        industry_map = get_industry_map() or {}
+        category = stock_category(code, industry_map)
+
+        # V15：若自訂分類與舊快照分類不同，直接用目前資料重算整套五大因子。
+        # 這是懶載入，只發生在使用者展開該檔持股，不增加持股頁首屏時間。
+        snapshot_category = str(raw.get("category") or "")
+        if category != snapshot_category:
+            try:
+                rev_data = fetch_monthly_revenue() or {}
+                val_data = fetch_valuation() or {}
+                streaks = get_consecutive_days_batch([code])
+                cum_map = get_cumulative_net_buy_for_codes([code], days=10)
+                quote = (get_realtime_stocks_bulk([code]) or {}).get(code) or {}
+                cum_yoy_now = rev_data.get(code, {}).get("cum_yoy_pct")
+                cum_lots_now, _buy_days_now = cum_map.get(code, (0, 0))
+                turnover_now = calc_turnover_billion(quote.get("close"), quote.get("volume"))
+                momentum_now = get_industry_momentum(rev_data, industry_map)
+                model_now = score_stock_by_category(
+                    code, industry_map, quote, cum_yoy_now, val_data.get(code) or {},
+                    streaks.get(code, 0), cum_lots_now, turnover_now, momentum_now
+                )
+                if model_now.get("total") is not None:
+                    raw.update({
+                        "category": model_now.get("category"),
+                        "score": model_now.get("total"),
+                        "rev": model_now.get("rev"), "val": model_now.get("val"),
+                        "mom": model_now.get("mom"), "streak_score": model_now.get("streak_score"),
+                        "chip": model_now.get("chip"), "caps": model_now.get("caps"),
+                        "cum_yoy": cum_yoy_now, "pe": model_now.get("pe"),
+                        "pb": model_now.get("pb"), "yield": model_now.get("yield"),
+                        "val_desc": model_now.get("val_desc"), "mom_desc": model_now.get("mom_desc"),
+                    })
+                    category = model_now.get("category") or category
+                    raw["full_model_refreshed"] = True
+            except Exception as exc:
+                print(f"⚠️ 持股五大因子完整模型重算失敗 {code}: {exc}")
 
         # V13：五大因子中的「營收成長」不能直接相信舊選股快照。
         # 選股快照可能是在最新月營收公告前產生，導致像 6442/8996
@@ -28998,9 +29127,11 @@ def _position_factor_snapshot(code):
                       "cum_yoy": raw.get("cum_yoy"),
                       "pe": raw.get("pe"), "pb": raw.get("pb"),
                       "yield": raw.get("yield"),
-                      "note": ("營收因子已用最新月營收資料校正；其餘因子沿用最近保存的選股快照。"
-                               if raw.get("revenue_refreshed") else
-                               "分數來自最近保存的選股快照；展開後才讀取，不影響持股頁首屏。"),
+                      "note": ("已套用目前網頁五大因子模型；自訂類別與最新營收資料均已校正。"
+                               if raw.get("full_model_refreshed") else
+                               ("營收因子已用最新月營收資料校正；其餘因子沿用最近保存的網頁五大因子快照。"
+                                if raw.get("revenue_refreshed") else
+                                "分數來自最近保存的網頁五大因子快照；展開後才讀取，不影響持股頁首屏。")),
                       "revenue_refreshed": bool(raw.get("revenue_refreshed")),
                       "revenue_cum_yoy": raw.get("cum_yoy")}
     with _POSITION_FACTOR_CACHE_LOCK:
