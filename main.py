@@ -17280,6 +17280,43 @@ def render_page(title, body, nav_active=None, user_name=None):
     }},180);
   }};
 
+  // 持股五大因子放在持久 shell，fragment 導航後仍可用；避免長 inline JS 造成 HTML 引號解析錯誤。
+  (function(){{
+    function esc(v){{return String(v==null?'':v).replace(/[&<>"']/g,function(c){{return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c];}});}}
+    function status(r){{return r>=.8?'偏強':r>=.6?'中上':r>=.4?'中性':'偏弱';}}
+    function cls(r){{return r>=.8?'strong':r>=.6?'mid':r>=.4?'neutral':'weak';}}
+    function render(d){{
+      if(!d||!d.ok)return '<div class="position-factor-empty">五大因子暫時無法載入：'+esc(d&&d.error||'未知錯誤')+'</div>';
+      if(!d.scored)return '<div class="position-factor-empty">'+esc(d.note||'目前沒有可用的五大因子評分。')+'</div>';
+      var fs=Array.isArray(d.factors)?d.factors:[];
+      if(!fs.length)return '<div class="position-factor-empty">目前沒有可用的五大因子分項資料。</div>';
+      var valid=fs.filter(function(x){{return Number(x.max)>0;}});
+      var best=valid.slice().sort(function(a,b){{return (Number(b.value)/Number(b.max))-(Number(a.value)/Number(a.max));}})[0];
+      var worst=valid.slice().sort(function(a,b){{return (Number(a.value)/Number(a.max))-(Number(b.value)/Number(b.max));}})[0];
+      var bars=fs.map(function(x){{var v=Number(x.value)||0,m=Number(x.max)||0,r=m>0?Math.max(0,Math.min(1,v/m)):0;return '<div class="position-factor-item '+cls(r)+'"><div class="position-factor-head"><span>'+esc(x.name)+'</span><b>'+v.toFixed(0)+' / '+m.toFixed(0)+'　'+status(r)+'</b></div><div class="position-factor-track"><i style="width:'+(r*100).toFixed(1)+'%"></i></div></div>';}}).join('');
+      var note='';
+      if(best)note+='<b>目前相對較強：</b>'+esc(best.name)+'（'+status(Number(best.value)/Number(best.max))+'）。';
+      if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+esc(worst.name)+'（'+status(Number(worst.value)/Number(worst.max))+'）。';
+      return '<div class="position-factor-overview"><div><small>五大因子綜合分數</small><b>'+esc(d.score==null?'—':Number(d.score).toFixed(0)+' 分')+'</b></div><em>'+esc(d.category||'個股')+'<br>資料日 '+esc(d.source_date||'未標日期')+'</em></div><div class="position-factor-list">'+bars+'</div>'+(note?'<div class="position-factor-note">'+note+'</div>':'')+'<div class="position-factor-source">分數沿用選股模型最近保存快照；不在手機端重新計算。</div>';
+    }}
+    window.loadPositionFactors=function(box){{
+      if(!box||box.dataset.loaded==='1')return;
+      var body=box.querySelector('.position-factors-body'),code=box.getAttribute('data-factor-code');
+      if(!body||!code)return;
+      box.dataset.loaded='1';
+      body.innerHTML='<div class="position-factor-loading">正在載入五大因子…</div>';
+      var token='';try{{token=new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}}catch(ignore){{}}
+      var url='/web/api/positions/factors?code='+encodeURIComponent(code)+(token?'&t='+encodeURIComponent(token):'');
+      fetch(url,{{credentials:'same-origin',cache:'no-store'}}).then(function(r){{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}}).then(function(d){{body.innerHTML=render(d);}}).catch(function(e){{box.dataset.loaded='';body.innerHTML='<div class="position-factor-empty">五大因子載入失敗：'+esc(e&&e.message||e)+'<br><small>請重新展開一次。</small></div>';}});
+    }};
+    document.addEventListener('click',function(e){{
+      var summary=e.target.closest('.position-factors-trigger');
+      if(!summary)return;
+      var box=summary.closest('.position-factors');
+      if(box)window.setTimeout(function(){{window.loadPositionFactors(box);}},0);
+    }},true);
+  }})();
+
   document.addEventListener('click',function(e){{
     const a=e.target.closest('a[href]');
     if(!a||e.defaultPrevented)return;
@@ -19062,7 +19099,7 @@ def web_positions(uid):
       </div>
       <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b>{weight:.1f}%</b></div>
       <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}">
-        <summary onclick="(function(s){{var box=s.parentElement;if(box.dataset.loaded)return;box.dataset.loaded='1';var body=box.querySelector('.position-factors-body'),code=box.getAttribute('data-factor-code');if(!body||!code)return;body.innerHTML='<div class=\"position-factor-loading\">正在載入五大因子…</div>';var t='';try{{t=new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}}catch(e){{}}var u='/web/api/positions/factors?code='+encodeURIComponent(code)+(t?'&t='+encodeURIComponent(t):'');fetch(u,{{credentials:'same-origin',cache:'no-store'}}).then(function(r){{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}}).then(function(d){{if(!d||!d.ok){{body.innerHTML='<div class=\"position-factor-empty\">'+(d&&d.error?d.error:'五大因子暫時無法載入')+'</div>';box.dataset.loaded='';return;}}if(!d.scored){{body.innerHTML='<div class=\"position-factor-empty\">'+(d.note||'目前沒有可用的五大因子評分。')+'</div>';return;}}var fs=Array.isArray(d.factors)?d.factors:[],status=function(r){{return r>=.8?'偏強':r>=.6?'中上':r>=.4?'中性':'偏弱'}},cls=function(r){{return r>=.8?'strong':r>=.6?'mid':r>=.4?'neutral':'weak'}},esc=function(v){{return String(v==null?'':v).replace(/[&<>]/g,function(c){{return({{'&':'&amp;','<':'&lt;','>':'&gt;'}})[c]}});}},best=null,worst=null;fs.forEach(function(x){{var r=Number(x.max)>0?Number(x.value)/Number(x.max):0;if(!best||r>(Number(best.value)/Number(best.max)))best=x;if(!worst||r<(Number(worst.value)/Number(worst.max)))worst=x;}});var bars=fs.map(function(x){{var v=Number(x.value)||0,m=Number(x.max)||0,r=m>0?Math.max(0,Math.min(1,v/m)):0;return '<div class=\"position-factor-item '+cls(r)+'\"><div class=\"position-factor-head\"><span>'+esc(x.name)+'</span><b>'+v.toFixed(0)+' / '+m.toFixed(0)+'　'+status(r)+'</b></div><div class=\"position-factor-track\"><i style=\"width:'+(r*100).toFixed(1)+'%\"></i></div></div>';}}).join('');var note='';if(best)note+='<b>目前相對較強：</b>'+esc(best.name)+'（'+status(Number(best.value)/Number(best.max))+'）。';if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+esc(worst.name)+'（'+status(Number(worst.value)/Number(worst.max))+'）。';body.innerHTML='<div class=\"position-factor-overview\"><div><small>五大因子綜合分數</small><b>'+esc(d.score)+'</b></div><em>'+esc(d.category||'個股')+'<br>資料日 '+esc(d.source_date||'未標日期')+'</em></div><div class=\"position-factor-list\">'+bars+'</div>'+(note?'<div class=\"position-factor-note\">'+note+'</div>':'')+'<div class=\"position-factor-source\">分數沿用最近保存的選股模型快照。</div>';}}).catch(function(e){{box.dataset.loaded='';body.innerHTML='<div class=\"position-factor-empty\">五大因子載入失敗：'+String(e&&e.message||e)+'</div>';}});}})(this)">🧭 查看五大因子與目前狀況</summary>
+        <summary class="position-factors-trigger">🧭 查看五大因子與目前狀況</summary>
         <div class="position-factors-body"><div class="position-factor-loading">展開後載入最近保存的五大因子…</div></div>
       </details>
       <div class="position-card-actions">
@@ -19099,7 +19136,7 @@ def web_positions(uid):
         <div><small>行情狀態</small><b class="flat position-quote-stamp" data-position-stamp="1">暫無可驗證行情</b></div>
       </div>
       <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}">
-        <summary onclick="(function(s){{var box=s.parentElement;if(box.dataset.loaded)return;box.dataset.loaded='1';var body=box.querySelector('.position-factors-body'),code=box.getAttribute('data-factor-code');if(!body||!code)return;body.innerHTML='<div class=\"position-factor-loading\">正在載入五大因子…</div>';var t='';try{{t=new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}}catch(e){{}}var u='/web/api/positions/factors?code='+encodeURIComponent(code)+(t?'&t='+encodeURIComponent(t):'');fetch(u,{{credentials:'same-origin',cache:'no-store'}}).then(function(r){{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}}).then(function(d){{if(!d||!d.ok){{body.innerHTML='<div class=\"position-factor-empty\">'+(d&&d.error?d.error:'五大因子暫時無法載入')+'</div>';box.dataset.loaded='';return;}}if(!d.scored){{body.innerHTML='<div class=\"position-factor-empty\">'+(d.note||'目前沒有可用的五大因子評分。')+'</div>';return;}}var fs=Array.isArray(d.factors)?d.factors:[],status=function(r){{return r>=.8?'偏強':r>=.6?'中上':r>=.4?'中性':'偏弱'}},cls=function(r){{return r>=.8?'strong':r>=.6?'mid':r>=.4?'neutral':'weak'}},esc=function(v){{return String(v==null?'':v).replace(/[&<>\"']/g,function(c){{return({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}})[c]}});}},best=null,worst=null;fs.forEach(function(x){{var r=Number(x.max)>0?Number(x.value)/Number(x.max):0;if(!best||r>(Number(best.value)/Number(best.max)))best=x;if(!worst||r<(Number(worst.value)/Number(worst.max)))worst=x;}});var bars=fs.map(function(x){{var v=Number(x.value)||0,m=Number(x.max)||0,r=m>0?Math.max(0,Math.min(1,v/m)):0;return '<div class=\"position-factor-item '+cls(r)+'\"><div class=\"position-factor-head\"><span>'+esc(x.name)+'</span><b>'+v.toFixed(0)+' / '+m.toFixed(0)+'　'+status(r)+'</b></div><div class=\"position-factor-track\"><i style=\"width:'+(r*100).toFixed(1)+'%\"></i></div></div>';}}).join('');var note='';if(best)note+='<b>目前相對較強：</b>'+esc(best.name)+'（'+status(Number(best.value)/Number(best.max))+'）。';if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+esc(worst.name)+'（'+status(Number(worst.value)/Number(worst.max))+'）。';body.innerHTML='<div class=\"position-factor-overview\"><div><small>五大因子綜合分數</small><b>'+esc(d.score)+'</b></div><em>'+esc(d.category||'個股')+'<br>資料日 '+esc(d.source_date||'未標日期')+'</em></div><div class=\"position-factor-list\">'+bars+'</div>'+(note?'<div class=\"position-factor-note\">'+note+'</div>':'')+'<div class=\"position-factor-source\">分數沿用最近保存的選股模型快照。</div>';}}).catch(function(e){{box.dataset.loaded='';body.innerHTML='<div class=\"position-factor-empty\">五大因子載入失敗：'+String(e&&e.message||e)+'</div>';}});}})(this)">🧭 查看五大因子與目前狀況</summary>
+        <summary class="position-factors-trigger">🧭 查看五大因子與目前狀況</summary>
         <div class="position-factors-body"><div class="position-factor-loading">展開後載入最近保存的五大因子…</div></div>
       </details>
       <div class="position-card-actions">{lots_html(p, p['code'], None)}</div>
