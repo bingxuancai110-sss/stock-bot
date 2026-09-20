@@ -7415,8 +7415,21 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             official_quote = official_quote or (
                 _fetch_twse_mis_quotes([code], {code: suffix}).get(code)
                 if _taiwan_post_close() else None)
-            close = (official_quote.get("close") if official_quote else
-                     meta.get('regularMarketPrice', 0.0))
+
+            # 【V31 關鍵修正：開盤前禁止使用 Yahoo regularMarketPrice】
+            # 07:00~08:59 左右 Yahoo 的 regularMarketPrice 在部分台股代號可能
+            # 帶到盤前／延遲報價或非最後正式收盤值。這會讓「尚未開盤」的首頁
+            # 算出一個使用者從未在上一交易日收盤看到的總市值。
+            # 開盤前的唯一可信口徑：最近一根已完成的日 K 收盤。
+            preopen_session = (not _taiwan_intraday_window() and
+                               not _taiwan_post_close())
+            if official_quote:
+                close = official_quote.get("close")
+            elif preopen_session and bars:
+                close = bars[-1][1]
+            else:
+                close = meta.get('regularMarketPrice', 0.0)
+
             # 官方 MIS 偶爾短暫沒有回傳個別代號；收盤後若 Yahoo 日 K
             # 已經有今天的最後一根，使用該日 K close，不能退回盤中 meta 價。
             if (not official_quote and _taiwan_post_close() and bars and
@@ -7449,10 +7462,13 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                     except Exception as exc:
                         print(f"⚠️ Yahoo 前一日收盤校正失敗 {code}: {exc}")
             elif bars:
-                # 序列停在昨天（或更早）——可能是盤前、假日、非交易日。
-                # 若目前報價就等於最後一根K的收盤，代表這根K就是「最新收盤」，
-                # 昨收要再往前一根，否則會拿自己比自己，永遠顯示 0.00%。
-                if abs(close - bars[-1][1]) < 0.001 and len(bars) >= 2:
+                # 開盤前／假日：bars[-1] 就是最近一個「已完成交易日」的正式收盤。
+                # 這裡絕對不能拿 Yahoo regularMarketPrice 當成今天的價格。
+                if preopen_session:
+                    prev_close = bars[-2][1] if len(bars) >= 2 else meta.get('chartPreviousClose', close)
+                    hist = bars[:-1]
+                # 序列停在昨天（或更早）——若非明確開盤前，仍保留原有判斷。
+                elif abs(close - bars[-1][1]) < 0.001 and len(bars) >= 2:
                     prev_close = bars[-2][1]
                     hist = bars[:-1]
                 else:
@@ -7575,12 +7591,14 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                             f"沿用今日稍早報價）" if sticky else
                             ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
                              if _taiwan_post_close() and bars and bars[-1][0] == today_date
-                             else "Yahoo Finance 日線行情"))),
+                             else ("Yahoo Finance 最近交易日正式收盤（開盤前）"
+                                   if preopen_session and bars else "Yahoo Finance 日線行情")))) ,
                 "updated_at": (official_quote.get("updated_at") if official_quote else
                                (sticky.get("updated_at") if sticky else None)),
-                "close_is_final": bool(official_quote and official_quote.get("close_is_final")),
+                "close_is_final": bool(official_quote and official_quote.get("close_is_final")) or bool(preopen_session and bars),
                 "close_date": (official_quote.get("close_date") if official_quote else
-                               today_date.strftime("%Y%m%d")),
+                               (bars[-1][0].strftime("%Y%m%d") if preopen_session and bars else
+                                today_date.strftime("%Y%m%d"))),
                 "close_time": (official_quote.get("close_time") if official_quote else None),
                 "resistance": resistance,
                 "support": support,
@@ -25235,7 +25253,11 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <a href="{focus_href}">{html.escape(focus_cta)} →</a>
 </section>'''
     market_text = fmt_pct(market_pct) if market_pct is not None else "資料尚未更新"
-    portfolio_text = fmt_pct(portfolio_pct) if portfolio_pct is not None else fmt_pct(pl_total)
+    if preopen_or_closed:
+        # 仍可顯示最近交易日的組合日變化，但明確標成最近交易日。
+        portfolio_text = fmt_pct(portfolio_pct) if portfolio_pct is not None else '尚未取得'
+    else:
+        portfolio_text = fmt_pct(portfolio_pct) if portfolio_pct is not None else '資料尚未更新'
     relative_text = fmt_pct(relative) if relative is not None else "—"
 
     quote_text = _homepage_quote_for(display_date)
@@ -25409,7 +25431,14 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     else:
         hero_eyebrow = f"TODAY · {display_date.strftime('%Y / %m / %d')}"
 
-    portfolio_label = "你的組合（今日基準）" if has_pretrade_basis else "你的組合"
+    # 開盤前沒有「今天」的股票成交；此時 price_map 的有效價格是最近交易日收盤價。
+    # 絕不能把上一交易日漲跌標成今天，尤其週一早上最容易造成誤解。
+    preopen_or_closed = not intraday_window
+    recent_date_text = display_date.strftime('%Y/%m/%d') if hasattr(display_date, 'strftime') else str(display_date)
+    if preopen_or_closed:
+        portfolio_label = f"最近交易日 {recent_date_text}"
+    else:
+        portfolio_label = "你的組合（今日盤中）" if has_pretrade_basis else "你的組合（今日盤中）"
     home_intraday_script = ""
     if intraday_window:
         home_intraday_script = r'''<script>
@@ -25693,8 +25722,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <section class="daily-card home-portfolio-card">
     <div class="daily-section-title"><div><h2>💰 我的投資</h2><span>你現在的組合狀態</span></div><a href="/web/positions">查看持股明細 →</a></div>
     <div class="home-portfolio-grid">
-      <div class="home-metric home-metric-main"><small>總市值</small><b>{total_value:,.0f}</b><em>成本 {total_cost:,.0f}</em></div>
-      <div class="home-metric"><small>今日組合</small><b class="{portfolio_pct_class}" data-home-portfolio-pct>{portfolio_text}</b></div>
+      <div class="home-metric home-metric-main"><small>{'最新收盤市值' if preopen_or_closed else '目前市值'}</small><b>{total_value:,.0f}</b><em>成本 {total_cost:,.0f} · 資料日 {recent_date_text}</em></div>
+      <div class="home-metric"><small>{'最近交易日組合' if preopen_or_closed else '今日組合'}</small><b class="{portfolio_pct_class}" data-home-portfolio-pct>{portfolio_text}</b><em>{'尚未開盤，沿用 '+recent_date_text+' 正式收盤' if preopen_or_closed else '盤中即時行情'}</em></div>
       <div class="home-metric"><small>持倉損益</small><b class="{pl_class}">{fmt_pct(pl_total)}</b></div>
       <div class="home-metric"><small>持股檔數</small><b>{len(holdings)} 檔</b></div>
     </div>
@@ -28495,6 +28524,7 @@ def render_workbench_body(initial_tab=""):
 .wb-lab-pick{min-height:72px}.wb-lab-pick-main{min-width:0}.wb-lab-pick-main small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-metric-mobile,.wb-lab-pick-reason-mobile{display:none}.wb-d-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.wb-d-chip{display:inline-flex;padding:4px 8px;border-radius:999px;background:#eef4fa;color:#4f6f8e;font-size:11px;font-weight:700}@media(max-width:700px){.wb-lab-pick{display:grid;grid-template-columns:24px minmax(0,1fr) 18px;grid-template-areas:"rank main arrow";gap:8px;padding:13px 4px;min-height:88px}.wb-lab-rank{grid-area:rank}.wb-lab-pick-main{grid-area:main}.wb-lab-pick-metric,.wb-lab-pick-reason{display:none}.wb-lab-pick-metric-mobile{display:flex;align-items:baseline;gap:6px;margin-top:6px}.wb-lab-pick-metric-mobile strong{font-size:17px;color:#274c77}.wb-lab-pick-metric-mobile em{font-style:normal;font-size:11px;color:#7a899a}.wb-lab-pick-reason-mobile{display:block;margin-top:5px;font-size:11px;line-height:1.4;color:#657487;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-tags{margin-top:5px}.wb-lab-chip{font-size:9px}.wb-lab-arrow{grid-area:arrow;align-self:center;font-size:24px;color:#4f78a6}.wb-lab-section-head{padding:14px}.wb-lab-picks{padding:0 12px}}
 .wb-lab-strategy-title{display:block!important;color:#1f3348!important;font-size:16px!important;font-weight:850!important;line-height:1.35!important;margin:0 0 2px!important}.wb-lab-strategy.active{background:#274c77!important;border-color:#274c77!important;color:#fff!important;box-shadow:0 8px 18px rgba(39,76,119,.18)!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy.active *{color:inherit!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy:focus-visible{outline:3px solid rgba(79,120,166,.28);outline-offset:2px}.wb-lab-pick:focus-visible{outline:2px solid rgba(79,120,166,.35);outline-offset:-2px}
 .wb-d-factor-list{display:flex;flex-direction:column;gap:7px;margin-top:12px}.wb-d-factor-row{display:flex;justify-content:space-between;gap:12px;padding:9px 11px;border-radius:10px;background:#f6f9fc;border:1px solid #e8eef4;color:#4f6174}.wb-d-factor-row b{color:#274c77}.wb-d-score-note{font-size:12px;color:#718096;margin-top:10px}
+.wb-d-rev-chart{margin-top:12px;padding:10px 12px;border:1px solid #e4ebf2;border-radius:14px;background:#fbfdff}.wb-d-rev-row{padding:11px 0;border-bottom:1px solid #edf1f5}.wb-d-rev-row:last-child{border-bottom:0}.wb-d-rev-head{display:flex;justify-content:space-between;align-items:center;gap:10px}.wb-d-rev-head b{font-size:12px;color:#526b82}.wb-d-rev-head strong{font-size:17px}.wb-d-rev-head strong.pos,.wb-d-rev-head strong.wb-up{color:#315b82}.wb-d-rev-head strong.neg,.wb-d-rev-head strong.wb-down{color:#a65a5a}.wb-d-rev-track{height:8px;margin:7px 0 6px;background:#edf2f6;border-radius:999px;overflow:hidden}.wb-d-rev-track i{display:block;height:100%;border-radius:999px}.wb-d-rev-track i.pos{background:#4f78a6}.wb-d-rev-track i.neg{background:#a65a5a}.wb-d-rev-amount{display:flex;justify-content:space-between;gap:10px;color:#7a8998;font-size:10px}.wb-d-rev-amount b{color:#3e556c;font-weight:800}.wb-d-hero-chart-cta button{min-height:72px!important}.wb-d-hero-chart-cta button b{font-size:16px!important}.wb-d-hero-chart-cta button small{font-size:11px!important;line-height:1.45}.wb-d-chart-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}.wb-d-chart-summary>div{padding:10px;border:1px solid #e5ebf1;border-radius:10px;background:#fff}.wb-d-chart-summary small{display:block;color:#78889a;font-size:10px}.wb-d-chart-summary b{display:block;margin-top:3px;font-size:16px;color:#294d69}.wb-d-chart-summary .wb-up{color:#315b82}.wb-d-chart-summary .wb-down{color:#a65a5a}@media(max-width:640px){.wb-d-chart-summary{grid-template-columns:1fr 1fr}.wb-d-chart-summary>div:last-child{grid-column:1/-1}.wb-d-rev-amount{font-size:10px}.wb-d-rev-head strong{font-size:16px}}
 </style>
 <p class="wb-disclaimer">選股台專注市場選股與訊號；個人持股請到「持股」頁查看完整組合分析。進入選股台先顯示黑馬快照；其他分頁點到哪裡才讀哪一份已保存快照／推薦紀錄，不因切換分頁重新掃描市場。資料缺漏維持待確認，不以推測數字補足。</p>
 </section>
@@ -28583,22 +28613,26 @@ def render_workbench_body(initial_tab=""):
     function drawLazyChart(host,data,kind){
       if(!Array.isArray(data)||!data.length){host.innerHTML='<div class="wb-d-chart-status">目前沒有足夠的歷史資料可畫圖。</div>';return;}
       if(kind==='revenue'){
-        var w=720,h=300,p={l:42,r:18,t:24,b:42};
-        var yoyVals=data.map(function(d){return d.yoy==null?null:Number(d.yoy);}).filter(function(v){return v!=null&&isFinite(v);});
-        var maxY=Math.max.apply(null,yoyVals.concat([0])),minY=Math.min.apply(null,yoyVals.concat([0]));
-        if(maxY===minY){maxY+=10;minY-=10;}
-        var span=Math.max(20,maxY-minY), pad=span*.15; maxY+=pad; minY-=pad;
-        var plotW=w-p.l-p.r,plotH=h-p.t-p.b,step=plotW/Math.max(1,data.length);
-        function yy(v){return p.t+plotH-(Number(v)-minY)/(maxY-minY)*plotH;}
-        var zero=yy(0), svg='<svg viewBox="0 0 '+w+' '+h+'" role="img" aria-label="營收 YoY 成長趨勢圖">';
-        [maxY,0,minY].forEach(function(v){var gy=yy(v);svg+='<line x1="'+p.l+'" y1="'+gy+'" x2="'+(w-p.r)+'" y2="'+gy+'" stroke="'+(v===0?'#9fb0bf':'#e4ebf1')+'" '+(v===0?'stroke-dasharray="4 4"':'')+'/><text x="'+(p.l-7)+'" y="'+(gy+4)+'" text-anchor="end" font-size="10" fill="#8291a0">'+Number(v).toFixed(0)+'%</text>';});
-        var pts=[]; data.forEach(function(d,i){if(d.yoy==null)return;var v=Number(d.yoy);if(!isFinite(v))return;var x=p.l+i*step+step/2,y=yy(v);pts.push(x+','+y);});
-        if(pts.length>1)svg+='<polyline points="'+pts.join(' ')+'" fill="none" stroke="#4f78a6" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>';
-        data.forEach(function(d,i){if(d.yoy==null)return;var v=Number(d.yoy);if(!isFinite(v))return;var x=p.l+i*step+step/2,y=yy(v),positive=v>=0;svg+='<circle cx="'+x+'" cy="'+y+'" r="6" fill="'+(positive?'#4f78a6':'#a65a5a')+'"/><text x="'+x+'" y="'+Math.max(13,y-11)+'" text-anchor="middle" font-size="10" font-weight="800" fill="'+(positive?'#315b82':'#a65a5a')+'">'+(v>=0?'+':'')+v.toFixed(0)+'%</text><text x="'+x+'" y="'+(h-15)+'" text-anchor="middle" font-size="10" fill="#74879a">'+esc(String(d.period||'').slice(0,7))+'</text>';});
-        svg+='</svg>';
-        var latest=data[data.length-1]||{},latestYoy=latest.yoy!=null?Number(latest.yoy):null,cur=latest.current!=null?Number(latest.current):null,prev=latest.previous!=null?Number(latest.previous):null;
-        var fmt=function(v){return v==null||!isFinite(v)?'待確認':Number(v).toLocaleString('zh-TW',{maximumFractionDigits:0});};
-        host.innerHTML='<div class="wb-d-chart-title"><b>每月營收 YoY 成長</b><small>先看成長率趨勢，再看最新月今年／去年金額。</small></div><div class="wb-d-chart-wrap wb-d-revenue-chart">'+svg+'</div><div class="wb-d-chart-summary wb-d-revenue-latest"><div><small>最新月 YoY</small><b>'+(latestYoy==null?'待確認':(latestYoy>=0?'+':'')+latestYoy.toFixed(1)+'%')+'</b></div><div><small>今年月營收</small><b>'+fmt(cur)+'</b></div><div><small>去年同期</small><b>'+fmt(prev)+'</b></div></div><div class="wb-d-chart-note">這張圖只回答一件事：每個月比去年同期成長多少。若保存資料少於 12 期，會如實顯示現有期間，不補造資料。</div>';
+        // 營收圖不再用「兩根柱子」或只有兩個點的空洞折線。
+        // 核心只回答：每個月比去年同期成長多少；金額放在每月列內一起對照。
+        var rows=data.filter(function(d){return d.yoy!=null&&isFinite(Number(d.yoy));});
+        if(!rows.length){host.innerHTML='<div class="wb-d-chart-status">目前沒有足夠的營收 YoY 歷史資料可畫圖。</div>';return;}
+        var maxAbs=Math.max.apply(null,rows.map(function(d){return Math.abs(Number(d.yoy)||0);}).concat([1]));
+        var scale=Math.max(100,maxAbs);
+        function moneyShort(v){return v==null||!isFinite(Number(v))?'待確認':Number(v).toLocaleString('zh-TW',{maximumFractionDigits:0});}
+        var list=rows.map(function(d){
+          var yoy=Number(d.yoy)||0, width=Math.min(100,Math.abs(yoy)/scale*100), cls=yoy>=0?'pos':'neg';
+          var period=String(d.period||'').slice(0,7);
+          return '<div class="wb-d-rev-row"><div class="wb-d-rev-head"><b>'+esc(period)+'</b><strong class="'+cls+'">'+(yoy>=0?'+':'')+yoy.toFixed(1)+'%</strong></div>'
+            +'<div class="wb-d-rev-track"><i class="'+cls+'" style="width:'+width.toFixed(1)+'%"></i></div>'
+            +'<div class="wb-d-rev-amount"><span>今年 <b>'+moneyShort(d.current)+'</b></span><span>去年同期 <b>'+moneyShort(d.previous)+'</b></span></div></div>';
+        }).join('');
+        var latest=rows[rows.length-1],latestYoy=Number(latest.yoy)||0,avg=rows.reduce(function(a,d){return a+(Number(d.yoy)||0);},0)/rows.length;
+        host.innerHTML='<div class="wb-d-chart-title"><b>每月營收 YoY 成長</b><small>每一列就是一個月份：先看右側 YoY，再看下面今年／去年同期金額。</small></div>'
+          +'<div class="wb-d-rev-chart">'+list+'</div>'
+          +'<div class="wb-d-chart-summary wb-d-revenue-latest"><div><small>最新月 YoY</small><b class="'+(latestYoy>=0?'wb-up':'wb-down')+'">'+(latestYoy>=0?'+':'')+latestYoy.toFixed(1)+'%</b></div>'
+          +'<div><small>資料期數</small><b>'+rows.length+' 期</b></div><div><small>期間平均 YoY</small><b class="'+(avg>=0?'wb-up':'wb-down')+'">'+(avg>=0?'+':'')+avg.toFixed(1)+'%</b></div></div>'
+          +'<div class="wb-d-chart-note">這裡不是拿營收金額高低畫柱子，而是直接看「年增率」。金額只用來驗證今年是否真的高於去年同期；若目前只保存 2 期，就只顯示 2 期，不補造資料。</div>';
         return;
       }
       var w=720,h=300,p={l:38,r:18,t:24,b:34},vals=data.map(function(d){return Number(d.net)||0;});
@@ -28671,7 +28705,13 @@ def render_workbench_body(initial_tab=""):
       function passFor(n){
         if(Object.prototype.hasOwnProperty.call(fp,n)) return !!fp[n];
         var item=fn.find(function(v){return String(v).indexOf(n)===0;});
-        if(item) return /✓|通過/.test(String(item));
+        if(item){
+          var txt=String(item);
+          if(/×|未通過|不符合|失敗/.test(txt)) return false;
+          // 舊快照的 factor_names 只保存「命中的條件＋排名」，沒有寫入「通過」字樣。
+          // 既然 hit_count 與命中條件同時存在，就把這個條件視為通過。
+          return true;
+        }
         return false;
       }
       var hitCount=Number(x.hit_count);
@@ -29055,6 +29095,11 @@ function bindFactors(){
       [['法人近十日',row.institutional_lots!=null?row.institutional_lots:d.institutional_lots],['外資',d.foreign_lots],['投信',d.trust_lots],['法人金額',d.institutional_amount],['方向變化',d.direction_change],['快照價格',d.snapshot_price]].forEach(function(x){if(x[1]!=null&&x[1]!=='')chipFacts+=fact(x[0],x[1]);});
       if(d.consensus)chipFacts+=fact('法人共識',d.consensus);
       var chipHtml=chipFacts?section('籌碼變化','法人資料依已保存快照整理','<div class="wb-d-facts wb-d-facts-compact">'+chipFacts+'</div>'):'';
+      var sourceChartCta='';
+      if(src==='籌碼'){
+        sourceChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="institutional" data-code="'+esc(row.code||'')+'"><span><b>📊 查看完整法人籌碼圖表</b><small>近20日淨買超／淨賣超、0 軸、累計方向與連續性</small></span><strong>›</strong></button></div>';
+      }
+
 
       /* 8. Price position */
       var posFacts='';
@@ -29067,7 +29112,7 @@ function bindFactors(){
       ex('資料日期',d.source_date);ex('估值說明',d.val_desc);ex('產業動能說明',d.mom_desc);ex('分數組成',d.score_breakdown);ex('資料完整度',d.data_quality);ex('資料原則','只使用目前已保存的原始資料；沒有保存的欄位不自行推測。');
       var explainHtml=section('資料說明','這些內容來自目前保存快照',explain.length?'<div class="wb-d-explain">'+explain.join('')+'</div>':'<p class="wb-d-note">目前沒有額外文字說明。</p>');
 
-      host.innerHTML='<div class="wb-d-container">'+hero+changeHtml+factorHtml+whyHtml+fundamentalHtml+chipHtml+posHtml+explainHtml+validationHtml+'</div>';
+      host.innerHTML='<div class="wb-d-container">'+hero+sourceChartCta+changeHtml+factorHtml+whyHtml+fundamentalHtml+chipHtml+posHtml+explainHtml+validationHtml+'</div>';
       if(typeof appendChipSection==='function')appendChipSection(row);
       bindScoreValidation(validationMode,row);
       /* 內容完成後再保證詳細頁仍在頂端。 */
