@@ -8847,6 +8847,182 @@ def score_stock_by_category(code, ind_map, price, cum_yoy, val, streak,
     }
 
 
+def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, category):
+    """Build transparent, data-backed explanations for each five-factor score.
+
+    These are explanations of the existing scoring rules, not a second scoring model.
+    Keep the text tied to actual fields used by score_stock_by_category().
+    """
+    stock = stock or {}
+    val = val or {}
+    close = stock.get("close")
+    ma20 = stock.get("ma20")
+    ma20_prev = stock.get("ma20_prev")
+    ma60 = stock.get("ma60")
+    ma60_prev = stock.get("ma60_prev")
+    low10 = stock.get("low_10d")
+    high20 = stock.get("high_20d")
+    high60 = stock.get("high_60d")
+    support = stock.get("support")
+    broke_support = bool(stock.get("broke_support"))
+    vol_ratio = float(stock.get("vol_ratio") or 0)
+    avg_price_10d = stock.get("avg_price_10d")
+    turnover10 = stock.get("turnover_10d_billion")
+
+    def fmt_num(v, digits=1):
+        try:
+            return f"{float(v):.{digits}f}"
+        except Exception:
+            return "—"
+
+    def signed(v, digits=1, suffix="%"):
+        try:
+            return f"{float(v):+.{digits}f}{suffix}"
+        except Exception:
+            return "—"
+
+    # 1) Revenue: explain the exact cumulative YoY bucket used by the model.
+    rev_score = float(model.get("rev") or 0)
+    rev_max = 25.0 if category == "電子" else 20.0
+    if cum_yoy is None:
+        rev_lines = ["⚪ 最新累計營收年增率無資料，模型使用缺資料基準分"]
+    else:
+        rev_lines = [f"{'🟢' if float(cum_yoy) >= 20 else '🟡' if float(cum_yoy) > 0 else '🔴'} 累計營收年增 {signed(cum_yoy)}"]
+        if category == "電子":
+            if cum_yoy >= 50: bucket = "≥50%，落在最高成長級距"
+            elif cum_yoy >= 30: bucket = "30%～49.9%，落在高成長級距"
+            elif cum_yoy >= 20: bucket = "20%～29.9%，落在成長級距"
+            elif cum_yoy >= 10: bucket = "10%～19.9%，落在中度成長級距"
+            elif cum_yoy >= 5: bucket = "5%～9.9%，落在低度成長級距"
+            elif cum_yoy > 0: bucket = "0%～4.9%，僅保留小幅成長分"
+            elif cum_yoy > -10: bucket = "-10%～0%，進入衰退級距"
+            else: bucket = "≤-10%，進入最弱級距"
+        else:
+            if cum_yoy >= 25: bucket = "≥25%，傳產成長最高級距"
+            elif cum_yoy >= 15: bucket = "15%～24.9%"
+            elif cum_yoy >= 10: bucket = "10%～14.9%"
+            elif cum_yoy >= 5: bucket = "5%～9.9%"
+            elif cum_yoy > 0: bucket = "0%～4.9%"
+            elif cum_yoy > -10: bucket = "-10%～0%"
+            else: bucket = "≤-10%"
+        rev_lines.append(f"⚪ {bucket} → 營收成長 {rev_score:.0f}/{rev_max:.0f}")
+    rev_lines.append(f"⚪ 本因子權重上限 {rev_max:.0f} 分")
+
+    # 2) Valuation: reuse the model's own description, with raw inputs exposed.
+    val_score = float(model.get("val") or 0)
+    val_max = 25.0
+    val_lines = []
+    pe = val.get("pe")
+    pb = val.get("pb")
+    dy = val.get("yield")
+    if category == "電子":
+        peg = model.get("peg")
+        if pe is not None:
+            val_lines.append(f"⚪ PE {fmt_num(pe)} 倍")
+        else:
+            val_lines.append("⚪ PE 無資料")
+        if cum_yoy is not None and float(cum_yoy) > 0 and pe is not None:
+            val_lines.append(f"⚪ 估值模型使用 PE ÷ 累計營收成長率，PEG ≈ {fmt_num(peg,2) if peg is not None else '—'}")
+        elif cum_yoy is not None:
+            val_lines.append(f"⚪ 累計營收年增 {signed(cum_yoy)}")
+        desc = model.get("val_desc")
+        if desc:
+            val_lines.append("⚪ " + str(desc).replace("\n", " ").strip())
+    else:
+        if pb is not None: val_lines.append(f"⚪ PB {fmt_num(pb,2)} 倍")
+        else: val_lines.append("⚪ PB 無資料")
+        if dy is not None: val_lines.append(f"⚪ 殖利率 {fmt_num(dy,2)}%")
+        else: val_lines.append("⚪ 殖利率無資料")
+        if pe is not None: val_lines.append(f"⚪ PE {fmt_num(pe)} 倍（輔助）")
+        desc = model.get("val_desc")
+        if desc:
+            val_lines.append("⚪ " + str(desc).replace("\n", " ").strip())
+    val_lines.append(f"⚪ 本因子得分 {val_score:.0f}/{val_max:.0f}")
+
+    # 3) Industry momentum: expose the actual industry statistics already used.
+    mom_score = float(model.get("mom") or 0)
+    mom_max = 20.0 if category == "電子" else 25.0
+    mom_desc = str(model.get("mom_desc") or "產業動能資料不足").replace("\n", " ").strip()
+    mom_lines = ["⚪ " + mom_desc, f"⚪ 本因子得分 {mom_score:.0f}/{mom_max:.0f}"]
+
+    # 4) Institutional continuity: exact streak bucket.
+    streak_score = float(model.get("streak_score") or 0)
+    streak_max = 20.0
+    streak_val = int(streak or 0)
+    if streak_val >= 8: streak_bucket = "≥8天 → 原始30分"
+    elif streak_val >= 5: streak_bucket = "5～7天 → 原始25分"
+    elif streak_val >= 3: streak_bucket = "3～4天 → 原始18分"
+    elif streak_val >= 2: streak_bucket = "2天 → 原始10分"
+    elif streak_val >= 1: streak_bucket = "1天 → 原始5分"
+    else: streak_bucket = "0天 → 原始0分"
+    streak_lines = [
+        f"{'🟢' if streak_val >= 3 else '🟡' if streak_val > 0 else '🔴'} 法人連續買超 {streak_val} 天",
+        f"⚪ {streak_bucket}",
+        f"⚪ 換算後法人連續性 {streak_score:.0f}/{streak_max:.0f}",
+    ]
+
+    # 5) Chip / technical: expose every condition contributing to the current score.
+    chip_score = float(model.get("chip_amount_score") or 0)
+    tech_score = float(model.get("technical_score") or 0)
+    chip_tech_score = float(model.get("chip") or 0)
+    chip_lines = []
+    if cum_lots is None or avg_price_10d is None or turnover10 is None:
+        chip_lines.append("⚪ 法人資金強度資料不足")
+    else:
+        net_amt = model.get("net_amount_billion")
+        ratio = (float(net_amt) / float(turnover10) * 100.0) if float(turnover10 or 0) > 0 and net_amt is not None else None
+        direction = "淨買超" if float(cum_lots) > 0 else "淨賣超／無買超"
+        icon = "🟢" if ratio is not None and ratio >= 5 else "🟡" if ratio is not None and ratio > 0 else "🔴"
+        chip_lines.append(f"{icon} 近10日法人{direction} {float(cum_lots):+.0f} 張")
+        chip_lines.append(f"⚪ 換算淨買超金額約 {fmt_num(net_amt,2)} 億元")
+        chip_lines.append(f"⚪ 占近10日成交金額 {signed(ratio) if ratio is not None else '—'}")
+    chip_lines.append(f"⚪ 籌碼子分數 {chip_score:.1f}/5")
+
+    tech_lines = []
+    if close is None:
+        tech_lines.append("⚪ 股價資料不足，無法判斷技術結構")
+    else:
+        if ma20 is not None:
+            diff20 = (float(close)-float(ma20))/float(ma20)*100 if ma20 else 0
+            tech_lines.append(f"{'🟢' if close >= ma20 else '🔴'} 股價 {fmt_num(close,2)} {'站上' if close >= ma20 else '跌破'} 20MA {fmt_num(ma20,2)}（{signed(diff20)}）")
+            if ma20_prev is not None:
+                tech_lines.append(f"{'🟢' if ma20 > ma20_prev else '🔴'} 20MA {'向上' if ma20 > ma20_prev else '向下或持平'}（前值 {fmt_num(ma20_prev,2)}）")
+        else:
+            tech_lines.append("⚪ 20MA 資料不足")
+        if ma60 is not None:
+            tech_lines.append(f"{'🟢' if close >= ma60 else '🔴'} 股價 {'站上' if close >= ma60 else '跌破'} 60MA {fmt_num(ma60,2)}")
+            if ma60_prev is not None:
+                tech_lines.append(f"{'🟢' if ma60 > ma60_prev else '🔴'} 60MA {'向上' if ma60 > ma60_prev else '向下或持平'}")
+        if low10 is not None and ma20 is not None and close >= ma20 and low10 <= ma20*1.03:
+            tech_lines.append("🟢 近10日曾回踩20MA附近，之後重新站在20MA上方")
+        elif support is not None and not broke_support and low10 is not None and low10 <= support*1.03:
+            tech_lines.append(f"🟢 近10日曾回踩支撐 {fmt_num(support,2)} 附近且未有效跌破")
+        else:
+            tech_lines.append("⚪ 未偵測到明確的近期均線／支撐回踩訊號")
+        if high20 is not None and close > high20:
+            tech_lines.append("🟢 突破近20日高點")
+        else:
+            tech_lines.append("⚪ 尚未突破近20日高點")
+        if high60 is not None and close >= high60:
+            tech_lines.append("🟢 站上近60日高點")
+        if high20 is not None and close > high20 and vol_ratio >= 1.3:
+            tech_lines.append(f"🟢 突破時量能約為20日均量 {vol_ratio:.2f} 倍")
+        elif vol_ratio >= 1.5 and close >= (ma20 or close):
+            tech_lines.append(f"🟡 上攻時量能約為20日均量 {vol_ratio:.2f} 倍")
+        else:
+            tech_lines.append(f"⚪ 目前量能約為20日均量 {vol_ratio:.2f} 倍，未因量能額外加分")
+    tech_lines.append(f"⚪ 技術子分數 {tech_score:.1f}/5")
+    chip_lines.append(f"⚪ 籌碼／技術合計 {chip_tech_score:.0f}/10")
+
+    return [
+        {"name": "營收成長", "lines": rev_lines},
+        {"name": "估值", "lines": val_lines},
+        {"name": "產業動能", "lines": mom_lines},
+        {"name": "法人連續性", "lines": streak_lines},
+        {"name": "籌碼／技術", "lines": ["<b>籌碼 5 分</b>"] + chip_lines + ["<b>技術 5 分</b>"] + tech_lines},
+    ]
+
+
 def get_industry_momentum(revenue_data, industry_map):
     """
     用真實資料推導「產業動能」：把全市場月營收依產業別加總，
@@ -13122,6 +13298,12 @@ def _compute_stock_watchlist_scores(codes):
             {"name": "法人連續性", "value": model.get("streak_score"), "max": caps[3]},
             {"name": "籌碼／技術", "value": model.get("chip"), "max": caps[4]},
         ]
+        factor_details = _build_factor_details(
+            code, stock, model, cum_yoy, val, streak, cum_lots, category
+        )
+        for factor in factors:
+            detail = next((d for d in factor_details if d.get("name") == factor.get("name")), None)
+            factor["details"] = detail.get("lines", []) if detail else []
         result[code] = {
             "code": code,
             "name": stock_display_name(code, institutional_data, stock.get("name")),
@@ -17503,7 +17685,7 @@ def render_page(title, body, nav_active=None, user_name=None):
       var valid=fs.filter(function(x){{return Number(x.max)>0;}});
       var best=valid.slice().sort(function(a,b){{return (Number(b.value)/Number(b.max))-(Number(a.value)/Number(a.max));}})[0];
       var worst=valid.slice().sort(function(a,b){{return (Number(a.value)/Number(a.max))-(Number(b.value)/Number(b.max));}})[0];
-      var bars=fs.map(function(x){{var v=Number(x.value)||0,m=Number(x.max)||0,r=m>0?Math.max(0,Math.min(1,v/m)):0;return '<div class="position-factor-item '+cls(r)+'"><div class="position-factor-head"><span>'+esc(x.name)+'</span><b>'+v.toFixed(0)+' / '+m.toFixed(0)+'　'+status(r)+'</b></div><div class="position-factor-track"><i style="width:'+(r*100).toFixed(1)+'%"></i></div></div>';}}).join('');
+      var bars=fs.map(function(x){{var v=Number(x.value)||0,m=Number(x.max)||0,r=m>0?Math.max(0,Math.min(1,v/m)):0;var details=Array.isArray(x.details)?x.details:[];var detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){{return '<div>'+esc(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\/b&gt;/g,'</b>')+'</div>';}}).join('')+'</div>':'';return '<details class="position-factor-item '+cls(r)+'"><summary class="position-factor-head"><span>'+esc(x.name)+'</span><b>'+v.toFixed(0)+' / '+m.toFixed(0)+'　'+status(r)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(r*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}}).join('');
       var note='';
       if(best)note+='<b>目前相對較強：</b>'+esc(best.name)+'（'+status(Number(best.value)/Number(best.max))+'）。';
       if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+esc(worst.name)+'（'+status(Number(worst.value)/Number(worst.max))+'）。';
@@ -19439,7 +19621,7 @@ def web_positions(uid):
 @media(max-width:520px){.position-card{border-radius:19px;padding:15px}.position-card-title h3{font-size:20px}.position-card-price b{font-size:23px}.position-card-primary{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}.position-card-primary>div:last-child{grid-column:auto}.bot-virtual-card{grid-template-columns:1fr}.position-card-grid{grid-template-columns:1fr 1fr}}
 .position-more{margin-top:8px;border-top:1px solid #edf1f4}.position-more>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:space-between}.position-more>summary::-webkit-details-marker{display:none}.position-more>summary:after{content:'＋';font-size:16px;font-weight:500;color:#8294a6}.position-more[open]>summary:after{content:'−'}.position-detail-body{padding:2px 0 4px}.position-card-grid{margin-top:8px!important}.position-card-actions{margin-top:8px!important}.position-card-primary>div{min-width:0!important;min-height:58px!important;display:flex!important;flex-direction:column!important;justify-content:center!important}.position-card-primary b{font-size:17px!important;line-height:1.15!important;overflow-wrap:anywhere}
 @media(max-width:520px){.position-card-primary>div{padding:8px 6px!important;min-height:54px!important;border-radius:11px!important}.position-card-primary small{font-size:10px!important;white-space:nowrap}.position-card-primary b{font-size:14px!important}}
-.position-card{position:relative;border-left:4px solid #d9e3ec;transition:border-color .18s,box-shadow .18s;background:#fff}.position-card:has(.position-card-primary .up){border-left-color:#d93025}.position-card:has(.position-card-primary .down){border-left-color:#0b8f55}.position-card .up{color:#d93025!important}.position-card .down{color:#0b8f55!important}.position-factors{margin-top:10px;border-top:1px solid #edf1f4;padding-top:2px}.position-factors>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:13px;font-weight:850;display:flex;align-items:center;justify-content:space-between}.position-factors>summary::-webkit-details-marker{display:none}.position-factors>summary:after{content:'＋';font-size:17px;font-weight:500;color:#8294a6}.position-factors[open]>summary:after{content:'−'}.position-factors-body{padding:4px 0 10px}.position-factor-loading,.position-factor-empty{padding:11px 12px;border:1px dashed #d7e2ea;border-radius:11px;background:#f8fafc;color:#71808f;font-size:12px;line-height:1.6}.position-factor-overview{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-radius:12px;background:#f5f9fc;border:1px solid #dfe9f1;margin-bottom:9px}.position-factor-overview small{display:block;color:#71808f;font-size:10px}.position-factor-overview b{display:block;margin-top:2px;color:#173b5d;font-size:22px;line-height:1}.position-factor-overview em{font-style:normal;color:#607789;font-size:11px;line-height:1.45;text-align:right}.position-factor-list{display:grid;gap:7px}.position-factor-item{padding:9px 10px;border:1px solid #e4ebf0;border-radius:10px;background:#fff}.position-factor-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-factor-head span{font-size:12px;font-weight:850;color:#294e6d}.position-factor-head b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.position-factor-track{height:8px;margin-top:6px;background:#e9eff3;border-radius:99px;overflow:hidden}.position-factor-track i{display:block;height:100%;border-radius:99px}.position-factor-item.strong .position-factor-head b{color:#1f638f}.position-factor-item.strong .position-factor-track i{background:#2d78a8}.position-factor-item.mid .position-factor-head b{color:#a66b18}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral .position-factor-head b{color:#667788}.position-factor-item.neutral .position-factor-track i{background:#91a2af}.position-factor-item.weak .position-factor-head b{color:#a14d4d}.position-factor-item.weak .position-factor-track i{background:#c56b6b}.position-factor-note{margin:8px 0 0;padding:9px 10px;border-radius:9px;background:#f8fafc;color:#526879;font-size:11px;line-height:1.6}.position-factor-note b{color:#244f70}.position-factor-source{margin-top:7px;color:#8997a4;font-size:10px}.position-factor-status{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.position-factor-status span{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;background:#eef4f8;color:#45647a}.position-factor-status span.good{background:#fff0f0;color:#c62828}.position-factor-status span.warn{background:#fff4e4;color:#9a651d}.position-factor-status span.weak{background:#eaf4ef;color:#087443}.position-factor-item.strong{border-color:#efc3c3;background:#fff5f5}.position-factor-item.strong .position-factor-head b{color:#c62828}.position-factor-item.strong .position-factor-track i{background:#d93025}.position-factor-item.mid{border-color:#f1d8a7;background:#fffaf0}.position-factor-item.mid .position-factor-head b{color:#9a651d}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral{border-color:#d9e1e8;background:#f8fafc}.position-factor-item.weak{border-color:#bfe3cf;background:#f3fbf6}.position-factor-item.weak .position-factor-head b{color:#087443}.position-factor-item.weak .position-factor-track i{background:#0b8f55}.position-factor-note{border-left:4px solid #52718d}.position-factor-note b{color:#244f70}
+.position-card{position:relative;border-left:4px solid #d9e3ec;transition:border-color .18s,box-shadow .18s;background:#fff}.position-card:has(.position-card-primary .up){border-left-color:#d93025}.position-card:has(.position-card-primary .down){border-left-color:#0b8f55}.position-card .up{color:#d93025!important}.position-card .down{color:#0b8f55!important}.position-factors{margin-top:10px;border-top:1px solid #edf1f4;padding-top:2px}.position-factors>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:13px;font-weight:850;display:flex;align-items:center;justify-content:space-between}.position-factors>summary::-webkit-details-marker{display:none}.position-factors>summary:after{content:'＋';font-size:17px;font-weight:500;color:#8294a6}.position-factors[open]>summary:after{content:'−'}.position-factors-body{padding:4px 0 10px}.position-factor-loading,.position-factor-empty{padding:11px 12px;border:1px dashed #d7e2ea;border-radius:11px;background:#f8fafc;color:#71808f;font-size:12px;line-height:1.6}.position-factor-overview{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-radius:12px;background:#f5f9fc;border:1px solid #dfe9f1;margin-bottom:9px}.position-factor-overview small{display:block;color:#71808f;font-size:10px}.position-factor-overview b{display:block;margin-top:2px;color:#173b5d;font-size:22px;line-height:1}.position-factor-overview em{font-style:normal;color:#607789;font-size:11px;line-height:1.45;text-align:right}.position-factor-list{display:grid;gap:7px}.position-factor-item>summary{list-style:none;cursor:pointer}.position-factor-item>summary::-webkit-details-marker{display:none}.position-factor-item>summary b{white-space:nowrap}.position-factor-item[open]>summary b{ }.position-factor-details{margin-top:8px;padding:9px 10px;border-top:1px solid rgba(120,140,155,.18);background:rgba(255,255,255,.62);border-radius:8px;color:#526879;font-size:11px;line-height:1.7}.position-factor-details>div{margin:2px 0}.position-factor-details b{color:#244f70;font-weight:900}.position-factor-item.strong .position-factor-details{background:#fffafa}.position-factor-item.weak .position-factor-details{background:#f7fcf8}.position-factor-item.mid .position-factor-details{background:#fffdf8}.position-factor-item{padding:9px 10px;border:1px solid #e4ebf0;border-radius:10px;background:#fff}.position-factor-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-factor-head span{font-size:12px;font-weight:850;color:#294e6d}.position-factor-head b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.position-factor-track{height:8px;margin-top:6px;background:#e9eff3;border-radius:99px;overflow:hidden}.position-factor-track i{display:block;height:100%;border-radius:99px}.position-factor-item.strong .position-factor-head b{color:#1f638f}.position-factor-item.strong .position-factor-track i{background:#2d78a8}.position-factor-item.mid .position-factor-head b{color:#a66b18}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral .position-factor-head b{color:#667788}.position-factor-item.neutral .position-factor-track i{background:#91a2af}.position-factor-item.weak .position-factor-head b{color:#a14d4d}.position-factor-item.weak .position-factor-track i{background:#c56b6b}.position-factor-note{margin:8px 0 0;padding:9px 10px;border-radius:9px;background:#f8fafc;color:#526879;font-size:11px;line-height:1.6}.position-factor-note b{color:#244f70}.position-factor-source{margin-top:7px;color:#8997a4;font-size:10px}.position-factor-status{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.position-factor-status span{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;background:#eef4f8;color:#45647a}.position-factor-status span.good{background:#fff0f0;color:#c62828}.position-factor-status span.warn{background:#fff4e4;color:#9a651d}.position-factor-status span.weak{background:#eaf4ef;color:#087443}.position-factor-item.strong{border-color:#efc3c3;background:#fff5f5}.position-factor-item.strong .position-factor-head b{color:#c62828}.position-factor-item.strong .position-factor-track i{background:#d93025}.position-factor-item.mid{border-color:#f1d8a7;background:#fffaf0}.position-factor-item.mid .position-factor-head b{color:#9a651d}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral{border-color:#d9e1e8;background:#f8fafc}.position-factor-item.weak{border-color:#bfe3cf;background:#f3fbf6}.position-factor-item.weak .position-factor-head b{color:#087443}.position-factor-item.weak .position-factor-track i{background:#0b8f55}.position-factor-note{border-left:4px solid #52718d}.position-factor-note b{color:#244f70}
 </style>"""
 
     body = f"""
@@ -19546,7 +19728,7 @@ def web_positions(uid):
     var valid=fs.filter(function(x){return x.value!=null&&x.max>0;});
     var best=valid.slice().sort(function(a,b){return (b.value/b.max)-(a.value/a.max);})[0];
     var worst=valid.slice().sort(function(a,b){return (a.value/a.max)-(b.value/b.max);})[0];
-    var bars=fs.map(function(x){var v=Number(x.value),max=Number(x.max),ratio=max>0?Math.max(0,Math.min(1,v/max)):0,cls=factorClass(ratio);return '<div class="position-factor-item '+cls+'"><div class="position-factor-head"><span>'+escText(x.name)+'</span><b>'+v.toFixed(0)+' / '+max.toFixed(0)+'　'+factorStatus(ratio)+'</b></div><div class="position-factor-track"><i style="width:'+(ratio*100).toFixed(1)+'%"></i></div></div>';}).join('');
+    var bars=fs.map(function(x){var v=Number(x.value),max=Number(x.max),ratio=max>0?Math.max(0,Math.min(1,v/max)):0,cls=factorClass(ratio),details=Array.isArray(x.details)?x.details:[],detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){return '<div>'+escText(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\/b&gt;/g,'</b>')+'</div>';}).join('')+'</div>':'';return '<details class="position-factor-item '+cls+'"><summary class="position-factor-head"><span>'+escText(x.name)+'</span><b>'+v.toFixed(0)+' / '+max.toFixed(0)+'　'+factorStatus(ratio)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(ratio*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}).join('');
     var note='';
     if(best)note+='<b>目前相對較強：</b>'+escText(best.name)+'（'+factorStatus(best.value/best.max)+'）。';
     if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+escText(worst.name)+'（'+factorStatus(worst.value/worst.max)+'）。';
