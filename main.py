@@ -28555,7 +28555,7 @@ def render_workbench_body(initial_tab=""):
         var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
         var metric='—';
         if(n!=null){
-          if(key==='混合'||key==='四因子複合'){metric=(x.hit_count||0)+'/4';}
+          if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} metric=hc+'/4';}
           else{var digits=(key==='低波動'||key==='ROE品質')?2:1;metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');}
         }
         return '<button type="button" class="wb-lab-pick" data-lab-code="'+esc(x.code)+'" data-lab-key="'+esc(key)+'"><span class="wb-lab-rank">'+(i+1)+'</span><span class="wb-lab-pick-main"><b>'+esc(x.code)+'　'+esc(x.name)+'</b><small>'+esc(x.industry||'未分類')+'</small><span class="wb-lab-pick-metric-mobile"><strong>'+esc(metric)+'</strong><em>'+esc(x.metric_label||'研究值')+'</em></span><span class="wb-lab-pick-tags">'+chips+'</span><span class="wb-lab-pick-reason-mobile">'+esc(x.reason||'')+'</span></span><span class="wb-lab-pick-metric"><strong>'+esc(metric)+'</strong><small>'+esc(x.metric_label||'研究值')+'</small></span><span class="wb-lab-pick-reason">'+esc(x.reason||'')+'</span><span class="wb-lab-arrow">›</span></button>';
@@ -28578,14 +28578,18 @@ def render_workbench_body(initial_tab=""):
       document.body.style.position='fixed';document.body.style.top=(-y)+'px';document.body.style.left='0';document.body.style.right='0';document.body.style.width='100%';
       dr.classList.add('open');dr.setAttribute('aria-hidden','false');if(mk)mk.hidden=false;dr.scrollTop=0;host.scrollTop=0;
       var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
-      var metric=n==null?'—':((key==='混合'||key==='四因子複合')?((x.hit_count||0)+'/4'):n.toFixed(key==='低波動'||key==='ROE品質'?2:1)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':''));
+      var metric=n==null?'—':((key==='混合'||key==='四因子複合')?((Number(x.hit_count)||((x.factor_names||[]).length||Object.keys(x.factor_rank_map||{}).length||0))+'/4'):n.toFixed(key==='低波動'||key==='ROE品質'?2:1)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':''));
       var chips=(x.tags||[]).map(function(t){return '<span class="wb-d-chip">'+esc(t)+'</span>';}).join('');
       var factorRows=''; var bars=''; var caution=''; var highlight=''; var conclusion=''; var noteworthy='';
       var isComposite=(key==='混合'||key==='四因子複合');
-      if(isComposite && x.factor_rank_map){
+      if(isComposite){
         var order=['營收成長','股價趨勢','價格穩定度','估值條件'];
         var rankVals=[];
-        order.forEach(function(name){var rv=Number(x.factor_rank_map[name]); if(isFinite(rv)){rankVals.push({name:name,rank:rv});}});
+        var rankMap=x.factor_rank_map||{};
+        order.forEach(function(name){var rv=Number(rankMap[name]); if(isFinite(rv)){rankVals.push({name:name,rank:rv});}});
+        if(!rankVals.length && Array.isArray(x.factor_names) && Array.isArray(x.factor_ranks)){
+          x.factor_names.forEach(function(name,idx){var rv=Number(x.factor_ranks[idx]); if(isFinite(rv)){rankVals.push({name:name,rank:rv});}});
+        }
         factorRows=rankVals.map(function(o){return '<div class="wb-d-factor-row"><span>'+esc(o.name)+'</span><b>第 '+esc(o.rank)+' 名</b></div>';}).join('');
         bars='<div class="wb-d-bars">'+rankVals.map(function(o){var pct=Math.max(8,Math.min(100,100*(26-o.rank)/25));return '<div class="wb-d-bar-row"><span>'+esc(o.name)+'</span><div class="wb-d-bar"><i style="width:'+pct.toFixed(0)+'%"></i></div><b>第 '+esc(o.rank)+'</b></div>';}).join('')+'</div>';
         var sorted=rankVals.slice().sort(function(a,b){return a.rank-b.rank;});
@@ -29857,8 +29861,8 @@ def _build_strategy_lab_payload():
                 factor_rank_map[hybrid_labels.get(fk,fk)]=maps[fk][c]
         hit_names=list(factor_rank_map.keys())
         detail_text="、".join([f"{name}第{rank}名" for name,rank in factor_rank_map.items()])
-        reason=(f"4 個條件中有 {len(ranks)} 個進入研究排名" + (f"：{detail_text}" if detail_text else ""))
-        hybrid_recs.append(make_rec(c,r.get("name"),r.get("industry"),score,"共識分數",[f"{len(ranks)}/4 條件有排名"],reason,extra={"rank":i,"factor_ranks":ranks,"factor_rank_map":factor_rank_map,"factor_names":hit_names,"hit_count":len(ranks),"score_explanation":"分數越高代表同時在更多條件、且排名更前；不是百分比。"}))
+        reason=(f"符合 {len(ranks)}/4 個研究條件" + (f"：{detail_text}" if detail_text else ""))
+        hybrid_recs.append(make_rec(c,r.get("name"),r.get("industry"),score,"多條件共識",[f"{len(ranks)}/4 條件有排名"],reason,extra={"rank":i,"factor_ranks":ranks,"factor_rank_map":factor_rank_map,"factor_names":hit_names,"hit_count":len(ranks),"matched_factors":hit_names,"score_explanation":"這是研究排序用的共識分數；同時符合的條件越多、各條件排名越前，分數越高，不是報酬率或百分比。"}))
 
     strategy_data={
         "營收動能":revenue_recs,"價格動能":mom_recs,"低波動":lowvol_recs,"價值":value_recs,
