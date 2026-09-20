@@ -29422,7 +29422,7 @@ def _workbench_source_payload(uid, source):
 
 _STRATEGY_LAB_CACHE = {"at": 0.0, "data": None}
 _STRATEGY_LAB_CACHE_TTL = 12 * 3600  # 12 小時；研究室每日預熱一次，白天直接讀快照
-_STRATEGY_LAB_SCHEMA_VERSION = 3  # 綜合條件欄位修正版：hit_count / factor_rank_map 必須存在
+_STRATEGY_LAB_SCHEMA_VERSION = 4  # ROE 財報來源／期間配對修正版；強制淘汰舊 ROE 快取
 _STRATEGY_LAB_CACHE_LOCK = threading.Lock()
 
 def _normalize_strategy_lab_payload(payload):
@@ -29512,88 +29512,149 @@ def _save_strategy_lab_shared_cache(payload):
 
 
 def _fetch_strategy_roe_from_twse(codes=None):
-    """抓取證交所公開財報，計算最新可用的 ROE。
+    """抓取上市／上櫃最新公開財報，計算研究室可驗證的目前 ROE。
 
-    這裡只做「目前研究候選」用途，不冒充 FinLab 的完整 point-in-time 歷史 ROE。
-    資料抓完後由 strategy_lab shared snapshot 快取，使用者進頁面不會現場重抓。
+    注意：TWSE 財報 API 的 t187ap06/t187ap07 是依產業拆分的綜合損益表／資產負債表，
+    不能把「t187ap06」當成單一端點，也不能只抓一般業；另外財報期間通常由「年度＋季別」
+    表示，不一定有「資料年月」。這裡統一做欄位與期間正規化，並用最新同期間的
+    「歸屬母公司業主淨利 ÷ 歸屬母公司業主權益」計算目前 ROE。
+
+    由於 OpenAPI 提供的是最新累計財報而非完整歷史序列，這裡的 ROE 會標示為
+    「最新累計財報年化」；不冒充 FinLab point-in-time 歷史 ROE。
     """
-    wanted=set(str(c) for c in (codes or []) if re.fullmatch(r"\d{4}",str(c)))
+    wanted=set()
+    for c in (codes or []):
+        m=re.search(r"\d{4}", str(c or ""))
+        if m:
+            wanted.add(m.group(0))
+    if not wanted:
+        return {}
+
+    # TWSE：一般業／金控／保險／證券期貨／異業；TPEX：一般業。
     endpoints=[]
     for suffix in ("ci","basi","bd","fh","ins","mim"):
-        endpoints.append(f"{TWSE_BASE}/opendata/t187ap06_L_{suffix}")
-        endpoints.append(f"{TWSE_BASE}/opendata/t187ap07_L_{suffix}")
+        endpoints.append((f"{TWSE_BASE}/opendata/t187ap06_L_{suffix}", "income", "TWSE"))
+        endpoints.append((f"{TWSE_BASE}/opendata/t187ap07_L_{suffix}", "equity", "TWSE"))
+    endpoints.extend([
+        (f"{TPEX_BASE}/mopsfin_t187ap06_O_ci", "income", "TPEX"),
+        (f"{TPEX_BASE}/mopsfin_t187ap07_O_ci", "equity", "TPEX"),
+    ])
+
     try:
-        fetched=fetch_json_bulk(endpoints, timeout=20, workers=8)
+        fetched=fetch_json_bulk([u for u,_,_ in endpoints], timeout=25, workers=10)
     except Exception as exc:
-        print(f"⚠️ TWSE ROE 批次讀取失敗：{exc}")
+        print(f"⚠️ 財報 ROE 批次讀取失敗：{exc}")
         return {}
 
     def norm_key(v):
-        return re.sub(r"[\s\u3000()（）%％_\-]", "", str(v or "")).lower()
+        return re.sub(r"[\s\u3000()（）%％_\-／/．.：:，,]", "", str(v or "")).lower()
+
     def pick(row, aliases):
         amap={norm_key(k):v for k,v in row.items()}
         for a in aliases:
             v=amap.get(norm_key(a))
-            if v not in (None, "", "-"):
+            if v not in (None, "", "-", "--"):
                 return v
         return None
+
+    def norm_code(v):
+        st=str(v or "").strip()
+        m=re.search(r"(?<!\d)(\d{4})(?!\d)", st)
+        return m.group(1) if m else None
+
     def num(v):
+        if v in (None, "", "-", "--"):
+            return None
         try:
-            x=float(str(v).replace(",","").replace("%"," ").strip())
-            return x
+            st=str(v).strip().replace(",", "").replace("，", "")
+            # 財報有時用括號或 △ 表示負數。
+            neg=st.startswith("(") and st.endswith(")")
+            st=st.strip("()")
+            st=st.replace("△", "-").replace("％", "%").replace("%", "")
+            x=float(st)
+            return -x if neg and x>0 else x
         except Exception:
             return None
-    def period_key(v):
-        st=str(v or "")
-        nums=re.sub(r"[^0-9]", "", st)
-        if len(nums)>=6:
-            return nums[:6]
-        return st
 
-    income_alias=["公司代號","證券代號","股票代號","公司碼"]
-    code_alias=income_alias
-    period_alias=["資料年月","財報年月","年月","資料日期","出表日期","報表日期"]
+    def period_key(row):
+        """回傳可排序的 (年度, 季別, 原始文字)。"""
+        year=pick(row, ["年度", "資料年度", "財報年度", "年"])
+        q=pick(row, ["季別", "季度", "財報季別", "季"])
+        yn=num(year)
+        qn=num(q)
+        if yn is not None:
+            # ROC 115 與西元 2026 都可排序；不需要強制轉換。
+            yi=int(yn)
+            qi=int(qn) if qn is not None else 0
+            return (yi, qi, f"{yi:04d}Q{qi}")
+        # 某些資料源會給 11506 / 202606 / 2026-06 形式。
+        raw=pick(row, ["資料年月", "財報年月", "年月", "資料日期", "出表日期", "報表日期"])
+        nums=re.sub(r"[^0-9]", "", str(raw or ""))
+        if len(nums)>=6:
+            try:
+                return (int(nums[:4]), int(nums[4:6]), str(raw))
+            except Exception:
+                pass
+        return (0, 0, str(raw or ""))
+
+    code_alias=["公司代號", "證券代號", "股票代號", "公司碼", "SecuritiesCompanyCode", "Code"]
     net_alias=[
-        "歸屬於母公司業主之淨利（淨損）","歸屬於母公司業主之淨利","本期淨利（淨損）",
-        "本期淨利","本期稅後淨利","稅後淨利","母公司業主之淨利（損）","母公司業主之淨利"
+        "歸屬於母公司業主之淨利（淨損）", "歸屬於母公司業主之淨利（損）",
+        "歸屬於母公司業主之淨利", "歸屬母公司業主淨利", "歸屬母公司業主之淨利",
+        "本期淨利（淨損）", "本期淨利", "本期淨損", "本期稅後淨利", "稅後淨利",
+        "母公司業主之淨利（損）", "母公司業主之淨利",
     ]
     eq_alias=[
-        "歸屬於母公司業主之權益","權益總額（歸屬於母公司業主）","股東權益總額",
-        "權益總額","權益總額（含非控制權益）"
+        "歸屬於母公司業主之權益", "歸屬於母公司業主之權益合計",
+        "權益總額（歸屬於母公司業主）", "歸屬母公司業主之權益",
+        "歸屬母公司業主權益", "股東權益總額", "權益總額",
     ]
-    # 同一公司可能同時有多個年度／季別；取資料年月最新的一筆。
-    income={}; equity={}
-    for url,rows in fetched.items():
-        if not isinstance(rows,list): continue
-        is_income="t187ap06" in url
-        is_equity="t187ap07" in url
-        if not (is_income or is_equity): continue
-        for row in rows:
-            if not isinstance(row,dict): continue
-            code=pick(row,code_alias)
-            if code is None: continue
-            code=str(code).strip()
-            if code not in wanted: continue
-            per=period_key(pick(row,period_alias))
-            if not per: per="000000"
-            if is_income:
-                val=num(pick(row,net_alias))
-                if val is not None and (code not in income or per>income[code][0]): income[code]=(per,val)
-            else:
-                val=num(pick(row,eq_alias))
-                if val is not None and val>0 and (code not in equity or per>equity[code][0]): equity[code]=(per,val)
 
-    # TWSE 財報數字常見單位為千元；ROE 為比率，單位會相消。
-    # 這裡以最新可配對期間的稅後淨利 / 平均可得權益近似目前季 ROE；
-    # 若只有單一季末權益，先以期末權益計算，並標記 data_scope。
+    income={}; equity={}
+    for url,kind,market in endpoints:
+        rows=fetched.get(url)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            code=norm_code(pick(row, code_alias))
+            if code not in wanted:
+                continue
+            period=period_key(row)
+            if kind=="income":
+                value=num(pick(row, net_alias))
+                if value is None:
+                    continue
+                if code not in income or period[:2] > income[code][0][:2]:
+                    income[code]=(period,value,market)
+            else:
+                value=num(pick(row, eq_alias))
+                if value is None or value <= 0:
+                    continue
+                if code not in equity or period[:2] > equity[code][0][:2]:
+                    equity[code]=(period,value,market)
+
     out={}
-    for code,(ip,net) in income.items():
-        ep,eq=equity.get(code,(None,None))
-        if not eq: continue
-        if net is None: continue
-        roe=net/eq*100.0
+    for code,(ip,net,imarket) in income.items():
+        eqrec=equity.get(code)
+        if not eqrec:
+            continue
+        ep,eq,emarket=eqrec
+        # 只有同一財報期間才配對，避免把不同季度的數字湊在一起。
+        if ip[:2] != ep[:2] or eq <= 0:
+            continue
+
+        # t187ap06_L / mopsfin_t187ap06_O 是截至該季累計損益；換成年化 ROE。
+        quarter=int(ip[1] or 0)
+        annualize={1:4.0, 2:2.0, 3:4.0/3.0, 4:1.0}.get(quarter, 1.0)
+        roe=net*annualize/eq*100.0
         if -200 <= roe <= 500:
-            out[code]={"roe":round(roe,2),"period":ip,"data_scope":"TWSE 最新可配對財報；非 FinLab point-in-time 歷史序列"}
+            out[code]={
+                "roe":round(roe,2),
+                "period":ip[2],
+                "data_scope":f"{imarket}/{emarket} 最新累計財報年化；非 FinLab point-in-time 歷史序列",
+            }
     return out
 
 def _build_strategy_lab_payload():
@@ -29790,7 +29851,7 @@ def _build_strategy_lab_payload():
     roe_recs=[]
     for i,(c,v) in enumerate(roe_items[:25],1):
         r=by_code[c]
-        roe_recs.append(make_rec(c,r.get("name"),r.get("industry"),v,"目前 ROE",["ROE品質"],f"目前可驗證 ROE {v:+.1f}%",extra={"rank":i,"roe":v,"data_scope":str(r.get("roe_data_scope") or "目前可驗證資料；非 point-in-time 歷史資料")}))
+        roe_recs.append(make_rec(c,r.get("name"),r.get("industry"),v,"目前 ROE",["ROE品質"],f"目前可驗證 ROE {v:+.1f}%",extra={"rank":i,"roe":v,"data_scope":str(r.get("roe_data_scope") or "最新累計財報年化；非 point-in-time 歷史資料")}))
 
     # 1. 營收動能
     revenue_items=[]
