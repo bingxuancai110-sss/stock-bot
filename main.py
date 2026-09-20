@@ -28472,7 +28472,7 @@ def render_workbench_body(initial_tab=""):
   <div id="wb-lab-body"><div class="wb-lab-loading">正在載入策略研究設定…</div></div>
 </div>
 <style>
-.wb-strategy-lab{padding:4px 0 28px}.wb-lab-hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;padding:18px;border:1px solid rgba(39,76,119,.12);border-radius:18px;background:linear-gradient(135deg,#f7fbff,#fff);margin-bottom:14px}.wb-lab-kicker{font-size:11px;letter-spacing:.14em;color:#4f78a6;font-weight:800}.wb-lab-hero h3{margin:5px 0 5px;font-size:22px}.wb-lab-hero p{margin:0;color:#657487;line-height:1.6}.wb-lab-hero button{border:0;border-radius:10px;padding:9px 13px;background:#274c77;color:#fff;font-weight:700;white-space:nowrap}.wb-lab-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.wb-lab-card{background:#fff;border:1px solid #e7edf4;border-radius:16px;padding:16px;box-shadow:0 4px 18px rgba(25,55,90,.05)}.wb-lab-card h4{margin:0 0 9px;font-size:16px}.wb-lab-muted{color:#738197;font-size:13px;line-height:1.6}.wb-lab-factor{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #eef2f6}.wb-lab-factor:first-of-type{border-top:0}.wb-lab-factor b{min-width:74px}.wb-lab-weight{margin-left:auto;font-weight:800}.wb-lab-status{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;background:#eef3f8;color:#4b647d}.wb-lab-status.ready{background:#e9f7ef;color:#19733b}.wb-lab-status.wait{background:#fff6df;color:#8a6815}.wb-lab-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.wb-lab-metric{padding:10px;border-radius:12px;background:#f6f8fb}.wb-lab-metric small{display:block;color:#78879a}.wb-lab-metric b{display:block;margin-top:3px;font-size:17px}.wb-lab-compare{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.wb-lab-compare .wb-lab-card{min-height:120px}.wb-lab-note{padding:12px 14px;border-radius:12px;background:#f8fafc;color:#657487;line-height:1.65;font-size:13px}.wb-lab-table{width:100%;border-collapse:collapse;margin-top:10px}.wb-lab-table th,.wb-lab-table td{text-align:left;padding:9px 7px;border-bottom:1px solid #edf1f5;font-size:13px}.wb-lab-table th{color:#738197;font-weight:700}@media(max-width:700px){.wb-lab-hero{display:block}.wb-lab-hero button{margin-top:12px}.wb-lab-grid,.wb-lab-compare{grid-template-columns:1fr}.wb-lab-metrics{grid-template-columns:repeat(2,1fr)}}
+.wb-strategy-lab{padding:4px 0 28px}.wb-lab-hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;padding:18px;border:1px solid rgba(39,76,119,.12);border-radius:18px;background:linear-gradient(135deg,#f7fbff,#fff);margin-bottom:14px}.wb-lab-kicker{font-size:11px;letter-spacing:.14em;color:#4f78a6;font-weight:800}.wb-lab-hero h3{margin:5px 0 5px;font-size:22px}.wb-lab-hero p{margin:0;color:#657487;line-height:1.6}.wb-lab-hero button{border:0;border-radius:10px;padding:9px 13px;background:#274c77;color:#fff;font-weight:700;white-space:nowrap}.wb-lab-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.wb-lab-card{background:#fff;border:1px solid #e7edf4;border-radius:16px;padding:16px;box-shadow:0 4px 18px rgba(25,55,90,.05)}.wb-lab-card h4{margin:0 0 9px;font-size:16px}.wb-lab-muted{color:#738197;font-size:13px;line-height:1.6}.wb-lab-factor{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #eef2f6}.wb-lab-factor:first-of-type{border-top:0}.wb-lab-factor b{min-width:74px}.wb-lab-weight{margin-left:auto;font-weight:800}.wb-lab-status{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;background:#eef3f8;color:#4b647d}.wb-lab-status.ready{background:#e9f7ef;color:#19733b}.wb-lab-status.wait{background:#fff6df;color:#8a6815}.wb-lab-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.wb-lab-metric{padding:10px;border-radius:12px;background:#f6f8fb}.wb-lab-metric small{display:block;color:#78879a}.wb-lab-metric b{display:block;margin-top:3px;font-size:17px}.wb-lab-compare{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.wb-lab-compare .wb-lab-card{min-height:120px}.wb-lab-note{padding:12px 14px;border-radius:12px;background:#f8fafc;color:#657487;line-height:1.65;font-size:13px}.wb-lab-table{width:100%;border-collapse:collapse;margin-top:10px}.wb-lab-table th,.wb-lab-table td{text-align:left;padding:9px 7px;border-bottom:1px solid #edf1f5;font-size:13px}.wb-lab-table th{color:#738197;font-weight:700} .wb-lab-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:12px}.wb-lab-strategy{border:1px solid #e2e9f1;background:#fff;border-radius:14px;padding:12px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:4px}.wb-lab-strategy.active{border-color:#4f78a6;box-shadow:0 0 0 2px rgba(79,120,166,.10)}.wb-lab-strategy b{font-size:14px}.wb-lab-strategy small{color:#738197;line-height:1.45}.wb-lab-strategy em{font-style:normal;font-size:10px;color:#4f78a6;font-weight:800}.wb-lab-picks{display:flex;flex-direction:column}.wb-lab-pick{display:grid;grid-template-columns:30px minmax(0,1fr) auto minmax(0,1fr) 16px;gap:8px;align-items:center;border:0;border-top:1px solid #edf1f5;background:#fff;padding:10px 0;text-align:left;cursor:pointer}.wb-lab-rank{font-weight:900;color:#58799a}.wb-lab-pick b{display:block}.wb-lab-pick small{display:block;color:#78879a;margin-top:2px}.wb-lab-pick strong{font-size:15px}.wb-lab-pick-tags{display:flex;gap:4px;flex-wrap:wrap}.wb-lab-chip{font-size:10px;background:#f1f5f9;border-radius:999px;padding:3px 6px;color:#50657a}.wb-lab-category-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.wb-lab-category{padding:11px;border-radius:12px;background:#f7f9fc}.wb-lab-category b{display:block;margin-bottom:4px}.wb-lab-category span{font-size:12px;color:#718096;line-height:1.55}@media(max-width:700px){.wb-lab-nav{grid-template-columns:1fr 1fr}.wb-lab-category-grid{grid-template-columns:1fr}.wb-lab-pick{grid-template-columns:26px minmax(0,1fr) auto 16px}.wb-lab-pick-tags{display:none}}@media(max-width:700px){.wb-lab-hero{display:block}.wb-lab-hero button{margin-top:12px}.wb-lab-grid,.wb-lab-compare{grid-template-columns:1fr}.wb-lab-metrics{grid-template-columns:repeat(2,1fr)}}
 </style>
 <p class="wb-disclaimer">選股台專注市場選股與訊號；個人持股請到「持股」頁查看完整組合分析。進入選股台先顯示黑馬快照；其他分頁點到哪裡才讀哪一份已保存快照／推薦紀錄，不因切換分頁重新掃描市場。資料缺漏維持待確認，不以推測數字補足。</p>
 </section>
@@ -28500,11 +28500,30 @@ def render_workbench_body(initial_tab=""):
   function renderStrategyLab(data){
     if(!labBody)return;
     var factors=data.factors||[];
+    var library=data.strategy_library||[];
+    var recs=data.recommendations||[];
+    var active=data.active_strategy||'FinLab 四因子';
     var factorHtml=factors.map(function(f){return '<div class="wb-lab-factor"><b>'+esc(f.name)+'</b><span class="wb-lab-muted">'+esc(f.description)+'</span><span class="wb-lab-weight">'+esc(f.weight)+'</span></div>';}).join('');
     var ref=data.reference||{};
     var refHtml='<div class="wb-lab-metrics">'+[['CAGR',ref.cagr],['Sharpe',ref.sharpe],['最大回撤',ref.mdd],['平均持股',ref.holdings]].map(function(x){return '<div class="wb-lab-metric"><small>'+esc(x[0])+'</small><b>'+esc(x[1]||'—')+'</b></div>';}).join('')+'</div>';
+    var libHtml=library.map(function(x){
+      var cls=x.key===active?'active':'';
+      return '<button type="button" class="wb-lab-strategy '+cls+'" data-lab-strategy="'+esc(x.key)+'"><b>'+esc(x.name)+'</b><small>'+esc(x.description)+'</small><em>'+esc(x.status_label||'研究')+'</em></button>';
+    }).join('');
+    var recHtml=recs.length?recs.map(function(x,i){
+      var chips=(x.tags||[]).map(function(t){return '<span class="wb-lab-chip">'+esc(t)+'</span>';}).join('');
+      return '<button type="button" class="wb-lab-pick" data-code="'+esc(x.code)+'"><span class="wb-lab-rank">'+(i+1)+'</span><span><b>'+esc(x.code)+'　'+esc(x.name)+'</b><small>'+esc(x.industry||'')+'</small></span><strong>'+esc(x.score_text||'—')+'</strong><span class="wb-lab-pick-tags">'+chips+'</span><span>›</span></button>';
+    }).join(''):'<div class="wb-lab-note">目前還沒有可驗證的 FinLab 完整四因子名單。先提供「營收動能候選」作為第一個可運作的研究策略；ROE／120D 動能／120D 低波資料完成 point-in-time 對齊後，才會正式產生四因子 Top N。</div>';
     var strategies=(data.strategies||[]).map(function(x){return '<div class="wb-lab-card"><h4>'+esc(x.name)+' <span class="wb-lab-status '+(x.status==='ready'?'ready':'wait')+'">'+esc(x.status_label)+'</span></h4><p class="wb-lab-muted">'+esc(x.description)+'</p><div class="wb-lab-note">'+esc(x.note)+'</div></div>';}).join('');
-    labBody.innerHTML='<div class="wb-lab-grid"><div class="wb-lab-card"><h4>FinLab 四因子模型</h4><p class="wb-lab-muted">第一版先按照公開策略的核心結構建立，不把結果直接混入正式黑馬／雷達。</p>'+factorHtml+'</div><div class="wb-lab-card"><h4>公開參考基準</h4><p class="wb-lab-muted">以下是 FinLab 公開頁面的參考回測，不是本 BOT 自己跑出的績效。</p>'+refHtml+'</div></div><div style="height:12px"></div><div class="wb-lab-compare">'+strategies+'</div><div style="height:12px"></div><div class="wb-lab-card"><h4>研究順序</h4><table class="wb-lab-table"><tr><th>階段</th><th>內容</th><th>狀態</th></tr>'+((data.steps||[]).map(function(x){return '<tr><td>'+esc(x.step)+'</td><td>'+esc(x.text)+'</td><td><span class="wb-lab-status '+(x.ready?'ready':'wait')+'">'+esc(x.status)+'</span></td></tr>';}).join(''))+'</table><div class="wb-lab-note" style="margin-top:10px">'+esc(data.disclaimer||'')+'</div></div>';
+    var categories=(data.categories||[]).map(function(x){return '<div class="wb-lab-category"><b>'+esc(x.name)+'</b><span>'+esc(x.items.join('・'))+'</span></div>';}).join('');
+    labBody.innerHTML=
+      '<div class="wb-lab-nav">'+libHtml+'</div>'+ 
+      '<div class="wb-lab-grid"><div class="wb-lab-card"><h4>FinLab 四因子模型</h4><p class="wb-lab-muted">先按照公開策略核心結構建立；這裡是研究模型，不會自動改動正式黑馬／雷達。</p>'+factorHtml+'</div><div class="wb-lab-card"><h4>今日研究候選</h4><p class="wb-lab-muted">'+esc(data.recommendation_note||'')+'</p><div class="wb-lab-picks">'+recHtml+'</div></div></div>'+ 
+      '<div style="height:12px"></div><div class="wb-lab-card"><h4>策略庫</h4><p class="wb-lab-muted">不是只有四因子；先把可研究的選股邏輯完整列出，再逐一建立可回測版本。</p><div class="wb-lab-category-grid">'+categories+'</div></div>'+ 
+      '<div style="height:12px"></div><div class="wb-lab-compare">'+strategies+'</div>'+ 
+      '<div style="height:12px"></div><div class="wb-lab-grid"><div class="wb-lab-card"><h4>公開參考基準</h4><p class="wb-lab-muted">以下是 FinLab 公開頁面的參考回測，不是本 BOT 自己跑出的績效。</p>'+refHtml+'</div><div class="wb-lab-card"><h4>研究順序</h4><table class="wb-lab-table"><tr><th>階段</th><th>內容</th><th>狀態</th></tr>'+((data.steps||[]).map(function(x){return '<tr><td>'+esc(x.step)+'</td><td>'+esc(x.text)+'</td><td><span class="wb-lab-status '+(x.ready?'ready':'wait')+'">'+esc(x.status)+'</span></td></tr>';}).join(''))+'</table></div></div>'+ 
+      '<div class="wb-lab-note" style="margin-top:12px">'+esc(data.disclaimer||'')+'</div>';
+    labBody.querySelectorAll('[data-lab-strategy]').forEach(function(b){b.addEventListener('click',function(){labBody.querySelectorAll('.wb-lab-strategy').forEach(function(x){x.classList.remove('active')});b.classList.add('active');var k=b.dataset.labStrategy||'';if(k&&k!==active){loadStrategyLab(true);}})});
   }
   function loadStrategyLab(force){
     if(labLoaded&&!force)return;
@@ -28735,7 +28754,7 @@ function bindFactors(){
     if(sel)sel.onchange=function(){state.scoreChangeSort=sel.value;renderScoreChanges();};
     scoreChangePanel.querySelectorAll('[data-score-change-code]').forEach(function(btn){btn.onclick=function(){var code=btn.getAttribute('data-score-change-code');var row=state.rows.find(function(r){return r.source==='黑馬'&&String(r.code)===String(code);});if(row)showDetail(row);};});
   }
-  function render(){renderScoreChanges();renderAssetTabs();renderTabs();var lab=state.assetMode==='lab'||state.source==='策略研究';var tools=document.querySelector('.wb-tools'),fp=document.getElementById('wb-filter-panel'),ms=document.getElementById('wb-mobile-sort'),meta=document.querySelector('.wb-meta'),table=document.getElementById('wb-table'),labEl=document.getElementById('wb-strategy-lab');[tools,fp,ms,meta,table].forEach(function(el){if(el)el.hidden=lab;});if(labEl)labEl.hidden=!lab;if(lab){state.source='策略研究';status.textContent='策略研究｜FinLab 四因子';loadStrategyLab(false);return;}document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}if(state.source!=='黑馬'&&state.source!=='雷達'&&state.source!=='成效'&&state.source!=='我的排行'&&!state.loadedSources[state.source]){rowsEl.innerHTML='<div class="wb-empty">正在準備 '+esc(state.source)+'…</div>';return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
+  function render(){renderScoreChanges();renderAssetTabs();renderTabs();var lab=state.assetMode==='lab'||state.source==='策略研究';var tools=document.querySelector('.wb-tools'),fp=document.getElementById('wb-filter-panel'),ms=document.getElementById('wb-mobile-sort'),meta=document.querySelector('.wb-meta'),table=document.getElementById('wb-table'),labEl=document.getElementById('wb-strategy-lab'),assetTabs=document.getElementById('wb-asset-tabs'),sourceTabs=document.getElementById('wb-tabs'),intro=document.querySelector('.wb-intro'),pulse=document.getElementById('wb-pulse');[tools,fp,ms,meta,table,assetTabs,sourceTabs,intro,pulse].forEach(function(el){if(el)el.hidden=lab;});if(labEl)labEl.hidden=!lab;if(lab){state.source='策略研究';status.textContent='策略研究實驗室';loadStrategyLab(false);return;}document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}if(state.source!=='黑馬'&&state.source!=='雷達'&&state.source!=='成效'&&state.source!=='我的排行'&&!state.loadedSources[state.source]){rowsEl.innerHTML='<div class="wb-empty">正在準備 '+esc(state.source)+'…</div>';return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
     var host=document.getElementById('wb-detail'), dr=document.getElementById('wb-drawer'), mk=document.getElementById('wb-mask');
     if(!host||!dr)return;
     var y=window.scrollY||window.pageYOffset||0;
@@ -29309,13 +29328,7 @@ def _workbench_source_payload(uid, source):
 
 
 def _build_strategy_lab_payload():
-    """策略研究室第一版：公開規則先固定下來，避免把研究策略偷偷混進正式選股。
-
-    FinLab 公開的四因子方向為 ROE 品質、價格動能、低波動、月營收；
-    低波動在目前公開策略中採雙倍權重。歷史回測需要 point-in-time 的財報／ROE
-    快照，目前本 BOT 尚未把 ROE 歷史資料完整存成可回測表，因此這裡先把研究規則
-    與公開基準固定下來，不虛構自己的回測績效。
-    """
+    """策略研究室：策略庫＋可運作的營收動能候選；完整四因子等 point-in-time 資料完成後再正式排名。"""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -29323,33 +29336,83 @@ def _build_strategy_lab_payload():
         revenue_count, revenue_period = cur.fetchone() or (0, None)
         cur.execute("SELECT COUNT(DISTINCT code), COUNT(DISTINCT trade_date) FROM inst_history")
         inst_count, inst_days = cur.fetchone() or (0, 0)
+        # 每檔最新累計營收年增；這是目前研究室第一個可以真正產生名單的單因子。
+        cur.execute("""
+            SELECT r.code, r.cum_yoy_pct, r.yoy_pct, r.mom_pct, r.period,
+                   COALESCE(s.name, r.code), COALESCE(s.industry, '')
+            FROM revenue_history r
+            JOIN (
+                SELECT code, MAX(period) AS period
+                FROM revenue_history
+                GROUP BY code
+            ) latest ON latest.code = r.code AND latest.period = r.period
+            LEFT JOIN stock_info s ON s.code = r.code
+            WHERE r.cum_yoy_pct IS NOT NULL
+            ORDER BY r.cum_yoy_pct DESC NULLS LAST
+            LIMIT 40
+        """)
+        revenue_rows = cur.fetchall()
         cur.close()
         release_db_connection(conn)
-    except Exception:
-        revenue_count, revenue_period, inst_count, inst_days = 0, None, 0, 0
+    except Exception as exc:
+        print(f"⚠️ 策略研究室資料讀取失敗：{exc}")
+        revenue_count, revenue_period, inst_count, inst_days, revenue_rows = 0, None, 0, 0, []
+
+    recommendations=[]
+    for code,cum_yoy,yoy,mom,period,name,industry in revenue_rows[:10]:
+        tags=[]
+        if cum_yoy is not None and float(cum_yoy)>=30: tags.append("累計營收強")
+        elif cum_yoy is not None and float(cum_yoy)>0: tags.append("營收正成長")
+        if yoy is not None and float(yoy)>0: tags.append("當月YoY+")
+        if mom is not None and float(mom)>0: tags.append("MoM+")
+        recommendations.append({
+            "code":str(code),"name":str(name or code),"industry":str(industry or ""),
+            "score_text":(f"{float(cum_yoy):+.1f}%" if cum_yoy is not None else "待確認"),
+            "tags":tags[:3],"cum_yoy":float(cum_yoy) if cum_yoy is not None else None,
+            "period":str(period or "")
+        })
     return {
-        "ok": True,
-        "version": "F1",
-        "factors": [
-            {"name":"ROE 品質","weight":"20%","description":"ROE 越高排名越前；正式回測必須用財報實際公布日對齊。"},
-            {"name":"價格動能","weight":"20%","description":"近 120 個交易日價格動能，越強排名越前。"},
-            {"name":"低波動","weight":"40%","description":"近 120 日波動度越低越前；公開策略刻意給雙倍權重，用來壓低回撤。"},
-            {"name":"月營收動能","weight":"20%","description":"月營收年增率排名；先建立營收動能，再與其他因子合成。"},
+        "ok": True, "version":"F2", "active_strategy":"營收動能",
+        "factors":[
+            {"name":"ROE 品質","weight":"20%","description":"ROE 越高排名越前；正式回測必須依財報實際公布日對齊。"},
+            {"name":"價格動能","weight":"20%","description":"公開四因子使用中期價格動能；研究室會以 point-in-time 歷史價格計算。"},
+            {"name":"低波動","weight":"40%","description":"近 120 日波動度越低排名越前；公開四因子刻意給雙倍權重。"},
+            {"name":"月營收動能","weight":"20%","description":"月營收 YoY／累計 YoY 排名；目前已先用保存的營收歷史產生候選名單。"},
         ],
-        "reference": {"cagr":"20.1%","sharpe":"1.46","mdd":"-24.8%","holdings":"25 檔"},
-        "strategies": [
+        "strategy_library":[
+            {"key":"營收動能","name":"營收動能","description":"月營收 YoY、累計 YoY、MoM、連續成長。","status_label":"可運作"},
+            {"key":"價格動能","name":"價格動能","description":"20D／60D／120D 報酬與相對大盤強弱。","status_label":"研究中"},
+            {"key":"ROE品質","name":"ROE／品質","description":"ROE、EPS、毛利率、營業利益率等品質因子。","status_label":"資料建置"},
+            {"key":"低波動","name":"低波動","description":"20D／60D／120D 波動與流動性過濾。","status_label":"研究中"},
+            {"key":"價值","name":"價值","description":"PE、PB、殖利率、PS、EV/EBITDA。","status_label":"研究中"},
+            {"key":"籌碼","name":"籌碼","description":"投信、外資、法人連續買超與金額占成交比。","status_label":"可接既有資料"},
+            {"key":"成長","name":"成長","description":"營收、EPS、獲利與成長加速度。","status_label":"研究中"},
+            {"key":"混合","name":"多因子／混合","description":"把彼此互補的因子排名合成，再產生 Top N。","status_label":"第二階段"},
+        ],
+        "categories":[
+            {"name":"多因子","items":["四因子複合","自由現金流多因子","品質＋價值＋股息"]},
+            {"name":"動能與趨勢","items":["營收動能","價格動能","複合動能","月營收公告換股","均線趨勢"]},
+            {"name":"品質與價值","items":["ROE 品質","低 PB","低 PE","高殖利率","低負債"]},
+            {"name":"風險","items":["低波動","風險調整報酬","品質＋動能＋低波"]},
+            {"name":"籌碼","items":["投信買超＋動能","法人連續性","法人金額占成交比"]},
+            {"name":"組合研究","items":["等權","分數加權","Top 10／25／30","月換／季換"]},
+        ],
+        "recommendations":recommendations,
+        "recommendation_note":("目前這 10 檔是『營收動能研究候選』，依保存的最新累計營收 YoY 排名；不是 FinLab 四因子正式推薦。待 ROE、120D 動能、120D 低波的 point-in-time 資料完成後，才會產生真正的 FinLab Top N。"),
+        "reference":{"cagr":"20.1%","sharpe":"1.46","mdd":"-24.8%","holdings":"25 檔"},
+        "strategies":[
             {"name":"我的五因子","status":"ready","status_label":"現行模型","description":"營收 25／估值 25／產業動能 20／法人 20／籌碼技術 10。","note":"維持正式 BOT，不因研究室加入而自動改權重。"},
-            {"name":"FinLab 四因子","status":"wait","status_label":"研究版","description":"ROE＋120D 動能＋120D 低波＋月營收，橫斷面排名後合成。","note":"目前先固定規則；ROE 歷史 point-in-time 資料完成後才開放正式回測。"},
-            {"name":"FinLab＋黑馬＋雷達","status":"wait","status_label":"第二階段","description":"先用 FinLab 四因子縮小股票池，再交給黑馬／雷達做行情篩選。","note":"必須先完成單獨 FinLab 回測，避免不知道改善來自哪一層。"},
+            {"name":"FinLab 四因子","status":"wait","status_label":"研究版","description":"ROE＋價格動能＋低波＋月營收，橫斷面排名後合成。","note":"完整 Top N 需先完成 ROE／價格歷史的 point-in-time 對齊。"},
+            {"name":"FinLab＋黑馬＋雷達","status":"wait","status_label":"第二階段","description":"先用 FinLab 四因子縮小股票池，再交給黑馬／雷達做行情篩選。","note":"先完成單獨 FinLab 回測，避免無法判斷是哪一層帶來差異。"},
         ],
-        "steps": [
-            {"step":"01","text":"固定四因子定義、排名方向與再平衡規則","status":"已固定","ready":True},
-            {"step":"02","text":f"營收歷史資料：{revenue_count:,} 筆，最新期 {revenue_period or '尚無'}","status":"已具備","ready":True},
+        "steps":[
+            {"step":"01","text":"建立策略庫與單因子研究入口","status":"已完成","ready":True},
+            {"step":"02","text":f"營收歷史資料：{revenue_count:,} 筆，最新期 {revenue_period or '尚無'}；營收動能已可產生候選名單","status":"可運作","ready":True},
             {"step":"03","text":"ROE 歷史資料依財報公布日對齊，避免 lookahead bias","status":"待建置","ready":False},
-            {"step":"04","text":"同一回測框架比較我的五因子／FinLab／混合策略","status":"待建置","ready":False},
-            {"step":"05","text":f"法人歷史目前約 {inst_count:,} 檔、{inst_days:,} 個交易日可供研究","status":"可用","ready":True},
+            {"step":"04","text":"價格 20／60／120D 與低波歷史資料建立後，產生 FinLab 四因子 Top N","status":"待建置","ready":False},
+            {"step":"05","text":"同一回測框架比較我的五因子／FinLab／混合策略","status":"待建置","ready":False},
         ],
-        "disclaimer":"公開參考績效只代表 FinLab 公開頁面當時的回測設定，不是本 BOT 的實測結果；本研究室在 ROE 歷史資料與 point-in-time 對齊完成前，不會顯示虛構的 CAGR／Sharpe。"
+        "disclaimer":"公開 FinLab 績效只作為外部參考；研究室自己的推薦與回測必須使用本 BOT 可驗證的資料，不會用推測數字補齊。"
     }
 
 
