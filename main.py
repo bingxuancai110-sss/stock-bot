@@ -6543,6 +6543,9 @@ def simulate_bot_portfolio(mode, days=365):
                 "sell_i": None, "exit_reason": "",
                 "name": it.get("name") or code, "pick_date": pick_day,
                 "buy_score": _workbench_number(it.get("score")),
+                "buy_rank": it.get("rank"),
+                "buy_reason": (f"當日進入前 {BOT_TOP_N} 名"
+                               + (f"（排名 #{int(it.get('rank'))}）" if str(it.get('rank') or '').isdigit() else "")),
                 "peak_score": _workbench_number(it.get("score")),
             })
     if not lots:
@@ -6630,13 +6633,30 @@ def simulate_bot_portfolio(mode, days=365):
             if lot.get("sell_i") == i:
                 r -= fee_rate + TAX_RATE_STOCK
             # 賣出日當天仍計入到收盤退出，然後不再放回 survivors。
-            rets.append(r)
+            rets.append((lot, r))
             if lot.get("sell_i") is None:
                 survivors.append(lot)
 
         open_lots = survivors
         if rets:
-            nav *= (1.0 + sum(rets) / len(rets))
+            # 實際資金配置與畫面上的持股權重使用同一口徑：
+            # 5 檔以上等權吃滿 100%；少於 5 檔時單檔最多 20%，
+            # 因此不足 5 檔才會真的留下現金。
+            active_codes = {lot["code"] for lot, _r in rets if lot.get("sell_i") is None or lot.get("sell_i") == i}
+            if not active_codes:
+                active_codes = {lot["code"] for lot, _r in rets}
+            n_active = len(active_codes)
+            target_weight = min(BOT_MAX_WEIGHT, 1.0 / n_active) if n_active else 0.0
+            by_code = {}
+            for lot, r in rets:
+                by_code.setdefault(lot["code"], []).append(r)
+            weighted_ret = 0.0
+            for code, code_rets in by_code.items():
+                # 同一檔若有多個歷史 lot，先取平均價格報酬，再套該檔目前權重，
+                # 避免重複上榜造成同一股票重複吃到權重。
+                code_ret = sum(code_rets) / len(code_rets)
+                weighted_ret += target_weight * code_ret
+            nav *= (1.0 + weighted_ret)
         curve.append((today, (nav - 1.0) * 100))
 
     virtual_curve = [(d, BOT_INITIAL_CAPITAL * (1.0 + ret / 100.0)) for d, ret in curve]
@@ -6673,6 +6693,8 @@ def simulate_bot_portfolio(mode, days=365):
             "buy_price": float(buy_p), "sell_price": float(sell_p),
             "hold_days": max(0, sell_i - buy_i),
             "buy_score": lot.get("buy_score"),
+            "buy_rank": lot.get("buy_rank"),
+            "buy_reason": lot.get("buy_reason") or f"當日進入前 {BOT_TOP_N} 名",
             "exit_reason": lot.get("exit_reason") or "—",
             "return_pct": net_pct,
         })
@@ -6701,22 +6723,28 @@ def simulate_bot_portfolio(mode, days=365):
             h["first_pick"] = lot["pick_date"]
         h["days_left"] = max(h["days_left"], max(0, lot["target_i"] - last_i))
 
-    # D 方案的持倉顯示必須真正遵守「單一股票最多 20%」。
-    # 每個推薦日 10 檔等權，基準新倉位為 10%；同一股票重複上榜不再無限加碼，
-    # 其顯示權重最多 20%。這裡不把剩餘現金硬塞給其他股票。
+    # D 方案的持倉顯示與實際 NAV 使用同一套配置口徑。
+    # 5 檔以上：等權吃滿 100%；少於 5 檔：單檔最多 20%，不足部分才留現金。
+    # 因此「目前只有 5 檔」時就是每檔 20%，不再出現 50% 股票＋50% 無來源現金的錯覺。
     holdings = []
+    unique_count = len(merged)
+    target_weight_pct = (min(BOT_MAX_WEIGHT, 1.0 / unique_count) * 100.0
+                         if unique_count else 0.0)
     for h in merged.values():
         h["pct"] = h["pct_sum"] / h["lots"]
-        h["weight"] = min(BOT_MAX_WEIGHT * 100.0, h["lots"] * (100.0 / BOT_TOP_N))
+        h["weight"] = target_weight_pct
         h.pop("pct_sum")
         holdings.append(h)
+    invested_pct = min(100.0, target_weight_pct * unique_count)
+    cash_pct = max(0.0, 100.0 - invested_pct)
     holdings.sort(key=lambda x: (-x["weight"], -x["pct"]))
 
     return {
         "curve": curve, "virtual_curve": virtual_curve,
         "initial_capital": BOT_INITIAL_CAPITAL, "virtual_asset": virtual_asset,
         "holdings": holdings, "history": history, "picks_days": len(by_date),
-        "strategy_code": "D10", "strategy_label": "前10名／單股上限20%／-20%停損／訊號消失或分數下降15分／20日到期，先到先賣",
+        "invested_pct": invested_pct, "cash_pct": cash_pct,
+        "strategy_code": "D10", "strategy_label": "前10名／5檔20%起等權配置（單股上限20%）／-20%停損／訊號消失或分數下降15分／20日到期，先到先賣",
     }
 
 
@@ -6942,7 +6970,9 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             "initial_capital": sim.get("initial_capital", BOT_INITIAL_CAPITAL),
             "virtual_asset": sim.get("virtual_asset"),
             "virtual_curve": sim.get("virtual_curve") or [],
-            "bot_rule": (f"D10 方案：每個推薦日納入前 {BOT_TOP_N} 名；單一股票權重上限 {BOT_MAX_WEIGHT*100:.0f}%；"
+            "invested_pct": sim.get("invested_pct", 0.0),
+            "cash_pct": sim.get("cash_pct", 100.0),
+            "bot_rule": (f"D10 方案：每個推薦日納入前 {BOT_TOP_N} 名；5 檔時每檔 20%，6～10 檔等權配置，不足 5 檔才保留現金；"
                          f"訊號消失或分數自持有後高點下降 {BOT_SCORE_DROP_POINTS:.0f} 分即賣出，"
                          f"最晚持有 {BOT_HOLD_DAYS} 個交易日；已扣手續費與證交稅。"
                          f"共 {sim['picks_days']} 個推薦日。"),
@@ -22869,11 +22899,11 @@ def web_leaderboard(uid):
             if key == "m30" and r.get("ret") is not None:
                 sc = "up" if r["ret"] >= 0 else "down"
                 supporting.append(
-                    f'<span><em>加入後</em> <span class="num {sc}">{r["ret"]:+.1f}%</span></span>')
+                    f'<span><em>加入後組合</em> <span class="num {sc}">{r["ret"]:+.1f}%</span></span>')
             elif key == "ret" and r.get("m30") is not None:
                 sc = "up" if r["m30"] >= 0 else "down"
                 supporting.append(
-                    f'<span><em>近30天</em> <span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
+                    f'<span><em>近30天組合</em> <span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
             if r.get("excess") is not None:
                 w = "贏" if r["excess"] >= 0 else "輸"
                 mkt = r.get("mkt_ret")
@@ -22905,13 +22935,14 @@ def web_leaderboard(uid):
                     f'<div><small>固定虛擬本金</small><b>NT$ {initial_capital:,.0f}</b></div>'
                     f'<div><small>目前虛擬資產</small><b>NT$ {asset_text}</b></div>'
                     f'<div><small>累積報酬</small><b class="num {"up" if (asset_ret or 0) >= 0 else "down"}">{asset_ret_text}</b></div>'
+                    f'<div><small>目前股票／現金</small><b>{float(r.get("invested_pct") or 0):.0f}% / {float(r.get("cash_pct") or 0):.0f}%</b></div>'
                     f'</div>',
                     f'<div class="bot-rule">'
                     f'<b style="color:#274c77">策略實驗：D 方案</b><br>'
                     f'{html.escape(str(r.get("bot_rule") or ""))}<br>'
                     f'虛擬帳戶只用來把同一套報酬率換算成資產金額，不途中補資金；'
                     f'不改變原本排行榜的報酬率口徑。<br>'
-                    f'跌幅達 {BOT_STOP_LOSS_PCT:.0f}% 即停損；同一檔連續上榜時，基準新倉位仍以每檔 10% 計，單一股票顯示權重最多 20%；剩餘資金保留為現金。<br>'
+                    f'跌幅達 {BOT_STOP_LOSS_PCT:.0f}% 即停損；5 檔時每檔 20%，6～10 檔等權配置，只有不足 5 檔時才會保留現金。<br>'
                     f'這是機械化模擬，沒有滑價與零股限制，跟真人並列僅供對照。</div>']
                 for x in bh:
                     pct = x.get("pct")
@@ -22965,6 +22996,21 @@ def web_leaderboard(uid):
                     rtxt = f'{rp:+.2f}%' if isinstance(rp, (int,float)) else '—'
                     sell_date = html.escape(str(tx.get("sell_date") or "—"))
                     reason = html.escape(str(tx.get("exit_reason") or "—"))
+                    buy_reason = html.escape(str(tx.get("buy_reason") or "—"))
+                    buy_rank = tx.get("buy_rank")
+                    buy_score = tx.get("buy_score")
+                    buy_meta = []
+                    if buy_rank is not None:
+                        try:
+                            buy_meta.append(f"排名 #{int(buy_rank)}")
+                        except (TypeError, ValueError):
+                            pass
+                    if buy_score is not None:
+                        try:
+                            buy_meta.append(f"分數 {float(buy_score):.1f}")
+                        except (TypeError, ValueError):
+                            pass
+                    buy_meta_text = ("・".join(buy_meta)) if buy_meta else ""
                     return (
                         f'<div class="bot-history-timeline-item">'
                         f'<div class="bot-history-dot" style="background:{"#D93025" if hcls == "up" else "#0B8F55" if hcls == "down" else "#8FA8C4"}"></div>'
@@ -22979,7 +23025,11 @@ def web_leaderboard(uid):
                         f'<small>{html.escape(str(tx.get("code") or ""))}</small></div>'
                         f'<div class="bot-history-price">{html.escape(str(tx.get("buy_date") or "—"))} → {sell_date}　｜　買 {btxt} ／ 賣 {stxt}</div>'
                         f'<div class="bot-history-hold">持有 {int(tx.get("hold_days") or 0)} 日</div>'
-                        f'<div class="bot-history-reason {hcls}">{reason}</div>'
+                        f'<div class="bot-history-reason">'
+                        f'<span class="bot-history-reason-buy">買入：{buy_reason}'
+                        f'{("・" + html.escape(buy_meta_text)) if buy_meta_text else ""}</span>'
+                        f'<span class="bot-history-reason {hcls}">換股／賣出：{reason}</span>'
+                        f'</div>'
                         f'</div></div></div>')
                 recent_hist = hist[:5]
                 recent_rows = [_render_history_tx(tx) for tx in recent_hist]
@@ -22991,9 +23041,9 @@ def web_leaderboard(uid):
                         f'<div class="bot-history-all-body">{"".join(all_rows)}</div>'
                         f'</details>') if len(hist) > 5 else ''
                     history_html = (f'<details class="rank-detail bot-history-list" data-default-collapsed="1">'
-                                    f'<summary>查看歷史操作（{len(hist)} 筆）</summary>'
+                                    f'<summary>查看歷史操作（{len(hist)} 筆・含換股原因）</summary>'
                                     f'<div class="rank-detail-body">'
-                                    f'<div class="rank-detail-title">最近 5 筆・最新賣出 → 最舊</div>'
+                                    f'<div class="rank-detail-title">最近 5 筆・最新賣出 → 最舊｜顯示買入與換股／賣出原因</div>'
                                     f'<div class="bot-history-timeline">{"".join(recent_rows)}</div>'
                                     f'{full_details}'
                                     f'</div></details>')
