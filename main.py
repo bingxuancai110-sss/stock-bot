@@ -29064,7 +29064,15 @@ function bindFactors(){
     if(state.loadedSources[source]) return Promise.resolve({source:source,loaded:true});
     if(state.loadingSources[source]) return state.loadingSources[source];
 
-    var promise = fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),{credentials:'same-origin',cache:'no-store'})
+    // 選股台入口不能因為單一快照 API 卡住而永遠停在「正在載入」。
+    // Render／資料庫偶發延遲時，12 秒後放棄該來源，讓頁面仍可進入並顯示其他快照。
+    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timeoutId = null;
+    if(controller) timeoutId = window.setTimeout(function(){try{controller.abort();}catch(e){}},12000);
+    var fetchOptions={credentials:'same-origin',cache:'no-store'};
+    if(controller) fetchOptions.signal=controller.signal;
+    var promise = fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),fetchOptions)
+      .finally(function(){if(timeoutId)window.clearTimeout(timeoutId);})
       .then(function(r){
         if(r.status===401)throw new Error('AUTH');
         if(!r.ok)throw new Error('HTTP '+r.status);
@@ -29086,7 +29094,8 @@ function bindFactors(){
         delete state.loadingSources[source];
         if(e&&e.message==='AUTH'){location.reload();return null;}
         console.warn('工作台快照 '+source+' 載入失敗',e);
-        state.sources[source]=Object.assign({},state.sources[source]||{},{available:false,error:String(e&&e.message||e)});
+        var em=String(e&&e.name==='AbortError'?'逾時（12 秒）':(e&&e.message||e));
+        state.sources[source]=Object.assign({},state.sources[source]||{},{available:false,error:em});
         renderTabs();
         return null;
       });
@@ -29135,7 +29144,21 @@ function bindFactors(){
     requestReview();
 
     blackHorse.then(function(data){
-      if(!data)return;
+      // 無論黑馬快照成功、失敗或逾時，都必須解除全頁 loading。
+      // 以前這裡在 data=null 時直接 return，會造成「選股台一直進不去」。
+      if(!data){
+        state.marketOpen=false;
+        state.source='黑馬';
+        state.assetMode='stock';
+        status.textContent='黑馬快照目前無法載入，已開啟選股台；可稍後按「重新整理」。';
+        note.textContent='最近黑馬快照暫時無法取得，其他資料來源仍可使用。';
+        rowsEl.innerHTML='<div class="wb-empty"><b>黑馬快照暫時無法載入</b><small>可能是資料庫或快照服務短暫延遲；不影響其他選股分頁。</small></div>';
+        renderTabs();
+        render();
+        if(window.stockBotFinishPageLoading) window.stockBotFinishPageLoading();
+        initialTab='';
+        return;
+      }
       state.marketOpen=!!(data.meta&&data.meta.intraday);
       state.source='黑馬';
       state.assetMode='stock';
