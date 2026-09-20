@@ -5010,9 +5010,8 @@ def _build_home_intraday_payload(uid):
         # 繞過 get_realtime_stock 的 90 秒快取（否則輪詢六次有五次拿到同一份），
         # 但保留 MIS 自己的 15 秒節流——兩層一起繞過的話，
         # 每個使用者每 15 秒都會真的打一次 MIS，人一多就放大請求量。
-        price_map = get_realtime_stocks_bulk(
-            codes, workers=min(12, len(codes)), rng="1d",
-            force_refresh=True, mis_force=False)
+        # 首頁盤中同樣只採官方 MIS，避免 Yahoo 延遲行情混進組合損益。
+        price_map = _fetch_twse_mis_quotes(codes, force_refresh=True)
         today_logs = get_position_change_logs(uid, 5000, trade_date=taiwan_today())
         reduced_codes = {
             str(log.get("code") or "").strip() for log in today_logs
@@ -5021,9 +5020,7 @@ def _build_home_intraday_payload(uid):
         }
         missing_reduced = sorted(code for code in reduced_codes if code and code not in price_map)
         if missing_reduced:
-            price_map.update(get_realtime_stocks_bulk(
-                missing_reduced, workers=min(12, len(missing_reduced)),
-                rng="1d", force_refresh=True, mis_force=False))
+            price_map.update(_fetch_twse_mis_quotes(missing_reduced, force_refresh=True))
 
         total_value = sum(
             float((price_map.get(str(position.get("code") or "").strip()) or {}).get("close") or 0) *
@@ -7097,9 +7094,9 @@ _suffix_cache = {}
 # 共用同一份結果；這不會把日線資料永久存死，也不會跨日期沿用昨天的行情。
 _realtime_cache = {}
 _realtime_cache_lock = threading.Lock()
-REALTIME_CACHE_SECONDS = 90
+REALTIME_CACHE_SECONDS = 15
 _TWSE_MIS_CACHE = {"day": None, "at": 0, "data": {}}
-_TWSE_MIS_CACHE_SECONDS = 15
+_TWSE_MIS_CACHE_SECONDS = 3
 _TWSE_MIS_BATCH_SIZE = 80
 
 
@@ -8848,10 +8845,14 @@ def score_stock_by_category(code, ind_map, price, cum_yoy, val, streak,
 
 
 def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, category):
-    """Build transparent, data-backed explanations for each five-factor score.
+    """Build transparent explanations using the SAME color semantics as factor cards.
 
-    These are explanations of the existing scoring rules, not a second scoring model.
-    Keep the text tied to actual fields used by score_stock_by_category().
+    Color meaning is intentionally unified everywhere:
+      🔴 strong (>=80% of factor max)
+      🟡 medium (60-79%)
+      🟢 weak (>0-59%)
+      ⚪ data / no contribution
+    The colors describe scoring strength, not "red=bad / green=good".
     """
     stock = stock or {}
     val = val or {}
@@ -8881,13 +8882,26 @@ def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, ca
         except Exception:
             return "—"
 
-    # 1) Revenue: explain the exact cumulative YoY bucket used by the model.
+    def icon(score, max_score):
+        try:
+            r = float(score) / float(max_score) if float(max_score) > 0 else 0
+        except Exception:
+            r = 0
+        if r >= 0.8:
+            return "🔴"
+        if r >= 0.6:
+            return "🟡"
+        if r > 0:
+            return "🟢"
+        return "⚪"
+
+    # 1) Revenue
     rev_score = float(model.get("rev") or 0)
     rev_max = 25.0 if category == "電子" else 20.0
     if cum_yoy is None:
         rev_lines = ["⚪ 最新累計營收年增率無資料，模型使用缺資料基準分"]
     else:
-        rev_lines = [f"{'🟢' if float(cum_yoy) >= 20 else '🟡' if float(cum_yoy) > 0 else '🔴'} 累計營收年增 {signed(cum_yoy)}"]
+        rev_lines = [f"{icon(rev_score, rev_max)} 累計營收年增 {signed(cum_yoy)}"]
         if category == "電子":
             if cum_yoy >= 50: bucket = "≥50%，落在最高成長級距"
             elif cum_yoy >= 30: bucket = "30%～49.9%，落在高成長級距"
@@ -8908,7 +8922,7 @@ def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, ca
         rev_lines.append(f"⚪ {bucket} → 營收成長 {rev_score:.0f}/{rev_max:.0f}")
     rev_lines.append(f"⚪ 本因子權重上限 {rev_max:.0f} 分")
 
-    # 2) Valuation: reuse the model's own description, with raw inputs exposed.
+    # 2) Valuation
     val_score = float(model.get("val") or 0)
     val_max = 25.0
     val_lines = []
@@ -8917,17 +8931,14 @@ def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, ca
     dy = val.get("yield")
     if category == "電子":
         peg = model.get("peg")
-        if pe is not None:
-            val_lines.append(f"⚪ PE {fmt_num(pe)} 倍")
-        else:
-            val_lines.append("⚪ PE 無資料")
+        if pe is not None: val_lines.append(f"⚪ PE {fmt_num(pe)} 倍")
+        else: val_lines.append("⚪ PE 無資料")
         if cum_yoy is not None and float(cum_yoy) > 0 and pe is not None:
             val_lines.append(f"⚪ 估值模型使用 PE ÷ 累計營收成長率，PEG ≈ {fmt_num(peg,2) if peg is not None else '—'}")
         elif cum_yoy is not None:
             val_lines.append(f"⚪ 累計營收年增 {signed(cum_yoy)}")
         desc = model.get("val_desc")
-        if desc:
-            val_lines.append("⚪ " + str(desc).replace("\n", " ").strip())
+        if desc: val_lines.append("⚪ " + str(desc).replace("\n", " ").strip())
     else:
         if pb is not None: val_lines.append(f"⚪ PB {fmt_num(pb,2)} 倍")
         else: val_lines.append("⚪ PB 無資料")
@@ -8935,17 +8946,16 @@ def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, ca
         else: val_lines.append("⚪ 殖利率無資料")
         if pe is not None: val_lines.append(f"⚪ PE {fmt_num(pe)} 倍（輔助）")
         desc = model.get("val_desc")
-        if desc:
-            val_lines.append("⚪ " + str(desc).replace("\n", " ").strip())
-    val_lines.append(f"⚪ 本因子得分 {val_score:.0f}/{val_max:.0f}")
+        if desc: val_lines.append("⚪ " + str(desc).replace("\n", " ").strip())
+    val_lines.append(f"{icon(val_score, val_max)} 本因子得分 {val_score:.0f}/{val_max:.0f}")
 
-    # 3) Industry momentum: expose the actual industry statistics already used.
+    # 3) Industry momentum
     mom_score = float(model.get("mom") or 0)
     mom_max = 20.0 if category == "電子" else 25.0
     mom_desc = str(model.get("mom_desc") or "產業動能資料不足").replace("\n", " ").strip()
-    mom_lines = ["⚪ " + mom_desc, f"⚪ 本因子得分 {mom_score:.0f}/{mom_max:.0f}"]
+    mom_lines = ["⚪ " + mom_desc, f"{icon(mom_score, mom_max)} 本因子得分 {mom_score:.0f}/{mom_max:.0f}"]
 
-    # 4) Institutional continuity: exact streak bucket.
+    # 4) Institutional continuity
     streak_score = float(model.get("streak_score") or 0)
     streak_max = 20.0
     streak_val = int(streak or 0)
@@ -8956,12 +8966,12 @@ def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, ca
     elif streak_val >= 1: streak_bucket = "1天 → 原始5分"
     else: streak_bucket = "0天 → 原始0分"
     streak_lines = [
-        f"{'🟢' if streak_val >= 3 else '🟡' if streak_val > 0 else '🔴'} 法人連續買超 {streak_val} 天",
+        f"{icon(streak_score, streak_max)} 法人連續買超 {streak_val} 天",
         f"⚪ {streak_bucket}",
-        f"⚪ 換算後法人連續性 {streak_score:.0f}/{streak_max:.0f}",
+        f"{icon(streak_score, streak_max)} 換算後法人連續性 {streak_score:.0f}/{streak_max:.0f}",
     ]
 
-    # 5) Chip / technical: expose every condition contributing to the current score.
+    # 5) Chip / technical
     chip_score = float(model.get("chip_amount_score") or 0)
     tech_score = float(model.get("technical_score") or 0)
     chip_tech_score = float(model.get("chip") or 0)
@@ -8972,11 +8982,10 @@ def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, ca
         net_amt = model.get("net_amount_billion")
         ratio = (float(net_amt) / float(turnover10) * 100.0) if float(turnover10 or 0) > 0 and net_amt is not None else None
         direction = "淨買超" if float(cum_lots) > 0 else "淨賣超／無買超"
-        icon = "🟢" if ratio is not None and ratio >= 5 else "🟡" if ratio is not None and ratio > 0 else "🔴"
-        chip_lines.append(f"{icon} 近10日法人{direction} {float(cum_lots):+.0f} 張")
+        chip_lines.append(f"{icon(chip_score, 5)} 近10日法人{direction} {float(cum_lots):+.0f} 張")
         chip_lines.append(f"⚪ 換算淨買超金額約 {fmt_num(net_amt,2)} 億元")
         chip_lines.append(f"⚪ 占近10日成交金額 {signed(ratio) if ratio is not None else '—'}")
-    chip_lines.append(f"⚪ 籌碼子分數 {chip_score:.1f}/5")
+    chip_lines.append(f"{icon(chip_score, 5)} 籌碼子分數 {chip_score:.1f}/5")
 
     tech_lines = []
     if close is None:
@@ -8984,35 +8993,35 @@ def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, ca
     else:
         if ma20 is not None:
             diff20 = (float(close)-float(ma20))/float(ma20)*100 if ma20 else 0
-            tech_lines.append(f"{'🟢' if close >= ma20 else '🔴'} 股價 {fmt_num(close,2)} {'站上' if close >= ma20 else '跌破'} 20MA {fmt_num(ma20,2)}（{signed(diff20)}）")
+            tech_lines.append(f"{icon(tech_score, 5)} 股價 {fmt_num(close,2)} {'站上' if close >= ma20 else '跌破'} 20MA {fmt_num(ma20,2)}（{signed(diff20)}）")
             if ma20_prev is not None:
-                tech_lines.append(f"{'🟢' if ma20 > ma20_prev else '🔴'} 20MA {'向上' if ma20 > ma20_prev else '向下或持平'}（前值 {fmt_num(ma20_prev,2)}）")
+                tech_lines.append(f"{icon(tech_score, 5)} 20MA {'向上' if ma20 > ma20_prev else '向下或持平'}（前值 {fmt_num(ma20_prev,2)}）")
         else:
             tech_lines.append("⚪ 20MA 資料不足")
         if ma60 is not None:
-            tech_lines.append(f"{'🟢' if close >= ma60 else '🔴'} 股價 {'站上' if close >= ma60 else '跌破'} 60MA {fmt_num(ma60,2)}")
+            tech_lines.append(f"{icon(tech_score, 5)} 股價 {'站上' if close >= ma60 else '跌破'} 60MA {fmt_num(ma60,2)}")
             if ma60_prev is not None:
-                tech_lines.append(f"{'🟢' if ma60 > ma60_prev else '🔴'} 60MA {'向上' if ma60 > ma60_prev else '向下或持平'}")
+                tech_lines.append(f"{icon(tech_score, 5)} 60MA {'向上' if ma60 > ma60_prev else '向下或持平'}")
         if low10 is not None and ma20 is not None and close >= ma20 and low10 <= ma20*1.03:
-            tech_lines.append("🟢 近10日曾回踩20MA附近，之後重新站在20MA上方")
+            tech_lines.append(f"{icon(tech_score, 5)} 近10日曾回踩20MA附近，之後重新站在20MA上方")
         elif support is not None and not broke_support and low10 is not None and low10 <= support*1.03:
-            tech_lines.append(f"🟢 近10日曾回踩支撐 {fmt_num(support,2)} 附近且未有效跌破")
+            tech_lines.append(f"{icon(tech_score, 5)} 近10日曾回踩支撐 {fmt_num(support,2)} 附近且未有效跌破")
         else:
             tech_lines.append("⚪ 未偵測到明確的近期均線／支撐回踩訊號")
         if high20 is not None and close > high20:
-            tech_lines.append("🟢 突破近20日高點")
+            tech_lines.append(f"{icon(tech_score, 5)} 突破近20日高點")
         else:
             tech_lines.append("⚪ 尚未突破近20日高點")
         if high60 is not None and close >= high60:
-            tech_lines.append("🟢 站上近60日高點")
+            tech_lines.append(f"{icon(tech_score, 5)} 站上近60日高點")
         if high20 is not None and close > high20 and vol_ratio >= 1.3:
-            tech_lines.append(f"🟢 突破時量能約為20日均量 {vol_ratio:.2f} 倍")
+            tech_lines.append(f"{icon(tech_score, 5)} 突破時量能約為20日均量 {vol_ratio:.2f} 倍")
         elif vol_ratio >= 1.5 and close >= (ma20 or close):
             tech_lines.append(f"🟡 上攻時量能約為20日均量 {vol_ratio:.2f} 倍")
         else:
             tech_lines.append(f"⚪ 目前量能約為20日均量 {vol_ratio:.2f} 倍，未因量能額外加分")
-    tech_lines.append(f"⚪ 技術子分數 {tech_score:.1f}/5")
-    chip_lines.append(f"⚪ 籌碼／技術合計 {chip_tech_score:.0f}/10")
+    tech_lines.append(f"{icon(tech_score, 5)} 技術子分數 {tech_score:.1f}/5")
+    chip_lines.append(f"{icon(chip_tech_score, 10)} 籌碼／技術合計 {chip_tech_score:.0f}/10")
 
     return [
         {"name": "營收成長", "lines": rev_lines},
@@ -19621,7 +19630,7 @@ def web_positions(uid):
 @media(max-width:520px){.position-card{border-radius:19px;padding:15px}.position-card-title h3{font-size:20px}.position-card-price b{font-size:23px}.position-card-primary{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}.position-card-primary>div:last-child{grid-column:auto}.bot-virtual-card{grid-template-columns:1fr}.position-card-grid{grid-template-columns:1fr 1fr}}
 .position-more{margin-top:8px;border-top:1px solid #edf1f4}.position-more>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:space-between}.position-more>summary::-webkit-details-marker{display:none}.position-more>summary:after{content:'＋';font-size:16px;font-weight:500;color:#8294a6}.position-more[open]>summary:after{content:'−'}.position-detail-body{padding:2px 0 4px}.position-card-grid{margin-top:8px!important}.position-card-actions{margin-top:8px!important}.position-card-primary>div{min-width:0!important;min-height:58px!important;display:flex!important;flex-direction:column!important;justify-content:center!important}.position-card-primary b{font-size:17px!important;line-height:1.15!important;overflow-wrap:anywhere}
 @media(max-width:520px){.position-card-primary>div{padding:8px 6px!important;min-height:54px!important;border-radius:11px!important}.position-card-primary small{font-size:10px!important;white-space:nowrap}.position-card-primary b{font-size:14px!important}}
-.position-card{position:relative;border-left:4px solid #d9e3ec;transition:border-color .18s,box-shadow .18s;background:#fff}.position-card:has(.position-card-primary .up){border-left-color:#d93025}.position-card:has(.position-card-primary .down){border-left-color:#0b8f55}.position-card .up{color:#d93025!important}.position-card .down{color:#0b8f55!important}.position-factors{margin-top:10px;border-top:1px solid #edf1f4;padding-top:2px}.position-factors>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:13px;font-weight:850;display:flex;align-items:center;justify-content:space-between}.position-factors>summary::-webkit-details-marker{display:none}.position-factors>summary:after{content:'＋';font-size:17px;font-weight:500;color:#8294a6}.position-factors[open]>summary:after{content:'−'}.position-factors-body{padding:4px 0 10px}.position-factor-loading,.position-factor-empty{padding:11px 12px;border:1px dashed #d7e2ea;border-radius:11px;background:#f8fafc;color:#71808f;font-size:12px;line-height:1.6}.position-factor-overview{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-radius:12px;background:#f5f9fc;border:1px solid #dfe9f1;margin-bottom:9px}.position-factor-overview small{display:block;color:#71808f;font-size:10px}.position-factor-overview b{display:block;margin-top:2px;color:#173b5d;font-size:22px;line-height:1}.position-factor-overview em{font-style:normal;color:#607789;font-size:11px;line-height:1.45;text-align:right}.position-factor-list{display:grid;gap:7px}.position-factor-item>summary{list-style:none;cursor:pointer}.position-factor-item>summary::-webkit-details-marker{display:none}.position-factor-item>summary b{white-space:nowrap}.position-factor-item[open]>summary b{ }.position-factor-details{margin-top:8px;padding:9px 10px;border-top:1px solid rgba(120,140,155,.18);background:rgba(255,255,255,.62);border-radius:8px;color:#526879;font-size:11px;line-height:1.7}.position-factor-details>div{margin:2px 0}.position-factor-details b{color:#244f70;font-weight:900}.position-factor-item.strong .position-factor-details{background:#fffafa}.position-factor-item.weak .position-factor-details{background:#f7fcf8}.position-factor-item.mid .position-factor-details{background:#fffdf8}.position-factor-item{padding:9px 10px;border:1px solid #e4ebf0;border-radius:10px;background:#fff}.position-factor-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-factor-head span{font-size:12px;font-weight:850;color:#294e6d}.position-factor-head b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.position-factor-track{height:8px;margin-top:6px;background:#e9eff3;border-radius:99px;overflow:hidden}.position-factor-track i{display:block;height:100%;border-radius:99px}.position-factor-item.strong .position-factor-head b{color:#1f638f}.position-factor-item.strong .position-factor-track i{background:#2d78a8}.position-factor-item.mid .position-factor-head b{color:#a66b18}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral .position-factor-head b{color:#667788}.position-factor-item.neutral .position-factor-track i{background:#91a2af}.position-factor-item.weak .position-factor-head b{color:#a14d4d}.position-factor-item.weak .position-factor-track i{background:#c56b6b}.position-factor-note{margin:8px 0 0;padding:9px 10px;border-radius:9px;background:#f8fafc;color:#526879;font-size:11px;line-height:1.6}.position-factor-note b{color:#244f70}.position-factor-source{margin-top:7px;color:#8997a4;font-size:10px}.position-factor-status{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.position-factor-status span{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;background:#eef4f8;color:#45647a}.position-factor-status span.good{background:#fff0f0;color:#c62828}.position-factor-status span.warn{background:#fff4e4;color:#9a651d}.position-factor-status span.weak{background:#eaf4ef;color:#087443}.position-factor-item.strong{border-color:#efc3c3;background:#fff5f5}.position-factor-item.strong .position-factor-head b{color:#c62828}.position-factor-item.strong .position-factor-track i{background:#d93025}.position-factor-item.mid{border-color:#f1d8a7;background:#fffaf0}.position-factor-item.mid .position-factor-head b{color:#9a651d}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral{border-color:#d9e1e8;background:#f8fafc}.position-factor-item.weak{border-color:#bfe3cf;background:#f3fbf6}.position-factor-item.weak .position-factor-head b{color:#087443}.position-factor-item.weak .position-factor-track i{background:#0b8f55}.position-factor-note{border-left:4px solid #52718d}.position-factor-note b{color:#244f70}
+.position-card{position:relative;border-left:4px solid #d9e3ec;transition:border-color .18s,box-shadow .18s;background:#fff}.position-card:has(.position-card-primary .up){border-left-color:#d93025}.position-card:has(.position-card-primary .down){border-left-color:#0b8f55}.position-card .up{color:#d93025!important}.position-card .down{color:#0b8f55!important}.position-factors{margin-top:10px;border-top:1px solid #edf1f4;padding-top:2px}.position-factors>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:13px;font-weight:850;display:flex;align-items:center;justify-content:space-between}.position-factors>summary::-webkit-details-marker{display:none}.position-factors>summary:after{content:'＋';font-size:17px;font-weight:500;color:#8294a6}.position-factors[open]>summary:after{content:'−'}.position-factors-body{padding:4px 0 10px}.position-factor-loading,.position-factor-empty{padding:11px 12px;border:1px dashed #d7e2ea;border-radius:11px;background:#f8fafc;color:#71808f;font-size:12px;line-height:1.6}.position-factor-overview{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-radius:12px;background:#f5f9fc;border:1px solid #dfe9f1;margin-bottom:9px}.position-factor-overview small{display:block;color:#71808f;font-size:10px}.position-factor-overview b{display:block;margin-top:2px;color:#173b5d;font-size:22px;line-height:1}.position-factor-overview em{font-style:normal;color:#607789;font-size:11px;line-height:1.45;text-align:right}.position-factor-list{display:grid;gap:7px}.position-factor-item>summary{list-style:none;cursor:pointer}.position-factor-item>summary::-webkit-details-marker{display:none}.position-factor-item>summary b{white-space:nowrap}.position-factor-item[open]>summary b{ }.position-factor-details{margin-top:8px;padding:9px 10px;border-top:1px solid rgba(120,140,155,.18);background:rgba(255,255,255,.62);border-radius:8px;color:#526879;font-size:11px;line-height:1.7}.position-factor-details>div{margin:2px 0}.position-factor-details b{color:#244f70;font-weight:900}.position-factor-item.strong .position-factor-details{background:#fffafa}.position-factor-item.weak .position-factor-details{background:#f7fcf8}.position-factor-item.mid .position-factor-details{background:#fffdf8}.position-factor-item{padding:9px 10px;border:1px solid #e4ebf0;border-radius:10px;background:#fff}.position-factor-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-factor-head span{font-size:12px;font-weight:850;color:#294e6d}.position-factor-head b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.position-factor-track{height:8px;margin-top:6px;background:#e9eff3;border-radius:99px;overflow:hidden}.position-factor-track i{display:block;height:100%;border-radius:99px}.position-factor-item.strong .position-factor-head b{color:#1f638f}.position-factor-item.strong .position-factor-track i{background:#2d78a8}.position-factor-item.mid .position-factor-head b{color:#a66b18}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral .position-factor-head b{color:#667788}.position-factor-item.neutral .position-factor-track i{background:#91a2af}.position-factor-item.weak .position-factor-head b{color:#a14d4d}.position-factor-item.weak .position-factor-track i{background:#c56b6b}.position-factor-note{margin:8px 0 0;padding:9px 10px;border-radius:9px;background:#f8fafc;color:#526879;font-size:11px;line-height:1.6}.position-factor-note b{color:#244f70}.position-live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#12a150;margin-right:5px;vertical-align:1px;box-shadow:0 0 0 3px rgba(18,161,80,.12)}.position-factor-source{margin-top:7px;color:#8997a4;font-size:10px}.position-factor-status{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.position-factor-status span{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;background:#eef4f8;color:#45647a}.position-factor-status span.good{background:#fff0f0;color:#c62828}.position-factor-status span.warn{background:#fff4e4;color:#9a651d}.position-factor-status span.weak{background:#eaf4ef;color:#087443}.position-factor-legend{display:flex;flex-wrap:wrap;gap:5px 9px;padding:0 2px 8px;color:#71808f;font-size:10px;line-height:1.4}.pf-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:3px;vertical-align:-1px}.pf-dot.strong{background:#d93025}.pf-dot.mid{background:#d59a37}.pf-dot.weak{background:#0b8f55}.pf-dot.neutral{background:#d8dee3}.position-factor-item.strong{border-color:#efc3c3;background:#fff5f5}.position-factor-item.strong .position-factor-head b{color:#c62828}.position-factor-item.strong .position-factor-track i{background:#d93025}.position-factor-item.mid{border-color:#f1d8a7;background:#fffaf0}.position-factor-item.mid .position-factor-head b{color:#9a651d}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral{border-color:#d9e1e8;background:#f8fafc}.position-factor-item.weak{border-color:#bfe3cf;background:#f3fbf6}.position-factor-item.weak .position-factor-head b{color:#087443}.position-factor-item.weak .position-factor-track i{background:#0b8f55}.position-factor-note{border-left:4px solid #52718d}.position-factor-note b{color:#244f70}
 </style>"""
 
     body = f"""
@@ -19629,7 +19638,7 @@ def web_positions(uid):
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {exright_html}
 {totals}
-{f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px;{"" if _is_taiwan_intraday_window() else "display:none"}">盤中持股行情已於 {taiwan_now().strftime("%H:%M:%S")} 取得；開盤期間每 15 秒局部更新，個別來源暫缺時保留最後有效價格並標示來源。</div>' if positions else ''}
+{f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px;{"" if _is_taiwan_intraday_window() else "display:none"}">盤中持股行情已於 {taiwan_now().strftime("%H:%M:%S")} 取得；開盤期間約每 5 秒局部更新；盤中只採官方 MIS 最後成交，暫缺時不拿延遲行情冒充即時。</div>' if positions else ''}
 {allocation_html_positions}
 {portfolio_trend_html}
 <div class="section-head"><h2>持股明細</h2>
@@ -19688,7 +19697,7 @@ def web_positions(uid):
     var mins=tw.getHours()*60+tw.getMinutes();
     return mins>=(9*60-5) && mins<=(13*60+35);   // 08:55–13:35，涵蓋開盤前後
   }
-  function schedule(){if(timer)clearTimeout(timer);timer=setTimeout(refresh,15000);}
+  function schedule(){if(timer)clearTimeout(timer);timer=setTimeout(refresh,5000);}
   function refresh(){
     if(document.hidden||busy){schedule();return;}
     if(!inMarket()){
@@ -19714,7 +19723,7 @@ def web_positions(uid):
     if(token)url+='?t='+encodeURIComponent(token);
     fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
       (data.updates||[]).forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
-      root.textContent=data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。');
+      root.textContent=(data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。'))+' 約 5 秒檢查一次。';
     }).catch(function(e){root.textContent='盤中行情暫時無法更新：'+(e&&e.message?e.message:e)+'（HTTP 401 代表登入已過期，請從 LINE 重新開啟）；保留最後有效價格。';}).finally(function(){busy=false;schedule();});
   }
   function factorClass(ratio){return ratio>=0.8?'strong':ratio>=0.6?'mid':ratio>=0.4?'neutral':'weak';}
@@ -19734,7 +19743,7 @@ def web_positions(uid):
     if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+escText(worst.name)+'（'+factorStatus(worst.value/worst.max)+'）。';
     if(data.val_desc)note+=' '+escText(String(data.val_desc).replace(/\n/g,' '));
     if(data.mom_desc)note+=' '+escText(String(data.mom_desc).replace(/\n/g,' '));
-    return '<div class="position-factor-overview"><div><small>五大因子綜合分數</small><b>'+escText(total)+'</b></div><em>'+escText(data.category||'個股')+'<br>資料日 '+escText(data.source_date||'未標日期')+'</em></div><div class="position-factor-list">'+bars+'</div>'+(note?'<div class="position-factor-note">'+note+'</div>':'')+'<div class="position-factor-source">分數沿用選股模型最近保存快照；不在手機端重新計算。</div>';
+    return '<div class="position-factor-overview"><div><small>五大因子綜合分數</small><b>'+escText(total)+'</b></div><em>'+escText(data.category||'個股')+'<br>資料日 '+escText(data.source_date||'未標日期')+'</em></div><div class="position-factor-legend"><span><i class="pf-dot strong"></i>強（≥80%）</span><span><i class="pf-dot mid"></i>中（60～79%）</span><span><i class="pf-dot weak"></i>弱（&gt;0～59%）</span><span><i class="pf-dot neutral"></i>資料／無貢獻</span></div><div class="position-factor-list">'+bars+'</div>'+(note?'<div class="position-factor-note">'+note+'</div>':'')+'<div class="position-factor-source">分數沿用選股模型最近保存快照；不在手機端重新計算。</div>';
   }
   function escText(v){return String(v==null?'':v).replace(/[&<>'"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[c]});}
   function loadPositionFactors(box){
@@ -29359,17 +29368,16 @@ def web_positions_quotes(uid):
         return _workbench_json_response({"ok": True, "updates": [], "market_open": True,
                                          "note": "目前沒有可更新的持股。"})
     try:
-        # 盤中輪詢每 15 秒打一次，但 get_realtime_stock 的快取是 90 秒——
-        # 不帶 force_refresh 的話，六次裡有五次拿到的是同一份快取，
-        # 畫面看起來就像「價格不會動」。
-        # 真正的節流在下一層：_fetch_twse_mis_quotes 自己有 15 秒快取，
-        # 所以這裡強制刷新不會變成每 15 秒真的打爆 MIS。
-        quotes = get_realtime_stocks_bulk(
-            codes, workers=min(12, len(codes)), rng="1d",
-            force_refresh=_is_taiwan_intraday_window(), mis_force=False)
+        # 盤中輪詢每 5 秒檢查一次；官方 MIS 快取 5 秒，讓畫面能在不重載整頁的情況下接近即時更新——
+        # get_realtime_stock 本身即使保留較長日線快取，也會在官方 MIS 報價存在時覆寫當前價格。
+        # 真正的節流在下一層：_fetch_twse_mis_quotes 自己有 5 秒快取，
+        # 因此前端 5 秒輪詢不會每次都打到官方端點。
+        # 盤中顯示價格只允許官方 TWSE MIS。
+        # MIS 暫時查不到時，寧可保留畫面最後一筆，也不能退回 Yahoo 日線/延遲行情。
+        official_quotes = _fetch_twse_mis_quotes(codes, force_refresh=True)
         updates = []
         for code in codes:
-            quote_data = quotes.get(code)
+            quote_data = official_quotes.get(code)
             if not isinstance(quote_data, dict):
                 continue
             try:
@@ -29386,7 +29394,9 @@ def web_positions_quotes(uid):
                             "source": quote_data.get("source") or "最近有效行情"})
         return _workbench_json_response({"ok": True, "updates": updates, "market_open": True,
                                          "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
-                                         "note": "盤中持股行情已局部更新；官方個別最後成交暫缺時保留可驗證來源，不以昨日價格冒充即時。"})
+                                         "official_count": len(updates),
+                                         "requested_count": len(codes),
+                                         "note": "盤中價格只採 TWSE MIS 官方最後成交；約每 5 秒檢查、官方快取最多 3 秒。MIS 暫缺時不退回 Yahoo 延遲行情。"})
     except Exception as exc:
         print(f"⚠️ 持股盤中行情更新失敗（uid={uid}）：{exc}")
         return _workbench_json_response({"ok": False, "updates": [], "market_open": True,
