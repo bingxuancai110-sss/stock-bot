@@ -28591,45 +28591,99 @@ def render_workbench_body(initial_tab=""):
       host.querySelectorAll('[data-lazy-chart]').forEach(function(btn){btn.addEventListener('click',function(){var kind=btn.dataset.lazyChart,code=btn.dataset.code,box=btn.parentElement;btn.disabled=true;var st=box.querySelector('.wb-d-chart-status');if(st)st.textContent='正在載入歷史資料…';fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'force-cache'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(d){if(!d.ok)throw new Error(d.error||'載入失敗');drawLazyChart(box,d.data,kind);}).catch(function(e){btn.disabled=false;if(st)st.textContent='載入失敗：'+esc(String(e.message||e));});});});
     }
     function showLabResearchDetail(x,key){
-      var host=document.getElementById('wb-detail'),dr=document.getElementById('wb-drawer'),mk=document.getElementById('wb-mask');
-      if(!host||!dr)return;
-      var y=window.scrollY||window.pageYOffset||0;state.returnScroll=y;document.body.dataset.wbScroll=String(y);
-      document.body.style.position='fixed';document.body.style.top=(-y)+'px';document.body.style.left='0';document.body.style.right='0';document.body.style.width='100%';
-      dr.classList.add('open');dr.setAttribute('aria-hidden','false');if(mk)mk.hidden=false;dr.scrollTop=0;host.scrollTop=0;
-      var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
-      var metric=n==null?'—':((key==='混合'||key==='四因子複合')?(function(){var hc=Number(x.hit_count);if(!hc)hc=(x.factor_names||[]).length||Object.keys(x.factor_rank_map||{}).length||0;if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\/\s*4/);if(mm)hc=Number(mm[1]);}return hc+'/4';})():n.toFixed(key==='低波動'||key==='ROE品質'?2:1)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':''));
-      var chips=(x.tags||[]).map(function(t){return '<span class="wb-d-chip">'+esc(t)+'</span>';}).join('');
-      var detailMetrics=Array.isArray(x.detail_metrics)?x.detail_metrics:[];
-      var detailMetricHtml=detailMetrics.length?'<div class="wb-d-metric-grid">'+detailMetrics.map(function(m){return '<div class="wb-d-metric"><small>'+esc(m[0])+'</small><b>'+esc(m[1])+'</b></div>';}).join('')+'</div>':'';
-      var factorRows=''; var bars=''; var caution=''; var highlight=''; var conclusion=''; var noteworthy='';
-      var isComposite=(key==='混合'||key==='四因子複合');
-      if(isComposite){
-        var order=['營收成長','股價趨勢','價格穩定度','估值條件'];
-        var rankVals=[];
-        var rankMap=x.factor_rank_map||{};
-        order.forEach(function(name){var rv=Number(rankMap[name]); if(isFinite(rv)){rankVals.push({name:name,rank:rv});}});
-        if(!rankVals.length && Array.isArray(x.factor_names) && Array.isArray(x.factor_ranks)){
-          x.factor_names.forEach(function(name,idx){var rv=Number(x.factor_ranks[idx]); if(isFinite(rv)){rankVals.push({name:name,rank:rv});}});
+    var host=document.getElementById('wb-detail');
+    var dr=document.getElementById('wb-drawer');
+    var mk=document.getElementById('wb-mask');
+    if(!host||!dr)return;
+
+    var y=window.scrollY||window.pageYOffset||0;
+    state.returnScroll=y;
+    document.body.dataset.wbScroll=String(y);
+    document.body.style.position='fixed';
+    document.body.style.top=(-y)+'px';
+    document.body.style.left='0';
+    document.body.style.right='0';
+    document.body.style.width='100%';
+    dr.classList.add('open');
+    dr.setAttribute('aria-hidden','false');
+    if(mk)mk.hidden=false;
+    dr.scrollTop=0;
+    host.scrollTop=0;
+
+    var keyName=labName(key);
+    var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
+    var metric='—';
+    if(n!=null){
+      if(key==='混合'||key==='四因子複合'){
+        var hit=Number(x.hit_count);
+        if(!isFinite(hit)||hit<=0){
+          hit=Array.isArray(x.factor_names)?x.factor_names.length:0;
+          if(!hit&&x.factor_rank_map)hit=Object.keys(x.factor_rank_map).length;
         }
-        factorRows=rankVals.map(function(o){return '<div class="wb-d-factor-row"><span>'+esc(o.name)+'</span><b>第 '+esc(o.rank)+' 名</b></div>';}).join('');
-        bars='<div class="wb-d-bars">'+rankVals.map(function(o){var pct=Math.max(8,Math.min(100,100*(26-o.rank)/25));return '<div class="wb-d-bar-row"><span>'+esc(o.name)+'</span><div class="wb-d-bar"><i style="width:'+pct.toFixed(0)+'%"></i></div><b>第 '+esc(o.rank)+'</b></div>';}).join('')+'</div>';
-        var sorted=rankVals.slice().sort(function(a,b){return a.rank-b.rank;});
-        var best=sorted.slice(0,2).map(function(o){return o.name+'第'+o.rank+'名';}).join('、');
-        var weak=sorted.slice(-1)[0];
-        highlight=best?'這檔股票主要因為 '+best+' 而進入綜合研究名單。':'';
-        noteworthy=best?'目前最值得注意的是「'+best+'」；代表它在這些角度的研究排名較前。':'目前可驗證條件不足，暫時沒有明確亮點。';
-        caution=weak && weak.rank>=15?'目前較需要留意的是「'+weak.name+'」排名第 '+weak.rank+'，並不是四項都同樣突出。':'';
-        conclusion=rankVals.length?('目前共有 '+rankVals.length+'/4 個條件進入研究排名；這代表它同時具備多個研究角度的支持，但仍應進一步查看基本面、估值與股價位置。'):'目前可驗證條件不足，暫不下結論。';
-      } else {
-        highlight=key==='營收動能'?'這檔股票因營收成長條件進入研究名單。':key==='價格動能'?'這檔股票因近期股價趨勢進入研究名單。':key==='低波動'?'這檔股票因價格波動相對穩定進入研究名單。':key==='價值'?'這檔股票因估值條件進入研究名單。':key==='籌碼'?'這檔股票因法人資金動向進入研究名單。':key==='成長'?'這檔股票因整體成長條件進入研究名單。':'這檔股票符合目前這項研究條件。';
-        noteworthy=key==='營收動能'?'重點是最近營收成長表現；可再搭配股價位置與估值確認。':key==='價格動能'?'重點是近期股價趨勢；仍要留意是否已經漲多。':key==='低波動'?'重點是價格波動相對穩定；不代表一定有上漲趨勢。':key==='價值'?'重點是估值條件較有吸引力；仍要確認公司基本面。':key==='籌碼'?'重點是法人資金動向較突出；仍要搭配價格與基本面。':key==='成長'?'重點是整體成長速度較突出；可再確認成長是否能延續。':'符合目前這項研究條件。';
-        conclusion='這是研究候選，不代表正式買進訊號；建議搭配其他條件一起查看。';
+        metric=String(hit)+'/4';
+      }else{
+        var digits=(key==='低波動'||key==='ROE品質')?2:1;
+        metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');
       }
-      var scoreNote=(key==='混合'||key==='四因子複合')?(x.score_explanation||'這個數字是研究排序用的共識分數，不是報酬率，也不是百分比。'):'';
-      host.innerHTML='<div class="wb-d-container"><div class="wb-d-hero wb-d-hero-premium"><div class="wb-d-hero-top"><div><span class="wb-d-label">策略研究 · '+esc(labName(key))+'</span><h3>'+esc(x.name)+' <small>'+esc(x.code)+'</small></h3><p>'+esc(x.industry||'未分類')+'</p></div><div class="wb-d-score"><span>'+esc(x.metric_label||'研究值')+'</span><b>'+esc(metric)+'</b></div></div></div><section class="wb-d-section wb-d-noteworthy"><div class="wb-d-section-head"><h4>① 值得注意</h4><small>先看這檔股票為什麼值得研究</small></div><div class="wb-d-highlight">'+esc(noteworthy||'目前沒有額外亮點說明。')+'</div></section><section class="wb-d-section"><div class="wb-d-section-head"><h4>② 為什麼入選</h4><small>研究候選，不代表正式買進訊號</small></div><p class="wb-d-note">'+esc(x.reason||'目前沒有額外說明。')+'</p>'+detailMetricHtml+'<div class="wb-d-why-highlight">'+esc(highlight)+'</div>'+(factorRows?'<div class="wb-d-factor-list">'+factorRows+'</div>':'')+(scoreNote?'<p class="wb-d-note wb-d-score-note">'+esc(scoreNote)+'</p>':'')+lazyChartBlock(x,key)+'<div class="wb-d-tags">'+chips+'</div></section>'+(bars?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>③ 條件強弱</h4><small>排名越前，代表在該條件中的位置越前</small></div>'+bars+'</section>':'')+(caution?'<section class="wb-d-section"><div class="wb-d-section-head"><h4>'+ (bars?'④ 需要注意':'③ 需要注意') +'</h4></div><div class="wb-d-caution">'+esc(caution)+'</div></section>':'')+'<section class="wb-d-section"><div class="wb-d-section-head"><h4>'+ (bars?'⑤ 研究結論':(caution?'④ 研究結論':'③ 研究結論')) +'</h4></div><div class="wb-d-conclusion">'+esc(conclusion)+'</div></section><section class="wb-d-section"><div class="wb-d-section-head"><h4>資料範圍</h4><small>只顯示目前 BOT 可驗證資料</small></div><p class="wb-d-note">'+esc(x.data_scope||'本次研究批次計算結果。')+'</p></section></div>';
     }
-      bindLazyCharts(host);
+
+    var chips=Array.isArray(x.tags)?x.tags.map(function(t){
+      return '<span class="wb-d-chip">'+esc(t)+'</span>';
+    }).join(''):'';
+
+    var metrics=Array.isArray(x.detail_metrics)?x.detail_metrics:[];
+    var metricHtml=metrics.length?'<div class="wb-d-metric-grid">'+metrics.map(function(m){
+      return '<div class="wb-d-metric"><small>'+esc(m[0])+'</small><b>'+esc(m[1])+'</b></div>';
+    }).join('')+'</div>':'';
+
+    var factorHtml='';
+    if(key==='混合'||key==='四因子複合'){
+      var order=['營收成長','股價趨勢','價格穩定度','估值條件'];
+      var rankMap=x.factor_rank_map||{};
+      var rankRows=[];
+      order.forEach(function(name){
+        var rv=Number(rankMap[name]);
+        if(isFinite(rv))rankRows.push({name:name,rank:rv});
+      });
+      if(!rankRows.length&&Array.isArray(x.factor_names)&&Array.isArray(x.factor_ranks)){
+        x.factor_names.forEach(function(name,idx){
+          var rv=Number(x.factor_ranks[idx]);
+          if(isFinite(rv))rankRows.push({name:name,rank:rv});
+        });
+      }
+      factorHtml=rankRows.length?'<div class="wb-d-factor-list">'+rankRows.map(function(row){
+        return '<div class="wb-d-factor-row"><span>'+esc(row.name)+'</span><b>第 '+esc(row.rank)+' 名</b></div>';
+      }).join('')+'</div>':'';
     }
+
+    var lazy='';
+    if(key==='營收動能')lazy='<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="revenue" data-code="'+esc(x.code)+'">查看近12個月營收圖</button><div class="wb-d-chart-status">點開後才載入歷史資料，不影響研究室首屏速度。</div></div>';
+    if(key==='籌碼')lazy='<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="institutional" data-code="'+esc(x.code)+'">查看近20日法人動向</button><div class="wb-d-chart-status">點開後才讀取已保存的法人歷史。</div></div>';
+
+    var reason=x.reason||'目前沒有額外說明。';
+    var scope=x.data_scope||'本次研究批次計算結果。';
+    var scoreNote=(key==='混合'||key==='四因子複合') ? (x.score_explanation||'這個數字是研究排序用的分數，不是報酬率。') : '';
+
+    host.innerHTML=''
+      +'<div class="wb-d-container">'
+      +'<div class="wb-d-hero wb-d-hero-premium">'
+      +'<div class="wb-d-hero-top"><div>'
+      +'<span class="wb-d-label">策略研究 · '+esc(keyName)+'</span>'
+      +'<h3>'+esc(x.name||x.code||'研究標的')+' <small>'+esc(x.code||'')+'</small></h3>'
+      +'<p>'+esc(x.industry||'未分類')+'</p>'
+      +'</div><div class="wb-d-score"><span>'+esc(x.metric_label||'研究值')+'</span><b>'+esc(metric)+'</b></div>'
+      +'</div></div>'
+      +'<section class="wb-d-section wb-d-noteworthy"><div class="wb-d-section-head"><h4>① 值得注意</h4><small>這檔股票目前為什麼進入研究名單</small></div>'
+      +'<div class="wb-d-highlight">'+esc(reason)+'</div></section>'
+      +'<section class="wb-d-section"><div class="wb-d-section-head"><h4>② 研究細節</h4><small>只使用目前已保存、可驗證的資料</small></div>'
+      +metricHtml+factorHtml+(scoreNote?'<p class="wb-d-note wb-d-score-note">'+esc(scoreNote)+'</p>':'')+lazy
+      +'<div class="wb-d-tags">'+chips+'</div></section>'
+      +'<section class="wb-d-section"><div class="wb-d-section-head"><h4>資料範圍</h4><small>不以推測數字補足</small></div>'
+      +'<p class="wb-d-note">'+esc(scope)+'</p></section>'
+      +'</div>';
+
+    bindLazyCharts(host);
+  }
     var strategies=(data.strategies||[]).map(function(x){return '<div class="wb-lab-card"><h4>'+esc(x.name)+' <span class="wb-lab-status '+(x.status==='ready'?'ready':'wait')+'">'+esc(x.status_label)+'</span></h4><p class="wb-lab-muted">'+esc(x.description)+'</p><div class="wb-lab-note">'+esc(x.note)+'</div></div>';}).join('');
     var categories=(data.categories||[]).map(function(x){return '<div class="wb-lab-category"><b>'+esc(x.name)+'</b><span>'+esc(x.items.join('・'))+'</span></div>';}).join('');
     labBody.innerHTML='<div class="wb-lab-nav">'+libHtml+'</div>'+
