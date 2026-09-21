@@ -25763,10 +25763,9 @@ def web_portfolio(uid):
     profile = get_profile(uid)
     risk_card = render_risk_card(profile, msg)
 
-    # 問卷沒填完就只給問卷。組合分析的價值有一大半來自依你的處境判讀，
-    # 少了那些答案，剩下的數字誰看都一樣，沒有必要先給。
-    if not is_profile_complete(profile):
-        return respond_page("今日", risk_card, "portfolio")
+    # 首頁永遠顯示完整首頁，不因問卷是否填完而中止。
+    # 問卷未完成時仍顯示風險輪廓，後續分析使用預設門檻；
+    # 不再把使用者卡在只有「你的風險輪廓」的半頁。
 
     positions = merge_positions(get_positions(uid))
     # 位置代號在所有首頁共享資料與即時行情流程都會使用。
