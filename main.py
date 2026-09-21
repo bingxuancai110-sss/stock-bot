@@ -6255,13 +6255,45 @@ _fast_rank_summary_cache_lock = threading.Lock()
 
 
 def get_fast_rank_summary(user_id):
-    """首頁 fast 專用：只讀最近兩次已保存名次，不重算全體排行榜。"""
+    """首頁排名摘要。
+
+    目前排名必須與排行榜頁的「最新完整快照」使用同一份資料；
+    舊版只讀 leaderboard_rank_snapshots，收盤後若尚未寫入名次快照，
+    首頁就會停在昨日排名，造成「排行榜頁 #1、首頁還顯示 #3」的不同步。
+    這裡改成：
+      1. 優先讀 leaderboard_page 的最新完整快照取得目前名次；
+      2. 昨日／前次排名仍從 leaderboard_rank_snapshots 取得；
+      3. 若完整快照暫時不存在，才退回舊的名次快照。
+    """
     uid = str(user_id).strip()
     now = time.time()
-    with _fast_rank_summary_cache_lock:
-        cached = _fast_rank_summary_cache.get(uid)
-        if cached and now - cached.get("at", 0) < _FAST_RANK_SUMMARY_CACHE_SECONDS:
-            return cached["value"]
+
+    # 不在這裡先命中 30 秒記憶體快取；排行榜快照可能剛在背景完成，
+    # 若先回舊 cache，首頁仍會比排行榜頁慢一個版本。這個查詢只讀小型
+    # shared snapshot + 名次歷史表，維持輕量但以「最新快照」為優先。
+
+    # 目前排名與排行榜頁共用「完整排行榜快照」。這是關鍵修正：
+    # leaderboard_rank_snapshots 是歷史變化資料，不應拿它當作今日目前排名。
+    persisted_rank = None
+    try:
+        persisted_rank = _load_persisted_leaderboard_page()
+    except Exception as exc:
+        print(f"⚠️ 首頁讀取最新排行榜快照失敗: {exc}")
+
+    current_rank_map = {}
+    current_data_date = None
+    if persisted_rank:
+        try:
+            boards, _graph = persisted_rank["value"]
+            current_data_date = persisted_rank.get("data_date")
+            for board in ("short", "long"):
+                rows = boards.get(board) or []
+                rank = next((idx for idx, row in enumerate(rows, 1)
+                             if str(row.get("user_id") or "").strip() == uid), None)
+                current_rank_map[board] = rank
+        except Exception as exc:
+            print(f"⚠️ 首頁解析最新排行榜快照失敗: {exc}")
+
     grouped = defaultdict(list)
     conn = get_db_connection()
     try:
@@ -6270,8 +6302,9 @@ def get_fast_rank_summary(user_id):
             SELECT board, snapshot_date, rank
             FROM leaderboard_rank_snapshots
             WHERE user_id=%s AND board = ANY(%s)
+              AND snapshot_date < %s
             ORDER BY board ASC, snapshot_date DESC
-        ''', (uid, ["short", "long"]))
+        ''', (uid, ["short", "long"], taiwan_today()))
         for board, snapshot_date, rank in cur.fetchall():
             if len(grouped[board]) < 2:
                 grouped[board].append((snapshot_date, rank))
@@ -6284,9 +6317,12 @@ def get_fast_rank_summary(user_id):
     result = {}
     for board, label in (("short", "短線"), ("long", "長線")):
         entries = grouped.get(board, [])
-        current = entries[0] if entries else None
-        previous = entries[1] if len(entries) > 1 else None
-        current_rank = current[1] if current else None
+        previous = entries[0] if entries else None
+        # 優先使用與排行榜頁相同的最新完整快照；
+        # 完整快照不存在時才退回歷史名次快照。
+        current_rank = current_rank_map.get(board)
+        if current_rank is None and not persisted_rank:
+            current_rank = previous[1] if previous else None
         previous_rank = previous[1] if previous else None
         if current_rank is None:
             delta, direction = None, None
@@ -6302,9 +6338,10 @@ def get_fast_rank_summary(user_id):
             "streak": 0,
             "direction": direction,
             "label": label,
-            "snapshot_date": (current[0].isoformat()
-                              if current and hasattr(current[0], "isoformat")
-                              else (str(current[0]) if current else None)),
+            "snapshot_date": (str(current_data_date)[:10] if current_data_date
+                              else (previous[0].isoformat()
+                                    if previous and hasattr(previous[0], "isoformat")
+                                    else (str(previous[0]) if previous else None))),
         }
     with _fast_rank_summary_cache_lock:
         _fast_rank_summary_cache[uid] = {"at": time.time(), "value": result}
@@ -28781,6 +28818,7 @@ def render_workbench_body(initial_tab=""):
         var table=show.map(function(d,i){var isLast=i===show.length-1;return '<div class="wb-growth-row '+(isLast?'latest':'')+'"><div class="period">'+escText(String(d.period||'').slice(0,7))+(isLast?'<span>最新</span>':'')+'</div><div class="metric '+cls(d.yoy)+'"><small>營收 YoY</small><b>'+escText(arrow(d.yoy)+' '+signedPct(d.yoy))+'</b></div><div class="metric '+cls(d.cum_yoy)+'"><small>累計 YoY</small><b>'+escText(arrow(d.cum_yoy)+' '+signedPct(d.cum_yoy))+'</b></div><div class="metric '+cls(d.mom)+'"><small>MoM</small><b>'+escText(arrow(d.mom)+' '+signedPct(d.mom))+'</b></div></div>';}).join('');
         host.innerHTML='<div class="wb-clear-style"></div><div class="wb-clear-head"><div><b>成長動能</b><small>直接看成長速度，不用從圖形猜。</small></div><strong class="'+(accel==='成長加速'?'positive':accel==='成長減速'?'negative':'neutral')+'">'+escText(accel)+'</strong></div><div class="wb-clear-kpis growth"><div class="'+cls(latest.yoy)+'"><small>最新營收 YoY</small><b>'+escText(arrow(latest.yoy)+' '+signedPct(latest.yoy))+'</b><em>今年 vs 去年同月</em></div><div class="'+cls(latest.cum_yoy)+'"><small>累計 YoY</small><b>'+escText(arrow(latest.cum_yoy)+' '+signedPct(latest.cum_yoy))+'</b><em>今年累計 vs 去年</em></div><div class="'+cls(latest.mom)+'"><small>最新 MoM</small><b>'+escText(arrow(latest.mom)+' '+signedPct(latest.mom))+'</b><em>最近一個月 vs 前月</em></div></div><div class="wb-growth-check"><div><span>YoY 變化</span><b class="'+cls(dy)+'">'+escText(dy==null?'資料不足':signedPct(dy))+'</b></div><div><span>累計 YoY 變化</span><b class="'+cls(dc)+'">'+escText(dc==null?'資料不足':signedPct(dc))+'</b></div><div><span>MoM 變化</span><b class="'+cls(dm)+'">'+escText(dm==null?'資料不足':signedPct(dm))+'</b></div></div><div class="wb-clear-table-title"><b>最近 6 個月成長</b><span>最新一期標記為「最新」</span></div><div class="wb-clear-table growth-table">'+table+'</div><div class="wb-clear-summary"><b>一句話：</b>'+escText(n(latest.yoy)>0?'營收年增為正，代表比去年同月成長。':n(latest.yoy)<0?'營收年增為負，代表比去年同月衰退。':'年增資料不足。')+' '+escText(n(latest.mom)>0?'最近一個月動能仍向上。':n(latest.mom)<0?'最近一個月動能轉弱。':'月增資料不足。')+'</div>';return;
       }
+    }
     function bindLazyCharts(host){
       host.querySelectorAll('[data-lazy-chart]').forEach(function(btn){btn.addEventListener('click',function(){var kind=btn.dataset.lazyChart,code=btn.dataset.code,box=btn.parentElement;btn.disabled=true;var st=box.querySelector('.wb-d-chart-status');if(st)st.textContent='正在載入歷史資料…';fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'force-cache'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(d){if(!d.ok)throw new Error(d.error||'載入失敗');drawLazyChart(box,d.data,kind);}).catch(function(e){btn.disabled=false;if(st)st.textContent='載入失敗：'+esc(String(e.message||e));});});});
     }
