@@ -12495,12 +12495,93 @@ def _parse_mops_revenue_html(text, target_period):
     return result
 
 
-def _fetch_mops_revenue_fallback(target_key):
-    """官方 OpenAPI 落後時，直接讀 MOPS 的 115/08 等歷史月營收頁。
+def _parse_mops_revenue_csv(raw, target_period, target_code=None):
+    """快速解析 MOPS 官方 CSV；可只取單一股票，避免 HTML 全表解析。"""
+    import csv
+    key = _normalize_revenue_period(target_period)
+    target = str(target_code or "").strip()
+    if not raw:
+        return {}
+    text = None
+    for enc in ("utf-8-sig", "utf-8", "cp950", "big5"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = raw.decode("utf-8", errors="replace")
 
-    這不是第三方資料；t21sc03 是公開資訊觀測站的歷史月營收頁。
-    三個市場分開抓，成功的市場先合併；單一市場失敗不會讓其他市場一起失效。
-    """
+    lines = [ln for ln in text.replace("\r", "").split("\n") if ln.strip()]
+    if not lines:
+        return {}
+    try:
+        rows = list(csv.reader(lines))
+    except Exception:
+        return {}
+    if not rows:
+        return {}
+
+    header_i = None
+    for i, row in enumerate(rows[:20]):
+        joined = "|".join(str(x or "").replace("\ufeff", "").strip() for x in row)
+        if "公司代號" in joined and ("當月營收" in joined or "營業收入" in joined):
+            header_i = i
+            break
+    if header_i is None:
+        return {}
+
+    header = [re.sub(r"\s+", "", str(x or "").replace("\ufeff", "")) for x in rows[header_i]]
+    def col(*keys):
+        for i, h in enumerate(header):
+            if all(k in h for k in keys):
+                return i
+        return None
+    code_i = col("公司代號")
+    month_i = col("當月營收")
+    yoy_i = col("去年同月增減")
+    cum_yoy_i = col("累計營收增減")
+    mom_i = col("前月比較增減")
+    # CSV 欄位通常固定；若標題文字略有差異，沿用標準位置。
+    code_i = 0 if code_i is None else code_i
+    month_i = 2 if month_i is None else month_i
+    yoy_i = 3 if yoy_i is None else yoy_i
+    cum_yoy_i = 6 if cum_yoy_i is None else cum_yoy_i
+    mom_i = 5 if mom_i is None else mom_i
+
+    def num(v):
+        t = str(v or "").strip().replace(",", "").replace("%", "")
+        if t in ("", "-", "--", "—", "－", "N/A", "NA"):
+            return None
+        if t.startswith("(") and t.endswith(")"):
+            t = "-" + t[1:-1]
+        try:
+            return float(t)
+        except (ValueError, TypeError):
+            return None
+
+    result = {}
+    for row in rows[header_i + 1:]:
+        if max(code_i, month_i, yoy_i, cum_yoy_i, mom_i) >= len(row):
+            continue
+        code = re.sub(r"\s+", "", str(row[code_i] or ""))
+        if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code):
+            continue
+        if target and code.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ") != target.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+            continue
+        result[code] = {
+            "yoy_pct": num(row[yoy_i]),
+            "cum_yoy_pct": num(row[cum_yoy_i]),
+            "mom_pct": num(row[mom_i]),
+            "month_revenue": num(row[month_i]),
+        }
+        if target:
+            break
+    return result
+
+
+def _fetch_mops_revenue_csv(target_key, target_code=None, market=None):
+    """優先使用 MOPS 官方靜態 CSV。比 HTML 快很多，且單一股票可找到後立即停止。"""
     key = _normalize_revenue_period(target_key)
     if not key:
         return {}, None
@@ -12508,40 +12589,87 @@ def _fetch_mops_revenue_fallback(target_key):
     month = key % 100
     period_text = f"{roc_year:03d}{month:02d}"
 
-    endpoints = [
-        ("上市", f"https://mopsov.twse.com.tw/nas/t21/sii/t21sc03_{roc_year}_{month}_0.html"),
-        ("上櫃", f"https://mopsov.twse.com.tw/nas/t21/otc/t21sc03_{roc_year}_{month}_0.html"),
-        ("興櫃", f"https://mopsov.twse.com.tw/nas/t21/rotc/t21sc03_{roc_year}_{month}_0.html"),
-    ]
+    market_text = str(market or "").strip().lower()
+    if market_text in ("上櫃", "上柜", "tpex", "otc", "two"):
+        markets = [("上櫃", "otc")]
+    elif market_text in ("上市", "twse", "sii", "tse", "tse.tw"):
+        markets = [("上市", "sii")]
+    elif market_text in ("興櫃", "rotc", "emerging"):
+        markets = [("興櫃", "rotc")]
+    else:
+        markets = [("上市", "sii"), ("上櫃", "otc"), ("興櫃", "rotc")]
+
+    for label, market_path in markets:
+        url = (
+            "https://mops.twse.com.tw/server-java/FileDownLoad"
+            f"?step=9&functionName=show_file&filePath=%2Fhome%2Fhtml%2Fnas%2Ft21%2F{market_path}%2F"
+            f"&fileName=t21sc03_{roc_year}_{month}.csv"
+        )
+        try:
+            r = _session.get(url, timeout=8, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+                "Referer": "https://mops.twse.com.tw/",
+            })
+            r.raise_for_status()
+            data = _parse_mops_revenue_csv(r.content, key, target_code=target_code)
+            if data:
+                print(f"⚡ MOPS CSV 月營收成功（{period_text}/{label}），{('單股 '+str(target_code)) if target_code else str(len(data))+' 檔'}")
+                return data, period_text
+        except Exception as exc:
+            print(f"⚠️ MOPS CSV {label} {period_text} 失敗: {exc}")
+    return {}, None
+
+
+def _fetch_mops_revenue_fallback(target_key, target_code=None, market=None):
+    """官方月營收歷史 fallback：先走快速 CSV，失敗才退回 HTML。"""
+    fast, fast_period = _fetch_mops_revenue_csv(target_key, target_code=target_code, market=market)
+    if fast:
+        return fast, fast_period
+
+    key = _normalize_revenue_period(target_key)
+    if not key:
+        return {}, None
+    roc_year = key // 100 - 1911
+    month = key % 100
+    period_text = f"{roc_year:03d}{month:02d}"
+    market_text = str(market or "").strip().lower()
+    if market_text in ("上櫃", "上柜", "tpex", "otc", "two"):
+        endpoints = [("上櫃", f"https://mopsov.twse.com.tw/nas/t21/otc/t21sc03_{roc_year}_{month}_0.html")]
+    elif market_text in ("上市", "twse", "sii", "tse", "tse.tw"):
+        endpoints = [("上市", f"https://mopsov.twse.com.tw/nas/t21/sii/t21sc03_{roc_year}_{month}_0.html")]
+    elif market_text in ("興櫃", "rotc", "emerging"):
+        endpoints = [("興櫃", f"https://mopsov.twse.com.tw/nas/t21/rotc/t21sc03_{roc_year}_{month}_0.html")]
+    else:
+        endpoints = [
+            ("上市", f"https://mopsov.twse.com.tw/nas/t21/sii/t21sc03_{roc_year}_{month}_0.html"),
+            ("上櫃", f"https://mopsov.twse.com.tw/nas/t21/otc/t21sc03_{roc_year}_{month}_0.html"),
+            ("興櫃", f"https://mopsov.twse.com.tw/nas/t21/rotc/t21sc03_{roc_year}_{month}_0.html"),
+        ]
     combined = {}
-    successful = []
     for label, url in endpoints:
         try:
-            r = _session.get(url, timeout=20, headers={
+            r = _session.get(url, timeout=10, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
                 "Referer": "https://mops.twse.com.tw/",
             })
             r.raise_for_status()
             raw = r.content
-            # MOPS 歷史頁可能是 big5/CP950；先試 UTF-8，再用 CP950。
             try:
                 text = raw.decode("utf-8")
             except UnicodeDecodeError:
                 text = raw.decode("cp950", errors="replace")
             data = _parse_mops_revenue_html(text, key)
-            if data:
-                combined.update(data)
-                successful.append(f"{label}:{len(data)}")
-            else:
-                print(f"⚠️ MOPS {label} {period_text} 頁面沒有解析到個股資料")
+            if target_code:
+                data = {k: v for k, v in data.items() if k.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ") == str(target_code).rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")}
+            combined.update(data)
+            if target_code and combined:
+                break
         except Exception as exc:
-            print(f"⚠️ MOPS {label} {period_text} fallback 失敗: {exc}")
-
+            print(f"⚠️ MOPS HTML {label} {period_text} fallback 失敗: {exc}")
     if combined:
-        print(f"🛟 MOPS 月營收 fallback 成功（{period_text}；{'、'.join(successful)}），共 {len(combined)} 檔")
+        print(f"🛟 MOPS HTML 月營收 fallback 成功（{period_text}），共 {len(combined)} 檔")
         return combined, period_text
     return {}, None
-
 
 def fetch_monthly_revenue(force_refresh=False, homepage=False):
     """抓最新一期月營收，涵蓋上市、上櫃、興櫃。
@@ -30679,7 +30807,7 @@ def _workbench_revenue_history_for_code(code, limit=6):
             label = _revenue_period_label(key)
             if str(key) not in existing:
                 try:
-                    fetched, fetched_period = _fetch_mops_revenue_fallback(key)
+                    fetched, fetched_period = _fetch_mops_revenue_fallback(key, target_code=code, market=(get_market_map().get(code) if isinstance(get_market_map(), dict) else None))
                     item = fetched.get(code) or fetched.get(code.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
                     if item and fetched_period:
                         period = str(fetched_period)
