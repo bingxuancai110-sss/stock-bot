@@ -28801,11 +28801,11 @@ def render_workbench_body(initial_tab=""):
 .wb-valuation-title{display:flex;flex-direction:column;gap:4px;margin-bottom:13px}.wb-valuation-title b{font-size:18px;color:#203c59}.wb-valuation-title small{font-size:12px;line-height:1.55;color:#7a8998}
 .wb-valuation-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.wb-valuation-card{padding:13px 12px;border:1px solid #dce6ef;border-radius:14px;background:#fff;min-width:0}.wb-valuation-card>span{display:block;color:#728397;font-size:12px;font-weight:700}.wb-valuation-card>b{display:block;margin-top:7px;color:#294d6b;font-size:22px;line-height:1.15}.wb-valuation-card>small{display:block;margin-top:7px;color:#7d8d9d;font-size:11px;line-height:1.4}.wb-val-pass,.wb-val-fail,.wb-val-wait{display:inline-flex;align-items:center;margin-top:8px;padding:5px 8px;border-radius:999px;font-size:11px;font-weight:900}.wb-val-pass{background:#eaf7f0;color:#2f8a61}.wb-val-fail{background:#fff0f0;color:#c34d4d}.wb-val-wait{background:#eef2f6;color:#6e7d8b}
 .wb-valuation-explain{margin-top:11px;padding:12px 13px;border-radius:14px;background:#fff;border:1px solid #e2e9f0}.wb-valuation-explain p{margin:0;padding:7px 0;border-bottom:1px solid #edf1f5;color:#536779;font-size:12px;line-height:1.65}.wb-valuation-explain p:last-child{border-bottom:0;padding-bottom:0}.wb-valuation-explain b{color:#294d6b}
-.wb-d-price-svg .price-grid{stroke:#e7edf3;stroke-width:1}.wb-d-price-svg .price-line{stroke:#2f6fd6;stroke-width:4;fill:none;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 2px 3px rgba(47,111,214,.18))}.wb-d-price-svg .price-dot{fill:#2f6fd6;stroke:#fff;stroke-width:2}.wb-d-price-chart{min-height:225px}.wb-d-chart-loading{display:flex;align-items:center;gap:9px;padding:10px 4px;color:#5d7184;font-size:12px;font-weight:800}.wb-d-spinner{width:18px;height:18px;border:3px solid #dce7f1;border-top-color:#2f6fd6;border-radius:50%;animation:wbSpin .75s linear infinite;flex:0 0 auto}@keyframes wbSpin{to{transform:rotate(360deg)}}
+.wb-d-price-svg .price-grid{stroke:#e7edf3;stroke-width:1}.wb-d-price-svg .price-line{stroke:#2f6fd6;stroke-width:4;fill:none;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 2px 3px rgba(47,111,214,.18))}.wb-d-price-svg .price-dot{fill:#2f6fd6;stroke:#fff;stroke-width:2}.wb-d-price-chart{min-height:225px}.wb-d-chart-loading{display:flex;align-items:center;gap:9px;padding:10px 4px;color:#5d7184;font-size:12px;font-weight:800}.wb-d-spinner{width:18px;height:18px;border:3px solid #dce7f1;border-top-color:#2f6fd6;border-radius:50%;animation:wbSpin .75s linear infinite;flex:0 0 auto}@keyframes wbSpin{to{transform:rotate(360deg)}}.wb-d-inline-spinner{width:15px;height:15px;border:2.5px solid rgba(255,255,255,.42);border-top-color:#fff;border-radius:50%;display:inline-block;vertical-align:-3px;margin-left:7px;animation:wbSpin .65s linear infinite}.wb-d-chart-loading-live{min-height:48px;justify-content:center;background:linear-gradient(90deg,#f7fbff,#eef6ff,#f7fbff);background-size:220% 100%;animation:wbLoadingSweep 1.2s ease-in-out infinite;border-radius:10px}@keyframes wbLoadingSweep{0%,100%{background-position:0 0}50%{background-position:100% 0}}.wb-d-lazy-chart button.wb-loading,.wb-d-hero-chart-cta button.wb-loading{opacity:.94;pointer-events:none}
 .wb-d-lazy-chart button.wb-loading,.wb-d-hero-chart-cta button.wb-loading{position:relative;cursor:wait;transform:translateY(0);box-shadow:0 0 0 3px rgba(47,111,214,.08);animation:wbPulse 1.15s ease-in-out infinite}.wb-d-lazy-chart button.wb-loading:after,.wb-d-hero-chart-cta button.wb-loading:after{content:'';width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;display:inline-block;vertical-align:-2px;margin-left:8px;animation:wbSpin .7s linear infinite}@keyframes wbPulse{50%{filter:brightness(1.06)}}
 @media(max-width:620px){.wb-valuation-grid{grid-template-columns:1fr}.wb-valuation-card{padding:12px 13px}.wb-valuation-card>b{font-size:21px}.wb-valuation-title b{font-size:17px}.wb-valuation-explain p{font-size:12px}}
 .wb-d-chart-title{margin-top:10px;margin-bottom:4px}.wb-d-chart-title b{display:block;color:#294d69;font-size:14px}.wb-d-chart-title small{display:block;margin-top:3px;color:#718394;font-size:10px}.wb-d-chart-wrap{margin-top:10px;overflow:hidden}.wb-d-chart-wrap svg{width:100%;height:220px;display:block}.wb-d-chart-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:#64748b;margin-top:5px}.wb-d-chart-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;background:#4f78a6;margin-right:4px}.wb-d-chart-legend i.alt{background:#a8b7c7}.wb-d-chart-legend i.mom{background:#86a7c3}.wb-d-chart-legend i.dealer{background:#a65a5a}.wb-d-chart-note{font-size:11px;color:#7a8796;line-height:1.5;margin-top:6px}
-.wb-d-tv-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.wb-d-tv-title>strong{font-size:15px;white-space:nowrap}.wb-d-tv-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.wb-d-tv-tab{border:1px solid #d7e2ec;background:#fff;color:#64788a;border-radius:9px;padding:7px 11px;font-weight:800;font-size:11px;cursor:pointer}.wb-d-tv-tab.active{background:#2f6fd6;border-color:#2f6fd6;color:#fff}.wb-d-tv-chart{background:#fbfdff;border:1px solid #e5ebf2;border-radius:12px;padding:8px}.wb-d-tv-svg{width:100%;height:260px;display:block}.wb-d-tv-svg .grid{stroke:#e6edf3;stroke-width:1}.wb-d-tv-svg .zero{stroke:#9eb0bf;stroke-width:1.2;stroke-dasharray:5 4}.wb-d-tv-svg .tick{fill:#8192a0;font-size:10px}.wb-d-tv-svg .date{fill:#7c8c99;font-size:9px}.wb-d-tv-svg .axis-label{fill:#536b7e;font-size:10px;font-weight:800}.wb-d-tv-svg .axis-label.sell{fill:#4f9b78}.wb-d-tv-svg .axis-label.orange{fill:#df7a22}.wb-d-tv-svg .buy{fill:#e45757}.wb-d-tv-svg .sell{fill:#45a879}.wb-d-tv-svg .flat{fill:#b8c5d0}.wb-d-tv-svg .value{font-size:9px;font-weight:800}.wb-d-tv-svg .value.buy{fill:#d94848}.wb-d-tv-svg .value.sell{fill:#328b63}.wb-d-tv-svg .revenue-bar{fill:#4f78a6}.wb-d-tv-svg .yoy-line{stroke:#e47b27;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .yoy-dot{fill:#e47b27;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-line.blue{stroke:#2f6fd6;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-line.orange{stroke:#e47b27;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-line.green{stroke:#2f9b73;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-dot.blue{fill:#2f6fd6;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-dot.orange{fill:#e47b27;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-dot.green{fill:#2f9b73;stroke:#fff;stroke-width:2}.wb-d-tv-svg .bar-value{fill:#365a7a;font-size:10px;font-weight:900}.wb-d-tv-svg .yoy-value{fill:#d56f20;font-size:10px;font-weight:900}.wb-d-tv-svg .growth-value{font-size:9px;font-weight:900}.wb-d-tv-svg .growth-value.blue{fill:#2f6fd6}.wb-d-tv-svg .growth-value.orange{fill:#d97823}.wb-d-tv-svg .growth-value.green{fill:#2f9b73}.wb-d-tv-chart{padding:4px 4px 0;background:#fff}.wb-d-tv-title small{max-width:520px;line-height:1.45}.wb-d-chart-summary>div{min-height:54px}.wb-d-revenue-latest b{font-variant-numeric:tabular-nums}.wb-d-chart-note{padding:9px 11px;border:1px solid #e5ebf0;border-radius:10px;background:#fafcfd}.wb-d-tv-svg .revenue-bar{opacity:.94}.wb-d-chart-legend{padding:0 3px}.wb-d-chart-legend span{font-weight:700}.wb-d-chart-legend i.tv-orange{background:#e47b27}{background:#e47b27}.wb-d-chart-legend i.tv-green{background:#2f9b73}.wb-d-chart-legend{align-items:center}.wb-d-revenue-latest{margin-top:8px}.wb-d-chart-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.wb-d-chart-summary>div{padding:9px 10px;border:1px solid #e3eaf1;border-radius:10px;background:#fff}.wb-d-chart-summary small{display:block;color:#81909e;font-size:10px}.wb-d-chart-summary b{display:block;margin-top:3px;color:#294e6b;font-size:14px}.wb-d-chart-summary em{display:block;margin-top:4px;color:#98a5af;font-size:9px;font-style:normal;line-height:1.35}.wb-d-chart-note b{color:#294e6b;margin-right:4px}.wb-up{color:#2f8a61!important}.wb-down{color:#c34d4d!important}.wb-d-tv-svg .growth-bar-pos{fill:#4f78a6}.wb-d-tv-svg .growth-bar-neg{fill:#c85b55}.wb-d-tv-svg .growth-yoy{fill:#4f78a6}.wb-d-tv-svg .growth-cum{fill:#e47b27}.wb-d-tv-svg .growth-mom{fill:#45a879}@media(max-width:620px){.wb-d-tv-svg{height:225px}.wb-d-tv-title{gap:8px}.wb-d-tv-title>b,.wb-d-tv-title strong{font-size:13px}.wb-d-chart-summary{grid-template-columns:1fr 1fr}.wb-d-chart-summary>div:last-child{grid-column:1/-1}.wb-d-tv-tab{padding:6px 9px;font-size:10px}}
+.wb-d-tv-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.wb-d-tv-title>strong{font-size:15px;white-space:nowrap}.wb-d-tv-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.wb-d-tv-tab{border:1px solid #d7e2ec;background:#fff;color:#64788a;border-radius:9px;padding:7px 11px;font-weight:800;font-size:11px;cursor:pointer}.wb-d-tv-tab.active{background:#2f6fd6;border-color:#2f6fd6;color:#fff}.wb-d-tv-chart{background:#fbfdff;border:1px solid #e5ebf2;border-radius:12px;padding:8px}.wb-d-tv-svg{width:100%;height:260px;display:block}.wb-d-tv-svg .grid{stroke:#e6edf3;stroke-width:1}.wb-d-tv-svg .zero{stroke:#9eb0bf;stroke-width:1.2;stroke-dasharray:5 4}.wb-d-tv-svg .tick{fill:#8192a0;font-size:10px}.wb-d-tv-svg .date{fill:#7c8c99;font-size:9px}.wb-d-tv-svg .axis-label{fill:#536b7e;font-size:10px;font-weight:800}.wb-d-tv-svg .axis-label.sell{fill:#4f9b78}.wb-d-tv-svg .axis-label.orange{fill:#df7a22}.wb-d-tv-svg .buy{fill:#e45757}.wb-d-tv-svg .sell{fill:#45a879}.wb-d-tv-svg .flat{fill:#b8c5d0}.wb-d-tv-svg .value{font-size:9px;font-weight:800}.wb-d-tv-svg .value.buy{fill:#d94848}.wb-d-tv-svg .value.sell{fill:#328b63}.wb-d-tv-svg .revenue-bar{fill:#4f78a6}.wb-d-tv-svg .yoy-line{stroke:#e47b27;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .yoy-dot{fill:#e47b27;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-line.blue{stroke:#2f6fd6;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-line.orange{stroke:#e47b27;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-line.green{stroke:#2f9b73;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-dot.blue{fill:#2f6fd6;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-dot.orange{fill:#e47b27;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-dot.green{fill:#2f9b73;stroke:#fff;stroke-width:2}.wb-d-tv-svg .bar-value{fill:#365a7a;font-size:10px;font-weight:900}.wb-d-tv-svg .yoy-value{fill:#d56f20;font-size:10px;font-weight:900}.wb-d-tv-svg .growth-value{font-size:9px;font-weight:900}.wb-d-tv-svg .growth-value.blue{fill:#2f6fd6}.wb-d-tv-svg .growth-value.orange{fill:#d97823}.wb-d-tv-svg .growth-value.green{fill:#2f9b73}.wb-d-tv-chart{padding:4px 4px 0;background:#fff}.wb-d-tv-title small{max-width:520px;line-height:1.45}.wb-d-chart-summary>div{min-height:54px}.wb-d-revenue-latest b{font-variant-numeric:tabular-nums}.wb-d-chart-note{padding:9px 11px;border:1px solid #e5ebf0;border-radius:10px;background:#fafcfd}.wb-d-tv-svg .revenue-bar{opacity:.94}.wb-d-chart-legend{padding:0 3px}.wb-d-chart-legend span{font-weight:700}.wb-d-chart-legend i.tv-orange{background:#e47b27}{background:#e47b27}.wb-d-chart-legend i.tv-green{background:#2f9b73}.wb-d-chart-legend{align-items:center}.wb-d-revenue-latest{margin-top:8px}.wb-d-chart-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.wb-d-chart-summary>div{padding:9px 10px;border:1px solid #e3eaf1;border-radius:10px;background:#fff}.wb-d-chart-summary small{display:block;color:#81909e;font-size:10px}.wb-d-chart-summary b{display:block;margin-top:3px;color:#294e6b;font-size:14px}.wb-d-chart-summary em{display:block;margin-top:4px;color:#98a5af;font-size:9px;font-style:normal;line-height:1.35}.wb-d-chart-note b{color:#294e6b;margin-right:4px}.wb-up{color:#D93025!important}.wb-down{color:#0B8F55!important}.wb-d-tv-svg .growth-bar-pos{fill:#4f78a6}.wb-d-tv-svg .growth-bar-neg{fill:#c85b55}.wb-d-tv-svg .growth-yoy{fill:#4f78a6}.wb-d-tv-svg .growth-cum{fill:#e47b27}.wb-d-tv-svg .growth-mom{fill:#45a879}@media(max-width:620px){.wb-d-tv-svg{height:225px}.wb-d-tv-title{gap:8px}.wb-d-tv-title>b,.wb-d-tv-title strong{font-size:13px}.wb-d-chart-summary{grid-template-columns:1fr 1fr}.wb-d-chart-summary>div:last-child{grid-column:1/-1}.wb-d-tv-tab{padding:6px 9px;font-size:10px}}
 .wb-lab-pick{min-height:72px}.wb-lab-pick-main{min-width:0}.wb-lab-pick-main small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-metric-mobile,.wb-lab-pick-reason-mobile{display:none}.wb-d-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.wb-d-chip{display:inline-flex;padding:4px 8px;border-radius:999px;background:#eef4fa;color:#4f6f8e;font-size:11px;font-weight:700}@media(max-width:700px){.wb-lab-pick{display:grid;grid-template-columns:24px minmax(0,1fr) 18px;grid-template-areas:"rank main arrow";gap:8px;padding:13px 4px;min-height:88px}.wb-lab-rank{grid-area:rank}.wb-lab-pick-main{grid-area:main}.wb-lab-pick-metric,.wb-lab-pick-reason{display:none}.wb-lab-pick-metric-mobile{display:flex;align-items:baseline;gap:6px;margin-top:6px}.wb-lab-pick-metric-mobile strong{font-size:17px;color:#274c77}.wb-lab-pick-metric-mobile em{font-style:normal;font-size:11px;color:#7a899a}.wb-lab-pick-reason-mobile{display:block;margin-top:5px;font-size:11px;line-height:1.4;color:#657487;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-tags{margin-top:5px}.wb-lab-chip{font-size:9px}.wb-lab-arrow{grid-area:arrow;align-self:center;font-size:24px;color:#4f78a6}.wb-lab-section-head{padding:14px}.wb-lab-picks{padding:0 12px}}
 .wb-lab-strategy-title{display:block!important;color:#1f3348!important;font-size:16px!important;font-weight:850!important;line-height:1.35!important;margin:0 0 2px!important}.wb-lab-strategy.active{background:#274c77!important;border-color:#274c77!important;color:#fff!important;box-shadow:0 8px 18px rgba(39,76,119,.18)!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy.active *{color:inherit!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy:focus-visible{outline:3px solid rgba(79,120,166,.28);outline-offset:2px}.wb-lab-pick:focus-visible{outline:2px solid rgba(79,120,166,.35);outline-offset:-2px}
 .wb-d-factor-list{display:flex;flex-direction:column;gap:7px;margin-top:12px}.wb-d-factor-row{display:flex;justify-content:space-between;gap:12px;padding:9px 11px;border-radius:10px;background:#f6f9fc;border:1px solid #e8eef4;color:#4f6174}.wb-d-factor-row b{color:#274c77}.wb-d-score-note{font-size:12px;color:#718096;margin-top:10px}
@@ -28995,17 +28995,19 @@ def render_workbench_body(initial_tab=""):
           if(st)st.textContent='正在讀取並整理資料…';
         }else if(st){
           btn.classList.add('wb-loading');
-          btn.textContent='正在載入股價趨勢…';
-          st.innerHTML='<div class="wb-d-chart-loading"><i class="wb-d-spinner"></i><span>正在抓取近6個月日線並繪製圖表…</span></div>';
+          btn.innerHTML='<span class="wb-d-loading-label">正在載入股價趨勢…</span><i class="wb-d-inline-spinner"></i>';
+          st.innerHTML='<div class="wb-d-chart-loading wb-d-chart-loading-live"><i class="wb-d-spinner"></i><span>正在抓取近6個月日線並繪製圖表…</span></div>';
         }
+        var loadStarted=Date.now();
         fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(d){
           if(timer)clearInterval(timer);if(progressBox){progressBox.querySelector('.wb-d-progress-bar').style.width='100%';progressBox.querySelector('.wb-d-progress-top strong').textContent='100%';progressBox.querySelector('.wb-d-progress-note').textContent='完成，正在顯示結果…';}
           if(!d.ok)throw new Error(d.error||'載入失敗');
+          var wait=Math.max(0,700-(Date.now()-loadStarted));
           setTimeout(function(){
             drawLazyChart(box,d.data,kind);
             btn.disabled=false;btn.classList.remove('wb-loading');
-            if(kind==='momentum'){btn.textContent='📈 重新整理近6個月股價趨勢圖';}
-          },180);
+            if(kind==='momentum'){btn.innerHTML='📈 重新整理近6個月股價趨勢圖';}
+          },wait);
         }).catch(function(e){if(timer)clearInterval(timer);btn.disabled=false;btn.classList.remove('wb-loading');if(progressBox)progressBox.remove();if(st)st.innerHTML='<div class="wb-d-chart-loading"><span>載入失敗：'+esc(String(e.message||e))+'</span></div>';});
       });});
     }
@@ -30046,7 +30048,7 @@ def _workbench_source_payload(uid, source):
 
 _STRATEGY_LAB_CACHE = {"at": 0.0, "data": None}
 _STRATEGY_LAB_CACHE_TTL = 12 * 3600  # 12 小時；研究室每日預熱一次，白天直接讀快照
-_STRATEGY_LAB_SCHEMA_VERSION = 12  # ROE 顯示修正＋營收圖表重做＋法人圖表按鈕＋盤中穩定性
+_STRATEGY_LAB_SCHEMA_VERSION = 13  # ROE逐檔修正＋四因子通過數同步＋趨勢載入動畫＋台股紅漲綠跌
 _STRATEGY_LAB_CACHE_LOCK = threading.Lock()
 
 def _normalize_strategy_lab_payload(payload):
@@ -30071,10 +30073,15 @@ def _normalize_strategy_lab_payload(payload):
             names = rec.get("factor_names") or rec.get("matched_factors") or list(fmap.keys())
             if not isinstance(names, list):
                 names = []
-            try:
-                hc = int(rec.get("hit_count"))
-            except Exception:
-                hc = 0
+            # 四因子複合的通過數以 factor_pass 為準；舊快照可能殘留錯誤的 hit_count。
+            fp = rec.get("factor_pass")
+            if key == "四因子複合" and isinstance(fp, dict) and fp:
+                hc = sum(1 for v in fp.values() if bool(v))
+            else:
+                try:
+                    hc = int(rec.get("hit_count"))
+                except Exception:
+                    hc = 0
             if hc <= 0:
                 for t in (rec.get("tags") or []):
                     m = re.search(r"(\d+)\s*/\s*4", str(t))
@@ -30259,7 +30266,12 @@ def _fetch_strategy_roe_from_twse(codes=None):
         return y, 3
 
     code_alias=["公司代號","證券代號","股票代號","公司碼","SecuritiesCompanyCode","Code"]
+    # TWSE/TPEx 財報欄位名稱會依資料集略有差異；尤其「淨利歸屬於母公司業主」
+    # 與「歸屬於母公司業主之淨利」兩種寫法都會出現。這裡把兩邊都納入，
+    # 否則 API 明明有資料，研究室卻會整批顯示「找不到 ROE」。
     net_alias=[
+        "淨利歸屬於母公司業主（淨損）","淨利歸屬於母公司業主（損）",
+        "淨利歸屬於母公司業主","本期淨利歸屬於母公司業主",
         "歸屬於母公司業主之淨利（淨損）","歸屬於母公司業主之淨利（損）",
         "歸屬於母公司業主之淨利","歸屬母公司業主淨利","歸屬母公司業主之淨利",
         "母公司業主之淨利（損）","母公司業主之淨利",
@@ -30269,27 +30281,33 @@ def _fetch_strategy_roe_from_twse(codes=None):
         "ProfitAfterTax","NetIncome","NetProfit",
     ]
     eq_alias=[
-        "歸屬於母公司業主之權益","歸屬於母公司業主之權益合計",
-        "權益總額（歸屬於母公司業主）","歸屬母公司業主之權益",
+        "歸屬於母公司業主之權益合計","歸屬於母公司業主之權益",
+        "歸屬母公司業主之權益合計","歸屬母公司業主之權益",
+        "權益總額（歸屬於母公司業主）","權益總額歸屬於母公司業主",
         "歸屬母公司業主權益","股東權益總額","權益總額","股東權益","業主權益",
         "EquityAttributableToOwnersOfParent","TotalEquity","Equity",
     ]
 
     # 先抓 consolidated/ci；金融股若在 ci 快照缺欄位，再同批補一般財報端點。
     # 不用推測 ROE，仍必須由同期間的損益＋權益配對後計算。
-    endpoints=[
-        (f"{TWSE_BASE}/opendata/t187ap06_L_ci","income","TWSE-ci"),
-        (f"{TWSE_BASE}/opendata/t187ap07_L_ci","equity","TWSE-ci"),
-        (f"{TPEX_BASE}/mopsfin_t187ap06_O_ci","income","TPEX-ci"),
-        (f"{TPEX_BASE}/mopsfin_t187ap07_O_ci","equity","TPEX-ci"),
-        (f"{TWSE_BASE}/opendata/t187ap06_L","income","TWSE"),
-        (f"{TWSE_BASE}/opendata/t187ap07_L","equity","TWSE"),
-        (f"{TPEX_BASE}/mopsfin_t187ap06_O","income","TPEX"),
-        (f"{TPEX_BASE}/mopsfin_t187ap07_O","equity","TPEX"),
-    ]
+    # 財報依產業分成一般業／金融／金控／保險／證券期貨／異業。
+    # 只抓 _ci 會讓不少股票完全沒有 ROE，進而讓「經典四項」整批變成找不到。
+    endpoints=[]
+    twse_suffixes=[("ci","TWSE-ci"),("basi","TWSE-basi"),("fh","TWSE-fh"),("ins","TWSE-ins"),("bd","TWSE-bd"),("mim","TWSE-mim")]
+    tpex_suffixes=[("ci","TPEX-ci"),("basi","TPEX-basi"),("fh","TPEX-fh"),("ins","TPEX-ins"),("bd","TPEX-bd"),("mim","TPEX-mim")]
+    for suffix,label in twse_suffixes:
+        endpoints.append((f"{TWSE_BASE}/opendata/t187ap06_L_{suffix}","income",label))
+        endpoints.append((f"{TWSE_BASE}/opendata/t187ap07_L_{suffix}","equity",label))
+    for suffix,label in tpex_suffixes:
+        endpoints.append((f"{TPEX_BASE}/mopsfin_t187ap06_O_{suffix}","income",label))
+        endpoints.append((f"{TPEX_BASE}/mopsfin_t187ap07_O_{suffix}","equity",label))
+    # 興櫃也納入；研究宇宙若包含興櫃，不再因市場不同直接變成無資料。
+    for suffix,label in [("ci","TPEX-U-ci"),("basi","TPEX-U-basi"),("fh","TPEX-U-fh"),("ins","TPEX-U-ins"),("bd","TPEX-U-bd"),("mim","TPEX-U-mim")]:
+        endpoints.append((f"{TPEX_BASE}/mopsfin_t187ap06_U_{suffix}","income",label))
+        endpoints.append((f"{TPEX_BASE}/mopsfin_t187ap07_U_{suffix}","equity",label))
 
     try:
-        fetched=fetch_json_bulk([u for u,_,_ in endpoints], timeout=7, workers=4)
+        fetched=fetch_json_bulk([u for u,_,_ in endpoints], timeout=7, workers=12)
     except Exception as exc:
         print(f"⚠️ 財報 ROE 批次讀取失敗：{exc}")
         return {}
@@ -30358,7 +30376,7 @@ def _fetch_strategy_roe_from_twse(codes=None):
                 "data_scope":f"{imarket}/{emarket} 最新累計財報年化；ROE 無期間欄位時依最新公告季度推定年化",
             }
 
-    print(f"ℹ️ 策略研究室 ROE：{len(out)}/{len(wanted)} 檔可驗證；財報 API=8 個並行，含一般財報備援端點")
+    print(f"ℹ️ 策略研究室 ROE：{len(out)}/{len(wanted)} 檔可驗證；財報 API={len(endpoints)} 個並行，涵蓋一般業／金融／金控／保險／證券期貨／異業")
     return out
 
 def _build_strategy_lab_payload():
@@ -30761,10 +30779,10 @@ def _build_strategy_lab_payload():
             ("去年同期對照",f"前期當月YoY {float(rr.get('prev_yoy')):+.1f}%" if rr.get("prev_yoy") is not None else "前期資料待確認"),
             ("累計營收YoY",f"{float(cy):+.1f}%"),
         ]
-        composite.append((c,score,hit,vals,detail_metrics,factor_names,reason))
+        composite.append((c,score,hit,vals,detail_metrics,factor_names,reason,rv))
     composite.sort(key=lambda x:(x[2],x[1]),reverse=True)
     composite_recs=[]
-    for i,(c,score,hit,vals,details,factor_names,reason) in enumerate(composite[:25],1):
+    for i,(c,score,hit,vals,details,factor_names,reason,rv) in enumerate(composite[:25],1):
         r=by_code[c]
         tags=[f"{hit}/4通過"]+["ROE通過" if vals[0] else "ROE未過","趨勢通過" if vals[1] else "趨勢未過"]
         composite_recs.append(make_rec(c,r.get("name"),r.get("industry"),score,"經典四項綜合分",tags[:3],reason,extra={"rank":i,"hit_count":hit,"roe":rv,"roe_period":r.get("roe_period"),"factor_names":factor_names,"matched_factors":[labels[j] for j in range(4) if vals[j]],"factor_pass":dict(zip(labels,vals)),"detail_metrics":details,"score_explanation":"經典四項：ROE 20%＋股價趨勢 20%＋價格穩定度 40%＋營收成長 20%。4 項是否通過採固定門檻判定；綜合分用各項橫斷面分數加權。"}))
