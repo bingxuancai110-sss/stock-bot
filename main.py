@@ -25973,56 +25973,14 @@ def web_portfolio(uid):
     alerts = []
     top = max(holdings, key=lambda h: h["weight"]) if holdings else None
     if not holdings:
-        # 盤前／行情來源暫時沒有有效價格時，不要把整個首頁縮成一張空白持股卡。
-        # 恢復原本的「今日首頁」先行摘要，同時把最後一筆正式收盤快照明確標日期，
-        # 絕不把舊價格冒充今天行情。
-        saved_snapshots = get_portfolio_snapshots(uid, days=120)
-        latest_saved = saved_snapshots[-1] if saved_snapshots else None
-        fast_home = ""
-        try:
-            fast_home = render_portfolio_fast_summary(uid)
-        except Exception as exc:
-            print(f"⚠️ 首頁先行摘要 fallback 失敗: {exc}")
-        snapshot_card = ""
-        if latest_saved and latest_saved.get("value") is not None:
-            saved_value = float(latest_saved.get("value") or 0)
-            saved_cost = float(latest_saved.get("cost") or 0)
-            saved_pl = saved_value - saved_cost
-            saved_pl_pct = (saved_pl / saved_cost * 100) if saved_cost else None
-            saved_date = latest_saved.get("date")
-            saved_date_text = saved_date.strftime("%Y/%m/%d") if hasattr(saved_date, "strftime") else str(saved_date)
-            pl_text = (
-                f'{saved_pl:+,.0f}（{saved_pl_pct:+.2f}%）'
-                if saved_pl_pct is not None else f'{saved_pl:+,.0f}'
-            )
-            snapshot_card = f"""
-<section class="daily-section home-market-fallback">
-  <div class="daily-section-title">
-    <div><h2>💰 我的投資</h2><span>最近一筆正式收盤快照</span></div>
-    <a href="/web/positions">查看持股明細 →</a>
-  </div>
-  <div class="callout" style="padding:16px">
-    <div style="font-size:28px;font-weight:800;letter-spacing:.2px">{saved_value:,.0f}</div>
-    <div style="margin-top:6px;color:var(--muted)">組合市值　資料日期 {saved_date_text}</div>
-    <div style="margin-top:10px;display:flex;gap:18px;flex-wrap:wrap">
-      <span>成本 <b>{saved_cost:,.0f}</b></span>
-      <span>未實現損益 <b>{pl_text}</b></span>
-    </div>
-    <div style="margin-top:12px;color:var(--muted);font-size:12px;line-height:1.6">
-      目前尚未取得今天有效行情，所以這裡只顯示最後一筆正式收盤資料。
-      <br>行情恢復後，持股市值與損益會再更新。
-    </div>
-  </div>
-</section>
+        body = risk_card + """
+<div class="empty-state">
+  <div class="empty-state-icon">◌</div>
+  <h2>目前無法取得持股行情</h2>
+  <p>你的持股資料仍然存在，但目前公開行情來源沒有回傳有效價格。</p>
+  <p class="sub">請稍後重新整理；系統不會把舊價格冒充成今日行情。</p>
+</div>
 """
-        else:
-            snapshot_card = """
-<section class="daily-section home-market-fallback">
-  <div class="daily-section-title"><div><h2>💰 我的投資</h2><span>行情等待中</span></div><a href="/web/positions">查看持股明細 →</a></div>
-  <div class="callout">目前沒有可驗證的今日價格或正式收盤快照；持股資料仍保留，請稍後重新整理。</div>
-</section>
-"""
-        body = risk_card + fast_home + snapshot_card
         return respond_page("今日", body, "portfolio")
     if top and top["weight"] > th["position"]:
         second = sorted(holdings, key=lambda h: h["weight"], reverse=True)
