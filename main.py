@@ -9,7 +9,6 @@ import ssl
 import socket
 import time
 import threading
-import statistics
 import requests
 from requests.adapters import HTTPAdapter
 import psycopg2
@@ -28,15 +27,6 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-
-# 首頁短 TTL 快取：避免使用者在首頁／持股／首頁間快速切換時，
-# 每次都重新查相同的共享快照與操作日誌。這些資料本身就不是毫秒級變動；
-# 即時股價仍每次重新抓，不經這個快取。
-_HOMEPAGE_SHARED_CACHE = {"key": None, "ts": 0.0, "value": None}
-_HOMEPAGE_JOURNAL_CACHE = {}
-_HOMEPAGE_CACHE_LOCK = threading.RLock()
-_HOMEPAGE_SHARED_TTL = 60.0  # 首頁共享快照 60 秒短快取，避免內部返回重打 Supabase
-_HOMEPAGE_JOURNAL_TTL = 8.0
 
 
 def taiwan_now():
@@ -255,8 +245,6 @@ def init_premarket_change_tables():
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_events_date ON premarket_events(snapshot_date, severity)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_events_briefing ON premarket_events(briefing_date, severity)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_events_home_user_key ON premarket_events(briefing_date, user_id, event_key)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_events_home_sort ON premarket_events(briefing_date, user_id, severity, id DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_premarket_snapshots_briefing ON premarket_snapshots(briefing_date)")
         conn.commit()
     except Exception:
@@ -437,23 +425,6 @@ def _premarket_record_map(value):
             if isinstance(item, dict)}
 
 
-def _level_score_label(score):
-    """把內部位階分數翻成人話，避免首頁直接丟 8→11 給一般使用者。"""
-    try:
-        value = float(score)
-    except (TypeError, ValueError):
-        return "資料待確認"
-    if value <= 3:
-        return "弱勢"
-    if value <= 6:
-        return "偏弱"
-    if value <= 9:
-        return "中性"
-    if value <= 12:
-        return "偏強"
-    return "強勢"
-
-
 def _format_watchlist_level_change_detail(evidence):
     """把自選股位階事件轉成人可讀的支撐／壓力前後比較。"""
     evidence = evidence if isinstance(evidence, dict) else {}
@@ -480,7 +451,7 @@ def _format_watchlist_level_change_detail(evidence):
             parts.append(f"壓力：前一日 {_format_level_price(old_resistance)} → 今日無有效參考")
     old_pos, new_pos = old.get("position"), new.get("position")
     if old_pos is not None and new_pos is not None and old_pos != new_pos:
-        parts.append(f"位階 {_level_score_label(old_pos)} → {_level_score_label(new_pos)}（分數 {old_pos} → {new_pos}）")
+        parts.append(f"位階分數 {old_pos} → {new_pos}")
     old_close, new_close = old.get("close"), new.get("close")
     if old_close is not None and new_close is not None:
         parts.append(f"收盤 { _format_level_price(old_close) } → { _format_level_price(new_close) }")
@@ -1098,217 +1069,18 @@ _daily_home_context_cache = {}
 _daily_home_context_lock = threading.Lock()
 
 
-def _get_daily_home_context(user_id, display_date, position_codes=None):
-    """首頁專用盤前上下文：只取最值得看的事件，優先自己的持股。
-
-    設計原則：
-    1. 首頁不需要 100 筆事件，只需要最相關的少量事件。
-    2. 自己持股的重大變化優先。
-    3. 其他重大／劇烈市場變化作為補充。
-    4. DB 端先縮小候選集，再做少量 Python 排序，避免大型
-       ROW_NUMBER/jsonb_agg 對整張 premarket_events 做重運算。
-    """
-    requested = display_date or taiwan_today()
-    key = (str(user_id).strip(), requested.isoformat(),
-           tuple(sorted(str(c).strip() for c in (position_codes or []) if str(c).strip())))
+def _get_daily_home_context(user_id, display_date):
+    display_date = _premarket_display_date(display_date)
+    key = (str(user_id).strip(), display_date.isoformat())
     now = time.time()
     with _daily_home_context_lock:
         cached = _daily_home_context_cache.get(key)
         if cached and now - cached.get("at", 0) < _DAILY_HOME_CONTEXT_TTL:
             return cached["value"]
 
-    codes = sorted({str(c).strip() for c in (position_codes or []) if str(c).strip()})
-    is_weekend = requested.weekday() >= 5
-
-    conn = get_db_connection()
-    try:
-        cur = conn.cursor()
-
-        # 日期解析仍與原版相容，但事件本身只抓「必要候選」。
-        cur.execute("""
-            WITH resolved_display AS (
-                SELECT CASE
-                    WHEN NOT %s THEN %s::date
-                    ELSE COALESCE(
-                        (SELECT MIN(briefing_date) FROM premarket_snapshots
-                         WHERE briefing_date >= %s),
-                        (SELECT MIN(briefing_date) FROM premarket_events
-                         WHERE briefing_date >= %s),
-                        (SELECT briefing_date FROM premarket_snapshots
-                         WHERE snapshot_date <= %s
-                         ORDER BY snapshot_date DESC LIMIT 1),
-                        (SELECT briefing_date FROM premarket_events
-                         WHERE snapshot_date <= %s
-                         ORDER BY snapshot_date DESC LIMIT 1),
-                        %s::date
-                    )
-                END AS display_date
-            ),
-            resolved_source AS (
-                SELECT r.display_date,
-                       COALESCE(
-                           (SELECT snapshot_date FROM premarket_snapshots
-                            WHERE briefing_date = r.display_date
-                            ORDER BY snapshot_date DESC LIMIT 1),
-                           (SELECT snapshot_date FROM premarket_events
-                            WHERE briefing_date = r.display_date
-                            ORDER BY snapshot_date DESC LIMIT 1),
-                           r.display_date
-                       ) AS source_date
-                FROM resolved_display r
-            )
-            SELECT r.display_date, r.source_date,
-                   s.snapshot_date, s.briefing_date, s.previous_trade_date,
-                   s.blackhorse, s.radar, s.market, s.news, s.institutional
-            FROM resolved_source r
-            LEFT JOIN premarket_snapshots s ON s.snapshot_date = r.source_date
-        """, (
-            is_weekend, requested,
-            requested, requested, requested, requested, requested,
-        ))
-        base = cur.fetchone()
-
-        if not base:
-            value = {
-                "snapshot": None,
-                "timeline": {
-                    "new": [], "ongoing": [], "resolved": [],
-                    "previous_date": None, "current": [], "previous": []
-                }
-            }
-        else:
-            (resolved_display_date, source_date, snapshot_date, briefing_date,
-             previous_trade_date, blackhorse, radar, market, news,
-             institutional) = base
-
-            snapshot = None
-            if snapshot_date:
-                snapshot = {
-                    "snapshot_date": snapshot_date.isoformat(),
-                    "source_date": source_date.isoformat() if source_date else snapshot_date.isoformat(),
-                    "briefing_date": briefing_date.isoformat() if briefing_date else (
-                        resolved_display_date.isoformat() if resolved_display_date else requested.isoformat()
-                    ),
-                    "previous_trade_date": previous_trade_date.isoformat() if previous_trade_date else None,
-                    "blackhorse": _premarket_record_list(blackhorse),
-                    "radar": _premarket_record_list(radar),
-                    "market": _premarket_json_value(market, "dict"),
-                    "news": _premarket_record_list(news),
-                    "institutional": _premarket_record_map(institutional),
-                }
-
-            # 只抓兩個日期、目前使用者/全域事件；最多帶回一個小候選集。
-            # event_key + severity + id 有對應索引時可直接縮小掃描範圍。
-            cur.execute("""
-                SELECT briefing_date, severity, category, title, detail,
-                       evidence, event_key, id
-                FROM premarket_events
-                WHERE briefing_date IN (%s, %s)
-                  AND (user_id IS NULL OR user_id = %s)
-                ORDER BY
-                  CASE severity WHEN 'S' THEN 4 WHEN 'A' THEN 3
-                       WHEN 'B' THEN 2 ELSE 1 END DESC,
-                  id DESC
-                LIMIT 80
-            """, (resolved_display_date, source_date, str(user_id).strip()))
-            rows = cur.fetchall()
-
-            current = []
-            previous = []
-            for row in rows:
-                event = {
-                    "severity": row[1],
-                    "category": row[2],
-                    "title": row[3],
-                    "detail": row[4],
-                    "evidence": row[5] or {},
-                    "event_key": row[6],
-                }
-                if row[0] == resolved_display_date:
-                    current.append(event)
-                elif row[0] == source_date:
-                    previous.append(event)
-
-            # 事件本身已經是少量候選；這裡只做「持股相關」與「劇烈程度」
-            # 的輕量排序，不再建立整張事件表的 ROW_NUMBER。
-            code_set = set(codes)
-
-            def event_code(event):
-                evidence = event.get("evidence")
-                if not isinstance(evidence, dict):
-                    return ""
-                for k in ("code", "stock_code", "symbol", "ticker"):
-                    value = evidence.get(k)
-                    if value:
-                        return str(value).strip()
-                # 部分舊事件把 code 放在 nested old/new 結構。
-                for side in ("new", "old", "current", "previous"):
-                    value = evidence.get(side)
-                    if isinstance(value, dict):
-                        for k in ("code", "stock_code", "symbol", "ticker"):
-                            if value.get(k):
-                                return str(value[k]).strip()
-                return ""
-
-            def severity_score(event):
-                return {"S": 4, "A": 3, "B": 2, "C": 1}.get(
-                    str(event.get("severity") or "").upper(), 0
-                )
-
-            def relevance_score(event):
-                code = event_code(event)
-                category = str(event.get("category") or "")
-                title = str(event.get("title") or "")
-                detail = str(event.get("detail") or "")
-                text_blob = f"{title} {detail}"
-                score = severity_score(event) * 100
-                if code and code in code_set:
-                    score += 1000
-                if category in ("watchlist_position", "watchlist"):
-                    score += 250
-                # 明確的劇烈變化字樣優先，但不取代持股重大事件。
-                if any(term in text_blob for term in (
-                    "暴漲", "暴跌", "大漲", "大跌", "漲停", "跌停",
-                    "新高", "新低", "劇烈", "重大", "突破", "失守"
-                )):
-                    score += 80
-                return score
-
-            def dedupe_and_pick(events, limit=6):
-                seen = set()
-                result = []
-                for event in sorted(events, key=lambda e: (
-                    -relevance_score(e),
-                    -severity_score(e)
-                )):
-                    identity = _change_event_identity(event)
-                    if not identity or identity in seen:
-                        continue
-                    seen.add(identity)
-                    result.append(event)
-                    if len(result) >= limit:
-                        break
-                return result
-
-            # 首頁只需要少量 current/previous，timeline 比對也因此非常輕。
-            current = dedupe_and_pick(current, 6)
-            previous = dedupe_and_pick(previous, 6)
-
-            current_keys = {_change_event_identity(e) for e in current}
-            previous_keys = {_change_event_identity(e) for e in previous}
-            timeline = {
-                "new": [e for e in current if _change_event_identity(e) not in previous_keys],
-                "ongoing": [e for e in current if _change_event_identity(e) in previous_keys],
-                "resolved": [e for e in previous if _change_event_identity(e) not in current_keys],
-                "previous_date": snapshot.get("previous_trade_date") if snapshot else None,
-                "current": current,
-                "previous": previous,
-            }
-            value = {"snapshot": snapshot, "timeline": timeline}
-
-    finally:
-        release_db_connection(conn)
-
+    snapshot = get_today_change_snapshot(display_date)
+    timeline = get_today_event_timeline(user_id, display_date, snapshot=snapshot)
+    value = {"snapshot": snapshot, "timeline": timeline}
     with _daily_home_context_lock:
         _daily_home_context_cache[key] = {"at": now, "value": value}
         if len(_daily_home_context_cache) > 500:
@@ -1452,79 +1224,6 @@ _ipv4_addr = socket.gethostbyname(_url.hostname)
 # 「SSL error: decryption failed or bad record mac」——
 # 錯誤訊息看起來像憑證問題，實際上是併發問題，很容易查錯方向。
 # 單執行緒時永遠不會發生，所以加上 --threads 之前都相安無事。
-
-# ===== DB 診斷模式（只記錄慢的連線／SQL，不改資料） =====
-DB_DIAG_ENABLED = os.environ.get("DB_DIAG_ENABLED", "1") != "0"
-DB_DIAG_CONN_WARN_MS = float(os.environ.get("DB_DIAG_CONN_WARN_MS", "100"))
-DB_DIAG_SQL_WARN_MS = float(os.environ.get("DB_DIAG_SQL_WARN_MS", "500"))
-DB_DIAG_HOLD_WARN_MS = float(os.environ.get("DB_DIAG_HOLD_WARN_MS", "1000"))
-_DB_DIAG_LOCAL = threading.local()
-_DB_CONN_CHECKOUT = {}
-_DB_CONN_LOCK = threading.Lock()
-
-
-def _db_diag_set(operation=None, request_id=None):
-    if operation is not None:
-        _DB_DIAG_LOCAL.operation = str(operation)
-    if request_id is not None:
-        _DB_DIAG_LOCAL.request_id = str(request_id)
-
-
-def _db_diag_context():
-    return (getattr(_DB_DIAG_LOCAL, "operation", "-"),
-            getattr(_DB_DIAG_LOCAL, "request_id", "-"))
-
-
-def _db_diag_sql(sql):
-    try:
-        text = re.sub(r"\s+", " ", str(sql)).strip()
-        if len(text) > 220:
-            text = text[:220] + "…"
-        return text
-    except Exception:
-        return "<sql-format-error>"
-
-
-class _TimedCursor(psycopg2.extensions.cursor):
-    def execute(self, query, vars=None):
-        if not DB_DIAG_ENABLED:
-            return super().execute(query, vars)
-        started = time.monotonic()
-        try:
-            return super().execute(query, vars)
-        finally:
-            elapsed_ms = (time.monotonic() - started) * 1000
-            if elapsed_ms >= DB_DIAG_SQL_WARN_MS:
-                operation, request_id = _db_diag_context()
-                print(
-                    "🐢 DB慢SQL %.0fms | op=%s | req=%s | sql=%s" %
-                    (elapsed_ms, operation, request_id, _db_diag_sql(query)),
-                    flush=True,
-                )
-
-    def fetchall(self):
-        if not DB_DIAG_ENABLED:
-            return super().fetchall()
-        started = time.monotonic()
-        try:
-            return super().fetchall()
-        finally:
-            elapsed_ms = (time.monotonic() - started) * 1000
-            if elapsed_ms >= DB_DIAG_SQL_WARN_MS:
-                operation, request_id = _db_diag_context()
-                print(
-                    "🐢 DB慢fetchall %.0fms | op=%s | req=%s" %
-                    (elapsed_ms, operation, request_id),
-                    flush=True,
-                )
-
-
-class _TimedConnection(psycopg2.extensions.connection):
-    def cursor(self, *args, **kwargs):
-        kwargs.setdefault("cursor_factory", _TimedCursor)
-        return super().cursor(*args, **kwargs)
-
-
 DB_POOL_MIN = int(os.environ.get("DB_POOL_MIN", "1"))
 DB_POOL_MAX = int(os.environ.get("DB_POOL_MAX", "10"))
 if DB_POOL_MAX < DB_POOL_MIN:
@@ -1546,17 +1245,15 @@ connection_pool = psycopg2.pool.ThreadedConnectionPool(
     keepalives_idle=30,
     keepalives_interval=10,
     keepalives_count=3,
-    connection_factory=_TimedConnection,
 )
 
 
 def get_db_connection():
     """
-    借一條連線。診斷模式會量測「排隊等 connection」的時間，
-    這是目前要確認首頁 6~10 秒波動是否來自 connection pool 的關鍵。
+    借一條連線。若借到的是已經壞掉的連線（例如被伺服器中途切斷），
+    直接丟棄再借一條——把壞連線放回池子只會讓下一個人也踩到。
     """
     for _attempt in range(3):
-        checkout_started = time.monotonic()
         try:
             conn = connection_pool.getconn()
         except pool.PoolError as e:
@@ -1569,20 +1266,6 @@ def get_db_connection():
             if conn.closed:
                 connection_pool.putconn(conn, close=True)
                 continue
-            wait_ms = (time.monotonic() - checkout_started) * 1000
-            with _DB_CONN_LOCK:
-                _DB_CONN_CHECKOUT[id(conn)] = time.monotonic()
-            if DB_DIAG_ENABLED and wait_ms >= DB_DIAG_CONN_WARN_MS:
-                operation, request_id = _db_diag_context()
-                try:
-                    in_use = len(connection_pool._used)
-                except Exception:
-                    in_use = "?"
-                print(
-                    "⏳ DB等連線 %.0fms | in_use=%s/%s | op=%s | req=%s" %
-                    (wait_ms, in_use, DB_POOL_MAX, operation, request_id),
-                    flush=True,
-                )
             return conn
         except Exception as e:
             print(f"⚠️ 取得連線異常，丟棄重試: {e}")
@@ -1596,25 +1279,6 @@ def get_db_connection():
 
 
 def release_db_connection(conn):
-    """
-    歸還連線。診斷模式同時量測一條 connection 被持有多久，
-    避免「SQL 很快，但連線被某段 Python 工作長時間佔住」被誤判成 DB 慢。
-    """
-    hold_ms = None
-    try:
-        with _DB_CONN_LOCK:
-            checkout_ts = _DB_CONN_CHECKOUT.pop(id(conn), None)
-        if checkout_ts is not None:
-            hold_ms = (time.monotonic() - checkout_ts) * 1000
-    except Exception:
-        pass
-    if DB_DIAG_ENABLED and hold_ms is not None and hold_ms >= DB_DIAG_HOLD_WARN_MS:
-        operation, request_id = _db_diag_context()
-        print(
-            "🔒 DB連線持有 %.0fms | op=%s | req=%s" %
-            (hold_ms, operation, request_id),
-            flush=True,
-        )
     """
     歸還連線。交易若停在異常狀態，必須先 rollback 再放回，
     否則下一個借到這條連線的人會直接收到
@@ -1834,10 +1498,6 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_inst_history_code_date
             ON inst_history (code, trade_date DESC)
         ''')
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_inst_history_trade_date_code
-            ON inst_history (trade_date DESC, code)
-        ''')
         # 上市公司基本資料（產業別）：抓一次即可，用來做「產業趨勢」分析
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS stock_info (
@@ -1935,27 +1595,6 @@ def init_db():
             ADD COLUMN IF NOT EXISTS asset_type TEXT NOT NULL DEFAULT 'stock'
         ''')
         cursor.execute('''
-            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS category TEXT
-        ''')
-        cursor.execute('''
-            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_revenue INTEGER
-        ''')
-        cursor.execute('''
-            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_valuation INTEGER
-        ''')
-        cursor.execute('''
-            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_momentum INTEGER
-        ''')
-        cursor.execute('''
-            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_streak INTEGER
-        ''')
-        cursor.execute('''
-            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_chip_tech INTEGER
-        ''')
-        cursor.execute('''
-            ALTER TABLE watchlist_scores ADD COLUMN IF NOT EXISTS factor_caps TEXT
-        ''')
-        cursor.execute('''
             ALTER TABLE watchlist_scores
             ADD COLUMN IF NOT EXISTS support REAL
         ''')
@@ -2039,25 +1678,6 @@ def init_db():
                 momentum_json JSONB NOT NULL DEFAULT '{}'::jsonb,
                 source_meta JSONB NOT NULL DEFAULT '{}'::jsonb
             )
-        ''')
-        # 選股盤中分數變化歷史：保留同一天前後兩次快照的差異，
-        # 讓使用者點進今日黑馬時能直接看到「哪一項變了」。
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS screener_score_change_history (
-                change_id BIGSERIAL PRIMARY KEY,
-                mode TEXT NOT NULL,
-                code TEXT NOT NULL,
-                snapshot_date DATE NOT NULL,
-                changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                old_score NUMERIC,
-                new_score NUMERIC,
-                old_factors JSONB NOT NULL DEFAULT '{}'::jsonb,
-                new_factors JSONB NOT NULL DEFAULT '{}'::jsonb
-            )
-        ''')
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_screener_score_change_today
-            ON screener_score_change_history (mode, code, snapshot_date, changed_at DESC)
         ''')
         # 排行榜成員。預設不參加，要自己填暱稱加入——
         # 排行榜會把報酬率給別人看，那跟「持股只用於你自己的分析」是兩件事，
@@ -5011,8 +4631,9 @@ def _build_home_intraday_payload(uid):
         # 繞過 get_realtime_stock 的 90 秒快取（否則輪詢六次有五次拿到同一份），
         # 但保留 MIS 自己的 15 秒節流——兩層一起繞過的話，
         # 每個使用者每 15 秒都會真的打一次 MIS，人一多就放大請求量。
-        # 首頁盤中同樣只採官方 MIS，避免 Yahoo 延遲行情混進組合損益。
-        price_map = _fetch_twse_mis_quotes(codes, force_refresh=True)
+        price_map = get_realtime_stocks_bulk(
+            codes, workers=min(12, len(codes)), rng="1d",
+            force_refresh=True, mis_force=False)
         today_logs = get_position_change_logs(uid, 5000, trade_date=taiwan_today())
         reduced_codes = {
             str(log.get("code") or "").strip() for log in today_logs
@@ -5021,7 +4642,9 @@ def _build_home_intraday_payload(uid):
         }
         missing_reduced = sorted(code for code in reduced_codes if code and code not in price_map)
         if missing_reduced:
-            price_map.update(_fetch_twse_mis_quotes(missing_reduced, force_refresh=True))
+            price_map.update(get_realtime_stocks_bulk(
+                missing_reduced, workers=min(12, len(missing_reduced)),
+                rng="1d", force_refresh=True, mis_force=False))
 
         total_value = sum(
             float((price_map.get(str(position.get("code") or "").strip()) or {}).get("close") or 0) *
@@ -6544,9 +6167,6 @@ def simulate_bot_portfolio(mode, days=365):
                 "sell_i": None, "exit_reason": "",
                 "name": it.get("name") or code, "pick_date": pick_day,
                 "buy_score": _workbench_number(it.get("score")),
-                "buy_rank": it.get("rank"),
-                "buy_reason": (f"當日進入前 {BOT_TOP_N} 名"
-                               + (f"（排名 #{int(it.get('rank'))}）" if str(it.get('rank') or '').isdigit() else "")),
                 "peak_score": _workbench_number(it.get("score")),
             })
     if not lots:
@@ -6634,30 +6254,13 @@ def simulate_bot_portfolio(mode, days=365):
             if lot.get("sell_i") == i:
                 r -= fee_rate + TAX_RATE_STOCK
             # 賣出日當天仍計入到收盤退出，然後不再放回 survivors。
-            rets.append((lot, r))
+            rets.append(r)
             if lot.get("sell_i") is None:
                 survivors.append(lot)
 
         open_lots = survivors
         if rets:
-            # 實際資金配置與畫面上的持股權重使用同一口徑：
-            # 5 檔以上等權吃滿 100%；少於 5 檔時單檔最多 20%，
-            # 因此不足 5 檔才會真的留下現金。
-            active_codes = {lot["code"] for lot, _r in rets if lot.get("sell_i") is None or lot.get("sell_i") == i}
-            if not active_codes:
-                active_codes = {lot["code"] for lot, _r in rets}
-            n_active = len(active_codes)
-            target_weight = min(BOT_MAX_WEIGHT, 1.0 / n_active) if n_active else 0.0
-            by_code = {}
-            for lot, r in rets:
-                by_code.setdefault(lot["code"], []).append(r)
-            weighted_ret = 0.0
-            for code, code_rets in by_code.items():
-                # 同一檔若有多個歷史 lot，先取平均價格報酬，再套該檔目前權重，
-                # 避免重複上榜造成同一股票重複吃到權重。
-                code_ret = sum(code_rets) / len(code_rets)
-                weighted_ret += target_weight * code_ret
-            nav *= (1.0 + weighted_ret)
+            nav *= (1.0 + sum(rets) / len(rets))
         curve.append((today, (nav - 1.0) * 100))
 
     virtual_curve = [(d, BOT_INITIAL_CAPITAL * (1.0 + ret / 100.0)) for d, ret in curve]
@@ -6694,8 +6297,6 @@ def simulate_bot_portfolio(mode, days=365):
             "buy_price": float(buy_p), "sell_price": float(sell_p),
             "hold_days": max(0, sell_i - buy_i),
             "buy_score": lot.get("buy_score"),
-            "buy_rank": lot.get("buy_rank"),
-            "buy_reason": lot.get("buy_reason") or f"當日進入前 {BOT_TOP_N} 名",
             "exit_reason": lot.get("exit_reason") or "—",
             "return_pct": net_pct,
         })
@@ -6724,28 +6325,22 @@ def simulate_bot_portfolio(mode, days=365):
             h["first_pick"] = lot["pick_date"]
         h["days_left"] = max(h["days_left"], max(0, lot["target_i"] - last_i))
 
-    # D 方案的持倉顯示與實際 NAV 使用同一套配置口徑。
-    # 5 檔以上：等權吃滿 100%；少於 5 檔：單檔最多 20%，不足部分才留現金。
-    # 因此「目前只有 5 檔」時就是每檔 20%，不再出現 50% 股票＋50% 無來源現金的錯覺。
+    # D 方案的持倉顯示必須真正遵守「單一股票最多 20%」。
+    # 每個推薦日 10 檔等權，基準新倉位為 10%；同一股票重複上榜不再無限加碼，
+    # 其顯示權重最多 20%。這裡不把剩餘現金硬塞給其他股票。
     holdings = []
-    unique_count = len(merged)
-    target_weight_pct = (min(BOT_MAX_WEIGHT, 1.0 / unique_count) * 100.0
-                         if unique_count else 0.0)
     for h in merged.values():
         h["pct"] = h["pct_sum"] / h["lots"]
-        h["weight"] = target_weight_pct
+        h["weight"] = min(BOT_MAX_WEIGHT * 100.0, h["lots"] * (100.0 / BOT_TOP_N))
         h.pop("pct_sum")
         holdings.append(h)
-    invested_pct = min(100.0, target_weight_pct * unique_count)
-    cash_pct = max(0.0, 100.0 - invested_pct)
     holdings.sort(key=lambda x: (-x["weight"], -x["pct"]))
 
     return {
         "curve": curve, "virtual_curve": virtual_curve,
         "initial_capital": BOT_INITIAL_CAPITAL, "virtual_asset": virtual_asset,
         "holdings": holdings, "history": history, "picks_days": len(by_date),
-        "invested_pct": invested_pct, "cash_pct": cash_pct,
-        "strategy_code": "D10", "strategy_label": "前10名／5檔20%起等權配置（單股上限20%）／-20%停損／訊號消失或分數下降15分／20日到期，先到先賣",
+        "strategy_code": "D10", "strategy_label": "前10名／單股上限20%／-20%停損／訊號消失或分數下降15分／20日到期，先到先賣",
     }
 
 
@@ -6779,41 +6374,6 @@ def _maybe_refresh_leaderboard_background(force=False):
         thread.start()
         print("⚡ 已啟動排行榜背景更新")
         return True
-
-
-def _fresh_bot_rows_for_persisted_leaderboard(days=365, market=None):
-    """持久化排行榜仍可沿用真人快照，但機器人必須每次重算，避免舊版10%權重被快取住。"""
-    rows = []
-    series_map = {}
-    for bot_mode, bot_name in BOT_MODES:
-        try:
-            sim = simulate_bot_portfolio(bot_mode, days=days)
-        except Exception as exc:
-            print(f"⚠️ 持久排行榜機器人重算失敗 {bot_mode}: {exc}")
-            continue
-        if not sim or len(sim.get("curve") or []) < 2:
-            continue
-        curve = sim["curve"]
-        recent = [(d,v) for d,v in curve if d >= taiwan_today()-timedelta(days=30)]
-        m30 = None
-        if len(recent)>=2:
-            base=1+recent[0][1]/100
-            if base: m30=((1+recent[-1][1]/100)/base-1)*100
-        bot_mkt = market[-1][1] if market else None
-        rows.append({
-            "user_id":f"bot:{bot_mode}","nickname":bot_name,"holdings":len(sim.get("holdings") or []),
-            "etf_holdings":0,"joined":curve[0][0],"show":True,"detail":None,
-            "ret":curve[-1][1],"m30":m30,"mdd":max_drawdown(curve),"days":len(curve),
-            "m30_days":len(recent),"excess":((curve[-1][1]-bot_mkt) if bot_mkt is not None else None),"mkt_ret":bot_mkt,"points":len(curve),"is_bot":True,
-            "bot_mode":bot_mode,"bot_holdings":sim.get("holdings") or [],"bot_history":sim.get("history") or [],
-            "initial_capital":sim.get("initial_capital",BOT_INITIAL_CAPITAL),"virtual_asset":sim.get("virtual_asset"),
-            "virtual_curve":sim.get("virtual_curve") or [],"invested_pct":sim.get("invested_pct",0.0),
-            "cash_pct":sim.get("cash_pct",100.0),
-            "bot_rule":(f"D10 方案：前 {BOT_TOP_N} 名；目前持股採等權配置，5 檔時每檔 20%，6～10 檔等權，"
-                         f"少於 5 檔才留現金；訊號消失／分數下降 {BOT_SCORE_DROP_POINTS:.0f} 分／-20% 停損／{BOT_HOLD_DAYS} 日到期。"),
-        })
-        series_map[f"bot:{bot_mode}"]={"nickname":bot_name,"curve":curve}
-    return rows,series_map
 
 
 def build_leaderboard(top_n=20, days=365, force_rebuild=False):
@@ -6853,27 +6413,14 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
                  "waiting": stored_boards.get("waiting") or []},
                 stored_graph,
             )
-            # 真人榜沿用持久化快照；機器人則強制重算，否則舊快照會把「每檔10%」
-            # 卡住，即使程式已改成5檔20%也看不到。
-            fresh_bots, fresh_bot_series = _fresh_bot_rows_for_persisted_leaderboard(days=days, market=market)
-            for board_name in ("long", "short", "waiting"):
-                boards[board_name] = [r for r in (boards.get(board_name) or []) if not str(r.get("user_id") or "").startswith("bot:")]
-            if fresh_bots:
-                boards["long"].extend(fresh_bots)
-                boards["short"].extend([r for r in fresh_bots if r.get("m30") is not None])
-                series_map.update(fresh_bot_series)
-                boards["long"].sort(key=lambda r: (r.get("ret") is not None, r.get("ret") or -1e99), reverse=True)
-                boards["short"].sort(key=lambda r: (r.get("m30") is not None, r.get("m30") or -1e99), reverse=True)
-                boards["long"] = boards["long"][:int(top_n)]
-                boards["short"] = boards["short"][:int(top_n)]
-            value = (boards, (series_map, market))
             with _leaderboard_cache_lock:
                 _leaderboard_cache[cache_key] = {
                     "at": now, "value": value, "source": "persisted",
                     "data_date": persisted.get("data_date"),
                 }
-            print("⚡ 排行榜改讀 Supabase 真人快照＋重新計算機器人（資料日 %s）；耗時 %.0fms" %
-                  (persisted.get("data_date") or "未標日期", (time.monotonic() - build_started) * 1000))
+            print("⚡ 排行榜改讀 Supabase 完整快照（資料日 %s），目前取前 %s 名；耗時 %.0fms" %
+                  (persisted.get("data_date") or "未標日期", top_n,
+                   (time.monotonic() - build_started) * 1000))
             return value
 
     conn = get_db_connection()
@@ -7019,9 +6566,7 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             "initial_capital": sim.get("initial_capital", BOT_INITIAL_CAPITAL),
             "virtual_asset": sim.get("virtual_asset"),
             "virtual_curve": sim.get("virtual_curve") or [],
-            "invested_pct": sim.get("invested_pct", 0.0),
-            "cash_pct": sim.get("cash_pct", 100.0),
-            "bot_rule": (f"D10 方案：每個推薦日納入前 {BOT_TOP_N} 名；5 檔時每檔 20%，6～10 檔等權配置，不足 5 檔才保留現金；"
+            "bot_rule": (f"D10 方案：每個推薦日納入前 {BOT_TOP_N} 名；單一股票權重上限 {BOT_MAX_WEIGHT*100:.0f}%；"
                          f"訊號消失或分數自持有後高點下降 {BOT_SCORE_DROP_POINTS:.0f} 分即賣出，"
                          f"最晚持有 {BOT_HOLD_DAYS} 個交易日；已扣手續費與證交稅。"
                          f"共 {sim['picks_days']} 個推薦日。"),
@@ -7173,9 +6718,9 @@ _suffix_cache = {}
 # 共用同一份結果；這不會把日線資料永久存死，也不會跨日期沿用昨天的行情。
 _realtime_cache = {}
 _realtime_cache_lock = threading.Lock()
-REALTIME_CACHE_SECONDS = 15
+REALTIME_CACHE_SECONDS = 90
 _TWSE_MIS_CACHE = {"day": None, "at": 0, "data": {}}
-_TWSE_MIS_CACHE_SECONDS = 3
+_TWSE_MIS_CACHE_SECONDS = 15
 _TWSE_MIS_BATCH_SIZE = 80
 
 
@@ -7415,21 +6960,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             official_quote = official_quote or (
                 _fetch_twse_mis_quotes([code], {code: suffix}).get(code)
                 if _taiwan_post_close() else None)
-
-            # 【V31 關鍵修正：開盤前禁止使用 Yahoo regularMarketPrice】
-            # 07:00~08:59 左右 Yahoo 的 regularMarketPrice 在部分台股代號可能
-            # 帶到盤前／延遲報價或非最後正式收盤值。這會讓「尚未開盤」的首頁
-            # 算出一個使用者從未在上一交易日收盤看到的總市值。
-            # 開盤前的唯一可信口徑：最近一根已完成的日 K 收盤。
-            preopen_session = (not _taiwan_intraday_window() and
-                               not _taiwan_post_close())
-            if official_quote:
-                close = official_quote.get("close")
-            elif preopen_session and bars:
-                close = bars[-1][1]
-            else:
-                close = meta.get('regularMarketPrice', 0.0)
-
+            close = (official_quote.get("close") if official_quote else
+                     meta.get('regularMarketPrice', 0.0))
             # 官方 MIS 偶爾短暫沒有回傳個別代號；收盤後若 Yahoo 日 K
             # 已經有今天的最後一根，使用該日 K close，不能退回盤中 meta 價。
             if (not official_quote and _taiwan_post_close() and bars and
@@ -7462,13 +6994,10 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                     except Exception as exc:
                         print(f"⚠️ Yahoo 前一日收盤校正失敗 {code}: {exc}")
             elif bars:
-                # 開盤前／假日：bars[-1] 就是最近一個「已完成交易日」的正式收盤。
-                # 這裡絕對不能拿 Yahoo regularMarketPrice 當成今天的價格。
-                if preopen_session:
-                    prev_close = bars[-2][1] if len(bars) >= 2 else meta.get('chartPreviousClose', close)
-                    hist = bars[:-1]
-                # 序列停在昨天（或更早）——若非明確開盤前，仍保留原有判斷。
-                elif abs(close - bars[-1][1]) < 0.001 and len(bars) >= 2:
+                # 序列停在昨天（或更早）——可能是盤前、假日、非交易日。
+                # 若目前報價就等於最後一根K的收盤，代表這根K就是「最新收盤」，
+                # 昨收要再往前一根，否則會拿自己比自己，永遠顯示 0.00%。
+                if abs(close - bars[-1][1]) < 0.001 and len(bars) >= 2:
                     prev_close = bars[-2][1]
                     hist = bars[:-1]
                 else:
@@ -7513,23 +7042,13 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             h60 = [b[2] for b in hist[-60:]]
             l60 = [b[3] for b in hist[-60:]]
             c20 = [b[1] for b in hist[-20:]]
-            c60 = [b[1] for b in hist[-60:]]
             v20 = [b[4] for b in hist[-20:] if b[4]]
-            recent10 = hist[-10:]
-            low_10d = min([b[3] for b in recent10]) if recent10 else None
-            avg_price_10d = (sum(b[1] for b in recent10) / len(recent10)) if recent10 else None
-            turnover_10d_billion = (sum((b[1] or 0) * (b[4] or 0) for b in recent10) / 100_000_000) if recent10 else None
 
             high_20d = max(h20) if h20 else None
             low_20d = min(l20) if l20 else None
             high_60d = max(h60) if h60 else None
             low_60d = min(l60) if l60 else None
             ma20 = round(sum(c20) / len(c20), 2) if c20 else None
-            ma20_prev_window = [b[1] for b in hist[-21:-1]]
-            ma20_prev = (sum(ma20_prev_window) / len(ma20_prev_window)) if ma20_prev_window else None
-            ma60 = round(sum(c60) / len(c60), 2) if len(c60) >= 60 else None
-            ma60_prev_window = [b[1] for b in hist[-61:-1]]
-            ma60_prev = (sum(ma60_prev_window) / len(ma60_prev_window)) if len(ma60_prev_window) >= 60 else None
             avg_vol_20 = (sum(v20) / len(v20)) if v20 else None
             vol_ratio = round(volume / avg_vol_20, 2) if avg_vol_20 else None
 
@@ -7591,14 +7110,12 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                             f"沿用今日稍早報價）" if sticky else
                             ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
                              if _taiwan_post_close() and bars and bars[-1][0] == today_date
-                             else ("Yahoo Finance 最近交易日正式收盤（開盤前）"
-                                   if preopen_session and bars else "Yahoo Finance 日線行情")))) ,
+                             else "Yahoo Finance 日線行情"))),
                 "updated_at": (official_quote.get("updated_at") if official_quote else
                                (sticky.get("updated_at") if sticky else None)),
-                "close_is_final": bool(official_quote and official_quote.get("close_is_final")) or bool(preopen_session and bars),
+                "close_is_final": bool(official_quote and official_quote.get("close_is_final")),
                 "close_date": (official_quote.get("close_date") if official_quote else
-                               (bars[-1][0].strftime("%Y%m%d") if preopen_session and bars else
-                                today_date.strftime("%Y%m%d"))),
+                               today_date.strftime("%Y%m%d")),
                 "close_time": (official_quote.get("close_time") if official_quote else None),
                 "resistance": resistance,
                 "support": support,
@@ -7609,12 +7126,6 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 "high_60d": high_60d,
                 "low_60d": low_60d,
                 "ma20": ma20,
-                "ma20_prev": round(ma20_prev, 2) if ma20_prev is not None else None,
-                "ma60": ma60,
-                "ma60_prev": round(ma60_prev, 2) if ma60_prev is not None else None,
-                "low_10d": low_10d,
-                "avg_price_10d": avg_price_10d,
-                "turnover_10d_billion": turnover_10d_billion,
                 "vol_ratio": vol_ratio,
                 "pos_vs_60d_high": pos_vs_60d_high,
                 "up_streak": up_streak,
@@ -7803,9 +7314,6 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
                 "pct": (close - previous) / previous * 100,
                 "volume": volume,
                 "previous_close": previous,
-                # 策略研究室也需要同一批 spark 歷史日線計算 60/120D 動能與波動，
-                # 不再為每個策略各自重抓 Yahoo。
-                "closes": closes,
                 "updated_at": meta.get("regularMarketTime"),
                 # spark 是盤中／輕量行情，不共享個股收盤 MIS 變數；
                 # 這裡不能引用 get_realtime_stock 作用域內的 official_quote 或 today_date。
@@ -8395,7 +7903,6 @@ _SHARED_SNAPSHOT_MAX_AGE = {
     "etf_distribution_history": 3 * 86400,
     "turning_observation": 900,
     "etf_product_rankings": 3 * 86400,
-    "strategy_lab": 1800,
 }
 
 
@@ -8910,11 +8417,8 @@ def score_stock_by_category(code, ind_map, price, cum_yoy, val, streak,
     mom_score, mom_desc = score_from_industry_momentum(
         momentum_stats.get(ind_map.get(str(code).strip())))
     streak_score_raw = score_from_streak(streak)
-    chip_amount = score_from_chip_amount(
-        cum_lots, price.get("avg_price_10d"), price.get("turnover_10d_billion")
-    )
-    technical_score = score_from_technical_structure(price)
-    chip_tech = round(chip_amount + technical_score)
+    chip_tech = round((score_from_net_lots(cum_lots) / 40 * 5)
+                      + (score_from_technical(price["pct"], turnover) / 60 * 5))
 
     if cat == "電子":
         rev = round(score_from_cum_revenue_growth(cum_yoy) * 25 / 40)   # 0-25
@@ -8935,202 +8439,9 @@ def score_stock_by_category(code, ind_map, price, cum_yoy, val, streak,
         "total": rev + val_score + mom + streak_score + chip_tech,
         "rev": rev, "val": val_score, "mom": mom,
         "streak_score": streak_score, "chip": chip_tech,
-        "chip_amount_score": round(chip_amount, 1),
-        "technical_score": round(technical_score, 1),
-        "net_amount_billion": (round(float(cum_lots) * float(price.get("avg_price_10d")) / 100_000.0, 2)
-                                if cum_lots is not None and price.get("avg_price_10d") is not None else None),
-        "turnover_10d_billion": price.get("turnover_10d_billion"),
         "caps": caps, "peg": peg, "pe": pe, "pb": pb, "yield": dy,
         "val_desc": val_desc, "mom_desc": mom_desc,
     }
-
-
-def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, category):
-    """Build transparent explanations using the SAME color semantics as factor cards.
-
-    Color meaning is intentionally unified everywhere:
-      🔴 strong (>=80% of factor max)
-      🟡 medium (60-79%)
-      🟢 weak (>0-59%)
-      ⚪ data / no contribution
-    The colors describe scoring strength, not "red=bad / green=good".
-    """
-    stock = stock or {}
-    val = val or {}
-    close = stock.get("close")
-    ma20 = stock.get("ma20")
-    ma20_prev = stock.get("ma20_prev")
-    ma60 = stock.get("ma60")
-    ma60_prev = stock.get("ma60_prev")
-    low10 = stock.get("low_10d")
-    high20 = stock.get("high_20d")
-    high60 = stock.get("high_60d")
-    support = stock.get("support")
-    broke_support = bool(stock.get("broke_support"))
-    vol_ratio = float(stock.get("vol_ratio") or 0)
-    avg_price_10d = stock.get("avg_price_10d")
-    turnover10 = stock.get("turnover_10d_billion")
-
-    def fmt_num(v, digits=1):
-        try:
-            return f"{float(v):.{digits}f}"
-        except Exception:
-            return "—"
-
-    def signed(v, digits=1, suffix="%"):
-        try:
-            return f"{float(v):+.{digits}f}{suffix}"
-        except Exception:
-            return "—"
-
-    def icon(score, max_score):
-        try:
-            r = float(score) / float(max_score) if float(max_score) > 0 else 0
-        except Exception:
-            r = 0
-        if r >= 0.8:
-            return "🔴"
-        if r >= 0.6:
-            return "🟡"
-        if r > 0:
-            return "🟢"
-        return "⚪"
-
-    # 1) Revenue
-    rev_score = float(model.get("rev") or 0)
-    rev_max = 25.0 if category == "電子" else 20.0
-    if cum_yoy is None:
-        rev_lines = ["⚪ 最新累計營收年增率無資料，模型使用缺資料基準分"]
-    else:
-        rev_lines = [f"{icon(rev_score, rev_max)} 累計營收年增 {signed(cum_yoy)}"]
-        if category == "電子":
-            if cum_yoy >= 50: bucket = "≥50%，落在最高成長級距"
-            elif cum_yoy >= 30: bucket = "30%～49.9%，落在高成長級距"
-            elif cum_yoy >= 20: bucket = "20%～29.9%，落在成長級距"
-            elif cum_yoy >= 10: bucket = "10%～19.9%，落在中度成長級距"
-            elif cum_yoy >= 5: bucket = "5%～9.9%，落在低度成長級距"
-            elif cum_yoy > 0: bucket = "0%～4.9%，僅保留小幅成長分"
-            elif cum_yoy > -10: bucket = "-10%～0%，進入衰退級距"
-            else: bucket = "≤-10%，進入最弱級距"
-        else:
-            if cum_yoy >= 25: bucket = "≥25%，傳產成長最高級距"
-            elif cum_yoy >= 15: bucket = "15%～24.9%"
-            elif cum_yoy >= 10: bucket = "10%～14.9%"
-            elif cum_yoy >= 5: bucket = "5%～9.9%"
-            elif cum_yoy > 0: bucket = "0%～4.9%"
-            elif cum_yoy > -10: bucket = "-10%～0%"
-            else: bucket = "≤-10%"
-        rev_lines.append(f"⚪ {bucket} → 營收成長 {rev_score:.0f}/{rev_max:.0f}")
-    rev_lines.append(f"⚪ 本因子權重上限 {rev_max:.0f} 分")
-
-    # 2) Valuation
-    val_score = float(model.get("val") or 0)
-    val_max = 25.0
-    val_lines = []
-    pe = val.get("pe")
-    pb = val.get("pb")
-    dy = val.get("yield")
-    if category == "電子":
-        peg = model.get("peg")
-        if pe is not None: val_lines.append(f"⚪ PE {fmt_num(pe)} 倍")
-        else: val_lines.append("⚪ PE 無資料")
-        if cum_yoy is not None and float(cum_yoy) > 0 and pe is not None:
-            val_lines.append(f"⚪ 估值模型使用 PE ÷ 累計營收成長率，PEG ≈ {fmt_num(peg,2) if peg is not None else '—'}")
-        elif cum_yoy is not None:
-            val_lines.append(f"⚪ 累計營收年增 {signed(cum_yoy)}")
-        desc = model.get("val_desc")
-        if desc: val_lines.append("⚪ " + str(desc).replace("\n", " ").strip())
-    else:
-        if pb is not None: val_lines.append(f"⚪ PB {fmt_num(pb,2)} 倍")
-        else: val_lines.append("⚪ PB 無資料")
-        if dy is not None: val_lines.append(f"⚪ 殖利率 {fmt_num(dy,2)}%")
-        else: val_lines.append("⚪ 殖利率無資料")
-        if pe is not None: val_lines.append(f"⚪ PE {fmt_num(pe)} 倍（輔助）")
-        desc = model.get("val_desc")
-        if desc: val_lines.append("⚪ " + str(desc).replace("\n", " ").strip())
-    val_lines.append(f"{icon(val_score, val_max)} 本因子得分 {val_score:.0f}/{val_max:.0f}")
-
-    # 3) Industry momentum
-    mom_score = float(model.get("mom") or 0)
-    mom_max = 20.0 if category == "電子" else 25.0
-    mom_desc = str(model.get("mom_desc") or "產業動能資料不足").replace("\n", " ").strip()
-    mom_lines = ["⚪ " + mom_desc, f"{icon(mom_score, mom_max)} 本因子得分 {mom_score:.0f}/{mom_max:.0f}"]
-
-    # 4) Institutional continuity
-    streak_score = float(model.get("streak_score") or 0)
-    streak_max = 20.0
-    streak_val = int(streak or 0)
-    if streak_val >= 8: streak_bucket = "≥8天 → 原始30分"
-    elif streak_val >= 5: streak_bucket = "5～7天 → 原始25分"
-    elif streak_val >= 3: streak_bucket = "3～4天 → 原始18分"
-    elif streak_val >= 2: streak_bucket = "2天 → 原始10分"
-    elif streak_val >= 1: streak_bucket = "1天 → 原始5分"
-    else: streak_bucket = "0天 → 原始0分"
-    streak_lines = [
-        f"{icon(streak_score, streak_max)} 法人連續買超 {streak_val} 天",
-        f"⚪ {streak_bucket}",
-        f"{icon(streak_score, streak_max)} 換算後法人連續性 {streak_score:.0f}/{streak_max:.0f}",
-    ]
-
-    # 5) Chip / technical
-    chip_score = float(model.get("chip_amount_score") or 0)
-    tech_score = float(model.get("technical_score") or 0)
-    chip_tech_score = float(model.get("chip") or 0)
-    chip_lines = []
-    if cum_lots is None or avg_price_10d is None or turnover10 is None:
-        chip_lines.append("⚪ 法人資金強度資料不足")
-    else:
-        net_amt = model.get("net_amount_billion")
-        ratio = (float(net_amt) / float(turnover10) * 100.0) if float(turnover10 or 0) > 0 and net_amt is not None else None
-        direction = "淨買超" if float(cum_lots) > 0 else "淨賣超／無買超"
-        chip_lines.append(f"{icon(chip_score, 5)} 近10日法人{direction} {float(cum_lots):+.0f} 張")
-        chip_lines.append(f"⚪ 換算淨買超金額約 {fmt_num(net_amt,2)} 億元")
-        chip_lines.append(f"⚪ 占近10日成交金額 {signed(ratio) if ratio is not None else '—'}")
-    chip_lines.append(f"{icon(chip_score, 5)} 籌碼子分數 {chip_score:.1f}/5")
-
-    tech_lines = []
-    if close is None:
-        tech_lines.append("⚪ 股價資料不足，無法判斷技術結構")
-    else:
-        if ma20 is not None:
-            diff20 = (float(close)-float(ma20))/float(ma20)*100 if ma20 else 0
-            tech_lines.append(f"{icon(tech_score, 5)} 股價 {fmt_num(close,2)} {'站上' if close >= ma20 else '跌破'} 20MA {fmt_num(ma20,2)}（{signed(diff20)}）")
-            if ma20_prev is not None:
-                tech_lines.append(f"{icon(tech_score, 5)} 20MA {'向上' if ma20 > ma20_prev else '向下或持平'}（前值 {fmt_num(ma20_prev,2)}）")
-        else:
-            tech_lines.append("⚪ 20MA 資料不足")
-        if ma60 is not None:
-            tech_lines.append(f"{icon(tech_score, 5)} 股價 {'站上' if close >= ma60 else '跌破'} 60MA {fmt_num(ma60,2)}")
-            if ma60_prev is not None:
-                tech_lines.append(f"{icon(tech_score, 5)} 60MA {'向上' if ma60 > ma60_prev else '向下或持平'}")
-        if low10 is not None and ma20 is not None and close >= ma20 and low10 <= ma20*1.03:
-            tech_lines.append(f"{icon(tech_score, 5)} 近10日曾回踩20MA附近，之後重新站在20MA上方")
-        elif support is not None and not broke_support and low10 is not None and low10 <= support*1.03:
-            tech_lines.append(f"{icon(tech_score, 5)} 近10日曾回踩支撐 {fmt_num(support,2)} 附近且未有效跌破")
-        else:
-            tech_lines.append("⚪ 未偵測到明確的近期均線／支撐回踩訊號")
-        if high20 is not None and close > high20:
-            tech_lines.append(f"{icon(tech_score, 5)} 突破近20日高點")
-        else:
-            tech_lines.append("⚪ 尚未突破近20日高點")
-        if high60 is not None and close >= high60:
-            tech_lines.append(f"{icon(tech_score, 5)} 站上近60日高點")
-        if high20 is not None and close > high20 and vol_ratio >= 1.3:
-            tech_lines.append(f"{icon(tech_score, 5)} 突破時量能約為20日均量 {vol_ratio:.2f} 倍")
-        elif vol_ratio >= 1.5 and close >= (ma20 or close):
-            tech_lines.append(f"🟡 上攻時量能約為20日均量 {vol_ratio:.2f} 倍")
-        else:
-            tech_lines.append(f"⚪ 目前量能約為20日均量 {vol_ratio:.2f} 倍，未因量能額外加分")
-    tech_lines.append(f"{icon(tech_score, 5)} 技術子分數 {tech_score:.1f}/5")
-    chip_lines.append(f"{icon(chip_tech_score, 10)} 籌碼／技術合計 {chip_tech_score:.0f}/10")
-
-    return [
-        {"name": "營收成長", "lines": rev_lines},
-        {"name": "估值", "lines": val_lines},
-        {"name": "產業動能", "lines": mom_lines},
-        {"name": "法人連續性", "lines": streak_lines},
-        {"name": "籌碼／技術", "lines": ["<b>籌碼 5 分</b>"] + chip_lines + ["<b>技術 5 分</b>"] + tech_lines},
-    ]
 
 
 def get_industry_momentum(revenue_data, industry_map):
@@ -9704,23 +9015,14 @@ ELECTRONIC_INDUSTRIES = {
     "36",  # 數位雲端
 }
 
-# ── BOT 自訂類股歸類 ──
-# 這裡不是覆蓋證交所官方產業分類，而是「五大因子評分模型」的分析分組。
-# 例如 8996 高力官方產業分類屬電機機械／傳統產業，
-# 但因使用者希望在本 BOT 中把它視為電子股，因此套用電子股評分規則。
-CUSTOM_ELECTRONIC_CODES = {
-    "8996",  # 高力：BOT 分析上歸入電子股
-}
-
 
 def stock_category(code, ind_map):
-    """回傳 電子 / 金融 / 傳產；BOT 可用自訂代碼覆蓋官方產業分類。"""
-    code = str(code).strip()
-    raw = ind_map.get(code)
+    """回傳 電子 / 金融 / 傳產。查不到產業別時歸為傳產（保守）。"""
+    raw = ind_map.get(str(code).strip())
     ind = str(raw).strip().zfill(2) if raw else ""
     if ind == "17":
         return "金融"
-    if code in CUSTOM_ELECTRONIC_CODES or ind in ELECTRONIC_INDUSTRIES:
+    if ind in ELECTRONIC_INDUSTRIES:
         return "電子"
     return "傳產"
 
@@ -11336,9 +10638,8 @@ def render_chips_web_body(result):
         detail = (f"{item.get('event_type')}・{changes}・今日三大法人 {current_total:+,} 張"
                   f"・{item.get('consensus')}{ratio_text}")
         shift_rows.append(
-            f'<div class="chips-row chips-row-rich"><div><b>{esc(str(item.get("name") or item.get("code")))}</b>'
-            f'<small>（{esc(str(item.get("code") or ""))}）・{esc(detail)}</small>'
-            f'<details class="chips-inline-chart" data-chips-code="{esc(str(item.get("code") or ""))}"><summary>查看近20日法人圖</summary><div class="chips-inline-chart-body"><span>點開後載入，不影響整頁速度。</span></div></details></div>'
+            f'<div class="chips-row"><div><b>{esc(str(item.get("name") or item.get("code")))}</b>'
+            f'<small>（{esc(str(item.get("code") or ""))}）・{esc(detail)}</small></div>'
             f'<strong>{esc(str(item.get("event_type") or "方向變化"))}</strong></div>')
     if not shift_rows:
         shift_rows.append('<div class="chips-empty">目前沒有符合「方向反轉或異常放大」條件的標的</div>')
@@ -11359,9 +10660,8 @@ def render_chips_web_body(result):
                 detail = (f"外資 {int(item.get('foreign_lots') or 0):+,} 張・"
                           f"投信 {int(item.get('trust_lots') or 0):+,} 張")
             rows.append(
-                f'<div class="chips-row chips-row-rich"><div><b>{esc(str(item.get("name") or item.get("code")))}</b>'
-                f'<small>（{esc(str(item.get("code") or ""))}）・{esc(detail)}</small>'
-                f'<details class="chips-inline-chart" data-chips-code="{esc(str(item.get("code") or ""))}"><summary>查看近20日法人圖</summary><div class="chips-inline-chart-body"><span>點開後載入，不影響整頁速度。</span></div></details></div>'
+                f'<div class="chips-row"><div><b>{esc(str(item.get("name") or item.get("code")))}</b>'
+                f'<small>（{esc(str(item.get("code") or ""))}）・{esc(detail)}</small></div>'
                 f'<strong>{float(item.get("amount_billion") or 0):,.0f} 億</strong></div>')
         if not rows:
             rows.append('<div class="chips-empty">近期無符合標的</div>')
@@ -11370,12 +10670,11 @@ def render_chips_web_body(result):
             f'<p>{esc(note)}</p>{"".join(rows)}</section>')
     data_date = result.get("data_date") or payload.get("data_date") or "未標日期"
     source = result.get("source") or "未標來源"
-    chips_script = r'''<script>(function(){function draw(box,data){if(!Array.isArray(data)||!data.length){box.innerHTML='<div class="chips-chart-empty">目前沒有足夠的法人歷史資料。</div>';return;}var w=700,h=230,p={l:30,r:12,t:18,b:26},vals=data.map(function(d){return Number(d.net)||0;}),max=Math.max.apply(null,vals.concat([0])),min=Math.min.apply(null,vals.concat([0]));if(max===min){max+=1;min-=1;}var pw=w-p.l-p.r,ph=h-p.t-p.b,step=pw/Math.max(1,data.length),zero=p.t+ph-(0-min)/(max-min)*ph,bw=Math.max(5,Math.min(13,step*.45));function y(v){return p.t+ph-(Number(v)-min)/(max-min)*ph;}var svg='<svg viewBox="0 0 '+w+' '+h+'" role="img" aria-label="近20日法人淨買超"><line x1="'+p.l+'" y1="'+zero+'" x2="'+(w-p.r)+'" y2="'+zero+'" stroke="#aebdca" stroke-dasharray="4 4"/>';data.forEach(function(d,i){var v=Number(d.net)||0,xx=p.l+i*step+step/2,yy=y(v),top=Math.min(yy,zero),hh=Math.max(2,Math.abs(yy-zero));svg+='<rect x="'+(xx-bw/2)+'" y="'+top+'" width="'+bw+'" height="'+hh+'" rx="3" fill="'+(v>=0?'#4f78a6':'#a65a5a')+'"/>';});svg+='</svg>';var sum=vals.reduce(function(a,b){return a+b;},0);box.innerHTML='<div class="chips-chart-wrap">'+svg+'</div><div class="chips-chart-legend"><span><i class="pos"></i>淨買超</span><span><i class="neg"></i>淨賣超</span><b>近'+data.length+'日合計 '+(sum>=0?'+':'')+sum.toLocaleString('zh-TW')+' 張</b></div><div class="chips-chart-note">藍柱＝法人淨買超；紅柱＝法人淨賣超。重點看連續性，不只看單日大小。</div>');}document.querySelectorAll('[data-chips-code]').forEach(function(d){d.addEventListener('toggle',function(){if(!d.open||d.dataset.loaded)return;d.dataset.loaded='1';var box=d.querySelector('.chips-inline-chart-body'),code=d.getAttribute('data-chips-code');fetch('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind=institutional',{credentials:'same-origin',cache:'force-cache'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(x){if(!x.ok)throw new Error(x.error||'載入失敗');draw(box,x.data||[]);}).catch(function(e){d.dataset.loaded='';box.innerHTML='<span>載入失敗：'+String(e.message||e)+'</span>';});});});})();</script>'''
     return f'''<div class="tabs">\n  <a href="/web/screener?mode=blackhorse&view=list">黑馬</a>\n  <a href="/web/screener?mode=radar&view=list">雷達</a>\n  <a href="/web/chips" class="on">籌碼超人</a>\n  <a href="/web/screener?mode=review">成效</a>\n  <a href="/web/screener?mode=turning">轉折觀察</a>\n  <a href="/web/etf">ETF 專區</a>\n</div>\n<div class="chips-meta">資料來源：<b>{esc(str(source))}</b>　資料日：<b>{esc(str(data_date))}</b>　近 <b>{int(payload.get("actual_days") or 0)}</b> 個交易日</div>
 <div class="callout">億＝以整理當下可取得的真實股價，將法人近十日累計張數換算為億元；天數＝近十日站同方向的天數。這裡只看法人籌碼，不含基本面與估值。</div>
 {shift_section}
 {"".join(sections)}
-<div class="callout">認養需至少 6／10 天持續同向；單日爆量隔天就跑的不算。法人買不代表便宜，法人賣不代表公司變壞。以上為公開資料整理，不構成投資建議。</div>{chips_script}'''
+<div class="callout">認養需至少 6／10 天持續同向；單日爆量隔天就跑的不算。法人買不代表便宜，法人賣不代表公司變壞。以上為公開資料整理，不構成投資建議。</div>'''
 
 
 def get_cumulative_net_buy_for_codes(codes, days=10):
@@ -11642,7 +10941,7 @@ def _load_latest_institutional_history():
     return data, data_date
 
 
-def fetch_institutional_data(codes=None):
+def fetch_institutional_data():
     """
     抓當日三大法人買賣超，涵蓋上市（TWSE T86）與上櫃（TPEx）。
 
@@ -11652,40 +10951,6 @@ def fetch_institutional_data(codes=None):
     """
     tw_now = taiwan_now()
     today = tw_now.strftime("%Y%m%d")
-    requested_codes = sorted({str(c).strip() for c in (codes or []) if str(c).strip()})
-
-    # 首頁只需要自己的持股法人資料；不要為 12 檔持股讀完整 1.8 萬筆，
-    # 更不要在首頁查不到快照時再打外部 T86/TPEx API。
-    if requested_codes:
-        conn = get_db_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT h.code, h.trade_date, h.name,
-                       h.foreign_net_lots, h.trust_net_lots,
-                       h.dealer_net_lots, h.total_net_lots
-                FROM inst_history h
-                WHERE h.trade_date = (SELECT MAX(trade_date) FROM inst_history)
-                  AND h.code = ANY(%s)
-                ORDER BY h.code
-            """, (requested_codes,))
-            rows = cur.fetchall()
-        except Exception as exc:
-            print(f"⚠️ 首頁持股法人快照讀取失敗: {exc}")
-            return {}
-        finally:
-            release_db_connection(conn)
-        result = {}
-        for row in rows:
-            result[str(row[0]).strip()] = {
-                "name": row[2] or row[0],
-                "foreign_net_lots": row[3] or 0,
-                "trust_net_lots": row[4] or 0,
-                "dealer_net_lots": row[5] or 0,
-                "total_net_lots": row[6] or 0,
-            }
-        print(f"⚡ 首頁法人只讀持股快照：{len(result)}/{len(requested_codes)} 檔")
-        return result
 
     # 快取判斷不能只看「今天抓過了嗎」。
     # 早上抓的時候今天的 T86 還沒公布，往前找會拿到昨天的資料，
@@ -11772,7 +11037,6 @@ def format_data_date(yyyymmdd):
 
 # --- 真實評分邏輯 ---
 def score_from_net_lots(lots):
-    """保留舊函式供相容舊畫面；五大因子不再用張數直接計分。"""
     if lots >= 5000: return 40
     if lots >= 2000: return 35
     if lots >= 1000: return 28
@@ -11782,102 +11046,15 @@ def score_from_net_lots(lots):
     return 0
 
 def calc_turnover_billion(close, volume_shares):
-    """成交金額（億元）。"""
+    """成交金額（億元）。改用金額而非「張數」評分，避免高價股（如緯穎）
+    因為一張要價高、成交張數天生偏少，在量能分數上被系統性低估。"""
     if not close or not volume_shares:
         return 0.0
     return (close * volume_shares) / 100_000_000
 
-def score_from_chip_amount(net_lots, avg_price_10d, turnover_10d_billion):
-    """
-    籌碼 0-5 分：用「近10日法人淨買超金額 / 近10日成交金額」評估資金強度。
-    不直接用張數，避免 10 元股與 10,000 元股的張數不可比。
-    """
-    if net_lots is None or avg_price_10d is None or turnover_10d_billion is None:
-        return 0.0
-    if turnover_10d_billion <= 0 or net_lots <= 0:
-        return 0.0
-    net_amount_billion = float(net_lots) * float(avg_price_10d) / 100_000.0
-    ratio_pct = net_amount_billion / float(turnover_10d_billion) * 100.0
-    if ratio_pct >= 15:
-        return 5.0
-    if ratio_pct >= 10:
-        return 4.2
-    if ratio_pct >= 5:
-        return 3.2
-    if ratio_pct >= 2:
-        return 2.0
-    if ratio_pct > 0:
-        return 0.8
-    return 0.0
-
-def score_from_technical_structure(price):
-    """
-    技術 0-5 分：看趨勢、均線位置、回踩支撐、突破與量價確認，
-    不再用「今日漲跌幅」直接代表技術強弱。
-    """
-    if not price:
-        return 0.0
-    close = price.get("close")
-    ma20 = price.get("ma20")
-    ma20_prev = price.get("ma20_prev")
-    ma60 = price.get("ma60")
-    ma60_prev = price.get("ma60_prev")
-    low_10d = price.get("low_10d")
-    high_20d = price.get("high_20d")
-    high_60d = price.get("high_60d")
-    support = price.get("support")
-    broke_support = bool(price.get("broke_support"))
-    vol_ratio = price.get("vol_ratio") or 0
-
-    if close is None:
-        return 0.0
-
-    score = 0.0
-
-    # 1) 趨勢結構：價格站在均線之上，且均線本身向上。
-    if ma20 and close >= ma20:
-        score += 0.75
-    if ma20 and ma20_prev and ma20 > ma20_prev:
-        score += 0.75
-
-    # 2) 均線位置：避免只因離20MA太遠就被當成「更強」。
-    if ma20:
-        diff20 = (close - ma20) / ma20 * 100
-        if 0 <= diff20 <= 15:
-            score += 0.5
-        elif diff20 > 15:
-            score += 0.3
-    if ma60 and close >= ma60:
-        score += 0.5
-
-    # 3) 回踩支撐後守住：最近10日曾靠近20MA／支撐，現在重新站上。
-    pullback = False
-    if ma20 and low_10d is not None and close >= ma20:
-        pullback = low_10d <= ma20 * 1.03
-    if support and close >= support and not broke_support:
-        if low_10d is not None and low_10d <= support * 1.03:
-            pullback = True
-    if pullback:
-        score += 1.0
-
-    # 4) 突破結構：近20日／60日高點，不用今天漲幅判斷。
-    if high_20d and close > high_20d:
-        score += 0.6
-    if high_60d and close >= high_60d:
-        score += 0.4
-
-    # 5) 量價確認：只有在突破或明確上攻時才給量能加分。
-    if high_20d and close > high_20d and vol_ratio >= 1.3:
-        score += 0.5
-    elif vol_ratio >= 1.5 and close >= (ma20 or close):
-        score += 0.3
-
-    return round(min(5.0, score), 1)
-
 def score_from_technical(pct, turnover_billion):
-    """舊介面相容函式；五大因子不再使用此舊的單日量價算法。"""
-    pct_score = max(0, min(30, pct * 3))
-    vol_score = max(0, min(30, turnover_billion))
+    pct_score = max(0, min(30, pct * 3))  # 貼近台股±10%漲跌停，10%封頂拿滿分
+    vol_score = max(0, min(30, turnover_billion))  # 1億元＝1分，30億元封頂
     return round(pct_score + vol_score)
 
 def fmt_resistance(r):
@@ -12426,7 +11603,7 @@ def _fetch_mops_revenue_fallback(target_key):
     return {}, None
 
 
-def fetch_monthly_revenue(force_refresh=False, homepage=False):
+def fetch_monthly_revenue(force_refresh=False):
     """抓最新一期月營收，涵蓋上市、上櫃、興櫃。
 
     重要原則：
@@ -12443,37 +11620,6 @@ def fetch_monthly_revenue(force_refresh=False, homepage=False):
     if (not force_refresh and _revenue_cache["data"] and
             now - _revenue_cache.get("checked_at", 0) < REVENUE_CACHE_CHECK_SECONDS):
         return _revenue_cache["data"]
-
-    # 首頁同步渲染不能等待官方月營收 API。
-    # 首頁只讀既有共享快照／歷史快照；官方最新月份由 warmup／背景流程更新。
-    if homepage:
-        shared = _load_shared_data_snapshot("monthly_revenue")
-        shared_data = (shared.get("payload") if shared else None) or {}
-        shared_period = ((shared.get("source_meta") or {}).get("period")
-                         if shared else None)
-        if isinstance(shared_data, dict) and shared_data and shared_period:
-            _revenue_cache.update({
-                "period": str(shared_period), "data": shared_data,
-                "checked_at": now, "source": "shared",
-                "source_date": shared.get("data_date"),
-            })
-            print("⚡ 首頁月營收只讀 Supabase 快照（月份 %s），共 %s 筆" %
-                  (shared_period, len(shared_data)))
-            return shared_data
-
-        history_data, history_period = _load_latest_revenue_history()
-        if history_data:
-            _revenue_cache.update({
-                "period": history_period, "data": history_data,
-                "checked_at": now, "source": "history",
-                "source_date": None,
-            })
-            print("⚡ 首頁月營收改讀歷史快照（月份 %s），共 %s 筆" %
-                  (history_period or "未知月份", len(history_data)))
-            return history_data
-
-        print("⚠️ 首頁沒有可用月營收快照，跳過官方抓取，避免阻塞首頁")
-        return {}
 
     # 非公布期可以使用共享快照；公布期必須先問官方，避免卡在上個月。
     if not force_refresh and not release_window and not _revenue_cache["data"]:
@@ -13355,8 +12501,9 @@ def build_watchlist_advice(total, chip_score, pos_score, rev_score, val_score,
 
 def _compute_stock_watchlist_scores(codes):
     """
-    計算個股自選評分；LINE、持股頁、選股台共用「網頁五大因子模型」。
-    這裡只統一模型，不調整五大因子的權重／門檻，待成效資料累積後再評估。
+    算一批股票的自選股評分。抽成獨立函式，讓「顯示報告」與「每日存快照」
+    共用同一套算法——分數若兩邊各算各的，隔天比對出來的變化就沒有意義了。
+    回傳 {code: {各項分數與當下的數據}}，查無行情的代號不會出現在結果裡。
     """
     codes = [str(c).strip() for c in codes if c]
     if not codes:
@@ -13365,11 +12512,9 @@ def _compute_stock_watchlist_scores(codes):
     institutional_data = fetch_institutional_data() or {}
     revenue_data = fetch_monthly_revenue() or {}
     valuation_data = fetch_valuation() or {}
-    industry_map = get_industry_map() or {}
-    momentum_stats = get_industry_momentum(revenue_data, industry_map)
     streaks = get_consecutive_days_batch(codes)
     cum_map = get_cumulative_net_buy_for_codes(codes, days=10)
-    price_map = get_realtime_stocks_bulk(codes)
+    price_map = get_realtime_stocks_bulk(codes)   # 並行抓，取代逐檔序列請求
 
     result = {}
     for code in codes:
@@ -13379,65 +12524,26 @@ def _compute_stock_watchlist_scores(codes):
 
         cum_lots, buy_days = cum_map.get(code, (0, 0))
         streak = streaks.get(code, 0)
+
+        chip_score = score_watchlist_chips(cum_lots, buy_days, streak)   # 0-30
+        pos_score = score_watchlist_position(stock)                       # 0-20
+
         cum_yoy = revenue_data.get(code, {}).get("cum_yoy_pct")
-        val = valuation_data.get(code, {}) or {}
-        turnover = calc_turnover_billion(stock.get("close"), stock.get("volume"))
+        rev_score = round(score_from_cum_revenue_growth(cum_yoy) * 30 / 40)  # 0-30
 
-        model = score_stock_by_category(
-            code, industry_map, stock, cum_yoy, val, streak,
-            cum_lots, turnover, momentum_stats
-        )
-        category = model.get("category")
-        total = model.get("total")
-        if total is None:
-            result[code] = {
-                "code": code,
-                "name": stock_display_name(code, institutional_data, stock.get("name")),
-                "stock": stock,
-                "total": None,
-                "asset_type": "stock",
-                "category": category,
-                "factors": [],
-                "cum_lots": cum_lots, "buy_days": buy_days, "streak": streak,
-                "cum_yoy": cum_yoy, "pe": val.get("pe"),
-            }
-            continue
+        pe = valuation_data.get(code, {}).get("pe")
+        val_raw, peg, _desc = score_from_valuation(pe, cum_yoy)
+        val_score = round(val_raw * 20 / 25)                              # 0-20
 
-        caps = [float(x) for x in model.get("caps", (25,25,20,20,10))]
-        factors = [
-            {"name": "營收成長", "value": model.get("rev"), "max": caps[0]},
-            {"name": "估值", "value": model.get("val"), "max": caps[1]},
-            {"name": "產業動能", "value": model.get("mom"), "max": caps[2]},
-            {"name": "法人連續性", "value": model.get("streak_score"), "max": caps[3]},
-            {"name": "籌碼／技術", "value": model.get("chip"), "max": caps[4]},
-        ]
-        factor_details = _build_factor_details(
-            code, stock, model, cum_yoy, val, streak, cum_lots, category
-        )
-        for factor in factors:
-            detail = next((d for d in factor_details if d.get("name") == factor.get("name")), None)
-            factor["details"] = detail.get("lines", []) if detail else []
         result[code] = {
             "code": code,
-            "name": stock_display_name(code, institutional_data, stock.get("name")),
+            "name": stock_display_name(code, institutional_data, stock["name"]),
             "stock": stock,
-            "total": int(round(total)),
-            "asset_type": "stock",
-            "category": category,
-            "factors": factors,
-            "chip": model.get("chip"),
-            "position": model.get("chip"),  # 舊欄位相容；顯示層不再稱為位階
-            "revenue": model.get("rev"),
-            "valuation": model.get("val"),
-            "momentum": model.get("mom"),
-            "streak_score": model.get("streak_score"),
-            "chip_tech": model.get("chip"),
-            "caps": caps,
+            "total": chip_score + pos_score + rev_score + val_score,
+            "chip": chip_score, "position": pos_score,
+            "revenue": rev_score, "valuation": val_score,
             "cum_lots": cum_lots, "buy_days": buy_days, "streak": streak,
-            "cum_yoy": cum_yoy, "pe": model.get("pe"), "pb": model.get("pb"),
-            "yield": model.get("yield"), "peg": model.get("peg"),
-            "val_desc": model.get("val_desc"), "mom_desc": model.get("mom_desc"),
-            "turnover": turnover,
+            "cum_yoy": cum_yoy, "pe": pe,
         }
     return result
 
@@ -13462,22 +12568,13 @@ def save_watchlist_scores(user_id, scores):
     """存下今天的自選股分數。同一天重複寫入會覆蓋，cron 跑兩次也不會重複。"""
     if not scores:
         return
-    rows = []
-    for s in scores.values():
-        factors = s.get("factors") or []
-        by_name = {str(x.get("name")): x.get("value") for x in factors if isinstance(x, dict)}
-        caps = s.get("caps") or []
-        rows.append((
-            str(user_id).strip(), s["code"], s.get("total"), s.get("chip"),
-            s.get("position"), s.get("revenue"), s.get("valuation"),
-            (s.get("stock") or {}).get("close"),
-            (s.get("stock") or {}).get("support"),
-            (s.get("stock") or {}).get("resistance"),
-            s.get("asset_type") or ("etf" if is_etf(s.get("code")) else "stock"),
-            s.get("category"), by_name.get("營收成長"), by_name.get("估值"),
-            by_name.get("產業動能"), by_name.get("法人連續性"),
-            by_name.get("籌碼／技術"), json.dumps(caps, ensure_ascii=False),
-        ))
+    rows = [(str(user_id).strip(), s["code"], s.get("total"), s.get("chip"),
+             s.get("position"), s.get("revenue"), s.get("valuation"),
+             (s.get("stock") or {}).get("close"),
+             (s.get("stock") or {}).get("support"),
+             (s.get("stock") or {}).get("resistance"),
+             s.get("asset_type") or ("etf" if is_etf(s.get("code")) else "stock"))
+            for s in scores.values()]
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -13486,25 +12583,17 @@ def save_watchlist_scores(user_id, scores):
             """
             INSERT INTO watchlist_scores
                 (user_id, code, snapshot_date, total, chip, position,
-                 revenue, valuation, close, support, resistance, asset_type,
-                 category, factor_revenue, factor_valuation, factor_momentum,
-                 factor_streak, factor_chip_tech, factor_caps)
+                 revenue, valuation, close, support, resistance, asset_type)
             VALUES %s
             ON CONFLICT (user_id, code, snapshot_date) DO UPDATE SET
                 total = EXCLUDED.total, chip = EXCLUDED.chip,
                 position = EXCLUDED.position, revenue = EXCLUDED.revenue,
                 valuation = EXCLUDED.valuation, close = EXCLUDED.close,
                 support = EXCLUDED.support, resistance = EXCLUDED.resistance,
-                asset_type = EXCLUDED.asset_type, category = EXCLUDED.category,
-                factor_revenue = EXCLUDED.factor_revenue,
-                factor_valuation = EXCLUDED.factor_valuation,
-                factor_momentum = EXCLUDED.factor_momentum,
-                factor_streak = EXCLUDED.factor_streak,
-                factor_chip_tech = EXCLUDED.factor_chip_tech,
-                factor_caps = EXCLUDED.factor_caps
+                asset_type = EXCLUDED.asset_type
             """,
             rows,
-            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             page_size=200,
         )
         conn.commit()
@@ -13589,23 +12678,6 @@ def describe_score_change(cur, prev):
     return arrow, f"{prev['total']}→{cur['total']} 分（{diff:+d}）{reason}"
 
 
-def build_web_factor_observation(score):
-    """以網頁五大因子做純資料歸納；不沿用舊版四因子買賣話術。"""
-    factors = [x for x in (score.get("factors") or []) if isinstance(x, dict) and x.get("max")]
-    if not factors:
-        return "目前沒有足夠的五大因子分項資料。"
-    ranked = sorted(factors, key=lambda x: (float(x.get("value") or 0) / float(x.get("max") or 1)), reverse=True)
-    strong = ranked[0]
-    weak = ranked[-1]
-    def label(x):
-        ratio = float(x.get("value") or 0) / float(x.get("max") or 1)
-        return "偏強" if ratio >= 0.8 else ("中上" if ratio >= 0.6 else ("中性" if ratio >= 0.4 else "偏弱"))
-    cat = score.get("category") or "個股"
-    return (f"📌 {cat}｜目前相對較強：{strong.get('name')}（{label(strong)}）；"
-            f"主要較弱：{weak.get('name')}（{label(weak)}）。"
-            "目前先沿用網頁五大因子模型，待成效資料累積後再評估是否調整因子。")
-
-
 def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
                                industry_label=None, score_change=None,
                                watchlist_status=None):
@@ -13648,15 +12720,12 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
         lines += [
             "",
             f"{flag} 綜合評分：{total}／100",
-            f"　營收成長 {score.get('revenue', 0):.0f}/{score.get('caps',[25,25,20,20,10])[0]:.0f}",
-            f"　估值 {score.get('valuation', 0):.0f}/{score.get('caps',[25,25,20,20,10])[1]:.0f}",
-            f"　產業動能 {score.get('momentum', 0):.0f}/{score.get('caps',[25,25,20,20,10])[2]:.0f}",
-            f"　法人連續性 {score.get('streak_score', 0):.0f}/{score.get('caps',[25,25,20,20,10])[3]:.0f}",
-            f"　籌碼／技術 {score.get('chip_tech', 0):.0f}/{score.get('caps',[25,25,20,20,10])[4]:.0f}",
+            f"　籌碼{score['chip']}/30　位階{score['position']}/20",
+            f"　營收{score['revenue']}/30　估值{score['valuation']}/20",
         ]
         if score_change:
             lines.append(score_change)
-        cum_yoy, pe = score.get("cum_yoy"), score.get("pe")
+        cum_yoy, pe = score["cum_yoy"], score["pe"]
         lines.append(
             f"　營收年增 {cum_yoy:+.1f}%" if cum_yoy is not None
             else "　營收年增資料不足")
@@ -13671,7 +12740,10 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
         lines += [
             "",
             "【觀察】",
-            build_web_factor_observation(score),
+            build_watchlist_advice(
+                score["total"], score["chip"], score["position"],
+                score["revenue"], score["valuation"], score["cum_lots"],
+                score["streak"], stock, score["cum_yoy"], score["pe"]),
         ]
 
     if watchlist_status:
@@ -13762,7 +12834,7 @@ def build_single_stock_report(code, user_id=None):
 
     lines = _format_stock_detail_lines(
         code, name, stock, score=score, bd=bd,
-        industry_label=(f"📌 {score.get('category') or '個股'}" + (f"｜{industry_name(industry)}" if industry else "")) if score else (industry_name(industry) if industry else None),
+        industry_label=industry_name(industry) if industry else None,
         score_change=score_change, watchlist_status=watchlist_status)
 
     news = fetch_stock_news(
@@ -14036,7 +13108,7 @@ def build_healthcheck_report(user_id):
         industry = industry_map.get(code)
         lines = _format_stock_detail_lines(
             code, name, stock, score=score, bd=breakdowns.get(code),
-            industry_label=(f"📌 {score.get('category') or '個股'}" + (f"｜{industry_name(industry)}" if industry else "")) if score else (industry_name(industry) if industry else None),
+            industry_label=industry_name(industry) if industry else None,
             score_change=score_change,
             watchlist_status="※ 已在自選清單")
         rows.append((tag, score["total"], "\n".join(lines)))
@@ -14070,7 +13142,7 @@ def build_healthcheck_report(user_id):
     has_etf = any(is_etf(code) for code in codes)
     formula_lines = []
     if has_stock:
-        formula_lines.append("個股評分＝營收成長25＋估值25＋產業動能20＋法人連續性20＋籌碼／技術10")
+        formula_lines.append("評分＝籌碼30＋位階20＋營收30＋估值20")
     if has_etf:
         formula_lines.append("ETF評分＝依類別權重計算超額報酬、價格報酬、配息殖利率、回撤、波動與資料完整度")
     formula_text = "\n".join(formula_lines)
@@ -14193,7 +13265,7 @@ def render_watchlist_web_body(user_id):
 
     formula_lines = []
     if any(not is_etf(code) for code in codes):
-        formula_lines.append("個股：營收成長 25＋估值 25＋產業動能 20＋法人連續性 20＋籌碼／技術 10")
+        formula_lines.append("個股：籌碼 30＋位階 20＋營收 30＋估值 20")
     if any(is_etf(code) for code in codes):
         formula_lines.append("ETF：依類別權重計算超額報酬、價格報酬、配息殖利率、回撤、波動與資料完整度")
     formula_text = "<br>".join(html.escape(text) for text in formula_lines)
@@ -15236,7 +14308,7 @@ def _do_fetch_t86():
 #
 # 狀態存資料庫而不是記憶體：gunicorn 開多個 worker 時，工作在 A 執行、
 # 查詢卻可能連到 B，記憶體版本會看到空的；服務重啟也會全部消失。
-JOB_STALE_MINUTES = 30   # 超過這麼久還標示執行中，視為當掉的殘留
+JOB_STALE_MINUTES = 60   # 長工作最多容許 60 分鐘；避免排程重疊造成同一批快照同時跑兩份
 
 
 def _job_batch_id(name):
@@ -15285,6 +14357,8 @@ def _job_mark_start(name):
         got = cur.fetchone() is not None
         conn.commit()
         cur.close()
+        if not got:
+            print(f"⏭️ 背景工作 {name} 已在執行中，本次觸發略過，不會重開第二份。")
         return got
     except Exception as e:
         conn.rollback()
@@ -15622,14 +14696,26 @@ def _do_daily_snapshot():
     # 但續跑時整個 if 區塊會被跳過，沒有預設就會 NameError。
     ind_perf_saved = 0
     if not reached("rank"):
+        # rank stage 內部有兩個可能耗時的步驟；原本只顯示 0/1，
+        # 卡在其中任何一步時管理頁看不出到底卡在哪裡。改成 0/3、1/3、2/3、3/3。
+        _job_mark_progress(job_name, "rank", 0, 3)
+        rank_t0 = time.monotonic()
         rank_saved = save_leaderboard_rank_snapshots()
-        # 產業近期表現：清單上要標，但它得抓所有推薦過標的的報價，
-        # 放在選股台現算會拖慢每一次載入。這裡算一次存起來，頁面只讀不算。
+        print(f"⏱️ 每日快照 rank：排行榜名次完成 {time.monotonic() - rank_t0:.1f}s")
+        _job_mark_progress(job_name, "rank", 1, 3)
+
+        # 產業近期表現會掃近 90 天推薦紀錄並抓歷史行情，是每日快照裡
+        # 最容易出現長耗時的步驟之一；獨立記時，管理頁可直接看到卡在哪裡。
+        ind_t0 = time.monotonic()
         try:
             ind_perf_saved = save_industry_recent_performance()
         except Exception as exc:
             print(f"❌ 產業近期表現快照失敗: {exc}")
             ind_perf_saved = 0
+        print(f"⏱️ 每日快照 rank：產業近期表現完成 {time.monotonic() - ind_t0:.1f}s")
+        _job_mark_progress(job_name, "rank", 2, 3)
+
+        _job_mark_progress(job_name, "rank", 3, 3)
         _job_mark_progress(job_name, "done", 1, 1)
 
     # 月度回顧不另開一條 Render／CRON 工作；沿用每日快照的既有安全觸發。
@@ -15831,8 +14917,8 @@ def _do_warmup():
     done = []
     shared_data = {}
     for label, fn in [
-        ("法人", lambda: fetch_institutional_data(codes=position_codes)),
-        ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
+        ("法人", fetch_institutional_data),
+        ("月營收", lambda: fetch_monthly_revenue(force_refresh=True)),
         ("估值", fetch_valuation),
         ("產業別", get_industry_map),
         ("名稱對照", get_name_map),
@@ -16006,16 +15092,6 @@ def _do_warmup():
             done.append("排行榜 失敗")
     else:
         done.append("排行榜 快照略過（等待收盤）")
-
-    # 策略研究室是所有使用者共用的資料；在 warmup 預先完成，
-    # 使用者第一次點進去直接讀 Supabase 快照，不再現場掃 180 檔 Yahoo。
-    try:
-        strategy_payload = _build_strategy_lab_payload()
-        saved = _save_strategy_lab_shared_cache(strategy_payload)
-        done.append("策略研究室 " + ("已預熱" if saved else "已計算"))
-    except Exception as e:
-        print(f"⚠️ 預熱策略研究室失敗: {e}")
-        done.append("策略研究室 失敗")
 
     # 美股指數單獨更新一次。首頁讀的盤前快照是前一晚 18:xx 建立的，
     # 那時抓到的美股是「再前一晚」收盤；warmup 在 07:50 跑，
@@ -16971,14 +16047,6 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
   .position-history-note{padding:9px 15px;background:#F9F9FB;color:var(--ink-soft);font-size:11.5px;line-height:1.6}.position-history-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:11px 15px;border-bottom:1px solid #E5E5EA}.position-history-summary{min-width:0;padding:9px;border-radius:8px;background:#F6F4EE}.position-history-summary b,.position-history-summary strong,.position-history-summary small{display:block}.position-history-summary b{font-size:11px}.position-history-summary strong{margin-top:3px;color:var(--ink);font-size:16px;font-variant-numeric:tabular-nums}.position-history-summary small{margin-top:3px;color:var(--ink-faint);font-size:10px;line-height:1.4}.position-history-summary.new b{color:#927A12}.position-history-summary.add b{color:var(--up)}.position-history-summary.reduce b{color:var(--down)}.position-history-summary.delete b{color:#667085}.position-history-table-head,.position-history-row{display:grid;grid-template-columns:.74fr minmax(0,1.3fr) .68fr minmax(0,.95fr) minmax(0,1.05fr);gap:9px;align-items:center;padding:9px 15px}.position-history-table-head{background:#F9F9FB;color:var(--ink-soft);font-size:11px;font-weight:700;line-height:1.25}.position-history-table-head span:not(:nth-child(2)){text-align:right}.position-history-row{border-top:1px solid #E5E5EA}.stock-group{border-top:1px solid #E5E5EA;padding:12px 15px 6px}.stock-group-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:6px;flex-wrap:wrap}.stock-group-head b{font-size:17px;color:var(--ink)}.stock-group-head .code{margin-left:7px;color:var(--ink-faint);font-size:12px}.stock-group-net{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}.stock-log-row{display:grid;grid-template-columns:52px 40px 54px 84px 96px 78px minmax(0,1fr);gap:8px;align-items:center;padding:7px 0 7px 12px;border-left:2px solid #EFEDE6}.stock-log-date{color:var(--ink-soft);font-size:12.5px;font-variant-numeric:tabular-nums}.stock-log-week,.stock-log-note{color:var(--ink-faint);font-size:11.5px}.stock-log-delta{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;text-align:right}.stock-log-shares{color:var(--ink-faint);font-size:11.5px;font-variant-numeric:tabular-nums}.stock-log-price{color:var(--ink-soft);font-size:12.5px;font-variant-numeric:tabular-nums;text-align:right}.position-history-date{color:var(--ink-soft);font-size:11px;font-variant-numeric:tabular-nums}.position-history-row .position-journal-cell:last-child{text-align:right}
   .position-journal-foot{padding:10px 15px 13px;color:var(--ink-faint);font-size:10.5px;line-height:1.55}
   .position-journal-empty{padding:14px 15px;color:var(--ink-soft);font-size:12.5px}
-  .position-journal-no-trade .position-journal-head{background:#FAFBFC}
-  .position-journal-no-trade .position-journal-head small{color:var(--ink-soft);font-weight:600}
-  .home-journal-history{border-top:1px solid #E5E5EA;background:#FAFBFC}
-  .home-journal-history>summary{cursor:pointer;list-style:none;padding:11px 15px;color:#48657E;font-size:12px;font-weight:700}
-  .home-journal-history>summary::-webkit-details-marker{display:none}
-  .home-journal-history>summary span{float:right;color:#91A0AF}
-  .home-journal-history .position-journal{margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}
-  .home-journal-history-empty{padding:11px 15px;border-top:1px solid #E5E5EA;color:var(--ink-faint);font-size:11.5px}
   @media(max-width:640px){
     .position-journal-head{padding:13px 12px 10px}
     .position-journal-head h2{font-size:17px}
@@ -17040,7 +16108,7 @@ h2{font-size:16px;font-weight:600;letter-spacing:.02em}
 .chips-section h2{font-size:17px;color:var(--ink);margin-bottom:4px}
 .chips-section>p{color:var(--ink-soft);font-size:12px;line-height:1.65;margin-bottom:8px}
 .chips-row{display:flex;justify-content:space-between;align-items:center;gap:12px;border-top:1px solid #EFEFF4;padding:11px 0}
-.chips-row>div{min-width:0}.chips-row b{display:block;font-size:14px;overflow-wrap:anywhere}.chips-row small{display:block;color:var(--ink-soft);font-size:11px;margin-top:2px;line-height:1.5}.chips-row strong{font-size:15px;white-space:nowrap;color:var(--ink)}.chips-row-rich{align-items:flex-start}.chips-row-rich>div{flex:1}.chips-inline-chart{margin-top:8px;border:1px solid #dfe7ee;border-radius:10px;background:#f8fbfd;overflow:hidden}.chips-inline-chart summary{cursor:pointer;padding:7px 9px;color:#3f6689;font-size:11px;font-weight:800;list-style:none}.chips-inline-chart summary::-webkit-details-marker{display:none}.chips-inline-chart-body{padding:6px 8px 9px;color:#778895;font-size:10px;line-height:1.5}.chips-chart-wrap{border:1px solid #dfe7ee;border-radius:10px;background:#fff;padding:6px 6px 2px;overflow:hidden}.chips-chart-wrap svg{display:block;width:100%;height:190px}.chips-chart-legend{display:flex;gap:8px 13px;flex-wrap:wrap;align-items:center;margin-top:5px;font-size:9.5px;color:#718394}.chips-chart-legend span{display:inline-flex;align-items:center;gap:4px}.chips-chart-legend i{width:7px;height:7px;border-radius:50%;display:inline-block}.chips-chart-legend i.pos{background:#4f78a6}.chips-chart-legend i.neg{background:#a65a5a}.chips-chart-legend b{color:#405a70}.chips-chart-note,.chips-chart-empty{margin-top:5px;color:#7a8b99;font-size:10px;line-height:1.55}.wb-d-revenue-chart,.wb-d-inst-chart{background:linear-gradient(180deg,#fbfdff,#f7fafc)}.wb-d-revenue-chart svg,.wb-d-inst-chart svg{display:block;width:100%;height:285px}.wb-d-chart-summary{display:flex;align-items:center;gap:9px;margin-top:8px;padding:9px 10px;border:1px solid #dce6ee;border-radius:9px;background:#f7fbfe}.wb-d-chart-summary b{color:#274f70;font-size:12px;white-space:nowrap}.wb-d-revenue-latest{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.wb-d-revenue-latest>div{padding:8px 9px;border:1px solid #dce6ee;border-radius:9px;background:#fff}.wb-d-revenue-latest small{display:block;color:#718394;font-size:9px}.wb-d-revenue-latest b{display:block;margin-top:3px;color:#274f70;font-size:14px}.wb-d-chart-summary span{color:#718394;font-size:10px;line-height:1.5}.wb-d-why-summary{display:flex;gap:12px;align-items:center;padding:12px;border:1px solid #d9e5ed;border-radius:12px;background:linear-gradient(135deg,#f4f9fd,#fff)}.wb-d-why-summary>div{min-width:74px;text-align:center;padding-right:12px;border-right:1px solid #dce6ee}.wb-d-why-summary>div b{display:block;font-size:26px;color:#244d6d}.wb-d-why-summary>div span{display:block;color:#728494;font-size:10px;font-weight:800}.wb-d-why-summary p{margin:0;color:#334e64;font-size:12px;line-height:1.65;font-weight:700}.wb-d-why-summary.single>div b{font-size:19px}.wb-d-why-grid{display:grid;gap:7px;margin-top:9px}.wb-d-why-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;align-items:center;padding:9px 10px;border:1px solid #e2e9ee;border-radius:9px;background:#fff}.wb-d-why-row.pass{border-left:3px solid #2b7a59;background:#f9fdfb}.wb-d-why-row.fail{border-left:3px solid #b7c1ca;background:#fafbfc}.wb-d-why-icon{font-weight:900;color:#267652}.wb-d-why-row.fail .wb-d-why-icon{color:#8b98a4}.wb-d-why-row b{display:block;color:#304c63;font-size:11px}.wb-d-why-row small{display:block;color:#8a98a4;font-size:9px;margin-top:2px}.wb-d-why-row strong{font-size:10px;color:#49657a;text-align:right;max-width:150px}.wb-d-why-pass{color:#267652!important}.wb-d-why-fail{color:#8b98a4!important}.wb-d-data-note{display:grid;gap:3px;margin-top:9px;padding:10px;border-radius:9px;background:#f7fafc}.wb-d-data-note b{font-size:10px;color:#3d5e75}.wb-d-data-note span{font-size:10.5px;line-height:1.55;color:#697b89}@media(max-width:620px){.wb-d-why-summary{align-items:flex-start}.wb-d-why-summary>div{min-width:68px}.wb-d-why-row strong{max-width:110px}.wb-d-chart-summary{display:block}.wb-d-chart-summary b{display:block;margin-bottom:3px}.chips-row-rich{display:block}.chips-row-rich>strong{display:block;margin-top:7px}}
+.chips-row>div{min-width:0}.chips-row b{display:block;font-size:14px;overflow-wrap:anywhere}.chips-row small{display:block;color:var(--ink-soft);font-size:11px;margin-top:2px;line-height:1.5}.chips-row strong{font-size:15px;white-space:nowrap;color:var(--ink)}
 .chips-empty{padding:9px 0;color:var(--ink-faint);font-size:12px}
 .callout{padding:12px 14px;margin:14px 0;background:#F5F5F1;color:var(--ink-soft);font-size:11.5px;line-height:1.7;border-radius:9px}
 .rows{border-top:1px solid var(--rule)}
@@ -17494,24 +16562,7 @@ a:active,button:active{transform:scale(.975);opacity:.82}.tap-loading{opacity:.6
 .app-load-card{position:fixed!important;z-index:10025;left:50%;top:88px!important;width:min(420px,calc(100vw - 28px));margin:0;transform:translateX(-50%);max-height:min(58vh,430px);overflow:auto;overscroll-behavior:contain;box-sizing:border-box;box-shadow:0 10px 28px rgba(29,41,57,.16)}
 .app-load-card{contain:layout paint;pointer-events:none}.app-load-card::-webkit-scrollbar{width:4px}.app-load-card::-webkit-scrollbar-thumb{background:#C8D5E2;border-radius:4px}
 @media(max-width:640px){.app-load-card{width:min(390px,calc(100vw - 24px));top:82px!important;padding:12px 14px}}
-.app-load-card{border-left:4px solid #5B8FC6}.app-load-card.market-full-loader{inset:0!important;left:0!important;top:0!important;width:100vw!important;max-width:none!important;height:100vh!important;max-height:none!important;transform:none!important;margin:0!important;border:0!important;border-radius:0!important;display:flex!important;align-items:center!important;justify-content:center!important;padding:24px!important;background:rgba(250,248,243,.985)!important;box-shadow:none!important;pointer-events:auto!important;overflow:hidden!important;box-sizing:border-box!important}
-.app-load-card.market-full-loader .market-loader-inner{width:min(410px,88vw);text-align:center;color:#102a43}
-.app-load-card.market-full-loader .market-loader-brand{font-size:11px;letter-spacing:.24em;font-weight:800;opacity:.55;margin-bottom:20px}
-.app-load-card.market-full-loader .market-loader-orbit{position:relative;width:94px;height:94px;margin:0 auto 20px}
-.app-load-card.market-full-loader .market-loader-ring{position:absolute;inset:6px;border:2px solid rgba(16,42,67,.11);border-top-color:#3f6f91;border-right-color:#3f6f91;border-radius:50%;animation:market-loader-spin 1.05s linear infinite}
-.app-load-card.market-full-loader .market-loader-dot{position:absolute;left:50%;top:50%;width:9px;height:9px;margin:-4.5px;border-radius:50%;background:#3f6f91;box-shadow:0 0 0 8px rgba(63,111,145,.08);animation:market-loader-pulse 1.15s ease-in-out infinite}
-.app-load-card.market-full-loader .market-loader-title{font-size:20px;font-weight:800;line-height:1.35}
-.app-load-card.market-full-loader .market-loader-status{font-size:13px;opacity:.62;margin-top:7px;min-height:20px}
-.app-load-card.market-full-loader .market-loader-bar{height:5px;border-radius:999px;background:rgba(16,42,67,.08);overflow:hidden;margin:19px 0 15px}
-.app-load-card.market-full-loader .market-loader-bar i{display:block;width:16%;height:100%;border-radius:999px;background:#3f6f91;animation:market-loader-progress 3.4s ease-in-out infinite}
-.app-load-card.market-full-loader .market-loader-steps{display:grid;gap:8px;text-align:left;font-size:12px}
-.app-load-card.market-full-loader .market-loader-step{display:flex;gap:8px;align-items:center;opacity:.32;transition:opacity .2s ease}
-.app-load-card.market-full-loader .market-loader-step.active,.app-load-card.market-full-loader .market-loader-step.done{opacity:.88}
-.app-load-card.market-full-loader .market-loader-step b{width:15px;text-align:center;font-size:10px}
-@keyframes market-loader-spin{to{transform:rotate(360deg)}}
-@keyframes market-loader-pulse{0%,100%{transform:scale(.78);opacity:.55}50%{transform:scale(1.08);opacity:1}}
-@keyframes market-loader-progress{0%{width:12%}45%{width:57%}75%{width:78%}100%{width:91%}}
-@media (prefers-reduced-motion:reduce){.app-load-card.market-full-loader .market-loader-ring,.app-load-card.market-full-loader .market-loader-dot,.app-load-card.market-full-loader .market-loader-bar i{animation:none}}.app-load-card b{display:block;color:#274c77;font-size:14px;line-height:1.35}.app-load-card small{display:block;margin-top:3px;color:#6c8095;font-size:11.5px}.app-load-card .app-load-steps{margin-top:8px}.app-load-card .app-load-step{font-size:12px}
+.app-load-card{border-left:4px solid #5B8FC6}.app-load-card b{display:block;color:#274c77;font-size:14px;line-height:1.35}.app-load-card small{display:block;margin-top:3px;color:#6c8095;font-size:11.5px}.app-load-card .app-load-steps{margin-top:8px}.app-load-card .app-load-step{font-size:12px}
 .app-load-card .app-sync-spinner{width:18px;height:18px;margin-top:1px}
 @keyframes toast-in{from{opacity:0;transform:translate(-50%,6px)}to{opacity:1;transform:translate(-50%,0)}}
 @keyframes load-card-in{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:translateY(0)}}
@@ -17669,7 +16720,7 @@ def rate_limit_ok(key, kind="normal"):
 HEAVY_COMMANDS = {"黑馬", "雷達", "籌碼", "籌碼超人", "認養", "盤前", "早安"}
 
 
-WORKBENCH_CSS = '/* v13 選股工作台視覺層：不改資料架構，只提升層次、可讀性與手機觸控回饋。 */\n.wb-shell{position:relative;margin:20px 0 34px;padding:18px 18px 22px;border:1px solid #dbe5ef;border-radius:18px;background:linear-gradient(180deg,#f7fbff 0,#fff 190px);box-shadow:0 14px 38px rgba(39,76,119,.09);overflow:hidden}\n.wb-shell:before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:linear-gradient(90deg,#24486e,#6e99bd,#24486e)}\n.wb-intro{padding-top:5px}\n.wb-kicker{letter-spacing:.15em;color:#3f6689}\n.wb-intro h2{font-size:30px;letter-spacing:.01em}\n.wb-status{border-radius:10px;box-shadow:0 4px 14px rgba(39,76,119,.05)}\n.wb-pulse{border-radius:12px;background:linear-gradient(90deg,#f1f7fc,#fff);box-shadow:0 5px 16px rgba(39,76,119,.04)}\n.wb-asset-tabs{display:flex;gap:6px;width:max-content;margin:15px 0 4px;padding:5px;border:1px solid #d7e3ee;border-radius:12px;background:#edf4fa}\n.wb-asset-tabs button{border:0;border-radius:9px;padding:8px 16px;background:transparent;color:#5c7185;font-weight:800;transition:.16s}\n.wb-asset-tabs button.on{background:#fff;color:#24486e;box-shadow:0 3px 11px rgba(39,76,119,.11)}\n.wb-tabs{padding-left:4px;gap:24px}\n.wb-tools{padding:18px 0 12px}\n.wb-tools label,.wb-tools button{border-radius:10px;transition:.16s}\n.wb-tools label:focus-within{border-color:#52718d;box-shadow:0 0 0 3px rgba(82,113,141,.10)}\n.wb-tools button:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(39,76,119,.08)}\n.wb-table{border-radius:14px;box-shadow:0 8px 24px rgba(23,42,58,.06)}\n.wb-head{background:linear-gradient(180deg,#edf4fa,#f8fbfe)}\n.wb-row{min-height:82px;transition:background .14s,transform .12s,box-shadow .14s}\n.wb-row:hover{background:#f7fbff;box-shadow:inset 4px 0 #52718d,0 3px 12px rgba(39,76,119,.05);transform:translateX(1px)}\n.wb-row:active{background:#eef6fd;transform:scale(.998)}\n.wb-result-more{background:#fbfdff;border-top:1px solid #e6edf4}\n.wb-result-more summary{padding:13px 16px;color:#3f6689;font-weight:900}\n.wb-score-change-panel{border-radius:14px!important;box-shadow:0 6px 20px rgba(39,76,119,.06)!important;background:linear-gradient(135deg,#f4f8fc,#fff)!important}\n.wb-factor-experiment-status{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;margin:10px 0;padding:12px 14px;border:1px solid #d6e2ed;border-left:4px solid #52718d;border-radius:10px;background:#f6faff;color:#344054}\n.wb-factor-experiment-status b{font-size:13px;color:#24486e}\n.wb-factor-experiment-status span{font-size:12px;font-weight:800}\n.wb-factor-experiment-status small{width:100%;color:#667085;font-size:11px;line-height:1.5}\n.wb-disclaimer{padding:10px 4px 0}\n@media(max-width:620px){\n .wb-shell{margin:12px -2px 24px;padding:15px 12px 18px;border-radius:15px}\n .wb-intro h2{font-size:27px}\n .wb-pulse{grid-template-columns:1fr 1fr;gap:9px;padding:11px}\n .wb-asset-tabs{width:100%;display:grid;grid-template-columns:1fr 1fr}\n .wb-asset-tabs button{width:100%}\n .wb-factor-experiment-status{display:grid;gap:4px;padding:11px 12px}\n}\n\n.wb-shell{margin:16px 0 28px;color:#1d2939}.wb-intro{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:2px solid #27364a;padding:4px 0 16px}.wb-kicker{margin:0;color:#526b84;font-size:11px;font-weight:800;letter-spacing:.08em}.wb-intro h2{margin:5px 0 4px;font-size:28px;letter-spacing:.02em}.wb-sub{margin:0;color:#667085;font-size:13px}.wb-status{border:1px solid #d4dce6;background:#f8fbff;padding:9px 11px;color:#526b84;font-size:11px;white-space:nowrap}.wb-pulse{display:grid;grid-template-columns:130px 180px 1fr 1fr 180px;align-items:center;gap:14px;border:1px solid #d7e0ea;border-left:3px solid #52718d;padding:14px 10px;background:#f7fbff;font-size:12px}.wb-pulse span{font-weight:800}.wb-pulse b{font-family:monospace;font-size:12px}.wb-pulse i{height:3px;background:#c94d45}.wb-pulse i:nth-of-type(2){background:#23795a}.wb-pulse em{font-style:normal;color:#667085}.wb-tabs{display:flex;gap:20px;border-bottom:1px solid #d7e0ea;padding:15px 10px 0}.wb-tabs button{border:0;background:transparent;color:#667085;padding:0 0 12px;font-size:13px;font-weight:700;border-bottom:2px solid transparent}.wb-tabs button.on{color:#274c77;border-color:#52718d}.wb-tools{display:grid;grid-template-columns:1fr auto auto;gap:8px;padding:16px 0}.wb-tools label{display:flex;gap:8px;align-items:center;border:1px solid #cfd9e5;background:#fff;padding:0 11px}.wb-tools input{width:100%;border:0;outline:0;padding:11px 0;font:inherit}.wb-tools button,.wb-filter-panel button{border:1px solid #cfd9e5;background:#fff;padding:9px 12px;color:#344054;font:inherit;font-size:12px}.wb-tools button:hover,.wb-filter-panel button.on{border-color:#52718d;color:#274c77;background:#f1f7fc}.wb-filter-panel{display:flex;gap:24px;margin:-8px 0 12px;padding:12px;border:1px solid #d9e3ed;background:#f7faff;font-size:12px}.wb-filter-panel div{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wb-filter-panel b{margin-right:5px;color:#526b84}.wb-filter-panel button{padding:5px 9px}.wb-meta{display:flex;justify-content:space-between;gap:12px;padding:7px 0 10px;color:#667085;font-size:11px}.wb-meta b{color:#1d2939}.wb-table{border:1px solid #d7e0ea;background:#fff;border-radius:12px;overflow:hidden}.wb-head,.wb-row{display:grid;grid-template-columns:minmax(190px,2fr) minmax(110px,1fr) minmax(110px,1fr) minmax(120px,1fr) minmax(145px,1.25fr) 22px;gap:10px;align-items:center;padding:12px 14px}.wb-head{background:#f3f7fb;border-bottom:1px solid #d7e0ea;color:#526b84;font-size:11px}.wb-head button{border:0;background:transparent;color:inherit;text-align:left;font:inherit;font-weight:800;padding:0}.wb-head button.on{color:#274c77}.wb-row{border-bottom:1px solid #edf1f5;text-align:left;cursor:pointer;background:#fff}.wb-row:hover{background:#f7fbff;box-shadow:inset 3px 0 #52718d}.wb-name{display:block;font-weight:800;font-size:19px;line-height:1.35;color:#182b3e}.wb-code,.wb-small{display:block;color:#66788a;font-size:13px;font-weight:700;line-height:1.35;margin-top:3px}.wb-industry{display:inline-flex;align-items:center;margin-top:6px;padding:3px 7px;border:1px solid #cad8e6;border-radius:999px;background:#f4f8fc;color:#41617e;font-size:11px;font-weight:800;line-height:1.25}.wb-mobile-sort{display:none;align-items:center;gap:6px;margin:-4px 0 12px;color:#526b84;font-size:12px;font-weight:800}.wb-mobile-sort button{border:1px solid #cfd9e5;background:#fff;border-radius:6px;padding:6px 10px;color:#526b84;font:inherit;font-size:11px}.wb-mobile-sort button.on{border-color:#52718d;background:#edf5fb;color:#274c77}.wb-turning-breakout{border-left:3px solid #9a5b17;background:#fffaf3}.wb-turning-note{margin:2px 0 8px;color:#667085;font-size:11px;line-height:1.5}.wb-turning-flow{display:inline-flex;margin-top:5px;padding:3px 6px;border-radius:5px;font-size:10px;font-weight:800;line-height:1.25}.wb-turning-flow.sell_to_buy,.wb-turning-flow.buying_strength{background:#fceceb;color:#D93025}.wb-turning-flow.buy_to_sell,.wb-turning-flow.selling_strength{background:#e9f6ef;color:#0B8F55}.wb-turning-flow.unknown{background:#eef2f6;color:#667085}.wb-num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800}.wb-up{color:#D93025}.wb-down{color:#0B8F55}.wb-flat{color:#7b8795}.wb-tag{display:inline-block;font-size:10px;padding:3px 5px;background:#edf3f8;color:#345673;margin-right:5px}.wb-tag.ETF{background:#e8f4ed;color:#227052}.wb-tag.雷達{background:#e8f5f5;color:#256d6c}.wb-tag.轉折{background:#f0ebf8;color:#674d8c}.wb-tag.籌碼{background:#fff0df;color:#9a5b17}.wb-skeleton{height:54px;margin:0 14px;border-bottom:1px solid #edf1f5;background:linear-gradient(90deg,#fff 20%,#f2f6fa 45%,#fff 70%);background-size:220% 100%;animation:wbscan 1.1s linear infinite}@keyframes wbscan{to{background-position:-120% 0}}.wb-review-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:14px}.wb-review-card{border:1px solid #d7e0ea;background:#fff;border-radius:10px;padding:14px}.wb-review-card h3{margin:0 0 5px;font-size:18px}.wb-review-card h3 small{font-size:11px;color:#667085;font-weight:700}.wb-review-card p{margin:0 0 10px;color:#667085;font-size:12px}.wb-review-recent{margin-top:10px;border-top:1px solid #edf1f5}.wb-review-recent summary{padding:10px 0 5px;cursor:pointer;color:#345673;font-size:12px;font-weight:800}.wb-review-recent ul{margin:0;padding:0;list-style:none}.wb-review-recent li{padding:7px 0;border-top:1px solid #edf1f5;font-size:12px;font-weight:700}.wb-review-recent li small{display:block;margin-top:2px;color:#667085;font-weight:400}.wb-review-row{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:8px;padding:10px 0;border-top:1px solid #edf1f5;font-size:12px}.wb-review-row b{display:block;font-family:ui-monospace,monospace}.wb-review-recent{margin-top:12px;padding-top:10px;border-top:1px solid #edf1f5;font-size:12px}.wb-review-recent>b{display:block;color:#344054}.wb-review-recent ul{margin:7px 0 0;padding:0;list-style:none}.wb-review-recent li{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid #f0f3f6}.wb-review-recent li span{color:#667085;font-size:11px;text-align:right}.wb-disclaimer{margin:12px 0;color:#7b8795;font-size:11px;line-height:1.55}.wb-mask{position:fixed;inset:0;background:rgba(23,42,58,.22);z-index:1000}.wb-drawer{position:fixed;z-index:1001;right:0;top:0;bottom:0;width:min(430px,92vw);padding:22px;background:#fff;box-shadow:-12px 0 32px rgba(23,42,58,.16);transform:translateX(110%);transition:transform .18s ease-out;overflow:auto}.wb-drawer.open{transform:translateX(0)}.wb-drawer>button{float:right;border:0;background:transparent;font-size:26px;color:#526b84}.wb-detail h3{margin:5px 0;font-size:25px}.wb-detail p{color:#667085;font-size:12px}.wb-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#dbe4ec;margin:18px 0}.wb-detail-grid div{background:#f9fbfd;padding:11px}.wb-detail-grid small{display:block;color:#7b8795}.wb-detail-grid b{display:block;margin-top:5px;font-family:ui-monospace,monospace}.wb-facts{padding:0;margin:0;list-style:none}.wb-facts li{border-top:1px solid #e4ebf1;padding:10px 0;font-size:12px;line-height:1.55}@media(max-width:620px){.wb-intro{display:block}.wb-status{display:inline-block;margin-top:12px}.wb-pulse{grid-template-columns:1fr 1fr;padding:12px}.wb-pulse i{grid-column:span 1}.wb-pulse em{grid-column:1/-1;border-top:1px solid #d7e0ea;padding-top:8px}.wb-tabs{gap:14px;overflow:auto}.wb-tools{grid-template-columns:1fr auto}.wb-tools label{grid-column:1/-1}.wb-filter-panel{display:block}.wb-filter-panel div+div{margin-top:10px}.wb-meta{display:block}.wb-meta span{display:block;margin-top:4px}.wb-head{display:none}.wb-row{grid-template-columns:1.6fr 1fr 1fr 18px;gap:8px;padding:12px}.wb-row .wb-institutional,.wb-row .wb-signal{display:none}.wb-mobile-sort{display:flex}.wb-row .wb-name{font-size:18px}.wb-row .wb-code{font-size:13px}.wb-row .wb-industry{font-size:11px}.wb-row .wb-tag{font-size:10px}.wb-review-grid{grid-template-columns:1fr;padding:10px}.wb-drawer{width:100%;}.wb-detail-grid{grid-template-columns:1fr 1fr}}\n\n.wb-asset-tabs{display:flex;gap:8px;margin:16px 0 4px;border-bottom:1px solid #d7e0ea}.wb-asset-tabs button{border:1px solid #cfd9e5;border-bottom:0;border-radius:8px 8px 0 0;background:#fff;padding:10px 18px;color:#526b84;font:inherit;font-weight:800}.wb-asset-tabs button.on{background:#edf5fb;border-color:#52718d;color:#274c77}.wb-rich-row{min-height:155px}.wb-row-main{min-width:0}.wb-score-block,.wb-price-block{display:flex;flex-direction:column;gap:5px}.wb-score{font-size:23px;color:#1d2939}.wb-score small{font-size:11px;color:#667085;margin-left:4px}.wb-score-parts,.wb-fact-line{display:block;color:#667085;font-size:11px;line-height:1.5;overflow-wrap:anywhere}.wb-breakout{display:inline-block;margin:5px 5px 0 0;padding:3px 7px;border:1px solid #8a6a35;border-radius:4px;background:#fffaf0;color:#72541e;font-size:11px;font-weight:800}.wb-high-status{display:inline-block;margin:5px 5px 0 0;padding:3px 7px;border:1px solid #52718d;border-radius:4px;background:#edf5fb;color:#274c77;font-size:11px;font-weight:800}.wb-holding-row{min-height:110px;align-items:center}.wb-holding-shares{display:flex;flex-direction:column;gap:5px;align-items:flex-end}.wb-holding-shares b{font-size:18px;color:#344054}.wb-holding-shares small{font-size:11px;color:#667085}.wb-holding-row .wb-fact-line{margin-top:8px}.wb-chip-group,.wb-turning-group{margin:12px 0;padding:12px;border:1px solid #d7e0ea;border-radius:12px;background:#f9fbfd}.wb-chip-group h3,.wb-turning-group h3{margin:0 0 7px;font-size:17px;color:#1d2939}.wb-chip-group h3 small,.wb-turning-group h3 small{font-size:11px;color:#667085;font-weight:600}.wb-turning-buy{border-left:4px solid #23795a}.wb-turning-sell{border-left:4px solid #b42318}.wb-turning-invalid{border-left:4px solid #b4a78d;background:#fffdf5}.wb-empty{padding:22px;color:#667085}.wb-tag.持股{background:#f5e8df;color:#85513a}.wb-rank-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:#ded7cc}.wb-rank-card{background:#FFFFFF;padding:18px}.wb-rank-card small,.wb-rank-card em{display:block;color:#857d71;font-size:11px;font-style:normal}.wb-rank-card b{display:block;font-family:ui-monospace,monospace;font-size:23px;margin:7px 0}.wb-rank-card span{font-size:12px;font-weight:800}@media(max-width:620px){.wb-rank-grid{grid-template-columns:1fr}}\n.wb-rich-row{align-items:start}.wb-rich-row .wb-row-main{grid-column:1 / span 2}.wb-rich-row .wb-score-block,.wb-rich-row .wb-price-block{align-self:start}.wb-rich-row .wb-institutional,.wb-rich-row .wb-signal{display:flex;flex-direction:column;gap:4px;color:#344054}.wb-rich-row .wb-institutional small,.wb-rich-row .wb-signal small{font-size:11px;color:#667085}.wb-radar-rank{display:inline-block;margin:0 7px 5px 0;padding:4px 8px;border-radius:5px;background:#e8f5f5;color:#256d6c;font-size:14px;font-weight:900;line-height:1.25}.wb-radar-rule{font-size:13px;color:#526b84}.wb-chip-row{grid-template-columns:minmax(240px,2fr) minmax(130px,1fr) minmax(130px,1fr) 22px;gap:12px;align-items:center;min-height:144px}.wb-chip-note,.wb-chip-split{display:block;margin-top:8px;color:#526b84;font-size:14px;line-height:1.55;overflow-wrap:anywhere}.wb-chip-split{font-weight:800;color:#344054}.wb-chip-amount,.wb-chip-meta{display:flex;flex-direction:column;gap:6px;color:#344054}.wb-chip-amount b{font-family:ui-monospace,monospace;font-size:20px}.wb-chip-meta b{font-size:14px}.wb-chip-amount small,.wb-chip-meta small{font-size:12px;color:#667085}.wb-turning-row{grid-template-columns:minmax(280px,2fr) minmax(110px,1fr) 22px;gap:14px;align-items:start;min-height:170px}.wb-turning-reason{margin:10px 0 7px;padding:8px 10px;border-left:3px solid #7b619b;background:#faf8fd;color:#344054;font-size:14px;font-weight:600;line-height:1.55}.wb-turning-reason b{display:block;margin-bottom:2px;color:#674d8c;font-size:12px}.wb-turning-fact{display:block;margin-top:5px;color:#526b84;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.wb-turning-reasons{margin:8px 0 0;padding-left:18px;color:#667085;font-size:12px;line-height:1.55}.wb-turning-price{display:flex;flex-direction:column;gap:5px;align-items:flex-end}.wb-turning-price b{font-family:ui-monospace,monospace;font-size:21px;color:#1d2939}.wb-chip-group .wb-rich-row{border:0;border-top:1px solid #e8edf2}.wb-turning-group .wb-rich-row{border:0;border-top:1px solid #e8edf2}.wb-turning-group .wb-row-main{grid-column:1 / span 2}.wb-turning-group .wb-score-block{display:none}.wb-turning-group .wb-price-block{grid-column:3}.wb-turning-group .wb-institutional,.wb-turning-group .wb-signal{display:none}\n@media(max-width:620px){.wb-rich-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:14px 10px}.wb-chip-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:16px 12px}.wb-chip-row .wb-row-main{grid-column:1/-1}.wb-chip-row .wb-chip-amount{grid-column:1}.wb-chip-row .wb-chip-meta{grid-column:2;text-align:right}.wb-chip-row .wb-chip-note,.wb-chip-row .wb-chip-split{font-size:15px}.wb-chip-row .wb-name{font-size:23px}.wb-turning-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:15px 12px}.wb-turning-row .wb-row-main{grid-column:1/-1}.wb-turning-row .wb-turning-price{grid-column:2;grid-row:2;align-self:start}.wb-turning-reason{font-size:15px}.wb-turning-fact{font-size:14px}.wb-rich-row .wb-row-main{grid-column:1/-1}.wb-rich-row .wb-score-block,.wb-rich-row .wb-price-block,.wb-rich-row .wb-institutional,.wb-rich-row .wb-signal{display:flex;grid-column:auto}.wb-rich-row .wb-score-block{grid-column:1}.wb-rich-row .wb-price-block{grid-column:2}.wb-rich-row .wb-institutional{grid-column:1}.wb-rich-row .wb-signal{grid-column:2}.wb-turning-group .wb-rich-row .wb-institutional,.wb-turning-group .wb-rich-row .wb-signal{display:none}.wb-turning-group .wb-rich-row .wb-price-block{grid-column:2}.wb-name{font-size:21px}}\n.wb-etf-period{margin:18px 0 26px;border:1px solid #b9cad8;border-radius:12px;overflow:hidden;background:#fff}.wb-etf-period>h3{display:flex;align-items:baseline;gap:10px;margin:0;padding:15px 16px;border-bottom:2px solid #405d77;background:#edf5fb;color:#1d3348;font-size:24px;font-weight:900;line-height:1.2}.wb-etf-period>h3 small{font-size:13px;color:#526b84;font-weight:800}.wb-etf-category{padding:14px 14px 0}.wb-etf-category h4{margin:0 0 8px;color:#344054;font-size:18px;font-weight:900}.wb-etf-category h4 small{font-size:12px;color:#667085;font-weight:800}.wb-etf-row{display:block;min-height:0;padding:16px;border:0;border-top:1px solid #dfe8ef;background:#fff}.wb-etf-row:hover{background:#f7fbff;box-shadow:inset 3px 0 #52718d}.wb-etf-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.wb-etf-title{display:block;min-width:0}.wb-etf-title .wb-name{display:inline;font-size:22px}.wb-etf-score{text-align:right;white-space:nowrap}.wb-etf-score small,.wb-etf-metric small,.wb-etf-comment small{display:block;color:#667085;font-size:12px;font-weight:700}.wb-etf-score b{display:block;color:#1d2939;font-family:ui-monospace,monospace;font-size:25px;font-weight:900}.wb-etf-score b em{font-family:inherit;font-size:12px;font-style:normal;color:#667085}.wb-etf-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}.wb-etf-metric{padding:9px 10px;border-left:3px solid #b7c8d8;background:#f7fafc}.wb-etf-metric b{display:block;margin-top:3px;font-size:16px;line-height:1.3}.wb-etf-comment{margin:12px 0 0;padding:10px 11px;border-left:3px solid #52718d;background:#f6faff;color:#344054;font-size:15px;font-weight:700;line-height:1.55}.wb-etf-breakdown{display:block;margin-top:9px;padding:7px 9px;background:#F9F9FB;border-radius:6px;color:#667085;font-size:12px;font-weight:700;line-height:1.6}.wb-etf-period-note{display:block;margin-top:8px;color:#667085;font-size:12px;font-weight:700}.wb-result-more{display:block;margin:0;background:#f8fbfd;border-top:1px solid #d7e0ea}.wb-result-more summary{cursor:pointer;padding:14px 16px;color:#274c77;font-size:15px;font-weight:900}.wb-result-more[open] summary{border-bottom:1px solid #d7e0ea}@media(max-width:620px){.wb-etf-period{margin:14px 0 22px;border-radius:10px}.wb-etf-period>h3{padding:15px 14px;font-size:25px}.wb-etf-category{padding:14px 0 0}.wb-etf-category h4{padding:0 14px;font-size:20px}.wb-etf-row{padding:16px 14px}.wb-etf-title .wb-name{font-size:23px}.wb-etf-score b{font-size:25px}.wb-etf-metrics{grid-template-columns:1fr 1fr}.wb-etf-metric:last-child:nth-child(odd){grid-column:1/-1}.wb-etf-metric b{font-size:17px}.wb-etf-comment{font-size:16px}.wb-result-more summary{padding:16px;font-size:16px}}\n.wb-turning-confirmed{border-left:4px solid #405d77}.wb-turning-observing{border-left:4px solid #b7791f;background:#fffdf7}.wb-turning-invalid{border-left:4px solid #7d8792;background:#f5f6f7}.wb-turning-flow.buy_to_sell,.wb-turning-flow.selling_strength{background:#e9f6ef;color:#0B8F55}.wb-turning-flow.sell_to_buy,.wb-turning-flow.buying_strength{background:#fceceb;color:#D93025}.wb-turning-flow.invalid{background:#eceff2;color:#525f6b}.wb-turning-failure-reason{border-left-color:#687482;background:#f0f2f4}.wb-row-wrap{border-bottom:1px solid #edf1f5}.wb-row-wrap .wb-row{border-bottom:0}.wb-chip-inline{padding:0 14px 9px;background:#fff}.wb-chip-inline>summary{cursor:pointer;color:#345673;font-size:11.5px;font-weight:800;padding:4px 0;list-style:none}.wb-chip-inline>summary::-webkit-details-marker{display:none}.wb-chip-inline>summary::before{content:\'▸ \';color:#7b8795}.wb-chip-inline[open]>summary::before{content:\'▾ \'}.wb-chip-inline>summary small{color:#7b8795;font-weight:400}.wb-chip-inline-body{margin-top:8px;font-size:12px;color:#344054}.wb-chip-dist{margin:16px 0 4px;border-top:1px solid #e4ebf1;padding-top:12px}.wb-chip-dist>summary{cursor:pointer;font-size:13px;font-weight:800;color:#274c77}.wb-chip-dist>summary small{color:#7b8795;font-weight:400}.wb-chip-dist-body{margin-top:10px;font-size:12px;color:#344054}.wb-chip-dist-hint{color:#7b8795;font-size:11px}.chip-head b{font-size:17px}.chip-head .sub{display:block;color:#7b8795;font-size:11px;margin-top:2px}.chip-summary{margin:9px 0 11px;padding:8px 10px;background:#f4f8fc;border-radius:6px;color:#41617e;font-size:11.5px;line-height:1.6}.chip-row{display:grid;grid-template-columns:96px 1fr 46px 40px;gap:7px;align-items:center;padding:3px 0;font-size:11px}.chip-price{color:#667085;font-family:ui-monospace,monospace}.chip-bar{background:#eef2f6;height:13px;border-radius:3px;overflow:hidden}.chip-bar i{display:block;height:100%}.chip-pct{text-align:right;font-family:ui-monospace,monospace;color:#344054}.chip-tag{color:#9a5b17;font-weight:800;font-size:10px}.chip-note{margin-top:11px;color:#7b8795;font-size:10.5px;line-height:1.6}.wb-chip-direction{display:inline-flex;align-items:center;margin-top:7px;padding:4px 8px;border-radius:5px;font-size:13px;font-weight:900;line-height:1.25}.wb-chip-direction.chip-buy-to-sell{background:#e9f6ef;color:#0B8F55}.wb-chip-direction.chip-sell-to-buy{background:#fceceb;color:#D93025}.wb-chip-direction.chip-neutral{background:#eef2f6;color:#526b84}.wb-review-loading{display:flex;flex-direction:column;gap:5px;margin:14px;padding:16px;border-left:4px solid #52718d;background:#f4f9fd;color:#344054}.wb-review-loading b{font-size:16px}.wb-review-loading span{font-size:13px;line-height:1.5;color:#526b84}.wb-drawer{top:calc(68px + env(safe-area-inset-top,0px));padding:16px 22px 22px;padding-bottom:calc(22px + env(safe-area-inset-bottom,0px));overscroll-behavior:contain}.wb-drawer-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;position:sticky;top:0;z-index:3;margin:0 -22px 14px;padding:12px 22px;min-height:50px;background:#fff;border-bottom:1px solid #d7e0ea;box-shadow:0 2px 8px rgba(23,42,58,.06);touch-action:manipulation}.wb-drawer-actions #wb-back{border:0;background:transparent;color:#274c77;font:inherit;font-size:15px;font-weight:900;padding:8px 0;min-height:40px}.wb-drawer-actions #wb-close{float:none;border:0;background:transparent;font-size:28px;line-height:1;color:#526b84;padding:6px;min-width:40px;min-height:40px;touch-action:manipulation}@media(max-width:620px){.wb-drawer{top:calc(64px + env(safe-area-inset-top,0px));width:100%;padding:14px 16px 24px;padding-bottom:calc(24px + env(safe-area-inset-bottom,0px))}.wb-drawer-actions{top:0;margin:0 -16px 14px;padding:12px 16px;min-height:52px}.wb-drawer h3{font-size:24px;line-height:1.3}.wb-turning-group h3{font-size:22px;font-weight:900}.wb-turning-group h3 small{font-size:14px}.wb-chip-direction{font-size:15px}}\n\n.wb-turning-row{display:grid;grid-template-columns:minmax(0,1fr) 22px;gap:10px;align-items:start;min-height:0}.wb-turning-card{display:block;min-width:0}.wb-turning-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.wb-turning-title{display:block;min-width:0}.wb-turning-title .wb-name{margin-top:2px}.wb-turning-price{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;gap:3px}.wb-turning-price b{font-family:ui-monospace,monospace;font-size:22px;color:#1d2939}.wb-row-chevron{align-self:center;color:#667085;font-size:22px}.wb-turning-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px}.wb-turning-facts>span{min-width:0;padding:8px 10px;border-left:3px solid #b7c8d8;background:#f7fafc}.wb-turning-facts small{display:block;color:#667085;font-size:11px;font-weight:800}.wb-turning-facts b{display:block;margin-top:3px;color:#344054;font-size:14px;line-height:1.45;overflow-wrap:anywhere}.wb-turning-reason{margin:11px 0 0;padding:10px 12px;border-left:3px solid #7b619b;background:#faf8fd;color:#344054;font-size:15px;line-height:1.65}.wb-turning-reason b,.wb-turning-reason span{display:block}.wb-turning-reason b{margin-bottom:4px;color:#674d8c;font-size:12px}.wb-turning-reasons{display:block;margin:9px 0 0;padding:0;list-style:none;color:#526b84;font-size:14px;line-height:1.6}.wb-turning-reasons li{display:block;padding:6px 10px;border-top:1px solid #edf1f5;overflow-wrap:anywhere}.wb-turning-reasons-title{font-weight:900;color:#344054;background:#f8fafc}.wb-turning-judgement{background:#faf8fd}.wb-turning-inst-lines{margin-top:10px}.wb-turning-inst-line{padding:10px 0;border-top:1px solid #e6e3ec}.wb-turning-inst-line:first-child{border-top:0;padding-top:0}.wb-turning-inst-line strong,.wb-turning-inst-total strong{display:block;color:#1d2939;font-size:18px;font-weight:900;line-height:1.25}.wb-turning-inst-line span,.wb-turning-inst-total span{display:block;margin-top:4px;color:#344054;font-size:15px;font-weight:700;line-height:1.65}.wb-turning-inst-total{margin-top:10px;padding:10px 11px;border-left:4px solid #52718d;background:#f4f8fc}.wb-turning-inst-total i{font-style:normal;color:#7b8795}.wb-inst-buy{color:#D93025;font-style:normal;font-weight:900}.wb-inst-sell{color:#0B8F55;font-style:normal;font-weight:900}.wb-etf-row{min-width:0;max-width:100%;overflow:hidden}.wb-etf-period-title{display:block;margin-bottom:10px;color:#526b84;font-size:13px;font-weight:900;line-height:1.45;overflow-wrap:anywhere}.wb-etf-top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:start}.wb-etf-title{min-width:0}.wb-etf-title .wb-name{display:block;margin-top:6px;overflow-wrap:anywhere;word-break:normal}.wb-etf-score{min-width:78px}.wb-etf-score small{white-space:nowrap}.wb-etf-score b{white-space:nowrap}.wb-review-horizon{margin-top:11px;padding-top:11px;border-top:1px solid #edf1f5}.wb-review-horizon header{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.wb-review-horizon header>b{font-size:14px}.wb-review-horizon header small{color:#667085;font-size:11px;font-weight:700}.wb-review-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px}.wb-review-metric{min-width:0;padding:8px;border-left:3px solid #b7c8d8;background:#f7fafc}.wb-review-metric small,.wb-review-metric em{display:block;color:#667085;font-size:10px;font-style:normal;line-height:1.4}.wb-review-metric b{display:block;margin:3px 0 2px;font-family:ui-monospace,monospace;font-size:15px;overflow-wrap:anywhere}.wb-review-samples{margin-top:12px;border-top:1px solid #edf1f5;padding-top:10px}.wb-review-samples>b{display:block;color:#344054;font-size:12px;margin-bottom:4px}.wb-review-sample{display:grid;grid-template-columns:minmax(110px,1.4fr) repeat(3,minmax(65px,1fr));gap:7px;align-items:center;border-top:1px solid #edf1f5;padding:8px 0;font-size:11px}.wb-review-sample>div{min-width:0}.wb-review-sample b{display:block;font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere}.wb-review-sample small{display:block;color:#667085;font-size:10px;line-height:1.35}.wb-review-sample span{text-align:right;min-width:0}@media(max-width:620px){.wb-turning-row{display:grid;grid-template-columns:minmax(0,1fr) 18px;gap:7px;padding:14px 12px}.wb-turning-title .wb-name{font-size:22px}.wb-turning-facts{grid-template-columns:1fr;gap:6px}.wb-turning-facts>span{padding:8px 9px}.wb-turning-facts b{font-size:15px}.wb-turning-reason{font-size:16px;line-height:1.6}.wb-turning-reasons{font-size:15px}.wb-turning-inst-line strong,.wb-turning-inst-total strong{font-size:21px}.wb-turning-inst-line span,.wb-turning-inst-total span{font-size:16px;line-height:1.7}.wb-etf-period-title{font-size:14px;margin-bottom:9px}.wb-etf-top{gap:9px}.wb-etf-title .wb-name{font-size:22px;line-height:1.35}.wb-etf-score{min-width:72px}.wb-etf-score b{font-size:23px}.wb-etf-metrics{grid-template-columns:1fr;gap:6px}.wb-etf-metric{min-width:0}.wb-etf-metric:last-child:nth-child(odd){grid-column:auto}.wb-review-horizon header{display:block}.wb-review-horizon header small{display:block;margin-top:2px}.wb-review-metrics{grid-template-columns:1fr;gap:6px}.wb-review-metric{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:4px 8px;padding:9px}.wb-review-metric small{grid-column:1}.wb-review-metric b{grid-column:2;grid-row:1 / span 2;text-align:right;font-size:16px}.wb-review-metric em{grid-column:1}.wb-review-sample{grid-template-columns:1fr 1fr;gap:5px 8px;padding:10px 0}.wb-review-sample>div{grid-column:1/-1}.wb-review-sample span{display:grid;grid-template-columns:1fr auto;gap:4px;text-align:left}.wb-review-sample span small{align-self:center}.wb-review-sample span b{text-align:right;font-size:13px}}\n\n\n.wb-review-extremes{margin:12px 0;padding:11px;border:1px solid #d7e0ea;border-radius:8px;background:#fbfdff}.wb-review-extremes>b{display:block;margin-bottom:8px;color:#344054;font-size:13px;font-weight:900}.wb-review-extremes>div{display:grid;grid-template-columns:1fr 1fr;gap:8px}.wb-review-extreme{min-width:0;padding:9px 10px;border-left:4px solid #b7c8d8;background:#f7fafc}.wb-review-extreme.best{border-left-color:#D93025;background:#fff7f6}.wb-review-extreme.worst{border-left-color:#0B8F55;background:#f4fbf7}.wb-review-extreme small,.wb-review-extreme b{display:block}.wb-review-extreme small{color:#667085;font-size:11px;font-weight:800}.wb-review-extreme b{margin-top:3px;color:#344054;font-size:14px;overflow-wrap:anywhere}.wb-review-extreme strong{display:block;margin-top:4px;font-family:ui-monospace,monospace;font-size:18px}.wb-review-samples>b small{margin-left:5px;color:#667085;font-size:10px;font-weight:700}.wb-review-more{display:block;margin-top:2px;border-top:1px solid #edf1f5}.wb-review-more summary{cursor:pointer;padding:10px 0;color:#274c77;font-size:12px;font-weight:900}.wb-review-more[open] summary{border-bottom:1px solid #edf1f5}\n@media(max-width:620px){.wb-review-extremes{padding:10px}.wb-review-extremes>div{grid-template-columns:1fr;gap:6px}.wb-review-extreme{display:grid;grid-template-columns:1fr auto;gap:3px 8px;align-items:center}.wb-review-extreme small{grid-column:1}.wb-review-extreme b{grid-column:1;margin-top:0;font-size:15px}.wb-review-extreme strong{grid-column:2;grid-row:1 / span 2;margin:0;font-size:18px;text-align:right}.wb-review-more summary{padding:12px 0;font-size:14px}}\n\n/* V15：選股工作台視覺升級——保留原本結構，只提高金融資訊層級與可讀性 */\n.wb-shell{--wb-navy:#183b5c;--wb-blue:#3e78a6;--wb-line:#d9e4ee;--wb-bg:#f3f7fb;}\n.wb-intro{padding:8px 0 18px;border-bottom:0;position:relative}.wb-intro:after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:linear-gradient(90deg,#294f70,#78a9cb,transparent);border-radius:3px}\n.wb-intro h2{color:var(--wb-navy);font-size:30px;letter-spacing:-.02em}.wb-sub{line-height:1.6}.wb-status{border-radius:10px;box-shadow:0 4px 12px rgba(34,69,98,.06)}\n.wb-pulse{border-radius:13px;background:linear-gradient(135deg,#f8fbfe,#eef5fa);box-shadow:0 5px 16px rgba(34,69,98,.05);border-color:#d6e2ec}\n.wb-tabs{gap:8px;padding:13px 4px 0;border-bottom:1px solid #d5e0ea}.wb-tabs button{padding:9px 13px 11px;border-radius:8px 8px 0 0}.wb-tabs button.on{background:#edf5fb;color:#183f61;border-bottom-color:#3e78a6}\n.wb-tools{padding:14px 0}.wb-tools label{border-radius:11px;box-shadow:0 3px 10px rgba(35,69,96,.04)}.wb-tools button,.wb-filter-panel button{border-radius:9px}\n.wb-table{border-radius:15px;box-shadow:0 8px 24px rgba(34,69,98,.06);border-color:#d6e2ec}.wb-head{background:linear-gradient(180deg,#f6f9fc,#eef4f8);padding-top:13px;padding-bottom:13px}.wb-row{min-height:118px;transition:transform .12s ease,box-shadow .12s ease,background .12s ease}.wb-row:hover{background:#f8fbfe;box-shadow:inset 4px 0 #4d80a7,0 2px 8px rgba(45,79,106,.05)}.wb-row:active{transform:scale(.995);background:#edf5fb}\n.wb-rich-row{min-height:165px}.wb-name{font-size:20px;color:#173c5d}.wb-score{font-size:25px;color:#173c5d}.wb-score-block,.wb-price-block{padding:3px 0}.wb-up{color:#c93636!important}.wb-down{color:#168153!important}.wb-flat{color:#738195!important}\n.wb-score-change-panel{box-shadow:0 7px 22px rgba(35,73,103,.08)!important}.wb-score-change-head{background:linear-gradient(135deg,#edf5fb,#f8fbfe)!important}\n.wb-drawer{padding:20px 20px 30px}.wb-drawer.open{box-shadow:-18px 0 40px rgba(22,52,77,.18)}\n@media(max-width:620px){.wb-shell{margin-top:10px}.wb-intro h2{font-size:26px}.wb-tabs{gap:5px}.wb-tabs button{padding:8px 10px 10px;font-size:12px}.wb-row{border-radius:0}.wb-table{border-radius:13px}.wb-rich-row{min-height:150px}}\n\n.wb-etf-category-tabs{display:flex;gap:8px;padding:12px 14px;overflow-x:auto;overscroll-behavior-x:contain;border-bottom:1px solid #dfe8ef;background:#fff;scrollbar-width:none}.wb-etf-category-tabs::-webkit-scrollbar{display:none}.wb-etf-category-tab{flex:0 0 auto;border:1px solid #b9cad8;border-radius:9px;background:#fff;color:#526b84;padding:9px 12px;font-size:14px;font-weight:900;white-space:nowrap}.wb-etf-category-tab.active{border-color:#405d77;background:#edf5fb;color:#1d496c;box-shadow:inset 0 -2px #405d77}.wb-etf-category[hidden]{display:none}@media(max-width:640px){.wb-etf-category-tabs{padding:11px 12px}.wb-etf-category-tab{padding:9px 11px;font-size:15px}}\n.wb-score-change-empty{padding:18px 14px 19px;background:#fff;text-align:center}.wb-score-change-empty b{display:block;color:#344054;font-size:12px}.wb-score-change-empty small{display:block;margin-top:6px;color:#7b8795;font-size:10px;line-height:1.55}\n/* V9：面板在 JS 初始化前也必須可見 */\n.wb-score-change-panel{display:block!important;visibility:visible!important;opacity:1!important}\n.wb-score-change-panel[hidden]{display:block!important}\n.wb-score-change-panel{margin:10px 0 14px;border:1px solid #d7e2ec;border-radius:13px;background:#fff;overflow:hidden;box-shadow:0 4px 14px rgba(39,76,119,.06)}.wb-score-change-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;background:linear-gradient(135deg,#f5f9fd,#edf5fb);border-bottom:1px solid #dfe8ef}.wb-score-change-head>div{display:flex;align-items:center;gap:8px}.wb-score-change-head span{font-size:14px;font-weight:900;color:#244a6c}.wb-score-change-head b{font-size:10px;padding:3px 7px;border-radius:999px;background:#e2edf6;color:#45647e}.wb-score-change-head small{font-size:9.5px;color:#7a8a99}.wb-score-change-list{display:flex;flex-direction:column}.wb-score-change-row{display:grid;grid-template-columns:minmax(0,1fr) auto 20px;align-items:center;gap:10px;width:100%;border:0;border-bottom:1px solid #edf1f5;background:#fff;text-align:left;padding:11px 13px;cursor:pointer}.wb-score-change-row:last-child{border-bottom:0}.wb-score-change-row:hover{background:#f7fbff}.wb-score-change-name{min-width:0}.wb-score-change-name b{display:block;color:#203b53;font-size:12px;line-height:1.35}.wb-score-change-name small{display:block;margin-top:3px;color:#7a8b9a;font-size:9.5px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-score-change-score{display:flex;align-items:center;gap:8px;white-space:nowrap}.wb-score-change-score b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#34536d;font-size:11px}.wb-score-change-score em{font-style:normal;font-family:ui-monospace,monospace;font-weight:900;font-size:10px}.wb-score-change-score em.up{color:#D93025}.wb-score-change-score em.down{color:#0B8F55}.wb-score-change-score em.flat{color:#7b8795}.wb-score-change-arrow{font-size:20px;color:#8a9aaa;text-align:right}@media(max-width:640px){.wb-score-change-head{align-items:flex-start;flex-direction:column;gap:4px}.wb-score-change-row{grid-template-columns:minmax(0,1fr) auto 15px;padding:11px 10px}.wb-score-change-name b{font-size:13px}.wb-score-change-name small{font-size:9px}.wb-score-change-score{display:flex;flex-direction:column;align-items:flex-end;gap:2px}}.wb-score-change-head-right{display:flex;align-items:center;gap:8px}.wb-score-change-head-right label{display:flex;align-items:center;gap:5px;color:#526b84;font-size:10px;font-weight:800}.wb-score-change-head-right select{border:1px solid #cfd9e5;border-radius:7px;background:#fff;color:#344054;padding:5px 7px;font:inherit;font-size:10px;outline:0}.wb-score-change-more{border-top:1px solid #dfe7ee;background:#fbfdff}.wb-score-change-more>summary{list-style:none;cursor:pointer;padding:11px 14px;color:#526b84;font-size:11px;font-weight:800}.wb-score-change-more>summary::-webkit-details-marker{display:none}.wb-score-change-more>summary:before{content:\'＋\';display:inline-block;margin-right:6px;color:#52718d}.wb-score-change-more[open]>summary:before{content:\'－\'}.wb-score-change-more>summary span{font-weight:600;color:#8491a0}.wb-score-change-more .wb-score-change-list{border-top:1px solid #edf1f5}.wb-score-change-more .wb-score-change-row:last-child{border-bottom:0}@media(max-width:640px){.wb-score-change-head-right{width:100%;justify-content:space-between}.wb-score-change-head-right select{max-width:145px}.wb-score-change-head-right small{font-size:9px}}.wb-d-loading{min-height:220px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:9px;color:#344054}.wb-d-loading b{font-size:17px}.wb-d-loading small{color:#7b8795;font-size:11px}.wb-d-loading-dot{width:28px;height:28px;border:3px solid #dbe7f1;border-top-color:#52718d;border-radius:50%;animation:wbdspin .75s linear infinite}@keyframes wbdspin{to{transform:rotate(360deg)}}\n/* 選股卡片內部詳情：外部工作台不改，只升級抽屜內容 */\n.wb-d-container{padding:4px 2px 30px}\n.wb-d-hero{margin:0 -4px 18px;padding:18px;border:1px solid #dbe4ec;border-radius:14px;background:linear-gradient(145deg,#f7fbff,#eef5fb);box-shadow:0 6px 18px rgba(39,76,119,.08)}\n.wb-d-hero-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}\n.wb-d-label{display:inline-block;font-size:10px;font-weight:800;letter-spacing:.08em;color:#52708c;margin-bottom:5px}\n.wb-d-hero h3{margin:0!important;font-size:25px!important;line-height:1.2;color:#172b3f}\n.wb-d-hero h3 small{font-size:13px;color:#718096;font-weight:700}\n.wb-d-hero p{margin:6px 0 0!important;color:#66788a!important;font-size:12px!important}\n.wb-d-price{display:flex;align-items:baseline;gap:10px;margin-top:17px}\n.wb-d-price b{font-size:28px;font-family:ui-monospace,SFMono-Regular,monospace;color:#162c42}\n.wb-d-price span{font-size:14px;font-weight:800;color:#4b6b88}\n.wb-d-score{min-width:74px;text-align:center;border:1px solid #cad9e7;border-radius:12px;background:#fff;padding:8px 7px}\n.wb-d-score b{display:block;font-size:24px;line-height:1;font-family:ui-monospace,monospace;color:#234d74}\n.wb-d-score small{display:block;margin-top:5px;color:#718096;font-size:10px}\n.wb-d-rank{text-align:right}.wb-d-rank small{display:block;color:#718096;font-size:10px}.wb-d-rank b{font-size:28px;color:#234d74;font-family:ui-monospace,monospace}\n.wb-d-chip-signal{padding:7px 10px;border-radius:8px;font-size:12px;font-weight:800;background:#fff;border:1px solid #d5e0e9}\n.wb-d-chip-signal.chip-sell-to-buy{color:#19734a}.wb-d-chip-signal.chip-buy-to-sell{color:#a64a43}.wb-d-chip-signal.chip-neutral{color:#52677a}\n.wb-d-state{padding:7px 10px;border-radius:8px;font-size:12px;font-weight:800;background:#fff;border:1px solid #d5e0e9}\n.wb-d-state.good{color:#18794e}.wb-d-state.bad{color:#a84646}.wb-d-state.wait{color:#806b2e}\n.wb-d-section{margin:0 0 17px;padding:15px;border:1px solid #e0e7ee;border-radius:12px;background:#fff}\n.wb-d-section-head{margin-bottom:12px}.wb-d-section-head h4{margin:0;color:#213b54;font-size:15px}.wb-d-section-head small{display:block;margin-top:3px;color:#8491a0;font-size:10.5px}\n.wb-d-facts{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#e1e8ee;border:1px solid #e1e8ee;border-radius:8px;overflow:hidden}\n.wb-d-fact{min-width:0;background:#f9fbfd;padding:10px 11px}.wb-d-fact small{display:block;color:#7a8998;font-size:10px}.wb-d-fact b{display:block;margin-top:4px;color:#263f55;font-size:12px;line-height:1.4;word-break:break-word}\n.wb-d-score-list{display:flex;flex-direction:column;gap:10px}.wb-d-score-row>div:first-child{display:flex;justify-content:space-between;font-size:11px;color:#536779}.wb-d-score-row b{font-family:ui-monospace,monospace;color:#244a6c}.wb-d-bar{height:7px;margin-top:5px;border-radius:99px;background:#e8eef3;overflow:hidden}.wb-d-bar i{display:block;height:100%;border-radius:99px;background:#4d789f}\n.wb-d-insight-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:12px 0 17px}.wb-d-insight-grid>div{padding:11px;border:1px solid #e0e7ee;border-radius:10px;background:#fbfcfd}.wb-d-insight-grid small{display:block;color:#8491a0;font-size:10px}.wb-d-insight-grid b{display:block;margin-top:4px;color:#244a6c;font-size:13px}.wb-d-insight-grid span{display:block;margin-top:3px;color:#697b8c;font-size:11px}\n.wb-d-inst-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.wb-d-inst-grid .wb-d-fact{border:1px solid #e0e7ee;border-radius:9px;background:#f9fbfd}\n.wb-d-list{list-style:none;padding:0;margin:0}.wb-d-list li{position:relative;padding:9px 0 9px 16px;border-top:1px solid #edf1f4;color:#405467;font-size:12px;line-height:1.55}.wb-d-list li:first-child{border-top:0}.wb-d-list li:before{content:"";position:absolute;left:2px;top:16px;width:5px;height:5px;border-radius:50%;background:#6c8ba5}\n.wb-d-note{padding:11px 12px;border-radius:9px;background:#f5f8fb;color:#526779;font-size:12px;line-height:1.65}\n.wb-d-empty{padding:14px;border-radius:9px;background:#f7f9fb;color:#8a96a3;font-size:11px;text-align:center}\n@media(max-width:620px){.wb-d-hero{padding:15px;border-radius:12px}.wb-d-hero h3{font-size:22px!important}.wb-d-price b{font-size:25px}.wb-d-facts{grid-template-columns:1fr 1fr}.wb-d-inst-grid{grid-template-columns:1fr}.wb-d-section{padding:13px}.wb-d-insight-grid{gap:7px}}\n\n\n\n/* V10: 個股詳細頁 1~8 區塊，只升級抽屜內部，不改外部選股台 */\n.wb-d-hero-premium{background:linear-gradient(135deg,#163b5c,#285c82 58%,#3b7597);color:#fff;border:0;box-shadow:0 12px 28px rgba(24,61,91,.18)}\n.wb-d-hero-premium .wb-d-label{color:#d8edf9}.wb-d-hero-premium h3{color:#fff}.wb-d-hero-premium h3 small,.wb-d-hero-premium p,.wb-d-hero-meta{color:#d4e6f0}.wb-d-hero-premium .wb-d-score{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22);backdrop-filter:blur(8px)}\n.wb-d-hero-premium .wb-d-score span,.wb-d-hero-premium .wb-d-score b{color:#fff}.wb-d-hero-premium .wb-d-price b{color:#fff}.wb-d-hero-premium .wb-d-price span{font-weight:900}.wb-d-hero-delta{display:block;margin-top:4px;font-size:11px;font-weight:900}.wb-d-hero-delta.up{color:#9af0c2}.wb-d-hero-delta.down{color:#ffb0b0}.wb-d-hero-delta.flat{color:#dbe8ef}\n.wb-d-factor-section{background:linear-gradient(180deg,#fff,#f8fbfd)}.wb-d-factor{margin:11px 0}.wb-d-factor>div:first-child{display:flex;justify-content:space-between;align-items:center;font-size:11px}.wb-d-factor>div:first-child span{font-weight:800;color:#405b70}.wb-d-factor>div:first-child b{font-family:ui-monospace,monospace;color:#274d69}.wb-d-factor-track{height:9px;background:#e9f0f4;border-radius:99px;overflow:hidden;margin-top:5px}.wb-d-factor-track i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#397aa0,#1f5477)}\n.wb-d-facts-compact{grid-template-columns:repeat(2,minmax(0,1fr))}.wb-d-empty-mini{padding:12px;border:1px dashed #d8e3ea;border-radius:10px;background:#f8fafb;color:#778895;font-size:11px;line-height:1.6}.wb-d-explain{display:grid;gap:8px}.wb-d-explain-item{padding:9px 10px;border:1px solid #e6edf2;border-radius:9px;background:#fbfcfd}.wb-d-explain-item b{display:block;font-size:10px;color:#4a6578}.wb-d-explain-item p{margin:3px 0 0;font-size:10.5px;line-height:1.55;color:#687a87;word-break:break-word}.wb-d-section{box-shadow:0 2px 9px rgba(30,61,82,.035)}.wb-d-metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:10px 0}.wb-d-metric{padding:9px 10px;border:1px solid #e3eaf0;border-radius:9px;background:#f8fafc}.wb-d-metric small{display:block;color:#7b8795;font-size:10px}.wb-d-metric b{display:block;margin-top:3px;color:#294a63;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.wb-d-metric-grid+.wb-d-why-highlight{margin-top:8px}@media(max-width:620px){.wb-d-metric-grid{grid-template-columns:1fr 1fr}}\n@media(max-width:620px){.wb-d-facts-compact{grid-template-columns:1fr 1fr}.wb-d-hero-premium h3{font-size:21px}.wb-d-hero-meta{font-size:9px}}\n.wb-score-validation{margin:0 0 17px;border:1px solid #d7e1ea;border-radius:12px;background:#fff;overflow:hidden}.wb-score-validation>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 15px;background:linear-gradient(135deg,#f7fbff,#eef5fb)}.wb-score-validation>summary::-webkit-details-marker{display:none}.wb-score-validation>summary span{display:flex;flex-direction:column;gap:3px}.wb-score-validation>summary b{font-size:15px;color:#213b54}.wb-score-validation>summary small{font-size:10.5px;color:#8491a0}.wb-score-validation>summary em{font-style:normal;font-size:10px;font-weight:800;color:#52708c}.wb-score-validation-body{padding:13px}.wb-sv-loading,.wb-sv-note,.wb-sv-foot{padding:10px 11px;border-radius:9px;background:#f6f9fb;color:#667788;font-size:11px;line-height:1.65}.wb-sv-cards{display:grid;gap:9px;margin-top:10px}.wb-sv-card{padding:11px;border:1px solid #e0e7ee;border-radius:10px;background:#fbfcfd}.wb-sv-card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.wb-sv-card-head>b{font-size:13px;color:#244a6c}.wb-sv-good,.wb-sv-bad,.wb-sv-neutral{font-size:10px;font-weight:800}.wb-sv-good{color:#18794e}.wb-sv-bad{color:#a84646}.wb-sv-neutral{color:#7a8794}.wb-sv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.wb-sv-grid>div{padding:7px 8px;background:#f5f8fa;border-radius:7px}.wb-sv-grid small{display:block;color:#8793a0;font-size:9px}.wb-sv-grid b{display:block;margin-top:2px;color:#334e64;font-size:11px;font-family:ui-monospace,monospace}.wb-sv-gap{margin-top:8px;padding-top:8px;border-top:1px solid #e9eef2;color:#526879;font-size:10.5px;font-weight:700}.wb-sv-history{margin-top:11px;border-top:1px solid #e6ebef}.wb-sv-history-title{padding:10px 0 7px;font-size:11px;font-weight:800;color:#405a70}.wb-sv-history-row{display:grid;grid-template-columns:1.1fr .8fr .65fr 1fr 1fr 1fr;gap:5px;padding:7px 0;border-top:1px solid #eef1f4;font-size:9.5px;color:#66798a;align-items:center}.wb-sv-history-row b{color:#34536d}.wb-sv-history-row em{font-style:normal;font-family:ui-monospace,monospace}.wb-sv-foot{margin-top:10px;font-size:10px}.wb-sv-tabs{display:flex;gap:6px;margin:10px 0}.wb-sv-tab{border:1px solid #d7e1ea;background:#f7fafc;color:#64788a;border-radius:8px;padding:6px 12px;font-size:10px;font-weight:800;cursor:pointer}.wb-sv-tab.active{background:#244f70;color:#fff;border-color:#244f70}.wb-sv-chart-title{margin:13px 0 7px;font-size:12px;font-weight:900;color:#304e65}.wb-sv-chart-wrap{border:1px solid #dfe7ed;border-radius:12px;background:linear-gradient(180deg,#fbfdff,#f7fafc);padding:10px 10px 8px;overflow:hidden}.wb-sv-chart-wrap svg{display:block;width:100%;height:285px}.wb-sv-chart-legend{display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:8px 13px;margin-top:5px;color:#7c8c99;font-size:9.5px;line-height:1.5}.wb-sv-chart-legend span{display:inline-flex;align-items:center;gap:4px}.wb-sv-chart-legend i{width:7px;height:7px;border-radius:50%;display:inline-block}.wb-sv-chart-legend i.pos{background:#D93025}.wb-sv-chart-legend i.neg{background:#0B8F55}.wb-sv-chart-legend b{color:#536b7e}.wb-sv-chart-empty{padding:30px 12px;text-align:center;border:1px dashed #dce5eb;border-radius:10px;background:#fafcfd;color:#8997a4;font-size:11px;line-height:1.7}@media(max-width:620px){.wb-sv-grid{grid-template-columns:repeat(2,1fr)}.wb-sv-history-row{grid-template-columns:1fr 1fr 1fr;row-gap:5px}.wb-sv-history-row em{font-size:9px}}\n/* V49: 國際盤勢首頁加入台指期夜盤＋三大美股指數。 */\n.home-us-list{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px!important}\n.home-us-list>span{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:10px 11px;border:1px solid #dfe6ed;border-radius:10px;background:#fbfcfe;min-width:0}\n.home-us-list>span b{font-size:11px;color:#536779;white-space:nowrap}\n.home-us-list>span strong{font-size:18px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.home-us-list>span strong.up{color:#D93025}.home-us-list>span strong.down{color:#0B8F55}.home-us-list>span strong.flat{color:#7b8795}\n@media(max-width:760px){.home-us-list{grid-template-columns:repeat(2,minmax(0,1fr))!important}.home-us-list>span strong{font-size:16px}}\n@media(min-width:761px) and (max-width:980px){.home-us-list{grid-template-columns:repeat(3,minmax(0,1fr))!important}}\n/* V48: 持股權重第一層＋變化箭頭；乖離風險只提示、不扣分。 */\n.wb-holding-row{grid-template-columns:minmax(260px,2fr) minmax(125px,.9fr) minmax(120px,.9fr) 22px!important}\n.wb-holding-weight,.wb-holding-price{display:flex;flex-direction:column;align-items:flex-end;min-width:0}\n.wb-holding-weight b{font-size:18px;color:#1d3349;font-family:ui-monospace,monospace}\n.wb-holding-weight small,.wb-holding-price small{margin-top:2px;color:#7a8794;font-size:10px}\n.wb-holding-weight em{font-style:normal;margin-top:3px;font-size:11px;font-weight:900}\n.wb-holding-price b{font-size:15px;color:#29445c;font-family:ui-monospace,monospace}\n.wb-chase-warning{display:inline-flex;align-items:center;gap:4px;margin:7px 6px 0 0;padding:6px 10px;border-radius:7px;background:#fff0f0;border:2px solid #D93025;color:#D93025;font-size:15px;font-weight:1000;line-height:1.2;letter-spacing:.02em;box-shadow:0 2px 8px rgba(217,48,37,.10)}\n@media(max-width:760px){.wb-holding-row{grid-template-columns:minmax(0,1.55fr) 74px 78px 18px!important;gap:6px!important;padding:11px 9px!important}.wb-holding-weight b{font-size:15px}.wb-holding-weight small,.wb-holding-price small{font-size:9px}.wb-holding-price b{font-size:13px}.wb-holding-row .wb-name{font-size:16px}.wb-holding-row .wb-fact-line{font-size:9.5px;line-height:1.45}.wb-chase-warning{font-size:13px;padding:5px 8px;margin-top:6px}}\n\n.wb-d-composite-summary{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid #d9e5ef;border-radius:12px;background:linear-gradient(135deg,#f7fbff,#fff);margin-bottom:10px}.wb-d-composite-summary>div{display:grid;min-width:78px;text-align:center;padding-right:12px;border-right:1px solid #e5ebf1}.wb-d-composite-summary>div span{font-size:10px;color:#718096}.wb-d-composite-summary>div b{font-size:24px;color:#274c77;line-height:1.1}.wb-d-composite-summary>div small{font-size:9px;color:#8a98a6}.wb-d-composite-summary p{margin:0;font-size:11px;color:#657487;line-height:1.55}.wb-d-composite-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.wb-d-composite-factor{padding:10px;border:1px solid #e1e8ef;border-radius:11px;background:#fff}.wb-d-composite-factor.pass{border-left:4px solid #3b8065;background:#f8fcfa}.wb-d-composite-factor.fail{border-left:4px solid #b56b68;background:#fffafa}.wb-d-composite-head{display:flex;justify-content:space-between;gap:8px;align-items:center}.wb-d-composite-head b{font-size:11px;color:#2d4558}.wb-d-composite-head strong{font-size:10px}.wb-d-composite-factor.pass .wb-d-composite-head strong{color:#267153}.wb-d-composite-factor.fail .wb-d-composite-head strong{color:#a34f4b}.wb-d-composite-evidence{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:7px}.wb-d-composite-evidence span{font-size:15px;font-weight:900;color:#274c77}.wb-d-composite-evidence small{font-size:9px;color:#8a98a6;text-align:right}.wb-d-composite-factor em{display:block;margin-top:5px;font-style:normal;font-size:9px;color:#80909e}.wb-d-why-card{padding:12px 13px;border:1px solid #dbe5ee;border-radius:12px;background:linear-gradient(135deg,#f8fbff,#fff)}.wb-d-why-card>span{display:block;font-size:10px;font-weight:800;color:#52718d;letter-spacing:.04em}.wb-d-why-card>b{display:block;margin-top:5px;font-size:13px;line-height:1.55;color:#263f54}.wb-d-why-card>small{display:block;margin-top:7px;color:#718096;font-size:10px;line-height:1.55}.wb-d-chart-legend i.neg{background:#a65a5a}.wb-d-chart-legend b{font-size:10px;color:#536b7e}@media(max-width:620px){.wb-d-composite-grid{grid-template-columns:1fr}.wb-d-composite-summary{align-items:flex-start}.wb-d-composite-summary>div{min-width:68px}}\n.wb-d-score-change{border:1px solid rgba(37,99,235,.18);background:linear-gradient(180deg,#f8fbff,#fff)}.wb-d-change-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-radius:12px;background:#f4f7fb}.wb-d-change-summary b{font-size:18px}.wb-d-change-summary span{font-weight:800}.wb-d-change-list{display:grid;gap:8px;margin-top:10px}.wb-d-change-row{display:grid;grid-template-columns:1fr auto auto auto;align-items:center;gap:8px;padding:9px 10px;border-radius:10px;background:#fff;border:1px solid #e8edf4}.wb-d-change-row span{font-weight:700;color:#334155}.wb-d-change-row b{font-size:14px}.wb-d-change-row i{font-style:normal;color:#64748b}.wb-d-change-time{display:block;margin-top:9px;color:#94a3b8}.wb-d-score-change-none{border-color:#e5e7eb;background:#fff}.wb-d-explain{display:grid;gap:10px}.wb-d-explain-item{padding:10px 12px;border:1px solid #e5eaf0;border-radius:10px;background:#f8fafc}.wb-d-explain-item b{display:block;color:#274c77;font-size:12px;margin-bottom:4px}.wb-d-explain-item p{margin:0;color:#475467;font-size:12px;line-height:1.65;word-break:break-word}.wb-d-explain .wb-d-note{margin:0;color:#667085;font-size:12px;line-height:1.65}'
+WORKBENCH_CSS = '/* v13 選股工作台視覺層：不改資料架構，只提升層次、可讀性與手機觸控回饋。 */\n.wb-shell{position:relative;margin:20px 0 34px;padding:18px 18px 22px;border:1px solid #dbe5ef;border-radius:18px;background:linear-gradient(180deg,#f7fbff 0,#fff 190px);box-shadow:0 14px 38px rgba(39,76,119,.09);overflow:hidden}\n.wb-shell:before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:linear-gradient(90deg,#24486e,#6e99bd,#24486e)}\n.wb-intro{padding-top:5px}\n.wb-kicker{letter-spacing:.15em;color:#3f6689}\n.wb-intro h2{font-size:30px;letter-spacing:.01em}\n.wb-status{border-radius:10px;box-shadow:0 4px 14px rgba(39,76,119,.05)}\n.wb-pulse{border-radius:12px;background:linear-gradient(90deg,#f1f7fc,#fff);box-shadow:0 5px 16px rgba(39,76,119,.04)}\n.wb-asset-tabs{display:flex;gap:6px;width:max-content;margin:15px 0 4px;padding:5px;border:1px solid #d7e3ee;border-radius:12px;background:#edf4fa}\n.wb-asset-tabs button{border:0;border-radius:9px;padding:8px 16px;background:transparent;color:#5c7185;font-weight:800;transition:.16s}\n.wb-asset-tabs button.on{background:#fff;color:#24486e;box-shadow:0 3px 11px rgba(39,76,119,.11)}\n.wb-tabs{padding-left:4px;gap:24px}\n.wb-tools{padding:18px 0 12px}\n.wb-tools label,.wb-tools button{border-radius:10px;transition:.16s}\n.wb-tools label:focus-within{border-color:#52718d;box-shadow:0 0 0 3px rgba(82,113,141,.10)}\n.wb-tools button:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(39,76,119,.08)}\n.wb-table{border-radius:14px;box-shadow:0 8px 24px rgba(23,42,58,.06)}\n.wb-head{background:linear-gradient(180deg,#edf4fa,#f8fbfe)}\n.wb-row{min-height:82px;transition:background .14s,transform .12s,box-shadow .14s}\n.wb-row:hover{background:#f7fbff;box-shadow:inset 4px 0 #52718d,0 3px 12px rgba(39,76,119,.05);transform:translateX(1px)}\n.wb-row:active{background:#eef6fd;transform:scale(.998)}\n.wb-result-more{background:#fbfdff;border-top:1px solid #e6edf4}\n.wb-result-more summary{padding:13px 16px;color:#3f6689;font-weight:900}\n.wb-score-change-panel{border-radius:14px!important;box-shadow:0 6px 20px rgba(39,76,119,.06)!important;background:linear-gradient(135deg,#f4f8fc,#fff)!important}\n.wb-factor-experiment-status{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;margin:10px 0;padding:12px 14px;border:1px solid #d6e2ed;border-left:4px solid #52718d;border-radius:10px;background:#f6faff;color:#344054}\n.wb-factor-experiment-status b{font-size:13px;color:#24486e}\n.wb-factor-experiment-status span{font-size:12px;font-weight:800}\n.wb-factor-experiment-status small{width:100%;color:#667085;font-size:11px;line-height:1.5}\n.wb-disclaimer{padding:10px 4px 0}\n@media(max-width:620px){\n .wb-shell{margin:12px -2px 24px;padding:15px 12px 18px;border-radius:15px}\n .wb-intro h2{font-size:27px}\n .wb-pulse{grid-template-columns:1fr 1fr;gap:9px;padding:11px}\n .wb-asset-tabs{width:100%;display:grid;grid-template-columns:1fr 1fr}\n .wb-asset-tabs button{width:100%}\n .wb-factor-experiment-status{display:grid;gap:4px;padding:11px 12px}\n}\n\n.wb-shell{margin:16px 0 28px;color:#1d2939}.wb-intro{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:2px solid #27364a;padding:4px 0 16px}.wb-kicker{margin:0;color:#526b84;font-size:11px;font-weight:800;letter-spacing:.08em}.wb-intro h2{margin:5px 0 4px;font-size:28px;letter-spacing:.02em}.wb-sub{margin:0;color:#667085;font-size:13px}.wb-status{border:1px solid #d4dce6;background:#f8fbff;padding:9px 11px;color:#526b84;font-size:11px;white-space:nowrap}.wb-pulse{display:grid;grid-template-columns:130px 180px 1fr 1fr 180px;align-items:center;gap:14px;border:1px solid #d7e0ea;border-left:3px solid #52718d;padding:14px 10px;background:#f7fbff;font-size:12px}.wb-pulse span{font-weight:800}.wb-pulse b{font-family:monospace;font-size:12px}.wb-pulse i{height:3px;background:#c94d45}.wb-pulse i:nth-of-type(2){background:#23795a}.wb-pulse em{font-style:normal;color:#667085}.wb-tabs{display:flex;gap:20px;border-bottom:1px solid #d7e0ea;padding:15px 10px 0}.wb-tabs button{border:0;background:transparent;color:#667085;padding:0 0 12px;font-size:13px;font-weight:700;border-bottom:2px solid transparent}.wb-tabs button.on{color:#274c77;border-color:#52718d}.wb-tools{display:grid;grid-template-columns:1fr auto auto;gap:8px;padding:16px 0}.wb-tools label{display:flex;gap:8px;align-items:center;border:1px solid #cfd9e5;background:#fff;padding:0 11px}.wb-tools input{width:100%;border:0;outline:0;padding:11px 0;font:inherit}.wb-tools button,.wb-filter-panel button{border:1px solid #cfd9e5;background:#fff;padding:9px 12px;color:#344054;font:inherit;font-size:12px}.wb-tools button:hover,.wb-filter-panel button.on{border-color:#52718d;color:#274c77;background:#f1f7fc}.wb-filter-panel{display:flex;gap:24px;margin:-8px 0 12px;padding:12px;border:1px solid #d9e3ed;background:#f7faff;font-size:12px}.wb-filter-panel div{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wb-filter-panel b{margin-right:5px;color:#526b84}.wb-filter-panel button{padding:5px 9px}.wb-meta{display:flex;justify-content:space-between;gap:12px;padding:7px 0 10px;color:#667085;font-size:11px}.wb-meta b{color:#1d2939}.wb-table{border:1px solid #d7e0ea;background:#fff;border-radius:12px;overflow:hidden}.wb-head,.wb-row{display:grid;grid-template-columns:minmax(190px,2fr) minmax(110px,1fr) minmax(110px,1fr) minmax(120px,1fr) minmax(145px,1.25fr) 22px;gap:10px;align-items:center;padding:12px 14px}.wb-head{background:#f3f7fb;border-bottom:1px solid #d7e0ea;color:#526b84;font-size:11px}.wb-head button{border:0;background:transparent;color:inherit;text-align:left;font:inherit;font-weight:800;padding:0}.wb-head button.on{color:#274c77}.wb-row{border-bottom:1px solid #edf1f5;text-align:left;cursor:pointer;background:#fff}.wb-row:hover{background:#f7fbff;box-shadow:inset 3px 0 #52718d}.wb-name{display:block;font-weight:800;font-size:19px;line-height:1.35;color:#182b3e}.wb-code,.wb-small{display:block;color:#66788a;font-size:13px;font-weight:700;line-height:1.35;margin-top:3px}.wb-industry{display:inline-flex;align-items:center;margin-top:6px;padding:3px 7px;border:1px solid #cad8e6;border-radius:999px;background:#f4f8fc;color:#41617e;font-size:11px;font-weight:800;line-height:1.25}.wb-mobile-sort{display:none;align-items:center;gap:6px;margin:-4px 0 12px;color:#526b84;font-size:12px;font-weight:800}.wb-mobile-sort button{border:1px solid #cfd9e5;background:#fff;border-radius:6px;padding:6px 10px;color:#526b84;font:inherit;font-size:11px}.wb-mobile-sort button.on{border-color:#52718d;background:#edf5fb;color:#274c77}.wb-turning-breakout{border-left:3px solid #9a5b17;background:#fffaf3}.wb-turning-note{margin:2px 0 8px;color:#667085;font-size:11px;line-height:1.5}.wb-turning-flow{display:inline-flex;margin-top:5px;padding:3px 6px;border-radius:5px;font-size:10px;font-weight:800;line-height:1.25}.wb-turning-flow.sell_to_buy,.wb-turning-flow.buying_strength{background:#fceceb;color:#D93025}.wb-turning-flow.buy_to_sell,.wb-turning-flow.selling_strength{background:#e9f6ef;color:#0B8F55}.wb-turning-flow.unknown{background:#eef2f6;color:#667085}.wb-num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800}.wb-up{color:#D93025}.wb-down{color:#0B8F55}.wb-flat{color:#7b8795}.wb-tag{display:inline-block;font-size:10px;padding:3px 5px;background:#edf3f8;color:#345673;margin-right:5px}.wb-tag.ETF{background:#e8f4ed;color:#227052}.wb-tag.雷達{background:#e8f5f5;color:#256d6c}.wb-tag.轉折{background:#f0ebf8;color:#674d8c}.wb-tag.籌碼{background:#fff0df;color:#9a5b17}.wb-skeleton{height:54px;margin:0 14px;border-bottom:1px solid #edf1f5;background:linear-gradient(90deg,#fff 20%,#f2f6fa 45%,#fff 70%);background-size:220% 100%;animation:wbscan 1.1s linear infinite}@keyframes wbscan{to{background-position:-120% 0}}.wb-review-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:14px}.wb-review-card{border:1px solid #d7e0ea;background:#fff;border-radius:10px;padding:14px}.wb-review-card h3{margin:0 0 5px;font-size:18px}.wb-review-card h3 small{font-size:11px;color:#667085;font-weight:700}.wb-review-card p{margin:0 0 10px;color:#667085;font-size:12px}.wb-review-recent{margin-top:10px;border-top:1px solid #edf1f5}.wb-review-recent summary{padding:10px 0 5px;cursor:pointer;color:#345673;font-size:12px;font-weight:800}.wb-review-recent ul{margin:0;padding:0;list-style:none}.wb-review-recent li{padding:7px 0;border-top:1px solid #edf1f5;font-size:12px;font-weight:700}.wb-review-recent li small{display:block;margin-top:2px;color:#667085;font-weight:400}.wb-review-row{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:8px;padding:10px 0;border-top:1px solid #edf1f5;font-size:12px}.wb-review-row b{display:block;font-family:ui-monospace,monospace}.wb-review-recent{margin-top:12px;padding-top:10px;border-top:1px solid #edf1f5;font-size:12px}.wb-review-recent>b{display:block;color:#344054}.wb-review-recent ul{margin:7px 0 0;padding:0;list-style:none}.wb-review-recent li{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid #f0f3f6}.wb-review-recent li span{color:#667085;font-size:11px;text-align:right}.wb-disclaimer{margin:12px 0;color:#7b8795;font-size:11px;line-height:1.55}.wb-mask{position:fixed;inset:0;background:rgba(23,42,58,.22);z-index:1000}.wb-drawer{position:fixed;z-index:1001;right:0;top:0;bottom:0;width:min(430px,92vw);padding:22px;background:#fff;box-shadow:-12px 0 32px rgba(23,42,58,.16);transform:translateX(110%);transition:transform .18s ease-out;overflow:auto}.wb-drawer.open{transform:translateX(0)}.wb-drawer>button{float:right;border:0;background:transparent;font-size:26px;color:#526b84}.wb-detail h3{margin:5px 0;font-size:25px}.wb-detail p{color:#667085;font-size:12px}.wb-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#dbe4ec;margin:18px 0}.wb-detail-grid div{background:#f9fbfd;padding:11px}.wb-detail-grid small{display:block;color:#7b8795}.wb-detail-grid b{display:block;margin-top:5px;font-family:ui-monospace,monospace}.wb-facts{padding:0;margin:0;list-style:none}.wb-facts li{border-top:1px solid #e4ebf1;padding:10px 0;font-size:12px;line-height:1.55}@media(max-width:620px){.wb-intro{display:block}.wb-status{display:inline-block;margin-top:12px}.wb-pulse{grid-template-columns:1fr 1fr;padding:12px}.wb-pulse i{grid-column:span 1}.wb-pulse em{grid-column:1/-1;border-top:1px solid #d7e0ea;padding-top:8px}.wb-tabs{gap:14px;overflow:auto}.wb-tools{grid-template-columns:1fr auto}.wb-tools label{grid-column:1/-1}.wb-filter-panel{display:block}.wb-filter-panel div+div{margin-top:10px}.wb-meta{display:block}.wb-meta span{display:block;margin-top:4px}.wb-head{display:none}.wb-row{grid-template-columns:1.6fr 1fr 1fr 18px;gap:8px;padding:12px}.wb-row .wb-institutional,.wb-row .wb-signal{display:none}.wb-mobile-sort{display:flex}.wb-row .wb-name{font-size:18px}.wb-row .wb-code{font-size:13px}.wb-row .wb-industry{font-size:11px}.wb-row .wb-tag{font-size:10px}.wb-review-grid{grid-template-columns:1fr;padding:10px}.wb-drawer{width:100%;}.wb-detail-grid{grid-template-columns:1fr 1fr}}\n\n.wb-asset-tabs{display:flex;gap:8px;margin:16px 0 4px;border-bottom:1px solid #d7e0ea}.wb-asset-tabs button{border:1px solid #cfd9e5;border-bottom:0;border-radius:8px 8px 0 0;background:#fff;padding:10px 18px;color:#526b84;font:inherit;font-weight:800}.wb-asset-tabs button.on{background:#edf5fb;border-color:#52718d;color:#274c77}.wb-rich-row{min-height:155px}.wb-row-main{min-width:0}.wb-score-block,.wb-price-block{display:flex;flex-direction:column;gap:5px}.wb-score{font-size:23px;color:#1d2939}.wb-score small{font-size:11px;color:#667085;margin-left:4px}.wb-score-parts,.wb-fact-line{display:block;color:#667085;font-size:11px;line-height:1.5;overflow-wrap:anywhere}.wb-breakout{display:inline-block;margin:5px 5px 0 0;padding:3px 7px;border:1px solid #8a6a35;border-radius:4px;background:#fffaf0;color:#72541e;font-size:11px;font-weight:800}.wb-high-status{display:inline-block;margin:5px 5px 0 0;padding:3px 7px;border:1px solid #52718d;border-radius:4px;background:#edf5fb;color:#274c77;font-size:11px;font-weight:800}.wb-holding-row{min-height:110px;align-items:center}.wb-holding-shares{display:flex;flex-direction:column;gap:5px;align-items:flex-end}.wb-holding-shares b{font-size:18px;color:#344054}.wb-holding-shares small{font-size:11px;color:#667085}.wb-holding-row .wb-fact-line{margin-top:8px}.wb-chip-group,.wb-turning-group{margin:12px 0;padding:12px;border:1px solid #d7e0ea;border-radius:12px;background:#f9fbfd}.wb-chip-group h3,.wb-turning-group h3{margin:0 0 7px;font-size:17px;color:#1d2939}.wb-chip-group h3 small,.wb-turning-group h3 small{font-size:11px;color:#667085;font-weight:600}.wb-turning-buy{border-left:4px solid #23795a}.wb-turning-sell{border-left:4px solid #b42318}.wb-turning-invalid{border-left:4px solid #b4a78d;background:#fffdf5}.wb-empty{padding:22px;color:#667085}.wb-tag.持股{background:#f5e8df;color:#85513a}.wb-rank-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:#ded7cc}.wb-rank-card{background:#FFFFFF;padding:18px}.wb-rank-card small,.wb-rank-card em{display:block;color:#857d71;font-size:11px;font-style:normal}.wb-rank-card b{display:block;font-family:ui-monospace,monospace;font-size:23px;margin:7px 0}.wb-rank-card span{font-size:12px;font-weight:800}@media(max-width:620px){.wb-rank-grid{grid-template-columns:1fr}}\n.wb-rich-row{align-items:start}.wb-rich-row .wb-row-main{grid-column:1 / span 2}.wb-rich-row .wb-score-block,.wb-rich-row .wb-price-block{align-self:start}.wb-rich-row .wb-institutional,.wb-rich-row .wb-signal{display:flex;flex-direction:column;gap:4px;color:#344054}.wb-rich-row .wb-institutional small,.wb-rich-row .wb-signal small{font-size:11px;color:#667085}.wb-radar-rank{display:inline-block;margin:0 7px 5px 0;padding:4px 8px;border-radius:5px;background:#e8f5f5;color:#256d6c;font-size:14px;font-weight:900;line-height:1.25}.wb-radar-rule{font-size:13px;color:#526b84}.wb-chip-row{grid-template-columns:minmax(240px,2fr) minmax(130px,1fr) minmax(130px,1fr) 22px;gap:12px;align-items:center;min-height:144px}.wb-chip-note,.wb-chip-split{display:block;margin-top:8px;color:#526b84;font-size:14px;line-height:1.55;overflow-wrap:anywhere}.wb-chip-split{font-weight:800;color:#344054}.wb-chip-amount,.wb-chip-meta{display:flex;flex-direction:column;gap:6px;color:#344054}.wb-chip-amount b{font-family:ui-monospace,monospace;font-size:20px}.wb-chip-meta b{font-size:14px}.wb-chip-amount small,.wb-chip-meta small{font-size:12px;color:#667085}.wb-turning-row{grid-template-columns:minmax(280px,2fr) minmax(110px,1fr) 22px;gap:14px;align-items:start;min-height:170px}.wb-turning-reason{margin:10px 0 7px;padding:8px 10px;border-left:3px solid #7b619b;background:#faf8fd;color:#344054;font-size:14px;font-weight:600;line-height:1.55}.wb-turning-reason b{display:block;margin-bottom:2px;color:#674d8c;font-size:12px}.wb-turning-fact{display:block;margin-top:5px;color:#526b84;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.wb-turning-reasons{margin:8px 0 0;padding-left:18px;color:#667085;font-size:12px;line-height:1.55}.wb-turning-price{display:flex;flex-direction:column;gap:5px;align-items:flex-end}.wb-turning-price b{font-family:ui-monospace,monospace;font-size:21px;color:#1d2939}.wb-chip-group .wb-rich-row{border:0;border-top:1px solid #e8edf2}.wb-turning-group .wb-rich-row{border:0;border-top:1px solid #e8edf2}.wb-turning-group .wb-row-main{grid-column:1 / span 2}.wb-turning-group .wb-score-block{display:none}.wb-turning-group .wb-price-block{grid-column:3}.wb-turning-group .wb-institutional,.wb-turning-group .wb-signal{display:none}\n@media(max-width:620px){.wb-rich-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:14px 10px}.wb-chip-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:16px 12px}.wb-chip-row .wb-row-main{grid-column:1/-1}.wb-chip-row .wb-chip-amount{grid-column:1}.wb-chip-row .wb-chip-meta{grid-column:2;text-align:right}.wb-chip-row .wb-chip-note,.wb-chip-row .wb-chip-split{font-size:15px}.wb-chip-row .wb-name{font-size:23px}.wb-turning-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:15px 12px}.wb-turning-row .wb-row-main{grid-column:1/-1}.wb-turning-row .wb-turning-price{grid-column:2;grid-row:2;align-self:start}.wb-turning-reason{font-size:15px}.wb-turning-fact{font-size:14px}.wb-rich-row .wb-row-main{grid-column:1/-1}.wb-rich-row .wb-score-block,.wb-rich-row .wb-price-block,.wb-rich-row .wb-institutional,.wb-rich-row .wb-signal{display:flex;grid-column:auto}.wb-rich-row .wb-score-block{grid-column:1}.wb-rich-row .wb-price-block{grid-column:2}.wb-rich-row .wb-institutional{grid-column:1}.wb-rich-row .wb-signal{grid-column:2}.wb-turning-group .wb-rich-row .wb-institutional,.wb-turning-group .wb-rich-row .wb-signal{display:none}.wb-turning-group .wb-rich-row .wb-price-block{grid-column:2}.wb-name{font-size:21px}}\n.wb-etf-period{margin:18px 0 26px;border:1px solid #b9cad8;border-radius:12px;overflow:hidden;background:#fff}.wb-etf-period>h3{display:flex;align-items:baseline;gap:10px;margin:0;padding:15px 16px;border-bottom:2px solid #405d77;background:#edf5fb;color:#1d3348;font-size:24px;font-weight:900;line-height:1.2}.wb-etf-period>h3 small{font-size:13px;color:#526b84;font-weight:800}.wb-etf-category{padding:14px 14px 0}.wb-etf-category h4{margin:0 0 8px;color:#344054;font-size:18px;font-weight:900}.wb-etf-category h4 small{font-size:12px;color:#667085;font-weight:800}.wb-etf-row{display:block;min-height:0;padding:16px;border:0;border-top:1px solid #dfe8ef;background:#fff}.wb-etf-row:hover{background:#f7fbff;box-shadow:inset 3px 0 #52718d}.wb-etf-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.wb-etf-title{display:block;min-width:0}.wb-etf-title .wb-name{display:inline;font-size:22px}.wb-etf-score{text-align:right;white-space:nowrap}.wb-etf-score small,.wb-etf-metric small,.wb-etf-comment small{display:block;color:#667085;font-size:12px;font-weight:700}.wb-etf-score b{display:block;color:#1d2939;font-family:ui-monospace,monospace;font-size:25px;font-weight:900}.wb-etf-score b em{font-family:inherit;font-size:12px;font-style:normal;color:#667085}.wb-etf-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}.wb-etf-metric{padding:9px 10px;border-left:3px solid #b7c8d8;background:#f7fafc}.wb-etf-metric b{display:block;margin-top:3px;font-size:16px;line-height:1.3}.wb-etf-comment{margin:12px 0 0;padding:10px 11px;border-left:3px solid #52718d;background:#f6faff;color:#344054;font-size:15px;font-weight:700;line-height:1.55}.wb-etf-breakdown{display:block;margin-top:9px;padding:7px 9px;background:#F9F9FB;border-radius:6px;color:#667085;font-size:12px;font-weight:700;line-height:1.6}.wb-etf-period-note{display:block;margin-top:8px;color:#667085;font-size:12px;font-weight:700}.wb-result-more{display:block;margin:0;background:#f8fbfd;border-top:1px solid #d7e0ea}.wb-result-more summary{cursor:pointer;padding:14px 16px;color:#274c77;font-size:15px;font-weight:900}.wb-result-more[open] summary{border-bottom:1px solid #d7e0ea}@media(max-width:620px){.wb-etf-period{margin:14px 0 22px;border-radius:10px}.wb-etf-period>h3{padding:15px 14px;font-size:25px}.wb-etf-category{padding:14px 0 0}.wb-etf-category h4{padding:0 14px;font-size:20px}.wb-etf-row{padding:16px 14px}.wb-etf-title .wb-name{font-size:23px}.wb-etf-score b{font-size:25px}.wb-etf-metrics{grid-template-columns:1fr 1fr}.wb-etf-metric:last-child:nth-child(odd){grid-column:1/-1}.wb-etf-metric b{font-size:17px}.wb-etf-comment{font-size:16px}.wb-result-more summary{padding:16px;font-size:16px}}\n.wb-turning-confirmed{border-left:4px solid #405d77}.wb-turning-observing{border-left:4px solid #b7791f;background:#fffdf7}.wb-turning-invalid{border-left:4px solid #7d8792;background:#f5f6f7}.wb-turning-flow.buy_to_sell,.wb-turning-flow.selling_strength{background:#e9f6ef;color:#0B8F55}.wb-turning-flow.sell_to_buy,.wb-turning-flow.buying_strength{background:#fceceb;color:#D93025}.wb-turning-flow.invalid{background:#eceff2;color:#525f6b}.wb-turning-failure-reason{border-left-color:#687482;background:#f0f2f4}.wb-row-wrap{border-bottom:1px solid #edf1f5}.wb-row-wrap .wb-row{border-bottom:0}.wb-chip-inline{padding:0 14px 9px;background:#fff}.wb-chip-inline>summary{cursor:pointer;color:#345673;font-size:11.5px;font-weight:800;padding:4px 0;list-style:none}.wb-chip-inline>summary::-webkit-details-marker{display:none}.wb-chip-inline>summary::before{content:\'▸ \';color:#7b8795}.wb-chip-inline[open]>summary::before{content:\'▾ \'}.wb-chip-inline>summary small{color:#7b8795;font-weight:400}.wb-chip-inline-body{margin-top:8px;font-size:12px;color:#344054}.wb-chip-dist{margin:16px 0 4px;border-top:1px solid #e4ebf1;padding-top:12px}.wb-chip-dist>summary{cursor:pointer;font-size:13px;font-weight:800;color:#274c77}.wb-chip-dist>summary small{color:#7b8795;font-weight:400}.wb-chip-dist-body{margin-top:10px;font-size:12px;color:#344054}.wb-chip-dist-hint{color:#7b8795;font-size:11px}.chip-head b{font-size:17px}.chip-head .sub{display:block;color:#7b8795;font-size:11px;margin-top:2px}.chip-summary{margin:9px 0 11px;padding:8px 10px;background:#f4f8fc;border-radius:6px;color:#41617e;font-size:11.5px;line-height:1.6}.chip-row{display:grid;grid-template-columns:96px 1fr 46px 40px;gap:7px;align-items:center;padding:3px 0;font-size:11px}.chip-price{color:#667085;font-family:ui-monospace,monospace}.chip-bar{background:#eef2f6;height:13px;border-radius:3px;overflow:hidden}.chip-bar i{display:block;height:100%}.chip-pct{text-align:right;font-family:ui-monospace,monospace;color:#344054}.chip-tag{color:#9a5b17;font-weight:800;font-size:10px}.chip-note{margin-top:11px;color:#7b8795;font-size:10.5px;line-height:1.6}.wb-chip-direction{display:inline-flex;align-items:center;margin-top:7px;padding:4px 8px;border-radius:5px;font-size:13px;font-weight:900;line-height:1.25}.wb-chip-direction.chip-buy-to-sell{background:#e9f6ef;color:#0B8F55}.wb-chip-direction.chip-sell-to-buy{background:#fceceb;color:#D93025}.wb-chip-direction.chip-neutral{background:#eef2f6;color:#526b84}.wb-review-loading{display:flex;flex-direction:column;gap:5px;margin:14px;padding:16px;border-left:4px solid #52718d;background:#f4f9fd;color:#344054}.wb-review-loading b{font-size:16px}.wb-review-loading span{font-size:13px;line-height:1.5;color:#526b84}.wb-drawer{top:calc(68px + env(safe-area-inset-top,0px));padding:16px 22px 22px;padding-bottom:calc(22px + env(safe-area-inset-bottom,0px));overscroll-behavior:contain}.wb-drawer-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;position:sticky;top:0;z-index:3;margin:0 -22px 14px;padding:12px 22px;min-height:50px;background:#fff;border-bottom:1px solid #d7e0ea;box-shadow:0 2px 8px rgba(23,42,58,.06);touch-action:manipulation}.wb-drawer-actions #wb-back{border:0;background:transparent;color:#274c77;font:inherit;font-size:15px;font-weight:900;padding:8px 0;min-height:40px}.wb-drawer-actions #wb-close{float:none;border:0;background:transparent;font-size:28px;line-height:1;color:#526b84;padding:6px;min-width:40px;min-height:40px;touch-action:manipulation}@media(max-width:620px){.wb-drawer{top:calc(64px + env(safe-area-inset-top,0px));width:100%;padding:14px 16px 24px;padding-bottom:calc(24px + env(safe-area-inset-bottom,0px))}.wb-drawer-actions{top:0;margin:0 -16px 14px;padding:12px 16px;min-height:52px}.wb-drawer h3{font-size:24px;line-height:1.3}.wb-turning-group h3{font-size:22px;font-weight:900}.wb-turning-group h3 small{font-size:14px}.wb-chip-direction{font-size:15px}}\n\n.wb-turning-row{display:grid;grid-template-columns:minmax(0,1fr) 22px;gap:10px;align-items:start;min-height:0}.wb-turning-card{display:block;min-width:0}.wb-turning-top{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.wb-turning-title{display:block;min-width:0}.wb-turning-title .wb-name{margin-top:2px}.wb-turning-price{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-end;gap:3px}.wb-turning-price b{font-family:ui-monospace,monospace;font-size:22px;color:#1d2939}.wb-row-chevron{align-self:center;color:#667085;font-size:22px}.wb-turning-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px}.wb-turning-facts>span{min-width:0;padding:8px 10px;border-left:3px solid #b7c8d8;background:#f7fafc}.wb-turning-facts small{display:block;color:#667085;font-size:11px;font-weight:800}.wb-turning-facts b{display:block;margin-top:3px;color:#344054;font-size:14px;line-height:1.45;overflow-wrap:anywhere}.wb-turning-reason{margin:11px 0 0;padding:10px 12px;border-left:3px solid #7b619b;background:#faf8fd;color:#344054;font-size:15px;line-height:1.65}.wb-turning-reason b,.wb-turning-reason span{display:block}.wb-turning-reason b{margin-bottom:4px;color:#674d8c;font-size:12px}.wb-turning-reasons{display:block;margin:9px 0 0;padding:0;list-style:none;color:#526b84;font-size:14px;line-height:1.6}.wb-turning-reasons li{display:block;padding:6px 10px;border-top:1px solid #edf1f5;overflow-wrap:anywhere}.wb-turning-reasons-title{font-weight:900;color:#344054;background:#f8fafc}.wb-turning-judgement{background:#faf8fd}.wb-turning-inst-lines{margin-top:10px}.wb-turning-inst-line{padding:10px 0;border-top:1px solid #e6e3ec}.wb-turning-inst-line:first-child{border-top:0;padding-top:0}.wb-turning-inst-line strong,.wb-turning-inst-total strong{display:block;color:#1d2939;font-size:18px;font-weight:900;line-height:1.25}.wb-turning-inst-line span,.wb-turning-inst-total span{display:block;margin-top:4px;color:#344054;font-size:15px;font-weight:700;line-height:1.65}.wb-turning-inst-total{margin-top:10px;padding:10px 11px;border-left:4px solid #52718d;background:#f4f8fc}.wb-turning-inst-total i{font-style:normal;color:#7b8795}.wb-inst-buy{color:#D93025;font-style:normal;font-weight:900}.wb-inst-sell{color:#0B8F55;font-style:normal;font-weight:900}.wb-etf-row{min-width:0;max-width:100%;overflow:hidden}.wb-etf-period-title{display:block;margin-bottom:10px;color:#526b84;font-size:13px;font-weight:900;line-height:1.45;overflow-wrap:anywhere}.wb-etf-top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:start}.wb-etf-title{min-width:0}.wb-etf-title .wb-name{display:block;margin-top:6px;overflow-wrap:anywhere;word-break:normal}.wb-etf-score{min-width:78px}.wb-etf-score small{white-space:nowrap}.wb-etf-score b{white-space:nowrap}.wb-review-horizon{margin-top:11px;padding-top:11px;border-top:1px solid #edf1f5}.wb-review-horizon header{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.wb-review-horizon header>b{font-size:14px}.wb-review-horizon header small{color:#667085;font-size:11px;font-weight:700}.wb-review-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:8px}.wb-review-metric{min-width:0;padding:8px;border-left:3px solid #b7c8d8;background:#f7fafc}.wb-review-metric small,.wb-review-metric em{display:block;color:#667085;font-size:10px;font-style:normal;line-height:1.4}.wb-review-metric b{display:block;margin:3px 0 2px;font-family:ui-monospace,monospace;font-size:15px;overflow-wrap:anywhere}.wb-review-samples{margin-top:12px;border-top:1px solid #edf1f5;padding-top:10px}.wb-review-samples>b{display:block;color:#344054;font-size:12px;margin-bottom:4px}.wb-review-sample{display:grid;grid-template-columns:minmax(110px,1.4fr) repeat(3,minmax(65px,1fr));gap:7px;align-items:center;border-top:1px solid #edf1f5;padding:8px 0;font-size:11px}.wb-review-sample>div{min-width:0}.wb-review-sample b{display:block;font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere}.wb-review-sample small{display:block;color:#667085;font-size:10px;line-height:1.35}.wb-review-sample span{text-align:right;min-width:0}@media(max-width:620px){.wb-turning-row{display:grid;grid-template-columns:minmax(0,1fr) 18px;gap:7px;padding:14px 12px}.wb-turning-title .wb-name{font-size:22px}.wb-turning-facts{grid-template-columns:1fr;gap:6px}.wb-turning-facts>span{padding:8px 9px}.wb-turning-facts b{font-size:15px}.wb-turning-reason{font-size:16px;line-height:1.6}.wb-turning-reasons{font-size:15px}.wb-turning-inst-line strong,.wb-turning-inst-total strong{font-size:21px}.wb-turning-inst-line span,.wb-turning-inst-total span{font-size:16px;line-height:1.7}.wb-etf-period-title{font-size:14px;margin-bottom:9px}.wb-etf-top{gap:9px}.wb-etf-title .wb-name{font-size:22px;line-height:1.35}.wb-etf-score{min-width:72px}.wb-etf-score b{font-size:23px}.wb-etf-metrics{grid-template-columns:1fr;gap:6px}.wb-etf-metric{min-width:0}.wb-etf-metric:last-child:nth-child(odd){grid-column:auto}.wb-review-horizon header{display:block}.wb-review-horizon header small{display:block;margin-top:2px}.wb-review-metrics{grid-template-columns:1fr;gap:6px}.wb-review-metric{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:4px 8px;padding:9px}.wb-review-metric small{grid-column:1}.wb-review-metric b{grid-column:2;grid-row:1 / span 2;text-align:right;font-size:16px}.wb-review-metric em{grid-column:1}.wb-review-sample{grid-template-columns:1fr 1fr;gap:5px 8px;padding:10px 0}.wb-review-sample>div{grid-column:1/-1}.wb-review-sample span{display:grid;grid-template-columns:1fr auto;gap:4px;text-align:left}.wb-review-sample span small{align-self:center}.wb-review-sample span b{text-align:right;font-size:13px}}\n\n\n.wb-review-extremes{margin:12px 0;padding:11px;border:1px solid #d7e0ea;border-radius:8px;background:#fbfdff}.wb-review-extremes>b{display:block;margin-bottom:8px;color:#344054;font-size:13px;font-weight:900}.wb-review-extremes>div{display:grid;grid-template-columns:1fr 1fr;gap:8px}.wb-review-extreme{min-width:0;padding:9px 10px;border-left:4px solid #b7c8d8;background:#f7fafc}.wb-review-extreme.best{border-left-color:#D93025;background:#fff7f6}.wb-review-extreme.worst{border-left-color:#0B8F55;background:#f4fbf7}.wb-review-extreme small,.wb-review-extreme b{display:block}.wb-review-extreme small{color:#667085;font-size:11px;font-weight:800}.wb-review-extreme b{margin-top:3px;color:#344054;font-size:14px;overflow-wrap:anywhere}.wb-review-extreme strong{display:block;margin-top:4px;font-family:ui-monospace,monospace;font-size:18px}.wb-review-samples>b small{margin-left:5px;color:#667085;font-size:10px;font-weight:700}.wb-review-more{display:block;margin-top:2px;border-top:1px solid #edf1f5}.wb-review-more summary{cursor:pointer;padding:10px 0;color:#274c77;font-size:12px;font-weight:900}.wb-review-more[open] summary{border-bottom:1px solid #edf1f5}\n@media(max-width:620px){.wb-review-extremes{padding:10px}.wb-review-extremes>div{grid-template-columns:1fr;gap:6px}.wb-review-extreme{display:grid;grid-template-columns:1fr auto;gap:3px 8px;align-items:center}.wb-review-extreme small{grid-column:1}.wb-review-extreme b{grid-column:1;margin-top:0;font-size:15px}.wb-review-extreme strong{grid-column:2;grid-row:1 / span 2;margin:0;font-size:18px;text-align:right}.wb-review-more summary{padding:12px 0;font-size:14px}}\n\n/* V15：選股工作台視覺升級——保留原本結構，只提高金融資訊層級與可讀性 */\n.wb-shell{--wb-navy:#183b5c;--wb-blue:#3e78a6;--wb-line:#d9e4ee;--wb-bg:#f3f7fb;}\n.wb-intro{padding:8px 0 18px;border-bottom:0;position:relative}.wb-intro:after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:linear-gradient(90deg,#294f70,#78a9cb,transparent);border-radius:3px}\n.wb-intro h2{color:var(--wb-navy);font-size:30px;letter-spacing:-.02em}.wb-sub{line-height:1.6}.wb-status{border-radius:10px;box-shadow:0 4px 12px rgba(34,69,98,.06)}\n.wb-pulse{border-radius:13px;background:linear-gradient(135deg,#f8fbfe,#eef5fa);box-shadow:0 5px 16px rgba(34,69,98,.05);border-color:#d6e2ec}\n.wb-tabs{gap:8px;padding:13px 4px 0;border-bottom:1px solid #d5e0ea}.wb-tabs button{padding:9px 13px 11px;border-radius:8px 8px 0 0}.wb-tabs button.on{background:#edf5fb;color:#183f61;border-bottom-color:#3e78a6}\n.wb-tools{padding:14px 0}.wb-tools label{border-radius:11px;box-shadow:0 3px 10px rgba(35,69,96,.04)}.wb-tools button,.wb-filter-panel button{border-radius:9px}\n.wb-table{border-radius:15px;box-shadow:0 8px 24px rgba(34,69,98,.06);border-color:#d6e2ec}.wb-head{background:linear-gradient(180deg,#f6f9fc,#eef4f8);padding-top:13px;padding-bottom:13px}.wb-row{min-height:118px;transition:transform .12s ease,box-shadow .12s ease,background .12s ease}.wb-row:hover{background:#f8fbfe;box-shadow:inset 4px 0 #4d80a7,0 2px 8px rgba(45,79,106,.05)}.wb-row:active{transform:scale(.995);background:#edf5fb}\n.wb-rich-row{min-height:165px}.wb-name{font-size:20px;color:#173c5d}.wb-score{font-size:25px;color:#173c5d}.wb-score-block,.wb-price-block{padding:3px 0}.wb-up{color:#c93636!important}.wb-down{color:#168153!important}.wb-flat{color:#738195!important}\n.wb-score-change-panel{box-shadow:0 7px 22px rgba(35,73,103,.08)!important}.wb-score-change-head{background:linear-gradient(135deg,#edf5fb,#f8fbfe)!important}\n.wb-drawer{padding:20px 20px 30px}.wb-drawer.open{box-shadow:-18px 0 40px rgba(22,52,77,.18)}\n@media(max-width:620px){.wb-shell{margin-top:10px}.wb-intro h2{font-size:26px}.wb-tabs{gap:5px}.wb-tabs button{padding:8px 10px 10px;font-size:12px}.wb-row{border-radius:0}.wb-table{border-radius:13px}.wb-rich-row{min-height:150px}}\n\n.wb-etf-category-tabs{display:flex;gap:8px;padding:12px 14px;overflow-x:auto;overscroll-behavior-x:contain;border-bottom:1px solid #dfe8ef;background:#fff;scrollbar-width:none}.wb-etf-category-tabs::-webkit-scrollbar{display:none}.wb-etf-category-tab{flex:0 0 auto;border:1px solid #b9cad8;border-radius:9px;background:#fff;color:#526b84;padding:9px 12px;font-size:14px;font-weight:900;white-space:nowrap}.wb-etf-category-tab.active{border-color:#405d77;background:#edf5fb;color:#1d496c;box-shadow:inset 0 -2px #405d77}.wb-etf-category[hidden]{display:none}@media(max-width:640px){.wb-etf-category-tabs{padding:11px 12px}.wb-etf-category-tab{padding:9px 11px;font-size:15px}}\n.wb-score-change-empty{padding:18px 14px 19px;background:#fff;text-align:center}.wb-score-change-empty b{display:block;color:#344054;font-size:12px}.wb-score-change-empty small{display:block;margin-top:6px;color:#7b8795;font-size:10px;line-height:1.55}\n/* V9：面板在 JS 初始化前也必須可見 */\n.wb-score-change-panel{display:block!important;visibility:visible!important;opacity:1!important}\n.wb-score-change-panel[hidden]{display:block!important}\n.wb-score-change-panel{margin:10px 0 14px;border:1px solid #d7e2ec;border-radius:13px;background:#fff;overflow:hidden;box-shadow:0 4px 14px rgba(39,76,119,.06)}.wb-score-change-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;background:linear-gradient(135deg,#f5f9fd,#edf5fb);border-bottom:1px solid #dfe8ef}.wb-score-change-head>div{display:flex;align-items:center;gap:8px}.wb-score-change-head span{font-size:14px;font-weight:900;color:#244a6c}.wb-score-change-head b{font-size:10px;padding:3px 7px;border-radius:999px;background:#e2edf6;color:#45647e}.wb-score-change-head small{font-size:9.5px;color:#7a8a99}.wb-score-change-list{display:flex;flex-direction:column}.wb-score-change-row{display:grid;grid-template-columns:minmax(0,1fr) auto 20px;align-items:center;gap:10px;width:100%;border:0;border-bottom:1px solid #edf1f5;background:#fff;text-align:left;padding:11px 13px;cursor:pointer}.wb-score-change-row:last-child{border-bottom:0}.wb-score-change-row:hover{background:#f7fbff}.wb-score-change-name{min-width:0}.wb-score-change-name b{display:block;color:#203b53;font-size:12px;line-height:1.35}.wb-score-change-name small{display:block;margin-top:3px;color:#7a8b9a;font-size:9.5px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-score-change-score{display:flex;align-items:center;gap:8px;white-space:nowrap}.wb-score-change-score b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#34536d;font-size:11px}.wb-score-change-score em{font-style:normal;font-family:ui-monospace,monospace;font-weight:900;font-size:10px}.wb-score-change-score em.up{color:#D93025}.wb-score-change-score em.down{color:#0B8F55}.wb-score-change-score em.flat{color:#7b8795}.wb-score-change-arrow{font-size:20px;color:#8a9aaa;text-align:right}@media(max-width:640px){.wb-score-change-head{align-items:flex-start;flex-direction:column;gap:4px}.wb-score-change-row{grid-template-columns:minmax(0,1fr) auto 15px;padding:11px 10px}.wb-score-change-name b{font-size:13px}.wb-score-change-name small{font-size:9px}.wb-score-change-score{display:flex;flex-direction:column;align-items:flex-end;gap:2px}}.wb-score-change-head-right{display:flex;align-items:center;gap:8px}.wb-score-change-head-right label{display:flex;align-items:center;gap:5px;color:#526b84;font-size:10px;font-weight:800}.wb-score-change-head-right select{border:1px solid #cfd9e5;border-radius:7px;background:#fff;color:#344054;padding:5px 7px;font:inherit;font-size:10px;outline:0}.wb-score-change-more{border-top:1px solid #dfe7ee;background:#fbfdff}.wb-score-change-more>summary{list-style:none;cursor:pointer;padding:11px 14px;color:#526b84;font-size:11px;font-weight:800}.wb-score-change-more>summary::-webkit-details-marker{display:none}.wb-score-change-more>summary:before{content:\'＋\';display:inline-block;margin-right:6px;color:#52718d}.wb-score-change-more[open]>summary:before{content:\'－\'}.wb-score-change-more>summary span{font-weight:600;color:#8491a0}.wb-score-change-more .wb-score-change-list{border-top:1px solid #edf1f5}.wb-score-change-more .wb-score-change-row:last-child{border-bottom:0}@media(max-width:640px){.wb-score-change-head-right{width:100%;justify-content:space-between}.wb-score-change-head-right select{max-width:145px}.wb-score-change-head-right small{font-size:9px}}.wb-d-loading{min-height:220px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:9px;color:#344054}.wb-d-loading b{font-size:17px}.wb-d-loading small{color:#7b8795;font-size:11px}.wb-d-loading-dot{width:28px;height:28px;border:3px solid #dbe7f1;border-top-color:#52718d;border-radius:50%;animation:wbdspin .75s linear infinite}@keyframes wbdspin{to{transform:rotate(360deg)}}\n/* 選股卡片內部詳情：外部工作台不改，只升級抽屜內容 */\n.wb-d-container{padding:4px 2px 30px}\n.wb-d-hero{margin:0 -4px 18px;padding:18px;border:1px solid #dbe4ec;border-radius:14px;background:linear-gradient(145deg,#f7fbff,#eef5fb);box-shadow:0 6px 18px rgba(39,76,119,.08)}\n.wb-d-hero-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}\n.wb-d-label{display:inline-block;font-size:10px;font-weight:800;letter-spacing:.08em;color:#52708c;margin-bottom:5px}\n.wb-d-hero h3{margin:0!important;font-size:25px!important;line-height:1.2;color:#172b3f}\n.wb-d-hero h3 small{font-size:13px;color:#718096;font-weight:700}\n.wb-d-hero p{margin:6px 0 0!important;color:#66788a!important;font-size:12px!important}\n.wb-d-price{display:flex;align-items:baseline;gap:10px;margin-top:17px}\n.wb-d-price b{font-size:28px;font-family:ui-monospace,SFMono-Regular,monospace;color:#162c42}\n.wb-d-price span{font-size:14px;font-weight:800;color:#4b6b88}\n.wb-d-score{min-width:74px;text-align:center;border:1px solid #cad9e7;border-radius:12px;background:#fff;padding:8px 7px}\n.wb-d-score b{display:block;font-size:24px;line-height:1;font-family:ui-monospace,monospace;color:#234d74}\n.wb-d-score small{display:block;margin-top:5px;color:#718096;font-size:10px}\n.wb-d-rank{text-align:right}.wb-d-rank small{display:block;color:#718096;font-size:10px}.wb-d-rank b{font-size:28px;color:#234d74;font-family:ui-monospace,monospace}\n.wb-d-chip-signal{padding:7px 10px;border-radius:8px;font-size:12px;font-weight:800;background:#fff;border:1px solid #d5e0e9}\n.wb-d-chip-signal.chip-sell-to-buy{color:#19734a}.wb-d-chip-signal.chip-buy-to-sell{color:#a64a43}.wb-d-chip-signal.chip-neutral{color:#52677a}\n.wb-d-state{padding:7px 10px;border-radius:8px;font-size:12px;font-weight:800;background:#fff;border:1px solid #d5e0e9}\n.wb-d-state.good{color:#18794e}.wb-d-state.bad{color:#a84646}.wb-d-state.wait{color:#806b2e}\n.wb-d-section{margin:0 0 17px;padding:15px;border:1px solid #e0e7ee;border-radius:12px;background:#fff}\n.wb-d-section-head{margin-bottom:12px}.wb-d-section-head h4{margin:0;color:#213b54;font-size:15px}.wb-d-section-head small{display:block;margin-top:3px;color:#8491a0;font-size:10.5px}\n.wb-d-facts{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#e1e8ee;border:1px solid #e1e8ee;border-radius:8px;overflow:hidden}\n.wb-d-fact{min-width:0;background:#f9fbfd;padding:10px 11px}.wb-d-fact small{display:block;color:#7a8998;font-size:10px}.wb-d-fact b{display:block;margin-top:4px;color:#263f55;font-size:12px;line-height:1.4;word-break:break-word}\n.wb-d-score-list{display:flex;flex-direction:column;gap:10px}.wb-d-score-row>div:first-child{display:flex;justify-content:space-between;font-size:11px;color:#536779}.wb-d-score-row b{font-family:ui-monospace,monospace;color:#244a6c}.wb-d-bar{height:7px;margin-top:5px;border-radius:99px;background:#e8eef3;overflow:hidden}.wb-d-bar i{display:block;height:100%;border-radius:99px;background:#4d789f}\n.wb-d-insight-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:12px 0 17px}.wb-d-insight-grid>div{padding:11px;border:1px solid #e0e7ee;border-radius:10px;background:#fbfcfd}.wb-d-insight-grid small{display:block;color:#8491a0;font-size:10px}.wb-d-insight-grid b{display:block;margin-top:4px;color:#244a6c;font-size:13px}.wb-d-insight-grid span{display:block;margin-top:3px;color:#697b8c;font-size:11px}\n.wb-d-inst-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.wb-d-inst-grid .wb-d-fact{border:1px solid #e0e7ee;border-radius:9px;background:#f9fbfd}\n.wb-d-list{list-style:none;padding:0;margin:0}.wb-d-list li{position:relative;padding:9px 0 9px 16px;border-top:1px solid #edf1f4;color:#405467;font-size:12px;line-height:1.55}.wb-d-list li:first-child{border-top:0}.wb-d-list li:before{content:"";position:absolute;left:2px;top:16px;width:5px;height:5px;border-radius:50%;background:#6c8ba5}\n.wb-d-note{padding:11px 12px;border-radius:9px;background:#f5f8fb;color:#526779;font-size:12px;line-height:1.65}\n.wb-d-empty{padding:14px;border-radius:9px;background:#f7f9fb;color:#8a96a3;font-size:11px;text-align:center}\n@media(max-width:620px){.wb-d-hero{padding:15px;border-radius:12px}.wb-d-hero h3{font-size:22px!important}.wb-d-price b{font-size:25px}.wb-d-facts{grid-template-columns:1fr 1fr}.wb-d-inst-grid{grid-template-columns:1fr}.wb-d-section{padding:13px}.wb-d-insight-grid{gap:7px}}\n\n\n\n/* V10: 個股詳細頁 1~8 區塊，只升級抽屜內部，不改外部選股台 */\n.wb-d-hero-premium{background:linear-gradient(135deg,#163b5c,#285c82 58%,#3b7597);color:#fff;border:0;box-shadow:0 12px 28px rgba(24,61,91,.18)}\n.wb-d-hero-premium .wb-d-label{color:#d8edf9}.wb-d-hero-premium h3{color:#fff}.wb-d-hero-premium h3 small,.wb-d-hero-premium p,.wb-d-hero-meta{color:#d4e6f0}.wb-d-hero-premium .wb-d-score{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22);backdrop-filter:blur(8px)}\n.wb-d-hero-premium .wb-d-score span,.wb-d-hero-premium .wb-d-score b{color:#fff}.wb-d-hero-premium .wb-d-price b{color:#fff}.wb-d-hero-premium .wb-d-price span{font-weight:900}.wb-d-hero-delta{display:block;margin-top:4px;font-size:11px;font-weight:900}.wb-d-hero-delta.up{color:#9af0c2}.wb-d-hero-delta.down{color:#ffb0b0}.wb-d-hero-delta.flat{color:#dbe8ef}\n.wb-d-factor-section{background:linear-gradient(180deg,#fff,#f8fbfd)}.wb-d-factor{margin:11px 0}.wb-d-factor>div:first-child{display:flex;justify-content:space-between;align-items:center;font-size:11px}.wb-d-factor>div:first-child span{font-weight:800;color:#405b70}.wb-d-factor>div:first-child b{font-family:ui-monospace,monospace;color:#274d69}.wb-d-factor-track{height:9px;background:#e9f0f4;border-radius:99px;overflow:hidden;margin-top:5px}.wb-d-factor-track i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#397aa0,#1f5477)}\n.wb-d-facts-compact{grid-template-columns:repeat(2,minmax(0,1fr))}.wb-d-empty-mini{padding:12px;border:1px dashed #d8e3ea;border-radius:10px;background:#f8fafb;color:#778895;font-size:11px;line-height:1.6}.wb-d-explain{display:grid;gap:8px}.wb-d-explain-item{padding:9px 10px;border:1px solid #e6edf2;border-radius:9px;background:#fbfcfd}.wb-d-explain-item b{display:block;font-size:10px;color:#4a6578}.wb-d-explain-item p{margin:3px 0 0;font-size:10.5px;line-height:1.55;color:#687a87;word-break:break-word}.wb-d-section{box-shadow:0 2px 9px rgba(30,61,82,.035)}\n@media(max-width:620px){.wb-d-facts-compact{grid-template-columns:1fr 1fr}.wb-d-hero-premium h3{font-size:21px}.wb-d-hero-meta{font-size:9px}}\n.wb-score-validation{margin:0 0 17px;border:1px solid #d7e1ea;border-radius:12px;background:#fff;overflow:hidden}.wb-score-validation>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 15px;background:linear-gradient(135deg,#f7fbff,#eef5fb)}.wb-score-validation>summary::-webkit-details-marker{display:none}.wb-score-validation>summary span{display:flex;flex-direction:column;gap:3px}.wb-score-validation>summary b{font-size:15px;color:#213b54}.wb-score-validation>summary small{font-size:10.5px;color:#8491a0}.wb-score-validation>summary em{font-style:normal;font-size:10px;font-weight:800;color:#52708c}.wb-score-validation-body{padding:13px}.wb-sv-loading,.wb-sv-note,.wb-sv-foot{padding:10px 11px;border-radius:9px;background:#f6f9fb;color:#667788;font-size:11px;line-height:1.65}.wb-sv-cards{display:grid;gap:9px;margin-top:10px}.wb-sv-card{padding:11px;border:1px solid #e0e7ee;border-radius:10px;background:#fbfcfd}.wb-sv-card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.wb-sv-card-head>b{font-size:13px;color:#244a6c}.wb-sv-good,.wb-sv-bad,.wb-sv-neutral{font-size:10px;font-weight:800}.wb-sv-good{color:#18794e}.wb-sv-bad{color:#a84646}.wb-sv-neutral{color:#7a8794}.wb-sv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.wb-sv-grid>div{padding:7px 8px;background:#f5f8fa;border-radius:7px}.wb-sv-grid small{display:block;color:#8793a0;font-size:9px}.wb-sv-grid b{display:block;margin-top:2px;color:#334e64;font-size:11px;font-family:ui-monospace,monospace}.wb-sv-gap{margin-top:8px;padding-top:8px;border-top:1px solid #e9eef2;color:#526879;font-size:10.5px;font-weight:700}.wb-sv-history{margin-top:11px;border-top:1px solid #e6ebef}.wb-sv-history-title{padding:10px 0 7px;font-size:11px;font-weight:800;color:#405a70}.wb-sv-history-row{display:grid;grid-template-columns:1.1fr .8fr .65fr 1fr 1fr 1fr;gap:5px;padding:7px 0;border-top:1px solid #eef1f4;font-size:9.5px;color:#66798a;align-items:center}.wb-sv-history-row b{color:#34536d}.wb-sv-history-row em{font-style:normal;font-family:ui-monospace,monospace}.wb-sv-foot{margin-top:10px;font-size:10px}.wb-sv-tabs{display:flex;gap:6px;margin:10px 0}.wb-sv-tab{border:1px solid #d7e1ea;background:#f7fafc;color:#64788a;border-radius:8px;padding:6px 12px;font-size:10px;font-weight:800;cursor:pointer}.wb-sv-tab.active{background:#244f70;color:#fff;border-color:#244f70}.wb-sv-chart-title{margin:13px 0 7px;font-size:12px;font-weight:900;color:#304e65}.wb-sv-chart-wrap{border:1px solid #dfe7ed;border-radius:12px;background:linear-gradient(180deg,#fbfdff,#f7fafc);padding:10px 10px 8px;overflow:hidden}.wb-sv-chart-wrap svg{display:block;width:100%;height:285px}.wb-sv-chart-legend{display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:8px 13px;margin-top:5px;color:#7c8c99;font-size:9.5px;line-height:1.5}.wb-sv-chart-legend span{display:inline-flex;align-items:center;gap:4px}.wb-sv-chart-legend i{width:7px;height:7px;border-radius:50%;display:inline-block}.wb-sv-chart-legend i.pos{background:#D93025}.wb-sv-chart-legend i.neg{background:#0B8F55}.wb-sv-chart-legend b{color:#536b7e}.wb-sv-chart-empty{padding:30px 12px;text-align:center;border:1px dashed #dce5eb;border-radius:10px;background:#fafcfd;color:#8997a4;font-size:11px;line-height:1.7}@media(max-width:620px){.wb-sv-grid{grid-template-columns:repeat(2,1fr)}.wb-sv-history-row{grid-template-columns:1fr 1fr 1fr;row-gap:5px}.wb-sv-history-row em{font-size:9px}}\n/* V50/V51: 持股權重移到第一層；移除選股台分數變化／歷史驗證額外查詢。 */\n/* V49: 國際盤勢首頁加入台指期夜盤＋三大美股指數。 */\n.home-us-list{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px!important}\n.home-us-list>span{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:10px 11px;border:1px solid #dfe6ed;border-radius:10px;background:#fbfcfe;min-width:0}\n.home-us-list>span b{font-size:11px;color:#536779;white-space:nowrap}\n.home-us-list>span strong{font-size:18px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.home-us-list>span strong.up{color:#D93025}.home-us-list>span strong.down{color:#0B8F55}.home-us-list>span strong.flat{color:#7b8795}\n@media(max-width:760px){.home-us-list{grid-template-columns:repeat(2,minmax(0,1fr))!important}.home-us-list>span strong{font-size:16px}}\n@media(min-width:761px) and (max-width:980px){.home-us-list{grid-template-columns:repeat(3,minmax(0,1fr))!important}}\n/* V48: 持股權重第一層＋變化箭頭；乖離風險只提示、不扣分。 */\n.wb-holding-row{grid-template-columns:minmax(260px,2fr) minmax(125px,.9fr) minmax(120px,.9fr) 22px!important}\n.wb-holding-weight,.wb-holding-price{display:flex;flex-direction:column;align-items:flex-end;min-width:0}\n.wb-holding-weight b{font-size:18px;color:#1d3349;font-family:ui-monospace,monospace}\n.wb-holding-weight small,.wb-holding-price small{margin-top:2px;color:#7a8794;font-size:10px}\n.wb-holding-weight em{font-style:normal;margin-top:3px;font-size:11px;font-weight:900}\n.wb-holding-price b{font-size:15px;color:#29445c;font-family:ui-monospace,monospace}\n.wb-d-chase-warning{margin-top:10px;padding:9px 11px;border-radius:9px;background:#FFF0F0;border:2px solid #D93025;color:#D93025;font-size:15px;font-weight:1000;line-height:1.25;letter-spacing:.02em}.wb-d-hero-premium .wb-d-chase-warning{position:relative;z-index:2}@media(max-width:760px){.wb-d-chase-warning{font-size:14px;padding:8px 10px}}\n.wb-chase-warning{display:inline-flex;align-items:center;gap:4px;margin:7px 6px 0 0;padding:6px 10px;border-radius:7px;background:#fff0f0;border:2px solid #D93025;color:#D93025;font-size:15px;font-weight:1000;line-height:1.2;letter-spacing:.02em;box-shadow:0 2px 8px rgba(217,48,37,.10)}\n@media(max-width:760px){.wb-holding-row{grid-template-columns:minmax(0,1.55fr) 74px 78px 18px!important;gap:6px!important;padding:11px 9px!important}.wb-holding-weight b{font-size:15px}.wb-holding-weight small,.wb-holding-price small{font-size:9px}.wb-holding-price b{font-size:13px}.wb-holding-row .wb-name{font-size:16px}.wb-holding-row .wb-fact-line{font-size:9.5px;line-height:1.45}.wb-chase-warning{font-size:13px;padding:5px 8px;margin-top:6px}}\n\n'
 
 
 def render_page(title, body, nav_active=None, user_name=None):
@@ -17724,137 +16775,7 @@ def render_page(title, body, nav_active=None, user_name=None):
 <title>{title}｜台股 BOT</title>
 <style>{BASE_CSS}</style>
 <style>{page_extra_css}</style>
-<style id="internal-top-loading">
-#page-nav-loader{{position:fixed;left:0;right:0;top:0;z-index:99999;transform:translateY(-110%);opacity:0;transition:transform .22s ease,opacity .18s ease;pointer-events:none;display:flex;justify-content:center}}
-#page-nav-loader.show{{transform:translateY(0);opacity:1}}
-#page-nav-loader .nav-loader-card{{width:min(520px,calc(100vw - 24px));margin:8px 12px 0;padding:10px 14px 11px;border-radius:0 0 14px 14px;background:rgba(255,255,255,.96);box-shadow:0 8px 28px rgba(0,0,0,.12);border:1px solid rgba(37,99,235,.12);backdrop-filter:blur(12px)}}
-#page-nav-loader .nav-loader-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;font-weight:700;color:#1e3a8a}}
-#page-nav-loader .nav-loader-title{{display:flex;align-items:center;gap:8px}}
-#page-nav-loader .nav-loader-spinner{{width:14px;height:14px;border-radius:50%;border:2px solid rgba(37,99,235,.18);border-top-color:#2563eb;animation:navspin .7s linear infinite}}
-#page-nav-loader.done .nav-loader-spinner{{animation:none;border-color:#16a34a;position:relative}}
-#page-nav-loader.done .nav-loader-spinner:after{{content:"✓";position:absolute;left:1px;top:-4px;font-size:12px;color:#16a34a;font-weight:900}}
-#page-nav-loader .nav-loader-percent{{font-variant-numeric:tabular-nums}}
-#page-nav-loader .nav-loader-track{{height:4px;margin-top:8px;border-radius:999px;overflow:hidden;background:#e8eefc}}
-#page-nav-loader .nav-loader-bar{{height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,#2563eb,#60a5fa);transition:width .12s linear}}
-@keyframes navspin{{to{{transform:rotate(360deg)}}}}
-</style>
-</head><body>
-<div id="page-nav-loader" aria-hidden="true">
-  <div class="nav-loader-card">
-    <div class="nav-loader-head">
-      <div class="nav-loader-title">
-        <span class="nav-loader-spinner"></span>
-        <span id="page-nav-loader-title">正在開啟頁面</span>
-      </div>
-      <span class="nav-loader-percent" id="page-nav-loader-percent">0%</span>
-    </div>
-    <div class="nav-loader-track"><div class="nav-loader-bar" id="page-nav-loader-bar"></div></div>
-  </div>
-</div>
-<script id="internal-top-loading-js">
-(function(){{
-  const loader=document.getElementById('page-nav-loader');
-  if(!loader)return;
-  const bar=document.getElementById('page-nav-loader-bar');
-  const pct=document.getElementById('page-nav-loader-percent');
-  const title=document.getElementById('page-nav-loader-title');
-  let raf=0,start=0,target=0,current=0,active=false;
-
-  function frame(now){{
-    if(!active)return;
-    const elapsed=(now-start)/1000;
-    const visual=Math.min(90,8+elapsed*18+Math.sqrt(elapsed)*18);
-    target=Math.max(target,visual);
-    current+=(target-current)*0.18;
-    if(current>89)current=89;
-    bar.style.width=current.toFixed(1)+'%';
-    pct.textContent=Math.floor(current)+'%';
-    raf=requestAnimationFrame(frame);
-  }}
-
-  window.showPageNavLoader=function(label){{
-    active=true;start=performance.now();target=0;current=0;
-    title.textContent=label||'正在開啟頁面';
-    loader.classList.remove('done');
-    loader.classList.add('show');
-    cancelAnimationFrame(raf);
-    raf=requestAnimationFrame(frame);
-  }};
-
-  window.finishPageNavLoader=function(){{
-    if(!active)return;
-    active=false;cancelAnimationFrame(raf);
-    current=100;bar.style.width='100%';pct.textContent='100%';
-    loader.classList.add('done');
-    setTimeout(function(){{
-      loader.classList.remove('show');
-      setTimeout(function(){{
-        loader.classList.remove('done');
-        bar.style.width='0%';pct.textContent='0%';
-      }},240);
-    }},180);
-  }};
-
-  // 持股五大因子放在持久 shell，fragment 導航後仍可用；避免長 inline JS 造成 HTML 引號解析錯誤。
-  (function(){{
-    function esc(v){{return String(v==null?'':v).replace(/[&<>"']/g,function(c){{return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c];}});}}
-    function status(r){{return r>=.8?'偏強':r>=.6?'中上':r>=.4?'中性':'偏弱';}}
-    function cls(r){{return r>=.8?'strong':r>=.6?'mid':r>=.4?'neutral':'weak';}}
-    function render(d){{
-      if(!d||!d.ok)return '<div class="position-factor-empty">五大因子暫時無法載入：'+esc(d&&d.error||'未知錯誤')+'</div>';
-      if(!d.scored)return '<div class="position-factor-empty">'+esc(d.note||'目前沒有可用的五大因子評分。')+'</div>';
-      var fs=Array.isArray(d.factors)?d.factors:[];
-      if(!fs.length)return '<div class="position-factor-empty">目前沒有可用的五大因子分項資料。</div>';
-      var valid=fs.filter(function(x){{return Number(x.max)>0;}});
-      var best=valid.slice().sort(function(a,b){{return (Number(b.value)/Number(b.max))-(Number(a.value)/Number(a.max));}})[0];
-      var worst=valid.slice().sort(function(a,b){{return (Number(a.value)/Number(a.max))-(Number(b.value)/Number(b.max));}})[0];
-      var bars=fs.map(function(x){{var v=Number(x.value)||0,m=Number(x.max)||0,r=m>0?Math.max(0,Math.min(1,v/m)):0;var details=Array.isArray(x.details)?x.details:[];var detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){{return '<div>'+esc(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\/b&gt;/g,'</b>')+'</div>';}}).join('')+'</div>':'';return '<details class="position-factor-item '+cls(r)+'"><summary class="position-factor-head"><span>'+esc(x.name)+'</span><b>'+v.toFixed(0)+' / '+m.toFixed(0)+'　'+status(r)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(r*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}}).join('');
-      var note='';
-      if(best)note+='<b>目前相對較強：</b>'+esc(best.name)+'（'+status(Number(best.value)/Number(best.max))+'）。';
-      if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+esc(worst.name)+'（'+status(Number(worst.value)/Number(worst.max))+'）。';
-      return '<div class="position-factor-overview"><div><small>五大因子綜合分數</small><b>'+esc(d.score==null?'—':Number(d.score).toFixed(0)+' 分')+'</b></div><em>'+esc(d.category||'個股')+'<br>資料日 '+esc(d.source_date||'未標日期')+'</em></div><div class="position-factor-list">'+bars+'</div>'+(note?'<div class="position-factor-note">'+note+'</div>':'')+'<div class="position-factor-source">分數沿用選股模型最近保存快照；不在手機端重新計算。</div>';
-    }}
-    window.loadPositionFactors=function(box){{
-      if(!box||box.dataset.loaded==='1')return;
-      var body=box.querySelector('.position-factors-body'),code=box.getAttribute('data-factor-code');
-      if(!body||!code)return;
-      box.dataset.loaded='1';
-      body.innerHTML='<div class="position-factor-loading">正在載入五大因子…</div>';
-      var token='';try{{token=new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}}catch(ignore){{}}
-      var url='/web/api/positions/factors?code='+encodeURIComponent(code)+(token?'&t='+encodeURIComponent(token):'');
-      fetch(url,{{credentials:'same-origin',cache:'no-store'}}).then(function(r){{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}}).then(function(d){{body.innerHTML=render(d);}}).catch(function(e){{box.dataset.loaded='';body.innerHTML='<div class="position-factor-empty">五大因子載入失敗：'+esc(e&&e.message||e)+'<br><small>請重新展開一次。</small></div>';}});
-    }};
-    document.addEventListener('click',function(e){{
-      var summary=e.target.closest('.position-factors-trigger');
-      if(!summary)return;
-      var box=summary.closest('.position-factors');
-      if(box)window.setTimeout(function(){{window.loadPositionFactors(box);}},0);
-    }},true);
-  }})();
-
-  document.addEventListener('click',function(e){{
-    const a=e.target.closest('a[href]');
-    if(!a||e.defaultPrevented)return;
-    if(a.target&&a.target!=='_self')return;
-    if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
-    const u=new URL(a.href,location.href);
-    if(u.origin!==location.origin)return;
-    if(!u.pathname.startsWith('/web/'))return;
-    if(u.href===location.href)return;
-    const labels={{
-      '/web/':'正在開啟首頁',
-      '/web/portfolio':'正在開啟首頁',
-      '/web/positions':'正在開啟持股',
-      '/web/workbench':'正在開啟選股台'
-    }};
-    showPageNavLoader(labels[u.pathname]||'正在開啟頁面');
-  }},true);
-
-  window.addEventListener('pageshow',function(){{
-    if(active)finishPageNavLoader();
-  }});
-}})();
-</script><div class="wrap">
+</head><body><div class="wrap">
 <header class="app-header">
   {page_back}
   <div class="eyebrow">TAIWAN STOCK BOT</div>
@@ -18039,73 +16960,11 @@ def render_page(title, body, nav_active=None, user_name=None):
     document.body.appendChild(toast);
     window.setTimeout(function() {{ if (toast.parentNode) toast.parentNode.removeChild(toast); }}, 1800);
   }}
-  function ensureTopNavLoadingForFullNavigation(title, steps) {{
-    try {{
-      var old = document.querySelector('.app-full-nav-loading');
-      if (old && old.parentNode) old.parentNode.removeChild(old);
-      var card = document.createElement('div');
-      card.className = 'app-load-card app-sync-float app-full-nav-loading';
-      card.setAttribute('role','status');
-      card.innerHTML = '<span class="app-sync-spinner" aria-hidden="true"></span>'
-        + '<span style="min-width:0;flex:1"><b>' + title + '</b>'
-        + '<small>資料較多時會逐步完成，請不用重複點擊</small>'
-        + '<span class="app-load-steps">' + (steps || []).map(function(label, i) {{
-            return '<span class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span class="step-icon" aria-hidden="true"></span><span>' + label + '</span></span>';
-          }}).join('') + '</span></span>';
-      document.body.appendChild(card);
-      var i = 0;
-      card._timer = window.setInterval(function() {{
-        var all = card.querySelectorAll('.app-load-step');
-        if (i < all.length - 1) i += 1;
-        all.forEach(function(step, idx) {{
-          step.classList.remove('done','active','pending');
-          if (idx < i) step.classList.add('done');
-          else if (idx === i) step.classList.add('active');
-          else step.classList.add('pending');
-        }});
-      }}, 650);
-    }} catch (ignore) {{}}
-  }}
-
-  function finishTopNavLoading() {{
-    try {{
-      var card = document.querySelector('.app-full-nav-loading');
-      if (!card) return;
-      if (card._timer) window.clearInterval(card._timer);
-      var steps = card.querySelectorAll('.app-load-step');
-      steps.forEach(function(step) {{ step.classList.remove('active','pending'); step.classList.add('done'); }});
-      var title = card.querySelector('b');
-      var sub = card.querySelector('small');
-      if (title) title.textContent = '✓ 載入完成';
-      if (sub) sub.textContent = '畫面已更新';
-      window.setTimeout(function() {{ if (card.parentNode) card.parentNode.removeChild(card); }}, 280);
-    }} catch (ignore) {{}}
-  }}
-  window.stockBotFinishPageLoading = finishTopNavLoading;
-
   function switchAppPage(rawHref, pushState) {{
     if (!appContent) {{ window.location.assign(rawHref); return; }}
     if (appNavBusy) return;
     var target = new URL(rawHref, window.location.href);
     if (!appRouteKeys[target.pathname]) {{ window.location.assign(target.pathname + target.search); return; }}
-    // 選股工作台含有大量原生頁面腳本；SPA fragment 插入後，部分 WebView/Safari
-    // 情況下動態 script 不會穩定執行，會只留下「讀取最近有效快照…」骨架。
-    // 因此選股工作台改走一次正常文件導覽；仍保留上方小型 Loading，而不是全頁動畫。
-    if (target.pathname === '/web/workbench') {{
-      // 工作台保留正常文件導覽，避免大量原生腳本在 fragment 插入後失效；
-      // 但內頁切換只顯示最上方細進度條，不再跳出大型 Loading 卡。
-      var wbNavProgress = document.createElement('div');
-      wbNavProgress.className = 'app-nav-loading show';
-      wbNavProgress.setAttribute('aria-hidden','true');
-      document.body.appendChild(wbNavProgress);
-      window.setTimeout(function() {{ wbNavProgress.classList.add('mid'); }}, 180);
-      target.searchParams.delete('fragment');
-      window.location.assign(target.pathname + (target.search ? '?' + target.searchParams.toString() : ''));
-      return;
-    }}
-    // 只有「第一次進站」使用全螢幕市場 Loading。
-    // 已經在 App 裡的頁面切換（包含回到今日首頁）一律走 SPA，
-    // 只顯示最上方細進度條，不覆蓋頁面內容。
     target.searchParams.set('fragment', '1');
     target.searchParams.delete('fast');
     var navSeq = ++appNavSeq;
@@ -18116,11 +16975,97 @@ def render_page(title, body, nav_active=None, user_name=None):
     if (pushState) appScrollRestore[window.location.pathname + window.location.search] = previousScroll;
     if (target.pathname === '/web/portfolio') target.searchParams.set('_nav', String(Date.now()));
     var requestUrl = target.pathname + '?' + target.searchParams.toString();
+    var navNotice = null;
     var navProgress = document.createElement('div');
     navProgress.className = 'app-nav-loading';
     navProgress.setAttribute('aria-hidden','true');
     document.body.appendChild(navProgress);
-    // 內頁切換不建立大型 Loading 卡，只使用上方細進度條。
+    // 只顯示「載入內容」的階段，不放無法由前端確認的「整理畫面」假進度。
+    // fetch 真正回來後，才把目前最後階段一次標成完成。
+    var loadStageMap = {{
+      '/web/portfolio':['市場資料','國際市場','大盤環境','我的持股','目前報價','今日損益','今日市場焦點','今日重要事件','選股結果','選股排名','風險檢查','我的績效'],
+      '/web/positions':['持股資料','目前報價','今日損益','持股分析','組合配置','風險檢查','今日重點','績效整理'],
+      '/web/workbench':['市場資料','營收資料','籌碼資料','計算排名'],
+      '/web/leaderboard':['排行榜快照','個人績效','趨勢資料'],
+      '/web/trades':['交易紀錄','績效計算','趨勢分析'],
+      '/web/compare':['比較資料','報酬計算','風險資料'],
+      '/web/settings':['設定資料','偏好設定','儲存狀態'],
+      '/web/more':['功能資料','狀態檢查'],
+      '/web/chips':['籌碼快照','法人資料','排序結果'],
+      '/web/etf':['ETF資料','報酬資料','分類排名'],
+      '/web/watchlist':['自選資料','目前報價','異動整理']
+    }};
+    var loadSteps = loadStageMap[target.pathname] || ['頁面資料','分析資料'];
+    var loadTitleMap = {{
+      '/web/portfolio':'正在載入今日資料…','/web/positions':'正在載入持股資料…','/web/workbench':'正在載入選股結果…',
+      '/web/leaderboard':'正在載入排行榜…','/web/trades':'正在載入交易紀錄…','/web/compare':'正在載入比較結果…',
+      '/web/settings':'正在載入設定…','/web/more':'正在載入功能…','/web/chips':'正在載入籌碼資料…',
+      '/web/etf':'正在載入 ETF 資料…','/web/watchlist':'正在載入自選資料…'
+    }};
+    var loadTitle = loadTitleMap[target.pathname] || '正在載入頁面…';
+    var stepTimer = null;
+    var stepIndex = 0;
+    var stageElapsed = 0;
+    var noticeTimer = null;
+    function ensureNavNotice() {{
+      if (navNotice) return;
+      navNotice = document.createElement('div');
+      navNotice.className = 'app-load-card';
+      navNotice.setAttribute('role','status');
+      navNotice.innerHTML = '<span class="app-sync-spinner" aria-hidden="true"></span>'
+        + '<span style="min-width:0;flex:1"><b>' + loadTitle + '</b>'
+        + '<small>資料較多時會逐步完成，請不用重複點擊</small>'
+        + '<span class="app-load-steps">'
+        + loadSteps.map(function(label, i) {{
+            return '<span class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span class="step-icon" aria-hidden="true"></span><span>' + label + '</span></span>';
+          }}).join('')
+        + '</span></span>';
+      // 一律掛在 body 最外層，避免被 .wrap / .app-content 等祖先元素的
+      // overflow、transform 或 stacking context 影響；fixed 才是真正跟著視窗走。
+      document.body.appendChild(navNotice);
+      function positionNavNotice() {{
+        if (!navNotice) return;
+        var header = document.querySelector('.app-header');
+        var headerBottom = header ? header.getBoundingClientRect().bottom : 72;
+        var top = Math.max(headerBottom + 10, 12);
+        navNotice.style.setProperty('top', top + 'px', 'important');
+        navNotice.style.setProperty('position', 'fixed', 'important');
+      }}
+      positionNavNotice();
+      window.addEventListener('resize', positionNavNotice, {{passive:true}});
+      navNotice._positionNavNotice = positionNavNotice;
+    }}
+    noticeTimer = window.setTimeout(ensureNavNotice, 180);
+    function setLoadStep(nextIndex, doneAll) {{
+      if (!navNotice) return;
+      var steps = navNotice.querySelectorAll('.app-load-step');
+      steps.forEach(function(step, i) {{
+        step.classList.remove('done','active','pending');
+        if (doneAll || i < nextIndex) step.classList.add('done');
+        else if (i === nextIndex) step.classList.add('active');
+        else step.classList.add('pending');
+      }});
+      if (doneAll) {{
+        var spinner = navNotice.querySelector('.app-sync-spinner');
+        if (spinner) spinner.style.display = 'none';
+      }}
+    }}
+    stepTimer = window.setInterval(function() {{
+      stageElapsed += 1;
+      if (stepIndex < loadSteps.length - 1) {{
+        stepIndex += 1;
+        setLoadStep(stepIndex, false);
+      }} else if (navNotice) {{
+        // 最後一階不是「整理畫面」；資料還沒回來時維持最後階段，
+        // 但讓文字持續變化，避免看起來像卡死。
+        var active = navNotice.querySelector('.app-load-step.active span:last-child');
+        if (active) {{
+          var dots = '.'.repeat((stageElapsed % 3) + 1);
+          active.textContent = loadSteps[loadSteps.length - 1] + dots;
+        }}
+      }}
+      if (navProgress.classList.contains('show')) navProgress.classList.add('mid');
+    }}, 1000);
     navProgress.classList.add('show');
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
@@ -18137,14 +17082,21 @@ def render_page(title, body, nav_active=None, user_name=None):
         document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
         appContent.innerHTML = fragment;
         executeFragmentScripts(appContent);
-        if (target.pathname !== '/web/portfolio') {{
-            upgradePreviewFragment(target.pathname, target.search);
+        upgradePreviewFragment(target.pathname, target.search);
+        if (stepTimer) {{ window.clearInterval(stepTimer); stepTimer = null; }}
+        if (noticeTimer) {{ window.clearTimeout(noticeTimer); noticeTimer = null; }}
+        setLoadStep(loadSteps.length, true);
+        if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
+        if (navNotice) {{
+          var loadTitleEl = navNotice.querySelector('b');
+          var loadSub = navNotice.querySelector('small');
+          if (loadTitleEl) loadTitleEl.textContent = '✓ 載入完成';
+          if (loadSub) loadSub.textContent = '畫面已更新';
+          window.setTimeout(function() {{
+            if (navNotice && navNotice._positionNavNotice) window.removeEventListener('resize', navNotice._positionNavNotice);
+            if (navNotice && navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
+          }}, 380);
         }}
-          if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
-        // 頁面內容已真正插入並完成 fragment scripts 後，才結束頂部導航動畫。
-        // 避免「內容已經好了，但仍卡著『正在開啟持股／選股台』」。
-        if (window.finishPageNavLoader) window.finishPageNavLoader();
-        appNavBusy = false;
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
         target.searchParams.delete('fragment');
@@ -18155,11 +17107,14 @@ def render_page(title, body, nav_active=None, user_name=None):
       }})
       .catch(function(error) {{
         if (error && error.name === 'AbortError') return;
+        if (stepTimer) {{ window.clearInterval(stepTimer); stepTimer = null; }}
+        if (noticeTimer) {{ window.clearTimeout(noticeTimer); noticeTimer = null; }}
         if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
-        if (window.finishPageNavLoader) window.finishPageNavLoader();
         appNavBusy = false;
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
+        if (navNotice && navNotice._positionNavNotice) window.removeEventListener('resize', navNotice._positionNavNotice);
+        if (navNotice && navNotice.parentNode) navNotice.parentNode.removeChild(navNotice);
         var retryNotice = document.createElement('div');
         retryNotice.className = 'app-fragment-status app-fragment-error';
         // 把錯誤內容顯示出來。只寫「請稍後再試」的話，
@@ -18561,117 +17516,42 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
         '<div id="detail-status" class="load-note" '
         'style="display:none;margin:8px 0 0">正在補上即時持股分析…</div>'
         if staged else "")
-    market_loader = title == "今日"
     shell = f"""
-<div id="loading" class="loading{' market-loading-screen' if market_loader else ''}">
-  {('<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div><div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="market-loader-title">正在整理今日市場</div><div class="market-loader-status" id="market-loader-status">正在連接市場資料…</div><div class="market-loader-progress-row"><div class="market-loader-bar"><i></i></div><span id="market-loader-percent">0%</span></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>市場資料</span></div><div class="app-load-step pending"><span>○</span><span>法人與估值</span></div><div class="app-load-step pending"><span>○</span><span>你的持股行情</span></div><div class="app-load-step pending"><span>○</span><span>今日市場判讀</span></div></div><div class="market-loader-foot">完整分析完成後自動進入首頁</div></div>') if market_loader else ('<div class="load-stage"><span id="loadstage">正在準備…</span></div>' + render_quote_block() + '<div class="load-note">' + note + '</div>')}
+<div id="loading" class="loading">
+  <div class="load-stage">
+    <span id="loadstage">正在準備…</span>
+  </div>
+  {render_quote_block()}
+  <div class="load-note">{note}</div>
 </div>
-<div id="content" class="loading-content" aria-live="polite" style="display:none"></div>
-<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.market-loading-screen{{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483000!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:#F7F3EA!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;color:#18283A!important}}.market-loader-inner{{width:min(88vw,390px);text-align:center;position:relative}}.market-loader-brand{{font-size:10px;letter-spacing:.24em;font-weight:900;color:#6E5228;margin-bottom:16px;opacity:.94}}.market-loader-brand span{{opacity:.45;font-weight:700}}.market-loader-visual{{height:138px;position:relative;margin:0 auto 20px;display:flex;align-items:center;justify-content:center}}.market-loader-grid{{position:absolute;inset:10px 18%;background:linear-gradient(rgba(53,107,145,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(53,107,145,.06) 1px,transparent 1px);background-size:18px 18px;mask-image:radial-gradient(circle,black 15%,transparent 72%);animation:market-grid-drift 5s linear infinite}}.market-loader-scan{{position:absolute;width:150px;height:2px;background:linear-gradient(90deg,transparent,rgba(185,154,103,.65),transparent);filter:blur(.2px);animation:market-scan 2.6s ease-in-out infinite}}.market-loader-glow{{position:absolute;width:150px;height:150px;border-radius:50%;background:radial-gradient(circle,rgba(53,107,145,.13),rgba(53,107,145,0) 68%);animation:market-glow 2.4s ease-in-out infinite}}.market-loader-orbit{{width:96px;height:96px;position:relative;display:grid;place-items:center;z-index:2}}.market-loader-ring{{position:absolute;inset:0;border:2.5px solid #D8E1E8;border-top-color:#356B91;border-right-color:#356B91;border-radius:50%;animation:market-spin 1.15s linear infinite;filter:drop-shadow(0 3px 8px rgba(53,107,145,.12))}}.market-loader-ring.ring-2{{inset:9px;border:1px dashed rgba(53,107,145,.22);border-left-color:#B99A67;animation:market-spin-reverse 2.4s linear infinite}}.market-loader-dot{{width:15px;height:15px;border-radius:50%;background:#356B91;box-shadow:0 0 0 0 rgba(53,107,145,.24);animation:market-pulse 1.55s ease-in-out infinite}}.market-loader-chart{{position:absolute;right:10%;bottom:1px;width:115px;height:58px;display:flex;align-items:flex-end;gap:5px;opacity:.72;transform:skewY(-7deg)}}.market-loader-chart i{{display:block;flex:1;border-radius:4px 4px 1px 1px;background:linear-gradient(to top,#356B91,rgba(53,107,145,.22));animation:market-bars 1.8s ease-in-out infinite}}.market-loader-chart i:nth-child(1){{height:22%}}.market-loader-chart i:nth-child(2){{height:42%;animation-delay:.08s}}.market-loader-chart i:nth-child(3){{height:34%;animation-delay:.16s}}.market-loader-chart i:nth-child(4){{height:58%;animation-delay:.24s}}.market-loader-chart i:nth-child(5){{height:48%;animation-delay:.32s}}.market-loader-chart i:nth-child(6){{height:72%;animation-delay:.40s}}.market-loader-chart i:nth-child(7){{height:63%;animation-delay:.48s}}.market-loader-chart i:nth-child(8){{height:88%;animation-delay:.56s}}.market-loader-title{{font-size:24px;font-weight:850;letter-spacing:.03em;color:#18283A}}.market-loader-status{{margin-top:9px;font-size:13px;color:#718092;min-height:22px}}.market-loader-progress-row{{display:flex;align-items:center;gap:10px;margin:18px auto 20px;width:100%}}.market-loader-progress-row>span{{font-size:11px;font-weight:800;letter-spacing:.08em;color:#356B91;min-width:32px;text-align:right}}.market-loader-bar{{height:6px;background:#E1E6EA;border-radius:99px;overflow:hidden;margin:20px auto 20px;width:100%;box-shadow:inset 0 1px 2px rgba(0,0,0,.04)}}.market-loader-bar i{{display:block;height:100%;width:0;background:linear-gradient(90deg,#356B91,#B99A67,#356B91);background-size:200% 100%;border-radius:99px;animation:market-progress 2.5s ease-in-out infinite,market-shimmer 1.5s linear infinite;will-change:transform}}.market-loader-steps{{display:grid;gap:9px;text-align:left;width:82%;margin:0 auto}}.market-loader-steps .app-load-step{{display:flex;align-items:center;gap:9px;font-size:12px;color:#9AA3AC;transition:all .3s ease}}.market-loader-steps .app-load-step span:first-child{{width:15px;text-align:center}}.market-loader-steps .app-load-step.active{{color:#356B91;font-weight:800;transform:translateX(3px)}}.market-loader-steps .app-load-step.done{{color:#5D7765;font-weight:700}}.market-loader-foot{{margin-top:18px;font-size:10px;color:#A3A9AE;letter-spacing:.04em}}@keyframes market-spin{{to{{transform:rotate(360deg)}}}}@keyframes market-grid-drift{{to{{background-position:0 18px,18px 0}}}}@keyframes market-scan{{0%,100%{{transform:translateY(-45px);opacity:0}}50%{{transform:translateY(45px);opacity:1}}}}@keyframes market-spin-reverse{{to{{transform:rotate(-360deg)}}}}@keyframes market-pulse{{0%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,.25)}}70%{{transform:scale(1);box-shadow:0 0 0 16px rgba(53,107,145,0)}}100%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,0)}}}}@keyframes market-glow{{0%,100%{{transform:scale(.88);opacity:.65}}50%{{transform:scale(1.08);opacity:1}}}}@keyframes market-bars{{0%,100%{{transform:scaleY(.72);transform-origin:bottom}}50%{{transform:scaleY(1);transform-origin:bottom}}}}@keyframes market-progress{{0%{{transform:translateX(-140%)}}50%{{transform:translateX(170%)}}100%{{transform:translateX(420%)}}}}@keyframes market-shimmer{{to{{background-position:200% 0}}}}@media(max-width:420px){{.market-loader-title{{font-size:22px}}.market-loader-steps{{width:90%}}.market-loader-chart{{right:2%;width:100px}}}}.market-loading-screen.is-complete{{opacity:0;transform:scale(1.015);transition:opacity .42s ease,transform .42s ease}}.market-loading-screen.is-hidden{{display:none!important}}</style>
+<div id="content" class="loading-content" aria-live="polite"><div class="loading-preview"><b>正在讀取最近有效資料…</b><span>先顯示頁面結構，不會重新掃描全市場</span><i></i><i></i><i></i></div></div>
+<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.loading-preview{{margin:14px 0;padding:18px 16px;border:1px solid #d7e0ea;border-radius:12px;background:#fff;color:#526b84}}.loading-preview b,.loading-preview span{{display:block}}.loading-preview b{{font-size:15px;color:#1d2939}}.loading-preview span{{margin-top:5px;font-size:12px}}.loading-preview i{{display:block;height:13px;margin-top:13px;border-radius:5px;background:linear-gradient(90deg,#eef3f7 20%,#dfeaf2 45%,#eef3f7 70%);background-size:220% 100%;animation:loading-scan 1.1s linear infinite}}.loading-preview i:nth-of-type(2){{width:82%}}.loading-preview i:nth-of-type(3){{width:64%}}@keyframes loading-scan{{to{{background-position:-120% 0}}}}</style>
 {detail_status_html}
 <script>
 (function () {{
   var stages = [{stages_js}];
   var stageEl = document.getElementById('loadstage');
-  var done = false, elapsed = 0, stageIndex = 0;
+  var done = false, elapsed = 0, stageIndex = 0, fragmentAttempt = 0;
 
-  // 體感進度：前段較快、後段逐漸放慢，最高停在 97%，真正完成才到 100%。
-  // 這樣即使後端跑 20～40 秒，也不會很早就卡在「最後一步」。
-  var startedAt = Date.now();
-  var visualFrame = 0;
-  var statusMessages = [
-    '正在掃描市場資料…', '正在比對法人與估值…', '正在整理你的持股行情…',
-    '正在計算組合變化…', '正在建立今日市場判讀…', '正在完成最後資料校驗…'
-  ];
-  var timer = null;
-  // 這不是假裝「精準知道後端進度」，而是用最近幾次首頁實測的中位數
-  // 做體感基準。首頁現在通常約 5~10 秒，進度會跟著這個速度走；
-  // 如果某次外部資料源突然變慢，90% 之後會改成非常緩慢的等待，60 秒與 75 秒會提示目前仍在同步，
-  // 不會再讓進度條早早跑完後卡死。
-  var expectedSec = 8;
-  function visualProgress(sec) {{
-    var stops = [
-      [0, 0], [2, 15], [4, 35], [6, 60], [8, 90]
-    ];
-    if (sec <= expectedSec) {{
-      for (var pi = 1; pi < stops.length; pi++) {{
-        if (sec <= stops[pi][0]) {{
-          var a = stops[pi - 1], b = stops[pi];
-          var t = (sec - a[0]) / (b[0] - a[0]);
-          t = t * t * (3 - 2 * t);
-          return a[1] + (b[1] - a[1]) * t;
-        }}
-      }}
-      return 90;
-    }}
-    return Math.min(97, 90 + (sec - expectedSec) * 0.12);
-  }}
-  function updateVisualProgress() {{
+  // 只輪換真實的處理階段，不顯示沒有後端回報依據的預估百分比。
+  var timer = setInterval(function () {{
     if (done) return;
-    visualFrame += 1;
-    var elapsedSec = (Date.now() - startedAt) / 1000;
-    var progress = visualProgress(elapsedSec);
-    var bar = document.querySelector('.market-loader-bar i');
-    var pct = document.getElementById('market-loader-percent');
-    if (bar) bar.style.width = progress.toFixed(1) + '%';
-    if (pct) pct.textContent = Math.round(progress) + '%';
-    var messageIndex = Math.min(statusMessages.length - 1, Math.floor(elapsedSec / 4));
-    var marketStatus = document.getElementById('market-loader-status');
-    if (marketStatus && elapsedSec > 2.5) {{
-      if (elapsedSec >= 75) {{
-        marketStatus.textContent = '資料同步時間較久，正在完成最後校驗…';
-      }} else if (elapsedSec >= 60) {{
-        marketStatus.textContent = '市場資料仍在整理中，請再等一下…';
-      }} else {{
-        marketStatus.textContent = statusMessages[messageIndex];
-      }}
-    }}
-    var stageStops = [2, 4, 6, 8];
-    var targetStage = 0;
-    for (var si2 = 0; si2 < stageStops.length; si2++) {{
-      if (elapsedSec >= stageStops[si2]) targetStage = Math.min(stages.length - 1, si2 + 1);
-    }}
-    stageIndex = Math.max(stageIndex, targetStage);
-    var steps = document.querySelectorAll('.market-loader-steps .app-load-step');
-    for (var si = 0; si < steps.length; si++) {{
-      steps[si].classList.remove('active');
-      steps[si].classList.remove('done');
-      var icon = steps[si].querySelector('span:first-child');
-      if (si < stageIndex) {{ steps[si].classList.add('done'); if (icon) icon.textContent = '✓'; }}
-      else if (si === stageIndex) {{ steps[si].classList.add('active'); if (icon) icon.textContent = '●'; }}
-      else if (icon) icon.textContent = '○';
-    }}
-    visualTimer = window.requestAnimationFrame(updateVisualProgress);
-  }}
-  var visualTimer = window.requestAnimationFrame(updateVisualProgress);
+    elapsed += 2.6;
+    stageIndex = Math.min(stages.length - 1, stageIndex + 1);
+    var label = stages[stageIndex] || '正在處理…';
+    if (elapsed > 45) label = '資料量較大，仍在處理中…';
+    else if (elapsed > 25) label = stages[stages.length - 1] + '（仍在處理）';
+    else if (elapsed > 10) label = '仍在等待資料回應，先保留目前畫面…';
+    stageEl.textContent = label;
+  }}, 2600);
 
   function finish(html) {{
     done = true;
     clearInterval(timer);
-    if (visualTimer) window.cancelAnimationFrame(visualTimer);
-    var bar = document.querySelector('.market-loader-bar i');
-    var pct = document.getElementById('market-loader-percent');
-    if (bar) bar.style.width = '100%';
-    if (pct) pct.textContent = '100%';
-    var marketStatus = document.getElementById('market-loader-status');
-    if (marketStatus) marketStatus.textContent = '分析完成，正在開啟今日首頁…';
-    var steps = document.querySelectorAll('.market-loader-steps .app-load-step');
-    for (var si = 0; si < steps.length; si++) {{
-      steps[si].classList.remove('active');
-      steps[si].classList.add('done');
-      var icon = steps[si].querySelector('span:first-child');
-      if (icon) icon.textContent = '✓';
-    }}
     setTimeout(function () {{
       var content = document.getElementById('content');
       content.innerHTML = html;
-      content.style.display = '';
-      var loadingEl = document.getElementById('loading');
-      if (loadingEl) loadingEl.classList.add('is-complete');
-      setTimeout(function () {{
-        if (loadingEl) loadingEl.classList.add('is-hidden');
-        if (loadingEl) loadingEl.style.setProperty('display', 'none', 'important');
-      }}, 420);
+      document.getElementById('loading').style.display = 'none';
       if ({staged_literal}) {{
         var status = document.getElementById('detail-status');
         if (status) status.style.display = 'block';
@@ -18738,7 +17618,9 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   if ({staged_literal}) fragmentParams.set('fast', '1');
   var url = window.location.pathname + '?' + fragmentParams.toString();
 
-  fetchWithTimeout(url, 90000)
+  function loadFragment() {{
+    fragmentAttempt += 1;
+    fetchWithTimeout(url, 30000)
     .then(function (r) {{
       if (r.status === 401) {{
         // Cookie 可能被 LINE WebView 清掉。先用同網域保存的 token
@@ -18767,65 +17649,27 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
         if (html !== null) finish(html);
     }})
     .catch(function (e) {{
+      // 首次開啟時 Render／資料庫剛喚醒，第一個 fragment 偶爾會短暫回 5xx。
+      // 不要求使用者自己重新整理：同一頁自動重試，成功後照原流程替換內容。
+      var status = e && e.status ? Number(e.status) : 0;
+      if (!done && {staged_literal} && fragmentAttempt < 12 && (status >= 500 || status === 0)) {{
+        stageEl.textContent = '首次載入資料中，正在自動重試…';
+        window.setTimeout(loadFragment, 1800);
+        console.warn('首頁 fragment 首次載入失敗，將自動重試：', e);
+        return;
+      }}
       done = true;
       clearInterval(timer);
-      if (visualTimer) window.cancelAnimationFrame(visualTimer);
-      var message = (e && e.message ? e.message : String(e || '未知錯誤'));
-      var marketStatus = document.getElementById('market-loader-status');
-      var marketFoot = document.querySelector('.market-loader-foot');
-      var loadingEl = document.getElementById('loading');
-      var marketMode = !!document.querySelector('.market-loading-screen');
-
-      // 今日首頁使用全螢幕市場 Loader；其他頁面仍沿用原本的 loadstage。
-      // 不要再假設 stageEl 一定存在，否則市場 Loader 出錯時會二次 TypeError，
-      // 讓使用者只看到 90% 卡住，卻看不到真正原因。
-      if (marketMode) {{
-        if (marketStatus) {{
-          marketStatus.textContent = message.indexOf('逾時') >= 0
-            ? '分析時間較久，首頁尚未收到完整資料。'
-            : '首頁分析暫時未完成，請重新載入。';
-        }}
-        var bar = document.querySelector('.market-loader-bar i');
-        var pct = document.getElementById('market-loader-percent');
-        if (bar) bar.style.width = '97%';
-        if (pct) pct.textContent = '97%';
-        if (marketFoot) marketFoot.textContent =
-          '可重新載入首頁；若持續發生，請檢查伺服器日誌。';
-        if (loadingEl) {{
-          var oldRetry = loadingEl.querySelector('.market-loader-retry');
-          if (!oldRetry) {{
-            oldRetry = document.createElement('button');
-            oldRetry.className = 'market-loader-retry';
-            oldRetry.type = 'button';
-            oldRetry.textContent = '重新載入首頁';
-            oldRetry.style.cssText = 'margin-top:16px;border:1px solid #b9c8d4;background:#fff;border-radius:999px;padding:9px 18px;color:#356B91;font-weight:800;font-size:12px;box-shadow:0 4px 12px rgba(53,107,145,.10);';
-            oldRetry.onclick = function() {{
-              try {{
-                var u = new URL(window.location.href);
-                u.searchParams.delete('fragment');
-                u.searchParams.delete('_nav');
-                u.searchParams.set('_retry', String(Date.now()));
-                oldRetry.disabled = true;
-                oldRetry.textContent = '重新載入中…';
-                window.location.replace(u.pathname + (u.search ? '?' + u.searchParams.toString() : ''));
-              }} catch (ignore) {{
-                window.location.href = window.location.pathname + '?_retry=' + Date.now();
-              }}
-            }};
-            var inner = loadingEl.querySelector('.market-loader-inner');
-            if (inner) inner.appendChild(oldRetry);
-          }}
-        }}
-      }} else if (stageEl) {{
-        stageEl.textContent = '載入失敗：' + message;
-        var hint = document.createElement('div');
-        hint.className = 'sub';
-        hint.style.marginTop = '8px';
-        hint.textContent = 'HTTP 500 代表伺服器端出錯，其他多半是網路問題，重新整理即可。';
-        if (stageEl.parentNode) stageEl.parentNode.appendChild(hint);
-      }}
+      stageEl.textContent = '載入失敗：' + (e && e.message ? e.message : e);
+      var hint = document.createElement('div');
+      hint.className = 'sub';
+      hint.style.marginTop = '8px';
+      hint.textContent = '伺服器暫時未回應，系統會持續自動重試；若仍失敗才需要重新整理。';
+      stageEl.parentNode.appendChild(hint);
       console.error(e);
     }});
+  }}
+  loadFragment();
 }})();
 </script>"""
     # 骨架也要走 render_page，才會帶上樣式與導覽列——
@@ -19417,10 +18261,7 @@ def web_positions(uid):
     positions = merge_positions(get_positions(uid))
     positions_data_done = time.monotonic()
     inst_started = time.monotonic()
-    # 持股頁只需要目前持股的法人資料與股票名稱，不需要把全市場法人快照
-    # 載入進來。指定 codes 會直接走 Supabase 的持股快照查詢。
-    position_codes_for_page = [str(p.get("code") or "").strip() for p in positions]
-    inst = fetch_institutional_data(position_codes_for_page) if position_codes_for_page else {}
+    inst = fetch_institutional_data() or {}
     inst_done = time.monotonic()
 
     def sell_form(lot_id, max_shares, code, cur_price, lot_cost, label="賣出"):
@@ -19546,12 +18387,11 @@ def web_positions(uid):
     rows_html, total_value, total_cost = [], 0.0, 0.0
     total_day_pl = 0.0
     enriched = []
-    # 主頁抓 3mo 日線：這已足夠計算近 60 日位階／均線，且能直接重用
-    # 首頁剛取得的同代號報價快取；原本使用 1d 會建立另一份 cache key，
-    # 從首頁切到持股時又重新打 Yahoo，容易把切頁拖到 20～30 秒。
+    # 主頁先抓 1d 即時資料；較重的一年損益走勢在使用者展開個別明細時才抓取，
+    # 所以不會為尚未查看的圖表付出外部請求成本。
     quote_started = time.monotonic()
     price_map = get_realtime_stocks_bulk(
-        [p["code"] for p in positions], rng="3mo")
+        [p["code"] for p in positions], rng="1d")
     quote_done = time.monotonic()
     for p in positions:
         price = price_map.get(p["code"])
@@ -19614,6 +18454,7 @@ def web_positions(uid):
     <div><small>今日損益</small><b class="{day_cls}" data-position-day-pl="1">{day_pl:+,.0f}</b></div>
     <div><small>市值</small><b>{value:,.0f}</b></div>
     <div><small>持有報酬</small><b class="{'up' if gross_pl >= 0 else 'down'}">{gross_pct_text}</b></div>
+    <div><small>組合權重</small><b>{weight:.1f}%</b></div>
   </div>
   <details class="position-more">
     <summary>查看詳細資料</summary>
@@ -19621,14 +18462,8 @@ def web_positions(uid):
       <div class="position-card-grid">
         <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
         <div><small>估算賣出淨損益</small><b class="{net_cls}">{net_amt:+,.0f}</b><em>{net_pct_text}</em></div>
-        <div><small>目前權重</small><b>{weight:.1f}%</b></div>
         <div><small>行情</small><b class="position-quote-stamp" data-position-stamp="1">{quote_stamp_safe}</b></div>
       </div>
-      <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b>{weight:.1f}%</b></div>
-      <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}">
-        <summary class="position-factors-trigger">🧭 查看五大因子與目前狀況</summary>
-        <div class="position-factors-body"><div class="position-factor-loading">展開後載入最近保存的五大因子…</div></div>
-      </details>
       <div class="position-card-actions">
         <details class="disclosure trend" data-code="{html.escape(str(p['code']), quote=True)}" ontoggle="window.loadPositionTrend(this)">
           <summary>📈 損益走勢</summary>
@@ -19662,10 +18497,6 @@ def web_positions(uid):
         <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
         <div><small>行情狀態</small><b class="flat position-quote-stamp" data-position-stamp="1">暫無可驗證行情</b></div>
       </div>
-      <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}">
-        <summary class="position-factors-trigger">🧭 查看五大因子與目前狀況</summary>
-        <div class="position-factors-body"><div class="position-factor-loading">展開後載入最近保存的五大因子…</div></div>
-      </details>
       <div class="position-card-actions">{lots_html(p, p['code'], None)}</div>
     </div>
   </details>
@@ -19677,7 +18508,7 @@ def web_positions(uid):
 <div class="totals">
   <div><div class="total-label">總市值</div>
        <div class="total-value num">{total_value:,.0f}</div>
-       <div class="total-sub">{fmt_pct(pl_total)}</div></div>
+       <div class="total-sub {'up' if (pl_total is not None and pl_total >= 0) else ('down' if pl_total is not None else 'flat')}">{fmt_pct(pl_total)}</div></div>
   <div><div class="total-label">淨損益</div>
        <div class="total-value num {'up' if total_value - total_cost - total_fee >= 0 else 'down'}">
          {total_value - total_cost - total_fee:+,.0f}</div>
@@ -19739,12 +18570,11 @@ def web_positions(uid):
     holding_card_css = """<style>
 .position-card{background:#fff;border:1px solid rgba(31,71,107,.14);border-radius:22px;padding:18px 18px 14px;margin:14px 0;box-shadow:0 10px 28px rgba(27,62,92,.07);overflow:hidden}
 .position-card-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
-.position-card-title{display:flex;gap:10px;min-width:0;align-items:flex-start}.position-card-title h3{margin:0;font-size:22px;line-height:1.2;color:#173b5d}.position-card-title small{display:block;margin-top:5px;color:#71859a;font-size:12px}.position-card-code{display:inline-flex;align-items:center;justify-content:center;min-width:44px;height:28px;padding:0 8px;border-radius:9px;background:#edf5fb;color:#1e5a86;font-size:12px;font-weight:800}.position-card-price{text-align:right;white-space:nowrap}.position-card-price b{display:block;font-size:26px;color:#173b5d;line-height:1.05}.position-card-price span{display:block;margin-top:5px;font-size:14px;font-weight:800}.position-card-primary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0 10px}.position-card-primary>div,.position-card-grid>div{background:#f7fafc;border-radius:13px;padding:10px}.position-card-primary small,.position-card-grid small{display:block;color:#7a8ea0;font-size:11px;margin-bottom:4px}.position-card-primary b{display:block;font-size:16px;color:#173b5d}.position-card-primary em{display:block;margin-top:2px;font-size:11px;font-style:normal;color:#7a8ea0}.position-card-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.position-card-grid b{font-size:14px;color:#294e6d;line-height:1.35;word-break:break-word}.position-card-weight{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;margin:12px 0 4px;color:#71859a;font-size:11px}.position-card-weight>div{height:7px;background:#e8eef3;border-radius:99px;overflow:hidden}.position-card-weight i{display:block;height:100%;background:linear-gradient(90deg,#4b88b1,#1d5f88);border-radius:99px}.position-card-weight b{font-size:12px;color:#294e6d}.position-card-actions{margin-top:8px}.position-card-actions>details{border-top:1px solid #edf1f4;padding:10px 0}.position-card-actions summary{color:#2a5b7f;font-weight:700;cursor:pointer}.position-card-noquote{opacity:.9}.position-quote-stamp{font-size:11px!important;color:#7a8ea0!important;font-weight:500!important}
+.position-card-title{display:flex;gap:10px;min-width:0;align-items:flex-start}.position-card-title h3{margin:0;font-size:22px;line-height:1.2;color:#173b5d}.position-card-title small{display:block;margin-top:5px;color:#71859a;font-size:12px}.position-card-code{display:inline-flex;align-items:center;justify-content:center;min-width:44px;height:28px;padding:0 8px;border-radius:9px;background:#edf5fb;color:#1e5a86;font-size:12px;font-weight:800}.position-card-price{text-align:right;white-space:nowrap}.position-card-price b{display:block;font-size:26px;color:#173b5d;line-height:1.05}.position-card-price span{display:block;margin-top:5px;font-size:14px;font-weight:800}.position-card-price span.up{color:var(--up)!important}.position-card-price span.down{color:var(--down)!important}.position-card-primary b.up{color:var(--up)!important}.position-card-primary b.down{color:var(--down)!important}.position-card-primary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:16px 0 10px}.position-card-primary>div,.position-card-grid>div{background:#f7fafc;border-radius:13px;padding:10px}.position-card-primary small,.position-card-grid small{display:block;color:#7a8ea0;font-size:11px;margin-bottom:4px}.position-card-primary b{display:block;font-size:16px;color:#173b5d}.position-card-primary em{display:block;margin-top:2px;font-size:11px;font-style:normal;color:#7a8ea0}.position-card-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.position-card-grid b{font-size:14px;color:#294e6d;line-height:1.35;word-break:break-word}.position-card-weight{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;margin:12px 0 4px;color:#71859a;font-size:11px}.position-card-weight>div{height:7px;background:#e8eef3;border-radius:99px;overflow:hidden}.position-card-weight i{display:block;height:100%;background:linear-gradient(90deg,#4b88b1,#1d5f88);border-radius:99px}.position-card-weight b{font-size:12px;color:#294e6d}.position-card-actions{margin-top:8px}.position-card-actions>details{border-top:1px solid #edf1f4;padding:10px 0}.position-card-actions summary{color:#2a5b7f;font-weight:700;cursor:pointer}.position-card-noquote{opacity:.9}.position-quote-stamp{font-size:11px!important;color:#7a8ea0!important;font-weight:500!important}
 .bot-virtual-card{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;background:linear-gradient(135deg,#eff7fc,#f8fbfd);border:1px solid #d8e8f2;border-radius:16px;padding:12px;margin-bottom:10px}.bot-virtual-card small{display:block;color:#71859a;font-size:10px}.bot-virtual-card b{display:block;margin-top:3px;color:#173b5d;font-size:15px}.bot-virtual-card .up{color:#16814c}.bot-virtual-card .down{color:#c63b3b}
-@media(max-width:520px){.position-card{border-radius:19px;padding:15px}.position-card-title h3{font-size:20px}.position-card-price b{font-size:23px}.position-card-primary{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}.position-card-primary>div:last-child{grid-column:auto}.bot-virtual-card{grid-template-columns:1fr}.position-card-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:520px){.position-card{border-radius:19px;padding:15px}.position-card-title h3{font-size:20px}.position-card-price b{font-size:23px}.position-card-primary{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px!important}.position-card-primary>div:last-child{grid-column:auto}.bot-virtual-card{grid-template-columns:1fr}.position-card-grid{grid-template-columns:1fr 1fr}}
 .position-more{margin-top:8px;border-top:1px solid #edf1f4}.position-more>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:space-between}.position-more>summary::-webkit-details-marker{display:none}.position-more>summary:after{content:'＋';font-size:16px;font-weight:500;color:#8294a6}.position-more[open]>summary:after{content:'−'}.position-detail-body{padding:2px 0 4px}.position-card-grid{margin-top:8px!important}.position-card-actions{margin-top:8px!important}.position-card-primary>div{min-width:0!important;min-height:58px!important;display:flex!important;flex-direction:column!important;justify-content:center!important}.position-card-primary b{font-size:17px!important;line-height:1.15!important;overflow-wrap:anywhere}
 @media(max-width:520px){.position-card-primary>div{padding:8px 6px!important;min-height:54px!important;border-radius:11px!important}.position-card-primary small{font-size:10px!important;white-space:nowrap}.position-card-primary b{font-size:14px!important}}
-.position-card{position:relative;border-left:4px solid #d9e3ec;transition:border-color .18s,box-shadow .18s;background:#fff}.position-card:has(.position-card-primary .up){border-left-color:#d93025}.position-card:has(.position-card-primary .down){border-left-color:#0b8f55}.position-card .up{color:#d93025!important}.position-card .down{color:#0b8f55!important}.position-factors{margin-top:10px;border-top:1px solid #edf1f4;padding-top:2px}.position-factors>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:13px;font-weight:850;display:flex;align-items:center;justify-content:space-between}.position-factors>summary::-webkit-details-marker{display:none}.position-factors>summary:after{content:'＋';font-size:17px;font-weight:500;color:#8294a6}.position-factors[open]>summary:after{content:'−'}.position-factors-body{padding:4px 0 10px}.position-factor-loading,.position-factor-empty{padding:11px 12px;border:1px dashed #d7e2ea;border-radius:11px;background:#f8fafc;color:#71808f;font-size:12px;line-height:1.6}.position-factor-overview{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-radius:12px;background:#f5f9fc;border:1px solid #dfe9f1;margin-bottom:9px}.position-factor-overview small{display:block;color:#71808f;font-size:10px}.position-factor-overview b{display:block;margin-top:2px;color:#173b5d;font-size:22px;line-height:1}.position-factor-overview em{font-style:normal;color:#607789;font-size:11px;line-height:1.45;text-align:right}.position-factor-list{display:grid;gap:7px}.position-factor-item>summary{list-style:none;cursor:pointer}.position-factor-item>summary::-webkit-details-marker{display:none}.position-factor-item>summary b{white-space:nowrap}.position-factor-item[open]>summary b{ }.position-factor-details{margin-top:8px;padding:9px 10px;border-top:1px solid rgba(120,140,155,.18);background:rgba(255,255,255,.62);border-radius:8px;color:#526879;font-size:11px;line-height:1.7}.position-factor-details>div{margin:2px 0}.position-factor-details b{color:#244f70;font-weight:900}.position-factor-item.strong .position-factor-details{background:#fffafa}.position-factor-item.weak .position-factor-details{background:#f7fcf8}.position-factor-item.mid .position-factor-details{background:#fffdf8}.position-factor-item{padding:9px 10px;border:1px solid #e4ebf0;border-radius:10px;background:#fff}.position-factor-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-factor-head span{font-size:12px;font-weight:850;color:#294e6d}.position-factor-head b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.position-factor-track{height:8px;margin-top:6px;background:#e9eff3;border-radius:99px;overflow:hidden}.position-factor-track i{display:block;height:100%;border-radius:99px}.position-factor-item.strong .position-factor-head b{color:#1f638f}.position-factor-item.strong .position-factor-track i{background:#2d78a8}.position-factor-item.mid .position-factor-head b{color:#a66b18}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral .position-factor-head b{color:#667788}.position-factor-item.neutral .position-factor-track i{background:#91a2af}.position-factor-item.weak .position-factor-head b{color:#a14d4d}.position-factor-item.weak .position-factor-track i{background:#c56b6b}.position-factor-note{margin:8px 0 0;padding:9px 10px;border-radius:9px;background:#f8fafc;color:#526879;font-size:11px;line-height:1.6}.position-factor-note b{color:#244f70}.position-live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#12a150;margin-right:5px;vertical-align:1px;box-shadow:0 0 0 3px rgba(18,161,80,.12)}.position-factor-source{margin-top:7px;color:#8997a4;font-size:10px}.position-factor-status{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.position-factor-status span{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;background:#eef4f8;color:#45647a}.position-factor-status span.good{background:#fff0f0;color:#c62828}.position-factor-status span.warn{background:#fff4e4;color:#9a651d}.position-factor-status span.weak{background:#eaf4ef;color:#087443}.position-factor-legend{display:flex;flex-wrap:wrap;gap:5px 9px;padding:0 2px 8px;color:#71808f;font-size:10px;line-height:1.4}.pf-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:3px;vertical-align:-1px}.pf-dot.strong{background:#d93025}.pf-dot.mid{background:#d59a37}.pf-dot.weak{background:#0b8f55}.pf-dot.neutral{background:#d8dee3}.position-factor-item.strong{border-color:#efc3c3;background:#fff5f5}.position-factor-item.strong .position-factor-head b{color:#c62828}.position-factor-item.strong .position-factor-track i{background:#d93025}.position-factor-item.mid{border-color:#f1d8a7;background:#fffaf0}.position-factor-item.mid .position-factor-head b{color:#9a651d}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral{border-color:#d9e1e8;background:#f8fafc}.position-factor-item.weak{border-color:#bfe3cf;background:#f3fbf6}.position-factor-item.weak .position-factor-head b{color:#087443}.position-factor-item.weak .position-factor-track i{background:#0b8f55}.position-factor-note{border-left:4px solid #52718d}.position-factor-note b{color:#244f70}
 </style>"""
 
     body = f"""
@@ -19752,7 +18582,7 @@ def web_positions(uid):
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {exright_html}
 {totals}
-{f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px;{"" if _is_taiwan_intraday_window() else "display:none"}">盤中持股行情已於 {taiwan_now().strftime("%H:%M:%S")} 取得；開盤期間約每 5 秒局部更新；盤中只採官方 MIS 最後成交，暫缺時不拿延遲行情冒充即時。</div>' if positions else ''}
+{f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px;{"" if _is_taiwan_intraday_window() else "display:none"}">盤中持股行情已於 {taiwan_now().strftime("%H:%M:%S")} 取得；開盤期間每 15 秒局部更新，個別來源暫缺時保留最後有效價格並標示來源。</div>' if positions else ''}
 {allocation_html_positions}
 {portfolio_trend_html}
 <div class="section-head"><h2>持股明細</h2>
@@ -19811,7 +18641,7 @@ def web_positions(uid):
     var mins=tw.getHours()*60+tw.getMinutes();
     return mins>=(9*60-5) && mins<=(13*60+35);   // 08:55–13:35，涵蓋開盤前後
   }
-  function schedule(){if(timer)clearTimeout(timer);timer=setTimeout(refresh,5000);}
+  function schedule(){if(timer)clearTimeout(timer);timer=setTimeout(refresh,15000);}
   function refresh(){
     if(document.hidden||busy){schedule();return;}
     if(!inMarket()){
@@ -19837,48 +18667,9 @@ def web_positions(uid):
     if(token)url+='?t='+encodeURIComponent(token);
     fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
       (data.updates||[]).forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
-      root.textContent=(data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。'))+' 約 5 秒檢查一次。';
+      root.textContent=data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。');
     }).catch(function(e){root.textContent='盤中行情暫時無法更新：'+(e&&e.message?e.message:e)+'（HTTP 401 代表登入已過期，請從 LINE 重新開啟）；保留最後有效價格。';}).finally(function(){busy=false;schedule();});
   }
-  function factorClass(ratio){return ratio>=0.8?'strong':ratio>=0.6?'mid':ratio>=0.4?'neutral':'weak';}
-  function factorStatus(ratio){return ratio>=0.8?'偏強':ratio>=0.6?'中上':ratio>=0.4?'中性':'偏弱';}
-  function renderPositionFactors(data){
-    if(!data||!data.ok)return '<div class="position-factor-empty">五大因子暫時無法載入：'+(data&&data.error?data.error:'未知錯誤')+'</div>';
-    if(!data.scored)return '<div class="position-factor-empty"><b>'+numberText(data.score,0)+'</b>'+String(data.note||'目前沒有可用的個股五大因子評分。')+'</div>';
-    var fs=Array.isArray(data.factors)?data.factors:[];
-    if(!fs.length)return '<div class="position-factor-empty">目前沒有可用的五大因子分項資料。</div>';
-    var total=data.score==null?'—':Number(data.score).toFixed(0)+' 分';
-    var valid=fs.filter(function(x){return x.value!=null&&x.max>0;});
-    var best=valid.slice().sort(function(a,b){return (b.value/b.max)-(a.value/a.max);})[0];
-    var worst=valid.slice().sort(function(a,b){return (a.value/a.max)-(b.value/b.max);})[0];
-    var bars=fs.map(function(x){var v=Number(x.value),max=Number(x.max),ratio=max>0?Math.max(0,Math.min(1,v/max)):0,cls=factorClass(ratio),details=Array.isArray(x.details)?x.details:[],detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){return '<div>'+escText(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\/b&gt;/g,'</b>')+'</div>';}).join('')+'</div>':'';return '<details class="position-factor-item '+cls+'"><summary class="position-factor-head"><span>'+escText(x.name)+'</span><b>'+v.toFixed(0)+' / '+max.toFixed(0)+'　'+factorStatus(ratio)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(ratio*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}).join('');
-    var note='';
-    if(best)note+='<b>目前相對較強：</b>'+escText(best.name)+'（'+factorStatus(best.value/best.max)+'）。';
-    if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+escText(worst.name)+'（'+factorStatus(worst.value/worst.max)+'）。';
-    if(data.val_desc)note+=' '+escText(String(data.val_desc).replace(/\n/g,' '));
-    if(data.mom_desc)note+=' '+escText(String(data.mom_desc).replace(/\n/g,' '));
-    return '<div class="position-factor-overview"><div><small>五大因子綜合分數</small><b>'+escText(total)+'</b></div><em>'+escText(data.category||'個股')+'<br>資料日 '+escText(data.source_date||'未標日期')+'</em></div><div class="position-factor-legend"><span><i class="pf-dot strong"></i>強（≥80%）</span><span><i class="pf-dot mid"></i>中（60～79%）</span><span><i class="pf-dot weak"></i>弱（&gt;0～59%）</span><span><i class="pf-dot neutral"></i>資料／無貢獻</span></div><div class="position-factor-list">'+bars+'</div>'+(note?'<div class="position-factor-note">'+note+'</div>':'')+'<div class="position-factor-source">分數沿用選股模型最近保存快照；不在手機端重新計算。</div>';
-  }
-  function escText(v){return String(v==null?'':v).replace(/[&<>'"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[c]});}
-  function loadPositionFactors(box){
-    if(!box||!box.open||box.dataset.loaded)return;
-    box.dataset.loaded='1';
-    var code=box.getAttribute('data-factor-code'),body=box.querySelector('.position-factors-body');
-    if(!code||!body)return;
-    body.innerHTML='<div class="position-factor-loading">正在載入五大因子…</div>';
-    var token='';try{token=new URLSearchParams(window.location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}catch(ignore){token='';}
-    var url='/web/api/positions/factors?code='+encodeURIComponent(code);if(token)url+='&t='+encodeURIComponent(token);
-    fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){body.innerHTML=renderPositionFactors(data);}).catch(function(e){box.dataset.loaded='';body.innerHTML='<div class="position-factor-empty">五大因子載入失敗：'+escText(e&&e.message?e.message:e)+'<br><small>請重新展開一次。</small></div>';});
-  }
-  window.loadPositionFactors=loadPositionFactors;
-  function bindFactorDetails(){
-    document.querySelectorAll('.position-factors').forEach(function(box){
-      if(box.dataset.bound)return;box.dataset.bound='1';
-      var summary=box.querySelector('summary');
-      if(summary)summary.addEventListener('click',function(){ window.setTimeout(function(){ loadPositionFactors(box); },0); });
-    });
-  }
-  bindFactorDetails();
   document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
   document.addEventListener('stockbot:pageleaving',function(){if(timer)clearTimeout(timer);timer=null;});
   // 立刻抓一次，不要等第一個 15 秒。
@@ -19890,7 +18681,7 @@ def web_positions(uid):
 
     if positions and _is_taiwan_intraday_window():
         body += ''''''
-    print("⏱️ 持股頁：持股資料 %.0fms、法人(持股) %.0fms、3mo行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
+    print("⏱️ 持股頁：持股資料 %.0fms、法人 %.0fms、1y行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
         (positions_data_done - positions_data_started) * 1000,
         (inst_done - inst_started) * 1000,
         (quote_done - quote_started) * 1000,
@@ -22983,11 +21774,11 @@ def web_leaderboard(uid):
             if key == "m30" and r.get("ret") is not None:
                 sc = "up" if r["ret"] >= 0 else "down"
                 supporting.append(
-                    f'<span><em>加入後組合</em> <span class="num {sc}">{r["ret"]:+.1f}%</span></span>')
+                    f'<span><em>加入後</em> <span class="num {sc}">{r["ret"]:+.1f}%</span></span>')
             elif key == "ret" and r.get("m30") is not None:
                 sc = "up" if r["m30"] >= 0 else "down"
                 supporting.append(
-                    f'<span><em>近30天組合</em> <span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
+                    f'<span><em>近30天</em> <span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
             if r.get("excess") is not None:
                 w = "贏" if r["excess"] >= 0 else "輸"
                 mkt = r.get("mkt_ret")
@@ -23019,14 +21810,13 @@ def web_leaderboard(uid):
                     f'<div><small>固定虛擬本金</small><b>NT$ {initial_capital:,.0f}</b></div>'
                     f'<div><small>目前虛擬資產</small><b>NT$ {asset_text}</b></div>'
                     f'<div><small>累積報酬</small><b class="num {"up" if (asset_ret or 0) >= 0 else "down"}">{asset_ret_text}</b></div>'
-                    f'<div><small>目前股票／現金</small><b>{float(r.get("invested_pct") or 0):.0f}% / {float(r.get("cash_pct") or 0):.0f}%</b></div>'
                     f'</div>',
                     f'<div class="bot-rule">'
                     f'<b style="color:#274c77">策略實驗：D 方案</b><br>'
                     f'{html.escape(str(r.get("bot_rule") or ""))}<br>'
                     f'虛擬帳戶只用來把同一套報酬率換算成資產金額，不途中補資金；'
                     f'不改變原本排行榜的報酬率口徑。<br>'
-                    f'跌幅達 {BOT_STOP_LOSS_PCT:.0f}% 即停損；5 檔時每檔 20%，6～10 檔等權配置，只有不足 5 檔時才會保留現金。<br>'
+                    f'跌幅達 {BOT_STOP_LOSS_PCT:.0f}% 即停損；同一檔連續上榜時，基準新倉位仍以每檔 10% 計，單一股票顯示權重最多 20%；剩餘資金保留為現金。<br>'
                     f'這是機械化模擬，沒有滑價與零股限制，跟真人並列僅供對照。</div>']
                 for x in bh:
                     pct = x.get("pct")
@@ -23080,21 +21870,6 @@ def web_leaderboard(uid):
                     rtxt = f'{rp:+.2f}%' if isinstance(rp, (int,float)) else '—'
                     sell_date = html.escape(str(tx.get("sell_date") or "—"))
                     reason = html.escape(str(tx.get("exit_reason") or "—"))
-                    buy_reason = html.escape(str(tx.get("buy_reason") or "—"))
-                    buy_rank = tx.get("buy_rank")
-                    buy_score = tx.get("buy_score")
-                    buy_meta = []
-                    if buy_rank is not None:
-                        try:
-                            buy_meta.append(f"排名 #{int(buy_rank)}")
-                        except (TypeError, ValueError):
-                            pass
-                    if buy_score is not None:
-                        try:
-                            buy_meta.append(f"分數 {float(buy_score):.1f}")
-                        except (TypeError, ValueError):
-                            pass
-                    buy_meta_text = ("・".join(buy_meta)) if buy_meta else ""
                     return (
                         f'<div class="bot-history-timeline-item">'
                         f'<div class="bot-history-dot" style="background:{"#D93025" if hcls == "up" else "#0B8F55" if hcls == "down" else "#8FA8C4"}"></div>'
@@ -23109,11 +21884,7 @@ def web_leaderboard(uid):
                         f'<small>{html.escape(str(tx.get("code") or ""))}</small></div>'
                         f'<div class="bot-history-price">{html.escape(str(tx.get("buy_date") or "—"))} → {sell_date}　｜　買 {btxt} ／ 賣 {stxt}</div>'
                         f'<div class="bot-history-hold">持有 {int(tx.get("hold_days") or 0)} 日</div>'
-                        f'<div class="bot-history-reason">'
-                        f'<span class="bot-history-reason-buy">買入：{buy_reason}'
-                        f'{("・" + html.escape(buy_meta_text)) if buy_meta_text else ""}</span>'
-                        f'<span class="bot-history-reason {hcls}">換股／賣出：{reason}</span>'
-                        f'</div>'
+                        f'<div class="bot-history-reason {hcls}">{reason}</div>'
                         f'</div></div></div>')
                 recent_hist = hist[:5]
                 recent_rows = [_render_history_tx(tx) for tx in recent_hist]
@@ -23125,9 +21896,9 @@ def web_leaderboard(uid):
                         f'<div class="bot-history-all-body">{"".join(all_rows)}</div>'
                         f'</details>') if len(hist) > 5 else ''
                     history_html = (f'<details class="rank-detail bot-history-list" data-default-collapsed="1">'
-                                    f'<summary>查看歷史操作（{len(hist)} 筆・含換股原因）</summary>'
+                                    f'<summary>查看歷史操作（{len(hist)} 筆）</summary>'
                                     f'<div class="rank-detail-body">'
-                                    f'<div class="rank-detail-title">最近 5 筆・最新賣出 → 最舊｜顯示買入與換股／賣出原因</div>'
+                                    f'<div class="rank-detail-title">最近 5 筆・最新賣出 → 最舊</div>'
                                     f'<div class="bot-history-timeline">{"".join(recent_rows)}</div>'
                                     f'{full_details}'
                                     f'</div></details>')
@@ -24606,11 +23377,8 @@ def build_profile_alerts(profile, holdings, top, ordered_industries, th):
 def render_portfolio_fast_summary(uid):
     """今日首頁第一段：先顯示既有快照、事件與排名，並明確提示完整分析仍在整合。"""
     fast_started = time.monotonic()
-    # 這個函式也會在「公開行情尚未回傳」的盤前 fallback 單獨使用，
-    # 不能依賴 web_portfolio() 區域變數。
-    position_codes = [str(p.get("code") or "").strip() for p in merge_positions(get_positions(uid))]
     snapshot_date = _premarket_display_date(taiwan_today())
-    context = _get_daily_home_context(uid, snapshot_date, position_codes)
+    context = _get_daily_home_context(uid, snapshot_date)
     context_done = time.monotonic()
     snapshot = context.get("snapshot") or {}
     timeline = context.get("timeline") or {}
@@ -24738,47 +23506,49 @@ def render_portfolio_fast_summary(uid):
             f'<div class="daily-fast-rank"><small>{html.escape(str(status["label"]))}</small>'
             f'<b>{value}</b><span>{note}</span></div>')
 
-    return f'''<style>
+    return f'''<div data-fast-preview="1">
+<style>
+.home-detail-status{{display:flex;align-items:center;gap:8px;margin:10px 0 14px;padding:9px 12px;border:1px solid #D6E5F2;border-radius:10px;background:#F6FAFD;color:#5F7489;font-size:12px;line-height:1.5}}.home-detail-status .app-sync-spinner{{width:13px;height:13px;border:2px solid #C9D8E5;border-top-color:#1769B0;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}
 .daily-fast-sync{{display:flex;gap:11px;align-items:flex-start;background:#F2F2F7;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:14px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-fast-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 4px rgba(139,105,52,.12);flex:none}}.daily-fast-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-fast-sync-copy span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.65}}.daily-fast-hero{{background:linear-gradient(135deg,#F9F9FB,#e7ece8);padding:22px 18px 18px;margin:-8px -2px 14px;border-bottom:1px solid #d7d4ca}}.daily-fast-hero .eyebrow{{letter-spacing:.14em;color:var(--brass);font-size:11px}}.daily-fast-hero h1{{font-size:26px;line-height:1.25;margin:8px 0 14px}}.daily-fast-market{{display:flex;gap:8px;flex-wrap:wrap}}.daily-fast-market span{{background:rgba(255,255,255,.72);padding:8px 10px;border-radius:8px;font-size:12px}}.daily-fast-market b{{display:block;font-size:16px;margin-top:3px}}.daily-fast-market small{{display:block;margin-top:3px;color:var(--ink-soft);font-size:9px;line-height:1.35}}.daily-fast-card{{background:#fff;border:1px solid #E5E5EA;border-radius:12px;padding:15px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.daily-fast-title{{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}}.daily-fast-title h2{{margin:0;font-size:19px}}.daily-fast-event{{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}}.daily-fast-number{{background:var(--brass);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;flex:none;font-size:12px}}.daily-fast-detail{{font-size:12.5px;color:var(--ink-soft);margin-top:3px}}.daily-fast-empty{{padding:11px 0;color:var(--ink-soft);font-size:13px}}.daily-fast-empty span{{font-size:12px}}.daily-fast-ranks{{display:grid;grid-template-columns:1fr;gap:0}}.daily-fast-rank{{background:transparent;border-bottom:1px solid #E5E5EA;border-radius:0;padding:9px 0}}.daily-fast-rank:last-child{{border-bottom:0}}.daily-fast-rank small,.daily-fast-rank>span{{display:block;color:var(--ink-soft);font-size:11px}}.daily-fast-rank b{{display:block;font-size:18px;margin:4px 0}}.daily-fast-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px}}.daily-fast-panel{{min-width:0;padding:11px 10px;border:1px solid rgba(139,105,52,.24);border-radius:9px;background:rgba(255,255,255,.58)}}.daily-fast-panel-title{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding-bottom:7px;border-bottom:1px solid rgba(139,105,52,.16)}}.daily-fast-panel-title b{{font-size:12px}}.daily-fast-panel-title a,.daily-fast-panel-title span{{font-size:8px;color:var(--brass);white-space:nowrap}}.daily-fast-index-row{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding:8px 0;border-bottom:1px solid #E5E5EA}}.daily-fast-index-row:last-child{{border-bottom:0}}.daily-fast-index-row b{{font-size:10px}}.daily-fast-index-row span{{font-size:9px;text-align:right;white-space:nowrap}}.daily-fast-index-row strong{{display:block;font-size:10px;color:var(--ink)}}.daily-fast-index-row em{{font-style:normal;font-size:9px}}@media (max-width:640px){{.daily-fast-panels{{grid-template-columns:1fr}}}}.daily-fast-summary-stack{{display:block;margin-top:11px}}.daily-fast-rank-panel{{padding:10px 13px}}.daily-fast-rank-panel .daily-fast-panel-title{{padding-bottom:6px}}.daily-fast-rank-panel .daily-fast-ranks{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.daily-fast-rank-panel .daily-fast-rank{{border:0;padding:8px 0}}.daily-fast-rank-panel .daily-fast-rank b{{font-size:16px;margin:3px 0}}.daily-fast-quote{{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:8px;padding:12px 13px;border:1px solid rgba(139,105,52,.22);border-radius:9px;background:#F9F9FB}}.daily-fast-quote strong{{color:var(--ink);font-family:"Kaiti TC","BiauKai","DFKai-SB","STKaiti","Noto Serif CJK TC","Noto Serif TC",serif;font-size:16px;font-weight:700;letter-spacing:.12em;line-height:1.5;text-align:center;white-space:nowrap}}@media (max-width:640px){{.daily-fast-rank-panel .daily-fast-ranks{{gap:6px}}.daily-fast-quote{{align-items:center;display:flex}}.daily-fast-quote strong{{display:block;margin-top:0;text-align:center;font-size:17px}}}}
 .home-exright{{border:1px solid #D9C9A7;border-left:4px solid var(--brass);background:#FFFFFF;border-radius:10px;padding:13px 15px;margin:0 0 12px}}.home-exright b{{display:block;font-size:14.5px;line-height:1.4}}.home-exright p{{margin:5px 0 9px;color:var(--ink-soft);font-size:12px;line-height:1.6}}.home-exright-go{{display:inline-block;padding:7px 16px;background:var(--brass);color:#fff;border-radius:6px;font-size:13px;text-decoration:none}}
 /* v14 首頁儀表板：建立「今天 → 市場 → 我的排名 → 事件」閱讀順序 */
-.daily-fast-sync{background:#EEF5FB;border:1px solid #D6E5F2;border-left:3px solid #1769B0;border-radius:14px;padding:11px 14px;margin:-2px 0 12px;box-shadow:none}
-.daily-fast-sync-dot{width:8px;height:8px;background:#1769B0;box-shadow:0 0 0 4px rgba(23,105,176,.10)}
-.daily-fast-sync b{font-size:13px}.daily-fast-sync-copy span{font-size:11.5px}
-.daily-fast-hero{position:relative;background:linear-gradient(145deg,#10243E 0%,#183A5D 62%,#1D4B73 100%);color:#fff;padding:25px 18px 18px;margin:-6px 0 13px;border:0;border-radius:18px;box-shadow:0 12px 28px rgba(16,36,62,.16);overflow:hidden}
-.daily-fast-hero:after{content:"";position:absolute;width:180px;height:180px;right:-70px;top:-90px;border:1px solid rgba(255,255,255,.10);border-radius:50%;box-shadow:0 0 0 26px rgba(255,255,255,.025),0 0 0 52px rgba(255,255,255,.018)}
-.daily-fast-hero .eyebrow{color:#AFC7DD;font-size:10px;letter-spacing:.18em}
-.daily-fast-hero h1{position:relative;font-size:27px;letter-spacing:-.025em;margin:6px 0 4px;color:#fff;z-index:1}
-.daily-fast-hero:before{content:"MARKET DASHBOARD";position:absolute;right:17px;top:17px;color:rgba(255,255,255,.38);font-size:8px;letter-spacing:.18em;z-index:1}
-.daily-fast-market{position:relative;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;z-index:1}
-.daily-fast-market span{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.10);padding:9px 9px;border-radius:10px;font-size:10px;color:#BFD0DF;backdrop-filter:blur(5px)}
-.daily-fast-market b{font-size:15px;color:#fff;margin-top:3px}.daily-fast-market small{color:#91A9BF;font-size:8px}
-.daily-fast-card{border:1px solid #E0E7EE;border-radius:14px;padding:15px;margin:11px 0;box-shadow:var(--shadow-soft)}
-.daily-fast-title{margin-bottom:8px}.daily-fast-title h2{font-size:17px;font-weight:750}
-.daily-fast-event{padding:12px 0;border-top:1px solid #EDF1F5}.daily-fast-number{background:#1769B0}
-.daily-fast-summary-stack{gap:10px}.daily-fast-panel{border:1px solid #E0E7EE!important;border-radius:14px!important;background:#fff!important;box-shadow:var(--shadow-soft)}
-.daily-fast-rank-panel .daily-fast-panel-title{padding-bottom:8px}.daily-fast-rank-panel .daily-fast-ranks{gap:0}
-.daily-fast-rank{padding:11px 4px!important;border-bottom:1px solid #EDF1F5!important}
-.daily-fast-rank b{font-size:19px}.daily-fast-rank small{font-weight:650;color:#68798B}
-.daily-fast-quote{border:1px solid #E0E7EE;background:#F8FAFC;box-shadow:none;border-radius:12px;padding:13px}
-.daily-fast-quote strong{font-size:15px;letter-spacing:.08em}
-.home-exright{border-color:#E2D5B9;border-left-color:#C79A45;background:#FFFCF5}
-@media(max-width:640px){{.daily-fast-market{{grid-template-columns:repeat(2,minmax(0,1fr))}}.daily-fast-hero{{padding-top:23px}}.daily-fast-hero:before{{display:none}}.daily-fast-hero h1{{font-size:25px}}}}
+.daily-fast-sync{{background:#EEF5FB;border:1px solid #D6E5F2;border-left:3px solid #1769B0;border-radius:14px;padding:11px 14px;margin:-2px 0 12px;box-shadow:none}}
+.daily-fast-sync-dot{{width:8px;height:8px;background:#1769B0;box-shadow:0 0 0 4px rgba(23,105,176,.10)}}
+.daily-fast-sync b{{font-size:13px}}.daily-fast-sync-copy span{{font-size:11.5px}}
+.daily-fast-hero{{position:relative;background:linear-gradient(145deg,#10243E 0%,#183A5D 62%,#1D4B73 100%);color:#fff;padding:25px 18px 18px;margin:-6px 0 13px;border:0;border-radius:18px;box-shadow:0 12px 28px rgba(16,36,62,.16);overflow:hidden}}
+.daily-fast-hero:after{{content:"";position:absolute;width:180px;height:180px;right:-70px;top:-90px;border:1px solid rgba(255,255,255,.10);border-radius:50%;box-shadow:0 0 0 26px rgba(255,255,255,.025),0 0 0 52px rgba(255,255,255,.018)}}
+.daily-fast-hero .eyebrow{{color:#AFC7DD;font-size:10px;letter-spacing:.18em}}
+.daily-fast-hero h1{{position:relative;font-size:27px;letter-spacing:-.025em;margin:6px 0 4px;color:#fff;z-index:1}}
+.daily-fast-hero:before{{content:"MARKET DASHBOARD";position:absolute;right:17px;top:17px;color:rgba(255,255,255,.38);font-size:8px;letter-spacing:.18em;z-index:1}}
+.daily-fast-market{{position:relative;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;z-index:1}}
+.daily-fast-market span{{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.10);padding:9px 9px;border-radius:10px;font-size:10px;color:#BFD0DF;backdrop-filter:blur(5px)}}
+.daily-fast-market b{{font-size:15px;color:#fff;margin-top:3px}}.daily-fast-market small{{color:#91A9BF;font-size:8px}}
+.daily-fast-card{{border:1px solid #E0E7EE;border-radius:14px;padding:15px;margin:11px 0;box-shadow:var(--shadow-soft)}}
+.daily-fast-title{{margin-bottom:8px}}.daily-fast-title h2{{font-size:17px;font-weight:750}}
+.daily-fast-event{{padding:12px 0;border-top:1px solid #EDF1F5}}.daily-fast-number{{background:#1769B0}}
+.daily-fast-summary-stack{{gap:10px}}.daily-fast-panel{{border:1px solid #E0E7EE!important;border-radius:14px!important;background:#fff!important;box-shadow:var(--shadow-soft)}}
+.daily-fast-rank-panel .daily-fast-panel-title{{padding-bottom:8px}}.daily-fast-rank-panel .daily-fast-ranks{{gap:0}}
+.daily-fast-rank{{padding:11px 4px!important;border-bottom:1px solid #EDF1F5!important}}
+.daily-fast-rank b{{font-size:19px}}.daily-fast-rank small{{font-weight:650;color:#68798B}}
+.daily-fast-quote{{border:1px solid #E0E7EE;background:#F8FAFC;box-shadow:none;border-radius:12px;padding:13px}}
+.daily-fast-quote strong{{font-size:15px;letter-spacing:.08em}}
+.home-exright{{border-color:#E2D5B9;border-left-color:#C79A45;background:#FFFCF5}}
+@media(max-width:640px){{{{.daily-fast-market{{{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}.daily-fast-hero{{{{padding-top:23px}}}}.daily-fast-hero:before{{{{display:none}}}}.daily-fast-hero h1{{{{font-size:25px}}}}}}}}
 
 /* V42: this is the ACTUAL first-screen hero. Use the supplied Taipei 101 photo directly. */
-.daily-fast-hero{{position:relative!important;overflow:hidden!important;min-height:0!important;height:auto!important;padding:0!important;margin:0 -16px 14px!important;border-radius:0 0 22px 22px!important;background:#142B45!important;box-shadow:0 10px 28px rgba(20,39,58,.18)!important;color:#fff!important}}
-.daily-fast-hero-photo{{display:block!important;width:100%!important;height:auto!important;aspect-ratio:1000 / 578!important;object-fit:cover!important;object-position:center center!important;background:#142B45!important}}
-.daily-fast-hero-copy{{position:absolute!important;left:0!important;right:0!important;bottom:0!important;padding:76px 18px 16px!important;z-index:3!important;background:linear-gradient(180deg,rgba(9,25,43,0) 0%,rgba(9,25,43,.12) 20%,rgba(9,25,43,.82) 100%)!important}}
-.daily-fast-hero-copy .eyebrow{{color:#DCEAF6!important;font-size:10px!important;letter-spacing:.18em!important}}
-.daily-fast-hero-copy h1{{margin:5px 0 5px!important;font-size:27px!important;line-height:1.18!important;color:#fff!important;text-shadow:0 2px 10px rgba(0,0,0,.28)!important}}
-.daily-fast-hero-copy .daily-fast-market{{margin-top:10px!important;grid-template-columns:repeat(4,minmax(0,1fr))!important}}
-.daily-fast-hero-copy .daily-fast-market span{{background:rgba(255,255,255,.92)!important;color:#183450!important;backdrop-filter:blur(4px)!important}}
-.daily-fast-hero-copy .daily-fast-market b{{color:#183450!important}}
-.daily-fast-hero-copy .daily-fast-market small{{color:#65788B!important}}
-.daily-fast-hero:before,.daily-fast-hero:after{{display:none!important}}
-@media(max-width:640px){{.daily-fast-hero{{margin:0 -16px 12px!important;border-radius:0 0 18px 18px!important}}.daily-fast-hero-copy{{padding:70px 14px 13px!important}}.daily-fast-hero-copy h1{{font-size:25px!important}}.daily-fast-hero-copy .daily-fast-market{{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px!important}}.daily-fast-hero-copy .daily-fast-market span{{padding:7px 8px!important}}.daily-fast-hero-copy .daily-fast-market b{{font-size:14px!important}}}}
+.daily-fast-hero{{{{position:relative!important;overflow:hidden!important;min-height:0!important;height:auto!important;padding:0!important;margin:0 -16px 14px!important;border-radius:0 0 22px 22px!important;background:#142B45!important;box-shadow:0 10px 28px rgba(20,39,58,.18)!important;color:#fff!important}}}}
+.daily-fast-hero-photo{{{{display:block!important;width:100%!important;height:auto!important;aspect-ratio:1000 / 578!important;object-fit:cover!important;object-position:center center!important;background:#142B45!important}}}}
+.daily-fast-hero-copy{{{{position:absolute!important;left:0!important;right:0!important;bottom:0!important;padding:76px 18px 16px!important;z-index:3!important;background:linear-gradient(180deg,rgba(9,25,43,0) 0%,rgba(9,25,43,.12) 20%,rgba(9,25,43,.82) 100%)!important}}}}
+.daily-fast-hero-copy .eyebrow{{{{color:#DCEAF6!important;font-size:10px!important;letter-spacing:.18em!important}}}}
+.daily-fast-hero-copy h1{{{{margin:5px 0 5px!important;font-size:27px!important;line-height:1.18!important;color:#fff!important;text-shadow:0 2px 10px rgba(0,0,0,.28)!important}}}}
+.daily-fast-hero-copy .daily-fast-market{{{{margin-top:10px!important;grid-template-columns:repeat(4,minmax(0,1fr))!important}}}}
+.daily-fast-hero-copy .daily-fast-market span{{{{background:rgba(255,255,255,.92)!important;color:#183450!important;backdrop-filter:blur(4px)!important}}}}
+.daily-fast-hero-copy .daily-fast-market b{{{{color:#183450!important}}}}
+.daily-fast-hero-copy .daily-fast-market small{{{{color:#65788B!important}}}}
+.daily-fast-hero:before,.daily-fast-hero:after{{{{display:none!important}}}}
+@media(max-width:640px){{{{.daily-fast-hero{{{{margin:0 -16px 12px!important;border-radius:0 0 18px 18px!important}}}}.daily-fast-hero-copy{{{{padding:70px 14px 13px!important}}}}.daily-fast-hero-copy h1{{{{font-size:25px!important}}}}.daily-fast-hero-copy .daily-fast-market{{{{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px!important}}}}.daily-fast-hero-copy .daily-fast-market span{{{{padding:7px 8px!important}}}}.daily-fast-hero-copy .daily-fast-market b{{{{font-size:14px!important}}}}}}}}
 /* The full renderer used to append a second Hero after the detailed sections. */
-.daily-home > .daily-hero{{display:none!important}}
+.daily-home > .daily-hero{{{{display:none!important}}}}
 </style>{exright_banner}<section class="daily-fast-sync" aria-live="polite">
   <span class="daily-fast-sync-dot" aria-hidden="true"></span>
   <div class="daily-fast-sync-copy"><b>系統正在跑・正在整合完整首頁</b>
@@ -24799,7 +23569,8 @@ def render_portfolio_fast_summary(uid):
   </div>
 </section>
 <section class="daily-fast-card"><div class="daily-fast-title"><h2>今日值得注意</h2><a href="/web/premarket" style="color:var(--brass);font-size:12px">查看完整變化 →</a></div>{event_html}</section>
-<div class="daily-fast-summary-stack"><section class="daily-fast-panel daily-fast-rank-panel"><div class="daily-fast-panel-title"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section><section class="daily-fast-quote"><strong>{fast_quote_text}</strong></section></div>'''
+<div class="daily-fast-summary-stack"><section class="daily-fast-panel daily-fast-rank-panel"><div class="daily-fast-panel-title"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section><section class="daily-fast-quote"><strong>{fast_quote_text}</strong></section></div>
+</div>'''
 
 
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total,
@@ -24977,139 +23748,18 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         rank_status = get_fast_rank_summary(uid)
         print("⏱️ 今日完整頁：排名摘要 %.0fms" % ((time.monotonic() - rank_started) * 1000))
 
-    # 首頁事件視覺化：代號永遠有名稱；支撐／壓力／收盤價格用漲跌語意著色。
-    # 紅＝數值往上、綠＝數值往下；不是單純依事件 severity 上色。
-    position_name_map = {}
-    for p in holdings:
-        code = str(p.get("code") or "").strip()
-        if code:
-            position_name_map[code] = stock_display_name(code, fallback=code)
-
-    def event_code_and_name(event):
-        event = event if isinstance(event, dict) else {}
-        evidence = event.get("evidence") if isinstance(event.get("evidence"), dict) else {}
-        code = ""
-        name = ""
-        for source in (evidence,):
-            for k in ("code", "stock_code", "symbol", "ticker"):
-                value = source.get(k)
-                if value:
-                    code = str(value).strip()
-                    break
-            if source.get("name"):
-                name = str(source.get("name")).strip()
-        if not code:
-            for side in ("new", "old", "current", "previous"):
-                nested = evidence.get(side)
-                if isinstance(nested, dict):
-                    for k in ("code", "stock_code", "symbol", "ticker"):
-                        if nested.get(k):
-                            code = str(nested[k]).strip()
-                            break
-                    if not name and nested.get("name"):
-                        name = str(nested.get("name")).strip()
-                if code:
-                    break
-        if not code:
-            import re as _re
-            blob = f"{event.get('title') or ''} {event.get('detail') or ''}"
-            m = _re.search(r"(?<!\d)(\d{4})(?!\d)", blob)
-            code = m.group(1) if m else ""
-        if code and not name:
-            name = position_name_map.get(code) or stock_display_name(code, fallback=code)
-        return code, name
-
-    def price_span(value, direction="flat", extra_class=""):
-        if value in (None, ""):
-            return ""
-        cls = "daily-price-up" if direction == "up" else ("daily-price-down" if direction == "down" else "daily-price-flat")
-        if extra_class:
-            cls += " " + extra_class
-        return f'<span class="{cls}">{html.escape(_format_level_price(value))}</span>'
-
-    def colored_compare(label, old_value, new_value):
-        if old_value is None and new_value is None:
-            return ""
-        if old_value is None:
-            return f'<span class="daily-level-label">{html.escape(label)}</span> <span class="daily-level-new">今日 {price_span(new_value, "up", "daily-price-new")}</span>'
-        if new_value is None:
-            return f'<span class="daily-level-label">{html.escape(label)}</span> <span class="daily-level-old">前日 {price_span(old_value, "flat")}</span> <span class="daily-level-muted">→ 無有效參考</span>'
-        try:
-            old_num, new_num = float(old_value), float(new_value)
-            direction = "up" if new_num > old_num else ("down" if new_num < old_num else "flat")
-        except (TypeError, ValueError):
-            direction = "flat"
-        return (f'<span class="daily-level-label">{html.escape(label)}</span> '
-                f'{price_span(old_value, "flat", "daily-price-old")} '
-                f'<span class="daily-level-arrow">→</span> '
-                f'{price_span(new_value, direction, "daily-price-new")}')
-
-    def event_detail_html(event):
-        event = event if isinstance(event, dict) else {}
-        category = str(event.get("category") or "")
-        evidence = event.get("evidence") if isinstance(event.get("evidence"), dict) else {}
-        if category == "watchlist_position":
-            old = evidence.get("old") if isinstance(evidence.get("old"), dict) else {}
-            new = evidence.get("new") if isinstance(evidence.get("new"), dict) else {}
-            parts = []
-            support = colored_compare("支撐", old.get("support"), new.get("support"))
-            resistance = colored_compare("壓力", old.get("resistance"), new.get("resistance"))
-            close = colored_compare("收盤", old.get("close"), new.get("close"))
-            if support: parts.append(support)
-            if resistance: parts.append(resistance)
-            if close: parts.append(close)
-            old_pos, new_pos = old.get("position"), new.get("position")
-            if old_pos is not None and new_pos is not None and old_pos != new_pos:
-                try:
-                    pos_dir = "daily-score-up" if float(new_pos) > float(old_pos) else "daily-score-down"
-                except (TypeError, ValueError):
-                    pos_dir = "daily-score-flat"
-                old_label = _level_score_label(old_pos)
-                new_label = _level_score_label(new_pos)
-                parts.append(
-                    f'<span class="daily-score-change">位階 <b>{html.escape(old_label)}</b>'
-                    f' → <b class="{pos_dir}">{html.escape(new_label)}</b>'
-                    f' <small>（分數 {html.escape(str(old_pos))} → {html.escape(str(new_pos))}）</small></span>'
-                )
-            return ''.join(f'<div class="daily-event-line">{x}</div>' for x in parts) or '<div class="daily-event-line daily-level-muted">支撐／壓力有效參考不足</div>'
-        if category == "watchlist":
-            old = evidence.get("old") if isinstance(evidence.get("old"), dict) else {}
-            new = evidence.get("new") if isinstance(evidence.get("new"), dict) else {}
-            if old.get("total") is not None or new.get("total") is not None:
-                try:
-                    ov, nv = float(old.get("total")), float(new.get("total"))
-                    cls = "daily-score-up" if nv > ov else ("daily-score-down" if nv < ov else "daily-score-flat")
-                except (TypeError, ValueError):
-                    cls = "daily-score-flat"
-                return f'<div class="daily-event-line"><span class="daily-level-label">綜合分數</span> <b>{html.escape(str(old.get("total", "待確認")))}</b> → <b class="{cls}">{html.escape(str(new.get("total", "待確認")))}</b></div>'
-        return f'<div class="daily-event-line">{html.escape(str(event.get("detail") or "依事件明細中的既有資料比較。"))}</div>'
-
     def timeline_rows(items, status_label, status_class, start=1):
         rows = []
         for idx, raw_event in enumerate(items or [], start):
             event = raw_event if isinstance(raw_event, dict) else {}
             level = html.escape(str(event.get("severity") or "B"))
-            title_raw = str(event.get("title") or "")
-            code, name = event_code_and_name(event)
-            # 若事件標題本身只有「你的8996...」，把它改成「8996｜股票名稱」層級，
-            # 讓使用者第一眼先看到是哪一檔，再看發生什麼事。
-            clean_title = title_raw
-            if code and name:
-                clean_title = clean_title.replace(f"你的{code}", "").strip(" ：:｜|")
-                if not clean_title:
-                    clean_title = "今日變化"
-            else:
-                clean_title = title_raw
-            stock_html = ""
-            if code:
-                stock_html = f'<div class="daily-event-stock"><span class="daily-event-code">{html.escape(code)}</span><b>{html.escape(name or code)}</b></div>'
-            title_html = f'<div class="daily-event-title"><strong>{html.escape(clean_title)}</strong></div>'
-            detail_html = event_detail_html(event)
-            rows.append(f'''<article class="daily-event timeline-{status_class} level-{level}">
-              <div class="daily-event-top"><span class="event-status event-status-{status_class}">{status_label}</span>{stock_html}</div>
-              {title_html}
-              <div class="daily-event-detail">{detail_html}</div>
-            </article>''')
+            title = html.escape(str(event.get("title") or ""))
+            detail = html.escape(str(event.get("detail") or ""))
+            rows.append(f'''<div class="daily-event timeline-{status_class} level-{level}">
+              <span class="event-status">{status_label}</span>
+              <div><b>{title}</b>
+              <div class="event-detail">{detail}</div></div>
+            </div>''')
         return "".join(rows)
 
     # 首頁與盤前完整頁採同一資訊層級：先給最高優先級 3 項，
@@ -25256,11 +23906,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <a href="{focus_href}">{html.escape(focus_cta)} →</a>
 </section>'''
     market_text = fmt_pct(market_pct) if market_pct is not None else "資料尚未更新"
-    if preopen_or_closed:
-        # 仍可顯示最近交易日的組合日變化，但明確標成最近交易日。
-        portfolio_text = fmt_pct(portfolio_pct) if portfolio_pct is not None else '尚未取得'
-    else:
-        portfolio_text = fmt_pct(portfolio_pct) if portfolio_pct is not None else '資料尚未更新'
+    portfolio_text = fmt_pct(portfolio_pct) if portfolio_pct is not None else fmt_pct(pl_total)
     relative_text = fmt_pct(relative) if relative is not None else "—"
 
     quote_text = _homepage_quote_for(display_date)
@@ -25298,9 +23944,26 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     else:
         close_sync_note = "盤中行情會隨市場更新；收盤後切換至官方最後成交／市撮價。"
 
-    # 首頁不要在最後階段重新抓一輪台指期／美股。前面的共享資料已經提供市場資料；
-    # 重複呼叫 _current_market() 會把首頁判讀拖到十幾秒，外部 API 異常時更嚴重。
+    # 首頁不再預覽雷達／智慧黑馬；需要時直接從「選股」頁查看完整工具。
+    # 國際盤勢在收盤後直接抓最新市場資料，避免沿用早先建立的舊快照。
     market_focus_items = []
+    # 完整首頁不要每次重算都重新打外部市場 API。
+    # fast 摘要與 warmup 已經把今日市場資料帶進 snapshot；只有快照沒有
+    # 今日市場資料時才補抓一次，避免使用者每次切回首頁都多等數秒。
+    fresh_market = {}
+    snapshot_market = display_snapshot.get("market") or {}
+    snapshot_market_date = (snapshot_market.get("taiex_date") or
+                            snapshot_market.get("data_date"))
+    market_is_today = _market_date_matches(snapshot_market_date, calendar_today)
+    if not market_is_today:
+        try:
+            fresh_market = _current_market() or {}
+        except Exception:
+            fresh_market = {}
+    if fresh_market:
+        merged_market = dict(snapshot_market)
+        merged_market.update(fresh_market)
+        display_snapshot["market"] = merged_market
     market_focus_definitions = [
         ("taiex_night", "台指期夜盤"),
         ("^DJI", "道瓊"),
@@ -25434,14 +24097,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     else:
         hero_eyebrow = f"TODAY · {display_date.strftime('%Y / %m / %d')}"
 
-    # 開盤前沒有「今天」的股票成交；此時 price_map 的有效價格是最近交易日收盤價。
-    # 絕不能把上一交易日漲跌標成今天，尤其週一早上最容易造成誤解。
-    preopen_or_closed = not intraday_window
-    recent_date_text = display_date.strftime('%Y/%m/%d') if hasattr(display_date, 'strftime') else str(display_date)
-    if preopen_or_closed:
-        portfolio_label = f"最近交易日 {recent_date_text}"
-    else:
-        portfolio_label = "你的組合（今日盤中）" if has_pretrade_basis else "你的組合（今日盤中）"
+    portfolio_label = "你的組合（今日基準）" if has_pretrade_basis else "你的組合"
     home_intraday_script = ""
     if intraday_window:
         home_intraday_script = r'''<script>
@@ -25615,44 +24271,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .home-screener-card .screener-fast-preview-row small{{font-size:10.5px!important;color:#8290A0!important}}
 .home-us-list>span{{font-weight:500!important}}
 .home-us-list strong{{font-weight:700!important;letter-spacing:-.02em!important}}
-/* V40：今日事件改成「股票 → 事件 → 價格變化」三層閱讀結構。 */
-.home-focus-events{{margin-top:14px!important;padding-top:14px!important}}
-.home-focus-events>b{{display:block!important;margin-bottom:9px!important;font-size:13px!important;font-weight:800!important;color:#173653!important}}
-.home-focus-events .daily-event{{position:relative!important;margin:8px 0!important;padding:11px 12px 12px!important;border:1px solid #E5EBF1!important;border-radius:12px!important;background:#FCFDFE!important;box-shadow:0 2px 8px rgba(25,54,84,.035)!important}}
-.home-focus-events .daily-event.timeline-new{{border-left:3px solid #E53935!important}}
-.home-focus-events .daily-event.timeline-ongoing{{border-left:3px solid #1685D6!important}}
-.home-focus-events .daily-event.timeline-resolved{{border-left:3px solid #8B98A6!important}}
-.daily-event-top{{display:flex!important;align-items:center!important;gap:8px!important;min-width:0!important}}
-.daily-event-stock{{display:flex!important;align-items:center!important;gap:6px!important;min-width:0!important}}
-.daily-event-stock b{{font-size:14px!important;font-weight:800!important;color:#132B45!important;letter-spacing:-.02em!important}}
-.daily-event-code{{display:inline-flex!important;align-items:center!important;padding:2px 6px!important;border-radius:5px!important;background:#EEF3F7!important;color:#64788C!important;font-size:9px!important;font-weight:700!important;letter-spacing:.03em!important}}
-.event-status{{flex:none!important;font-size:9px!important;font-weight:800!important}}
-.event-status-new{{color:#D7352A!important}}
-.event-status-ongoing{{color:#1473BD!important}}
-.event-status-resolved{{color:#7A8794!important}}
-.daily-event-title{{margin:7px 0 5px!important;color:#142B45!important;line-height:1.45!important}}
-.daily-event-title strong{{font-size:13px!important;font-weight:800!important;letter-spacing:-.01em!important}}
-.daily-event-detail{{color:#586C80!important;font-size:11px!important;line-height:1.75!important;font-weight:400!important}}
-.daily-event-line{{display:flex!important;align-items:center!important;flex-wrap:wrap!important;gap:3px!important;min-height:22px!important}}
-.daily-level-label{{display:inline-block!important;min-width:30px!important;color:#74869A!important;font-size:10px!important;font-weight:600!important}}
-.daily-price-old,.daily-price-flat{{color:#718092!important;font-weight:500!important}}
-.daily-price-up{{color:#E53935!important;font-weight:800!important}}
-.daily-price-down{{color:#07966A!important;font-weight:800!important}}
-.daily-price-new{{font-size:12px!important}}
-.daily-level-arrow{{color:#A1ACB7!important;font-weight:500!important;margin:0 2px!important}}
-.daily-level-muted{{color:#97A2AD!important;font-weight:400!important}}
-.daily-score-change{{margin-left:1px!important;color:#6D7C8C!important;font-size:10px!important}}
-.daily-score-up{{color:#E53935!important;font-weight:800!important}}
-.daily-score-down{{color:#07966A!important;font-weight:800!important}}
-.daily-score-flat{{color:#6D7C8C!important;font-weight:700!important}}
-.daily-score-change small{{font-size:9px!important;color:#91A0AF!important;font-weight:500!important}}
-@media(max-width:640px){{
-  .home-focus-events .daily-event{{padding:10px 10px 11px!important}}
-  .daily-event-stock b{{font-size:14px!important}}
-  .daily-event-title strong{{font-size:13px!important}}
-  .daily-event-detail{{font-size:11px!important;line-height:1.72!important}}
-}}
-
+.home-focus-events,.home-focus-events *{{font-weight:400!important}}
+.home-focus-events>b{{font-weight:700!important}}
 /* 桌面與手機一致的閱讀寬度 */
 @media(max-width:640px){{
   .daily-home{{font-size:14px!important}}
@@ -25723,10 +24343,11 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     <div><b data-home-live-title>{html.escape(home_sync_title)}</b><span data-home-live-note>{html.escape(home_sync_detail)}</span></div>
   </div>
   <section class="daily-card home-portfolio-card">
+    {homepage_quote_note}
     <div class="daily-section-title"><div><h2>💰 我的投資</h2><span>你現在的組合狀態</span></div><a href="/web/positions">查看持股明細 →</a></div>
     <div class="home-portfolio-grid">
-      <div class="home-metric home-metric-main"><small>{'最新收盤市值' if preopen_or_closed else '目前市值'}</small><b>{total_value:,.0f}</b><em>成本 {total_cost:,.0f} · 資料日 {recent_date_text}</em></div>
-      <div class="home-metric"><small>{'最近交易日組合' if preopen_or_closed else '今日組合'}</small><b class="{portfolio_pct_class}" data-home-portfolio-pct>{portfolio_text}</b><em>{'尚未開盤，沿用 '+recent_date_text+' 正式收盤' if preopen_or_closed else '盤中即時行情'}</em></div>
+      <div class="home-metric home-metric-main"><small>總市值</small><b>{total_value:,.0f}</b><em>成本 {total_cost:,.0f}</em></div>
+      <div class="home-metric"><small>今日組合</small><b class="{portfolio_pct_class}" data-home-portfolio-pct>{portfolio_text}</b></div>
       <div class="home-metric"><small>持倉損益</small><b class="{pl_class}">{fmt_pct(pl_total)}</b></div>
       <div class="home-metric"><small>持股檔數</small><b>{len(holdings)} 檔</b></div>
     </div>
@@ -25747,6 +24368,56 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 @app.route("/web/portfolio", methods=["GET", "POST"])
 @web_login_required
 def web_portfolio(uid):
+    # 今日首頁採用單一 shell、先行摘要再完整內容的分段流程。
+    # 兩次回應都只替換同一個 content，不重複插入外框，避免 LINE WebView 疊頁。
+    if request.method == "GET" and not wants_fragment():
+        # V58：取消整頁暖身殼。先直接顯示快照／既有資料，完整分析在背景補上。
+        fast_html = render_portfolio_fast_summary(uid)
+        detail_script = """<script>
+(function () {
+  var preview = document.querySelector('[data-fast-preview=\"1\"]');
+  if (!preview) return;
+  var params = new URLSearchParams(window.location.search);
+  params.set('fragment', '1');
+  params.set('detail', '1');
+  params.delete('fast');
+  var url = window.location.pathname + '?' + params.toString();
+  var tries = 0, busy = false;
+  var status = document.createElement('div');
+  status.className = 'home-detail-status';
+  status.innerHTML = '<span class=\"app-sync-spinner\" aria-hidden=\"true\"></span><span>正在補上即時持股、損益與完整判讀…</span>';
+  preview.appendChild(status);
+  function load() {
+    if (busy) return;
+    busy = true; tries += 1;
+    fetchWithTimeout(url, 45000)
+      .then(function (r) {
+        if (r.status === 401) throw new Error('登入狀態已失效');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      })
+      .then(function (html) {
+        if (html.indexOf('AUTH_EXPIRED') >= 0) return;
+        var content = document.getElementById('content');
+        if (!content) return;
+        content.innerHTML = html;
+        executeFragmentScripts(content);
+      })
+      .catch(function () {
+        busy = false;
+        if (tries < 4) {
+          status.innerHTML = '<span class=\"app-sync-spinner\" aria-hidden=\"true\"></span><span>完整分析還在整理，將自動重試（第 ' + tries + ' 次）…</span>';
+          window.setTimeout(load, 3000);
+        } else {
+          status.innerHTML = '<span>摘要已可使用；完整分析暫時載入較慢，請稍後重新整理。</span>';
+        }
+      });
+  }
+  window.setTimeout(load, 120);
+})();
+</script>"""
+        return render_page("今日", fast_html + detail_script, "portfolio")
+
     msg = ""
     if request.method == "POST" and not valid_web_csrf():
         return respond_page("今日", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "portfolio")
@@ -25763,16 +24434,18 @@ def web_portfolio(uid):
     profile = get_profile(uid)
     risk_card = render_risk_card(profile, msg)
 
+    # fast 片段只讀既有快照與排名，讓首頁先可用；完整片段再補即時行情與判讀。
+    if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1":
+        if not is_profile_complete(profile):
+            return respond_page("今日", risk_card, "portfolio")
+        return respond_page("今日", render_portfolio_fast_summary(uid), "portfolio")
+
     # 問卷沒填完就只給問卷。組合分析的價值有一大半來自依你的處境判讀，
     # 少了那些答案，剩下的數字誰看都一樣，沒有必要先給。
     if not is_profile_complete(profile):
         return respond_page("今日", risk_card, "portfolio")
 
     positions = merge_positions(get_positions(uid))
-    # 位置代號在所有首頁共享資料與即時行情流程都會使用。
-    # 必須在進入 shared cache 分支前就建立，否則 shared cache 命中時
-    # 會跳過原本的初始化，導致首頁／內部返回首頁出現 NameError。
-    position_codes = [str(p.get("code") or "").strip() for p in positions]
     if not positions:
         # 沒有目前持股，但可能有賣光的歷史紀錄或組合快照可看，
         # 不能因為現在空手就把已實現損益跟走勢圖也一起藏起來。
@@ -25787,116 +24460,67 @@ def web_portfolio(uid):
 <div class="callout" style="padding:14px 15px 4px">{trend_html_empty}</div>"""
         return respond_page("今日", body, "portfolio")
 
-    # 「今日」先秒回漂亮的全螢幕載入動畫，再由瀏覽器以 fragment=1
-    # 取得同一份完整首頁。不是預覽頁：動畫結束後直接替換成完整首頁，
-    # 不會再出現「先顯示一份半成品、之後再補 detail」的兩階段流程。
-    if request.method == "GET" and not wants_fragment():
-        return render_loading_shell(
-            "今日", "portfolio",
-            [
-                "正在連接台股與國際市場資料…",
-                "正在整理法人、估值與產業資料…",
-                "正在同步你的持股行情與操作紀錄…",
-                "正在完成今日市場判讀…",
-            ],
-            note="資料量較大，請稍候；完成後會直接顯示完整首頁。",
-            staged=False,
-        )
-
     full_started = time.monotonic()
-    home_diag_request = "home-%x-%s" % (int(time.time() * 1000) & 0xfffffff, threading.get_ident() % 10000)
-    _db_diag_set(operation="homepage", request_id=home_diag_request)
     th = get_thresholds(profile)
     fee_disc, min_fee = get_fee_settings(profile)
 
-    # 這三項只依賴 user_id，與首頁前段的共享資料、持股行情彼此獨立。
-    # 提前啟動，讓「走勢／已實現損益／排名」在等待行情與共享資料時就一起跑，
-    # 避免原本固定排在最後、額外再增加約 2～3 秒的尾端等待。
-    aux_executor = ThreadPoolExecutor(max_workers=2)
-    aux_trend_future = aux_executor.submit(
-        lambda: render_trend_chart(get_portfolio_snapshots(uid, days=120)))
-    aux_realized_future = aux_executor.submit(get_realized_trades, uid, 500)
-    aux_rank_future = aux_executor.submit(get_fast_rank_summary, uid)
+    # 首頁完整分析優先讀「今日已完成的共享快照」，避免每次開首頁再次抓
+    # 全市場 2,000+ 檔月營收、估值等資料。只有沒有可用快照時才回退到原本
+    # 的即時 loader；因此不犧牲資料來源與正確性，卻能大幅縮短首屏後的等待。
+    def homepage_snapshot_or_loader(snapshot_key, loader, max_age_seconds=None):
+        try:
+            snap = _load_shared_data_snapshot(snapshot_key, max_age_seconds=max_age_seconds)
+            payload = (snap.get("payload") if snap else None)
+            if payload:
+                print("⚡ 今日首頁：沿用共享快照 %s（資料日 %s），跳過重新抓取" % (
+                    snapshot_key, snap.get("data_date") or "未標日期"))
+                return payload
+        except Exception as exc:
+            print("⚠️ 今日首頁共享快照讀取失敗 %s：%s" % (snapshot_key, exc))
+        return loader() or {}
 
-    # 六份共享資料在短時間內會被首頁反覆使用；用 12 秒短 TTL 快取，
-    # 避免首頁重新整理／內部返回時再次打 Supabase。市場即時行情不走這個快取。
-    shared_key = (uid, taiwan_today())
-    shared_values = None
-    with _HOMEPAGE_CACHE_LOCK:
-        if (_HOMEPAGE_SHARED_CACHE.get("key") == shared_key and
-                time.monotonic() - _HOMEPAGE_SHARED_CACHE.get("ts", 0.0) < _HOMEPAGE_SHARED_TTL):
-            shared_values = _HOMEPAGE_SHARED_CACHE.get("value")
-            if shared_values is not None:
-                print("⚡ 首頁共享資料命中短快取")
+    # 這些資料彼此獨立；並行抓取可把等待時間從各次網路延遲總和
+    # 降到最慢的一次。每個 loader 失敗只回空資料，不影響其他分析區塊。
+    def safe_shared_loader(label, loader):
+        loader_started = time.monotonic()
+        try:
+            value = loader() or {}
+            print("⏱️ 今日共享資料：%s %.0fms" % (
+                label, (time.monotonic() - loader_started) * 1000))
+            return value
+        except Exception as exc:
+            print("⚠️ 今日共享資料載入失敗 %s（%.0fms）：%s" % (
+                label, (time.monotonic() - loader_started) * 1000, exc))
+            return {}
 
-    if shared_values is None:
-        # 這六份共享資料彼此獨立；並行抓取可把等待時間從各次網路延遲總和
-        # 降到最慢的一次。每個 loader 失敗只回空資料，不影響其他分析區塊。
-        def safe_shared_loader(label, loader):
-            loader_started = time.monotonic()
-            _db_diag_set(operation="homepage/%s" % label, request_id=home_diag_request)
-            try:
-                value = loader() or {}
-                print("⏱️ 今日共享資料：%s %.0fms" % (
-                    label, (time.monotonic() - loader_started) * 1000))
-                return value
-            except Exception as exc:
-                print("⚠️ 今日共享資料載入失敗 %s（%.0fms）：%s" % (
-                    label, (time.monotonic() - loader_started) * 1000, exc))
-                return {}
-
-        # 重要：不要讓 6 份共享資料一次搶滿 DB pool。
-        # 首頁前段另有 3 個 aux DB 工作；舊版 6+3 幾乎會把 10 條
-        # connection 吃滿，最後進來的「今日事件」因此會在 getconn()
-        # 排隊約 5～9 秒。診斷已證實今日事件 SQL 本身只有約 0.6 秒。
-        # 改成 3 個共享 worker，且把今日事件放在第一批，讓它先完成；
-        # 第二批再跑其餘共享資料。這不是單純降低並行度，而是避免
-        # connection pool 爭用，把 8 秒的「等連線」直接消掉。
-        shared_loaders = [
-            ("法人", lambda: fetch_institutional_data(position_codes)),
-            ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today(), position_codes)),
-            ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
-            ("估值", fetch_valuation),
-            ("產業", get_industry_map),
-            ("大盤", fetch_taiex_summary),
-        ]
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            shared_values = list(ex.map(
-                lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
-        with _HOMEPAGE_CACHE_LOCK:
-            _HOMEPAGE_SHARED_CACHE.update({
-                "key": shared_key, "ts": time.monotonic(), "value": shared_values
-            })
-    # shared_loaders 的順序是「今日事件、法人、月營收、估值、產業、大盤」，
-    # 但後續首頁變數維持原本的語意順序，避免其他渲染邏輯跟著改。
-    inst, daily_context, revenue, valuation, ind_map, taiex = shared_values
+    shared_loaders = [
+        # 法人歷史表本身就是每日快照來源；首頁不需要再打 TWSE/TPEx。
+        ("法人", lambda: (_load_latest_institutional_history()[0] or fetch_institutional_data())),
+        # 月營收與估值已有每日共享快照；這兩項是首頁過去最容易變慢的來源。
+        ("月營收", lambda: homepage_snapshot_or_loader(
+            "monthly_revenue", lambda: fetch_monthly_revenue(force_refresh=False))),
+        ("估值", lambda: homepage_snapshot_or_loader(
+            "valuation", fetch_valuation)),
+        ("產業", get_industry_map),
+        ("大盤", fetch_taiex_summary),
+        # 今日事件上下文與五份共享資料互相獨立；併行取得後，
+        # render_daily_home_top 不必在完整頁尾端再次查詢同一份快照。
+        ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today())),
+    ]
+    with ThreadPoolExecutor(max_workers=len(shared_loaders)) as ex:
+        shared_values = list(ex.map(
+            lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
+    inst, revenue, valuation, ind_map, taiex, daily_context = shared_values
     shared_done = time.monotonic()
-    if DB_DIAG_ENABLED:
-        print(
-            "🔎 首頁DB診斷：共享資料完成 %.0fms | req=%s | pool=%s/%s" %
-            ((shared_done - full_started) * 1000, home_diag_request,
-             len(getattr(connection_pool, "_used", {})), DB_POOL_MAX),
-            flush=True,
-        )
 
     # 日內首頁同時需要目前持股行情與當日操作日誌。兩者互不相依，並行讀取；
     # 若當天已全部賣出某標的，再補抓該代號行情，保留它在日初至減碼前的貢獻。
+    position_codes = [p["code"] for p in positions]
     with ThreadPoolExecutor(max_workers=2) as exposure_executor:
         price_future = exposure_executor.submit(get_realtime_stocks_bulk, position_codes)
-        journal_key = (uid, taiwan_today())
-        with _HOMEPAGE_CACHE_LOCK:
-            journal_cached = _HOMEPAGE_JOURNAL_CACHE.get(journal_key)
-            journal_fresh = (journal_cached and
-                             time.monotonic() - journal_cached[0] < _HOMEPAGE_JOURNAL_TTL)
-        journal_future = None if journal_fresh else exposure_executor.submit(get_position_change_logs, uid, 5000)
+        journal_future = exposure_executor.submit(get_position_change_logs, uid, 5000)
         price_map = price_future.result()
-        if journal_fresh:
-            journal_logs = journal_cached[1]
-            print("⚡ 首頁操作日誌命中短快取")
-        else:
-            journal_logs = journal_future.result()
-            with _HOMEPAGE_CACHE_LOCK:
-                _HOMEPAGE_JOURNAL_CACHE[journal_key] = (time.monotonic(), journal_logs)
+        journal_logs = journal_future.result()
     reduced_today_codes = {
         str(log.get("code") or "").strip() for log in journal_logs
         if (_position_change_date(log.get("trade_date")) == taiwan_today() and
@@ -25907,6 +24531,64 @@ def web_portfolio(uid):
                                    if code and code not in price_map)
     if missing_reduced_quotes:
         price_map.update(get_realtime_stocks_bulk(missing_reduced_quotes))
+    # 盤前／行情來源暫時沒有回傳即時價時，首頁不能因此整頁消失。
+    # 9/21 盤前應沿用最近一筆「正式收盤」快照（例如 9/18），
+    # 並明確標示為最近正式收盤，不把舊價冒充今天行情。
+    premarket_snapshot = None
+    using_last_close_fallback = False
+    if not price_map:
+        try:
+            snaps = get_portfolio_snapshots(uid, days=30)
+            if snaps:
+                premarket_snapshot = snaps[-1]
+        except Exception as exc:
+            print(f"⚠️ 盤前讀取組合快照失敗: {exc}")
+
+        def _latest_formal_close(code):
+            code = str(code).strip()
+            # 直接讀 Yahoo 日 K，只取今天以前最後一筆已完成交易日。
+            # 這條路只在即時 bulk 完全失敗時使用，不影響正常盤中行情。
+            for suffix in (".TW", ".TWO"):
+                try:
+                    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}"
+                           f"?range=1mo&interval=1d")
+                    res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6).json()
+                    result = (res.get("chart", {}).get("result") or [None])[0]
+                    if not result:
+                        continue
+                    ts = result.get("timestamp") or []
+                    q = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+                    closes = q.get("close") or []
+                    rows = []
+                    for idx, stamp in enumerate(ts):
+                        if idx >= len(closes) or closes[idx] is None:
+                            continue
+                        d = datetime.fromtimestamp(stamp, timezone(timedelta(hours=8))).date()
+                        if d < taiwan_today():
+                            rows.append((d, float(closes[idx])))
+                    if rows:
+                        d, close = rows[-1]
+                        prev = rows[-2][1] if len(rows) >= 2 else None
+                        pct = ((close - prev) / prev * 100) if prev else 0.0
+                        return {
+                            "code": code, "close": close, "previous_close": prev,
+                            "pct": pct, "name": STOCK_NAME_MAP.get(code, code),
+                            "source": "最近正式收盤", "close_date": d,
+                            "close_is_final": True, "updated_at": str(d),
+                            "high": close, "low": close, "volume": 0,
+                        }
+                except Exception as exc:
+                    print(f"⚠️ 盤前正式收盤 fallback 失敗 {code}: {exc}")
+            return None
+
+        for code in position_codes:
+            q = _latest_formal_close(code)
+            if q:
+                price_map[code] = q
+        using_last_close_fallback = bool(price_map)
+        if using_last_close_fallback:
+            print("ℹ️ 今日首頁：即時行情尚未開放，沿用最近正式收盤資料，不把舊價冒充今日行情")
+
     price_done = time.monotonic()
     total_value, total_cost = 0.0, 0.0
     for p in positions:
@@ -25914,6 +24596,19 @@ def web_portfolio(uid):
         if pr:
             total_value += pr["close"] * p["shares"]
         total_cost += p["cost"] * p["shares"]
+    # 盤前首頁的「總市值」優先沿用最近正式收盤快照，避免不同資料源的小數／
+    # 還原價差造成首頁與前一交易日正式結算數字不一致。個股明細仍使用同一天
+    # 的收盤價計算權重與貢獻。
+    if using_last_close_fallback and isinstance(premarket_snapshot, dict):
+        try:
+            snap_value = float(premarket_snapshot.get("value"))
+            snap_cost = float(premarket_snapshot.get("cost"))
+            if snap_value > 0:
+                total_value = snap_value
+            if snap_cost > 0:
+                total_cost = snap_cost
+        except (TypeError, ValueError):
+            pass
 
     # ── 產業集中度 ──
     by_industry, holdings = {}, []
@@ -25973,11 +24668,13 @@ def web_portfolio(uid):
     alerts = []
     top = max(holdings, key=lambda h: h["weight"]) if holdings else None
     if not holdings:
+        # 只有連「最近正式收盤」也拿不到時才中止；盤前不應因為沒有即時價
+        # 就把原本完整首頁砍掉。
         body = risk_card + """
 <div class="empty-state">
   <div class="empty-state-icon">◌</div>
-  <h2>目前無法取得持股行情</h2>
-  <p>你的持股資料仍然存在，但目前公開行情來源沒有回傳有效價格。</p>
+  <h2>目前暫時無法建立持股分析</h2>
+  <p>持股資料仍然存在，但目前沒有可用的正式收盤價格。</p>
   <p class="sub">請稍後重新整理；系統不會把舊價格冒充成今日行情。</p>
 </div>
 """
@@ -26027,6 +24724,17 @@ def web_portfolio(uid):
                        f"個股部分加權營收年增率 {w_yoy:+.1f}%，加權本益比 {w_pe:.1f} 倍"
                        f"（涵蓋組合的 {covered:.0f}%，ETF 無本益比故未計入）。"))
 
+    # 盤前沿用最近正式收盤時，所有首頁數字都要講清楚資料口徑。
+    if using_last_close_fallback:
+        fallback_date = (premarket_snapshot or {}).get("date")
+        fallback_date_text = str(fallback_date) if fallback_date else "最近交易日"
+        homepage_quote_note = (
+            f'<div class="callout" style="margin:10px 0 12px;padding:10px 12px;"'
+            f' aria-live="polite">目前尚未開盤，行情來源尚未提供今天有效價格；'
+            f'以上持股計算暫採 <b>{fallback_date_text}</b> 最近正式收盤資料。'
+            f'開盤後取得有效行情會自動更新，不會把舊價格標成今日行情。</div>')
+    else:
+        homepage_quote_note = ""
     pl_total = ((total_value - total_cost) / total_cost * 100) if total_cost else None
     calc_done = time.monotonic()
 
@@ -26059,63 +24767,25 @@ def web_portfolio(uid):
                 if avg_corr is not None and eff else
                 "持股數不足或資料不齊，尚無法計算相關係數。")
 
-    # 走勢、已實現損益與首頁排名摘要已在前段提前並行；此處只等待結果。
-    # 操作日誌已在行情階段讀取並供日初曝險與日報共用，避免同頁重複讀取資料庫。
+    # 走勢、已實現損益與首頁排名摘要彼此獨立，尾端同時查詢。操作日誌已在
+    # 行情階段讀取並供日初曝險與日報共用，避免同頁重複讀取資料庫。
     aux_started = time.monotonic()
-    try:
-        trend_html = aux_trend_future.result()
-        realized_trades = aux_realized_future.result()
-        page_rank_status = aux_rank_future.result()
-    finally:
-        aux_executor.shutdown(wait=True)
+    with ThreadPoolExecutor(max_workers=3) as aux_executor:
+        trend_future = aux_executor.submit(
+            lambda: render_trend_chart(get_portfolio_snapshots(uid, days=120)))
+        realized_future = aux_executor.submit(get_realized_trades, uid, 500)
+        rank_future = aux_executor.submit(get_fast_rank_summary, uid)
+        trend_html = trend_future.result()
+        realized_trades = realized_future.result()
+        page_rank_status = rank_future.result()
     aux_done = time.monotonic()
     trend_done = aux_done
     journal_dates = [_position_change_date(log.get("trade_date")) for log in journal_logs]
-    today_date = taiwan_today()
-    today_journal_logs = [
-        log for log in journal_logs
-        if _position_change_date(log.get("trade_date")) == today_date
-    ]
-    previous_journal_date = max(
-        (d for d in journal_dates if d and d < today_date),
-        default=None,
-    )
-    if today_journal_logs:
-        # 今天有操作：照原本方式直接顯示今天的操作日報。
-        journal_html = render_position_change_journal(
-            uid, current_positions=positions, price_map=price_map, inst_data=inst,
-            logs=today_journal_logs, trade_date=today_date, display_limit=20,
-            realized_trades=realized_trades)
-    else:
-        # 今天沒有操作：首頁預設收合，只露出「今日無操作」。
-        # 歷史資料不消失，點開「查看前一次操作」才載入／顯示最近一次有操作的日期。
-        history_html = ""
-        if previous_journal_date:
-            history_logs = [
-                log for log in journal_logs
-                if _position_change_date(log.get("trade_date")) == previous_journal_date
-            ]
-            history_inner = render_position_change_journal(
-                uid, current_positions=positions, price_map=price_map, inst_data=inst,
-                logs=history_logs, trade_date=previous_journal_date, display_limit=20,
-                realized_trades=realized_trades)
-            history_html = (
-                f'<details class="home-journal-history"><summary>'
-                f'查看前一次操作・{previous_journal_date.strftime("%Y/%m/%d")} <span>⌄</span></summary>'
-                f'{history_inner}'
-                f'</details>'
-            )
-        else:
-            history_html = '<div class="home-journal-history-empty">目前沒有更早的操作紀錄。</div>'
-        journal_html = (
-            '<section class="position-journal position-journal-no-trade">'
-            '<div class="position-journal-head">'
-            '<div class="position-journal-title-actions"><h2>操作日報</h2></div>'
-            '<small>今日無操作</small></div>'
-            '<div class="position-journal-empty">今天沒有加碼／減碼操作，日報已預設收合。</div>'
-            f'{history_html}'
-            '</section>'
-        )
+    latest_journal_date = max((d for d in journal_dates if d), default=None)
+    journal_html = render_position_change_journal(
+        uid, current_positions=positions, price_map=price_map, inst_data=inst,
+        logs=journal_logs, trade_date=latest_journal_date, display_limit=20,
+        realized_trades=realized_trades)
     daily_pretrade_exposure = _build_daily_pretrade_exposure(
         holdings, price_map, journal_logs, inst)
     realized_by_code = _today_realized_by_code(realized_trades)
@@ -26241,41 +24911,6 @@ def _load_persisted_screener_snapshot(mode):
         return None
 
 
-def _load_today_screener_score_changes(mode):
-    """讀取今日同一標的最新一次分數變化；只供詳細頁顯示，不參與評分。"""
-    if str(mode).strip() not in ("blackhorse", "radar"):
-        return {}
-    conn = get_db_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT code, changed_at, old_score, new_score, old_factors, new_factors
-            FROM screener_score_change_history
-            WHERE mode = %s AND snapshot_date = %s
-            ORDER BY changed_at DESC, change_id DESC
-        """, (str(mode).strip(), taiwan_today()))
-        rows = cur.fetchall()
-        cur.close()
-    except Exception as exc:
-        print(f"⚠️ 讀取今日選股分數變化失敗 {mode}: {exc}")
-        rows = []
-    finally:
-        release_db_connection(conn)
-    out = {}
-    for code, changed_at, old_score, new_score, old_factors, new_factors in rows:
-        key = str(code or '').strip()
-        if not key or key in out:
-            continue
-        out[key] = {
-            "changed_at": str(changed_at or ""),
-            "old_score": _workbench_number(old_score),
-            "new_score": _workbench_number(new_score),
-            "old_factors": old_factors if isinstance(old_factors, dict) else {},
-            "new_factors": new_factors if isinstance(new_factors, dict) else {},
-        }
-    return out
-
-
 RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS = 10 * 60
 RADAR_LIVE_SNAPSHOT_MAX_AGE_SECONDS = RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS
 
@@ -26313,53 +24948,7 @@ def _save_persisted_screener_snapshot(mode, rows, skipped, momentum,
     if not effective_date:
         print(f"⚠️ 選股快照 {mode} 缺少可確認的資料日，略過保存")
         return False
-    old_rows = []
     conn = get_db_connection()
-    try:
-        old_cur = conn.cursor()
-        old_cur.execute("SELECT snapshot_date, rows_json FROM screener_result_snapshots WHERE mode = %s", (mode,))
-        old_rec = old_cur.fetchone()
-        old_snapshot_date = old_rec[0] if old_rec else None
-        old_cur.close()
-        # 只有同一天的前一份快照，才算「今日分數變化」。跨日不誤判。
-        if old_rec and len(old_rec) > 1 and isinstance(old_rec[1], list):
-            old_rows = old_rec[1]
-    except Exception as exc:
-        print(f"⚠️ 讀取舊選股快照供分數差異比較失敗 {mode}: {exc}")
-        old_rows = []
-    try:
-        old_by_code = {str(x.get("code") or ""): x for x in old_rows if isinstance(x, dict)}
-        same_day_previous = bool(old_snapshot_date and effective_date and str(old_snapshot_date) == str(effective_date))
-        for new_row in rows if isinstance(rows, list) else []:
-            if not same_day_previous:
-                break
-            if not isinstance(new_row, dict):
-                continue
-            code = str(new_row.get("code") or "").strip()
-            if not code or code not in old_by_code:
-                continue
-            old_row = old_by_code.get(code) or {}
-            keys = ("rev", "val", "mom", "streak_score", "chip")
-            old_f = {k: old_row.get(k) for k in keys}
-            new_f = {k: new_row.get(k) for k in keys}
-            old_score = old_row.get("score")
-            new_score = new_row.get("score")
-            changed = (old_score != new_score or any(old_f[k] != new_f[k] for k in keys))
-            if not changed:
-                continue
-            cur2 = conn.cursor()
-            cur2.execute("""
-                INSERT INTO screener_score_change_history
-                    (mode, code, snapshot_date, old_score, new_score, old_factors, new_factors)
-                VALUES (%s, %s, %s, %s, %s, CAST(%s AS JSONB), CAST(%s AS JSONB))
-            """, (mode, code, effective_date, old_score, new_score,
-                    json.dumps(_jsonable(old_f), ensure_ascii=False),
-                    json.dumps(_jsonable(new_f), ensure_ascii=False)))
-            cur2.close()
-        conn.commit()
-    except Exception as exc:
-        conn.rollback()
-        print(f"⚠️ 保存選股分數變化歷史失敗 {mode}: {exc}")
     try:
         cur = conn.cursor()
         cur.execute(
@@ -28156,9 +26745,6 @@ def build_workbench_snapshot_payload(uid=None):
         if cached and now - cached.get("at", 0) < _WORKBENCH_SNAPSHOT_CACHE_SECONDS:
             return cached.get("value")
     sources, rows = {}, []
-    # 分數變化已從工作台首屏移除；不要在首屏查第二次快照，避免拖慢入口。
-    # 後端相關 helper 保留，之後若需要可改成點開個股時再 lazy load。
-    score_changes = []
     def safe(label, fn, fallback=None):
         try:
             return fn()
@@ -28169,7 +26755,6 @@ def build_workbench_snapshot_payload(uid=None):
     blackhorse = safe("黑馬", lambda: _load_persisted_screener_snapshot("blackhorse"))
     if blackhorse:
         bh_rows = _workbench_screener_rows("blackhorse", blackhorse)
-        # 首屏只讀黑馬正式快照；分數變化不再阻塞入口。
         rows.extend(bh_rows)
         sources["黑馬"] = {"date": str(blackhorse.get("source_date") or "未標日期"),
                          "computed_at": str(blackhorse.get("computed_at") or "")}
@@ -28319,7 +26904,6 @@ def build_workbench_snapshot_payload(uid=None):
         "rows": deduped,
         "sources": sources,
         "personal": personal,
-        "score_changes": score_changes,
         "market_open": bool(_is_taiwan_intraday_window()),
         "server_time": workbench_server_time,
         "note": ("開盤期間只更新目前可見標的的行情；黑馬、雷達、轉折與 ETF 排名仍依既有快照更新。"
@@ -28505,31 +27089,19 @@ def build_workbench_review_payload():
 def render_workbench_body(initial_tab=""):
     """正式工作台只回傳前端殼；真實資料由同源、權杖保護的快照 API 局部載入。"""
     initial_tab = str(initial_tab or "").strip()
-    if initial_tab not in {"雷達", "轉折", "籌碼", "成效", "我的排行", "ETF", "策略研究"}:
+    if initial_tab not in {"持股", "雷達", "轉折", "籌碼", "成效", "我的排行", "ETF"}:
         initial_tab = ""
     body = r'''
 <section class="wb-shell" id="stockbot-workbench" data-workbench="snapshot-first-v1" data-initial-tab="__INITIAL_TAB__">
   <div class="wb-intro"><div><p class="wb-kicker">選股工作台 · 快照優先</p><h2>選股工作台</h2><p class="wb-sub">先讀取最近有效快照；排序、篩選與個股詳情都不重新掃描市場。</p></div><div class="wb-status" id="wb-status">讀取最近有效快照…</div></div>
   <div class="wb-pulse" id="wb-pulse"><span>資料狀態</span><b>快照優先</b><i></i><i></i><em>先看已保存資料；個股與 ETF 分開比較，不混在同一榜單。</em></div>
-  <div class="wb-asset-tabs" id="wb-asset-tabs" aria-label="工作台專區"><button type="button" class="on" data-asset="stock">個股</button><button type="button" data-asset="etf">ETF 專區</button><button type="button" data-asset="lab">🧪 策略研究</button></div>
+  <div class="wb-asset-tabs" id="wb-asset-tabs" aria-label="資產類型"><button type="button" class="on" data-asset="stock">個股</button><button type="button" data-asset="etf">ETF 專區</button></div>
   <div class="wb-tabs" id="wb-tabs" aria-label="選股資料來源"></div>
   <div class="wb-tools"><label><span>⌕</span><input id="wb-search" placeholder="搜尋代號、名稱或產業" autocomplete="off"></label><button type="button" id="wb-filter">篩選條件</button><button type="button" id="wb-refresh">重新整理</button></div>
   <div class="wb-filter-panel" id="wb-filter-panel" hidden><div><b>當日漲跌</b><button type="button" data-dir="all" class="on">不限</button><button type="button" data-dir="up">上漲</button><button type="button" data-dir="down">下跌</button></div></div><div class="wb-mobile-sort" id="wb-mobile-sort" aria-label="排序方式"><span>排序</span><button type="button" data-sort="score" class="on">分數</button><button type="button" data-sort="change_pct">漲跌</button><button type="button" data-sort="institutional_lots">法人</button></div>
   <div class="wb-meta"><span id="wb-count">正在讀取…</span><span id="wb-note"></span></div>
   <div class="wb-table" id="wb-table" aria-live="polite"><div class="wb-head"><span>標的</span><button type="button" data-sort="score">綜合分數</button><button type="button" data-sort="change_pct">報酬／漲跌</button><button type="button" data-sort="institutional_lots">法人方向</button><span>訊號</span><span></span></div><div id="wb-rows"><div class="wb-skeleton"></div><div class="wb-skeleton"></div><div class="wb-skeleton"></div></div></div>
-  <div class="wb-strategy-lab" id="wb-strategy-lab" hidden>
-  <div class="wb-lab-hero"><div><span class="wb-lab-kicker">STRATEGY LAB · MULTI-FACTOR</span><h3>策略研究實驗室</h3><p>把「我的五因子」、「FinLab 四因子」與之後的混合策略放在同一個研究框架，先定義規則，再做回測。</p></div><button type="button" id="wb-lab-refresh">重新讀取研究設定</button></div>
-  <div id="wb-lab-body"><div class="wb-lab-loading">正在載入策略研究設定…</div></div>
-</div>
-<style>
-.wb-strategy-lab{padding:4px 0 28px}.wb-lab-hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;padding:18px;border:1px solid rgba(39,76,119,.12);border-radius:18px;background:linear-gradient(135deg,#f7fbff,#fff);margin-bottom:14px}.wb-lab-kicker{font-size:11px;letter-spacing:.14em;color:#4f78a6;font-weight:800}.wb-lab-hero h3{margin:5px 0 5px;font-size:22px}.wb-lab-hero p{margin:0;color:#657487;line-height:1.6}.wb-lab-hero button{border:0;border-radius:10px;padding:9px 13px;background:#274c77;color:#fff;font-weight:700;white-space:nowrap}.wb-lab-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.wb-lab-card{background:#fff;border:1px solid #e7edf4;border-radius:16px;padding:16px;box-shadow:0 4px 18px rgba(25,55,90,.05)}.wb-lab-card h4{margin:0 0 9px;font-size:16px}.wb-lab-muted{color:#738197;font-size:13px;line-height:1.6}.wb-lab-factor{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #eef2f6}.wb-lab-factor:first-of-type{border-top:0}.wb-lab-factor b{min-width:74px}.wb-lab-weight{margin-left:auto;font-weight:800}.wb-lab-status{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;background:#eef3f8;color:#4b647d}.wb-lab-status.ready{background:#e9f7ef;color:#19733b}.wb-lab-status.wait{background:#fff6df;color:#8a6815}.wb-lab-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.wb-lab-metric{padding:10px;border-radius:12px;background:#f6f8fb}.wb-lab-metric small{display:block;color:#78879a}.wb-lab-metric b{display:block;margin-top:3px;font-size:17px}.wb-lab-compare{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.wb-lab-compare .wb-lab-card{min-height:120px}.wb-lab-note{padding:12px 14px;border-radius:12px;background:#f8fafc;color:#657487;line-height:1.65;font-size:13px}.wb-lab-table{width:100%;border-collapse:collapse;margin-top:10px}.wb-lab-table th,.wb-lab-table td{text-align:left;padding:9px 7px;border-bottom:1px solid #edf1f5;font-size:13px}.wb-lab-table th{color:#738197;font-weight:700} .wb-lab-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:12px}.wb-lab-strategy{border:1px solid #e2e9f1;background:#fff;border-radius:14px;padding:12px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:4px}.wb-lab-strategy.active{border-color:#4f78a6;box-shadow:0 0 0 2px rgba(79,120,166,.10)}.wb-lab-strategy b{font-size:14px}.wb-lab-strategy small{color:#738197;line-height:1.45}.wb-lab-strategy em{font-style:normal;font-size:10px;color:#4f78a6;font-weight:800}.wb-lab-picks{display:flex;flex-direction:column}.wb-lab-pick{display:grid;grid-template-columns:30px minmax(0,1fr) auto minmax(0,1fr) 16px;gap:8px;align-items:center;border:0;border-top:1px solid #edf1f5;background:#fff;padding:10px 0;text-align:left;cursor:pointer}.wb-lab-rank{font-weight:900;color:#58799a}.wb-lab-pick b{display:block}.wb-lab-pick small{display:block;color:#78879a;margin-top:2px}.wb-lab-pick strong{font-size:15px}.wb-lab-pick-tags{display:flex;gap:4px;flex-wrap:wrap}.wb-lab-chip{font-size:10px;background:#f1f5f9;border-radius:999px;padding:3px 6px;color:#50657a}.wb-lab-category-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.wb-lab-category{padding:11px;border-radius:12px;background:#f7f9fc}.wb-lab-category b{display:block;margin-bottom:4px}.wb-lab-category span{font-size:12px;color:#718096;line-height:1.55}.wb-lab-active .wb-tabs{display:none!important}.wb-lab-active .wb-tools,.wb-lab-active .wb-filter-panel,.wb-lab-active .wb-mobile-sort,.wb-lab-active .wb-meta,.wb-lab-active .wb-table,.wb-lab-active .wb-intro,.wb-lab-active .wb-pulse{display:none!important}.wb-lab-nav{grid-template-columns:repeat(4,minmax(0,1fr));}.wb-lab-strategy{min-height:92px}.wb-lab-strategy:disabled{opacity:.55;cursor:not-allowed} .wb-lab-section-head h4,#wb-lab-picks-title{color:#1f3348!important;font-weight:850!important}.wb-lab-strategy b{color:#1f3348!important}.wb-lab-strategy.active{background:#f5f9fd;border-color:#8fb4d8}.wb-lab-strategy.active b{color:#24547f!important}.wb-lab-strategy small{color:#6b7d91!important}.wb-lab-pick-main b{color:#1d3348!important}.wb-lab-pick-metric strong{color:#b44a4a!important}.wb-lab-empty b{color:#334b63}.wb-lab-card h4{color:#203449}.wb-lab-muted{color:#687b91}.wb-lab-factor b{color:#2a4057}.wb-lab-picks-card{padding:0;overflow:hidden}.wb-lab-section-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:16px 16px 12px;border-bottom:1px solid #e9eef4}.wb-lab-section-head h4{margin:0 0 5px}.wb-lab-count{white-space:nowrap;padding:5px 9px;border-radius:999px;background:#eef4fa;color:#456784;font-size:12px;font-weight:800}.wb-lab-picks{padding:0 14px}.wb-lab-pick{grid-template-columns:30px minmax(130px,1.2fr) minmax(90px,.65fr) minmax(150px,1.5fr) 18px;padding:13px 6px;gap:10px}.wb-lab-pick-main small,.wb-lab-pick-metric small{color:#66778c}.wb-lab-pick-main b{font-size:15px;color:#1f3348;font-weight:850}.wb-lab-pick-main{min-width:0}.wb-lab-pick-main b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick{color:#1f3348}.wb-lab-pick:hover{background:#f8fbfe}.wb-lab-pick:active{background:#eef5fb}.wb-lab-pick-metric{display:flex;flex-direction:column;align-items:flex-end}.wb-lab-pick-metric strong{font-size:16px}.wb-lab-pick-reason{font-size:12px;color:#657487;line-height:1.45}.wb-lab-empty{padding:22px 16px;text-align:center;color:#657487}.wb-lab-empty b,.wb-lab-empty small{display:block}.wb-lab-empty small{margin-top:5px}@media(max-width:700px){.wb-lab-nav{grid-template-columns:1fr 1fr}.wb-lab-pick{grid-template-columns:25px minmax(110px,1fr) auto 16px}.wb-lab-pick-reason{display:none}.wb-lab-pick-metric{align-items:flex-end}.wb-lab-section-head{display:block}.wb-lab-count{display:inline-flex;margin-top:8px}}@media(max-width:700px){.wb-lab-nav{grid-template-columns:1fr 1fr}.wb-lab-category-grid{grid-template-columns:1fr}.wb-lab-pick{grid-template-columns:26px minmax(0,1fr) auto 16px}.wb-lab-pick-tags{display:flex}.wb-lab-pick-main b{font-size:15px}.wb-lab-pick-main small{font-size:11px}.wb-lab-pick-reason-mobile{display:block;margin-top:4px;font-size:11px;line-height:1.35;color:#718096;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}@media(max-width:700px){.wb-lab-hero{display:block}.wb-lab-hero button{margin-top:12px}.wb-lab-grid,.wb-lab-compare{grid-template-columns:1fr}.wb-lab-metrics{grid-template-columns:repeat(2,1fr)}}
-.wb-d-hero-chart-cta{margin-top:12px}.wb-d-hero-chart-cta button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;border:0;border-radius:14px;padding:14px 16px;background:#274f73;color:#fff;box-shadow:0 8px 20px rgba(39,79,115,.18);cursor:pointer;text-align:left}.wb-d-hero-chart-cta button:disabled{opacity:.7}.wb-d-hero-chart-cta button b{font-size:15px}.wb-d-hero-chart-cta button small{display:block;margin-top:3px;color:#d8e6f2;font-size:11px}.wb-d-hero-chart-cta button strong{font-size:22px}.wb-d-lazy-chart{margin-top:12px;padding:12px;border:1px solid #e6edf4;border-radius:14px;background:#fbfdff}.wb-d-lazy-chart button{border:1px solid #cbd9e6;background:#fff;color:#315b82;border-radius:10px;padding:9px 12px;font-weight:800;cursor:pointer}.wb-d-chart-status{margin-top:8px;color:#718096;font-size:12px}.wb-d-chart-title{margin-top:10px;margin-bottom:4px}.wb-d-chart-title b{display:block;color:#294d69;font-size:14px}.wb-d-chart-title small{display:block;margin-top:3px;color:#718394;font-size:10px}.wb-d-chart-wrap{margin-top:10px;overflow:hidden}.wb-d-chart-wrap svg{width:100%;height:220px;display:block}.wb-d-chart-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:#64748b;margin-top:5px}.wb-d-chart-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;background:#4f78a6;margin-right:4px}.wb-d-chart-legend i.alt{background:#a8b7c7}.wb-d-chart-note{font-size:11px;color:#7a8796;line-height:1.5;margin-top:6px}
-.wb-lab-pick{min-height:72px}.wb-lab-pick-main{min-width:0}.wb-lab-pick-main small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-metric-mobile,.wb-lab-pick-reason-mobile{display:none}.wb-d-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.wb-d-chip{display:inline-flex;padding:4px 8px;border-radius:999px;background:#eef4fa;color:#4f6f8e;font-size:11px;font-weight:700}@media(max-width:700px){.wb-lab-pick{display:grid;grid-template-columns:24px minmax(0,1fr) 18px;grid-template-areas:"rank main arrow";gap:8px;padding:13px 4px;min-height:88px}.wb-lab-rank{grid-area:rank}.wb-lab-pick-main{grid-area:main}.wb-lab-pick-metric,.wb-lab-pick-reason{display:none}.wb-lab-pick-metric-mobile{display:flex;align-items:baseline;gap:6px;margin-top:6px}.wb-lab-pick-metric-mobile strong{font-size:17px;color:#274c77}.wb-lab-pick-metric-mobile em{font-style:normal;font-size:11px;color:#7a899a}.wb-lab-pick-reason-mobile{display:block;margin-top:5px;font-size:11px;line-height:1.4;color:#657487;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-tags{margin-top:5px}.wb-lab-chip{font-size:9px}.wb-lab-arrow{grid-area:arrow;align-self:center;font-size:24px;color:#4f78a6}.wb-lab-section-head{padding:14px}.wb-lab-picks{padding:0 12px}}
-.wb-lab-strategy-title{display:block!important;color:#1f3348!important;font-size:16px!important;font-weight:850!important;line-height:1.35!important;margin:0 0 2px!important}.wb-lab-strategy.active{background:#274c77!important;border-color:#274c77!important;color:#fff!important;box-shadow:0 8px 18px rgba(39,76,119,.18)!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy.active *{color:inherit!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy:focus-visible{outline:3px solid rgba(79,120,166,.28);outline-offset:2px}.wb-lab-pick:focus-visible{outline:2px solid rgba(79,120,166,.35);outline-offset:-2px}
-.wb-d-factor-list{display:flex;flex-direction:column;gap:7px;margin-top:12px}.wb-d-factor-row{display:flex;justify-content:space-between;gap:12px;padding:9px 11px;border-radius:10px;background:#f6f9fc;border:1px solid #e8eef4;color:#4f6174}.wb-d-factor-row b{color:#274c77}.wb-d-score-note{font-size:12px;color:#718096;margin-top:10px}
-.wb-d-rev-chart{margin-top:12px;padding:10px 12px;border:1px solid #e4ebf2;border-radius:14px;background:#fbfdff}.wb-d-rev-row{padding:11px 0;border-bottom:1px solid #edf1f5}.wb-d-rev-row:last-child{border-bottom:0}.wb-d-rev-head{display:flex;justify-content:space-between;align-items:center;gap:10px}.wb-d-rev-head b{font-size:12px;color:#526b82}.wb-d-rev-head strong{font-size:17px}.wb-d-rev-head strong.pos,.wb-d-rev-head strong.wb-up{color:#315b82}.wb-d-rev-head strong.neg,.wb-d-rev-head strong.wb-down{color:#a65a5a}.wb-d-rev-track{height:8px;margin:7px 0 6px;background:#edf2f6;border-radius:999px;overflow:hidden}.wb-d-rev-track i{display:block;height:100%;border-radius:999px}.wb-d-rev-track i.pos{background:#4f78a6}.wb-d-rev-track i.neg{background:#a65a5a}.wb-d-rev-amount{display:flex;justify-content:space-between;gap:10px;color:#7a8998;font-size:10px}.wb-d-rev-amount b{color:#3e556c;font-weight:800}.wb-d-hero-chart-cta button{min-height:72px!important}.wb-d-hero-chart-cta button b{font-size:16px!important}.wb-d-hero-chart-cta button small{font-size:11px!important;line-height:1.45}.wb-d-chart-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}.wb-d-chart-summary>div{padding:10px;border:1px solid #e5ebf1;border-radius:10px;background:#fff}.wb-d-chart-summary small{display:block;color:#78889a;font-size:10px}.wb-d-chart-summary b{display:block;margin-top:3px;font-size:16px;color:#294d69}.wb-d-chart-summary .wb-up{color:#315b82}.wb-d-chart-summary .wb-down{color:#a65a5a}@media(max-width:640px){.wb-d-chart-summary{grid-template-columns:1fr 1fr}.wb-d-chart-summary>div:last-child{grid-column:1/-1}.wb-d-rev-amount{font-size:10px}.wb-d-rev-head strong{font-size:16px}}
-</style>
-<p class="wb-disclaimer">選股台專注市場選股與訊號；個人持股請到「持股」頁查看完整組合分析。進入選股台先顯示黑馬快照；其他分頁點到哪裡才讀哪一份已保存快照／推薦紀錄，不因切換分頁重新掃描市場。資料缺漏維持待確認，不以推測數字補足。</p>
+  <p class="wb-disclaimer">進入選股台後會並行預載黑馬、雷達、持股、轉折、籌碼、ETF 與成效資料；全部只讀已保存快照／推薦紀錄，不因切換分頁重新掃描市場。資料缺漏維持待確認，不以推測數字補足。</p>
 </section>
 <aside class="wb-drawer" id="wb-drawer" aria-hidden="true"><div class="wb-drawer-actions"><button type="button" id="wb-back">‹ 回到選股清單</button><button type="button" id="wb-close" aria-label="關閉">×</button></div><div id="wb-detail"></div></aside><div class="wb-mask" id="wb-mask" hidden></div>
 
@@ -28539,8 +27111,8 @@ def render_workbench_body(initial_tab=""):
 (function(){
   var root=document.getElementById('stockbot-workbench'); if(!root) return;
   var initialTab=(root.dataset.initialTab||new URLSearchParams(location.search).get('tab')||'').trim();
-  var state={rows:[],sources:{},personal:{},scoreChanges:[],scoreChangeSort:'score_desc',assetMode:'stock',source:'黑馬',query:'',kind:'all',dir:'all',sort:'score',desc:true,marketOpen:false,timer:null,review:null,reviewLoading:false,quoteLoading:false,quoteUpdatedAt:'',returnScroll:0,loadedSources:{},loadingSource:''};
-  var tabs=document.getElementById('wb-tabs'), scoreChangePanel=document.getElementById('wb-score-change-panel'), rowsEl=document.getElementById('wb-rows'), note=document.getElementById('wb-note'), count=document.getElementById('wb-count'), status=document.getElementById('wb-status'), pulse=document.getElementById('wb-pulse'), drawer=document.getElementById('wb-drawer'), mask=document.getElementById('wb-mask');
+  var state={rows:[],sources:{},personal:{},assetMode:'stock',source:'黑馬',query:'',kind:'all',dir:'all',sort:'score',desc:true,marketOpen:false,timer:null,review:null,reviewLoading:false,quoteLoading:false,quoteUpdatedAt:'',returnScroll:0,loadedSources:{'黑馬':true,'雷達':true},loadingSource:''};
+  var tabs=document.getElementById('wb-tabs'),  rowsEl=document.getElementById('wb-rows'), note=document.getElementById('wb-note'), count=document.getElementById('wb-count'), status=document.getElementById('wb-status'), pulse=document.getElementById('wb-pulse'), drawer=document.getElementById('wb-drawer'), mask=document.getElementById('wb-mask');
   function token(){try{return new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||''}catch(e){return ''}}
   function api(path){return path+(path.indexOf('?')>-1?'&':'?')+'fragment=1'+(token()?'&t='+encodeURIComponent(token()):'')}
   function esc(v){return String(v==null?'—':v).replace(/[&<>'"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[c]})}
@@ -28549,241 +27121,8 @@ def render_workbench_body(initial_tab=""):
   function latestSourceDate(data){var sourceDates=Object.keys((data&&data.sources)||{}).map(function(k){var s=data.sources[k]||{};return s.date||s.computed_at||'';}).filter(Boolean);return sourceDates.length?sourceDates.sort().slice(-1)[0]:'未標日期';}
   function workbenchStatusText(data, marketOpen){return '最近資料：'+latestSourceDate(data)+'｜'+(marketOpen?'只更新目前可見標的，每 15 秒一次；排名仍依快照':'價格不再輪詢，固定使用已確認的正式收盤校正');}
   function isEtf(row){return row&&row.source==='ETF';}
-  function sources(){var order=state.assetMode==='etf'?['ETF']:['黑馬','雷達','轉折','籌碼','成效','我的排行'];return order.filter(function(s){if(s==='成效')return true;if(s==='我的排行')return !!(state.personal&&Object.keys(state.personal.rank_summary||{}).length);return true;});}
+  function sources(){var order=state.assetMode==='etf'?['ETF']:['黑馬','持股','雷達','轉折','籌碼','成效','我的排行'];return order.filter(function(s){if(s==='成效')return true;if(s==='我的排行')return !!(state.personal&&Object.keys(state.personal.rank_summary||{}).length);return true;});}
   function renderAssetTabs(){document.querySelectorAll('#wb-asset-tabs button').forEach(function(b){b.classList.toggle('on',b.dataset.asset===state.assetMode);});}
-  var labBody=document.getElementById('wb-lab-body'), labLoaded=false;
-  var LAB_DISPLAY={
-    '營收動能':'營收成長',
-    '價格動能':'股價趨勢',
-    'ROE品質':'公司獲利能力',
-    '低波動':'價格穩定度',
-    '價值':'估值條件',
-    '籌碼':'法人動向',
-    '成長':'成長性',
-    '混合':'綜合條件',
-    '四因子複合':'經典四項選股'
-  };
-  var LAB_EXPLAIN={
-    '營收動能':'看公司最近營收是否持續成長',
-    '價格動能':'看股價近幾個月的趨勢是否向上',
-    'ROE品質':'看公司用股東資本賺錢的效率（ROE）',
-    '低波動':'看股價是否相對穩定、波動較小',
-    '價值':'看本益比、股價淨值比、殖利率等估值',
-    '籌碼':'看法人買賣方向與資金動向',
-    '成長':'看營收成長的速度與加速度，不等同於單純的營收年增率',
-    '混合':'把幾種已完成的條件一起比較',
-    '四因子複合':'同時看獲利能力、股價趨勢、穩定度與營收成長'
-  };
-  function labName(k){return LAB_DISPLAY[k]||k;}
-  function labExplain(k){return LAB_EXPLAIN[k]||'';}
-  function renderStrategyLab(data){
-    if(!labBody)return;
-    var factors=data.factors||[], library=data.strategy_library||[], active=data.active_strategy||'營收動能';
-    var strategyData=data.strategy_data||{};
-    var factorHtml=factors.map(function(f){return '<div class="wb-lab-factor"><b>'+esc(f.name)+'</b><span class="wb-lab-muted">'+esc(f.description)+'</span><span class="wb-lab-weight">'+esc(f.weight)+'</span></div>';}).join('');
-    var ref=data.reference||{};
-    var refHtml='<div class="wb-lab-metrics">'+[['CAGR',ref.cagr],['Sharpe',ref.sharpe],['最大回撤',ref.mdd],['平均持股',ref.holdings]].map(function(x){return '<div class="wb-lab-metric"><small>'+esc(x[0])+'</small><b>'+esc(x[1]||'—')+'</b></div>';}).join('')+'</div>';
-    var libHtml=library.map(function(x){var cls=x.key===active?'active':'';var disabled=!x.available&&x.status_label!=='資料建置'?' disabled':'';var nm=labName(x.key);var explain=labExplain(x.key)||x.description||'';return '<button type="button" class="wb-lab-strategy '+cls+disabled+'" data-lab-strategy="'+esc(x.key)+'"><strong class="wb-lab-strategy-title">'+esc(nm)+'</strong><small>'+esc(explain)+'</small><em>'+esc(x.status_label||'研究')+'</em></button>';}).join('');
-    function recHtml(key){
-      var recs=strategyData[key]||[];
-      if(!recs.length){var isRoe=key==='ROE品質';return '<div class="wb-lab-empty wb-lab-empty-info"><b>'+(isRoe?'目前沒有可驗證的 ROE 資料':'這個條件目前還沒有可用名單')+'</b><small>'+(isRoe?'目前可取得的公開財報尚未提供可配對的 ROE；這裡不會用估算值冒充 ROE。':' '+(labExplain(key)||((library.find(function(x){return x.key===key})||{}).description)||'等待必要資料完成。'))+'</small></div>';}
-      return '<div class="wb-lab-picks">'+recs.map(function(x,i){
-        var chips=(x.tags||[]).map(function(t){return '<span class="wb-lab-chip">'+esc(t)+'</span>';}).join('');
-        var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
-        var metric='—';
-        if(n!=null){
-          if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<=0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\/\s*4/);if(mm)hc=Number(mm[1]);} metric=hc+'/4';}
-          else{var digits=(key==='低波動'||key==='ROE品質')?2:1;metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');}
-        }
-        return '<button type="button" class="wb-lab-pick" data-lab-code="'+esc(x.code)+'" data-lab-key="'+esc(key)+'"><span class="wb-lab-rank">'+(i+1)+'</span><span class="wb-lab-pick-main"><b>'+esc(x.code)+'　'+esc(x.name)+'</b><small>'+esc(x.industry||'未分類')+'</small><span class="wb-lab-pick-metric-mobile"><strong>'+esc(metric)+'</strong><em>'+esc(x.metric_label||'研究值')+'</em></span><span class="wb-lab-pick-tags">'+chips+'</span><span class="wb-lab-pick-reason-mobile">'+esc(x.reason||'')+'</span></span><span class="wb-lab-pick-metric"><strong>'+esc(metric)+'</strong><small>'+esc(x.metric_label||'研究值')+'</small></span><span class="wb-lab-pick-reason">'+esc(x.reason||'')+'</span><span class="wb-lab-arrow">›</span></button>';
-      }).join('')+'</div>';
-    }
-    function bindLabPicks(view,key){
-      if(!view)return;
-      view.querySelectorAll('[data-lab-code]').forEach(function(btn){
-        btn.addEventListener('click',function(){
-          var code=btn.getAttribute('data-lab-code');
-          var rec=(strategyData[key]||[]).find(function(x){return String(x.code)===String(code)});
-          if(rec)showLabResearchDetail(rec,key);
-        });
-      });
-    }
-    function lazyChartBlock(x,key){
-      if(key==='營收動能') return '<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="revenue" data-code="'+esc(x.code)+'">查看近12個月營收圖</button><div class="wb-d-chart-status">點開後才載入歷史資料，不影響研究室首屏速度。</div></div>';
-      if(key==='籌碼') return '<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="institutional" data-code="'+esc(x.code)+'">查看近20日法人動向</button><div class="wb-d-chart-status">點開後才讀取已保存的法人歷史。</div></div>';
-      return '';
-    }
-    function drawLazyChart(host,data,kind){
-      if(!Array.isArray(data)||!data.length){host.innerHTML='<div class="wb-d-chart-status">目前沒有足夠的歷史資料可畫圖。</div>';return;}
-      if(kind==='revenue'){
-        var w=720,h=300,p={l:38,r:18,t:24,b:48};
-        var vals=[];data.forEach(function(d){if(d.current!=null)vals.push(Number(d.current));if(d.previous!=null)vals.push(Number(d.previous));});
-        var max=Math.max.apply(null,vals.concat([0]));if(!isFinite(max)||max<=0)max=1;
-        var plotW=w-p.l-p.r,plotH=h-p.t-p.b,groupW=plotW/Math.max(1,data.length),barW=Math.max(7,Math.min(18,groupW*.28));
-        function ry(v){return p.t+plotH-(Number(v)||0)/max*plotH;}
-        var svg='<svg viewBox="0 0 '+w+' '+h+'" role="img" aria-label="近12個月營收，今年與去年同期比較">';
-        [0,.5,1].forEach(function(q){var yy=p.t+plotH*(1-q);svg+='<line x1="'+p.l+'" y1="'+yy+'" x2="'+(w-p.r)+'" y2="'+yy+'" stroke="#e4ebf1"/>';});
-        data.forEach(function(d,i){var cx=p.l+groupW*i+groupW/2,cur=Number(d.current)||0,pre=d.previous==null?null:Number(d.previous),cy=ry(cur),py=pre==null?null:ry(pre);
-          svg+='<rect x="'+(cx-barW-2)+'" y="'+cy+'" width="'+barW+'" height="'+Math.max(1,p.t+plotH-cy)+'" rx="4" fill="#4f78a6"/>';
-          if(py!=null)svg+='<rect x="'+(cx+2)+'" y="'+py+'" width="'+barW+'" height="'+Math.max(1,p.t+plotH-py)+'" rx="4" fill="#b9c7d4"/>';
-          var label=String(d.period||'').slice(0,7);svg+='<text x="'+cx+'" y="'+(h-18)+'" text-anchor="middle" font-size="10" fill="#74879a">'+esc(label)+'</text>';
-          if(d.yoy!=null)svg+='<text x="'+cx+'" y="'+Math.max(13,Math.min(cy,py==null?cy:py)-5)+'" text-anchor="middle" font-size="9" font-weight="700" fill="'+(Number(d.yoy)>=0?'#b23b31':'#16745a')+'">'+(Number(d.yoy)>=0?'+':'')+Number(d.yoy).toFixed(0)+'%</text>';
-        });
-        svg+='</svg>';
-        var latest=data[data.length-1]||{},latestYoy=latest.yoy!=null?Number(latest.yoy):null;
-        var yoyVals=data.map(function(d){return d.yoy==null?null:Number(d.yoy)}).filter(function(v){return v!=null&&isFinite(v)});
-        var avgYoy=yoyVals.length?yoyVals.reduce(function(a,b){return a+b},0)/yoyVals.length:null;
-        var positive=yoyVals.filter(function(v){return v>0}).length;
-        var peak=data.reduce(function(a,b){return (!a||Number(b.current||0)>Number(a.current||0))?b:a;},null);
-        var latestLabel=latest.period?String(latest.period).slice(0,7):'最新月份';
-        host.innerHTML='<div class="wb-d-chart-wrap wb-d-revenue-chart">'+svg+'</div><div class="wb-d-chart-legend"><span><i></i>今年月營收</span><span><i class="alt"></i>去年同期</span></div><div class="wb-d-chart-summary wb-d-chart-summary-grid"><div><b>最新月 '+(latestYoy==null?'YoY 待確認':((latestYoy>=0?'+':'')+latestYoy.toFixed(1)+'%'))+'</b><span>'+esc(latestLabel)+'，直接看最新成長速度</span></div><div><b>'+ (avgYoy==null?'—':((avgYoy>=0?'+':'')+avgYoy.toFixed(1)+'%')) +'</b><span>近'+data.length+'個月平均 YoY</span></div><div><b>'+positive+'/'+yoyVals.length+'</b><span>YoY 正成長月份</span></div></div><div class="wb-d-chart-insight"><b>圖表怎麼看</b><p>藍柱高於灰柱代表今年高於去年同期；柱頂 YoY 是每月成長率。若連續多月維持正成長，代表成長不是只靠單月跳升。'+(peak?' 近期最高月營收為 '+esc(String(peak.period||'').slice(0,7))+'。':'')+'</p></div><div class="wb-d-chart-note">去年同期由當月營收與 YoY 還原；圖表使用已保存月營收快照。</div>';
-        return;
-      }
-      var w=720,h=300,p={l:38,r:18,t:24,b:34},vals=data.map(function(d){return Number(d.net)||0;});
-      var max=Math.max.apply(null,vals.concat([0])),min=Math.min.apply(null,vals.concat([0]));if(max===min){max+=1;min-=1;}
-      var plotW=w-p.l-p.r,plotH=h-p.t-p.b,xstep=plotW/Math.max(1,data.length),zeroY=p.t+plotH-(0-min)/(max-min)*plotH,barW=Math.max(5,Math.min(14,xstep*.42));
-      function iy(v){return p.t+plotH-(Number(v)-min)/(max-min)*plotH;}
-      var svg='<svg viewBox="0 0 '+w+' '+h+'" role="img" aria-label="近20日法人淨買超">';
-      [min,0,max].forEach(function(v){var yy=iy(v);svg+='<line x1="'+p.l+'" y1="'+yy+'" x2="'+(w-p.r)+'" y2="'+yy+'" stroke="'+(v===0?'#aebdca':'#e7edf2')+'" stroke-dasharray="'+(v===0?'4 4':'')+'"/>';});
-      data.forEach(function(d,i){var v=Number(d.net)||0,xx=p.l+i*xstep+xstep/2,yy=iy(v),top=Math.min(yy,zeroY),hh=Math.max(2,Math.abs(yy-zeroY));svg+='<rect x="'+(xx-barW/2)+'" y="'+top+'" width="'+barW+'" height="'+hh+'" rx="3" fill="'+(v>=0?'#4f78a6':'#a65a5a')+'"/>';});
-      svg+='</svg>';
-      var buyDays=data.filter(function(d){return Number(d.net)>0}).length,sellDays=data.filter(function(d){return Number(d.net)<0}).length,totalNet=vals.reduce(function(a,b){return a+b},0),maxBuy=Math.max.apply(null,vals),maxSell=Math.min.apply(null,vals);
-      var streak=0,dir=0;for(var si=data.length-1;si>=0;si--){var sv=Number(data[si].net)||0,sd=sv>0?1:(sv<0?-1:0);if(!dir&&sd){dir=sd;streak=1;}else if(dir&&sd===dir){streak++;}else if(sd!==0)break;}
-      host.innerHTML='<div class="wb-d-chart-wrap wb-d-inst-chart">'+svg+'</div><div class="wb-d-chart-legend"><span><i></i>淨買超</span><span><i class="alt"></i>淨賣超</span></div><div class="wb-d-chart-summary wb-d-chart-summary-grid"><div><b>'+((totalNet>=0?'+':'')+totalNet.toLocaleString('zh-TW'))+' 張</b><span>近'+data.length+'日法人淨額</span></div><div><b>'+buyDays+' 日</b><span>淨買超天數</span></div><div><b>'+sellDays+' 日</b><span>淨賣超天數</span></div></div><div class="wb-d-chart-insight"><b>圖表怎麼看</b><p>0 軸以上是法人淨買超，以下是淨賣超。柱子連續站在同一側，比單日大買更能反映資金方向。'+(streak? '目前最後一段連續'+(dir>0?'買超':'賣超')+'為 '+streak+' 日。':'')+(maxBuy>0?' 期間最大單日買超約 '+maxBuy.toLocaleString('zh-TW')+' 張。':'')+'</p></div><div class="wb-d-chart-note">正值為淨買超、負值為淨賣超；資料來自已保存法人歷史。</div>';
-    }
-    function bindLazyCharts(host){
-      host.querySelectorAll('[data-lazy-chart]').forEach(function(btn){btn.addEventListener('click',function(){
-        var kind=btn.dataset.lazyChart,code=btn.dataset.code;
-        var box=document.getElementById('wb-full-chart')||btn.closest('.wb-d-lazy-chart')||btn.parentElement;
-        if(btn.dataset.loaded==='1'){if(box&&box.scrollIntoView)box.scrollIntoView({behavior:'smooth',block:'start'});return;}
-        btn.dataset.loaded='1';btn.disabled=true;
-        var st=box?box.querySelector('.wb-d-chart-status'):null;
-        if(st)st.textContent='正在載入完整歷史圖表…';
-        fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'force-cache'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(d){
-          if(!d.ok)throw new Error(d.error||'載入失敗');
-          drawLazyChart(box,d.data,kind);
-          if(box&&box.scrollIntoView)setTimeout(function(){box.scrollIntoView({behavior:'smooth',block:'start'});},60);
-        }).catch(function(e){btn.disabled=false;btn.dataset.loaded='';if(st)st.textContent='載入失敗：'+esc(String(e.message||e));});
-      });});
-    }
-    function showLabResearchDetail(x,key){
-    var host=document.getElementById('wb-detail');
-    var dr=document.getElementById('wb-drawer');
-    var mk=document.getElementById('wb-mask');
-    if(!host||!dr)return;
-
-    var y=window.scrollY||window.pageYOffset||0;
-    state.returnScroll=y;
-    document.body.dataset.wbScroll=String(y);
-    document.body.style.position='fixed';
-    document.body.style.top=(-y)+'px';
-    document.body.style.left='0';
-    document.body.style.right='0';
-    document.body.style.width='100%';
-    dr.classList.add('open');
-    dr.setAttribute('aria-hidden','false');
-    if(mk)mk.hidden=false;
-    dr.scrollTop=0;
-    host.scrollTop=0;
-
-    var keyName=labName(key);
-    var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
-    var metric='—';
-    if(n!=null){
-      if(key==='混合'||key==='四因子複合'){
-        var hit=Number(x.hit_count);
-        if(!isFinite(hit)||hit<=0){
-          hit=Array.isArray(x.factor_names)?x.factor_names.length:0;
-          if(!hit&&x.factor_rank_map)hit=Object.keys(x.factor_rank_map).length;
-        }
-        metric=String(hit)+'/4';
-      }else{
-        var digits=(key==='低波動'||key==='ROE品質')?2:1;
-        metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');
-      }
-    }
-
-    var chips=Array.isArray(x.tags)?x.tags.map(function(t){
-      return '<span class="wb-d-chip">'+esc(t)+'</span>';
-    }).join(''):'';
-
-    var metrics=Array.isArray(x.detail_metrics)?x.detail_metrics:[];
-    var metricHtml=metrics.length?'<div class="wb-d-metric-grid">'+metrics.map(function(m){
-      return '<div class="wb-d-metric"><small>'+esc(m[0])+'</small><b>'+esc(m[1])+'</b></div>';
-    }).join('')+'</div>':'';
-
-    var factorHtml='';
-    var reason=x.reason||'目前沒有額外說明。';
-    var scope=x.data_scope||'本次研究批次計算結果。';
-    var scoreNote=(key==='混合'||key==='四因子複合') ? (x.score_explanation||'這個數字是研究排序用的分數，不是報酬率。') : '';
-    var whyHtml='';
-    if(key==='混合'||key==='四因子複合'){
-      var fp=x.factor_pass||{}, fm={"公司獲利能力":"ROE","股價趨勢":"120D／60D 報酬","價格穩定度":"波動率","營收成長":"累計營收 YoY"};
-      var detailsMap={};(metrics||[]).forEach(function(m){detailsMap[String(m[0])]=m[1];});
-      var names=['公司獲利能力','股價趨勢','價格穩定度','營收成長'];
-      var hitCount=names.filter(function(n){return !!fp[n];}).length;
-      whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(reason)+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=!!fp[n];var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'—')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong>'+(v?esc(v):(ok?'符合':'未符合'))+'</strong></div>';}).join('')+'</div>';
-    }else{
-      whyHtml='<div class="wb-d-why-summary single"><div><b>'+esc(metric)+'</b><span>'+esc(x.metric_label||'研究值')+'</span></div><p>'+esc(reason)+'</p></div>';
-    }
-
-    var chartKind=(key==='營收動能')?'revenue':(key==='籌碼'?'institutional':'');
-    var chartTitle=key==='營收動能'?'完整營收成長圖表':(key==='籌碼'?'完整法人籌碼圖表':'');
-    var chartSub=key==='營收動能'?'一次看近12個月：今年、去年同期、每月 YoY 與最新趨勢。':(key==='籌碼'?'一次看近20日：法人淨買賣、0 軸、買賣方向與資金連續性。':'');
-    var lazy='';
-    if(chartKind) lazy='<div class="wb-d-lazy-chart wb-d-lazy-chart-premium" id="wb-full-chart"><div class="wb-d-chart-cta"><div><span>圖表分析</span><b>'+chartTitle+'</b><small>'+chartSub+'</small></div><button type="button" class="wb-d-full-chart-btn" data-lazy-chart="'+chartKind+'" data-code="'+esc(x.code)+'"><span>↗</span>查看完整圖表</button></div><div class="wb-d-chart-status">點擊後才載入歷史資料；不會拖慢股票卡片首屏。</div></div>';
-
-    var reason=x.reason||'目前沒有額外說明。';
-    var scope=x.data_scope||'本次研究批次計算結果。';
-    var scoreNote=(key==='混合'||key==='四因子複合') ? (x.score_explanation||'這個數字是研究排序用的分數，不是報酬率。') : '';
-    var whyHtml='';
-    if(key==='混合'||key==='四因子複合'){
-      var fp=x.factor_pass||{}, fm={"公司獲利能力":"ROE","股價趨勢":"120D／60D 報酬","價格穩定度":"波動率","營收成長":"累計營收 YoY"};
-      var detailsMap={};(metrics||[]).forEach(function(m){detailsMap[String(m[0])]=m[1];});
-      var names=['公司獲利能力','股價趨勢','價格穩定度','營收成長'];
-      var hitCount=names.filter(function(n){return !!fp[n];}).length;
-      whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(reason)+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=!!fp[n];var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'—')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong>'+(v?esc(v):(ok?'符合':'未符合'))+'</strong></div>';}).join('')+'</div>';
-    }else{
-      whyHtml='<div class="wb-d-why-summary single"><div><b>'+esc(metric)+'</b><span>'+esc(x.metric_label||'研究值')+'</span></div><p>'+esc(reason)+'</p></div>';
-    }
-    host.innerHTML=''
-      +'<div class="wb-d-container">'
-      +'<div class="wb-d-hero wb-d-hero-premium">'
-      +'<div class="wb-d-hero-top"><div>'
-      +'<span class="wb-d-label">策略研究 · '+esc(keyName)+'</span>'
-      +'<h3>'+esc(x.name||x.code||'研究標的')+' <small>'+esc(x.code||'')+'</small></h3>'
-      +'<p>'+esc(x.industry||'未分類')+'</p>'
-      +'</div><div class="wb-d-score"><span>'+esc(x.metric_label||'研究值')+'</span><b>'+esc(metric)+'</b></div>'
-      +'</div>'
-      +(chartKind?'<div class="wb-d-hero-chart-cta"><div><b>'+chartTitle+'</b><span>'+chartSub+'</span></div><button type="button" class="wb-d-full-chart-btn wb-d-full-chart-btn-hero" data-lazy-chart="'+chartKind+'" data-code="'+esc(x.code)+'"><span>↗</span> 查看完整圖表</button></div>':'')
-      +'</div>'
-      +'<section class="wb-d-section wb-d-noteworthy"><div class="wb-d-section-head"><h4>① 為什麼入選</h4><small>先看「符合幾項」，再看每一項到底過沒過</small></div>'
-      +whyHtml+'</section>'
-      +'<section class="wb-d-section"><div class="wb-d-section-head"><h4>② 研究證據</h4><small>把真正影響這次排名的數字攤開</small></div>'
-      +metricHtml+factorHtml+(scoreNote?'<p class="wb-d-note wb-d-score-note">'+esc(scoreNote)+'</p>':'')+lazy
-      +'<div class="wb-d-tags">'+chips+'</div></section>'
-      +'<section class="wb-d-section"><div class="wb-d-section-head"><h4>③ 資料與判讀方式</h4><small>這一區告訴你資料從哪裡來</small></div>'
-      +'<p class="wb-d-note">'+esc(scope)+'</p><div class="wb-d-data-note"><b>怎麼看</b><span>'+esc(key==='營收動能'?'看月營收是否持續成長，並直接對照去年同期與 YoY。':key==='籌碼'?'看法人近20日買賣方向，不把單日爆買直接當成趨勢。':key==='四因子複合'?'4 個條件分開判定，最後再合併成研究分。':'先看研究值，再看下方細項，不用只看一個總分。')+'</span></div></section>'
-      +'</div>';
-
-    bindLazyCharts(host);
-  }
-    var strategies=(data.strategies||[]).map(function(x){return '<div class="wb-lab-card"><h4>'+esc(x.name)+' <span class="wb-lab-status '+(x.status==='ready'?'ready':'wait')+'">'+esc(x.status_label)+'</span></h4><p class="wb-lab-muted">'+esc(x.description)+'</p><div class="wb-lab-note">'+esc(x.note)+'</div></div>';}).join('');
-    var categories=(data.categories||[]).map(function(x){return '<div class="wb-lab-category"><b>'+esc(x.name)+'</b><span>'+esc(x.items.join('・'))+'</span></div>';}).join('');
-    labBody.innerHTML='<div class="wb-lab-nav">'+libHtml+'</div>'+
-      '<div class="wb-lab-card wb-lab-picks-card"><div class="wb-lab-section-head"><div><h4 id="wb-lab-picks-title">今日研究候選 · '+esc((library.find(function(x){return x.key===active})||{}).name||active)+'</h4><p class="wb-lab-muted">'+esc(data.recommendation_note||'')+'</p></div><span class="wb-lab-count">'+((strategyData[active]||[]).length||0)+' 檔</span></div><div id="wb-lab-picks-view">'+recHtml(active)+'</div></div>'+
-      '<div style="height:12px"></div><div class="wb-lab-grid"><div class="wb-lab-card"><h4>經典四項選股條件</h4><p class="wb-lab-muted">用 4 個簡單角度一起看股票：公司獲利能力、股價趨勢、價格穩定度、營收成長。</p>'+factorHtml+'</div><div class="wb-lab-card"><h4>其他研究方式</h4><p class="wb-lab-muted">下面每一種都是不同的看股角度；點選後，上面的股票名單會直接切換。</p><div class="wb-lab-category-grid">'+categories+'</div></div></div>'+
-      '<div style="height:12px"></div><div class="wb-lab-compare">'+strategies+'</div>'+
-      '<div style="height:12px"></div><div class="wb-lab-grid"><div class="wb-lab-card"><h4>公開參考基準</h4><p class="wb-lab-muted">以下是 FinLab 公開頁面的參考回測，不是本 BOT 自己跑出的績效。</p>'+refHtml+'</div><div class="wb-lab-card"><h4>研究進度</h4><table class="wb-lab-table"><tr><th>階段</th><th>內容</th><th>狀態</th></tr>'+((data.steps||[]).map(function(x){return '<tr><td>'+esc(x.step)+'</td><td>'+esc(x.text)+'</td><td><span class="wb-lab-status '+(x.ready?'ready':'wait')+'">'+esc(x.status)+'</span></td></tr>';}).join(''))+'</table></div></div>'+
-      '<div class="wb-lab-note" style="margin-top:12px">'+esc(data.disclaimer||'')+'</div>';
-    bindLabPicks(document.getElementById('wb-lab-picks-view'),active);
-    labBody.querySelectorAll('[data-lab-strategy]').forEach(function(b){b.addEventListener('click',function(){var k=b.dataset.labStrategy||'';if(!k||b.disabled)return;labBody.querySelectorAll('.wb-lab-strategy').forEach(function(x){x.classList.remove('active')});b.classList.add('active');active=k;var title=document.getElementById('wb-lab-picks-title'),view=document.getElementById('wb-lab-picks-view'),count=document.querySelector('.wb-lab-count');var item=library.find(function(x){return x.key===k})||{};if(title)title.textContent='今日研究候選 · '+labName(k);if(count)count.textContent=((strategyData[k]||[]).length||0)+' 檔';if(view){view.innerHTML=recHtml(k);bindLabPicks(view,k);}});});
-  }
-  function loadStrategyLab(force){
-    if(labLoaded&&!force)return;
-    if(labBody)labBody.innerHTML='<div class="wb-lab-loading">正在一次載入全部策略研究資料…</div>';
-    fetch(api('/web/api/workbench/strategy-lab'+(force?'?refresh=1':'')),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');labLoaded=true;renderStrategyLab(data);}).catch(function(e){if(labBody)labBody.innerHTML='<div class="wb-lab-note">策略研究資料暫時無法載入：'+esc(String(e.message||e))+'</div>';});
-  }
   function renderTabs(){var list=sources();if(list.indexOf(state.source)<0)state.source=list[0]||'';tabs.innerHTML=list.map(function(s){var loaded=!!state.loadedSources[s];var n=s==='成效'||s==='我的排行'?'':(loaded?' <small>'+state.rows.filter(function(r){return r.source===s}).length+'</small>':'');return '<button type="button" class="'+(state.source===s?'on':'')+'" data-source="'+esc(s)+'">'+esc(s)+n+'</button>'}).join('');}
   function filtered(){var q=state.query.trim().toLowerCase();return state.rows.filter(function(r){var etf=r.source==='ETF';return (state.source==='全部'||r.source===state.source)&&(!q||[r.code,r.name,r.industry].join(' ').toLowerCase().indexOf(q)>-1)&&(state.kind==='all'||(state.kind==='etf'?etf:!etf))&&(state.dir==='all'||(state.dir==='up'&&Number(r.change_pct)>0)||(state.dir==='down'&&Number(r.change_pct)<0));}).sort(function(a,b){var av=a[state.sort],bv=b[state.sort];av=av==null?-Infinity:Number(av);bv=bv==null?-Infinity:Number(bv);return state.desc?bv-av:av-bv;});}
   function reviewPct(v){return v==null?'待確認':(Number(v)>0?'+':'')+Number(v).toFixed(1)+'%';}
@@ -28904,7 +27243,53 @@ def render_workbench_body(initial_tab=""):
     var comment=d.comment||r.signal||'尚無原始評論',range=(d.start_date||d.end_date)?('比較區間：'+(d.start_date||'—')+' 至 '+(d.end_date||'—')):period;
     return '<button type="button" class="wb-row wb-etf-row" data-code="'+esc(r.code)+'" data-source="ETF" data-row-key="'+esc(r.row_key||'')+'"><small class="wb-etf-period-title">'+esc(period)+'</small><span class="wb-etf-top"><span class="wb-etf-title"><span class="wb-tag ETF">ETF</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><small class="wb-industry">'+esc(r.industry)+'</small></span><span class="wb-etf-score"><small>排名分數</small><b>'+(score==null?'尚無資料':esc(score.toFixed(1)))+(score==null?'':'<em> 分</em>')+'</b></span></span>'+(d.score_breakdown?('<small class="wb-etf-breakdown">'+esc(d.score_breakdown)+'</small>'):'')+'<span class="wb-etf-metrics">'+metrics+'</span><p class="wb-etf-comment"><small>原始評論</small>'+esc(comment)+'</p><small class="wb-etf-period-note">'+esc(range)+'</small></button>';
   }
-  function renderHoldingRow(r){var d=r.detail||{},shares=Number(d.position_shares||0),score=r.score!=null?Number(r.score):null,scoreText=score==null?'未評分':'綜合 '+score.toFixed(0)+' 分',scoreClass=score==null?'wb-flat':'wb-score',weight=r.weight!=null?Number(r.weight):null,wd=r.weight_delta!=null?Number(r.weight_delta):null,wdText=wd==null?'':(wd>0?'↑ '+wd.toFixed(2)+'%':wd<0?'↓ '+Math.abs(wd).toFixed(2)+'%':'→ 0.00%'),wdClass=wd==null?'wb-flat':wd>0?'wb-up':wd<0?'wb-down':'wb-flat',price=r.price!=null?money(r.price):'—',today=r.change_pct!=null?pct(r.change_pct):'—';return '<button type="button" class="wb-row wb-holding-row" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'"><span class="wb-row-main"><span class="wb-tag 持股">持股</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><small class="wb-industry">個人庫存</small><small class="wb-fact-line">持有 '+shares.toLocaleString('zh-TW')+' 股　今日 '+esc(today)+'</small></span><span class="wb-holding-weight"><b>'+(weight==null?'—':weight.toFixed(1)+'%')+'</b><small>目前權重</small><em class="'+wdClass+'">'+esc(wdText)+'</em></span><span class="wb-holding-price"><b>'+esc(price)+'</b><small>'+esc(scoreText)+'</small></span><span>›</span></button>';}function renderTurningGrouped(){var isBreakout=function(r){var d=r.detail||{};return r.source==='轉折'&&String(d.breakout||'').indexOf('突破')===0&&['confirmed','observing'].indexOf(String(d.state||''))>=0;};var bo=state.rows.filter(isBreakout).slice().sort(function(a,b){return Number(b.turning_score||0)-Number(a.turning_score||0);});var boCodes={};bo.forEach(function(r){boCodes[r.code]=1;});var boHtml='';if(bo.length){var bv=bo.slice(0,3).map(renderTurningRow).join(''),bm=bo.slice(3).map(renderTurningRow).join('');boHtml='<section class="wb-turning-group wb-turning-breakout"><h3>🚀 突破 <small>'+bo.length+' 檔</small></h3><p class="wb-turning-note">法人已轉向，且價格同步站上近 60 日新高；已從下方狀態組移入</p>'+bv+(bm?'<details class="wb-turning-more"><summary>其餘 '+(bo.length-3)+' 檔</summary>'+bm+'</details>':'')+'</section>';}else{boHtml='<section class="wb-turning-group wb-turning-breakout"><h3>🚀 突破 <small>0 檔</small></h3><p class="wb-turning-note">今日沒有同時符合的標的。兩個條件要同時發生本來就不常見，空白是正常的。</p></section>';}var groups=[['confirmed','已確認','wb-turning-confirmed'],['observing','觀察中','wb-turning-observing'],['invalid','失敗','wb-turning-invalid']];var html=boHtml+groups.map(function(g){var list=state.rows.filter(function(r){return r.source==='轉折'&&!boCodes[r.code]&&String((r.detail||{}).state||'observing')===g[0];}).slice().sort(function(a,b){return Number(b.turning_score||0)-Number(a.turning_score||0)||Math.abs(Number(b.institutional_lots||0))-Math.abs(Number(a.institutional_lots||0));});if(!list.length)return '';var visible=list.slice(0,3).map(renderTurningRow).join('');var more=list.slice(3).map(renderTurningRow).join('');return '<section class="wb-turning-group '+g[2]+'"><h3>'+g[1]+' <small>'+list.length+' 檔</small></h3>'+visible+(more?'<details class="wb-turning-more"><summary>其餘 '+(list.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}).join('');rowsEl.innerHTML=state.rows.some(function(r){return r.source==='轉折';})?html:'<div class="wb-empty">目前沒有已保存的轉折資料。</div>';count.textContent='突破組置頂；其餘依已確認、觀察中、失敗分組；買轉賣與賣轉買以不同方向顏色標示；每組先顯示 3 檔';}   function renderChipsGrouped(list){var groups=['投信認養','外資認養','外資投信同買','投信調節','外資投信同賣'];function section(label,xs,extraClass){if(!xs.length)return '';var visible=xs.slice(0,3).map(renderChipRow).join(''),more=xs.slice(3).map(renderChipRow).join('');return '<section class="wb-chip-group '+(extraClass||'')+'"><h3>'+esc(label)+' <small>'+xs.length+' 檔</small></h3>'+visible+(more?'<details class="wb-turning-more"><summary>其餘 '+(xs.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}var shifts=list.filter(function(r){return groups.indexOf(r.signal)<0;});var html=section('法人籌碼突變',shifts,'wb-chip-shifts');html+=groups.map(function(label){return section(label,list.filter(function(r){return r.signal===label;}));}).join('');rowsEl.innerHTML=html||'<div class="wb-empty">目前沒有符合舊版近十日籌碼規則的資料。</div>';count.textContent='近十日籌碼：法人籌碼突變置頂；其後依投信認養、外資認養、同買、投信調節、同賣分組，每組先顯示 3 檔';}   function renderEtfGrouped(list){var periods=[['short','短期'],['long','長期']],categories=['主動式','高股息','市值型','主題型'];var html=periods.map(function(p){var periodRows=list.filter(function(r){return (r.detail||{}).period_key===p[0];});if(!periodRows.length)return '';var label=(periodRows[0].detail||{}).period_label||p[1]+'價格報酬';var blocks=categories.map(function(category){var xs=periodRows.filter(function(r){return r.industry===category;});if(!xs.length)return '';var visible=xs.slice(0,3).map(renderEtfRow).join(''),more=xs.slice(3).map(renderEtfRow).join('');return '<section class="wb-etf-category"><h4>'+esc(category)+' <small>'+xs.length+' 檔</small></h4>'+visible+(more?'<details class="wb-result-more"><summary>其餘 '+(xs.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}).join('');return '<section class="wb-etf-period"><h3><strong>'+esc(p[1])+'排名</strong><small>'+esc(label)+'</small></h3>'+blocks+'</section>';}).join('');rowsEl.innerHTML=html||'<div class="wb-empty">目前沒有已保存的 ETF 短期／長期排名資料。</div>';count.textContent='ETF 依舊版短期／長期及四種類別分組；每類先顯示 3 檔';}   function reviewCacheKey(){return 'stockbot_workbench_review_v3';}function restoreReviewCache(){if(state.review)return;try{var saved=JSON.parse(sessionStorage.getItem(reviewCacheKey())||'null');if(saved&&saved.at&&Date.now()-saved.at<300000&&saved.data&&Array.isArray(saved.data.modes)&&!saved.data.statistics_building)state.review=saved.data;}catch(e){}}function requestReview(force){if(state.reviewLoading)return;restoreReviewCache();if(!force&&state.review){if(state.source==='成效')render();return;}state.reviewLoading=true;fetch(api('/web/api/workbench/review'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){state.review=data;state.reviewLoading=false;if(!data.statistics_building){try{sessionStorage.setItem(reviewCacheKey(),JSON.stringify({at:Date.now(),data:data}));}catch(e){}}if(state.source==='成效')render();if(data.statistics_building){window.setTimeout(function(){requestReview(true);},3500);}}).catch(function(e){state.reviewLoading=false;if(state.source==='成效'){rowsEl.innerHTML='<div class="wb-empty" style="color:#8b4034">成效資料暫時無法載入，請稍後再試。</div>';}if(e.message==='AUTH')location.reload();});}function reviewMetric(label,value,kind,sub){var cls=value==null?'wb-flat':Number(value)>0?'wb-up':Number(value)<0?'wb-down':'wb-flat',text=value==null?'未提供':reviewPct(value);return '<span class="wb-review-metric"><small>'+esc(label)+'</small><b class="'+cls+'">'+esc(text)+'</b>'+(sub?'<em>'+esc(sub)+'</em>':'')+'</span>';}function renderReview(){
+  function renderHoldingRow(r){
+    var d=r.detail||{};
+    var shares=Number(d.position_shares||0);
+    var weight=r.weight!=null?Number(r.weight):null;
+    var wd=r.weight_delta!=null?Number(r.weight_delta):null;
+    var wdText=wd==null?"":(wd>0?"↑ "+wd.toFixed(2)+"%":wd<0?"↓ "+Math.abs(wd).toFixed(2)+"%":"→ 0.00%");
+    var wdClass=wd==null?"wb-flat":wd>0?"wb-up":wd<0?"wb-down":"wb-flat";
+    var price=r.price!=null?money(r.price):"—";
+    var today=r.change_pct!=null?pct(r.change_pct):"—";
+    return `<button type="button" class="wb-row wb-holding-row" data-code="${esc(r.code)}" data-source="${esc(r.source)}">
+      <span class="wb-row-main"><span class="wb-tag 持股">持股</span><b class="wb-name">${esc(r.code)}　${esc(r.name)}</b><small class="wb-industry">個人庫存</small><small class="wb-fact-line">持有 ${shares.toLocaleString('zh-TW')} 股　今日 ${today}</small></span>
+      <span class="wb-holding-weight"><b>${weight==null?'—':weight.toFixed(1)+'%'}</b><small>目前權重</small><em class="${wdClass}">${esc(wdText)}</em></span>
+      <span class="wb-holding-price"><b>${esc(price)}</b><small>持股快照</small></span><span>›</span>
+    </button>`;
+  }
+  function renderTurningGrouped(){
+    var isBreakout=function(r){
+      var d=r.detail||{};
+      return r.source==="轉折" && String(d.breakout||"").indexOf("突破")===0 && ["confirmed","observing"].indexOf(String(d.state||""))>=0;
+    };
+    var bo=state.rows.filter(isBreakout).slice().sort(function(a,b){return Number(b.turning_score||0)-Number(a.turning_score||0);});
+    var boCodes={};
+    bo.forEach(function(r){boCodes[r.code]=1;});
+    var boHtml="";
+    if(bo.length){
+      var bv=bo.slice(0,3).map(renderTurningRow).join("");
+      var bm=bo.slice(3).map(renderTurningRow).join("");
+      boHtml=`<section class="wb-turning-group wb-turning-breakout"><h3>🚀 突破 <small>${bo.length} 檔</small></h3><p class="wb-turning-note">法人已轉向，且價格同步站上近 60 日新高；已從下方狀態組移入</p>${bv}${bm?`<details class="wb-turning-more"><summary>其餘 ${bo.length-3} 檔</summary>${bm}</details>`:""}</section>`;
+    }else{
+      boHtml=`<section class="wb-turning-group wb-turning-breakout"><h3>🚀 突破 <small>0 檔</small></h3><p class="wb-turning-note">今日沒有同時符合的標的。兩個條件要同時發生本來就不常見，空白是正常的。</p></section>`;
+    }
+    var groups=[["confirmed","已確認","wb-turning-confirmed"],["observing","觀察中","wb-turning-observing"],["invalid","失敗","wb-turning-invalid"]];
+    var html=boHtml+groups.map(function(g){
+      var list=state.rows.filter(function(r){
+        return r.source==="轉折"&&!boCodes[r.code]&&String((r.detail||{}).state||"observing")===g[0];
+      }).slice().sort(function(a,b){
+        return Number(b.turning_score||0)-Number(a.turning_score||0)||Math.abs(Number(b.institutional_lots||0))-Math.abs(Number(a.institutional_lots||0));
+      });
+      if(!list.length)return "";
+      var visible=list.slice(0,3).map(renderTurningRow).join("");
+      var more=list.slice(3).map(renderTurningRow).join("");
+      return `<section class="wb-turning-group ${g[2]}"><h3>${g[1]} <small>${list.length} 檔</small></h3>${visible}${more?`<details class="wb-turning-more"><summary>其餘 ${list.length-3} 檔</summary>${more}</details>`:""}</section>`;
+    }).join("");
+    rowsEl.innerHTML=state.rows.some(function(r){return r.source==="轉折";})?html:`<div class="wb-empty">目前沒有已保存的轉折資料。</div>`;
+    count.textContent="突破組置頂；其餘依已確認、觀察中、失敗分組；買轉賣與賣轉買以不同方向顏色標示；每組先顯示 3 檔";
+  }
+  function renderChipsGrouped(list){var groups=['投信認養','外資認養','外資投信同買','投信調節','外資投信同賣'];function section(label,xs,extraClass){if(!xs.length)return '';var visible=xs.slice(0,3).map(renderChipRow).join(''),more=xs.slice(3).map(renderChipRow).join('');return '<section class="wb-chip-group '+(extraClass||'')+'"><h3>'+esc(label)+' <small>'+xs.length+' 檔</small></h3>'+visible+(more?'<details class="wb-turning-more"><summary>其餘 '+(xs.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}var shifts=list.filter(function(r){return groups.indexOf(r.signal)<0;});var html=section('法人籌碼突變',shifts,'wb-chip-shifts');html+=groups.map(function(label){return section(label,list.filter(function(r){return r.signal===label;}));}).join('');rowsEl.innerHTML=html||'<div class="wb-empty">目前沒有符合舊版近十日籌碼規則的資料。</div>';count.textContent='近十日籌碼：法人籌碼突變置頂；其後依投信認養、外資認養、同買、投信調節、同賣分組，每組先顯示 3 檔';}   function renderEtfGrouped(list){var periods=[['short','短期'],['long','長期']],categories=['主動式','高股息','市值型','主題型'];var html=periods.map(function(p){var periodRows=list.filter(function(r){return (r.detail||{}).period_key===p[0];});if(!periodRows.length)return '';var label=(periodRows[0].detail||{}).period_label||p[1]+'價格報酬';var blocks=categories.map(function(category){var xs=periodRows.filter(function(r){return r.industry===category;});if(!xs.length)return '';var visible=xs.slice(0,3).map(renderEtfRow).join(''),more=xs.slice(3).map(renderEtfRow).join('');return '<section class="wb-etf-category"><h4>'+esc(category)+' <small>'+xs.length+' 檔</small></h4>'+visible+(more?'<details class="wb-result-more"><summary>其餘 '+(xs.length-3)+' 檔</summary>'+more+'</details>':'')+'</section>';}).join('');return '<section class="wb-etf-period"><h3><strong>'+esc(p[1])+'排名</strong><small>'+esc(label)+'</small></h3>'+blocks+'</section>';}).join('');rowsEl.innerHTML=html||'<div class="wb-empty">目前沒有已保存的 ETF 短期／長期排名資料。</div>';count.textContent='ETF 依舊版短期／長期及四種類別分組；每類先顯示 3 檔';}   function reviewCacheKey(){return 'stockbot_workbench_review_v3';}function restoreReviewCache(){if(state.review)return;try{var saved=JSON.parse(sessionStorage.getItem(reviewCacheKey())||'null');if(saved&&saved.at&&Date.now()-saved.at<300000&&saved.data&&Array.isArray(saved.data.modes)&&!saved.data.statistics_building)state.review=saved.data;}catch(e){}}function requestReview(force){if(state.reviewLoading)return;restoreReviewCache();if(!force&&state.review){if(state.source==='成效')render();return;}state.reviewLoading=true;fetch(api('/web/api/workbench/review'),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){state.review=data;state.reviewLoading=false;if(!data.statistics_building){try{sessionStorage.setItem(reviewCacheKey(),JSON.stringify({at:Date.now(),data:data}));}catch(e){}}if(state.source==='成效')render();if(data.statistics_building){window.setTimeout(function(){requestReview(true);},3500);}}).catch(function(e){state.reviewLoading=false;if(state.source==='成效'){rowsEl.innerHTML='<div class="wb-empty" style="color:#8b4034">成效資料暫時無法載入，請稍後再試。</div>';}if(e.message==='AUTH')location.reload();});}function reviewMetric(label,value,kind,sub){var cls=value==null?'wb-flat':Number(value)>0?'wb-up':Number(value)<0?'wb-down':'wb-flat',text=value==null?'未提供':reviewPct(value);return '<span class="wb-review-metric"><small>'+esc(label)+'</small><b class="'+cls+'">'+esc(text)+'</b>'+(sub?'<em>'+esc(sub)+'</em>':'')+'</span>';}function renderReview(){
   count.textContent='成效依原始推薦價格逐檔對照同期大盤；成熟樣本才顯示報酬';
   restoreReviewCache();
   if(!state.review){
@@ -28970,45 +27355,7 @@ function bindFactors(){
       .then(function(html){box.innerHTML=html;})
       .catch(function(e){d.dataset.loaded='';box.textContent='因子分析載入失敗：'+(e&&e.message?e.message:e);});
   });
-}  function renderScoreChanges(){
-    if(!scoreChangePanel)return;
-    var xs=Array.isArray(state.scoreChanges)?state.scoreChanges.slice():[];
-    if(!xs.length){
-      scoreChangePanel.hidden=false;
-      scoreChangePanel.innerHTML='<div class="wb-score-change-head"><div><span>今日黑馬分數變化</span><b>0 檔</b></div><div class="wb-score-change-head-right"><small>目前尚未偵測到今天的第二次快照</small></div></div><div class="wb-score-change-empty"><b>今天目前沒有可比較的分數變化</b><small>第一次快照不會被當成變化；當今天再次產生快照且分數改變，這裡會自動列出。</small></div>';
-      return;
-    }
-    function num(v){var n=Number(v);return isFinite(n)?n:null;}
-    xs.sort(function(a,b){
-      var av,bv;
-      if(state.scoreChangeSort==='delta_desc'||state.scoreChangeSort==='delta_asc'){
-        av=num(a.delta);bv=num(b.delta);
-      }else if(state.scoreChangeSort==='name_asc'){
-        return String(a.name||a.code||'').localeCompare(String(b.name||b.code||''),'zh-Hant');
-      }else{
-        av=num(a.new_score);bv=num(b.new_score);
-      }
-      av=av==null?-Infinity:av;bv=bv==null?-Infinity:bv;
-      return state.scoreChangeSort==='score_asc'||state.scoreChangeSort==='delta_asc'?av-bv:bv-av;
-    });
-    var visible=xs.slice(0,5), rest=xs.slice(5);
-    var sortLabel={score_desc:'目前分數 ↓',score_asc:'目前分數 ↑',delta_desc:'分數變化 ↓',delta_asc:'分數變化 ↑',name_asc:'名稱 A→Z'}[state.scoreChangeSort]||'目前分數 ↓';
-    var html='<div class="wb-score-change-head"><div><span>今日黑馬分數變化</span><b>'+xs.length+' 檔</b></div><div class="wb-score-change-head-right"><label>排序 <select id="wb-score-change-sort">'+[['score_desc','目前分數 ↓'],['score_asc','目前分數 ↑'],['delta_desc','分數變化 ↓'],['delta_asc','分數變化 ↑'],['name_asc','名稱 A→Z']].map(function(o){return '<option value="'+o[0]+'" '+(state.scoreChangeSort===o[0]?'selected':'')+'>'+o[1]+'</option>';}).join('')+'</select></label><small>預設依目前分數由高到低</small></div></div>';
-    function rowsHtml(arr){return '<div class="wb-score-change-list">'+arr.map(function(x){
-      var oldN=x.old_score==null?'—':Number(x.old_score).toFixed(0), newN=x.new_score==null?'—':Number(x.new_score).toFixed(0);
-      var delta=x.delta==null?null:Number(x.delta), cls=delta>0?'up':delta<0?'down':'flat', deltaText=delta==null?'—':(delta>0?'+':'')+delta.toFixed(1);
-      var factorText=(x.factors||[]).map(function(f){return esc(f.label)+' '+esc(f.old==null?'—':String(f.old))+'→'+esc(f.new==null?'—':String(f.new));}).join('　');
-      if(!factorText)factorText='分項資料沒有可辨識差異';
-      return '<button type="button" class="wb-score-change-row" data-score-change-code="'+esc(x.code)+'"><span class="wb-score-change-name"><b>'+esc(x.code)+'　'+esc(x.name)+'</b><small>'+esc(factorText)+'</small></span><span class="wb-score-change-score"><b>'+esc(oldN)+' → '+esc(newN)+'</b><em class="'+cls+'">'+esc(deltaText)+' 分</em></span><span class="wb-score-change-arrow">›</span></button>';
-    }).join('')+'</div>';}
-    html+=rowsHtml(visible);
-    if(rest.length){html+='<details class="wb-score-change-more"><summary>其餘 '+rest.length+' 檔　<span>展開查看</span></summary>'+rowsHtml(rest)+'</details>';}
-    scoreChangePanel.innerHTML=html;
-    var sel=document.getElementById('wb-score-change-sort');
-    if(sel)sel.onchange=function(){state.scoreChangeSort=sel.value;renderScoreChanges();};
-    scoreChangePanel.querySelectorAll('[data-score-change-code]').forEach(function(btn){btn.onclick=function(){var code=btn.getAttribute('data-score-change-code');var row=state.rows.find(function(r){return r.source==='黑馬'&&String(r.code)===String(code);});if(row)showDetail(row);};});
-  }
-  function render(){renderScoreChanges();renderAssetTabs();renderTabs();var lab=state.assetMode==='lab'||state.source==='策略研究';root.classList.toggle('wb-lab-active',lab);var tools=document.querySelector('.wb-tools'),fp=document.getElementById('wb-filter-panel'),ms=document.getElementById('wb-mobile-sort'),meta=document.querySelector('.wb-meta'),table=document.getElementById('wb-table'),labEl=document.getElementById('wb-strategy-lab'),assetTabs=document.getElementById('wb-asset-tabs'),sourceTabs=document.getElementById('wb-tabs'),intro=document.querySelector('.wb-intro'),pulse=document.getElementById('wb-pulse');[tools,fp,ms,meta,table,assetTabs,sourceTabs,intro,pulse].forEach(function(el){if(el)el.hidden=lab;});if(labEl)labEl.hidden=!lab;if(lab){state.source='策略研究';status.textContent='策略研究實驗室';loadStrategyLab(false);return;}document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}if(state.source!=='黑馬'&&state.source!=='雷達'&&state.source!=='成效'&&state.source!=='我的排行'&&!state.loadedSources[state.source]){rowsEl.innerHTML='<div class="wb-empty">正在準備 '+esc(state.source)+'…</div>';return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
+}  function render(){renderAssetTabs();renderTabs();document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','持股','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}if(state.source!=='黑馬'&&state.source!=='雷達'&&state.source!=='成效'&&state.source!=='我的排行'&&!state.loadedSources[state.source]){rowsEl.innerHTML='<div class="wb-empty">正在準備 '+esc(state.source)+'…</div>';return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}if(state.source==='持股'){count.textContent='我的持股；優先顯示最近已保存的自選股綜合分數，沒有快照才標示未評分';rowsEl.innerHTML=list.length?list.map(renderHoldingRow).join(''):'<div class="wb-empty">目前沒有已保存的持股。</div>';return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
     var host=document.getElementById('wb-detail'), dr=document.getElementById('wb-drawer'), mk=document.getElementById('wb-mask');
     if(!host||!dr)return;
     var y=window.scrollY||window.pageYOffset||0;
@@ -29037,24 +27384,12 @@ function bindFactors(){
       var src=txt(row.source||'選股'),name=txt(row.name||row.code||'標的'),code=txt(row.code||'—');
       var score=num(row.score!=null?row.score:d.score),price=num(row.price!=null?row.price:d.price),ch=num(row.change_pct!=null?row.change_pct:d.change_pct);
       var titleScore=score==null?'未評分':score.toFixed(0)+' 分';
-      var scoreChange=d.score_change||null,oldScore=scoreChange?num(scoreChange.old_score):null,newScore=scoreChange?num(scoreChange.new_score):score;
-      var delta=oldScore!=null&&newScore!=null?newScore-oldScore:null;
-      var scoreBadge=scoreChange&&delta!=null?'<span class="wb-d-hero-delta '+(delta>0?'up':delta<0?'down':'flat')+'">'+(delta>0?'+':'')+delta.toFixed(0)+' 分</span>':'';
+      var scoreBadge='';
+      var chaseWarning=row.chase_risk||d.chase_risk||'';
+      var chaseHtml=chaseWarning?'<div class="wb-d-chase-warning">'+esc(chaseWarning)+'</div>':'';
 
       /* 1. Hero */
-      var hero='<div class="wb-d-hero wb-d-hero-premium"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p><div class="wb-d-hero-meta"><span>資料日期 '+esc(txt(d.source_date||'未標日期'))+'</span>'+(row.radar_rank?' <span>雷達 #'+escv(row.radar_rank)+'</span>':'')+'</div></div><div class="wb-d-score"><span>綜合分數</span><b>'+esc(titleScore)+'</b>'+scoreBadge+'</div></div><div class="wb-d-price"><b>'+esc(price==null?'—':price)+'</b><span class="'+(ch!=null&&ch>0?'wb-up':ch!=null&&ch<0?'wb-down':'wb-flat')+'">'+esc(pct(ch))+'</span></div></div>';
-
-      /* 2. Today's score change */
-      var changeHtml='';
-      if(src==='黑馬'){
-        if(scoreChange){
-          var of=scoreChange.old_factors||{},nf=scoreChange.new_factors||{},items=[];
-          [['營收','rev',25],['估值','val',25],['產業動能','mom',20],['連續性','streak_score',20],['籌碼／技術','chip',10]].forEach(function(x){var ov=num(of[x[1]]),nv=num(nf[x[1]]);if(ov==null&&nv==null)return;var dd=(ov!=null&&nv!=null)?nv-ov:null;items.push('<div class="wb-d-change-row"><span>'+esc(x[0])+'</span><b>'+esc(ov==null?'—':ov.toFixed(0))+'</b><i>→</i><b>'+esc(nv==null?'—':nv.toFixed(0))+'</b><em class="'+(dd>0?'up':dd<0?'down':'flat')+'">'+(dd==null?'—':(dd>0?'+':'')+dd.toFixed(0))+'</em></div>')});
-          changeHtml=section('今日分數變化','上次快照 → 最新快照','<div class="wb-d-change-summary"><b>'+esc(oldScore==null?'—':oldScore.toFixed(0))+' → '+esc(newScore==null?'—':newScore.toFixed(0))+' 分</b><span class="'+(delta>0?'wb-up':delta<0?'wb-down':'wb-flat')+'">'+esc(delta==null?'—':(delta>0?'+':'')+delta.toFixed(0)+' 分')+'</span></div>'+(items.length?'<div class="wb-d-change-list">'+items.join('')+'</div>':'<p class="wb-d-note">總分有變化，但五項分項沒有可辨識差異。</p>')+'<small class="wb-d-change-time">紀錄時間：'+escv(scoreChange.changed_at||'今日')+'</small>','wb-d-score-change');
-        }else{
-          changeHtml=section('今日分數變化','目前沒有第二次可比較快照','<div class="wb-d-empty-mini">今天目前沒有偵測到這檔黑馬的分數變化。第一次快照不會被當成變化。</div>','wb-d-score-change wb-d-score-change-none');
-        }
-      }
+      var hero='<div class="wb-d-hero wb-d-hero-premium"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p><div class="wb-d-hero-meta"><span>資料日期 '+esc(txt(d.source_date||'未標日期'))+'</span>'+(row.radar_rank?' <span>雷達 #'+escv(row.radar_rank)+'</span>':'')+'</div></div><div class="wb-d-score"><span>綜合分數</span><b>'+esc(titleScore)+'</b>'+scoreBadge+'</div></div><div class="wb-d-price"><b>'+esc(price==null?'—':price)+'</b><span class="'+(ch!=null&&ch>0?'wb-up':ch!=null&&ch<0?'wb-down':'wb-flat')+'">'+esc(pct(ch))+'</span></div>'+chaseHtml+'</div>';
 
       /* 3. Factor chart */
       var factors=[],factorBars='';
@@ -29098,9 +27433,10 @@ function bindFactors(){
       ex('資料日期',d.source_date);ex('估值說明',d.val_desc);ex('產業動能說明',d.mom_desc);ex('分數組成',d.score_breakdown);ex('資料完整度',d.data_quality);ex('資料原則','只使用目前已保存的原始資料；沒有保存的欄位不自行推測。');
       var explainHtml=section('資料說明','這些內容來自目前保存快照',explain.length?'<div class="wb-d-explain">'+explain.join('')+'</div>':'<p class="wb-d-note">目前沒有額外文字說明。</p>');
 
-      host.innerHTML='<div class="wb-d-container">'+hero+changeHtml+factorHtml+whyHtml+fundamentalHtml+chipHtml+posHtml+explainHtml+validationHtml+'</div>';
+      /* V51: 已移除「分數變化」功能；詳細頁不再引用不存在的 changeHtml。 */
+      host.innerHTML='<div class="wb-d-container">'+hero+factorHtml+whyHtml+fundamentalHtml+chipHtml+posHtml+explainHtml+'</div>';
       if(typeof appendChipSection==='function')appendChipSection(row);
-      bindScoreValidation(validationMode,row);
+      /* V51: 不再載入分數歷史驗證，避免點個股時觸發額外計算。 */
       /* 內容完成後再保證詳細頁仍在頂端。 */
       dr.scrollTop=0;
       host.scrollTop=0;
@@ -29192,145 +27528,91 @@ function bindFactors(){
     });
   }
   function updateQuotes(){if(!state.marketOpen||document.hidden||state.quoteLoading)return;var codes=filtered().slice(0,30).map(function(r){return r.code}).join(',');if(!codes)return;state.quoteLoading=true;fetch(api('/web/api/workbench/quotes?codes='+encodeURIComponent(codes)),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){(data.updates||[]).forEach(function(q){state.rows.forEach(function(r){if(r.code===q.code&&q.price!=null){r.price=q.price;r.change_pct=q.change_pct;r.metric_label='當日漲跌';}});});state.quoteUpdatedAt=data.fetched_at||'';if(data.note)note.textContent=data.note+(state.quoteUpdatedAt?' 最後取得 '+state.quoteUpdatedAt+'。':'');status.textContent=state.quoteUpdatedAt?'盤中行情已更新 '+state.quoteUpdatedAt:'盤中行情局部更新中';render();}).catch(function(e){if(e.message==='AUTH')location.reload();}).finally(function(){state.quoteLoading=false;});}
-  // 選股台採「一次並行載入」：黑馬先顯示，但其他快照同時在背景載入，
-  // 不採用「點哪頁才載哪頁」，避免使用者切頁時才開始等待。
-  state.loadingSources = state.loadingSources || {};
-  var workbenchSources = ['黑馬','雷達','轉折','籌碼','ETF'];
-
-  function fetchWorkbenchSource(source){
-    if(!source || source==='成效' || source==='我的排行') return Promise.resolve(null);
-    if(state.loadedSources[source]) return Promise.resolve({source:source,loaded:true});
-    if(state.loadingSources[source]) return state.loadingSources[source];
-
-    // 選股台入口不能因為單一快照 API 卡住而永遠停在「正在載入」。
-    // Render／資料庫偶發延遲時，12 秒後放棄該來源，讓頁面仍可進入並顯示其他快照。
-    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-    var timeoutId = null;
-    if(controller) timeoutId = window.setTimeout(function(){try{controller.abort();}catch(e){}},12000);
-    var fetchOptions={credentials:'same-origin',cache:'no-store'};
-    if(controller) fetchOptions.signal=controller.signal;
-    var promise = fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),fetchOptions)
-      .finally(function(){if(timeoutId)window.clearTimeout(timeoutId);})
-      .then(function(r){
-        if(r.status===401)throw new Error('AUTH');
-        if(!r.ok)throw new Error('HTTP '+r.status);
-        return r.json();
-      })
+  function loadSource(source){
+    if(!source||source==='成效'||source==='我的排行'||state.loadedSources[source]||state.loadingSource)return;
+    state.loadingSource=source;status.textContent='正在載入 '+source+'…';rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
+    fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),{credentials:'same-origin'})
+      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
       .then(function(data){
         if(!data.ok)throw new Error(data.error||'載入失敗');
         state.rows=state.rows.filter(function(r){return r.source!==source;}).concat(Array.isArray(data.rows)?data.rows:[]);
-        if(source==='黑馬') state.scoreChanges=Array.isArray(data.score_changes)?data.score_changes:state.scoreChanges;
-        if(source==='持股') note.textContent='持股已載入：優先使用最近已保存的自選股評分快照。';
+        if(source==='持股'){note.textContent='持股已載入：優先使用最近已保存的自選股評分快照。';}
+        state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{});
+        state.loadedSources[source]=true;state.loadingSource='';status.textContent='已載入 '+source;render();
+      }).catch(function(e){state.loadingSource='';status.textContent=source+' 暫時無法載入';rowsEl.innerHTML='<div class="wb-empty" style="color:#8b4034">'+esc(source)+' 暫時無法載入。請稍後再試；其他分頁不受影響。</div>';});
+  }
+  // 進入選股台後一次並行預載所有分頁；使用者不需要逐一點擊。
+  function preloadSource(source){
+    if(!source||source==='黑馬'||source==='雷達'||source==='成效'||source==='我的排行'||state.loadedSources[source])return;
+    fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),{credentials:'same-origin'})
+      .then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(function(data){
+        if(!data.ok)throw new Error(data.error||'載入失敗');
+        state.rows=state.rows.filter(function(x){return x.source!==source;}).concat(Array.isArray(data.rows)?data.rows:[]);
         state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{available:true});
         state.loadedSources[source]=true;
-        delete state.loadingSources[source];
         renderTabs();
-        if(state.source===source) render();
-        return data;
+        if(state.source===source)render();
       })
       .catch(function(e){
-        delete state.loadingSources[source];
-        if(e&&e.message==='AUTH'){location.reload();return null;}
-        console.warn('工作台快照 '+source+' 載入失敗',e);
-        var em=String(e&&e.name==='AbortError'?'逾時（12 秒）':(e&&e.message||e));
-        state.sources[source]=Object.assign({},state.sources[source]||{},{available:false,error:em});
-        renderTabs();
-        return null;
+        console.warn('工作台預載 '+source+' 失敗',e);
+        if(e&&e.message==='AUTH')location.reload();
       });
-    state.loadingSources[source]=promise;
-    return promise;
   }
-
-  function loadSource(source){
-    if(!source||source==='成效'||source==='我的排行')return;
-    state.source=source;
-    if(source==='ETF')state.assetMode='etf';
-    else if(source!=='ETF')state.assetMode='stock';
-    render();
-    if(state.loadedSources[source])return;
-    status.textContent='正在載入 '+source+' 快照…';
-    rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
-    fetchWorkbenchSource(source).then(function(){
-      if(state.source===source){
-        status.textContent=state.loadedSources[source]?'已載入 '+source:'正在等待 '+source+' 快照…';
-        render();
-      }
-    });
-  }
-
-  function preloadSource(source){ return fetchWorkbenchSource(source); }
-
   function preloadAllWorkbench(){
-    // 所有資料源一次並行請求；黑馬只是 UI 優先顯示，不會阻塞其他快照。
-    workbenchSources.forEach(function(source){fetchWorkbenchSource(source);});
+    ['持股','轉折','籌碼','ETF'].forEach(preloadSource);
     requestReview();
   }
 
   function load(){
-    status.textContent='正在載入黑馬快照…';
+    // 進入選股台時，所有資料源一次並行讀取；不再要求使用者逐一點分頁才載入。
+    var allSources=['黑馬','雷達','持股','轉折','籌碼','ETF'];
+    var total=allSources.length, done=0, failed=0, finished=false;
+    status.textContent='正在一次載入選股台全部快照…';
     rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
 
-    var target=initialTab;
-    if(target==='ETF')state.assetMode='etf';
-    if(target==='策略研究')state.assetMode='lab';
-    if(target&&target!=='ETF'&&target!=='策略研究'&&sources().indexOf(target)>=0)state.source=target;
-    if(target==='策略研究'){state.source='策略研究';render();initialTab='';return;}
+    function one(source){
+      var controller=(window.AbortController?new AbortController():null);
+      var timer=controller?setTimeout(function(){try{controller.abort();}catch(_){ }},12000):null;
+      var opts={credentials:'same-origin'}; if(controller)opts.signal=controller.signal;
+      return fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),opts)
+        .then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+        .then(function(data){
+          if(!data.ok)throw new Error(data.error||'載入失敗');
+          state.rows=state.rows.filter(function(x){return x.source!==source;}).concat(Array.isArray(data.rows)?data.rows:[]);
+          state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{available:true});
+          state.loadedSources[source]=true;
+          done++;
+          status.textContent='選股台資料載入中… '+done+'/'+total;
+          renderTabs();
+          if(state.source===source)render();
+          return true;
+        })
+        .catch(function(e){
+          state.loadedSources[source]=false;
+          failed++;
+          if(e&&e.message==='AUTH'){location.reload();return false;}
+          console.warn('工作台載入 '+source+' 失敗',e);
+          return false;
+        })
+        .finally(function(){if(timer)clearTimeout(timer);});
+    }
 
-    // 黑馬與其他所有快照同時發出請求；黑馬完成後立即把首屏畫出來。
-    var blackHorse = fetchWorkbenchSource('黑馬');
-    workbenchSources.filter(function(source){return source!=='黑馬';}).forEach(function(source){fetchWorkbenchSource(source);});
+    // 成效統計同時啟動；它不再阻塞六個快照。
     requestReview();
-
-    blackHorse.then(function(data){
-      // 無論黑馬快照成功、失敗或逾時，都必須解除全頁 loading。
-      // 以前這裡在 data=null 時直接 return，會造成「選股台一直進不去」。
-      if(!data){
-        state.marketOpen=false;
-        state.source='黑馬';
-        state.assetMode='stock';
-        status.textContent='黑馬快照目前無法載入，已開啟選股台；可稍後按「重新整理」。';
-        note.textContent='最近黑馬快照暫時無法取得，其他資料來源仍可使用。';
-        rowsEl.innerHTML='<div class="wb-empty"><b>黑馬快照暫時無法載入</b><small>可能是資料庫或快照服務短暫延遲；不影響其他選股分頁。</small></div>';
-        renderTabs();
-        render();
-        if(window.stockBotFinishPageLoading) window.stockBotFinishPageLoading();
-        initialTab='';
-        return;
-      }
-      state.marketOpen=!!(data.meta&&data.meta.intraday);
-      state.source='黑馬';
-      state.assetMode='stock';
-      status.textContent='黑馬快照已載入，其他資料同步載入中…';
-      renderTabs();
+    Promise.all(allSources.map(one)).then(function(){
+      if(finished)return;
+      finished=true;
+      state.marketOpen=!!(state.sources['雷達']&&state.sources['雷達'].intraday);
+      if(initialTab==='ETF'){state.assetMode='etf';state.source='ETF';initialTab='';}
+      else if(initialTab&&sources().indexOf(initialTab)>=0){state.source=initialTab;initialTab='';}
+      status.textContent=failed?'選股台已載入（'+failed+' 個資料源暫時失敗）':'選股台全部資料已載入';
       render();
-      if(window.stockBotFinishPageLoading) window.stockBotFinishPageLoading();
-      if(state.marketOpen){
-        updateQuotes();
-        if(state.timer)clearInterval(state.timer);
-        state.timer=setInterval(updateQuotes,15000);
-      }
-      // 若是指定分頁進入，黑馬先出現，指定分頁的快照完成後會自動切過去。
-      if(target && target!=='黑馬' && target!=='成效' && target!=='我的排行' && target!=='策略研究'){
-        state.source=target;
-        if(target==='ETF')state.assetMode='etf';
-        render();
-      }
-      initialTab='';
-    });
-
-    // 不是等黑馬完成才載其他資料；所有 Promise 已在上面同時啟動。
-    workbenchSources.filter(function(source){return source!=='黑馬';}).forEach(function(source){
-      fetchWorkbenchSource(source).then(function(){
-        if(target && target===source){
-          state.source=source;
-          state.assetMode=(source==='ETF'?'etf':'stock');
-          initialTab='';
-        }
-        if(state.source===source) render();
-      });
+      if(state.timer)clearInterval(state.timer);
+      if(state.marketOpen){updateQuotes();state.timer=setInterval(updateQuotes,15000);}
     });
   }
-  document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':(state.assetMode==='lab'?'策略研究':'黑馬');state.query='';render();if(state.assetMode!=='lab')loadSource(state.source);};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){if(state.assetMode==='lab'){loadStrategyLab(true);}else load();};document.getElementById('wb-lab-refresh').onclick=function(){loadStrategyLab(true);};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();loadSource(state.source);}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
+  document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':'黑馬';state.query='';render();loadSource(state.source);};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){load();};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();loadSource(state.source);}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
   // 點擊保險：即使 rowsEl 被其他重新渲染／事件處理影響，仍由捕獲階段直接開啟詳情。
   document.addEventListener('click',function(e){
     var b=e.target&&e.target.closest?e.target.closest('#wb-rows .wb-row'):null;
@@ -29373,38 +27655,6 @@ function bindFactors(){
     return body.replace("__INITIAL_TAB__", html.escape(initial_tab, quote=True))
 
 
-def _workbench_score_changes_and_rows(snapshot, mode):
-    rows = _workbench_screener_rows(mode, snapshot) if snapshot else []
-    changes = []
-    if mode != "blackhorse":
-        return rows, changes
-    change_map = _load_today_screener_score_changes(mode)
-    labels = (("rev", "營收"), ("val", "估值"), ("mom", "產業動能"),
-              ("streak_score", "連續性"), ("chip", "籌碼／技術"))
-    for item in rows:
-        chg = change_map.get(str(item.get("code") or ""))
-        if not chg:
-            continue
-        item.setdefault("detail", {})["score_change"] = chg
-        of, nf = chg.get("old_factors") or {}, chg.get("new_factors") or {}
-        fc=[]
-        for fk,label in labels:
-            ov,nv=of.get(fk),nf.get(fk)
-            if ov != nv:
-                fc.append({"key":fk,"label":label,"old":ov,"new":nv})
-        old_score,new_score=chg.get("old_score"),chg.get("new_score")
-        delta=None
-        try:
-            if old_score is not None and new_score is not None:
-                delta=float(new_score)-float(old_score)
-        except Exception: pass
-        changes.append({"code":str(item.get("code") or ""),"name":str(item.get("name") or item.get("code") or ""),
-                        "old_score":old_score,"new_score":new_score,"delta":delta,
-                        "changed_at":chg.get("changed_at"),"factors":fc})
-    changes.sort(key=lambda x:str(x.get("changed_at") or ""), reverse=True)
-    return rows, changes
-
-
 def _workbench_holding_rows(uid):
     """只讀本人持股與已保存 watchlist_scores，供選股台 lazy tab 使用。"""
     positions=[]
@@ -29424,8 +27674,7 @@ def _workbench_holding_rows(uid):
         conn=get_db_connection();cur=conn.cursor()
         cur.execute("""
             SELECT DISTINCT ON (code) code, snapshot_date, total, chip, position, revenue, valuation,
-                   close, support, resistance, asset_type, category, factor_revenue, factor_valuation,
-                   factor_momentum, factor_streak, factor_chip_tech, factor_caps
+                   close, support, resistance, asset_type
             FROM watchlist_scores
             WHERE user_id=%s AND code=ANY(%s)
             ORDER BY code, snapshot_date DESC
@@ -29433,9 +27682,7 @@ def _workbench_holding_rows(uid):
         for rr in cur.fetchall():
             holding_scores[str(rr[0])] = {"source_date":str(rr[1] or ""),"total":rr[2],"chip":rr[3],
                 "position":rr[4],"revenue":rr[5],"valuation":rr[6],"close":rr[7],
-                "support":rr[8],"resistance":rr[9],"asset_type":rr[10],"category":rr[11],
-                "factor_revenue":rr[12],"factor_valuation":rr[13],"factor_momentum":rr[14],
-                "factor_streak":rr[15],"factor_chip_tech":rr[16],"factor_caps":rr[17]}
+                "support":rr[8],"resistance":rr[9],"asset_type":rr[10]}
         cur.close()
     except Exception as exc:
         print(f"⚠️ 工作台讀取持股評分快照失敗：{exc}")
@@ -29473,7 +27720,7 @@ def _workbench_holding_rows(uid):
     rows=[]
     for x in value_rows:
         position=x["position"];code=x["code"];score=x["score"];score_date=x["score_date"];shares=x["shares"];cost=x["cost"];saved_close=x["saved_close"];live_close=x["live_close"];live_pct=x["live_pct"]
-        rows.append({"source":"持股","code":code,"name":_workbench_display_name(position,code),"industry":"個人庫存","score":score,"price":live_close,"change_pct":live_pct,"metric_label":"今日漲跌","institutional_lots":None,"signal":f"持有 {int(shares or 0):,} 股","quality":"已有自選股評分快照" if score is not None else None,"analysis_available":score is not None,"weight":x["current_weight"],"weight_delta":x["weight_delta"],"detail":{"average_cost":cost,"position_shares":shares,"bought_on":str(position.get("bought_on") or ""),"analysis_available":score is not None,"analysis_note":(f"自選股評分快照：{score_date}" if score is not None else "此庫存尚未有已保存的自選股評分快照"),"source_date":score_date,"score":score,"chip":saved.get("chip"),"position":saved.get("position"),"revenue":saved.get("revenue"),"valuation":saved.get("valuation"),"category":saved.get("category"),"factor_revenue":saved.get("factor_revenue"),"factor_valuation":saved.get("factor_valuation"),"factor_momentum":saved.get("factor_momentum"),"factor_streak":saved.get("factor_streak"),"factor_chip_tech":saved.get("factor_chip_tech"),"factor_caps":saved.get("factor_caps"),"snapshot_price":saved_close,"support":saved.get("support"),"resistance":saved.get("resistance"),"asset_type":saved.get("asset_type"),"live_price":live_close,"live_change_pct":live_pct,"weight":x["current_weight"],"weight_delta":x["weight_delta"]}})
+        rows.append({"source":"持股","code":code,"name":_workbench_display_name(position,code),"industry":"個人庫存","score":score,"price":live_close,"change_pct":live_pct,"metric_label":"今日漲跌","institutional_lots":None,"signal":f"持有 {int(shares or 0):,} 股","quality":"已有自選股評分快照" if score is not None else None,"analysis_available":score is not None,"weight":x["current_weight"],"weight_delta":x["weight_delta"],"detail":{"average_cost":cost,"position_shares":shares,"bought_on":str(position.get("bought_on") or ""),"analysis_available":score is not None,"analysis_note":(f"自選股評分快照：{score_date}" if score is not None else "此庫存尚未有已保存的自選股評分快照"),"source_date":score_date,"score":score,"chip":saved.get("chip"),"position":saved.get("position"),"revenue":saved.get("revenue"),"valuation":saved.get("valuation"),"snapshot_price":saved_close,"support":saved.get("support"),"resistance":saved.get("resistance"),"asset_type":saved.get("asset_type"),"live_price":live_close,"live_change_pct":live_pct,"weight":x["current_weight"],"weight_delta":x["weight_delta"]}})
     return rows,{"available":True,"date":max((r["detail"]["source_date"] for r in rows if r["detail"]["source_date"]),default="未標日期")}
 
 
@@ -29543,7 +27790,6 @@ def _build_workbench_core_payload(uid):
         print(f"⚠️ 工作台雷達快照讀取失敗：{exc}")
         sources["雷達"]["note"]="雷達快照暫時無法載入，其他來源不受影響。"
 
-    # 分數變化不再阻塞首屏；點開黑馬／成效時再讀取。
     server_time=taiwan_now().isoformat()
     for meta in sources.values():
         if isinstance(meta,dict): meta.setdefault("server_time",server_time)
@@ -29554,10 +27800,9 @@ def _build_workbench_core_payload(uid):
             seen.add(key);deduped.append(row)
     value={"ok":True,"rows":deduped,"sources":sources,
            "personal":{"positions":[],"rank_summary":{}},
-           "score_changes":[],
            "market_open":bool(_is_taiwan_intraday_window()),
            "server_time":server_time,
-           "note":"首屏只讀已保存的黑馬／雷達快照；分數變化、成效、轉折、籌碼、ETF、持股與排行均延後載入。"}
+           "note":"首屏只讀已保存的黑馬／雷達快照；成效、轉折、籌碼、ETF、持股與排行均延後載入。"}
     with _workbench_snapshot_cache_lock:
         _workbench_snapshot_cache[cache_key]={"at":time.time(),"value":value}
     return value
@@ -29584,781 +27829,22 @@ def _workbench_source_payload(uid, source):
                 print(f"⚠️ 工作台讀取{source}最近快照失敗：{exc}")
                 snap = None
         rows=_workbench_screener_rows(mode, snap) if snap else []
-        # 黑馬首屏只讀快照；今日分數變化需要額外資料庫比對，不能阻塞首屏。
-        changes=[]
-        return {"ok":True,"source":source,"rows":rows,"score_changes":changes,
+        return {"ok":True,"source":source,"rows":rows,
                 "meta":{"available":bool(snap),
                         "date":str((snap or {}).get("source_date") or "未標日期"),
                         "source":snap_source or "最近已保存快照"}}
     if source=="持股":
-        rows,meta=_workbench_holding_rows(uid);return {"ok":True,"source":source,"rows":rows,"score_changes":[],"meta":meta}
+        rows,meta=_workbench_holding_rows(uid);return {"ok":True,"source":source,"rows":rows,"meta":meta}
     if source=="籌碼":
         result=build_chips_payload(allow_compute=False);rows=_workbench_chips_rows(result)
-        return {"ok":True,"source":source,"rows":rows,"score_changes":[],"meta":{"available":bool(rows),"date":str(result.get("data_date") or "未標日期"),"note":result.get("source")}}
+        return {"ok":True,"source":source,"rows":rows,"meta":{"available":bool(rows),"date":str(result.get("data_date") or "未標日期"),"note":result.get("source")}}
     if source=="轉折":
         turning,fresh,src=_get_turning_web_snapshot();rows=_workbench_turning_rows(turning) if turning else []
-        return {"ok":True,"source":source,"rows":rows,"score_changes":[],"meta":{"available":bool(rows),"date":str((turning or {}).get("data_date") or "未標日期"),"source":src,"fresh":fresh}}
+        return {"ok":True,"source":source,"rows":rows,"meta":{"available":bool(rows),"date":str((turning or {}).get("data_date") or "未標日期"),"source":src,"fresh":fresh}}
     if source=="ETF":
         payload,fresh,src=_load_etf_product_ranking_snapshot();rows=_workbench_etf_rows(payload) if payload else []
-        return {"ok":True,"source":source,"rows":rows,"score_changes":[],"meta":{"available":bool(rows),"date":str((payload or {}).get("market_data_date") or (payload or {}).get("data_date") or "未標日期"),"source":src,"fresh":fresh}}
+        return {"ok":True,"source":source,"rows":rows,"meta":{"available":bool(rows),"date":str((payload or {}).get("market_data_date") or (payload or {}).get("data_date") or "未標日期"),"source":src,"fresh":fresh}}
     return {"ok":False,"error":"不支援的工作台來源。"}
-
-
-_STRATEGY_LAB_CACHE = {"at": 0.0, "data": None}
-_STRATEGY_LAB_CACHE_TTL = 12 * 3600  # 12 小時；研究室每日預熱一次，白天直接讀快照
-_STRATEGY_LAB_SCHEMA_VERSION = 8  # ROE＋經典四項＋按需圖表＋估值門檻
-_STRATEGY_LAB_CACHE_LOCK = threading.Lock()
-
-def _normalize_strategy_lab_payload(payload):
-    """把舊版策略研究快照升級成目前格式，避免舊快取把綜合條件顯示成 0/4。"""
-    if not isinstance(payload, dict):
-        return payload
-    payload["strategy_lab_schema"] = _STRATEGY_LAB_SCHEMA_VERSION
-    data = payload.get("strategy_data")
-    if not isinstance(data, dict):
-        return payload
-    for key in ("混合", "四因子複合"):
-        recs = data.get(key)
-        if not isinstance(recs, list):
-            continue
-        for rec in recs:
-            if not isinstance(rec, dict):
-                continue
-            # 先用新欄位；舊快照若沒有，從 tags / reason / matched_factors 補回。
-            fmap = rec.get("factor_rank_map")
-            if not isinstance(fmap, dict):
-                fmap = {}
-            names = rec.get("factor_names") or rec.get("matched_factors") or list(fmap.keys())
-            if not isinstance(names, list):
-                names = []
-            try:
-                hc = int(rec.get("hit_count"))
-            except Exception:
-                hc = 0
-            if hc <= 0:
-                for t in (rec.get("tags") or []):
-                    m = re.search(r"(\d+)\s*/\s*4", str(t))
-                    if m:
-                        hc = int(m.group(1)); break
-            if hc <= 0:
-                m = re.search(r"(\d+)\s*/\s*4", str(rec.get("reason") or ""))
-                if m: hc = int(m.group(1))
-            if hc <= 0:
-                hc = len(names) or len(fmap)
-            rec["factor_rank_map"] = fmap
-            rec["factor_names"] = list(names)
-            rec["matched_factors"] = list(names)
-            rec["hit_count"] = max(0, min(4, hc))
-            # 舊版只有模糊的「3/4」時，至少讓使用者看到正確數量；新快照會提供具體條件。
-            if rec.get("reason") and "符合" not in str(rec["reason"]):
-                rec["reason"] = f"符合 {rec['hit_count']}/4 個研究條件"
-    return payload
-
-def _load_strategy_lab_shared_cache(force_refresh=False):
-    """讀取研究室完整結果快照；避免每次進頁都重新掃 Yahoo／DB。"""
-    if not force_refresh:
-        now = time.time()
-        with _STRATEGY_LAB_CACHE_LOCK:
-            data = _STRATEGY_LAB_CACHE.get("data")
-            at = float(_STRATEGY_LAB_CACHE.get("at") or 0)
-            if data and now - at < _STRATEGY_LAB_CACHE_TTL and data.get("strategy_lab_schema") == _STRATEGY_LAB_SCHEMA_VERSION:
-                return _normalize_strategy_lab_payload(data)
-        try:
-            shared = _load_shared_data_snapshot("strategy_lab", max_age_seconds=_STRATEGY_LAB_CACHE_TTL)
-            payload = (shared.get("payload") if shared else None) or {}
-            if isinstance(payload, dict) and payload.get("ok"):
-                raw_schema = payload.get("strategy_lab_schema")
-                # 舊共享快照沒有目前 schema，直接失效，讓 API 重新計算一次。
-                if raw_schema != _STRATEGY_LAB_SCHEMA_VERSION:
-                    return None
-                payload = _normalize_strategy_lab_payload(payload)
-                with _STRATEGY_LAB_CACHE_LOCK:
-                    _STRATEGY_LAB_CACHE.update({"at": time.time(), "data": payload})
-                return payload
-        except Exception as exc:
-            print(f"⚠️ 讀取策略研究室共享快照失敗：{exc}")
-    return None
-
-def _save_strategy_lab_shared_cache(payload):
-    if not isinstance(payload, dict) or not payload.get("ok"):
-        return False
-    payload = _normalize_strategy_lab_payload(payload)
-    with _STRATEGY_LAB_CACHE_LOCK:
-        _STRATEGY_LAB_CACHE.update({"at": time.time(), "data": payload})
-    try:
-        return bool(_save_shared_data_snapshot(
-            "strategy_lab", payload, data_date=taiwan_today(),
-            source_meta={"source": "strategy_lab", "ttl_seconds": _STRATEGY_LAB_CACHE_TTL},
-        ))
-    except Exception as exc:
-        print(f"⚠️ 保存策略研究室共享快照失敗：{exc}")
-        return False
-
-
-def _fetch_strategy_roe_from_twse(codes=None):
-    """研究室 ROE 快速版。
-
-    重點：TWSE / TPEx 財報 OpenAPI 的最新快照不一定帶完整「年度／季別」欄位，
-    因此不能因為 period 欄位缺失就把整批資料丟掉。
-
-    策略：
-      1. 只抓上市／上櫃一般業 4 個端點，四個請求並行。
-      2. 若 API 有年度／季別／資料年月，就使用它。
-      3. 若最新快照沒有期間欄位，使用目前已公告財報季度推定年化倍率，
-         但仍要求損益表與資產負債表以同一批最新資料配對。
-      4. 不再補抓 20 個特殊產業端點，避免首載入被拖到 20~30 秒。
-
-    ROE = 歸屬母公司業主淨利（最新累計）／歸屬母公司業主權益 × 年化倍率。
-    """
-    wanted=set()
-    for c in (codes or []):
-        m=re.search(r"(?<!\d)(\d{4})(?!\d)", str(c or ""))
-        if m:
-            wanted.add(m.group(1))
-    if not wanted:
-        return {}
-
-    def norm_key(v):
-        return re.sub(r"[\s\u3000()（）%％_\-／/．.：:，,\[\]{}]", "", str(v or "")).lower()
-
-    def pick(row, aliases):
-        amap={norm_key(k):v for k,v in row.items()}
-        for a in aliases:
-            v=amap.get(norm_key(a))
-            if v not in (None, "", "-", "--", "N/A", "NA", "null", "None"):
-                return v
-        return None
-
-    def norm_code(v):
-        st=str(v or "").strip()
-        m=re.search(r"(?<!\d)(\d{4})(?!\d)", st)
-        return m.group(1) if m else None
-
-    def num(v):
-        if v in (None, "", "-", "--", "N/A", "NA"):
-            return None
-        try:
-            st=str(v).strip().replace(",", "").replace("，", "")
-            st=st.replace("－", "-").replace("−", "-").replace("△", "-")
-            neg=st.startswith("(") and st.endswith(")")
-            st=st.strip("()")
-            st=st.replace("％", "").replace("%", "")
-            try:
-                x=float(st)
-            except Exception:
-                m=re.search(r"-?\d+(?:\.\d+)?", st)
-                if not m:
-                    return None
-                x=float(m.group(0))
-            return -x if neg and x>0 else x
-        except Exception:
-            return None
-
-    def roc_or_ad_year(v):
-        n=num(v)
-        if n is None:
-            return None
-        y=int(n)
-        if 90 <= y <= 150:
-            return y + 1911
-        return y
-
-    def period_key(row):
-        # 先讀年度＋季別。
-        year=pick(row, ["年度","資料年度","財報年度","年","Year","year"])
-        q=pick(row, ["季別","季度","財報季別","季","Quarter","quarter","Q"])
-        y=roc_or_ad_year(year)
-        qn=num(q)
-        if y is not None and qn is not None and 1 <= int(qn) <= 4:
-            qi=int(qn)
-            return (y, qi, f"{y}Q{qi}")
-
-        # 再讀年月；同時支援西元 YYYYMM / YYYY-MM / 民國 YYYMM。
-        raw=pick(row, ["資料年月","財報年月","年月","資料日期","出表日期","報表日期","日期","Date","date"])
-        txt=str(raw or "").strip()
-        digits=re.sub(r"[^0-9]", "", txt)
-        if digits:
-            try:
-                if len(digits) >= 8:
-                    yy=int(digits[:4]); mo=int(digits[4:6])
-                elif len(digits) == 6:
-                    yy=int(digits[:4]); mo=int(digits[4:6])
-                elif len(digits) == 5:
-                    yy=int(digits[:3])+1911; mo=int(digits[3:5])
-                else:
-                    yy=None; mo=None
-                if yy is not None and 1 <= int(mo) <= 12:
-                    if 90 <= yy <= 150:
-                        yy += 1911
-                    return (int(yy),(int(mo)-1)//3+1,txt)
-            except Exception:
-                pass
-
-        # 最新快照有時沒有期間欄位：先給同一個 latest key，
-        # 配對時仍會要求 income/equity 都是 latest。
-        return (0,0,"最新財報")
-
-    def latest_report_quarter():
-        """依目前日期推定「已經通常公告」的最新財報季度。
-        這只在 API 缺少期間欄位時使用，並非用來替代有期間欄位的資料。
-        """
-        try:
-            d=taiwan_today()
-            y=int(d.year); m=int(d.month)
-        except Exception:
-            import datetime as _dt
-            d=_dt.date.today(); y=int(d.year); m=int(d.month)
-        if m <= 2:
-            return y-1, 3
-        if m <= 4:
-            return y-1, 4
-        if m <= 7:
-            return y, 1
-        if m <= 10:
-            return y, 2
-        return y, 3
-
-    code_alias=["公司代號","證券代號","股票代號","公司碼","SecuritiesCompanyCode","Code"]
-    net_alias=[
-        "歸屬於母公司業主之淨利（淨損）","歸屬於母公司業主之淨利（損）",
-        "歸屬於母公司業主之淨利","歸屬母公司業主淨利","歸屬母公司業主之淨利",
-        "母公司業主之淨利（損）","母公司業主之淨利",
-        "本期淨利（淨損）","本期淨利","本期淨損","本期稅後淨利","稅後淨利",
-        "ProfitAfterTax","NetIncome","NetProfit",
-    ]
-    eq_alias=[
-        "歸屬於母公司業主之權益","歸屬於母公司業主之權益合計",
-        "權益總額（歸屬於母公司業主）","歸屬母公司業主之權益",
-        "歸屬母公司業主權益","股東權益總額","權益總額",
-        "EquityAttributableToOwnersOfParent","TotalEquity","Equity",
-    ]
-
-    # 只保留四個一般業端點。官方 TWSE / TPEx OpenAPI 確實提供這四個財報端點。
-    endpoints=[
-        (f"{TWSE_BASE}/opendata/t187ap06_L_ci","income","TWSE"),
-        (f"{TWSE_BASE}/opendata/t187ap07_L_ci","equity","TWSE"),
-        (f"{TPEX_BASE}/mopsfin_t187ap06_O_ci","income","TPEX"),
-        (f"{TPEX_BASE}/mopsfin_t187ap07_O_ci","equity","TPEX"),
-    ]
-
-    try:
-        fetched=fetch_json_bulk([u for u,_,_ in endpoints], timeout=7, workers=4)
-    except Exception as exc:
-        print(f"⚠️ 財報 ROE 批次讀取失敗：{exc}")
-        return {}
-
-    income={}; equity={}
-    for url,kind,market in endpoints:
-        rows=fetched.get(url)
-        if not isinstance(rows,list):
-            continue
-        for row in rows:
-            if not isinstance(row,dict):
-                continue
-            code=norm_code(pick(row,code_alias))
-            if code not in wanted:
-                continue
-            period=period_key(row)
-            if kind=="income":
-                value=num(pick(row,net_alias))
-                if value is None:
-                    continue
-                old=income.get(code)
-                # 有期間就取較新的；無期間則保留第一個有效快照。
-                if old is None or period[:2] > old[0][:2] or old[0][:2]==(0,0):
-                    income[code]=(period,value,market)
-            else:
-                value=num(pick(row,eq_alias))
-                if value is None or value <= 0:
-                    continue
-                old=equity.get(code)
-                if old is None or period[:2] > old[0][:2] or old[0][:2]==(0,0):
-                    equity[code]=(period,value,market)
-
-    fallback_y, fallback_q=latest_report_quarter()
-    out={}
-    for code,rec in income.items():
-        eqrec=equity.get(code)
-        if not eqrec:
-            continue
-        ip,net,imarket=rec; ep,eq,emarket=eqrec
-        # 有明確期間時必須同期間；沒有期間時允許 latest 對 latest。
-        if ip[:2] != (0,0) or ep[:2] != (0,0):
-            if ip[:2] != ep[:2]:
-                continue
-            y,q=ip[0],ip[1]
-            period_label=ip[2]
-        else:
-            y,q=fallback_y,fallback_q
-            period_label=f"{y}Q{q}（最新快照推定）"
-
-        annualize={1:4.0,2:2.0,3:4.0/3.0,4:1.0}.get(int(q),1.0)
-        roe=net*annualize/eq*100.0
-        if -200 <= roe <= 500:
-            out[code]={
-                "roe":round(roe,2),
-                "period":period_label,
-                "data_scope":f"{imarket}/{emarket} 最新累計財報年化；ROE 無期間欄位時依最新公告季度推定年化",
-            }
-
-    print(f"ℹ️ 策略研究室 ROE：{len(out)}/{len(wanted)} 檔可驗證；財報 API=4 個並行，未啟用特殊產業補抓")
-    return out
-
-def _build_strategy_lab_payload():
-    """策略研究室：一次載入全部研究策略所需資料，切換策略只在前端換榜，不重新整理。"""
-    def pct_rank(items, reverse=False):
-        vals=[v for _,v in items if v is not None]
-        if not vals: return {}
-        ordered=sorted(set(vals), reverse=reverse)
-        n=max(1,len(ordered)-1)
-        return {v: (100.0 if len(ordered)==1 else (ordered.index(v)/n)*100.0) for v in ordered}
-
-    def make_rec(code, name, industry, metric, metric_label, tags, reason, scores=None, extra=None):
-        out={"code":str(code),"name":str(name or code),"industry":str(industry or ""),
-             "metric":metric,"metric_label":metric_label,"tags":list(tags or [])[:3],
-             "reason":reason,"scores":scores or {}}
-        if extra: out.update(extra)
-        return out
-
-    def extract_roe(row):
-        """從既有快照中找目前可驗證的 ROE；沒有就回傳 None。
-        這不是 point-in-time 歷史 ROE，因此只用來做「目前研究候選」，
-        不會拿來冒充完整 FinLab 歷史回測。
-        """
-        if not isinstance(row, dict):
-            return None
-        candidates = [
-            row.get("roe"), row.get("ROE"), row.get("roe_pct"),
-            row.get("roe_percent"), row.get("return_on_equity"),
-        ]
-        detail = row.get("detail")
-        if isinstance(detail, dict):
-            candidates += [detail.get("roe"), detail.get("ROE"), detail.get("roe_pct"), detail.get("roe_percent")]
-        for v in candidates:
-            try:
-                if v is not None and str(v).strip() != "":
-                    n=float(v)
-                    if -200 <= n <= 500:
-                        return n
-            except Exception:
-                pass
-        return None
-
-    try:
-        conn=get_db_connection(); cur=conn.cursor()
-        cur.execute("SELECT COUNT(*), MAX(period) FROM revenue_history")
-        revenue_count,revenue_period=cur.fetchone() or (0,None)
-        cur.execute("SELECT COUNT(DISTINCT code), COUNT(DISTINCT trade_date) FROM inst_history")
-        inst_count,inst_days=cur.fetchone() or (0,0)
-        cur.execute("""
-            WITH ranked AS (
-              SELECT r.code,r.cum_yoy_pct,r.yoy_pct,r.mom_pct,r.period,
-                     LAG(r.yoy_pct) OVER (PARTITION BY r.code ORDER BY r.period) AS prev_yoy_pct,
-                     LAG(r.cum_yoy_pct) OVER (PARTITION BY r.code ORDER BY r.period) AS prev_cum_yoy_pct,
-                     ROW_NUMBER() OVER (PARTITION BY r.code ORDER BY r.period DESC) AS rn
-              FROM revenue_history r
-              WHERE r.cum_yoy_pct IS NOT NULL
-            )
-            SELECT r.code,r.cum_yoy_pct,r.yoy_pct,r.mom_pct,r.period,
-                   r.prev_yoy_pct,r.prev_cum_yoy_pct,
-                   COALESCE(s.name,r.code),COALESCE(s.industry,'')
-            FROM ranked r
-            LEFT JOIN stock_info s ON s.code=r.code
-            WHERE r.rn=1
-            ORDER BY r.cum_yoy_pct DESC NULLS LAST
-        """)
-        rev_rows=cur.fetchall()
-        cur.close(); release_db_connection(conn)
-    except Exception as exc:
-        print(f"⚠️ 策略研究室資料讀取失敗：{exc}")
-        revenue_count=revenue_period=inst_count=inst_days=0; rev_rows=[]
-
-    # 研究宇宙優先使用已保存的黑馬完整快照，避免進實驗室時重新掃全市場。
-    universe=[]
-    try:
-        snap=_load_persisted_screener_snapshot("blackhorse")
-        if snap and isinstance(snap.get("rows"),list):
-            universe=snap["rows"]
-    except Exception as exc:
-        print(f"⚠️ 讀取策略研究股票池失敗：{exc}")
-    by_code={str(r.get("code")):r for r in universe if isinstance(r,dict) and re.fullmatch(r"\d{4}",str(r.get("code") or ""))}
-    # 名稱一律補自既有名稱快照，避免不同來源的研究列出現「只有代號」。
-    try:
-        name_map = get_name_map() or {}
-    except Exception:
-        name_map = {}
-    for c,r in by_code.items():
-        if not r.get("name") or str(r.get("name")) == c:
-            r["name"] = name_map.get(c) or r.get("name") or c
-
-    # 把營收資料補進研究宇宙；前 180 檔是為了讓營收動能不受黑馬當日排名限制。
-    rev_map={}
-    for row in rev_rows:
-        code=str(row[0]); rev_map[code]={"cum_yoy":row[1],"yoy":row[2],"mom":row[3],"period":row[4],"prev_yoy":row[5],"prev_cum_yoy":row[6],"name":row[7],"industry":row[8]}
-        if code not in by_code and len(by_code)<180:
-            by_code[code]={"code":code,"name":row[7] or name_map.get(code) or code,"industry":row[8]}
-    codes=list(by_code)[:180]
-
-    # ROE 只在研究室預熱時抓一次，之後跟整份研究結果一起快取；不在使用者切換策略時重抓。
-    twse_roe={}
-    try:
-        twse_roe=_fetch_strategy_roe_from_twse(codes)
-    except Exception as exc:
-        print(f"⚠️ 策略研究室 TWSE ROE 計算失敗：{exc}")
-    for c,v in twse_roe.items():
-        if c in by_code:
-            by_code[c]["roe"]=v.get("roe")
-            by_code[c]["roe_period"]=v.get("period")
-            by_code[c]["roe_data_scope"]=v.get("data_scope")
-
-    # 法人與估值都是既有資料；不因切換策略再查一次。
-    try:
-        inst_data,_=_load_latest_institutional_history()
-    except Exception:
-        inst_data={}
-    try:
-        valuation=fetch_valuation() or {}
-    except Exception as exc:
-        print(f"⚠️ 策略研究室估值讀取失敗：{exc}"); valuation={}
-
-    # ROE 來源優先序：既有資料庫欄位 → 任一既有財務表的 ROE 欄位 →
-    # 若環境有 FinLab 套件與登入憑證，再讀公開資料欄位。沒有就維持「待建置」，不虛構。
-    roe_db={}
-    try:
-        conn=get_db_connection(); cur=conn.cursor()
-        cur.execute("""
-            SELECT table_name,column_name
-            FROM information_schema.columns
-            WHERE table_schema='public'
-              AND lower(column_name) IN ('roe','roe_pct','roe_percent','return_on_equity','roe_tax_after')
-            ORDER BY CASE WHEN lower(column_name)='roe' THEN 1 WHEN lower(column_name)='roe_pct' THEN 2 ELSE 3 END
-            LIMIT 8
-        """)
-        candidates=cur.fetchall() or []
-        for table,col in candidates:
-            try:
-                cur.execute(f'SELECT code, "{col}" FROM "{table}" WHERE "{col}" IS NOT NULL')
-                for code,val in cur.fetchall():
-                    try:
-                        n=float(val)
-                        if -200 <= n <= 500: roe_db[str(code)]=n
-                    except Exception:
-                        pass
-                if roe_db: break
-            except Exception:
-                continue
-        cur.close(); release_db_connection(conn)
-    except Exception as exc:
-        print(f"⚠️ 策略研究室 ROE 資料庫讀取失敗：{exc}")
-
-    if not roe_db:
-        try:
-            if os.getenv("FINLAB_TOKEN") or os.getenv("FINLAB_API_TOKEN"):
-                from finlab import data as _finlab_data
-                _roe = _finlab_data.get("fundamental_features:ROE稅後")
-                _roe = _roe.index_str_to_date()
-                if _roe is not None and len(_roe.index):
-                    latest = _roe.iloc[-1]
-                    for code,val in latest.items():
-                        try:
-                            n=float(val)
-                            if -200 <= n <= 500: roe_db[str(code)]=n
-                        except Exception:
-                            pass
-        except Exception as exc:
-            print(f"⚠️ FinLab ROE 尚未可用：{exc}")
-
-    # 把資料庫 ROE 補進研究宇宙。
-    for c,v in roe_db.items():
-        if c in by_code:
-            by_code[c]['roe']=v
-
-    # 一次批次取得 1 年 spark 日線。這一份同時供價格動能與低波策略使用。
-    spark={}
-    if codes:
-        try:
-            spark=_fetch_yahoo_spark_bulk(codes,rng="6mo",force_refresh=False,market_map=get_market_map() or {})
-        except Exception as exc:
-            print(f"⚠️ 策略研究室價格批次失敗：{exc}")
-
-    def hist_metrics(code):
-        q=spark.get(code) or {}; closes=[float(x) for x in (q.get("closes") or []) if x not in (None,0)]
-        if len(closes)<20:return None
-        ret20=(closes[-1]/closes[-21]-1)*100 if len(closes)>=21 else None
-        ret60=(closes[-1]/closes[-61]-1)*100 if len(closes)>=61 else None
-        ret120=(closes[-1]/closes[-121]-1)*100 if len(closes)>=121 else None
-        series=closes[-121:] if len(closes)>=121 else closes[-61:]
-        daily=[series[i]/series[i-1]-1 for i in range(1,len(series)) if series[i-1]]
-        vol=(statistics.pstdev(daily)*100) if len(daily)>=20 else None
-        hi=max(series) if series else None; lo=min(series) if series else None
-        close=float(q.get("close") or series[-1]) if series else None
-        range_pos=((close-lo)/(hi-lo)*100) if hi is not None and lo is not None and hi>lo and close is not None else None
-        peak=series[0] if series else None; max_dd=0.0
-        for px in series:
-            peak=max(peak,px) if peak is not None else px
-            if peak: max_dd=min(max_dd,(px/peak-1)*100)
-        return {"close":close,"pct":q.get("pct"),"ret20":ret20,"ret60":ret60,"ret120":ret120,"vol":vol,"high120":hi,"low120":lo,"range_pos":range_pos,"max_drawdown":max_dd}
-
-    metrics={c:hist_metrics(c) for c in codes}
-    active_rows=[(c,by_code[c]) for c in codes]
-
-    # ROE：先使用既有快照可驗證的「目前 ROE」。
-    # 沒有 point-in-time 歷史資料時，不把它冒充成完整 FinLab 回測因子。
-    roe_items=[]
-    for c,r in active_rows:
-        rv=extract_roe(r)
-        if rv is not None:
-            roe_items.append((c,rv))
-    roe_items.sort(key=lambda x:x[1], reverse=True)
-    roe_recs=[]
-    for i,(c,v) in enumerate(roe_items[:25],1):
-        r=by_code[c]
-        roe_recs.append(make_rec(c,r.get("name"),r.get("industry"),v,"目前 ROE",["ROE品質"],f"目前可驗證 ROE {v:+.1f}%",extra={"rank":i,"roe":v,"data_scope":str(r.get("roe_data_scope") or "最新累計財報年化；非 point-in-time 歷史資料"),"detail_metrics":[("ROE",f"{v:.2f}%"),("財報期間",str(r.get("roe_period") or "最新財報")),("資料口徑",str(r.get("roe_data_scope") or "最新累計財報年化"))]}))
-
-    # 1. 營收動能
-    revenue_items=[]
-    for c,r in rev_map.items():
-        if r.get("cum_yoy") is None: continue
-        v=float(r["cum_yoy"])
-        # 先排除極端基期／資料異常值，避免 1,000,000% 類型的數字把研究榜洗掉。
-        # FinLab 公開的營收動能研究也使用 10%～150% 的月營收 YoY 範圍來降低基期失真。
-        if 10 <= v <= 150:
-            revenue_items.append((c,v))
-    revenue_items.sort(key=lambda x:x[1],reverse=True)
-    revenue_recs=[]
-    for i,(c,val) in enumerate(revenue_items[:25],1):
-        r=rev_map[c]; tags=[]
-        if val>=30: tags.append("累計YoY強")
-        elif val>0: tags.append("累計YoY+")
-        if r.get("yoy") is not None and float(r["yoy"])>0: tags.append("當月YoY+")
-        if r.get("mom") is not None and float(r["mom"])>0: tags.append("MoM+")
-        revenue_recs.append(make_rec(c,r["name"],r["industry"],val,"累計營收 YoY",tags,f"最新累計營收年增 {val:+.1f}%",extra={"rank":i,"period":str(r.get("period") or ""),"detail_metrics":[("最新累計營收年增",f"{val:+.1f}%"),("當月YoY",f'{float(r.get("yoy")):+.1f}%' if r.get("yoy") is not None else "待確認"),("MoM",f'{float(r.get("mom")):+.1f}%' if r.get("mom") is not None else "待確認"),("前期當月YoY",f'{float(r.get("prev_yoy")):+.1f}%' if r.get("prev_yoy") is not None else "待確認"),("累計YoY前期",f'{float(r.get("prev_cum_yoy")):+.1f}%' if r.get("prev_cum_yoy") is not None else "待確認"),("資料期別",str(r.get("period") or "最新"))]}))
-
-    # 2. 價格動能：120D 優先，資料不足才退回 60D，並把資料視窗寫清楚。
-    mom_items=[]
-    for c,r in active_rows:
-        m=metrics.get(c) or {}; v=m.get("ret120") if m.get("ret120") is not None else m.get("ret60")
-        if v is not None: mom_items.append((c,float(v)))
-    mom_items.sort(key=lambda x:x[1],reverse=True)
-    mom_recs=[]
-    for i,(c,v) in enumerate(mom_items[:25],1):
-        r=by_code[c]; window="120D" if (metrics[c] or {}).get("ret120") is not None else "60D"
-        mom_recs.append(make_rec(c,r.get("name"),r.get("industry"),v,window+" 報酬",[window+"動能",("正報酬" if v>0 else "負報酬")],f"近{window}報酬 {v:+.1f}%",extra={"rank":i,"detail_metrics":[("20日報酬",f"{float((metrics[c] or {}).get("ret20")):+.1f}%" if (metrics[c] or {}).get("ret20") is not None else "待確認"),("60日報酬",f"{float((metrics[c] or {}).get("ret60")):+.1f}%" if (metrics[c] or {}).get("ret60") is not None else "待確認"),("120日報酬",f"{float((metrics[c] or {}).get("ret120")):+.1f}%" if (metrics[c] or {}).get("ret120") is not None else "待確認"),("現價",f"{float((metrics[c] or {}).get("close")):.2f}" if (metrics[c] or {}).get("close") is not None else "待確認")]}))
-
-    # 3. 低波：波動越低越前。
-    lowvol_items=[(c,float((metrics[c] or {}).get("vol"))) for c in codes if (metrics[c] or {}).get("vol") is not None]
-    lowvol_items.sort(key=lambda x:x[1])
-    lowvol_recs=[]
-    for i,(c,v) in enumerate(lowvol_items[:25],1):
-        r=by_code[c]; m=metrics[c] or {}; lowvol_recs.append(make_rec(c,r.get("name"),r.get("industry"),v,"近120D/60D波動",["低波"],f"歷史日報酬波動度約 {v:.2f}%",extra={"rank":i,"detail_metrics":[("波動率",f"{v:.2f}%"),("120日最高",f"{float(m.get("high120")):.2f}" if m.get("high120") is not None else "待確認"),("120日最低",f"{float(m.get("low120")):.2f}" if m.get("low120") is not None else "待確認"),("目前區間位置",f"{float(m.get("range_pos")):.0f}%" if m.get("range_pos") is not None else "待確認"),("最大回撤",f"{float(m.get("max_drawdown")):.1f}%" if m.get("max_drawdown") is not None else "待確認")]}))
-
-    # 4. 價值：低 PB＋低 PE＋高殖利率；至少有一項資料才入榜。
-    value_items=[]
-    for c in codes:
-        v=valuation.get(c) or {}; pb=v.get("pb"); pe=v.get("pe"); dy=v.get("yield")
-        nums=[]
-        if pb is not None and float(pb)>0: nums.append(("PB",float(pb)))
-        if pe is not None and float(pe)>0: nums.append(("PE",float(pe)))
-        if dy is not None: nums.append(("殖利率",float(dy)))
-        if nums:
-            # 各指標先做簡單橫斷面百分位，再取平均；方向：PB/PE越低越好、殖利率越高越好。
-            value_items.append((c,pb,pe,dy))
-    # 用排序名次組合，避免不同單位直接相加。
-    def rankmap(vals,ascending=True):
-        vals=[x for x in vals if x is not None]
-        order=sorted(set(vals),reverse=not ascending); n=max(1,len(order)-1)
-        # rankmap 的輸出一律「越好越高」：ascending=True 時最小值拿 100。
-        return {v:(100 if len(order)==1 else (100 - order.index(v)/n*100)) for v in order}
-    pb_rank=rankmap([float(x[1]) for x in value_items if x[1] is not None],True)
-    pe_rank=rankmap([float(x[2]) for x in value_items if x[2] is not None],True)
-    dy_rank=rankmap([float(x[3]) for x in value_items if x[3] is not None],False)
-    val_scored=[]
-    for c,pb,pe,dy in value_items:
-        parts=[]
-        if pb is not None: parts.append(pb_rank.get(float(pb),50))
-        if pe is not None: parts.append(pe_rank.get(float(pe),50))
-        if dy is not None: parts.append(dy_rank.get(float(dy),50))
-        score=sum(parts)/len(parts) if parts else None
-        val_scored.append((c,score,pb,pe,dy))
-    val_scored.sort(key=lambda x:x[1] if x[1] is not None else -1,reverse=True)
-    value_recs=[]
-    for i,(c,score,pb,pe,dy) in enumerate(val_scored[:25],1):
-        r=by_code[c]; facts=[]
-        if pb is not None:facts.append(f"PB {float(pb):.2f}")
-        if pe is not None:facts.append(f"PE {float(pe):.1f}")
-        if dy is not None:facts.append(f"殖利率 {float(dy):.2f}%")
-        value_recs.append(make_rec(c,r.get("name"),r.get("industry"),score,"價值綜合排名",["低PB/PE","高殖利率"],"、".join(facts),extra={"rank":i,"pb":pb,"pe":pe,"yield":dy,"detail_metrics":[("本益比 PE",f"{float(pe):.1f} 倍" if pe is not None else "待確認"),("PE 研究門檻","≤ 15 倍"),("股價淨值比 PB",f"{float(pb):.2f} 倍" if pb is not None else "待確認"),("PB 研究門檻","≤ 1.5 倍"),("殖利率",f"{float(dy):.2f}%" if dy is not None else "待確認"),("殖利率研究門檻","≥ 4%"),("符合估值條件",f"{sum([pe is not None and float(pe)<=15,pb is not None and float(pb)<=1.5,dy is not None and float(dy)>=4])}/3")]}))
-
-    # 5. 籌碼：用「法人淨買超張數／當日成交張數」衡量強度，避免單純比張數。
-    chip_items=[]
-    for c in codes:
-        inst=inst_data.get(c) or {}; q=spark.get(c) or {}; lots=inst.get("total_net_lots")
-        vol=q.get("volume")
-        if lots is None or not vol: continue
-        turnover_lots=max(float(vol)/1000,1)
-        strength=float(lots)/turnover_lots*100
-        chip_items.append((c,strength,int(float(lots))))
-    chip_items.sort(key=lambda x:x[1],reverse=True)
-    chip_recs=[]
-    for i,(c,v,lots) in enumerate(chip_items[:25],1):
-        r=by_code[c]; chip_recs.append(make_rec(c,r.get("name"),r.get("industry"),v,"法人／成交強度",["法人淨買超" if lots>0 else "法人淨賣超"],f"法人淨額 {lots:+,} 張，約占當日成交量 {v:+.2f}%",extra={"rank":i,"net_lots":lots,"detail_metrics":[("今日法人淨買超",f"{lots:+,} 張"),("占當日成交量",f"{v:+.2f}%"),("估算名目金額",f"約 {abs(float(lots))*float((spark.get(c) or {}).get("close") or 0)*1000/1e8:.2f} 億元" if (spark.get(c) or {}).get("close") else "待確認"),("計算方式","股價 × 淨買超張數 × 1,000；不代表實際資金流入"),("資料口徑","最新可用法人快照；詳細20日圖表按需載入")]}))
-
-    # 6. 成長：營收＋營收加速度，先以目前可驗證的月營收資料運作。
-    growth_items=[]
-    for c,r in rev_map.items():
-        cy=r.get("cum_yoy"); y=r.get("yoy"); m=r.get("mom")
-        if cy is None: continue
-        cyv=float(cy)
-        if not (-100 < cyv <= 1500): continue
-        # 極端基期／缺值造成的單月 YoY 不拿來主導「成長性」排序。
-        # 仍保留累計 YoY 與 MoM，讓成長性回答「速度／加速度」，而不是被異常百分比洗榜。
-        yv=float(y) if y is not None else None
-        mv=float(m) if m is not None else None
-        if yv is not None and not (-100.0 < yv <= 1500.0):
-            yv=None
-        if mv is not None and not (-100.0 < mv <= 1000.0):
-            mv=None
-        accel=(yv if yv is not None else cyv)*0.6 + cyv*0.4 + (mv if mv is not None else 0)*0.2
-        growth_items.append((c,accel))
-    growth_items.sort(key=lambda x:x[1],reverse=True)
-    growth_recs=[]
-    for i,(c,v) in enumerate(growth_items[:25],1):
-        r=rev_map[c]
-        yraw=float(r["yoy"]) if r.get("yoy") is not None else None
-        mraw=float(r["mom"]) if r.get("mom") is not None else None
-        if yraw is not None and not (-100.0 < yraw <= 1500.0):
-            growth_reason=f"累計YoY {float(r['cum_yoy']):+.1f}%；當月YoY {yraw:+.1f}% 屬極端基期，未納入成長性排序"
-        else:
-            growth_reason=f"累計YoY {float(r['cum_yoy']):+.1f}%、當月YoY {yraw:+.1f}%" if yraw is not None else f"累計YoY {float(r['cum_yoy']):+.1f}%"
-        growth_recs.append(make_rec(c,r["name"],r["industry"],v,"成長速度／加速度",["累計成長","當月速度","加速度"],growth_reason,extra={"rank":i,"detail_metrics":[("累計營收YoY",f"{float(r['cum_yoy']):+.1f}%"),("當月營收YoY",f"{yraw:+.1f}%" if yraw is not None else "待確認"),("月增率MoM",f"{mraw:+.1f}%" if mraw is not None else "待確認"),("研究口徑","極端基期 YoY 不直接主導排序")]}))
-
-    # 7. 混合：目前先做可驗證的四路交集分數，不冒充完整 FinLab。
-    maps={}
-    for key,items in (("營收動能",revenue_items),("價格動能",mom_items),("低波動",[(c,-v) for c,v in lowvol_items]),("價值",[(c,v) for c,v,_,_,_ in val_scored])):
-        ordered=sorted(items,key=lambda x:x[1],reverse=True); maps[key]={c:i for i,(c,_) in enumerate(ordered,1)}
-    hybrid=[]
-    for c in codes:
-        ranks=[maps[k][c] for k in maps if c in maps[k]]
-        if len(ranks)>=2: hybrid.append((c,sum(1/r for r in ranks),ranks))
-    hybrid.sort(key=lambda x:x[1],reverse=True)
-    hybrid_recs=[]
-    hybrid_labels={"營收動能":"營收成長","價格動能":"股價趨勢","低波動":"價格穩定度","價值":"估值條件"}
-    for i,(c,score,ranks) in enumerate(hybrid[:25],1):
-        r=by_code[c]
-        factor_rank_map={}
-        for fk in maps:
-            if c in maps[fk]:
-                factor_rank_map[hybrid_labels.get(fk,fk)]=maps[fk][c]
-        hit_names=list(factor_rank_map.keys())
-        detail_text="、".join([f"{name}第{rank}名" for name,rank in factor_rank_map.items()])
-        reason=(f"符合 {len(ranks)}/4 個研究條件" + (f"：{detail_text}" if detail_text else ""))
-        hybrid_recs.append(make_rec(c,r.get("name"),r.get("industry"),score,"多條件共識",[f"{len(ranks)}/4 條件有排名"],reason,extra={"rank":i,"factor_ranks":ranks,"factor_rank_map":factor_rank_map,"factor_names":hit_names,"hit_count":len(ranks),"matched_factors":hit_names,"score_explanation":"這是研究排序用的共識分數；同時符合的條件越多、各條件排名越前，分數越高，不是報酬率或百分比。"}))
-
-    # 8. 經典四項：真正計算「ROE＋股價趨勢＋價格穩定度＋營收成長」。
-    # 不再使用空陣列；每一檔股票逐項判定，並保留每一項的實際數據供詳情卡使用。
-    composite=[]
-    valid_mom=[v for c,v in mom_items if v is not None]
-    valid_vol=[v for c,v in lowvol_items if v is not None]
-    vol_median=statistics.median(valid_vol) if valid_vol else None
-    roe_by={c:v for c,v in roe_items}
-    mom_by={c:v for c,v in mom_items}
-    vol_by={c:v for c,v in lowvol_items}
-    # 百分位分數：動能／營收／ROE 越高越前；波動率越低越前。
-    def percentile_score(values, value, reverse=False):
-        vals=[float(x) for x in values if x is not None]
-        if not vals or value is None: return None
-        vals=sorted(vals)
-        if reverse: vals=list(reversed(vals))
-        if len(vals)==1: return 100.0
-        rank=sum(1 for x in vals if (x>=value if reverse else x<=value))
-        return max(0.0,min(100.0,(rank/len(vals))*100.0))
-    for c in codes:
-        r=by_code[c]; rv=roe_by.get(c); mv=mom_by.get(c); vv=vol_by.get(c); rr=rev_map.get(c) or {}
-        cy=rr.get("cum_yoy");
-        if rv is None or mv is None or vv is None or cy is None: continue
-        # 四項的「通過」定義寫死且透明：ROE>=15%、120D/60D報酬>0、波動率不高於全體中位數、累計營收YoY>=10%。
-        passes=[rv>=15.0, mv>0.0, vv<=vol_median if vol_median is not None else False, float(cy)>=10.0]
-        hit=sum(1 for x in passes if x)
-        if hit<2: continue
-        roe_score=max(0.0,min(100.0,rv/30.0*100.0))
-        mom_score=percentile_score(valid_mom,mv,False) or 0.0
-        stability_score=percentile_score(valid_vol,vv,True) or 0.0
-        revenue_score=percentile_score([x[1] for x in revenue_items],float(cy),False) or 0.0
-        score=roe_score*0.20+mom_score*0.20+stability_score*0.40+revenue_score*0.20
-        m=metrics[c] or {}
-        window="120D" if m.get("ret120") is not None else "60D"
-        factor_names=[]; factor_details=[]
-        labels=["公司獲利能力","股價趨勢","價格穩定度","營收成長"]
-        vals=[passes[0],passes[1],passes[2],passes[3]]
-        for lab,ok in zip(labels,vals):
-            factor_names.append(lab+((" ✓") if ok else " ×"))
-        reason=f"符合 {hit}/4 項；ROE {rv:.1f}%、{window}報酬 {mv:+.1f}%、波動 {vv:.2f}%、累計營收YoY {float(cy):+.1f}%"
-        detail_metrics=[
-            ("四項通過",f"{hit}/4"),("ROE",f"{rv:.2f}%"),("ROE門檻","≥15%"),
-            (f"{window}報酬",f"{mv:+.1f}%"),("股價趨勢門檻","> 0%"),
-            ("波動率",f"{vv:.2f}%"),("全體波動中位數",f"{vol_median:.2f}%" if vol_median is not None else "待確認"),
-            ("120日價格區間",f"{float(m.get('low120')):.2f} ～ {float(m.get('high120')):.2f}" if m.get("low120") is not None and m.get("high120") is not None else "待確認"),
-            ("目前區間位置",f"{float(m.get('range_pos')):.0f}%" if m.get("range_pos") is not None else "待確認"),
-            ("最大回撤",f"{float(m.get('max_drawdown')):.1f}%" if m.get("max_drawdown") is not None else "待確認"),
-            ("當月營收YoY",f"{float(rr.get('yoy')):+.1f}%" if rr.get("yoy") is not None else "待確認"),
-            ("去年同期對照",f"前期當月YoY {float(rr.get('prev_yoy')):+.1f}%" if rr.get("prev_yoy") is not None else "前期資料待確認"),
-            ("累計營收YoY",f"{float(cy):+.1f}%"),
-        ]
-        composite.append((c,score,hit,vals,detail_metrics,factor_names,reason))
-    composite.sort(key=lambda x:(x[2],x[1]),reverse=True)
-    composite_recs=[]
-    for i,(c,score,hit,vals,details,factor_names,reason) in enumerate(composite[:25],1):
-        r=by_code[c]
-        tags=[f"{hit}/4通過"]+["ROE通過" if vals[0] else "ROE未過","趨勢通過" if vals[1] else "趨勢未過"]
-        composite_recs.append(make_rec(c,r.get("name"),r.get("industry"),score,"經典四項綜合分",tags[:3],reason,extra={"rank":i,"hit_count":hit,"factor_names":factor_names,"matched_factors":[labels[j] for j in range(4) if vals[j]],"factor_pass":dict(zip(labels,vals)),"detail_metrics":details,"score_explanation":"經典四項：ROE 20%＋股價趨勢 20%＋價格穩定度 40%＋營收成長 20%。4 項是否通過採固定門檻判定；綜合分用各項橫斷面分數加權。"}))
-
-    strategy_data={
-        "營收動能":revenue_recs,"價格動能":mom_recs,"低波動":lowvol_recs,"價值":value_recs,
-        "籌碼":chip_recs,"成長":growth_recs,"混合":hybrid_recs,
-        # 目前 ROE：若快照有可驗證欄位就先提供研究候選；完整四因子仍需 point-in-time ROE。
-        "ROE品質":roe_recs,"四因子複合":composite_recs
-    }
-    status_map={"營收動能":"可運作","價格動能":"可運作","低波動":"可運作","價值":"可運作","籌碼":"可運作","成長":"可運作","混合":"研究版","ROE品質":"目前有資料" if roe_recs else "等待資料源","四因子複合":"可運作"}
-    desc_map={
-        "營收動能":"月營收 YoY／累計 YoY／MoM。","價格動能":"近 120D 報酬優先，資料不足退回 60D。","低波動":"歷史日報酬波動度越低越前。","價值":"低 PB／低 PE／高殖利率的橫斷面排名。","籌碼":"法人淨買超占當日成交量，避免單純比張數。","成長":"成長性：把累計營收、當月 YoY 與月增動能合併，觀察成長速度與加速度；不是單看一個營收年增率。","混合":"把目前已可驗證的營收、動能、低波、價值排名做共識。","ROE品質":"ROE、EPS、毛利率等 point-in-time 財務資料。","四因子複合":"ROE＋120D/60D 動能＋價格穩定度＋月營收，逐檔計算 4/4 通過數。"
-    }
-    library=[]
-    for key in ["四因子複合","營收動能","價格動能","ROE品質","低波動","價值","籌碼","成長","混合"]:
-        friendly_names={"營收動能":"營收成長","價格動能":"股價趨勢","ROE品質":"公司獲利能力","低波動":"價格穩定度","價值":"估值條件","籌碼":"法人動向","成長":"成長性（速度／加速度）","混合":"綜合條件","四因子複合":"經典四項選股"}
-        friendly_desc={"營收動能":"看公司最近營收是否持續成長","價格動能":"看股價近幾個月的趨勢是否向上","ROE品質":"看公司用股東資本賺錢的效率（ROE）","低波動":"看股價是否相對穩定、波動較小","價值":"看本益比、股價淨值比、殖利率等估值","籌碼":"看法人買賣方向與資金動向","成長":"看營收成長速度與加速度；營收成長則只回答『現在比去年多多少』。","混合":"把幾種已完成的條件一起比較","四因子複合":"同時看獲利能力、股價趨勢、穩定度與營收成長"}
-        library.append({"key":key,"name":friendly_names.get(key,key),"description":friendly_desc.get(key,desc_map[key]),"status_label":status_map[key],"available":bool(strategy_data[key])})
-
-    return {
-        "ok":True,"version":"F3","active_strategy":"營收動能","strategy_data":strategy_data,
-        "factors":[
-            {"name":"公司獲利能力","weight":"20%","description":"ROE 越高，代表股東資金的獲利效率越高；正式歷史排名需公告時點財報資料。"},
-            {"name":"股價趨勢","weight":"20%","description":"看近 120 個交易日的股價表現；資料不足時退回 60 日。"},
-            {"name":"價格穩定度","weight":"40%","description":"近 120 日波動越小越前；經典四項條件中這一項權重較高。"},
-            {"name":"營收成長","weight":"20%","description":"看月營收與累計營收年增率。"}],
-        "strategy_library":library,
-        "categories":[
-            {"name":"多因子","items":["四因子複合","自由現金流多因子","品質＋價值＋股息"]},
-            {"name":"動能與趨勢","items":["營收動能","價格動能","複合動能","月營收公告換股","均線趨勢"]},
-            {"name":"品質與價值","items":["ROE 品質","低 PB","低 PE","高殖利率","低負債"]},
-            {"name":"風險","items":["低波動","風險調整報酬","品質＋動能＋低波"]},
-            {"name":"籌碼","items":["投信買超＋動能","法人連續性","法人金額占成交比"]},
-            {"name":"組合研究","items":["等權","分數加權","Top 10／25／30","月換／季換"]}],
-        "recommendation_note":"所有已完成的研究資料會先一次載入；切換上方條件只是在本頁換名單，不會重新整理。公司獲利能力（ROE）目前只會顯示有真實資料的股票，不會用推測數字補足。",
-        "recommendations":revenue_recs,
-        "reference":{"cagr":"20.1%","sharpe":"1.46","mdd":"-24.8%","holdings":"25 檔"},
-        "strategies":[
-            {"name":"我的五因子","status":"ready","status_label":"現行模型","description":"營收 25／估值 25／產業動能 20／法人 20／籌碼技術 10。","note":"維持正式 BOT，不因研究室加入而自動改權重。"},
-            {"name":"經典四項選股","status":"ready","status_label":"可運作","description":"ROE＋價格動能＋低波＋月營收。","note":"已逐檔計算 4/4、3/4、2/4 通過數與加權研究分。"},
-            {"name":"FinLab＋黑馬＋雷達","status":"wait","status_label":"第二階段","description":"FinLab 先縮小股票池，再交給黑馬／雷達做行情篩選。","note":"先完成獨立因子回測，再比較混合效果。"}],
-        "steps":[
-            {"step":"01","text":"策略庫與單因子研究入口；一次載入全部可運作策略","status":"已完成","ready":True},
-            {"step":"02","text":f"營收歷史資料：{int(revenue_count or 0):,} 筆，最新期 {revenue_period or '尚無'}；營收動能可運作","status":"可運作","ready":True},
-            {"step":"03","text":"價格 60／120D 動能與低波動已用同一批歷史行情計算","status":"可運作","ready":bool(mom_recs and lowvol_recs)},
-            {"step":"04","text":"ROE 歷史資料依財報公布日對齊，避免 lookahead bias","status":"待建置","ready":False},
-            {"step":"05","text":"完整 FinLab 四因子與同一回測框架比較","status":"待建置","ready":False}],
-        "data_meta":{"universe":len(codes),"revenue_count":int(revenue_count or 0),"inst_count":int(inst_count or 0),"inst_days":int(inst_days or 0)},
-        "disclaimer":"公開研究結果只作參考；本研究室的候選名單只使用 BOT 目前能驗證的資料。ROE 沒有真實資料時不會硬補數字。"
-    }
 
 
 @app.route("/web/workbench")
@@ -30366,63 +27852,6 @@ def _build_strategy_lab_payload():
 def web_workbench(uid):
     """正式互動選股工作台：頁面本身秒回，資料僅透過受保護的快照 API 局部載入。"""
     return render_page("選股工作台", render_workbench_body(request.args.get("tab")), nav_active="screener")
-
-
-
-@app.route("/web/api/workbench/strategy-detail")
-@web_login_required
-def web_workbench_strategy_detail(uid):
-    """按需載入研究圖表資料；首屏不呼叫。只讀既有 DB 快照，避免拖慢工作台。"""
-    code = str(request.args.get("code") or "").strip()
-    kind = str(request.args.get("kind") or "").strip()
-    if not re.fullmatch(r"\d{4,6}", code) or kind not in {"revenue", "institutional"}:
-        return _workbench_json_response({"ok": False, "error": "參數不正確。"}, 400)
-    try:
-        conn = get_db_connection(); cur = conn.cursor()
-        if kind == "revenue":
-            cur.execute("""
-                SELECT period, month_revenue, yoy_pct, cum_yoy_pct, mom_pct
-                FROM revenue_history WHERE code=%s
-                ORDER BY period DESC LIMIT 12
-            """, (code,))
-            rows = cur.fetchall()
-            cur.close(); release_db_connection(conn)
-            rows=list(reversed(rows))
-            data=[]
-            for period, rev, yoy, cum_yoy, mom in rows:
-                current=float(rev) if rev is not None else None
-                prior=(current/(1+float(yoy)/100.0)) if current is not None and yoy is not None and float(yoy)>-100 else None
-                data.append({"period":str(period),"current":current,"previous":prior,"yoy":float(yoy) if yoy is not None else None,"cum_yoy":float(cum_yoy) if cum_yoy is not None else None,"mom":float(mom) if mom is not None else None})
-            return _workbench_json_response({"ok":True,"kind":kind,"code":code,"data":data,"note":"去年同期由當月營收與 YoY 還原；不需重新呼叫外部 API。"})
-        cur.execute("""
-            SELECT trade_date, foreign_net_lots, trust_net_lots, dealer_net_lots, total_net_lots
-            FROM inst_history WHERE code=%s
-            ORDER BY trade_date DESC LIMIT 20
-        """, (code,))
-        rows=list(reversed(cur.fetchall())); cur.close(); release_db_connection(conn)
-        data=[{"day":str(d),"foreign":float(f or 0),"trust":float(t or 0),"dealer":float(de or 0),"net":float(total or 0)} for d,f,t,de,total in rows]
-        return _workbench_json_response({"ok":True,"kind":kind,"code":code,"data":data,"note":"使用已保存法人歷史快照；點開才查詢，不影響研究室首屏。"})
-    except Exception as exc:
-        try: release_db_connection(conn)
-        except Exception: pass
-        print(f"⚠️ 研究圖表按需資料失敗（{kind}/{code}）：{exc}")
-        return _workbench_json_response({"ok":False,"error":"詳細圖表資料暫時無法取得。"},503)
-
-@app.route("/web/api/workbench/strategy-lab")
-@web_login_required
-def web_workbench_strategy_lab(uid):
-    try:
-        force_refresh = request.args.get("refresh") == "1"
-        cached = _load_strategy_lab_shared_cache(force_refresh=force_refresh)
-        if cached:
-            return _workbench_json_response(cached)
-        payload = _build_strategy_lab_payload()
-        payload = _normalize_strategy_lab_payload(payload)
-        _save_strategy_lab_shared_cache(payload)
-        return _workbench_json_response(payload)
-    except Exception as exc:
-        print(f"❌ 策略研究室 API 失敗（uid={uid}）：{exc}")
-        return _workbench_json_response({"ok": False, "error": "策略研究設定暫時無法載入。"}, 503)
 
 
 @app.route("/web/api/workbench/snapshot")
@@ -30494,94 +27923,6 @@ def web_workbench_quotes(uid):
                                          "note": "盤中行情暫時無法更新；保留最近有效快照。"}, 503)
 
 
-
-_POSITION_FACTOR_CACHE = {}
-_POSITION_FACTOR_CACHE_LOCK = threading.Lock()
-_POSITION_FACTOR_CACHE_TTL = 300
-
-def _position_factor_snapshot(code):
-    """Lazy-load the canonical web five-factor score for one holding.
-
-    The positions page and LINE must not read different historical snapshots.
-    When the user expands a holding, calculate that one stock through the same
-    _compute_stock_watchlist_scores() core used by LINE/workbench.  This keeps
-    the initial positions page fast while guaranteeing identical factor values.
-    """
-    code = normalize_code(code or "")
-    if not code:
-        return {"ok": False, "error": "缺少股票代號"}
-    now = time.monotonic()
-    key = code
-    with _POSITION_FACTOR_CACHE_LOCK:
-        cached = _POSITION_FACTOR_CACHE.get(key)
-        if cached and now - cached[0] < _POSITION_FACTOR_CACHE_TTL:
-            return cached[1]
-
-    if is_etf(code):
-        result = {"ok": True, "code": code, "asset_type": "ETF",
-                  "scored": False, "note": "ETF 不套用個股五大因子模型。"}
-        with _POSITION_FACTOR_CACHE_LOCK:
-            _POSITION_FACTOR_CACHE[key] = (now, result)
-        return result
-
-    try:
-        scored = _compute_stock_watchlist_scores([code]) or {}
-        item = scored.get(code) or scored.get(str(code).strip())
-        if not item:
-            result = {"ok": True, "code": code, "scored": False,
-                      "note": "目前沒有可用的最新五大因子評分。"}
-        elif item.get("total") is None:
-            result = {"ok": True, "code": code, "scored": False,
-                      "category": item.get("category"),
-                      "note": "金融股目前不套用五大因子分數；保留事實資料供判讀。"}
-        else:
-            factors = item.get("factors") or []
-            result = {
-                "ok": True,
-                "code": code,
-                "scored": True,
-                "category": item.get("category"),
-                "mode": "web_unified",
-                "source_date": str(taiwan_today()),
-                "score": float(item.get("total")),
-                "factors": factors,
-                "val_desc": item.get("val_desc"),
-                "mom_desc": item.get("mom_desc"),
-                "cum_yoy": item.get("cum_yoy"),
-                "pe": item.get("pe"),
-                "pb": item.get("pb"),
-                "yield": item.get("yield"),
-                "note": "持股頁與 LINE 共用同一套網頁五大因子計算核心；展開後才計算，不影響持股頁首屏。",
-                "revenue_refreshed": True,
-                "revenue_cum_yoy": item.get("cum_yoy"),
-            }
-    except Exception as exc:
-        print(f"⚠️ 持股五大因子統一模型計算失敗 {code}: {exc}")
-        result = {"ok": False, "code": code, "error": "五大因子計算失敗，請稍後再試"}
-
-    with _POSITION_FACTOR_CACHE_LOCK:
-        _POSITION_FACTOR_CACHE[key] = (now, result)
-    return result
-
-
-@app.route("/web/api/positions/factors")
-@web_login_required
-def web_positions_factors(uid):
-    factor_started = time.monotonic()
-    code = normalize_code(request.args.get("code") or "")
-    if not code:
-        print("🔎 持股五大因子 API：缺少股票代號")
-        return _workbench_json_response({"ok": False, "error": "缺少股票代號"}, 400)
-    # Security: only allow the logged-in user to request factors for a current holding.
-    current_codes = {str(p.get("code") or "").strip() for p in merge_positions(get_positions(uid))}
-    if code not in current_codes:
-        print(f"🔎 持股五大因子 API：403 code={code}")
-        return _workbench_json_response({"ok": False, "error": "這檔股票目前不在你的持股中"}, 403)
-    result = _position_factor_snapshot(code)
-    print(f"⏱️ 持股五大因子：{code} {int((time.monotonic()-factor_started)*1000)}ms | scored={bool(result.get('scored'))}")
-    return _workbench_json_response(result)
-
-
 @app.route("/web/api/positions/quotes")
 @web_login_required
 def web_positions_quotes(uid):
@@ -30600,16 +27941,17 @@ def web_positions_quotes(uid):
         return _workbench_json_response({"ok": True, "updates": [], "market_open": True,
                                          "note": "目前沒有可更新的持股。"})
     try:
-        # 盤中輪詢每 5 秒檢查一次；官方 MIS 快取 5 秒，讓畫面能在不重載整頁的情況下接近即時更新——
-        # get_realtime_stock 本身即使保留較長日線快取，也會在官方 MIS 報價存在時覆寫當前價格。
-        # 真正的節流在下一層：_fetch_twse_mis_quotes 自己有 5 秒快取，
-        # 因此前端 5 秒輪詢不會每次都打到官方端點。
-        # 盤中顯示價格只允許官方 TWSE MIS。
-        # MIS 暫時查不到時，寧可保留畫面最後一筆，也不能退回 Yahoo 日線/延遲行情。
-        official_quotes = _fetch_twse_mis_quotes(codes, force_refresh=True)
+        # 盤中輪詢每 15 秒打一次，但 get_realtime_stock 的快取是 90 秒——
+        # 不帶 force_refresh 的話，六次裡有五次拿到的是同一份快取，
+        # 畫面看起來就像「價格不會動」。
+        # 真正的節流在下一層：_fetch_twse_mis_quotes 自己有 15 秒快取，
+        # 所以這裡強制刷新不會變成每 15 秒真的打爆 MIS。
+        quotes = get_realtime_stocks_bulk(
+            codes, workers=min(12, len(codes)), rng="1d",
+            force_refresh=_is_taiwan_intraday_window(), mis_force=False)
         updates = []
         for code in codes:
-            quote_data = official_quotes.get(code)
+            quote_data = quotes.get(code)
             if not isinstance(quote_data, dict):
                 continue
             try:
@@ -30626,9 +27968,7 @@ def web_positions_quotes(uid):
                             "source": quote_data.get("source") or "最近有效行情"})
         return _workbench_json_response({"ok": True, "updates": updates, "market_open": True,
                                          "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
-                                         "official_count": len(updates),
-                                         "requested_count": len(codes),
-                                         "note": "盤中價格只採 TWSE MIS 官方最後成交；約每 5 秒檢查、官方快取最多 3 秒。MIS 暫缺時不退回 Yahoo 延遲行情。"})
+                                         "note": "盤中持股行情已局部更新；官方個別最後成交暫缺時保留可驗證來源，不以昨日價格冒充即時。"})
     except Exception as exc:
         print(f"⚠️ 持股盤中行情更新失敗（uid={uid}）：{exc}")
         return _workbench_json_response({"ok": False, "updates": [], "market_open": True,
@@ -31789,4 +29129,3 @@ def handle_message(event):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
