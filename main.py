@@ -25877,6 +25877,47 @@ def web_portfolio(uid):
                              time.monotonic() - journal_cached[0] < _HOMEPAGE_JOURNAL_TTL)
         journal_future = None if journal_fresh else exposure_executor.submit(get_position_change_logs, uid, 5000)
         price_map = price_future.result()
+        # 盤中／公開行情暫時完全沒有回傳時，首頁不能因此只剩風險輪廓。
+        # 退回本人最近一次已保存的 watchlist_scores 收盤快照，只作為「最近有效快照」顯示，
+        # 絕不標成今日即時價；行情恢復後前端／下一次整理會自然換回即時資料。
+        missing_quote_codes = [c for c in position_codes if not price_map.get(c)]
+        if missing_quote_codes:
+            try:
+                conn_fallback = get_db_connection()
+                cur_fallback = conn_fallback.cursor()
+                cur_fallback.execute("""
+                    SELECT DISTINCT ON (code) code, close, snapshot_date
+                    FROM watchlist_scores
+                    WHERE user_id = %s AND code = ANY(%s) AND close IS NOT NULL AND close > 0
+                    ORDER BY code, snapshot_date DESC
+                """, (str(uid), missing_quote_codes))
+                for row in cur_fallback.fetchall():
+                    code, close, snapshot_date = row
+                    if str(code) not in price_map and close:
+                        price_map[str(code)] = {
+                            "code": str(code),
+                            "name": STOCK_NAME_MAP.get(str(code), str(code)),
+                            "close": float(close),
+                            "pct": 0.0,
+                            "high": float(close),
+                            "low": float(close),
+                            "volume": 0,
+                            "source": "最近有效收盤快照（非今日即時）",
+                            "updated_at": None,
+                            "close_is_final": True,
+                            "close_date": snapshot_date,
+                            "close_time": None,
+                        }
+                cur_fallback.close()
+                release_db_connection(conn_fallback)
+                print("⚠️ 首頁行情暫缺，已回退最近有效持股收盤快照：%s" %
+                      ",".join(c for c in missing_quote_codes if price_map.get(c)))
+            except Exception as exc:
+                print("⚠️ 首頁持股收盤快照回退失敗：%s" % exc)
+                try:
+                    release_db_connection(conn_fallback)
+                except Exception:
+                    pass
         if journal_fresh:
             journal_logs = journal_cached[1]
             print("⚡ 首頁操作日誌命中短快取")
@@ -25960,12 +26001,15 @@ def web_portfolio(uid):
     alerts = []
     top = max(holdings, key=lambda h: h["weight"]) if holdings else None
     if not holdings:
+        # 只有在「持股存在，但連最近有效快照也完全沒有」時才顯示無行情。
+        # 正常情況下，上面的 snapshot fallback 已讓首頁繼續使用最近有效價格，
+        # 不再把完整首頁截斷在「目前無法取得持股行情」。
         body = risk_card + """
 <div class="empty-state">
   <div class="empty-state-icon">◌</div>
   <h2>目前無法取得持股行情</h2>
-  <p>你的持股資料仍然存在，但目前公開行情來源沒有回傳有效價格。</p>
-  <p class="sub">請稍後重新整理；系統不會把舊價格冒充成今日行情。</p>
+  <p>你的持股資料仍然存在，但目前也沒有可用的最近有效收盤快照。</p>
+  <p class="sub">請稍後重新整理；一旦行情或快照恢復，完整首頁會自動顯示。</p>
 </div>
 """
         return respond_page("今日", body, "portfolio")
