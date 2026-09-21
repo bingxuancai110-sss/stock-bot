@@ -28590,7 +28590,8 @@ def render_workbench_body(initial_tab=""):
         var metric='—';
         if(n!=null){
           if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<=0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\/\s*4/);if(mm)hc=Number(mm[1]);} metric=hc+'/4';}
-          else{var digits=(key==='低波動'||key==='ROE品質')?2:1;metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');}
+          else{var digits=(key==='低波動'||key==='ROE品質')?2:1;if(key==='成長' && Math.abs(n)>1000){ metric='基期異常'; }
+        else metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');}
         }
         return '<button type="button" class="wb-lab-pick" data-lab-code="'+esc(x.code)+'" data-lab-key="'+esc(key)+'"><span class="wb-lab-rank">'+(i+1)+'</span><span class="wb-lab-pick-main"><b>'+esc(x.code)+'　'+esc(x.name)+'</b><small>'+esc(x.industry||'未分類')+'</small><span class="wb-lab-pick-metric-mobile"><strong>'+esc(metric)+'</strong><em>'+esc(x.metric_label||'研究值')+'</em></span><span class="wb-lab-pick-tags">'+chips+'</span><span class="wb-lab-pick-reason-mobile">'+esc(x.reason||'')+'</span></span><span class="wb-lab-pick-metric"><strong>'+esc(metric)+'</strong><small>'+esc(x.metric_label||'研究值')+'</small></span><span class="wb-lab-pick-reason">'+esc(x.reason||'')+'</span><span class="wb-lab-arrow">›</span></button>';
       }).join('')+'</div>';
@@ -28606,7 +28607,7 @@ def render_workbench_body(initial_tab=""):
       });
     }
     function lazyChartBlock(x,key){
-      if(key==='營收動能') return '<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="revenue" data-code="'+esc(x.code)+'">查看近12個月營收圖</button><div class="wb-d-chart-status">點開後才載入歷史資料，不影響研究室首屏速度。</div></div>';
+      if(key==='營收動能'||key==='成長') return '<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="revenue" data-code="'+esc(x.code)+'">查看營收成長／加速圖</button><div class="wb-d-chart-status">點開後才載入已保存的月營收歷史。</div></div>';
       if(key==='籌碼') return '<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="institutional" data-code="'+esc(x.code)+'">查看近20日法人動向</button><div class="wb-d-chart-status">點開後才讀取已保存的法人歷史。</div></div>';
       return '';
     }
@@ -28628,7 +28629,10 @@ def render_workbench_body(initial_tab=""):
             +'<div class="wb-d-rev-amount"><span>今年 <b>'+moneyShort(d.current)+'</b></span><span>去年同期 <b>'+moneyShort(d.previous)+'</b></span></div></div>';
         }).join('');
         var latest=rows[rows.length-1],latestYoy=Number(latest.yoy)||0,avg=rows.reduce(function(a,d){return a+(Number(d.yoy)||0);},0)/rows.length;
-        host.innerHTML='<div class="wb-d-chart-title"><b>每月營收 YoY 成長</b><small>每一列就是一個月份：先看右側 YoY，再看下面今年／去年同期金額。</small></div>'
+        var acceleration=null;
+        if(rows.length>=2){ acceleration=latestYoy-(Number(rows[rows.length-2].yoy)||0); }
+        var accelText=acceleration==null?'資料不足':((acceleration>=0?'+':'')+acceleration.toFixed(1)+' 個百分點');
+        host.innerHTML='<div class="wb-d-chart-title"><b>每月營收 YoY 成長</b><small>看「成長多少」之外，再看最新一個月相較前一期是加速還是減速。</small></div>'
           +'<div class="wb-d-rev-chart">'+list+'</div>'
           +'<div class="wb-d-chart-summary wb-d-revenue-latest"><div><small>最新月 YoY</small><b class="'+(latestYoy>=0?'wb-up':'wb-down')+'">'+(latestYoy>=0?'+':'')+latestYoy.toFixed(1)+'%</b></div>'
           +'<div><small>資料期數</small><b>'+rows.length+' 期</b></div><div><small>期間平均 YoY</small><b class="'+(avg>=0?'wb-up':'wb-down')+'">'+(avg>=0?'+':'')+avg.toFixed(1)+'%</b></div></div>'
@@ -28725,9 +28729,9 @@ def render_workbench_body(initial_tab=""):
 
     var lazy='';
     var heroChartCta='';
-    if(key==='營收動能'){
+    if(key==='營收動能'||key==='成長'){
       lazy='<div class="wb-d-lazy-chart"><div class="wb-d-chart-status">圖表已載入；下方可查看完整資料說明。</div></div>';
-      heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="revenue" data-code="'+esc(x.code)+'"><span><b>📊 查看完整營收圖表</b><small>每月 YoY、今年／去年同期與最新月比較</small></span><strong>›</strong></button></div>';
+      heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="revenue" data-code="'+esc(x.code)+'"><span><b>📊 查看完整營收成長圖表</b><small>YoY 趨勢、今年／去年同期與成長速度變化</small></span><strong>›</strong></button></div>';
     }
     if(key==='籌碼'){
       lazy='<div class="wb-d-lazy-chart"><div class="wb-d-chart-status">圖表已載入；下方可查看完整資料說明。</div></div>';
@@ -28745,7 +28749,13 @@ def render_workbench_body(initial_tab=""):
       function passFor(n){
         if(Object.prototype.hasOwnProperty.call(fp,n)) return !!fp[n];
         var item=fn.find(function(v){return String(v).indexOf(n)===0;});
-        if(item) return /✓|通過/.test(String(item));
+        if(item){
+          var txt=String(item);
+          if(/×|未通過|不符合|失敗/.test(txt)) return false;
+          // 舊快照的 factor_names 只保存命中的條件＋排名，沒有寫入「通過」。
+          // 命中條件本身就是通過條件，因此沿用它恢復舊快照狀態。
+          return true;
+        }
         return false;
       }
       var hitCount=Number(x.hit_count);
@@ -29113,6 +29123,8 @@ function bindFactors(){
       var explainHtml=section('資料說明','這些內容來自目前保存快照',explain.length?'<div class="wb-d-explain">'+explain.join('')+'</div>':'<p class="wb-d-note">目前沒有額外文字說明。</p>');
 
       host.innerHTML='<div class="wb-d-container">'+hero+sourceChartCta+changeHtml+factorHtml+whyHtml+fundamentalHtml+chipHtml+posHtml+explainHtml+validationHtml+'</div>';
+      // 籌碼超人／一般選股詳細頁的 Hero CTA 也要綁定圖表載入事件。
+      bindLazyCharts(host);
       if(typeof appendChipSection==='function')appendChipSection(row);
       bindScoreValidation(validationMode,row);
       /* 內容完成後再保證詳細頁仍在頂端。 */
