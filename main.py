@@ -6255,44 +6255,21 @@ _fast_rank_summary_cache_lock = threading.Lock()
 
 
 def get_fast_rank_summary(user_id):
-    """首頁排名摘要。
+    """首頁 fast 專用：
 
-    目前排名必須與排行榜頁的「最新完整快照」使用同一份資料；
-    舊版只讀 leaderboard_rank_snapshots，收盤後若尚未寫入名次快照，
-    首頁就會停在昨日排名，造成「排行榜頁 #1、首頁還顯示 #3」的不同步。
-    這裡改成：
-      1. 優先讀 leaderboard_page 的最新完整快照取得目前名次；
-      2. 昨日／前次排名仍從 leaderboard_rank_snapshots 取得；
-      3. 若完整快照暫時不存在，才退回舊的名次快照。
+    目前名次以「最新排行榜完整快照」為準，前一名次才讀 rank snapshot。
+    這很重要：排行榜完整頁可能已經更新到最新交易日，但每日快照工作若
+    中途失敗，leaderboard_rank_snapshots 仍可能停在前一天；首頁若只讀
+    rank_snapshots，就會把「目前名次」卡在舊資料。
+
+    不在首頁現場重算一年行情；完整排行榜快照由背景 warmup／每日快照建立。
     """
     uid = str(user_id).strip()
     now = time.time()
-
-    # 不在這裡先命中 30 秒記憶體快取；排行榜快照可能剛在背景完成，
-    # 若先回舊 cache，首頁仍會比排行榜頁慢一個版本。這個查詢只讀小型
-    # shared snapshot + 名次歷史表，維持輕量但以「最新快照」為優先。
-
-    # 目前排名與排行榜頁共用「完整排行榜快照」。這是關鍵修正：
-    # leaderboard_rank_snapshots 是歷史變化資料，不應拿它當作今日目前排名。
-    persisted_rank = None
-    try:
-        persisted_rank = _load_persisted_leaderboard_page()
-    except Exception as exc:
-        print(f"⚠️ 首頁讀取最新排行榜快照失敗: {exc}")
-
-    current_rank_map = {}
-    current_data_date = None
-    if persisted_rank:
-        try:
-            boards, _graph = persisted_rank["value"]
-            current_data_date = persisted_rank.get("data_date")
-            for board in ("short", "long"):
-                rows = boards.get(board) or []
-                rank = next((idx for idx, row in enumerate(rows, 1)
-                             if str(row.get("user_id") or "").strip() == uid), None)
-                current_rank_map[board] = rank
-        except Exception as exc:
-            print(f"⚠️ 首頁解析最新排行榜快照失敗: {exc}")
+    with _fast_rank_summary_cache_lock:
+        cached = _fast_rank_summary_cache.get(uid)
+        if cached and now - cached.get("at", 0) < _FAST_RANK_SUMMARY_CACHE_SECONDS:
+            return cached["value"]
 
     grouped = defaultdict(list)
     conn = get_db_connection()
@@ -6302,9 +6279,8 @@ def get_fast_rank_summary(user_id):
             SELECT board, snapshot_date, rank
             FROM leaderboard_rank_snapshots
             WHERE user_id=%s AND board = ANY(%s)
-              AND snapshot_date < %s
             ORDER BY board ASC, snapshot_date DESC
-        ''', (uid, ["short", "long"], taiwan_today()))
+        ''', (uid, ["short", "long"]))
         for board, snapshot_date, rank in cur.fetchall():
             if len(grouped[board]) < 2:
                 grouped[board].append((snapshot_date, rank))
@@ -6314,23 +6290,40 @@ def get_fast_rank_summary(user_id):
     finally:
         release_db_connection(conn)
 
+    persisted = None
+    try:
+        persisted = _load_persisted_leaderboard_page(allow_stale=False)
+    except Exception as exc:
+        print(f"⚠️ 首頁讀取最新排行榜完整快照失敗: {exc}")
+
+    current_from_page = {}
+    page_date = None
+    if persisted:
+        try:
+            boards, _graph = persisted.get("value") or ({}, ({}, []))
+            page_date = persisted.get("data_date")
+            for board in ("short", "long"):
+                rows = boards.get(board) or []
+                found = next((idx for idx, row in enumerate(rows, 1)
+                              if str(row.get("user_id") or "").strip() == uid), None)
+                current_from_page[board] = found
+        except Exception as exc:
+            print(f"⚠️ 首頁解析最新排行榜名次失敗: {exc}")
+
     result = {}
     for board, label in (("short", "短線"), ("long", "長線")):
         entries = grouped.get(board, [])
-        previous = entries[0] if entries else None
-        # 優先使用與排行榜頁相同的最新完整快照；
-        # 完整快照不存在時才退回歷史名次快照。
-        current_rank = current_rank_map.get(board)
-        if current_rank is None and not persisted_rank:
-            current_rank = previous[1] if previous else None
+        snapshot_current = entries[0] if entries else None
+        previous = entries[1] if len(entries) > 1 else None
+        current_rank = current_from_page.get(board) or (snapshot_current[1] if snapshot_current else None)
         previous_rank = previous[1] if previous else None
-        if current_rank is None:
-            delta, direction = None, None
-        elif previous_rank is None:
+        if current_rank is None or previous_rank is None:
             delta, direction = None, None
         else:
             delta = previous_rank - current_rank
             direction = "up" if delta > 0 else ("down" if delta < 0 else "same")
+        rank_date = (page_date if current_from_page.get(board) is not None else
+                     (snapshot_current[0] if snapshot_current else None))
         result[board] = {
             "rank": current_rank,
             "previous": previous_rank,
@@ -6338,10 +6331,9 @@ def get_fast_rank_summary(user_id):
             "streak": 0,
             "direction": direction,
             "label": label,
-            "snapshot_date": (str(current_data_date)[:10] if current_data_date
-                              else (previous[0].isoformat()
-                                    if previous and hasattr(previous[0], "isoformat")
-                                    else (str(previous[0]) if previous else None))),
+            "snapshot_date": (rank_date.isoformat()
+                              if hasattr(rank_date, "isoformat")
+                              else (str(rank_date) if rank_date else None)),
         }
     with _fast_rank_summary_cache_lock:
         _fast_rank_summary_cache[uid] = {"at": time.time(), "value": result}
@@ -30623,10 +30615,96 @@ def web_workbench(uid):
 
 
 
+def _workbench_revenue_history_for_code(code, limit=6):
+    """工作台營收明細：先讀已累積的 DB，若不足 6 期，再按需向 MOPS 補歷史月份。
+
+    這段只在使用者點開單一股票的營收／成長明細時執行，不影響工作台首屏。
+    補回的月份會寫入 revenue_history，之後再次查看就直接讀 DB。
+    """
+    code = str(code).strip()
+    conn = get_db_connection()
+    existing = {}
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT period, month_revenue, yoy_pct, cum_yoy_pct, mom_pct
+            FROM revenue_history
+            WHERE code=%s
+            ORDER BY period DESC
+            LIMIT %s
+        """, (code, max(12, int(limit))))
+        for period, rev, yoy, cum_yoy, mom in cur.fetchall():
+            existing[str(period)] = {
+                "period": str(period), "month_revenue": rev,
+                "yoy_pct": yoy, "cum_yoy_pct": cum_yoy, "mom_pct": mom,
+            }
+        cur.close()
+    finally:
+        release_db_connection(conn)
+
+    # 已有 6 期就不再打外部來源。
+    if len(existing) < limit:
+        # 以資料庫最新期為尾端；若完全沒有歷史，從上個完整月份開始。
+        keys = []
+        for k in existing:
+            m = re.fullmatch(r"(\d{3})(\d{2})", str(k))
+            if m:
+                keys.append(int(m.group(1)) + 1911)
+                keys[-1] = keys[-1] * 100 + int(m.group(2))
+            else:
+                nk = _normalize_revenue_period(k)
+                if nk:
+                    keys.append(nk)
+        if keys:
+            end_key = max(keys)
+        else:
+            today = taiwan_today()
+            y, m = today.year, today.month - 1
+            if m == 0:
+                y, m = y - 1, 12
+            end_key = y * 100 + m
+
+        def prev_month(key):
+            y, m = divmod(int(key), 100)
+            m -= 1
+            if m == 0:
+                y, m = y - 1, 12
+            return y * 100 + m
+
+        key = end_key
+        # 最多向前補 12 個月，避免單一股票遇到缺月時一直打外部來源。
+        for _ in range(12):
+            if len(existing) >= limit:
+                break
+            label = _revenue_period_label(key)
+            if str(key) not in existing:
+                try:
+                    fetched, fetched_period = _fetch_mops_revenue_fallback(key)
+                    item = fetched.get(code) or fetched.get(code.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+                    if item and fetched_period:
+                        period = str(fetched_period)
+                        item = dict(item)
+                        existing[period] = {
+                            "period": period,
+                            "month_revenue": item.get("month_revenue"),
+                            "yoy_pct": item.get("yoy_pct"),
+                            "cum_yoy_pct": item.get("cum_yoy_pct"),
+                            "mom_pct": item.get("mom_pct"),
+                        }
+                        save_revenue_history(period, {code: item})
+                except Exception as exc:
+                    print(f"⚠️ 工作台補查 {code} {label} 月營收失敗: {exc}")
+            key = prev_month(key)
+
+    rows = list(existing.values())
+    rows.sort(key=lambda x: _normalize_revenue_period(x.get("period")) or 0)
+    return rows[-max(1, int(limit)):]
+
+
 @app.route("/web/api/workbench/strategy-detail")
 @web_login_required
 def web_workbench_strategy_detail(uid):
-    """按需載入研究圖表資料；首屏不呼叫。只讀既有 DB 快照，避免拖慢工作台。"""
+    """按需載入研究圖表資料；首屏不呼叫。營收明細不足 6 期時，點開後才補官方歷史月份。"""
     code = str(request.args.get("code") or "").strip()
     kind = str(request.args.get("kind") or "").strip()
     if not re.fullmatch(r"\d{4,6}", code) or kind not in {"revenue", "growth", "institutional"}:
@@ -30634,20 +30712,20 @@ def web_workbench_strategy_detail(uid):
     try:
         conn = get_db_connection(); cur = conn.cursor()
         if kind in {"revenue", "growth"}:
-            cur.execute("""
-                SELECT period, month_revenue, yoy_pct, cum_yoy_pct, mom_pct
-                FROM revenue_history WHERE code=%s
-                ORDER BY period DESC LIMIT 12
-            """, (code,))
-            rows = cur.fetchall()
+            # 先釋放本段連線；營收歷史補查會自行管理 DB 連線。
             cur.close(); release_db_connection(conn)
-            rows=list(reversed(rows))
+            rows = _workbench_revenue_history_for_code(code, limit=6)
             data=[]
-            for period, rev, yoy, cum_yoy, mom in rows:
+            for row in rows:
+                period = row.get("period")
+                rev = row.get("month_revenue")
+                yoy = row.get("yoy_pct")
+                cum_yoy = row.get("cum_yoy_pct")
+                mom = row.get("mom_pct")
                 current=float(rev) if rev is not None else None
                 prior=(current/(1+float(yoy)/100.0)) if current is not None and yoy is not None and float(yoy)>-100 else None
                 data.append({"period":str(period),"current":current,"previous":prior,"yoy":float(yoy) if yoy is not None else None,"cum_yoy":float(cum_yoy) if cum_yoy is not None else None,"mom":float(mom) if mom is not None else None})
-            return _workbench_json_response({"ok":True,"kind":kind,"code":code,"data":data,"note":"去年同期由當月營收與 YoY 還原；不需重新呼叫外部 API。"})
+            return _workbench_json_response({"ok":True,"kind":kind,"code":code,"data":data,"note":"已保存月份優先；不足 6 期時，點開後按需補抓公開資訊觀測站歷史月營收。"})
         cur.execute("""
             SELECT trade_date, foreign_net_lots, trust_net_lots, dealer_net_lots, total_net_lots
             FROM inst_history WHERE code=%s
