@@ -28801,11 +28801,8 @@ def render_workbench_body(initial_tab=""):
 .wb-valuation-title{display:flex;flex-direction:column;gap:4px;margin-bottom:13px}.wb-valuation-title b{font-size:18px;color:#203c59}.wb-valuation-title small{font-size:12px;line-height:1.55;color:#7a8998}
 .wb-valuation-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.wb-valuation-card{padding:13px 12px;border:1px solid #dce6ef;border-radius:14px;background:#fff;min-width:0}.wb-valuation-card>span{display:block;color:#728397;font-size:12px;font-weight:700}.wb-valuation-card>b{display:block;margin-top:7px;color:#294d6b;font-size:22px;line-height:1.15}.wb-valuation-card>small{display:block;margin-top:7px;color:#7d8d9d;font-size:11px;line-height:1.4}.wb-val-pass,.wb-val-fail,.wb-val-wait{display:inline-flex;align-items:center;margin-top:8px;padding:5px 8px;border-radius:999px;font-size:11px;font-weight:900}.wb-val-pass{background:#eaf7f0;color:#2f8a61}.wb-val-fail{background:#fff0f0;color:#c34d4d}.wb-val-wait{background:#eef2f6;color:#6e7d8b}
 .wb-valuation-explain{margin-top:11px;padding:12px 13px;border-radius:14px;background:#fff;border:1px solid #e2e9f0}.wb-valuation-explain p{margin:0;padding:7px 0;border-bottom:1px solid #edf1f5;color:#536779;font-size:12px;line-height:1.65}.wb-valuation-explain p:last-child{border-bottom:0;padding-bottom:0}.wb-valuation-explain b{color:#294d6b}
-.wb-d-price-svg .price-grid{stroke:#e7edf3;stroke-width:1}.wb-d-price-svg .price-line{stroke:#2f6fd6;stroke-width:4;fill:none;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 2px 3px rgba(47,111,214,.18))}.wb-d-price-svg .price-dot{fill:#2f6fd6;stroke:#fff;stroke-width:2}.wb-d-price-chart{min-height:225px}.wb-d-chart-loading{display:flex;align-items:center;gap:9px;padding:10px 4px;color:#5d7184;font-size:12px;font-weight:800}.wb-d-spinner{width:18px;height:18px;border:3px solid #dce7f1;border-top-color:#2f6fd6;border-radius:50%;animation:wbSpin .75s linear infinite;flex:0 0 auto}@keyframes wbSpin{to{transform:rotate(360deg)}}.wb-d-inline-spinner{width:15px;height:15px;border:2.5px solid rgba(255,255,255,.42);border-top-color:#fff;border-radius:50%;display:inline-block;vertical-align:-3px;margin-left:7px;animation:wbSpin .65s linear infinite}.wb-d-chart-loading-live{min-height:48px;justify-content:center;background:linear-gradient(90deg,#f7fbff,#eef6ff,#f7fbff);background-size:220% 100%;animation:wbLoadingSweep 1.2s ease-in-out infinite;border-radius:10px}@keyframes wbLoadingSweep{0%,100%{background-position:0 0}50%{background-position:100% 0}}.wb-d-lazy-chart button.wb-loading,.wb-d-hero-chart-cta button.wb-loading{opacity:.94;pointer-events:none}
+.wb-d-price-svg .price-grid{stroke:#e7edf3;stroke-width:1}.wb-d-price-svg .price-line{stroke:#2f6fd6;stroke-width:4;fill:none;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 2px 3px rgba(47,111,214,.18))}.wb-d-price-svg .price-dot{fill:#2f6fd6;stroke:#fff;stroke-width:2}.wb-d-price-chart{min-height:225px}.wb-d-chart-loading{display:flex;align-items:center;gap:9px;padding:10px 4px;color:#5d7184;font-size:12px;font-weight:800}.wb-d-spinner{width:18px;height:18px;border:3px solid #dce7f1;border-top-color:#2f6fd6;border-radius:50%;animation:wbSpin .75s linear infinite;flex:0 0 auto}@keyframes wbSpin{to{transform:rotate(360deg)}}.wb-d-inline-spinner{width:15px;height:15px;border:2.5px solid rgba(255,255,255,.42);border-top-color:#fff;border-radius:50%;display:inline-block;vertical-align:-3px;margin-left:7px;animation:wbSpin .65s linear infinite}.wb-d-chart-loading-live{min-height:48px;justify-content:center;background:linear-gradient(90deg,#f7fbff,#eef6ff,#f7fbff);background-size:220% 100%;animation:wbLoadingSweep 1.2s ease-in-out infinite;border-radius:10px}@keyframes wbLoadingSweep{0%,100%{background-position:0 0}50%{background-position:100% 0}}.wb-d-lazy-chart button.wb-loading,.wb-d-hero-chart-cta button.wb-loading{opacity:.94;pointer-events:none}.wb-d-loading-dots{display:inline-block;min-width:18px;margin-left:2px}
 .wb-d-lazy-chart button.wb-loading,.wb-d-hero-chart-cta button.wb-loading{position:relative;cursor:wait;transform:translateY(0);box-shadow:0 0 0 3px rgba(47,111,214,.08);animation:wbPulse 1.15s ease-in-out infinite}.wb-d-lazy-chart button.wb-loading:after,.wb-d-hero-chart-cta button.wb-loading:after{content:'';width:13px;height:13px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;display:inline-block;vertical-align:-2px;margin-left:8px;animation:wbSpin .7s linear infinite}@keyframes wbPulse{50%{filter:brightness(1.06)}}
-/* 趨勢圖載入動畫：即使 iOS／Safari 的 reduced-motion 全域規則存在，這個明確的載入提示仍保持可見。 */
-.wb-d-lazy-chart button.wb-loading:after,.wb-d-hero-chart-cta button.wb-loading:after{animation:wbSpin .7s linear infinite!important;animation-duration:.7s!important;animation-iteration-count:infinite!important}
-.wb-d-chart-loading-live .wb-d-spinner{animation:wbSpin .75s linear infinite!important;animation-duration:.75s!important;animation-iteration-count:infinite!important}
 @media(max-width:620px){.wb-valuation-grid{grid-template-columns:1fr}.wb-valuation-card{padding:12px 13px}.wb-valuation-card>b{font-size:21px}.wb-valuation-title b{font-size:17px}.wb-valuation-explain p{font-size:12px}}
 .wb-d-chart-title{margin-top:10px;margin-bottom:4px}.wb-d-chart-title b{display:block;color:#294d69;font-size:14px}.wb-d-chart-title small{display:block;margin-top:3px;color:#718394;font-size:10px}.wb-d-chart-wrap{margin-top:10px;overflow:hidden}.wb-d-chart-wrap svg{width:100%;height:220px;display:block}.wb-d-chart-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:#64748b;margin-top:5px}.wb-d-chart-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;background:#4f78a6;margin-right:4px}.wb-d-chart-legend i.alt{background:#a8b7c7}.wb-d-chart-legend i.mom{background:#86a7c3}.wb-d-chart-legend i.dealer{background:#a65a5a}.wb-d-chart-note{font-size:11px;color:#7a8796;line-height:1.5;margin-top:6px}
 .wb-d-tv-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.wb-d-tv-title>strong{font-size:15px;white-space:nowrap}.wb-d-tv-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.wb-d-tv-tab{border:1px solid #d7e2ec;background:#fff;color:#64788a;border-radius:9px;padding:7px 11px;font-weight:800;font-size:11px;cursor:pointer}.wb-d-tv-tab.active{background:#2f6fd6;border-color:#2f6fd6;color:#fff}.wb-d-tv-chart{background:#fbfdff;border:1px solid #e5ebf2;border-radius:12px;padding:8px}.wb-d-tv-svg{width:100%;height:260px;display:block}.wb-d-tv-svg .grid{stroke:#e6edf3;stroke-width:1}.wb-d-tv-svg .zero{stroke:#9eb0bf;stroke-width:1.2;stroke-dasharray:5 4}.wb-d-tv-svg .tick{fill:#8192a0;font-size:10px}.wb-d-tv-svg .date{fill:#7c8c99;font-size:9px}.wb-d-tv-svg .axis-label{fill:#536b7e;font-size:10px;font-weight:800}.wb-d-tv-svg .axis-label.sell{fill:#4f9b78}.wb-d-tv-svg .axis-label.orange{fill:#df7a22}.wb-d-tv-svg .buy{fill:#e45757}.wb-d-tv-svg .sell{fill:#45a879}.wb-d-tv-svg .flat{fill:#b8c5d0}.wb-d-tv-svg .value{font-size:9px;font-weight:800}.wb-d-tv-svg .value.buy{fill:#d94848}.wb-d-tv-svg .value.sell{fill:#328b63}.wb-d-tv-svg .revenue-bar{fill:#4f78a6}.wb-d-tv-svg .yoy-line{stroke:#e47b27;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .yoy-dot{fill:#e47b27;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-line.blue{stroke:#2f6fd6;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-line.orange{stroke:#e47b27;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-line.green{stroke:#2f9b73;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-dot.blue{fill:#2f6fd6;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-dot.orange{fill:#e47b27;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-dot.green{fill:#2f9b73;stroke:#fff;stroke-width:2}.wb-d-tv-svg .bar-value{fill:#365a7a;font-size:10px;font-weight:900}.wb-d-tv-svg .yoy-value{fill:#d56f20;font-size:10px;font-weight:900}.wb-d-tv-svg .growth-value{font-size:9px;font-weight:900}.wb-d-tv-svg .growth-value.blue{fill:#2f6fd6}.wb-d-tv-svg .growth-value.orange{fill:#d97823}.wb-d-tv-svg .growth-value.green{fill:#2f9b73}.wb-d-tv-chart{padding:4px 4px 0;background:#fff}.wb-d-tv-title small{max-width:520px;line-height:1.45}.wb-d-chart-summary>div{min-height:54px}.wb-d-revenue-latest b{font-variant-numeric:tabular-nums}.wb-d-chart-note{padding:9px 11px;border:1px solid #e5ebf0;border-radius:10px;background:#fafcfd}.wb-d-tv-svg .revenue-bar{opacity:.94}.wb-d-chart-legend{padding:0 3px}.wb-d-chart-legend span{font-weight:700}.wb-d-chart-legend i.tv-orange{background:#e47b27}{background:#e47b27}.wb-d-chart-legend i.tv-green{background:#2f9b73}.wb-d-chart-legend{align-items:center}.wb-d-revenue-latest{margin-top:8px}.wb-d-chart-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.wb-d-chart-summary>div{padding:9px 10px;border:1px solid #e3eaf1;border-radius:10px;background:#fff}.wb-d-chart-summary small{display:block;color:#81909e;font-size:10px}.wb-d-chart-summary b{display:block;margin-top:3px;color:#294e6b;font-size:14px}.wb-d-chart-summary em{display:block;margin-top:4px;color:#98a5af;font-size:9px;font-style:normal;line-height:1.35}.wb-d-chart-note b{color:#294e6b;margin-right:4px}.wb-up{color:#D93025!important}.wb-down{color:#0B8F55!important}.wb-d-tv-svg .growth-bar-pos{fill:#4f78a6}.wb-d-tv-svg .growth-bar-neg{fill:#c85b55}.wb-d-tv-svg .growth-yoy{fill:#4f78a6}.wb-d-tv-svg .growth-cum{fill:#e47b27}.wb-d-tv-svg .growth-mom{fill:#45a879}@media(max-width:620px){.wb-d-tv-svg{height:225px}.wb-d-tv-title{gap:8px}.wb-d-tv-title>b,.wb-d-tv-title strong{font-size:13px}.wb-d-chart-summary{grid-template-columns:1fr 1fr}.wb-d-chart-summary>div:last-child{grid-column:1/-1}.wb-d-tv-tab{padding:6px 9px;font-size:10px}}
@@ -28989,7 +28986,7 @@ def render_workbench_body(initial_tab=""):
     function bindLazyCharts(host){
       host.querySelectorAll('[data-lazy-chart]').forEach(function(btn){btn.addEventListener('click',function(){
         var kind=btn.dataset.lazyChart,code=btn.dataset.code,box=btn.parentElement;btn.disabled=true;
-        var st=box.querySelector('.wb-d-chart-status'), timer=null, progress=0, progressBox=null, bar=null, pctEl=null;
+        var st=box.querySelector('.wb-d-chart-status'), timer=null, animTimer=null, progress=0, progressBox=null, bar=null, pctEl=null;
         if(kind==='revenue'||kind==='growth'){
           progressBox=document.createElement('div');progressBox.className='wb-d-progress';
           progressBox.innerHTML='<div class="wb-d-progress-top"><b>正在整理'+(kind==='revenue'?'營收歷史':'成長資料')+'…</b><strong>0%</strong></div><div class="wb-d-progress-track"><div class="wb-d-progress-bar"></div></div><small class="wb-d-progress-note">資料已經找到一部分，正在補齊歷史月份</small>';
@@ -28998,20 +28995,29 @@ def render_workbench_body(initial_tab=""):
           if(st)st.textContent='正在讀取並整理資料…';
         }else if(st){
           btn.classList.add('wb-loading');
-          btn.innerHTML='<span class="wb-d-loading-label">正在載入股價趨勢…</span><i class="wb-d-inline-spinner"></i>';
+          btn.setAttribute('aria-busy','true');
+          var dots=0;
+          btn.innerHTML='<span class="wb-d-loading-label">正在載入股價趨勢</span><i class="wb-d-inline-spinner"></i><b class="wb-d-loading-dots">.</b>';
           st.innerHTML='<div class="wb-d-chart-loading wb-d-chart-loading-live"><i class="wb-d-spinner"></i><span>正在抓取近6個月日線並繪製圖表…</span></div>';
+          // 不依賴 CSS animation：用 JS 讓 iPhone Safari 一定看得到 loading 動態。
+          animTimer=setInterval(function(){
+            dots=(dots+1)%4;
+            var d='.'.repeat(dots||1);
+            var el=btn.querySelector('.wb-d-loading-dots');
+            if(el)el.textContent=d;
+          },260);
         }
         var loadStarted=Date.now();
         fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(d){
-          if(timer)clearInterval(timer);if(progressBox){progressBox.querySelector('.wb-d-progress-bar').style.width='100%';progressBox.querySelector('.wb-d-progress-top strong').textContent='100%';progressBox.querySelector('.wb-d-progress-note').textContent='完成，正在顯示結果…';}
+          if(timer)clearInterval(timer);if(animTimer)clearInterval(animTimer);if(progressBox){progressBox.querySelector('.wb-d-progress-bar').style.width='100%';progressBox.querySelector('.wb-d-progress-top strong').textContent='100%';progressBox.querySelector('.wb-d-progress-note').textContent='完成，正在顯示結果…';}
           if(!d.ok)throw new Error(d.error||'載入失敗');
           var wait=Math.max(0,700-(Date.now()-loadStarted));
           setTimeout(function(){
             drawLazyChart(box,d.data,kind);
-            btn.disabled=false;btn.classList.remove('wb-loading');
+            btn.disabled=false;btn.classList.remove('wb-loading');btn.removeAttribute('aria-busy');
             if(kind==='momentum'){btn.innerHTML='📈 重新整理近6個月股價趨勢圖';}
           },wait);
-        }).catch(function(e){if(timer)clearInterval(timer);btn.disabled=false;btn.classList.remove('wb-loading');if(progressBox)progressBox.remove();if(st)st.innerHTML='<div class="wb-d-chart-loading"><span>載入失敗：'+esc(String(e.message||e))+'</span></div>';});
+        }).catch(function(e){if(timer)clearInterval(timer);if(animTimer)clearInterval(animTimer);btn.disabled=false;btn.classList.remove('wb-loading');btn.removeAttribute('aria-busy');if(progressBox)progressBox.remove();if(st)st.innerHTML='<div class="wb-d-chart-loading"><span>載入失敗：'+esc(String(e.message||e))+'</span></div>';});
       });});
     }
     function showLabResearchDetail(x,key){
@@ -30051,7 +30057,7 @@ def _workbench_source_payload(uid, source):
 
 _STRATEGY_LAB_CACHE = {"at": 0.0, "data": None}
 _STRATEGY_LAB_CACHE_TTL = 12 * 3600  # 12 小時；研究室每日預熱一次，白天直接讀快照
-_STRATEGY_LAB_SCHEMA_VERSION = 13  # 保留現有快照；修復既有 ROE 回填與趨勢載入動畫
+_STRATEGY_LAB_SCHEMA_VERSION = 14  # ROE安全回填＋JS載入動畫；保留既有研究快照資料
 _STRATEGY_LAB_CACHE_LOCK = threading.Lock()
 
 def _normalize_strategy_lab_payload(payload):
@@ -30062,62 +30068,6 @@ def _normalize_strategy_lab_payload(payload):
     data = payload.get("strategy_data")
     if not isinstance(data, dict):
         return payload
-
-    # ROE 修復：部分舊研究快照的「經典四項」仍保留正確 ROE，
-    # 但新版「ROE品質」名單可能因資料源更新而變成空白。
-    # 不重新計算、不改其他因子，直接共用同一份已驗證的逐檔 ROE。
-    roe_by_code = {}
-    for _k, _recs in data.items():
-        if not isinstance(_recs, list):
-            continue
-        for _rec in _recs:
-            if not isinstance(_rec, dict):
-                continue
-            _code = str(_rec.get("code") or "").strip()
-            if not re.fullmatch(r"\d{4,6}", _code):
-                continue
-            for _rv in (_rec.get("roe"), _rec.get("ROE"), _rec.get("roe_pct"), _rec.get("roe_percent")):
-                try:
-                    _n = float(_rv)
-                    if -200 <= _n <= 500:
-                        roe_by_code[_code] = _n
-                        break
-                except Exception:
-                    pass
-
-    # 先把已存在的正確 ROE 回填到經典四項，避免「4/4」與 ROE 顯示不一致。
-    for _rec in (data.get("四因子複合") or []):
-        if isinstance(_rec, dict):
-            _code = str(_rec.get("code") or "").strip()
-            if _code in roe_by_code and _rec.get("roe") in (None, "", "找不到"):
-                _rec["roe"] = roe_by_code[_code]
-                _rec["metric"] = _rec.get("metric") or roe_by_code[_code]
-
-    # 若 ROE 品質整張榜是空的，直接從既有經典四項的逐檔 ROE 建立候選。
-    # 這是資料回收，不是估算，因此不會憑空製造 ROE。
-    if not isinstance(data.get("ROE品質"), list) or not data.get("ROE品質"):
-        _roe_recs = []
-        for _code, _rv in roe_by_code.items():
-            _src = None
-            for _k in ("四因子複合", "ROE品質", "混合"):
-                for _r in (data.get(_k) or []):
-                    if isinstance(_r, dict) and str(_r.get("code") or "") == _code:
-                        _src = _r; break
-                if _src: break
-            if _src:
-                _nr = dict(_src)
-                _nr["metric"] = _rv
-                _nr["metric_label"] = "目前 ROE"
-                _nr["roe"] = _rv
-                _nr["tags"] = ["ROE品質"]
-                _nr["reason"] = f"目前可驗證 ROE {_rv:+.1f}%"
-                _roe_recs.append(_nr)
-        _roe_recs.sort(key=lambda r: float(r.get("roe") or r.get("metric") or -999), reverse=True)
-        for _i, _r in enumerate(_roe_recs, 1):
-            _r["rank"] = _i
-        if _roe_recs:
-            data["ROE品質"] = _roe_recs
-
     for key in ("混合", "四因子複合"):
         recs = data.get(key)
         if not isinstance(recs, list):
@@ -30522,6 +30472,42 @@ def _build_strategy_lab_payload():
             by_code[code]={"code":code,"name":row[7] or name_map.get(code) or code,"industry":row[8]}
     codes=list(by_code)[:180]
 
+    # ROE 安全回填：如果本次即時財報來源失敗，先保留「上一份已驗證研究快照」裡的 ROE。
+    # 這是為了避免重新整理研究室時，把原本經典四項已經有的 ROE 全部洗成「找不到」。
+    prior_roe_by_code={}
+    try:
+        _prior_shared=_load_shared_data_snapshot("strategy_lab", max_age_seconds=_STRATEGY_LAB_CACHE_TTL)
+        _prior_payload=(_prior_shared.get("payload") if _prior_shared else None) or {}
+        _prior_data=_prior_payload.get("strategy_data") if isinstance(_prior_payload,dict) else None
+        if isinstance(_prior_data,dict):
+            for _pk,_plist in _prior_data.items():
+                if not isinstance(_plist,list):
+                    continue
+                for _pr in _plist:
+                    if not isinstance(_pr,dict):
+                        continue
+                    _pc=str(_pr.get("code") or "").strip()
+                    if not re.fullmatch(r"\d{4,6}",_pc):
+                        continue
+                    _cands=[_pr.get("roe"),_pr.get("ROE"),_pr.get("roe_pct"),_pr.get("roe_percent")]
+                    _detail=_pr.get("detail")
+                    if isinstance(_detail,dict):
+                        _cands += [_detail.get("roe"),_detail.get("ROE"),_detail.get("roe_pct"),_detail.get("roe_percent")]
+                    for _rv in _cands:
+                        try:
+                            _n=float(_rv)
+                            if -200 <= _n <= 500:
+                                prior_roe_by_code[_pc]=_n
+                                break
+                        except Exception:
+                            pass
+    except Exception as _exc:
+        print(f"⚠️ 策略研究室舊 ROE 快照回填失敗：{_exc}")
+    for _c,_v in prior_roe_by_code.items():
+        if _c in by_code and by_code[_c].get("roe") in (None, "", "找不到"):
+            by_code[_c]["roe"]=_v
+            by_code[_c]["roe_source"]="既有研究快照回填"
+
     # ROE 只在研究室預熱時抓一次，之後跟整份研究結果一起快取；不在使用者切換策略時重抓。
     twse_roe={}
     try:
@@ -30533,6 +30519,7 @@ def _build_strategy_lab_payload():
             by_code[c]["roe"]=v.get("roe")
             by_code[c]["roe_period"]=v.get("period")
             by_code[c]["roe_data_scope"]=v.get("data_scope")
+            by_code[c]["roe_source"]="即時財報計算"
 
     # 法人與估值都是既有資料；不因切換策略再查一次。
     try:
@@ -30595,6 +30582,7 @@ def _build_strategy_lab_payload():
     for c,v in roe_db.items():
         if c in by_code:
             by_code[c]['roe']=v
+            by_code[c]['roe_source']='資料庫 ROE'
 
     # 一次批次取得 1 年 spark 日線。這一份同時供價格動能與低波策略使用。
     spark={}
@@ -30636,7 +30624,7 @@ def _build_strategy_lab_payload():
     roe_recs=[]
     for i,(c,v) in enumerate(roe_items[:25],1):
         r=by_code[c]
-        roe_recs.append(make_rec(c,r.get("name"),r.get("industry"),v,"目前 ROE",["ROE品質"],f"目前可驗證 ROE {v:+.1f}%",extra={"rank":i,"roe":v,"data_scope":str(r.get("roe_data_scope") or "最新累計財報年化；非 point-in-time 歷史資料"),"detail_metrics":[("ROE",f"{v:.2f}%"),("財報期間",str(r.get("roe_period") or "最新財報")),("資料口徑",str(r.get("roe_data_scope") or "最新累計財報年化"))]}))
+        roe_recs.append(make_rec(c,r.get("name"),r.get("industry"),v,"目前 ROE",["ROE品質"],f"目前可驗證 ROE {v:+.1f}%",extra={"rank":i,"roe":v,"data_scope":str(r.get("roe_data_scope") or "最新累計財報年化；非 point-in-time 歷史資料"),"detail_metrics":[("ROE",f"{v:.2f}%"),("財報期間",str(r.get("roe_period") or "最新財報")),("資料口徑",str(r.get("roe_data_scope") or "最新累計財報年化")),("ROE來源",str(r.get("roe_source") or "既有研究資料"))]}))
 
     # 1. 營收動能
     revenue_items=[]
