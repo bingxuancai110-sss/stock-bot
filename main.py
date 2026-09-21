@@ -7869,8 +7869,23 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
             code = match.group(1)
             meta = raw.get("meta") or {}
             quote = ((raw.get("indicators") or {}).get("quote") or [{}])[0] or {}
-            closes = [float(value) for value in (quote.get("close") or [])
-                      if value is not None and float(value) > 0]
+            raw_closes = quote.get("close") or []
+            raw_timestamps = raw.get("timestamp") or []
+            closes = []
+            timestamps = []
+            for idx, value in enumerate(raw_closes):
+                try:
+                    px = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if px <= 0:
+                    continue
+                closes.append(px)
+                try:
+                    ts = int(raw_timestamps[idx]) if idx < len(raw_timestamps) and raw_timestamps[idx] is not None else None
+                except (TypeError, ValueError):
+                    ts = None
+                timestamps.append(ts)
             close = meta.get("regularMarketPrice") or (closes[-1] if closes else None)
             # chartPreviousClose 在部分台股商品會落到較早的調整基準，
             # 造成 1709／2605 等即時漲幅被放大，雷達便會錯誤排除或誤判。
@@ -7897,6 +7912,7 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
                 # 策略研究室也需要同一批 spark 歷史日線計算 60/120D 動能與波動，
                 # 不再為每個策略各自重抓 Yahoo。
                 "closes": closes,
+                "timestamps": timestamps,
                 "updated_at": meta.get("regularMarketTime"),
                 # spark 是盤中／輕量行情，不共享個股收盤 MIS 變數；
                 # 這裡不能引用 get_realtime_stock 作用域內的 official_quote 或 today_date。
@@ -28779,7 +28795,9 @@ def render_workbench_body(initial_tab=""):
 </div>
 <style>
 .wb-strategy-lab{padding:4px 0 28px}.wb-lab-hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;padding:18px;border:1px solid rgba(39,76,119,.12);border-radius:18px;background:linear-gradient(135deg,#f7fbff,#fff);margin-bottom:14px}.wb-lab-kicker{font-size:11px;letter-spacing:.14em;color:#4f78a6;font-weight:800}.wb-lab-hero h3{margin:5px 0 5px;font-size:22px}.wb-lab-hero p{margin:0;color:#657487;line-height:1.6}.wb-lab-hero button{border:0;border-radius:10px;padding:9px 13px;background:#274c77;color:#fff;font-weight:700;white-space:nowrap}.wb-lab-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.wb-lab-card{background:#fff;border:1px solid #e7edf4;border-radius:16px;padding:16px;box-shadow:0 4px 18px rgba(25,55,90,.05)}.wb-lab-card h4{margin:0 0 9px;font-size:16px}.wb-lab-muted{color:#738197;font-size:13px;line-height:1.6}.wb-lab-factor{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #eef2f6}.wb-lab-factor:first-of-type{border-top:0}.wb-lab-factor b{min-width:74px}.wb-lab-weight{margin-left:auto;font-weight:800}.wb-lab-status{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;background:#eef3f8;color:#4b647d}.wb-lab-status.ready{background:#e9f7ef;color:#19733b}.wb-lab-status.wait{background:#fff6df;color:#8a6815}.wb-lab-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.wb-lab-metric{padding:10px;border-radius:12px;background:#f6f8fb}.wb-lab-metric small{display:block;color:#78879a}.wb-lab-metric b{display:block;margin-top:3px;font-size:17px}.wb-lab-compare{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.wb-lab-compare .wb-lab-card{min-height:120px}.wb-lab-note{padding:12px 14px;border-radius:12px;background:#f8fafc;color:#657487;line-height:1.65;font-size:13px}.wb-lab-table{width:100%;border-collapse:collapse;margin-top:10px}.wb-lab-table th,.wb-lab-table td{text-align:left;padding:9px 7px;border-bottom:1px solid #edf1f5;font-size:13px}.wb-lab-table th{color:#738197;font-weight:700} .wb-lab-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:12px}.wb-lab-strategy{border:1px solid #e2e9f1;background:#fff;border-radius:14px;padding:12px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:4px}.wb-lab-strategy.active{border-color:#4f78a6;box-shadow:0 0 0 2px rgba(79,120,166,.10)}.wb-lab-strategy b{font-size:14px}.wb-lab-strategy small{color:#738197;line-height:1.45}.wb-lab-strategy em{font-style:normal;font-size:10px;color:#4f78a6;font-weight:800}.wb-lab-picks{display:flex;flex-direction:column}.wb-lab-pick{display:grid;grid-template-columns:30px minmax(0,1fr) auto minmax(0,1fr) 16px;gap:8px;align-items:center;border:0;border-top:1px solid #edf1f5;background:#fff;padding:10px 0;text-align:left;cursor:pointer}.wb-lab-rank{font-weight:900;color:#58799a}.wb-lab-pick b{display:block}.wb-lab-pick small{display:block;color:#78879a;margin-top:2px}.wb-lab-pick strong{font-size:15px}.wb-lab-pick-tags{display:flex;gap:4px;flex-wrap:wrap}.wb-lab-chip{font-size:10px;background:#f1f5f9;border-radius:999px;padding:3px 6px;color:#50657a}.wb-lab-category-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.wb-lab-category{padding:11px;border-radius:12px;background:#f7f9fc}.wb-lab-category b{display:block;margin-bottom:4px}.wb-lab-category span{font-size:12px;color:#718096;line-height:1.55}.wb-lab-active .wb-tabs{display:none!important}.wb-lab-active .wb-tools,.wb-lab-active .wb-filter-panel,.wb-lab-active .wb-mobile-sort,.wb-lab-active .wb-meta,.wb-lab-active .wb-table,.wb-lab-active .wb-intro,.wb-lab-active .wb-pulse{display:none!important}.wb-lab-nav{grid-template-columns:repeat(4,minmax(0,1fr));}.wb-lab-strategy{min-height:92px}.wb-lab-strategy:disabled{opacity:.55;cursor:not-allowed} .wb-lab-section-head h4,#wb-lab-picks-title{color:#1f3348!important;font-weight:850!important}.wb-lab-strategy b{color:#1f3348!important}.wb-lab-strategy.active{background:#f5f9fd;border-color:#8fb4d8}.wb-lab-strategy.active b{color:#24547f!important}.wb-lab-strategy small{color:#6b7d91!important}.wb-lab-pick-main b{color:#1d3348!important}.wb-lab-pick-metric strong{color:#b44a4a!important}.wb-lab-empty b{color:#334b63}.wb-lab-card h4{color:#203449}.wb-lab-muted{color:#687b91}.wb-lab-factor b{color:#2a4057}.wb-lab-picks-card{padding:0;overflow:hidden}.wb-lab-section-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:16px 16px 12px;border-bottom:1px solid #e9eef4}.wb-lab-section-head h4{margin:0 0 5px}.wb-lab-count{white-space:nowrap;padding:5px 9px;border-radius:999px;background:#eef4fa;color:#456784;font-size:12px;font-weight:800}.wb-lab-picks{padding:0 14px}.wb-lab-pick{grid-template-columns:30px minmax(130px,1.2fr) minmax(90px,.65fr) minmax(150px,1.5fr) 18px;padding:13px 6px;gap:10px}.wb-lab-pick-main small,.wb-lab-pick-metric small{color:#66778c}.wb-lab-pick-main b{font-size:15px;color:#1f3348;font-weight:850}.wb-lab-pick-main{min-width:0}.wb-lab-pick-main b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick{color:#1f3348}.wb-lab-pick:hover{background:#f8fbfe}.wb-lab-pick:active{background:#eef5fb}.wb-lab-pick-metric{display:flex;flex-direction:column;align-items:flex-end}.wb-lab-pick-metric strong{font-size:16px}.wb-lab-pick-reason{font-size:12px;color:#657487;line-height:1.45}.wb-lab-empty{padding:22px 16px;text-align:center;color:#657487}.wb-lab-empty b,.wb-lab-empty small{display:block}.wb-lab-empty small{margin-top:5px}@media(max-width:700px){.wb-lab-nav{grid-template-columns:1fr 1fr}.wb-lab-pick{grid-template-columns:25px minmax(110px,1fr) auto 16px}.wb-lab-pick-reason{display:none}.wb-lab-pick-metric{align-items:flex-end}.wb-lab-section-head{display:block}.wb-lab-count{display:inline-flex;margin-top:8px}}@media(max-width:700px){.wb-lab-nav{grid-template-columns:1fr 1fr}.wb-lab-category-grid{grid-template-columns:1fr}.wb-lab-pick{grid-template-columns:26px minmax(0,1fr) auto 16px}.wb-lab-pick-tags{display:flex}.wb-lab-pick-main b{font-size:15px}.wb-lab-pick-main small{font-size:11px}.wb-lab-pick-reason-mobile{display:block;margin-top:4px;font-size:11px;line-height:1.35;color:#718096;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}@media(max-width:700px){.wb-lab-hero{display:block}.wb-lab-hero button{margin-top:12px}.wb-lab-grid,.wb-lab-compare{grid-template-columns:1fr}.wb-lab-metrics{grid-template-columns:repeat(2,1fr)}}
-.wb-d-hero-chart-cta{margin-top:12px}.wb-d-hero-chart-cta button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;border:0;border-radius:14px;padding:14px 16px;background:#274f73;color:#fff;box-shadow:0 8px 20px rgba(39,79,115,.18);cursor:pointer;text-align:left}.wb-d-hero-chart-cta button:disabled{opacity:.7}.wb-d-hero-chart-cta button b{font-size:15px}.wb-d-hero-chart-cta button small{display:block;margin-top:3px;color:#d8e6f2;font-size:11px}.wb-d-hero-chart-cta button strong{font-size:22px}.wb-d-lazy-chart{margin-top:12px;padding:12px;border:1px solid #e6edf4;border-radius:14px;background:#fbfdff}.wb-d-lazy-chart button{border:1px solid #cbd9e6;background:#fff;color:#315b82;border-radius:10px;padding:9px 12px;font-weight:800;cursor:pointer}.wb-d-chart-status{margin-top:8px;color:#718096;font-size:12px}.wb-d-chart-title{margin-top:10px;margin-bottom:4px}.wb-d-chart-title b{display:block;color:#294d69;font-size:14px}.wb-d-chart-title small{display:block;margin-top:3px;color:#718394;font-size:10px}.wb-d-chart-wrap{margin-top:10px;overflow:hidden}.wb-d-chart-wrap svg{width:100%;height:220px;display:block}.wb-d-chart-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:#64748b;margin-top:5px}.wb-d-chart-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;background:#4f78a6;margin-right:4px}.wb-d-chart-legend i.alt{background:#a8b7c7}.wb-d-chart-legend i.mom{background:#86a7c3}.wb-d-chart-legend i.dealer{background:#a65a5a}.wb-d-chart-note{font-size:11px;color:#7a8796;line-height:1.5;margin-top:6px}
+.wb-d-hero-chart-cta{margin-top:12px}.wb-d-hero-chart-cta button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;border:0;border-radius:14px;padding:14px 16px;background:#274f73;color:#fff;box-shadow:0 8px 20px rgba(39,79,115,.18);cursor:pointer;text-align:left}.wb-d-hero-chart-cta button:disabled{opacity:.7}.wb-d-hero-chart-cta button b{font-size:15px}.wb-d-hero-chart-cta button small{display:block;margin-top:3px;color:#d8e6f2;font-size:11px}.wb-d-hero-chart-cta button strong{font-size:22px}.wb-d-lazy-chart{margin-top:12px;padding:12px;border:1px solid #e6edf4;border-radius:14px;background:#fbfdff}.wb-d-lazy-chart button{border:1px solid #cbd9e6;background:#fff;color:#315b82;border-radius:10px;padding:9px 12px;font-weight:800;cursor:pointer}.wb-d-chart-status{margin-top:8px;color:#718096;font-size:12px}
+.wb-d-progress{padding:14px 15px;border:1px solid #dfe8f1;border-radius:14px;background:linear-gradient(180deg,#f9fbfd,#f3f7fb);margin-top:10px}.wb-d-progress-top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:9px}.wb-d-progress-top b{font-size:13px;color:#2b4e73}.wb-d-progress-top strong{font-size:18px;color:#274c77}.wb-d-progress-track{height:9px;border-radius:99px;background:#e4ebf2;overflow:hidden}.wb-d-progress-bar{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,#6d95bb,#274c77);transition:width .35s ease}.wb-d-progress-note{display:block;margin-top:7px;font-size:11px;color:#7a8998}
+.wb-d-chart-title{margin-top:10px;margin-bottom:4px}.wb-d-chart-title b{display:block;color:#294d69;font-size:14px}.wb-d-chart-title small{display:block;margin-top:3px;color:#718394;font-size:10px}.wb-d-chart-wrap{margin-top:10px;overflow:hidden}.wb-d-chart-wrap svg{width:100%;height:220px;display:block}.wb-d-chart-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:#64748b;margin-top:5px}.wb-d-chart-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;background:#4f78a6;margin-right:4px}.wb-d-chart-legend i.alt{background:#a8b7c7}.wb-d-chart-legend i.mom{background:#86a7c3}.wb-d-chart-legend i.dealer{background:#a65a5a}.wb-d-chart-note{font-size:11px;color:#7a8796;line-height:1.5;margin-top:6px}
 .wb-d-tv-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.wb-d-tv-title>strong{font-size:15px;white-space:nowrap}.wb-d-tv-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.wb-d-tv-tab{border:1px solid #d7e2ec;background:#fff;color:#64788a;border-radius:9px;padding:7px 11px;font-weight:800;font-size:11px;cursor:pointer}.wb-d-tv-tab.active{background:#2f6fd6;border-color:#2f6fd6;color:#fff}.wb-d-tv-chart{background:#fbfdff;border:1px solid #e5ebf2;border-radius:12px;padding:8px}.wb-d-tv-svg{width:100%;height:260px;display:block}.wb-d-tv-svg .grid{stroke:#e6edf3;stroke-width:1}.wb-d-tv-svg .zero{stroke:#9eb0bf;stroke-width:1.2;stroke-dasharray:5 4}.wb-d-tv-svg .tick{fill:#8192a0;font-size:10px}.wb-d-tv-svg .date{fill:#7c8c99;font-size:9px}.wb-d-tv-svg .axis-label{fill:#536b7e;font-size:10px;font-weight:800}.wb-d-tv-svg .axis-label.sell{fill:#4f9b78}.wb-d-tv-svg .axis-label.orange{fill:#df7a22}.wb-d-tv-svg .buy{fill:#e45757}.wb-d-tv-svg .sell{fill:#45a879}.wb-d-tv-svg .flat{fill:#b8c5d0}.wb-d-tv-svg .value{font-size:9px;font-weight:800}.wb-d-tv-svg .value.buy{fill:#d94848}.wb-d-tv-svg .value.sell{fill:#328b63}.wb-d-tv-svg .revenue-bar{fill:#4f78a6}.wb-d-tv-svg .yoy-line{stroke:#e47b27;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .yoy-dot{fill:#e47b27;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-line.blue{stroke:#2f6fd6;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-line.orange{stroke:#e47b27;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-line.green{stroke:#2f9b73;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.wb-d-tv-svg .growth-dot.blue{fill:#2f6fd6;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-dot.orange{fill:#e47b27;stroke:#fff;stroke-width:2}.wb-d-tv-svg .growth-dot.green{fill:#2f9b73;stroke:#fff;stroke-width:2}.wb-d-tv-svg .bar-value{fill:#365a7a;font-size:10px;font-weight:900}.wb-d-tv-svg .yoy-value{fill:#d56f20;font-size:10px;font-weight:900}.wb-d-tv-svg .growth-value{font-size:9px;font-weight:900}.wb-d-tv-svg .growth-value.blue{fill:#2f6fd6}.wb-d-tv-svg .growth-value.orange{fill:#d97823}.wb-d-tv-svg .growth-value.green{fill:#2f9b73}.wb-d-tv-chart{padding:4px 4px 0;background:#fff}.wb-d-tv-title small{max-width:520px;line-height:1.45}.wb-d-chart-summary>div{min-height:54px}.wb-d-revenue-latest b{font-variant-numeric:tabular-nums}.wb-d-chart-note{padding:9px 11px;border:1px solid #e5ebf0;border-radius:10px;background:#fafcfd}.wb-d-tv-svg .revenue-bar{opacity:.94}.wb-d-chart-legend{padding:0 3px}.wb-d-chart-legend span{font-weight:700}.wb-d-chart-legend i.tv-orange{background:#e47b27}{background:#e47b27}.wb-d-chart-legend i.tv-green{background:#2f9b73}.wb-d-chart-legend{align-items:center}.wb-d-revenue-latest{margin-top:8px}.wb-d-chart-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.wb-d-chart-summary>div{padding:9px 10px;border:1px solid #e3eaf1;border-radius:10px;background:#fff}.wb-d-chart-summary small{display:block;color:#81909e;font-size:10px}.wb-d-chart-summary b{display:block;margin-top:3px;color:#294e6b;font-size:14px}.wb-d-chart-summary em{display:block;margin-top:4px;color:#98a5af;font-size:9px;font-style:normal;line-height:1.35}.wb-d-chart-note b{color:#294e6b;margin-right:4px}.wb-up{color:#2f8a61!important}.wb-down{color:#c34d4d!important}.wb-d-tv-svg .growth-bar-pos{fill:#4f78a6}.wb-d-tv-svg .growth-bar-neg{fill:#c85b55}.wb-d-tv-svg .growth-yoy{fill:#4f78a6}.wb-d-tv-svg .growth-cum{fill:#e47b27}.wb-d-tv-svg .growth-mom{fill:#45a879}@media(max-width:620px){.wb-d-tv-svg{height:225px}.wb-d-tv-title{gap:8px}.wb-d-tv-title>b,.wb-d-tv-title strong{font-size:13px}.wb-d-chart-summary{grid-template-columns:1fr 1fr}.wb-d-chart-summary>div:last-child{grid-column:1/-1}.wb-d-tv-tab{padding:6px 9px;font-size:10px}}
 .wb-lab-pick{min-height:72px}.wb-lab-pick-main{min-width:0}.wb-lab-pick-main small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-metric-mobile,.wb-lab-pick-reason-mobile{display:none}.wb-d-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.wb-d-chip{display:inline-flex;padding:4px 8px;border-radius:999px;background:#eef4fa;color:#4f6f8e;font-size:11px;font-weight:700}@media(max-width:700px){.wb-lab-pick{display:grid;grid-template-columns:24px minmax(0,1fr) 18px;grid-template-areas:"rank main arrow";gap:8px;padding:13px 4px;min-height:88px}.wb-lab-rank{grid-area:rank}.wb-lab-pick-main{grid-area:main}.wb-lab-pick-metric,.wb-lab-pick-reason{display:none}.wb-lab-pick-metric-mobile{display:flex;align-items:baseline;gap:6px;margin-top:6px}.wb-lab-pick-metric-mobile strong{font-size:17px;color:#274c77}.wb-lab-pick-metric-mobile em{font-style:normal;font-size:11px;color:#7a899a}.wb-lab-pick-reason-mobile{display:block;margin-top:5px;font-size:11px;line-height:1.4;color:#657487;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-tags{margin-top:5px}.wb-lab-chip{font-size:9px}.wb-lab-arrow{grid-area:arrow;align-self:center;font-size:24px;color:#4f78a6}.wb-lab-section-head{padding:14px}.wb-lab-picks{padding:0 12px}}
 .wb-lab-strategy-title{display:block!important;color:#1f3348!important;font-size:16px!important;font-weight:850!important;line-height:1.35!important;margin:0 0 2px!important}.wb-lab-strategy.active{background:#274c77!important;border-color:#274c77!important;color:#fff!important;box-shadow:0 8px 18px rgba(39,76,119,.18)!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy.active *{color:inherit!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy:focus-visible{outline:3px solid rgba(79,120,166,.28);outline-offset:2px}.wb-lab-pick:focus-visible{outline:2px solid rgba(79,120,166,.35);outline-offset:-2px}
@@ -28910,6 +28928,25 @@ def render_workbench_body(initial_tab=""):
         renderInstitutional(viewMode); return;
       }
 
+      /* 股價趨勢：用近6個月日線畫成簡潔折線圖，讓使用者直接看到趨勢，而不是只看120D報酬。 */
+      if(kind==='momentum'){
+        var rows=data.slice(-120).filter(function(d){return n(d.close)!=null;});
+        if(!rows.length){host.innerHTML='<div class="wb-d-chart-status">目前沒有足夠的股價歷史資料可畫圖。</div>';return;}
+        var vals=rows.map(function(d){return n(d.close);}), min=Math.min.apply(null,vals), max=Math.max.apply(null,vals);
+        if(min===max){min-=1;max+=1;}
+        var w=760,h=330,p={l:58,r:18,t:30,b:42},pw=w-p.l-p.r,ph=h-p.t-p.b,step=pw/Math.max(1,rows.length-1);
+        function yy(v){return p.t+(max-v)/(max-min)*ph;}
+        var path=rows.map(function(d,i){var x=p.l+i*step,y=yy(n(d.close));return (i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1);}).join(' ');
+        var svg='<svg class="wb-d-tv-svg wb-d-price-svg" viewBox="0 0 '+w+' '+h+'" role="img" aria-label="近6個月股價趨勢">';
+        [0,.25,.5,.75,1].forEach(function(t){var v=max-(max-min)*t, y=p.t+ph*t;svg+='<line x1="'+p.l+'" y1="'+y.toFixed(1)+'" x2="'+(w-p.r)+'" y2="'+y.toFixed(1)+'" class="price-grid"></line><text x="'+(p.l-8)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" class="tick">'+fmt(v,1)+'</text>';});
+        svg+='<path d="'+path+'" fill="none" class="price-line"></path>';
+        [0,Math.floor(rows.length/2),rows.length-1].forEach(function(i){var x=p.l+i*step;svg+='<text x="'+x.toFixed(1)+'" y="'+(h-15)+'" text-anchor="middle" class="date">'+escText(rows[i].day)+'</text>';});
+        var latest=vals[vals.length-1],first=vals[0],ret=(latest/first-1)*100;
+        svg+='</svg>';
+        host.innerHTML='<div class="wb-d-chart-title wb-d-tv-title"><div><b>股價趨勢 · 近6個月</b><small>日線收盤價；折線越往右代表越新的交易日。</small></div><strong class="'+(ret>=0?'wb-up':'wb-down')+'">區間 '+signedPct(ret)+'</strong></div><div class="wb-d-chart-wrap wb-d-tv-chart wb-d-price-chart">'+svg+'</div><div class="wb-d-chart-summary wb-d-revenue-latest"><div><small>起始價格</small><b>'+fmt(first,2)+'</b></div><div><small>最新價格</small><b>'+fmt(latest,2)+'</b></div><div><small>區間變化</small><b class="'+(ret>=0?'wb-up':'wb-down')+'">'+signedPct(ret)+'</b></div></div>';
+        return;
+      }
+
       /* 營收：不再使用折線或柱狀圖；改成「最新三數字＋逐月明細」的資訊卡，直接回答多少錢、比去年、比上月。 */
       if(kind==='revenue'){
         var rows=data.slice(-12).filter(function(d){return n(d.current)!=null;});
@@ -28940,7 +28977,21 @@ def render_workbench_body(initial_tab=""):
       }
     }
     function bindLazyCharts(host){
-      host.querySelectorAll('[data-lazy-chart]').forEach(function(btn){btn.addEventListener('click',function(){var kind=btn.dataset.lazyChart,code=btn.dataset.code,box=btn.parentElement;btn.disabled=true;var st=box.querySelector('.wb-d-chart-status');if(st)st.textContent='正在載入歷史資料…';fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'force-cache'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(d){if(!d.ok)throw new Error(d.error||'載入失敗');drawLazyChart(box,d.data,kind);}).catch(function(e){btn.disabled=false;if(st)st.textContent='載入失敗：'+esc(String(e.message||e));});});});
+      host.querySelectorAll('[data-lazy-chart]').forEach(function(btn){btn.addEventListener('click',function(){
+        var kind=btn.dataset.lazyChart,code=btn.dataset.code,box=btn.parentElement;btn.disabled=true;
+        var st=box.querySelector('.wb-d-chart-status'), timer=null, progress=0, progressBox=null, bar=null, pctEl=null;
+        if(kind==='revenue'||kind==='growth'){
+          progressBox=document.createElement('div');progressBox.className='wb-d-progress';
+          progressBox.innerHTML='<div class="wb-d-progress-top"><b>正在整理'+(kind==='revenue'?'營收歷史':'成長資料')+'…</b><strong>0%</strong></div><div class="wb-d-progress-track"><div class="wb-d-progress-bar"></div></div><small class="wb-d-progress-note">資料已經找到一部分，正在補齊歷史月份</small>';
+          box.insertBefore(progressBox,st||null);bar=progressBox.querySelector('.wb-d-progress-bar');pctEl=progressBox.querySelector('.wb-d-progress-top strong');
+          timer=setInterval(function(){progress=Math.min(94,progress+(progress<50?7:progress<80?4:1));if(bar)bar.style.width=progress+'%';if(pctEl)pctEl.textContent=progress+'%';},380);
+          if(st)st.textContent='正在讀取並整理資料…';
+        }else if(st){st.textContent='正在載入歷史資料…';}
+        fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'force-cache'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(d){
+          if(timer)clearInterval(timer);if(progressBox){progressBox.querySelector('.wb-d-progress-bar').style.width='100%';progressBox.querySelector('.wb-d-progress-top strong').textContent='100%';progressBox.querySelector('.wb-d-progress-note').textContent='完成，正在顯示結果…';}
+          if(!d.ok)throw new Error(d.error||'載入失敗');setTimeout(function(){drawLazyChart(box,d.data,kind);},180);
+        }).catch(function(e){if(timer)clearInterval(timer);btn.disabled=false;if(progressBox)progressBox.remove();if(st)st.textContent='載入失敗：'+esc(String(e.message||e));});
+      });});
     }
     function showLabResearchDetail(x,key){
     var host=document.getElementById('wb-detail');
@@ -28988,6 +29039,18 @@ def render_workbench_body(initial_tab=""):
       return '<div class="wb-d-metric"><small>'+esc(m[0])+'</small><b>'+esc(m[1])+'</b></div>';
     }).join('')+'</div>':'';
 
+    var valuationHtml='';
+    if(key==='價值'){
+      var pb=x.pb!=null?Number(x.pb):null, pe=x.pe!=null?Number(x.pe):null, dy=x.yield!=null?Number(x.yield):null;
+      function valStatus(v,op,cut){if(v==null||!isFinite(v))return '<span class="wb-val-wait">待確認</span>';var ok=op==='le'?v<=cut:v>=cut;return '<span class="'+(ok?'wb-val-pass':'wb-val-fail')+'">'+(ok?'✓ 通過':'× 未通過')+'</span>';}
+      valuationHtml='<div class="wb-valuation-guide"><div class="wb-valuation-title"><b>估值條件怎麼看？</b><small>不是只列數字，而是把「目前值 → 研究門檻 → 是否通過」一次說清楚。</small></div>'
+        +'<div class="wb-valuation-grid">'
+        +'<div class="wb-valuation-card"><span>本益比 PE</span><b>'+(pe==null?'待確認':pe.toFixed(1)+' 倍')+'</b><small>研究門檻：≤ 15 倍</small>'+valStatus(pe,'le',15)+'</div>'
+        +'<div class="wb-valuation-card"><span>股價淨值比 PB</span><b>'+(pb==null?'待確認':pb.toFixed(2)+' 倍')+'</b><small>研究門檻：≤ 1.5 倍</small>'+valStatus(pb,'le',1.5)+'</div>'
+        +'<div class="wb-valuation-card"><span>殖利率</span><b>'+(dy==null?'待確認':dy.toFixed(2)+'%')+'</b><small>研究門檻：≥ 4%</small>'+valStatus(dy,'ge',4)+'</div>'
+        +'</div><div class="wb-valuation-explain"><p><b>PE：</b>股價相對每股盈餘的倍數，研究上用較低倍數作為價值條件。</p><p><b>PB：</b>股價相對每股淨值的倍數，低於門檻代表股價相對帳面淨值較低。</p><p><b>殖利率：</b>現金股利相對股價的比例，較高代表以目前股價計算的股利率較高。</p><p><b>符合條件：</b>'+((pe!=null&&pe<=15)+(pb!=null&&pb<=1.5)+(dy!=null&&dy>=4))+'/3 項；「待確認」不算通過。</p></div></div>';
+    }
+
     var factorHtml='';
     var reason=x.reason||'目前沒有額外說明。';
     var scope=x.data_scope||'本次研究批次計算結果。';
@@ -29026,6 +29089,10 @@ def render_workbench_body(initial_tab=""):
     if(key==='成長'){
       lazy='<div class="wb-d-lazy-chart"><div class="wb-d-chart-status">圖表已載入；下方可查看成長速度與加速度。</div></div>';
       heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="growth" data-code="'+esc(x.code)+'"><span><b>📈 查看成長動能圖表</b><small>每月 YoY、累計 YoY 與 MoM，加速度一眼看懂</small></span><strong>›</strong></button></div>';
+    }
+    if(key==='價格動能'){
+      lazy='<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="momentum" data-code="'+esc(x.code)+'">📈 查看近6個月股價趨勢圖</button><div class="wb-d-chart-status">點開後載入日線價格，不影響研究室首屏。</div></div>';
+      heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="momentum" data-code="'+esc(x.code)+'"><span><b>📈 查看股價趨勢圖</b><small>近6個月日線＋區間報酬，一眼看出上升、盤整或走弱</small></span><strong>›</strong></button></div>';
     }
     if(key==='籌碼'){
       // 籌碼超人圖表只放在「策略研究實驗室 → 籌碼」的個股詳細頁，並提供明確按鈕。
@@ -29085,7 +29152,7 @@ def render_workbench_body(initial_tab=""):
       +'<section class="wb-d-section wb-d-noteworthy"><div class="wb-d-section-head"><h4>① 為什麼入選</h4><small>先看「符合幾項」，再看每一項到底過沒過</small></div>'
       +whyHtml+'</section>'
       +'<section class="wb-d-section"><div class="wb-d-section-head"><h4>② 研究證據</h4><small>把真正影響這次排名的數字攤開</small></div>'
-      +metricHtml+factorHtml+(scoreNote?'<p class="wb-d-note wb-d-score-note">'+esc(scoreNote)+'</p>':'')+lazy
+      +metricHtml+valuationHtml+factorHtml+(scoreNote?'<p class="wb-d-note wb-d-score-note">'+esc(scoreNote)+'</p>':'')+lazy
       +'<div class="wb-d-tags">'+chips+'</div></section>'
       +'<section class="wb-d-section"><div class="wb-d-section-head"><h4>③ 資料與判讀方式</h4><small>這一區告訴你資料從哪裡來</small></div>'
       +'<p class="wb-d-note">'+esc(scope)+'</p><div class="wb-d-data-note"><b>怎麼看</b><span>'+esc(key==='營收動能'?'先看今年與去年同期實際營收，再看 YoY。':key==='成長'?'同時看當月 YoY、累計 YoY 與 MoM，判斷成長速度與加速度。':key==='籌碼'?'看法人近20日買賣方向，不把單日爆買直接當成趨勢。':key==='四因子複合'?'4 個條件分開判定，最後再合併成研究分。':'先看研究值，再看下方細項，不用只看一個總分。')+'</span></div></section>'
@@ -30835,10 +30902,31 @@ def web_workbench_strategy_detail(uid):
     """按需載入研究圖表資料；首屏不呼叫。營收明細不足 6 期時，點開後才補官方歷史月份。"""
     code = str(request.args.get("code") or "").strip()
     kind = str(request.args.get("kind") or "").strip()
-    if not re.fullmatch(r"\d{4,6}", code) or kind not in {"revenue", "growth", "institutional"}:
+    if not re.fullmatch(r"\d{4,6}", code) or kind not in {"revenue", "growth", "institutional", "momentum"}:
         return _workbench_json_response({"ok": False, "error": "參數不正確。"}, 400)
     try:
         conn = get_db_connection(); cur = conn.cursor()
+        if kind == "momentum":
+            # 股價趨勢圖採按需單檔抓取，避免研究室首屏再增加網路負擔。
+            cur.close(); release_db_connection(conn)
+            spark = _fetch_yahoo_spark_bulk([code], rng="6mo", force_refresh=True, market_map=get_market_map() or {}) or {}
+            q = spark.get(code) or {}
+            closes = q.get("closes") or []
+            timestamps = q.get("timestamps") or []
+            data = []
+            for idx, px in enumerate(closes):
+                ts = timestamps[idx] if idx < len(timestamps) else None
+                if ts is None:
+                    continue
+                try:
+                    label = datetime.fromtimestamp(int(ts), tz=timezone.utc).astimezone(TW_TZ).strftime("%m/%d")
+                except Exception:
+                    continue
+                try:
+                    data.append({"day": label, "close": float(px)})
+                except (TypeError, ValueError):
+                    pass
+            return _workbench_json_response({"ok":True,"kind":kind,"code":code,"data":data[-120:],"note":"使用 Yahoo Spark 近6個月日線；只在點開股價趨勢時按需抓取。"})
         if kind in {"revenue", "growth"}:
             # 先釋放本段連線；營收歷史補查會自行管理 DB 連線。
             cur.close(); release_db_connection(conn)
