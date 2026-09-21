@@ -28790,11 +28790,40 @@ def render_workbench_body(initial_tab=""):
   <div class="wb-meta"><span id="wb-count">正在讀取…</span><span id="wb-note"></span></div>
   <div class="wb-table" id="wb-table" aria-live="polite"><div class="wb-head"><span>標的</span><button type="button" data-sort="score">綜合分數</button><button type="button" data-sort="change_pct">報酬／漲跌</button><button type="button" data-sort="institutional_lots">法人方向</button><span>訊號</span><span></span></div><div id="wb-rows"><div class="wb-skeleton"></div><div class="wb-skeleton"></div><div class="wb-skeleton"></div></div></div>
   <div class="wb-strategy-lab" id="wb-strategy-lab" hidden>
-  <div class="wb-lab-hero"><div><span class="wb-lab-kicker">STRATEGY LAB · MULTI-FACTOR</span><h3>策略研究實驗室</h3><p>把「我的五因子」、「FinLab 四因子」與之後的混合策略放在同一個研究框架，先定義規則，再做回測。</p></div><button type="button" id="wb-lab-refresh">重新讀取研究設定</button></div>
+  <div class="wb-lab-hero"><div><span class="wb-lab-kicker">STRATEGY LAB · BACKTEST</span><h3>策略回測實驗室</h3><p>先用歷史資料驗證，再把有效的模型放進選股工作台。你可以測試「🐎 秉軒黑馬」、「⚡ 秉軒爆賺雷達」，也可以直接測自己的持股。</p></div><button type="button" id="wb-lab-refresh">重新讀取研究設定</button></div>
   <div id="wb-lab-body"><div class="wb-lab-loading">正在載入策略研究設定…</div></div>
+  <div class="wb-lab-flow">
+    <div class="wb-lab-flow-card"><span>01</span><b>選策略</b><small>黑馬、爆賺雷達或我的持股</small></div>
+    <div class="wb-lab-flow-arrow">→</div>
+    <div class="wb-lab-flow-card"><span>02</span><b>跑歷史</b><small>2018 起依當時可得資料模擬</small></div>
+    <div class="wb-lab-flow-arrow">→</div>
+    <div class="wb-lab-flow-card"><span>03</span><b>看績效</b><small>報酬、風險、回撤一次看懂</small></div>
+  </div>
+  <div class="wb-lab-backtest" id="wb-lab-backtest">
+    <div class="wb-lab-card">
+      <div class="wb-lab-section-head"><div><h4>開始一場回測</h4><p class="wb-lab-muted">選好條件後按一次即可。沒有 FinLab 憑證時不會顯示虛構績效。</p></div><span class="wb-lab-count">2018 起可測（需 FinLab 憑證）</span></div>
+      <div class="wb-lab-grid" style="margin-top:12px">
+        <div>
+          <label class="wb-lab-field"><span>回測策略</span><select id="wb-bt-strategy"><option value="blackhorse">🐎 秉軒黑馬 V1（候選）</option><option value="hunter">⚡ 秉軒爆賺雷達 V1（候選）</option><option value="holdings">👤 我的持股</option></select></label>
+          <label class="wb-lab-field"><span>開始日期</span><input id="wb-bt-start" type="date" value="2018-01-01"></label>
+          <label class="wb-lab-field"><span>結束日期</span><input id="wb-bt-end" type="date"></label>
+        </div>
+        <div>
+          <label class="wb-lab-field"><span>再平衡</span><select id="wb-bt-resample"><option value="M">每月</option><option value="Q">每季</option><option value="W">每週</option></select></label>
+          <label class="wb-lab-field"><span>持股數</span><select id="wb-bt-topn"><option value="10">Top 10</option><option value="20">Top 20</option><option value="30">Top 30</option></select></label>
+          <label class="wb-lab-field"><span>我的持股（僅「我的持股」使用）</span><input id="wb-bt-holdings" placeholder="2330:30,2308:20,6442:20"></label>
+        </div>
+      </div>
+      <div class="wb-lab-note">交易成本預設依 FinLab 回測引擎設定：手續費 0.1425%、賣出證交稅 0.3%。結果會顯示 CAGR、Sharpe、Sortino、最大回撤、勝率與交易筆數；沒有 FinLab 憑證時不會假造結果。</div>
+      <button type="button" class="wb-bt-run" id="wb-bt-run">▶ 開始實際回測</button>
+      <div id="wb-bt-status" class="wb-lab-bt-status"></div>
+      <div id="wb-bt-result"></div>
+    </div>
+  </div>
 </div>
 <style>
-.wb-strategy-lab{padding:4px 0 28px}.wb-lab-hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;padding:18px;border:1px solid rgba(39,76,119,.12);border-radius:18px;background:linear-gradient(135deg,#f7fbff,#fff);margin-bottom:14px}.wb-lab-kicker{font-size:11px;letter-spacing:.14em;color:#4f78a6;font-weight:800}.wb-lab-hero h3{margin:5px 0 5px;font-size:22px}.wb-lab-hero p{margin:0;color:#657487;line-height:1.6}.wb-lab-hero button{border:0;border-radius:10px;padding:9px 13px;background:#274c77;color:#fff;font-weight:700;white-space:nowrap}.wb-lab-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.wb-lab-card{background:#fff;border:1px solid #e7edf4;border-radius:16px;padding:16px;box-shadow:0 4px 18px rgba(25,55,90,.05)}.wb-lab-card h4{margin:0 0 9px;font-size:16px}.wb-lab-muted{color:#738197;font-size:13px;line-height:1.6}.wb-lab-factor{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #eef2f6}.wb-lab-factor:first-of-type{border-top:0}.wb-lab-factor b{min-width:74px}.wb-lab-weight{margin-left:auto;font-weight:800}.wb-lab-status{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;background:#eef3f8;color:#4b647d}.wb-lab-status.ready{background:#e9f7ef;color:#19733b}.wb-lab-status.wait{background:#fff6df;color:#8a6815}.wb-lab-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.wb-lab-metric{padding:10px;border-radius:12px;background:#f6f8fb}.wb-lab-metric small{display:block;color:#78879a}.wb-lab-metric b{display:block;margin-top:3px;font-size:17px}.wb-lab-compare{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.wb-lab-compare .wb-lab-card{min-height:120px}.wb-lab-note{padding:12px 14px;border-radius:12px;background:#f8fafc;color:#657487;line-height:1.65;font-size:13px}.wb-lab-table{width:100%;border-collapse:collapse;margin-top:10px}.wb-lab-table th,.wb-lab-table td{text-align:left;padding:9px 7px;border-bottom:1px solid #edf1f5;font-size:13px}.wb-lab-table th{color:#738197;font-weight:700} .wb-lab-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:12px}.wb-lab-strategy{border:1px solid #e2e9f1;background:#fff;border-radius:14px;padding:12px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:4px}.wb-lab-strategy.active{border-color:#4f78a6;box-shadow:0 0 0 2px rgba(79,120,166,.10)}.wb-lab-strategy b{font-size:14px}.wb-lab-strategy small{color:#738197;line-height:1.45}.wb-lab-strategy em{font-style:normal;font-size:10px;color:#4f78a6;font-weight:800}.wb-lab-picks{display:flex;flex-direction:column}.wb-lab-pick{display:grid;grid-template-columns:30px minmax(0,1fr) auto minmax(0,1fr) 16px;gap:8px;align-items:center;border:0;border-top:1px solid #edf1f5;background:#fff;padding:10px 0;text-align:left;cursor:pointer}.wb-lab-rank{font-weight:900;color:#58799a}.wb-lab-pick b{display:block}.wb-lab-pick small{display:block;color:#78879a;margin-top:2px}.wb-lab-pick strong{font-size:15px}.wb-lab-pick-tags{display:flex;gap:4px;flex-wrap:wrap}.wb-lab-chip{font-size:10px;background:#f1f5f9;border-radius:999px;padding:3px 6px;color:#50657a}.wb-lab-category-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.wb-lab-category{padding:11px;border-radius:12px;background:#f7f9fc}.wb-lab-category b{display:block;margin-bottom:4px}.wb-lab-category span{font-size:12px;color:#718096;line-height:1.55}.wb-lab-active .wb-tabs{display:none!important}.wb-lab-active .wb-tools,.wb-lab-active .wb-filter-panel,.wb-lab-active .wb-mobile-sort,.wb-lab-active .wb-meta,.wb-lab-active .wb-table,.wb-lab-active .wb-intro,.wb-lab-active .wb-pulse{display:none!important}.wb-lab-nav{grid-template-columns:repeat(4,minmax(0,1fr));}.wb-lab-strategy{min-height:92px}.wb-lab-strategy:disabled{opacity:.55;cursor:not-allowed} .wb-lab-section-head h4,#wb-lab-picks-title{color:#1f3348!important;font-weight:850!important}.wb-lab-strategy b{color:#1f3348!important}.wb-lab-strategy.active{background:#f5f9fd;border-color:#8fb4d8}.wb-lab-strategy.active b{color:#24547f!important}.wb-lab-strategy small{color:#6b7d91!important}.wb-lab-pick-main b{color:#1d3348!important}.wb-lab-pick-metric strong{color:#b44a4a!important}.wb-lab-empty b{color:#334b63}.wb-lab-card h4{color:#203449}.wb-lab-muted{color:#687b91}.wb-lab-factor b{color:#2a4057}.wb-lab-picks-card{padding:0;overflow:hidden}.wb-lab-section-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:16px 16px 12px;border-bottom:1px solid #e9eef4}.wb-lab-section-head h4{margin:0 0 5px}.wb-lab-count{white-space:nowrap;padding:5px 9px;border-radius:999px;background:#eef4fa;color:#456784;font-size:12px;font-weight:800}.wb-lab-picks{padding:0 14px}.wb-lab-pick{grid-template-columns:30px minmax(130px,1.2fr) minmax(90px,.65fr) minmax(150px,1.5fr) 18px;padding:13px 6px;gap:10px}.wb-lab-pick-main small,.wb-lab-pick-metric small{color:#66778c}.wb-lab-pick-main b{font-size:15px;color:#1f3348;font-weight:850}.wb-lab-pick-main{min-width:0}.wb-lab-pick-main b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick{color:#1f3348}.wb-lab-pick:hover{background:#f8fbfe}.wb-lab-pick:active{background:#eef5fb}.wb-lab-pick-metric{display:flex;flex-direction:column;align-items:flex-end}.wb-lab-pick-metric strong{font-size:16px}.wb-lab-pick-reason{font-size:12px;color:#657487;line-height:1.45}.wb-lab-empty{padding:22px 16px;text-align:center;color:#657487}.wb-lab-empty b,.wb-lab-empty small{display:block}.wb-lab-empty small{margin-top:5px}@media(max-width:700px){.wb-lab-nav{grid-template-columns:1fr 1fr}.wb-lab-pick{grid-template-columns:25px minmax(110px,1fr) auto 16px}.wb-lab-pick-reason{display:none}.wb-lab-pick-metric{align-items:flex-end}.wb-lab-section-head{display:block}.wb-lab-count{display:inline-flex;margin-top:8px}}@media(max-width:700px){.wb-lab-nav{grid-template-columns:1fr 1fr}.wb-lab-category-grid{grid-template-columns:1fr}.wb-lab-pick{grid-template-columns:26px minmax(0,1fr) auto 16px}.wb-lab-pick-tags{display:flex}.wb-lab-pick-main b{font-size:15px}.wb-lab-pick-main small{font-size:11px}.wb-lab-pick-reason-mobile{display:block;margin-top:4px;font-size:11px;line-height:1.35;color:#718096;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}@media(max-width:700px){.wb-lab-hero{display:block}.wb-lab-hero button{margin-top:12px}.wb-lab-grid,.wb-lab-compare{grid-template-columns:1fr}.wb-lab-metrics{grid-template-columns:repeat(2,1fr)}}
+.wb-strategy-lab{padding:4px 0 28px} .wb-lab-flow{display:grid;grid-template-columns:1fr 28px 1fr 28px 1fr;align-items:center;gap:8px;margin:0 0 14px}.wb-lab-flow-card{min-height:92px;padding:14px;border:1px solid #e6edf5;border-radius:16px;background:#fff;box-shadow:0 4px 16px rgba(25,55,90,.045)}.wb-lab-flow-card span{display:inline-flex;width:25px;height:25px;align-items:center;justify-content:center;border-radius:8px;background:#eef4fa;color:#315d88;font-size:11px;font-weight:900}.wb-lab-flow-card b{display:block;margin-top:8px;font-size:15px}.wb-lab-flow-card small{display:block;margin-top:4px;color:#748397;line-height:1.45}.wb-lab-flow-arrow{text-align:center;color:#9aabbd;font-size:22px;font-weight:700}.wb-lab-backtest .wb-lab-card{padding:18px}.wb-bt-run{width:100%;margin-top:14px;border:0;border-radius:14px;padding:13px 16px;background:#274c77;color:#fff;font-weight:900;font-size:15px;cursor:pointer;box-shadow:0 6px 16px rgba(39,76,119,.16)}.wb-bt-run:hover{filter:brightness(1.04)}.wb-bt-run:disabled{opacity:.62;cursor:wait}.wb-bt-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:12px}.wb-bt-metric{min-height:72px;padding:11px 12px;border:1px solid #e8edf3;border-radius:13px;background:#fbfcfe}.wb-bt-metric small{display:block;color:#78879a;font-size:11px}.wb-bt-metric b{display:block;margin-top:6px;font-size:18px;letter-spacing:-.02em}.wb-bt-ok{padding:11px 13px;border-radius:12px;background:#edf8f1;color:#1f7140;font-weight:800}.wb-bt-warning{padding:11px 13px;border-radius:12px;background:#fff7e5;color:#84631b;line-height:1.55}.wb-lab-note{margin-top:12px}.wb-lab-field input,.wb-lab-field select{min-height:42px;border:1px solid #dce5ee;border-radius:10px;background:#fff;padding:0 11px;font-size:14px}.wb-lab-field input:focus,.wb-lab-field select:focus{outline:0;border-color:#7d9dbc;box-shadow:0 0 0 3px rgba(79,120,166,.10)}.wb-lab-hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;padding:18px;border:1px solid rgba(39,76,119,.12);border-radius:18px;background:linear-gradient(135deg,#f7fbff,#fff);margin-bottom:14px}.wb-lab-kicker{font-size:11px;letter-spacing:.14em;color:#4f78a6;font-weight:800}.wb-lab-hero h3{margin:5px 0 5px;font-size:22px}.wb-lab-hero p{margin:0;color:#657487;line-height:1.6}.wb-lab-hero button{border:0;border-radius:10px;padding:9px 13px;background:#274c77;color:#fff;font-weight:700;white-space:nowrap}.wb-lab-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.wb-lab-card{background:#fff;border:1px solid #e7edf4;border-radius:16px;padding:16px;box-shadow:0 4px 18px rgba(25,55,90,.05)}.wb-lab-card h4{margin:0 0 9px;font-size:16px}.wb-lab-muted{color:#738197;font-size:13px;line-height:1.6}.wb-lab-factor{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #eef2f6}.wb-lab-factor:first-of-type{border-top:0}.wb-lab-factor b{min-width:74px}.wb-lab-weight{margin-left:auto;font-weight:800}.wb-lab-status{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;background:#eef3f8;color:#4b647d}.wb-lab-status.ready{background:#e9f7ef;color:#19733b}.wb-lab-status.wait{background:#fff6df;color:#8a6815}.wb-lab-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.wb-lab-metric{padding:10px;border-radius:12px;background:#f6f8fb}.wb-lab-metric small{display:block;color:#78879a}.wb-lab-metric b{display:block;margin-top:3px;font-size:17px}.wb-lab-compare{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.wb-lab-compare .wb-lab-card{min-height:120px}.wb-lab-note{padding:12px 14px;border-radius:12px;background:#f8fafc;color:#657487;line-height:1.65;font-size:13px}.wb-lab-table{width:100%;border-collapse:collapse;margin-top:10px}.wb-lab-table th,.wb-lab-table td{text-align:left;padding:9px 7px;border-bottom:1px solid #edf1f5;font-size:13px}.wb-lab-table th{color:#738197;font-weight:700} .wb-lab-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:12px}.wb-lab-strategy{border:1px solid #e2e9f1;background:#fff;border-radius:14px;padding:12px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:4px}.wb-lab-strategy.active{border-color:#4f78a6;box-shadow:0 0 0 2px rgba(79,120,166,.10)}.wb-lab-strategy b{font-size:14px}.wb-lab-strategy small{color:#738197;line-height:1.45}.wb-lab-strategy em{font-style:normal;font-size:10px;color:#4f78a6;font-weight:800}.wb-lab-picks{display:flex;flex-direction:column}.wb-lab-pick{display:grid;grid-template-columns:30px minmax(0,1fr) auto minmax(0,1fr) 16px;gap:8px;align-items:center;border:0;border-top:1px solid #edf1f5;background:#fff;padding:10px 0;text-align:left;cursor:pointer}.wb-lab-rank{font-weight:900;color:#58799a}.wb-lab-pick b{display:block}.wb-lab-pick small{display:block;color:#78879a;margin-top:2px}.wb-lab-pick strong{font-size:15px}.wb-lab-pick-tags{display:flex;gap:4px;flex-wrap:wrap}.wb-lab-chip{font-size:10px;background:#f1f5f9;border-radius:999px;padding:3px 6px;color:#50657a}.wb-lab-category-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.wb-lab-category{padding:11px;border-radius:12px;background:#f7f9fc}.wb-lab-category b{display:block;margin-bottom:4px}.wb-lab-category span{font-size:12px;color:#718096;line-height:1.55}.wb-lab-active .wb-tabs{display:none!important}.wb-lab-active .wb-tools,.wb-lab-active .wb-filter-panel,.wb-lab-active .wb-mobile-sort,.wb-lab-active .wb-meta,.wb-lab-active .wb-table,.wb-lab-active .wb-intro,.wb-lab-active .wb-pulse{display:none!important}.wb-lab-nav{grid-template-columns:repeat(4,minmax(0,1fr));}.wb-lab-strategy{min-height:92px}.wb-lab-strategy:disabled{opacity:.55;cursor:not-allowed} .wb-lab-section-head h4,#wb-lab-picks-title{color:#1f3348!important;font-weight:850!important}.wb-lab-strategy b{color:#1f3348!important}.wb-lab-strategy.active{background:#f5f9fd;border-color:#8fb4d8}.wb-lab-strategy.active b{color:#24547f!important}.wb-lab-strategy small{color:#6b7d91!important}.wb-lab-pick-main b{color:#1d3348!important}.wb-lab-pick-metric strong{color:#b44a4a!important}.wb-lab-empty b{color:#334b63}.wb-lab-card h4{color:#203449}.wb-lab-muted{color:#687b91}.wb-lab-factor b{color:#2a4057}.wb-lab-picks-card{padding:0;overflow:hidden}.wb-lab-section-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:16px 16px 12px;border-bottom:1px solid #e9eef4}.wb-lab-section-head h4{margin:0 0 5px}.wb-lab-count{white-space:nowrap;padding:5px 9px;border-radius:999px;background:#eef4fa;color:#456784;font-size:12px;font-weight:800}.wb-lab-picks{padding:0 14px}.wb-lab-pick{grid-template-columns:30px minmax(130px,1.2fr) minmax(90px,.65fr) minmax(150px,1.5fr) 18px;padding:13px 6px;gap:10px}.wb-lab-pick-main small,.wb-lab-pick-metric small{color:#66778c}.wb-lab-pick-main b{font-size:15px;color:#1f3348;font-weight:850}.wb-lab-pick-main{min-width:0}.wb-lab-pick-main b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick{color:#1f3348}.wb-lab-pick:hover{background:#f8fbfe}.wb-lab-pick:active{background:#eef5fb}.wb-lab-pick-metric{display:flex;flex-direction:column;align-items:flex-end}.wb-lab-pick-metric strong{font-size:16px}.wb-lab-pick-reason{font-size:12px;color:#657487;line-height:1.45}.wb-lab-empty{padding:22px 16px;text-align:center;color:#657487}.wb-lab-empty b,.wb-lab-empty small{display:block}.wb-lab-empty small{margin-top:5px}@media(max-width:700px){.wb-lab-nav{grid-template-columns:1fr 1fr}.wb-lab-pick{grid-template-columns:25px minmax(110px,1fr) auto 16px}.wb-lab-pick-reason{display:none}.wb-lab-pick-metric{align-items:flex-end}.wb-lab-section-head{display:block}.wb-lab-count{display:inline-flex;margin-top:8px}}@media(max-width:700px){.wb-lab-nav{grid-template-columns:1fr 1fr}.wb-lab-category-grid{grid-template-columns:1fr}.wb-lab-pick{grid-template-columns:26px minmax(0,1fr) auto 16px}.wb-lab-pick-tags{display:flex}.wb-lab-pick-main b{font-size:15px}.wb-lab-pick-main small{font-size:11px}.wb-lab-pick-reason-mobile{display:block;margin-top:4px;font-size:11px;line-height:1.35;color:#718096;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}@media(max-width:700px){.wb-lab-hero{display:block}.wb-lab-hero button{margin-top:12px}.wb-lab-grid,.wb-lab-compare{grid-template-columns:1fr}.wb-lab-metrics{grid-template-columns:repeat(2,1fr)}}
+.wb-lab-backtest{margin-top:12px}.wb-lab-field{display:block;margin-bottom:10px}.wb-lab-field>span{display:block;font-size:12px;font-weight:800;color:#526a82;margin-bottom:5px}.wb-lab-field input,.wb-lab-field select{width:100%;box-sizing:border-box;border:1px solid #dbe4ed;border-radius:10px;padding:9px 10px;background:#fff;color:#263b50;font-size:13px}.wb-bt-run{margin-top:12px;border:0;border-radius:12px;padding:11px 15px;background:#274c77;color:#fff;font-weight:800;cursor:pointer}.wb-bt-run:disabled{opacity:.6;cursor:wait}.wb-lab-bt-status{margin-top:9px;font-size:12px;color:#687b91}.wb-bt-result{margin-top:12px}.wb-bt-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.wb-bt-metric{padding:11px;border-radius:12px;background:#f6f8fb}.wb-bt-metric small{display:block;color:#78879a}.wb-bt-metric b{display:block;margin-top:3px;font-size:17px;color:#203449}.wb-bt-warning{padding:11px 13px;border-radius:12px;background:#fff7e6;color:#7b5d1c;font-size:12px;line-height:1.6}.wb-bt-ok{padding:11px 13px;border-radius:12px;background:#edf8f1;color:#216a3b;font-size:12px;line-height:1.6}@media(max-width:700px){.wb-bt-metrics{grid-template-columns:repeat(2,1fr)}}
 .wb-d-hero-chart-cta{margin-top:12px}.wb-d-hero-chart-cta button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;border:0;border-radius:14px;padding:14px 16px;background:#274f73;color:#fff;box-shadow:0 8px 20px rgba(39,79,115,.18);cursor:pointer;text-align:left}.wb-d-hero-chart-cta button:disabled{opacity:.7}.wb-d-hero-chart-cta button b{font-size:15px}.wb-d-hero-chart-cta button small{display:block;margin-top:3px;color:#d8e6f2;font-size:11px}.wb-d-hero-chart-cta button strong{font-size:22px}.wb-d-lazy-chart{margin-top:12px;padding:12px;border:1px solid #e6edf4;border-radius:14px;background:#fbfdff}.wb-d-lazy-chart button{border:1px solid #cbd9e6;background:#fff;color:#315b82;border-radius:10px;padding:9px 12px;font-weight:800;cursor:pointer}.wb-d-chart-status{margin-top:8px;color:#718096;font-size:12px}
 .wb-d-progress{padding:14px 15px;border:1px solid #dfe8f1;border-radius:14px;background:linear-gradient(180deg,#f9fbfd,#f3f7fb);margin-top:10px}.wb-d-progress-top{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:9px}.wb-d-progress-top b{font-size:13px;color:#2b4e73}.wb-d-progress-top strong{font-size:18px;color:#274c77}.wb-d-progress-track{height:9px;border-radius:99px;background:#e4ebf2;overflow:hidden}.wb-d-progress-bar{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,#6d95bb,#274c77);transition:width .35s ease}.wb-d-progress-note{display:block;margin-top:7px;font-size:11px;color:#7a8998}
 .wb-valuation-guide{margin-top:12px;padding:16px;border:1px solid #dfe8f1;border-radius:18px;background:linear-gradient(180deg,#fbfdff 0%,#f6f9fc 100%);box-shadow:0 6px 18px rgba(39,79,115,.06)}
@@ -28809,7 +28838,7 @@ def render_workbench_body(initial_tab=""):
 .wb-lab-pick{min-height:72px}.wb-lab-pick-main{min-width:0}.wb-lab-pick-main small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-metric-mobile,.wb-lab-pick-reason-mobile{display:none}.wb-d-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.wb-d-chip{display:inline-flex;padding:4px 8px;border-radius:999px;background:#eef4fa;color:#4f6f8e;font-size:11px;font-weight:700}@media(max-width:700px){.wb-lab-pick{display:grid;grid-template-columns:24px minmax(0,1fr) 18px;grid-template-areas:"rank main arrow";gap:8px;padding:13px 4px;min-height:88px}.wb-lab-rank{grid-area:rank}.wb-lab-pick-main{grid-area:main}.wb-lab-pick-metric,.wb-lab-pick-reason{display:none}.wb-lab-pick-metric-mobile{display:flex;align-items:baseline;gap:6px;margin-top:6px}.wb-lab-pick-metric-mobile strong{font-size:17px;color:#274c77}.wb-lab-pick-metric-mobile em{font-style:normal;font-size:11px;color:#7a899a}.wb-lab-pick-reason-mobile{display:block;margin-top:5px;font-size:11px;line-height:1.4;color:#657487;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wb-lab-pick-tags{margin-top:5px}.wb-lab-chip{font-size:9px}.wb-lab-arrow{grid-area:arrow;align-self:center;font-size:24px;color:#4f78a6}.wb-lab-section-head{padding:14px}.wb-lab-picks{padding:0 12px}}
 .wb-lab-strategy-title{display:block!important;color:#1f3348!important;font-size:16px!important;font-weight:850!important;line-height:1.35!important;margin:0 0 2px!important}.wb-lab-strategy.active{background:#274c77!important;border-color:#274c77!important;color:#fff!important;box-shadow:0 8px 18px rgba(39,76,119,.18)!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy.active *{color:inherit!important}.wb-lab-strategy.active .wb-lab-strategy-title{color:#fff!important}.wb-lab-strategy.active small{color:#e6f0f8!important}.wb-lab-strategy.active em{color:#c8dff1!important}.wb-lab-strategy:focus-visible{outline:3px solid rgba(79,120,166,.28);outline-offset:2px}.wb-lab-pick:focus-visible{outline:2px solid rgba(79,120,166,.35);outline-offset:-2px}
 .wb-d-factor-list{display:flex;flex-direction:column;gap:7px;margin-top:12px}.wb-d-factor-row{display:flex;justify-content:space-between;gap:12px;padding:9px 11px;border-radius:10px;background:#f6f9fc;border:1px solid #e8eef4;color:#4f6174}.wb-d-factor-row b{color:#274c77}.wb-d-score-note{font-size:12px;color:#718096;margin-top:10px}
-</style>
+@media(max-width:760px){.wb-lab-flow{grid-template-columns:1fr;gap:7px}.wb-lab-flow-arrow{transform:rotate(90deg);height:16px}.wb-lab-flow-card{min-height:0}.wb-lab-hero{display:block;padding:16px}.wb-lab-hero button{margin-top:12px;width:100%}.wb-lab-grid,.wb-lab-compare{grid-template-columns:1fr}.wb-bt-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.wb-lab-nav{grid-template-columns:1fr}.wb-lab-section-head{display:block}.wb-lab-count{display:inline-flex;margin-top:8px}.wb-lab-card{padding:14px}}</style>
 <p class="wb-disclaimer">選股台專注市場選股與訊號；個人持股請到「持股」頁查看完整組合分析。進入選股台先顯示黑馬快照；其他分頁點到哪裡才讀哪一份已保存快照／推薦紀錄，不因切換分頁重新掃描市場。資料缺漏維持待確認，不以推測數字補足。</p>
 </section>
 <aside class="wb-drawer" id="wb-drawer" aria-hidden="true"><div class="wb-drawer-actions"><button type="button" id="wb-back">‹ 回到選股清單</button><button type="button" id="wb-close" aria-label="關閉">×</button></div><div id="wb-detail"></div></aside><div class="wb-mask" id="wb-mask" hidden></div>
@@ -29101,7 +29130,7 @@ def render_workbench_body(initial_tab=""):
       if(key==='混合'){
         whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>條件有排名</span></div><p>'+esc(hitCount===4?'四個研究因子都有可用排名。':'目前有 '+hitCount+' / 4 個研究因子納入共識；未納入者不會被當成通過。')+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';if(!v&&key==='混合'&&x.factor_rank_map&&x.factor_rank_map[n]!=null)v='第'+x.factor_rank_map[n]+'名';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'已納入':'未納入'))+'</strong></div>';}).join('')+'</div>';
       }else{
-        whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(hitCount===4?'四項條件全部通過。':('共通過 '+hitCount+' / 4 項；只有標示「通過」的項目才算入選條件。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';if(!v&&n==='公司獲利能力'&&x.roe!=null)v=Number(x.roe).toFixed(2)+'%';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
+        whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(hitCount===4?'四項條件全部通過。':('共通過 '+hitCount+' / 4 項；只有標示「通過」的項目才算入選條件。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
       }
     }else{
       whyHtml='<div class="wb-d-why-summary single"><div><b>'+esc(metric)+'</b><span>'+esc(x.metric_label||'研究值')+'</span></div><p>'+esc(reason)+'</p></div>';
@@ -29118,9 +29147,8 @@ def render_workbench_body(initial_tab=""):
       heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="growth" data-code="'+esc(x.code)+'"><span><b>📈 查看成長動能圖表</b><small>每月 YoY、累計 YoY 與 MoM，加速度一眼看懂</small></span><strong>›</strong></button></div>';
     }
     if(key==='價格動能'){
-      // 股價趨勢只保留一個入口：上方主按鈕。下方不再重複放第二顆按鈕。
-      lazy='<div class="wb-d-lazy-chart wb-d-momentum-result"><div class="wb-d-chart-status">點開上方按鈕後載入近6個月日線價格。</div></div>';
-      heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="momentum" data-code="'+esc(x.code)+'"><span><b>📈 查看股價趨勢圖</b><small>近6個月日線＋區間報酬，一眼看出上升、盤整或走弱</small></span><strong>›</strong></button><div class="wb-d-chart-status">點開後載入日線價格，不影響研究室首屏。</div></div>';
+      lazy='<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="momentum" data-code="'+esc(x.code)+'">📈 查看近6個月股價趨勢圖</button><div class="wb-d-chart-status">點開後載入日線價格，不影響研究室首屏。</div></div>';
+      heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="momentum" data-code="'+esc(x.code)+'"><span><b>📈 查看股價趨勢圖</b><small>近6個月日線＋區間報酬，一眼看出上升、盤整或走弱</small></span><strong>›</strong></button></div>';
     }
     if(key==='籌碼'){
       // 籌碼超人圖表只放在「策略研究實驗室 → 籌碼」的個股詳細頁，並提供明確按鈕。
@@ -29138,8 +29166,6 @@ def render_workbench_body(initial_tab=""):
       var names=['公司獲利能力','股價趨勢','價格穩定度','營收成長'];
       function numMetric(label){
         var raw=detailsMap[label];
-        // 經典四項的 ROE 可能存在於後端 rec 的 roe 欄位，但舊快照 detail_metrics 沒有 ROE。
-        if(raw==null && label==='ROE' && x.roe!=null) raw=x.roe;
         if(raw==null) return null;
         var m=String(raw).replace(/,/g,'').match(/[+-]?\d+(?:\.\d+)?/);
         return m?Number(m[0]):null;
@@ -29201,16 +29227,25 @@ def render_workbench_body(initial_tab=""):
     bindLabPicks(document.getElementById('wb-lab-picks-view'),active);
     labBody.querySelectorAll('[data-lab-strategy]').forEach(function(b){b.addEventListener('click',function(){var k=b.dataset.labStrategy||'';if(!k||b.disabled)return;labBody.querySelectorAll('.wb-lab-strategy').forEach(function(x){x.classList.remove('active')});b.classList.add('active');active=k;var title=document.getElementById('wb-lab-picks-title'),view=document.getElementById('wb-lab-picks-view'),count=document.querySelector('.wb-lab-count');var item=library.find(function(x){return x.key===k})||{};if(title)title.textContent='今日研究候選 · '+labName(k);if(count)count.textContent=((strategyData[k]||[]).length||0)+' 檔';if(view){view.innerHTML=recHtml(k);bindLabPicks(view,k);}});});
   }
-  if(!document.getElementById('wb-lab-loading-live-css')){var ls=document.createElement('style');ls.id='wb-lab-loading-live-css';ls.textContent='.wb-lab-loading-live{min-height:118px;padding:18px 20px;border:1px solid #dfe8f1;border-radius:16px;background:linear-gradient(180deg,#fbfdff,#f4f8fb);color:#294d6c}.wb-lab-loading-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.wb-lab-loading-head b{font-size:15px}.wb-lab-loading-pct{font-size:20px;font-weight:900;color:#274c77;font-variant-numeric:tabular-nums}.wb-lab-loading-track{height:10px;margin-top:13px;border-radius:99px;background:#e4ebf2;overflow:hidden}.wb-lab-loading-bar{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,#6d95bb,#274c77);transition:width .35s ease}.wb-lab-loading-note{display:block;margin-top:8px;color:#7b8c9b;font-size:11px;line-height:1.45}.wb-lab-loading-dots{display:inline-block;margin-left:3px;font-weight:900;color:#2d628e}';document.head.appendChild(ls);}
-    function loadStrategyLab(force){
+  function loadStrategyLab(force){
     if(labLoaded&&!force)return;
-    var progressTimer=null,progress=8;
-    if(labBody)labBody.innerHTML='<div class="wb-lab-loading wb-lab-loading-live"><div class="wb-lab-loading-head"><b>正在載入策略研究資料</b><strong class="wb-lab-loading-pct">8%</strong></div><div class="wb-lab-loading-track"><div class="wb-lab-loading-bar"></div></div><small class="wb-lab-loading-note">正在讀取研究快照與策略候選資料<span class="wb-lab-loading-dots">.</span></small></div>';
-    var bar=labBody&&labBody.querySelector('.wb-lab-loading-bar'),pct=labBody&&labBody.querySelector('.wb-lab-loading-pct');
-    function setProgress(v){progress=Math.max(progress,Math.min(92,v));if(bar)bar.style.width=progress+'%';if(pct)pct.textContent=Math.round(progress)+'%';}
-    if(bar){bar.style.width='8%';progressTimer=setInterval(function(){if(progress<45)setProgress(progress+4);else if(progress<72)setProgress(progress+2);else if(progress<88)setProgress(progress+0.7);},280);}
-    fetch(api('/web/api/workbench/strategy-lab'+(force?'?refresh=1':'')),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');if(progressTimer)clearInterval(progressTimer);setProgress(100);setTimeout(function(){labLoaded=true;renderStrategyLab(data);},180);}).catch(function(e){if(progressTimer)clearInterval(progressTimer);if(labBody)labBody.innerHTML='<div class="wb-lab-note">策略研究資料暫時無法載入：'+esc(String(e.message||e))+'</div>';});
+    if(labBody)labBody.innerHTML='<div class="wb-lab-loading">正在一次載入全部策略研究資料…</div>';
+    fetch(api('/web/api/workbench/strategy-lab'+(force?'?refresh=1':'')),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');labLoaded=true;renderStrategyLab(data);}).catch(function(e){if(labBody)labBody.innerHTML='<div class="wb-lab-note">策略研究資料暫時無法載入：'+esc(String(e.message||e))+'</div>';});
   }
+  function btEsc(v){return esc(v==null?'—':v)}
+  function btPct(v){return v==null?'—':(Number(v)*100).toFixed(2)+'%'}
+  function runBacktest(){
+    var btn=document.getElementById('wb-bt-run'), status=document.getElementById('wb-bt-status'), result=document.getElementById('wb-bt-result');
+    if(!btn)return;
+    var payload={strategy:(document.getElementById('wb-bt-strategy')||{}).value||'blackhorse',start:(document.getElementById('wb-bt-start')||{}).value||'2018-01-01',end:(document.getElementById('wb-bt-end')||{}).value||'',resample:(document.getElementById('wb-bt-resample')||{}).value||'M',topn:Number((document.getElementById('wb-bt-topn')||{}).value||10),holdings:(document.getElementById('wb-bt-holdings')||{}).value||''};
+    btn.disabled=true; status.textContent='正在取得歷史資料並執行回測；2018 起的全市場資料可能需要一些時間。'; result.innerHTML='';
+    fetch(api('/web/api/workbench/backtest'),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){return r.json().then(function(x){if(!r.ok||!x.ok)throw new Error(x.error||('HTTP '+r.status));return x;});}).then(function(x){
+      var m=x.metrics||{};
+      result.innerHTML='<div class="wb-bt-ok">'+btEsc(x.note||'回測完成')+'</div><div style="height:10px"></div><div class="wb-bt-metrics">'+[['CAGR',btPct(m.cagr)],['Sharpe',m.sharpe==null?'—':Number(m.sharpe).toFixed(2)],['Sortino',m.sortino==null?'—':Number(m.sortino).toFixed(2)],['最大回撤',btPct(m.max_drawdown)],['勝率',btPct(m.win_ratio)],['交易筆數',m.trades==null?'—':m.trades],['開始',m.start],['結束',m.end]].map(function(a){return '<div class="wb-bt-metric"><small>'+btEsc(a[0])+'</small><b>'+btEsc(a[1])+'</b></div>';}).join('')+'</div>'+(x.warning?'<div style="height:10px"></div><div class="wb-bt-warning">'+btEsc(x.warning)+'</div>':'');
+    }).catch(function(e){result.innerHTML='<div class="wb-bt-warning">回測沒有完成：'+btEsc(e.message||e)+'</div>';}).finally(function(){btn.disabled=false;status.textContent='';});
+  }
+  document.addEventListener('click',function(e){if(e.target&&e.target.id==='wb-bt-run')runBacktest();});
+  var btEnd=document.getElementById('wb-bt-end'); if(btEnd&&!btEnd.value){btEnd.value=new Date().toISOString().slice(0,10);}
   function renderTabs(){var list=sources();if(list.indexOf(state.source)<0)state.source=list[0]||'';tabs.innerHTML=list.map(function(s){var loaded=!!state.loadedSources[s];var n=s==='成效'||s==='我的排行'?'':(loaded?' <small>'+state.rows.filter(function(r){return r.source===s}).length+'</small>':'');return '<button type="button" class="'+(state.source===s?'on':'')+'" data-source="'+esc(s)+'">'+esc(s)+n+'</button>'}).join('');}
   function filtered(){var q=state.query.trim().toLowerCase();return state.rows.filter(function(r){var etf=r.source==='ETF';return (state.source==='全部'||r.source===state.source)&&(!q||[r.code,r.name,r.industry].join(' ').toLowerCase().indexOf(q)>-1)&&(state.kind==='all'||(state.kind==='etf'?etf:!etf))&&(state.dir==='all'||(state.dir==='up'&&Number(r.change_pct)>0)||(state.dir==='down'&&Number(r.change_pct)<0));}).sort(function(a,b){var av=a[state.sort],bv=b[state.sort];av=av==null?-Infinity:Number(av);bv=bv==null?-Infinity:Number(bv);return state.desc?bv-av:av-bv;});}
   function reviewPct(v){return v==null?'待確認':(Number(v)>0?'+':'')+Number(v).toFixed(1)+'%';}
@@ -30866,9 +30901,9 @@ def _build_strategy_lab_payload():
         "recommendations":revenue_recs,
         "reference":{"cagr":"20.1%","sharpe":"1.46","mdd":"-24.8%","holdings":"25 檔"},
         "strategies":[
-            {"name":"我的五因子","status":"ready","status_label":"現行模型","description":"營收 25／估值 25／產業動能 20／法人 20／籌碼技術 10。","note":"維持正式 BOT，不因研究室加入而自動改權重。"},
+            {"name":"🐎 秉軒黑馬","status":"ready","status_label":"候選 V1","description":"營收動能＋三率改善＋EPS＋股價動能＋低波動；候選 V1。","note":"這是研究用候選模型，不會自動改掉目前正式 BOT 的權重。"},
             {"name":"經典四項選股","status":"ready","status_label":"可運作","description":"ROE＋價格動能＋低波＋月營收。","note":"已逐檔計算 4/4、3/4、2/4 通過數與加權研究分。"},
-            {"name":"FinLab＋黑馬＋雷達","status":"wait","status_label":"第二階段","description":"FinLab 先縮小股票池，再交給黑馬／雷達做行情篩選。","note":"先完成獨立因子回測，再比較混合效果。"}],
+            {"name":"⚡ 秉軒爆賺雷達","status":"ready","status_label":"候選 V1","description":"動能＋趨勢＋突破＋量價；先回測，不預設哪個指標一定有效。","note":"技術面候選模型，等待 2018+ 全市場回測與樣本外驗證。"},{"name":"FinLab＋黑馬＋雷達","status":"wait","status_label":"第二階段","description":"FinLab 先縮小股票池，再交給黑馬／雷達做行情篩選。","note":"先完成獨立因子回測，再比較混合效果。"}],
         "steps":[
             {"step":"01","text":"策略庫與單因子研究入口；一次載入全部可運作策略","status":"已完成","ready":True},
             {"step":"02","text":f"營收歷史資料：{int(revenue_count or 0):,} 筆，最新期 {revenue_period or '尚無'}；營收動能可運作","status":"可運作","ready":True},
@@ -30876,7 +30911,7 @@ def _build_strategy_lab_payload():
             {"step":"04","text":"ROE 歷史資料依財報公布日對齊，避免 lookahead bias","status":"待建置","ready":False},
             {"step":"05","text":"完整 FinLab 四因子與同一回測框架比較","status":"待建置","ready":False}],
         "data_meta":{"universe":len(codes),"revenue_count":int(revenue_count or 0),"inst_count":int(inst_count or 0),"inst_days":int(inst_days or 0)},
-        "disclaimer":"公開研究結果只作參考；本研究室的候選名單只使用 BOT 目前能驗證的資料。ROE 沒有真實資料時不會硬補數字。"
+        "disclaimer":"公開研究結果只作參考；「🐎 秉軒黑馬」與「⚡ 秉軒爆賺雷達」在完成回測與樣本外驗證前都標示為候選 V1，不會把候選結果當成已驗證的正式策略。"
     }
 
 
@@ -31036,6 +31071,93 @@ def web_workbench_strategy_detail(uid):
         except Exception: pass
         print(f"⚠️ 研究圖表按需資料失敗（{kind}/{code}）：{exc}")
         return _workbench_json_response({"ok":False,"error":"詳細圖表資料暫時無法取得。"},503)
+
+@app.route("/web/api/workbench/backtest", methods=["POST"])
+@web_login_required
+def web_workbench_backtest(uid):
+    """策略回測實驗室：可選官方候選策略或使用者自己的固定持股。
+    真正的 2018+ 全市場回測只在 Render 有 FINLAB_TOKEN / FINLAB_API_TOKEN 時執行；沒有憑證絕不回傳假績效。
+    """
+    try:
+        payload=request.get_json(silent=True) or {}
+        strategy=str(payload.get("strategy") or "blackhorse")
+        start=str(payload.get("start") or "2018-01-01")[:10]
+        end=str(payload.get("end") or datetime.now(TW_TZ).strftime("%Y-%m-%d"))[:10]
+        resample=str(payload.get("resample") or "M")
+        topn=max(1,min(50,int(payload.get("topn") or 10)))
+        holdings_text=str(payload.get("holdings") or "")
+        if resample not in {"M","Q","W"}:
+            return _workbench_json_response({"ok":False,"error":"再平衡只能選每週、每月或每季。"},400)
+        if start >= end:
+            return _workbench_json_response({"ok":False,"error":"回測開始日期必須早於結束日期。"},400)
+        if not (os.getenv("FINLAB_TOKEN") or os.getenv("FINLAB_API_TOKEN")):
+            return _workbench_json_response({"ok":False,"error":"Render 尚未設定 FINLAB_TOKEN / FINLAB_API_TOKEN；目前不會用假資料冒充 2018+ 回測。請先接上 FinLab 憑證。"},503)
+        if strategy not in {"blackhorse","hunter","holdings"}:
+            return _workbench_json_response({"ok":False,"error":"不支援的回測策略。"},400)
+        import finlab
+        from finlab import data as fl_data
+        from finlab.backtest import sim as fl_sim
+        old_truncate=getattr(finlab,"truncate_start",None)
+        try:
+            finlab.truncate_start=start
+            close=fl_data.get("price:收盤價")
+            close=close.loc[close.index <= end]
+            if close.empty:
+                return _workbench_json_response({"ok":False,"error":"指定期間沒有可用股價資料。"},404)
+            if strategy=="holdings":
+                import pandas as pd
+                weights={}
+                for part in holdings_text.split(","):
+                    if not part.strip() or ":" not in part: continue
+                    code,w=part.split(":",1)
+                    code=code.strip(); w=float(w.strip())/100.0
+                    if re.fullmatch(r"\d{4,6}",code) and w>0: weights[code]=w
+                if not weights:
+                    return _workbench_json_response({"ok":False,"error":"請輸入持股，例如 2330:30,2308:20,6442:20。"},400)
+                valid=[c for c in weights if c in close.columns]
+                if not valid:
+                    return _workbench_json_response({"ok":False,"error":"輸入的股票在指定期間沒有可用歷史價格。"},404)
+                total=sum(weights[c] for c in valid)
+                if total>1.0001:
+                    return _workbench_json_response({"ok":False,"error":"持股比例合計不能超過 100%。"},400)
+                position=pd.DataFrame(0.0,index=close.index,columns=valid)
+                for c in valid: position[c]=weights[c]
+                strategy_name="我的持股固定權重"
+            else:
+                rev_yoy=fl_data.get("monthly_revenue:去年同月增減(%)")
+                momentum60=close/close.shift(60)-1
+                momentum120=close/close.shift(120)-1
+                ma60=close.average(60)
+                volume=fl_data.get("price:成交股數")
+                if strategy=="hunter":
+                    breakout60=close>=close.rolling(60).max()
+                    vol_ratio=volume/volume.average(20)
+                    score=(momentum120.cs.rank(pct=True)*0.35 + momentum60.cs.rank(pct=True)*0.25 + ((close>ma60).astype(float)).cs.rank(pct=True)*0.15 + breakout60.astype(float).cs.rank(pct=True)*0.15 + vol_ratio.cs.rank(pct=True)*0.10)
+                    position=score.is_largest(topn)
+                    strategy_name="秉軒爆賺雷達 V1"
+                else:
+                    # 候選版：營收＋盈利改善＋動能＋低波；權重只是研究起點，尚未宣稱最優。
+                    eps=fl_data.get("financial_statement:每股盈餘")
+                    gm=fl_data.get("fundamental_features:營業毛利率")
+                    om=fl_data.get("fundamental_features:營業利益率")
+                    nm=fl_data.get("fundamental_features:稅後淨利率")
+                    vol=close.pct_change().rolling(120).std()
+                    eps_g=eps.pct_change(4)
+                    gm_imp=gm-gm.shift(4); om_imp=om-om.shift(4); nm_imp=nm-nm.shift(4)
+                    profit=(gm_imp.cs.rank(pct=True)*0.30 + om_imp.cs.rank(pct=True)*0.30 + nm_imp.cs.rank(pct=True)*0.20 + eps_g.cs.rank(pct=True)*0.20)
+                    score=(rev_yoy.cs.rank(pct=True)*0.25 + profit*0.25 + momentum120.cs.rank(pct=True)*0.20 + (-vol).cs.rank(pct=True)*0.15 + momentum60.cs.rank(pct=True)*0.15)
+                    position=score.is_largest(topn)
+                    strategy_name="秉軒黑馬 V1"
+            report=fl_sim(position.loc[start:end],resample=resample,position_limit=1.0/topn if strategy!="holdings" else 1.0,fee_ratio=0.001425,tax_ratio=0.003,name=strategy_name,upload=False)
+            stats=report.get_stats()
+            trades=report.get_trades()
+            metrics={"cagr":stats.get("daily_mean"),"sharpe":stats.get("daily_sharpe"),"sortino":stats.get("daily_sortino"),"max_drawdown":stats.get("max_drawdown"),"win_ratio":stats.get("win_ratio"),"trades":len(trades) if trades is not None else 0,"start":str(stats.get("start",start)),"end":str(stats.get("end",end))}
+            return _workbench_json_response({"ok":True,"metrics":metrics,"note":f"{strategy_name} 已用 FinLab 回測引擎完成；交易成本已計入。","warning":"這是候選 V1 回測，不代表已找到最優模型；正式命名與權重仍需樣本外／walk-forward 驗證。"})
+        finally:
+            finlab.truncate_start=old_truncate
+    except Exception as exc:
+        print(f"❌ 策略回測失敗（uid={uid}）：{exc}")
+        return _workbench_json_response({"ok":False,"error":f"回測執行失敗：{str(exc)[:220]}"},503)
 
 @app.route("/web/api/workbench/strategy-lab")
 @web_login_required
