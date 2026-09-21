@@ -30266,12 +30266,7 @@ def _fetch_strategy_roe_from_twse(codes=None):
         return y, 3
 
     code_alias=["公司代號","證券代號","股票代號","公司碼","SecuritiesCompanyCode","Code"]
-    # TWSE/TPEx 財報欄位名稱會依資料集略有差異；尤其「淨利歸屬於母公司業主」
-    # 與「歸屬於母公司業主之淨利」兩種寫法都會出現。這裡把兩邊都納入，
-    # 否則 API 明明有資料，研究室卻會整批顯示「找不到 ROE」。
     net_alias=[
-        "淨利歸屬於母公司業主（淨損）","淨利歸屬於母公司業主（損）",
-        "淨利歸屬於母公司業主","本期淨利歸屬於母公司業主",
         "歸屬於母公司業主之淨利（淨損）","歸屬於母公司業主之淨利（損）",
         "歸屬於母公司業主之淨利","歸屬母公司業主淨利","歸屬母公司業主之淨利",
         "母公司業主之淨利（損）","母公司業主之淨利",
@@ -30281,33 +30276,27 @@ def _fetch_strategy_roe_from_twse(codes=None):
         "ProfitAfterTax","NetIncome","NetProfit",
     ]
     eq_alias=[
-        "歸屬於母公司業主之權益合計","歸屬於母公司業主之權益",
-        "歸屬母公司業主之權益合計","歸屬母公司業主之權益",
-        "權益總額（歸屬於母公司業主）","權益總額歸屬於母公司業主",
+        "歸屬於母公司業主之權益","歸屬於母公司業主之權益合計",
+        "權益總額（歸屬於母公司業主）","歸屬母公司業主之權益",
         "歸屬母公司業主權益","股東權益總額","權益總額","股東權益","業主權益",
         "EquityAttributableToOwnersOfParent","TotalEquity","Equity",
     ]
 
     # 先抓 consolidated/ci；金融股若在 ci 快照缺欄位，再同批補一般財報端點。
     # 不用推測 ROE，仍必須由同期間的損益＋權益配對後計算。
-    # 財報依產業分成一般業／金融／金控／保險／證券期貨／異業。
-    # 只抓 _ci 會讓不少股票完全沒有 ROE，進而讓「經典四項」整批變成找不到。
-    endpoints=[]
-    twse_suffixes=[("ci","TWSE-ci"),("basi","TWSE-basi"),("fh","TWSE-fh"),("ins","TWSE-ins"),("bd","TWSE-bd"),("mim","TWSE-mim")]
-    tpex_suffixes=[("ci","TPEX-ci"),("basi","TPEX-basi"),("fh","TPEX-fh"),("ins","TPEX-ins"),("bd","TPEX-bd"),("mim","TPEX-mim")]
-    for suffix,label in twse_suffixes:
-        endpoints.append((f"{TWSE_BASE}/opendata/t187ap06_L_{suffix}","income",label))
-        endpoints.append((f"{TWSE_BASE}/opendata/t187ap07_L_{suffix}","equity",label))
-    for suffix,label in tpex_suffixes:
-        endpoints.append((f"{TPEX_BASE}/mopsfin_t187ap06_O_{suffix}","income",label))
-        endpoints.append((f"{TPEX_BASE}/mopsfin_t187ap07_O_{suffix}","equity",label))
-    # 興櫃也納入；研究宇宙若包含興櫃，不再因市場不同直接變成無資料。
-    for suffix,label in [("ci","TPEX-U-ci"),("basi","TPEX-U-basi"),("fh","TPEX-U-fh"),("ins","TPEX-U-ins"),("bd","TPEX-U-bd"),("mim","TPEX-U-mim")]:
-        endpoints.append((f"{TPEX_BASE}/mopsfin_t187ap06_U_{suffix}","income",label))
-        endpoints.append((f"{TPEX_BASE}/mopsfin_t187ap07_U_{suffix}","equity",label))
+    endpoints=[
+        (f"{TWSE_BASE}/opendata/t187ap06_L_ci","income","TWSE-ci"),
+        (f"{TWSE_BASE}/opendata/t187ap07_L_ci","equity","TWSE-ci"),
+        (f"{TPEX_BASE}/mopsfin_t187ap06_O_ci","income","TPEX-ci"),
+        (f"{TPEX_BASE}/mopsfin_t187ap07_O_ci","equity","TPEX-ci"),
+        (f"{TWSE_BASE}/opendata/t187ap06_L","income","TWSE"),
+        (f"{TWSE_BASE}/opendata/t187ap07_L","equity","TWSE"),
+        (f"{TPEX_BASE}/mopsfin_t187ap06_O","income","TPEX"),
+        (f"{TPEX_BASE}/mopsfin_t187ap07_O","equity","TPEX"),
+    ]
 
     try:
-        fetched=fetch_json_bulk([u for u,_,_ in endpoints], timeout=7, workers=12)
+        fetched=fetch_json_bulk([u for u,_,_ in endpoints], timeout=7, workers=4)
     except Exception as exc:
         print(f"⚠️ 財報 ROE 批次讀取失敗：{exc}")
         return {}
@@ -30376,7 +30365,7 @@ def _fetch_strategy_roe_from_twse(codes=None):
                 "data_scope":f"{imarket}/{emarket} 最新累計財報年化；ROE 無期間欄位時依最新公告季度推定年化",
             }
 
-    print(f"ℹ️ 策略研究室 ROE：{len(out)}/{len(wanted)} 檔可驗證；財報 API={len(endpoints)} 個並行，涵蓋一般業／金融／金控／保險／證券期貨／異業")
+    print(f"ℹ️ 策略研究室 ROE：{len(out)}/{len(wanted)} 檔可驗證；財報 API=8 個並行，含一般財報備援端點")
     return out
 
 def _build_strategy_lab_payload():
