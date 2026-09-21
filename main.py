@@ -17398,23 +17398,26 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 .bot-history-main b{display:block;color:#1B2027;font-size:12.5px}
 .bot-history-main small{color:#8E959D;font-size:10px}
 .bot-history-reason{color:#66788B;line-height:1.5}
+.bot-cash-row{display:grid;grid-template-columns:1fr 58px 72px;gap:3px 8px;align-items:center;padding:9px 0;border-top:1px solid #E5E9EE;margin-top:3px;color:#66788B;font-size:12px;line-height:1.25;min-height:30px}
+.bot-cash-name{font-weight:700;color:#4A5C70}.bot-cash-name small{margin-left:5px;color:#9AA3AD;font-size:10px;font-weight:400}
+.bot-cash-wt{text-align:right;font-size:12px;font-weight:800;color:#4A5C70;font-variant-numeric:tabular-nums}.bot-cash-note{text-align:right;font-size:10px;color:#8E959D;white-space:nowrap}
 .bot-history-timeline{position:relative;margin:6px 0 2px;padding-left:0}
 .bot-history-timeline:before{content:"";position:absolute;left:73px;top:12px;bottom:12px;width:2px;background:#E3E8EE}
-.bot-history-timeline-item{position:relative;display:grid;grid-template-columns:64px minmax(0,1fr);column-gap:18px;padding:0 0 12px;min-height:72px}
+.bot-history-timeline-item{position:relative;display:grid;grid-template-columns:64px minmax(0,1fr);column-gap:18px;padding:0 0 12px;min-height:72px;width:100%;box-sizing:border-box}
 .bot-history-dot{position:absolute;left:69px;top:12px;width:8px;height:8px;border-radius:50%;background:#8FA8C4;border:2px solid #FFF;box-shadow:0 0 0 1px #C9D1DA;z-index:2}
 .bot-history-left{grid-column:1;grid-row:1;min-width:0;text-align:right;padding-top:1px}
 .bot-history-date{font-size:10px;font-weight:800;color:#6B7785;letter-spacing:.01em;line-height:1.25;margin:0 0 5px;white-space:nowrap}
 .bot-history-pnl{display:block;font-size:16px;font-weight:900;line-height:1.1;letter-spacing:-.03em;font-variant-numeric:tabular-nums;white-space:nowrap}
 .bot-history-pnl.up{color:#D93025}.bot-history-pnl.down{color:#0B8F55}.bot-history-pnl.flat{color:#667085}
 .bot-history-left small{display:block;margin-top:4px;color:#8E959D;font-size:9.5px;line-height:1.25}
-.bot-history-content{grid-column:2;grid-row:1;min-width:0;padding:0 0 1px}
-.bot-history-row{display:flex!important;flex-direction:column;gap:3px;padding:0!important;border-top:0!important;align-items:flex-start!important;font-size:11px;color:#5D6C7C}
-.bot-history-main{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
-.bot-history-main b{display:inline!important;color:#1B2027;font-size:13px}
-.bot-history-main small{color:#8E959D;font-size:10px}
-.bot-history-price{color:#66788B;font-size:10.5px;font-variant-numeric:tabular-nums}
-.bot-history-hold{font-size:10.5px;color:#66788B}
-.bot-history-reason{display:inline-block;margin-top:2px;padding:3px 7px;border-radius:5px;background:#F4F6F8;color:#66788B;font-size:10px;line-height:1.35}
+.bot-history-content{grid-column:2;grid-row:1;min-width:0;width:100%;max-width:100%;padding:0 0 1px;overflow:hidden}
+.bot-history-row{display:flex!important;flex-direction:column;gap:3px;padding:0!important;border-top:0!important;align-items:flex-start!important;font-size:11px!important;line-height:1.3!important;color:#5D6C7C;min-width:0;width:100%}
+.bot-history-main{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;min-width:0;max-width:100%}
+.bot-history-main b{display:inline!important;color:#1B2027;font-size:13px!important;line-height:1.25!important;font-weight:700}
+.bot-history-main small{color:#8E959D;font-size:10px!important;line-height:1.2!important}
+.bot-history-price{color:#66788B;font-size:10.5px!important;line-height:1.3!important;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere}
+.bot-history-hold{font-size:10.5px!important;line-height:1.25!important;color:#66788B}
+.bot-history-reason{display:block!important;box-sizing:border-box;width:100%;max-width:100%;margin-top:2px;padding:3px 7px;border-radius:5px;background:#F4F6F8;color:#66788B;font-size:10px!important;line-height:1.35!important;white-space:normal;overflow-wrap:anywhere}
 .bot-history-reason.up{background:#FFF1F0;color:#B42318}.bot-history-reason.down{background:#EEF9F2;color:#087A4B}
 .bot-history-all{margin-top:8px;border-top:1px solid #E5E9EE;padding-top:8px}
 .bot-history-all>summary{cursor:pointer;list-style:none;color:#2776b8;font-size:11.5px;font-weight:800;padding:6px 0}
@@ -23150,6 +23153,16 @@ def web_leaderboard(uid):
                                    '<span>報酬</span><span></span></div>')
                 else:
                     bits.append('<div class="sub">目前沒有持倉（全部已到期賣出）。</div>')
+                # 不足 5 檔時，未配置的權重就是現金；直接列在持股清單底部，
+                # 不讓使用者只看到 4 檔股票卻不知道剩餘 20% 放在哪裡。
+                cash_pct = float(r.get("cash_pct") or 0.0)
+                if cash_pct > 0.05:
+                    bits.append(
+                        f'<div class="bot-cash-row">'
+                        f'<span class="bot-cash-name">現金 <small>未配置資金</small></span>'
+                        f'<span class="bot-cash-wt">{cash_pct:.1f}%</span>'
+                        f'<span class="bot-cash-note">保留現金</span>'
+                        f'</div>')
                 current_holdings_html = (f'<details class="rank-detail bot-hold-list" data-default-collapsed="1">'
                               f'<summary>查看機器人目前持股（{len(bh)} 檔）</summary>'
                               f'<div class="rank-detail-body"><div class="rank-detail-title">目前持股（{len(bh)} 檔）</div>{"".join(bits)}</div></details>')
