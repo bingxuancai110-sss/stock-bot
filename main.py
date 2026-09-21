@@ -25904,19 +25904,6 @@ def web_portfolio(uid):
                                    if code and code not in price_map)
     if missing_reduced_quotes:
         price_map.update(get_realtime_stocks_bulk(missing_reduced_quotes))
-
-    # 開盤前／行情源暫時無回價時，不讓首頁整張投資組合消失。
-    # 只使用最近一筆「已保存的正式組合快照」做總覽，絕不把它冒充成今日盤中價格。
-    portfolio_snapshot_fallback = None
-    if not price_map:
-        try:
-            snaps = get_portfolio_snapshots(uid, days=30)
-            if snaps:
-                portfolio_snapshot_fallback = snaps[-1]
-                print("ℹ️ 首頁行情暫無回價，沿用最近正式組合快照：%s" % portfolio_snapshot_fallback.get("date"))
-        except Exception as exc:
-            print("⚠️ 首頁組合快照 fallback 失敗：%s" % exc)
-
     price_done = time.monotonic()
     total_value, total_cost = 0.0, 0.0
     for p in positions:
@@ -25983,26 +25970,44 @@ def web_portfolio(uid):
     alerts = []
     top = max(holdings, key=lambda h: h["weight"]) if holdings else None
     if not holdings:
-        if portfolio_snapshot_fallback:
-            sv = portfolio_snapshot_fallback.get("value")
-            sc = portfolio_snapshot_fallback.get("cost")
-            sd = portfolio_snapshot_fallback.get("date")
-            try:
-                svf = float(sv) if sv is not None else None
-                scf = float(sc) if sc is not None else None
-            except (TypeError, ValueError):
-                svf, scf = None, None
-            ret = ((svf-scf)/scf*100.0) if svf is not None and scf else None
+        # 即時行情完全沒有回傳時，不應把整個首頁判成「沒有持股」。
+        # 只要資料庫仍有正式組合快照，就顯示最近一筆已確認的收盤資料；
+        # 明確標示資料日期，絕不把舊收盤價冒充成今天行情。
+        saved_snapshots = get_portfolio_snapshots(uid, days=120)
+        latest_saved = saved_snapshots[-1] if saved_snapshots else None
+        if latest_saved and latest_saved.get("value") is not None:
+            saved_value = float(latest_saved.get("value") or 0)
+            saved_cost = float(latest_saved.get("cost") or 0)
+            saved_pl = saved_value - saved_cost
+            saved_pl_pct = (saved_pl / saved_cost * 100) if saved_cost else None
+            saved_date = latest_saved.get("date")
+            saved_date_text = saved_date.strftime("%Y/%m/%d") if hasattr(saved_date, "strftime") else str(saved_date)
+            pl_text = (
+                f'{saved_pl:+,.0f}（{saved_pl_pct:+.2f}%）'
+                if saved_pl_pct is not None else f'{saved_pl:+,.0f}'
+            )
             body = risk_card + f"""
-<section class="portfolio-summary-card">
-  <div class="portfolio-summary-head"><div><span>💰 我的投資</span><small>最近正式收盤快照</small></div><a href="/web/portfolio">查看持股明細 →</a></div>
-  <div class="portfolio-summary-value"><small>組合市值</small><b>{svf:,.0f}</b><span>成本 {scf:,.0f}</span></div>
-  <div class="portfolio-summary-grid"><div><small>持有損益</small><b>{('+' if ret is not None and ret >= 0 else '') + (f'{ret:.2f}%' if ret is not None else '待確認')}</b></div><div><small>資料日期</small><b>{sd or '待確認'}</b></div></div>
-  <p class="portfolio-summary-note">今天尚未取得有效公開行情；以上沿用最近一筆正式收盤快照，不當作今日盤中價格。</p>
+<section class="daily-section">
+  <div class="daily-section-title">
+    <div><h2>💰 我的投資</h2><span>最近一筆正式收盤快照</span></div>
+    <a href="/web/positions">查看持股明細 →</a>
+  </div>
+  <div class="callout" style="padding:18px 16px">
+    <div style="font-size:28px;font-weight:800;letter-spacing:.2px">{saved_value:,.0f}</div>
+    <div style="margin-top:6px;color:var(--muted)">組合市值　資料日期 {saved_date_text}</div>
+    <div style="margin-top:12px;display:flex;gap:18px;flex-wrap:wrap">
+      <span>成本 <b>{saved_cost:,.0f}</b></span>
+      <span>未實現損益 <b>{pl_text}</b></span>
+    </div>
+    <div style="margin-top:14px;color:var(--muted);font-size:13px;line-height:1.65">
+      今日公開行情尚未取得有效價格，因此以上沿用最近一筆正式收盤快照。
+      <br>系統不會把舊價格冒充成今日行情；行情恢復後會自動更新。
+    </div>
+  </div>
 </section>
 """
-            return respond_page("今日", body, "portfolio")
-        body = risk_card + """
+        else:
+            body = risk_card + """
 <div class="empty-state">
   <div class="empty-state-icon">◌</div>
   <h2>目前無法取得持股行情</h2>
@@ -28605,48 +28610,6 @@ def render_workbench_body(initial_tab=""):
   };
   function labName(k){return LAB_DISPLAY[k]||k;}
   function labExplain(k){return LAB_EXPLAIN[k]||'';}
-  // 共用：策略研究與一般詳細頁都需要的延遲圖表 helper。
-    function drawLazyChart(host,data,kind){
-      if(!Array.isArray(data)||!data.length){host.innerHTML='<div class="wb-d-chart-status">目前沒有足夠的歷史資料可畫圖。</div>';return;}
-      if(kind==='revenue'){
-        // 營收圖不再用「兩根柱子」或只有兩個點的空洞折線。
-        // 核心只回答：每個月比去年同期成長多少；金額放在每月列內一起對照。
-        var rows=data.filter(function(d){return d.yoy!=null&&isFinite(Number(d.yoy));});
-        if(!rows.length){host.innerHTML='<div class="wb-d-chart-status">目前沒有足夠的營收 YoY 歷史資料可畫圖。</div>';return;}
-        var maxAbs=Math.max.apply(null,rows.map(function(d){return Math.abs(Number(d.yoy)||0);}).concat([1]));
-        var scale=Math.max(100,maxAbs);
-        function moneyShort(v){return v==null||!isFinite(Number(v))?'待確認':Number(v).toLocaleString('zh-TW',{maximumFractionDigits:0});}
-        var list=rows.map(function(d){
-          var yoy=Number(d.yoy)||0, width=Math.min(100,Math.abs(yoy)/scale*100), cls=yoy>=0?'pos':'neg';
-          var period=String(d.period||'').slice(0,7);
-          return '<div class="wb-d-rev-row"><div class="wb-d-rev-head"><b>'+esc(period)+'</b><strong class="'+cls+'">'+(yoy>=0?'+':'')+yoy.toFixed(1)+'%</strong></div>'
-            +'<div class="wb-d-rev-track"><i class="'+cls+'" style="width:'+width.toFixed(1)+'%"></i></div>'
-            +'<div class="wb-d-rev-amount"><span>今年 <b>'+moneyShort(d.current)+'</b></span><span>去年同期 <b>'+moneyShort(d.previous)+'</b></span></div></div>';
-        }).join('');
-        var latest=rows[rows.length-1],latestYoy=Number(latest.yoy)||0,avg=rows.reduce(function(a,d){return a+(Number(d.yoy)||0);},0)/rows.length;
-        var acceleration=null;
-        if(rows.length>=2){ acceleration=latestYoy-(Number(rows[rows.length-2].yoy)||0); }
-        var accelText=acceleration==null?'資料不足':((acceleration>=0?'+':'')+acceleration.toFixed(1)+' 個百分點');
-        host.innerHTML='<div class="wb-d-chart-title"><b>每月營收 YoY 成長</b><small>看「成長多少」之外，再看最新一個月相較前一期是加速還是減速。</small></div>'
-          +'<div class="wb-d-rev-chart">'+list+'</div>'
-          +'<div class="wb-d-chart-summary wb-d-revenue-latest"><div><small>最新月 YoY</small><b class="'+(latestYoy>=0?'wb-up':'wb-down')+'">'+(latestYoy>=0?'+':'')+latestYoy.toFixed(1)+'%</b></div>'
-          +'<div><small>資料期數</small><b>'+rows.length+' 期</b></div><div><small>期間平均 YoY</small><b class="'+(avg>=0?'wb-up':'wb-down')+'">'+(avg>=0?'+':'')+avg.toFixed(1)+'%</b></div></div>'
-          +'<div class="wb-d-chart-note">這裡不是拿營收金額高低畫柱子，而是直接看「年增率」。金額只用來驗證今年是否真的高於去年同期；若目前只保存 2 期，就只顯示 2 期，不補造資料。</div>';
-        return;
-      }
-      var w=720,h=300,p={l:38,r:18,t:24,b:34},vals=data.map(function(d){return Number(d.net)||0;});
-      var max=Math.max.apply(null,vals.concat([0])),min=Math.min.apply(null,vals.concat([0]));if(max===min){max+=1;min-=1;}
-      var plotW=w-p.l-p.r,plotH=h-p.t-p.b,xstep=plotW/Math.max(1,data.length),zeroY=p.t+plotH-(0-min)/(max-min)*plotH,barW=Math.max(5,Math.min(14,xstep*.42));
-      function iy(v){return p.t+plotH-(Number(v)-min)/(max-min)*plotH;}
-      var svg='<svg viewBox="0 0 '+w+' '+h+'" role="img" aria-label="近20日法人淨買超">';
-      [min,0,max].forEach(function(v){var yy=iy(v);svg+='<line x1="'+p.l+'" y1="'+yy+'" x2="'+(w-p.r)+'" y2="'+yy+'" stroke="'+(v===0?'#aebdca':'#e7edf2')+'" stroke-dasharray="'+(v===0?'4 4':'')+'"/>';});
-      data.forEach(function(d,i){var v=Number(d.net)||0,xx=p.l+i*xstep+xstep/2,yy=iy(v),top=Math.min(yy,zeroY),hh=Math.max(2,Math.abs(yy-zeroY));svg+='<rect x="'+(xx-barW/2)+'" y="'+top+'" width="'+barW+'" height="'+hh+'" rx="3" fill="'+(v>=0?'#4f78a6':'#a65a5a')+'"/>';});
-      svg+='</svg>';host.innerHTML='<div class="wb-d-chart-wrap wb-d-inst-chart">'+svg+'</div><div class="wb-d-chart-legend"><span><i></i>淨買超</span><span><i class="alt"></i>淨賣超</span></div><div class="wb-d-chart-note">正值為淨買超、負值為淨賣超；資料來自已保存法人歷史。</div>';
-    }
-    function bindLazyCharts(host){
-      host.querySelectorAll('[data-lazy-chart]').forEach(function(btn){btn.addEventListener('click',function(){var kind=btn.dataset.lazyChart,code=btn.dataset.code,box=btn.parentElement;btn.disabled=true;var st=box.querySelector('.wb-d-chart-status');if(st)st.textContent='正在載入歷史資料…';fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'force-cache'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(d){if(!d.ok)throw new Error(d.error||'載入失敗');drawLazyChart(box,d.data,kind);}).catch(function(e){btn.disabled=false;if(st)st.textContent='載入失敗：'+esc(String(e.message||e));});});});
-    }
-
   function renderStrategyLab(data){
     if(!labBody)return;
     var factors=data.factors||[], library=data.strategy_library||[], active=data.active_strategy||'營收動能';
@@ -28663,101 +28626,30 @@ def render_workbench_body(initial_tab=""):
         var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
         var metric='—';
         if(n!=null){
-          if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<=0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\/\s*4/);if(mm)hc=Number(mm[1]);} metric=hc+'/4';}
-          else{var digits=(key==='低波動'||key==='ROE品質')?2:1; metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');}
-        }
-        return '<button type="button" class="wb-lab-pick" data-lab-code="'+esc(x.code)+'" data-lab-key="'+esc(key)+'"><span class="wb-lab-rank">'+(i+1)+'</span><span class="wb-lab-pick-main"><b>'+esc(x.code)+'　'+esc(x.name)+'</b><small>'+esc(x.industry||'未分類')+'</small><span class="wb-lab-pick-metric-mobile"><strong>'+esc(metric)+'</strong><em>'+esc(x.metric_label||'研究值')+'</em></span><span class="wb-lab-pick-tags">'+chips+'</span><span class="wb-lab-pick-reason-mobile">'+esc(x.reason||'')+'</span></span><span class="wb-lab-pick-metric"><strong>'+esc(metric)+'</strong><small>'+esc(x.metric_label||'研究值')+'</small></span><span class="wb-lab-pick-reason">'+esc(x.reason||'')+'</span><span class="wb-lab-arrow">›</span></button>';
-      }).join('')+'</div>';
-    }
-    function bindLabPicks(view,key){
-      if(!view)return;
-      view.querySelectorAll('[data-lab-code]').forEach(function(btn){
-        btn.addEventListener('click',function(){
-          var code=btn.getAttribute('data-lab-code');
-          var rec=(strategyData[key]||[]).find(function(x){return String(x.code)===String(code)});
-          if(rec)showLabResearchDetail(rec,key);
-        });
-      });
-    }
-    function showLabResearchDetail(x,key){
-    var host=document.getElementById('wb-detail');
-    var dr=document.getElementById('wb-drawer');
-    var mk=document.getElementById('wb-mask');
-    if(!host||!dr)return;
-
-    var y=window.scrollY||window.pageYOffset||0;
-    state.returnScroll=y;
-    document.body.dataset.wbScroll=String(y);
-    document.body.style.position='fixed';
-    document.body.style.top=(-y)+'px';
-    document.body.style.left='0';
-    document.body.style.right='0';
-    document.body.style.width='100%';
-    dr.classList.add('open');
-    dr.setAttribute('aria-hidden','false');
-    if(mk)mk.hidden=false;
-    dr.scrollTop=0;
-    host.scrollTop=0;
-
-    var keyName=labName(key);
-    var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
-    var metric='—';
-    if(n!=null){
-      if(key==='混合'||key==='四因子複合'){
-        var hit=Number(x.hit_count);
-        if(!isFinite(hit)||hit<=0){
-          hit=Array.isArray(x.factor_names)?x.factor_names.length:0;
-          if(!hit&&x.factor_rank_map)hit=Object.keys(x.factor_rank_map).length;
-        }
-        metric=String(hit)+'/4';
-      }else{
-        var digits=(key==='低波動'||key==='ROE品質')?2:1;
-        metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');
-      }
-    }
-
-    var chips=Array.isArray(x.tags)?x.tags.map(function(t){
-      return '<span class="wb-d-chip">'+esc(t)+'</span>';
-    }).join(''):'';
-
-    var metrics=Array.isArray(x.detail_metrics)?x.detail_metrics:[];
-    var metricHtml=metrics.length?'<div class="wb-d-metric-grid">'+metrics.map(function(m){
-      return '<div class="wb-d-metric"><small>'+esc(m[0])+'</small><b>'+esc(m[1])+'</b></div>';
-    }).join('')+'</div>':'';
-
-    var factorHtml='';
-    var reason=x.reason||'目前沒有額外說明。';
-    var scope=x.data_scope||'本次研究批次計算結果。';
-    var scoreNote=(key==='混合'||key==='四因子複合') ? (x.score_explanation||'這個數字是研究排序用的分數，不是報酬率。') : '';
-    var whyHtml='';
-    if(key==='混合'){
-      var fmap=x.factor_rank_map||{};
-      var fn=Array.isArray(x.factor_names)?x.factor_names:Object.keys(fmap);
-      var hit=Number(x.hit_count);
-      if(!isFinite(hit)||hit<0)hit=fn.length;
-      hit=Math.max(0,hit);
-      var rankRows=fn.map(function(n){
-        var rank=fmap[n];
-        return '<div class="wb-d-why-row pass"><span class="wb-d-why-icon">✓</span><div><b>'+esc(n)+'</b><small>研究條件有有效排名</small></div><strong class="wb-d-why-pass">第 '+esc(rank==null?'—':rank)+' 名</strong></div>';
-      }).join('');
-      whyHtml='<div class="wb-d-why-summary"><div><b>'+hit+'/4</b><span>研究條件有排名</span></div><p>'+esc(hit===4?'四種研究條件都有有效排名；這裡不是 ROE 四因子判定。':'共有 '+hit+' / 4 種研究條件有有效排名。')+'</p></div><div class="wb-d-why-grid">'+(rankRows||'<div class="wb-d-note">目前沒有可顯示的研究條件。</div>')+'</div>';
-    }else if(key==='四因子複合'){
-      var fp=x.factor_pass||{}, fn=Array.isArray(x.factor_names)?x.factor_names:[], fm={"公司獲利能力":"ROE","股價趨勢":"120D／60D 報酬","價格穩定度":"波動率","營收成長":"累計營收 YoY"};
+          if(key==='混合'||key==='四因子複合'){
+      var fp=x.factor_pass||{}, fn=Array.isArray(x.factor_names)?x.factor_names:[], isClassic=(key==='四因子複合');
+      var fm=isClassic
+        ? {"公司獲利能力":"ROE","股價趨勢":"120D／60D 報酬","價格穩定度":"波動率","營收成長":"累計營收 YoY"}
+        : {"營收成長":"累計營收 YoY","股價趨勢":"120D／60D 報酬","價格穩定度":"波動率","估值條件":"PE／PB／殖利率"};
       var detailsMap={};(metrics||[]).forEach(function(m){detailsMap[String(m[0])]=m[1];});
-      var names=['公司獲利能力','股價趨勢','價格穩定度','營收成長'];
+      var names=isClassic?['公司獲利能力','股價趨勢','價格穩定度','營收成長']:['營收成長','股價趨勢','價格穩定度','估值條件'];
       function passFor(n){
         if(Object.prototype.hasOwnProperty.call(fp,n)) return !!fp[n];
         var item=fn.find(function(v){return String(v).indexOf(n)===0;});
-        if(item){var txt=String(item);if(/×|未通過|不符合|失敗/.test(txt))return false;return true;}
+        if(item) return !/×|未通過|不符合|失敗/.test(String(item));
+        if(key==='混合' && x.factor_rank_map) return Object.prototype.hasOwnProperty.call(x.factor_rank_map,n);
         return false;
       }
-      var hitCount=Number(x.hit_count);
-      if(!isFinite(hitCount)||hitCount<0)hitCount=names.filter(passFor).length;
-      hitCount=Math.max(0,Math.min(4,hitCount));
-      whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(hitCount===4?'四項條件全部通過。':('共通過 '+hitCount+' / 4 項；只有標示「通過」的項目才算入選條件。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
+      // 詳細頁的 4/4 必須由四個實際條件重新計數，不能盲信舊快照的 hit_count。
+      var hitCount=names.filter(passFor).length;
+      if(!Object.keys(fp).length && !fn.length && isFinite(Number(x.hit_count))) hitCount=Math.max(0,Math.min(4,Number(x.hit_count)));
+      var labelText=isClassic?'符合經典條件':'符合研究條件';
+      var allText=isClassic?'四項條件全部通過。':'四項研究條件全部有排名。';
+      whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>'+labelText+'</span></div><p>'+esc(hitCount===4?allText:('共 '+hitCount+' / 4 項通過／有排名；每一項都以實際資料判定。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
     }else{
       whyHtml='<div class="wb-d-why-summary single"><div><b>'+esc(metric)+'</b><span>'+esc(x.metric_label||'研究值')+'</span></div><p>'+esc(reason)+'</p></div>';
     }
+
     var lazy='';
     var heroChartCta='';
     if(key==='營收動能'||key==='成長'){
@@ -28774,26 +28666,25 @@ def render_workbench_body(initial_tab=""):
     var scoreNote=(key==='混合'||key==='四因子複合') ? (x.score_explanation||'這個數字是研究排序用的分數，不是報酬率。') : '';
     var whyHtml='';
     if(key==='混合'||key==='四因子複合'){
-      var fp=x.factor_pass||{}, fn=Array.isArray(x.factor_names)?x.factor_names:[], fm={"公司獲利能力":"ROE","股價趨勢":"120D／60D 報酬","價格穩定度":"波動率","營收成長":"累計營收 YoY"};
+      var fp=x.factor_pass||{}, fn=Array.isArray(x.factor_names)?x.factor_names:[], isClassic=(key==='四因子複合');
+      var fm=isClassic
+        ? {"公司獲利能力":"ROE","股價趨勢":"120D／60D 報酬","價格穩定度":"波動率","營收成長":"累計營收 YoY"}
+        : {"營收成長":"累計營收 YoY","股價趨勢":"120D／60D 報酬","價格穩定度":"波動率","估值條件":"PE／PB／殖利率"};
       var detailsMap={};(metrics||[]).forEach(function(m){detailsMap[String(m[0])]=m[1];});
-      var names=['公司獲利能力','股價趨勢','價格穩定度','營收成長'];
+      var names=isClassic?['公司獲利能力','股價趨勢','價格穩定度','營收成長']:['營收成長','股價趨勢','價格穩定度','估值條件'];
       function passFor(n){
         if(Object.prototype.hasOwnProperty.call(fp,n)) return !!fp[n];
         var item=fn.find(function(v){return String(v).indexOf(n)===0;});
-        if(item){
-          var txt=String(item);
-          if(/×|未通過|不符合|失敗/.test(txt)) return false;
-          // 舊快照的 factor_names 只保存命中的條件＋排名，沒有寫入「通過」。
-          // 命中條件本身就是通過條件，因此沿用它恢復舊快照狀態。
-          return true;
-        }
+        if(item) return !/×|未通過|不符合|失敗/.test(String(item));
+        if(key==='混合' && x.factor_rank_map) return Object.prototype.hasOwnProperty.call(x.factor_rank_map,n);
         return false;
       }
-      var hitCount=Number(x.hit_count);
-      if(!isFinite(hitCount)||hitCount<0){hitCount=names.filter(passFor).length;}
-      if(hitCount===0){var mm=String(reason||'').match(/(\d+)\s*\/\s*4/);if(mm)hitCount=Number(mm[1]);}
-      hitCount=Math.max(0,Math.min(4,hitCount));
-      whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(hitCount===4?'四項條件全部通過。':('共通過 '+hitCount+' / 4 項；只有標示「通過」的項目才算入選條件。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
+      // 詳細頁的 4/4 必須由四個實際條件重新計數，不能盲信舊快照的 hit_count。
+      var hitCount=names.filter(passFor).length;
+      if(!Object.keys(fp).length && !fn.length && isFinite(Number(x.hit_count))) hitCount=Math.max(0,Math.min(4,Number(x.hit_count)));
+      var labelText=isClassic?'符合經典條件':'符合研究條件';
+      var allText=isClassic?'四項條件全部通過。':'四項研究條件全部有排名。';
+      whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>'+labelText+'</span></div><p>'+esc(hitCount===4?allText:('共 '+hitCount+' / 4 項通過／有排名；每一項都以實際資料判定。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
     }else{
       whyHtml='<div class="wb-d-why-summary single"><div><b>'+esc(metric)+'</b><span>'+esc(x.metric_label||'研究值')+'</span></div><p>'+esc(reason)+'</p></div>';
     }
@@ -28813,7 +28704,7 @@ def render_workbench_body(initial_tab=""):
       +metricHtml+factorHtml+(scoreNote?'<p class="wb-d-note wb-d-score-note">'+esc(scoreNote)+'</p>':'')+lazy
       +'<div class="wb-d-tags">'+chips+'</div></section>'
       +'<section class="wb-d-section"><div class="wb-d-section-head"><h4>③ 資料與判讀方式</h4><small>這一區告訴你資料從哪裡來</small></div>'
-      +'<p class="wb-d-note">'+esc(scope)+'</p><div class="wb-d-data-note"><b>怎麼看</b><span>'+esc(key==='營收動能'?'看月營收是否持續成長，並直接對照去年同期與 YoY。':key==='籌碼'?'看法人近20日買賣方向，不把單日爆買直接當成趨勢。':key==='混合'?'把營收、股價趨勢、穩定度、估值等研究排名放在一起看；不是 ROE 四因子判定。':key==='四因子複合'?'4 個條件分開判定，最後再合併成研究分。':'先看研究值，再看下方細項，不用只看一個總分。')+'</span></div></section>'
+      +'<p class="wb-d-note">'+esc(scope)+'</p><div class="wb-d-data-note"><b>怎麼看</b><span>'+esc(key==='營收動能'?'看月營收是否持續成長，並直接對照去年同期與 YoY。':key==='籌碼'?'看法人近20日買賣方向，不把單日爆買直接當成趨勢。':key==='四因子複合'?'4 個條件分開判定，最後再合併成研究分。':'先看研究值，再看下方細項，不用只看一個總分。')+'</span></div></section>'
       +'</div>';
 
     bindLazyCharts(host);
@@ -30275,31 +30166,19 @@ def _build_strategy_lab_payload():
             yv=None
         if mv is not None and not (-100.0 < mv <= 1000.0):
             mv=None
-        prev=float(r.get("prev_yoy")) if r.get("prev_yoy") is not None else None
-        accel_pp=(yv-prev) if (yv is not None and prev is not None and abs(prev) <= 1500.0) else None
-        # 成長性排序看「速度變化」，但極端 YoY 不讓單月低基期把排序炸掉。
-        accel_for_score=max(-200.0,min(200.0,accel_pp)) if accel_pp is not None else None
-        base_component=max(-100.0,min(100.0,cyv))
-        mom_component=max(-100.0,min(100.0,mv)) if mv is not None else 0.0
-        rank_score=(accel_for_score*0.6 if accel_for_score is not None else 0.0) + base_component*0.3 + mom_component*0.1
-        growth_items.append((c,rank_score))
+        accel=(yv if yv is not None else cyv)*0.6 + cyv*0.4 + (mv if mv is not None else 0)*0.2
+        growth_items.append((c,accel))
     growth_items.sort(key=lambda x:x[1],reverse=True)
     growth_recs=[]
     for i,(c,v) in enumerate(growth_items[:25],1):
         r=rev_map[c]
         yraw=float(r["yoy"]) if r.get("yoy") is not None else None
         mraw=float(r["mom"]) if r.get("mom") is not None else None
-        base_warning = bool(yraw is not None and abs(yraw) > 1000.0)
-        if base_warning:
-            growth_reason=f"累計YoY {float(r['cum_yoy']):+.1f}%；當月YoY {yraw:+.1f}%，單月數字極端，需留意低基期效應；排序仍以累計成長與動能為主"
+        if yraw is not None and not (-100.0 < yraw <= 1500.0):
+            growth_reason=f"累計YoY {float(r['cum_yoy']):+.1f}%；當月YoY {yraw:+.1f}% 屬極端基期，未納入成長性排序"
         else:
             growth_reason=f"累計YoY {float(r['cum_yoy']):+.1f}%、當月YoY {yraw:+.1f}%" if yraw is not None else f"累計YoY {float(r['cum_yoy']):+.1f}%"
-        prev_yoy=float(r.get("prev_yoy")) if r.get("prev_yoy") is not None else None
-        accel_display=(yraw-prev_yoy) if (yraw is not None and prev_yoy is not None and abs(prev_yoy)<=1500.0) else None
-        display_value=accel_display if accel_display is not None else float(r["cum_yoy"])
-        display_label="YoY 加速度" if accel_display is not None else "累計成長基準"
-        growth_tags=["看速度變化","看累計成長","看加速度"] + (["⚠️ 低基期警示"] if base_warning else [])
-        growth_recs.append(make_rec(c,r["name"],r["industry"],display_value,display_label,growth_tags,growth_reason,extra={"rank":i,"detail_metrics":[("累計營收YoY",f"{float(r['cum_yoy']):+.1f}%"),("當月營收YoY",f"{yraw:+.1f}%" if yraw is not None else "待確認"),("前期當月YoY",f"{prev_yoy:+.1f}%" if prev_yoy is not None else "待確認"),("YoY加速度",f"{accel_display:+.1f} 個百分點" if accel_display is not None else "待確認"),("月增率MoM",f"{mraw:+.1f}%" if mraw is not None else "待確認"),("研究口徑","極端基期 YoY 只做警示，不直接主導排序")]}) )
+        growth_recs.append(make_rec(c,r["name"],r["industry"],v,"成長速度／加速度",["累計成長","當月速度","加速度"],growth_reason,extra={"rank":i,"detail_metrics":[("累計營收YoY",f"{float(r['cum_yoy']):+.1f}%"),("當月營收YoY",f"{yraw:+.1f}%" if yraw is not None else "待確認"),("月增率MoM",f"{mraw:+.1f}%" if mraw is not None else "待確認"),("研究口徑","極端基期 YoY 不直接主導排序")]}))
 
     # 7. 混合：目前先做可驗證的四路交集分數，不冒充完整 FinLab。
     maps={}
