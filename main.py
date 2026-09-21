@@ -5073,17 +5073,25 @@ def _build_home_intraday_payload(uid):
             float((price_map.get(str(position.get("code") or "").strip()) or {}).get("close") or 0) *
             int(position.get("shares") or 0)
             for position in positions)
+        # 每檔持股獨立維持最後一筆有效報價：本輪有新 MIS 報價就更新，
+        # 沒回來的就沿用同日上一筆。不能因為單一檔缺資料，就把整個組合暫停。
         holdings = []
+        stale_codes = []
         for position in positions:
             code = str(position.get("code") or "").strip()
+            if not code:
+                continue
             quote_data = price_map.get(code)
-            if not code or not isinstance(quote_data, dict):
+            if not isinstance(quote_data, dict):
+                stale_codes.append(code)
                 continue
             try:
                 close = float(quote_data.get("close"))
             except (TypeError, ValueError):
+                stale_codes.append(code)
                 continue
             if close <= 0:
+                stale_codes.append(code)
                 continue
             shares = int(position.get("shares") or 0)
             holdings.append({
@@ -5095,7 +5103,7 @@ def _build_home_intraday_payload(uid):
             })
         if not holdings:
             return {"ok": False, "market_open": True, "updates": [],
-                    "note": "盤中持股行情暫時無法更新；保留頁面最後有效資料。"}
+                    "note": "目前還沒有任何一檔持股取得有效報價；保留頁面最後有效資料。"}
 
         exposure_rows = _build_daily_pretrade_exposure(holdings, price_map, today_logs)
         realized_by_code = (_today_realized_by_code(get_realized_trades(uid, 100))
@@ -5132,10 +5140,9 @@ def _build_home_intraday_payload(uid):
             })
         portfolio_pct = (sum(item["contribution"] for item in contribution_rows)
                          if contribution_rows else None)
-        # 這裡曾經加過「只列今日報價」的過濾，已移除——理由同首頁：
-        # updated_at 只有官方 MIS 來源才有，走 Yahoo 的會被整批誤判成
-        # 非今日而排除，清單反而更空、跳得更嚴重。
-        stale_names = []
+        # 只有「今天從未拿到過有效報價」才標 stale。
+        # 已經存在於 sticky cache 的股票，即使本輪 MIS 沒回，也仍用上一筆有效價格計算。
+        stale_names = [stock_display_name(code, {}, None) for code in stale_codes]
         positive = sorted((item for item in contribution_rows if item["contribution"] > 0),
                           key=lambda item: item["contribution"], reverse=True)[:5]
         negative = sorted((item for item in contribution_rows if item["contribution"] < 0),
@@ -5158,7 +5165,7 @@ def _build_home_intraday_payload(uid):
                     "stale_names": stale_names[:6],
                     "stale_count": len(stale_names)},
             "note": ("首頁盤中行情已局部更新；大盤採 TWSE MIS 當日即時指數，"
-                     "組合與正負貢獻採最新持股行情，不重整操作日報。"),
+                     "每檔持股有新報價就更新，沒回來的沿用上一筆有效價格，不重整操作日報。"),
         }
     except Exception as exc:
         print(f"⚠️ 首頁盤中行情更新失敗（uid={uid}）：{exc}")
@@ -28634,36 +28641,30 @@ def render_workbench_body(initial_tab=""):
     function drawLazyChart(host,data,kind){
       if(!Array.isArray(data)||!data.length){host.innerHTML='<div class="wb-d-chart-status">目前沒有足夠的歷史資料可畫圖。</div>';return;}
       if(kind==='revenue'){
-        var w=720,h=330,p={l:62,r:18,t:30,b:52};
-        var cur=data.map(function(d){return d.current==null?null:Number(d.current);});
-        var prev=data.map(function(d){return d.previous==null?null:Number(d.previous);});
-        var all=cur.concat(prev).filter(function(v){return v!=null&&isFinite(v);});
-        if(!all.length){host.innerHTML='<div class="wb-d-chart-status">目前沒有足夠的營收歷史資料可畫圖。</div>';return;}
-        var maxV=Math.max.apply(null,all),minV=Math.min.apply(null,all);if(maxV===minV){maxV+=1;minV=Math.max(0,minV-1);}
-        var range=maxV-minV;minV=Math.max(0,minV-range*.10);maxV+=range*.10;
-        var plotW=w-p.l-p.r,plotH=h-p.t-p.b,step=plotW/Math.max(1,data.length-1);
+        /* 營收圖改成「每月 YoY 長條」：直接回答成長是正是負、幅度多大，避免實際金額尺度把趨勢壓扁。 */
+        var w=720,h=330,p={l:52,r:18,t:28,b:48};
+        var vals=data.map(function(d){return d.yoy==null?null:Number(d.yoy);}).filter(function(v){return v!=null&&isFinite(v);});
+        if(!vals.length){host.innerHTML='<div class="wb-d-chart-status">目前沒有足夠的營收 YoY 歷史資料可畫圖。</div>';return;}
+        var maxV=Math.max.apply(null,vals.concat([0])),minV=Math.min.apply(null,vals.concat([0]));
+        if(maxV===minV){maxV+=10;minV-=10;}
+        var pad=Math.max(5,(maxV-minV)*.12);maxV+=pad;minV-=pad;
+        var plotW=w-p.l-p.r,plotH=h-p.t-p.b,step=plotW/Math.max(1,data.length);
         function ry(v){return p.t+plotH-(Number(v)-minV)/(maxV-minV)*plotH;}
-        function moneyTick(v){
-          var n=Number(v);if(n>=100000000)return (n/100000000).toFixed(1)+'億';
-          if(n>=10000)return (n/10000).toFixed(0)+'萬';
-          return Math.round(n).toLocaleString('zh-TW');
-        }
-        var ticks=[maxV,(maxV+minV)/2,minV],svg='<svg viewBox="0 0 '+w+' '+h+'" role="img" aria-label="近12個月今年與去年同期營收趨勢">';
-        ticks.forEach(function(v){var yy=ry(v);svg+='<line x1="'+p.l+'" y1="'+yy+'" x2="'+(w-p.r)+'" y2="'+yy+'" stroke="#e5ebf0"/><text x="'+(p.l-10)+'" y="'+(yy+4)+'" text-anchor="end" font-size="10" fill="#7d8c9a">'+moneyTick(v)+'</text>';});
-        function line(vals,stroke,dash){var pts=[];vals.forEach(function(v,i){if(v==null||!isFinite(v))return;var x=p.l+(data.length<=1?0:i*step);pts.push(x+','+ry(v));});return pts.length>1?'<polyline points="'+pts.join(' ')+'" fill="none" stroke="'+stroke+'" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" '+(dash?'stroke-dasharray="7 5"':'')+'/>':'';}
-        svg+=line(cur,'#4f78a6',false)+line(prev,'#a8b7c7',true);
+        var zero=ry(0),svg='<svg viewBox="0 0 '+w+' '+h+'" role="img" aria-label="每月營收年增率 YoY">';
+        [maxV,0,minV].forEach(function(v){var yy=ry(v);svg+='<line x1="'+p.l+'" y1="'+yy+'" x2="'+(w-p.r)+'" y2="'+yy+'" stroke="'+(v===0?'#9fb0bf':'#e6edf2')+'" '+(v===0?'stroke-dasharray="4 4"':'')+'/><text x="'+(p.l-9)+'" y="'+(yy+4)+'" text-anchor="end" font-size="10" fill="#8291a0">'+(v>=0?'+':'')+Number(v).toFixed(0)+'%</text>';});
         data.forEach(function(d,i){
-          var x=p.l+(data.length<=1?0:i*step),cv=cur[i],pv=prev[i];
-          if(cv!=null&&isFinite(cv)) svg+='<circle cx="'+x+'" cy="'+ry(cv)+'" r="4.5" fill="#4f78a6"/>';
-          if(pv!=null&&isFinite(pv)) svg+='<circle cx="'+x+'" cy="'+ry(pv)+'" r="3.5" fill="#a8b7c7"/>';
-          var yoy=d.yoy==null?null:Number(d.yoy);
-          if(yoy!=null&&isFinite(yoy)&&cv!=null) svg+='<text x="'+x+'" y="'+Math.max(17,ry(cv)-10)+'" text-anchor="middle" font-size="10" font-weight="800" fill="#315b82">'+(yoy>=0?'+':'')+yoy.toFixed(0)+'%</text>';
+          var v=d.yoy==null?null:Number(d.yoy),x=p.l+i*step+step/2;
+          if(v!=null&&isFinite(v)){
+            var yy=ry(v),top=Math.min(yy,zero),hh=Math.max(3,Math.abs(yy-zero));
+            svg+='<rect x="'+(x-Math.min(15,step*.28))+'" y="'+top+'" width="'+Math.min(30,step*.56)+'" height="'+hh+'" rx="5" fill="'+(v>=0?'#4f78a6':'#a65a5a')+'"/>';
+            svg+='<text x="'+x+'" y="'+(v>=0?Math.max(16,top-8):Math.min(h-30,top+hh+16))+'" text-anchor="middle" font-size="10" font-weight="800" fill="'+(v>=0?'#315b82':'#8d4b4b')+'">'+(v>=0?'+':'')+v.toFixed(0)+'%</text>';
+          }
           if(i===0||i===data.length-1||i%2===0) svg+='<text x="'+x+'" y="'+(h-17)+'" text-anchor="middle" font-size="10" fill="#74879a">'+esc(String(d.period||'').slice(0,7))+'</text>';
         });
         svg+='</svg>';
         var latest=data[data.length-1]||{},fmt=function(v){return v==null||!isFinite(Number(v))?'待確認':Number(v).toLocaleString('zh-TW',{maximumFractionDigits:0});};
         var yoyText=latest.yoy==null?'待確認':(Number(latest.yoy)>=0?'+':'')+Number(latest.yoy).toFixed(1)+'%';
-        host.innerHTML='<div class="wb-d-chart-title"><b>營收趨勢：今年 vs 去年同期</b><small>用兩條線看實際營收走勢；藍線＝今年、灰虛線＝去年同期，最新點再標 YoY。</small></div><div class="wb-d-chart-wrap wb-d-revenue-chart">'+svg+'</div><div class="wb-d-chart-legend"><span><i></i>今年營收</span><span><i class="alt"></i>去年同期</span></div><div class="wb-d-chart-summary wb-d-revenue-latest"><div><small>最新月 YoY</small><b>'+yoyText+'</b></div><div><small>今年最新月</small><b>'+fmt(latest.current)+'</b></div><div><small>去年同期</small><b>'+fmt(latest.previous)+'</b></div></div><div class="wb-d-chart-note">先看兩條線的距離與方向，再看最新 YoY；這比單純把百分比畫成高柱更容易判斷成長是否持續。</div>';
+        host.innerHTML='<div class="wb-d-chart-title"><b>每月營收成長 YoY</b><small>每根柱子就是一個月的年增率；0% 以上代表比去年同期增加，低於 0% 代表衰退。柱上直接標出 YoY。</small></div><div class="wb-d-chart-wrap wb-d-revenue-chart">'+svg+'</div><div class="wb-d-chart-legend"><span><i></i>營收年增</span><span><i class="alt"></i>0% 基準線</span></div><div class="wb-d-chart-summary wb-d-revenue-latest"><div><small>最新月 YoY</small><b>'+yoyText+'</b></div><div><small>今年最新月營收</small><b>'+fmt(latest.current)+'</b></div><div><small>去年同期</small><b>'+fmt(latest.previous)+'</b></div></div><div class="wb-d-chart-note">先看柱子的方向與高度，再看最新月實際營收；這張圖不讓「營收金額很大」把 YoY 趨勢壓扁。</div>';
         return;
       }
       if(kind==='growth'){
@@ -28777,10 +28778,9 @@ def render_workbench_body(initial_tab=""):
       heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="growth" data-code="'+esc(x.code)+'"><span><b>📈 查看成長動能圖表</b><small>每月 YoY、累計 YoY 與 MoM，加速度一眼看懂</small></span><strong>›</strong></button></div>';
     }
     if(key==='籌碼'){
-      // 籌碼超人圖表只放在「策略研究實驗室 → 籌碼」的個股詳細頁。
-      // 開啟個股後直接載入近20日三大法人，不再把圖表放到外部籌碼超人頁。
-      lazy='<div class="wb-d-lazy-chart wb-d-inst-lab-chart" data-auto-inst-chart="'+esc(x.code)+'"><div class="wb-d-chart-status">正在載入近20日法人籌碼圖…</div></div>';
-      heroChartCta='';
+      // 籌碼超人圖表只放在「策略研究實驗室 → 籌碼」的個股詳細頁，並提供明確按鈕。
+      lazy='<div class="wb-d-lazy-chart wb-d-inst-lab-chart"><button type="button" data-lazy-chart="institutional" data-code="'+esc(x.code)+'">📊 查看近20日法人籌碼圖</button><div class="wb-d-chart-status">點開後載入外資、投信、自營商近20日買賣超。</div></div>';
+      heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="institutional" data-code="'+esc(x.code)+'"><span><b>📊 查看近20日法人圖表</b><small>外資、投信、自營商分開看，0 軸以上為買超</small></span><strong>›</strong></button></div>';
     }
 
     var reason=x.reason||'目前沒有額外說明。';
@@ -28791,15 +28791,32 @@ def render_workbench_body(initial_tab=""):
       var fp=x.factor_pass||{}, fn=Array.isArray(x.factor_names)?x.factor_names:[], fm={"公司獲利能力":"ROE","股價趨勢":"120D／60D 報酬","價格穩定度":"波動率","營收成長":"累計營收 YoY"};
       var detailsMap={};(metrics||[]).forEach(function(m){detailsMap[String(m[0])]=m[1];});
       var names=['公司獲利能力','股價趨勢','價格穩定度','營收成長'];
+      function numMetric(label){
+        var raw=detailsMap[label];
+        if(raw==null) return null;
+        var m=String(raw).replace(/,/g,'').match(/[+-]?\d+(?:\.\d+)?/);
+        return m?Number(m[0]):null;
+      }
       function passFor(n){
+        // 綜合條件的顯示直接以後端實際門檻重算一次，避免舊快照的 factor_pass
+        // 與 hit_count 不一致，造成「4/4 但 ROE 顯示未通過」。
+        if(key==='四因子複合'){
+          if(n==='公司獲利能力'){var roe=numMetric('ROE');if(roe!=null)return roe>=15;}
+          if(n==='股價趨勢'){var tr=numMetric('120D報酬');if(tr==null)tr=numMetric('60D報酬');if(tr!=null)return tr>0;}
+          if(n==='價格穩定度'){var vol=numMetric('波動率'),med=numMetric('全體波動中位數');if(vol!=null&&med!=null)return vol<=med;}
+          if(n==='營收成長'){var rev=numMetric('累計營收YoY');if(rev!=null)return rev>=10;}
+        }
         if(Object.prototype.hasOwnProperty.call(fp,n)) return !!fp[n];
         var item=fn.find(function(v){return String(v).indexOf(n)===0;});
         if(item) return /✓|通過/.test(String(item));
         return false;
       }
-      var hitCount=Number(x.hit_count);
-      if(!isFinite(hitCount)||hitCount<0){hitCount=names.filter(passFor).length;}
-      if(hitCount===0){var mm=String(reason||'').match(/(\d+)\s*\/\s*4/);if(mm)hitCount=Number(mm[1]);}
+      var derivedHit=names.filter(passFor).length;
+      var hitCount=derivedHit;
+      if(derivedHit===0){
+        hitCount=Number(x.hit_count);
+        if(!isFinite(hitCount)||hitCount<0){var mm=String(reason||'').match(/(\d+)\s*\/\s*4/);hitCount=mm?Number(mm[1]):0;}
+      }
       hitCount=Math.max(0,Math.min(4,hitCount));
       whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(hitCount===4?'四項條件全部通過。':('共通過 '+hitCount+' / 4 項；只有標示「通過」的項目才算入選條件。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
     }else{
@@ -28825,17 +28842,6 @@ def render_workbench_body(initial_tab=""):
       +'</div>';
 
     bindLazyCharts(host);
-    // 實驗室「籌碼」個股頁：圖表直接出現在研究證據區，不需要再按一次。
-    if(key==='籌碼'){
-      var instBox=host.querySelector('[data-auto-inst-chart]');
-      if(instBox){
-        var instCode=instBox.getAttribute('data-auto-inst-chart');
-        fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(instCode)+'&kind=institutional'),{credentials:'same-origin',cache:'force-cache'})
-          .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
-          .then(function(d){if(!d.ok)throw new Error(d.error||'載入失敗');drawLazyChart(instBox,d.data,'institutional');})
-          .catch(function(e){instBox.innerHTML='<div class="wb-d-chart-status">法人籌碼圖載入失敗：'+esc(String(e.message||e))+'</div>';});
-      }
-    }
   }
     var strategies=(data.strategies||[]).map(function(x){return '<div class="wb-lab-card"><h4>'+esc(x.name)+' <span class="wb-lab-status '+(x.status==='ready'?'ready':'wait')+'">'+esc(x.status_label)+'</span></h4><p class="wb-lab-muted">'+esc(x.description)+'</p><div class="wb-lab-note">'+esc(x.note)+'</div></div>';}).join('');
     var categories=(data.categories||[]).map(function(x){return '<div class="wb-lab-category"><b>'+esc(x.name)+'</b><span>'+esc(x.items.join('・'))+'</span></div>';}).join('');
@@ -29675,7 +29681,7 @@ def _workbench_source_payload(uid, source):
 
 _STRATEGY_LAB_CACHE = {"at": 0.0, "data": None}
 _STRATEGY_LAB_CACHE_TTL = 12 * 3600  # 12 小時；研究室每日預熱一次，白天直接讀快照
-_STRATEGY_LAB_SCHEMA_VERSION = 10  # ROE＋經典四項＋圖表＋盤中穩定性
+_STRATEGY_LAB_SCHEMA_VERSION = 11  # ROE 顯示修正＋營收圖表重做＋法人圖表按鈕＋盤中穩定性
 _STRATEGY_LAB_CACHE_LOCK = threading.Lock()
 
 def _normalize_strategy_lab_payload(payload):
