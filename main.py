@@ -29101,7 +29101,7 @@ def render_workbench_body(initial_tab=""):
       if(key==='混合'){
         whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>條件有排名</span></div><p>'+esc(hitCount===4?'四個研究因子都有可用排名。':'目前有 '+hitCount+' / 4 個研究因子納入共識；未納入者不會被當成通過。')+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';if(!v&&key==='混合'&&x.factor_rank_map&&x.factor_rank_map[n]!=null)v='第'+x.factor_rank_map[n]+'名';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'已納入':'未納入'))+'</strong></div>';}).join('')+'</div>';
       }else{
-        whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(hitCount===4?'四項條件全部通過。':('共通過 '+hitCount+' / 4 項；只有標示「通過」的項目才算入選條件。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
+        whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(hitCount===4?'四項條件全部通過。':('共通過 '+hitCount+' / 4 項；只有標示「通過」的項目才算入選條件。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';if(!v&&n==='公司獲利能力'&&x.roe!=null)v=Number(x.roe).toFixed(2)+'%';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
       }
     }else{
       whyHtml='<div class="wb-d-why-summary single"><div><b>'+esc(metric)+'</b><span>'+esc(x.metric_label||'研究值')+'</span></div><p>'+esc(reason)+'</p></div>';
@@ -29118,8 +29118,9 @@ def render_workbench_body(initial_tab=""):
       heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="growth" data-code="'+esc(x.code)+'"><span><b>📈 查看成長動能圖表</b><small>每月 YoY、累計 YoY 與 MoM，加速度一眼看懂</small></span><strong>›</strong></button></div>';
     }
     if(key==='價格動能'){
-      lazy='<div class="wb-d-lazy-chart"><button type="button" data-lazy-chart="momentum" data-code="'+esc(x.code)+'">📈 查看近6個月股價趨勢圖</button><div class="wb-d-chart-status">點開後載入日線價格，不影響研究室首屏。</div></div>';
-      heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="momentum" data-code="'+esc(x.code)+'"><span><b>📈 查看股價趨勢圖</b><small>近6個月日線＋區間報酬，一眼看出上升、盤整或走弱</small></span><strong>›</strong></button></div>';
+      // 股價趨勢只保留一個入口：上方主按鈕。下方不再重複放第二顆按鈕。
+      lazy='<div class="wb-d-lazy-chart wb-d-momentum-result"><div class="wb-d-chart-status">點開上方按鈕後載入近6個月日線價格。</div></div>';
+      heroChartCta='<div class="wb-d-hero-chart-cta"><button type="button" data-lazy-chart="momentum" data-code="'+esc(x.code)+'"><span><b>📈 查看股價趨勢圖</b><small>近6個月日線＋區間報酬，一眼看出上升、盤整或走弱</small></span><strong>›</strong></button><div class="wb-d-chart-status">點開後載入日線價格，不影響研究室首屏。</div></div>';
     }
     if(key==='籌碼'){
       // 籌碼超人圖表只放在「策略研究實驗室 → 籌碼」的個股詳細頁，並提供明確按鈕。
@@ -29137,6 +29138,8 @@ def render_workbench_body(initial_tab=""):
       var names=['公司獲利能力','股價趨勢','價格穩定度','營收成長'];
       function numMetric(label){
         var raw=detailsMap[label];
+        // 經典四項的 ROE 可能存在於後端 rec 的 roe 欄位，但舊快照 detail_metrics 沒有 ROE。
+        if(raw==null && label==='ROE' && x.roe!=null) raw=x.roe;
         if(raw==null) return null;
         var m=String(raw).replace(/,/g,'').match(/[+-]?\d+(?:\.\d+)?/);
         return m?Number(m[0]):null;
@@ -29198,10 +29201,15 @@ def render_workbench_body(initial_tab=""):
     bindLabPicks(document.getElementById('wb-lab-picks-view'),active);
     labBody.querySelectorAll('[data-lab-strategy]').forEach(function(b){b.addEventListener('click',function(){var k=b.dataset.labStrategy||'';if(!k||b.disabled)return;labBody.querySelectorAll('.wb-lab-strategy').forEach(function(x){x.classList.remove('active')});b.classList.add('active');active=k;var title=document.getElementById('wb-lab-picks-title'),view=document.getElementById('wb-lab-picks-view'),count=document.querySelector('.wb-lab-count');var item=library.find(function(x){return x.key===k})||{};if(title)title.textContent='今日研究候選 · '+labName(k);if(count)count.textContent=((strategyData[k]||[]).length||0)+' 檔';if(view){view.innerHTML=recHtml(k);bindLabPicks(view,k);}});});
   }
-  function loadStrategyLab(force){
+  if(!document.getElementById('wb-lab-loading-live-css')){var ls=document.createElement('style');ls.id='wb-lab-loading-live-css';ls.textContent='.wb-lab-loading-live{min-height:118px;padding:18px 20px;border:1px solid #dfe8f1;border-radius:16px;background:linear-gradient(180deg,#fbfdff,#f4f8fb);color:#294d6c}.wb-lab-loading-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.wb-lab-loading-head b{font-size:15px}.wb-lab-loading-pct{font-size:20px;font-weight:900;color:#274c77;font-variant-numeric:tabular-nums}.wb-lab-loading-track{height:10px;margin-top:13px;border-radius:99px;background:#e4ebf2;overflow:hidden}.wb-lab-loading-bar{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,#6d95bb,#274c77);transition:width .35s ease}.wb-lab-loading-note{display:block;margin-top:8px;color:#7b8c9b;font-size:11px;line-height:1.45}.wb-lab-loading-dots{display:inline-block;margin-left:3px;font-weight:900;color:#2d628e}';document.head.appendChild(ls);}
+    function loadStrategyLab(force){
     if(labLoaded&&!force)return;
-    if(labBody)labBody.innerHTML='<div class="wb-lab-loading">正在一次載入全部策略研究資料…</div>';
-    fetch(api('/web/api/workbench/strategy-lab'+(force?'?refresh=1':'')),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');labLoaded=true;renderStrategyLab(data);}).catch(function(e){if(labBody)labBody.innerHTML='<div class="wb-lab-note">策略研究資料暫時無法載入：'+esc(String(e.message||e))+'</div>';});
+    var progressTimer=null,progress=8;
+    if(labBody)labBody.innerHTML='<div class="wb-lab-loading wb-lab-loading-live"><div class="wb-lab-loading-head"><b>正在載入策略研究資料</b><strong class="wb-lab-loading-pct">8%</strong></div><div class="wb-lab-loading-track"><div class="wb-lab-loading-bar"></div></div><small class="wb-lab-loading-note">正在讀取研究快照與策略候選資料<span class="wb-lab-loading-dots">.</span></small></div>';
+    var bar=labBody&&labBody.querySelector('.wb-lab-loading-bar'),pct=labBody&&labBody.querySelector('.wb-lab-loading-pct');
+    function setProgress(v){progress=Math.max(progress,Math.min(92,v));if(bar)bar.style.width=progress+'%';if(pct)pct.textContent=Math.round(progress)+'%';}
+    if(bar){bar.style.width='8%';progressTimer=setInterval(function(){if(progress<45)setProgress(progress+4);else if(progress<72)setProgress(progress+2);else if(progress<88)setProgress(progress+0.7);},280);}
+    fetch(api('/web/api/workbench/strategy-lab'+(force?'?refresh=1':'')),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');if(progressTimer)clearInterval(progressTimer);setProgress(100);setTimeout(function(){labLoaded=true;renderStrategyLab(data);},180);}).catch(function(e){if(progressTimer)clearInterval(progressTimer);if(labBody)labBody.innerHTML='<div class="wb-lab-note">策略研究資料暫時無法載入：'+esc(String(e.message||e))+'</div>';});
   }
   function renderTabs(){var list=sources();if(list.indexOf(state.source)<0)state.source=list[0]||'';tabs.innerHTML=list.map(function(s){var loaded=!!state.loadedSources[s];var n=s==='成效'||s==='我的排行'?'':(loaded?' <small>'+state.rows.filter(function(r){return r.source===s}).length+'</small>':'');return '<button type="button" class="'+(state.source===s?'on':'')+'" data-source="'+esc(s)+'">'+esc(s)+n+'</button>'}).join('');}
   function filtered(){var q=state.query.trim().toLowerCase();return state.rows.filter(function(r){var etf=r.source==='ETF';return (state.source==='全部'||r.source===state.source)&&(!q||[r.code,r.name,r.industry].join(' ').toLowerCase().indexOf(q)>-1)&&(state.kind==='all'||(state.kind==='etf'?etf:!etf))&&(state.dir==='all'||(state.dir==='up'&&Number(r.change_pct)>0)||(state.dir==='down'&&Number(r.change_pct)<0));}).sort(function(a,b){var av=a[state.sort],bv=b[state.sort];av=av==null?-Infinity:Number(av);bv=bv==null?-Infinity:Number(bv);return state.desc?bv-av:av-bv;});}
