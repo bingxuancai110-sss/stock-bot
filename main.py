@@ -20242,7 +20242,7 @@ def web_positions(uid):
 .position-submit-progress-icon{width:52px;height:52px;margin:0 auto 12px;border-radius:17px;background:#edf5fb;color:#1e5f8a;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:900;animation:positionProgressPulse 1.2s ease-in-out infinite}
 @keyframes positionProgressPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
 .position-submit-progress-card h3{margin:0;color:#173b5d;font-size:19px}.position-submit-progress-card p{margin:6px 0 16px;color:#7a8ea0;font-size:12px;line-height:1.5}
-.position-submit-progress-track{height:9px;border-radius:999px;background:#e7eef5;overflow:hidden}.position-submit-progress-bar{height:100%;width:12%;border-radius:999px;background:linear-gradient(90deg,#3d78b5,#6da8ef);transition:width .45s ease;box-shadow:0 2px 8px rgba(61,120,181,.2)}
+.position-submit-progress-track{height:9px;border-radius:999px;background:#e7eef5;overflow:hidden}.position-submit-progress-bar{height:100%;width:12%;max-width:100%;border-radius:999px;background:linear-gradient(90deg,#3d78b5,#6da8ef);transition:width .45s ease;box-shadow:0 2px 8px rgba(61,120,181,.2)}
 .position-submit-progress-percent{margin-top:9px;color:#4f6f8a;font-size:12px;font-weight:800}
 .position-confirm-backdrop{position:fixed;inset:0;background:rgba(18,38,56,.48);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px);z-index:99999;display:flex;align-items:flex-end;justify-content:center;padding:16px;box-sizing:border-box}
 .position-confirm-modal{width:min(520px,100%);background:#fff;border:1px solid rgba(31,71,107,.14);border-radius:24px;box-shadow:0 24px 70px rgba(14,36,55,.28);overflow:hidden;animation:positionConfirmIn .18s ease-out}
@@ -20374,13 +20374,44 @@ def web_positions(uid):
         headers:{'X-Requested-With':'XMLHttpRequest'}
       }).then(function(resp){
         if(!resp.ok) throw new Error('HTTP '+resp.status);
-        return resp.text().then(function(){ return resp.url || window.location.href; });
-      }).then(function(url){
+        return resp.text().then(function(html){ return {url:resp.url || window.location.href,html:html}; });
+      }).then(function(result){
+        var url=result.url;
+        var responseHtml=result.html;
         finished=true;
         if(timer) clearInterval(timer);
         setProgress(100);
-        if(subEl) subEl.textContent=isAddAction?'新增完成，正在重新整理持股…':'賣出完成，正在重新整理持股…';
-        setTimeout(function(){ window.location.href=url; },260);
+        if(subEl) subEl.textContent=isAddAction?'新增完成，正在更新持股畫面…':'賣出完成，正在更新持股畫面…';
+
+        // 不再整頁跳轉／重新載入。後端仍然照正常 POST 寫入資料，
+        // 成功後只把目前的 #app-page-content 換成最新內容，
+        // 因此手機不會重新跑整個首頁 loader，也不會把使用者帶回頁面頂端。
+        setTimeout(function(){
+          var target=document.getElementById('app-page-content');
+          if(!target){ window.location.href=url; return; }
+          Promise.resolve(responseHtml)
+            .then(function(html){
+              var doc=new DOMParser().parseFromString(html,'text/html');
+              var fresh=doc.getElementById('app-page-content');
+              if(!fresh) throw new Error('找不到更新後的持股內容');
+              var oldScroll=window.scrollY;
+              target.innerHTML=fresh.innerHTML;
+              // innerHTML 插入的 script 不會自動執行，這裡只重新啟動片段內原本需要的腳本。
+              target.querySelectorAll('script').forEach(function(oldScript){
+                var replacement=document.createElement('script');
+                Array.prototype.slice.call(oldScript.attributes).forEach(function(attr){ replacement.setAttribute(attr.name,attr.name==='src'?attr.value:attr.value); });
+                replacement.text=oldScript.text||oldScript.textContent||'';
+                oldScript.parentNode.replaceChild(replacement,oldScript);
+              });
+              window.scrollTo(0,oldScroll);
+              if(wrap && wrap.parentNode) wrap.remove();
+            })
+            .catch(function(err){
+              // 更新片段失敗時才退回整頁導覽，避免資料其實已寫入卻卡在舊畫面。
+              if(subEl) subEl.textContent='資料已完成寫入，正在重新同步畫面…';
+              setTimeout(function(){ window.location.href=url; },300);
+            });
+        },220);
       }).catch(function(err){
         if(timer) clearInterval(timer);
         if(wrap && wrap.parentNode) wrap.remove();
