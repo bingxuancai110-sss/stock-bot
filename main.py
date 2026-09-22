@@ -3183,7 +3183,7 @@ def get_positions(user_id):
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id, code, shares, cost, bought_on, note
+            SELECT id, code, shares, cost, bought_on, note, created_at
             FROM positions WHERE user_id = %s ORDER BY id
             """,
             (str(user_id).strip(),),
@@ -3192,7 +3192,7 @@ def get_positions(user_id):
         cursor.close()
         return [
             {"id": r[0], "code": r[1], "shares": r[2], "cost": r[3],
-             "bought_on": r[4], "note": r[5]}
+             "bought_on": r[4], "note": r[5], "created_at": r[6]}
             for r in rows
         ]
     except Exception as e:
@@ -3531,37 +3531,44 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
         release_db_connection(conn)
 
 
-def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None, fallback_cost=None,
-                    fallback_bought_on=None, fallback_note=None):
+def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None,
+                    fallback_cost=None, fallback_bought_on=None, fallback_note=None,
+                    fallback_created_at=None):
     """刪除單筆持股。
 
-    優先使用 position id；若手機頁面／舊 fragment 造成 id 不可用，
-    再使用「代號＋股數＋成本＋買進日期＋備註」做更完整的精確匹配。
-    若只有一筆符合才刪除，避免誤刪。"""
+    先用資料庫唯一 id 刪除；若手機舊 fragment 的 id 失效，
+    再用「代號＋股數＋成本＋日期＋備註＋建立時間」精確找回同一筆 lot。
+    若仍無法唯一定位，寧可不刪，避免誤刪。
+    """
     try:
         pos_id = int(pos_id)
     except (TypeError, ValueError):
         pos_id = None
+
     uid = str(user_id).strip()
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         row = None
-        actual_id = None
+
+        # 第一優先：資料庫唯一主鍵。
         if pos_id is not None:
             cursor.execute(
-                "SELECT id, code, shares, cost FROM positions WHERE id = %s AND user_id = %s",
-                (pos_id, uid))
+                "SELECT id, code, shares, cost FROM positions "
+                "WHERE id = %s AND user_id = %s",
+                (pos_id, uid),
+            )
             row = cursor.fetchone()
 
-        # 若使用者看到的是舊頁面／舊 fragment，表單裡的 lot id 可能已不是目前頁面
-        # 對應的那筆。用完整 lot 欄位做精確 fallback；只有唯一符合才刪除。
+        # 第二優先：完整 lot 指紋。created_at 可把「同代號、同股數、同成本」
+        # 的重複 lot 明確分開，避免手機舊頁面造成刪錯筆。
         if row is None and fallback_code and fallback_shares is not None and fallback_cost is not None:
             try:
                 f_shares = int(fallback_shares)
                 f_cost = float(fallback_cost)
             except (TypeError, ValueError):
                 f_shares, f_cost = 0, None
+
             if f_shares > 0 and f_cost is not None and math.isfinite(f_cost):
                 query = (
                     "SELECT id, code, shares, cost FROM positions "
@@ -3569,28 +3576,29 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None, f
                     "AND ABS(cost - %s) < 0.01"
                 )
                 params = [uid, str(fallback_code).strip(), f_shares, f_cost]
+
                 if fallback_bought_on:
                     query += " AND bought_on = %s"
                     params.append(str(fallback_bought_on).strip())
                 if fallback_note is not None:
                     query += " AND COALESCE(note, '') = %s"
                     params.append(str(fallback_note))
+
+                # 若有建立時間，再用它做最後一層精確辨識。
+                if fallback_created_at:
+                    query += " AND created_at = %s"
+                    params.append(str(fallback_created_at).strip())
+
                 query += " ORDER BY id"
                 cursor.execute(query, tuple(params))
                 matches = cursor.fetchall()
+
                 if len(matches) == 1:
                     row = matches[0]
-                elif len(matches) > 1:
-                    # 日期／備註若沒有傳到舊頁面，最後才嘗試同代號同成本的最新 lot；
-                    # 這只在 id 已失效時使用，並且仍限制在完全相同股數與成本。
-                    cursor.execute(
-                        "SELECT id, code, shares, cost FROM positions "
-                        "WHERE user_id = %s AND code = %s AND shares = %s "
-                        "AND ABS(cost - %s) < 0.01 ORDER BY id DESC LIMIT 2",
-                        (uid, str(fallback_code).strip(), f_shares, f_cost))
-                    narrowed = cursor.fetchall()
-                    if len(narrowed) == 1:
-                        row = narrowed[0]
+                elif len(matches) > 1 and not fallback_created_at:
+                    # 舊頁面沒有 created_at 時，只有在「完整欄位」唯一時才刪。
+                    # 不再用 LIMIT 2 猜最新一筆。
+                    row = None
 
         if row is None:
             conn.rollback()
@@ -3601,9 +3609,13 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None, f
         code = str(code_raw).strip()
         shares = int(shares_raw or 0)
         cost = cost_raw
-        cursor.execute("DELETE FROM positions WHERE id = %s AND user_id = %s",
-                       (int(actual_id), uid))
+
+        cursor.execute(
+            "DELETE FROM positions WHERE id = %s AND user_id = %s",
+            (int(actual_id), uid),
+        )
         deleted = cursor.rowcount
+
         if deleted > 0:
             cursor.execute(
                 """
@@ -3612,14 +3624,21 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None, f
                      trade_date, note, source)
                 VALUES (%s, %s, 'delete', %s, %s, %s, %s, 'web')
                 """,
-                (uid, code, -shares,
-                 float(cost) if cost is not None else None,
-                 taiwan_today(), "刪除持股（未產生已實現損益）"))
+                (
+                    uid, code, -shares,
+                    float(cost) if cost is not None else None,
+                    taiwan_today(),
+                    "刪除持股（未產生已實現損益）",
+                ),
+            )
+
         conn.commit()
         cursor.close()
+
         if deleted > 0:
             clear_leaderboard_cache()
         return deleted > 0
+
     except Exception as e:
         conn.rollback()
         print(f"❌ 刪除持股失敗: {e}")
@@ -19758,7 +19777,8 @@ def web_positions(uid):
                 fallback_shares=request.form.get("delete_shares"),
                 fallback_cost=request.form.get("delete_cost"),
                 fallback_bought_on=request.form.get("delete_bought_on"),
-                fallback_note=request.form.get("delete_note"))
+                fallback_note=request.form.get("delete_note"),
+                fallback_created_at=request.form.get("delete_created_at"))
             msg = "已刪除這筆持股。" if ok else "刪除失敗：找不到完全匹配的持股資料，沒有改動任何持股。"
         elif action == "sell":
             def num(field, cast=float):
@@ -19898,6 +19918,7 @@ def web_positions(uid):
                 f'<input type="hidden" name="delete_cost" value="{cost:.4f}">'
                 f'<input type="hidden" name="delete_bought_on" value="{html.escape(str(lot.get("bought_on") or ""), quote=True)}">'
                 f'<input type="hidden" name="delete_note" value="{html.escape(str(lot.get("note") or ""), quote=True)}">'
+                f'<input type="hidden" name="delete_created_at" value="{html.escape(str(lot.get("created_at") or ""), quote=True)}">'
                 f'<button class="del" type="submit">刪除</button></form>')
 
     def sell_all_form(p, name, cur_price):
