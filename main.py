@@ -3913,13 +3913,15 @@ def get_realized_trades(user_id, limit=100, code=None, month=None):
         )
         rows = cursor.fetchall()
         cursor.close()
-        return [
+        trades = [
             {"code": r[0], "shares": r[1], "buy_cost": r[2], "sell_price": r[3],
              "realized_pl": r[4], "realized_pct": r[5],
              "bought_on": r[6], "sold_on": r[7],
              "fee": r[8], "tax": r[9], "sell_reason": r[10]}
             for r in rows
         ]
+        # 同日 +23 / -23 這類誤操作產生的 realized trade 也不應出現在交易紀錄。
+        return _filter_voided_same_day_realized_trades(user_id, trades)
     except Exception as e:
         print(f"❌ 讀取已實現損益失敗: {e}")
         return []
@@ -5241,13 +5243,15 @@ def _position_change_journal_status(log):
     return "減碼", "reduce"
 
 
-def _filter_voided_same_day_logs(logs):
-    """排除「同一天加入後又完整撤回」的無效操作。
+def _same_day_voided_log_ids(logs):
+    """找出同日「加進去又完整撤回」的成對操作。
 
-    規則：同一使用者、同一交易日、同一檔股票，同時有 add 與
-    reduce/delete，且 shares_delta 淨額為 0，視為誤操作後完整撤回。
-    底層日誌仍保留供除錯，但不進入操作日報、交易紀錄、月度統計與操作習慣。
-    跨日撤回不排除，因為那代表真正的持倉決策。
+    不用整天淨變動判斷，因為可能出現：
+    +23 → -23 → +2。此時前面的 +23/-23 應視為誤操作，最後的 +2
+    仍然是真正的加碼。
+
+    只有「正股數的 add」與「負股數的 reduce/delete」能以完全相同股數配對時，
+    才將這一對視為無效；跨日不配對。底層紀錄保留，但報表／統計排除。
     """
     grouped = {}
     for log in logs or []:
@@ -5256,20 +5260,77 @@ def _filter_voided_same_day_logs(logs):
         key = (day, code)
         grouped.setdefault(key, []).append(log)
 
-    voided_keys = set()
-    for key, items in grouped.items():
-        actions = {str(x.get("action") or "").strip() for x in items}
-        net = sum(int(x.get("shares_delta") or 0) for x in items)
-        if net == 0 and "add" in actions and (actions & {"reduce", "delete"}):
-            voided_keys.add(key)
+    voided_ids = set()
+    for _key, items in grouped.items():
+        adds = {}
+        reduces = {}
+        for log in sorted(items, key=lambda x: int(x.get("id") or 0)):
+            action = str(log.get("action") or "").strip()
+            delta = int(log.get("shares_delta") or 0)
+            lid = int(log.get("id") or 0)
+            if not lid or delta == 0:
+                continue
+            if action == "add" and delta > 0:
+                adds.setdefault(delta, []).append(lid)
+            elif action in {"reduce", "delete"} and delta < 0:
+                reduces.setdefault(abs(delta), []).append(lid)
 
-    if not voided_keys:
-        return list(logs or [])
-    return [
-        log for log in (logs or [])
-        if (_position_change_date(log.get("trade_date")),
-            str(log.get("code") or "").strip()) not in voided_keys
-    ]
+        for qty in set(adds) & set(reduces):
+            pair_count = min(len(adds[qty]), len(reduces[qty]))
+            voided_ids.update(adds[qty][:pair_count])
+            voided_ids.update(reduces[qty][:pair_count])
+
+    return voided_ids
+
+
+def _filter_voided_same_day_logs(logs):
+    """排除同日完全配對撤回的操作；不影響同日後續真正加碼。"""
+    raw = list(logs or [])
+    voided_ids = _same_day_voided_log_ids(raw)
+    if not voided_ids:
+        return raw
+    return [log for log in raw if int(log.get("id") or 0) not in voided_ids]
+
+
+def _filter_voided_same_day_realized_trades(user_id, trades):
+    """排除由同日誤加後立即賣回所產生的 realized_trades。
+
+    以股票、日期、股數、賣價與被配對的 reduce/delete 日誌交叉確認，
+    避免把真正的同日交易誤刪。
+    """
+    raw = list(trades or [])
+    if not raw:
+        return raw
+    logs = get_position_change_logs(user_id, limit=5000)
+    voided_ids = _same_day_voided_log_ids(logs)
+    if not voided_ids:
+        return raw
+
+    voided_reduce_keys = set()
+    for log in logs:
+        lid = int(log.get("id") or 0)
+        action = str(log.get("action") or "").strip()
+        delta = int(log.get("shares_delta") or 0)
+        if lid not in voided_ids or action not in {"reduce", "delete"} or delta >= 0:
+            continue
+        day = _position_change_date(log.get("trade_date"))
+        price = log.get("trade_price")
+        price_key = round(float(price), 6) if price is not None else None
+        voided_reduce_keys.add((str(log.get("code") or "").strip(), day, abs(delta), price_key))
+
+    used = set()
+    filtered = []
+    for idx, trade in enumerate(raw):
+        day = _position_change_date(trade.get("sold_on"))
+        price = trade.get("sell_price")
+        key = (str(trade.get("code") or "").strip(), day,
+               int(trade.get("shares") or 0),
+               round(float(price), 6) if price is not None else None)
+        if key in voided_reduce_keys and key not in used:
+            used.add(key)
+            continue
+        filtered.append(trade)
+    return filtered
 
 
 def _filter_position_change_logs(logs, trade_date=None, start_date=None, end_date=None):
@@ -5720,8 +5781,8 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
     for day in sorted(grouped, key=lambda value: value or date.min, reverse=True):
         day_logs = grouped[day]
         day_text = day.strftime("%Y/%m/%d") if day else "日期待確認"
-        # 同一天加了又刪、淨變動為零的，視為「加錯又撤掉」，
-        # 摺疊起來不佔正常操作的版面——那件事等於沒發生過。
+        # 同一天加了又撤、且股數完全配對的，視為「加錯又撤掉」，
+        # 不佔正常操作的版面——那一對等於沒發生過。
         #
         # 只合併同一天：隔天才刪通常是真的改變主意，那是有意義的
         # 操作決定，不該被藏起來。
@@ -20074,6 +20135,17 @@ def web_positions(uid):
 .position-more{margin-top:8px;border-top:1px solid #edf1f4}.position-more>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:space-between}.position-more>summary::-webkit-details-marker{display:none}.position-more>summary:after{content:'＋';font-size:16px;font-weight:500;color:#8294a6}.position-more[open]>summary:after{content:'−'}.position-detail-body{padding:2px 0 4px}.position-card-grid{margin-top:8px!important}.position-card-actions{margin-top:8px!important}.position-card-primary>div{min-width:0!important;min-height:58px!important;display:flex!important;flex-direction:column!important;justify-content:center!important}.position-card-primary b{font-size:17px!important;line-height:1.15!important;overflow-wrap:anywhere}
 @media(max-width:520px){.position-card-primary>div{padding:8px 6px!important;min-height:54px!important;border-radius:11px!important}.position-card-primary small{font-size:10px!important;white-space:nowrap}.position-card-primary b{font-size:14px!important}}
 .position-card{position:relative;border-left:4px solid #d9e3ec;transition:border-color .18s,box-shadow .18s;background:#fff}.position-card:has(.position-card-primary .up){border-left-color:#d93025}.position-card:has(.position-card-primary .down){border-left-color:#0b8f55}.position-card .up{color:#d93025!important}.position-card .down{color:#0b8f55!important}.position-factors{margin-top:10px;border-top:1px solid #edf1f4;padding-top:2px}.position-factors>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:13px;font-weight:850;display:flex;align-items:center;justify-content:space-between}.position-factors>summary::-webkit-details-marker{display:none}.position-factors>summary:after{content:'＋';font-size:17px;font-weight:500;color:#8294a6}.position-factors[open]>summary:after{content:'−'}.position-factors-body{padding:4px 0 10px}.position-factor-loading,.position-factor-empty{padding:11px 12px;border:1px dashed #d7e2ea;border-radius:11px;background:#f8fafc;color:#71808f;font-size:12px;line-height:1.6}.position-factor-overview{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-radius:12px;background:#f5f9fc;border:1px solid #dfe9f1;margin-bottom:9px}.position-factor-overview small{display:block;color:#71808f;font-size:10px}.position-factor-overview b{display:block;margin-top:2px;color:#173b5d;font-size:22px;line-height:1}.position-factor-overview em{font-style:normal;color:#607789;font-size:11px;line-height:1.45;text-align:right}.position-factor-list{display:grid;gap:7px}.position-factor-item>summary{list-style:none;cursor:pointer}.position-factor-item>summary::-webkit-details-marker{display:none}.position-factor-item>summary b{white-space:nowrap}.position-factor-item[open]>summary b{ }.position-factor-details{margin-top:8px;padding:9px 10px;border-top:1px solid rgba(120,140,155,.18);background:rgba(255,255,255,.62);border-radius:8px;color:#526879;font-size:11px;line-height:1.7}.position-factor-details>div{margin:2px 0}.position-factor-details b{color:#244f70;font-weight:900}.position-factor-item.strong .position-factor-details{background:#fffafa}.position-factor-item.weak .position-factor-details{background:#f7fcf8}.position-factor-item.mid .position-factor-details{background:#fffdf8}.position-factor-item{padding:9px 10px;border:1px solid #e4ebf0;border-radius:10px;background:#fff}.position-factor-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-factor-head span{font-size:12px;font-weight:850;color:#294e6d}.position-factor-head b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.position-factor-track{height:8px;margin-top:6px;background:#e9eff3;border-radius:99px;overflow:hidden}.position-factor-track i{display:block;height:100%;border-radius:99px}.position-factor-item.strong .position-factor-head b{color:#1f638f}.position-factor-item.strong .position-factor-track i{background:#2d78a8}.position-factor-item.mid .position-factor-head b{color:#a66b18}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral .position-factor-head b{color:#667788}.position-factor-item.neutral .position-factor-track i{background:#91a2af}.position-factor-item.weak .position-factor-head b{color:#a14d4d}.position-factor-item.weak .position-factor-track i{background:#c56b6b}.position-factor-note{margin:8px 0 0;padding:9px 10px;border-radius:9px;background:#f8fafc;color:#526879;font-size:11px;line-height:1.6}.position-factor-note b{color:#244f70}.position-live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#12a150;margin-right:5px;vertical-align:1px;box-shadow:0 0 0 3px rgba(18,161,80,.12)}.position-factor-source{margin-top:7px;color:#8997a4;font-size:10px}.position-factor-status{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.position-factor-status span{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;background:#eef4f8;color:#45647a}.position-factor-status span.good{background:#fff0f0;color:#c62828}.position-factor-status span.warn{background:#fff4e4;color:#9a651d}.position-factor-status span.weak{background:#eaf4ef;color:#087443}.position-factor-legend{display:flex;flex-wrap:wrap;gap:5px 9px;padding:0 2px 8px;color:#71808f;font-size:10px;line-height:1.4}.pf-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:3px;vertical-align:-1px}.pf-dot.strong{background:#d93025}.pf-dot.mid{background:#d59a37}.pf-dot.weak{background:#0b8f55}.pf-dot.neutral{background:#d8dee3}.position-factor-item.strong{border-color:#efc3c3;background:#fff5f5}.position-factor-item.strong .position-factor-head b{color:#c62828}.position-factor-item.strong .position-factor-track i{background:#d93025}.position-factor-item.mid{border-color:#f1d8a7;background:#fffaf0}.position-factor-item.mid .position-factor-head b{color:#9a651d}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral{border-color:#d9e1e8;background:#f8fafc}.position-factor-item.weak{border-color:#bfe3cf;background:#f3fbf6}.position-factor-item.weak .position-factor-head b{color:#087443}.position-factor-item.weak .position-factor-track i{background:#0b8f55}.position-factor-note{border-left:4px solid #52718d}.position-factor-note b{color:#244f70}
+
+.position-confirm-backdrop{position:fixed;inset:0;background:rgba(18,38,56,.48);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px);z-index:99999;display:flex;align-items:flex-end;justify-content:center;padding:16px;box-sizing:border-box}
+.position-confirm-modal{width:min(520px,100%);background:#fff;border:1px solid rgba(31,71,107,.14);border-radius:24px;box-shadow:0 24px 70px rgba(14,36,55,.28);overflow:hidden;animation:positionConfirmIn .18s ease-out}
+@keyframes positionConfirmIn{from{transform:translateY(16px);opacity:0}to{transform:translateY(0);opacity:1}}
+.position-confirm-head{padding:20px 20px 14px;border-bottom:1px solid #edf1f4;display:flex;align-items:center;gap:12px}
+.position-confirm-icon{width:42px;height:42px;border-radius:14px;background:#edf5fb;color:#1e5a86;display:flex;align-items:center;justify-content:center;font-size:21px;font-weight:900;flex:0 0 auto}
+.position-confirm-head h3{margin:0;color:#173b5d;font-size:19px;line-height:1.25}.position-confirm-head p{margin:4px 0 0;color:#7a8ea0;font-size:12px}
+.position-confirm-body{padding:16px 20px 8px}.position-confirm-stock{padding:12px 14px;border-radius:15px;background:#f6f9fc;border:1px solid #e1eaf1;margin-bottom:12px}.position-confirm-stock b{display:block;color:#173b5d;font-size:18px}.position-confirm-stock span{display:block;margin-top:3px;color:#71859a;font-size:11px}
+.position-confirm-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.position-confirm-item{background:#fafbfd;border:1px solid #edf1f4;border-radius:12px;padding:10px 11px;min-width:0}.position-confirm-item small{display:block;color:#7a8ea0;font-size:10px;margin-bottom:4px}.position-confirm-item b{display:block;color:#294e6d;font-size:14px;line-height:1.35;overflow-wrap:anywhere}.position-confirm-warning{margin:12px 0 6px;padding:10px 12px;border-radius:12px;background:#fff8ed;border:1px solid #f2d9aa;color:#8a631d;font-size:11px;line-height:1.6}
+.position-confirm-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:14px 20px 18px}.position-confirm-actions button{appearance:none;border:0;border-radius:13px;padding:13px 12px;font-size:15px;font-weight:850;cursor:pointer}.position-confirm-cancel{background:#f1f4f7;color:#526879}.position-confirm-submit{background:#1e5f8a;color:#fff;box-shadow:0 7px 16px rgba(30,95,138,.2)}
+@media(max-width:520px){.position-confirm-backdrop{padding:10px}.position-confirm-modal{border-radius:22px}.position-confirm-head{padding:18px 17px 13px}.position-confirm-body{padding:14px 17px 7px}.position-confirm-actions{padding:12px 17px 16px}.position-confirm-grid{gap:7px}.position-confirm-item{padding:9px}.position-confirm-item b{font-size:13px}}
 </style>"""
 
     body = f"""
@@ -20091,6 +20163,7 @@ def web_positions(uid):
 </div>
 
 <form class="add" method="post">
+  {csrf_hidden_input()}
   <h3>新增持股</h3>
   <div class="fields">
     <div><label>股票代號</label>
@@ -20112,6 +20185,71 @@ def web_positions(uid):
     新增後會同步記入操作日報；備註只保存你自己輸入的內容。若填的是純成交價，在手續費欄填實際金額，會自動攤進每股成本。
   </div>
 </form>"""
+    body += '''<script>
+(function(){
+  function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;')}
+  function num(v){var n=Number(String(v||'').replace(/,/g,''));return Number.isFinite(n)?n:null}
+  function money(v,digits){var n=num(v);return n==null?'未填':n.toLocaleString('zh-TW',{minimumFractionDigits:digits||0,maximumFractionDigits:digits||0})}
+  function shares(v){var n=num(v);return n==null?'未填':n.toLocaleString('zh-TW')+' 股'}
+  function showConfirm(form, type){
+    var old=document.getElementById('position-confirm-backdrop'); if(old) old.remove();
+    var isAdd=type==='add';
+    var code=(form.querySelector('[name="code"]')||{}).value||'';
+    var card=form.closest('.position-card');
+    var stockEl=card?.querySelector('h3');
+    if(!code && card) code=card.getAttribute('data-position-code')||card.querySelector('.position-card-code')?.textContent.trim()||'';
+    var name=code;
+    if(stockEl && !isAdd) name=stockEl.textContent.trim();
+    var s=(form.querySelector('[name="shares"], [name="sell_shares"]')||{}).value||'';
+    var cost=(form.querySelector('[name="cost"]')||{}).value||'';
+    var price=(form.querySelector('[name="sell_price"]')||{}).value||'';
+    var fee=(form.querySelector('[name="buy_fee"], [name="fee"]')||{}).value||'';
+    var tax=(form.querySelector('[name="tax"]')||{}).value||'';
+    var date=(form.querySelector('[name="bought_on"]')||{}).value||'未填';
+    var note=(form.querySelector('[name="position_note"]')||{}).value||'';
+    var reason=(form.querySelector('[name="sell_reason"]')||{}).value||'';
+    var title=isAdd?'確認加碼':'確認換股';
+    var subtitle=isAdd?'確認後才會寫入持股與操作日報':'你選擇「換股」，確認後才會執行賣出並寫入交易紀錄';
+    var icon=isAdd?'＋':'⇄';
+    var qty=num(s), unit=isAdd?num(cost):num(price);
+    var total=qty!=null && unit!=null ? qty*unit : null;
+    var rows=isAdd
+      ? [['股數',shares(s)],['成本價',cost?money(cost,2)+'／股':'未填'],['預計金額',total!=null?money(total,0)+' 元':'—'],['買進手續費',fee?money(fee,0)+' 元':'未填／不另加'],['買進日期',date],['備註',note||'—']]
+      : [['賣出股數',shares(s)],['賣出價',price?money(price,2)+'／股':'市價／送出後估算'],['成交金額',total!=null?money(total,0)+' 元':'送出後計算'],['手續費',fee?money(fee,0)+' 元':'系統估算'],['證交稅',tax?money(tax,0)+' 元':'系統估算'],['理由',reason||'換股']];
+    var html='<div class="position-confirm-backdrop" id="position-confirm-backdrop" role="dialog" aria-modal="true">'+
+      '<div class="position-confirm-modal">'+
+      '<div class="position-confirm-head"><div class="position-confirm-icon">'+icon+'</div><div><h3>'+esc(title)+'</h3><p>'+esc(subtitle)+'</p></div></div>'+
+      '<div class="position-confirm-body"><div class="position-confirm-stock"><b>'+esc(name||'股票')+' <span style="font-size:13px;color:#71859a">'+esc(code)+'</span></b><span>'+ (isAdd?'這筆資料將新增為一筆持股':'這筆資料將從目前持股中賣出') +'</span></div>'+
+      '<div class="position-confirm-grid">'+rows.map(function(r){return '<div class="position-confirm-item"><small>'+esc(r[0])+'</small><b>'+esc(r[1])+'</b></div>'}).join('')+'</div>'+
+      (isAdd?'<div class="position-confirm-warning">送出後會立即寫入持股，並產生一筆加碼操作紀錄。若股數填錯，之後還要再修正，請先確認股數。</div>':'<div class="position-confirm-warning">「換股」會視為正式賣出：會更新持股、已實現損益與交易紀錄。請確認股數與成交價。</div>')+
+      '</div><div class="position-confirm-actions"><button type="button" class="position-confirm-cancel">返回修改</button><button type="button" class="position-confirm-submit">確認送出</button></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+    var back=document.getElementById('position-confirm-backdrop');
+    var cancel=back.querySelector('.position-confirm-cancel');
+    var submit=back.querySelector('.position-confirm-submit');
+    cancel.onclick=function(){back.remove()};
+    back.addEventListener('click',function(e){if(e.target===back) back.remove()});
+    function go(){
+      back.remove();
+      form.dataset.confirmed='1';
+      if(typeof form.requestSubmit==='function') form.requestSubmit(); else form.submit();
+    }
+    submit.onclick=go;
+    setTimeout(function(){cancel.focus()},30);
+  }
+  document.addEventListener('submit',function(e){
+    var form=e.target;
+    if(!form || !form.matches('form.add, form.sellpanel')) return;
+    if(form.dataset.confirmed==='1'){delete form.dataset.confirmed;return}
+    if(form.matches('form.add')){e.preventDefault();showConfirm(form,'add');return}
+    var reason=form.querySelector('[name="sell_reason"]');
+    if(reason && reason.value==='換股'){e.preventDefault();showConfirm(form,'swap');}
+  },true);
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'){var m=document.getElementById('position-confirm-backdrop');if(m)m.remove()}
+  });
+})();
+</script>'''
     body += '''<script>
 (function(){
   var timer=null,busy=false,root=document.getElementById('positions-quote-status');
