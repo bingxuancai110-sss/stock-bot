@@ -3531,6 +3531,52 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
         release_db_connection(conn)
 
 
+
+def delete_position_exact_id(user_id, pos_id):
+    """用 positions.id 直接刪除唯一的一筆 lot，避免任何模糊匹配。"""
+    try:
+        pos_id = int(str(pos_id).strip())
+    except (TypeError, ValueError):
+        return False, "無效的持股 ID"
+    uid = str(user_id).strip()
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, code, shares, cost FROM positions WHERE id = %s AND user_id = %s",
+            (pos_id, uid),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            conn.rollback(); cursor.close()
+            return False, f"找不到這筆持股（ID {pos_id}）"
+        actual_id, code_raw, shares_raw, cost_raw = row
+        cursor.execute(
+            "DELETE FROM positions WHERE id = %s AND user_id = %s",
+            (int(actual_id), uid),
+        )
+        deleted = cursor.rowcount
+        if deleted != 1:
+            conn.rollback(); cursor.close()
+            return False, f"刪除筆數異常（ID {pos_id}）"
+        cursor.execute(
+            """INSERT INTO position_change_logs
+                (user_id, code, action, shares_delta, trade_price, trade_date, note, source)
+                VALUES (%s, %s, 'delete', %s, %s, %s, %s, 'web')""",
+            (uid, str(code_raw).strip(), -int(shares_raw or 0),
+             float(cost_raw) if cost_raw is not None else None,
+             taiwan_today(), "刪除持股（未產生已實現損益）"),
+        )
+        conn.commit(); cursor.close(); clear_leaderboard_cache()
+        return True, "ok"
+    except Exception as exc:
+        try: conn.rollback()
+        except Exception: pass
+        print(f"❌ 精確刪除持股失敗 ID={pos_id}: {exc}")
+        return False, f"資料庫刪除失敗：{exc}"
+    finally:
+        release_db_connection(conn)
+
 def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None,
                     fallback_cost=None, fallback_bought_on=None, fallback_note=None,
                     fallback_created_at=None):
@@ -19770,6 +19816,9 @@ def web_positions(uid):
             set_exright_ignored(uid, request.form.get("code"),
                                 request.form.get("ratio"))
             msg = "已忽略這筆除權提示；若之後偵測到不同的配股率會再提醒。"
+        elif action == "delete_exact":
+            ok, info = delete_position_exact_id(uid, request.form.get("delete_lot_id"))
+            msg = "已刪除這筆持股。" if ok else f"刪除失敗：{info}"
         elif action == "delete":
             ok = delete_position(
                 uid, request.form.get("id"),
@@ -19869,7 +19918,7 @@ def web_positions(uid):
 <details class="sellbox"><summary>{label}</summary>
 <form method="post" class="sellpanel">
   <input type="hidden" name="action" value="sell">
-  <input type="hidden" name="id" value="{lot_id}">
+  <input type="hidden" name="delete_lot_id" value="{html.escape(str(lot_id), quote=True)}">
   <div class="fields">
     <div><label>賣出股數</label>
       <input type="number" name="sell_shares" min="1" max="{max_shares}"
@@ -19911,7 +19960,7 @@ def web_positions(uid):
                 f'onsubmit="return confirm(\'刪除是把這筆持股整筆移除，'
                 f'不會記入已實現損益。確定刪除 {name}？\')">'
                 f'{csrf_hidden_input()}'
-                f'<input type="hidden" name="action" value="delete">'
+                f'<input type="hidden" name="action" value="delete_exact">'
                 f'<input type="hidden" name="id" value="{lot_id}">'
                 f'<input type="hidden" name="delete_code" value="{code}">'
                 f'<input type="hidden" name="delete_shares" value="{shares}">'
