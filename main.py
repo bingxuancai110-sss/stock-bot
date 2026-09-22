@@ -19918,6 +19918,7 @@ def web_positions(uid):
 <details class="sellbox"><summary>{label}</summary>
 <form method="post" class="sellpanel">
   <input type="hidden" name="action" value="sell">
+  <input type="hidden" name="id" value="{html.escape(str(lot_id), quote=True)}">
   <input type="hidden" name="delete_lot_id" value="{html.escape(str(lot_id), quote=True)}">
   <div class="fields">
     <div><label>賣出股數</label>
@@ -19961,6 +19962,7 @@ def web_positions(uid):
                 f'不會記入已實現損益。確定刪除 {name}？\')">'
                 f'{csrf_hidden_input()}'
                 f'<input type="hidden" name="action" value="delete_exact">'
+                f'<input type="hidden" name="delete_lot_id" value="{lot_id}">'
                 f'<input type="hidden" name="id" value="{lot_id}">'
                 f'<input type="hidden" name="delete_code" value="{code}">'
                 f'<input type="hidden" name="delete_shares" value="{shares}">'
@@ -20240,6 +20242,14 @@ def web_positions(uid):
 @media(max-width:520px){.position-card-primary>div{padding:8px 6px!important;min-height:54px!important;border-radius:11px!important}.position-card-primary small{font-size:10px!important;white-space:nowrap}.position-card-primary b{font-size:14px!important}}
 .position-card{position:relative;border-left:4px solid #d9e3ec;transition:border-color .18s,box-shadow .18s;background:#fff}.position-card:has(.position-card-primary .up){border-left-color:#d93025}.position-card:has(.position-card-primary .down){border-left-color:#0b8f55}.position-card .up{color:#d93025!important}.position-card .down{color:#0b8f55!important}.position-factors{margin-top:10px;border-top:1px solid #edf1f4;padding-top:2px}.position-factors>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:13px;font-weight:850;display:flex;align-items:center;justify-content:space-between}.position-factors>summary::-webkit-details-marker{display:none}.position-factors>summary:after{content:'＋';font-size:17px;font-weight:500;color:#8294a6}.position-factors[open]>summary:after{content:'−'}.position-factors-body{padding:4px 0 10px}.position-factor-loading,.position-factor-empty{padding:11px 12px;border:1px dashed #d7e2ea;border-radius:11px;background:#f8fafc;color:#71808f;font-size:12px;line-height:1.6}.position-factor-overview{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-radius:12px;background:#f5f9fc;border:1px solid #dfe9f1;margin-bottom:9px}.position-factor-overview small{display:block;color:#71808f;font-size:10px}.position-factor-overview b{display:block;margin-top:2px;color:#173b5d;font-size:22px;line-height:1}.position-factor-overview em{font-style:normal;color:#607789;font-size:11px;line-height:1.45;text-align:right}.position-factor-list{display:grid;gap:7px}.position-factor-item>summary{list-style:none;cursor:pointer}.position-factor-item>summary::-webkit-details-marker{display:none}.position-factor-item>summary b{white-space:nowrap}.position-factor-item[open]>summary b{ }.position-factor-details{margin-top:8px;padding:9px 10px;border-top:1px solid rgba(120,140,155,.18);background:rgba(255,255,255,.62);border-radius:8px;color:#526879;font-size:11px;line-height:1.7}.position-factor-details>div{margin:2px 0}.position-factor-details b{color:#244f70;font-weight:900}.position-factor-item.strong .position-factor-details{background:#fffafa}.position-factor-item.weak .position-factor-details{background:#f7fcf8}.position-factor-item.mid .position-factor-details{background:#fffdf8}.position-factor-item{padding:9px 10px;border:1px solid #e4ebf0;border-radius:10px;background:#fff}.position-factor-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-factor-head span{font-size:12px;font-weight:850;color:#294e6d}.position-factor-head b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.position-factor-track{height:8px;margin-top:6px;background:#e9eff3;border-radius:99px;overflow:hidden}.position-factor-track i{display:block;height:100%;border-radius:99px}.position-factor-item.strong .position-factor-head b{color:#1f638f}.position-factor-item.strong .position-factor-track i{background:#2d78a8}.position-factor-item.mid .position-factor-head b{color:#a66b18}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral .position-factor-head b{color:#667788}.position-factor-item.neutral .position-factor-track i{background:#91a2af}.position-factor-item.weak .position-factor-head b{color:#a14d4d}.position-factor-item.weak .position-factor-track i{background:#c56b6b}.position-factor-note{margin:8px 0 0;padding:9px 10px;border-radius:9px;background:#f8fafc;color:#526879;font-size:11px;line-height:1.6}.position-factor-note b{color:#244f70}.position-live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#12a150;margin-right:5px;vertical-align:1px;box-shadow:0 0 0 3px rgba(18,161,80,.12)}.position-factor-source{margin-top:7px;color:#8997a4;font-size:10px}.position-factor-status{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.position-factor-status span{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;background:#eef4f8;color:#45647a}.position-factor-status span.good{background:#fff0f0;color:#c62828}.position-factor-status span.warn{background:#fff4e4;color:#9a651d}.position-factor-status span.weak{background:#eaf4ef;color:#087443}.position-factor-legend{display:flex;flex-wrap:wrap;gap:5px 9px;padding:0 2px 8px;color:#71808f;font-size:10px;line-height:1.4}.pf-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:3px;vertical-align:-1px}.pf-dot.strong{background:#d93025}.pf-dot.mid{background:#d59a37}.pf-dot.weak{background:#0b8f55}.pf-dot.neutral{background:#d8dee3}.position-factor-item.strong{border-color:#efc3c3;background:#fff5f5}.position-factor-item.strong .position-factor-head b{color:#c62828}.position-factor-item.strong .position-factor-track i{background:#d93025}.position-factor-item.mid{border-color:#f1d8a7;background:#fffaf0}.position-factor-item.mid .position-factor-head b{color:#9a651d}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral{border-color:#d9e1e8;background:#f8fafc}.position-factor-item.weak{border-color:#bfe3cf;background:#f3fbf6}.position-factor-item.weak .position-factor-head b{color:#087443}.position-factor-item.weak .position-factor-track i{background:#0b8f55}.position-factor-note{border-left:4px solid #52718d}.position-factor-note b{color:#244f70}
 
+.position-submit-progress-backdrop{position:fixed;inset:0;background:rgba(18,38,56,.42);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);z-index:100000;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box}
+.position-submit-progress-card{width:min(390px,100%);background:#fff;border:1px solid rgba(31,71,107,.12);border-radius:24px;box-shadow:0 24px 70px rgba(14,36,55,.28);padding:24px 22px 22px;text-align:center;animation:positionProgressIn .2s ease-out}
+@keyframes positionProgressIn{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
+.position-submit-progress-icon{width:52px;height:52px;margin:0 auto 12px;border-radius:17px;background:#edf5fb;color:#1e5f8a;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:900;animation:positionProgressPulse 1.2s ease-in-out infinite}
+@keyframes positionProgressPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+.position-submit-progress-card h3{margin:0;color:#173b5d;font-size:19px}.position-submit-progress-card p{margin:6px 0 16px;color:#7a8ea0;font-size:12px;line-height:1.5}
+.position-submit-progress-track{height:9px;border-radius:999px;background:#e7eef5;overflow:hidden}.position-submit-progress-bar{height:100%;width:12%;border-radius:999px;background:linear-gradient(90deg,#3d78b5,#6da8ef);transition:width .45s ease;box-shadow:0 2px 8px rgba(61,120,181,.2)}
+.position-submit-progress-percent{margin-top:9px;color:#4f6f8a;font-size:12px;font-weight:800}
 .position-confirm-backdrop{position:fixed;inset:0;background:rgba(18,38,56,.48);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px);z-index:99999;display:flex;align-items:flex-end;justify-content:center;padding:16px;box-sizing:border-box}
 .position-confirm-modal{width:min(520px,100%);background:#fff;border:1px solid rgba(31,71,107,.14);border-radius:24px;box-shadow:0 24px 70px rgba(14,36,55,.28);overflow:hidden;animation:positionConfirmIn .18s ease-out}
 @keyframes positionConfirmIn{from{transform:translateY(16px);opacity:0}to{transform:translateY(0);opacity:1}}
@@ -20334,14 +20344,42 @@ def web_positions(uid):
     cancel.onclick=function(){back.remove()};
     back.addEventListener('click',function(e){if(e.target===back) back.remove()});
     var confirmed=false;
+    function showSubmitProgress(){
+      var isAddAction = isAdd;
+      var title = isAddAction ? '正在新增你的持股' : '正在送出你的賣出';
+      var sub = isAddAction ? '資料確認後正在寫入持股與操作日報…' : '正在更新持股與交易紀錄…';
+      var icon = isAddAction ? '＋' : '✓';
+      var wrap=document.createElement('div');
+      wrap.className='position-submit-progress-backdrop';
+      wrap.innerHTML='<div class="position-submit-progress-card" role="status" aria-live="polite">'+
+        '<div class="position-submit-progress-icon">'+icon+'</div>'+
+        '<h3>'+esc(title)+'</h3>'+
+        '<p>'+esc(sub)+'</p>'+
+        '<div class="position-submit-progress-track"><div class="position-submit-progress-bar"></div></div>'+
+        '<div class="position-submit-progress-percent">0%</div>'+
+        '</div>';
+      document.body.appendChild(wrap);
+      var bar=wrap.querySelector('.position-submit-progress-bar');
+      var pct=wrap.querySelector('.position-submit-progress-percent');
+      var value=12;
+      var timer=setInterval(function(){
+        value=Math.min(value+Math.floor(Math.random()*11)+6,88);
+        bar.style.width=value+'%'; pct.textContent=value+'%';
+        if(value>=88) clearInterval(timer);
+      },220);
+      setTimeout(function(){
+        clearInterval(timer);
+        bar.style.width='100%'; pct.textContent='100%';
+        // 使用原生 submit，刻意繞過全域 submit 防重送攔截器，避免再次出現「處理中」卡住。
+        HTMLFormElement.prototype.submit.call(form);
+      },520);
+    }
     function go(){
       if(confirmed) return;
       confirmed=true;
       submit.disabled=true;
-      // 不顯示「處理中」；這顆按鈕只負責真正送出。
       back.remove();
-      form.dataset.confirmed='1';
-      if(typeof form.requestSubmit==='function') form.requestSubmit(); else form.submit();
+      showSubmitProgress();
     }
     submit.onclick=go;
     setTimeout(function(){cancel.focus()},30);
