@@ -189,7 +189,7 @@ def configure_daily_change_detector(**dependencies):
 def _require_dependencies():
     required = ("get_db_connection", "release_db_connection", "compute_screener_rows",
                 "fetch_taiex_summary", "fetch_quotes_bulk", "fetch_stock_news",
-                "get_user_watchlist", "compute_watchlist_scores", "get_notify_users",
+                "get_user_watchlist", "compute_watchlist_scores", "get_notify_users", "get_anomaly_notify_users",
                 "get_all_watchlist_user_ids", "stock_display_name")
     missing = [name for name in required if name not in globals()]
     if missing:
@@ -869,6 +869,11 @@ def run_daily_change_detection(snapshot_date=None):
         except Exception as exc:
             print(f"❌ 盤前變化偵測：使用者 {uid} 失敗：{exc}")
     _save_events(snapshot_date, None, _sort_events(events), briefing_date)
+    if snapshot_date == taiwan_today():
+        try:
+            print(push_anomaly_events(snapshot_date, base_url=DEFAULT_WEB_BASE_URL))
+        except Exception as exc:
+            print(f"⚠️ 異常提醒推播流程失敗：{exc}")
     return (f"盤前變化偵測完成：{len(events)} 個全市場事件、"
             f"資料日 {snapshot_date}、顯示日 {briefing_date}")
 
@@ -1677,6 +1682,32 @@ def init_db():
             ALTER TABLE users ADD COLUMN IF NOT EXISTS requested BOOLEAN DEFAULT FALSE
         ''')
         cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS anomaly_notify BOOLEAN DEFAULT FALSE
+        ''')
+        cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS anomaly_daily_limit INTEGER DEFAULT 5
+        ''')
+        cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS anomaly_cooldown_minutes INTEGER DEFAULT 60
+        ''')
+        cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS anomaly_s_bypass_limit BOOLEAN DEFAULT TRUE
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS line_anomaly_sent (
+                id BIGSERIAL PRIMARY KEY,
+                snapshot_date DATE NOT NULL,
+                user_id TEXT NOT NULL,
+                event_key TEXT NOT NULL,
+                sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(snapshot_date, user_id, event_key)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_line_anomaly_sent_time
+            ON line_anomaly_sent(sent_at DESC)
+        ''')
+        cursor.execute('''
             ALTER TABLE users ADD COLUMN IF NOT EXISTS last_feature TEXT
         ''')
         cursor.execute('''
@@ -2291,7 +2322,10 @@ def _admin_user_rows(status="all", limit=10, offset=0):
         cur.execute(f"""
             SELECT u.user_id, COALESCE(u.display_name, '(未知)'), u.last_seen,
                    COALESCE(u.last_feature, ''), COALESCE(u.notify, FALSE),
-                   COALESCE(u.requested, FALSE), COALESCE(u.activity_count, 0)
+                   COALESCE(u.requested, FALSE), COALESCE(u.anomaly_notify, FALSE),
+                   COALESCE(u.anomaly_daily_limit, 5), COALESCE(u.anomaly_cooldown_minutes, 60),
+                   COALESCE(u.anomaly_s_bypass_limit, TRUE),
+                   COALESCE(u.activity_count, 0)
             FROM users u {where}
             ORDER BY u.last_seen DESC NULLS LAST, u.user_id
             LIMIT %s OFFSET %s
@@ -2529,7 +2563,7 @@ def build_admin_user_list_report(status="all", limit=10, offset=0):
         lines.append("目前沒有符合條件的使用者。")
         return "\n".join(lines)
     recent_features = _admin_recent_features_map([row[0] for row in rows])
-    for i, (uid, name, last_seen, last_feature, notify, requested, count) in enumerate(rows, offset + 1):
+    for i, (uid, name, last_seen, last_feature, notify, requested, anomaly_notify, anomaly_limit, anomaly_cooldown, anomaly_bypass, count) in enumerate(rows, offset + 1):
         features = recent_features.get(str(uid).strip(), [])
         masked = f"{uid[:4]}••••{uid[-4:]}" if len(uid) > 8 else uid
         push_state = ("🔔 盤前推播：開啟" if notify else
@@ -2538,11 +2572,14 @@ def build_admin_user_list_report(status="all", limit=10, offset=0):
         lines += [f"{i}. {name}", f"   {_admin_status(last_seen)}",
                   f"   最後使用：{_admin_format_time(last_seen)}",
                   f"   最近使用：{'／'.join(features) if features else _activity_feature_label(last_feature) if last_feature else '—'}",
-                  f"   {push_state}", f"   LINE：{masked}"]
+                  f"   {push_state}",
+                  f"   {'⚡ 異常提醒：開啟' if anomaly_notify else '▫️ 異常提醒：關閉'}",
+                  f"   異常額度：{anomaly_limit} 則/日｜冷卻 {anomaly_cooldown} 分鐘｜S級{'可突破' if anomaly_bypass else '不突破'}",
+                  f"   LINE：{masked}"]
     if status == "all":
         lines += ["", "─" * 14,
-                  "推播管理：輸入「開通 編號」或「停用 編號」",
-                  "例如：開通 3　／　停用 3"]
+                  "每日推播：開通 3／停用 3",
+                  "異常提醒：異常開 3／異常關 3"]
     return "\n".join(lines)
 
 
@@ -2583,8 +2620,8 @@ def is_admin(user_id):
     return str(user_id).strip() in admins if admins else False
 
 
-def set_push_flags(user_id, notify=None, requested=None):
-    """在同一個 transaction 更新主動推播與申請狀態。"""
+def set_push_flags(user_id, notify=None, requested=None, anomaly_notify=None, anomaly_daily_limit=None, anomaly_cooldown_minutes=None, anomaly_s_bypass_limit=None):
+    """在同一個 transaction 更新每日推播、申請狀態與異常提醒設定。"""
     fields, values = [], []
     if notify is not None:
         fields.append("notify = %s")
@@ -2592,6 +2629,18 @@ def set_push_flags(user_id, notify=None, requested=None):
     if requested is not None:
         fields.append("requested = %s")
         values.append(bool(requested))
+    if anomaly_notify is not None:
+        fields.append("anomaly_notify = %s")
+        values.append(bool(anomaly_notify))
+    if anomaly_daily_limit is not None:
+        fields.append("anomaly_daily_limit = %s")
+        values.append(max(0, min(50, int(anomaly_daily_limit))))
+    if anomaly_cooldown_minutes is not None:
+        fields.append("anomaly_cooldown_minutes = %s")
+        values.append(max(0, min(1440, int(anomaly_cooldown_minutes))))
+    if anomaly_s_bypass_limit is not None:
+        fields.append("anomaly_s_bypass_limit = %s")
+        values.append(bool(anomaly_s_bypass_limit))
     if not fields:
         return False
     values.append(str(user_id).strip())
@@ -2627,7 +2676,9 @@ def list_users():
         cursor = conn.cursor()
         cursor.execute("""
             SELECT user_id, COALESCE(display_name, '(未知)'),
-                   COALESCE(notify, FALSE), COALESCE(requested, FALSE)
+                   COALESCE(notify, FALSE), COALESCE(requested, FALSE),
+                   COALESCE(anomaly_notify, FALSE), COALESCE(anomaly_daily_limit, 5),
+                   COALESCE(anomaly_cooldown_minutes, 60), COALESCE(anomaly_s_bypass_limit, TRUE)
             FROM users ORDER BY last_seen DESC NULLS LAST, user_id
         """)
         rows = cursor.fetchall()
@@ -2742,15 +2793,16 @@ def build_user_list_report():
 
     on = sum(1 for r in rows if r[2])
     lines = [f"👥 使用者名單（共 {len(rows)} 人，已開通 {on} 人）", "─" * 14]
-    for i, (uid, name, notify, requested) in enumerate(rows, start=1):
+    for i, (uid, name, notify, requested, anomaly_notify, anomaly_limit, anomaly_cooldown, anomaly_bypass) in enumerate(rows, start=1):
         mark = "🔔" if notify else ("📮" if requested else "　")
-        lines.append(f"{i:>2}. {mark} {name}")
+        anomaly = "⚡" if anomaly_notify else "▫️"
+        lines.append(f"{i:>2}. {mark} {anomaly} {name}｜異常 {anomaly_limit}/日｜冷卻 {anomaly_cooldown}分｜S級{'突破' if anomaly_bypass else '不突破'}")
     lines += [
         "─" * 14,
-        "🔔 已開通　📮 申請中",
+        "🔔 已開通　📮 申請中　⚡ 異常提醒已開",
         "",
-        "開通：輸入「開通 3」",
-        "停用：輸入「停用 3」",
+        "每日推播：開通 3／停用 3",
+        "異常提醒：異常開 3／異常關 3",
     ]
     # 額度上限直接算給管理者看，不要讓他自己去記「大概九個人」
     if on > PUSH_MAX_USERS:
@@ -2797,6 +2849,124 @@ def get_notify_users():
         return []
     finally:
         release_db_connection(conn)
+
+def get_anomaly_notify_users():
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""SELECT user_id FROM users WHERE COALESCE(anomaly_notify, FALSE) = TRUE
+                           ORDER BY last_seen DESC NULLS LAST, user_id""")
+        ids = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return ids
+    except Exception as e:
+        print(f"❌ 讀取異常提醒名單錯誤: {e}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+def get_anomaly_user_settings(user_id):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT COALESCE(anomaly_daily_limit,5), COALESCE(anomaly_cooldown_minutes,60),
+                           COALESCE(anomaly_s_bypass_limit,TRUE)
+                      FROM users WHERE user_id=%s""", (str(user_id),))
+        row = cur.fetchone()
+        cur.close()
+        return row or (5, 60, True)
+    except Exception as exc:
+        print(f"⚠️ 讀取異常提醒設定失敗 {user_id}: {exc}")
+        return (5, 60, True)
+    finally:
+        release_db_connection(conn)
+
+def _anomaly_daily_sent_count(snapshot_date, user_id):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM line_anomaly_sent WHERE snapshot_date=%s AND user_id=%s", (snapshot_date, str(user_id)))
+        n = int(cur.fetchone()[0] or 0)
+        cur.close(); return n
+    except Exception as exc:
+        print(f"⚠️ 讀取異常提醒日額度失敗 {user_id}: {exc}")
+        return 0
+    finally:
+        release_db_connection(conn)
+
+def _anomaly_recent_sent(snapshot_date, user_id, event_key, cooldown_minutes):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT 1 FROM line_anomaly_sent
+                      WHERE snapshot_date=%s AND user_id=%s AND event_key=%s
+                        AND sent_at >= NOW() - (%s * INTERVAL '1 minute') LIMIT 1""",
+                    (snapshot_date, str(user_id), str(event_key), int(cooldown_minutes)))
+        ok = cur.fetchone() is not None
+        cur.close(); return ok
+    except Exception as exc:
+        print(f"⚠️ 讀取異常提醒冷卻失敗 {user_id}: {exc}")
+        return True
+    finally:
+        release_db_connection(conn)
+
+def _claim_anomaly_event(snapshot_date, user_id, event_key):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO line_anomaly_sent(snapshot_date, user_id, event_key)
+                       VALUES (%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id""",
+                    (snapshot_date, str(user_id), str(event_key)))
+        ok = cur.fetchone() is not None
+        conn.commit(); cur.close(); return ok
+    except Exception as exc:
+        conn.rollback(); print(f"⚠️ 異常提醒去重失敗：{exc}"); return False
+    finally:
+        release_db_connection(conn)
+
+def _format_anomaly_line(event, base_url=None):
+    level = str(event.get("severity") or "A").upper()
+    icon = "🚨" if level == "S" else "⚡"
+    lines = [f"{icon} 【台股異常提醒】", "", str(event.get("title") or "市場異常事件")]
+    if event.get("detail"):
+        lines.append(str(event["detail"]))
+    lines += ["", "這是事件提醒，不代表買賣建議。"]
+    if base_url:
+        lines.append(f"查看完整戰情：{base_url}/")
+    return "\n".join(lines)
+
+def push_anomaly_events(snapshot_date, users=None, base_url=None):
+    users = list(users if users is not None else get_anomaly_notify_users())
+    if not users: return "異常提醒：沒有開啟的使用者"
+    sent = failed = skipped = 0
+    for uid in users:
+        daily_limit, cooldown, s_bypass = get_anomaly_user_settings(uid)
+        daily_sent = _anomaly_daily_sent_count(snapshot_date, uid)
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("""SELECT severity, category, title, detail, event_key
+                          FROM premarket_events WHERE snapshot_date=%s AND user_id=%s
+                            AND severity IN ('S','A')
+                          ORDER BY CASE severity WHEN 'S' THEN 0 ELSE 1 END, id DESC LIMIT 20""",
+                        (snapshot_date, str(uid)))
+            events = cur.fetchall(); cur.close()
+        finally:
+            release_db_connection(conn)
+        for severity, category, title, detail, event_key in events:
+            if _anomaly_recent_sent(snapshot_date, uid, event_key, cooldown):
+                skipped += 1; continue
+            if daily_sent >= daily_limit and not (str(severity).upper() == 'S' and s_bypass):
+                skipped += 1; continue
+            if not _claim_anomaly_event(snapshot_date, uid, event_key):
+                skipped += 1; continue
+            try:
+                line_bot_api.push_message(uid, TextSendMessage(text=_format_anomaly_line({"severity":severity,"title":title,"detail":detail}, base_url)))
+                sent += 1; daily_sent += 1
+            except Exception as exc:
+                failed += 1; print(f"❌ 異常提醒推播失敗 {uid}: {exc}")
+    return f"異常提醒 done. sent={sent}, failed={failed}, skipped={skipped}"
+
 
 # ── 自選股分類 ──
 # 只有三種，不開放自由輸入：LINE 是純文字介面，自由標籤很容易打錯字，
@@ -2923,7 +3093,7 @@ import hashlib
 from functools import wraps
 from flask import make_response, redirect, url_for
 
-WEB_SESSION_DAYS = 30  # 權杖有效天數
+WEB_SESSION_DAYS = 180  # 網頁登入權杖有效 180 天；有效使用期間會自動續期
 
 
 def _web_csrf_secret():
@@ -3006,14 +3176,37 @@ def resolve_web_token(token):
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT user_id FROM web_sessions WHERE token = %s AND expires_at > NOW()",
+                "SELECT user_id, expires_at FROM web_sessions WHERE token = %s AND expires_at > NOW()",
                 (token,),
             )
             row = cursor.fetchone()
+            # 有效使用者不需要重新登入：只要最近有使用網頁，就把權杖
+            # 自動往後延長。這不是密碼登入，而是沿用 LINE 發出的
+            # 一次性登入連結所建立的長期 session。
+            if row:
+                user_id, expires_at = row
+                try:
+                    cursor.execute(
+                        """
+                        UPDATE web_sessions
+                        SET expires_at = NOW() + INTERVAL '%s days'
+                        WHERE token = %s
+                          AND expires_at > NOW()
+                          AND expires_at < NOW() + INTERVAL '45 days'
+                        """,
+                        (WEB_SESSION_DAYS, token),
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                cursor.close()
+                release_db_connection(conn)
+                conn = None
+                return user_id
             cursor.close()
             release_db_connection(conn)
             conn = None
-            return row[0] if row else None
+            return None
         except Exception as e:
             print(f"❌ 驗證網頁權杖失敗（第 {attempt + 1} 次）: {e}")
             # SSL／連線例外後不要把壞連線放回 pool；下一次從 pool
@@ -18065,10 +18258,12 @@ input:focus,select:focus{box-shadow:0 0 0 3px rgba(82,122,155,.13)}
 
 NEED_LOGIN_HTML = """
 <div class="msg">
-  這個網頁登入狀態已失效。從 LINE 開啟時，請回到 LINE 輸入「網頁」重新取得連結；<b>不需要設定帳號密碼</b>。
+  <b>不需要帳號密碼。</b><br>
+  這個網頁平常會保持登入，而且只要持續使用就會自動續期。
+  如果真的失效，請回到 LINE 的「台股 BOT」輸入「網頁」重新取得專屬連結。
 </div>
-<div class="section-head"><h2>用登入碼登入</h2>
-  <span class="section-note">任何瀏覽器都可以</span></div>
+<div class="section-head"><h2>網頁登入已失效</h2>
+  <span class="section-note">不用設定密碼</span></div>
 <form method="post" action="/web/code" class="add">
   <h3>輸入 6 位數登入碼</h3>
   <div class="fields">
@@ -18079,10 +18274,9 @@ NEED_LOGIN_HTML = """
   </div>
   <button type="submit">登入</button>
   <div class="sell-hint">
-    回到 LINE 的「台股 BOT」，輸入 <b>網頁</b>，訊息裡就有登入碼；
-    只想重拿一組的話輸入 <b>登入碼</b>。有效 30 分鐘。<br>
-    在 LINE 裡開網頁若顯示不正常，用這個方式就能在 Safari、Chrome
-    等外部瀏覽器登入。
+    這個 6 位數登入碼只是「真的換裝置／換瀏覽器」時的備援方式，
+    平常使用網頁 App 不需要輸入帳號密碼。<br>
+    回到 LINE 的「台股 BOT」輸入 <b>登入碼</b> 即可取得新的登入碼。
   </div>
 </form>
 """
@@ -32641,6 +32835,69 @@ def handle_message(event):
 
     elif is_admin(user_id) and text in ["統計", "數據", "使用統計"]:
         reply = build_usage_stats_report()
+
+    elif is_admin(user_id) and (text.startswith("異常開") or text.startswith("異常關")):
+        turn_on = text.startswith("異常開")
+        arg = text[3:].strip()
+        rows = list_users(); target = None; ambiguous = None
+        if arg.isdigit() and 1 <= int(arg) <= len(rows): target = rows[int(arg)-1]
+        elif arg:
+            matches = [r for r in rows if arg in r[1]]
+            if len(matches) == 1: target = matches[0]
+            elif len(matches) > 1: ambiguous = "、".join(m[1] for m in matches[:5])
+        if target:
+            changed = set_push_flags(target[0], anomaly_notify=turn_on)
+            if changed:
+                reply = (f"{'⚡ 已開啟異常提醒' if turn_on else '▫️ 已關閉異常提醒'}：{target[1]}\n\n" + build_admin_user_list_report(status="all", limit=10))
+            else: reply = "❌ 異常提醒設定沒有成功寫入，請稍後再試。"
+        elif ambiguous: reply = f"符合「{arg}」的有多人：{ambiguous}\n請改用編號，例如「異常開 3」"
+        else: reply = f"找不到「{arg}」。輸入「名單」查看編號。"
+
+    elif is_admin(user_id) and text.startswith("異常上限"):
+        parts = text.split()
+        if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+            reply = "格式：異常上限 編號 數量\n例如：異常上限 3 5（第3位每天最多5則）"
+        else:
+            idx, limit = int(parts[1]), int(parts[2])
+            rows = list_users()
+            if not (1 <= idx <= len(rows)):
+                reply = "❌ 使用者編號不存在，請先輸入「名單」。"
+            elif limit > 50:
+                reply = "❌ 每日上限最多 50 則。"
+            else:
+                target = rows[idx-1]
+                changed = set_push_flags(target[0], anomaly_daily_limit=limit)
+                reply = (f"✅ 已設定 {target[1]}：異常提醒每日上限 {limit} 則" if changed else "❌ 設定失敗，請稍後再試。")
+
+    elif is_admin(user_id) and text.startswith("異常冷卻"):
+        parts = text.split()
+        if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+            reply = "格式：異常冷卻 編號 分鐘\n例如：異常冷卻 3 60"
+        else:
+            idx, minutes = int(parts[1]), int(parts[2])
+            rows = list_users()
+            if not (1 <= idx <= len(rows)):
+                reply = "❌ 使用者編號不存在，請先輸入「名單」。"
+            elif minutes > 1440:
+                reply = "❌ 冷卻時間最多 1440 分鐘。"
+            else:
+                target = rows[idx-1]
+                changed = set_push_flags(target[0], anomaly_cooldown_minutes=minutes)
+                reply = (f"✅ 已設定 {target[1]}：異常提醒冷卻 {minutes} 分鐘" if changed else "❌ 設定失敗，請稍後再試。")
+
+    elif is_admin(user_id) and (text.startswith("S級突破") or text.startswith("S級不突破")):
+        turn_on = text.startswith("S級突破")
+        parts = text.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            reply = "格式：S級突破 編號 或 S級不突破 編號"
+        else:
+            idx = int(parts[1]); rows = list_users()
+            if not (1 <= idx <= len(rows)):
+                reply = "❌ 使用者編號不存在，請先輸入「名單」。"
+            else:
+                target = rows[idx-1]
+                changed = set_push_flags(target[0], anomaly_s_bypass_limit=turn_on)
+                reply = (f"✅ 已設定 {target[1]}：S級異常{'可突破每日上限' if turn_on else '也受每日上限限制'}" if changed else "❌ 設定失敗，請稍後再試。")
 
     elif is_admin(user_id) and (text.startswith("開通") or text.startswith("停用")):
         turn_on = text.startswith("開通")
