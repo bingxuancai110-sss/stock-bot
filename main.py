@@ -5242,12 +5242,12 @@ def _position_change_journal_status(log):
 
 
 def _filter_voided_same_day_logs(logs):
-    """排除「同一天加入後又完整刪除」的無效操作。
+    """排除「同一天加入後又完整撤回」的無效操作。
 
-    規則：同一使用者、同一交易日、同一檔股票，同時有 add 與 delete，
-    且 shares_delta 淨額為 0，視為誤操作後完整撤回。
+    規則：同一使用者、同一交易日、同一檔股票，同時有 add 與
+    reduce/delete，且 shares_delta 淨額為 0，視為誤操作後完整撤回。
     底層日誌仍保留供除錯，但不進入操作日報、交易紀錄、月度統計與操作習慣。
-    跨日刪除不排除，因為那代表真正的持倉決策。
+    跨日撤回不排除，因為那代表真正的持倉決策。
     """
     grouped = {}
     for log in logs or []:
@@ -5260,7 +5260,7 @@ def _filter_voided_same_day_logs(logs):
     for key, items in grouped.items():
         actions = {str(x.get("action") or "").strip() for x in items}
         net = sum(int(x.get("shares_delta") or 0) for x in items)
-        if net == 0 and "add" in actions and "delete" in actions:
+        if net == 0 and "add" in actions and (actions & {"reduce", "delete"}):
             voided_keys.add(key)
 
     if not voided_keys:
@@ -5733,32 +5733,13 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
         for log in day_logs:
             code_key = str(log.get("code") or "").strip()
             by_code_delta.setdefault(code_key, []).append(log)
-        # 舊資料的補救：刪除持股在「刪除會寫日誌」這個修正之前發生的，
-        # 資料庫裡只有 add、沒有對應的 delete，上面的條件永遠不成立，
-        # 那些誤加就會一直卡在日報的新增／加碼裡。
-        #
-        # 判斷方式：這檔目前完全沒有持股，而且整份日誌裡從來沒有
-        # 任何 reduce／delete 紀錄——真正賣光的標的一定留得下賣出紀錄，
-        # 所以只有「刪除但沒記到」會落入這個情況。
-        ever_exit = set()
-        for log in enriched:
-            if str(log.get("action") or "") in ("reduce", "delete"):
-                ever_exit.add(str(log.get("code") or "").strip())
-        held_now = {str(p.get("code") or "").strip()
-                    for p in (current_positions or [])
-                    if int(p.get("shares") or 0) > 0}
-
         cancelled_codes = set()
         for code_key, logs_of_code in by_code_delta.items():
             actions = {str(x.get("action") or "") for x in logs_of_code}
             net = sum(int(x.get("shares_delta") or 0) for x in logs_of_code)
-            # 需要同時出現「進場」與「刪除」，且當天淨變動為零
-            if net == 0 and "delete" in actions and actions & {"add"}:
-                cancelled_codes.add(code_key)
-            # 舊資料：只有進場、目前無持股、且從未有過任何出場紀錄
-            elif (actions <= {"add"} and net > 0
-                    and code_key not in held_now
-                    and code_key not in ever_exit):
+            # 同一天「加入後完整撤回」：撤回可以是按刪除，也可以是按賣出。
+            # 只有淨變動為 0 才視為誤操作，避免把正常加碼／減碼藏掉。
+            if net == 0 and "add" in actions and (actions & {"reduce", "delete"}):
                 cancelled_codes.add(code_key)
         if cancelled_codes:
             cancelled_logs = [x for x in day_logs
@@ -22665,6 +22646,23 @@ def web_trades(uid):
     trades = get_realized_trades(uid, limit=500,
                                  code=code or None, month=month or None)
     journal_logs = get_position_change_logs(uid, limit=5000, code=code or None)
+    # 同日加入後又完整撤回（加入 23 股、當天又賣回 23 股）視為輸入錯誤，
+    # 不列入已實現交易、勝率、盈虧比與交易紀錄明細。
+    voided_keys = set()
+    by_key = {}
+    for lg in journal_logs:
+        d = _position_change_date(lg.get("trade_date"))
+        c = str(lg.get("code") or "").strip()
+        by_key.setdefault((d, c), []).append(lg)
+    for key, items in by_key.items():
+        actions = {str(x.get("action") or "").strip() for x in items}
+        net = sum(int(x.get("shares_delta") or 0) for x in items)
+        if net == 0 and "add" in actions and (actions & {"reduce", "delete"}):
+            voided_keys.add(key)
+    if voided_keys:
+        trades = [t for t in trades
+                  if (_position_change_date(t.get("sold_on")),
+                      str(t.get("code") or "").strip()) not in voided_keys]
     inst = fetch_institutional_data() or {}
     current_positions = merge_positions(get_positions(uid))
     journal_codes = (sorted({str(p.get("code")).strip() for p in current_positions if p.get("code")} |
