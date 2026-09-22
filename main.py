@@ -3531,29 +3531,57 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
         release_db_connection(conn)
 
 
-def delete_position(user_id, pos_id):
-    """一定要同時比對 user_id，否則有人改網址上的 id 就能刪別人的持股。"""
+def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None, fallback_cost=None):
+    """刪除單筆持股。先用安全的 id+user_id；若頁面是舊快取導致 id 對不上，
+    再用「代號＋股數＋成本」做唯一精確匹配，避免誤刪其他筆。"""
     try:
         pos_id = int(pos_id)
     except (TypeError, ValueError):
-        return False
+        pos_id = None
+    uid = str(user_id).strip()
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        # 先讀出這筆的內容，刪掉之後就查不到了。
-        # 沒有這一步的話操作日誌不會知道「刪了什麼」，
-        # 而日報是用目前持股往回推算前後股數的——
-        # 少了刪除這筆，推出來的會是「−3 → 0 股」這種不可能的負數
-        # （實際發生過：誤加 3 股後刪除，日報顯示 加碼 +3 股、−3 → 0 股）。
-        cursor.execute(
-            "SELECT code, shares, cost FROM positions WHERE id = %s AND user_id = %s",
-            (int(pos_id), str(user_id).strip()))
-        row = cursor.fetchone()
+        row = None
+        actual_id = None
+        if pos_id is not None:
+            cursor.execute(
+                "SELECT id, code, shares, cost FROM positions WHERE id = %s AND user_id = %s",
+                (pos_id, uid))
+            row = cursor.fetchone()
+
+        # 若使用者看到的是舊頁面／舊 fragment，表單裡的 lot id 可能已不是目前頁面
+        # 對應的那筆。只有在代號、股數、成本三項完全匹配且只有一筆時才 fallback，
+        # 不做模糊刪除。
+        if row is None and fallback_code and fallback_shares is not None and fallback_cost is not None:
+            try:
+                f_shares = int(fallback_shares)
+                f_cost = float(fallback_cost)
+            except (TypeError, ValueError):
+                f_shares, f_cost = 0, None
+            if f_shares > 0 and f_cost is not None and math.isfinite(f_cost):
+                cursor.execute(
+                    "SELECT id, code, shares, cost FROM positions "
+                    "WHERE user_id = %s AND code = %s AND shares = %s "
+                    "AND ABS(cost - %s) < 0.01 ORDER BY id",
+                    (uid, str(fallback_code).strip(), f_shares, f_cost))
+                matches = cursor.fetchall()
+                if len(matches) == 1:
+                    row = matches[0]
+
+        if row is None:
+            conn.rollback()
+            cursor.close()
+            return False
+
+        actual_id, code_raw, shares_raw, cost_raw = row
+        code = str(code_raw).strip()
+        shares = int(shares_raw or 0)
+        cost = cost_raw
         cursor.execute("DELETE FROM positions WHERE id = %s AND user_id = %s",
-                       (int(pos_id), str(user_id).strip()))
+                       (int(actual_id), uid))
         deleted = cursor.rowcount
-        if deleted > 0 and row:
-            code, shares, cost = str(row[0]).strip(), int(row[1] or 0), row[2]
+        if deleted > 0:
             cursor.execute(
                 """
                 INSERT INTO position_change_logs
@@ -3561,7 +3589,7 @@ def delete_position(user_id, pos_id):
                      trade_date, note, source)
                 VALUES (%s, %s, 'delete', %s, %s, %s, %s, 'web')
                 """,
-                (str(user_id).strip(), code, -shares,
+                (uid, code, -shares,
                  float(cost) if cost is not None else None,
                  taiwan_today(), "刪除持股（未產生已實現損益）"))
         conn.commit()
@@ -3911,6 +3939,7 @@ def summarize_trade_habits(uid, with_after=False):
     trades = get_realized_trades(uid, limit=1000)
     scored = [t for t in trades if t.get("realized_pl") is not None]
     logs = get_position_change_logs(uid, limit=5000)
+    logs = _filter_voided_same_day_logs(logs)
     out = {"n": len(scored), "n_logs": len(logs)}
 
     # ── 1. 賺錢與賠錢的持有天數 ──
@@ -5212,6 +5241,37 @@ def _position_change_journal_status(log):
     return "減碼", "reduce"
 
 
+def _filter_voided_same_day_logs(logs):
+    """排除「同一天加入後又完整刪除」的無效操作。
+
+    規則：同一使用者、同一交易日、同一檔股票，同時有 add 與 delete，
+    且 shares_delta 淨額為 0，視為誤操作後完整撤回。
+    底層日誌仍保留供除錯，但不進入操作日報、交易紀錄、月度統計與操作習慣。
+    跨日刪除不排除，因為那代表真正的持倉決策。
+    """
+    grouped = {}
+    for log in logs or []:
+        day = _position_change_date(log.get("trade_date"))
+        code = str(log.get("code") or "").strip()
+        key = (day, code)
+        grouped.setdefault(key, []).append(log)
+
+    voided_keys = set()
+    for key, items in grouped.items():
+        actions = {str(x.get("action") or "").strip() for x in items}
+        net = sum(int(x.get("shares_delta") or 0) for x in items)
+        if net == 0 and "add" in actions and "delete" in actions:
+            voided_keys.add(key)
+
+    if not voided_keys:
+        return list(logs or [])
+    return [
+        log for log in (logs or [])
+        if (_position_change_date(log.get("trade_date")),
+            str(log.get("code") or "").strip()) not in voided_keys
+    ]
+
+
 def _filter_position_change_logs(logs, trade_date=None, start_date=None, end_date=None):
     """先重建完整持股歷程再篩選輸出範圍，確保期間起點的前後持股正確。"""
     exact = _position_change_date(trade_date) if trade_date else None
@@ -5250,6 +5310,7 @@ def build_position_journal_csv(user_id, current_positions=None, price_map=None,
     enriched = enrich_position_change_logs(all_logs, current_positions, price_map, total_value)
     enriched = _filter_position_change_logs(
         enriched, trade_date=trade_date, start_date=start_date, end_date=end_date)
+    enriched = _filter_voided_same_day_logs(enriched)
     realized_trades = (list(realized_trades) if realized_trades is not None
                        else get_realized_trades(user_id, limit=500))
     realized_by_key = {}
@@ -5327,6 +5388,7 @@ def render_position_change_history(user_id, current_positions=None, price_map=No
     )
     enriched = enrich_position_change_logs(all_logs, current_positions, price_map, total_value)
     enriched = _filter_position_change_logs(enriched, start_date=start_date, end_date=end_date)
+    enriched = _filter_voided_same_day_logs(enriched)
     if not enriched:
         return ('<section class="position-history"><div class="position-history-head"><h2>完整操作歷程</h2></div>'
                 '<div class="position-journal-empty">這個日期區間沒有操作紀錄。</div></section>')
@@ -5475,6 +5537,7 @@ def build_monthly_review_payload(user_id, month_key, logs=None, realized_trades=
         return None
     all_logs = list(logs) if logs is not None else get_position_change_logs(user_id, limit=5000)
     period_logs = _filter_position_change_logs(all_logs, start_date=start, end_date=end)
+    period_logs = _filter_voided_same_day_logs(period_logs)
     statuses = (("新增", "new"), ("加碼", "add"), ("減碼", "reduce"), ("刪除", "delete"))
     actions = []
     for label, key in statuses:
@@ -5624,6 +5687,7 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
         for p in current_positions if price_map.get(p.get("code"))
     )
     enriched = enrich_position_change_logs(all_logs, current_positions, price_map, total_value)
+    enriched = _filter_voided_same_day_logs(enriched)
     realized_trades = (list(realized_trades) if realized_trades is not None
                        else get_realized_trades(user_id, limit=500))
     realized_by_key = {}
@@ -5662,7 +5726,8 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
         # 只合併同一天：隔天才刪通常是真的改變主意，那是有意義的
         # 操作決定，不該被藏起來。
         #
-        # 紀錄本身不刪除，仍可展開查看；日報只是不把它混在正常操作裡。
+        # 已被判定為「當日加入後完整刪除」的無效操作已在前面排除，
+        # 因此這裡只呈現真正有效的操作。
         cancelled_logs = []
         by_code_delta = {}
         for log in day_logs:
@@ -19616,8 +19681,12 @@ def web_positions(uid):
                                 request.form.get("ratio"))
             msg = "已忽略這筆除權提示；若之後偵測到不同的配股率會再提醒。"
         elif action == "delete":
-            ok = delete_position(uid, request.form.get("id"))
-            msg = "已刪除。" if ok else "刪除失敗：找不到這筆持股或資料未成功寫入。"
+            ok = delete_position(
+                uid, request.form.get("id"),
+                fallback_code=request.form.get("delete_code"),
+                fallback_shares=request.form.get("delete_shares"),
+                fallback_cost=request.form.get("delete_cost"))
+            msg = "已刪除這筆持股。" if ok else "刪除失敗：找不到完全匹配的持股資料，沒有改動任何持股。"
         elif action == "sell":
             def num(field, cast=float):
                 """空字串代表「請幫我算」，回 None；填了才用使用者給的數字。"""
@@ -19738,12 +19807,21 @@ def web_positions(uid):
 </form>
 </details>"""
 
-    def delete_form(lot_id, name):
+    def delete_form(lot_id, name, lot=None):
+        # 額外帶上這筆 lot 的內容；若手機上拿到的是舊 fragment，後端仍能
+        # 在「代號＋股數＋成本」唯一匹配時安全地找到正確那筆。
+        lot = lot or {}
+        code = html.escape(str(lot.get("code") or ""), quote=True)
+        shares = int(lot.get("shares") or 0)
+        cost = float(lot.get("cost") or 0)
         return (f'<form method="post" style="display:inline;margin:0" '
                 f'onsubmit="return confirm(\'刪除是把這筆持股整筆移除，'
                 f'不會記入已實現損益。確定刪除 {name}？\')">'
                 f'<input type="hidden" name="action" value="delete">'
                 f'<input type="hidden" name="id" value="{lot_id}">'
+                f'<input type="hidden" name="delete_code" value="{code}">'
+                f'<input type="hidden" name="delete_shares" value="{shares}">'
+                f'<input type="hidden" name="delete_cost" value="{cost:.4f}">'
                 f'<button class="del" type="submit">刪除</button></form>')
 
     def sell_all_form(p, name, cur_price):
@@ -19798,7 +19876,7 @@ def web_positions(uid):
             if not lots:
                 return ""
             l = lots[0]
-            return (f'<div class="lot-actions">{delete_form(l["id"], name)}</div>'
+            return (f'<div class="lot-actions">{delete_form(l["id"], name, l)}</div>'
                     + sell_form(l["id"], l["shares"], p["code"],
                                 cur_price, l["cost"]))
         items = "".join(
@@ -19806,7 +19884,7 @@ def web_positions(uid):
             f'<span class="num">{l["shares"]:,}</span> 股　'
             f'成本 <span class="num">{l["cost"]:,.2f}</span>　'
             f'{l["bought_on"].strftime("%Y/%m/%d") if l["bought_on"] else "未填日期"}'
-            f'<div class="lot-actions">{delete_form(l["id"], name)}</div>'
+            f'<div class="lot-actions">{delete_form(l["id"], name, l)}</div>'
             f'{sell_form(l["id"], l["shares"], p["code"], cur_price, l["cost"], "賣出這筆")}'
             f'</div>' for l in lots)
         return (sell_all_form(p, name, cur_price)
