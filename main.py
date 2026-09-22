@@ -18600,10 +18600,16 @@ def render_page(title, body, nav_active=None, user_name=None):
     a.classList.add('tap-loading');
   }}, true);
 
-  // POST 表單只允許送出一次，避免新增／賣出／設定被重複點擊。
+  // 一般 POST 表單只允許送出一次。
+  // 「新增持股／換股」由下方自訂確認視窗接管：
+  // 第一次 submit 只開確認視窗，確認後才真正 requestSubmit。
+  // 這裡必須跳過這兩類表單，否則全域防重送會先攔掉 requestSubmit，
+  // 造成按「確認送出」後卡在處理中、實際沒有送出。
   document.addEventListener('submit', function(e) {{
     var form = e.target;
-    if (!form || form.dataset.submitted === '1') {{
+    if (!form) return;
+    if (form.matches('form.add, form.sellpanel')) return;
+    if (form.dataset.submitted === '1') {{
       e.preventDefault();
       return;
     }}
@@ -20222,14 +20228,19 @@ def web_positions(uid):
       '<div class="position-confirm-body"><div class="position-confirm-stock"><b>'+esc(name||'股票')+' <span style="font-size:13px;color:#71859a">'+esc(code)+'</span></b><span>'+ (isAdd?'這筆資料將新增為一筆持股':'這筆資料將從目前持股中賣出') +'</span></div>'+
       '<div class="position-confirm-grid">'+rows.map(function(r){return '<div class="position-confirm-item"><small>'+esc(r[0])+'</small><b>'+esc(r[1])+'</b></div>'}).join('')+'</div>'+
       (isAdd?'<div class="position-confirm-warning">送出後會立即寫入持股，並產生一筆加碼操作紀錄。若股數填錯，之後還要再修正，請先確認股數。</div>':'<div class="position-confirm-warning">「換股」會視為正式賣出：會更新持股、已實現損益與交易紀錄。請確認股數與成交價。</div>')+
-      '</div><div class="position-confirm-actions"><button type="button" class="position-confirm-cancel">返回修改</button><button type="button" class="position-confirm-submit">確認送出</button></div></div></div>';
+      '</div><div class="position-confirm-actions"><button type="button" class="position-confirm-cancel">返回</button><button type="button" class="position-confirm-submit">確認送出</button></div></div></div>';
     document.body.insertAdjacentHTML('beforeend',html);
     var back=document.getElementById('position-confirm-backdrop');
     var cancel=back.querySelector('.position-confirm-cancel');
     var submit=back.querySelector('.position-confirm-submit');
     cancel.onclick=function(){back.remove()};
     back.addEventListener('click',function(e){if(e.target===back) back.remove()});
+    var confirmed=false;
     function go(){
+      if(confirmed) return;
+      confirmed=true;
+      submit.disabled=true;
+      // 不顯示「處理中」；這顆按鈕只負責真正送出。
       back.remove();
       form.dataset.confirmed='1';
       if(typeof form.requestSubmit==='function') form.requestSubmit(); else form.submit();
