@@ -3559,14 +3559,8 @@ def delete_position_exact_id(user_id, pos_id):
         if deleted != 1:
             conn.rollback(); cursor.close()
             return False, f"刪除筆數異常（ID {pos_id}）"
-        cursor.execute(
-            """INSERT INTO position_change_logs
-                (user_id, code, action, shares_delta, trade_price, trade_date, note, source)
-                VALUES (%s, %s, 'delete', %s, %s, %s, %s, 'web')""",
-            (uid, str(code_raw).strip(), -int(shares_raw or 0),
-             float(cost_raw) if cost_raw is not None else None,
-             taiwan_today(), "刪除持股（未產生已實現損益）"),
-        )
+        # 刪除是「資料清理」，不是交易：依使用者規則不寫入操作日報／交易紀錄。
+        # position_change_logs.action 只允許 add/reduce，因此更不能寫入 delete。
         conn.commit(); cursor.close(); clear_leaderboard_cache()
         return True, "ok"
     except Exception as exc:
@@ -20347,32 +20341,52 @@ def web_positions(uid):
     function showSubmitProgress(){
       var isAddAction = isAdd;
       var title = isAddAction ? '正在新增你的持股' : '正在送出你的賣出';
-      var sub = isAddAction ? '資料確認後正在寫入持股與操作日報…' : '正在更新持股與交易紀錄…';
+      var sub = isAddAction ? '正在確認資料並寫入持股與操作日報…' : '正在更新持股與交易紀錄…';
       var icon = isAddAction ? '＋' : '✓';
       var wrap=document.createElement('div');
       wrap.className='position-submit-progress-backdrop';
       wrap.innerHTML='<div class="position-submit-progress-card" role="status" aria-live="polite">'+
         '<div class="position-submit-progress-icon">'+icon+'</div>'+
         '<h3>'+esc(title)+'</h3>'+
-        '<p>'+esc(sub)+'</p>'+
+        '<p class="position-submit-progress-sub">'+esc(sub)+'</p>'+
         '<div class="position-submit-progress-track"><div class="position-submit-progress-bar"></div></div>'+
         '<div class="position-submit-progress-percent">0%</div>'+
         '</div>';
       document.body.appendChild(wrap);
       var bar=wrap.querySelector('.position-submit-progress-bar');
       var pct=wrap.querySelector('.position-submit-progress-percent');
-      var value=12;
+      var subEl=wrap.querySelector('.position-submit-progress-sub');
+      var value=8, finished=false;
+      function setProgress(v){ value=Math.max(0,Math.min(100,v)); bar.style.width=value+'%'; pct.textContent=Math.round(value)+'%'; }
+      // 這個進度條只代表「送出流程」的體感進度。真正收到後端回應前，最高停在 92%。
+      // 因此不會再出現畫面顯示 100%、但後端其實還在處理一半的情況。
       var timer=setInterval(function(){
-        value=Math.min(value+Math.floor(Math.random()*11)+6,88);
-        bar.style.width=value+'%'; pct.textContent=value+'%';
-        if(value>=88) clearInterval(timer);
-      },220);
-      setTimeout(function(){
-        clearInterval(timer);
-        bar.style.width='100%'; pct.textContent='100%';
-        // 使用原生 submit，刻意繞過全域 submit 防重送攔截器，避免再次出現「處理中」卡住。
-        HTMLFormElement.prototype.submit.call(form);
-      },520);
+        if(value < 45) value += 5;
+        else if(value < 72) value += 2.5;
+        else if(value < 92) value += 0.8;
+        setProgress(value);
+        if(value >= 92){ clearInterval(timer); if(subEl) subEl.textContent='資料已送出，正在等待系統完成寫入…'; }
+      },180);
+
+      var body=new FormData(form);
+      fetch(form.action || window.location.href, {
+        method:'POST', body:body, credentials:'same-origin', cache:'no-store',
+        headers:{'X-Requested-With':'XMLHttpRequest'}
+      }).then(function(resp){
+        if(!resp.ok) throw new Error('HTTP '+resp.status);
+        return resp.text().then(function(){ return resp.url || window.location.href; });
+      }).then(function(url){
+        finished=true;
+        if(timer) clearInterval(timer);
+        setProgress(100);
+        if(subEl) subEl.textContent=isAddAction?'新增完成，正在重新整理持股…':'賣出完成，正在重新整理持股…';
+        setTimeout(function(){ window.location.href=url; },260);
+      }).catch(function(err){
+        if(timer) clearInterval(timer);
+        if(wrap && wrap.parentNode) wrap.remove();
+        confirmed=false; submit.disabled=false;
+        alert('送出失敗：'+(err && err.message ? err.message : '網路或伺服器錯誤'));
+      });
     }
     function go(){
       if(confirmed) return;
