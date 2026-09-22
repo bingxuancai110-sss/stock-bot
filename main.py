@@ -3531,9 +3531,13 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
         release_db_connection(conn)
 
 
-def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None, fallback_cost=None):
-    """刪除單筆持股。先用安全的 id+user_id；若頁面是舊快取導致 id 對不上，
-    再用「代號＋股數＋成本」做唯一精確匹配，避免誤刪其他筆。"""
+def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None, fallback_cost=None,
+                    fallback_bought_on=None, fallback_note=None):
+    """刪除單筆持股。
+
+    優先使用 position id；若手機頁面／舊 fragment 造成 id 不可用，
+    再使用「代號＋股數＋成本＋買進日期＋備註」做更完整的精確匹配。
+    若只有一筆符合才刪除，避免誤刪。"""
     try:
         pos_id = int(pos_id)
     except (TypeError, ValueError):
@@ -3551,8 +3555,7 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None, f
             row = cursor.fetchone()
 
         # 若使用者看到的是舊頁面／舊 fragment，表單裡的 lot id 可能已不是目前頁面
-        # 對應的那筆。只有在代號、股數、成本三項完全匹配且只有一筆時才 fallback，
-        # 不做模糊刪除。
+        # 對應的那筆。用完整 lot 欄位做精確 fallback；只有唯一符合才刪除。
         if row is None and fallback_code and fallback_shares is not None and fallback_cost is not None:
             try:
                 f_shares = int(fallback_shares)
@@ -3560,14 +3563,34 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None, f
             except (TypeError, ValueError):
                 f_shares, f_cost = 0, None
             if f_shares > 0 and f_cost is not None and math.isfinite(f_cost):
-                cursor.execute(
+                query = (
                     "SELECT id, code, shares, cost FROM positions "
                     "WHERE user_id = %s AND code = %s AND shares = %s "
-                    "AND ABS(cost - %s) < 0.01 ORDER BY id",
-                    (uid, str(fallback_code).strip(), f_shares, f_cost))
+                    "AND ABS(cost - %s) < 0.01"
+                )
+                params = [uid, str(fallback_code).strip(), f_shares, f_cost]
+                if fallback_bought_on:
+                    query += " AND bought_on = %s"
+                    params.append(str(fallback_bought_on).strip())
+                if fallback_note is not None:
+                    query += " AND COALESCE(note, '') = %s"
+                    params.append(str(fallback_note))
+                query += " ORDER BY id"
+                cursor.execute(query, tuple(params))
                 matches = cursor.fetchall()
                 if len(matches) == 1:
                     row = matches[0]
+                elif len(matches) > 1:
+                    # 日期／備註若沒有傳到舊頁面，最後才嘗試同代號同成本的最新 lot；
+                    # 這只在 id 已失效時使用，並且仍限制在完全相同股數與成本。
+                    cursor.execute(
+                        "SELECT id, code, shares, cost FROM positions "
+                        "WHERE user_id = %s AND code = %s AND shares = %s "
+                        "AND ABS(cost - %s) < 0.01 ORDER BY id DESC LIMIT 2",
+                        (uid, str(fallback_code).strip(), f_shares, f_cost))
+                    narrowed = cursor.fetchall()
+                    if len(narrowed) == 1:
+                        row = narrowed[0]
 
         if row is None:
             conn.rollback()
@@ -19733,7 +19756,9 @@ def web_positions(uid):
                 uid, request.form.get("id"),
                 fallback_code=request.form.get("delete_code"),
                 fallback_shares=request.form.get("delete_shares"),
-                fallback_cost=request.form.get("delete_cost"))
+                fallback_cost=request.form.get("delete_cost"),
+                fallback_bought_on=request.form.get("delete_bought_on"),
+                fallback_note=request.form.get("delete_note"))
             msg = "已刪除這筆持股。" if ok else "刪除失敗：找不到完全匹配的持股資料，沒有改動任何持股。"
         elif action == "sell":
             def num(field, cast=float):
@@ -19871,6 +19896,8 @@ def web_positions(uid):
                 f'<input type="hidden" name="delete_code" value="{code}">'
                 f'<input type="hidden" name="delete_shares" value="{shares}">'
                 f'<input type="hidden" name="delete_cost" value="{cost:.4f}">'
+                f'<input type="hidden" name="delete_bought_on" value="{html.escape(str(lot.get("bought_on") or ""), quote=True)}">'
+                f'<input type="hidden" name="delete_note" value="{html.escape(str(lot.get("note") or ""), quote=True)}">'
                 f'<button class="del" type="submit">刪除</button></form>')
 
     def sell_all_form(p, name, cur_price):
