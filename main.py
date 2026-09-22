@@ -19865,6 +19865,7 @@ def web_positions(uid):
         return (f'<form method="post" style="display:inline;margin:0" '
                 f'onsubmit="return confirm(\'刪除是把這筆持股整筆移除，'
                 f'不會記入已實現損益。確定刪除 {name}？\')">'
+                f'{csrf_hidden_input()}'
                 f'<input type="hidden" name="action" value="delete">'
                 f'<input type="hidden" name="id" value="{lot_id}">'
                 f'<input type="hidden" name="delete_code" value="{code}">'
