@@ -13648,6 +13648,10 @@ def _compute_stock_watchlist_scores(codes):
             code, industry_map, stock, cum_yoy, val, streak,
             cum_lots, turnover, momentum_stats
         )
+        # 「位階」與「籌碼／技術」是兩個不同概念：
+        # 位階看股價相對 60 日高點與 20 日均線；籌碼／技術則沿用五大因子模型。
+        # 舊版曾把 model["chip"] 寫進 position，導致首頁把籌碼／技術分數誤標成位階。
+        position_score = score_watchlist_position(stock)
         category = model.get("category")
         total = model.get("total")
         if total is None:
@@ -13687,7 +13691,7 @@ def _compute_stock_watchlist_scores(codes):
             "category": category,
             "factors": factors,
             "chip": model.get("chip"),
-            "position": model.get("chip"),  # 舊欄位相容；顯示層不再稱為位階
+            "position": position_score,
             "revenue": model.get("rev"),
             "valuation": model.get("val"),
             "momentum": model.get("mom"),
