@@ -1694,6 +1694,15 @@ def init_db():
             ALTER TABLE users ADD COLUMN IF NOT EXISTS anomaly_s_bypass_limit BOOLEAN DEFAULT TRUE
         ''')
         cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS quiet_hours_enabled BOOLEAN DEFAULT FALSE
+        ''')
+        cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS quiet_start SMALLINT DEFAULT 23
+        ''')
+        cursor.execute('''
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS quiet_end SMALLINT DEFAULT 7
+        ''')
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS line_anomaly_sent (
                 id BIGSERIAL PRIMARY KEY,
                 snapshot_date DATE NOT NULL,
@@ -2252,6 +2261,40 @@ FEATURE_LABELS = {
 }
 
 
+def build_line_notification_settings(user_id):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT COALESCE(notify,FALSE), COALESCE(anomaly_notify,FALSE),
+                             COALESCE(anomaly_daily_limit,5), COALESCE(anomaly_cooldown_minutes,60),
+                             COALESCE(anomaly_s_bypass_limit,TRUE), COALESCE(quiet_hours_enabled,FALSE),
+                             COALESCE(quiet_start,23), COALESCE(quiet_end,7)
+                      FROM users WHERE user_id=%s""", (str(user_id),))
+        row = cur.fetchone()
+        cur.close()
+    except Exception as exc:
+        print(f"⚠️ 讀取 LINE 設定失敗 {user_id}: {exc}")
+        row = None
+    finally:
+        release_db_connection(conn)
+    if not row:
+        return "⚙️ LINE 通知設定\n\n目前還沒有建立使用者設定。請先與 Bot 互動一次。"
+    notify, anomaly, limit, cooldown, bypass, quiet, start, end = row
+    return "\n".join([
+        "⚙️ 我的 LINE 通知設定", "─" * 14,
+        f"🌅 盤前推播：{'🟢 開啟' if notify else '🔴 關閉'}",
+        f"🚨 異常提醒：{'🟢 開啟' if anomaly else '🔴 關閉'}",
+        f"每日異常上限：{limit} 則",
+        f"異常冷卻：{cooldown} 分鐘",
+        f"S級突破上限：{'🟢 是' if bypass else '🔴 否'}",
+        f"🔕 靜音時段：{'🟢 ' + f'{int(start):02d}:00～{int(end):02d}:00' if quiet else '🔴 關閉'}",
+        "",
+        "指令：",
+        "・靜音 23 07 → 開啟 23:00～07:00",
+        "・靜音關 → 關閉靜音",
+        "・推播開／推播關 → 每日推播",
+    ])
+
 def infer_line_feature(text):
     raw = (text or "").strip()
     exact = {
@@ -2325,6 +2368,7 @@ def _admin_user_rows(status="all", limit=10, offset=0):
                    COALESCE(u.requested, FALSE), COALESCE(u.anomaly_notify, FALSE),
                    COALESCE(u.anomaly_daily_limit, 5), COALESCE(u.anomaly_cooldown_minutes, 60),
                    COALESCE(u.anomaly_s_bypass_limit, TRUE),
+                   COALESCE(u.quiet_hours_enabled, FALSE), COALESCE(u.quiet_start, 23), COALESCE(u.quiet_end, 7),
                    COALESCE(u.activity_count, 0)
             FROM users u {where}
             ORDER BY u.last_seen DESC NULLS LAST, u.user_id
@@ -2563,7 +2607,7 @@ def build_admin_user_list_report(status="all", limit=10, offset=0):
         lines.append("目前沒有符合條件的使用者。")
         return "\n".join(lines)
     recent_features = _admin_recent_features_map([row[0] for row in rows])
-    for i, (uid, name, last_seen, last_feature, notify, requested, anomaly_notify, anomaly_limit, anomaly_cooldown, anomaly_bypass, count) in enumerate(rows, offset + 1):
+    for i, (uid, name, last_seen, last_feature, notify, requested, anomaly_notify, anomaly_limit, anomaly_cooldown, anomaly_bypass, quiet_enabled, quiet_start, quiet_end, count) in enumerate(rows, offset + 1):
         features = recent_features.get(str(uid).strip(), [])
         masked = f"{uid[:4]}••••{uid[-4:]}" if len(uid) > 8 else uid
         push_state = ("🔔 盤前推播：開啟" if notify else
@@ -2575,6 +2619,7 @@ def build_admin_user_list_report(status="all", limit=10, offset=0):
                   f"   {push_state}",
                   f"   {'⚡ 異常提醒：開啟' if anomaly_notify else '▫️ 異常提醒：關閉'}",
                   f"   異常額度：{anomaly_limit} 則/日｜冷卻 {anomaly_cooldown} 分鐘｜S級{'可突破' if anomaly_bypass else '不突破'}",
+                  f"   {'🔕 靜音：' + f'{int(quiet_start):02d}:00～{int(quiet_end):02d}:00' if quiet_enabled else '🔔 靜音：關閉'}",
                   f"   LINE：{masked}"]
     if status == "all":
         lines += ["", "─" * 14,
@@ -2620,7 +2665,7 @@ def is_admin(user_id):
     return str(user_id).strip() in admins if admins else False
 
 
-def set_push_flags(user_id, notify=None, requested=None, anomaly_notify=None, anomaly_daily_limit=None, anomaly_cooldown_minutes=None, anomaly_s_bypass_limit=None):
+def set_push_flags(user_id, notify=None, requested=None, anomaly_notify=None, anomaly_daily_limit=None, anomaly_cooldown_minutes=None, anomaly_s_bypass_limit=None, quiet_hours_enabled=None, quiet_start=None, quiet_end=None):
     """在同一個 transaction 更新每日推播、申請狀態與異常提醒設定。"""
     fields, values = [], []
     if notify is not None:
@@ -2641,6 +2686,15 @@ def set_push_flags(user_id, notify=None, requested=None, anomaly_notify=None, an
     if anomaly_s_bypass_limit is not None:
         fields.append("anomaly_s_bypass_limit = %s")
         values.append(bool(anomaly_s_bypass_limit))
+    if quiet_hours_enabled is not None:
+        fields.append("quiet_hours_enabled = %s")
+        values.append(bool(quiet_hours_enabled))
+    if quiet_start is not None:
+        fields.append("quiet_start = %s")
+        values.append(max(0, min(23, int(quiet_start))))
+    if quiet_end is not None:
+        fields.append("quiet_end = %s")
+        values.append(max(0, min(23, int(quiet_end))))
     if not fields:
         return False
     values.append(str(user_id).strip())
@@ -2850,6 +2904,41 @@ def get_notify_users():
     finally:
         release_db_connection(conn)
 
+def get_quiet_hours(user_id):
+    """回傳 (enabled, start_hour, end_hour)。跨午夜區間例如 23→07。"""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT COALESCE(quiet_hours_enabled,FALSE), COALESCE(quiet_start,23), COALESCE(quiet_end,7)
+                      FROM users WHERE user_id=%s""", (str(user_id),))
+        row = cur.fetchone()
+        cur.close()
+        return row or (False, 23, 7)
+    except Exception as exc:
+        print(f"⚠️ 讀取靜音時段失敗 {user_id}: {exc}")
+        return (False, 23, 7)
+    finally:
+        release_db_connection(conn)
+
+def is_user_quiet_hours(user_id, now=None):
+    enabled, start, end = get_quiet_hours(user_id)
+    if not enabled:
+        return False
+    try:
+        hour = (now or taiwan_now()).hour
+        start, end = int(start), int(end)
+    except Exception:
+        return False
+    if start == end:
+        return True
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+def format_quiet_hours(user_id):
+    enabled, start, end = get_quiet_hours(user_id)
+    return f"🔕 靜音：{'開啟' if enabled else '關閉'}｜{int(start):02d}:00～{int(end):02d}:00"
+
 def get_anomaly_notify_users():
     conn = get_db_connection()
     try:
@@ -2940,6 +3029,10 @@ def push_anomaly_events(snapshot_date, users=None, base_url=None):
     if not users: return "異常提醒：沒有開啟的使用者"
     sent = failed = skipped = 0
     for uid in users:
+        if is_user_quiet_hours(uid):
+            skipped += 1
+            print(f"🔕 異常提醒跳過靜音時段 {uid}")
+            continue
         daily_limit, cooldown, s_bypass = get_anomaly_user_settings(uid)
         daily_sent = _anomaly_daily_sent_count(snapshot_date, uid)
         conn = get_db_connection()
@@ -14256,75 +14349,58 @@ def build_web_factor_observation(score):
 def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
                                industry_label=None, score_change=None,
                                watchlist_status=None):
-    """單檔與自選股共用的手機版股票詳情格式。
-
-    所有會因長度造成 LINE 自動折行的欄位都拆成固定直向行；
-    只改顯示層，不改任何真實資料、評分或判讀計算。
-    """
+    """LINE 個股查詢：先講事實，再講五大因子；不把模型分數包裝成買賣結論。"""
     lines = [f"📊 {code} {name}"]
     if industry_label:
         lines.append(industry_label)
     lines.append("─" * 14)
 
-    close = stock.get("close")
-    pct = stock.get("pct")
+    close, pct = stock.get("close"), stock.get("pct")
     if close is not None and pct is not None:
         lines.append(f"💰 {close:.2f}（{pct:+.2f}%）")
     elif close is not None:
         lines.append(f"💰 {close:.2f}（漲跌資料不足）")
     else:
         lines.append("💰 股價資料不足")
-
     high, low = stock.get("high"), stock.get("low")
-    if high is not None and low is not None:
-        lines.append(f"高低 {high:.2f}/{low:.2f}")
-    else:
-        lines.append("高低資料不足")
-
+    lines.append(f"高低 {high:.2f}/{low:.2f}" if high is not None and low is not None else "高低資料不足")
     volume = stock.get("volume")
-    if volume is not None:
-        lines.append(f"📦 {int(volume / 1000):,} 張")
-    else:
-        lines.append("📦 成交量資料不足")
+    lines.append(f"📦 {int(volume / 1000):,} 張" if volume is not None else "📦 成交量資料不足")
     lines.append(f"🛡️ 支撐 {fmt_support(stock)}")
     lines.append(f"🚧 壓力 {fmt_resistance(stock.get('resistance'))}")
 
     if score:
-        total = score["total"]
-        flag = "🟢" if total >= 70 else ("🟡" if total >= 45 else "🔴")
-        lines += [
-            "",
-            f"{flag} 綜合評分：{total}／100",
-            f"　營收成長 {score.get('revenue', 0):.0f}/{score.get('caps',[25,25,20,20,10])[0]:.0f}",
-            f"　估值 {score.get('valuation', 0):.0f}/{score.get('caps',[25,25,20,20,10])[1]:.0f}",
-            f"　產業動能 {score.get('momentum', 0):.0f}/{score.get('caps',[25,25,20,20,10])[2]:.0f}",
-            f"　法人連續性 {score.get('streak_score', 0):.0f}/{score.get('caps',[25,25,20,20,10])[3]:.0f}",
-            f"　籌碼／技術 {score.get('chip_tech', 0):.0f}/{score.get('caps',[25,25,20,20,10])[4]:.0f}",
-        ]
+        caps = score.get('caps',[25,25,20,20,10])
+        lines += ["", "【五大因子】",
+                  f"營收成長　{score.get('revenue', 0):.0f}/{caps[0]:.0f}",
+                  f"估值　　　{score.get('valuation', 0):.0f}/{caps[1]:.0f}",
+                  f"產業動能　{score.get('momentum', 0):.0f}/{caps[2]:.0f}",
+                  f"法人連續性 {score.get('streak_score', 0):.0f}/{caps[3]:.0f}",
+                  f"籌碼／技術 {score.get('chip_tech', 0):.0f}/{caps[4]:.0f}",
+                  f"模型分數　{score['total']}／100"]
         if score_change:
             lines.append(score_change)
-        cum_yoy, pe = score.get("cum_yoy"), score.get("pe")
-        lines.append(
-            f"　營收年增 {cum_yoy:+.1f}%" if cum_yoy is not None
-            else "　營收年增資料不足")
-        lines.append(f"　PE {pe:.1f}" if pe else "　PE 無")
+
+        cum_yoy, pe, pb, dy, peg = score.get("cum_yoy"), score.get("pe"), score.get("pb"), score.get("yield"), score.get("peg")
+        lines += ["", "【關鍵數據】",
+                  f"累計營收年增 {cum_yoy:+.1f}%" if cum_yoy is not None else "累計營收年增：資料不足",
+                  f"PE {pe:.1f} 倍" if pe is not None else "PE：資料不足"]
+        if score.get('category') == '電子':
+            lines.append(f"估值模型：PE ÷ 累計營收年增率，PEG≈{peg:.2f}" if peg is not None else "估值模型：PE ÷ 累計營收年增率，PEG無法計算")
+            lines.append("※ 這裡的 PEG 不是標準 EPS-PEG，僅作模型比較")
+        else:
+            lines.append(f"PB {pb:.2f} 倍" if pb is not None else "PB：資料不足")
+            lines.append(f"殖利率 {dy:.2f}%" if dy is not None else "殖利率：資料不足")
+        lines += ["", "【模型解讀】", build_web_factor_observation(score),
+                  "※ 模型分數用來比較五大面向的相對強弱，不代表買賣建議。"]
 
     lines += ["", "【法人籌碼】近10日"]
     desc = describe_investor_breakdown(bd)
     lines.append(desc if desc else "　尚無法人歷史資料")
     lines += ["", "【位階】", build_position_desc(stock)]
-
-    if score:
-        lines += [
-            "",
-            "【觀察】",
-            build_web_factor_observation(score),
-        ]
-
     if watchlist_status:
         lines += ["", watchlist_status]
     return lines
-
 
 def _flex_report_contents(text):
     """把報告逐行轉成 Flex 元件，讓重點字級與粗細一致。"""
@@ -15130,6 +15206,9 @@ def push_to_users(users, build_fn, label):
 
     sent, failed, empty = 0, 0, 0
     for uid in targets:
+        if is_user_quiet_hours(uid):
+            print(f"🔕 {label}跳過靜音時段 {uid}")
+            continue
         msg = build_fn(uid)
         if not msg:
             empty += 1
@@ -32970,6 +33049,56 @@ def handle_message(event):
     elif "刪" in text and 4 <= len(pure_code) <= 7:
         remove_watchlist_db(user_id, pure_code)
         reply = f"🗑️ 已從自選清單移除：{pure_code}"
+
+    # 2.75 管理者可直接替指定使用者設定靜音時段
+    elif is_admin(user_id) and text.startswith("靜音") and text != "靜音關" and len(text.split()) == 4:
+        parts = text.split()
+        if not all(x.isdigit() for x in parts[1:]):
+            reply = "格式：靜音 使用者編號 開始小時 結束小時\n例如：靜音 3 23 07"
+        else:
+            idx, start_h, end_h = map(int, parts[1:])
+            rows = list_users()
+            if not (1 <= idx <= len(rows)):
+                reply = "❌ 使用者編號不存在，請先輸入「名單」。"
+            elif not (0 <= start_h <= 23 and 0 <= end_h <= 23):
+                reply = "❌ 小時請輸入 0～23。"
+            else:
+                target = rows[idx-1]
+                changed = set_push_flags(target[0], quiet_hours_enabled=True, quiet_start=start_h, quiet_end=end_h)
+                reply = (f"🔕 已設定 {target[1]}：{start_h:02d}:00～{end_h:02d}:00" if changed else "❌ 靜音設定失敗，請稍後再試。")
+    elif is_admin(user_id) and text.startswith("靜音關") and len(text.split()) == 2:
+        parts = text.split()
+        if not parts[1].isdigit():
+            reply = "格式：靜音關 使用者編號\n例如：靜音關 3"
+        else:
+            idx = int(parts[1]); rows = list_users()
+            if not (1 <= idx <= len(rows)):
+                reply = "❌ 使用者編號不存在，請先輸入「名單」。"
+            else:
+                target = rows[idx-1]
+                changed = set_push_flags(target[0], quiet_hours_enabled=False)
+                reply = (f"🔔 已關閉 {target[1]} 的靜音時段" if changed else "❌ 靜音設定失敗，請稍後再試。")
+
+    # 2.8 LINE 通知／靜音設定（使用者可自行調整）
+    elif text in ["設定", "通知設定", "LINE設定", "LINE 設定"]:
+        reply = build_line_notification_settings(user_id)
+    elif text.startswith("靜音關") or text in ["取消靜音", "關閉靜音"]:
+        if set_push_flags(user_id, quiet_hours_enabled=False):
+            reply = "🔔 已關閉靜音時段。\n\n" + build_line_notification_settings(user_id)
+        else:
+            reply = "❌ 靜音設定更新失敗，請稍後再試。"
+    elif text.startswith("靜音"):
+        parts = text.split()
+        if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+            reply = "格式：靜音 開始小時 結束小時\n例如：靜音 23 07"
+        else:
+            start_h, end_h = int(parts[1]), int(parts[2])
+            if not (0 <= start_h <= 23 and 0 <= end_h <= 23):
+                reply = "❌ 小時請輸入 0～23。"
+            elif set_push_flags(user_id, quiet_hours_enabled=True, quiet_start=start_h, quiet_end=end_h):
+                reply = f"🔕 已開啟靜音時段：{start_h:02d}:00～{end_h:02d}:00\n\n" + build_line_notification_settings(user_id)
+            else:
+                reply = "❌ 靜音設定更新失敗，請稍後再試。"
 
     # 3. 推播開關設定
     elif text in ["推播開", "開啟推播", "訂閱", "申請推播"]:
