@@ -231,6 +231,17 @@ def init_premarket_change_tables():
             UNIQUE(snapshot_date, user_id, event_key)
         )
         """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS intraday_market_samples (
+            id BIGSERIAL PRIMARY KEY,
+            sample_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            index_name TEXT NOT NULL DEFAULT 'TAIEX',
+            index_value NUMERIC NOT NULL,
+            previous_close NUMERIC NOT NULL,
+            pct NUMERIC NOT NULL
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_intraday_market_samples_time ON intraday_market_samples(index_name, sample_at DESC)")
         cur.execute("ALTER TABLE premarket_snapshots ADD COLUMN IF NOT EXISTS institutional JSONB NOT NULL DEFAULT '{}'::jsonb")
         cur.execute("ALTER TABLE premarket_snapshots ADD COLUMN IF NOT EXISTS briefing_date DATE")
         cur.execute("ALTER TABLE premarket_events ADD COLUMN IF NOT EXISTS briefing_date DATE")
@@ -1643,6 +1654,44 @@ def release_db_connection(conn):
         except Exception:
             pass
 
+def _cleanup_legacy_same_day_corrections(cursor, today=None):
+    """一次性清理舊版「同日新增後全部刪除」但沒有 delete log 的歷史紀錄。"""
+    try:
+        from datetime import timedelta
+        day = today or taiwan_today()
+        target_day = day - timedelta(days=1)
+        cursor.execute("""
+            SELECT user_id, code, COALESCE(SUM(shares_delta),0) AS day_delta
+            FROM position_change_logs
+            WHERE trade_date=%s
+            GROUP BY user_id, code
+            HAVING BOOL_AND(action='add' AND shares_delta > 0)
+        """, (target_day,))
+        groups = cursor.fetchall()
+        removed = 0
+        for uid, code, _day_delta in groups:
+            cursor.execute(
+                "SELECT COALESCE(SUM(shares),0) FROM positions WHERE user_id=%s AND code=%s",
+                (uid, code))
+            if int(cursor.fetchone()[0] or 0) != 0:
+                continue
+            cursor.execute(
+                "SELECT COALESCE(SUM(shares_delta),0) FROM position_change_logs "
+                "WHERE user_id=%s AND code=%s AND trade_date < %s",
+                (uid, code, target_day))
+            if int(cursor.fetchone()[0] or 0) > 0:
+                continue
+            cursor.execute(
+                "DELETE FROM position_change_logs WHERE user_id=%s AND code=%s "
+                "AND trade_date=%s AND action='add' AND shares_delta>0",
+                (uid, code, target_day))
+            removed += int(cursor.rowcount or 0)
+        return removed
+    except Exception as exc:
+        print(f"⚠️ 舊版同日撤回紀錄清理失敗：{exc}")
+        return 0
+
+
 def init_db():
     conn = get_db_connection()
     try:
@@ -1800,6 +1849,10 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_position_change_logs_user_code
             ON position_change_logs (user_id, code, trade_date DESC, id DESC)
         ''')
+        # V74：一次清理舊版「昨天新增、昨天全部刪除」但殘留在操作日報的資料。
+        legacy_removed = _cleanup_legacy_same_day_corrections(cursor)
+        if legacy_removed:
+            print(f"🧹 V74 舊版同日撤回紀錄已清理：{legacy_removed} 筆")
         # 問卷與門檻設定。前四題必填，其餘可略過，所以全部允許 NULL。
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_profile (
@@ -2259,6 +2312,26 @@ FEATURE_LABELS = {
     "more": "更多",
     "admin": "管理",
 }
+
+
+def send_line_test_notification(user_id):
+    """實際走 LINE push API 發送測試訊息；不計入異常額度與異常冷卻。"""
+    uid = str(user_id).strip()
+    if not uid:
+        return False, "無效的 LINE 使用者。"
+    try:
+        now = taiwan_now().strftime("%Y/%m/%d %H:%M:%S")
+        msg = TextSendMessage(text=(
+            "🧪 TAIWAN STOCK BOT 測試通知\n\n"
+            f"時間：{now}\n"
+            "如果你看到這則訊息，代表 LINE 主動推播正常。\n\n"
+            "這只是測試，不會消耗你的異常提醒額度。"
+        ))
+        line_bot_api.push_message(uid, msg)
+        return True, "測試通知已發送。請確認 LINE 是否收到。"
+    except Exception as exc:
+        print(f"❌ LINE 測試通知失敗 {uid}: {exc}")
+        return False, "測試通知發送失敗，請檢查 LINE Channel Access Token 與使用者是否仍可接收訊息。"
 
 
 def build_line_notification_settings(user_id):
@@ -3818,6 +3891,41 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
 
 
 
+def _void_same_day_correction_logs(cursor, user_id, code, today):
+    """刪除今天才建立、且之後整檔被資料修正清空的錯誤操作日誌。
+
+    規則：刪除後該檔已無任何持股、今天的操作全部是 add，且今天以前沒有
+    正股數未歸零的歷史基準；這代表「今天誤新增 → 今天全部刪掉」的資料修正，
+    應從操作日報與交易紀錄消失。真正跨日的刪股不會被這條規則清掉。
+    """
+    uid = str(user_id).strip()
+    code = str(code).strip()
+    cursor.execute(
+        "SELECT id, action, shares_delta FROM position_change_logs "
+        "WHERE user_id=%s AND code=%s AND trade_date=%s ORDER BY id",
+        (uid, code, today))
+    today_logs = cursor.fetchall()
+    if not today_logs:
+        return 0
+    if any(str(r[1]).strip() != "add" or int(r[2] or 0) <= 0 for r in today_logs):
+        return 0
+    cursor.execute(
+        "SELECT COALESCE(SUM(shares_delta),0) FROM position_change_logs "
+        "WHERE user_id=%s AND code=%s AND trade_date < %s",
+        (uid, code, today))
+    historical_delta = int(cursor.fetchone()[0] or 0)
+    if historical_delta > 0:
+        return 0
+    ids = [int(r[0]) for r in today_logs if r[0] is not None]
+    if not ids:
+        return 0
+    cursor.execute(
+        "DELETE FROM position_change_logs WHERE user_id=%s AND code=%s "
+        "AND trade_date=%s AND action='add' AND id = ANY(%s)",
+        (uid, code, today, ids))
+    return int(cursor.rowcount or 0)
+
+
 def delete_position_exact_id(user_id, pos_id):
     """用 positions.id 直接刪除唯一的一筆 lot，避免任何模糊匹配。"""
     try:
@@ -3846,7 +3954,17 @@ def delete_position_exact_id(user_id, pos_id):
             conn.rollback(); cursor.close()
             return False, f"刪除筆數異常（ID {pos_id}）"
         # 刪除是「資料清理」，不是交易：依使用者規則不寫入操作日報／交易紀錄。
-        # position_change_logs.action 只允許 add/reduce，因此更不能寫入 delete。
+        # 若這是「今天誤新增 → 今天全部刪除」的修正，同步移除今天的 add 日誌，
+        # 否則操作日報仍會顯示一筆其實已不存在的新增。
+        cursor.execute(
+            "SELECT COALESCE(SUM(shares),0) FROM positions WHERE user_id=%s AND code=%s",
+            (uid, str(code_raw).strip()))
+        remaining_shares = int(cursor.fetchone()[0] or 0)
+        voided_logs = 0
+        if remaining_shares == 0:
+            voided_logs = _void_same_day_correction_logs(cursor, uid, str(code_raw).strip(), taiwan_today())
+        if voided_logs:
+            print(f"🧹 已清除同日撤回操作日誌：{uid} {str(code_raw).strip()} {voided_logs} 筆")
         conn.commit(); cursor.close(); clear_leaderboard_cache()
         return True, "ok"
     except Exception as exc:
@@ -3942,22 +4060,18 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None,
         )
         deleted = cursor.rowcount
 
+        voided_logs = 0
         if deleted > 0:
             cursor.execute(
-                """
-                INSERT INTO position_change_logs
-                    (user_id, code, action, shares_delta, trade_price,
-                     trade_date, note, source)
-                VALUES (%s, %s, 'delete', %s, %s, %s, %s, 'web')
-                """,
-                (
-                    uid, code, -shares,
-                    float(cost) if cost is not None else None,
-                    taiwan_today(),
-                    "刪除持股（未產生已實現損益）",
-                ),
-            )
+                "SELECT COALESCE(SUM(shares),0) FROM positions WHERE user_id=%s AND code=%s",
+                (uid, code))
+            remaining_shares = int(cursor.fetchone()[0] or 0)
+            if remaining_shares == 0:
+                voided_logs = _void_same_day_correction_logs(cursor, uid, code, taiwan_today())
+            if voided_logs:
+                print(f"🧹 已清除同日撤回操作日誌：{uid} {code} {voided_logs} 筆")
 
+        # 刪除永遠不寫入 position_change_logs：它是資料修正，不是交易。
         conn.commit()
         cursor.close()
 
@@ -5653,7 +5767,8 @@ def _same_day_voided_log_ids(logs):
 
 def _filter_voided_same_day_logs(logs):
     """排除同日完全配對撤回的操作；不影響同日後續真正加碼。"""
-    raw = list(logs or [])
+    # 舊版本曾誤寫入 action='delete'；這些歷史錯誤資料不再顯示。
+    raw = [log for log in (logs or []) if str(log.get("action") or "").strip() != "delete"]
     voided_ids = _same_day_voided_log_ids(raw)
     if not voided_ids:
         return raw
@@ -17438,6 +17553,8 @@ def build_quick_reply():
         ("📂 自選", "自選"),
         ("📊 解盤", "解盤"),
         ("📰 新聞", "新聞"),
+        ("⚙️ 設定", "設定"),
+        ("🧪 測試", "測試通知"),
         ("🌐 網頁", "網頁"),
     ]
     return QuickReply(items=[
@@ -17485,15 +17602,17 @@ def build_menu_flex(is_admin_user=False):
             ("雷達", "帶量突破、法人買超強勢股"),
             ("籌碼超人", "投信、外資各自在認養與撤退的標的"),
         ]),
-        ("推播設定", "#7A8290", "#EDEFF1", [
+        ("通知設定", "#7A8290", "#EDEFF1", [
+            ("設定", "通知開關、異常上限、冷卻與靜音時段"),
+            ("測試通知", "實際發送一則 LINE 測試推播"),
             ("申請推播", "🔒 VIP 限定　每日盤前自動發送\n非 VIP 可直接點上方「盤前」查看相同內容"),
-            ("推播關", "停止自動發送"),
+            ("推播關", "停止每日自動發送"),
         ]),
     ]
-    # 盤前手動查詢對所有人開放；主動推播的開通／停用控制只放在管理者選單。
-    if not is_admin_user:
-        groups = [group for group in groups if group[0] != "推播設定"]
-
+    if is_admin_user:
+        groups.append(("管理者通知", "#8A4B2A", "#F6E9E1", [
+            ("異常額度", "調整指定使用者每日異常提醒則數"),
+        ]))
     def row(label, desc, tint):
         """一列＝左邊指令按鈕（該分區的淡色底），右邊說明文字。"""
         return {
@@ -17567,6 +17686,9 @@ def build_menu_flex(is_admin_user=False):
              howto("設定分類", "分類 2330 短線", "長線／短線／觀察"),
              howto("移除自選", "刪 2330", "從清單移除"),
              howto("查詢個股", "2330", "只打代號即可"),
+             howto("通知設定", "設定", "調整推播、異常提醒、冷卻與靜音"),
+             howto("測試推播", "測試通知", "實際發送一則 LINE 測試訊息"),
+             howto("管理每日額度（管理者）", "異常上限 3 10", "把第3位使用者的每日異常提醒上限改成10則"),
          ]},
         {"type": "separator", "margin": "lg", "color": "#EEF0EC"},
         {"type": "text", "text": "作者：蔡秉軒　敬上", "size": "sm",
@@ -27821,9 +27943,149 @@ def cron_radar_live():
         abort(403)
     if not _is_taiwan_intraday_window():
         return "目前非台股一般盤中時段，未啟動盤中雷達快照。", 200
+    try:
+        print(push_intraday_market_anomalies(base_url=DEFAULT_WEB_BASE_URL))
+    except Exception as exc:
+        print(f"⚠️ 盤中大盤異常檢查失敗：{exc}")
     if _load_recent_live_radar_snapshot():
         return (f"最近 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘已有盤中雷達快照，本次略過。", 200)
     return run_in_background("盤中雷達快照", _do_scheduled_radar_live_snapshot), 200
+
+
+def _taiex_intraday_history_points(now=None):
+    """取得最近 35 分鐘內的大盤盤中樣本，供 5/10/30 分鐘異常判斷。"""
+    now = now or taiwan_now()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT sample_at, index_value, previous_close, pct
+            FROM intraday_market_samples
+            WHERE index_name='TAIEX'
+              AND sample_at >= %s - INTERVAL '35 minutes'
+            ORDER BY sample_at ASC
+        """, (now,))
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    except Exception as exc:
+        print(f"⚠️ 讀取盤中大盤樣本失敗：{exc}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def _save_taiex_intraday_sample(data, now=None):
+    now = now or taiwan_now()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO intraday_market_samples
+                (sample_at, index_name, index_value, previous_close, pct)
+            VALUES (%s, 'TAIEX', %s, %s, %s)
+        """, (now, float(data["close"]), float(data["previous_close"]), float(data["pct"])))
+        cur.execute("""
+            DELETE FROM intraday_market_samples
+            WHERE index_name='TAIEX' AND sample_at < %s - INTERVAL '2 days'
+        """, (now,))
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        print(f"⚠️ 儲存盤中大盤樣本失敗：{exc}")
+    finally:
+        release_db_connection(conn)
+
+
+def _pick_market_history_point(rows, now, minutes):
+    """找最接近「minutes 分鐘前」且不晚於目標時間的樣本。"""
+    target = now - timedelta(minutes=minutes)
+    candidates = [r for r in rows if r[0] <= target]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda r: abs((r[0] - target).total_seconds()))
+
+
+def _build_taiex_intraday_events(data, rows, now=None):
+    """盤中大盤異常：5/10/30 分鐘，百分比與點數任一達標。"""
+    now = now or taiwan_now()
+    current = float(data["close"])
+    events = []
+    rules = [
+        (5, 0.60, 100, "A", "5分鐘"),
+        (10, 1.00, 150, "A", "10分鐘"),
+        (30, 1.50, None, "S", "30分鐘"),
+    ]
+    for minutes, pct_threshold, point_threshold, severity, label in rules:
+        old = _pick_market_history_point(rows, now, minutes)
+        if not old:
+            continue
+        old_value = float(old[1])
+        if old_value <= 0:
+            continue
+        diff_points = current - old_value
+        diff_pct = diff_points / old_value * 100.0
+        pct_hit = abs(diff_pct) >= pct_threshold
+        point_hit = point_threshold is not None and abs(diff_points) >= point_threshold
+        if not (pct_hit or point_hit):
+            continue
+        direction = "上漲" if diff_points > 0 else "下跌"
+        event_key = f"taiex_intraday_{minutes}m_{'up' if diff_points > 0 else 'down'}"
+        title = f"加權指數 {label}快速{direction} {diff_points:+,.0f} 點 / {diff_pct:+.2f}%"
+        detail = (
+            f"加權指數由 {old_value:,.0f} 變為 {current:,.0f}，"
+            f"{label}變動 {diff_points:+,.0f} 點（{diff_pct:+.2f}%）。"
+        )
+        events.append({
+            "severity": severity,
+            "category": "intraday_market",
+            "title": title,
+            "detail": detail,
+            "event_key": event_key,
+        })
+    rank = {"S": 2, "A": 1}
+    best = {}
+    for event in events:
+        direction = "up" if "_up" in event["event_key"] else "down"
+        if direction not in best or rank[event["severity"]] > rank[best[direction]["severity"]]:
+            best[direction] = event
+    return list(best.values())
+
+
+def push_intraday_market_anomalies(now=None, base_url=None):
+    """盤中大盤異常即時推播；使用既有的每人上限、冷卻、S級突破與靜音設定。"""
+    now = now or taiwan_now()
+    if not _is_taiwan_intraday_window(now):
+        return "盤中大盤異常：非交易時段"
+    data = fetch_taiex_intraday(force_refresh=True, now=now)
+    if not data:
+        return "盤中大盤異常：即時 TAIEX 暫時無資料"
+    _save_taiex_intraday_sample(data, now)
+    rows = _taiex_intraday_history_points(now)
+    events = _build_taiex_intraday_events(data, rows, now)
+    if not events:
+        return "盤中大盤異常：本次沒有觸發"
+    users = get_anomaly_notify_users()
+    sent = 0
+    for uid in users:
+        if is_user_quiet_hours(uid, now=now):
+            continue
+        daily_limit, cooldown, s_bypass = get_anomaly_user_settings(uid)
+        daily_sent = _anomaly_daily_sent_count(now.date(), uid)
+        for event in sorted(events, key=lambda e: 0 if e["severity"] == "S" else 1):
+            if _anomaly_recent_sent(now.date(), uid, event["event_key"], cooldown):
+                continue
+            if daily_sent >= daily_limit and not (event["severity"] == "S" and s_bypass):
+                continue
+            if not _claim_anomaly_event(now.date(), uid, event["event_key"]):
+                continue
+            try:
+                line_bot_api.push_message(uid, TextSendMessage(text=_format_anomaly_line(event, base_url=base_url)))
+                sent += 1
+                daily_sent += 1
+            except Exception as exc:
+                print(f"❌ 盤中大盤異常推播失敗 {uid}: {exc}")
+    return f"盤中大盤異常：觸發 {len(events)} 件，已推送 {sent} 則"
 
 
 def _screener_building_fragment(mode, source_date=None):
@@ -32932,10 +33194,41 @@ def handle_message(event):
         elif ambiguous: reply = f"符合「{arg}」的有多人：{ambiguous}\n請改用編號，例如「異常開 3」"
         else: reply = f"找不到「{arg}」。輸入「名單」查看編號。"
 
-    elif is_admin(user_id) and text.startswith("異常上限"):
+    elif is_admin(user_id) and text in ["異常額度", "每日異常上限"]:
+        reply = ("👥 設定指定使用者的每日異常提醒上限\n\n"
+                 "格式：異常上限 編號 數量\n"
+                 "例如：異常上限 3 10\n"
+                 "→ 第 3 位每天最多收到 10 則異常提醒\n\n"
+                 "可設定 0～50 則。輸入「名單」可查看目前每位使用者的額度。")
+    elif is_admin(user_id) and text.startswith("每日上限"):
         parts = text.split()
         if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
-            reply = "格式：異常上限 編號 數量\n例如：異常上限 3 5（第3位每天最多5則）"
+            reply = "格式：每日上限 編號 數量\n例如：每日上限 3 10"
+        else:
+            idx, limit = int(parts[1]), int(parts[2])
+            rows = list_users()
+            if not (1 <= idx <= len(rows)):
+                reply = "❌ 使用者編號不存在，請先輸入「名單」。"
+            elif limit > 50:
+                reply = "❌ 每日上限最多 50 則。"
+            else:
+                target = rows[idx-1]
+                changed = set_push_flags(target[0], anomaly_daily_limit=limit)
+                reply = (f"✅ 已設定 {target[1]}：異常提醒每日上限 {limit} 則"
+                         if changed else "❌ 設定失敗，請稍後再試。")
+    elif is_admin(user_id) and text.startswith("異常上限"):
+        parts = text.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            idx = int(parts[1])
+            rows = list_users()
+            if not (1 <= idx <= len(rows)):
+                reply = "❌ 使用者編號不存在，請先輸入「名單」。"
+            else:
+                target = rows[idx-1]
+                current = get_anomaly_user_settings(target[0])[0]
+                reply = f"👤 {target[1]} 目前每日異常上限：{current} 則\n\n要修改請輸入：異常上限 {idx} 數量"
+        elif len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
+            reply = "格式：異常上限 編號 數量\n例如：異常上限 3 10（第3位每天最多10則）"
         else:
             idx, limit = int(parts[1]), int(parts[2])
             rows = list_users()
@@ -33080,6 +33373,9 @@ def handle_message(event):
                 reply = (f"🔔 已關閉 {target[1]} 的靜音時段" if changed else "❌ 靜音設定失敗，請稍後再試。")
 
     # 2.8 LINE 通知／靜音設定（使用者可自行調整）
+    elif text in ["測試通知", "測試推播", "推播測試"]:
+        ok, test_reply = send_line_test_notification(user_id)
+        reply = ("🧪 " + test_reply + "\n\n" + build_line_notification_settings(user_id)) if ok else ("❌ " + test_reply)
     elif text in ["設定", "通知設定", "LINE設定", "LINE 設定"]:
         reply = build_line_notification_settings(user_id)
     elif text.startswith("靜音關") or text in ["取消靜音", "關閉靜音"]:
