@@ -2353,13 +2353,19 @@ def build_line_notification_settings(user_id):
     if not row:
         return "⚙️ LINE 通知設定\n\n目前還沒有建立使用者設定。請先與 Bot 互動一次。"
     notify, anomaly, limit, cooldown, bypass, quiet, start, end = row
-    return "\n".join([
+    lines = [
         "⚙️ 我的 LINE 通知設定", "─" * 14,
         f"🌅 盤前推播：{'🟢 開啟' if notify else '🔴 關閉'}",
         f"🚨 異常提醒：{'🟢 開啟' if anomaly else '🔴 關閉'}",
-        f"每日異常上限：{limit} 則",
-        f"異常冷卻：{cooldown} 分鐘",
-        f"S級突破上限：{'🟢 是' if bypass else '🔴 否'}",
+    ]
+    # 異常額度／冷卻／S級突破屬管理者控制項；一般使用者不在設定頁暴露。
+    if is_admin(user_id):
+        lines.extend([
+            f"每日異常上限：{limit} 則",
+            f"異常冷卻：{cooldown} 分鐘",
+            f"S級突破上限：{'🟢 是' if bypass else '🔴 否'}",
+        ])
+    lines.extend([
         f"🔕 靜音時段：{'🟢 ' + f'{int(start):02d}:00～{int(end):02d}:00' if quiet else '🔴 關閉'}",
         "",
         "指令：",
@@ -2367,6 +2373,7 @@ def build_line_notification_settings(user_id):
         "・靜音關 → 關閉靜音",
         "・推播開／推播關 → 每日推播",
     ])
+    return "\n".join(lines)
 
 def infer_line_feature(text):
     raw = (text or "").strip()
@@ -2576,6 +2583,13 @@ def build_admin_dashboard_report():
         people, uses = feature_map.get(feature, (0, 0))
         lines.append(f"{_activity_feature_label(feature):<6}　{people} 人／{uses} 次")
     lines += ["", "━━━━━━━━━━━━", "", "資料更新：" + taiwan_now().strftime('%m/%d %H:%M')]
+    lines += [
+        "",
+        "⚙️ 修改異常提醒額度：",
+        "異常上限 編號 數量",
+        "例如：異常上限 3 10 → 第3位改為每天10則",
+        "也可輸入「異常上限 3」查看目前額度。",
+    ]
     return "\n".join(lines)
 
 
@@ -3543,7 +3557,7 @@ def get_positions(user_id):
         cursor.execute(
             """
             SELECT id, code, shares, cost, bought_on, note, created_at
-            FROM positions WHERE user_id = %s ORDER BY id
+            FROM positions WHERE user_id = %s AND COALESCE(shares, 0) > 0 ORDER BY id
             """,
             (str(user_id).strip(),),
         )
@@ -3570,6 +3584,12 @@ def merge_positions(positions):
     """
     grouped = {}
     for p in positions:
+        # 防禦性過濾：歷史版本若留下 0 股 lot，不應再出現在目前持股。
+        try:
+            if int(p.get("shares") or 0) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
         g = grouped.setdefault(p["code"], {
             "code": p["code"], "shares": 0, "cost_total": 0.0, "lots": []})
         g["shares"] += p["shares"]
@@ -4062,14 +4082,56 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None,
 
         voided_logs = 0
         if deleted > 0:
-            cursor.execute(
-                "SELECT COALESCE(SUM(shares),0) FROM positions WHERE user_id=%s AND code=%s",
-                (uid, code))
-            remaining_shares = int(cursor.fetchone()[0] or 0)
-            if remaining_shares == 0:
-                voided_logs = _void_same_day_correction_logs(cursor, uid, code, taiwan_today())
+            # 「刪除持股」本身是資料修正，不是交易。
+            # 如果被刪掉的 lot 是今天/最近建立、且原本對應到一筆 web 新增，
+            # 就把那一筆 add 日誌一起撤銷。這比「整檔歸零才清除」安全，
+            # 因為使用者可能本來就持有同一檔股票，昨天只是誤新增一筆。
+            # 真正用「賣出」功能的交易不會走這裡，因此 realized_trades 不受影響。
+            try:
+                cursor.execute(
+                    """
+                    SELECT id FROM position_change_logs
+                    WHERE user_id=%s AND code=%s
+                      AND action='add' AND shares_delta=%s
+                      AND trade_price IS NOT NULL
+                      AND ABS(trade_price - %s) < 0.01
+                      AND trade_date = %s
+                      AND source='web'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (uid, code, shares, float(cost), taiwan_today()),
+                )
+                match = cursor.fetchone()
+                if match:
+                    cursor.execute("DELETE FROM position_change_logs WHERE id=%s", (int(match[0]),))
+                    voided_logs = int(cursor.rowcount or 0)
+                # 舊版可能把 bought_on 寫成其他日期；若今天沒有找到，
+                # 再用最近建立時間做一次精確配對，避免留下明確已刪除的誤新增。
+                if not voided_logs:
+                    cursor.execute(
+                        """
+                        SELECT id FROM position_change_logs
+                        WHERE user_id=%s AND code=%s
+                          AND action='add' AND shares_delta=%s
+                          AND trade_price IS NOT NULL
+                          AND ABS(trade_price - %s) < 0.01
+                          AND source='web'
+                          AND created_at >= NOW() - INTERVAL '48 hours'
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        (uid, code, shares, float(cost)),
+                    )
+                    match = cursor.fetchone()
+                    if match:
+                        cursor.execute("DELETE FROM position_change_logs WHERE id=%s", (int(match[0]),))
+                        voided_logs = int(cursor.rowcount or 0)
+            except Exception as log_exc:
+                print(f"⚠️ 刪除持股後清除對應操作日誌失敗：{log_exc}")
+
             if voided_logs:
-                print(f"🧹 已清除同日撤回操作日誌：{uid} {code} {voided_logs} 筆")
+                print(f"🧹 已清除被刪除 lot 對應的誤新增操作日誌：{uid} {code} {voided_logs} 筆")
 
         # 刪除永遠不寫入 position_change_logs：它是資料修正，不是交易。
         conn.commit()
@@ -17563,9 +17625,21 @@ def build_quick_reply():
     ])
 
 
+def build_anomaly_limit_quick_reply(user_index):
+    """管理員查看某位使用者額度後，提供常用額度按鈕，避免只能手打指令。"""
+    values = [0, 3, 5, 10, 20, 30, 50]
+    return QuickReply(items=[
+        QuickReplyButton(action=MessageAction(
+            label=f"{v}則", text=f"異常上限 {user_index} {v}"))
+        for v in values
+    ])
+
+
 def build_admin_quick_reply():
     items = [
         ("使用者名單", "使用者名單"),
+        ("⚡ 異常額度", "異常額度"),
+        ("🔕 靜音管理", "靜音管理"),
         ("今日活躍", "今日活躍"),
         ("沉睡使用者", "沉睡使用者"),
         ("功能統計", "功能統計"),
@@ -17603,7 +17677,7 @@ def build_menu_flex(is_admin_user=False):
             ("籌碼超人", "投信、外資各自在認養與撤退的標的"),
         ]),
         ("通知設定", "#7A8290", "#EDEFF1", [
-            ("設定", "通知開關、異常上限、冷卻與靜音時段"),
+            ("設定", "通知開關、冷卻與靜音時段"),
             ("測試通知", "實際發送一則 LINE 測試推播"),
             ("申請推播", "🔒 VIP 限定　每日盤前自動發送\n非 VIP 可直接點上方「盤前」查看相同內容"),
             ("推播關", "停止每日自動發送"),
@@ -19749,6 +19823,157 @@ def web_code_login():
                     path="/", httponly=True, samesite="None", secure=True)
     return resp
 
+
+def _admin_history_candidates(limit=100):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("WITH d AS (SELECT user_id,code,trade_date,SUM(CASE WHEN action='add' AND COALESCE(shares_delta,0)>0 THEN shares_delta ELSE 0 END) add_shares,BOOL_AND(action='add' AND COALESCE(shares_delta,0)>0) all_adds FROM position_change_logs GROUP BY user_id,code,trade_date), cp AS (SELECT user_id,code,COALESCE(SUM(shares),0) shares FROM positions GROUP BY user_id,code) SELECT d.user_id,COALESCE(u.display_name,'(未知)'),d.code,d.trade_date,d.add_shares,COALESCE(cp.shares,0),COALESCE((SELECT SUM(COALESCE(x.shares_delta,0)) FROM position_change_logs x WHERE x.user_id=d.user_id AND x.code=d.code AND x.trade_date<d.trade_date),0) FROM d LEFT JOIN cp ON cp.user_id=d.user_id AND cp.code=d.code LEFT JOIN users u ON u.user_id=d.user_id WHERE d.all_adds AND d.add_shares>0 AND COALESCE(cp.shares,0)=0 AND COALESCE((SELECT SUM(COALESCE(x.shares_delta,0)) FROM position_change_logs x WHERE x.user_id=d.user_id AND x.code=d.code AND x.trade_date<d.trade_date),0)<=0 ORDER BY d.trade_date DESC LIMIT %s", (int(limit),))
+        rows=cur.fetchall(); cur.close(); return rows
+    except Exception as exc:
+        print(f"❌ 管理盤點失敗：{exc}"); return []
+    finally:
+        release_db_connection(conn)
+
+@app.route("/web/admin")
+@web_login_required
+def web_admin(uid):
+    if not is_admin(uid): return make_response("Forbidden",403)
+    cs=_admin_history_candidates(100)
+    body='<div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>只有管理員可以看到與進入。</p></div><div class="more-group"><div class="more-group-title">管理功能</div><a class="more-item" href="/web/admin/history"><span class="more-icon">🔍</span><span><b>歷史紀錄檢查</b><small>唯讀盤點疑似誤新增後刪除</small></span><strong>›</strong></a><a class="more-item" href="/web/admin/users"><span class="more-icon">👥</span><span><b>使用者管理</b><small>活躍狀態與 LINE 設定</small></span><strong>›</strong></a><a class="more-item" href="/web/admin/notifications"><span class="more-icon">🔔</span><span><b>LINE 通知管理</b><small>推播、異常額度、冷卻、靜音</small></span><strong>›</strong></a><a class="more-item" href="/web/admin/system"><span class="more-icon">🩺</span><span><b>系統狀態</b><small>資料更新與快照狀態</small></span><strong>›</strong></a><a class="more-item" href="/web/admin/maintenance"><span class="more-icon">🛠️</span><span><b>維護模式</b><small>立即維護、排程、預計結束時間</small></span><strong>›</strong></a></div>'
+    body += f'<div class="more-group"><div class="more-group-title">歷史盤點</div><div class="more-note">目前找到 {len(cs)} 筆高信心候選；只讀，尚未刪除。</div></div>'
+    return render_page("管理員後台",body,"more")
+
+@app.route("/web/admin/history")
+@web_login_required
+def web_admin_history(uid):
+    if not is_admin(uid): return make_response("Forbidden",403)
+    cs=_admin_history_candidates(200)
+    items=''.join(f'<div class="more-item"><span><b>{html.escape(str(r[2]))}｜{html.escape(str(r[1]))}</b><small>日期 {r[3]}｜新增 {r[4]} 股｜目前持股 {r[5]} 股｜此前累計 {r[6]} 股</small></span></div>' for r in cs) or '<div class="more-note">沒有符合高信心條件的候選。</div>'
+    body=f'<div class="more-hero"><div class="eyebrow">READ ONLY</div><h1>歷史紀錄檢查</h1><p>這一頁沒有刪除功能。</p></div><div class="more-group">{items}</div><div class="more-note">條件：同日全為新增、目前持股為 0、此前累計變化不大於 0。這只是第一層安全篩選。</div>'
+    return render_page("歷史紀錄檢查",body,"more")
+
+@app.route("/web/admin/users")
+@web_login_required
+def web_admin_users(uid):
+    if not is_admin(uid): return make_response("Forbidden",403)
+    report=build_admin_user_list_report(status="all",limit=100,offset=0)
+    return render_page("使用者管理",'<div class="more-hero"><h1>使用者管理</h1></div><pre style="white-space:pre-wrap">'+html.escape(report)+'</pre>',"more")
+
+@app.route("/web/admin/notifications")
+@web_login_required
+def web_admin_notifications(uid):
+    if not is_admin(uid): return make_response("Forbidden",403)
+    return render_page("LINE 通知管理",'<div class="more-hero"><h1>LINE 通知管理</h1><p>每日推播、異常提醒、異常額度、冷卻、S級突破與靜音。</p></div>',"more")
+
+@app.route("/web/admin/system")
+@web_login_required
+def web_admin_system(uid):
+    if not is_admin(uid): return make_response("Forbidden",403)
+    return render_page("系統狀態",'<div class="more-hero"><h1>系統狀態</h1></div><pre style="white-space:pre-wrap">'+html.escape(_admin_system_data_status_report())+'</pre>',"more")
+
+# =========================
+# 管理員維護模式（V81）
+# =========================
+_MAINT_TABLE_READY = False
+_MAINT_TABLE_LOCK = threading.Lock()
+
+def _ensure_maintenance_table():
+    global _MAINT_TABLE_READY
+    if _MAINT_TABLE_READY: return True
+    with _MAINT_TABLE_LOCK:
+        if _MAINT_TABLE_READY: return True
+        conn=get_db_connection()
+        try:
+            cur=conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS web_maintenance_mode (id INTEGER PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT FALSE, scheduled_start TIMESTAMPTZ NULL, estimated_end TIMESTAMPTZ NULL, reason TEXT NOT NULL DEFAULT '', updated_by TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
+            cur.execute("INSERT INTO web_maintenance_mode (id,enabled) VALUES (1,FALSE) ON CONFLICT (id) DO NOTHING")
+            conn.commit(); cur.close(); _MAINT_TABLE_READY=True; return True
+        except Exception as exc:
+            conn.rollback(); print(f"❌ 維護模式資料表初始化失敗：{exc}"); return False
+        finally: release_db_connection(conn)
+
+def _maintenance_state():
+    if not _ensure_maintenance_table(): return {"ok":False,"active":False,"enabled":False}
+    conn=get_db_connection()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT enabled,scheduled_start,estimated_end,reason,updated_by,updated_at FROM web_maintenance_mode WHERE id=1"); row=cur.fetchone(); cur.close()
+        if not row: return {"ok":True,"active":False,"enabled":False}
+        enabled,start,end,reason,updated_by,updated_at=row; now=datetime.now(timezone.utc); active=bool(enabled)
+        if start is not None and start>now: active=False
+        if end is not None and end<=now: active=False
+        return {"ok":True,"active":active,"enabled":bool(enabled),"scheduled_start":start.isoformat() if start else None,"estimated_end":end.isoformat() if end else None,"reason":str(reason or ""),"updated_by":str(updated_by or ""),"updated_at":updated_at.isoformat() if updated_at else None}
+    except Exception as exc:
+        print(f"❌ 讀取維護模式失敗：{exc}"); return {"ok":False,"active":False,"enabled":False}
+    finally: release_db_connection(conn)
+
+def _set_maintenance(enabled=True,scheduled_start=None,estimated_end=None,reason="",updated_by=""):
+    if not _ensure_maintenance_table(): return False
+    conn=get_db_connection()
+    try:
+        cur=conn.cursor(); cur.execute("UPDATE web_maintenance_mode SET enabled=%s,scheduled_start=%s,estimated_end=%s,reason=%s,updated_by=%s,updated_at=NOW() WHERE id=1",(bool(enabled),scheduled_start,estimated_end,str(reason or "")[:500],str(updated_by or "")[:200])); conn.commit(); cur.close(); return True
+    except Exception as exc:
+        conn.rollback(); print(f"❌ 更新維護模式失敗：{exc}"); return False
+    finally: release_db_connection(conn)
+
+def _parse_admin_datetime(value):
+    if value in (None,""): return None
+    try:
+        dt=datetime.fromisoformat(str(value).strip().replace("Z","+00:00"))
+        if dt.tzinfo is None: dt=dt.replace(tzinfo=timezone(timedelta(hours=8)))
+        return dt.astimezone(timezone.utc)
+    except Exception: return None
+
+@app.before_request
+def _enforce_web_maintenance():
+    path=request.path or ""
+    if not path.startswith("/web") or path in ("/web/login","/web/code","/web/maintenance"): return None
+    uid=current_web_user()
+    if uid and is_admin(uid): return None
+    state=_maintenance_state()
+    if not state.get("active"): return None
+    if path.startswith("/web/api/") or request.args.get("fragment")=="1":
+        return make_response(json.dumps({"maintenance":True,"state":state},ensure_ascii=False),503,{"Content-Type":"application/json; charset=utf-8","Retry-After":"60"})
+    return redirect("/web/maintenance")
+
+@app.route("/web/maintenance")
+def web_maintenance():
+    state=_maintenance_state()
+    if not state.get("active"):
+        uid=current_web_user()
+        if uid: return redirect("/web/portfolio")
+        return render_page("維護模式",'<div class="more-hero"><h1>系統已恢復</h1><p>網站目前可以正常使用。</p></div>')
+    reason=safe_html_text(state.get("reason") or "系統例行維護"); end=safe_html_text(state.get("estimated_end") or ""); end_js=json.dumps(state.get("estimated_end") or "",ensure_ascii=False)
+    body=f'''<style>.maint-wrap{{max-width:620px;margin:10vh auto;padding:28px 20px;text-align:center}}.maint-card{{background:#fff;border:1px solid #e6e8eb;border-radius:24px;padding:28px;box-shadow:0 12px 35px rgba(0,0,0,.06)}}.maint-icon{{font-size:52px}}.maint-time{{font-size:30px;font-weight:800;margin:18px 0 6px}}.maint-sub{{font-size:13px;color:#8a919b}}.maint-btn{{display:inline-block;margin-top:20px;padding:12px 20px;border-radius:12px;background:#111;color:#fff;text-decoration:none}}</style><div class="maint-wrap"><div class="maint-card"><div class="maint-icon">🛠️</div><h1>網站維護中</h1><p>{reason}</p><div class="maint-time" id="maint-countdown">維護中</div><div class="maint-sub">{('預計結束：'+end) if end else '目前尚未設定預計結束時間'}</div><a class="maint-btn" href="/web/maintenance">重新整理</a></div></div><script>(function(){{var end={end_js};function tick(){{if(!end)return;var ms=new Date(end).getTime()-Date.now();if(ms<=0){{location.reload();return;}}var x=Math.floor(ms/1000),h=Math.floor(x/3600),m=Math.floor(x%3600/60),s=x%60;document.getElementById('maint-countdown').textContent='預計剩餘 '+String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');}}tick();setInterval(tick,1000);setTimeout(function(){{location.reload()}},60000);}})();</script>'''
+    return render_page("網站維護中",body,"more")
+
+@app.route("/web/admin/maintenance",methods=["GET","POST"])
+def web_admin_maintenance(uid=None):
+    uid=current_web_user()
+    if not uid or not is_admin(uid): return make_response("Forbidden",403)
+    if request.method=="POST":
+        if not valid_web_csrf(): return make_response("CSRF validation failed",403)
+        action=request.form.get("action","").strip(); reason=request.form.get("reason","").strip(); end=_parse_admin_datetime(request.form.get("estimated_end")); start=_parse_admin_datetime(request.form.get("scheduled_start")); now=datetime.now(timezone.utc)
+        if action=="start":
+            if end is not None and end<=now: return make_response("預計結束時間必須晚於現在",400)
+            ok=_set_maintenance(True,None,end,reason,uid)
+        elif action=="schedule":
+            if start is None or start<=now: return make_response("預定開始時間必須晚於現在",400)
+            if end is not None and end<=start: return make_response("預計結束時間必須晚於開始時間",400)
+            ok=_set_maintenance(True,start,end,reason,uid)
+        elif action=="stop": ok=_set_maintenance(False,None,None,"",uid)
+        else: return make_response("未知操作",400)
+        if not ok: return make_response("更新失敗",500)
+        return redirect("/web/admin/maintenance")
+    state=_maintenance_state(); status='維護中' if state.get('active') else ('已排程' if state.get('enabled') else '正常運作')
+    body=f'''<style>.maint-admin{{max-width:760px;margin:auto}}.maint-status{{padding:18px;border-radius:18px;background:#f7f8fa;margin-bottom:16px}}.maint-status.active{{background:#fff3f0;border:1px solid #ffd4cc}}.maint-form{{background:#fff;border:1px solid #e6e8eb;border-radius:20px;padding:20px;margin-bottom:14px}}.maint-form label{{display:block;font-weight:700;margin:12px 0 6px}}.maint-form input,.maint-form textarea{{width:100%;box-sizing:border-box;padding:11px;border:1px solid #d9dde3;border-radius:10px;font-size:16px}}.maint-form button{{margin-top:14px;padding:11px 16px;border:0;border-radius:10px;background:#111;color:#fff;font-weight:700}}.maint-stop button{{background:#b42318}}</style><div class="maint-admin"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🛠️ 維護模式</h1><p>後端攔截一般使用者；管理員仍可正常進入網站與後台。</p></div><div class="maint-status {'active' if state.get('active') else ''}"><b>目前狀態：{status}</b><br><small>開始：{safe_html_text(state.get('scheduled_start') or '立即／未設定')}<br>結束：{safe_html_text(state.get('estimated_end') or '未設定')}<br>原因：{safe_html_text(state.get('reason') or '—')}</small></div><form class="maint-form" method="post">{csrf_hidden_input()}<input type="hidden" name="action" value="start"><h3>立即開始</h3><label>預計結束</label><input type="datetime-local" name="estimated_end"><label>原因（選填）</label><textarea name="reason" rows="3" placeholder="例如：資料庫升級"></textarea><button>立即開始維護</button></form><form class="maint-form" method="post">{csrf_hidden_input()}<input type="hidden" name="action" value="schedule"><h3>排程維護</h3><label>開始時間</label><input type="datetime-local" name="scheduled_start" required><label>預計結束</label><input type="datetime-local" name="estimated_end"><label>原因（選填）</label><textarea name="reason" rows="3" placeholder="例如：系統更新"></textarea><button>建立維護排程</button></form><form class="maint-form maint-stop" method="post">{csrf_hidden_input()}<input type="hidden" name="action" value="stop"><h3>結束維護</h3><p>立即恢復一般使用者存取。</p><button>立即結束維護</button></form></div>'''
+    return render_page("維護模式",body,"more")
+
+@app.route("/web/api/admin/maintenance",methods=["GET"])
+def web_admin_maintenance_api():
+    uid=current_web_user()
+    if not uid or not is_admin(uid): return make_response(json.dumps({"error":"forbidden"}),403,{"Content-Type":"application/json"})
+    return make_response(json.dumps(_maintenance_state(),ensure_ascii=False),200,{"Content-Type":"application/json; charset=utf-8"})
 
 @app.route("/web")
 @web_login_required
@@ -25471,6 +25696,8 @@ def web_more(uid):
 
 <div class="more-note">部分功能僅在其他入口或管理端使用，不會顯示於此處。</div>
 """
+    if is_admin(uid):
+        body = body.replace('<div class="more-note">部分功能僅在其他入口或管理端使用，不會顯示於此處。</div>', '<div class="more-group"><div class="more-group-title">管理員</div><a class="more-item" href="/web/admin"><span class="more-icon">⚙</span><span><b>管理員後台</b><small>使用者、LINE 通知、系統狀態與歷史紀錄維護</small></span><strong>›</strong></a></div><div class="more-note">管理員專用功能。</div>')
     return render_page("更多", body, nav_active="more")
 
 
@@ -33194,12 +33421,22 @@ def handle_message(event):
         elif ambiguous: reply = f"符合「{arg}」的有多人：{ambiguous}\n請改用編號，例如「異常開 3」"
         else: reply = f"找不到「{arg}」。輸入「名單」查看編號。"
 
+    elif is_admin(user_id) and text in ["靜音管理", "管理靜音"]:
+        reply = ("🔕 管理使用者靜音時段\n\n"
+                 "設定：靜音 使用者編號 開始小時 結束小時\n"
+                 "例如：靜音 3 23 07\n\n"
+                 "關閉：靜音關 使用者編號\n"
+                 "例如：靜音關 3\n\n"
+                 "輸入「使用者名單」可查看每位使用者目前的靜音狀態。")
+
     elif is_admin(user_id) and text in ["異常額度", "每日異常上限"]:
-        reply = ("👥 設定指定使用者的每日異常提醒上限\n\n"
-                 "格式：異常上限 編號 數量\n"
-                 "例如：異常上限 3 10\n"
+        reply = ("⚡ 管理每位使用者的異常提醒額度\n\n"
+                 "先輸入：異常上限 編號\n"
+                 "例如：異常上限 3\n"
+                 "我會顯示第3位目前額度，並提供 0／3／5／10／20／30／50 則快捷按鈕。\n\n"
+                 "也可直接輸入：異常上限 3 10\n"
                  "→ 第 3 位每天最多收到 10 則異常提醒\n\n"
-                 "可設定 0～50 則。輸入「名單」可查看目前每位使用者的額度。")
+                 "可設定 0～50 則。")
     elif is_admin(user_id) and text.startswith("每日上限"):
         parts = text.split()
         if len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
@@ -33216,7 +33453,7 @@ def handle_message(event):
                 changed = set_push_flags(target[0], anomaly_daily_limit=limit)
                 reply = (f"✅ 已設定 {target[1]}：異常提醒每日上限 {limit} 則"
                          if changed else "❌ 設定失敗，請稍後再試。")
-    elif is_admin(user_id) and text.startswith("異常上限"):
+    elif is_admin(user_id) and (text.startswith("異常上限") or text.startswith("異常額度")):
         parts = text.split()
         if len(parts) == 2 and parts[1].isdigit():
             idx = int(parts[1])
@@ -33226,7 +33463,10 @@ def handle_message(event):
             else:
                 target = rows[idx-1]
                 current = get_anomaly_user_settings(target[0])[0]
-                reply = f"👤 {target[1]} 目前每日異常上限：{current} 則\n\n要修改請輸入：異常上限 {idx} 數量"
+                reply = (f"👤 {target[1]}\n"
+                         f"目前每日異常上限：{current} 則\n\n"
+                         f"請直接點下方數字，或輸入：異常上限 {idx} 數量")
+                admin_quick_reply = build_anomaly_limit_quick_reply(idx)
         elif len(parts) != 3 or not parts[1].isdigit() or not parts[2].isdigit():
             reply = "格式：異常上限 編號 數量\n例如：異常上限 3 10（第3位每天最多10則）"
         else:
@@ -33239,7 +33479,8 @@ def handle_message(event):
             else:
                 target = rows[idx-1]
                 changed = set_push_flags(target[0], anomaly_daily_limit=limit)
-                reply = (f"✅ 已設定 {target[1]}：異常提醒每日上限 {limit} 則" if changed else "❌ 設定失敗，請稍後再試。")
+                reply = (f"✅ 已設定 {target[1]}：異常提醒每日上限 {limit} 則\n\n"
+                         + "輸入「使用者名單」可查看全部額度。" if changed else "❌ 設定失敗，請稍後再試。")
 
     elif is_admin(user_id) and text.startswith("異常冷卻"):
         parts = text.split()
