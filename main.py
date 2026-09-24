@@ -20575,21 +20575,6 @@ def web_positions(uid):
         return respond_page("持股", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "positions")
     if request.method == "POST":
         action = request.form.get("action")
-        # 明確區分「新增／加碼」與「賣出」。
-        # 舊版在部分手機的動態 fragment／確認視窗流程中，若表單上下文殘留
-        # 了 sell 欄位，可能把本來的新增請求誤送進 sell_position，
-        # 最後就會出現「找不到這筆持股」。
-        # 新增表單一定有 code+shares+cost，且不應有 positions.id；
-        # 即使 action 欄位意外重複，也優先視為新增。
-        is_add_request = (
-            action == "add"
-            or (not (request.form.get("id") or "").strip()
-                and (request.form.get("code") or "").strip()
-                and (request.form.get("shares") or "").strip()
-                and (request.form.get("cost") or "").strip())
-        )
-        if is_add_request:
-            action = "add"
         if action == "sell_all":
             def numv(field, cast=float):
                 v = (request.form.get(field) or "").strip()
@@ -20670,7 +20655,7 @@ def web_positions(uid):
                        f"證交稅 {summary['tax']:,.0f}。")
             else:
                 msg = "已賣出，但查不到報價，這筆沒有損益紀錄。"
-        elif action == "add":
+        else:
             code = normalize_code(request.form.get("code", ""))
             try:
                 shares = int(request.form.get("shares", "0"))
@@ -21085,7 +21070,6 @@ def web_positions(uid):
 
 <form class="add" method="post" action="/web/positions">
   {csrf_hidden_input()}
-  <input type="hidden" name="action" value="add">
   <h3>新增持股</h3>
   <div class="fields">
     <div><label>股票代號</label>
@@ -21183,14 +21167,17 @@ def web_positions(uid):
       },180);
 
       var body=new FormData(form);
-      fetch(form.action || window.location.href, {
+      // 持股頁可能是以 fragment 動態載入，window.location.href 不一定是 /web/positions。
+      // 買進／賣出一律送到真正的持股 POST endpoint，避免手機 WebView 出現 HTTP 404。
+      var submitUrl = '/web/positions';
+      fetch(submitUrl, {
         method:'POST', body:body, credentials:'same-origin', cache:'no-store',
         headers:{'X-Requested-With':'XMLHttpRequest'}
       }).then(function(resp){
         if(!resp.ok) throw new Error('HTTP '+resp.status);
         return resp.text().then(function(html){ return {url:resp.url || window.location.href,html:html}; });
       }).then(function(result){
-        var url=result.url;
+        var url=result.url || '/web/positions';
         var responseHtml=result.html;
         finished=true;
         if(timer) clearInterval(timer);
