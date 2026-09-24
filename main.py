@@ -3112,6 +3112,8 @@ def _format_anomaly_line(event, base_url=None):
     return "\n".join(lines)
 
 def push_anomaly_events(snapshot_date, users=None, base_url=None):
+    if not _admin_feature_enabled('line_anomaly'):
+        return "異常提醒目前已由管理員關閉。"
     users = list(users if users is not None else get_anomaly_notify_users())
     if not users: return "異常提醒：沒有開啟的使用者"
     sent = failed = skipped = 0
@@ -3527,6 +3529,24 @@ def web_login_required(view):
                 return make_response("AUTH_EXPIRED", 401,
                                      {"X-StockBot-Auth": "expired"})
             return render_page("需要登入", NEED_LOGIN_HTML), 401
+        # 功能開關實際攔截對應頁面；fragment 也檢查，避免 SPA 繞過開關。
+        feature_gate = {
+            '/web/portfolio': 'portfolio', '/web/positions': 'positions',
+            '/web/leaderboard': 'leaderboard', '/web/workbench': 'screener',
+            '/web/trades': 'trades', '/web/compare': 'compare',
+            '/web/settings': 'settings', '/web/more': 'more',
+            '/web/chips': 'chips', '/web/etf': 'etf',
+            '/web/watchlist': 'watchlist', '/web/premarket': 'premarket',
+        }
+        gate_key = feature_gate.get(request.path)
+        if request.path == '/web/screener':
+            mode = request.args.get('mode', 'blackhorse')
+            gate_key = 'radar' if mode == 'radar' else 'blackhorse' if mode == 'blackhorse' else 'screener'
+        if gate_key and not is_admin(uid) and not _admin_feature_enabled(gate_key):
+            blocked = _admin_feature_block(uid, gate_key)
+            if blocked is not None:
+                return blocked
+
         # fragment 請求只是同一頁的載入片段，不重複計算成一次使用。
         if request.args.get("fragment") != "1":
             path = request.path
@@ -16072,6 +16092,8 @@ def cron_push_watchlist():
     secret = request.args.get("token")
     if secret != os.environ.get("CRON_SECRET"):
         abort(403)
+    if not _admin_feature_enabled('line_daily'):
+        return "LINE 每日推播目前已由管理員關閉。", 200
     return run_in_background(
         "盤前推播",
         lambda: push_to_users(get_notify_users(), build_morning_push_message, "盤前推播")), 200
@@ -18644,7 +18666,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     page_back = ""
     if nav_active and nav_active != "portfolio":
         page_back = preserve_web_token(
-            '<div class="page-back"><a href="/web/portfolio" data-fresh-nav="1" data-app-nav="1">‹ 回首頁</a></div>')
+            '<div class="page-back"><a href="#" data-history-back="1" aria-label="回上一頁">‹ 上一頁</a></div>')
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
 <meta charset="UTF-8">
@@ -19121,6 +19143,21 @@ def render_page(title, body, nav_active=None, user_name=None):
     window.setTimeout(function() {{ target.classList.remove('app-press'); }}, 180);
   }}, {{capture:true, passive:true}});
   document.addEventListener('click', function(e) {{
+    var backLink = e.target.closest ? e.target.closest('[data-history-back="1"]') : null;
+    if (backLink) {{
+      e.preventDefault();
+      if (appNavBusy) return;
+      try {{
+        var ref = document.referrer || '';
+        var sameOrigin = false;
+        try {{ sameOrigin = ref.indexOf(window.location.origin + '/') === 0; }} catch (ignoreRef) {{}}
+        var ownState = false;
+        try {{ ownState = !!(history.state && history.state.stockbotApp); }} catch (ignoreState) {{}}
+        if ((sameOrigin || ownState) && history.length > 1) history.back();
+        else window.location.assign('/web/more');
+      }} catch (ignore) {{ window.location.assign('/web/more'); }}
+      return;
+    }}
     var appLink = e.target.closest ? e.target.closest('a[data-app-nav="1"]') : null;
     if (!appLink || appLink.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
@@ -19825,13 +19862,56 @@ def web_code_login():
 
 
 def _admin_history_candidates(limit=100):
+    """找真正可疑的「孤兒新增」紀錄，避免把正常買進後賣出的交易誤判成異常。"""
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("WITH d AS (SELECT user_id,code,trade_date,SUM(CASE WHEN action='add' AND COALESCE(shares_delta,0)>0 THEN shares_delta ELSE 0 END) add_shares,BOOL_AND(action='add' AND COALESCE(shares_delta,0)>0) all_adds FROM position_change_logs GROUP BY user_id,code,trade_date), cp AS (SELECT user_id,code,COALESCE(SUM(shares),0) shares FROM positions GROUP BY user_id,code) SELECT d.user_id,COALESCE(u.display_name,'(未知)'),d.code,d.trade_date,d.add_shares,COALESCE(cp.shares,0),COALESCE((SELECT SUM(COALESCE(x.shares_delta,0)) FROM position_change_logs x WHERE x.user_id=d.user_id AND x.code=d.code AND x.trade_date<d.trade_date),0) FROM d LEFT JOIN cp ON cp.user_id=d.user_id AND cp.code=d.code LEFT JOIN users u ON u.user_id=d.user_id WHERE d.all_adds AND d.add_shares>0 AND COALESCE(cp.shares,0)=0 AND COALESCE((SELECT SUM(COALESCE(x.shares_delta,0)) FROM position_change_logs x WHERE x.user_id=d.user_id AND x.code=d.code AND x.trade_date<d.trade_date),0)<=0 ORDER BY d.trade_date DESC LIMIT %s", (int(limit),))
+        cur.execute("""
+            WITH d AS (
+                SELECT user_id, code, trade_date,
+                       SUM(CASE WHEN action='add' AND COALESCE(shares_delta,0)>0
+                                THEN shares_delta ELSE 0 END) AS add_shares,
+                       BOOL_AND(action='add' AND COALESCE(shares_delta,0)>0) AS all_adds
+                FROM position_change_logs
+                GROUP BY user_id, code, trade_date
+            ),
+            cp AS (
+                SELECT user_id, code, COALESCE(SUM(shares),0) AS shares
+                FROM positions
+                GROUP BY user_id, code
+            )
+            SELECT d.user_id, COALESCE(u.display_name,'(未知)'), d.code, d.trade_date,
+                   d.add_shares, COALESCE(cp.shares,0),
+                   COALESCE((SELECT SUM(COALESCE(x.shares_delta,0))
+                             FROM position_change_logs x
+                             WHERE x.user_id=d.user_id AND x.code=d.code
+                               AND x.trade_date<d.trade_date),0)
+            FROM d
+            LEFT JOIN cp ON cp.user_id=d.user_id AND cp.code=d.code
+            LEFT JOIN users u ON u.user_id=d.user_id
+            WHERE d.all_adds
+              AND d.add_shares>0
+              AND COALESCE(cp.shares,0)=0
+              AND COALESCE((SELECT SUM(COALESCE(x.shares_delta,0))
+                            FROM position_change_logs x
+                            WHERE x.user_id=d.user_id AND x.code=d.code
+                              AND x.trade_date<d.trade_date),0)<=0
+              AND NOT EXISTS (
+                  SELECT 1 FROM position_change_logs x
+                  WHERE x.user_id=d.user_id AND x.code=d.code
+                    AND x.trade_date>d.trade_date AND x.action='reduce'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM realized_trades r
+                  WHERE r.user_id=d.user_id AND r.code=d.code
+                    AND r.sold_on>d.trade_date
+              )
+            ORDER BY d.trade_date DESC
+            LIMIT %s
+        """, (int(limit),))
         rows=cur.fetchall(); cur.close(); return rows
     except Exception as exc:
-        print(f"❌ 管理盤點失敗：{exc}"); return []
+        print(f"❌ 管理異常排查失敗：{exc}"); return []
     finally:
         release_db_connection(conn)
 
@@ -19839,10 +19919,22 @@ def _admin_history_candidates(limit=100):
 # 管理員後台（V82：Dashboard / 資料更新 / LINE / 歷史交易 / 功能開關）
 # =========================
 _ADMIN_FEATURE_DEFAULTS = {
+    'portfolio': ('今日／組合分析', True),
+    'positions': ('持股管理', True),
+    'trades': ('交易紀錄', True),
+    'leaderboard': ('排行榜', True),
+    'screener': ('選股實驗室', True),
+    'blackhorse': ('黑馬選股', True),
+    'radar': ('技術雷達', True),
+    'chips': ('籌碼超人', True),
+    'etf': ('ETF 專區', True),
+    'compare': ('股票比較', True),
+    'watchlist': ('名單儀表板', True),
+    'settings': ('提醒／設定', True),
+    'premarket': ('盤前簡報', True),
+    'more': ('更多功能', True),
     'line_anomaly': ('LINE 異常推播', True),
     'line_daily': ('LINE 每日推播', True),
-    'leaderboard': ('排行榜', True),
-    'selection_lab': ('選股實驗室', True),
     'backtest_lab': ('回測實驗室', True),
 }
 _FEATURE_TABLE_READY = False
@@ -19876,7 +19968,9 @@ def _admin_feature_flags():
         cur = conn.cursor(); cur.execute("SELECT feature_key, enabled, updated_by, updated_at FROM admin_feature_flags ORDER BY feature_key")
         rows = cur.fetchall(); cur.close(); out = {}
         for key, enabled, updated_by, updated_at in rows:
-            label = _ADMIN_FEATURE_DEFAULTS.get(key, (key, True))[0]
+            if key not in _ADMIN_FEATURE_DEFAULTS:
+                continue
+            label = _ADMIN_FEATURE_DEFAULTS[key][0]
             out[key] = {'label':label, 'enabled':bool(enabled), 'updated_by':updated_by, 'updated_at':updated_at}
         for key,(label,default) in _ADMIN_FEATURE_DEFAULTS.items():
             out.setdefault(key, {'label':label,'enabled':default,'updated_by':None,'updated_at':None})
@@ -19899,6 +19993,22 @@ def _set_admin_feature_flag(key, enabled, updated_by):
         print(f'⚠️ 更新功能開關失敗：{exc}'); return False
     finally:
         release_db_connection(conn)
+
+def _admin_feature_enabled(key, default=True):
+    try:
+        info = _admin_feature_flags().get(str(key))
+        return bool(info.get('enabled')) if info is not None else bool(default)
+    except Exception:
+        return bool(default)
+
+
+def _admin_feature_block(uid, key):
+    if is_admin(uid) or _admin_feature_enabled(key):
+        return None
+    label = _ADMIN_FEATURE_DEFAULTS.get(key, (key, False))[0]
+    body = f'''<div class="more-hero"><div class="eyebrow">功能暫停</div><h1>🔒 {html.escape(label)}</h1><p>這項功能目前由管理員暫時關閉，資料沒有被刪除。開啟後即可恢復使用。</p></div><div class="more-group"><div class="more-note">目前狀態：🔴 關閉<br>請由管理員到「更多 → 管理員後台 → 功能開關」開啟。</div></div>'''
+    return render_page(f'{label}暫停', body, 'more'), 403
+
 
 def _admin_dashboard_data():
     conn=get_db_connection()
@@ -20045,8 +20155,9 @@ def web_admin_features(uid):
     for key,info in flags.items():
         on=bool(info.get('enabled'))
         bg='#eaf7ef' if on else '#fcebea'; fg='#16794c' if on else '#b42318'; label='🟢 開啟' if on else '🔴 關閉'
-        rows.append(f'<div class="flag-row"><div><b>{html.escape(info["label"])}</b><small>{"目前開啟" if on else "目前關閉"} · 變更：{html.escape(str(info.get("updated_at") or "尚未變更"))}</small></div><form method="post">{csrf_hidden_input()}<input type="hidden" name="feature_key" value="{html.escape(key)}"><input type="hidden" name="enabled" value="{0 if on else 1}"><button class="flag-btn" style="background:{bg};color:{fg}">{label}</button></form></div>')
-    body='<style>.flag-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid #edf0f4}.flag-row:last-child{border-bottom:0}.flag-row small{display:block;color:#667085;margin-top:4px}.flag-btn{border:0;border-radius:999px;padding:8px 13px;font-weight:700}.more-group{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}</style><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🔧 功能開關</h1><p>集中管理功能狀態。關閉前請確認該功能已接入對應的實際路由／推播檢查。</p></div><div class="more-group">'+''.join(rows)+'</div>'
+        extra=' · 與選股工作台共用頁面' if key == 'backtest_lab' else ''
+        rows.append(f'<div class="flag-row"><div><b>{html.escape(info["label"])}</b><small>{"目前開啟" if on else "目前關閉"}{extra} · 變更：{html.escape(str(info.get("updated_at") or "尚未變更"))}</small></div><form method="post">{csrf_hidden_input()}<input type="hidden" name="feature_key" value="{html.escape(key)}"><input type="hidden" name="enabled" value="{0 if on else 1}"><button class="flag-btn" style="background:{bg};color:{fg}">{label}</button></form></div>')
+    body='<style>.flag-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 0;border-bottom:1px solid #edf0f4}.flag-row:last-child{border-bottom:0}.flag-row small{display:block;color:#667085;margin-top:4px;line-height:1.45}.flag-btn{border:0;border-radius:999px;padding:8px 13px;font-weight:700;white-space:nowrap}.more-group{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}</style><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🔧 功能開關</h1><p>這裡的開關會實際影響對應功能。關閉後一般使用者無法進入該功能；資料不會被刪除。</p></div><div class="more-group">'+''.join(rows)+'</div>'
     return render_page('功能開關',body,'more')
 
 # =========================
@@ -28462,6 +28573,8 @@ def _build_taiex_intraday_events(data, rows, now=None):
 
 def push_intraday_market_anomalies(now=None, base_url=None):
     """盤中大盤異常即時推播；使用既有的每人上限、冷卻、S級突破與靜音設定。"""
+    if not _admin_feature_enabled('line_anomaly'):
+        return "盤中大盤異常目前已由管理員關閉。"
     now = now or taiwan_now()
     if not _is_taiwan_intraday_window(now):
         return "盤中大盤異常：非交易時段"
