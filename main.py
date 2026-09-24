@@ -20549,77 +20549,6 @@ def render_positions_fast_summary(uid):
 </section>'''
 
 
-@app.route("/web/api/positions/sell", methods=["POST"])
-@web_login_required
-def web_positions_sell_api(uid):
-    """專用賣出 API。
-
-    不再讓手機端的賣出確認流程把 POST 直接送回 /web/positions；
-    賣出現在有獨立、明確的 API 路由，避免部署版本／fragment query
-    導致 POST 收到 404。成功後只回 JSON，前端再重新抓持股片段。
-    """
-    if not valid_web_csrf():
-        return jsonify({"ok": False, "message": "安全驗證已過期，請重新整理後再試。"}), 403
-
-    def numv(field, cast=float):
-        v = (request.form.get(field) or "").strip()
-        if not v:
-            return None
-        try:
-            return cast(v)
-        except (ValueError, TypeError):
-            return None
-
-    action = (request.form.get("action") or "sell").strip()
-    try:
-        if action == "sell_all":
-            code = normalize_code(request.form.get("code", ""))
-            if not code:
-                return jsonify({"ok": False, "message": "找不到要賣出的股票代號。"}), 400
-            ok, info = sell_position_all(
-                uid, code,
-                sell_price=numv("sell_price"),
-                fee=numv("fee"),
-                tax=numv("tax"),
-                sell_reason=request.form.get("sell_reason"),
-            )
-            if not ok:
-                return jsonify({"ok": False, "message": str(info or "全部賣出失敗")}), 400
-            return jsonify({
-                "ok": True,
-                "message": (f"已全部賣出 {code}：{info.get('shares', 0):,} 股，"
-                            f"已實現損益 {info.get('realized_pl', 0):+,.0f} 元。"),
-                "summary": info,
-            })
-
-        pos_id = request.form.get("id")
-        sell_shares = numv("sell_shares", int) or 0
-        if not pos_id:
-            return jsonify({"ok": False, "message": "找不到這筆持股。"}), 400
-        ok, err, summary = sell_position(
-            uid, pos_id, sell_shares,
-            sell_price=numv("sell_price"),
-            fee=numv("fee"),
-            tax=numv("tax"),
-            sell_reason=request.form.get("sell_reason"),
-        )
-        if not ok:
-            return jsonify({"ok": False, "message": err or "賣出失敗，沒有修改持股。"}), 400
-
-        if summary:
-            message = (
-                f"已賣出 {stock_display_name(summary['code'])} "
-                f"{summary['shares']:,} 股 @ {summary['sell_price']:,.2f}；"
-                f"實現損益 {summary['pl']:+,.0f} 元。"
-            )
-        else:
-            message = "已完成賣出。"
-        return jsonify({"ok": True, "message": message, "summary": summary})
-    except Exception as exc:
-        print(f"❌ 專用賣出 API 失敗（uid={uid}）：{type(exc).__name__}: {exc}")
-        return jsonify({"ok": False, "message": "賣出處理發生錯誤，持股沒有成功更新。"}), 500
-
-
 @app.route("/web/positions", methods=["GET", "POST"])
 @web_login_required
 def web_positions(uid):
@@ -20646,6 +20575,21 @@ def web_positions(uid):
         return respond_page("持股", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "positions")
     if request.method == "POST":
         action = request.form.get("action")
+        # 明確區分「新增／加碼」與「賣出」。
+        # 舊版在部分手機的動態 fragment／確認視窗流程中，若表單上下文殘留
+        # 了 sell 欄位，可能把本來的新增請求誤送進 sell_position，
+        # 最後就會出現「找不到這筆持股」。
+        # 新增表單一定有 code+shares+cost，且不應有 positions.id；
+        # 即使 action 欄位意外重複，也優先視為新增。
+        is_add_request = (
+            action == "add"
+            or (not (request.form.get("id") or "").strip()
+                and (request.form.get("code") or "").strip()
+                and (request.form.get("shares") or "").strip()
+                and (request.form.get("cost") or "").strip())
+        )
+        if is_add_request:
+            action = "add"
         if action == "sell_all":
             def numv(field, cast=float):
                 v = (request.form.get(field) or "").strip()
@@ -20726,7 +20670,7 @@ def web_positions(uid):
                        f"證交稅 {summary['tax']:,.0f}。")
             else:
                 msg = "已賣出，但查不到報價，這筆沒有損益紀錄。"
-        else:
+        elif action == "add":
             code = normalize_code(request.form.get("code", ""))
             try:
                 shares = int(request.form.get("shares", "0"))
@@ -20778,7 +20722,7 @@ def web_positions(uid):
         est_tax = round(gross * tax_rate) if gross else 0
         return f"""
 <details class="sellbox"><summary>{label}</summary>
-<form method="post" action="/web/api/positions/sell" class="sellpanel">
+<form method="post" action="/web/positions" class="sellpanel">
   {csrf_hidden_input()}
   <input type="hidden" name="action" value="sell">
   <input type="hidden" name="id" value="{html.escape(str(lot_id), quote=True)}">
@@ -20852,7 +20796,7 @@ def web_positions(uid):
         est_tax = round(gross * tax_rate) if gross else 0
         return f'''
 <details class="sellbox sellbox-all"><summary>全部賣出（{len(p.get("lots", []))} 筆・{total:,} 股）</summary>
-<form method="post" action="/web/api/positions/sell" class="sellpanel"
+<form method="post" action="/web/positions" class="sellpanel"
       onsubmit="return confirm('確定將 {html.escape(str(name))} 的 {total:,} 股全部賣出？');">
   {csrf_hidden_input()}
   <input type="hidden" name="action" value="sell_all">
@@ -21139,8 +21083,9 @@ def web_positions(uid):
 {''.join(rows_html) if rows_html else '<div class="empty">還沒有持股紀錄，用下方表單新增。</div>'}
 </div>
 
-<form class="add" method="post">
+<form class="add" method="post" action="/web/positions">
   {csrf_hidden_input()}
+  <input type="hidden" name="action" value="add">
   <h3>新增持股</h3>
   <div class="fields">
     <div><label>股票代號</label>
@@ -21238,59 +21183,47 @@ def web_positions(uid):
       },180);
 
       var body=new FormData(form);
-      var sellApi=form.getAttribute('action') || '/web/api/positions/sell';
-      fetch(sellApi, {
+      fetch(form.action || window.location.href, {
         method:'POST', body:body, credentials:'same-origin', cache:'no-store',
-        headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}
+        headers:{'X-Requested-With':'XMLHttpRequest'}
       }).then(function(resp){
-        return resp.text().then(function(text){
-          var data=null;
-          try{data=JSON.parse(text);}catch(e){}
-          if(!resp.ok){
-            var msg=(data&&data.message)?data.message:('HTTP '+resp.status);
-            throw new Error(msg);
-          }
-          if(!data || data.ok!==true) throw new Error((data&&data.message)||'賣出失敗');
-          return data;
-        });
+        if(!resp.ok) throw new Error('HTTP '+resp.status);
+        return resp.text().then(function(html){ return {url:resp.url || window.location.href,html:html}; });
       }).then(function(result){
+        var url=result.url;
+        var responseHtml=result.html;
         finished=true;
         if(timer) clearInterval(timer);
         setProgress(100);
         if(subEl) subEl.textContent=isAddAction?'新增完成，正在更新持股畫面…':'賣出完成，正在更新持股畫面…';
 
-        // 賣出由專用 API 寫入資料後，再抓一次持股片段。
-        // 不再依賴 POST /web/positions 的舊路由，因此不會再因該路由回 404。
+        // 不再整頁跳轉／重新載入。後端仍然照正常 POST 寫入資料，
+        // 成功後只把目前的 #app-page-content 換成最新內容，
+        // 因此手機不會重新跑整個首頁 loader，也不會把使用者帶回頁面頂端。
         setTimeout(function(){
           var target=document.getElementById('app-page-content');
-          if(!target){ window.location.reload(); return; }
-          var u=new URL(window.location.href);
-          u.pathname='/web/positions';
-          u.searchParams.set('fragment','1');
-          u.searchParams.delete('fast');
-          fetch(u.toString(),{credentials:'same-origin',cache:'no-store'})
-            .then(function(resp){
-              if(!resp.ok) throw new Error('更新持股畫面失敗：HTTP '+resp.status);
-              return resp.text();
-            })
+          if(!target){ window.location.href=url; return; }
+          Promise.resolve(responseHtml)
             .then(function(html){
               var doc=new DOMParser().parseFromString(html,'text/html');
               var fresh=doc.getElementById('app-page-content');
               if(!fresh) throw new Error('找不到更新後的持股內容');
               var oldScroll=window.scrollY;
               target.innerHTML=fresh.innerHTML;
+              // innerHTML 插入的 script 不會自動執行，這裡只重新啟動片段內原本需要的腳本。
               target.querySelectorAll('script').forEach(function(oldScript){
                 var replacement=document.createElement('script');
-                Array.prototype.slice.call(oldScript.attributes).forEach(function(attr){replacement.setAttribute(attr.name,attr.value);});
+                Array.prototype.slice.call(oldScript.attributes).forEach(function(attr){ replacement.setAttribute(attr.name,attr.name==='src'?attr.value:attr.value); });
                 replacement.text=oldScript.text||oldScript.textContent||'';
                 oldScript.parentNode.replaceChild(replacement,oldScript);
               });
               window.scrollTo(0,oldScroll);
-              if(wrap&&wrap.parentNode)wrap.remove();
+              if(wrap && wrap.parentNode) wrap.remove();
             })
             .catch(function(err){
-              if(subEl) subEl.textContent='交易已寫入，正在重新整理持股畫面…';
-              setTimeout(function(){window.location.reload();},300);
+              // 更新片段失敗時才退回整頁導覽，避免資料其實已寫入卻卡在舊畫面。
+              if(subEl) subEl.textContent='資料已完成寫入，正在重新同步畫面…';
+              setTimeout(function(){ window.location.href=url; },300);
             });
         },220);
       }).catch(function(err){
