@@ -155,10 +155,19 @@ def _homepage_quote_for(display_date=None):
     return group[(ordinal // len(groups)) % len(group)]
 
 
+def is_twse_trading_day(day=None):
+    """以管理員台股日曆（TWSE 官方開休市表）判斷是否為集中市場交易日。
+    不只判斷週末，也會排除國定假日、春節前後僅結算交割等無交易日。
+    """
+    d = day if isinstance(day, date) else (taiwan_today() if day is None else date.fromisoformat(str(day)))
+    # 日曆函式定義在後方；Python 執行時函式已完成載入，因此可直接共用。
+    return bool(_twse_calendar_day_info(d).get("open"))
+
+
 def next_taiwan_trading_day(source_date):
-    """由資料日取得下一個平日顯示日；週五會跳到下週一。"""
+    """取得下一個真正的台股交易日，不只跳過週末，也跳過 TWSE 休市日。"""
     d = source_date + timedelta(days=1)
-    while d.weekday() >= 5:
+    while not is_twse_trading_day(d):
         d += timedelta(days=1)
     return d
 
@@ -880,7 +889,7 @@ def run_daily_change_detection(snapshot_date=None):
         except Exception as exc:
             print(f"❌ 盤前變化偵測：使用者 {uid} 失敗：{exc}")
     _save_events(snapshot_date, None, _sort_events(events), briefing_date)
-    if snapshot_date == taiwan_today():
+    if snapshot_date == taiwan_today() and is_twse_trading_day(snapshot_date):
         try:
             print(push_anomaly_events(snapshot_date, base_url=DEFAULT_WEB_BASE_URL))
         except Exception as exc:
@@ -3111,7 +3120,86 @@ def _format_anomaly_line(event, base_url=None):
         lines.append(f"查看完整戰情：{base_url}/")
     return "\n".join(lines)
 
+def _aggregate_anomaly_events(events, snapshot_date):
+    """推播前先把大量同類事件合併，避免 LINE 被單一類型事件洗版。
+
+    規則：
+    1. 三大法人方向反轉：同一批次合成 1 則。
+    2. 今日新增黑馬：每天最多形成 1 則。
+    3. 其他事件維持原本逐事件處理，交給日額度與冷卻保護。
+    """
+    grouped = []
+    institutional = []
+    blackhorse_entered = []
+    seen_blackhorse_codes = set()
+
+    for row in events:
+        severity, category, title, detail, event_key = row
+        category = str(category or "")
+        event_key = str(event_key or "")
+        if category == "institutional" and event_key.startswith("institutional_direction_"):
+            institutional.append(row)
+            continue
+        if category == "blackhorse" and event_key == "blackhorse_entered":
+            # 同一資料日若產生重複事件，只保留不同股票。
+            try:
+                # detail 通常是「A、B、C」；title 則提供總檔數。
+                for name in str(detail or "").split("、"):
+                    name = name.strip()
+                    if name:
+                        blackhorse_entered.append(name)
+            except Exception:
+                pass
+            continue
+        grouped.append({
+            "severity": severity, "category": category, "title": title,
+            "detail": detail, "event_key": event_key
+        })
+
+    if institutional:
+        # 依方向分組；同一批次只發一則。
+        direction_groups = {}
+        for severity, category, title, detail, event_key in institutional:
+            direction = "買超轉賣超" if "買超轉賣超" in str(title) else "賣超轉買超"
+            name = str(title).split("法人方向：", 1)[0].strip()
+            direction_groups.setdefault(direction, []).append(name)
+        names = []
+        for direction in ("買超轉賣超", "賣超轉買超"):
+            vals = direction_groups.get(direction, [])
+            if vals:
+                names.append(f"\n🔄 {direction}（{len(vals)} 檔）：" + "、".join(vals[:12]) + ("⋯" if len(vals) > 12 else ""))
+        total = len(institutional)
+        grouped.append({
+            "severity": "S",
+            "category": "institutional",
+            "title": f"法人異常｜{total} 檔方向反轉",
+            "detail": "三大法人合計方向出現反轉。" + "".join(names),
+            "event_key": f"institutional_direction_batch_{snapshot_date}"
+        })
+
+    if blackhorse_entered:
+        # 每個資料日只建立一個黑馬新增事件；即使 cron 重跑也靠 event_key 去重。
+        unique_names = []
+        for name in blackhorse_entered:
+            if name not in seen_blackhorse_codes:
+                seen_blackhorse_codes.add(name)
+                unique_names.append(name)
+        grouped.append({
+            "severity": "A",
+            "category": "blackhorse",
+            "title": f"今日新增 {len(unique_names)} 檔黑馬",
+            "detail": "、".join(unique_names[:12]) + ("⋯" if len(unique_names) > 12 else ""),
+            "event_key": f"blackhorse_entered_daily_{snapshot_date}"
+        })
+
+    # S 優先、同級維持原本順序。
+    grouped.sort(key=lambda e: 0 if str(e.get("severity")).upper() == "S" else 1)
+    return grouped
+
 def push_anomaly_events(snapshot_date, users=None, base_url=None):
+    # 最後一道保護：即使排程或人工呼叫誤在休市日執行，也絕不消耗 LINE 額度。
+    if not is_twse_trading_day(snapshot_date):
+        return f"異常提醒跳過：{snapshot_date} 非台股交易日，不發送 LINE。"
     if not _admin_feature_enabled('line_anomaly'):
         return "異常提醒目前已由管理員關閉。"
     users = list(users if users is not None else get_anomaly_notify_users())
@@ -3135,7 +3223,14 @@ def push_anomaly_events(snapshot_date, users=None, base_url=None):
             events = cur.fetchall(); cur.close()
         finally:
             release_db_connection(conn)
-        for severity, category, title, detail, event_key in events:
+
+        # 先合併大量同類事件，再套用「每日上限 + 冷卻」。
+        events = _aggregate_anomaly_events(events, snapshot_date)
+        for event in events:
+            severity = event.get("severity")
+            title = event.get("title")
+            detail = event.get("detail")
+            event_key = event.get("event_key")
             if _anomaly_recent_sent(snapshot_date, uid, event_key, cooldown):
                 skipped += 1; continue
             if daily_sent >= daily_limit and not (str(severity).upper() == 'S' and s_bypass):
@@ -16112,8 +16207,8 @@ def cron_detect_premarket_changes():
             requested_date = date.fromisoformat(requested_raw)
         except ValueError:
             return "date 必須使用 YYYY-MM-DD 格式。", 400
-        if requested_date.weekday() >= 5:
-            return "指定資料日必須是台股平日，週六日不執行台股資料 Job。", 400
+        if not is_twse_trading_day(requested_date):
+            return "指定資料日不是台股交易日，TWSE 休市日不執行台股資料 Job。", 400
         if requested_date > today:
             return "指定資料日不能晚於台灣今天。", 400
         # 測試只允許補抓近期資料，避免把過舊日期誤當成日常盤後批次。
@@ -16126,8 +16221,8 @@ def cron_detect_premarket_changes():
         return f"已排入指定資料日測試：{requested_date.isoformat()}（不會觸發 LINE 推播）\n{result}", 200
 
     # 正式排程若在週末被手動觸發，直接拒絕，不建立週末快照。
-    if today.weekday() >= 5:
-        return "今天不是台股交易日，未啟動盤前變化偵測；如需補抓平日，請加上 date=YYYY-MM-DD。", 400
+    if not is_twse_trading_day(today):
+        return "今天不是台股交易日，未啟動盤前變化偵測；休市日不建立盤前快照，也不發異常 LINE。", 400
     return run_in_background("盤前變化偵測", run_daily_change_detection), 200
 
 @app.route("/cron/fetch-t86", methods=["POST", "GET"])
@@ -20100,7 +20195,7 @@ def web_admin(uid):
     if not is_admin(uid): return make_response('Forbidden',403)
     d=_admin_dashboard_data(); state=_maintenance_state(); status='🟢 正常' if not state.get('active') else '🟠 維護中'
     cards=f'''<div class="admin-grid"><div class="admin-stat"><b>{d['users']}</b><small>使用者</small></div><div class="admin-stat"><b>{d['active_today']}</b><small>今日活躍</small></div><div class="admin-stat"><b>{d['trades']}</b><small>正式賣出</small></div><div class="admin-stat"><b>{d['activity_today']}</b><small>今日操作</small></div></div>'''
-    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a></div></div></div>'''
+    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股日曆<br><small>開市、休市與今日交易狀態</small></a></div></div></div>'''
     return render_page('管理員後台',body,'more')
 
 @app.route('/web/admin/transactions')
@@ -20141,6 +20236,45 @@ def web_admin_system(uid):
     rows=''.join(f'<div class="more-item"><span><b>{html.escape(str(r[1]))}</b><small>{html.escape(str(r[0]))} · {html.escape(str(r[2]))} · {html.escape(str(r[3]))}</small></span></div>' for r in recent) or '<div class="more-note">近期沒有操作紀錄。</div>'
     body=f'<div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>📊 資料更新中心</h1><p>快速看資料有沒有更新；單一項目失敗不代表整個快照系統壞掉。</p></div><div class="more-group"><div class="more-note">使用者 {d["users"]} · 今日活躍 {d["active_today"]} · 持股筆數 {d["positions"]} · 正式賣出 {d["trades"]}</div><pre style="white-space:pre-wrap">{html.escape(str(report))}</pre></div><div class="more-group"><div class="more-group-title">最近系統操作</div>{rows}</div>'
     return render_page('資料更新中心',body,'more')
+
+# =========================
+# 管理員後台：台股交易日曆（以 TWSE 官方市場開休市日期為準）
+# =========================
+_TWSE_MARKET_CALENDAR = {
+    2026: {
+        "2026-01-01": "中華民國開國紀念日", "2026-02-12": "春節前休市（僅結算交割）", "2026-02-13": "春節前休市（僅結算交割）",
+        "2026-02-15": "農曆除夕及春節", "2026-02-16": "農曆除夕及春節", "2026-02-17": "農曆除夕及春節", "2026-02-18": "農曆除夕及春節", "2026-02-19": "農曆除夕及春節", "2026-02-20": "春節補假",
+        "2026-02-27": "和平紀念日補假", "2026-02-28": "和平紀念日", "2026-04-03": "兒童節及民族掃墓節補假", "2026-04-04": "兒童節及民族掃墓節", "2026-04-05": "民族掃墓節", "2026-04-06": "民族掃墓節補假",
+        "2026-05-01": "勞動節", "2026-06-19": "端午節", "2026-09-25": "中秋節", "2026-09-28": "孔子誕辰紀念日／教師節", "2026-10-09": "國慶日補假", "2026-10-10": "國慶日", "2026-10-25": "臺灣光復暨金門古寧頭大捷紀念日", "2026-10-26": "臺灣光復暨金門古寧頭大捷紀念日補假", "2026-12-25": "行憲紀念日",
+    },
+}
+
+def _twse_calendar_day_info(day):
+    d = day if isinstance(day, date) else date.fromisoformat(str(day)); key = d.isoformat(); holiday = _TWSE_MARKET_CALENDAR.get(d.year, {}).get(key)
+    if d.weekday() >= 5: return {"date": key, "open": False, "kind": "weekend", "note": "市場休市"}
+    if holiday: return {"date": key, "open": False, "kind": "holiday", "note": holiday}
+    return {"date": key, "open": True, "kind": "open", "note": "正常交易日"}
+
+def _twse_calendar_month_html(year, month):
+    weeks = calendar.monthcalendar(year, month); names=['一','二','三','四','五','六','日']; cells=[]
+    for week in weeks:
+        for num in week:
+            if not num: cells.append('<div class="mcal-cell empty"></div>'); continue
+            d=date(year,month,num); info=_twse_calendar_day_info(d); cls=info['kind']+(' today' if d==taiwan_today() else ''); badge='開' if info['open'] else ('休' if info['kind']=='holiday' else '末')
+            cells.append(f'<div class="mcal-cell {cls}" title="{html.escape(info["note"])}"><b>{num}</b><span>{badge}</span></div>')
+    head=''.join(f'<div class="mcal-head">{x}</div>' for x in names)
+    return f'<div class="mcal-grid mcal-week">{head}</div><div class="mcal-grid">{"".join(cells)}</div>'
+
+@app.route('/web/admin/market-calendar')
+def web_admin_market_calendar():
+    uid=current_web_user()
+    if not uid or not is_admin(uid): return make_response('Forbidden',403)
+    year=int(request.args.get('year',taiwan_today().year) or taiwan_today().year); year=year if year in _TWSE_MARKET_CALENDAR else 2026
+    today=taiwan_today(); info=_twse_calendar_day_info(today); status='🟢 今日開市' if info['open'] else '🔴 今日休市'
+    events=''.join(f'<div class="mcal-event"><b>{html.escape(k)}</b><span>🔴 {html.escape(v)}</span></div>' for k,v in sorted(_TWSE_MARKET_CALENDAR[year].items()))
+    months=''.join(f'<section class="mcal-month"><h3>{m} 月</h3>{_twse_calendar_month_html(year,m)}</section>' for m in range(1,13))
+    body=f'''<style>.mcal-wrap{{max-width:980px;margin:auto}}.mcal-note,.mcal-status,.mcal-month,.mcal-events{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}}.mcal-note{{background:#f7f8fa;color:#475467;line-height:1.6}}.mcal-status b{{font-size:20px}}.mcal-grid{{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}}.mcal-head{{font-size:12px;text-align:center;color:#667085;font-weight:700;padding:5px}}.mcal-cell{{min-height:54px;border-radius:10px;background:#f6fbf7;padding:7px;box-sizing:border-box;display:flex;justify-content:space-between;border:1px solid #e5eee7}}.mcal-cell.holiday{{background:#fff5f3;border-color:#f5d2cc}}.mcal-cell.weekend{{background:#f5f6f8;color:#98a2b3;border-color:#eaecf0}}.mcal-cell.empty{{background:transparent;border:0}}.mcal-cell.today{{outline:3px solid #111;outline-offset:-2px}}.mcal-cell span{{font-size:10px;font-weight:800;color:#667085}}.mcal-cell.open span{{color:#16803c}}.mcal-cell.holiday span{{color:#b42318}}.mcal-event{{display:flex;gap:18px;padding:9px 0;border-bottom:1px solid #edf0f4}}.mcal-event:last-child{{border-bottom:0}}@media(max-width:650px){{.mcal-cell{{min-height:45px;padding:5px;font-size:13px}}.mcal-event{{display:block}}.mcal-event span{{display:block;margin-top:3px}}}}</style><div class="mcal-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>📅 台股交易日曆</h1><p>依臺灣證券交易所（TWSE）公告的市場開休市日期整理，方便檢查 Bot 的交易日判斷。</p></div><div class="mcal-status"><b>{status}</b><p>{today.isoformat()}｜{html.escape(info['note'])}</p></div><div class="mcal-note">🟢 開＝正常交易日　🔴 休＝證交所公告休市　⚪ 末＝週末。<br>目前資料以 TWSE 2026 年市場開休市公告為基準。</div>{months}<div class="mcal-events"><h3>2026 休市／特殊日期</h3>{events}</div><div class="mcal-note">官方來源：<a href="https://www.twse.com.tw/holidaySchedule/holidaySchedule?response=html" target="_blank" rel="noopener">TWSE 市場開休市日期</a></div></div>'''
+    return render_page('台股交易日曆',body,'more')
 
 @app.route('/web/admin/features', methods=['GET','POST'])
 @web_login_required
