@@ -19835,42 +19835,219 @@ def _admin_history_candidates(limit=100):
     finally:
         release_db_connection(conn)
 
-@app.route("/web/admin")
+# =========================
+# 管理員後台（V83：Dashboard / 資料更新 / LINE / 歷史交易 / 功能開關；修正賣出 POST 404）
+# =========================
+_ADMIN_FEATURE_DEFAULTS = {
+    'line_anomaly': ('LINE 異常推播', True),
+    'line_daily': ('LINE 每日推播', True),
+    'leaderboard': ('排行榜', True),
+    'selection_lab': ('選股實驗室', True),
+    'backtest_lab': ('回測實驗室', True),
+}
+_FEATURE_TABLE_READY = False
+_FEATURE_TABLE_LOCK = threading.Lock()
+
+def _ensure_admin_feature_table():
+    global _FEATURE_TABLE_READY
+    if _FEATURE_TABLE_READY:
+        return True
+    with _FEATURE_TABLE_LOCK:
+        if _FEATURE_TABLE_READY:
+            return True
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS admin_feature_flags (feature_key TEXT PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT TRUE, updated_by TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
+            for key, (_label, default) in _ADMIN_FEATURE_DEFAULTS.items():
+                cur.execute("INSERT INTO admin_feature_flags (feature_key, enabled) VALUES (%s, %s) ON CONFLICT (feature_key) DO NOTHING", (key, bool(default)))
+            conn.commit(); cur.close(); _FEATURE_TABLE_READY = True; return True
+        except Exception as exc:
+            try: conn.rollback()
+            except Exception: pass
+            print(f'⚠️ 管理功能開關初始化失敗：{exc}'); return False
+        finally:
+            release_db_connection(conn)
+
+def _admin_feature_flags():
+    _ensure_admin_feature_table()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor(); cur.execute("SELECT feature_key, enabled, updated_by, updated_at FROM admin_feature_flags ORDER BY feature_key")
+        rows = cur.fetchall(); cur.close(); out = {}
+        for key, enabled, updated_by, updated_at in rows:
+            label = _ADMIN_FEATURE_DEFAULTS.get(key, (key, True))[0]
+            out[key] = {'label':label, 'enabled':bool(enabled), 'updated_by':updated_by, 'updated_at':updated_at}
+        for key,(label,default) in _ADMIN_FEATURE_DEFAULTS.items():
+            out.setdefault(key, {'label':label,'enabled':default,'updated_by':None,'updated_at':None})
+        return out
+    except Exception as exc:
+        print(f'⚠️ 讀取功能開關失敗：{exc}')
+        return {key:{'label':label,'enabled':default,'updated_by':None,'updated_at':None} for key,(label,default) in _ADMIN_FEATURE_DEFAULTS.items()}
+    finally:
+        release_db_connection(conn)
+
+def _set_admin_feature_flag(key, enabled, updated_by):
+    if key not in _ADMIN_FEATURE_DEFAULTS: return False
+    _ensure_admin_feature_table(); conn=get_db_connection()
+    try:
+        cur=conn.cursor(); cur.execute("UPDATE admin_feature_flags SET enabled=%s, updated_by=%s, updated_at=NOW() WHERE feature_key=%s", (bool(enabled),str(updated_by),key))
+        ok=cur.rowcount==1; conn.commit(); cur.close(); return ok
+    except Exception as exc:
+        try: conn.rollback()
+        except Exception: pass
+        print(f'⚠️ 更新功能開關失敗：{exc}'); return False
+    finally:
+        release_db_connection(conn)
+
+def _admin_dashboard_data():
+    conn=get_db_connection()
+    try:
+        cur=conn.cursor(); d={}
+        queries={'users':'SELECT COUNT(*) FROM users','active_today':'SELECT COUNT(*) FROM users WHERE last_seen >= CURRENT_DATE','positions':'SELECT COUNT(*) FROM positions','trades':'SELECT COUNT(*) FROM realized_trades','logs':'SELECT COUNT(*) FROM position_change_logs','activity_today':'SELECT COUNT(*) FROM activity_log WHERE occurred_at >= CURRENT_DATE'}
+        for k,q in queries.items():
+            try: cur.execute(q); d[k]=int(cur.fetchone()[0] or 0)
+            except Exception:
+                d[k]=0
+                try: conn.rollback()
+                except Exception: pass
+        cur.close(); return d
+    except Exception as exc:
+        print(f'⚠️ 管理首頁統計失敗：{exc}'); return {k:0 for k in ['users','active_today','positions','trades','logs','activity_today']}
+    finally:
+        release_db_connection(conn)
+
+def _admin_recent_activity(limit=12):
+    conn=get_db_connection()
+    try:
+        cur=conn.cursor(); cur.execute('SELECT a.occurred_at, COALESCE(u.display_name, a.user_id), a.feature, a.action FROM activity_log a LEFT JOIN users u ON u.user_id=a.user_id ORDER BY a.occurred_at DESC LIMIT %s',(int(limit),))
+        rows=cur.fetchall(); cur.close(); return rows
+    except Exception as exc:
+        print(f'⚠️ 讀取管理操作紀錄失敗：{exc}'); return []
+    finally:
+        release_db_connection(conn)
+
+def _admin_transaction_rows(limit=200, user_id=None, code=None):
+    """真正的歷史交易：買進/加碼看 position_change_logs；賣出以 realized_trades 為準。"""
+    conn=get_db_connection()
+    try:
+        cur=conn.cursor(); params=[]; clauses=[]
+        if user_id: clauses += ['p.user_id=%s']; params += [str(user_id).strip()]
+        if code: clauses += ['p.code=%s']; params += [str(code).strip()]
+        where=('WHERE '+ ' AND '.join(clauses)) if clauses else ''
+        cur.execute(f'''SELECT p.id,p.user_id,p.code,p.trade_date,p.action,p.shares_delta,p.trade_price,p.note,u.display_name FROM position_change_logs p LEFT JOIN users u ON u.user_id=p.user_id {where} ORDER BY p.trade_date DESC,p.id DESC LIMIT %s''',tuple(params+[int(limit)]))
+        logs=cur.fetchall()
+        rparams=[]; rclauses=[]
+        if user_id: rclauses += ['r.user_id=%s']; rparams += [str(user_id).strip()]
+        if code: rclauses += ['r.code=%s']; rparams += [str(code).strip()]
+        rwhere=('WHERE '+ ' AND '.join(rclauses)) if rclauses else ''
+        cur.execute(f'''SELECT r.user_id,r.code,r.sold_on,r.shares,r.buy_cost,r.sell_price,r.realized_pl,r.realized_pct,r.fee,r.tax,r.sell_reason,u.display_name FROM realized_trades r LEFT JOIN users u ON u.user_id=r.user_id {rwhere} ORDER BY r.sold_on DESC,r.id DESC LIMIT %s''',tuple(rparams+[int(limit)]))
+        sells=cur.fetchall(); cur.close()
+        rows=[]
+        # 先依照既有的「同日完全配對」規則，把誤加後撤回的 add 排除。
+        grouped={}
+        for r in logs:
+            rid,ruid,rcode,rdate,raction,rdelta=r[0],r[1],r[2],r[3],str(r[4]).strip(),int(r[5] or 0)
+            grouped.setdefault((ruid,rcode,rdate),[]).append((rid,raction,rdelta))
+        voided=set()
+        for items in grouped.values():
+            adds={}; reduces={}
+            for rid,action,delta in sorted(items,key=lambda x:x[0] or 0):
+                if action=='add' and delta>0: adds.setdefault(delta,[]).append(rid)
+                elif action in {'reduce','delete'} and delta<0: reduces.setdefault(abs(delta),[]).append(rid)
+            for qty in set(adds)&set(reduces):
+                for rid in adds[qty][:min(len(adds[qty]),len(reduces[qty]))]: voided.add(rid)
+                for rid in reduces[qty][:min(len(adds[qty]),len(reduces[qty]))]: voided.add(rid)
+        for r in logs:
+            if r[0] in voided: continue
+            if str(r[4]).strip()=='add':
+                rows.append({'user_id':r[1],'code':r[2],'date':r[3],'type':'buy','shares':r[5],'price':r[6],'note':r[7],'name':r[8]})
+        for r in sells:
+            rows.append({'user_id':r[0],'code':r[1],'date':r[2],'type':'sell','shares':r[3],'buy_cost':r[4],'price':r[5],'realized_pl':r[6],'realized_pct':r[7],'fee':r[8],'tax':r[9],'reason':r[10],'name':r[11]})
+        rows.sort(key=lambda x:(x.get('date') or date.min), reverse=True)
+        return rows[:int(limit)]
+    except Exception as exc:
+        print(f'⚠️ 管理歷史交易查詢失敗：{exc}'); return []
+    finally:
+        release_db_connection(conn)
+
+def _admin_tx_html(rows):
+    if not rows: return '<div class="more-note">目前沒有正式買賣紀錄。</div>'
+    parts=[]
+    for r in rows:
+        code=html.escape(str(r.get('code') or '')); name=html.escape(str(stock_display_name(r.get('code'), {}) or r.get('code') or '')); who=html.escape(str(r.get('name') or r.get('user_id') or '')); day=html.escape(str(r.get('date') or ''))
+        if r.get('type')=='buy':
+            shares=int(r.get('shares') or 0); price=r.get('price'); ptxt=f'{float(price):,.2f}' if price is not None else '待確認'
+            parts.append(f'<div class="tx-card"><div class="tx-top"><b>{name} <small>{code}</small></b><span class="tx-buy">🟢 買進／加碼</span></div><div class="tx-meta">{day} · {who}</div><div class="tx-grid"><div><b>{shares:,}</b><small>股數</small></div><div><b>{ptxt}</b><small>成本／成交價</small></div><div><b>—</b><small>已實現損益</small></div></div></div>')
+        else:
+            shares=int(r.get('shares') or 0); price=r.get('price'); pl=r.get('realized_pl'); pct=r.get('realized_pct'); ptxt=f'{float(price):,.2f}' if price is not None else '待確認'; pltxt=f'{float(pl):+,.0f}' if pl is not None else '待確認'; pcttxt=f'{float(pct):+.2f}%' if pct is not None else '—'; cls='up' if pl is not None and float(pl)>=0 else 'down' if pl is not None else 'flat'; reason=html.escape(str(r.get('reason') or '')); reason_html=f'<small>理由：{reason}</small>' if reason else ''
+            parts.append(f'<div class="tx-card"><div class="tx-top"><b>{name} <small>{code}</small></b><span class="tx-sell">🔴 賣出</span></div><div class="tx-meta">{day} · {who}</div><div class="tx-grid"><div><b>{shares:,}</b><small>股數</small></div><div><b>{ptxt}</b><small>賣出價</small></div><div><b class="{cls}">{pltxt}</b><small>已實現損益 {pcttxt}</small></div></div>{reason_html}</div>')
+    return ''.join(parts)
+
+@app.route('/web/admin')
 @web_login_required
 def web_admin(uid):
-    if not is_admin(uid): return make_response("Forbidden",403)
-    cs=_admin_history_candidates(100)
-    body='<div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>只有管理員可以看到與進入。</p></div><div class="more-group"><div class="more-group-title">管理功能</div><a class="more-item" href="/web/admin/history"><span class="more-icon">🔍</span><span><b>歷史紀錄檢查</b><small>唯讀盤點疑似誤新增後刪除</small></span><strong>›</strong></a><a class="more-item" href="/web/admin/users"><span class="more-icon">👥</span><span><b>使用者管理</b><small>活躍狀態與 LINE 設定</small></span><strong>›</strong></a><a class="more-item" href="/web/admin/notifications"><span class="more-icon">🔔</span><span><b>LINE 通知管理</b><small>推播、異常額度、冷卻、靜音</small></span><strong>›</strong></a><a class="more-item" href="/web/admin/system"><span class="more-icon">🩺</span><span><b>系統狀態</b><small>資料更新與快照狀態</small></span><strong>›</strong></a><a class="more-item" href="/web/admin/maintenance"><span class="more-icon">🛠️</span><span><b>維護模式</b><small>立即維護、排程、預計結束時間</small></span><strong>›</strong></a></div>'
-    body += f'<div class="more-group"><div class="more-group-title">歷史盤點</div><div class="more-note">目前找到 {len(cs)} 筆高信心候選；只讀，尚未刪除。</div></div>'
-    return render_page("管理員後台",body,"more")
+    if not is_admin(uid): return make_response('Forbidden',403)
+    d=_admin_dashboard_data(); state=_maintenance_state(); status='🟢 正常' if not state.get('active') else '🟠 維護中'
+    cards=f'''<div class="admin-grid"><div class="admin-stat"><b>{d['users']}</b><small>使用者</small></div><div class="admin-stat"><b>{d['active_today']}</b><small>今日活躍</small></div><div class="admin-stat"><b>{d['trades']}</b><small>正式賣出</small></div><div class="admin-stat"><b>{d['activity_today']}</b><small>今日操作</small></div></div>'''
+    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a></div></div></div>'''
+    return render_page('管理員後台',body,'more')
 
-@app.route("/web/admin/history")
+@app.route('/web/admin/transactions')
+@web_login_required
+def web_admin_transactions(uid):
+    if not is_admin(uid): return make_response('Forbidden',403)
+    rows=_admin_transaction_rows(300)
+    body=f'''<style>.tx-wrap{{max-width:860px;margin:auto}}.tx-filter,.tx-card{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:15px;margin:10px 0}}.tx-top,.tx-meta{{display:flex;justify-content:space-between;gap:10px;align-items:center}}.tx-meta{{font-size:13px;color:#667085;margin-top:5px}}.tx-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}}.tx-grid small{{display:block;color:#667085;margin-top:5px}}.tx-buy{{color:#16794c;font-weight:700}}.tx-sell{{color:#b42318;font-weight:700}}.up{{color:#b42318!important}}.down{{color:#16794c!important}}.flat{{color:#667085!important}}</style><div class="tx-wrap"><div class="more-hero"><div class="eyebrow">READ ONLY</div><h1>📋 歷史交易</h1><p>這裡才是真正的買進／加碼／賣出紀錄，不再顯示難懂的「此前累計」盤點數字。</p></div><div class="tx-filter"><b>最近 {len(rows)} 筆正式交易</b><small>買進／加碼來自操作帳本；賣出以已實現損益紀錄為準。</small></div>{_admin_tx_html(rows)}</div>'''
+    return render_page('歷史交易',body,'more')
+
+@app.route('/web/admin/history')
 @web_login_required
 def web_admin_history(uid):
-    if not is_admin(uid): return make_response("Forbidden",403)
-    cs=_admin_history_candidates(200)
-    items=''.join(f'<div class="more-item"><span><b>{html.escape(str(r[2]))}｜{html.escape(str(r[1]))}</b><small>日期 {r[3]}｜新增 {r[4]} 股｜目前持股 {r[5]} 股｜此前累計 {r[6]} 股</small></span></div>' for r in cs) or '<div class="more-note">沒有符合高信心條件的候選。</div>'
-    body=f'<div class="more-hero"><div class="eyebrow">READ ONLY</div><h1>歷史紀錄檢查</h1><p>這一頁沒有刪除功能。</p></div><div class="more-group">{items}</div><div class="more-note">條件：同日全為新增、目前持股為 0、此前累計變化不大於 0。這只是第一層安全篩選。</div>'
-    return render_page("歷史紀錄檢查",body,"more")
+    if not is_admin(uid): return make_response('Forbidden',403)
+    cs=_admin_history_candidates(200); items=''.join(f'<div class="more-item"><span><b>{html.escape(str(r[2]))}｜{html.escape(str(r[1]))}</b><small>日期 {r[3]}｜新增 {r[4]} 股｜目前持股 {r[5]} 股｜此前累計 {r[6]} 股</small></span></div>' for r in cs) or '<div class="more-note">沒有符合高信心條件的候選。</div>'
+    body=f'<div class="more-hero"><div class="eyebrow">READ ONLY</div><h1>🔍 紀錄異常檢查</h1><p>這裡專門找疑似「誤新增後撤回」的舊資料，不是正常的歷史交易頁。</p></div><div class="more-group">{items}</div><div class="more-note">只讀安全檢查，不會自動刪除資料。</div>'
+    return render_page('紀錄異常檢查',body,'more')
 
-@app.route("/web/admin/users")
+@app.route('/web/admin/users')
 @web_login_required
 def web_admin_users(uid):
-    if not is_admin(uid): return make_response("Forbidden",403)
-    report=build_admin_user_list_report(status="all",limit=100,offset=0)
-    return render_page("使用者管理",'<div class="more-hero"><h1>使用者管理</h1></div><pre style="white-space:pre-wrap">'+html.escape(report)+'</pre>',"more")
+    if not is_admin(uid): return make_response('Forbidden',403)
+    report=build_admin_user_list_report(status='all',limit=100,offset=0)
+    return render_page('使用者管理','<div class="more-hero"><h1>👥 使用者管理</h1></div><pre style="white-space:pre-wrap">'+html.escape(report)+'</pre>','more')
 
-@app.route("/web/admin/notifications")
+@app.route('/web/admin/notifications')
 @web_login_required
 def web_admin_notifications(uid):
-    if not is_admin(uid): return make_response("Forbidden",403)
-    return render_page("LINE 通知管理",'<div class="more-hero"><h1>LINE 通知管理</h1><p>每日推播、異常提醒、異常額度、冷卻、S級突破與靜音。</p></div>',"more")
+    if not is_admin(uid): return make_response('Forbidden',403)
+    report=build_usage_stats_report()
+    return render_page('LINE 通知管理','<div class="more-hero"><h1>📢 LINE 推播中心</h1><p>集中查看使用狀況與推播相關設定。</p></div><pre style="white-space:pre-wrap">'+html.escape(str(report))+'</pre>','more')
 
-@app.route("/web/admin/system")
+@app.route('/web/admin/system')
 @web_login_required
 def web_admin_system(uid):
-    if not is_admin(uid): return make_response("Forbidden",403)
-    return render_page("系統狀態",'<div class="more-hero"><h1>系統狀態</h1></div><pre style="white-space:pre-wrap">'+html.escape(_admin_system_data_status_report())+'</pre>',"more")
+    if not is_admin(uid): return make_response('Forbidden',403)
+    d=_admin_dashboard_data(); report=_admin_system_data_status_report(); recent=_admin_recent_activity(12)
+    rows=''.join(f'<div class="more-item"><span><b>{html.escape(str(r[1]))}</b><small>{html.escape(str(r[0]))} · {html.escape(str(r[2]))} · {html.escape(str(r[3]))}</small></span></div>' for r in recent) or '<div class="more-note">近期沒有操作紀錄。</div>'
+    body=f'<div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>📊 資料更新中心</h1><p>快速看資料有沒有更新；單一項目失敗不代表整個快照系統壞掉。</p></div><div class="more-group"><div class="more-note">使用者 {d["users"]} · 今日活躍 {d["active_today"]} · 持股筆數 {d["positions"]} · 正式賣出 {d["trades"]}</div><pre style="white-space:pre-wrap">{html.escape(str(report))}</pre></div><div class="more-group"><div class="more-group-title">最近系統操作</div>{rows}</div>'
+    return render_page('資料更新中心',body,'more')
+
+@app.route('/web/admin/features', methods=['GET','POST'])
+@web_login_required
+def web_admin_features(uid):
+    if not is_admin(uid): return make_response('Forbidden',403)
+    if request.method=='POST':
+        if not valid_web_csrf(): return make_response('CSRF validation failed',400)
+        key=str(request.form.get('feature_key') or '').strip(); enabled=str(request.form.get('enabled') or '0')=='1'
+        if _set_admin_feature_flag(key,enabled,uid): return redirect('/web/admin/features')
+        return make_response('更新失敗',400)
+    flags=_admin_feature_flags(); rows=[]
+    for key,info in flags.items():
+        on=bool(info.get('enabled'))
+        bg='#eaf7ef' if on else '#fcebea'; fg='#16794c' if on else '#b42318'; label='🟢 開啟' if on else '🔴 關閉'
+        rows.append(f'<div class="flag-row"><div><b>{html.escape(info["label"])}</b><small>{"目前開啟" if on else "目前關閉"} · 變更：{html.escape(str(info.get("updated_at") or "尚未變更"))}</small></div><form method="post">{csrf_hidden_input()}<input type="hidden" name="feature_key" value="{html.escape(key)}"><input type="hidden" name="enabled" value="{0 if on else 1}"><button class="flag-btn" style="background:{bg};color:{fg}">{label}</button></form></div>')
+    body='<style>.flag-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid #edf0f4}.flag-row:last-child{border-bottom:0}.flag-row small{display:block;color:#667085;margin-top:4px}.flag-btn{border:0;border-radius:999px;padding:8px 13px;font-weight:700}.more-group{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}</style><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🔧 功能開關</h1><p>集中管理功能狀態。關閉前請確認該功能已接入對應的實際路由／推播檢查。</p></div><div class="more-group">'+''.join(rows)+'</div>'
+    return render_page('功能開關',body,'more')
 
 # =========================
 # 管理員維護模式（V81）
@@ -20530,7 +20707,8 @@ def web_positions(uid):
         est_tax = round(gross * tax_rate) if gross else 0
         return f"""
 <details class="sellbox"><summary>{label}</summary>
-<form method="post" class="sellpanel">
+<form method="post" action="/web/positions" class="sellpanel">
+  {csrf_hidden_input()}
   <input type="hidden" name="action" value="sell">
   <input type="hidden" name="id" value="{html.escape(str(lot_id), quote=True)}">
   <input type="hidden" name="delete_lot_id" value="{html.escape(str(lot_id), quote=True)}">
@@ -20603,7 +20781,7 @@ def web_positions(uid):
         est_tax = round(gross * tax_rate) if gross else 0
         return f'''
 <details class="sellbox sellbox-all"><summary>全部賣出（{len(p.get("lots", []))} 筆・{total:,} 股）</summary>
-<form method="post" class="sellpanel"
+<form method="post" action="/web/positions" class="sellpanel"
       onsubmit="return confirm('確定將 {html.escape(str(name))} 的 {total:,} 股全部賣出？');">
   {csrf_hidden_input()}
   <input type="hidden" name="action" value="sell_all">
@@ -20890,7 +21068,7 @@ def web_positions(uid):
 {''.join(rows_html) if rows_html else '<div class="empty">還沒有持股紀錄，用下方表單新增。</div>'}
 </div>
 
-<form class="add" method="post">
+<form class="add" method="post" action="/web/positions">
   {csrf_hidden_input()}
   <h3>新增持股</h3>
   <div class="fields">
@@ -24138,7 +24316,7 @@ def web_leaderboard(uid):
     重新加入不會重設起算日——否則賠錢時退出再加入就能把負報酬洗掉。
   </div>
 </div>
-<form class="add" method="post">
+<form class="add" method="post" action="/web/positions">
   <h3>修改設定</h3>
   <div class="fields">
     <div><label>顯示暱稱</label>
@@ -24162,7 +24340,7 @@ def web_leaderboard(uid):
 </form>"""
     else:
         panel = """
-<form class="add" method="post">
+<form class="add" method="post" action="/web/positions">
   <h3>參加排行榜</h3>
   <div class="fields">
     <div><label>顯示暱稱（其他人看得到）</label>
