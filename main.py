@@ -20195,7 +20195,7 @@ def web_admin(uid):
     if not is_admin(uid): return make_response('Forbidden',403)
     d=_admin_dashboard_data(); state=_maintenance_state(); status='🟢 正常' if not state.get('active') else '🟠 維護中'
     cards=f'''<div class="admin-grid"><div class="admin-stat"><b>{d['users']}</b><small>使用者</small></div><div class="admin-stat"><b>{d['active_today']}</b><small>今日活躍</small></div><div class="admin-stat"><b>{d['trades']}</b><small>正式賣出</small></div><div class="admin-stat"><b>{d['activity_today']}</b><small>今日操作</small></div></div>'''
-    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股日曆<br><small>開市、休市與今日交易狀態</small></a></div></div></div>'''
+    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股日曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>查看容量並刪除過期歷史資料</small></a></div></div></div>'''
     return render_page('管理員後台',body,'more')
 
 @app.route('/web/admin/transactions')
@@ -20275,6 +20275,85 @@ def web_admin_market_calendar():
     months=''.join(f'<section class="mcal-month"><h3>{m} 月</h3>{_twse_calendar_month_html(year,m)}</section>' for m in range(1,13))
     body=f'''<style>.mcal-wrap{{max-width:980px;margin:auto}}.mcal-note,.mcal-status,.mcal-month,.mcal-events{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}}.mcal-note{{background:#f7f8fa;color:#475467;line-height:1.6}}.mcal-status b{{font-size:20px}}.mcal-grid{{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}}.mcal-head{{font-size:12px;text-align:center;color:#667085;font-weight:700;padding:5px}}.mcal-cell{{min-height:54px;border-radius:10px;background:#f6fbf7;padding:7px;box-sizing:border-box;display:flex;justify-content:space-between;border:1px solid #e5eee7}}.mcal-cell.holiday{{background:#fff5f3;border-color:#f5d2cc}}.mcal-cell.weekend{{background:#f5f6f8;color:#98a2b3;border-color:#eaecf0}}.mcal-cell.empty{{background:transparent;border:0}}.mcal-cell.today{{outline:3px solid #111;outline-offset:-2px}}.mcal-cell span{{font-size:10px;font-weight:800;color:#667085}}.mcal-cell.open span{{color:#16803c}}.mcal-cell.holiday span{{color:#b42318}}.mcal-event{{display:flex;gap:18px;padding:9px 0;border-bottom:1px solid #edf0f4}}.mcal-event:last-child{{border-bottom:0}}@media(max-width:650px){{.mcal-cell{{min-height:45px;padding:5px;font-size:13px}}.mcal-event{{display:block}}.mcal-event span{{display:block;margin-top:3px}}}}</style><div class="mcal-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>📅 台股交易日曆</h1><p>依臺灣證券交易所（TWSE）公告的市場開休市日期整理，方便檢查 Bot 的交易日判斷。</p></div><div class="mcal-status"><b>{status}</b><p>{today.isoformat()}｜{html.escape(info['note'])}</p></div><div class="mcal-note">🟢 開＝正常交易日　🔴 休＝證交所公告休市　⚪ 末＝週末。<br>目前資料以 TWSE 2026 年市場開休市公告為基準。</div>{months}<div class="mcal-events"><h3>2026 休市／特殊日期</h3>{events}</div><div class="mcal-note">官方來源：<a href="https://www.twse.com.tw/holidaySchedule/holidaySchedule?response=html" target="_blank" rel="noopener">TWSE 市場開休市日期</a></div></div>'''
     return render_page('台股交易日曆',body,'more')
+
+# =========================
+# 管理員後台：資料清理（V84）
+# =========================
+_ADMIN_CLEANUP_ALLOWED = {
+    "inst_history": ("trade_date", 730),
+    "watchlist_scores": ("snapshot_date", 400),
+    "portfolio_snapshots": ("snapshot_date", 1095),
+    "pick_history": ("pick_date", 1095),
+    "industry_momentum_history": ("snapshot_date", 1095),
+    "activity_log": ("occurred_at", 730),
+    "line_event_dedup": ("received_at", 14),
+    "premarket_events": ("created_at", 730),
+    "premarket_snapshots": ("snapshot_date", 730),
+    "leaderboard_rank_snapshots": ("snapshot_date", 1095),
+}
+
+def _admin_cleanup_report():
+    rows=[]
+    for table,(col,days) in _ADMIN_CLEANUP_ALLOWED.items():
+        conn=get_db_connection()
+        try:
+            cur=conn.cursor()
+            cur.execute(f"SELECT COUNT(*), MIN({col}) FROM {table} WHERE {col} < CURRENT_DATE - %s",(days,))
+            count,oldest=cur.fetchone()
+            rows.append((table,col,days,int(count or 0),oldest,None))
+        except Exception as exc:
+            rows.append((table,col,days,0,None,str(exc)))
+        finally:
+            try: cur.close()
+            except Exception: pass
+            release_db_connection(conn)
+    return rows
+
+@app.route('/web/admin/data-cleanup', methods=['GET','POST'])
+@web_login_required
+def web_admin_data_cleanup(uid):
+    if not is_admin(uid): return make_response('Forbidden',403)
+    message=''; kind='ok'
+    if request.method=='POST':
+        if not valid_web_csrf(): return make_response('CSRF validation failed',400)
+        action=str(request.form.get('action') or '').strip()
+        if action=='delete_inst_history':
+            try: days=int(request.form.get('days') or 730)
+            except Exception: days=730
+            if days not in (90,180,365,730): days=730
+            conn=get_db_connection()
+            try:
+                cur=conn.cursor()
+                cur.execute("DELETE FROM inst_history WHERE trade_date < CURRENT_DATE - %s",(days,))
+                deleted=int(cur.rowcount or 0); conn.commit()
+                message=f"✅ inst_history 已刪除 {deleted:,} 筆（{days} 天以前）。近期資料未動。"
+            except Exception as exc:
+                conn.rollback(); message=f"❌ 清理失敗：{html.escape(str(exc))}"; kind='bad'
+            finally:
+                try: cur.close()
+                except Exception: pass
+                release_db_connection(conn)
+        elif action=='delete_policy':
+            total=0; details=[]
+            for table,(col,days) in _ADMIN_CLEANUP_ALLOWED.items():
+                conn=get_db_connection()
+                try:
+                    cur=conn.cursor(); cur.execute(f"DELETE FROM {table} WHERE {col} < CURRENT_DATE - %s",(days,))
+                    n=int(cur.rowcount or 0); conn.commit(); total+=n; details.append(f"{table} {n:,} 筆")
+                except Exception as exc:
+                    conn.rollback(); details.append(f"{table} 失敗"); print(f"❌ 管理員資料清理 {table} 失敗：{exc}")
+                finally:
+                    try: cur.close()
+                    except Exception: pass
+                    release_db_connection(conn)
+            message="✅ 已依系統保留政策清理："+"、".join(details)+f"。合計刪除 {total:,} 筆。"
+    rows=_admin_cleanup_report(); table_html=''
+    for table,col,days,count,oldest,err in rows:
+        status=(f'<span class="bad">讀取失敗：{html.escape(err)}</span>' if err else (f'<span class="warn">可清理 {count:,} 筆</span>' if count else '<span class="oktxt">目前沒有符合條件的舊資料</span>'))
+        table_html+=f'<div class="dc-row"><div><b>{html.escape(table)}</b><small>欄位：{html.escape(col)}｜保留 {days} 天｜最舊：{html.escape(str(oldest or "—"))}</small></div><div>{status}</div></div>'
+    msg=f'<div class="dc-msg {kind}">{message}</div>' if message else ''
+    body=f'''<style>.dc-wrap{{max-width:900px;margin:auto}}.dc-card{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}}.dc-row{{display:flex;justify-content:space-between;align-items:center;gap:15px;padding:14px 0;border-bottom:1px solid #edf0f4}}.dc-row:last-child{{border-bottom:0}}.dc-row small{{display:block;color:#667085;margin-top:4px}}.warn{{color:#b54708;font-weight:800}}.oktxt{{color:#16803c;font-weight:700}}.bad{{color:#b42318;font-weight:700}}.dc-msg{{padding:13px 15px;border-radius:14px;margin:12px 0;line-height:1.5}}.dc-msg.ok{{background:#ecfdf3;color:#166534}}.dc-msg.bad{{background:#fef3f2;color:#b42318}}.dc-actions{{display:flex;gap:10px;flex-wrap:wrap;align-items:center}}.dc-btn{{border:0;border-radius:12px;padding:10px 14px;font-weight:800;cursor:pointer}}.dc-danger{{background:#b42318;color:#fff}}.dc-normal{{background:#eef2f6;color:#172033}}.dc-select{{padding:10px;border:1px solid #d0d5dd;border-radius:10px;background:#fff}}@media(max-width:650px){{.dc-row{{display:block}}.dc-row>div:last-child{{margin-top:8px}}}}</style><div class="dc-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🗄️ 資料清理</h1><p>只清理超過保留期限的歷史資料，近期資料不會被刪除。</p></div>{msg}<div class="dc-card"><h3>⚠️ inst_history</h3><p>目前最大的歷史資料表。先看下方可清理筆數，再決定要刪多少。</p><form method="post" onsubmit="return confirm('確定要刪除指定天數以前的法人歷史？這個動作無法復原。');">{csrf_hidden_input()}<input type="hidden" name="action" value="delete_inst_history"><select class="dc-select" name="days"><option value="730">730 天以前</option><option value="365">365 天以前</option><option value="180">180 天以前</option><option value="90">90 天以前</option></select> <button class="dc-btn dc-danger" type="submit">🗑️ 刪除舊法人資料</button></form></div><div class="dc-card"><h3>🧹 全部歷史資料</h3><p>按照程式目前設定的保留政策清理，只處理下方列出的歷史表，不碰使用者帳號、持股或交易帳本。</p><form method="post" onsubmit="return confirm('確定依系統保留政策清理所有列出的舊資料？這個動作無法復原。');">{csrf_hidden_input()}<input type="hidden" name="action" value="delete_policy"><button class="dc-btn dc-normal" type="submit">🧹 依保留政策清理全部</button></form></div><div class="dc-card"><h3>📊 可清理資料預覽</h3>{table_html}</div><div class="dc-card"><b>注意：</b>DELETE 後資料列可被 PostgreSQL 重用，但 Supabase 顯示的磁碟大小不一定立即下降；這個頁面不會自行執行高風險的 VACUUM FULL。</div></div>'''
+    return render_page('資料清理',body,'more')
 
 @app.route('/web/admin/features', methods=['GET','POST'])
 @web_login_required
