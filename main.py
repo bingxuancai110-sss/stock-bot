@@ -10,6 +10,7 @@ import socket
 import time
 import threading
 import statistics
+import resource
 import requests
 from requests.adapters import HTTPAdapter
 import psycopg2
@@ -2323,6 +2324,28 @@ FEATURE_LABELS = {
 }
 
 
+def _push_line_with_retry(user_id, message, max_attempts=3):
+    """LINE push 的有限重試：429/5xx/網路錯誤才重試，避免瞬間故障直接丟失通知。"""
+    last_exc = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return line_bot_api.push_message(str(user_id), message)
+        except Exception as exc:
+            last_exc = exc
+            status = getattr(exc, "status_code", None)
+            if status is None:
+                response = getattr(exc, "response", None)
+                status = getattr(response, "status_code", None)
+            retryable = status is None or int(status) == 429 or int(status) >= 500
+            if not retryable or attempt >= max_attempts:
+                raise
+            delay = min(0.8 * (2 ** (attempt - 1)), 4.0)
+            print(f"⚠️ LINE 推播暫時失敗，{delay:.1f}s 後重試 ({attempt}/{max_attempts})：{exc}")
+            time.sleep(delay)
+    if last_exc:
+        raise last_exc
+
+
 def send_line_test_notification(user_id):
     """實際走 LINE push API 發送測試訊息；不計入異常額度與異常冷卻。"""
     uid = str(user_id).strip()
@@ -2336,7 +2359,7 @@ def send_line_test_notification(user_id):
             "如果你看到這則訊息，代表 LINE 主動推播正常。\n\n"
             "這只是測試，不會消耗你的異常提醒額度。"
         ))
-        line_bot_api.push_message(uid, msg)
+        _push_line_with_retry(uid, msg)
         return True, "測試通知已發送。請確認 LINE 是否收到。"
     except Exception as exc:
         print(f"❌ LINE 測試通知失敗 {uid}: {exc}")
@@ -3109,6 +3132,20 @@ def _claim_anomaly_event(snapshot_date, user_id, event_key):
     finally:
         release_db_connection(conn)
 
+def _release_anomaly_claim(snapshot_date, user_id, event_key):
+    """LINE 實際發送失敗時撤銷本次 claim，讓後續重試不會被錯誤去重卡死。"""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM line_anomaly_sent WHERE snapshot_date=%s AND user_id=%s AND event_key=%s", (snapshot_date, str(user_id), str(event_key)))
+        conn.commit(); cur.close()
+    except Exception as exc:
+        try: conn.rollback()
+        except Exception: pass
+        print(f"⚠️ 撤銷異常提醒 claim 失敗：{exc}")
+    finally:
+        release_db_connection(conn)
+
 def _format_anomaly_line(event, base_url=None):
     level = str(event.get("severity") or "A").upper()
     icon = "🚨" if level == "S" else "⚡"
@@ -3233,14 +3270,17 @@ def push_anomaly_events(snapshot_date, users=None, base_url=None):
             event_key = event.get("event_key")
             if _anomaly_recent_sent(snapshot_date, uid, event_key, cooldown):
                 skipped += 1; continue
+            if daily_sent >= ANOMALY_HARD_DAILY_CAP:
+                skipped += 1; continue
             if daily_sent >= daily_limit and not (str(severity).upper() == 'S' and s_bypass):
                 skipped += 1; continue
             if not _claim_anomaly_event(snapshot_date, uid, event_key):
                 skipped += 1; continue
             try:
-                line_bot_api.push_message(uid, TextSendMessage(text=_format_anomaly_line({"severity":severity,"title":title,"detail":detail}, base_url)))
+                _push_line_with_retry(uid, TextSendMessage(text=_format_anomaly_line({"severity":severity,"title":title,"detail":detail}, base_url)))
                 sent += 1; daily_sent += 1
             except Exception as exc:
+                _release_anomaly_claim(snapshot_date, uid, event_key)
                 failed += 1; print(f"❌ 異常提醒推播失敗 {uid}: {exc}")
     return f"異常提醒 done. sent={sent}, failed={failed}, skipped={skipped}"
 
@@ -15485,6 +15525,8 @@ PUSH_TRADING_DAYS = 21          # 一個月的交易日數，抓保守值
 PUSH_MAX_USERS = PUSH_MONTHLY_QUOTA // PUSH_TRADING_DAYS   # ≈ 9 人
 
 
+ANOMALY_HARD_DAILY_CAP = int(os.environ.get("ANOMALY_HARD_DAILY_CAP", "8") or 8)
+
 def push_to_users(users, build_fn, label):
     """
     對名單推播，並在超過額度上限時只送前 N 位。
@@ -15508,7 +15550,7 @@ def push_to_users(users, build_fn, label):
         try:
             outbound = (msg if isinstance(msg, (TextSendMessage, FlexSendMessage))
                         else TextSendMessage(text=str(msg)))
-            line_bot_api.push_message(uid, outbound)
+            _push_line_with_retry(uid, outbound)
             sent += 1
         except Exception as e:
             print(f"❌ {label}推播失敗 {uid}: {e}")
@@ -16030,10 +16072,10 @@ def build_line_screener_message(user_id, mode, base_url=None,
         # 尚未有定時快照時只允許一次冷啟動；之後由排程接手每 10 分鐘更新。
         started = _start_screener_background_refresh(
             "radar", intraday=True, radar_deep_limit=48,
-            on_complete=lambda: line_bot_api.push_message(
+            on_complete=lambda: _push_line_with_retry(
                 user_id, build_line_screener_message(
                     user_id, "radar", base_url, _completed_live_scan=True)),
-            on_failure=lambda _exc: line_bot_api.push_message(
+            on_failure=lambda _exc: _push_line_with_retry(
                 user_id, TextSendMessage(
                     text="❌ 雷達即時掃描未完成，公開行情資料源暫時無法回應；請稍後再輸入「雷達」重試。")))
         return _build_line_radar_pending_message(
@@ -16672,6 +16714,125 @@ def _do_daily_snapshot():
             f"產業近期表現 {ind_perf_saved}、大盤 {taiex_close}"
             f"{portfolio_status}{pick_status}；{monthly_status}")
 
+
+# ── 系統健康／資料清理輔助 ──
+RENDER_MEMORY_LIMIT_MB = float(os.environ.get("RENDER_MEMORY_LIMIT_MB", "512") or 512)
+HEALTH_SAMPLE_INTERVAL = 300
+_last_health_sample_at = 0.0
+_health_sample_lock = threading.Lock()
+
+def _current_process_rss_bytes():
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    try:
+        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+    except Exception:
+        return 0
+
+def _ensure_system_health_table():
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE IF NOT EXISTS system_health_samples (id BIGSERIAL PRIMARY KEY, sampled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), worker_pid INTEGER, rss_bytes BIGINT NOT NULL DEFAULT 0, db_bytes BIGINT NOT NULL DEFAULT 0)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_system_health_samples_time ON system_health_samples(sampled_at DESC)")
+        conn.commit(); cur.close(); return True
+    except Exception as exc:
+        try: conn.rollback()
+        except Exception: pass
+        print(f"⚠️ 系統健康表初始化失敗：{exc}"); return False
+    finally:
+        release_db_connection(conn)
+
+def _record_system_health_sample(force=False):
+    global _last_health_sample_at
+    now = time.time()
+    with _health_sample_lock:
+        if not force and now - _last_health_sample_at < HEALTH_SAMPLE_INTERVAL:
+            return
+        _last_health_sample_at = now
+    if not _ensure_system_health_table(): return
+    conn = None
+    try:
+        rss = _current_process_rss_bytes()
+        conn = get_db_connection(); cur = conn.cursor()
+        cur.execute("SELECT pg_database_size(current_database())")
+        db_bytes = int(cur.fetchone()[0] or 0)
+        cur.execute("INSERT INTO system_health_samples(worker_pid,rss_bytes,db_bytes) VALUES (%s,%s,%s)", (os.getpid(), rss, db_bytes))
+        conn.commit(); cur.close()
+    except Exception as exc:
+        try: conn.rollback()
+        except Exception: pass
+        print(f"⚠️ 寫入系統健康樣本失敗：{exc}")
+    finally:
+        if conn is not None:
+            try: release_db_connection(conn)
+            except Exception: pass
+
+def _system_health_summary():
+    _record_system_health_sample()
+    rss = _current_process_rss_bytes()
+    limit = int(RENDER_MEMORY_LIMIT_MB * 1024 * 1024)
+    result = {"rss":rss,"limit":limit,"rss_pct":(rss/limit*100) if limit else 0,"peak_24h":rss,"peak_24h_pct":(rss/limit*100) if limit else 0,"db_bytes":0,"db_growth_per_day":None,"db_days_to_limit":None}
+    conn = None
+    try:
+        conn = get_db_connection(); cur = conn.cursor()
+        cur.execute("SELECT pg_database_size(current_database())"); result["db_bytes"] = int(cur.fetchone()[0] or 0)
+        cur.execute("SELECT COALESCE(MAX(rss_bytes),0) FROM system_health_samples WHERE sampled_at >= NOW() - INTERVAL '24 hours'")
+        peak = int(cur.fetchone()[0] or 0)
+        if peak:
+            result["peak_24h"] = peak; result["peak_24h_pct"] = peak/limit*100 if limit else 0
+        cur.execute("SELECT sampled_at, db_bytes FROM system_health_samples WHERE sampled_at >= NOW() - INTERVAL '7 days' ORDER BY sampled_at ASC LIMIT 1")
+        first = cur.fetchone()
+        cur.execute("SELECT sampled_at, db_bytes FROM system_health_samples ORDER BY sampled_at DESC LIMIT 1")
+        last = cur.fetchone()
+        if first and last and last[1] > first[1] and last[0] > first[0]:
+            days=max((last[0]-first[0]).total_seconds()/86400, 1/24)
+            growth=(last[1]-first[1])/days
+            result["db_growth_per_day"] = growth
+            if growth > 0:
+                result["db_days_to_limit"] = max(500*1024*1024-result["db_bytes"],0)/growth
+        cur.close()
+    except Exception as exc:
+        try: conn.rollback()
+        except Exception: pass
+        print(f"⚠️ 系統健康摘要失敗：{exc}")
+    finally:
+        if conn is not None:
+            try: release_db_connection(conn)
+            except Exception: pass
+    return result
+
+def _fmt_mb_bytes(value):
+    return f"{float(value or 0)/1024/1024:.1f} MB"
+
+def _cleanup_candidates():
+    rows=[]
+    stats,_=get_db_stats(); size_map={str(name):int(size or 0) for name,_n,size in stats}
+    conn=get_db_connection()
+    try:
+        cur=conn.cursor()
+        for table,(col,days) in RETENTION_DAYS.items():
+            if table not in size_map: continue
+            if days:
+                cur.execute(f"SELECT COUNT(*), MIN({col}), MAX({col}) FROM {table} WHERE {col} < CURRENT_DATE - %s", (days,))
+            else:
+                cur.execute(f"SELECT COUNT(*), MIN({col}), MAX({col}) FROM {table} WHERE {col} < NOW()")
+            count,oldest,newest=cur.fetchone() or (0,None,None)
+            cur.execute(f"SELECT COUNT(*) FROM {table}"); total=int(cur.fetchone()[0] or 0)
+            size=size_map.get(table,0); estimated=int(size*(int(count or 0)/total)) if total else 0
+            rows.append({"table":table,"column":col,"days":days,"count":int(count or 0),"oldest":oldest,"newest":newest,"total":total,"size":size,"estimated_bytes":estimated})
+        cur.close()
+    except Exception as exc:
+        try: conn.rollback()
+        except Exception: pass
+        print(f"⚠️ 可清理資料預覽失敗：{exc}")
+    finally: release_db_connection(conn)
+    return rows
 
 # ── 資料保留期限 ──
 # Supabase 免費方案 500MB。inst_history 每天約 2,000 筆、一年約 60MB，
@@ -20195,8 +20356,49 @@ def web_admin(uid):
     if not is_admin(uid): return make_response('Forbidden',403)
     d=_admin_dashboard_data(); state=_maintenance_state(); status='🟢 正常' if not state.get('active') else '🟠 維護中'
     cards=f'''<div class="admin-grid"><div class="admin-stat"><b>{d['users']}</b><small>使用者</small></div><div class="admin-stat"><b>{d['active_today']}</b><small>今日活躍</small></div><div class="admin-stat"><b>{d['trades']}</b><small>正式賣出</small></div><div class="admin-stat"><b>{d['activity_today']}</b><small>今日操作</small></div></div>'''
-    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股日曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>查看容量並刪除過期歷史資料</small></a></div></div></div>'''
+    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股日曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>容量、RAM、可清理歷史資料</small></a></div></div></div>'''
     return render_page('管理員後台',body,'more')
+
+@app.route('/web/admin/data-cleanup', methods=['GET','POST'])
+@web_login_required
+def web_admin_data_cleanup(uid):
+    if not is_admin(uid): return make_response('Forbidden',403)
+    if request.method=='POST':
+        if not valid_web_csrf(): return make_response('CSRF validation failed',403)
+        action=str(request.form.get('action') or '').strip(); table=str(request.form.get('table') or '').strip()
+        if action!='cleanup' or table not in RETENTION_DAYS: return make_response('未知清理操作',400)
+        col,days=RETENTION_DAYS[table]; conn=get_db_connection(); deleted=0
+        try:
+            cur=conn.cursor()
+            if days: cur.execute(f"DELETE FROM {table} WHERE {col} < CURRENT_DATE - %s",(days,))
+            else: cur.execute(f"DELETE FROM {table} WHERE {col} < NOW()")
+            deleted=cur.rowcount; conn.commit(); cur.close()
+        except Exception as exc:
+            try: conn.rollback()
+            except Exception: pass
+            print(f"❌ 管理員清理 {table} 失敗：{exc}"); return make_response('清理失敗：'+html.escape(str(exc)),500)
+        finally: release_db_connection(conn)
+        print(f"🧹 管理員 {uid} 清理 {table}: {deleted:,} 筆")
+        return redirect('/web/admin/data-cleanup?cleaned='+quote(f'{table}｜{deleted:,} 筆'))
+    health=_system_health_summary(); candidates=_cleanup_candidates(); cleaned=request.args.get('cleaned')
+    rss_pct=health['rss_pct']; peak_pct=health['peak_24h_pct']
+    def level(p): return '🟢 正常' if p<70 else ('🟡 注意' if p<85 else ('🟠 高風險' if p<95 else '🔴 接近上限'))
+    db_days=health.get('db_days_to_limit'); growth=health.get('db_growth_per_day')
+    forecast=(f'依最近 7 天樣本估算，約 {db_days:.0f} 天後達 500 MB' if db_days else '尚無足夠歷史樣本，持續收集後才會估算')
+    preview=[]
+    for item in candidates:
+        table=item['table']; count=item['count']; est=_fmt_mb_bytes(item['estimated_bytes']); oldest=html.escape(str(item['oldest'] or '—'))
+        if count:
+            table_q=html.escape(table,quote=True)
+            btn=f'''<form method="post" onsubmit="return confirm('確定刪除 {table} 中超過保留期限的 {count:,} 筆資料？此動作無法復原。')">{csrf_hidden_input()}<input type="hidden" name="action" value="cleanup"><input type="hidden" name="table" value="{table_q}"><button class="danger-btn">🗑️ 刪除 {count:,} 筆（約 {est}）</button></form>'''
+            status=f'<b style="color:#b42318">可清理 {count:,} 筆</b> · 最舊 {oldest} · 約 {est}'
+        else:
+            btn='<span class="clean-ok">目前沒有符合條件的舊資料</span>'; status=f'<span class="clean-ok">目前沒有符合條件的舊資料</span> · 最舊 {oldest}'
+        preview.append(f'<div class="clean-row"><div><h3>{html.escape(table)}</h3><small>欄位：{html.escape(item["column"])} · 保留 {item["days"]} 天 · 總筆數 {item["total"]:,} · 表大小 {_fmt_mb_bytes(item["size"])}</small><p>{status}</p></div><div>{btn}</div></div>')
+    flash=f'<div class="clean-flash">✅ {html.escape(cleaned)}</div>' if cleaned else ''
+    growth_text=f' · 最近樣本約 +{_fmt_mb_bytes(growth)}/天' if growth else ''
+    body=f'''<style>.clean-wrap{{max-width:900px;margin:auto}}.health-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}}.health-card,.clean-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:10px 0}}.health-card b{{font-size:24px;display:block;margin:4px 0}}.health-card small,.clean-row small{{color:#667085;line-height:1.6}}.health-meter{{height:9px;background:#edf0f4;border-radius:99px;overflow:hidden;margin:10px 0}}.health-meter i{{display:block;height:100%;width:{min(max(rss_pct,0),100):.1f}%;background:#111;border-radius:99px}}.clean-row{{padding:15px 0;border-bottom:1px solid #edf0f4;display:flex;justify-content:space-between;gap:15px;align-items:center}}.clean-row:last-child{{border-bottom:0}}.clean-row h3{{margin:0 0 4px}}.clean-row p{{margin:8px 0 0}}.danger-btn{{border:0;background:#b42318;color:#fff;border-radius:11px;padding:10px 14px;font-weight:800;white-space:nowrap}}.clean-ok{{color:#16803c;font-weight:700}}.clean-flash{{background:#ecfdf3;color:#067647;border:1px solid #abefc6;border-radius:14px;padding:12px;margin:12px 0}}@media(max-width:700px){{.health-grid{{grid-template-columns:1fr}}.clean-row{{display:block}}.danger-btn{{margin-top:10px;width:100%}}}}</style><div class="clean-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🗄️ 資料清理 & 系統健康</h1><p>先看實際可清理數量，再決定要刪多少。核心資料不提供一鍵清空。</p></div>{flash}<div class="health-grid"><div class="health-card"><small>目前 Worker RSS</small><b>{_fmt_mb_bytes(health['rss'])} / {RENDER_MEMORY_LIMIT_MB:.0f} MB</b><div class="health-meter"><i></i></div><span>{level(rss_pct)} · {rss_pct:.1f}%</span></div><div class="health-card"><small>24 小時已記錄峰值</small><b>{_fmt_mb_bytes(health['peak_24h'])}</b><span>{level(peak_pct)} · {peak_pct:.1f}%</span><br><small>⚠️ 這是單一 Gunicorn worker RSS，不代表 Render 整個服務總 RAM。</small></div><div class="health-card"><small>Supabase 資料庫</small><b>{_fmt_mb_bytes(health['db_bytes'])} / 500 MB</b><span>{health['db_bytes']/(500*1024*1024)*100:.1f}%</span><br><small>{forecast}{growth_text}</small></div></div><div class="clean-panel"><h2>📊 可清理資料預覽</h2>{''.join(preview) or '<div class="more-note">目前沒有可清理資料表。</div>'}</div><div class="clean-panel"><b>安全規則</b><p class="more-note">刪除只依程式內建白名單與保留期限執行；不接受前端任意 SQL。刪除前會再次確認，不會碰 users、positions、realized_trades、position_change_logs。</p></div></div>'''
+    return render_page('資料清理',body,'more')
 
 @app.route('/web/admin/transactions')
 @web_login_required
@@ -20232,9 +20434,9 @@ def web_admin_notifications(uid):
 @web_login_required
 def web_admin_system(uid):
     if not is_admin(uid): return make_response('Forbidden',403)
-    d=_admin_dashboard_data(); report=_admin_system_data_status_report(); recent=_admin_recent_activity(12)
+    d=_admin_dashboard_data(); report=_admin_system_data_status_report(); recent=_admin_recent_activity(12); health=_system_health_summary()
     rows=''.join(f'<div class="more-item"><span><b>{html.escape(str(r[1]))}</b><small>{html.escape(str(r[0]))} · {html.escape(str(r[2]))} · {html.escape(str(r[3]))}</small></span></div>' for r in recent) or '<div class="more-note">近期沒有操作紀錄。</div>'
-    body=f'<div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>📊 資料更新中心</h1><p>快速看資料有沒有更新；單一項目失敗不代表整個快照系統壞掉。</p></div><div class="more-group"><div class="more-note">使用者 {d["users"]} · 今日活躍 {d["active_today"]} · 持股筆數 {d["positions"]} · 正式賣出 {d["trades"]}</div><pre style="white-space:pre-wrap">{html.escape(str(report))}</pre></div><div class="more-group"><div class="more-group-title">最近系統操作</div>{rows}</div>'
+    body=f'<div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>📊 資料更新中心</h1><p>快速看資料有沒有更新；單一項目失敗不代表整個快照系統壞掉。</p></div><div class="more-group"><div class="more-note">使用者 {d["users"]} · 今日活躍 {d["active_today"]} · 持股筆數 {d["positions"]} · 正式賣出 {d["trades"]}</div><div class="more-note">🧠 Worker RSS {_fmt_mb_bytes(health["rss"])} / {RENDER_MEMORY_LIMIT_MB:.0f} MB（{health["rss_pct"]:.1f}%） · 24H 峰值 {_fmt_mb_bytes(health["peak_24h"])} · <a href="/web/admin/data-cleanup">資料清理／健康監控</a></div><pre style="white-space:pre-wrap">{html.escape(str(report))}</pre></div><div class="more-group"><div class="more-group-title">最近系統操作</div>{rows}</div>'
     return render_page('資料更新中心',body,'more')
 
 # =========================
@@ -20275,85 +20477,6 @@ def web_admin_market_calendar():
     months=''.join(f'<section class="mcal-month"><h3>{m} 月</h3>{_twse_calendar_month_html(year,m)}</section>' for m in range(1,13))
     body=f'''<style>.mcal-wrap{{max-width:980px;margin:auto}}.mcal-note,.mcal-status,.mcal-month,.mcal-events{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}}.mcal-note{{background:#f7f8fa;color:#475467;line-height:1.6}}.mcal-status b{{font-size:20px}}.mcal-grid{{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}}.mcal-head{{font-size:12px;text-align:center;color:#667085;font-weight:700;padding:5px}}.mcal-cell{{min-height:54px;border-radius:10px;background:#f6fbf7;padding:7px;box-sizing:border-box;display:flex;justify-content:space-between;border:1px solid #e5eee7}}.mcal-cell.holiday{{background:#fff5f3;border-color:#f5d2cc}}.mcal-cell.weekend{{background:#f5f6f8;color:#98a2b3;border-color:#eaecf0}}.mcal-cell.empty{{background:transparent;border:0}}.mcal-cell.today{{outline:3px solid #111;outline-offset:-2px}}.mcal-cell span{{font-size:10px;font-weight:800;color:#667085}}.mcal-cell.open span{{color:#16803c}}.mcal-cell.holiday span{{color:#b42318}}.mcal-event{{display:flex;gap:18px;padding:9px 0;border-bottom:1px solid #edf0f4}}.mcal-event:last-child{{border-bottom:0}}@media(max-width:650px){{.mcal-cell{{min-height:45px;padding:5px;font-size:13px}}.mcal-event{{display:block}}.mcal-event span{{display:block;margin-top:3px}}}}</style><div class="mcal-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>📅 台股交易日曆</h1><p>依臺灣證券交易所（TWSE）公告的市場開休市日期整理，方便檢查 Bot 的交易日判斷。</p></div><div class="mcal-status"><b>{status}</b><p>{today.isoformat()}｜{html.escape(info['note'])}</p></div><div class="mcal-note">🟢 開＝正常交易日　🔴 休＝證交所公告休市　⚪ 末＝週末。<br>目前資料以 TWSE 2026 年市場開休市公告為基準。</div>{months}<div class="mcal-events"><h3>2026 休市／特殊日期</h3>{events}</div><div class="mcal-note">官方來源：<a href="https://www.twse.com.tw/holidaySchedule/holidaySchedule?response=html" target="_blank" rel="noopener">TWSE 市場開休市日期</a></div></div>'''
     return render_page('台股交易日曆',body,'more')
-
-# =========================
-# 管理員後台：資料清理（V84）
-# =========================
-_ADMIN_CLEANUP_ALLOWED = {
-    "inst_history": ("trade_date", 730),
-    "watchlist_scores": ("snapshot_date", 400),
-    "portfolio_snapshots": ("snapshot_date", 1095),
-    "pick_history": ("pick_date", 1095),
-    "industry_momentum_history": ("snapshot_date", 1095),
-    "activity_log": ("occurred_at", 730),
-    "line_event_dedup": ("received_at", 14),
-    "premarket_events": ("created_at", 730),
-    "premarket_snapshots": ("snapshot_date", 730),
-    "leaderboard_rank_snapshots": ("snapshot_date", 1095),
-}
-
-def _admin_cleanup_report():
-    rows=[]
-    for table,(col,days) in _ADMIN_CLEANUP_ALLOWED.items():
-        conn=get_db_connection()
-        try:
-            cur=conn.cursor()
-            cur.execute(f"SELECT COUNT(*), MIN({col}) FROM {table} WHERE {col} < CURRENT_DATE - %s",(days,))
-            count,oldest=cur.fetchone()
-            rows.append((table,col,days,int(count or 0),oldest,None))
-        except Exception as exc:
-            rows.append((table,col,days,0,None,str(exc)))
-        finally:
-            try: cur.close()
-            except Exception: pass
-            release_db_connection(conn)
-    return rows
-
-@app.route('/web/admin/data-cleanup', methods=['GET','POST'])
-@web_login_required
-def web_admin_data_cleanup(uid):
-    if not is_admin(uid): return make_response('Forbidden',403)
-    message=''; kind='ok'
-    if request.method=='POST':
-        if not valid_web_csrf(): return make_response('CSRF validation failed',400)
-        action=str(request.form.get('action') or '').strip()
-        if action=='delete_inst_history':
-            try: days=int(request.form.get('days') or 730)
-            except Exception: days=730
-            if days not in (90,180,365,730): days=730
-            conn=get_db_connection()
-            try:
-                cur=conn.cursor()
-                cur.execute("DELETE FROM inst_history WHERE trade_date < CURRENT_DATE - %s",(days,))
-                deleted=int(cur.rowcount or 0); conn.commit()
-                message=f"✅ inst_history 已刪除 {deleted:,} 筆（{days} 天以前）。近期資料未動。"
-            except Exception as exc:
-                conn.rollback(); message=f"❌ 清理失敗：{html.escape(str(exc))}"; kind='bad'
-            finally:
-                try: cur.close()
-                except Exception: pass
-                release_db_connection(conn)
-        elif action=='delete_policy':
-            total=0; details=[]
-            for table,(col,days) in _ADMIN_CLEANUP_ALLOWED.items():
-                conn=get_db_connection()
-                try:
-                    cur=conn.cursor(); cur.execute(f"DELETE FROM {table} WHERE {col} < CURRENT_DATE - %s",(days,))
-                    n=int(cur.rowcount or 0); conn.commit(); total+=n; details.append(f"{table} {n:,} 筆")
-                except Exception as exc:
-                    conn.rollback(); details.append(f"{table} 失敗"); print(f"❌ 管理員資料清理 {table} 失敗：{exc}")
-                finally:
-                    try: cur.close()
-                    except Exception: pass
-                    release_db_connection(conn)
-            message="✅ 已依系統保留政策清理："+"、".join(details)+f"。合計刪除 {total:,} 筆。"
-    rows=_admin_cleanup_report(); table_html=''
-    for table,col,days,count,oldest,err in rows:
-        status=(f'<span class="bad">讀取失敗：{html.escape(err)}</span>' if err else (f'<span class="warn">可清理 {count:,} 筆</span>' if count else '<span class="oktxt">目前沒有符合條件的舊資料</span>'))
-        table_html+=f'<div class="dc-row"><div><b>{html.escape(table)}</b><small>欄位：{html.escape(col)}｜保留 {days} 天｜最舊：{html.escape(str(oldest or "—"))}</small></div><div>{status}</div></div>'
-    msg=f'<div class="dc-msg {kind}">{message}</div>' if message else ''
-    body=f'''<style>.dc-wrap{{max-width:900px;margin:auto}}.dc-card{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}}.dc-row{{display:flex;justify-content:space-between;align-items:center;gap:15px;padding:14px 0;border-bottom:1px solid #edf0f4}}.dc-row:last-child{{border-bottom:0}}.dc-row small{{display:block;color:#667085;margin-top:4px}}.warn{{color:#b54708;font-weight:800}}.oktxt{{color:#16803c;font-weight:700}}.bad{{color:#b42318;font-weight:700}}.dc-msg{{padding:13px 15px;border-radius:14px;margin:12px 0;line-height:1.5}}.dc-msg.ok{{background:#ecfdf3;color:#166534}}.dc-msg.bad{{background:#fef3f2;color:#b42318}}.dc-actions{{display:flex;gap:10px;flex-wrap:wrap;align-items:center}}.dc-btn{{border:0;border-radius:12px;padding:10px 14px;font-weight:800;cursor:pointer}}.dc-danger{{background:#b42318;color:#fff}}.dc-normal{{background:#eef2f6;color:#172033}}.dc-select{{padding:10px;border:1px solid #d0d5dd;border-radius:10px;background:#fff}}@media(max-width:650px){{.dc-row{{display:block}}.dc-row>div:last-child{{margin-top:8px}}}}</style><div class="dc-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🗄️ 資料清理</h1><p>只清理超過保留期限的歷史資料，近期資料不會被刪除。</p></div>{msg}<div class="dc-card"><h3>⚠️ inst_history</h3><p>目前最大的歷史資料表。先看下方可清理筆數，再決定要刪多少。</p><form method="post" onsubmit="return confirm('確定要刪除指定天數以前的法人歷史？這個動作無法復原。');">{csrf_hidden_input()}<input type="hidden" name="action" value="delete_inst_history"><select class="dc-select" name="days"><option value="730">730 天以前</option><option value="365">365 天以前</option><option value="180">180 天以前</option><option value="90">90 天以前</option></select> <button class="dc-btn dc-danger" type="submit">🗑️ 刪除舊法人資料</button></form></div><div class="dc-card"><h3>🧹 全部歷史資料</h3><p>按照程式目前設定的保留政策清理，只處理下方列出的歷史表，不碰使用者帳號、持股或交易帳本。</p><form method="post" onsubmit="return confirm('確定依系統保留政策清理所有列出的舊資料？這個動作無法復原。');">{csrf_hidden_input()}<input type="hidden" name="action" value="delete_policy"><button class="dc-btn dc-normal" type="submit">🧹 依保留政策清理全部</button></form></div><div class="dc-card"><h3>📊 可清理資料預覽</h3>{table_html}</div><div class="dc-card"><b>注意：</b>DELETE 後資料列可被 PostgreSQL 重用，但 Supabase 顯示的磁碟大小不一定立即下降；這個頁面不會自行執行高風險的 VACUUM FULL。</div></div>'''
-    return render_page('資料清理',body,'more')
 
 @app.route('/web/admin/features', methods=['GET','POST'])
 @web_login_required
@@ -28809,15 +28932,18 @@ def push_intraday_market_anomalies(now=None, base_url=None):
         for event in sorted(events, key=lambda e: 0 if e["severity"] == "S" else 1):
             if _anomaly_recent_sent(now.date(), uid, event["event_key"], cooldown):
                 continue
+            if daily_sent >= ANOMALY_HARD_DAILY_CAP:
+                continue
             if daily_sent >= daily_limit and not (event["severity"] == "S" and s_bypass):
                 continue
             if not _claim_anomaly_event(now.date(), uid, event["event_key"]):
                 continue
             try:
-                line_bot_api.push_message(uid, TextSendMessage(text=_format_anomaly_line(event, base_url=base_url)))
+                _push_line_with_retry(uid, TextSendMessage(text=_format_anomaly_line(event, base_url=base_url)))
                 sent += 1
                 daily_sent += 1
             except Exception as exc:
+                _release_anomaly_claim(now.date(), uid, event["event_key"])
                 print(f"❌ 盤中大盤異常推播失敗 {uid}: {exc}")
     return f"盤中大盤異常：觸發 {len(events)} 件，已推送 {sent} 則"
 
