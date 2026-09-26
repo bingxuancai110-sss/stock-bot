@@ -12147,6 +12147,33 @@ def build_chips_payload(days=10, force_refresh=False, persist=True,
         return result
 
 
+def _line_full_web_url(user_id, base_url, target, extra_params=None):
+    """所有 LINE「查看完整分析」共用同一套 token + 路由組裝。"""
+    token=create_web_token(user_id)
+    if not token: return None
+    params=dict(extra_params or {}); params["t"]=token
+    return f"{public_web_base_url(base_url)}{target}?{urlencode(params, doseq=True)}"
+
+
+def _line_feature_web_url(user_id, feature, base_url=None, code=None):
+    routes={
+        "positions":("/web/portfolio",{}),
+        "positions_export":("/web/positions",{}),
+        "quote":("/web/stock",{"code":normalize_code(code or "")}),
+        "etf":("/web/etf-detail",{"code":normalize_code(code or "")}),
+        "news":("/web/news",{}),
+        "premarket":("/web/premarket",{}),
+        "debrief":("/web/postmarket",{}),
+        "chips":("/web/workbench",{"tab":"籌碼"}),
+        "turning":("/web/workbench",{"tab":"轉折"}),
+        "blackhorse":("/web/workbench",{"tab":"黑馬"}),
+        "radar":("/web/workbench",{"tab":"雷達"}),
+    }
+    target,params=routes.get(str(feature or ""),("/web/portfolio",{}))
+    params={k:v for k,v in params.items() if v not in (None,"")}
+    return _line_full_web_url(user_id,base_url,target,params)
+
+
 def build_line_chips_message(user_id, base_url=None):
     """LINE 籌碼超人：只顯示三個重點區塊，完整五區資料由網頁查看。"""
     result = build_chips_payload()
@@ -12155,11 +12182,7 @@ def build_line_chips_message(user_id, base_url=None):
         return TextSendMessage(
             text="❌ 法人歷史資料還不夠，籌碼超人需要至少幾個交易日的累積；請稍後再試。")
 
-    token = create_web_token(user_id)
-    web_url = None
-    if token:
-        web_url = (f"{public_web_base_url(base_url)}/web/portfolio?t="
-                   f"{quote(token, safe='')}")
+    web_url = _line_feature_web_url(user_id, "chips", base_url)
     data_date = result.get("data_date") or payload.get("data_date") or "未標日期"
     actual = payload.get("actual_days") or 0
     contents = [
@@ -14225,12 +14248,9 @@ def build_market_recap():
 def build_market_recap_line_message(user_id, base_url=None):
     """LINE 盤後摘要：保留真實資料，改用分區卡片呈現並附網頁完整分析按鈕。"""
     recap_text = build_market_recap()
-    token = create_web_token(user_id)
-    if not token:
+    web_url = _line_feature_web_url(user_id, "debrief", base_url)
+    if not web_url:
         return TextSendMessage(text=recap_text)
-
-    web_url = (f"{public_web_base_url(base_url)}/web/portfolio?t="
-               f"{quote(token, safe='')}")
     raw_lines = [line.rstrip() for line in recap_text.splitlines()]
     clean_lines = [line for line in raw_lines if line.strip("─").strip()]
     if clean_lines and clean_lines[0].startswith("📊"):
@@ -15285,7 +15305,15 @@ def build_line_watchlist_message(user_id, base_url=None):
     report = build_healthcheck_report(user_id)
     if not report:
         return TextSendMessage(text="📂 自選股清單是空的\n輸入「加 3081」新增自選")
-    return _build_text_flex_message(report, alt_text=report)
+    msg=_build_text_flex_message(report, alt_text=report)
+    web_url=_line_feature_web_url(user_id,"positions",base_url)
+    if web_url and isinstance(msg,FlexSendMessage) and isinstance(msg.contents,dict):
+        msg.contents["body"]["contents"] += [
+            {"type":"separator","margin":"lg","color":"#E8EAE6"},
+            {"type":"button","style":"primary","height":"sm","color":"#6E5228","margin":"md",
+             "action":{"type":"uri","label":"查看完整自選健檢","uri":web_url}},
+        ]
+    return msg
 
 # --- 個股新聞（Google News RSS，免費、可帶關鍵字查詢） ---
 def _news_company_names(extra=None):
@@ -15482,7 +15510,7 @@ def build_news_digest(user_id):
 
     # LINE 只做入口，最多顯示 8 個標題，避免又變成長篇報告。
     records = records[:8]
-    token = create_web_token(user_id)
+    web_url = _line_feature_web_url(user_id, "news")
     contents = [
         {"type": "text", "text": f"📰 自選股新聞｜{taiwan_now().strftime('%m/%d')}",
          "weight": "bold", "size": "xl", "color": "#1B2027"},
@@ -15503,6 +15531,13 @@ def build_news_digest(user_id):
         contents.append(component)
 
     alt_text = "📰 自選股新聞｜" + "；".join(item["title"] for item in records[:3])
+    if web_url:
+        contents += [
+            {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+            {"type": "button", "style": "primary", "height": "sm",
+             "color": "#6E5228", "margin": "md",
+             "action": {"type": "uri", "label": "查看完整自選股新聞", "uri": web_url}},
+        ]
     return FlexSendMessage(
         alt_text=alt_text[:400],
         contents={
@@ -15757,12 +15792,9 @@ def build_morning_push_message(user_id, base_url=None):
     plain_text = build_today_attention_push(user_id) + "\n\n" + "\n".join(_morning_macro_lines())
     if news_lines:
         plain_text += "\n\n📰 總經焦點\n" + "\n".join(news_lines)
-    token = create_web_token(user_id)
-    if not token:
+    web_url = _line_feature_web_url(user_id, "premarket", base_url)
+    if not web_url:
         return TextSendMessage(text=plain_text)
-
-    web_url = (f"{public_web_base_url(base_url)}/web/premarket?t="
-               f"{quote(token, safe='')}")
     contents = [{
         "type": "text", "text": "🔥 今日值得注意", "weight": "bold",
         "size": "xl", "color": "#1B2027"
@@ -15874,10 +15906,7 @@ def build_turning_observation_line_message(user_id, base_url=None):
     items = result.get("items") or []
     data_date = result.get("data_date") or "未標日期"
     prior_days = int(result.get("prior_days") or 5)
-    token = create_web_token(user_id)
-    web_url = None
-    if token:
-        web_url = (f"{public_web_base_url(base_url)}/web/portfolio?t={quote(token, safe='')}")
+    web_url = _line_feature_web_url(user_id, "turning", base_url)
     contents = [
         {"type": "text", "text": "🔄 轉折觀察", "weight": "bold",
          "size": "xl", "color": "#1B2027"},
@@ -16023,10 +16052,7 @@ def _line_screener_snapshot(mode, intraday=False):
 def _build_line_radar_pending_message(user_id, base_url=None,
                                       already_running=False):
     """LINE 盤中雷達的立即回覆；真正掃描在背景完成後另行推送。"""
-    token = create_web_token(user_id)
-    web_url = None
-    if token:
-        web_url = (f"{public_web_base_url(base_url)}/web/portfolio?t={quote(token, safe='')}")
+    web_url = _line_feature_web_url(user_id, "radar", base_url)
     state = ("已有另一個即時全市場掃描正在處理，完成後請重新輸入「雷達」查看。"
              if already_running else
              "已啟動即時全市場行情掃描；完成後會再推送本次真實前三名。")
@@ -16127,10 +16153,7 @@ def build_line_screener_message(user_id, mode, base_url=None,
                     r.get("streak", 0), r.get("pct", 0))
         rows.sort(key=line_radar_key, reverse=True)
 
-    token = create_web_token(user_id)
-    web_url = None
-    if token:
-        web_url = (f"{public_web_base_url(base_url)}/web/portfolio?t={quote(token, safe='')}")
+    web_url = _line_feature_web_url(user_id, mode, base_url)
 
     date_text = (source_date.isoformat() if hasattr(source_date, "isoformat")
                  else str(source_date or "未標日期"))
@@ -17849,30 +17872,41 @@ SLOW_COMMANDS = {
 
 
 def start_loading_animation(user_id, seconds=60):
-    """啟動 LINE 官方原生 Loading。
+    """可靠啟動 LINE 官方原生 Loading。
 
-    重要：官方 Loading 會在 Bot 送出下一則訊息時自動消失。
-    因此這裡必須在 webhook 回覆任何 LINE 訊息之前啟動，
-    查詢期間不再送「動畫卡片」，完成後才 Push 最終結果。
-    這樣 Loading 才會真的一路顯示到分析完成，而不是一送卡片就消失。
+    V91 修正：V90 只有一次 1.5 秒請求，API 若瞬時網路延遲就會
+    靜默失敗，使用者便完全看不到動畫。這裡改成短重試 + 明確記錄。
+    LINE 官方允許 5~60 秒，且重複呼叫會延長目前 Loading 的剩餘時間。
     """
-    try:
-        r = requests.post(
-            "https://api.line.me/v2/bot/chat/loading/start",
-            headers={
-                "Authorization": f"Bearer {os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')}",
-                "Content-Type": "application/json",
-            },
-            json={"chatId": str(user_id).strip(),
-                  "loadingSeconds": min(60, max(5, int(seconds) // 5 * 5))},
-            timeout=1.5,
-        )
-        if r.status_code not in (200, 202):
-            print(f"⚠️ LINE Loading 回應 {r.status_code}: {r.text[:300]}")
-        return r.status_code in (200, 202)
-    except Exception as e:
-        print(f"⚠️ LINE Loading 啟動失敗 {user_id}: {e}")
+    token = (os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") or "").strip()
+    chat_id = str(user_id or "").strip()
+    if not token:
+        print("❌ LINE Loading 無法啟動：LINE_CHANNEL_ACCESS_TOKEN 未設定")
         return False
+    if not chat_id:
+        print("❌ LINE Loading 無法啟動：chatId 為空")
+        return False
+
+    loading_seconds = min(60, max(5, int(seconds) // 5 * 5))
+    url = "https://api.line.me/v2/bot/chat/loading/start"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {"chatId": chat_id, "loadingSeconds": loading_seconds}
+
+    for attempt in range(1, 4):
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=(2.0, 5.0))
+            if r.status_code in (200, 202):
+                print(f"✅ LINE Loading 已啟動 {chat_id[-6:]} ({loading_seconds}s, attempt={attempt})")
+                return True
+            print(f"⚠️ LINE Loading 回應 {r.status_code} attempt={attempt}: {r.text[:500]}")
+        except Exception as e:
+            print(f"⚠️ LINE Loading 連線失敗 attempt={attempt} {chat_id[-6:]}: {type(e).__name__}: {e}")
+        if attempt < 3:
+            time.sleep(0.35 * attempt)
+    return False
 
 
 def build_quick_reply():
@@ -25552,6 +25586,116 @@ def web_settings(uid):
   請到<a href="/web/portfolio" style="color:var(--brass)">組合分析</a>頁最上方編輯。
 </div>"""
     return render_page("設定", body, nav_active="settings")
+
+
+
+def _render_report_lines_html(text, title=None):
+    """把既有 LINE 報告原文轉成簡潔網頁版；不改數據、不補不存在的值。"""
+    parts=[]
+    if title:
+        parts.append(f'<section class="card"><h2>{html.escape(title)}</h2></section>')
+    blocks=[]
+    for raw in str(text or "").splitlines():
+        line=raw.strip()
+        if not line: continue
+        if set(line)=={"─"}:
+            blocks.append('<hr style="border:0;border-top:1px solid #e8eae6;margin:12px 0">')
+        elif line.startswith("【") or line.startswith("📊") or line.startswith("💰") or line.startswith("📰"):
+            blocks.append(f'<h3 style="margin:18px 0 7px;color:#18283A;font-size:16px">{html.escape(line)}</h3>')
+        else:
+            blocks.append(f'<p style="margin:6px 0;color:#454C55;line-height:1.7">{html.escape(line)}</p>')
+    return '<section class="card">' + ''.join(blocks) + '</section>'
+
+
+@app.route("/web/stock")
+@web_login_required
+def web_line_stock_detail(uid):
+    """LINE 個股完整頁；直接對應輸入的代號，不跳持股頁。"""
+    code=normalize_code(request.args.get("code", ""))
+    if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code or ""):
+        return respond_page("個股分析", '<section class="card"><div class="sub">股票代號不正確。</div></section>', "screener")
+    try:
+        stock=get_realtime_stock(code)
+        if not stock:
+            body='<section class="card"><div class="sub">查無目前行情，請稍後再試。</div></section>'
+        else:
+            inst=fetch_institutional_data() or {}
+            scores=compute_watchlist_scores([code]); score=scores.get(code)
+            ind_map=get_industry_map() or {}; industry=ind_map.get(code)
+            name=short_company_name(stock_display_name(code, inst, stock.get("name")))
+            bd=get_investor_breakdown([code]).get(code)
+            lines=_format_stock_detail_lines(code,name,stock,score=score,bd=bd,
+                industry_label=((f"📌 {score.get('category') or '個股'}" + (f"｜{industry_name(industry)}" if industry else "")) if score else (industry_name(industry) if industry else None)))
+            news=fetch_stock_news(name,max_items=5,within_hours=36,subject_name=name,known_names=_news_company_names([name]))
+            report='\n'.join(lines)
+            if news:
+                report += '\n\n📰 相關新聞\n' + '\n'.join(f"・{x.get('title','')}（{x.get('source','')}）" for x in news)
+            body=_render_report_lines_html(report, title=f"📊 {code} {name}｜完整個股分析")
+            body += '<section class="card"><div class="sub">LINE 輸入代號後的完整分析與這個頁面共用同一套個股資料邏輯。</div></section>'
+        return respond_page(f"{code} 個股分析", body, "screener")
+    except Exception as exc:
+        print(f"❌ LINE 個股完整頁失敗 {code}: {exc}")
+        return respond_page("個股分析", '<section class="card"><div class="sub">個股完整分析暫時無法取得，請稍後再試。</div></section>', "screener")
+
+
+@app.route("/web/postmarket")
+@web_login_required
+def web_line_postmarket(uid):
+    """LINE 盤後完整頁；不再把盤後按鈕導到持股頁。"""
+    try:
+        report=build_market_recap()
+        body=_render_report_lines_html(report, title="🌙 盤後完整分析")
+        return respond_page("盤後完整分析", body, "portfolio")
+    except Exception as exc:
+        print(f"❌ LINE 盤後完整頁失敗：{exc}")
+        return respond_page("盤後完整分析", '<section class="card"><div class="sub">盤後完整分析暫時無法取得，請稍後再試。</div></section>', "portfolio")
+
+
+@app.route("/web/news")
+@web_login_required
+def web_line_news(uid):
+    """LINE 自選股新聞完整頁；與 LINE 摘要使用相同新聞來源與過濾規則。"""
+    codes=get_user_watchlist(uid)
+    if not codes:
+        return respond_page("自選股新聞", '<section class="card"><div class="sub">你的自選股清單是空的，先輸入「加 2330」之類的指令。</div></section>', "watchlist")
+    names={code:stock_display_name(code) for code in codes}
+    known=_news_company_names(names.values())
+    records=[]
+    for code in codes:
+        try:
+            items=fetch_stock_news(names[code],max_items=5,within_hours=72,subject_name=names[code],known_names=known)
+        except Exception as exc:
+            print(f"⚠️ 自選股新聞完整頁失敗 {code}: {exc}"); items=[]
+        for item in items:
+            records.append({"code":code,"name":names[code],**item})
+    rows=[]; seen=set()
+    for item in records:
+        key=str(item.get("title") or "").casefold()
+        if not key or key in seen: continue
+        seen.add(key)
+        uri=_valid_news_uri(item.get("link"))
+        link=(f'<a href="{html.escape(uri,quote=True)}" target="_blank" rel="noopener">查看原文</a>' if uri else '')
+        rows.append(f'<article class="card"><h3 style="margin:0 0 7px">{html.escape(item["name"])}（{html.escape(item["code"])}）</h3><p style="margin:0;line-height:1.7">{html.escape(item.get("title") or "")}</p><div class="sub" style="margin-top:8px">{html.escape(item.get("source") or "")}{("　"+link) if link else ""}</div></article>')
+    body='<section class="card"><h2>📰 自選股新聞</h2><div class="sub">依你的自選股整理近期財經相關標題；新聞原文仍以來源網站為準。</div></section>'
+    body += ''.join(rows) if rows else '<section class="card"><div class="sub">目前沒有抓到符合條件的相關新聞。</div></section>'
+    return respond_page("自選股新聞", body, "watchlist")
+
+
+@app.route("/web/etf-detail")
+@web_login_required
+def web_line_etf_detail(uid):
+    """LINE ETF 單檔完整頁；避免點擊後只進 ETF 清單。"""
+    code=normalize_code(request.args.get("code", ""))
+    if not code or not is_etf(code):
+        return respond_page("ETF 分析", '<section class="card"><div class="sub">ETF 代號不正確。</div></section>', "screener")
+    try:
+        report=build_single_etf_report(code,uid)
+        text=report.text if isinstance(report,TextSendMessage) else (report.alt_text if isinstance(report,FlexSendMessage) else str(report))
+        body=_render_report_lines_html(text,title=f"📦 {code}｜ETF 完整分析")
+        return respond_page(f"{code} ETF 分析",body,"screener")
+    except Exception as exc:
+        print(f"❌ LINE ETF 完整頁失敗 {code}: {exc}")
+        return respond_page("ETF 分析", '<section class="card"><div class="sub">ETF 完整分析暫時無法取得，請稍後再試。</div></section>', "screener")
 
 
 @app.route("/web/chips")
@@ -33891,6 +34035,8 @@ _LINE_UX_CONFIG = {
                      "accent": "#C34848", "stages": ["掃描即時行情", "檢查量價與突破", "比對法人異常訊號"]},
     "positions_export": {"emoji": "📦", "name": "持股", "seconds": 30,
                           "accent": "#64748B", "stages": ["整理持股資料", "計算目前部位", "準備持股明細"]},
+    "etf":         {"emoji": "📦", "name": "ETF", "seconds": 35,
+                     "accent": "#3B7A63", "stages": ["讀取 ETF 行情", "整理商品與配息資料", "整理報酬與風險資訊"]},
 }
 _LINE_ASYNC_JOB_LOCK = threading.Lock()
 _LINE_ASYNC_JOBS = {}
@@ -33958,100 +34104,39 @@ def _rect(px, x0, y0, x1, y1, rgba):
 
 
 def _make_line_loading_apng(feature):
-    """產生高質感金融終端風 APNG；純標準庫、<300KB、無外部圖片依賴。"""
+    """產生極簡、接近 LINE 原生等待感的 APNG；不預先顯示任何分析結果。"""
     cfg = _line_ux_config(feature)
-    accent_hex = cfg.get("accent", "#4A8FC2").lstrip("#")
-    ar, ag, ab = int(accent_hex[0:2],16), int(accent_hex[2:4],16), int(accent_hex[4:6],16)
-    W, H, frames = 480, 240, 16
+    accent_hex = cfg.get("accent", "#356B91").lstrip("#")
+    try:
+        ar, ag, ab = int(accent_hex[0:2], 16), int(accent_hex[2:4], 16), int(accent_hex[4:6], 16)
+    except Exception:
+        ar, ag, ab = 53, 107, 145
+    W, H, frames = 360, 150, 12
     out = [b"\x89PNG\r\n\x1a\n"]
     out.append(_png_chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0)))
     out.append(_png_chunk(b"acTL", struct.pack(">II", frames, 0)))
-
-    def blend(c1, c2, t):
-        return tuple(int(c1[k] + (c2[k]-c1[k])*t) for k in range(4))
-
-    # 深色專業金融終端：比原本的「圓環＋柱狀圖」更像真正的分析引擎。
-    top = (10, 24, 38, 255)
-    bottom = (24, 48, 65, 255)
-    grid = (111, 141, 163, 42)
-    white = (235, 243, 248, 235)
-    muted = (151, 171, 186, 135)
-    red = (220, 102, 96, 210)
-    green = (54, 176, 125, 235)
-    candles = [
-        (54, 150, 67, 116), (79, 137, 92, 105), (104, 128, 117, 144),
-        (129, 145, 142, 118), (154, 125, 167, 96), (179, 112, 192, 130),
-        (204, 132, 217, 88), (229, 103, 242, 115), (254, 119, 267, 78),
-        (279, 91, 292, 105), (304, 108, 317, 70), (329, 82, 342, 94),
-        (354, 72, 367, 58),
-    ]
+    bg = (255,255,255,255); line=(231,235,239,255); inactive=(188,197,206,210); centers=(142,180,218)
     for i in range(frames):
-        pixels = [[blend(top, bottom, y/(H-1)) for _ in range(W)] for y in range(H)]
-
-        # 上方極細品牌線與狀態燈
-        _rect(pixels, 28, 24, 452, 25, (255,255,255,35))
-        _rect(pixels, 28, 24, 118, 25, (ar,ag,ab,220))
-        _circle(pixels, 0, 43, 39, 4, (ar,ag,ab,240))
-        _circle(pixels, 0, 43, 39, 8, (ar,ag,ab,30))
-        _rect(pixels, 58, 35, 108, 41, (255,255,255,180))
-        _rect(pixels, 114, 35, 139, 41, (255,255,255,70))
-
-        # 低對比網格
-        for x in range(42, 452, 32):
-            _rect(pixels, x, 58, x, 184, grid)
-        for y in range(66, 185, 24):
-            _rect(pixels, 30, y, 452, y, grid)
-
-        # K 線＋上下影線
-        for j, (x0, hi, x1, lo) in enumerate(candles):
-            shift = int(round(3 * math.sin((i+j)*math.pi/8)))
-            hi2, lo2 = hi+shift, lo+shift
-            mid = (hi2+lo2)//2
-            body_h = 11 + (j % 3)*3
-            body_top, body_bot = mid-body_h, mid+body_h
-            bullish = ((j+i//4) % 4 != 1)
-            col = green if bullish else red
-            _rect(pixels, x0+6, hi2, x0+6, lo2, (*col[:3], 180))
-            _rect(pixels, x0, body_top, x1, body_bot, col)
-            _rect(pixels, x0, body_top, x1, body_top+1, (255,255,255,65))
-
-        # 趨勢線：由左往右逐幀移動亮點
-        pts=[]
-        for j in range(14):
-            x=54+j*25
-            y=157-int(0.028*(x-54)**1.35)-int(5*math.sin((j+i)*math.pi/8))
-            pts.append((x,y))
-        for j,(x1,y1) in enumerate(pts[:-1]):
-            x2,y2=pts[j+1]
-            steps=max(abs(x2-x1),abs(y2-y1),1)
-            for q in range(steps+1):
-                xx=int(x1+(x2-x1)*q/steps); yy=int(y1+(y2-y1)*q/steps)
-                _circle(pixels,0,xx,yy,2,(ar,ag,ab,185))
-
-        # 掃描光束＋柔和光暈
-        sx=45+((i*29)%390)
-        for width,alpha in [(13,18),(7,32),(3,80)]:
-            _rect(pixels,max(35,sx-width),54,min(448,sx+width),185,(ar,ag,ab,alpha))
-        _rect(pixels,sx,54,min(448,sx+1),185,(225,245,255,205))
-        _circle(pixels,0,sx,157,7,(ar,ag,ab,45))
-        _circle(pixels,0,sx,157,3,(235,248,255,230))
-
-        # 底部「分析引擎」進度軌跡
-        _rect(pixels,30,202,452,203,(255,255,255,35))
-        progress=int(42+360*((i+1)/frames))
-        _rect(pixels,42,218,progress,220,(ar,ag,ab,205))
-        _rect(pixels,progress,218,min(438,progress+12),220,(ar,ag,ab,55))
-        for x in (42,226,438):
-            active = x <= progress
-            _circle(pixels,0,x,219,4,(ar,ag,ab,235) if active else (154,174,188,120))
-
+        pixels=[[bg for _ in range(W)] for _ in range(H)]
+        _rect(pixels,52,20,308,21,line)
+        _rect(pixels,110,128,250,129,(238,241,244,255))
+        for j,cx in enumerate(centers):
+            phase=(i-j*3)%frames
+            if phase in (0,1,2):
+                radius=5 if phase==1 else 4; alpha=245 if phase==1 else 165
+                col=(ar,ag,ab,alpha)
+            else:
+                radius=4; col=inactive
+            _circle(pixels,0,cx,75,radius,col)
+        phase=i/frames*math.pi*2
+        glow_alpha=int(18+10*(0.5+0.5*math.sin(phase)))
+        _circle(pixels,0,180,75,13,(ar,ag,ab,glow_alpha))
         raw=bytearray()
         for row in pixels:
             raw.append(0)
-            for r,g,b,a in row:
-                raw += bytes((r,g,b,a))
-        compressed=zlib.compress(bytes(raw),6)
-        fctl=struct.pack(">IIIIIHHBB",i,W,H,0,0,2,12,0,0)
+            for r,g,b,a in row: raw += bytes((r,g,b,a))
+        compressed=zlib.compress(bytes(raw),9)
+        fctl=struct.pack(">IIIIIHHBB",i,W,H,0,0,3,12,0,0)
         out.append(_png_chunk(b"fcTL",fctl))
         if i==0: out.append(_png_chunk(b"IDAT",compressed))
         else: out.append(_png_chunk(b"fdAT",struct.pack(">I",i)+compressed))
@@ -34061,7 +34146,7 @@ def _make_line_loading_apng(feature):
 
 @app.route("/line-assets/loading/<feature>.png", methods=["GET"])
 def line_loading_asset(feature):
-    """舊版 APNG 資產路由；V90 不再把它放進等待卡片。"""
+    """LINE 自製載入動畫資產；APNG 本身只做三點動畫，不放任何分析結果。"""
     feature = str(feature or "").strip().lower()
     if feature not in _LINE_UX_CONFIG:
         abort(404)
@@ -34070,33 +34155,23 @@ def line_loading_asset(feature):
         if data is None:
             data = _make_line_loading_apng(feature)
             _LINE_LOADING_IMAGE_CACHE[feature] = data
-    return app.response_class(data, mimetype="image/png",
-                              headers={"Cache-Control": "public, max-age=3600"})
+    return app.response_class(data, mimetype="image/png", headers={"Cache-Control":"public, max-age=3600"})
 
 
 def _line_loading_message(user_id, feature, base_url=None):
-    cfg = _line_ux_config(feature)
-    base = public_web_base_url(base_url)
-    stages = cfg.get("stages") or ["準備資料", "分析中", "整理結果"]
-    # V90 不再使用圖片 Hero；等待期間由 LINE 原生 Loading 負責動態效果。
-    contents = [
-        {"type": "text", "text": f"{cfg['emoji']} {cfg['name']}正在分析",
-         "weight": "bold", "size": "xl", "color": "#18283A"},
-        {"type": "text", "text": "資料正在背景整理，完成後會自動回傳結果。",
-         "size": "sm", "color": "#687586", "wrap": True, "margin": "sm"},
+    """自製等待卡：極簡三點 APNG + 功能名稱 + 不帶結果的分析階段。"""
+    cfg=_line_ux_config(feature); base=public_web_base_url(base_url)
+    asset_url=f"{base}/line-assets/loading/{quote(str(feature), safe='')}.png"
+    stages=cfg.get("stages") or ["準備資料","分析中","整理結果"]
+    contents=[
+        {"type":"text","text":f"{cfg['emoji']} {cfg['name']}正在分析","weight":"bold","size":"xl","color":"#18283A"},
+        {"type":"text","text":"資料正在背景整理，完成後會自動回傳結果。","size":"sm","color":"#687586","wrap":True,"margin":"sm"},
+        {"type":"image","url":asset_url,"animated":True,"size":"full","aspectMode":"fit","aspectRatio":"12:5","margin":"md"},
     ]
-    for idx, stage in enumerate(stages):
-        contents.append({
-            "type": "text", "text": ("● " if idx == 0 else "○ ") + str(stage),
-            "size": "sm", "color": cfg["accent"] if idx == 0 else "#A0A8B2",
-            "weight": "bold" if idx == 0 else "regular", "margin": "md" if idx == 0 else "xs"})
-    contents.append({"type": "text", "text": "不用重複輸入，完成後我會自己回來。",
-                     "size": "xs", "color": "#9AA3AC", "margin": "lg"})
-    return FlexSendMessage(
-        alt_text=f"{cfg['emoji']} {cfg['name']}分析中",
-        contents={"type": "bubble", "body": {"type": "box", "layout": "vertical",
-                   "contents": contents, "paddingAll": "18px", "backgroundColor": "#FFFFFF"},
-                  "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
+    for idx,stage in enumerate(stages):
+        contents.append({"type":"text","text":("● " if idx==0 else "○ ")+str(stage),"size":"sm","color":cfg["accent"] if idx==0 else "#A0A8B2","weight":"bold" if idx==0 else "regular","margin":"md" if idx==0 else "xs"})
+    contents.append({"type":"text","text":"不用重複輸入，完成後我會自己回來。","size":"xs","color":"#9AA3AC","margin":"lg"})
+    return FlexSendMessage(alt_text=f"{cfg['emoji']} {cfg['name']}分析中",contents={"type":"bubble","body":{"type":"box","layout":"vertical","contents":contents,"paddingAll":"18px","backgroundColor":"#FFFFFF"},"styles":{"body":{"backgroundColor":"#FFFFFF"}}})
 
 
 def _line_async_normalize_result(result):
@@ -34108,44 +34183,84 @@ def _line_async_normalize_result(result):
 
 
 def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
-                      quick_reply_builder=None):
-    """背景查詢 + LINE 原生 Loading。
+                      quick_reply_builder=None, web_code=None):
+    """自製 LINE Loading 卡 + 官方三點 Loading + 背景分析。
 
-    不再送任何「動畫圖片卡片」：LINE 官方 Loading 本身才是可靠的動態等待
-    UI。只要在第一則 Bot 訊息送出前啟動，它就會持續顯示；分析完成後 Push
-    正式結果，LINE 會自動把 Loading 收掉。
+    順序固定：先回覆自製動畫卡，讓使用者看得到我們自己的動畫；
+    回覆成功後再啟動 LINE 官方原生三點 Loading，兩者可以同時存在。
+    完成後才 Push 正式結果，並由正式訊息自然收掉官方 Loading。
     """
-    cfg = _line_ux_config(feature)
-    if not _line_async_claim(user_id, feature):
+    cfg=_line_ux_config(feature)
+    if not _line_async_claim(user_id,feature):
         try:
-            line_bot_api.reply_message(
-                reply_token,
-                TextSendMessage(text=f"{cfg['emoji']} {cfg['name']}還在分析中，完成後會自動回傳。",
-                                quick_reply=build_quick_reply()))
+            line_bot_api.reply_message(reply_token,TextSendMessage(
+                text=f"{cfg['emoji']} {cfg['name']}還在分析中，完成後會自動回傳。",
+                quick_reply=build_quick_reply()))
         except Exception as exc:
             print(f"⚠️ LINE 重複查詢回覆失敗 {user_id}: {exc}")
         return False
 
-    # 先啟動官方 Loading，再回 HTTP 200；這期間絕對不送 LINE 訊息，
-    # 否則 LINE 會立刻把 Loading 收掉。
-    start_loading_animation(user_id, cfg.get("seconds", 60))
+    # 先送我們自己的動畫卡；這是本次 UX 的主載入畫面。
+    try:
+        loading_card=_line_loading_message(user_id,feature,base_url)
+        try:
+            loading_card.quick_reply=(quick_reply_builder() if quick_reply_builder else build_quick_reply())
+        except Exception:
+            pass
+        line_bot_api.reply_message(reply_token,loading_card)
+    except Exception as exc:
+        print(f"❌ LINE 自製 Loading 卡送出失敗 {user_id} {cfg['name']}: {type(exc).__name__}: {exc}")
+        _line_async_release(user_id)
+        try:
+            line_bot_api.reply_message(reply_token,TextSendMessage(
+                text=f"{cfg['emoji']} {cfg['name']}已收到，正在背景整理資料。",
+                quick_reply=build_quick_reply()))
+        except Exception:
+            pass
+        return False
+
+    # 自製卡送出後，再啟動官方三點 Loading；不會把自製卡消掉。
+    loading_ok=start_loading_animation(user_id,cfg.get("seconds",60))
+    if not loading_ok:
+        print(f"❌ LINE Loading 最終啟動失敗：{user_id} / {cfg['name']}")
+
+    loading_stop=threading.Event()
+    def _loading_heartbeat():
+        while not loading_stop.wait(45):
+            start_loading_animation(user_id,60)
+    if loading_ok:
+        try:
+            threading.Thread(target=_loading_heartbeat,name=f"line-loading-{feature}",daemon=True).start()
+        except Exception as exc:
+            print(f"⚠️ LINE Loading 心跳執行緒啟動失敗 {user_id}: {exc}")
 
     def worker():
-        t0 = time.time()
+        t0=time.time()
         try:
-            result = build_fn()
-            outbound = _line_async_normalize_result(result)
+            result=build_fn()
+            outbound=_line_async_normalize_result(result)
+            # 所有完整分析入口都由這裡補上，避免各個 builder 自己拼錯網址。
+            if web_code and feature in {"quote","etf"}:
+                web_url=_line_feature_web_url(user_id,feature,base_url,code=web_code)
+                if web_url and isinstance(outbound,FlexSendMessage):
+                    body=outbound.contents
+                    if isinstance(body,dict):
+                        body.setdefault("body",{}).setdefault("contents",[])
+                        body["body"]["contents"] += [
+                            {"type":"separator","margin":"lg","color":"#E8EAE6"},
+                            {"type":"button","style":"primary","height":"sm","color":"#6E5228","margin":"md",
+                             "action":{"type":"uri","label":("查看完整個股分析" if feature=="quote" else "查看完整 ETF 分析"),"uri":web_url}}
+                        ]
             try:
-                outbound.quick_reply = (quick_reply_builder() if quick_reply_builder
-                                        else build_quick_reply())
+                outbound.quick_reply=(quick_reply_builder() if quick_reply_builder else build_quick_reply())
             except Exception:
                 pass
-            _push_line_with_retry(user_id, outbound)
+            _push_line_with_retry(user_id,outbound)
             print(f"✅ LINE 背景查詢完成 {user_id} {cfg['name']}（{time.time()-t0:.1f}s）")
         except Exception as exc:
             print(f"❌ LINE 背景查詢失敗 {user_id} {cfg['name']}: {type(exc).__name__}: {exc}")
             try:
-                _push_line_with_retry(user_id, TextSendMessage(
+                _push_line_with_retry(user_id,TextSendMessage(
                     text=(f"{cfg['emoji']} 【{cfg['name']}】\n\n"
                           "這次資料整理沒有完成，可能是外部資料源暫時延遲。\n"
                           "請稍後再試一次；如果連續失敗，再告訴我。"),
@@ -34153,13 +34268,13 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
             except Exception as push_exc:
                 print(f"❌ LINE 背景查詢失敗通知也送不出去 {user_id}: {push_exc}")
         finally:
-            _line_async_release(user_id)
+            loading_stop.set(); _line_async_release(user_id)
 
     try:
-        threading.Thread(target=worker, name=f"line-query-{feature}", daemon=True).start()
+        threading.Thread(target=worker,name=f"line-query-{feature}",daemon=True).start()
         return True
     except Exception as exc:
-        _line_async_release(user_id)
+        loading_stop.set(); _line_async_release(user_id)
         print(f"❌ LINE 背景查詢執行緒啟動失敗 {user_id}: {exc}")
         return False
 
@@ -34240,8 +34355,8 @@ def handle_message(event):
         async_feature = "positions"
         async_builder = lambda: build_line_watchlist_message(user_id, line_base_url)
     elif is_etf(pure_code) and 4 <= len(pure_code) <= 7 and len(text) <= 8 and " " not in text:
-        # ETF 目前仍維持同步，避免改動既有 ETF 報告流程。
-        pass
+        async_feature = "etf"
+        async_builder = lambda: build_single_etf_report(pure_code, user_id)
     elif 4 <= len(pure_code) <= 7 and len(text) <= 8 and " " not in text:
         async_feature = "quote"
         async_builder = lambda: build_single_stock_report(pure_code, user_id)
@@ -34270,7 +34385,7 @@ def handle_message(event):
 
     if async_feature and async_builder:
         _line_async_query(user_id, async_feature, async_builder,
-                          event.reply_token, line_base_url)
+                          event.reply_token, line_base_url, web_code=(pure_code if async_feature in {"quote","etf"} else None))
         # 重型查詢不再回覆「動畫卡片」。官方 Loading 必須在第一則 Bot 訊息
         # 送出前啟動，否則任何回覆都會讓 Loading 立即消失；完成後才 Push 正式結果。
         return
