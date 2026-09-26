@@ -9,6 +9,9 @@ import ssl
 import socket
 import time
 import threading
+import math
+import struct
+import zlib
 import statistics
 import resource
 import requests
@@ -33848,10 +33851,8 @@ def handle_follow(event):
         "自選股與持股只用於產生你自己的分析，"
         "作者不會查看個別使用者的持股內容。\n\n"
         "📌 操作小提醒\n"
-        "每個指令都會即時抓取最新行情、法人與財務資料，"
-        "通常需要約 10-20 秒才會回覆。\n"
-        "如果按鈕按下後沒有立即反應，請先等 5 秒；"
-        "仍沒有反應再按一次，不要連續快速點擊，避免同一查詢重複執行。\n\n"
+        "較重的查詢會先顯示分析動畫；資料整理完成後會自動回傳結果。\n"
+        "不用重複快速點擊，同一使用者同時間只會執行一個重型查詢。\n\n"
         "看得懂數字背後的意思再做決定，"
         "不要因為看到一個分數就進場。\n\n"
         "隨時輸入「選單」都能再叫出功能選單。\n\n"
@@ -33868,31 +33869,46 @@ def handle_follow(event):
 
 
 # ============================================================
-# LINE V86 UX：統一「Loading 動畫 → 背景分析 → 單次完成推播」
+# LINE V87 UX：真正的「漂亮動畫卡 → 背景分析 → 完成結果」
 # ============================================================
-# LINE 官方 Loading Animation 只適用一對一聊天室；這裡不把 loading
-# 當成訊息送出，因此不額外消耗一般訊息額度。真正的分析結果完成後
-# 才 push 一則結果，避免「先回等待文字、再回結果」造成訊息翻倍。
+# V86 的官方 Loading Animation 其實只有 LINE 內建的三點動畫；
+# 使用者看到的白色三點就是它，不是我們自己設計的動畫。
+# V87 改成真正可見的動畫 Flex 卡片：每個功能都有自己的配色、
+# 動態 K 線／掃描／進度視覺，送出後背景工作完成再推一次正式結果。
+# 這個動畫卡會多佔 1 則 LINE 訊息，因此只對真正的重型查詢使用。
 _LINE_UX_CONFIG = {
-    "quote":       {"emoji": "📊", "name": "個股", "seconds": 30},
-    "positions":   {"emoji": "🩺", "name": "自選健檢", "seconds": 45},
-    "news":        {"emoji": "📰", "name": "新聞", "seconds": 35},
-    "premarket":   {"emoji": "🌅", "name": "盤前", "seconds": 45},
-    "debrief":     {"emoji": "🌙", "name": "盤後解盤", "seconds": 45},
-    "chips":       {"emoji": "🦸", "name": "籌碼超人", "seconds": 45},
-    "turning":     {"emoji": "🔄", "name": "轉折觀察", "seconds": 35},
-    "blackhorse":  {"emoji": "🐎", "name": "黑馬", "seconds": 60},
-    "radar":       {"emoji": "🚨", "name": "雷達", "seconds": 60},
-    "positions_export": {"emoji": "📦", "name": "持股", "seconds": 30},
+    "quote":       {"emoji": "📊", "name": "個股", "seconds": 30,
+                     "accent": "#2F6FD6", "stages": ["抓取即時行情", "分析估值與基本面", "整理法人與新聞"]},
+    "positions":   {"emoji": "🩺", "name": "自選健檢", "seconds": 45,
+                     "accent": "#2B8A78", "stages": ["讀取你的自選股", "逐檔檢查五大因子", "整理需要注意的標的"]},
+    "news":        {"emoji": "📰", "name": "新聞", "seconds": 35,
+                     "accent": "#7956C7", "stages": ["整理最新新聞", "篩選個股相關事件", "濃縮成重點摘要"]},
+    "premarket":   {"emoji": "🌅", "name": "盤前", "seconds": 45,
+                     "accent": "#B78635", "stages": ["掃描美股與總經", "判讀對台股的可能影響", "整理今日盤前重點"]},
+    "debrief":     {"emoji": "🌙", "name": "盤後解盤", "seconds": 45,
+                     "accent": "#526B91", "stages": ["整理今日大盤", "分析法人與量價", "濃縮盤後重點"]},
+    "chips":       {"emoji": "🦸", "name": "籌碼超人", "seconds": 45,
+                     "accent": "#C26A2E", "stages": ["整理三大法人", "追蹤近十日方向", "找出籌碼轉折"]},
+    "turning":     {"emoji": "🔄", "name": "轉折觀察", "seconds": 35,
+                     "accent": "#5367B5", "stages": ["整理法人方向", "比對量價與趨勢", "確認轉折狀態"]},
+    "blackhorse":  {"emoji": "🐎", "name": "黑馬", "seconds": 60,
+                     "accent": "#765225", "stages": ["掃描候選股票", "計算五大因子", "重新排列黑馬排名"]},
+    "radar":       {"emoji": "🚨", "name": "雷達", "seconds": 60,
+                     "accent": "#C34848", "stages": ["掃描即時行情", "檢查量價與突破", "比對法人異常訊號"]},
+    "positions_export": {"emoji": "📦", "name": "持股", "seconds": 30,
+                          "accent": "#64748B", "stages": ["整理持股資料", "計算目前部位", "準備持股明細"]},
 }
 _LINE_ASYNC_JOB_LOCK = threading.Lock()
 _LINE_ASYNC_JOBS = {}
 _LINE_ASYNC_JOB_TTL = 300
+_LINE_LOADING_IMAGE_CACHE = {}
+_LINE_LOADING_IMAGE_LOCK = threading.Lock()
 
 
 def _line_ux_config(feature):
-    return _LINE_UX_CONFIG.get(str(feature or ""),
-                               {"emoji": "⏳", "name": "查詢", "seconds": 30})
+    return _LINE_UX_CONFIG.get(str(feature or ""), {
+        "emoji": "⏳", "name": "查詢", "seconds": 30,
+        "accent": "#356B91", "stages": ["準備資料", "分析中", "整理結果"]})
 
 
 def _line_job_key(user_id):
@@ -33912,31 +33928,134 @@ def _line_async_claim(user_id, feature):
         if old and old.get("running"):
             return False
         _LINE_ASYNC_JOBS[key] = {
-            "running": True,
-            "feature": str(feature or ""),
-            "started_at": now,
-        }
+            "running": True, "feature": str(feature or ""), "started_at": now}
         return True
 
 
 def _line_async_release(user_id):
-    key = _line_job_key(user_id)
     with _LINE_ASYNC_JOB_LOCK:
-        _LINE_ASYNC_JOBS.pop(key, None)
+        _LINE_ASYNC_JOBS.pop(_line_job_key(user_id), None)
 
 
-def _line_loading_heartbeat(user_id, feature, stop_event):
-    """長查詢超過 60 秒時續接官方動畫；完成後立即停止。"""
+def _png_chunk(kind, payload):
+    raw = kind + payload
+    return struct.pack(">I", len(payload)) + raw + struct.pack(">I", zlib.crc32(raw) & 0xffffffff)
+
+
+def _circle(px, py, cx, cy, r, rgba):
+    rr = r * r
+    x0, x1 = max(0, int(cx-r)), min(len(px[0])-1, int(cx+r))
+    y0, y1 = max(0, int(cy-r)), min(len(px)-1, int(cy+r))
+    for y in range(y0, y1+1):
+        dy = y-cy
+        for x in range(x0, x1+1):
+            dx = x-cx
+            if dx*dx + dy*dy <= rr:
+                px[y][x] = rgba
+
+
+def _rect(px, x0, y0, x1, y1, rgba):
+    x0, x1 = max(0, int(x0)), min(len(px[0])-1, int(x1))
+    y0, y1 = max(0, int(y0)), min(len(px)-1, int(y1))
+    for y in range(y0, y1+1):
+        row = px[y]
+        for x in range(x0, x1+1):
+            row[x] = rgba
+
+
+def _make_line_loading_apng(feature):
+    """純標準庫產生 <300KB 的 APNG；不依賴 Pillow，Render 不需新增套件。"""
     cfg = _line_ux_config(feature)
-    seconds = int(cfg.get("seconds", 30))
-    start_loading_animation(user_id, seconds=seconds)
-    # 官方最多 60 秒；留安全緩衝，避免長查詢中動畫中斷。
-    interval = max(15, min(45, seconds - 10))
-    while not stop_event.wait(interval):
-        try:
-            start_loading_animation(user_id, seconds=60)
-        except Exception as exc:
-            print(f"⚠️ LINE loading 續接失敗 {user_id}: {exc}")
+    accent_hex = cfg.get("accent", "#356B91").lstrip("#")
+    ar, ag, ab = int(accent_hex[0:2],16), int(accent_hex[2:4],16), int(accent_hex[4:6],16)
+    W, H, frames = 360, 180, 12
+    out = [b"\x89PNG\r\n\x1a\n"]
+    out.append(_png_chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0)))
+    out.append(_png_chunk(b"acTL", struct.pack(">II", frames, 0)))
+    bars = [34, 58, 43, 78, 62, 94, 72, 110]
+    for i in range(frames):
+        pixels = [[(247, 250, 252, 255) for _ in range(W)] for _ in range(H)]
+        # 柔和底部波紋
+        for y in range(0, H):
+            shade = int(247 + min(5, y*5//H))
+            if y > 112:
+                for x in range(W):
+                    pixels[y][x] = (shade, min(253, shade+2), min(255, shade+5), 255)
+        # 圓環與中心脈衝點
+        cx, cy = 102, 82
+        _circle(pixels, 0, cx, cy, 39 + int(2*math.sin(i*math.pi/6)), (225,231,236,255))
+        _circle(pixels, 0, cx, cy, 31, (247,250,252,255))
+        angle = i * math.pi / 6
+        dx, dy = math.cos(angle)*31, math.sin(angle)*31
+        _circle(pixels, 0, cx+dx, cy+dy, 7, (ar,ag,ab,255))
+        pulse = 8 + int(2*math.sin(i*math.pi/6))
+        _circle(pixels, 0, cx, cy, pulse, (ar,ag,ab,255))
+        # 右側動態柱狀圖
+        for j, base_h in enumerate(bars):
+            wave = 1 + 0.16*math.sin((i+j)*math.pi/4)
+            h = max(12, int(base_h*wave))
+            x = 180 + j*19
+            alpha = 255 if j >= 3 else 190
+            _rect(pixels, x, 128-h, x+12, 128, (ar,ag,ab,alpha))
+        # 掃描線
+        sy = 24 + ((i*13) % 112)
+        _rect(pixels, 52, sy, 316, sy+1, (ar,ag,ab,105))
+        raw = bytearray()
+        for row in pixels:
+            raw.append(0)
+            for r,g,b,a in row:
+                raw += bytes((r,g,b,a))
+        compressed = zlib.compress(bytes(raw), 6)
+        fctl = struct.pack(">IIIIIHHBB", i, W, H, 0, 0, 1, 12, 0, 0)
+        out.append(_png_chunk(b"fcTL", fctl))
+        if i == 0:
+            out.append(_png_chunk(b"IDAT", compressed))
+        else:
+            out.append(_png_chunk(b"fdAT", struct.pack(">I", i) + compressed))
+    out.append(_png_chunk(b"IEND", b""))
+    return b"".join(out)
+
+
+@app.route("/line-assets/loading/<feature>.png", methods=["GET"])
+def line_loading_asset(feature):
+    """LINE Flex 動畫圖片；公開 HTTPS URL，APNG <= 300KB 並由 LINE 播放。"""
+    feature = str(feature or "").strip().lower()
+    if feature not in _LINE_UX_CONFIG:
+        abort(404)
+    with _LINE_LOADING_IMAGE_LOCK:
+        data = _LINE_LOADING_IMAGE_CACHE.get(feature)
+        if data is None:
+            data = _make_line_loading_apng(feature)
+            _LINE_LOADING_IMAGE_CACHE[feature] = data
+    return app.response_class(data, mimetype="image/png",
+                              headers={"Cache-Control": "public, max-age=3600"})
+
+
+def _line_loading_message(user_id, feature, base_url=None):
+    cfg = _line_ux_config(feature)
+    base = public_web_base_url(base_url)
+    image_url = f"{base}/line-assets/loading/{quote(str(feature), safe='')}.png"
+    stages = cfg.get("stages") or ["準備資料", "分析中", "整理結果"]
+    contents = [
+        {"type": "image", "url": image_url, "size": "full", "aspectRatio": "2:1",
+         "aspectMode": "cover", "animated": True},
+        {"type": "text", "text": f"{cfg['emoji']} {cfg['name']}正在分析",
+         "weight": "bold", "size": "xl", "color": "#18283A", "margin": "lg"},
+        {"type": "text", "text": "資料正在背景整理，完成後會自動回傳結果。",
+         "size": "sm", "color": "#687586", "wrap": True, "margin": "sm"},
+    ]
+    for idx, stage in enumerate(stages):
+        contents.append({
+            "type": "text", "text": ("● " if idx == 0 else "○ ") + str(stage),
+            "size": "sm", "color": cfg["accent"] if idx == 0 else "#A0A8B2",
+            "weight": "bold" if idx == 0 else "regular", "margin": "md" if idx == 0 else "xs"})
+    contents.append({"type": "text", "text": "不用重複輸入，完成後我會自己回來。",
+                     "size": "xs", "color": "#9AA3AC", "margin": "lg"})
+    return FlexSendMessage(
+        alt_text=f"{cfg['emoji']} {cfg['name']}分析中",
+        contents={"type": "bubble", "body": {"type": "box", "layout": "vertical",
+                   "contents": contents, "paddingAll": "18px", "backgroundColor": "#FFFFFF"},
+                  "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
 
 
 def _line_async_normalize_result(result):
@@ -33947,23 +34066,26 @@ def _line_async_normalize_result(result):
     return TextSendMessage(text=str(result))
 
 
-def _line_async_query(user_id, feature, build_fn, quick_reply_builder=None):
-    """啟動背景查詢；不依賴 Flask request context，完成後用 Push API 回傳結果。"""
+def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
+                      quick_reply_builder=None):
+    """先用 reply token 顯示漂亮動畫卡，再在背景完成後 push 正式結果。"""
     cfg = _line_ux_config(feature)
     if not _line_async_claim(user_id, feature):
-        # 已有查詢在跑，只續接 loading，不再發第二則訊息。
         try:
-            start_loading_animation(user_id, seconds=60)
-        except Exception:
-            pass
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=f"{cfg['emoji']} {cfg['name']}還在分析中，完成後會自動回傳。",
+                                quick_reply=build_quick_reply()))
+        except Exception as exc:
+            print(f"⚠️ LINE 重複查詢回覆失敗 {user_id}: {exc}")
         return False
 
-    stop_event = threading.Event()
-    heartbeat = threading.Thread(
-        target=_line_loading_heartbeat,
-        args=(user_id, feature, stop_event),
-        name=f"line-loading-{feature}", daemon=True)
-    heartbeat.start()
+    try:
+        line_bot_api.reply_message(reply_token, _line_loading_message(user_id, feature, base_url))
+    except Exception as exc:
+        _line_async_release(user_id)
+        print(f"❌ LINE 動畫卡回覆失敗 {user_id} {cfg['name']}: {exc}")
+        return False
 
     def worker():
         t0 = time.time()
@@ -33980,24 +34102,20 @@ def _line_async_query(user_id, feature, build_fn, quick_reply_builder=None):
         except Exception as exc:
             print(f"❌ LINE 背景查詢失敗 {user_id} {cfg['name']}: {type(exc).__name__}: {exc}")
             try:
-                _push_line_with_retry(
-                    user_id,
-                    TextSendMessage(
-                        text=(f"{cfg['emoji']} 【{cfg['name']}】\n\n"
-                               "這次資料整理沒有完成，可能是外部資料源暫時延遲。\n"
-                               "請稍後再試一次；如果連續失敗，再告訴我。"),
-                        quick_reply=build_quick_reply()))
+                _push_line_with_retry(user_id, TextSendMessage(
+                    text=(f"{cfg['emoji']} 【{cfg['name']}】\n\n"
+                          "這次資料整理沒有完成，可能是外部資料源暫時延遲。\n"
+                          "請稍後再試一次；如果連續失敗，再告訴我。"),
+                    quick_reply=build_quick_reply()))
             except Exception as push_exc:
                 print(f"❌ LINE 背景查詢失敗通知也送不出去 {user_id}: {push_exc}")
         finally:
-            stop_event.set()
             _line_async_release(user_id)
 
     try:
         threading.Thread(target=worker, name=f"line-query-{feature}", daemon=True).start()
         return True
     except Exception as exc:
-        stop_event.set()
         _line_async_release(user_id)
         print(f"❌ LINE 背景查詢執行緒啟動失敗 {user_id}: {exc}")
         return False
@@ -34108,15 +34226,13 @@ def handle_message(event):
         async_builder = lambda: build_holdings_text(user_id)
 
     if async_feature and async_builder:
-        started = _line_async_query(user_id, async_feature, async_builder)
-        # webhook 直接 ACK；真正結果由背景 worker Push。這是 LINE 官方建議的
-        # 非同步 webhook 模式，也避免 1 worker + 長 SQL/API 工作卡住後續事件。
+        _line_async_query(user_id, async_feature, async_builder,
+                          event.reply_token, line_base_url)
+        # 先用 reply token 送出真正的動畫卡；後續分析在背景執行，完成後只再 push 一次結果。
         return
 
-    # 黑馬／雷達已改為快照優先，必須立即回覆；若沒有快照只啟動背景刷新，
-    # 不再讓 LINE 聊天室顯示長時間載入動畫。其他仍可能同步整理的指令保留動畫。
-    if text not in {"黑馬", "雷達"}:
-        start_loading_animation(user_id)
+    # 非重型／管理流程維持原本同步回覆。
+    # 真正的重型功能已在上方統一使用動畫卡，不再顯示只有三個點的內建 loading。
 
     # 0. 管理指令（只有 ADMIN_USER_ID 本人可用，其他人輸入等同無效指令）
     if is_admin(user_id) and text in ["管理", "管理中心"]:
