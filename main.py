@@ -33758,10 +33758,6 @@ _FAST_LINE_EVENT_TTL = 120
 _fast_line_event_seen = {}
 _fast_line_event_lock = threading.Lock()
 
-# LINE 耗時查詢採有上限的背景佇列，避免單一 worker 下大量使用者同時查詢
-# 反而把 Render 的 CPU / RAM 撐爆。
-_LINE_QUERY_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="line-query")
-
 
 def _line_payload_is_menu(raw_body):
     """只判斷純選單文字事件；其他 webhook 仍走資料庫跨 worker 去重。"""
@@ -33871,7 +33867,144 @@ def handle_follow(event):
         print(f"❌ 歡迎訊息發送失敗 {user_id}: {e}")
 
 
-def _handle_message_core(event, async_mode=False):
+# ============================================================
+# LINE V86 UX：統一「Loading 動畫 → 背景分析 → 單次完成推播」
+# ============================================================
+# LINE 官方 Loading Animation 只適用一對一聊天室；這裡不把 loading
+# 當成訊息送出，因此不額外消耗一般訊息額度。真正的分析結果完成後
+# 才 push 一則結果，避免「先回等待文字、再回結果」造成訊息翻倍。
+_LINE_UX_CONFIG = {
+    "quote":       {"emoji": "📊", "name": "個股", "seconds": 30},
+    "positions":   {"emoji": "🩺", "name": "自選健檢", "seconds": 45},
+    "news":        {"emoji": "📰", "name": "新聞", "seconds": 35},
+    "premarket":   {"emoji": "🌅", "name": "盤前", "seconds": 45},
+    "debrief":     {"emoji": "🌙", "name": "盤後解盤", "seconds": 45},
+    "chips":       {"emoji": "🦸", "name": "籌碼超人", "seconds": 45},
+    "turning":     {"emoji": "🔄", "name": "轉折觀察", "seconds": 35},
+    "blackhorse":  {"emoji": "🐎", "name": "黑馬", "seconds": 60},
+    "radar":       {"emoji": "🚨", "name": "雷達", "seconds": 60},
+    "positions_export": {"emoji": "📦", "name": "持股", "seconds": 30},
+}
+_LINE_ASYNC_JOB_LOCK = threading.Lock()
+_LINE_ASYNC_JOBS = {}
+_LINE_ASYNC_JOB_TTL = 300
+
+
+def _line_ux_config(feature):
+    return _LINE_UX_CONFIG.get(str(feature or ""),
+                               {"emoji": "⏳", "name": "查詢", "seconds": 30})
+
+
+def _line_job_key(user_id):
+    return str(user_id or "").strip()
+
+
+def _line_async_claim(user_id, feature):
+    """同一使用者同時只允許一個重型 LINE 查詢，避免狂點造成重複抓資料。"""
+    key = _line_job_key(user_id)
+    now = time.time()
+    with _LINE_ASYNC_JOB_LOCK:
+        stale = [k for k, v in _LINE_ASYNC_JOBS.items()
+                 if now - float(v.get("started_at", 0)) > _LINE_ASYNC_JOB_TTL]
+        for k in stale:
+            _LINE_ASYNC_JOBS.pop(k, None)
+        old = _LINE_ASYNC_JOBS.get(key)
+        if old and old.get("running"):
+            return False
+        _LINE_ASYNC_JOBS[key] = {
+            "running": True,
+            "feature": str(feature or ""),
+            "started_at": now,
+        }
+        return True
+
+
+def _line_async_release(user_id):
+    key = _line_job_key(user_id)
+    with _LINE_ASYNC_JOB_LOCK:
+        _LINE_ASYNC_JOBS.pop(key, None)
+
+
+def _line_loading_heartbeat(user_id, feature, stop_event):
+    """長查詢超過 60 秒時續接官方動畫；完成後立即停止。"""
+    cfg = _line_ux_config(feature)
+    seconds = int(cfg.get("seconds", 30))
+    start_loading_animation(user_id, seconds=seconds)
+    # 官方最多 60 秒；留安全緩衝，避免長查詢中動畫中斷。
+    interval = max(15, min(45, seconds - 10))
+    while not stop_event.wait(interval):
+        try:
+            start_loading_animation(user_id, seconds=60)
+        except Exception as exc:
+            print(f"⚠️ LINE loading 續接失敗 {user_id}: {exc}")
+
+
+def _line_async_normalize_result(result):
+    if isinstance(result, (TextSendMessage, FlexSendMessage)):
+        return result
+    if result is None:
+        return TextSendMessage(text="目前沒有可用結果，請稍後再試。")
+    return TextSendMessage(text=str(result))
+
+
+def _line_async_query(user_id, feature, build_fn, quick_reply_builder=None):
+    """啟動背景查詢；不依賴 Flask request context，完成後用 Push API 回傳結果。"""
+    cfg = _line_ux_config(feature)
+    if not _line_async_claim(user_id, feature):
+        # 已有查詢在跑，只續接 loading，不再發第二則訊息。
+        try:
+            start_loading_animation(user_id, seconds=60)
+        except Exception:
+            pass
+        return False
+
+    stop_event = threading.Event()
+    heartbeat = threading.Thread(
+        target=_line_loading_heartbeat,
+        args=(user_id, feature, stop_event),
+        name=f"line-loading-{feature}", daemon=True)
+    heartbeat.start()
+
+    def worker():
+        t0 = time.time()
+        try:
+            result = build_fn()
+            outbound = _line_async_normalize_result(result)
+            try:
+                outbound.quick_reply = (quick_reply_builder() if quick_reply_builder
+                                        else build_quick_reply())
+            except Exception:
+                pass
+            _push_line_with_retry(user_id, outbound)
+            print(f"✅ LINE 背景查詢完成 {user_id} {cfg['name']}（{time.time()-t0:.1f}s）")
+        except Exception as exc:
+            print(f"❌ LINE 背景查詢失敗 {user_id} {cfg['name']}: {type(exc).__name__}: {exc}")
+            try:
+                _push_line_with_retry(
+                    user_id,
+                    TextSendMessage(
+                        text=(f"{cfg['emoji']} 【{cfg['name']}】\n\n"
+                               "這次資料整理沒有完成，可能是外部資料源暫時延遲。\n"
+                               "請稍後再試一次；如果連續失敗，再告訴我。"),
+                        quick_reply=build_quick_reply()))
+            except Exception as push_exc:
+                print(f"❌ LINE 背景查詢失敗通知也送不出去 {user_id}: {push_exc}")
+        finally:
+            stop_event.set()
+            _line_async_release(user_id)
+
+    try:
+        threading.Thread(target=worker, name=f"line-query-{feature}", daemon=True).start()
+        return True
+    except Exception as exc:
+        stop_event.set()
+        _line_async_release(user_id)
+        print(f"❌ LINE 背景查詢執行緒啟動失敗 {user_id}: {exc}")
+        return False
+
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
     user_id = event.source.user_id
     flex_reply = None  # 若為 Flex 訊息（彩色選單），改用這個回覆
     admin_quick_reply = None
@@ -33924,20 +34057,61 @@ def _handle_message_core(event, async_mode=False):
     kind = "heavy" if (text in HEAVY_COMMANDS or text in SLOW_COMMANDS) else "normal"
     allowed, wait = rate_limit_ok(user_id, kind)
     if not allowed:
-        limited_msg = TextSendMessage(
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(
             text=(f"⏳ 查詢太頻繁了，請稍等 {wait} 秒再試。\n\n"
                   f"每個指令都要即時抓取行情與財務資料，"
                   f"短時間內重複查詢會影響其他使用者。"),
-            quick_reply=build_quick_reply())
-        if async_mode:
-            _push_line_with_retry(user_id, limited_msg)
-        else:
-            line_bot_api.reply_message(event.reply_token, limited_msg)
+            quick_reply=build_quick_reply()))
         return
 
     feature = infer_line_feature(text)
     if feature:
         record_activity(user_id, feature, action="message", source="line")
+
+    # V86：所有真正需要抓行情／新聞／法人／全市場計算的查詢統一走背景。
+    # 不在這裡使用 request.url_root 進背景執行緒；先轉成純字串，避免 Flask
+    # request context 離開 webhook 後被背景 worker 讀取而出現「查詢沒有完成」。
+    line_base_url = public_web_base_url(request.url_root.rstrip("/"))
+    async_feature = None
+    async_builder = None
+
+    if text in ("自選", "WATCHLIST", "健檢", "自選健檢"):
+        async_feature = "positions"
+        async_builder = lambda: build_line_watchlist_message(user_id, line_base_url)
+    elif is_etf(pure_code) and 4 <= len(pure_code) <= 7 and len(text) <= 8 and " " not in text:
+        # ETF 目前仍維持同步，避免改動既有 ETF 報告流程。
+        pass
+    elif 4 <= len(pure_code) <= 7 and len(text) <= 8 and " " not in text:
+        async_feature = "quote"
+        async_builder = lambda: build_single_stock_report(pure_code, user_id)
+    elif text in ("新聞", "自選新聞"):
+        async_feature = "news"
+        async_builder = lambda: build_news_digest(user_id)
+    elif text in ("盤前", "早安"):
+        async_feature = "premarket"
+        async_builder = lambda: build_morning_push_message(user_id, line_base_url)
+    elif text in ("解盤", "盤後解盤", "盤後"):
+        async_feature = "debrief"
+        async_builder = lambda: build_market_recap_line_message(user_id, line_base_url)
+    elif text in ("籌碼", "籌碼超人", "認養"):
+        async_feature = "chips"
+        async_builder = lambda: build_line_chips_message(user_id, line_base_url)
+    elif text in ("轉折", "轉折觀察"):
+        async_feature = "turning"
+        async_builder = lambda: build_turning_observation_line_message(user_id, line_base_url)
+    elif text in ("黑馬", "雷達"):
+        async_feature = "blackhorse" if text == "黑馬" else "radar"
+        mode = async_feature
+        async_builder = lambda: build_line_screener_message(user_id, mode, line_base_url)
+    elif text in ("持股", "庫存", "匯出持股", "持股匯出"):
+        async_feature = "positions_export"
+        async_builder = lambda: build_holdings_text(user_id)
+
+    if async_feature and async_builder:
+        started = _line_async_query(user_id, async_feature, async_builder)
+        # webhook 直接 ACK；真正結果由背景 worker Push。這是 LINE 官方建議的
+        # 非同步 webhook 模式，也避免 1 worker + 長 SQL/API 工作卡住後續事件。
+        return
 
     # 黑馬／雷達已改為快照優先，必須立即回覆；若沒有快照只啟動背景刷新，
     # 不再讓 LINE 聊天室顯示長時間載入動畫。其他仍可能同步整理的指令保留動畫。
@@ -34384,91 +34558,10 @@ def _handle_message_core(event, async_mode=False):
     qr = admin_quick_reply or build_quick_reply()
     if flex_reply is not None:
         flex_reply.quick_reply = qr
-        if async_mode:
-            _push_line_with_retry(user_id, flex_reply)
-        else:
-            line_bot_api.reply_message(event.reply_token, flex_reply)
+        line_bot_api.reply_message(event.reply_token, flex_reply)
     else:
-        outbound = TextSendMessage(text=reply, quick_reply=qr)
-        if async_mode:
-            _push_line_with_retry(user_id, outbound)
-        else:
-            line_bot_api.reply_message(event.reply_token, outbound)
-
-
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    """
-    LINE 快速 ACK：耗時查詢先用 reply token 立即告知使用者已收到，
-    真正分析放到背景執行緒，完成後用 push message 回傳。
-
-    這避免股票／法人／新聞等資料來源延遲時，使用者看到「完全沒反應」。
-    靜態與極輕量指令仍維持同步 reply，避免不必要的 push。
-    """
-    user_id = event.source.user_id
-    text = (event.message.text or '').strip()
-    text_upper = text.upper()
-
-    # 這些指令本身很快，直接使用 reply token；其餘查詢先 ACK。
-    fast_commands = {
-        "MENU", "選單", "幫助", "HELP",
-        "我的ID", "我的id", "MYID",
-    }
-    is_fast = text_upper in fast_commands
-
-    if is_fast:
-        _handle_message_core(event, async_mode=False)
-        return
-
-    # 先把「有收到」告訴使用者；這則只消耗 reply token，後續結果走 push。
-    try:
-        ack = TextSendMessage(
-            text=(
-                "🔎 已收到你的指令！\n\n"
-                "正在整理最新資料…\n"
-                "📊 行情　💰 法人　🧮 財務\n\n"
-                "完成後會直接把結果傳給你，請不用重複按。"
-            ),
-            quick_reply=build_quick_reply(),
-        )
-        line_bot_api.reply_message(event.reply_token, ack)
-    except Exception as exc:
-        print(f"⚠️ LINE 快速 ACK 發送失敗 {user_id}: {type(exc).__name__}: {exc}")
-        # ACK 失敗仍繼續執行背景工作，避免因為提示訊息失敗而整個查詢消失。
-
-    def _run_async():
-        try:
-            _handle_message_core(event, async_mode=True)
-        except Exception as exc:
-            print(f"❌ LINE 背景查詢失敗 {user_id}: {type(exc).__name__}: {exc}")
-            try:
-                _push_line_with_retry(
-                    user_id,
-                    TextSendMessage(
-                        text=(
-                            "⚠️ 這次查詢沒有完成。\n\n"
-                            "資料來源回應較慢或暫時異常，請稍後再試。"
-                        ),
-                        quick_reply=build_quick_reply(),
-                    ),
-                )
-            except Exception as push_exc:
-                print(f"❌ LINE 背景失敗通知也發送失敗 {user_id}: {push_exc}")
-
-    try:
-        _LINE_QUERY_EXECUTOR.submit(_run_async)
-    except Exception as exc:
-        print(f"❌ LINE 背景查詢執行緒啟動失敗 {user_id}: {exc}")
-        try:
-            _push_line_with_retry(
-                user_id,
-                TextSendMessage(
-                    text="⚠️ 查詢暫時無法啟動，請稍後再試。",
-                    quick_reply=build_quick_reply(),
-                ),
-            )
-        except Exception as push_exc:
-            print(f"❌ LINE fallback 失敗 {user_id}: {push_exc}")
+        line_bot_api.reply_message(
+            event.reply_token, TextSendMessage(text=reply, quick_reply=qr))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
