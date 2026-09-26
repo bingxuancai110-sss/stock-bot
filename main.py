@@ -33869,11 +33869,11 @@ def handle_follow(event):
 
 
 # ============================================================
-# LINE V87 UX：真正的「漂亮動畫卡 → 背景分析 → 完成結果」
+# LINE V88 UX：漂亮動畫卡 + 官方 Loading → 背景分析 → 完成結果
 # ============================================================
-# V86 的官方 Loading Animation 其實只有 LINE 內建的三點動畫；
+# V86 的官方 Loading Animation 只有 LINE 內建的三點動畫；
 # 使用者看到的白色三點就是它，不是我們自己設計的動畫。
-# V87 改成真正可見的動畫 Flex 卡片：每個功能都有自己的配色、
+# V88 使用真正可見的動畫 Flex 卡片，並在卡片送出後同步啟動官方 Loading；每個功能都有自己的配色、
 # 動態 K 線／掃描／進度視覺，送出後背景工作完成再推一次正式結果。
 # 這個動畫卡會多佔 1 則 LINE 訊息，因此只對真正的重型查詢使用。
 _LINE_UX_CONFIG = {
@@ -33964,55 +33964,104 @@ def _rect(px, x0, y0, x1, y1, rgba):
 
 
 def _make_line_loading_apng(feature):
-    """純標準庫產生 <300KB 的 APNG；不依賴 Pillow，Render 不需新增套件。"""
+    """產生高質感金融終端風 APNG；純標準庫、<300KB、無外部圖片依賴。"""
     cfg = _line_ux_config(feature)
-    accent_hex = cfg.get("accent", "#356B91").lstrip("#")
+    accent_hex = cfg.get("accent", "#4A8FC2").lstrip("#")
     ar, ag, ab = int(accent_hex[0:2],16), int(accent_hex[2:4],16), int(accent_hex[4:6],16)
-    W, H, frames = 360, 180, 12
+    W, H, frames = 480, 240, 16
     out = [b"\x89PNG\r\n\x1a\n"]
     out.append(_png_chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0)))
     out.append(_png_chunk(b"acTL", struct.pack(">II", frames, 0)))
-    bars = [34, 58, 43, 78, 62, 94, 72, 110]
+
+    def blend(c1, c2, t):
+        return tuple(int(c1[k] + (c2[k]-c1[k])*t) for k in range(4))
+
+    # 深色專業金融終端：比原本的「圓環＋柱狀圖」更像真正的分析引擎。
+    top = (10, 24, 38, 255)
+    bottom = (24, 48, 65, 255)
+    grid = (111, 141, 163, 42)
+    white = (235, 243, 248, 235)
+    muted = (151, 171, 186, 135)
+    red = (220, 102, 96, 210)
+    green = (54, 176, 125, 235)
+    candles = [
+        (54, 150, 67, 116), (79, 137, 92, 105), (104, 128, 117, 144),
+        (129, 145, 142, 118), (154, 125, 167, 96), (179, 112, 192, 130),
+        (204, 132, 217, 88), (229, 103, 242, 115), (254, 119, 267, 78),
+        (279, 91, 292, 105), (304, 108, 317, 70), (329, 82, 342, 94),
+        (354, 72, 367, 58),
+    ]
     for i in range(frames):
-        pixels = [[(247, 250, 252, 255) for _ in range(W)] for _ in range(H)]
-        # 柔和底部波紋
-        for y in range(0, H):
-            shade = int(247 + min(5, y*5//H))
-            if y > 112:
-                for x in range(W):
-                    pixels[y][x] = (shade, min(253, shade+2), min(255, shade+5), 255)
-        # 圓環與中心脈衝點
-        cx, cy = 102, 82
-        _circle(pixels, 0, cx, cy, 39 + int(2*math.sin(i*math.pi/6)), (225,231,236,255))
-        _circle(pixels, 0, cx, cy, 31, (247,250,252,255))
-        angle = i * math.pi / 6
-        dx, dy = math.cos(angle)*31, math.sin(angle)*31
-        _circle(pixels, 0, cx+dx, cy+dy, 7, (ar,ag,ab,255))
-        pulse = 8 + int(2*math.sin(i*math.pi/6))
-        _circle(pixels, 0, cx, cy, pulse, (ar,ag,ab,255))
-        # 右側動態柱狀圖
-        for j, base_h in enumerate(bars):
-            wave = 1 + 0.16*math.sin((i+j)*math.pi/4)
-            h = max(12, int(base_h*wave))
-            x = 180 + j*19
-            alpha = 255 if j >= 3 else 190
-            _rect(pixels, x, 128-h, x+12, 128, (ar,ag,ab,alpha))
-        # 掃描線
-        sy = 24 + ((i*13) % 112)
-        _rect(pixels, 52, sy, 316, sy+1, (ar,ag,ab,105))
-        raw = bytearray()
+        pixels = [[blend(top, bottom, y/(H-1)) for _ in range(W)] for y in range(H)]
+
+        # 上方極細品牌線與狀態燈
+        _rect(pixels, 28, 24, 452, 25, (255,255,255,35))
+        _rect(pixels, 28, 24, 118, 25, (ar,ag,ab,220))
+        _circle(pixels, 0, 43, 39, 4, (ar,ag,ab,240))
+        _circle(pixels, 0, 43, 39, 8, (ar,ag,ab,30))
+        _rect(pixels, 58, 35, 108, 41, (255,255,255,180))
+        _rect(pixels, 114, 35, 139, 41, (255,255,255,70))
+
+        # 低對比網格
+        for x in range(42, 452, 32):
+            _rect(pixels, x, 58, x, 184, grid)
+        for y in range(66, 185, 24):
+            _rect(pixels, 30, y, 452, y, grid)
+
+        # K 線＋上下影線
+        for j, (x0, hi, x1, lo) in enumerate(candles):
+            shift = int(round(3 * math.sin((i+j)*math.pi/8)))
+            hi2, lo2 = hi+shift, lo+shift
+            mid = (hi2+lo2)//2
+            body_h = 11 + (j % 3)*3
+            body_top, body_bot = mid-body_h, mid+body_h
+            bullish = ((j+i//4) % 4 != 1)
+            col = green if bullish else red
+            _rect(pixels, x0+6, hi2, x0+6, lo2, (*col[:3], 180))
+            _rect(pixels, x0, body_top, x1, body_bot, col)
+            _rect(pixels, x0, body_top, x1, body_top+1, (255,255,255,65))
+
+        # 趨勢線：由左往右逐幀移動亮點
+        pts=[]
+        for j in range(14):
+            x=54+j*25
+            y=157-int(0.028*(x-54)**1.35)-int(5*math.sin((j+i)*math.pi/8))
+            pts.append((x,y))
+        for j,(x1,y1) in enumerate(pts[:-1]):
+            x2,y2=pts[j+1]
+            steps=max(abs(x2-x1),abs(y2-y1),1)
+            for q in range(steps+1):
+                xx=int(x1+(x2-x1)*q/steps); yy=int(y1+(y2-y1)*q/steps)
+                _circle(pixels,0,xx,yy,2,(ar,ag,ab,185))
+
+        # 掃描光束＋柔和光暈
+        sx=45+((i*29)%390)
+        for width,alpha in [(13,18),(7,32),(3,80)]:
+            _rect(pixels,max(35,sx-width),54,min(448,sx+width),185,(ar,ag,ab,alpha))
+        _rect(pixels,sx,54,min(448,sx+1),185,(225,245,255,205))
+        _circle(pixels,0,sx,157,7,(ar,ag,ab,45))
+        _circle(pixels,0,sx,157,3,(235,248,255,230))
+
+        # 底部「分析引擎」進度軌跡
+        _rect(pixels,30,202,452,203,(255,255,255,35))
+        progress=int(42+360*((i+1)/frames))
+        _rect(pixels,42,218,progress,220,(ar,ag,ab,205))
+        _rect(pixels,progress,218,min(438,progress+12),220,(ar,ag,ab,55))
+        for x in (42,226,438):
+            active = x <= progress
+            _circle(pixels,0,x,219,4,(ar,ag,ab,235) if active else (154,174,188,120))
+
+        raw=bytearray()
         for row in pixels:
             raw.append(0)
             for r,g,b,a in row:
                 raw += bytes((r,g,b,a))
-        compressed = zlib.compress(bytes(raw), 6)
-        fctl = struct.pack(">IIIIIHHBB", i, W, H, 0, 0, 1, 12, 0, 0)
-        out.append(_png_chunk(b"fcTL", fctl))
-        if i == 0:
-            out.append(_png_chunk(b"IDAT", compressed))
-        else:
-            out.append(_png_chunk(b"fdAT", struct.pack(">I", i) + compressed))
-    out.append(_png_chunk(b"IEND", b""))
+        compressed=zlib.compress(bytes(raw),6)
+        fctl=struct.pack(">IIIIIHHBB",i,W,H,0,0,2,12,0,0)
+        out.append(_png_chunk(b"fcTL",fctl))
+        if i==0: out.append(_png_chunk(b"IDAT",compressed))
+        else: out.append(_png_chunk(b"fdAT",struct.pack(">I",i)+compressed))
+    out.append(_png_chunk(b"IEND",b""))
     return b"".join(out)
 
 
@@ -34086,6 +34135,16 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
         _line_async_release(user_id)
         print(f"❌ LINE 動畫卡回覆失敗 {user_id} {cfg['name']}: {exc}")
         return False
+
+    # APNG 是否自動播放取決於使用者 LINE 的「GIF 自動播放」設定。
+    # 為了讓等待狀態不受這個設定影響，卡片送出後再啟動 LINE 官方
+    # Loading Animation；查詢完成、Bot 再送出結果時官方動畫會自動結束。
+    # 這樣即使 APNG 被 LINE 客戶端以靜態圖片呈現，使用者仍會看到
+    # 真正持續跳動的官方等待動畫。
+    try:
+        start_loading_animation(user_id, cfg.get("seconds", 30))
+    except Exception as exc:
+        print(f"⚠️ LINE 官方 Loading 啟動失敗 {user_id} {cfg['name']}: {exc}")
 
     def worker():
         t0 = time.time()
