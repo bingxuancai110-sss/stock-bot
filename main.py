@@ -33758,6 +33758,10 @@ _FAST_LINE_EVENT_TTL = 120
 _fast_line_event_seen = {}
 _fast_line_event_lock = threading.Lock()
 
+# LINE 耗時查詢採有上限的背景佇列，避免單一 worker 下大量使用者同時查詢
+# 反而把 Render 的 CPU / RAM 撐爆。
+_LINE_QUERY_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="line-query")
+
 
 def _line_payload_is_menu(raw_body):
     """只判斷純選單文字事件；其他 webhook 仍走資料庫跨 worker 去重。"""
@@ -33867,8 +33871,7 @@ def handle_follow(event):
         print(f"❌ 歡迎訊息發送失敗 {user_id}: {e}")
 
 
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
+def _handle_message_core(event, async_mode=False):
     user_id = event.source.user_id
     flex_reply = None  # 若為 Flex 訊息（彩色選單），改用這個回覆
     admin_quick_reply = None
@@ -33921,11 +33924,15 @@ def handle_message(event):
     kind = "heavy" if (text in HEAVY_COMMANDS or text in SLOW_COMMANDS) else "normal"
     allowed, wait = rate_limit_ok(user_id, kind)
     if not allowed:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(
+        limited_msg = TextSendMessage(
             text=(f"⏳ 查詢太頻繁了，請稍等 {wait} 秒再試。\n\n"
                   f"每個指令都要即時抓取行情與財務資料，"
                   f"短時間內重複查詢會影響其他使用者。"),
-            quick_reply=build_quick_reply()))
+            quick_reply=build_quick_reply())
+        if async_mode:
+            _push_line_with_retry(user_id, limited_msg)
+        else:
+            line_bot_api.reply_message(event.reply_token, limited_msg)
         return
 
     feature = infer_line_feature(text)
@@ -34377,10 +34384,91 @@ def handle_message(event):
     qr = admin_quick_reply or build_quick_reply()
     if flex_reply is not None:
         flex_reply.quick_reply = qr
-        line_bot_api.reply_message(event.reply_token, flex_reply)
+        if async_mode:
+            _push_line_with_retry(user_id, flex_reply)
+        else:
+            line_bot_api.reply_message(event.reply_token, flex_reply)
     else:
-        line_bot_api.reply_message(
-            event.reply_token, TextSendMessage(text=reply, quick_reply=qr))
+        outbound = TextSendMessage(text=reply, quick_reply=qr)
+        if async_mode:
+            _push_line_with_retry(user_id, outbound)
+        else:
+            line_bot_api.reply_message(event.reply_token, outbound)
+
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    """
+    LINE 快速 ACK：耗時查詢先用 reply token 立即告知使用者已收到，
+    真正分析放到背景執行緒，完成後用 push message 回傳。
+
+    這避免股票／法人／新聞等資料來源延遲時，使用者看到「完全沒反應」。
+    靜態與極輕量指令仍維持同步 reply，避免不必要的 push。
+    """
+    user_id = event.source.user_id
+    text = (event.message.text or '').strip()
+    text_upper = text.upper()
+
+    # 這些指令本身很快，直接使用 reply token；其餘查詢先 ACK。
+    fast_commands = {
+        "MENU", "選單", "幫助", "HELP",
+        "我的ID", "我的id", "MYID",
+    }
+    is_fast = text_upper in fast_commands
+
+    if is_fast:
+        _handle_message_core(event, async_mode=False)
+        return
+
+    # 先把「有收到」告訴使用者；這則只消耗 reply token，後續結果走 push。
+    try:
+        ack = TextSendMessage(
+            text=(
+                "🔎 已收到你的指令！\n\n"
+                "正在整理最新資料…\n"
+                "📊 行情　💰 法人　🧮 財務\n\n"
+                "完成後會直接把結果傳給你，請不用重複按。"
+            ),
+            quick_reply=build_quick_reply(),
+        )
+        line_bot_api.reply_message(event.reply_token, ack)
+    except Exception as exc:
+        print(f"⚠️ LINE 快速 ACK 發送失敗 {user_id}: {type(exc).__name__}: {exc}")
+        # ACK 失敗仍繼續執行背景工作，避免因為提示訊息失敗而整個查詢消失。
+
+    def _run_async():
+        try:
+            _handle_message_core(event, async_mode=True)
+        except Exception as exc:
+            print(f"❌ LINE 背景查詢失敗 {user_id}: {type(exc).__name__}: {exc}")
+            try:
+                _push_line_with_retry(
+                    user_id,
+                    TextSendMessage(
+                        text=(
+                            "⚠️ 這次查詢沒有完成。\n\n"
+                            "資料來源回應較慢或暫時異常，請稍後再試。"
+                        ),
+                        quick_reply=build_quick_reply(),
+                    ),
+                )
+            except Exception as push_exc:
+                print(f"❌ LINE 背景失敗通知也發送失敗 {user_id}: {push_exc}")
+
+    try:
+        _LINE_QUERY_EXECUTOR.submit(_run_async)
+    except Exception as exc:
+        print(f"❌ LINE 背景查詢執行緒啟動失敗 {user_id}: {exc}")
+        try:
+            _push_line_with_retry(
+                user_id,
+                TextSendMessage(
+                    text="⚠️ 查詢暫時無法啟動，請稍後再試。",
+                    quick_reply=build_quick_reply(),
+                ),
+            )
+        except Exception as push_exc:
+            print(f"❌ LINE fallback 失敗 {user_id}: {push_exc}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
