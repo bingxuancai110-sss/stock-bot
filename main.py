@@ -17849,36 +17849,30 @@ SLOW_COMMANDS = {
 
 
 def start_loading_animation(user_id, seconds=60):
+    """啟動 LINE 官方原生 Loading。
+
+    重要：官方 Loading 會在 Bot 送出下一則訊息時自動消失。
+    因此這裡必須在 webhook 回覆任何 LINE 訊息之前啟動，
+    查詢期間不再送「動畫卡片」，完成後才 Push 最終結果。
+    這樣 Loading 才會真的一路顯示到分析完成，而不是一送卡片就消失。
     """
-    叫出 LINE 聊天室裡的官方載入動畫（三個點跳動），最長 60 秒。
-
-    用背景執行緒送出，不等它回應：這支 API 現在每則訊息都會呼叫，
-    若同步等待，光是這個網路來回就會讓每則訊息都多幾百毫秒到 3 秒的延遲，
-    「加動畫」反而讓整體變慢。動畫只是視覺回饋，晚一點出現或沒出現
-    都不該影響真正的查詢。
-
-    只在一對一聊天有效，群組會回錯誤，所以整段包在 try 裡。
-    linebot SDK 版本較舊時可能沒有這個方法，因此直接打 REST API。
-    """
-    def _fire():
-        try:
-            requests.post(
-                "https://api.line.me/v2/bot/chat/loading/start",
-                headers={
-                    "Authorization": f"Bearer {os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')}",
-                    "Content-Type": "application/json",
-                },
-                json={"chatId": str(user_id).strip(),
-                      "loadingSeconds": min(60, max(5, int(seconds) // 5 * 5))},
-                timeout=3,
-            )
-        except Exception as e:
-            print(f"⚠️ 載入動畫啟動失敗 {user_id}: {e}")
-
     try:
-        threading.Thread(target=_fire, daemon=True).start()
+        r = requests.post(
+            "https://api.line.me/v2/bot/chat/loading/start",
+            headers={
+                "Authorization": f"Bearer {os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')}",
+                "Content-Type": "application/json",
+            },
+            json={"chatId": str(user_id).strip(),
+                  "loadingSeconds": min(60, max(5, int(seconds) // 5 * 5))},
+            timeout=1.5,
+        )
+        if r.status_code not in (200, 202):
+            print(f"⚠️ LINE Loading 回應 {r.status_code}: {r.text[:300]}")
+        return r.status_code in (200, 202)
     except Exception as e:
-        print(f"⚠️ 載入動畫執行緒啟動失敗: {e}")
+        print(f"⚠️ LINE Loading 啟動失敗 {user_id}: {e}")
+        return False
 
 
 def build_quick_reply():
@@ -34067,7 +34061,7 @@ def _make_line_loading_apng(feature):
 
 @app.route("/line-assets/loading/<feature>.png", methods=["GET"])
 def line_loading_asset(feature):
-    """LINE Flex 動畫圖片；公開 HTTPS URL，APNG <= 300KB 並由 LINE 播放。"""
+    """舊版 APNG 資產路由；V90 不再把它放進等待卡片。"""
     feature = str(feature or "").strip().lower()
     if feature not in _LINE_UX_CONFIG:
         abort(404)
@@ -34083,13 +34077,11 @@ def line_loading_asset(feature):
 def _line_loading_message(user_id, feature, base_url=None):
     cfg = _line_ux_config(feature)
     base = public_web_base_url(base_url)
-    image_url = f"{base}/line-assets/loading/{quote(str(feature), safe='')}.png"
     stages = cfg.get("stages") or ["準備資料", "分析中", "整理結果"]
+    # V90 不再使用圖片 Hero；等待期間由 LINE 原生 Loading 負責動態效果。
     contents = [
-        {"type": "image", "url": image_url, "size": "full", "aspectRatio": "2:1",
-         "aspectMode": "cover", "animated": True},
         {"type": "text", "text": f"{cfg['emoji']} {cfg['name']}正在分析",
-         "weight": "bold", "size": "xl", "color": "#18283A", "margin": "lg"},
+         "weight": "bold", "size": "xl", "color": "#18283A"},
         {"type": "text", "text": "資料正在背景整理，完成後會自動回傳結果。",
          "size": "sm", "color": "#687586", "wrap": True, "margin": "sm"},
     ]
@@ -34117,7 +34109,12 @@ def _line_async_normalize_result(result):
 
 def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
                       quick_reply_builder=None):
-    """先用 reply token 顯示漂亮動畫卡，再在背景完成後 push 正式結果。"""
+    """背景查詢 + LINE 原生 Loading。
+
+    不再送任何「動畫圖片卡片」：LINE 官方 Loading 本身才是可靠的動態等待
+    UI。只要在第一則 Bot 訊息送出前啟動，它就會持續顯示；分析完成後 Push
+    正式結果，LINE 會自動把 Loading 收掉。
+    """
     cfg = _line_ux_config(feature)
     if not _line_async_claim(user_id, feature):
         try:
@@ -34129,22 +34126,9 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
             print(f"⚠️ LINE 重複查詢回覆失敗 {user_id}: {exc}")
         return False
 
-    try:
-        line_bot_api.reply_message(reply_token, _line_loading_message(user_id, feature, base_url))
-    except Exception as exc:
-        _line_async_release(user_id)
-        print(f"❌ LINE 動畫卡回覆失敗 {user_id} {cfg['name']}: {exc}")
-        return False
-
-    # APNG 是否自動播放取決於使用者 LINE 的「GIF 自動播放」設定。
-    # 為了讓等待狀態不受這個設定影響，卡片送出後再啟動 LINE 官方
-    # Loading Animation；查詢完成、Bot 再送出結果時官方動畫會自動結束。
-    # 這樣即使 APNG 被 LINE 客戶端以靜態圖片呈現，使用者仍會看到
-    # 真正持續跳動的官方等待動畫。
-    try:
-        start_loading_animation(user_id, cfg.get("seconds", 30))
-    except Exception as exc:
-        print(f"⚠️ LINE 官方 Loading 啟動失敗 {user_id} {cfg['name']}: {exc}")
+    # 先啟動官方 Loading，再回 HTTP 200；這期間絕對不送 LINE 訊息，
+    # 否則 LINE 會立刻把 Loading 收掉。
+    start_loading_animation(user_id, cfg.get("seconds", 60))
 
     def worker():
         t0 = time.time()
@@ -34287,7 +34271,8 @@ def handle_message(event):
     if async_feature and async_builder:
         _line_async_query(user_id, async_feature, async_builder,
                           event.reply_token, line_base_url)
-        # 先用 reply token 送出真正的動畫卡；後續分析在背景執行，完成後只再 push 一次結果。
+        # 重型查詢不再回覆「動畫卡片」。官方 Loading 必須在第一則 Bot 訊息
+        # 送出前啟動，否則任何回覆都會讓 Loading 立即消失；完成後才 Push 正式結果。
         return
 
     # 非重型／管理流程維持原本同步回覆。
