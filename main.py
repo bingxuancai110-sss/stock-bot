@@ -16083,7 +16083,7 @@ def _build_line_radar_pending_message(user_id, base_url=None,
 
 def build_line_screener_message(user_id, mode, base_url=None,
                                 _completed_live_scan=False):
-    """LINE 黑馬／雷達只回前 3 檔；盤中雷達先立即回覆，完成後再推送結果。"""
+    """LINE 黑馬／雷達快速回傳前 5 檔；不使用 Loading，避免快速結果被等待畫面打斷。"""
     mode = "radar" if str(mode).strip() == "radar" else "blackhorse"
     label = "雷達" if mode == "radar" else "黑馬"
     icon = "🚨" if mode == "radar" else "🐎"
@@ -16177,7 +16177,7 @@ def build_line_screener_message(user_id, mode, base_url=None,
         source_text = "背景整理中"
         date_text = "尚無可用資料日"
     contents = [
-        {"type": "text", "text": f"{icon} {label}｜前 3 名",
+        {"type": "text", "text": f"{icon} {label}｜前 5 名",
          "weight": "bold", "size": "xl", "color": "#1B2027"},
         {"type": "text", "text": f"資料來源：{source_text}・資料日：{date_text}",
          "size": "xs", "color": "#767D85", "margin": "sm", "wrap": True},
@@ -16195,7 +16195,7 @@ def build_line_screener_message(user_id, mode, base_url=None,
         contents.append({"type": "text", "text": empty_text,
                          "size": "sm", "color": "#767D85", "margin": "lg", "wrap": True})
     else:
-        for rank, row in enumerate(rows[:3], 1):
+        for rank, row in enumerate(rows[:5], 1):
             name = str(row.get("name") or row.get("code") or "未命名")
             code = str(row.get("code") or "")
             if mode == "blackhorse":
@@ -16236,8 +16236,8 @@ def build_line_screener_message(user_id, mode, base_url=None,
         contents.append({"type": "text", "text": "網頁入口暫時無法建立，請稍後再試。",
                          "size": "xs", "color": "#767D85", "margin": "lg", "wrap": True})
 
-    alt_lines = [f"{icon} {label}｜前 3 名｜資料日 {date_text}"]
-    for rank, row in enumerate(rows[:3], 1):
+    alt_lines = [f"{icon} {label}｜前 5 名｜資料日 {date_text}"]
+    for rank, row in enumerate(rows[:5], 1):
         alt_lines.append(f"#{rank} {row.get('name') or row.get('code')}")
     plain_text = "\n".join(alt_lines)
     bubble = {
@@ -34029,9 +34029,9 @@ _LINE_UX_CONFIG = {
                      "accent": "#C26A2E", "stages": ["整理三大法人", "追蹤近十日方向", "找出籌碼轉折"]},
     "turning":     {"emoji": "🔄", "name": "轉折觀察", "seconds": 35,
                      "accent": "#5367B5", "stages": ["整理法人方向", "比對量價與趨勢", "確認轉折狀態"]},
-    "blackhorse":  {"emoji": "🐎", "name": "黑馬", "seconds": 60,
+    "blackhorse":  {"emoji": "🐎", "name": "黑馬", "seconds": 0,
                      "accent": "#765225", "stages": ["掃描候選股票", "計算五大因子", "重新排列黑馬排名"]},
-    "radar":       {"emoji": "🚨", "name": "雷達", "seconds": 60,
+    "radar":       {"emoji": "🚨", "name": "雷達", "seconds": 0,
                      "accent": "#C34848", "stages": ["掃描即時行情", "檢查量價與突破", "比對法人異常訊號"]},
     "positions_export": {"emoji": "📦", "name": "持股", "seconds": 30,
                           "accent": "#64748B", "stages": ["整理持股資料", "計算目前部位", "準備持股明細"]},
@@ -34104,43 +34104,88 @@ def _rect(px, x0, y0, x1, y1, rgba):
 
 
 def _make_line_loading_apng(feature):
-    """產生極簡、接近 LINE 原生等待感的 APNG；不預先顯示任何分析結果。"""
+    """產生真正的 APNG 雷達掃描動畫；LINE Flex 以 animated=true 播放。"""
     cfg = _line_ux_config(feature)
     accent_hex = cfg.get("accent", "#356B91").lstrip("#")
     try:
         ar, ag, ab = int(accent_hex[0:2], 16), int(accent_hex[2:4], 16), int(accent_hex[4:6], 16)
     except Exception:
         ar, ag, ab = 53, 107, 145
-    W, H, frames = 360, 150, 12
+
+    W, H, frames = 360, 150, 18
+    cx, cy, radius = 180, 75, 48
+    bg = (255, 255, 255, 255)
+    ring = (222, 229, 235, 255)
+    faint = (236, 240, 243, 255)
+
+    def draw_line(px, x0, y0, x1, y1, rgba, width=2):
+        dx = x1 - x0
+        dy = y1 - y0
+        steps = max(abs(dx), abs(dy), 1)
+        for n in range(steps + 1):
+            t = n / steps
+            x = int(round(x0 + dx * t))
+            y = int(round(y0 + dy * t))
+            _circle(px, 0, x, y, max(1, width // 2), rgba)
+
     out = [b"\x89PNG\r\n\x1a\n"]
     out.append(_png_chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0)))
-    out.append(_png_chunk(b"acTL", struct.pack(">II", frames, 0)))
-    bg = (255,255,255,255); line=(231,235,239,255); inactive=(188,197,206,210); centers=(142,180,218)
+    out.append(_png_chunk(b"acTL", struct.pack(">II", frames, 0)))  # 0 = infinite loop
+
     for i in range(frames):
-        pixels=[[bg for _ in range(W)] for _ in range(H)]
-        _rect(pixels,52,20,308,21,line)
-        _rect(pixels,110,128,250,129,(238,241,244,255))
-        for j,cx in enumerate(centers):
-            phase=(i-j*3)%frames
-            if phase in (0,1,2):
-                radius=5 if phase==1 else 4; alpha=245 if phase==1 else 165
-                col=(ar,ag,ab,alpha)
-            else:
-                radius=4; col=inactive
-            _circle(pixels,0,cx,75,radius,col)
-        phase=i/frames*math.pi*2
-        glow_alpha=int(18+10*(0.5+0.5*math.sin(phase)))
-        _circle(pixels,0,180,75,13,(ar,ag,ab,glow_alpha))
-        raw=bytearray()
+        pixels = [[bg for _ in range(W)] for _ in range(H)]
+
+        # subtle title-line / baseline, keeping the animation visually restrained
+        _rect(pixels, 58, 18, 302, 19, faint)
+        _rect(pixels, 120, 132, 240, 133, faint)
+
+        # radar rings
+        for rr in (16, 32, radius):
+            _circle(pixels, 0, cx, cy, rr, ring)
+            _circle(pixels, 0, cx, cy, max(1, rr - 2), bg)
+
+        # four cardinal ticks
+        for ang in (0, math.pi/2, math.pi, 3*math.pi/2):
+            tx = cx + int(math.cos(ang) * radius)
+            ty = cy + int(math.sin(ang) * radius)
+            draw_line(pixels, cx + int(math.cos(ang) * (radius-5)),
+                      cy + int(math.sin(ang) * (radius-5)), tx, ty, ring, 2)
+
+        # rotating sweep hand — this is the actual moving element
+        angle = (i / frames) * (2 * math.pi)
+        ex = cx + int(math.cos(angle) * radius)
+        ey = cy + int(math.sin(angle) * radius)
+        draw_line(pixels, cx, cy, ex, ey, (ar, ag, ab, 230), 5)
+
+        # fading trail behind the sweep
+        for back, alpha in ((1, 110), (2, 70), (3, 35)):
+            a = angle - back * (2 * math.pi / frames)
+            tx = cx + int(math.cos(a) * radius)
+            ty = cy + int(math.sin(a) * radius)
+            draw_line(pixels, cx, cy, tx, ty, (ar, ag, ab, alpha), 2)
+
+        # rotating target point
+        _circle(pixels, 0, ex, ey, 6, (ar, ag, ab, 75))
+        _circle(pixels, 0, ex, ey, 3, (ar, ag, ab, 235))
+        _circle(pixels, 0, cx, cy, 4, (ar, ag, ab, 235))
+
+        raw = bytearray()
         for row in pixels:
             raw.append(0)
-            for r,g,b,a in row: raw += bytes((r,g,b,a))
-        compressed=zlib.compress(bytes(raw),9)
-        fctl=struct.pack(">IIIIIHHBB",i,W,H,0,0,3,12,0,0)
-        out.append(_png_chunk(b"fcTL",fctl))
-        if i==0: out.append(_png_chunk(b"IDAT",compressed))
-        else: out.append(_png_chunk(b"fdAT",struct.pack(">I",i)+compressed))
-    out.append(_png_chunk(b"IEND",b""))
+            for r, g, b, a in row:
+                raw += bytes((r, g, b, a))
+        compressed = zlib.compress(bytes(raw), 9)
+
+        # 0.08s per frame, 18 frames = 1.44s per loop
+        fctl_seq = 0 if i == 0 else (2 * i - 1)
+        fctl = struct.pack(">IIIIIHHBB", fctl_seq, W, H, 0, 0, 2, 25, 0, 0)
+        out.append(_png_chunk(b"fcTL", fctl))
+        if i == 0:
+            out.append(_png_chunk(b"IDAT", compressed))
+        else:
+            out.append(_png_chunk(b"fdAT", struct.pack(">I", 2 * i) + compressed))
+
+    out.append(_png_chunk(b"IEND", b""))
     return b"".join(out)
 
 
@@ -34159,7 +34204,7 @@ def line_loading_asset(feature):
 
 
 def _line_loading_message(user_id, feature, base_url=None):
-    """自製等待卡：極簡三點 APNG + 功能名稱 + 不帶結果的分析階段。"""
+    """自製等待卡：真正的 APNG 雷達掃描動畫 + 功能名稱 + 不帶結果的分析階段。"""
     cfg=_line_ux_config(feature); base=public_web_base_url(base_url)
     asset_url=f"{base}/line-assets/loading/{quote(str(feature), safe='')}.png"
     stages=cfg.get("stages") or ["準備資料","分析中","整理結果"]
@@ -34184,97 +34229,99 @@ def _line_async_normalize_result(result):
 
 def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
                       quick_reply_builder=None, web_code=None):
-    """自製 LINE Loading 卡 + 官方三點 Loading + 背景分析。
+    """自訂 Loading：查詢超過短暫門檻才送出真正的 APNG Loading 卡。
 
-    順序固定：先回覆自製動畫卡，讓使用者看得到我們自己的動畫；
-    回覆成功後再啟動 LINE 官方原生三點 Loading，兩者可以同時存在。
-    完成後才 Push 正式結果，並由正式訊息自然收掉官方 Loading。
+    黑馬／雷達不會走到這裡；它們直接回覆 Top 5。
+    其他重型功能先在背景開始工作，約 0.7 秒仍未完成才使用 reply token
+    顯示我們自己的 APNG 雷達掃描動畫。APNG 會在 LINE Flex 中以
+    animated=true 無限循環；分析完成後再 push 最終結果。
     """
-    cfg=_line_ux_config(feature)
-    if not _line_async_claim(user_id,feature):
+    cfg = _line_ux_config(feature)
+    if not _line_async_claim(user_id, feature):
         try:
-            line_bot_api.reply_message(reply_token,TextSendMessage(
-                text=f"{cfg['emoji']} {cfg['name']}還在分析中，完成後會自動回傳。",
-                quick_reply=build_quick_reply()))
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(
+                    text=f"{cfg['emoji']} {cfg['name']}還在分析中，完成後會自動回傳。",
+                    quick_reply=build_quick_reply()))
         except Exception as exc:
             print(f"⚠️ LINE 重複查詢回覆失敗 {user_id}: {exc}")
         return False
 
-    # 先送我們自己的動畫卡；這是本次 UX 的主載入畫面。
-    try:
-        loading_card=_line_loading_message(user_id,feature,base_url)
-        try:
-            loading_card.quick_reply=(quick_reply_builder() if quick_reply_builder else build_quick_reply())
-        except Exception:
-            pass
-        line_bot_api.reply_message(reply_token,loading_card)
-    except Exception as exc:
-        print(f"❌ LINE 自製 Loading 卡送出失敗 {user_id} {cfg['name']}: {type(exc).__name__}: {exc}")
-        _line_async_release(user_id)
-        try:
-            line_bot_api.reply_message(reply_token,TextSendMessage(
-                text=f"{cfg['emoji']} {cfg['name']}已收到，正在背景整理資料。",
-                quick_reply=build_quick_reply()))
-        except Exception:
-            pass
-        return False
+    finished = threading.Event()
+    loading_started = threading.Event()
 
-    # 自製卡送出後，再啟動官方三點 Loading；不會把自製卡消掉。
-    loading_ok=start_loading_animation(user_id,cfg.get("seconds",60))
-    if not loading_ok:
-        print(f"❌ LINE Loading 最終啟動失敗：{user_id} / {cfg['name']}")
-
-    loading_stop=threading.Event()
-    def _loading_heartbeat():
-        while not loading_stop.wait(45):
-            start_loading_animation(user_id,60)
-    if loading_ok:
+    def _custom_loading_trigger():
+        if finished.wait(0.7):
+            return
+        if finished.is_set():
+            return
         try:
-            threading.Thread(target=_loading_heartbeat,name=f"line-loading-{feature}",daemon=True).start()
+            loading_card = _line_loading_message(user_id, feature, base_url)
+            line_bot_api.reply_message(reply_token, loading_card)
+            loading_started.set()
+            print(f"🎞️ 自訂 APNG Loading 已送出：{user_id} / {cfg['name']}")
         except Exception as exc:
-            print(f"⚠️ LINE Loading 心跳執行緒啟動失敗 {user_id}: {exc}")
+            print(f"❌ 自訂 APNG Loading 送出失敗 {user_id} / {cfg['name']}: {type(exc).__name__}: {exc}")
+
+    try:
+        threading.Thread(
+            target=_custom_loading_trigger,
+            name=f"line-custom-loading-delay-{feature}",
+            daemon=True).start()
+    except Exception as exc:
+        print(f"⚠️ 自訂 Loading 延遲執行緒啟動失敗 {user_id}: {exc}")
 
     def worker():
-        t0=time.time()
+        t0 = time.time()
         try:
-            result=build_fn()
-            outbound=_line_async_normalize_result(result)
-            # 所有完整分析入口都由這裡補上，避免各個 builder 自己拼錯網址。
-            if web_code and feature in {"quote","etf"}:
-                web_url=_line_feature_web_url(user_id,feature,base_url,code=web_code)
-                if web_url and isinstance(outbound,FlexSendMessage):
-                    body=outbound.contents
-                    if isinstance(body,dict):
-                        body.setdefault("body",{}).setdefault("contents",[])
+            result = build_fn()
+            outbound = _line_async_normalize_result(result)
+            if web_code and feature in {"quote", "etf"}:
+                web_url = _line_feature_web_url(user_id, feature, base_url, code=web_code)
+                if web_url and isinstance(outbound, FlexSendMessage):
+                    body = outbound.contents
+                    if isinstance(body, dict):
+                        body.setdefault("body", {}).setdefault("contents", [])
                         body["body"]["contents"] += [
-                            {"type":"separator","margin":"lg","color":"#E8EAE6"},
-                            {"type":"button","style":"primary","height":"sm","color":"#6E5228","margin":"md",
-                             "action":{"type":"uri","label":("查看完整個股分析" if feature=="quote" else "查看完整 ETF 分析"),"uri":web_url}}
+                            {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+                            {"type": "button", "style": "primary", "height": "sm",
+                             "color": "#6E5228", "margin": "md",
+                             "action": {"type": "uri",
+                                        "label": ("查看完整個股分析" if feature == "quote" else "查看完整 ETF 分析"),
+                                        "uri": web_url}}
                         ]
             try:
-                outbound.quick_reply=(quick_reply_builder() if quick_reply_builder else build_quick_reply())
+                outbound.quick_reply = (quick_reply_builder() if quick_reply_builder else build_quick_reply())
             except Exception:
                 pass
-            _push_line_with_retry(user_id,outbound)
-            print(f"✅ LINE 背景查詢完成 {user_id} {cfg['name']}（{time.time()-t0:.1f}s）")
+            _push_line_with_retry(user_id, outbound)
+            print(f"✅ LINE 背景查詢完成 {user_id} {cfg['name']}（{time.time()-t0:.1f}s，CustomLoading={'有' if loading_started.is_set() else '無'}）")
         except Exception as exc:
             print(f"❌ LINE 背景查詢失敗 {user_id} {cfg['name']}: {type(exc).__name__}: {exc}")
             try:
-                _push_line_with_retry(user_id,TextSendMessage(
-                    text=(f"{cfg['emoji']} 【{cfg['name']}】\n\n"
-                          "這次資料整理沒有完成，可能是外部資料源暫時延遲。\n"
-                          "請稍後再試一次；如果連續失敗，再告訴我。"),
-                    quick_reply=build_quick_reply()))
+                _push_line_with_retry(
+                    user_id,
+                    TextSendMessage(
+                        text=(f"{cfg['emoji']} 【{cfg['name']}】\n\n"
+                              "這次資料整理沒有完成，可能是外部資料源暫時延遲。\n"
+                              "請稍後再試一次；如果連續失敗，再告訴我。"),
+                        quick_reply=build_quick_reply()))
             except Exception as push_exc:
                 print(f"❌ LINE 背景查詢失敗通知也送不出去 {user_id}: {push_exc}")
         finally:
-            loading_stop.set(); _line_async_release(user_id)
+            finished.set()
+            _line_async_release(user_id)
 
     try:
-        threading.Thread(target=worker,name=f"line-query-{feature}",daemon=True).start()
+        threading.Thread(
+            target=worker,
+            name=f"line-query-{feature}",
+            daemon=True).start()
         return True
     except Exception as exc:
-        loading_stop.set(); _line_async_release(user_id)
+        finished.set()
+        _line_async_release(user_id)
         print(f"❌ LINE 背景查詢執行緒啟動失敗 {user_id}: {exc}")
         return False
 
@@ -34383,11 +34430,31 @@ def handle_message(event):
         async_feature = "positions_export"
         async_builder = lambda: build_holdings_text(user_id)
 
+    # 黑馬／雷達：結果本身很快，直接回前 5 檔，不顯示 Loading。
+    # 盤中雷達若遇到冷啟動，既有 builder 會自行處理背景刷新與後續 push。
+    if async_feature in {"blackhorse", "radar"} and async_builder:
+        try:
+            result = async_builder()
+            result = _line_async_normalize_result(result)
+            try:
+                result.quick_reply = build_quick_reply()
+            except Exception:
+                pass
+            line_bot_api.reply_message(event.reply_token, result)
+        except Exception as exc:
+            print(f"❌ LINE 快速篩選回覆失敗 {user_id} {async_feature}: {type(exc).__name__}: {exc}")
+            try:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="這次資料整理沒有完成，請稍後再試。", quick_reply=build_quick_reply()))
+            except Exception:
+                pass
+        return
+
     if async_feature and async_builder:
         _line_async_query(user_id, async_feature, async_builder,
                           event.reply_token, line_base_url, web_code=(pure_code if async_feature in {"quote","etf"} else None))
-        # 重型查詢不再回覆「動畫卡片」。官方 Loading 必須在第一則 Bot 訊息
-        # 送出前啟動，否則任何回覆都會讓 Loading 立即消失；完成後才 Push 正式結果。
+        # 其他重型查詢只有超過約 0.7 秒才啟動 LINE 官方 Loading。
         return
 
     # 非重型／管理流程維持原本同步回覆。
