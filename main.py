@@ -34102,244 +34102,181 @@ def _rect(px, x0, y0, x1, y1, rgba):
 
 
 
-def _make_line_loading_apng(feature):
-    """V97 premium LINE Loading：每個慢功能使用不同的產品化動態語言。
-
-    設計原則：少元素、慢節奏、細微位移；不再使用共用雷達圈。
-    黑馬／雷達不進入這個動畫，因為它們是快速功能。
-    """
+def _make_line_stage_dot_apng(feature, stage_index):
+    """小型進度點：三個點以錯開相位呼吸，避免永遠像靜態 ●○○。"""
     cfg = _line_ux_config(feature)
-    accent_hex = cfg.get("accent", "#356B91").lstrip("#")
+    hx = cfg.get("accent", "#356B91").lstrip("#")
     try:
-        ar, ag, ab = int(accent_hex[0:2], 16), int(accent_hex[2:4], 16), int(accent_hex[4:6], 16)
+        ar, ag, ab = int(hx[0:2],16), int(hx[2:4],16), int(hx[4:6],16)
     except Exception:
-        ar, ag, ab = 53, 107, 145
-
-    W, H, frames = 360, 150, 30
-    bg = (248, 250, 252, 255)
-    ink = (39, 52, 68, 210)
-    soft = (204, 213, 223, 210)
-    softer = (231, 235, 240, 255)
-    accent = (ar, ag, ab, 235)
-
-    def blend(c, alpha):
-        return (c[0], c[1], c[2], max(0, min(255, int(alpha))))
-
-    def draw_line(px, x0, y0, x1, y1, rgba, width=2):
-        dx, dy = x1-x0, y1-y0
-        steps = max(abs(dx), abs(dy), 1)
-        for n in range(steps+1):
-            t = n / steps
-            x = int(round(x0 + dx*t)); y = int(round(y0 + dy*t))
-            _circle(px, 0, x, y, max(1, width//2), rgba)
-
-    def polyline(px, pts, rgba, width=2):
-        for a, b in zip(pts, pts[1:]):
-            draw_line(px, a[0], a[1], b[0], b[1], rgba, width)
-
-    def rect_outline(px, x0, y0, x1, y1, rgba, width=2):
-        draw_line(px, x0, y0, x1, y0, rgba, width)
-        draw_line(px, x1, y0, x1, y1, rgba, width)
-        draw_line(px, x1, y1, x0, y1, rgba, width)
-        draw_line(px, x0, y1, x0, y0, rgba, width)
-
-    def rounded_card(px, x0, y0, x1, y1, border, fill=None):
-        # 小型圓角卡片；避免過度幾何化的「工程圖」感。
-        if fill:
-            _rect(px, x0+5, y0, x1-5, y1, fill)
-            _rect(px, x0, y0+5, x1, y1-5, fill)
-            for cx, cy in ((x0+5,y0+5),(x1-5,y0+5),(x0+5,y1-5),(x1-5,y1-5)):
-                _circle(px, 0, cx, cy, 5, fill)
-        rect_outline(px, x0+3, y0, x1-3, y1, border, 2)
-        rect_outline(px, x0, y0+3, x1, y1-3, border, 2)
-
-    def arrow(px, x, y, direction, rgba, size=8, width=2):
-        if direction > 0:
-            draw_line(px, x-size, y+size//2, x, y, rgba, width)
-            draw_line(px, x, y, x-size, y-size//2, rgba, width)
-        else:
-            draw_line(px, x+size, y+size//2, x, y, rgba, width)
-            draw_line(px, x, y, x+size, y-size//2, rgba, width)
-
-    def draw_feature(px, i):
-        import math as _m
-        t = i / (frames - 1)
-        phase = t * 2 * _m.pi
-        breathe = 0.5 + 0.5 * _m.sin(phase)
-
-        # 統一的底部基線，讓不同功能看起來屬於同一套產品。
-        _rect(px, 70, 125, 290, 126, softer)
-
-        if feature == "quote":
-            # 個股：資料卡 + 價格線游標。游標走一圈後回到起點，節奏慢而乾淨。
-            rounded_card(px, 82, 34, 278, 115, softer, (255,255,255,255))
-            _rect(px, 99, 51, 145, 54, blend(accent, 170))
-            for y, w in [(68,52),(77,83),(86,66)]:
-                _rect(px, 99, y, 99+w, y+2, soft)
-            pts=[(166,96),(184,86),(199,91),(217,72),(235,80),(252,61),(266,67)]
-            polyline(px, pts, soft, 2)
-            polyline(px, pts, accent, 3)
-            x0,y0=pts[0]; x1,y1=pts[-1]
-            x=x0+(x1-x0)*t
-            # 線性插值到折線上的游標
-            seg=min(len(pts)-2, int(t*(len(pts)-1)))
-            local=t*(len(pts)-1)-seg
-            x=int(pts[seg][0]+(pts[seg+1][0]-pts[seg][0])*local)
-            y=int(pts[seg][1]+(pts[seg+1][1]-pts[seg][1])*local)
-            _circle(px,0,x,y,8,blend(accent,45+int(30*breathe)))
-            _circle(px,0,x,y,3,accent)
-
-        elif feature == "positions":
-            # 自選健檢：三張小卡逐一亮起，代表逐檔檢查，而不是單純轉圈。
-            cards=[(84,46,136,103),(154,46,206,103),(224,46,276,103)]
-            active=int(t*3.0) % 3
-            for k,(x0,y0,x1,y1) in enumerate(cards):
-                border=accent if k==active else soft
-                fill=blend(accent,18) if k==active else (255,255,255,255)
-                rounded_card(px,x0,y0,x1,y1,border,fill)
-                _rect(px,x0+11,y0+12,x0+29,y0+15,blend(accent,90 if k==active else 55))
-                _rect(px,x0+11,y0+23,x1-10,y0+25,soft)
-                _rect(px,x0+11,y0+32,x1-18,y0+34,soft)
-                if k < active or k == active and breathe > .55:
-                    draw_line(px,x0+12,y0+45,x0+19,y0+51,accent,2)
-                    draw_line(px,x0+19,y0+51,x0+31,y0+39,accent,2)
-
-        elif feature == "news":
-            # 新聞：兩層新聞卡片輕微錯位，前卡標題由左向右掃過。
-            rounded_card(px, 101, 34, 259, 114, soft, (255,255,255,255))
-            rounded_card(px, 92, 41, 250, 121, softer, None)
-            _rect(px,110,53,160,57,blend(accent,220))
-            for k,w in enumerate((92,112,72,101)):
-                y=67+k*10
-                start=110+int((1-breathe)*5)
-                _rect(px,start,y,start+w,y+2,soft)
-            scan_x=110+int(t*125)
-            _rect(px,scan_x,51,scan_x+4,106,blend(accent,38+int(35*breathe)))
-            _circle(px,0,scan_x+2,55,3,accent)
-
-        elif feature == "premarket":
-            # 盤前：日出不是大太陽，而是極簡 horizon + 市場線逐步亮起。
-            horizon=99
-            _rect(px,91,horizon,269,horizon+2,soft)
-            sun_y=94-int(18*breathe)
-            _circle(px,0,180,sun_y,17,blend(accent,190))
-            for k in range(7):
-                a=_m.pi + (k/6)*_m.pi
-                r1=24; r2=31+int(3*breathe)
-                draw_line(px,180+int(_m.cos(a)*r1),sun_y+int(_m.sin(a)*r1),
-                          180+int(_m.cos(a)*r2),sun_y+int(_m.sin(a)*r2),blend(accent,80),2)
-            pts=[(95,113),(125,106),(151,109),(179,96),(204,101),(230,87),(265,92)]
-            n=min(len(pts)-1, 2+int(t*(len(pts)-2)))
-            polyline(px,pts,softer,2)
-            polyline(px,pts[:n+1],accent,3)
-            ex,ey=pts[n]
-            _circle(px,0,ex,ey,7,blend(accent,45))
-            _circle(px,0,ex,ey,3,accent)
-
-        elif feature == "debrief":
-            # 盤後：K線收斂到一條收盤線，最後一點有微弱呼吸。
-            xs=[100,125,150,175,200,225,250,275]
-            highs=[68,61,75,58,65,51,62,48]
-            lows =[103,96,108,94,99,83,92,76]
-            closes=[91,72,96,67,84,58,78,55]
-            for k,x in enumerate(xs):
-                _rect(px,x-2,highs[k],x+2,lows[k],soft)
-                _rect(px,x-7,min(closes[k],91),x+7,max(closes[k],91),soft)
-            n=int(t*(len(xs)-1))
-            for k in range(n+1):
-                x=xs[k]
-                _rect(px,x-2,highs[k],x+2,lows[k],accent)
-                _rect(px,x-7,min(closes[k],91),x+7,max(closes[k],91),accent)
-            x=xs[n]; y=closes[n]
-            _circle(px,0,x,y,9,blend(accent,40+int(25*breathe)))
-            _circle(px,0,x,y,3,accent)
-
-        elif feature == "chips":
-            # 籌碼超人：三股資金流向中央，不用柱狀圖堆滿畫面。
-            cx,cy=180,78
-            nodes=[(105,55),(105,101),(255,78)]
-            for nx,ny in nodes:
-                _circle(px,0,nx,ny,12,soft)
-                _circle(px,0,nx,ny,5,blend(accent,120))
-            # 三條線的亮點輪流往中央／右側匯聚。
-            for k,(nx,ny) in enumerate(nodes):
-                draw_line(px,nx+12 if nx<cx else nx-12,ny,cx-14 if nx<cx else cx+14,cy,soft,2)
-                phase=(t*2.0+k/3.0)%1.0
-                if nx<cx:
-                    pxp=int(nx+12+(cx-14-(nx+12))*phase)
-                else:
-                    pxp=int(cx+14+(nx-12-(cx+14))*phase)
-                pyp=int(ny+(cy-ny)*phase)
-                _circle(px,0,pxp,pyp,5,blend(accent,70))
-                _circle(px,0,pxp,pyp,2,accent)
-            _circle(px,0,cx,cy,19,blend(accent,30+int(25*breathe)))
-            _circle(px,0,cx,cy,10,accent)
-
-        elif feature == "turning":
-            # 轉折：兩條趨勢線交會，交點亮起後重新開始。
-            pts1=[(90,101),(120,94),(150,88),(180,80),(210,68),(244,58),(270,51)]
-            pts2=[(90,54),(120,62),(150,70),(180,80),(210,88),(244,96),(270,103)]
-            polyline(px,pts1,soft,2); polyline(px,pts2,soft,2)
-            cross=(180,80)
-            p=min(1.0, max(0.0, t*1.35))
-            # 兩條線逐步恢復 accent
-            n=max(2,int(2+p*(len(pts1)-2)))
-            polyline(px,pts1[:n],accent,3); polyline(px,pts2[:n],accent,3)
-            r=6+int(5*breathe)
-            _circle(px,0,cross[0],cross[1],r,blend(accent,45))
-            _circle(px,0,cross[0],cross[1],3,accent)
-
-        elif feature == "etf":
-            # ETF：基金卡片水平滑入，最後由一條掃描線確認。
-            for k,(x0,y0,w,h) in enumerate([(91,58,70,49),(145,45,70,62),(199,58,70,49)]):
-                shift=int(6*_m.sin(phase+k*0.8))
-                rounded_card(px,x0+shift,y0,x0+w+shift,y0+h,soft,(255,255,255,255))
-                _rect(px,x0+13+shift,y0+13,x0+45+shift,y0+16,blend(accent,110))
-                _rect(px,x0+13+shift,y0+25,x0+w-12+shift,y0+27,soft)
-            sx=92+int(176*t)
-            _rect(px,sx,43,sx+3,114,blend(accent,55+int(30*breathe)))
-            _circle(px,0,sx+1,44,3,accent)
-
-        elif feature == "positions_export":
-            # 持股：文件由下往上浮現，下載箭頭只做一次小幅呼吸。
-            shift=4-int(8*breathe)
-            rounded_card(px,125,37+shift,235,114+shift,soft,(255,255,255,255))
-            _rect(px,142,52+shift,208,55+shift,blend(accent,150))
-            for k,w in enumerate((67,51,72)):
-                y=67+k*11+shift
-                _rect(px,142,y,142+w,y+2,soft)
-            # 向下箭頭
-            draw_line(px,180,78+shift,180,101+shift,accent,2)
-            arrow(px,180,104+shift,1,accent,7,2)
-
-        else:
-            # fallback：細進度線，不再使用雷達圈。
-            _rect(px,91,82,269,84,soft)
-            x=91+int(178*t)
-            _rect(px,91,82,x,84,accent)
-            _circle(px,0,x,83,4,accent)
-
-    out=[b"\x89PNG\r\n\x1a\n"]
-    out.append(_png_chunk(b"IHDR",struct.pack(">IIBBBBB",W,H,8,6,0,0,0)))
-    out.append(_png_chunk(b"acTL",struct.pack(">II",frames,0)))
+        ar, ag, ab = 53,107,145
+    W=H=30; frames=24
+    out=[b"\x89PNG\r\n\x1a\n", _png_chunk(b"IHDR",struct.pack(">IIBBBBB",W,H,8,6,0,0,0)), _png_chunk(b"acTL",struct.pack(">II",frames,0))]
     for i in range(frames):
-        pixels=[[bg for _ in range(W)] for _ in range(H)]
-        draw_feature(pixels,i)
+        px=[[(255,255,255,0) for _ in range(W)] for _ in range(H)]
+        # 每個點都有自己的相位；視覺上形成 1→2→3 的連續呼吸。
+        phase=((i + int(stage_index)*8) % frames) / frames
+        pulse=0.5+0.5*math.sin(2*math.pi*phase)
+        radius=4+int(round(1.5*pulse))
+        alpha=145+int(100*pulse)
+        _circle(px,0,15,15,radius,(ar,ag,ab,alpha))
         raw=bytearray()
-        for row in pixels:
+        for row in px:
             raw.append(0)
-            for r,g,b,a in row:
-                raw += bytes((r,g,b,a))
-        compressed=zlib.compress(bytes(raw),9)
-        fctl_seq=0 if i==0 else 2*i-1
-        fctl=struct.pack(">IIIIIHHBB",fctl_seq,W,H,0,0,2,10,0,0)
-        out.append(_png_chunk(b"fcTL",fctl))
-        if i==0:
-            out.append(_png_chunk(b"IDAT",compressed))
-        else:
-            out.append(_png_chunk(b"fdAT",struct.pack(">I",2*i)+compressed))
+            for r,g,b,a in row: raw += bytes((r,g,b,a))
+        comp=zlib.compress(bytes(raw),9)
+        seq=0 if i==0 else 2*i-1
+        out.append(_png_chunk(b"fcTL",struct.pack(">IIIIIHHBB",seq,W,H,0,0,2,10,0,0)))
+        out.append(_png_chunk(b"IDAT",comp) if i==0 else _png_chunk(b"fdAT",struct.pack(">I",2*i)+comp))
     out.append(_png_chunk(b"IEND",b""))
     return b"".join(out)
+
+def _make_line_loading_apng(feature):
+    """V99：重新設計的產品級 Loading。
+
+    核心：不是「畫一個圖示讓它轉」，而是讓資料本身產生動畫。
+    每個功能使用不同的動作語言；黑馬／雷達不使用 Loading。
+    """
+    cfg=_line_ux_config(feature)
+    hx=cfg.get("accent","#356B91").lstrip("#")
+    try: ar,ag,ab=int(hx[0:2],16),int(hx[2:4],16),int(hx[4:6],16)
+    except Exception: ar,ag,ab=53,107,145
+    W,H,frames=360,150,36
+    bg=(249,250,252,255); ink=(39,52,68,225); line=(214,220,228,220)
+    accent=(ar,ag,ab,245); faint=(ar,ag,ab,55)
+    def blend(c,a): return (c[0],c[1],c[2],max(0,min(255,int(a))))
+    def seg(px,a,b,c,w=2):
+        x0,y0=a; x1,y1=b; n=max(abs(x1-x0),abs(y1-y0),1)
+        for k in range(n+1):
+            q=k/n; _circle(px,0,int(x0+(x1-x0)*q),int(y0+(y1-y0)*q),max(1,w//2),c)
+    def poly(px,pts,c,w=2):
+        for a,b in zip(pts,pts[1:]): seg(px,a,b,c,w)
+    def card(px,x0,y0,x1,y1,c=(220,226,233,220),fill=(255,255,255,255)):
+        _rect(px,x0+5,y0,x1-5,y1,fill); _rect(px,x0,y0+5,x1,y1-5,fill)
+        for x,y in ((x0+5,y0+5),(x1-5,y0+5),(x0+5,y1-5),(x1-5,y1-5)): _circle(px,0,x,y,5,fill)
+        seg(px,(x0+5,y0),(x1-5,y0),c,2); seg(px,(x1,y0+5),(x1,y1-5),c,2); seg(px,(x1-5,y1),(x0+5,y1),c,2); seg(px,(x0,y1-5),(x0,y0+5),c,2)
+    def dot(px,x,y,r,c): _circle(px,0,x,y,r,c)
+    def draw(px,i):
+        import math as m
+        t=i/(frames-1); phase=t*2*m.pi; pulse=.5+.5*m.sin(phase)
+        # 很淡的基準，不再有厚重灰底。
+        _rect(px,72,126,288,127,(235,239,243,180))
+        if feature=="quote":
+            # 個股：K線逐根生成 + 最新價格脈衝
+            xs=[92,116,140,164,188,212,236,260,284]; highs=[98,82,92,70,79,58,68,48,60]; lows=[116,108,113,94,103,76,88,67,78]; closes=[108,91,101,78,88,66,76,57,70]
+            n=max(1,min(len(xs),2+int(t*(len(xs)-1))))
+            for k in range(n):
+                c=accent if k==n-1 else (ar,ag,ab,115)
+                seg(px,(xs[k],highs[k]),(xs[k],lows[k]),c,2)
+                _rect(px,xs[k]-5,min(closes[k],(highs[k]+lows[k])//2),xs[k]+5,max(closes[k],(highs[k]+lows[k])//2),c)
+            x=xs[n-1]; y=closes[n-1]; dot(px,x,y,10,blend(accent,45+30*pulse)); dot(px,x,y,3,accent)
+        elif feature=="premarket":
+            # 盤前：全球資料節點依序醒來，最後匯成台股走勢。
+            pts=[(96,78),(180,52),(264,78)]; labels=["US","MACRO","TW"]
+            for k,(x,y) in enumerate(pts):
+                local=(i-k*8)%frames; p=.5+.5*m.sin(2*m.pi*local/frames)
+                dot(px,x,y,13,(235,239,243,230)); dot(px,x,y,7,blend(accent,80+130*p))
+                if k>0: seg(px,pts[k-1],(x-13,y),line,2)
+            market=[(90,108),(120,101),(150,105),(180,88),(210,94),(240,76),(270,82)]
+            n=max(1,min(len(market),2+int(t*(len(market)-1))))
+            poly(px,market[:n],accent,3); dot(px,*market[n-1],3,accent)
+        elif feature=="debrief":
+            # 盤後：四個資料模組依序收斂到今日結論。
+            nodes=[(98,56),(98,100),(262,56),(262,100)]; center=(180,78)
+            for k,(x,y) in enumerate(nodes):
+                active=((i-k*7)%frames)/frames
+                a=70+int(150*(.5+.5*m.sin(2*m.pi*active)))
+                dot(px,x,y,10,(ar,ag,ab,a)); seg(px,(x+(13 if x<180 else -13),y),center,line,2)
+            dot(px,180,78,20,blend(accent,30+30*pulse)); dot(px,180,78,8,accent)
+            ring=22+int(4*pulse); dot(px,180,78,ring,blend(accent,35))
+        elif feature=="chips":
+            # 籌碼：外資／投信／自營三股資金流真正匯入核心。
+            sources=[(92,54),(92,78),(92,102)]; c=(190,78)
+            for k,(sx,sy) in enumerate(sources):
+                seg(px,(sx,sy),(c[0]-18,c[1]),line,2)
+                q=((i-k*8)%frames)/frames; x=int(sx+(c[0]-18-sx)*q); y=int(sy+(c[1]-sy)*q)
+                dot(px,x,y,5,blend(accent,90)); dot(px,x,y,2,accent)
+            dot(px,*c,18,blend(accent,35+25*pulse)); dot(px,*c,9,accent)
+        elif feature=="news":
+            # 新聞：文章不是滑一條掃描線，而是由多篇逐漸濃縮成一張摘要卡。
+            for k,y in enumerate((45,69,93)):
+                q=max(0,min(1,(t*3-k)*1.2)); x=76+int(62*q)
+                card(px,x,y,x+170,y+19,blend(accent,80 if k else 150),(255,255,255,255))
+                _rect(px,x+12,y+6,x+52,y+9,blend(accent,170 if q>0.7 else 80)); _rect(px,x+61,y+7,x+150,y+9,line)
+            # 最後一張摘要卡呼吸
+            q=max(0,min(1,(t-.58)/.35)); w=int(80*q)
+            card(px,140,53,220,97,blend(accent,120),(255,255,255,255)); _rect(px,153,67,153+w,71,accent); _rect(px,153,79,205,82,line)
+        elif feature=="positions":
+            # 健檢：五因子依序打勾，掃描游標由左至右。
+            labels=["REV","VAL","IND","FLOW","TECH"]
+            for k,x in enumerate((82,126,170,214,258)):
+                active=(i//5)%5
+                c=accent if k==active else line
+                dot(px,x,72,13,blend(c,65 if k!=active else 220));
+                if k<active or (k==active and i%5>=3):
+                    seg(px,(x-5,72),(x-1,77),accent,2); seg(px,(x-1,77),(x+6,66),accent,2)
+                _rect(px,x-14,96,x+14,98,blend(accent,110 if k==active else 45))
+        elif feature=="turning":
+            # 轉折：兩條趨勢線交會，交點脈衝。
+            a=[(86,105),(120,98),(150,90),(180,78),(210,66),(242,58),(274,51)]
+            b=[(86,54),(120,62),(150,70),(180,78),(210,88),(242,96),(274,103)]
+            poly(px,a,line,2); poly(px,b,line,2); poly(px,a[:max(2,2+int(t*5))],accent,3); poly(px,b[:max(2,2+int(t*5))],accent,3)
+            dot(px,180,78,10,blend(accent,40+35*pulse)); dot(px,180,78,3,accent)
+        elif feature=="etf":
+            # ETF：三張基金資訊卡從後往前聚焦到中間。
+            for k,(x,y) in enumerate(((86,57),(145,45),(204,57))):
+                q=.5+.5*m.sin(phase+k*2.1); shift=int(5*q)
+                card(px,x+shift,y,x+54+shift,y+42,blend(accent,90 if k!=1 else 180),(255,255,255,255))
+                _rect(px,x+12+shift,y+12,x+34+shift,y+15,blend(accent,180 if k==1 else 90)); _rect(px,x+12+shift,y+23,x+43+shift,y+25,line)
+            dot(px,172,107,3,accent)
+        elif feature=="positions_export":
+            # 持股：一頁組合報告由底部浮起，內容逐行生成。
+            q=(.5+.5*m.sin(phase)); y=int(37+5*(1-q)); card(px,122,y,238,y+78,blend(accent,130),(255,255,255,255))
+            _rect(px,140,y+16,192,y+19,blend(accent,180))
+            for k,w in enumerate((72,52,66,44)): _rect(px,140,y+29+k*9,140+w,y+31+k*9,line)
+        else:
+            _rect(px,90,83,270,85,line); x=90+int(180*t); _rect(px,90,83,x,85,accent); dot(px,x,84,4,accent)
+    out=[b"\x89PNG\r\n\x1a\n",_png_chunk(b"IHDR",struct.pack(">IIBBBBB",W,H,8,6,0,0,0)),_png_chunk(b"acTL",struct.pack(">II",frames,0))]
+    for i in range(frames):
+        px=[[(255,255,255,255) for _ in range(W)] for _ in range(H)]; draw(px,i)
+        raw=bytearray()
+        for row in px:
+            raw.append(0)
+            for r,g,b,a in row: raw+=bytes((r,g,b,a))
+        comp=zlib.compress(bytes(raw),9); seq=0 if i==0 else 2*i-1
+        out.append(_png_chunk(b"fcTL",struct.pack(">IIIIIHHBB",seq,W,H,0,0,2,10,0,0)))
+        out.append(_png_chunk(b"IDAT",comp) if i==0 else _png_chunk(b"fdAT",struct.pack(">I",2*i)+comp))
+    out.append(_png_chunk(b"IEND",b"")); return b"".join(out)
+
+@app.route("/line-assets/loading-v99/<feature>/stage-<int:stage_index>.png", methods=["GET"])
+def line_stage_dot_asset(feature, stage_index):
+    """LINE 階段進度點：每一個點本身都是 APNG，依序呼吸而非永遠停在第一點。"""
+    feature = str(feature or "").strip().lower()
+    if feature not in _LINE_UX_CONFIG or stage_index not in (0, 1, 2):
+        abort(404)
+    key = f"stage:{feature}:{stage_index}"
+    with _LINE_LOADING_IMAGE_LOCK:
+        data = _LINE_LOADING_IMAGE_CACHE.get(key)
+        if data is None:
+            data = _make_line_stage_dot_apng(feature, stage_index)
+            _LINE_LOADING_IMAGE_CACHE[key] = data
+    return app.response_class(data, mimetype="image/png", headers={"Cache-Control":"no-cache, no-store, must-revalidate", "Pragma":"no-cache", "Expires":"0"})
+
+
+@app.route("/line-assets/loading-v99/<feature>.png", methods=["GET"])
+def line_loading_asset_v98(feature):
+    """V99 主動畫資產；版本化 URL 避免 LINE 快取舊版。"""
+    feature = str(feature or "").strip().lower()
+    if feature not in _LINE_UX_CONFIG:
+        abort(404)
+    with _LINE_LOADING_IMAGE_LOCK:
+        data = _LINE_LOADING_IMAGE_CACHE.get(f"main:{feature}")
+        if data is None:
+            data = _make_line_loading_apng(feature)
+            _LINE_LOADING_IMAGE_CACHE[f"main:{feature}"] = data
+    return app.response_class(data, mimetype="image/png", headers={"Cache-Control":"no-cache, no-store, must-revalidate", "Pragma":"no-cache", "Expires":"0"})
+
+
 @app.route("/line-assets/loading-v97/<feature>.png", methods=["GET"])
 def line_loading_asset(feature):
     """LINE 自製載入動畫資產；V97 使用版本化 URL，避免舊版圖片快取。"""
@@ -34357,15 +34294,28 @@ def line_loading_asset(feature):
 def _line_loading_message(user_id, feature, base_url=None):
     """自製等待卡：真正的功能專屬 APNG 動畫 + 功能名稱 + 不帶結果的分析階段。"""
     cfg=_line_ux_config(feature); base=public_web_base_url(base_url)
-    asset_url=f"{base}/line-assets/loading-v97/{quote(str(feature), safe='')}.png"
+    asset_url=f"{base}/line-assets/loading-v99/{quote(str(feature), safe='')}.png"
     stages=cfg.get("stages") or ["準備資料","分析中","整理結果"]
+    # LINE Flex 的文字本身不能做逐幀動畫；因此不要再假裝第一個「●」會自己跳。
+    # 改成：把三階段進度點直接畫進 APNG，讓活動點真的會 1→2→3 循環。
     contents=[
         {"type":"text","text":f"{cfg['emoji']} {cfg['name']}正在分析","weight":"bold","size":"xl","color":"#18283A"},
         {"type":"text","text":"資料正在背景整理，完成後會自動回傳結果。","size":"sm","color":"#687586","wrap":True,"margin":"sm"},
         {"type":"image","url":asset_url,"animated":True,"size":"full","aspectMode":"fit","aspectRatio":"12:5","margin":"md"},
     ]
+    # 階段文字固定，動畫點改由上方 APNG 控制，避免畫面永遠卡在第一階段。
     for idx,stage in enumerate(stages):
-        contents.append({"type":"text","text":("● " if idx==0 else "○ ")+str(stage),"size":"sm","color":cfg["accent"] if idx==0 else "#A0A8B2","weight":"bold" if idx==0 else "regular","margin":"md" if idx==0 else "xs"})
+        dot_url = f"{base}/line-assets/loading-v99/{quote(str(feature), safe='')}/stage-{idx}.png"
+        contents.append({
+            "type": "box", "layout": "horizontal", "alignItems": "center",
+            "margin": "md" if idx == 0 else "xs", "spacing": "xs",
+            "contents": [
+                {"type": "image", "url": dot_url, "animated": True, "size": "18px",
+                 "aspectMode": "fit", "flex": 0},
+                {"type": "text", "text": str(stage), "size": "sm",
+                 "color": "#454C55", "weight": "regular", "flex": 1}
+            ]
+        })
     contents.append({"type":"text","text":"不用重複輸入，完成後我會自己回來。","size":"xs","color":"#9AA3AC","margin":"lg"})
     return FlexSendMessage(alt_text=f"{cfg['emoji']} {cfg['name']}分析中",contents={"type":"bubble","body":{"type":"box","layout":"vertical","contents":contents,"paddingAll":"18px","backgroundColor":"#FFFFFF"},"styles":{"body":{"backgroundColor":"#FFFFFF"}}})
 
@@ -34402,26 +34352,18 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
     finished = threading.Event()
     loading_started = threading.Event()
 
-    def _custom_loading_trigger():
-        if finished.wait(0.7):
-            return
-        if finished.is_set():
-            return
-        try:
-            loading_card = _line_loading_message(user_id, feature, base_url)
-            line_bot_api.reply_message(reply_token, loading_card)
-            loading_started.set()
-            print(f"🎞️ 自訂 APNG Loading 已送出：{user_id} / {cfg['name']}")
-        except Exception as exc:
-            print(f"❌ 自訂 APNG Loading 送出失敗 {user_id} / {cfg['name']}: {type(exc).__name__}: {exc}")
-
+    # 先回覆 Loading，再啟動真正的資料分析。
+    # V97 的問題是「分析 worker 與 Loading thread 同時搶 CPU」；
+    # 盤前／盤後這種重工作業會讓 Loading 卡在 10 秒以上才出現。
+    # V99 改成明確的先後順序：LINE Loading 回覆完成 → 才開始 build_fn。
     try:
-        threading.Thread(
-            target=_custom_loading_trigger,
-            name=f"line-custom-loading-delay-{feature}",
-            daemon=True).start()
+        loading_card = _line_loading_message(user_id, feature, base_url)
+        line_bot_api.reply_message(reply_token, loading_card)
+        loading_started.set()
+        print(f"🎞️ 自訂 APNG Loading 已立即送出：{user_id} / {cfg['name']}")
     except Exception as exc:
-        print(f"⚠️ 自訂 Loading 延遲執行緒啟動失敗 {user_id}: {exc}")
+        print(f"❌ 自訂 APNG Loading 送出失敗 {user_id} / {cfg['name']}: {type(exc).__name__}: {exc}")
+        # Loading 回覆失敗時仍然繼續背景工作，避免功能整個中斷。
 
     def worker():
         t0 = time.time()
