@@ -17924,6 +17924,7 @@ def build_quick_reply():
         ("📂 自選", "自選"),
         ("📊 解盤", "解盤"),
         ("📰 新聞", "新聞"),
+        ("📅 大行事曆", "大行事曆"),
         ("⚙️ 設定", "設定"),
         ("🧪 測試", "測試通知"),
         ("🌐 網頁", "網頁"),
@@ -17984,6 +17985,9 @@ def build_menu_flex(is_admin_user=False):
             ("黑馬", "營收成長＋估值＋產業動能"),
             ("雷達", "帶量突破、法人買超強勢股"),
             ("籌碼超人", "投信、外資各自在認養與撤退的標的"),
+        ]),
+        ("行事曆", "#3E6B5A", "#E8F2ED", [
+            ("大行事曆", "本月台股＋美國重要總經與 FOMC"),
         ]),
         ("通知設定", "#7A8290", "#EDEFF1", [
             ("設定", "通知開關、冷卻與靜音時段"),
@@ -20387,7 +20391,7 @@ def web_admin(uid):
     if not is_admin(uid): return make_response('Forbidden',403)
     d=_admin_dashboard_data(); state=_maintenance_state(); status='🟢 正常' if not state.get('active') else '🟠 維護中'
     cards=f'''<div class="admin-grid"><div class="admin-stat"><b>{d['users']}</b><small>使用者</small></div><div class="admin-stat"><b>{d['active_today']}</b><small>今日活躍</small></div><div class="admin-stat"><b>{d['trades']}</b><small>正式賣出</small></div><div class="admin-stat"><b>{d['activity_today']}</b><small>今日操作</small></div></div>'''
-    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股日曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>容量、RAM、可清理歷史資料</small></a></div></div></div>'''
+    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股行事曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/international-calendar">🌎 國際行事曆<br><small>CPI、非農、PCE、GDP、FOMC</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>容量、RAM、可清理歷史資料</small></a></div></div></div>'''
     return render_page('管理員後台',body,'more')
 
 @app.route('/web/admin/data-cleanup', methods=['GET','POST'])
@@ -20471,6 +20475,94 @@ def web_admin_system(uid):
     return render_page('資料更新中心',body,'more')
 
 # =========================
+# =========================
+# 國際經濟行事曆＋LINE 大行事曆
+# =========================
+_INTERNATIONAL_EVENTS_2026 = [
+    *[dict(date=d, title='美國 非農就業／失業率', category='🇺🇸 非農', source='BLS') for d in ['2026-01-09','2026-02-11','2026-03-06','2026-04-03','2026-05-08','2026-06-05','2026-07-02','2026-08-07','2026-09-04','2026-10-02','2026-11-06','2026-12-04']],
+    *[dict(date=d, title='美國 CPI 消費者物價指數', category='🇺🇸 CPI', source='BLS') for d in ['2026-01-13','2026-02-13','2026-03-11','2026-04-10','2026-05-12','2026-06-10','2026-07-14','2026-08-12','2026-09-11','2026-10-14','2026-11-10','2026-12-10']],
+    *[dict(date=d, title='美國 PPI 生產者物價指數', category='🇺🇸 PPI', source='BLS') for d in ['2026-02-27','2026-03-18','2026-04-14','2026-05-13','2026-06-11','2026-07-15','2026-08-13','2026-09-10','2026-10-15','2026-11-13']],
+    *[dict(date=d, title=t, category='🇺🇸 BEA', source='BEA') for d,t in [
+        ('2026-01-22','美國 GDP 更新估計＋個人所得與支出'),('2026-02-20','美國 GDP 初值＋個人所得與支出'),
+        ('2026-03-13','美國 GDP 第二估＋個人所得與支出'),('2026-04-09','美國 GDP 第三估＋個人所得與支出'),
+        ('2026-04-30','美國 GDP 第一季初值＋個人所得與支出'),('2026-05-28','美國 GDP 第一季第二估＋個人所得與支出'),
+        ('2026-06-25','美國 GDP 第一季第三估＋個人所得與支出'),('2026-07-30','美國 GDP 第二季初值＋個人所得與支出'),
+        ('2026-08-26','美國 GDP 第二季第二估＋個人所得與支出'),('2026-09-30','美國 GDP 第二季第三估＋個人所得與支出'),
+        ('2026-10-29','美國 GDP 第三季初值＋個人所得與支出'),('2026-11-25','美國 GDP 第三季第二估＋個人所得與支出'),
+        ('2026-12-23','美國 GDP 第三季第三估＋個人所得與支出')]],
+    *[dict(date=d, title='FOMC 利率決策／會議', category='🏦 FOMC', source='Federal Reserve') for d in ['2026-01-29','2026-03-19','2026-04-30','2026-06-18','2026-07-30','2026-09-17','2026-10-29','2026-12-10']],
+]
+
+def _us_release_tw_time(iso_date, et_time='08:30'):
+    try:
+        d=date.fromisoformat(str(iso_date)); h,m=[int(x) for x in str(et_time).split(':')[:2]]
+        offset=12 if date(2026,3,8) <= d < date(2026,11,1) else 13
+        return f'{(h+offset)%24:02d}:{m:02d}'
+    except Exception:
+        return str(et_time)
+
+def _international_calendar_events(year, month):
+    out=[]
+    for e in _INTERNATIONAL_EVENTS_2026:
+        d=date.fromisoformat(e['date'])
+        if d.year==int(year) and d.month==int(month):
+            item=dict(e); item['display_date']=d.strftime('%m/%d')
+            item['display_time']=_us_release_tw_time(e['date'], '14:00' if e['source']=='Federal Reserve' else '08:30')
+            out.append(item)
+    return sorted(out,key=lambda x:(x['date'],x['display_time'],x['title']))
+
+def _line_big_calendar_flex(user_id=None, base_url=None, year=None, month=None):
+    today=taiwan_today(); year=int(year or today.year); month=max(1,min(12,int(month or today.month)))
+    if year!=2026: year=2026
+    intl=_international_calendar_events(year,month); intl_dates={e['date'] for e in intl}; weeks=calendar.monthcalendar(year,month)
+    cells=[]
+    for n in ['一','二','三','四','五','六','日']:
+        cells.append({'type':'box','layout':'vertical','alignItems':'center','contents':[{'type':'text','text':n,'size':'xxs','color':'#667085','weight':'bold'}]})
+    for week in weeks:
+        for num in week:
+            if not num:
+                cells.append({'type':'box','layout':'vertical','contents':[]}); continue
+            d=date(year,month,num); info=_twse_calendar_day_info(d); has=d.isoformat() in intl_dates
+            bg='#FFF3D6' if has else ('#E8EFF7' if d==today else ('#E8F5EC' if info['open'] else '#F4F5F7'))
+            mark='●' if has else ('開' if info['open'] else '休'); mc='#B54708' if has else ('#16803C' if info['open'] else '#98A2B3')
+            cells.append({'type':'box','layout':'vertical','paddingAll':'5px','cornerRadius':'7px','backgroundColor':bg,'contents':[
+                {'type':'text','text':str(num),'size':'sm','weight':'bold','align':'center','color':'#172033'},
+                {'type':'text','text':mark,'size':'xxs','align':'center','color':mc}]})
+    event_lines=[]
+    for e in intl[:12]:
+        event_lines.append({'type':'box','layout':'horizontal','spacing':'sm','margin':'sm','contents':[
+            {'type':'text','text':e['display_date'],'size':'xs','weight':'bold','color':'#344054','flex':2},
+            {'type':'text','text':e['display_time'],'size':'xs','color':'#667085','flex':2},
+            {'type':'text','text':e['title'],'size':'xs','wrap':True,'color':'#172033','flex':7}]})
+    if not event_lines: event_lines=[{'type':'text','text':'本月沒有已納入的重要國際總經事件。','size':'sm','color':'#667085','wrap':True}]
+    op=sum(1 for w in weeks for n in w if n and _twse_calendar_day_info(date(year,month,n))['open']); cl=sum(1 for w in weeks for n in w if n and not _twse_calendar_day_info(date(year,month,n))['open'])
+    grid=[{'type':'box','layout':'horizontal','spacing':'xs','contents':cells[:7]}]
+    grid += [{'type':'box','layout':'horizontal','spacing':'xs','margin':'xs','contents':cells[7+i*7:14+i*7]} for i in range(len(weeks))]
+    body=[
+        {'type':'text','text':f'📅 {year} 年 {month} 月大行事曆','size':'xl','weight':'bold','color':'#172033'},
+        {'type':'text','text':f'台股＋國際總經｜交易日 {op} 天・休市 {cl} 天','size':'xs','color':'#667085','margin':'sm'},
+        {'type':'separator','margin':'md','color':'#E4E7EC'},
+        {'type':'box','layout':'vertical','margin':'md','spacing':'xs','contents':grid},
+        {'type':'text','text':'🟡 國際重要事件　🟢 台股交易日　⚪ 台股休市','size':'xxs','color':'#667085','margin':'md'},
+        {'type':'separator','margin':'md','color':'#E4E7EC'},
+        {'type':'text','text':'🌎 本月重要國際事件','size':'md','weight':'bold','color':'#172033','margin':'md'},
+        *event_lines,
+        {'type':'text','text':'資料來源：BLS／BEA／Federal Reserve／TWSE','size':'xxs','color':'#98A2B3','margin':'md','wrap':True}]
+    return FlexSendMessage(alt_text=f'{year}年{month}月大行事曆',contents={'type':'bubble','size':'giga','body':{'type':'box','layout':'vertical','paddingAll':'16px','contents':body}})
+
+@app.route('/web/admin/international-calendar')
+def web_admin_international_calendar():
+    uid=current_web_user()
+    if not uid or not is_admin(uid): return make_response('Forbidden',403)
+    today=taiwan_today(); year=2026; month=max(1,min(12,int(request.args.get('month',today.month) or today.month))); intl=_international_calendar_events(year,month)
+    rows=''.join(f'<div class="ical-event"><b>{html.escape(e["display_date"])} {html.escape(e["display_time"])}</b><span>{html.escape(e["title"])}</span><small>{html.escape(e["source"])}</small></div>' for e in intl)
+    months=''.join(f'<a class="ical-month {"active" if m==month else ""}" href="/web/admin/international-calendar?month={m}">{m}月</a>' for m in range(1,13))
+    empty='<div class="more-note">本月沒有已納入的重要事件。</div>'
+    body=('<style>.ical-wrap{max-width:980px;margin:auto}.ical-panel{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}.ical-months{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.ical-month{display:block;text-align:center;padding:9px;border:1px solid #e4e8ee;border-radius:10px;text-decoration:none;color:#344054;background:#fafbfc}.ical-month.active{background:#172033;color:#fff;border-color:#172033}.ical-event{display:grid;grid-template-columns:110px 1fr 110px;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid #edf0f4}.ical-event:last-child{border-bottom:0}.ical-event b{font-family:ui-monospace,monospace}.ical-event small{color:#667085}.ical-source{color:#667085;line-height:1.6}@media(max-width:650px){.ical-months{grid-template-columns:repeat(4,1fr)}.ical-event{grid-template-columns:80px 1fr;gap:6px}.ical-event small{grid-column:2}}</style>'
+           +f'<div class="ical-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🌎 國際行事曆</h1><p>重要美國總經與 FOMC，時間換算為台灣時間。</p></div><div class="ical-panel"><h3>選擇月份</h3><div class="ical-months">{months}</div></div><div class="ical-panel"><h2>{year} 年 {month} 月</h2><p class="ical-source">來源：BLS、BEA、Federal Reserve。官方排程可能更新。</p>{rows or empty}</div><div class="ical-panel"><a href="/web/admin/market-calendar">← 查看台股行事曆</a></div></div>')
+    return render_page('國際行事曆',body,'more')
+
+
 # 管理員後台：台股交易日曆（以 TWSE 官方市場開休市日期為準）
 # =========================
 _TWSE_MARKET_CALENDAR = {
@@ -34488,6 +34580,21 @@ def handle_message(event):
     # 不在這裡使用 request.url_root 進背景執行緒；先轉成純字串，避免 Flask
     # request context 離開 webhook 後被背景 worker 讀取而出現「查詢沒有完成」。
     line_base_url = public_web_base_url(request.url_root.rstrip("/"))
+
+    # 📅 大行事曆：直接在 LINE 顯示本月台股＋國際重要事件，不跳網頁。
+    if text in ("大行事曆", "行事曆", "日曆"):
+        try:
+            cal_reply = _line_big_calendar_flex(user_id, line_base_url)
+            cal_reply.quick_reply = build_quick_reply()
+            line_bot_api.reply_message(event.reply_token, cal_reply)
+        except Exception as exc:
+            print(f"❌ LINE 大行事曆失敗 {user_id}: {type(exc).__name__}: {exc}")
+            try:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📅 大行事曆暫時無法載入，請稍後再試。", quick_reply=build_quick_reply()))
+            except Exception:
+                pass
+        return
+
     async_feature = None
     async_builder = None
 
