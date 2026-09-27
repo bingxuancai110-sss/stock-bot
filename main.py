@@ -34007,12 +34007,10 @@ def handle_follow(event):
 
 
 # ============================================================
-# LINE V88 UX：漂亮動畫卡 + 官方 Loading → 背景分析 → 完成結果
+# LINE V95 UX：版本化自訂 APNG Loading → 背景分析 → 完成結果
 # ============================================================
-# V86 的官方 Loading Animation 只有 LINE 內建的三點動畫；
-# 使用者看到的白色三點就是它，不是我們自己設計的動畫。
-# V88 使用真正可見的動畫 Flex 卡片，並在卡片送出後同步啟動官方 Loading；每個功能都有自己的配色、
-# 動態 K 線／掃描／進度視覺，送出後背景工作完成再推一次正式結果。
+# V95 使用真正可見的自訂 APNG 雷達掃描動畫；資產路徑使用版本號，避免 LINE/CDN 沿用舊版靜態圖。
+# 黑馬／雷達不顯示 Loading；其他重型查詢才使用自訂動畫卡，完成後背景推送正式結果。
 # 這個動畫卡會多佔 1 則 LINE 訊息，因此只對真正的重型查詢使用。
 _LINE_UX_CONFIG = {
     "quote":       {"emoji": "📊", "name": "個股", "seconds": 30,
@@ -34189,9 +34187,9 @@ def _make_line_loading_apng(feature):
     return b"".join(out)
 
 
-@app.route("/line-assets/loading/<feature>.png", methods=["GET"])
+@app.route("/line-assets/loading-v95/<feature>.png", methods=["GET"])
 def line_loading_asset(feature):
-    """LINE 自製載入動畫資產；APNG 本身只做三點動畫，不放任何分析結果。"""
+    """LINE 自製載入動畫資產；V95 使用版本化 URL，避免舊版圖片快取。"""
     feature = str(feature or "").strip().lower()
     if feature not in _LINE_UX_CONFIG:
         abort(404)
@@ -34200,13 +34198,13 @@ def line_loading_asset(feature):
         if data is None:
             data = _make_line_loading_apng(feature)
             _LINE_LOADING_IMAGE_CACHE[feature] = data
-    return app.response_class(data, mimetype="image/png", headers={"Cache-Control":"public, max-age=3600"})
+    return app.response_class(data, mimetype="image/png", headers={"Cache-Control":"no-cache, no-store, must-revalidate", "Pragma":"no-cache", "Expires":"0"})
 
 
 def _line_loading_message(user_id, feature, base_url=None):
     """自製等待卡：真正的 APNG 雷達掃描動畫 + 功能名稱 + 不帶結果的分析階段。"""
     cfg=_line_ux_config(feature); base=public_web_base_url(base_url)
-    asset_url=f"{base}/line-assets/loading/{quote(str(feature), safe='')}.png"
+    asset_url=f"{base}/line-assets/loading-v95/{quote(str(feature), safe='')}.png"
     stages=cfg.get("stages") or ["準備資料","分析中","整理結果"]
     contents=[
         {"type":"text","text":f"{cfg['emoji']} {cfg['name']}正在分析","weight":"bold","size":"xl","color":"#18283A"},
