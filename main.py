@@ -34940,8 +34940,8 @@ def handle_message(event):
                     {"type":"text","text":"這是一組一次性的登入網址。複製後，可自行貼到 Safari、Chrome 或其他瀏覽器開啟。","size":"sm","color":"#667085","wrap":True,"margin":"sm"},
                     {"type":"separator","margin":"lg"},
                     {"type":"text","text":login_url,"size":"sm","color":"#315E9B","wrap":True,"margin":"lg","lineSpacing":"4px"},
-                    {"type":"button","style":"primary","color":"#315E9B","margin":"lg","action":{"type":"uri","label":"🌐 直接用瀏覽器開啟","uri":_line_external_browser_url(login_url)}},
-                    {"type":"text","text":"💡 如果你想指定瀏覽器，請長按／複製上面的網址，再貼到你想使用的 Safari、Chrome 等瀏覽器。","size":"xs","color":"#667085","wrap":True,"margin":"sm","lineSpacing":"4px"}
+                    {"type":"button","style":"primary","color":"#315E9B","margin":"lg","action":{"type":"clipboard","label":"📋 複製網址","clipboardText":login_url}},
+                    {"type":"text","text":"💡 已提供一鍵複製。複製後可貼到你想使用的 Safari、Chrome 或其他瀏覽器開啟。","size":"xs","color":"#667085","wrap":True,"margin":"sm","lineSpacing":"4px"}
                 ]}
             }
             flex_reply = FlexSendMessage(alt_text="🔗 網頁登入網址", contents=contents)
