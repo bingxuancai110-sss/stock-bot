@@ -35034,14 +35034,8 @@ def handle_message(event):
         base = request.url_root.rstrip("/")
         if token:
             login_url = f"{base}/web/login?t={token}"
-            reply = (
-                "🔗 網頁登入網址\n\n"
-                f"{login_url}\n\n"
-                "📋 請直接長按上面的網址複製。\n"
-                "🌐 也可以直接點網址開啟。\n\n"
-                "這是一組一次性登入網址；如果要指定 Safari、Chrome 等瀏覽器，"
-                "複製後貼到你想使用的瀏覽器即可。"
-            )
+            # V123：只回傳登入網址，不加任何其他文字，方便直接長按／複製。
+            reply = login_url
             flex_reply = None
         else:
             reply = "❌ 產生登入網址失敗，請稍後再試。"
