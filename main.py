@@ -17928,6 +17928,7 @@ def build_quick_reply():
         ("⚙️ 設定", "設定"),
         ("🧪 測試", "測試通知"),
         ("🌐 網頁", "網頁"),
+        ("📱 安裝教學", "安裝教學"),
     ]
     return QuickReply(items=[
         QuickReplyButton(action=MessageAction(label=label, text=text))
@@ -17976,6 +17977,7 @@ def build_menu_flex(is_admin_user=False):
         ]),
         ("網頁版", "#6B4E9E", "#EFEAF7", [
             ("網頁", "組合分析、交易紀錄、選股成效"),
+            ("安裝教學", "iPhone Safari 加入主畫面，像 App 一樣使用"),
         ]),
         ("我的自選", "#2E7D5B", "#E6F1EC", [
             ("自選", "持股評分、位階與支撐壓力"),
@@ -18961,7 +18963,14 @@ def render_page(title, body, nav_active=None, user_name=None):
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#315E9B">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="台股 BOT">
+<link rel="manifest" href="/web/manifest.json">
+<link rel="apple-touch-icon" href="/web/app-icon.svg">
 <title>{title}｜台股 BOT</title>
 <style>{BASE_CSS}</style>
 <style>{page_extra_css}</style>
@@ -20522,18 +20531,30 @@ def _line_big_calendar_flex(user_id=None, base_url=None, year=None, month=None):
         for num in week:
             if not num:
                 cells.append({'type':'box','layout':'vertical','contents':[]}); continue
-            d=date(year,month,num); info=_twse_calendar_day_info(d); has=d.isoformat() in intl_dates
-            bg='#FFF3D6' if has else ('#E8EFF7' if d==today else ('#E8F5EC' if info['open'] else '#F4F5F7'))
-            mark='●' if has else ('開' if info['open'] else '休'); mc='#B54708' if has else ('#16803C' if info['open'] else '#98A2B3')
+            d=date(year,month,num); info=_twse_calendar_day_info(d); has=d.isoformat() in intl_dates; past=d < today
+            # 休市／假日統一用紅色；國際事件改用藍紫色。若同日兼有事件與休市，以紅色為主、事件用小點提示。
+            if not info['open']:
+                bg='#FFF0F0'; mark='休'; mc='#C62828'
+            elif has:
+                bg='#EEF2FF'; mark='●'; mc='#4F46E5'
+            elif d==today:
+                bg='#E8EFF7'; mark='開'; mc='#16803C'
+            else:
+                bg='#E8F5EC'; mark='開'; mc='#16803C'
+            if has and not info['open']:
+                mark='休 · ●'; mc='#C62828'
+            day_color='#7A8797' if past else '#172033'
+            if d==today: day_color='#172033' 
             cells.append({'type':'box','layout':'vertical','paddingAll':'5px','cornerRadius':'7px','backgroundColor':bg,'contents':[
-                {'type':'text','text':str(num),'size':'sm','weight':'bold','align':'center','color':'#172033'},
+                {'type':'text','text':str(num),'size':'sm','weight':'bold','align':'center','color':day_color},
                 {'type':'text','text':mark,'size':'xxs','align':'center','color':mc}]})
     event_lines=[]
     for e in intl[:12]:
+        e_date=date.fromisoformat(e['date']); past=e_date < today
         event_lines.append({'type':'box','layout':'horizontal','spacing':'sm','margin':'sm','contents':[
-            {'type':'text','text':e['display_date'],'size':'xs','weight':'bold','color':'#344054','flex':2},
-            {'type':'text','text':e['display_time'],'size':'xs','color':'#667085','flex':2},
-            {'type':'text','text':e['title'],'size':'xs','wrap':True,'color':'#172033','flex':7}]})
+            {'type':'text','text':('✓ ' if past else '')+e['display_date'],'size':'xs','weight':'bold','color':'#7A8797' if past else '#344054','flex':2},
+            {'type':'text','text':e['display_time'],'size':'xs','color':'#98A2B3' if past else '#667085','flex':2},
+            {'type':'text','text':('已公布 · ' if past else '待公布 · ')+e['title'],'size':'xs','wrap':True,'color':'#7A8797' if past else '#172033','flex':7}]})
     if not event_lines: event_lines=[{'type':'text','text':'本月沒有已納入的重要國際總經事件。','size':'sm','color':'#667085','wrap':True}]
     op=sum(1 for w in weeks for n in w if n and _twse_calendar_day_info(date(year,month,n))['open']); cl=sum(1 for w in weeks for n in w if n and not _twse_calendar_day_info(date(year,month,n))['open'])
     grid=[{'type':'box','layout':'horizontal','spacing':'xs','contents':cells[:7]}]
@@ -20543,19 +20564,59 @@ def _line_big_calendar_flex(user_id=None, base_url=None, year=None, month=None):
         {'type':'text','text':f'台股＋國際總經｜交易日 {op} 天・休市 {cl} 天','size':'xs','color':'#667085','margin':'sm'},
         {'type':'separator','margin':'md','color':'#E4E7EC'},
         {'type':'box','layout':'vertical','margin':'md','spacing':'xs','contents':grid},
-        {'type':'text','text':'🟡 國際重要事件　🟢 台股交易日　⚪ 台股休市','size':'xxs','color':'#667085','margin':'md'},
+        {'type':'text','text':'🔵 國際重要事件　🟢 台股交易日　🔴 台股休市','size':'xxs','color':'#667085','margin':'md'},
         {'type':'separator','margin':'md','color':'#E4E7EC'},
         {'type':'text','text':'🌎 本月重要國際事件','size':'md','weight':'bold','color':'#172033','margin':'md'},
         *event_lines,
         {'type':'text','text':'資料來源：BLS／BEA／Federal Reserve／TWSE','size':'xxs','color':'#98A2B3','margin':'md','wrap':True}]
     return FlexSendMessage(alt_text=f'{year}年{month}月大行事曆',contents={'type':'bubble','size':'giga','body':{'type':'box','layout':'vertical','paddingAll':'16px','contents':body}})
 
+@app.route('/web/manifest.json')
+def web_pwa_manifest():
+    return jsonify({
+        "name": "台股 BOT",
+        "short_name": "台股 BOT",
+        "start_url": "/web/portfolio",
+        "scope": "/web/",
+        "display": "standalone",
+        "background_color": "#F4F7FA",
+        "theme_color": "#315E9B",
+        "description": "台股投資、持股、盤前、選股與行事曆工具",
+        "icons": [{"src":"/web/app-icon.svg","sizes":"192x192","type":"image/svg+xml","purpose":"any maskable"}]
+    })
+
+@app.route('/web/app-icon.svg')
+def web_pwa_icon():
+    svg="""<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='42' fill='#315E9B'/><rect x='32' y='42' width='128' height='108' rx='20' fill='#fff'/><path d='M48 124L75 96l22 16 43-48' fill='none' stroke='#D93025' stroke-width='9' stroke-linecap='round' stroke-linejoin='round'/><path d='M53 137h86' stroke='#315E9B' stroke-width='7' stroke-linecap='round'/><path d='M55 66h34' stroke='#315E9B' stroke-width='8' stroke-linecap='round'/></svg>"""
+    return Response(svg, mimetype='image/svg+xml')
+
+@app.route('/web/install')
+@web_login_required
+def web_install(uid):
+    body="""<style>
+.install-page{max-width:820px;margin:0 auto;padding-bottom:100px}.install-hero{background:linear-gradient(135deg,#EFF6FF,#FFFFFF);border:1px solid #D8E5F2;border-radius:20px;padding:22px;margin-bottom:14px}.install-hero h1{margin:4px 0 8px;color:#172B43;font-size:28px}.install-hero p{margin:0;color:#5F6F80;line-height:1.7}.install-step{background:#fff;border:1px solid #E3E9EF;border-radius:16px;padding:16px;margin:10px 0;box-shadow:0 4px 14px rgba(25,55,85,.04)}.install-step-head{display:flex;align-items:center;gap:10px}.install-num{width:30px;height:30px;border-radius:50%;background:#315E9B;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:900;flex:0 0 auto}.install-step h2{margin:0;font-size:17px;color:#22384D}.install-step p{margin:9px 0 0;color:#667085;line-height:1.7;font-size:13px}.install-finish{background:#F0FDF4;border:1px solid #C9EED5;border-radius:16px;padding:16px;margin-top:12px}.install-finish b{color:#16794C}.install-note{background:#FFF8E8;border:1px solid #F3E0B0;border-radius:14px;padding:12px;margin-top:12px;color:#705D2B;font-size:12px;line-height:1.65}.install-visual{margin-top:11px;border:1px solid #E5EAF0;border-radius:12px;background:#F8FAFC;padding:13px;text-align:center;color:#52657A;font-weight:800;font-size:12px}.install-link-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.install-link-row a{display:inline-block;padding:9px 12px;border:1px solid #D9E2EC;border-radius:10px;text-decoration:none;color:#315E9B;background:#fff;font-size:12px;font-weight:800}@media(max-width:640px){.install-page{padding:0 2px 90px}.install-hero{border-radius:15px;padding:17px}.install-hero h1{font-size:24px}.install-step{padding:14px}.install-step h2{font-size:16px}}
+</style><div class='install-page'>
+      <div class='install-hero'>
+        <div class='eyebrow'>IPHONE · SAFARI</div>
+        <h1>📱 把台股 BOT 加到主畫面</h1>
+        <p>不用從 App Store 下載。用 iPhone Safari 加入主畫面後，就可以像 App 一樣直接開啟台股 BOT。</p>
+        <div class='install-link-row'><a href='/web/portfolio'>← 回台股首頁</a><a href='https://support.apple.com/zh-tw/guide/iphone/iphea86e5236/27/ios/27' target='_blank' rel='noopener'>Apple 官方教學 ↗</a></div>
+      </div>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>1</span><h2>先用 Safari 開啟台股 BOT</h2></div><p>如果你現在是在 LINE 裡看到網頁，先選「在 Safari 中開啟」。不要直接在 LINE 內建瀏覽器完成安裝。</p><div class='install-visual'>LINE → 在 Safari 中開啟 → 台股 BOT</div></div>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>2</span><h2>點 Safari 的「分享」</h2></div><p>在 Safari 開啟台股 BOT 後，點頁面上的「分享」按鈕。</p><div class='install-visual'>Safari → 分享 ↑</div></div>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>3</span><h2>選擇「加入主畫面」</h2></div><p>在分享選單往下找「加入主畫面」。如果沒有看到，可以到選單底部的「編輯動作」把它加入。</p><div class='install-visual'>分享選單 → 加入主畫面</div></div>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>4</span><h2>開啟「打開為網頁 App」後按「加入」</h2></div><p>如果你的 iPhone 顯示「打開為網頁 App」，請開啟它，再按右上角「加入」。完成後，台股 BOT 圖示會出現在 iPhone 主畫面。</p><div class='install-visual'>打開為網頁 App ✓ → 加入</div></div>
+      <div class='install-finish'><b>🎉 完成！</b><p style='margin:7px 0 0;color:#3F6B54;line-height:1.65'>之後直接從 iPhone 主畫面點「台股 BOT」，會像 App 一樣開啟，不必再進 Safari 找網址。</p></div>
+      <div class='install-note'><b>如果找不到「加入主畫面」</b><br>請確認目前是 Safari；在分享選單最下方點「編輯動作」，再把「加入主畫面」加入選單。這是 Apple 官方目前的操作方式。</div>
+    </div>"""
+    return render_page('加入主畫面教學',body,'more')
+
 @app.route('/web/admin/international-calendar')
 def web_admin_international_calendar():
     uid=current_web_user()
     if not uid or not is_admin(uid): return make_response('Forbidden',403)
     today=taiwan_today(); year=2026; month=max(1,min(12,int(request.args.get('month',today.month) or today.month))); intl=_international_calendar_events(year,month)
-    rows=''.join(f'<div class="ical-event"><b>{html.escape(e["display_date"])} {html.escape(e["display_time"])}</b><span>{html.escape(e["title"])}</span><small>{html.escape(e["source"])}</small></div>' for e in intl)
+    rows=''.join(f'<div class="ical-event" style="{'opacity:.58;' if date.fromisoformat(e['date']) < today else ''}"><b>{'✓ 已公布 · ' if date.fromisoformat(e['date']) < today else '待公布 · '}{html.escape(e["display_date"])} {html.escape(e["display_time"])}</b><span>{html.escape(e["title"])}</span><small>{html.escape(e["source"])}</small></div>' for e in intl)
     months=''.join(f'<a class="ical-month {"active" if m==month else ""}" href="/web/admin/international-calendar?month={m}">{m}月</a>' for m in range(1,13))
     empty='<div class="more-note">本月沒有已納入的重要事件。</div>'
     body=('<style>.ical-wrap{max-width:980px;margin:auto}.ical-panel{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}.ical-months{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.ical-month{display:block;text-align:center;padding:9px;border:1px solid #e4e8ee;border-radius:10px;text-decoration:none;color:#344054;background:#fafbfc}.ical-month.active{background:#172033;color:#fff;border-color:#172033}.ical-event{display:grid;grid-template-columns:110px 1fr 110px;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid #edf0f4}.ical-event:last-child{border-bottom:0}.ical-event b{font-family:ui-monospace,monospace}.ical-event small{color:#667085}.ical-source{color:#667085;line-height:1.6}@media(max-width:650px){.ical-months{grid-template-columns:repeat(4,1fr)}.ical-event{grid-template-columns:80px 1fr;gap:6px}.ical-event small{grid-column:2}}</style>'
@@ -20598,7 +20659,7 @@ def web_admin_market_calendar():
     today=taiwan_today(); info=_twse_calendar_day_info(today); status='🟢 今日開市' if info['open'] else '🔴 今日休市'
     events=''.join(f'<div class="mcal-event"><b>{html.escape(k)}</b><span>🔴 {html.escape(v)}</span></div>' for k,v in sorted(_TWSE_MARKET_CALENDAR[year].items()))
     months=''.join(f'<section class="mcal-month"><h3>{m} 月</h3>{_twse_calendar_month_html(year,m)}</section>' for m in range(1,13))
-    body=f'''<style>.mcal-wrap{{max-width:980px;margin:auto}}.mcal-note,.mcal-status,.mcal-month,.mcal-events{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}}.mcal-note{{background:#f7f8fa;color:#475467;line-height:1.6}}.mcal-status b{{font-size:20px}}.mcal-grid{{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}}.mcal-head{{font-size:12px;text-align:center;color:#667085;font-weight:700;padding:5px}}.mcal-cell{{min-height:54px;border-radius:10px;background:#f6fbf7;padding:7px;box-sizing:border-box;display:flex;justify-content:space-between;border:1px solid #e5eee7}}.mcal-cell.holiday{{background:#fff5f3;border-color:#f5d2cc}}.mcal-cell.weekend{{background:#f5f6f8;color:#98a2b3;border-color:#eaecf0}}.mcal-cell.empty{{background:transparent;border:0}}.mcal-cell.today{{outline:3px solid #111;outline-offset:-2px}}.mcal-cell span{{font-size:10px;font-weight:800;color:#667085}}.mcal-cell.open span{{color:#16803c}}.mcal-cell.holiday span{{color:#b42318}}.mcal-event{{display:flex;gap:18px;padding:9px 0;border-bottom:1px solid #edf0f4}}.mcal-event:last-child{{border-bottom:0}}@media(max-width:650px){{.mcal-cell{{min-height:45px;padding:5px;font-size:13px}}.mcal-event{{display:block}}.mcal-event span{{display:block;margin-top:3px}}}}</style><div class="mcal-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>📅 台股交易日曆</h1><p>依臺灣證券交易所（TWSE）公告的市場開休市日期整理，方便檢查 Bot 的交易日判斷。</p></div><div class="mcal-status"><b>{status}</b><p>{today.isoformat()}｜{html.escape(info['note'])}</p></div><div class="mcal-note">🟢 開＝正常交易日　🔴 休＝證交所公告休市　⚪ 末＝週末。<br>目前資料以 TWSE 2026 年市場開休市公告為基準。</div>{months}<div class="mcal-events"><h3>2026 休市／特殊日期</h3>{events}</div><div class="mcal-note">官方來源：<a href="https://www.twse.com.tw/holidaySchedule/holidaySchedule?response=html" target="_blank" rel="noopener">TWSE 市場開休市日期</a></div></div>'''
+    body=f'''<style>.mcal-wrap{{max-width:980px;margin:auto}}.mcal-note,.mcal-status,.mcal-month,.mcal-events{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;margin:12px 0}}.mcal-note{{background:#f7f8fa;color:#475467;line-height:1.6}}.mcal-status b{{font-size:20px}}.mcal-grid{{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}}.mcal-head{{font-size:12px;text-align:center;color:#667085;font-weight:700;padding:5px}}.mcal-cell{{min-height:54px;border-radius:10px;background:#f6fbf7;padding:7px;box-sizing:border-box;display:flex;justify-content:space-between;border:1px solid #e5eee7}}.mcal-cell.holiday{{background:#fff5f3;border-color:#f5d2cc}}.mcal-cell.weekend{{background:#fff0f0;color:#c62828;border-color:#f2c8c8}}.mcal-cell.empty{{background:transparent;border:0}}.mcal-cell.today{{outline:3px solid #111;outline-offset:-2px}}.mcal-cell span{{font-size:10px;font-weight:800;color:#667085}}.mcal-cell.open span{{color:#16803c}}.mcal-cell.holiday span{{color:#b42318}}.mcal-event{{display:flex;gap:18px;padding:9px 0;border-bottom:1px solid #edf0f4}}.mcal-event:last-child{{border-bottom:0}}@media(max-width:650px){{.mcal-cell{{min-height:45px;padding:5px;font-size:13px}}.mcal-event{{display:block}}.mcal-event span{{display:block;margin-top:3px}}}}</style><div class="mcal-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>📅 台股交易日曆</h1><p>依臺灣證券交易所（TWSE）公告的市場開休市日期整理，方便檢查 Bot 的交易日判斷。</p></div><div class="mcal-status"><b>{status}</b><p>{today.isoformat()}｜{html.escape(info['note'])}</p></div><div class="mcal-note">🟢 開＝正常交易日　🔴 休＝市場休市／假日　（週末也以紅色顯示）。<br>目前資料以 TWSE 2026 年市場開休市公告為基準。</div>{months}<div class="mcal-events"><h3>2026 休市／特殊日期</h3>{events}</div><div class="mcal-note">官方來源：<a href="https://www.twse.com.tw/holidaySchedule/holidaySchedule?response=html" target="_blank" rel="noopener">TWSE 市場開休市日期</a></div></div>'''
     return render_page('台股交易日曆',body,'more')
 
 @app.route('/web/admin/features', methods=['GET','POST'])
@@ -26550,6 +26611,11 @@ def web_more(uid):
 </div>
 
 <div class="more-group">
+  <div class="more-group-title">📱 手機使用</div>
+  <a class="more-item" href="/web/install"><span class="more-icon">📱</span><span><b>加入主畫面教學</b><small>用 iPhone Safari 把台股 BOT 變成像 App 一樣的入口</small></span><strong>›</strong></a>
+</div>
+
+<div class="more-group">
   <div class="more-group-title">說明</div>
   <a class="more-item" href="/web/leaderboard#rules"><span class="more-icon">?</span><span><b>排行榜規則</b><small>了解短線、長線與排名變化</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/portfolio#sources"><span class="more-icon">◎</span><span><b>資料來源與使用說明</b><small>資料更新方式、隱私與免責聲明</small></span><strong>›</strong></a>
@@ -27882,6 +27948,10 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       <section class="hero-summary-panel hero-rank-panel"><div class="hero-summary-panel-head"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="rank-grid">{rank_line('short')}{rank_line('long')}</div></section>
       <section class="hero-quote-panel"><p class="hero-quote-text">{html.escape(quote_text)}</p></section>
     </div>
+  </section>
+  <section class="daily-card pwa-install-card" aria-label="加入主畫面" style="border:1px solid #D9E4EF;background:linear-gradient(135deg,#F7FBFF,#FFFFFF);">
+    <div class="daily-section-title"><div><h2>📱 把台股 BOT 變成手機 App</h2><span>不用下載 App，從 Safari 加入主畫面即可</span></div><a href="/web/install" data-app-nav="1">查看教學 →</a></div>
+    <p style="margin:0;color:#5F6F80;font-size:12px;line-height:1.6">第一次使用？照著 4 個步驟操作，之後直接從 iPhone 主畫面開啟。</p>
   </section>
   <div class="daily-complete-sync" aria-live="polite">
     <span class="daily-complete-sync-dot" aria-hidden="true"></span>
@@ -34580,6 +34650,22 @@ def handle_message(event):
     # 不在這裡使用 request.url_root 進背景執行緒；先轉成純字串，避免 Flask
     # request context 離開 webhook 後被背景 worker 讀取而出現「查詢沒有完成」。
     line_base_url = public_web_base_url(request.url_root.rstrip("/"))
+
+    # 📱 安裝教學：LINE 直接給 Safari 加入主畫面的教學入口。
+    if text in ("安裝教學", "加入主畫面", "手機App", "手機 APP"):
+        try:
+            install_url = _line_web_url(user_id, "/web/install")
+            contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"18px","contents":[
+                {"type":"text","text":"📱 台股 BOT 安裝教學","size":"xl","weight":"bold","color":"#172033"},
+                {"type":"text","text":"不用下載 App，從 iPhone Safari 加入主畫面即可。","size":"sm","color":"#667085","wrap":True,"margin":"sm"},
+                {"type":"separator","margin":"lg"},
+                {"type":"text","text":"① 用 Safari 開啟\n② 點「分享」\n③ 選「加入主畫面」\n④ 開啟「打開為網頁 App」並按「加入」","size":"sm","color":"#344054","wrap":True,"margin":"lg","lineSpacing":"6px"},
+                {"type":"button","style":"primary","color":"#315E9B","margin":"lg","action":{"type":"uri","label":"📖 查看完整教學","uri":install_url}}]}}
+            line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="📱 Safari 加入主畫面教學", contents=contents))
+        except Exception as exc:
+            print(f"❌ LINE 安裝教學失敗 {user_id}: {type(exc).__name__}: {exc}")
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📱 安裝教學：請用 Safari 開啟網頁後，點「分享」→「加入主畫面」。", quick_reply=build_quick_reply()))
+        return
 
     # 📅 大行事曆：直接在 LINE 顯示本月台股＋國際重要事件，不跳網頁。
     if text in ("大行事曆", "行事曆", "日曆"):
