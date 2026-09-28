@@ -12155,6 +12155,18 @@ def _line_full_web_url(user_id, base_url, target, extra_params=None):
     return f"{public_web_base_url(base_url)}{target}?{urlencode(params, doseq=True)}"
 
 
+def _line_external_browser_url(url):
+    """LINE URI action: request opening a normal web URL in the device external browser.
+    iPhone normally opens Safari; Android normally opens the default browser (often Chrome).
+    """
+    if not url:
+        return url
+    if "openExternalBrowser=" in url:
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}openExternalBrowser=1"
+
+
 def _line_feature_web_url(user_id, feature, base_url=None, code=None):
     routes={
         "positions":("/web/portfolio",{}),
@@ -20644,57 +20656,71 @@ def web_pwa_icon():
 @web_login_required
 def web_install(uid):
     body="""<style>
-.install-page{max-width:820px;margin:0 auto;padding-bottom:100px}
+.install-page{max-width:900px;margin:0 auto;padding-bottom:100px}
 .install-hero{background:linear-gradient(135deg,#EFF6FF,#FFFFFF);border:1px solid #D8E5F2;border-radius:20px;padding:22px;margin-bottom:14px}
 .install-hero h1{margin:4px 0 8px;color:#172B43;font-size:28px}
 .install-hero p{margin:0;color:#5F6F80;line-height:1.7}
-.install-step{background:#fff;border:1px solid #E3E9EF;border-radius:16px;padding:16px;margin:10px 0;box-shadow:0 4px 14px rgba(25,55,85,.04)}
-.install-step-head{display:flex;align-items:center;gap:10px}
-.install-num{width:30px;height:30px;border-radius:50%;background:#315E9B;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:900;flex:0 0 auto}
-.install-step h2{margin:0;font-size:17px;color:#22384D}
-.install-step p{margin:9px 0 0;color:#667085;line-height:1.7;font-size:13px}
-.install-finish{background:#F0FDF4;border:1px solid #C9EED5;border-radius:16px;padding:16px;margin-top:12px}
-.install-finish b{color:#16794C}
-.install-note{background:#FFF8E8;border:1px solid #F3E0B0;border-radius:14px;padding:12px;margin-top:12px;color:#705D2B;font-size:12px;line-height:1.65}
-.install-shot{display:block;width:100%;max-width:710px;height:auto;margin:14px auto 0;border:1px solid #E1E7EE;border-radius:14px;background:#F8FAFC}
 .install-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
 .install-actions a{display:inline-block;padding:10px 14px;border-radius:11px;text-decoration:none;font-size:12px;font-weight:800;border:1px solid #D9E2EC}
-.install-actions .primary{background:#315E9B;color:#fff;border-color:#315E9B}
 .install-actions .secondary{background:#fff;color:#315E9B}
-@media(max-width:640px){.install-page{padding:0 2px 90px}.install-hero{border-radius:15px;padding:17px}.install-hero h1{font-size:24px}.install-step{padding:14px}}
+.install-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.install-platform{background:#fff;border:1px solid #E3E9EF;border-radius:18px;padding:18px;box-shadow:0 4px 14px rgba(25,55,85,.04)}
+.platform-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.platform-icon{font-size:27px}
+.platform-head h2{margin:0;color:#22384D;font-size:19px}
+.platform-sub{margin:0 0 14px;color:#667085;font-size:13px;line-height:1.65}
+.install-step{border:1px solid #E6EBF1;border-radius:14px;padding:13px;margin:10px 0;background:#FBFCFE}
+.install-step-head{display:flex;align-items:center;gap:9px}
+.install-num{width:28px;height:28px;border-radius:50%;background:#315E9B;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:900;flex:0 0 auto}
+.install-step h3{margin:0;font-size:15px;color:#22384D}
+.install-step p{margin:7px 0 0;color:#667085;line-height:1.65;font-size:12px}
+.install-shot{display:block;width:100%;height:auto;margin:12px auto 0;border:1px solid #E1E7EE;border-radius:14px;background:#F8FAFC}
+.android-mock{margin-top:12px;border:1px solid #D9E1EA;border-radius:18px;background:#F4F6F8;padding:13px}
+.android-top{height:30px;display:flex;justify-content:space-between;align-items:center;color:#111;font-size:11px;font-weight:800;padding:0 4px}
+.android-browser{background:#fff;border:1px solid #E0E5EA;border-radius:14px;padding:10px;margin-top:4px}
+.android-url{height:30px;border-radius:15px;background:#F0F2F5;display:flex;align-items:center;padding:0 12px;color:#667085;font-size:11px}
+.android-menu{margin:10px 0 0 auto;width:82%;background:#fff;border:1px solid #DDE3EA;border-radius:14px;padding:7px;box-shadow:0 8px 20px rgba(0,0,0,.08)}
+.android-menu-row{padding:9px 8px;border-bottom:1px solid #EEF1F4;font-size:11px;color:#20252B}
+.android-menu-row:last-child{border-bottom:0}
+.android-highlight{margin-top:8px;border:2px solid #315E9B;border-radius:10px;padding:9px 8px;font-size:11px;font-weight:900;color:#315E9B;background:#F5F8FC}
+.install-finish{background:#F0FDF4;border:1px solid #C9EED5;border-radius:16px;padding:16px;margin-top:14px}
+.install-finish b{color:#16794C}
+.install-note{background:#FFF8E8;border:1px solid #F3E0B0;border-radius:14px;padding:12px;margin-top:12px;color:#705D2B;font-size:12px;line-height:1.65}
+@media(max-width:700px){.install-grid{grid-template-columns:1fr}.install-page{padding:0 2px 90px}.install-hero{border-radius:15px;padding:17px}.install-hero h1{font-size:24px}}
 </style>
 <div class='install-page'>
   <div class='install-hero'>
-    <div class='eyebrow'>IPHONE · SAFARI</div>
-    <h1>📱 把台股 BOT 加到主畫面</h1>
-    <p>不用從 App Store 下載。用 Safari 加入主畫面後，就可以像 App 一樣直接開啟台股 BOT。</p>
+    <div class='eyebrow'>IPHONE · ANDROID</div>
+    <h1>📱 把台股 BOT 放到手機主畫面</h1>
+    <p>台股 BOT 是網頁 App，不需要從 App Store 或 Google Play 下載。加入主畫面後，就能像一般 App 一樣直接開啟。</p>
     <div class='install-actions'>
       <a class='secondary' href='/web/portfolio'>← 回台股首頁</a>
-      <a class='secondary' href='https://support.apple.com/zh-tw/guide/iphone/iphea86e5236/27/ios/27' target='_blank' rel='noopener'>Apple 官方教學 ↗</a>
+      <a class='secondary' href='/web/login'>🌐 開啟網頁版</a>
     </div>
   </div>
-  <div class='install-step'>
-    <div class='install-step-head'><span class='install-num'>1</span><h2>先用 Safari 開啟台股 BOT</h2></div>
-    <p>如果你現在是在 LINE 裡，先選「在 Safari 中開啟」。安裝主畫面 App 時，不要停留在 LINE 的內建瀏覽器。</p>
-    <div style='margin-top:12px;padding:14px;border-radius:12px;background:#F5F8FC;color:#315E9B;font-weight:800;text-align:center'>LINE → 在 Safari 中開啟 → 台股 BOT</div>
+
+  <div class='install-grid'>
+    <section class='install-platform'>
+      <div class='platform-head'><span class='platform-icon'>🍎</span><h2>iPhone｜Safari</h2></div>
+      <p class='platform-sub'>如果從 LINE 進來，先用外部瀏覽器開啟。之後照下面 4 步即可。</p>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>1</span><h3>用 Safari 開啟台股 BOT</h3></div><p>不要停留在 LINE 內建瀏覽器；按「由瀏覽器開啟」後會進入 Safari。</p></div>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>2</span><h3>點 Safari 的「分享」</h3></div><p>開啟台股 BOT 後，點 Safari 的分享按鈕。</p><img class='install-shot' src='/line-assets/install/share.jpg?v=113' alt='iPhone Safari 分享選單'></div>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>3</span><h3>選「加入主畫面」</h3></div><p>在分享選單找到「加入主畫面」，進入下一頁。</p><img class='install-shot' src='/line-assets/install/add-home.jpg?v=113' alt='iPhone 加入主畫面'></div>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>4</span><h3>按右上角「加入」</h3></div><p>確認「打開為網頁 App」保持開啟，再按「加入」。</p></div>
+    </section>
+
+    <section class='install-platform'>
+      <div class='platform-head'><span class='platform-icon'>🤖</span><h2>Android｜Chrome</h2></div>
+      <p class='platform-sub'>Android 不同品牌的選單名稱可能略有不同，通常會看到「加到主畫面」或「安裝應用程式」。</p>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>1</span><h3>用 Chrome 開啟台股 BOT</h3></div><p>從 LINE 點「由瀏覽器開啟」，Android 通常會用 Chrome 或你的預設瀏覽器開啟。</p></div>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>2</span><h3>點右上角「⋮」</h3></div><p>進入 Chrome 的功能選單。</p><div class='android-mock'><div class='android-top'><span>4:40</span><span>▮▮  Wi-Fi  🔋</span></div><div class='android-browser'><div class='android-url'>🔒 stock-bot · 台股 BOT</div><div class='android-menu'><div class='android-menu-row'>新分頁</div><div class='android-menu-row'>新增無痕分頁</div><div class='android-highlight'>＋ 加到主畫面</div><div class='android-menu-row'>下載</div><div class='android-menu-row'>設定</div></div></div></div></div>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>3</span><h3>選「加到主畫面」或「安裝應用程式」</h3></div><p>不同 Android 手機可能顯示不同文字；看到其中一個就可以點進去。</p></div>
+      <div class='install-step'><div class='install-step-head'><span class='install-num'>4</span><h3>確認加入</h3></div><p>確認名稱後按「加入」或「安裝」。完成後，主畫面就會出現台股 BOT。</p></div>
+    </section>
   </div>
-  <div class='install-step'>
-    <div class='install-step-head'><span class='install-num'>2</span><h2>在 Safari 點「分享」</h2></div>
-    <p>看到台股 BOT 網頁後，點 Safari 的分享按鈕。這張是你實際 iPhone 的分享選單。</p>
-    <img class='install-shot' src='/line-assets/install/share.jpg?v=108' alt='Safari 分享選單'>
-  </div>
-  <div class='install-step'>
-    <div class='install-step-head'><span class='install-num'>3</span><h2>選「加入主畫面」</h2></div>
-    <p>在分享選單找到「加入主畫面」。進入下一頁後，確認「打開為網頁 App」保持開啟。</p>
-    <img class='install-shot' src='/line-assets/install/add-home.jpg?v=108' alt='加入主畫面'>
-  </div>
-  <div class='install-step'>
-    <div class='install-step-head'><span class='install-num'>4</span><h2>按右上角「加入」</h2></div>
-    <p>最後按「加入」。完成後，iPhone 主畫面就會出現「台股 BOT」。以後直接點圖示即可。</p>
-    <img class='install-shot' src='/line-assets/install/add-home.jpg?v=108' alt='打開為網頁 App 並加入'>
-  </div>
-  <div class='install-finish'><b>🎉 完成！</b><p style='margin:7px 0 0;color:#3F6B54;line-height:1.65'>之後直接從 iPhone 主畫面點「台股 BOT」，就能像 App 一樣開啟。</p></div>
-  <div class='install-note'><b>找不到「加入主畫面」？</b><br>請確認你是在 Safari；如果分享選單沒有看到，可以到選單底部「編輯動作」把「加入主畫面」加入。</div>
+
+  <div class='install-finish'><b>🎉 完成！</b><p style='margin:7px 0 0;color:#3F6B54;line-height:1.65'>之後直接點手機主畫面的「台股 BOT」，就能像 App 一樣使用。</p></div>
+  <div class='install-note'><b>找不到「加到主畫面」？</b><br>Android 不同品牌與 Chrome 版本可能有不同名稱。如果沒有看到「加到主畫面」，請找「安裝應用程式」或「新增至主畫面」等相近選項。</div>
 </div>"""
     return render_page('加入主畫面教學',body,'more')
 
@@ -28038,7 +28064,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     </div>
   </section>
   <section class="daily-card pwa-install-card" aria-label="加入主畫面" style="border:1px solid #D9E4EF;background:linear-gradient(135deg,#F7FBFF,#FFFFFF);">
-    <div class="daily-section-title"><div><h2>📱 把台股 BOT 變成手機 App</h2><span>不用下載 App，從 Safari 加入主畫面即可</span></div><a href="/web/install" data-app-nav="1">查看教學 →</a></div>
+    <div class="daily-section-title"><div><h2>📱 把台股 BOT 變成手機 App</h2><span>iPhone 用 Safari、Android 用 Chrome 加入主畫面</span></div><a href="/web/install" data-app-nav="1">查看教學 →</a></div>
     <p style="margin:0;color:#5F6F80;font-size:12px;line-height:1.6">第一次使用？照著 4 個步驟操作，之後直接從 iPhone 主畫面開啟。</p>
   </section>
   <div class="daily-complete-sync" aria-live="polite">
@@ -34739,34 +34765,34 @@ def handle_message(event):
     # request context 離開 webhook 後被背景 worker 讀取而出現「查詢沒有完成」。
     line_base_url = public_web_base_url(request.url_root.rstrip("/"))
 
-    # 📱 安裝教學：LINE 只顯示清楚步驟；完整截圖統一放在 Web 教學頁。
+    # 📱 安裝教學：同時支援 iPhone 與 Android；完整圖文教學放在 Web 教學頁。
     if text in ("安裝教學", "加入主畫面", "手機App", "手機 APP"):
         try:
             install_url = _line_full_web_url(user_id, line_base_url, "/web/install")
+            install_external_url = _line_external_browser_url(install_url)
             contents = {
                 "type":"bubble",
                 "size":"mega",
                 "body":{
                     "type":"box","layout":"vertical","paddingAll":"20px",
                     "contents":[
-                        {"type":"text","text":"📱 加入主畫面教學","size":"xl","weight":"bold","color":"#172033","wrap":True},
-                        {"type":"text","text":"把台股 BOT 放到 iPhone 主畫面，之後就能像 App 一樣直接開啟。","size":"sm","color":"#667085","wrap":True,"margin":"sm"},
+                        {"type":"text","text":"📱 台股 BOT 手機安裝教學","size":"xl","weight":"bold","color":"#172033","wrap":True},
+                        {"type":"text","text":"iPhone、Android 都可以使用，不需要從 App Store／Google Play 下載。","size":"sm","color":"#667085","wrap":True,"margin":"sm"},
                         {"type":"separator","margin":"lg"},
-                        {"type":"text","text":"① 用 Safari 開啟台股 BOT","size":"md","weight":"bold","color":"#315E9B","wrap":True,"margin":"lg"},
-                        {"type":"text","text":"如果你現在是在 LINE 裡，先選「在 Safari 中開啟」。不要在 LINE 內建瀏覽器直接安裝。","size":"sm","color":"#667085","wrap":True,"margin":"xs"},
-                        {"type":"text","text":"② 點 Safari 的「分享」","size":"md","weight":"bold","color":"#315E9B","wrap":True,"margin":"lg"},
-                        {"type":"text","text":"開啟台股 BOT 後，點 Safari 上方的分享按鈕。","size":"sm","color":"#667085","wrap":True,"margin":"xs"},
-                        {"type":"text","text":"③ 選「加入主畫面」→「加入」","size":"md","weight":"bold","color":"#315E9B","wrap":True,"margin":"lg"},
-                        {"type":"text","text":"找到「加入主畫面」後點進去，確認「打開為網頁 App」保持開啟，再按右上角「加入」。","size":"sm","color":"#667085","wrap":True,"margin":"xs"},
-                        {"type":"button","style":"primary","color":"#315E9B","margin":"xl","action":{"type":"uri","label":"📖 查看完整圖文教學","uri":install_url}}
+                        {"type":"text","text":"🍎 iPhone｜Safari","size":"md","weight":"bold","color":"#315E9B","wrap":True,"margin":"lg"},
+                        {"type":"text","text":"① 用 Safari 開啟台股 BOT\n② 點 Safari「分享」\n③ 選「加入主畫面」\n④ 按右上角「加入」","size":"sm","color":"#475467","wrap":True,"margin":"xs","lineSpacing":"5px"},
+                        {"type":"separator","margin":"lg"},
+                        {"type":"text","text":"🤖 Android｜Chrome","size":"md","weight":"bold","color":"#315E9B","wrap":True,"margin":"lg"},
+                        {"type":"text","text":"① 用 Chrome 開啟台股 BOT\n② 點右上角「⋮」\n③ 選「加到主畫面」或「安裝應用程式」\n④ 確認加入","size":"sm","color":"#475467","wrap":True,"margin":"xs","lineSpacing":"5px"},
+                        {"type":"button","style":"primary","color":"#315E9B","margin":"xl","action":{"type":"uri","label":"📖 查看完整圖文教學","uri":install_external_url}}
                     ]
                 }
             }
-            line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="📱 台股 BOT 加入主畫面教學", contents=contents))
+            line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="📱 台股 BOT 手機安裝教學：iPhone＋Android", contents=contents))
         except Exception as exc:
             print(f"❌ LINE 安裝教學失敗 {user_id}: {type(exc).__name__}: {exc}")
             try:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"📱 加入主畫面教學\n\n① 用 Safari 開啟台股 BOT\n② 點 Safari 的「分享」\n③ 選「加入主畫面」→「加入」\n\n完整圖文教學：{install_url}", quick_reply=build_quick_reply()))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"📱 台股 BOT 手機安裝教學\n\n🍎 iPhone：Safari → 分享 → 加入主畫面 → 加入\n🤖 Android：Chrome → ⋮ → 加到主畫面／安裝應用程式 → 確認\n\n完整圖文教學：{install_external_url}", quick_reply=build_quick_reply()))
             except Exception:
                 pass
         return
@@ -34896,7 +34922,9 @@ def handle_message(event):
         base = request.url_root.rstrip("/")
         if token:
             login_url = f"{base}/web/login?t={token}"
+            login_external_url = _line_external_browser_url(login_url)
             install_url = _line_full_web_url(user_id, base, "/web/install")
+            install_external_url = _line_external_browser_url(install_url)
             contents = {
                 "type":"bubble","size":"mega",
                 "body":{"type":"box","layout":"vertical","paddingAll":"18px","contents":[
@@ -34904,9 +34932,9 @@ def handle_message(event):
                     {"type":"text","text":"不用複製網址，直接點下面的按鈕即可。","size":"sm","color":"#667085","wrap":True,"margin":"sm"},
                     {"type":"separator","margin":"lg"},
                     {"type":"text","text":"📱 手機使用","size":"md","weight":"bold","color":"#315E9B","margin":"lg"},
-                    {"type":"button","style":"primary","color":"#315E9B","margin":"sm","action":{"type":"uri","label":"🌐 開啟網頁版","uri":login_url}},
+                    {"type":"button","style":"primary","color":"#315E9B","margin":"sm","action":{"type":"uri","label":"🌐 由瀏覽器開啟","uri":login_external_url}},
                     {"type":"button","style":"secondary","margin":"sm","action":{"type":"message","label":"🔑 取得登入碼","text":"登入碼"}},
-                    {"type":"button","style":"secondary","margin":"sm","action":{"type":"uri","label":"📱 Safari 安裝教學","uri":install_url}},
+                    {"type":"button","style":"secondary","margin":"sm","action":{"type":"uri","label":"📱 手機安裝教學","uri":install_external_url}},
                     {"type":"text","text":"💡 換 Safari／Chrome 或登入失效時，點「🔑 取得登入碼」；不用設定長期密碼。","size":"xs","color":"#667085","wrap":True,"margin":"sm","lineSpacing":"4px"},
                     {"type":"separator","margin":"lg"},
                     {"type":"text","text":"網頁版可使用：持股管理、組合分析、交易紀錄、黑馬／雷達完整清單與行事曆。","size":"sm","color":"#475467","wrap":True,"margin":"lg","lineSpacing":"4px"}
