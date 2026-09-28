@@ -18860,7 +18860,7 @@ NEED_LOGIN_HTML = """
 <div class="msg">
   <b>不用設定帳號密碼。</b><br>
   你的網頁版平常會保持登入。若換到 Safari、Chrome、電腦，或登入狀態真的失效，
-  只要回到 LINE 的「台股 BOT」取得一組新的「網頁登入碼」即可。
+  如果瀏覽器自動登入失敗，可回到 LINE 的「台股 BOT」使用備援登入碼。
 </div>
 <div class="section-head"><h2>網頁登入</h2>
   <span class="section-note">一次性登入碼</span></div>
@@ -18875,7 +18875,7 @@ NEED_LOGIN_HTML = """
   <button type="submit">登入網頁版</button>
   <div class="sell-hint">
     登入碼有效 {WEB_CODE_MINUTES} 分鐘，只能使用一次。登入成功後，這台瀏覽器會保持登入 {WEB_SESSION_DAYS} 天。<br>
-    需要新的登入碼時，回到 LINE 的「台股 BOT」，點「🌐 網頁版」裡的「🔑 取得登入碼」即可。
+    自動登入失敗時，可回到 LINE 輸入「登入碼」取得備援登入碼。
   </div>
 </form>
 """
@@ -34763,11 +34763,11 @@ def handle_message(event):
                         {"type":"text","text":"iPhone 與 Android 都能把台股 BOT 加到手機主畫面，之後像 App 一樣直接開啟。","size":"sm","color":"#667085","wrap":True,"margin":"sm"},
                         {"type":"separator","margin":"lg"},
                         {"type":"text","text":"🍎 iPhone｜Safari","size":"md","weight":"bold","color":"#315E9B","wrap":True,"margin":"lg"},
-                        {"type":"text","text":"先點「🌐 瀏覽器登入」，iPhone 會用 Safari 開啟。","size":"sm","color":"#667085","wrap":True,"margin":"xs"},
+                        {"type":"text","text":"點「🌐 瀏覽器登入」會離開 LINE，使用手機目前設定的外部瀏覽器。","size":"sm","color":"#667085","wrap":True,"margin":"xs"},
                         {"type":"text","text":"① Safari：點「分享」","size":"md","weight":"bold","color":"#315E9B","wrap":True,"margin":"lg"},
                         {"type":"text","text":"找到「加入主畫面」，確認後按「加入」。","size":"sm","color":"#667085","wrap":True,"margin":"xs"},
                         {"type":"text","text":"🤖 Android｜Chrome","size":"md","weight":"bold","color":"#315E9B","wrap":True,"margin":"lg"},
-                        {"type":"text","text":"用 Chrome 開啟後，點右上角「⋮」→「加到主畫面／安裝應用程式」→確認。","size":"sm","color":"#667085","wrap":True,"margin":"xs"},
+                        {"type":"text","text":"用 Chrome 或你的預設瀏覽器開啟後，點右上角「⋮」→「加到主畫面／安裝應用程式」→確認。","size":"sm","color":"#667085","wrap":True,"margin":"xs"},
                         {"type":"button","style":"primary","color":"#315E9B","margin":"xl","action":{"type":"uri","label":"📖 查看完整圖文教學","uri":install_url}}
                     ]
                 }
@@ -34916,8 +34916,9 @@ def handle_message(event):
                     {"type":"separator","margin":"lg"},
                     {"type":"text","text":"📱 手機使用","size":"md","weight":"bold","color":"#315E9B","margin":"lg"},
                     {"type":"button","style":"primary","color":"#315E9B","margin":"sm","action":{"type":"uri","label":"🌐 瀏覽器登入","uri":login_external_url}},
+                    {"type":"button","style":"secondary","margin":"sm","action":{"type":"message","label":"🔗 產生登入網址","text":"產生登入網址"}},
                     {"type":"button","style":"secondary","margin":"sm","action":{"type":"uri","label":"📱 安裝教學","uri":install_url}},
-                    {"type":"text","text":"💡 iPhone 會用 Safari，Android 通常會用 Chrome。這個按鈕會直接離開 LINE 內建瀏覽器。","size":"xs","color":"#667085","wrap":True,"margin":"sm","lineSpacing":"4px"},
+                    {"type":"text","text":"💡「瀏覽器登入」會使用手機目前設定的外部瀏覽器；想自己指定 Safari、Chrome 等瀏覽器，請使用「🔗 產生登入網址」。","size":"xs","color":"#667085","wrap":True,"margin":"sm","lineSpacing":"4px"},
                     {"type":"separator","margin":"lg"},
                     {"type":"text","text":"網頁版可使用：持股管理、組合分析、交易紀錄、黑馬／雷達完整清單與行事曆。","size":"sm","color":"#475467","wrap":True,"margin":"lg","lineSpacing":"4px"}
                 ]}
@@ -34926,6 +34927,27 @@ def handle_message(event):
             reply = None
         else:
             reply = "❌ 產生連結失敗，請稍後再試。"
+
+    elif text in ["產生登入網址", "登入網址", "LOGIN URL"]:
+        token = create_web_token(user_id)
+        base = request.url_root.rstrip("/")
+        if token:
+            login_url = f"{base}/web/login?t={token}"
+            contents = {
+                "type":"bubble","size":"mega",
+                "body":{"type":"box","layout":"vertical","paddingAll":"20px","contents":[
+                    {"type":"text","text":"🔗 網頁登入網址","size":"xl","weight":"bold","color":"#172033"},
+                    {"type":"text","text":"這是一組一次性的登入網址。複製後，可自行貼到 Safari、Chrome 或其他瀏覽器開啟。","size":"sm","color":"#667085","wrap":True,"margin":"sm"},
+                    {"type":"separator","margin":"lg"},
+                    {"type":"text","text":login_url,"size":"sm","color":"#315E9B","wrap":True,"margin":"lg","lineSpacing":"4px"},
+                    {"type":"button","style":"primary","color":"#315E9B","margin":"lg","action":{"type":"uri","label":"🌐 直接用瀏覽器開啟","uri":_line_external_browser_url(login_url)}},
+                    {"type":"text","text":"💡 如果你想指定瀏覽器，請長按／複製上面的網址，再貼到你想使用的 Safari、Chrome 等瀏覽器。","size":"xs","color":"#667085","wrap":True,"margin":"sm","lineSpacing":"4px"}
+                ]}
+            }
+            flex_reply = FlexSendMessage(alt_text="🔗 網頁登入網址", contents=contents)
+            reply = None
+        else:
+            reply = "❌ 產生登入網址失敗，請稍後再試。"
 
     elif text in ["登入碼", "驗證碼", "CODE", "登入"]:
         code = create_web_code(user_id)
