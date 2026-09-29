@@ -7460,7 +7460,7 @@ BOT_MAX_WEIGHT = 0.20    # 單一股票持倉權重上限 20%
 BOT_SCORE_DROP_POINTS = 15.0  # 自持有後最高分回落 15 分視為大幅下降（實驗門檻）
 BOT_STOP_LOSS_PCT = -20.0  # D 方案：單筆自買進價跌幅達 -20% 即停損
 BOT_INITIAL_CAPITAL = 1_000_000.0  # 虛擬帳戶固定初始資產；不途中補資金
-BOT_MODES = (("blackhorse", "黑馬機器人"), ("radar", "雷達機器人"))
+BOT_MODES = (("blackhorse", "黑馬"), ("radar", "雷達"))
 
 
 def simulate_bot_portfolio(mode, days=365):
@@ -7889,10 +7889,18 @@ def _augment_leaderboard_period_metrics(boards, series_map, market):
             return None, None
         return curve[-1][1], mkt[-1][1]
 
+    # long / short / waiting 是不同榜單，同一位參賽者可能同時出現在
+    # long 與 short。賽季榜是「每位參賽者一筆」，不能直接把多個榜單串起來，
+    # 否則同一人會被算兩次（甚至看起來像每位參賽者都有兩個名額）。
     all_rows = []
-    for board_name in ("long", "short", "waiting", "season"):
-        all_rows.extend(boards.get(board_name) or [])
     seen = set()
+    for board_name in ("long", "short", "waiting", "season"):
+        for r in (boards.get(board_name) or []):
+            uid = str(r.get("user_id") or "").strip()
+            if not uid or uid in seen:
+                continue
+            seen.add(uid)
+            all_rows.append(r)
     for r in all_rows:
         uid = str(r.get("user_id") or "")
         if uid in seen:
@@ -25231,7 +25239,9 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
     for d, user_id, ret, nickname in rows:
         if d is None or ret is None: continue
         key = str(user_id).strip()
-        by_user.setdefault(key, []).append((d, float(ret), nickname or key))
+        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達"}
+        display_name = bot_display_names.get(key) or (nickname or key)
+        by_user.setdefault(key, []).append((d, float(ret), display_name))
     def pk(d, kind):
         return f"{d.year}-{d.month:02d}" if kind == 'month' else f"{d.year}Q{(d.month-1)//3+1}"
     def build(kind, limit):
@@ -25352,11 +25362,26 @@ def web_leaderboard(uid):
         if wants_fragment():
             return preserve_web_token(inject_csrf_inputs(pending_html))
         return render_page("排行榜", pending_html, nav_active="leaderboard")
+    # 舊的持久化快照可能還保存「黑馬機器人／雷達機器人」或 bot:xxx，
+    # 顯示層統一改成中文名稱，避免快取未重建時把內部 ID 顯示給使用者。
+    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達"}
+    def _normalise_bot_names(rows):
+        out = []
+        for row in rows or []:
+            item = dict(row)
+            uid = str(item.get("user_id") or "").strip()
+            if uid in bot_display_names:
+                item["nickname"] = bot_display_names[uid]
+            elif item.get("nickname") in ("黑馬機器人", "雷達機器人"):
+                item["nickname"] = "黑馬" if uid == "bot:blackhorse" else "雷達"
+            out.append(item)
+        return out
+
     boards = {
-        "long": (all_boards.get("long") or [])[:20],
-        "short": (all_boards.get("short") or [])[:20],
-        "season": (all_boards.get("season") or [])[:20],
-        "waiting": all_boards.get("waiting") or [],
+        "long": _normalise_bot_names((all_boards.get("long") or [])[:20]),
+        "short": _normalise_bot_names((all_boards.get("short") or [])[:20]),
+        "season": _normalise_bot_names((all_boards.get("season") or [])[:20]),
+        "waiting": _normalise_bot_names(all_boards.get("waiting") or []),
     }
     with _leaderboard_cache_lock:
         leaderboard_meta = dict(_leaderboard_cache.get((100, 365)) or {})
