@@ -6059,13 +6059,27 @@ def _same_day_voided_log_ids(logs):
 
 
 def _filter_voided_same_day_logs(logs):
-    """排除同日完全配對撤回的操作；不影響同日後續真正加碼。"""
-    # 舊版本曾誤寫入 action='delete'；這些歷史錯誤資料不再顯示。
-    raw = [log for log in (logs or []) if str(log.get("action") or "").strip() != "delete"]
+    """排除同日完整配對撤回的操作；不影響真正跨日或部分減碼。
+
+    關鍵：刪除持股不一定會寫入 action='delete'，因此不能先把 delete
+    從配對資料拿掉；否則「今天新增 → 今天刪除」只剩 add，操作日報就會
+    把它誤認成一筆有效新增。先用 add/reduce/delete 完整配對，再把 delete
+    本身隱藏即可。
+    """
+    raw = list(logs or [])
     voided_ids = _same_day_voided_log_ids(raw)
-    if not voided_ids:
-        return raw
-    return [log for log in raw if int(log.get("id") or 0) not in voided_ids]
+    out = []
+    for log in raw:
+        action = str(log.get("action") or "").strip()
+        lid = int(log.get("id") or 0)
+        # 刪除持股是資料修正，不在操作日報單獨顯示。
+        if action == "delete":
+            continue
+        # 同日新增後完整撤回：add 與對應的 reduce/delete 一起隱藏。
+        if lid in voided_ids:
+            continue
+        out.append(log)
+    return out
 
 
 def _filter_voided_same_day_realized_trades(user_id, trades):
@@ -25235,6 +25249,12 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
     def pk(d, kind):
         return f"{d.year}-{d.month:02d}" if kind == 'month' else f"{d.year}Q{(d.month-1)//3+1}"
     def build(kind, limit):
+        # 歷史頁只接受固定的整數筆數；即使未來呼叫端傳入字串/float，
+        # 也不要讓切片直接炸掉整個排行榜頁。
+        try:
+            limit = max(0, int(limit))
+        except (TypeError, ValueError):
+            limit = 0
         keys = sorted({pk(d, kind) for vals in by_user.values() for d,_,_ in vals}, reverse=True)[:limit]
         result=[]
         for period in keys:
