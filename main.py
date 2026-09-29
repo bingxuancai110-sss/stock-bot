@@ -3246,56 +3246,119 @@ def _aggregate_anomaly_events(events, snapshot_date):
     grouped.sort(key=lambda e: 0 if str(e.get("severity")).upper() == "S" else 1)
     return grouped
 
+def _build_postmarket_anomaly_digest(events, snapshot_date, base_url=None):
+    """把收盤後同一批異常事件合併成一則 LINE 盤後摘要。
+
+    目的：收盤後 16:00 左右若同時出現多個事件，不要連續洗出多則 LINE。
+    一批事件固定只產生一則訊息；每個事件仍保留標題與重點細節。
+    """
+    events = list(events or [])
+    if not events:
+        return None
+
+    has_s = any(str(e.get("severity") or "A").upper() == "S" for e in events)
+    icon = "🚨" if has_s else "📊"
+    lines = [f"{icon} 【台股盤後異常摘要】", "", f"今日共 {len(events)} 項重要變化："]
+
+    # 保留排序後的所有事件，但限制單則訊息長度，避免 LINE 被超長訊息截斷。
+    for i, event in enumerate(events, 1):
+        severity = str(event.get("severity") or "A").upper()
+        marker = "🚨" if severity == "S" else "⚡"
+        title = str(event.get("title") or "市場異常事件").strip()
+        detail = str(event.get("detail") or "").strip()
+        lines.append(f"\n{marker} {title}")
+        if detail:
+            # 避免單一事件本身過長；完整內容仍可由網頁戰情查看。
+            clean_detail = " ".join(detail.split())
+            if len(clean_detail) > 180:
+                clean_detail = clean_detail[:177] + "..."
+            lines.append(clean_detail)
+
+    lines += ["", "這是事件提醒，不代表買賣建議。"]
+    if base_url:
+        lines.append(f"查看完整戰情：{base_url}/")
+    text = "\n".join(lines)
+    return {
+        "severity": "S" if has_s else "A",
+        "title": f"盤後異常摘要｜{len(events)} 項",
+        "detail": text,
+        "event_key": f"postmarket_digest_{snapshot_date}",
+    }
+
+
 def push_anomaly_events(snapshot_date, users=None, base_url=None):
+    """收盤後異常提醒改為「一人一天一則」盤後摘要。
+
+    16:00 左右若同時偵測到多個異常，全部先合併，再只發一則 LINE；
+    不再逐事件連續推播，避免同一個盤後時段洗版。
+    """
     # 最後一道保護：即使排程或人工呼叫誤在休市日執行，也絕不消耗 LINE 額度。
     if not is_twse_trading_day(snapshot_date):
         return f"異常提醒跳過：{snapshot_date} 非台股交易日，不發送 LINE。"
     if not _admin_feature_enabled('line_anomaly'):
         return "異常提醒目前已由管理員關閉。"
     users = list(users if users is not None else get_anomaly_notify_users())
-    if not users: return "異常提醒：沒有開啟的使用者"
+    if not users:
+        return "異常提醒：沒有開啟的使用者"
+
     sent = failed = skipped = 0
     for uid in users:
         if is_user_quiet_hours(uid):
             skipped += 1
             print(f"🔕 異常提醒跳過靜音時段 {uid}")
             continue
+
         daily_limit, cooldown, s_bypass = get_anomaly_user_settings(uid)
         daily_sent = _anomaly_daily_sent_count(snapshot_date, uid)
+
         conn = get_db_connection()
         try:
             cur = conn.cursor()
             cur.execute("""SELECT severity, category, title, detail, event_key
                           FROM premarket_events WHERE snapshot_date=%s AND user_id=%s
                             AND severity IN ('S','A')
-                          ORDER BY CASE severity WHEN 'S' THEN 0 ELSE 1 END, id DESC LIMIT 20""",
+                          ORDER BY CASE severity WHEN 'S' THEN 0 ELSE 1 END, id DESC LIMIT 50""",
                         (snapshot_date, str(uid)))
-            events = cur.fetchall(); cur.close()
+            raw_events = cur.fetchall()
+            cur.close()
         finally:
             release_db_connection(conn)
 
-        # 先合併大量同類事件，再套用「每日上限 + 冷卻」。
-        events = _aggregate_anomaly_events(events, snapshot_date)
-        for event in events:
-            severity = event.get("severity")
-            title = event.get("title")
-            detail = event.get("detail")
-            event_key = event.get("event_key")
-            if _anomaly_recent_sent(snapshot_date, uid, event_key, cooldown):
-                skipped += 1; continue
-            if daily_sent >= ANOMALY_HARD_DAILY_CAP:
-                skipped += 1; continue
-            if daily_sent >= daily_limit and not (str(severity).upper() == 'S' and s_bypass):
-                skipped += 1; continue
-            if not _claim_anomaly_event(snapshot_date, uid, event_key):
-                skipped += 1; continue
-            try:
-                _push_line_with_retry(uid, TextSendMessage(text=_format_anomaly_line({"severity":severity,"title":title,"detail":detail}, base_url)))
-                sent += 1; daily_sent += 1
-            except Exception as exc:
-                _release_anomaly_claim(snapshot_date, uid, event_key)
-                failed += 1; print(f"❌ 異常提醒推播失敗 {uid}: {exc}")
-    return f"異常提醒 done. sent={sent}, failed={failed}, skipped={skipped}"
+        # 先做既有同類合併，再把整批事件合成「一則盤後摘要」。
+        normalized = _aggregate_anomaly_events(raw_events, snapshot_date)
+        digest = _build_postmarket_anomaly_digest(normalized, snapshot_date, base_url=base_url)
+        if not digest:
+            continue
+
+        event_key = digest["event_key"]
+        severity = digest["severity"]
+
+        if _anomaly_recent_sent(snapshot_date, uid, event_key, cooldown):
+            skipped += 1
+            continue
+        if daily_sent >= ANOMALY_HARD_DAILY_CAP:
+            skipped += 1
+            continue
+        if daily_sent >= daily_limit and not (severity == "S" and s_bypass):
+            skipped += 1
+            continue
+        if not _claim_anomaly_event(snapshot_date, uid, event_key):
+            skipped += 1
+            continue
+
+        try:
+            _push_line_with_retry(
+                uid,
+                TextSendMessage(text=digest["detail"]),
+            )
+            sent += 1
+            daily_sent += 1
+        except Exception as exc:
+            _release_anomaly_claim(snapshot_date, uid, event_key)
+            failed += 1
+            print(f"❌ 盤後異常摘要推播失敗 {uid}: {exc}")
+
+    return f"盤後異常摘要 done. sent={sent}, failed={failed}, skipped={skipped}"
 
 
 # ── 自選股分類 ──
@@ -25605,13 +25668,19 @@ def web_leaderboard(uid):
   長線：從各自加入日後累計；加入天數不同，請搭配樣本天數判讀。
 </div>"""
 
-    chart_keys = [str(r["user_id"]) for r in boards[active_board]][:5]
+    # 走勢比較同時拆成「短期／近30天」與「長期／加入後累計」。
+    # 不再讓目前排行榜 tab 決定下面唯一一張圖，避免使用者切到長線後
+    # 看不到短線，或切到短線後看不到長期。兩張圖各自使用對應榜單的前 5 名，
+    # 並且都保留「我的曲線」與大盤基準。
     my_curve_key = (str(uid) if me and str(uid) in series_map else None)
-    chart_note = ("含我的曲線・前 4 名・大盤"
-                  if my_curve_key else "前 5 名 vs 大盤")
-    chart = render_leaderboard_chart(
-        series_map, market, chart_keys, highlight_key=my_curve_key,
-        days_window=30 if is_short else None)
+    short_chart_keys = [str(r["user_id"]) for r in boards["short"]][:5]
+    long_chart_keys = [str(r["user_id"]) for r in boards["long"]][:5]
+    short_chart = render_leaderboard_chart(
+        series_map, market, short_chart_keys, highlight_key=my_curve_key,
+        days_window=30)
+    long_chart = render_leaderboard_chart(
+        series_map, market, long_chart_keys, highlight_key=my_curve_key,
+        days_window=None)
 
     # 已加入的人：設定收在下方，不佔版面。
     # 還沒加入的人：把加入表單直接攤開放在最上面——
@@ -25661,8 +25730,17 @@ def web_leaderboard(uid):
 {join_top_html}
 
 <div class="section-head"><h2>走勢比較</h2>
-  <span class="section-note">{chart_note}</span></div>
-<div class="callout" style="padding:14px 15px 8px">{chart}</div>
+  <span class="section-note">短期與長期分開看</span></div>
+<div class="callout" style="padding:14px 15px 8px">
+  <div style="font-weight:800;font-size:15px;margin-bottom:4px">短期｜近30天</div>
+  <div class="sub" style="margin-bottom:10px">所有人從相同的30天區間重新歸零比較。</div>
+  {short_chart}
+</div>
+<div class="callout" style="padding:14px 15px 8px;margin-top:12px">
+  <div style="font-weight:800;font-size:15px;margin-bottom:4px">長期｜加入後累計</div>
+  <div class="sub" style="margin-bottom:10px">從各自加入排行榜的日期開始計算，不受30天滾動區間影響。</div>
+  {long_chart}
+</div>
 
 {settings_html}
 
