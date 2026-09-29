@@ -7370,7 +7370,7 @@ def _load_persisted_leaderboard_page(allow_stale=False):
     # 不應因為 schema 版本變更就把既有快照判成「不存在」，否則新 worker
     # 會立刻進入重型一年行情＋機器人模擬，使用者反而卡在「建立最新快照」。
     schema_version = source_meta.get("schema_version")
-    if schema_version not in (5, "5"):
+    if schema_version not in (6, "6"):
         return None
     payload = shared.get("payload") or {}
     boards = payload.get("boards") if isinstance(payload, dict) else None
@@ -7439,7 +7439,7 @@ def _save_persisted_leaderboard_page(value, data_date=None):
         {"boards": boards,
          "graph": {"series_map": series_map, "market": market}},
         data_date=data_date,
-        source_meta={"source": "leaderboard_build", "schema_version": 5,
+        source_meta={"source": "leaderboard_build", "schema_version": 6,
                      "top_n": 100, "days": 365, "member_count": len(boards.get("waiting", [])) +
                      len(boards.get("long", []))},
     )
@@ -7892,20 +7892,18 @@ def _augment_leaderboard_period_metrics(boards, series_map, market):
     # long / short / waiting 是不同榜單，同一位參賽者可能同時出現在
     # long 與 short。賽季榜是「每位參賽者一筆」，不能直接把多個榜單串起來，
     # 否則同一人會被算兩次（甚至看起來像每位參賽者都有兩個名額）。
-    all_rows = []
-    seen = set()
+    # 每位參賽者只保留一筆；同一人同時出現在長線／短線不能在賽季重複計算。
+    # 舊版這裡建立 seen 後又用同一個 seen 判斷，會讓所有 row 都被跳過，
+    # 因而無法重新產生正確的 season_ret。
+    unique_rows = {}
     for board_name in ("long", "short", "waiting", "season"):
         for r in (boards.get(board_name) or []):
             uid = str(r.get("user_id") or "").strip()
-            if not uid or uid in seen:
-                continue
-            seen.add(uid)
-            all_rows.append(r)
+            if uid and uid not in unique_rows:
+                unique_rows[uid] = r
+    all_rows = list(unique_rows.values())
     for r in all_rows:
-        uid = str(r.get("user_id") or "")
-        if uid in seen:
-            continue
-        seen.add(uid)
+        uid = str(r.get("user_id") or "").strip()
         item = series_map.get(uid) or {}
         curve = item.get("curve") if isinstance(item, dict) else item
         curve = curve or []
@@ -25377,11 +25375,22 @@ def web_leaderboard(uid):
             out.append(item)
         return out
 
+    def _dedup_board(rows):
+        out, seen = [], set()
+        for row in rows or []:
+            item = dict(row)
+            key = str(item.get("user_id") or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+        return out
+
     boards = {
-        "long": _normalise_bot_names((all_boards.get("long") or [])[:20]),
-        "short": _normalise_bot_names((all_boards.get("short") or [])[:20]),
-        "season": _normalise_bot_names((all_boards.get("season") or [])[:20]),
-        "waiting": _normalise_bot_names(all_boards.get("waiting") or []),
+        "long": _normalise_bot_names(_dedup_board((all_boards.get("long") or [])[:100])[:20]),
+        "short": _normalise_bot_names(_dedup_board((all_boards.get("short") or [])[:100])[:20]),
+        "season": _normalise_bot_names(_dedup_board((all_boards.get("season") or [])[:100])[:20]),
+        "waiting": _normalise_bot_names(_dedup_board(all_boards.get("waiting") or [])),
     }
     with _leaderboard_cache_lock:
         leaderboard_meta = dict(_leaderboard_cache.get((100, 365)) or {})
@@ -25816,61 +25825,62 @@ def web_leaderboard(uid):
         "season": board_rows(boards["season"], "season_ret", rank_status_map),
     }
     board = board_html[active_board]
-    active_status = my_rank[active_board]
-    active_row = active_status.get("row")
-    if active_row:
-        active_value = active_row.get(active_key)
-        active_days = (active_row.get("m30_days") if is_short else
-                       active_row.get("days") if is_long else
-                       active_row.get("season_days"))
-        active_days = active_days or 0
-        active_cls = "up" if active_value is not None and active_value >= 0 else (
-            "down" if active_value is not None else "flat")
-        active_txt = (f"{active_value:+.2f}%" if active_value is not None else "—")
-        previous_txt = (f"#{active_status['previous']}"
-                        if active_status.get("previous") else "—")
-        previous_note = (active_label if active_status.get("previous")
-                         else "尚無前一日快照")
-        excess = active_row.get({"short": "m30_excess", "long": "long_excess", "season": "season_excess"}[active_board])
+
+    situation_labels = {
+        "short": "短線｜近 30 天",
+        "long": "長線｜加入後累計",
+        "season": f"賽季｜{(all_boards.get('season_info') or leaderboard_season_info()).get('label', '本季')}",
+    }
+
+    def render_situation_panel(board_name):
+        status = my_rank[board_name]
+        row = status.get("row")
+        panel_style = "" if board_name == active_board else "display:none"
+        if not row:
+            if me_is_waiting:
+                body = ("已報名，現在是<b>排隊觀察中</b>；有效每日快照達標前不列正式名次，"
+                        "也不會提前計算或公開最佳持股。")
+            elif me:
+                body = "已加入排行榜，正在累積有效每日快照；資料不足時不先捏造排名或報酬。"
+            else:
+                body = "你尚未加入排行榜。加入後會從加入日開始累積自己的排名與報酬曲線。"
+            return f'<div class="rank-situation-panel" data-situation-panel="{board_name}" style="{panel_style}"><div class="rank-situation-empty">{body}</div></div>'
+
+        key = {"short": "m30", "long": "ret", "season": "season_ret"}[board_name]
+        days_key = {"short": "m30_days", "long": "days", "season": "season_days"}[board_name]
+        value = row.get(key)
+        sample_days = int(row.get(days_key) or 0)
+        value_cls = "up" if value is not None and value >= 0 else ("down" if value is not None else "flat")
+        value_txt = f"{value:+.2f}%" if value is not None else "—"
+        rank_title = f"#{status['rank']}" if status.get("rank") else "尚未上榜"
+        rank_move = render_rank_status(status) if status.get("delta") is not None else '<span class="rank-move muted">尚無前一日快照</span>'
+        previous_txt = f"#{status['previous']}" if status.get("previous") else "—"
+        previous_note = situation_labels[board_name] if status.get("previous") else "尚無前一日快照"
+        excess_key = {"short": "m30_excess", "long": "long_excess", "season": "season_excess"}[board_name]
+        excess = row.get(excess_key)
         if excess is None:
             vs_txt, vs_cls = "尚無資料", "flat"
         else:
-            vs_txt = (f"贏 {abs(excess):.1f}%" if excess >= 0
-                      else f"輸 {abs(excess):.1f}%")
+            vs_txt = f"贏 {abs(excess):.1f}%" if excess >= 0 else f"輸 {abs(excess):.1f}%"
             vs_cls = "up" if excess >= 0 else "down"
-        rank_title = (f"#{active_status['rank']}"
-                      if active_status.get("rank") else "尚未上榜")
-        rank_move = (render_rank_status(active_status)
-                     if active_status.get("delta") is not None
-                     else '<span class="rank-move muted">尚無前一日快照</span>')
-        sample_note = (f"樣本 {active_days} 天｜參考排名"
-                       if active_days < 10 else f"樣本 {active_days} 天")
-        situation_body = f'''<div class="rank-situation-grid">
-  <div class="rank-situation-item"><small>目前排名</small><b>{rank_title}</b>
-    <span class="rank-situation-sub">{rank_move}</span></div>
-  <div class="rank-situation-item"><small>{"近 30 天" if is_short else "加入後"}</small>
-    <b class="num {active_cls}">{active_txt}</b>
-    <span class="rank-situation-sub">{sample_note}</span></div>
-  <div class="rank-situation-item"><small>昨日排名</small><b>{previous_txt}</b>
-    <span class="rank-situation-sub">{previous_note}</span></div>
-  <div class="rank-situation-item"><small>相對大盤</small><b class="{vs_cls}">{vs_txt}</b>
-    <span class="rank-situation-sub">{f"大盤 {active_row.get('mkt_ret'):+.1f}%" if active_row.get('mkt_ret') is not None else "尚無大盤資料"}</span></div>
+        period_label = {"short": "近 30 天", "long": "加入後", "season": "本季"}[board_name]
+        sample_note = f"樣本 {sample_days} 天｜參考排名" if sample_days < 10 else f"樣本 {sample_days} 天"
+        market_ret = row.get("mkt_ret")
+        market_txt = f"大盤 {market_ret:+.1f}%" if market_ret is not None else "尚無大盤資料"
+        return f'''<div class="rank-situation-panel" data-situation-panel="{board_name}" style="{panel_style}">
+  <div class="rank-situation-grid">
+    <div class="rank-situation-item"><small>目前排名</small><b>{rank_title}</b><span class="rank-situation-sub">{rank_move}</span></div>
+    <div class="rank-situation-item"><small>{period_label}</small><b class="num {value_cls}">{value_txt}</b><span class="rank-situation-sub">{sample_note}</span></div>
+    <div class="rank-situation-item"><small>昨日排名</small><b>{previous_txt}</b><span class="rank-situation-sub">{previous_note}</span></div>
+    <div class="rank-situation-item"><small>相對大盤</small><b class="{vs_cls}">{vs_txt}</b><span class="rank-situation-sub">{market_txt}</span></div>
+  </div>
 </div>'''
-    elif me:
-        situation_body = ('''<div class="rank-situation-empty">
-          已報名，現在是<b>排隊觀察中</b>；有效每日快照達標前不列正式名次，
-          也不會提前計算或公開最佳持股。
-        </div>''' if me_is_waiting else '''<div class="rank-situation-empty">
-          已加入排行榜，正在累積有效每日快照；資料不足時不先捏造排名或報酬。
-        </div>''')
-    else:
-        situation_body = '''<div class="rank-situation-empty">
-          你尚未加入排行榜。加入後會從加入日開始累積自己的排名與報酬曲線。
-        </div>'''
+
+    situation_panels = "".join(render_situation_panel(name) for name in ("short", "long", "season"))
     my_rank_html = f'''<section class="rank-situation">
   <div class="rank-situation-title"><h2>🏆 我的排名戰況</h2>
-    <span class="rank-situation-badge">{active_label}</span></div>
-  {situation_body}
+    <span class="rank-situation-badge" data-situation-badge="1">{situation_labels[active_board]}</span></div>
+  {situation_panels}
 </section>'''
 
     # 排隊區要顯示進度，不能只寫「計算中」。
@@ -26052,6 +26062,14 @@ def web_leaderboard(uid):
             (el.getAttribute('data-board-' + kind) === board) ? '' : 'none';
         }});
     }});
+    Array.prototype.forEach.call(document.querySelectorAll('[data-situation-panel]'), function (el) {{
+      el.style.display = (el.getAttribute('data-situation-panel') === board) ? '' : 'none';
+    }});
+    var situationBadge = document.querySelector('[data-situation-badge]');
+    if (situationBadge) {{
+      var labels = {{short:'短線｜近 30 天', long:'長線｜加入後累計', season:'賽季｜本季'}};
+      situationBadge.textContent = labels[board] || '';
+    }}
     // 網址同步更新，重新整理或分享連結時停在同一榜；
     // 用 replaceState 不留歷史紀錄，返回鍵才不會卡在切換上。
     try {{
