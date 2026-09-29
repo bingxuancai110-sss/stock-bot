@@ -1678,37 +1678,43 @@ def release_db_connection(conn):
             pass
 
 def _cleanup_legacy_same_day_corrections(cursor, today=None):
-    """一次性清理舊版「同日新增後全部刪除」但沒有 delete log 的歷史紀錄。"""
+    """一次性清理舊版「同日新增後全部刪除」但沒有 delete log 的殘留紀錄。
+
+    同時檢查今天與昨天，因為使用者可能在前一天完成「新增→刪除」，
+    今天才第一次重新整理頁面。只有該日全部是正向 add、目前該檔已無持股、
+    且更早沒有未歸零的歷史基準時才清理，避免碰到真正的歷史交易。
+    """
     try:
         from datetime import timedelta
         day = today or taiwan_today()
-        target_day = day - timedelta(days=1)
-        cursor.execute("""
-            SELECT user_id, code, COALESCE(SUM(shares_delta),0) AS day_delta
-            FROM position_change_logs
-            WHERE trade_date=%s
-            GROUP BY user_id, code
-            HAVING BOOL_AND(action='add' AND shares_delta > 0)
-        """, (target_day,))
-        groups = cursor.fetchall()
+        target_days = (day, day - timedelta(days=1))
         removed = 0
-        for uid, code, _day_delta in groups:
-            cursor.execute(
-                "SELECT COALESCE(SUM(shares),0) FROM positions WHERE user_id=%s AND code=%s",
-                (uid, code))
-            if int(cursor.fetchone()[0] or 0) != 0:
-                continue
-            cursor.execute(
-                "SELECT COALESCE(SUM(shares_delta),0) FROM position_change_logs "
-                "WHERE user_id=%s AND code=%s AND trade_date < %s",
-                (uid, code, target_day))
-            if int(cursor.fetchone()[0] or 0) > 0:
-                continue
-            cursor.execute(
-                "DELETE FROM position_change_logs WHERE user_id=%s AND code=%s "
-                "AND trade_date=%s AND action='add' AND shares_delta>0",
-                (uid, code, target_day))
-            removed += int(cursor.rowcount or 0)
+        for target_day in target_days:
+            cursor.execute("""
+                SELECT user_id, code, COALESCE(SUM(shares_delta),0) AS day_delta
+                FROM position_change_logs
+                WHERE trade_date=%s
+                GROUP BY user_id, code
+                HAVING BOOL_AND(action='add' AND shares_delta > 0)
+            """, (target_day,))
+            groups = cursor.fetchall()
+            for uid, code, _day_delta in groups:
+                cursor.execute(
+                    "SELECT COALESCE(SUM(shares),0) FROM positions WHERE user_id=%s AND code=%s",
+                    (uid, code))
+                if int(cursor.fetchone()[0] or 0) != 0:
+                    continue
+                cursor.execute(
+                    "SELECT COALESCE(SUM(shares_delta),0) FROM position_change_logs "
+                    "WHERE user_id=%s AND code=%s AND trade_date < %s",
+                    (uid, code, target_day))
+                if int(cursor.fetchone()[0] or 0) > 0:
+                    continue
+                cursor.execute(
+                    "DELETE FROM position_change_logs WHERE user_id=%s AND code=%s "
+                    "AND trade_date=%s AND action='add' AND shares_delta>0",
+                    (uid, code, target_day))
+                removed += int(cursor.rowcount or 0)
         return removed
     except Exception as exc:
         print(f"⚠️ 舊版同日撤回紀錄清理失敗：{exc}")
@@ -4177,6 +4183,50 @@ def _void_same_day_correction_logs(cursor, user_id, code, today):
     return int(cursor.rowcount or 0)
 
 
+def _remove_matching_add_log_for_deleted_lot(cursor, user_id, code, shares, cost,
+                                             bought_on=None):
+    """刪除「這一筆被資料修正刪掉的 lot」對應的新增日誌。
+
+    刪除持股不是交易，不應在操作日報留下「待確認」的殘影。
+    只處理 source=web 的 add 日誌，並優先用買進日期與股數／成本精確配對；
+    同日有多筆完全相同 lot 時取最新一筆，避免誤刪其他歷史操作。
+    """
+    uid = str(user_id).strip()
+    code = str(code).strip()
+    try:
+        shares = int(shares)
+        cost = float(cost)
+    except (TypeError, ValueError):
+        return 0
+    if shares <= 0 or not math.isfinite(cost) or cost <= 0:
+        return 0
+
+    where = [
+        "user_id=%s", "code=%s", "action='add'",
+        "shares_delta=%s", "trade_price IS NOT NULL",
+        "ABS(trade_price - %s) < 0.01", "source='web'"
+    ]
+    params = [uid, code, shares, cost]
+
+    bought_date = _position_change_date(bought_on)
+    if bought_date:
+        where.append("trade_date=%s")
+        params.append(bought_date)
+
+    cursor.execute(
+        f"""SELECT id FROM position_change_logs
+            WHERE {' AND '.join(where)}
+            ORDER BY id DESC
+            LIMIT 1""",
+        tuple(params),
+    )
+    match = cursor.fetchone()
+    if not match:
+        return 0
+    cursor.execute("DELETE FROM position_change_logs WHERE id=%s", (int(match[0]),))
+    return int(cursor.rowcount or 0)
+
+
 def delete_position_exact_id(user_id, pos_id):
     """用 positions.id 直接刪除唯一的一筆 lot，避免任何模糊匹配。"""
     try:
@@ -4188,14 +4238,14 @@ def delete_position_exact_id(user_id, pos_id):
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, code, shares, cost FROM positions WHERE id = %s AND user_id = %s",
+            "SELECT id, code, shares, cost, bought_on FROM positions WHERE id = %s AND user_id = %s",
             (pos_id, uid),
         )
         row = cursor.fetchone()
         if row is None:
             conn.rollback(); cursor.close()
             return False, f"找不到這筆持股（ID {pos_id}）"
-        actual_id, code_raw, shares_raw, cost_raw = row
+        actual_id, code_raw, shares_raw, cost_raw, bought_on_raw = row
         cursor.execute(
             "DELETE FROM positions WHERE id = %s AND user_id = %s",
             (int(actual_id), uid),
@@ -4204,18 +4254,24 @@ def delete_position_exact_id(user_id, pos_id):
         if deleted != 1:
             conn.rollback(); cursor.close()
             return False, f"刪除筆數異常（ID {pos_id}）"
-        # 刪除是「資料清理」，不是交易：依使用者規則不寫入操作日報／交易紀錄。
-        # 若這是「今天誤新增 → 今天全部刪除」的修正，同步移除今天的 add 日誌，
-        # 否則操作日報仍會顯示一筆其實已不存在的新增。
-        cursor.execute(
-            "SELECT COALESCE(SUM(shares),0) FROM positions WHERE user_id=%s AND code=%s",
-            (uid, str(code_raw).strip()))
-        remaining_shares = int(cursor.fetchone()[0] or 0)
-        voided_logs = 0
-        if remaining_shares == 0:
-            voided_logs = _void_same_day_correction_logs(cursor, uid, str(code_raw).strip(), taiwan_today())
+        # 刪除是「資料清理」，不是交易：不應在操作日報留下「待確認」。
+        # 以前只有「整檔歸零」才清理 add 日誌；若同一檔還有其他 lot，
+        # 被刪掉的那一筆就會殘留，最後被重建成「待確認」。
+        # 現在直接用被刪除 lot 的股數／成本／買進日配對其原始 add 日誌。
+        voided_logs = _remove_matching_add_log_for_deleted_lot(
+            cursor, uid, str(code_raw).strip(), int(shares_raw or 0),
+            float(cost_raw or 0), bought_on_raw)
+        # 舊版「整檔歸零」資料再補一次清理，處理歷史殘留。
+        if not voided_logs:
+            cursor.execute(
+                "SELECT COALESCE(SUM(shares),0) FROM positions WHERE user_id=%s AND code=%s",
+                (uid, str(code_raw).strip()))
+            remaining_shares = int(cursor.fetchone()[0] or 0)
+            if remaining_shares == 0:
+                voided_logs = _void_same_day_correction_logs(
+                    cursor, uid, str(code_raw).strip(), taiwan_today())
         if voided_logs:
-            print(f"🧹 已清除同日撤回操作日誌：{uid} {str(code_raw).strip()} {voided_logs} 筆")
+            print(f"🧹 已清除被刪除 lot 對應的操作日誌：{uid} {str(code_raw).strip()} {voided_logs} 筆")
         conn.commit(); cursor.close(); clear_leaderboard_cache()
         return True, "ok"
     except Exception as exc:
@@ -4266,7 +4322,7 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None,
 
             if f_shares > 0 and f_cost is not None and math.isfinite(f_cost):
                 query = (
-                    "SELECT id, code, shares, cost FROM positions "
+                    "SELECT id, code, shares, cost, bought_on FROM positions "
                     "WHERE user_id = %s AND code = %s AND shares = %s "
                     "AND ABS(cost - %s) < 0.01"
                 )
@@ -4300,7 +4356,7 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None,
             cursor.close()
             return False
 
-        actual_id, code_raw, shares_raw, cost_raw = row
+        actual_id, code_raw, shares_raw, cost_raw, bought_on_raw = row
         code = str(code_raw).strip()
         shares = int(shares_raw or 0)
         cost = cost_raw
@@ -4314,50 +4370,10 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None,
         voided_logs = 0
         if deleted > 0:
             # 「刪除持股」本身是資料修正，不是交易。
-            # 如果被刪掉的 lot 是今天/最近建立、且原本對應到一筆 web 新增，
-            # 就把那一筆 add 日誌一起撤銷。這比「整檔歸零才清除」安全，
-            # 因為使用者可能本來就持有同一檔股票，昨天只是誤新增一筆。
-            # 真正用「賣出」功能的交易不會走這裡，因此 realized_trades 不受影響。
+            # 直接移除被刪除 lot 對應的 web add 日誌，避免日報出現「待確認」。
             try:
-                cursor.execute(
-                    """
-                    SELECT id FROM position_change_logs
-                    WHERE user_id=%s AND code=%s
-                      AND action='add' AND shares_delta=%s
-                      AND trade_price IS NOT NULL
-                      AND ABS(trade_price - %s) < 0.01
-                      AND trade_date = %s
-                      AND source='web'
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (uid, code, shares, float(cost), taiwan_today()),
-                )
-                match = cursor.fetchone()
-                if match:
-                    cursor.execute("DELETE FROM position_change_logs WHERE id=%s", (int(match[0]),))
-                    voided_logs = int(cursor.rowcount or 0)
-                # 舊版可能把 bought_on 寫成其他日期；若今天沒有找到，
-                # 再用最近建立時間做一次精確配對，避免留下明確已刪除的誤新增。
-                if not voided_logs:
-                    cursor.execute(
-                        """
-                        SELECT id FROM position_change_logs
-                        WHERE user_id=%s AND code=%s
-                          AND action='add' AND shares_delta=%s
-                          AND trade_price IS NOT NULL
-                          AND ABS(trade_price - %s) < 0.01
-                          AND source='web'
-                          AND created_at >= NOW() - INTERVAL '48 hours'
-                        ORDER BY created_at DESC, id DESC
-                        LIMIT 1
-                        """,
-                        (uid, code, shares, float(cost)),
-                    )
-                    match = cursor.fetchone()
-                    if match:
-                        cursor.execute("DELETE FROM position_change_logs WHERE id=%s", (int(match[0]),))
-                        voided_logs = int(cursor.rowcount or 0)
+                voided_logs = _remove_matching_add_log_for_deleted_lot(
+                    cursor, uid, code, shares, float(cost), bought_on_raw)
             except Exception as log_exc:
                 print(f"⚠️ 刪除持股後清除對應操作日誌失敗：{log_exc}")
 
@@ -6019,14 +6035,15 @@ def _position_change_journal_status(log):
 
 
 def _same_day_voided_log_ids(logs):
-    """找出同日「加進去又完整撤回」的成對操作。
+    """找出同日「加進去又完整撤回」的成對／群組操作。
 
-    不用整天淨變動判斷，因為可能出現：
-    +23 → -23 → +2。此時前面的 +23/-23 應視為誤操作，最後的 +2
-    仍然是真正的加碼。
-
-    只有「正股數的 add」與「負股數的 reduce/delete」能以完全相同股數配對時，
-    才將這一對視為無效；跨日不配對。底層紀錄保留，但報表／統計排除。
+    目的不是刪除真正的交易資料，而是讓操作日報忽略已完整撤回的同日操作。
+    支援：
+      +1 → -1
+      +1 → +1 → -2
+      +23 → -23 → +2
+    只有同一天、同一檔、最後可完整抵銷的 add/reduce 才會被隱藏；
+    跨日操作不配對，因此正常的隔日持有不受影響。
     """
     grouped = {}
     for log in logs or []:
@@ -6037,8 +6054,9 @@ def _same_day_voided_log_ids(logs):
 
     voided_ids = set()
     for _key, items in grouped.items():
-        adds = {}
-        reduces = {}
+        # 依資料庫 id 保持實際操作順序；用 stack 做「先前尚未撤回的 add」配對。
+        # 對 reduce 的股數先從最近的 add lot 扣除，能處理多筆 add 合併賣出的情況。
+        open_adds = []  # [log_id, remaining_shares]
         for log in sorted(items, key=lambda x: int(x.get("id") or 0)):
             action = str(log.get("action") or "").strip()
             delta = int(log.get("shares_delta") or 0)
@@ -6046,25 +6064,43 @@ def _same_day_voided_log_ids(logs):
             if not lid or delta == 0:
                 continue
             if action == "add" and delta > 0:
-                adds.setdefault(delta, []).append(lid)
-            elif action in {"reduce", "delete"} and delta < 0:
-                reduces.setdefault(abs(delta), []).append(lid)
+                open_adds.append([lid, delta])
+                continue
+            if action not in {"reduce", "delete"} or delta >= 0:
+                continue
 
-        for qty in set(adds) & set(reduces):
-            pair_count = min(len(adds[qty]), len(reduces[qty]))
-            voided_ids.update(adds[qty][:pair_count])
-            voided_ids.update(reduces[qty][:pair_count])
+            remaining = abs(delta)
+            # 只有能完全由同日新增抵銷的部分才算撤回；若超出，
+            # 多出來的部分屬於真正減碼，不會把整筆誤標為撤回。
+            while remaining > 0 and open_adds:
+                add_id, add_qty = open_adds[-1]
+                used = min(remaining, add_qty)
+                if used == add_qty:
+                    voided_ids.add(add_id)
+                    open_adds.pop()
+                else:
+                    open_adds[-1][1] -= used
+                    # 部分抵銷後，該 add 仍有有效剩餘，不隱藏。
+                remaining -= used
+
+            # reduce/delete 本身只有在「完全由同日 add 抵銷」時才隱藏。
+            if remaining == 0:
+                voided_ids.add(lid)
 
     return voided_ids
 
 
 def _filter_voided_same_day_logs(logs):
-    """排除同日完整配對撤回的操作；不影響真正跨日或部分減碼。
+    """建立「操作日報」可見資料。
 
-    關鍵：刪除持股不一定會寫入 action='delete'，因此不能先把 delete
-    從配對資料拿掉；否則「今天新增 → 今天刪除」只剩 add，操作日報就會
-    把它誤認成一筆有效新增。先用 add/reduce/delete 完整配對，再把 delete
-    本身隱藏即可。
+    這裡的規則很明確：
+    1. 「刪除持股」是資料修正，不是交易，絕對不列入操作日報。
+    2. 同一天「新增 → 賣回／撤回」且股數完整抵銷，視為這次輸入從未發生，
+       新增與對應的減碼一起從操作日報移除。
+    3. 真正的跨日交易、部分減碼仍照常保留。
+
+    注意：被刪除的 lot 原本對應的 add 日誌也會在 delete_position() 時直接刪掉；
+    這裡再做一次過濾，是為了清掉舊版殘留資料，避免任何「待確認／刪除」痕跡出現在操作日報。
     """
     raw = list(logs or [])
     voided_ids = _same_day_voided_log_ids(raw)
@@ -6072,10 +6108,10 @@ def _filter_voided_same_day_logs(logs):
     for log in raw:
         action = str(log.get("action") or "").strip()
         lid = int(log.get("id") or 0)
-        # 刪除持股是資料修正，不在操作日報單獨顯示。
+        # 刪除永遠不屬於操作日報。
         if action == "delete":
             continue
-        # 同日新增後完整撤回：add 與對應的 reduce/delete 一起隱藏。
+        # 同日完整撤回：整組 add/reduce 都視為無效輸入，不留下任何紀錄。
         if lid in voided_ids:
             continue
         out.append(log)
@@ -6571,33 +6607,8 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
     for day in sorted(grouped, key=lambda value: value or date.min, reverse=True):
         day_logs = grouped[day]
         day_text = day.strftime("%Y/%m/%d") if day else "日期待確認"
-        # 同一天加了又撤、且股數完全配對的，視為「加錯又撤掉」，
-        # 不佔正常操作的版面——那一對等於沒發生過。
-        #
-        # 只合併同一天：隔天才刪通常是真的改變主意，那是有意義的
-        # 操作決定，不該被藏起來。
-        #
-        # 已被判定為「當日加入後完整刪除」的無效操作已在前面排除，
-        # 因此這裡只呈現真正有效的操作。
-        cancelled_logs = []
-        by_code_delta = {}
-        for log in day_logs:
-            code_key = str(log.get("code") or "").strip()
-            by_code_delta.setdefault(code_key, []).append(log)
-        cancelled_codes = set()
-        for code_key, logs_of_code in by_code_delta.items():
-            actions = {str(x.get("action") or "") for x in logs_of_code}
-            net = sum(int(x.get("shares_delta") or 0) for x in logs_of_code)
-            # 同一天「加入後完整撤回」：撤回可以是按刪除，也可以是按賣出。
-            # 只有淨變動為 0 才視為誤操作，避免把正常加碼／減碼藏掉。
-            if net == 0 and "add" in actions and (actions & {"reduce", "delete"}):
-                cancelled_codes.add(code_key)
-        if cancelled_codes:
-            cancelled_logs = [x for x in day_logs
-                              if str(x.get("code") or "").strip() in cancelled_codes]
-            day_logs = [x for x in day_logs
-                        if str(x.get("code") or "").strip() not in cancelled_codes]
-
+        # _filter_voided_same_day_logs() 已經把「刪除」以及同日完整撤回的
+        # add/reduce 整組移除，因此這裡只呈現真正存在於操作日報的紀錄。
         row_parts = []
         attached_pnl_keys = set()
         status_groups = {label: [] for label, _cls in journal_group_order}
@@ -6654,35 +6665,13 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
   <div class="position-journal-cell"><b>{html.escape(change_text)}</b><small>相對操作前</small></div>
   <div class="position-journal-cell"><b>{html.escape(weight_text)}</b><small class="{event_weight_class}">{html.escape(event_weight_text)}</small>{pnl_html}{note_html}</div>
 </div>''')
-        # 當天被判定為「加錯又撤掉」的，收在一行裡，預設不展開。
         cancelled_html = ""
-        if cancelled_logs:
-            names = []
-            for code_key in sorted(cancelled_codes):
-                nm = str(stock_display_name(code_key, inst_data))
-                names.append(f"{html.escape(nm)}（{html.escape(code_key)}）")
-            detail_rows = []
-            for log in sorted(cancelled_logs, key=lambda x: int(x.get("id") or 0)):
-                lbl, _cls = _position_change_journal_status(log)
-                dlt = int(log.get("shares_delta") or 0)
-                nm = html.escape(str(stock_display_name(
-                    str(log.get("code") or "").strip(), inst_data)))
-                detail_rows.append(
-                    f'<div class="journal-cancel-row">{nm}　{lbl}　{dlt:+,} 股</div>')
-            cancelled_html = (
-                f'<details class="journal-cancelled">'
-                f'<summary>{"、".join(names)} 當天加入後又刪除，已不列入操作統計'
-                f'（{len(cancelled_logs)} 筆）</summary>'
-                f'{"".join(detail_rows)}'
-                f'<div class="journal-cancel-note">同一天加入又刪除、淨變動為零，'
-                f'視為輸入後撤回；紀錄仍保留在交易紀錄頁的完整操作歷程。</div>'
-                f'</details>')
 
-        if not row_parts and not cancelled_html:
+        if not row_parts:
             continue
         day_sections.append(
             f'<div class="position-journal-day">{day_text}</div>'
-            f'{"".join(row_parts)}{cancelled_html}')
+            f'{"".join(row_parts)}')
 
     filter_text = (selected_date.strftime("%Y/%m/%d") if selected_date else "全部日期")
     export_params = []
@@ -6693,7 +6682,7 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
     export_url = "/web/position-journal.csv" + ("?" + "&".join(export_params) if export_params else "")
     return f'''<section class="position-journal">
   <div class="position-journal-head"><div class="position-journal-title-actions"><h2>操作日報</h2><a class="position-journal-export" href="{html.escape(export_url, quote=True)}">匯出 CSV</a></div><small>{len(enriched)} 筆操作<br>{html.escape(filter_text)}</small></div>
-  <div class="position-journal-note">同日依<b>新增 → 加碼 → 減碼 → 刪除</b>分類排列；刪除表示該筆操作已將持股完整減碼至 0 股。<b>目前權重</b>＝最新可得價格 × 目前持股 ÷ 目前持股總市值；未輸入的現金與其他資產不會被假設加入分母。</div>
+  <div class="position-journal-note">操作日報只記錄實際的新增、加碼與減碼；<b>刪除持股屬資料修正，不會留下任何操作紀錄</b>。同日新增後又完整撤回的操作也會從日報中移除。<b>目前權重</b>＝最新可得價格 × 目前持股 ÷ 目前持股總市值；未輸入的現金與其他資產不會被假設加入分母。</div>
   <div class="position-journal-table-head"><span>標的</span><span>狀態</span><span>持股變動</span><span>變動幅度</span><span>目前權重<br>變動 %</span></div>
   {"".join(day_sections)}
   <div class="position-journal-foot">本次影響是以成交／成本價 × 股數變動估算，占目前已登錄持股總市值；不是個人化買賣建議。價格若查無有效資料，相關欄位維持待確認。</div>
@@ -25219,9 +25208,6 @@ def render_leaderboard_chart(series_map, chart_market, top_keys, highlight_key=N
 </div>"""
 
 
-@app.route("/web/leaderboard", methods=["GET", "POST"])
-@web_login_required
-
 def get_leaderboard_historical_summary(months=6, seasons=4):
     """讀取已保存的排行榜每日快照，整理月榜與賽季歷史。"""
     out = {"months": [], "seasons": []}
@@ -25278,6 +25264,8 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
     out['months']=build('month',months); out['seasons']=build('season',seasons)
     return out
 
+@app.route("/web/leaderboard", methods=["GET", "POST"])
+@web_login_required
 def web_leaderboard(uid):
     """
     全站績效排行榜。
