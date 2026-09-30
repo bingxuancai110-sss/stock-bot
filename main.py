@@ -3252,44 +3252,80 @@ def _aggregate_anomaly_events(events, snapshot_date):
     grouped.sort(key=lambda e: 0 if str(e.get("severity")).upper() == "S" else 1)
     return grouped
 
-def _build_postmarket_anomaly_digest(events, snapshot_date, base_url=None):
-    """把收盤後同一批異常事件合併成一則 LINE 盤後摘要。
+def _stock_name_for_digest(code, fallback=None):
+    try:
+        name = stock_display_name(str(code), fallback=fallback or str(code))
+        return str(name or fallback or code).strip()
+    except Exception:
+        return str(fallback or code).strip()
 
-    目的：收盤後 16:00 左右若同時出現多個事件，不要連續洗出多則 LINE。
-    一批事件固定只產生一則訊息；每個事件仍保留標題與重點細節。
-    """
+
+def _digest_event_title(event):
+    """盤後摘要顯示股票名稱，不讓使用者只看到代號。"""
+    title = str(event.get("title") or "").strip()
+    evidence = event.get("evidence") or {}
+    code = evidence.get("code")
+    if not code:
+        m = re.search(r"(?:你的)?([0-9]{4,6}[A-Z]?)", title)
+        code = m.group(1) if m else None
+    if code and code in title:
+        name = _stock_name_for_digest(code)
+        title = title.replace(str(code), f"{name}（{code}）")
+    return title
+
+
+def _build_postmarket_anomaly_digest(events, snapshot_date, base_url=None):
+    """濃縮盤後精華：優先持股、方向反轉、黑馬大變動、雷達突破與大盤。"""
     events = list(events or [])
     if not events:
         return None
 
-    has_s = any(str(e.get("severity") or "A").upper() == "S" for e in events)
-    icon = "🚨" if has_s else "📊"
-    lines = [f"{icon} 【台股盤後異常摘要】", "", f"今日共 {len(events)} 項重要變化："]
+    # 同類低價值事件不逐檔洗版；保留真正有辨識度的事件。
+    priority_categories = {"watchlist", "watchlist_position", "institutional", "blackhorse", "radar", "market", "news"}
+    selected = [e for e in events if str(e.get("category") or "") in priority_categories]
+    selected.sort(key=lambda e: (-CHANGE_LEVEL.get(str(e.get("severity") or "C").upper(), 1), str(e.get("category") or "")))
 
-    # 保留排序後的所有事件，但限制單則訊息長度，避免 LINE 被超長訊息截斷。
-    for i, event in enumerate(events, 1):
-        severity = str(event.get("severity") or "A").upper()
-        marker = "🚨" if severity == "S" else "⚡"
-        title = str(event.get("title") or "市場異常事件").strip()
-        detail = str(event.get("detail") or "").strip()
-        lines.append(f"\n{marker} {title}")
-        if detail:
-            # 避免單一事件本身過長；完整內容仍可由網頁戰情查看。
-            clean_detail = " ".join(detail.split())
-            if len(clean_detail) > 180:
-                clean_detail = clean_detail[:177] + "..."
-            lines.append(clean_detail)
+    # 單純法人連續 1→2、4→5 這類事件不單獨佔版面。
+    selected = [e for e in selected if not (str(e.get("category")) == "institutional" and "方向反轉" not in str(e.get("title")))]
 
-    lines += ["", "這是事件提醒，不代表買賣建議。"]
+    # 黑馬 #1 只有真的換人才能報；前後同一名次直接丟掉。
+    filtered = []
+    for e in selected:
+        title = str(e.get("title") or "")
+        if "黑馬 #1 換人" in title:
+            m = re.search(r"換人[:：]?\s*([^，, ]+).*?([A-Za-z0-9一-龥\-]+)\s*上升至 #1", title)
+            if m and m.group(1) == m.group(2):
+                continue
+        filtered.append(e)
+    selected = filtered[:15]
+
+    has_s = any(str(e.get("severity") or "A").upper() == "S" for e in selected)
+    lines = [f"{'🚨' if has_s else '📊'} 【台股盤後精華】", "",
+             f"今日偵測 {len(events)} 項，精選 {len(selected)} 項", ""]
+
+    groups = [("watchlist", "🔥 你的持股"), ("institutional", "🔄 法人異動"),
+              ("blackhorse", "🐎 黑馬異動"), ("radar", "📡 雷達"),
+              ("market", "🌎 市場"), ("news", "📰 重要新聞")]
+    for cat, heading in groups:
+        items = [e for e in selected if str(e.get("category") or "") == cat]
+        if not items:
+            continue
+        lines += [heading]
+        for e in items[:6]:
+            title = _digest_event_title(e)
+            detail = " ".join(str(e.get("detail") or "").split())
+            if len(detail) > 110:
+                detail = detail[:107] + "..."
+            # 法人連續性只保留方向反轉；其他低價值 streak 已被過濾。
+            lines.append(f"• {title}" + (f"｜{detail}" if detail else ""))
+        lines.append("")
+
+    lines += ["📌 事件提醒，不代表買賣建議。"]
     if base_url:
-        lines.append(f"查看完整戰情：{base_url}/")
+        lines.append(f"👉 查看完整戰情：{base_url}/")
     text = "\n".join(lines)
-    return {
-        "severity": "S" if has_s else "A",
-        "title": f"盤後異常摘要｜{len(events)} 項",
-        "detail": text,
-        "event_key": f"postmarket_digest_{snapshot_date}",
-    }
+    return {"severity": "S" if has_s else "A", "title": f"盤後精華｜{len(selected)} 項",
+            "detail": text, "event_key": f"postmarket_digest_{snapshot_date}"}
 
 
 def push_anomaly_events(snapshot_date, users=None, base_url=None):
