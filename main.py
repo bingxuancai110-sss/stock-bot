@@ -25457,6 +25457,7 @@ def web_leaderboard(uid):
         "waiting": _normalise_bot_names(_dedup_board(all_boards.get("waiting") or [])),
     }
     month_rows, month_info = _build_current_month_board(all_boards, series_map, market)
+    season_info = all_boards.get("season_info") or leaderboard_season_info()
     boards["month"] = _normalise_bot_names(_dedup_board(month_rows[:100])[:20])
     with _leaderboard_cache_lock:
         leaderboard_meta = dict(_leaderboard_cache.get((100, 365)) or {})
