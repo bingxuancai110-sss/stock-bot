@@ -7463,7 +7463,41 @@ BOT_MAX_WEIGHT = 0.20    # 單一股票持倉權重上限 20%
 BOT_SCORE_DROP_POINTS = 15.0  # 自持有後最高分回落 15 分視為大幅下降（實驗門檻）
 BOT_STOP_LOSS_PCT = -20.0  # D 方案：單筆自買進價跌幅達 -20% 即停損
 BOT_INITIAL_CAPITAL = 1_000_000.0  # 虛擬帳戶固定初始資產；不途中補資金
-BOT_MODES = (("blackhorse", "黑馬"), ("radar", "雷達"))
+BOT_MODES = (("blackhorse", "黑馬"), ("radar", "雷達"), ("yaochi_00981a", "瑤池金母"))
+
+
+def _simulate_yaochi_00981a(days=365):
+    """瑤池金母：以 00981A 實際還原後價格走勢作為排行榜 PK 對手。"""
+    q = get_realtime_stock("00981A", rng="1y") or {}
+    dates = q.get("close_dates") or []
+    closes = q.get("adj_closes") or q.get("closes") or []
+    if len(dates) != len(closes) or len(dates) < 2:
+        return None
+    pairs = [(d, float(v)) for d, v in zip(dates, closes) if d is not None and v not in (None, 0)]
+    if len(pairs) < 2:
+        return None
+    cutoff = taiwan_today() - timedelta(days=int(days))
+    pairs = [(d, v) for d, v in pairs if d >= cutoff]
+    if len(pairs) < 2:
+        return None
+    base = pairs[0][1]
+    curve = [(d, (v / base - 1.0) * 100.0) for d, v in pairs]
+    virtual_curve = [(d, BOT_INITIAL_CAPITAL * (1.0 + ret / 100.0)) for d, ret in curve]
+    virtual_asset = virtual_curve[-1][1] if virtual_curve else BOT_INITIAL_CAPITAL
+    latest = pairs[-1][1]
+    holdings = [{
+        "code": "00981A", "name": STOCK_NAME_MAP.get("00981A", "00981A"),
+        "weight": 100.0, "pct": 0.0, "lots": 1,
+        "first_pick": pairs[0][0], "days_left": 0, "etf_latest_price": latest,
+    }]
+    return {
+        "curve": curve, "virtual_curve": virtual_curve,
+        "initial_capital": BOT_INITIAL_CAPITAL, "virtual_asset": virtual_asset,
+        "holdings": holdings, "history": [], "picks_days": len(curve),
+        "invested_pct": 100.0, "cash_pct": 0.0,
+        "strategy_code": "ETF00981A",
+        "strategy_label": "00981A 實際績效線｜100% 持有主動統一台股增長",
+    }
 
 
 def simulate_bot_portfolio(mode, days=365):
@@ -7481,6 +7515,9 @@ def simulate_bot_portfolio(mode, days=365):
     注意：pick_history 只保存前 N 名，因此「訊號消失」的定義是「在下一個
     有保存的推薦日不再出現在前 N 名」。如果中間沒有推薦快照，不自行推測。
     """
+    if mode == "yaochi_00981a":
+        return _simulate_yaochi_00981a(days=days)
+
     picks = get_picks_since(mode, days=days) or []
     if not picks:
         return None
@@ -7807,8 +7844,12 @@ def _fresh_bot_rows_for_persisted_leaderboard(days=365, market=None):
             "initial_capital":sim.get("initial_capital",BOT_INITIAL_CAPITAL),"virtual_asset":sim.get("virtual_asset"),
             "virtual_curve":sim.get("virtual_curve") or [],"invested_pct":sim.get("invested_pct",0.0),
             "cash_pct":sim.get("cash_pct",100.0),
-            "bot_rule":(f"D10 方案：前 {BOT_TOP_N} 名；目前持股採等權配置，5 檔時每檔 20%，6～10 檔等權，"
-                         f"少於 5 檔才留現金；訊號消失／分數下降 {BOT_SCORE_DROP_POINTS:.0f} 分／-20% 停損／{BOT_HOLD_DAYS} 日到期。"),
+            "bot_rule": (
+                "00981A 實際績效線：100% 持有主動統一台股增長，作為『瑤池金母』PK 對手。"
+                if bot_mode == "yaochi_00981a" else
+                f"D10 方案：前 {BOT_TOP_N} 名；目前持股採等權配置，5 檔時每檔 20%，6～10 檔等權，"
+                f"少於 5 檔才留現金；訊號消失／分數下降 {BOT_SCORE_DROP_POINTS:.0f} 分／-20% 停損／{BOT_HOLD_DAYS} 日到期。"
+            ),
         })
         series_map[f"bot:{bot_mode}"]={"nickname":bot_name,"curve":curve}
     return rows,series_map
@@ -8159,10 +8200,14 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             "virtual_curve": sim.get("virtual_curve") or [],
             "invested_pct": sim.get("invested_pct", 0.0),
             "cash_pct": sim.get("cash_pct", 100.0),
-            "bot_rule": (f"D10 方案：每個推薦日納入前 {BOT_TOP_N} 名；5 檔時每檔 20%，6～10 檔等權配置，不足 5 檔才保留現金；"
-                         f"訊號消失或分數自持有後高點下降 {BOT_SCORE_DROP_POINTS:.0f} 分即賣出，"
-                         f"最晚持有 {BOT_HOLD_DAYS} 個交易日；已扣手續費與證交稅。"
-                         f"共 {sim['picks_days']} 個推薦日。"),
+            "bot_rule": (
+                "00981A 實際績效線：100% 持有主動統一台股增長，作為『瑤池金母』PK 對手。"
+                if bot_mode == "yaochi_00981a" else
+                f"D10 方案：每個推薦日納入前 {BOT_TOP_N} 名；5 檔時每檔 20%，6～10 檔等權配置，不足 5 檔才保留現金；"
+                f"訊號消失或分數自持有後高點下降 {BOT_SCORE_DROP_POINTS:.0f} 分即賣出，"
+                f"最晚持有 {BOT_HOLD_DAYS} 個交易日；已扣手續費與證交稅。"
+                f"共 {sim['picks_days']} 個推薦日。"
+            ),
         })
         series_map[f"bot:{bot_mode}"] = {"nickname": bot_name, "curve": bot_curve}
 
@@ -12389,6 +12434,7 @@ def _line_feature_web_url(user_id, feature, base_url=None, code=None):
         "turning":("/web/workbench",{"tab":"轉折"}),
         "blackhorse":("/web/workbench",{"tab":"黑馬"}),
         "radar":("/web/workbench",{"tab":"雷達"}),
+        "leaderboard":("/web/leaderboard",{}),
     }
     target,params=routes.get(str(feature or ""),("/web/portfolio",{}))
     params={k:v for k,v in params.items() if v not in (None,"")}
@@ -16470,6 +16516,214 @@ def build_line_screener_message(user_id, mode, base_url=None,
     return FlexSendMessage(alt_text=plain_text[:400], contents=bubble)
 
 
+def _leaderboard_settlement_periods(today=None):
+    """回傳今天是否為月末／季末最後一個台股交易日。"""
+    today = today or taiwan_today()
+    if not is_twse_trading_day(today):
+        return []
+    try:
+        next_trade = next_taiwan_trading_day(today)
+    except Exception as exc:
+        print(f"⚠️ 判斷排行榜結算日失敗：{exc}")
+        return []
+    periods = []
+    if next_trade.month != today.month or next_trade.year != today.year:
+        periods.append(("month", f"{today.year}-{today.month:02d}", f"{today.year}/{today.month:02d} 月榜"))
+    if (((today.month - 1) // 3) != ((next_trade.month - 1) // 3) or
+            next_trade.year != today.year):
+        q = (today.month - 1) // 3 + 1
+        periods.append(("season", f"{today.year}Q{q}", f"{today.year} 第 {q} 季"))
+    return periods
+
+
+def _ensure_leaderboard_settlement_push_table():
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS leaderboard_settlement_push_sent (
+                settlement_date DATE NOT NULL,
+                user_id TEXT NOT NULL,
+                periods TEXT NOT NULL DEFAULT '',
+                sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (settlement_date, user_id)
+            )
+        """)
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"❌ 建立排行榜結算推播紀錄表失敗：{exc}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def _leaderboard_settlement_targets(today):
+    """只通知已加入排行榜且已開啟 LINE 每日推播的使用者。"""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT m.user_id
+            FROM leaderboard_members m
+            JOIN users u ON u.user_id = m.user_id
+            WHERE COALESCE(u.notify, FALSE) = TRUE
+            ORDER BY m.user_id
+        """)
+        rows = [str(r[0]).strip() for r in cur.fetchall() if r and r[0]]
+        cur.close()
+        return rows
+    except Exception as exc:
+        print(f"❌ 讀取排行榜結算推播名單失敗：{exc}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def _leaderboard_settlement_already_sent(today, user_id):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 1 FROM leaderboard_settlement_push_sent
+            WHERE settlement_date=%s AND user_id=%s LIMIT 1
+        """, (today, str(user_id)))
+        found = cur.fetchone() is not None
+        cur.close()
+        return found
+    except Exception as exc:
+        print(f"⚠️ 查詢排行榜結算推播狀態失敗 {user_id}: {exc}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def _mark_leaderboard_settlement_sent(today, user_id, periods):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO leaderboard_settlement_push_sent
+                (settlement_date, user_id, periods)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (settlement_date, user_id) DO UPDATE
+            SET periods=EXCLUDED.periods, sent_at=NOW()
+        """, (today, str(user_id), ",".join(periods)))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"❌ 寫入排行榜結算推播紀錄失敗 {user_id}: {exc}")
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def build_leaderboard_settlement_push(user_id, periods, base_url=None):
+    """LINE 結算提醒：月末與季末若同日，合併成一則訊息，並附個人排行榜入口。"""
+    labels = []
+    for kind, period_id, label in periods:
+        if kind == "month":
+            labels.append(f"📅 {label}")
+        elif kind == "season":
+            labels.append(f"🏆 {label} 賽季")
+    if not labels:
+        return None
+    web_url = _line_feature_web_url(user_id, "leaderboard", base_url)
+    title = "🏁 排行榜已完成結算"
+    text = (
+        f"{title}\n\n"
+        + "\n".join(labels)
+        + "\n\n本期排行榜資料已更新完成，成績單已產生。"
+        + "\n前往排行榜查看你的最終排名、報酬與結算成績。"
+    )
+    if not web_url:
+        return TextSendMessage(text=text)
+    contents = [
+        {"type": "text", "text": title, "weight": "bold", "size": "xl", "color": "#1B2027"},
+        {"type": "text", "text": "\n".join(labels), "weight": "bold", "size": "md", "color": "#6E5228", "margin": "md", "wrap": True},
+        {"type": "text", "text": "本期排行榜資料已更新完成，成績單已產生。\n前往排行榜查看你的最終排名、報酬與結算成績。", "size": "sm", "color": "#454C55", "margin": "lg", "wrap": True},
+        {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+        {"type": "button", "style": "primary", "height": "sm", "color": "#6E5228", "margin": "lg",
+         "action": {"type": "uri", "label": "🏆 前往排行榜查看成績單", "uri": web_url}},
+    ]
+    return FlexSendMessage(
+        alt_text=(title + "｜" + "、".join(labels)),
+        contents={"type": "bubble", "body": {"type": "box", "layout": "vertical", "contents": contents, "paddingAll": "18px", "backgroundColor": "#FFFFFF"}, "styles": {"body": {"backgroundColor": "#FFFFFF"}}}
+    )
+
+
+def push_leaderboard_settlement_notifications(today=None):
+    """結算完成後只推一次；月末／季末同日合併為一則 LINE。"""
+    today = today or taiwan_today()
+    periods = _leaderboard_settlement_periods(today)
+    if not periods:
+        return "今天不是月末／季末最後交易日，未發排行榜結算提醒。"
+    if taiwan_now().hour < 15:
+        return "尚未到台股收盤後時段，未發排行榜結算提醒。"
+    if not _admin_feature_enabled('line_daily'):
+        return "LINE 每日推播目前已由管理員關閉，未發排行榜結算提醒。"
+    if not _ensure_leaderboard_settlement_push_table():
+        return "排行榜結算推播紀錄表無法建立，未發提醒。"
+
+    # 先保存當日排名快照，再重建排行榜，確保使用者點開看到的是剛結算的版本。
+    try:
+        save_leaderboard_rank_snapshots(snapshot_date=today)
+    except Exception as exc:
+        print(f"⚠️ 結算提醒前保存排行榜快照失敗：{exc}")
+    try:
+        clear_leaderboard_cache()
+        build_leaderboard(top_n=100, days=365, force_rebuild=True)
+    except Exception as exc:
+        print(f"❌ 結算提醒前排行榜更新失敗：{exc}")
+        return f"排行榜結算資料更新失敗，未發提醒：{exc}"
+
+    targets = _leaderboard_settlement_targets(today)
+    sent = failed = skipped = 0
+    period_ids = [p[1] for p in periods]
+    for uid in targets[:PUSH_MAX_USERS]:
+        if _leaderboard_settlement_already_sent(today, uid):
+            skipped += 1
+            continue
+        if is_user_quiet_hours(uid):
+            skipped += 1
+            continue
+        msg = build_leaderboard_settlement_push(uid, periods)
+        if not msg:
+            skipped += 1
+            continue
+        try:
+            _push_line_with_retry(uid, msg)
+            if _mark_leaderboard_settlement_sent(today, uid, period_ids):
+                sent += 1
+        except Exception as exc:
+            print(f"❌ 排行榜結算提醒推播失敗 {uid}: {exc}")
+            failed += 1
+    over = max(0, len(targets) - PUSH_MAX_USERS)
+    result = f"排行榜結算提醒完成：sent={sent}, failed={failed}, skipped={skipped}"
+    if over:
+        result += f"；通知名單 {len(targets)} 人超過目前推播上限 {PUSH_MAX_USERS} 人"
+    return result
+
+
+@app.route("/cron/push-leaderboard-settlement", methods=["POST", "GET"])
+def cron_push_leaderboard_settlement():
+    """月末／季末收盤後提醒排行榜使用者查看結算成績單。"""
+    secret = request.args.get("token")
+    if secret != os.environ.get("CRON_SECRET"):
+        abort(403)
+    return "排行榜結算通知已改為管理員手動發送，請至管理員後台 → 排行榜結算通知。", 410
+
+
 @app.route("/cron/push-watchlist", methods=["POST", "GET"])
 def cron_push_watchlist():
     """早上推播盤前簡報＋自選股摘要。受 PUSH_MAX_USERS 額度保護。"""
@@ -16944,6 +17198,9 @@ def _do_daily_snapshot():
     # 月度回顧不另開一條 Render／CRON 工作；沿用每日快照的既有安全觸發。
     # 當月最後一日才封存，且使用同月快照鍵 upsert，所以重試不會累積重複紀錄。
     monthly_status = archive_monthly_reviews_if_due(taiwan_today())
+    # 每日快照完成後，若今天正好是月末／季末最後交易日，
+    # 排行榜結算通知改為管理員手動發送，不在每日快照自動推播。
+    settlement_push_status = "改為管理員手動發送"
 
     missing_after = get_missing_portfolio_snapshot_user_ids(taiwan_today())
     if missing_after is None:
@@ -16958,7 +17215,8 @@ def _do_daily_snapshot():
     return (f"組合本次續跑處理 {saved}（略過 {skipped}，共 {len(user_ids)}）、"
             f"自選本次 {wl_saved}/{len(wl_users)}、產業 {ind_saved}、"
             f"選股名單 {picks_saved}、排行榜名次 {rank_saved}、"
-            f"產業近期表現 {ind_perf_saved}、大盤 {taiex_close}"
+            f"產業近期表現 {ind_perf_saved}、大盤 {taiex_close}、"
+            f"排行榜結算提醒：{settlement_push_status}"
             f"{portfolio_status}{pick_status}；{monthly_status}")
 
 
@@ -20620,8 +20878,62 @@ def web_admin(uid):
     if not is_admin(uid): return make_response('Forbidden',403)
     d=_admin_dashboard_data(); state=_maintenance_state(); status='🟢 正常' if not state.get('active') else '🟠 維護中'
     cards=f'''<div class="admin-grid"><div class="admin-stat"><b>{d['users']}</b><small>使用者</small></div><div class="admin-stat"><b>{d['active_today']}</b><small>今日活躍</small></div><div class="admin-stat"><b>{d['trades']}</b><small>正式賣出</small></div><div class="admin-stat"><b>{d['activity_today']}</b><small>今日操作</small></div></div>'''
-    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股行事曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/international-calendar">🌎 國際行事曆<br><small>CPI、非農、PCE、GDP、FOMC</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>容量、RAM、可清理歷史資料</small></a></div></div></div>'''
+    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/leaderboard-settlement">🏆 排行榜結算通知<br><small>手動發送月榜／賽季結算 LINE</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股行事曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/international-calendar">🌎 國際行事曆<br><small>CPI、非農、PCE、GDP、FOMC</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>容量、RAM、可清理歷史資料</small></a></div></div></div>'''
     return render_page('管理員後台',body,'more')
+
+
+def _leaderboard_periods_for_admin(target_date):
+    d = target_date if isinstance(target_date, date) else date.fromisoformat(str(target_date))
+    q = (d.month - 1) // 3 + 1
+    return [("month", f"{d.year}-{d.month:02d}", f"{d.year}/{d.month:02d} 月榜"), ("season", f"{d.year}Q{q}", f"{d.year} 第 {q} 季")]
+
+def _leaderboard_admin_members():
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor(); cur.execute("SELECT m.user_id, m.nickname FROM leaderboard_members m ORDER BY m.nickname, m.user_id")
+        rows = cur.fetchall(); cur.close(); return [(str(r[0]), str(r[1] or r[0])) for r in rows]
+    except Exception as exc:
+        print(f"⚠️ 讀取排行榜成員失敗：{exc}"); return []
+    finally: release_db_connection(conn)
+
+def _send_manual_leaderboard_settlement(target_ids, periods):
+    sent = failed = 0
+    for target_uid in target_ids:
+        try:
+            msg = build_leaderboard_settlement_push(target_uid, periods)
+            if msg: _push_line_with_retry(target_uid, msg); sent += 1
+        except Exception as exc:
+            failed += 1; print(f"❌ 管理員手動發送排行榜結算通知失敗 {target_uid}: {exc}")
+    return sent, failed
+
+@app.route('/web/admin/leaderboard-settlement', methods=['GET','POST'])
+@web_login_required
+def web_admin_leaderboard_settlement(uid):
+    if not is_admin(uid): return make_response('Forbidden',403)
+    members = _leaderboard_admin_members()
+    if request.method == 'POST':
+        if not valid_web_csrf(): return make_response('CSRF validation failed',403)
+        try: settlement_date = date.fromisoformat(str(request.form.get('settlement_date') or taiwan_today().isoformat()).strip())
+        except Exception: return make_response('結算日期格式錯誤',400)
+        kinds = request.form.getlist('period_kind'); periods = [p for p in _leaderboard_periods_for_admin(settlement_date) if p[0] in kinds]
+        if not periods: return make_response('請至少選擇本月或本季',400)
+        target_mode = str(request.form.get('target_mode') or 'all')
+        if target_mode == 'selected':
+            selected = {str(x).strip() for x in request.form.getlist('target_user_id') if str(x).strip()}; target_ids = [member_uid for member_uid,_ in members if member_uid in selected]
+        else: target_ids = [member_uid for member_uid,_ in members]
+        if not target_ids: return redirect('/web/admin/leaderboard-settlement?status=' + quote('沒有可發送的排行榜成員'))
+        try:
+            save_leaderboard_rank_snapshots(snapshot_date=settlement_date); clear_leaderboard_cache(); build_leaderboard(top_n=100, days=365, force_rebuild=True)
+        except Exception as exc:
+            print(f"❌ 管理員手動結算前排行榜更新失敗：{exc}"); return make_response('排行榜更新失敗：'+html.escape(str(exc)),500)
+        sent, failed = _send_manual_leaderboard_settlement(target_ids, periods)
+        return redirect('/web/admin/leaderboard-settlement?status=' + quote(f'已發送 {sent} 人，失敗 {failed} 人'))
+    status = request.args.get('status',''); default_date = taiwan_today().isoformat()
+    options = ''.join(f'<label style="display:flex;gap:8px;align-items:center;padding:8px 0"><input type="checkbox" name="target_user_id" value="{html.escape(member_uid)}">{html.escape(nickname)}</label>' for member_uid,nickname in members)
+    body = f"""<div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🏆 排行榜結算通知</h1><p>只在管理員按下發送後才會透過 LINE 通知，不會自動推播。</p></div>
+    <div class="admin-panel"><h3>📅 結算內容</h3><form method="post" action="/web/admin/leaderboard-settlement"><input type="hidden" name="csrf_token" value="{html.escape(get_web_csrf_token())}"><label>結算日期<br><input name="settlement_date" type="date" value="{default_date}"></label><div style="margin-top:12px"><label><input type="checkbox" name="period_kind" value="month" checked> 📅 本月結算</label><br><label><input type="checkbox" name="period_kind" value="season" checked> 🏆 本季結算</label></div><h3 style="margin-top:18px">📱 發送對象</h3><label><input type="radio" name="target_mode" value="all" checked onchange="document.getElementById('targets').style.opacity='.55'"> 全部排行榜成員</label><label style="display:block;margin-top:8px"><input type="radio" name="target_mode" value="selected" onchange="document.getElementById('targets').style.opacity='1'"> 指定成員</label><div id="targets" style="margin-top:8px;max-height:260px;overflow:auto;opacity:.55;border:1px solid #eee;border-radius:12px;padding:10px">{options or '<span>目前沒有排行榜成員</span>'}</div><button type="submit" style="margin-top:16px;padding:12px 18px;border:0;border-radius:12px;background:#6E5228;color:#fff;font-weight:800">📤 發送 LINE 結算通知</button></form></div>
+    <div class="admin-panel"><h3>預覽內容</h3><p>🏁 排行榜已完成結算<br><br>📅 月榜／🏆 賽季榜<br><br>本期排行榜資料已更新完成，成績單已產生。<br>前往排行榜查看你的最終排名、報酬與結算成績。</p><p class="more-note">使用者收到訊息後，按鈕會直接進入排行榜。</p></div><div class="admin-panel"><a href="/web/admin">← 返回管理員後台</a></div>{('<div class="admin-panel" style="color:#176b3a"><b>'+html.escape(status)+'</b></div>') if status else ''}"""
+    return render_page('排行榜結算通知', body, 'more')
 
 @app.route('/web/admin/data-cleanup', methods=['GET','POST'])
 @web_login_required
@@ -25275,7 +25587,7 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
         if d is None or ret is None:
             continue
         key = str(user_id).strip()
-        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達"}
+        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人"}
         display_name = bot_display_names.get(key) or (nickname or key)
         by_user.setdefault(key, []).append((d, float(ret), display_name))
 
@@ -25426,7 +25738,7 @@ def web_leaderboard(uid):
         return render_page("排行榜", pending_html, nav_active="leaderboard")
     # 舊的持久化快照可能還保存「黑馬機器人／雷達機器人」或 bot:xxx，
     # 顯示層統一改成中文名稱，避免快取未重建時把內部 ID 顯示給使用者。
-    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達"}
+    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人"}
     def _normalise_bot_names(rows):
         out = []
         for row in rows or []:
@@ -25435,7 +25747,7 @@ def web_leaderboard(uid):
             if uid in bot_display_names:
                 item["nickname"] = bot_display_names[uid]
             elif item.get("nickname") in ("黑馬機器人", "雷達機器人"):
-                item["nickname"] = "黑馬" if uid == "bot:blackhorse" else "雷達"
+                item["nickname"] = "黑馬" if uid == "bot:blackhorse" else "雷達" if uid == "bot:radar" else "瑤池金母｜00981A 經理人"
             out.append(item)
         return out
 
@@ -25877,32 +26189,44 @@ def web_leaderboard(uid):
                     f'不改變原本排行榜的報酬率口徑。<br>'
                     f'跌幅達 {BOT_STOP_LOSS_PCT:.0f}% 即停損；5 檔時每檔 20%，6～10 檔等權配置，只有不足 5 檔時才會保留現金。<br>'
                     f'這是機械化模擬，沒有滑價與零股限制，跟真人並列僅供對照。</div>']
-                for x in bh:
-                    pct = x.get("pct")
-                    cls = "up" if (pct or 0) >= 0 else "down"
-                    left = int(x.get("days_left") or 0)
-                    lots_n = int(x.get("lots") or 1)
-                    wt = x.get("weight")
-                    meta = f'{lots_n} 次買進'
-                    meta += f'・還有 {left} 個交易日' if left > 0 else '・已到期'
-                    # 權重條：刻度用這批持倉的最大權重當滿格。
-                    # 不用固定刻度——實測連續上榜的標的可以到 39%，
-                    # 用 20% 當滿格會撐爆、用 100% 則所有條都很短。
-                    bar = ''
-                    if wt is not None and max_wt:
-                        bar = (f'<span class="bot-hold-bar">'
-                               f'<i style="width:{min(100.0, wt / max_wt * 100):.1f}%">'
-                               f'</i></span>')
-                    bits.append(
-                        f'<div class="bot-hold">'
-                        f'<span class="bot-hold-name">'
-                        f'{html.escape(str(x.get("name") or x["code"]))}'
-                        f'<small>{html.escape(str(x["code"]))}</small></span>'
-                        f'<span class="bot-hold-wt">'
-                        f'{("%.1f%%" % wt) if wt is not None else "—"}</span>'
-                        f'<span class="bot-hold-pct num {cls}">{pct:+.1f}%</span>'
-                        f'{bar}'
-                        f'<span class="bot-hold-meta">{meta}</span></div>')
+                if r.get("bot_mode") == "yaochi_00981a":
+                    etf_price = bh[0].get("etf_latest_price") if bh else None
+                    bot_detail = (
+                        '<div class="bot-rule"><b style="color:#274c77">🏆 瑤池金母｜00981A 經理人</b><br>'
+                        '以 00981A「主動統一台股增長」的實際還原後價格走勢作為對手績效線，100% 持有 ETF。<br>'
+                        '這是公開市場績效對照，不代表經理人的實際個人交易明細。'
+                        + (f'<br>最新可得價格：{float(etf_price):,.2f}' if etf_price is not None else '')
+                        + '</div>'
+                    )
+                    supporting.append('<span><em>PK 對手</em>00981A 經理人</span>')
+                    supporting.append('<span><em>策略</em>100% 持有 00981A</span>')
+                else:
+                    for x in bh:
+                        pct = x.get("pct")
+                        cls = "up" if (pct or 0) >= 0 else "down"
+                        left = int(x.get("days_left") or 0)
+                        lots_n = int(x.get("lots") or 1)
+                        wt = x.get("weight")
+                        meta = f'{lots_n} 次買進'
+                        meta += f'・還有 {left} 個交易日' if left > 0 else '・已到期'
+                        # 權重條：刻度用這批持倉的最大權重當滿格。
+                        # 不用固定刻度——實測連續上榜的標的可以到 39%，
+                        # 用 20% 當滿格會撐爆、用 100% 則所有條都很短。
+                        bar = ''
+                        if wt is not None and max_wt:
+                            bar = (f'<span class="bot-hold-bar">'
+                                   f'<i style="width:{min(100.0, wt / max_wt * 100):.1f}%">'
+                                   f'</i></span>')
+                        bits.append(
+                            f'<div class="bot-hold">'
+                            f'<span class="bot-hold-name">'
+                            f'{html.escape(str(x.get("name") or x["code"]))}'
+                            f'<small>{html.escape(str(x["code"]))}</small></span>'
+                            f'<span class="bot-hold-wt">'
+                            f'{("%.1f%%" % wt) if wt is not None else "—"}</span>'
+                            f'<span class="bot-hold-pct num {cls}">{pct:+.1f}%</span>'
+                            f'{bar}'
+                            f'<span class="bot-hold-meta">{meta}</span></div>')
                 if len(bits) > 1:
                     bits.insert(1, '<div class="bot-hold bot-hold-head">'
                                    '<span>標的</span><span>權重</span>'
@@ -25995,6 +26319,15 @@ def web_leaderboard(uid):
                                     f'<summary>查看歷史操作（0 筆）</summary>'
                                     f'<div class="rank-detail-body"><div class="rank-detail-title">歷史操作（0 筆）</div><div class="sub">目前尚無已完成賣出交易；新的 D10 交易完成後會直接列在這裡。</div></div></details>')
                 bot_detail = current_holdings_html + history_html
+                if r.get("bot_mode") == "yaochi_00981a":
+                    etf_price = bh[0].get("etf_latest_price") if bh else None
+                    bot_detail = (
+                        '<div class="bot-rule"><b style="color:#274c77">🏆 瑤池金母｜00981A 經理人</b><br>'
+                        '以 00981A「主動統一台股增長」的實際還原後價格走勢作為對手績效線，100% 持有 ETF。<br>'
+                        '這是公開市場績效對照，不代表經理人的實際個人交易明細。'
+                        + (f'<br>最新可得價格：{float(etf_price):,.2f}' if etf_price is not None else '')
+                        + '</div>'
+                    )
 
             d = r.get("detail")
             if d:
