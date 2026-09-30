@@ -6652,14 +6652,18 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
             if code not in merged:
                 item = dict(log)
                 item["_merged_count"] = 1
+                item["_merged_logs"] = [dict(log)]
                 merged[code] = item
                 order.append(code)
                 continue
             item = merged[code]
+            item["_merged_logs"].append(dict(log))
             item["shares_delta"] = int(item.get("shares_delta") or 0) + int(log.get("shares_delta") or 0)
             item["shares_after"] = int(log.get("shares_after") or 0)
-            before = int(item.get("shares_before") or 0)
             delta = int(item.get("shares_delta") or 0)
+            after = int(item.get("shares_after") or 0)
+            before = max(0, after - delta)
+            item["shares_before"] = before
             item["change_pct"] = (delta / before * 100) if before > 0 else None
             if log.get("trade_price") is not None:
                 item["trade_price"] = log.get("trade_price")
@@ -6713,7 +6717,7 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
                 note = html.escape(str(log.get("note") or ""))
                 note_html = f'<small>{note}</small>' if note else ''
                 merged_count = int(log.get("_merged_count") or 1)
-                merged_hint = f" · 今日 {merged_count} 筆合併" if merged_count > 1 else ""
+                merged_logs = list(log.get("_merged_logs") or [])
                 pnl_key = (code, day)
                 realized_pl = realized_by_key.get(pnl_key)
                 if pnl_key in attached_pnl_keys:
@@ -6727,8 +6731,33 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
                     pnl_html = '<small class="position-journal-pnl flat">已實現損益 待確認</small>'
                 else:
                     pnl_html = ''
+                detail_html = ""
+                if merged_count > 1:
+                    detail_rows = []
+                    for idx, raw_log in enumerate(merged_logs, 1):
+                        raw_delta = int(raw_log.get("shares_delta") or 0)
+                        raw_before = int(raw_log.get("shares_before") or 0)
+                        raw_after = int(raw_log.get("shares_after") or 0)
+                        raw_pct = (raw_delta / raw_before * 100) if raw_before > 0 else None
+                        raw_pct_text = f"{raw_pct:+.2f}%" if raw_pct is not None else "待確認"
+                        raw_price = raw_log.get("trade_price")
+                        raw_price_text = f"　成交 {float(raw_price):,.2f}" if raw_price is not None else ""
+                        raw_cls = "up" if raw_delta > 0 else "down" if raw_delta < 0 else "flat"
+                        detail_rows.append(
+                            f'<div class="position-journal-detail-row">'
+                            f'<span>第 {idx} 筆</span>'
+                            f'<b class="{raw_cls}">{raw_delta:+,} 股</b>'
+                            f'<span>{raw_before:,} → {raw_after:,} 股</span>'
+                            f'<span>{html.escape(raw_pct_text)}{raw_price_text}</span>'
+                            f'</div>')
+                    detail_html = (
+                        f'<details class="position-journal-details">'
+                        f'<summary>查看今日 {merged_count} 筆操作 <span>⌄</span></summary>'
+                        f'<div class="position-journal-detail-body">{"".join(detail_rows)}</div>'
+                        f'</details>')
+
                 row_parts.append(f'''<div class="position-journal-row">
-  <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}{merged_hint}</small></div>
+  <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small>{detail_html}</div>
   <div class="position-journal-status"><span class="position-journal-badge {status_cls}">{status_label}</span></div>
   <div class="position-journal-cell"><b class="{delta_class}">{delta_text}</b><small>{before:,} → {after:,} 股</small></div>
   <div class="position-journal-cell"><b>{html.escape(change_text)}</b><small>持股變動幅度</small></div>
@@ -6751,7 +6780,7 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
     export_url = "/web/position-journal.csv" + ("?" + "&".join(export_params) if export_params else "")
     return f'''<section class="position-journal">
   <div class="position-journal-head"><div class="position-journal-title-actions"><h2>操作日報</h2><a class="position-journal-export" href="{html.escape(export_url, quote=True)}">匯出 CSV</a></div><small>{displayed_stock_count} 檔標的・{len(enriched)} 筆原始操作<br>{html.escape(filter_text)}</small></div>
-  <div class="position-journal-note">同日同檔操作會合併顯示；原始操作紀錄仍完整保留。<b>變動幅度</b>＝本次持股變動 ÷ 操作前股數；<b>目前權重</b>＝最新可得價格 × 目前持股 ÷ 目前持股總市值。</div>
+  <div class="position-journal-note">同日同檔操作合併顯示；<b>點開可查看逐筆操作</b>。<b>變動幅度</b>＝本次持股變動 ÷ 操作前股數；<b>目前權重</b>＝最新可得價格 × 目前持股 ÷ 目前持股總市值。</div>
   <div class="position-journal-table-head"><span>標的</span><span>狀態</span><span>持股變動</span><span>持股變動幅度</span><span>目前權重<br>權重變動</span></div>
   {"".join(day_sections)}
   <div class="position-journal-foot">＊權重變化依目前持股市值計算，僅供紀錄參考；無有效價格時顯示「待確認」。</div>
@@ -8824,29 +8853,76 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 else:
                     break
 
-            # 支撐壓力改用實際的近期高低點與均線，不再用「今日高低價微調」
-            # 若已突破近60日高點，上方沒有參考壓力可言，回傳 None 讓顯示端說明
-            if high_60d and close >= high_60d:
-                resistance = None
-            elif high_20d and close >= high_20d:
-                resistance = round(high_60d, 2) if high_60d else None
-            elif high_20d:
-                resistance = round(high_20d, 2)
-            else:
-                resistance = round(high * 1.01, 2)
-            # 支撐必須在現價「下方」才有意義。
-            # 原本沒有候選時會退回 low_20d，但股價跌破近 20 日低點時
-            # 那個數字反而在現價上方——畫面就會出現「支撐 1655、現價 1625」
-            # 這種自相矛盾的東西。依序往更低的參考位找，
-            # 全都在上方就代表近期支撐已經跌破，用今日低點當最後防線。
-            support_candidates = [x for x in [low_20d, ma20, low_60d]
-                                  if x and x < close]
-            if support_candidates:
-                support = round(max(support_candidates), 2)
-                broke_support = False
-            else:
-                support = round(low, 2) if low and low < close else round(close * 0.97, 2)
-                broke_support = True
+            # 支撐／壓力改為「結構型」參考：局部波段高低點（pivot）＋20MA／60MA，
+            # 再以相近價位聚類。這樣不會把單次插針低點直接當成「有效支撐」。
+            def _structure_level(side):
+                bars = hist[-60:] if hist else []
+                candidates = []
+                n = len(bars)
+                radius = 2
+                for i in range(radius, max(radius, n - radius)):
+                    level = bars[i][3] if side == "support" else bars[i][2]
+                    if level is None:
+                        continue
+                    idx = 3 if side == "support" else 2
+                    left = [bars[j][idx] for j in range(i-radius, i) if bars[j][idx] is not None]
+                    right = [bars[j][idx] for j in range(i+1, min(n, i+radius+1)) if bars[j][idx] is not None]
+                    if len(left) < radius or len(right) < radius:
+                        continue
+                    if side == "support" and level <= min(left) and level <= min(right):
+                        candidates.append((float(level), i, "pivot"))
+                    elif side == "resistance" and level >= max(left) and level >= max(right):
+                        candidates.append((float(level), i, "pivot"))
+                if ma20:
+                    candidates.append((float(ma20), n - 1, "ma20"))
+                if ma60:
+                    candidates.append((float(ma60), n - 1, "ma60"))
+                if not candidates:
+                    return None, 0.0
+                same_side = [(lv, idx, kind) for lv, idx, kind in candidates
+                             if (lv < close if side == "support" else lv > close)]
+                if not same_side:
+                    return None, 0.0
+                clusters = []
+                tolerance = 0.015
+                for lv, idx, kind in sorted(same_side, key=lambda x: x[0]):
+                    for c in clusters:
+                        center = c[0] / c[1]
+                        if abs(lv - center) / center <= tolerance:
+                            c[0] += lv
+                            c[1] += 1
+                            c[2] += 2.0 if kind == "pivot" else 1.0
+                            c[3] = max(c[3], idx)
+                            break
+                    else:
+                        clusters.append([lv, 1, 2.0 if kind == "pivot" else 1.0, idx])
+                scored = []
+                for total, count, strength, last_idx in clusters:
+                    center = total / count
+                    dist_pct = abs(close - center) / close * 100
+                    age = max(0, (n - 1) - last_idx)
+                    recency = max(0.55, 1.0 - age / 120.0)
+                    score = strength * recency - dist_pct * 0.08
+                    scored.append((score, center, strength, count))
+                scored.sort(reverse=True)
+                best = scored[0]
+                return round(best[1], 2), round(best[2] + best[3] * 0.25, 2)
+
+            support, support_strength = _structure_level("support")
+            resistance, resistance_strength = _structure_level("resistance")
+            broke_support = bool(support is None)
+            # 結構證據不足時才使用較弱的背景極值；不再用今日高低價乘常數製造價位。
+            if support is None:
+                fallback_supports = [x for x in (ma20, ma60, low_20d, low_60d) if x and x < close]
+                if fallback_supports:
+                    support = round(max(fallback_supports), 2)
+                    support_strength = 0.5
+                    broke_support = False
+            if resistance is None and not (high_60d and close >= high_60d):
+                fallback_resistances = [x for x in (high_20d, high_60d) if x and x > close]
+                if fallback_resistances:
+                    resistance = round(min(fallback_resistances), 2)
+                    resistance_strength = 0.5
 
             _suffix_cache[code] = suffix  # 這個後綴有效，下次直接從它開始
 
@@ -8872,6 +8948,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 "close_time": (official_quote.get("close_time") if official_quote else None),
                 "resistance": resistance,
                 "support": support,
+                "support_strength": support_strength,
+                "resistance_strength": resistance_strength,
                 # 近期支撐全數跌破時要讓顯示端說明，不能只丟一個數字
                 "broke_support": broke_support,
                 "high_20d": high_20d,
@@ -18768,6 +18846,7 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
   .position-journal-title-actions{display:flex;align-items:center;gap:9px;min-width:0}.position-journal-export{display:inline-flex;align-items:center;padding:5px 8px;border:1px solid #B8CBDC;border-radius:6px;background:#F7FBFF;color:#345673;font-size:11px;font-weight:800;line-height:1;text-decoration:none;white-space:nowrap}.position-journal-export:hover{border-color:#527A9B;background:#EEF5FB}
   .position-journal-note{padding:9px 15px;background:#F9F9FB;color:var(--ink-soft);font-size:11.5px;line-height:1.6}
   .position-journal-day{padding:10px 15px 4px;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}.journal-cancelled{margin:2px 15px 10px;padding:8px 11px;background:#F5F5F2;border-radius:7px;color:var(--ink-faint);font-size:11.5px;line-height:1.6}.journal-cancelled>summary{cursor:pointer;list-style:none}.journal-cancel-row{margin-top:5px;color:var(--ink-soft)}.journal-cancel-note{margin-top:6px;font-size:10.5px}
+  .position-journal-details{margin-top:6px}.position-journal-details>summary{cursor:pointer;list-style:none;color:#48657E;font-size:10.5px;font-weight:700}.position-journal-details>summary::-webkit-details-marker{display:none}.position-journal-details>summary span{margin-left:4px;color:#91A0AF}.position-journal-detail-body{margin-top:5px;padding:5px 7px;background:#F8FAFC;border:1px solid #E7EDF3;border-radius:7px}.position-journal-detail-row{display:grid;grid-template-columns:42px 58px 78px minmax(0,1fr);gap:6px;align-items:center;padding:4px 0;border-top:1px solid #E8EDF2;color:var(--ink-faint);font-size:9.5px;line-height:1.35}.position-journal-detail-row:first-child{border-top:0}.position-journal-detail-row b{font-size:10px;text-align:right}.position-journal-detail-row span:last-child{text-align:right}
   .position-journal-table-head{display:grid;grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:9px;align-items:end;padding:9px 15px 7px;background:#F9F9FB;color:var(--ink-soft);font-size:11px;font-weight:700;line-height:1.25;border-bottom:1px solid #E5E5EA}
   .position-journal-table-head span:not(:first-child){text-align:right}
   .position-journal-row{display:grid;grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:9px;align-items:center;padding:12px 15px;border-top:1px solid #E5E5EA}
@@ -18814,6 +18893,7 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
     .position-journal-status{font-size:9px}
     .position-journal-badge{padding:3px 5px;font-size:9.5px}
     .position-journal-category{padding:9px 8px 5px;font-size:11px}.position-journal-category b{font-size:11px}.position-journal-category small{font-size:9.5px}
+    .position-journal-details{margin-top:5px}.position-journal-details>summary{font-size:9.5px}.position-journal-detail-row{grid-template-columns:38px 50px 66px minmax(0,1fr);gap:4px;font-size:8.5px}.position-journal-detail-row b{font-size:9px}.position-journal-detail-body{padding:4px 6px}
     .position-journal-note,.position-journal-day,.position-journal-foot{padding-left:8px;padding-right:8px}
   }
 
