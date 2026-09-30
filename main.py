@@ -6659,11 +6659,15 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
             item = merged[code]
             item["_merged_logs"].append(dict(log))
             item["shares_delta"] = int(item.get("shares_delta") or 0) + int(log.get("shares_delta") or 0)
-            item["shares_after"] = int(log.get("shares_after") or 0)
+            # 合併後的「操作前」一定取所有原始操作中最早的 before；
+            # 「操作後」取最後一筆的 after。不能用 after - 累計 delta，
+            # 否則跨多筆操作時會把股數推錯。
+            raw_befores = [int(x.get("shares_before") or 0) for x in item["_merged_logs"]]
+            raw_afters = [int(x.get("shares_after") or 0) for x in item["_merged_logs"]]
+            item["shares_before"] = raw_befores[0] if raw_befores else 0
+            item["shares_after"] = raw_afters[-1] if raw_afters else int(item.get("shares_after") or 0)
+            before = int(item.get("shares_before") or 0)
             delta = int(item.get("shares_delta") or 0)
-            after = int(item.get("shares_after") or 0)
-            before = max(0, after - delta)
-            item["shares_before"] = before
             item["change_pct"] = (delta / before * 100) if before > 0 else None
             if log.get("trade_price") is not None:
                 item["trade_price"] = log.get("trade_price")
@@ -6757,11 +6761,12 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
                         f'</details>')
 
                 row_parts.append(f'''<div class="position-journal-row">
-  <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small>{detail_html}</div>
+  <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
   <div class="position-journal-status"><span class="position-journal-badge {status_cls}">{status_label}</span></div>
   <div class="position-journal-cell"><b class="{delta_class}">{delta_text}</b><small>{before:,} → {after:,} 股</small></div>
   <div class="position-journal-cell"><b>{html.escape(change_text)}</b><small>持股變動幅度</small></div>
   <div class="position-journal-cell"><b>{html.escape(weight_text)}</b><small>目前權重</small><small class="{event_weight_class}">{html.escape(event_weight_text)}</small><small>權重變動</small>{pnl_html}{note_html}</div>
+  {detail_html}
 </div>''')
         cancelled_html = ""
 
@@ -18846,7 +18851,7 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
   .position-journal-title-actions{display:flex;align-items:center;gap:9px;min-width:0}.position-journal-export{display:inline-flex;align-items:center;padding:5px 8px;border:1px solid #B8CBDC;border-radius:6px;background:#F7FBFF;color:#345673;font-size:11px;font-weight:800;line-height:1;text-decoration:none;white-space:nowrap}.position-journal-export:hover{border-color:#527A9B;background:#EEF5FB}
   .position-journal-note{padding:9px 15px;background:#F9F9FB;color:var(--ink-soft);font-size:11.5px;line-height:1.6}
   .position-journal-day{padding:10px 15px 4px;color:var(--brass);font-size:12px;font-weight:700;letter-spacing:.04em}.journal-cancelled{margin:2px 15px 10px;padding:8px 11px;background:#F5F5F2;border-radius:7px;color:var(--ink-faint);font-size:11.5px;line-height:1.6}.journal-cancelled>summary{cursor:pointer;list-style:none}.journal-cancel-row{margin-top:5px;color:var(--ink-soft)}.journal-cancel-note{margin-top:6px;font-size:10.5px}
-  .position-journal-details{margin-top:6px}.position-journal-details>summary{cursor:pointer;list-style:none;color:#48657E;font-size:10.5px;font-weight:700}.position-journal-details>summary::-webkit-details-marker{display:none}.position-journal-details>summary span{margin-left:4px;color:#91A0AF}.position-journal-detail-body{margin-top:5px;padding:5px 7px;background:#F8FAFC;border:1px solid #E7EDF3;border-radius:7px}.position-journal-detail-row{display:grid;grid-template-columns:42px 58px 78px minmax(0,1fr);gap:6px;align-items:center;padding:4px 0;border-top:1px solid #E8EDF2;color:var(--ink-faint);font-size:9.5px;line-height:1.35}.position-journal-detail-row:first-child{border-top:0}.position-journal-detail-row b{font-size:10px;text-align:right}.position-journal-detail-row span:last-child{text-align:right}
+  .position-journal-details{grid-column:1 / -1;margin:8px 0 0;width:100%;min-width:0}.position-journal-details>summary{cursor:pointer;list-style:none;color:#48657E;font-size:10.5px;font-weight:700}.position-journal-details>summary::-webkit-details-marker{display:none}.position-journal-details>summary span{margin-left:4px;color:#91A0AF}.position-journal-detail-body{margin-top:6px;padding:7px 9px;background:#F8FAFC;border:1px solid #E7EDF3;border-radius:8px;width:100%;box-sizing:border-box}.position-journal-detail-row{display:grid;grid-template-columns:52px 72px 100px minmax(0,1fr);gap:8px;align-items:center;padding:7px 0;border-top:1px solid #E8EDF2;color:var(--ink-faint);font-size:10px;line-height:1.35}.position-journal-detail-row:first-child{border-top:0}.position-journal-detail-row b{font-size:10.5px;text-align:right}.position-journal-detail-row span:last-child{text-align:right;overflow-wrap:anywhere}
   .position-journal-table-head{display:grid;grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:9px;align-items:end;padding:9px 15px 7px;background:#F9F9FB;color:var(--ink-soft);font-size:11px;font-weight:700;line-height:1.25;border-bottom:1px solid #E5E5EA}
   .position-journal-table-head span:not(:first-child){text-align:right}
   .position-journal-row{display:grid;grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:9px;align-items:center;padding:12px 15px;border-top:1px solid #E5E5EA}
@@ -18885,6 +18890,7 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
     .position-journal-title-actions{gap:6px}.position-journal-export{padding:5px 7px;font-size:10px}
     .position-journal-table-head{grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:5px;padding:8px 8px 6px;font-size:9.5px}
     .position-journal-row{grid-template-columns:minmax(0,1.25fr) .72fr minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr);gap:6px 5px;padding:10px 8px}
+    .position-journal-details{grid-column:1 / -1}
     .position-journal-name b{font-size:13px}
     .position-journal-name small{font-size:9.5px}
     .position-journal-cell{font-size:9.5px}
@@ -18893,7 +18899,7 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
     .position-journal-status{font-size:9px}
     .position-journal-badge{padding:3px 5px;font-size:9.5px}
     .position-journal-category{padding:9px 8px 5px;font-size:11px}.position-journal-category b{font-size:11px}.position-journal-category small{font-size:9.5px}
-    .position-journal-details{margin-top:5px}.position-journal-details>summary{font-size:9.5px}.position-journal-detail-row{grid-template-columns:38px 50px 66px minmax(0,1fr);gap:4px;font-size:8.5px}.position-journal-detail-row b{font-size:9px}.position-journal-detail-body{padding:4px 6px}
+    .position-journal-details{grid-column:1 / -1;margin-top:7px}.position-journal-details>summary{font-size:10.5px;padding:3px 0}.position-journal-detail-row{grid-template-columns:44px 58px 82px minmax(0,1fr);gap:5px;font-size:9px;padding:6px 0}.position-journal-detail-row b{font-size:9.5px}.position-journal-detail-body{padding:5px 7px}
     .position-journal-note,.position-journal-day,.position-journal-foot{padding-left:8px;padding-right:8px}
   }
 
@@ -29323,6 +29329,23 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .impact-detail-row>strong.up{{color:#D74B43!important}}.impact-detail-row>strong.down{{color:#159B68!important}}
 .impact-realized{{display:none!important}}
 @media(max-width:640px){{.impact-leads{{grid-template-columns:1fr 1fr!important;gap:9px!important}}.impact-lead{{min-height:164px!important;padding:14px 11px 12px!important}}.impact-lead h3{{font-size:20px!important}}.impact-lead p{{font-size:11.5px!important}}.impact-lead>strong{{margin-top:15px!important}}.impact-lead>strong b{{font-size:20px!important}}.impact-detail-row{{grid-template-columns:28px minmax(0,1fr) auto!important;gap:9px!important;padding:12px 1px!important}}.impact-rank{{width:27px!important;height:27px!important}}.impact-detail-name b{{font-size:14px!important}}.impact-detail-name small{{font-size:11px!important}}.impact-detail-row>strong{{font-size:12.5px!important}}}}
+
+/* V153 操作日報展開：明細必須獨立成整列，避免塞進「標的」欄造成手機重疊。 */
+.position-journal-row > .position-journal-details{{grid-column:1 / -1!important;grid-row:auto!important;display:block!important;width:100%!important;min-width:0!important;box-sizing:border-box!important;margin:4px 0 0!important}}
+.position-journal-row > .position-journal-details > summary{{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:8px!important;padding:8px 10px!important;border-radius:8px!important;background:#F4F7FA!important;color:#48657E!important;font-size:11px!important;font-weight:750!important;box-sizing:border-box!important}}
+.position-journal-row > .position-journal-details[open] > summary{{border-radius:8px 8px 0 0!important;background:#EEF4F8!important}}
+.position-journal-row > .position-journal-details .position-journal-detail-body{{display:block!important;margin:0!important;padding:4px 10px 7px!important;border:1px solid #E2E9EF!important;border-top:0!important;border-radius:0 0 8px 8px!important;background:#FAFCFD!important;box-sizing:border-box!important}}
+.position-journal-row > .position-journal-details .position-journal-detail-row{{display:grid!important;grid-template-columns:54px 76px 108px minmax(0,1fr)!important;gap:8px!important;align-items:center!important;padding:8px 0!important;border-top:1px solid #E8EDF2!important;box-sizing:border-box!important}}
+.position-journal-row > .position-journal-details .position-journal-detail-row:first-child{{border-top:0!important}}
+.position-journal-row > .position-journal-details .position-journal-detail-row span{{min-width:0!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}}
+.position-journal-row > .position-journal-details .position-journal-detail-row span:last-child{{text-align:right!important;white-space:normal!important;overflow:visible!important;text-overflow:clip!important}}
+@media(max-width:640px){{
+ .position-journal-row > .position-journal-details{{grid-column:1 / -1!important}}
+ .position-journal-row > .position-journal-details > summary{{font-size:11px!important;padding:8px 9px!important}}
+ .position-journal-row > .position-journal-details .position-journal-detail-body{{padding:3px 9px 6px!important}}
+ .position-journal-row > .position-journal-details .position-journal-detail-row{{grid-template-columns:44px 58px 82px minmax(0,1fr)!important;gap:6px!important;padding:7px 0!important;font-size:9.5px!important}}
+ .position-journal-row > .position-journal-details .position-journal-detail-row b{{font-size:10px!important}}
+}}
 </style>
 <div class="daily-home">
   <section class="daily-hero" aria-label="台北 101 城市主視覺">
