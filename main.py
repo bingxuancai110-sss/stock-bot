@@ -7007,9 +7007,12 @@ def save_leaderboard_rank_snapshots(snapshot_date=None):
     full_value = build_leaderboard(top_n=100, days=365)
     boards, (series_map, market) = full_value
     rows = []
-    for board_name in ("short", "long", "season"):
+    for board_name in ("short", "long", "season", "month"):
         for rank, row in enumerate(boards.get(board_name, []), start=1):
-            value = (row.get("m30") if board_name == "short" else row.get("ret") if board_name == "long" else row.get("season_ret"))
+            value = (row.get("m30") if board_name == "short" else
+                     row.get("ret") if board_name == "long" else
+                     row.get("season_ret") if board_name == "season" else
+                     row.get("month_ret"))
             rows.append((board_name, snapshot_date, row.get("user_id"), rank, value))
     if not rows:
         return 0
@@ -7188,7 +7191,7 @@ def get_fast_rank_summary(user_id):
         try:
             boards, _graph = persisted.get("value") or ({}, ({}, []))
             page_date = persisted.get("data_date")
-            for board in ("short", "long", "season"):
+            for board in ("short", "long", "season", "month"):
                 rows = boards.get(board) or []
                 found = next((idx for idx, row in enumerate(rows, 1)
                               if str(row.get("user_id") or "").strip() == uid), None)
@@ -7197,7 +7200,7 @@ def get_fast_rank_summary(user_id):
             print(f"⚠️ 首頁解析最新排行榜名次失敗: {exc}")
 
     result = {}
-    for board, label in (("short", "短線"), ("long", "長線"), ("season", "賽季")):
+    for board, label in (("short", "短線"), ("long", "長線"), ("season", "賽季"), ("month", "月榜")):
         entries = grouped.get(board, [])
         snapshot_current = entries[0] if entries else None
         previous = entries[1] if len(entries) > 1 else None
@@ -7258,14 +7261,14 @@ def get_my_rank_summary(user_id, boards=None, rank_status_map=None):
     boards = boards if boards is not None else build_leaderboard(top_n=100, days=365)[0]
     if rank_status_map is None:
         rank_inputs = []
-        for board in ("short", "long", "season"):
+        for board in ("short", "long", "season", "month"):
             rows = boards.get(board, [])
             current_rank = next((i for i, row in enumerate(rows, 1)
                                  if row.get("user_id") == str(user_id)), None)
             rank_inputs.append((board, user_id, current_rank))
         rank_status_map = _get_leaderboard_rank_status_cached(rank_inputs)
     result = {}
-    for board, label in (("short", "短線"), ("long", "長線"), ("season", "賽季")):
+    for board, label in (("short", "短線"), ("long", "長線"), ("season", "賽季"), ("month", "月榜")):
         current_rows = boards.get(board, [])
         current_row = next((row for row in current_rows
                             if row.get("user_id") == str(user_id)), None)
@@ -18795,9 +18798,9 @@ footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--rule);
 @media(max-width:640px){.bot-history-timeline:before{left:64px}.bot-history-timeline-item{grid-template-columns:56px minmax(0,1fr);column-gap:17px}.bot-history-dot{left:60px}.bot-history-pnl{font-size:15px}.bot-history-date{font-size:9.5px}.bot-history-content{padding-top:0}}
 
 .rank-tabs{display:flex;gap:4px;margin:18px 0 8px;padding:4px;background:#D7D9D2;
-  border-radius:11px;flex-wrap:nowrap}
+  border-radius:11px;flex-wrap:nowrap;overflow-x:auto}
 .rank-tabs a,.rank-tabs button{flex:1;text-align:center;padding:8px 7px;background:transparent;border-radius:8px;
-  color:var(--ink-soft);font-size:13px;white-space:nowrap;
+  color:var(--ink-soft);font-size:13px;white-space:nowrap;min-width:25%;
   border:0;font-family:inherit;cursor:pointer;-webkit-appearance:none;appearance:none}
 .rank-tabs a.on,.rank-tabs button.on{background:#FFF;color:var(--ink);font-weight:600;box-shadow:0 2px 7px rgba(35,39,35,.10)}
 .rank-tabs a:hover,.rank-tabs button:hover{background:#F9F9FB;color:var(--ink)}
@@ -25214,9 +25217,42 @@ def render_leaderboard_chart(series_map, chart_market, top_keys, highlight_key=N
 </div>"""
 
 
+def leaderboard_month_info(today=None):
+    today = today or taiwan_today()
+    start = date(today.year, today.month, 1)
+    end = date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
+    return {"id": f"{today.year}-{today.month:02d}", "label": f"{today.year}/{today.month:02d} 月榜", "start": start, "end": end}
+
+def _build_current_month_board(base_boards, series_map, market):
+    info = leaderboard_month_info(); start = info["start"]; unique = {}
+    for bn in ("long", "short", "season", "waiting"):
+        for r in (base_boards.get(bn) or []):
+            uid=str(r.get("user_id") or "").strip()
+            if uid and uid not in unique: unique[uid]=dict(r)
+    def pr(curve):
+        pts=[]
+        for d,v in (curve or []):
+            dd=_leaderboard_date(d)
+            if dd is not None and v is not None: pts.append((dd,float(v)))
+        pts.sort(); inside=[x for x in pts if x[0]>=start]; before=[x for x in pts if x[0]<start]
+        if not inside: return None,0
+        base=before[-1][1] if before else inside[0][1]; end=inside[-1][1]
+        try: return ((1+end/100)/(1+base/100)-1)*100,len(inside)
+        except ZeroDivisionError: return None,len(inside)
+    mr,_=pr(market); rows=[]
+    for uid,row in unique.items():
+        item=series_map.get(uid) or {}; curve=item.get("curve") if isinstance(item,dict) else item
+        ret,days=pr(curve)
+        if ret is None or days<1: continue
+        rr=dict(row); rr.update(month_ret=ret,month_days=days,month_mkt_ret=mr,month_excess=(ret-mr) if mr is not None else None); rows.append(rr)
+    rows.sort(key=lambda x:x.get("month_ret",-1e99),reverse=True)
+    return rows[:100],info
+
+
 def get_leaderboard_historical_summary(months=6, seasons=4):
-    """讀取已保存的排行榜每日快照，整理月榜與賽季歷史。"""
+    """只回傳已完成的自然月／自然季；當期結算完成後才進入歷史。"""
     out = {"months": [], "seasons": []}
+    today = taiwan_today()
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -25226,50 +25262,78 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
             LEFT JOIN leaderboard_members m ON m.user_id = s.user_id
             WHERE s.board = 'long' AND s.snapshot_date >= %s
             ORDER BY s.snapshot_date ASC, s.rank ASC
-        """, (date(taiwan_today().year - 1, 1, 1),))
+        """, (date(today.year - 2, 1, 1),))
         rows = cur.fetchall(); cur.close()
     except Exception as exc:
         print(f"⚠️ 讀取排行榜歷史失敗: {exc}")
         return out
     finally:
         release_db_connection(conn)
+
     by_user = {}
     for d, user_id, ret, nickname in rows:
-        if d is None or ret is None: continue
+        if d is None or ret is None:
+            continue
         key = str(user_id).strip()
         bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達"}
         display_name = bot_display_names.get(key) or (nickname or key)
         by_user.setdefault(key, []).append((d, float(ret), display_name))
+
     def pk(d, kind):
         return f"{d.year}-{d.month:02d}" if kind == 'month' else f"{d.year}Q{(d.month-1)//3+1}"
+
+    def period_bounds(period, kind):
+        if kind == 'month':
+            y, mo = map(int, period.split('-'))
+            start = date(y, mo, 1)
+            end = date(y, mo, calendar.monthrange(y, mo)[1])
+        else:
+            y, q = int(period[:4]), int(period[-1])
+            start = date(y, (q-1)*3+1, 1)
+            end_month = (q-1)*3+3
+            end = date(y, end_month, calendar.monthrange(y, end_month)[1])
+        return start, end
+
+    def completed_period_keys(kind, limit):
+        keys = sorted({pk(d, kind) for vals in by_user.values() for d, _, _ in vals}, reverse=True)
+        completed = []
+        for period in keys:
+            _start, end = period_bounds(period, kind)
+            # 當期即使已到最後交易日，也先留在「今日結算」；跨日後才進歷史。
+            if end >= today:
+                continue
+            completed.append(period)
+            if len(completed) >= limit:
+                break
+        return completed
+
     def build(kind, limit):
-        # 歷史頁只接受固定的整數筆數；即使未來呼叫端傳入字串/float，
-        # 也不要讓切片直接炸掉整個排行榜頁。
         try:
             limit = max(0, int(limit))
         except (TypeError, ValueError):
             limit = 0
-        keys = sorted({pk(d, kind) for vals in by_user.values() for d,_,_ in vals}, reverse=True)[:limit]
-        result=[]
-        for period in keys:
-            users=[]
+        result = []
+        for period in completed_period_keys(kind, limit):
+            start, end = period_bounds(period, kind)
+            users = []
             for uid, vals in by_user.items():
-                inside=sorted([x for x in vals if pk(x[0],kind)==period], key=lambda x:x[0])
-                if not inside: continue
-                end_d,end_r,nick=inside[-1]
-                if kind=='month':
-                    y,mo=map(int,period.split('-')); start=date(y,mo,1)
-                else:
-                    y,q=int(period[:4]),int(period[-1]); start=date(y,(q-1)*3+1,1)
-                before=sorted([x for x in vals if x[0]<start], key=lambda x:x[0])
-                base_r=before[-1][1] if before else inside[0][1]
-                try: period_ret=((1+end_r/100)/(1+base_r/100)-1)*100
-                except ZeroDivisionError: continue
-                users.append({"user_id":uid,"nickname":nick,"return_pct":period_ret})
-            users.sort(key=lambda x:x['return_pct'], reverse=True)
-            result.append({"period":period,"rows":users[:5]})
+                inside = sorted([x for x in vals if start <= x[0] <= end], key=lambda x: x[0])
+                if not inside:
+                    continue
+                _end_d, end_r, nick = inside[-1]
+                before = sorted([x for x in vals if x[0] < start], key=lambda x: x[0])
+                base_r = before[-1][1] if before else inside[0][1]
+                try:
+                    period_ret = ((1 + end_r/100) / (1 + base_r/100) - 1) * 100
+                except ZeroDivisionError:
+                    continue
+                users.append({"user_id": uid, "nickname": nick, "return_pct": period_ret})
+            users.sort(key=lambda x: x['return_pct'], reverse=True)
+            result.append({"period": period, "rows": users[:5]})
         return result
-    out['months']=build('month',months); out['seasons']=build('season',seasons)
+
+    out['months'] = build('month', months)
+    out['seasons'] = build('season', seasons)
     return out
 
 @app.route("/web/leaderboard", methods=["GET", "POST"])
@@ -25392,6 +25456,8 @@ def web_leaderboard(uid):
         "season": _normalise_bot_names(_dedup_board((all_boards.get("season") or [])[:100])[:20]),
         "waiting": _normalise_bot_names(_dedup_board(all_boards.get("waiting") or [])),
     }
+    month_rows, month_info = _build_current_month_board(all_boards, series_map, market)
+    boards["month"] = _normalise_bot_names(_dedup_board(month_rows[:100])[:20])
     with _leaderboard_cache_lock:
         leaderboard_meta = dict(_leaderboard_cache.get((100, 365)) or {})
     if leaderboard_meta.get("source") == "persisted_stale":
@@ -25405,21 +25471,84 @@ def web_leaderboard(uid):
     leaderboard_data_date = (leaderboard_data_date.isoformat()
                              if isinstance(leaderboard_data_date, (date, datetime))
                              else str(leaderboard_data_date or "未標日期"))
+    # 期間結算卡：最後一個有效交易日收盤、且資料已更新到今天才顯示。
+    # 卡片定位成「成績單」：排名、報酬、超額大盤、最大回撤、穩定度、有效樣本。
+    settlement_html = ""
+    _today = taiwan_today()
+    _data_day = _leaderboard_date(leaderboard_data_date)
+    if _data_day == _today:
+        def _render_settlement_card(board_name, icon, title, info, ret_key, days_key):
+            _pts = []
+            for _pt in (market or []):
+                if isinstance(_pt, (list, tuple)) and _pt:
+                    _dd = _leaderboard_date(_pt[0])
+                    if _dd is not None and info["start"] <= _dd <= info["end"]:
+                        _pts.append(_dd)
+            if not _pts or max(_pts) != _today:
+                return ""
+            _rows = boards.get(board_name) or []
+            _rank = next((i for i, r in enumerate(_rows, 1)
+                          if str(r.get("user_id") or "").strip() == str(uid).strip()), None)
+            _row = _rows[_rank - 1] if _rank else None
+            _series_item = series_map.get(str(uid)) or {}
+            _curve = _series_item.get("curve") if isinstance(_series_item, dict) else _series_item
+            _period_curve = _rebase_period_curve(_curve, start_date=info["start"])
+            _ret = _row.get(ret_key) if _row else (_period_curve[-1][1] if _period_curve else None)
+            _days = int(_row.get(days_key) or 0) if _row else len(_period_curve)
+            _mdd = max_drawdown(_period_curve) if _period_curve else None
+            _vol, _stability = _curve_volatility_and_stability(_period_curve)
+            _mkt_curve = _rebase_period_curve(market, start_date=info["start"])
+            _mkt_ret = _mkt_curve[-1][1] if _mkt_curve else None
+            _excess = (_ret - _mkt_ret) if _ret is not None and _mkt_ret is not None else None
+            _participant_count = len([r for r in _rows if r.get(ret_key) is not None])
+            _ret_txt = f"{float(_ret):+.2f}%" if _ret is not None else "—"
+            _mkt_txt = f"{float(_mkt_ret):+.2f}%" if _mkt_ret is not None else "—"
+            _excess_txt = f"{float(_excess):+.2f}%" if _excess is not None else "—"
+            _mdd_txt = f"{float(_mdd):+.2f}%" if _mdd is not None else "—"
+            _rank_txt = f"#{_rank}" if _rank else "未上榜"
+            _stability_txt = html.escape(_stability or "資料不足")
+            return f'''<section class="settlement-report-card">
+  <div class="settlement-report-top"><span>{icon} {html.escape(title)}</span><small>{html.escape(info.get("label", ""))}</small></div>
+  <div class="settlement-report-title">{_rank_txt} <b>本期最終排名</b></div>
+  <div class="settlement-report-main"><strong>{html.escape(_ret_txt)}</strong><span>本期報酬</span></div>
+  <div class="settlement-report-grid">
+    <div><small>超額大盤</small><b>{html.escape(_excess_txt)}</b><span>大盤 {html.escape(_mkt_txt)}</span></div>
+    <div><small>最大回撤</small><b>{html.escape(_mdd_txt)}</b><span>從高點至低點</span></div>
+    <div><small>穩定度</small><b>{_stability_txt}</b><span>依本期日報酬波動</span></div>
+    <div><small>有效樣本</small><b>{_days} 天</b><span>共 {_participant_count} 人有績效</span></div>
+  </div>
+  <div class="settlement-report-foot"><span>✓ 本期已完成結算</span><span>結算日 {_today.strftime("%Y/%m/%d")}</span></div>
+</section>'''
+
+        _cards = [
+            _render_settlement_card("month", "📅", "本月結算成績單", month_info, "month_ret", "month_days"),
+            _render_settlement_card("season", "🏆", "本季結算成績單", season_info, "season_ret", "season_days"),
+        ]
+        _cards = [x for x in _cards if x]
+        if _cards:
+            settlement_html = '''<section class="settlement-wrap">
+  <div class="settlement-kicker">TODAY · SETTLEMENT</div>
+  <h2>🏁 今日結算成績單</h2>
+  <p>今天是本期最後一個有效交易日。結算完成後，這一期會自動封存到「更多 → 排行榜歷史」。</p>
+  ''' + ''.join(_cards) + '''
+</section>'''
     rank_inputs = []
-    for board_name in ("short", "long", "season"):
+    for board_name in ("short", "long", "season", "month"):
         for current_rank, row in enumerate(all_boards.get(board_name, []), 1):
             rank_inputs.append((board_name, row.get("user_id"), current_rank))
     rank_status_map = get_rank_status_map(rank_inputs)
     rank_status_done = time.monotonic()
     view = request.args.get("board", "short")
-    active_board = view if view in ("short", "long", "season") else "short"
+    active_board = view if view in ("short", "long", "season", "month") else "short"
     is_short = active_board == "short"
     is_long = active_board == "long"
-    active_key = {"short": "m30", "long": "ret", "season": "season_ret"}[active_board]
+    active_key = {"short": "m30", "long": "ret", "season": "season_ret", "month": "month_ret"}[active_board]
     active_label = {
         "short": "短線｜近 30 天",
         "long": "長線｜加入後累計",
         "season": f"賽季｜{(all_boards.get('season_info') or leaderboard_season_info()).get('label', '本季')}",
+        "month": f"月榜｜{month_info.get('label', '本月')}",
+        "month": f"月榜｜{month_info.get('label', '本月')}",
     }[active_board]
 
     # ── 參加／退出 ──
@@ -25578,7 +25707,7 @@ def web_leaderboard(uid):
                 honour = ""
             main_v = r[key]
             cls = "up" if main_v >= 0 else "down"
-            board_for_status = {"m30": "short", "ret": "long", "season_ret": "season"}.get(key, "long")
+            board_for_status = {"m30": "short", "ret": "long", "season_ret": "season", "month_ret": "month"}.get(key, "long")
             rank_state = status_map.get(
                 (board_for_status, str(r.get("user_id")).strip()),
                 _rank_status_from_previous(current_rank, []))
@@ -25604,15 +25733,15 @@ def web_leaderboard(uid):
             elif key == "season_ret" and r.get("ret") is not None:
                 sc = "up" if r["ret"] >= 0 else "down"
                 supporting.append(f'<span><em>長線累計</em> <span class="num {sc}">{r["ret"]:+.1f}%</span></span>')
-            excess_key = {"m30": "m30_excess", "ret": "long_excess", "season_ret": "season_excess"}.get(key, "long_excess")
-            mkt_key = {"m30": "mkt_ret", "ret": "mkt_ret", "season_ret": "season_mkt_ret"}.get(key, "mkt_ret")
+            excess_key = {"m30": "m30_excess", "ret": "long_excess", "season_ret": "season_excess", "month_ret": "month_excess"}.get(key, "long_excess")
+            mkt_key = {"m30": "mkt_ret", "ret": "mkt_ret", "season_ret": "season_mkt_ret", "month_ret": "month_mkt_ret"}.get(key, "mkt_ret")
             ex = r.get(excess_key)
             if ex is not None:
                 w = "贏" if ex >= 0 else "輸"
                 mkt = r.get(mkt_key)
                 mkt_txt = f"（大盤 {mkt:+.1f}%）" if mkt is not None else ""
                 supporting.append(f'<span><em>超額報酬</em> {w} {abs(ex):.1f}%{mkt_txt}</span>')
-            mdd_key = {"m30": "m30_mdd", "ret": "long_mdd", "season_ret": "season_mdd"}.get(key, "long_mdd")
+            mdd_key = {"m30": "m30_mdd", "ret": "long_mdd", "season_ret": "season_mdd", "month_ret": "month_mdd"}.get(key, "long_mdd")
             mdd = r.get(mdd_key)
             if mdd is not None:
                 supporting.append(f'<span><em>最大回檔</em> <span class="num">-{mdd:.1f}%</span></span>')
@@ -25823,6 +25952,7 @@ def web_leaderboard(uid):
         "short": board_rows(boards["short"], "m30", rank_status_map),
         "long": board_rows(boards["long"], "ret", rank_status_map),
         "season": board_rows(boards["season"], "season_ret", rank_status_map),
+        "month": board_rows(boards["month"], "month_ret", rank_status_map),
     }
     board = board_html[active_board]
 
@@ -25846,8 +25976,8 @@ def web_leaderboard(uid):
                 body = "你尚未加入排行榜。加入後會從加入日開始累積自己的排名與報酬曲線。"
             return f'<div class="rank-situation-panel" data-situation-panel="{board_name}" style="{panel_style}"><div class="rank-situation-empty">{body}</div></div>'
 
-        key = {"short": "m30", "long": "ret", "season": "season_ret"}[board_name]
-        days_key = {"short": "m30_days", "long": "days", "season": "season_days"}[board_name]
+        key = {"short": "m30", "long": "ret", "season": "season_ret", "month": "month_ret"}[board_name]
+        days_key = {"short": "m30_days", "long": "days", "season": "season_days", "month": "month_days"}[board_name]
         value = row.get(key)
         sample_days = int(row.get(days_key) or 0)
         value_cls = "up" if value is not None and value >= 0 else ("down" if value is not None else "flat")
@@ -25856,16 +25986,16 @@ def web_leaderboard(uid):
         rank_move = render_rank_status(status) if status.get("delta") is not None else '<span class="rank-move muted">尚無前一日快照</span>'
         previous_txt = f"#{status['previous']}" if status.get("previous") else "—"
         previous_note = situation_labels[board_name] if status.get("previous") else "尚無前一日快照"
-        excess_key = {"short": "m30_excess", "long": "long_excess", "season": "season_excess"}[board_name]
+        excess_key = {"short": "m30_excess", "long": "long_excess", "season": "season_excess", "month": "month_excess"}[board_name]
         excess = row.get(excess_key)
         if excess is None:
             vs_txt, vs_cls = "尚無資料", "flat"
         else:
             vs_txt = f"贏 {abs(excess):.1f}%" if excess >= 0 else f"輸 {abs(excess):.1f}%"
             vs_cls = "up" if excess >= 0 else "down"
-        period_label = {"short": "近 30 天", "long": "加入後", "season": "本季"}[board_name]
+        period_label = {"short": "近 30 天", "long": "加入後", "season": "本季", "month": "本月"}[board_name]
         sample_note = f"樣本 {sample_days} 天｜參考排名" if sample_days < 10 else f"樣本 {sample_days} 天"
-        market_ret = row.get("mkt_ret")
+        market_ret = row.get("month_mkt_ret") if board_name == "month" else row.get("mkt_ret")
         market_txt = f"大盤 {market_ret:+.1f}%" if market_ret is not None else "尚無大盤資料"
         return f'''<div class="rank-situation-panel" data-situation-panel="{board_name}" style="{panel_style}">
   <div class="rank-situation-grid">
@@ -25876,7 +26006,7 @@ def web_leaderboard(uid):
   </div>
 </div>'''
 
-    situation_panels = "".join(render_situation_panel(name) for name in ("short", "long", "season"))
+    situation_panels = "".join(render_situation_panel(name) for name in ("short", "long", "season", "month"))
     my_rank_html = f'''<section class="rank-situation">
   <div class="rank-situation-title"><h2>🏆 我的排名戰況</h2>
     <span class="rank-situation-badge" data-situation-badge="1">{situation_labels[active_board]}</span></div>
@@ -25918,6 +26048,7 @@ def web_leaderboard(uid):
   <button type="button" data-board="short" class="{'on' if active_board == 'short' else ''}">短線　近30天</button>
   <button type="button" data-board="long" class="{'on' if active_board == 'long' else ''}">長線　累計</button>
   <button type="button" data-board="season" class="{'on' if active_board == 'season' else ''}">賽季　本季</button>
+  <button type="button" data-board="month" class="{'on' if active_board == 'month' else ''}">月榜　本月</button>
 </div>
 <div class="rank-switch-note" data-board-note="short" style="{' ' if active_board == 'short' else 'display:none'}">
   短線：所有人統一比較近30天；重點看短期報酬、短期回檔、短期超額與短期穩定度。
@@ -25927,6 +26058,9 @@ def web_leaderboard(uid):
 </div>
 <div class="rank-switch-note" data-board-note="season" style="{' ' if active_board == 'season' else 'display:none'}">
   賽季：本季重新計算；每一季從季初重新開始，不受加入日期以外的歷史績效影響。
+</div>
+<div class="rank-switch-note" data-board-note="month" style="{' ' if active_board == 'month' else 'display:none'}">
+  月榜：自然月 1 日到月底，不把近 30 天當成當月報酬。
 </div>"""
 
     # 走勢比較同時拆成「短期／近30天」與「長期／加入後累計」。
@@ -25949,6 +26083,9 @@ def web_leaderboard(uid):
         days_window=None, start_date=season_start)
 
     history_assets = """<style>
+.settlement-wrap{margin:0 0 18px;padding:16px;border:1px solid #d8c28d;border-radius:20px;background:linear-gradient(145deg,#fff8dd,#fffdf7);box-shadow:0 8px 22px rgba(120,95,35,.08)}
+.settlement-kicker{font-size:9px;letter-spacing:.18em;color:#9a7736;font-weight:900}.settlement-wrap h2{margin:5px 0 4px}.settlement-wrap>p{margin:0 0 12px;color:#766a55;font-size:12px;line-height:1.6}
+.settlement-report-card{border:1px solid #e4d2a5;border-radius:16px;background:#fffef8;padding:14px;margin-top:10px}.settlement-report-top{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d6538;font-weight:900}.settlement-report-top small{color:#8b8f98;font-weight:600}.settlement-report-title{margin-top:12px;font-size:15px}.settlement-report-title b{font-size:12px;color:#7c8796;font-weight:700;margin-left:6px}.settlement-report-main{text-align:center;padding:9px 0 11px}.settlement-report-main strong{display:block;font-size:34px;line-height:1.05;font-weight:950}.settlement-report-main span{display:block;margin-top:5px;color:#7b8591;font-size:12px}.settlement-report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.settlement-report-grid div{padding:9px;border-radius:11px;background:#faf8f0;border:1px solid #eee6d5}.settlement-report-grid small{display:block;color:#7f8997;font-size:10.5px}.settlement-report-grid b{display:block;margin-top:3px;font-size:17px}.settlement-report-grid span{display:block;margin-top:2px;color:#9aa1aa;font-size:9.5px}.settlement-report-foot{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #eee6d5;color:#7b8794;font-size:10.5px}
 .leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
@@ -25963,10 +26100,10 @@ def web_leaderboard(uid):
             blocks.append(f'<div class="history-period"><div class="history-period-head"><b>{html.escape(item["period"])}</b><span>Top 5</span></div>{"".join(rows) or "<div class=history-empty>資料不足</div>"}</div>')
         return '<div class="history-grid">'+''.join(blocks)+'</div>'
     history_html = f"""<section class="leaderboard-history" id="leaderboard-history">
-  <div class="section-head"><h2>📚 歷史排行榜</h2><span class="section-note">回看每月與每季</span></div>
+  <div class="section-head"><h2>📚 歷史排行榜</h2><span class="section-note">已結算才會封存</span></div>
   <div class="tabs history-tabs" id="historyTabs"><button type="button" class="on" data-history="months">月榜</button><button type="button" data-history="seasons">賽季榜</button></div>
-  <div class="history-panel" data-history-panel="months"><div class="history-note">最近 6 個月的期間報酬。</div>{render_history_table(history_data['months'],'目前還沒有足夠的月榜歷史快照。')}</div>
-  <div class="history-panel" data-history-panel="seasons" style="display:none"><div class="history-note">最近 4 個賽季的期間報酬。</div>{render_history_table(history_data['seasons'],'目前還沒有足夠的賽季歷史快照。')}</div>
+  <div class="history-panel" data-history-panel="months"><div class="history-note">最近 6 個已結算月份的期間報酬。</div>{render_history_table(history_data['months'],'目前還沒有足夠的月榜歷史快照。')}</div>
+  <div class="history-panel" data-history-panel="seasons" style="display:none"><div class="history-note">最近 4 個已結算賽季的期間報酬。</div>{render_history_table(history_data['seasons'],'目前還沒有足夠的賽季歷史快照。')}</div>
 </section>"""
     # 已加入的人：設定收在下方，不佔版面。
     # 還沒加入的人：把加入表單直接攤開放在最上面——
@@ -26000,6 +26137,7 @@ def web_leaderboard(uid):
 
     body = f"""
 {f'<div class="msg">{msg}</div>' if msg else ''}
+{settlement_html}
 {my_rank_html}
 {tabs}
 <div class="rank-list-caption" data-board-caption="short"
@@ -26011,11 +26149,14 @@ def web_leaderboard(uid):
 <div class="rank-list-caption" data-board-caption="season"
      style="{'display:none' if active_board == 'season' else ''}">
   <span>{len(boards["season"])} 位顯示中・依本季報酬排序</span></div>
+<div class="rank-list-caption" data-board-caption="month" style="{'display:none' if active_board == 'month' else ''}">
+  <span>{len(boards["month"])} 位顯示中・依 {html.escape(month_info.get('label', '本月'))} 報酬排序</span></div>
 <div class="rank-source-note">資料來源：{leaderboard_source}・資料日：{html.escape(leaderboard_data_date)}</div>
 <div class="mode-note">個股與 ETF 持股都納入會員整體績效；ETF 只計入實際價格／市值變化，不套用個股營收、PE 或法人評分。</div>
 <div data-board-panel="short" style="{' ' if active_board == 'short' else 'display:none'}">{board_html["short"]}</div>
 <div data-board-panel="long" style="{' ' if active_board == 'long' else 'display:none'}">{board_html["long"]}</div>
 <div data-board-panel="season" style="{' ' if active_board == 'season' else 'display:none'}">{board_html["season"]}</div>
+<div data-board-panel="month" style="{' ' if active_board == 'month' else 'display:none'}">{board_html["month"]}</div>
 {waiting_html}
 {join_top_html}
 
@@ -26067,7 +26208,7 @@ def web_leaderboard(uid):
     }});
     var situationBadge = document.querySelector('[data-situation-badge]');
     if (situationBadge) {{
-      var labels = {{short:'短線｜近 30 天', long:'長線｜加入後累計', season:'賽季｜本季'}};
+      var labels = {{short:'短線｜近 30 天', long:'長線｜加入後累計', season:'賽季｜本季', month:'月榜｜本月'}};
       situationBadge.textContent = labels[board] || '';
     }}
     // 網址同步更新，重新整理或分享連結時停在同一榜；
@@ -27164,6 +27305,32 @@ def web_etf(uid):
     return respond_page("ETF 專區", body, "screener")
 
 
+@app.route("/web/leaderboard/history")
+@web_login_required
+def web_leaderboard_history(uid):
+    """已完成的月榜／賽季榜歷史；當期不提前封存。"""
+    history = get_leaderboard_historical_summary(months=12, seasons=8)
+    def render_history(items, empty_text):
+        if not items:
+            return f'<div class="empty">{html.escape(empty_text)}</div>'
+        blocks=[]
+        for item in items:
+            rows=[]
+            for i, r in enumerate(item["rows"], 1):
+                cls = "up" if r["return_pct"] >= 0 else "down"
+                rows.append(f'<div class="history-rank-row"><span class="history-rank">{i}</span><span class="history-name">{safe_html_text(r["nickname"])}</span><b class="num {cls}">{r["return_pct"]:+.2f}%</b></div>')
+            blocks.append(f'<div class="history-period"><div class="history-period-head"><b>{html.escape(item["period"])}</b><span>Top 5</span></div>{"".join(rows) or "<div class=history-empty>資料不足</div>"}</div>')
+        return '<div class="history-grid">' + ''.join(blocks) + '</div>'
+    body=f'''<div class="more-hero"><div class="eyebrow">台股 BOT</div><h1>排行榜歷史</h1><p>只有完成月／季結算的成績才會封存到這裡；當期不會提前出現。</p></div>
+<section class="leaderboard-history" style="margin-top:0">
+  <div class="tabs history-tabs" id="historyTabs"><button type="button" class="on" data-history="months">月榜</button><button type="button" data-history="seasons">賽季榜</button></div>
+  <div class="history-panel" data-history-panel="months"><div class="history-note">最近 12 個已結算月份。</div>{render_history(history["months"],"目前還沒有已結算的月榜歷史。")}</div>
+  <div class="history-panel" data-history-panel="seasons" style="display:none"><div class="history-note">最近 8 個已結算賽季。</div>{render_history(history["seasons"],"目前還沒有已結算的賽季歷史。")}</div>
+</section>
+<style>.leaderboard-history{{margin-top:18px}}.history-tabs{{margin-bottom:10px}}.history-tabs button{{min-width:86px}}.history-note{{font-size:12px;color:var(--ink-soft);margin:0 0 10px}}.history-grid{{display:grid;gap:10px}}.history-period{{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}}.history-period-head{{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}}.history-period-head span{{font-size:11px;color:var(--ink-faint)}}.history-rank-row{{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}}.history-rank-row:last-child{{border-bottom:0}}.history-rank{{font-weight:900;color:var(--ink-faint)}}.history-name{{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.history-empty{{padding:12px;color:var(--ink-faint);font-size:12px}}</style>
+<script>(function(){{var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){{var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){{x.classList.toggle('on',x===b)}});document.querySelectorAll('[data-history-panel]').forEach(function(x){{x.style.display=x.getAttribute('data-history-panel')===k?'':'none'}})}})}})();</script>'''
+    return respond_page("排行榜歷史", body, "more")
+
 @app.route("/web/more")
 @web_login_required
 def web_more(uid):
@@ -27196,6 +27363,7 @@ def web_more(uid):
 
 <div class="more-group">
   <div class="more-group-title">說明</div>
+  <a class="more-item" href="/web/leaderboard/history"><span class="more-icon">📚</span><span><b>排行榜歷史</b><small>查看已結算的月榜與賽季成績</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/leaderboard#rules"><span class="more-icon">?</span><span><b>排行榜規則</b><small>了解短線、長線與排名變化</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/portfolio#sources"><span class="more-icon">◎</span><span><b>資料來源與使用說明</b><small>資料更新方式、隱私與免責聲明</small></span><strong>›</strong></a>
 </div>
