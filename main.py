@@ -6640,6 +6640,31 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
     journal_group_order = (("新增", "new"), ("加碼", "add"),
                            ("減碼", "reduce"), ("刪除", "delete"))
     day_sections = []
+    displayed_stock_count = 0
+
+    def merge_journal_logs(logs_in_group):
+        """同日同檔同類型合併顯示；底層原始 log 不改寫。"""
+        merged, order = {}, []
+        for log in logs_in_group:
+            code = str(log.get("code") or "").strip()
+            if not code:
+                continue
+            if code not in merged:
+                item = dict(log)
+                item["_merged_count"] = 1
+                merged[code] = item
+                order.append(code)
+                continue
+            item = merged[code]
+            item["shares_delta"] = int(item.get("shares_delta") or 0) + int(log.get("shares_delta") or 0)
+            item["shares_after"] = int(log.get("shares_after") or 0)
+            before = int(item.get("shares_before") or 0)
+            delta = int(item.get("shares_delta") or 0)
+            item["change_pct"] = (delta / before * 100) if before > 0 else None
+            if log.get("trade_price") is not None:
+                item["trade_price"] = log.get("trade_price")
+            item["_merged_count"] = int(item.get("_merged_count") or 1) + 1
+        return [merged[c] for c in order]
     for day in sorted(grouped, key=lambda value: value or date.min, reverse=True):
         day_logs = grouped[day]
         day_text = day.strftime("%Y/%m/%d") if day else "日期待確認"
@@ -6658,7 +6683,13 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
             row_parts.append(
                 f'<div class="position-journal-category {group_cls}"><b>{group_label}</b>'
                 f'<small>{len(logs_in_group)} 筆</small></div>')
-            for log, status_label, status_cls in logs_in_group:
+            merged_group = merge_journal_logs([x[0] for x in logs_in_group])
+            displayed_stock_count += len(merged_group)
+            row_parts[-1] = (
+                f'<div class="position-journal-category {group_cls}"><b>{group_label}</b>'
+                f'<small>{len(merged_group)} 檔</small></div>')
+            for log in merged_group:
+                status_label, status_cls = group_label, group_cls
                 code = str(log.get("code") or "")
                 name = html.escape(str(stock_display_name(code, inst_data)))
                 action = "加碼" if log.get("action") == "add" else "減碼"
@@ -6681,6 +6712,8 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
                 price_text = f"成交／成本 {price:,.2f}" if price is not None else "成交價待確認"
                 note = html.escape(str(log.get("note") or ""))
                 note_html = f'<small>{note}</small>' if note else ''
+                merged_count = int(log.get("_merged_count") or 1)
+                merged_hint = f" · 今日 {merged_count} 筆合併" if merged_count > 1 else ""
                 pnl_key = (code, day)
                 realized_pl = realized_by_key.get(pnl_key)
                 if pnl_key in attached_pnl_keys:
@@ -6693,13 +6726,13 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
                 elif action == "減碼":
                     pnl_html = '<small class="position-journal-pnl flat">已實現損益 待確認</small>'
                 else:
-                    pnl_html = '<small class="position-journal-pnl flat">已實現損益 —</small>'
+                    pnl_html = ''
                 row_parts.append(f'''<div class="position-journal-row">
-  <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
+  <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}{merged_hint}</small></div>
   <div class="position-journal-status"><span class="position-journal-badge {status_cls}">{status_label}</span></div>
   <div class="position-journal-cell"><b class="{delta_class}">{delta_text}</b><small>{before:,} → {after:,} 股</small></div>
-  <div class="position-journal-cell"><b>{html.escape(change_text)}</b><small>相對操作前</small></div>
-  <div class="position-journal-cell"><b>{html.escape(weight_text)}</b><small class="{event_weight_class}">{html.escape(event_weight_text)}</small>{pnl_html}{note_html}</div>
+  <div class="position-journal-cell"><b>{html.escape(change_text)}</b><small>持股變動幅度</small></div>
+  <div class="position-journal-cell"><b>{html.escape(weight_text)}</b><small>目前權重</small><small class="{event_weight_class}">{html.escape(event_weight_text)}</small><small>權重變動</small>{pnl_html}{note_html}</div>
 </div>''')
         cancelled_html = ""
 
@@ -6717,11 +6750,11 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
         export_params.append("code=" + quote(str(export_code), safe=""))
     export_url = "/web/position-journal.csv" + ("?" + "&".join(export_params) if export_params else "")
     return f'''<section class="position-journal">
-  <div class="position-journal-head"><div class="position-journal-title-actions"><h2>操作日報</h2><a class="position-journal-export" href="{html.escape(export_url, quote=True)}">匯出 CSV</a></div><small>{len(enriched)} 筆操作<br>{html.escape(filter_text)}</small></div>
-  <div class="position-journal-note">操作日報只記錄實際的新增、加碼與減碼；<b>刪除持股屬資料修正，不會留下任何操作紀錄</b>。同日新增後又完整撤回的操作也會從日報中移除。<b>目前權重</b>＝最新可得價格 × 目前持股 ÷ 目前持股總市值；未輸入的現金與其他資產不會被假設加入分母。</div>
-  <div class="position-journal-table-head"><span>標的</span><span>狀態</span><span>持股變動</span><span>變動幅度</span><span>目前權重<br>變動 %</span></div>
+  <div class="position-journal-head"><div class="position-journal-title-actions"><h2>操作日報</h2><a class="position-journal-export" href="{html.escape(export_url, quote=True)}">匯出 CSV</a></div><small>{displayed_stock_count} 檔標的・{len(enriched)} 筆原始操作<br>{html.escape(filter_text)}</small></div>
+  <div class="position-journal-note">同日同檔操作會合併顯示；原始操作紀錄仍完整保留。<b>變動幅度</b>＝本次持股變動 ÷ 操作前股數；<b>目前權重</b>＝最新可得價格 × 目前持股 ÷ 目前持股總市值。</div>
+  <div class="position-journal-table-head"><span>標的</span><span>狀態</span><span>持股變動</span><span>持股變動幅度</span><span>目前權重<br>權重變動</span></div>
   {"".join(day_sections)}
-  <div class="position-journal-foot">本次影響是以成交／成本價 × 股數變動估算，占目前已登錄持股總市值；不是個人化買賣建議。價格若查無有效資料，相關欄位維持待確認。</div>
+  <div class="position-journal-foot">＊權重變化依目前持股市值計算，僅供紀錄參考；無有效價格時顯示「待確認」。</div>
 </section>'''
 
 
