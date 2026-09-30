@@ -25502,22 +25502,120 @@ def web_leaderboard(uid):
             _mkt_ret = _mkt_curve[-1][1] if _mkt_curve else None
             _excess = (_ret - _mkt_ret) if _ret is not None and _mkt_ret is not None else None
             _participant_count = len([r for r in _rows if r.get(ret_key) is not None])
+            # 更多成績單指標：排名百分位、超越人數、正報酬日／勝率、平均日報酬。
+            _daily_changes = []
+            for _i in range(1, len(_period_curve)):
+                try:
+                    _daily_changes.append(float(_period_curve[_i][1]) - float(_period_curve[_i-1][1]))
+                except Exception:
+                    continue
+            _positive_days = sum(1 for _x in _daily_changes if _x > 0)
+            _negative_days = sum(1 for _x in _daily_changes if _x < 0)
+            _flat_days = sum(1 for _x in _daily_changes if _x == 0)
+            _active_days = len(_daily_changes)
+            _win_rate = (_positive_days / _active_days * 100.0) if _active_days else None
+            _avg_day = (sum(_daily_changes) / _active_days) if _active_days else None
+            _positive_txt = f"{_positive_days} 天" if _active_days else "—"
+            _win_txt = f"{_win_rate:.0f}%" if _win_rate is not None else "—"
+            _avg_txt = f"{_avg_day:+.2f}%" if _avg_day is not None else "—"
+            _beaten = (_participant_count - _rank) if _rank and _participant_count else None
+            _percentile = (( _participant_count - _rank + 1) / _participant_count * 100.0) if _rank and _participant_count else None
+            _beaten_txt = f"{_beaten} 人" if _beaten is not None else "—"
+            _percentile_txt = f"前 {_percentile:.0f}%" if _percentile is not None else "—"
+            _return_mdd_ratio = (float(_ret) / abs(float(_mdd))) if _ret is not None and _mdd not in (None, 0) else None
+            _return_mdd_txt = f"{_return_mdd_ratio:.2f}" if _return_mdd_ratio is not None else "—"
+            _max_up_streak = _max_down_streak = _cur_up = _cur_down = 0
+            for _x in _daily_changes:
+                if _x > 0:
+                    _cur_up += 1; _cur_down = 0
+                elif _x < 0:
+                    _cur_down += 1; _cur_up = 0
+                else:
+                    _cur_up = _cur_down = 0
+                _max_up_streak = max(_max_up_streak, _cur_up)
+                _max_down_streak = max(_max_down_streak, _cur_down)
+            _up_streak_txt = f"{_max_up_streak} 天" if _active_days else "—"
+            _down_streak_txt = f"{_max_down_streak} 天" if _active_days else "—"
             _ret_txt = f"{float(_ret):+.2f}%" if _ret is not None else "—"
             _mkt_txt = f"{float(_mkt_ret):+.2f}%" if _mkt_ret is not None else "—"
             _excess_txt = f"{float(_excess):+.2f}%" if _excess is not None else "—"
-            _mdd_txt = f"{float(_mdd):+.2f}%" if _mdd is not None else "—"
+            _mdd_txt = f"−{abs(float(_mdd)):.2f}%" if _mdd is not None else "—"
             _rank_txt = f"#{_rank}" if _rank else "未上榜"
             _stability_txt = html.escape(_stability or "資料不足")
+            _start_txt = info["start"].strftime("%Y/%m/%d")
+            _end_txt = info["end"].strftime("%Y/%m/%d")
+            _span_txt = f"{_start_txt}–{_end_txt}"
+            _best_day = max(_daily_changes) if _daily_changes else None
+            _worst_day = min(_daily_changes) if _daily_changes else None
+            _best_txt = f"{_best_day:+.2f}%" if _best_day is not None else "—"
+            _worst_txt = f"{_worst_day:+.2f}%" if _worst_day is not None else "—"
+
+            # 成績單圖表：累積報酬 vs 大盤。直接用 inline SVG，不依賴外部 JS。
+            def _scorecard_svg(curve, market_curve):
+                try:
+                    c = [(d, float(v)) for d, v in (curve or []) if d is not None and v is not None]
+                    m = {d: float(v) for d, v in (market_curve or []) if d is not None and v is not None}
+                    c = sorted(c, key=lambda x: x[0])
+                    if len(c) < 2:
+                        return '<div class="scorecard-chart-empty">本期有效資料不足，暫無法繪製趨勢圖。</div>'
+                    pairs = [(d, v, m.get(d)) for d, v in c]
+                    vals = [v for _, v, _ in pairs] + [mv for _, _, mv in pairs if mv is not None]
+                    lo, hi = min(vals), max(vals)
+                    if hi == lo:
+                        hi += 1.0; lo -= 1.0
+                    W, H, L, R, T, B = 560, 210, 42, 14, 18, 32
+                    def xy(i, v):
+                        x = L + i * (W-L-R) / max(1, len(pairs)-1)
+                        y = T + (hi-v) * (H-T-B) / (hi-lo)
+                        return x, y
+                    pts = ' '.join(f'{xy(i,v)[0]:.1f},{xy(i,v)[1]:.1f}' for i,(_,v,_) in enumerate(pairs))
+                    market_pairs = [(i, mv) for i,(_,_,mv) in enumerate(pairs) if mv is not None]
+                    mpts = ' '.join(f'{xy(i,mv)[0]:.1f},{xy(i,mv)[1]:.1f}' for i,mv in market_pairs)
+                    grid = []
+                    for frac in (0, .5, 1):
+                        y = T + frac*(H-T-B)
+                        val = hi - frac*(hi-lo)
+                        grid.append(f'<line x1="{L}" y1="{y:.1f}" x2="{W-R}" y2="{y:.1f}" stroke="#e8edf2" stroke-width="1"/><text x="4" y="{y+4:.1f}" fill="#8b97a5" font-size="10">{val:+.1f}%</text>')
+                    end_label = pairs[-1][0].strftime('%m/%d') if hasattr(pairs[-1][0], 'strftime') else ''
+                    start_label = pairs[0][0].strftime('%m/%d') if hasattr(pairs[0][0], 'strftime') else ''
+                    market_line = f'<polyline points="{mpts}" fill="none" stroke="#a7b0ba" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round"/>' if mpts else ''
+                    market_legend = '<span><i class="legend-market"></i>大盤</span>' if mpts else ''
+                    return f'''<div class="scorecard-chart">
+  <div class="scorecard-chart-head"><b>績效走勢</b><span>累積報酬</span></div>
+  <svg viewBox="0 0 {W} {H}" role="img" aria-label="本期累積報酬走勢圖">{''.join(grid)}
+    <polyline points="{pts}" fill="none" stroke="#1769aa" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    {market_line}
+    <text x="{L}" y="{H-7}" fill="#8b97a5" font-size="10">{start_label}</text>
+    <text x="{W-R}" y="{H-7}" text-anchor="end" fill="#8b97a5" font-size="10">{end_label}</text>
+  </svg>
+  <div class="scorecard-chart-legend"><span><i class="legend-user"></i>你的報酬</span>{market_legend}</div>
+</div>'''
+                except Exception:
+                    return '<div class="scorecard-chart-empty">圖表資料暫時無法產生。</div>'
+
+            _chart_html = _scorecard_svg(_period_curve, _mkt_curve)
             return f'''<section class="settlement-report-card">
   <div class="settlement-report-top"><span>{icon} {html.escape(title)}</span><small>{html.escape(info.get("label", ""))}</small></div>
-  <div class="settlement-report-title">{_rank_txt} <b>本期最終排名</b></div>
-  <div class="settlement-report-main"><strong>{html.escape(_ret_txt)}</strong><span>本期報酬</span></div>
+  <div class="settlement-report-title"><span class="scorecard-rank">{_rank_txt}</span> <b>本期最終排名</b><em>共 {_participant_count} 人</em></div>
+  <div class="settlement-report-main"><strong>{html.escape(_ret_txt)}</strong><span>本期總報酬</span></div>
+  {_chart_html}
   <div class="settlement-report-grid">
     <div><small>超額大盤</small><b>{html.escape(_excess_txt)}</b><span>大盤 {html.escape(_mkt_txt)}</span></div>
-    <div><small>最大回撤</small><b>{html.escape(_mdd_txt)}</b><span>從高點至低點</span></div>
+    <div><small>排名位置</small><b>{html.escape(_percentile_txt)}</b><span>超越 {html.escape(_beaten_txt)}</span></div>
+    <div><small>最大回撤</small><b>{html.escape(_mdd_txt)}</b><span>從本期高點至低點</span></div>
+    <div><small>報酬／回撤</small><b>{html.escape(_return_mdd_txt)}</b><span>數值越高代表報酬相對回撤較大</span></div>
     <div><small>穩定度</small><b>{_stability_txt}</b><span>依本期日報酬波動</span></div>
-    <div><small>有效樣本</small><b>{_days} 天</b><span>共 {_participant_count} 人有績效</span></div>
+    <div><small>有效樣本</small><b>{_days} 天</b><span>本期有效快照</span></div>
+    <div><small>上漲天數</small><b>{html.escape(_positive_txt)}</b><span>下跌 { _negative_days } 天・持平 { _flat_days } 天</span></div>
+    <div><small>勝率</small><b>{html.escape(_win_txt)}</b><span>有變動日中上漲占比</span></div>
+    <div><small>平均單日</small><b>{html.escape(_avg_txt)}</b><span>本期平均日報酬</span></div>
+    <div><small>最佳單日</small><b>{html.escape(_best_txt)}</b><span>單日報酬</span></div>
+    <div><small>最差單日</small><b>{html.escape(_worst_txt)}</b><span>單日報酬</span></div>
+    <div><small>最長連漲</small><b>{html.escape(_up_streak_txt)}</b><span>連續上漲交易日</span></div>
+    <div><small>最長連跌</small><b>{html.escape(_down_streak_txt)}</b><span>連續下跌交易日</span></div>
+    <div><small>參賽人數</small><b>{_participant_count} 人</b><span>本期有有效績效</span></div>
   </div>
+  <div class="settlement-report-period"><span>📅 結算期間</span><b>{_span_txt}</b></div>
   <div class="settlement-report-foot"><span>✓ 本期已完成結算</span><span>結算日 {_today.strftime("%Y/%m/%d")}</span></div>
 </section>'''
 
@@ -25530,17 +25628,17 @@ def web_leaderboard(uid):
             settlement_html = '''<section class="settlement-wrap">
   <div class="settlement-kicker">TODAY · SETTLEMENT</div>
   <h2>🏁 今日結算成績單</h2>
-  <p>今天是本期最後一個有效交易日。結算完成後，這一期會自動封存到「更多 → 排行榜歷史」。</p>
+  <p>今天是本期最後一個有效交易日。月榜只在結算成績單與歷史中保存；平時排行榜只保留「短線／長線／賽季」三種口徑。結算完成後，這一期會自動封存到「更多 → 排行榜歷史」。</p>
   ''' + ''.join(_cards) + '''
 </section>'''
     rank_inputs = []
-    for board_name in ("short", "long", "season", "month"):
+    for board_name in ("short", "long", "season"):
         for current_rank, row in enumerate(all_boards.get(board_name, []), 1):
             rank_inputs.append((board_name, row.get("user_id"), current_rank))
     rank_status_map = get_rank_status_map(rank_inputs)
     rank_status_done = time.monotonic()
     view = request.args.get("board", "short")
-    active_board = view if view in ("short", "long", "season", "month") else "short"
+    active_board = view if view in ("short", "long", "season") else "short"
     is_short = active_board == "short"
     is_long = active_board == "long"
     active_key = {"short": "m30", "long": "ret", "season": "season_ret", "month": "month_ret"}[active_board]
@@ -25548,8 +25646,6 @@ def web_leaderboard(uid):
         "short": "短線｜近 30 天",
         "long": "長線｜加入後累計",
         "season": f"賽季｜{(all_boards.get('season_info') or leaderboard_season_info()).get('label', '本季')}",
-        "month": f"月榜｜{month_info.get('label', '本月')}",
-        "month": f"月榜｜{month_info.get('label', '本月')}",
     }[active_board]
 
     # ── 參加／退出 ──
@@ -25953,7 +26049,6 @@ def web_leaderboard(uid):
         "short": board_rows(boards["short"], "m30", rank_status_map),
         "long": board_rows(boards["long"], "ret", rank_status_map),
         "season": board_rows(boards["season"], "season_ret", rank_status_map),
-        "month": board_rows(boards["month"], "month_ret", rank_status_map),
     }
     board = board_html[active_board]
 
@@ -26007,7 +26102,7 @@ def web_leaderboard(uid):
   </div>
 </div>'''
 
-    situation_panels = "".join(render_situation_panel(name) for name in ("short", "long", "season", "month"))
+    situation_panels = "".join(render_situation_panel(name) for name in ("short", "long", "season"))
     my_rank_html = f'''<section class="rank-situation">
   <div class="rank-situation-title"><h2>🏆 我的排名戰況</h2>
     <span class="rank-situation-badge" data-situation-badge="1">{situation_labels[active_board]}</span></div>
@@ -26049,7 +26144,6 @@ def web_leaderboard(uid):
   <button type="button" data-board="short" class="{'on' if active_board == 'short' else ''}">短線　近30天</button>
   <button type="button" data-board="long" class="{'on' if active_board == 'long' else ''}">長線　累計</button>
   <button type="button" data-board="season" class="{'on' if active_board == 'season' else ''}">賽季　本季</button>
-  <button type="button" data-board="month" class="{'on' if active_board == 'month' else ''}">月榜　本月</button>
 </div>
 <div class="rank-switch-note" data-board-note="short" style="{' ' if active_board == 'short' else 'display:none'}">
   短線：所有人統一比較近30天；重點看短期報酬、短期回檔、短期超額與短期穩定度。
@@ -26060,9 +26154,7 @@ def web_leaderboard(uid):
 <div class="rank-switch-note" data-board-note="season" style="{' ' if active_board == 'season' else 'display:none'}">
   賽季：本季重新計算；每一季從季初重新開始，不受加入日期以外的歷史績效影響。
 </div>
-<div class="rank-switch-note" data-board-note="month" style="{' ' if active_board == 'month' else 'display:none'}">
-  月榜：自然月 1 日到月底，不把近 30 天當成當月報酬。
-</div>"""
+"""
 
     # 走勢比較同時拆成「短期／近30天」與「長期／加入後累計」。
     # 不再讓目前排行榜 tab 決定下面唯一一張圖，避免使用者切到長線後
@@ -26086,7 +26178,7 @@ def web_leaderboard(uid):
     history_assets = """<style>
 .settlement-wrap{margin:0 0 18px;padding:16px;border:1px solid #d8c28d;border-radius:20px;background:linear-gradient(145deg,#fff8dd,#fffdf7);box-shadow:0 8px 22px rgba(120,95,35,.08)}
 .settlement-kicker{font-size:9px;letter-spacing:.18em;color:#9a7736;font-weight:900}.settlement-wrap h2{margin:5px 0 4px}.settlement-wrap>p{margin:0 0 12px;color:#766a55;font-size:12px;line-height:1.6}
-.settlement-report-card{border:1px solid #e4d2a5;border-radius:16px;background:#fffef8;padding:14px;margin-top:10px}.settlement-report-top{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d6538;font-weight:900}.settlement-report-top small{color:#8b8f98;font-weight:600}.settlement-report-title{margin-top:12px;font-size:15px}.settlement-report-title b{font-size:12px;color:#7c8796;font-weight:700;margin-left:6px}.settlement-report-main{text-align:center;padding:9px 0 11px}.settlement-report-main strong{display:block;font-size:34px;line-height:1.05;font-weight:950}.settlement-report-main span{display:block;margin-top:5px;color:#7b8591;font-size:12px}.settlement-report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.settlement-report-grid div{padding:9px;border-radius:11px;background:#faf8f0;border:1px solid #eee6d5}.settlement-report-grid small{display:block;color:#7f8997;font-size:10.5px}.settlement-report-grid b{display:block;margin-top:3px;font-size:17px}.settlement-report-grid span{display:block;margin-top:2px;color:#9aa1aa;font-size:9.5px}.settlement-report-foot{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #eee6d5;color:#7b8794;font-size:10.5px}
+.settlement-report-card{border:1px solid #e4d2a5;border-radius:16px;background:#fffef8;padding:14px;margin-top:10px}.settlement-report-top{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d6538;font-weight:900}.settlement-report-top small{color:#8b8f98;font-weight:600}.settlement-report-title{margin-top:12px;font-size:15px;display:flex;align-items:center;gap:5px}.settlement-report-title b{font-size:12px;color:#7c8796;font-weight:700}.settlement-report-title em{margin-left:auto;font-style:normal;color:#9a8a6d;font-size:10.5px}.scorecard-rank{font-size:20px;font-weight:950;color:#18263a}.settlement-report-main{text-align:center;padding:9px 0 11px}.settlement-report-main strong{display:block;font-size:34px;line-height:1.05;font-weight:950}.settlement-report-main span{display:block;margin-top:5px;color:#7b8591;font-size:12px}.settlement-report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.settlement-report-grid div{padding:9px;border-radius:11px;background:#faf8f0;border:1px solid #eee6d5}.settlement-report-grid small{display:block;color:#7f8997;font-size:10.5px}.settlement-report-grid b{display:block;margin-top:3px;font-size:17px}.settlement-report-grid span{display:block;margin-top:2px;color:#9aa1aa;font-size:9.5px}.settlement-report-period{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding:9px 10px;border-radius:10px;background:#fbf8ef;color:#8a7b60;font-size:10.5px}.settlement-report-period b{color:#5d6570;font-size:10.5px}.settlement-report-foot{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #eee6d5;color:#7b8794;font-size:10.5px}.scorecard-chart{margin:4px 0 12px;padding:10px 10px 7px;border:1px solid #e8edf2;border-radius:12px;background:#fbfcfd}.scorecard-chart-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;color:#344255;font-size:11px}.scorecard-chart-head span{color:#8b97a5;font-weight:600}.scorecard-chart svg{display:block;width:100%;height:auto}.scorecard-chart-legend{display:flex;gap:14px;justify-content:flex-end;color:#8b97a5;font-size:9.5px}.scorecard-chart-legend span{display:flex;align-items:center;gap:4px}.scorecard-chart-legend i{display:inline-block;width:15px;height:3px;border-radius:3px}.legend-user{background:#1769aa}.legend-market{background:#a7b0ba}.scorecard-chart-empty{margin:4px 0 12px;padding:22px 10px;text-align:center;border:1px dashed #dfe5eb;border-radius:12px;color:#8b97a5;font-size:11px;background:#fbfcfd}
 .leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
@@ -26150,14 +26242,11 @@ def web_leaderboard(uid):
 <div class="rank-list-caption" data-board-caption="season"
      style="{'display:none' if active_board == 'season' else ''}">
   <span>{len(boards["season"])} 位顯示中・依本季報酬排序</span></div>
-<div class="rank-list-caption" data-board-caption="month" style="{'display:none' if active_board == 'month' else ''}">
-  <span>{len(boards["month"])} 位顯示中・依 {html.escape(month_info.get('label', '本月'))} 報酬排序</span></div>
 <div class="rank-source-note">資料來源：{leaderboard_source}・資料日：{html.escape(leaderboard_data_date)}</div>
 <div class="mode-note">個股與 ETF 持股都納入會員整體績效；ETF 只計入實際價格／市值變化，不套用個股營收、PE 或法人評分。</div>
 <div data-board-panel="short" style="{' ' if active_board == 'short' else 'display:none'}">{board_html["short"]}</div>
 <div data-board-panel="long" style="{' ' if active_board == 'long' else 'display:none'}">{board_html["long"]}</div>
 <div data-board-panel="season" style="{' ' if active_board == 'season' else 'display:none'}">{board_html["season"]}</div>
-<div data-board-panel="month" style="{' ' if active_board == 'month' else 'display:none'}">{board_html["month"]}</div>
 {waiting_html}
 {join_top_html}
 
@@ -26185,7 +26274,7 @@ def web_leaderboard(uid):
 
 <script>
 (function () {{
-  // 短線／長線切換：兩榜的 HTML 都已經在頁面上，這裡只切換顯示，
+  // 短線／長線／賽季切換：三榜的 HTML 都已經在頁面上，這裡只切換顯示，
   // 不重新請求。原本用 <a href> 會整頁重載，為了換個排序
   // 重跑一次完整計算，開一次要等好幾秒。
   var tabs = document.getElementById('rankTabs');
@@ -26209,7 +26298,7 @@ def web_leaderboard(uid):
     }});
     var situationBadge = document.querySelector('[data-situation-badge]');
     if (situationBadge) {{
-      var labels = {{short:'短線｜近 30 天', long:'長線｜加入後累計', season:'賽季｜本季', month:'月榜｜本月'}};
+      var labels = {{short:'短線｜近 30 天', long:'長線｜加入後累計', season:'賽季｜本季'}};
       situationBadge.textContent = labels[board] || '';
     }}
     // 網址同步更新，重新整理或分享連結時停在同一榜；
