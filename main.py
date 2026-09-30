@@ -7463,7 +7463,7 @@ BOT_MAX_WEIGHT = 0.20    # 單一股票持倉權重上限 20%
 BOT_SCORE_DROP_POINTS = 15.0  # 自持有後最高分回落 15 分視為大幅下降（實驗門檻）
 BOT_STOP_LOSS_PCT = -20.0  # D 方案：單筆自買進價跌幅達 -20% 即停損
 BOT_INITIAL_CAPITAL = 1_000_000.0  # 虛擬帳戶固定初始資產；不途中補資金
-BOT_MODES = (("blackhorse", "黑馬"), ("radar", "雷達"), ("yaochi_00981a", "瑤池金母"))
+BOT_MODES = (("blackhorse", "黑馬"), ("radar", "雷達"), ("yaochi_00981a", "瑤池金母｜00981A 經理人"), ("manager_00403a", "張哲瑋｜00403A 經理人"), ("manager_00991a", "呂宏宇｜00991A 經理人"))
 
 
 def _simulate_yaochi_00981a(days=365):
@@ -7500,6 +7500,31 @@ def _simulate_yaochi_00981a(days=365):
     }
 
 
+def _simulate_manager_etf(code, display_name, days=365):
+    """主動 ETF 經理人參賽線：以 ETF 實際還原價格計算，不納入選股機器人規則。"""
+    q = get_realtime_stock(code, rng="1y") or {}
+    dates = q.get("close_dates") or []
+    closes = q.get("adj_closes") or q.get("closes") or []
+    if len(dates) != len(closes) or len(dates) < 2:
+        return None
+    pairs = [(d, float(v)) for d, v in zip(dates, closes) if d is not None and v not in (None, 0)]
+    cutoff = taiwan_today() - timedelta(days=int(days))
+    pairs = [(d, v) for d, v in pairs if d >= cutoff]
+    if len(pairs) < 2:
+        return None
+    base = pairs[0][1]
+    curve = [(d, (v / base - 1.0) * 100.0) for d, v in pairs]
+    virtual_curve = [(d, BOT_INITIAL_CAPITAL * (1.0 + ret / 100.0)) for d, ret in curve]
+    return {
+        "curve": curve, "virtual_curve": virtual_curve,
+        "initial_capital": BOT_INITIAL_CAPITAL,
+        "virtual_asset": virtual_curve[-1][1] if virtual_curve else BOT_INITIAL_CAPITAL,
+        "holdings": [{"code": code, "name": STOCK_NAME_MAP.get(code, code), "weight": 100.0, "pct": 0.0, "lots": 1, "first_pick": pairs[0][0], "days_left": 0, "etf_latest_price": pairs[-1][1]}],
+        "history": [], "picks_days": len(curve), "invested_pct": 100.0, "cash_pct": 0.0,
+        "strategy_code": code, "strategy_label": f"{display_name}｜100% 持有 {code}",
+    }
+
+
 def simulate_bot_portfolio(mode, days=365):
     """
     D 方案實驗版機器人：
@@ -7517,6 +7542,10 @@ def simulate_bot_portfolio(mode, days=365):
     """
     if mode == "yaochi_00981a":
         return _simulate_yaochi_00981a(days=days)
+    if mode == "manager_00403a":
+        return _simulate_manager_etf("00403A", "張哲瑋｜00403A 經理人", days=days)
+    if mode == "manager_00991a":
+        return _simulate_manager_etf("00991A", "呂宏宇｜00991A 經理人", days=days)
 
     picks = get_picks_since(mode, days=days) or []
     if not picks:
@@ -25598,7 +25627,7 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
         if d is None or ret is None:
             continue
         key = str(user_id).strip()
-        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人"}
+        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人", "bot:manager_00991a": "呂宏宇｜00991A 經理人"}
         display_name = bot_display_names.get(key) or (nickname or key)
         by_user.setdefault(key, []).append((d, float(ret), display_name))
 
@@ -25749,7 +25778,7 @@ def web_leaderboard(uid):
         return render_page("排行榜", pending_html, nav_active="leaderboard")
     # 舊的持久化快照可能還保存「黑馬機器人／雷達機器人」或 bot:xxx，
     # 顯示層統一改成中文名稱，避免快取未重建時把內部 ID 顯示給使用者。
-    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人"}
+    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人", "bot:manager_00991a": "呂宏宇｜00991A 經理人"}
     def _normalise_bot_names(rows):
         out = []
         for row in rows or []:
@@ -25773,12 +25802,17 @@ def web_leaderboard(uid):
             out.append(item)
         return out
 
-    # 瑤池金母只參加短線／賽季／月榜，不納入「長線｜加入後累計」。
+    # 00981A、00403A、00991A 三位經理人只參加短線／賽季／月榜，不納入「長線｜加入後累計」。
     # 長線是拿一般參賽者的累計績效比較，00981A 的歷史績效跨度過大，
     # 因此從長線榜與長線排名計算一起排除。
+    _long_excluded_manager_ids = {
+        "bot:yaochi_00981a",
+        "bot:manager_00403a",
+        "bot:manager_00991a",
+    }
     _long_rows = [
         r for r in (all_boards.get("long") or [])
-        if str((r or {}).get("user_id") or "").strip() != "bot:yaochi_00981a"
+        if str((r or {}).get("user_id") or "").strip() not in _long_excluded_manager_ids
     ]
     boards = {
         "long": _normalise_bot_names(_dedup_board(_long_rows[:100])[:20]),
