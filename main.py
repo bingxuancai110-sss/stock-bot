@@ -7868,7 +7868,8 @@ def _fresh_bot_rows_for_persisted_leaderboard(days=365, market=None):
             "user_id":f"bot:{bot_mode}","nickname":bot_name,"holdings":len(sim.get("holdings") or []),
             "etf_holdings":0,"joined":curve[0][0],"show":True,"detail":None,
             "ret":curve[-1][1],"m30":m30,"mdd":max_drawdown(curve),"days":len(curve),
-            "m30_days":len(recent),"excess":((curve[-1][1]-bot_mkt) if bot_mkt is not None else None),"mkt_ret":bot_mkt,"points":len(curve),"is_bot":True,
+            "m30_days":len(recent),"excess":((curve[-1][1]-bot_mkt) if bot_mkt is not None else None),"mkt_ret":bot_mkt,"points":len(curve),"is_bot":(bot_mode not in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
+            "is_manager":(bot_mode in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
             "bot_mode":bot_mode,"bot_holdings":sim.get("holdings") or [],"bot_history":sim.get("history") or [],
             "initial_capital":sim.get("initial_capital",BOT_INITIAL_CAPITAL),"virtual_asset":sim.get("virtual_asset"),
             "virtual_curve":sim.get("virtual_curve") or [],"invested_pct":sim.get("invested_pct",0.0),
@@ -8223,7 +8224,8 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             "excess": (bot_ret - bot_mkt) if bot_mkt is not None else None,
             "mkt_ret": bot_mkt,
             "points": len(bot_curve),
-            "is_bot": True,
+            "is_bot": (bot_mode not in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
+            "is_manager": (bot_mode in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
             "bot_mode": bot_mode,
             "bot_holdings": sim["holdings"],
             "bot_history": sim.get("history") or [],
@@ -20006,7 +20008,7 @@ def render_page(title, body, nav_active=None, user_name=None):
   document.addEventListener('submit', function(e) {{
     var form = e.target;
     if (!form) return;
-    if (form.matches('form.add, form.sellpanel')) return;
+    if (form.matches('form.add, form.sellpanel, form[data-form-purpose="leaderboard-settlement"]')) return;
     if (form.dataset.submitted === '1') {{
       e.preventDefault();
       return;
@@ -20960,18 +20962,27 @@ def web_admin_leaderboard_settlement(uid):
             selected = {str(x).strip() for x in request.form.getlist('target_user_id') if str(x).strip()}; target_ids = [member_uid for member_uid,_ in members if member_uid in selected]
         else: target_ids = [member_uid for member_uid,_ in members]
         if not target_ids: return redirect('/web/admin/leaderboard-settlement?status=' + quote('沒有可發送的排行榜成員'))
+        # 不在 HTTP request 裡重建整個排行榜。
+        # 原本這裡先跑 save_leaderboard_rank_snapshots() + force_rebuild=True，
+        # 會重新抓大量行情，導致手機瀏覽器的按鈕長時間停在「處理中…」，
+        # 甚至還沒走到 LINE push 就超時。排行榜本身已經在頁面上完成更新，
+        # 手動通知只負責「發 LINE」，所以把發送工作放到背景。
+        def _send_job():
+            sent, failed = _send_manual_leaderboard_settlement(target_ids, periods)
+            print(f"📤 管理員手動排行榜結算通知完成：sent={sent}, failed={failed}, periods={periods}")
+            return f"已發送 {sent} 人，失敗 {failed} 人"
         try:
-            save_leaderboard_rank_snapshots(snapshot_date=settlement_date); clear_leaderboard_cache(); build_leaderboard(top_n=100, days=365, force_rebuild=True)
+            result = run_in_background("管理員排行榜結算通知", _send_job)
         except Exception as exc:
-            print(f"❌ 管理員手動結算前排行榜更新失敗：{exc}"); return make_response('排行榜更新失敗：'+html.escape(str(exc)),500)
-        sent, failed = _send_manual_leaderboard_settlement(target_ids, periods)
-        return redirect('/web/admin/leaderboard-settlement?status=' + quote(f'已發送 {sent} 人，失敗 {failed} 人'))
+            print(f"❌ 啟動管理員排行榜結算通知失敗：{exc}")
+            return make_response('通知啟動失敗：' + html.escape(str(exc)), 500)
+        return redirect('/web/admin/leaderboard-settlement?status=' + quote('已開始發送 LINE 通知｜' + str(result)))
     status = request.args.get('status',''); default_date = taiwan_today().isoformat()
     options = ''.join(f'<label style="display:flex;gap:8px;align-items:center;padding:8px 0"><input type="checkbox" name="target_user_id" value="{html.escape(member_uid)}">{html.escape(nickname)}</label>' for member_uid,nickname in members)
     if not options:
         options = '<span class="more-note">目前沒有可發送的排行榜成員；若剛新增成員，請先重新整理排行榜快照。</span>'
     body = f"""<div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🏆 排行榜結算通知</h1><p>只在管理員按下發送後才會透過 LINE 通知，不會自動推播。</p></div>
-    <div class="admin-panel"><h3>📅 結算內容</h3><form method="post" action="/web/admin/leaderboard-settlement"><input type="hidden" name="csrf_token" value="{html.escape(current_web_csrf_token())}"><label>結算日期<br><input name="settlement_date" type="date" value="{default_date}"></label><div style="margin-top:12px"><label><input type="checkbox" name="period_kind" value="month" checked> 📅 本月結算</label><br><label><input type="checkbox" name="period_kind" value="season" checked> 🏆 本季結算</label></div><h3 style="margin-top:18px">📱 發送對象</h3><label><input type="radio" name="target_mode" value="all" checked onchange="document.getElementById('targets').style.opacity='.55'"> 全部排行榜成員</label><label style="display:block;margin-top:8px"><input type="radio" name="target_mode" value="selected" onchange="document.getElementById('targets').style.opacity='1'"> 指定成員</label><div id="targets" style="margin-top:8px;max-height:260px;overflow:auto;opacity:.55;border:1px solid #eee;border-radius:12px;padding:10px">{options or '<span>目前沒有排行榜成員</span>'}</div><button type="submit" style="margin-top:16px;padding:12px 18px;border:0;border-radius:12px;background:#6E5228;color:#fff;font-weight:800">📤 發送 LINE 結算通知</button></form></div>
+    <div class="admin-panel"><h3>📅 結算內容</h3><form method="post" action="/web/admin/leaderboard-settlement" data-form-purpose="leaderboard-settlement"><input type="hidden" name="csrf_token" value="{html.escape(current_web_csrf_token())}"><label>結算日期<br><input name="settlement_date" type="date" value="{default_date}"></label><div style="margin-top:12px"><label><input type="checkbox" name="period_kind" value="month" checked> 📅 本月結算</label><br><label><input type="checkbox" name="period_kind" value="season" checked> 🏆 本季結算</label></div><h3 style="margin-top:18px">📱 發送對象</h3><label><input type="radio" name="target_mode" value="all" checked onchange="document.getElementById('targets').style.opacity='.55'"> 全部排行榜成員</label><label style="display:block;margin-top:8px"><input type="radio" name="target_mode" value="selected" onchange="document.getElementById('targets').style.opacity='1'"> 指定成員</label><div id="targets" style="margin-top:8px;max-height:260px;overflow:auto;opacity:.55;border:1px solid #eee;border-radius:12px;padding:10px">{options or '<span>目前沒有排行榜成員</span>'}</div><button type="submit" style="margin-top:16px;padding:12px 18px;border:0;border-radius:12px;background:#6E5228;color:#fff;font-weight:800">📤 開始發送 LINE 結算通知</button></form></div>
     <div class="admin-panel"><h3>預覽內容</h3><p>🏁 排行榜已完成結算<br><br>📅 月榜／🏆 賽季榜<br><br>本期排行榜資料已更新完成，成績單已產生。<br>前往排行榜查看你的最終排名、報酬與結算成績。</p><p class="more-note">使用者收到訊息後，按鈕會直接進入排行榜。</p></div><div class="admin-panel"><a href="/web/admin">← 返回管理員後台</a></div>{('<div class="admin-panel" style="color:#176b3a"><b>'+html.escape(status)+'</b></div>') if status else ''}"""
     return render_page('排行榜結算通知', body, 'more')
 
@@ -25788,6 +25799,11 @@ def web_leaderboard(uid):
                 item["nickname"] = bot_display_names[uid]
             elif item.get("nickname") in ("黑馬機器人", "雷達機器人"):
                 item["nickname"] = "黑馬" if uid == "bot:blackhorse" else "雷達" if uid == "bot:radar" else "瑤池金母｜00981A 經理人"
+            # ETF 經理人是「一般參賽者」，不是機器人。
+            # 舊版快照可能曾把他們標成 is_bot=True，這裡強制洗回正常參賽者。
+            if uid in {"bot:yaochi_00981a", "bot:manager_00403a", "bot:manager_00991a"}:
+                item["is_bot"] = False
+                item["is_manager"] = True
             out.append(item)
         return out
 
