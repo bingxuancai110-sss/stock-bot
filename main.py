@@ -26201,15 +26201,19 @@ def web_leaderboard(uid):
                          if span < 10 else f'<span>樣本 {span} 天</span>')
 
             supporting = []
-            if key == "m30" and r.get("ret") is not None:
-                sc = "up" if r["ret"] >= 0 else "down"
-                supporting.append(f'<span><em>長線累計</em> <span class="num {sc}">{r["ret"]:+.1f}%</span></span>')
+            # 對照數字跟著目前所看的榜單走，避免短線／賽季畫面一直拿長線累計比較。
+            # 短線：主數字＝近30天，對照本季。
+            # 賽季：主數字＝本季，對照近30天。
+            # 長線：主數字＝加入後累計，對照近30天。
+            if key == "m30" and r.get("season_ret") is not None:
+                sc = "up" if r["season_ret"] >= 0 else "down"
+                supporting.append(f'<span><em>本季</em> <span class="num {sc}">{r["season_ret"]:+.1f}%</span></span>')
             elif key == "ret" and r.get("m30") is not None:
                 sc = "up" if r["m30"] >= 0 else "down"
                 supporting.append(f'<span><em>短線近30天</em> <span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
-            elif key == "season_ret" and r.get("ret") is not None:
-                sc = "up" if r["ret"] >= 0 else "down"
-                supporting.append(f'<span><em>長線累計</em> <span class="num {sc}">{r["ret"]:+.1f}%</span></span>')
+            elif key == "season_ret" and r.get("m30") is not None:
+                sc = "up" if r["m30"] >= 0 else "down"
+                supporting.append(f'<span><em>短線近30天</em> <span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
             excess_key = {"m30": "m30_excess", "ret": "long_excess", "season_ret": "season_excess", "month_ret": "month_excess"}.get(key, "long_excess")
             mkt_key = {"m30": "mkt_ret", "ret": "mkt_ret", "season_ret": "season_mkt_ret", "month_ret": "month_mkt_ret"}.get(key, "mkt_ret")
             ex = r.get(excess_key)
