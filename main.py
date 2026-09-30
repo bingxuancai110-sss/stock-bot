@@ -8025,13 +8025,16 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             stored_boards, stored_graph = persisted["value"]
             # 網頁顯示前 20 名，但保留前 100 名給 get_my_rank_summary()，
             # 與原本排行榜頁面「前20顯示、前100個人摘要」的功能完全一致。
-            value = (
-                {"long": (stored_boards.get("long") or [])[:int(top_n)],
-                 "short": (stored_boards.get("short") or [])[:int(top_n)],
-                 "waiting": stored_boards.get("waiting") or []},
-                stored_graph,
-            )
-            # 真人榜沿用持久化快照；機器人則強制重算，否則舊快照會把「每檔10%」
+            # 先建立可修改的排行榜副本與曲線資料。
+            # v144 這裡直接使用了尚未定義的 boards / series_map / market，
+            # 在讀取持久化快照時會直接 NameError，造成排行榜或相關頁面 500。
+            boards = {
+                "long": (stored_boards.get("long") or [])[:int(top_n)],
+                "short": (stored_boards.get("short") or [])[:int(top_n)],
+                "waiting": stored_boards.get("waiting") or [],
+            }
+            series_map, market = stored_graph
+            # 真人榜沿用持久化快照；機器人則強制重算，避免舊快照殘留舊版數據。
             # 卡住，即使程式已改成5檔20%也看不到。
             fresh_bots, fresh_bot_series = _fresh_bot_rows_for_persisted_leaderboard(days=days, market=market)
             for board_name in ("long", "short", "waiting"):
@@ -20910,7 +20913,13 @@ def _send_manual_leaderboard_settlement(target_ids, periods):
 @web_login_required
 def web_admin_leaderboard_settlement(uid):
     if not is_admin(uid): return make_response('Forbidden',403)
-    members = _leaderboard_admin_members()
+    # 管理頁 GET 不能因為排行榜成員資料暫時讀取失敗而整頁 500；
+    # 發送前再做必要的資料驗證。
+    try:
+        members = _leaderboard_admin_members()
+    except Exception as exc:
+        print(f"❌ 排行榜結算通知頁讀取成員失敗：{exc}")
+        members = []
     if request.method == 'POST':
         if not valid_web_csrf(): return make_response('CSRF validation failed',403)
         try: settlement_date = date.fromisoformat(str(request.form.get('settlement_date') or taiwan_today().isoformat()).strip())
@@ -20930,8 +20939,10 @@ def web_admin_leaderboard_settlement(uid):
         return redirect('/web/admin/leaderboard-settlement?status=' + quote(f'已發送 {sent} 人，失敗 {failed} 人'))
     status = request.args.get('status',''); default_date = taiwan_today().isoformat()
     options = ''.join(f'<label style="display:flex;gap:8px;align-items:center;padding:8px 0"><input type="checkbox" name="target_user_id" value="{html.escape(member_uid)}">{html.escape(nickname)}</label>' for member_uid,nickname in members)
+    if not options:
+        options = '<span class="more-note">目前沒有可發送的排行榜成員；若剛新增成員，請先重新整理排行榜快照。</span>'
     body = f"""<div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🏆 排行榜結算通知</h1><p>只在管理員按下發送後才會透過 LINE 通知，不會自動推播。</p></div>
-    <div class="admin-panel"><h3>📅 結算內容</h3><form method="post" action="/web/admin/leaderboard-settlement"><input type="hidden" name="csrf_token" value="{html.escape(get_web_csrf_token())}"><label>結算日期<br><input name="settlement_date" type="date" value="{default_date}"></label><div style="margin-top:12px"><label><input type="checkbox" name="period_kind" value="month" checked> 📅 本月結算</label><br><label><input type="checkbox" name="period_kind" value="season" checked> 🏆 本季結算</label></div><h3 style="margin-top:18px">📱 發送對象</h3><label><input type="radio" name="target_mode" value="all" checked onchange="document.getElementById('targets').style.opacity='.55'"> 全部排行榜成員</label><label style="display:block;margin-top:8px"><input type="radio" name="target_mode" value="selected" onchange="document.getElementById('targets').style.opacity='1'"> 指定成員</label><div id="targets" style="margin-top:8px;max-height:260px;overflow:auto;opacity:.55;border:1px solid #eee;border-radius:12px;padding:10px">{options or '<span>目前沒有排行榜成員</span>'}</div><button type="submit" style="margin-top:16px;padding:12px 18px;border:0;border-radius:12px;background:#6E5228;color:#fff;font-weight:800">📤 發送 LINE 結算通知</button></form></div>
+    <div class="admin-panel"><h3>📅 結算內容</h3><form method="post" action="/web/admin/leaderboard-settlement"><input type="hidden" name="csrf_token" value="{html.escape(current_web_csrf_token())}"><label>結算日期<br><input name="settlement_date" type="date" value="{default_date}"></label><div style="margin-top:12px"><label><input type="checkbox" name="period_kind" value="month" checked> 📅 本月結算</label><br><label><input type="checkbox" name="period_kind" value="season" checked> 🏆 本季結算</label></div><h3 style="margin-top:18px">📱 發送對象</h3><label><input type="radio" name="target_mode" value="all" checked onchange="document.getElementById('targets').style.opacity='.55'"> 全部排行榜成員</label><label style="display:block;margin-top:8px"><input type="radio" name="target_mode" value="selected" onchange="document.getElementById('targets').style.opacity='1'"> 指定成員</label><div id="targets" style="margin-top:8px;max-height:260px;overflow:auto;opacity:.55;border:1px solid #eee;border-radius:12px;padding:10px">{options or '<span>目前沒有排行榜成員</span>'}</div><button type="submit" style="margin-top:16px;padding:12px 18px;border:0;border-radius:12px;background:#6E5228;color:#fff;font-weight:800">📤 發送 LINE 結算通知</button></form></div>
     <div class="admin-panel"><h3>預覽內容</h3><p>🏁 排行榜已完成結算<br><br>📅 月榜／🏆 賽季榜<br><br>本期排行榜資料已更新完成，成績單已產生。<br>前往排行榜查看你的最終排名、報酬與結算成績。</p><p class="more-note">使用者收到訊息後，按鈕會直接進入排行榜。</p></div><div class="admin-panel"><a href="/web/admin">← 返回管理員後台</a></div>{('<div class="admin-panel" style="color:#176b3a"><b>'+html.escape(status)+'</b></div>') if status else ''}"""
     return render_page('排行榜結算通知', body, 'more')
 
@@ -25762,8 +25773,15 @@ def web_leaderboard(uid):
             out.append(item)
         return out
 
+    # 瑤池金母只參加短線／賽季／月榜，不納入「長線｜加入後累計」。
+    # 長線是拿一般參賽者的累計績效比較，00981A 的歷史績效跨度過大，
+    # 因此從長線榜與長線排名計算一起排除。
+    _long_rows = [
+        r for r in (all_boards.get("long") or [])
+        if str((r or {}).get("user_id") or "").strip() != "bot:yaochi_00981a"
+    ]
     boards = {
-        "long": _normalise_bot_names(_dedup_board((all_boards.get("long") or [])[:100])[:20]),
+        "long": _normalise_bot_names(_dedup_board(_long_rows[:100])[:20]),
         "short": _normalise_bot_names(_dedup_board((all_boards.get("short") or [])[:100])[:20]),
         "season": _normalise_bot_names(_dedup_board((all_boards.get("season") or [])[:100])[:20]),
         "waiting": _normalise_bot_names(_dedup_board(all_boards.get("waiting") or [])),
@@ -25945,7 +25963,7 @@ def web_leaderboard(uid):
 </section>'''
     rank_inputs = []
     for board_name in ("short", "long", "season"):
-        for current_rank, row in enumerate(all_boards.get(board_name, []), 1):
+        for current_rank, row in enumerate(boards.get(board_name, []), 1):
             rank_inputs.append((board_name, row.get("user_id"), current_rank))
     rank_status_map = get_rank_status_map(rank_inputs)
     rank_status_done = time.monotonic()
