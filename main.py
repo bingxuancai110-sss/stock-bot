@@ -8085,7 +8085,13 @@ def _augment_leaderboard_period_metrics(boards, series_map, market):
         curve = item.get("curve") if isinstance(item, dict) else item
         curve = curve or []
         short_curve = _rebase_period_curve(curve, days_window=30)
-        season_curve = _rebase_period_curve(curve, start_date=season_start)
+        # 賽季第一個有效交易日也要有「本季」資料：
+        # 當天的季內報酬以 0% 起算，而不是因為只有 1 個快照就整個榜單變成空白。
+        _season_raw = [(d, v) for d, v in (curve or []) if d >= season_start]
+        if len(_season_raw) == 1:
+            season_curve = [(_season_raw[0][0], 0.0)]
+        else:
+            season_curve = _rebase_period_curve(curve, start_date=season_start)
         long_curve = list(curve)
 
         r["m30_mdd"] = max_drawdown(short_curve) if short_curve else None
@@ -8103,8 +8109,8 @@ def _augment_leaderboard_period_metrics(boards, series_map, market):
         r["season_ret"] = qv
         r["season_mkt_ret"] = qm
         r["season_excess"] = (qv - qm) if qv is not None and qm is not None else None
-        r["season_days"] = ((season_curve[-1][0] - season_curve[0][0]).days
-                             if len(season_curve) >= 2 else 0)
+        # 這裡的「有效樣本」代表本季已累積的有效快照天數；第一天就是 1 天。
+        r["season_days"] = len(season_curve) if season_curve else 0
         if short_curve:
             r["m30"] = short_curve[-1][1]
             r["m30_days"] = ((short_curve[-1][0] - short_curve[0][0]).days
@@ -8114,6 +8120,7 @@ def _augment_leaderboard_period_metrics(boards, series_map, market):
             r["days"] = ((long_curve[-1][0] - long_curve[0][0]).days
                           if len(long_curve) >= 2 else 0)
 
+    # 第一個有效交易日也納入賽季榜；當天所有人的季內報酬先以 0% 起算。
     season_scored = [r for r in all_rows
                      if r.get("season_ret") is not None
                      and (r.get("season_days") or 0) >= 1]
