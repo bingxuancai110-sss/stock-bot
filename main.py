@@ -7566,7 +7566,9 @@ BOT_MAX_WEIGHT = 0.20    # 單一股票持倉權重上限 20%
 BOT_SCORE_DROP_POINTS = 15.0  # 自持有後最高分回落 15 分視為大幅下降（實驗門檻）
 BOT_STOP_LOSS_PCT = -20.0  # D 方案：單筆自買進價跌幅達 -20% 即停損
 BOT_INITIAL_CAPITAL = 1_000_000.0  # 虛擬帳戶固定初始資產；不途中補資金
-BOT_MODES = (("blackhorse", "黑馬"), ("radar", "雷達"), ("yaochi_00981a", "瑤池金母｜00981A 經理人"), ("manager_00403a", "張哲瑋｜00403A 經理人"), ("manager_00991a", "呂宏宇｜00991A 經理人"))
+BOT_MODES = (("blackhorse", "黑馬"), ("radar", "雷達"), ("yaochi_00981a", "瑤池金母｜00981A 經理人"), ("manager_00403a", "張哲瑋｜00403A 經理人"))
+# 已移除的參賽者：即使舊快照仍殘留，也一律不再顯示。
+REMOVED_LEADERBOARD_USER_IDS = {"bot:manager_00991a"}
 
 
 def _simulate_yaochi_00981a(days=365):
@@ -7647,8 +7649,6 @@ def simulate_bot_portfolio(mode, days=365):
         return _simulate_yaochi_00981a(days=days)
     if mode == "manager_00403a":
         return _simulate_manager_etf("00403A", "張哲瑋｜00403A 經理人", days=days)
-    if mode == "manager_00991a":
-        return _simulate_manager_etf("00991A", "呂宏宇｜00991A 經理人", days=days)
 
     picks = get_picks_since(mode, days=days) or []
     if not picks:
@@ -7971,8 +7971,8 @@ def _fresh_bot_rows_for_persisted_leaderboard(days=365, market=None):
             "user_id":f"bot:{bot_mode}","nickname":bot_name,"holdings":len(sim.get("holdings") or []),
             "etf_holdings":0,"joined":curve[0][0],"show":True,"detail":None,
             "ret":curve[-1][1],"m30":m30,"mdd":max_drawdown(curve),"days":len(curve),
-            "m30_days":len(recent),"excess":((curve[-1][1]-bot_mkt) if bot_mkt is not None else None),"mkt_ret":bot_mkt,"points":len(curve),"is_bot":(bot_mode not in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
-            "is_manager":(bot_mode in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
+            "m30_days":len(recent),"excess":((curve[-1][1]-bot_mkt) if bot_mkt is not None else None),"mkt_ret":bot_mkt,"points":len(curve),"is_bot":(bot_mode not in {"yaochi_00981a", "manager_00403a"}),
+            "is_manager":(bot_mode in {"yaochi_00981a", "manager_00403a"}),
             "bot_mode":bot_mode,"bot_holdings":sim.get("holdings") or [],"bot_history":sim.get("history") or [],
             "initial_capital":sim.get("initial_capital",BOT_INITIAL_CAPITAL),"virtual_asset":sim.get("virtual_asset"),
             "virtual_curve":sim.get("virtual_curve") or [],"invested_pct":sim.get("invested_pct",0.0),
@@ -8327,8 +8327,8 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             "excess": (bot_ret - bot_mkt) if bot_mkt is not None else None,
             "mkt_ret": bot_mkt,
             "points": len(bot_curve),
-            "is_bot": (bot_mode not in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
-            "is_manager": (bot_mode in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
+            "is_bot": (bot_mode not in {"yaochi_00981a", "manager_00403a"}),
+            "is_manager": (bot_mode in {"yaochi_00981a", "manager_00403a"}),
             "bot_mode": bot_mode,
             "bot_holdings": sim["holdings"],
             "bot_history": sim.get("history") or [],
@@ -16204,21 +16204,41 @@ def _morning_macro_news_lines():
 
 
 def _macro_metric_box(item):
-    """Flex 的單一指標格，避免多個指標塞在同一行後錯位。"""
-    if item["pct"] is None:
-        value = "資料暫缺"
+    """Flex 的單一指標格：保留原 2×2 卡片尺寸，同時顯示現值與日漲跌幅。"""
+    pct = item.get("pct")
+    close = item.get("close")
+    if close is None:
+        current_value = "資料暫缺"
+    elif item.get("symbol") == "^TNX":
+        current_value = f"{close:.3f}%"
+    else:
+        current_value = f"{close:,.2f}"
+
+    if pct is None:
+        change_value = "—"
         value_color = "#767D85"
     else:
-        value = f"{item['pct']:+.2f}%"
-        value_color = "#B52F2F" if item["pct"] > 0 else ("#087A4B" if item["pct"] < 0 else "#767D85")
+        change_value = f"{pct:+.2f}%"
+        value_color = "#B52F2F" if pct > 0 else ("#087A4B" if pct < 0 else "#767D85")
+
+    metric_row = {
+        "type": "box", "layout": "horizontal", "alignItems": "center",
+        "margin": "sm", "contents": [
+            {"type": "text", "text": current_value, "size": "sm",
+             "weight": "bold", "color": "#454C55", "flex": 1,
+             "wrap": False, "maxLines": 1},
+            {"type": "text", "text": change_value, "size": "sm",
+             "weight": "bold", "color": value_color, "align": "end",
+             "flex": 0, "wrap": False, "maxLines": 1},
+        ]
+    }
     return {
         "type": "box", "layout": "vertical", "flex": 1,
         "backgroundColor": "#F9F9FB", "cornerRadius": "8px",
         "paddingAll": "10px", "contents": [
             {"type": "text", "text": item["label"], "size": "xs",
              "color": "#454C55", "wrap": True, "maxLines": 2},
-            {"type": "text", "text": value, "size": "sm", "weight": "bold",
-             "color": value_color, "margin": "sm"},
+            metric_row,
         ]
     }
 
@@ -25741,6 +25761,16 @@ def leaderboard_month_info(today=None):
     end = date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
     return {"id": f"{today.year}-{today.month:02d}", "label": f"{today.year}/{today.month:02d} 月榜", "start": start, "end": end}
 
+
+def _leaderboard_last_valid_trading_day(start, end):
+    """取得排行榜期間最後一個真正有交易的台股日。"""
+    d = end
+    while d >= start:
+        if is_twse_trading_day(d):
+            return d
+        d -= timedelta(days=1)
+    return None
+
 def _build_current_month_board(base_boards, series_map, market):
     info = leaderboard_month_info(); start = info["start"]; unique = {}
     for bn in ("long", "short", "season", "waiting"):
@@ -25793,7 +25823,9 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
         if d is None or ret is None:
             continue
         key = str(user_id).strip()
-        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人", "bot:manager_00991a": "呂宏宇｜00991A 經理人"}
+        if key in REMOVED_LEADERBOARD_USER_IDS:
+            continue
+        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人"}
         display_name = bot_display_names.get(key) or (nickname or key)
         by_user.setdefault(key, []).append((d, float(ret), display_name))
 
@@ -25944,19 +25976,21 @@ def web_leaderboard(uid):
         return render_page("排行榜", pending_html, nav_active="leaderboard")
     # 舊的持久化快照可能還保存「黑馬機器人／雷達機器人」或 bot:xxx，
     # 顯示層統一改成中文名稱，避免快取未重建時把內部 ID 顯示給使用者。
-    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人", "bot:manager_00991a": "呂宏宇｜00991A 經理人"}
+    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人"}
     def _normalise_bot_names(rows):
         out = []
         for row in rows or []:
             item = dict(row)
             uid = str(item.get("user_id") or "").strip()
+            if uid in REMOVED_LEADERBOARD_USER_IDS:
+                continue
             if uid in bot_display_names:
                 item["nickname"] = bot_display_names[uid]
             elif item.get("nickname") in ("黑馬機器人", "雷達機器人"):
-                item["nickname"] = "黑馬" if uid == "bot:blackhorse" else "雷達" if uid == "bot:radar" else "瑤池金母｜00981A 經理人"
+                item["nickname"] = "黑馬" if uid == "bot:blackhorse" else "雷達" if uid == "bot:radar" else item.get("nickname")
             # ETF 經理人是「一般參賽者」，不是機器人。
             # 舊版快照可能曾把他們標成 is_bot=True，這裡強制洗回正常參賽者。
-            if uid in {"bot:yaochi_00981a", "bot:manager_00403a", "bot:manager_00991a"}:
+            if uid in {"bot:yaochi_00981a", "bot:manager_00403a"}:
                 item["is_bot"] = False
                 item["is_manager"] = True
             out.append(item)
@@ -25973,14 +26007,13 @@ def web_leaderboard(uid):
             out.append(item)
         return out
 
-    # 00981A、00403A、00991A 三位經理人只參加短線／賽季／月榜，不納入「長線｜加入後累計」。
+    # 00981A、00403A 兩位經理人只參加短線／賽季／月榜，不納入「長線｜加入後累計」。
     # 長線是拿一般參賽者的累計績效比較，00981A 的歷史績效跨度過大，
     # 因此從長線榜與長線排名計算一起排除。
     _long_excluded_manager_ids = {
         "bot:yaochi_00981a",
         "bot:manager_00403a",
-        "bot:manager_00991a",
-    }
+            }
     _long_rows = [
         r for r in (all_boards.get("long") or [])
         if str((r or {}).get("user_id") or "").strip() not in _long_excluded_manager_ids
@@ -26014,6 +26047,10 @@ def web_leaderboard(uid):
     _data_day = _leaderboard_date(leaderboard_data_date)
     if _data_day == _today:
         def _render_settlement_card(board_name, icon, title, info, ret_key, days_key):
+            # 只有「本期最後一個有效交易日」才顯示成績單。
+            # 跨到下一個交易日後，成績單就不應繼續掛在排行榜首頁。
+            if _leaderboard_last_valid_trading_day(info["start"], info["end"]) != _today:
+                return ""
             _pts = []
             for _pt in (market or []):
                 if isinstance(_pt, (list, tuple)) and _pt:
