@@ -13998,8 +13998,8 @@ def fetch_monthly_revenue(force_refresh=False, homepage=False):
     重要原則：
     1. 以「所有回傳列中最大的資料年月」判定最新月份，不能拿第一列當月份。
     2. 每月 1～15 日是新月份公布高峰，這段期間即使有舊快照也必須重新問官方。
-    3. warmup 可用 force_refresh=True，避免 Render worker 的 10 分鐘記憶體快取
-       讓新月份卡住。
+    3. warmup 會用 force_refresh=True，避免 Render worker 的記憶體快取
+       把「尚未公告的新月份」誤當成已公告。
     4. 若官方端點暫時失敗，保留舊資料；但不把舊資料的月份偽裝成新月份。
     """
     now = time.time()
@@ -14057,19 +14057,22 @@ def fetch_monthly_revenue(force_refresh=False, homepage=False):
                   (shared_period, len(shared_data)))
             return shared_data
 
-    # 若記憶體尚未有資料，先保留資料庫舊快照作為失敗 fallback。
-    # 公布期不直接 return；仍會往下打官方端點。
-    fallback_data = _revenue_cache.get("data") or {}
-    fallback_period = _revenue_cache.get("period")
-    if not fallback_data:
-        history_data, history_period = _load_latest_revenue_history()
-        if history_data:
+    # force_refresh 時不要相信記憶體裡可能殘留的「月份標籤」。
+    # 例如舊快取可能寫著 11509，但 9 月其實尚未公告；這時必須以資料庫
+    # 真正存在的最新歷史資料（例如 11508）作為 fallback，而不是讓錯誤月份
+    # 標籤一路污染後面的累計營收修復／評分。
+    fallback_data = {} if force_refresh else (_revenue_cache.get("data") or {})
+    fallback_period = None if force_refresh else _revenue_cache.get("period")
+    history_data, history_period = _load_latest_revenue_history()
+    if history_data:
+        if (not fallback_data or force_refresh or
+                not _normalize_revenue_period(fallback_period)):
             fallback_data, fallback_period = history_data, history_period
             _revenue_cache["period"] = history_period
             _revenue_cache["data"] = history_data
             _revenue_cache["source"] = "history"
             _revenue_cache["source_date"] = None
-            print("🔄 月營收先保留資料庫舊快照（%s），繼續檢查官方新月份" %
+            print("🔄 月營收以資料庫最新已公告月份（%s）作為 fallback，繼續檢查官方新月份" %
                   (history_period or "未知月份"))
 
     _revenue_cache["checked_at"] = now
@@ -18088,7 +18091,11 @@ def _do_warmup():
     shared_data = {}
     for label, fn in [
         ("法人", lambda: fetch_institutional_data(codes=position_codes)),
-        ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
+        # Warm-up 是每日固定的背景入口；月營收不能走 homepage=True，
+        # 因為 homepage 模式刻意只讀快照、不問官方。這裡強制重新確認
+        # 「每一市場目前真正已公告的最新月份」，已公告就切新月份，
+        # 尚未公告就沿用資料庫最新已公告月份。
+        ("月營收", lambda: fetch_monthly_revenue(force_refresh=True, homepage=False)),
         ("估值", fetch_valuation),
         ("產業別", get_industry_map),
         ("名稱對照", get_name_map),
