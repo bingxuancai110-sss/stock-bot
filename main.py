@@ -7566,9 +7566,7 @@ BOT_MAX_WEIGHT = 0.20    # 單一股票持倉權重上限 20%
 BOT_SCORE_DROP_POINTS = 15.0  # 自持有後最高分回落 15 分視為大幅下降（實驗門檻）
 BOT_STOP_LOSS_PCT = -20.0  # D 方案：單筆自買進價跌幅達 -20% 即停損
 BOT_INITIAL_CAPITAL = 1_000_000.0  # 虛擬帳戶固定初始資產；不途中補資金
-BOT_MODES = (("blackhorse", "黑馬"), ("radar", "雷達"), ("yaochi_00981a", "瑤池金母｜00981A 經理人"), ("manager_00403a", "張哲瑋｜00403A 經理人"))
-# 已移除的參賽者：即使舊快照仍殘留，也一律不再顯示。
-REMOVED_LEADERBOARD_USER_IDS = {"bot:manager_00991a"}
+BOT_MODES = (("blackhorse", "黑馬"), ("radar", "雷達"), ("yaochi_00981a", "瑤池金母｜00981A 經理人"), ("manager_00403a", "張哲瑋｜00403A 經理人"), ("manager_00991a", "呂宏宇｜00991A 經理人"))
 
 
 def _simulate_yaochi_00981a(days=365):
@@ -7649,6 +7647,8 @@ def simulate_bot_portfolio(mode, days=365):
         return _simulate_yaochi_00981a(days=days)
     if mode == "manager_00403a":
         return _simulate_manager_etf("00403A", "張哲瑋｜00403A 經理人", days=days)
+    if mode == "manager_00991a":
+        return _simulate_manager_etf("00991A", "呂宏宇｜00991A 經理人", days=days)
 
     picks = get_picks_since(mode, days=days) or []
     if not picks:
@@ -7971,8 +7971,8 @@ def _fresh_bot_rows_for_persisted_leaderboard(days=365, market=None):
             "user_id":f"bot:{bot_mode}","nickname":bot_name,"holdings":len(sim.get("holdings") or []),
             "etf_holdings":0,"joined":curve[0][0],"show":True,"detail":None,
             "ret":curve[-1][1],"m30":m30,"mdd":max_drawdown(curve),"days":len(curve),
-            "m30_days":len(recent),"excess":((curve[-1][1]-bot_mkt) if bot_mkt is not None else None),"mkt_ret":bot_mkt,"points":len(curve),"is_bot":(bot_mode not in {"yaochi_00981a", "manager_00403a"}),
-            "is_manager":(bot_mode in {"yaochi_00981a", "manager_00403a"}),
+            "m30_days":len(recent),"excess":((curve[-1][1]-bot_mkt) if bot_mkt is not None else None),"mkt_ret":bot_mkt,"points":len(curve),"is_bot":(bot_mode not in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
+            "is_manager":(bot_mode in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
             "bot_mode":bot_mode,"bot_holdings":sim.get("holdings") or [],"bot_history":sim.get("history") or [],
             "initial_capital":sim.get("initial_capital",BOT_INITIAL_CAPITAL),"virtual_asset":sim.get("virtual_asset"),
             "virtual_curve":sim.get("virtual_curve") or [],"invested_pct":sim.get("invested_pct",0.0),
@@ -8085,13 +8085,7 @@ def _augment_leaderboard_period_metrics(boards, series_map, market):
         curve = item.get("curve") if isinstance(item, dict) else item
         curve = curve or []
         short_curve = _rebase_period_curve(curve, days_window=30)
-        # 賽季第一個有效交易日也要有「本季」資料：
-        # 當天的季內報酬以 0% 起算，而不是因為只有 1 個快照就整個榜單變成空白。
-        _season_raw = [(d, v) for d, v in (curve or []) if d >= season_start]
-        if len(_season_raw) == 1:
-            season_curve = [(_season_raw[0][0], 0.0)]
-        else:
-            season_curve = _rebase_period_curve(curve, start_date=season_start)
+        season_curve = _rebase_period_curve(curve, start_date=season_start)
         long_curve = list(curve)
 
         r["m30_mdd"] = max_drawdown(short_curve) if short_curve else None
@@ -8109,8 +8103,8 @@ def _augment_leaderboard_period_metrics(boards, series_map, market):
         r["season_ret"] = qv
         r["season_mkt_ret"] = qm
         r["season_excess"] = (qv - qm) if qv is not None and qm is not None else None
-        # 這裡的「有效樣本」代表本季已累積的有效快照天數；第一天就是 1 天。
-        r["season_days"] = len(season_curve) if season_curve else 0
+        r["season_days"] = ((season_curve[-1][0] - season_curve[0][0]).days
+                             if len(season_curve) >= 2 else 0)
         if short_curve:
             r["m30"] = short_curve[-1][1]
             r["m30_days"] = ((short_curve[-1][0] - short_curve[0][0]).days
@@ -8120,7 +8114,6 @@ def _augment_leaderboard_period_metrics(boards, series_map, market):
             r["days"] = ((long_curve[-1][0] - long_curve[0][0]).days
                           if len(long_curve) >= 2 else 0)
 
-    # 第一個有效交易日也納入賽季榜；當天所有人的季內報酬先以 0% 起算。
     season_scored = [r for r in all_rows
                      if r.get("season_ret") is not None
                      and (r.get("season_days") or 0) >= 1]
@@ -8334,8 +8327,8 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             "excess": (bot_ret - bot_mkt) if bot_mkt is not None else None,
             "mkt_ret": bot_mkt,
             "points": len(bot_curve),
-            "is_bot": (bot_mode not in {"yaochi_00981a", "manager_00403a"}),
-            "is_manager": (bot_mode in {"yaochi_00981a", "manager_00403a"}),
+            "is_bot": (bot_mode not in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
+            "is_manager": (bot_mode in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
             "bot_mode": bot_mode,
             "bot_holdings": sim["holdings"],
             "bot_history": sim.get("history") or [],
@@ -13849,35 +13842,21 @@ def _parse_mops_revenue_csv(raw, target_period, target_code=None):
     code_i = col("公司代號")
     month_i = col("當月營收")
     yoy_i = col("去年同月增減")
-    # 不再只找「累計營收增減」：MOPS/TWSE 正式欄名是
-    # 「累計營業收入-前期比較增減(%)」，不同來源的欄名略有差異。
-    def first_col(*candidates):
-        for idx in candidates:
-            if idx is not None:
-                return idx
-        return None
-
-    cum_yoy_i = first_col(
-        col("累計營業收入", "前期比較增減"),
-        col("累計營收", "前期比較增減"),
-        col("累計營收增減"),
-    )
-    cum_current_i = first_col(
-        col("累計營業收入", "當月累計營收"),
-        col("本年累計營收"),
-        col("當月累計營收"),
-    )
-    cum_prior_i = first_col(
-        col("累計營業收入", "去年累計營收"),
-        col("去年累計營收"),
-    )
+    cum_yoy_i = col("累計營收增減")
     mom_i = col("前月比較增減")
-    # 只有在欄名真的找不到時才使用舊 CSV 固定位置。
+    # CSV 欄位順序可能調整；尤其「累計營收增減」不能硬猜成第 6 欄。
     code_i = 0 if code_i is None else code_i
     month_i = 2 if month_i is None else month_i
     yoy_i = 3 if yoy_i is None else yoy_i
-    cum_yoy_i = 6 if cum_yoy_i is None else cum_yoy_i
-    mom_i = 5 if mom_i is None else mom_i
+    if cum_yoy_i is None:
+        # 常見新版格式的累計 YoY 百分比通常在含「累計＋增減／比較」的欄位。
+        candidates = [i for i, h in enumerate(header)
+                      if "累計" in h and any(x in h for x in ("增減", "比較", "%", "百分"))]
+        cum_yoy_i = candidates[-1] if candidates else None
+    if mom_i is None:
+        candidates = [i for i, h in enumerate(header)
+                      if "前月比較" in h or ("上月比較" in h and "%" in h)]
+        mom_i = candidates[-1] if candidates else None
 
     def num(v):
         t = str(v or "").strip().replace(",", "").replace("%", "")
@@ -13892,26 +13871,30 @@ def _parse_mops_revenue_csv(raw, target_period, target_code=None):
 
     result = {}
     for row in rows[header_i + 1:]:
-        if max(code_i, month_i, yoy_i, cum_yoy_i, mom_i) >= len(row):
+        required_indices = [i for i in (code_i, month_i, yoy_i, cum_yoy_i, mom_i) if i is not None]
+        if required_indices and max(required_indices) >= len(row):
             continue
         code = re.sub(r"\s+", "", str(row[code_i] or ""))
         if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code):
             continue
         if target and code.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ") != target.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
             continue
-        cum_yoy = num(row[cum_yoy_i])
-        # 若百分比欄位缺失，直接用官方「本年累計／去年累計」重算。
-        if cum_yoy is None and cum_current_i is not None and cum_prior_i is not None:
-            if max(cum_current_i, cum_prior_i) < len(row):
-                cur_cum = num(row[cum_current_i])
-                prior_cum = num(row[cum_prior_i])
-                if cur_cum is not None and prior_cum not in (None, 0):
-                    cum_yoy = (cur_cum / prior_cum - 1.0) * 100.0
+        cum_value = num(row[cum_yoy_i]) if cum_yoy_i is not None and cum_yoy_i < len(row) else None
+        # 若沒有累計 YoY 百分比欄，嘗試從「今年累計／去年累計」兩欄計算。
+        if cum_value is None:
+            cur_i = next((i for i, h in enumerate(header)
+                          if "累計" in h and "營收" in h and not any(x in h for x in ("去年", "前期", "增減", "比較", "%", "百分"))), None)
+            prev_i = next((i for i, h in enumerate(header)
+                           if "累計" in h and ("去年" in h or "前期" in h) and not any(x in h for x in ("增減", "比較", "%", "百分"))), None)
+            if cur_i is not None and prev_i is not None and cur_i < len(row) and prev_i < len(row):
+                cur_v, prev_v = num(row[cur_i]), num(row[prev_i])
+                if cur_v is not None and prev_v not in (None, 0):
+                    cum_value = (cur_v / prev_v - 1.0) * 100.0
         result[code] = {
-            "yoy_pct": num(row[yoy_i]),
-            "cum_yoy_pct": cum_yoy,
-            "mom_pct": num(row[mom_i]),
-            "month_revenue": num(row[month_i]),
+            "yoy_pct": num(row[yoy_i]) if yoy_i is not None and yoy_i < len(row) else None,
+            "cum_yoy_pct": cum_value,
+            "mom_pct": num(row[mom_i]) if mom_i is not None and mom_i < len(row) else None,
+            "month_revenue": num(row[month_i]) if month_i is not None and month_i < len(row) else None,
         }
         if target:
             break
@@ -14148,33 +14131,84 @@ def fetch_monthly_revenue(force_refresh=False, homepage=False):
             code = _pick(row, "公司代號", "SecuritiesCompanyCode", "Code")
             if not code:
                 continue
-            cum_yoy_raw = _pick(
+            # 官方 OpenAPI 的欄位名稱曾出現不同版本；不能只鎖死單一欄位名。
+            # 先做多版本 alias，再從同一列的累計營收／去年累計營收直接計算。
+            def _row_value_by_keywords(keys, must_have=(), must_not=()):
+                for k, v in row.items():
+                    nk = re.sub(r"\s+", "", str(k or ""))
+                    if not all(x in nk for x in must_have):
+                        continue
+                    if any(x in nk for x in must_not):
+                        continue
+                    if v not in (None, ""):
+                        return v
+                return ""
+
+            yoy_raw = _pick(
+                row,
+                "營業收入-去年同月增減(%)",
+                "營業收入-去年同月增減百分比",
+                "營業收入去年同月增減(%)",
+                "去年同月增減(%)",
+            )
+            cum_raw = _pick(
                 row,
                 "累計營業收入-前期比較增減(%)",
+                "累計營業收入-前期比較增減百分比",
+                "累計營業收入前期比較增減(%)",
+                "累計營業收入前期比較增減",
                 "累計營收-前期比較增減(%)",
+                "累計營收前期比較增減(%)",
                 "累計營收增減(%)",
             )
-            cum_yoy = to_float(cum_yoy_raw)
-            # 官方 API 若沒有直接給百分比，就用同一列的累計營收重算。
-            if cum_yoy is None:
-                cur_cum = to_float(_pick(
-                    row,
-                    "累計營業收入-當月累計營收",
-                    "本年累計營收",
-                    "當月累計營收",
-                ))
-                prior_cum = to_float(_pick(
-                    row,
-                    "累計營業收入-去年累計營收",
-                    "去年累計營收",
-                ))
-                if cur_cum is not None and prior_cum not in (None, 0):
-                    cum_yoy = (cur_cum / prior_cum - 1.0) * 100.0
+            # 最後再用關鍵字掃描，容忍官方欄名的小幅改名。
+            if not cum_raw:
+                cum_raw = _row_value_by_keywords(
+                    row, must_have=("累計",),
+                )
+                # 上面的寬鬆搜尋可能找到「累計營業收入」金額，不是百分比；
+                # 若找到數字過大，改找帶「增減／比較／%」的欄位。
+                try:
+                    if cum_raw and abs(float(str(cum_raw).replace(",", ""))) > 1000:
+                        cum_raw = ""
+                except Exception:
+                    pass
+            if not cum_raw:
+                cum_raw = _row_value_by_keywords(
+                    row, must_have=("累計",),
+                )
+                for k, v in row.items():
+                    nk = re.sub(r"\s+", "", str(k or ""))
+                    if "累計" in nk and any(x in nk for x in ("增減", "比較", "%", "百分")) and v not in (None, ""):
+                        cum_raw = v
+                        break
+
+            month_raw = _pick(row, "營業收入-當月營收", "當月營收")
+            mom_raw = _pick(row, "營業收入-上月比較增減(%)", "營業收入-上月比較增減百分比", "上月比較增減(%)")
+
+            # 若 API 完全沒有累計 YoY，直接用官方同一列的「今年累計」與「去年累計」計算，
+            # 絕不把單月 YoY 當成累計 YoY。
+            if not cum_raw:
+                cur_cum = _row_value_by_keywords(row, must_have=("累計", "營業收入"), must_not=("去年", "前期", "比較", "增減", "%", "百分"))
+                prev_cum = _row_value_by_keywords(row, must_have=("累計",), must_not=("增減", "%", "百分"))
+                # 優先挑含「去年／前期」的欄位作為去年累計。
+                for k, v in row.items():
+                    nk = re.sub(r"\s+", "", str(k or ""))
+                    if "累計" in nk and ("去年" in nk or "前期" in nk) and "增減" not in nk and "%" not in nk and v not in (None, ""):
+                        prev_cum = v
+                        break
+                try:
+                    a = to_float(cur_cum); b = to_float(prev_cum)
+                    if a is not None and b not in (None, 0):
+                        cum_raw = (a / b - 1.0) * 100.0
+                except Exception:
+                    pass
+
             result[code] = {
-                "yoy_pct": to_float(_pick(row, "營業收入-去年同月增減(%)")),
-                "cum_yoy_pct": cum_yoy,
-                "mom_pct": to_float(_pick(row, "營業收入-上月比較增減(%)")),
-                "month_revenue": to_float(_pick(row, "營業收入-當月營收")),
+                "yoy_pct": to_float(yoy_raw),
+                "cum_yoy_pct": to_float(cum_raw),
+                "mom_pct": to_float(mom_raw),
+                "month_revenue": to_float(month_raw),
             }
 
     if not result or not included_sources:
@@ -17782,7 +17816,7 @@ def _do_warmup():
     shared_data = {}
     for label, fn in [
         ("法人", lambda: fetch_institutional_data(codes=position_codes)),
-        ("月營收", lambda: fetch_monthly_revenue(force_refresh=True, homepage=False)),
+        ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
         ("估值", fetch_valuation),
         ("產業別", get_industry_map),
         ("名稱對照", get_name_map),
@@ -25819,16 +25853,6 @@ def leaderboard_month_info(today=None):
     end = date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
     return {"id": f"{today.year}-{today.month:02d}", "label": f"{today.year}/{today.month:02d} 月榜", "start": start, "end": end}
 
-
-def _leaderboard_last_valid_trading_day(start, end):
-    """取得排行榜期間最後一個真正有交易的台股日。"""
-    d = end
-    while d >= start:
-        if is_twse_trading_day(d):
-            return d
-        d -= timedelta(days=1)
-    return None
-
 def _build_current_month_board(base_boards, series_map, market):
     info = leaderboard_month_info(); start = info["start"]; unique = {}
     for bn in ("long", "short", "season", "waiting"):
@@ -25881,9 +25905,7 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
         if d is None or ret is None:
             continue
         key = str(user_id).strip()
-        if key in REMOVED_LEADERBOARD_USER_IDS:
-            continue
-        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人"}
+        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人", "bot:manager_00991a": "呂宏宇｜00991A 經理人"}
         display_name = bot_display_names.get(key) or (nickname or key)
         by_user.setdefault(key, []).append((d, float(ret), display_name))
 
@@ -26034,21 +26056,19 @@ def web_leaderboard(uid):
         return render_page("排行榜", pending_html, nav_active="leaderboard")
     # 舊的持久化快照可能還保存「黑馬機器人／雷達機器人」或 bot:xxx，
     # 顯示層統一改成中文名稱，避免快取未重建時把內部 ID 顯示給使用者。
-    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人"}
+    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人", "bot:manager_00991a": "呂宏宇｜00991A 經理人"}
     def _normalise_bot_names(rows):
         out = []
         for row in rows or []:
             item = dict(row)
             uid = str(item.get("user_id") or "").strip()
-            if uid in REMOVED_LEADERBOARD_USER_IDS:
-                continue
             if uid in bot_display_names:
                 item["nickname"] = bot_display_names[uid]
             elif item.get("nickname") in ("黑馬機器人", "雷達機器人"):
-                item["nickname"] = "黑馬" if uid == "bot:blackhorse" else "雷達" if uid == "bot:radar" else item.get("nickname")
+                item["nickname"] = "黑馬" if uid == "bot:blackhorse" else "雷達" if uid == "bot:radar" else "瑤池金母｜00981A 經理人"
             # ETF 經理人是「一般參賽者」，不是機器人。
             # 舊版快照可能曾把他們標成 is_bot=True，這裡強制洗回正常參賽者。
-            if uid in {"bot:yaochi_00981a", "bot:manager_00403a"}:
+            if uid in {"bot:yaochi_00981a", "bot:manager_00403a", "bot:manager_00991a"}:
                 item["is_bot"] = False
                 item["is_manager"] = True
             out.append(item)
@@ -26065,13 +26085,14 @@ def web_leaderboard(uid):
             out.append(item)
         return out
 
-    # 00981A、00403A 兩位經理人只參加短線／賽季／月榜，不納入「長線｜加入後累計」。
+    # 00981A、00403A、00991A 三位經理人只參加短線／賽季／月榜，不納入「長線｜加入後累計」。
     # 長線是拿一般參賽者的累計績效比較，00981A 的歷史績效跨度過大，
     # 因此從長線榜與長線排名計算一起排除。
     _long_excluded_manager_ids = {
         "bot:yaochi_00981a",
         "bot:manager_00403a",
-            }
+        "bot:manager_00991a",
+    }
     _long_rows = [
         r for r in (all_boards.get("long") or [])
         if str((r or {}).get("user_id") or "").strip() not in _long_excluded_manager_ids
@@ -26105,10 +26126,6 @@ def web_leaderboard(uid):
     _data_day = _leaderboard_date(leaderboard_data_date)
     if _data_day == _today:
         def _render_settlement_card(board_name, icon, title, info, ret_key, days_key):
-            # 只有「本期最後一個有效交易日」才顯示成績單。
-            # 跨到下一個交易日後，成績單就不應繼續掛在排行榜首頁。
-            if _leaderboard_last_valid_trading_day(info["start"], info["end"]) != _today:
-                return ""
             _pts = []
             for _pt in (market or []):
                 if isinstance(_pt, (list, tuple)) and _pt:
