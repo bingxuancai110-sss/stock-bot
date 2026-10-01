@@ -15108,6 +15108,58 @@ def _repair_missing_cumulative_revenue(codes, revenue_data, trace=None):
         return None
 
     for code in targets:
+        # ★ 重要修正：latest_key 是「全市場目前看到的最新月份」，不能直接
+        # 當成「這一檔股票已公告的最新月份」。例如 2026/10/01 全市場資料
+        # 可能已進入 11509，但 2308 尚未公告 9 月；2308 此時必須回退到
+        # 自己資料庫真正存在的最新月份 11508，才能計算 1~8 月累計 YoY。
+        rows = db_rows.get(code, {})
+        db_latest_key = None
+        for k in sorted(rows, reverse=True):
+            item = rows.get(k) or {}
+            if item.get("month_revenue") is not None or item.get("cum_yoy_pct") is not None:
+                db_latest_key = k
+                break
+
+        calculation_key = latest_key
+        _trace("stock_latest_period", code=code, global_latest=latest_key,
+               db_latest=db_latest_key)
+
+        # 先用這一檔目前已存在的最新 DB 資料試算。這一步會讓「尚未公告新月份」
+        # 的股票直接使用上一個已公告月份，而不是卡在全市場新月份。
+        if db_latest_key and db_latest_key < latest_key:
+            calculation_key = db_latest_key
+            def _try_calculate_at(key):
+                item = rows.get(key)
+                if item and item.get("cum_yoy_pct") is not None:
+                    return float(item["cum_yoy_pct"])
+                current_months = months_through(key)
+                cur_vals, prev_vals = [], []
+                for ck in current_months:
+                    pk = ck - 100
+                    cv = rows.get(ck, {}).get("month_revenue")
+                    pv = rows.get(pk, {}).get("month_revenue")
+                    try:
+                        cv = float(cv) if cv is not None else None
+                        pv = float(pv) if pv is not None else None
+                    except (TypeError, ValueError):
+                        cv = pv = None
+                    if cv is None or pv is None:
+                        return None
+                    cur_vals.append(cv)
+                    prev_vals.append(pv)
+                if cur_vals and sum(prev_vals) != 0:
+                    return (sum(cur_vals) / sum(prev_vals) - 1.0) * 100.0
+                return None
+
+            calculated = _try_calculate_at(calculation_key)
+            if calculated is not None:
+                revenue_data.setdefault(code, {})["cum_yoy_pct"] = calculated
+                revenue_data.setdefault(code, {})["revenue_period"] = str(calculation_key)
+                _trace("calculated_from_stock_latest", code=code, period=calculation_key,
+                       cum_yoy_pct=calculated)
+                print(f"✅ 累計營收依個股最新已公告月份修補：{code}/{calculation_key} = {calculated:+.2f}%")
+                continue
+
         calculated = try_calculate(code)
         if calculated is not None:
             revenue_data.setdefault(code, {})["cum_yoy_pct"] = calculated
@@ -15188,6 +15240,44 @@ def _repair_missing_cumulative_revenue(codes, revenue_data, trace=None):
             except Exception as exc:
                 _trace("mops_history_error", code=code, period=key, error=f"{type(exc).__name__}: {exc}")
                 print(f"⚠️ MOPS 歷史月營收修補失敗 {code}/{key}: {type(exc).__name__}: {exc}")
+
+        # MOPS 補抓後，再以「這一檔實際存在的最新月份」重新計算一次。
+        # 如果最新月份尚未公告，不應因全市場 latest_key 較新而直接判定資料不足。
+        rows = db_rows.get(code, {})
+        stock_latest_key = None
+        for k in sorted(rows, reverse=True):
+            item = rows.get(k) or {}
+            if item.get("month_revenue") is not None or item.get("cum_yoy_pct") is not None:
+                stock_latest_key = k
+                break
+
+        if stock_latest_key and stock_latest_key != latest_key:
+            item = rows.get(stock_latest_key) or {}
+            if item.get("cum_yoy_pct") is not None:
+                calculated = float(item["cum_yoy_pct"])
+            else:
+                cur_vals, prev_vals = [], []
+                for ck in months_through(stock_latest_key):
+                    cv = rows.get(ck, {}).get("month_revenue")
+                    pv = rows.get(ck - 100, {}).get("month_revenue")
+                    try:
+                        cv = float(cv) if cv is not None else None
+                        pv = float(pv) if pv is not None else None
+                    except (TypeError, ValueError):
+                        cv = pv = None
+                    if cv is None or pv is None:
+                        cur_vals = []
+                        break
+                    cur_vals.append(cv); prev_vals.append(pv)
+                calculated = ((sum(cur_vals) / sum(prev_vals) - 1.0) * 100.0
+                              if cur_vals and sum(prev_vals) != 0 else None)
+            if calculated is not None:
+                revenue_data.setdefault(code, {})["cum_yoy_pct"] = calculated
+                revenue_data.setdefault(code, {})["revenue_period"] = str(stock_latest_key)
+                _trace("calculated_after_stock_fallback", code=code, period=stock_latest_key,
+                       cum_yoy_pct=calculated)
+                print(f"✅ 累計營收依個股最新月份完成修補：{code}/{stock_latest_key} = {calculated:+.2f}%")
+                continue
 
         calculated = try_calculate(code)
         if calculated is not None:
