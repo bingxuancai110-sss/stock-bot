@@ -25886,7 +25886,9 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
                     continue
                 users.append({"user_id": uid, "nickname": nick, "return_pct": period_ret})
             users.sort(key=lambda x: x['return_pct'], reverse=True)
-            result.append({"period": period, "rows": users[:5]})
+            # 歷史頁面：每一期預設只顯示前 5 名，但保留該期所有參賽者；
+            # 其餘名次放進可展開的「其餘 N 人」區塊，避免歷史頁過長。
+            result.append({"period": period, "rows": users})
         return result
 
     out['months'] = build('month', months)
@@ -26783,18 +26785,43 @@ def web_leaderboard(uid):
 .settlement-wrap{margin:0 0 18px;padding:16px;border:1px solid #d8c28d;border-radius:20px;background:linear-gradient(145deg,#fff8dd,#fffdf7);box-shadow:0 8px 22px rgba(120,95,35,.08)}
 .settlement-kicker{font-size:9px;letter-spacing:.18em;color:#9a7736;font-weight:900}.settlement-wrap h2{margin:5px 0 4px}.settlement-wrap>p{margin:0 0 12px;color:#766a55;font-size:12px;line-height:1.6}
 .settlement-report-card{border:1px solid #e4d2a5;border-radius:16px;background:#fffef8;padding:14px;margin-top:10px}.settlement-report-top{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d6538;font-weight:900}.settlement-report-top small{color:#8b8f98;font-weight:600}.settlement-report-title{margin-top:12px;font-size:15px;display:flex;align-items:center;gap:5px}.settlement-report-title b{font-size:12px;color:#7c8796;font-weight:700}.settlement-report-title em{margin-left:auto;font-style:normal;color:#9a8a6d;font-size:10.5px}.scorecard-rank{font-size:20px;font-weight:950;color:#18263a}.settlement-report-main{text-align:center;padding:9px 0 11px}.settlement-report-main strong{display:block;font-size:34px;line-height:1.05;font-weight:950}.settlement-report-main span{display:block;margin-top:5px;color:#7b8591;font-size:12px}.settlement-report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.settlement-report-grid div{padding:9px;border-radius:11px;background:#faf8f0;border:1px solid #eee6d5}.settlement-report-grid small{display:block;color:#7f8997;font-size:10.5px}.settlement-report-grid b{display:block;margin-top:3px;font-size:17px}.settlement-report-grid span{display:block;margin-top:2px;color:#9aa1aa;font-size:9.5px}.settlement-report-period{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding:9px 10px;border-radius:10px;background:#fbf8ef;color:#8a7b60;font-size:10.5px}.settlement-report-period b{color:#5d6570;font-size:10.5px}.settlement-report-foot{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #eee6d5;color:#7b8794;font-size:10.5px}.scorecard-chart{margin:4px 0 12px;padding:10px 10px 7px;border:1px solid #e8edf2;border-radius:12px;background:#fbfcfd}.scorecard-chart-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;color:#344255;font-size:11px}.scorecard-chart-head span{color:#8b97a5;font-weight:600}.scorecard-chart svg{display:block;width:100%;height:auto}.scorecard-chart-legend{display:flex;gap:14px;justify-content:flex-end;color:#8b97a5;font-size:9.5px}.scorecard-chart-legend span{display:flex;align-items:center;gap:4px}.scorecard-chart-legend i{display:inline-block;width:15px;height:3px;border-radius:3px}.legend-user{background:#1769aa}.legend-market{background:#a7b0ba}.scorecard-chart-empty{margin:4px 0 12px;padding:22px 10px;text-align:center;border:1px dashed #dfe5eb;border-radius:12px;color:#8b97a5;font-size:11px;background:#fbfcfd}
-.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>"""
+.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}.history-others{border-top:1px solid rgba(120,130,140,.12);background:rgba(247,249,251,.65)}.history-others summary{cursor:pointer;list-style:none;padding:10px 12px;color:#2876b7;font-weight:800;font-size:12px;display:flex;justify-content:space-between;align-items:center}.history-others summary::-webkit-details-marker{display:none}.history-others summary:before{content:"▸";margin-right:6px}.history-others[open] summary:before{content:"▾"}.history-others summary span{font-weight:600;color:var(--ink-faint);font-size:10.5px}.history-others-list .history-rank-row:last-child{border-bottom:0}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
     def render_history_table(items, empty_text):
         if not items: return f'<div class="empty">{empty_text}</div>'
         blocks=[]
         for item in items:
+            all_rows = item.get('rows') or []
+            top_rows = all_rows[:5]
+            other_rows = all_rows[5:]
             rows=[]
-            for i,r in enumerate(item['rows'],1):
+            for i,r in enumerate(top_rows,1):
                 cls='up' if r['return_pct']>=0 else 'down'
                 rows.append(f'<div class="history-rank-row"><span class="history-rank">{i}</span><span class="history-name">{safe_html_text(r["nickname"])}</span><b class="num {cls}">{r["return_pct"]:+.2f}%</b></div>')
-            blocks.append(f'<div class="history-period"><div class="history-period-head"><b>{html.escape(item["period"])}</b><span>Top 5</span></div>{"".join(rows) or "<div class=history-empty>資料不足</div>"}</div>')
+            others_html = ""
+            if other_rows:
+                other_rows_html=[]
+                for i,r in enumerate(other_rows,6):
+                    cls='up' if r['return_pct']>=0 else 'down'
+                    other_rows_html.append(
+                        f'<div class="history-rank-row"><span class="history-rank">{i}</span>'
+                        f'<span class="history-name">{safe_html_text(r["nickname"])}</span>'
+                        f'<b class="num {cls}">{r["return_pct"]:+.2f}%</b></div>'
+                    )
+                others_html = (
+                    f'<details class="history-others">'
+                    f'<summary>其餘 {len(other_rows)} 人 <span>展開查看全部名次</span></summary>'
+                    f'<div class="history-others-list">{"".join(other_rows_html)}</div>'
+                    f'</details>'
+                )
+            header_label = f'Top 5・共 {len(all_rows)} 人' if all_rows else '資料不足'
+            blocks.append(
+                f'<div class="history-period">'
+                f'<div class="history-period-head"><b>{html.escape(item["period"])}</b><span>{header_label}</span></div>'
+                f'{"".join(rows) or "<div class=history-empty>資料不足</div>"}'
+                f'{others_html}</div>'
+            )
         return '<div class="history-grid">'+''.join(blocks)+'</div>'
     history_html = f"""<section class="leaderboard-history" id="leaderboard-history">
   <div class="section-head"><h2>📚 歷史排行榜</h2><span class="section-note">已結算才會封存</span></div>
