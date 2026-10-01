@@ -14989,6 +14989,189 @@ def build_watchlist_advice(total, chip_score, pos_score, rev_score, val_score,
     return "😐 各面向訊號中性，暫無明顯方向，續觀察法人動向與月線支撐"
 
 
+
+def _repair_missing_cumulative_revenue(codes, revenue_data):
+    """補修缺失的「累計營收年增率」。
+
+    月營收快照可能有「當月 YoY」但 cum_yoy_pct 為 NULL；這不能直接把單月 YoY
+    當成累計 YoY。這裡優先使用 DB 已保存的每月營收，必要時才向 MOPS 官方歷史頁
+    補月份，最後用「今年 1 月至最新月」對「去年同期」的營收總額計算累計 YoY。
+    只修使用者目前要求評分的股票，避免全市場一次打數百／數千次外部請求。
+    """
+    if not isinstance(revenue_data, dict):
+        return revenue_data or {}
+
+    targets = []
+    for code in codes or []:
+        code = str(code).strip()
+        info = revenue_data.get(code) or {}
+        if info.get("cum_yoy_pct") is None:
+            targets.append(code)
+    if not targets:
+        return revenue_data
+
+    # 最新完整月：先以目前月營收快照的 period 為準，沒有才退回今天的上個月。
+    latest_key = _normalize_revenue_period(_revenue_cache.get("period"))
+    if not latest_key:
+        today = taiwan_today()
+        y, m = today.year, today.month - 1
+        if m == 0:
+            y, m = y - 1, 12
+        latest_key = y * 100 + m
+
+    def prev_month(key):
+        y, m = divmod(int(key), 100)
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+        return y * 100 + m
+
+    def months_through(key):
+        y, m = divmod(int(key), 100)
+        return [y * 100 + mm for mm in range(1, m + 1)]
+
+    def code_matches(a, b):
+        aa = str(a).strip().upper().rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        bb = str(b).strip().upper().rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        return aa == bb
+
+    # 一次讀出目標股票的既有歷史；通常這裡就能直接修好，不必打網路。
+    db_rows = {c: {} for c in targets}
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT code, period, month_revenue, cum_yoy_pct
+            FROM revenue_history
+            WHERE code = ANY(%s)
+            ORDER BY code, period
+        """, (targets,))
+        for code, period, month_revenue, cum_yoy in cur.fetchall():
+            c = next((x for x in targets if code_matches(x, code)), str(code))
+            db_rows.setdefault(c, {})[int(_normalize_revenue_period(period) or 0)] = {
+                "month_revenue": month_revenue,
+                "cum_yoy_pct": cum_yoy,
+            }
+        cur.close()
+        release_db_connection(conn)
+    except Exception as exc:
+        print(f"⚠️ 累計營收修補讀 DB 失敗：{type(exc).__name__}: {exc}")
+        try:
+            release_db_connection(conn)
+        except Exception:
+            pass
+
+    def try_calculate(code):
+        rows = db_rows.get(code, {})
+        # 若最新期本身已有官方累計 YoY，直接採用，不必重新計算。
+        latest_item = rows.get(latest_key)
+        if latest_item and latest_item.get("cum_yoy_pct") is not None:
+            return float(latest_item["cum_yoy_pct"])
+
+        current_months = months_through(latest_key)
+        prior_year_key = latest_key - 100
+        prior_months = [k - 100 for k in current_months]
+        cur_vals = []
+        prev_vals = []
+        for ck, pk in zip(current_months, prior_months):
+            cv = rows.get(ck, {}).get("month_revenue")
+            pv = rows.get(pk, {}).get("month_revenue")
+            try:
+                cv = float(cv) if cv is not None else None
+                pv = float(pv) if pv is not None else None
+            except (TypeError, ValueError):
+                cv = pv = None
+            if cv is None or pv is None:
+                return None
+            cur_vals.append(cv)
+            prev_vals.append(pv)
+        if cur_vals and sum(prev_vals) != 0:
+            return (sum(cur_vals) / sum(prev_vals) - 1.0) * 100.0
+        return None
+
+    for code in targets:
+        calculated = try_calculate(code)
+        if calculated is not None:
+            revenue_data.setdefault(code, {})["cum_yoy_pct"] = calculated
+            print(f"✅ 累計營收由既有月資料修補：{code} = {calculated:+.2f}%")
+            continue
+
+        # 先直接問最新完整月的 MOPS 官方資料；若官方列本身有累計 YoY，這一步就結束。
+        market = None
+        try:
+            mm = get_market_map() or {}
+            market = mm.get(code)
+        except Exception:
+            market = None
+        try:
+            fetched, fetched_period = _fetch_mops_revenue_fallback(
+                latest_key, target_code=code, market=market
+            )
+            if fetched:
+                item = fetched.get(code)
+                if item is None:
+                    item = next((v for k, v in fetched.items() if code_matches(code, k)), None)
+                if item:
+                    revenue_data.setdefault(code, {}).update(item)
+                    if fetched_period:
+                        save_revenue_history(fetched_period, {
+                            code: item
+                        })
+                    if item.get("cum_yoy_pct") is not None:
+                        print(f"✅ MOPS 直接補回累計營收：{code} = {float(item['cum_yoy_pct']):+.2f}%")
+                        continue
+                    db_rows.setdefault(code, {})[latest_key] = {
+                        "month_revenue": item.get("month_revenue"),
+                        "cum_yoy_pct": item.get("cum_yoy_pct"),
+                    }
+        except Exception as exc:
+            print(f"⚠️ MOPS 最新月營收修補失敗 {code}: {type(exc).__name__}: {exc}")
+
+        # 最新列仍沒有累計 YoY，就只為這檔股票補齊今年與去年同期的月營收。
+        # 已存在 DB 的月份不再重抓。
+        current_months = months_through(latest_key)
+        needed = []
+        rows = db_rows.setdefault(code, {})
+        for ck in current_months:
+            if ck not in rows or rows[ck].get("month_revenue") is None:
+                needed.append(ck)
+            pk = ck - 100
+            if pk not in rows or rows[pk].get("month_revenue") is None:
+                needed.append(pk)
+
+        # 避免單一壞資料造成大量請求；最多補 24 個月。
+        for key in sorted(set(needed))[:24]:
+            try:
+                fetched, fetched_period = _fetch_mops_revenue_fallback(
+                    key, target_code=code, market=market
+                )
+                if not fetched:
+                    continue
+                item = fetched.get(code)
+                if item is None:
+                    item = next((v for k, v in fetched.items() if code_matches(code, k)), None)
+                if not item:
+                    continue
+                nk = _normalize_revenue_period(fetched_period or key) or key
+                rows[nk] = {
+                    "month_revenue": item.get("month_revenue"),
+                    "cum_yoy_pct": item.get("cum_yoy_pct"),
+                }
+                save_revenue_history(fetched_period or str(key), {code: item})
+                if item.get("cum_yoy_pct") is not None and nk == latest_key:
+                    revenue_data.setdefault(code, {}).update(item)
+            except Exception as exc:
+                print(f"⚠️ MOPS 歷史月營收修補失敗 {code}/{key}: {type(exc).__name__}: {exc}")
+
+        calculated = try_calculate(code)
+        if calculated is not None:
+            revenue_data.setdefault(code, {})["cum_yoy_pct"] = calculated
+            print(f"✅ 累計營收計算修補完成：{code} = {calculated:+.2f}%")
+        else:
+            print(f"⚠️ 累計營收仍無法計算：{code}（保留資料不足，不猜數字）")
+
+    return revenue_data
+
 def _compute_stock_watchlist_scores(codes):
     """
     計算個股自選評分；LINE、持股頁、選股台共用「網頁五大因子模型」。
@@ -15000,6 +15183,9 @@ def _compute_stock_watchlist_scores(codes):
 
     institutional_data = fetch_institutional_data() or {}
     revenue_data = fetch_monthly_revenue() or {}
+    # 五大因子真正使用前，先修補「有月營收、但累計 YoY 為 NULL」的個股。
+    # 這是針對目前使用者的自選股做按需修補，不會把單月 YoY 冒充累計 YoY。
+    revenue_data = _repair_missing_cumulative_revenue(codes, revenue_data)
     valuation_data = fetch_valuation() or {}
     industry_map = get_industry_map() or {}
     momentum_stats = get_industry_momentum(revenue_data, industry_map)
