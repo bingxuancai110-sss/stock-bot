@@ -25813,7 +25813,7 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
         if d is None or ret is None:
             continue
         key = str(user_id).strip()
-        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人", "bot:manager_00991a": "呂宏宇｜00991A 經理人"}
+        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人"}
         display_name = bot_display_names.get(key) or (nickname or key)
         by_user.setdefault(key, []).append((d, float(ret), display_name))
 
@@ -25964,7 +25964,7 @@ def web_leaderboard(uid):
         return render_page("排行榜", pending_html, nav_active="leaderboard")
     # 舊的持久化快照可能還保存「黑馬機器人／雷達機器人」或 bot:xxx，
     # 顯示層統一改成中文名稱，避免快取未重建時把內部 ID 顯示給使用者。
-    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人", "bot:manager_00991a": "呂宏宇｜00991A 經理人"}
+    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人"}
     def _normalise_bot_names(rows):
         out = []
         for row in rows or []:
@@ -26032,7 +26032,24 @@ def web_leaderboard(uid):
     settlement_html = ""
     _today = taiwan_today()
     _data_day = _leaderboard_date(leaderboard_data_date)
-    if _data_day == _today:
+    # 結算成績單只允許在「當天就是月末／季末最後交易日」顯示。
+    # 跨到下一個交易日後，即使資料快照仍是上一個結算日，也必須移除，
+    # 避免 10/1 還看到 9/30 的「今日結算成績單」。
+    _settlement_today_periods = _leaderboard_settlement_periods(_today)
+    # 強制保護：月／季結算卡只能出現在真正的結算月份最後交易日。
+    # 月榜：當月最後一個交易日，且日期至少 28 日。
+    # 季榜：只可能出現在 3／6／9／12 月的最後一個交易日。
+    # 因此 10/1、11/1 等新月份第一天絕不可能顯示任何結算成績單。
+    _valid_settlement_periods = []
+    for _kind, _pid, _plabel in (_settlement_today_periods or []):
+        if _kind == "month":
+            if _today.day >= 28:
+                _valid_settlement_periods.append((_kind, _pid, _plabel))
+        elif _kind == "season":
+            if _today.month in (3, 6, 9, 12) and _today.day >= 28:
+                _valid_settlement_periods.append((_kind, _pid, _plabel))
+    _settlement_today_periods = _valid_settlement_periods
+    if _data_day == _today and _settlement_today_periods:
         def _render_settlement_card(board_name, icon, title, info, ret_key, days_key):
             _pts = []
             for _pt in (market or []):
@@ -26174,10 +26191,12 @@ def web_leaderboard(uid):
   <div class="settlement-report-foot"><span>✓ 本期已完成結算</span><span>結算日 {_today.strftime("%Y/%m/%d")}</span></div>
 </section>'''
 
-        _cards = [
-            _render_settlement_card("month", "📅", "本月結算成績單", month_info, "month_ret", "month_days"),
-            _render_settlement_card("season", "🏆", "本季結算成績單", season_info, "season_ret", "season_days"),
-        ]
+        _valid_kinds = {x[0] for x in _settlement_today_periods}
+        _cards = []
+        if "month" in _valid_kinds:
+            _cards.append(_render_settlement_card("month", "📅", "本月結算成績單", month_info, "month_ret", "month_days"))
+        if "season" in _valid_kinds:
+            _cards.append(_render_settlement_card("season", "🏆", "本季結算成績單", season_info, "season_ret", "season_days"))
         _cards = [x for x in _cards if x]
         if _cards:
             settlement_html = '''<section class="settlement-wrap">
