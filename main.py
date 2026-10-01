@@ -14990,7 +14990,7 @@ def build_watchlist_advice(total, chip_score, pos_score, rev_score, val_score,
 
 
 
-def _repair_missing_cumulative_revenue(codes, revenue_data):
+def _repair_missing_cumulative_revenue(codes, revenue_data, trace=None):
     """補修缺失的「累計營收年增率」。
 
     月營收快照可能有「當月 YoY」但 cum_yoy_pct 為 NULL；這不能直接把單月 YoY
@@ -14998,7 +14998,14 @@ def _repair_missing_cumulative_revenue(codes, revenue_data):
     補月份，最後用「今年 1 月至最新月」對「去年同期」的營收總額計算累計 YoY。
     只修使用者目前要求評分的股票，避免全市場一次打數百／數千次外部請求。
     """
+    def _trace(stage, **data):
+        if isinstance(trace, list):
+            row = {"stage": stage}
+            row.update(data)
+            trace.append(row)
+
     if not isinstance(revenue_data, dict):
+        _trace("invalid_revenue_data", type=type(revenue_data).__name__)
         return revenue_data or {}
 
     targets = []
@@ -15008,7 +15015,10 @@ def _repair_missing_cumulative_revenue(codes, revenue_data):
         if info.get("cum_yoy_pct") is None:
             targets.append(code)
     if not targets:
+        _trace("nothing_to_repair", codes=[str(c).strip() for c in (codes or [])])
         return revenue_data
+
+    _trace("targets", targets=list(targets))
 
     # 最新完整月：先以目前月營收快照的 period 為準，沒有才退回今天的上個月。
     latest_key = _normalize_revenue_period(_revenue_cache.get("period"))
@@ -15018,6 +15028,8 @@ def _repair_missing_cumulative_revenue(codes, revenue_data):
         if m == 0:
             y, m = y - 1, 12
         latest_key = y * 100 + m
+
+    _trace("latest_period", latest_key=latest_key, cache_period=_revenue_cache.get("period"))
 
     def prev_month(key):
         y, m = divmod(int(key), 100)
@@ -15056,10 +15068,13 @@ def _repair_missing_cumulative_revenue(codes, revenue_data):
         release_db_connection(conn)
     except Exception as exc:
         print(f"⚠️ 累計營收修補讀 DB 失敗：{type(exc).__name__}: {exc}")
+        _trace("db_error", error=f"{type(exc).__name__}: {exc}")
         try:
             release_db_connection(conn)
         except Exception:
             pass
+
+    _trace("db_loaded", rows={c: len(v) for c, v in db_rows.items()}, latest={c: db_rows.get(c, {}).get(latest_key) for c in targets})
 
     def try_calculate(code):
         rows = db_rows.get(code, {})
@@ -15093,8 +15108,11 @@ def _repair_missing_cumulative_revenue(codes, revenue_data):
         calculated = try_calculate(code)
         if calculated is not None:
             revenue_data.setdefault(code, {})["cum_yoy_pct"] = calculated
+            _trace("calculated_from_db", code=code, cum_yoy_pct=calculated)
             print(f"✅ 累計營收由既有月資料修補：{code} = {calculated:+.2f}%")
             continue
+
+        _trace("db_calculation_failed", code=code, available_periods=sorted(db_rows.get(code, {}).keys())[-8:])
 
         # 先直接問最新完整月的 MOPS 官方資料；若官方列本身有累計 YoY，這一步就結束。
         market = None
@@ -15103,10 +15121,12 @@ def _repair_missing_cumulative_revenue(codes, revenue_data):
             market = mm.get(code)
         except Exception:
             market = None
+        _trace("market_resolved", code=code, market=market)
         try:
             fetched, fetched_period = _fetch_mops_revenue_fallback(
                 latest_key, target_code=code, market=market
             )
+            _trace("mops_latest_result", code=code, fetched_period=fetched_period, found=bool(fetched), keys=list((fetched or {}).keys())[:10], item=(next((v for k, v in (fetched or {}).items() if code_matches(code, k)), None) if fetched else None))
             if fetched:
                 item = fetched.get(code)
                 if item is None:
@@ -15125,6 +15145,7 @@ def _repair_missing_cumulative_revenue(codes, revenue_data):
                         "cum_yoy_pct": item.get("cum_yoy_pct"),
                     }
         except Exception as exc:
+            _trace("mops_latest_error", code=code, error=f"{type(exc).__name__}: {exc}")
             print(f"⚠️ MOPS 最新月營收修補失敗 {code}: {type(exc).__name__}: {exc}")
 
         # 最新列仍沒有累計 YoY，就只為這檔股票補齊今年與去年同期的月營收。
@@ -15140,6 +15161,7 @@ def _repair_missing_cumulative_revenue(codes, revenue_data):
                 needed.append(pk)
 
         # 避免單一壞資料造成大量請求；最多補 24 個月。
+        _trace("history_needed", code=code, needed=sorted(set(needed))[:24], count=len(set(needed)))
         for key in sorted(set(needed))[:24]:
             try:
                 fetched, fetched_period = _fetch_mops_revenue_fallback(
@@ -15161,16 +15183,80 @@ def _repair_missing_cumulative_revenue(codes, revenue_data):
                 if item.get("cum_yoy_pct") is not None and nk == latest_key:
                     revenue_data.setdefault(code, {}).update(item)
             except Exception as exc:
+                _trace("mops_history_error", code=code, period=key, error=f"{type(exc).__name__}: {exc}")
                 print(f"⚠️ MOPS 歷史月營收修補失敗 {code}/{key}: {type(exc).__name__}: {exc}")
 
         calculated = try_calculate(code)
         if calculated is not None:
             revenue_data.setdefault(code, {})["cum_yoy_pct"] = calculated
+            _trace("calculated_after_mops", code=code, cum_yoy_pct=calculated, periods=len(db_rows.get(code, {})))
             print(f"✅ 累計營收計算修補完成：{code} = {calculated:+.2f}%")
         else:
+            _trace("repair_failed", code=code, periods=sorted(db_rows.get(code, {}).keys())[-12:])
             print(f"⚠️ 累計營收仍無法計算：{code}（保留資料不足，不猜數字）")
 
     return revenue_data
+
+
+@app.route("/web/admin/revenue-debug")
+@web_login_required
+def web_admin_revenue_debug(uid):
+    """ADMIN ONLY：追蹤單一股票累計營收 YoY 從來源到五大因子的完整資料鏈。"""
+    if not is_admin(uid):
+        return make_response("Forbidden", 403)
+    code = normalize_code(request.args.get("code") or "2308")
+    if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code or ""):
+        return _workbench_json_response({"ok": False, "error": "股票代號格式錯誤"}, 400)
+
+    trace = []
+    out = {"ok": True, "code": code, "checked_at": datetime.now().isoformat()}
+    try:
+        raw = fetch_monthly_revenue() or {}
+        out["cache"] = {"period": _revenue_cache.get("period"), "source": _revenue_cache.get("source"), "updated_at": str(_revenue_cache.get("updated_at")), "code_present": code in raw}
+        out["fetch_monthly_revenue"] = raw.get(code) or next((v for k,v in raw.items() if str(k).strip()==code), None)
+        try:
+            market_map = get_market_map() or {}
+            out["market"] = market_map.get(code)
+        except Exception as exc:
+            out["market_error"] = f"{type(exc).__name__}: {exc}"
+
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT code, period, month_revenue, cum_yoy_pct FROM revenue_history WHERE code=%s ORDER BY period DESC LIMIT 24", (code,))
+            rows = cur.fetchall()
+            out["db_history"] = [{"code":r[0],"period":r[1],"month_revenue":r[2],"cum_yoy_pct":r[3]} for r in rows]
+            cur.close()
+        finally:
+            release_db_connection(conn)
+
+        latest_key = _normalize_revenue_period(_revenue_cache.get("period"))
+        if latest_key:
+            try:
+                market = out.get("market")
+                fetched, fetched_period = _fetch_mops_revenue_fallback(latest_key, target_code=code, market=market)
+                item = next((v for k,v in (fetched or {}).items() if str(k).strip()==code), None)
+                out["mops_direct"] = {"period": fetched_period, "item": item, "found": bool(item), "keys": list((fetched or {}).keys())[:20]}
+            except Exception as exc:
+                out["mops_direct"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+        # 這一步與正式評分完全相同，並保留每個分支的 trace。
+        repaired = _repair_missing_cumulative_revenue([code], {code: dict(out["fetch_monthly_revenue"] or {})}, trace=trace)
+        out["after_repair"] = repaired.get(code)
+        try:
+            scored = _compute_stock_watchlist_scores([code]) or {}
+            item = scored.get(code) or {}
+            out["final_score_path"] = {"cum_yoy": item.get("cum_yoy"), "revenue": item.get("revenue"), "valuation": item.get("valuation"), "total": item.get("total"), "pe": item.get("pe")}
+        except Exception as exc:
+            out["final_score_path_error"] = f"{type(exc).__name__}: {exc}"
+        out["trace"] = trace
+        return _workbench_json_response(out)
+    except Exception as exc:
+        out["ok"] = False
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        out["trace"] = trace
+        return _workbench_json_response(out, 500)
+
 
 def _compute_stock_watchlist_scores(codes):
     """
@@ -21365,7 +21451,7 @@ def web_admin(uid):
     if not is_admin(uid): return make_response('Forbidden',403)
     d=_admin_dashboard_data(); state=_maintenance_state(); status='🟢 正常' if not state.get('active') else '🟠 維護中'
     cards=f'''<div class="admin-grid"><div class="admin-stat"><b>{d['users']}</b><small>使用者</small></div><div class="admin-stat"><b>{d['active_today']}</b><small>今日活躍</small></div><div class="admin-stat"><b>{d['trades']}</b><small>正式賣出</small></div><div class="admin-stat"><b>{d['activity_today']}</b><small>今日操作</small></div></div>'''
-    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/leaderboard-settlement">🏆 排行榜結算通知<br><small>手動發送月榜／賽季結算 LINE</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股行事曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/international-calendar">🌎 國際行事曆<br><small>CPI、非農、PCE、GDP、FOMC</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>容量、RAM、可清理歷史資料</small></a></div></div></div>'''
+    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/leaderboard-settlement">🏆 排行榜結算通知<br><small>手動發送月榜／賽季結算 LINE</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股行事曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/international-calendar">🌎 國際行事曆<br><small>CPI、非農、PCE、GDP、FOMC</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>容量、RAM、可清理歷史資料</small></a><a class="admin-link" href="/web/admin/revenue-debug?code=2308">🧪 營收資料診斷<br><small>追查累計 YoY 到底斷在哪一層</small></a></div></div></div>'''
     return render_page('管理員後台',body,'more')
 
 
