@@ -26454,9 +26454,8 @@ def web_leaderboard(uid):
             out.append(item)
         return out
 
-    # 00981A、00403A、00991A 三位經理人只參加短線／賽季／月榜，不納入「長線｜加入後累計」。
-    # 長線是拿一般參賽者的累計績效比較，00981A 的歷史績效跨度過大，
-    # 因此從長線榜與長線排名計算一起排除。
+    # 經理人屬於正式參賽者：可參加短線、賽季、月榜。
+    # 只有長線榜排除經理人，避免使用跨期歷史資料與一般參賽者的加入後累計口徑混在一起。
     _long_excluded_manager_ids = {
         "bot:yaochi_00981a",
         "bot:manager_00403a",
@@ -26495,13 +26494,17 @@ def web_leaderboard(uid):
     _data_day = _leaderboard_date(leaderboard_data_date)
     if _data_day == _today:
         def _render_settlement_card(board_name, icon, title, info, ret_key, days_key):
+            # 只有「這一期真正最後一個交易日」才顯示結算卡。
+            # 不能只判斷資料更新到今天，否則 10/02 也會把 10 月月榜當成
+            # 已結算，因為當天確實有最新行情資料。
             _pts = []
             for _pt in (market or []):
                 if isinstance(_pt, (list, tuple)) and _pt:
                     _dd = _leaderboard_date(_pt[0])
                     if _dd is not None and info["start"] <= _dd <= info["end"]:
                         _pts.append(_dd)
-            if not _pts or max(_pts) != _today:
+            _period_last_trade_day = max(_pts) if _pts else None
+            if _period_last_trade_day != _today:
                 return ""
             _rows = boards.get(board_name) or []
             _rank = next((i for i, r in enumerate(_rows, 1)
