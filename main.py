@@ -8112,9 +8112,54 @@ def _augment_leaderboard_period_metrics(boards, series_map, market):
             r["days"] = ((long_curve[-1][0] - long_curve[0][0]).days
                           if len(long_curve) >= 2 else 0)
 
+    # 經理人屬於正式季賽參賽者。即使本季目前只有 1 個有效快照，
+    # 也不能因 season_days < 1 就把經理人排除；以目前快照的累計報酬作為季內起點，
+    # season_ret 為 0，等下一個交易日再更新。
+    _manager_ids = {"bot:yaochi_00981a", "bot:manager_00403a"}
+    _manager_names = {
+        "bot:yaochi_00981a": "瑤池金母｜00981A 經理人",
+        "bot:manager_00403a": "張哲瑋｜00403A 經理人",
+    }
+    _by_uid = {str(r.get("user_id") or "").strip(): r for r in all_rows}
+    for _mid in _manager_ids:
+        _item = series_map.get(_mid) or {}
+        _curve = _item.get("curve") if isinstance(_item, dict) else _item
+        _curve = _curve or []
+        _scurve = _rebase_period_curve(_curve, start_date=season_start)
+        if _mid not in _by_uid and _scurve:
+            _row = {
+                "user_id": _mid,
+                "nickname": _manager_names[_mid],
+                "show": True, "is_bot": False, "is_manager": True,
+                "bot_mode": _mid.replace("bot:", ""),
+                "holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
+                "etf_holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
+                "joined": _curve[0][0],
+                "ret": _curve[-1][1], "days": len(_curve),
+                "m30": None, "m30_days": 0, "points": len(_curve),
+            }
+            all_rows.append(_row)
+            _by_uid[_mid] = _row
+        _row = _by_uid.get(_mid)
+        if _row is not None and _scurve:
+            _row["season_ret"] = _scurve[-1][1] if len(_scurve) >= 2 else 0.0
+            _row["season_mkt_ret"] = qm if 'qm' in locals() else None
+            _row["season_excess"] = ((_row["season_ret"] - _row["season_mkt_ret"])
+                                      if _row.get("season_mkt_ret") is not None else None)
+            _row["season_days"] = ((_scurve[-1][0] - _scurve[0][0]).days
+                                    if len(_scurve) >= 2 else 0)
+            _row["season_mdd"] = max_drawdown(_scurve) if _scurve else 0.0
+            _row["season_vol"], _row["season_stability"] = _curve_volatility_and_stability(_scurve)
+
     season_scored = [r for r in all_rows
                      if r.get("season_ret") is not None
                      and (r.get("season_days") or 0) >= 1]
+    # 若經理人只有本季第一個有效快照，也仍然列入季榜；此時季內報酬為 0%。
+    _season_manager_rows = [r for r in all_rows
+                            if str(r.get("user_id") or "").strip() in _manager_ids
+                            and r.get("season_ret") is not None]
+    season_scored = [r for r in season_scored if str(r.get("user_id") or "").strip() not in _manager_ids]
+    season_scored.extend(_season_manager_rows)
     boards["season"] = sorted(
         season_scored,
         key=lambda r: r.get("season_ret") if r.get("season_ret") is not None else -1e99,
@@ -21747,7 +21792,7 @@ def _line_big_calendar_flex(user_id=None, base_url=None, year=None, month=None):
     for week in weeks:
         for num in week:
             if not num:
-                cells.append({'type':'box','layout':'vertical','flex':1,'minHeight':'74px','contents':[{'type':'text','text':' ','size':'sm','color':'#FFFFFF'}]}); continue
+                cells.append({'type':'box','layout':'vertical','flex':1,'minHeight':'74px','paddingAll':'5px','contents':[{'type':'text','text':'　','size':'sm','color':'#FFFFFF','align':'center'},{'type':'text','text':'　','size':'xxs','color':'#FFFFFF','align':'center'}]}); continue
             d=date(year,month,num); info=_twse_calendar_day_info(d); has=d.isoformat() in intl_dates; past=d < today
             # 休市／假日統一用紅色；國際事件改用藍紫色。若同日兼有事件與休市，以紅色為主、事件用小點提示。
             if not info['open']:
