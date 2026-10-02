@@ -7566,7 +7566,7 @@ BOT_MAX_WEIGHT = 0.20    # 單一股票持倉權重上限 20%
 BOT_SCORE_DROP_POINTS = 15.0  # 自持有後最高分回落 15 分視為大幅下降（實驗門檻）
 BOT_STOP_LOSS_PCT = -20.0  # D 方案：單筆自買進價跌幅達 -20% 即停損
 BOT_INITIAL_CAPITAL = 1_000_000.0  # 虛擬帳戶固定初始資產；不途中補資金
-BOT_MODES = (("blackhorse", "黑馬"), ("radar", "雷達"), ("yaochi_00981a", "瑤池金母｜00981A 經理人"), ("manager_00403a", "張哲瑋｜00403A 經理人"), ("manager_00991a", "呂宏宇｜00991A 經理人"))
+BOT_MODES = (("blackhorse", "黑馬"), ("radar", "雷達"), ("yaochi_00981a", "瑤池金母｜00981A 經理人"), ("manager_00403a", "張哲瑋｜00403A 經理人"))
 
 
 def _simulate_yaochi_00981a(days=365):
@@ -7647,8 +7647,6 @@ def simulate_bot_portfolio(mode, days=365):
         return _simulate_yaochi_00981a(days=days)
     if mode == "manager_00403a":
         return _simulate_manager_etf("00403A", "張哲瑋｜00403A 經理人", days=days)
-    if mode == "manager_00991a":
-        return _simulate_manager_etf("00991A", "呂宏宇｜00991A 經理人", days=days)
 
     picks = get_picks_since(mode, days=days) or []
     if not picks:
@@ -7971,8 +7969,8 @@ def _fresh_bot_rows_for_persisted_leaderboard(days=365, market=None):
             "user_id":f"bot:{bot_mode}","nickname":bot_name,"holdings":len(sim.get("holdings") or []),
             "etf_holdings":0,"joined":curve[0][0],"show":True,"detail":None,
             "ret":curve[-1][1],"m30":m30,"mdd":max_drawdown(curve),"days":len(curve),
-            "m30_days":len(recent),"excess":((curve[-1][1]-bot_mkt) if bot_mkt is not None else None),"mkt_ret":bot_mkt,"points":len(curve),"is_bot":(bot_mode not in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
-            "is_manager":(bot_mode in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
+            "m30_days":len(recent),"excess":((curve[-1][1]-bot_mkt) if bot_mkt is not None else None),"mkt_ret":bot_mkt,"points":len(curve),"is_bot":(bot_mode not in {"yaochi_00981a", "manager_00403a"}),
+            "is_manager":(bot_mode in {"yaochi_00981a", "manager_00403a"}),
             "bot_mode":bot_mode,"bot_holdings":sim.get("holdings") or [],"bot_history":sim.get("history") or [],
             "initial_capital":sim.get("initial_capital",BOT_INITIAL_CAPITAL),"virtual_asset":sim.get("virtual_asset"),
             "virtual_curve":sim.get("virtual_curve") or [],"invested_pct":sim.get("invested_pct",0.0),
@@ -8327,8 +8325,8 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
             "excess": (bot_ret - bot_mkt) if bot_mkt is not None else None,
             "mkt_ret": bot_mkt,
             "points": len(bot_curve),
-            "is_bot": (bot_mode not in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
-            "is_manager": (bot_mode in {"yaochi_00981a", "manager_00403a", "manager_00991a"}),
+            "is_bot": (bot_mode not in {"yaochi_00981a", "manager_00403a"}),
+            "is_manager": (bot_mode in {"yaochi_00981a", "manager_00403a"}),
             "bot_mode": bot_mode,
             "bot_holdings": sim["holdings"],
             "bot_history": sim.get("history") or [],
@@ -26274,7 +26272,7 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
         if d is None or ret is None:
             continue
         key = str(user_id).strip()
-        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人", "bot:manager_00991a": "呂宏宇｜00991A 經理人"}
+        bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人"}
         display_name = bot_display_names.get(key) or (nickname or key)
         by_user.setdefault(key, []).append((d, float(ret), display_name))
 
@@ -26425,7 +26423,7 @@ def web_leaderboard(uid):
         return render_page("排行榜", pending_html, nav_active="leaderboard")
     # 舊的持久化快照可能還保存「黑馬機器人／雷達機器人」或 bot:xxx，
     # 顯示層統一改成中文名稱，避免快取未重建時把內部 ID 顯示給使用者。
-    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人", "bot:manager_00991a": "呂宏宇｜00991A 經理人"}
+    bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人"}
     def _normalise_bot_names(rows):
         out = []
         for row in rows or []:
@@ -26437,7 +26435,7 @@ def web_leaderboard(uid):
                 item["nickname"] = "黑馬" if uid == "bot:blackhorse" else "雷達" if uid == "bot:radar" else "瑤池金母｜00981A 經理人"
             # ETF 經理人是「一般參賽者」，不是機器人。
             # 舊版快照可能曾把他們標成 is_bot=True，這裡強制洗回正常參賽者。
-            if uid in {"bot:yaochi_00981a", "bot:manager_00403a", "bot:manager_00991a"}:
+            if uid in {"bot:yaochi_00981a", "bot:manager_00403a"}:
                 item["is_bot"] = False
                 item["is_manager"] = True
             out.append(item)
@@ -26454,21 +26452,37 @@ def web_leaderboard(uid):
             out.append(item)
         return out
 
-    # 經理人屬於正式參賽者：可參加短線、賽季、月榜。
-    # 只有長線榜排除經理人，避免使用跨期歷史資料與一般參賽者的加入後累計口徑混在一起。
+    # 00981A、00403A 兩位經理人只參加短線／賽季／月榜，不納入「長線｜加入後累計」。
+    # 長線是拿一般參賽者的累計績效比較，00981A 的歷史績效跨度過大，
+    # 因此從長線榜與長線排名計算一起排除。
     _long_excluded_manager_ids = {
         "bot:yaochi_00981a",
         "bot:manager_00403a",
-        "bot:manager_00991a",
     }
     _long_rows = [
         r for r in (all_boards.get("long") or [])
         if str((r or {}).get("user_id") or "").strip() not in _long_excluded_manager_ids
     ]
+    # 季賽的參賽資格與「長線｜加入後累計」分開。
+    # 經理人可以參加短線／賽季／月榜；只有長線榜維持排除經理人的規則。
+    # 舊版直接讀 Supabase 快照時，season 可能沿用舊快照而漏掉經理人，
+    # 所以這裡從所有既有榜單補回經理人，再重新去重。
+    _manager_ids = {
+        "bot:yaochi_00981a",
+        "bot:manager_00403a",
+    }
+    _season_rows = list(all_boards.get("season") or [])
+    _manager_rows = []
+    for _board_name in ("long", "short", "waiting", "season"):
+        for _r in (all_boards.get(_board_name) or []):
+            if str((_r or {}).get("user_id") or "").strip() in _manager_ids:
+                _manager_rows.append(_r)
+    _season_rows.extend(_manager_rows)
+
     boards = {
         "long": _normalise_bot_names(_dedup_board(_long_rows[:100])[:20]),
         "short": _normalise_bot_names(_dedup_board((all_boards.get("short") or [])[:100])[:20]),
-        "season": _normalise_bot_names(_dedup_board((all_boards.get("season") or [])[:100])[:20]),
+        "season": _normalise_bot_names(_dedup_board(_season_rows[:100])[:20]),
         "waiting": _normalise_bot_names(_dedup_board(all_boards.get("waiting") or [])),
     }
     month_rows, month_info = _build_current_month_board(all_boards, series_map, market)
@@ -26494,17 +26508,16 @@ def web_leaderboard(uid):
     _data_day = _leaderboard_date(leaderboard_data_date)
     if _data_day == _today:
         def _render_settlement_card(board_name, icon, title, info, ret_key, days_key):
-            # 只有「這一期真正最後一個交易日」才顯示結算卡。
-            # 不能只判斷資料更新到今天，否則 10/02 也會把 10 月月榜當成
-            # 已結算，因為當天確實有最新行情資料。
+            # 二次防呆：只有今天被結算日判斷器列為該榜單的結算日才允許產生卡片。
+            if board_name not in {kind for kind, _period_id, _label in _leaderboard_settlement_periods(_today)}:
+                return ""
             _pts = []
             for _pt in (market or []):
                 if isinstance(_pt, (list, tuple)) and _pt:
                     _dd = _leaderboard_date(_pt[0])
                     if _dd is not None and info["start"] <= _dd <= info["end"]:
                         _pts.append(_dd)
-            _period_last_trade_day = max(_pts) if _pts else None
-            if _period_last_trade_day != _today:
+            if not _pts or max(_pts) != _today:
                 return ""
             _rows = boards.get(board_name) or []
             _rank = next((i for i, r in enumerate(_rows, 1)
@@ -26638,10 +26651,16 @@ def web_leaderboard(uid):
   <div class="settlement-report-foot"><span>✓ 本期已完成結算</span><span>結算日 {_today.strftime("%Y/%m/%d")}</span></div>
 </section>'''
 
-        _cards = [
-            _render_settlement_card("month", "📅", "本月結算成績單", month_info, "month_ret", "month_days"),
-            _render_settlement_card("season", "🏆", "本季結算成績單", season_info, "season_ret", "season_days"),
-        ]
+        # 結算成績單只能在「真的到了該期最後一個台股交易日」顯示。
+        # 不能用「今天有行情」或「資料日 = 今天」代替，否則 10/2 這種新月份的第一個交易日
+        # 也會被誤判成 10 月結算。_leaderboard_settlement_periods() 已經依台股交易日曆判斷
+        # 月末／季末最後交易日，這裡直接使用同一套規則。
+        _today_settlement_periods = {kind for kind, _period_id, _label in _leaderboard_settlement_periods(_today)}
+        _cards = []
+        if "month" in _today_settlement_periods:
+            _cards.append(_render_settlement_card("month", "📅", "本月結算成績單", month_info, "month_ret", "month_days"))
+        if "season" in _today_settlement_periods:
+            _cards.append(_render_settlement_card("season", "🏆", "本季結算成績單", season_info, "season_ret", "season_days"))
         _cards = [x for x in _cards if x]
         if _cards:
             settlement_html = '''<section class="settlement-wrap">
