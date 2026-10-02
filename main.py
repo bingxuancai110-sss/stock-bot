@@ -21747,7 +21747,7 @@ def _line_big_calendar_flex(user_id=None, base_url=None, year=None, month=None):
     for week in weeks:
         for num in week:
             if not num:
-                cells.append({'type':'box','layout':'vertical','flex':1,'contents':[]}); continue
+                cells.append({'type':'box','layout':'vertical','flex':1,'minHeight':'74px','contents':[{'type':'text','text':' ','size':'sm','color':'#FFFFFF'}]}); continue
             d=date(year,month,num); info=_twse_calendar_day_info(d); has=d.isoformat() in intl_dates; past=d < today
             # 休市／假日統一用紅色；國際事件改用藍紫色。若同日兼有事件與休市，以紅色為主、事件用小點提示。
             if not info['open']:
