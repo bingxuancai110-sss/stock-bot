@@ -26463,26 +26463,10 @@ def web_leaderboard(uid):
         r for r in (all_boards.get("long") or [])
         if str((r or {}).get("user_id") or "").strip() not in _long_excluded_manager_ids
     ]
-    # 季賽的參賽資格與「長線｜加入後累計」分開。
-    # 經理人可以參加短線／賽季／月榜；只有長線榜維持排除經理人的規則。
-    # 舊版直接讀 Supabase 快照時，season 可能沿用舊快照而漏掉經理人，
-    # 所以這裡從所有既有榜單補回經理人，再重新去重。
-    _manager_ids = {
-        "bot:yaochi_00981a",
-        "bot:manager_00403a",
-    }
-    _season_rows = list(all_boards.get("season") or [])
-    _manager_rows = []
-    for _board_name in ("long", "short", "waiting", "season"):
-        for _r in (all_boards.get(_board_name) or []):
-            if str((_r or {}).get("user_id") or "").strip() in _manager_ids:
-                _manager_rows.append(_r)
-    _season_rows.extend(_manager_rows)
-
     boards = {
         "long": _normalise_bot_names(_dedup_board(_long_rows[:100])[:20]),
         "short": _normalise_bot_names(_dedup_board((all_boards.get("short") or [])[:100])[:20]),
-        "season": _normalise_bot_names(_dedup_board(_season_rows[:100])[:20]),
+        "season": _normalise_bot_names(_dedup_board((all_boards.get("season") or [])[:100])[:20]),
         "waiting": _normalise_bot_names(_dedup_board(all_boards.get("waiting") or [])),
     }
     month_rows, month_info = _build_current_month_board(all_boards, series_map, market)
@@ -26508,9 +26492,6 @@ def web_leaderboard(uid):
     _data_day = _leaderboard_date(leaderboard_data_date)
     if _data_day == _today:
         def _render_settlement_card(board_name, icon, title, info, ret_key, days_key):
-            # 二次防呆：只有今天被結算日判斷器列為該榜單的結算日才允許產生卡片。
-            if board_name not in {kind for kind, _period_id, _label in _leaderboard_settlement_periods(_today)}:
-                return ""
             _pts = []
             for _pt in (market or []):
                 if isinstance(_pt, (list, tuple)) and _pt:
@@ -26651,16 +26632,10 @@ def web_leaderboard(uid):
   <div class="settlement-report-foot"><span>✓ 本期已完成結算</span><span>結算日 {_today.strftime("%Y/%m/%d")}</span></div>
 </section>'''
 
-        # 結算成績單只能在「真的到了該期最後一個台股交易日」顯示。
-        # 不能用「今天有行情」或「資料日 = 今天」代替，否則 10/2 這種新月份的第一個交易日
-        # 也會被誤判成 10 月結算。_leaderboard_settlement_periods() 已經依台股交易日曆判斷
-        # 月末／季末最後交易日，這裡直接使用同一套規則。
-        _today_settlement_periods = {kind for kind, _period_id, _label in _leaderboard_settlement_periods(_today)}
-        _cards = []
-        if "month" in _today_settlement_periods:
-            _cards.append(_render_settlement_card("month", "📅", "本月結算成績單", month_info, "month_ret", "month_days"))
-        if "season" in _today_settlement_periods:
-            _cards.append(_render_settlement_card("season", "🏆", "本季結算成績單", season_info, "season_ret", "season_days"))
+        _cards = [
+            _render_settlement_card("month", "📅", "本月結算成績單", month_info, "month_ret", "month_days"),
+            _render_settlement_card("season", "🏆", "本季結算成績單", season_info, "season_ret", "season_days"),
+        ]
         _cards = [x for x in _cards if x]
         if _cards:
             settlement_html = '''<section class="settlement-wrap">
@@ -26840,8 +26815,14 @@ def web_leaderboard(uid):
             else:
                 tier_class = ""
                 honour = ""
-            main_v = r[key]
-            cls = "up" if main_v >= 0 else "down"
+            main_v = r.get(key)
+            # 某些機器人／經理人或快照在該榜單可能暫時沒有數值；
+            # 排行榜頁不能因 None 與 0 比較而整頁 500。
+            try:
+                main_v_num = float(main_v) if main_v is not None else None
+            except (TypeError, ValueError):
+                main_v_num = None
+            cls = "up" if (main_v_num is not None and main_v_num >= 0) else "down"
             board_for_status = {"m30": "short", "ret": "long", "season_ret": "season", "month_ret": "month"}.get(key, "long")
             rank_state = status_map.get(
                 (board_for_status, str(r.get("user_id")).strip()),
