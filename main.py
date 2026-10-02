@@ -21743,11 +21743,11 @@ def _line_big_calendar_flex(user_id=None, base_url=None, year=None, month=None):
     intl=_international_calendar_events(year,month); intl_dates={e['date'] for e in intl}; weeks=calendar.monthcalendar(year,month)
     cells=[]
     for n in ['一','二','三','四','五','六','日']:
-        cells.append({'type':'box','layout':'vertical','alignItems':'center','contents':[{'type':'text','text':n,'size':'xxs','color':'#667085','weight':'bold'}]})
+        cells.append({'type':'box','layout':'vertical','flex':1,'alignItems':'center','contents':[{'type':'text','text':n,'size':'xxs','color':'#667085','weight':'bold'}]})
     for week in weeks:
         for num in week:
             if not num:
-                cells.append({'type':'box','layout':'vertical','contents':[]}); continue
+                cells.append({'type':'box','layout':'vertical','flex':1,'contents':[]}); continue
             d=date(year,month,num); info=_twse_calendar_day_info(d); has=d.isoformat() in intl_dates; past=d < today
             # 休市／假日統一用紅色；國際事件改用藍紫色。若同日兼有事件與休市，以紅色為主、事件用小點提示。
             if not info['open']:
@@ -21762,7 +21762,7 @@ def _line_big_calendar_flex(user_id=None, base_url=None, year=None, month=None):
                 mark='休 · ●'; mc='#C62828'
             day_color='#7A8797' if past else '#172033'
             if d==today: day_color='#172033' 
-            cells.append({'type':'box','layout':'vertical','paddingAll':'5px','cornerRadius':'7px','backgroundColor':bg,'contents':[
+            cells.append({'type':'box','layout':'vertical','flex':1,'paddingAll':'5px','cornerRadius':'7px','backgroundColor':bg,'contents':[
                 {'type':'text','text':str(num),'size':'sm','weight':'bold','align':'center','color':day_color},
                 {'type':'text','text':mark,'size':'xxs','align':'center','color':mc}]})
     event_lines=[]
@@ -26471,6 +26471,40 @@ def web_leaderboard(uid):
     }
     month_rows, month_info = _build_current_month_board(all_boards, series_map, market)
     season_info = all_boards.get("season_info") or leaderboard_season_info()
+
+    # 強制把兩位經理人補回「本季」：舊版 Supabase 快照可能沒有 season rows，
+    # 但只要 series_map 還有他們的實際績效曲線，就可以在顯示層重新計算本季績效。
+    _manager_ids = {"bot:yaochi_00981a", "bot:manager_00403a"}
+    _manager_names = {
+        "bot:yaochi_00981a": "瑤池金母｜00981A 經理人",
+        "bot:manager_00403a": "張哲瑋｜00403A 經理人",
+    }
+    _season_rows = [dict(r) for r in (boards.get("season") or [])]
+    _season_seen = {str(r.get("user_id") or "").strip() for r in _season_rows}
+    for _mid in _manager_ids:
+        if _mid in _season_seen:
+            continue
+        _sitem = series_map.get(_mid) or {}
+        _curve = _sitem.get("curve") if isinstance(_sitem, dict) else _sitem
+        _scurve = _rebase_period_curve(_curve, start_date=season_info["start"])
+        if len(_scurve) < 2:
+            continue
+        _season_rows.append({
+            "user_id": _mid,
+            "nickname": _manager_names[_mid],
+            "holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
+            "etf_holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
+            "joined": _curve[0][0] if _curve else season_info["start"],
+            "show": True, "detail": None,
+            "ret": _curve[-1][1], "m30": None, "days": len(_curve), "m30_days": 0,
+            "points": len(_curve), "is_bot": False, "is_manager": True,
+            "season_ret": _scurve[-1][1],
+            "season_days": (_scurve[-1][0] - _scurve[0][0]).days,
+            "season_mdd": max_drawdown(_scurve),
+            "bot_mode": "yaochi_00981a" if _mid == "bot:yaochi_00981a" else "manager_00403a",
+        })
+    _season_rows.sort(key=lambda r: r.get("season_ret") if r.get("season_ret") is not None else -1e99, reverse=True)
+    boards["season"] = _normalise_bot_names(_dedup_board(_season_rows[:100])[:20])
     boards["month"] = _normalise_bot_names(_dedup_board(month_rows[:100])[:20])
     with _leaderboard_cache_lock:
         leaderboard_meta = dict(_leaderboard_cache.get((100, 365)) or {})
@@ -26485,13 +26519,18 @@ def web_leaderboard(uid):
     leaderboard_data_date = (leaderboard_data_date.isoformat()
                              if isinstance(leaderboard_data_date, (date, datetime))
                              else str(leaderboard_data_date or "未標日期"))
-    # 期間結算卡：最後一個有效交易日收盤、且資料已更新到今天才顯示。
-    # 卡片定位成「成績單」：排名、報酬、超額大盤、最大回撤、穩定度、有效樣本。
+    # 期間結算卡：只有「今天真的就是該期最後一個台股交易日」才顯示。
+    # 不能只用「資料更新到今天」判斷，否則每個月第一個交易日也會被誤當成結算日。
     settlement_html = ""
     _today = taiwan_today()
     _data_day = _leaderboard_date(leaderboard_data_date)
-    if _data_day == _today:
+    _settlement_period_kinds = {p[0] for p in _leaderboard_settlement_periods(_today)}
+    if _data_day == _today and _settlement_period_kinds:
         def _render_settlement_card(board_name, icon, title, info, ret_key, days_key):
+            # 是否結算完全由 TWSE 月末／季末最後交易日判斷；
+            # market curve 只負責確認資料已經更新到今天。
+            if board_name not in _settlement_period_kinds:
+                return ""
             _pts = []
             for _pt in (market or []):
                 if isinstance(_pt, (list, tuple)) and _pt:
