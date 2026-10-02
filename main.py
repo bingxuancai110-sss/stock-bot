@@ -26532,8 +26532,9 @@ def web_leaderboard(uid):
         _sitem = series_map.get(_mid) or {}
         _curve = _sitem.get("curve") if isinstance(_sitem, dict) else _sitem
         _scurve = _rebase_period_curve(_curve, start_date=season_info["start"])
-        if len(_scurve) < 2:
-            continue
+        if not _scurve:
+            # 本季尚未產生曲線時，仍保留經理人席位；首個有效快照視為季賽起點。
+            _scurve = [(_curve[-1][0], 0.0)] if _curve else [(season_info["start"], 0.0)]
         _season_rows.append({
             "user_id": _mid,
             "nickname": _manager_names[_mid],
