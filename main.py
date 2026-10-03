@@ -26538,8 +26538,10 @@ def web_leaderboard(uid):
         _season_rows.append({
             "user_id": _mid,
             "nickname": _manager_names[_mid],
-            "holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
-            "etf_holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
+            # 00981A、00403A 都是主動 ETF 經理人，均各自持有 1 檔 ETF。
+            # 舊版這裡把 00403A 寫成 0，導致排行榜顯示「持股 0 檔」。
+            "holdings": 1,
+            "etf_holdings": 1,
             "joined": _curve[0][0] if _curve else season_info["start"],
             "show": True, "detail": None,
             "ret": _curve[-1][1], "m30": None, "days": len(_curve), "m30_days": 0,
