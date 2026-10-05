@@ -18456,11 +18456,11 @@ def plain_text_page(lines):
 /* 持股明細：手機上增加橫向空間，讓價格與三個資料格不被壓扁。 */
 @media(max-width:640px){{
   .position-card,.position-fast-card{{
-    width:calc(100% + 16px)!important;
-    margin-left:-8px!important;
-    margin-right:-8px!important;
+    width:calc(100% + 28px)!important;
+    margin-left:-14px!important;
+    margin-right:-14px!important;
   }}
-  .position-card{{padding-left:15px!important;padding-right:15px!important}}
+  .position-card{{padding-left:17px!important;padding-right:17px!important}}
   .position-card .position-top,
   .position-card .position-head{{column-gap:10px!important}}
 }}
@@ -25765,60 +25765,32 @@ def render_realized_summary(user_id, inst_data, summary_label="已實現損益",
 # 組合走勢：每日快照 vs 大盤
 # ============================================================
 def render_portfolio_allocation_chart(holdings):
-    """以目前有效市值畫輕量 SVG 配置甜甜圈；不把未知資料或未輸入現金補進分母。"""
-    valid = []
+    """v182 interactive allocation donut used on both home and positions pages."""
+    valid=[]
     for holding in holdings or []:
-        try:
-            value = float(holding.get("value"))
-        except (TypeError, ValueError):
-            continue
-        if value > 0 and math.isfinite(value):
-            valid.append((holding, value))
+        try: value=float(holding.get("value"))
+        except (TypeError,ValueError): continue
+        if value>0 and math.isfinite(value): valid.append((holding,value))
     if not valid:
-        return ('<section class="portfolio-chart-card">'
-                '<div class="section-head"><h2>組合配置</h2>'
-                '<span class="section-note">依目前市值</span></div>'
-                '<div class="empty">目前沒有足夠的有效價格資料，暫時無法繪製配置圖。</div></section>')
-
-    valid.sort(key=lambda item: item[1], reverse=True)
-    total_value = sum(value for _holding, value in valid)
-    top_items = valid[:5]
-    if len(valid) > 5:
-        top_items.append(({"name": "其他持股", "code": ""},
-                          sum(value for _holding, value in valid[5:])))
-
-    colors = ["#6E5228", "#8A6A3B", "#A98A5C", "#C3AC85", "#DCCFB4", "#EAEBE7"]
-    radius, circumference = 43, 2 * math.pi * 43
-    circles, legend = [], []
-    offset = 0.0
-    for idx, (holding, value) in enumerate(top_items):
-        pct = value / total_value * 100 if total_value else 0
-        dash = circumference * pct / 100
-        color = colors[min(idx, len(colors) - 1)]
-        circles.append(
-            f'<circle cx="60" cy="60" r="{radius}" fill="none" stroke="{color}" '
-            f'stroke-width="18" stroke-dasharray="{dash:.2f} {circumference - dash:.2f}" '
-            f'stroke-dashoffset="{-offset:.2f}" transform="rotate(-90 60 60)"/>')
-        offset += dash
-        name = html.escape(str(holding.get("name") or holding.get("code") or "其他持股"))
-        code = html.escape(str(holding.get("code") or ""))
-        label = f"{name} {code}".strip()
-        legend.append(
-            f'<div class="portfolio-allocation-item"><i style="background:{color}"></i>'
-            f'<div><b>{label}</b><span>{pct:.1f}%　市值 {value:,.0f}</span></div></div>')
-
-    return f'''<style>
-.portfolio-chart-card{{background:#fff;border:1px solid #E5E5EA;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.portfolio-chart-card .section-head{{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}}.portfolio-chart-card h2{{margin:0;font-size:20px}}.portfolio-chart-note{{color:var(--ink-soft);font-size:12px;line-height:1.6;margin:0 0 12px}}.portfolio-allocation-layout{{display:flex;align-items:center;gap:15px}}.portfolio-allocation-svg{{width:136px;height:136px;flex:none}}.portfolio-allocation-hole{{fill:#fff}}.portfolio-allocation-label{{font-size:8px;fill:var(--ink-soft);text-anchor:middle}}.portfolio-allocation-legend{{display:grid;gap:9px;min-width:0;flex:1}}.portfolio-allocation-item{{display:flex;align-items:center;gap:7px;min-width:0}}.portfolio-allocation-item i{{width:10px;height:10px;border-radius:50%;flex:none}}.portfolio-allocation-item b{{display:block;font-size:12px;line-height:1.3;overflow-wrap:anywhere}}.portfolio-allocation-item span{{display:block;color:var(--ink-soft);font-size:10px;line-height:1.35}}.portfolio-chart-footnote{{margin-top:12px;padding:10px 11px;border-left:3px solid var(--brass);border-radius:8px;background:#FFFFFF;color:var(--ink-soft);font-size:11px;line-height:1.55}}@media(max-width:640px){{.portfolio-allocation-layout{{gap:11px}}.portfolio-allocation-svg{{width:128px;height:128px}}.portfolio-allocation-item b{{font-size:11px}}.portfolio-allocation-item span{{font-size:9.5px}}}}
-</style><section class="portfolio-chart-card" id="portfolio-allocation">
-  <div class="section-head"><h2>組合配置</h2><span class="section-note">依目前有效市值</span></div>
-  <p class="portfolio-chart-note">只納入已登錄且有有效價格的持股；未輸入現金與其他資產不納入分母。</p>
-  <div class="portfolio-allocation-layout"><svg class="portfolio-allocation-svg" viewBox="0 0 120 120" role="img" aria-label="組合配置甜甜圈圖">
-    <circle cx="60" cy="60" r="43" fill="none" stroke="#E7E5DD" stroke-width="18"/>{''.join(circles)}
-    <circle cx="60" cy="60" r="31" class="portfolio-allocation-hole"/>
-    <text x="60" y="57" class="portfolio-allocation-label">組合</text><text x="60" y="68" class="portfolio-allocation-label">配置</text>
-  </svg><div class="portfolio-allocation-legend">{''.join(legend)}</div></div>
-  <div class="portfolio-chart-footnote">配置圖回答「目前資金放在哪裡」，不取代持股明細，也不把未知資料或現金假設成 0。</div>
-</section>'''
+        return '<section class="portfolio-chart-card"><div class="section-head"><h2>組合配置</h2><span class="section-note">依目前有效市值</span></div><div class="empty">目前沒有足夠的有效價格資料，暫時無法繪製配置圖。</div></section>'
+    valid.sort(key=lambda x:x[1],reverse=True); total=sum(v for _,v in valid); items=valid[:6]
+    if len(valid)>6: items.append(({"name":"其他持股","code":"__other__"},sum(v for _,v in valid[6:])))
+    palette=["#6B4F22","#8B6A38","#A98958","#C2AA80","#D8C9A7","#8B9A8D","#E5E8E4"]
+    r=78; circ=2*math.pi*r; offset=0.0; paths=[]; legend=[]
+    for i,(h,v) in enumerate(items):
+        pct=v/total*100 if total else 0; dash=circ*pct/100; color=palette[min(i,len(palette)-1)]
+        code=str(h.get("code") or ""); name=str(h.get("name") or code or "其他持股"); label=(name+' '+code).strip()
+        paths.append(f'<circle class="allocation-segment" data-alloc-index="{i}" cx="120" cy="120" r="78" fill="none" stroke="{color}" stroke-width="27" stroke-dasharray="{dash:.3f} {circ-dash:.3f}" stroke-dashoffset="{-offset:.3f}" transform="rotate(-90 120 120)" tabindex="0" role="button" aria-label="{html.escape(label)} {pct:.1f}%"/>')
+        legend.append(f'<button type="button" class="allocation-legend-item" data-alloc-index="{i}"><i style="background:{color}"></i><span class="allocation-legend-main"><b>{html.escape(label)}</b><small>{pct:.1f}%</small></span><span class="allocation-legend-value">{v:,.0f}</span></button>')
+        offset+=dash
+    css='''<style>
+.portfolio-chart-card{background:linear-gradient(145deg,#fff,#f8fbff);border:1px solid #dbe6f0;border-radius:22px;padding:22px;margin:16px 0;box-shadow:0 14px 34px rgba(39,76,119,.08)}
+.portfolio-chart-card .section-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:4px}.portfolio-chart-card h2{margin:0;font-size:24px;color:#162b42}.portfolio-chart-note{margin:7px 0 18px;color:#64788d;font-size:12px;line-height:1.6}
+.portfolio-allocation-layout{display:grid;grid-template-columns:minmax(220px,300px) 1fr;align-items:center;gap:22px}.portfolio-allocation-visual{display:grid;place-items:center;aspect-ratio:1}.portfolio-allocation-svg{width:min(100%,290px);height:auto;overflow:visible;filter:drop-shadow(0 8px 14px rgba(31,59,86,.08))}.allocation-track{fill:none;stroke:#edf1f3;stroke-width:27}.allocation-segment{cursor:pointer;transition:opacity .18s,stroke-width .18s,filter .18s;outline:none}.allocation-segment:hover,.allocation-segment.active,.allocation-segment:focus{stroke-width:33;filter:drop-shadow(0 4px 7px rgba(31,59,86,.18))}.allocation-segment.dim{opacity:.24}.allocation-center-value{font-size:25px;font-weight:900;fill:#173b5d;text-anchor:middle}.allocation-center-label{font-size:11px;font-weight:800;fill:#7890a4;text-anchor:middle}.portfolio-allocation-legend{display:grid;gap:7px;min-width:0}.allocation-legend-item{display:grid;grid-template-columns:11px minmax(0,1fr) auto;align-items:center;gap:9px;width:100%;padding:10px 11px;border:1px solid transparent;border-radius:12px;background:transparent;text-align:left;cursor:pointer;color:inherit;font:inherit;transition:.16s}.allocation-legend-item:hover,.allocation-legend-item.active{background:#fff;border-color:#dce7f0;box-shadow:0 5px 14px rgba(39,76,119,.07)}.allocation-legend-item.dim{opacity:.38}.allocation-legend-item i{width:11px;height:11px;border-radius:50%}.allocation-legend-main{min-width:0;display:block}.allocation-legend-main b{display:block;color:#182b3e;font-size:14px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.allocation-legend-main small{display:block;color:#70849a;font-size:11px;margin-top:2px}.allocation-legend-value{font-size:13px;font-weight:850;color:#315a7c;font-variant-numeric:tabular-nums;white-space:nowrap}.portfolio-allocation-hover{margin-top:12px;padding:12px 14px;border:1px solid #dbe6ef;border-radius:12px;background:#f5f9fc;color:#536b80;font-size:12px;display:flex;justify-content:space-between;gap:10px}.portfolio-allocation-hover b{color:#173b5d;font-size:14px}.portfolio-chart-footnote{margin-top:12px;color:#8292a1;font-size:10px;line-height:1.5}
+@media(max-width:700px){.portfolio-chart-card{padding:18px 14px;border-radius:18px}.portfolio-allocation-layout{grid-template-columns:1fr;gap:8px}.portfolio-allocation-visual{max-width:235px;margin:0 auto}.portfolio-allocation-svg{width:235px}.allocation-legend-item{padding:9px 8px}.allocation-legend-main b{font-size:13px}.portfolio-allocation-hover{font-size:11px}}
+</style>'''
+    js='''<script>(function(){var root=document.getElementById('portfolio-allocation');if(!root||root.dataset.bound==='1')return;root.dataset.bound='1';var segs=[].slice.call(root.querySelectorAll('.allocation-segment')),items=[].slice.call(root.querySelectorAll('.allocation-legend-item')),value=root.querySelector('#allocation-center-value'),label=root.querySelector('#allocation-center-label'),hn=root.querySelector('#allocation-hover-name'),hv=root.querySelector('#allocation-hover-value');function clear(){segs.forEach(function(x){x.classList.remove('active','dim')});items.forEach(function(x){x.classList.remove('active','dim')});value.textContent='100%';label.textContent='全部持股';hn.textContent='全部持股';hv.textContent='100.0%'}function focus(i){segs.forEach(function(x,n){x.classList.toggle('active',n===i);x.classList.toggle('dim',n!==i)});items.forEach(function(x,n){x.classList.toggle('active',n===i);x.classList.toggle('dim',n!==i)});var it=items[i];if(!it)return;var pct=it.querySelector('small')?.textContent||'';var name=it.querySelector('b')?.textContent||'';value.textContent=pct;label.textContent=name.length>15?name.slice(0,14)+'…':name;hn.textContent=name;hv.textContent=pct}segs.forEach(function(x){['mouseenter','focus','click'].forEach(function(ev){x.addEventListener(ev,function(){focus(Number(x.dataset.allocIndex))})});['mouseleave','blur'].forEach(function(ev){x.addEventListener(ev,clear)})});items.forEach(function(x){['mouseenter','focus','click'].forEach(function(ev){x.addEventListener(ev,function(){focus(Number(x.dataset.allocIndex))})});['mouseleave','blur'].forEach(function(ev){x.addEventListener(ev,clear)})})})();</script>'''
+    return css+f'''<section class="portfolio-chart-card" id="portfolio-allocation"><div class="section-head"><h2>組合配置</h2><span class="section-note">點擊圖表查看權重</span></div><p class="portfolio-chart-note">滑過或點擊任一區塊，就會同步突出該持股。</p><div class="portfolio-allocation-layout"><div class="portfolio-allocation-visual"><svg class="portfolio-allocation-svg" viewBox="0 0 240 240" role="img" aria-label="互動式組合配置圖"><circle class="allocation-track" cx="120" cy="120" r="78"/>{''.join(paths)}<circle cx="120" cy="120" r="55" fill="#fff"/><text id="allocation-center-value" class="allocation-center-value" x="120" y="116">100%</text><text id="allocation-center-label" class="allocation-center-label" x="120" y="136">全部持股</text></svg></div><div class="portfolio-allocation-legend">{''.join(legend)}</div></div><div class="portfolio-allocation-hover"><span id="allocation-hover-name">全部持股</span><b id="allocation-hover-value">100.0%</b></div><div class="portfolio-chart-footnote">只納入已登錄且有有效價格的持股；不把未知資料或現金假設成 0。</div></section>{js}'''
 
 
 def render_trend_chart(snapshots):
@@ -27781,10 +27753,7 @@ def web_settings(uid):
   以牌價 0.1425% 與證交稅試算；實際賣出時一律以你填的數字為準。
 </div>
 
-<div class="hint" style="margin-top:14px">
-  想調整你的風險輪廓（資金年期、資產比重等問卷），
-  請到<a href="/web/portfolio" style="color:var(--brass)">組合分析</a>頁最上方編輯。
-</div>"""
+"""
     return render_page("設定", body, nav_active="settings")
 
 
@@ -28679,7 +28648,6 @@ def web_more(uid):
 
 <div class="more-group">
   <div class="more-group-title">我的設定</div>
-  <a class="more-item" href="/web/portfolio#risk"><span class="more-icon">◌</span><span><b>風險輪廓</b><small>修改投資年期、資產配置與持有習慣</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/settings"><span class="more-icon">⚙</span><span><b>提醒門檻</b><small>調整損失與持股集中度提醒</small></span><strong>›</strong></a>
 </div>
 
@@ -30086,14 +30054,7 @@ def web_portfolio(uid):
             msg = f"還有 {len(missing)} 題沒選：{'、'.join(missing[:3])}" + (
                 " 等" if len(missing) > 3 else "")
 
-    profile = get_profile(uid)
-    risk_card = render_risk_card(profile, msg)
-
-    # 問卷沒填完就只給問卷。組合分析的價值有一大半來自依你的處境判讀，
-    # 少了那些答案，剩下的數字誰看都一樣，沒有必要先給。
-    if not is_profile_complete(profile):
-        return respond_page("今日", risk_card, "portfolio")
-
+    # v182：移除登入／進入組合頁前的風險問卷門檻。
     positions = merge_positions(get_positions(uid))
     # 位置代號在所有首頁共享資料與即時行情流程都會使用。
     # 必須在進入 shared cache 分支前就建立，否則 shared cache 命中時
@@ -30481,16 +30442,14 @@ def web_portfolio(uid):
     allocation_html = render_portfolio_allocation_chart(holdings)
     body = f"""
 {daily_top}
-<details class="risk-collapse"><summary>查看我的風險輪廓</summary>
-{risk_card}
-</details>
 <div class="section-head"><h2>完整組合分析</h2><span class="section-note">往下查看詳細資料</span></div>
 <div class="totals"><div><div class="total-label">總市值</div><div class="total-value num">{total_value:,.0f}</div><div class="total-sub">{fmt_pct(pl_total)}</div></div><div><div class="total-label">持股檔數</div><div class="total-value num">{len(holdings)}</div><div class="total-sub">{len(by_industry)} 個產業</div></div><div><div class="total-label">最大單一持股</div><div class="total-value num">{top['weight']:.1f}%</div><div class="total-sub">{top['name']}</div></div>{alert_card}</div>
 {allocation_html}
 <div class="section-head"><h2>組合走勢</h2><span class="section-note">相對起始日漲跌幅</span></div><div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
 <div class="section-head"><h2>產業集中度</h2><span class="section-note">寬度即權重</span></div><div class="band">{''.join(band)}</div><div class="legend">{''.join(legend)}</div><div class="callout">{corr_txt}</div>
 <div class="section-head"><h2>持股權重</h2><span class="section-note">依權重排序</span></div><div class="rows">{''.join(f'''<div class="row"><div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div><div class="price num">{h['weight']:.1f}%</div><div class="meta"><span><em>產業</em> {h['industry']}</span><span><em>損益</em> {fmt_pct(h['pl'])}</span><span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span><span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span></div><div class="chg">{fmt_pct(h['price']['pct'])}</div><div class="wbar"><span class="wbar-track"><i style="width:{min(100.0, h['weight'] / 30.0 * 100):.1f}%"></i></span><em>{h['weight']:.1f}%</em></div></div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}</div>
-<div class="section-head" id="alerts"><h2>值得注意</h2><span class="section-note"><a href="/web/settings" style="color:var(--ink-soft)">調整門檻 →</a></span></div><div class="rows">{''.join(f'<div class="alert"><span class="tag">{tag}</span><span>{txt}</span></div>' for tag, txt in alerts) if alerts else '<div class="empty">目前沒有觸及門檻的項目。</div>'}</div>"""
+
+"""
     return respond_page("今日", body, "portfolio")
 
 
@@ -34005,10 +33964,10 @@ function bindFactors(){
   },true);function restoreWorkbenchScroll(){var y=Number(document.body.dataset.wbScroll||state.returnScroll||0);document.body.style.position='';document.body.style.top='';document.body.style.left='';document.body.style.right='';document.body.style.width='';delete document.body.dataset.wbScroll;window.scrollTo(0,y);}
   function closeDrawer(immediate){
     if(!drawer.classList.contains('open'))return;
-    /* 詳情是同一頁的 UI 狀態：優先走 history，不讓「返回」變成整頁重新載入。 */
+    /* v182：關閉詳細抽屜只回復同一個 DOM 清單，不重新導覽。 */
     if(!immediate && state.detailHistory){
       state.detailHistory=false;
-      try{history.back();return;}catch(e){}
+      try{if(location.hash === '#workbench-detail'){history.back();return;}}catch(e){}
     }
     drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;restoreWorkbenchScroll();
   }
