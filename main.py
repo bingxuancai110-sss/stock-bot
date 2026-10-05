@@ -23179,6 +23179,7 @@ def web_positions(uid):
             "code": p["code"],
             "name": stock_display_name(p["code"], inst, price.get("name")),
             "value": value,
+            "price": price,
         })
     try:
         allocation_html_positions = render_portfolio_allocation_chart(chart_holdings)
@@ -25773,46 +25774,120 @@ def render_realized_summary(user_id, inst_data, summary_label="已實現損益",
 # 組合走勢：每日快照 vs 大盤
 # ============================================================
 def render_portfolio_allocation_chart(holdings):
-    """v184：互動式組合地圖，以面積表達權重。"""
+    'v192：個股組合熱力地圖。面積＝持股權重；顏色＝今日漲跌。'
     valid=[]
     for holding in holdings or []:
         try: value=float(holding.get("value"))
         except (TypeError,ValueError): continue
-        if value>0 and math.isfinite(value): valid.append((holding,value))
+        if value<=0 or not math.isfinite(value): continue
+        try:
+            pct=float((holding.get("price") or {}).get("pct"))
+            if not math.isfinite(pct): pct=None
+        except (TypeError,ValueError):
+            pct=None
+        valid.append((holding,value,pct))
     if not valid:
-        return '<section class="portfolio-chart-card"><div class="section-head"><h2>組合配置</h2><span class="section-note">依目前有效市值</span></div><div class="empty">目前沒有足夠的有效價格資料，暫時無法繪製配置圖。</div></section>'
+        return '<section class="portfolio-chart-card" id="portfolio-allocation"><div class="section-head"><h2>組合配置</h2><span class="section-note">面積＝權重</span></div><div class="empty">目前沒有足夠的有效價格資料，暫時無法繪製配置圖。</div></section>'
     valid.sort(key=lambda x:x[1],reverse=True)
-    total=sum(v for _,v in valid)
-    items=valid[:6]
-    if len(valid)>6: items.append(({"name":"其他持股","code":"__other__"},sum(v for _,v in valid[6:])))
-    palette=["#6B4F22","#8B6A38","#A98958","#C2AA80","#D8C9A7","#8B9A8D","#DDE2DE"]
+    total=sum(v for _,v,_ in valid)
+    items=valid[:8]
+    if len(valid)>8:
+        items.append(({"name":"其他持股","code":"__other__"},sum(v for _,v,_ in valid[8:]),None))
     rects=[]
     def split(entries,x,y,w,h,horizontal=True):
         if not entries:return
         if len(entries)==1:
-            i,(item,val)=entries[0];rects.append((i,item,val,x,y,w,h));return
-        subtotal=sum(val for _,(_,val) in entries); first_n=max(1,min(len(entries)-1,round(len(entries)*0.45)))
-        first,rest=entries[:first_n],entries[first_n:];ratio=sum(val for _,(_,val) in first)/subtotal if subtotal else .5
+            i,item,value,pct=entries[0];rects.append((i,item,value,pct,x,y,w,h));return
+        subtotal=sum(value for _,_,value,_ in entries)
+        first_n=max(1,min(len(entries)-1,round(len(entries)*0.45)))
+        first,rest=entries[:first_n],entries[first_n:]
+        ratio=sum(value for _,_,value,_ in first)/subtotal if subtotal else .5
         if horizontal:
             w1=w*ratio;split(first,x,y,w1,h,False);split(rest,x+w1,y,w-w1,h,False)
         else:
             h1=h*ratio;split(first,x,y,w,h1,True);split(rest,x,y+h1,w,h-h1,True)
-    split(list(enumerate(items)),0,0,100,100,True)
-    svg=[];legend=[]
-    for i,item,val,x,y,w,h in rects:
-        pct=val/total*100 if total else 0;color=palette[min(i,len(palette)-1)]
-        code=str(item.get("code") or "");name=str(item.get("name") or code or "其他持股");label=(name+' '+code).strip()
-        short=html.escape(name if len(name)<=10 else name[:9]+'…'); show_text=w>=22 and h>=22
-        text=(f'<text x="{x+2.3:.2f}" y="{y+7.8:.2f}" class="allocation-tile-name">{short}</text><text x="{x+2.3:.2f}" y="{y+16.2:.2f}" class="allocation-tile-pct">{pct:.1f}%</text>' if show_text else '')
-        svg.append(f'<g class="allocation-tile" data-alloc-index="{i}" tabindex="0" role="button" aria-label="{html.escape(label)} {pct:.1f}%"><rect x="{x:.2f}" y="{y:.2f}" width="{max(0,w-.6):.2f}" height="{max(0,h-.6):.2f}" rx="2.8" fill="{color}"/>{text}</g>')
-        legend.append(f'<button type="button" class="allocation-legend-item" data-alloc-index="{i}"><span class="allocation-rank">{i+1:02d}</span><span class="allocation-legend-main"><b>{html.escape(label)}</b><small>{pct:.1f}%</small></span><strong>{val:,.0f}</strong></button>')
-    css='''<style>
-.portfolio-chart-card{background:linear-gradient(145deg,#fff,#f8fbff);border:1px solid #dbe6f0;border-radius:22px;padding:22px;margin:16px 0;box-shadow:0 14px 34px rgba(39,76,119,.08)}
-.portfolio-chart-card .section-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:3px}.portfolio-chart-card h2{margin:0;font-size:24px;color:#162b42}.portfolio-chart-note{margin:7px 0 16px;color:#64788d;font-size:12px;line-height:1.6}.portfolio-allocation-layout{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(230px,.8fr);gap:18px;align-items:stretch}.portfolio-allocation-visual{min-width:0;background:#eef4f8;border:1px solid #dbe6ef;border-radius:18px;padding:8px;display:flex;align-items:center}.portfolio-allocation-svg{width:100%;height:auto;aspect-ratio:1.45;display:block;overflow:visible}.allocation-tile{cursor:pointer;outline:none}.allocation-tile rect{transition:filter .16s,opacity .16s}.allocation-tile:hover rect,.allocation-tile.active rect,.allocation-tile:focus rect{filter:brightness(1.08) drop-shadow(0 4px 7px rgba(31,59,86,.18))}.allocation-tile.dim{opacity:.25}.allocation-tile-name{font-size:5px;font-weight:850;fill:#fff;pointer-events:none}.allocation-tile-pct{font-size:4.3px;font-weight:750;fill:rgba(255,255,255,.88);pointer-events:none}.portfolio-allocation-legend{display:grid;grid-template-columns:1fr;gap:6px;align-content:start}.allocation-legend-item{display:grid;grid-template-columns:27px minmax(0,1fr) auto;align-items:center;gap:8px;width:100%;padding:9px 10px;border:1px solid #e2eaf1;border-radius:12px;background:#fff;text-align:left;cursor:pointer;color:inherit;font:inherit;transition:.16s;box-sizing:border-box}.allocation-legend-item:hover,.allocation-legend-item.active{border-color:#bfd2e1;box-shadow:0 5px 14px rgba(39,76,119,.08);transform:translateY(-1px)}.allocation-legend-item.dim{opacity:.38}.allocation-rank{font-size:11px;font-weight:850;color:#8a9aaa;text-align:center}.allocation-legend-main{min-width:0;display:block}.allocation-legend-main b{display:block;color:#182b3e;font-size:13px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.allocation-legend-main small{display:block;color:#70849a;font-size:11px;margin-top:2px}.allocation-legend-item>strong{font-size:13px;color:#315a7c;font-variant-numeric:tabular-nums;white-space:nowrap}.portfolio-allocation-hover{margin-top:12px;padding:11px 14px;border:1px solid #dbe6ef;border-radius:12px;background:#f5f9fc;color:#536b80;font-size:12px;display:flex;justify-content:space-between;gap:10px}.portfolio-allocation-hover b{color:#173b5d;font-size:14px}.portfolio-chart-footnote{margin-top:10px;color:#8292a1;font-size:10px;line-height:1.5}@media(max-width:700px){.portfolio-chart-card{padding:18px 14px;border-radius:18px}.portfolio-allocation-layout{grid-template-columns:1fr;gap:10px}.portfolio-allocation-visual{padding:6px}.portfolio-allocation-svg{aspect-ratio:1.55}.portfolio-allocation-legend{grid-template-columns:1fr 1fr;gap:6px}.allocation-legend-item{grid-template-columns:22px minmax(0,1fr);padding:8px}.allocation-legend-item>strong{grid-column:2;font-size:12px}.allocation-legend-main b{font-size:12px}.allocation-legend-main small{font-size:10px}.portfolio-allocation-hover{font-size:11px}}
-</style>'''
-    js='''<script>(function(){var root=document.getElementById('portfolio-allocation');if(!root||root.dataset.bound==='1')return;root.dataset.bound='1';var tiles=[].slice.call(root.querySelectorAll('.allocation-tile')),items=[].slice.call(root.querySelectorAll('.allocation-legend-item')),hn=root.querySelector('#allocation-hover-name'),hv=root.querySelector('#allocation-hover-value');function clear(){tiles.forEach(function(x){x.classList.remove('active','dim')});items.forEach(function(x){x.classList.remove('active','dim')});if(hn)hn.textContent='全部持股';if(hv)hv.textContent='100.0%'}function focus(i){tiles.forEach(function(x,n){x.classList.toggle('active',n===i);x.classList.toggle('dim',n!==i)});items.forEach(function(x,n){x.classList.toggle('active',n===i);x.classList.toggle('dim',n!==i)});var it=items[i];if(!it)return;var pct=it.querySelector('small')?.textContent||'';var name=it.querySelector('b')?.textContent||'';if(hn)hn.textContent=name;if(hv)hv.textContent=pct}function bind(el){['mouseenter','focus','click'].forEach(function(ev){el.addEventListener(ev,function(){focus(Number(el.dataset.allocIndex))})});['mouseleave','blur'].forEach(function(ev){el.addEventListener(ev,clear)})}tiles.forEach(bind);items.forEach(bind)})();</script>'''
-    return css+f'''<section class="portfolio-chart-card" id="portfolio-allocation"><div class="section-head"><h2>組合配置</h2><span class="section-note">面積即權重</span></div><p class="portfolio-chart-note">越大的區塊，代表資金占比越高；點擊任一區塊會同步標記持股。</p><div class="portfolio-allocation-layout"><div class="portfolio-allocation-visual"><svg class="portfolio-allocation-svg" viewBox="0 0 100 100" role="img" aria-label="互動式組合配置地圖">{''.join(svg)}</svg></div><div class="portfolio-allocation-legend">{''.join(legend)}</div></div><div class="portfolio-allocation-hover"><span id="allocation-hover-name">全部持股</span><b id="allocation-hover-value">100.0%</b></div><div class="portfolio-chart-footnote">只納入已登錄且有有效價格的持股；「其他持股」代表其餘部位合計。</div></section>{js}'''
+    split([(i,item,value,pct) for i,(item,value,pct) in enumerate(items)],0,0,100,100,True)
 
+    def tile_color(pct,is_other=False):
+        if is_other or pct is None:return "#A9B2B8"
+        if pct>0.15:return "#B52A2A"
+        if pct>0:return "#D65A52"
+        if pct<-0.15:return "#3F9B62"
+        if pct<0:return "#78B887"
+        return "#A9B2B8"
+
+    svg=[];tile_meta=[]
+    for i,item,value,pct,x,y,w,h in rects:
+        weight=value/total*100 if total else 0
+        code=str(item.get("code") or "")
+        name=str(item.get("name") or code or "其他持股")
+        label=(name+" "+code).strip()
+        is_other=code=="__other__"
+        show_name=w>=14 and h>=12
+        show_detail=w>=23 and h>=20
+        safe_name=html.escape(name if len(name)<=9 else name[:8]+"…")
+        pct_text=f"{pct:+.2f}%" if pct is not None else "—"
+        fill=tile_color(pct,is_other)
+        text_parts=[]
+        if show_name:
+            text_parts.append(f'<text x="{x+2.2:.2f}" y="{y+7.4:.2f}" class="allocation-tile-name">{safe_name}</text>')
+        if show_detail:
+            text_parts.append(f'<text x="{x+2.2:.2f}" y="{y+14.6:.2f}" class="allocation-tile-weight">{weight:.1f}%</text>')
+            text_parts.append(f'<text x="{x+2.2:.2f}" y="{y+21.4:.2f}" class="allocation-tile-change">{html.escape(pct_text)}</text>')
+        elif show_name:
+            text_parts.append(f'<text x="{x+2.2:.2f}" y="{y+14.2:.2f}" class="allocation-tile-weight">{weight:.1f}%</text>')
+        svg.append(f'<g class="allocation-tile" data-alloc-index="{i}" tabindex="0" role="button" aria-label="{html.escape(label)}，權重 {weight:.1f}%，今日 {html.escape(pct_text)}"><rect x="{x+0.35:.2f}" y="{y+0.35:.2f}" width="{max(0,w-0.7):.2f}" height="{max(0,h-0.7):.2f}" rx="2.2" fill="{fill}"/>{"".join(text_parts)}</g>')
+        tile_meta.append(f'<button type="button" class="allocation-mobile-detail" data-alloc-index="{i}" aria-label="{html.escape(label)}"><span class="allocation-mobile-rank">{i+1:02d}</span><span><b>{html.escape(label)}</b><small>{weight:.1f}%</small></span><strong>{html.escape(pct_text)}</strong></button>')
+
+    css='''<style>
+.portfolio-chart-card{background:#fff;border:1px solid #dce6ee;border-radius:22px;padding:18px 14px;margin:16px 0;box-shadow:0 8px 24px rgba(39,76,119,.06)}
+.portfolio-chart-card .section-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:5px}
+.portfolio-chart-card h2{margin:0;font-size:24px;color:#162b42}
+.portfolio-chart-note{margin:7px 0 13px;color:#64788d;font-size:12px;line-height:1.6}
+.portfolio-allocation-visual{background:#f1f4f5;border:1px solid #dbe2e5;border-radius:20px;padding:7px;overflow:hidden}
+.portfolio-allocation-svg{width:100%;height:auto;aspect-ratio:1.18;display:block}
+.allocation-tile{cursor:pointer;outline:none}
+.allocation-tile rect{stroke:#fff;stroke-width:1.25;transition:opacity .14s,filter .14s,stroke-width .14s}
+.allocation-tile:hover rect,.allocation-tile.active rect,.allocation-tile:focus rect{filter:brightness(1.04);stroke:#fff;stroke-width:2.1}
+.allocation-tile.dim{opacity:.25}
+.allocation-tile-name{font-size:5.3px;font-weight:900;fill:#fff;pointer-events:none;paint-order:stroke;stroke:rgba(0,0,0,.14);stroke-width:.7}
+.allocation-tile-weight{font-size:4.4px;font-weight:850;fill:#fff;pointer-events:none}
+.allocation-tile-change{font-size:4.2px;font-weight:850;fill:#fff;pointer-events:none}
+.portfolio-allocation-mobile-details{display:none}
+.allocation-mobile-detail{border:1px solid #e1e7ea;background:#fff;border-radius:12px;padding:9px 10px;text-align:left;display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:7px;align-items:center;font:inherit;color:#182b3e;cursor:pointer}
+.allocation-mobile-detail b{display:block;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.allocation-mobile-detail small{display:block;color:#7b8b98;font-size:10px;margin-top:2px}
+.allocation-mobile-detail strong{font-size:12px;font-variant-numeric:tabular-nums}
+.allocation-mobile-detail.active{border-color:#9c7540;background:#fbf4e8;box-shadow:none}
+.allocation-mobile-detail.dim{opacity:.32}
+.allocation-mobile-rank{color:#8b9aa6;font-size:10px;font-weight:900}
+.portfolio-allocation-hover{margin-top:8px;padding:8px 11px;border:1px solid #e0e7ec;border-radius:11px;background:#f8fafb;color:#536b80;font-size:11px;display:flex;justify-content:space-between;gap:10px}
+.portfolio-allocation-hover b{color:#8b6a38;font-size:13px}
+.portfolio-chart-footnote{margin-top:8px;color:#8292a1;font-size:10px;line-height:1.5}
+@media(max-width:700px){.portfolio-chart-card{padding:15px 10px;border-radius:18px}.portfolio-chart-card h2{font-size:22px}.portfolio-allocation-visual{padding:5px;border-radius:16px}.portfolio-allocation-svg{aspect-ratio:1.08}.portfolio-allocation-mobile-details{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:7px}}
+</style>'''
+    js='''<script>
+(function(){
+  var root=document.getElementById('portfolio-allocation');
+  if(!root||root.dataset.bound==='1')return;
+  root.dataset.bound='1';
+  var tiles=[].slice.call(root.querySelectorAll('.allocation-tile'));
+  var details=[].slice.call(root.querySelectorAll('.allocation-mobile-detail'));
+  var hn=root.querySelector('#allocation-hover-name'),hv=root.querySelector('#allocation-hover-value');
+  function clear(){tiles.forEach(function(x){x.classList.remove('active','dim')});details.forEach(function(x){x.classList.remove('active','dim')});if(hn)hn.textContent='全部持股';if(hv)hv.textContent='點擊個股查看'}
+  function focus(i){tiles.forEach(function(x,n){x.classList.toggle('active',n===i);x.classList.toggle('dim',n!==i)});details.forEach(function(x,n){x.classList.toggle('active',n===i);x.classList.toggle('dim',n!==i)});var el=details[i];if(!el)return;var b=el.querySelector('b'),st=el.querySelector('strong');if(hn)hn.textContent=b?b.textContent:'個股';if(hv)hv.textContent=st?st.textContent:''}
+  function bind(el){el.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();var i=Number(el.dataset.allocIndex);if(el.classList.contains('active'))clear();else focus(i)});el.addEventListener('mouseenter',function(){focus(Number(el.dataset.allocIndex))});el.addEventListener('mouseleave',clear);el.addEventListener('focus',function(){focus(Number(el.dataset.allocIndex))});el.addEventListener('blur',clear)}
+  tiles.forEach(bind);details.forEach(bind);
+})();
+</script>'''
+    return css+f'''<section class="portfolio-chart-card" id="portfolio-allocation">
+<div class="section-head"><h2>組合配置</h2><span class="section-note">面積＝持股權重・顏色＝今日漲跌</span></div>
+<p class="portfolio-chart-note">越大的區塊代表持股越重；紅色代表上漲、綠色代表下跌。點擊個股只會在圖上高亮，不會跳頁。</p>
+<div class="portfolio-allocation-visual"><svg class="portfolio-allocation-svg" viewBox="0 0 100 100" role="img" aria-label="個股組合熱力地圖">{''.join(svg)}</svg></div>
+<div class="portfolio-allocation-mobile-details">{''.join(tile_meta)}</div>
+<div class="portfolio-allocation-hover"><span id="allocation-hover-name">全部持股</span><b id="allocation-hover-value">點擊個股查看</b></div>
+<div class="portfolio-chart-footnote">面積代表目前組合權重；顏色代表今日股價變化。</div>
+</section>{js}'''
 
 def render_trend_chart(snapshots):
     """
@@ -32959,7 +33034,7 @@ def render_workbench_body(initial_tab=""):
 (function(){
   var root=document.getElementById('stockbot-workbench'); if(!root) return;
   var initialTab=(root.dataset.initialTab||new URLSearchParams(location.search).get('tab')||'').trim();
-  var state={rows:[],sources:{},personal:{},scoreChanges:[],scoreChangeSort:'score_desc',assetMode:'stock',source:'黑馬',query:'',kind:'all',dir:'all',sort:'score',desc:true,marketOpen:false,timer:null,review:null,reviewLoading:false,quoteLoading:false,quoteUpdatedAt:'',returnScroll:0,loadedSources:{},loadingSource:''};
+  var state={rows:[],sources:{},personal:{},scoreChanges:[],scoreChangeSort:'score_desc',assetMode:'stock',source:'黑馬',query:'',kind:'all',dir:'all',sort:'score',desc:true,marketOpen:false,timer:null,review:null,reviewLoading:false,quoteLoading:false,quoteUpdatedAt:'',returnScroll:0,loadedSources:{},loadingSource:'',closingDrawer:false};
   var tabs=document.getElementById('wb-tabs'), scoreChangePanel=document.getElementById('wb-score-change-panel'), rowsEl=document.getElementById('wb-rows'), note=document.getElementById('wb-note'), count=document.getElementById('wb-count'), status=document.getElementById('wb-status'), pulse=document.getElementById('wb-pulse'), drawer=document.getElementById('wb-drawer'), mask=document.getElementById('wb-mask');
   function token(){try{return new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||''}catch(e){return ''}}
   function api(path){return path+(path.indexOf('?')>-1?'&':'?')+'fragment=1'+(token()?'&t='+encodeURIComponent(token()):'')}
@@ -33942,10 +34017,12 @@ function bindFactors(){
   function closeDrawer(e){
     if(e){e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation();}
     if(!drawer.classList.contains('open'))return false;
-    /* v189：只操作現有 DOM；關閉不使用 URL/history、不重新 fetch、不 reload。 */
-    drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;
+    /* v191：關閉只操作既有 DOM；短暫禁止 visibility/quote refresh，避免 iOS 關閉時又觸發 render。 */
+    state.closingDrawer=true;
+    drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');if(mask)mask.hidden=true;
     var detail=document.getElementById('wb-detail');if(detail)detail.innerHTML='';
     restoreWorkbenchScroll();
+    window.setTimeout(function(){state.closingDrawer=false;},700);
     return false;
   }
   document.getElementById('wb-close').onclick=function(e){return closeDrawer(e);};
@@ -33955,9 +34032,9 @@ function bindFactors(){
     var b=e.target&&e.target.closest?e.target.closest('#wb-close,#wb-back'):null;
     if(!b)return;
     e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation();
-    closeDrawer(e);
+    if(!state.closingDrawer)closeDrawer(e);
   },true);
-  document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
+  document.addEventListener('visibilitychange',function(){if(!document.hidden&&!state.closingDrawer)updateQuotes();});load();
 })();
 </script>'''
     body += ''''''
