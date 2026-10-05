@@ -3877,7 +3877,9 @@ def merge_positions(positions):
             "shares": g["shares"],
             "cost": g["cost_total"] / g["shares"] if g["shares"] else 0.0,
             "bought_on": min(dates) if dates else None,   # 以最早一筆算持有天數
-            "lots": sorted(g["lots"], key=lambda x: (x["bought_on"] or date.min)),
+            "lots": sorted(g["lots"], key=lambda x: (x.get("bought_on") or date.max,
+                                             x.get("created_at") or datetime.max,
+                                             int(x.get("id") or 0))),
         })
     return merged
 
@@ -4438,70 +4440,101 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None,
 SELL_REASONS = ["停利", "停損", "換股", "需要用錢", "看法改變", "其他"]
 
 
-def sell_position_all(user_id, code, sell_price=None, fee=None, tax=None,
+def _ordered_lots_fifo(user_id, code):
+    """取得同一檔持股並依 FIFO（最早買進優先）排序。"""
+    code = str(code or "").strip()
+    rows = [p for p in get_positions(user_id)
+            if str(p.get("code") or "").strip() == code
+            and int(p.get("shares") or 0) > 0]
+    rows.sort(key=lambda x: (x.get("bought_on") or date.max,
+                             x.get("created_at") or datetime.max,
+                             int(x.get("id") or 0)))
+    return rows
+
+
+def sell_position_fifo(user_id, code, sell_shares, sell_price=None, fee=None, tax=None,
                       sell_reason=None):
-    """
-    把同一檔的所有買進筆數一次賣光。
+    """以 FIFO 賣出指定股數；預設從最早買進的 lot 開始。
 
-    為什麼需要：分批買進的股票會拆成多筆，原本每一筆都要各自展開賣出面板
-    再送一次表單——9 筆就要操作 9 次，而實際上券商是一次賣掉的。
-
-    刻意逐筆呼叫既有的 sell_position，而不是另寫一套結算：
-    已實現損益要用「各筆自己的成本」計算，合併成一筆平均成本會算錯，
-    而且分批的歷史紀錄也會消失。
-
-    手續費與證交稅依各筆的賣出金額比例分攤，總額仍等於使用者填的數字。
-    任何一筆失敗就中止，並回報已完成幾筆——不會讓部分成功卻無聲無息。
+    UI 將同一檔合併成一張卡，但資料庫仍保留每個 lot。
+    若賣出股數超過第一筆，會自動往下一筆 lot 扣除。
     """
     code = str(code or "").strip()
+    try:
+        sell_shares = int(sell_shares)
+    except (TypeError, ValueError):
+        return False, "賣出股數格式不正確"
     if not code:
         return False, "股票代號不正確"
+    if sell_shares <= 0:
+        return False, "賣出股數必須大於 0"
 
-    lots = [l for p in merge_positions(get_positions(user_id))
-            if str(p.get("code")).strip() == code
-            for l in (p.get("lots") or [])
-            if int(l.get("shares") or 0) > 0]
-    if not lots:
+    lots = _ordered_lots_fifo(user_id, code)
+    total_available = sum(int(l["shares"]) for l in lots)
+    if not lots or total_available <= 0:
         return False, "找不到這檔持股"
+    if sell_shares > total_available:
+        return False, f"最多只能賣出 {total_available:,} 股"
 
-    total_shares = sum(int(l["shares"]) for l in lots)
-    if total_shares <= 0:
-        return False, "持股股數為 0"
+    allocations = []
+    remain = sell_shares
+    for lot in lots:
+        take = min(int(lot["shares"]), remain)
+        if take > 0:
+            allocations.append((lot, take))
+            remain -= take
+        if remain <= 0:
+            break
 
-    done, results = 0, []
-    remain_fee = fee
-    remain_tax = tax
-    for idx, lot in enumerate(lots):
-        shares = int(lot["shares"])
-        # 依股數比例分攤；最後一筆吃掉餘數，總額才不會因四捨五入而短少
-        if fee is None:
+    if sum(take for _lot, take in allocations) != sell_shares:
+        return False, "FIFO 賣出股數分配失敗"
+
+    remain_fee = float(fee) if fee is not None else None
+    remain_tax = float(tax) if tax is not None else None
+    results = []
+    done = 0
+    for idx, (lot, take) in enumerate(allocations):
+        is_last = idx == len(allocations) - 1
+        if remain_fee is None:
             lot_fee = None
-        elif idx == len(lots) - 1:
+        elif is_last:
             lot_fee = round(remain_fee, 2)
         else:
-            lot_fee = round(float(fee) * shares / total_shares, 2)
+            lot_fee = round(float(fee) * take / sell_shares, 2)
             remain_fee -= lot_fee
-        if tax is None:
+        if remain_tax is None:
             lot_tax = None
-        elif idx == len(lots) - 1:
+        elif is_last:
             lot_tax = round(remain_tax, 2)
         else:
-            lot_tax = round(float(tax) * shares / total_shares, 2)
+            lot_tax = round(float(tax) * take / sell_shares, 2)
             remain_tax -= lot_tax
 
         ok, err, summary = sell_position(
-            user_id, lot["id"], shares, sell_price=sell_price,
+            user_id, lot["id"], take, sell_price=sell_price,
             fee=lot_fee, tax=lot_tax, sell_reason=sell_reason)
         if not ok:
-            return False, (f"已完成 {done} 筆後中止：{err}"
+            return False, (f"已完成 {done:,} 股後中止：{err}"
                            if done else (err or "賣出失敗"))
-        done += 1
+        done += take
         if summary:
             results.append(summary)
 
-    # sell_position 的 summary 用的鍵是 pl（不是 realized_pl）
     total_pl = sum(float(r.get("pl") or 0) for r in results)
-    return True, {"lots": done, "shares": total_shares, "realized_pl": total_pl}
+    return True, {"lots": len(allocations), "shares": sell_shares,
+                  "realized_pl": total_pl}
+
+
+def sell_position_all(user_id, code, sell_price=None, fee=None, tax=None,
+                      sell_reason=None):
+    """相容舊功能：整檔全部賣出；實際結算改走 FIFO。"""
+    lots = _ordered_lots_fifo(user_id, code)
+    total = sum(int(l.get("shares") or 0) for l in lots)
+    if total <= 0:
+        return False, "找不到這檔持股"
+    return sell_position_fifo(user_id, code, total,
+                              sell_price=sell_price, fee=fee, tax=tax,
+                              sell_reason=sell_reason)
 
 
 def normalize_sell_reason(raw):
@@ -22645,7 +22678,25 @@ def web_positions(uid):
         return respond_page("持股", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "positions")
     if request.method == "POST":
         action = request.form.get("action")
-        if action == "sell_all":
+        if action == "sell_fifo":
+            def numv(field, cast=float):
+                v = (request.form.get(field) or "").strip()
+                if not v:
+                    return None
+                try:
+                    return cast(v)
+                except ValueError:
+                    return None
+            ok, info = sell_position_fifo(
+                uid, request.form.get("code"), numv("sell_shares", int),
+                sell_price=numv("sell_price"), fee=numv("fee"), tax=numv("tax"),
+                sell_reason=request.form.get("sell_reason"))
+            if ok:
+                msg = (f"✅ 已賣出 {info['shares']:,} 股，依 FIFO 從最早買進開始扣除；"
+                       f"本次涉及 {info['lots']} 筆，已實現損益 {info['realized_pl']:+,.0f} 元。")
+            else:
+                msg = f"賣出失敗：{info}"
+        elif action == "sell_all":
             def numv(field, cast=float):
                 v = (request.form.get(field) or "").strip()
                 if not v:
@@ -22834,6 +22885,58 @@ def web_positions(uid):
                 f'<input type="hidden" name="delete_created_at" value="{html.escape(str(lot.get("created_at") or ""), quote=True)}">'
                 f'<button class="del" type="submit">刪除</button></form>')
 
+    def sell_fifo_form(p, name, cur_price):
+        """同一檔只顯示一個賣出入口；預設賣最早買進的那一筆。"""
+        code = p["code"]
+        total = int(p.get("shares") or 0)
+        lots = sorted(p.get("lots") or [],
+                      key=lambda x: (x.get("bought_on") or date.max,
+                                     x.get("created_at") or datetime.max,
+                                     int(x.get("id") or 0)))
+        first = lots[0] if lots else None
+        default_shares = int(first.get("shares") or 0) if first else total
+        tax_rate = TAX_RATE_ETF if is_etf(code) else TAX_RATE_STOCK
+        px = f"{cur_price:.2f}" if cur_price else ""
+        gross = (cur_price or 0) * default_shares
+        est_fee = round(broker_fee(gross)) if gross else 0
+        est_tax = round(gross * tax_rate) if gross else 0
+        first_date = (first.get("bought_on").strftime("%Y/%m/%d")
+                      if first and first.get("bought_on") else "未填日期")
+        options = "".join(f'<option value="{r}">{r}</option>' for r in SELL_REASONS)
+        return f"""
+<details class="sellbox sellbox-fifo"><summary>賣出（預設最早買進）</summary>
+<form method="post" action="/web/positions" class="sellpanel"
+      onsubmit="return confirm('確定賣出 {html.escape(str(name))}？系統會從最早買進的持股開始扣除。');">
+  {csrf_hidden_input()}
+  <input type="hidden" name="action" value="sell_fifo">
+  <input type="hidden" name="code" value="{html.escape(str(code), quote=True)}">
+  <div class="fields">
+    <div><label>賣出股數</label>
+      <input type="number" name="sell_shares" min="1" max="{total}"
+             value="{default_shares}" required></div>
+    <div><label>賣出價</label>
+      <input type="number" step="0.01" name="sell_price" value="{px}"
+             placeholder="{px or '市價'}"></div>
+    <div><label>手續費</label>
+      <input type="number" step="1" name="fee" placeholder="{est_fee}"></div>
+    <div><label>證交稅</label>
+      <input type="number" step="1" name="tax" placeholder="{est_tax}"></div>
+    <div><label>賣出理由（選填）</label>
+      <select name="sell_reason">
+        <option value="">未填</option>
+        {options}
+      </select></div>
+  </div>
+  <div class="row-actions"><a class="cancel-link" href="/web/positions" data-no-busy="1">返回／取消</a>
+    <button type="submit">確認賣出</button></div>
+  <div class="sell-hint">
+    目前共 <b>{total:,} 股</b>；預設先賣最早買進的 <b>{default_shares:,} 股</b>（{first_date}）。
+    若改成更大的股數，系統會自動依「最早 → 最新」FIFO 跨筆扣除。<br>
+    每一筆仍保留自己的成本與已實現損益，不會把歷史買進紀錄合併掉。
+  </div>
+</form>
+</details>"""
+
     def sell_all_form(p, name, cur_price):
         """
         整檔一次賣出。分批買進的股票原本每一筆都要各自展開面板送一次表單，
@@ -22880,25 +22983,22 @@ def web_positions(uid):
 </details>'''
 
     def lots_html(p, name, cur_price):
-        """單筆就一組賣出面板＋刪除鍵；分批買進則每一筆各自可賣出或刪除。"""
-        lots = p.get("lots", [])
-        if len(lots) <= 1:
-            if not lots:
-                return ""
-            l = lots[0]
-            return (f'<div class="lot-actions">{delete_form(l["id"], name, l)}</div>'
-                    + sell_form(l["id"], l["shares"], p["code"],
-                                cur_price, l["cost"]))
+        """同一檔只顯示一個賣出入口；買進 lot 僅供查閱／刪除。"""
+        lots = sorted(p.get("lots") or [],
+                      key=lambda x: (x.get("bought_on") or date.max,
+                                     x.get("created_at") or datetime.max,
+                                     int(x.get("id") or 0)))
+        if not lots:
+            return ""
         items = "".join(
             f'<div class="lot">'
-            f'<span class="num">{l["shares"]:,}</span> 股　'
-            f'成本 <span class="num">{l["cost"]:,.2f}</span>　'
-            f'{l["bought_on"].strftime("%Y/%m/%d") if l["bought_on"] else "未填日期"}'
+            f'<span class="num">{int(l.get("shares") or 0):,}</span> 股　'
+            f'成本 <span class="num">{float(l.get("cost") or 0):,.2f}</span>　'
+            f'{l["bought_on"].strftime("%Y/%m/%d") if l.get("bought_on") else "未填日期"}'
             f'<div class="lot-actions">{delete_form(l["id"], name, l)}</div>'
-            f'{sell_form(l["id"], l["shares"], p["code"], cur_price, l["cost"], "賣出這筆")}'
             f'</div>' for l in lots)
-        return (sell_all_form(p, name, cur_price)
-                + f'<details class="lots"><summary>分 {len(lots)} 筆買進</summary>'
+        return (sell_fifo_form(p, name, cur_price)
+                + f'<details class="lots"><summary>查看 {len(lots)} 筆買進明細</summary>'
                   f'{items}</details>')
 
     rows_html, total_value, total_cost = [], 0.0, 0.0
