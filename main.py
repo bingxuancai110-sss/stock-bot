@@ -23180,7 +23180,15 @@ def web_positions(uid):
             "name": stock_display_name(p["code"], inst, price.get("name")),
             "value": value,
         })
-    allocation_html_positions = render_portfolio_allocation_chart(chart_holdings)
+    try:
+        allocation_html_positions = render_portfolio_allocation_chart(chart_holdings)
+    except Exception as exc:
+        import traceback
+        print(f"❌ 持股頁配置圖失敗，降級不阻斷持股頁: {type(exc).__name__}: {exc}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        allocation_html_positions = ('<section class="portfolio-chart-card"><div class="section-head">'
+                                   '<h2>組合配置</h2><span class="section-note">暫時無法繪製</span></div>'
+                                   '<div class="empty">配置圖暫時無法產生，但持股資料仍可正常查看。</div></section>')
     try:
         position_snapshots = get_portfolio_snapshots(uid, days=120)
         position_trend_html = render_trend_chart(position_snapshots)
@@ -25784,7 +25792,7 @@ def render_portfolio_allocation_chart(holdings):
         if len(entries)==1:
             i,(item,val)=entries[0];rects.append((i,item,val,x,y,w,h));return
         subtotal=sum(val for _,(_,val) in entries); first_n=max(1,min(len(entries)-1,round(len(entries)*0.45)))
-        first,rest=entries[:first_n],entries[first_n:];ratio=sum(v for _,v in first)/subtotal if subtotal else .5
+        first,rest=entries[:first_n],entries[first_n:];ratio=sum(val for _,(_,val) in first)/subtotal if subtotal else .5
         if horizontal:
             w1=w*ratio;split(first,x,y,w1,h,False);split(rest,x+w1,y,w-w1,h,False)
         else:
@@ -30413,15 +30421,12 @@ def web_portfolio(uid):
                            '<h2>組合配置</h2><span class="section-note">暫時無法繪製</span></div>'
                            '<div class="empty">配置圖資料暫時無法產生，其他首頁資料仍可查看。</div></section>')
     _home_cp("ALLOCATION_DONE")
-    industry_css = """<style>
-.industry-rank-list{display:grid;gap:9px;margin:10px 0 4px}.industry-rank-row{display:grid;grid-template-columns:30px minmax(0,1fr);gap:9px;align-items:center;padding:10px 11px;background:#fff;border:1px solid #e1e9f0;border-radius:13px}.industry-rank-num{font-size:11px;font-weight:850;color:#8b9aaa;text-align:center}.industry-rank-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:6px}.industry-rank-head b{font-size:13px;color:#233a51}.industry-rank-head strong{font-size:13px;color:#315a7c;font-variant-numeric:tabular-nums}.industry-rank-track{height:7px;border-radius:999px;background:#edf2f5;overflow:hidden}.industry-rank-track i{display:block;height:100%;border-radius:999px}.industry-rank-row:first-child{border-color:#d5e2ec;box-shadow:0 5px 14px rgba(39,76,119,.06)}@media(max-width:640px){.industry-rank-row{padding:9px}.industry-rank-head b{font-size:12px}.industry-rank-head strong{font-size:12px}}</style>"""
     body = f"""
 {daily_top}
 {industry_css}<div class="section-head"><h2>完整組合分析</h2><span class="section-note">往下查看詳細資料</span></div>
 <div class="totals"><div><div class="total-label">總市值</div><div class="total-value num">{total_value:,.0f}</div><div class="total-sub">{fmt_pct(pl_total)}</div></div><div><div class="total-label">持股檔數</div><div class="total-value num">{len(holdings)}</div><div class="total-sub">{len(by_industry)} 個產業</div></div><div><div class="total-label">最大單一持股</div><div class="total-value num">{top['weight']:.1f}%</div><div class="total-sub">{top['name']}</div></div></div>
 {allocation_html}
 <div class="section-head"><h2>組合走勢</h2><span class="section-note">相對起始日漲跌幅</span></div><div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
-<div class="section-head"><h2>產業集中度</h2><span class="section-note">比例越長，代表權重越高</span></div>{industry_html}<div class="callout">{corr_txt}</div>
 <div class="section-head"><h2>持股權重</h2><span class="section-note">依權重排序</span></div><div class="rows">{''.join(f'''<div class="row"><div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div><div class="price num">{h['weight']:.1f}%</div><div class="meta"><span><em>產業</em> {h['industry']}</span><span><em>損益</em> {fmt_pct(h['pl'])}</span><span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span><span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span></div><div class="chg">{fmt_pct(h['price']['pct'])}</div><div class="wbar"><span class="wbar-track"><i style="width:{min(100.0, h['weight'] / 30.0 * 100):.1f}%"></i></span><em>{h['weight']:.1f}%</em></div></div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}</div>
 
 """
@@ -33933,14 +33938,24 @@ function bindFactors(){
     e.stopPropagation();
     showDetail(row);
   },true);function restoreWorkbenchScroll(){var y=Number(document.body.dataset.wbScroll||state.returnScroll||0);document.body.style.position='';document.body.style.top='';document.body.style.left='';document.body.style.right='';document.body.style.width='';delete document.body.dataset.wbScroll;window.scrollTo(0,y);}
-  function closeDrawer(){
-    if(!drawer.classList.contains('open'))return;
-    /* v184：詳細抽屜完全不使用 URL／history；關閉只還原同一份工作台 DOM。 */
-    drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;restoreWorkbenchScroll();
+  function closeDrawer(e){
+    if(e){e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation();}
+    if(!drawer.classList.contains('open'))return false;
+    /* v189：只操作現有 DOM；關閉不使用 URL/history、不重新 fetch、不 reload。 */
+    drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;
+    var detail=document.getElementById('wb-detail');if(detail)detail.innerHTML='';
+    restoreWorkbenchScroll();
+    return false;
   }
-  document.getElementById('wb-close').onclick=function(e){if(e)e.preventDefault();closeDrawer();};
-  document.getElementById('wb-back').onclick=function(e){if(e)e.preventDefault();closeDrawer();};
-  mask.onclick=function(e){if(e)e.preventDefault();closeDrawer();};
+  document.getElementById('wb-close').onclick=function(e){return closeDrawer(e);};
+  document.getElementById('wb-back').onclick=function(e){return closeDrawer(e);};
+  mask.onclick=function(e){return closeDrawer(e);};
+  document.addEventListener('click',function(e){
+    var b=e.target&&e.target.closest?e.target.closest('#wb-close,#wb-back'):null;
+    if(!b)return;
+    e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation();
+    closeDrawer(e);
+  },true);
   document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
 })();
 </script>'''
