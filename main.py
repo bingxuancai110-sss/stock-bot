@@ -30238,7 +30238,7 @@ def web_portfolio(uid):
             total_value += pr["close"] * p["shares"]
         total_cost += p["cost"] * p["shares"]
 
-    # ── 產業集中度 ──
+    # 產業分類僅保留用於摘要計數，不再渲染產業集中度圖表。
     by_industry, holdings = {}, []
     for p in positions:
         pr = price_map.get(p["code"])
@@ -30421,6 +30421,7 @@ def web_portfolio(uid):
                            '<h2>組合配置</h2><span class="section-note">暫時無法繪製</span></div>'
                            '<div class="empty">配置圖資料暫時無法產生，其他首頁資料仍可查看。</div></section>')
     _home_cp("ALLOCATION_DONE")
+    industry_css = ""
     body = f"""
 {daily_top}
 {industry_css}<div class="section-head"><h2>完整組合分析</h2><span class="section-note">往下查看詳細資料</span></div>
