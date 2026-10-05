@@ -23168,28 +23168,7 @@ def web_positions(uid):
        <div class="total-value num">{len(positions)}</div></div>
 </div>""" if positions else ""
 
-    # 使用者目前所在的「持股」頁也要直接看得到兩張圖；不能只把圖放在
-    # 另一個完整分析 route。配置圖只用有有效現價的市值，走勢圖沿用
-    # get_portfolio_snapshots/render_trend_chart 的既有組合對加權指數口徑。
-    chart_holdings = []
-    for p, price, value, _cost_total in enriched:
-        if not price or not value or not math.isfinite(float(value)):
-            continue
-        chart_holdings.append({
-            "code": p["code"],
-            "name": stock_display_name(p["code"], inst, price.get("name")),
-            "value": value,
-            "price": price,
-        })
-    try:
-        allocation_html_positions = render_portfolio_allocation_chart(chart_holdings)
-    except Exception as exc:
-        import traceback
-        print(f"❌ 持股頁配置圖失敗，降級不阻斷持股頁: {type(exc).__name__}: {exc}", flush=True)
-        print(traceback.format_exc(), flush=True)
-        allocation_html_positions = ('<section class="portfolio-chart-card"><div class="section-head">'
-                                   '<h2>組合配置</h2><span class="section-note">暫時無法繪製</span></div>'
-                                   '<div class="empty">配置圖暫時無法產生，但持股資料仍可正常查看。</div></section>')
+    # v194：移除組合配置圖；持股頁直接呈現持股明細與組合走勢。
     try:
         position_snapshots = get_portfolio_snapshots(uid, days=120)
         position_trend_html = render_trend_chart(position_snapshots)
@@ -23257,7 +23236,6 @@ def web_positions(uid):
 {exright_html}
 {totals}
 {f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px;{"" if _is_taiwan_intraday_window() else "display:none"}">盤中持股行情已於 {taiwan_now().strftime("%H:%M:%S")} 取得；開盤期間約每 5 秒局部更新；盤中只採官方 MIS 最後成交，暫缺時不拿延遲行情冒充即時。</div>' if positions else ''}
-{allocation_html_positions}
 {portfolio_trend_html}
 <div class="section-head"><h2>持股明細</h2>
   <span class="section-note">依市值排序　·　<a href="/web/trades" style="color:var(--brass)">操作日報 →</a></span></div>
@@ -30491,23 +30469,12 @@ def web_portfolio(uid):
         (aux_done - calc_done) * 1000,
         (daily_top_done - daily_top_started) * 1000,
         (daily_top_done - full_started) * 1000))
-    _home_cp("ALLOCATION_START", holdings=len(holdings))
-    try:
-        allocation_html = render_portfolio_allocation_chart(holdings)
-    except Exception as exc:
-        import traceback
-        print(f"❌ HOME_CHECKPOINT allocation_failed type={type(exc).__name__} msg={exc}", flush=True)
-        print(traceback.format_exc(), flush=True)
-        allocation_html = ('<section class="portfolio-chart-card"><div class="section-head">'
-                           '<h2>組合配置</h2><span class="section-note">暫時無法繪製</span></div>'
-                           '<div class="empty">配置圖資料暫時無法產生，其他首頁資料仍可查看。</div></section>')
-    _home_cp("ALLOCATION_DONE")
+    _home_cp("ALLOCATION_SKIPPED")
     industry_css = ""
     body = f"""
 {daily_top}
 {industry_css}<div class="section-head"><h2>完整組合分析</h2><span class="section-note">往下查看詳細資料</span></div>
 <div class="totals"><div><div class="total-label">總市值</div><div class="total-value num">{total_value:,.0f}</div><div class="total-sub">{fmt_pct(pl_total)}</div></div><div><div class="total-label">持股檔數</div><div class="total-value num">{len(holdings)}</div><div class="total-sub">{len(by_industry)} 個產業</div></div><div><div class="total-label">最大單一持股</div><div class="total-value num">{top['weight']:.1f}%</div><div class="total-sub">{top['name']}</div></div></div>
-{allocation_html}
 <div class="section-head"><h2>組合走勢</h2><span class="section-note">相對起始日漲跌幅</span></div><div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
 <div class="section-head"><h2>持股權重</h2><span class="section-note">依權重排序</span></div><div class="rows">{''.join(f'''<div class="row"><div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div><div class="price num">{h['weight']:.1f}%</div><div class="meta"><span><em>產業</em> {h['industry']}</span><span><em>損益</em> {fmt_pct(h['pl'])}</span><span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span><span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span></div><div class="chg">{fmt_pct(h['price']['pct'])}</div><div class="wbar"><span class="wbar-track"><i style="width:{min(100.0, h['weight'] / 30.0 * 100):.1f}%"></i></span><em>{h['weight']:.1f}%</em></div></div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}</div>
 
@@ -33688,6 +33655,7 @@ function bindFactors(){
     scoreChangePanel.querySelectorAll('[data-score-change-code]').forEach(function(btn){btn.onclick=function(){var code=btn.getAttribute('data-score-change-code');var row=state.rows.find(function(r){return r.source==='黑馬'&&String(r.code)===String(code);});if(row)showDetail(row);};});
   }
   function render(){renderScoreChanges();renderAssetTabs();renderTabs();var lab=state.assetMode==='lab'||state.source==='策略研究';root.classList.toggle('wb-lab-active',lab);var tools=document.querySelector('.wb-tools'),fp=document.getElementById('wb-filter-panel'),ms=document.getElementById('wb-mobile-sort'),meta=document.querySelector('.wb-meta'),table=document.getElementById('wb-table'),labEl=document.getElementById('wb-strategy-lab'),assetTabs=document.getElementById('wb-asset-tabs'),sourceTabs=document.getElementById('wb-tabs'),intro=document.querySelector('.wb-intro'),pulse=document.getElementById('wb-pulse');[tools,fp,ms,meta,table,assetTabs,sourceTabs,intro,pulse].forEach(function(el){if(el)el.hidden=lab;});if(labEl)labEl.hidden=!lab;if(lab){state.source='策略研究';status.textContent='策略研究實驗室';loadStrategyLab(false);return;}document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}if(state.source!=='黑馬'&&state.source!=='雷達'&&state.source!=='成效'&&state.source!=='我的排行'&&!state.loadedSources[state.source]){rowsEl.innerHTML='<div class="wb-empty">正在準備 '+esc(state.source)+'…</div>';return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
+    state.detailOpen=true;
     var host=document.getElementById('wb-detail'), dr=document.getElementById('wb-drawer'), mk=document.getElementById('wb-mask');
     if(!host||!dr)return;
     var y=window.scrollY||window.pageYOffset||0;
@@ -33870,9 +33838,12 @@ function bindFactors(){
         .catch(function(e){box.dataset.loaded='';body.textContent='籌碼分布載入失敗：'+(e&&e.message?e.message:e);});
     });
   }
-  function updateQuotes(){if(!state.marketOpen||document.hidden||state.quoteLoading)return;var codes=filtered().slice(0,30).map(function(r){return r.code}).join(',');if(!codes)return;state.quoteLoading=true;fetch(api('/web/api/workbench/quotes?codes='+encodeURIComponent(codes)),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){(data.updates||[]).forEach(function(q){state.rows.forEach(function(r){if(r.code===q.code&&q.price!=null){r.price=q.price;r.change_pct=q.change_pct;r.metric_label='當日漲跌';}});});state.quoteUpdatedAt=data.fetched_at||'';if(data.note)note.textContent=data.note+(state.quoteUpdatedAt?' 最後取得 '+state.quoteUpdatedAt+'。':'');status.textContent=state.quoteUpdatedAt?'盤中行情已更新 '+state.quoteUpdatedAt:'盤中行情局部更新中';render();}).catch(function(e){if(e.message==='AUTH')location.reload();}).finally(function(){state.quoteLoading=false;});}
+  function updateQuotes(){if(!state.marketOpen||document.hidden||state.quoteLoading)return;var epoch=state.viewEpoch||0;var codes=filtered().slice(0,30).map(function(r){return r.code}).join(',');if(!codes)return;state.quoteLoading=true;fetch(api('/web/api/workbench/quotes?codes='+encodeURIComponent(codes)),{credentials:'same-origin'}).then(function(r){if(r.status===401)throw new Error('AUTH');if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(data){(data.updates||[]).forEach(function(q){state.rows.forEach(function(r){if(r.code===q.code&&q.price!=null){r.price=q.price;r.change_pct=q.change_pct;r.metric_label='當日漲跌';}});});state.quoteUpdatedAt=data.fetched_at||'';if(data.note)note.textContent=data.note+(state.quoteUpdatedAt?' 最後取得 '+state.quoteUpdatedAt+'。':'');status.textContent=state.quoteUpdatedAt?'盤中行情已更新 '+state.quoteUpdatedAt:'盤中行情局部更新中';if(epoch===(state.viewEpoch||0)&&!state.detailOpen&&!state.closingDrawer)render();}).catch(function(e){if(e.message==='AUTH')location.reload();}).finally(function(){state.quoteLoading=false;});}
   // 選股台採「一次並行載入」：黑馬先顯示，但其他快照同時在背景載入，
   // 不採用「點哪頁才載哪頁」，避免使用者切頁時才開始等待。
+  state.viewEpoch = state.viewEpoch || 0;
+  state.detailOpen = !!state.detailOpen;
+  state.closingDrawer = !!state.closingDrawer;
   state.loadingSources = state.loadingSources || {};
   var workbenchSources = ['黑馬','雷達','轉折','籌碼','ETF'];
 
@@ -33888,6 +33859,7 @@ function bindFactors(){
     if(controller) timeoutId = window.setTimeout(function(){try{controller.abort();}catch(e){}},12000);
     var fetchOptions={credentials:'same-origin',cache:'no-store'};
     if(controller) fetchOptions.signal=controller.signal;
+    var sourceViewEpoch=state.viewEpoch||0;
     var promise = fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),fetchOptions)
       .finally(function(){if(timeoutId)window.clearTimeout(timeoutId);})
       .then(function(r){
@@ -33904,7 +33876,7 @@ function bindFactors(){
         state.loadedSources[source]=true;
         delete state.loadingSources[source];
         renderTabs();
-        if(state.source===source) render();
+        if(state.source===source && sourceViewEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer) render();
         return data;
       })
       .catch(function(e){
@@ -33923,6 +33895,7 @@ function bindFactors(){
   function loadSource(source){
     if(!source||source==='成效'||source==='我的排行')return;
     state.source=source;
+    var loadEpoch=state.viewEpoch||0;
     if(source==='ETF')state.assetMode='etf';
     else if(source!=='ETF')state.assetMode='stock';
     render();
@@ -33930,7 +33903,7 @@ function bindFactors(){
     status.textContent='正在載入 '+source+' 快照…';
     rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
     fetchWorkbenchSource(source).then(function(){
-      if(state.source===source){
+      if(state.source===source && loadEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer){
         status.textContent=state.loadedSources[source]?'已載入 '+source:'正在等待 '+source+' 快照…';
         render();
       }
@@ -34023,8 +33996,10 @@ function bindFactors(){
   function closeDrawer(e){
     if(e){e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation();}
     if(!drawer.classList.contains('open'))return false;
-    /* v191：關閉只操作既有 DOM；短暫禁止 visibility/quote refresh，避免 iOS 關閉時又觸發 render。 */
+    /* v194：關閉詳細頁只改現有 DOM；任何關閉前已發出的 async callback 都不得再 render 清單。 */
     state.closingDrawer=true;
+    state.detailOpen=false;
+    state.viewEpoch=(state.viewEpoch||0)+1;
     if(state.timer){clearInterval(state.timer);state.timer=null;}
     drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');if(mask)mask.hidden=true;
     var detail=document.getElementById('wb-detail');if(detail)detail.innerHTML='';
