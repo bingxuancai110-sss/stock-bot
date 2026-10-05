@@ -30052,6 +30052,16 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 @app.route("/web/portfolio", methods=["GET", "POST"])
 @web_login_required
 def web_portfolio(uid):
+    # v187：首頁除錯攔截點。每完成一個主要階段就寫入 Render log，
+    # 若下一次再 500，可直接知道最後成功到哪一步，不再靠猜。
+    def _home_cp(stage, **meta):
+        try:
+            extra = " ".join(f"{k}={v}" for k, v in meta.items())
+            print(f"🧭 HOME_CHECKPOINT stage={stage} {extra}".rstrip(), flush=True)
+        except Exception:
+            pass
+
+    _home_cp("ENTER", method=request.method, fragment=int(wants_fragment()))
     msg = ""
     if request.method == "POST" and not valid_web_csrf():
         return respond_page("今日", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "portfolio")
@@ -30068,6 +30078,7 @@ def web_portfolio(uid):
     # v184：首頁移除風險問卷與「值得注意」入口。
     profile = {}
     positions = merge_positions(get_positions(uid))
+    _home_cp("POSITIONS_LOADED", count=len(positions))
     # 位置代號在所有首頁共享資料與即時行情流程都會使用。
     # 必須在進入 shared cache 分支前就建立，否則 shared cache 命中時
     # 會跳過原本的初始化，導致首頁／內部返回首頁出現 NameError。
@@ -30084,7 +30095,8 @@ def web_portfolio(uid):
 <div class="section-head"><h2>組合走勢</h2>
   <span class="section-note">相對起始日漲跌幅</span></div>
 <div class="callout" style="padding:14px 15px 4px">{trend_html_empty}</div>"""
-        return respond_page("今日", body, "portfolio")
+        _home_cp("RENDER_READY", body_bytes=len(body.encode("utf-8", errors="ignore")))
+    return respond_page("今日", body, "portfolio")
 
     # 「今日」先秒回漂亮的全螢幕載入動畫，再由瀏覽器以 fragment=1
     # 取得同一份完整首頁。不是預覽頁：動畫結束後直接替換成完整首頁，
@@ -30106,6 +30118,7 @@ def web_portfolio(uid):
     home_diag_request = "home-%x-%s" % (int(time.time() * 1000) & 0xfffffff, threading.get_ident() % 10000)
     _db_diag_set(operation="homepage", request_id=home_diag_request)
     fee_disc, min_fee = get_fee_settings(profile)
+    _home_cp("FEES_READY")
 
     # 這三項只依賴 user_id，與首頁前段的共享資料、持股行情彼此獨立。
     # 提前啟動，讓「走勢／已實現損益／排名」在等待行情與共享資料時就一起跑，
@@ -30126,6 +30139,8 @@ def web_portfolio(uid):
             shared_values = _HOMEPAGE_SHARED_CACHE.get("value")
             if shared_values is not None:
                 print("⚡ 首頁共享資料命中短快取")
+
+    _home_cp("AUX_FUTURES_STARTED")
 
     if shared_values is None:
         # 這六份共享資料彼此獨立；並行抓取可把等待時間從各次網路延遲總和
@@ -30169,6 +30184,7 @@ def web_portfolio(uid):
     # 但後續首頁變數維持原本的語意順序，避免其他渲染邏輯跟著改。
     inst, daily_context, revenue, valuation, ind_map, taiex = shared_values
     shared_done = time.monotonic()
+    _home_cp("SHARED_DATA_DONE", ms=round((shared_done-full_started)*1000))
     if DB_DIAG_ENABLED:
         print(
             "🔎 首頁DB診斷：共享資料完成 %.0fms | req=%s | pool=%s/%s" %
@@ -30206,6 +30222,7 @@ def web_portfolio(uid):
     if missing_reduced_quotes:
         price_map.update(get_realtime_stocks_bulk(missing_reduced_quotes))
     price_done = time.monotonic()
+    _home_cp("PRICE_JOURNAL_DONE", ms=round((price_done-shared_done)*1000), price_count=len(price_map), journal_count=len(journal_logs))
     total_value, total_cost = 0.0, 0.0
     for p in positions:
         pr = price_map.get(p["code"])
@@ -30246,6 +30263,8 @@ def web_portfolio(uid):
             "pe": valuation.get(p["code"], {}).get("pe"),
         })
 
+    _home_cp("HOLDINGS_CALC_DONE", holdings=len(holdings), total_value=round(total_value,2))
+
     # v184 hotfix：這些首頁效能計時／總損益變數在 UI 重構時被移掉，
     # 但後面的首頁渲染仍會使用；重新在組合計算完成後建立，避免 fragment 500。
     calc_done = time.monotonic()
@@ -30282,6 +30301,7 @@ def web_portfolio(uid):
     # v184/v185：首頁移除「值得注意」入口，但後續摘要仍需要最大持股與
     # 總損益；這些原本在提醒區塊附近建立，重構後必須獨立建立。
     top = max(holdings, key=lambda h: h["weight"]) if holdings else {"weight": 0.0, "name": "—"}
+    _home_cp("ANALYSIS_READY", holdings=len(holdings), industries=len(ordered))
     corr_txt = (f"兩兩相關係數平均 <b>{avg_corr:.2f}</b>，"
                 f"實際分散效果約等於 <b>{eff:.1f} 檔</b>。"
                 if avg_corr is not None and eff else
@@ -30297,6 +30317,7 @@ def web_portfolio(uid):
     finally:
         aux_executor.shutdown(wait=True)
     aux_done = time.monotonic()
+    _home_cp("AUX_RESULTS_DONE", ms=round((aux_done-calc_done)*1000))
     trend_done = aux_done
     journal_dates = [_position_change_date(log.get("trade_date")) for log in journal_logs]
     today_date = taiwan_today()
@@ -30373,6 +30394,7 @@ def web_portfolio(uid):
             f'<span style="font-size:12px">{html.escape(type(exc).__name__)}: '
             f'{html.escape(str(exc))}<br>{html.escape(where)}</span></div>')
     daily_top_done = time.monotonic()
+    _home_cp("DAILY_TOP_DONE", ms=round((daily_top_done-daily_top_started)*1000))
     print("⏱️ 今日完整頁：共享 %.0fms、持股行情／日誌 %.0fms、組合計算 %.0fms、走勢／損益／排名並行 %.0fms、首頁判讀 %.0fms、合計 %.0fms" % (
         (shared_done - full_started) * 1000,
         (price_done - shared_done) * 1000,
@@ -30380,7 +30402,17 @@ def web_portfolio(uid):
         (aux_done - calc_done) * 1000,
         (daily_top_done - daily_top_started) * 1000,
         (daily_top_done - full_started) * 1000))
-    allocation_html = render_portfolio_allocation_chart(holdings)
+    _home_cp("ALLOCATION_START", holdings=len(holdings))
+    try:
+        allocation_html = render_portfolio_allocation_chart(holdings)
+    except Exception as exc:
+        import traceback
+        print(f"❌ HOME_CHECKPOINT allocation_failed type={type(exc).__name__} msg={exc}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        allocation_html = ('<section class="portfolio-chart-card"><div class="section-head">'
+                           '<h2>組合配置</h2><span class="section-note">暫時無法繪製</span></div>'
+                           '<div class="empty">配置圖資料暫時無法產生，其他首頁資料仍可查看。</div></section>')
+    _home_cp("ALLOCATION_DONE")
     industry_css = """<style>
 .industry-rank-list{display:grid;gap:9px;margin:10px 0 4px}.industry-rank-row{display:grid;grid-template-columns:30px minmax(0,1fr);gap:9px;align-items:center;padding:10px 11px;background:#fff;border:1px solid #e1e9f0;border-radius:13px}.industry-rank-num{font-size:11px;font-weight:850;color:#8b9aaa;text-align:center}.industry-rank-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:6px}.industry-rank-head b{font-size:13px;color:#233a51}.industry-rank-head strong{font-size:13px;color:#315a7c;font-variant-numeric:tabular-nums}.industry-rank-track{height:7px;border-radius:999px;background:#edf2f5;overflow:hidden}.industry-rank-track i{display:block;height:100%;border-radius:999px}.industry-rank-row:first-child{border-color:#d5e2ec;box-shadow:0 5px 14px rgba(39,76,119,.06)}@media(max-width:640px){.industry-rank-row{padding:9px}.industry-rank-head b{font-size:12px}.industry-rank-head strong{font-size:12px}}</style>"""
     body = f"""
