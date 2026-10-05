@@ -30096,7 +30096,7 @@ def web_portfolio(uid):
   <span class="section-note">相對起始日漲跌幅</span></div>
 <div class="callout" style="padding:14px 15px 4px">{trend_html_empty}</div>"""
         _home_cp("RENDER_READY", body_bytes=len(body.encode("utf-8", errors="ignore")))
-    return respond_page("今日", body, "portfolio")
+        return respond_page("今日", body, "portfolio")
 
     # 「今日」先秒回漂亮的全螢幕載入動畫，再由瀏覽器以 fragment=1
     # 取得同一份完整首頁。不是預覽頁：動畫結束後直接替換成完整首頁，
