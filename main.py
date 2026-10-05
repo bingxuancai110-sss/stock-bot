@@ -25783,7 +25783,7 @@ def render_portfolio_allocation_chart(holdings):
         if not entries:return
         if len(entries)==1:
             i,(item,val)=entries[0];rects.append((i,item,val,x,y,w,h));return
-        subtotal=sum(v for _,v in entries); first_n=max(1,min(len(entries)-1,round(len(entries)*0.45)))
+        subtotal=sum(val for _,(_,val) in entries); first_n=max(1,min(len(entries)-1,round(len(entries)*0.45)))
         first,rest=entries[:first_n],entries[first_n:];ratio=sum(v for _,v in first)/subtotal if subtotal else .5
         if horizontal:
             w1=w*ratio;split(first,x,y,w1,h,False);split(rest,x+w1,y,w-w1,h,False)
