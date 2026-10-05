@@ -18414,7 +18414,64 @@ def plain_text_page(lines):
     return f"""<!DOCTYPE html><html lang="zh-Hant"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>診斷</title></head>
+<title>診斷</title>
+<style id="v181-polish">
+/* V181：三個回饋的精修：權重右對齊、持股卡片放寬、選股台詳情返回不重載 */
+.portfolio-allocation-legend{{width:100%;min-width:0}}
+.portfolio-allocation-item{{
+  display:grid!important;
+  grid-template-columns:10px minmax(0,1fr)!important;
+  align-items:center!important;
+  gap:8px!important;
+  width:100%!important;
+}}
+.portfolio-allocation-item>div{{
+  min-width:0;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  align-items:baseline;
+  column-gap:12px;
+  width:100%;
+}}
+.portfolio-allocation-item b{{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}}
+.portfolio-allocation-item span{{
+  justify-self:end;
+  text-align:right;
+  white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}}
+@media(max-width:640px){{
+  .portfolio-allocation-layout{{gap:12px}}
+  .portfolio-allocation-svg{{width:132px;height:132px}}
+  .portfolio-allocation-item>div{{column-gap:8px}}
+  .portfolio-allocation-item b{{font-size:11px}}
+  .portfolio-allocation-item span{{font-size:10px}}
+}}
+
+/* 持股明細：手機上增加橫向空間，讓價格與三個資料格不被壓扁。 */
+@media(max-width:640px){{
+  .position-card,.position-fast-card{{
+    width:calc(100% + 16px)!important;
+    margin-left:-8px!important;
+    margin-right:-8px!important;
+  }}
+  .position-card{{padding-left:15px!important;padding-right:15px!important}}
+  .position-card .position-top,
+  .position-card .position-head{{column-gap:10px!important}}
+}}
+
+/* 選股台詳情抽屜：關閉時只還原清單，不觸發整頁重新載入。 */
+.wb-drawer-actions{{display:flex;justify-content:space-between;align-items:center;gap:8px}}
+.wb-drawer-actions button{{min-height:38px}}
+.wb-drawer-actions #wb-back{{font-size:14px;font-weight:800;color:#245B8F}}
+.wb-drawer-actions #wb-close{{font-size:26px;line-height:1}}
+</style>
+</head>
 <body style="margin:0;background:#12161B;color:#D8DBD4">
 <pre style="font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
  font-size:12px;line-height:1.6;padding:14px;margin:0;
@@ -33417,7 +33474,7 @@ def render_workbench_body(initial_tab=""):
     var signalBlock=cleanSignal?'<span class="wb-signal"><b>'+esc(cleanSignal)+'</b><small>'+valueText(r.turnover,' 成交額')+'</small></span>':'<span class="wb-signal"></span>';
     var macdTag=macdLabel?'<span class="wb-macd '+macdClass+'">'+esc(macdLabel)+'</span>':'';
     var chaseTag=r.chase_risk?'<span class="wb-chase-warning">'+esc(r.chase_risk)+'</span>':'';
-    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-rich-row" onclick="return window.__wbOpenWorkbenchDetail(this)" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'" data-row-key="'+esc(r.row_key||'')+'"><span class="wb-row-main"><span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>'+radarRank+'<b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b>'+highStatus+breakout+macdTag+chaseTag+'<small class="wb-industry">'+esc(r.industry)+'</small>'+flow+'<small class="wb-fact-line">'+basics+'</small><small class="wb-fact-line">'+trend+'</small></span><span class="wb-score-block">'+scoreHtml+'</span><span class="wb-price-block"><b class="wb-num">'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span><span class="wb-institutional wb-num"><b>'+esc(inst)+'</b><small>法人近十日</small></span>'+signalBlock+'<span>›</span></button>'+chipBlock(r.code)+'</div>'
+    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-rich-row" onclick="return false" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'" data-row-key="'+esc(r.row_key||'')+'"><span class="wb-row-main"><span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>'+radarRank+'<b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b>'+highStatus+breakout+macdTag+chaseTag+'<small class="wb-industry">'+esc(r.industry)+'</small>'+flow+'<small class="wb-fact-line">'+basics+'</small><small class="wb-fact-line">'+trend+'</small></span><span class="wb-score-block">'+scoreHtml+'</span><span class="wb-price-block"><b class="wb-num">'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span><span class="wb-institutional wb-num"><b>'+esc(inst)+'</b><small>法人近十日</small></span>'+signalBlock+'<span>›</span></button>'+chipBlock(r.code)+'</div>'
   }
   function renderTurningRow(r){
     var d=r.detail||{},state=d.state||'observing',stateLabel=state==='invalid'?'失敗':(state==='confirmed'?'已確認':'觀察中'),invalidReasons=Array.isArray(d.invalid_reasons)?d.invalid_reasons.filter(Boolean):[],reasons=(state==='invalid'&&invalidReasons.length?invalidReasons:(Array.isArray(d.reasons)?d.reasons:[])),reason=(state==='invalid'?(invalidReasons[0]||d.state_reason||'原始快照尚未提供具體失敗原因'):(d.state_reason||'轉折細節資料不足'));
@@ -33436,7 +33493,7 @@ def render_workbench_body(initial_tab=""):
     }else{
       judgement='<section class="wb-turning-reason"><b>目前判讀</b><span>'+esc(reason)+'</span></section>';
     }
-    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-turning-row" onclick="return window.__wbOpenWorkbenchDetail(this)" data-code="'+esc(r.code)+'" data-source="轉折"><span class="wb-turning-card"><span class="wb-turning-top"><span class="wb-turning-title"><span class="wb-tag 轉折">轉折</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><span class="wb-turning-flow '+esc(flowClass)+'">'+esc(state==='invalid'?'失敗／'+flow:flow+'／'+stateLabel)+'</span></span><span class="wb-turning-price"><b>'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span></span><span class="wb-turning-facts"><span><small>法人淨額</small><b>'+esc(lots)+'</b></span><span><small>法人共識</small><b>'+esc(d.consensus||'未提供')+'</b></span><span><small>量能</small><b>'+esc(volume)+'</b></span><span><small>支撐／壓力</small><b>'+esc(support)+' ／ '+esc(resistance)+'</b></span></span>'+judgement+(reasonList?'<ul class="wb-turning-reasons"><li class="wb-turning-reasons-title">'+(state==='invalid'?'失效條件明細':'條件明細')+'</li>'+reasonList+'</ul>':'')+'</span><span class="wb-row-chevron">›</span></button>'+chipBlock(r.code)+'</div>';
+    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-turning-row" onclick="return false" data-code="'+esc(r.code)+'" data-source="轉折"><span class="wb-turning-card"><span class="wb-turning-top"><span class="wb-turning-title"><span class="wb-tag 轉折">轉折</span><b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b><span class="wb-turning-flow '+esc(flowClass)+'">'+esc(state==='invalid'?'失敗／'+flow:flow+'／'+stateLabel)+'</span></span><span class="wb-turning-price"><b>'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span></span><span class="wb-turning-facts"><span><small>法人淨額</small><b>'+esc(lots)+'</b></span><span><small>法人共識</small><b>'+esc(d.consensus||'未提供')+'</b></span><span><small>量能</small><b>'+esc(volume)+'</b></span><span><small>支撐／壓力</small><b>'+esc(support)+' ／ '+esc(resistance)+'</b></span></span>'+judgement+(reasonList?'<ul class="wb-turning-reasons"><li class="wb-turning-reasons-title">'+(state==='invalid'?'失效條件明細':'條件明細')+'</li>'+reasonList+'</ul>':'')+'</span><span class="wb-row-chevron">›</span></button>'+chipBlock(r.code)+'</div>';
   }
   function renderChipRow(r){
     var d=r.detail||{},split=[];
@@ -33613,6 +33670,10 @@ function bindFactors(){
     var host=document.getElementById('wb-detail'), dr=document.getElementById('wb-drawer'), mk=document.getElementById('wb-mask');
     if(!host||!dr)return;
     var y=window.scrollY||window.pageYOffset||0;
+    if(!dr.classList.contains('open')){
+      state.detailHistory=true;
+      try{history.pushState({workbenchDetail:true},'',location.href.split('#')[0]+'#workbench-detail');}catch(e){}
+    }
     state.returnScroll=y;
     document.body.dataset.wbScroll=String(y);
     document.body.style.position='fixed';document.body.style.top=(-y)+'px';document.body.style.left='0';document.body.style.right='0';document.body.style.width='100%';
@@ -33941,7 +34002,26 @@ function bindFactors(){
     e.preventDefault();
     e.stopPropagation();
     showDetail(row);
-  },true);function closeDrawer(){var y=Number(document.body.dataset.wbScroll||state.returnScroll||0);drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;document.body.style.position='';document.body.style.top='';document.body.style.left='';document.body.style.right='';document.body.style.width='';delete document.body.dataset.wbScroll;window.scrollTo(0,y);}document.getElementById('wb-close').onclick=closeDrawer;document.getElementById('wb-back').onclick=closeDrawer;mask.onclick=closeDrawer;document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
+  },true);function restoreWorkbenchScroll(){var y=Number(document.body.dataset.wbScroll||state.returnScroll||0);document.body.style.position='';document.body.style.top='';document.body.style.left='';document.body.style.right='';document.body.style.width='';delete document.body.dataset.wbScroll;window.scrollTo(0,y);}
+  function closeDrawer(immediate){
+    if(!drawer.classList.contains('open'))return;
+    /* 詳情是同一頁的 UI 狀態：優先走 history，不讓「返回」變成整頁重新載入。 */
+    if(!immediate && state.detailHistory){
+      state.detailHistory=false;
+      try{history.back();return;}catch(e){}
+    }
+    drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');mask.hidden=true;restoreWorkbenchScroll();
+  }
+  document.getElementById('wb-close').onclick=function(e){if(e)e.preventDefault();closeDrawer();};
+  document.getElementById('wb-back').onclick=function(e){if(e)e.preventDefault();closeDrawer();};
+  mask.onclick=function(e){if(e)e.preventDefault();closeDrawer();};
+  window.addEventListener('popstate',function(e){
+    if(drawer.classList.contains('open')){
+      state.detailHistory=false;
+      closeDrawer(true);
+    }
+  });
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)updateQuotes();});load();
 })();
 </script>'''
     body += ''''''
