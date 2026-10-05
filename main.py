@@ -4537,7 +4537,6 @@ def sell_position_all(user_id, code, sell_price=None, fee=None, tax=None,
                               sell_reason=sell_reason)
 
 
-
 def normalize_sell_reason(raw):
     """只接受清單內的值，其餘一律視為未填，避免髒資料進資料庫。"""
     v = str(raw or "").strip()
@@ -8146,54 +8145,9 @@ def _augment_leaderboard_period_metrics(boards, series_map, market):
             r["days"] = ((long_curve[-1][0] - long_curve[0][0]).days
                           if len(long_curve) >= 2 else 0)
 
-    # 經理人屬於正式季賽參賽者。即使本季目前只有 1 個有效快照，
-    # 也不能因 season_days < 1 就把經理人排除；以目前快照的累計報酬作為季內起點，
-    # season_ret 為 0，等下一個交易日再更新。
-    _manager_ids = {"bot:yaochi_00981a", "bot:manager_00403a"}
-    _manager_names = {
-        "bot:yaochi_00981a": "瑤池金母｜00981A 經理人",
-        "bot:manager_00403a": "張哲瑋｜00403A 經理人",
-    }
-    _by_uid = {str(r.get("user_id") or "").strip(): r for r in all_rows}
-    for _mid in _manager_ids:
-        _item = series_map.get(_mid) or {}
-        _curve = _item.get("curve") if isinstance(_item, dict) else _item
-        _curve = _curve or []
-        _scurve = _rebase_period_curve(_curve, start_date=season_start)
-        if _mid not in _by_uid and _scurve:
-            _row = {
-                "user_id": _mid,
-                "nickname": _manager_names[_mid],
-                "show": True, "is_bot": False, "is_manager": True,
-                "bot_mode": _mid.replace("bot:", ""),
-                "holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
-                "etf_holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
-                "joined": _curve[0][0],
-                "ret": _curve[-1][1], "days": len(_curve),
-                "m30": None, "m30_days": 0, "points": len(_curve),
-            }
-            all_rows.append(_row)
-            _by_uid[_mid] = _row
-        _row = _by_uid.get(_mid)
-        if _row is not None and _scurve:
-            _row["season_ret"] = _scurve[-1][1] if len(_scurve) >= 2 else 0.0
-            _row["season_mkt_ret"] = qm if 'qm' in locals() else None
-            _row["season_excess"] = ((_row["season_ret"] - _row["season_mkt_ret"])
-                                      if _row.get("season_mkt_ret") is not None else None)
-            _row["season_days"] = ((_scurve[-1][0] - _scurve[0][0]).days
-                                    if len(_scurve) >= 2 else 0)
-            _row["season_mdd"] = max_drawdown(_scurve) if _scurve else 0.0
-            _row["season_vol"], _row["season_stability"] = _curve_volatility_and_stability(_scurve)
-
     season_scored = [r for r in all_rows
                      if r.get("season_ret") is not None
                      and (r.get("season_days") or 0) >= 1]
-    # 若經理人只有本季第一個有效快照，也仍然列入季榜；此時季內報酬為 0%。
-    _season_manager_rows = [r for r in all_rows
-                            if str(r.get("user_id") or "").strip() in _manager_ids
-                            and r.get("season_ret") is not None]
-    season_scored = [r for r in season_scored if str(r.get("user_id") or "").strip() not in _manager_ids]
-    season_scored.extend(_season_manager_rows)
     boards["season"] = sorted(
         season_scored,
         key=lambda r: r.get("season_ret") if r.get("season_ret") is not None else -1e99,
@@ -8579,10 +8533,15 @@ _TWSE_MIS_BATCH_SIZE = 80
 
 
 def _taiwan_post_close(now=None):
-    """13:30 後才可把官方 MIS 的最後成交價視為當日正式收盤口徑。"""
+    """只有真正的 TWSE 交易日 13:30 後，才把 MIS 最後成交視為當日正式收盤。"""
     current = now if now is not None else taiwan_now()
-    return current.weekday() < 5 and (current.hour > 13 or
-                                      (current.hour == 13 and current.minute >= 30))
+    try:
+        if not is_twse_trading_day(current.date()):
+            return False
+    except Exception:
+        if current.weekday() >= 5:
+            return False
+    return current.hour > 13 or (current.hour == 13 and current.minute >= 30)
 
 
 def _twse_mis_quote_symbols(codes, market_suffix=None):
@@ -8785,6 +8744,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             # 統一使用既有的台灣交易日時鐘；這可避免收盤同步、快取與
             # 官方 MIS／Yahoo 日K 的「今天」判斷在測試或跨時區環境不一致。
             today_date = taiwan_today()
+            market_open_today = is_twse_trading_day(today_date)
             bars = []
             today_raw_index = None
             for i, (ts, c) in enumerate(zip(timestamps, raw_closes)):
@@ -8814,22 +8774,35 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             official_quote = official_quote or (
                 _fetch_twse_mis_quotes([code], {code: suffix}).get(code)
                 if _taiwan_post_close() else None)
-            close = (official_quote.get("close") if official_quote else
-                     meta.get('regularMarketPrice', 0.0))
-            # 官方 MIS 偶爾短暫沒有回傳個別代號；收盤後若 Yahoo 日 K
-            # 已經有今天的最後一根，使用該日 K close，不能退回盤中 meta 價。
-            if (not official_quote and _taiwan_post_close() and bars and
-                    bars[-1][0] == today_date):
-                close = bars[-1][1]
-            if not close or close == 0:
-                close = bars[-1][1] if bars else 0.0
+            if not market_open_today and bars:
+                # 非交易日禁止使用 Yahoo meta regularMarketPrice；只採最新實際交易日K棒。
+                latest_bar = bars[-1]
+                close = latest_bar[1]
+                hist = bars[:-1]
+                prev_close = bars[-2][1] if len(bars) >= 2 else meta.get('chartPreviousClose', close)
+                nontrading_price_date = latest_bar[0]
+                nontrading_high = latest_bar[2]
+                nontrading_low = latest_bar[3]
+                nontrading_volume = latest_bar[4]
+            else:
+                close = (official_quote.get("close") if official_quote else
+                         meta.get('regularMarketPrice', 0.0))
+                if (not official_quote and _taiwan_post_close() and bars and
+                        bars[-1][0] == today_date):
+                    close = bars[-1][1]
+                if not close or close == 0:
+                    close = bars[-1][1] if bars else 0.0
+                nontrading_price_date = None
+                nontrading_high = nontrading_low = nontrading_volume = None
 
             # 判斷「日K序列」最後一筆到底是不是今天：
             # - 是今天 → 昨收 = 倒數第二筆
             # - 還停在昨天（Yahoo 資料還沒更新到今天）→ 倒數第一筆本身才是昨收，
             #   不能再往前抓倒數第二筆，不然會變成抓到前天，算出兩天以上的
             #   累積漲幅，誤標成「當日漲幅」。
-            if official_quote:
+            if not market_open_today and bars:
+                pass
+            elif official_quote:
                 prev_close = official_quote.get("previous_close") or meta.get("chartPreviousClose", close)
                 hist = bars[:-1] if bars and bars[-1][0] == today_date else bars
             elif bars and bars[-1][0] == today_date:
@@ -8883,12 +8856,15 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                     close = float(sticky["close"])
 
             pct = ((close - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
-            high = ((official_quote.get("high") if official_quote else None) or
-                    meta.get('regularMarketDayHigh', close) or close)
-            low = ((official_quote.get("low") if official_quote else None) or
-                   meta.get('regularMarketDayLow', close) or close)
-            volume = ((official_quote.get("volume") if official_quote else None) or
-                      meta.get('regularMarketVolume', 0) or 0)
+            high = (nontrading_high if not market_open_today and nontrading_high is not None else
+                    ((official_quote.get("high") if official_quote else None) or
+                     meta.get('regularMarketDayHigh', close) or close))
+            low = (nontrading_low if not market_open_today and nontrading_low is not None else
+                   ((official_quote.get("low") if official_quote else None) or
+                    meta.get('regularMarketDayLow', close) or close))
+            volume = (nontrading_volume if not market_open_today and nontrading_volume is not None else
+                      ((official_quote.get("volume") if official_quote else None) or
+                       meta.get('regularMarketVolume', 0) or 0))
 
             # --- 位階與量能：判斷「這根K棒站在什麼位置」 ---
             h20 = [b[2] for b in hist[-20:]]
@@ -9016,18 +8992,30 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 "high": float(high),
                 "low": float(low),
                 "volume": int(volume),
-                "source": (official_quote.get("source") if official_quote else
-                           (f"{sticky.get('source') or 'TWSE MIS'}（本次 MIS 暫缺，"
-                            f"沿用今日稍早報價）" if sticky else
-                            ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
-                             if _taiwan_post_close() and bars and bars[-1][0] == today_date
-                             else "Yahoo Finance 日線行情"))),
-                "updated_at": (official_quote.get("updated_at") if official_quote else
-                               (sticky.get("updated_at") if sticky else None)),
-                "close_is_final": bool(official_quote and official_quote.get("close_is_final")),
-                "close_date": (official_quote.get("close_date") if official_quote else
-                               today_date.strftime("%Y%m%d")),
-                "close_time": (official_quote.get("close_time") if official_quote else None),
+                "source": (
+                    f"Yahoo Finance 最近交易日收盤（{nontrading_price_date.strftime('%Y/%m/%d')}）"
+                    if not market_open_today and nontrading_price_date else
+                    (official_quote.get("source") if official_quote else
+                     (f"{sticky.get('source') or 'TWSE MIS'}（本次 MIS 暫缺，"
+                      f"沿用今日稍早報價）" if sticky else
+                      ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
+                       if _taiwan_post_close() and bars and bars[-1][0] == today_date
+                       else "Yahoo Finance 日線行情")))),
+                "updated_at": (
+                    nontrading_price_date.strftime("%Y-%m-%d 13:30:00")
+                    if not market_open_today and nontrading_price_date else
+                    (official_quote.get("updated_at") if official_quote else
+                     (sticky.get("updated_at") if sticky else None))),
+                "close_is_final": bool((not market_open_today and nontrading_price_date) or
+                                        (official_quote and official_quote.get("close_is_final"))),
+                "close_date": (
+                    nontrading_price_date.strftime("%Y%m%d") if not market_open_today and nontrading_price_date else
+                    (official_quote.get("close_date") if official_quote else today_date.strftime("%Y%m%d"))),
+                "close_time": (
+                    "13:30:00" if not market_open_today and nontrading_price_date else
+                    (official_quote.get("close_time") if official_quote else None)),
+                "daily_change_valid": bool(market_open_today),
+                "price_date": (nontrading_price_date if not market_open_today and nontrading_price_date else today_date),
                 "resistance": resistance,
                 "support": support,
                 "support_strength": support_strength,
@@ -9055,7 +9043,9 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 # 對應的日期。畫損益走勢時要靠它標出「你買在哪一天」——
                 # 只有收盤價的話，圖上永遠只能寫「近 N 個交易日」，
                 # 而「什麼時候發生的」正是圖能回答、數字回答不了的問題。
-                "close_dates": [b[0] for b in hist] + [today_date],
+                "close_dates": [b[0] for b in hist] + [
+                    nontrading_price_date if not market_open_today and nontrading_price_date else today_date
+                ],
                 # 逐日高低價，供籌碼分布把當日成交量攤到價格區間。
                 # 只有收盤價的話，整天的量會全部歸在收盤那一格——
                 # 一天內震盪 5% 的標的，位置就會明顯偏掉。
@@ -16755,15 +16745,17 @@ def _macro_metric_box(item):
         change_value = f"{pct:+.2f}%"
         value_color = "#B52F2F" if pct > 0 else ("#087A4B" if pct < 0 else "#767D85")
 
+    # 不再把現值與漲跌塞在同一橫列。LINE Flex 在手機寬度下會把長數字
+    # 截成「51,1…」之類的省略號；改成上下兩行，確保指數完整顯示。
     metric_row = {
-        "type": "box", "layout": "horizontal", "alignItems": "center",
-        "margin": "sm", "contents": [
+        "type": "box", "layout": "vertical", "margin": "sm",
+        "spacing": "xs", "contents": [
             {"type": "text", "text": current_value, "size": "sm",
-             "weight": "bold", "color": "#454C55", "flex": 1,
-             "wrap": False, "maxLines": 1},
-            {"type": "text", "text": change_value, "size": "sm",
-             "weight": "bold", "color": value_color, "align": "end",
-             "flex": 0, "wrap": False, "maxLines": 1},
+             "weight": "bold", "color": "#454C55",
+             "wrap": False, "maxLines": 1, "align": "start"},
+            {"type": "text", "text": change_value, "size": "xs",
+             "weight": "bold", "color": value_color,
+             "wrap": False, "maxLines": 1, "align": "start"},
         ]
     }
     return {
@@ -18232,8 +18224,8 @@ def cron_warmup():
 
 def _warm_current_position_quotes():
     """預熱目前持股主頁需要的 1d 真實行情，直接填入既有90秒快取。"""
-    if taiwan_today().weekday() >= 5:
-        return 0, 0, 0, "週末略過"
+    if not is_twse_trading_day(taiwan_today()):
+        return 0, 0, 0, "休市日略過"
     user_ids = get_all_position_user_ids()
     codes = set()
     for uid in user_ids:
@@ -23052,9 +23044,14 @@ def web_positions(uid):
             # 今日損益金額：用漲跌幅反推昨收，再乘持股數。
             # 直接用「今收 − 昨收」比用市值差可靠——市值差會受到當天
             # 新增或賣出持股影響，那不是股價造成的損益。
-            prev_close = price["close"] / (1 + price["pct"] / 100) if price["pct"] != -100 else price["close"]
-            day_pl = (price["close"] - prev_close) * p["shares"]
-            total_day_pl += day_pl
+            daily_change_valid = bool(price.get("daily_change_valid", is_twse_trading_day(taiwan_today())))
+            if daily_change_valid:
+                prev_close = price["close"] / (1 + price["pct"] / 100) if price["pct"] != -100 else price["close"]
+                day_pl = (price["close"] - prev_close) * p["shares"]
+                total_day_pl += day_pl
+            else:
+                prev_close = None
+                day_pl = None
             net_amt = net_amt if net_amt is not None else (value - cost_total)
             held = ((taiwan_now().date() - p["bought_on"]).days
                     if p["bought_on"] else None)
@@ -23063,8 +23060,10 @@ def web_positions(uid):
                 quote_stamp += "・" + html.escape(str(price.get("updated_at")))
             net_pct_text = fmt_pct(pl)
             gross_pct_text = fmt_pct(gross_pl)
-            day_cls = 'up' if day_pl >= 0 else 'down'
+            day_cls = ('up' if day_pl >= 0 else 'down') if day_pl is not None else 'flat'
             net_cls = 'up' if net_amt >= 0 else 'down'
+            day_pl_text = f"{day_pl:+,.0f}" if day_pl is not None else "—"
+            daily_pct_text = fmt_pct(price["pct"]) if daily_change_valid else "—"
             quote_stamp_safe = quote_stamp
             rows_html.append(f"""
 <article class="position-card" data-position-code="{html.escape(str(p['code']), quote=True)}">
@@ -23075,11 +23074,11 @@ def web_positions(uid):
     </div>
     <div class="position-card-price">
       <b data-position-price="1">{price['close']:,.2f}</b>
-      <span class="{day_cls}" data-position-pct="1">{fmt_pct(price['pct'])}</span>
+      <span class="{day_cls}" data-position-pct="1">{daily_pct_text}</span>
     </div>
   </div>
   <div class="position-card-primary">
-    <div><small>今日損益</small><b class="{day_cls}" data-position-day-pl="1">{day_pl:+,.0f}</b></div>
+    <div><small>{"今日損益" if daily_change_valid else "最新交易日損益"}</small><b class="{day_cls}" data-position-day-pl="1">{day_pl_text}</b></div>
     <div><small>市值</small><b>{value:,.0f}</b></div>
     <div><small>持有報酬</small><b class="{'up' if gross_pl >= 0 else 'down'}">{gross_pct_text}</b></div>
   </div>
@@ -23151,9 +23150,9 @@ def web_positions(uid):
          {total_value - total_cost - total_fee:+,.0f}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
          已扣交易成本 <span class="num">{total_fee:,.0f}</span></div></div>
-  <div><div class="total-label">今日損益</div>
+  <div><div class="total-label">{"今日損益" if is_twse_trading_day(taiwan_today()) else "最新交易日損益"}</div>
        <div class="total-value num {'up' if total_day_pl >= 0 else 'down'}">
-         {total_day_pl:+,.0f}</div>
+         {f"{total_day_pl:+,.0f}" if is_twse_trading_day(taiwan_today()) else "—"}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
          今收 vs 昨收</div></div>
   <div><div class="total-label">持股檔數</div>
@@ -26418,6 +26417,8 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
         if d is None or ret is None:
             continue
         key = str(user_id).strip()
+        if key == "bot:manager_00991a":
+            continue
         bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人"}
         display_name = bot_display_names.get(key) or (nickname or key)
         by_user.setdefault(key, []).append((d, float(ret), display_name))
@@ -26472,7 +26473,8 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
                     continue
                 users.append({"user_id": uid, "nickname": nick, "return_pct": period_ret})
             users.sort(key=lambda x: x['return_pct'], reverse=True)
-            result.append({"period": period, "rows": users[:5]})
+            # 預設顯示 Top 5；其餘完整名單收進可展開區，不再直接丟掉。
+            result.append({"period": period, "rows": users})
         return result
 
     out['months'] = build('month', months)
@@ -26604,16 +26606,23 @@ def web_leaderboard(uid):
     _long_excluded_manager_ids = {
         "bot:yaochi_00981a",
         "bot:manager_00403a",
+        "bot:manager_00991a",  # 舊版殘留資料，不再是現行經理人
     }
+    # 舊快照可能殘留已停用的 00991A 經理人；任何榜單顯示都要徹底排除。
+    _disabled_bot_ids = {"bot:manager_00991a"}
     _long_rows = [
         r for r in (all_boards.get("long") or [])
         if str((r or {}).get("user_id") or "").strip() not in _long_excluded_manager_ids
     ]
+    def _filter_disabled_bots(rows):
+        return [r for r in (rows or [])
+                if str((r or {}).get("user_id") or "").strip() not in _disabled_bot_ids]
+
     boards = {
-        "long": _normalise_bot_names(_dedup_board(_long_rows[:100])[:20]),
-        "short": _normalise_bot_names(_dedup_board((all_boards.get("short") or [])[:100])[:20]),
-        "season": _normalise_bot_names(_dedup_board((all_boards.get("season") or [])[:100])[:20]),
-        "waiting": _normalise_bot_names(_dedup_board(all_boards.get("waiting") or [])),
+        "long": _normalise_bot_names(_dedup_board(_filter_disabled_bots(_long_rows[:100]))[:20]),
+        "short": _normalise_bot_names(_dedup_board(_filter_disabled_bots((all_boards.get("short") or [])[:100]))[:20]),
+        "season": _normalise_bot_names(_dedup_board(_filter_disabled_bots((all_boards.get("season") or [])[:100]))[:20]),
+        "waiting": _normalise_bot_names(_dedup_board(_filter_disabled_bots(all_boards.get("waiting") or []))),
     }
     month_rows, month_info = _build_current_month_board(all_boards, series_map, market)
     season_info = all_boards.get("season_info") or leaderboard_season_info()
@@ -26633,16 +26642,13 @@ def web_leaderboard(uid):
         _sitem = series_map.get(_mid) or {}
         _curve = _sitem.get("curve") if isinstance(_sitem, dict) else _sitem
         _scurve = _rebase_period_curve(_curve, start_date=season_info["start"])
-        if not _scurve:
-            # 本季尚未產生曲線時，仍保留經理人席位；首個有效快照視為季賽起點。
-            _scurve = [(_curve[-1][0], 0.0)] if _curve else [(season_info["start"], 0.0)]
+        if len(_scurve) < 2:
+            continue
         _season_rows.append({
             "user_id": _mid,
             "nickname": _manager_names[_mid],
-            # 00981A、00403A 都是主動 ETF 經理人，均各自持有 1 檔 ETF。
-            # 舊版這裡把 00403A 寫成 0，導致排行榜顯示「持股 0 檔」。
-            "holdings": 1,
-            "etf_holdings": 1,
+            "holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
+            "etf_holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
             "joined": _curve[0][0] if _curve else season_info["start"],
             "show": True, "detail": None,
             "ret": _curve[-1][1], "m30": None, "days": len(_curve), "m30_days": 0,
@@ -27411,18 +27417,22 @@ def web_leaderboard(uid):
 .settlement-wrap{margin:0 0 18px;padding:16px;border:1px solid #d8c28d;border-radius:20px;background:linear-gradient(145deg,#fff8dd,#fffdf7);box-shadow:0 8px 22px rgba(120,95,35,.08)}
 .settlement-kicker{font-size:9px;letter-spacing:.18em;color:#9a7736;font-weight:900}.settlement-wrap h2{margin:5px 0 4px}.settlement-wrap>p{margin:0 0 12px;color:#766a55;font-size:12px;line-height:1.6}
 .settlement-report-card{border:1px solid #e4d2a5;border-radius:16px;background:#fffef8;padding:14px;margin-top:10px}.settlement-report-top{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d6538;font-weight:900}.settlement-report-top small{color:#8b8f98;font-weight:600}.settlement-report-title{margin-top:12px;font-size:15px;display:flex;align-items:center;gap:5px}.settlement-report-title b{font-size:12px;color:#7c8796;font-weight:700}.settlement-report-title em{margin-left:auto;font-style:normal;color:#9a8a6d;font-size:10.5px}.scorecard-rank{font-size:20px;font-weight:950;color:#18263a}.settlement-report-main{text-align:center;padding:9px 0 11px}.settlement-report-main strong{display:block;font-size:34px;line-height:1.05;font-weight:950}.settlement-report-main span{display:block;margin-top:5px;color:#7b8591;font-size:12px}.settlement-report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.settlement-report-grid div{padding:9px;border-radius:11px;background:#faf8f0;border:1px solid #eee6d5}.settlement-report-grid small{display:block;color:#7f8997;font-size:10.5px}.settlement-report-grid b{display:block;margin-top:3px;font-size:17px}.settlement-report-grid span{display:block;margin-top:2px;color:#9aa1aa;font-size:9.5px}.settlement-report-period{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding:9px 10px;border-radius:10px;background:#fbf8ef;color:#8a7b60;font-size:10.5px}.settlement-report-period b{color:#5d6570;font-size:10.5px}.settlement-report-foot{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #eee6d5;color:#7b8794;font-size:10.5px}.scorecard-chart{margin:4px 0 12px;padding:10px 10px 7px;border:1px solid #e8edf2;border-radius:12px;background:#fbfcfd}.scorecard-chart-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;color:#344255;font-size:11px}.scorecard-chart-head span{color:#8b97a5;font-weight:600}.scorecard-chart svg{display:block;width:100%;height:auto}.scorecard-chart-legend{display:flex;gap:14px;justify-content:flex-end;color:#8b97a5;font-size:9.5px}.scorecard-chart-legend span{display:flex;align-items:center;gap:4px}.scorecard-chart-legend i{display:inline-block;width:15px;height:3px;border-radius:3px}.legend-user{background:#1769aa}.legend-market{background:#a7b0ba}.scorecard-chart-empty{margin:4px 0 12px;padding:22px 10px;text-align:center;border:1px dashed #dfe5eb;border-radius:12px;color:#8b97a5;font-size:11px;background:#fbfcfd}
-.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>"""
+.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}.history-more{border-top:1px solid rgba(120,130,140,.12)}.history-more summary{padding:10px 12px;color:#2d6fa3;font-weight:700;cursor:pointer;list-style:none}.history-more summary::-webkit-details-marker{display:none}.history-more summary span{font-weight:500;color:var(--ink-faint)}.history-more[open] summary{background:var(--paper-2,#f7f3ea)}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
     def render_history_table(items, empty_text):
         if not items: return f'<div class="empty">{empty_text}</div>'
         blocks=[]
         for item in items:
-            rows=[]
-            for i,r in enumerate(item['rows'],1):
+            all_rows = item['rows'] or []
+            def _history_row(i, r):
                 cls='up' if r['return_pct']>=0 else 'down'
-                rows.append(f'<div class="history-rank-row"><span class="history-rank">{i}</span><span class="history-name">{safe_html_text(r["nickname"])}</span><b class="num {cls}">{r["return_pct"]:+.2f}%</b></div>')
-            blocks.append(f'<div class="history-period"><div class="history-period-head"><b>{html.escape(item["period"])}</b><span>Top 5</span></div>{"".join(rows) or "<div class=history-empty>資料不足</div>"}</div>')
+                return f'<div class="history-rank-row"><span class="history-rank">{i}</span><span class="history-name">{safe_html_text(r["nickname"])}</span><b class="num {cls}">{r["return_pct"]:+.2f}%</b></div>'
+            top_rows = ''.join(_history_row(i, r) for i, r in enumerate(all_rows[:5], 1))
+            rest_rows = ''.join(_history_row(i, r) for i, r in enumerate(all_rows[5:], 6))
+            rest_html = (f'<details class="history-more"><summary>其餘 {len(all_rows[5:])} 名　<span>展開完整排名</span></summary>{rest_rows}</details>'
+                         if len(all_rows) > 5 else '')
+            blocks.append(f'<div class="history-period"><div class="history-period-head"><b>{html.escape(item["period"])}</b><span>完整榜單</span></div>{top_rows or "<div class=history-empty>資料不足</div>"}{rest_html}</div>')
         return '<div class="history-grid">'+''.join(blocks)+'</div>'
     history_html = f"""<section class="leaderboard-history" id="leaderboard-history">
   <div class="section-head"><h2>📚 歷史排行榜</h2><span class="section-note">已結算才會封存</span></div>
@@ -30743,10 +30753,14 @@ def _screener_source_date():
 
 
 def _is_taiwan_intraday_window(now=None):
-    """判斷台股平日一般盤中時段；週末與盤前／盤後走收盤快照。"""
+    """判斷真正台股交易日的一般盤中時段；休市日一律不視為盤中。"""
     now = now or taiwan_now()
     minutes = now.hour * 60 + now.minute
-    return (now.weekday() < 5 and 9 * 60 <= minutes <= 13 * 60 + 30)
+    try:
+        trading_day = is_twse_trading_day(now.date())
+    except Exception:
+        trading_day = now.weekday() < 5
+    return bool(trading_day and 9 * 60 <= minutes <= 13 * 60 + 30)
 
 
 def _screener_snapshot_valid_for_today(snapshot):
