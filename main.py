@@ -25774,7 +25774,7 @@ def render_realized_summary(user_id, inst_data, summary_label="已實現損益",
 # 組合走勢：每日快照 vs 大盤
 # ============================================================
 def render_portfolio_allocation_chart(holdings):
-    'v192：個股組合熱力地圖。面積＝持股權重；顏色＝今日漲跌。'
+    '個股組合熱力地圖：面積＝持股權重、顏色＝今日漲跌。'
     valid=[]
     for holding in holdings or []:
         try: value=float(holding.get("value"))
@@ -25783,88 +25783,85 @@ def render_portfolio_allocation_chart(holdings):
         try:
             pct=float((holding.get("price") or {}).get("pct"))
             if not math.isfinite(pct): pct=None
-        except (TypeError,ValueError):
-            pct=None
+        except (TypeError,ValueError): pct=None
         valid.append((holding,value,pct))
     if not valid:
-        return '<section class="portfolio-chart-card" id="portfolio-allocation"><div class="section-head"><h2>組合配置</h2><span class="section-note">面積＝權重</span></div><div class="empty">目前沒有足夠的有效價格資料，暫時無法繪製配置圖。</div></section>'
+        return '<section class="portfolio-chart-card" id="portfolio-allocation"><div class="section-head"><h2>組合配置</h2><span class="section-note">面積＝權重・顏色＝今日漲跌</span></div><div class="empty">目前沒有足夠的有效價格資料，暫時無法繪製配置圖。</div></section>'
     valid.sort(key=lambda x:x[1],reverse=True)
     total=sum(v for _,v,_ in valid)
     items=valid[:8]
     if len(valid)>8:
         items.append(({"name":"其他持股","code":"__other__"},sum(v for _,v,_ in valid[8:]),None))
+    entries=[{"idx":i,"item":item,"value":value,"pct":pct,"area":(value/total)*10000} for i,(item,value,pct) in enumerate(items)]
     rects=[]
-    def split(entries,x,y,w,h,horizontal=True):
-        if not entries:return
-        if len(entries)==1:
-            i,item,value,pct=entries[0];rects.append((i,item,value,pct,x,y,w,h));return
-        subtotal=sum(value for _,_,value,_ in entries)
-        first_n=max(1,min(len(entries)-1,round(len(entries)*0.45)))
-        first,rest=entries[:first_n],entries[first_n:]
-        ratio=sum(value for _,_,value,_ in first)/subtotal if subtotal else .5
-        if horizontal:
-            w1=w*ratio;split(first,x,y,w1,h,False);split(rest,x+w1,y,w-w1,h,False)
-        else:
-            h1=h*ratio;split(first,x,y,w,h1,True);split(rest,x,y+h1,w,h-h1,True)
-    split([(i,item,value,pct) for i,(item,value,pct) in enumerate(items)],0,0,100,100,True)
-
+    def worst(row,side):
+        if not row or side<=0:return float("inf")
+        a=[z["area"] for z in row]; total_a=sum(a)
+        return max((side*side*max(a))/(total_a*total_a),(total_a*total_a)/(side*side*min(a)))
+    def layout_row(row,x,y,w,h):
+        area=sum(z["area"] for z in row)
+        if w>=h:
+            rh=area/w if w else 0;cur=x
+            for z in row:
+                rw=z["area"]/rh if rh else 0
+                rects.append((z["idx"],z["item"],z["value"],z["pct"],cur,y,rw,rh));cur+=rw
+            return x,y+rh,w,max(0,h-rh)
+        rw=area/h if h else 0;cur=y
+        for z in row:
+            rh=z["area"]/rw if rw else 0
+            rects.append((z["idx"],z["item"],z["value"],z["pct"],x,cur,rw,rh));cur+=rh
+        return x+rw,y,max(0,w-rw),h
+    def squarify(pool,x,y,w,h):
+        if not pool or w<=0 or h<=0:return
+        side=min(w,h);row=[];rest=list(pool)
+        while rest:
+            c=rest[0]
+            if not row or worst(row+[c],side)<=worst(row,side):
+                row.append(c);rest.pop(0)
+            else:
+                x,y,w,h=layout_row(row,x,y,w,h);side=min(w,h);row=[]
+        if row:layout_row(row,x,y,w,h)
+    squarify(entries,0,0,100,100)
+    rects.sort(key=lambda z:z[0])
     def tile_color(pct,is_other=False):
-        if is_other or pct is None:return "#A9B2B8"
-        if pct>0.15:return "#B52A2A"
-        if pct>0:return "#D65A52"
-        if pct<-0.15:return "#3F9B62"
-        if pct<0:return "#78B887"
-        return "#A9B2B8"
-
-    svg=[];tile_meta=[]
+        if is_other or pct is None:return "#AEB7BD"
+        strength=min(1.0,abs(pct)/8.0)
+        if pct>0:return "#D84A45" if strength<.35 else "#C92F2F" if strength<.7 else "#B82024"
+        if pct<0:return "#73BE83" if strength<.35 else "#52A968" if strength<.7 else "#359455"
+        return "#AEB7BD"
+    svg=[]
     for i,item,value,pct,x,y,w,h in rects:
         weight=value/total*100 if total else 0
         code=str(item.get("code") or "")
         name=str(item.get("name") or code or "其他持股")
         label=(name+" "+code).strip()
-        is_other=code=="__other__"
-        show_name=w>=14 and h>=12
-        show_detail=w>=23 and h>=20
-        safe_name=html.escape(name if len(name)<=9 else name[:8]+"…")
+        is_other=code=="__other__";fill=tile_color(pct,is_other)
         pct_text=f"{pct:+.2f}%" if pct is not None else "—"
-        fill=tile_color(pct,is_other)
+        show_name=w>=15 and h>=10;show_weight=w>=20 and h>=16;show_change=w>=24 and h>=24
+        safe_name=html.escape(name if len(name)<=8 else name[:7]+"…")
         text_parts=[]
-        if show_name:
-            text_parts.append(f'<text x="{x+2.2:.2f}" y="{y+7.4:.2f}" class="allocation-tile-name">{safe_name}</text>')
-        if show_detail:
-            text_parts.append(f'<text x="{x+2.2:.2f}" y="{y+14.6:.2f}" class="allocation-tile-weight">{weight:.1f}%</text>')
-            text_parts.append(f'<text x="{x+2.2:.2f}" y="{y+21.4:.2f}" class="allocation-tile-change">{html.escape(pct_text)}</text>')
-        elif show_name:
-            text_parts.append(f'<text x="{x+2.2:.2f}" y="{y+14.2:.2f}" class="allocation-tile-weight">{weight:.1f}%</text>')
-        svg.append(f'<g class="allocation-tile" data-alloc-index="{i}" tabindex="0" role="button" aria-label="{html.escape(label)}，權重 {weight:.1f}%，今日 {html.escape(pct_text)}"><rect x="{x+0.35:.2f}" y="{y+0.35:.2f}" width="{max(0,w-0.7):.2f}" height="{max(0,h-0.7):.2f}" rx="2.2" fill="{fill}"/>{"".join(text_parts)}</g>')
-        tile_meta.append(f'<button type="button" class="allocation-mobile-detail" data-alloc-index="{i}" aria-label="{html.escape(label)}"><span class="allocation-mobile-rank">{i+1:02d}</span><span><b>{html.escape(label)}</b><small>{weight:.1f}%</small></span><strong>{html.escape(pct_text)}</strong></button>')
-
+        if show_name:text_parts.append(f'<text x="{x+2:.2f}" y="{y+6.5:.2f}" class="allocation-tile-name">{safe_name}</text>')
+        if show_weight:text_parts.append(f'<text x="{x+2:.2f}" y="{y+13:.2f}" class="allocation-tile-weight">{weight:.1f}%</text>')
+        if show_change:text_parts.append(f'<text x="{x+2:.2f}" y="{y+19.8:.2f}" class="allocation-tile-change">{html.escape(pct_text)}</text>')
+        svg.append(f'<g class="allocation-tile" data-alloc-index="{i}" tabindex="0" role="button" aria-label="{html.escape(label)}，權重 {weight:.1f}%，今日 {html.escape(pct_text)}"><rect x="{x+.45:.2f}" y="{y+.45:.2f}" width="{max(0,w-.9):.2f}" height="{max(0,h-.9):.2f}" rx="2" fill="{fill}"/>{"".join(text_parts)}</g>')
     css='''<style>
 .portfolio-chart-card{background:#fff;border:1px solid #dce6ee;border-radius:22px;padding:18px 14px;margin:16px 0;box-shadow:0 8px 24px rgba(39,76,119,.06)}
 .portfolio-chart-card .section-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:5px}
 .portfolio-chart-card h2{margin:0;font-size:24px;color:#162b42}
 .portfolio-chart-note{margin:7px 0 13px;color:#64788d;font-size:12px;line-height:1.6}
-.portfolio-allocation-visual{background:#f1f4f5;border:1px solid #dbe2e5;border-radius:20px;padding:7px;overflow:hidden}
-.portfolio-allocation-svg{width:100%;height:auto;aspect-ratio:1.18;display:block}
+.portfolio-allocation-visual{background:#f3f6f7;border:1px solid #dbe2e5;border-radius:20px;padding:6px;overflow:hidden}
+.portfolio-allocation-svg{width:100%;height:auto;aspect-ratio:1.12;display:block}
 .allocation-tile{cursor:pointer;outline:none}
-.allocation-tile rect{stroke:#fff;stroke-width:1.25;transition:opacity .14s,filter .14s,stroke-width .14s}
-.allocation-tile:hover rect,.allocation-tile.active rect,.allocation-tile:focus rect{filter:brightness(1.04);stroke:#fff;stroke-width:2.1}
-.allocation-tile.dim{opacity:.25}
-.allocation-tile-name{font-size:5.3px;font-weight:900;fill:#fff;pointer-events:none;paint-order:stroke;stroke:rgba(0,0,0,.14);stroke-width:.7}
-.allocation-tile-weight{font-size:4.4px;font-weight:850;fill:#fff;pointer-events:none}
-.allocation-tile-change{font-size:4.2px;font-weight:850;fill:#fff;pointer-events:none}
-.portfolio-allocation-mobile-details{display:none}
-.allocation-mobile-detail{border:1px solid #e1e7ea;background:#fff;border-radius:12px;padding:9px 10px;text-align:left;display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:7px;align-items:center;font:inherit;color:#182b3e;cursor:pointer}
-.allocation-mobile-detail b{display:block;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.allocation-mobile-detail small{display:block;color:#7b8b98;font-size:10px;margin-top:2px}
-.allocation-mobile-detail strong{font-size:12px;font-variant-numeric:tabular-nums}
-.allocation-mobile-detail.active{border-color:#9c7540;background:#fbf4e8;box-shadow:none}
-.allocation-mobile-detail.dim{opacity:.32}
-.allocation-mobile-rank{color:#8b9aa6;font-size:10px;font-weight:900}
-.portfolio-allocation-hover{margin-top:8px;padding:8px 11px;border:1px solid #e0e7ec;border-radius:11px;background:#f8fafb;color:#536b80;font-size:11px;display:flex;justify-content:space-between;gap:10px}
-.portfolio-allocation-hover b{color:#8b6a38;font-size:13px}
+.allocation-tile rect{stroke:#fff;stroke-width:1.45;transition:opacity .14s,filter .14s,stroke-width .14s}
+.allocation-tile:hover rect,.allocation-tile.active rect,.allocation-tile:focus rect{filter:brightness(1.03);stroke:#F0C36A;stroke-width:2.2}
+.allocation-tile.dim{opacity:.22}
+.allocation-tile-name{font-size:5px;font-weight:900;fill:#fff;pointer-events:none;paint-order:stroke;stroke:rgba(0,0,0,.16);stroke-width:.65}
+.allocation-tile-weight{font-size:4px;font-weight:850;fill:#fff;pointer-events:none}
+.allocation-tile-change{font-size:3.8px;font-weight:850;fill:#fff;pointer-events:none}
+.portfolio-allocation-hover{margin-top:9px;padding:9px 11px;border:1px solid #e0e7ec;border-radius:11px;background:#f8fafb;color:#536b80;font-size:11px;display:flex;justify-content:space-between;gap:10px}
+.portfolio-allocation-hover b{color:#9B6D24;font-size:13px}
 .portfolio-chart-footnote{margin-top:8px;color:#8292a1;font-size:10px;line-height:1.5}
-@media(max-width:700px){.portfolio-chart-card{padding:15px 10px;border-radius:18px}.portfolio-chart-card h2{font-size:22px}.portfolio-allocation-visual{padding:5px;border-radius:16px}.portfolio-allocation-svg{aspect-ratio:1.08}.portfolio-allocation-mobile-details{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:7px}}
+@media(max-width:700px){.portfolio-chart-card{padding:15px 10px;border-radius:18px}.portfolio-chart-card h2{font-size:22px}.portfolio-allocation-visual{padding:5px;border-radius:16px}.portfolio-allocation-svg{aspect-ratio:1.05}}
 </style>'''
     js='''<script>
 (function(){
@@ -25872,19 +25869,28 @@ def render_portfolio_allocation_chart(holdings):
   if(!root||root.dataset.bound==='1')return;
   root.dataset.bound='1';
   var tiles=[].slice.call(root.querySelectorAll('.allocation-tile'));
-  var details=[].slice.call(root.querySelectorAll('.allocation-mobile-detail'));
   var hn=root.querySelector('#allocation-hover-name'),hv=root.querySelector('#allocation-hover-value');
-  function clear(){tiles.forEach(function(x){x.classList.remove('active','dim')});details.forEach(function(x){x.classList.remove('active','dim')});if(hn)hn.textContent='全部持股';if(hv)hv.textContent='點擊個股查看'}
-  function focus(i){tiles.forEach(function(x,n){x.classList.toggle('active',n===i);x.classList.toggle('dim',n!==i)});details.forEach(function(x,n){x.classList.toggle('active',n===i);x.classList.toggle('dim',n!==i)});var el=details[i];if(!el)return;var b=el.querySelector('b'),st=el.querySelector('strong');if(hn)hn.textContent=b?b.textContent:'個股';if(hv)hv.textContent=st?st.textContent:''}
-  function bind(el){el.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();var i=Number(el.dataset.allocIndex);if(el.classList.contains('active'))clear();else focus(i)});el.addEventListener('mouseenter',function(){focus(Number(el.dataset.allocIndex))});el.addEventListener('mouseleave',clear);el.addEventListener('focus',function(){focus(Number(el.dataset.allocIndex))});el.addEventListener('blur',clear)}
-  tiles.forEach(bind);details.forEach(bind);
+  function clear(){tiles.forEach(function(x){x.classList.remove('active','dim')});if(hn)hn.textContent='全部持股';if(hv)hv.textContent='點擊個股查看'}
+  function focus(i){
+    tiles.forEach(function(x,n){x.classList.toggle('active',n===i);x.classList.toggle('dim',n!==i)});
+    var el=tiles[i];if(!el)return;var label=el.getAttribute('aria-label')||'個股';
+    if(hn)hn.textContent=label.split('，')[0]||'個股';
+    if(hv)hv.textContent=label.split('，').slice(1).join('，')||'';
+  }
+  function bind(el){
+    el.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();var i=Number(el.dataset.allocIndex);if(el.classList.contains('active'))clear();else focus(i)});
+    el.addEventListener('mouseenter',function(){focus(Number(el.dataset.allocIndex))});
+    el.addEventListener('mouseleave',clear);
+    el.addEventListener('focus',function(){focus(Number(el.dataset.allocIndex))});
+    el.addEventListener('blur',clear);
+  }
+  tiles.forEach(bind);
 })();
 </script>'''
     return css+f'''<section class="portfolio-chart-card" id="portfolio-allocation">
 <div class="section-head"><h2>組合配置</h2><span class="section-note">面積＝持股權重・顏色＝今日漲跌</span></div>
-<p class="portfolio-chart-note">越大的區塊代表持股越重；紅色代表上漲、綠色代表下跌。點擊個股只會在圖上高亮，不會跳頁。</p>
+<p class="portfolio-chart-note">區塊越大代表持股越重；紅色代表上漲、綠色代表下跌。點擊個股只會高亮，不會跳頁。</p>
 <div class="portfolio-allocation-visual"><svg class="portfolio-allocation-svg" viewBox="0 0 100 100" role="img" aria-label="個股組合熱力地圖">{''.join(svg)}</svg></div>
-<div class="portfolio-allocation-mobile-details">{''.join(tile_meta)}</div>
 <div class="portfolio-allocation-hover"><span id="allocation-hover-name">全部持股</span><b id="allocation-hover-value">點擊個股查看</b></div>
 <div class="portfolio-chart-footnote">面積代表目前組合權重；顏色代表今日股價變化。</div>
 </section>{js}'''
@@ -34019,10 +34025,14 @@ function bindFactors(){
     if(!drawer.classList.contains('open'))return false;
     /* v191：關閉只操作既有 DOM；短暫禁止 visibility/quote refresh，避免 iOS 關閉時又觸發 render。 */
     state.closingDrawer=true;
+    if(state.timer){clearInterval(state.timer);state.timer=null;}
     drawer.classList.remove('open');drawer.setAttribute('aria-hidden','true');if(mask)mask.hidden=true;
     var detail=document.getElementById('wb-detail');if(detail)detail.innerHTML='';
     restoreWorkbenchScroll();
-    window.setTimeout(function(){state.closingDrawer=false;},700);
+    window.setTimeout(function(){
+      state.closingDrawer=false;
+      if(state.marketOpen && !document.hidden && !state.timer) state.timer=setInterval(updateQuotes,15000);
+    },700);
     return false;
   }
   document.getElementById('wb-close').onclick=function(e){return closeDrawer(e);};
@@ -34034,7 +34044,9 @@ function bindFactors(){
     e.preventDefault();e.stopPropagation();if(e.stopImmediatePropagation)e.stopImmediatePropagation();
     if(!state.closingDrawer)closeDrawer(e);
   },true);
-  document.addEventListener('visibilitychange',function(){if(!document.hidden&&!state.closingDrawer)updateQuotes();});load();
+  /* v193：關閉詳細頁不得觸發重新抓價／render；盤中更新只由既有 timer 負責。 */
+  document.addEventListener('visibilitychange',function(){});
+  load();
 })();
 </script>'''
     body += ''''''
