@@ -29647,36 +29647,6 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     else:
         close_sync_note = "盤中行情會隨市場更新；收盤後切換至官方最後成交／市撮價。"
 
-    # 首頁不要在最後階段重新抓一輪台指期／美股。前面的共享資料已經提供市場資料；
-    # 重複呼叫 _current_market() 會把首頁判讀拖到十幾秒，外部 API 異常時更嚴重。
-    market_focus_items = []
-    market_focus_definitions = [
-        ("taiex_night", "台指期夜盤"),
-        ("^DJI", "道瓊"),
-        ("^IXIC", "那斯達克"),
-        ("^GSPC", "S&P 500"),
-        ("^SOX", "費城半導體"),
-    ]
-    market_focus_market = display_snapshot.get("market", {})
-    night_date_text = market_focus_market.get("taiex_night_date")
-    night_fresh = False
-    if night_date_text:
-        try:
-            night_date = date.fromisoformat(str(night_date_text).replace("/", "-")[:10])
-            night_fresh = night_date == _latest_taifex_night_data_date(calendar_today)
-        except (TypeError, ValueError):
-            night_fresh = False
-    for key, label in market_focus_definitions:
-        value = market_focus_market.get("taiex_night_pct" if key == "taiex_night" else f"{key}_pct")
-        if key == "taiex_night" and not night_fresh:
-            value = None
-        if value is not None:
-            try:
-                cls = "up" if float(value) > 0 else "down" if float(value) < 0 else "flat"
-            except (TypeError, ValueError):
-                cls = "flat"
-            market_focus_items.append(f'<span><b>{html.escape(label)}</b><strong class="{cls}">{fmt_pct(value)}</strong></span>')
-    market_focus_html = ''.join(market_focus_items) or '<span>國際盤勢資料尚未更新</span>'
     portfolio_pct_class = "up" if (portfolio_pct or 0) > 0 else "down" if (portfolio_pct or 0) < 0 else "flat"
     pl_class = "up" if (pl_total or 0) > 0 else "down" if (pl_total or 0) < 0 else "flat"
 
@@ -30107,10 +30077,6 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   </section>
   {position_journal_html}
   <!-- 首頁精簡：雷達／智慧黑馬保留在「選股」頁，不在今日首頁重複展示。 -->
-  <section class="daily-card home-market-focus">
-    <div class="daily-section-title"><div><h2>🌎 今日市場焦點</h2><span>國際 → 台股 · 掌握關鍵影響</span></div><a href="/web/premarket">查看完整簡報 →</a></div>
-    <div class="home-us-list">{market_focus_html}</div>
-  </section>
   <details class="home-detail-collapse"><summary>查看完整組合判讀 →</summary>{home_judgement_html}</details>
   {home_intraday_script}
 </div>'''
@@ -33929,6 +33895,7 @@ function bindFactors(){
     if(target==='策略研究'){state.source='策略研究';render();initialTab='';return;}
 
     // 黑馬與其他所有快照同時發出請求；黑馬完成後立即把首屏畫出來。
+    var loadViewEpoch = state.viewEpoch||0;
     var blackHorse = fetchWorkbenchSource('黑馬');
     workbenchSources.filter(function(source){return source!=='黑馬';}).forEach(function(source){fetchWorkbenchSource(source);});
     requestReview();
@@ -33944,7 +33911,7 @@ function bindFactors(){
         note.textContent='最近黑馬快照暫時無法取得，其他資料來源仍可使用。';
         rowsEl.innerHTML='<div class="wb-empty"><b>黑馬快照暫時無法載入</b><small>可能是資料庫或快照服務短暫延遲；不影響其他選股分頁。</small></div>';
         renderTabs();
-        render();
+        if(loadViewEpoch===(state.viewEpoch||0)&&!state.detailOpen&&!state.closingDrawer) render();
         if(window.stockBotFinishPageLoading) window.stockBotFinishPageLoading();
         initialTab='';
         return;
@@ -33965,7 +33932,7 @@ function bindFactors(){
       if(target && target!=='黑馬' && target!=='成效' && target!=='我的排行' && target!=='策略研究'){
         state.source=target;
         if(target==='ETF')state.assetMode='etf';
-        render();
+        if(loadViewEpoch===(state.viewEpoch||0)&&!state.detailOpen&&!state.closingDrawer) render();
       }
       initialTab='';
     });
@@ -33978,7 +33945,7 @@ function bindFactors(){
           state.assetMode=(source==='ETF'?'etf':'stock');
           initialTab='';
         }
-        if(state.source===source) render();
+        if(state.source===source && loadViewEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer) render();
       });
     });
   }
