@@ -4537,6 +4537,7 @@ def sell_position_all(user_id, code, sell_price=None, fee=None, tax=None,
                               sell_reason=sell_reason)
 
 
+
 def normalize_sell_reason(raw):
     """只接受清單內的值，其餘一律視為未填，避免髒資料進資料庫。"""
     v = str(raw or "").strip()
@@ -8145,9 +8146,54 @@ def _augment_leaderboard_period_metrics(boards, series_map, market):
             r["days"] = ((long_curve[-1][0] - long_curve[0][0]).days
                           if len(long_curve) >= 2 else 0)
 
+    # 經理人屬於正式季賽參賽者。即使本季目前只有 1 個有效快照，
+    # 也不能因 season_days < 1 就把經理人排除；以目前快照的累計報酬作為季內起點，
+    # season_ret 為 0，等下一個交易日再更新。
+    _manager_ids = {"bot:yaochi_00981a", "bot:manager_00403a"}
+    _manager_names = {
+        "bot:yaochi_00981a": "瑤池金母｜00981A 經理人",
+        "bot:manager_00403a": "張哲瑋｜00403A 經理人",
+    }
+    _by_uid = {str(r.get("user_id") or "").strip(): r for r in all_rows}
+    for _mid in _manager_ids:
+        _item = series_map.get(_mid) or {}
+        _curve = _item.get("curve") if isinstance(_item, dict) else _item
+        _curve = _curve or []
+        _scurve = _rebase_period_curve(_curve, start_date=season_start)
+        if _mid not in _by_uid and _scurve:
+            _row = {
+                "user_id": _mid,
+                "nickname": _manager_names[_mid],
+                "show": True, "is_bot": False, "is_manager": True,
+                "bot_mode": _mid.replace("bot:", ""),
+                "holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
+                "etf_holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
+                "joined": _curve[0][0],
+                "ret": _curve[-1][1], "days": len(_curve),
+                "m30": None, "m30_days": 0, "points": len(_curve),
+            }
+            all_rows.append(_row)
+            _by_uid[_mid] = _row
+        _row = _by_uid.get(_mid)
+        if _row is not None and _scurve:
+            _row["season_ret"] = _scurve[-1][1] if len(_scurve) >= 2 else 0.0
+            _row["season_mkt_ret"] = qm if 'qm' in locals() else None
+            _row["season_excess"] = ((_row["season_ret"] - _row["season_mkt_ret"])
+                                      if _row.get("season_mkt_ret") is not None else None)
+            _row["season_days"] = ((_scurve[-1][0] - _scurve[0][0]).days
+                                    if len(_scurve) >= 2 else 0)
+            _row["season_mdd"] = max_drawdown(_scurve) if _scurve else 0.0
+            _row["season_vol"], _row["season_stability"] = _curve_volatility_and_stability(_scurve)
+
     season_scored = [r for r in all_rows
                      if r.get("season_ret") is not None
                      and (r.get("season_days") or 0) >= 1]
+    # 若經理人只有本季第一個有效快照，也仍然列入季榜；此時季內報酬為 0%。
+    _season_manager_rows = [r for r in all_rows
+                            if str(r.get("user_id") or "").strip() in _manager_ids
+                            and r.get("season_ret") is not None]
+    season_scored = [r for r in season_scored if str(r.get("user_id") or "").strip() not in _manager_ids]
+    season_scored.extend(_season_manager_rows)
     boards["season"] = sorted(
         season_scored,
         key=lambda r: r.get("season_ret") if r.get("season_ret") is not None else -1e99,
@@ -8533,15 +8579,10 @@ _TWSE_MIS_BATCH_SIZE = 80
 
 
 def _taiwan_post_close(now=None):
-    """只有真正的 TWSE 交易日 13:30 後，才把 MIS 最後成交視為當日正式收盤。"""
+    """13:30 後才可把官方 MIS 的最後成交價視為當日正式收盤口徑。"""
     current = now if now is not None else taiwan_now()
-    try:
-        if not is_twse_trading_day(current.date()):
-            return False
-    except Exception:
-        if current.weekday() >= 5:
-            return False
-    return current.hour > 13 or (current.hour == 13 and current.minute >= 30)
+    return current.weekday() < 5 and (current.hour > 13 or
+                                      (current.hour == 13 and current.minute >= 30))
 
 
 def _twse_mis_quote_symbols(codes, market_suffix=None):
@@ -8744,7 +8785,6 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             # 統一使用既有的台灣交易日時鐘；這可避免收盤同步、快取與
             # 官方 MIS／Yahoo 日K 的「今天」判斷在測試或跨時區環境不一致。
             today_date = taiwan_today()
-            market_open_today = is_twse_trading_day(today_date)
             bars = []
             today_raw_index = None
             for i, (ts, c) in enumerate(zip(timestamps, raw_closes)):
@@ -8774,35 +8814,22 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             official_quote = official_quote or (
                 _fetch_twse_mis_quotes([code], {code: suffix}).get(code)
                 if _taiwan_post_close() else None)
-            if not market_open_today and bars:
-                # 非交易日禁止使用 Yahoo meta regularMarketPrice；只採最新實際交易日K棒。
-                latest_bar = bars[-1]
-                close = latest_bar[1]
-                hist = bars[:-1]
-                prev_close = bars[-2][1] if len(bars) >= 2 else meta.get('chartPreviousClose', close)
-                nontrading_price_date = latest_bar[0]
-                nontrading_high = latest_bar[2]
-                nontrading_low = latest_bar[3]
-                nontrading_volume = latest_bar[4]
-            else:
-                close = (official_quote.get("close") if official_quote else
-                         meta.get('regularMarketPrice', 0.0))
-                if (not official_quote and _taiwan_post_close() and bars and
-                        bars[-1][0] == today_date):
-                    close = bars[-1][1]
-                if not close or close == 0:
-                    close = bars[-1][1] if bars else 0.0
-                nontrading_price_date = None
-                nontrading_high = nontrading_low = nontrading_volume = None
+            close = (official_quote.get("close") if official_quote else
+                     meta.get('regularMarketPrice', 0.0))
+            # 官方 MIS 偶爾短暫沒有回傳個別代號；收盤後若 Yahoo 日 K
+            # 已經有今天的最後一根，使用該日 K close，不能退回盤中 meta 價。
+            if (not official_quote and _taiwan_post_close() and bars and
+                    bars[-1][0] == today_date):
+                close = bars[-1][1]
+            if not close or close == 0:
+                close = bars[-1][1] if bars else 0.0
 
             # 判斷「日K序列」最後一筆到底是不是今天：
             # - 是今天 → 昨收 = 倒數第二筆
             # - 還停在昨天（Yahoo 資料還沒更新到今天）→ 倒數第一筆本身才是昨收，
             #   不能再往前抓倒數第二筆，不然會變成抓到前天，算出兩天以上的
             #   累積漲幅，誤標成「當日漲幅」。
-            if not market_open_today and bars:
-                pass
-            elif official_quote:
+            if official_quote:
                 prev_close = official_quote.get("previous_close") or meta.get("chartPreviousClose", close)
                 hist = bars[:-1] if bars and bars[-1][0] == today_date else bars
             elif bars and bars[-1][0] == today_date:
@@ -8856,15 +8883,12 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                     close = float(sticky["close"])
 
             pct = ((close - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
-            high = (nontrading_high if not market_open_today and nontrading_high is not None else
-                    ((official_quote.get("high") if official_quote else None) or
-                     meta.get('regularMarketDayHigh', close) or close))
-            low = (nontrading_low if not market_open_today and nontrading_low is not None else
-                   ((official_quote.get("low") if official_quote else None) or
-                    meta.get('regularMarketDayLow', close) or close))
-            volume = (nontrading_volume if not market_open_today and nontrading_volume is not None else
-                      ((official_quote.get("volume") if official_quote else None) or
-                       meta.get('regularMarketVolume', 0) or 0))
+            high = ((official_quote.get("high") if official_quote else None) or
+                    meta.get('regularMarketDayHigh', close) or close)
+            low = ((official_quote.get("low") if official_quote else None) or
+                   meta.get('regularMarketDayLow', close) or close)
+            volume = ((official_quote.get("volume") if official_quote else None) or
+                      meta.get('regularMarketVolume', 0) or 0)
 
             # --- 位階與量能：判斷「這根K棒站在什麼位置」 ---
             h20 = [b[2] for b in hist[-20:]]
@@ -8992,30 +9016,18 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 "high": float(high),
                 "low": float(low),
                 "volume": int(volume),
-                "source": (
-                    f"Yahoo Finance 最近交易日收盤（{nontrading_price_date.strftime('%Y/%m/%d')}）"
-                    if not market_open_today and nontrading_price_date else
-                    (official_quote.get("source") if official_quote else
-                     (f"{sticky.get('source') or 'TWSE MIS'}（本次 MIS 暫缺，"
-                      f"沿用今日稍早報價）" if sticky else
-                      ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
-                       if _taiwan_post_close() and bars and bars[-1][0] == today_date
-                       else "Yahoo Finance 日線行情")))),
-                "updated_at": (
-                    nontrading_price_date.strftime("%Y-%m-%d 13:30:00")
-                    if not market_open_today and nontrading_price_date else
-                    (official_quote.get("updated_at") if official_quote else
-                     (sticky.get("updated_at") if sticky else None))),
-                "close_is_final": bool((not market_open_today and nontrading_price_date) or
-                                        (official_quote and official_quote.get("close_is_final"))),
-                "close_date": (
-                    nontrading_price_date.strftime("%Y%m%d") if not market_open_today and nontrading_price_date else
-                    (official_quote.get("close_date") if official_quote else today_date.strftime("%Y%m%d"))),
-                "close_time": (
-                    "13:30:00" if not market_open_today and nontrading_price_date else
-                    (official_quote.get("close_time") if official_quote else None)),
-                "daily_change_valid": bool(market_open_today),
-                "price_date": (nontrading_price_date if not market_open_today and nontrading_price_date else today_date),
+                "source": (official_quote.get("source") if official_quote else
+                           (f"{sticky.get('source') or 'TWSE MIS'}（本次 MIS 暫缺，"
+                            f"沿用今日稍早報價）" if sticky else
+                            ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
+                             if _taiwan_post_close() and bars and bars[-1][0] == today_date
+                             else "Yahoo Finance 日線行情"))),
+                "updated_at": (official_quote.get("updated_at") if official_quote else
+                               (sticky.get("updated_at") if sticky else None)),
+                "close_is_final": bool(official_quote and official_quote.get("close_is_final")),
+                "close_date": (official_quote.get("close_date") if official_quote else
+                               today_date.strftime("%Y%m%d")),
+                "close_time": (official_quote.get("close_time") if official_quote else None),
                 "resistance": resistance,
                 "support": support,
                 "support_strength": support_strength,
@@ -9043,9 +9055,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 # 對應的日期。畫損益走勢時要靠它標出「你買在哪一天」——
                 # 只有收盤價的話，圖上永遠只能寫「近 N 個交易日」，
                 # 而「什麼時候發生的」正是圖能回答、數字回答不了的問題。
-                "close_dates": [b[0] for b in hist] + [
-                    nontrading_price_date if not market_open_today and nontrading_price_date else today_date
-                ],
+                "close_dates": [b[0] for b in hist] + [today_date],
                 # 逐日高低價，供籌碼分布把當日成交量攤到價格區間。
                 # 只有收盤價的話，整天的量會全部歸在收盤那一格——
                 # 一天內震盪 5% 的標的，位置就會明顯偏掉。
@@ -18222,8 +18232,8 @@ def cron_warmup():
 
 def _warm_current_position_quotes():
     """預熱目前持股主頁需要的 1d 真實行情，直接填入既有90秒快取。"""
-    if not is_twse_trading_day(taiwan_today()):
-        return 0, 0, 0, "休市日略過"
+    if taiwan_today().weekday() >= 5:
+        return 0, 0, 0, "週末略過"
     user_ids = get_all_position_user_ids()
     codes = set()
     for uid in user_ids:
@@ -23042,14 +23052,9 @@ def web_positions(uid):
             # 今日損益金額：用漲跌幅反推昨收，再乘持股數。
             # 直接用「今收 − 昨收」比用市值差可靠——市值差會受到當天
             # 新增或賣出持股影響，那不是股價造成的損益。
-            daily_change_valid = bool(price.get("daily_change_valid", is_twse_trading_day(taiwan_today())))
-            if daily_change_valid:
-                prev_close = price["close"] / (1 + price["pct"] / 100) if price["pct"] != -100 else price["close"]
-                day_pl = (price["close"] - prev_close) * p["shares"]
-                total_day_pl += day_pl
-            else:
-                prev_close = None
-                day_pl = None
+            prev_close = price["close"] / (1 + price["pct"] / 100) if price["pct"] != -100 else price["close"]
+            day_pl = (price["close"] - prev_close) * p["shares"]
+            total_day_pl += day_pl
             net_amt = net_amt if net_amt is not None else (value - cost_total)
             held = ((taiwan_now().date() - p["bought_on"]).days
                     if p["bought_on"] else None)
@@ -23058,10 +23063,8 @@ def web_positions(uid):
                 quote_stamp += "・" + html.escape(str(price.get("updated_at")))
             net_pct_text = fmt_pct(pl)
             gross_pct_text = fmt_pct(gross_pl)
-            day_cls = ('up' if day_pl >= 0 else 'down') if day_pl is not None else 'flat'
+            day_cls = 'up' if day_pl >= 0 else 'down'
             net_cls = 'up' if net_amt >= 0 else 'down'
-            day_pl_text = f"{day_pl:+,.0f}" if day_pl is not None else "—"
-            daily_pct_text = fmt_pct(price["pct"]) if daily_change_valid else "—"
             quote_stamp_safe = quote_stamp
             rows_html.append(f"""
 <article class="position-card" data-position-code="{html.escape(str(p['code']), quote=True)}">
@@ -23072,11 +23075,11 @@ def web_positions(uid):
     </div>
     <div class="position-card-price">
       <b data-position-price="1">{price['close']:,.2f}</b>
-      <span class="{day_cls}" data-position-pct="1">{daily_pct_text}</span>
+      <span class="{day_cls}" data-position-pct="1">{fmt_pct(price['pct'])}</span>
     </div>
   </div>
   <div class="position-card-primary">
-    <div><small>{"今日損益" if daily_change_valid else "最新交易日損益"}</small><b class="{day_cls}" data-position-day-pl="1">{day_pl_text}</b></div>
+    <div><small>今日損益</small><b class="{day_cls}" data-position-day-pl="1">{day_pl:+,.0f}</b></div>
     <div><small>市值</small><b>{value:,.0f}</b></div>
     <div><small>持有報酬</small><b class="{'up' if gross_pl >= 0 else 'down'}">{gross_pct_text}</b></div>
   </div>
@@ -23148,9 +23151,9 @@ def web_positions(uid):
          {total_value - total_cost - total_fee:+,.0f}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
          已扣交易成本 <span class="num">{total_fee:,.0f}</span></div></div>
-  <div><div class="total-label">{"今日損益" if is_twse_trading_day(taiwan_today()) else "最新交易日損益"}</div>
+  <div><div class="total-label">今日損益</div>
        <div class="total-value num {'up' if total_day_pl >= 0 else 'down'}">
-         {f"{total_day_pl:+,.0f}" if is_twse_trading_day(taiwan_today()) else "—"}</div>
+         {total_day_pl:+,.0f}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
          今收 vs 昨收</div></div>
   <div><div class="total-label">持股檔數</div>
@@ -26630,13 +26633,16 @@ def web_leaderboard(uid):
         _sitem = series_map.get(_mid) or {}
         _curve = _sitem.get("curve") if isinstance(_sitem, dict) else _sitem
         _scurve = _rebase_period_curve(_curve, start_date=season_info["start"])
-        if len(_scurve) < 2:
-            continue
+        if not _scurve:
+            # 本季尚未產生曲線時，仍保留經理人席位；首個有效快照視為季賽起點。
+            _scurve = [(_curve[-1][0], 0.0)] if _curve else [(season_info["start"], 0.0)]
         _season_rows.append({
             "user_id": _mid,
             "nickname": _manager_names[_mid],
-            "holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
-            "etf_holdings": 1 if _mid == "bot:yaochi_00981a" else 0,
+            # 00981A、00403A 都是主動 ETF 經理人，均各自持有 1 檔 ETF。
+            # 舊版這裡把 00403A 寫成 0，導致排行榜顯示「持股 0 檔」。
+            "holdings": 1,
+            "etf_holdings": 1,
             "joined": _curve[0][0] if _curve else season_info["start"],
             "show": True, "detail": None,
             "ret": _curve[-1][1], "m30": None, "days": len(_curve), "m30_days": 0,
@@ -30737,14 +30743,10 @@ def _screener_source_date():
 
 
 def _is_taiwan_intraday_window(now=None):
-    """判斷真正台股交易日的一般盤中時段；休市日一律不視為盤中。"""
+    """判斷台股平日一般盤中時段；週末與盤前／盤後走收盤快照。"""
     now = now or taiwan_now()
     minutes = now.hour * 60 + now.minute
-    try:
-        trading_day = is_twse_trading_day(now.date())
-    except Exception:
-        trading_day = now.weekday() < 5
-    return bool(trading_day and 9 * 60 <= minutes <= 13 * 60 + 30)
+    return (now.weekday() < 5 and 9 * 60 <= minutes <= 13 * 60 + 30)
 
 
 def _screener_snapshot_valid_for_today(snapshot):
