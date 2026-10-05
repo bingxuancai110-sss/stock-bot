@@ -30246,6 +30246,20 @@ def web_portfolio(uid):
             "pe": valuation.get(p["code"], {}).get("pe"),
         })
 
+    # v184 hotfix：這些首頁效能計時／總損益變數在 UI 重構時被移掉，
+    # 但後面的首頁渲染仍會使用；重新在組合計算完成後建立，避免 fragment 500。
+    calc_done = time.monotonic()
+    total_fee = 0.0
+    for h in holdings:
+        try:
+            total_fee += float(net_profit(
+                h["code"], h["shares"], h["cost"], h["price"]["close"],
+                h.get("lots"), fee_disc, min_fee)[2] or 0.0)
+        except Exception:
+            pass
+    pl_total = (((total_value - total_fee - total_cost) / total_cost * 100)
+                if total_cost else 0.0)
+
     ordered = sorted(by_industry.items(), key=lambda x: x[1], reverse=True)
     industry_colors = ["#6B4F22", "#8B6A38", "#A98958", "#C2AA80", "#D8C9A7", "#8B9A8D", "#DDE2DE", "#E8ECE9"]
     industry_rows=[]
@@ -30265,7 +30279,9 @@ def web_portfolio(uid):
         return num / den if den else None
     w_yoy, w_pe = weighted("cum_yoy"), weighted("pe")
 
-    # v184：首頁不再顯示「值得注意」入口／提醒卡。
+    # v184/v185：首頁移除「值得注意」入口，但後續摘要仍需要最大持股與
+    # 總損益；這些原本在提醒區塊附近建立，重構後必須獨立建立。
+    top = max(holdings, key=lambda h: h["weight"]) if holdings else {"weight": 0.0, "name": "—"}
     corr_txt = (f"兩兩相關係數平均 <b>{avg_corr:.2f}</b>，"
                 f"實際分散效果約等於 <b>{eff:.1f} 檔</b>。"
                 if avg_corr is not None and eff else
