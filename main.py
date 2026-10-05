@@ -30054,7 +30054,8 @@ def web_portfolio(uid):
             msg = f"還有 {len(missing)} 題沒選：{'、'.join(missing[:3])}" + (
                 " 等" if len(missing) > 3 else "")
 
-    # v182：移除登入／進入組合頁前的風險問卷門檻。
+    # v183：移除風險問卷後，首頁不再依賴 profile；提醒門檻改用系統預設值。
+    profile = {}
     positions = merge_positions(get_positions(uid))
     # 位置代號在所有首頁共享資料與即時行情流程都會使用。
     # 必須在進入 shared cache 分支前就建立，否則 shared cache 命中時
@@ -30305,8 +30306,6 @@ def web_portfolio(uid):
         alerts.append(("虧損提醒",
                        f"{h['name']}虧損 {abs(h['pl']):.1f}%，"
                        f"已達你設定的 {th['loss']}% 門檻。"))
-
-    alerts += build_profile_alerts(profile, holdings, top, ordered, th)
 
     if w_pe and w_yoy is not None:
         covered = sum(h["weight"] for h in holdings if h["pe"] is not None)
