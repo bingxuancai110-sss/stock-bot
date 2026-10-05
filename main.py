@@ -3877,9 +3877,7 @@ def merge_positions(positions):
             "shares": g["shares"],
             "cost": g["cost_total"] / g["shares"] if g["shares"] else 0.0,
             "bought_on": min(dates) if dates else None,   # 以最早一筆算持有天數
-            "lots": sorted(g["lots"], key=lambda x: (x.get("bought_on") or date.max,
-                                             x.get("created_at") or datetime.max,
-                                             int(x.get("id") or 0))),
+            "lots": sorted(g["lots"], key=lambda x: (x["bought_on"] or date.min)),
         })
     return merged
 
@@ -4440,101 +4438,70 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None,
 SELL_REASONS = ["停利", "停損", "換股", "需要用錢", "看法改變", "其他"]
 
 
-def _ordered_lots_fifo(user_id, code):
-    """取得同一檔持股並依 FIFO（最早買進優先）排序。"""
-    code = str(code or "").strip()
-    rows = [p for p in get_positions(user_id)
-            if str(p.get("code") or "").strip() == code
-            and int(p.get("shares") or 0) > 0]
-    rows.sort(key=lambda x: (x.get("bought_on") or date.max,
-                             x.get("created_at") or datetime.max,
-                             int(x.get("id") or 0)))
-    return rows
-
-
-def sell_position_fifo(user_id, code, sell_shares, sell_price=None, fee=None, tax=None,
+def sell_position_all(user_id, code, sell_price=None, fee=None, tax=None,
                       sell_reason=None):
-    """以 FIFO 賣出指定股數；預設從最早買進的 lot 開始。
+    """
+    把同一檔的所有買進筆數一次賣光。
 
-    UI 將同一檔合併成一張卡，但資料庫仍保留每個 lot。
-    若賣出股數超過第一筆，會自動往下一筆 lot 扣除。
+    為什麼需要：分批買進的股票會拆成多筆，原本每一筆都要各自展開賣出面板
+    再送一次表單——9 筆就要操作 9 次，而實際上券商是一次賣掉的。
+
+    刻意逐筆呼叫既有的 sell_position，而不是另寫一套結算：
+    已實現損益要用「各筆自己的成本」計算，合併成一筆平均成本會算錯，
+    而且分批的歷史紀錄也會消失。
+
+    手續費與證交稅依各筆的賣出金額比例分攤，總額仍等於使用者填的數字。
+    任何一筆失敗就中止，並回報已完成幾筆——不會讓部分成功卻無聲無息。
     """
     code = str(code or "").strip()
-    try:
-        sell_shares = int(sell_shares)
-    except (TypeError, ValueError):
-        return False, "賣出股數格式不正確"
     if not code:
         return False, "股票代號不正確"
-    if sell_shares <= 0:
-        return False, "賣出股數必須大於 0"
 
-    lots = _ordered_lots_fifo(user_id, code)
-    total_available = sum(int(l["shares"]) for l in lots)
-    if not lots or total_available <= 0:
+    lots = [l for p in merge_positions(get_positions(user_id))
+            if str(p.get("code")).strip() == code
+            for l in (p.get("lots") or [])
+            if int(l.get("shares") or 0) > 0]
+    if not lots:
         return False, "找不到這檔持股"
-    if sell_shares > total_available:
-        return False, f"最多只能賣出 {total_available:,} 股"
 
-    allocations = []
-    remain = sell_shares
-    for lot in lots:
-        take = min(int(lot["shares"]), remain)
-        if take > 0:
-            allocations.append((lot, take))
-            remain -= take
-        if remain <= 0:
-            break
+    total_shares = sum(int(l["shares"]) for l in lots)
+    if total_shares <= 0:
+        return False, "持股股數為 0"
 
-    if sum(take for _lot, take in allocations) != sell_shares:
-        return False, "FIFO 賣出股數分配失敗"
-
-    remain_fee = float(fee) if fee is not None else None
-    remain_tax = float(tax) if tax is not None else None
-    results = []
-    done = 0
-    for idx, (lot, take) in enumerate(allocations):
-        is_last = idx == len(allocations) - 1
-        if remain_fee is None:
+    done, results = 0, []
+    remain_fee = fee
+    remain_tax = tax
+    for idx, lot in enumerate(lots):
+        shares = int(lot["shares"])
+        # 依股數比例分攤；最後一筆吃掉餘數，總額才不會因四捨五入而短少
+        if fee is None:
             lot_fee = None
-        elif is_last:
+        elif idx == len(lots) - 1:
             lot_fee = round(remain_fee, 2)
         else:
-            lot_fee = round(float(fee) * take / sell_shares, 2)
+            lot_fee = round(float(fee) * shares / total_shares, 2)
             remain_fee -= lot_fee
-        if remain_tax is None:
+        if tax is None:
             lot_tax = None
-        elif is_last:
+        elif idx == len(lots) - 1:
             lot_tax = round(remain_tax, 2)
         else:
-            lot_tax = round(float(tax) * take / sell_shares, 2)
+            lot_tax = round(float(tax) * shares / total_shares, 2)
             remain_tax -= lot_tax
 
         ok, err, summary = sell_position(
-            user_id, lot["id"], take, sell_price=sell_price,
+            user_id, lot["id"], shares, sell_price=sell_price,
             fee=lot_fee, tax=lot_tax, sell_reason=sell_reason)
         if not ok:
-            return False, (f"已完成 {done:,} 股後中止：{err}"
+            return False, (f"已完成 {done} 筆後中止：{err}"
                            if done else (err or "賣出失敗"))
-        done += take
+        done += 1
         if summary:
             results.append(summary)
 
+    # sell_position 的 summary 用的鍵是 pl（不是 realized_pl）
     total_pl = sum(float(r.get("pl") or 0) for r in results)
-    return True, {"lots": len(allocations), "shares": sell_shares,
-                  "realized_pl": total_pl}
-
-
-def sell_position_all(user_id, code, sell_price=None, fee=None, tax=None,
-                      sell_reason=None):
-    """相容舊功能：整檔全部賣出；實際結算改走 FIFO。"""
-    lots = _ordered_lots_fifo(user_id, code)
-    total = sum(int(l.get("shares") or 0) for l in lots)
-    if total <= 0:
-        return False, "找不到這檔持股"
-    return sell_position_fifo(user_id, code, total,
-                              sell_price=sell_price, fee=fee, tax=tax,
-                              sell_reason=sell_reason)
+    return True, {"lots": done, "shares": total_shares, "realized_pl": total_pl}
 
 
 def normalize_sell_reason(raw):
@@ -8533,15 +8500,10 @@ _TWSE_MIS_BATCH_SIZE = 80
 
 
 def _taiwan_post_close(now=None):
-    """只有真正的 TWSE 交易日 13:30 後，才把 MIS 最後成交視為當日正式收盤。"""
+    """13:30 後才可把官方 MIS 的最後成交價視為當日正式收盤口徑。"""
     current = now if now is not None else taiwan_now()
-    try:
-        if not is_twse_trading_day(current.date()):
-            return False
-    except Exception:
-        if current.weekday() >= 5:
-            return False
-    return current.hour > 13 or (current.hour == 13 and current.minute >= 30)
+    return current.weekday() < 5 and (current.hour > 13 or
+                                      (current.hour == 13 and current.minute >= 30))
 
 
 def _twse_mis_quote_symbols(codes, market_suffix=None):
@@ -8744,7 +8706,6 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             # 統一使用既有的台灣交易日時鐘；這可避免收盤同步、快取與
             # 官方 MIS／Yahoo 日K 的「今天」判斷在測試或跨時區環境不一致。
             today_date = taiwan_today()
-            market_open_today = is_twse_trading_day(today_date)
             bars = []
             today_raw_index = None
             for i, (ts, c) in enumerate(zip(timestamps, raw_closes)):
@@ -8774,35 +8735,22 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             official_quote = official_quote or (
                 _fetch_twse_mis_quotes([code], {code: suffix}).get(code)
                 if _taiwan_post_close() else None)
-            if not market_open_today and bars:
-                # 非交易日禁止使用 Yahoo meta regularMarketPrice；只採最新實際交易日K棒。
-                latest_bar = bars[-1]
-                close = latest_bar[1]
-                hist = bars[:-1]
-                prev_close = bars[-2][1] if len(bars) >= 2 else meta.get('chartPreviousClose', close)
-                nontrading_price_date = latest_bar[0]
-                nontrading_high = latest_bar[2]
-                nontrading_low = latest_bar[3]
-                nontrading_volume = latest_bar[4]
-            else:
-                close = (official_quote.get("close") if official_quote else
-                         meta.get('regularMarketPrice', 0.0))
-                if (not official_quote and _taiwan_post_close() and bars and
-                        bars[-1][0] == today_date):
-                    close = bars[-1][1]
-                if not close or close == 0:
-                    close = bars[-1][1] if bars else 0.0
-                nontrading_price_date = None
-                nontrading_high = nontrading_low = nontrading_volume = None
+            close = (official_quote.get("close") if official_quote else
+                     meta.get('regularMarketPrice', 0.0))
+            # 官方 MIS 偶爾短暫沒有回傳個別代號；收盤後若 Yahoo 日 K
+            # 已經有今天的最後一根，使用該日 K close，不能退回盤中 meta 價。
+            if (not official_quote and _taiwan_post_close() and bars and
+                    bars[-1][0] == today_date):
+                close = bars[-1][1]
+            if not close or close == 0:
+                close = bars[-1][1] if bars else 0.0
 
             # 判斷「日K序列」最後一筆到底是不是今天：
             # - 是今天 → 昨收 = 倒數第二筆
             # - 還停在昨天（Yahoo 資料還沒更新到今天）→ 倒數第一筆本身才是昨收，
             #   不能再往前抓倒數第二筆，不然會變成抓到前天，算出兩天以上的
             #   累積漲幅，誤標成「當日漲幅」。
-            if not market_open_today and bars:
-                pass
-            elif official_quote:
+            if official_quote:
                 prev_close = official_quote.get("previous_close") or meta.get("chartPreviousClose", close)
                 hist = bars[:-1] if bars and bars[-1][0] == today_date else bars
             elif bars and bars[-1][0] == today_date:
@@ -8856,15 +8804,12 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                     close = float(sticky["close"])
 
             pct = ((close - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
-            high = (nontrading_high if not market_open_today and nontrading_high is not None else
-                    ((official_quote.get("high") if official_quote else None) or
-                     meta.get('regularMarketDayHigh', close) or close))
-            low = (nontrading_low if not market_open_today and nontrading_low is not None else
-                   ((official_quote.get("low") if official_quote else None) or
-                    meta.get('regularMarketDayLow', close) or close))
-            volume = (nontrading_volume if not market_open_today and nontrading_volume is not None else
-                      ((official_quote.get("volume") if official_quote else None) or
-                       meta.get('regularMarketVolume', 0) or 0))
+            high = ((official_quote.get("high") if official_quote else None) or
+                    meta.get('regularMarketDayHigh', close) or close)
+            low = ((official_quote.get("low") if official_quote else None) or
+                   meta.get('regularMarketDayLow', close) or close)
+            volume = ((official_quote.get("volume") if official_quote else None) or
+                      meta.get('regularMarketVolume', 0) or 0)
 
             # --- 位階與量能：判斷「這根K棒站在什麼位置」 ---
             h20 = [b[2] for b in hist[-20:]]
@@ -8992,30 +8937,18 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 "high": float(high),
                 "low": float(low),
                 "volume": int(volume),
-                "source": (
-                    f"Yahoo Finance 最近交易日收盤（{nontrading_price_date.strftime('%Y/%m/%d')}）"
-                    if not market_open_today and nontrading_price_date else
-                    (official_quote.get("source") if official_quote else
-                     (f"{sticky.get('source') or 'TWSE MIS'}（本次 MIS 暫缺，"
-                      f"沿用今日稍早報價）" if sticky else
-                      ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
-                       if _taiwan_post_close() and bars and bars[-1][0] == today_date
-                       else "Yahoo Finance 日線行情")))),
-                "updated_at": (
-                    nontrading_price_date.strftime("%Y-%m-%d 13:30:00")
-                    if not market_open_today and nontrading_price_date else
-                    (official_quote.get("updated_at") if official_quote else
-                     (sticky.get("updated_at") if sticky else None))),
-                "close_is_final": bool((not market_open_today and nontrading_price_date) or
-                                        (official_quote and official_quote.get("close_is_final"))),
-                "close_date": (
-                    nontrading_price_date.strftime("%Y%m%d") if not market_open_today and nontrading_price_date else
-                    (official_quote.get("close_date") if official_quote else today_date.strftime("%Y%m%d"))),
-                "close_time": (
-                    "13:30:00" if not market_open_today and nontrading_price_date else
-                    (official_quote.get("close_time") if official_quote else None)),
-                "daily_change_valid": bool(market_open_today),
-                "price_date": (nontrading_price_date if not market_open_today and nontrading_price_date else today_date),
+                "source": (official_quote.get("source") if official_quote else
+                           (f"{sticky.get('source') or 'TWSE MIS'}（本次 MIS 暫缺，"
+                            f"沿用今日稍早報價）" if sticky else
+                            ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
+                             if _taiwan_post_close() and bars and bars[-1][0] == today_date
+                             else "Yahoo Finance 日線行情"))),
+                "updated_at": (official_quote.get("updated_at") if official_quote else
+                               (sticky.get("updated_at") if sticky else None)),
+                "close_is_final": bool(official_quote and official_quote.get("close_is_final")),
+                "close_date": (official_quote.get("close_date") if official_quote else
+                               today_date.strftime("%Y%m%d")),
+                "close_time": (official_quote.get("close_time") if official_quote else None),
                 "resistance": resistance,
                 "support": support,
                 "support_strength": support_strength,
@@ -9043,9 +8976,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 # 對應的日期。畫損益走勢時要靠它標出「你買在哪一天」——
                 # 只有收盤價的話，圖上永遠只能寫「近 N 個交易日」，
                 # 而「什麼時候發生的」正是圖能回答、數字回答不了的問題。
-                "close_dates": [b[0] for b in hist] + [
-                    nontrading_price_date if not market_open_today and nontrading_price_date else today_date
-                ],
+                "close_dates": [b[0] for b in hist] + [today_date],
                 # 逐日高低價，供籌碼分布把當日成交量攤到價格區間。
                 # 只有收盤價的話，整天的量會全部歸在收盤那一格——
                 # 一天內震盪 5% 的標的，位置就會明顯偏掉。
@@ -16745,17 +16676,15 @@ def _macro_metric_box(item):
         change_value = f"{pct:+.2f}%"
         value_color = "#B52F2F" if pct > 0 else ("#087A4B" if pct < 0 else "#767D85")
 
-    # 不再把現值與漲跌塞在同一橫列。LINE Flex 在手機寬度下會把長數字
-    # 截成「51,1…」之類的省略號；改成上下兩行，確保指數完整顯示。
     metric_row = {
-        "type": "box", "layout": "vertical", "margin": "sm",
-        "spacing": "xs", "contents": [
+        "type": "box", "layout": "horizontal", "alignItems": "center",
+        "margin": "sm", "contents": [
             {"type": "text", "text": current_value, "size": "sm",
-             "weight": "bold", "color": "#454C55",
-             "wrap": False, "maxLines": 1, "align": "start"},
-            {"type": "text", "text": change_value, "size": "xs",
-             "weight": "bold", "color": value_color,
-             "wrap": False, "maxLines": 1, "align": "start"},
+             "weight": "bold", "color": "#454C55", "flex": 1,
+             "wrap": False, "maxLines": 1},
+            {"type": "text", "text": change_value, "size": "sm",
+             "weight": "bold", "color": value_color, "align": "end",
+             "flex": 0, "wrap": False, "maxLines": 1},
         ]
     }
     return {
@@ -18224,8 +18153,8 @@ def cron_warmup():
 
 def _warm_current_position_quotes():
     """預熱目前持股主頁需要的 1d 真實行情，直接填入既有90秒快取。"""
-    if not is_twse_trading_day(taiwan_today()):
-        return 0, 0, 0, "休市日略過"
+    if taiwan_today().weekday() >= 5:
+        return 0, 0, 0, "週末略過"
     user_ids = get_all_position_user_ids()
     codes = set()
     for uid in user_ids:
@@ -20062,6 +19991,103 @@ input:focus,select:focus{box-shadow:0 0 0 3px rgba(82,122,155,.13)}
   .daily-card,.more-group,.rank-spotlight,.portfolio-chart-card,.contribution-card{border-radius:14px}
   .section-head{margin-top:25px;padding-left:9px}
 }
+
+/* V180 UI REDESIGN：完整視覺層級升級；不改資料與商業邏輯。 */
+:root{
+  --v180-bg:#F4F7FB; --v180-surface:#FFFFFF; --v180-surface-2:#F8FAFD;
+  --v180-border:#E2E8F0; --v180-text:#12233A; --v180-muted:#708096;
+  --v180-primary:#245B8F; --v180-primary-2:#397BAF;
+  --v180-shadow:0 8px 26px rgba(25,55,85,.075);
+  --v180-shadow-sm:0 3px 12px rgba(25,55,85,.055);
+}
+html{scroll-behavior:smooth} body{background:radial-gradient(circle at 50% -10%,#fff 0,#F4F7FB 42%,#EEF3F8 100%);}
+.wrap{max-width:760px;padding-left:14px;padding-right:14px}
+.card,.daily-card,.portfolio-chart-card,.contribution-card,.rank-spotlight,.rank-champion,.rank-honour,.rank-mine,.exright-card,.position-card,.position-fast-card,.watch-dashboard-intro,.screener-fast-card,.turning-section{
+  border:1px solid var(--v180-border)!important; border-radius:18px!important; box-shadow:var(--v180-shadow-sm)!important; background:rgba(255,255,255,.96);
+  transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;
+}
+.card:hover,.daily-card:hover,.position-card:hover,.screener-fast-card:hover,.rank-mine:hover{transform:translateY(-1px);box-shadow:var(--v180-shadow)!important;border-color:#D2DFEC!important}
+.section-head{border-left:0;padding:0 0 9px;display:flex;align-items:center;gap:9px;position:relative}
+.section-head:before{content:"";width:5px;height:22px;border-radius:5px;background:linear-gradient(180deg,var(--v180-primary-2),var(--v180-primary));flex:none}
+.section-head h2{font-size:19px;letter-spacing:-.01em;color:var(--v180-text)}
+.top-nav{position:sticky;top:0;z-index:40;backdrop-filter:blur(16px);background:rgba(244,247,251,.86);border-bottom:1px solid rgba(210,222,234,.8);padding:8px 0}
+.top-nav a{border:0!important;background:transparent!important;border-radius:11px!important;color:#60738A!important;padding:8px 11px!important;transition:.18s ease}
+.top-nav a.on{background:#E5F0F8!important;color:#1E527F!important;box-shadow:inset 0 0 0 1px #D1E3F0!important}
+button,.btn,.primary-btn{border-radius:12px!important;min-height:42px;transition:transform .15s ease,box-shadow .15s ease,filter .15s ease}
+button:hover,.btn:hover,.primary-btn:hover{transform:translateY(-1px);filter:brightness(1.02)}
+button:active,.btn:active,.primary-btn:active{transform:translateY(0)}
+input,select{min-height:42px;border-radius:11px!important;background:#FBFDFF!important;border-color:#D7E1EA!important}
+input:focus,select:focus{outline:none!important;box-shadow:0 0 0 4px rgba(57,123,175,.11)!important;border-color:#78A9C8!important}
+.tabs{gap:7px!important;overflow-x:auto;padding-bottom:3px;scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}
+.tabs a{border-radius:11px!important;padding:9px 13px!important;white-space:nowrap;transition:.18s ease}
+.app-bottom-nav{background:rgba(255,255,255,.91)!important;backdrop-filter:blur(18px);border-top:1px solid #DCE5ED!important;box-shadow:0 -8px 28px rgba(25,55,85,.08)!important}
+.app-bottom-nav a{border-radius:13px!important;transition:.18s ease}.app-bottom-nav a.on{background:#EAF3F9!important;color:#245B8F!important}
+.callout,.chips-meta,.hint,.msg,.dist{border-radius:13px!important;box-shadow:none!important;border:1px solid #E0E8F0}
+/* 數據密度：桌機留白、手機緊湊，避免一眼塞滿資訊。 */
+.data-grid,.stat-grid{gap:10px!important}
+@media(max-width:640px){
+  .wrap{padding-left:12px;padding-right:12px;padding-bottom:92px}
+  .card,.daily-card,.position-card,.screener-fast-card,.rank-mine{border-radius:16px!important}
+  .section-head{margin-top:22px;padding-bottom:8px}
+  .section-head h2{font-size:18px}
+  .top-nav{display:none}
+  .app-bottom-nav{padding-bottom:max(7px,env(safe-area-inset-bottom))}
+  .app-bottom-nav .bottom-inner{gap:3px}
+  .app-bottom-nav a{font-size:10px;padding:7px 5px!important}
+}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation-duration:.001ms!important;animation-iteration-count:1!important}}
+
+/* ===== v180 全站 UI/UX REDESIGN ===== */
+:root{
+ --ui-bg:#f4f7fb;--ui-surface:#fff;--ui-surface-2:#f8fafc;--ui-text:#162333;--ui-muted:#718096;
+ --ui-line:#e4eaf1;--ui-primary:#315e9b;--ui-primary-2:#4f7fc1;--ui-gold:#b58a4a;
+ --ui-up:#d63d35;--ui-down:#16805a;--ui-radius:18px;--ui-shadow:0 10px 30px rgba(25,45,70,.07);
+}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{background:linear-gradient(180deg,#f8fafc 0,#f3f6fa 100%);color:var(--ui-text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang TC","Noto Sans TC",sans-serif;-webkit-font-smoothing:antialiased}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at 85% 0,rgba(49,94,155,.055),transparent 32%),radial-gradient(circle at 5% 35%,rgba(181,138,74,.035),transparent 28%);z-index:-1}
+.main-wrap,.page-wrap,.content-wrap{max-width:1080px;margin:0 auto;padding-left:18px;padding-right:18px}
+.top-nav{position:sticky;top:0;z-index:1000;display:flex;align-items:center;gap:5px;max-width:1080px;margin:0 auto;padding:10px 14px;background:rgba(248,250,252,.88);border:1px solid rgba(228,234,241,.9);border-top:0;border-radius:0 0 18px 18px;backdrop-filter:blur(18px);box-shadow:0 8px 25px rgba(20,40,65,.06)}
+.top-nav a{position:relative;padding:10px 13px;border-radius:11px;color:#66758a;text-decoration:none;font-weight:800;font-size:13px;transition:.18s ease}
+.top-nav a:hover{background:#edf3fa;color:var(--ui-primary);transform:translateY(-1px)}.top-nav a.on{background:#e8f0fa;color:#244f87}.top-nav a.on:after{content:"";position:absolute;left:20%;right:20%;bottom:3px;height:2px;border-radius:9px;background:var(--ui-primary)}
+.page-back{max-width:1080px;margin:14px auto 0;padding:0 18px}.page-back a{color:#66758a;text-decoration:none;font-size:12px;font-weight:800}.page-back a:hover{color:var(--ui-primary)}
+.more-hero{position:relative;overflow:hidden;border:1px solid var(--ui-line)!important;border-radius:24px!important;background:linear-gradient(135deg,#fff 0,#f6f9fd 100%)!important;box-shadow:var(--ui-shadow)!important;padding:24px!important;margin:18px 0!important}.more-hero:after{content:"";position:absolute;width:180px;height:180px;right:-55px;top:-75px;border-radius:50%;background:radial-gradient(circle,rgba(49,94,155,.12),transparent 68%)}.more-hero h1{position:relative;margin:5px 0 7px;font-size:30px;letter-spacing:-.025em}.more-hero p{position:relative;color:var(--ui-muted);line-height:1.7}.eyebrow{font-size:10px;letter-spacing:.14em;font-weight:900;color:var(--ui-primary)}
+.card,.panel,.section-card,.stat-card,.position-card,.holding-card,.leaderboard-card,.trade-card{border:1px solid var(--ui-line);border-radius:var(--ui-radius);background:var(--ui-surface);box-shadow:var(--ui-shadow);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
+.card:hover,.panel:hover,.section-card:hover,.position-card:hover,.holding-card:hover,.leaderboard-card:hover,.trade-card:hover{box-shadow:0 14px 36px rgba(25,45,70,.1);border-color:#d8e2ed}
+button,.btn,input,select,textarea{font-family:inherit}button,.btn{border-radius:12px!important;transition:transform .16s ease,box-shadow .16s ease,background .16s ease}.btn-primary,button.primary{background:linear-gradient(135deg,#315e9b,#4679ba)!important;box-shadow:0 6px 16px rgba(49,94,155,.18)}button:hover,.btn:hover{transform:translateY(-1px)}button:active,.btn:active{transform:scale(.985)}
+input,select,textarea{border:1px solid #d8e1eb!important;border-radius:12px!important;background:#fff!important;box-shadow:inset 0 1px 2px rgba(20,40,65,.025);transition:.16s}.input:focus,input:focus,select:focus,textarea:focus{outline:none!important;border-color:#6d96c6!important;box-shadow:0 0 0 4px rgba(49,94,155,.10)!important}
+.up,.rise,.positive,.profit{color:var(--ui-up)!important}.down,.fall,.negative,.loss{color:var(--ui-down)!important}.muted,.sub,.secondary{color:var(--ui-muted)}
+/* 首頁／市場摘要 */
+.market-summary,.portfolio-summary,.dashboard-grid,.summary-grid{gap:12px!important}.market-summary>*,.portfolio-summary>*,.dashboard-grid>*,.summary-grid>*{border:1px solid var(--ui-line);border-radius:16px;background:#fff;box-shadow:0 7px 22px rgba(25,45,70,.055);padding:14px}
+/* 股票卡片 */
+.stock-card,.stock-row,.quote-card,.watch-card{border:1px solid var(--ui-line)!important;border-radius:16px!important;background:#fff!important;transition:.18s ease!important}.stock-card:hover,.stock-row:hover,.quote-card:hover,.watch-card:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(25,45,70,.09)!important;border-color:#cbd9e8!important}.stock-name,.quote-name{font-weight:900;color:#172a40}.stock-code,.quote-code{color:#8390a0;font-size:11px;font-weight:800}
+/* 黑馬／雷達 */
+.blackhorse-card,.radar-card,.signal-card,.factor-card{position:relative;overflow:hidden;border:1px solid var(--ui-line)!important;border-radius:18px!important;background:linear-gradient(145deg,#fff,#f8fbfe)!important;box-shadow:0 9px 26px rgba(25,45,70,.065)!important}.blackhorse-card:before,.radar-card:before,.signal-card:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:linear-gradient(#315e9b,#7aa0c9)}.blackhorse-card:hover,.radar-card:hover,.signal-card:hover{transform:translateY(-2px)}
+.score,.big-score,.factor-score{font-variant-numeric:tabular-nums;font-weight:950;letter-spacing:-.03em}.score{font-size:28px;color:#274f82}.score-label{font-size:10px;color:#7a8796;font-weight:800;letter-spacing:.05em}
+.badge,.tag,.pill{border-radius:999px!important;font-weight:800!important;border:1px solid #dce5ee!important;background:#f5f8fb!important;color:#50657b!important;padding:4px 9px!important}
+/* 五大因子 */
+.factor-progress,.progress{height:7px!important;border-radius:99px!important;background:#e9eef4!important;overflow:hidden}.factor-progress>i,.progress>i{height:100%;display:block;border-radius:99px;background:linear-gradient(90deg,#315e9b,#6e9bd0);transition:width .55s cubic-bezier(.2,.8,.2,1)}
+/* 持股 */
+.position-card,.holding-card{padding:0!important;overflow:hidden}.position-card .card-head,.holding-card .card-head{padding:15px 16px;border-bottom:1px solid #edf1f5;background:linear-gradient(90deg,#fff,#f8fbfe)}.position-card .card-body,.holding-card .card-body{padding:14px 16px}.position-card:hover,.holding-card:hover{transform:translateY(-2px)}
+.wb-holding-row{background:#fff!important;border-bottom:1px solid #edf1f5!important}.wb-holding-row:hover{background:#f7fbff!important;box-shadow:inset 3px 0 #315e9b!important}
+/* 排行榜 */
+.leaderboard-card,.rank-card{position:relative;overflow:hidden}.rank-card{padding:15px!important;border:1px solid var(--ui-line);border-radius:16px;background:#fff}.rank-card:hover{transform:translateY(-2px);box-shadow:0 13px 30px rgba(25,45,70,.09)}.rank-1,.rank-2,.rank-3{border-top:3px solid #b58a4a}.rank-1{background:linear-gradient(135deg,#fff,#fffaf0)}.rank-number{font-size:22px;font-weight:950;font-variant-numeric:tabular-nums}.rank-return{font-size:20px;font-weight:950}
+/* 圖表 */
+.chart-card,.chart-panel{border:1px solid var(--ui-line)!important;border-radius:18px!important;background:#fff!important;box-shadow:var(--ui-shadow)!important;padding:14px!important}.chart-card canvas,.chart-panel canvas{border-radius:12px}
+/* 表格 */
+table{border-collapse:separate!important;border-spacing:0!important;overflow:hidden;border:1px solid var(--ui-line);border-radius:16px;background:#fff;box-shadow:0 7px 22px rgba(25,45,70,.045)}th{background:#f4f7fb!important;color:#607187!important;font-size:11px!important}td,th{border-bottom:1px solid #edf1f5!important;padding:11px 10px!important}tr:last-child td{border-bottom:0!important}tbody tr:hover{background:#f8fbfe}
+/* 底部導航 */
+.app-bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:1200;padding:8px max(10px,env(safe-area-inset-left)) calc(8px + env(safe-area-inset-bottom));background:rgba(255,255,255,.9)!important;border-top:1px solid rgba(220,228,237,.95)!important;box-shadow:0 -10px 28px rgba(20,40,65,.08)!important;backdrop-filter:blur(18px)}.bottom-inner{max-width:620px;margin:auto;display:grid!important;grid-template-columns:repeat(5,1fr);gap:4px}.bottom-inner a{min-height:48px!important;border-radius:13px!important;color:#8390a0!important;text-decoration:none!important;display:flex!important;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:10px;font-weight:800;transition:.16s}.bottom-inner a b{font-size:20px;line-height:1}.bottom-inner a.on{background:#edf3fa!important;color:#315e9b!important}.bottom-inner a:active{transform:scale(.96)}
+body{padding-bottom:78px}
+/* 載入 skeleton */
+.skeleton,.loading-skeleton{background:linear-gradient(90deg,#f0f3f7 20%,#e7edf4 38%,#f0f3f7 56%);background-size:240% 100%;animation:v180-shimmer 1.25s linear infinite;border-radius:10px;color:transparent!important}.skeleton *{visibility:hidden}@keyframes v180-shimmer{to{background-position:-140% 0}}
+/* page reveal */
+body>.page,.page-wrap,.main-wrap{animation:v180-reveal .28s ease both}@keyframes v180-reveal{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+@media(max-width:760px){
+ .main-wrap,.page-wrap,.content-wrap{padding-left:12px;padding-right:12px}.top-nav{display:none}.more-hero{padding:20px!important;border-radius:20px!important}.more-hero h1{font-size:25px}.card,.panel,.section-card,.position-card,.holding-card,.leaderboard-card,.trade-card{border-radius:16px}.market-summary,.portfolio-summary,.dashboard-grid,.summary-grid{grid-template-columns:1fr 1fr!important}.stock-card,.stock-row,.quote-card,.watch-card{border-radius:14px!important}.chart-card,.chart-panel{padding:11px!important;border-radius:15px!important}table{font-size:12px}td,th{padding:9px 7px!important}.rank-card{padding:13px!important}
+}
+@media(max-width:430px){.market-summary,.portfolio-summary,.dashboard-grid,.summary-grid{grid-template-columns:1fr!important}.more-hero h1{font-size:23px}.bottom-inner a{font-size:9px}.bottom-inner a b{font-size:18px}.score{font-size:24px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+
 """
 
 NEED_LOGIN_HTML = """
@@ -22680,25 +22706,7 @@ def web_positions(uid):
         return respond_page("持股", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "positions")
     if request.method == "POST":
         action = request.form.get("action")
-        if action == "sell_fifo":
-            def numv(field, cast=float):
-                v = (request.form.get(field) or "").strip()
-                if not v:
-                    return None
-                try:
-                    return cast(v)
-                except ValueError:
-                    return None
-            ok, info = sell_position_fifo(
-                uid, request.form.get("code"), numv("sell_shares", int),
-                sell_price=numv("sell_price"), fee=numv("fee"), tax=numv("tax"),
-                sell_reason=request.form.get("sell_reason"))
-            if ok:
-                msg = (f"✅ 已賣出 {info['shares']:,} 股，依 FIFO 從最早買進開始扣除；"
-                       f"本次涉及 {info['lots']} 筆，已實現損益 {info['realized_pl']:+,.0f} 元。")
-            else:
-                msg = f"賣出失敗：{info}"
-        elif action == "sell_all":
+        if action == "sell_all":
             def numv(field, cast=float):
                 v = (request.form.get(field) or "").strip()
                 if not v:
@@ -22887,58 +22895,6 @@ def web_positions(uid):
                 f'<input type="hidden" name="delete_created_at" value="{html.escape(str(lot.get("created_at") or ""), quote=True)}">'
                 f'<button class="del" type="submit">刪除</button></form>')
 
-    def sell_fifo_form(p, name, cur_price):
-        """同一檔只顯示一個賣出入口；預設賣最早買進的那一筆。"""
-        code = p["code"]
-        total = int(p.get("shares") or 0)
-        lots = sorted(p.get("lots") or [],
-                      key=lambda x: (x.get("bought_on") or date.max,
-                                     x.get("created_at") or datetime.max,
-                                     int(x.get("id") or 0)))
-        first = lots[0] if lots else None
-        default_shares = int(first.get("shares") or 0) if first else total
-        tax_rate = TAX_RATE_ETF if is_etf(code) else TAX_RATE_STOCK
-        px = f"{cur_price:.2f}" if cur_price else ""
-        gross = (cur_price or 0) * default_shares
-        est_fee = round(broker_fee(gross)) if gross else 0
-        est_tax = round(gross * tax_rate) if gross else 0
-        first_date = (first.get("bought_on").strftime("%Y/%m/%d")
-                      if first and first.get("bought_on") else "未填日期")
-        options = "".join(f'<option value="{r}">{r}</option>' for r in SELL_REASONS)
-        return f"""
-<details class="sellbox sellbox-fifo"><summary>賣出（預設最早買進）</summary>
-<form method="post" action="/web/positions" class="sellpanel"
-      onsubmit="return confirm('確定賣出 {html.escape(str(name))}？系統會從最早買進的持股開始扣除。');">
-  {csrf_hidden_input()}
-  <input type="hidden" name="action" value="sell_fifo">
-  <input type="hidden" name="code" value="{html.escape(str(code), quote=True)}">
-  <div class="fields">
-    <div><label>賣出股數</label>
-      <input type="number" name="sell_shares" min="1" max="{total}"
-             value="{default_shares}" required></div>
-    <div><label>賣出價</label>
-      <input type="number" step="0.01" name="sell_price" value="{px}"
-             placeholder="{px or '市價'}"></div>
-    <div><label>手續費</label>
-      <input type="number" step="1" name="fee" placeholder="{est_fee}"></div>
-    <div><label>證交稅</label>
-      <input type="number" step="1" name="tax" placeholder="{est_tax}"></div>
-    <div><label>賣出理由（選填）</label>
-      <select name="sell_reason">
-        <option value="">未填</option>
-        {options}
-      </select></div>
-  </div>
-  <div class="row-actions"><a class="cancel-link" href="/web/positions" data-no-busy="1">返回／取消</a>
-    <button type="submit">確認賣出</button></div>
-  <div class="sell-hint">
-    目前共 <b>{total:,} 股</b>；預設先賣最早買進的 <b>{default_shares:,} 股</b>（{first_date}）。
-    若改成更大的股數，系統會自動依「最早 → 最新」FIFO 跨筆扣除。<br>
-    每一筆仍保留自己的成本與已實現損益，不會把歷史買進紀錄合併掉。
-  </div>
-</form>
-</details>"""
-
     def sell_all_form(p, name, cur_price):
         """
         整檔一次賣出。分批買進的股票原本每一筆都要各自展開面板送一次表單，
@@ -22985,22 +22941,25 @@ def web_positions(uid):
 </details>'''
 
     def lots_html(p, name, cur_price):
-        """同一檔只顯示一個賣出入口；買進 lot 僅供查閱／刪除。"""
-        lots = sorted(p.get("lots") or [],
-                      key=lambda x: (x.get("bought_on") or date.max,
-                                     x.get("created_at") or datetime.max,
-                                     int(x.get("id") or 0)))
-        if not lots:
-            return ""
+        """單筆就一組賣出面板＋刪除鍵；分批買進則每一筆各自可賣出或刪除。"""
+        lots = p.get("lots", [])
+        if len(lots) <= 1:
+            if not lots:
+                return ""
+            l = lots[0]
+            return (f'<div class="lot-actions">{delete_form(l["id"], name, l)}</div>'
+                    + sell_form(l["id"], l["shares"], p["code"],
+                                cur_price, l["cost"]))
         items = "".join(
             f'<div class="lot">'
-            f'<span class="num">{int(l.get("shares") or 0):,}</span> 股　'
-            f'成本 <span class="num">{float(l.get("cost") or 0):,.2f}</span>　'
-            f'{l["bought_on"].strftime("%Y/%m/%d") if l.get("bought_on") else "未填日期"}'
+            f'<span class="num">{l["shares"]:,}</span> 股　'
+            f'成本 <span class="num">{l["cost"]:,.2f}</span>　'
+            f'{l["bought_on"].strftime("%Y/%m/%d") if l["bought_on"] else "未填日期"}'
             f'<div class="lot-actions">{delete_form(l["id"], name, l)}</div>'
+            f'{sell_form(l["id"], l["shares"], p["code"], cur_price, l["cost"], "賣出這筆")}'
             f'</div>' for l in lots)
-        return (sell_fifo_form(p, name, cur_price)
-                + f'<details class="lots"><summary>查看 {len(lots)} 筆買進明細</summary>'
+        return (sell_all_form(p, name, cur_price)
+                + f'<details class="lots"><summary>分 {len(lots)} 筆買進</summary>'
                   f'{items}</details>')
 
     rows_html, total_value, total_cost = [], 0.0, 0.0
@@ -23044,14 +23003,9 @@ def web_positions(uid):
             # 今日損益金額：用漲跌幅反推昨收，再乘持股數。
             # 直接用「今收 − 昨收」比用市值差可靠——市值差會受到當天
             # 新增或賣出持股影響，那不是股價造成的損益。
-            daily_change_valid = bool(price.get("daily_change_valid", is_twse_trading_day(taiwan_today())))
-            if daily_change_valid:
-                prev_close = price["close"] / (1 + price["pct"] / 100) if price["pct"] != -100 else price["close"]
-                day_pl = (price["close"] - prev_close) * p["shares"]
-                total_day_pl += day_pl
-            else:
-                prev_close = None
-                day_pl = None
+            prev_close = price["close"] / (1 + price["pct"] / 100) if price["pct"] != -100 else price["close"]
+            day_pl = (price["close"] - prev_close) * p["shares"]
+            total_day_pl += day_pl
             net_amt = net_amt if net_amt is not None else (value - cost_total)
             held = ((taiwan_now().date() - p["bought_on"]).days
                     if p["bought_on"] else None)
@@ -23060,10 +23014,8 @@ def web_positions(uid):
                 quote_stamp += "・" + html.escape(str(price.get("updated_at")))
             net_pct_text = fmt_pct(pl)
             gross_pct_text = fmt_pct(gross_pl)
-            day_cls = ('up' if day_pl >= 0 else 'down') if day_pl is not None else 'flat'
+            day_cls = 'up' if day_pl >= 0 else 'down'
             net_cls = 'up' if net_amt >= 0 else 'down'
-            day_pl_text = f"{day_pl:+,.0f}" if day_pl is not None else "—"
-            daily_pct_text = fmt_pct(price["pct"]) if daily_change_valid else "—"
             quote_stamp_safe = quote_stamp
             rows_html.append(f"""
 <article class="position-card" data-position-code="{html.escape(str(p['code']), quote=True)}">
@@ -23074,11 +23026,11 @@ def web_positions(uid):
     </div>
     <div class="position-card-price">
       <b data-position-price="1">{price['close']:,.2f}</b>
-      <span class="{day_cls}" data-position-pct="1">{daily_pct_text}</span>
+      <span class="{day_cls}" data-position-pct="1">{fmt_pct(price['pct'])}</span>
     </div>
   </div>
   <div class="position-card-primary">
-    <div><small>{"今日損益" if daily_change_valid else "最新交易日損益"}</small><b class="{day_cls}" data-position-day-pl="1">{day_pl_text}</b></div>
+    <div><small>今日損益</small><b class="{day_cls}" data-position-day-pl="1">{day_pl:+,.0f}</b></div>
     <div><small>市值</small><b>{value:,.0f}</b></div>
     <div><small>持有報酬</small><b class="{'up' if gross_pl >= 0 else 'down'}">{gross_pct_text}</b></div>
   </div>
@@ -23150,9 +23102,9 @@ def web_positions(uid):
          {total_value - total_cost - total_fee:+,.0f}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
          已扣交易成本 <span class="num">{total_fee:,.0f}</span></div></div>
-  <div><div class="total-label">{"今日損益" if is_twse_trading_day(taiwan_today()) else "最新交易日損益"}</div>
+  <div><div class="total-label">今日損益</div>
        <div class="total-value num {'up' if total_day_pl >= 0 else 'down'}">
-         {f"{total_day_pl:+,.0f}" if is_twse_trading_day(taiwan_today()) else "—"}</div>
+         {total_day_pl:+,.0f}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
          今收 vs 昨收</div></div>
   <div><div class="total-label">持股檔數</div>
@@ -26417,8 +26369,6 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
         if d is None or ret is None:
             continue
         key = str(user_id).strip()
-        if key == "bot:manager_00991a":
-            continue
         bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人"}
         display_name = bot_display_names.get(key) or (nickname or key)
         by_user.setdefault(key, []).append((d, float(ret), display_name))
@@ -26473,8 +26423,7 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
                     continue
                 users.append({"user_id": uid, "nickname": nick, "return_pct": period_ret})
             users.sort(key=lambda x: x['return_pct'], reverse=True)
-            # 預設顯示 Top 5；其餘完整名單收進可展開區，不再直接丟掉。
-            result.append({"period": period, "rows": users})
+            result.append({"period": period, "rows": users[:5]})
         return result
 
     out['months'] = build('month', months)
@@ -26606,23 +26555,16 @@ def web_leaderboard(uid):
     _long_excluded_manager_ids = {
         "bot:yaochi_00981a",
         "bot:manager_00403a",
-        "bot:manager_00991a",  # 舊版殘留資料，不再是現行經理人
     }
-    # 舊快照可能殘留已停用的 00991A 經理人；任何榜單顯示都要徹底排除。
-    _disabled_bot_ids = {"bot:manager_00991a"}
     _long_rows = [
         r for r in (all_boards.get("long") or [])
         if str((r or {}).get("user_id") or "").strip() not in _long_excluded_manager_ids
     ]
-    def _filter_disabled_bots(rows):
-        return [r for r in (rows or [])
-                if str((r or {}).get("user_id") or "").strip() not in _disabled_bot_ids]
-
     boards = {
-        "long": _normalise_bot_names(_dedup_board(_filter_disabled_bots(_long_rows[:100]))[:20]),
-        "short": _normalise_bot_names(_dedup_board(_filter_disabled_bots((all_boards.get("short") or [])[:100]))[:20]),
-        "season": _normalise_bot_names(_dedup_board(_filter_disabled_bots((all_boards.get("season") or [])[:100]))[:20]),
-        "waiting": _normalise_bot_names(_dedup_board(_filter_disabled_bots(all_boards.get("waiting") or []))),
+        "long": _normalise_bot_names(_dedup_board(_long_rows[:100])[:20]),
+        "short": _normalise_bot_names(_dedup_board((all_boards.get("short") or [])[:100])[:20]),
+        "season": _normalise_bot_names(_dedup_board((all_boards.get("season") or [])[:100])[:20]),
+        "waiting": _normalise_bot_names(_dedup_board(all_boards.get("waiting") or [])),
     }
     month_rows, month_info = _build_current_month_board(all_boards, series_map, market)
     season_info = all_boards.get("season_info") or leaderboard_season_info()
@@ -27417,22 +27359,18 @@ def web_leaderboard(uid):
 .settlement-wrap{margin:0 0 18px;padding:16px;border:1px solid #d8c28d;border-radius:20px;background:linear-gradient(145deg,#fff8dd,#fffdf7);box-shadow:0 8px 22px rgba(120,95,35,.08)}
 .settlement-kicker{font-size:9px;letter-spacing:.18em;color:#9a7736;font-weight:900}.settlement-wrap h2{margin:5px 0 4px}.settlement-wrap>p{margin:0 0 12px;color:#766a55;font-size:12px;line-height:1.6}
 .settlement-report-card{border:1px solid #e4d2a5;border-radius:16px;background:#fffef8;padding:14px;margin-top:10px}.settlement-report-top{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d6538;font-weight:900}.settlement-report-top small{color:#8b8f98;font-weight:600}.settlement-report-title{margin-top:12px;font-size:15px;display:flex;align-items:center;gap:5px}.settlement-report-title b{font-size:12px;color:#7c8796;font-weight:700}.settlement-report-title em{margin-left:auto;font-style:normal;color:#9a8a6d;font-size:10.5px}.scorecard-rank{font-size:20px;font-weight:950;color:#18263a}.settlement-report-main{text-align:center;padding:9px 0 11px}.settlement-report-main strong{display:block;font-size:34px;line-height:1.05;font-weight:950}.settlement-report-main span{display:block;margin-top:5px;color:#7b8591;font-size:12px}.settlement-report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.settlement-report-grid div{padding:9px;border-radius:11px;background:#faf8f0;border:1px solid #eee6d5}.settlement-report-grid small{display:block;color:#7f8997;font-size:10.5px}.settlement-report-grid b{display:block;margin-top:3px;font-size:17px}.settlement-report-grid span{display:block;margin-top:2px;color:#9aa1aa;font-size:9.5px}.settlement-report-period{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding:9px 10px;border-radius:10px;background:#fbf8ef;color:#8a7b60;font-size:10.5px}.settlement-report-period b{color:#5d6570;font-size:10.5px}.settlement-report-foot{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #eee6d5;color:#7b8794;font-size:10.5px}.scorecard-chart{margin:4px 0 12px;padding:10px 10px 7px;border:1px solid #e8edf2;border-radius:12px;background:#fbfcfd}.scorecard-chart-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;color:#344255;font-size:11px}.scorecard-chart-head span{color:#8b97a5;font-weight:600}.scorecard-chart svg{display:block;width:100%;height:auto}.scorecard-chart-legend{display:flex;gap:14px;justify-content:flex-end;color:#8b97a5;font-size:9.5px}.scorecard-chart-legend span{display:flex;align-items:center;gap:4px}.scorecard-chart-legend i{display:inline-block;width:15px;height:3px;border-radius:3px}.legend-user{background:#1769aa}.legend-market{background:#a7b0ba}.scorecard-chart-empty{margin:4px 0 12px;padding:22px 10px;text-align:center;border:1px dashed #dfe5eb;border-radius:12px;color:#8b97a5;font-size:11px;background:#fbfcfd}
-.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}.history-more{border-top:1px solid rgba(120,130,140,.12)}.history-more summary{padding:10px 12px;color:#2d6fa3;font-weight:700;cursor:pointer;list-style:none}.history-more summary::-webkit-details-marker{display:none}.history-more summary span{font-weight:500;color:var(--ink-faint)}.history-more[open] summary{background:var(--paper-2,#f7f3ea)}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>"""
+.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
     def render_history_table(items, empty_text):
         if not items: return f'<div class="empty">{empty_text}</div>'
         blocks=[]
         for item in items:
-            all_rows = item['rows'] or []
-            def _history_row(i, r):
+            rows=[]
+            for i,r in enumerate(item['rows'],1):
                 cls='up' if r['return_pct']>=0 else 'down'
-                return f'<div class="history-rank-row"><span class="history-rank">{i}</span><span class="history-name">{safe_html_text(r["nickname"])}</span><b class="num {cls}">{r["return_pct"]:+.2f}%</b></div>'
-            top_rows = ''.join(_history_row(i, r) for i, r in enumerate(all_rows[:5], 1))
-            rest_rows = ''.join(_history_row(i, r) for i, r in enumerate(all_rows[5:], 6))
-            rest_html = (f'<details class="history-more"><summary>其餘 {len(all_rows[5:])} 名　<span>展開完整排名</span></summary>{rest_rows}</details>'
-                         if len(all_rows) > 5 else '')
-            blocks.append(f'<div class="history-period"><div class="history-period-head"><b>{html.escape(item["period"])}</b><span>完整榜單</span></div>{top_rows or "<div class=history-empty>資料不足</div>"}{rest_html}</div>')
+                rows.append(f'<div class="history-rank-row"><span class="history-rank">{i}</span><span class="history-name">{safe_html_text(r["nickname"])}</span><b class="num {cls}">{r["return_pct"]:+.2f}%</b></div>')
+            blocks.append(f'<div class="history-period"><div class="history-period-head"><b>{html.escape(item["period"])}</b><span>Top 5</span></div>{"".join(rows) or "<div class=history-empty>資料不足</div>"}</div>')
         return '<div class="history-grid">'+''.join(blocks)+'</div>'
     history_html = f"""<section class="leaderboard-history" id="leaderboard-history">
   <div class="section-head"><h2>📚 歷史排行榜</h2><span class="section-note">已結算才會封存</span></div>
@@ -30753,14 +30691,10 @@ def _screener_source_date():
 
 
 def _is_taiwan_intraday_window(now=None):
-    """判斷真正台股交易日的一般盤中時段；休市日一律不視為盤中。"""
+    """判斷台股平日一般盤中時段；週末與盤前／盤後走收盤快照。"""
     now = now or taiwan_now()
     minutes = now.hour * 60 + now.minute
-    try:
-        trading_day = is_twse_trading_day(now.date())
-    except Exception:
-        trading_day = now.weekday() < 5
-    return bool(trading_day and 9 * 60 <= minutes <= 13 * 60 + 30)
+    return (now.weekday() < 5 and 9 * 60 <= minutes <= 13 * 60 + 30)
 
 
 def _screener_snapshot_valid_for_today(snapshot):
