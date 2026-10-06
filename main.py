@@ -26334,8 +26334,10 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
     if(!el)return;
     var panel=el.closest('.portfolio-trend-panel');
     if(!panel)return;
-    var modal=panel.querySelector('.trend-modal');
-    var overlay=panel.querySelector('.trend-modal-overlay');
+    // 第一次開啟後 modal/overlay 會被移到 body；之後再次點其他圓點時，
+    // panel.querySelector() 已經找不到它們，這正是「只能點一次」的原因。
+    var modal=panel.querySelector('.trend-modal') || panel.__trendModal;
+    var overlay=panel.querySelector('.trend-modal-overlay') || panel.__trendOverlay;
     if(!modal)return;
     // 真正移到 body，避免 Safari 被任何 overflow/transform 父層影響。
     // 同時保留原 panel 參照，讓移到 body 後的「關閉」按鈕仍然找得到來源 panel。
