@@ -23174,7 +23174,11 @@ def web_positions(uid):
     # v194：移除組合配置圖；持股頁直接呈現持股明細與組合走勢。
     try:
         position_snapshots = get_portfolio_snapshots(uid, days=420)
-        position_trend_html = render_trend_chart(position_snapshots, auth_token=str(request.args.get("t") or ""))
+        position_trend_html = render_trend_chart(
+            position_snapshots,
+            requested_period=str(request.args.get("trend_period") or "3m"),
+            show_benchmark=str(request.args.get("trend_benchmark") or "1").lower() not in {"0", "false", "off", "no"},
+            auth_token=str(request.args.get("t") or ""))
     except Exception as exc:
         print(f"⚠️ 持股頁組合走勢載入失敗: {exc}")
         position_trend_html = '<div class="empty">組合走勢暫時無法載入，請稍後再試。</div>'
@@ -30546,14 +30550,18 @@ def web_portfolio(uid):
     if requested_trend_period not in {"1m", "3m", "6m", "ytd", "all"}:
         requested_trend_period = "3m"
     requested_trend_benchmark = str(request.args.get("trend_benchmark") or "1").lower() not in {"0", "false", "off", "no"}
+    # Flask request 只能在主 request thread 使用；所有 request.args 都先取成純字串，
+    # 再交給背景 worker。上一版漏掉 auth_token，worker 仍會碰到 request proxy，
+    # 導致走勢圖 future 例外、首頁只能顯示「暫時無法載入」。
+    requested_trend_token = str(request.args.get("t") or "")
 
     aux_executor = ThreadPoolExecutor(max_workers=2)
     aux_trend_future = aux_executor.submit(
-        lambda: render_trend_chart(
-            get_portfolio_snapshots(uid, days=420),
-            requested_period=requested_trend_period,
-            show_benchmark=requested_trend_benchmark,
-            auth_token=str(request.args.get("t") or "")))
+        render_trend_chart,
+        get_portfolio_snapshots(uid, days=420),
+        requested_period=requested_trend_period,
+        show_benchmark=requested_trend_benchmark,
+        auth_token=requested_trend_token)
     aux_realized_future = aux_executor.submit(get_realized_trades, uid, 500)
     aux_rank_future = aux_executor.submit(get_fast_rank_summary, uid)
 
