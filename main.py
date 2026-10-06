@@ -25881,37 +25881,32 @@ def render_portfolio_allocation_chart(holdings):
 </section>{js}'''
 
 def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, auth_token=""):
-    """
-    互動式「組合 vs 加權指數」績效圖。
+    """CSS-only 互動式組合 vs 加權指數走勢。
 
-    設計原則：
-    1. 後端只負責整理 TWR／大盤資料，前端 SVG + 原生 JS 完成互動，不依賴第三方圖表庫。
-    2. 期間切換時重新以「該期間第一個有效點」歸零，因此 1M／3M／6M／今年看到的是該期間報酬，
-       不會只是把整段累積報酬硬裁掉。
-    3. 滑動或點擊圖表會顯示日期、組合、加權指數與超額報酬；手機與桌面都可用。
-    4. 保留原本 TWR 計算邏輯，資金進出不會被誤認成投資報酬。
+    五種期間與 benchmark 都在伺服器端一次算好；前端只用原生 radio/checkbox + CSS。
+    因此不會 reload，也不依賴 JavaScript。圖上的點用同頁錨點查看每日精確資料。
     """
-    pts = [s for s in snapshots if s.get("value")]
+    pts = [s for s in snapshots if s.get("value") and s["value"] > 0]
     if len(pts) < 2:
-        return ('<div class="empty">資料還在累積中，'
-                '至少需要 2 天以上的快照才能畫出走勢，明天再回來看看。</div>')
+        return '<div class="empty">資料還在累積中，至少需要 2 天以上的快照才能畫出走勢。</div>'
 
-    # TWR：與排行榜同口徑，避免加碼／減碼直接扭曲績效曲線。
-    twr_curve = []
     try:
-        twr_curve = compute_twr(
-            [{"date": p["date"], "value": p["value"], "cost": p.get("cost")}
-             for p in pts])
+        twr_curve = compute_twr([
+            {"date": p["date"], "value": p["value"], "cost": p.get("cost")}
+            for p in pts
+        ])
     except Exception as exc:
         print(f"⚠️ 走勢圖 TWR 計算失敗，改用市值變化: {exc}")
+        twr_curve = []
 
     if len(twr_curve) >= 2:
-        by_date = {d: v for d, v in twr_curve}
-        port_series, last = [], 0.0
+        by_date = {d: float(v) for d, v in twr_curve}
+        port_series = []
+        last = 0.0
         for p in pts:
             if p["date"] in by_date:
                 last = by_date[p["date"]]
-            port_series.append(float(last))
+            port_series.append(last)
     else:
         base_value = float(pts[0]["value"] or 0)
         port_series = [
@@ -25919,438 +25914,213 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             for p in pts
         ]
 
-    # 大盤基準線：先保留原始收盤，前端依選定期間重新歸零。
-    taiex_base_idx = next((i for i, p in enumerate(pts) if p.get("taiex")), None)
-    base_taiex = float(pts[taiex_base_idx]["taiex"]) if taiex_base_idx is not None else None
-    taiex_raw = [float(p["taiex"]) if p.get("taiex") else None for p in pts]
-
-    # 將日期、累積 TWR 與大盤原始值序列化給前端。
-    data = []
+    raw_data = []
     for i, p in enumerate(pts):
-        data.append({
+        raw_data.append({
             "date": p["date"].isoformat() if hasattr(p["date"], "isoformat") else str(p["date"]),
             "port": round(float(port_series[i]), 6),
-            "taiex": round(float(taiex_raw[i]), 6) if taiex_raw[i] is not None else None,
+            "taiex": round(float(p["taiex"]), 6) if p.get("taiex") else None,
         })
 
-    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-    latest_port = float(port_series[-1])
-    latest_taiex = None
-    for v in reversed(taiex_raw):
-        if v is not None:
-            latest_taiex = v
-            break
-
-    initial_taiex_text = ""
-    if base_taiex:
-        initial_taiex_text = f"・基準大盤 {base_taiex:,.0f} 點"
-
-    # WebView fallback：部分環境不會執行這張卡片裡的 script，
-    # 所以第一幀不能依賴 JS 才把 SVG 畫出來。這裡直接在伺服器先畫好 3M 圖。
-    def _trend_date(s):
+    def parse_date(v):
         try:
-            return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+            return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
         except Exception:
             return None
 
     requested_period = str(requested_period or "3m").lower()
-    show_benchmark = bool(show_benchmark)
     if requested_period not in {"1m", "3m", "6m", "ytd", "all"}:
         requested_period = "3m"
-    _dates = [_trend_date(x["date"]) for x in data]
-    _last_date = next((d for d in reversed(_dates) if d), None)
-    if requested_period == "all" or _last_date is None:
-        _server_rows = list(data)
-    elif requested_period == "ytd":
-        _server_rows = [r for r,d in zip(data,_dates) if d and d.year == _last_date.year]
-    else:
-        _days = {"1m":31,"3m":93,"6m":186}[requested_period]
-        _cut = _last_date - timedelta(days=_days)
-        _server_rows = [r for r,d in zip(data,_dates) if d and d >= _cut]
-    if len(_server_rows) < 2:
-        _server_rows = data[-2:]
+    period_labels = {"1m": "1 個月", "3m": "3 個月", "6m": "6 個月", "ytd": "今年", "all": "全部"}
+    period_order = ["1m", "3m", "6m", "ytd", "all"]
+    last_date = next((parse_date(r["date"]) for r in reversed(raw_data) if parse_date(r["date"])), None)
 
-    def _norm_server(rows):
+    def period_rows(key):
+        if key == "all" or last_date is None:
+            return list(raw_data)
+        if key == "ytd":
+            return [r for r in raw_data if (parse_date(r["date"]) and parse_date(r["date"]).year == last_date.year)]
+        days = {"1m": 31, "3m": 93, "6m": 186}[key]
+        cutoff = last_date - timedelta(days=days)
+        rows = [r for r in raw_data if (parse_date(r["date"]) and parse_date(r["date"]) >= cutoff)]
+        return rows if len(rows) >= 2 else raw_data[-2:]
+
+    def nice_step(span):
+        if not math.isfinite(span) or span <= 0:
+            return 1.0
+        raw = span / 4.0
+        p10 = 10 ** math.floor(math.log10(raw))
+        q = raw / p10
+        return (1 if q <= 1 else 2 if q <= 2 else 5 if q <= 5 else 10) * p10
+
+    def fmt_pct(v):
+        return "—" if v is None else f"{v:+.2f}%"
+
+    def fmt_date_full(v):
+        d = parse_date(v)
+        return d.strftime("%Y/%m/%d") if d else str(v)
+
+    panels = []
+    for key in period_order:
+        rows = period_rows(key)
+        if len(rows) < 2:
+            panels.append(f'<section class="portfolio-trend-panel panel-{key}"><div class="empty">{period_labels[key]}資料不足。</div></section>')
+            continue
+
         p0 = float(rows[0]["port"])
-        t0 = next((r["taiex"] for r in rows if r["taiex"] is not None), None)
-        out=[]
+        tbase = next((float(r["taiex"]) for r in rows if r.get("taiex") is not None), None)
+        norm = []
         for r in rows:
-            pv=((1+float(r["port"])/100)/(1+p0/100)-1)*100
-            tv=((float(r["taiex"])/t0)-1)*100 if t0 is not None and r["taiex"] is not None else None
-            out.append({"date":r["date"],"port":pv,"taiex":tv})
-        return out
+            pv = ((1 + float(r["port"]) / 100) / (1 + p0 / 100) - 1) * 100
+            tv = ((float(r["taiex"]) / tbase) - 1) * 100 if tbase is not None and r.get("taiex") is not None else None
+            norm.append({"date": r["date"], "port": pv, "taiex": tv})
 
-    _sr = _norm_server(_server_rows)
-    _W,_H,_ML,_MR,_MT,_MB = 800,305,48,12,16,34
-    _PW,_PH = _W-_ML-_MR,_H-_MT-_MB
-    _vals=[r["port"] for r in _sr]+[r["taiex"] for r in _sr if r["taiex"] is not None]+[0]
-    _vmin,_vmax=min(_vals),max(_vals)
-    _span=max(2.0,_vmax-_vmin)
-    _rawstep=_span/4
-    _pow=10**math.floor(math.log10(_rawstep)) if _rawstep>0 else 1
-    _q=_rawstep/_pow
-    _step=(1 if _q<=1 else 2 if _q<=2 else 5 if _q<=5 else 10)*_pow
-    _lo=math.floor(_vmin/_step)*_step; _hi=math.ceil(_vmax/_step)*_step
-    if _hi-_lo<_step*3:
-        _mid=(_hi+_lo)/2; _lo=math.floor((_mid-_step*1.5)/_step)*_step; _hi=math.ceil((_mid+_step*1.5)/_step)*_step
-    def _sx(i): return _ML+(i/max(1,len(_sr)-1))*_PW
-    def _sy(v): return _MT+(1-(v-_lo)/max(1e-9,_hi-_lo))*_PH
-    def _spath(key):
-        out=[]; started=False
-        for i,r in enumerate(_sr):
-            v=r.get(key)
-            if v is None:
-                started=False; continue
-            out.append(("L" if started else "M")+f" {_sx(i):.1f},{_sy(v):.1f}"); started=True
-        return " ".join(out)
-    _zero=_sy(0)
-    _valid=[(i,r["port"]) for i,r in enumerate(_sr)]
-    _area=f"M {_sx(0):.1f},{_zero:.1f} L "+" L ".join(f"{_sx(i):.1f},{_sy(v):.1f}" for i,v in _valid)+f" L {_sx(len(_sr)-1):.1f},{_zero:.1f} Z"
-    _grid=[]
-    for _j in range(5):
-        _gv=_lo+(_hi-_lo)*_j/4; _gy=_sy(_gv); _cls="zero" if abs(_gv)<1e-9 else "grid"
-        _lab=f"{_gv:+.0f}%" if abs(_gv-round(_gv))<1e-9 else f"{_gv:+.1f}%"
-        _grid.append(f'<line class="{_cls}" x1="{_ML}" x2="{_W-_MR}" y1="{_gy:.1f}" y2="{_gy:.1f}"/><text class="tick" x="{_ML-8}" y="{_gy+3.3:.1f}" text-anchor="end">{_lab}</text>')
-    _label_count=4 if len(_sr)>20 else 5
-    _idxs=sorted(set(round(i*(len(_sr)-1)/max(1,_label_count-1)) for i in range(_label_count)))
-    _date_labels=[]
-    for _i in _idxs:
-        _d=_trend_date(_sr[_i]["date"]); _txt=f"{_d.month}/{_d.day:02d}" if _d else str(_sr[_i]["date"])[:10]
-        _date_labels.append(f'<text class="date" x="{_sx(_i):.1f}" y="{_H-12}" text-anchor="middle">{html.escape(_txt)}</text>')
-    _dots=[]
-    for _i,_r in enumerate(_sr):
-        _market=_r["taiex"]; _ex=_r["port"]-_market if _market is not None else None
-        _title=f'{_r["date"]}｜組合 {(_r["port"]>=0 and "+" or "")}{_r["port"]:.2f}%'
-        if _market is not None: _title+=f'｜加權指數 {(_market>=0 and "+" or "")}{_market:.2f}%｜超額 {(_ex>=0 and "+" or "")}{_ex:.2f}%'
-        _dots.append(f'<circle class="port-point" cx="{_sx(_i):.1f}" cy="{_sy(_r["port"]):.1f}" r="3.4"><title>{html.escape(_title)}</title></circle>')
-    _server_svg=f"""<svg class="portfolio-trend-svg" data-trend-svg viewBox="0 0 800 305" role="img" aria-label="組合與加權指數績效圖"><defs><linearGradient id="portfolioTrendAreaStatic" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#8b6934" stop-opacity=".18"/><stop offset="100%" stop-color="#8b6934" stop-opacity="0"/></linearGradient></defs>{"".join(_grid)}<path class="port-area" d="{_area}"/><path class="port-line" d="{_spath("port")}"/>{f'<path class="market-line" data-market-line d="{_spath("taiex")}"/>' if show_benchmark else ""}{"".join(_dots)}{"".join(_date_labels)}</svg>"""
+        vals = [r["port"] for r in norm] + [r["taiex"] for r in norm if r["taiex"] is not None] + [0]
+        vmin, vmax = min(vals), max(vals)
+        span = max(2.0, vmax - vmin)
+        step = nice_step(span)
+        lo = math.floor(vmin / step) * step
+        hi = math.ceil(vmax / step) * step
+        if hi - lo < step * 3:
+            mid = (hi + lo) / 2
+            lo = math.floor((mid - step * 1.5) / step) * step
+            hi = math.ceil((mid + step * 1.5) / step) * step
 
-    # 伺服器真正顯示的期間摘要：不能再沿用整段 420 天的 latest_port。
-    period_latest_port = float(_sr[-1]["port"]) if _sr else 0.0
-    period_market = None
-    for _r in reversed(_sr):
-        if _r.get("taiex") is not None:
-            period_market = float(_r["taiex"])
-            break
-    period_excess = (period_latest_port - period_market) if period_market is not None else None
-    period_code = {"1m":"1M","3m":"3M","6m":"6M","ytd":"YTD","all":"全部"}.get(requested_period, "3M")
-    period_start_date = _sr[0]["date"] if _sr else pts[0]["date"]
-    period_end_date = _sr[-1]["date"] if _sr else pts[-1]["date"]
-    auth_hidden = (
-        f'<input type="hidden" name="t" value="{html.escape(str(auth_token or ""), quote=True)}">'
-        if auth_token else ""
-    )
+        W, H, ML, MR, MT, MB = 900, 340, 72, 18, 20, 46
+        PW, PH = W - ML - MR, H - MT - MB
+        def x(i): return ML + (i / max(1, len(norm) - 1)) * PW
+        def y(v): return MT + (1 - (v - lo) / max(1e-9, hi - lo)) * PH
+        zero = y(0)
 
-    css = """
-<style>
-/* V199：互動式組合績效圖。沿用首頁藍灰＋金色視覺，避免與持股卡片搶主色。 */
-.portfolio-trend-card{position:relative;background:linear-gradient(180deg,#ffffff 0%,#fbfdff 100%);border:1px solid #dce6ee;border-radius:22px;padding:17px 14px 14px;margin:16px 0;box-shadow:0 10px 28px rgba(39,76,119,.07);overflow:hidden}
-.portfolio-trend-card:before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:linear-gradient(90deg,#355f82,#a88243,#355f82);opacity:.88}
-.portfolio-trend-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin:2px 1px 11px}
-.portfolio-trend-title h2{margin:0;color:#162b42;font-size:28px;letter-spacing:.01em}
-.portfolio-trend-title p{margin:5px 0 0;color:#77899a;font-size:13px;line-height:1.55}
-.portfolio-trend-status{display:flex;align-items:center;gap:6px;padding:6px 9px;border:1px solid #dce6ee;border-radius:999px;background:#f8fbfd;color:#63788b;font-size:10px;font-weight:800;white-space:nowrap}
-.portfolio-trend-status:before{content:"";width:6px;height:6px;border-radius:50%;background:#4b85aa;box-shadow:0 0 0 3px rgba(75,133,170,.10)}
-.portfolio-trend-tabs{display:flex;gap:8px;overflow-x:auto;padding:3px 1px 10px;scrollbar-width:none}
-.portfolio-trend-tabs::-webkit-scrollbar{display:none}
-.portfolio-trend-tab-form{display:block;margin:0;padding:0}
-.portfolio-trend-tab{appearance:none;border:1px solid #ccd9e3;background:#f7fafc;color:#5f7285;border-radius:12px;padding:12px 16px;font-size:15px;line-height:1.05;font-weight:850;white-space:nowrap;cursor:pointer;transition:all .16s ease;outline:none;box-shadow:none;text-decoration:none;-webkit-tap-highlight-color:transparent;-webkit-appearance:none}
-.portfolio-trend-tab:hover{border-color:#b8cbd9;background:#fff;transform:translateY(-1px)}
-.portfolio-trend-tab.active{background:#fff;border-color:#c4d2dc;color:#8b6934;box-shadow:inset 0 -4px 0 #b18a4b}
-.portfolio-trend-tab:focus,.portfolio-trend-tab:focus-visible,.portfolio-trend-tab:active{background:#fff;color:#8b6934;border-color:#c4d2dc;outline:none;box-shadow:inset 0 -4px 0 #b18a4b}
-.portfolio-trend-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:0 1px 9px}
-.portfolio-trend-benchmark-form{display:block;margin:0;padding:0}
-.portfolio-trend-toggle{appearance:none;border:1px solid #cbd8e2;background:#fff;color:#5f7285;border-radius:11px;padding:11px 14px;font-size:14px;font-weight:850;cursor:pointer;text-decoration:none;outline:none;box-shadow:0 4px 12px rgba(39,76,119,.07);-webkit-tap-highlight-color:transparent;-webkit-appearance:none}
-.portfolio-trend-toggle:hover{border-color:#b8cbd9;background:#fff}
-.portfolio-trend-toggle:focus,.portfolio-trend-toggle:focus-visible,.portfolio-trend-toggle:active{background:#fff;color:#5f7285;border-color:#b8cbd9;outline:none}
-.portfolio-trend-toggle.off{background:#f2f4f6;color:#9aa5ae}
-.portfolio-trend-current{display:flex;align-items:baseline;gap:7px;color:#718497;font-size:13px;flex-wrap:wrap}
-.portfolio-trend-current b{color:#8b6934;font-size:16px}
-.portfolio-trend-plot{position:relative;border:1px solid #dce6ee;border-radius:17px;background:linear-gradient(180deg,#f8fbfe 0%,#f4f8fb 100%);overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.8)}
-.portfolio-trend-svg{display:block;width:100%;height:292px;touch-action:none;user-select:none;-webkit-user-select:none}
-.portfolio-trend-svg .grid{stroke:#e2e9ef;stroke-width:1}
-.portfolio-trend-svg .zero{stroke:#aab8c4;stroke-width:1.15;stroke-dasharray:4 4}
-.portfolio-trend-svg .tick{fill:#718597;font-size:12px;font-weight:800}
-.portfolio-trend-svg .date{fill:#748798;font-size:12px;font-weight:800}
-.portfolio-trend-svg .port-area{fill:url(#portfolioTrendArea)}
-.portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}
-.portfolio-trend-svg .port-dot{fill:#8b6934;stroke:#fff;stroke-width:2.2}
-.portfolio-trend-svg .market-line{fill:none;stroke:#9aa19c;stroke-width:1.8;stroke-dasharray:5 4;stroke-linejoin:round;stroke-linecap:round}
-.portfolio-trend-svg .market-dot{fill:#9aa19c;stroke:#fff;stroke-width:1.7}
-.portfolio-trend-svg .crosshair{stroke:#74899a;stroke-width:1;stroke-dasharray:3 3;opacity:.8}
-.portfolio-trend-svg .cross-dot{fill:#fff;stroke:#8b6934;stroke-width:3}
-.portfolio-trend-hit{fill:transparent;cursor:crosshair}
-.portfolio-trend-tooltip{position:absolute;z-index:4;min-width:168px;max-width:215px;padding:10px 11px;border:1px solid #d8e3eb;border-radius:12px;background:rgba(255,255,255,.96);box-shadow:0 12px 28px rgba(28,54,76,.15);pointer-events:none;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);opacity:0;transform:translateY(5px);transition:opacity .12s ease,transform .12s ease}
-.portfolio-trend-tooltip.show{opacity:1;transform:translateY(0)}
-.portfolio-trend-tooltip-date{color:#5e7588;font-size:12px;font-weight:850;margin-bottom:7px}
-.portfolio-trend-tooltip-row{display:flex;justify-content:space-between;gap:12px;margin-top:6px;color:#82909c;font-size:12px}
-.portfolio-trend-tooltip-row b{color:#304a60;font-size:13px;font-variant-numeric:tabular-nums}
-.portfolio-trend-tooltip-row b.port{color:#8b6934}.portfolio-trend-tooltip-row b.market{color:#66716d}.portfolio-trend-tooltip-row b.outperform{color:#315d7f}
-.portfolio-trend-summary{display:grid;grid-template-columns:1.05fr 1fr 1fr;gap:7px;margin-top:9px}
-.portfolio-trend-stat{min-width:0;padding:9px 10px;border:1px solid #e0e7ed;border-radius:11px;background:#fff}
-.portfolio-trend-stat small{display:block;color:#8593a0;font-size:11px;font-weight:750}
-.portfolio-trend-stat strong{display:block;margin-top:4px;color:#8b6934;font-size:22px;font-variant-numeric:tabular-nums;line-height:1.1}
-.portfolio-trend-stat strong.market{color:#66716d}.portfolio-trend-stat strong.outperform{color:#315d7f}
-.portfolio-trend-legend{display:flex;align-items:center;flex-wrap:wrap;gap:7px 14px;margin:8px 1px 0;color:#728494;font-size:11px;font-weight:750}
-.portfolio-trend-legend span{display:inline-flex;align-items:center;gap:5px}
-.portfolio-trend-legend i{display:inline-block;width:16px;height:3px;border-radius:3px;background:#8b6934}
-.portfolio-trend-legend i.market{height:2px;background:repeating-linear-gradient(90deg,#9aa19c 0 5px,transparent 5px 8px)}
-.portfolio-trend-note{margin:7px 1px 0;color:#8a98a4;font-size:11px;line-height:1.55}
-.portfolio-trend-empty-market{display:flex;align-items:center;justify-content:center;min-height:40px;padding:5px;color:#8997a3;font-size:10px}
-@media(max-width:640px){
- .portfolio-trend-card{padding:15px 10px 12px;border-radius:19px}
- .portfolio-trend-title h2{font-size:25px}
- .portfolio-trend-title p{font-size:12px}
- .portfolio-trend-status{font-size:10px;padding:6px 8px}
- .portfolio-trend-tab{font-size:14px;padding:10px 14px}
- .portfolio-trend-toggle{font-size:13px;padding:10px 12px}
- .portfolio-trend-svg{height:270px}
- .portfolio-trend-summary{grid-template-columns:1fr 1fr}
- .portfolio-trend-stat:last-child{grid-column:1/-1}
- .portfolio-trend-stat strong{font-size:20px}
- .portfolio-trend-toolbar{align-items:flex-end}
-}
-</style>
-"""
+        grid = []
+        gv = lo
+        guard = 0
+        while gv <= hi + step / 2 and guard < 10:
+            gy = y(gv)
+            cls = "zero" if abs(gv) < 1e-9 else "grid"
+            lab = f"{gv:+.0f}%" if abs(gv - round(gv)) < 1e-9 else f"{gv:+.1f}%"
+            grid.append(
+                f'<line class="{cls}" x1="{ML}" x2="{W-MR}" y1="{gy:.1f}" y2="{gy:.1f}"/>'
+                f'<text class="tick" x="{ML-12}" y="{gy+4:.1f}" text-anchor="end">{html.escape(lab)}</text>'
+            )
+            gv += step
+            guard += 1
 
-    js = f"""
-<script>
-(function(){{
-  var root=document.getElementById('portfolio-trend');
-  if(!root || root.dataset.bound==='1') return;
-  root.dataset.bound='1';
-  var raw={payload};
-  var tabs=[].slice.call(root.querySelectorAll('[data-trend-period]'));
-  var benchmarkBtn=root.querySelector('[data-trend-benchmark]');
-  var svg=root.querySelector('[data-trend-svg]');
-  var plot=root.querySelector('[data-trend-plot]');
-  var tooltip=root.querySelector('[data-trend-tooltip]');
-  var currentPeriod='{requested_period}';
-  var benchmarkOn={"1" if show_benchmark else "0"} === '1';
-  var resizeTimer=null;
+        def path_for(k):
+            out = []
+            started = False
+            for i, r in enumerate(norm):
+                v = r.get(k)
+                if v is None:
+                    started = False
+                    continue
+                out.append(("L" if started else "M") + f" {x(i):.1f},{y(v):.1f}")
+                started = True
+            return " ".join(out)
 
-  function esc(v){{return String(v).replace(/[&<>'"]/g,function(c){{return {{'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\\"':'&quot;'}}[c]||c;}});}}
-  function fmtPct(v){{
-    if(v===null || v===undefined || !isFinite(v)) return '—';
-    return (v>=0?'+':'') + v.toFixed(2) + '%';
-  }}
-  function fmtDate(s){{
-    var d=new Date(s+'T00:00:00+08:00');
-    if(isNaN(d.getTime())) return s;
-    return (d.getMonth()+1)+'/'+String(d.getDate()).padStart(2,'0');
-  }}
-  function fmtDateFull(s){{
-    var d=new Date(s+'T00:00:00+08:00');
-    if(isNaN(d.getTime())) return s;
-    return d.getFullYear()+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0');
-  }}
-  function startOfYear(){{
-    var now=new Date();
-    return now.getFullYear()+'-01-01';
-  }}
-  function periodDays(p){{
-    if(p==='1m') return 31;
-    if(p==='3m') return 93;
-    if(p==='6m') return 186;
-    if(p==='ytd') return null;
-    return null;
-  }}
-  function selectRows(p){{
-    if(!raw.length) return [];
-    if(p==='ytd') return raw.filter(function(x){{return x.date>=startOfYear();}});
-    var days=periodDays(p);
-    if(!days) return raw.slice();
-    var last=raw[raw.length-1].date;
-    var end=new Date(last+'T00:00:00+08:00');
-    var from=new Date(end.getTime()-days*86400000);
-    var rows=raw.filter(function(x){{return new Date(x.date+'T00:00:00+08:00')>=from;}});
-    return rows.length>=2 ? rows : raw.slice(-Math.min(raw.length,Math.max(2,days)));
-  }}
-  function normalize(rows){{
-    if(!rows.length) return [];
-    var p0=rows[0].port;
-    var t0=rows.find(function(x){{return x.taiex!==null && x.taiex!==undefined;}});
-    var tbase=t0 ? t0.taiex : null;
-    return rows.map(function(x){{
-      var pv=(1+x.port/100)/(1+p0/100)-1;
-      var tv=(tbase!==null && x.taiex!==null) ? (x.taiex/tbase-1) : null;
-      return {{date:x.date,port:pv*100,taiex:tv*100}};
-    }});
-  }}
-  function niceStep(span){{
-    if(!isFinite(span) || span<=0) return 1;
-    var rawStep=span/4;
-    var p=Math.pow(10,Math.floor(Math.log10(rawStep)));
-    var n=rawStep/p;
-    var q=n<=1?1:n<=2?2:n<=5?5:10;
-    return q*p;
-  }}
-  function niceFloor(v,step){{return Math.floor(v/step)*step;}}
-  function niceCeil(v,step){{return Math.ceil(v/step)*step;}}
-  function pathFor(rows,key,x,y){{
-    var path='';
-    var started=false;
-    rows.forEach(function(r,i){{
-      var v=r[key];
-      if(v===null || v===undefined || !isFinite(v)){{started=false;return;}}
-      path+=(started?' L ':'M ')+x(i)+','+y(v);
-      started=true;
-    }});
-    return path;
-  }}
-  function areaFor(rows,x,y,zeroY){{
-    var valid=[];
-    rows.forEach(function(r,i){{if(isFinite(r.port)) valid.push([i,r.port]);}});
-    if(!valid.length) return '';
-    var first=valid[0][0], last=valid[valid.length-1][0];
-    var d='M '+x(first)+','+zeroY+' L '+x(first)+','+y(valid[0][1]);
-    for(var j=1;j<valid.length;j++) d+=' L '+x(valid[j][0])+','+y(valid[j][1]);
-    d+=' L '+x(last)+','+zeroY+' Z';
-    return d;
-  }}
-  function setTooltip(idx,rows,xValue){{
-    var r=rows[idx]; if(!r || !tooltip || !plot) return;
-    var market=r.taiex;
-    var excess=(market!==null && isFinite(market)) ? r.port-market : null;
-    tooltip.innerHTML='<div class="portfolio-trend-tooltip-date">'+esc(fmtDateFull(r.date))+'</div>'+
-      '<div class="portfolio-trend-tooltip-row"><span>我的組合</span><b class="port">'+esc(fmtPct(r.port))+'</b></div>'+ 
-      (market!==null && isFinite(market)?'<div class="portfolio-trend-tooltip-row"><span>加權指數</span><b class="market">'+esc(fmtPct(market))+'</b></div>':'')+
-      (excess!==null?'<div class="portfolio-trend-tooltip-row"><span>超額報酬</span><b class="outperform">'+esc(fmtPct(excess))+'</b></div>':'');
-    var rect=plot.getBoundingClientRect();
-    var sx=xValue/800*rect.width;
-    var left=Math.max(8,Math.min(rect.width-tooltip.offsetWidth-8,sx+12));
-    var top=10;
-    tooltip.style.left=left+'px'; tooltip.style.top=top+'px'; tooltip.classList.add('show');
-  }}
-  function hideTooltip(){{if(tooltip) tooltip.classList.remove('show');}}
-  function drawCrosshair(idx,rows,x,y,zeroY,W,H,ML,MR,MT,MB,viewH){{
-    var old=svg.querySelector('[data-crosshair-group]');
-    if(old) old.remove();
-    var r=rows[idx]; if(!r) return;
-    var g=document.createElementNS('http://www.w3.org/2000/svg','g');
-    g.setAttribute('data-crosshair-group','1');
-    var cx=x(idx), py=y(r.port), marketY=(r.taiex===null?null:y(r.taiex));
-    var line=document.createElementNS('http://www.w3.org/2000/svg','line');
-    line.setAttribute('x1',cx);line.setAttribute('x2',cx);line.setAttribute('y1',MT);line.setAttribute('y2',viewH-MB);line.setAttribute('class','crosshair');g.appendChild(line);
-    var dot=document.createElementNS('http://www.w3.org/2000/svg','circle');dot.setAttribute('cx',cx);dot.setAttribute('cy',py);dot.setAttribute('r',5.2);dot.setAttribute('class','cross-dot');g.appendChild(dot);
-    if(marketY!==null && benchmarkOn){{var md=document.createElementNS('http://www.w3.org/2000/svg','circle');md.setAttribute('cx',cx);md.setAttribute('cy',marketY);md.setAttribute('r',4);md.setAttribute('class','market-dot');g.appendChild(md);}}
-    svg.appendChild(g);
-    setTooltip(idx,rows,cx);
-  }}
-  function render(){{
-    var rows=normalize(selectRows(currentPeriod));
-    if(rows.length<2){{
-      svg.innerHTML='';
-      root.querySelector('[data-trend-empty]').style.display='flex';
-      return;
-    }}
-    root.querySelector('[data-trend-empty]').style.display='none';
-    var W=800,H=305,ML=44,MR=12,MT=16,MB=34;
-    var plotW=W-ML-MR, plotH=H-MT-MB, n=rows.length;
-    var vals=rows.map(function(r){{return r.port;}}).concat(benchmarkOn?rows.filter(function(r){{return r.taiex!==null;}}).map(function(r){{return r.taiex;}}):[]);
-    var minV=Math.min.apply(null,vals.concat([0])), maxV=Math.max.apply(null,vals.concat([0]));
-    var span=Math.max(2,maxV-minV), step=niceStep(span), lo=niceFloor(minV,step), hi=niceCeil(maxV,step);
-    if(hi-lo<step*3){{var mid=(hi+lo)/2;lo=niceFloor(mid-step*1.5,step);hi=niceCeil(mid+step*1.5,step);}}
-    var x=function(i){{return ML+(i/(n-1))*plotW;}};
-    var y=function(v){{return MT+(1-(v-lo)/(hi-lo))*plotH;}};
-    var zeroY=y(0);
-    var parts=[];
-    parts.push('<defs><linearGradient id="portfolioTrendArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#8b6934" stop-opacity=".16"/><stop offset="100%" stop-color="#8b6934" stop-opacity="0"/></linearGradient></defs>');
-    for(var g=lo;g<=hi+step/2;g+=step){{
-      var gy=y(g);
-      if(gy<MT-1||gy>H-MB+1) continue;
-      parts.push('<line class="'+(Math.abs(g)<1e-9?'zero':'grid')+'" x1="'+ML+'" x2="'+(W-MR)+'" y1="'+gy.toFixed(1)+'" y2="'+gy.toFixed(1)+'"/>');
-      parts.push('<text class="tick" x="'+(ML-7)+'" y="'+(gy+3.3).toFixed(1)+'" text-anchor="end">'+(g>0?'+':'')+g.toFixed(g%1===0?0:1)+'%</text>');
-    }}
-    // 日期刻度：手機少一點、桌面最多六個。
-    var labelCount=window.innerWidth<=640?4:6;
-    var stepIdx=Math.max(1,Math.ceil((n-1)/(labelCount-1)));
-    var used=[];
-    for(var i=0;i<n;i+=stepIdx) used.push(i);
-    if(used[used.length-1]!==n-1) used.push(n-1);
-    used.forEach(function(i){{parts.push('<text class="date" x="'+x(i).toFixed(1)+'" y="'+(H-12)+'" text-anchor="middle">'+esc(fmtDate(rows[i].date))+'</text>');}});
-    var area=areaFor(rows,x,y,zeroY);
-    if(area) parts.push('<path class="port-area" d="'+area+'"/>');
-    parts.push('<path class="port-line" d="'+pathFor(rows,'port',x,y)+'"/>');
-    if(benchmarkOn) parts.push('<path class="market-line" d="'+pathFor(rows,'taiex',x,y)+'"/>');
-    // 透明 hit targets：每個日期都可點擊／觸控。
-    for(var j=0;j<n;j++){{parts.push('<rect class="portfolio-trend-hit" data-hit-index="'+j+'" x="'+(j===0?ML:((x(j-1)+x(j))/2)) .toFixed(1)+'" y="'+MT+'" width="'+(j===0?((x(0)+x(1))/2-ML): (j===n-1?(W-MR-(x(n-2)+x(n-1))/2):((x(j)+x(j+1))/2-(x(j-1)+x(j))/2))).toFixed(1)+'" height="'+plotH+'"/>');}}
-    svg.setAttribute('viewBox','0 0 '+W+' '+H);
-    svg.innerHTML=parts.join('');
-    svg.querySelectorAll('.portfolio-trend-hit').forEach(function(hit){{
-      var idx=Number(hit.dataset.hitIndex);
-      function activate(e){{
-        var rect=svg.getBoundingClientRect();
-        var ratio=(e.touches&&e.touches[0])?((e.touches[0].clientX-rect.left)/rect.width):((e.clientX-rect.left)/rect.width);
-        var pos=Math.max(0,Math.min(n-1,Math.round(ratio*(n-1))));
-        drawCrosshair(pos,rows,x,y,zeroY,W,H,ML,MR,MT,MB,H);
-      }}
-      hit.addEventListener('mouseenter',function(e){{activate(e);}});
-      hit.addEventListener('mousemove',function(e){{activate(e);}});
-      hit.addEventListener('touchstart',function(e){{activate(e);}},{{passive:true}});
-      hit.addEventListener('touchmove',function(e){{activate(e);}},{{passive:true}});
-      hit.addEventListener('click',function(e){{e.stopPropagation();activate(e);}});
-    }});
+        area_points = "".join(f" L {x(i):.1f},{y(r['port']):.1f}" for i, r in enumerate(norm))
+        area = f"M {x(0):.1f},{zero:.1f} L {x(0):.1f},{y(norm[0]['port']):.1f}{area_points} L {x(len(norm)-1):.1f},{zero:.1f} Z"
 
-    var last=rows[rows.length-1];
-    var marketLast=null;
-    for(var k=rows.length-1;k>=0;k--){{if(rows[k].taiex!==null){{marketLast=rows[k].taiex;break;}}}}
-    var excess=marketLast!==null?last.port-marketLast:null;
-    root.querySelector('[data-stat-port]').textContent=fmtPct(last.port);
-    root.querySelector('[data-stat-market]').textContent=marketLast!==null?fmtPct(marketLast):'—';
-    root.querySelector('[data-stat-excess]').textContent=excess!==null?fmtPct(excess):'—';
-    root.querySelector('[data-current-label]').textContent=rows[0].date+' → '+last.date;
-    root.querySelector('[data-current-port]').textContent=fmtPct(last.port);
-    root.querySelector('[data-current-period]').textContent=currentPeriod==='all'?'全部資料':currentPeriod==='ytd'?'今年':currentPeriod.toUpperCase();
-  }}
+        label_count = 5 if len(norm) > 20 else min(6, len(norm))
+        idxs = sorted(set(round(i * (len(norm) - 1) / max(1, label_count - 1)) for i in range(label_count)))
+        dates = []
+        for i in idxs:
+            d = parse_date(norm[i]["date"])
+            txt = f"{d.month}/{d.day:02d}" if d else str(norm[i]["date"])[:10]
+            dates.append(f'<text class="date" x="{x(i):.1f}" y="{H-14}" text-anchor="middle">{html.escape(txt)}</text>')
 
-  window.addEventListener('resize',function(){{clearTimeout(resizeTimer);resizeTimer=setTimeout(render,120);}});
-  render();
-}})();
-</script>
-"""
+        points = []
+        details = []
+        for i, r in enumerate(norm):
+            dkey = str(r["date"]).replace("-", "")
+            anchor = f"trend-point-{key}-{dkey}"
+            market = r.get("taiex")
+            excess = r["port"] - market if market is not None else None
+            title = f"{fmt_date_full(r['date'])}｜組合 {fmt_pct(r['port'])}"
+            if market is not None:
+                title += f"｜加權指數 {fmt_pct(market)}｜超額 {fmt_pct(excess)}"
+            points.append(
+                f'<a class="trend-point-link" href="#{anchor}" aria-label="查看 {html.escape(title)}">'
+                f'<circle class="port-point" cx="{x(i):.1f}" cy="{y(r["port"]):.1f}" r="6"><title>{html.escape(title)}</title></circle></a>'
+            )
+            details.append(
+                f'<div class="trend-point-detail" id="{anchor}">'
+                f'<div class="trend-point-detail-date">{html.escape(fmt_date_full(r["date"]))}</div>'
+                f'<div><span>我的組合</span><b class="port">{html.escape(fmt_pct(r["port"]))}</b></div>'
+                f'{f"<div class=market-detail><span>加權指數</span><b class=market>{html.escape(fmt_pct(market))}</b></div>" if market is not None else ""}'
+                f'{f"<div><span>超額報酬</span><b class=excess>{html.escape(fmt_pct(excess))}</b></div>" if excess is not None else ""}'
+                f'</div>'
+            )
 
-    card = f"""
-<div class="portfolio-trend-card" id="portfolio-trend">
-  {css}
-  <div class="portfolio-trend-head">
-    <div class="portfolio-trend-title">
-      <h2>組合走勢</h2>
-      <p>相對起始日報酬・時間加權績效（TWR）{initial_taiex_text}</p>
-    </div>
-    <div class="portfolio-trend-status">可互動</div>
-  </div>
-  <div class="portfolio-trend-tabs" role="tablist" aria-label="績效期間">
-    <form method="get" action="/web/portfolio" class="portfolio-trend-tab-form"><input type="hidden" name="trend_period" value="1m"><input type="hidden" name="trend_benchmark" value="{1 if show_benchmark else 0}">{auth_hidden}<button type="submit" class="portfolio-trend-tab{' active' if requested_period == '1m' else ''}" data-trend-period="1m">1 個月</button></form>
-    <form method="get" action="/web/portfolio" class="portfolio-trend-tab-form"><input type="hidden" name="trend_period" value="3m"><input type="hidden" name="trend_benchmark" value="{1 if show_benchmark else 0}">{auth_hidden}<button type="submit" class="portfolio-trend-tab{' active' if requested_period == '3m' else ''}" data-trend-period="3m">3 個月</button></form>
-    <form method="get" action="/web/portfolio" class="portfolio-trend-tab-form"><input type="hidden" name="trend_period" value="6m"><input type="hidden" name="trend_benchmark" value="{1 if show_benchmark else 0}">{auth_hidden}<button type="submit" class="portfolio-trend-tab{' active' if requested_period == '6m' else ''}" data-trend-period="6m">6 個月</button></form>
-    <form method="get" action="/web/portfolio" class="portfolio-trend-tab-form"><input type="hidden" name="trend_period" value="ytd"><input type="hidden" name="trend_benchmark" value="{1 if show_benchmark else 0}">{auth_hidden}<button type="submit" class="portfolio-trend-tab{' active' if requested_period == 'ytd' else ''}" data-trend-period="ytd">今年</button></form>
-    <form method="get" action="/web/portfolio" class="portfolio-trend-tab-form"><input type="hidden" name="trend_period" value="all"><input type="hidden" name="trend_benchmark" value="{1 if show_benchmark else 0}">{auth_hidden}<button type="submit" class="portfolio-trend-tab{' active' if requested_period == 'all' else ''}" data-trend-period="all">全部</button></form>
-  </div>
-  <div class="portfolio-trend-toolbar">
-    <div class="portfolio-trend-current"><span>目前顯示</span><b data-current-period>{period_code}</b><span data-current-label>{period_start_date} → {period_end_date}</span></div>
-    <form method="get" action="/web/portfolio" class="portfolio-trend-benchmark-form"><input type="hidden" name="trend_period" value="{requested_period}"><input type="hidden" name="trend_benchmark" value="{0 if show_benchmark else 1}">{auth_hidden}<button type="submit" class="portfolio-trend-toggle" data-trend-benchmark>{"隱藏加權指數" if show_benchmark else "顯示加權指數"}</button></form>
-  </div>
-  <div class="portfolio-trend-plot" data-trend-plot>
-    {_server_svg}
-    <div class="portfolio-trend-tooltip" data-trend-tooltip></div>
-    <div class="portfolio-trend-empty-market" data-trend-empty style="display:none">這個期間的資料不足，請稍後再試。</div>
-  </div>
+        svg = (
+            f'<svg class="portfolio-trend-svg" viewBox="0 0 {W} {H}" role="img" aria-label="{period_labels[key]}組合與加權指數績效圖">'
+            f'<defs><linearGradient id="trend-area-{key}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#8b6934" stop-opacity=".18"/><stop offset="100%" stop-color="#8b6934" stop-opacity="0"/></linearGradient></defs>'
+            f'{"".join(grid)}'
+            f'<path class="port-area" d="{area}" fill="url(#trend-area-{key})"/>'
+            f'<path class="port-line" d="{path_for("port")}"/>'
+            f'<path class="market-layer market-line" d="{path_for("taiex")}"/>'
+            f'{"".join(points)}{"".join(dates)}</svg>'
+        )
+
+        latest = norm[-1]
+        market_latest = next((r["taiex"] for r in reversed(norm) if r.get("taiex") is not None), None)
+        excess = latest["port"] - market_latest if market_latest is not None else None
+        panels.append(
+            f'''<section class="portfolio-trend-panel panel-{key}">
+  <div class="portfolio-trend-range"><span>資料期間</span><b>{html.escape(fmt_date_full(norm[0]["date"]))} → {html.escape(fmt_date_full(norm[-1]["date"]))}</b></div>
+  <div class="portfolio-trend-plot">{svg}</div>
+  <div class="trend-point-hint">點擊圖上的圓點，可查看該交易日的精確報酬。</div>
+  <div class="trend-point-details">{"".join(details)}</div>
   <div class="portfolio-trend-summary">
-    <div class="portfolio-trend-stat"><small>期間組合</small><strong data-stat-port>{period_latest_port:+.2f}%</strong></div>
-    <div class="portfolio-trend-stat"><small>期間加權指數</small><strong class="market" data-stat-market>{'—' if period_market is None else f'{period_market:+.2f}%'}</strong></div>
-    <div class="portfolio-trend-stat"><small>超額報酬</small><strong class="outperform" data-stat-excess>{"—" if period_excess is None else (f"{period_excess:+.2f}%")}</strong></div>
+    <div class="portfolio-trend-stat"><small>期間組合</small><strong class="port">{html.escape(fmt_pct(latest["port"]))}</strong></div>
+    <div class="portfolio-trend-stat"><small>期間加權指數</small><strong class="market">{html.escape(fmt_pct(market_latest))}</strong></div>
+    <div class="portfolio-trend-stat"><small>超額報酬</small><strong class="excess">{html.escape(fmt_pct(excess))}</strong></div>
   </div>
-  <div class="portfolio-trend-legend">
-    <span><i></i>我的組合</span>
-    <span><i class="market"></i>加權指數</span>
-    <span>點擊／滑動圖表查看每日數據</span>
-  </div>
-  <div class="portfolio-trend-note">切換期間會重新開啟首頁，先由伺服器算好該期間資料再顯示；組合採 TWR，避免加碼或減碼把資金流誤算成績效。{html.escape('資料延伸至最近快照。')}</div>
-  {js}
-</div>
-"""
-    return card
+</section>'''
+        )
+
+    css = r'''
+<style>
+/* V206: CSS-only tabs + benchmark toggle + same-page point drilldown; no reload / no JS. */
+.portfolio-trend-card{position:relative;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%);border:1px solid #d7e2ea;border-radius:24px;padding:20px 18px 19px;margin:18px 0;box-shadow:0 12px 32px rgba(39,76,119,.08);overflow:hidden}
+.portfolio-trend-card:before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:linear-gradient(90deg,#35688d,#b28b4c,#35688d)}
+.portfolio-trend-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin:2px 0 18px}
+.portfolio-trend-title h2{margin:0;color:#162b42;font-size:30px;line-height:1.2}.portfolio-trend-title p{margin:8px 0 0;color:#718397;font-size:15px;line-height:1.5}.portfolio-trend-status{padding:9px 12px;border:1px solid #d8e3eb;border-radius:999px;background:#f8fbfd;color:#5c7487;font-size:12px;font-weight:850;white-space:nowrap}
+.trend-period-radio,.trend-benchmark-toggle{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
+.portfolio-trend-tabs{display:flex;gap:10px;overflow-x:auto;padding:2px 1px 12px;scrollbar-width:none}.portfolio-trend-tabs::-webkit-scrollbar{display:none}
+.portfolio-trend-tab{display:inline-flex;align-items:center;justify-content:center;min-width:92px;border:1.5px solid #cbd9e4;background:#f7fafc;color:#596e81;border-radius:14px;padding:13px 16px;font-size:18px;line-height:1;font-weight:900;white-space:nowrap;cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none}
+#trend-period-1m:checked ~ .portfolio-trend-tabs label[for="trend-period-1m"],#trend-period-3m:checked ~ .portfolio-trend-tabs label[for="trend-period-3m"],#trend-period-6m:checked ~ .portfolio-trend-tabs label[for="trend-period-6m"],#trend-period-ytd:checked ~ .portfolio-trend-tabs label[for="trend-period-ytd"],#trend-period-all:checked ~ .portfolio-trend-tabs label[for="trend-period-all"]{background:#fff;border-color:#c2d0dc;color:#8b6934;box-shadow:inset 0 -4px 0 #b18a4b}
+.portfolio-trend-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:3px 0 13px}.portfolio-trend-current{font-size:14px;color:#74879a}.portfolio-trend-current b{color:#8b6934;font-size:20px;margin-left:5px}
+.portfolio-trend-current .period-current-label{display:none}.portfolio-trend-current .period-label-3m{display:inline}
+#trend-period-1m:checked ~ .portfolio-trend-toolbar .period-label-1m,#trend-period-3m:checked ~ .portfolio-trend-toolbar .period-label-3m,#trend-period-6m:checked ~ .portfolio-trend-toolbar .period-label-6m,#trend-period-ytd:checked ~ .portfolio-trend-toolbar .period-label-ytd,#trend-period-all:checked ~ .portfolio-trend-toolbar .period-label-all{display:inline}
+.portfolio-trend-benchmark-label{display:inline-flex;align-items:center;gap:8px;padding:11px 14px;border:1.5px solid #cbd9e4;background:#fff;border-radius:13px;color:#566d80;font-size:14px;font-weight:900;cursor:pointer;-webkit-tap-highlight-color:transparent}.portfolio-trend-benchmark-label .show-text{display:none}
+#trend-benchmark:checked ~ .portfolio-trend-toolbar .portfolio-trend-benchmark-label .hide-text{display:none}#trend-benchmark:checked ~ .portfolio-trend-toolbar .portfolio-trend-benchmark-label .show-text{display:inline}#trend-benchmark:checked ~ .portfolio-trend-panels .market-layer{display:none}
+.portfolio-trend-panel{display:none}#trend-period-1m:checked ~ .portfolio-trend-panels .panel-1m,#trend-period-3m:checked ~ .portfolio-trend-panels .panel-3m,#trend-period-6m:checked ~ .portfolio-trend-panels .panel-6m,#trend-period-ytd:checked ~ .portfolio-trend-panels .panel-ytd,#trend-period-all:checked ~ .portfolio-trend-panels .panel-all{display:block}
+.portfolio-trend-range{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:1px 3px 10px;color:#77899a;font-size:14px}.portfolio-trend-range b{color:#667b8d;font-size:15px}
+.portfolio-trend-plot{border:1.5px solid #d7e2ea;border-radius:19px;background:linear-gradient(180deg,#f8fbfe 0%,#f3f8fb 100%);overflow:hidden}.portfolio-trend-svg{display:block;width:100%;height:410px;touch-action:manipulation}
+.portfolio-trend-svg .grid{stroke:#e0e8ee;stroke-width:1}.portfolio-trend-svg .zero{stroke:#98aab8;stroke-width:1.3;stroke-dasharray:5 5}.portfolio-trend-svg .tick{fill:#6f8192;font-size:13px;font-weight:800}.portfolio-trend-svg .date{fill:#6f8192;font-size:11px;font-weight:800}.portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:4;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .market-line{fill:none;stroke:#949c98;stroke-width:2.6;stroke-dasharray:7 5;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .port-point{fill:#8b6934;stroke:#fff;stroke-width:2.5;cursor:pointer}.portfolio-trend-svg .trend-point-link:focus .port-point{stroke:#315d7f;stroke-width:4}
+.trend-point-hint{margin:10px 3px 0;color:#7d8e9b;font-size:13px;line-height:1.5}.trend-point-detail{display:none;margin:10px 3px 0;padding:12px 14px;border:1px solid #d6e2ea;border-radius:13px;background:#fff;box-shadow:0 8px 18px rgba(39,76,119,.07)}.trend-point-detail:target{display:block}.trend-point-detail-date{font-size:14px;font-weight:900;color:#5e7487;margin-bottom:8px}.trend-point-detail>div:not(.trend-point-detail-date){display:flex;justify-content:space-between;gap:12px;padding:5px 0;color:#81919f;font-size:13px}.trend-point-detail b{font-size:15px;font-variant-numeric:tabular-nums}.trend-point-detail b.port{color:#8b6934}.trend-point-detail b.market{color:#68716d}.trend-point-detail b.excess{color:#315d7f}
+.portfolio-trend-summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px;margin-top:12px}.portfolio-trend-stat{padding:13px 14px;border:1px solid #dde6ed;border-radius:13px;background:#fff}.portfolio-trend-stat small{display:block;color:#83929f;font-size:12px;font-weight:800}.portfolio-trend-stat strong{display:block;margin-top:4px;font-size:24px;line-height:1.05;font-variant-numeric:tabular-nums}.portfolio-trend-stat strong.port{color:#8b6934}.portfolio-trend-stat strong.market{color:#68716d}.portfolio-trend-stat strong.excess{color:#315d7f}
+.portfolio-trend-legend{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:12px 2px 0;color:#6e8090;font-size:12px;font-weight:800}.portfolio-trend-legend span{display:inline-flex;align-items:center;gap:6px}.portfolio-trend-legend i{display:inline-block;width:20px;height:4px;border-radius:4px;background:#8b6934}.portfolio-trend-legend i.market{height:3px;background:repeating-linear-gradient(90deg,#949c98 0 7px,transparent 7px 11px)}.portfolio-trend-note{margin:8px 2px 0;color:#83929e;font-size:12px;line-height:1.55}
+@media(max-width:640px){.portfolio-trend-card{padding:18px 11px 15px;border-radius:21px}.portfolio-trend-header{gap:9px;margin-bottom:14px}.portfolio-trend-title h2{font-size:28px}.portfolio-trend-title p{font-size:13px}.portfolio-trend-tab{min-width:86px;padding:12px 11px;font-size:17px}.portfolio-trend-current{font-size:13px}.portfolio-trend-current b{font-size:19px}.portfolio-trend-benchmark-label{font-size:13px;padding:10px 11px}.portfolio-trend-svg{height:340px}.portfolio-trend-svg .tick{font-size:12px}.portfolio-trend-svg .date{font-size:10px}.portfolio-trend-range{font-size:13px}.portfolio-trend-range b{font-size:14px}.portfolio-trend-summary{grid-template-columns:1fr 1fr}.portfolio-trend-stat:last-child{grid-column:1/-1}.portfolio-trend-stat strong{font-size:23px}}
+</style>'''
+
+    radios = "".join(
+        f'<input class="trend-period-radio" type="radio" name="trend_period_ui" id="trend-period-{k}" {"checked" if k == requested_period else ""} aria-label="{period_labels[k]}">' 
+        for k in period_order
+    )
+    checked = "" if show_benchmark else "checked"
+    return f'''<section class="portfolio-trend-card" id="portfolio-trend">
+{css}
+  <div class="portfolio-trend-header"><div class="portfolio-trend-title"><h2>組合走勢</h2><p>相對起始日報酬・時間加權績效（TWR）</p></div><div class="portfolio-trend-status">直接互動・不重載</div></div>
+  {radios}
+  <div class="portfolio-trend-tabs" role="tablist" aria-label="績效期間"><label class="portfolio-trend-tab" for="trend-period-1m">1 個月</label><label class="portfolio-trend-tab" for="trend-period-3m">3 個月</label><label class="portfolio-trend-tab" for="trend-period-6m">6 個月</label><label class="portfolio-trend-tab" for="trend-period-ytd">今年</label><label class="portfolio-trend-tab" for="trend-period-all">全部</label></div>
+  <input class="trend-benchmark-toggle" type="checkbox" id="trend-benchmark" {checked}>
+  <div class="portfolio-trend-toolbar"><div class="portfolio-trend-current"><span>目前顯示</span> <b class="period-current-label period-label-1m">1 個月</b><b class="period-current-label period-label-3m">3 個月</b><b class="period-current-label period-label-6m">6 個月</b><b class="period-current-label period-label-ytd">今年</b><b class="period-current-label period-label-all">全部</b></div><label class="portfolio-trend-benchmark-label" for="trend-benchmark"><span class="hide-text">隱藏加權指數</span><span class="show-text">顯示加權指數</span></label></div>
+  <div class="portfolio-trend-panels">{"".join(panels)}</div>
+  <div class="portfolio-trend-legend"><span><i></i>我的組合</span><span><i class="market"></i>加權指數</span><span>點擊圖上圓點查看每日精確數據</span></div>
+  <div class="portfolio-trend-note">五種期間全部已由伺服器預先算好；切換期間／隱藏加權指數立即切換，不重新載入頁面，也不依賴 JavaScript。</div>
+</section>'''
 
 
 @app.route("/web/position-journal.csv")
