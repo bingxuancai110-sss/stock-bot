@@ -25881,11 +25881,10 @@ def render_portfolio_allocation_chart(holdings):
 </section>{js}'''
 
 def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, auth_token=""):
-    """互動式組合 vs 加權指數走勢。
+    """CSS-only 互動式組合 vs 加權指數走勢。
 
-    五種期間與 benchmark 都在伺服器端一次算好；前端只切換既有面板，
-    不會因切換期間而 reload。走勢圖採水平滑動；點擊圖面會依位置選最近交易日，
-    在中央 modal 顯示該日組合／大盤／相對績效。
+    五種期間與 benchmark 都在伺服器端一次算好；前端只用原生 radio/checkbox + CSS。
+    因此不會 reload，也不依賴 JavaScript。圖上的點用同頁錨點查看每日精確資料。
     """
     pts = [s for s in snapshots if s.get("value") and s["value"] > 0]
     if len(pts) < 2:
@@ -26008,14 +26007,12 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             lo = math.floor((mid - step * 1.5) / step) * step
             hi = math.ceil((mid + step * 1.5) / step) * step
 
-        # V219：左右滑動保留，但把長期間的橫向寬度再壓縮。
-        # 目的不是把所有交易日塞進同一畫面，而是讓「今年／全部」不要
-        # 變成幾千 px 的超長圖；手機大約滑 2～4 個畫面就能看完整期間。
-        # 每個點仍使用真實日期索引，點擊時由整個圖面尋找最近交易日。
-        point_px = {"1m": 13, "3m": 10, "6m": 8, "ytd": 6.5, "all": 5.5}.get(key, 8)
-        min_width = {"1m": 600, "3m": 760, "6m": 900, "ytd": 1100, "all": 1300}.get(key, 900)
-        W = max(min_width, 110 + int(len(norm) * point_px))
-        H, ML, MR, MT, MB = 640, 82, 24, 34, 72
+        # V218：保留左右滑動，但不要再把短週期放到過度誇張。
+        # 交易日越多，每日可用寬度會逐步縮小；一年／全部仍可左右滑動。
+        point_px = {"1m": 23, "3m": 19, "6m": 16, "ytd": 13, "all": 11}.get(key, 16)
+        min_width = {"1m": 650, "3m": 850, "6m": 1000, "ytd": 1400, "all": 1550}.get(key, 850)
+        W = max(min_width, 110 + len(norm) * point_px)
+        H, ML, MR, MT, MB = 600, 76, 22, 30, 66
         PW, PH = W - ML - MR, H - MT - MB
         def x(i): return ML + (i / max(1, len(norm) - 1)) * PW
         def y(v): return MT + (1 - (v - lo) / max(1e-9, hi - lo)) * PH
@@ -26060,6 +26057,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 
 
         point_circles = []
+        point_hit_buttons = []
         tooltips = []
 
         def point_state_for(excess):
@@ -26074,15 +26072,22 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             excess = r["port"] - market if market is not None else None
             state = point_state_for(excess)
 
-            # 圓點與折線共用完全相同的 x()/y() 座標。
-            # 不再為每個點疊一顆透明 button：交易日密集時，44px hitbox 會互相重疊，
-            # iOS Safari 又可能把它誤判成左右滑動。改成「整張圖單一觸控層」，
-            # pointerup 時依觸控位置找最近的實際交易日，因此每一天都能點，而且不會刷新頁面。
+            # IMPORTANT: both visible and touch circles use the exact same x()/y()
+            # as path_for("port"). The large transparent circle is the touch target;
+            # because it lives inside the SVG, there is no CSS-to-SVG coordinate drift.
             px, py = x(i), y(r["port"])
+            # 可視圓點只負責呈現；真正的點擊區改用 HTML button 疊在 SVG 上。
+            # iOS Safari 對「SVG 透明 circle + 橫向 scroll」的觸控事件容易被 scroll 手勢吃掉，
+            # HTML button 會穩定很多，而且可以讓每個交易日各自有獨立 44px 觸控區。
             point_circles.append(
                 f'<circle class="port-point {state}" data-index="{i}" cx="{px:.1f}" cy="{py:.1f}" r="8" pointer-events="none">'
                 f'<title>{html.escape(fmt_date_full(r["date"]))}</title></circle>'
                 f'<circle class="port-point-core {state}" data-index="{i}" cx="{px:.1f}" cy="{py:.1f}" r="3" pointer-events="none"/>'
+            )
+            safe_date = html.escape(fmt_date_full(r["date"]), quote=True)
+            point_hit_buttons.append(
+                f'<button type="button" class="trend-html-hit" data-index="{i}" aria-label="查看 {safe_date} 績效" '
+                f'style="left:{px-14:.1f}px;top:{py-14:.1f}px"></button>'
             )
 
             if excess is not None and excess > 0.05:
@@ -26133,7 +26138,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         )
         chart_inner = (
             f'<div class="trend-chart-inner" style="width:{W}px;height:{H}px;min-width:{W}px">'
-            f'{svg}<div class="trend-chart-touch-layer" aria-label="點擊走勢圖查看最近交易日"></div></div>'
+            f'{svg}<div class="trend-html-hit-layer">{"".join(point_hit_buttons)}</div></div>'
         )
 
         latest = norm[-1]
@@ -26143,7 +26148,6 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             f'''<section class="portfolio-trend-panel panel-{key}">
   <div class="portfolio-trend-range"><span>資料期間</span><b>{html.escape(fmt_date_full(norm[0]["date"]))} → {html.escape(fmt_date_full(norm[-1]["date"]))}</b></div>
   <div class="portfolio-trend-plot">{chart_inner}<div class="trend-point-hidden-data">{"".join(tooltips)}</div><div class="trend-modal-overlay" aria-hidden="true"></div><div class="trend-modal" role="dialog" aria-modal="true" aria-hidden="true"><div class="trend-modal-card"><div class="trend-modal-head"><div><span class="trend-modal-kicker">交易日</span><strong class="trend-modal-date"></strong></div><button type="button" class="trend-modal-close" aria-label="關閉">關閉</button></div><div class="trend-modal-status"></div><div class="trend-modal-metrics"><div><span>我的組合</span><b class="trend-modal-port"></b></div><div><span>加權指數</span><b class="trend-modal-market"></b></div><div><span>相對大盤</span><b class="trend-modal-excess"></b></div></div></div></div></div>
-  <div class="trend-point-hint">每個圓點都有大點擊範圍；手機可左右滑動查看完整歷史，點擊圓點可查看當日相對大盤績效。</div>
   <div class="portfolio-trend-summary">
     <div class="portfolio-trend-stat portfolio-stat"><small>我的組合</small><strong class="port">{html.escape(fmt_pct(latest["port"]))}</strong></div>
     <div class="portfolio-trend-stat market-stat"><small>加權指數</small><strong class="market">{html.escape(fmt_pct(market_latest))}</strong></div>
@@ -26174,8 +26178,8 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 .portfolio-trend-panel{display:none}
 #trend-period-1m:checked ~ .portfolio-trend-panels .panel-1m,#trend-period-3m:checked ~ .portfolio-trend-panels .panel-3m,#trend-period-6m:checked ~ .portfolio-trend-panels .panel-6m,#trend-period-ytd:checked ~ .portfolio-trend-panels .panel-ytd,#trend-period-all:checked ~ .portfolio-trend-panels .panel-all{display:block}
 .portfolio-trend-range{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:2px 3px 11px;color:#8292a0;font-size:15px;font-weight:750}.portfolio-trend-range b{color:#5f7487;font-size:18px;font-weight:950}
-.portfolio-trend-plot{position:relative;border:1px solid #d5e1e9;border-radius:22px;background:linear-gradient(180deg,#f8fbfe 0%,#f2f7fa 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 10px 25px rgba(38,65,88,.055);overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;touch-action:pan-x pan-y;scrollbar-width:thin}
-.trend-chart-inner{position:relative;flex:0 0 auto}.portfolio-trend-svg{display:block;width:100%;height:100%;touch-action:none}.trend-chart-touch-layer{position:absolute;inset:0;z-index:5;cursor:pointer;touch-action:pan-x pan-y;-webkit-tap-highlight-color:transparent;background:transparent}
+.portfolio-trend-plot{position:relative;border:0;border-radius:0;background:transparent;box-shadow:none;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;touch-action:pan-x pan-y;scrollbar-width:thin}
+.trend-chart-inner{position:relative;flex:0 0 auto}.portfolio-trend-svg{display:block;width:100%;height:100%;touch-action:none}.trend-html-hit-layer{position:absolute;inset:0;pointer-events:none}.trend-html-hit{position:absolute;width:28px;height:28px;margin:0;padding:0;border:0;border-radius:50%;background:transparent;pointer-events:auto;cursor:pointer;touch-action:pan-x;-webkit-tap-highlight-color:transparent;z-index:5}
 .portfolio-trend-svg .grid{stroke:#dfe8ee;stroke-width:1}.portfolio-trend-svg .zero{stroke:#8498a8;stroke-width:1.5;stroke-dasharray:5 5}
 .portfolio-trend-svg .tick{fill:#5d7285;font-size:23px;font-weight:900}.portfolio-trend-svg .date{fill:#5d7285;font-size:20px;font-weight:900}
 .portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 3px 3px rgba(139,105,52,.12))}
@@ -26188,7 +26192,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 .trend-hit-point{cursor:pointer;touch-action:manipulation}.trend-crosshair{display:none;stroke:#718797;stroke-width:2;stroke-dasharray:6 6;opacity:.62;pointer-events:none}.trend-selected-point{stroke-width:4!important}
 .trend-point-hidden-data,.trend-point-tooltip-data{display:none}
 .trend-modal-overlay{display:none;position:fixed;inset:0;z-index:9998;background:rgba(18,35,50,.16);backdrop-filter:blur(2px)}
-.trend-modal{display:none;position:fixed;z-index:9999;left:50%;top:50%;width:min(88vw,370px);transform:translate(-50%,-50%);box-sizing:border-box}.trend-modal.open{display:block}
+.trend-modal{display:none;position:fixed;z-index:9999;left:50%;top:50%;width:min(88vw,370px);transform:translate(-50%,-50%);box-sizing:border-box}.trend-modal.open{display:block}.trend-modal-lock{overflow:hidden!important}
 .trend-modal-card{padding:20px 18px 18px;border:1px solid #d6e2ea;border-radius:22px;background:rgba(255,255,255,.985);box-shadow:0 24px 70px rgba(18,39,57,.25)}
 .trend-modal-head{display:flex;justify-content:space-between;align-items:center;gap:14px}.trend-modal-kicker{display:block;color:#8494a0;font-size:12px;font-weight:850;margin-bottom:2px}.trend-modal-head strong{display:block;color:#162b40;font-size:23px;font-weight:950}.trend-modal-close{border:0;border-radius:999px;padding:9px 13px;background:#eef3f6;color:#577087;font-size:14px;font-weight:900;cursor:pointer}
 .trend-modal-status{margin-top:14px;padding:11px 12px;border-radius:12px;text-align:center;font-size:15px;font-weight:950}.trend-modal-status.up{background:#ffdada;color:#c92323}.trend-modal-status.down{background:#d8f3e5;color:#117d4d}.trend-modal-status.neutral{background:#e1edf3;color:#4f728d}
@@ -26224,136 +26228,60 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 (function(){
   var root=document.getElementById('portfolio-trend');
   if(!root) return;
-
   root.querySelectorAll('.portfolio-trend-panel').forEach(function(panel){
     var svg=panel.querySelector('.portfolio-trend-svg');
     if(!svg) return;
-
     var modal=panel.querySelector('.trend-modal');
     var overlay=panel.querySelector('.trend-modal-overlay');
     var rows=panel.querySelectorAll('.trend-point-tooltip-data');
+    var startX=0,startY=0,startTime=0,moved=false;
+
+    // 把彈窗真正移到 body，避免 iOS Safari 受父層 overflow/transform 限制。
+    if(modal && modal.parentNode!==document.body) document.body.appendChild(modal);
+    if(overlay && overlay.parentNode!==document.body) document.body.appendChild(overlay);
 
     function close(){
-      if(!modal) return;
-      modal.classList.remove('open');
-      modal.setAttribute('aria-hidden','true');
-      if(overlay) overlay.style.display='none';
-      svg.querySelectorAll('.port-point').forEach(function(c){
-        c.classList.remove('trend-selected-point');
-      });
-      var guide=svg.querySelector('.trend-crosshair');
-      if(guide) guide.style.display='none';
+      if(modal){modal.classList.remove('open');modal.setAttribute('aria-hidden','true');}
+      if(overlay){overlay.style.display='none';overlay.setAttribute('aria-hidden','true');}
+      svg.querySelectorAll('.port-point').forEach(function(c){c.classList.remove('trend-selected-point');});
+      var guide=svg.querySelector('.trend-crosshair'); if(guide) guide.style.display='none';
+      document.body.classList.remove('trend-modal-lock');
     }
-
     function show(i){
       var row=null;
-      for(var k=0;k<rows.length;k++){
-        if(Number(rows[k].dataset.index)===i){row=rows[k];break;}
-      }
-      if(!row) return;
-
+      for(var k=0;k<rows.length;k++){if(Number(rows[k].dataset.index)===i){row=rows[k];break;}}
+      if(!row||!modal) return;
       modal.querySelector('.trend-modal-date').textContent=row.dataset.date||'';
       modal.querySelector('.trend-modal-port').textContent=row.dataset.port||'—';
       modal.querySelector('.trend-modal-market').textContent=row.dataset.market||'—';
-
-      var ex=modal.querySelector('.trend-modal-excess');
-      ex.textContent=row.dataset.excess||'—';
-      ex.className='trend-modal-excess '+(row.dataset.state||'neutral');
-
-      var st=modal.querySelector('.trend-modal-status');
-      st.textContent=row.dataset.verdict||'● 當日與大盤接近';
-      st.className='trend-modal-status '+(row.dataset.state||'neutral');
-
-      svg.querySelectorAll('.port-point').forEach(function(c){
-        c.classList.remove('trend-selected-point');
-      });
+      var ex=modal.querySelector('.trend-modal-excess'); ex.textContent=row.dataset.excess||'—'; ex.className='trend-modal-excess '+(row.dataset.state||'neutral');
+      var st=modal.querySelector('.trend-modal-status'); st.textContent=row.dataset.verdict||'● 當日與大盤接近'; st.className='trend-modal-status '+(row.dataset.state||'neutral');
+      svg.querySelectorAll('.port-point').forEach(function(c){c.classList.remove('trend-selected-point');});
       var selected=svg.querySelector('.port-point[data-index="'+i+'"]');
       if(selected) selected.classList.add('trend-selected-point');
-
       var guide=svg.querySelector('.trend-crosshair');
-      if(guide && selected){
-        guide.setAttribute('x1',selected.getAttribute('cx'));
-        guide.setAttribute('x2',selected.getAttribute('cx'));
-        guide.style.display='block';
-      }
-
-      modal.classList.add('open');
-      modal.setAttribute('aria-hidden','false');
-      if(overlay) overlay.style.display='block';
+      if(guide&&selected){guide.setAttribute('x1',selected.getAttribute('cx'));guide.setAttribute('x2',selected.getAttribute('cx'));guide.style.display='block';}
+      modal.classList.add('open'); modal.setAttribute('aria-hidden','false');
+      if(overlay){overlay.style.display='block';overlay.setAttribute('aria-hidden','false');}
+      document.body.classList.add('trend-modal-lock');
     }
 
-    // 單一觸控層：pointerup 才判定為「點擊」，先記錄 pointerdown 位置。
-    // 如果手指移動超過 10px，就視為左右滑動，不開啟 modal。
-    // 點擊時依實際 x 座標尋找最近的 port-point，所以每個交易日都可點。
-    var touchLayer=panel.querySelector('.trend-chart-touch-layer');
-    var pointerStart=null;
-    var lastHandledAt=0;
-
-    function nearestIndex(clientX, clientY){
-      if(!touchLayer) return -1;
-      var rect=touchLayer.getBoundingClientRect();
-      var localX=clientX-rect.left;
-      var localY=clientY-rect.top;
-      var circles=svg.querySelectorAll('.port-point');
-      var best=-1, bestScore=Infinity;
-      circles.forEach(function(c){
-        var cx=Number(c.getAttribute('cx')||0);
-        var cy=Number(c.getAttribute('cy')||0);
-        // 以 x 為主、y 為輔；這樣使用者點在線附近也能選到正確日期。
-        var dx=Math.abs(cx-localX);
-        var dy=Math.abs(cy-localY);
-        var score=dx + dy*0.18;
-        if(score<bestScore){bestScore=score;best=Number(c.getAttribute('data-index'));}
+    panel.querySelectorAll('.trend-html-hit').forEach(function(hit){
+      hit.addEventListener('pointerdown',function(e){startX=e.clientX;startY=e.clientY;startTime=Date.now();moved=false;},{passive:true});
+      hit.addEventListener('pointermove',function(e){if(Math.abs(e.clientX-startX)>10 || Math.abs(e.clientY-startY)>10)moved=true;},{passive:true});
+      hit.addEventListener('pointerup',function(e){
+        var dx=Math.abs(e.clientX-startX),dy=Math.abs(e.clientY-startY),dt=Date.now()-startTime;
+        if(dx>10 || dy>10 || dt>650 || moved) return;
+        e.preventDefault();e.stopPropagation();show(Number(hit.dataset.index));
+      },{passive:false});
+      hit.addEventListener('click',function(e){
+        if(e.detail===0){e.preventDefault();e.stopPropagation();show(Number(hit.dataset.index));}
       });
-      return best;
-    }
-
-    function handleChartTap(clientX,clientY,e){
-      var now=Date.now();
-      if(now-lastHandledAt<350) return;
-      lastHandledAt=now;
-      if(e){ e.preventDefault(); e.stopPropagation(); }
-      var i=nearestIndex(clientX,clientY);
-      if(i>=0) show(i);
-    }
-
-    if(touchLayer){
-      touchLayer.addEventListener('pointerdown',function(e){
-        pointerStart={x:e.clientX,y:e.clientY,id:e.pointerId};
-      },{passive:true});
-
-      touchLayer.addEventListener('pointerup',function(e){
-        if(!pointerStart || (pointerStart.id!=null && e.pointerId!==pointerStart.id)) return;
-        var dx=e.clientX-pointerStart.x;
-        var dy=e.clientY-pointerStart.y;
-        pointerStart=null;
-        if(Math.abs(dx)>10 || Math.abs(dy)>10) return;
-        handleChartTap(e.clientX,e.clientY,e);
-      },{passive:false});
-
-      touchLayer.addEventListener('touchend',function(e){
-        if(!e.changedTouches || !e.changedTouches.length) return;
-        var t=e.changedTouches[0];
-        if(pointerStart){
-          var dx=t.clientX-pointerStart.x;
-          var dy=t.clientY-pointerStart.y;
-          pointerStart=null;
-          if(Math.abs(dx)>10 || Math.abs(dy)>10) return;
-        }
-        handleChartTap(t.clientX,t.clientY,e);
-      },{passive:false});
-
-      touchLayer.addEventListener('click',function(e){
-        handleChartTap(e.clientX,e.clientY,e);
-      },{passive:false});
-
-      touchLayer.addEventListener('pointercancel',function(){pointerStart=null;},{passive:true});
-      touchLayer.addEventListener('touchcancel',function(){pointerStart=null;},{passive:true});
-    }
-
-    var closeBtn=panel.querySelector('.trend-modal-close');
-    if(closeBtn) closeBtn.addEventListener('click',function(e){e.preventDefault();close();});
+    });
+    var closeBtn=modal&&modal.querySelector('.trend-modal-close');
+    if(closeBtn) closeBtn.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();close();});
     if(overlay) overlay.addEventListener('click',close);
+    document.addEventListener('keydown',function(e){if(e.key==='Escape') close();});
   });
 })();
 </script>
