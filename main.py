@@ -21408,8 +21408,13 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     }});
 }})();
 </script>"""
-    # 骨架也要走 render_page，才會帶上樣式與導覽列——
-    # 沒有外框的話使用者第一眼看到的會是一段沒有樣式的裸 HTML。
+    # 防呆：若 shell 經過其他模板層／格式化流程後仍殘留 placeholder，
+    # 在送出 HTML 前強制替換，絕不讓 {loader_title} 之類的字串出現在手機畫面。
+    shell = (shell
+             .replace("{loader_title}", str(loader_title))
+             .replace("{loader_status}", str(loader_status))
+             .replace("{loader_foot}", str(loader_foot)))
+    # 骨架也要走 render_page，才會帶上樣式與導覽列。
     return render_page(title, shell, nav_active=nav_active)
 
 
@@ -26264,36 +26269,38 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
       if(overlay){overlay.style.display='block';overlay.setAttribute('aria-hidden','false');}
     }
 
-    // 重要：不要在每個交易日上疊透明 button。
-    // 由整個 scroll 容器統一判斷「點」與「滑」，讓瀏覽器保留原生水平/垂直捲動。
+    // 重要：不要在每個交易日上疊透明 button，也不要在 pointermove 中做任何計算。
+    // pointermove 會在 iPhone 滑動時每秒觸發大量事件；你的帳號資料點較多時，
+    // 原本這裡會讓主執行緒一直忙著判斷「是不是拖曳」，造成整頁像被卡住。
+    // 現在只記錄按下位置，放開時一次判斷距離；水平/垂直滑動完全交給瀏覽器。
     var plot=panel.querySelector('.portfolio-trend-plot');
     if(plot){
-      var downX=0,downY=0,downTime=0,dragged=false;
+      var downX=0,downY=0,downTime=0,tracking=false;
+      var pointData=[];
+      svg.querySelectorAll('.port-point').forEach(function(pt){
+        var cx=parseFloat(pt.getAttribute('cx'));
+        var idx=Number(pt.getAttribute('data-index'));
+        if(Number.isFinite(cx) && Number.isFinite(idx)) pointData.push({x:cx,i:idx});
+      });
       plot.addEventListener('pointerdown',function(e){
         if(e.pointerType==='mouse' && e.button!==0) return;
-        downX=e.clientX; downY=e.clientY; downTime=Date.now(); dragged=false;
+        downX=e.clientX; downY=e.clientY; downTime=Date.now(); tracking=true;
       },{passive:true});
-      plot.addEventListener('pointermove',function(e){
-        if(Math.abs(e.clientX-downX)>8 || Math.abs(e.clientY-downY)>8) dragged=true;
-      },{passive:true});
-      plot.addEventListener('pointercancel',function(){dragged=true;});
+      plot.addEventListener('pointercancel',function(){tracking=false;});
       plot.addEventListener('pointerup',function(e){
-        var dx=Math.abs(e.clientX-downX),dy=Math.abs(e.clientY-downY),dt=Date.now()-downTime;
-        if(dragged || dx>8 || dy>8 || dt>700) return;
-
+        if(!tracking){return;}
+        tracking=false;
+        var dx=e.clientX-downX,dy=e.clientY-downY,dt=Date.now()-downTime;
+        // 8px 以上就是滑動；滑動絕不開卡片。
+        if(Math.abs(dx)>8 || Math.abs(dy)>8 || dt>700) return;
         var svgRect=svg.getBoundingClientRect();
         var localX=e.clientX-svgRect.left;
-        if(localX<0 || localX>svgRect.width) return;
-
-        // 找最接近手指 X 座標的實際交易日。
-        var points=Array.prototype.slice.call(svg.querySelectorAll('.port-point'));
+        if(localX<0 || localX>svgRect.width || !pointData.length) return;
         var nearest=-1,best=Infinity;
-        points.forEach(function(pt){
-          var cx=parseFloat(pt.getAttribute('cx'));
-          if(!Number.isFinite(cx)) return;
-          var d=Math.abs(cx-localX);
-          if(d<best){best=d;nearest=Number(pt.getAttribute('data-index'));}
-        });
+        for(var pi=0;pi<pointData.length;pi++){
+          var d=Math.abs(pointData[pi].x-localX);
+          if(d<best){best=d;nearest=pointData[pi].i;}
+        }
         if(nearest>=0) show(nearest);
       },{passive:true});
     }
