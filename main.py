@@ -26273,13 +26273,16 @@ def render_trend_chart(snapshots, requested_period="3m"):
     root.querySelector('[data-current-port]').textContent=fmtPct(last.port);
     root.querySelector('[data-current-period]').textContent=currentPeriod==='all'?'全部資料':currentPeriod==='ytd'?'今年':currentPeriod.toUpperCase();
   }}
-  function activateTab(p){{
-    currentPeriod=p;
-    tabs.forEach(function(t){{t.classList.toggle('active',t.dataset.trendPeriod===p);}});
-    hideTooltip();
-    render();
-  }}
-  tabs.forEach(function(t){{t.addEventListener('click',function(e){{e.preventDefault();activateTab(t.dataset.trendPeriod);}});}});
+  // 期間切換不要在前端偷換資料。每次點擊都重新進入首頁，
+  // 由後端先算好該期間的 TWR／加權指數，再把完整首頁送回來。
+  // 這樣 1M／3M／6M／今年／全部都會走同一套伺服器端資料口徑，
+  // 也不會因 LINE WebView 的 JS 行為而出現「點了但畫面沒變」。
+  tabs.forEach(function(t){{
+    t.addEventListener('click',function(){{
+      // 保留原生 <a> 導航；不要 preventDefault。
+      hideTooltip();
+    }});
+  }});
   if(benchmarkBtn) benchmarkBtn.addEventListener('click',function(){{benchmarkOn=!benchmarkOn;benchmarkBtn.classList.toggle('off',!benchmarkOn);benchmarkBtn.textContent=benchmarkOn?'隱藏加權指數':'顯示加權指數';render();}});
   window.addEventListener('resize',function(){{clearTimeout(resizeTimer);resizeTimer=setTimeout(render,120);}});
   render();
@@ -26323,7 +26326,7 @@ def render_trend_chart(snapshots, requested_period="3m"):
     <span><i class="market"></i>加權指數</span>
     <span>點擊／滑動圖表查看每日數據</span>
   </div>
-  <div class="portfolio-trend-note">期間切換後會重新以該期間第一個交易日歸零；組合採 TWR，避免加碼或減碼把資金流誤算成績效。{html.escape('資料延伸至最近快照。')}</div>
+  <div class="portfolio-trend-note">切換期間會重新開啟首頁，先由伺服器算好該期間資料再顯示；組合採 TWR，避免加碼或減碼把資金流誤算成績效。{html.escape('資料延伸至最近快照。')}</div>
   {js}
 </div>
 """
