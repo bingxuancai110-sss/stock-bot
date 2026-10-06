@@ -25881,10 +25881,11 @@ def render_portfolio_allocation_chart(holdings):
 </section>{js}'''
 
 def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, auth_token=""):
-    """CSS-only 互動式組合 vs 加權指數走勢。
+    """互動式組合 vs 加權指數走勢。
 
-    五種期間與 benchmark 都在伺服器端一次算好；前端只用原生 radio/checkbox + CSS。
-    因此不會 reload，也不依賴 JavaScript。圖上的點用同頁錨點查看每日精確資料。
+    五種期間與 benchmark 都在伺服器端一次算好；前端只切換既有面板，
+    不會因切換期間而 reload。走勢圖採水平滑動；點擊圖面會依位置選最近交易日，
+    在中央 modal 顯示該日組合／大盤／相對績效。
     """
     pts = [s for s in snapshots if s.get("value") and s["value"] > 0]
     if len(pts) < 2:
@@ -26007,9 +26008,14 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             lo = math.floor((mid - step * 1.5) / step) * step
             hi = math.ceil((mid + step * 1.5) / step) * step
 
-        # 不再把所有交易日硬壓進手機寬度：每個交易日保留約 52px，超出螢幕就左右滑動。
-        W = max(1100, 120 + len(norm) * 52)
-        H, ML, MR, MT, MB = 700, 100, 22, 36, 82
+        # V219：左右滑動保留，但把長期間的橫向寬度再壓縮。
+        # 目的不是把所有交易日塞進同一畫面，而是讓「今年／全部」不要
+        # 變成幾千 px 的超長圖；手機大約滑 2～4 個畫面就能看完整期間。
+        # 每個點仍使用真實日期索引，點擊時由整個圖面尋找最近交易日。
+        point_px = {"1m": 13, "3m": 10, "6m": 8, "ytd": 7, "all": 6.5}.get(key, 8)
+        min_width = {"1m": 600, "3m": 760, "6m": 900, "ytd": 1200, "all": 1500}.get(key, 900)
+        W = max(min_width, 110 + int(len(norm) * point_px))
+        H, ML, MR, MT, MB = 640, 82, 24, 34, 72
         PW, PH = W - ML - MR, H - MT - MB
         def x(i): return ML + (i / max(1, len(norm) - 1)) * PW
         def y(v): return MT + (1 - (v - lo) / max(1e-9, hi - lo)) * PH
@@ -26068,15 +26074,15 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             excess = r["port"] - market if market is not None else None
             state = point_state_for(excess)
 
-            # IMPORTANT: both visible and touch circles use the exact same x()/y()
-            # as path_for("port"). The large transparent circle is the touch target;
-            # because it lives inside the SVG, there is no CSS-to-SVG coordinate drift.
+            # 圓點與折線共用完全相同的 x()/y() 座標。
+            # 不再為每個點疊一顆透明 button：交易日密集時，44px hitbox 會互相重疊，
+            # iOS Safari 又可能把它誤判成左右滑動。改成「整張圖單一觸控層」，
+            # pointerup 時依觸控位置找最近的實際交易日，因此每一天都能點，而且不會刷新頁面。
             px, py = x(i), y(r["port"])
             point_circles.append(
-                f'<circle class="trend-hit-point" data-index="{i}" cx="{px:.1f}" cy="{py:.1f}" r="26" fill="transparent" stroke="transparent" pointer-events="all" tabindex="-1"></circle>'
-                f'<circle class="port-point {state}" data-index="{i}" cx="{px:.1f}" cy="{py:.1f}" r="7" pointer-events="none">'
+                f'<circle class="port-point {state}" data-index="{i}" cx="{px:.1f}" cy="{py:.1f}" r="8" pointer-events="none">'
                 f'<title>{html.escape(fmt_date_full(r["date"]))}</title></circle>'
-                f'<circle class="port-point-core {state}" data-index="{i}" cx="{px:.1f}" cy="{py:.1f}" r="2.6" pointer-events="none"/>'
+                f'<circle class="port-point-core {state}" data-index="{i}" cx="{px:.1f}" cy="{py:.1f}" r="3" pointer-events="none"/>'
             )
 
             if excess is not None and excess > 0.05:
@@ -26117,13 +26123,17 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             )
 
         svg = (
-            f'<svg class="portfolio-trend-svg" style="width:{W}px;min-width:{W}px;max-width:none" viewBox="0 0 {W} {H}" preserveAspectRatio="none" role="img" aria-label="{period_labels[key]}組合與加權指數績效圖">'
+            f'<svg class="portfolio-trend-svg" viewBox="0 0 {W} {H}" preserveAspectRatio="none" role="img" aria-label="{period_labels[key]}組合與加權指數績效圖">'
             f'<defs><linearGradient id="trend-area-{key}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#8b6934" stop-opacity=".18"/><stop offset="100%" stop-color="#8b6934" stop-opacity="0"/></linearGradient></defs>'
             f'{"".join(grid)}'
             f'<path class="port-area" d="{area}" fill="url(#trend-area-{key})"/>'
             f'<path class="port-line" d="{path_for("port")}"/>'
             f'<path class="market-layer market-line" d="{path_for("taiex")}"/>'
             f'<line class="trend-crosshair" x1="{ML}" x2="{ML}" y1="{MT}" y2="{H-MB}"/>' f'{"".join(point_circles)}{"".join(endpoint_labels)}{"".join(dates)}</svg>'
+        )
+        chart_inner = (
+            f'<div class="trend-chart-inner" style="width:{W}px;height:{H}px;min-width:{W}px">'
+            f'{svg}<div class="trend-chart-touch-layer" aria-label="點擊走勢圖查看最近交易日"></div></div>'
         )
 
         latest = norm[-1]
@@ -26132,7 +26142,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         panels.append(
             f'''<section class="portfolio-trend-panel panel-{key}">
   <div class="portfolio-trend-range"><span>資料期間</span><b>{html.escape(fmt_date_full(norm[0]["date"]))} → {html.escape(fmt_date_full(norm[-1]["date"]))}</b></div>
-  <div class="portfolio-trend-plot">{svg}<div class="trend-point-hidden-data">{"".join(tooltips)}</div><div class="trend-modal-overlay" aria-hidden="true"></div><div class="trend-modal" role="dialog" aria-modal="true" aria-hidden="true"><div class="trend-modal-card"><div class="trend-modal-head"><div><span class="trend-modal-kicker">交易日</span><strong class="trend-modal-date"></strong></div><button type="button" class="trend-modal-close" aria-label="關閉">關閉</button></div><div class="trend-modal-status"></div><div class="trend-modal-metrics"><div><span>我的組合</span><b class="trend-modal-port"></b></div><div><span>加權指數</span><b class="trend-modal-market"></b></div><div><span>相對大盤</span><b class="trend-modal-excess"></b></div></div></div></div></div>
+  <div class="portfolio-trend-plot">{chart_inner}<div class="trend-point-hidden-data">{"".join(tooltips)}</div><div class="trend-modal-overlay" aria-hidden="true"></div><div class="trend-modal" role="dialog" aria-modal="true" aria-hidden="true"><div class="trend-modal-card"><div class="trend-modal-head"><div><span class="trend-modal-kicker">交易日</span><strong class="trend-modal-date"></strong></div><button type="button" class="trend-modal-close" aria-label="關閉">關閉</button></div><div class="trend-modal-status"></div><div class="trend-modal-metrics"><div><span>我的組合</span><b class="trend-modal-port"></b></div><div><span>加權指數</span><b class="trend-modal-market"></b></div><div><span>相對大盤</span><b class="trend-modal-excess"></b></div></div></div></div></div>
   <div class="trend-point-hint">每個圓點都有大點擊範圍；手機可左右滑動查看完整歷史，點擊圓點可查看當日相對大盤績效。</div>
   <div class="portfolio-trend-summary">
     <div class="portfolio-trend-stat portfolio-stat"><small>我的組合</small><strong class="port">{html.escape(fmt_pct(latest["port"]))}</strong></div>
@@ -26165,7 +26175,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 #trend-period-1m:checked ~ .portfolio-trend-panels .panel-1m,#trend-period-3m:checked ~ .portfolio-trend-panels .panel-3m,#trend-period-6m:checked ~ .portfolio-trend-panels .panel-6m,#trend-period-ytd:checked ~ .portfolio-trend-panels .panel-ytd,#trend-period-all:checked ~ .portfolio-trend-panels .panel-all{display:block}
 .portfolio-trend-range{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:2px 3px 11px;color:#8292a0;font-size:15px;font-weight:750}.portfolio-trend-range b{color:#5f7487;font-size:18px;font-weight:950}
 .portfolio-trend-plot{position:relative;border:1px solid #d5e1e9;border-radius:22px;background:linear-gradient(180deg,#f8fbfe 0%,#f2f7fa 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 10px 25px rgba(38,65,88,.055);overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;touch-action:pan-x pan-y;scrollbar-width:thin}
-.portfolio-trend-svg{display:block;width:auto;min-width:1100px;max-width:none;height:560px;min-height:560px;touch-action:manipulation}
+.trend-chart-inner{position:relative;flex:0 0 auto}.portfolio-trend-svg{display:block;width:100%;height:100%;touch-action:none}.trend-chart-touch-layer{position:absolute;inset:0;z-index:5;cursor:pointer;touch-action:pan-x pan-y;-webkit-tap-highlight-color:transparent;background:transparent}
 .portfolio-trend-svg .grid{stroke:#dfe8ee;stroke-width:1}.portfolio-trend-svg .zero{stroke:#8498a8;stroke-width:1.5;stroke-dasharray:5 5}
 .portfolio-trend-svg .tick{fill:#5d7285;font-size:23px;font-weight:900}.portfolio-trend-svg .date{fill:#5d7285;font-size:20px;font-weight:900}
 .portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 3px 3px rgba(139,105,52,.12))}
@@ -26198,7 +26208,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 @media(max-width:640px){
 .portfolio-trend-card{padding:19px 11px 17px;border-radius:23px;margin:16px 0}.portfolio-trend-header{gap:8px;margin-bottom:15px}.portfolio-trend-title h2{font-size:35px}.portfolio-trend-title p{font-size:16px}.portfolio-trend-status{font-size:11px;padding:8px 9px}
 .portfolio-trend-tabs{gap:5px;padding-bottom:15px}.portfolio-trend-tab{min-height:47px;padding:8px 1px;font-size:16px;border-radius:15px}.portfolio-trend-current{font-size:14px}.portfolio-trend-current b{font-size:24px}.portfolio-trend-benchmark-label{min-height:46px;font-size:13px;padding:8px 10px}
-.portfolio-trend-range{font-size:14px}.portfolio-trend-range b{font-size:17px}.portfolio-trend-svg{width:auto;min-width:1100px;max-width:none;height:585px;min-height:585px}.portfolio-trend-svg .tick{font-size:24px}.portfolio-trend-svg .date{font-size:21px}
+.portfolio-trend-range{font-size:14px}.portfolio-trend-range b{font-size:17px}.portfolio-trend-svg .tick{font-size:22px}.portfolio-trend-svg .date{font-size:19px}
 .portfolio-trend-summary{gap:8px;margin-top:12px}.portfolio-trend-stat{padding:13px 12px;border-radius:16px}.portfolio-trend-stat small{font-size:13px}.portfolio-trend-stat strong{font-size:27px}.portfolio-trend-stat.excess-stat{min-height:102px;padding:14px 15px}.portfolio-trend-stat.excess-stat strong{font-size:34px}.excess-caption{font-size:12px}
 }
 </style>
@@ -26272,20 +26282,56 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
       if(overlay) overlay.style.display='block';
     }
 
-    svg.querySelectorAll('.trend-hit-point').forEach(function(hit){
-      hit.addEventListener('click',function(e){
+    // 單一觸控層：pointerup 才判定為「點擊」，先記錄 pointerdown 位置。
+    // 如果手指移動超過 10px，就視為左右滑動，不開啟 modal。
+    // 點擊時依實際 x 座標尋找最近的 port-point，所以每個交易日都可點。
+    var touchLayer=panel.querySelector('.trend-chart-touch-layer');
+    var pointerStart=null;
+    var lastHandledAt=0;
+
+    function nearestIndex(clientX, clientY){
+      if(!touchLayer) return -1;
+      var rect=touchLayer.getBoundingClientRect();
+      var localX=clientX-rect.left;
+      var localY=clientY-rect.top;
+      var circles=svg.querySelectorAll('.port-point');
+      var best=-1, bestScore=Infinity;
+      circles.forEach(function(c){
+        var cx=Number(c.getAttribute('cx')||0);
+        var cy=Number(c.getAttribute('cy')||0);
+        // 以 x 為主、y 為輔；這樣使用者點在線附近也能選到正確日期。
+        var dx=Math.abs(cx-localX);
+        var dy=Math.abs(cy-localY);
+        var score=dx + dy*0.18;
+        if(score<bestScore){bestScore=score;best=Number(c.getAttribute('data-index'));}
+      });
+      return best;
+    }
+
+    if(touchLayer){
+      touchLayer.addEventListener('pointerdown',function(e){
+        pointerStart={x:e.clientX,y:e.clientY,id:e.pointerId};
+      },{passive:true});
+
+      touchLayer.addEventListener('pointerup',function(e){
+        if(!pointerStart || (pointerStart.id!=null && e.pointerId!==pointerStart.id)) return;
+        var dx=e.clientX-pointerStart.x;
+        var dy=e.clientY-pointerStart.y;
+        pointerStart=null;
+        if(Math.abs(dx)>10 || Math.abs(dy)>10) return; // 是滑動，不是點擊
+
+        var now=Date.now();
+        if(now-lastHandledAt<350) return;
+        lastHandledAt=now;
+
         e.preventDefault();
         e.stopPropagation();
-        show(Number(hit.getAttribute('data-index')));
-      });
-      hit.addEventListener('pointerup',function(e){
-        if(e.pointerType==='touch'){
-          e.preventDefault();
-          e.stopPropagation();
-          show(Number(hit.getAttribute('data-index')));
-        }
-      });
-    });
+        var i=nearestIndex(e.clientX,e.clientY);
+        if(i>=0) show(i);
+      },{passive:false});
+
+      touchLayer.addEventListener('pointercancel',function(){pointerStart=null;},{passive:true});
+    }
 
     var closeBtn=panel.querySelector('.trend-modal-close');
     if(closeBtn) closeBtn.addEventListener('click',function(e){e.preventDefault();close();});
@@ -26305,7 +26351,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
   <div class="portfolio-trend-toolbar"><div class="portfolio-trend-current"><span>目前顯示</span> <b class="period-current-label period-label-1m">1 個月</b><b class="period-current-label period-label-3m">3 個月</b><b class="period-current-label period-label-6m">6 個月</b><b class="period-current-label period-label-ytd">今年</b><b class="period-current-label period-label-all">全部</b></div><label class="portfolio-trend-benchmark-label" for="trend-benchmark"><span class="hide-text">隱藏加權指數</span><span class="show-text">顯示加權指數</span></label></div>
   <div class="portfolio-trend-panels">{"".join(panels)}</div>
   <div class="portfolio-trend-legend"><span><i></i>我的組合</span><span><i class="market"></i>加權指數</span><span><i class="point-up"></i>跑贏</span><span><i class="point-down"></i>跑輸</span><span><i class="point-neutral"></i>接近大盤</span><span>點擊圓點查看每日相對大盤績效</span></div>
-  <div class="portfolio-trend-note">切換期間不重新載入；手機圖表改為左右滑動，不再把所有交易日硬縮在同一個畫面。紅色代表跑贏大盤，綠色代表跑輸大盤，顏色深淺反映差距大小。</div>
+  <div class="portfolio-trend-note">切換期間不重新載入；手機圖表可左右滑動，長期間已縮短橫向寬度。點擊走勢附近即可選取最近交易日，不會跳頁或刷新。紅色代表跑贏大盤，綠色代表跑輸大盤，顏色深淺反映差距大小。</div>
   {trend_js}
 </section>'''
 
