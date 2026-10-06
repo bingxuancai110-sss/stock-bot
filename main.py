@@ -26060,9 +26060,12 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             title = f"{fmt_date_full(r['date'])}｜組合 {fmt_pct(r['port'])}"
             if market is not None:
                 title += f"｜加權指數 {fmt_pct(market)}｜超額 {fmt_pct(excess)}"
+            point_state = "neutral"
+            if excess is not None:
+                point_state = "up" if excess > 0.05 else ("down" if excess < -0.05 else "neutral")
             points.append(
                 f'<a class="trend-point-link" href="#{anchor}" aria-label="查看 {html.escape(title)}">'
-                f'<circle class="port-point" cx="{x(i):.1f}" cy="{y(r["port"]):.1f}" r="10"><title>{html.escape(title)}</title></circle></a>'
+                f'<circle class="port-point {point_state}" cx="{x(i):.1f}" cy="{y(r["port"]):.1f}" r="6"><title>{html.escape(title)}</title></circle></a>'
             )
             details.append(
                 f'<div class="trend-point-detail" id="{anchor}">'
@@ -26095,54 +26098,68 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
   <div class="portfolio-trend-summary">
     <div class="portfolio-trend-stat {perf_class(latest["port"])}"><small>期間組合</small><strong class="port">{html.escape(fmt_pct(latest["port"]))}</strong></div>
     <div class="portfolio-trend-stat market-stat"><small>加權指數</small><strong class="market">{html.escape(fmt_pct(market_latest))}</strong></div>
-    <div class="portfolio-trend-stat excess-stat {perf_class(excess)}"><small>跑贏大盤</small><strong class="excess">{html.escape(fmt_pct(excess))}</strong><span class="excess-caption">{'▲ 領先加權指數 ' + html.escape(fmt_pct(abs(excess))) + ' 個百分點' if excess is not None and excess > 0 else ('▼ 落後加權指數 ' + html.escape(fmt_pct(abs(excess))) + ' 個百分點' if excess is not None and excess < 0 else '與加權指數持平')}</span></div>
+    <div class="portfolio-trend-stat excess-stat {perf_class(excess)}"><small>跑贏大盤</small><strong class="excess">{html.escape(fmt_pct(excess))}</strong><span class="excess-caption">{'▲ 領先大盤 ' + html.escape(fmt_pct(abs(excess))) + ' 個百分點' if excess is not None and excess > 0 else ('▼ 落後大盤 ' + html.escape(fmt_pct(abs(excess))) + ' 個百分點' if excess is not None and excess < 0 else '與大盤持平')}</span></div>
   </div>
 </section>'''
         )
 
     css = r'''
 <style>
-/* V208: CSS-only tabs + benchmark toggle + same-page point drilldown; no reload / no JS. */
-.portfolio-trend-card{position:relative;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%);border:1px solid #d7e2ea;border-radius:24px;padding:20px 18px 19px;margin:18px 0;box-shadow:0 12px 32px rgba(39,76,119,.08);overflow:hidden}
-.portfolio-trend-card:before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:linear-gradient(90deg,#35688d,#b28b4c,#35688d)}
-.portfolio-trend-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin:2px 0 18px}
-.portfolio-trend-title h2{margin:0;color:#162b42;font-size:34px;line-height:1.15}.portfolio-trend-title p{margin:9px 0 0;color:#718397;font-size:17px;line-height:1.5}.portfolio-trend-status{padding:9px 13px;border:1px solid #d8e3eb;border-radius:999px;background:#f8fbfd;color:#5c7487;font-size:13px;font-weight:900;white-space:nowrap}
+.portfolio-trend-card{position:relative;margin:20px 0;padding:24px 20px 22px;border:1px solid #d9e3ea;border-radius:28px;background:radial-gradient(circle at 100% 0%,rgba(180,145,82,.10),transparent 32%),linear-gradient(180deg,#fff 0%,#f8fbfd 100%);box-shadow:0 18px 45px rgba(30,57,82,.10);overflow:hidden}
+.portfolio-trend-card:before{content:"";position:absolute;left:0;right:0;top:0;height:5px;background:linear-gradient(90deg,#315f80,#b18a4b,#315f80)}
+.portfolio-trend-header{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin:4px 0 20px}
+.portfolio-trend-title h2{margin:0;color:#142a40;font-size:36px;line-height:1.08;letter-spacing:-.6px;font-weight:950}
+.portfolio-trend-title p{margin:9px 0 0;color:#718397;font-size:17px;line-height:1.5;font-weight:750}
+.portfolio-trend-status{flex:0 0 auto;padding:9px 13px;border:1px solid #d6e2ea;border-radius:999px;background:#f8fbfd;color:#587085;font-size:13px;font-weight:950;white-space:nowrap}
 .trend-period-radio,.trend-benchmark-toggle{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
-.portfolio-trend-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;padding:2px 1px 12px}
-.portfolio-trend-tab{display:flex;align-items:center;justify-content:center;width:100%;min-width:0;border:1.5px solid #cbd9e4;background:#f7fafc;color:#596e81;border-radius:14px;padding:13px 4px;font-size:18px;line-height:1;font-weight:900;white-space:nowrap;cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none}
-#trend-period-1m:checked ~ .portfolio-trend-tabs label[for="trend-period-1m"],#trend-period-3m:checked ~ .portfolio-trend-tabs label[for="trend-period-3m"],#trend-period-6m:checked ~ .portfolio-trend-tabs label[for="trend-period-6m"],#trend-period-ytd:checked ~ .portfolio-trend-tabs label[for="trend-period-ytd"],#trend-period-all:checked ~ .portfolio-trend-tabs label[for="trend-period-all"]{background:#fff;border-color:#c2d0dc;color:#8b6934;box-shadow:inset 0 -4px 0 #b18a4b}
-.portfolio-trend-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:3px 0 13px}.portfolio-trend-current{font-size:16px;color:#74879a}.portfolio-trend-current b{color:#8b6934;font-size:24px;margin-left:5px}
-.portfolio-trend-current .period-current-label{display:none}
+.portfolio-trend-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px;padding:4px 0 16px}
+.portfolio-trend-tab{display:flex;align-items:center;justify-content:center;min-height:48px;border:1px solid #d0dce5;background:#f7fafc;color:#63778a;border-radius:16px;padding:8px 3px;font-size:17px;line-height:1;font-weight:950;cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none}
+#trend-period-1m:checked ~ .portfolio-trend-tabs label[for="trend-period-1m"],#trend-period-3m:checked ~ .portfolio-trend-tabs label[for="trend-period-3m"],#trend-period-6m:checked ~ .portfolio-trend-tabs label[for="trend-period-6m"],#trend-period-ytd:checked ~ .portfolio-trend-tabs label[for="trend-period-ytd"],#trend-period-all:checked ~ .portfolio-trend-tabs label[for="trend-period-all"]{background:#fff;border-color:#b18a4b;color:#8b6934;box-shadow:inset 0 -4px 0 #b18a4b,0 7px 18px rgba(80,65,40,.08)}
+.portfolio-trend-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:1px 0 12px}
+.portfolio-trend-current{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;color:#8292a0;font-size:15px;font-weight:750}
+.portfolio-trend-current b{color:#8b6934;font-size:25px;font-weight:950}.portfolio-trend-current .period-current-label{display:none}
 #trend-period-1m:checked ~ .portfolio-trend-toolbar .period-label-1m,#trend-period-3m:checked ~ .portfolio-trend-toolbar .period-label-3m,#trend-period-6m:checked ~ .portfolio-trend-toolbar .period-label-6m,#trend-period-ytd:checked ~ .portfolio-trend-toolbar .period-label-ytd,#trend-period-all:checked ~ .portfolio-trend-toolbar .period-label-all{display:inline}
-.portfolio-trend-benchmark-label{display:inline-flex;align-items:center;gap:8px;padding:12px 14px;border:1.5px solid #cbd9e4;background:#fff;border-radius:13px;color:#566d80;font-size:15px;font-weight:900;cursor:pointer;-webkit-tap-highlight-color:transparent}.portfolio-trend-benchmark-label .show-text{display:none}
+.portfolio-trend-benchmark-label{display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:9px 13px;border:1px solid #ccdbe5;background:#fff;border-radius:15px;color:#536b7f;font-size:14px;font-weight:950;cursor:pointer;box-shadow:0 5px 15px rgba(42,69,91,.06)}
+.portfolio-trend-benchmark-label .show-text{display:none}
 #trend-benchmark:checked ~ .portfolio-trend-toolbar .portfolio-trend-benchmark-label .hide-text{display:none}#trend-benchmark:checked ~ .portfolio-trend-toolbar .portfolio-trend-benchmark-label .show-text{display:inline}#trend-benchmark:checked ~ .portfolio-trend-panels .market-layer{display:none}
-.portfolio-trend-panel{display:none}#trend-period-1m:checked ~ .portfolio-trend-panels .panel-1m,#trend-period-3m:checked ~ .portfolio-trend-panels .panel-3m,#trend-period-6m:checked ~ .portfolio-trend-panels .panel-6m,#trend-period-ytd:checked ~ .portfolio-trend-panels .panel-ytd,#trend-period-all:checked ~ .portfolio-trend-panels .panel-all{display:block}
-.portfolio-trend-range{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:2px 3px 11px;color:#77899a;font-size:16px}.portfolio-trend-range b{color:#667b8d;font-size:18px}
-.portfolio-trend-plot{border:1.5px solid #d7e2ea;border-radius:19px;background:linear-gradient(180deg,#f8fbfe 0%,#f3f8fb 100%);overflow:hidden}.portfolio-trend-svg{display:block;width:100%;height:470px;min-height:470px;touch-action:manipulation}
-.portfolio-trend-svg .grid{stroke:#e0e8ee;stroke-width:1}.portfolio-trend-svg .zero{stroke:#98aab8;stroke-width:1.3;stroke-dasharray:5 5}.portfolio-trend-svg .tick{fill:#5f7487;font-size:20px;font-weight:900}.portfolio-trend-svg .date{fill:#5f7487;font-size:18px;font-weight:900}.portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:5.5;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .market-line{fill:none;stroke:#949c98;stroke-width:2.8;stroke-dasharray:9 6;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .port-point{fill:#8b6934;stroke:#fff;stroke-width:4;cursor:pointer;r:10}.portfolio-trend-svg .trend-point-link:focus .port-point{stroke:#315d7f;stroke-width:4}
-.trend-point-hint{margin:10px 3px 0;color:#7d8e9b;font-size:13px;line-height:1.5}.trend-point-detail{display:none;margin:10px 3px 0;padding:12px 14px;border:1px solid #d6e2ea;border-radius:13px;background:#fff;box-shadow:0 8px 18px rgba(39,76,119,.07)}.trend-point-detail:target{display:block}.trend-point-detail-date{font-size:14px;font-weight:900;color:#5e7487;margin-bottom:8px}.trend-point-detail>div:not(.trend-point-detail-date){display:flex;justify-content:space-between;gap:12px;padding:5px 0;color:#81919f;font-size:13px}.trend-point-detail b{font-size:15px;font-variant-numeric:tabular-nums}.trend-point-detail b.port{color:#8b6934}.trend-point-detail b.market{color:#68716d}.trend-point-detail b.excess.up{color:#d62f2f}.trend-point-detail b.excess.down{color:#17834a}
-.portfolio-trend-summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px;margin-top:12px}.portfolio-trend-stat{padding:15px 15px;border:1px solid #dde6ed;border-radius:15px;background:#fff;transition:background .2s,border-color .2s,box-shadow .2s}.portfolio-trend-stat small{display:block;color:#83929f;font-size:14px;font-weight:900}.portfolio-trend-stat strong{display:block;margin-top:6px;font-size:29px;line-height:1.05;font-variant-numeric:tabular-nums}.portfolio-trend-stat strong.port,.portfolio-trend-stat strong.market,.portfolio-trend-stat strong.excess{color:inherit}.portfolio-trend-stat.up{color:#d62f2f}.portfolio-trend-stat.down{color:#17834a}.portfolio-trend-stat.flat{color:#6f7f8d}.portfolio-trend-stat.intensity-1{background:#fffafa;border-color:#f0cfcf}.portfolio-trend-stat.up.intensity-2{background:#fff4f4;border-color:#e9a7a7}.portfolio-trend-stat.up.intensity-3{background:#ffe7e7;border-color:#e97979;box-shadow:0 8px 20px rgba(214,47,47,.12)}.portfolio-trend-stat.up.intensity-4{background:#ffd9d9;border-color:#df4b4b;box-shadow:0 10px 24px rgba(214,47,47,.2)}.portfolio-trend-stat.excess-stat{min-height:92px}.portfolio-trend-stat.excess-stat strong{font-size:34px}.portfolio-trend-stat.down.intensity-1{background:#f7fcf9;border-color:#cfe8d9}.portfolio-trend-stat.down.intensity-2{background:#eefaf3;border-color:#a9dbbc}.portfolio-trend-stat.down.intensity-3{background:#dcf4e7;border-color:#65bd8a;box-shadow:0 8px 20px rgba(23,131,74,.12)}.portfolio-trend-stat.down.intensity-4{background:#c9eedb;border-color:#3fa66b;box-shadow:0 10px 24px rgba(23,131,74,.2)}
-.portfolio-trend-legend{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:12px 2px 0;color:#6e8090;font-size:12px;font-weight:800}.portfolio-trend-legend span{display:inline-flex;align-items:center;gap:6px}.portfolio-trend-legend i{display:inline-block;width:20px;height:4px;border-radius:4px;background:#8b6934}.portfolio-trend-legend i.market{height:3px;background:repeating-linear-gradient(90deg,#949c98 0 7px,transparent 7px 11px)}.portfolio-trend-note{margin:9px 2px 0;color:#83929e;font-size:13px;line-height:1.55}
-@media(max-width:640px){.portfolio-trend-card{padding:18px 11px 15px;border-radius:21px}.portfolio-trend-header{gap:9px;margin-bottom:14px}.portfolio-trend-title h2{font-size:34px}.portfolio-trend-title p{font-size:16px}.portfolio-trend-status{font-size:12px;padding:8px 10px}.portfolio-trend-tabs{gap:6px}.portfolio-trend-tab{padding:12px 2px;font-size:16px;border-radius:13px}.portfolio-trend-current{font-size:15px}.portfolio-trend-current b{font-size:23px}.portfolio-trend-benchmark-label{font-size:14px;padding:11px 10px}.portfolio-trend-svg{height:445px;min-height:445px}.portfolio-trend-svg .tick{font-size:20px}.portfolio-trend-svg .date{font-size:18px}.portfolio-trend-range{font-size:15px}.portfolio-trend-range b{font-size:17px}.portfolio-trend-summary{grid-template-columns:1fr 1fr;gap:8px}.portfolio-trend-stat:last-child{grid-column:1/-1}.portfolio-trend-stat strong{font-size:28px}.portfolio-trend-stat small{font-size:14px}}
+.portfolio-trend-panel{display:none}
+#trend-period-1m:checked ~ .portfolio-trend-panels .panel-1m,#trend-period-3m:checked ~ .portfolio-trend-panels .panel-3m,#trend-period-6m:checked ~ .portfolio-trend-panels .panel-6m,#trend-period-ytd:checked ~ .portfolio-trend-panels .panel-ytd,#trend-period-all:checked ~ .portfolio-trend-panels .panel-all{display:block}
+.portfolio-trend-range{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:2px 3px 11px;color:#8292a0;font-size:15px;font-weight:750}.portfolio-trend-range b{color:#5f7487;font-size:18px;font-weight:950}
+.portfolio-trend-plot{position:relative;border:1px solid #d5e1e9;border-radius:22px;background:linear-gradient(180deg,#f8fbfe 0%,#f2f7fa 100%);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 10px 25px rgba(38,65,88,.055);overflow:hidden}
+.portfolio-trend-svg{display:block;width:100%;height:560px;min-height:560px;touch-action:manipulation}
+.portfolio-trend-svg .grid{stroke:#dfe8ee;stroke-width:1}.portfolio-trend-svg .zero{stroke:#8498a8;stroke-width:1.5;stroke-dasharray:5 5}
+.portfolio-trend-svg .tick{fill:#5d7285;font-size:23px;font-weight:900}.portfolio-trend-svg .date{fill:#5d7285;font-size:20px;font-weight:900}
+.portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 3px 3px rgba(139,105,52,.12))}
+.portfolio-trend-svg .market-line{fill:none;stroke:#9aa29f;stroke-width:3;stroke-dasharray:9 7;stroke-linecap:round;stroke-linejoin:round}
+.portfolio-trend-svg .port-point{stroke:#fff;stroke-width:2.5;cursor:pointer}
+.portfolio-trend-svg .port-point.up{fill:#d64a45}
+.portfolio-trend-svg .port-point.down{fill:#3f9a72}
+.portfolio-trend-svg .port-point.neutral{fill:#6f8799}
+.portfolio-trend-svg .trend-point-link:hover .port-point,.portfolio-trend-svg .trend-point-link:focus .port-point{r:8;stroke-width:3}
+.trend-point-hint{margin:11px 3px 0;color:#7a8d9d;font-size:14px;line-height:1.5;font-weight:750}
+.trend-point-detail{display:none;margin:10px 3px 0;padding:13px 15px;border:1px solid #d6e2ea;border-radius:15px;background:#fff;box-shadow:0 8px 18px rgba(39,76,119,.07)}.trend-point-detail:target{display:block}
+.trend-point-detail-date{font-size:14px;font-weight:950;color:#5e7487;margin-bottom:8px}.trend-point-detail>div:not(.trend-point-detail-date){display:flex;justify-content:space-between;gap:12px;padding:5px 0;color:#81919f;font-size:13px}.trend-point-detail b{font-size:15px;font-variant-numeric:tabular-nums}
+.trend-point-detail b.port{color:#8b6934}.trend-point-detail b.market{color:#68716d}.trend-point-detail b.excess.up{color:#d62f2f}.trend-point-detail b.excess.down{color:#17834a}
+.portfolio-trend-summary{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.portfolio-trend-stat{position:relative;min-width:0;padding:14px 13px 13px;border:1px solid #dbe5eb;border-radius:18px;background:rgba(255,255,255,.94);box-shadow:0 7px 18px rgba(38,65,88,.045)}
+.portfolio-trend-stat small{display:block;color:#83929f;font-size:14px;font-weight:900}.portfolio-trend-stat strong{display:block;margin-top:6px;font-size:28px;line-height:1.03;font-variant-numeric:tabular-nums;font-weight:950}
+.portfolio-trend-stat strong.port{color:#8b6934}.portfolio-trend-stat.market-stat{color:#6d7977;background:#fbfcfc}.portfolio-trend-stat strong.market{color:#6d7977}
+.portfolio-trend-stat.excess-stat{grid-column:1/-1;min-height:104px;padding:15px 17px 14px}.portfolio-trend-stat.excess-stat small{font-size:14px}.portfolio-trend-stat.excess-stat strong{font-size:34px}
+.excess-caption{display:block;margin-top:7px;font-size:14px;font-weight:900;opacity:.88}
+.portfolio-trend-stat.up{color:#d62f2f}.portfolio-trend-stat.down{color:#17834a}.portfolio-trend-stat.flat{color:#6f7f8d}
+.portfolio-trend-stat.intensity-1{background:#fffafa;border-color:#f0cfcf}.portfolio-trend-stat.up.intensity-2{background:#fff3f3;border-color:#e9a7a7}.portfolio-trend-stat.up.intensity-3{background:#ffe5e5;border-color:#e97979;box-shadow:0 10px 25px rgba(214,47,47,.13)}.portfolio-trend-stat.up.intensity-4{background:#ffd4d4;border-color:#df4b4b;box-shadow:0 12px 28px rgba(214,47,47,.22)}
+.portfolio-trend-stat.down.intensity-1{background:#f7fcf9;border-color:#cfe8d9}.portfolio-trend-stat.down.intensity-2{background:#eefaf3;border-color:#a9dbbc}.portfolio-trend-stat.down.intensity-3{background:#dcf4e7;border-color:#65bd8a;box-shadow:0 10px 25px rgba(23,131,74,.13)}.portfolio-trend-stat.down.intensity-4{background:#c9eedb;border-color:#3fa66b;box-shadow:0 12px 28px rgba(23,131,74,.22)}
+.portfolio-trend-legend{display:flex;align-items:center;gap:17px;flex-wrap:wrap;margin:13px 3px 0;color:#6e8090;font-size:12px;font-weight:850}.portfolio-trend-legend span{display:inline-flex;align-items:center;gap:6px}.portfolio-trend-legend i{display:inline-block;width:22px;height:4px;border-radius:4px;background:#8b6934}.portfolio-trend-legend i.market{height:3px;background:repeating-linear-gradient(90deg,#949c98 0 7px,transparent 7px 11px)}.portfolio-trend-legend i.point-up{width:9px;height:9px;border-radius:50%;background:#d64a45}.portfolio-trend-legend i.point-down{width:9px;height:9px;border-radius:50%;background:#3f9a72}.portfolio-trend-legend i.point-neutral{width:9px;height:9px;border-radius:50%;background:#6f8799}
+.portfolio-trend-note{margin:9px 3px 0;color:#8796a2;font-size:12px;line-height:1.55;font-weight:700}
+@media(max-width:640px){
+.portfolio-trend-card{padding:19px 11px 17px;border-radius:23px;margin:16px 0}.portfolio-trend-header{gap:8px;margin-bottom:15px}.portfolio-trend-title h2{font-size:35px}.portfolio-trend-title p{font-size:16px}.portfolio-trend-status{font-size:11px;padding:8px 9px}
+.portfolio-trend-tabs{gap:5px;padding-bottom:15px}.portfolio-trend-tab{min-height:47px;padding:8px 1px;font-size:16px;border-radius:15px}.portfolio-trend-current{font-size:14px}.portfolio-trend-current b{font-size:24px}.portfolio-trend-benchmark-label{min-height:46px;font-size:13px;padding:8px 10px}
+.portfolio-trend-range{font-size:14px}.portfolio-trend-range b{font-size:17px}.portfolio-trend-svg{height:560px;min-height:560px}.portfolio-trend-svg .tick{font-size:23px}.portfolio-trend-svg .date{font-size:20px}
+.portfolio-trend-summary{gap:8px;margin-top:12px}.portfolio-trend-stat{padding:13px 12px;border-radius:16px}.portfolio-trend-stat small{font-size:13px}.portfolio-trend-stat strong{font-size:27px}.portfolio-trend-stat.excess-stat{min-height:102px;padding:14px 15px}.portfolio-trend-stat.excess-stat strong{font-size:34px}.excess-caption{font-size:12px}
+}
+</style>
+'''
 
-/* V210 visual polish */
-.portfolio-trend-card{border-radius:28px;padding:24px 20px 22px;background:radial-gradient(circle at 100% 0%,rgba(177,138,75,.10),transparent 34%),linear-gradient(180deg,#fff 0%,#f8fbfd 100%);box-shadow:0 18px 45px rgba(30,57,82,.11)}
-.portfolio-trend-card:before{height:5px;background:linear-gradient(90deg,#315f80,#b18a4b 50%,#315f80)}
-.portfolio-trend-title h2{font-size:38px;letter-spacing:-.7px;font-weight:950}.portfolio-trend-title p{font-size:18px;font-weight:750}
-.portfolio-trend-status{padding:10px 14px;font-size:13px;box-shadow:0 5px 15px rgba(42,69,91,.05)}
-.portfolio-trend-tab{min-height:50px;border-radius:16px;font-size:18px;transition:transform .15s ease,box-shadow .15s ease}.portfolio-trend-tab:active{transform:scale(.97)}
-#trend-period-1m:checked ~ .portfolio-trend-tabs label[for="trend-period-1m"],#trend-period-3m:checked ~ .portfolio-trend-tabs label[for="trend-period-3m"],#trend-period-6m:checked ~ .portfolio-trend-tabs label[for="trend-period-6m"],#trend-period-ytd:checked ~ .portfolio-trend-tabs label[for="trend-period-ytd"],#trend-period-all:checked ~ .portfolio-trend-tabs label[for="trend-period-all"]{background:#fff;border-color:#b18a4b;color:#8b6934;box-shadow:inset 0 -4px 0 #b18a4b,0 8px 20px rgba(80,65,40,.10)}
-.portfolio-trend-benchmark-label{min-height:47px;border-radius:15px;box-shadow:0 6px 16px rgba(42,69,91,.07)}
-.portfolio-trend-plot{border-radius:23px;box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 12px 28px rgba(38,65,88,.07)}
-.portfolio-trend-svg{height:535px;min-height:535px}.portfolio-trend-svg .tick{font-size:22px}.portfolio-trend-svg .date{font-size:19px}.portfolio-trend-svg .port-line{stroke-width:6.2}.portfolio-trend-svg .market-line{stroke-width:3.1}.portfolio-trend-svg .port-point{r:8.5}
-.portfolio-trend-summary{grid-template-columns:1fr 1fr;gap:11px;margin-top:15px}.portfolio-trend-stat{border-radius:19px;padding:18px 17px;box-shadow:0 8px 20px rgba(38,65,88,.05)}
-.portfolio-trend-stat small{font-size:15px}.portfolio-trend-stat strong{font-size:35px}.portfolio-trend-stat.market-stat{color:#6d7977;background:#fbfcfc}.portfolio-trend-stat strong.market{color:#6d7977}
-.portfolio-trend-stat.excess-stat{grid-column:1/-1;min-height:126px;padding:20px 19px}.portfolio-trend-stat.excess-stat small{font-size:17px}.portfolio-trend-stat.excess-stat strong{font-size:46px}.excess-caption{display:block;margin-top:8px;font-size:14px;font-weight:900}
-.portfolio-trend-stat.up.intensity-1{background:#fffafa;border-color:#f0cfcf}.portfolio-trend-stat.up.intensity-2{background:#fff2f2;border-color:#e9a7a7}.portfolio-trend-stat.up.intensity-3{background:#ffe3e3;border-color:#e97979;box-shadow:0 10px 26px rgba(214,47,47,.14)}.portfolio-trend-stat.up.intensity-4{background:#ffd1d1;border-color:#df4b4b;box-shadow:0 13px 30px rgba(214,47,47,.24)}
-.portfolio-trend-stat.down.intensity-1{background:#f7fcf9;border-color:#cfe8d9}.portfolio-trend-stat.down.intensity-2{background:#edf9f2;border-color:#a9dbbc}.portfolio-trend-stat.down.intensity-3{background:#daf3e5;border-color:#65bd8a;box-shadow:0 10px 26px rgba(23,131,74,.14)}.portfolio-trend-stat.down.intensity-4{background:#c7ecd9;border-color:#3fa66b;box-shadow:0 13px 30px rgba(23,131,74,.24)}
-.portfolio-trend-legend{font-size:13px}.portfolio-trend-note{font-size:12px}
-@media(max-width:640px){.portfolio-trend-card{padding:20px 11px 18px;border-radius:24px}.portfolio-trend-title h2{font-size:36px}.portfolio-trend-title p{font-size:16px}.portfolio-trend-tab{min-height:48px;font-size:16px}.portfolio-trend-svg{height:525px;min-height:525px}.portfolio-trend-svg .tick{font-size:21px}.portfolio-trend-svg .date{font-size:18px}.portfolio-trend-stat{padding:16px 14px}.portfolio-trend-stat strong{font-size:32px}.portfolio-trend-stat.excess-stat{min-height:118px;padding:18px 16px}.portfolio-trend-stat.excess-stat strong{font-size:43px}.excess-caption{font-size:13px}}
-</style>'''
 
     radios = "".join(
         f'<input class="trend-period-radio" type="radio" name="trend_period_ui" id="trend-period-{k}" {"checked" if k == requested_period else ""} aria-label="{period_labels[k]}">' 
@@ -26157,7 +26174,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
   <input class="trend-benchmark-toggle" type="checkbox" id="trend-benchmark" {checked}>
   <div class="portfolio-trend-toolbar"><div class="portfolio-trend-current"><span>目前顯示</span> <b class="period-current-label period-label-1m">1 個月</b><b class="period-current-label period-label-3m">3 個月</b><b class="period-current-label period-label-6m">6 個月</b><b class="period-current-label period-label-ytd">今年</b><b class="period-current-label period-label-all">全部</b></div><label class="portfolio-trend-benchmark-label" for="trend-benchmark"><span class="hide-text">隱藏加權指數</span><span class="show-text">顯示加權指數</span></label></div>
   <div class="portfolio-trend-panels">{"".join(panels)}</div>
-  <div class="portfolio-trend-legend"><span><i></i>我的組合</span><span><i class="market"></i>加權指數</span><span>點擊圖上圓點查看每日精確數據</span></div>
+  <div class="portfolio-trend-legend"><span><i></i>我的組合</span><span><i class="market"></i>加權指數</span><span><i class="point-up"></i>跑贏</span><span><i class="point-down"></i>跑輸</span><span><i class="point-neutral"></i>接近大盤</span><span>點擊圖上圓點查看每日精確數據</span></div>
   <div class="portfolio-trend-note">切換期間不重新載入；紅色代表跑贏大盤，綠色代表跑輸大盤，顏色深淺反映差距大小。</div>
 </section>'''
 
