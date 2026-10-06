@@ -25874,7 +25874,7 @@ def render_portfolio_allocation_chart(holdings):
 <div class="portfolio-chart-footnote">面積代表目前組合權重；顏色代表今日股價變化。</div>
 </section>{js}'''
 
-def render_trend_chart(snapshots):
+def render_trend_chart(snapshots, requested_period="3m"):
     """
     互動式「組合 vs 加權指數」績效圖。
 
@@ -25947,7 +25947,7 @@ def render_trend_chart(snapshots):
         except Exception:
             return None
 
-    requested_period = str(request.args.get("trend_period") or "3m").lower()
+    requested_period = str(requested_period or "3m").lower()
     if requested_period not in {"1m", "3m", "6m", "ytd", "all"}:
         requested_period = "3m"
     _dates = [_trend_date(x["date"]) for x in data]
@@ -30515,9 +30515,19 @@ def web_portfolio(uid):
     # 這三項只依賴 user_id，與首頁前段的共享資料、持股行情彼此獨立。
     # 提前啟動，讓「走勢／已實現損益／排名」在等待行情與共享資料時就一起跑，
     # 避免原本固定排在最後、額外再增加約 2～3 秒的尾端等待。
+    # Flask request proxy 不能跨執行緒使用。先在主 request thread 讀出期間，
+    # 再把純字串傳進走勢圖 worker；否則 render_trend_chart() 在 worker 裡
+    # 讀 request.args 會直接拋出「Working outside of request context」，
+    # 最終讓 fragment 回 500，前端 Loader 就只會停在 97%。
+    requested_trend_period = str(request.args.get("trend_period") or "3m").lower()
+    if requested_trend_period not in {"1m", "3m", "6m", "ytd", "all"}:
+        requested_trend_period = "3m"
+
     aux_executor = ThreadPoolExecutor(max_workers=2)
     aux_trend_future = aux_executor.submit(
-        lambda: render_trend_chart(get_portfolio_snapshots(uid, days=420)))
+        lambda: render_trend_chart(
+            get_portfolio_snapshots(uid, days=420),
+            requested_period=requested_trend_period))
     aux_realized_future = aux_executor.submit(get_realized_trades, uid, 500)
     aux_rank_future = aux_executor.submit(get_fast_rank_summary, uid)
 
@@ -30703,7 +30713,13 @@ def web_portfolio(uid):
     # 操作日誌已在行情階段讀取並供日初曝險與日報共用，避免同頁重複讀取資料庫。
     aux_started = time.monotonic()
     try:
-        trend_html = aux_trend_future.result()
+        try:
+            trend_html = aux_trend_future.result()
+        except Exception as exc:
+            # 組合走勢屬於首頁下半部的非必要視覺區塊；就算快照／畫圖失敗，
+            # 也不能讓整個首頁 fragment 變成 HTTP 500。
+            print(f"⚠️ 首頁組合走勢載入失敗（不阻塞首頁）: {type(exc).__name__}: {exc}", flush=True)
+            trend_html = '<div class="empty">組合走勢暫時無法載入，其他首頁資料仍可使用。</div>'
         realized_trades = aux_realized_future.result()
         page_rank_status = aux_rank_future.result()
     finally:
