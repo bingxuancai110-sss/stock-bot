@@ -16659,7 +16659,7 @@ def _morning_macro_news_lines():
 
 
 def _macro_metric_box(item):
-    """Flex 的單一指標格：保留原 2×2 卡片尺寸，同時顯示現值與日漲跌幅。"""
+    """LINE 盤前指標卡：完整顯示指數點位／殖利率與日漲跌幅，避免手機版被截斷。"""
     pct = item.get("pct")
     close = item.get("close")
     if close is None:
@@ -16676,27 +16676,28 @@ def _macro_metric_box(item):
         change_value = f"{pct:+.2f}%"
         value_color = "#B52F2F" if pct > 0 else ("#087A4B" if pct < 0 else "#767D85")
 
-    metric_row = {
-        "type": "box", "layout": "horizontal", "alignItems": "center",
-        "margin": "sm", "contents": [
-            {"type": "text", "text": current_value, "size": "sm",
-             "weight": "bold", "color": "#454C55", "flex": 1,
-             "wrap": False, "maxLines": 1},
-            {"type": "text", "text": change_value, "size": "sm",
-             "weight": "bold", "color": value_color, "align": "end",
-             "flex": 0, "wrap": False, "maxLines": 1},
-        ]
-    }
     return {
         "type": "box", "layout": "vertical", "flex": 1,
         "backgroundColor": "#F9F9FB", "cornerRadius": "8px",
         "paddingAll": "10px", "contents": [
-            {"type": "text", "text": item["label"], "size": "xs",
-             "color": "#454C55", "wrap": True, "maxLines": 2},
-            metric_row,
+            {
+                "type": "text", "text": item["label"], "size": "xs",
+                "color": "#454C55", "weight": "bold",
+                "wrap": True, "maxLines": 2
+            },
+            {
+                "type": "text", "text": current_value, "size": "sm",
+                "weight": "bold", "color": "#454C55",
+                "margin": "sm", "wrap": False, "maxLines": 1,
+                "adjustMode": "shrink-to-fit"
+            },
+            {
+                "type": "text", "text": change_value, "size": "sm",
+                "weight": "bold", "color": value_color,
+                "margin": "xs", "wrap": False, "maxLines": 1
+            }
         ]
     }
-
 
 def _macro_metric_rows(group):
     items = [item for item in _morning_macro_data() if item["group"] == group]
@@ -33921,7 +33922,12 @@ function bindFactors(){
       state.assetMode='stock';
       status.textContent='黑馬快照已載入，其他資料同步載入中…';
       renderTabs();
-      render();
+      /* v197：這裡才是黑馬「按 X 後又整份清單重跑」的真正來源。
+         load() 啟動時記住 loadViewEpoch；如果使用者期間已進入/關閉個股詳情，
+         closeDrawer() 會遞增 state.viewEpoch。舊 Promise 完成後禁止再 render。 */
+      if(loadViewEpoch===(state.viewEpoch||0)&&!state.detailOpen&&!state.closingDrawer){
+        render();
+      }
       if(window.stockBotFinishPageLoading) window.stockBotFinishPageLoading();
       if(state.marketOpen){
         updateQuotes();
