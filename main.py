@@ -26042,7 +26042,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         area_points = "".join(f" L {x(i):.1f},{y(r['port']):.1f}" for i, r in enumerate(norm))
         area = f"M {x(0):.1f},{zero:.1f} L {x(0):.1f},{y(norm[0]['port']):.1f}{area_points} L {x(len(norm)-1):.1f},{zero:.1f} Z"
 
-        label_count = 5 if len(norm) > 20 else min(6, len(norm))
+        label_count = 5 if len(norm) > 20 else min(5, len(norm))
         idxs = sorted(set(round(i * (len(norm) - 1) / max(1, label_count - 1)) for i in range(label_count)))
         dates = []
         for i in idxs:
@@ -26051,79 +26051,60 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             dates.append(f'<text class="date" x="{x(i):.1f}" y="{H-14}" text-anchor="middle">{html.escape(txt)}</text>')
 
 
-        points = []
-        point_inputs = []
+        point_circles = []
         tooltips = []
-        panel_radio_name = f"trend_point_ui_{key}"
-        none_id = f"trend-point-none-{key}"
 
-        # One radio group per period. Selecting a point only changes :checked state;
-        # there is no href/hash navigation, so the page does not scroll or reload.
-        point_inputs.append(
-            f'<input class="point-radio point-radio-none" type="radio" '
-            f'name="{panel_radio_name}" id="{none_id}" checked>'
-        )
+        def point_state_for(excess):
+            if excess is None or abs(float(excess)) < 0.50:
+                return "neutral"
+            a = abs(float(excess))
+            level = 1 if a < 1.5 else (2 if a < 3 else (3 if a < 5 else 4))
+            return ("up" if excess > 0 else "down") + f" intensity-{level}"
 
         for i, r in enumerate(norm):
-            dkey = str(r["date"]).replace("-", "")
-            radio_id = f"trend-point-radio-{key}-{dkey}-{i}"
             market = r.get("taiex")
             excess = r["port"] - market if market is not None else None
-
-            if excess is not None and excess > 0.05:
-                point_state = "up"
-                verdict = "▲ 當日跑贏大盤"
-            elif excess is not None and excess < -0.05:
-                point_state = "down"
-                verdict = "▼ 當日跑輸大盤"
-            else:
-                point_state = "neutral"
-                verdict = "● 當日與大盤接近"
-
-            point_inputs.append(
-                f'<input class="point-radio point-radio-data" type="radio" '
-                f'name="{panel_radio_name}" id="{radio_id}">'
-            )
-
-            # Visible SVG point.
-            points.append(
-                f'<circle class="port-point {point_state}" '
-                f'cx="{x(i):.1f}" cy="{y(r["port"]):.1f}" r="7.5">'
+            state = point_state_for(excess)
+            point_circles.append(
+                f'<circle class="port-point {state}" cx="{x(i):.1f}" cy="{y(r["port"]):.1f}" r="8">'
                 f'<title>{html.escape(fmt_date_full(r["date"]))}</title></circle>'
+                f'<circle class="port-point-core {state}" cx="{x(i):.1f}" cy="{y(r["port"]):.1f}" r="3.4"/>'
+            )
+            if excess is not None and excess > 0.05:
+                verdict = "▲ 當日跑贏大盤"
+                verdict_class = "up"
+            elif excess is not None and excess < -0.05:
+                verdict = "▼ 當日跑輸大盤"
+                verdict_class = "down"
+            else:
+                verdict = "● 當日與大盤接近"
+                verdict_class = "neutral"
+            tooltips.append(
+                f'<div class="trend-point-tooltip-data" data-index="{i}" data-state="{verdict_class}" '
+                f'data-date="{html.escape(fmt_date_full(r["date"]))}" data-port="{html.escape(fmt_pct(r["port"]))}" '
+                f'data-market="{html.escape(fmt_pct(market) if market is not None else "資料暫缺")}" '
+                f'data-excess="{html.escape(fmt_pct(excess) if excess is not None else "—")}" '
+                f'data-verdict="{html.escape(verdict)}"></div>'
             )
 
-            # Large HTML tap target layered over the SVG point.
-            hit_left = x(i) / W * 100
-            hit_top = y(r["port"]) / H * 100
-            points.append(
-                f'<label class="point-hit point-hit-{point_state}" for="{radio_id}" '
-                f'style="left:{hit_left:.4f}%;top:{hit_top:.4f}%" '
-                f'aria-label="查看 {html.escape(fmt_date_full(r["date"]))} 報酬">'
-                f'<span class="point-dot"></span></label>'
+        chart_data = html.escape(json.dumps(norm, ensure_ascii=False), quote=True)
+        chart_config = html.escape(json.dumps({
+            "W": W, "H": H, "ML": ML, "MR": MR, "MT": MT, "MB": MB, "lo": lo, "hi": hi
+        }, ensure_ascii=False), quote=True)
+
+        endpoint_labels = []
+        last_i = len(norm) - 1
+        last_port = norm[last_i]["port"]
+        last_market = norm[last_i].get("taiex")
+        ey = max(MT + 5, y(last_port) - 23)
+        endpoint_labels.append(
+            f'<g class="endpoint port-end"><rect x="{max(ML, x(last_i)-154):.1f}" y="{ey:.1f}" width="146" height="29" rx="14"/><text x="{max(ML+73, x(last_i)-81):.1f}" y="{ey+19:.1f}" text-anchor="middle">我的組合 {fmt_pct(last_port)}</text></g>'
+        )
+        if last_market is not None:
+            ey2 = min(H - MB - 28, y(last_market) + 8)
+            endpoint_labels.append(
+                f'<g class="endpoint market-end"><rect x="{max(ML, x(last_i)-154):.1f}" y="{ey2:.1f}" width="146" height="27" rx="13"/><text x="{max(ML+73, x(last_i)-81):.1f}" y="{ey2+18:.1f}" text-anchor="middle">大盤 {fmt_pct(last_market)}</text></g>'
             )
-
-            port_text = fmt_pct(r["port"])
-            market_text = fmt_pct(market) if market is not None else "資料暫缺"
-            excess_text = fmt_pct(excess) if excess is not None else "—"
-
-            tooltip_html = (
-                f'<div class="trend-point-tooltip" role="dialog" '
-                f'aria-label="{html.escape(fmt_date_full(r["date"]))} 每日績效">'
-                f'<div class="trend-point-tooltip-head">'
-                f'<div><span class="trend-point-tooltip-kicker">交易日</span>'
-                f'<strong>{html.escape(fmt_date_full(r["date"]))}</strong></div>'
-                f'<label class="trend-point-close" for="{none_id}" aria-label="關閉">關閉</label>'
-                f'</div>'
-                f'<div class="trend-point-tooltip-status {point_state}">{verdict}</div>'
-                f'<div class="trend-point-metrics">'
-                f'<div><span>我的組合</span><b class="port">{html.escape(port_text)}</b></div>'
-                f'<div><span>加權指數</span><b class="market">{html.escape(market_text)}</b></div>'
-                f'<div><span>相對大盤</span><b class="excess {point_state}">{html.escape(excess_text)}</b></div>'
-                f'</div></div>'
-            )
-            tooltips.append(tooltip_html)
-
-        details = []
 
         svg = (
             f'<svg class="portfolio-trend-svg" viewBox="0 0 {W} {H}" preserveAspectRatio="none" role="img" aria-label="{period_labels[key]}組合與加權指數績效圖">'
@@ -26132,7 +26113,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             f'<path class="port-area" d="{area}" fill="url(#trend-area-{key})"/>'
             f'<path class="port-line" d="{path_for("port")}"/>'
             f'<path class="market-layer market-line" d="{path_for("taiex")}"/>'
-            f'{"".join(points)}{"".join(dates)}</svg>'
+            f'<line class="trend-crosshair" x1="{ML}" x2="{ML}" y1="{MT}" y2="{H-MB}"/>' f'{"".join(point_circles)}{"".join(endpoint_labels)}{"".join(dates)}</svg>'
         )
 
         latest = norm[-1]
@@ -26141,10 +26122,10 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         panels.append(
             f'''<section class="portfolio-trend-panel panel-{key}">
   <div class="portfolio-trend-range"><span>資料期間</span><b>{html.escape(fmt_date_full(norm[0]["date"]))} → {html.escape(fmt_date_full(norm[-1]["date"]))}</b></div>
-  <div class="portfolio-trend-plot">{"".join(point_inputs)}{"".join(tooltips)}{svg}</div>
-  <div class="trend-point-hint">點擊圓點後，當日績效會直接顯示在螢幕中央，不會跳頁。</div>
+  <div class="portfolio-trend-plot">{svg}<div class="trend-touch-surface" data-points="{chart_data}" data-config="{chart_config}" role="button" tabindex="0" aria-label="點擊圖表查看每日績效"></div><div class="trend-point-hidden-data">{"".join(tooltips)}</div><div class="trend-modal-overlay" aria-hidden="true"></div><div class="trend-modal" role="dialog" aria-modal="true" aria-hidden="true"><div class="trend-modal-card"><div class="trend-modal-head"><div><span class="trend-modal-kicker">交易日</span><strong class="trend-modal-date"></strong></div><button type="button" class="trend-modal-close" aria-label="關閉">關閉</button></div><div class="trend-modal-status"></div><div class="trend-modal-metrics"><div><span>我的組合</span><b class="trend-modal-port"></b></div><div><span>加權指數</span><b class="trend-modal-market"></b></div><div><span>相對大盤</span><b class="trend-modal-excess"></b></div></div></div></div></div>
+  <div class="trend-point-hint">點擊圖表任一位置，系統會自動找到最近交易日；詳細績效直接顯示在螢幕中央，不刷新頁面。</div>
   <div class="portfolio-trend-summary">
-    <div class="portfolio-trend-stat {perf_class(latest["port"])}"><small>期間組合</small><strong class="port">{html.escape(fmt_pct(latest["port"]))}</strong></div>
+    <div class="portfolio-trend-stat portfolio-stat"><small>我的組合</small><strong class="port">{html.escape(fmt_pct(latest["port"]))}</strong></div>
     <div class="portfolio-trend-stat market-stat"><small>加權指數</small><strong class="market">{html.escape(fmt_pct(market_latest))}</strong></div>
     <div class="portfolio-trend-stat excess-stat {perf_class(excess)}"><small>跑贏大盤</small><strong class="excess">{html.escape(fmt_pct(excess))}</strong><span class="excess-caption">{'▲ 領先大盤 ' + html.escape(fmt_pct(abs(excess))) + ' 個百分點' if excess is not None and excess > 0 else ('▼ 落後大盤 ' + html.escape(fmt_pct(abs(excess))) + ' 個百分點' if excess is not None and excess < 0 else '與大盤持平')}</span></div>
   </div>
@@ -26179,36 +26160,20 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 .portfolio-trend-svg .tick{fill:#5d7285;font-size:23px;font-weight:900}.portfolio-trend-svg .date{fill:#5d7285;font-size:20px;font-weight:900}
 .portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 3px 3px rgba(139,105,52,.12))}
 .portfolio-trend-svg .market-line{fill:none;stroke:#9aa29f;stroke-width:3;stroke-dasharray:9 7;stroke-linecap:round;stroke-linejoin:round}
-.portfolio-trend-svg .port-point{stroke:#fff;stroke-width:2.8}
-.portfolio-trend-svg .port-point.up{fill:#e53935}
-.portfolio-trend-svg .port-point.down{fill:#159a62}
-.portfolio-trend-svg .port-point.neutral{fill:#5d8099}
-.portfolio-trend-plot .point-radio{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
-.point-hit{position:absolute;z-index:20;width:48px;height:48px;transform:translate(-50%,-50%);display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;-webkit-tap-highlight-color:transparent}
-.point-dot{display:block;width:11px;height:11px;border:2.5px solid #fff;border-radius:50%;box-shadow:0 2px 7px rgba(28,54,74,.28);pointer-events:none}
-.point-hit-up .point-dot{background:#e53935}
-.point-hit-down .point-dot{background:#159a62}
-.point-hit-neutral .point-dot{background:#5d8099}
-.point-hit:active{background:rgba(49,93,127,.10)}
-.point-radio-data:checked + .trend-point-tooltip{display:block}
-.trend-point-tooltip{display:none;position:fixed;z-index:99999;left:50%;top:50%;width:min(86vw,360px);box-sizing:border-box;transform:translate(-50%,-50%);padding:20px 18px 18px;border:1px solid #d7e2ea;border-radius:22px;background:rgba(255,255,255,.985);box-shadow:0 24px 60px rgba(22,45,65,.24);backdrop-filter:blur(12px)}
-.trend-point-tooltip-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
-.trend-point-tooltip-kicker{display:block;color:#8796a2;font-size:12px;font-weight:850;margin-bottom:2px}
-.trend-point-tooltip-head strong{display:block;color:#172c41;font-size:22px;line-height:1.2;font-weight:950}
-.trend-point-close{min-width:36px;height:36px;padding:0 10px;display:flex;align-items:center;justify-content:center;border-radius:18px;background:#eef3f6;color:#5f7487;font-size:14px;font-weight:900;cursor:pointer}
-.trend-point-tooltip-status{margin-top:14px;padding:11px 12px;border-radius:12px;font-size:15px;font-weight:950;text-align:center}
-.trend-point-tooltip-status.up{background:#ffdede;color:#d52828}
-.trend-point-tooltip-status.down{background:#d9f4e7;color:#118651}
-.trend-point-tooltip-status.neutral{background:#dfeaf1;color:#4f728d}
-.trend-point-metrics{margin-top:12px;border-top:1px solid #e7edf1}
-.trend-point-metrics>div{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid #edf1f3;color:#738595;font-size:14px;font-weight:800}
-.trend-point-metrics b{font-size:19px;font-weight:950;font-variant-numeric:tabular-nums}
-.trend-point-metrics b.port{color:#8b6934}.trend-point-metrics b.market{color:#68716d}
-.trend-point-metrics b.excess.up{color:#e53935}.trend-point-metrics b.excess.down{color:#159a62}.trend-point-metrics b.excess.neutral{color:#5d8099}
+.portfolio-trend-svg .port-point{stroke:#fff;stroke-width:2.4;vector-effect:non-scaling-stroke;paint-order:stroke fill}.portfolio-trend-svg .port-point-core{stroke:#fff;stroke-width:1.1;vector-effect:non-scaling-stroke}
+.portfolio-trend-svg .port-point.up.intensity-1{fill:#ef6a66}.portfolio-trend-svg .port-point.up.intensity-2{fill:#e53935}.portfolio-trend-svg .port-point.up.intensity-3{fill:#c91f1f}.portfolio-trend-svg .port-point.up.intensity-4{fill:#a90f0f}
+.portfolio-trend-svg .port-point.down.intensity-1{fill:#44b884}.portfolio-trend-svg .port-point.down.intensity-2{fill:#159a62}.portfolio-trend-svg .port-point.down.intensity-3{fill:#0d7c4e}.portfolio-trend-svg .port-point.down.intensity-4{fill:#075e3b}
+.portfolio-trend-svg .port-point.neutral{fill:#5d8099}.portfolio-trend-svg .port-point-core.up{fill:#fff}.portfolio-trend-svg .port-point-core.down{fill:#fff}.portfolio-trend-svg .port-point-core.neutral{fill:#fff}
+.portfolio-trend-svg .endpoint rect{stroke:#fff;stroke-width:2}.portfolio-trend-svg .endpoint text{font-size:17px;font-weight:950}.portfolio-trend-svg .port-end rect{fill:#8b6934}.portfolio-trend-svg .port-end text{fill:#fff}.portfolio-trend-svg .market-end rect{fill:#697572}.portfolio-trend-svg .market-end text{fill:#fff}
+.trend-touch-surface{position:absolute;inset:0;z-index:12;cursor:crosshair;touch-action:pan-y;background:transparent;outline:none}.trend-touch-surface:focus{outline:2px solid rgba(49,93,127,.28);outline-offset:-3px;border-radius:22px}.trend-crosshair{display:none;stroke:#718797;stroke-width:2;stroke-dasharray:6 6;opacity:.7;pointer-events:none}.trend-selected-point{stroke-width:4!important}
+.trend-point-hidden-data,.trend-point-tooltip-data{display:none}
+.trend-modal-overlay{display:none;position:fixed;inset:0;z-index:9998;background:rgba(18,35,50,.16);backdrop-filter:blur(2px)}
+.trend-modal{display:none;position:fixed;z-index:9999;left:50%;top:50%;width:min(88vw,370px);transform:translate(-50%,-50%);box-sizing:border-box}.trend-modal.open{display:block}
+.trend-modal-card{padding:20px 18px 18px;border:1px solid #d6e2ea;border-radius:22px;background:rgba(255,255,255,.985);box-shadow:0 24px 70px rgba(18,39,57,.25)}
+.trend-modal-head{display:flex;justify-content:space-between;align-items:center;gap:14px}.trend-modal-kicker{display:block;color:#8494a0;font-size:12px;font-weight:850;margin-bottom:2px}.trend-modal-head strong{display:block;color:#162b40;font-size:23px;font-weight:950}.trend-modal-close{border:0;border-radius:999px;padding:9px 13px;background:#eef3f6;color:#577087;font-size:14px;font-weight:900;cursor:pointer}
+.trend-modal-status{margin-top:14px;padding:11px 12px;border-radius:12px;text-align:center;font-size:15px;font-weight:950}.trend-modal-status.up{background:#ffdada;color:#c92323}.trend-modal-status.down{background:#d8f3e5;color:#117d4d}.trend-modal-status.neutral{background:#e1edf3;color:#4f728d}
+.trend-modal-metrics{margin-top:12px;border-top:1px solid #e6edf1}.trend-modal-metrics>div{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid #edf1f3;color:#718494;font-size:14px;font-weight:800}.trend-modal-metrics b{font-size:20px;font-weight:950;font-variant-numeric:tabular-nums}.trend-modal-port{color:#8b6934}.trend-modal-market{color:#6d7977}.trend-modal-excess.up{color:#e53935}.trend-modal-excess.down{color:#159a62}.trend-modal-excess.neutral{color:#5d8099}
 .trend-point-hint{margin:11px 3px 0;color:#7a8d9d;font-size:14px;line-height:1.5;font-weight:750}
-.trend-point-detail{display:none;margin:10px 3px 0;padding:13px 15px;border:1px solid #d6e2ea;border-radius:15px;background:#fff;box-shadow:0 8px 18px rgba(39,76,119,.07)}.trend-point-detail:target{display:block}
-.trend-point-detail-date{font-size:14px;font-weight:950;color:#5e7487;margin-bottom:8px}.trend-point-detail>div:not(.trend-point-detail-date){display:flex;justify-content:space-between;gap:12px;padding:5px 0;color:#81919f;font-size:13px}.trend-point-detail b{font-size:15px;font-variant-numeric:tabular-nums}
-.trend-point-detail b.port{color:#8b6934}.trend-point-detail b.market{color:#68716d}.trend-point-detail b.excess.up{color:#d62f2f}.trend-point-detail b.excess.down{color:#17834a}
 .portfolio-trend-summary{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
 .portfolio-trend-stat{position:relative;min-width:0;padding:14px 13px 13px;border:1px solid #dbe5eb;border-radius:18px;background:rgba(255,255,255,.94);box-shadow:0 7px 18px rgba(38,65,88,.045)}
 .portfolio-trend-stat small{display:block;color:#83929f;font-size:14px;font-weight:900}.portfolio-trend-stat strong{display:block;margin-top:6px;font-size:28px;line-height:1.03;font-variant-numeric:tabular-nums;font-weight:950}
@@ -26223,7 +26188,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 @media(max-width:640px){
 .portfolio-trend-card{padding:19px 11px 17px;border-radius:23px;margin:16px 0}.portfolio-trend-header{gap:8px;margin-bottom:15px}.portfolio-trend-title h2{font-size:35px}.portfolio-trend-title p{font-size:16px}.portfolio-trend-status{font-size:11px;padding:8px 9px}
 .portfolio-trend-tabs{gap:5px;padding-bottom:15px}.portfolio-trend-tab{min-height:47px;padding:8px 1px;font-size:16px;border-radius:15px}.portfolio-trend-current{font-size:14px}.portfolio-trend-current b{font-size:24px}.portfolio-trend-benchmark-label{min-height:46px;font-size:13px;padding:8px 10px}
-.portfolio-trend-range{font-size:14px}.portfolio-trend-range b{font-size:17px}.portfolio-trend-svg{height:560px;min-height:560px}.portfolio-trend-svg .tick{font-size:23px}.portfolio-trend-svg .date{font-size:20px}
+.portfolio-trend-range{font-size:14px}.portfolio-trend-range b{font-size:17px}.portfolio-trend-svg{height:585px;min-height:585px}.portfolio-trend-svg .tick{font-size:24px}.portfolio-trend-svg .date{font-size:21px}
 .portfolio-trend-summary{gap:8px;margin-top:12px}.portfolio-trend-stat{padding:13px 12px;border-radius:16px}.portfolio-trend-stat small{font-size:13px}.portfolio-trend-stat strong{font-size:27px}.portfolio-trend-stat.excess-stat{min-height:102px;padding:14px 15px}.portfolio-trend-stat.excess-stat strong{font-size:34px}.excess-caption{font-size:12px}
 }
 </style>
@@ -26234,6 +26199,63 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         f'<input class="trend-period-radio" type="radio" name="trend_period_ui" id="trend-period-{k}" {"checked" if k == requested_period else ""} aria-label="{period_labels[k]}">' 
         for k in period_order
     )
+    trend_js = """
+<script>
+(function(){
+  var root=document.getElementById('portfolio-trend');
+  if(!root) return;
+  root.querySelectorAll('.trend-touch-surface').forEach(function(surface){
+    var panel=surface.closest('.portfolio-trend-panel');
+    if(!panel) return;
+    var modal=panel.querySelector('.trend-modal');
+    var overlay=panel.querySelector('.trend-modal-overlay');
+    var rows=panel.querySelectorAll('.trend-point-tooltip-data');
+    function close(){modal.classList.remove('open');modal.setAttribute('aria-hidden','true');overlay.style.display='none';var svg=panel.querySelector('.portfolio-trend-svg');if(svg){svg.querySelectorAll('.port-point').forEach(function(c){c.classList.remove('trend-selected-point');});var line=svg.querySelector('.trend-crosshair');if(line)line.style.display='none';}}
+    function show(i){
+      var n=Array.prototype.find.call(rows,function(x){return Number(x.dataset.index)===i;});
+      if(!n) return;
+      modal.querySelector('.trend-modal-date').textContent=n.dataset.date||'';
+      modal.querySelector('.trend-modal-port').textContent=n.dataset.port||'—';
+      modal.querySelector('.trend-modal-market').textContent=n.dataset.market||'—';
+      var ex=modal.querySelector('.trend-modal-excess'); ex.textContent=n.dataset.excess||'—'; ex.className='trend-modal-excess '+(n.dataset.state||'neutral');
+      var st=modal.querySelector('.trend-modal-status'); st.textContent=n.dataset.verdict||'● 當日與大盤接近'; st.className='trend-modal-status '+(n.dataset.state||'neutral');
+      modal.classList.add('open'); modal.setAttribute('aria-hidden','false'); overlay.style.display='block';
+      var svg=panel.querySelector('.portfolio-trend-svg');
+      if(svg){
+        svg.querySelectorAll('.port-point').forEach(function(c){c.classList.remove('trend-selected-point');});
+        var circles=svg.querySelectorAll('.port-point');
+        if(circles[i]) circles[i].classList.add('trend-selected-point');
+        var line=svg.querySelector('.trend-crosshair');
+        if(line){
+          var cfg=JSON.parse(surface.dataset.config||'{}');
+          var px=cfg.ML+(i/Math.max(1,data.length-1))*(cfg.W-cfg.ML-cfg.MR);
+          line.setAttribute('x1',px); line.setAttribute('x2',px); line.style.display='block';
+        }
+      }
+    }
+    function nearest(ev){
+      var data=[],cfg={};
+      try{data=JSON.parse(surface.dataset.points||'[]');cfg=JSON.parse(surface.dataset.config||'{}');}catch(err){return -1;}
+      var rect=surface.getBoundingClientRect();
+      if(!rect.width||!rect.height||!data.length) return -1;
+      var sx=(ev.clientX-rect.left)/rect.width*cfg.W;
+      var sy=(ev.clientY-rect.top)/rect.height*cfg.H;
+      var best=0,bestD=Infinity;
+      for(var i=0;i<data.length;i++){
+        var px=cfg.ML+(i/Math.max(1,data.length-1))*(cfg.W-cfg.ML-cfg.MR);
+        var dx=Math.abs(sx-px);
+        if(dx<bestD){bestD=dx;best=i;}
+      }
+      return best;
+    }
+    surface.addEventListener('click',function(e){var i=nearest(e);if(i>=0)show(i);});
+    surface.addEventListener('pointerup',function(e){ if(e.pointerType==='touch'){ var i=nearest(e); if(i>=0)show(i); }});
+    var closeBtn=panel.querySelector('.trend-modal-close'); if(closeBtn) closeBtn.addEventListener('click',close);
+    if(overlay) overlay.addEventListener('click',close);
+  });
+})();
+</script>
+"""
     checked = "" if show_benchmark else "checked"
     return f'''<section class="portfolio-trend-card" id="portfolio-trend">
 {css}
@@ -26245,6 +26267,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
   <div class="portfolio-trend-panels">{"".join(panels)}</div>
   <div class="portfolio-trend-legend"><span><i></i>我的組合</span><span><i class="market"></i>加權指數</span><span><i class="point-up"></i>跑贏</span><span><i class="point-down"></i>跑輸</span><span><i class="point-neutral"></i>接近大盤</span><span>點擊圓點查看每日相對大盤績效</span></div>
   <div class="portfolio-trend-note">切換期間不重新載入；紅色代表跑贏大盤，綠色代表跑輸大盤，顏色深淺反映差距大小。</div>
+  {trend_js}
 </section>'''
 
 
