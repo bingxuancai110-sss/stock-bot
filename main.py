@@ -25986,7 +25986,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             lo = math.floor((mid - step * 1.5) / step) * step
             hi = math.ceil((mid + step * 1.5) / step) * step
 
-        W, H, ML, MR, MT, MB = 900, 340, 72, 18, 20, 46
+        W, H, ML, MR, MT, MB = 1100, 700, 100, 22, 36, 82
         PW, PH = W - ML - MR, H - MT - MB
         def x(i): return ML + (i / max(1, len(norm) - 1)) * PW
         def y(v): return MT + (1 - (v - lo) / max(1e-9, hi - lo)) * PH
@@ -26041,7 +26041,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
                 title += f"｜加權指數 {fmt_pct(market)}｜超額 {fmt_pct(excess)}"
             points.append(
                 f'<a class="trend-point-link" href="#{anchor}" aria-label="查看 {html.escape(title)}">'
-                f'<circle class="port-point" cx="{x(i):.1f}" cy="{y(r["port"]):.1f}" r="6"><title>{html.escape(title)}</title></circle></a>'
+                f'<circle class="port-point" cx="{x(i):.1f}" cy="{y(r["port"]):.1f}" r="10"><title>{html.escape(title)}</title></circle></a>'
             )
             details.append(
                 f'<div class="trend-point-detail" id="{anchor}">'
@@ -26053,7 +26053,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             )
 
         svg = (
-            f'<svg class="portfolio-trend-svg" viewBox="0 0 {W} {H}" role="img" aria-label="{period_labels[key]}組合與加權指數績效圖">'
+            f'<svg class="portfolio-trend-svg" viewBox="0 0 {W} {H}" preserveAspectRatio="none" role="img" aria-label="{period_labels[key]}組合與加權指數績效圖">'
             f'<defs><linearGradient id="trend-area-{key}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#8b6934" stop-opacity=".18"/><stop offset="100%" stop-color="#8b6934" stop-opacity="0"/></linearGradient></defs>'
             f'{"".join(grid)}'
             f'<path class="port-area" d="{area}" fill="url(#trend-area-{key})"/>'
@@ -26097,12 +26097,12 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 #trend-benchmark:checked ~ .portfolio-trend-toolbar .portfolio-trend-benchmark-label .hide-text{display:none}#trend-benchmark:checked ~ .portfolio-trend-toolbar .portfolio-trend-benchmark-label .show-text{display:inline}#trend-benchmark:checked ~ .portfolio-trend-panels .market-layer{display:none}
 .portfolio-trend-panel{display:none}#trend-period-1m:checked ~ .portfolio-trend-panels .panel-1m,#trend-period-3m:checked ~ .portfolio-trend-panels .panel-3m,#trend-period-6m:checked ~ .portfolio-trend-panels .panel-6m,#trend-period-ytd:checked ~ .portfolio-trend-panels .panel-ytd,#trend-period-all:checked ~ .portfolio-trend-panels .panel-all{display:block}
 .portfolio-trend-range{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:1px 3px 10px;color:#77899a;font-size:14px}.portfolio-trend-range b{color:#667b8d;font-size:15px}
-.portfolio-trend-plot{border:1.5px solid #d7e2ea;border-radius:19px;background:linear-gradient(180deg,#f8fbfe 0%,#f3f8fb 100%);overflow:hidden}.portfolio-trend-svg{display:block;width:100%;height:410px;touch-action:manipulation}
-.portfolio-trend-svg .grid{stroke:#e0e8ee;stroke-width:1}.portfolio-trend-svg .zero{stroke:#98aab8;stroke-width:1.3;stroke-dasharray:5 5}.portfolio-trend-svg .tick{fill:#6f8192;font-size:13px;font-weight:800}.portfolio-trend-svg .date{fill:#6f8192;font-size:11px;font-weight:800}.portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:4;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .market-line{fill:none;stroke:#949c98;stroke-width:2.6;stroke-dasharray:7 5;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .port-point{fill:#8b6934;stroke:#fff;stroke-width:2.5;cursor:pointer}.portfolio-trend-svg .trend-point-link:focus .port-point{stroke:#315d7f;stroke-width:4}
+.portfolio-trend-plot{border:1.5px solid #d7e2ea;border-radius:19px;background:linear-gradient(180deg,#f8fbfe 0%,#f3f8fb 100%);overflow:hidden}.portfolio-trend-svg{display:block;width:100%;height:680px;min-height:680px;touch-action:manipulation}
+.portfolio-trend-svg .grid{stroke:#e0e8ee;stroke-width:1}.portfolio-trend-svg .zero{stroke:#98aab8;stroke-width:1.3;stroke-dasharray:5 5}.portfolio-trend-svg .tick{fill:#5f7487;font-size:24px;font-weight:900}.portfolio-trend-svg .date{fill:#5f7487;font-size:20px;font-weight:900}.portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:7;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .market-line{fill:none;stroke:#949c98;stroke-width:3.5;stroke-dasharray:9 6;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .port-point{fill:#8b6934;stroke:#fff;stroke-width:4;cursor:pointer;r:10}.portfolio-trend-svg .trend-point-link:focus .port-point{stroke:#315d7f;stroke-width:4}
 .trend-point-hint{margin:10px 3px 0;color:#7d8e9b;font-size:13px;line-height:1.5}.trend-point-detail{display:none;margin:10px 3px 0;padding:12px 14px;border:1px solid #d6e2ea;border-radius:13px;background:#fff;box-shadow:0 8px 18px rgba(39,76,119,.07)}.trend-point-detail:target{display:block}.trend-point-detail-date{font-size:14px;font-weight:900;color:#5e7487;margin-bottom:8px}.trend-point-detail>div:not(.trend-point-detail-date){display:flex;justify-content:space-between;gap:12px;padding:5px 0;color:#81919f;font-size:13px}.trend-point-detail b{font-size:15px;font-variant-numeric:tabular-nums}.trend-point-detail b.port{color:#8b6934}.trend-point-detail b.market{color:#68716d}.trend-point-detail b.excess{color:#315d7f}
 .portfolio-trend-summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px;margin-top:12px}.portfolio-trend-stat{padding:13px 14px;border:1px solid #dde6ed;border-radius:13px;background:#fff}.portfolio-trend-stat small{display:block;color:#83929f;font-size:12px;font-weight:800}.portfolio-trend-stat strong{display:block;margin-top:4px;font-size:24px;line-height:1.05;font-variant-numeric:tabular-nums}.portfolio-trend-stat strong.port{color:#8b6934}.portfolio-trend-stat strong.market{color:#68716d}.portfolio-trend-stat strong.excess{color:#315d7f}
 .portfolio-trend-legend{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:12px 2px 0;color:#6e8090;font-size:12px;font-weight:800}.portfolio-trend-legend span{display:inline-flex;align-items:center;gap:6px}.portfolio-trend-legend i{display:inline-block;width:20px;height:4px;border-radius:4px;background:#8b6934}.portfolio-trend-legend i.market{height:3px;background:repeating-linear-gradient(90deg,#949c98 0 7px,transparent 7px 11px)}.portfolio-trend-note{margin:8px 2px 0;color:#83929e;font-size:12px;line-height:1.55}
-@media(max-width:640px){.portfolio-trend-card{padding:18px 11px 15px;border-radius:21px}.portfolio-trend-header{gap:9px;margin-bottom:14px}.portfolio-trend-title h2{font-size:28px}.portfolio-trend-title p{font-size:13px}.portfolio-trend-tab{min-width:86px;padding:12px 11px;font-size:17px}.portfolio-trend-current{font-size:13px}.portfolio-trend-current b{font-size:19px}.portfolio-trend-benchmark-label{font-size:13px;padding:10px 11px}.portfolio-trend-svg{height:340px}.portfolio-trend-svg .tick{font-size:12px}.portfolio-trend-svg .date{font-size:10px}.portfolio-trend-range{font-size:13px}.portfolio-trend-range b{font-size:14px}.portfolio-trend-summary{grid-template-columns:1fr 1fr}.portfolio-trend-stat:last-child{grid-column:1/-1}.portfolio-trend-stat strong{font-size:23px}}
+@media(max-width:640px){.portfolio-trend-card{padding:18px 11px 15px;border-radius:21px}.portfolio-trend-header{gap:9px;margin-bottom:14px}.portfolio-trend-title h2{font-size:32px}.portfolio-trend-title p{font-size:13px}.portfolio-trend-tab{min-width:86px;padding:12px 11px;font-size:17px}.portfolio-trend-current{font-size:13px}.portfolio-trend-current b{font-size:22px}.portfolio-trend-benchmark-label{font-size:13px;padding:10px 11px}.portfolio-trend-svg{height:680px;min-height:680px}.portfolio-trend-svg .tick{font-size:22px}.portfolio-trend-svg .date{font-size:18px}.portfolio-trend-range{font-size:13px}.portfolio-trend-range b{font-size:14px}.portfolio-trend-summary{grid-template-columns:1fr 1fr}.portfolio-trend-stat:last-child{grid-column:1/-1}.portfolio-trend-stat strong{font-size:23px}}
 </style>'''
 
     radios = "".join(
