@@ -25939,6 +25939,85 @@ def render_trend_chart(snapshots):
     if base_taiex:
         initial_taiex_text = f"・基準大盤 {base_taiex:,.0f} 點"
 
+    # WebView fallback：部分環境不會執行這張卡片裡的 script，
+    # 所以第一幀不能依賴 JS 才把 SVG 畫出來。這裡直接在伺服器先畫好 3M 圖。
+    def _trend_date(s):
+        try:
+            return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+    requested_period = str(request.args.get("trend_period") or "3m").lower()
+    if requested_period not in {"1m", "3m", "6m", "ytd", "all"}:
+        requested_period = "3m"
+    _dates = [_trend_date(x["date"]) for x in data]
+    _last_date = next((d for d in reversed(_dates) if d), None)
+    if requested_period == "all" or _last_date is None:
+        _server_rows = list(data)
+    elif requested_period == "ytd":
+        _server_rows = [r for r,d in zip(data,_dates) if d and d.year == _last_date.year]
+    else:
+        _days = {"1m":31,"3m":93,"6m":186}[requested_period]
+        _cut = _last_date - timedelta(days=_days)
+        _server_rows = [r for r,d in zip(data,_dates) if d and d >= _cut]
+    if len(_server_rows) < 2:
+        _server_rows = data[-2:]
+
+    def _norm_server(rows):
+        p0 = float(rows[0]["port"])
+        t0 = next((r["taiex"] for r in rows if r["taiex"] is not None), None)
+        out=[]
+        for r in rows:
+            pv=((1+float(r["port"])/100)/(1+p0/100)-1)*100
+            tv=((float(r["taiex"])/t0)-1)*100 if t0 is not None and r["taiex"] is not None else None
+            out.append({"date":r["date"],"port":pv,"taiex":tv})
+        return out
+
+    _sr = _norm_server(_server_rows)
+    _W,_H,_ML,_MR,_MT,_MB = 800,305,48,12,16,34
+    _PW,_PH = _W-_ML-_MR,_H-_MT-_MB
+    _vals=[r["port"] for r in _sr]+[r["taiex"] for r in _sr if r["taiex"] is not None]+[0]
+    _vmin,_vmax=min(_vals),max(_vals)
+    _span=max(2.0,_vmax-_vmin)
+    _rawstep=_span/4
+    _pow=10**math.floor(math.log10(_rawstep)) if _rawstep>0 else 1
+    _q=_rawstep/_pow
+    _step=(1 if _q<=1 else 2 if _q<=2 else 5 if _q<=5 else 10)*_pow
+    _lo=math.floor(_vmin/_step)*_step; _hi=math.ceil(_vmax/_step)*_step
+    if _hi-_lo<_step*3:
+        _mid=(_hi+_lo)/2; _lo=math.floor((_mid-_step*1.5)/_step)*_step; _hi=math.ceil((_mid+_step*1.5)/_step)*_step
+    def _sx(i): return _ML+(i/max(1,len(_sr)-1))*_PW
+    def _sy(v): return _MT+(1-(v-_lo)/max(1e-9,_hi-_lo))*_PH
+    def _spath(key):
+        out=[]; started=False
+        for i,r in enumerate(_sr):
+            v=r.get(key)
+            if v is None:
+                started=False; continue
+            out.append(("L" if started else "M")+f" {_sx(i):.1f},{_sy(v):.1f}"); started=True
+        return " ".join(out)
+    _zero=_sy(0)
+    _valid=[(i,r["port"]) for i,r in enumerate(_sr)]
+    _area=f"M {_sx(0):.1f},{_zero:.1f} L "+" L ".join(f"{_sx(i):.1f},{_sy(v):.1f}" for i,v in _valid)+f" L {_sx(len(_sr)-1):.1f},{_zero:.1f} Z"
+    _grid=[]
+    for _j in range(5):
+        _gv=_lo+(_hi-_lo)*_j/4; _gy=_sy(_gv); _cls="zero" if abs(_gv)<1e-9 else "grid"
+        _lab=f"{_gv:+.0f}%" if abs(_gv-round(_gv))<1e-9 else f"{_gv:+.1f}%"
+        _grid.append(f'<line class="{_cls}" x1="{_ML}" x2="{_W-_MR}" y1="{_gy:.1f}" y2="{_gy:.1f}"/><text class="tick" x="{_ML-8}" y="{_gy+3.3:.1f}" text-anchor="end">{_lab}</text>')
+    _label_count=4 if len(_sr)>20 else 5
+    _idxs=sorted(set(round(i*(len(_sr)-1)/max(1,_label_count-1)) for i in range(_label_count)))
+    _date_labels=[]
+    for _i in _idxs:
+        _d=_trend_date(_sr[_i]["date"]); _txt=f"{_d.month}/{_d.day:02d}" if _d else str(_sr[_i]["date"])[:10]
+        _date_labels.append(f'<text class="date" x="{_sx(_i):.1f}" y="{_H-12}" text-anchor="middle">{html.escape(_txt)}</text>')
+    _dots=[]
+    for _i,_r in enumerate(_sr):
+        _market=_r["taiex"]; _ex=_r["port"]-_market if _market is not None else None
+        _title=f'{_r["date"]}｜組合 {(_r["port"]>=0 and "+" or "")}{_r["port"]:.2f}%'
+        if _market is not None: _title+=f'｜加權指數 {(_market>=0 and "+" or "")}{_market:.2f}%｜超額 {(_ex>=0 and "+" or "")}{_ex:.2f}%'
+        _dots.append(f'<circle class="port-point" cx="{_sx(_i):.1f}" cy="{_sy(_r["port"]):.1f}" r="3.4"><title>{html.escape(_title)}</title></circle>')
+    _server_svg=f"""<svg class="portfolio-trend-svg" data-trend-svg viewBox="0 0 800 305" role="img" aria-label="組合與加權指數績效圖"><defs><linearGradient id="portfolioTrendAreaStatic" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#8b6934" stop-opacity=".18"/><stop offset="100%" stop-color="#8b6934" stop-opacity="0"/></linearGradient></defs>{"".join(_grid)}<path class="port-area" d="{_area}"/><path class="port-line" d="{_spath("port")}"/><path class="market-line" data-market-line d="{_spath("taiex")}"/>{"".join(_dots)}{"".join(_date_labels)}</svg>"""
+
     css = """
 <style>
 /* V199：互動式組合績效圖。沿用首頁藍灰＋金色視覺，避免與持股卡片搶主色。 */
@@ -25953,7 +26032,7 @@ def render_trend_chart(snapshots):
 .portfolio-trend-tabs::-webkit-scrollbar{display:none}
 .portfolio-trend-tab{appearance:none;border:1px solid #d7e1e9;background:#f7fafc;color:#667b8e;border-radius:10px;padding:7px 12px;font-size:10.5px;font-weight:850;white-space:nowrap;cursor:pointer;transition:all .16s ease}
 .portfolio-trend-tab:hover{border-color:#b7c9d8;background:#fff;transform:translateY(-1px)}
-.portfolio-trend-tab.active{background:#315d7f;border-color:#315d7f;color:#fff;box-shadow:0 5px 12px rgba(49,93,127,.16)}
+.portfolio-trend-tab.active{background:#fff;border-color:#c9d6df;color:#8b6934;box-shadow:inset 0 -3px 0 #b18a4b}
 .portfolio-trend-toolbar{display:flex;justify-content:space-between;align-items:center;gap:9px;margin:0 1px 8px}
 .portfolio-trend-toggle{appearance:none;border:1px solid #d7e1e9;background:#fff;color:#64788a;border-radius:9px;padding:6px 9px;font-size:10px;font-weight:800;cursor:pointer}
 .portfolio-trend-toggle.off{background:#f2f4f6;color:#9aa5ae}
@@ -26016,7 +26095,7 @@ def render_trend_chart(snapshots):
   var svg=root.querySelector('[data-trend-svg]');
   var plot=root.querySelector('[data-trend-plot]');
   var tooltip=root.querySelector('[data-trend-tooltip]');
-  var currentPeriod='3m';
+  var currentPeriod='{requested_period}';
   var benchmarkOn=true;
   var resizeTimer=null;
 
@@ -26200,7 +26279,7 @@ def render_trend_chart(snapshots):
     hideTooltip();
     render();
   }}
-  tabs.forEach(function(t){{t.addEventListener('click',function(){{activateTab(t.dataset.trendPeriod);}});}});
+  tabs.forEach(function(t){{t.addEventListener('click',function(e){{e.preventDefault();activateTab(t.dataset.trendPeriod);}});}});
   if(benchmarkBtn) benchmarkBtn.addEventListener('click',function(){{benchmarkOn=!benchmarkOn;benchmarkBtn.classList.toggle('off',!benchmarkOn);benchmarkBtn.textContent=benchmarkOn?'隱藏加權指數':'顯示加權指數';render();}});
   window.addEventListener('resize',function(){{clearTimeout(resizeTimer);resizeTimer=setTimeout(render,120);}});
   render();
@@ -26219,18 +26298,18 @@ def render_trend_chart(snapshots):
     <div class="portfolio-trend-status">可互動</div>
   </div>
   <div class="portfolio-trend-tabs" role="tablist" aria-label="績效期間">
-    <button class="portfolio-trend-tab" type="button" data-trend-period="1m">1 個月</button>
-    <button class="portfolio-trend-tab active" type="button" data-trend-period="3m">3 個月</button>
-    <button class="portfolio-trend-tab" type="button" data-trend-period="6m">6 個月</button>
-    <button class="portfolio-trend-tab" type="button" data-trend-period="ytd">今年</button>
-    <button class="portfolio-trend-tab" type="button" data-trend-period="all">全部</button>
+    <a class="portfolio-trend-tab{' active' if requested_period == '1m' else ''}" href="/web/portfolio?trend_period=1m" data-trend-period="1m">1 個月</a>
+    <a class="portfolio-trend-tab{' active' if requested_period == '3m' else ''}" href="/web/portfolio?trend_period=3m" data-trend-period="3m">3 個月</a>
+    <a class="portfolio-trend-tab{' active' if requested_period == '6m' else ''}" href="/web/portfolio?trend_period=6m" data-trend-period="6m">6 個月</a>
+    <a class="portfolio-trend-tab{' active' if requested_period == 'ytd' else ''}" href="/web/portfolio?trend_period=ytd" data-trend-period="ytd">今年</a>
+    <a class="portfolio-trend-tab{' active' if requested_period == 'all' else ''}" href="/web/portfolio?trend_period=all" data-trend-period="all">全部</a>
   </div>
   <div class="portfolio-trend-toolbar">
     <div class="portfolio-trend-current"><span>目前顯示</span><b data-current-period>3M</b><span data-current-label>{pts[0]['date']} → {pts[-1]['date']}</span></div>
     <button type="button" class="portfolio-trend-toggle" data-trend-benchmark>隱藏加權指數</button>
   </div>
   <div class="portfolio-trend-plot" data-trend-plot>
-    <svg class="portfolio-trend-svg" data-trend-svg role="img" aria-label="組合與加權指數互動式績效圖"></svg>
+    {_server_svg}
     <div class="portfolio-trend-tooltip" data-trend-tooltip></div>
     <div class="portfolio-trend-empty-market" data-trend-empty style="display:none">這個期間的資料不足，請稍後再試。</div>
   </div>
