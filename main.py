@@ -3819,6 +3819,43 @@ def web_login_required(view):
                 feature = "radar" if mode == "radar" else "blackhorse" if mode == "blackhorse" else "screener"
             if feature:
                 record_activity(uid, feature, action="open", source="web")
+
+        # V226：LINE／外部瀏覽器直接打開完整端點時，先秒回首頁同款全螢幕 Loader。
+        # 之前只有部分頁面自己呼叫 render_loading_shell；LINE 直接進入的
+        # 個股、盤前、盤後、新聞、ETF 等端點仍會先在伺服器上計算，
+        # LINE WebView 因此會先出現「讀取中」＋大片白屏。
+        # 這裡統一在真正頁面計算前先送出 Loader，之後由 fragment=1 取內容。
+        direct_shells = {
+            "/web/portfolio": ("今日", "portfolio", ["正在讀取市場資料…", "正在整理你的持股行情…", "正在完成今日市場判讀…"], False),
+            "/web/positions": ("持股", "positions", ["正在讀取你的持股…", "正在抓即時報價…", "正在計算損益與權重…"], True),
+            "/web/premarket": ("盤前變化", "premarket", ["正在讀取盤前資料…", "正在整理法人與題材…", "正在完成盤前判讀…"], False),
+            "/web/postmarket": ("盤後完整分析", "portfolio", ["正在整理今日收盤資料…", "正在整理法人與市場變化…", "正在完成盤後判讀…"], False),
+            "/web/stock": ("個股分析", "screener", ["正在讀取個股行情…", "正在整理法人與估值…", "正在完成個股分析…"], False),
+            "/web/news": ("自選股新聞", "watchlist", ["正在讀取自選股…", "正在整理最新新聞…", "正在完成新聞列表…"], False),
+            "/web/etf-detail": ("ETF 分析", "screener", ["正在讀取 ETF 資料…", "正在整理成分與行情…", "正在完成 ETF 分析…"], False),
+            "/web/etf": ("ETF", "screener", ["正在讀取 ETF 資料…", "正在整理行情與排名…", "正在完成 ETF 頁面…"], False),
+            "/web/chips": ("籌碼超人", "screener", ["正在讀取法人資料…", "正在整理資金方向…", "正在組裝籌碼分析…"], False),
+            "/web/trades": ("交易紀錄", "trades", ["正在讀取交易紀錄…", "正在計算統計…"], False),
+            "/web/leaderboard": ("排行榜", "leaderboard", ["正在讀取排行榜…", "正在整理績效資料…"], False),
+            "/web/compare": ("比較", "compare", ["正在讀取自選清單…", "正在抓報價與估值…", "正在整理對照表…"], False),
+            "/web/settings": ("設定", "settings", ["正在讀取設定…", "正在整理你的偏好…"], False),
+            "/web/more": ("更多", "more", ["正在讀取功能清單…", "正在整理可用功能…"], False),
+            "/web/watchlist": ("自選股", "watchlist", ["正在讀取自選股…", "正在整理行情…", "正在完成自選股頁面…"], False),
+            "/web/leaderboard/history": ("排行榜歷史", "leaderboard", ["正在讀取歷史排名…", "正在整理賽季資料…"], False),
+            "/web/position-trend": ("持股走勢", "positions", ["正在讀取持股快照…", "正在整理走勢資料…"], False),
+        }
+        # 選股工作台／screener 內有自己的特殊導覽與 redirect 邏輯，另外處理。
+        shell_cfg = direct_shells.get(request.path)
+        if request.method == "GET" and request.args.get("fragment") != "1" and shell_cfg:
+            stitle, snav, sstages, sstaged = shell_cfg
+            return render_loading_shell(stitle, snav, sstages, note="資料準備完成後自動進入頁面。", staged=sstaged)
+
+        if request.method == "GET" and request.path == "/web/workbench" and request.args.get("fragment") != "1":
+            return render_loading_shell("選股工作台", "screener", ["正在讀取選股快照…", "正在整理五大因子與策略…", "正在完成選股工作台…"], note="資料準備完成後自動進入選股工作台。", staged=False)
+
+        if request.method == "GET" and request.path == "/web/screener" and request.args.get("fragment") != "1" and request.args.get("mode", "blackhorse") != "review":
+            return render_loading_shell("選股", "screener", ["正在讀取選股快照…", "正在整理候選名單…", "正在完成選股頁面…"], note="資料準備完成後自動進入選股頁面。", staged=False)
+
         return view(uid, *args, **kwargs)
     return wrapper
 
@@ -20655,9 +20692,8 @@ def render_page(title, body, nav_active=None, user_name=None):
       window.location.assign(target.pathname + (target.search ? '?' + target.searchParams.toString() : ''));
       return;
     }}
-    // 只有「第一次進站」使用全螢幕市場 Loading。
-    // 已經在 App 裡的頁面切換（包含回到今日首頁）一律走 SPA，
-    // 只顯示最上方細進度條，不覆蓋頁面內容。
+    // V227：SPA 內頁切換也使用首頁同款全螢幕市場 Loader，避免 LINE／Safari
+    // 不同進入方式產生完全不同的載入體驗。
     target.searchParams.set('fragment', '1');
     target.searchParams.delete('fast');
     var navSeq = ++appNavSeq;
@@ -20672,8 +20708,14 @@ def render_page(title, body, nav_active=None, user_name=None):
     navProgress.className = 'app-nav-loading';
     navProgress.setAttribute('aria-hidden','true');
     document.body.appendChild(navProgress);
-    // 內頁切換不建立大型 Loading 卡，只使用上方細進度條。
     navProgress.classList.add('show');
+    // 同步建立首頁同款全螢幕 Loader。這裡不使用模板 placeholder，直接寫入實際文字。
+    var routeLoader = document.createElement('div');
+    routeLoader.id = 'spa-market-loader';
+    routeLoader.className = 'loading market-loading-screen';
+    var routeTitle = (appTitles[target.pathname] || '市場資料');
+    routeLoader.innerHTML = '<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div><div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="market-loader-title">正在載入'+routeTitle+'</div><div class="market-loader-status">正在準備頁面資料…</div><div class="market-loader-progress-row"><div class="market-loader-bar"><i></i></div><span>0%</span></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>市場資料</span></div><div class="app-load-step pending"><span>○</span><span>法人與估值</span></div><div class="app-load-step pending"><span>○</span><span>你的持股行情</span></div><div class="app-load-step pending"><span>○</span><span>今日市場判讀</span></div></div><div class="market-loader-foot">資料準備完成後自動進入頁面</div></div>';
+    document.body.appendChild(routeLoader);
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
     fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, appNavController ? {{signal:appNavController.signal}} : {{}}))
@@ -20693,6 +20735,7 @@ def render_page(title, body, nav_active=None, user_name=None):
             upgradePreviewFragment(target.pathname, target.search);
         }}
           if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
+        if (routeLoader) {{ routeLoader.classList.add('is-complete'); window.setTimeout(function() {{ if (routeLoader.parentNode) routeLoader.parentNode.removeChild(routeLoader); }}, 430); }}
         // 頁面內容已真正插入並完成 fragment scripts 後，才結束頂部導航動畫。
         // 避免「內容已經好了，但仍卡著『正在開啟持股／選股台』」。
         if (window.finishPageNavLoader) window.finishPageNavLoader();
@@ -20708,6 +20751,7 @@ def render_page(title, body, nav_active=None, user_name=None):
       .catch(function(error) {{
         if (error && error.name === 'AbortError') return;
         if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
+        if (routeLoader) {{ routeLoader.classList.add('is-complete'); window.setTimeout(function() {{ if (routeLoader.parentNode) routeLoader.parentNode.removeChild(routeLoader); }}, 430); }}
         if (window.finishPageNavLoader) window.finishPageNavLoader();
         appNavBusy = false;
         appContent.removeAttribute('aria-busy');
@@ -21225,6 +21269,18 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   }}
   var visualTimer = window.requestAnimationFrame(updateVisualProgress);
 
+  function executeFragmentScripts(container) {{
+    if (!container) return;
+    container.querySelectorAll('script').forEach(function(oldScript) {{
+      var replacement = document.createElement('script');
+      Array.prototype.slice.call(oldScript.attributes).forEach(function(attr) {{
+        replacement.setAttribute(attr.name, attr.value);
+      }});
+      replacement.text = oldScript.text || oldScript.textContent || '';
+      oldScript.parentNode.replaceChild(replacement, oldScript);
+    }});
+  }}
+
   function finish(html) {{
     done = true;
     clearInterval(timer);
@@ -21245,6 +21301,11 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     setTimeout(function () {{
       var content = document.getElementById('content');
       content.innerHTML = html;
+      // 重要：LINE 直連先進入 Loader，再把 fragment 塞進 DOM。
+      // innerHTML 不會自動執行其中的 <script>，這正是「朋友從首頁可以按、
+      // 你從 LINE 進來不能按」的關鍵差異。這裡明確重建 script，讓走勢圖等
+      // 頁面互動在 LINE 直連後也會初始化。
+      executeFragmentScripts(content);
       content.style.display = '';
       var loadingEl = document.getElementById('loading');
       if (loadingEl) loadingEl.classList.add('is-complete');
@@ -21273,6 +21334,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
             }})
             .then(function (detailHtml) {{
               content.innerHTML = detailHtml;
+              executeFragmentScripts(content);
               var pending = content.querySelector('[data-screener-pending="1"]');
               if (pending && detailAttempt < 24) {{
                 if (status) {{
@@ -26089,9 +26151,23 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             # 可視圓點只負責呈現；真正的點擊區改用 HTML button 疊在 SVG 上。
             # iOS Safari 對「SVG 透明 circle + 橫向 scroll」的觸控事件容易被 scroll 手勢吃掉，
             # HTML button 會穩定很多，而且可以讓每個交易日各自有獨立 44px 觸控區。
+            # Safari 直接從首頁載入時，不再依賴「片段 script 是否成功初始化」。
+            # 可視圓點本身帶資料，外加一個 13px 的透明 SVG hit circle；拖曳由瀏覽器原生處理，
+            # 只有真正 click 才會呼叫全域 openPortfolioTrendPoint。
+            date_txt = fmt_date_full(r["date"])
+            market_txt = fmt_pct(market) if market is not None else "資料暫缺"
+            excess_txt = fmt_pct(excess) if excess is not None else "—"
+            verdict = "▲ 當日跑贏大盤" if excess is not None and excess > 0.05 else ("▼ 當日跑輸大盤" if excess is not None and excess < -0.05 else "● 當日與大盤接近")
+            verdict_class = "up" if excess is not None and excess > 0.05 else ("down" if excess is not None and excess < -0.05 else "neutral")
+            label_txt = html.escape(date_txt + " " + verdict, quote=True)
+            attrs = (
+                f'data-index="{i}" data-date="{html.escape(date_txt, quote=True)}" '
+                f'data-port="{html.escape(fmt_pct(r["port"]), quote=True)}" data-market="{html.escape(market_txt, quote=True)}" '
+                f'data-excess="{html.escape(excess_txt, quote=True)}" data-verdict="{html.escape(verdict, quote=True)}" data-state="{verdict_class}"'
+            )
             point_circles.append(
-                f'<circle class="port-point {state}" data-index="{i}" cx="{px:.1f}" cy="{py:.1f}" r="8" pointer-events="none">'
-                f'<title>{html.escape(fmt_date_full(r["date"]))}</title></circle>'
+                f'<circle class="trend-hit-point" {attrs} cx="{px:.1f}" cy="{py:.1f}" r="13" fill="transparent" stroke="transparent" pointer-events="all" tabindex="0" role="button" aria-label="{label_txt}" onclick="window.openPortfolioTrendPoint(this)"></circle>'
+                f'<circle class="port-point {state}" {attrs} cx="{px:.1f}" cy="{py:.1f}" r="8" pointer-events="none"><title>{html.escape(date_txt)}</title></circle>'
                 f'<circle class="port-point-core {state}" data-index="{i}" cx="{px:.1f}" cy="{py:.1f}" r="3" pointer-events="none"/>'
             )
 
@@ -26184,7 +26260,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 #trend-period-1m:checked ~ .portfolio-trend-panels .panel-1m,#trend-period-3m:checked ~ .portfolio-trend-panels .panel-3m,#trend-period-6m:checked ~ .portfolio-trend-panels .panel-6m,#trend-period-ytd:checked ~ .portfolio-trend-panels .panel-ytd,#trend-period-all:checked ~ .portfolio-trend-panels .panel-all{display:block}
 .portfolio-trend-range{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:2px 3px 11px;color:#8292a0;font-size:15px;font-weight:750}.portfolio-trend-range b{color:#5f7487;font-size:18px;font-weight:950}
 .portfolio-trend-plot{position:relative;border:0;border-radius:0;background:transparent;box-shadow:none;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;touch-action:pan-x pan-y;scrollbar-width:thin}
-.trend-chart-inner{position:relative;flex:0 0 auto}.portfolio-trend-svg{display:block;width:100%;height:100%;touch-action:pan-x pan-y}
+.trend-chart-inner{position:relative;flex:0 0 auto}.portfolio-trend-svg{display:block;width:100%;height:100%;touch-action:auto}
 .portfolio-trend-svg .grid{stroke:#dfe8ee;stroke-width:1}.portfolio-trend-svg .zero{stroke:#8498a8;stroke-width:1.5;stroke-dasharray:5 5}
 .portfolio-trend-svg .tick{fill:#5d7285;font-size:23px;font-weight:900}.portfolio-trend-svg .date{fill:#5d7285;font-size:20px;font-weight:900}
 .portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:none}
@@ -26231,84 +26307,53 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
     trend_js = """
 <script>
 (function(){
-  var root=document.getElementById('portfolio-trend');
-  if(!root) return;
-  root.querySelectorAll('.portfolio-trend-panel').forEach(function(panel){
-    var svg=panel.querySelector('.portfolio-trend-svg');
-    if(!svg) return;
+  function closeTrendModal(panel){
+    if(!panel)return;
     var modal=panel.querySelector('.trend-modal');
     var overlay=panel.querySelector('.trend-modal-overlay');
-    var rows=panel.querySelectorAll('.trend-point-tooltip-data');
-    var startX=0,startY=0,startTime=0,moved=false;
-
-    // 把彈窗真正移到 body，避免 iOS Safari 受父層 overflow/transform 限制。
-    if(modal && modal.parentNode!==document.body) document.body.appendChild(modal);
-    if(overlay && overlay.parentNode!==document.body) document.body.appendChild(overlay);
-
-    function close(){
-      if(modal){modal.classList.remove('open');modal.setAttribute('aria-hidden','true');}
-      if(overlay){overlay.style.display='none';overlay.setAttribute('aria-hidden','true');}
+    if(modal){modal.classList.remove('open');modal.setAttribute('aria-hidden','true');}
+    if(overlay){overlay.style.display='none';overlay.setAttribute('aria-hidden','true');}
+    panel.querySelectorAll('.trend-selected-point').forEach(function(x){x.classList.remove('trend-selected-point');});
+    var guide=panel.querySelector('.trend-crosshair'); if(guide)guide.style.display='none';
+  }
+  window.openPortfolioTrendPoint=function(el){
+    if(!el)return;
+    var panel=el.closest('.portfolio-trend-panel');
+    if(!panel)return;
+    var modal=panel.querySelector('.trend-modal');
+    var overlay=panel.querySelector('.trend-modal-overlay');
+    if(!modal)return;
+    // 真正移到 body，避免 Safari 被任何 overflow/transform 父層影響。
+    if(modal.parentNode!==document.body)document.body.appendChild(modal);
+    if(overlay && overlay.parentNode!==document.body)document.body.appendChild(overlay);
+    modal.querySelector('.trend-modal-date').textContent=el.dataset.date||'';
+    modal.querySelector('.trend-modal-port').textContent=el.dataset.port||'—';
+    modal.querySelector('.trend-modal-market').textContent=el.dataset.market||'—';
+    var ex=modal.querySelector('.trend-modal-excess');
+    ex.textContent=el.dataset.excess||'—'; ex.className='trend-modal-excess '+(el.dataset.state||'neutral');
+    var st=modal.querySelector('.trend-modal-status');
+    st.textContent=el.dataset.verdict||'● 當日與大盤接近'; st.className='trend-modal-status '+(el.dataset.state||'neutral');
+    var svg=panel.querySelector('.portfolio-trend-svg');
+    if(svg){
       svg.querySelectorAll('.port-point').forEach(function(c){c.classList.remove('trend-selected-point');});
-      var guide=svg.querySelector('.trend-crosshair'); if(guide) guide.style.display='none';
-    }
-    function show(i){
-      var row=null;
-      for(var k=0;k<rows.length;k++){if(Number(rows[k].dataset.index)===i){row=rows[k];break;}}
-      if(!row||!modal) return;
-      modal.querySelector('.trend-modal-date').textContent=row.dataset.date||'';
-      modal.querySelector('.trend-modal-port').textContent=row.dataset.port||'—';
-      modal.querySelector('.trend-modal-market').textContent=row.dataset.market||'—';
-      var ex=modal.querySelector('.trend-modal-excess'); ex.textContent=row.dataset.excess||'—'; ex.className='trend-modal-excess '+(row.dataset.state||'neutral');
-      var st=modal.querySelector('.trend-modal-status'); st.textContent=row.dataset.verdict||'● 當日與大盤接近'; st.className='trend-modal-status '+(row.dataset.state||'neutral');
-      svg.querySelectorAll('.port-point').forEach(function(c){c.classList.remove('trend-selected-point');});
-      var selected=svg.querySelector('.port-point[data-index="'+i+'"]');
-      if(selected) selected.classList.add('trend-selected-point');
+      var selected=svg.querySelector('.port-point[data-index="'+el.dataset.index+'"]');
+      if(selected){selected.classList.add('trend-selected-point');}
       var guide=svg.querySelector('.trend-crosshair');
-      if(guide&&selected){guide.setAttribute('x1',selected.getAttribute('cx'));guide.setAttribute('x2',selected.getAttribute('cx'));guide.style.display='block';}
-      modal.classList.add('open'); modal.setAttribute('aria-hidden','false');
-      if(overlay){overlay.style.display='block';overlay.setAttribute('aria-hidden','false');}
+      if(guide && selected){guide.setAttribute('x1',selected.getAttribute('cx'));guide.setAttribute('x2',selected.getAttribute('cx'));guide.style.display='block';}
     }
-
-    // 重要：不要在每個交易日上疊透明 button，也不要在 pointermove 中做任何計算。
-    // pointermove 會在 iPhone 滑動時每秒觸發大量事件；你的帳號資料點較多時，
-    // 原本這裡會讓主執行緒一直忙著判斷「是不是拖曳」，造成整頁像被卡住。
-    // 現在只記錄按下位置，放開時一次判斷距離；水平/垂直滑動完全交給瀏覽器。
-    var plot=panel.querySelector('.portfolio-trend-plot');
-    if(plot){
-      var downX=0,downY=0,downTime=0,tracking=false;
-      var pointData=[];
-      svg.querySelectorAll('.port-point').forEach(function(pt){
-        var cx=parseFloat(pt.getAttribute('cx'));
-        var idx=Number(pt.getAttribute('data-index'));
-        if(Number.isFinite(cx) && Number.isFinite(idx)) pointData.push({x:cx,i:idx});
-      });
-      plot.addEventListener('pointerdown',function(e){
-        if(e.pointerType==='mouse' && e.button!==0) return;
-        downX=e.clientX; downY=e.clientY; downTime=Date.now(); tracking=true;
-      },{passive:true});
-      plot.addEventListener('pointercancel',function(){tracking=false;});
-      plot.addEventListener('pointerup',function(e){
-        if(!tracking){return;}
-        tracking=false;
-        var dx=e.clientX-downX,dy=e.clientY-downY,dt=Date.now()-downTime;
-        // 8px 以上就是滑動；滑動絕不開卡片。
-        if(Math.abs(dx)>8 || Math.abs(dy)>8 || dt>700) return;
-        var svgRect=svg.getBoundingClientRect();
-        var localX=e.clientX-svgRect.left;
-        if(localX<0 || localX>svgRect.width || !pointData.length) return;
-        var nearest=-1,best=Infinity;
-        for(var pi=0;pi<pointData.length;pi++){
-          var d=Math.abs(pointData[pi].x-localX);
-          if(d<best){best=d;nearest=pointData[pi].i;}
-        }
-        if(nearest>=0) show(nearest);
-      },{passive:true});
+    modal.classList.add('open'); modal.setAttribute('aria-hidden','false');
+    if(overlay){overlay.style.display='block';overlay.setAttribute('aria-hidden','false');}
+  };
+  // Safari/LINE 都走同一個關閉邏輯。
+  document.addEventListener('click',function(e){
+    var close=e.target.closest && e.target.closest('.trend-modal-close');
+    if(close){e.preventDefault();e.stopPropagation();var p=close.closest('.portfolio-trend-panel'); if(p)closeTrendModal(p);}
+    if(e.target.classList && e.target.classList.contains('trend-modal-overlay')){
+      var p2=e.target.closest('.portfolio-trend-panel') || document.querySelector('.portfolio-trend-panel');
+      if(p2)closeTrendModal(p2);
     }
-    var closeBtn=modal&&modal.querySelector('.trend-modal-close');
-    if(closeBtn) closeBtn.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();close();});
-    if(overlay) overlay.addEventListener('click',close);
-    document.addEventListener('keydown',function(e){if(e.key==='Escape') close();});
   });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'){document.querySelectorAll('.portfolio-trend-panel').forEach(closeTrendModal);}});
 })();
 </script>
 """
@@ -28308,6 +28353,10 @@ def web_line_etf_detail(uid):
 def web_chips(uid):
     """籌碼超人完整網頁版；LINE 按鈕與選股模式列都進這裡。"""
     if request.args.get("legacy") != "1":
+        # 直接進入時由 web_login_required 統一顯示 Loader；fragment 則直接回
+        # 工作台的「籌碼」內容，避免 fetch 跟著 redirect 後拿到整份 HTML。
+        if wants_fragment():
+            return preserve_web_token(inject_csrf_inputs(render_workbench_body("籌碼")))
         token = str(request.args.get("t") or "").strip()
         target = "/web/workbench?tab=籌碼"
         if token:
@@ -35453,8 +35502,11 @@ def _build_strategy_lab_payload():
 @app.route("/web/workbench")
 @web_login_required
 def web_workbench(uid):
-    """正式互動選股工作台：頁面本身秒回，資料僅透過受保護的快照 API 局部載入。"""
-    return render_page("選股工作台", render_workbench_body(request.args.get("tab")), nav_active="screener")
+    """正式互動選股工作台：完整導覽使用 Loader；fragment 只回內容。"""
+    body = render_workbench_body(request.args.get("tab"))
+    if wants_fragment():
+        return preserve_web_token(inject_csrf_inputs(body))
+    return render_page("選股工作台", body, nav_active="screener")
 
 
 
