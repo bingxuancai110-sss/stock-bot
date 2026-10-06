@@ -26050,31 +26050,80 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             txt = f"{d.month}/{d.day:02d}" if d else str(norm[i]["date"])[:10]
             dates.append(f'<text class="date" x="{x(i):.1f}" y="{H-14}" text-anchor="middle">{html.escape(txt)}</text>')
 
+
         points = []
-        details = []
+        point_inputs = []
+        tooltips = []
+        panel_radio_name = f"trend_point_ui_{key}"
+        none_id = f"trend-point-none-{key}"
+
+        # One radio group per period. Selecting a point only changes :checked state;
+        # there is no href/hash navigation, so the page does not scroll or reload.
+        point_inputs.append(
+            f'<input class="point-radio point-radio-none" type="radio" '
+            f'name="{panel_radio_name}" id="{none_id}" checked>'
+        )
+
         for i, r in enumerate(norm):
             dkey = str(r["date"]).replace("-", "")
-            anchor = f"trend-point-{key}-{dkey}"
+            radio_id = f"trend-point-radio-{key}-{dkey}-{i}"
             market = r.get("taiex")
             excess = r["port"] - market if market is not None else None
-            title = f"{fmt_date_full(r['date'])}｜組合 {fmt_pct(r['port'])}"
-            if market is not None:
-                title += f"｜加權指數 {fmt_pct(market)}｜超額 {fmt_pct(excess)}"
-            point_state = "neutral"
-            if excess is not None:
-                point_state = "up" if excess > 0.05 else ("down" if excess < -0.05 else "neutral")
+
+            if excess is not None and excess > 0.05:
+                point_state = "up"
+                verdict = "▲ 當日跑贏大盤"
+            elif excess is not None and excess < -0.05:
+                point_state = "down"
+                verdict = "▼ 當日跑輸大盤"
+            else:
+                point_state = "neutral"
+                verdict = "● 當日與大盤接近"
+
+            point_inputs.append(
+                f'<input class="point-radio point-radio-data" type="radio" '
+                f'name="{panel_radio_name}" id="{radio_id}">'
+            )
+
+            # Visible SVG point.
             points.append(
-                f'<a class="trend-point-link" href="#{anchor}" aria-label="查看 {html.escape(title)}">'
-                f'<circle class="port-point {point_state}" cx="{x(i):.1f}" cy="{y(r["port"]):.1f}" r="6"><title>{html.escape(title)}</title></circle></a>'
+                f'<circle class="port-point {point_state}" '
+                f'cx="{x(i):.1f}" cy="{y(r["port"]):.1f}" r="7.5">'
+                f'<title>{html.escape(fmt_date_full(r["date"]))}</title></circle>'
             )
-            details.append(
-                f'<div class="trend-point-detail" id="{anchor}">'
-                f'<div class="trend-point-detail-date">{html.escape(fmt_date_full(r["date"]))}</div>'
-                f'<div><span>我的組合</span><b class="port">{html.escape(fmt_pct(r["port"]))}</b></div>'
-                f'{f"<div class=market-detail><span>加權指數</span><b class=market>{html.escape(fmt_pct(market))}</b></div>" if market is not None else ""}'
-                f"{f'<div><span>跑贏加權指數</span><b class=\"excess {perf_class(excess)}\">{html.escape(fmt_pct(excess))}</b></div>' if excess is not None else ''}"
+
+            # Large HTML tap target layered over the SVG point.
+            hit_left = x(i) / W * 100
+            hit_top = y(r["port"]) / H * 100
+            points.append(
+                f'<label class="point-hit point-hit-{point_state}" for="{radio_id}" '
+                f'style="left:{hit_left:.4f}%;top:{hit_top:.4f}%" '
+                f'aria-label="查看 {html.escape(fmt_date_full(r["date"]))} 報酬">'
+                f'<span class="point-dot"></span></label>'
+            )
+
+            port_text = fmt_pct(r["port"])
+            market_text = fmt_pct(market) if market is not None else "資料暫缺"
+            excess_text = fmt_pct(excess) if excess is not None else "—"
+
+            tooltip_html = (
+                f'<div class="trend-point-tooltip" role="dialog" '
+                f'aria-label="{html.escape(fmt_date_full(r["date"]))} 每日績效">'
+                f'<div class="trend-point-tooltip-head">'
+                f'<div><span class="trend-point-tooltip-kicker">交易日</span>'
+                f'<strong>{html.escape(fmt_date_full(r["date"]))}</strong></div>'
+                f'<label class="trend-point-close" for="{none_id}" aria-label="關閉">關閉</label>'
                 f'</div>'
+                f'<div class="trend-point-tooltip-status {point_state}">{verdict}</div>'
+                f'<div class="trend-point-metrics">'
+                f'<div><span>我的組合</span><b class="port">{html.escape(port_text)}</b></div>'
+                f'<div><span>加權指數</span><b class="market">{html.escape(market_text)}</b></div>'
+                f'<div><span>相對大盤</span><b class="excess {point_state}">{html.escape(excess_text)}</b></div>'
+                f'</div></div>'
             )
+            tooltips.append(tooltip_html)
+
+        details = []
 
         svg = (
             f'<svg class="portfolio-trend-svg" viewBox="0 0 {W} {H}" preserveAspectRatio="none" role="img" aria-label="{period_labels[key]}組合與加權指數績效圖">'
@@ -26092,9 +26141,8 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         panels.append(
             f'''<section class="portfolio-trend-panel panel-{key}">
   <div class="portfolio-trend-range"><span>資料期間</span><b>{html.escape(fmt_date_full(norm[0]["date"]))} → {html.escape(fmt_date_full(norm[-1]["date"]))}</b></div>
-  <div class="portfolio-trend-plot">{svg}</div>
-  <div class="trend-point-hint">點擊圖上的圓點，可查看該交易日的精確報酬。</div>
-  <div class="trend-point-details">{"".join(details)}</div>
+  <div class="portfolio-trend-plot">{"".join(point_inputs)}{"".join(tooltips)}{svg}</div>
+  <div class="trend-point-hint">點擊圓點後，當日績效會直接顯示在螢幕中央，不會跳頁。</div>
   <div class="portfolio-trend-summary">
     <div class="portfolio-trend-stat {perf_class(latest["port"])}"><small>期間組合</small><strong class="port">{html.escape(fmt_pct(latest["port"]))}</strong></div>
     <div class="portfolio-trend-stat market-stat"><small>加權指數</small><strong class="market">{html.escape(fmt_pct(market_latest))}</strong></div>
@@ -26131,11 +26179,32 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 .portfolio-trend-svg .tick{fill:#5d7285;font-size:23px;font-weight:900}.portfolio-trend-svg .date{fill:#5d7285;font-size:20px;font-weight:900}
 .portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 3px 3px rgba(139,105,52,.12))}
 .portfolio-trend-svg .market-line{fill:none;stroke:#9aa29f;stroke-width:3;stroke-dasharray:9 7;stroke-linecap:round;stroke-linejoin:round}
-.portfolio-trend-svg .port-point{stroke:#fff;stroke-width:2.5;cursor:pointer}
-.portfolio-trend-svg .port-point.up{fill:#d64a45}
-.portfolio-trend-svg .port-point.down{fill:#3f9a72}
-.portfolio-trend-svg .port-point.neutral{fill:#6f8799}
-.portfolio-trend-svg .trend-point-link:hover .port-point,.portfolio-trend-svg .trend-point-link:focus .port-point{r:8;stroke-width:3}
+.portfolio-trend-svg .port-point{stroke:#fff;stroke-width:2.8}
+.portfolio-trend-svg .port-point.up{fill:#e53935}
+.portfolio-trend-svg .port-point.down{fill:#159a62}
+.portfolio-trend-svg .port-point.neutral{fill:#5d8099}
+.portfolio-trend-plot .point-radio{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
+.point-hit{position:absolute;z-index:20;width:48px;height:48px;transform:translate(-50%,-50%);display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.point-dot{display:block;width:11px;height:11px;border:2.5px solid #fff;border-radius:50%;box-shadow:0 2px 7px rgba(28,54,74,.28);pointer-events:none}
+.point-hit-up .point-dot{background:#e53935}
+.point-hit-down .point-dot{background:#159a62}
+.point-hit-neutral .point-dot{background:#5d8099}
+.point-hit:active{background:rgba(49,93,127,.10)}
+.point-radio-data:checked + .trend-point-tooltip{display:block}
+.trend-point-tooltip{display:none;position:fixed;z-index:99999;left:50%;top:50%;width:min(86vw,360px);box-sizing:border-box;transform:translate(-50%,-50%);padding:20px 18px 18px;border:1px solid #d7e2ea;border-radius:22px;background:rgba(255,255,255,.985);box-shadow:0 24px 60px rgba(22,45,65,.24);backdrop-filter:blur(12px)}
+.trend-point-tooltip-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.trend-point-tooltip-kicker{display:block;color:#8796a2;font-size:12px;font-weight:850;margin-bottom:2px}
+.trend-point-tooltip-head strong{display:block;color:#172c41;font-size:22px;line-height:1.2;font-weight:950}
+.trend-point-close{min-width:36px;height:36px;padding:0 10px;display:flex;align-items:center;justify-content:center;border-radius:18px;background:#eef3f6;color:#5f7487;font-size:14px;font-weight:900;cursor:pointer}
+.trend-point-tooltip-status{margin-top:14px;padding:11px 12px;border-radius:12px;font-size:15px;font-weight:950;text-align:center}
+.trend-point-tooltip-status.up{background:#ffdede;color:#d52828}
+.trend-point-tooltip-status.down{background:#d9f4e7;color:#118651}
+.trend-point-tooltip-status.neutral{background:#dfeaf1;color:#4f728d}
+.trend-point-metrics{margin-top:12px;border-top:1px solid #e7edf1}
+.trend-point-metrics>div{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid #edf1f3;color:#738595;font-size:14px;font-weight:800}
+.trend-point-metrics b{font-size:19px;font-weight:950;font-variant-numeric:tabular-nums}
+.trend-point-metrics b.port{color:#8b6934}.trend-point-metrics b.market{color:#68716d}
+.trend-point-metrics b.excess.up{color:#e53935}.trend-point-metrics b.excess.down{color:#159a62}.trend-point-metrics b.excess.neutral{color:#5d8099}
 .trend-point-hint{margin:11px 3px 0;color:#7a8d9d;font-size:14px;line-height:1.5;font-weight:750}
 .trend-point-detail{display:none;margin:10px 3px 0;padding:13px 15px;border:1px solid #d6e2ea;border-radius:15px;background:#fff;box-shadow:0 8px 18px rgba(39,76,119,.07)}.trend-point-detail:target{display:block}
 .trend-point-detail-date{font-size:14px;font-weight:950;color:#5e7487;margin-bottom:8px}.trend-point-detail>div:not(.trend-point-detail-date){display:flex;justify-content:space-between;gap:12px;padding:5px 0;color:#81919f;font-size:13px}.trend-point-detail b{font-size:15px;font-variant-numeric:tabular-nums}
@@ -26149,7 +26218,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 .portfolio-trend-stat.up{color:#d62f2f}.portfolio-trend-stat.down{color:#17834a}.portfolio-trend-stat.flat{color:#6f7f8d}
 .portfolio-trend-stat.intensity-1{background:#fffafa;border-color:#f0cfcf}.portfolio-trend-stat.up.intensity-2{background:#fff3f3;border-color:#e9a7a7}.portfolio-trend-stat.up.intensity-3{background:#ffe5e5;border-color:#e97979;box-shadow:0 10px 25px rgba(214,47,47,.13)}.portfolio-trend-stat.up.intensity-4{background:#ffd4d4;border-color:#df4b4b;box-shadow:0 12px 28px rgba(214,47,47,.22)}
 .portfolio-trend-stat.down.intensity-1{background:#f7fcf9;border-color:#cfe8d9}.portfolio-trend-stat.down.intensity-2{background:#eefaf3;border-color:#a9dbbc}.portfolio-trend-stat.down.intensity-3{background:#dcf4e7;border-color:#65bd8a;box-shadow:0 10px 25px rgba(23,131,74,.13)}.portfolio-trend-stat.down.intensity-4{background:#c9eedb;border-color:#3fa66b;box-shadow:0 12px 28px rgba(23,131,74,.22)}
-.portfolio-trend-legend{display:flex;align-items:center;gap:17px;flex-wrap:wrap;margin:13px 3px 0;color:#6e8090;font-size:12px;font-weight:850}.portfolio-trend-legend span{display:inline-flex;align-items:center;gap:6px}.portfolio-trend-legend i{display:inline-block;width:22px;height:4px;border-radius:4px;background:#8b6934}.portfolio-trend-legend i.market{height:3px;background:repeating-linear-gradient(90deg,#949c98 0 7px,transparent 7px 11px)}.portfolio-trend-legend i.point-up{width:9px;height:9px;border-radius:50%;background:#d64a45}.portfolio-trend-legend i.point-down{width:9px;height:9px;border-radius:50%;background:#3f9a72}.portfolio-trend-legend i.point-neutral{width:9px;height:9px;border-radius:50%;background:#6f8799}
+.portfolio-trend-legend{display:flex;align-items:center;gap:17px;flex-wrap:wrap;margin:13px 3px 0;color:#6e8090;font-size:12px;font-weight:850}.portfolio-trend-legend span{display:inline-flex;align-items:center;gap:6px}.portfolio-trend-legend i{display:inline-block;width:22px;height:4px;border-radius:4px;background:#8b6934}.portfolio-trend-legend i.market{height:3px;background:repeating-linear-gradient(90deg,#949c98 0 7px,transparent 7px 11px)}.portfolio-trend-legend i.point-up{width:9px;height:9px;border-radius:50%;background:#d64a45}.portfolio-trend-legend i.point-down{width:9px;height:9px;border-radius:50%;background:#159a62}.portfolio-trend-legend i.point-neutral{width:9px;height:9px;border-radius:50%;background:#6f8799}
 .portfolio-trend-note{margin:9px 3px 0;color:#8796a2;font-size:12px;line-height:1.55;font-weight:700}
 @media(max-width:640px){
 .portfolio-trend-card{padding:19px 11px 17px;border-radius:23px;margin:16px 0}.portfolio-trend-header{gap:8px;margin-bottom:15px}.portfolio-trend-title h2{font-size:35px}.portfolio-trend-title p{font-size:16px}.portfolio-trend-status{font-size:11px;padding:8px 9px}
@@ -26174,7 +26243,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
   <input class="trend-benchmark-toggle" type="checkbox" id="trend-benchmark" {checked}>
   <div class="portfolio-trend-toolbar"><div class="portfolio-trend-current"><span>目前顯示</span> <b class="period-current-label period-label-1m">1 個月</b><b class="period-current-label period-label-3m">3 個月</b><b class="period-current-label period-label-6m">6 個月</b><b class="period-current-label period-label-ytd">今年</b><b class="period-current-label period-label-all">全部</b></div><label class="portfolio-trend-benchmark-label" for="trend-benchmark"><span class="hide-text">隱藏加權指數</span><span class="show-text">顯示加權指數</span></label></div>
   <div class="portfolio-trend-panels">{"".join(panels)}</div>
-  <div class="portfolio-trend-legend"><span><i></i>我的組合</span><span><i class="market"></i>加權指數</span><span><i class="point-up"></i>跑贏</span><span><i class="point-down"></i>跑輸</span><span><i class="point-neutral"></i>接近大盤</span><span>點擊圖上圓點查看每日精確數據</span></div>
+  <div class="portfolio-trend-legend"><span><i></i>我的組合</span><span><i class="market"></i>加權指數</span><span><i class="point-up"></i>跑贏</span><span><i class="point-down"></i>跑輸</span><span><i class="point-neutral"></i>接近大盤</span><span>點擊圓點查看每日相對大盤績效</span></div>
   <div class="portfolio-trend-note">切換期間不重新載入；紅色代表跑贏大盤，綠色代表跑輸大盤，顏色深淺反映差距大小。</div>
 </section>'''
 
