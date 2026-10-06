@@ -26012,8 +26012,8 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         # 目的不是把所有交易日塞進同一畫面，而是讓「今年／全部」不要
         # 變成幾千 px 的超長圖；手機大約滑 2～4 個畫面就能看完整期間。
         # 每個點仍使用真實日期索引，點擊時由整個圖面尋找最近交易日。
-        point_px = {"1m": 13, "3m": 10, "6m": 8, "ytd": 7, "all": 6.5}.get(key, 8)
-        min_width = {"1m": 600, "3m": 760, "6m": 900, "ytd": 1200, "all": 1500}.get(key, 900)
+        point_px = {"1m": 13, "3m": 10, "6m": 8, "ytd": 6.5, "all": 5.5}.get(key, 8)
+        min_width = {"1m": 600, "3m": 760, "6m": 900, "ytd": 1100, "all": 1300}.get(key, 900)
         W = max(min_width, 110 + int(len(norm) * point_px))
         H, ML, MR, MT, MB = 640, 82, 24, 34, 72
         PW, PH = W - ML - MR, H - MT - MB
@@ -26308,6 +26308,15 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
       return best;
     }
 
+    function handleChartTap(clientX,clientY,e){
+      var now=Date.now();
+      if(now-lastHandledAt<350) return;
+      lastHandledAt=now;
+      if(e){ e.preventDefault(); e.stopPropagation(); }
+      var i=nearestIndex(clientX,clientY);
+      if(i>=0) show(i);
+    }
+
     if(touchLayer){
       touchLayer.addEventListener('pointerdown',function(e){
         pointerStart={x:e.clientX,y:e.clientY,id:e.pointerId};
@@ -26318,19 +26327,28 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         var dx=e.clientX-pointerStart.x;
         var dy=e.clientY-pointerStart.y;
         pointerStart=null;
-        if(Math.abs(dx)>10 || Math.abs(dy)>10) return; // 是滑動，不是點擊
+        if(Math.abs(dx)>10 || Math.abs(dy)>10) return;
+        handleChartTap(e.clientX,e.clientY,e);
+      },{passive:false});
 
-        var now=Date.now();
-        if(now-lastHandledAt<350) return;
-        lastHandledAt=now;
+      touchLayer.addEventListener('touchend',function(e){
+        if(!e.changedTouches || !e.changedTouches.length) return;
+        var t=e.changedTouches[0];
+        if(pointerStart){
+          var dx=t.clientX-pointerStart.x;
+          var dy=t.clientY-pointerStart.y;
+          pointerStart=null;
+          if(Math.abs(dx)>10 || Math.abs(dy)>10) return;
+        }
+        handleChartTap(t.clientX,t.clientY,e);
+      },{passive:false});
 
-        e.preventDefault();
-        e.stopPropagation();
-        var i=nearestIndex(e.clientX,e.clientY);
-        if(i>=0) show(i);
+      touchLayer.addEventListener('click',function(e){
+        handleChartTap(e.clientX,e.clientY,e);
       },{passive:false});
 
       touchLayer.addEventListener('pointercancel',function(){pointerStart=null;},{passive:true});
+      touchLayer.addEventListener('touchcancel',function(){pointerStart=null;},{passive:true});
     }
 
     var closeBtn=panel.querySelector('.trend-modal-close');
@@ -26351,7 +26369,6 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
   <div class="portfolio-trend-toolbar"><div class="portfolio-trend-current"><span>目前顯示</span> <b class="period-current-label period-label-1m">1 個月</b><b class="period-current-label period-label-3m">3 個月</b><b class="period-current-label period-label-6m">6 個月</b><b class="period-current-label period-label-ytd">今年</b><b class="period-current-label period-label-all">全部</b></div><label class="portfolio-trend-benchmark-label" for="trend-benchmark"><span class="hide-text">隱藏加權指數</span><span class="show-text">顯示加權指數</span></label></div>
   <div class="portfolio-trend-panels">{"".join(panels)}</div>
   <div class="portfolio-trend-legend"><span><i></i>我的組合</span><span><i class="market"></i>加權指數</span><span><i class="point-up"></i>跑贏</span><span><i class="point-down"></i>跑輸</span><span><i class="point-neutral"></i>接近大盤</span><span>點擊圓點查看每日相對大盤績效</span></div>
-  <div class="portfolio-trend-note">切換期間不重新載入；手機圖表可左右滑動，長期間已縮短橫向寬度。點擊走勢附近即可選取最近交易日，不會跳頁或刷新。紅色代表跑贏大盤，綠色代表跑輸大盤，顏色深淺反映差距大小。</div>
   {trend_js}
 </section>'''
 
