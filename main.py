@@ -26272,8 +26272,8 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 .portfolio-trend-svg .endpoint rect{stroke:#fff;stroke-width:2}.portfolio-trend-svg .endpoint text{font-size:17px;font-weight:950}.portfolio-trend-svg .port-end rect{fill:#8b6934}.portfolio-trend-svg .port-end text{fill:#fff}.portfolio-trend-svg .market-end rect{fill:#697572}.portfolio-trend-svg .market-end text{fill:#fff}
 .trend-hit-point{cursor:pointer;touch-action:manipulation}.trend-crosshair{display:none;stroke:#718797;stroke-width:2;stroke-dasharray:6 6;opacity:.62;pointer-events:none}.trend-selected-point{stroke-width:4!important}
 .trend-point-hidden-data,.trend-point-tooltip-data{display:none}
-.trend-modal-overlay{display:none;position:fixed;inset:0;z-index:9998;background:rgba(18,35,50,.12);touch-action:none;will-change:opacity}
-.trend-modal{display:none;position:fixed;z-index:9999;left:50%;top:50%;width:min(88vw,370px);transform:translate3d(-50%,-50%,0);box-sizing:border-box;contain:layout paint}.trend-modal.open{display:block}
+.trend-modal-overlay{display:none;position:fixed;inset:0;z-index:9998;background:rgba(18,35,50,.10);pointer-events:none;will-change:auto}
+.trend-modal{display:none;position:fixed;z-index:9999;left:50%;top:50%;width:min(88vw,370px);transform:translate3d(-50%,-50%,0);box-sizing:border-box;contain:layout paint;pointer-events:auto}.trend-modal.open{display:block}
 .trend-modal-card{padding:20px 18px 18px;border:1px solid #d6e2ea;border-radius:22px;background:rgba(255,255,255,.985);box-shadow:0 24px 70px rgba(18,39,57,.25)}
 .trend-modal-head{display:flex;justify-content:space-between;align-items:center;gap:14px}.trend-modal-kicker{display:block;color:#8494a0;font-size:12px;font-weight:850;margin-bottom:2px}.trend-modal-head strong{display:block;color:#162b40;font-size:23px;font-weight:950}.trend-modal-close{border:0;border-radius:999px;padding:9px 13px;background:#eef3f6;color:#577087;font-size:14px;font-weight:900;cursor:pointer}
 .trend-modal-status{margin-top:14px;padding:11px 12px;border-radius:12px;text-align:center;font-size:15px;font-weight:950}.trend-modal-status.up{background:#ffdada;color:#c92323}.trend-modal-status.down{background:#d8f3e5;color:#117d4d}.trend-modal-status.neutral{background:#e1edf3;color:#4f728d}
@@ -26311,11 +26311,25 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
     if(!panel)return;
     var modal=panel.querySelector('.trend-modal');
     var overlay=panel.querySelector('.trend-modal-overlay');
+    // modal/overlay 會在開啟時移到 body；因此不能再靠 closest(panel) 找回父層。
+    if(!modal && panel.__trendModal) modal=panel.__trendModal;
+    if(!overlay && panel.__trendOverlay) overlay=panel.__trendOverlay;
     if(modal){modal.classList.remove('open');modal.setAttribute('aria-hidden','true');}
     if(overlay){overlay.style.display='none';overlay.setAttribute('aria-hidden','true');}
     panel.querySelectorAll('.trend-selected-point').forEach(function(x){x.classList.remove('trend-selected-point');});
     var guide=panel.querySelector('.trend-crosshair'); if(guide)guide.style.display='none';
   }
+  window.closePortfolioTrendModal=function(elOrPanel){
+    var panel=null;
+    if(elOrPanel && elOrPanel.classList && elOrPanel.classList.contains('portfolio-trend-panel')) panel=elOrPanel;
+    else if(elOrPanel && elOrPanel.closest) panel=elOrPanel.closest('.portfolio-trend-panel');
+    if(!panel && elOrPanel && elOrPanel.__trendPanel) panel=elOrPanel.__trendPanel;
+    if(!panel){
+      var openModal=document.querySelector('.trend-modal.open');
+      panel=openModal && openModal.__trendPanel;
+    }
+    if(panel)closeTrendModal(panel);
+  };
   window.openPortfolioTrendPoint=function(el){
     if(!el)return;
     var panel=el.closest('.portfolio-trend-panel');
@@ -26324,6 +26338,10 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
     var overlay=panel.querySelector('.trend-modal-overlay');
     if(!modal)return;
     // 真正移到 body，避免 Safari 被任何 overflow/transform 父層影響。
+    // 同時保留原 panel 參照，讓移到 body 後的「關閉」按鈕仍然找得到來源 panel。
+    panel.__trendModal=modal;
+    modal.__trendPanel=panel;
+    if(overlay){panel.__trendOverlay=overlay;overlay.__trendPanel=panel;}
     if(modal.parentNode!==document.body)document.body.appendChild(modal);
     if(overlay && overlay.parentNode!==document.body)document.body.appendChild(overlay);
     modal.querySelector('.trend-modal-date').textContent=el.dataset.date||'';
@@ -26344,15 +26362,18 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
     modal.classList.add('open'); modal.setAttribute('aria-hidden','false');
     if(overlay){overlay.style.display='block';overlay.setAttribute('aria-hidden','false');}
   };
-  // Safari/LINE 都走同一個關閉邏輯。
+  // Safari/LINE 都走同一個關閉邏輯。使用 capture，避免其他全域 click handler 把事件吃掉。
   document.addEventListener('click',function(e){
     var close=e.target.closest && e.target.closest('.trend-modal-close');
-    if(close){e.preventDefault();e.stopPropagation();var p=close.closest('.portfolio-trend-panel'); if(p)closeTrendModal(p);}
+    if(close){e.preventDefault();e.stopPropagation();window.closePortfolioTrendModal(close);return;}
     if(e.target.classList && e.target.classList.contains('trend-modal-overlay')){
-      var p2=e.target.closest('.portfolio-trend-panel') || document.querySelector('.portfolio-trend-panel');
-      if(p2)closeTrendModal(p2);
+      window.closePortfolioTrendModal(e.target);
     }
-  });
+  },true);
+  document.addEventListener('touchend',function(e){
+    var close=e.target.closest && e.target.closest('.trend-modal-close');
+    if(close){e.preventDefault();e.stopPropagation();window.closePortfolioTrendModal(close);}
+  },{capture:true,passive:false});
   document.addEventListener('keydown',function(e){if(e.key==='Escape'){document.querySelectorAll('.portfolio-trend-panel').forEach(closeTrendModal);}});
 })();
 </script>
