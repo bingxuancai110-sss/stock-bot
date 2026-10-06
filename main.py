@@ -25960,6 +25960,27 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         d = parse_date(v)
         return d.strftime("%Y/%m/%d") if d else str(v)
 
+    def perf_class(v):
+        """台股習慣：正報酬紅、負報酬綠；數值越大，視覺強度越高。"""
+        if v is None:
+            return "neutral"
+        try:
+            n = float(v)
+        except Exception:
+            return "neutral"
+        a = abs(n)
+        level = 1 if a >= 0.01 else 0
+        if a >= 5:
+            level = 4
+        elif a >= 2:
+            level = 3
+        elif a >= 0.5:
+            level = 2
+        elif a >= 0.01:
+            level = 1
+        direction = "up" if n > 0 else ("down" if n < 0 else "flat")
+        return f"{direction} intensity-{level}"
+
     panels = []
     for key in period_order:
         rows = period_rows(key)
@@ -26048,7 +26069,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
                 f'<div class="trend-point-detail-date">{html.escape(fmt_date_full(r["date"]))}</div>'
                 f'<div><span>我的組合</span><b class="port">{html.escape(fmt_pct(r["port"]))}</b></div>'
                 f'{f"<div class=market-detail><span>加權指數</span><b class=market>{html.escape(fmt_pct(market))}</b></div>" if market is not None else ""}'
-                f'{f"<div><span>超額報酬</span><b class=excess>{html.escape(fmt_pct(excess))}</b></div>" if excess is not None else ""}'
+                f"{f'<div><span>跑贏加權指數</span><b class=\"excess {perf_class(excess)}\">{html.escape(fmt_pct(excess))}</b></div>' if excess is not None else ''}"
                 f'</div>'
             )
 
@@ -26072,9 +26093,9 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
   <div class="trend-point-hint">點擊圖上的圓點，可查看該交易日的精確報酬。</div>
   <div class="trend-point-details">{"".join(details)}</div>
   <div class="portfolio-trend-summary">
-    <div class="portfolio-trend-stat"><small>期間組合</small><strong class="port">{html.escape(fmt_pct(latest["port"]))}</strong></div>
-    <div class="portfolio-trend-stat"><small>期間加權指數</small><strong class="market">{html.escape(fmt_pct(market_latest))}</strong></div>
-    <div class="portfolio-trend-stat"><small>超額報酬</small><strong class="excess">{html.escape(fmt_pct(excess))}</strong></div>
+    <div class="portfolio-trend-stat {perf_class(latest["port"])}"><small>期間組合</small><strong class="port">{html.escape(fmt_pct(latest["port"]))}</strong></div>
+    <div class="portfolio-trend-stat {perf_class(market_latest)}"><small>期間加權指數</small><strong class="market">{html.escape(fmt_pct(market_latest))}</strong></div>
+    <div class="portfolio-trend-stat excess-stat {perf_class(excess)}"><small>跑贏加權指數</small><strong class="excess">{html.escape(fmt_pct(excess))}</strong></div>
   </div>
 </section>'''
         )
@@ -26085,24 +26106,24 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 .portfolio-trend-card{position:relative;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%);border:1px solid #d7e2ea;border-radius:24px;padding:20px 18px 19px;margin:18px 0;box-shadow:0 12px 32px rgba(39,76,119,.08);overflow:hidden}
 .portfolio-trend-card:before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:linear-gradient(90deg,#35688d,#b28b4c,#35688d)}
 .portfolio-trend-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin:2px 0 18px}
-.portfolio-trend-title h2{margin:0;color:#162b42;font-size:30px;line-height:1.2}.portfolio-trend-title p{margin:8px 0 0;color:#718397;font-size:15px;line-height:1.5}.portfolio-trend-status{padding:9px 12px;border:1px solid #d8e3eb;border-radius:999px;background:#f8fbfd;color:#5c7487;font-size:12px;font-weight:850;white-space:nowrap}
+.portfolio-trend-title h2{margin:0;color:#162b42;font-size:34px;line-height:1.15}.portfolio-trend-title p{margin:9px 0 0;color:#718397;font-size:17px;line-height:1.5}.portfolio-trend-status{padding:9px 13px;border:1px solid #d8e3eb;border-radius:999px;background:#f8fbfd;color:#5c7487;font-size:13px;font-weight:900;white-space:nowrap}
 .trend-period-radio,.trend-benchmark-toggle{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
-.portfolio-trend-tabs{display:flex;gap:10px;overflow-x:auto;padding:2px 1px 12px;scrollbar-width:none}.portfolio-trend-tabs::-webkit-scrollbar{display:none}
-.portfolio-trend-tab{display:inline-flex;align-items:center;justify-content:center;min-width:92px;border:1.5px solid #cbd9e4;background:#f7fafc;color:#596e81;border-radius:14px;padding:13px 16px;font-size:18px;line-height:1;font-weight:900;white-space:nowrap;cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none}
+.portfolio-trend-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;padding:2px 1px 12px}
+.portfolio-trend-tab{display:flex;align-items:center;justify-content:center;width:100%;min-width:0;border:1.5px solid #cbd9e4;background:#f7fafc;color:#596e81;border-radius:14px;padding:13px 4px;font-size:18px;line-height:1;font-weight:900;white-space:nowrap;cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none}
 #trend-period-1m:checked ~ .portfolio-trend-tabs label[for="trend-period-1m"],#trend-period-3m:checked ~ .portfolio-trend-tabs label[for="trend-period-3m"],#trend-period-6m:checked ~ .portfolio-trend-tabs label[for="trend-period-6m"],#trend-period-ytd:checked ~ .portfolio-trend-tabs label[for="trend-period-ytd"],#trend-period-all:checked ~ .portfolio-trend-tabs label[for="trend-period-all"]{background:#fff;border-color:#c2d0dc;color:#8b6934;box-shadow:inset 0 -4px 0 #b18a4b}
-.portfolio-trend-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:3px 0 13px}.portfolio-trend-current{font-size:14px;color:#74879a}.portfolio-trend-current b{color:#8b6934;font-size:20px;margin-left:5px}
+.portfolio-trend-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:3px 0 13px}.portfolio-trend-current{font-size:16px;color:#74879a}.portfolio-trend-current b{color:#8b6934;font-size:24px;margin-left:5px}
 .portfolio-trend-current .period-current-label{display:none}
 #trend-period-1m:checked ~ .portfolio-trend-toolbar .period-label-1m,#trend-period-3m:checked ~ .portfolio-trend-toolbar .period-label-3m,#trend-period-6m:checked ~ .portfolio-trend-toolbar .period-label-6m,#trend-period-ytd:checked ~ .portfolio-trend-toolbar .period-label-ytd,#trend-period-all:checked ~ .portfolio-trend-toolbar .period-label-all{display:inline}
-.portfolio-trend-benchmark-label{display:inline-flex;align-items:center;gap:8px;padding:11px 14px;border:1.5px solid #cbd9e4;background:#fff;border-radius:13px;color:#566d80;font-size:14px;font-weight:900;cursor:pointer;-webkit-tap-highlight-color:transparent}.portfolio-trend-benchmark-label .show-text{display:none}
+.portfolio-trend-benchmark-label{display:inline-flex;align-items:center;gap:8px;padding:12px 14px;border:1.5px solid #cbd9e4;background:#fff;border-radius:13px;color:#566d80;font-size:15px;font-weight:900;cursor:pointer;-webkit-tap-highlight-color:transparent}.portfolio-trend-benchmark-label .show-text{display:none}
 #trend-benchmark:checked ~ .portfolio-trend-toolbar .portfolio-trend-benchmark-label .hide-text{display:none}#trend-benchmark:checked ~ .portfolio-trend-toolbar .portfolio-trend-benchmark-label .show-text{display:inline}#trend-benchmark:checked ~ .portfolio-trend-panels .market-layer{display:none}
 .portfolio-trend-panel{display:none}#trend-period-1m:checked ~ .portfolio-trend-panels .panel-1m,#trend-period-3m:checked ~ .portfolio-trend-panels .panel-3m,#trend-period-6m:checked ~ .portfolio-trend-panels .panel-6m,#trend-period-ytd:checked ~ .portfolio-trend-panels .panel-ytd,#trend-period-all:checked ~ .portfolio-trend-panels .panel-all{display:block}
-.portfolio-trend-range{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:1px 3px 10px;color:#77899a;font-size:14px}.portfolio-trend-range b{color:#667b8d;font-size:15px}
+.portfolio-trend-range{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:2px 3px 11px;color:#77899a;font-size:16px}.portfolio-trend-range b{color:#667b8d;font-size:18px}
 .portfolio-trend-plot{border:1.5px solid #d7e2ea;border-radius:19px;background:linear-gradient(180deg,#f8fbfe 0%,#f3f8fb 100%);overflow:hidden}.portfolio-trend-svg{display:block;width:100%;height:470px;min-height:470px;touch-action:manipulation}
-.portfolio-trend-svg .grid{stroke:#e0e8ee;stroke-width:1}.portfolio-trend-svg .zero{stroke:#98aab8;stroke-width:1.3;stroke-dasharray:5 5}.portfolio-trend-svg .tick{fill:#5f7487;font-size:19px;font-weight:900}.portfolio-trend-svg .date{fill:#5f7487;font-size:17px;font-weight:900}.portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:5.5;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .market-line{fill:none;stroke:#949c98;stroke-width:2.8;stroke-dasharray:9 6;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .port-point{fill:#8b6934;stroke:#fff;stroke-width:4;cursor:pointer;r:10}.portfolio-trend-svg .trend-point-link:focus .port-point{stroke:#315d7f;stroke-width:4}
-.trend-point-hint{margin:10px 3px 0;color:#7d8e9b;font-size:13px;line-height:1.5}.trend-point-detail{display:none;margin:10px 3px 0;padding:12px 14px;border:1px solid #d6e2ea;border-radius:13px;background:#fff;box-shadow:0 8px 18px rgba(39,76,119,.07)}.trend-point-detail:target{display:block}.trend-point-detail-date{font-size:14px;font-weight:900;color:#5e7487;margin-bottom:8px}.trend-point-detail>div:not(.trend-point-detail-date){display:flex;justify-content:space-between;gap:12px;padding:5px 0;color:#81919f;font-size:13px}.trend-point-detail b{font-size:15px;font-variant-numeric:tabular-nums}.trend-point-detail b.port{color:#8b6934}.trend-point-detail b.market{color:#68716d}.trend-point-detail b.excess{color:#315d7f}
-.portfolio-trend-summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px;margin-top:12px}.portfolio-trend-stat{padding:13px 14px;border:1px solid #dde6ed;border-radius:13px;background:#fff}.portfolio-trend-stat small{display:block;color:#83929f;font-size:12px;font-weight:800}.portfolio-trend-stat strong{display:block;margin-top:4px;font-size:24px;line-height:1.05;font-variant-numeric:tabular-nums}.portfolio-trend-stat strong.port{color:#8b6934}.portfolio-trend-stat strong.market{color:#68716d}.portfolio-trend-stat strong.excess{color:#315d7f}
-.portfolio-trend-legend{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:12px 2px 0;color:#6e8090;font-size:12px;font-weight:800}.portfolio-trend-legend span{display:inline-flex;align-items:center;gap:6px}.portfolio-trend-legend i{display:inline-block;width:20px;height:4px;border-radius:4px;background:#8b6934}.portfolio-trend-legend i.market{height:3px;background:repeating-linear-gradient(90deg,#949c98 0 7px,transparent 7px 11px)}.portfolio-trend-note{margin:8px 2px 0;color:#83929e;font-size:12px;line-height:1.55}
-@media(max-width:640px){.portfolio-trend-card{padding:18px 11px 15px;border-radius:21px}.portfolio-trend-header{gap:9px;margin-bottom:14px}.portfolio-trend-title h2{font-size:32px}.portfolio-trend-title p{font-size:13px}.portfolio-trend-tab{min-width:86px;padding:12px 11px;font-size:17px}.portfolio-trend-current{font-size:13px}.portfolio-trend-current b{font-size:22px}.portfolio-trend-benchmark-label{font-size:13px;padding:10px 11px}.portfolio-trend-svg{height:460px;min-height:460px}.portfolio-trend-svg .tick{font-size:19px}.portfolio-trend-svg .date{font-size:16px}.portfolio-trend-range{font-size:13px}.portfolio-trend-range b{font-size:14px}.portfolio-trend-summary{grid-template-columns:1fr 1fr}.portfolio-trend-stat:last-child{grid-column:1/-1}.portfolio-trend-stat strong{font-size:23px}}
+.portfolio-trend-svg .grid{stroke:#e0e8ee;stroke-width:1}.portfolio-trend-svg .zero{stroke:#98aab8;stroke-width:1.3;stroke-dasharray:5 5}.portfolio-trend-svg .tick{fill:#5f7487;font-size:20px;font-weight:900}.portfolio-trend-svg .date{fill:#5f7487;font-size:18px;font-weight:900}.portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:5.5;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .market-line{fill:none;stroke:#949c98;stroke-width:2.8;stroke-dasharray:9 6;stroke-linecap:round;stroke-linejoin:round}.portfolio-trend-svg .port-point{fill:#8b6934;stroke:#fff;stroke-width:4;cursor:pointer;r:10}.portfolio-trend-svg .trend-point-link:focus .port-point{stroke:#315d7f;stroke-width:4}
+.trend-point-hint{margin:10px 3px 0;color:#7d8e9b;font-size:13px;line-height:1.5}.trend-point-detail{display:none;margin:10px 3px 0;padding:12px 14px;border:1px solid #d6e2ea;border-radius:13px;background:#fff;box-shadow:0 8px 18px rgba(39,76,119,.07)}.trend-point-detail:target{display:block}.trend-point-detail-date{font-size:14px;font-weight:900;color:#5e7487;margin-bottom:8px}.trend-point-detail>div:not(.trend-point-detail-date){display:flex;justify-content:space-between;gap:12px;padding:5px 0;color:#81919f;font-size:13px}.trend-point-detail b{font-size:15px;font-variant-numeric:tabular-nums}.trend-point-detail b.port{color:#8b6934}.trend-point-detail b.market{color:#68716d}.trend-point-detail b.excess.up{color:#d62f2f}.trend-point-detail b.excess.down{color:#17834a}
+.portfolio-trend-summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px;margin-top:12px}.portfolio-trend-stat{padding:15px 15px;border:1px solid #dde6ed;border-radius:15px;background:#fff;transition:background .2s,border-color .2s,box-shadow .2s}.portfolio-trend-stat small{display:block;color:#83929f;font-size:14px;font-weight:900}.portfolio-trend-stat strong{display:block;margin-top:6px;font-size:29px;line-height:1.05;font-variant-numeric:tabular-nums}.portfolio-trend-stat strong.port,.portfolio-trend-stat strong.market,.portfolio-trend-stat strong.excess{color:inherit}.portfolio-trend-stat.up{color:#d62f2f}.portfolio-trend-stat.down{color:#17834a}.portfolio-trend-stat.flat{color:#6f7f8d}.portfolio-trend-stat.intensity-1{background:#fffafa;border-color:#f0cfcf}.portfolio-trend-stat.up.intensity-2{background:#fff4f4;border-color:#e9a7a7}.portfolio-trend-stat.up.intensity-3{background:#ffe7e7;border-color:#e97979;box-shadow:0 8px 20px rgba(214,47,47,.12)}.portfolio-trend-stat.up.intensity-4{background:#ffd9d9;border-color:#df4b4b;box-shadow:0 10px 24px rgba(214,47,47,.2)}.portfolio-trend-stat.excess-stat{min-height:92px}.portfolio-trend-stat.excess-stat strong{font-size:34px}.portfolio-trend-stat.down.intensity-1{background:#f7fcf9;border-color:#cfe8d9}.portfolio-trend-stat.down.intensity-2{background:#eefaf3;border-color:#a9dbbc}.portfolio-trend-stat.down.intensity-3{background:#dcf4e7;border-color:#65bd8a;box-shadow:0 8px 20px rgba(23,131,74,.12)}.portfolio-trend-stat.down.intensity-4{background:#c9eedb;border-color:#3fa66b;box-shadow:0 10px 24px rgba(23,131,74,.2)}
+.portfolio-trend-legend{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:12px 2px 0;color:#6e8090;font-size:12px;font-weight:800}.portfolio-trend-legend span{display:inline-flex;align-items:center;gap:6px}.portfolio-trend-legend i{display:inline-block;width:20px;height:4px;border-radius:4px;background:#8b6934}.portfolio-trend-legend i.market{height:3px;background:repeating-linear-gradient(90deg,#949c98 0 7px,transparent 7px 11px)}.portfolio-trend-note{margin:9px 2px 0;color:#83929e;font-size:13px;line-height:1.55}
+@media(max-width:640px){.portfolio-trend-card{padding:18px 11px 15px;border-radius:21px}.portfolio-trend-header{gap:9px;margin-bottom:14px}.portfolio-trend-title h2{font-size:34px}.portfolio-trend-title p{font-size:16px}.portfolio-trend-status{font-size:12px;padding:8px 10px}.portfolio-trend-tabs{gap:6px}.portfolio-trend-tab{padding:12px 2px;font-size:16px;border-radius:13px}.portfolio-trend-current{font-size:15px}.portfolio-trend-current b{font-size:23px}.portfolio-trend-benchmark-label{font-size:14px;padding:11px 10px}.portfolio-trend-svg{height:445px;min-height:445px}.portfolio-trend-svg .tick{font-size:20px}.portfolio-trend-svg .date{font-size:18px}.portfolio-trend-range{font-size:15px}.portfolio-trend-range b{font-size:17px}.portfolio-trend-summary{grid-template-columns:1fr 1fr;gap:8px}.portfolio-trend-stat:last-child{grid-column:1/-1}.portfolio-trend-stat strong{font-size:28px}.portfolio-trend-stat small{font-size:14px}}
 </style>'''
 
     radios = "".join(
@@ -26112,14 +26133,14 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
     checked = "" if show_benchmark else "checked"
     return f'''<section class="portfolio-trend-card" id="portfolio-trend">
 {css}
-  <div class="portfolio-trend-header"><div class="portfolio-trend-title"><h2>組合走勢</h2><p>相對起始日報酬・時間加權績效（TWR）</p></div><div class="portfolio-trend-status">直接互動・不重載</div></div>
+  <div class="portfolio-trend-header"><div class="portfolio-trend-title"><h2>組合走勢</h2><p>相對起始日報酬・時間加權績效（TWR）</p></div><div class="portfolio-trend-status">績效對照</div></div>
   {radios}
   <div class="portfolio-trend-tabs" role="tablist" aria-label="績效期間"><label class="portfolio-trend-tab" for="trend-period-1m">1 個月</label><label class="portfolio-trend-tab" for="trend-period-3m">3 個月</label><label class="portfolio-trend-tab" for="trend-period-6m">6 個月</label><label class="portfolio-trend-tab" for="trend-period-ytd">今年</label><label class="portfolio-trend-tab" for="trend-period-all">全部</label></div>
   <input class="trend-benchmark-toggle" type="checkbox" id="trend-benchmark" {checked}>
   <div class="portfolio-trend-toolbar"><div class="portfolio-trend-current"><span>目前顯示</span> <b class="period-current-label period-label-1m">1 個月</b><b class="period-current-label period-label-3m">3 個月</b><b class="period-current-label period-label-6m">6 個月</b><b class="period-current-label period-label-ytd">今年</b><b class="period-current-label period-label-all">全部</b></div><label class="portfolio-trend-benchmark-label" for="trend-benchmark"><span class="hide-text">隱藏加權指數</span><span class="show-text">顯示加權指數</span></label></div>
   <div class="portfolio-trend-panels">{"".join(panels)}</div>
   <div class="portfolio-trend-legend"><span><i></i>我的組合</span><span><i class="market"></i>加權指數</span><span>點擊圖上圓點查看每日精確數據</span></div>
-  <div class="portfolio-trend-note">五種期間全部已由伺服器預先算好；切換期間／隱藏加權指數立即切換，不重新載入頁面，也不依賴 JavaScript。</div>
+  <div class="portfolio-trend-note">五種期間已預先計算；切換期間與加權指數會即時切換，不需重新載入。</div>
 </section>'''
 
 
