@@ -42,6 +42,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
+APP_BUILD = "V203_TREND_INTERACTIVE_RELOAD"
 
 # 首頁短 TTL 快取：避免使用者在首頁／持股／首頁間快速切換時，
 # 每次都重新查相同的共享快照與操作日誌。這些資料本身就不是毫秒級變動；
@@ -23173,7 +23174,7 @@ def web_positions(uid):
     # v194：移除組合配置圖；持股頁直接呈現持股明細與組合走勢。
     try:
         position_snapshots = get_portfolio_snapshots(uid, days=420)
-        position_trend_html = render_trend_chart(position_snapshots)
+        position_trend_html = render_trend_chart(position_snapshots, auth_token=str(request.args.get("t") or ""))
     except Exception as exc:
         print(f"⚠️ 持股頁組合走勢載入失敗: {exc}")
         position_trend_html = '<div class="empty">組合走勢暫時無法載入，請稍後再試。</div>'
@@ -25875,7 +25876,7 @@ def render_portfolio_allocation_chart(holdings):
 <div class="portfolio-chart-footnote">面積代表目前組合權重；顏色代表今日股價變化。</div>
 </section>{js}'''
 
-def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True):
+def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, auth_token=""):
     """
     互動式「組合 vs 加權指數」績效圖。
 
@@ -26031,6 +26032,10 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True):
     period_code = {"1m":"1M","3m":"3M","6m":"6M","ytd":"YTD","all":"全部"}.get(requested_period, "3M")
     period_start_date = _sr[0]["date"] if _sr else pts[0]["date"]
     period_end_date = _sr[-1]["date"] if _sr else pts[-1]["date"]
+    auth_hidden = (
+        f'<input type="hidden" name="t" value="{html.escape(str(auth_token or ""), quote=True)}">'
+        if auth_token else ""
+    )
 
     css = """
 <style>
@@ -26038,26 +26043,31 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True):
 .portfolio-trend-card{position:relative;background:linear-gradient(180deg,#ffffff 0%,#fbfdff 100%);border:1px solid #dce6ee;border-radius:22px;padding:17px 14px 14px;margin:16px 0;box-shadow:0 10px 28px rgba(39,76,119,.07);overflow:hidden}
 .portfolio-trend-card:before{content:"";position:absolute;left:0;right:0;top:0;height:3px;background:linear-gradient(90deg,#355f82,#a88243,#355f82);opacity:.88}
 .portfolio-trend-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin:2px 1px 11px}
-.portfolio-trend-title h2{margin:0;color:#162b42;font-size:27px;letter-spacing:.01em}
-.portfolio-trend-title p{margin:4px 0 0;color:#77899a;font-size:11px;line-height:1.5}
+.portfolio-trend-title h2{margin:0;color:#162b42;font-size:28px;letter-spacing:.01em}
+.portfolio-trend-title p{margin:5px 0 0;color:#77899a;font-size:13px;line-height:1.55}
 .portfolio-trend-status{display:flex;align-items:center;gap:6px;padding:6px 9px;border:1px solid #dce6ee;border-radius:999px;background:#f8fbfd;color:#63788b;font-size:10px;font-weight:800;white-space:nowrap}
 .portfolio-trend-status:before{content:"";width:6px;height:6px;border-radius:50%;background:#4b85aa;box-shadow:0 0 0 3px rgba(75,133,170,.10)}
-.portfolio-trend-tabs{display:flex;gap:6px;overflow-x:auto;padding:2px 1px 8px;scrollbar-width:none}
+.portfolio-trend-tabs{display:flex;gap:8px;overflow-x:auto;padding:3px 1px 10px;scrollbar-width:none}
 .portfolio-trend-tabs::-webkit-scrollbar{display:none}
-.portfolio-trend-tab{appearance:none;border:1px solid #d7e1e9;background:#f7fafc;color:#667b8e;border-radius:10px;padding:10px 15px;font-size:13px;font-weight:850;white-space:nowrap;cursor:pointer;transition:all .16s ease;text-decoration:none;-webkit-tap-highlight-color:transparent}
-.portfolio-trend-tab:hover{border-color:#b7c9d8;background:#fff;transform:translateY(-1px)}
-.portfolio-trend-tab.active{background:#fff;border-color:#c9d6df;color:#8b6934;box-shadow:inset 0 -3px 0 #b18a4b;text-decoration:none} .portfolio-trend-tab:active{background:#fff;color:#8b6934}
-.portfolio-trend-toolbar{display:flex;justify-content:space-between;align-items:center;gap:9px;margin:0 1px 8px}
-.portfolio-trend-toggle{appearance:none;border:1px solid #d7e1e9;background:#fff;color:#64788a;border-radius:9px;padding:9px 13px;font-size:12px;font-weight:800;cursor:pointer;text-decoration:none;-webkit-tap-highlight-color:transparent} .portfolio-trend-toggle:active{background:#fff;color:#64788a}
+.portfolio-trend-tab-form{display:block;margin:0;padding:0}
+.portfolio-trend-tab{appearance:none;border:1px solid #ccd9e3;background:#f7fafc;color:#5f7285;border-radius:12px;padding:12px 16px;font-size:15px;line-height:1.05;font-weight:850;white-space:nowrap;cursor:pointer;transition:all .16s ease;outline:none;box-shadow:none;text-decoration:none;-webkit-tap-highlight-color:transparent;-webkit-appearance:none}
+.portfolio-trend-tab:hover{border-color:#b8cbd9;background:#fff;transform:translateY(-1px)}
+.portfolio-trend-tab.active{background:#fff;border-color:#c4d2dc;color:#8b6934;box-shadow:inset 0 -4px 0 #b18a4b}
+.portfolio-trend-tab:focus,.portfolio-trend-tab:focus-visible,.portfolio-trend-tab:active{background:#fff;color:#8b6934;border-color:#c4d2dc;outline:none;box-shadow:inset 0 -4px 0 #b18a4b}
+.portfolio-trend-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:0 1px 9px}
+.portfolio-trend-benchmark-form{display:block;margin:0;padding:0}
+.portfolio-trend-toggle{appearance:none;border:1px solid #cbd8e2;background:#fff;color:#5f7285;border-radius:11px;padding:11px 14px;font-size:14px;font-weight:850;cursor:pointer;text-decoration:none;outline:none;box-shadow:0 4px 12px rgba(39,76,119,.07);-webkit-tap-highlight-color:transparent;-webkit-appearance:none}
+.portfolio-trend-toggle:hover{border-color:#b8cbd9;background:#fff}
+.portfolio-trend-toggle:focus,.portfolio-trend-toggle:focus-visible,.portfolio-trend-toggle:active{background:#fff;color:#5f7285;border-color:#b8cbd9;outline:none}
 .portfolio-trend-toggle.off{background:#f2f4f6;color:#9aa5ae}
-.portfolio-trend-current{display:flex;align-items:baseline;gap:6px;color:#718497;font-size:12px}
-.portfolio-trend-current b{color:#8b6934;font-size:13px}
+.portfolio-trend-current{display:flex;align-items:baseline;gap:7px;color:#718497;font-size:13px;flex-wrap:wrap}
+.portfolio-trend-current b{color:#8b6934;font-size:16px}
 .portfolio-trend-plot{position:relative;border:1px solid #dce6ee;border-radius:17px;background:linear-gradient(180deg,#f8fbfe 0%,#f4f8fb 100%);overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.8)}
 .portfolio-trend-svg{display:block;width:100%;height:292px;touch-action:none;user-select:none;-webkit-user-select:none}
 .portfolio-trend-svg .grid{stroke:#e2e9ef;stroke-width:1}
 .portfolio-trend-svg .zero{stroke:#aab8c4;stroke-width:1.15;stroke-dasharray:4 4}
-.portfolio-trend-svg .tick{fill:#8192a0;font-size:11px;font-weight:700}
-.portfolio-trend-svg .date{fill:#8494a1;font-size:11px;font-weight:700}
+.portfolio-trend-svg .tick{fill:#718597;font-size:12px;font-weight:800}
+.portfolio-trend-svg .date{fill:#748798;font-size:12px;font-weight:800}
 .portfolio-trend-svg .port-area{fill:url(#portfolioTrendArea)}
 .portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}
 .portfolio-trend-svg .port-dot{fill:#8b6934;stroke:#fff;stroke-width:2.2}
@@ -26068,14 +26078,14 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True):
 .portfolio-trend-hit{fill:transparent;cursor:crosshair}
 .portfolio-trend-tooltip{position:absolute;z-index:4;min-width:168px;max-width:215px;padding:10px 11px;border:1px solid #d8e3eb;border-radius:12px;background:rgba(255,255,255,.96);box-shadow:0 12px 28px rgba(28,54,76,.15);pointer-events:none;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);opacity:0;transform:translateY(5px);transition:opacity .12s ease,transform .12s ease}
 .portfolio-trend-tooltip.show{opacity:1;transform:translateY(0)}
-.portfolio-trend-tooltip-date{color:#5e7588;font-size:10px;font-weight:850;margin-bottom:7px}
-.portfolio-trend-tooltip-row{display:flex;justify-content:space-between;gap:12px;margin-top:5px;color:#82909c;font-size:10px}
-.portfolio-trend-tooltip-row b{color:#304a60;font-size:11px;font-variant-numeric:tabular-nums}
+.portfolio-trend-tooltip-date{color:#5e7588;font-size:12px;font-weight:850;margin-bottom:7px}
+.portfolio-trend-tooltip-row{display:flex;justify-content:space-between;gap:12px;margin-top:6px;color:#82909c;font-size:12px}
+.portfolio-trend-tooltip-row b{color:#304a60;font-size:13px;font-variant-numeric:tabular-nums}
 .portfolio-trend-tooltip-row b.port{color:#8b6934}.portfolio-trend-tooltip-row b.market{color:#66716d}.portfolio-trend-tooltip-row b.outperform{color:#315d7f}
 .portfolio-trend-summary{display:grid;grid-template-columns:1.05fr 1fr 1fr;gap:7px;margin-top:9px}
 .portfolio-trend-stat{min-width:0;padding:9px 10px;border:1px solid #e0e7ed;border-radius:11px;background:#fff}
 .portfolio-trend-stat small{display:block;color:#8593a0;font-size:11px;font-weight:750}
-.portfolio-trend-stat strong{display:block;margin-top:3px;color:#8b6934;font-size:20px;font-variant-numeric:tabular-nums;line-height:1.1}
+.portfolio-trend-stat strong{display:block;margin-top:4px;color:#8b6934;font-size:22px;font-variant-numeric:tabular-nums;line-height:1.1}
 .portfolio-trend-stat strong.market{color:#66716d}.portfolio-trend-stat strong.outperform{color:#315d7f}
 .portfolio-trend-legend{display:flex;align-items:center;flex-wrap:wrap;gap:7px 14px;margin:8px 1px 0;color:#728494;font-size:11px;font-weight:750}
 .portfolio-trend-legend span{display:inline-flex;align-items:center;gap:5px}
@@ -26085,13 +26095,15 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True):
 .portfolio-trend-empty-market{display:flex;align-items:center;justify-content:center;min-height:40px;padding:5px;color:#8997a3;font-size:10px}
 @media(max-width:640px){
  .portfolio-trend-card{padding:15px 10px 12px;border-radius:19px}
- .portfolio-trend-title h2{font-size:24px}
+ .portfolio-trend-title h2{font-size:25px}
  .portfolio-trend-title p{font-size:12px}
- .portfolio-trend-status{font-size:11px;padding:6px 8px}
+ .portfolio-trend-status{font-size:10px;padding:6px 8px}
+ .portfolio-trend-tab{font-size:14px;padding:10px 14px}
+ .portfolio-trend-toggle{font-size:13px;padding:10px 12px}
  .portfolio-trend-svg{height:270px}
  .portfolio-trend-summary{grid-template-columns:1fr 1fr}
  .portfolio-trend-stat:last-child{grid-column:1/-1}
- .portfolio-trend-stat strong{font-size:18px}
+ .portfolio-trend-stat strong{font-size:20px}
  .portfolio-trend-toolbar{align-items:flex-end}
 }
 </style>
@@ -26287,17 +26299,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True):
     root.querySelector('[data-current-port]').textContent=fmtPct(last.port);
     root.querySelector('[data-current-period]').textContent=currentPeriod==='all'?'全部資料':currentPeriod==='ytd'?'今年':currentPeriod.toUpperCase();
   }}
-  // 期間切換不要在前端偷換資料。每次點擊都重新進入首頁，
-  // 由後端先算好該期間的 TWR／加權指數，再把完整首頁送回來。
-  // 這樣 1M／3M／6M／今年／全部都會走同一套伺服器端資料口徑，
-  // 也不會因 LINE WebView 的 JS 行為而出現「點了但畫面沒變」。
-  tabs.forEach(function(t){{
-    t.addEventListener('click',function(){{
-      // 保留原生 <a> 導航；不要 preventDefault。
-      hideTooltip();
-    }});
-  }});
-  if(benchmarkBtn) benchmarkBtn.addEventListener('click',function(){{ hideTooltip(); }});
+
   window.addEventListener('resize',function(){{clearTimeout(resizeTimer);resizeTimer=setTimeout(render,120);}});
   render();
 }})();
@@ -26315,15 +26317,15 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True):
     <div class="portfolio-trend-status">可互動</div>
   </div>
   <div class="portfolio-trend-tabs" role="tablist" aria-label="績效期間">
-    <a class="portfolio-trend-tab{' active' if requested_period == '1m' else ''}" href="/web/portfolio?trend_period=1m&trend_benchmark={1 if show_benchmark else 0}" data-trend-period="1m" data-full-navigation="1">1 個月</a>
-    <a class="portfolio-trend-tab{' active' if requested_period == '3m' else ''}" href="/web/portfolio?trend_period=3m&trend_benchmark={1 if show_benchmark else 0}" data-trend-period="3m" data-full-navigation="1">3 個月</a>
-    <a class="portfolio-trend-tab{' active' if requested_period == '6m' else ''}" href="/web/portfolio?trend_period=6m&trend_benchmark={1 if show_benchmark else 0}" data-trend-period="6m" data-full-navigation="1">6 個月</a>
-    <a class="portfolio-trend-tab{' active' if requested_period == 'ytd' else ''}" href="/web/portfolio?trend_period=ytd&trend_benchmark={1 if show_benchmark else 0}" data-trend-period="ytd" data-full-navigation="1">今年</a>
-    <a class="portfolio-trend-tab{' active' if requested_period == 'all' else ''}" href="/web/portfolio?trend_period=all&trend_benchmark={1 if show_benchmark else 0}" data-trend-period="all" data-full-navigation="1">全部</a>
+    <form method="get" action="/web/portfolio" class="portfolio-trend-tab-form"><input type="hidden" name="trend_period" value="1m"><input type="hidden" name="trend_benchmark" value="{1 if show_benchmark else 0}">{auth_hidden}<button type="submit" class="portfolio-trend-tab{' active' if requested_period == '1m' else ''}" data-trend-period="1m">1 個月</button></form>
+    <form method="get" action="/web/portfolio" class="portfolio-trend-tab-form"><input type="hidden" name="trend_period" value="3m"><input type="hidden" name="trend_benchmark" value="{1 if show_benchmark else 0}">{auth_hidden}<button type="submit" class="portfolio-trend-tab{' active' if requested_period == '3m' else ''}" data-trend-period="3m">3 個月</button></form>
+    <form method="get" action="/web/portfolio" class="portfolio-trend-tab-form"><input type="hidden" name="trend_period" value="6m"><input type="hidden" name="trend_benchmark" value="{1 if show_benchmark else 0}">{auth_hidden}<button type="submit" class="portfolio-trend-tab{' active' if requested_period == '6m' else ''}" data-trend-period="6m">6 個月</button></form>
+    <form method="get" action="/web/portfolio" class="portfolio-trend-tab-form"><input type="hidden" name="trend_period" value="ytd"><input type="hidden" name="trend_benchmark" value="{1 if show_benchmark else 0}">{auth_hidden}<button type="submit" class="portfolio-trend-tab{' active' if requested_period == 'ytd' else ''}" data-trend-period="ytd">今年</button></form>
+    <form method="get" action="/web/portfolio" class="portfolio-trend-tab-form"><input type="hidden" name="trend_period" value="all"><input type="hidden" name="trend_benchmark" value="{1 if show_benchmark else 0}">{auth_hidden}<button type="submit" class="portfolio-trend-tab{' active' if requested_period == 'all' else ''}" data-trend-period="all">全部</button></form>
   </div>
   <div class="portfolio-trend-toolbar">
     <div class="portfolio-trend-current"><span>目前顯示</span><b data-current-period>{period_code}</b><span data-current-label>{period_start_date} → {period_end_date}</span></div>
-    <a class="portfolio-trend-toggle" data-full-navigation="1" data-trend-benchmark href="/web/portfolio?trend_period={requested_period}&trend_benchmark={0 if show_benchmark else 1}">{"隱藏加權指數" if show_benchmark else "顯示加權指數"}</a>
+    <form method="get" action="/web/portfolio" class="portfolio-trend-benchmark-form"><input type="hidden" name="trend_period" value="{requested_period}"><input type="hidden" name="trend_benchmark" value="{0 if show_benchmark else 1}">{auth_hidden}<button type="submit" class="portfolio-trend-toggle" data-trend-benchmark>{"隱藏加權指數" if show_benchmark else "顯示加權指數"}</button></form>
   </div>
   <div class="portfolio-trend-plot" data-trend-plot>
     {_server_svg}
@@ -30495,7 +30497,11 @@ def web_portfolio(uid):
     if not positions:
         # 沒有目前持股，但可能有賣光的歷史紀錄或組合快照可看，
         # 不能因為現在空手就把已實現損益跟走勢圖也一起藏起來。
-        trend_html_empty = render_trend_chart(get_portfolio_snapshots(uid, days=420), requested_period=str(request.args.get("trend_period") or "3m"), show_benchmark=str(request.args.get("trend_benchmark") or "1") not in {"0","false","off","no"})
+        trend_html_empty = render_trend_chart(
+            get_portfolio_snapshots(uid, days=420),
+            requested_period=str(request.args.get("trend_period") or "3m"),
+            show_benchmark=str(request.args.get("trend_benchmark") or "1").lower() not in {"0", "false", "off", "no"},
+            auth_token=str(request.args.get("t") or ""))
         body = f"""
 <div class="empty">還沒有持股紀錄。<br><br>
 <a href="/web/positions" style="color:var(--brass)">先去新增持股 →</a></div>"""
@@ -30546,7 +30552,8 @@ def web_portfolio(uid):
         lambda: render_trend_chart(
             get_portfolio_snapshots(uid, days=420),
             requested_period=requested_trend_period,
-            show_benchmark=requested_trend_benchmark))
+            show_benchmark=requested_trend_benchmark,
+            auth_token=str(request.args.get("t") or "")))
     aux_realized_future = aux_executor.submit(get_realized_trades, uid, 500)
     aux_rank_future = aux_executor.submit(get_fast_rank_summary, uid)
 
