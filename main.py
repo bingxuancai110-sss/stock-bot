@@ -26057,7 +26057,6 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 
 
         point_circles = []
-        point_hit_buttons = []
         tooltips = []
 
         def point_state_for(excess):
@@ -26083,11 +26082,6 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
                 f'<circle class="port-point {state}" data-index="{i}" cx="{px:.1f}" cy="{py:.1f}" r="8" pointer-events="none">'
                 f'<title>{html.escape(fmt_date_full(r["date"]))}</title></circle>'
                 f'<circle class="port-point-core {state}" data-index="{i}" cx="{px:.1f}" cy="{py:.1f}" r="3" pointer-events="none"/>'
-            )
-            safe_date = html.escape(fmt_date_full(r["date"]), quote=True)
-            point_hit_buttons.append(
-                f'<button type="button" class="trend-html-hit" data-index="{i}" aria-label="查看 {safe_date} 績效" '
-                f'style="left:{px-14:.1f}px;top:{py-14:.1f}px"></button>'
             )
 
             if excess is not None and excess > 0.05:
@@ -26138,7 +26132,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         )
         chart_inner = (
             f'<div class="trend-chart-inner" style="width:{W}px;height:{H}px;min-width:{W}px">'
-            f'{svg}<div class="trend-html-hit-layer">{"".join(point_hit_buttons)}</div></div>'
+            f'{svg}</div>'
         )
 
         latest = norm[-1]
@@ -26179,10 +26173,10 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 #trend-period-1m:checked ~ .portfolio-trend-panels .panel-1m,#trend-period-3m:checked ~ .portfolio-trend-panels .panel-3m,#trend-period-6m:checked ~ .portfolio-trend-panels .panel-6m,#trend-period-ytd:checked ~ .portfolio-trend-panels .panel-ytd,#trend-period-all:checked ~ .portfolio-trend-panels .panel-all{display:block}
 .portfolio-trend-range{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:2px 3px 11px;color:#8292a0;font-size:15px;font-weight:750}.portfolio-trend-range b{color:#5f7487;font-size:18px;font-weight:950}
 .portfolio-trend-plot{position:relative;border:0;border-radius:0;background:transparent;box-shadow:none;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;touch-action:pan-x pan-y;scrollbar-width:thin}
-.trend-chart-inner{position:relative;flex:0 0 auto}.portfolio-trend-svg{display:block;width:100%;height:100%;touch-action:none}.trend-html-hit-layer{position:absolute;inset:0;pointer-events:none}.trend-html-hit{position:absolute;width:28px;height:28px;margin:0;padding:0;border:0;border-radius:50%;background:transparent;pointer-events:auto;cursor:pointer;touch-action:pan-x;-webkit-tap-highlight-color:transparent;z-index:5}
+.trend-chart-inner{position:relative;flex:0 0 auto}.portfolio-trend-svg{display:block;width:100%;height:100%;touch-action:pan-x pan-y}
 .portfolio-trend-svg .grid{stroke:#dfe8ee;stroke-width:1}.portfolio-trend-svg .zero{stroke:#8498a8;stroke-width:1.5;stroke-dasharray:5 5}
 .portfolio-trend-svg .tick{fill:#5d7285;font-size:23px;font-weight:900}.portfolio-trend-svg .date{fill:#5d7285;font-size:20px;font-weight:900}
-.portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 3px 3px rgba(139,105,52,.12))}
+.portfolio-trend-svg .port-line{fill:none;stroke:#8b6934;stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:none}
 .portfolio-trend-svg .market-line{fill:none;stroke:#9aa29f;stroke-width:3;stroke-dasharray:9 7;stroke-linecap:round;stroke-linejoin:round}
 .portfolio-trend-svg .port-point{stroke:#fff;stroke-width:2.4;vector-effect:non-scaling-stroke;paint-order:stroke fill}.portfolio-trend-svg .port-point-core{stroke:#fff;stroke-width:1.1;vector-effect:non-scaling-stroke}
 .portfolio-trend-svg .port-point.up.intensity-1{fill:#ef6a66}.portfolio-trend-svg .port-point.up.intensity-2{fill:#e53935}.portfolio-trend-svg .port-point.up.intensity-3{fill:#c91f1f}.portfolio-trend-svg .port-point.up.intensity-4{fill:#a90f0f}
@@ -26191,8 +26185,8 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 .portfolio-trend-svg .endpoint rect{stroke:#fff;stroke-width:2}.portfolio-trend-svg .endpoint text{font-size:17px;font-weight:950}.portfolio-trend-svg .port-end rect{fill:#8b6934}.portfolio-trend-svg .port-end text{fill:#fff}.portfolio-trend-svg .market-end rect{fill:#697572}.portfolio-trend-svg .market-end text{fill:#fff}
 .trend-hit-point{cursor:pointer;touch-action:manipulation}.trend-crosshair{display:none;stroke:#718797;stroke-width:2;stroke-dasharray:6 6;opacity:.62;pointer-events:none}.trend-selected-point{stroke-width:4!important}
 .trend-point-hidden-data,.trend-point-tooltip-data{display:none}
-.trend-modal-overlay{display:none;position:fixed;inset:0;z-index:9998;background:rgba(18,35,50,.16);backdrop-filter:blur(2px)}
-.trend-modal{display:none;position:fixed;z-index:9999;left:50%;top:50%;width:min(88vw,370px);transform:translate(-50%,-50%);box-sizing:border-box}.trend-modal.open{display:block}.trend-modal-lock{overflow:hidden!important}
+.trend-modal-overlay{display:none;position:fixed;inset:0;z-index:9998;background:rgba(18,35,50,.12);touch-action:none;will-change:opacity}
+.trend-modal{display:none;position:fixed;z-index:9999;left:50%;top:50%;width:min(88vw,370px);transform:translate3d(-50%,-50%,0);box-sizing:border-box;contain:layout paint}.trend-modal.open{display:block}
 .trend-modal-card{padding:20px 18px 18px;border:1px solid #d6e2ea;border-radius:22px;background:rgba(255,255,255,.985);box-shadow:0 24px 70px rgba(18,39,57,.25)}
 .trend-modal-head{display:flex;justify-content:space-between;align-items:center;gap:14px}.trend-modal-kicker{display:block;color:#8494a0;font-size:12px;font-weight:850;margin-bottom:2px}.trend-modal-head strong{display:block;color:#162b40;font-size:23px;font-weight:950}.trend-modal-close{border:0;border-radius:999px;padding:9px 13px;background:#eef3f6;color:#577087;font-size:14px;font-weight:900;cursor:pointer}
 .trend-modal-status{margin-top:14px;padding:11px 12px;border-radius:12px;text-align:center;font-size:15px;font-weight:950}.trend-modal-status.up{background:#ffdada;color:#c92323}.trend-modal-status.down{background:#d8f3e5;color:#117d4d}.trend-modal-status.neutral{background:#e1edf3;color:#4f728d}
@@ -26245,7 +26239,6 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
       if(overlay){overlay.style.display='none';overlay.setAttribute('aria-hidden','true');}
       svg.querySelectorAll('.port-point').forEach(function(c){c.classList.remove('trend-selected-point');});
       var guide=svg.querySelector('.trend-crosshair'); if(guide) guide.style.display='none';
-      document.body.classList.remove('trend-modal-lock');
     }
     function show(i){
       var row=null;
@@ -26263,21 +26256,41 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
       if(guide&&selected){guide.setAttribute('x1',selected.getAttribute('cx'));guide.setAttribute('x2',selected.getAttribute('cx'));guide.style.display='block';}
       modal.classList.add('open'); modal.setAttribute('aria-hidden','false');
       if(overlay){overlay.style.display='block';overlay.setAttribute('aria-hidden','false');}
-      document.body.classList.add('trend-modal-lock');
     }
 
-    panel.querySelectorAll('.trend-html-hit').forEach(function(hit){
-      hit.addEventListener('pointerdown',function(e){startX=e.clientX;startY=e.clientY;startTime=Date.now();moved=false;},{passive:true});
-      hit.addEventListener('pointermove',function(e){if(Math.abs(e.clientX-startX)>10 || Math.abs(e.clientY-startY)>10)moved=true;},{passive:true});
-      hit.addEventListener('pointerup',function(e){
-        var dx=Math.abs(e.clientX-startX),dy=Math.abs(e.clientY-startY),dt=Date.now()-startTime;
-        if(dx>10 || dy>10 || dt>650 || moved) return;
-        e.preventDefault();e.stopPropagation();show(Number(hit.dataset.index));
-      },{passive:false});
-      hit.addEventListener('click',function(e){
-        if(e.detail===0){e.preventDefault();e.stopPropagation();show(Number(hit.dataset.index));}
-      });
-    });
+    // 重要：不要在每個交易日上疊透明 button。
+    // 由整個 scroll 容器統一判斷「點」與「滑」，讓瀏覽器保留原生水平/垂直捲動。
+    var plot=panel.querySelector('.portfolio-trend-plot');
+    if(plot){
+      var downX=0,downY=0,downTime=0,dragged=false;
+      plot.addEventListener('pointerdown',function(e){
+        if(e.pointerType==='mouse' && e.button!==0) return;
+        downX=e.clientX; downY=e.clientY; downTime=Date.now(); dragged=false;
+      },{passive:true});
+      plot.addEventListener('pointermove',function(e){
+        if(Math.abs(e.clientX-downX)>8 || Math.abs(e.clientY-downY)>8) dragged=true;
+      },{passive:true});
+      plot.addEventListener('pointercancel',function(){dragged=true;});
+      plot.addEventListener('pointerup',function(e){
+        var dx=Math.abs(e.clientX-downX),dy=Math.abs(e.clientY-downY),dt=Date.now()-downTime;
+        if(dragged || dx>8 || dy>8 || dt>700) return;
+
+        var svgRect=svg.getBoundingClientRect();
+        var localX=e.clientX-svgRect.left;
+        if(localX<0 || localX>svgRect.width) return;
+
+        // 找最接近手指 X 座標的實際交易日。
+        var points=Array.prototype.slice.call(svg.querySelectorAll('.port-point'));
+        var nearest=-1,best=Infinity;
+        points.forEach(function(pt){
+          var cx=parseFloat(pt.getAttribute('cx'));
+          if(!Number.isFinite(cx)) return;
+          var d=Math.abs(cx-localX);
+          if(d<best){best=d;nearest=Number(pt.getAttribute('data-index'));}
+        });
+        if(nearest>=0) show(nearest);
+      },{passive:true});
+    }
     var closeBtn=modal&&modal.querySelector('.trend-modal-close');
     if(closeBtn) closeBtn.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();close();});
     if(overlay) overlay.addEventListener('click',close);
