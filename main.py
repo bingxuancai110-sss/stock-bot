@@ -5767,11 +5767,19 @@ def enrich_position_change_logs(logs, current_positions, price_map, total_value)
 
 
 def _build_daily_pretrade_exposure(holdings, price_map, today_logs, inst_data=None):
-    """建立首頁「今日貢獻」的日初持股曝險，僅在當日有正式減碼日誌時套用。
+    """建立首頁「今日貢獻」的實際日內曝險。
 
-    操作日誌沒有成交時點與逐筆分時市值，故這是日報閱讀用的日初曝險基準：
-    以當日全部加減碼反推日初股數，再用可驗證的前一收盤價做權重分母。這不會
-    寫回資料庫，也不會變更 TWR、已實現損益、排行榜或持股頁既有的計算口徑。
+    重要口徑：
+    1. 沒有今日交易的股票：沿用「前收 → 今日價」× 日初權重。
+    2. 今日有交易：依交易先後把價格區間切開。交易前的股數只算到成交價；
+       買進後新增的股數從成交價開始算；賣出後已不持有的股數不再吃後面的跌幅。
+    3. 因為目前操作日誌只有成交價、日期與 created_at，沒有逐筆分時行情，
+       日內區間以「前收／成交價／目前價」這些可驗證價格切段，不假裝知道成交
+       前後每一秒的真實價格路徑。
+
+    回傳除了既有欄位外，新增 contribution_pct（對整體組合的百分點貢獻）。
+    renderer 應優先使用它，不再把「目前／操作前權重 × 今日收盤漲跌」套在
+    已經賣掉的部位上。
     """
     calendar_today = taiwan_today()
     inst_data = inst_data or {}
@@ -5783,95 +5791,139 @@ def _build_daily_pretrade_exposure(holdings, price_map, today_logs, inst_data=No
         code: int(item.get("shares") or 0)
         for code, item in holding_by_code.items()
     }
-    daily_deltas, reduced_codes = {}, set()
+
+    logs_by_code = {}
     for raw in today_logs or []:
         if _position_change_date(raw.get("trade_date")) != calendar_today:
             continue
         code = str(raw.get("code") or "").strip()
-        if not code:
-            continue
         delta = int(raw.get("shares_delta") or 0)
-        daily_deltas[code] = daily_deltas.get(code, 0) + delta
-        if str(raw.get("action") or "").strip() == "reduce" and delta < 0:
-            reduced_codes.add(code)
+        if not code or delta == 0:
+            continue
+        # created_at 是目前唯一可用的日內順序；若舊資料沒有，就退回 id。
+        logs_by_code.setdefault(code, []).append(raw)
+    for code in logs_by_code:
+        logs_by_code[code].sort(key=lambda x: (
+            str(x.get("created_at") or ""), int(x.get("id") or 0)))
 
-    def price_for(code, holding=None):
+    all_codes = set(holding_by_code) | set(logs_by_code)
+    opening_shares = {}
+    for code in all_codes:
+        net_delta = sum(int(x.get("shares_delta") or 0) for x in logs_by_code.get(code, []))
+        opening_shares[code] = max(0, int(current_shares.get(code, 0)) - net_delta)
+
+    def quote_for(code):
+        holding = holding_by_code.get(code)
         return ((price_map or {}).get(code) or
                 ((holding or {}).get("price") if holding else None) or {})
 
-    # 沒有減碼時完全沿用原本「目前持股權重」的畫面與計算；當日新增不會倒灌
-    # 成為開盤前曝險，只有發生減碼才需要把整體日初配置還原。
-    if not reduced_codes:
-        return [{
-            "code": code, "holding": holding, "name": holding.get("name") or code,
-            "pct": (price_for(code, holding).get("pct")),
-            "daily_weight": float(holding.get("weight") or 0),
-            "current_weight": float(holding.get("weight") or 0),
-            "daily_opening_shares": int(holding.get("shares") or 0),
-            "current_shares": int(holding.get("shares") or 0),
-            "reduced_today": False, "fully_reduced_today": False,
-            "basis": "current", "basis_available": True,
-        } for code, holding in holding_by_code.items()]
-
-    all_codes = set(holding_by_code) | set(daily_deltas)
-    opening_shares = {
-        code: max(0, int(current_shares.get(code, 0)) - int(daily_deltas.get(code, 0)))
-        for code in all_codes
-    }
-    active_codes = {code for code in all_codes if opening_shares.get(code, 0) > 0}
-    prior_values = {}
-    for code in active_codes:
-        holding = holding_by_code.get(code)
-        quote = price_for(code, holding)
+    def prior_close_for(code):
+        q = quote_for(code)
         try:
-            close, pct = float(quote.get("close")), float(quote.get("pct"))
-            prior_close = close / (1 + pct / 100)
+            close = float(q.get("close"))
+            pct = float(q.get("pct"))
+            if abs(1 + pct / 100) < 1e-12:
+                return None
+            value = close / (1 + pct / 100)
+            return value if value > 0 else None
         except (TypeError, ValueError, ZeroDivisionError):
-            prior_close = None
-        if prior_close is None or prior_close <= 0:
-            # 如果缺任一日初部位的可驗證今日行情，不能把不完整分母包裝成精確
-            # 操作前權重；安全退回原本目前權重，並在首頁明示資料不足。
-            return [{
-                "code": item_code, "holding": item_holding,
-                "name": item_holding.get("name") or item_code,
-                "pct": price_for(item_code, item_holding).get("pct"),
-                "daily_weight": float(item_holding.get("weight") or 0),
-                "current_weight": float(item_holding.get("weight") or 0),
-                "daily_opening_shares": int(item_holding.get("shares") or 0),
-                "current_shares": int(item_holding.get("shares") or 0),
-                "reduced_today": item_code in reduced_codes,
-                "fully_reduced_today": False,
-                "basis": "current_fallback", "basis_available": False,
-            } for item_code, item_holding in holding_by_code.items()]
-        prior_values[code] = prior_close * opening_shares[code]
-    opening_total_value = sum(prior_values.values())
-    if opening_total_value <= 0:
-        return []
+            return None
+
+    # 日初組合市值：只用日初仍存在的部位；今天新買的部位不進入分母。
+    opening_values = {}
+    for code, shares in opening_shares.items():
+        if shares <= 0:
+            continue
+        prev = prior_close_for(code)
+        if prev is not None:
+            opening_values[code] = prev * shares
+    opening_total_value = sum(opening_values.values())
 
     rows = []
-    for code in sorted(active_codes):
+    for code in sorted(all_codes):
         holding = holding_by_code.get(code)
-        quote = price_for(code, holding)
+        q = quote_for(code)
+        pct = q.get("pct")
+        try:
+            pct_num = float(pct) if pct is not None else None
+        except (TypeError, ValueError):
+            pct_num = None
+        current = int(current_shares.get(code, 0))
+        opening = int(opening_shares.get(code, 0))
+        logs = logs_by_code.get(code, [])
+        prev = prior_close_for(code)
+        try:
+            current_price = float(q.get("close"))
+        except (TypeError, ValueError):
+            current_price = None
+
+        contribution_value = None
+        basis = "current"
+        basis_available = True
+        if opening_total_value > 0 and prev is not None and current_price is not None:
+            if not logs:
+                contribution_value = opening * (current_price - prev)
+                basis = "current"
+            else:
+                # 以交易成交價作為日內切點。若某筆沒有成交價，無法安全切段，
+                # 改用日初曝險並標記 fallback，避免製造精確假象。
+                if any(x.get("trade_price") is None for x in logs):
+                    contribution_value = opening * (current_price - prev)
+                    basis = "current_fallback"
+                    basis_available = False
+                else:
+                    held = opening
+                    ref_price = prev
+                    contribution_value = 0.0
+                    for log in logs:
+                        trade_price = float(log.get("trade_price"))
+                        # 交易前持有的股數，承擔 ref_price → 成交價。
+                        contribution_value += held * (trade_price - ref_price)
+                        delta = int(log.get("shares_delta") or 0)
+                        held = max(0, held + delta)
+                        ref_price = trade_price
+                    # 最後一段只由交易後仍持有的股數承擔。
+                    contribution_value += held * (current_price - ref_price)
+                    basis = "intraday_trade_segments"
+        else:
+            basis_available = False
+            basis = "current_fallback"
+
+        contribution_pct = (contribution_value / opening_total_value * 100
+                            if contribution_value is not None and opening_total_value > 0
+                            else None)
+        current_weight = (
+            float(q.get("close")) * current / opening_total_value * 100
+            if current_price is not None and opening_total_value > 0 else
+            float(holding.get("weight") or 0) if holding else 0.0)
+        daily_weight = (
+            opening_values.get(code, 0.0) / opening_total_value * 100
+            if opening_total_value > 0 else float(holding.get("weight") or 0) if holding else 0.0)
+
         if holding is None:
-            # 全數賣出仍是當日開始時的曝險，應保留在「今日貢獻」；但目前權重必為 0。
             holding = {
                 "code": code,
-                "name": stock_display_name(code, inst_data, quote.get("name")),
-                "weight": 0.0, "shares": 0, "price": quote,
+                "name": stock_display_name(code, inst_data, q.get("name")),
+                "weight": 0.0, "shares": current, "price": q,
             }
-        current = int(current_shares.get(code, 0))
-        rows.append({
+
+        reduced_today = any(int(x.get("shares_delta") or 0) < 0 for x in logs)
+        fully_reduced_today = reduced_today and current == 0
+        item = {
             "code": code, "holding": holding,
-            "name": holding.get("name") or stock_display_name(code, inst_data, quote.get("name")),
-            "pct": quote.get("pct"),
-            "daily_weight": prior_values[code] / opening_total_value * 100,
-            "current_weight": float(holding.get("weight") or 0),
-            "daily_opening_shares": int(opening_shares[code]),
+            "name": holding.get("name") or stock_display_name(code, inst_data, q.get("name")),
+            "pct": pct_num,
+            "daily_weight": daily_weight,
+            "current_weight": current_weight,
+            "daily_opening_shares": opening,
             "current_shares": current,
-            "reduced_today": code in reduced_codes,
-            "fully_reduced_today": code in reduced_codes and current == 0,
-            "basis": "pretrade", "basis_available": True,
-        })
+            "reduced_today": reduced_today,
+            "fully_reduced_today": fully_reduced_today,
+            "basis": basis,
+            "basis_available": basis_available,
+            "contribution_pct": contribution_pct,
+        }
+        rows.append(item)
     return rows
 
 
@@ -6697,18 +6749,23 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
             item = merged[code]
             item["_merged_logs"].append(dict(log))
             item["shares_delta"] = int(item.get("shares_delta") or 0) + int(log.get("shares_delta") or 0)
-            # 合併後的「操作前」一定取所有原始操作中最早的 before；
-            # 「操作後」取最後一筆的 after。不能用 after - 累計 delta，
-            # 否則跨多筆操作時會把股數推錯。
-            raw_befores = [int(x.get("shares_before") or 0) for x in item["_merged_logs"]]
-            raw_afters = [int(x.get("shares_after") or 0) for x in item["_merged_logs"]]
+            # SQL 讀回的 logs 是「最新在前」，不能直接用第一筆 before／最後一筆 after。
+            # 先依實際操作順序（created_at，再 id）排序，再取最早 before 與最後 after，
+            # 否則像「-10 股」很容易被畫成「3 → 8 股」這種數學上不可能的結果。
+            item["_merged_logs"].sort(key=lambda x: (
+                str(x.get("created_at") or ""), int(x.get("id") or 0)))
+            ordered = item["_merged_logs"]
+            raw_befores = [int(x.get("shares_before") or 0) for x in ordered]
+            raw_afters = [int(x.get("shares_after") or 0) for x in ordered]
             item["shares_before"] = raw_befores[0] if raw_befores else 0
             item["shares_after"] = raw_afters[-1] if raw_afters else int(item.get("shares_after") or 0)
             before = int(item.get("shares_before") or 0)
             delta = int(item.get("shares_delta") or 0)
             item["change_pct"] = (delta / before * 100) if before > 0 else None
-            if log.get("trade_price") is not None:
-                item["trade_price"] = log.get("trade_price")
+            # 顯示成交價以最後一筆操作為準，與「操作後」一致。
+            last_price = ordered[-1].get("trade_price") if ordered else None
+            if last_price is not None:
+                item["trade_price"] = last_price
             item["_merged_count"] = int(item.get("_merged_count") or 1) + 1
         return [merged[c] for c in order]
     for day in sorted(grouped, key=lambda value: value or date.min, reverse=True):
@@ -29688,7 +29745,21 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         contribution_holdings.append(contribution_holding)
     holding_changes = [(h, holding_day_pct(h)) for h in contribution_holdings]
     valid_changes = [(h, pct) for h, pct in holding_changes if pct is not None]
-    portfolio_pct = (sum(h["weight"] * pct for h, pct in valid_changes) / 100
+
+    def contribution_value(h, pct):
+        """今日對整體組合的百分點貢獻；優先使用交易切段後的精確口徑。"""
+        value = h.get("contribution_pct")
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                pass
+        try:
+            return float(h.get("weight") or 0) * float(pct or 0) / 100
+        except (TypeError, ValueError):
+            return 0.0
+
+    portfolio_pct = (sum(contribution_value(h, pct) for h, pct in valid_changes)
                      if valid_changes else None)
     relative = portfolio_pct - market_pct if portfolio_pct is not None and market_pct is not None else None
 
@@ -29726,10 +29797,10 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     # 「最大貢獻／最大拖累」看的是對組合的實際影響，不是單看個股漲跌幅。
     # 例如權重 40% 下跌 2%，通常比權重 1% 下跌 10% 更拖累整體組合。
     gain_entry = max(
-        ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct > 0),
+        ((h, pct, contribution_value(h, pct)) for h, pct in valid_changes if contribution_value(h, pct) > 0),
         key=lambda item: item[2], default=None)
     loss_entry = min(
-        ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct < 0),
+        ((h, pct, contribution_value(h, pct)) for h, pct in valid_changes if contribution_value(h, pct) < 0),
         key=lambda item: item[2], default=None)
     biggest_gain = gain_entry[0] if gain_entry else None
     biggest_gain_pct = gain_entry[1] if gain_entry else None
@@ -29740,10 +29811,10 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     # 首頁貢獻明細固定以「前 5 名」呈現；不虛構不存在的正貢獻。
     # 正向包含 0.00% 的中性持股，讓接近五檔時仍保持穩定版型；負向同理只取真正拖累。
     positive_entries = sorted(
-        ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct > 0),
+        ((h, pct, contribution_value(h, pct)) for h, pct in valid_changes if contribution_value(h, pct) > 0),
         key=lambda item: item[2], reverse=True)[:5]
     negative_entries = sorted(
-        ((h, pct, h["weight"] * pct / 100) for h, pct in valid_changes if pct < 0),
+        ((h, pct, contribution_value(h, pct)) for h, pct in valid_changes if contribution_value(h, pct) < 0),
         key=lambda item: item[2])[:5]
     reduced_contribution_holdings = [h for h in contribution_holdings if h.get("reduced_today")]
     has_pretrade_basis = any(h.get("contribution_basis") == "pretrade"
@@ -29957,18 +30028,25 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         return f'''<div class="rank-mini"><span>{s["label"]}</span><b>#{s["rank"]} {movement}</b><small>{previous_label} #{s["previous"]}{streak}</small></div>'''
 
     def contribution_basis_text(holding, compact=False):
-        if not holding.get("reduced_today"):
+        basis = holding.get("contribution_basis")
+        if basis == "intraday_trade_segments":
+            if holding.get("fully_reduced_today"):
+                return ("今日已全數賣出，只計算賣出前的實際跌幅"
+                        if compact else
+                        "今日貢獻按成交價切段計算；全數賣出後的股價漲跌不再算入組合")
+            return ("依今日成交價切段計算" if compact else
+                    "今日貢獻依交易前後實際持股與成交價切段計算")
+        if not holding.get("reduced_today") and not holding.get("contribution_basis", "").endswith("fallback"):
             return f"佔你的組合 {holding['weight']:.1f}%"
         current_text = ("目前已刪除（0.0%）" if holding.get("fully_reduced_today")
                         else f"目前權重 {holding.get('current_weight', 0):.1f}%")
-        if holding.get("contribution_basis") == "pretrade":
-            return (f"今日基準：操作前 {holding['weight']:.1f}%／{current_text}"
+        if holding.get("contribution_basis") == "current_fallback":
+            return (f"今日交易價格資料不足，暫用目前權重 {holding.get('current_weight', 0):.1f}%"
                     if compact else
-                    f"今日貢獻以操作前 {holding['daily_opening_shares']:,} 股、"
-                    f"{holding['weight']:.1f}% 為基準；{current_text}")
-        return (f"今日基準資料不足，暫用目前權重 {holding.get('current_weight', 0):.1f}%"
+                    f"今日交易價格資料不足，暫以目前權重 {holding.get('current_weight', 0):.1f}% 顯示")
+        return (f"操作前 {holding.get('daily_opening_shares', 0):,} 股／{holding.get('weight', 0):.1f}% → {current_text}"
                 if compact else
-                f"今日操作前基準資料不足，暫以目前權重 {holding.get('current_weight', 0):.1f}% 顯示")
+                f"操作前 {holding.get('daily_opening_shares', 0):,} 股、{holding.get('weight', 0):.1f}%；{current_text}")
 
     def realized_today_text(holding):
         if not holding.get("reduced_today"):
@@ -30144,14 +30222,16 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     positive_display_count = min(positive_count, 5)
     negative_display_count = min(negative_count, 5)
     basis_notice = ""
-    if has_pretrade_basis:
+    has_intraday_basis = any(h.get("contribution_basis") == "intraday_trade_segments"
+                             for h in contribution_holdings if h.get("reduced_today"))
+    if has_intraday_basis:
         realized_summary = (f"・今日正式已實現損益 {realized_today_total:+,.0f} 元"
-                            if realized_by_code else "・今日已實現損益僅列正式賣出紀錄")
-        basis_notice = (f'<div class="contribution-basis-notice"><b>今日有 {len(reduced_contribution_holdings)} 檔減碼：</b>'
-                        f'貢獻先按操作前／開盤曝險計算，明日才改用目前權重{html.escape(realized_summary)}</div>')
+                            if realized_by_code else "")
+        basis_notice = (f'<div class="contribution-basis-notice"><b>今日有 {len(reduced_contribution_holdings)} 檔持股異動：</b>'
+                        f'貢獻依成交價切段計算；賣出後的漲跌不再算進你的組合{html.escape(realized_summary)}</div>')
     elif basis_fallback:
-        basis_notice = ('<div class="contribution-basis-notice fallback"><b>今日有減碼，但操作前基準資料不足：</b>'
-                        '目前暫以減碼後權重顯示，未將不完整資料包裝為精確日內報酬。</div>')
+        basis_notice = ('<div class="contribution-basis-notice fallback"><b>今日有交易，但成交價格資料不足：</b>'
+                        '相關標的暫用可驗證的目前權重計算，避免製造假的日內精度。</div>')
     # +/- 貢獻：主卡 + 正負各 5 檔明細。只改這一區，其餘首頁維持原樣。
     positive_rows_html = contribution_detail_rows(positive_entries, "up")
     negative_rows_html = contribution_detail_rows(negative_entries, "down")
