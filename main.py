@@ -6090,7 +6090,9 @@ def _build_home_intraday_payload(uid):
                 return f"佔你的組合 {float(row.get('daily_weight') or 0):.1f}%"
             current_text = ("目前已刪除（0.0%）" if row.get("fully_reduced_today")
                             else f"目前權重 {current_weight:.1f}%")
-            if row.get("basis") == "pretrade":
+            if row.get("basis") == "intraday_trade_segments":
+                return f"今日交易切段：操作前 {float(row.get('daily_weight') or 0):.1f}%／{current_text}"
+            if row.get("basis") == "current":
                 return f"今日基準：操作前 {float(row.get('daily_weight') or 0):.1f}%／{current_text}"
             return f"今日基準資料不足，暫用目前權重 {current_weight:.1f}%"
 
@@ -6102,7 +6104,13 @@ def _build_home_intraday_payload(uid):
                 pct = float(quote_data.get("pct"))
             except (TypeError, ValueError):
                 continue
-            contribution = float(row.get("daily_weight") or 0) * pct / 100
+            # V232：若今天有買／賣，必須使用實際交易切段後的
+            # contribution_pct；不能再用「目前／操作前權重 × 今日整日漲跌」，
+            # 否則賣出後的跌幅仍會被算進已賣部位。
+            contribution = row.get("contribution_pct")
+            if contribution is None:
+                contribution = float(row.get("daily_weight") or 0) * pct / 100
+            contribution = float(contribution)
             code = str(row.get("code") or "").strip()
             realized_value = realized_by_code.get(code)
             contribution_rows.append({
@@ -6741,8 +6749,9 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
                 continue
             if code not in merged:
                 item = dict(log)
-                item["_merged_count"] = 1
-                item["_merged_logs"] = [dict(log)]
+                existing_logs = list(log.get("_merged_logs") or [])
+                item["_merged_logs"] = existing_logs if existing_logs else [dict(log)]
+                item["_merged_count"] = int(log.get("_merged_count") or len(item["_merged_logs"]) or 1)
                 merged[code] = item
                 order.append(code)
                 continue
@@ -6771,13 +6780,61 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
     for day in sorted(grouped, key=lambda value: value or date.min, reverse=True):
         day_logs = grouped[day]
         day_text = day.strftime("%Y/%m/%d") if day else "日期待確認"
-        # _filter_voided_same_day_logs() 已經把「刪除」以及同日完整撤回的
-        # add/reduce 整組移除，因此這裡只呈現真正存在於操作日報的紀錄。
+        # 同日同檔先跨「新增／加碼／減碼」全部合併，再決定最後分類。
+        # 這樣若今天是 11→1 再 1→0，首頁只顯示「刪除 11 股、11→0」，
+        # 不會先列一筆減碼、再列一筆刪除，避免使用者誤以為發生兩種不同事件。
+        day_by_code = {}
+        code_order = []
+        for raw_log in day_logs:
+            code = str(raw_log.get("code") or "").strip()
+            if not code:
+                continue
+            if code not in day_by_code:
+                item = dict(raw_log)
+                item["_merged_logs"] = [dict(raw_log)]
+                item["_merged_count"] = 1
+                day_by_code[code] = item
+                code_order.append(code)
+            else:
+                item = day_by_code[code]
+                item["_merged_logs"].append(dict(raw_log))
+                item["_merged_count"] = int(item.get("_merged_count") or 1) + 1
+
+        merged_day_logs = []
+        for code in code_order:
+            item = day_by_code[code]
+            ordered = sorted(item["_merged_logs"], key=lambda x: (
+                str(x.get("created_at") or ""), int(x.get("id") or 0)))
+            item["_merged_logs"] = ordered
+            item["shares_before"] = int(ordered[0].get("shares_before") or 0)
+            item["shares_after"] = int(ordered[-1].get("shares_after") or 0)
+            item["shares_delta"] = sum(int(x.get("shares_delta") or 0) for x in ordered)
+            before = int(item["shares_before"])
+            delta = int(item["shares_delta"])
+            item["change_pct"] = (delta / before * 100) if before > 0 else None
+            last_price = ordered[-1].get("trade_price")
+            if last_price is not None:
+                item["trade_price"] = last_price
+            # 最終歸零就是「刪除」；其餘才依淨變化判斷新增／加碼／減碼。
+            if item["shares_after"] == 0 and before > 0 and delta < 0:
+                item["action"] = "reduce"
+                item["_journal_force_delete"] = True
+            elif delta > 0:
+                item["action"] = "add"
+                item["_journal_force_delete"] = False
+            else:
+                item["action"] = "reduce"
+                item["_journal_force_delete"] = False
+            merged_day_logs.append(item)
+
         row_parts = []
         attached_pnl_keys = set()
         status_groups = {label: [] for label, _cls in journal_group_order}
-        for log in day_logs:
-            status_label, status_cls = _position_change_journal_status(log)
+        for log in merged_day_logs:
+            if log.get("_journal_force_delete"):
+                status_label, status_cls = "刪除", "delete"
+            else:
+                status_label, status_cls = _position_change_journal_status(log)
             status_groups[status_label].append((log, status_label, status_cls))
         for group_label, group_cls in journal_group_order:
             logs_in_group = status_groups[group_label]
@@ -6795,7 +6852,8 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
                 status_label, status_cls = group_label, group_cls
                 code = str(log.get("code") or "")
                 name = html.escape(str(stock_display_name(code, inst_data)))
-                action = "加碼" if log.get("action") == "add" else "減碼"
+                action = ("加碼" if log.get("action") == "add" else
+                           ("刪除" if status_label == "刪除" else "減碼"))
                 delta = int(log.get("shares_delta") or 0)
                 before = int(log.get("shares_before") or 0)
                 delta_text = f"{delta:+,} 股"
@@ -14437,7 +14495,21 @@ def fetch_taiex_intraday(force_refresh=False, now=None):
         return data
     except Exception as exc:
         print(f"⚠️ 抓取 TWSE MIS 即時 TAIEX 失敗：{exc}")
+        # 盤中偶發性網路／TWSE MIS timeout 時，不要把剛剛成功取得的
+        # 「今天」大盤直接清成 None，否則首頁會突然從有數字變成「資料尚未更新」。
+        # 保留同一交易日最後一筆有效值，並標記 stale，讓 UI 可以明確顯示
+        # 「最近有效」而不是把舊日資料冒充今天。
         with _realtime_cache_lock:
+            cached_day = _taiex_intraday_cache.get("day")
+            cached_data = _taiex_intraday_cache.get("data")
+            if cached_day == today and isinstance(cached_data, dict):
+                sticky = dict(cached_data)
+                sticky["stale"] = True
+                sticky["stale_reason"] = str(exc)
+                _taiex_intraday_cache.update({
+                    "day": today, "at": epoch_now, "data": sticky
+                })
+                return sticky
             _taiex_intraday_cache.update({"day": today, "at": epoch_now, "data": None})
         return None
 
@@ -29665,9 +29737,14 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         # 盤中只認 TWSE MIS 當日、帶時間且未過時的 t00 指數；失敗絕不回退日K。
         if intraday_taiex and intraday_taiex.get("pct") is not None:
             market_pct = float(intraday_taiex["pct"])
-            market_status_text = f"即時 TAIEX・更新 {intraday_taiex.get('updated_at')}"
-            home_sync_title = "今日資料已整合完成"
-            home_sync_detail = "持股與大盤均採盤中即時行情；詳細貢獻明細可往下展開查看。"
+            if intraday_taiex.get("stale"):
+                market_status_text = f"TAIEX 最近有效・{intraday_taiex.get('updated_at')}"
+                home_sync_title = "今日資料已整合完成"
+                home_sync_detail = "大盤剛才的即時連線暫時失敗，先沿用今天最後一筆有效行情；連線恢復後會自動更新。"
+            else:
+                market_status_text = f"即時 TAIEX・更新 {intraday_taiex.get('updated_at')}"
+                home_sync_title = "今日資料已整合完成"
+                home_sync_detail = "持股與大盤均採盤中即時行情；詳細貢獻明細可往下展開查看。"
         else:
             market_status_text = "即時 TAIEX 暫時無法取得，未使用日K快照"
             home_sync_title = "即時大盤暫時無法取得"
