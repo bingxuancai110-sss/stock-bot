@@ -20101,7 +20101,7 @@ a,button{transition:transform .12s ease,opacity .12s ease,box-shadow .16s ease,b
 a:active,button:active{transform:scale(.975);opacity:.82}.tap-loading{opacity:.68;cursor:wait}.app-ux-toast{position:fixed;z-index:10020;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:calc(100vw - 32px);padding:10px 14px;border:1px solid #c8d8e5;border-radius:999px;background:rgba(255,255,255,.98);box-shadow:0 7px 22px rgba(29,41,57,.16);font-size:13px;font-weight:800;color:#274c77;pointer-events:none;animation:toast-in .18s ease-out}.app-ux-toast.error{color:#a33b2e;border-color:#e5c5bf;background:#fff8f6}
 .app-press{transform:scale(.965)!important;filter:brightness(.97);box-shadow:0 0 0 3px rgba(63,111,145,.12)!important}
 .app-press::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px rgba(63,111,145,.16);pointer-events:none}
-.app-nav-loading{position:fixed;z-index:10030;top:0;left:0;height:3px;width:0;background:#3f6f91;box-shadow:0 1px 5px rgba(63,111,145,.25);transition:width .28s ease,opacity .2s ease;pointer-events:none}
+.app-nav-loading{position:fixed;z-index:2147483001;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,#245B82,#4C91C5,#B99A67);box-shadow:0 1px 8px rgba(36,91,130,.30);transition:width .22s ease,opacity .2s ease;pointer-events:none;overflow:hidden}.app-nav-loading.show{width:38%}.app-nav-loading.mid{width:76%}.app-nav-loading.done{width:100%;opacity:0}.app-nav-loading::after{content:"";position:absolute;top:0;bottom:0;width:22%;left:-25%;background:rgba(255,255,255,.72);animation:app-nav-shimmer 1.05s ease-in-out infinite}@keyframes app-nav-shimmer{to{left:110%}}#app-page-content.app-page-enter{animation:app-page-enter .34s cubic-bezier(.22,.68,0,1) both;will-change:opacity,transform}.market-page-enter{animation:app-page-enter .34s cubic-bezier(.22,.68,0,1) both;will-change:opacity,transform}@keyframes app-page-enter{from{opacity:.0;transform:translate3d(0,9px,0)}to{opacity:1;transform:translate3d(0,0,0)}}@media(prefers-reduced-motion:reduce){.app-nav-loading::after{animation:none}#app-page-content.app-page-enter,.market-page-enter{animation:none!important;will-change:auto}}
 .app-nav-loading.show{width:42%}.app-nav-loading.mid{width:72%}.app-nav-loading.done{width:100%;opacity:0}
 .app-load-card{display:flex;align-items:flex-start;gap:10px;margin:0 0 12px;padding:13px 14px;border:1px solid #c8d8e5;border-radius:14px;background:rgba(248,252,255,.98);box-shadow:0 6px 20px rgba(29,41,57,.10);animation:load-card-in .16s ease-out}
 /* 載入提示固定在視窗中，使用者滑到頁面任何位置都看得到；實際 top 由 JS 依固定標題列高度定位。 */
@@ -21972,11 +21972,67 @@ def render_page(title, body, nav_active=None, user_name=None):
     routeLoader.id = 'spa-market-loader';
     routeLoader.className = 'loading market-loading-screen';
     var routeTitle = (appTitles[target.pathname] || '市場資料');
-    routeLoader.innerHTML = '<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div><div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="market-loader-title">正在載入'+routeTitle+'</div><div class="market-loader-status">正在準備頁面資料…</div><div class="market-loader-progress-row"><div class="market-loader-bar"><i></i></div><span>0%</span></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>市場資料</span></div><div class="app-load-step pending"><span>○</span><span>法人與估值</span></div><div class="app-load-step pending"><span>○</span><span>你的持股行情</span></div><div class="app-load-step pending"><span>○</span><span>今日市場判讀</span></div></div><div class="market-loader-foot">資料準備完成後自動進入頁面</div></div>';
+    routeLoader.innerHTML = '<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div><div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="market-loader-title">正在載入'+routeTitle+'</div><div class="market-loader-status" id="spa-market-loader-status">正在準備頁面資料…</div><div class="market-loader-progress-row"><div class="market-loader-bar"><i style="width:8%"></i></div><span id="spa-market-loader-percent" aria-live="polite">8%</span></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>資料連線</span></div><div class="app-load-step pending"><span>○</span><span>整理頁面資料</span></div><div class="app-load-step pending"><span>○</span><span>初始化互動</span></div><div class="app-load-step pending"><span>○</span><span>即將顯示頁面</span></div></div><div class="market-loader-foot">進度為估算・資料完成後自動進入頁面</div></div>';
     document.body.appendChild(routeLoader);
+    // V243：轉場進度以「等待時間估算」平滑前進，成功回應才到 100%；不冒充後端實際百分比。
+    // 先從 8% 起步，避免舊版 SPA loader 永遠顯示硬編碼的 0%。
+    var routeLoadStartedAt = Date.now();
+    var routeLoadDone = false;
+    var routeLoadTimedOut = false;
+    var routeLoadBar = routeLoader.querySelector('.market-loader-bar i');
+    var routeLoadPercent = routeLoader.querySelector('#spa-market-loader-percent');
+    var routeLoadStatus = routeLoader.querySelector('#spa-market-loader-status');
+    var routeLoadSteps = routeLoader.querySelectorAll('.market-loader-steps .app-load-step');
+    var routeLoadMessages = ['正在建立頁面連線…', '正在整理頁面內容…', '正在初始化互動元件…', '即將顯示' + routeTitle + '…'];
+    function updateRouteLoadProgress() {{
+      if (routeLoadDone) return;
+      var seconds = (Date.now() - routeLoadStartedAt) / 1000;
+      var percent = Math.min(92, Math.round(8 + 84 * (1 - Math.exp(-seconds / 5))));
+      if (routeLoadBar) routeLoadBar.style.width = percent + '%';
+      if (routeLoadPercent) routeLoadPercent.textContent = seconds >= 45 ? '…' : percent + '%';
+      var messageIndex = seconds < 1.5 ? 0 : seconds < 4 ? 1 : seconds < 8 ? 2 : 3;
+      if (routeLoadStatus) {{
+        if (seconds >= 45) routeLoadStatus.textContent = '頁面回應較慢，仍在等待伺服器完成…';
+        else if (seconds >= 20) routeLoadStatus.textContent = '資料量較大，正在繼續準備頁面…';
+        else routeLoadStatus.textContent = routeLoadMessages[messageIndex];
+      }}
+      var activeIndex = seconds < 1.5 ? 0 : seconds < 4 ? 1 : seconds < 8 ? 2 : 3;
+      routeLoadSteps.forEach(function(step, idx) {{
+        step.classList.remove('active', 'done', 'pending');
+        var icon = step.querySelector('span:first-child');
+        if (idx < activeIndex) {{ step.classList.add('done'); if (icon) icon.textContent = '✓'; }}
+        else if (idx === activeIndex) {{ step.classList.add('active'); if (icon) icon.textContent = '●'; }}
+        else {{ step.classList.add('pending'); if (icon) icon.textContent = '○'; }}
+      }});
+    }}
+    routeLoader._progressTimer = window.setInterval(updateRouteLoadProgress, 120);
+    routeLoader._stopProgress = function(success) {{
+      routeLoadDone = true;
+      if (routeLoader._progressTimer) window.clearInterval(routeLoader._progressTimer);
+      if (routeLoadBar) routeLoadBar.style.width = success ? '100%' : '92%';
+      if (routeLoadPercent) routeLoadPercent.textContent = success ? '100%' : '—';
+      if (routeLoadStatus) routeLoadStatus.textContent = success ? '載入完成，正在顯示' + routeTitle + '…' : '頁面載入未完成，正在顯示錯誤訊息…';
+      if (success) routeLoadSteps.forEach(function(step) {{
+        step.classList.remove('active', 'pending'); step.classList.add('done');
+        var icon = step.querySelector('span:first-child'); if (icon) icon.textContent = '✓';
+      }});
+    }};
+    updateRouteLoadProgress();
+    var routeLoadTimeoutId = null;
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
-    fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, appNavController ? {{signal:appNavController.signal}} : {{}}))
+    // Promise.race 作為沒有 AbortController 的 WebView fallback，確保逾時也會進入錯誤處理。
+    var routeFetchPromise = fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, appNavController ? {{signal:appNavController.signal}} : {{}}));
+    var routeTimeoutPromise = new Promise(function(resolve, reject) {{
+      routeLoadTimeoutId = window.setTimeout(function() {{
+        if (routeLoadDone) return;
+        routeLoadTimedOut = true;
+        if (routeLoadStatus) routeLoadStatus.textContent = '伺服器回應逾時，正在解除載入畫面…';
+        if (appNavController) {{ try {{ appNavController.abort(); }} catch (ignore) {{}} }}
+        reject(new Error('頁面載入逾時（90 秒），請重新整理後再試。'));
+      }}, 90000);
+    }});
+    Promise.race([routeFetchPromise, routeTimeoutPromise])
       .then(function(response) {{
         if (response.status === 401) {{ window.location.assign(target.pathname + target.search.replace(/([?&])fragment=1&?/, '$1').replace(/[?&]$/, '')); return null; }}
         if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -21993,7 +22049,20 @@ def render_page(title, body, nav_active=None, user_name=None):
             upgradePreviewFragment(target.pathname, target.search);
         }}
           if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
-        if (routeLoader) {{ routeLoader.classList.add('is-complete'); window.setTimeout(function() {{ if (routeLoader.parentNode) routeLoader.parentNode.removeChild(routeLoader); }}, 430); }}
+        if (routeLoader) {{
+          if (routeLoader._stopProgress) routeLoader._stopProgress(true);
+          routeLoader.classList.add('is-complete');
+          window.setTimeout(function() {{
+            if (routeLoader.parentNode) routeLoader.parentNode.removeChild(routeLoader);
+            // Loader 消失後才讓新頁面淡入上移，避免兩套動畫互相干擾。
+            if (appContent) {{
+              appContent.classList.remove('app-page-enter');
+              void appContent.offsetWidth;
+              appContent.classList.add('app-page-enter');
+              window.setTimeout(function() {{ appContent.classList.remove('app-page-enter'); }}, 380);
+            }}
+          }}, 430);
+        }}
         // 頁面內容已真正插入並完成 fragment scripts 後，才結束頂部導航動畫。
         // 避免「內容已經好了，但仍卡著『正在開啟持股／選股台』」。
         if (window.finishPageNavLoader) window.finishPageNavLoader();
@@ -22007,7 +22076,14 @@ def render_page(title, body, nav_active=None, user_name=None):
         window.scrollTo({{top:0, behavior: prefersReducedMotion() ? 'auto' : 'smooth'}});
       }})
       .catch(function(error) {{
-        if (error && error.name === 'AbortError') return;
+        if (error && error.name === 'AbortError' && !routeLoadTimedOut) {{
+          if (routeLoader && routeLoader._stopProgress) routeLoader._stopProgress(false);
+          if (routeLoader) {{ routeLoader.classList.add('is-complete'); window.setTimeout(function() {{ if (routeLoader.parentNode) routeLoader.parentNode.removeChild(routeLoader); }}, 250); }}
+          if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
+          return;
+        }}
+        if (routeLoadTimedOut) error = new Error('頁面載入逾時（90 秒），請重新整理後再試。');
+        if (routeLoader && routeLoader._stopProgress) routeLoader._stopProgress(false);
         if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
         if (routeLoader) {{ routeLoader.classList.add('is-complete'); window.setTimeout(function() {{ if (routeLoader.parentNode) routeLoader.parentNode.removeChild(routeLoader); }}, 430); }}
         if (window.finishPageNavLoader) window.finishPageNavLoader();
@@ -22030,6 +22106,7 @@ def render_page(title, body, nav_active=None, user_name=None):
         console.error(error);
       }})
       .finally(function() {{
+        window.clearTimeout(routeLoadTimeoutId);
         if (navSeq === appNavSeq) appNavBusy = false;
       }});
   }}
@@ -23390,13 +23467,13 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     market_loader = True
     loader_title = "正在載入今日市場" if title == "今日" else f"正在載入{title}"
     loader_status = "正在連接市場資料…" if title == "今日" else "正在準備頁面資料…"
-    loader_foot = "完整分析完成後自動進入首頁" if title == "今日" else "資料準備完成後自動進入頁面"
+    loader_foot = "進度為估算・完整分析完成後自動進入首頁" if title == "今日" else "進度為估算・資料準備完成後自動進入頁面"
     shell = f"""
 <div id="loading" class="loading{' market-loading-screen' if market_loader else ''}">
-  {('<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div><div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="market-loader-title">{loader_title}</div><div class="market-loader-status" id="market-loader-status">{loader_status}</div><div class="market-loader-progress-row"><div class="market-loader-bar"><i></i></div><span id="market-loader-percent">0%</span></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>市場資料</span></div><div class="app-load-step pending"><span>○</span><span>法人與估值</span></div><div class="app-load-step pending"><span>○</span><span>你的持股行情</span></div><div class="app-load-step pending"><span>○</span><span>今日市場判讀</span></div></div><div class="market-loader-foot">{loader_foot}</div></div>') if market_loader else ('<div class="load-stage"><span id="loadstage">正在準備…</span></div>' + render_quote_block() + '<div class="load-note">' + note + '</div>')}
+  {('<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div><div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="market-loader-title">{loader_title}</div><div class="market-loader-status" id="market-loader-status">{loader_status}</div><div class="market-loader-progress-row"><div class="market-loader-bar"><i style="width:8%"></i></div><span id="market-loader-percent" aria-live="polite">8%</span></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>市場資料</span></div><div class="app-load-step pending"><span>○</span><span>法人與估值</span></div><div class="app-load-step pending"><span>○</span><span>你的持股行情</span></div><div class="app-load-step pending"><span>○</span><span>今日市場判讀</span></div></div><div class="market-loader-foot">{loader_foot}</div></div>') if market_loader else ('<div class="load-stage"><span id="loadstage">正在準備…</span></div>' + render_quote_block() + '<div class="load-note">' + note + '</div>')}
 </div>
 <div id="content" class="loading-content" aria-live="polite" style="display:none"></div>
-<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.market-loading-screen{{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483000!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:#F7F3EA!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;color:#18283A!important}}.market-loader-inner{{width:min(88vw,390px);text-align:center;position:relative}}.market-loader-brand{{font-size:10px;letter-spacing:.24em;font-weight:900;color:#6E5228;margin-bottom:16px;opacity:.94}}.market-loader-brand span{{opacity:.45;font-weight:700}}.market-loader-visual{{height:138px;position:relative;margin:0 auto 20px;display:flex;align-items:center;justify-content:center}}.market-loader-grid{{position:absolute;inset:10px 18%;background:linear-gradient(rgba(53,107,145,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(53,107,145,.06) 1px,transparent 1px);background-size:18px 18px;mask-image:radial-gradient(circle,black 15%,transparent 72%);animation:market-grid-drift 5s linear infinite}}.market-loader-scan{{position:absolute;width:150px;height:2px;background:linear-gradient(90deg,transparent,rgba(185,154,103,.65),transparent);filter:blur(.2px);animation:market-scan 2.6s ease-in-out infinite}}.market-loader-glow{{position:absolute;width:150px;height:150px;border-radius:50%;background:radial-gradient(circle,rgba(53,107,145,.13),rgba(53,107,145,0) 68%);animation:market-glow 2.4s ease-in-out infinite}}.market-loader-orbit{{width:96px;height:96px;position:relative;display:grid;place-items:center;z-index:2}}.market-loader-ring{{position:absolute;inset:0;border:2.5px solid #D8E1E8;border-top-color:#356B91;border-right-color:#356B91;border-radius:50%;animation:market-spin 1.15s linear infinite;filter:drop-shadow(0 3px 8px rgba(53,107,145,.12))}}.market-loader-ring.ring-2{{inset:9px;border:1px dashed rgba(53,107,145,.22);border-left-color:#B99A67;animation:market-spin-reverse 2.4s linear infinite}}.market-loader-dot{{width:15px;height:15px;border-radius:50%;background:#356B91;box-shadow:0 0 0 0 rgba(53,107,145,.24);animation:market-pulse 1.55s ease-in-out infinite}}.market-loader-chart{{position:absolute;right:10%;bottom:1px;width:115px;height:58px;display:flex;align-items:flex-end;gap:5px;opacity:.72;transform:skewY(-7deg)}}.market-loader-chart i{{display:block;flex:1;border-radius:4px 4px 1px 1px;background:linear-gradient(to top,#356B91,rgba(53,107,145,.22));animation:market-bars 1.8s ease-in-out infinite}}.market-loader-chart i:nth-child(1){{height:22%}}.market-loader-chart i:nth-child(2){{height:42%;animation-delay:.08s}}.market-loader-chart i:nth-child(3){{height:34%;animation-delay:.16s}}.market-loader-chart i:nth-child(4){{height:58%;animation-delay:.24s}}.market-loader-chart i:nth-child(5){{height:48%;animation-delay:.32s}}.market-loader-chart i:nth-child(6){{height:72%;animation-delay:.40s}}.market-loader-chart i:nth-child(7){{height:63%;animation-delay:.48s}}.market-loader-chart i:nth-child(8){{height:88%;animation-delay:.56s}}.market-loader-title{{font-size:24px;font-weight:850;letter-spacing:.03em;color:#18283A}}.market-loader-status{{margin-top:9px;font-size:13px;color:#718092;min-height:22px}}.market-loader-progress-row{{display:flex;align-items:center;gap:10px;margin:18px auto 20px;width:100%}}.market-loader-progress-row>span{{font-size:11px;font-weight:800;letter-spacing:.08em;color:#356B91;min-width:32px;text-align:right}}.market-loader-bar{{height:6px;background:#E1E6EA;border-radius:99px;overflow:hidden;margin:20px auto 20px;width:100%;box-shadow:inset 0 1px 2px rgba(0,0,0,.04)}}.market-loader-bar i{{display:block;height:100%;width:0;background:linear-gradient(90deg,#356B91,#B99A67,#356B91);background-size:200% 100%;border-radius:99px;animation:market-progress 2.5s ease-in-out infinite,market-shimmer 1.5s linear infinite;will-change:transform}}.market-loader-steps{{display:grid;gap:9px;text-align:left;width:82%;margin:0 auto}}.market-loader-steps .app-load-step{{display:flex;align-items:center;gap:9px;font-size:12px;color:#9AA3AC;transition:all .3s ease}}.market-loader-steps .app-load-step span:first-child{{width:15px;text-align:center}}.market-loader-steps .app-load-step.active{{color:#356B91;font-weight:800;transform:translateX(3px)}}.market-loader-steps .app-load-step.done{{color:#5D7765;font-weight:700}}.market-loader-foot{{margin-top:18px;font-size:10px;color:#A3A9AE;letter-spacing:.04em}}@keyframes market-spin{{to{{transform:rotate(360deg)}}}}@keyframes market-grid-drift{{to{{background-position:0 18px,18px 0}}}}@keyframes market-scan{{0%,100%{{transform:translateY(-45px);opacity:0}}50%{{transform:translateY(45px);opacity:1}}}}@keyframes market-spin-reverse{{to{{transform:rotate(-360deg)}}}}@keyframes market-pulse{{0%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,.25)}}70%{{transform:scale(1);box-shadow:0 0 0 16px rgba(53,107,145,0)}}100%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,0)}}}}@keyframes market-glow{{0%,100%{{transform:scale(.88);opacity:.65}}50%{{transform:scale(1.08);opacity:1}}}}@keyframes market-bars{{0%,100%{{transform:scaleY(.72);transform-origin:bottom}}50%{{transform:scaleY(1);transform-origin:bottom}}}}@keyframes market-progress{{0%{{transform:translateX(-140%)}}50%{{transform:translateX(170%)}}100%{{transform:translateX(420%)}}}}@keyframes market-shimmer{{to{{background-position:200% 0}}}}@media(max-width:420px){{.market-loader-title{{font-size:22px}}.market-loader-steps{{width:90%}}.market-loader-chart{{right:2%;width:100px}}}}.market-loading-screen.is-complete{{opacity:0;transform:scale(1.015);transition:opacity .42s ease,transform .42s ease}}.market-loading-screen.is-hidden{{display:none!important}}</style>
+<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.market-loading-screen{{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483000!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:#F7F3EA!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;color:#18283A!important;animation:market-loader-enter .22s ease-out both}}.market-loader-inner{{width:min(88vw,390px);text-align:center;position:relative}}.market-loader-brand{{font-size:10px;letter-spacing:.24em;font-weight:900;color:#6E5228;margin-bottom:16px;opacity:.94}}.market-loader-brand span{{opacity:.45;font-weight:700}}.market-loader-visual{{height:138px;position:relative;margin:0 auto 20px;display:flex;align-items:center;justify-content:center}}.market-loader-grid{{position:absolute;inset:10px 18%;background:linear-gradient(rgba(53,107,145,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(53,107,145,.06) 1px,transparent 1px);background-size:18px 18px;mask-image:radial-gradient(circle,black 15%,transparent 72%);animation:market-grid-drift 5s linear infinite}}.market-loader-scan{{position:absolute;width:150px;height:2px;background:linear-gradient(90deg,transparent,rgba(185,154,103,.65),transparent);filter:blur(.2px);animation:market-scan 2.6s ease-in-out infinite}}.market-loader-glow{{position:absolute;width:150px;height:150px;border-radius:50%;background:radial-gradient(circle,rgba(53,107,145,.13),rgba(53,107,145,0) 68%);animation:market-glow 2.4s ease-in-out infinite}}.market-loader-orbit{{width:96px;height:96px;position:relative;display:grid;place-items:center;z-index:2}}.market-loader-ring{{position:absolute;inset:0;border:2.5px solid #D8E1E8;border-top-color:#356B91;border-right-color:#356B91;border-radius:50%;animation:market-spin 1.15s linear infinite;filter:drop-shadow(0 3px 8px rgba(53,107,145,.12))}}.market-loader-ring.ring-2{{inset:9px;border:1px dashed rgba(53,107,145,.22);border-left-color:#B99A67;animation:market-spin-reverse 2.4s linear infinite}}.market-loader-dot{{width:15px;height:15px;border-radius:50%;background:#356B91;box-shadow:0 0 0 0 rgba(53,107,145,.24);animation:market-pulse 1.55s ease-in-out infinite}}.market-loader-chart{{position:absolute;right:10%;bottom:1px;width:115px;height:58px;display:flex;align-items:flex-end;gap:5px;opacity:.72;transform:skewY(-7deg)}}.market-loader-chart i{{display:block;flex:1;border-radius:4px 4px 1px 1px;background:linear-gradient(to top,#356B91,rgba(53,107,145,.22));animation:market-bars 1.8s ease-in-out infinite}}.market-loader-chart i:nth-child(1){{height:22%}}.market-loader-chart i:nth-child(2){{height:42%;animation-delay:.08s}}.market-loader-chart i:nth-child(3){{height:34%;animation-delay:.16s}}.market-loader-chart i:nth-child(4){{height:58%;animation-delay:.24s}}.market-loader-chart i:nth-child(5){{height:48%;animation-delay:.32s}}.market-loader-chart i:nth-child(6){{height:72%;animation-delay:.40s}}.market-loader-chart i:nth-child(7){{height:63%;animation-delay:.48s}}.market-loader-chart i:nth-child(8){{height:88%;animation-delay:.56s}}.market-loader-title{{font-size:24px;font-weight:850;letter-spacing:.03em;color:#18283A}}.market-loader-status{{margin-top:9px;font-size:13px;color:#718092;min-height:22px}}.market-loader-progress-row{{display:flex;align-items:center;gap:10px;margin:18px auto 20px;width:100%}}.market-loader-progress-row>span{{font-size:11px;font-weight:800;letter-spacing:.08em;color:#356B91;min-width:32px;text-align:right}}.market-loader-bar{{height:6px;background:#E1E6EA;border-radius:99px;overflow:hidden;margin:20px auto 20px;width:100%;box-shadow:inset 0 1px 2px rgba(0,0,0,.04)}}.market-loader-bar i{{display:block;height:100%;width:0;background:linear-gradient(90deg,#356B91,#B99A67,#356B91);background-size:200% 100%;border-radius:99px;animation:market-shimmer 1.5s linear infinite;transition:width .14s linear;will-change:width,background-position}}.market-loader-steps{{display:grid;gap:9px;text-align:left;width:82%;margin:0 auto}}.market-loader-steps .app-load-step{{display:flex;align-items:center;gap:9px;font-size:12px;color:#9AA3AC;transition:all .3s ease}}.market-loader-steps .app-load-step span:first-child{{width:15px;text-align:center}}.market-loader-steps .app-load-step.active{{color:#356B91;font-weight:800;transform:translateX(3px)}}.market-loader-steps .app-load-step.done{{color:#5D7765;font-weight:700}}.market-loader-foot{{margin-top:18px;font-size:10px;color:#A3A9AE;letter-spacing:.04em}}@keyframes market-loader-enter{{from{{opacity:0;transform:scale(.99)}}to{{opacity:1;transform:scale(1)}}}}@keyframes market-spin{{to{{transform:rotate(360deg)}}}}@keyframes market-grid-drift{{to{{background-position:0 18px,18px 0}}}}@keyframes market-scan{{0%,100%{{transform:translateY(-45px);opacity:0}}50%{{transform:translateY(45px);opacity:1}}}}@keyframes market-spin-reverse{{to{{transform:rotate(-360deg)}}}}@keyframes market-pulse{{0%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,.25)}}70%{{transform:scale(1);box-shadow:0 0 0 16px rgba(53,107,145,0)}}100%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,0)}}}}@keyframes market-glow{{0%,100%{{transform:scale(.88);opacity:.65}}50%{{transform:scale(1.08);opacity:1}}}}@keyframes market-bars{{0%,100%{{transform:scaleY(.72);transform-origin:bottom}}50%{{transform:scaleY(1);transform-origin:bottom}}}}@keyframes market-progress{{0%{{transform:translateX(-140%)}}50%{{transform:translateX(170%)}}100%{{transform:translateX(420%)}}}}@keyframes market-shimmer{{to{{background-position:200% 0}}}}@media(max-width:420px){{.market-loader-title{{font-size:22px}}.market-loader-steps{{width:90%}}.market-loader-chart{{right:2%;width:100px}}}}.market-loading-screen.is-complete{{opacity:0;transform:scale(1.015);transition:opacity .42s ease,transform .42s ease}}.market-loading-screen.is-hidden{{display:none!important}}</style>
 {detail_status_html}
 <script>
 (function () {{
@@ -23420,7 +23497,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   var expectedSec = 8;
   function visualProgress(sec) {{
     var stops = [
-      [0, 0], [2, 15], [4, 35], [6, 60], [8, 90]
+      [0, 8], [1, 16], [2, 29], [4, 52], [6, 74], [8, 89]
     ];
     if (sec <= expectedSec) {{
       for (var pi = 1; pi < stops.length; pi++) {{
@@ -23495,7 +23572,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     if (bar) bar.style.width = '100%';
     if (pct) pct.textContent = '100%';
     var marketStatus = document.getElementById('market-loader-status');
-    if (marketStatus) marketStatus.textContent = '分析完成，正在開啟今日首頁…';
+    if (marketStatus) marketStatus.textContent = '資料準備完成，正在開啟{title}…';
     var steps = document.querySelectorAll('.market-loader-steps .app-load-step');
     for (var si = 0; si < steps.length; si++) {{
       steps[si].classList.remove('active');
@@ -23517,6 +23594,12 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
       setTimeout(function () {{
         if (loadingEl) loadingEl.classList.add('is-hidden');
         if (loadingEl) loadingEl.style.setProperty('display', 'none', 'important');
+        if (content) {{
+          content.classList.remove('market-page-enter');
+          void content.offsetWidth;
+          content.classList.add('market-page-enter');
+          window.setTimeout(function() {{ content.classList.remove('market-page-enter'); }}, 380);
+        }}
       }}, 420);
       if ({staged_literal}) {{
         var status = document.getElementById('detail-status');
@@ -23634,8 +23717,8 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
         }}
         var bar = document.querySelector('.market-loader-bar i');
         var pct = document.getElementById('market-loader-percent');
-        if (bar) bar.style.width = '97%';
-        if (pct) pct.textContent = '97%';
+        if (bar) bar.style.width = '92%';
+        if (pct) pct.textContent = '—';
         if (marketFoot) marketFoot.textContent =
           '可重新載入首頁；若持續發生，請檢查伺服器日誌。';
         if (loadingEl) {{
