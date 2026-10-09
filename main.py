@@ -22819,6 +22819,127 @@ input:focus,select:focus,textarea:focus {{ outline:2px solid rgba(53,107,145,.20
 .wb-row.wb-rich-row {{ border-radius:14px !important; }}
 .rank-card:not(.rank-champion) {{ border-radius:15px !important; }}
 
+/* V241: financial dashboard language — one hero surface, ledger rows, quieter dividers. */
+:root {{ --ink:#172B40; --ink-soft:#526B81; --ink-faint:#75899A; --rule:#D8E3EC; --brand:#1E6B9D; --paper:#FFFFFF; --paper-2:#F2F6F9; --brass:#C18A2C; }}
+.daily-card, .home-portfolio-card, .portfolio-trend-card {{ box-shadow:0 5px 18px rgba(21,52,76,.045) !important; }}
+.home-portfolio-grid {{ background:#F1F5F8 !important; border-radius:14px !important; padding:10px 8px !important; }}
+.home-metric {{ background:transparent !important; border:0 !important; box-shadow:none !important; border-radius:0 !important; padding:6px 9px !important; }}
+.home-metric + .home-metric {{ border-left:1px solid #D4E0E9 !important; }}
+.home-metric small, .home-metric label {{ color:#60768A !important; font-weight:800 !important; }}
+.home-metric b, .home-metric strong {{ color:#172B40 !important; font-weight:950 !important; font-variant-numeric:tabular-nums !important; }}
+
+/* Holdings become a compact portfolio ledger instead of thirteen floating cards. */
+.position-card, .position-fast-card {{
+  margin:0 !important; padding:17px 3px !important; border:0 !important; border-bottom:1px solid #D8E3EC !important;
+  border-radius:0 !important; background:transparent !important; box-shadow:none !important; transform:none !important;
+}}
+.position-card:last-child, .position-fast-card:last-child {{ border-bottom:0 !important; }}
+.position-card:hover, .position-fast-card:hover {{ box-shadow:none !important; transform:none !important; }}
+.position-card .position-price, .position-fast-card .position-price {{ font-variant-numeric:tabular-nums !important; letter-spacing:-.025em !important; }}
+
+/* Screener rows: keep all data, but present the list like a market watchlist. */
+.wb-row-wrap {{ border:0 !important; border-radius:0 !important; box-shadow:none !important; background:transparent !important; }}
+.wb-row.wb-rich-row {{
+  margin:0 !important; border:0 !important; border-bottom:1px solid #D8E3EC !important; border-radius:0 !important;
+  box-shadow:none !important; background:#FFFFFF !important; transform:none !important;
+}}
+.wb-row.wb-rich-row:hover {{ box-shadow:none !important; transform:none !important; }}
+.wb-row.wb-rich-row .wb-score-block {{ color:#173F5D !important; }}
+.wb-row.wb-rich-row .wb-score-block strong, .wb-row.wb-rich-row .wb-score-block b {{ font-weight:950 !important; }}
+
+/* My ranking: a single dark performance dashboard with internal separators, not cards nested in cards. */
+.rank-situation {{
+  padding:18px 16px 12px !important; border:0 !important; border-radius:18px !important;
+  background:linear-gradient(135deg,#14364F 0%,#1D5274 100%) !important;
+  box-shadow:0 10px 24px rgba(20,56,82,.13) !important; color:#F4F8FB !important;
+}}
+.rank-situation-title {{ border:0 !important; border-bottom:1px solid rgba(220,236,246,.20) !important; padding:0 0 13px !important; margin:0 0 2px !important; }}
+.rank-situation .rank-situation-title h2, .rank-situation h2, .rank-situation h3 {{ color:#FFFFFF !important; font-weight:950 !important; letter-spacing:-.02em !important; }}
+.rank-situation .rank-situation-badge {{ color:#E6F0F7 !important; background:rgba(255,255,255,.09) !important; border:1px solid rgba(255,255,255,.20) !important; border-radius:8px !important; font-weight:850 !important; }}
+.rank-situation .rank-situation-grid {{ display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:0 !important; background:transparent !important; border:0 !important; border-radius:0 !important; padding:0 !important; }}
+.rank-situation .rank-situation-panel {{ background:transparent !important; border:0 !important; border-radius:0 !important; box-shadow:none !important; padding:0 !important; margin:0 !important; color:#FFFFFF !important; }}
+.rank-situation .rank-situation-item {{
+  display:flex !important; flex-direction:column !important; align-items:flex-start !important; justify-content:center !important;
+  gap:6px !important; min-width:0 !important; min-height:94px !important; padding:13px 10px !important;
+  background:transparent !important; border:0 !important; border-radius:0 !important; box-shadow:none !important; color:#FFFFFF !important;
+}}
+.rank-situation .rank-situation-item:nth-child(odd) {{ border-right:1px solid rgba(220,236,246,.20) !important; }}
+.rank-situation .rank-situation-item:nth-child(-n+2) {{ border-bottom:1px solid rgba(220,236,246,.20) !important; }}
+.rank-situation .rank-situation-item small {{ color:#BBD1E0 !important; font-size:11px !important; font-weight:850 !important; letter-spacing:.02em !important; }}
+.rank-situation .rank-situation-item b {{ color:#FFFFFF !important; font-size:25px !important; line-height:1.08 !important; font-weight:950 !important; font-variant-numeric:tabular-nums !important; }}
+.rank-situation .rank-situation-item span, .rank-situation .rank-situation-sub {{ color:#D7E5EF !important; font-size:11px !important; line-height:1.35 !important; }}
+.rank-situation .rank-situation-item .up, .rank-situation .rank-situation-item .positive {{ color:#FFABA4 !important; font-weight:950 !important; }}
+.rank-situation .rank-situation-item .down, .rank-situation .rank-situation-item .negative {{ color:#72E0B1 !important; font-weight:950 !important; }}
+.rank-situation .rank-situation-empty {{ color:#E5EFF6 !important; line-height:1.65 !important; }}
+@media(max-width:390px) {{
+  .rank-situation {{ padding:15px 12px 10px !important; }}
+  .rank-situation .rank-situation-item {{ min-height:86px !important; padding:11px 8px !important; }}
+  .rank-situation .rank-situation-item b {{ font-size:22px !important; }}
+}}
+
+/* Ranking list: ledger-style rows, a restrained champion surface, fewer rounded boxes. */
+.rank-card:not(.rank-champion) {{
+  margin:0 !important; padding:16px 2px !important; border:0 !important; border-bottom:1px solid #D8E3EC !important;
+  border-radius:0 !important; box-shadow:none !important; background:transparent !important; transform:none !important;
+}}
+.rank-card:not(.rank-champion):hover {{ transform:none !important; box-shadow:none !important; }}
+.rank-rows .rank-card:last-child {{ border-bottom:0 !important; }}
+.rank-card.rank-silver, .rank-card.rank-bronze {{ background:transparent !important; margin:0 !important; padding:16px 2px !important; border-radius:0 !important; box-shadow:none !important; }}
+.rank-card .rank-number {{ width:31px !important; min-width:31px !important; height:31px !important; border-radius:50% !important; background:#EAF1F6 !important; color:#315771 !important; font-weight:950 !important; }}
+.rank-card .name {{ color:#172B40 !important; font-size:16px !important; font-weight:900 !important; line-height:1.3 !important; }}
+.rank-card .rank-return {{ font-size:22px !important; font-weight:950 !important; font-variant-numeric:tabular-nums !important; }}
+.rank-card .rank-meta {{ color:#61778A !important; font-size:12px !important; line-height:1.55 !important; font-weight:700 !important; }}
+.rank-card.rank-champion {{
+  margin:14px 0 18px !important; padding:18px 15px 14px !important; border:0 !important; border-left:4px solid #D6B05B !important;
+  border-radius:16px !important; background:linear-gradient(135deg,#14364F 0%,#1D5274 100%) !important;
+  box-shadow:0 12px 26px rgba(20,56,82,.15) !important; color:#FFFFFF !important;
+}}
+.rank-card.rank-champion:before, .rank-card.rank-champion:after {{ display:none !important; content:none !important; }}
+.rank-card.rank-champion .rank-honour {{
+  display:flex !important; flex-direction:row !important; align-items:center !important; justify-content:flex-start !important;
+  gap:12px !important; padding:0 0 13px !important; margin:0 0 8px !important; background:transparent !important;
+  border:0 !important; border-bottom:1px solid rgba(255,255,255,.18) !important; border-radius:0 !important; text-align:left !important;
+}}
+.rank-card.rank-champion .rank-honour:before, .rank-card.rank-champion .rank-honour:after {{ display:none !important; content:none !important; }}
+.rank-card.rank-champion .rank-honour-icon, .rank-card.rank-champion .rank-honour-icon svg {{ width:46px !important; height:46px !important; flex:0 0 46px !important; }}
+.rank-card.rank-champion .rank-honour b {{ color:#FFFFFF !important; font-size:15px !important; font-weight:950 !important; }}
+.rank-card.rank-champion .rank-honour small {{ display:block !important; color:#BBD2E1 !important; font-size:11px !important; font-weight:800 !important; }}
+.rank-card.rank-champion .rank-detail-body {{ display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:0 12px !important; margin-top:8px !important; }}
+.rank-card.rank-champion .rank-detail-body > span {{
+  min-height:68px !important; padding:12px 5px !important; border:0 !important; border-top:1px solid rgba(255,255,255,.16) !important;
+  border-radius:0 !important; background:transparent !important; box-shadow:none !important; color:#F3F8FB !important;
+}}
+.rank-card.rank-champion .rank-detail-body > span:first-child {{ border-left:0 !important; }}
+.rank-card.rank-champion .rank-detail-body > span em {{ color:#BBD2E1 !important; font-size:11px !important; font-weight:850 !important; }}
+.rank-card.rank-champion .rank-detail-body > span > .num {{ font-size:16px !important; font-weight:950 !important; }}
+.rank-card.rank-champion .rank-champion-prompt {{ color:#688197 !important; font-weight:800 !important; }}
+
+/* Charts become full-width analytical sections, not three separate bordered widgets. */
+.rank-chart-panel {{
+  margin:0 !important; padding:17px 0 20px !important; border:0 !important; border-bottom:1px solid #D8E3EC !important;
+  border-radius:0 !important; background:transparent !important; box-shadow:none !important;
+}}
+.rank-chart-panel > div:first-child {{ color:#172B40 !important; font-size:17px !important; font-weight:950 !important; letter-spacing:-.01em !important; }}
+.rank-chart-panel .sub {{ color:#6B8092 !important; font-size:12px !important; line-height:1.5 !important; font-weight:650 !important; }}
+.rank-chart-panel svg {{ display:block !important; max-width:100% !important; overflow:visible !important; }}
+.rank-chart-panel .legend {{ display:flex !important; flex-wrap:wrap !important; gap:8px 13px !important; margin-top:10px !important; padding-top:10px !important; border-top:1px solid #E1E9EF !important; }}
+.rank-chart-panel .legend span {{ font-size:11px !important; color:#4E6579 !important; font-weight:750 !important; }}
+.rank-chart-panel .legend i {{ width:9px !important; height:9px !important; border-radius:3px !important; }}
+
+/* History reads as a compact statement table rather than a stack of cards. */
+.leaderboard-history {{ margin-top:22px !important; }}
+.history-grid {{ gap:18px !important; }}
+.history-period {{ border:0 !important; border-bottom:1px solid #D8E3EC !important; border-radius:0 !important; background:transparent !important; overflow:visible !important; }}
+.history-period-head {{ padding:12px 0 !important; background:transparent !important; border-bottom:1px solid #D8E3EC !important; }}
+.history-period-head b {{ color:#173B59 !important; font-size:19px !important; font-weight:950 !important; }}
+.history-rank-row {{ grid-template-columns:30px minmax(0,1fr) auto !important; padding:12px 0 !important; background:transparent !important; border-bottom:1px solid #E5ECF1 !important; }}
+.history-rank {{ color:#8799A9 !important; font-size:14px !important; }}
+.history-name {{ color:#243E54 !important; font-size:14px !important; font-weight:800 !important; white-space:normal !important; overflow:visible !important; text-overflow:clip !important; }}
+.history-more {{ border:0 !important; background:transparent !important; }}
+.history-more summary {{ color:#1E6B9D !important; font-size:13px !important; font-weight:950 !important; }}
+.rank-list-caption {{ color:#536D82 !important; font-size:12px !important; font-weight:800 !important; }}
+.rank-source-note {{ color:#71869A !important; font-size:11px !important; line-height:1.5 !important; }}
+
 </style>
 </div></body></html>"""
 
@@ -28664,20 +28785,20 @@ def render_leaderboard_chart(series_map, chart_market, top_keys, highlight_key=N
              f'stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,3"/>']
     if chart_market:
         p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in chart_market)
-        parts.append(f'<path d="{p}" fill="none" stroke="var(--ink-faint)" '
-                     f'stroke-width="1.5" stroke-dasharray="4,3"/>')
+        parts.append(f'<path d="{p}" fill="none" stroke="#8799A8" '
+                     f'stroke-width="1.8" stroke-dasharray="5,5"/>')
 
-    tints = ["#6E5228", "#A82A20", "#155C42", "#8A6A3B", "#454C55"]
+    tints = ["#2A72A5", "#D8443E", "#138568", "#7867B7", "#C18A2C"]
     legend = []
     for i, (key, name, curve) in enumerate(lines):
-        color = "var(--brass)" if str(key) == str(highlight_key) else tints[i % len(tints)]
+        color = "#1E6B9D" if str(key) == str(highlight_key) else tints[i % len(tints)]
         p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in curve)
         parts.append(f'<path d="{p}" fill="none" stroke="{color}" '
                      f'stroke-width="2"/>')
         legend.append(f'<span><i style="background:{color}"></i>{name} '
                       f'{curve[-1][1]:+.1f}%</span>')
     if chart_market:
-        legend.append(f'<span><i style="background:var(--ink-faint)"></i>'
+        legend.append(f'<span><i style="background:#8799A8"></i>'
                       f'大盤 {chart_market[-1][1]:+.1f}%</span>')
 
     # X 軸刻度：依涵蓋期間自動切換單位。
@@ -29703,7 +29824,8 @@ def web_leaderboard(uid):
             vs_cls = "up" if excess >= 0 else "down"
         period_label = {"short": "近 30 天", "long": "加入後", "season": "本季", "month": "本月"}[board_name]
         sample_note = f"樣本 {sample_days} 天｜參考排名" if sample_days < 10 else f"樣本 {sample_days} 天"
-        market_ret = row.get("month_mkt_ret") if board_name == "month" else row.get("mkt_ret")
+        market_key = {"short": "mkt_ret", "long": "mkt_ret", "season": "season_mkt_ret", "month": "month_mkt_ret"}.get(board_name, "mkt_ret")
+        market_ret = row.get(market_key)
         market_txt = f"大盤 {market_ret:+.1f}%" if market_ret is not None else "尚無大盤資料"
         return f'''<div class="rank-situation-panel" data-situation-panel="{board_name}" style="{panel_style}">
   <div class="rank-situation-grid">
@@ -29860,10 +29982,10 @@ def web_leaderboard(uid):
      style="{'' if is_short else 'display:none'}">
   <span>{len(boards["short"])} 位顯示中・依報酬排序</span></div>
 <div class="rank-list-caption" data-board-caption="long"
-     style="{'display:none' if active_board == 'long' else ''}">
-  <span>{len(boards["long"])} 位顯示中・依報酬排序</span></div>
+     style="{'' if active_board == 'long' else 'display:none'}">
+  <span>{len(boards["long"])} 位顯示中・依加入後報酬排序</span></div>
 <div class="rank-list-caption" data-board-caption="season"
-     style="{'display:none' if active_board == 'season' else ''}">
+     style="{'' if active_board == 'season' else 'display:none'}">
   <span>{len(boards["season"])} 位顯示中・依本季報酬排序</span></div>
 <div class="rank-source-note">資料來源：{leaderboard_source}・資料日：{html.escape(leaderboard_data_date)}</div>
 <div class="mode-note">個股與 ETF 持股都納入會員整體績效；ETF 只計入實際價格／市值變化，不套用個股營收、PE 或法人評分。</div>
@@ -29875,17 +29997,17 @@ def web_leaderboard(uid):
 
 <div class="section-head"><h2>走勢比較</h2>
   <span class="section-note">短期與長期分開看</span></div>
-<div class="callout" style="padding:14px 15px 8px">
+<div class="callout rank-chart-panel" style="padding:14px 15px 8px">
   <div style="font-weight:800;font-size:15px;margin-bottom:4px">短期｜近30天</div>
   <div class="sub" style="margin-bottom:10px">所有人從相同的30天區間重新歸零比較。</div>
   {short_chart}
 </div>
-<div class="callout" style="padding:14px 15px 8px;margin-top:12px">
+<div class="callout rank-chart-panel" style="padding:14px 15px 8px;margin-top:12px">
   <div style="font-weight:800;font-size:15px;margin-bottom:4px">長期｜加入後累計</div>
   <div class="sub" style="margin-bottom:10px">從各自加入排行榜的日期開始計算，不受30天滾動區間影響。</div>
   {long_chart}
 </div>
-<div class="callout" style="padding:14px 15px 8px;margin-top:12px">
+<div class="callout rank-chart-panel" style="padding:14px 15px 8px;margin-top:12px">
   <div style="font-weight:800;font-size:15px;margin-bottom:4px">賽季｜本季</div>
   <div class="sub" style="margin-bottom:10px">{html.escape((all_boards.get('season_info') or leaderboard_season_info()).get('label', '本季'))}，從本季第一個有效交易日重新計算。</div>
   {season_chart}
