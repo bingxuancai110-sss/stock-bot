@@ -20101,7 +20101,7 @@ a,button{transition:transform .12s ease,opacity .12s ease,box-shadow .16s ease,b
 a:active,button:active{transform:scale(.975);opacity:.82}.tap-loading{opacity:.68;cursor:wait}.app-ux-toast{position:fixed;z-index:10020;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:calc(100vw - 32px);padding:10px 14px;border:1px solid #c8d8e5;border-radius:999px;background:rgba(255,255,255,.98);box-shadow:0 7px 22px rgba(29,41,57,.16);font-size:13px;font-weight:800;color:#274c77;pointer-events:none;animation:toast-in .18s ease-out}.app-ux-toast.error{color:#a33b2e;border-color:#e5c5bf;background:#fff8f6}
 .app-press{transform:scale(.965)!important;filter:brightness(.97);box-shadow:0 0 0 3px rgba(63,111,145,.12)!important}
 .app-press::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px rgba(63,111,145,.16);pointer-events:none}
-.app-nav-loading{position:fixed;z-index:2147483001;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,#245B82,#4C91C5,#B99A67);box-shadow:0 1px 8px rgba(36,91,130,.30);transition:width .22s ease,opacity .2s ease;pointer-events:none;overflow:hidden}.app-nav-loading.show{width:38%}.app-nav-loading.mid{width:76%}.app-nav-loading.done{width:100%;opacity:0}.app-nav-loading::after{content:"";position:absolute;top:0;bottom:0;width:22%;left:-25%;background:rgba(255,255,255,.72);animation:app-nav-shimmer 1.05s ease-in-out infinite}@keyframes app-nav-shimmer{to{left:110%}}#app-page-content.app-page-enter{animation:app-page-enter .34s cubic-bezier(.22,.68,0,1) both;will-change:opacity,transform}.market-page-enter{animation:app-page-enter .34s cubic-bezier(.22,.68,0,1) both;will-change:opacity,transform}@keyframes app-page-enter{from{opacity:.0;transform:translate3d(0,9px,0)}to{opacity:1;transform:translate3d(0,0,0)}}@media(prefers-reduced-motion:reduce){.app-nav-loading::after{animation:none}#app-page-content.app-page-enter,.market-page-enter{animation:none!important;will-change:auto}}
+.app-nav-loading{position:fixed;z-index:2147483001;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,#245B82,#4C91C5,#B99A67);transition:width .10s ease,opacity .10s ease;pointer-events:none;overflow:hidden}.app-nav-loading.show{width:38%}.app-nav-loading.mid{width:76%}.app-nav-loading.done{width:100%;opacity:0}.app-nav-loading::after{content:"";position:absolute;top:0;bottom:0;width:22%;left:-25%;background:rgba(255,255,255,.72);animation:app-nav-shimmer .9s linear infinite}@keyframes app-nav-shimmer{to{left:110%}}#app-page-content.app-page-enter{animation:app-page-enter .16s ease-out both}.market-page-enter{animation:app-page-enter .16s ease-out both}@keyframes app-page-enter{from{opacity:.86;transform:translate3d(0,4px,0)}to{opacity:1;transform:translate3d(0,0,0)}}@media(prefers-reduced-motion:reduce){.app-nav-loading::after{animation:none}#app-page-content.app-page-enter,.market-page-enter{animation:none!important;will-change:auto}}
 .app-nav-loading.show{width:42%}.app-nav-loading.mid{width:72%}.app-nav-loading.done{width:100%;opacity:0}
 .app-load-card{display:flex;align-items:flex-start;gap:10px;margin:0 0 12px;padding:13px 14px;border:1px solid #c8d8e5;border-radius:14px;background:rgba(248,252,255,.98);box-shadow:0 6px 20px rgba(29,41,57,.10);animation:load-card-in .16s ease-out}
 /* 載入提示固定在視窗中，使用者滑到頁面任何位置都看得到；實際 top 由 JS 依固定標題列高度定位。 */
@@ -21571,18 +21571,20 @@ def render_page(title, body, nav_active=None, user_name=None):
 <style>{BASE_CSS}</style>
 <style>{page_extra_css}</style>
 <style id="internal-top-loading">
-#page-nav-loader{{position:fixed;left:0;right:0;top:0;z-index:99999;transform:translateY(-110%);opacity:0;transition:transform .22s ease,opacity .18s ease;pointer-events:none;display:flex;justify-content:center}}
+#page-nav-loader{{position:fixed;left:0;right:0;top:env(safe-area-inset-top,0px);z-index:2147483001;height:3px;overflow:hidden;transform:translateY(-110%);opacity:0;transition:transform .12s ease,opacity .12s ease;pointer-events:none;display:block;background:transparent}}
 #page-nav-loader.show{{transform:translateY(0);opacity:1}}
-#page-nav-loader .nav-loader-card{{width:min(520px,calc(100vw - 24px));margin:8px 12px 0;padding:10px 14px 11px;border-radius:0 0 14px 14px;background:rgba(255,255,255,.96);box-shadow:0 8px 28px rgba(0,0,0,.12);border:1px solid rgba(37,99,235,.12);backdrop-filter:blur(12px)}}
-#page-nav-loader .nav-loader-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;font-weight:700;color:#1e3a8a}}
-#page-nav-loader .nav-loader-title{{display:flex;align-items:center;gap:8px}}
-#page-nav-loader .nav-loader-spinner{{width:14px;height:14px;border-radius:50%;border:2px solid rgba(37,99,235,.18);border-top-color:#2563eb;animation:navspin .7s linear infinite}}
-#page-nav-loader.done .nav-loader-spinner{{animation:none;border-color:#16a34a;position:relative}}
-#page-nav-loader.done .nav-loader-spinner:after{{content:"✓";position:absolute;left:1px;top:-4px;font-size:12px;color:#16a34a;font-weight:900}}
-#page-nav-loader .nav-loader-percent{{font-variant-numeric:tabular-nums}}
-#page-nav-loader .nav-loader-track{{height:4px;margin-top:8px;border-radius:999px;overflow:hidden;background:#e8eefc}}
-#page-nav-loader .nav-loader-bar{{height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,#2563eb,#60a5fa);transition:width .12s linear}}
-@keyframes navspin{{to{{transform:rotate(360deg)}}}}
+#page-nav-loader .nav-loader-card{{width:100%;height:3px;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}}
+#page-nav-loader .nav-loader-head{{display:none!important}}
+#page-nav-loader .nav-loader-title,#page-nav-loader .nav-loader-spinner,#page-nav-loader .nav-loader-percent{{display:none!important}}
+#page-nav-loader .nav-loader-track{{display:block;height:3px;margin:0;border-radius:0;overflow:hidden;background:rgba(219,231,242,.40)}}
+#page-nav-loader .nav-loader-bar{{position:relative;height:100%;width:0;border-radius:0;background:linear-gradient(90deg,#245B82,#4C91C5,#B99A67);transition:width .12s linear;overflow:hidden}}
+#page-nav-loader.show .nav-loader-bar{{width:38%!important;animation:nav-progress-sweep 1.05s ease-in-out infinite}}
+#page-nav-loader.done .nav-loader-bar{{width:100%!important;animation:none;transition:width .10s linear}}
+#page-nav-loader .nav-loader-bar:after{{content:"";position:absolute;top:0;bottom:0;width:25%;left:-30%;background:rgba(255,255,255,.68);animation:nav-bar-shimmer 1s linear infinite}}
+#page-nav-loader.done .nav-loader-bar:after{{animation:none;display:none}}
+@keyframes nav-bar-shimmer{{to{{left:115%}}}}
+@keyframes nav-progress-sweep{{0%{{transform:translateX(0)}}50%{{transform:translateX(85%)}}100%{{transform:translateX(0)}}}}
+@media(prefers-reduced-motion:reduce){{#page-nav-loader,#page-nav-loader .nav-loader-bar,#page-nav-loader .nav-loader-bar:after{{transition:none!important;animation:none!important}}}}
 </style>
 </head><body>
 <div id="page-nav-loader" aria-hidden="true">
@@ -21604,41 +21606,28 @@ def render_page(title, body, nav_active=None, user_name=None):
   const bar=document.getElementById('page-nav-loader-bar');
   const pct=document.getElementById('page-nav-loader-percent');
   const title=document.getElementById('page-nav-loader-title');
-  let raf=0,start=0,target=0,current=0,active=false;
+  let active=false,hideTimer=0,resetTimer=0;
 
-  function frame(now){{
-    if(!active)return;
-    const elapsed=(now-start)/1000;
-    const visual=Math.min(90,8+elapsed*18+Math.sqrt(elapsed)*18);
-    target=Math.max(target,visual);
-    current+=(target-current)*0.18;
-    if(current>89)current=89;
-    bar.style.width=current.toFixed(1)+'%';
-    pct.textContent=Math.floor(current)+'%';
-    raf=requestAnimationFrame(frame);
-  }}
-
+  // 進度線完全交給 CSS 動畫，不在載入期間持續執行 JS 計時器。
   window.showPageNavLoader=function(label){{
-    active=true;start=performance.now();target=0;current=0;
-    title.textContent=label||'正在開啟頁面';
+    active=true;
+    window.clearTimeout(hideTimer);window.clearTimeout(resetTimer);
+    if(title){{ title.textContent=label||'正在開啟頁面'; loader.setAttribute('aria-label',title.textContent); }}
     loader.classList.remove('done');
     loader.classList.add('show');
-    cancelAnimationFrame(raf);
-    raf=requestAnimationFrame(frame);
   }};
 
   window.finishPageNavLoader=function(){{
     if(!active)return;
-    active=false;cancelAnimationFrame(raf);
-    current=100;bar.style.width='100%';pct.textContent='100%';
+    active=false;
     loader.classList.add('done');
-    setTimeout(function(){{
+    hideTimer=window.setTimeout(function(){{
       loader.classList.remove('show');
-      setTimeout(function(){{
+      resetTimer=window.setTimeout(function(){{
         loader.classList.remove('done');
-        bar.style.width='0%';pct.textContent='0%';
-      }},240);
-    }},180);
+        if(bar)bar.style.width='0%';
+      }},100);
+    }},100);
   }};
 
   // 持股五大因子放在持久 shell，fragment 導航後仍可用；避免長 inline JS 造成 HTML 引號解析錯誤。
@@ -21687,6 +21676,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     if(u.origin!==location.origin)return;
     if(!u.pathname.startsWith('/web/'))return;
     if(u.href===location.href)return;
+    if(a.dataset && a.dataset.appNav === '1')return; // SPA／分頁導覽由 switchAppPage 統一顯示單一頂部進度條。
     const labels={{
       '/web/':'正在開啟首頁',
       '/web/portfolio':'正在開啟首頁',
@@ -21887,46 +21877,10 @@ def render_page(title, body, nav_active=None, user_name=None):
     window.setTimeout(function() {{ if (toast.parentNode) toast.parentNode.removeChild(toast); }}, 1800);
   }}
   function ensureTopNavLoadingForFullNavigation(title, steps) {{
-    try {{
-      var old = document.querySelector('.app-full-nav-loading');
-      if (old && old.parentNode) old.parentNode.removeChild(old);
-      var card = document.createElement('div');
-      card.className = 'app-load-card app-sync-float app-full-nav-loading';
-      card.setAttribute('role','status');
-      card.innerHTML = '<span class="app-sync-spinner" aria-hidden="true"></span>'
-        + '<span style="min-width:0;flex:1"><b>' + title + '</b>'
-        + '<small>資料較多時會逐步完成，請不用重複點擊</small>'
-        + '<span class="app-load-steps">' + (steps || []).map(function(label, i) {{
-            return '<span class="app-load-step ' + (i === 0 ? 'active' : 'pending') + '"><span class="step-icon" aria-hidden="true"></span><span>' + label + '</span></span>';
-          }}).join('') + '</span></span>';
-      document.body.appendChild(card);
-      var i = 0;
-      card._timer = window.setInterval(function() {{
-        var all = card.querySelectorAll('.app-load-step');
-        if (i < all.length - 1) i += 1;
-        all.forEach(function(step, idx) {{
-          step.classList.remove('done','active','pending');
-          if (idx < i) step.classList.add('done');
-          else if (idx === i) step.classList.add('active');
-          else step.classList.add('pending');
-        }});
-      }}, 650);
-    }} catch (ignore) {{}}
+    if (window.showPageNavLoader) window.showPageNavLoader(title || '正在開啟頁面');
   }}
-
   function finishTopNavLoading() {{
-    try {{
-      var card = document.querySelector('.app-full-nav-loading');
-      if (!card) return;
-      if (card._timer) window.clearInterval(card._timer);
-      var steps = card.querySelectorAll('.app-load-step');
-      steps.forEach(function(step) {{ step.classList.remove('active','pending'); step.classList.add('done'); }});
-      var title = card.querySelector('b');
-      var sub = card.querySelector('small');
-      if (title) title.textContent = '✓ 載入完成';
-      if (sub) sub.textContent = '畫面已更新';
-      window.setTimeout(function() {{ if (card.parentNode) card.parentNode.removeChild(card); }}, 280);
-    }} catch (ignore) {{}}
+    if (window.finishPageNavLoader) window.finishPageNavLoader();
   }}
   window.stockBotFinishPageLoading = finishTopNavLoading;
 
@@ -21941,17 +21895,12 @@ def render_page(title, body, nav_active=None, user_name=None):
     if (target.pathname === '/web/workbench') {{
       // 工作台保留正常文件導覽，避免大量原生腳本在 fragment 插入後失效；
       // 但內頁切換只顯示最上方細進度條，不再跳出大型 Loading 卡。
-      var wbNavProgress = document.createElement('div');
-      wbNavProgress.className = 'app-nav-loading show';
-      wbNavProgress.setAttribute('aria-hidden','true');
-      document.body.appendChild(wbNavProgress);
-      window.setTimeout(function() {{ wbNavProgress.classList.add('mid'); }}, 180);
+      if (window.showPageNavLoader) window.showPageNavLoader('正在開啟選股工作台');
       target.searchParams.delete('fragment');
       window.location.assign(target.pathname + (target.search ? '?' + target.searchParams.toString() : ''));
       return;
     }}
-    // V227：SPA 內頁切換也使用首頁同款全螢幕市場 Loader，避免 LINE／Safari
-    // 不同進入方式產生完全不同的載入體驗。
+    // V244：頁內切換只使用共用頂部進度線，避免全螢幕遮罩、浮動卡片與第二條進度條互相覆蓋。
     target.searchParams.set('fragment', '1');
     target.searchParams.delete('fast');
     var navSeq = ++appNavSeq;
@@ -21962,77 +21911,21 @@ def render_page(title, body, nav_active=None, user_name=None):
     if (pushState) appScrollRestore[window.location.pathname + window.location.search] = previousScroll;
     if (target.pathname === '/web/portfolio') target.searchParams.set('_nav', String(Date.now()));
     var requestUrl = target.pathname + '?' + target.searchParams.toString();
-    var navProgress = document.createElement('div');
-    navProgress.className = 'app-nav-loading';
-    navProgress.setAttribute('aria-hidden','true');
-    document.body.appendChild(navProgress);
-    navProgress.classList.add('show');
-    // 同步建立首頁同款全螢幕 Loader。這裡不使用模板 placeholder，直接寫入實際文字。
-    var routeLoader = document.createElement('div');
-    routeLoader.id = 'spa-market-loader';
-    routeLoader.className = 'loading market-loading-screen';
-    var routeTitle = (appTitles[target.pathname] || '市場資料');
-    routeLoader.innerHTML = '<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div><div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="market-loader-title">正在載入'+routeTitle+'</div><div class="market-loader-status" id="spa-market-loader-status">正在準備頁面資料…</div><div class="market-loader-progress-row"><div class="market-loader-bar"><i style="width:8%"></i></div><span id="spa-market-loader-percent" aria-live="polite">8%</span></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>資料連線</span></div><div class="app-load-step pending"><span>○</span><span>整理頁面資料</span></div><div class="app-load-step pending"><span>○</span><span>初始化互動</span></div><div class="app-load-step pending"><span>○</span><span>即將顯示頁面</span></div></div><div class="market-loader-foot">進度為估算・資料完成後自動進入頁面</div></div>';
-    document.body.appendChild(routeLoader);
-    // V243：轉場進度以「等待時間估算」平滑前進，成功回應才到 100%；不冒充後端實際百分比。
-    // 先從 8% 起步，避免舊版 SPA loader 永遠顯示硬編碼的 0%。
-    var routeLoadStartedAt = Date.now();
-    var routeLoadDone = false;
+    var routeTitle = appTitles[target.pathname] || '頁面';
+    if (window.showPageNavLoader) window.showPageNavLoader('正在開啟' + routeTitle);
     var routeLoadTimedOut = false;
-    var routeLoadBar = routeLoader.querySelector('.market-loader-bar i');
-    var routeLoadPercent = routeLoader.querySelector('#spa-market-loader-percent');
-    var routeLoadStatus = routeLoader.querySelector('#spa-market-loader-status');
-    var routeLoadSteps = routeLoader.querySelectorAll('.market-loader-steps .app-load-step');
-    var routeLoadMessages = ['正在建立頁面連線…', '正在整理頁面內容…', '正在初始化互動元件…', '即將顯示' + routeTitle + '…'];
-    function updateRouteLoadProgress() {{
-      if (routeLoadDone) return;
-      var seconds = (Date.now() - routeLoadStartedAt) / 1000;
-      var percent = Math.min(92, Math.round(8 + 84 * (1 - Math.exp(-seconds / 5))));
-      if (routeLoadBar) routeLoadBar.style.width = percent + '%';
-      if (routeLoadPercent) routeLoadPercent.textContent = seconds >= 45 ? '…' : percent + '%';
-      var messageIndex = seconds < 1.5 ? 0 : seconds < 4 ? 1 : seconds < 8 ? 2 : 3;
-      if (routeLoadStatus) {{
-        if (seconds >= 45) routeLoadStatus.textContent = '頁面回應較慢，仍在等待伺服器完成…';
-        else if (seconds >= 20) routeLoadStatus.textContent = '資料量較大，正在繼續準備頁面…';
-        else routeLoadStatus.textContent = routeLoadMessages[messageIndex];
-      }}
-      var activeIndex = seconds < 1.5 ? 0 : seconds < 4 ? 1 : seconds < 8 ? 2 : 3;
-      routeLoadSteps.forEach(function(step, idx) {{
-        step.classList.remove('active', 'done', 'pending');
-        var icon = step.querySelector('span:first-child');
-        if (idx < activeIndex) {{ step.classList.add('done'); if (icon) icon.textContent = '✓'; }}
-        else if (idx === activeIndex) {{ step.classList.add('active'); if (icon) icon.textContent = '●'; }}
-        else {{ step.classList.add('pending'); if (icon) icon.textContent = '○'; }}
-      }});
-    }}
-    routeLoader._progressTimer = window.setInterval(updateRouteLoadProgress, 120);
-    routeLoader._stopProgress = function(success) {{
-      routeLoadDone = true;
-      if (routeLoader._progressTimer) window.clearInterval(routeLoader._progressTimer);
-      if (routeLoadBar) routeLoadBar.style.width = success ? '100%' : '92%';
-      if (routeLoadPercent) routeLoadPercent.textContent = success ? '100%' : '—';
-      if (routeLoadStatus) routeLoadStatus.textContent = success ? '載入完成，正在顯示' + routeTitle + '…' : '頁面載入未完成，正在顯示錯誤訊息…';
-      if (success) routeLoadSteps.forEach(function(step) {{
-        step.classList.remove('active', 'pending'); step.classList.add('done');
-        var icon = step.querySelector('span:first-child'); if (icon) icon.textContent = '✓';
-      }});
-    }};
-    updateRouteLoadProgress();
     var routeLoadTimeoutId = null;
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
-    // Promise.race 作為沒有 AbortController 的 WebView fallback，確保逾時也會進入錯誤處理。
     var routeFetchPromise = fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, appNavController ? {{signal:appNavController.signal}} : {{}}));
     var routeTimeoutPromise = new Promise(function(resolve, reject) {{
       routeLoadTimeoutId = window.setTimeout(function() {{
-        if (routeLoadDone) return;
         routeLoadTimedOut = true;
-        if (routeLoadStatus) routeLoadStatus.textContent = '伺服器回應逾時，正在解除載入畫面…';
         if (appNavController) {{ try {{ appNavController.abort(); }} catch (ignore) {{}} }}
         reject(new Error('頁面載入逾時（90 秒），請重新整理後再試。'));
       }}, 90000);
     }});
-    Promise.race([routeFetchPromise, routeTimeoutPromise])
+        Promise.race([routeFetchPromise, routeTimeoutPromise])
       .then(function(response) {{
         if (response.status === 401) {{ window.location.assign(target.pathname + target.search.replace(/([?&])fragment=1&?/, '$1').replace(/[?&]$/, '')); return null; }}
         if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -22048,44 +21941,32 @@ def render_page(title, body, nav_active=None, user_name=None):
         if (target.pathname !== '/web/portfolio') {{
             upgradePreviewFragment(target.pathname, target.search);
         }}
-          if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
-        if (routeLoader) {{
-          if (routeLoader._stopProgress) routeLoader._stopProgress(true);
-          routeLoader.classList.add('is-complete');
-          window.setTimeout(function() {{
-            if (routeLoader.parentNode) routeLoader.parentNode.removeChild(routeLoader);
-            // Loader 消失後才讓新頁面淡入上移，避免兩套動畫互相干擾。
-            if (appContent) {{
-              appContent.classList.remove('app-page-enter');
-              void appContent.offsetWidth;
-              appContent.classList.add('app-page-enter');
-              window.setTimeout(function() {{ appContent.classList.remove('app-page-enter'); }}, 380);
-            }}
-          }}, 430);
-        }}
-        // 頁面內容已真正插入並完成 fragment scripts 後，才結束頂部導航動畫。
-        // 避免「內容已經好了，但仍卡著『正在開啟持股／選股台』」。
+        // HTML 與頁面腳本已插入後，立即完成頂部進度；只留下短暫的輕微進場，不再等待大型遮罩淡出。
         if (window.finishPageNavLoader) window.finishPageNavLoader();
+        appContent.classList.remove('app-page-enter');
+        if (!prefersReducedMotion()) {{
+          window.requestAnimationFrame(function() {{
+            appContent.classList.add('app-page-enter');
+            window.setTimeout(function() {{ appContent.classList.remove('app-page-enter'); }}, 170);
+          }});
+        }}
         appNavBusy = false;
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
         target.searchParams.delete('fragment');
         if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', target.pathname + target.search);
         setAppNavState(target.pathname);
-        showAppToast('✓ 頁面已更新','success');
-        window.scrollTo({{top:0, behavior: prefersReducedMotion() ? 'auto' : 'smooth'}});
+        // 切換分頁不再彈出干擾閱讀的成功提示；新頁面直接定位頂部，避免額外平滑捲動延遲。
+        window.scrollTo({{top:0, behavior:'auto'}});
       }})
       .catch(function(error) {{
         if (error && error.name === 'AbortError' && !routeLoadTimedOut) {{
-          if (routeLoader && routeLoader._stopProgress) routeLoader._stopProgress(false);
-          if (routeLoader) {{ routeLoader.classList.add('is-complete'); window.setTimeout(function() {{ if (routeLoader.parentNode) routeLoader.parentNode.removeChild(routeLoader); }}, 250); }}
-          if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
+          if (window.finishPageNavLoader) window.finishPageNavLoader();
+          appContent.removeAttribute('aria-busy');
+          appContent.classList.remove('app-page-loading');
           return;
         }}
         if (routeLoadTimedOut) error = new Error('頁面載入逾時（90 秒），請重新整理後再試。');
-        if (routeLoader && routeLoader._stopProgress) routeLoader._stopProgress(false);
-        if (navProgress) {{ navProgress.classList.remove('show','mid'); navProgress.classList.add('done'); window.setTimeout(function() {{ if (navProgress.parentNode) navProgress.parentNode.removeChild(navProgress); }}, 220); }}
-        if (routeLoader) {{ routeLoader.classList.add('is-complete'); window.setTimeout(function() {{ if (routeLoader.parentNode) routeLoader.parentNode.removeChild(routeLoader); }}, 430); }}
         if (window.finishPageNavLoader) window.finishPageNavLoader();
         appNavBusy = false;
         appContent.removeAttribute('aria-busy');
@@ -23473,7 +23354,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   {('<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div><div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="market-loader-title">{loader_title}</div><div class="market-loader-status" id="market-loader-status">{loader_status}</div><div class="market-loader-progress-row"><div class="market-loader-bar"><i style="width:8%"></i></div><span id="market-loader-percent" aria-live="polite">8%</span></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>市場資料</span></div><div class="app-load-step pending"><span>○</span><span>法人與估值</span></div><div class="app-load-step pending"><span>○</span><span>你的持股行情</span></div><div class="app-load-step pending"><span>○</span><span>今日市場判讀</span></div></div><div class="market-loader-foot">{loader_foot}</div></div>') if market_loader else ('<div class="load-stage"><span id="loadstage">正在準備…</span></div>' + render_quote_block() + '<div class="load-note">' + note + '</div>')}
 </div>
 <div id="content" class="loading-content" aria-live="polite" style="display:none"></div>
-<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.market-loading-screen{{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483000!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:#F7F3EA!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;color:#18283A!important;animation:market-loader-enter .22s ease-out both}}.market-loader-inner{{width:min(88vw,390px);text-align:center;position:relative}}.market-loader-brand{{font-size:10px;letter-spacing:.24em;font-weight:900;color:#6E5228;margin-bottom:16px;opacity:.94}}.market-loader-brand span{{opacity:.45;font-weight:700}}.market-loader-visual{{height:138px;position:relative;margin:0 auto 20px;display:flex;align-items:center;justify-content:center}}.market-loader-grid{{position:absolute;inset:10px 18%;background:linear-gradient(rgba(53,107,145,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(53,107,145,.06) 1px,transparent 1px);background-size:18px 18px;mask-image:radial-gradient(circle,black 15%,transparent 72%);animation:market-grid-drift 5s linear infinite}}.market-loader-scan{{position:absolute;width:150px;height:2px;background:linear-gradient(90deg,transparent,rgba(185,154,103,.65),transparent);filter:blur(.2px);animation:market-scan 2.6s ease-in-out infinite}}.market-loader-glow{{position:absolute;width:150px;height:150px;border-radius:50%;background:radial-gradient(circle,rgba(53,107,145,.13),rgba(53,107,145,0) 68%);animation:market-glow 2.4s ease-in-out infinite}}.market-loader-orbit{{width:96px;height:96px;position:relative;display:grid;place-items:center;z-index:2}}.market-loader-ring{{position:absolute;inset:0;border:2.5px solid #D8E1E8;border-top-color:#356B91;border-right-color:#356B91;border-radius:50%;animation:market-spin 1.15s linear infinite;filter:drop-shadow(0 3px 8px rgba(53,107,145,.12))}}.market-loader-ring.ring-2{{inset:9px;border:1px dashed rgba(53,107,145,.22);border-left-color:#B99A67;animation:market-spin-reverse 2.4s linear infinite}}.market-loader-dot{{width:15px;height:15px;border-radius:50%;background:#356B91;box-shadow:0 0 0 0 rgba(53,107,145,.24);animation:market-pulse 1.55s ease-in-out infinite}}.market-loader-chart{{position:absolute;right:10%;bottom:1px;width:115px;height:58px;display:flex;align-items:flex-end;gap:5px;opacity:.72;transform:skewY(-7deg)}}.market-loader-chart i{{display:block;flex:1;border-radius:4px 4px 1px 1px;background:linear-gradient(to top,#356B91,rgba(53,107,145,.22));animation:market-bars 1.8s ease-in-out infinite}}.market-loader-chart i:nth-child(1){{height:22%}}.market-loader-chart i:nth-child(2){{height:42%;animation-delay:.08s}}.market-loader-chart i:nth-child(3){{height:34%;animation-delay:.16s}}.market-loader-chart i:nth-child(4){{height:58%;animation-delay:.24s}}.market-loader-chart i:nth-child(5){{height:48%;animation-delay:.32s}}.market-loader-chart i:nth-child(6){{height:72%;animation-delay:.40s}}.market-loader-chart i:nth-child(7){{height:63%;animation-delay:.48s}}.market-loader-chart i:nth-child(8){{height:88%;animation-delay:.56s}}.market-loader-title{{font-size:24px;font-weight:850;letter-spacing:.03em;color:#18283A}}.market-loader-status{{margin-top:9px;font-size:13px;color:#718092;min-height:22px}}.market-loader-progress-row{{display:flex;align-items:center;gap:10px;margin:18px auto 20px;width:100%}}.market-loader-progress-row>span{{font-size:11px;font-weight:800;letter-spacing:.08em;color:#356B91;min-width:32px;text-align:right}}.market-loader-bar{{height:6px;background:#E1E6EA;border-radius:99px;overflow:hidden;margin:20px auto 20px;width:100%;box-shadow:inset 0 1px 2px rgba(0,0,0,.04)}}.market-loader-bar i{{display:block;height:100%;width:0;background:linear-gradient(90deg,#356B91,#B99A67,#356B91);background-size:200% 100%;border-radius:99px;animation:market-shimmer 1.5s linear infinite;transition:width .14s linear;will-change:width,background-position}}.market-loader-steps{{display:grid;gap:9px;text-align:left;width:82%;margin:0 auto}}.market-loader-steps .app-load-step{{display:flex;align-items:center;gap:9px;font-size:12px;color:#9AA3AC;transition:all .3s ease}}.market-loader-steps .app-load-step span:first-child{{width:15px;text-align:center}}.market-loader-steps .app-load-step.active{{color:#356B91;font-weight:800;transform:translateX(3px)}}.market-loader-steps .app-load-step.done{{color:#5D7765;font-weight:700}}.market-loader-foot{{margin-top:18px;font-size:10px;color:#A3A9AE;letter-spacing:.04em}}@keyframes market-loader-enter{{from{{opacity:0;transform:scale(.99)}}to{{opacity:1;transform:scale(1)}}}}@keyframes market-spin{{to{{transform:rotate(360deg)}}}}@keyframes market-grid-drift{{to{{background-position:0 18px,18px 0}}}}@keyframes market-scan{{0%,100%{{transform:translateY(-45px);opacity:0}}50%{{transform:translateY(45px);opacity:1}}}}@keyframes market-spin-reverse{{to{{transform:rotate(-360deg)}}}}@keyframes market-pulse{{0%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,.25)}}70%{{transform:scale(1);box-shadow:0 0 0 16px rgba(53,107,145,0)}}100%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,0)}}}}@keyframes market-glow{{0%,100%{{transform:scale(.88);opacity:.65}}50%{{transform:scale(1.08);opacity:1}}}}@keyframes market-bars{{0%,100%{{transform:scaleY(.72);transform-origin:bottom}}50%{{transform:scaleY(1);transform-origin:bottom}}}}@keyframes market-progress{{0%{{transform:translateX(-140%)}}50%{{transform:translateX(170%)}}100%{{transform:translateX(420%)}}}}@keyframes market-shimmer{{to{{background-position:200% 0}}}}@media(max-width:420px){{.market-loader-title{{font-size:22px}}.market-loader-steps{{width:90%}}.market-loader-chart{{right:2%;width:100px}}}}.market-loading-screen.is-complete{{opacity:0;transform:scale(1.015);transition:opacity .42s ease,transform .42s ease}}.market-loading-screen.is-hidden{{display:none!important}}</style>
+<style>.loading-content{{min-height:190px}}.loading .load-stage{{display:flex;align-items:center;gap:10px}}.loading .load-stage:before{{content:"";width:17px;height:17px;border:2px solid #c9d8e5;border-top-color:#3f6f91;border-radius:50%;animation:app-sync-spin .72s linear infinite;flex:none}}@media(prefers-reduced-motion:reduce){{.loading .load-stage:before{{animation:none;border-top-color:#c9d8e5}}}}.market-loading-screen{{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483000!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:#F7F3EA!important;display:flex!important;align-items:center!important;justify-content:center!important;overflow:hidden!important;color:#18283A!important;animation:market-loader-enter .22s ease-out both}}.market-loader-inner{{width:min(88vw,390px);text-align:center;position:relative}}.market-loader-brand{{font-size:10px;letter-spacing:.24em;font-weight:900;color:#6E5228;margin-bottom:16px;opacity:.94}}.market-loader-brand span{{opacity:.45;font-weight:700}}.market-loader-visual{{height:138px;position:relative;margin:0 auto 20px;display:flex;align-items:center;justify-content:center}}.market-loader-grid{{position:absolute;inset:10px 18%;background:linear-gradient(rgba(53,107,145,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(53,107,145,.06) 1px,transparent 1px);background-size:18px 18px;mask-image:radial-gradient(circle,black 15%,transparent 72%);animation:market-grid-drift 5s linear infinite}}.market-loader-scan{{position:absolute;width:150px;height:2px;background:linear-gradient(90deg,transparent,rgba(185,154,103,.65),transparent);filter:blur(.2px);animation:market-scan 2.6s ease-in-out infinite}}.market-loader-glow{{position:absolute;width:150px;height:150px;border-radius:50%;background:radial-gradient(circle,rgba(53,107,145,.13),rgba(53,107,145,0) 68%);animation:market-glow 2.4s ease-in-out infinite}}.market-loader-orbit{{width:96px;height:96px;position:relative;display:grid;place-items:center;z-index:2}}.market-loader-ring{{position:absolute;inset:0;border:2.5px solid #D8E1E8;border-top-color:#356B91;border-right-color:#356B91;border-radius:50%;animation:market-spin 1.15s linear infinite;filter:drop-shadow(0 3px 8px rgba(53,107,145,.12))}}.market-loader-ring.ring-2{{inset:9px;border:1px dashed rgba(53,107,145,.22);border-left-color:#B99A67;animation:market-spin-reverse 2.4s linear infinite}}.market-loader-dot{{width:15px;height:15px;border-radius:50%;background:#356B91;box-shadow:0 0 0 0 rgba(53,107,145,.24);animation:market-pulse 1.55s ease-in-out infinite}}.market-loader-chart{{position:absolute;right:10%;bottom:1px;width:115px;height:58px;display:flex;align-items:flex-end;gap:5px;opacity:.72;transform:skewY(-7deg)}}.market-loader-chart i{{display:block;flex:1;border-radius:4px 4px 1px 1px;background:linear-gradient(to top,#356B91,rgba(53,107,145,.22));animation:market-bars 1.8s ease-in-out infinite}}.market-loader-chart i:nth-child(1){{height:22%}}.market-loader-chart i:nth-child(2){{height:42%;animation-delay:.08s}}.market-loader-chart i:nth-child(3){{height:34%;animation-delay:.16s}}.market-loader-chart i:nth-child(4){{height:58%;animation-delay:.24s}}.market-loader-chart i:nth-child(5){{height:48%;animation-delay:.32s}}.market-loader-chart i:nth-child(6){{height:72%;animation-delay:.40s}}.market-loader-chart i:nth-child(7){{height:63%;animation-delay:.48s}}.market-loader-chart i:nth-child(8){{height:88%;animation-delay:.56s}}.market-loader-title{{font-size:24px;font-weight:850;letter-spacing:.03em;color:#18283A}}.market-loader-status{{margin-top:9px;font-size:13px;color:#718092;min-height:22px}}.market-loader-progress-row{{display:flex;align-items:center;gap:10px;margin:18px auto 20px;width:100%}}.market-loader-progress-row>span{{font-size:11px;font-weight:800;letter-spacing:.08em;color:#356B91;min-width:32px;text-align:right}}.market-loader-bar{{height:6px;background:#E1E6EA;border-radius:99px;overflow:hidden;margin:20px auto 20px;width:100%;box-shadow:inset 0 1px 2px rgba(0,0,0,.04)}}.market-loader-bar i{{display:block;height:100%;width:0;background:linear-gradient(90deg,#356B91,#B99A67,#356B91);background-size:200% 100%;border-radius:99px;animation:market-shimmer 1.5s linear infinite;transition:width .14s linear;will-change:width,background-position}}.market-loader-steps{{display:grid;gap:9px;text-align:left;width:82%;margin:0 auto}}.market-loader-steps .app-load-step{{display:flex;align-items:center;gap:9px;font-size:12px;color:#9AA3AC;transition:all .3s ease}}.market-loader-steps .app-load-step span:first-child{{width:15px;text-align:center}}.market-loader-steps .app-load-step.active{{color:#356B91;font-weight:800;transform:translateX(3px)}}.market-loader-steps .app-load-step.done{{color:#5D7765;font-weight:700}}.market-loader-foot{{margin-top:18px;font-size:10px;color:#A3A9AE;letter-spacing:.04em}}@keyframes market-loader-enter{{from{{opacity:0;transform:scale(.99)}}to{{opacity:1;transform:scale(1)}}}}@keyframes market-spin{{to{{transform:rotate(360deg)}}}}@keyframes market-grid-drift{{to{{background-position:0 18px,18px 0}}}}@keyframes market-scan{{0%,100%{{transform:translateY(-45px);opacity:0}}50%{{transform:translateY(45px);opacity:1}}}}@keyframes market-spin-reverse{{to{{transform:rotate(-360deg)}}}}@keyframes market-pulse{{0%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,.25)}}70%{{transform:scale(1);box-shadow:0 0 0 16px rgba(53,107,145,0)}}100%{{transform:scale(.82);box-shadow:0 0 0 0 rgba(53,107,145,0)}}}}@keyframes market-glow{{0%,100%{{transform:scale(.88);opacity:.65}}50%{{transform:scale(1.08);opacity:1}}}}@keyframes market-bars{{0%,100%{{transform:scaleY(.72);transform-origin:bottom}}50%{{transform:scaleY(1);transform-origin:bottom}}}}@keyframes market-progress{{0%{{transform:translateX(-140%)}}50%{{transform:translateX(170%)}}100%{{transform:translateX(420%)}}}}@keyframes market-shimmer{{to{{background-position:200% 0}}}}@media(max-width:420px){{.market-loader-title{{font-size:22px}}.market-loader-steps{{width:90%}}.market-loader-chart{{right:2%;width:100px}}}}.market-loading-screen.is-complete{{opacity:0;transform:none;transition:opacity .14s ease}}.market-loading-screen.is-hidden{{display:none!important}}@media(max-width:768px){{.market-loader-grid,.market-loader-scan,.market-loader-glow,.market-loader-chart i,.market-loader-ring.ring-2,.market-loader-dot{{animation:none!important;filter:none!important;box-shadow:none!important}}.market-loader-ring{{animation:market-spin 1.5s linear infinite;filter:none!important}}.market-loader-chart i{{transform:none!important}}.market-loader-bar i{{animation:none;background:#356B91;background-size:auto}}}}@media(prefers-reduced-motion:reduce){{.market-loader-grid,.market-loader-scan,.market-loader-glow,.market-loader-chart i,.market-loader-ring,.market-loader-dot,.market-loader-bar i{{animation:none!important;transition:none!important}}}}</style>
 {detail_status_html}
 <script>
 (function () {{
@@ -23514,7 +23395,6 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   }}
   function updateVisualProgress() {{
     if (done) return;
-    visualFrame += 1;
     var elapsedSec = (Date.now() - startedAt) / 1000;
     var progress = visualProgress(elapsedSec);
     var bar = document.querySelector('.market-loader-bar i');
@@ -23547,9 +23427,9 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
       else if (si === stageIndex) {{ steps[si].classList.add('active'); if (icon) icon.textContent = '●'; }}
       else if (icon) icon.textContent = '○';
     }}
-    visualTimer = window.requestAnimationFrame(updateVisualProgress);
+    visualTimer = window.setTimeout(updateVisualProgress, 140);
   }}
-  var visualTimer = window.requestAnimationFrame(updateVisualProgress);
+  var visualTimer = window.setTimeout(updateVisualProgress, 40);
 
   function executeFragmentScripts(container) {{
     if (!container) return;
@@ -23566,7 +23446,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   function finish(html) {{
     done = true;
     clearInterval(timer);
-    if (visualTimer) window.cancelAnimationFrame(visualTimer);
+    if (visualTimer) window.clearTimeout(visualTimer);
     var bar = document.querySelector('.market-loader-bar i');
     var pct = document.getElementById('market-loader-percent');
     if (bar) bar.style.width = '100%';
@@ -23600,7 +23480,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
           content.classList.add('market-page-enter');
           window.setTimeout(function() {{ content.classList.remove('market-page-enter'); }}, 380);
         }}
-      }}, 420);
+      }}, 140);
       if ({staged_literal}) {{
         var status = document.getElementById('detail-status');
         if (status) status.style.display = 'block';
@@ -23652,16 +23532,18 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
         }}
         loadDetail();
       }}
-    }}, 70);
+    }}, 0);
   }}
 
   function fetchWithTimeout(url, timeoutMs) {{
-    return Promise.race([
-      fetch(url, {{ credentials: 'same-origin', cache: 'no-store' }}),
-      new Promise(function (_, reject) {{
-        window.setTimeout(function () {{ reject(new Error('載入逾時，請重新整理查看最新狀態')); }}, timeoutMs);
-      }})
-    ]);
+    var timeoutId = null;
+    var request = fetch(url, {{ credentials: 'same-origin', cache: 'no-store' }});
+    var timeout = new Promise(function (_, reject) {{
+      timeoutId = window.setTimeout(function () {{ reject(new Error('載入逾時，請重新整理查看最新狀態')); }}, timeoutMs);
+    }});
+    return Promise.race([request, timeout]).finally(function () {{
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    }});
   }}
   var fragmentParams = new URLSearchParams(window.location.search);
   fragmentParams.set('fragment', '1');
@@ -23699,7 +23581,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     .catch(function (e) {{
       done = true;
       clearInterval(timer);
-      if (visualTimer) window.cancelAnimationFrame(visualTimer);
+      if (visualTimer) window.clearTimeout(visualTimer);
       var message = (e && e.message ? e.message : String(e || '未知錯誤'));
       var marketStatus = document.getElementById('market-loader-status');
       var marketFoot = document.querySelector('.market-loader-foot');
