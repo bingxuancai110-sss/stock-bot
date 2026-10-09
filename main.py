@@ -22,6 +22,7 @@ import threading
 import math
 import struct
 import zlib
+import gzip
 import statistics
 import resource
 import requests
@@ -50,7 +51,7 @@ APP_BUILD = "V203_TREND_INTERACTIVE_RELOAD"
 _HOMEPAGE_SHARED_CACHE = {"key": None, "ts": 0.0, "value": None}
 _HOMEPAGE_JOURNAL_CACHE = {}
 _HOMEPAGE_CACHE_LOCK = threading.RLock()
-_HOMEPAGE_SHARED_TTL = 60.0  # 首頁共享快照 60 秒短快取，避免內部返回重打 Supabase
+_HOMEPAGE_SHARED_TTL = max(60.0, float(os.environ.get("HOMEPAGE_SHARED_TTL_SECONDS", "180")))  # 個股即時價格仍另行更新
 _HOMEPAGE_JOURNAL_TTL = 8.0
 
 
@@ -1402,13 +1403,57 @@ def build_today_change_web_data(user_id):
 app = Flask(__name__)
 
 
+@app.before_request
+def _stockbot_start_request_timer():
+    """測量每次 /web 請求的伺服器總耗時，不記錄網址 token 或個人資料。"""
+    if (request.path or "").startswith("/web"):
+        request.environ["stockbot_request_started_at"] = time.monotonic()
+
+
 @app.after_request
 def _disable_web_page_cache(response):
-    """行情、持股與盤前頁不可由瀏覽器／代理沿用上一個收盤時點的 HTML。"""
-    if request.path.startswith("/web"):
+    """禁用動態 HTML 快取，並輸出總耗時供 Render 日誌與瀏覽器診斷。"""
+    path = request.path or ""
+    if path.startswith("/web"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+
+        # 大型 HTML/JSON fragment 可壓縮到原始大小的一小部分；減少 iPhone 行動網路傳輸，
+        # 只有客戶端明確接受 gzip、內容至少 1 KiB 且尚未編碼時才壓縮。
+        # 這是傳輸層處理，不改 HTML/JS 內容或前端互動。
+        accepts_gzip = "gzip" in (request.headers.get("Accept-Encoding", "").lower())
+        compressible = (response.mimetype.startswith("text/") or
+                        response.mimetype in ("application/json", "application/javascript"))
+        if (accepts_gzip and compressible and response.status_code not in (204, 206, 304)
+                and request.method != "HEAD" and not response.direct_passthrough
+                and not response.headers.get("Content-Encoding")
+                and not response.headers.get("Content-Range")):
+            try:
+                original_body = response.get_data()
+                if len(original_body) >= 1024:
+                    compressed_body = gzip.compress(original_body, compresslevel=5, mtime=0)
+                    if len(compressed_body) < len(original_body):
+                        response.set_data(compressed_body)
+                        response.headers["Content-Encoding"] = "gzip"
+                        response.headers.add("Vary", "Accept-Encoding")
+            except Exception as compression_error:
+                print("⚠️ HTTP gzip 壓縮略過：%s" % compression_error, flush=True)
+
+        started = request.environ.get("stockbot_request_started_at")
+        if started is not None:
+            elapsed_ms = max(0.0, (time.monotonic() - started) * 1000.0)
+            # Server-Timing 可供瀏覽器網路面板讀取；只暴露此請求的毫秒數。
+            response.headers["Server-Timing"] = "app;dur=%.1f" % elapsed_ms
+            key_pages = {"/web/portfolio", "/web/positions", "/web/leaderboard",
+                         "/web/workbench", "/web/screener"}
+            if elapsed_ms >= 800 or path in key_pages:
+                fragment = "1" if request.args.get("fragment") == "1" else "0"
+                size = response.headers.get("Content-Length", "-")
+                encoding = response.headers.get("Content-Encoding", "identity")
+                print("⏱️ HTTP_PAGE path=%s method=%s status=%s fragment=%s ms=%.0f bytes=%s encoding=%s" %
+                      (path, request.method, response.status_code, fragment, elapsed_ms, size, encoding),
+                      flush=True)
     return response
 
 
@@ -8641,12 +8686,13 @@ def normalize_code(raw):
 # 只存在記憶體，重啟就沒了，但那只是回到原本的行為，不影響正確性。
 _suffix_cache = {}
 
-# 即時行情的外部請求是網頁反覆開啟時最明顯的等待來源。
-# 同一個 Render process 內，90 秒內的重整、頁面切換與 fragment 請求
-# 共用同一份結果；這不會把日線資料永久存死，也不會跨日期沿用昨天的行情。
+# 歷史日線（3mo）主要用於走勢、位階與技術欄位；頁面切換不應每次重抓。
+# 依台灣日期與盤中／收盤時段分開快取 5 分鐘，跨日或跨時段自動使用新 key。
+# 有有效的官方 MIS 報價時，get_realtime_stock 仍會覆寫最新價、漲跌幅與最後一根日線，
+# 所以延長的是歷史序列快取，不是把最新官方成交價固定 5 分鐘。可用環境變數調整。
 _realtime_cache = {}
 _realtime_cache_lock = threading.Lock()
-REALTIME_CACHE_SECONDS = 15
+REALTIME_CACHE_SECONDS = max(30, int(os.environ.get("REALTIME_CACHE_SECONDS", "300")))
 _TWSE_MIS_CACHE = {"day": None, "at": 0, "data": {}}
 _TWSE_MIS_CACHE_SECONDS = 3
 _TWSE_MIS_BATCH_SIZE = 80
@@ -9181,8 +9227,8 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
 
     # 收盤後先批次取得官方 MIS 最後成交／市撮價格；同一次頁面請求的
     # 所有檔案共用這份 map，避免首頁與持股頁各自落到不同的 Yahoo 時點。
-    # MIS 那層自己有 15 秒快取，跟盤中輪詢的間隔一致，本來就不會給到太舊的值。
-    # 盤中輪詢要繞過的是 get_realtime_stock 的 90 秒快取，不是 MIS 這層——
+    # MIS 那層自己有短時間快取，跟盤中輪詢的間隔一致，本來就不會給到太舊的值。
+    # 盤中輪詢要繞過的是 get_realtime_stock 的歷史序列快取，不是 MIS 這層——
     # 兩層一起繞過的話，每個使用者每 15 秒都會真的打一次 MIS，
     # 人一多就等於放大請求量。所以這裡分開控制。
     official_quotes = _fetch_twse_mis_quotes(
@@ -18320,7 +18366,7 @@ def cron_warmup():
 
 
 def _warm_current_position_quotes():
-    """預熱目前持股主頁需要的 1d 真實行情，直接填入既有90秒快取。"""
+    """預熱目前持股主頁需要的 1d 真實行情，直接填入既有歷史日線快取。"""
     if taiwan_today().weekday() >= 5:
         return 0, 0, 0, "週末略過"
     user_ids = get_all_position_user_ids()
@@ -18475,7 +18521,7 @@ def _do_warmup():
         done.append("轉折觀察 失敗")
 
     # 今日完整首頁最慢的外部資料是持股即時行情；交易日先預熱到既有
-    # 90 秒記憶體快取，使用者開頁時直接命中。週末不把最新收盤誤當成今日行情。
+    # 分時段記憶體快取，官方報價可覆寫最新價格。週末不把最新收盤誤當成今日行情。
     try:
         user_count, code_count, valid_count, state = _warm_current_position_quotes()
         done.append(f"持股行情 {valid_count}/{code_count} 檔（{user_count} 人，{state}）")
@@ -32845,15 +32891,22 @@ def web_portfolio(uid):
     aux_realized_future = aux_executor.submit(get_realized_trades, uid, 500)
     aux_rank_future = aux_executor.submit(get_fast_rank_summary, uid)
 
-    # 六份共享資料在短時間內會被首頁反覆使用；用 12 秒短 TTL 快取，
-    # 避免首頁重新整理／內部返回時再次打 Supabase。市場即時行情不走這個快取。
-    shared_key = (uid, taiwan_today())
+    # 六份共享資料快取 180 秒，避免頁面切換重複打 Supabase；大盤摘要命中時另行刷新。
+    # 個股即時價格不走這個共享快取，而是使用帶日期／時段的行情快取並疊加官方報價。
+    # 持股內容改變（加碼、減碼、成本調整或賣光）時必須立刻失效，
+    # 避免 180 秒共享快取把變更前的持股相關資料留在首頁。
+    position_signature = tuple(sorted(
+        (str(p.get("code") or ""), str(p.get("shares") or ""), str(p.get("cost") or ""))
+        for p in positions))
+    shared_key = (uid, taiwan_today(), position_signature)
     shared_values = None
+    shared_cache_hit = False
     with _HOMEPAGE_CACHE_LOCK:
         if (_HOMEPAGE_SHARED_CACHE.get("key") == shared_key and
                 time.monotonic() - _HOMEPAGE_SHARED_CACHE.get("ts", 0.0) < _HOMEPAGE_SHARED_TTL):
             shared_values = _HOMEPAGE_SHARED_CACHE.get("value")
             if shared_values is not None:
+                shared_cache_hit = True
                 print("⚡ 首頁共享資料命中短快取")
 
     _home_cp("AUX_FUTURES_STARTED")
@@ -32896,7 +32949,25 @@ def web_portfolio(uid):
             _HOMEPAGE_SHARED_CACHE.update({
                 "key": shared_key, "ts": time.monotonic(), "value": shared_values
             })
-    # shared_loaders 的順序是「今日事件、法人、月營收、估值、產業、大盤」，
+    # 共用快取命中時，前五項（持股相關法人、事件、營收、估值、產業）
+    # 可短暫重用；大盤摘要則單獨刷新，避免延長快取後盤中指數顯示過舊。
+    if shared_cache_hit:
+        try:
+            _taiex_refresh_started = time.monotonic()
+            _taiex_fresh = fetch_taiex_summary()
+            shared_values = list(shared_values)
+            # 若收盤資料尚未確認，明確回傳 None；不能保留較舊的指數數值冒充最新。
+            shared_values[5] = _taiex_fresh if isinstance(_taiex_fresh, dict) and _taiex_fresh else None
+            with _HOMEPAGE_CACHE_LOCK:
+                if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key:
+                    _HOMEPAGE_SHARED_CACHE["value"] = shared_values
+            print("⏱️ 今日大盤摘要更新：%.0fms" %
+                  ((time.monotonic() - _taiex_refresh_started) * 1000), flush=True)
+        except Exception as _taiex_refresh_error:
+            print("⚠️ 大盤摘要即時更新失敗，沿用最近有效快照：%s" %
+                  _taiex_refresh_error, flush=True)
+
+    # shared_loaders 的順序是「法人、今日事件、月營收、估值、產業、大盤」，
     # 但後續首頁變數維持原本的語意順序，避免其他渲染邏輯跟著改。
     inst, daily_context, revenue, valuation, ind_map, taiex = shared_values
     shared_done = time.monotonic()
@@ -40007,6 +40078,133 @@ def handle_message(event):
     else:
         line_bot_api.reply_message(
             event.reply_token, TextSendMessage(text=reply, quick_reply=qr))
+
+@app.route("/web/api/perf-test", methods=["GET"])
+@web_login_required
+def web_api_perf_test(uid):
+    """Authenticated performance probe. Never returns price values, names, tokens, or SQL data.
+
+    GET /web/api/perf-test                  measures DB ping + positions + cache state
+    GET /web/api/perf-test?snapshots=1      additionally times common shared-snapshot reads
+    GET /web/api/perf-test?quotes=1         measures normal 3mo quote path (may populate cache)
+    GET /web/api/perf-test?refresh=1        forces a fresh quote fetch for up to 25 own holdings
+    """
+    total_started = time.monotonic()
+    request_id = "perf-" + secrets.token_hex(4)
+    timings = {}
+    errors = []
+    _db_diag_set(operation="perf_test", request_id=request_id)
+    try:
+        # Cheap DB baseline isolates DB connection/check-out latency from a full page render.
+        t0 = time.monotonic()
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+            cur.close()
+        finally:
+            release_db_connection(conn)
+        timings["db_ping_ms"] = round((time.monotonic() - t0) * 1000, 1)
+
+        t0 = time.monotonic()
+        raw_positions = get_positions(uid)
+        positions = merge_positions(raw_positions)
+        codes = list(dict.fromkeys(str(p.get("code") or "").strip()
+                                   for p in positions if p.get("code")))
+        timings["positions_ms"] = round((time.monotonic() - t0) * 1000, 1)
+
+        # Optional DB snapshot micro-benchmark. It reads metadata only and returns timings/hit state,
+        # never the stored holdings, payload contents, tokens, or source values.
+        snapshot_results = None
+        if request.args.get("snapshots") == "1":
+            snapshot_results = {}
+            for snapshot_key in ("monthly_revenue", "valuation", "stock_info_map", "leaderboard_page"):
+                snapshot_started = time.monotonic()
+                try:
+                    snapshot = _load_shared_data_snapshot(snapshot_key)
+                    snapshot_results[snapshot_key] = {
+                        "ms": round((time.monotonic() - snapshot_started) * 1000, 1),
+                        "hit": bool(snapshot),
+                    }
+                except Exception as exc:
+                    snapshot_results[snapshot_key] = {
+                        "ms": round((time.monotonic() - snapshot_started) * 1000, 1),
+                        "hit": False, "error": str(exc)[:160],
+                    }
+
+        cache_day = taiwan_now().date().isoformat()
+        cache_session = "postclose" if _taiwan_post_close() else "intraday"
+        cache_now = time.time()
+        with _realtime_cache_lock:
+            cached_codes = [
+                code for code in codes
+                if (lambda item: item is not None and
+                    cache_now - item.get("at", 0) < REALTIME_CACHE_SECONDS)(
+                        _realtime_cache.get(f"{code}:3mo:{cache_day}:{cache_session}"))
+            ]
+        refresh = request.args.get("refresh") == "1"
+        run_quotes = refresh or request.args.get("quotes") == "1"
+        tested_codes = codes[:25]
+        valid_quotes = None
+        if run_quotes and tested_codes:
+            t0 = time.monotonic()
+            try:
+                quote_result = get_realtime_stocks_bulk(
+                    tested_codes, workers=12, rng="3mo", force_refresh=refresh)
+                valid_quotes = sum(1 for value in quote_result.values() if isinstance(value, dict))
+            except Exception as exc:
+                errors.append("quotes: " + str(exc)[:240])
+                valid_quotes = 0
+            timings["quotes_3mo_ms"] = round((time.monotonic() - t0) * 1000, 1)
+
+        try:
+            pool_in_use = len(getattr(connection_pool, "_used", {}))
+        except Exception:
+            pool_in_use = None
+        try:
+            # Render uses Linux; ru_maxrss is KiB. This is process peak RSS, not current RSS.
+            peak_memory_mb = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
+        except Exception:
+            peak_memory_mb = None
+
+        timings["total_ms"] = round((time.monotonic() - total_started) * 1000, 1)
+        result = {
+            "ok": True,
+            "request_id": request_id,
+            "server_time": datetime.now(timezone.utc).isoformat(),
+            "path": "/web/api/perf-test",
+            "timings_ms": timings,
+            "shared_snapshot_reads": snapshot_results,
+            "holdings": {"count": len(positions), "unique_codes": len(codes)},
+            "quote_cache": {
+                "range": "3mo", "ttl_seconds": REALTIME_CACHE_SECONDS,
+                "cached_before": len(cached_codes), "needed": len(codes),
+                "tested_count": len(tested_codes) if run_quotes else 0,
+                "valid_results": valid_quotes, "forced_refresh": refresh,
+            },
+            "db_pool": {"in_use_at_response": pool_in_use, "max": DB_POOL_MAX},
+            "process_peak_memory_mb": peak_memory_mb,
+            "errors": errors,
+            "usage": {
+                "baseline": "GET /web/api/perf-test",
+                "shared_snapshots": "GET /web/api/perf-test?snapshots=1",
+                "normal_quotes": "GET /web/api/perf-test?quotes=1",
+                "force_quote_refresh": "GET /web/api/perf-test?refresh=1 (may take several seconds; warms quote cache)",
+            },
+        }
+        print("🔬 PERF_TEST req=%s timings_ms=%s cached=%s/%s refresh=%s" %
+              (request_id, timings, len(cached_codes), len(codes), refresh), flush=True)
+        return jsonify(result)
+    except Exception as exc:
+        timings["total_ms"] = round((time.monotonic() - total_started) * 1000, 1)
+        print("❌ PERF_TEST req=%s failed after %.0fms: %s" %
+              (request_id, timings["total_ms"], exc), flush=True)
+        return jsonify({"ok": False, "request_id": request_id,
+                        "timings_ms": timings, "error": str(exc)[:240]}), 500
+    finally:
+        _db_diag_set(operation="-", request_id="-")
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
