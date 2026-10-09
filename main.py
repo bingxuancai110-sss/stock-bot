@@ -51,8 +51,40 @@ APP_BUILD = "V203_TREND_INTERACTIVE_RELOAD"
 _HOMEPAGE_SHARED_CACHE = {"key": None, "ts": 0.0, "value": None}
 _HOMEPAGE_JOURNAL_CACHE = {}
 _HOMEPAGE_CACHE_LOCK = threading.RLock()
-_HOMEPAGE_SHARED_TTL = max(60.0, float(os.environ.get("HOMEPAGE_SHARED_TTL_SECONDS", "180")))  # 個股即時價格仍另行更新
+_HOMEPAGE_TAIEX_REFRESH_LOCK = threading.Lock()
+_HOMEPAGE_TAIEX_REFRESH_RUNNING = False
+_HOMEPAGE_SHARED_TTL = max(60.0, float(os.environ.get("HOMEPAGE_SHARED_TTL_SECONDS", "300")))  # 個股即時價格仍另行更新
 _HOMEPAGE_JOURNAL_TTL = 8.0
+
+
+def _schedule_homepage_taiex_refresh(shared_key):
+    """在背景更新大盤摘要，不讓單次指數來源等待拖慢首頁導覽。"""
+    global _HOMEPAGE_TAIEX_REFRESH_RUNNING
+    with _HOMEPAGE_TAIEX_REFRESH_LOCK:
+        if _HOMEPAGE_TAIEX_REFRESH_RUNNING:
+            return False
+        _HOMEPAGE_TAIEX_REFRESH_RUNNING = True
+
+    def worker():
+        global _HOMEPAGE_TAIEX_REFRESH_RUNNING
+        try:
+            fresh = fetch_taiex_summary()
+            with _HOMEPAGE_CACHE_LOCK:
+                if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key:
+                    current = _HOMEPAGE_SHARED_CACHE.get("value")
+                    if isinstance(current, (list, tuple)) and len(current) >= 6:
+                        updated = list(current)
+                        updated[5] = fresh if isinstance(fresh, dict) and fresh else None
+                        _HOMEPAGE_SHARED_CACHE["value"] = updated
+            print("⏱️ 今日大盤摘要背景更新完成", flush=True)
+        except Exception as exc:
+            print("⚠️ 大盤摘要背景更新失敗：%s" % exc, flush=True)
+        finally:
+            with _HOMEPAGE_TAIEX_REFRESH_LOCK:
+                _HOMEPAGE_TAIEX_REFRESH_RUNNING = False
+
+    threading.Thread(target=worker, name="homepage-taiex-refresh", daemon=True).start()
+    return True
 
 
 def taiwan_now():
@@ -21629,7 +21661,7 @@ def render_page(title, body, nav_active=None, user_name=None):
 #page-nav-progress-percent{{font-size:14px;font-variant-numeric:tabular-nums;color:#356b91}}
 #page-nav-progress-track{{height:5px;margin-top:10px;border-radius:99px;overflow:hidden;background:#e4ebf1}}
 #page-nav-progress-bar{{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,#356b91,#7ba8c7,#b99a67);transition:width .18s linear}}
-#page-nav-progress-note{{display:block;margin-top:7px;font-size:10.5px;line-height:1.5;color:#77899a}}
+#page-nav-progress-time{{display:block;margin-top:6px;font-size:10.5px;line-height:1.35;color:#71879a;font-variant-numeric:tabular-nums}}
 @media(prefers-reduced-motion:reduce){{#page-nav-progress-card{{animation:none}}#page-nav-progress-bar{{transition:none}}}}
 #page-nav-loader .nav-loader-track{{display:block;height:3px;margin:0;border-radius:0;overflow:hidden;background:rgba(219,231,242,.40)}}
 #page-nav-loader .nav-loader-bar{{position:relative;height:100%;width:0;border-radius:0;background:linear-gradient(90deg,#245B82,#4C91C5,#B99A67);transition:width .12s linear;overflow:hidden}}
@@ -21657,7 +21689,7 @@ def render_page(title, body, nav_active=None, user_name=None):
 <div id="page-nav-progress-card" role="status" aria-live="polite" aria-atomic="true">
   <div id="page-nav-progress-head"><span id="page-nav-progress-title">正在載入頁面…</span><span id="page-nav-progress-percent">0%</span></div>
   <div id="page-nav-progress-track"><div id="page-nav-progress-bar"></div></div>
-  <small id="page-nav-progress-note">超過 3 秒仍在載入；進度為時間估算，完成後才會顯示 100%。</small>
+  <small id="page-nav-progress-time">已等待 0.0 秒</small>
 </div>
 <script id="internal-top-loading-js">
 (function(){{
@@ -21670,7 +21702,7 @@ def render_page(title, body, nav_active=None, user_name=None):
   const progressTitle=document.getElementById('page-nav-progress-title');
   const progressPercent=document.getElementById('page-nav-progress-percent');
   const progressBar=document.getElementById('page-nav-progress-bar');
-  const progressNote=document.getElementById('page-nav-progress-note');
+  const progressTime=document.getElementById('page-nav-progress-time');
   let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0;
 
   function clearProgressTimers(){{
@@ -21680,16 +21712,12 @@ def render_page(title, body, nav_active=None, user_name=None):
   function paintEstimatedProgress(){{
     if(!active)return;
     var sec=Math.max(0,(Date.now()-progressStartedAt)/1000);
-    // 以等待時間作估算，不冒充後端真實進度；最多 92%，收到完整內容才到 100%。
-    var pct=sec<1?18:sec<3?18+(sec-1)*16:sec<6?50+(sec-3)*8:Math.min(92,74+(sec-6)*1.4);
-    pct=Math.min(92,Math.max(8,pct));
+    // 進度只用來呈現等待狀態；完成前保留少量空間，避免誤以為已載入完成。
+    var pct=sec<1?20:sec<3?20+(sec-1)*20:sec<6?60+(sec-3)*9:Math.min(97,87+(sec-6)*1.7);
+    pct=Math.min(97,Math.max(8,pct));
     if(progressPercent)progressPercent.textContent=Math.round(pct)+'%';
     if(progressBar)progressBar.style.width=pct.toFixed(1)+'%';
-    if(progressNote){{
-      if(sec<3)progressNote.textContent='正在等待頁面回應…';
-      else if(sec<8)progressNote.textContent='載入超過 3 秒，正在整理頁面內容；進度為時間估算。';
-      else progressNote.textContent='資料準備時間較久，仍在等待伺服器回應；完成前進度最多顯示 92%。';
-    }}
+    if(progressTime)progressTime.textContent='已等待 '+sec.toFixed(1)+' 秒';
   }}
 
   window.showPageNavLoader=function(label){{
@@ -21700,6 +21728,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     if(progressCard)progressCard.classList.remove('show');
     if(progressPercent)progressPercent.textContent='8%';
     if(progressBar)progressBar.style.width='8%';
+    if(progressTime)progressTime.textContent='已等待 0.0 秒';
     loader.classList.remove('done');loader.classList.add('show');
     // 頁面若在 3 秒內完成，不顯示浮動卡片；超過才顯示百分比。
     progressRevealTimer=window.setTimeout(function(){{
@@ -22010,6 +22039,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     if (pushState) appScrollRestore[window.location.pathname + window.location.search] = previousScroll;
     if (target.pathname === '/web/portfolio') target.searchParams.set('_nav', String(Date.now()));
     var requestUrl = target.pathname + '?' + target.searchParams.toString();
+    var navStartedAt = performance.now();
     var routeTitle = appTitles[target.pathname] || '頁面';
     if (window.showPageNavLoader) window.showPageNavLoader('正在開啟' + routeTitle);
     var routeLoadTimedOut = false;
@@ -22036,12 +22066,13 @@ def render_page(title, body, nav_active=None, user_name=None):
         if (fragment.indexOf('AUTH_EXPIRED') >= 0) {{ window.location.assign(target.pathname + target.search); return; }}
         document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
         appContent.innerHTML = fragment;
+        // 伺服器已回傳並插入頁面主內容時，先收起覆蓋卡片；大型頁面腳本隨後初始化，
+        // 避免文字與資料已可見，載入卡仍蓋在畫面上造成「明明載入完卻卡住」的錯覺。
+        if (window.finishPageNavLoader) window.finishPageNavLoader();
         executeFragmentScripts(appContent);
         if (target.pathname !== '/web/portfolio') {{
             upgradePreviewFragment(target.pathname, target.search);
         }}
-        // HTML 與頁面腳本已插入後，立即完成頂部進度；只留下短暫的輕微進場，不再等待大型遮罩淡出。
-        if (window.finishPageNavLoader) window.finishPageNavLoader();
         appContent.classList.remove('app-page-enter');
         if (!prefersReducedMotion()) {{
           window.requestAnimationFrame(function() {{
@@ -22055,6 +22086,10 @@ def render_page(title, body, nav_active=None, user_name=None):
         target.searchParams.delete('fragment');
         if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', target.pathname + target.search);
         setAppNavState(target.pathname);
+        try {{
+          var navElapsed = Math.round((performance.now() - navStartedAt) * 10) / 10;
+          console.info('[台股 BOT] 頁面切換完成', target.pathname, navElapsed + 'ms');
+        }} catch (ignore) {{}}
         // 切換分頁不再彈出干擾閱讀的成功提示；新頁面直接定位頂部，避免額外平滑捲動延遲。
         window.scrollTo({{top:0, behavior:'auto'}});
       }})
@@ -22934,6 +22969,45 @@ input:focus,select:focus,textarea:focus {{ outline:2px solid rgba(53,107,145,.20
   .rank-situation .rank-situation-item b {{ font-size:22px !important; }}
 }}
 
+/* V247：排行榜改用全站一致的淺藍灰金融配色，冠軍卡不再使用突兀的深藍金框。 */
+.rank-situation {{
+  color:#233D51 !important; background:linear-gradient(145deg,#FFFFFF 0%,#EDF4F8 100%) !important;
+  border:1px solid #CCDCE7 !important; border-radius:15px !important;
+  box-shadow:0 5px 16px rgba(31,63,87,.07) !important;
+}}
+.rank-situation .rank-situation-title h2, .rank-situation .rank-situation-title h3 {{ color:#203C52 !important; }}
+.rank-situation .rank-situation-badge {{ color:#315A76 !important; background:#E4EEF5 !important; border:1px solid #C6D9E7 !important; }}
+.rank-situation .rank-situation-panel, .rank-situation .rank-situation-panel * {{ color:#526C80 !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item small {{ color:#617A8E !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item b {{ color:#203C52 !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item b.up,
+.rank-situation .rank-situation-panel .rank-situation-item b.positive {{ color:#D84A43 !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item b.down,
+.rank-situation .rank-situation-panel .rank-situation-item b.negative {{ color:#07865B !important; }}
+.rank-situation .rank-situation-empty {{ color:#526C80 !important; }}
+.rank-situation .rank-situation-item {{ border-color:#D8E4EC !important; }}
+.rank-card.rank-champion {{
+  background:linear-gradient(145deg,#FFFFFF 0%,#EAF3F9 100%) !important;
+  color:#233D51 !important; border:1px solid #C4D7E5 !important; border-left:4px solid #8AAEC7 !important;
+  border-radius:15px !important; box-shadow:0 6px 18px rgba(31,63,87,.08) !important;
+}}
+.rank-card.rank-champion .name, .rank-card.rank-champion .rank-number {{ color:#203C52 !important; }}
+.rank-card.rank-champion .rank-meta, .rank-card.rank-champion .rank-meta span,
+.rank-card.rank-champion .rank-movement, .rank-card.rank-champion .rank-private {{ color:#617A8E !important; }}
+.rank-card.rank-champion .rank-return.up {{ color:#D84A43 !important; }}
+.rank-card.rank-champion .rank-return.down {{ color:#07865B !important; }}
+.rank-card.rank-champion .rank-return.flat {{ color:#34546B !important; }}
+.rank-card.rank-champion .rank-honour {{ border-bottom-color:#D7E4ED !important; }}
+.rank-card.rank-champion .rank-honour b {{ color:#203C52 !important; }}
+.rank-card.rank-champion .rank-honour small {{ color:#617A8E !important; }}
+.rank-card.rank-champion .rank-detail > summary {{
+  background:#E7F0F6 !important; border:1px solid #C8DCE9 !important; color:#315D7B !important;
+}}
+.rank-card.rank-champion .rank-detail-body > span {{ border-color:#D7E4ED !important; color:#203C52 !important; background:transparent !important; }}
+.rank-card.rank-champion .rank-detail-body > span em {{ color:#617A8E !important; }}
+.rank-card.rank-champion .rank-detail-body > span > .num {{ color:#203C52 !important; }}
+.rank-card.rank-champion .rank-detail-body .num.up {{ color:#D84A43 !important; }}
+.rank-card.rank-champion .rank-detail-body .num.down {{ color:#07865B !important; }}
 /* Ranking list: ledger-style rows, a restrained champion surface, fewer rounded boxes. */
 .rank-card:not(.rank-champion) {{
   margin:0 !important; padding:16px 2px !important; border:0 !important; border-bottom:1px solid #D8E3EC !important;
@@ -23198,6 +23272,51 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 }}
 @media (prefers-reduced-motion:reduce) {{
   *, *::before, *::after {{ transition-duration:.01ms !important; animation-duration:.01ms !important; scroll-behavior:auto !important; }}
+}}
+
+/* V247 final palette override: make champion and leaderboard summary consistent with the cool, light app surfaces. */
+.rank-situation {{
+  color:#233D51 !important; background:linear-gradient(145deg,#FFFFFF 0%,#EDF4F8 100%) !important;
+  border:1px solid #CCDCE7 !important; border-radius:15px !important;
+  box-shadow:0 5px 16px rgba(31,63,87,.07) !important;
+}}
+.rank-situation .rank-situation-title h2, .rank-situation .rank-situation-title h3 {{ color:#203C52 !important; }}
+.rank-situation .rank-situation-badge {{ color:#315A76 !important; background:#E4EEF5 !important; border:1px solid #C6D9E7 !important; }}
+.rank-situation .rank-situation-panel, .rank-situation .rank-situation-panel * {{ color:#526C80 !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item small {{ color:#617A8E !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item b {{ color:#203C52 !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item b.up,
+.rank-situation .rank-situation-panel .rank-situation-item b.positive {{ color:#D84A43 !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item b.down,
+.rank-situation .rank-situation-panel .rank-situation-item b.negative {{ color:#07865B !important; }}
+.rank-situation .rank-situation-empty {{ color:#526C80 !important; }}
+.rank-situation .rank-situation-item {{ border-color:#D8E4EC !important; }}
+.rank-card.rank-champion {{
+  background:linear-gradient(145deg,#FFFFFF 0%,#EAF3F9 100%) !important;
+  color:#233D51 !important; border:1px solid #C4D7E5 !important; border-left:4px solid #8AAEC7 !important;
+  border-radius:15px !important; box-shadow:0 6px 18px rgba(31,63,87,.08) !important;
+}}
+.rank-card.rank-champion .name, .rank-card.rank-champion .rank-number {{ color:#203C52 !important; }}
+.rank-card.rank-champion .rank-meta, .rank-card.rank-champion .rank-meta span,
+.rank-card.rank-champion .rank-movement, .rank-card.rank-champion .rank-private {{ color:#617A8E !important; }}
+.rank-card.rank-champion .rank-return.up {{ color:#D84A43 !important; }}
+.rank-card.rank-champion .rank-return.down {{ color:#07865B !important; }}
+.rank-card.rank-champion .rank-return.flat {{ color:#34546B !important; }}
+.rank-card.rank-champion .rank-honour {{ border-bottom-color:#D7E4ED !important; }}
+.rank-card.rank-champion .rank-honour b {{ color:#203C52 !important; }}
+.rank-card.rank-champion .rank-honour small {{ color:#617A8E !important; }}
+.rank-card.rank-champion .rank-detail > summary {{
+  background:#E7F0F6 !important; border:1px solid #C8DCE9 !important; color:#315D7B !important;
+}}
+.rank-card.rank-champion .rank-detail-body > span {{ border-color:#D7E4ED !important; color:#203C52 !important; background:transparent !important; }}
+.rank-card.rank-champion .rank-detail-body > span em {{ color:#617A8E !important; }}
+.rank-card.rank-champion .rank-detail-body > span > .num {{ color:#203C52 !important; }}
+.rank-card.rank-champion .rank-detail-body .num.up {{ color:#D84A43 !important; }}
+.rank-card.rank-champion .rank-detail-body .num.down {{ color:#07865B !important; }}
+.rank-card.rank-champion .rank-champion-prompt {{ color:#617A8E !important; }}
+@media(max-width:420px) {{
+  .rank-situation {{ padding:14px 11px !important; }}
+  .rank-card.rank-champion {{ padding:17px 13px 13px !important; }}
 }}
 </style>
 </div></body></html>"""
@@ -29286,8 +29405,25 @@ def web_leaderboard(uid):
     me = get_leaderboard_member(uid)
     board_started = time.monotonic()
 
-    # HTTP request 只讀最後一份完整快照；一年行情與機器人模擬改在背景更新。
-    persisted_for_page = _load_persisted_leaderboard_page(allow_stale=True)
+    # V247：短時間內再次切回排行榜，優先用程序記憶體裡已解析的快照，
+    # 避免每次都重新讀取／解析較大的 Supabase JSONB 曲線資料。
+    with _leaderboard_cache_lock:
+        _board_memory = _leaderboard_cache.get((100, 365))
+    _board_memory_fresh = bool(
+        _board_memory and _board_memory.get("value") and
+        time.time() - float(_board_memory.get("at") or 0) < 45
+    )
+    if _board_memory_fresh:
+        persisted_for_page = {
+            "value": _board_memory["value"],
+            "data_date": _board_memory.get("data_date"),
+            "computed_at": None,
+            "source_meta": {"source": "process_memory_cache"},
+        }
+        print("⚡ 排行榜命中 45 秒記憶體快取：%.0fms" %
+              ((time.monotonic() - board_started) * 1000), flush=True)
+    else:
+        persisted_for_page = _load_persisted_leaderboard_page(allow_stale=True)
     if persisted_for_page:
         all_boards, (series_map, market) = persisted_for_page["value"]
         with _leaderboard_cache_lock:
@@ -32935,19 +33071,21 @@ def web_portfolio(uid):
     requested_trend_token = str(request.args.get("t") or "")
 
     aux_executor = ThreadPoolExecutor(max_workers=2)
-    aux_trend_future = aux_executor.submit(
-        render_trend_chart,
-        get_portfolio_snapshots(uid, days=420),
-        requested_period=requested_trend_period,
-        show_benchmark=requested_trend_benchmark,
-        auth_token=requested_trend_token)
+    def _render_home_trend_async():
+        snapshots = get_portfolio_snapshots(uid, days=420)
+        return render_trend_chart(
+            snapshots, requested_period=requested_trend_period,
+            show_benchmark=requested_trend_benchmark,
+            auth_token=requested_trend_token)
+    # V247：快照 DB 讀取也移入 worker，與首頁共享資料載入重疊執行。
+    aux_trend_future = aux_executor.submit(_render_home_trend_async)
     aux_realized_future = aux_executor.submit(get_realized_trades, uid, 500)
     aux_rank_future = aux_executor.submit(get_fast_rank_summary, uid)
 
-    # 六份共享資料快取 180 秒，避免頁面切換重複打 Supabase；大盤摘要命中時另行刷新。
+    # 六份共享資料快取 300 秒，避免頁面切換重複打 Supabase；大盤摘要命中時另行刷新。
     # 個股即時價格不走這個共享快取，而是使用帶日期／時段的行情快取並疊加官方報價。
     # 持股內容改變（加碼、減碼、成本調整或賣光）時必須立刻失效，
-    # 避免 180 秒共享快取把變更前的持股相關資料留在首頁。
+    # 避免首頁共享快取把變更前的持股相關資料留在首頁。
     position_signature = tuple(sorted(
         (str(p.get("code") or ""), str(p.get("shares") or ""), str(p.get("cost") or ""))
         for p in positions))
@@ -33002,23 +33140,10 @@ def web_portfolio(uid):
             _HOMEPAGE_SHARED_CACHE.update({
                 "key": shared_key, "ts": time.monotonic(), "value": shared_values
             })
-    # 共用快取命中時，前五項（持股相關法人、事件、營收、估值、產業）
-    # 可短暫重用；大盤摘要則單獨刷新，避免延長快取後盤中指數顯示過舊。
+    # 快取命中時先用最近一次大盤摘要完成渲染，再背景刷新；不讓指數來源等待卡住首頁。
     if shared_cache_hit:
-        try:
-            _taiex_refresh_started = time.monotonic()
-            _taiex_fresh = fetch_taiex_summary()
-            shared_values = list(shared_values)
-            # 若收盤資料尚未確認，明確回傳 None；不能保留較舊的指數數值冒充最新。
-            shared_values[5] = _taiex_fresh if isinstance(_taiex_fresh, dict) and _taiex_fresh else None
-            with _HOMEPAGE_CACHE_LOCK:
-                if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key:
-                    _HOMEPAGE_SHARED_CACHE["value"] = shared_values
-            print("⏱️ 今日大盤摘要更新：%.0fms" %
-                  ((time.monotonic() - _taiex_refresh_started) * 1000), flush=True)
-        except Exception as _taiex_refresh_error:
-            print("⚠️ 大盤摘要即時更新失敗，沿用最近有效快照：%s" %
-                  _taiex_refresh_error, flush=True)
+        shared_values = list(shared_values)
+        _schedule_homepage_taiex_refresh(shared_key)
 
     # shared_loaders 的順序是「法人、今日事件、月營收、估值、產業、大盤」，
     # 但後續首頁變數維持原本的語意順序，避免其他渲染邏輯跟著改。
@@ -36618,6 +36743,20 @@ function bindFactors(){
   state.loadingSources = state.loadingSources || {};
   var workbenchSources = ['黑馬','雷達','轉折','籌碼','ETF'];
 
+  // 選股台限制背景預載併發：目前可見來源優先，其他快照一次載一個，
+  // 避免 5 個來源加成效 API 同時打到只有 4 個 Gunicorn threads 的服務而互相排隊。
+  function preloadWorkbenchSourcesSequential(sourceList){
+    var queue=(sourceList||[]).slice();
+    function next(){
+      var source=queue.shift();
+      if(!source)return;
+      fetchWorkbenchSource(source).then(function(){
+        if(state.source===source && !state.detailOpen && !state.closingDrawer)render();
+      }).catch(function(){}).finally(next);
+    }
+    next();
+  }
+
   function fetchWorkbenchSource(source){
     if(!source || source==='成效' || source==='我的排行') return Promise.resolve(null);
     if(state.loadedSources[source]) return Promise.resolve({source:source,loaded:true});
@@ -36684,8 +36823,8 @@ function bindFactors(){
   function preloadSource(source){ return fetchWorkbenchSource(source); }
 
   function preloadAllWorkbench(){
-    // 所有資料源一次並行請求；黑馬只是 UI 優先顯示，不會阻塞其他快照。
-    workbenchSources.forEach(function(source){fetchWorkbenchSource(source);});
+    // 成效只占一個背景請求；其他快照依序載入，避免把後端請求塞滿。
+    preloadWorkbenchSourcesSequential(workbenchSources);
     requestReview();
   }
 
@@ -36699,11 +36838,26 @@ function bindFactors(){
     if(target&&target!=='ETF'&&target!=='策略研究'&&sources().indexOf(target)>=0)state.source=target;
     if(target==='策略研究'){state.source='策略研究';render();initialTab='';return;}
 
-    // 黑馬與其他所有快照同時發出請求；黑馬完成後立即把首屏畫出來。
+    // 先載入預設黑馬；若使用者指定其他來源進入，該來源也立即啟動。
+    // 剩餘快照排隊載入，避免同時送出 5 個來源＋成效請求。
     var loadViewEpoch = state.viewEpoch||0;
     var blackHorse = fetchWorkbenchSource('黑馬');
-    workbenchSources.filter(function(source){return source!=='黑馬';}).forEach(function(source){fetchWorkbenchSource(source);});
+    var targetSourcePromise = null;
+    if(target && target!=='黑馬' && workbenchSources.indexOf(target)>=0){
+      targetSourcePromise = fetchWorkbenchSource(target);
+      targetSourcePromise.then(function(){
+        if(target && target!=='黑馬'){
+          state.source=target;
+          state.assetMode=(target==='ETF'?'etf':'stock');
+          initialTab='';
+          if(state.source===target && loadViewEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer)render();
+        }
+      });
+    }
     requestReview();
+    preloadWorkbenchSourcesSequential(workbenchSources.filter(function(source){
+      return source!=='黑馬' && source!==target;
+    }));
 
     blackHorse.then(function(data){
       // 無論黑馬快照成功、失敗或逾時，都必須解除全頁 loading。
@@ -36747,17 +36901,11 @@ function bindFactors(){
       initialTab='';
     });
 
-    // 不是等黑馬完成才載其他資料；所有 Promise 已在上面同時啟動。
-    workbenchSources.filter(function(source){return source!=='黑馬';}).forEach(function(source){
-      fetchWorkbenchSource(source).then(function(){
-        if(target && target===source){
-          state.source=source;
-          state.assetMode=(source==='ETF'?'etf':'stock');
-          initialTab='';
-        }
-        if(state.source===source && loadViewEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer) render();
-      });
-    });
+    // 指定來源的請求已在上方優先啟動；其餘來源由背景佇列逐一補齊。
+    // 這裡刻意不再 forEach 全部來源，避免重複啟動多個慢 API。
+    if(targetSourcePromise){
+      targetSourcePromise.catch(function(){});
+    }
   }
   document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':(state.assetMode==='lab'?'策略研究':'黑馬');state.query='';render();if(state.assetMode!=='lab')loadSource(state.source);};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){if(state.assetMode==='lab'){loadStrategyLab(true);}else load();};document.getElementById('wb-lab-refresh').onclick=function(){loadStrategyLab(true);};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();loadSource(state.source);}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
   // 點擊保險：即使 rowsEl 被其他重新渲染／事件處理影響，仍由捕獲階段直接開啟詳情。
@@ -38067,11 +38215,34 @@ def web_workbench_snapshot(uid):
         return _workbench_json_response({"ok": False,"error": "工作台首屏暫時無法載入；沒有顯示推測資料。"}, 503)
 
 
+_WORKBENCH_SOURCE_PAYLOAD_CACHE = {}
+_WORKBENCH_SOURCE_PAYLOAD_CACHE_LOCK = threading.RLock()
+_WORKBENCH_SOURCE_PAYLOAD_CACHE_MAX = 80
+
+
 @app.route("/web/api/workbench/source")
 @web_login_required
 def web_workbench_source(uid):
+    source = str(request.args.get("source") or "").strip()
+    # 來源快照更新頻率遠低於使用者切頁頻率；短暫快取避免重複搶 DB 連線。
+    # 持股只快取 10 秒，其他依已保存快照顯示的分頁快取 25 秒。
+    ttl = 10 if source == "持股" else 25
+    cache_key = (str(uid), source)
+    now = time.monotonic()
+    with _WORKBENCH_SOURCE_PAYLOAD_CACHE_LOCK:
+        cached = _WORKBENCH_SOURCE_PAYLOAD_CACHE.get(cache_key)
+        if cached and now - cached[0] < ttl:
+            print("⚡ 工作台來源命中短快取：%s" % source, flush=True)
+            return _workbench_json_response(cached[1])
     try:
-        return _workbench_json_response(_workbench_source_payload(uid, request.args.get("source")))
+        payload = _workbench_source_payload(uid, source)
+        if isinstance(payload, dict) and payload.get("ok"):
+            with _WORKBENCH_SOURCE_PAYLOAD_CACHE_LOCK:
+                if len(_WORKBENCH_SOURCE_PAYLOAD_CACHE) >= _WORKBENCH_SOURCE_PAYLOAD_CACHE_MAX:
+                    oldest = min(_WORKBENCH_SOURCE_PAYLOAD_CACHE, key=lambda k: _WORKBENCH_SOURCE_PAYLOAD_CACHE[k][0])
+                    _WORKBENCH_SOURCE_PAYLOAD_CACHE.pop(oldest, None)
+                _WORKBENCH_SOURCE_PAYLOAD_CACHE[cache_key] = (time.monotonic(), payload)
+        return _workbench_json_response(payload)
     except Exception as exc:
         print(f"❌ 工作台分頁 API 失敗（uid={uid}）：{exc}")
         return _workbench_json_response({"ok":False,"error":"此分頁暫時無法載入；其他分頁不受影響。"},503)
