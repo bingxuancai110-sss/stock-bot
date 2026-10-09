@@ -21067,6 +21067,111 @@ def render_page(title, body, nav_active=None, user_name=None):
 資料來源：臺灣證券交易所、櫃買中心、Yahoo Finance。作者：蔡秉軒
 </footer>
 {bottom_nav}
+
+<style id="visual-refresh-v234">
+/* V234 VISUAL-ONLY REFRESH
+   Only presentation overrides: no data, calculations, routes, event handlers or DOM behavior changed. */
+:root {{
+  --paper:#F3F6FA !important;
+  --paper-2:#EAF0F6 !important;
+  --card:#FFFFFF !important;
+  --ink:#172B40 !important;
+  --ink-soft:#52697E !important;
+  --ink-faint:#7F91A4 !important;
+  --rule:#D9E3EC !important;
+  --sep:#E8EEF4 !important;
+  --up:#D83D35 !important;
+  --down:#0B8758 !important;
+  --brass:#356B91 !important;
+  --brass-2:#78A7CC !important;
+  --hero:#172B40 !important;
+  --hero-soft:#254968 !important;
+  --gold:#C79A45 !important;
+  --radius:16px !important;
+}}
+html {{ background:#F3F6FA !important; }}
+body {{ background:#F3F6FA !important; color:#172B40 !important; }}
+.wrap {{ max-width:760px !important; }}
+.app-header {{ border-bottom:1px solid #DCE5EE !important; }}
+.app-header .eyebrow, header .eyebrow {{ color:#47779F !important; letter-spacing:.19em !important; font-weight:850 !important; }}
+.app-header h1, header h1 {{ color:#172B40 !important; letter-spacing:-.025em !important; font-weight:850 !important; }}
+.app-header .dateline, header .dateline {{ color:#71859A !important; }}
+.card,.panel,.section-card,.stat-card,.position-card,.holding-card,.leaderboard-card,.trade-card,
+.daily-card,.more-group,.rank-spotlight,.chips-section,.position-journal,.position-history,
+.review-details,.portfolio-chart-card,.contribution-card,.rank-situation,.exright-card {{
+  background:#FFFFFF !important;
+  border:1px solid #DCE5EE !important;
+  border-radius:16px !important;
+  box-shadow:0 4px 16px rgba(23,43,64,.045) !important;
+}}
+.section-head {{ border-left-color:#477DA5 !important; padding-left:12px !important; }}
+.section-head h2,.daily-section-title,.position-journal-head h2,.position-history-head h2 {{ color:#1A3550 !important; font-weight:800 !important; }}
+.section-note,.muted,.help-text {{ color:#647A90 !important; }}
+.tabs a,.tab-button,.filter-chip {{ background:#EAF1F7 !important; color:#3D5D79 !important; border:1px solid #D8E4EE !important; border-radius:10px !important; box-shadow:none !important; }}
+.tabs a.on,.tab-button.active,.filter-chip.active {{ background:#356B91 !important; color:#FFFFFF !important; border-color:#356B91 !important; }}
+button,.btn {{ border-radius:11px !important; font-weight:750 !important; box-shadow:0 2px 7px rgba(31,73,105,.10) !important; }}
+input,select,textarea {{ background:#FFFFFF !important; color:#172B40 !important; border-color:#CBD9E6 !important; border-radius:9px !important; }}
+input:focus,select:focus,textarea:focus {{ outline:2px solid rgba(53,107,145,.20) !important; border-color:#356B91 !important; }}
+.callout,.daily-complete-sync,.app-fragment-status,.position-journal-note,.position-history-note {{ background:#F5F9FC !important; border-color:#DCE7F0 !important; color:#52697E !important; }}
+/* Today: consistent navy-blue hero instead of a separate orange/brown theme. */
+.daily-hero,.daily-fast-hero,.daily-fast-hero-copy {{
+  background:linear-gradient(135deg,#173B5C 0%,#245E88 62%,#477FA6 100%) !important;
+  color:#FFFFFF !important;
+  border-radius:18px !important;
+  box-shadow:0 8px 22px rgba(23,59,92,.14) !important;
+}}
+.daily-hero .eyebrow,.daily-fast-hero .eyebrow,.daily-fast-hero-copy .eyebrow {{ color:#DCECF8 !important; }}
+.daily-fast-finance-visual {{ background:radial-gradient(circle at 78% 20%,rgba(89,164,213,.22),transparent 34%),linear-gradient(135deg,#173B5C 0%,#245E88 62%,#477FA6 100%) !important; }}
+.daily-fast-panel {{ border-color:rgba(53,107,145,.18) !important; background:rgba(255,255,255,.08) !important; }}
+.daily-fast-panel-title {{ border-color:rgba(255,255,255,.18) !important; }}
+.daily-fast-panel-title b,.daily-fast-panel-title a,.daily-fast-panel-title span {{ color:#F3F8FC !important; }}
+.daily-fast-quote {{ border-color:#DCE7F0 !important; background:#F6F9FC !important; }}
+.daily-hero p,.daily-fast-hero p,.daily-fast-hero-copy p {{ color:#EEF6FC !important; }}
+.market-strip,.daily-fast-summary-stack,.daily-fast-panel {{ border-radius:14px !important; }}
+.daily-fast-panel,.market-strip .market-tile,.market-summary,.portfolio-summary,.summary-grid .summary-item {{ box-shadow:none !important; }}
+/* Financial numbers: preserve Taiwan-market red-up / green-down semantics. */
+.up,.positive,.gain,.is-up {{ color:#D83D35 !important; }}
+.down,.negative,.loss,.is-down {{ color:#0B8758 !important; }}
+.flat,.neutral {{ color:#7F91A4 !important; }}
+.num,.price,.chg,.rank-return,.history-return,.position-journal-cell b,.position-journal-pnl {{
+  font-variant-numeric:tabular-nums !important;
+  font-feature-settings:"tnum" 1 !important;
+}}
+/* Holdings and operation journal: clean dividers, less nested-box appearance. */
+.position-card,.position-fast-card,.stock-card,.stock-row,.quote-card,.watch-card {{ border-radius:14px !important; box-shadow:0 2px 10px rgba(23,43,64,.035) !important; }}
+.position-journal,.position-history {{ overflow:hidden !important; }}
+.position-journal-head,.position-history-head {{ background:#FFFFFF !important; border-bottom:1px solid #E5ECF2 !important; }}
+.position-journal-note,.position-journal-category,.position-journal-table-head,.position-history-table-head {{ background:#F5F8FB !important; }}
+.position-journal-row,.position-history-row,.stock-group {{ border-color:#E5ECF2 !important; }}
+.position-journal-badge {{ border-radius:999px !important; }}
+/* Trend chart: light canvas, clearer series contrast, without changing SVG/data/interaction. */
+.portfolio-chart-card,.chart-card,.chart-panel {{ background:#FFFFFF !important; border-radius:16px !important; }}
+.trend-chart,.trend-chart-viewport,.trend-chart-inner,.portfolio-trend-wrap {{ background:#F9FBFD !important; border-radius:12px !important; }}
+.portfolio-trend-svg .grid {{ stroke:#E2EAF1 !important; }}
+.portfolio-trend-svg .zero {{ stroke:#8FA1B1 !important; }}
+.portfolio-trend-svg .tick,.portfolio-trend-svg .date {{ fill:#657B90 !important; }}
+/* Workbench: keep dense research data readable, but reduce visual noise. */
+.wb-stock-card,.wb-result-card,.wb-card,.watchlist-card {{ border-color:#DCE5EE !important; border-radius:14px !important; box-shadow:0 2px 9px rgba(23,43,64,.035) !important; }}
+.wb-stock-card:hover,.wb-result-card:hover,.wb-card:hover,.watchlist-card:hover {{ box-shadow:0 5px 15px rgba(23,43,64,.07) !important; }}
+.wb-chip-chart-host,.chips-inline-chart,.chips-chart-view,.chips-chart-wrap {{ border-color:#DFE8F0 !important; background:#FAFCFE !important; }}
+.wb-chip-chart-btn,.chips-chart-tab {{ background:#F1F6FA !important; color:#365B7A !important; border-color:#D7E3ED !important; }}
+.wb-chip-chart-tab.active {{ background:#356B91 !important; color:#FFFFFF !important; border-color:#356B91 !important; }}
+/* Leaderboard: reserve gold for the champion and keep the rest of the page neutral. */
+.rank-card {{ border-color:#DCE5EE !important; border-radius:14px !important; background:#FFFFFF !important; box-shadow:0 2px 10px rgba(23,43,64,.035) !important; }}
+.rank-card.rank-champion {{ border-color:#D8B96F !important; background:linear-gradient(135deg,#FFF9E8 0%,#F9EFD5 100%) !important; box-shadow:0 6px 18px rgba(137,103,40,.11) !important; }}
+.rank-card.rank-champion:before {{ border-color:rgba(181,137,43,.28) !important; }}
+.rank-card:not(.rank-champion) .rank-return {{ color:#D83D35 !important; }}
+.history-period {{ border-color:#DCE5EE !important; border-radius:14px !important; background:#FFFFFF !important; }}
+.history-period-head {{ background:#EDF3F8 !important; border-color:#DCE5EE !important; }}
+.history-rank-row {{ border-color:#E8EEF4 !important; }}
+.history-more, .history-more summary {{ color:#356B91 !important; }}
+/* Bottom navigation: clearer selected state and restrained glass effect. */
+.app-bottom-nav {{ border-top:1px solid rgba(216,227,237,.96) !important; box-shadow:0 -6px 22px rgba(23,43,64,.055) !important; }}
+.app-bottom-nav a.on,.bottom-inner a.on {{ color:#285E8C !important; background:#EAF2F9 !important; border:1px solid #D8E7F3 !important; }}
+/* Respect reduced-motion preferences and avoid decorative movement affecting usability. */
+@media (prefers-reduced-motion:reduce) {{ *,*::before,*::after {{ animation-duration:.01ms !important; transition-duration:.01ms !important; scroll-behavior:auto !important; }} }}
+
+</style>
 </div></body></html>"""
 
 
@@ -27085,7 +27190,7 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
                     continue
                 users.append({"user_id": uid, "nickname": nick, "return_pct": period_ret})
             users.sort(key=lambda x: x['return_pct'], reverse=True)
-            result.append({"period": period, "rows": users[:5]})
+            result.append({"period": period, "rows": users})
         return result
 
     out['months'] = build('month', months)
@@ -28021,18 +28126,29 @@ def web_leaderboard(uid):
 .settlement-wrap{margin:0 0 18px;padding:16px;border:1px solid #d8c28d;border-radius:20px;background:linear-gradient(145deg,#fff8dd,#fffdf7);box-shadow:0 8px 22px rgba(120,95,35,.08)}
 .settlement-kicker{font-size:9px;letter-spacing:.18em;color:#9a7736;font-weight:900}.settlement-wrap h2{margin:5px 0 4px}.settlement-wrap>p{margin:0 0 12px;color:#766a55;font-size:12px;line-height:1.6}
 .settlement-report-card{border:1px solid #e4d2a5;border-radius:16px;background:#fffef8;padding:14px;margin-top:10px}.settlement-report-top{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d6538;font-weight:900}.settlement-report-top small{color:#8b8f98;font-weight:600}.settlement-report-title{margin-top:12px;font-size:15px;display:flex;align-items:center;gap:5px}.settlement-report-title b{font-size:12px;color:#7c8796;font-weight:700}.settlement-report-title em{margin-left:auto;font-style:normal;color:#9a8a6d;font-size:10.5px}.scorecard-rank{font-size:20px;font-weight:950;color:#18263a}.settlement-report-main{text-align:center;padding:9px 0 11px}.settlement-report-main strong{display:block;font-size:34px;line-height:1.05;font-weight:950}.settlement-report-main span{display:block;margin-top:5px;color:#7b8591;font-size:12px}.settlement-report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.settlement-report-grid div{padding:9px;border-radius:11px;background:#faf8f0;border:1px solid #eee6d5}.settlement-report-grid small{display:block;color:#7f8997;font-size:10.5px}.settlement-report-grid b{display:block;margin-top:3px;font-size:17px}.settlement-report-grid span{display:block;margin-top:2px;color:#9aa1aa;font-size:9.5px}.settlement-report-period{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding:9px 10px;border-radius:10px;background:#fbf8ef;color:#8a7b60;font-size:10.5px}.settlement-report-period b{color:#5d6570;font-size:10.5px}.settlement-report-foot{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #eee6d5;color:#7b8794;font-size:10.5px}.scorecard-chart{margin:4px 0 12px;padding:10px 10px 7px;border:1px solid #e8edf2;border-radius:12px;background:#fbfcfd}.scorecard-chart-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;color:#344255;font-size:11px}.scorecard-chart-head span{color:#8b97a5;font-weight:600}.scorecard-chart svg{display:block;width:100%;height:auto}.scorecard-chart-legend{display:flex;gap:14px;justify-content:flex-end;color:#8b97a5;font-size:9.5px}.scorecard-chart-legend span{display:flex;align-items:center;gap:4px}.scorecard-chart-legend i{display:inline-block;width:15px;height:3px;border-radius:3px}.legend-user{background:#1769aa}.legend-market{background:#a7b0ba}.scorecard-chart-empty{margin:4px 0 12px;padding:22px 10px;text-align:center;border:1px dashed #dfe5eb;border-radius:12px;color:#8b97a5;font-size:11px;background:#fbfcfd}
-.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>"""
+.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}.history-more{border-top:1px solid var(--rule);background:var(--paper)}.history-more summary{list-style:none;cursor:pointer;padding:11px 12px;color:#1769aa;font-size:12px;font-weight:800;text-align:center}.history-more summary::-webkit-details-marker{display:none}.history-more summary:before{content:"⌄ ";font-size:13px}.history-more[open] summary:before{content:"⌃ "}.history-more-body{border-top:1px solid rgba(120,130,140,.12)}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
     def render_history_table(items, empty_text):
         if not items: return f'<div class="empty">{empty_text}</div>'
         blocks=[]
         for item in items:
-            rows=[]
-            for i,r in enumerate(item['rows'],1):
-                cls='up' if r['return_pct']>=0 else 'down'
-                rows.append(f'<div class="history-rank-row"><span class="history-rank">{i}</span><span class="history-name">{safe_html_text(r["nickname"])}</span><b class="num {cls}">{r["return_pct"]:+.2f}%</b></div>')
-            blocks.append(f'<div class="history-period"><div class="history-period-head"><b>{html.escape(item["period"])}</b><span>Top 5</span></div>{"".join(rows) or "<div class=history-empty>資料不足</div>"}</div>')
+            all_rows = item['rows'] or []
+            visible_rows = all_rows[:5]
+            def _history_row(i, r):
+                cls = 'up' if r['return_pct'] >= 0 else 'down'
+                return (f'<div class="history-rank-row"><span class="history-rank">{i}</span>'
+                        f'<span class="history-name">{safe_html_text(r["nickname"])}</span>'
+                        f'<b class="num {cls}">{r["return_pct"]:+.2f}%</b></div>')
+            rows = ''.join(_history_row(i, r) for i, r in enumerate(visible_rows, 1))
+            rest_rows = all_rows[5:]
+            more_html = ''
+            if rest_rows:
+                more_rows = ''.join(_history_row(i, r) for i, r in enumerate(rest_rows, 6))
+                more_html = (f'<details class="history-more">'
+                             f'<summary>查看其餘 {len(rest_rows)} 名</summary>'
+                             f'<div class="history-more-body">{more_rows}</div></details>')
+            blocks.append(f'<div class="history-period"><div class="history-period-head"><b>{html.escape(item["period"])}</b><span>Top 5</span></div>{rows or "<div class=history-empty>資料不足</div>"}{more_html}</div>')
         return '<div class="history-grid">'+''.join(blocks)+'</div>'
     history_html = f"""<section class="leaderboard-history" id="leaderboard-history">
   <div class="section-head"><h2>📚 歷史排行榜</h2><span class="section-note">已結算才會封存</span></div>
