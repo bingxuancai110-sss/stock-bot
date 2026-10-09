@@ -21622,6 +21622,15 @@ def render_page(title, body, nav_active=None, user_name=None):
 #page-nav-loader .nav-loader-card{{width:100%;height:3px;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}}
 #page-nav-loader .nav-loader-head{{display:none!important}}
 #page-nav-loader .nav-loader-title,#page-nav-loader .nav-loader-spinner,#page-nav-loader .nav-loader-percent{{display:none!important}}
+/* V246：頁內切換超過 3 秒，顯示有百分比與階段文字的提示；百分比為估算，未完成前不會到 100%。 */
+#page-nav-progress-card{{position:fixed;z-index:2147483000;top:calc(env(safe-area-inset-top,0px) + 14px);left:50%;transform:translateX(-50%);width:min(390px,calc(100vw - 28px));padding:13px 15px;border:1px solid #d8e3ec;border-radius:13px;background:rgba(250,252,254,.98);box-shadow:0 8px 26px rgba(29,41,57,.16);color:#27445d;display:none;box-sizing:border-box;pointer-events:none}}
+#page-nav-progress-card.show{{display:block;animation:load-card-in .16s ease-out}}
+#page-nav-progress-head{{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:800}}
+#page-nav-progress-percent{{font-size:14px;font-variant-numeric:tabular-nums;color:#356b91}}
+#page-nav-progress-track{{height:5px;margin-top:10px;border-radius:99px;overflow:hidden;background:#e4ebf1}}
+#page-nav-progress-bar{{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,#356b91,#7ba8c7,#b99a67);transition:width .18s linear}}
+#page-nav-progress-note{{display:block;margin-top:7px;font-size:10.5px;line-height:1.5;color:#77899a}}
+@media(prefers-reduced-motion:reduce){{#page-nav-progress-card{{animation:none}}#page-nav-progress-bar{{transition:none}}}}
 #page-nav-loader .nav-loader-track{{display:block;height:3px;margin:0;border-radius:0;overflow:hidden;background:rgba(219,231,242,.40)}}
 #page-nav-loader .nav-loader-bar{{position:relative;height:100%;width:0;border-radius:0;background:linear-gradient(90deg,#245B82,#4C91C5,#B99A67);transition:width .12s linear;overflow:hidden}}
 #page-nav-loader.show .nav-loader-bar{{width:38%!important;animation:nav-progress-sweep 1.05s ease-in-out infinite}}
@@ -21645,6 +21654,11 @@ def render_page(title, body, nav_active=None, user_name=None):
     <div class="nav-loader-track"><div class="nav-loader-bar" id="page-nav-loader-bar"></div></div>
   </div>
 </div>
+<div id="page-nav-progress-card" role="status" aria-live="polite" aria-atomic="true">
+  <div id="page-nav-progress-head"><span id="page-nav-progress-title">正在載入頁面…</span><span id="page-nav-progress-percent">0%</span></div>
+  <div id="page-nav-progress-track"><div id="page-nav-progress-bar"></div></div>
+  <small id="page-nav-progress-note">超過 3 秒仍在載入；進度為時間估算，完成後才會顯示 100%。</small>
+</div>
 <script id="internal-top-loading-js">
 (function(){{
   const loader=document.getElementById('page-nav-loader');
@@ -21652,28 +21666,65 @@ def render_page(title, body, nav_active=None, user_name=None):
   const bar=document.getElementById('page-nav-loader-bar');
   const pct=document.getElementById('page-nav-loader-percent');
   const title=document.getElementById('page-nav-loader-title');
-  let active=false,hideTimer=0,resetTimer=0;
+  const progressCard=document.getElementById('page-nav-progress-card');
+  const progressTitle=document.getElementById('page-nav-progress-title');
+  const progressPercent=document.getElementById('page-nav-progress-percent');
+  const progressBar=document.getElementById('page-nav-progress-bar');
+  const progressNote=document.getElementById('page-nav-progress-note');
+  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0;
 
-  // 進度線完全交給 CSS 動畫，不在載入期間持續執行 JS 計時器。
+  function clearProgressTimers(){{
+    window.clearTimeout(progressRevealTimer);window.clearInterval(progressTimer);
+    progressRevealTimer=0;progressTimer=0;
+  }}
+  function paintEstimatedProgress(){{
+    if(!active)return;
+    var sec=Math.max(0,(Date.now()-progressStartedAt)/1000);
+    // 以等待時間作估算，不冒充後端真實進度；最多 92%，收到完整內容才到 100%。
+    var pct=sec<1?18:sec<3?18+(sec-1)*16:sec<6?50+(sec-3)*8:Math.min(92,74+(sec-6)*1.4);
+    pct=Math.min(92,Math.max(8,pct));
+    if(progressPercent)progressPercent.textContent=Math.round(pct)+'%';
+    if(progressBar)progressBar.style.width=pct.toFixed(1)+'%';
+    if(progressNote){{
+      if(sec<3)progressNote.textContent='正在等待頁面回應…';
+      else if(sec<8)progressNote.textContent='載入超過 3 秒，正在整理頁面內容；進度為時間估算。';
+      else progressNote.textContent='資料準備時間較久，仍在等待伺服器回應；完成前進度最多顯示 92%。';
+    }}
+  }}
+
   window.showPageNavLoader=function(label){{
-    active=true;
+    active=true;progressStartedAt=Date.now();clearProgressTimers();
     window.clearTimeout(hideTimer);window.clearTimeout(resetTimer);
     if(title){{ title.textContent=label||'正在開啟頁面'; loader.setAttribute('aria-label',title.textContent); }}
-    loader.classList.remove('done');
-    loader.classList.add('show');
+    if(progressTitle)progressTitle.textContent=label||'正在開啟頁面';
+    if(progressCard)progressCard.classList.remove('show');
+    if(progressPercent)progressPercent.textContent='8%';
+    if(progressBar)progressBar.style.width='8%';
+    loader.classList.remove('done');loader.classList.add('show');
+    // 頁面若在 3 秒內完成，不顯示浮動卡片；超過才顯示百分比。
+    progressRevealTimer=window.setTimeout(function(){{
+      if(!active)return;
+      if(progressCard)progressCard.classList.add('show');
+      paintEstimatedProgress();
+      progressTimer=window.setInterval(paintEstimatedProgress,180);
+    }},3000);
   }};
 
   window.finishPageNavLoader=function(){{
     if(!active)return;
-    active=false;
+    active=false;clearProgressTimers();
+    if(progressPercent)progressPercent.textContent='100%';
+    if(progressBar)progressBar.style.width='100%';
     loader.classList.add('done');
     hideTimer=window.setTimeout(function(){{
       loader.classList.remove('show');
+      if(progressCard)progressCard.classList.remove('show');
       resetTimer=window.setTimeout(function(){{
         loader.classList.remove('done');
         if(bar)bar.style.width='0%';
+        if(progressBar)progressBar.style.width='0%';
       }},100);
-    }},100);
+    }},120);
   }};
 
   // 持股五大因子放在持久 shell，fragment 導航後仍可用；避免長 inline JS 造成 HTML 引號解析錯誤。
@@ -21734,6 +21785,8 @@ def render_page(title, body, nav_active=None, user_name=None):
 
   window.addEventListener('pageshow',function(){{
     if(active)finishPageNavLoader();
+    if(progressCard)progressCard.classList.remove('show');
+    clearProgressTimers();
   }});
 }})();
 </script><div class="wrap">
