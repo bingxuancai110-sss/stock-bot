@@ -22940,6 +22940,208 @@ input:focus,select:focus,textarea:focus {{ outline:2px solid rgba(53,107,145,.20
 .rank-list-caption {{ color:#536D82 !important; font-size:12px !important; font-weight:800 !important; }}
 .rank-source-note {{ color:#71869A !important; font-size:11px !important; line-height:1.5 !important; }}
 
+
+/* V242: interaction-first finance UI. Visual and touch feedback only; no data/handler changes. */
+:root {{
+  --ink:#132B40 !important;
+  --ink-soft:#405D73 !important;
+  --ink-faint:#617A8E !important;
+  --rule:#C9D7E2 !important;
+  --brand:#155C8B !important;
+  --paper:#FFFFFF !important;
+  --paper-2:#EFF4F8 !important;
+}}
+html, body {{ background:#F1F5F9 !important; color:#132B40 !important; }}
+body {{ -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }}
+.wrap {{ background:transparent !important; }}
+.app-header, header.app-header {{
+  background:#F8FAFC !important; color:#132B40 !important;
+  border-bottom:1px solid #C5D5E1 !important; box-shadow:0 3px 12px rgba(17,45,67,.08) !important;
+}}
+.app-header .eyebrow, header .eyebrow {{ color:#155C8B !important; }}
+.app-header h1, header h1 {{ color:#132B40 !important; }}
+.app-header .dateline, header .dateline {{ color:#405D73 !important; }}
+
+/* A consistent visual hierarchy: labels are quiet, values are high-contrast. */
+.daily-section-title h2, .section-head h2, .position-journal-head h2,
+.position-history-head h2, .rank-chart-head h2 {{ color:#132B40 !important; font-weight:900 !important; }}
+.section-note, .section-subtitle, .help-text, .muted, .rank-list-caption,
+.rank-source-note, .history-note {{ color:#405D73 !important; }}
+input, select, textarea {{ color:#132B40 !important; background:#FFFFFF !important; border-color:#B9CAD7 !important; }}
+input:focus-visible, select:focus-visible, textarea:focus-visible,
+button:focus-visible, a:focus-visible, summary:focus-visible {{
+  outline:3px solid rgba(21,92,139,.38) !important; outline-offset:2px !important;
+}}
+a, button, summary, select, .filter-chip, .tab-button {{
+  -webkit-tap-highlight-color:transparent !important; touch-action:manipulation;
+}}
+button, .btn, .filter-chip, .tab-button {{ font-weight:800 !important; }}
+button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:brightness(.96); }}
+
+/* Home: remove extra nested-card feeling and strengthen the market/portfolio hierarchy. */
+.daily-card, .home-portfolio-card, .portfolio-trend-card {{
+  background:#FFFFFF !important; border:1px solid #CFDCE6 !important;
+  border-radius:16px !important; box-shadow:0 3px 12px rgba(19,43,64,.035) !important;
+}}
+.daily-section-title {{ border-bottom:1px solid #D8E3EC !important; padding-bottom:11px !important; }}
+.home-portfolio-grid {{ background:#EDF3F7 !important; border-radius:12px !important; padding:8px !important; gap:0 !important; }}
+.home-metric {{ padding:10px 9px !important; min-width:0 !important; }}
+.home-metric + .home-metric {{ border-left:1px solid #C9D7E2 !important; }}
+.home-metric small, .home-metric label {{ color:#405D73 !important; font-weight:800 !important; }}
+.home-metric b, .home-metric strong {{ color:#132B40 !important; font-weight:950 !important; }}
+.home-privacy-toggle {{ min-width:44px !important; width:44px !important; min-height:44px !important; height:44px !important; border-radius:10px !important; }}
+.daily-complete-sync {{ border-color:#B8D0E0 !important; background:#EAF3F9 !important; }}
+
+/* Holdings: ledger rows, no floating tiles or hover lift. Keep all existing detail controls. */
+.position-card, .position-fast-card {{
+  padding:16px 4px !important; border:0 !important; border-bottom:1px solid #C9D7E2 !important;
+  border-radius:0 !important; box-shadow:none !important; background:transparent !important; transform:none !important;
+}}
+.position-card:hover, .position-fast-card:hover {{ box-shadow:none !important; transform:none !important; }}
+.position-card .position-price, .position-fast-card .position-price {{
+  color:#132B40 !important; font-size:clamp(21px,5.5vw,28px) !important;
+  font-weight:950 !important; font-variant-numeric:tabular-nums !important;
+}}
+.position-card .muted, .position-fast-card .muted {{ color:#405D73 !important; }}
+.position-card .position-detail summary, .position-fast-card .position-detail summary,
+.position-card details > summary, .position-fast-card details > summary {{ min-height:44px !important; }}
+
+/* Stock screener: true watchlist rows, readable data columns, controls visibly separate from content. */
+.wb-row-wrap {{ background:transparent !important; border:0 !important; border-radius:0 !important; box-shadow:none !important; }}
+.wb-row.wb-rich-row {{
+  background:#FFFFFF !important; border:0 !important; border-bottom:1px solid #C9D7E2 !important;
+  border-radius:0 !important; box-shadow:none !important; margin:0 !important; transform:none !important;
+}}
+.wb-row.wb-rich-row:nth-child(even) {{ background:#F7F9FB !important; }}
+.wb-row.wb-rich-row:hover {{ box-shadow:none !important; transform:none !important; }}
+.wb-row.wb-rich-row .wb-name {{ color:#132B40 !important; font-weight:900 !important; }}
+.wb-row.wb-rich-row .wb-small, .wb-row.wb-rich-row .wb-code,
+.wb-row.wb-rich-row .wb-industry, .wb-row.wb-rich-row .wb-fact-line {{ color:#405D73 !important; }}
+.wb-row.wb-rich-row .wb-price-block, .wb-row.wb-rich-row .wb-score-block {{ min-width:0 !important; }}
+.wb-row.wb-rich-row .wb-price-block strong, .wb-row.wb-rich-row .wb-score-block strong,
+.wb-row.wb-rich-row .wb-score-block b {{ color:#132B40 !important; font-weight:950 !important; }}
+.wb-row.wb-rich-row .wb-score-parts {{ color:#405D73 !important; font-size:11px !important; line-height:1.4 !important; }}
+.wb-chip-chart-host, .chips-inline-chart, .chips-chart-view, .chips-chart-wrap {{ border-color:#C9D7E2 !important; }}
+.wb-chip-chart-btn, .chips-chart-tab {{ min-height:40px !important; }}
+
+/* Leaderboard: high-contrast active board selector and financial results. */
+.rank-tabs {{
+  background:#E1E8EF !important; border:1px solid #C4D2DE !important; border-radius:10px !important;
+  padding:4px !important; gap:4px !important; box-shadow:none !important;
+}}
+.rank-tabs button, .rank-tabs a {{
+  min-height:44px !important; padding:10px 9px !important; flex:1 1 0 !important; min-width:0 !important;
+  border-radius:7px !important; border:1px solid transparent !important; background:transparent !important;
+  color:#2E4C62 !important; font-size:13px !important; font-weight:850 !important; box-shadow:none !important;
+}}
+.rank-tabs button.on, .rank-tabs a.on {{
+  color:#FFFFFF !important; background:#143E5A !important; border-color:#143E5A !important;
+  box-shadow:0 2px 5px rgba(20,62,90,.20) !important;
+}}
+.rank-tabs button:not(.on):hover, .rank-tabs a:not(.on):hover {{ background:#D4E1EB !important; color:#132B40 !important; }}
+.rank-switch-note {{ color:#304D63 !important; background:#E8F0F6 !important; border-left:3px solid #155C8B !important; padding:10px 12px !important; border-radius:0 7px 7px 0 !important; line-height:1.55 !important; }}
+.rank-situation {{
+  color:#F5F9FC !important; background:linear-gradient(145deg,#102F47 0%,#174D70 100%) !important;
+  border:1px solid #0C2B41 !important; border-radius:15px !important; box-shadow:0 7px 18px rgba(12,43,65,.15) !important;
+}}
+.rank-situation .rank-situation-title h2, .rank-situation .rank-situation-title h3 {{ color:#FFFFFF !important; }}
+.rank-situation .rank-situation-badge {{ color:#FFFFFF !important; background:#245D80 !important; border:1px solid #6B91AA !important; }}
+.rank-situation .rank-situation-panel, .rank-situation .rank-situation-panel * {{ color:#E0EBF3 !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item small {{ color:#C5D9E7 !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item b {{ color:#FFFFFF !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item b.up,
+.rank-situation .rank-situation-panel .rank-situation-item b.positive {{ color:#FFB5AE !important; }}
+.rank-situation .rank-situation-panel .rank-situation-item b.down,
+.rank-situation .rank-situation-panel .rank-situation-item b.negative {{ color:#7CE7BA !important; }}
+.rank-situation .rank-situation-empty {{ color:#E0EBF3 !important; }}
+.rank-situation .rank-situation-item {{ border-color:rgba(231,241,248,.26) !important; }}
+.rank-situation .rank-situation-item small {{ color:#C5D9E7 !important; font-size:12px !important; font-weight:850 !important; }}
+.rank-situation .rank-situation-item b {{ color:#FFFFFF !important; font-size:clamp(22px,6vw,27px) !important; font-weight:950 !important; }}
+.rank-situation .rank-situation-item span, .rank-situation .rank-situation-sub {{ color:#E0EBF3 !important; }}
+.rank-situation .rank-situation-item .up, .rank-situation .rank-situation-item .positive {{ color:#FFB5AE !important; }}
+.rank-situation .rank-situation-item .down, .rank-situation .rank-situation-item .negative {{ color:#7CE7BA !important; }}
+
+/* Champion is one hero section; all other members are ledger-like rows, not individual buttons/cards. */
+.rank-card.rank-champion {{
+  background:linear-gradient(145deg,#102F47 0%,#174D70 100%) !important;
+  color:#F5F9FC !important; border:1px solid #C7A354 !important; border-left:4px solid #D8B86A !important;
+  border-radius:14px !important; box-shadow:0 8px 20px rgba(12,43,65,.15) !important;
+}}
+.rank-card.rank-champion .name, .rank-card.rank-champion .rank-number {{ color:#FFFFFF !important; }}
+.rank-card.rank-champion .rank-meta, .rank-card.rank-champion .rank-meta span,
+.rank-card.rank-champion .rank-movement, .rank-card.rank-champion .rank-private {{ color:#D5E4EF !important; }}
+.rank-card.rank-champion .rank-return {{ font-size:clamp(22px,5.8vw,28px) !important; font-weight:950 !important; }}
+.rank-card.rank-champion .rank-return.up {{ color:#FFB5AE !important; }}
+.rank-card.rank-champion .rank-return.down {{ color:#7CE7BA !important; }}
+.rank-card.rank-champion .rank-return.flat {{ color:#F2F7FA !important; }}
+.rank-card.rank-champion .rank-detail > summary {{
+  min-height:46px !important; border-radius:8px !important; background:rgba(255,255,255,.08) !important;
+  border:1px solid rgba(235,244,250,.35) !important; color:#FFFFFF !important;
+}}
+.rank-card.rank-champion .rank-detail-body > span {{ border-color:rgba(231,241,248,.22) !important; color:#FFFFFF !important; background:transparent !important; }}
+.rank-card.rank-champion .rank-detail-body > span em {{ color:#C5D9E7 !important; font-size:12px !important; }}
+.rank-card.rank-champion .rank-detail-body > span > .num {{ color:#FFFFFF !important; font-size:16px !important; font-weight:950 !important; }}
+.rank-card.rank-champion .rank-detail-body .num.up {{ color:#FFB5AE !important; }}
+.rank-card.rank-champion .rank-detail-body .num.down {{ color:#7CE7BA !important; }}
+.rank-card.rank-champion .rank-champion-prompt {{ color:#D5E4EF !important; }}
+.rank-card:not(.rank-champion) {{
+  margin:0 !important; padding:16px 8px !important; border:0 !important; border-bottom:1px solid #C5D3DF !important;
+  border-radius:0 !important; box-shadow:none !important; background:transparent !important; transform:none !important;
+}}
+.rank-card:not(.rank-champion):nth-child(even) {{ background:#F7F9FB !important; }}
+.rank-card:not(.rank-champion):hover {{ box-shadow:none !important; transform:none !important; }}
+.rank-card:not(.rank-champion) .rank-number {{ background:#DDE7EF !important; border:1px solid #BFCFDA !important; color:#173E59 !important; font-weight:950 !important; }}
+.rank-card:not(.rank-champion) .name {{ color:#132B40 !important; font-weight:900 !important; }}
+.rank-card:not(.rank-champion) .rank-meta, .rank-card:not(.rank-champion) .rank-movement,
+.rank-card:not(.rank-champion) .rank-private {{ color:#405D73 !important; }}
+.rank-card:not(.rank-champion) .rank-return.up {{ color:#C42F2A !important; font-weight:950 !important; }}
+.rank-card:not(.rank-champion) .rank-return.down {{ color:#08764B !important; font-weight:950 !important; }}
+.rank-card:not(.rank-champion) .rank-return.flat {{ color:#314B60 !important; font-weight:900 !important; }}
+.rank-card .rank-detail > summary, .rank-card summary, .history-more summary {{
+  min-height:44px !important; display:flex !important; align-items:center !important;
+  color:#155C8B !important; font-weight:900 !important; cursor:pointer !important;
+}}
+
+/* Charts and history: clearer analytical hierarchy, with no extra floating panels. */
+.rank-chart-panel {{ margin:0 !important; padding:18px 0 !important; border:0 !important; border-bottom:1px solid #C5D3DF !important; border-radius:0 !important; background:transparent !important; box-shadow:none !important; }}
+.rank-chart-panel > div:first-child {{ color:#132B40 !important; font-weight:950 !important; font-size:18px !important; }}
+.rank-chart-panel .sub {{ color:#405D73 !important; }}
+.rank-chart-panel .legend {{ border-top:1px solid #C9D7E2 !important; gap:9px 14px !important; }}
+.rank-chart-panel .legend span {{ color:#2F4B60 !important; font-size:12px !important; font-weight:850 !important; }}
+.rank-chart-panel svg text {{ fill:#405D73 !important; font-weight:700 !important; }}
+.leaderboard-history {{ margin-top:24px !important; border-top:2px solid #173F5D !important; }}
+.history-tabs button, .history-tabs a {{ min-height:44px !important; }}
+.history-period {{ background:transparent !important; border:0 !important; border-bottom:1px solid #C5D3DF !important; border-radius:0 !important; box-shadow:none !important; }}
+.history-period-head {{ background:#E7EEF4 !important; border:0 !important; border-bottom:1px solid #C5D3DF !important; padding:13px 12px !important; }}
+.history-period-head b {{ color:#132B40 !important; font-weight:950 !important; }}
+.history-rank-row {{ border-bottom:1px solid #D5E0E8 !important; min-height:48px !important; }}
+.history-rank {{ color:#526B81 !important; font-weight:900 !important; }}
+.history-name {{ color:#132B40 !important; font-weight:850 !important; white-space:normal !important; overflow:visible !important; text-overflow:clip !important; }}
+.history-return, .history-rank-row .num {{ font-weight:950 !important; }}
+.history-more {{ border:0 !important; background:transparent !important; }}
+.history-more summary {{ min-height:46px !important; padding:9px 6px !important; border-top:1px solid #C5D3DF !important; }}
+
+/* Navigation & controls: communicate action through state, not through card-like shadows. */
+.app-bottom-nav {{ background:#FFFFFF !important; border-top:1px solid #C5D3DF !important; box-shadow:0 -4px 14px rgba(19,43,64,.07) !important; }}
+.app-bottom-nav .bottom-inner {{ gap:4px !important; }}
+.app-bottom-nav a {{ min-height:48px !important; justify-content:center !important; color:#526B81 !important; border:1px solid transparent !important; }}
+.app-bottom-nav a b {{ font-weight:800 !important; }}
+.app-bottom-nav a.on, .bottom-inner a.on {{ color:#123F60 !important; background:#E1EDF6 !important; border-color:#B9D0E1 !important; font-weight:950 !important; }}
+.top-nav a, .tabs a, .tabs button, .filter-chip, .tab-button {{ min-height:42px !important; }}
+.details summary, details > summary {{ cursor:pointer !important; -webkit-tap-highlight-color:transparent !important; }}
+
+@media (max-width:420px) {{
+  .rank-situation {{ border-radius:12px !important; padding:14px 11px !important; }}
+  .rank-situation .rank-situation-item {{ min-height:82px !important; padding:10px 8px !important; }}
+  .rank-situation .rank-situation-item b {{ font-size:22px !important; }}
+  .rank-tabs button, .rank-tabs a {{ padding-left:5px !important; padding-right:5px !important; font-size:12px !important; }}
+  .rank-card:not(.rank-champion) {{ padding-left:4px !important; padding-right:4px !important; }}
+  .rank-card:not(.rank-champion) .rank-return {{ font-size:18px !important; }}
+  .rank-chart-panel svg {{ height:auto !important; }}
+}}
+@media (prefers-reduced-motion:reduce) {{
+  *, *::before, *::after {{ transition-duration:.01ms !important; animation-duration:.01ms !important; scroll-behavior:auto !important; }}
+}}
 </style>
 </div></body></html>"""
 
