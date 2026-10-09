@@ -22181,6 +22181,48 @@ def render_page(title, body, nav_active=None, user_name=None):
       box.classList.add('feedback-error'); haptic('error');
     }}
   }});
+  // 首頁總市值隱私遮罩：只遮蔽顯示，不改動任何資料或計算；SPA 回到首頁也保留狀態。
+  var homePrivacyKey = 'stockbot_home_value_masked_v1';
+  window.__stockbotHomePrivacyMasked = false;
+  function readHomePrivacyMasked() {{
+    try {{ return window.sessionStorage.getItem(homePrivacyKey) === '1'; }}
+    catch (ignore) {{ return window.__stockbotHomePrivacyMasked === true; }}
+  }}
+  function applyHomePrivacy(scope) {{
+    var root = scope || document;
+    if (!root || !root.querySelectorAll) return;
+    var masked = readHomePrivacyMasked();
+    root.querySelectorAll('[data-home-sensitive]').forEach(function (node) {{
+      var original = node.getAttribute('data-home-original');
+      if (original === null) original = node.textContent.trim();
+      var shown = masked ? '******' : original;
+      if (node.textContent !== shown) node.textContent = shown;
+    }});
+    root.querySelectorAll('[data-home-privacy-card]').forEach(function (card) {{
+      card.classList.toggle('is-privacy-hidden', masked);
+      var button = card.querySelector('[data-home-privacy-toggle]');
+      if (button) {{
+        button.setAttribute('aria-pressed', masked ? 'true' : 'false');
+        button.setAttribute('aria-label', masked ? '顯示總市值與成本' : '隱藏總市值與成本');
+        button.setAttribute('title', masked ? '顯示總市值與成本' : '隱藏總市值與成本');
+      }}
+    }});
+  }}
+  document.addEventListener('click', function (event) {{
+    var button = event.target && event.target.closest ? event.target.closest('[data-home-privacy-toggle]') : null;
+    if (!button) return;
+    event.preventDefault(); event.stopPropagation();
+    var card = button.closest('[data-home-privacy-card]');
+    if (!card) return;
+    var next = !card.classList.contains('is-privacy-hidden');
+    window.__stockbotHomePrivacyMasked = next;
+    try {{ window.sessionStorage.setItem(homePrivacyKey, next ? '1' : '0'); }} catch (ignore) {{}}
+    applyHomePrivacy(document);
+  }}, true);
+  applyHomePrivacy(document);
+  if (appContent && window.MutationObserver) {{
+    new MutationObserver(function () {{ applyHomePrivacy(appContent); }}).observe(appContent, {{ childList: true, subtree: true }});
+  }}
   // 首次整頁載入若拿到的是預覽殼，也要自動補完整內容。
   // 殼層的 finish() 只在 staged 模式處理，直接開網址走不到那條。
   if (appContent) {{
@@ -22663,6 +22705,119 @@ input:focus,select:focus,textarea:focus {{ outline:2px solid rgba(53,107,145,.20
 .section-note, .muted, .help-text, .section-subtitle,
 .app-page-content small, .app-page-content .muted {{ color: #536B81 !important; }}
 .app-bottom-nav, .bottom-nav {{ background: #FFFFFF !important; opacity: 1 !important; }}
+
+
+/* V240: visible benchmark line + portfolio privacy toggle + champion details */
+.home-metric-heading {{
+  display:flex !important; align-items:center !important; justify-content:space-between !important;
+  gap:8px !important; min-width:0 !important;
+}}
+.home-metric-main .home-metric-heading small {{
+  color:#526B81 !important; font-size:13px !important; font-weight:900 !important; line-height:1.35 !important;
+}}
+.home-privacy-toggle {{
+  display:inline-flex !important; align-items:center !important; justify-content:center !important;
+  width:38px !important; height:38px !important; min-width:38px !important; min-height:38px !important;
+  flex:0 0 38px !important; margin:-4px -4px 0 0 !important; padding:0 !important;
+  border:1px solid #C7D9E7 !important; border-radius:11px !important;
+  background:#EAF2F8 !important; color:#245B82 !important; box-shadow:none !important;
+  -webkit-tap-highlight-color:transparent !important; cursor:pointer !important;
+}}
+.home-privacy-toggle svg {{
+  display:block !important; width:20px !important; height:20px !important; fill:none !important;
+  stroke:currentColor !important; stroke-width:1.9 !important; stroke-linecap:round !important; stroke-linejoin:round !important;
+  pointer-events:none !important;
+}}
+.home-privacy-toggle .eye-closed {{ display:none !important; }}
+.home-metric-main.is-privacy-hidden .home-privacy-toggle {{ background:#DCE9F3 !important; color:#173F5D !important; border-color:#ADC6D9 !important; }}
+.home-metric-main.is-privacy-hidden .home-privacy-toggle .eye-open {{ display:none !important; }}
+.home-metric-main.is-privacy-hidden .home-privacy-toggle .eye-closed {{ display:block !important; }}
+.home-metric-main [data-home-sensitive] {{ font-variant-numeric:tabular-nums !important; overflow-wrap:normal !important; word-break:normal !important; }}
+.home-metric-main.is-privacy-hidden b[data-home-sensitive],
+.home-metric-main.is-privacy-hidden em [data-home-sensitive] {{ letter-spacing:.12em !important; color:#244B68 !important; }}
+.home-metric-main em {{ line-height:1.45 !important; }}
+@media (max-width:390px) {{
+  .home-privacy-toggle {{ width:36px !important; height:36px !important; min-width:36px !important; min-height:36px !important; flex-basis:36px !important; }}
+}}
+
+/* The index line is intentionally a contrasting dashed navy, not the low-contrast gray used before. */
+.portfolio-trend-svg .market-line-halo {{
+  fill:none !important; stroke:#FFFFFF !important; stroke-width:9 !important; stroke-dasharray:10 6 !important;
+  stroke-linecap:round !important; stroke-linejoin:round !important; vector-effect:non-scaling-stroke !important;
+  opacity:1 !important; pointer-events:none !important;
+}}
+.portfolio-trend-svg .market-line {{
+  fill:none !important; stroke:#304F69 !important; stroke-width:4.2 !important; stroke-dasharray:10 6 !important;
+  stroke-linecap:round !important; stroke-linejoin:round !important; vector-effect:non-scaling-stroke !important;
+  opacity:1 !important; pointer-events:none !important;
+}}
+.portfolio-trend-svg .market-endpoint-marker {{
+  display:inline !important; fill:#304F69 !important; stroke:#FFFFFF !important; stroke-width:3 !important;
+  vector-effect:non-scaling-stroke !important; pointer-events:none !important;
+}}
+.portfolio-trend-svg .market-end rect {{ fill:#304F69 !important; stroke:#FFFFFF !important; stroke-width:2 !important; }}
+.portfolio-trend-svg .market-end text {{ fill:#FFFFFF !important; font-weight:950 !important; }}
+.portfolio-trend-legend i.market {{
+  display:inline-block !important; width:25px !important; height:4px !important; border-radius:0 !important;
+  background:repeating-linear-gradient(90deg,#304F69 0 8px,transparent 8px 12px) !important;
+}}
+.portfolio-trend-stat.market-stat {{
+  background:#F2F7FB !important; border:1px solid #CBDCE9 !important; border-radius:12px !important;
+}}
+.portfolio-trend-stat.market-stat small {{ color:#526B81 !important; font-weight:850 !important; }}
+.portfolio-trend-stat.market-stat strong.market {{ color:#304F69 !important; font-weight:950 !important; }}
+
+/* Champion holdings are real dashboard tiles below the disclosure, not a plain text paragraph. */
+.rank-card.rank-champion .rank-detail {{ display:block !important; margin-top:13px !important; min-width:0 !important; }}
+.rank-card.rank-champion .rank-detail > summary {{
+  display:flex !important; align-items:center !important; justify-content:space-between !important; gap:10px !important;
+  min-height:44px !important; box-sizing:border-box !important; padding:11px 13px !important;
+  border:1px solid rgba(255,255,255,.22) !important; border-radius:12px !important;
+  background:rgba(255,255,255,.10) !important; color:#FFFFFF !important;
+  font-size:14px !important; font-weight:950 !important; line-height:1.35 !important; cursor:pointer !important;
+  list-style:none !important; -webkit-tap-highlight-color:transparent !important;
+}}
+.rank-card.rank-champion .rank-detail > summary::-webkit-details-marker {{ display:none !important; }}
+.rank-card.rank-champion .rank-detail > summary::after {{ content:'＋'; font-size:18px !important; line-height:1 !important; color:#E3C77E !important; flex:0 0 auto !important; }}
+.rank-card.rank-champion .rank-detail[open] > summary::after {{ content:'－'; }}
+.rank-card.rank-champion .rank-detail-body {{
+  display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:9px !important;
+  margin:10px 0 2px !important; padding:0 !important; min-width:0 !important; border:0 !important;
+  background:transparent !important; color:#FFFFFF !important;
+}}
+.rank-card.rank-champion .rank-detail-body > span {{
+  display:flex !important; flex-direction:column !important; align-items:flex-start !important; justify-content:flex-start !important;
+  gap:5px !important; box-sizing:border-box !important; min-width:0 !important; min-height:82px !important;
+  padding:11px 12px !important; border:1px solid rgba(255,255,255,.18) !important; border-radius:12px !important;
+  background:rgba(255,255,255,.085) !important; color:#F2F7FB !important;
+  font-size:13px !important; font-weight:850 !important; line-height:1.4 !important;
+  white-space:normal !important; overflow-wrap:anywhere !important; word-break:normal !important;
+}}
+.rank-card.rank-champion .rank-detail-body > span:first-child {{ border-left:3px solid #D9B86C !important; }}
+.rank-card.rank-champion .rank-detail-body > span em {{
+  display:block !important; color:#BDD4E4 !important; font-size:11px !important; font-style:normal !important;
+  font-weight:900 !important; line-height:1.35 !important; letter-spacing:.01em !important;
+}}
+.rank-card.rank-champion .rank-detail-body > span > .num {{
+  display:inline-block !important; margin-top:auto !important; font-size:15px !important; font-weight:950 !important;
+  font-variant-numeric:tabular-nums !important; white-space:nowrap !important;
+}}
+.rank-card.rank-champion .rank-detail-body .num.up {{ color:#FFB2AA !important; }}
+.rank-card.rank-champion .rank-detail-body .num.down {{ color:#79E2B7 !important; }}
+@media (max-width:360px) {{
+  .rank-card.rank-champion .rank-detail-body {{ gap:7px !important; }}
+  .rank-card.rank-champion .rank-detail-body > span {{ padding:9px !important; font-size:12px !important; }}
+  .rank-card.rank-champion .rank-detail-body > span em {{ font-size:10px !important; }}
+}}
+
+/* Final finishing pass: sharper section titles, calmer cards, stable finance digits. */
+.daily-section-title h2 {{ font-weight:950 !important; letter-spacing:-.02em !important; }}
+.daily-card, .home-portfolio-card, .portfolio-trend-card {{ border-color:#D5E1EB !important; }}
+.home-portfolio-grid {{ gap:9px !important; }}
+.home-metric {{ min-width:0 !important; border-radius:13px !important; }}
+.position-card, .position-fast-card {{ border-radius:15px !important; }}
+.wb-row.wb-rich-row {{ border-radius:14px !important; }}
+.rank-card:not(.rank-champion) {{ border-radius:15px !important; }}
 
 </style>
 </div></body></html>"""
@@ -27924,15 +28079,30 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         endpoint_labels = []
         last_i = len(norm) - 1
         last_port = norm[last_i]["port"]
-        last_market = norm[last_i].get("taiex")
+        # 加權指數有時比組合快照晚／早一個交易日回來；標示最後一筆有效大盤資料，
+        # 不把舊值假裝成最新交易日，也不因最後一天缺值而整條線看似消失。
+        last_market_i = next((j for j in range(last_i, -1, -1) if norm[j].get("taiex") is not None), None)
+        last_market = norm[last_market_i]["taiex"] if last_market_i is not None else None
+        market_path = path_for("taiex")
         ey = max(MT + 5, y(last_port) - 23)
         endpoint_labels.append(
             f'<g class="endpoint port-end"><rect x="{max(ML, x(last_i)-154):.1f}" y="{ey:.1f}" width="146" height="29" rx="14"/><text x="{max(ML+73, x(last_i)-81):.1f}" y="{ey+19:.1f}" text-anchor="middle">我的組合 {fmt_pct(last_port)}</text></g>'
         )
-        if last_market is not None:
-            ey2 = min(H - MB - 28, y(last_market) + 8)
+        market_endpoint_marker = ""
+        if last_market_i is not None and last_market is not None:
+            market_x = x(last_market_i)
+            market_y = y(last_market)
+            market_endpoint_marker = f'<circle class="market-layer market-endpoint-marker" cx="{market_x:.1f}" cy="{market_y:.1f}" r="7"/>'
+            ey2 = min(H - MB - 28, max(MT + 6, market_y + 9))
+            if abs(ey2 - ey) < 35:
+                ey2 = min(H - MB - 28, ey + 35)
+                if abs(ey2 - ey) < 28:
+                    ey2 = max(MT + 6, ey - 35)
+            label_x = max(ML, min(market_x - 154, W - MR - 146))
+            label_mid = label_x + 73
+            latest_market_date = html.escape(fmt_date_full(norm[last_market_i]["date"]))
             endpoint_labels.append(
-                f'<g class="endpoint market-end"><rect x="{max(ML, x(last_i)-154):.1f}" y="{ey2:.1f}" width="146" height="27" rx="13"/><text x="{max(ML+73, x(last_i)-81):.1f}" y="{ey2+18:.1f}" text-anchor="middle">大盤 {fmt_pct(last_market)}</text></g>'
+                f'<g class="endpoint market-end" aria-label="加權指數最後有效資料 {latest_market_date}"><rect x="{label_x:.1f}" y="{ey2:.1f}" width="146" height="27" rx="13"/><text x="{label_mid:.1f}" y="{ey2+18:.1f}" text-anchor="middle">大盤 {fmt_pct(last_market)}</text></g>'
             )
 
         svg = (
@@ -27941,7 +28111,9 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             f'{"".join(grid)}'
             f'<path class="port-area" d="{area}" fill="url(#trend-area-{key})"/>'
             f'<path class="port-line" d="{path_for("port")}"/>'
-            f'<path class="market-layer market-line" d="{path_for("taiex")}"/>'
+            f'<path class="market-layer market-line-halo" d="{market_path}"/>'
+            f'<path class="market-layer market-line" d="{market_path}"/>'
+            f'{market_endpoint_marker}'
             f'<line class="trend-crosshair" x1="{ML}" x2="{ML}" y1="{MT}" y2="{H-MB}"/>' f'{"".join(point_circles)}{"".join(endpoint_labels)}{"".join(dates)}</svg>'
         )
         chart_inner = (
@@ -32262,7 +32434,14 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <section class="daily-card home-portfolio-card">
     <div class="daily-section-title"><div><h2>💰 我的投資</h2><span>你現在的組合狀態</span></div><a href="/web/positions">查看持股明細 →</a></div>
     <div class="home-portfolio-grid">
-      <div class="home-metric home-metric-main"><small>總市值</small><b>{total_value:,.0f}</b><em>成本 {total_cost:,.0f}</em></div>
+      <div class="home-metric home-metric-main" data-home-privacy-card>
+        <div class="home-metric-heading"><small>總市值</small><button type="button" class="home-privacy-toggle" data-home-privacy-toggle aria-label="隱藏總市值與成本" aria-pressed="false" title="隱藏總市值與成本">
+          <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3.2"/></svg>
+          <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.7 5.2A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3 3.8M6.2 6.5C3.5 8.4 2 12 2 12s3.5 7 10 7a10.5 10.5 0 0 0 4-.8M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+        </button></div>
+        <b data-home-sensitive data-home-original="{total_value:,.0f}">{total_value:,.0f}</b>
+        <em>成本 <span data-home-sensitive data-home-original="{total_cost:,.0f}">{total_cost:,.0f}</span></em>
+      </div>
       <div class="home-metric"><small>今日組合</small><b class="{portfolio_pct_class}" data-home-portfolio-pct>{portfolio_text}</b></div>
       <div class="home-metric"><small>持倉損益</small><b class="{pl_class}">{fmt_pct(pl_total)}</b></div>
       <div class="home-metric"><small>持股檔數</small><b>{len(holdings)} 檔</b></div>
