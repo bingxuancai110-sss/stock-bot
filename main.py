@@ -20690,6 +20690,824 @@ a{ -webkit-tap-highlight-color:rgba(53,111,153,.12); }
   .card,.panel,.position-card,.holding-card,.rank-card,.wb-row{transition:none !important;transform:none !important;}
 }
 
+
+/* V236: visible typography + iPhone safe-area correction. Presentation only. */
+html {
+  scroll-padding-top: calc(128px + env(safe-area-inset-top, 0px)) !important;
+}
+body {
+  font-weight: 550 !important;
+  -webkit-font-smoothing: auto !important;
+  text-rendering: optimizeLegibility;
+}
+/* The standalone iPhone app has a notch/Dynamic Island area above the page header.
+   Keep the header background behind the status area, but move text below the safe inset. */
+.app-header {
+  top: 0 !important;
+  box-sizing: border-box !important;
+  padding-top: calc(14px + env(safe-area-inset-top, 0px)) !important;
+  padding-left: 18px !important;
+  padding-right: 18px !important;
+  padding-bottom: 13px !important;
+  background: rgba(255,255,255,.985) !important;
+  border-bottom: 2px solid #C8D8E6 !important;
+  box-shadow: 0 7px 22px rgba(18,47,75,.095) !important;
+}
+.wrap {
+  box-sizing: border-box !important;
+  padding-top: calc(114px + env(safe-area-inset-top, 0px)) !important;
+}
+#app-page-content { padding-top: 12px !important; }
+.app-header .page-back {
+  margin: 0 0 8px !important;
+  line-height: 1.25 !important;
+}
+.app-header .page-back a {
+  display: inline-block !important;
+  padding: 5px 0 !important;
+  color: #245B82 !important;
+  font-size: 15px !important;
+  font-weight: 900 !important;
+}
+.app-header .eyebrow, header .eyebrow {
+  color: #245F89 !important;
+  font-size: 12px !important;
+  line-height: 1.3 !important;
+  letter-spacing: .17em !important;
+  font-weight: 950 !important;
+}
+.app-header h1, header h1 {
+  color: #102A42 !important;
+  margin: 5px 0 4px !important;
+  font-size: clamp(28px, 7.2vw, 33px) !important;
+  line-height: 1.12 !important;
+  letter-spacing: -.025em !important;
+  font-weight: 950 !important;
+}
+.app-header .dateline, header .dateline {
+  color: #526A80 !important;
+  margin-top: 3px !important;
+  font-size: 14px !important;
+  line-height: 1.3 !important;
+  font-weight: 800 !important;
+}
+/* More substantial type: strengthen actual reading text and labels without changing data/layout. */
+.wrap { color: #142B42 !important; }
+.wrap p, .wrap li, .wrap label, .wrap td, .wrap th,
+.wrap summary, .section-note, .section-subtitle, .help-text,
+.position-journal-note, .position-history-note, .history-note,
+.wb-sub, .wb-meta, .wb-small, .wb-code, .wb-industry,
+.daily-fast-detail, .daily-fast-empty, .impact-detail-row,
+.position-card .meta, .position-card .position-meta,
+.position-card .stat-cell small, .position-card .position-stat small {
+  font-weight: 600 !important;
+}
+.section-head h2, .daily-section-title,
+.position-journal-head h2, .position-history-head h2,
+.wb-intro h2, .rank-spotlight h2 {
+  color: #153B59 !important;
+  font-weight: 950 !important;
+  letter-spacing: -.02em !important;
+}
+.section-head h2 { font-size: clamp(20px, 5.3vw, 23px) !important; line-height: 1.2 !important; }
+.daily-section-title { font-size: clamp(19px, 5vw, 22px) !important; }
+.daily-card h2, .daily-card h3, .position-card h2, .position-card h3,
+.position-journal-head h2, .position-history-head h2,
+.wb-name, .rank-card .name, .history-name {
+  font-weight: 900 !important;
+}
+.daily-card small, .position-card small, .rank-card small,
+.position-journal-note, .position-history-note, .history-rank-row {
+  color: #536B80 !important;
+  font-weight: 600 !important;
+}
+.num, .price, .return, [class*="price"], [class*="pct"],
+[class*="profit"], [class*="return"], .home-metric b,
+.portfolio-trend-stat strong, .rank-return, .rank-situation strong {
+  font-variant-numeric: tabular-nums lining-nums !important;
+  font-weight: 900 !important;
+}
+button, .btn, input, select, textarea,
+.tabs a, .tab-button, .filter-chip, .history-tabs button,
+.portfolio-trend-tab, .portfolio-trend-benchmark-label {
+  font-weight: 850 !important;
+}
+.app-bottom-nav a { font-weight: 800 !important; font-size: 12px !important; }
+.app-bottom-nav a b { font-weight: 950 !important; font-size: 20px !important; }
+.app-bottom-nav a.on {
+  background: #DDECF7 !important;
+  color: #174E75 !important;
+  box-shadow: inset 0 0 0 1.5px #BBD5E8 !important;
+}
+/* More obvious hierarchy at the card level; avoid adding nested boxes. */
+.daily-card, .position-card, .holding-card, .position-journal,
+.position-history, .rank-spotlight, .history-period, .wb-table,
+.portfolio-trend-card, .portfolio-chart-card, .contribution-card {
+  border-width: 1.5px !important;
+  border-color: #C9D9E7 !important;
+  box-shadow: 0 8px 22px rgba(20,48,75,.085) !important;
+}
+.section-head { border-left-width: 5px !important; border-left-color: #2D719F !important; }
+.impact-lead h3, .impact-lead strong { font-weight: 950 !important; }
+.impact-details > summary, .position-journal-details > summary,
+.home-journal-history > summary, .history-more summary {
+  color: #214F70 !important;
+  font-weight: 900 !important;
+}
+.wb-score, .wb-name, .wb-row .wb-num, .wb-row .wb-price { font-weight: 900 !important; }
+.wb-row { border-bottom-color: #DBE5ED !important; }
+.wb-head { font-weight: 850 !important; }
+.rank-return { font-weight: 950 !important; }
+.rank-card:not(.rank-champion) { border-color: #D4E0EA !important; }
+.rank-card.rank-champion, .rank-champion {
+  border-top: 4px solid #C99D46 !important;
+}
+/* Preserve bottom safe-area spacing and keep the fixed header clear of the notch on narrow phones. */
+@media (max-width: 699px) {
+  .wrap { padding-left: 14px !important; padding-right: 14px !important; }
+  .app-header { padding-left: 18px !important; padding-right: 18px !important; }
+  .app-header .eyebrow { font-size: 12px !important; }
+  .app-header h1 { font-size: clamp(28px, 7.4vw, 32px) !important; }
+  .app-header .dateline { font-size: 14px !important; }
+  .section-head { margin-top: 24px !important; margin-bottom: 12px !important; }
+  .app-bottom-nav { padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)) !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-header, .daily-card, .position-card, .rank-card, .wb-row { transition: none !important; }
+}
+
+/* ========================================================================
+   V237 — VISUAL REDESIGN / CSS ONLY
+   Intent: visible page-level redesign, stable existing DOM and interactions.
+   - New split-safe header: neutral iOS status zone + navy content band.
+   - Rebuild the home hero into a compact editorial header + market tiles.
+   - Turn the workbench list into clear mobile research cards.
+   - Improve holdings hierarchy, ranking champion treatment and bottom nav.
+   ======================================================================== */
+:root {
+  --v237-ink: #142B42 !important;
+  --v237-ink-2: #294863 !important;
+  --v237-muted: #526B82 !important;
+  --v237-muted-2: #75899D !important;
+  --v237-bg: #EEF3F8 !important;
+  --v237-card: #FFFFFF !important;
+  --v237-line: #D5E1EB !important;
+  --v237-blue: #1D5277 !important;
+  --v237-blue-2: #2F78A8 !important;
+  --v237-blue-pale: #E8F2FA !important;
+  --v237-red: #D83D35 !important;
+  --v237-green: #078451 !important;
+  --v237-gold: #D1AD5B !important;
+}
+
+html, body {
+  background: #EEF3F8 !important;
+  color: var(--v237-ink) !important;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif !important;
+  -webkit-font-smoothing: auto !important;
+  text-rendering: optimizeLegibility !important;
+}
+body { font-weight: 600 !important; }
+.wrap {
+  max-width: 780px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  padding-left: 16px !important;
+  padding-right: 16px !important;
+}
+#app-page-content { min-width: 0 !important; padding-top: 12px !important; }
+
+/* Header: the top 48px is kept light for iOS status icons. Actual page title sits
+   entirely in the opaque navy band below the safe area. */
+.app-header {
+  top: 0 !important;
+  box-sizing: border-box !important;
+  padding-top: max(52px, calc(env(safe-area-inset-top, 0px) + 10px)) !important;
+  padding-left: 20px !important;
+  padding-right: 20px !important;
+  padding-bottom: 14px !important;
+  background: linear-gradient(180deg, #F3F6FA 0px, #F3F6FA 48px, #143852 48px, #205779 100%) !important;
+  color: #FFFFFF !important;
+  border: 0 !important;
+  border-bottom: 3px solid #6EA8CF !important;
+  border-radius: 0 0 18px 18px !important;
+  box-shadow: 0 9px 24px rgba(16, 43, 66, .18) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  isolation: isolate !important;
+}
+.app-header .eyebrow, header .eyebrow {
+  display: block !important;
+  max-width: calc(100% - 90px) !important;
+  margin: 0 0 4px !important;
+  color: #B9DDF4 !important;
+  font-size: 11px !important;
+  line-height: 1.25 !important;
+  letter-spacing: .17em !important;
+  font-weight: 950 !important;
+  white-space: nowrap !important;
+}
+.app-header h1, header h1 {
+  color: #FFFFFF !important;
+  font-size: clamp(29px, 7.4vw, 35px) !important;
+  line-height: 1.08 !important;
+  letter-spacing: -.035em !important;
+  font-weight: 950 !important;
+  margin: 5px 0 5px !important;
+  text-shadow: none !important;
+}
+.app-header .dateline, header .dateline {
+  color: #E0ECF5 !important;
+  margin: 0 !important;
+  font-size: 13px !important;
+  line-height: 1.25 !important;
+  font-weight: 800 !important;
+  letter-spacing: .035em !important;
+}
+/* Keep the back affordance on the brand row so it does not increase header height
+   and does not push page content under the fixed header. */
+.app-header .page-back {
+  position: absolute !important;
+  top: max(52px, calc(env(safe-area-inset-top, 0px) + 10px)) !important;
+  right: 16px !important;
+  z-index: 4 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1 !important;
+}
+.app-header .page-back a {
+  display: inline-flex !important;
+  align-items: center !important;
+  min-height: 30px !important;
+  padding: 5px 9px !important;
+  color: #FFFFFF !important;
+  background: rgba(255,255,255,.12) !important;
+  border: 1px solid rgba(255,255,255,.25) !important;
+  border-radius: 10px !important;
+  font-size: 12px !important;
+  font-weight: 900 !important;
+  text-decoration: none !important;
+  box-shadow: none !important;
+}
+@media (max-width: 699px) {
+  .wrap { padding-top: calc(112px + max(52px, calc(env(safe-area-inset-top, 0px) + 10px))) !important; padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px)) !important; }
+  .app-header { width: 100% !important; padding-left: 18px !important; padding-right: 18px !important; }
+  .app-header .eyebrow { max-width: calc(100% - 90px) !important; }
+}
+@media (min-width: 700px) {
+  .app-header { padding-top: 18px !important; background: linear-gradient(135deg, #143852, #205779) !important; border-radius: 0 0 20px 20px !important; }
+  .app-header .eyebrow { max-width: calc(100% - 110px) !important; }
+  .wrap { padding-top: 128px !important; }
+}
+
+/* Unified typography: remove the thin grey report look. */
+.app-page-content p, .app-page-content li, .app-page-content label,
+.app-page-content summary, .app-page-content td, .app-page-content th,
+.app-page-content small, .app-page-content .muted, .app-page-content .help-text,
+.app-page-content .section-note, .app-page-content .section-subtitle {
+  font-weight: 600 !important;
+}
+.section-head, .daily-section-title { gap: 10px !important; }
+.section-head {
+  margin-top: 25px !important;
+  margin-bottom: 13px !important;
+  padding: 2px 0 2px 13px !important;
+  border-left: 5px solid #2F78A8 !important;
+}
+.section-head h2, .daily-section-title h2, .daily-section-title h3,
+.position-journal-head h2, .position-history-head h2, .wb-intro h2,
+.rank-spotlight h2 {
+  color: #142F47 !important;
+  font-weight: 950 !important;
+  letter-spacing: -.025em !important;
+}
+.section-note, .muted, .help-text, .section-subtitle { color: #526B82 !important; }
+.num, .price, .return, [class*="price"], [class*="pct"], [class*="profit"],
+[class*="return"], .rank-return, .wb-num, .home-metric b {
+  font-variant-numeric: tabular-nums lining-nums !important;
+  font-weight: 900 !important;
+}
+
+/* Cards: one clear white surface, less stacked decoration. */
+.card, .panel, .section-card, .stat-card, .position-card, .holding-card,
+.leaderboard-card, .trade-card, .daily-card, .more-group, .rank-spotlight,
+.chips-section, .position-journal, .position-history, .review-details,
+.portfolio-chart-card, .contribution-card, .rank-situation, .exright-card,
+.screener-fast-card, .turning-section, .rank-mine, .rank-honour,
+.history-period, .watch-dashboard-intro {
+  border: 1px solid #D5E1EB !important;
+  border-radius: 18px !important;
+  background: #FFFFFF !important;
+  box-shadow: 0 5px 18px rgba(24, 55, 82, .055) !important;
+}
+.daily-card, .position-card, .rank-card, .history-period, .wb-row-wrap,
+.portfolio-chart-card, .portfolio-trend-card { transition: none !important; transform: none !important; }
+button, .btn, .tabs a, .tab-button, .filter-chip, .history-tabs button,
+input, select, textarea { font-weight: 800 !important; }
+input, select, textarea {
+  border-radius: 12px !important;
+  border-color: #C9D8E5 !important;
+  background: #FFFFFF !important;
+}
+input:focus, select:focus, textarea:focus { outline: 3px solid rgba(47,120,168,.18) !important; }
+:where(.up,.positive,.pnl-up,.return-up,.text-up) { color: #D83D35 !important; }
+:where(.down,.negative,.pnl-down,.return-down,.text-down) { color: #078451 !important; }
+
+/* TODAY — replace the oversized orange city poster with a clean editorial header.
+   The actual ranking, live-data and portfolio components remain untouched. */
+.daily-home { max-width: 780px !important; margin: 0 auto !important; padding: 0 0 112px !important; background: transparent !important; }
+.daily-hero {
+  position: relative !important;
+  min-height: 0 !important;
+  margin: 0 0 12px !important;
+  padding: 18px 4px 2px !important;
+  overflow: visible !important;
+  color: #142B42 !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+.daily-hero:before, .daily-hero:after, .hero-finance-visual { display: none !important; content: none !important; }
+.daily-hero > * { position: relative !important; z-index: auto !important; }
+.daily-hero .eyebrow {
+  max-width: none !important;
+  margin: 0 0 8px !important;
+  color: #2F78A8 !important;
+  font-size: 11px !important;
+  line-height: 1.4 !important;
+  font-weight: 950 !important;
+  letter-spacing: .18em !important;
+  text-shadow: none !important;
+}
+.daily-hero h1 {
+  color: #142B42 !important;
+  font-size: clamp(28px, 7vw, 34px) !important;
+  line-height: 1.18 !important;
+  font-weight: 950 !important;
+  letter-spacing: -.04em !important;
+  margin: 0 0 8px !important;
+  max-width: 700px !important;
+  text-shadow: none !important;
+}
+.daily-hero > p {
+  max-width: 620px !important;
+  margin: 0 !important;
+  color: #526B82 !important;
+  font-size: 15px !important;
+  line-height: 1.55 !important;
+  font-weight: 650 !important;
+  text-shadow: none !important;
+}
+.market-strip {
+  display: grid !important;
+  grid-template-columns: minmax(0,1fr) minmax(0,1fr) !important;
+  gap: 9px !important;
+  margin: 18px 0 10px !important;
+}
+.market-strip > span {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: baseline !important;
+  gap: 5px 8px !important;
+  min-width: 0 !important;
+  padding: 13px 14px !important;
+  border: 1px solid #D6E2EC !important;
+  border-radius: 16px !important;
+  background: #FFFFFF !important;
+  color: #526B82 !important;
+  box-shadow: 0 3px 12px rgba(20,48,75,.04) !important;
+  font-size: 12px !important;
+  font-weight: 800 !important;
+}
+.market-strip > span:first-child {
+  grid-column: 1 / -1 !important;
+  min-height: 76px !important;
+  align-content: center !important;
+  background: linear-gradient(120deg,#143852,#205779) !important;
+  border-color: #244F6E !important;
+  color: #D6E9F6 !important;
+}
+.market-strip > span:first-child b {
+  color: #FFFFFF !important;
+  font-size: clamp(24px,6vw,30px) !important;
+  line-height: 1.14 !important;
+  font-weight: 950 !important;
+  letter-spacing: -.035em !important;
+}
+.market-strip > span:first-child small { flex-basis: 100% !important; width: 100% !important; color: #D0E4F1 !important; font-size: 11px !important; line-height: 1.35 !important; }
+.market-strip > span:not(:first-child) b { color: #173B59 !important; font-size: clamp(19px,5vw,24px) !important; line-height: 1.15 !important; font-weight: 950 !important; }
+.hero-summary-stack { display: grid !important; grid-template-columns: minmax(0,1fr) !important; gap: 10px !important; margin-top: 10px !important; }
+.hero-summary-panel, .hero-rank-panel {
+  min-width: 0 !important;
+  background: #FFFFFF !important;
+  border: 1px solid #D5E1EB !important;
+  border-radius: 17px !important;
+  padding: 15px !important;
+  color: #142B42 !important;
+  box-shadow: 0 4px 14px rgba(20,48,75,.045) !important;
+}
+.hero-summary-panel-head { display:flex !important; align-items:center !important; justify-content:space-between !important; gap:10px !important; margin-bottom:9px !important; }
+.hero-summary-panel-head b { color:#173B59 !important; font-size:15px !important; font-weight:950 !important; }
+.hero-summary-panel-head a { color:#2F78A8 !important; font-weight:900 !important; white-space:nowrap !important; }
+.rank-grid { display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:9px !important; }
+.rank-grid > * { min-width:0 !important; background:#F0F5F9 !important; border:1px solid #DDE7EF !important; border-radius:12px !important; padding:11px !important; }
+.daily-home > .daily-card { margin: 14px 0 !important; padding: 17px !important; }
+.pwa-install-card { padding: 14px 15px !important; background:#FFFFFF !important; border-left:4px solid #5F94BC !important; }
+.pwa-install-card .daily-section-title h2 { font-size:17px !important; font-weight:950 !important; }
+.pwa-install-card p { font-size:13px !important; line-height:1.55 !important; font-weight:600 !important; }
+.daily-complete-sync { border:1px solid #D7E4EE !important; border-radius:14px !important; background:#F8FBFD !important; box-shadow:none !important; margin:12px 0 !important; padding:12px 14px !important; }
+.daily-complete-sync b { color:#234D6C !important; font-size:13px !important; font-weight:900 !important; }
+.daily-complete-sync span { color:#526B82 !important; font-size:12px !important; font-weight:600 !important; }
+.home-portfolio-card > .daily-section-title { margin-bottom:14px !important; }
+.home-portfolio-grid { display:grid !important; grid-template-columns:repeat(3,minmax(0,1fr)) !important; gap:9px !important; }
+.home-metric { min-width:0 !important; padding:12px 11px !important; border:1px solid #DCE6EF !important; border-radius:14px !important; background:#F5F8FB !important; box-shadow:none !important; }
+.home-metric-main { grid-column:1 / -1 !important; padding:17px 16px !important; background:linear-gradient(125deg,#143852,#205779) !important; border-color:#244F6E !important; color:#FFFFFF !important; }
+.home-metric small { color:#667E91 !important; font-size:11px !important; font-weight:800 !important; line-height:1.3 !important; }
+.home-metric b { display:block !important; margin-top:5px !important; color:#173B59 !important; font-size:clamp(19px,5vw,23px) !important; line-height:1.15 !important; font-weight:950 !important; word-break:normal !important; }
+.home-metric-main small, .home-metric-main em { color:#D5E7F3 !important; }
+.home-metric-main b { color:#FFFFFF !important; font-size:clamp(29px,7.8vw,36px) !important; }
+.home-metric-main em { display:block !important; margin-top:5px !important; font-style:normal !important; font-weight:650 !important; }
+.contribution-card { padding:0 !important; border:0 !important; background:transparent !important; box-shadow:none !important; margin:12px 0 0 !important; }
+.impact-leads { display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:9px !important; }
+.impact-lead { min-width:0 !important; padding:13px 12px !important; border-radius:15px !important; box-shadow:none !important; }
+.impact-lead.impact-up { background:#FFF0EE !important; border:1px solid #F0C9C4 !important; border-top:4px solid #D83D35 !important; }
+.impact-lead.impact-down { background:#EAF7F0 !important; border:1px solid #C8E7D6 !important; border-top:4px solid #078451 !important; }
+.impact-lead h3 { font-size:16px !important; font-weight:950 !important; line-height:1.25 !important; }
+.impact-lead strong, .impact-lead .contribution-points { font-size:clamp(23px,6vw,29px) !important; font-weight:950 !important; }
+.impact-details { margin-top:10px !important; border:1px solid #DCE6EF !important; border-radius:14px !important; overflow:hidden !important; background:#FFFFFF !important; }
+.impact-details > summary { background:#EFF5F9 !important; font-size:13px !important; font-weight:900 !important; }
+
+/* HOLDINGS — stable two-column headline, aligned price block, compact three-metric row. */
+.position-card { margin:13px 0 !important; padding:0 !important; overflow:hidden !important; border:1px solid #D3E0EA !important; border-radius:19px !important; background:#FFFFFF !important; box-shadow:0 5px 17px rgba(20,48,75,.055) !important; }
+.position-card-top { display:grid !important; grid-template-columns:minmax(0,1fr) minmax(112px,38%) !important; align-items:center !important; gap:10px !important; padding:16px 15px 13px !important; background:linear-gradient(115deg,#F0F6FB,#FFFFFF 68%) !important; border-bottom:1px solid #E0E9F1 !important; }
+.position-card-title { display:flex !important; align-items:flex-start !important; gap:9px !important; min-width:0 !important; }
+.position-card-code { flex:0 0 auto !important; display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:48px !important; padding:7px 8px !important; border-radius:10px !important; background:#E2EEF7 !important; color:#245B82 !important; font-size:12px !important; font-weight:950 !important; }
+.position-card-title h3 { margin:0 !important; color:#142F47 !important; font-size:clamp(17px,4.5vw,20px) !important; line-height:1.22 !important; font-weight:950 !important; overflow-wrap:anywhere !important; }
+.position-card-title small { display:block !important; margin-top:5px !important; color:#526B82 !important; font-size:12px !important; line-height:1.4 !important; font-weight:700 !important; }
+.position-card-price { min-width:0 !important; max-width:100% !important; display:flex !important; flex-direction:column !important; align-items:flex-end !important; justify-content:center !important; gap:4px !important; }
+.position-card-price b, [data-position-price] { width:100% !important; max-width:100% !important; overflow:hidden !important; text-overflow:clip !important; font-size:clamp(21px,5.8vw,28px) !important; line-height:1.05 !important; letter-spacing:-.035em !important; font-weight:950 !important; text-align:right !important; color:#173B59 !important; }
+.position-card-price span { font-size:14px !important; line-height:1.2 !important; font-weight:950 !important; white-space:nowrap !important; }
+.position-card-primary { display:grid !important; grid-template-columns:repeat(3,minmax(0,1fr)) !important; gap:8px !important; padding:12px 12px !important; background:#FFFFFF !important; }
+.position-card-primary > div { min-width:0 !important; padding:10px 9px !important; border:1px solid #E0E9F0 !important; border-radius:12px !important; background:#F4F8FB !important; }
+.position-card-primary small { display:block !important; color:#61798E !important; font-size:11px !important; line-height:1.3 !important; font-weight:800 !important; }
+.position-card-primary b { display:block !important; margin-top:5px !important; font-size:clamp(14px,3.7vw,18px) !important; line-height:1.15 !important; font-weight:950 !important; overflow-wrap:anywhere !important; }
+.position-more { border-top:1px solid #E5ECF2 !important; }
+.position-more > summary { padding:13px 15px !important; color:#245B82 !important; background:#FFFFFF !important; font-size:13px !important; font-weight:900 !important; }
+.position-detail-body { padding:12px !important; background:#F7FAFC !important; }
+.position-card-grid { gap:8px !important; }
+.position-card-grid > div { padding:11px !important; border:1px solid #DFE8F0 !important; border-radius:12px !important; background:#FFFFFF !important; min-width:0 !important; }
+.position-card-grid small { color:#61798E !important; font-size:11px !important; font-weight:800 !important; }
+.position-card-grid b { font-size:16px !important; font-weight:900 !important; overflow-wrap:anywhere !important; }
+
+/* WORKBENCH — turn the dense research table into scan-friendly stock cards on phones. */
+.wb-shell { margin:12px 0 28px !important; padding:17px 14px 20px !important; border:1px solid #D0DFEA !important; border-radius:22px !important; background:#F4F8FB !important; box-shadow:none !important; }
+.wb-shell:before { height:5px !important; background:linear-gradient(90deg,#143852,#2F78A8,#86BEDF) !important; }
+.wb-intro { padding:4px 2px 14px !important; }
+.wb-kicker { color:#2F78A8 !important; font-weight:950 !important; letter-spacing:.14em !important; }
+.wb-intro h2 { color:#142F47 !important; font-size:clamp(26px,6vw,32px) !important; line-height:1.15 !important; font-weight:950 !important; }
+.wb-status { border-radius:12px !important; font-weight:850 !important; }
+.wb-asset-tabs { display:grid !important; grid-template-columns:repeat(3,minmax(0,1fr)) !important; width:100% !important; gap:6px !important; padding:5px !important; border-radius:14px !important; background:#E4EDF5 !important; }
+.wb-asset-tabs button { min-width:0 !important; padding:10px 6px !important; font-size:12px !important; border-radius:10px !important; }
+.wb-tabs { gap:12px !important; overflow-x:auto !important; padding-bottom:7px !important; }
+.wb-tabs button, .wb-mobile-sort button { font-weight:850 !important; white-space:nowrap !important; }
+.wb-tools { padding:14px 0 12px !important; }
+.wb-tools input, .wb-tools label { min-width:0 !important; border-radius:12px !important; }
+.wb-table { border:0 !important; border-radius:0 !important; overflow:visible !important; background:transparent !important; box-shadow:none !important; }
+.wb-head { display:none !important; }
+.wb-row-wrap { margin:10px 0 !important; border:1px solid #D5E1EB !important; border-radius:17px !important; background:#FFFFFF !important; box-shadow:0 4px 13px rgba(20,48,75,.045) !important; overflow:hidden !important; }
+.wb-row { box-sizing:border-box !important; display:grid !important; grid-template-columns:minmax(0,1fr) auto !important; grid-template-areas:"main arrow" "price score" !important; align-items:center !important; gap:10px 12px !important; min-height:0 !important; width:100% !important; padding:14px !important; border:0 !important; border-radius:0 !important; background:#FFFFFF !important; box-shadow:none !important; text-align:left !important; transform:none !important; }
+.wb-row-main { grid-area:main !important; display:block !important; min-width:0 !important; }
+.wb-row > .wb-score-block { grid-area:score !important; justify-self:end !important; align-self:center !important; min-width:72px !important; margin:0 !important; text-align:right !important; }
+.wb-row > .wb-price-block { grid-area:price !important; display:flex !important; align-items:baseline !important; flex-wrap:wrap !important; gap:4px 8px !important; min-width:0 !important; margin:0 !important; text-align:left !important; }
+.wb-row > .wb-institutional, .wb-row > .wb-signal { display:none !important; }
+.wb-row > span:last-child { grid-area:arrow !important; justify-self:end !important; align-self:start !important; margin:0 !important; color:#7A92A6 !important; font-size:20px !important; font-weight:900 !important; }
+.wb-name { display:block !important; color:#142F47 !important; font-size:19px !important; line-height:1.25 !important; font-weight:950 !important; }
+.wb-code, .wb-small, .wb-industry, .wb-fact-line { color:#526B82 !important; font-weight:650 !important; }
+.wb-industry { display:inline-block !important; margin-top:5px !important; padding:3px 7px !important; border:1px solid #D8E5EF !important; border-radius:7px !important; background:#EFF5F9 !important; font-size:11px !important; }
+.wb-fact-line { display:block !important; margin-top:6px !important; font-size:12px !important; line-height:1.5 !important; overflow-wrap:anywhere !important; }
+.wb-score-block { color:#173B59 !important; }
+.wb-result-more { margin-top:0 !important; border-top:1px solid #E2EAF1 !important; background:#F7FAFC !important; }
+.wb-result-more summary { padding:12px 14px !important; font-size:13px !important; font-weight:900 !important; }
+@media (max-width: 380px) {
+  .wb-shell { padding-left:10px !important; padding-right:10px !important; }
+  .wb-row { padding:12px !important; gap:8px !important; }
+  .position-card-top { grid-template-columns:minmax(0,1fr) minmax(100px,37%) !important; padding:13px 11px 11px !important; gap:7px !important; }
+  .position-card-primary { padding:9px 8px !important; gap:5px !important; }
+  .position-card-primary > div { padding:9px 7px !important; }
+}
+
+/* LEADERBOARD — a clear summary, premium champion and uniform participant list. */
+.rank-situation, .rank-mine, .rank-spotlight { border-radius:20px !important; }
+.rank-situation { background:linear-gradient(130deg,#143852,#205779) !important; border-color:#244F6E !important; color:#FFFFFF !important; box-shadow:0 10px 25px rgba(20,56,82,.16) !important; }
+.rank-situation h2, .rank-situation h3, .rank-situation b, .rank-situation strong { color:#FFFFFF !important; }
+.rank-situation small, .rank-situation span, .rank-situation p { color:#D7E8F4 !important; }
+.rank-mine { background:#E8F2F9 !important; border-color:#C7DBEB !important; }
+.rank-tabs, .history-tabs { display:flex !important; gap:7px !important; flex-wrap:nowrap !important; overflow-x:auto !important; padding:5px !important; border-radius:14px !important; background:#E4EDF5 !important; }
+.rank-tabs a, .history-tabs button { flex:0 0 auto !important; min-height:42px !important; border-radius:11px !important; font-weight:900 !important; }
+.rank-tabs a.on, .history-tabs button.on { color:#FFFFFF !important; background:#173F5D !important; border-color:#173F5D !important; }
+.rank-card:not(.rank-champion) { margin:9px 0 !important; padding:15px 13px !important; background:#FFFFFF !important; border:1px solid #D8E3EC !important; border-radius:16px !important; box-shadow:0 3px 12px rgba(20,48,75,.04) !important; }
+.rank-card .rank-row-main { gap:10px !important; }
+.rank-card .rank-number { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:30px !important; height:30px !important; border-radius:9px !important; background:#EAF1F7 !important; color:#315571 !important; font-weight:950 !important; }
+.rank-card .name { color:#172F46 !important; font-size:17px !important; font-weight:950 !important; overflow-wrap:anywhere !important; }
+.rank-card .rank-return { font-size:22px !important; line-height:1.05 !important; font-weight:950 !important; white-space:nowrap !important; }
+.rank-card .rank-meta { color:#536C81 !important; font-size:12px !important; line-height:1.55 !important; font-weight:700 !important; }
+.rank-card.rank-champion, .rank-champion {
+  margin:14px 0 18px !important;
+  padding:19px 16px !important;
+  background:linear-gradient(140deg,#143852 0%,#205779 100%) !important;
+  color:#FFFFFF !important;
+  border:1px solid #C9A653 !important;
+  border-top:5px solid #D7B564 !important;
+  border-radius:22px !important;
+  box-shadow:0 12px 28px rgba(20,56,82,.18) !important;
+}
+.rank-card.rank-champion .name, .rank-card.rank-champion .rank-number,
+.rank-champion .name, .rank-champion .rank-number { color:#FFFFFF !important; }
+.rank-card.rank-champion .rank-number, .rank-champion .rank-number { background:rgba(255,255,255,.13) !important; border:1px solid rgba(255,255,255,.22) !important; }
+.rank-card.rank-champion .rank-meta, .rank-card.rank-champion .rank-movement,
+.rank-champion .rank-meta, .rank-champion .rank-movement { color:#DBEAF4 !important; }
+.rank-card.rank-champion .rank-return.up, .rank-champion .rank-return.up { color:#FF9A90 !important; }
+.rank-card.rank-champion .rank-return.down, .rank-champion .rank-return.down { color:#6DE0B1 !important; }
+.rank-card.rank-champion details > summary, .rank-champion details > summary { color:#214F70 !important; background:#F2F7FA !important; }
+.history-period { margin:12px 0 !important; overflow:hidden !important; border-radius:17px !important; }
+.history-period-head { padding:14px 15px !important; background:#E9F1F7 !important; }
+.history-period details > summary { min-height:44px !important; display:flex !important; align-items:center !important; justify-content:center !important; padding:11px 14px !important; margin:8px 10px !important; border-radius:11px !important; background:#EAF2F8 !important; color:#245B82 !important; font-size:13px !important; font-weight:950 !important; }
+
+/* Charts: light canvas and clearly separated data series, without touching hit areas. */
+.portfolio-trend-card, .portfolio-chart-card, .rank-chart-card, .leaderboard-chart-card {
+  background:#FFFFFF !important; border:1px solid #D3E0EA !important; border-radius:20px !important;
+  box-shadow:0 5px 17px rgba(20,48,75,.055) !important;
+}
+.portfolio-trend-plot { background:#F7FAFC !important; border:1px solid #DCE6EE !important; border-radius:15px !important; }
+.portfolio-trend-svg .grid { stroke:#DCE6EE !important; }
+.portfolio-trend-svg .tick, .portfolio-trend-svg .date { fill:#526B82 !important; font-weight:700 !important; }
+.portfolio-trend-svg .port-line { stroke:#1E6B9D !important; stroke-width:4.5 !important; filter:none !important; }
+.portfolio-trend-svg .market-line { stroke:#8B9DAC !important; stroke-width:3 !important; stroke-dasharray:7 6 !important; }
+.portfolio-trend-tabs { gap:6px !important; }
+.portfolio-trend-tab { min-width:0 !important; font-weight:900 !important; }
+.trend-modal-card { border-radius:21px !important; }
+
+/* Bottom navigation: large, confident selected pill and consistent icon/label spacing. */
+.app-bottom-nav, .bottom-nav {
+  background:rgba(255,255,255,.985) !important;
+  border-top:1px solid #D5E1EB !important;
+  box-shadow:0 -6px 22px rgba(20,48,75,.075) !important;
+  backdrop-filter:none !important; -webkit-backdrop-filter:none !important;
+  padding-top:8px !important;
+  padding-bottom:calc(8px + env(safe-area-inset-bottom, 0px)) !important;
+}
+.app-bottom-nav .bottom-inner { gap:5px !important; }
+.app-bottom-nav a, .bottom-inner a {
+  min-height:54px !important; padding:7px 2px 6px !important;
+  display:flex !important; flex-direction:column !important; align-items:center !important; justify-content:center !important;
+  gap:4px !important; border-radius:13px !important; color:#6B8093 !important;
+  font-size:12px !important; line-height:1.15 !important; font-weight:850 !important;
+}
+.app-bottom-nav a b, .bottom-inner a b { font-size:21px !important; line-height:1 !important; font-weight:950 !important; }
+.app-bottom-nav a.on, .bottom-inner a.on { color:#FFFFFF !important; background:#173F5D !important; box-shadow:0 4px 10px rgba(23,63,93,.20) !important; }
+
+/* Safety: no global transforms, no expensive blur, no interaction selector changes. */
+@media (max-width: 640px) {
+  .section-head { margin-top:22px !important; }
+  .daily-home > .daily-card { margin:12px 0 !important; padding:14px !important; }
+  .home-portfolio-grid { grid-template-columns:repeat(3,minmax(0,1fr)) !important; }
+  .home-metric { padding:10px 8px !important; }
+  .home-metric small { font-size:10.5px !important; }
+  .home-metric b { font-size:clamp(16px,4.2vw,20px) !important; }
+  .home-metric-main b { font-size:clamp(28px,7.6vw,35px) !important; }
+  .impact-leads { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+  .impact-lead { padding:11px 10px !important; }
+  .rank-spotlight { padding:15px !important; }
+  .rank-card .name { font-size:16px !important; }
+  .rank-card .rank-return { font-size:19px !important; }
+  .history-period-head { font-size:16px !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior:auto !important; animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important; }
+}
+
+
+/* V238 refinement: fix the iOS safe-area/header geometry and preserve semantic colors. */
+.app-header {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  z-index: 140 !important;
+  box-sizing: border-box !important;
+  padding-top: max(62px, calc(env(safe-area-inset-top, 0px) + 10px)) !important;
+  padding-bottom: 13px !important;
+  background: linear-gradient(
+    180deg,
+    #F2F6FA 0px,
+    #F2F6FA max(52px, calc(env(safe-area-inset-top, 0px) + 3px)),
+    #143852 max(52px, calc(env(safe-area-inset-top, 0px) + 3px)),
+    #205779 100%
+  ) !important;
+  border-bottom: 3px solid #70B0D7 !important;
+  border-radius: 0 0 18px 18px !important;
+  overflow: visible !important;
+}
+.app-header .eyebrow, header .eyebrow {
+  position: relative !important;
+  z-index: 1 !important;
+  max-width: calc(100% - 92px) !important;
+  color: #D8ECF8 !important;
+  font-size: 11px !important;
+  font-weight: 950 !important;
+  letter-spacing: .14em !important;
+  line-height: 1.3 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+.app-header h1, header h1 {
+  position: relative !important;
+  z-index: 1 !important;
+  margin: 5px 0 4px !important;
+  color: #FFFFFF !important;
+  font-size: clamp(30px, 7.8vw, 36px) !important;
+  font-weight: 950 !important;
+  line-height: 1.05 !important;
+  letter-spacing: -.04em !important;
+  overflow-wrap: anywhere !important;
+}
+.app-header .dateline, header .dateline {
+  position: relative !important;
+  z-index: 1 !important;
+  color: #DFEDF6 !important;
+  font-size: 13px !important;
+  line-height: 1.3 !important;
+  font-weight: 800 !important;
+}
+.app-header .page-back {
+  top: max(62px, calc(env(safe-area-inset-top, 0px) + 8px)) !important;
+  right: 14px !important;
+}
+@media (max-width: 699px) {
+  .wrap {
+    padding-top: max(160px, calc(env(safe-area-inset-top, 0px) + 105px)) !important;
+    padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+  #app-page-content { padding-top: 5px !important; }
+  .app-header { padding-left: 18px !important; padding-right: 18px !important; }
+}
+@media (min-width: 700px) {
+  .wrap { padding-top: 122px !important; }
+  .app-header { padding-top: 18px !important; background:linear-gradient(135deg,#143852,#205779) !important; }
+}
+
+/* Ranking situation is a light summary surface; only the champion gets the dark treatment. */
+.rank-situation {
+  background: #FFFFFF !important;
+  border-color: #D5E1EB !important;
+  color: #142B42 !important;
+  box-shadow: 0 5px 18px rgba(20,48,75,.055) !important;
+}
+.rank-situation-title h2, .rank-situation h2, .rank-situation h3 {
+  color: #142F47 !important;
+}
+.rank-situation .rank-situation-badge {
+  color: #245B82 !important;
+  background: #EAF2F8 !important;
+  border-color: #D0E1EF !important;
+}
+.rank-situation .rank-situation-panel {
+  margin: 8px 0 !important;
+  padding: 12px !important;
+  border: 1px solid #D9E5EF !important;
+  border-radius: 14px !important;
+  background: #F4F8FB !important;
+  color: #142B42 !important;
+}
+.rank-situation .daily-section-title span {
+  color: #526B82 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+}
+.rank-situation .rank-situation-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+}
+.rank-situation .rank-situation-item {
+  min-width: 0 !important;
+  padding: 10px !important;
+  border: 1px solid #D9E5EF !important;
+  border-left: 3px solid #A8C8DF !important;
+  border-radius: 11px !important;
+  background: #F4F8FB !important;
+}
+.rank-situation .rank-situation-item small,
+.rank-situation .rank-situation-sub {
+  color: #526B82 !important;
+  font-weight: 750 !important;
+}
+.rank-situation .rank-situation-item {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  justify-content: flex-start !important;
+  gap: 4px !important;
+}
+.rank-situation .rank-situation-item small { font-size: 11px !important; line-height: 1.25 !important; }
+.rank-situation .rank-situation-item b {
+  display: block !important;
+  width: 100% !important;
+  margin: 0 !important;
+  color: #173B59 !important;
+  font-size: clamp(18px, 4.5vw, 22px) !important;
+  line-height: 1.18 !important;
+  font-weight: 950 !important;
+  overflow-wrap: anywhere !important;
+}
+.rank-situation .rank-situation-sub { display: block !important; font-size: 11px !important; line-height: 1.3 !important; }
+.rank-situation .rank-situation-item b.up,
+.rank-situation .rank-situation-item b.positive { color: #D83D35 !important; }
+.rank-situation .rank-situation-item b.down,
+.rank-situation .rank-situation-item b.negative { color: #078451 !important; }
+
+/* Workbench: clear status line and separated controls; keep all data chips visible. */
+.wb-status {
+  display: inline-flex !important;
+  position: static !important;
+  width: fit-content !important;
+  max-width: 100% !important;
+  margin: 8px 0 12px !important;
+  padding: 7px 10px !important;
+  border: 1px solid #CFE0EC !important;
+  border-radius: 10px !important;
+  background: #E8F2F9 !important;
+  color: #285A7B !important;
+  white-space: normal !important;
+  line-height: 1.4 !important;
+}
+.wb-asset-tabs { margin: 0 0 10px !important; }
+.wb-tabs { margin: 8px 0 12px !important; }
+.wb-tools { margin-top: 8px !important; }
+
+/* Workbench: do not hide the institutional/signal chips; place them on a dedicated row. */
+.wb-row {
+  grid-template-areas: "main arrow" "price score" "institutional signal" !important;
+}
+.wb-row > .wb-institutional {
+  grid-area: institutional !important;
+  display: inline-flex !important;
+  justify-self: start !important;
+  min-width: 0 !important;
+  color: #526B82 !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+}
+.wb-row > .wb-signal {
+  grid-area: signal !important;
+  display: inline-flex !important;
+  justify-self: end !important;
+  min-width: 0 !important;
+  color: #245B82 !important;
+  font-size: 11px !important;
+  font-weight: 850 !important;
+}
+
+/* Keep compact screens readable without clipping high-priced stocks or long names. */
+@media (max-width: 390px) {
+  .position-card-top { grid-template-columns:minmax(0,1fr) minmax(96px,36%) !important; }
+  .position-card-price b, [data-position-price] {
+    font-size: clamp(19px,5.2vw,23px) !important;
+    letter-spacing: -.045em !important;
+  }
+  .position-card-title h3 { font-size: clamp(16px,4.3vw,19px) !important; }
+  .market-strip { gap:7px !important; }
+  .market-strip > span { padding:11px 10px !important; }
+  .home-metric { border-radius:12px !important; }
+  .rank-card .rank-row-main { grid-template-columns:30px minmax(0,1fr) auto !important; }
+}
+
+
+/* Finishing touches: solid bottom bar and padded champion-detail control. */
+.app-bottom-nav, .bottom-nav {
+  background: #FFFFFF !important;
+  opacity: 1 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.rank-card.rank-champion details > summary,
+.rank-champion details > summary {
+  display: flex !important;
+  align-items: center !important;
+  min-height: 44px !important;
+  margin-top: 12px !important;
+  padding: 10px 13px !important;
+  border: 1px solid #D8E7F0 !important;
+  border-radius: 12px !important;
+  background: #F1F7FB !important;
+  color: #214F70 !important;
+  font-size: 13px !important;
+  font-weight: 950 !important;
+}
+
 '''
 
 
@@ -20892,7 +21710,7 @@ def render_page(title, body, nav_active=None, user_name=None):
 </header>
 {nav}
 <main id="app-page-content" class="app-page-content">{body}</main>
-<style id="global-visual-refresh-v235">{GLOBAL_VISUAL_CSS}</style>
+<style id="global-visual-refresh-v236">{GLOBAL_VISUAL_CSS}</style>
 <script>
 (function() {{
   // LINE WebView 可能清掉 cookie；把有效網址 token 保存到同一個網域，
