@@ -22300,6 +22300,370 @@ input:focus,select:focus,textarea:focus {{ outline:2px solid rgba(53,107,145,.20
 /* Respect reduced-motion preferences and avoid decorative movement affecting usability. */
 @media (prefers-reduced-motion:reduce) {{ *,*::before,*::after {{ animation-duration:.01ms !important; transition-duration:.01ms !important; scroll-behavior:auto !important; }} }}
 
+
+/* V239: visibility, mobile grid and contrast fixes only. Keep DOM, data and handlers intact. */
+.app-header, header.app-header {{
+  background: #F5F8FC !important;
+  background-image: none !important;
+  color: #172B40 !important;
+  border: 0 !important;
+  border-bottom: 2px solid #BFD4E4 !important;
+  border-radius: 0 0 14px 14px !important;
+  box-shadow: 0 5px 16px rgba(23,43,64,.09) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}}
+.app-header .eyebrow, header .eyebrow {{
+  color: #245B82 !important;
+  font-size: 11px !important;
+  font-weight: 950 !important;
+  letter-spacing: .11em !important;
+  line-height: 1.3 !important;
+  text-shadow: none !important;
+}}
+.app-header h1, header h1 {{
+  color: #172B40 !important;
+  font-size: clamp(29px, 7.2vw, 34px) !important;
+  font-weight: 950 !important;
+  line-height: 1.12 !important;
+  letter-spacing: -.025em !important;
+  overflow-wrap: normal !important;
+  word-break: keep-all !important;
+  text-shadow: none !important;
+}}
+.app-header .dateline, header .dateline {{
+  color: #526B81 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  line-height: 1.3 !important;
+}}
+.app-header .page-back a, header .page-back a {{
+  color: #245B82 !important;
+  background: #E8F1F7 !important;
+  border: 1px solid #CADCE9 !important;
+  box-shadow: none !important;
+}}
+@media (max-width: 699px) {{
+  .app-header {{
+    padding-top: max(60px, calc(env(safe-area-inset-top, 0px) + 12px)) !important;
+    padding-bottom: 12px !important;
+  }}
+  .wrap {{
+    padding-top: max(166px, calc(env(safe-area-inset-top, 0px) + 124px)) !important;
+    padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px)) !important;
+  }}
+  #app-page-content {{ padding-top: 0 !important; }}
+}}
+
+/* Home hero is dark on purpose, so every heading/body line inside it must be light. */
+.daily-hero, .daily-fast-hero, .daily-fast-hero-copy {{ color: #FFFFFF !important; }}
+.daily-hero .eyebrow, .daily-fast-hero .eyebrow, .daily-fast-hero-copy .eyebrow {{
+  color: #DCEAF5 !important;
+  font-weight: 900 !important;
+  text-shadow: none !important;
+}}
+.daily-hero h1, .daily-fast-hero h1, .daily-fast-hero h2,
+.daily-fast-hero-copy h1, .daily-hero h2 {{
+  color: #FFFFFF !important;
+  font-weight: 950 !important;
+  text-shadow: none !important;
+}}
+.daily-hero > p, .daily-fast-hero > p, .daily-fast-hero-copy > p {{
+  color: #E8F2F9 !important;
+  font-weight: 650 !important;
+  text-shadow: none !important;
+}}
+.daily-hero .hero-rank-panel, .daily-hero .hero-summary-panel {{
+  background: #FFFFFF !important;
+  border: 1px solid #D5E1EB !important;
+  color: #172B40 !important;
+}}
+.daily-hero .hero-summary-panel-head b {{ color: #173B59 !important; }}
+.daily-hero .hero-summary-panel-head a {{ color: #246A98 !important; }}
+.daily-hero .hero-rank-panel .rank-mini {{
+  min-width: 0 !important;
+  padding: 9px 10px !important;
+  border: 1px solid #DCE6EE !important;
+  border-radius: 10px !important;
+  background: #F3F7FA !important;
+}}
+.daily-hero .hero-rank-panel .rank-mini span,
+.daily-hero .hero-rank-panel .rank-mini small {{
+  color: #526B81 !important;
+  font-size: 10.5px !important;
+  line-height: 1.4 !important;
+  font-weight: 750 !important;
+}}
+.daily-hero .hero-rank-panel .rank-mini b {{
+  color: #172B40 !important;
+  font-size: 19px !important;
+  font-weight: 950 !important;
+}}
+.daily-hero .hero-rank-panel .rank-mini em {{ color: #526B81 !important; font-weight: 800 !important; }}
+.daily-hero .hero-rank-panel .rank-mini em.up {{ color: #D83D35 !important; }}
+.daily-hero .hero-rank-panel .rank-mini em.down {{ color: #078451 !important; }}
+.daily-hero .hero-quote-panel {{
+  background: rgba(255,255,255,.09) !important;
+  border-color: rgba(255,255,255,.24) !important;
+}}
+.daily-hero .hero-quote-text {{ color: #F5FAFD !important; }}
+
+/* Screener: the old span-two-column rule conflicted with the new grid areas and squeezed text. */
+@media (max-width: 699px) {{
+  .wb-shell, .wb-table, .wb-row-wrap, .wb-row {{
+    box-sizing: border-box !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+  }}
+  .wb-table {{ overflow: visible !important; }}
+  .wb-row-wrap {{ overflow: hidden !important; }}
+  .wb-row.wb-rich-row {{
+    position: relative !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+    grid-template-areas: "main main" "price score" "institutional signal" !important;
+    align-items: start !important;
+    gap: 10px 12px !important;
+    padding: 14px !important;
+    overflow: visible !important;
+  }}
+  .wb-row.wb-rich-row > .wb-row-main {{
+    grid-area: main !important;
+    grid-column: 1 / -1 !important;
+    grid-row: 1 !important;
+    display: block !important;
+    box-sizing: border-box !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    padding: 0 26px 0 0 !important;
+    margin: 0 !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    overflow-wrap: anywhere !important;
+  }}
+  .wb-row.wb-rich-row > .wb-row-main .wb-name {{
+    display: block !important;
+    max-width: 100% !important;
+    white-space: normal !important;
+    overflow: visible !important;
+    overflow-wrap: anywhere !important;
+    word-break: normal !important;
+    line-height: 1.28 !important;
+    font-size: 19px !important;
+  }}
+  .wb-row.wb-rich-row > .wb-row-main .wb-industry,
+  .wb-row.wb-rich-row > .wb-row-main .wb-fact-line,
+  .wb-row.wb-rich-row > .wb-row-main .wb-tag,
+  .wb-row.wb-rich-row > .wb-row-main .wb-radar-rank,
+  .wb-row.wb-rich-row > .wb-row-main .wb-high-status,
+  .wb-row.wb-rich-row > .wb-row-main .wb-breakout,
+  .wb-row.wb-rich-row > .wb-row-main .wb-macd,
+  .wb-row.wb-rich-row > .wb-row-main .wb-chase-warning {{
+    max-width: 100% !important;
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+    word-break: normal !important;
+  }}
+  .wb-row.wb-rich-row > .wb-price-block {{
+    grid-area: price !important;
+    grid-column: 1 !important;
+    grid-row: 2 !important;
+    display: flex !important;
+    align-items: baseline !important;
+    justify-content: flex-start !important;
+    flex-wrap: wrap !important;
+    min-width: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    text-align: left !important;
+    white-space: normal !important;
+  }}
+  .wb-row.wb-rich-row > .wb-score-block {{
+    grid-area: score !important;
+    grid-column: 2 !important;
+    grid-row: 2 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-end !important;
+    justify-self: stretch !important;
+    min-width: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    text-align: right !important;
+    overflow-wrap: anywhere !important;
+  }}
+  .wb-row.wb-rich-row > .wb-score-block .wb-score-parts {{
+    max-width: 100% !important;
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+    word-break: normal !important;
+    line-height: 1.45 !important;
+  }}
+  .wb-row.wb-rich-row > .wb-institutional {{
+    grid-area: institutional !important;
+    grid-column: 1 !important;
+    grid-row: 3 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    justify-self: stretch !important;
+    min-width: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    font-size: 12px !important;
+    line-height: 1.35 !important;
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+  }}
+  .wb-row.wb-rich-row > .wb-signal {{
+    grid-area: signal !important;
+    grid-column: 2 !important;
+    grid-row: 3 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-end !important;
+    justify-self: stretch !important;
+    min-width: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    font-size: 12px !important;
+    line-height: 1.35 !important;
+    text-align: right !important;
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+  }}
+  .wb-row.wb-rich-row > span:last-child {{
+    position: absolute !important;
+    top: 10px !important;
+    right: 12px !important;
+    grid-area: auto !important;
+    grid-column: auto !important;
+    grid-row: auto !important;
+    justify-self: auto !important;
+    align-self: auto !important;
+    pointer-events: none !important;
+  }}
+  .wb-row.wb-rich-row .wb-small,
+  .wb-row.wb-rich-row .wb-code,
+  .wb-row.wb-rich-row .wb-industry,
+  .wb-row.wb-rich-row .wb-fact-line {{
+    color: #4E657B !important;
+    font-weight: 650 !important;
+  }}
+}}
+
+/* Leaderboard: preserve full nicknames and match text contrast to each surface. */
+.rank-situation {{
+  background: #FFFFFF !important;
+  border-color: #D5E1EB !important;
+  color: #172B40 !important;
+  box-shadow: 0 5px 18px rgba(20,48,75,.055) !important;
+}}
+.rank-situation h2, .rank-situation h3, .rank-situation b,
+.rank-situation strong, .rank-situation .rank-situation-title {{ color: #172B40 !important; }}
+.rank-situation small, .rank-situation span, .rank-situation p,
+.rank-situation .rank-situation-sub {{ color: #526B81 !important; }}
+.rank-situation .rank-situation-panel,
+.rank-situation .rank-situation-item {{
+  background: #F3F7FA !important;
+  border-color: #D8E4ED !important;
+  color: #172B40 !important;
+}}
+.rank-situation .rank-situation-panel *,
+.rank-situation .rank-situation-item * {{ color: #526B81 !important; }}
+.rank-situation .rank-situation-panel b,
+.rank-situation .rank-situation-item b,
+.rank-situation .rank-situation-panel strong,
+.rank-situation .rank-situation-item strong {{ color: #172B40 !important; }}
+.rank-situation .up, .rank-situation .positive {{ color: #D83D35 !important; }}
+.rank-situation .down, .rank-situation .negative {{ color: #078451 !important; }}
+.rank-card.rank-champion {{
+  background: linear-gradient(140deg, #143852 0%, #205779 100%) !important;
+  color: #FFFFFF !important;
+  border-color: #C9A653 !important;
+  border-top: 4px solid #D7B564 !important;
+  box-shadow: 0 10px 25px rgba(20,56,82,.16) !important;
+}}
+.rank-card.rank-champion .name,
+.rank-card.rank-champion .rank-number {{ color: #FFFFFF !important; }}
+.rank-card.rank-champion .rank-meta,
+.rank-card.rank-champion .rank-movement,
+.rank-card.rank-champion .rank-meta span,
+.rank-card.rank-champion .rank-meta em {{ color: #DCEAF5 !important; }}
+.rank-card.rank-champion .rank-return.up {{ color: #FFB0A8 !important; }}
+.rank-card.rank-champion .rank-return.down {{ color: #7BE2B7 !important; }}
+.rank-card.rank-champion .rank-return.flat {{ color: #E5EFF6 !important; }}
+.rank-card.rank-champion .rank-honour {{
+  background: linear-gradient(180deg,#FFFFFF,#F7F9FB) !important;
+  border-color: #E3D2A8 !important;
+  color: #755821 !important;
+}}
+.rank-card.rank-champion .rank-honour b {{ color: #755821 !important; }}
+.rank-card.rank-champion .rank-honour small {{ color: #7D6A48 !important; }}
+.rank-card:not(.rank-champion) .rank-row-main {{
+  display: grid !important;
+  grid-template-columns: 30px minmax(0,1fr) auto !important;
+  align-items: start !important;
+  gap: 8px !important;
+}}
+.rank-card:not(.rank-champion) .name {{
+  display: block !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
+  line-height: 1.32 !important;
+  font-size: 16px !important;
+  color: #172F46 !important;
+}}
+.rank-card:not(.rank-champion) .rank-return {{
+  font-size: clamp(17px,4.5vw,21px) !important;
+  line-height: 1.12 !important;
+  white-space: nowrap !important;
+}}
+.rank-card .rank-meta {{
+  min-width: 0 !important;
+  flex-wrap: wrap !important;
+  line-height: 1.5 !important;
+}}
+.rank-card .rank-meta span {{ white-space: normal !important; overflow-wrap: anywhere !important; }}
+.rank-card .rank-meta, .rank-card .rank-detail, .rank-card .rank-private {{ color: #526B81 !important; }}
+.rank-card:not(.rank-champion) .rank-movement {{
+  grid-column: 2 / -1 !important;
+  justify-self: start !important;
+  margin: 0 !important;
+  white-space: normal !important;
+}}
+@media (max-width: 390px) {{
+  .rank-card:not(.rank-champion) {{ padding: 13px 11px !important; }}
+  .rank-card:not(.rank-champion) .rank-row-main {{ grid-template-columns: 29px minmax(0,1fr) auto !important; gap: 6px !important; }}
+  .rank-card:not(.rank-champion) .name {{ font-size: 15px !important; }}
+}}
+
+/* Chart: keep the portfolio area subtle so it cannot cover the benchmark line. */
+.portfolio-trend-svg .port-area {{
+  fill: #4D8BB5 !important;
+  fill-opacity: .10 !important;
+  stroke: none !important;
+  opacity: 1 !important;
+}}
+.portfolio-trend-svg .port-line {{ stroke: #1E6B9D !important; stroke-width: 4.5 !important; filter: none !important; }}
+.portfolio-trend-svg .market-line {{ stroke: #8799A8 !important; stroke-width: 2.8 !important; stroke-dasharray: 7 6 !important; }}
+.portfolio-trend-svg .grid {{ stroke: #E0E9F0 !important; }}
+.portfolio-trend-svg .tick, .portfolio-trend-svg .date {{ fill: #536C81 !important; font-weight: 800 !important; }}
+
+/* Global legibility: keep supporting text readable without making every paragraph ultra-bold. */
+.section-note, .muted, .help-text, .section-subtitle,
+.app-page-content small, .app-page-content .muted {{ color: #536B81 !important; }}
+.app-bottom-nav, .bottom-nav {{ background: #FFFFFF !important; opacity: 1 !important; }}
+
 </style>
 </div></body></html>"""
 
