@@ -22651,7 +22651,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     # 綁定目前帳號的動作仍留在「設定」頁，避免首頁按鈕把另一個 Google 帳號誤綁到現有帳號。
     header_google_mode = 'login'
     header_google_label = 'Google 登入／註冊'
-    header_google_href = '/auth/google?mode=login'
+    header_google_href = '/auth/choose'
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
 <meta charset="UTF-8">
@@ -25508,6 +25508,31 @@ def _bind_google_identity(user_id, identity):
         return False, "綁定暫時失敗，請稍後再試。"
     finally:
         release_db_connection(conn)
+
+
+@app.route("/auth/choose")
+def auth_google_choose():
+    """說明 Google 登入／註冊與綁定既有帳號的差別，讓使用者先選對流程。"""
+    body = r'''<div class="card" style="padding:20px;margin:18px 0;">
+  <div style="font-size:12px;font-weight:900;letter-spacing:.16em;color:#315E82;margin-bottom:8px">TAIWAN STOCK BOT</div>
+  <h2 style="font-size:26px;line-height:1.25;color:#172B40;margin-bottom:10px">你要怎麼使用 Google？</h2>
+  <p style="color:#526A80;margin-bottom:18px">請依照你目前是否已有台股 BOT 帳號，選擇適合的方式。兩種方式用途不同，選擇前先看說明。</p>
+  <section style="border:1px solid #D5E2ED;border-radius:16px;padding:16px;margin:12px 0;background:#fff">
+    <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">🟦 Google 登入／註冊</h3>
+    <p style="color:#526A80;margin-bottom:12px">適合第一次使用台股 BOT，或以前已用這個 Google 帳號註冊的人。第一次使用會建立一個新的台股 BOT 帳號；之後使用同一個 Google 帳號，就會回到這個帳號。</p>
+    <p style="font-size:13px;color:#8A5A20;margin-bottom:14px">注意：如果你原本已經有 LINE 台股 BOT 帳號，單純登入／註冊不會自動取得原帳號的持股與設定。</p>
+    <a href="/auth/google?mode=login" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800">繼續使用 Google 登入／註冊</a>
+  </section>
+  <section style="border:1px solid #D5E2ED;border-radius:16px;padding:16px;margin:12px 0;background:#F7FAFD">
+    <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">🔗 綁定 Google 到既有帳號</h3>
+    <p style="color:#526A80;margin-bottom:12px">適合已經有台股 BOT 帳號，並希望 Google 與原本帳號共用持股、自選股及設定的人。必須先用原本的 LINE 登入網址登入，再進入設定完成綁定。</p>
+    <p style="font-size:13px;color:#8A5A20;margin-bottom:14px">不會只因為 Email 相同就自動合併帳號；如果你尚未登入原本帳號，請先返回並用原本的 LINE 登入。</p>
+    <a href="/web/settings" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#E5EDF5;color:#244E72;font-weight:800">前往設定綁定既有帳號</a>
+  </section>
+  <p style="font-size:13px;color:#657B8F;margin-top:14px">不確定要選哪一個？如果你已經有原本的 LINE 台股 BOT 帳號，請先登入該帳號，再從設定綁定 Google，以免建立另一個獨立帳號。</p>
+</div>
+'''
+    return render_page("Google 登入／註冊說明", body)
 
 
 @app.route("/auth/google")
