@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V258_LEADERBOARD_REFINEMENT_AND_SHARED_QUERY_ACCELERATION"
+APP_BUILD = "V260_STABLE_PAGE_SPEED_STALE_HISTORY_FAST_REFRESH"
 
 # 首頁短 TTL 快取：避免使用者在首頁／持股／首頁間快速切換時，
 # 每次都重新查相同的共享快照與操作日誌。這些資料本身就不是毫秒級變動；
@@ -26921,8 +26921,10 @@ def web_positions(uid):
     # 首頁剛取得的同代號報價快取；原本使用 1d 會建立另一份 cache key，
     # 從首頁切到持股時又重新打 Yahoo，容易把切頁拖到 20～30 秒。
     quote_started = time.monotonic()
-    price_map = get_realtime_stocks_bulk(
-        [p["code"] for p in positions], rng="3mo")
+    # 先用首頁／持股共用的持久 3mo 序列組頁，不讓 Yahoo/MIS 慢回應阻塞切頁；
+    # 盤中現價由頁面下方的 /web/api/positions/quotes 立即局部更新。
+    _position_codes = [p["code"] for p in positions]
+    price_map = _get_homepage_prices_cached(uid, _position_codes, refresh_official=False)
     quote_done = time.monotonic()
     for p in positions:
         price = price_map.get(p["code"])
@@ -34841,19 +34843,107 @@ def _save_homepage_quote_map_async(uid, codes, prices):
     threading.Thread(target=writer, name="home-quote-cache-save", daemon=True).start()
 
 
-def _get_homepage_prices_cached(uid, codes):
-    """先用程序／持久行情快取；只有首次且完全沒有快照時才同步抓完整 3mo 歷史序列。"""
+def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_refresh=False):
+    """將官方 MIS 當下價格疊到已快取的歷史序列，不為更新現價重抓整段 Yahoo 日線。"""
+    result = {str(code): dict(item) for code, item in (prices or {}).items()
+              if isinstance(item, dict)}
+    codes = list(dict.fromkeys(str(c).strip() for c in (codes or []) if c))
+    if not codes:
+        return result
+    try:
+        quotes = _fetch_twse_mis_quotes(codes, market_suffix=market_suffix,
+                                        force_refresh=force_refresh)
+    except Exception as exc:
+        print("⚠️ 快取行情的 MIS 疊加失敗，先沿用最近有效行情：%s" % type(exc).__name__, flush=True)
+        quotes = {}
+    today = taiwan_today()
+    for code, quote in (quotes or {}).items():
+        if not isinstance(quote, dict):
+            continue
+        try:
+            close = float(quote.get("close") or 0)
+            pct = float(quote.get("pct"))
+        except (TypeError, ValueError):
+            continue
+        if close <= 0:
+            continue
+        item = dict(result.get(code) or {})
+        item.update({
+            "code": code,
+            "close": close,
+            "pct": pct,
+            "high": quote.get("high") or item.get("high") or close,
+            "low": quote.get("low") or item.get("low") or close,
+            "volume": quote.get("volume") or item.get("volume") or 0,
+            "source": quote.get("source") or "TWSE MIS 最近有效報價",
+            "updated_at": quote.get("updated_at") or item.get("updated_at"),
+            "close_is_final": bool(quote.get("close_is_final")),
+            "close_date": quote.get("close_date") or item.get("close_date"),
+            "close_time": quote.get("close_time") or item.get("close_time"),
+        })
+        dates = list(item.get("close_dates") or [])
+        closes = list(item.get("closes") or [])
+        highs = list(item.get("highs") or [])
+        lows = list(item.get("lows") or [])
+        volumes = list(item.get("volumes") or [])
+        adj_closes = list(item.get("adj_closes") or [])
+        # 官方現價只替換／補上最後一根；不重算或破壞先前已保存的歷史日線。
+        if dates and dates[-1] == today:
+            idx = len(dates) - 1
+            if idx < len(closes): closes[idx] = close
+            else: closes.append(close)
+            if idx < len(highs): highs[idx] = item["high"]
+            else: highs.append(item["high"])
+            if idx < len(lows): lows[idx] = item["low"]
+            else: lows.append(item["low"])
+            if idx < len(volumes): volumes[idx] = item["volume"]
+            else: volumes.append(item["volume"])
+            if idx < len(adj_closes): adj_closes[idx] = close
+            else: adj_closes.append(close)
+        else:
+            dates.append(today)
+            closes.append(close)
+            highs.append(item["high"])
+            lows.append(item["low"])
+            volumes.append(item["volume"])
+            adj_closes.append(close)
+        item["close_dates"] = dates
+        item["closes"] = closes
+        item["highs"] = highs
+        item["lows"] = lows
+        item["volumes"] = volumes
+        item["adj_closes"] = adj_closes
+        result[code] = item
+    return result
+
+
+def _get_homepage_prices_cached(uid, codes, refresh_official=True):
+    """重用持久 3mo 歷史序列；持股頁可只用快取首屏，現價由背景 MIS API 更新。"""
     codes = list(dict.fromkeys(str(c).strip() for c in (codes or []) if c))
     if not codes:
         return {}
     signature = tuple(sorted(codes))
     now = time.monotonic()
+
     with _HOMEPAGE_QUOTE_MAP_LOCK:
         memory = _HOMEPAGE_QUOTE_MAP_CACHE.get(str(uid))
         if memory and memory.get("signature") == signature and now - memory.get("at", 0) < 240:
-            print("⚡ 首頁行情序列命中程序快取", flush=True)
-            # 會命中已預熱的個股 3mo cache；盤中再疊加 TWSE MIS 最新價。
-            return get_realtime_stocks_bulk(codes, rng="3mo")
+            prices = {code: dict(item) for code, item in (memory.get("prices") or {}).items()
+                      if isinstance(item, dict)}
+            print("⚡ 首頁行情序列命中程序快取（%s 檔）" % len(prices), flush=True)
+            if refresh_official:
+                prices = _homepage_merge_official_quotes(prices, codes)
+            missing = [code for code in codes if not prices.get(code)]
+            if missing:
+                print("⚠️ 行情快取缺少 %s 檔，只補抓缺漏序列" % len(missing), flush=True)
+                prices.update(get_realtime_stocks_bulk(missing, rng="3mo"))
+            if all(prices.get(code) for code in codes):
+                with _HOMEPAGE_QUOTE_MAP_LOCK:
+                    _HOMEPAGE_QUOTE_MAP_CACHE[str(uid)] = {
+                        "at": time.monotonic(), "signature": signature, "prices": prices,
+                    }
+                _save_homepage_quote_map_async(uid, codes, prices)
+            return prices
 
     snapshot_key = _homepage_quote_snapshot_key(uid)
     try:
@@ -34861,28 +34951,28 @@ def _get_homepage_prices_cached(uid, codes):
         restored = _homepage_quote_map_restore(snapshot.get("payload") if snapshot else None, codes)
         if restored:
             _homepage_quote_map_seed_realtime_cache(restored)
+            prices = dict(restored)
+            if refresh_official:
+                prices = _homepage_merge_official_quotes(prices, codes)
+            missing = [code for code in codes if not prices.get(code)]
+            if missing:
+                print("⚠️ 持久行情快照缺少 %s 檔，只補抓缺漏序列" % len(missing), flush=True)
+                prices.update(get_realtime_stocks_bulk(missing, rng="3mo"))
             with _HOMEPAGE_QUOTE_MAP_LOCK:
                 _HOMEPAGE_QUOTE_MAP_CACHE[str(uid)] = {
-                    "at": time.monotonic(), "signature": signature, "prices": restored,
+                    "at": time.monotonic(), "signature": signature,
+                    "prices": {code: dict(item) for code, item in prices.items() if isinstance(item, dict)},
                 }
-            print("⚡ 首頁行情序列命中持久快照（%s 檔）" % len(restored), flush=True)
-            # 官方 MIS 只更新當下價格；歷史序列沿用最近保存的 3mo 快照。
-            current = get_realtime_stocks_bulk(codes, rng="3mo")
-            combined = dict(restored)
-            if isinstance(current, dict):
-                combined.update({code: value for code, value in current.items() if value})
-            if combined:
-                with _HOMEPAGE_QUOTE_MAP_LOCK:
-                    _HOMEPAGE_QUOTE_MAP_CACHE[str(uid)] = {
-                        "at": time.monotonic(), "signature": signature, "prices": combined,
-                    }
-                if all(combined.get(code) for code in codes):
-                    _save_homepage_quote_map_async(uid, codes, combined)
-                return combined
-            return current or {}
+            print("⚡ 首頁行情序列命中持久快照（%s/%s 檔；%s）" % (
+                sum(1 for code in codes if prices.get(code)), len(codes),
+                "已疊加官方現價" if refresh_official else "首屏跳過同步外部行情"), flush=True)
+            if all(prices.get(code) for code in codes):
+                _save_homepage_quote_map_async(uid, codes, prices)
+            return prices
     except Exception as exc:
         print("⚠️ 首頁行情快照讀取失敗，改用即時抓取：%s" % type(exc).__name__, flush=True)
 
+    # 真正冷啟動且完全沒有持久序列時才同步下載整段歷史；成功後背景保存供下次重用。
     prices = get_realtime_stocks_bulk(codes, rng="3mo")
     if prices and all(prices.get(code) for code in codes):
         with _HOMEPAGE_QUOTE_MAP_LOCK:
