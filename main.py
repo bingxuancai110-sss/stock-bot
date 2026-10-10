@@ -43,13 +43,16 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V254_PINNED_LOADING_RANK_READABILITY_PERFORMANCE"
+APP_BUILD = "V255_LEADERBOARD_REDESIGN_FAST_NAV"
 
 # 首頁短 TTL 快取：避免使用者在首頁／持股／首頁間快速切換時，
 # 每次都重新查相同的共享快照與操作日誌。這些資料本身就不是毫秒級變動；
 # 即時股價仍每次重新抓，不經這個快取。
 _HOMEPAGE_SHARED_CACHE = {"key": None, "ts": 0.0, "value": None}
 _HOMEPAGE_JOURNAL_CACHE = {}
+_HOMEPAGE_QUOTE_MAP_CACHE = {}
+_HOMEPAGE_QUOTE_MAP_LOCK = threading.RLock()
+_HOMEPAGE_QUOTE_CACHE_SAVING = set()
 _HOMEPAGE_CACHE_LOCK = threading.RLock()
 _HOMEPAGE_TAIEX_REFRESH_LOCK = threading.Lock()
 _HOMEPAGE_TAIEX_REFRESH_RUNNING = False
@@ -10180,7 +10183,7 @@ def _write_stock_info_file_cache():
             pass
 
 
-_SHARED_SNAPSHOT_MEMORY_TTL = max(1.0, float(os.environ.get("SHARED_SNAPSHOT_MEMORY_TTL_SECONDS", "12")))
+_SHARED_SNAPSHOT_MEMORY_TTL = max(1.0, float(os.environ.get("SHARED_SNAPSHOT_MEMORY_TTL_SECONDS", "60")))
 _SHARED_SNAPSHOT_MEMORY_CACHE = {}
 _SHARED_SNAPSHOT_MEMORY_LOCK = threading.RLock()
 
@@ -24173,90 +24176,179 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   .rank-situation {{ padding:14px 11px !important; }}
   .rank-card.rank-champion {{ padding:17px 13px 13px !important; }}
 }}
-/* V254 FINAL OVERRIDE: placed after legacy visual-refresh styles so ranking contrast actually wins. */
-/* V254 FINAL: stronger readable finance dashboard palette for the entire leaderboard. */
+/* V255 FINAL LEADERBOARD REDESIGN
+   Keep one consistent pearl/white finance palette. Dark colors are used only for ink and small rank markers,
+   never as a huge filled hero card. Strong red/green return pills keep Taiwan-market convention. */
 #app-page-content .rank-situation,
-#app-page-content .rank-card.rank-champion {{
-  background:linear-gradient(145deg,#172B37 0%,#263F4D 100%) !important;
-  color:#FFFFFF !important;border-color:#526B7A !important;border-left-color:#1A9A8A !important;
+#app-page-content .rank-card.rank-champion,
+#app-page-content .rank-card:not(.rank-champion),
+#app-page-content .leaderboard-history,
+#app-page-content .rank-chart-panel {{
+  color:#17212B !important;
+  background:#FFFFFF !important;
+  border:1.5px solid #B7C4CF !important;
+  border-radius:16px !important;
+  box-shadow:0 3px 12px rgba(24,42,56,.055) !important;
 }}
-#app-page-content .rank-situation .rank-situation-title h2,
-#app-page-content .rank-situation .rank-situation-title h3,
+#app-page-content .rank-situation {{
+  position:relative !important;
+  padding:18px 16px !important;
+  border-top:4px solid #187A73 !important;
+  background:linear-gradient(180deg,#FFFFFF 0%,#F7FAFB 100%) !important;
+}}
 #app-page-content .rank-situation h2,
-#app-page-content .rank-situation h3 {{ color:#FFFFFF !important;font-weight:950 !important; }}
-#app-page-content .rank-situation .rank-situation-item small,
-#app-page-content .rank-situation .rank-situation-sub {{ color:#E1EAF0 !important;font-size:13px !important;font-weight:850 !important; }}
-#app-page-content .rank-situation .rank-situation-item b {{ color:#FFFFFF !important;font-weight:1000 !important; }}
-#app-page-content .rank-situation .rank-situation-item b.up,
-#app-page-content .rank-situation .rank-situation-item b.positive {{ color:#FF9A90 !important; }}
-#app-page-content .rank-situation .rank-situation-item b.down,
-#app-page-content .rank-situation .rank-situation-item b.negative {{ color:#72E3B4 !important; }}
-#app-page-content .rank-tabs {{ background:#DCE4EA !important;border:1.5px solid #9CACB9 !important; }}
-#app-page-content .rank-tabs button,
-#app-page-content .rank-tabs a {{ color:#1D2939 !important;font-size:14px !important;font-weight:950 !important; }}
-#app-page-content .rank-tabs button.on,
-#app-page-content .rank-tabs a.on {{ background:#174C5B !important;border-color:#174C5B !important;color:#FFFFFF !important; }}
-#app-page-content .rank-switch-note {{ background:#E5EDF2 !important;border-left:5px solid #0F766E !important;color:#1D2939 !important;font-size:14px !important;font-weight:800 !important; }}
-#app-page-content .rank-source-note,
-#app-page-content .rank-list-caption {{ color:#263746 !important;font-size:13.5px !important;font-weight:800 !important;line-height:1.6 !important; }}
-#app-page-content .rank-card:not(.rank-champion) {{
-  background:#FFFFFF !important;border:1.5px solid #9BAAB6 !important;border-left:5px solid #526B7A !important;
-  border-radius:13px !important;box-shadow:0 3px 8px rgba(16,24,40,.075) !important;color:#101828 !important;
+#app-page-content .rank-situation h3,
+#app-page-content .rank-situation .rank-situation-title h2,
+#app-page-content .rank-situation .rank-situation-title h3 {{
+  color:#142B3A !important; font-size:19px !important; font-weight:900 !important;
 }}
-#app-page-content .rank-card:not(.rank-champion):nth-child(even) {{ background:#EDF2F5 !important; }}
-#app-page-content .rank-card:not(.rank-champion) .name {{ color:#101828 !important;font-size:18px !important;font-weight:1000 !important;line-height:1.45 !important; }}
-#app-page-content .rank-card:not(.rank-champion) .rank-number {{ background:#243B4B !important;border:1px solid #243B4B !important;color:#FFFFFF !important;font-weight:1000 !important; }}
-#app-page-content .rank-card:not(.rank-champion) .rank-meta,
-#app-page-content .rank-card:not(.rank-champion) .rank-meta span,
-#app-page-content .rank-card:not(.rank-champion) .rank-movement,
-#app-page-content .rank-card:not(.rank-champion) .rank-private {{ color:#263746 !important;font-size:14px !important;font-weight:800 !important;line-height:1.6 !important; }}
-#app-page-content .rank-card:not(.rank-champion) .rank-movement {{ background:#E0E7EC !important;border-color:#9BAAB6 !important;color:#263746 !important; }}
-#app-page-content .rank-card .rank-return.up,
-#app-page-content .history-return.up,
-#app-page-content .history-rank-row .num.up {{ background:#FEE4E2 !important;border:1.5px solid #FCA5A5 !important;color:#A61B1B !important;font-size:21px !important;font-weight:1000 !important; }}
-#app-page-content .rank-card .rank-return.down,
-#app-page-content .history-return.down,
-#app-page-content .history-rank-row .num.down {{ background:#D1FADF !important;border:1.5px solid #6CE9A6 !important;color:#05603A !important;font-size:21px !important;font-weight:1000 !important; }}
-#app-page-content .rank-card .rank-return.flat {{ background:#EAECF0 !important;border:1.5px solid #98A2B3 !important;color:#344054 !important;font-size:19px !important;font-weight:950 !important; }}
+#app-page-content .rank-situation .rank-situation-item small,
+#app-page-content .rank-situation .rank-situation-sub,
+#app-page-content .rank-situation .rank-situation-item span {{
+  color:#475467 !important; font-size:13px !important; font-weight:700 !important;
+}}
+#app-page-content .rank-situation .rank-situation-item b {{
+  color:#142B3A !important; font-weight:950 !important;
+}}
+#app-page-content .rank-situation .rank-situation-item b.up,
+#app-page-content .rank-situation .rank-situation-item b.positive {{ color:#B42318 !important; }}
+#app-page-content .rank-situation .rank-situation-item b.down,
+#app-page-content .rank-situation .rank-situation-item b.negative {{ color:#067647 !important; }}
+#app-page-content .rank-tabs {{
+  background:#E8EEF2 !important; border:1.5px solid #B8C5CF !important;
+  border-radius:12px !important; padding:4px !important;
+}}
+#app-page-content .rank-tabs button,
+#app-page-content .rank-tabs a {{
+  color:#263746 !important; font-size:14px !important; font-weight:850 !important;
+}}
+#app-page-content .rank-tabs button.on,
+#app-page-content .rank-tabs a.on {{
+  background:#176B65 !important; border-color:#176B65 !important;
+  color:#FFFFFF !important; box-shadow:0 2px 5px rgba(15,83,78,.18) !important;
+}}
+#app-page-content .rank-switch-note {{
+  background:#EAF5F3 !important; border:1px solid #A8D4CA !important;
+  border-left:5px solid #187A73 !important; color:#183C3A !important;
+  font-size:14px !important; font-weight:750 !important;
+}}
+#app-page-content .rank-source-note,
+#app-page-content .rank-list-caption {{
+  color:#344054 !important; font-size:13.5px !important;
+  font-weight:750 !important; line-height:1.65 !important;
+}}
+#app-page-content .rank-card.rank-champion {{
+  position:relative !important;
+  background:linear-gradient(145deg,#FFFFFF 0%,#F0F7F6 100%) !important;
+  border:1.5px solid #95BEB8 !important; border-left:6px solid #187A73 !important;
+  border-radius:16px !important; color:#17212B !important;
+  box-shadow:0 4px 14px rgba(18,73,68,.075) !important;
+}}
+#app-page-content .rank-card.rank-champion .name,
+#app-page-content .rank-card.rank-champion .rank-number,
+#app-page-content .rank-card.rank-champion .rank-honour b {{ color:#142B3A !important; }}
+#app-page-content .rank-card.rank-champion .rank-number {{
+  background:#176B65 !important; color:#FFFFFF !important;
+  border:1px solid #176B65 !important; border-radius:9px !important;
+}}
 #app-page-content .rank-card.rank-champion .rank-meta,
 #app-page-content .rank-card.rank-champion .rank-meta span,
 #app-page-content .rank-card.rank-champion .rank-movement,
 #app-page-content .rank-card.rank-champion .rank-private,
-#app-page-content .rank-card.rank-champion .rank-champion-prompt {{ color:#F1F5F9 !important;font-size:13.5px !important;font-weight:800 !important; }}
-#app-page-content .rank-card.rank-champion .rank-return.up {{ background:#FFE0DD !important;color:#8F1717 !important;border-color:#FF9A92 !important; }}
-#app-page-content .rank-card.rank-champion .rank-return.down {{ background:#B7F0D0 !important;color:#065F46 !important;border-color:#5ACB99 !important; }}
+#app-page-content .rank-card.rank-champion .rank-champion-prompt,
+#app-page-content .rank-card.rank-champion .rank-honour small {{
+  color:#475467 !important; font-size:13.5px !important; font-weight:700 !important;
+}}
+#app-page-content .rank-card:not(.rank-champion) {{
+  background:#FFFFFF !important; border-color:#C0CCD5 !important;
+  border-left:5px solid #8799A7 !important; color:#17212B !important;
+}}
+#app-page-content .rank-card:not(.rank-champion):nth-child(even) {{ background:#F3F6F8 !important; }}
+#app-page-content .rank-card:not(.rank-champion) .name {{
+  color:#111D27 !important; font-size:18px !important; font-weight:900 !important; line-height:1.45 !important;
+}}
+#app-page-content .rank-card:not(.rank-champion) .rank-number {{
+  background:#E3EAEE !important; border:1.5px solid #93A4B0 !important;
+  color:#172B3A !important; border-radius:8px !important; font-weight:950 !important;
+}}
+#app-page-content .rank-card:not(.rank-champion) .rank-meta,
+#app-page-content .rank-card:not(.rank-champion) .rank-meta span,
+#app-page-content .rank-card:not(.rank-champion) .rank-movement,
+#app-page-content .rank-card:not(.rank-champion) .rank-private {{
+  color:#344054 !important; font-size:13.5px !important; font-weight:700 !important; line-height:1.65 !important;
+}}
+#app-page-content .rank-card .rank-return.up,
+#app-page-content .history-return.up,
+#app-page-content .history-rank-row .num.up {{
+  display:inline-flex !important; align-items:center !important; justify-content:center !important;
+  padding:5px 10px !important; border-radius:9px !important;
+  background:#FDE8E7 !important; border:1.5px solid #E9A09B !important;
+  color:#A61B1B !important; font-size:20px !important; font-weight:950 !important;
+  letter-spacing:-.02em !important; white-space:nowrap !important;
+}}
+#app-page-content .rank-card .rank-return.down,
+#app-page-content .history-return.down,
+#app-page-content .history-rank-row .num.down {{
+  display:inline-flex !important; align-items:center !important; justify-content:center !important;
+  padding:5px 10px !important; border-radius:9px !important;
+  background:#DCFCEB !important; border:1.5px solid #75C9A0 !important;
+  color:#05603A !important; font-size:20px !important; font-weight:950 !important;
+  letter-spacing:-.02em !important; white-space:nowrap !important;
+}}
+#app-page-content .rank-card .rank-return.flat {{
+  display:inline-flex !important; padding:5px 10px !important; border-radius:9px !important;
+  background:#EAECF0 !important; border:1.5px solid #A7B0BC !important;
+  color:#344054 !important; font-size:19px !important; font-weight:900 !important;
+}}
+#app-page-content .rank-card.rank-champion .rank-return.up {{ background:#FDE8E7 !important; border-color:#E9A09B !important; color:#A61B1B !important; }}
+#app-page-content .rank-card.rank-champion .rank-return.down {{ background:#DCFCEB !important; border-color:#75C9A0 !important; color:#05603A !important; }}
 #app-page-content .rank-card .rank-detail > summary,
 #app-page-content .rank-card summary,
-#app-page-content .history-more summary {{ background:#E1EAF0 !important;border:1.5px solid #9AAEBB !important;color:#17394D !important;font-size:14px !important;font-weight:950 !important; }}
-#app-page-content .rank-card.rank-champion .rank-detail > summary {{ background:#304C5D !important;border-color:#718A99 !important;color:#FFFFFF !important; }}
-#app-page-content .rank-card .rank-detail-body > span {{ background:#FFFFFF !important;border-color:#AAB8C2 !important;color:#172B3A !important; }}
+#app-page-content .history-more summary {{
+  background:#EDF3F6 !important; border:1.5px solid #A9B9C4 !important;
+  color:#18394B !important; font-size:14px !important; font-weight:850 !important;
+  border-radius:9px !important;
+}}
+#app-page-content .rank-card.rank-champion .rank-detail > summary {{
+  background:#E2F1ED !important; border-color:#8DC1B6 !important; color:#135D55 !important;
+}}
+#app-page-content .rank-card .rank-detail-body > span {{
+  background:#FFFFFF !important; border:1px solid #C3CFD7 !important; color:#17212B !important;
+}}
 #app-page-content .rank-card .rank-detail-body > span em,
-#app-page-content .rank-card .rank-detail-body > span small {{ color:#34495A !important;font-size:13px !important;font-weight:850 !important; }}
-#app-page-content .rank-card.rank-champion .rank-detail-body > span {{ background:#203947 !important;border-color:#647D8C !important;color:#FFFFFF !important; }}
-#app-page-content .rank-card.rank-champion .rank-detail-body > span em,
-#app-page-content .rank-card.rank-champion .rank-detail-body > span small {{ color:#E8EFF4 !important; }}
-#app-page-content .rank-chart-panel {{ background:#FFFFFF !important;border:1.5px solid #A4B2BD !important;color:#101828 !important; }}
-#app-page-content .rank-chart-panel > div:first-child {{ color:#101828 !important;font-size:19px !important;font-weight:1000 !important; }}
+#app-page-content .rank-card .rank-detail-body > span small {{
+  color:#475467 !important; font-size:12.5px !important; font-weight:700 !important;
+}}
+#app-page-content .rank-card .rank-detail-body > span > .num {{ color:#17212B !important; }}
+#app-page-content .rank-card .rank-detail-body .num.up {{ color:#B42318 !important; font-weight:900 !important; }}
+#app-page-content .rank-card .rank-detail-body .num.down {{ color:#067647 !important; font-weight:900 !important; }}
+#app-page-content .rank-chart-panel {{
+  background:#FFFFFF !important; border:1.5px solid #BCC8D1 !important;
+  border-top:4px solid #176B65 !important; color:#17212B !important;
+}}
+#app-page-content .rank-chart-panel > div:first-child {{ color:#172B3A !important; font-size:19px !important; font-weight:900 !important; }}
 #app-page-content .rank-chart-panel .sub,
-#app-page-content .rank-chart-panel .legend span {{ color:#263746 !important;font-size:13.5px !important;font-weight:850 !important; }}
-#app-page-content .rank-chart-panel svg text {{ fill:#263746 !important;font-size:12px !important;font-weight:850 !important; }}
-#app-page-content .leaderboard-history {{ background:#FFFFFF !important;border:1.5px solid #9BAAB6 !important;border-top:5px solid #263F4D !important; }}
-#app-page-content .history-period-head {{ background:#DCE5EB !important;border-bottom:1.5px solid #A7B6C1 !important; }}
+#app-page-content .rank-chart-panel .legend span {{ color:#344054 !important; font-size:13.5px !important; font-weight:750 !important; }}
+#app-page-content .rank-chart-panel svg text {{ fill:#344054 !important; font-size:12px !important; font-weight:750 !important; }}
+#app-page-content .leaderboard-history {{
+  background:#FFFFFF !important; border:1.5px solid #BCC8D1 !important; border-top:4px solid #176B65 !important;
+}}
+#app-page-content .history-period-head {{ background:#E8EEF2 !important; border-bottom:1.5px solid #B8C5CF !important; }}
 #app-page-content .history-period-head b,
-#app-page-content .history-name {{ color:#101828 !important;font-size:14px !important;font-weight:950 !important; }}
-#app-page-content .history-rank {{ color:#34495A !important;font-size:14px !important;font-weight:950 !important; }}
-#app-page-content .history-rank-row {{ border-bottom:1px solid #CBD5DD !important; }}
-#app-page-content .history-rank-row:nth-child(even) {{ background:#EEF2F5 !important; }}
-#app-page-content .history-return {{ font-size:15px !important;font-weight:1000 !important; }}
+#app-page-content .history-name {{ color:#101828 !important; font-size:14px !important; font-weight:900 !important; }}
+#app-page-content .history-rank {{ color:#344054 !important; font-size:14px !important; font-weight:900 !important; }}
+#app-page-content .history-rank-row {{ border-bottom:1px solid #CDD6DD !important; }}
+#app-page-content .history-rank-row:nth-child(even) {{ background:#F1F4F6 !important; }}
+#app-page-content .history-return {{ font-size:15px !important; font-weight:950 !important; }}
 @media(max-width:420px) {{
+  #app-page-content .rank-situation {{ padding:15px 12px !important; }}
   #app-page-content .rank-card:not(.rank-champion) .rank-meta,
   #app-page-content .rank-card:not(.rank-champion) .rank-meta span,
-  #app-page-content .rank-card:not(.rank-champion) .rank-private {{ font-size:13.5px !important; }}
+  #app-page-content .rank-card:not(.rank-champion) .rank-private {{ font-size:13px !important; }}
   #app-page-content .rank-card:not(.rank-champion) .name {{ font-size:17px !important; }}
   #app-page-content .rank-card .rank-return.up,
-  #app-page-content .rank-card .rank-return.down {{ font-size:20px !important; }}
+  #app-page-content .rank-card .rank-return.down {{ font-size:19px !important; padding:4px 8px !important; }}
 }}
-
 </style>
 </div></body></html>"""
 
@@ -26140,6 +26232,10 @@ def render_positions_fast_summary(uid):
 @web_login_required
 def web_positions(uid):
     positions_page_started = time.monotonic()
+    # 持股有任何寫入操作時，先清除同一位使用者的持股／首頁頁面快取，避免舊數字殘留。
+    if request.method == "POST":
+        for _cache_page in ("positions", "positions-fast", "portfolio", "portfolio-fast"):
+            _web_fragment_cache_clear(_cache_page, uid)
     # GET 且不是要片段時，先秒回骨架讓使用者馬上看到畫面，
     # 真正的抓價工作交給後續的 fragment 請求。
     # POST 不能這樣做——表單送出必須當場處理完，否則新增／賣出會遺失。
@@ -26152,6 +26248,22 @@ def web_positions(uid):
 
     if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1":
         return respond_page("持股", render_positions_fast_summary(uid), "positions")
+
+    # V255：先以使用者／日期／查詢狀態查片段快取，避免每次切回持股都先等 positions SQL。
+    # 持股相關 POST 會在上方主動失效此快取；即時行情仍由頁面內的輕量行情 API 更新。
+    _positions_fast_fragment_key = None
+    if request.method == "GET" and wants_fragment() and request.args.get("refresh") != "1":
+        _positions_fast_fragment_key = (
+            str(uid), str(request.args.get("t") or request.cookies.get("stockbot_token") or ""),
+            taiwan_today().isoformat(),
+            tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
+                         if k not in {"t", "fragment", "_nav", "refresh", "fast"})))
+        _positions_fast_ttl = 180.0 if _is_taiwan_intraday_window() else 300.0
+        _cached_positions_fast_body = _web_fragment_cache_get(
+            "positions-fast", _positions_fast_fragment_key, _positions_fast_ttl)
+        if _cached_positions_fast_body is not None:
+            print("⚡ 持股頁命中前置 HTML 快取（跳過持股資料 DB 查詢）", flush=True)
+            return respond_page("持股", _cached_positions_fast_body, "positions")
 
     # POST 賣出一定要先讀手續費設定；GET 則等快取檢查後再讀，避免切頁時做不必要的 DB round-trip。
     fee_disc = min_fee = None
@@ -26959,8 +27071,11 @@ def web_positions(uid):
         (quote_done - quote_started) * 1000,
         (time.monotonic() - quote_done) * 1000,
         (time.monotonic() - positions_page_started) * 1000), flush=True)
-    if request.method == "GET" and wants_fragment() and _positions_fragment_cache_key is not None:
-        _web_fragment_cache_put("positions", _positions_fragment_cache_key, body)
+    if request.method == "GET" and wants_fragment():
+        if _positions_fragment_cache_key is not None:
+            _web_fragment_cache_put("positions", _positions_fragment_cache_key, body)
+        if _positions_fast_fragment_key is not None:
+            _web_fragment_cache_put("positions-fast", _positions_fast_fragment_key, body)
     return respond_page("持股", body, "positions")
 
 
@@ -30385,7 +30500,7 @@ def web_leaderboard(uid):
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
                          if k not in {"t", "fragment", "_nav"})))
         # 排行榜以快照為資料來源，數十秒內重用既有 HTML 可省去數次遠端 DB round-trip。
-        _leaderboard_cache_ttl = 180.0 if _is_taiwan_intraday_window() else 300.0
+        _leaderboard_cache_ttl = 600.0 if _is_taiwan_intraday_window() else 600.0
         _cached_leaderboard_body = _web_fragment_cache_get(
             "leaderboard", _leaderboard_fragment_cache_key, _leaderboard_cache_ttl)
         if _cached_leaderboard_body is not None:
@@ -33971,9 +34086,148 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 </div>'''
 
 
+def _homepage_quote_snapshot_key(uid):
+    # 個人持股頁只快取行情技術序列，不保存股數、成本或其他持倉明細。
+    return "homepage_quote_map:%s" % str(uid)
+
+
+def _homepage_quote_map_restore(payload, codes):
+    """從持久快照還原 3mo 價格序列，讓冷啟動不必同步重抓十幾檔 Yahoo 日線。"""
+    if not isinstance(payload, dict):
+        return None
+    expected = tuple(sorted(set(str(c).strip() for c in codes if c)))
+    saved = tuple(sorted(set(str(c).strip() for c in (payload.get("codes") or []) if c)))
+    if not expected or saved != expected:
+        return None
+    prices = payload.get("prices")
+    if not isinstance(prices, dict) or not all(code in prices for code in expected):
+        return None
+    restored = {}
+    for code in expected:
+        item = prices.get(code)
+        if not isinstance(item, dict) or not item.get("close"):
+            return None
+        q = dict(item)
+        # JSONB 會把 datetime.date 寫成 ISO 字串；圖表／相關係數邏輯使用 date 物件。
+        fixed_dates = []
+        for value in q.get("close_dates") or []:
+            if isinstance(value, date):
+                fixed_dates.append(value)
+                continue
+            try:
+                fixed_dates.append(datetime.fromisoformat(str(value)[:10]).date())
+            except (TypeError, ValueError):
+                continue
+        if fixed_dates:
+            q["close_dates"] = fixed_dates
+        for list_key in ("closes", "highs", "lows", "volumes", "adj_closes"):
+            raw_list = q.get(list_key)
+            if isinstance(raw_list, list):
+                cleaned = []
+                for value in raw_list:
+                    try:
+                        cleaned.append(float(value) if value is not None else None)
+                    except (TypeError, ValueError):
+                        cleaned.append(None)
+                q[list_key] = cleaned
+        restored[code] = q
+    return restored
+
+
+def _homepage_quote_map_seed_realtime_cache(prices):
+    """把持久行情快照放回現行 3mo cache；get_realtime_stocks_bulk 可再疊加官方 MIS 即時價。"""
+    try:
+        cache_day, cache_session = _realtime_cache_period()
+        now = time.time()
+        with _realtime_cache_lock:
+            for code, item in (prices or {}).items():
+                if not isinstance(item, dict) or not item.get("close"):
+                    continue
+                key = f"{code}:3mo:{cache_day}:{cache_session}"
+                _realtime_cache[key] = {"at": now, "data": dict(item)}
+    except Exception as exc:
+        print("⚠️ 首頁持久行情快取預熱失敗：%s" % type(exc).__name__, flush=True)
+
+
+def _save_homepage_quote_map_async(uid, codes, prices):
+    """背景保存行情序列，避免把 JSONB 寫入延遲加到當前頁面的回應時間。"""
+    key = _homepage_quote_snapshot_key(uid)
+    signature = tuple(sorted(set(str(c).strip() for c in codes if c)))
+    if not prices or not signature or not all(code in prices for code in signature):
+        return
+    with _HOMEPAGE_QUOTE_MAP_LOCK:
+        if key in _HOMEPAGE_QUOTE_CACHE_SAVING:
+            return
+        _HOMEPAGE_QUOTE_CACHE_SAVING.add(key)
+    def writer():
+        try:
+            payload = {"codes": list(signature), "prices": {code: prices[code] for code in signature}}
+            _save_shared_data_snapshot(
+                key, payload, data_date=taiwan_today(),
+                source_meta={"source": "homepage_quote_map", "range": "3mo", "captured_on": taiwan_today().isoformat()},
+            )
+            print("⚡ 首頁行情序列已背景保存（%s 檔）" % len(signature), flush=True)
+        except Exception as exc:
+            print("⚠️ 首頁行情序列背景保存失敗：%s" % type(exc).__name__, flush=True)
+        finally:
+            with _HOMEPAGE_QUOTE_MAP_LOCK:
+                _HOMEPAGE_QUOTE_CACHE_SAVING.discard(key)
+    threading.Thread(target=writer, name="home-quote-cache-save", daemon=True).start()
+
+
+def _get_homepage_prices_cached(uid, codes):
+    """先用程序／持久行情快取；只有首次且完全沒有快照時才同步抓完整 3mo 歷史序列。"""
+    codes = list(dict.fromkeys(str(c).strip() for c in (codes or []) if c))
+    if not codes:
+        return {}
+    signature = tuple(sorted(codes))
+    now = time.monotonic()
+    with _HOMEPAGE_QUOTE_MAP_LOCK:
+        memory = _HOMEPAGE_QUOTE_MAP_CACHE.get(str(uid))
+        if memory and memory.get("signature") == signature and now - memory.get("at", 0) < 240:
+            print("⚡ 首頁行情序列命中程序快取", flush=True)
+            # 會命中已預熱的個股 3mo cache；盤中再疊加 TWSE MIS 最新價。
+            return get_realtime_stocks_bulk(codes, rng="3mo")
+
+    snapshot_key = _homepage_quote_snapshot_key(uid)
+    try:
+        snapshot = _load_shared_data_snapshot(snapshot_key, max_age_seconds=172800)
+        restored = _homepage_quote_map_restore(snapshot.get("payload") if snapshot else None, codes)
+        if restored:
+            _homepage_quote_map_seed_realtime_cache(restored)
+            with _HOMEPAGE_QUOTE_MAP_LOCK:
+                _HOMEPAGE_QUOTE_MAP_CACHE[str(uid)] = {
+                    "at": time.monotonic(), "signature": signature, "prices": restored,
+                }
+            print("⚡ 首頁行情序列命中持久快照（%s 檔）" % len(restored), flush=True)
+            # 官方 MIS 只更新當下價格；歷史序列沿用最近保存的 3mo 快照。
+            current = get_realtime_stocks_bulk(codes, rng="3mo")
+            if current and all(current.get(code) for code in codes):
+                with _HOMEPAGE_QUOTE_MAP_LOCK:
+                    _HOMEPAGE_QUOTE_MAP_CACHE[str(uid)] = {
+                        "at": time.monotonic(), "signature": signature, "prices": current,
+                    }
+            return current
+    except Exception as exc:
+        print("⚠️ 首頁行情快照讀取失敗，改用即時抓取：%s" % type(exc).__name__, flush=True)
+
+    prices = get_realtime_stocks_bulk(codes, rng="3mo")
+    if prices and all(prices.get(code) for code in codes):
+        with _HOMEPAGE_QUOTE_MAP_LOCK:
+            _HOMEPAGE_QUOTE_MAP_CACHE[str(uid)] = {
+                "at": time.monotonic(), "signature": signature, "prices": prices,
+            }
+        _save_homepage_quote_map_async(uid, codes, prices)
+    return prices
+
+
 @app.route("/web/portfolio", methods=["GET", "POST"])
 @web_login_required
 def web_portfolio(uid):
+    # 修改首頁問卷／設定後，清掉舊版個人首頁片段。
+    if request.method == "POST":
+        _web_fragment_cache_clear("portfolio", uid)
+        _web_fragment_cache_clear("portfolio-fast", uid)
     # v187：首頁除錯攔截點。每完成一個主要階段就寫入 Render log，
     # 若下一次再 500，可直接知道最後成功到哪一步，不再靠猜。
     def _home_cp(stage, **meta):
@@ -34012,6 +34266,24 @@ def web_portfolio(uid):
             note="資料量較大，請稍候；完成後會直接顯示完整首頁。",
             staged=False,
         )
+
+    # V255：個人首頁片段快取前移到 positions SQL 之前。
+    # 因為持股 POST 會主動失效 portfolio-fast，這裡不必每次切回首頁都先查持股清單。
+    _home_fast_fragment_key = None
+    if request.method == "GET" and wants_fragment() and request.args.get("refresh") != "1":
+        _home_fast_fragment_key = (
+            str(uid), str(request.args.get("t") or request.cookies.get("stockbot_token") or ""),
+            taiwan_today().isoformat(),
+            str(request.args.get("trend_period") or "3m"),
+            str(request.args.get("trend_benchmark") or "1"),
+            tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
+                         if k not in {"t", "fragment", "_nav", "refresh"})))
+        _home_fast_ttl = 180.0 if _is_taiwan_intraday_window() else 300.0
+        _cached_home_fast_body = _web_fragment_cache_get(
+            "portfolio-fast", _home_fast_fragment_key, _home_fast_ttl)
+        if _cached_home_fast_body is not None:
+            print("⚡ 今日首頁命中前置 HTML 快取（跳過 positions SQL 與完整組裝）", flush=True)
+            return respond_page("今日", _cached_home_fast_body, "portfolio")
 
     # v184：首頁移除風險問卷與「值得注意」入口。
     profile = {}
@@ -34182,7 +34454,7 @@ def web_portfolio(uid):
     # 日內首頁同時需要目前持股行情與當日操作日誌。兩者互不相依，並行讀取；
     # 若當天已全部賣出某標的，再補抓該代號行情，保留它在日初至減碼前的貢獻。
     with ThreadPoolExecutor(max_workers=2) as exposure_executor:
-        price_future = exposure_executor.submit(get_realtime_stocks_bulk, position_codes)
+        price_future = exposure_executor.submit(_get_homepage_prices_cached, uid, position_codes)
         journal_key = (uid, taiwan_today())
         with _HOMEPAGE_CACHE_LOCK:
             journal_cached = _HOMEPAGE_JOURNAL_CACHE.get(journal_key)
@@ -34404,8 +34676,11 @@ def web_portfolio(uid):
 <div class="section-head"><h2>持股權重</h2><span class="section-note">依權重排序</span></div><div class="rows">{''.join(f'''<div class="row"><div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div><div class="price num">{h['weight']:.1f}%</div><div class="meta"><span><em>產業</em> {h['industry']}</span><span><em>損益</em> {fmt_pct(h['pl'])}</span><span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span><span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span></div><div class="chg">{fmt_pct(h['price']['pct'])}</div><div class="wbar"><span class="wbar-track"><i style="width:{min(100.0, h['weight'] / 30.0 * 100):.1f}%"></i></span><em>{h['weight']:.1f}%</em></div></div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}</div>
 
 """
-    if request.method == "GET" and wants_fragment() and _home_fragment_cache_key is not None:
-        _web_fragment_cache_put("portfolio", _home_fragment_cache_key, body)
+    if request.method == "GET" and wants_fragment():
+        if _home_fragment_cache_key is not None:
+            _web_fragment_cache_put("portfolio", _home_fragment_cache_key, body)
+        if _home_fast_fragment_key is not None:
+            _web_fragment_cache_put("portfolio-fast", _home_fast_fragment_key, body)
     return respond_page("今日", body, "portfolio")
 
 
