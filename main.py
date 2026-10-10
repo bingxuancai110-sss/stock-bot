@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V256_GOLD_CHAMPION_RANK_ALIGNMENT_CACHE_ACCELERATION"
+APP_BUILD = "V258_LEADERBOARD_REFINEMENT_AND_SHARED_QUERY_ACCELERATION"
 
 # 首頁短 TTL 快取：避免使用者在首頁／持股／首頁間快速切換時，
 # 每次都重新查相同的共享快照與操作日誌。這些資料本身就不是毫秒級變動；
@@ -60,12 +60,18 @@ _HOMEPAGE_TAIEX_REFRESH_LOCK = threading.Lock()
 _HOMEPAGE_TAIEX_REFRESH_RUNNING = False
 _HOMEPAGE_SHARED_REFRESH_LOCK = threading.Lock()
 _HOMEPAGE_SHARED_REFRESHING = set()
-_HOMEPAGE_SHARED_TTL = max(60.0, float(os.environ.get("HOMEPAGE_SHARED_TTL_SECONDS", "300")))  # 個股即時價格仍另行更新
+_HOMEPAGE_SHARED_TTL = max(60.0, float(os.environ.get("HOMEPAGE_SHARED_TTL_SECONDS", "600")))  # 個股即時價格仍另行更新
 _HOMEPAGE_SHARED_STALE_MAX_AGE = max(3600.0, float(os.environ.get("HOMEPAGE_SHARED_STALE_MAX_AGE_SECONDS", "86400")))
 _HOMEPAGE_JOURNAL_TTL = 60.0  # operation log only changes on a trade; mutations explicitly invalidate it
 _WEB_FRAGMENT_CACHE = {}
 _WEB_FRAGMENT_CACHE_LOCK = threading.RLock()
 _WEB_FRAGMENT_CACHE_MAX = 96
+
+# Trend chart content is identical across 今日／持股 when user, period and benchmark are identical.
+_PORTFOLIO_TREND_HTML_CACHE = {}
+_PORTFOLIO_TREND_HTML_CACHE_LOCK = threading.RLock()
+_PORTFOLIO_TREND_HTML_CACHE_TTL = max(30.0, float(os.environ.get("PORTFOLIO_TREND_HTML_CACHE_TTL_SECONDS", "180")))
+_PORTFOLIO_TREND_HTML_CACHE_MAX = 64
 
 
 def _web_fragment_cache_get(page, key, ttl_seconds):
@@ -116,12 +122,13 @@ def _refresh_homepage_shared_data(shared_key, user_id, position_codes):
 
     started = time.monotonic()
     try:
+        def load_revenue_valuation_industry_bundle():
+            _load_shared_data_snapshots_bulk(("monthly_revenue", "valuation", "stock_info_map"))
+            return (fetch_monthly_revenue(homepage=True), fetch_valuation(), get_industry_map())
         loaders = [
             ("法人", lambda: fetch_institutional_data(position_codes)),
             ("今日事件", lambda: _get_daily_home_context(user_id, taiwan_today(), position_codes)),
-            ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
-            ("估值", fetch_valuation),
-            ("產業", get_industry_map),
+            ("營收／估值／產業", load_revenue_valuation_industry_bundle),
             ("大盤", fetch_taiex_summary),
         ]
         def load(item):
@@ -137,7 +144,13 @@ def _refresh_homepage_shared_data(shared_key, user_id, position_codes):
 
         # 背景工作限為 2 個 worker，避免跟前景持股／走勢查詢搶完 DB pool。
         with ThreadPoolExecutor(max_workers=2) as executor:
-            refreshed = list(executor.map(load, loaders))
+            raw_refreshed = list(executor.map(load, loaders))
+        core_bundle = raw_refreshed[2] if len(raw_refreshed) > 2 else None
+        if not isinstance(core_bundle, (list, tuple)) or len(core_bundle) != 3:
+            core_bundle = ({}, {}, {})
+        refreshed = [raw_refreshed[0], raw_refreshed[1],
+                     core_bundle[0] or {}, core_bundle[1] or {},
+                     core_bundle[2] or {}, raw_refreshed[3] if len(raw_refreshed) > 3 else {}]
 
         with _HOMEPAGE_CACHE_LOCK:
             _shared_entry = _HOMEPAGE_SHARED_CACHE_BY_KEY.get(shared_key)
@@ -1571,9 +1584,17 @@ def _disable_web_page_cache(response):
     """禁用動態 HTML 快取，並輸出總耗時供 Render 日誌與瀏覽器診斷。"""
     path = request.path or ""
     if path.startswith("/web"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
+        # 這兩個檔案是所有頁面共用且不含使用者資料的固定資產。原本 no-store
+        # 會讓手機每次切頁都重新請求；若 Gunicorn 正忙著等 DB，連 400 bytes 的
+        # manifest/icon 都會排隊數秒。只對固定資產使用瀏覽器快取，動態頁面仍 no-store。
+        if path in {"/web/manifest.json", "/web/app-icon.svg"}:
+            response.headers["Cache-Control"] = "public, max-age=86400, stale-while-revalidate=604800"
+            response.headers.pop("Pragma", None)
+            response.headers.pop("Expires", None)
+        else:
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
 
         # 大型 HTML/JSON fragment 可壓縮到原始大小的一小部分；減少 iPhone 行動網路傳輸，
         # 只有客戶端明確接受 gzip、內容至少 1 KiB 且尚未編碼時才壓縮。
@@ -1773,11 +1794,10 @@ class _TimedConnection(psycopg2.extensions.connection):
 
 
 DB_POOL_MAX = int(os.environ.get("DB_POOL_MAX", "10"))
-# Render 日誌顯示冷啟動時連線取得時間以約 1.3 秒階梯式增加；
-# psycopg2 ThreadedConnectionPool 在需要新連線時會在 pool lock 內建立連線，
-# 同時多個頁面就會排隊。預設啟動時先準備 6 條連線，避免把握手延遲算進頁面切換。
-# 若有設定較小的 DB_POOL_MAX，預設 minconn 會自動跟著縮小。
-DB_POOL_MIN = int(os.environ.get("DB_POOL_MIN", str(min(6, DB_POOL_MAX))))
+# Render 日誌顯示同時使用 7-8 條連線時，尚未預熱的連線會在 pool lock 內依序建立，
+# 造成約 1.3 秒一階的排隊。預設預熱 8 條，避免一般頁面切換再臨時建立連線；
+# 如需控制 Supabase 連線上限，可透過 DB_POOL_MIN 環境變數覆寫。
+DB_POOL_MIN = int(os.environ.get("DB_POOL_MIN", str(min(8, DB_POOL_MAX))))
 if DB_POOL_MAX < DB_POOL_MIN:
     raise RuntimeError("DB_POOL_MAX 不可小於 DB_POOL_MIN。")
 
@@ -7822,7 +7842,8 @@ def get_my_rank_summary(user_id, boards=None, rank_status_map=None):
 
 _leaderboard_cache = {}
 _leaderboard_cache_lock = threading.Lock()
-LEADERBOARD_CACHE_SECONDS = 30
+# 排行榜快照以每日資料為主；使用者加入/退出會明確 clear_leaderboard_cache。
+LEADERBOARD_CACHE_SECONDS = 180
 
 # 排行榜頁面採「快照優先、背景重算」，避免使用者每次進頁都等待重型計算。
 _LEADERBOARD_REFRESH_MIN_SECONDS = 300
@@ -10195,7 +10216,7 @@ def _write_stock_info_file_cache():
             pass
 
 
-_SHARED_SNAPSHOT_MEMORY_TTL = max(1.0, float(os.environ.get("SHARED_SNAPSHOT_MEMORY_TTL_SECONDS", "60")))
+_SHARED_SNAPSHOT_MEMORY_TTL = max(1.0, float(os.environ.get("SHARED_SNAPSHOT_MEMORY_TTL_SECONDS", "300")))
 _SHARED_SNAPSHOT_MEMORY_CACHE = {}
 _SHARED_SNAPSHOT_MEMORY_LOCK = threading.RLock()
 
@@ -10356,6 +10377,101 @@ def _load_shared_data_snapshot(snapshot_key, max_age_seconds=None):
         print(f"⚠️ 解析共享資料快照失敗 {key}: {exc}")
         return None
 
+
+
+def _load_shared_data_snapshots_bulk(snapshot_keys):
+    """一次 DB round-trip 讀取多個共享快照，並預熱既有單筆讀取會使用的記憶體快取。"""
+    keys = list(dict.fromkeys(str(k).strip() for k in (snapshot_keys or []) if str(k).strip()))
+    if not keys:
+        return {}
+    now_mono = time.monotonic()
+    now_utc = datetime.now(timezone.utc)
+    result = {}
+    missing = []
+    # 先從進程記憶體命中；只把缺失／過期的 key 交給資料庫。
+    with _SHARED_SNAPSHOT_MEMORY_LOCK:
+        for key in keys:
+            max_age = float(_SHARED_SNAPSHOT_MAX_AGE.get(key, 86400))
+            entry = _SHARED_SNAPSHOT_MEMORY_CACHE.get(key)
+            cached = (entry or {}).get("value") or {}
+            computed_at = cached.get("computed_at")
+            fresh = False
+            if entry and now_mono - entry.get("at", 0.0) <= min(_SHARED_SNAPSHOT_MEMORY_TTL, max_age):
+                try:
+                    if computed_at:
+                        computed_at = (computed_at if computed_at.tzinfo
+                                       else computed_at.replace(tzinfo=timezone.utc))
+                        age = (now_utc - computed_at).total_seconds()
+                        fresh = 0 <= age <= max_age and bool(cached.get("payload"))
+                except Exception:
+                    fresh = False
+            if fresh:
+                result[key] = dict(cached)
+            else:
+                if entry:
+                    _SHARED_SNAPSHOT_MEMORY_CACHE.pop(key, None)
+                missing.append(key)
+    if not missing:
+        return result
+
+    started = time.monotonic()
+    conn = None
+    rows = []
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT snapshot_key, data_date, computed_at, payload, source_meta
+               FROM shared_data_snapshots WHERE snapshot_key = ANY(%s)""",
+            (missing,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+    except Exception as exc:
+        print("⚠️ 批次讀取共享快照失敗（%s keys）：%s" % (len(missing), exc), flush=True)
+        return result
+    finally:
+        if conn is not None:
+            release_db_connection(conn)
+
+    row_by_key = {str(row[0]): row[1:] for row in rows}
+    cache_updates = {}
+    for key in missing:
+        row = row_by_key.get(key)
+        if not row:
+            result[key] = None
+            continue
+        data_date, computed_at, payload, source_meta = row
+        max_age = float(_SHARED_SNAPSHOT_MAX_AGE.get(key, 86400))
+        try:
+            if computed_at:
+                computed_at = (computed_at if computed_at.tzinfo
+                               else computed_at.replace(tzinfo=timezone.utc))
+                age = (now_utc - computed_at).total_seconds()
+                if age < 0 or age > max_age:
+                    result[key] = None
+                    continue
+            if not payload:
+                result[key] = None
+                continue
+            value = {"data_date": data_date, "computed_at": computed_at,
+                     "payload": payload, "source_meta": source_meta or {}}
+            result[key] = value
+            cache_updates[key] = {"at": time.monotonic(), "value": value}
+        except Exception as exc:
+            print("⚠️ 解析批次共享快照失敗 %s：%s" % (key, exc), flush=True)
+            result[key] = None
+    with _SHARED_SNAPSHOT_MEMORY_LOCK:
+        _SHARED_SNAPSHOT_MEMORY_CACHE.update(cache_updates)
+        if len(_SHARED_SNAPSHOT_MEMORY_CACHE) > 128:
+            oldest = sorted(_SHARED_SNAPSHOT_MEMORY_CACHE.items(),
+                            key=lambda item: item[1].get("at", 0.0))[:32]
+            for old_key, _entry in oldest:
+                _SHARED_SNAPSHOT_MEMORY_CACHE.pop(old_key, None)
+    print("⚡ 共享快照批次讀取 %s keys：有效 %s 筆，%.0fms" % (
+        len(missing), sum(1 for k in missing if result.get(k)),
+        (time.monotonic() - started) * 1000), flush=True)
+    return result
 
 def _stock_info_from_shared_snapshot():
     snapshot = _load_shared_data_snapshot("stock_info_map")
@@ -24362,71 +24478,102 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   #app-page-content .rank-card .rank-return.down {{ font-size:19px !important; padding:4px 8px !important; }}
 }}
 
-/* V256 FINAL OVERRIDE — rank alignment and warm trophy treatment. Intentionally placed last
-   because older visual refresh rules had higher-specificity dark-blue honour styles. */
+/* V257 FINAL: one coherent finance UI. Champion uses ivory + restrained gold, never navy; all rank numbers share one rail. */
 #app-page-content .rank-rows .rank-card,
+.rank-rows .rank-card {{
+  box-sizing:border-box !important; position:relative !important; overflow:hidden !important;
+  margin:0 0 10px !important; padding:14px 13px 13px !important;
+  background:#FFFFFF !important; color:#1D2939 !important;
+  border:1px solid #C9D2D9 !important; border-left:4px solid #A8B4BD !important;
+  border-radius:13px !important; box-shadow:0 2px 6px rgba(16,24,40,.045) !important;
+}}
 #app-page-content .rank-rows .rank-card.rank-champion,
-.rank-rows .rank-card,
 .rank-rows .rank-card.rank-champion {{
-  color:#202923 !important;
-  background:#FFFFFF !important;
-  border:1.5px solid #C7CDD0 !important;
-  border-left:4px solid #AEB7BC !important;
-  border-radius:15px !important;
-  box-shadow:0 2px 7px rgba(20,31,24,.055) !important;
+  background:#FFFEFB !important; color:#1D2939 !important;
+  border:1px solid #D8CBAA !important; border-left:5px solid #BE8B2C !important;
+  border-radius:14px !important; box-shadow:0 3px 10px rgba(94,73,28,.075) !important;
 }}
 #app-page-content .rank-rows .rank-card.rank-silver,
 .rank-rows .rank-card.rank-silver {{
-  background:#FAFBFB !important; border-left:4px solid #939DA3 !important;
+  background:#FCFDFE !important; border-color:#CBD3D9 !important; border-left:4px solid #98A4AD !important;
 }}
 #app-page-content .rank-rows .rank-card.rank-bronze,
 .rank-rows .rank-card.rank-bronze {{
-  background:#FFFBF7 !important; border-left:4px solid #B9794D !important;
+  background:#FFFCF9 !important; border-color:#E2D0C1 !important; border-left:4px solid #B77951 !important;
 }}
-/* The first column is a fixed-width rail, so #1/#2/#3 all start and center on the same axis. */
+/* Two columns: primary line (fixed rank + flexible name) and return; movement sits under the name line. */
 #app-page-content .rank-rows .rank-card .rank-row-main,
 .rank-rows .rank-card .rank-row-main {{
-  display:grid !important;
-  grid-template-columns:44px minmax(0,1fr) max-content !important;
-  grid-template-areas:"rank name ret" "movement movement movement" !important;
-  align-items:center !important;
-  column-gap:10px !important;
-  row-gap:3px !important;
+  display:grid !important; grid-template-columns:minmax(0,1fr) max-content !important;
+  grid-template-areas:"primary ret" "movement movement" !important;
+  align-items:center !important; column-gap:9px !important; row-gap:4px !important;
+  min-width:0 !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-primary-line,
+.rank-rows .rank-card .rank-primary-line {{
+  grid-area:primary !important; display:grid !important;
+  grid-template-columns:38px minmax(0,1fr) !important; align-items:center !important;
+  gap:9px !important; min-width:0 !important; margin:0 !important;
 }}
 #app-page-content .rank-rows .rank-card .rank-number,
 .rank-rows .rank-card .rank-number {{
-  grid-area:rank !important;
-  display:inline-flex !important;
-  align-items:center !important;
-  justify-content:center !important;
-  box-sizing:border-box !important;
-  width:44px !important; min-width:44px !important; max-width:44px !important;
-  height:40px !important; min-height:40px !important;
-  padding:0 !important; margin:0 !important;
-  border-radius:10px !important;
-  font-size:16px !important; line-height:1 !important; font-weight:950 !important;
+  grid-area:auto !important; position:static !important; float:none !important;
+  display:inline-flex !important; align-items:center !important; justify-content:center !important;
+  box-sizing:border-box !important; width:38px !important; min-width:38px !important; max-width:38px !important;
+  height:36px !important; min-height:36px !important; margin:0 !important; padding:0 !important;
+  border:1px solid #B6C1C8 !important; border-radius:9px !important;
+  background:#E9EEF1 !important; color:#344054 !important;
+  font-size:15px !important; line-height:1 !important; font-weight:950 !important;
   font-variant-numeric:tabular-nums !important; letter-spacing:-.02em !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-number,
+.rank-rows .rank-card.rank-champion .rank-number {{
+  background:#F7E6B5 !important; color:#67460B !important;
+  border:1px solid #C49A45 !important; box-shadow:inset 0 1px 0 #FFF9E7 !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-silver .rank-number,
+.rank-rows .rank-card.rank-silver .rank-number {{
+  background:#E2E8EC !important; color:#364152 !important; border-color:#AEBBC4 !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-bronze .rank-number,
+.rank-rows .rank-card.rank-bronze .rank-number {{
+  background:#F3DFD0 !important; color:#7A4425 !important; border-color:#D0A486 !important;
 }}
 #app-page-content .rank-rows .rank-card .name,
 .rank-rows .rank-card .name {{
-  grid-area:name !important; align-self:center !important; min-width:0 !important;
-  color:#17211B !important; font-size:17px !important; line-height:1.4 !important;
-  font-weight:900 !important; white-space:normal !important; overflow-wrap:anywhere !important;
-  text-overflow:clip !important; margin:0 !important;
+  grid-area:auto !important; display:block !important; min-width:0 !important; max-width:100% !important;
+  margin:0 !important; padding:0 !important; position:static !important; float:none !important;
+  color:#17212B !important; font-size:16.5px !important; line-height:1.38 !important;
+  font-weight:850 !important; white-space:normal !important; overflow-wrap:anywhere !important;
+  word-break:normal !important; text-overflow:clip !important;
 }}
 #app-page-content .rank-rows .rank-card .rank-return,
 .rank-rows .rank-card .rank-return {{
   grid-area:ret !important; justify-self:end !important; align-self:center !important;
-  font-variant-numeric:tabular-nums !important; font-size:clamp(20px,5vw,25px) !important;
-  line-height:1.05 !important; font-weight:950 !important; white-space:nowrap !important;
+  display:inline-flex !important; justify-content:center !important; align-items:center !important;
+  box-sizing:border-box !important; margin:0 !important; padding:5px 8px !important;
+  border-radius:8px !important; font-size:clamp(19px,4.9vw,24px) !important;
+  line-height:1.08 !important; font-weight:950 !important; white-space:nowrap !important;
+  font-variant-numeric:tabular-nums !important; letter-spacing:-.02em !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-return.up,
+.rank-rows .rank-card .rank-return.up {{
+  color:#B42318 !important; background:#FEE4E2 !important; border:1px solid #F3AAA4 !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-return.down,
+.rank-rows .rank-card .rank-return.down {{
+  color:#067647 !important; background:#D1FADF !important; border:1px solid #6CE9A6 !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-return.flat,
+.rank-rows .rank-card .rank-return.flat {{
+  color:#344054 !important; background:#EAECF0 !important; border:1px solid #B8C0CC !important;
 }}
 #app-page-content .rank-rows .rank-card .rank-movement,
 .rank-rows .rank-card .rank-movement {{
-  grid-area:movement !important; grid-column:auto !important;
-  justify-self:start !important; align-self:start !important;
-  margin:3px 0 0 0 !important; padding:0 !important;
-  color:#46524B !important; font-size:13px !important; line-height:1.45 !important;
-  font-weight:750 !important; white-space:normal !important;
+  grid-area:movement !important; grid-column:1 / -1 !important; justify-self:start !important;
+  display:block !important; position:static !important; margin:1px 0 0 47px !important; padding:0 !important;
+  color:#475467 !important; font-size:12.5px !important; line-height:1.4 !important; font-weight:750 !important;
+  white-space:normal !important; overflow-wrap:anywhere !important;
 }}
 #app-page-content .rank-rows .rank-card .rank-meta,
 #app-page-content .rank-rows .rank-card .rank-detail,
@@ -24434,156 +24581,134 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 .rank-rows .rank-card .rank-meta,
 .rank-rows .rank-card .rank-detail,
 .rank-rows .rank-card .rank-private {{
-  margin-left:54px !important; color:#35413A !important;
-  font-size:13.5px !important; font-weight:700 !important; line-height:1.65 !important;
+  margin:9px 0 0 47px !important; padding:0 !important; color:#344054 !important;
+  font-size:13px !important; line-height:1.6 !important; font-weight:650 !important;
 }}
+#app-page-content .rank-rows .rank-card .rank-meta,
+.rank-rows .rank-card .rank-meta {{ display:flex !important; flex-wrap:wrap !important; gap:5px 11px !important; }}
+#app-page-content .rank-rows .rank-card .rank-meta span,
+.rank-rows .rank-card .rank-meta span {{ color:#344054 !important; font-size:13px !important; font-weight:700 !important; }}
 #app-page-content .rank-rows .rank-card .rank-meta em,
 #app-page-content .rank-rows .rank-card .rank-detail-body em,
 .rank-rows .rank-card .rank-meta em,
 .rank-rows .rank-card .rank-detail-body em {{
-  color:#58635D !important; font-weight:800 !important; font-style:normal !important;
+  display:block !important; margin:0 0 3px !important; color:#667085 !important;
+  font-size:11px !important; line-height:1.3 !important; font-style:normal !important; font-weight:800 !important;
 }}
-#app-page-content .rank-rows .rank-card .rank-number,
-.rank-rows .rank-card .rank-number {{
-  background:#E9EEF0 !important; color:#33413A !important; border:1.5px solid #A8B4BA !important;
-}}
-#app-page-content .rank-rows .rank-card.rank-champion .rank-number,
-.rank-rows .rank-card.rank-champion .rank-number {{
-  color:#573B0D !important; background:#F5D989 !important;
-  border:1.5px solid #C3932D !important; box-shadow:inset 0 1px 0 #FFF4C7 !important;
-}}
-#app-page-content .rank-rows .rank-card.rank-silver .rank-number,
-.rank-rows .rank-card.rank-silver .rank-number {{
-  color:#35414A !important; background:#DDE2E5 !important; border-color:#9DA9B0 !important;
-}}
-#app-page-content .rank-rows .rank-card.rank-bronze .rank-number,
-.rank-rows .rank-card.rank-bronze .rank-number {{
-  color:#733D1F !important; background:#F0D1BA !important; border-color:#C38D68 !important;
-}}
-#app-page-content .rank-rows .rank-card.rank-champion,
-.rank-rows .rank-card.rank-champion {{
-  position:relative !important; overflow:hidden !important;
-  background:linear-gradient(150deg,#FFFEFA 0%,#FFF9E9 58%,#FFF2CB 100%) !important;
-  border:1.5px solid #D6B45E !important; border-left:6px solid #C28D22 !important;
-  box-shadow:0 5px 16px rgba(133,93,20,.11) !important;
-  padding:15px 13px 14px !important;
-}}
-#app-page-content .rank-rows .rank-card.rank-champion:before,
-#app-page-content .rank-rows .rank-card.rank-champion:after,
-.rank-rows .rank-card.rank-champion:before,
-.rank-rows .rank-card.rank-champion:after {{
-  pointer-events:none !important;
-}}
-/* Override the old high-specificity navy honour banner: warm ivory + gold, not blue. */
+/* Winner header: compact ivory band with a small trophy; keep gold as an accent, not a full-card gradient. */
 #app-page-content .rank-rows .rank-card.rank-champion .rank-honour,
 .rank-rows .rank-card.rank-champion .rank-honour {{
-  display:flex !important; flex-direction:row !important; justify-content:flex-start !important;
-  align-items:center !important; text-align:left !important; gap:14px !important;
-  min-height:0 !important; padding:12px 14px !important; margin:0 0 14px !important;
-  background:linear-gradient(110deg,#FFF8DE 0%,#FFFDF6 100%) !important;
-  border:1.5px solid #E1C16B !important; border-radius:12px !important;
-  border-bottom:1.5px solid #E1C16B !important;
-  color:#684A12 !important; box-shadow:none !important;
+  display:flex !important; flex-direction:row !important; align-items:center !important; justify-content:flex-start !important;
+  gap:10px !important; min-height:0 !important; margin:0 0 12px !important; padding:9px 11px !important;
+  color:#3D3525 !important; text-align:left !important; background:#FFFDF7 !important;
+  border:1px solid #E6D8B7 !important; border-left:4px solid #BE8B2C !important;
+  border-radius:10px !important; box-shadow:none !important;
 }}
 #app-page-content .rank-rows .rank-card.rank-champion .rank-honour:before,
 #app-page-content .rank-rows .rank-card.rank-champion .rank-honour:after,
 .rank-rows .rank-card.rank-champion .rank-honour:before,
-.rank-rows .rank-card.rank-champion .rank-honour:after {{
-  content:none !important; display:none !important;
-}}
+.rank-rows .rank-card.rank-champion .rank-honour:after {{ content:none !important; display:none !important; }}
 #app-page-content .rank-rows .rank-card.rank-champion .rank-honour-icon,
 #app-page-content .rank-rows .rank-card.rank-champion .rank-honour-icon svg,
 .rank-rows .rank-card.rank-champion .rank-honour-icon,
 .rank-rows .rank-card.rank-champion .rank-honour-icon svg {{
-  display:grid !important; place-items:center !important;
-  width:62px !important; height:62px !important; flex:0 0 62px !important;
-  filter:drop-shadow(0 2px 2px rgba(133,93,20,.16)) !important;
+  display:block !important; width:44px !important; height:44px !important; flex:0 0 44px !important;
+  filter:drop-shadow(0 1px 1px rgba(94,73,28,.12)) !important;
 }}
 #app-page-content .rank-rows .rank-card.rank-champion .rank-honour b,
 .rank-rows .rank-card.rank-champion .rank-honour b {{
-  display:block !important; margin:0 !important; color:#563C0C !important;
-  font-size:19px !important; line-height:1.25 !important; font-weight:950 !important;
-  letter-spacing:.02em !important;
+  display:block !important; margin:0 !important; color:#40331A !important;
+  font-size:16px !important; line-height:1.25 !important; font-weight:950 !important; letter-spacing:0 !important;
 }}
 #app-page-content .rank-rows .rank-card.rank-champion .rank-honour small,
 .rank-rows .rank-card.rank-champion .rank-honour small {{
-  display:block !important; margin-top:4px !important; color:#6F5A2C !important;
-  font-size:13px !important; line-height:1.45 !important; font-weight:800 !important;
+  display:block !important; margin-top:3px !important; color:#67583B !important;
+  font-size:12px !important; line-height:1.4 !important; font-weight:750 !important;
 }}
 #app-page-content .rank-rows .rank-card.rank-champion .rank-meta,
 #app-page-content .rank-rows .rank-card.rank-champion .rank-meta span,
-#app-page-content .rank-rows .rank-card.rank-champion .rank-meta em,
 #app-page-content .rank-rows .rank-card.rank-champion .rank-movement,
 #app-page-content .rank-rows .rank-card.rank-champion .rank-private,
-#app-page-content .rank-rows .rank-card.rank-champion .rank-detail-body,
-#app-page-content .rank-rows .rank-card.rank-champion .rank-detail-body span,
 .rank-rows .rank-card.rank-champion .rank-meta,
 .rank-rows .rank-card.rank-champion .rank-meta span,
-.rank-rows .rank-card.rank-champion .rank-meta em,
 .rank-rows .rank-card.rank-champion .rank-movement,
-.rank-rows .rank-card.rank-champion .rank-private,
-.rank-rows .rank-card.rank-champion .rank-detail-body,
-.rank-rows .rank-card.rank-champion .rank-detail-body span {{
-  color:#303B33 !important; font-size:13.5px !important; line-height:1.65 !important;
-  font-weight:750 !important;
+.rank-rows .rank-card.rank-champion .rank-private {{ color:#344054 !important; }}
+#app-page-content .rank-rows .rank-card .rank-tier,
+.rank-rows .rank-card .rank-tier {{
+  display:flex !important; align-items:center !important; gap:7px !important;
+  margin:0 0 8px 0 !important; padding:0 !important; background:transparent !important;
+  border:0 !important; box-shadow:none !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-tier-medal,
+.rank-rows .rank-card .rank-tier-medal {{
+  display:inline-flex !important; align-items:center !important; justify-content:center !important;
+  width:27px !important; height:27px !important; flex:0 0 27px !important; font-size:20px !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-tier b,
+.rank-rows .rank-card .rank-tier b {{ color:#475467 !important; font-size:12px !important; font-weight:900 !important; letter-spacing:.03em !important; }}
+#app-page-content .rank-rows .rank-card .rank-tier small,
+.rank-rows .rank-card .rank-tier small {{ display:none !important; }}
+#app-page-content .rank-rows .rank-card .rank-detail > summary,
+#app-page-content .rank-rows .rank-card summary,
+.rank-rows .rank-card .rank-detail > summary,
+.rank-rows .rank-card summary {{
+  display:block !important; margin:9px 0 0 47px !important; padding:9px 10px !important;
+  color:#344054 !important; background:#F2F4F7 !important; border:1px solid #D0D5DD !important;
+  border-radius:9px !important; font-size:13px !important; line-height:1.35 !important; font-weight:850 !important;
 }}
 #app-page-content .rank-rows .rank-card.rank-champion .rank-detail > summary,
 .rank-rows .rank-card.rank-champion .rank-detail > summary {{
-  background:#FFF4D7 !important; color:#67470D !important; border:1.5px solid #D7B45B !important;
-  border-radius:9px !important; font-size:14px !important; font-weight:900 !important;
+  color:#57441D !important; background:#FBF6E9 !important; border-color:#E5D7B7 !important;
 }}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body,
+.rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body {{
+  display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  gap:7px !important; margin:8px 0 0 47px !important; padding:0 !important;
+}}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > span,
+.rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > span {{
+  display:flex !important; flex-direction:column !important; align-items:flex-start !important; justify-content:center !important;
+  gap:2px !important; min-width:0 !important; margin:0 !important; padding:9px 10px !important;
+  background:#F8FAF9 !important; border:1px solid #DDE4DF !important; border-radius:9px !important;
+  color:#26332B !important; font-size:13px !important; line-height:1.45 !important; font-weight:750 !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-champion > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > span,
+.rank-rows .rank-card.rank-champion > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > span {{ background:#FFFEFA !important; border-color:#E8DFC9 !important; }}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > span > .num,
+.rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > span > .num {{ font-weight:950 !important; }}
+/* This sentence repeated the champion label and interrupted the card stack; the heading now carries that status. */
 #app-page-content .rank-rows .rank-champion-prompt,
-.rank-rows .rank-champion-prompt {{
-  display:block !important; margin:-7px 0 16px !important; padding:11px 13px !important;
-  background:#FFF9E9 !important; border:1px solid #E8D6A5 !important;
-  border-radius:10px !important; color:#75571C !important;
-  font-size:13.5px !important; line-height:1.5 !important; font-weight:850 !important;
-  text-align:center !important; letter-spacing:0 !important;
-}}
-#app-page-content .rank-rows .rank-card .rank-return.up,
-.rank-rows .rank-card .rank-return.up {{
-  color:#B42318 !important; background:#FDE8E7 !important; border:1.5px solid #E9A09B !important;
-  border-radius:9px !important; padding:5px 9px !important; font-weight:950 !important;
-}}
-#app-page-content .rank-rows .rank-card .rank-return.down,
-.rank-rows .rank-card .rank-return.down {{
-  color:#067647 !important; background:#D1FADF !important; border:1.5px solid #6CE9A6 !important;
-  border-radius:9px !important; padding:5px 9px !important; font-weight:950 !important;
-}}
-#app-page-content .rank-rows .rank-card .rank-return.flat,
-.rank-rows .rank-card .rank-return.flat {{
-  color:#344054 !important; background:#EAECF0 !important; border:1.5px solid #B8C0CC !important;
-  border-radius:9px !important; padding:5px 9px !important; font-weight:950 !important;
-}}
-#app-page-content .rank-rows .rank-card:not(.rank-champion) .rank-meta,
-#app-page-content .rank-rows .rank-card:not(.rank-champion) .rank-meta span,
-#app-page-content .rank-rows .rank-card:not(.rank-champion) .rank-movement,
-#app-page-content .rank-rows .rank-card:not(.rank-champion) .rank-private,
-.rank-rows .rank-card:not(.rank-champion) .rank-meta,
-.rank-rows .rank-card:not(.rank-champion) .rank-meta span,
-.rank-rows .rank-card:not(.rank-champion) .rank-movement,
-.rank-rows .rank-card:not(.rank-champion) .rank-private {{
-  color:#35413A !important; font-weight:700 !important;
-}}
+.rank-rows .rank-champion-prompt {{ display:none !important; }}
+#app-page-content .rank-rows .rank-source-note,
+#app-page-content .rank-rows .rank-source-note *,
+.rank-rows .rank-source-note {{ color:#475467 !important; font-weight:700 !important; }}
 @media(max-width:420px) {{
   #app-page-content .rank-rows .rank-card .rank-row-main,
-  .rank-rows .rank-card .rank-row-main {{ grid-template-columns:42px minmax(0,1fr) max-content !important; column-gap:8px !important; }}
+  .rank-rows .rank-card .rank-row-main {{ column-gap:6px !important; }}
+  #app-page-content .rank-rows .rank-card .rank-primary-line,
+  .rank-rows .rank-card .rank-primary-line {{ grid-template-columns:34px minmax(0,1fr) !important; gap:7px !important; }}
   #app-page-content .rank-rows .rank-card .rank-number,
-  .rank-rows .rank-card .rank-number {{ width:42px !important; min-width:42px !important; max-width:42px !important; }}
+  .rank-rows .rank-card .rank-number {{ width:34px !important; min-width:34px !important; max-width:34px !important; height:34px !important; min-height:34px !important; }}
   #app-page-content .rank-rows .rank-card .name,
-  .rank-rows .rank-card .name {{ font-size:16px !important; }}
+  .rank-rows .rank-card .name {{ font-size:15.5px !important; }}
+  #app-page-content .rank-rows .rank-card .rank-return,
+  .rank-rows .rank-card .rank-return {{ font-size:clamp(18px,4.8vw,21px) !important; padding:4px 6px !important; }}
+  #app-page-content .rank-rows .rank-card .rank-movement,
+  .rank-rows .rank-card .rank-movement {{ margin-left:41px !important; }}
   #app-page-content .rank-rows .rank-card .rank-meta,
   #app-page-content .rank-rows .rank-card .rank-detail,
   #app-page-content .rank-rows .rank-card .rank-private,
+  #app-page-content .rank-rows .rank-card .rank-detail-body,
   .rank-rows .rank-card .rank-meta,
   .rank-rows .rank-card .rank-detail,
-  .rank-rows .rank-card .rank-private {{ margin-left:50px !important; }}
-  #app-page-content .rank-rows .rank-card.rank-champion .rank-honour,
-  .rank-rows .rank-card.rank-champion .rank-honour {{ gap:10px !important; padding:10px !important; }}
+  .rank-rows .rank-card .rank-private,
+  .rank-rows .rank-card .rank-detail-body {{ margin-left:41px !important; }}
+  #app-page-content .rank-rows .rank-card .rank-detail-body,
+  .rank-rows .rank-card .rank-detail-body {{ grid-template-columns:minmax(0,1fr) !important; }}
   #app-page-content .rank-rows .rank-card.rank-champion .rank-honour-icon,
   #app-page-content .rank-rows .rank-card.rank-champion .rank-honour-icon svg,
   .rank-rows .rank-card.rank-champion .rank-honour-icon,
-  .rank-rows .rank-card.rank-champion .rank-honour-icon svg {{ width:54px !important; height:54px !important; flex-basis:54px !important; }}
+  .rank-rows .rank-card.rank-champion .rank-honour-icon svg {{ width:40px !important; height:40px !important; flex-basis:40px !important; }}
 }}
 </style>
 </div></body></html>"""
@@ -26472,6 +26597,7 @@ def web_positions(uid):
     if request.method == "POST":
         for _cache_page in ("positions", "positions-fast", "portfolio", "portfolio-fast"):
             _web_fragment_cache_clear(_cache_page, uid)
+        _clear_portfolio_trend_html_cache(uid)
         with _HOMEPAGE_CACHE_LOCK:
             _HOMEPAGE_JOURNAL_CACHE.pop((uid, taiwan_today()), None)
     # GET 且不是要片段時，先秒回骨架讓使用者馬上看到畫面，
@@ -26939,9 +27065,8 @@ def web_positions(uid):
 
     # v194：移除組合配置圖；持股頁直接呈現持股明細與組合走勢。
     try:
-        position_snapshots = get_portfolio_snapshots(uid, days=420)
-        position_trend_html = render_trend_chart(
-            position_snapshots,
+        position_trend_html = render_portfolio_trend_chart_cached(
+            uid,
             requested_period=str(request.args.get("trend_period") or "3m"),
             show_benchmark=str(request.args.get("trend_benchmark") or "1").lower() not in {"0", "false", "off", "no"},
             auth_token=str(request.args.get("t") or ""))
@@ -30109,6 +30234,44 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 </section>'''
 
 
+def _clear_portfolio_trend_html_cache(user_id):
+    uid_key = str(user_id).strip()
+    with _PORTFOLIO_TREND_HTML_CACHE_LOCK:
+        for key in list(_PORTFOLIO_TREND_HTML_CACHE):
+            if key and key[0] == uid_key:
+                _PORTFOLIO_TREND_HTML_CACHE.pop(key, None)
+
+
+def render_portfolio_trend_chart_cached(user_id, requested_period="3m", show_benchmark=True, auth_token=""):
+    """同一使用者今日／持股共用已繪製的走勢圖；快取過期後才重新查快照並組 SVG。"""
+    period = str(requested_period or "3m").lower()
+    if period not in {"1m", "3m", "6m", "ytd", "all"}:
+        period = "3m"
+    uid_key = str(user_id).strip()
+    key = (uid_key, taiwan_today().isoformat(), period, bool(show_benchmark), str(auth_token or ""))
+    now = time.monotonic()
+    with _PORTFOLIO_TREND_HTML_CACHE_LOCK:
+        entry = _PORTFOLIO_TREND_HTML_CACHE.get(key)
+        if entry and now - entry.get("at", 0.0) < _PORTFOLIO_TREND_HTML_CACHE_TTL:
+            print("⚡ 組合走勢命中跨頁 HTML 快取", flush=True)
+            return entry.get("html") or ""
+        if entry:
+            _PORTFOLIO_TREND_HTML_CACHE.pop(key, None)
+    started = time.monotonic()
+    snapshots = get_portfolio_snapshots(uid_key, days=420)
+    rendered = render_trend_chart(snapshots, requested_period=period,
+                                  show_benchmark=bool(show_benchmark), auth_token=str(auth_token or ""))
+    with _PORTFOLIO_TREND_HTML_CACHE_LOCK:
+        _PORTFOLIO_TREND_HTML_CACHE[key] = {"at": time.monotonic(), "html": rendered}
+        if len(_PORTFOLIO_TREND_HTML_CACHE) > _PORTFOLIO_TREND_HTML_CACHE_MAX:
+            oldest = sorted(_PORTFOLIO_TREND_HTML_CACHE.items(),
+                            key=lambda item: item[1].get("at", 0.0))[:16]
+            for old_key, _entry in oldest:
+                _PORTFOLIO_TREND_HTML_CACHE.pop(old_key, None)
+    print("⏱️ 組合走勢快取未命中：快照／SVG %.0fms" % ((time.monotonic() - started) * 1000), flush=True)
+    return rendered
+
+
 @app.route("/web/position-journal.csv")
 @web_login_required
 def web_position_journal_csv(uid):
@@ -31210,22 +31373,11 @@ def web_leaderboard(uid):
             return ('<div class="empty">這個榜還沒有資料。<br><br>'
                     '<span style="font-size:12.5px">加入後會先進入排隊觀察；'
                     '有效資料達標後才會出現正式名次。</span></div>')
-        champion_svg = '''<svg viewBox="0 0 120 120" role="img" aria-label="冠軍獎盃" xmlns="http://www.w3.org/2000/svg">
-  <defs><linearGradient id="cupGold" x1="0" y1="0" x2="1" y2="1">
-    <stop offset="0" stop-color="#FFF2C2"/><stop offset=".32" stop-color="#E4B84E"/>
-    <stop offset=".68" stop-color="#9A681C"/><stop offset="1" stop-color="#F9E6A0"/>
-  </linearGradient><linearGradient id="cupShadow" x1="0" y1="0" x2="0" y2="1">
-    <stop offset="0" stop-color="#8B5B17"/><stop offset="1" stop-color="#D6A73A"/>
-  </linearGradient></defs>
-  <path d="M31 23h58v18c0 18-12 31-29 34C43 72 31 59 31 41V23Z" fill="url(#cupGold)" stroke="#A87520" stroke-width="2"/>
-  <path d="M31 28H17c0 20 8 30 23 32M89 28h14c0 20-8 30-23 32" fill="none" stroke="#B88526" stroke-width="7" stroke-linecap="round"/>
-  <path d="M42 24c8 10 28 10 36 0" fill="none" stroke="#FFFDF5" stroke-width="3" opacity=".9"/>
-  <path d="M60 75v15M40 94h40" stroke="#8A5A16" stroke-width="7" stroke-linecap="round"/>
-  <path d="M36 96h48v9H36z" fill="url(#cupShadow)" stroke="#A87520" stroke-width="2"/>
-  <path d="M60 9l3 7 8 1-6 5 2 8-7-4-7 4 2-8-6-5 8-1 3-7Z" fill="#F4D779" stroke="#A87520" stroke-width="1.5"/>
-  <path d="M18 88c-8-12-7-25 1-36M102 88c8-12 7-25-1-36" fill="none" stroke="#B88224" stroke-width="2" opacity=".8"/>
-  <path d="M20 76l-8-3M20 66l-8-5M22 56l-7-7M100 76l8-3M100 66l8-5M98 56l7-7" stroke="#D3A641" stroke-width="2" stroke-linecap="round"/>
-  <circle cx="24" cy="48" r="2" fill="#FFF2C2"/><circle cx="96" cy="48" r="2" fill="#FFF2C2"/>
+        champion_svg = '''<svg viewBox="0 0 48 48" role="img" aria-label="冠軍獎盃" xmlns="http://www.w3.org/2000/svg">
+  <path d="M14 8h20v10c0 7-4 12-10 14-6-2-10-7-10-14V8Z" fill="#C69A3A" stroke="#946A20" stroke-width="1.6"/>
+  <path d="M14 11H7v4c0 7 4 11 10 12M34 11h7v4c0 7-4 11-10 12" fill="none" stroke="#A77B2C" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M24 32v6M16 40h16" stroke="#946A20" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M24 3l2.1 4.2 4.6.7-3.3 3.2.8 4.6-4.2-2.2-4.2 2.2.8-4.6-3.3-3.2 4.6-.7L24 3Z" fill="#E4C16D"/>
 </svg>'''
         out = []
         for i, r in enumerate(rows):
@@ -31236,16 +31388,14 @@ def web_leaderboard(uid):
                 tier_class = " rank-champion"
                 honour = f'''<div class="rank-honour">
   <span class="rank-honour-icon">{champion_svg}</span>
-  <div><b>冠軍席位</b><small>今日冠軍・目前第一名</small></div>
+  <div><b>本榜冠軍</b><small>本期排名第一・依所選期間</small></div>
 </div>'''
             elif current_rank == 2:
                 tier_class = " rank-silver"
-                honour = '''<div class="rank-tier"><span class="rank-tier-medal">🥈</span>
-  <b>亞軍</b><small>第二名</small></div>'''
+                honour = ""
             elif current_rank == 3:
                 tier_class = " rank-bronze"
-                honour = '''<div class="rank-tier"><span class="rank-tier-medal">🥉</span>
-  <b>季軍</b><small>第三名</small></div>'''
+                honour = ""
             else:
                 tier_class = ""
                 honour = ""
@@ -31507,16 +31657,16 @@ def web_leaderboard(uid):
 <div class="rank-card{tier_class}{mine}">
   {honour}
   <div class="rank-row-main">
-    <span class="rank-number">{rank}</span>
-    <span class="name">{safe_html_text(r['nickname'])}</span>
+    <div class="rank-primary-line">
+      <span class="rank-number">{rank}</span>
+      <span class="name">{safe_html_text(r['nickname'])}</span>
+    </div>
     <span class="rank-return num {cls}">{main_v:+.2f}%</span>
     <span class="rank-movement">{movement}</span>
   </div>
   <div class="rank-meta">{''.join(supporting)}<span>{span_html}</span></div>
   {detail}
 </div>""")
-            if current_rank == 1:
-                out.append('<div class="rank-champion-prompt">冠軍領先中・持續追蹤報酬與最大回檔</div>')
         return f'<div class="rows rank-rows">{"".join(out)}</div>'
 
     # 兩榜都先渲染好。資料本來就都算過了（build_leaderboard 同時回 short/long），
@@ -31658,7 +31808,181 @@ def web_leaderboard(uid):
 .settlement-wrap{margin:0 0 18px;padding:16px;border:1px solid #d8c28d;border-radius:20px;background:linear-gradient(145deg,#fff8dd,#fffdf7);box-shadow:0 8px 22px rgba(120,95,35,.08)}
 .settlement-kicker{font-size:9px;letter-spacing:.18em;color:#9a7736;font-weight:900}.settlement-wrap h2{margin:5px 0 4px}.settlement-wrap>p{margin:0 0 12px;color:#766a55;font-size:12px;line-height:1.6}
 .settlement-report-card{border:1px solid #e4d2a5;border-radius:16px;background:#fffef8;padding:14px;margin-top:10px}.settlement-report-top{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d6538;font-weight:900}.settlement-report-top small{color:#8b8f98;font-weight:600}.settlement-report-title{margin-top:12px;font-size:15px;display:flex;align-items:center;gap:5px}.settlement-report-title b{font-size:12px;color:#7c8796;font-weight:700}.settlement-report-title em{margin-left:auto;font-style:normal;color:#9a8a6d;font-size:10.5px}.scorecard-rank{font-size:20px;font-weight:950;color:#18263a}.settlement-report-main{text-align:center;padding:9px 0 11px}.settlement-report-main strong{display:block;font-size:34px;line-height:1.05;font-weight:950}.settlement-report-main span{display:block;margin-top:5px;color:#7b8591;font-size:12px}.settlement-report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.settlement-report-grid div{padding:9px;border-radius:11px;background:#faf8f0;border:1px solid #eee6d5}.settlement-report-grid small{display:block;color:#7f8997;font-size:10.5px}.settlement-report-grid b{display:block;margin-top:3px;font-size:17px}.settlement-report-grid span{display:block;margin-top:2px;color:#9aa1aa;font-size:9.5px}.settlement-report-period{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding:9px 10px;border-radius:10px;background:#fbf8ef;color:#8a7b60;font-size:10.5px}.settlement-report-period b{color:#5d6570;font-size:10.5px}.settlement-report-foot{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #eee6d5;color:#7b8794;font-size:10.5px}.scorecard-chart{margin:4px 0 12px;padding:10px 10px 7px;border:1px solid #e8edf2;border-radius:12px;background:#fbfcfd}.scorecard-chart-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;color:#344255;font-size:11px}.scorecard-chart-head span{color:#8b97a5;font-weight:600}.scorecard-chart svg{display:block;width:100%;height:auto}.scorecard-chart-legend{display:flex;gap:14px;justify-content:flex-end;color:#8b97a5;font-size:9.5px}.scorecard-chart-legend span{display:flex;align-items:center;gap:4px}.scorecard-chart-legend i{display:inline-block;width:15px;height:3px;border-radius:3px}.legend-user{background:#1769aa}.legend-market{background:#a7b0ba}.scorecard-chart-empty{margin:4px 0 12px;padding:22px 10px;text-align:center;border:1px dashed #dfe5eb;border-radius:12px;color:#8b97a5;font-size:11px;background:#fbfcfd}
-.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}.history-more{border-top:1px solid var(--rule);background:var(--paper)}.history-more summary{list-style:none;cursor:pointer;padding:11px 12px;color:#1769aa;font-size:12px;font-weight:800;text-align:center}.history-more summary::-webkit-details-marker{display:none}.history-more summary:before{content:"⌄ ";font-size:13px}.history-more[open] summary:before{content:"⌃ "}.history-more-body{border-top:1px solid rgba(120,130,140,.12)}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>"""
+.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}.history-more{border-top:1px solid var(--rule);background:var(--paper)}.history-more summary{list-style:none;cursor:pointer;padding:11px 12px;color:#1769aa;font-size:12px;font-weight:800;text-align:center}.history-more summary::-webkit-details-marker{display:none}.history-more summary:before{content:"⌄ ";font-size:13px}.history-more[open] summary:before{content:"⌃ "}.history-more-body{border-top:1px solid rgba(120,130,140,.12)}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>
+<style id="v258-rank-visual-system">
+/* V258: one consistent high-contrast fintech system; no large blue champion panel. */
+#app-page-content .rank-rows .rank-card,
+.rank-rows .rank-card {
+  box-sizing:border-box !important; margin:0 0 11px !important; padding:14px 13px 13px !important;
+  background:#FFFFFF !important; border:1px solid #D4DDE4 !important; border-left:4px solid #AEBBC5 !important;
+  border-radius:14px !important; box-shadow:0 2px 5px rgba(16,24,40,.045) !important;
+  color:#17212B !important; overflow:hidden !important;
+}
+#app-page-content .rank-rows .rank-card.rank-champion,
+.rank-rows .rank-card.rank-champion {
+  background:#FFFEFB !important; border:1px solid #DCCFAF !important; border-left:3px solid #B8872E !important;
+  border-radius:14px !important; box-shadow:0 3px 10px rgba(92,72,28,.065) !important;
+}
+#app-page-content .rank-rows .rank-card.rank-silver,
+.rank-rows .rank-card.rank-silver { border-left-color:#98A5AF !important; }
+#app-page-content .rank-rows .rank-card.rank-bronze,
+.rank-rows .rank-card.rank-bronze { border-left-color:#B77D56 !important; }
+#app-page-content .rank-rows .rank-card.rank-silver,
+.rank-rows .rank-card.rank-silver { background:#FFFFFF !important; border-color:#D4DDE4 !important; border-left:3px solid #98A5AF !important; }
+#app-page-content .rank-rows .rank-card.rank-bronze,
+.rank-rows .rank-card.rank-bronze { background:#FFFFFF !important; border-color:#D4DDE4 !important; border-left:3px solid #B77D56 !important; }
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour,
+.rank-rows .rank-card.rank-champion .rank-honour {
+  display:flex !important; align-items:center !important; justify-content:flex-start !important; flex-direction:row !important;
+  gap:10px !important; margin:0 0 12px !important; padding:0 0 11px !important; min-height:0 !important;
+  background:transparent !important; border:0 !important; border-left:0 !important; border-bottom:1px solid #E9E1D0 !important;
+  border-radius:0 !important; box-shadow:none !important; color:#44391F !important; text-align:left !important;
+}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour:before,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour:after,
+.rank-rows .rank-card.rank-champion .rank-honour:before,
+.rank-rows .rank-card.rank-champion .rank-honour:after { display:none !important; content:none !important; }
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour-icon,
+.rank-rows .rank-card.rank-champion .rank-honour-icon {
+  display:grid !important; place-items:center !important; width:38px !important; height:38px !important; flex:0 0 38px !important;
+  padding:2px !important; box-sizing:border-box !important; background:#FFF4D7 !important;
+  border:1px solid #E4D09B !important; border-radius:10px !important; filter:none !important;
+}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour-icon svg,
+.rank-rows .rank-card.rank-champion .rank-honour-icon svg { display:block !important; width:30px !important; height:30px !important; }
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour b,
+.rank-rows .rank-card.rank-champion .rank-honour b { display:block !important; margin:0 !important; color:#59431A !important; font-size:14px !important; line-height:1.3 !important; font-weight:900 !important; letter-spacing:0 !important; }
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour small,
+.rank-rows .rank-card.rank-champion .rank-honour small { display:block !important; margin-top:3px !important; color:#6B6251 !important; font-size:12px !important; line-height:1.4 !important; font-weight:650 !important; }
+#app-page-content .rank-rows .rank-card .rank-row-main,
+.rank-rows .rank-card .rank-row-main {
+  display:grid !important; grid-template-columns:minmax(0,1fr) max-content !important;
+  grid-template-areas:"primary returns" "movement movement" !important; align-items:center !important;
+  gap:7px 10px !important; min-width:0 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-primary-line,
+.rank-rows .rank-card .rank-primary-line {
+  grid-area:primary !important; display:grid !important; grid-template-columns:38px minmax(0,1fr) !important;
+  align-items:center !important; gap:9px !important; min-width:0 !important; margin:0 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-number,
+.rank-rows .rank-card .rank-number {
+  display:inline-flex !important; align-items:center !important; justify-content:center !important;
+  box-sizing:border-box !important; width:38px !important; min-width:38px !important; max-width:38px !important;
+  height:36px !important; min-height:36px !important; margin:0 !important; padding:0 !important;
+  border:1px solid #C9D2D9 !important; border-radius:10px !important; background:#F0F3F5 !important;
+  color:#344054 !important; font-size:14px !important; line-height:1 !important; font-weight:950 !important;
+  font-variant-numeric:tabular-nums !important; white-space:nowrap !important;
+}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-number,
+.rank-rows .rank-card.rank-champion .rank-number { background:#FFF1C7 !important; color:#785614 !important; border-color:#DCC17C !important; }
+#app-page-content .rank-rows .rank-card.rank-silver .rank-number,
+.rank-rows .rank-card.rank-silver .rank-number { background:#E7EBEF !important; color:#44515B !important; border-color:#BCC6CE !important; }
+#app-page-content .rank-rows .rank-card.rank-bronze .rank-number,
+.rank-rows .rank-card.rank-bronze .rank-number { background:#F4E4D9 !important; color:#85502F !important; border-color:#D7B39B !important; }
+#app-page-content .rank-rows .rank-card .name,
+.rank-rows .rank-card .name {
+  display:block !important; min-width:0 !important; max-width:100% !important; margin:0 !important; padding:0 !important;
+  color:#17212B !important; font-size:16px !important; line-height:1.35 !important; font-weight:850 !important;
+  white-space:normal !important; overflow:visible !important; text-overflow:clip !important; overflow-wrap:anywhere !important; word-break:normal !important;
+}
+#app-page-content .rank-rows .rank-card.rank-champion .name,
+.rank-rows .rank-card.rank-champion .name { color:#241F16 !important; }
+#app-page-content .rank-rows .rank-card .rank-return,
+.rank-rows .rank-card .rank-return {
+  grid-area:returns !important; justify-self:end !important; align-self:center !important; display:inline-flex !important;
+  align-items:center !important; justify-content:center !important; box-sizing:border-box !important; margin:0 !important;
+  padding:6px 9px !important; border-radius:9px !important; font-size:clamp(18px,4.6vw,22px) !important;
+  line-height:1.1 !important; font-weight:950 !important; letter-spacing:-.02em !important; white-space:nowrap !important;
+  font-variant-numeric:tabular-nums !important; border:1px solid transparent !important;
+}
+#app-page-content .rank-rows .rank-card .rank-return.up,
+.rank-rows .rank-card .rank-return.up { color:#A61B1B !important; background:#FEE4E2 !important; border-color:#F1A6A0 !important; }
+#app-page-content .rank-rows .rank-card .rank-return.down,
+.rank-rows .rank-card .rank-return.down { color:#05603A !important; background:#D1FADF !important; border-color:#6CE9A6 !important; }
+#app-page-content .rank-rows .rank-card .rank-return.flat,
+.rank-rows .rank-card .rank-return.flat { color:#344054 !important; background:#F2F4F7 !important; border-color:#D0D5DD !important; }
+#app-page-content .rank-rows .rank-card .rank-movement,
+.rank-rows .rank-card .rank-movement {
+  grid-area:movement !important; justify-self:start !important; margin:0 0 0 47px !important; padding:4px 8px !important;
+  color:#475467 !important; background:#F4F6F8 !important; border:1px solid #D8E0E6 !important;
+  border-radius:7px !important; font-size:12px !important; line-height:1.3 !important; font-weight:750 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-movement,
+.rank-rows .rank-card .rank-movement {
+  justify-self:start !important; margin:0 0 0 47px !important; padding:0 !important;
+  color:#667085 !important; background:transparent !important; border:0 !important; border-radius:0 !important;
+  font-size:11.5px !important; line-height:1.35 !important; font-weight:650 !important; box-shadow:none !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta,
+#app-page-content .rank-rows .rank-card .rank-detail,
+#app-page-content .rank-rows .rank-card .rank-private,
+.rank-rows .rank-card .rank-meta,
+.rank-rows .rank-card .rank-detail,
+.rank-rows .rank-card .rank-private { margin:10px 0 0 47px !important; padding:0 !important; color:#344054 !important; font-size:12.5px !important; line-height:1.55 !important; font-weight:650 !important; }
+#app-page-content .rank-rows .rank-card .rank-meta,
+.rank-rows .rank-card .rank-meta { display:flex !important; flex-wrap:wrap !important; gap:5px 12px !important; }
+#app-page-content .rank-rows .rank-card .rank-meta span,
+#app-page-content .rank-rows .rank-card .rank-private,
+.rank-rows .rank-card .rank-meta span,
+.rank-rows .rank-card .rank-private { color:#344054 !important; font-size:12.5px !important; font-weight:700 !important; }
+#app-page-content .rank-rows .rank-card .rank-meta em,
+#app-page-content .rank-rows .rank-card .rank-detail-body em,
+.rank-rows .rank-card .rank-meta em,
+.rank-rows .rank-card .rank-detail-body em { color:#667085 !important; font-size:11.5px !important; font-style:normal !important; font-weight:750 !important; }
+#app-page-content .rank-rows .rank-card .rank-detail-body > span > em,
+.rank-rows .rank-card .rank-detail-body > span > em { white-space:nowrap !important; font-size:10.5px !important; letter-spacing:-.025em !important; }
+#app-page-content .rank-rows .rank-card .rank-detail > summary,
+#app-page-content .rank-rows .rank-card summary,
+.rank-rows .rank-card .rank-detail > summary,
+.rank-rows .rank-card summary {
+  display:block !important; margin:10px 0 0 47px !important; padding:9px 10px !important;
+  color:#344054 !important; background:#F3F5F6 !important; border:1px solid #D1D9DF !important;
+  border-radius:9px !important; font-size:12.5px !important; line-height:1.4 !important; font-weight:800 !important;
+}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-detail > summary,
+.rank-rows .rank-card.rank-champion .rank-detail > summary { color:#59431A !important; background:#FBF6E9 !important; border-color:#E5D7B7 !important; }
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body,
+.rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body {
+  display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:7px !important;
+  margin:8px 0 0 47px !important; padding:0 !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > span,
+.rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > span {
+  display:flex !important; flex-direction:column !important; align-items:flex-start !important; justify-content:center !important;
+  min-width:0 !important; margin:0 !important; padding:8px 9px !important; background:#F7F8F8 !important;
+  border:1px solid #DCE2E6 !important; border-radius:9px !important; color:#273640 !important;
+  font-size:12px !important; line-height:1.4 !important; font-weight:750 !important; overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card.rank-champion > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > span,
+.rank-rows .rank-card.rank-champion > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > span { background:#FFFEFB !important; border-color:#E9E0CC !important; }
+#app-page-content .rank-rows .rank-card.rank-champion .rank-champion-prompt,
+.rank-rows .rank-card.rank-champion .rank-champion-prompt { display:none !important; }
+#app-page-content .rank-rows .rank-source-note,
+#app-page-content .rank-rows .rank-source-note *,
+.rank-rows .rank-source-note { color:#475467 !important; font-weight:700 !important; }
+@media(max-width:420px) {
+  #app-page-content .rank-rows .rank-card, .rank-rows .rank-card { padding:12px 10px 11px !important; }
+  #app-page-content .rank-rows .rank-card .rank-primary-line,
+  .rank-rows .rank-card .rank-primary-line { grid-template-columns:34px minmax(0,1fr) !important; gap:7px !important; }
+  #app-page-content .rank-rows .rank-card .rank-number,
+  .rank-rows .rank-card .rank-number { width:34px !important; min-width:34px !important; max-width:34px !important; height:34px !important; min-height:34px !important; }
+  #app-page-content .rank-rows .rank-card .name,
+  .rank-rows .rank-card .name { font-size:15px !important; }
+  #app-page-content .rank-rows .rank-card .rank-return,
+  .rank-rows .rank-card .rank-return { font-size:18px !important; padding:5px 6px !important; }
+  #app-page-content .rank-rows .rank-card .rank-meta,
+  #app-page-content .rank-rows .rank-card .rank-detail,
+  #app-page-content .rank-rows .rank-card .rank-private,
+  #app-page-content .rank-rows .rank-card summary,
+  .rank-rows .rank-card .rank-meta,
+  .rank-rows .rank-card .rank-detail,
+  .rank-rows .rank-card .rank-private,
+  .rank-rows .rank-card summary { margin-left:41px !important; }
+  #app-page-content .rank-rows .rank-card .rank-detail-body,
+  .rank-rows .rank-card .rank-detail-body { margin-left:41px !important; }
+}
+</style>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
     def render_history_table(items, empty_text):
@@ -34546,9 +34870,8 @@ def web_portfolio(uid):
     if not positions:
         # 沒有目前持股，但可能有賣光的歷史紀錄或組合快照可看，
         # 不能因為現在空手就把已實現損益跟走勢圖也一起藏起來。
-        trend_html_empty = render_trend_chart(
-            get_portfolio_snapshots(uid, days=420),
-            requested_period=str(request.args.get("trend_period") or "3m"),
+        trend_html_empty = render_portfolio_trend_chart_cached(
+            uid, requested_period=str(request.args.get("trend_period") or "3m"),
             show_benchmark=str(request.args.get("trend_benchmark") or "1").lower() not in {"0", "false", "off", "no"},
             auth_token=str(request.args.get("t") or ""))
         body = f"""
@@ -34602,9 +34925,8 @@ def web_portfolio(uid):
 
     aux_executor = ThreadPoolExecutor(max_workers=2)
     def _render_home_trend_async():
-        snapshots = get_portfolio_snapshots(uid, days=420)
-        return render_trend_chart(
-            snapshots, requested_period=requested_trend_period,
+        return render_portfolio_trend_chart_cached(
+            uid, requested_period=requested_trend_period,
             show_benchmark=requested_trend_benchmark,
             auth_token=requested_trend_token)
     # V247：快照 DB 讀取也移入 worker，與首頁共享資料載入重疊執行。
@@ -34667,20 +34989,31 @@ def web_portfolio(uid):
         # 改成 3 個共享 worker，且把今日事件放在第一批，讓它先完成；
         # 第二批再跑其餘共享資料。這不是單純降低並行度，而是避免
         # connection pool 爭用，把 8 秒的「等連線」直接消掉。
+        def load_revenue_valuation_industry_bundle():
+            bundle_started = time.monotonic()
+            # 三項資料原本各自查 shared_data_snapshots；改成一個 ANY(%s) 查詢，
+            # 並預熱單筆 loader 的記憶體快取，之後的既有函式不需再各自借 DB connection。
+            _load_shared_data_snapshots_bulk(("monthly_revenue", "valuation", "stock_info_map"))
+            value = (fetch_monthly_revenue(homepage=True), fetch_valuation(), get_industry_map())
+            print("⏱️ 首頁營收／估值／產業快照 bundle %.0fms" % ((time.monotonic()-bundle_started)*1000), flush=True)
+            return value
+
         shared_loaders = [
             ("法人", lambda: fetch_institutional_data(position_codes)),
             ("今日事件", lambda: _get_daily_home_context(uid, taiwan_today(), position_codes)),
-            ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
-            ("估值", fetch_valuation),
-            ("產業", get_industry_map),
+            ("營收／估值／產業", load_revenue_valuation_industry_bundle),
             ("大盤", fetch_taiex_summary),
         ]
-        # V254：冷連線延遲已由 DB_POOL_MIN 預熱；改 4 個 worker，將 6 份共享資料的等待
-        # 從 3+3 兩輪縮短為 4+2 兩輪，且同時共享資料 + 兩個首頁輔助 worker 最多約 6 個任務，
-        # 不再額外由選股台背景預載占用剩餘連線。
+        # 由 6 個任務縮成 4 個；三份共享快照合併為單次 round-trip，減少 pool 抢線與 SQL 往返。
         with ThreadPoolExecutor(max_workers=4) as ex:
-            shared_values = list(ex.map(
+            _shared_parts = list(ex.map(
                 lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
+        _core_bundle = _shared_parts[2]
+        if not isinstance(_core_bundle, (list, tuple)) or len(_core_bundle) != 3:
+            _core_bundle = ({}, {}, {})
+        shared_values = [_shared_parts[0], _shared_parts[1],
+                         _core_bundle[0] or {}, _core_bundle[1] or {},
+                         _core_bundle[2] or {}, _shared_parts[3]]
         with _HOMEPAGE_CACHE_LOCK:
             _shared_cache_now = time.monotonic()
             _HOMEPAGE_SHARED_CACHE_BY_KEY[shared_key] = {
