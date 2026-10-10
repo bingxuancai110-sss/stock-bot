@@ -2191,7 +2191,7 @@ def init_db():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS oauth_login_states (
                 state TEXT PRIMARY KEY,
-                intent TEXT NOT NULL CHECK (intent IN ('login', 'bind')),
+                intent TEXT NOT NULL CHECK (intent IN ('login', 'register', 'bind')),
                 bind_user_id TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 expires_at TIMESTAMPTZ NOT NULL,
@@ -2199,6 +2199,8 @@ def init_db():
             )
         ''')
         # 官方 LINE Login OAuth state：與 Google state 分表，避免兩個 provider 混用。
+        cursor.execute("ALTER TABLE oauth_login_states DROP CONSTRAINT IF EXISTS oauth_login_states_intent_check")
+        cursor.execute("ALTER TABLE oauth_login_states ADD CONSTRAINT oauth_login_states_intent_check CHECK (intent IN ('login','register','bind'))")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS line_oauth_login_states (
                 state TEXT PRIMARY KEY,
@@ -20829,11 +20831,10 @@ body>.page,.page-wrap,.main-wrap{animation:v180-reveal .28s ease both}@keyframes
 
 NEED_LOGIN_HTML = """
 <div class="card" style="padding:20px;margin:18px 0">
-  <h2>登入台股 BOT</h2>
-  <p>選擇你原本使用的登入方式。若你已經有 LINE 帳號，請優先使用 LINE 登入，以保留原本的持股與設定。</p>
-  <a class="btn" href="/auth/line" style="display:block;text-align:center;text-decoration:none;padding:12px;border-radius:12px;background:#06C755;color:#fff;font-weight:800;margin:10px 0">使用 LINE 登入</a>
-  <a class="btn" href="/auth/choose" style="display:block;text-align:center;text-decoration:none;padding:12px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800">Google 登入／註冊與帳號綁定說明</a>
-  <p class="sell-hint" style="margin-top:12px">第一次使用者可用 Google 建立新帳號。已有 LINE 帳號者，請先用原本的 LINE 帳號登入，再從設定綁定 Google；系統不會只因 Email 相同就合併帳號。</p>
+  <h2>使用 Google 登入台股 BOT</h2>
+  <p>使用 Google 帳號註冊或登入，不需要另外設定 LINE Login。</p>
+  <a class="btn" href="/auth/google?mode=login" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800;margin:10px 0">使用 Google 登入／註冊</a>
+  <p class="sell-hint" style="margin-top:12px">如果你原本已經有台股 BOT 帳號，請先使用原本的登入網址進入，再到設定綁定 Google，才能保留原本的持股、自選股與設定。系統不會只因 Email 相同就自動合併帳號。</p>
 </div>
 """
 
@@ -25393,7 +25394,7 @@ def _line_redirect_uri():
 def auth_line_start():
     if not _line_login_configured():
         return render_page("LINE 登入尚未啟用",
-            '<div class="msg">尚未設定 LINE Login Channel。請在 Render 設定 LINE_LOGIN_CHANNEL_ID、LINE_LOGIN_CHANNEL_SECRET 與 LINE_LOGIN_REDIRECT_URI；這與 LINE Bot 的 Messaging API 憑證不同，原本的 LINE 網頁登入網址仍可使用。</div>'), 503
+            '<div class="msg">網站的 LINE 官方登入尚未設定完成。請在 Render 設定 LINE_LOGIN_CHANNEL_ID、LINE_LOGIN_CHANNEL_SECRET 與 LINE_LOGIN_REDIRECT_URI。注意：LINE Messaging API 是原本 LINE Bot 用來收發訊息的服務；網站登入需要另外設定 LINE Login，兩者不是同一組憑證。原本透過 LINE Bot 取得的網頁登入網址仍可使用。</div>'), 503
     state = secrets.token_urlsafe(32)
     conn = get_db_connection()
     try:
@@ -25571,43 +25572,26 @@ def _google_identity_from_code(code):
 
 
 def _bind_google_identity(user_id, identity):
+    """更換既有帳號的 Google 登入身分，保留原 user_id 與所有投資資料。"""
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT user_id FROM user_auth_identities "
-            "WHERE provider='google' AND provider_subject=%s",
-            (identity["subject"],))
+        cur.execute("SELECT user_id FROM user_auth_identities WHERE provider='google' AND provider_subject=%s", (identity["subject"],))
         existing = cur.fetchone()
         if existing and str(existing[0]) != str(user_id):
-            conn.rollback()
-            cur.close()
-            return False, "這個 Google 帳號已綁定其他台股 BOT 帳號，為保護資料，不能自動合併。"
-        if not existing:
-            cur.execute(
-                "INSERT INTO user_auth_identities (provider, provider_subject, user_id, email) "
-                "VALUES ('google', %s, %s, %s) ON CONFLICT (provider, provider_subject) DO NOTHING",
-                (identity["subject"], str(user_id), identity.get("email", "")))
-            cur.execute(
-                "SELECT user_id FROM user_auth_identities "
-                "WHERE provider='google' AND provider_subject=%s",
-                (identity["subject"],))
-            after = cur.fetchone()
-            if not after or str(after[0]) != str(user_id):
-                conn.rollback()
-                cur.close()
-                return False, "綁定衝突，沒有變更任何既有資料。"
-        else:
-            cur.execute(
-                "UPDATE user_auth_identities SET email=%s "
-                "WHERE provider='google' AND provider_subject=%s AND user_id=%s",
-                (identity.get("email", ""), identity["subject"], str(user_id)))
-        conn.commit()
-        cur.close()
-        return True, "Google 已綁定到目前的台股 BOT 帳號。"
+            conn.rollback(); cur.close()
+            return False, "這個 Google 帳號已綁定其他台股 BOT 帳號，不能直接覆蓋或合併。"
+        # 僅移除目前帳號的舊 Google 身分；不刪帳號、不改持股 user_id。
+        cur.execute("DELETE FROM user_auth_identities WHERE provider='google' AND user_id=%s AND provider_subject<>%s", (str(user_id), identity["subject"]))
+        cur.execute("INSERT INTO user_auth_identities (provider, provider_subject, user_id, email) VALUES ('google', %s, %s, %s) ON CONFLICT (provider, provider_subject) DO UPDATE SET email=EXCLUDED.email WHERE user_auth_identities.user_id=EXCLUDED.user_id", (identity["subject"], str(user_id), identity.get("email", "")))
+        cur.execute("SELECT user_id FROM user_auth_identities WHERE provider='google' AND provider_subject=%s", (identity["subject"],))
+        after=cur.fetchone()
+        if not after or str(after[0]) != str(user_id):
+            conn.rollback(); cur.close(); return False, "綁定衝突，沒有變更既有資料。"
+        conn.commit(); cur.close()
+        return True, "Google 已更新綁定；原帳號 ID、持股、自選股與設定均保留。"
     except Exception as exc:
-        conn.rollback()
-        print(f"❌ Google 身分綁定失敗：{type(exc).__name__}")
+        conn.rollback(); print(f"Google identity bind failed: {type(exc).__name__}")
         return False, "綁定暫時失敗，請稍後再試。"
     finally:
         release_db_connection(conn)
@@ -25615,33 +25599,23 @@ def _bind_google_identity(user_id, identity):
 
 @app.route("/auth/choose")
 def auth_google_choose():
-    """說明 Google 登入／註冊與綁定既有帳號的差別，讓使用者先選對流程。"""
+    """分開 Google 註冊與登入入口。"""
     body = r'''<div class="card" style="padding:20px;margin:18px 0;">
   <div style="font-size:12px;font-weight:900;letter-spacing:.16em;color:#315E82;margin-bottom:8px">TAIWAN STOCK BOT</div>
-  <h2 style="font-size:26px;line-height:1.25;color:#172B40;margin-bottom:10px">你要怎麼使用 Google？</h2>
-  <p style="color:#526A80;margin-bottom:18px">請依照你目前是否已有台股 BOT 帳號，選擇適合的方式。兩種方式用途不同，選擇前先看說明。</p>
-  <section style="border:1px solid #D5E2ED;border-radius:16px;padding:16px;margin:12px 0;background:#F1FBF5">
-    <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">🟩 使用 LINE 登入</h3>
-    <p style="color:#526A80;margin-bottom:12px">如果你已經使用 LINE 台股 BOT，請選這個入口，以原本的 LINE 身分登入。</p>
-    <a href="/auth/line" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#06C755;color:#fff;font-weight:800">前往 LINE 官方授權登入</a>
-  </section>
+  <h2 style="font-size:26px;line-height:1.25;color:#172B40;margin-bottom:10px">台股 BOT 帳號</h2>
   <section style="border:1px solid #D5E2ED;border-radius:16px;padding:16px;margin:12px 0;background:#fff">
-    <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">🟦 Google 登入／註冊</h3>
-    <p style="color:#526A80;margin-bottom:12px">適合第一次使用台股 BOT，或以前已用這個 Google 帳號註冊的人。第一次使用會建立一個新的台股 BOT 帳號；之後使用同一個 Google 帳號，就會回到這個帳號。</p>
-    <p style="font-size:13px;color:#8A5A20;margin-bottom:14px">注意：如果你原本已經有 LINE 台股 BOT 帳號，單純登入／註冊不會自動取得原帳號的持股與設定。</p>
-    <a href="/auth/google?mode=login" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800">繼續使用 Google 登入／註冊</a>
+    <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">第一次使用？建立新帳號</h3>
+    <p style="color:#526A80;margin-bottom:14px">若這個 Google 身分已註冊，請改用登入，不會建立重複帳號。</p>
+    <a href="/auth/google?mode=register" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800">使用 Google 註冊</a>
   </section>
   <section style="border:1px solid #D5E2ED;border-radius:16px;padding:16px;margin:12px 0;background:#F7FAFD">
-    <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">🔗 綁定 Google 到既有帳號</h3>
-    <p style="color:#526A80;margin-bottom:12px">適合已經有台股 BOT 帳號，並希望 Google 與原本帳號共用持股、自選股及設定的人。必須先用原本的 LINE 登入網址登入，再進入設定完成綁定。</p>
-    <p style="font-size:13px;color:#8A5A20;margin-bottom:14px">不會只因為 Email 相同就自動合併帳號；如果你尚未登入原本帳號，請先返回並用原本的 LINE 登入。</p>
-    <a href="/web/settings" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#E5EDF5;color:#244E72;font-weight:800">前往設定綁定既有帳號</a>
+    <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">已經有帳號？直接登入</h3>
+    <p style="color:#526A80;margin-bottom:14px">只允許已註冊的 Google 身分登入；尚未註冊時會提示先註冊。</p>
+    <a href="/auth/google?mode=login" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#fff;border:1px solid #315E9B;color:#315E9B;font-weight:800">使用 Google 登入</a>
   </section>
-  <p style="font-size:13px;color:#657B8F;margin-top:14px">不確定要選哪一個？如果你已經有原本的 LINE 台股 BOT 帳號，請先登入該帳號，再從設定綁定 Google，以免建立另一個獨立帳號。</p>
-</div>
-'''
-    return render_page("Google 登入／註冊說明", body)
-
+  <p style="color:#526A80;font-size:13px">更換 Gmail：先登入原帳號，再到設定綁定新 Google。若新 Google 已綁定其他 BOT 帳號，系統會拒絕覆蓋，避免資料混淆。</p>
+</div>'''
+    return render_page("台股 BOT 帳號", body)
 
 @app.route("/auth/google")
 def auth_google_start():
@@ -25649,7 +25623,7 @@ def auth_google_start():
         return render_page("Google 登入尚未啟用",
             '<div class="msg">Google 登入尚未完成伺服器設定；目前不會影響原本的 LINE 登入。</div>'), 503
     mode = request.args.get("mode", "login").strip().lower()
-    if mode not in ("login", "bind"):
+    if mode not in ("login", "register", "bind"):
         abort(400)
     bind_user_id = None
     if mode == "bind":
@@ -25721,8 +25695,12 @@ def auth_google_callback():
             '<div class="msg">目前無法查詢帳號，請稍後再試。</div>'), 503
     finally:
         release_db_connection(conn)
+    if intent == "register" and row:
+        return render_page("這個 Google 帳號已註冊", '<div class="msg">這個 Google 帳號已經註冊，請改用 Google 登入，不會建立重複帳號。</div><a href="/auth/google?mode=login">前往登入</a>'), 409
+    if intent == "login" and not row:
+        return render_page("尚未註冊", '<div class="msg">這個 Google 帳號尚未註冊，請先建立新帳號。</div><a href="/auth/google?mode=register">前往註冊</a>'), 404
     if not row:
-        # 新版：首次 Google 登入時建立獨立的 Google 帳號。
+        # 只有明確選擇註冊時才會建立帳號。
         # 使用 Google 的穩定 subject 作為內部 user_id，不用 email 當主鍵，
         # 也絕不把它自動合併到任何既有 LINE 帳號。
         google_user_id = "google:" + identity["subject"]
