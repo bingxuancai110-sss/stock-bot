@@ -31628,8 +31628,14 @@ def web_leaderboard(uid):
             if d:
                 detail_bits = []
                 b_ = d["biggest"]
+                # Keep the weight in its own element: a trailing text node can
+                # wrap or be clipped inside the mobile two-column detail layout.
+                biggest_name = safe_html_text(f'{b_["name"]}（{b_["code"]}）')
+                biggest_weight = float(b_.get("weight") or 0)
                 detail_bits.append(
-                    f'<span><em>最大持股</em> {b_["name"]}（{b_["code"]}）{b_["weight"]:.0f}%</span>')
+                    f'<span class="rank-detail-item rank-biggest-holding">'
+                    f'<em>最大持股</em><b class="rank-detail-value">{biggest_name}</b>'
+                    f'<strong class="rank-holding-weight">{biggest_weight:.0f}%</strong></span>')
                 best_two = d.get("best_two")
                 if not isinstance(best_two, list):
                     # 相容舊快取 payload；新資料一律由 best_two 產生。
@@ -31640,12 +31646,18 @@ def web_leaderboard(uid):
                     if not isinstance(bs, dict) or bs.get("ret") is None:
                         continue
                     bcls = "up" if bs["ret"] >= 0 else "down"
+                    best_name = safe_html_text(f'{bs["name"]}（{bs["code"]}）')
                     detail_bits.append(
-                        f'<span><em>最佳 {best_rank}｜加入後報酬</em> {bs["name"]}（{bs["code"]}）'
-                        f'<span class="num {bcls}">{bs["ret"]:+.1f}%</span></span>')
+                        f'<span class="rank-detail-item rank-best-holding">'
+                        f'<em>最佳 {best_rank}｜加入後報酬</em>'
+                        f'<b class="rank-detail-value">{best_name}</b>'
+                        f'<strong class="rank-detail-return {bcls}">{bs["ret"]:+.1f}%</strong></span>')
                 if d.get("top_industry"):
                     nm, w2 = d["top_industry"]
-                    detail_bits.append(f'<span><em>最大產業</em> {nm} {w2:.0f}%</span>')
+                    detail_bits.append(
+                        f'<span class="rank-detail-item rank-top-industry">'
+                        f'<em>最大產業</em><b class="rank-detail-value">{safe_html_text(str(nm))}</b>'
+                        f'<strong class="rank-holding-weight">{float(w2):.0f}%</strong></span>')
                 detail = (f'<details class="rank-detail"><summary>查看持股明細</summary>'
                           f'<div class="rank-detail-body">{"".join(detail_bits)}</div></details>')
             else:
@@ -31981,6 +31993,93 @@ def web_leaderboard(uid):
   .rank-rows .rank-card summary { margin-left:41px !important; }
   #app-page-content .rank-rows .rank-card .rank-detail-body,
   .rank-rows .rank-card .rank-detail-body { margin-left:41px !important; }
+}
+/* V259: reduce card-like decoration and fix mobile holding-weight clipping. */
+#app-page-content .rank-rows .rank-card .rank-return,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-return,
+.rank-rows .rank-card .rank-return,
+.rank-rows .rank-card.rank-champion .rank-return {
+  display:inline !important; padding:0 !important; margin:0 !important;
+  background:transparent !important; border:0 !important; border-radius:0 !important;
+  box-shadow:none !important; font-size:clamp(16px,4vw,19px) !important;
+  line-height:1.2 !important; letter-spacing:-.015em !important; font-weight:850 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-return.up,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-return.up,
+.rank-rows .rank-card .rank-return.up { color:#B42318 !important; }
+#app-page-content .rank-rows .rank-card .rank-return.down,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-return.down,
+.rank-rows .rank-card .rank-return.down { color:#067647 !important; }
+#app-page-content .rank-rows .rank-card .rank-return.flat,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-return.flat,
+.rank-rows .rank-card .rank-return.flat { color:#344054 !important; }
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > summary,
+#app-page-content .rank-rows .rank-card > .rank-detail > summary,
+.rank-rows .rank-card > .rank-detail > summary {
+  margin-left:0 !important; padding:8px 0 !important; background:transparent !important;
+  border:0 !important; border-top:1px solid #E1E7EC !important; border-radius:0 !important;
+  color:#344054 !important; font-size:12.5px !important; font-weight:750 !important;
+}
+#app-page-content .rank-rows .rank-card.rank-champion > .rank-detail > summary,
+.rank-rows .rank-card.rank-champion > .rank-detail > summary {
+  background:transparent !important; border-color:#E5DCC7 !important; color:#59431A !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body,
+.rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body {
+  margin:7px 0 0 !important; padding:0 !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:8px 14px !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > .rank-detail-item,
+.rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > .rank-detail-item {
+  display:flex !important; flex-direction:column !important; align-items:flex-start !important;
+  justify-content:flex-start !important; gap:3px !important; min-width:0 !important;
+  padding:4px 0 !important; margin:0 !important; overflow:visible !important;
+  background:transparent !important; border:0 !important; border-bottom:1px solid #E8EDF1 !important;
+  border-radius:0 !important; color:#24313B !important; overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .rank-detail-item em,
+.rank-rows .rank-card .rank-detail-item em {
+  display:block !important; color:#667085 !important; font-size:11px !important;
+  line-height:1.35 !important; font-weight:700 !important; white-space:normal !important;
+}
+#app-page-content .rank-rows .rank-card .rank-detail-value,
+.rank-rows .rank-card .rank-detail-value {
+  display:block !important; max-width:100% !important; min-width:0 !important;
+  color:#24313B !important; font-size:13px !important; line-height:1.4 !important;
+  font-weight:800 !important; overflow-wrap:anywhere !important; word-break:normal !important;
+}
+#app-page-content .rank-rows .rank-card .rank-holding-weight,
+.rank-rows .rank-card .rank-holding-weight {
+  display:block !important; color:#24313B !important; font-size:13px !important;
+  line-height:1.3 !important; font-weight:900 !important; font-variant-numeric:tabular-nums !important;
+}
+#app-page-content .rank-rows .rank-card .rank-detail-return,
+.rank-rows .rank-card .rank-detail-return {
+  display:inline !important; margin:0 !important; padding:0 !important;
+  background:transparent !important; border:0 !important; border-radius:0 !important;
+  font-size:14px !important; line-height:1.3 !important; font-weight:850 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-detail-return.up,
+.rank-rows .rank-card .rank-detail-return.up { color:#B42318 !important; }
+#app-page-content .rank-rows .rank-card .rank-detail-return.down,
+.rank-rows .rank-card .rank-detail-return.down { color:#067647 !important; }
+#app-page-content .rank-rows .rank-card .rank-detail-return.flat,
+.rank-rows .rank-card .rank-detail-return.flat { color:#344054 !important; }
+#app-page-content .rank-rows .rank-card.rank-champion,
+.rank-rows .rank-card.rank-champion {
+  border-left-width:3px !important; box-shadow:none !important;
+}
+#app-page-content .rank-rows .rank-card .rank-number,
+.rank-rows .rank-card .rank-number { border-radius:8px !important; }
+@media(max-width:420px) {
+  #app-page-content .rank-rows .rank-card .rank-return,
+  .rank-rows .rank-card .rank-return { font-size:16px !important; }
+  #app-page-content .rank-rows .rank-card .rank-meta,
+  #app-page-content .rank-rows .rank-card .rank-private,
+  .rank-rows .rank-card .rank-meta,
+  .rank-rows .rank-card .rank-private { margin-left:41px !important; }
+  #app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body,
+  .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
 }
 </style>"""
 
