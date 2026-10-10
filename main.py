@@ -43,7 +43,12 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V260_STABLE_PAGE_SPEED_STALE_HISTORY_FAST_REFRESH"
+APP_BUILD = "V263_QUOTE_CACHE_THROTTLE_AND_FRESHNESS"
+# V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
+# refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
+# index on page render so an upstream timeout cannot hold the whole page for six seconds.
+# Portfolio totals still use an actual valid price series; new symbols with no usable quote are
+# not assigned fabricated prices.
 
 # 首頁短 TTL 快取：避免使用者在首頁／持股／首頁間快速切換時，
 # 每次都重新查相同的共享快照與操作日誌。這些資料本身就不是毫秒級變動；
@@ -55,6 +60,15 @@ _HOMEPAGE_JOURNAL_CACHE = {}
 _HOMEPAGE_QUOTE_MAP_CACHE = {}
 _HOMEPAGE_QUOTE_MAP_LOCK = threading.RLock()
 _HOMEPAGE_QUOTE_CACHE_SAVING = set()
+# V261: history is slow-changing data. Keep useful in-process series and refresh it
+# in the background, rather than making every 4-minute cache miss read a large JSONB
+# snapshot or synchronously redownload 3 months of Yahoo data.
+_HOMEPAGE_QUOTE_MAP_MEMORY_TTL = max(3600.0, float(os.environ.get("HOMEPAGE_QUOTE_MAP_MEMORY_TTL_SECONDS", "21600")))
+_HOMEPAGE_QUOTE_MAP_REFRESH_AFTER = max(900.0, float(os.environ.get("HOMEPAGE_QUOTE_MAP_REFRESH_AFTER_SECONDS", "1800")))
+_HOMEPAGE_QUOTE_MAP_MAX_STALE = max(86400.0, float(os.environ.get("HOMEPAGE_QUOTE_MAP_MAX_STALE_SECONDS", "604800")))
+_HOMEPAGE_QUOTE_REFRESH_LOCK = threading.Lock()
+_HOMEPAGE_QUOTE_REFRESHING = set()
+_HOMEPAGE_QUOTE_REFRESH_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="quote-history-refresh")
 _HOMEPAGE_CACHE_LOCK = threading.RLock()
 _HOMEPAGE_TAIEX_REFRESH_LOCK = threading.Lock()
 _HOMEPAGE_TAIEX_REFRESH_RUNNING = False
@@ -6271,7 +6285,7 @@ def _build_home_intraday_payload(uid):
         # 但保留 MIS 自己的 15 秒節流——兩層一起繞過的話，
         # 每個使用者每 15 秒都會真的打一次 MIS，人一多就放大請求量。
         # 首頁盤中同樣只採官方 MIS，避免 Yahoo 延遲行情混進組合損益。
-        fresh_price_map = _fetch_twse_mis_quotes(codes, force_refresh=True)
+        fresh_price_map = _fetch_twse_mis_quotes(codes, force_refresh=False)
         # MIS may return a partial set or an older timestamp on adjacent polls.  Merge it
         # into a per-user same-day sticky cache before calculating the portfolio return.
         cache_day = taiwan_today().isoformat()
@@ -6295,7 +6309,7 @@ def _build_home_intraday_payload(uid):
         }
         missing_reduced = sorted(code for code in reduced_codes if code and code not in price_map)
         if missing_reduced:
-            retry_quotes = _fetch_twse_mis_quotes(missing_reduced, force_refresh=True)
+            retry_quotes = _fetch_twse_mis_quotes(missing_reduced, force_refresh=False)
             price_map = _sticky_home_quotes(uid, retry_quotes)
 
         # 第一輪先把「目前持股」建立成完整的盤中基準；建立完成後才允許逐檔增量更新。
@@ -6404,7 +6418,7 @@ def _build_home_intraday_payload(uid):
                           key=lambda item: item["contribution"], reverse=True)[:5]
         negative = sorted((item for item in contribution_rows if item["contribution"] < 0),
                           key=lambda item: item["contribution"])[:5]
-        taiex = fetch_taiex_intraday(force_refresh=True)
+        taiex = fetch_taiex_intraday(stale_while_revalidate=True)
         try:
             market_pct = float(taiex.get("pct")) if taiex and taiex.get("pct") is not None else None
         except (TypeError, ValueError):
@@ -6415,7 +6429,9 @@ def _build_home_intraday_payload(uid):
             "ok": True, "market_open": True,
             "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
             "market": ({"pct": market_pct, "source": taiex.get("source"),
-                        "updated_at": taiex.get("updated_at")}
+                        "updated_at": taiex.get("updated_at"),
+                        "stale": bool(taiex.get("stale")),
+                        "cache_age_seconds": taiex.get("cache_age_seconds")}
                        if market_pct is not None else None),
             "portfolio": {"pct": portfolio_pct, "relative": relative,
                           "positive": positive, "negative": negative,
@@ -8951,7 +8967,7 @@ _realtime_cache = {}
 _realtime_cache_lock = threading.Lock()
 REALTIME_CACHE_SECONDS = max(30, int(os.environ.get("REALTIME_CACHE_SECONDS", "300")))
 _TWSE_MIS_CACHE = {"day": None, "at": 0, "data": {}}
-_TWSE_MIS_CACHE_SECONDS = 3
+_TWSE_MIS_CACHE_SECONDS = 5
 _TWSE_MIS_BATCH_SIZE = 80
 
 
@@ -9012,9 +9028,12 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False):
                 code: item for code, item in cached.items()
                 if isinstance(item, dict) and str(item.get("close_date") or "") == today.replace("-", "")
             }
-            if all(code in valid_cached for code in codes):
-                return {code: valid_cached[code] for code in codes}
-            # 只要有任一代號尚未進入當日快取，就重新查詢這一批。
+            # Do not force another network round-trip merely because MIS omitted one symbol.
+            # Return only real official quotes currently available; missing symbols are omitted
+            # and retried after the short cache TTL. Newly added symbols may wait at most 5s.
+            if valid_cached:
+                return {code: valid_cached[code] for code in codes if code in valid_cached}
+            # No usable official quotes in this fresh cache: retry the batch once.
 
     symbols = _twse_mis_quote_symbols(codes, market_suffix)
     parsed = {}
@@ -9069,7 +9088,7 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False):
 
 
 def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
-                       official_quote=None):
+                       official_quote=None, include_mis=True, request_timeout=8):
     """
     rng 是 Yahoo 的資料區間。預設 3mo 足夠算位階與均線；
     持股頁要畫「買進點」時才改用 1y——持有超過三個月的部位，
@@ -9144,7 +9163,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
                    f"?range={rng}&interval=1d")
             headers = {'User-Agent': 'Mozilla/5.0'}
-            res = requests.get(url, headers=headers, timeout=8).json()
+            res = requests.get(url, headers=headers, timeout=max(2, float(request_timeout))).json()
 
             result_meta = res.get('chart', {}).get('result', [])
             if not result_meta:
@@ -9201,7 +9220,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             # Yahoo 在收盤集合競價後可能仍停在盤中最後成交，不能拿來代表正式收盤。
             official_quote = official_quote or (
                 _fetch_twse_mis_quotes([code], {code: suffix}).get(code)
-                if _taiwan_post_close() else None)
+                if include_mis and _taiwan_post_close() else None)
             close = (official_quote.get("close") if official_quote else
                      meta.get('regularMarketPrice', 0.0))
             # 官方 MIS 偶爾短暫沒有回傳個別代號；收盤後若 Yahoo 日 K
@@ -9227,7 +9246,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                     try:
                         prior_res = requests.get(
                             f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1d",
-                            headers=headers, timeout=8).json()
+                            headers=headers, timeout=max(2, float(request_timeout))).json()
                         prior_meta = ((prior_res.get("chart", {}).get("result") or [{}])[0]
                                       .get("meta", {}))
                         verified_prev = float(prior_meta.get("chartPreviousClose") or 0)
@@ -9473,7 +9492,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
 
 
 def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
-                             force_refresh=False, mis_force=None):
+                             force_refresh=False, mis_force=None, skip_mis=False,
+                             request_timeout=8):
     """
     並行抓多檔報價，回傳 {code: data 或 None}。
 
@@ -9489,25 +9509,37 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
     if not codes:
         return {}
     def suffix_for(code):
-        if isinstance(market_suffix, dict):
-            return market_suffix.get(code)
-        return market_suffix
+        """Pick a known exchange suffix without a database round-trip."""
+        explicit = market_suffix.get(code) if isinstance(market_suffix, dict) else market_suffix
+        explicit = str(explicit or "").upper().strip()
+        if explicit in (".TW", ".TWO"):
+            return explicit
+        try:
+            _load_stock_info_file_cache()
+        except Exception:
+            pass
+        market_map = _market_cache.get("map") or {}
+        market = str(market_map.get(code) or "").strip().lower()
+        if market in ("上市", "twse", "listed", "tw", "tse"):
+            return ".TW"
+        if market in ("上櫃", "上柜", "tpex", "otc", "two"):
+            return ".TWO"
+        known = _suffix_cache.get(code)
+        return known if known in (".TW", ".TWO") else None
 
-    # 收盤後先批次取得官方 MIS 最後成交／市撮價格；同一次頁面請求的
-    # 所有檔案共用這份 map，避免首頁與持股頁各自落到不同的 Yahoo 時點。
-    # MIS 那層自己有短時間快取，跟盤中輪詢的間隔一致，本來就不會給到太舊的值。
-    # 盤中輪詢要繞過的是 get_realtime_stock 的歷史序列快取，不是 MIS 這層——
-    # 兩層一起繞過的話，每個使用者每 15 秒都會真的打一次 MIS，
-    # 人一多就等於放大請求量。所以這裡分開控制。
-    official_quotes = _fetch_twse_mis_quotes(
-        codes, market_suffix=market_suffix,
+    # History refreshes do not need a current MIS quote. Skipping this step is important:
+    # _fetch_twse_mis_quotes can wait up to 10 seconds even though its result is discarded by
+    # the background history cache. User-facing quote endpoints still use MIS by default.
+    official_quotes = {} if skip_mis else _fetch_twse_mis_quotes(
+        codes, market_suffix={c: suffix_for(c) for c in codes} if market_suffix is None else market_suffix,
         force_refresh=(force_refresh if mis_force is None else mis_force))
 
     if len(codes) == 1:  # 只有一檔就不必付出開執行緒池的成本
         return {codes[0]: get_realtime_stock(
             codes[0], rng, market_suffix=suffix_for(codes[0]),
             force_refresh=force_refresh,
-            official_quote=official_quotes.get(codes[0]))}
+            official_quote=official_quotes.get(codes[0]), include_mis=not skip_mis,
+            request_timeout=request_timeout)}
 
     def safe_fetch(c):
         # 單檔失敗不能拖垮整批，一律吞掉例外回 None，交由呼叫端顯示「查無行情」
@@ -9515,7 +9547,8 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
             return get_realtime_stock(
                 c, rng, market_suffix=suffix_for(c),
                 force_refresh=force_refresh,
-                official_quote=official_quotes.get(c))
+                official_quote=official_quotes.get(c), include_mis=not skip_mis,
+                request_timeout=request_timeout)
         except Exception as e:
             print(f"⚠️ 並行抓取失敗 {c}: {e}")
             return None
@@ -14881,9 +14914,12 @@ _taiex_cache = {"at": 0, "data": None}
 TAIEX_CACHE_SECONDS = 60
 
 # 首頁盤中大盤不能拿日K或昨日快照假裝即時；獨立以 TWSE MIS 的 t00 指數短快取。
-_taiex_intraday_cache = {"day": None, "at": 0, "data": None}
+_taiex_intraday_cache = {"day": None, "at": 0, "attempt_at": 0, "data": None}
 TAIEX_INTRADAY_CACHE_SECONDS = 15
 TAIEX_INTRADAY_MAX_AGE_SECONDS = 180
+_TAIEX_INTRADAY_REFRESH_LOCK = threading.Lock()
+_TAIEX_INTRADAY_REFRESH_RUNNING = False
+_TAIEX_INTRADAY_RETRY_GAP_SECONDS = 10
 
 
 def _taiex_live_number(value):
@@ -14894,22 +14930,82 @@ def _taiex_live_number(value):
         return None
 
 
-def fetch_taiex_intraday(force_refresh=False, now=None):
+def _schedule_taiex_intraday_refresh():
+    """Refresh official index in the background; at most one request runs at a time."""
+    global _TAIEX_INTRADAY_REFRESH_RUNNING
+    now_epoch = time.time()
+    with _TAIEX_INTRADAY_REFRESH_LOCK:
+        if _TAIEX_INTRADAY_REFRESH_RUNNING:
+            return False
+        _TAIEX_INTRADAY_REFRESH_RUNNING = True
+    with _realtime_cache_lock:
+        _taiex_intraday_cache["attempt_at"] = now_epoch
+
+    def worker():
+        global _TAIEX_INTRADAY_REFRESH_RUNNING
+        try:
+            data = fetch_taiex_intraday(force_refresh=True, stale_while_revalidate=False)
+            if data:
+                print("⚡ TAIEX 即時指數背景更新完成：%s" % data.get("updated_at", "時間未知"), flush=True)
+        except Exception as exc:
+            print("⚠️ TAIEX 背景更新失敗：%s" % type(exc).__name__, flush=True)
+        finally:
+            with _TAIEX_INTRADAY_REFRESH_LOCK:
+                _TAIEX_INTRADAY_REFRESH_RUNNING = False
+
+    try:
+        threading.Thread(target=worker, name="taiex-intraday-refresh", daemon=True).start()
+        return True
+    except Exception:
+        with _TAIEX_INTRADAY_REFRESH_LOCK:
+            _TAIEX_INTRADAY_REFRESH_RUNNING = False
+        return False
+
+
+def fetch_taiex_intraday(force_refresh=False, now=None, stale_while_revalidate=False):
     """取得 TWSE MIS 官方盤中加權指數；只接受今日且三分鐘內的實際報價。
 
-    盤中取得失敗時回傳 None，呼叫端必須顯示資料暫缺，不得降級成日K／昨日收盤。
+    頁面渲染可開啟 stale_while_revalidate：有今日最後有效資料就立即回傳並排程刷新；
+    從未拿到今日資料時立即回傳 None，讓前端在互動後的 API 再更新，而不是卡住頁面。
+    一般/推播呼叫預設仍同步取得，且不使用日K或昨收冒充即時指數。
     """
     current = now or taiwan_now()
     if not _is_taiwan_intraday_window(current):
         return None
     today = current.date().isoformat()
     epoch_now = time.time()
+    stale_result = None
+    schedule_refresh = False
     with _realtime_cache_lock:
+        # Cross-day safety: yesterday's last valid index must never be shown as today's live data.
+        if _taiex_intraday_cache.get("day") != today:
+            _taiex_intraday_cache.update({"day": today, "at": 0, "attempt_at": 0, "data": None})
         cached = _taiex_intraday_cache.get("data")
-        if (not force_refresh and _taiex_intraday_cache.get("day") == today and
-                cached is not None and
-                epoch_now - _taiex_intraday_cache.get("at", 0) < TAIEX_INTRADAY_CACHE_SECONDS):
-            return cached
+        cache_at = float(_taiex_intraday_cache.get("at") or 0)
+        attempt_at = float(_taiex_intraday_cache.get("attempt_at") or 0)
+        cached_today = isinstance(cached, dict) and bool(cache_at)
+        if (not force_refresh and cached_today and
+                epoch_now - cache_at < TAIEX_INTRADAY_CACHE_SECONDS):
+            result = dict(cached)
+            result.pop("stale", None)
+            result.pop("cache_age_seconds", None)
+            return result
+        if stale_while_revalidate and not force_refresh:
+            if cached_today:
+                stale_result = dict(cached)
+                age = max(0, int(epoch_now - cache_at))
+                stale_result["stale"] = age >= TAIEX_INTRADAY_CACHE_SECONDS
+                stale_result["cache_age_seconds"] = age
+            # Keep retries bounded if TWSE MIS is down. A failed upstream shouldn't cause every
+            # 15-second page poll to launch another network call.
+            schedule_refresh = (not attempt_at or epoch_now - attempt_at >= _TAIEX_INTRADAY_RETRY_GAP_SECONDS)
+        else:
+            _taiex_intraday_cache["attempt_at"] = epoch_now
+    if stale_while_revalidate and not force_refresh:
+        if schedule_refresh:
+            _schedule_taiex_intraday_refresh()
+        return stale_result
+
     try:
         response = requests.get(
             "https://mis.twse.com.tw/stock/api/getStockInfo.jsp",
@@ -14945,7 +15041,8 @@ def fetch_taiex_intraday(force_refresh=False, now=None):
             "source": "TWSE MIS 即時加權指數", "is_intraday": True,
         }
         with _realtime_cache_lock:
-            _taiex_intraday_cache.update({"day": today, "at": epoch_now, "data": data})
+            _taiex_intraday_cache.update({"day": today, "at": epoch_now,
+                                          "attempt_at": epoch_now, "data": data})
         return data
     except Exception as exc:
         print(f"⚠️ 抓取 TWSE MIS 即時 TAIEX 失敗：{exc}")
@@ -14956,15 +15053,17 @@ def fetch_taiex_intraday(force_refresh=False, now=None):
         with _realtime_cache_lock:
             cached_day = _taiex_intraday_cache.get("day")
             cached_data = _taiex_intraday_cache.get("data")
+            # Don't move the successful-fetch timestamp forward on a failed request: that would
+            # falsely make an old quote appear fresh and suppress timely retries.
+            _taiex_intraday_cache["attempt_at"] = epoch_now
             if cached_day == today and isinstance(cached_data, dict):
                 sticky = dict(cached_data)
                 sticky["stale"] = True
                 sticky["stale_reason"] = str(exc)
-                _taiex_intraday_cache.update({
-                    "day": today, "at": epoch_now, "data": sticky
-                })
+                sticky["cache_age_seconds"] = max(0, int(epoch_now - float(_taiex_intraday_cache.get("at") or 0)))
+                _taiex_intraday_cache["data"] = sticky
                 return sticky
-            _taiex_intraday_cache.update({"day": today, "at": epoch_now, "data": None})
+            _taiex_intraday_cache.update({"day": today, "data": None})
         return None
 
 
@@ -26966,6 +27065,8 @@ def web_positions(uid):
             quote_stamp = html.escape(str(price.get("source") or "最近有效行情"))
             if price.get("updated_at"):
                 quote_stamp += "・" + html.escape(str(price.get("updated_at")))
+            if price.get("_history_cache_stale"):
+                quote_stamp += "・歷史序列快取，背景更新中"
             net_pct_text = fmt_pct(pl)
             gross_pct_text = fmt_pct(gross_pl)
             day_cls = 'up' if day_pl >= 0 else 'down'
@@ -27138,7 +27239,7 @@ def web_positions(uid):
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {exright_html}
 {totals}
-{f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px;{"" if _is_taiwan_intraday_window() else "display:none"}">盤中持股行情已於 {taiwan_now().strftime("%H:%M:%S")} 取得；開盤期間約每 5 秒局部更新；盤中只採官方 MIS 最後成交，暫缺時不拿延遲行情冒充即時。</div>' if positions else ''}
+{f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px;{"" if _is_taiwan_intraday_window() else "display:none"}">歷史行情優先使用最近有效快取並在背景更新；盤中現價由官方 MIS 局部同步，約每 5 秒檢查一次。若官方報價暫缺，保留最後有效價格並顯示來源時間。</div>' if positions else ''}
 {portfolio_trend_html}
 <div class="section-head"><h2>持股明細</h2>
   <span class="section-note">依市值排序　·　<a href="/web/trades" style="color:var(--brass)">操作日報 →</a></span></div>
@@ -33621,7 +33722,7 @@ def render_portfolio_fast_summary(uid):
 
     market = snapshot.get("market") or {}
     intraday_window = _is_taiwan_intraday_window()
-    intraday_taiex = fetch_taiex_intraday() if intraday_window else None
+    intraday_taiex = fetch_taiex_intraday(stale_while_revalidate=True) if intraday_window else None
     if _taiwan_post_close():
         # 先行摘要不能因為每日快照較早用 Yahoo 日K 擷取，而在收盤後顯示
         # 盤中最後一筆；完整首頁與先行摘要均以同一個官方正式收盤口徑重取。
@@ -33806,7 +33907,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     events = (timeline.get("new", []) + timeline.get("ongoing", []))[:3]
     taiex = (fetch_taiex_summary() if taiex is None else taiex) or {}
     intraday_window = _is_taiwan_intraday_window()
-    intraday_taiex = fetch_taiex_intraday() if intraday_window else None
+    intraday_taiex = fetch_taiex_intraday(stale_while_revalidate=True) if intraday_window else None
     market_pct = None
     if intraday_window:
         # 盤中只認 TWSE MIS 當日、帶時間且未過時的 t00 指數；失敗絕不回退日K。
@@ -34445,7 +34546,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       if(!data.market_open){stopped=true;var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');if(title)title.textContent='盤中已結束';if(note)note.textContent=data.note||'目前非一般盤中時段；開盤後會自動恢復更新。';schedule();return;}
       if(stopped){stopped=false;var t0=document.querySelector('[data-home-live-title]');if(t0)t0.textContent='盤中更新中';}
       var market=data.market,portfolio=data.portfolio||{};
-      if(market&&market.pct!=null){marketEl.innerHTML=pct(market.pct);var freshness=document.querySelector('[data-home-market-freshness]');if(freshness)freshness.textContent=(market.source||'TWSE MIS 即時加權指數')+(market.updated_at?'・更新 '+market.updated_at:'');}
+      if(market&&market.pct!=null){marketEl.innerHTML=pct(market.pct);var freshness=document.querySelector('[data-home-market-freshness]');if(freshness)freshness.textContent=(market.stale?'最近有效行情・背景更新中・':'')+(market.source||'TWSE MIS 即時加權指數')+(market.updated_at?'・更新 '+market.updated_at:'');}
       else {marketEl.textContent='資料尚未更新';var missing=document.querySelector('[data-home-market-freshness]');if(missing)missing.textContent='即時 TAIEX 暫時無法取得，未使用日K快照';}
       var liveReady=portfolio.ready!==false;
       if(liveReady&&portfolio.pct!=null){
@@ -34812,7 +34913,10 @@ def _homepage_quote_map_seed_realtime_cache(prices):
                 if not isinstance(item, dict) or not item.get("close"):
                     continue
                 key = f"{code}:3mo:{cache_day}:{cache_session}"
-                _realtime_cache[key] = {"at": now, "data": dict(item)}
+                seeded = dict(item)
+                seeded.setdefault("_history_fetched_at", now)
+                seeded.setdefault("_history_period", f"{cache_day}:{cache_session}")
+                _realtime_cache[key] = {"at": now, "data": seeded}
     except Exception as exc:
         print("⚠️ 首頁持久行情快取預熱失敗：%s" % type(exc).__name__, flush=True)
 
@@ -34829,7 +34933,14 @@ def _save_homepage_quote_map_async(uid, codes, prices):
         _HOMEPAGE_QUOTE_CACHE_SAVING.add(key)
     def writer():
         try:
-            payload = {"codes": list(signature), "prices": {code: prices[code] for code in signature}}
+            payload = {
+                "codes": list(signature),
+                "prices": {code: {k: v for k, v in dict(prices[code]).items()
+                                  if k not in {"_history_cache_stale", "_history_cache_age_seconds"}}
+                           for code in signature},
+                "cache_period": "%s:%s" % _realtime_cache_period(),
+                "saved_at": time.time(),
+            }
             _save_shared_data_snapshot(
                 key, payload, data_date=taiwan_today(),
                 source_meta={"source": "homepage_quote_map", "range": "3mo", "captured_on": taiwan_today().isoformat()},
@@ -34917,70 +35028,360 @@ def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_ref
     return result
 
 
-def _get_homepage_prices_cached(uid, codes, refresh_official=True):
-    """重用持久 3mo 歷史序列；持股頁可只用快取首屏，現價由背景 MIS API 更新。"""
+def _homepage_quote_period_token():
+    day, session = _realtime_cache_period()
+    return f"{day}:{session}"
+
+
+def _homepage_quote_has_history(item):
+    if not isinstance(item, dict):
+        return False
+    try:
+        if float(item.get("close") or 0) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    closes = item.get("closes") or []
+    dates = item.get("close_dates") or []
+    return isinstance(closes, list) and isinstance(dates, list) and len(closes) >= 2 and len(dates) >= 2
+
+
+def _homepage_quote_attach_freshness(prices, now=None, default_fetched_at=None,
+                                     period_matches=True, current_period=None):
+    """Mark cached history visibly stale without altering prices/returns."""
+    now = time.time() if now is None else float(now)
+    tagged = {}
+    for code, raw in (prices or {}).items():
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        try:
+            fetched_at = float(item.get("_history_fetched_at") or default_fetched_at or 0)
+        except (TypeError, ValueError):
+            fetched_at = 0
+        age = max(0.0, now - fetched_at) if fetched_at > 0 else _HOMEPAGE_QUOTE_MAP_MAX_STALE + 1
+        series_period = item.get("_history_period")
+        stale = (age >= _HOMEPAGE_QUOTE_MAP_REFRESH_AFTER or not period_matches
+                 or not series_period or (current_period and series_period != current_period))
+        item["_history_fetched_at"] = fetched_at or None
+        item["_history_period"] = series_period
+        item["_history_cache_age_seconds"] = int(age) if fetched_at else None
+        item["_history_cache_stale"] = bool(stale)
+        tagged[str(code)] = item
+    return tagged
+
+
+def _homepage_global_history_cache(codes, max_age_seconds=None):
+    """Reuse a recent 3mo series cached by another page/user in this worker."""
     codes = list(dict.fromkeys(str(c).strip() for c in (codes or []) if c))
     if not codes:
         return {}
-    signature = tuple(sorted(codes))
-    now = time.monotonic()
+    max_age = _HOMEPAGE_QUOTE_MAP_MAX_STALE if max_age_seconds is None else float(max_age_seconds)
+    now = time.time()
+    found = {}
+    with _realtime_cache_lock:
+        for code in codes:
+            prefix = f"{code}:3mo:"
+            candidates = []
+            for key, entry in _realtime_cache.items():
+                if not str(key).startswith(prefix) or not isinstance(entry, dict):
+                    continue
+                try:
+                    at = float(entry.get("at") or 0)
+                except (TypeError, ValueError):
+                    at = 0
+                if at <= 0 or now - at > max_age:
+                    continue
+                item = entry.get("data")
+                if _homepage_quote_has_history(item):
+                    candidates.append((at, str(key), item))
+            if candidates:
+                at, chosen_key, item = max(candidates, key=lambda x: x[0])
+                value = dict(item)
+                # The real fetch timestamp may differ from the cache-entry timestamp when
+                # the series has been seeded from a persistent snapshot. Preserve it if present.
+                value.setdefault("_history_fetched_at", at)
+                try:
+                    parts = chosen_key.split(":", 3)
+                    if len(parts) >= 4:
+                        value.setdefault("_history_period", parts[2] + ":" + parts[3])
+                except Exception:
+                    pass
+                found[code] = value
+    return found
 
-    with _HOMEPAGE_QUOTE_MAP_LOCK:
-        memory = _HOMEPAGE_QUOTE_MAP_CACHE.get(str(uid))
-        if memory and memory.get("signature") == signature and now - memory.get("at", 0) < 240:
-            prices = {code: dict(item) for code, item in (memory.get("prices") or {}).items()
-                      if isinstance(item, dict)}
-            print("⚡ 首頁行情序列命中程序快取（%s 檔）" % len(prices), flush=True)
-            if refresh_official:
-                prices = _homepage_merge_official_quotes(prices, codes)
-            missing = [code for code in codes if not prices.get(code)]
-            if missing:
-                print("⚠️ 行情快取缺少 %s 檔，只補抓缺漏序列" % len(missing), flush=True)
-                prices.update(get_realtime_stocks_bulk(missing, rng="3mo"))
-            if all(prices.get(code) for code in codes):
-                with _HOMEPAGE_QUOTE_MAP_LOCK:
-                    _HOMEPAGE_QUOTE_MAP_CACHE[str(uid)] = {
-                        "at": time.monotonic(), "signature": signature, "prices": prices,
-                    }
-                _save_homepage_quote_map_async(uid, codes, prices)
-            return prices
 
-    snapshot_key = _homepage_quote_snapshot_key(uid)
-    try:
-        snapshot = _load_shared_data_snapshot(snapshot_key, max_age_seconds=172800)
-        restored = _homepage_quote_map_restore(snapshot.get("payload") if snapshot else None, codes)
-        if restored:
-            _homepage_quote_map_seed_realtime_cache(restored)
-            prices = dict(restored)
-            if refresh_official:
-                prices = _homepage_merge_official_quotes(prices, codes)
-            missing = [code for code in codes if not prices.get(code)]
-            if missing:
-                print("⚠️ 持久行情快照缺少 %s 檔，只補抓缺漏序列" % len(missing), flush=True)
-                prices.update(get_realtime_stocks_bulk(missing, rng="3mo"))
+def _schedule_homepage_quote_history_refresh(uid, codes, existing_prices=None,
+                                             refresh_codes=None, reason="stale"):
+    """Refresh selected 3mo series off the request path; only two refresh jobs run at once."""
+    codes = list(dict.fromkeys(str(c).strip() for c in (codes or []) if c))
+    target = list(dict.fromkeys(str(c).strip() for c in (refresh_codes or codes) if c))
+    if not codes or not target:
+        return False
+    uid_key = str(uid)
+    with _HOMEPAGE_QUOTE_REFRESH_LOCK:
+        if uid_key in _HOMEPAGE_QUOTE_REFRESHING:
+            return False
+        _HOMEPAGE_QUOTE_REFRESHING.add(uid_key)
+
+    base_prices = {str(k): dict(v) for k, v in (existing_prices or {}).items()
+                   if isinstance(v, dict)}
+    started_at = time.time()
+
+    def worker():
+        try:
+            t0 = time.monotonic()
+            fresh = get_realtime_stocks_bulk(
+                target, workers=min(6, max(1, len(target))), rng="3mo",
+                force_refresh=True, mis_force=False, skip_mis=True, request_timeout=5)
+            updated = {}
+            for code, item in (fresh or {}).items():
+                if _homepage_quote_has_history(item):
+                    value = dict(item)
+                    value["_history_fetched_at"] = time.time()
+                    value["_history_period"] = _homepage_quote_period_token()
+                    value.pop("_history_cache_stale", None)
+                    value.pop("_history_cache_age_seconds", None)
+                    updated[str(code)] = value
             with _HOMEPAGE_QUOTE_MAP_LOCK:
-                _HOMEPAGE_QUOTE_MAP_CACHE[str(uid)] = {
-                    "at": time.monotonic(), "signature": signature,
-                    "prices": {code: dict(item) for code, item in prices.items() if isinstance(item, dict)},
+                current = _HOMEPAGE_QUOTE_MAP_CACHE.get(uid_key) or {}
+                merged = {str(k): dict(v) for k, v in base_prices.items()
+                          if isinstance(v, dict)}
+                # Existing in-process entries may be fresher than a persisted copy read by
+                # another request. Preserve current memory, then overlay newly fetched data.
+                merged.update({str(k): dict(v) for k, v in (current.get("prices") or {}).items()
+                               if isinstance(v, dict)})
+                merged.update(updated)
+                # Keep the historical series for all current holdings if the refresh was partial.
+                effective_codes = list(dict.fromkeys(codes + list(merged.keys())))
+                complete = bool(codes) and all(code in merged and _homepage_quote_has_history(merged[code])
+                                               for code in codes)
+                _HOMEPAGE_QUOTE_MAP_CACHE[uid_key] = {
+                    "at": time.monotonic(),
+                    "signature": tuple(sorted(effective_codes)),
+                    "period": _homepage_quote_period_token(),
+                    "prices": merged,
                 }
-            print("⚡ 首頁行情序列命中持久快照（%s/%s 檔；%s）" % (
-                sum(1 for code in codes if prices.get(code)), len(codes),
-                "已疊加官方現價" if refresh_official else "首屏跳過同步外部行情"), flush=True)
-            if all(prices.get(code) for code in codes):
-                _save_homepage_quote_map_async(uid, codes, prices)
-            return prices
-    except Exception as exc:
-        print("⚠️ 首頁行情快照讀取失敗，改用即時抓取：%s" % type(exc).__name__, flush=True)
+            if complete:
+                _save_homepage_quote_map_async(uid_key, codes, merged)
+            print("⚡ 行情歷史背景刷新完成 uid=%s updated=%s/%s elapsed=%.0fms reason=%s" % (
+                uid_key, len(updated), len(target), (time.monotonic()-t0)*1000, reason), flush=True)
+        except Exception as exc:
+            print("⚠️ 行情歷史背景刷新失敗 uid=%s reason=%s error=%s" % (
+                uid_key, reason, type(exc).__name__), flush=True)
+        finally:
+            with _HOMEPAGE_QUOTE_REFRESH_LOCK:
+                _HOMEPAGE_QUOTE_REFRESHING.discard(uid_key)
 
-    # 真正冷啟動且完全沒有持久序列時才同步下載整段歷史；成功後背景保存供下次重用。
-    prices = get_realtime_stocks_bulk(codes, rng="3mo")
-    if prices and all(prices.get(code) for code in codes):
+    try:
+        _HOMEPAGE_QUOTE_REFRESH_POOL.submit(worker)
+        print("↻ 行情歷史背景刷新已排程 uid=%s target=%s reason=%s" % (
+            uid_key, len(target), reason), flush=True)
+        return True
+    except Exception as exc:
+        with _HOMEPAGE_QUOTE_REFRESH_LOCK:
+            _HOMEPAGE_QUOTE_REFRESHING.discard(uid_key)
+        print("⚠️ 行情歷史背景刷新排程失敗：%s" % type(exc).__name__, flush=True)
+        return False
+
+
+def _get_homepage_prices_cached(uid, codes, refresh_official=True):
+    """Use a usable cached series immediately; refresh stale history asynchronously.
+
+    Live MIS prices are intentionally optional here. Page routes pass refresh_official=False
+    and the dedicated intraday API updates current prices after the page is interactive.
+    Only a true cold/missing-history path fetches a missing series synchronously, because
+    returning a made-up or silently incomplete holding value would be worse than one cold miss.
+    """
+    codes = list(dict.fromkeys(str(c).strip() for c in (codes or []) if c))
+    if not codes:
+        return {}
+    uid_key = str(uid)
+    signature = tuple(sorted(codes))
+    period = _homepage_quote_period_token()
+    now_mono, now_wall = time.monotonic(), time.time()
+    combined = {}
+    memory_age = None
+    memory_period_matches = True
+
+    # First take any usable per-user series, even if the exact holdings signature changed.
+    # That lets us reuse overlapping stocks after adding/selling one position.
+    with _HOMEPAGE_QUOTE_MAP_LOCK:
+        memory = _HOMEPAGE_QUOTE_MAP_CACHE.get(uid_key)
+        if memory:
+            try:
+                memory_age = max(0.0, now_mono - float(memory.get("at") or 0))
+            except (TypeError, ValueError):
+                memory_age = None
+            memory_period_matches = memory.get("period") == period
+            stored_prices = memory.get("prices") or {}
+            for code in codes:
+                item = stored_prices.get(code)
+                if _homepage_quote_has_history(item):
+                    combined[code] = dict(item)
+
+    # After a worker restart or after the per-user map misses one ticker, this small in-proc
+    # cache may already have the same market-wide series from the screener or another page.
+    global_prices = _homepage_global_history_cache([c for c in codes if c not in combined])
+    combined.update(global_prices)
+
+    # An existing full series is returned without DB/HTTP waits, even if it needs refreshing.
+    if all(code in combined for code in codes):
+        stale_codes = []
+        for code in codes:
+            item = combined[code]
+            try:
+                fetched_at = float(item.get("_history_fetched_at") or 0)
+            except (TypeError, ValueError):
+                fetched_at = 0
+            series_period = (combined.get(code) or {}).get("_history_period")
+            if (not fetched_at or now_wall - fetched_at >= _HOMEPAGE_QUOTE_MAP_REFRESH_AFTER
+                    or not memory_period_matches or not series_period or series_period != period):
+                stale_codes.append(code)
+        tagged = _homepage_quote_attach_freshness(
+            {code: combined[code] for code in codes}, now=now_wall,
+            period_matches=memory_period_matches, current_period=period)
+        if stale_codes:
+            _schedule_homepage_quote_history_refresh(uid_key, codes, combined,
+                                                     refresh_codes=stale_codes,
+                                                     reason="memory-stale-or-period-change")
         with _HOMEPAGE_QUOTE_MAP_LOCK:
-            _HOMEPAGE_QUOTE_MAP_CACHE[str(uid)] = {
-                "at": time.monotonic(), "signature": signature, "prices": prices,
+            previous = _HOMEPAGE_QUOTE_MAP_CACHE.get(uid_key) or {}
+            merged = dict(previous.get("prices") or {})
+            merged.update({code: dict(item) for code, item in tagged.items()})
+            _HOMEPAGE_QUOTE_MAP_CACHE[uid_key] = {
+                "at": previous.get("at", now_mono),
+                "signature": tuple(sorted(set(previous.get("signature") or ()) | set(codes))),
+                "period": period,
+                "prices": merged,
             }
-        _save_homepage_quote_map_async(uid, codes, prices)
-    return prices
+        print("⚡ 行情歷史快取命中 uid=%s hit=%s/%s age=%.0fs stale=%s" % (
+            uid_key, len(codes), len(codes), memory_age if memory_age is not None else -1,
+            len(stale_codes)), flush=True)
+        if refresh_official:
+            tagged = _homepage_merge_official_quotes(tagged, codes)
+        return tagged
+
+    # If per-user memory is incomplete, load the persistent map with a seven-day stale-while-
+    # revalidate limit. Historical prices are still useful for a first paint; current price is
+    # updated separately through official MIS, and an old history map is refreshed in background.
+    snapshot = None
+    snapshot_age = None
+    try:
+        snapshot = _load_shared_data_snapshot(
+            _homepage_quote_snapshot_key(uid), max_age_seconds=_HOMEPAGE_QUOTE_MAP_MAX_STALE)
+        if snapshot:
+            computed_at = snapshot.get("computed_at")
+            if computed_at:
+                computed_at = (computed_at if computed_at.tzinfo else computed_at.replace(tzinfo=timezone.utc))
+                snapshot_age = max(0.0, (datetime.now(timezone.utc) - computed_at).total_seconds())
+            restored = _homepage_quote_map_restore(snapshot.get("payload") or {}, codes) or {}
+            default_saved_at = None
+            payload = snapshot.get("payload") or {}
+            try:
+                default_saved_at = float(payload.get("saved_at") or (computed_at.timestamp() if computed_at else 0))
+            except (TypeError, ValueError, AttributeError):
+                default_saved_at = 0
+            snapshot_period = payload.get("cache_period")
+            snapshot_period_matches = bool(snapshot_period and snapshot_period == period)
+            for code, item in restored.items():
+                if code not in combined:
+                    value = dict(item)
+                    if not value.get("_history_fetched_at") and default_saved_at:
+                        value["_history_fetched_at"] = default_saved_at
+                    combined[code] = value
+            # Persisted map from V260 has no cache_period; treat it as revalidation-worthy once.
+            if snapshot_age is None:
+                snapshot_age = _HOMEPAGE_QUOTE_MAP_MAX_STALE + 1
+            stale_codes = []
+            for code in codes:
+                item = combined.get(code) or {}
+                try:
+                    fetched_at = float(item.get("_history_fetched_at") or default_saved_at or 0)
+                except (TypeError, ValueError):
+                    fetched_at = 0
+                series_period = (combined.get(code) or {}).get("_history_period")
+                if (not fetched_at or now_wall - fetched_at >= _HOMEPAGE_QUOTE_MAP_REFRESH_AFTER
+                        or not snapshot_period_matches or not series_period or series_period != period):
+                    stale_codes.append(code)
+            if stale_codes:
+                _schedule_homepage_quote_history_refresh(
+                    uid_key, codes, combined, refresh_codes=stale_codes,
+                    reason="persistent-stale-or-period-change")
+            print("⚡ 持久行情快照命中 uid=%s hit=%s/%s snapshot_age=%.0fs" % (
+                uid_key, sum(1 for code in codes if code in combined), len(codes), snapshot_age), flush=True)
+    except Exception as exc:
+        print("⚠️ 首頁行情快照讀取失敗，先用程序快取：%s" % type(exc).__name__, flush=True)
+
+    # If only some symbols were available from user/global snapshots, fetch only the missing
+    # series. This rare path protects valuation correctness after a new holding is added.
+    missing = [code for code in codes if not _homepage_quote_has_history(combined.get(code))]
+    if missing:
+        fetch_started = time.monotonic()
+        print("↻ 行情歷史冷缺漏補抓 codes=%s count=%s" % (",".join(missing[:12]), len(missing)), flush=True)
+        try:
+            try:
+                _load_stock_info_file_cache()
+            except Exception:
+                pass
+            market_map = _market_cache.get("map") or {}
+            suffixes = {}
+            for code in missing:
+                market = str(market_map.get(code) or "").strip().lower()
+                if market in ("上市", "twse", "listed", "tw"):
+                    suffixes[code] = ".TW"
+                elif market in ("上櫃", "上柜", "tpex", "otc", "two"):
+                    suffixes[code] = ".TWO"
+            fetched = get_realtime_stocks_bulk(
+                missing, workers=min(6, max(1, len(missing))), rng="3mo",
+                market_suffix=suffixes or None, mis_force=False, skip_mis=True,
+                request_timeout=5)
+            for code, item in (fetched or {}).items():
+                if _homepage_quote_has_history(item):
+                    value = dict(item)
+                    value["_history_fetched_at"] = time.time()
+                    value["_history_period"] = period
+                    combined[str(code)] = value
+        except Exception as exc:
+            print("⚠️ 行情歷史缺漏補抓失敗：%s" % type(exc).__name__, flush=True)
+        print("⏱️ 行情歷史缺漏補抓 %.0fms updated=%s/%s" % (
+            (time.monotonic()-fetch_started)*1000,
+            sum(1 for code in missing if code in combined), len(missing)), flush=True)
+
+    # Do not calculate portfolio weights from a partial quote set. If a true cold cache still
+    # cannot supply some history after fetch, keep the old behaviour (None entries are excluded
+    # from this map) so the existing renderer shows missing quote state rather than fake prices.
+    usable = {code: dict(combined[code]) for code in codes
+              if _homepage_quote_has_history(combined.get(code))}
+    all_available = all(code in usable for code in codes)
+    if all_available:
+        for code in codes:
+            usable[code].setdefault("_history_fetched_at", now_wall)
+            usable[code].setdefault("_history_period", period)
+            series_period = usable[code].get("_history_period")
+            usable[code]["_history_cache_stale"] = (
+                now_wall - float(usable[code].get("_history_fetched_at") or now_wall)
+                >= _HOMEPAGE_QUOTE_MAP_REFRESH_AFTER or not series_period or series_period != period)
+        with _HOMEPAGE_QUOTE_MAP_LOCK:
+            previous = _HOMEPAGE_QUOTE_MAP_CACHE.get(uid_key) or {}
+            merged = dict(previous.get("prices") or {})
+            merged.update(usable)
+            _HOMEPAGE_QUOTE_MAP_CACHE[uid_key] = {
+                "at": time.monotonic(),
+                "signature": tuple(sorted(set(previous.get("signature") or ()) | set(codes))),
+                "period": period,
+                "prices": merged,
+            }
+        # Snapshot persistence is background-only; never add a JSONB write to this page's latency.
+        if snapshot is None or snapshot_age is None or snapshot_age > _HOMEPAGE_QUOTE_MAP_REFRESH_AFTER:
+            _save_homepage_quote_map_async(uid_key, codes, usable)
+    else:
+        print("⚠️ 行情資料仍不完整 uid=%s missing=%s" % (
+            uid_key, ",".join(code for code in codes if code not in usable)), flush=True)
+
+    if refresh_official and usable:
+        usable = _homepage_merge_official_quotes(usable, codes)
+    return usable
 
 
 @app.route("/web/portfolio", methods=["GET", "POST"])
@@ -35241,7 +35642,7 @@ def web_portfolio(uid):
     # 日內首頁同時需要目前持股行情與當日操作日誌。兩者互不相依，並行讀取；
     # 若當天已全部賣出某標的，再補抓該代號行情，保留它在日初至減碼前的貢獻。
     with ThreadPoolExecutor(max_workers=2) as exposure_executor:
-        price_future = exposure_executor.submit(_get_homepage_prices_cached, uid, position_codes)
+        price_future = exposure_executor.submit(_get_homepage_prices_cached, uid, position_codes, False)
         journal_key = (uid, taiwan_today())
         with _HOMEPAGE_CACHE_LOCK:
             journal_cached = _HOMEPAGE_JOURNAL_CACHE.get(journal_key)
@@ -40375,7 +40776,7 @@ def web_workbench_quotes(uid):
     if not codes:
         return _workbench_json_response({"ok": True, "updates": [], "market_open": True})
     try:
-        official_quotes = _fetch_twse_mis_quotes(codes, force_refresh=True)
+        official_quotes = _fetch_twse_mis_quotes(codes, force_refresh=False)
         missing = [code for code in codes if code not in official_quotes]
         fallback_quotes = (get_realtime_stocks_bulk(
             missing, workers=min(12, len(missing)), rng="3mo", force_refresh=True)
@@ -40507,13 +40908,11 @@ def web_positions_quotes(uid):
         return _workbench_json_response({"ok": True, "updates": [], "market_open": True,
                                          "note": "目前沒有可更新的持股。"})
     try:
-        # 盤中輪詢每 5 秒檢查一次；官方 MIS 快取 5 秒，讓畫面能在不重載整頁的情況下接近即時更新——
-        # get_realtime_stock 本身即使保留較長日線快取，也會在官方 MIS 報價存在時覆寫當前價格。
-        # 真正的節流在下一層：_fetch_twse_mis_quotes 自己有 5 秒快取，
-        # 因此前端 5 秒輪詢不會每次都打到官方端點。
+        # 盤中輪詢只讀共用的官方 MIS 短快取；不因每位使用者的輪詢而強制打外部端點。
+        # 快取有效時立即回傳可用官方報價；缺少的代號不捏造價格，TTL 到期後再補抓。
         # 盤中顯示價格只允許官方 TWSE MIS。
         # MIS 暫時查不到時，寧可保留畫面最後一筆，也不能退回 Yahoo 日線/延遲行情。
-        official_quotes = _fetch_twse_mis_quotes(codes, force_refresh=True)
+        official_quotes = _fetch_twse_mis_quotes(codes, force_refresh=False)
         updates = []
         for code in codes:
             quote_data = official_quotes.get(code)
@@ -40535,7 +40934,7 @@ def web_positions_quotes(uid):
                                          "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
                                          "official_count": len(updates),
                                          "requested_count": len(codes),
-                                         "note": "盤中價格只採 TWSE MIS 官方最後成交；約每 5 秒檢查、官方快取最多 3 秒。MIS 暫缺時不退回 Yahoo 延遲行情。"})
+                                         "note": "盤中價格只採 TWSE MIS 官方最後成交；約每 5 秒檢查、官方行情採共用 5 秒快取。MIS 暫缺時不退回 Yahoo 延遲行情。"})
     except Exception as exc:
         print(f"⚠️ 持股盤中行情更新失敗（uid={uid}）：{exc}")
         return _workbench_json_response({"ok": False, "updates": [], "market_open": True,
