@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V268_GOOGLE_REGISTER_LOGIN_PREMARKET_CHIPS_UI_DRAFT"
+APP_BUILD = "V269_GOOGLE_LOGIN_ENTRY_FIX_PREMARKET_CHIPS_UI_DRAFT"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
 # index on page render so an upstream timeout cannot hold the whole page for six seconds.
@@ -22647,12 +22647,11 @@ def render_page(title, body, nav_active=None, user_name=None):
         page_back = preserve_web_token(
             '<div class="page-back"><a href="#" data-history-back="1" aria-label="回上一頁">‹ 上一頁</a></div>')
     header_user = current_web_user()
-    header_token = request.args.get('t') or request.cookies.get('stockbot_token')
-    header_google_mode = 'bind' if header_user else 'login'
-    header_google_label = '綁定 Google' if header_user else 'Google 登入／註冊'
-    header_google_href = '/auth/google?mode=' + header_google_mode
-    if header_google_mode == 'bind' and header_token:
-        header_google_href += '&t=' + quote(str(header_token), safe='')
+    # 首頁右上角固定提供 Google 登入／註冊，讓已登入 LINE 的使用者也能測試/切換 Google 身分。
+    # 綁定目前帳號的動作仍留在「設定」頁，避免首頁按鈕把另一個 Google 帳號誤綁到現有帳號。
+    header_google_mode = 'login'
+    header_google_label = 'Google 登入／註冊'
+    header_google_href = '/auth/google?mode=login'
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
 <meta charset="UTF-8">
