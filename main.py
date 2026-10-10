@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V267_GOOGLE_OAUTH_PREMARKET_CHIPS_UI_REFINEMENT_DRAFT"
+APP_BUILD = "V268_GOOGLE_REGISTER_LOGIN_PREMARKET_CHIPS_UI_DRAFT"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
 # index on page render so an upstream timeout cannot hold the whole page for six seconds.
@@ -19989,7 +19989,8 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
   .app-header{position:relative;padding-right:58px}
   .app-account-link{position:absolute;right:0;top:2px;min-height:44px;display:flex;align-items:center;justify-content:center;gap:7px;padding:0 11px;border:1px solid #D5E2ED;border-radius:24px;background:#fff;box-shadow:0 3px 10px rgba(30,65,92,.10);text-decoration:none;color:#315E82;font-size:11px;font-weight:800;white-space:nowrap}
   .app-account-link svg{width:24px;height:24px;display:block;flex:none}
-  .app-account-link:after{content:"綁定 Google";display:inline-block}
+  .app-account-link:after{content:"Google 登入／註冊";display:inline-block}
+  .app-account-link.is-bind:after{content:"綁定 Google"}
   .app-account-link:focus-visible{outline:3px solid rgba(23,105,176,.28);outline-offset:2px}
   @media(max-width:420px){.app-header{padding-right:12px}.app-account-link{top:-1px;min-height:36px;padding:0 8px;gap:5px;font-size:10px}.app-account-link svg{width:21px;height:21px}}
   /* iOS 分組列表：卡片是白的、圓角較大、不用外框——
@@ -22021,6 +22022,17 @@ input:focus, select:focus, textarea:focus { outline: 3px solid rgba(47,120,168,.
 .app-page-content:has(.premarket-market-card)>.premarket-market-card{margin-top:0!important}
 .app-page-content:has(.premarket-market-card) .premarket-meta{margin-top:0!important}
 .app-page-content:has(.premarket-market-card) .premarket-market-card:first-child{transform:none!important}
+/* V268：籌碼超人改修實際 /web/chips 卡片；強制覆蓋舊版手機 display:block。 */
+.chips-section .chips-row-rich{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(92px,auto)!important;gap:12px!important;align-items:center!important;text-align:left!important}
+.chips-section .chips-row-rich>div{grid-column:1;min-width:0;text-align:left!important}
+.chips-section .chips-row-rich>strong{grid-column:2;grid-row:1;justify-self:end;align-self:center;max-width:132px;text-align:right;white-space:normal;overflow-wrap:anywhere}
+.chips-section .chips-row-rich>div>b,.chips-section .chips-row-rich>div>small{ text-align:left!important }
+@media(max-width:620px){.chips-section .chips-row-rich{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(82px,100px)!important;gap:9px!important;padding:13px 0!important}.chips-section .chips-row-rich>strong{display:block!important;grid-column:2;grid-row:1;margin:0!important;max-width:100px;font-size:12px;padding:7px 6px}.chips-section .chips-row-rich>div{grid-column:1;grid-row:1}}
+@media(max-width:360px){.chips-section .chips-row-rich{grid-template-columns:minmax(0,1fr) 78px!important;gap:7px!important}.chips-section .chips-row-rich>strong{max-width:78px;font-size:11px;padding:6px 4px}}
+/* V268：盤前頁在 LINE WebView 的固定頁首下緊接內容，清除容器與第一張卡片的累積間距。 */
+#app-page-content:has(.premarket-market-card){margin-top:0!important;padding-top:0!important;transform:none!important}
+#app-page-content:has(.premarket-market-card) .premarket-market-card:first-child{margin-block-start:0!important;position:relative;top:0!important}
+#app-page-content:has(.premarket-market-card) .premarket-meta:first-child{margin-block-start:0!important}
 /* V267：籌碼超人卡片使用明確的左右資訊分區，避免主文被壓成窄欄。 */
 .wb-chip-card .wb-chip-row{display:grid!important;grid-template-columns:minmax(0,1.35fr) minmax(92px,.72fr) minmax(110px,.82fr) 16px!important;grid-template-areas:"main price meta arrow" "main price meta arrow"!important;gap:10px!important;align-items:center!important;padding:15px 12px!important;min-width:0!important;text-align:left!important}
 .wb-chip-card .wb-chip-row>.wb-row-main{grid-area:main!important;min-width:0!important;align-self:start!important}
@@ -22634,6 +22646,13 @@ def render_page(title, body, nav_active=None, user_name=None):
     if nav_active and nav_active != "portfolio":
         page_back = preserve_web_token(
             '<div class="page-back"><a href="#" data-history-back="1" aria-label="回上一頁">‹ 上一頁</a></div>')
+    header_user = current_web_user()
+    header_token = request.args.get('t') or request.cookies.get('stockbot_token')
+    header_google_mode = 'bind' if header_user else 'login'
+    header_google_label = '綁定 Google' if header_user else 'Google 登入／註冊'
+    header_google_href = '/auth/google?mode=' + header_google_mode
+    if header_google_mode == 'bind' and header_token:
+        header_google_href += '&t=' + quote(str(header_token), safe='')
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
 <meta charset="UTF-8">
@@ -22858,7 +22877,7 @@ def render_page(title, body, nav_active=None, user_name=None):
 </script><div class="wrap">
 <header class="app-header">
   {page_back}
-  <a class="app-account-link" href="{('/auth/google?mode=bind&t=' + quote(str(request.args.get('t') or request.cookies.get('stockbot_token')), safe='')) if (request.args.get('t') or request.cookies.get('stockbot_token')) else '/auth/google?mode=bind'}" aria-label="綁定 Google 帳號" title="綁定 Google 帳號">
+  <a class="app-account-link {('is-bind' if header_user else 'is-login')}" href="{header_google_href}" aria-label="{header_google_label}" title="{header_google_label}">
     <svg viewBox="0 0 48 48" role="img" aria-label="Google"><path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.6c3.9-3.6 6.1-8.8 6.1-15z"/><path fill="#34A853" d="M24 44c5.5 0 10.1-1.8 13.5-4.9l-6.6-5.1c-1.8 1.2-4.1 2-6.9 2-5.3 0-9.8-3.6-11.4-8.4H5.8v5.3A20 20 0 0 0 24 44z"/><path fill="#FBBC05" d="M12.6 27.6a12 12 0 0 1 0-7.2v-5.3H5.8a20 20 0 0 0 0 17.8z"/><path fill="#EA4335" d="M24 12.1c3 0 5.7 1 7.8 3.1l5.8-5.8C34.1 6.1 29.5 4 24 4A20 20 0 0 0 5.8 15.1l6.8 5.3c1.6-4.8 6.1-8.3 11.4-8.3z"/></svg>
   </a>
   <div class="eyebrow">TAIWAN STOCK BOT</div>
@@ -25357,7 +25376,7 @@ def web_login():
     return resp
 
 
-# ── Google OAuth：既有 LINE 帳號綁定／已綁定 Google 登入 ──
+# ── Google OAuth：首次註冊／登入／既有 LINE 帳號綁定 ──
 def _google_oauth_configured():
     return bool(os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET"))
 
@@ -25516,6 +25535,7 @@ def auth_google_start():
         "response_type": "code",
         "scope": "openid email profile",
         "state": state,
+        # 明確顯示 Google 帳號選擇器，避免使用者誤以為另一個帳號已被綁定。
         "prompt": "select_account",
     })
     return redirect("https://accounts.google.com/o/oauth2/v2/auth?" + params)
@@ -25570,8 +25590,36 @@ def auth_google_callback():
     finally:
         release_db_connection(conn)
     if not row:
-        return render_page("Google 尚未綁定",
-            '<div class="msg">這個 Google 帳號尚未綁定台股 BOT。請先回到 LINE，使用原本的登入網址進入既有帳號，再到「設定」綁定 Google。系統不會自動建立空白帳號，也不會依電子郵件自動合併。</div>'), 403
+        # 新版：首次 Google 登入時建立獨立的 Google 帳號。
+        # 使用 Google 的穩定 subject 作為內部 user_id，不用 email 當主鍵，
+        # 也絕不把它自動合併到任何既有 LINE 帳號。
+        google_user_id = "google:" + identity["subject"]
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO user_auth_identities (provider, provider_subject, user_id, email) "
+                "VALUES ('google', %s, %s, %s) ON CONFLICT (provider, provider_subject) DO NOTHING",
+                (identity["subject"], google_user_id, identity.get("email", "")))
+            cur.execute(
+                "SELECT user_id FROM user_auth_identities "
+                "WHERE provider='google' AND provider_subject=%s",
+                (identity["subject"],))
+            row = cur.fetchone()
+            if not row or not row[0]:
+                conn.rollback()
+                cur.close()
+                return render_page("Google 註冊未完成",
+                    '<div class="msg">目前無法建立帳號，沒有變更任何既有資料，請稍後再試。</div>'), 503
+            conn.commit()
+            cur.close()
+        except Exception as exc:
+            conn.rollback()
+            print(f"❌ Google 新帳號建立失敗：{type(exc).__name__}")
+            return render_page("Google 註冊未完成",
+                '<div class="msg">目前無法建立帳號，請稍後再試。原有 LINE 帳號與資料未被合併。</div>'), 503
+        finally:
+            release_db_connection(conn)
     token = create_web_token(row[0])
     if not token:
         return render_page("登入暫時失敗",
