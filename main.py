@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V269_GOOGLE_LOGIN_ENTRY_FIX_PREMARKET_CHIPS_UI_DRAFT"
+APP_BUILD = "V270_AUTH_ONLY_GOOGLE_LINE_OAUTH"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
 # index on page render so an upstream timeout cannot hold the whole page for six seconds.
@@ -2193,6 +2193,15 @@ def init_db():
                 state TEXT PRIMARY KEY,
                 intent TEXT NOT NULL CHECK (intent IN ('login', 'bind')),
                 bind_user_id TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL,
+                used BOOLEAN NOT NULL DEFAULT FALSE
+            )
+        ''')
+        # 官方 LINE Login OAuth state：與 Google state 分表，避免兩個 provider 混用。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS line_oauth_login_states (
+                state TEXT PRIMARY KEY,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 expires_at TIMESTAMPTZ NOT NULL,
                 used BOOLEAN NOT NULL DEFAULT FALSE
@@ -20819,18 +20828,12 @@ body>.page,.page-wrap,.main-wrap{animation:v180-reveal .28s ease both}@keyframes
 """
 
 NEED_LOGIN_HTML = """
-<div class="msg">
-  <b>登入台股 BOT</b><br>
-  若尚未綁定 Google，請先回到 LINE 的「台股 BOT」，輸入「網頁」或「產生登入網址」，再開啟登入連結。
-  完成 Google 綁定後，之後即可用 LINE 登入網址或 Google 登入同一個帳號。
-</div>
-<div class="section-head"><h2>登入方式</h2>
-  <span class="section-note">LINE／Google</span></div>
-<div class="fields">
-  <a class="btn" href="/auth/google" style="display:block;text-align:center;text-decoration:none;padding:12px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800">使用 Google 登入</a>
-</div>
-<div class="sell-hint" style="margin-top:12px">
-  Google 尚未綁定時，不會自動建立新帳號；請先使用原本的 LINE 登入網址，再到「設定」綁定 Google。
+<div class="card" style="padding:20px;margin:18px 0">
+  <h2>登入台股 BOT</h2>
+  <p>選擇你原本使用的登入方式。若你已經有 LINE 帳號，請優先使用 LINE 登入，以保留原本的持股與設定。</p>
+  <a class="btn" href="/auth/line" style="display:block;text-align:center;text-decoration:none;padding:12px;border-radius:12px;background:#06C755;color:#fff;font-weight:800;margin:10px 0">使用 LINE 登入</a>
+  <a class="btn" href="/auth/choose" style="display:block;text-align:center;text-decoration:none;padding:12px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800">Google 登入／註冊與帳號綁定說明</a>
+  <p class="sell-hint" style="margin-top:12px">第一次使用者可用 Google 建立新帳號。已有 LINE 帳號者，請先用原本的 LINE 帳號登入，再從設定綁定 Google；系統不會只因 Email 相同就合併帳號。</p>
 </div>
 """
 
@@ -25375,6 +25378,106 @@ def web_login():
     return resp
 
 
+# ── 官方 LINE Login OAuth：使用 LINE Login Channel，不混用 Messaging API 憑證 ──
+def _line_login_configured():
+    return bool((os.environ.get("LINE_LOGIN_CHANNEL_ID") or "").strip() and
+                (os.environ.get("LINE_LOGIN_CHANNEL_SECRET") or "").strip())
+
+
+def _line_redirect_uri():
+    return (os.environ.get("LINE_LOGIN_REDIRECT_URI") or
+            "https://stock-bot-6xct.onrender.com/auth/line/callback")
+
+
+@app.route("/auth/line")
+def auth_line_start():
+    if not _line_login_configured():
+        return render_page("LINE 登入尚未啟用",
+            '<div class="msg">尚未設定 LINE Login Channel。請在 Render 設定 LINE_LOGIN_CHANNEL_ID、LINE_LOGIN_CHANNEL_SECRET 與 LINE_LOGIN_REDIRECT_URI；這與 LINE Bot 的 Messaging API 憑證不同，原本的 LINE 網頁登入網址仍可使用。</div>'), 503
+    state = secrets.token_urlsafe(32)
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO line_oauth_login_states (state, expires_at) VALUES (%s, NOW() + INTERVAL '10 minutes')", (state,))
+        conn.commit()
+        cur.close()
+    except Exception as exc:
+        conn.rollback()
+        print(f"LINE OAuth state create failed: {type(exc).__name__}")
+        return render_page("LINE 登入暫時無法使用", '<div class="msg">目前無法建立安全登入流程，請稍後再試。</div>'), 503
+    finally:
+        release_db_connection(conn)
+    params = urlencode({
+        "response_type": "code",
+        "client_id": os.environ["LINE_LOGIN_CHANNEL_ID"].strip(),
+        "redirect_uri": _line_redirect_uri(),
+        "state": state,
+        "scope": "profile openid",
+    })
+    return redirect("https://access.line.me/oauth2/v2.1/authorize?" + params)
+
+
+@app.route("/auth/line/callback")
+def auth_line_callback():
+    state = (request.args.get("state") or "").strip()
+    if not state or len(state) > 256:
+        return render_page("LINE 登入失敗", '<div class="msg">登入驗證無效，請重新操作。</div>'), 400
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE line_oauth_login_states SET used=TRUE WHERE state=%s AND used=FALSE AND expires_at>NOW() RETURNING state", (state,))
+        valid_state = cur.fetchone()
+        conn.commit()
+        cur.close()
+    except Exception as exc:
+        conn.rollback()
+        print(f"LINE OAuth state verify failed: {type(exc).__name__}")
+        return render_page("LINE 登入暫時失敗", '<div class="msg">目前無法驗證登入狀態，請稍後再試。</div>'), 503
+    finally:
+        release_db_connection(conn)
+    if not valid_state:
+        return render_page("LINE 登入連結已失效", '<div class="msg">登入連結已過期或已使用，請重新開始。</div>'), 400
+    if request.args.get("error"):
+        return render_page("LINE 登入已取消", '<div class="msg">你已取消 LINE 登入，原本資料沒有變更。</div>'), 400
+    code = (request.args.get("code") or "").strip()
+    if not code:
+        return render_page("LINE 登入失敗", '<div class="msg">LINE 沒有回傳授權碼，請重新操作。</div>'), 400
+    try:
+        token_resp = requests.post("https://api.line.me/oauth2/v2.1/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": _line_redirect_uri(),
+            "client_id": os.environ["LINE_LOGIN_CHANNEL_ID"].strip(),
+            "client_secret": os.environ["LINE_LOGIN_CHANNEL_SECRET"].strip(),
+        }, timeout=12)
+        if token_resp.status_code != 200:
+            print(f"LINE token exchange failed: HTTP {token_resp.status_code}")
+            return render_page("LINE 登入失敗", '<div class="msg">LINE 授權驗證失敗，請確認 LINE Login Channel 的回呼網址設定。</div>'), 401
+        token_data = token_resp.json()
+        access_token = token_data.get("access_token")
+        if not access_token:
+            return render_page("LINE 登入失敗", '<div class="msg">LINE 未回傳有效的存取權杖。</div>'), 401
+        profile_resp = requests.get("https://api.line.me/v2/profile", headers={"Authorization": "Bearer " + access_token}, timeout=12)
+        if profile_resp.status_code != 200:
+            print(f"LINE profile lookup failed: HTTP {profile_resp.status_code}")
+            return render_page("LINE 登入失敗", '<div class="msg">無法取得 LINE 使用者身分，請重新登入。</div>'), 401
+        profile = profile_resp.json()
+        line_user_id = str(profile.get("userId") or "").strip()
+        if not line_user_id:
+            return render_page("LINE 登入失敗", '<div class="msg">LINE 使用者識別碼缺失。</div>'), 401
+    except Exception as exc:
+        print(f"LINE OAuth callback failed: {type(exc).__name__}")
+        return render_page("LINE 登入暫時失敗", '<div class="msg">連線 LINE 驗證服務失敗，請稍後再試。</div>'), 503
+    # 此應用既有帳號以 LINE userId 作為 user_id；沿用原 ID，避免建立另一份持股資料。
+    token = create_web_token(line_user_id)
+    if not token:
+        return render_page("LINE 登入暫時失敗", '<div class="msg">無法建立登入工作階段，請稍後再試。</div>'), 503
+    resp = make_response(redirect("/web/portfolio"))
+    resp.set_cookie("stockbot_token", token, max_age=WEB_SESSION_DAYS * 86400,
+                    path="/", httponly=True, samesite="Lax", secure=True)
+    return resp
+
+
 # ── Google OAuth：首次註冊／登入／既有 LINE 帳號綁定 ──
 def _google_oauth_configured():
     return bool(os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET"))
@@ -25517,6 +25620,11 @@ def auth_google_choose():
   <div style="font-size:12px;font-weight:900;letter-spacing:.16em;color:#315E82;margin-bottom:8px">TAIWAN STOCK BOT</div>
   <h2 style="font-size:26px;line-height:1.25;color:#172B40;margin-bottom:10px">你要怎麼使用 Google？</h2>
   <p style="color:#526A80;margin-bottom:18px">請依照你目前是否已有台股 BOT 帳號，選擇適合的方式。兩種方式用途不同，選擇前先看說明。</p>
+  <section style="border:1px solid #D5E2ED;border-radius:16px;padding:16px;margin:12px 0;background:#F1FBF5">
+    <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">🟩 使用 LINE 登入</h3>
+    <p style="color:#526A80;margin-bottom:12px">如果你已經使用 LINE 台股 BOT，請選這個入口，以原本的 LINE 身分登入。</p>
+    <a href="/auth/line" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#06C755;color:#fff;font-weight:800">前往 LINE 官方授權登入</a>
+  </section>
   <section style="border:1px solid #D5E2ED;border-radius:16px;padding:16px;margin:12px 0;background:#fff">
     <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">🟦 Google 登入／註冊</h3>
     <p style="color:#526A80;margin-bottom:12px">適合第一次使用台股 BOT，或以前已用這個 Google 帳號註冊的人。第一次使用會建立一個新的台股 BOT 帳號；之後使用同一個 Google 帳號，就會回到這個帳號。</p>
