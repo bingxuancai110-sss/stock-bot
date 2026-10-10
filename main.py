@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V252_FINTECH_CONTRAST_PERFORMANCE"
+APP_BUILD = "V254_PINNED_LOADING_RANK_READABILITY_PERFORMANCE"
 
 # 首頁短 TTL 快取：避免使用者在首頁／持股／首頁間快速切換時，
 # 每次都重新查相同的共享快照與操作日誌。這些資料本身就不是毫秒級變動；
@@ -1757,8 +1757,12 @@ class _TimedConnection(psycopg2.extensions.connection):
         return super().cursor(*args, **kwargs)
 
 
-DB_POOL_MIN = int(os.environ.get("DB_POOL_MIN", "1"))
 DB_POOL_MAX = int(os.environ.get("DB_POOL_MAX", "10"))
+# Render 日誌顯示冷啟動時連線取得時間以約 1.3 秒階梯式增加；
+# psycopg2 ThreadedConnectionPool 在需要新連線時會在 pool lock 內建立連線，
+# 同時多個頁面就會排隊。預設啟動時先準備 6 條連線，避免把握手延遲算進頁面切換。
+# 若有設定較小的 DB_POOL_MAX，預設 minconn 會自動跟著縮小。
+DB_POOL_MIN = int(os.environ.get("DB_POOL_MIN", str(min(6, DB_POOL_MAX))))
 if DB_POOL_MAX < DB_POOL_MIN:
     raise RuntimeError("DB_POOL_MAX 不可小於 DB_POOL_MIN。")
 
@@ -22274,6 +22278,116 @@ html, body { background:#F2F4F7 !important; color:#111827 !important; }
   #app-page-content .daily-fast-hero-copy .daily-fast-market { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
 }
 
+
+/* V253 FINAL LEADERBOARD CONTRAST SYSTEM — no pale-on-pale labels. */
+#app-page-content .rank-situation,
+#app-page-content .rank-card.rank-champion {
+  background:linear-gradient(145deg,#172A38 0%,#263D4E 100%) !important;
+  color:#F8FAFC !important;border:1px solid #40586A !important;border-left:5px solid #3C8C8A !important;
+  border-radius:16px !important;box-shadow:0 8px 22px rgba(14,31,45,.18) !important;
+}
+#app-page-content .rank-situation { padding:15px 13px !important; margin-bottom:15px !important; }
+#app-page-content .rank-situation .rank-situation-title h2,
+#app-page-content .rank-situation .rank-situation-title h3,
+#app-page-content .rank-situation h2,
+#app-page-content .rank-situation h3 { color:#FFFFFF !important;font-weight:950 !important; }
+#app-page-content .rank-situation .rank-situation-badge { color:#FFFFFF !important;background:#344F62 !important;border:1px solid #6F8797 !important; }
+#app-page-content .rank-situation .rank-situation-panel,
+#app-page-content .rank-situation .rank-situation-panel * { color:#E7EEF4 !important; }
+#app-page-content .rank-situation .rank-situation-item { border-color:#516778 !important; }
+#app-page-content .rank-situation .rank-situation-item small { color:#D4E0E8 !important;font-size:12px !important;font-weight:850 !important; }
+#app-page-content .rank-situation .rank-situation-item b { color:#FFFFFF !important;font-size:clamp(22px,5.8vw,28px) !important;font-weight:950 !important; }
+#app-page-content .rank-situation .rank-situation-item span,
+#app-page-content .rank-situation .rank-situation-sub { color:#C5D4DF !important;font-size:11.5px !important;font-weight:750 !important; }
+#app-page-content .rank-situation .rank-situation-item b.up,
+#app-page-content .rank-situation .rank-situation-item b.positive { color:#FF958D !important; }
+#app-page-content .rank-situation .rank-situation-item b.down,
+#app-page-content .rank-situation .rank-situation-item b.negative { color:#68E0AD !important; }
+
+#app-page-content .rank-tabs { background:#D8E1E8 !important;border:1px solid #AABCC9 !important; }
+#app-page-content .rank-tabs button,
+#app-page-content .rank-tabs a { color:#23394A !important;font-weight:900 !important;font-size:13px !important; }
+#app-page-content .rank-tabs button.on,
+#app-page-content .rank-tabs a.on { background:#1C3547 !important;color:#FFFFFF !important;border-color:#1C3547 !important; }
+#app-page-content .rank-switch-note { color:#263D4F !important;background:#E0E8EE !important;border-left:4px solid #2D7777 !important;font-weight:750 !important; }
+#app-page-content .rank-source-note,
+#app-page-content .rank-list-caption,
+#app-page-content .rank-switch-note { font-size:12px !important;line-height:1.6 !important; }
+#app-page-content .rank-source-note { color:#334B5D !important;font-weight:750 !important; }
+
+#app-page-content .rank-card.rank-champion { margin:12px 0 18px !important;padding:18px 14px 14px !important; }
+#app-page-content .rank-card.rank-champion .rank-honour { color:#FFFFFF !important;background:#243D4E !important;border:1px solid #577082 !important;border-radius:12px !important; }
+#app-page-content .rank-card.rank-champion .rank-honour b { color:#FFFFFF !important;font-weight:950 !important; }
+#app-page-content .rank-card.rank-champion .rank-honour small { color:#D2DEE7 !important;font-weight:750 !important; }
+#app-page-content .rank-card.rank-champion .name,
+#app-page-content .rank-card.rank-champion .rank-number { color:#FFFFFF !important;font-weight:950 !important; }
+#app-page-content .rank-card.rank-champion .rank-number { background:#344F62 !important;border:1px solid #678295 !important;border-radius:9px !important; }
+#app-page-content .rank-card.rank-champion .rank-meta,
+#app-page-content .rank-card.rank-champion .rank-meta span,
+#app-page-content .rank-card.rank-champion .rank-movement,
+#app-page-content .rank-card.rank-champion .rank-private,
+#app-page-content .rank-card.rank-champion .rank-champion-prompt { color:#E1EAF0 !important;font-size:12.5px !important;font-weight:750 !important; }
+#app-page-content .rank-card.rank-champion .rank-return { font-size:clamp(23px,6vw,29px) !important;font-weight:1000 !important; }
+#app-page-content .rank-card .rank-return.up { display:inline-flex !important;justify-content:center;align-items:center;padding:5px 9px !important;border-radius:8px !important;
+  color:#A61B1B !important;background:#FEE4E2 !important;border:1px solid #FCA5A5 !important;font-weight:1000 !important;letter-spacing:-.015em; }
+#app-page-content .rank-card .rank-return.down { display:inline-flex !important;justify-content:center;align-items:center;padding:5px 9px !important;border-radius:8px !important;
+  color:#05603A !important;background:#D1FADF !important;border:1px solid #6CE9A6 !important;font-weight:1000 !important;letter-spacing:-.015em; }
+#app-page-content .rank-card .rank-return.flat { display:inline-flex !important;justify-content:center;align-items:center;padding:5px 9px !important;border-radius:8px !important;
+  color:#344054 !important;background:#E4E7EC !important;border:1px solid #98A2B3 !important;font-weight:950 !important; }
+#app-page-content .rank-card.rank-champion .rank-return.up { color:#8F1717 !important;background:#FFE0DD !important;border:1px solid #FF9A92 !important; }
+#app-page-content .rank-card.rank-champion .rank-return.down { color:#065F46 !important;background:#B7F0D0 !important;border:1px solid #5ACB99 !important; }
+#app-page-content .rank-card.rank-champion .rank-return.flat { color:#263746 !important;background:#F3F6F8 !important;border:1px solid #D0D9E0 !important; }
+
+#app-page-content .rank-card:not(.rank-champion) {
+  display:block !important;margin:0 0 10px !important;padding:14px 12px !important;
+  border:1px solid #AEBECB !important;border-left:4px solid #647D90 !important;border-radius:12px !important;
+  background:#FFFFFF !important;box-shadow:0 2px 6px rgba(24,44,60,.055) !important;color:#172B3A !important;
+}
+#app-page-content .rank-card:not(.rank-champion):nth-child(even) { background:#F0F4F7 !important; }
+#app-page-content .rank-card:not(.rank-champion) .rank-number {
+  display:inline-flex !important;align-items:center;justify-content:center;min-width:31px;height:31px;
+  background:#273E50 !important;border:1px solid #273E50 !important;border-radius:9px !important;color:#FFFFFF !important;font-weight:1000 !important;
+}
+#app-page-content .rank-card:not(.rank-champion) .name { color:#172B3A !important;font-size:17px !important;font-weight:1000 !important;line-height:1.4 !important; }
+#app-page-content .rank-card:not(.rank-champion) .rank-meta,
+#app-page-content .rank-card:not(.rank-champion) .rank-meta span,
+#app-page-content .rank-card:not(.rank-champion) .rank-movement,
+#app-page-content .rank-card:not(.rank-champion) .rank-private { color:#334A5B !important;font-size:12.5px !important;font-weight:750 !important;line-height:1.55 !important; }
+#app-page-content .rank-card:not(.rank-champion) .rank-movement { display:inline-flex !important;margin:5px 0;padding:3px 7px;border:1px solid #C5D0DA;border-radius:7px;background:#E7EDF2;color:#263D4F !important; }
+#app-page-content .rank-card .rank-detail > summary,
+#app-page-content .rank-card summary,
+#app-page-content .history-more summary { color:#173F59 !important;background:#E3ECF2 !important;border:1px solid #B3C5D2 !important;border-radius:9px !important;font-size:13px !important;font-weight:950 !important; }
+#app-page-content .rank-card.rank-champion .rank-detail > summary { color:#FFFFFF !important;background:#304B5E !important;border:1px solid #6A8496 !important; }
+#app-page-content .rank-card .rank-detail-body > span { border-color:#C1CFDA !important;background:#FFFFFF !important;color:#253C4E !important; }
+#app-page-content .rank-card .rank-detail-body > span em { color:#42596A !important;font-weight:800 !important; }
+#app-page-content .rank-card .rank-detail-body > span > .num { font-weight:1000 !important; }
+
+#app-page-content .rank-chart-panel { margin:12px 0 !important;padding:14px 12px !important;border:1px solid #B6C5D1 !important;border-radius:12px !important;background:#FFFFFF !important;box-shadow:0 2px 7px rgba(24,44,60,.04) !important; }
+#app-page-content .rank-chart-panel > div:first-child { color:#172B3A !important;font-weight:1000 !important;font-size:18px !important; }
+#app-page-content .rank-chart-panel .sub { color:#334A5B !important;font-size:12px !important;font-weight:700 !important; }
+#app-page-content .rank-chart-panel .legend { border-top:1px solid #B9C7D2 !important; }
+#app-page-content .rank-chart-panel .legend span { color:#263D4F !important;font-size:12px !important;font-weight:900 !important; }
+#app-page-content .rank-chart-panel svg text { fill:#334A5B !important;font-weight:800 !important; }
+#app-page-content .leaderboard-history { background:#FFFFFF !important;border:1px solid #AEBECB !important;border-top:4px solid #263F51 !important;border-radius:12px !important;padding:12px !important; }
+#app-page-content .history-period { background:#FFFFFF !important;border:1px solid #B8C6D2 !important;border-radius:10px !important;margin:9px 0 !important;overflow:hidden; }
+#app-page-content .history-period-head { background:#DDE6ED !important;border-bottom:1px solid #B6C5D0 !important; }
+#app-page-content .history-period-head b { color:#172B3A !important;font-weight:1000 !important; }
+#app-page-content .history-rank-row { background:#FFFFFF !important;border-bottom:1px solid #D0D9E0 !important; }
+#app-page-content .history-rank-row:nth-child(even) { background:#F1F5F8 !important; }
+#app-page-content .history-rank,
+#app-page-content .history-name { color:#243A4B !important;font-weight:900 !important; }
+#app-page-content .history-return,
+#app-page-content .history-rank-row .num { font-weight:1000 !important; }
+@media(max-width:420px) {
+  #app-page-content .rank-card:not(.rank-champion) { padding:13px 10px !important; }
+  #app-page-content .rank-card:not(.rank-champion) .rank-return { font-size:19px !important; }
+  #app-page-content .rank-card:not(.rank-champion) .rank-meta,
+  #app-page-content .rank-card:not(.rank-champion) .rank-meta span { font-size:12px !important; }
+  #app-page-content .rank-situation .rank-situation-item small { font-size:11px !important; }
+}
+
+
+
 '''
 
 
@@ -22345,7 +22459,30 @@ def render_page(title, body, nav_active=None, user_name=None):
 /* 導覽等待狀態不顯示估算百分比或開發診斷文字。 */
 #page-nav-progress-card{{position:fixed;z-index:2147483000;top:calc(env(safe-area-inset-top,0px) + 14px);left:50%;transform:translateX(-50%);width:min(390px,calc(100vw - 28px));padding:13px 15px;border:1px solid #d8e3ec;border-radius:13px;background:rgba(250,252,254,.98);box-shadow:0 8px 26px rgba(29,41,57,.16);color:#27445d;display:none;box-sizing:border-box;pointer-events:none}}
 #page-nav-progress-card{{display:none!important}}
-#page-nav-progress-card.show{{display:none!important}}
+#page-nav-progress-card.show{{
+  position:fixed!important;z-index:2147483000!important;top:calc(env(safe-area-inset-top,0px) + 8px)!important;
+  left:50%!important;right:auto!important;transform:translateX(-50%)!important;
+  width:min(450px,calc(100vw - 22px))!important;box-sizing:border-box!important;
+  display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;
+  padding:10px 11px!important;border:1px solid #BCD0DF!important;border-radius:12px!important;
+  background:rgba(255,255,255,.98)!important;color:#173F59!important;
+  box-shadow:0 6px 22px rgba(20,48,69,.18)!important;pointer-events:none!important;backdrop-filter:blur(8px)!important;
+}}
+#page-nav-progress-card.show:before{{content:"";position:absolute;left:0;right:0;top:0;height:3px;border-radius:12px 12px 0 0;
+  background:linear-gradient(90deg,#245B82 0%,#4C91C5 45%,#7DB9D7 70%,#B99A67 100%)}}
+#page-nav-progress-card.show #page-nav-progress-head{{flex:1;min-width:0;display:block!important;margin:0!important;padding:0!important;
+  color:#173F59!important;font-size:12px!important;font-weight:900!important;line-height:1.35!important}}
+#page-nav-progress-card.show #page-nav-progress-title{{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+#page-nav-progress-card.show #page-nav-progress-percent{{display:none!important}}
+#page-nav-progress-card.show #page-nav-progress-track{{display:none!important}}
+#page-nav-progress-card.show #page-nav-progress-time{{display:inline-flex!important;flex:0 0 auto;align-items:center;justify-content:center;
+  margin:0!important;padding:5px 8px!important;border-radius:8px!important;color:#FFFFFF!important;
+  background:linear-gradient(90deg,#245B82 0%,#4C91C5 48%,#7DB9D7 72%,#B99A67 100%)!important;
+  font-size:12px!important;font-weight:950!important;line-height:1.2!important;white-space:nowrap!important;
+  font-variant-numeric:tabular-nums!important}}
+#page-nav-progress-card.show #page-nav-progress-time:before{{content:"";display:inline-block;width:6px;height:6px;margin-right:5px;border-radius:50%;background:#FFFFFF;opacity:.95}}
+@media(max-width:360px){{#page-nav-progress-card.show{{width:calc(100vw - 14px)!important;padding:8px!important;gap:6px!important}}
+#page-nav-progress-card.show #page-nav-progress-head{{font-size:11px!important}}#page-nav-progress-card.show #page-nav-progress-time{{font-size:11px!important;padding:5px 6px!important}}}}
 #page-nav-progress-head{{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:800}}
 #page-nav-progress-percent{{font-size:14px;font-variant-numeric:tabular-nums;color:#356b91}}
 #page-nav-progress-track{{height:5px;margin-top:10px;border-radius:99px;overflow:hidden;background:#e4ebf1}}
@@ -22392,7 +22529,7 @@ def render_page(title, body, nav_active=None, user_name=None):
   const progressPercent=document.getElementById('page-nav-progress-percent');
   const progressBar=document.getElementById('page-nav-progress-bar');
   const progressTime=document.getElementById('page-nav-progress-time');
-  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0;
+  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0,workbenchNavigationPending=false;
 
   function clearProgressTimers(){{
     window.clearTimeout(progressRevealTimer);window.clearInterval(progressTimer);
@@ -22406,18 +22543,25 @@ def render_page(title, body, nav_active=None, user_name=None):
     pct=Math.min(97,Math.max(8,pct));
     if(progressPercent)progressPercent.textContent=Math.round(pct)+'%';
     if(progressBar)progressBar.style.width=pct.toFixed(1)+'%';
-    if(progressTime)progressTime.textContent='已等待 '+sec.toFixed(1)+' 秒';
+    if(progressTime)progressTime.textContent=sec.toFixed(1)+' 秒';
   }}
 
   window.showPageNavLoader=function(label, internalNavigation){{
-    active=true;progressStartedAt=Date.now();clearProgressTimers();
+    var wasActive=active, now=Date.now(), savedStart=0;
+    try{{savedStart=Number(sessionStorage.getItem('stockbot_nav_started_at')||0);}}catch(ignore){{}}
+    active=true;
+    if(wasActive&&progressStartedAt){{/* 同一切頁工作持續沿用原始起算時間。 */}}
+    else if(internalNavigation&&savedStart>0&&now-savedStart<120000)progressStartedAt=savedStart;
+    else progressStartedAt=now;
+    try{{sessionStorage.setItem('stockbot_nav_started_at',String(progressStartedAt));}}catch(ignore){{}}
+    clearProgressTimers();
     window.clearTimeout(hideTimer);window.clearTimeout(resetTimer);
     if(title){{ title.textContent=label||'正在開啟頁面'; loader.setAttribute('aria-label',title.textContent); }}
     if(progressTitle)progressTitle.textContent=label||'正在開啟頁面';
-    if(progressCard)progressCard.classList.remove('show');
+    if(progressCard)progressCard.classList.add('show');
     if(progressPercent)progressPercent.hidden=true;
     if(progressBar)progressBar.style.width='0%';
-    if(progressTime)progressTime.textContent='已等待 0.0 秒';
+    if(progressTime)progressTime.textContent='0.0 秒';
     loader.classList.remove('done');loader.classList.add('show');
     // V251：真正啟動計時器。先前只定義 paintEstimatedProgress，卻沒有排程，
     // 導致切頁超過 3 秒仍看不到持續更新的等待秒數。
@@ -22429,8 +22573,9 @@ def render_page(title, body, nav_active=None, user_name=None):
   window.finishPageNavLoader=function(){{
     if(!active)return;
     active=false;clearProgressTimers();
-    if(progressPercent)progressPercent.textContent='100%';
+    if(progressPercent)progressPercent.textContent='';
     if(progressBar)progressBar.style.width='100%';
+    try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
     loader.classList.add('done');
     hideTimer=window.setTimeout(function(){{
       loader.classList.remove('show');
@@ -22499,10 +22644,17 @@ def render_page(title, body, nav_active=None, user_name=None):
     showPageNavLoader(labels[u.pathname]||'正在開啟頁面', true);
   }},true);
 
+  try{{
+    var bootQuery=new URLSearchParams(location.search);
+    if(location.pathname==='/web/workbench'&&bootQuery.get('_nav')==='1'){{
+      workbenchNavigationPending=true;
+      window.showPageNavLoader('正在開啟選股工作台',true);
+    }}
+  }}catch(ignore){{}}
   window.addEventListener('pageshow',function(){{
-    if(active)finishPageNavLoader();
-    if(progressCard)progressCard.classList.remove('show');
-    clearProgressTimers();
+    if(active&&!workbenchNavigationPending)finishPageNavLoader();
+    if(!active&&progressCard)progressCard.classList.remove('show');
+    if(!workbenchNavigationPending)clearProgressTimers();
   }});
 }})();
 </script><div class="wrap">
@@ -22698,28 +22850,9 @@ def render_page(title, body, nav_active=None, user_name=None):
     if (window.finishPageNavLoader) window.finishPageNavLoader();
   }}
   function showLocalPageLoading(message) {{
-    if (!appContent) return;
-    var banner = document.getElementById('app-page-local-loading');
-    if (!banner) {{
-      banner = document.createElement('div');
-      banner.id = 'app-page-local-loading';
-      banner.setAttribute('role', 'status');
-      banner.setAttribute('aria-live', 'polite');
-      banner.innerHTML = '<span class="app-local-spinner" aria-hidden="true"></span><span class="app-local-loading-text"></span><strong class="app-local-elapsed">0.0 秒</strong>';
-      appContent.insertBefore(banner, appContent.firstChild);
-    }}
-    var text = banner.querySelector('.app-local-loading-text');
-    if (text) text.textContent = message || '正在開啟頁面…';
-    if (!banner.dataset.startedAt) banner.dataset.startedAt = String(performance.now());
-    if (!banner.dataset.timerStarted) {{
-      banner.dataset.timerStarted = '1';
-      banner._elapsedTimer = window.setInterval(function() {{
-        if (!banner.isConnected) return;
-        var elapsed = Math.max(0, (performance.now() - Number(banner.dataset.startedAt || performance.now())) / 1000);
-        var out = banner.querySelector('.app-local-elapsed');
-        if (out) out.textContent = elapsed.toFixed(1) + ' 秒';
-      }}, 100);
-    }}
+    // V254：所有分頁共用固定在 viewport 頂端的彩色進度條與秒數膠囊。
+    // 不再把計時器插在可捲動內容內，避免使用者捲動後找不到載入秒數。
+    if (window.showPageNavLoader) window.showPageNavLoader(message || '正在開啟頁面', true);
   }}
   function hideLocalPageLoading() {{
     var banner = document.getElementById('app-page-local-loading');
@@ -24040,6 +24173,90 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   .rank-situation {{ padding:14px 11px !important; }}
   .rank-card.rank-champion {{ padding:17px 13px 13px !important; }}
 }}
+/* V254 FINAL OVERRIDE: placed after legacy visual-refresh styles so ranking contrast actually wins. */
+/* V254 FINAL: stronger readable finance dashboard palette for the entire leaderboard. */
+#app-page-content .rank-situation,
+#app-page-content .rank-card.rank-champion {{
+  background:linear-gradient(145deg,#172B37 0%,#263F4D 100%) !important;
+  color:#FFFFFF !important;border-color:#526B7A !important;border-left-color:#1A9A8A !important;
+}}
+#app-page-content .rank-situation .rank-situation-title h2,
+#app-page-content .rank-situation .rank-situation-title h3,
+#app-page-content .rank-situation h2,
+#app-page-content .rank-situation h3 {{ color:#FFFFFF !important;font-weight:950 !important; }}
+#app-page-content .rank-situation .rank-situation-item small,
+#app-page-content .rank-situation .rank-situation-sub {{ color:#E1EAF0 !important;font-size:13px !important;font-weight:850 !important; }}
+#app-page-content .rank-situation .rank-situation-item b {{ color:#FFFFFF !important;font-weight:1000 !important; }}
+#app-page-content .rank-situation .rank-situation-item b.up,
+#app-page-content .rank-situation .rank-situation-item b.positive {{ color:#FF9A90 !important; }}
+#app-page-content .rank-situation .rank-situation-item b.down,
+#app-page-content .rank-situation .rank-situation-item b.negative {{ color:#72E3B4 !important; }}
+#app-page-content .rank-tabs {{ background:#DCE4EA !important;border:1.5px solid #9CACB9 !important; }}
+#app-page-content .rank-tabs button,
+#app-page-content .rank-tabs a {{ color:#1D2939 !important;font-size:14px !important;font-weight:950 !important; }}
+#app-page-content .rank-tabs button.on,
+#app-page-content .rank-tabs a.on {{ background:#174C5B !important;border-color:#174C5B !important;color:#FFFFFF !important; }}
+#app-page-content .rank-switch-note {{ background:#E5EDF2 !important;border-left:5px solid #0F766E !important;color:#1D2939 !important;font-size:14px !important;font-weight:800 !important; }}
+#app-page-content .rank-source-note,
+#app-page-content .rank-list-caption {{ color:#263746 !important;font-size:13.5px !important;font-weight:800 !important;line-height:1.6 !important; }}
+#app-page-content .rank-card:not(.rank-champion) {{
+  background:#FFFFFF !important;border:1.5px solid #9BAAB6 !important;border-left:5px solid #526B7A !important;
+  border-radius:13px !important;box-shadow:0 3px 8px rgba(16,24,40,.075) !important;color:#101828 !important;
+}}
+#app-page-content .rank-card:not(.rank-champion):nth-child(even) {{ background:#EDF2F5 !important; }}
+#app-page-content .rank-card:not(.rank-champion) .name {{ color:#101828 !important;font-size:18px !important;font-weight:1000 !important;line-height:1.45 !important; }}
+#app-page-content .rank-card:not(.rank-champion) .rank-number {{ background:#243B4B !important;border:1px solid #243B4B !important;color:#FFFFFF !important;font-weight:1000 !important; }}
+#app-page-content .rank-card:not(.rank-champion) .rank-meta,
+#app-page-content .rank-card:not(.rank-champion) .rank-meta span,
+#app-page-content .rank-card:not(.rank-champion) .rank-movement,
+#app-page-content .rank-card:not(.rank-champion) .rank-private {{ color:#263746 !important;font-size:14px !important;font-weight:800 !important;line-height:1.6 !important; }}
+#app-page-content .rank-card:not(.rank-champion) .rank-movement {{ background:#E0E7EC !important;border-color:#9BAAB6 !important;color:#263746 !important; }}
+#app-page-content .rank-card .rank-return.up,
+#app-page-content .history-return.up,
+#app-page-content .history-rank-row .num.up {{ background:#FEE4E2 !important;border:1.5px solid #FCA5A5 !important;color:#A61B1B !important;font-size:21px !important;font-weight:1000 !important; }}
+#app-page-content .rank-card .rank-return.down,
+#app-page-content .history-return.down,
+#app-page-content .history-rank-row .num.down {{ background:#D1FADF !important;border:1.5px solid #6CE9A6 !important;color:#05603A !important;font-size:21px !important;font-weight:1000 !important; }}
+#app-page-content .rank-card .rank-return.flat {{ background:#EAECF0 !important;border:1.5px solid #98A2B3 !important;color:#344054 !important;font-size:19px !important;font-weight:950 !important; }}
+#app-page-content .rank-card.rank-champion .rank-meta,
+#app-page-content .rank-card.rank-champion .rank-meta span,
+#app-page-content .rank-card.rank-champion .rank-movement,
+#app-page-content .rank-card.rank-champion .rank-private,
+#app-page-content .rank-card.rank-champion .rank-champion-prompt {{ color:#F1F5F9 !important;font-size:13.5px !important;font-weight:800 !important; }}
+#app-page-content .rank-card.rank-champion .rank-return.up {{ background:#FFE0DD !important;color:#8F1717 !important;border-color:#FF9A92 !important; }}
+#app-page-content .rank-card.rank-champion .rank-return.down {{ background:#B7F0D0 !important;color:#065F46 !important;border-color:#5ACB99 !important; }}
+#app-page-content .rank-card .rank-detail > summary,
+#app-page-content .rank-card summary,
+#app-page-content .history-more summary {{ background:#E1EAF0 !important;border:1.5px solid #9AAEBB !important;color:#17394D !important;font-size:14px !important;font-weight:950 !important; }}
+#app-page-content .rank-card.rank-champion .rank-detail > summary {{ background:#304C5D !important;border-color:#718A99 !important;color:#FFFFFF !important; }}
+#app-page-content .rank-card .rank-detail-body > span {{ background:#FFFFFF !important;border-color:#AAB8C2 !important;color:#172B3A !important; }}
+#app-page-content .rank-card .rank-detail-body > span em,
+#app-page-content .rank-card .rank-detail-body > span small {{ color:#34495A !important;font-size:13px !important;font-weight:850 !important; }}
+#app-page-content .rank-card.rank-champion .rank-detail-body > span {{ background:#203947 !important;border-color:#647D8C !important;color:#FFFFFF !important; }}
+#app-page-content .rank-card.rank-champion .rank-detail-body > span em,
+#app-page-content .rank-card.rank-champion .rank-detail-body > span small {{ color:#E8EFF4 !important; }}
+#app-page-content .rank-chart-panel {{ background:#FFFFFF !important;border:1.5px solid #A4B2BD !important;color:#101828 !important; }}
+#app-page-content .rank-chart-panel > div:first-child {{ color:#101828 !important;font-size:19px !important;font-weight:1000 !important; }}
+#app-page-content .rank-chart-panel .sub,
+#app-page-content .rank-chart-panel .legend span {{ color:#263746 !important;font-size:13.5px !important;font-weight:850 !important; }}
+#app-page-content .rank-chart-panel svg text {{ fill:#263746 !important;font-size:12px !important;font-weight:850 !important; }}
+#app-page-content .leaderboard-history {{ background:#FFFFFF !important;border:1.5px solid #9BAAB6 !important;border-top:5px solid #263F4D !important; }}
+#app-page-content .history-period-head {{ background:#DCE5EB !important;border-bottom:1.5px solid #A7B6C1 !important; }}
+#app-page-content .history-period-head b,
+#app-page-content .history-name {{ color:#101828 !important;font-size:14px !important;font-weight:950 !important; }}
+#app-page-content .history-rank {{ color:#34495A !important;font-size:14px !important;font-weight:950 !important; }}
+#app-page-content .history-rank-row {{ border-bottom:1px solid #CBD5DD !important; }}
+#app-page-content .history-rank-row:nth-child(even) {{ background:#EEF2F5 !important; }}
+#app-page-content .history-return {{ font-size:15px !important;font-weight:1000 !important; }}
+@media(max-width:420px) {{
+  #app-page-content .rank-card:not(.rank-champion) .rank-meta,
+  #app-page-content .rank-card:not(.rank-champion) .rank-meta span,
+  #app-page-content .rank-card:not(.rank-champion) .rank-private {{ font-size:13.5px !important; }}
+  #app-page-content .rank-card:not(.rank-champion) .name {{ font-size:17px !important; }}
+  #app-page-content .rank-card .rank-return.up,
+  #app-page-content .rank-card .rank-return.down {{ font-size:20px !important; }}
+}}
+
 </style>
 </div></body></html>"""
 
@@ -26070,7 +26287,7 @@ def web_positions(uid):
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
                          if k not in {"t", "fragment", "_nav"})))
         # 短時間切回持股時先回傳最近完整頁；行情 API 仍會更新即時報價。
-        _position_cache_ttl = 30.0 if _is_taiwan_intraday_window() else 180.0
+        _position_cache_ttl = 60.0 if _is_taiwan_intraday_window() else 300.0
         _cached_positions_body = _web_fragment_cache_get(
             "positions", _positions_fragment_cache_key, _position_cache_ttl)
         if _cached_positions_body is not None:
@@ -30020,10 +30237,24 @@ def _build_current_month_board(base_boards, series_map, market):
     return rows[:100],info
 
 
+_LEADERBOARD_HISTORICAL_CACHE = {}
+_LEADERBOARD_HISTORICAL_CACHE_LOCK = threading.RLock()
+
+
 def get_leaderboard_historical_summary(months=6, seasons=4):
     """只回傳已完成的自然月／自然季；當期結算完成後才進入歷史。"""
-    out = {"months": [], "seasons": []}
     today = taiwan_today()
+    try:
+        _cache_key = (int(months), int(seasons), today.year, today.month)
+    except (TypeError, ValueError):
+        _cache_key = (6, 4, today.year, today.month)
+    _now_mono = time.monotonic()
+    with _LEADERBOARD_HISTORICAL_CACHE_LOCK:
+        _entry = _LEADERBOARD_HISTORICAL_CACHE.get(_cache_key)
+        if _entry and _now_mono - _entry[0] < 300.0:
+            print("⚡ 排行榜歷史彙總命中 300 秒快取", flush=True)
+            return _entry[1]
+    out = {"months": [], "seasons": []}
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -30105,6 +30336,12 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
 
     out['months'] = build('month', months)
     out['seasons'] = build('season', seasons)
+    with _LEADERBOARD_HISTORICAL_CACHE_LOCK:
+        _LEADERBOARD_HISTORICAL_CACHE[_cache_key] = (time.monotonic(), out)
+        if len(_LEADERBOARD_HISTORICAL_CACHE) > 12:
+            _oldest = sorted(_LEADERBOARD_HISTORICAL_CACHE.items(), key=lambda item: item[1][0])[:4]
+            for _old_key, _ in _oldest:
+                _LEADERBOARD_HISTORICAL_CACHE.pop(_old_key, None)
     return out
 
 @app.route("/web/leaderboard", methods=["GET", "POST"])
@@ -30148,7 +30385,7 @@ def web_leaderboard(uid):
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
                          if k not in {"t", "fragment", "_nav"})))
         # 排行榜以快照為資料來源，數十秒內重用既有 HTML 可省去數次遠端 DB round-trip。
-        _leaderboard_cache_ttl = 45.0 if _is_taiwan_intraday_window() else 180.0
+        _leaderboard_cache_ttl = 180.0 if _is_taiwan_intraday_window() else 300.0
         _cached_leaderboard_body = _web_fragment_cache_get(
             "leaderboard", _leaderboard_fragment_cache_key, _leaderboard_cache_ttl)
         if _cached_leaderboard_body is not None:
@@ -33813,7 +34050,7 @@ def web_portfolio(uid):
             str(request.args.get("trend_period") or "3m"),
             str(request.args.get("trend_benchmark") or "1"))
         # 首頁已載入完整摘要；短時間內切回先用既有內容，避免重新抓六份共享資料。
-        _home_cache_ttl = 30.0 if _is_taiwan_intraday_window() else 180.0
+        _home_cache_ttl = 60.0 if _is_taiwan_intraday_window() else 300.0
         _cached_home_body = _web_fragment_cache_get(
             "portfolio", _home_fragment_cache_key, _home_cache_ttl)
         if _cached_home_body is not None:
@@ -33913,8 +34150,10 @@ def web_portfolio(uid):
             ("產業", get_industry_map),
             ("大盤", fetch_taiex_summary),
         ]
-        # 三個共享 worker 比原來的兩個少一輪等待；與兩個首頁輔助 worker 合計仍低於 DB_POOL_MAX。
-        with ThreadPoolExecutor(max_workers=3) as ex:
+        # V254：冷連線延遲已由 DB_POOL_MIN 預熱；改 4 個 worker，將 6 份共享資料的等待
+        # 從 3+3 兩輪縮短為 4+2 兩輪，且同時共享資料 + 兩個首頁輔助 worker 最多約 6 個任務，
+        # 不再額外由選股台背景預載占用剩餘連線。
+        with ThreadPoolExecutor(max_workers=4) as ex:
             shared_values = list(ex.map(
                 lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
         with _HOMEPAGE_CACHE_LOCK:
@@ -36703,6 +36942,7 @@ def render_workbench_body(initial_tab=""):
   function finishWorkbenchLoad(label){
     if(wbLoadFinished)return;wbLoadFinished=true;
     if(wbLoadClock)window.clearInterval(wbLoadClock);
+    if(window.finishPageNavLoader)window.finishPageNavLoader();
     var sec=Math.max(0,(performance.now()-wbLoadStartedAt)/1000);
     if(wbElapsed)wbElapsed.textContent='實際耗時 '+sec.toFixed(2)+' 秒';
     if(label)console.info('[台股 BOT] 選股工作台首屏 '+label+'，耗時 '+sec.toFixed(2)+' 秒');
@@ -37626,9 +37866,10 @@ function bindFactors(){
   function preloadSource(source){ return fetchWorkbenchSource(source); }
 
   function preloadAllWorkbench(){
-    // 成效只占一個背景請求；其他快照依序載入，避免把後端請求塞滿。
-    preloadWorkbenchSourcesSequential(workbenchSources);
-    requestReview();
+    // V253：不要在入口背景預載其他 4 個來源與成效 API。Render 日誌顯示這些
+    // 背景請求會在使用者離開選股台後仍與首頁／持股／排行榜爭用 4 個 Gunicorn threads
+    // 及 DB pool。只有使用者點選分頁時才呼叫 loadSource()/requestReview()。
+    return Promise.resolve();
   }
 
   function load(){
@@ -37657,10 +37898,8 @@ function bindFactors(){
         }
       });
     }
-    requestReview();
-    preloadWorkbenchSourcesSequential(workbenchSources.filter(function(source){
-      return source!=='黑馬' && source!==target;
-    }));
+    // V253：初次進入只載入黑馬主畫面；其他來源與成效資料一律按需載入。
+    // 這避免離開選股台後，尚未完成的背景 API 持續佔用 Render worker／DB 連線。
 
     blackHorse.then(function(data){
       // 無論黑馬快照成功、失敗或逾時，都必須解除全頁 loading。
@@ -37681,7 +37920,7 @@ function bindFactors(){
       state.marketOpen=!!(data.meta&&data.meta.intraday);
       state.source='黑馬';
       state.assetMode='stock';
-      status.textContent='黑馬快照已載入，其他資料同步載入中…';
+      status.textContent='黑馬快照已載入；其他分頁按需讀取。';
       renderTabs();
       /* v197：這裡才是黑馬「按 X 後又整份清單重跑」的真正來源。
          load() 啟動時記住 loadViewEpoch；如果使用者期間已進入/關閉個股詳情，
