@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V250_LIGHT_NAV_PERFORMANCE"
+APP_BUILD = "V252_FINTECH_CONTRAST_PERFORMANCE"
 
 # 首頁短 TTL 快取：避免使用者在首頁／持股／首頁間快速切換時，
 # 每次都重新查相同的共享快照與操作日誌。這些資料本身就不是毫秒級變動；
@@ -53,8 +53,117 @@ _HOMEPAGE_JOURNAL_CACHE = {}
 _HOMEPAGE_CACHE_LOCK = threading.RLock()
 _HOMEPAGE_TAIEX_REFRESH_LOCK = threading.Lock()
 _HOMEPAGE_TAIEX_REFRESH_RUNNING = False
+_HOMEPAGE_SHARED_REFRESH_LOCK = threading.Lock()
+_HOMEPAGE_SHARED_REFRESHING = set()
 _HOMEPAGE_SHARED_TTL = max(60.0, float(os.environ.get("HOMEPAGE_SHARED_TTL_SECONDS", "300")))  # 個股即時價格仍另行更新
+_HOMEPAGE_SHARED_STALE_MAX_AGE = max(3600.0, float(os.environ.get("HOMEPAGE_SHARED_STALE_MAX_AGE_SECONDS", "86400")))
 _HOMEPAGE_JOURNAL_TTL = 8.0
+_WEB_FRAGMENT_CACHE = {}
+_WEB_FRAGMENT_CACHE_LOCK = threading.RLock()
+_WEB_FRAGMENT_CACHE_MAX = 96
+
+
+def _web_fragment_cache_get(page, key, ttl_seconds):
+    cache_key = (str(page), key)
+    now = time.monotonic()
+    with _WEB_FRAGMENT_CACHE_LOCK:
+        entry = _WEB_FRAGMENT_CACHE.get(cache_key)
+        if not entry:
+            return None
+        if now - entry[0] > max(0.0, float(ttl_seconds)):
+            _WEB_FRAGMENT_CACHE.pop(cache_key, None)
+            return None
+        return entry[1]
+
+
+def _web_fragment_cache_put(page, key, body):
+    if not key or not isinstance(body, str) or not body:
+        return
+    cache_key = (str(page), key)
+    with _WEB_FRAGMENT_CACHE_LOCK:
+        _WEB_FRAGMENT_CACHE[cache_key] = (time.monotonic(), body)
+        if len(_WEB_FRAGMENT_CACHE) > _WEB_FRAGMENT_CACHE_MAX:
+            oldest = sorted(_WEB_FRAGMENT_CACHE.items(), key=lambda item: item[1][0])[:24]
+            for old_key, _entry in oldest:
+                _WEB_FRAGMENT_CACHE.pop(old_key, None)
+
+
+def _web_fragment_cache_clear(page=None, user_id=None):
+    page = str(page) if page is not None else None
+    user_id = str(user_id).strip() if user_id is not None else None
+    with _WEB_FRAGMENT_CACHE_LOCK:
+        for cache_key in list(_WEB_FRAGMENT_CACHE):
+            cache_page, key = cache_key
+            if page is not None and cache_page != page:
+                continue
+            if user_id is not None:
+                if not isinstance(key, tuple) or not key or str(key[0]).strip() != user_id:
+                    continue
+            _WEB_FRAGMENT_CACHE.pop(cache_key, None)
+
+
+def _refresh_homepage_shared_data(shared_key, user_id, position_codes):
+    """在回應送出後背景刷新首頁共享資料；舊資料先供頁面使用，不阻塞導覽。"""
+    with _HOMEPAGE_SHARED_REFRESH_LOCK:
+        if shared_key in _HOMEPAGE_SHARED_REFRESHING:
+            return False
+        _HOMEPAGE_SHARED_REFRESHING.add(shared_key)
+
+    started = time.monotonic()
+    try:
+        loaders = [
+            ("法人", lambda: fetch_institutional_data(position_codes)),
+            ("今日事件", lambda: _get_daily_home_context(user_id, taiwan_today(), position_codes)),
+            ("月營收", lambda: fetch_monthly_revenue(homepage=True)),
+            ("估值", fetch_valuation),
+            ("產業", get_industry_map),
+            ("大盤", fetch_taiex_summary),
+        ]
+        def load(item):
+            label, loader = item
+            t0 = time.monotonic()
+            try:
+                value = loader()
+                print("⏱️ 首頁背景刷新：%s %.0fms" % (label, (time.monotonic()-t0)*1000), flush=True)
+                return value
+            except Exception as exc:
+                print("⚠️ 首頁背景刷新失敗 %s（%.0fms）：%s" % (label, (time.monotonic()-t0)*1000, exc), flush=True)
+                return None
+
+        # 背景工作限為 2 個 worker，避免跟前景持股／走勢查詢搶完 DB pool。
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            refreshed = list(executor.map(load, loaders))
+
+        with _HOMEPAGE_CACHE_LOCK:
+            current = _HOMEPAGE_SHARED_CACHE.get("value") if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key else None
+            previous = list(current) if isinstance(current, (list, tuple)) else None
+            if previous and len(previous) == len(refreshed):
+                for index, value in enumerate(refreshed):
+                    # 失敗／空回應時保留最後一份有效資料，避免一次上游或 DB 抖動把畫面洗成空白。
+                    if value is None or (not value and previous[index]):
+                        refreshed[index] = previous[index]
+            refreshed = [({} if value is None else value) for value in refreshed]
+            if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key:
+                _HOMEPAGE_SHARED_CACHE.update({"ts": time.monotonic(), "value": refreshed})
+        print("⚡ 首頁共享資料背景刷新完成 %.0fms" % ((time.monotonic()-started)*1000), flush=True)
+        return True
+    finally:
+        with _HOMEPAGE_SHARED_REFRESH_LOCK:
+            _HOMEPAGE_SHARED_REFRESHING.discard(shared_key)
+
+
+def _schedule_homepage_shared_data_refresh(shared_key, user_id, position_codes):
+    """排程背景刷新；只在頁面內容已生成後呼叫。"""
+    try:
+        thread = threading.Thread(
+            target=_refresh_homepage_shared_data,
+            args=(shared_key, str(user_id), list(position_codes or [])),
+            name="homepage-shared-refresh", daemon=True)
+        thread.start()
+        return True
+    except Exception as exc:
+        print("⚠️ 排程首頁共享資料刷新失敗：%s" % exc, flush=True)
+        return False
 
 
 def _schedule_homepage_taiex_refresh(shared_key):
@@ -1486,6 +1595,12 @@ def _disable_web_page_cache(response):
                 print("⏱️ HTTP_PAGE path=%s method=%s status=%s fragment=%s ms=%.0f bytes=%s encoding=%s" %
                       (path, request.method, response.status_code, fragment, elapsed_ms, size, encoding),
                       flush=True)
+    refresh_job = request.environ.pop("stockbot_homepage_shared_refresh", None)
+    if refresh_job:
+        try:
+            _schedule_homepage_shared_data_refresh(*refresh_job)
+        except Exception as refresh_error:
+            print("⚠️ 首頁共享資料背景刷新未能啟動：%s" % refresh_error, flush=True)
     return response
 
 
@@ -3607,6 +3722,21 @@ from functools import wraps
 from flask import make_response, redirect, url_for
 
 WEB_SESSION_DAYS = 180  # 網頁登入權杖有效 180 天；有效使用期間會自動續期
+_WEB_SESSION_CACHE = {}
+_WEB_SESSION_CACHE_LOCK = threading.RLock()
+_WEB_SESSION_CACHE_TTL = 90.0
+_WEB_SESSION_CACHE_MAX = 4096
+
+
+def _cache_web_session(token, user_id):
+    if not token or not user_id:
+        return
+    with _WEB_SESSION_CACHE_LOCK:
+        _WEB_SESSION_CACHE[str(token)] = (time.monotonic(), str(user_id).strip())
+        if len(_WEB_SESSION_CACHE) > _WEB_SESSION_CACHE_MAX:
+            old = sorted(_WEB_SESSION_CACHE.items(), key=lambda item: item[1][0])[:512]
+            for key, _value in old:
+                _WEB_SESSION_CACHE.pop(key, None)
 
 
 def _web_csrf_secret():
@@ -3683,6 +3813,13 @@ def resolve_web_token(token):
     """
     if not token:
         return None
+    now_mono = time.monotonic()
+    with _WEB_SESSION_CACHE_LOCK:
+        cached_session = _WEB_SESSION_CACHE.get(str(token))
+        if cached_session and now_mono - cached_session[0] < _WEB_SESSION_CACHE_TTL:
+            return cached_session[1]
+        if cached_session:
+            _WEB_SESSION_CACHE.pop(str(token), None)
     for attempt in range(2):
         conn = None
         try:
@@ -3698,24 +3835,45 @@ def resolve_web_token(token):
             # 一次性登入連結所建立的長期 session。
             if row:
                 user_id, expires_at = row
+                # 大多數登入權杖仍有數月效期，無須每個網頁/API 請求都再送一次 UPDATE。
+                # 只有即將進入 45 天內時才續期，節省一次遠端 DB round-trip。
+                needs_refresh = True
                 try:
-                    cursor.execute(
-                        """
-                        UPDATE web_sessions
-                        SET expires_at = NOW() + INTERVAL '%s days'
-                        WHERE token = %s
-                          AND expires_at > NOW()
-                          AND expires_at < NOW() + INTERVAL '45 days'
-                        """,
-                        (WEB_SESSION_DAYS, token),
-                    )
-                    conn.commit()
+                    expiry = expires_at
+                    if expiry and getattr(expiry, "tzinfo", None) is None:
+                        expiry = expiry.replace(tzinfo=timezone.utc)
+                    needs_refresh = (not expiry or
+                                     expiry <= datetime.now(timezone.utc) + timedelta(days=45))
                 except Exception:
-                    conn.rollback()
+                    needs_refresh = True
+                if needs_refresh:
+                    try:
+                        cursor.execute(
+                            """
+                            UPDATE web_sessions
+                            SET expires_at = NOW() + INTERVAL '%s days'
+                            WHERE token = %s
+                              AND expires_at > NOW()
+                              AND expires_at < NOW() + INTERVAL '45 days'
+                            """,
+                            (WEB_SESSION_DAYS, token),
+                        )
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                else:
+                    # SELECT 開啟的唯讀交易在連線放回 pool 前明確結束。
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
                 cursor.close()
                 release_db_connection(conn)
                 conn = None
+                _cache_web_session(token, user_id)
                 return user_id
+            with _WEB_SESSION_CACHE_LOCK:
+                _WEB_SESSION_CACHE.pop(str(token), None)
             cursor.close()
             release_db_connection(conn)
             conn = None
@@ -7054,17 +7212,40 @@ def save_portfolio_snapshot(user_id, total_value, total_cost, taiex_close):
 
 
 # ── 排行榜 ──
+_LEADERBOARD_MEMBER_CACHE = {}
+_LEADERBOARD_MEMBER_CACHE_LOCK = threading.Lock()
+_LEADERBOARD_MEMBER_CACHE_TTL = 30.0
+
+
+def _clear_leaderboard_member_cache(user_id):
+    with _LEADERBOARD_MEMBER_CACHE_LOCK:
+        _LEADERBOARD_MEMBER_CACHE.pop(str(user_id).strip(), None)
+
+
 def get_leaderboard_member(user_id):
+    uid = str(user_id).strip()
+    now = time.monotonic()
+    with _LEADERBOARD_MEMBER_CACHE_LOCK:
+        cached = _LEADERBOARD_MEMBER_CACHE.get(uid)
+        if cached and now - cached[0] < _LEADERBOARD_MEMBER_CACHE_TTL:
+            return dict(cached[1]) if cached[1] else None
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         cur.execute("SELECT nickname, joined_on, COALESCE(show_holdings, FALSE) "
                     "FROM leaderboard_members WHERE user_id = %s",
-                    (str(user_id).strip(),))
+                    (uid,))
         r = cur.fetchone()
         cur.close()
-        return ({"nickname": r[0], "joined_on": r[1], "show_holdings": r[2]}
-                if r else None)
+        value = ({"nickname": r[0], "joined_on": r[1], "show_holdings": r[2]}
+                 if r else None)
+        with _LEADERBOARD_MEMBER_CACHE_LOCK:
+            _LEADERBOARD_MEMBER_CACHE[uid] = (time.monotonic(), value)
+            if len(_LEADERBOARD_MEMBER_CACHE) > 2048:
+                oldest = sorted(_LEADERBOARD_MEMBER_CACHE.items(), key=lambda item: item[1][0])[:256]
+                for key, _entry in oldest:
+                    _LEADERBOARD_MEMBER_CACHE.pop(key, None)
+        return dict(value) if value else None
     except Exception as e:
         print(f"❌ 讀取排行榜成員失敗: {e}")
         return None
@@ -7094,6 +7275,7 @@ def join_leaderboard(user_id, nickname, show_holdings=False):
             (str(user_id).strip(), nick, bool(show_holdings)))
         conn.commit()
         cur.close()
+        _clear_leaderboard_member_cache(user_id)
         clear_leaderboard_cache()
         return True, None
     except Exception as e:
@@ -7112,6 +7294,7 @@ def leave_leaderboard(user_id):
                     (str(user_id).strip(),))
         conn.commit()
         cur.close()
+        _clear_leaderboard_member_cache(user_id)
         clear_leaderboard_cache()
         return True
     except Exception as e:
@@ -7567,7 +7750,7 @@ def get_fast_rank_summary(user_id):
     return result
 
 
-_LEADERBOARD_STATUS_CACHE_SECONDS = 60
+_LEADERBOARD_STATUS_CACHE_SECONDS = 180
 _leaderboard_status_cache = {}
 _leaderboard_status_cache_lock = threading.Lock()
 
@@ -7632,6 +7815,8 @@ def clear_leaderboard_cache():
     """成員加入、退出或設定變更後立即清掉排行榜結果。"""
     with _leaderboard_cache_lock:
         _leaderboard_cache.clear()
+    # 已結算快照或成員資料更新時，不沿用舊的排行榜 HTML 片段。
+    _web_fragment_cache_clear("leaderboard")
     # 每日收盤快照完成後，首頁 fast 不能繼續拿舊的個人名次摘要。
     fast_cache_lock = globals().get("_fast_rank_summary_cache_lock")
     fast_cache = globals().get("_fast_rank_summary_cache")
@@ -8737,6 +8922,15 @@ def _taiwan_post_close(now=None):
                                       (current.hour == 13 and current.minute >= 30))
 
 
+def _realtime_cache_period(now=None):
+    """週末沿用最近週五收盤的歷史序列快取，避免週六／日重抓同一份 Yahoo 日線。"""
+    current = now if now is not None else taiwan_now()
+    if current.weekday() >= 5:
+        last_weekday = current.date() - timedelta(days=current.weekday() - 4)
+        return last_weekday.isoformat(), "postclose"
+    return current.date().isoformat(), ("postclose" if _taiwan_post_close(current) else "intraday")
+
+
 def _twse_mis_quote_symbols(codes, market_suffix=None):
     symbols = []
     for code in codes:
@@ -8760,6 +8954,9 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False):
     """
     codes = list(dict.fromkeys(str(code).strip() for code in (codes or []) if code))
     if not codes:
+        return {}
+    # 週末不呼叫沒有當日報價的 MIS；直接使用上個交易日歷史行情快取。
+    if taiwan_now().weekday() >= 5:
         return {}
     today = taiwan_today().isoformat()
     now = time.time()
@@ -8844,8 +9041,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
     stock_name = STOCK_NAME_MAP.get(code, code)
 
     # 日期納入 key，避免跨午夜把前一交易日的結果沿用到新的一天。
-    cache_day = taiwan_now().date().isoformat()
-    cache_session = "postclose" if _taiwan_post_close() else "intraday"
+    cache_day, cache_session = _realtime_cache_period()
     cache_key = f"{code}:{rng}:{cache_day}:{cache_session}"
     now = time.time()
     with _realtime_cache_lock:
@@ -21829,6 +22025,255 @@ input:focus, select:focus, textarea:focus { outline: 3px solid rgba(47,120,168,.
 #app-page-content .history-rank-row .num.down {color:#0B8F55 !important;}
 #app-page-content .history-more summary {color:#315C78 !important;}
 
+
+/* V252 FINTECH REDESIGN — no large navy header; strong ink, clean neutral surfaces, clearer ranking contrast. */
+:root {
+  --v252-paper:#F2F4F7 !important;
+  --v252-card:#FFFFFF !important;
+  --v252-ink:#111827 !important;
+  --v252-muted:#344054 !important;
+  --v252-line:#AAB4C0 !important;
+  --v252-up:#C5221F !important;
+  --v252-down:#087443 !important;
+}
+html, body { background:#F2F4F7 !important; color:#111827 !important; }
+.app-header {
+  background:linear-gradient(180deg,#FBFCFD 0%,#F1F4F6 100%) !important;
+  color:#111827 !important;
+  border:0 !important;
+  border-bottom:3px solid #0F766E !important;
+  border-radius:0 0 14px 14px !important;
+  box-shadow:0 4px 14px rgba(16,24,40,.08) !important;
+}
+.app-header .eyebrow, header .eyebrow { color:#475467 !important; text-shadow:none !important; }
+.app-header h1, header h1 { color:#101828 !important; text-shadow:none !important; }
+.app-header .dateline, header .dateline { color:#475467 !important; }
+.app-header .page-back a {
+  background:#FFFFFF !important; color:#1D2939 !important;
+  border:1px solid #98A2B3 !important; box-shadow:0 1px 2px rgba(16,24,40,.08) !important;
+}
+@media (min-width:700px) {
+  .app-header { background:linear-gradient(135deg,#FFFFFF 0%,#F1F4F6 100%) !important; }
+}
+.daily-hero .eyebrow { color:#0F766E !important; }
+.daily-hero h1 { color:#101828 !important; }
+.daily-hero > p { color:#344054 !important; }
+.market-strip > span:first-child {
+  background:#FFFFFF !important; color:#344054 !important;
+  border:1px solid #98A2B3 !important; border-top:4px solid #0F766E !important;
+  box-shadow:0 3px 10px rgba(16,24,40,.06) !important;
+}
+.market-strip > span:first-child b { color:#101828 !important; }
+.market-strip > span:first-child small { color:#475467 !important; }
+.home-metric-main {
+  background:#FFFFFF !important; color:#101828 !important;
+  border:1px solid #98A2B3 !important; border-top:4px solid #0F766E !important;
+  box-shadow:0 3px 10px rgba(16,24,40,.06) !important;
+}
+.home-metric-main small,.home-metric-main span,.home-metric-main p { color:#475467 !important; }
+.home-metric-main b,.home-metric-main strong { color:#101828 !important; }
+
+/* Ranking overview and participant cards: dark labels and lines, high-salience red/green returns. */
+#app-page-content .rank-situation,
+#app-page-content .rank-spotlight,
+#app-page-content .leaderboard-history,
+.rank-situation,.rank-spotlight,.leaderboard-history {
+  background:#FFFFFF !important; color:#101828 !important;
+  border:2px solid #98A2B3 !important;
+  box-shadow:0 4px 14px rgba(16,24,40,.08) !important;
+}
+#app-page-content .rank-situation h2,
+#app-page-content .rank-situation h3,
+#app-page-content .rank-situation-title,
+.rank-situation h2,.rank-situation h3 { color:#101828 !important; font-weight:950 !important; }
+#app-page-content .rank-situation .rank-situation-panel,
+#app-page-content .rank-situation .rank-situation-item,
+#app-page-content .my-rank-card,
+.rank-situation .rank-situation-panel,
+.rank-situation .rank-situation-item,.my-rank-card {
+  background:#F2F4F7 !important; color:#1D2939 !important;
+  border:1px solid #98A2B3 !important; border-radius:12px !important;
+}
+#app-page-content .rank-situation .rank-situation-item small,
+#app-page-content .rank-situation .rank-situation-sub,
+#app-page-content .my-rank-card small,
+#app-page-content .my-rank-card span,
+.rank-situation .rank-situation-item small,
+.rank-situation .rank-situation-sub,.my-rank-card small,.my-rank-card span {
+  color:#344054 !important; font-size:12px !important; font-weight:750 !important;
+}
+#app-page-content .rank-situation .rank-situation-item b,
+#app-page-content .my-rank-card b,
+.rank-situation .rank-situation-item b,.my-rank-card b { color:#101828 !important; font-weight:950 !important; }
+#app-page-content .rank-tabs,
+.rank-tabs { background:#E4E7EC !important; border:1px solid #98A2B3 !important; }
+#app-page-content .rank-tabs a,#app-page-content .rank-tabs button,
+.rank-tabs a,.rank-tabs button { color:#344054 !important; font-weight:900 !important; }
+#app-page-content .rank-tabs .on,#app-page-content .rank-tabs a.on,#app-page-content .rank-tabs button.on,
+.rank-tabs .on,.rank-tabs a.on,.rank-tabs button.on {
+  background:#1D2939 !important; color:#FFFFFF !important; border:2px solid #111827 !important;
+}
+#app-page-content .rank-card,.rank-card {
+  background:#FFFFFF !important; color:#101828 !important;
+  border:2px solid #AAB4C0 !important; border-left:6px solid #667085 !important;
+  border-radius:15px !important;
+  box-shadow:0 3px 0 rgba(16,24,40,.07),0 6px 16px rgba(16,24,40,.07) !important;
+}
+#app-page-content .rank-card.rank-champion,.rank-card.rank-champion {
+  background:#F0FDF9 !important; border:2px solid #0F766E !important;
+  border-left:8px solid #0F766E !important;
+}
+#app-page-content .rank-card.rank-silver,.rank-card.rank-silver {
+  background:#F8FAFC !important; border-left:7px solid #475467 !important;
+}
+#app-page-content .rank-card.rank-bronze,.rank-card.rank-bronze {
+  background:#FFF9F2 !important; border-left:7px solid #9A4D00 !important;
+}
+#app-page-content .rank-card .name,#app-page-content .rank-card .rank-position,
+#app-page-content .rank-card .rank-honour b,#app-page-content .rank-card .rank-tier b,
+#app-page-content .rank-card.rank-champion .name,
+.rank-card .name,.rank-card .rank-position,.rank-card .rank-honour b,.rank-card .rank-tier b {
+  color:#101828 !important; font-size:16px !important; font-weight:950 !important;
+}
+#app-page-content .rank-card .rank-meta,
+#app-page-content .rank-card .rank-meta span,
+#app-page-content .rank-card .rank-movement,
+#app-page-content .rank-card .rank-private,
+#app-page-content .rank-card .rank-detail-body>span,
+#app-page-content .rank-card .rank-honour small,
+#app-page-content .rank-card .rank-tier small,
+#app-page-content .rank-card .rank-champion-prompt,
+.rank-card .rank-meta,.rank-card .rank-meta span,.rank-card .rank-movement,
+.rank-card .rank-private,.rank-card .rank-detail-body>span,
+.rank-card .rank-honour small,.rank-card .rank-tier small,.rank-card .rank-champion-prompt {
+  color:#344054 !important; font-size:12px !important; line-height:1.55 !important; font-weight:700 !important;
+}
+#app-page-content .rank-card .rank-number,.rank-card .rank-number {
+  background:#1D2939 !important; color:#FFFFFF !important;
+  border:1px solid #101828 !important; border-radius:10px !important;
+  min-width:38px !important; min-height:38px !important; font-weight:1000 !important;
+}
+#app-page-content .rank-card .rank-return,
+#app-page-content .rank-card .rank-return.up,
+#app-page-content .rank-card .rank-detail-body .num.up,
+.rank-card .rank-return,.rank-card .rank-return.up,.rank-card .rank-detail-body .num.up {
+  color:#C5221F !important; font-size:clamp(23px,5.3vw,29px) !important;
+  font-weight:1000 !important; font-variant-numeric:tabular-nums !important;
+}
+#app-page-content .rank-card .rank-return.down,
+#app-page-content .rank-card .rank-detail-body .num.down,
+.rank-card .rank-return.down,.rank-card .rank-detail-body .num.down {
+  color:#087443 !important; font-size:clamp(23px,5.3vw,29px) !important;
+  font-weight:1000 !important; font-variant-numeric:tabular-nums !important;
+}
+#app-page-content .rank-card .rank-return.flat,
+.rank-card .rank-return.flat { color:#344054 !important; font-weight:950 !important; }
+#app-page-content .rank-card .rank-detail>summary,
+#app-page-content .rank-card .rank-card-detail>summary,
+.rank-card .rank-detail>summary,.rank-card .rank-card-detail>summary {
+  background:#E4E7EC !important; color:#1D2939 !important;
+  border:1px solid #98A2B3 !important; font-weight:950 !important;
+}
+#app-page-content .rank-card .rank-detail-body>span,
+.rank-card .rank-detail-body>span { background:#F2F4F7 !important; border-color:#C0C7D0 !important; }
+#app-page-content .rank-card .rank-detail-body>span em,
+.rank-card .rank-detail-body>span em { color:#475467 !important; }
+#app-page-content .rank-chart-panel,.rank-chart-panel { background:#FFFFFF !important; border:2px solid #AAB4C0 !important; }
+#app-page-content .rank-chart-panel > div:first-child,.rank-chart-panel > div:first-child { color:#101828 !important; font-weight:950 !important; }
+#app-page-content .rank-chart-panel .sub,
+#app-page-content .rank-chart-panel .legend span,
+#app-page-content .rank-chart-panel svg text,
+.rank-chart-panel .sub,.rank-chart-panel .legend span,.rank-chart-panel svg text {
+  color:#344054 !important; fill:#344054 !important; font-weight:700 !important;
+}
+#app-page-content .history-period,.history-period { background:#FFFFFF !important; border:1px solid #98A2B3 !important; }
+#app-page-content .history-period-head,.history-period-head { background:#E4E7EC !important; border-bottom:1px solid #98A2B3 !important; }
+#app-page-content .history-period-head b,#app-page-content .history-period-head strong,
+#app-page-content .history-name,.history-period-head b,.history-period-head strong,.history-name { color:#101828 !important; font-weight:950 !important; }
+#app-page-content .history-period-head span,#app-page-content .history-empty,
+#app-page-content .history-note,.history-period-head span,.history-empty,.history-note { color:#344054 !important; font-weight:700 !important; }
+#app-page-content .history-return.up,#app-page-content .history-rank-row .num.up,
+.history-return.up,.history-rank-row .num.up { color:#C5221F !important; font-weight:950 !important; }
+#app-page-content .history-return.down,#app-page-content .history-rank-row .num.down,
+.history-return.down,.history-rank-row .num.down { color:#087443 !important; font-weight:950 !important; }
+#app-page-content .rank-source-note,#app-page-content .rank-source-note * { color:#344054 !important; }
+@media(max-width:640px) {
+  #app-page-content .rank-card .rank-meta,.rank-card .rank-meta { font-size:12.5px !important; }
+  #app-page-content .rank-card .rank-return,.rank-card .rank-return { font-size:22px !important; }
+}
+
+/* V252.1: replace the oversized navy/photo hero with a crisp light fintech header. */
+#app-page-content .daily-fast-hero {
+  display:block !important; position:relative !important; overflow:hidden !important;
+  min-height:0 !important; height:auto !important; padding:0 !important;
+  margin:0 -16px 14px !important; border-radius:0 0 18px 18px !important;
+  background:#F8FAFC !important; color:#101828 !important;
+  border:1px solid #D0D5DD !important; border-top:4px solid #0F766E !important;
+  box-shadow:0 4px 12px rgba(16,24,40,.06) !important;
+}
+#app-page-content .daily-fast-hero-photo { display:none !important; }
+#app-page-content .daily-fast-hero-copy {
+  position:relative !important; inset:auto !important; z-index:1 !important;
+  display:block !important; padding:20px 16px 16px !important;
+  background:#F8FAFC !important; color:#101828 !important;
+}
+#app-page-content .daily-fast-hero-copy .eyebrow { color:#0F766E !important; font-size:11px !important; font-weight:900 !important; letter-spacing:.14em !important; text-shadow:none !important; }
+#app-page-content .daily-fast-hero-copy h1 { color:#101828 !important; font-size:27px !important; line-height:1.25 !important; font-weight:950 !important; text-shadow:none !important; }
+#app-page-content .daily-fast-hero-copy p,
+#app-page-content .daily-fast-hero-copy .hero-description { color:#344054 !important; font-weight:600 !important; }
+#app-page-content .daily-fast-hero-copy .daily-fast-market { display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:8px !important; margin-top:12px !important; }
+#app-page-content .daily-fast-hero-copy .daily-fast-market span {
+  display:block !important; background:#FFFFFF !important; color:#1D2939 !important;
+  border:1px solid #98A2B3 !important; border-radius:10px !important;
+  padding:10px 11px !important; box-shadow:0 2px 4px rgba(16,24,40,.04) !important;
+}
+#app-page-content .daily-fast-hero-copy .daily-fast-market b { color:#101828 !important; font-size:18px !important; font-weight:950 !important; }
+#app-page-content .daily-fast-hero-copy .daily-fast-market small { color:#475467 !important; font-size:11px !important; line-height:1.45 !important; font-weight:700 !important; }
+#app-page-content .daily-fast-hero:before,
+#app-page-content .daily-fast-hero:after { display:none !important; content:none !important; }
+#app-page-content .daily-fast-sync { background:#FFFFFF !important; border:1px solid #98A2B3 !important; border-left:5px solid #0F766E !important; color:#1D2939 !important; box-shadow:none !important; }
+#app-page-content .daily-fast-sync b { color:#101828 !important; font-weight:900 !important; }
+#app-page-content .daily-fast-sync-copy span { color:#344054 !important; font-weight:600 !important; }
+
+/* Strong readable return chips: saturated Taiwan red/green on tinted, outlined chips. */
+#app-page-content .rank-card .rank-return.up,
+#app-page-content .rank-card .rank-detail-body .num.up,
+#app-page-content .history-return.up,
+#app-page-content .history-rank-row .num.up {
+  display:inline-flex !important; align-items:center !important; width:max-content !important;
+  padding:4px 9px !important; border-radius:8px !important;
+  background:#FEE4E2 !important; border:1px solid #FDA29B !important;
+  color:#B42318 !important; font-weight:1000 !important;
+}
+#app-page-content .rank-card .rank-return.down,
+#app-page-content .rank-card .rank-detail-body .num.down,
+#app-page-content .history-return.down,
+#app-page-content .history-rank-row .num.down {
+  display:inline-flex !important; align-items:center !important; width:max-content !important;
+  padding:4px 9px !important; border-radius:8px !important;
+  background:#D1FADF !important; border:1px solid #6CE9A6 !important;
+  color:#067647 !important; font-weight:1000 !important;
+}
+#app-page-content .rank-card .rank-return.flat { background:#EAECF0 !important; border:1px solid #98A2B3 !important; padding:4px 8px !important; border-radius:8px !important; color:#344054 !important; }
+#app-page-content .rank-card .rank-meta,
+#app-page-content .rank-card .rank-private,
+#app-page-content .rank-card .rank-movement,
+#app-page-content .rank-card .rank-detail-body,
+#app-page-content .rank-situation .rank-situation-sub,
+#app-page-content .rank-chart-panel .legend,
+#app-page-content .leaderboard-history,
+#app-page-content .rank-source-note { color:#1D2939 !important; font-weight:700 !important; }
+#app-page-content .rank-card .rank-meta span,
+#app-page-content .rank-card .rank-detail-body em,
+#app-page-content .rank-card .rank-detail-body small,
+#app-page-content .rank-chart-panel .sub,
+#app-page-content .rank-chart-panel .legend span { color:#344054 !important; font-weight:750 !important; }
+@media(max-width:640px) {
+  #app-page-content .daily-fast-hero-copy { padding:18px 14px 14px !important; }
+  #app-page-content .daily-fast-hero-copy h1 { font-size:25px !important; }
+  #app-page-content .daily-fast-hero-copy .daily-fast-market { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+}
+
 '''
 
 
@@ -25491,9 +25936,10 @@ def web_positions(uid):
     if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1":
         return respond_page("持股", render_positions_fast_summary(uid), "positions")
 
-    # 手續費設定要在處理賣出之前先讀出來，賣出當下記錄的已實現損益
-    # 才能用使用者自己的折扣／最低收費計算，跟畫面上其他地方口徑一致。
-    fee_disc, min_fee = get_fee_settings(get_profile(uid))
+    # POST 賣出一定要先讀手續費設定；GET 則等快取檢查後再讀，避免切頁時做不必要的 DB round-trip。
+    fee_disc = min_fee = None
+    if request.method == "POST":
+        fee_disc, min_fee = get_fee_settings(get_profile(uid))
 
     msg = ""
     if request.method == "POST" and not valid_web_csrf():
@@ -25613,6 +26059,25 @@ def web_positions(uid):
     positions_data_started = time.monotonic()
     positions = merge_positions(get_positions(uid))
     positions_data_done = time.monotonic()
+    _positions_fragment_cache_key = None
+    if request.method == "GET" and wants_fragment() and request.args.get("refresh") != "1":
+        _position_signature = tuple(sorted(
+            (str(p.get("code") or ""), str(p.get("shares") or ""), str(p.get("cost") or ""))
+            for p in positions))
+        _session_token = str(request.args.get("t") or request.cookies.get("stockbot_token") or "")
+        _positions_fragment_cache_key = (
+            str(uid), _session_token, taiwan_today().isoformat(), _position_signature,
+            tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
+                         if k not in {"t", "fragment", "_nav"})))
+        # 短時間切回持股時先回傳最近完整頁；行情 API 仍會更新即時報價。
+        _position_cache_ttl = 30.0 if _is_taiwan_intraday_window() else 180.0
+        _cached_positions_body = _web_fragment_cache_get(
+            "positions", _positions_fragment_cache_key, _position_cache_ttl)
+        if _cached_positions_body is not None:
+            print("⚡ 持股頁命中個人 HTML 快取（持股 %s 檔）" % len(positions), flush=True)
+            return respond_page("持股", _cached_positions_body, "positions")
+    if fee_disc is None or min_fee is None:
+        fee_disc, min_fee = get_fee_settings(get_profile(uid))
     inst_started = time.monotonic()
     # 持股頁只需要目前持股的法人資料與股票名稱，不需要把全市場法人快照
     # 載入進來。指定 codes 會直接走 Supabase 的持股快照查詢。
@@ -26276,7 +26741,9 @@ def web_positions(uid):
         (inst_done - inst_started) * 1000,
         (quote_done - quote_started) * 1000,
         (time.monotonic() - quote_done) * 1000,
-        (time.monotonic() - positions_page_started) * 1000))
+        (time.monotonic() - positions_page_started) * 1000), flush=True)
+    if request.method == "GET" and wants_fragment() and _positions_fragment_cache_key is not None:
+        _web_fragment_cache_put("positions", _positions_fragment_cache_key, body)
     return respond_page("持股", body, "positions")
 
 
@@ -29674,6 +30141,20 @@ def web_leaderboard(uid):
             ["正在讀取成員名單…", "正在計算每人的報酬率…", "正在整理排名…"],
                 note="報酬率以時間加權計算，加碼與贖回不影響結果；個股與 ETF 持股都會納入。")
 
+    _leaderboard_fragment_cache_key = None
+    if request.method == "GET" and wants_fragment() and request.args.get("refresh") != "1":
+        _leaderboard_fragment_cache_key = (
+            str(uid), str(request.args.get("t") or request.cookies.get("stockbot_token") or ""),
+            tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
+                         if k not in {"t", "fragment", "_nav"})))
+        # 排行榜以快照為資料來源，數十秒內重用既有 HTML 可省去數次遠端 DB round-trip。
+        _leaderboard_cache_ttl = 45.0 if _is_taiwan_intraday_window() else 180.0
+        _cached_leaderboard_body = _web_fragment_cache_get(
+            "leaderboard", _leaderboard_fragment_cache_key, _leaderboard_cache_ttl)
+        if _cached_leaderboard_body is not None:
+            print("⚡ 排行榜命中個人 HTML 快取", flush=True)
+            return respond_page("排行榜", _cached_leaderboard_body, "leaderboard")
+
     me = get_leaderboard_member(uid)
     board_started = time.monotonic()
 
@@ -29683,7 +30164,7 @@ def web_leaderboard(uid):
         _board_memory = _leaderboard_cache.get((100, 365))
     _board_memory_fresh = bool(
         _board_memory and _board_memory.get("value") and
-        time.time() - float(_board_memory.get("at") or 0) < 180
+        time.time() - float(_board_memory.get("at") or 0) < 600
     )
     if _board_memory_fresh:
         persisted_for_page = {
@@ -30763,6 +31244,8 @@ def web_leaderboard(uid):
         (rank_status_done - board_done) * 1000,
         (time.monotonic() - rank_status_done) * 1000,
         (time.monotonic() - page_started) * 1000))
+    if request.method == "GET" and wants_fragment() and _leaderboard_fragment_cache_key is not None:
+        _web_fragment_cache_put("leaderboard", _leaderboard_fragment_cache_key, body)
     return respond_page("排行榜", body, "leaderboard")
 
 
@@ -33277,6 +33760,22 @@ def web_portfolio(uid):
             msg = f"還有 {len(missing)} 題沒選：{'、'.join(missing[:3])}" + (
                 " 等" if len(missing) > 3 else "")
 
+    # 首頁完整內容只應由 fragment=1 請求計算；初次完整導覽先回快速載入殼。
+    # 舊順序會在顯示載入殼前先查一次 positions，跟後續 fragment 重複查詢，
+    # 在 Supabase/Render 慢連線時可能多等數秒，使用者卻看不到進度。
+    if request.method == "GET" and not wants_fragment():
+        return render_loading_shell(
+            "今日", "portfolio",
+            [
+                "正在連接台股與國際市場資料…",
+                "正在整理法人、估值與產業資料…",
+                "正在同步你的持股行情與操作紀錄…",
+                "正在完成今日市場判讀…",
+            ],
+            note="資料量較大，請稍候；完成後會直接顯示完整首頁。",
+            staged=False,
+        )
+
     # v184：首頁移除風險問卷與「值得注意」入口。
     profile = {}
     positions = merge_positions(get_positions(uid))
@@ -33285,6 +33784,7 @@ def web_portfolio(uid):
     # 必須在進入 shared cache 分支前就建立，否則 shared cache 命中時
     # 會跳過原本的初始化，導致首頁／內部返回首頁出現 NameError。
     position_codes = [str(p.get("code") or "").strip() for p in positions]
+    _home_fragment_cache_key = None
     if not positions:
         # 沒有目前持股，但可能有賣光的歷史紀錄或組合快照可看，
         # 不能因為現在空手就把已實現損益跟走勢圖也一起藏起來。
@@ -33304,21 +33804,21 @@ def web_portfolio(uid):
         _home_cp("RENDER_READY", body_bytes=len(body.encode("utf-8", errors="ignore")))
         return respond_page("今日", body, "portfolio")
 
-    # 「今日」先秒回漂亮的全螢幕載入動畫，再由瀏覽器以 fragment=1
-    # 取得同一份完整首頁。不是預覽頁：動畫結束後直接替換成完整首頁，
-    # 不會再出現「先顯示一份半成品、之後再補 detail」的兩階段流程。
-    if request.method == "GET" and not wants_fragment():
-        return render_loading_shell(
-            "今日", "portfolio",
-            [
-                "正在連接台股與國際市場資料…",
-                "正在整理法人、估值與產業資料…",
-                "正在同步你的持股行情與操作紀錄…",
-                "正在完成今日市場判讀…",
-            ],
-            note="資料量較大，請稍候；完成後會直接顯示完整首頁。",
-            staged=False,
-        )
+    if request.method == "GET" and wants_fragment() and request.args.get("refresh") != "1":
+        _home_fragment_cache_key = (
+            str(uid), str(request.args.get("t") or request.cookies.get("stockbot_token") or ""),
+            taiwan_today().isoformat(),
+            tuple(sorted((str(p.get("code") or ""), str(p.get("shares") or ""), str(p.get("cost") or ""))
+                         for p in positions)),
+            str(request.args.get("trend_period") or "3m"),
+            str(request.args.get("trend_benchmark") or "1"))
+        # 首頁已載入完整摘要；短時間內切回先用既有內容，避免重新抓六份共享資料。
+        _home_cache_ttl = 30.0 if _is_taiwan_intraday_window() else 180.0
+        _cached_home_body = _web_fragment_cache_get(
+            "portfolio", _home_fragment_cache_key, _home_cache_ttl)
+        if _cached_home_body is not None:
+            print("⚡ 今日首頁命中個人 HTML 快取（%s 檔持股）" % len(positions), flush=True)
+            return respond_page("今日", _cached_home_body, "portfolio")
 
     full_started = time.monotonic()
     home_diag_request = "home-%x-%s" % (int(time.time() * 1000) & 0xfffffff, threading.get_ident() % 10000)
@@ -33364,13 +33864,21 @@ def web_portfolio(uid):
     shared_key = (uid, taiwan_today(), position_signature)
     shared_values = None
     shared_cache_hit = False
+    shared_cache_stale = False
     with _HOMEPAGE_CACHE_LOCK:
-        if (_HOMEPAGE_SHARED_CACHE.get("key") == shared_key and
-                time.monotonic() - _HOMEPAGE_SHARED_CACHE.get("ts", 0.0) < _HOMEPAGE_SHARED_TTL):
-            shared_values = _HOMEPAGE_SHARED_CACHE.get("value")
-            if shared_values is not None:
+        if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key:
+            _cache_age = time.monotonic() - _HOMEPAGE_SHARED_CACHE.get("ts", 0.0)
+            _cached_values = _HOMEPAGE_SHARED_CACHE.get("value")
+            if _cached_values is not None and _cache_age <= _HOMEPAGE_SHARED_STALE_MAX_AGE:
+                shared_values = _cached_values
                 shared_cache_hit = True
-                print("⚡ 首頁共享資料命中短快取")
+                shared_cache_stale = _cache_age >= _HOMEPAGE_SHARED_TTL
+                if shared_cache_stale:
+                    print("⚡ 首頁共享資料使用最後有效快照（背景刷新中，age=%.0fs）" % _cache_age, flush=True)
+                    # 將刷新工作交給 after_request，避免在本頁 HTML 組裝前重新爭用 DB pool。
+                    request.environ["stockbot_homepage_shared_refresh"] = (shared_key, uid, position_codes)
+                else:
+                    print("⚡ 首頁共享資料命中短快取")
 
     _home_cp("AUX_FUTURES_STARTED")
 
@@ -33405,7 +33913,8 @@ def web_portfolio(uid):
             ("產業", get_industry_map),
             ("大盤", fetch_taiex_summary),
         ]
-        with ThreadPoolExecutor(max_workers=2) as ex:
+        # 三個共享 worker 比原來的兩個少一輪等待；與兩個首頁輔助 worker 合計仍低於 DB_POOL_MAX。
+        with ThreadPoolExecutor(max_workers=3) as ex:
             shared_values = list(ex.map(
                 lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
         with _HOMEPAGE_CACHE_LOCK:
@@ -33415,7 +33924,8 @@ def web_portfolio(uid):
     # 快取命中時先用最近一次大盤摘要完成渲染，再背景刷新；不讓指數來源等待卡住首頁。
     if shared_cache_hit:
         shared_values = list(shared_values)
-        _schedule_homepage_taiex_refresh(shared_key)
+        if not shared_cache_stale:
+            _schedule_homepage_taiex_refresh(shared_key)
 
     # shared_loaders 的順序是「法人、今日事件、月營收、估值、產業、大盤」，
     # 但後續首頁變數維持原本的語意順序，避免其他渲染邏輯跟著改。
@@ -33655,6 +34165,8 @@ def web_portfolio(uid):
 <div class="section-head"><h2>持股權重</h2><span class="section-note">依權重排序</span></div><div class="rows">{''.join(f'''<div class="row"><div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div><div class="price num">{h['weight']:.1f}%</div><div class="meta"><span><em>產業</em> {h['industry']}</span><span><em>損益</em> {fmt_pct(h['pl'])}</span><span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span><span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span></div><div class="chg">{fmt_pct(h['price']['pct'])}</div><div class="wbar"><span class="wbar-track"><i style="width:{min(100.0, h['weight'] / 30.0 * 100):.1f}%"></i></span><em>{h['weight']:.1f}%</em></div></div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}</div>
 
 """
+    if request.method == "GET" and wants_fragment() and _home_fragment_cache_key is not None:
+        _web_fragment_cache_put("portfolio", _home_fragment_cache_key, body)
     return respond_page("今日", body, "portfolio")
 
 
@@ -40648,8 +41160,7 @@ def web_api_perf_test(uid):
                         "hit": False, "error": str(exc)[:160],
                     }
 
-        cache_day = taiwan_now().date().isoformat()
-        cache_session = "postclose" if _taiwan_post_close() else "intraday"
+        cache_day, cache_session = _realtime_cache_period()
         cache_now = time.time()
         with _realtime_cache_lock:
             cached_codes = [
