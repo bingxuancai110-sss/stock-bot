@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V263_QUOTE_CACHE_THROTTLE_AND_FRESHNESS"
+APP_BUILD = "V266_GOOGLE_OAUTH_LOGIN_CODE_REMOVED_REVIEWED_DRAFT"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
 # index on page render so an upstream timeout cannot hold the whole page for six seconds.
@@ -2172,17 +2172,30 @@ def init_db():
                 expires_at TIMESTAMP NOT NULL
             )
         ''')
-        # 一次性登入驗證碼。
-        # LINE 內建瀏覽器的 cookie 跟外部瀏覽器不互通，點連結登入的方式
-        # 一換瀏覽器就失效；讓使用者拿一組短碼自己輸入，就能在任何裝置
-        # 任何瀏覽器登入，不必再回 LINE 重拿連結。
+        # Google OAuth 身分綁定：只保存 provider 的唯一識別，不以 email 作為帳號主鍵。
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS web_codes (
-                code TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS user_auth_identities (
+                provider TEXT NOT NULL,
+                provider_subject TEXT NOT NULL,
                 user_id TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT NOW(),
-                expires_at TIMESTAMP NOT NULL,
-                used BOOLEAN DEFAULT FALSE
+                email TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (provider, provider_subject)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_user_auth_identities_user
+            ON user_auth_identities (user_id)
+        ''')
+        # OAuth state 一次性使用且短效，支援登入與「已登入 LINE 帳號綁定 Google」兩種流程。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS oauth_login_states (
+                state TEXT PRIMARY KEY,
+                intent TEXT NOT NULL CHECK (intent IN ('login', 'bind')),
+                bind_user_id TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL,
+                used BOOLEAN NOT NULL DEFAULT FALSE
             )
         ''')
         # 每日三大法人買賣超歷史（用來算「連續買超天數」等長線指標）
@@ -3815,7 +3828,7 @@ def csrf_hidden_input():
 
 
 def inject_csrf_inputs(markup):
-    """替所有已登入的 POST 表單加 hidden CSRF 欄位；登入碼表單沒有 session 時不注入。"""
+    """替所有已登入的 POST 表單加 hidden CSRF 欄位。"""
     if not markup or not current_web_csrf_token():
         return markup
     hidden = csrf_hidden_input()
@@ -3976,87 +3989,6 @@ def preserve_web_token(markup):
     return re.sub(r'((?:href|action)=["\'])(/web[^"\']*)(["\'])',
                   add_token, markup)
 
-
-# ── 一次性登入驗證碼 ──
-WEB_CODE_MINUTES = 30   # 跟網頁連結一起給，可能過一陣子才想到要換瀏覽器開
-
-
-def create_web_code(user_id):
-    """
-    產生 6 位數登入碼。同一使用者先前未使用的碼一律作廢，
-    避免使用者連續要了三次卻不知道該用哪一組。
-    極小機率撞號時重試幾次即可。
-    """
-    uid = str(user_id).strip()
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE web_codes SET used = TRUE WHERE user_id = %s AND used = FALSE",
-            (uid,))
-        for _ in range(5):
-            code = f"{secrets.randbelow(1000000):06d}"
-            try:
-                cursor.execute(
-                    """
-                    INSERT INTO web_codes (code, user_id, expires_at)
-                    VALUES (%s, %s, NOW() + INTERVAL '%s minutes')
-                    """,
-                    (code, uid, WEB_CODE_MINUTES),
-                )
-                conn.commit()
-                cursor.close()
-                return code
-            except Exception:
-                conn.rollback()   # 多半是主鍵重複，換一組再試
-                cursor = conn.cursor()
-        cursor.close()
-        return None
-    except Exception as e:
-        conn.rollback()
-        print(f"❌ 建立登入碼失敗: {e}")
-        return None
-    finally:
-        release_db_connection(conn)
-
-
-def redeem_web_code(code):
-    """
-    驗證登入碼並換成正式權杖。用過即作廢——
-    驗證碼只有六位數，允許重複使用等於把帳號長期暴露在猜號之下。
-    回傳 (token, user_id)，失敗回傳 (None, None)。
-    """
-    code = re.sub(r"\D", "", str(code or ""))   # 容忍使用者貼上時夾帶空格或符號
-    if len(code) != 6:
-        return None, None
-
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        # 用 UPDATE ... RETURNING 一步完成「檢查並標記已使用」，
-        # 兩個請求同時送同一組碼時只有一個會拿到結果。
-        cursor.execute(
-            """
-            UPDATE web_codes SET used = TRUE
-            WHERE code = %s AND used = FALSE AND expires_at > NOW()
-            RETURNING user_id
-            """,
-            (code,),
-        )
-        row = cursor.fetchone()
-        conn.commit()
-        cursor.close()
-    except Exception as e:
-        conn.rollback()
-        print(f"❌ 驗證登入碼失敗: {e}")
-        return None, None
-    finally:
-        release_db_connection(conn)
-
-    if not row:
-        return None, None
-    uid = row[0]
-    return create_web_token(uid), uid
 
 
 def web_login_required(view):
@@ -18737,7 +18669,7 @@ RETENTION_DAYS = {
     "pick_history": ("pick_date", 1095),         # 3 年，量極小且是成效追蹤的依據
     "industry_momentum_history": ("snapshot_date", 1095),
     "web_sessions": ("expires_at", 0),           # 過期即可刪
-    "web_codes": ("expires_at", 0),
+    "oauth_login_states": ("expires_at", 0),      # OAuth state 短效且一次性
     "leaderboard_rank_snapshots": ("snapshot_date", 1095),
     "activity_log": ("occurred_at", 730),
     "line_event_dedup": ("received_at", 14),
@@ -18835,7 +18767,7 @@ def cron_cleanup():
                 cursor.execute(
                     f"DELETE FROM {table} WHERE {col} < CURRENT_DATE - %s", (days,))
             else:
-                # web_sessions／web_codes 存的是到期時間，過期就沒有保留價值
+                # web_sessions／oauth_login_states 存的是到期時間，過期就沒有保留價值
                 cursor.execute(f"DELETE FROM {table} WHERE {col} < NOW()")
             deleted = cursor.rowcount
             conn.commit()
@@ -20870,26 +20802,18 @@ body>.page,.page-wrap,.main-wrap{animation:v180-reveal .28s ease both}@keyframes
 
 NEED_LOGIN_HTML = """
 <div class="msg">
-  <b>不用設定帳號密碼。</b><br>
-  你的網頁版平常會保持登入。若換到 Safari、Chrome、電腦，或登入狀態真的失效，
-  如果瀏覽器自動登入失敗，可回到 LINE 的「台股 BOT」使用備援登入碼。
+  <b>登入台股 BOT</b><br>
+  若尚未綁定 Google，請先回到 LINE 的「台股 BOT」，輸入「網頁」或「產生登入網址」，再開啟登入連結。
+  完成 Google 綁定後，之後即可用 LINE 登入網址或 Google 登入同一個帳號。
 </div>
-<div class="section-head"><h2>網頁登入</h2>
-  <span class="section-note">一次性登入碼</span></div>
-<form method="post" action="/web/code" class="add">
-  <h3>輸入 6 位數網頁登入碼</h3>
-  <div class="fields">
-    <div><label>登入碼</label>
-      <input name="code" inputmode="numeric" autocomplete="one-time-code"
-             maxlength="6" placeholder="000000" required
-             style="font-size:22px;letter-spacing:.3em;text-align:center"></div>
-  </div>
-  <button type="submit">登入網頁版</button>
-  <div class="sell-hint">
-    登入碼有效 {WEB_CODE_MINUTES} 分鐘，只能使用一次。登入成功後，這台瀏覽器會保持登入 {WEB_SESSION_DAYS} 天。<br>
-    自動登入失敗時，可回到 LINE 輸入「登入碼」取得備援登入碼。
-  </div>
-</form>
+<div class="section-head"><h2>登入方式</h2>
+  <span class="section-note">LINE／Google</span></div>
+<div class="fields">
+  <a class="btn" href="/auth/google" style="display:block;text-align:center;text-decoration:none;padding:12px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800">使用 Google 登入</a>
+</div>
+<div class="sell-hint" style="margin-top:12px">
+  Google 尚未綁定時，不會自動建立新帳號；請先使用原本的 LINE 登入網址，再到「設定」綁定 Google。
+</div>
 """
 
 
@@ -22910,7 +22834,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     var isLoginPage = /需要登入|登入狀態已失效/.test(loginText);
     var savedToken = localStorage.getItem('stockbot_web_token');
     var alreadyRecovered = query.get('auth_recover') === '1';
-    if (savedToken && isLoginPage && !alreadyRecovered && window.location.pathname !== '/web/code') {{
+    if (savedToken && isLoginPage && !alreadyRecovered) {{
       window.location.replace(window.location.pathname + '?t=' + encodeURIComponent(savedToken) + '&auth_recover=1');
       return;
     }}
@@ -25265,7 +25189,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
         var saved = null;
         try {{ saved = localStorage.getItem('stockbot_web_token'); }} catch (_) {{}}
         if (saved && q.get('auth_recover') !== '1'
-            && window.location.pathname !== '/web/code') {{
+           ) {{
           window.location.replace(window.location.pathname + '?t='
             + encodeURIComponent(saved) + '&auth_recover=1');
         }} else {{
@@ -25386,30 +25310,231 @@ def web_login():
     return resp
 
 
-@app.route("/web/code", methods=["GET", "POST"])
-def web_code_login():
-    """
-    用 6 位數登入碼登入，給外部瀏覽器使用。
+# ── Google OAuth：既有 LINE 帳號綁定／已綁定 Google 登入 ──
+def _google_oauth_configured():
+    return bool(os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET"))
 
-    LINE 內建瀏覽器的 cookie 與 Safari／Chrome 不互通，所以「點連結登入」
-    只在 LINE 裡有效，一換瀏覽器就變回未登入。改成讓使用者自己輸入短碼，
-    任何裝置、任何瀏覽器都能登入，也不必再回 LINE 重拿一次連結。
-    """
-    if request.method == "GET":
-        return render_page("登入", NEED_LOGIN_HTML)
 
-    token, uid = redeem_web_code(request.form.get("code", ""))
+def _google_redirect_uri():
+    # 固定正式站 callback，避免依賴未驗證的 Host 標頭產生 OAuth redirect_uri。
+    # 若日後改用自訂網域，請同步設定 Render 的 GOOGLE_REDIRECT_URI 與 Google Cloud URI。
+    return (os.environ.get("GOOGLE_REDIRECT_URI") or
+            "https://stock-bot-6xct.onrender.com/auth/google/callback")
+
+
+def _create_oauth_state(intent, bind_user_id=None):
+    state = secrets.token_urlsafe(32)
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO oauth_login_states (state, intent, bind_user_id, expires_at) "
+            "VALUES (%s, %s, %s, NOW() + INTERVAL '10 minutes')",
+            (state, intent, str(bind_user_id) if bind_user_id else None))
+        conn.commit()
+        cur.close()
+        return state
+    except Exception as exc:
+        conn.rollback()
+        print(f"❌ 建立 Google OAuth state 失敗：{type(exc).__name__}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+
+def _consume_oauth_state(state):
+    if not state or len(str(state)) > 256:
+        return None
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE oauth_login_states SET used=TRUE "
+            "WHERE state=%s AND used=FALSE AND expires_at>NOW() "
+            "RETURNING intent, bind_user_id",
+            (state,))
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        return (row[0], row[1]) if row else None
+    except Exception as exc:
+        conn.rollback()
+        print(f"❌ 驗證 Google OAuth state 失敗：{type(exc).__name__}")
+        return None
+    finally:
+        release_db_connection(conn)
+
+
+def _google_identity_from_code(code):
+    """以 Google token endpoint 換取 ID Token，再向 Google tokeninfo 驗證簽章／受眾等資訊。"""
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    redirect_uri = _google_redirect_uri()
+    try:
+        token_resp = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={"code": code, "client_id": client_id,
+                  "client_secret": client_secret, "redirect_uri": redirect_uri,
+                  "grant_type": "authorization_code"},
+            timeout=12)
+        if token_resp.status_code != 200:
+            print(f"⚠️ Google token exchange failed: HTTP {token_resp.status_code}")
+            return None
+        token_data = token_resp.json()
+        id_token = token_data.get("id_token")
+        if not id_token:
+            return None
+        # 使用 Google 官方驗證函式檢查簽章、audience、issuer 與有效期限。
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+        from google.oauth2 import id_token as google_id_token
+        claims = google_id_token.verify_oauth2_token(
+            id_token, GoogleAuthRequest(), audience=client_id)
+        if claims.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
+            return None
+        if str(claims.get("email_verified", "")).lower() not in ("true", "1"):
+            return None
+        subject = str(claims.get("sub", "")).strip()
+        if not subject:
+            return None
+        return {"subject": subject, "email": str(claims.get("email", ""))[:320]}
+    except Exception as exc:
+        print(f"⚠️ Google OAuth 驗證失敗：{type(exc).__name__}")
+        return None
+
+
+def _bind_google_identity(user_id, identity):
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT user_id FROM user_auth_identities "
+            "WHERE provider='google' AND provider_subject=%s",
+            (identity["subject"],))
+        existing = cur.fetchone()
+        if existing and str(existing[0]) != str(user_id):
+            conn.rollback()
+            cur.close()
+            return False, "這個 Google 帳號已綁定其他台股 BOT 帳號，為保護資料，不能自動合併。"
+        if not existing:
+            cur.execute(
+                "INSERT INTO user_auth_identities (provider, provider_subject, user_id, email) "
+                "VALUES ('google', %s, %s, %s) ON CONFLICT (provider, provider_subject) DO NOTHING",
+                (identity["subject"], str(user_id), identity.get("email", "")))
+            cur.execute(
+                "SELECT user_id FROM user_auth_identities "
+                "WHERE provider='google' AND provider_subject=%s",
+                (identity["subject"],))
+            after = cur.fetchone()
+            if not after or str(after[0]) != str(user_id):
+                conn.rollback()
+                cur.close()
+                return False, "綁定衝突，沒有變更任何既有資料。"
+        else:
+            cur.execute(
+                "UPDATE user_auth_identities SET email=%s "
+                "WHERE provider='google' AND provider_subject=%s AND user_id=%s",
+                (identity.get("email", ""), identity["subject"], str(user_id)))
+        conn.commit()
+        cur.close()
+        return True, "Google 已綁定到目前的台股 BOT 帳號。"
+    except Exception as exc:
+        conn.rollback()
+        print(f"❌ Google 身分綁定失敗：{type(exc).__name__}")
+        return False, "綁定暫時失敗，請稍後再試。"
+    finally:
+        release_db_connection(conn)
+
+
+@app.route("/auth/google")
+def auth_google_start():
+    if not _google_oauth_configured():
+        return render_page("Google 登入尚未啟用",
+            '<div class="msg">Google 登入尚未完成伺服器設定；目前不會影響原本的 LINE 登入。</div>'), 503
+    mode = request.args.get("mode", "login").strip().lower()
+    if mode not in ("login", "bind"):
+        abort(400)
+    bind_user_id = None
+    if mode == "bind":
+        bind_user_id = current_web_user()
+        if not bind_user_id:
+            return render_page("請先登入",
+                '<div class="msg">請先透過 LINE 的登入網址登入既有帳號，再回設定綁定 Google。</div>'), 401
+    state = _create_oauth_state(mode, bind_user_id)
+    if not state:
+        return render_page("登入暫時無法使用",
+            '<div class="msg">目前無法建立安全登入流程，請稍後再試。</div>'), 503
+    params = urlencode({
+        "client_id": os.environ["GOOGLE_CLIENT_ID"],
+        "redirect_uri": _google_redirect_uri(),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "prompt": "select_account",
+    })
+    return redirect("https://accounts.google.com/o/oauth2/v2/auth?" + params)
+
+
+@app.route("/auth/google/callback")
+def auth_google_callback():
+    state_result = _consume_oauth_state(request.args.get("state", ""))
+    if not state_result:
+        return render_page("登入連結已失效",
+            '<div class="msg">登入驗證已過期或已使用，請重新開始登入。</div>'), 400
+    intent, bind_user_id = state_result
+    if request.args.get("error"):
+        return render_page("Google 登入已取消",
+            '<div class="msg">你已取消 Google 登入，原本的帳號資料沒有變更。</div>'), 400
+    code = request.args.get("code", "")
+    if not code:
+        return render_page("Google 登入失敗",
+            '<div class="msg">Google 沒有回傳有效授權碼，請重新操作。</div>'), 400
+    identity = _google_identity_from_code(code)
+    if not identity:
+        return render_page("Google 驗證失敗",
+            '<div class="msg">無法驗證 Google 身分，請重新登入。</div>'), 401
+
+    if intent == "bind":
+        if not bind_user_id:
+            return render_page("綁定失敗",
+                '<div class="msg">綁定工作階段已失效，請重新從既有 LINE 帳號操作。</div>'), 401
+        ok, message = _bind_google_identity(bind_user_id, identity)
+        if not ok:
+            return render_page("Google 綁定未完成",
+                '<div class="msg">' + safe_html_text(message) + '</div>'), 409
+        return render_page("Google 綁定完成",
+            '<div class="msg">Google 已綁定至原本的台股 BOT 帳號；持股與設定沒有搬移或重建。</div>'
+            '<a href="/web/settings">返回設定</a>')
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT user_id FROM user_auth_identities "
+            "WHERE provider='google' AND provider_subject=%s",
+            (identity["subject"],))
+        row = cur.fetchone()
+        conn.rollback()
+        cur.close()
+    except Exception as exc:
+        conn.rollback()
+        print(f"❌ 查詢 Google 身分失敗：{type(exc).__name__}")
+        return render_page("登入暫時失敗",
+            '<div class="msg">目前無法查詢帳號，請稍後再試。</div>'), 503
+    finally:
+        release_db_connection(conn)
+    if not row:
+        return render_page("Google 尚未綁定",
+            '<div class="msg">這個 Google 帳號尚未綁定台股 BOT。請先回到 LINE，使用原本的登入網址進入既有帳號，再到「設定」綁定 Google。系統不會自動建立空白帳號，也不會依電子郵件自動合併。</div>'), 403
+    token = create_web_token(row[0])
     if not token:
-        body = ('<div class="msg">登入碼不正確、已過期，或已經使用過了。'
-                '請回 LINE 輸入「登入碼」取得新的一組。</div>' + NEED_LOGIN_HTML)
-        return render_page("登入", body), 401
-
-    safe_token = quote(token, safe="")
-    resp = make_response(redirect(f"/web/portfolio?t={safe_token}"))
+        return render_page("登入暫時失敗",
+            '<div class="msg">無法建立網頁工作階段，請稍後再試。</div>'), 503
+    resp = make_response(redirect("/web/portfolio"))
     resp.set_cookie("stockbot_token", token,
                     max_age=WEB_SESSION_DAYS * 86400,
-                    path="/", httponly=True, samesite="None", secure=True)
+                    path="/", httponly=True, samesite="Lax", secure=True)
     return resp
+
 
 
 def _admin_history_candidates(limit=100):
@@ -26243,7 +26368,7 @@ def _parse_admin_datetime(value):
 @app.before_request
 def _enforce_web_maintenance():
     path=request.path or ""
-    if not path.startswith("/web") or path in ("/web/login","/web/code","/web/maintenance"): return None
+    if not path.startswith("/web") or path in ("/web/login","/web/maintenance"): return None
     uid=current_web_user()
     if uid and is_admin(uid): return None
     state=_maintenance_state()
@@ -32510,6 +32635,9 @@ def web_compare(uid):
 @web_login_required
 def web_settings(uid):
     msg = ""
+    # LINE WebView 若未保存 Cookie，綁定入口需沿用目前有效的網址 Token。
+    _bind_token = request.args.get("t") or request.cookies.get("stockbot_token")
+    google_bind_href = "/auth/google?mode=bind" + ("&t=" + quote(str(_bind_token), safe="") if _bind_token else "")
     if request.method == "POST" and not valid_web_csrf():
         return respond_page("設定", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "settings")
     if request.method == "POST":
@@ -32552,6 +32680,11 @@ def web_settings(uid):
 
 <button type="submit">儲存設定</button>
 </form>
+
+<div class="section-head" style="margin-top:24px"><h2>帳號登入方式</h2>
+  <span class="section-note">跨裝置同步</span></div>
+<div class="hint">綁定 Google 後，可使用 LINE 登入網址或 Google 登入同一個帳號；不會另建一份持股資料。</div>
+<a href="{google_bind_href}" style="display:block;text-align:center;text-decoration:none;padding:12px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800;margin-top:10px">綁定 Google 帳號</a>
 
 <div class="hint" style="margin-top:22px">
   <b>關於交易成本</b><br>
@@ -42423,30 +42556,8 @@ def handle_message(event):
         else:
             reply = "❌ 產生登入網址失敗，請稍後再試。"
 
-    elif text in ["登入碼", "驗證碼", "CODE", "登入"]:
-        code = create_web_code(user_id)
-        if code:
-            base = request.url_root.rstrip("/")
-            # V105：登入碼改成「碼＋直接前往登入頁」的 Flex，避免使用者還要自己選取網址。
-            login_page = f"{base}/web/code"
-            contents = {
-                "type":"bubble","size":"mega",
-                "body":{"type":"box","layout":"vertical","paddingAll":"20px","contents":[
-                    {"type":"text","text":"🔑 網頁登入碼","size":"xl","weight":"bold","color":"#172033"},
-                    {"type":"text","text":str(code),"size":"xxl","weight":"bold","color":"#315E9B","align":"center","margin":"lg"},
-                    {"type":"text","text":f"有效 {WEB_CODE_MINUTES} 分鐘・只能使用一次","size":"sm","color":"#667085","align":"center","margin":"sm"},
-                    {"type":"separator","margin":"lg"},
-                    {"type":"text","text":"1. 點下面按鈕開啟登入頁","size":"sm","weight":"bold","color":"#344054","margin":"lg"},
-                    {"type":"text","text":"2. 輸入上面的 6 位數登入碼","size":"sm","color":"#475467","margin":"sm"},
-                    {"type":"text","text":f"登入成功後，此瀏覽器可保持登入 {WEB_SESSION_DAYS} 天。","size":"xs","color":"#667085","wrap":True,"margin":"sm"},
-                    {"type":"button","style":"primary","color":"#315E9B","margin":"lg","action":{"type":"uri","label":"🌐 瀏覽器登入","uri":_line_external_browser_url(login_page)}},
-                    {"type":"text","text":"重新索取會讓舊的登入碼失效。","size":"xs","color":"#98A2B3","wrap":True,"margin":"sm"}
-                ]}
-            }
-            flex_reply = FlexSendMessage(alt_text="🔑 網頁登入碼", contents=contents)
-            reply = None
-        else:
-            reply = "❌ 產生登入碼失敗，請稍後再試。"
+    elif text in ["登入碼", "驗證碼", "CODE"]:
+        reply = "登入碼功能已取消。請輸入「網頁」或「產生登入網址」取得登入連結。"
 
     elif is_admin(user_id) and text in ["名單", "使用者", "VIP"]:
         reply = build_user_list_report()
