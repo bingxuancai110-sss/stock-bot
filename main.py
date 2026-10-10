@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V266_GOOGLE_OAUTH_LOGIN_CODE_REMOVED_REVIEWED_DRAFT"
+APP_BUILD = "V267_GOOGLE_OAUTH_PREMARKET_CHIPS_UI_REFINEMENT_DRAFT"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
 # index on page render so an upstream timeout cannot hold the whole page for six seconds.
@@ -19987,10 +19987,11 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
   .wrap{max-width:720px;margin:0 auto;padding:0 16px 80px}
   /* Google 帳號入口：放在每頁共用頁首右上角，LINE 直連頁也會出現。 */
   .app-header{position:relative;padding-right:58px}
-  .app-account-link{position:absolute;right:0;top:2px;width:44px;height:44px;display:flex;align-items:center;justify-content:center;border:1px solid #D5E2ED;border-radius:50%;background:#fff;box-shadow:0 3px 10px rgba(30,65,92,.10);text-decoration:none}
-  .app-account-link svg{width:24px;height:24px;display:block}
+  .app-account-link{position:absolute;right:0;top:2px;min-height:44px;display:flex;align-items:center;justify-content:center;gap:7px;padding:0 11px;border:1px solid #D5E2ED;border-radius:24px;background:#fff;box-shadow:0 3px 10px rgba(30,65,92,.10);text-decoration:none;color:#315E82;font-size:11px;font-weight:800;white-space:nowrap}
+  .app-account-link svg{width:24px;height:24px;display:block;flex:none}
+  .app-account-link:after{content:"綁定 Google";display:inline-block}
   .app-account-link:focus-visible{outline:3px solid rgba(23,105,176,.28);outline-offset:2px}
-  @media(max-width:420px){.app-header{padding-right:50px}.app-account-link{width:40px;height:40px;top:0}}
+  @media(max-width:420px){.app-header{padding-right:12px}.app-account-link{top:-1px;min-height:36px;padding:0 8px;gap:5px;font-size:10px}.app-account-link svg{width:21px;height:21px}}
   /* iOS 分組列表：卡片是白的、圓角較大、不用外框——
      灰底本身就把卡片分出來了，再加邊框會顯得雜。
      這幾條放在共用樣式，讓所有頁面的卡片一次改變外觀。 */
@@ -22013,6 +22014,33 @@ input:focus, select:focus, textarea:focus { outline: 3px solid rgba(47,120,168,.
   .market-strip > span { padding:11px 10px !important; }
   .home-metric { border-radius:12px !important; }
   .rank-card .rank-row-main { grid-template-columns:30px minmax(0,1fr) auto !important; }
+/* V267：Google 綁定入口加上可辨識文字；避免只有 G 圖示而不知用途。 */
+.app-header .app-account-link{z-index:3;max-width:calc(100vw - 28px)}
+/* V267：LINE 內建瀏覽器盤前頁緊貼固定頁首，移除不必要的大段空白。 */
+.app-page-content:has(.premarket-market-card){margin-top:0!important;padding-top:0!important}
+.app-page-content:has(.premarket-market-card)>.premarket-market-card{margin-top:0!important}
+.app-page-content:has(.premarket-market-card) .premarket-meta{margin-top:0!important}
+.app-page-content:has(.premarket-market-card) .premarket-market-card:first-child{transform:none!important}
+/* V267：籌碼超人卡片使用明確的左右資訊分區，避免主文被壓成窄欄。 */
+.wb-chip-card .wb-chip-row{display:grid!important;grid-template-columns:minmax(0,1.35fr) minmax(92px,.72fr) minmax(110px,.82fr) 16px!important;grid-template-areas:"main price meta arrow" "main price meta arrow"!important;gap:10px!important;align-items:center!important;padding:15px 12px!important;min-width:0!important;text-align:left!important}
+.wb-chip-card .wb-chip-row>.wb-row-main{grid-area:main!important;min-width:0!important;align-self:start!important}
+.wb-chip-card .wb-chip-amount{grid-area:price!important;display:flex!important;flex-direction:column!important;align-items:flex-end!important;justify-content:center!important;min-width:0!important;text-align:right!important}
+.wb-chip-card .wb-chip-meta{grid-area:meta!important;display:flex!important;flex-direction:column!important;align-items:flex-end!important;justify-content:center!important;min-width:0!important;text-align:right!important}
+.wb-chip-card .wb-chip-row>span:last-child{grid-area:arrow!important;justify-self:end!important}
+.wb-chip-card .wb-chip-direction{display:inline-block!important;max-width:100%!important;width:fit-content!important;padding:5px 8px!important;border-radius:8px!important;line-height:1.4!important;overflow-wrap:anywhere!important}
+.wb-chip-card .wb-chip-note,.wb-chip-card .wb-chip-split{display:block!important;line-height:1.55!important;overflow-wrap:anywhere!important;word-break:break-word!important}
+.wb-chip-card .wb-chip-amount>b,.wb-chip-card .wb-chip-meta>b{font-size:clamp(12px,3.4vw,17px)!important;line-height:1.35!important;overflow-wrap:anywhere!important}
+.wb-chip-card .wb-chip-amount>small,.wb-chip-card .wb-chip-meta>small{font-size:10px!important;line-height:1.5!important;overflow-wrap:anywhere!important}
+@media(max-width:620px){
+ .wb-chip-card .wb-chip-row{grid-template-columns:minmax(0,1.2fr) minmax(76px,.8fr)!important;grid-template-areas:"main main" "price meta" "arrow arrow"!important;gap:10px 12px!important;padding:13px 12px!important}
+ .wb-chip-card .wb-chip-row>.wb-row-main{grid-area:main!important}
+ .wb-chip-card .wb-chip-amount{grid-area:price!important;align-items:flex-start!important;text-align:left!important;padding-top:9px;border-top:1px solid #e8eef3}
+ .wb-chip-card .wb-chip-meta{grid-area:meta!important;align-items:flex-end!important;text-align:right!important;padding-top:9px;border-top:1px solid #e8eef3}
+ .wb-chip-card .wb-chip-row>span:last-child{grid-area:arrow!important;display:none!important}
+ .wb-chip-card .wb-chip-note{font-size:12px!important}
+ .wb-chip-card .wb-chip-amount>b,.wb-chip-card .wb-chip-meta>b{font-size:13px!important}
+}
+
 }
 
 
@@ -26755,6 +26783,10 @@ def web_premarket(uid):
       .premarket-empty-state b {{ color:#6E5228; font-size:1.05rem; }}
       .premarket-empty-state p {{ margin:.55rem 0 0; }}
       .premarket-raw {{ margin-top:14px; }}
+      /* V267：盤前頁不在第一張卡片前額外留白；LINE WebView 與 Safari 共用。 */
+      .app-page-content:has(.premarket-market-card) {{ margin-top:0!important; padding-top:0!important; }}
+      .app-page-content:has(.premarket-market-card) > .premarket-market-card {{ margin-top:0!important; }}
+      .app-page-content:has(.premarket-market-card) > .premarket-market-card:first-child {{ transform:none!important; }}
       /* LINE WebView／iPhone：避免盤前長文字把欄位擠出畫面。 */
       .premarket-market-card,.premarket-section,.premarket-status,.premarket-event-card{{min-width:0;max-width:100%;}}
       .premarket-row,.premarket-metric{{min-width:0;align-items:flex-start;}}
