@@ -21672,9 +21672,10 @@ input:focus, select:focus, textarea:focus { outline: 3px solid rgba(47,120,168,.
 /* Local navigation feedback: keep the current page visible while the next fragment loads. */
 #app-page-local-loading{
   display:flex;align-items:center;gap:9px;margin:0 0 12px;padding:10px 12px;
-  border:1px solid #D5E4EF;border-radius:11px;background:#FFFFFF;color:#345B77;
+  border:2px solid #8AAFC6;border-radius:11px;background:#F4FAFE;color:#173F59;
   font-size:12px;font-weight:800;line-height:1.4;box-shadow:0 3px 10px rgba(34,73,100,.045);
 }
+#app-page-local-loading .app-local-elapsed{margin-left:auto;white-space:nowrap;color:#183F5A;font-size:12px;font-variant-numeric:tabular-nums;font-weight:950}
 #app-page-local-loading .app-local-spinner{
   width:16px;height:16px;flex:0 0 16px;border:2px solid #D4E2EC;
   border-top-color:#4F86A9;border-radius:50%;animation:app-local-spin .75s linear infinite;
@@ -21788,6 +21789,39 @@ input:focus, select:focus, textarea:focus { outline: 3px solid rgba(47,120,168,.
 #app-page-content .history-period-head {background:#F1F5F8 !important;border-color:#DCE6ED !important;}
 #app-page-content .history-period-head b,
 #app-page-content .history-name {color:#20394D !important;}
+/* V251: 強化排行榜可讀性，不再使用淡到看不清的文字與邊框。 */
+#app-page-content .rank-situation,#app-page-content .rank-spotlight,#app-page-content .rank-card,#app-page-content .leaderboard-history,#app-page-content .rank-chart-panel {border-color:#A8BAC9!important;box-shadow:0 3px 0 rgba(25,55,78,.07),0 8px 22px rgba(25,55,78,.09)!important;}
+#app-page-content .rank-card {border:2px solid #B7C6D2!important;background:#FFFFFF!important;color:#142B3D!important;}
+#app-page-content .rank-card.rank-champion {border:2px solid #477FA3!important;border-left:7px solid #245F86!important;background:#F0F7FC!important;}
+#app-page-content .rank-card.rank-silver {border-left:7px solid #667D8E!important;background:#F7F9FB!important;}
+#app-page-content .rank-card.rank-bronze {border-left:7px solid #8B6A4C!important;background:#FFF9F2!important;}
+#app-page-content .rank-card .name,#app-page-content .rank-card .rank-meta,#app-page-content .rank-card .rank-meta span,#app-page-content .rank-card .rank-movement,#app-page-content .rank-card .rank-private,#app-page-content .rank-card .rank-detail-body>span {color:#243746!important;}
+#app-page-content .rank-card .rank-meta,#app-page-content .rank-card .rank-movement,#app-page-content .rank-card .rank-private {font-weight:650!important;}
+#app-page-content .rank-card .rank-return,#app-page-content .rank-card .rank-return.up,#app-page-content .rank-card .rank-detail-body .num.up {color:#C5221F!important;font-size:clamp(22px,5vw,28px)!important;font-weight:1000!important;text-shadow:0 1px 0 rgba(197,34,31,.08)!important;}
+#app-page-content .rank-card .rank-return.down,#app-page-content .rank-card .rank-detail-body .num.down {color:#087443!important;font-size:clamp(22px,5vw,28px)!important;font-weight:1000!important;}
+#app-page-content .rank-card .rank-return.flat {color:#334155!important;font-weight:900!important;}
+#app-page-content .rank-card .rank-number {color:#FFFFFF!important;background:#244E68!important;border:1px solid #173C53!important;min-width:38px!important;min-height:38px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;border-radius:10px!important;}
+#app-page-content .rank-card .rank-detail>summary,#app-page-content .rank-card .rank-card-detail>summary {color:#163E58!important;background:#E5F0F7!important;border:1px solid #8BAEC5!important;font-weight:900!important;}
+#app-page-content .rank-situation .rank-situation-item small,#app-page-content .rank-situation .rank-situation-sub,#app-page-content .my-rank-card small,#app-page-content .my-rank-card span {color:#354F63!important;font-weight:650!important;}
+#app-page-content .rank-situation .rank-situation-item b.up,#app-page-content .rank-situation .rank-situation-item b.positive,#app-page-content .my-rank-card .up {color:#C5221F!important;font-weight:1000!important;}
+#app-page-content .rank-situation .rank-situation-item b.down,#app-page-content .rank-situation .rank-situation-item b.negative,#app-page-content .my-rank-card .down {color:#087443!important;font-weight:1000!important;}
+#app-page-content .rank-tabs .on,#app-page-content .rank-tabs a.on,#app-page-content .rank-tabs button.on {background:#244E68!important;color:#FFFFFF!important;border:2px solid #173C53!important;box-shadow:none!important;}
+#app-page-content .rank-source-note,#app-page-content .history-note,#app-page-content .rank-chart-panel .sub {color:#344B5D!important;font-weight:600!important;}
+/* Also apply on direct/full-page responses where the #app-page-content shell is absent. */
+.rank-card {border:2px solid #B7C6D2!important;background:#FFFFFF!important;color:#142B3D!important;box-shadow:0 3px 0 rgba(25,55,78,.07),0 8px 22px rgba(25,55,78,.09)!important;}
+.rank-card.rank-champion {border:2px solid #477FA3!important;border-left:7px solid #245F86!important;background:#F0F7FC!important;}
+.rank-card.rank-silver {border-left:7px solid #667D8E!important;background:#F7F9FB!important;}
+.rank-card.rank-bronze {border-left:7px solid #8B6A4C!important;background:#FFF9F2!important;}
+.rank-card .name,.rank-card .rank-meta,.rank-card .rank-meta span,.rank-card .rank-movement,.rank-card .rank-private,.rank-card .rank-detail-body>span {color:#243746!important;}
+.rank-card .rank-return,.rank-card .rank-return.up,.rank-card .rank-detail-body .num.up {color:#C5221F!important;font-size:clamp(22px,5vw,28px)!important;font-weight:1000!important;}
+.rank-card .rank-return.down,.rank-card .rank-detail-body .num.down {color:#087443!important;font-size:clamp(22px,5vw,28px)!important;font-weight:1000!important;}
+.rank-card .rank-number {color:#FFFFFF!important;background:#244E68!important;border:1px solid #173C53!important;min-width:38px!important;min-height:38px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;border-radius:10px!important;}
+.rank-situation .rank-situation-item small,.rank-situation .rank-situation-sub,.my-rank-card small,.my-rank-card span {color:#354F63!important;font-weight:650!important;}
+.rank-situation .rank-situation-item b.up,.rank-situation .rank-situation-item b.positive,.my-rank-card .up {color:#C5221F!important;font-weight:1000!important;}
+.rank-situation .rank-situation-item b.down,.rank-situation .rank-situation-item b.negative,.my-rank-card .down {color:#087443!important;font-weight:1000!important;}
+.wb-load-elapsed{display:inline-block;margin-left:7px;padding:3px 7px;border-radius:7px;background:#173F59;color:#fff!important;font-size:11px;font-weight:950;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.wb-load-error{border:2px solid #B42318!important;background:#FFF4F2!important;color:#7A271A!important;padding:18px!important;border-radius:12px!important;}
+.wb-load-error b{display:block;color:#B42318!important;font-size:16px!important;}.wb-load-error small{display:block;margin-top:6px;color:#7A271A!important;line-height:1.6!important;}
 #app-page-content .history-rank {color:#63798B !important;}
 #app-page-content .history-return.up,
 #app-page-content .history-rank-row .num.up {color:#D93025 !important;}
@@ -21936,12 +21970,15 @@ def render_page(title, body, nav_active=None, user_name=None):
     if(title){{ title.textContent=label||'正在開啟頁面'; loader.setAttribute('aria-label',title.textContent); }}
     if(progressTitle)progressTitle.textContent=label||'正在開啟頁面';
     if(progressCard)progressCard.classList.remove('show');
-    if(progressPercent)progressPercent.textContent='8%';
-    if(progressBar)progressBar.style.width='8%';
+    if(progressPercent)progressPercent.hidden=true;
+    if(progressBar)progressBar.style.width='0%';
     if(progressTime)progressTime.textContent='已等待 0.0 秒';
     loader.classList.remove('done');loader.classList.add('show');
-    // 只有從 LINE／外部網址完整進站才顯示整頁進度卡；站內切頁只保留頂部細進度線。
-    // 不顯示虛構的百分比／等待秒數；首次進站使用全頁 Loader，站內導覽改用內容區提示。
+    // V251：真正啟動計時器。先前只定義 paintEstimatedProgress，卻沒有排程，
+    // 導致切頁超過 3 秒仍看不到持續更新的等待秒數。
+    progressTimer=window.setInterval(paintEstimatedProgress,100);
+    paintEstimatedProgress();
+    // 只有首次完整進站顯示整頁 Loader；站內切頁只保留頂部進度線及內容區提示。
   }};
 
   window.finishPageNavLoader=function(){{
@@ -22223,14 +22260,25 @@ def render_page(title, body, nav_active=None, user_name=None):
       banner.id = 'app-page-local-loading';
       banner.setAttribute('role', 'status');
       banner.setAttribute('aria-live', 'polite');
-      banner.innerHTML = '<span class="app-local-spinner" aria-hidden="true"></span><span class="app-local-loading-text"></span>';
+      banner.innerHTML = '<span class="app-local-spinner" aria-hidden="true"></span><span class="app-local-loading-text"></span><strong class="app-local-elapsed">0.0 秒</strong>';
       appContent.insertBefore(banner, appContent.firstChild);
     }}
     var text = banner.querySelector('.app-local-loading-text');
     if (text) text.textContent = message || '正在開啟頁面…';
+    if (!banner.dataset.startedAt) banner.dataset.startedAt = String(performance.now());
+    if (!banner.dataset.timerStarted) {{
+      banner.dataset.timerStarted = '1';
+      banner._elapsedTimer = window.setInterval(function() {{
+        if (!banner.isConnected) return;
+        var elapsed = Math.max(0, (performance.now() - Number(banner.dataset.startedAt || performance.now())) / 1000);
+        var out = banner.querySelector('.app-local-elapsed');
+        if (out) out.textContent = elapsed.toFixed(1) + ' 秒';
+      }}, 100);
+    }}
   }}
   function hideLocalPageLoading() {{
     var banner = document.getElementById('app-page-local-loading');
+    if (banner && banner._elapsedTimer) window.clearInterval(banner._elapsedTimer);
     if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
   }}
   window.stockBotFinishPageLoading = finishTopNavLoading;
@@ -36137,6 +36185,17 @@ def render_workbench_body(initial_tab=""):
   var initialTab=(root.dataset.initialTab||new URLSearchParams(location.search).get('tab')||'').trim();
   var state={rows:[],sources:{},personal:{},scoreChanges:[],scoreChangeSort:'score_desc',assetMode:'stock',source:'黑馬',query:'',kind:'all',dir:'all',sort:'score',desc:true,marketOpen:false,timer:null,review:null,reviewLoading:false,quoteLoading:false,quoteUpdatedAt:'',returnScroll:0,loadedSources:{},loadingSource:'',closingDrawer:false};
   var tabs=document.getElementById('wb-tabs'), scoreChangePanel=document.getElementById('wb-score-change-panel'), rowsEl=document.getElementById('wb-rows'), note=document.getElementById('wb-note'), count=document.getElementById('wb-count'), status=document.getElementById('wb-status'), pulse=document.getElementById('wb-pulse'), drawer=document.getElementById('wb-drawer'), mask=document.getElementById('wb-mask');
+  var wbLoadStartedAt=performance.now(), wbLoadClock=null, wbLoadFinished=false;
+  var wbElapsed=document.createElement('span'); wbElapsed.className='wb-load-elapsed'; wbElapsed.textContent='載入 0.0 秒';
+  if(status){status.insertAdjacentElement('afterend',wbElapsed);}
+  function finishWorkbenchLoad(label){
+    if(wbLoadFinished)return;wbLoadFinished=true;
+    if(wbLoadClock)window.clearInterval(wbLoadClock);
+    var sec=Math.max(0,(performance.now()-wbLoadStartedAt)/1000);
+    if(wbElapsed)wbElapsed.textContent='實際耗時 '+sec.toFixed(2)+' 秒';
+    if(label)console.info('[台股 BOT] 選股工作台首屏 '+label+'，耗時 '+sec.toFixed(2)+' 秒');
+  }
+  wbLoadClock=window.setInterval(function(){if(!wbLoadFinished&&wbElapsed)wbElapsed.textContent='載入 '+Math.max(0,(performance.now()-wbLoadStartedAt)/1000).toFixed(1)+' 秒';},100);
   function token(){try{return new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||''}catch(e){return ''}}
   function api(path){return path+(path.indexOf('?')>-1?'&':'?')+'fragment=1'+(token()?'&t='+encodeURIComponent(token()):'')}
   function esc(v){return String(v==null?'—':v).replace(/[&<>'"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[c]})}
@@ -36188,7 +36247,7 @@ def render_workbench_body(initial_tab=""):
         var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
         var metric='—';
         if(n!=null){
-          if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<=0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\\/\s*4/);if(mm)hc=Number(mm[1]);} metric=hc+'/4';}
+          if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<=0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\/\s*4/);if(mm)hc=Number(mm[1]);} metric=hc+'/4';}
           else{var digits=(key==='低波動'||key==='ROE品質')?2:1;metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');}
         }
         return '<button type="button" class="wb-lab-pick" data-lab-code="'+esc(x.code)+'" data-lab-key="'+esc(key)+'"><span class="wb-lab-rank">'+(i+1)+'</span><span class="wb-lab-pick-main"><b>'+esc(x.code)+'　'+esc(x.name)+'</b><small>'+esc(x.industry||'未分類')+'</small><span class="wb-lab-pick-metric-mobile"><strong>'+esc(metric)+'</strong><em>'+esc(x.metric_label||'研究值')+'</em></span><span class="wb-lab-pick-tags">'+chips+'</span><span class="wb-lab-pick-reason-mobile">'+esc(x.reason||'')+'</span></span><span class="wb-lab-pick-metric"><strong>'+esc(metric)+'</strong><small>'+esc(x.metric_label||'研究值')+'</small></span><span class="wb-lab-pick-reason">'+esc(x.reason||'')+'</span><span class="wb-lab-arrow">›</span></button>';
@@ -36405,7 +36464,7 @@ def render_workbench_body(initial_tab=""):
       }
       var hitCount=Number(x.hit_count);
       if(!isFinite(hitCount)||hitCount<0){hitCount=names.filter(passFor).length;}
-      if(hitCount===0){var mm=String(reason||'').match(/(\d+)\s*\\/\s*4/);if(mm)hitCount=Number(mm[1]);}
+      if(hitCount===0){var mm=String(reason||'').match(/(\d+)\s*\/\s*4/);if(mm)hitCount=Number(mm[1]);}
       hitCount=Math.max(0,Math.min(4,hitCount));
       if(key==='混合'){
         whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>條件有排名</span></div><p>'+esc(hitCount===4?'四個研究因子都有可用排名。':'目前有 '+hitCount+' / 4 個研究因子納入共識；未納入者不會被當成通過。')+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';if(!v&&key==='混合'&&x.factor_rank_map&&x.factor_rank_map[n]!=null)v='第'+x.factor_rank_map[n]+'名';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'已納入':'未納入'))+'</strong></div>';}).join('')+'</div>';
@@ -36471,7 +36530,7 @@ def render_workbench_body(initial_tab=""):
       var hitCount=derivedHit;
       if(derivedHit===0){
         hitCount=Number(x.hit_count);
-        if(!isFinite(hitCount)||hitCount<0){var mm=String(reason||'').match(/(\d+)\s*\\/\s*4/);hitCount=mm?Number(mm[1]):0;}
+        if(!isFinite(hitCount)||hitCount<0){var mm=String(reason||'').match(/(\d+)\s*\/\s*4/);hitCount=mm?Number(mm[1]):0;}
       }
       hitCount=Math.max(0,Math.min(4,hitCount));
       whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(hitCount===4?'四項條件全部通過。':('共通過 '+hitCount+' / 4 項；只有標示「通過」的項目才算入選條件。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
@@ -36513,12 +36572,11 @@ def render_workbench_body(initial_tab=""):
   if(!document.getElementById('wb-lab-loading-live-css')){var ls=document.createElement('style');ls.id='wb-lab-loading-live-css';ls.textContent='.wb-lab-loading-live{min-height:118px;padding:18px 20px;border:1px solid #dfe8f1;border-radius:16px;background:linear-gradient(180deg,#fbfdff,#f4f8fb);color:#294d6c}.wb-lab-loading-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.wb-lab-loading-head b{font-size:15px}.wb-lab-loading-pct{font-size:20px;font-weight:900;color:#274c77;font-variant-numeric:tabular-nums}.wb-lab-loading-track{height:10px;margin-top:13px;border-radius:99px;background:#e4ebf2;overflow:hidden}.wb-lab-loading-bar{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,#6d95bb,#274c77);transition:width .35s ease}.wb-lab-loading-note{display:block;margin-top:8px;color:#7b8c9b;font-size:11px;line-height:1.45}.wb-lab-loading-dots{display:inline-block;margin-left:3px;font-weight:900;color:#2d628e}';document.head.appendChild(ls);}
     function loadStrategyLab(force){
     if(labLoaded&&!force)return;
-    var progressTimer=null,progress=8;
-    if(labBody)labBody.innerHTML='<div class="wb-lab-loading wb-lab-loading-live"><div class="wb-lab-loading-head"><b>正在載入策略研究資料</b><strong class="wb-lab-loading-pct">8%</strong></div><div class="wb-lab-loading-track"><div class="wb-lab-loading-bar"></div></div><small class="wb-lab-loading-note">正在讀取研究快照與策略候選資料<span class="wb-lab-loading-dots">.</span></small></div>';
+    var progressTimer=null,labStarted=performance.now();
+    if(labBody)labBody.innerHTML='<div class="wb-lab-loading wb-lab-loading-live"><div class="wb-lab-loading-head"><b>正在載入策略研究資料</b><strong class="wb-lab-loading-pct">0.0 秒</strong></div><div class="wb-lab-loading-track"><div class="wb-lab-loading-bar"></div></div><small class="wb-lab-loading-note">正在讀取研究快照與策略候選資料</small></div>';
     var bar=labBody&&labBody.querySelector('.wb-lab-loading-bar'),pct=labBody&&labBody.querySelector('.wb-lab-loading-pct');
-    function setProgress(v){progress=Math.max(progress,Math.min(92,v));if(bar)bar.style.width=progress+'%';if(pct)pct.textContent=Math.round(progress)+'%';}
-    if(bar){bar.style.width='8%';progressTimer=setInterval(function(){if(progress<45)setProgress(progress+4);else if(progress<72)setProgress(progress+2);else if(progress<88)setProgress(progress+0.7);},280);}
-    fetch(api('/web/api/workbench/strategy-lab'+(force?'?refresh=1':'')),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');if(progressTimer)clearInterval(progressTimer);setProgress(100);setTimeout(function(){labLoaded=true;renderStrategyLab(data);},180);}).catch(function(e){if(progressTimer)clearInterval(progressTimer);if(labBody)labBody.innerHTML='<div class="wb-lab-note">策略研究資料暫時無法載入：'+esc(String(e.message||e))+'</div>';});
+    if(bar){bar.style.width='35%';progressTimer=window.setInterval(function(){if(pct)pct.textContent=((performance.now()-labStarted)/1000).toFixed(1)+' 秒';},100);}
+    fetch(api('/web/api/workbench/strategy-lab'+(force?'?refresh=1':'')),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');if(progressTimer)clearInterval(progressTimer);if(pct)pct.textContent='實際耗時 '+((performance.now()-labStarted)/1000).toFixed(2)+' 秒';if(bar)bar.style.width='100%';finishWorkbenchLoad('策略研究完成');setTimeout(function(){labLoaded=true;renderStrategyLab(data);},180);}).catch(function(e){if(progressTimer)clearInterval(progressTimer);finishWorkbenchLoad('策略研究失敗');if(labBody)labBody.innerHTML='<div class="wb-lab-note">策略研究資料暫時無法載入：'+esc(String(e.message||e))+'；請按重新讀取重試。</div>';});
   }
   function renderTabs(){var list=sources();if(list.indexOf(state.source)<0)state.source=list[0]||'';tabs.innerHTML=list.map(function(s){var loaded=!!state.loadedSources[s];var n=s==='成效'||s==='我的排行'?'':(loaded?' <small>'+state.rows.filter(function(r){return r.source===s}).length+'</small>':'');return '<button type="button" class="'+(state.source===s?'on':'')+'" data-source="'+esc(s)+'">'+esc(s)+n+'</button>'}).join('');}
   function filtered(){var q=state.query.trim().toLowerCase();return state.rows.filter(function(r){var etf=r.source==='ETF';return (state.source==='全部'||r.source===state.source)&&(!q||[r.code,r.name,r.industry].join(' ').toLowerCase().indexOf(q)>-1)&&(state.kind==='all'||(state.kind==='etf'?etf:!etf))&&(state.dir==='all'||(state.dir==='up'&&Number(r.change_pct)>0)||(state.dir==='down'&&Number(r.change_pct)<0));}).sort(function(a,b){var av=a[state.sort],bv=b[state.sort];av=av==null?-Infinity:Number(av);bv=bv==null?-Infinity:Number(bv);return state.desc?bv-av:av-bv;});}
@@ -36994,6 +37052,8 @@ function bindFactors(){
     var fetchOptions={credentials:'same-origin',cache:'no-store'};
     if(controller) fetchOptions.signal=controller.signal;
     var sourceViewEpoch=state.viewEpoch||0;
+    var sourceStartedAt=performance.now();
+    if(status)status.setAttribute('data-loading-source',source);
     var promise = fetch(api('/web/api/workbench/source?source='+encodeURIComponent(source)),fetchOptions)
       .finally(function(){if(timeoutId)window.clearTimeout(timeoutId);})
       .then(function(r){
@@ -37009,6 +37069,9 @@ function bindFactors(){
         state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{available:true});
         state.loadedSources[source]=true;
         delete state.loadingSources[source];
+        var sourceElapsed=Math.max(0,(performance.now()-sourceStartedAt)/1000);
+        console.info('[台股 BOT] 選股快照 '+source+' API 耗時 '+sourceElapsed.toFixed(2)+' 秒');
+        if(source==='黑馬')finishWorkbenchLoad('完成');
         renderTabs();
         if(state.source===source && sourceViewEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer) render();
         return data;
@@ -37018,8 +37081,12 @@ function bindFactors(){
         if(e&&e.message==='AUTH'){location.reload();return null;}
         console.warn('工作台快照 '+source+' 載入失敗',e);
         var em=String(e&&e.name==='AbortError'?'逾時（12 秒）':(e&&e.message||e));
+        var sourceElapsed=Math.max(0,(performance.now()-sourceStartedAt)/1000);
+        console.error('[台股 BOT] 選股快照 '+source+' 失敗，耗時 '+sourceElapsed.toFixed(2)+' 秒：'+em);
         state.sources[source]=Object.assign({},state.sources[source]||{},{available:false,error:em});
+        if(source==='黑馬')finishWorkbenchLoad('失敗');
         renderTabs();
+        if(source===state.source){status.textContent=source+' 快照載入失敗（'+sourceElapsed.toFixed(2)+' 秒）';rowsEl.innerHTML='<div class="wb-empty wb-load-error"><b>'+esc(source)+' 快照載入失敗</b><small>'+esc(em)+'；可按「重新整理」重試，其他分頁仍可使用。</small></div>';}
         return null;
       });
     state.loadingSources[source]=promise;
