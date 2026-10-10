@@ -43,12 +43,14 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V255_LEADERBOARD_REDESIGN_FAST_NAV"
+APP_BUILD = "V256_GOLD_CHAMPION_RANK_ALIGNMENT_CACHE_ACCELERATION"
 
 # 首頁短 TTL 快取：避免使用者在首頁／持股／首頁間快速切換時，
 # 每次都重新查相同的共享快照與操作日誌。這些資料本身就不是毫秒級變動；
 # 即時股價仍每次重新抓，不經這個快取。
 _HOMEPAGE_SHARED_CACHE = {"key": None, "ts": 0.0, "value": None}
+_HOMEPAGE_SHARED_CACHE_BY_KEY = {}  # V256: keep one entry per user/holdings signature; do not let users evict each other.
+_HOMEPAGE_SHARED_CACHE_BY_KEY_MAX = 24
 _HOMEPAGE_JOURNAL_CACHE = {}
 _HOMEPAGE_QUOTE_MAP_CACHE = {}
 _HOMEPAGE_QUOTE_MAP_LOCK = threading.RLock()
@@ -60,7 +62,7 @@ _HOMEPAGE_SHARED_REFRESH_LOCK = threading.Lock()
 _HOMEPAGE_SHARED_REFRESHING = set()
 _HOMEPAGE_SHARED_TTL = max(60.0, float(os.environ.get("HOMEPAGE_SHARED_TTL_SECONDS", "300")))  # 個股即時價格仍另行更新
 _HOMEPAGE_SHARED_STALE_MAX_AGE = max(3600.0, float(os.environ.get("HOMEPAGE_SHARED_STALE_MAX_AGE_SECONDS", "86400")))
-_HOMEPAGE_JOURNAL_TTL = 8.0
+_HOMEPAGE_JOURNAL_TTL = 60.0  # operation log only changes on a trade; mutations explicitly invalidate it
 _WEB_FRAGMENT_CACHE = {}
 _WEB_FRAGMENT_CACHE_LOCK = threading.RLock()
 _WEB_FRAGMENT_CACHE_MAX = 96
@@ -138,7 +140,9 @@ def _refresh_homepage_shared_data(shared_key, user_id, position_codes):
             refreshed = list(executor.map(load, loaders))
 
         with _HOMEPAGE_CACHE_LOCK:
-            current = _HOMEPAGE_SHARED_CACHE.get("value") if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key else None
+            _shared_entry = _HOMEPAGE_SHARED_CACHE_BY_KEY.get(shared_key)
+            current = (_shared_entry.get("value") if _shared_entry else
+                       (_HOMEPAGE_SHARED_CACHE.get("value") if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key else None))
             previous = list(current) if isinstance(current, (list, tuple)) else None
             if previous and len(previous) == len(refreshed):
                 for index, value in enumerate(refreshed):
@@ -146,8 +150,12 @@ def _refresh_homepage_shared_data(shared_key, user_id, position_codes):
                     if value is None or (not value and previous[index]):
                         refreshed[index] = previous[index]
             refreshed = [({} if value is None else value) for value in refreshed]
+            _refresh_ts = time.monotonic()
+            _entry = _HOMEPAGE_SHARED_CACHE_BY_KEY.get(shared_key)
+            if _entry is not None:
+                _entry.update({"ts": _refresh_ts, "value": refreshed})
             if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key:
-                _HOMEPAGE_SHARED_CACHE.update({"ts": time.monotonic(), "value": refreshed})
+                _HOMEPAGE_SHARED_CACHE.update({"ts": _refresh_ts, "value": refreshed})
         print("⚡ 首頁共享資料背景刷新完成 %.0fms" % ((time.monotonic()-started)*1000), flush=True)
         return True
     finally:
@@ -182,12 +190,16 @@ def _schedule_homepage_taiex_refresh(shared_key):
         try:
             fresh = fetch_taiex_summary()
             with _HOMEPAGE_CACHE_LOCK:
-                if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key:
-                    current = _HOMEPAGE_SHARED_CACHE.get("value")
-                    if isinstance(current, (list, tuple)) and len(current) >= 6:
-                        updated = list(current)
-                        updated[5] = fresh if isinstance(fresh, dict) and fresh else None
-                        _HOMEPAGE_SHARED_CACHE["value"] = updated
+                _entry = _HOMEPAGE_SHARED_CACHE_BY_KEY.get(shared_key)
+                current = (_entry.get("value") if _entry else
+                           (_HOMEPAGE_SHARED_CACHE.get("value") if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key else None))
+                if isinstance(current, (list, tuple)) and len(current) >= 6:
+                    updated = list(current)
+                    updated[5] = fresh if isinstance(fresh, dict) and fresh else None
+                    if _entry is not None:
+                        _entry.update({"ts": time.monotonic(), "value": updated})
+                    if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key:
+                        _HOMEPAGE_SHARED_CACHE.update({"ts": time.monotonic(), "value": updated})
             print("⏱️ 今日大盤摘要背景更新完成", flush=True)
         except Exception as exc:
             print("⚠️ 大盤摘要背景更新失敗：%s" % exc, flush=True)
@@ -24349,6 +24361,230 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   #app-page-content .rank-card .rank-return.up,
   #app-page-content .rank-card .rank-return.down {{ font-size:19px !important; padding:4px 8px !important; }}
 }}
+
+/* V256 FINAL OVERRIDE — rank alignment and warm trophy treatment. Intentionally placed last
+   because older visual refresh rules had higher-specificity dark-blue honour styles. */
+#app-page-content .rank-rows .rank-card,
+#app-page-content .rank-rows .rank-card.rank-champion,
+.rank-rows .rank-card,
+.rank-rows .rank-card.rank-champion {{
+  color:#202923 !important;
+  background:#FFFFFF !important;
+  border:1.5px solid #C7CDD0 !important;
+  border-left:4px solid #AEB7BC !important;
+  border-radius:15px !important;
+  box-shadow:0 2px 7px rgba(20,31,24,.055) !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-silver,
+.rank-rows .rank-card.rank-silver {{
+  background:#FAFBFB !important; border-left:4px solid #939DA3 !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-bronze,
+.rank-rows .rank-card.rank-bronze {{
+  background:#FFFBF7 !important; border-left:4px solid #B9794D !important;
+}}
+/* The first column is a fixed-width rail, so #1/#2/#3 all start and center on the same axis. */
+#app-page-content .rank-rows .rank-card .rank-row-main,
+.rank-rows .rank-card .rank-row-main {{
+  display:grid !important;
+  grid-template-columns:44px minmax(0,1fr) max-content !important;
+  grid-template-areas:"rank name ret" "movement movement movement" !important;
+  align-items:center !important;
+  column-gap:10px !important;
+  row-gap:3px !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-number,
+.rank-rows .rank-card .rank-number {{
+  grid-area:rank !important;
+  display:inline-flex !important;
+  align-items:center !important;
+  justify-content:center !important;
+  box-sizing:border-box !important;
+  width:44px !important; min-width:44px !important; max-width:44px !important;
+  height:40px !important; min-height:40px !important;
+  padding:0 !important; margin:0 !important;
+  border-radius:10px !important;
+  font-size:16px !important; line-height:1 !important; font-weight:950 !important;
+  font-variant-numeric:tabular-nums !important; letter-spacing:-.02em !important;
+}}
+#app-page-content .rank-rows .rank-card .name,
+.rank-rows .rank-card .name {{
+  grid-area:name !important; align-self:center !important; min-width:0 !important;
+  color:#17211B !important; font-size:17px !important; line-height:1.4 !important;
+  font-weight:900 !important; white-space:normal !important; overflow-wrap:anywhere !important;
+  text-overflow:clip !important; margin:0 !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-return,
+.rank-rows .rank-card .rank-return {{
+  grid-area:ret !important; justify-self:end !important; align-self:center !important;
+  font-variant-numeric:tabular-nums !important; font-size:clamp(20px,5vw,25px) !important;
+  line-height:1.05 !important; font-weight:950 !important; white-space:nowrap !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-movement,
+.rank-rows .rank-card .rank-movement {{
+  grid-area:movement !important; grid-column:auto !important;
+  justify-self:start !important; align-self:start !important;
+  margin:3px 0 0 0 !important; padding:0 !important;
+  color:#46524B !important; font-size:13px !important; line-height:1.45 !important;
+  font-weight:750 !important; white-space:normal !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-meta,
+#app-page-content .rank-rows .rank-card .rank-detail,
+#app-page-content .rank-rows .rank-card .rank-private,
+.rank-rows .rank-card .rank-meta,
+.rank-rows .rank-card .rank-detail,
+.rank-rows .rank-card .rank-private {{
+  margin-left:54px !important; color:#35413A !important;
+  font-size:13.5px !important; font-weight:700 !important; line-height:1.65 !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-meta em,
+#app-page-content .rank-rows .rank-card .rank-detail-body em,
+.rank-rows .rank-card .rank-meta em,
+.rank-rows .rank-card .rank-detail-body em {{
+  color:#58635D !important; font-weight:800 !important; font-style:normal !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-number,
+.rank-rows .rank-card .rank-number {{
+  background:#E9EEF0 !important; color:#33413A !important; border:1.5px solid #A8B4BA !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-number,
+.rank-rows .rank-card.rank-champion .rank-number {{
+  color:#573B0D !important; background:#F5D989 !important;
+  border:1.5px solid #C3932D !important; box-shadow:inset 0 1px 0 #FFF4C7 !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-silver .rank-number,
+.rank-rows .rank-card.rank-silver .rank-number {{
+  color:#35414A !important; background:#DDE2E5 !important; border-color:#9DA9B0 !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-bronze .rank-number,
+.rank-rows .rank-card.rank-bronze .rank-number {{
+  color:#733D1F !important; background:#F0D1BA !important; border-color:#C38D68 !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-champion,
+.rank-rows .rank-card.rank-champion {{
+  position:relative !important; overflow:hidden !important;
+  background:linear-gradient(150deg,#FFFEFA 0%,#FFF9E9 58%,#FFF2CB 100%) !important;
+  border:1.5px solid #D6B45E !important; border-left:6px solid #C28D22 !important;
+  box-shadow:0 5px 16px rgba(133,93,20,.11) !important;
+  padding:15px 13px 14px !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-champion:before,
+#app-page-content .rank-rows .rank-card.rank-champion:after,
+.rank-rows .rank-card.rank-champion:before,
+.rank-rows .rank-card.rank-champion:after {{
+  pointer-events:none !important;
+}}
+/* Override the old high-specificity navy honour banner: warm ivory + gold, not blue. */
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour,
+.rank-rows .rank-card.rank-champion .rank-honour {{
+  display:flex !important; flex-direction:row !important; justify-content:flex-start !important;
+  align-items:center !important; text-align:left !important; gap:14px !important;
+  min-height:0 !important; padding:12px 14px !important; margin:0 0 14px !important;
+  background:linear-gradient(110deg,#FFF8DE 0%,#FFFDF6 100%) !important;
+  border:1.5px solid #E1C16B !important; border-radius:12px !important;
+  border-bottom:1.5px solid #E1C16B !important;
+  color:#684A12 !important; box-shadow:none !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour:before,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour:after,
+.rank-rows .rank-card.rank-champion .rank-honour:before,
+.rank-rows .rank-card.rank-champion .rank-honour:after {{
+  content:none !important; display:none !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour-icon,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour-icon svg,
+.rank-rows .rank-card.rank-champion .rank-honour-icon,
+.rank-rows .rank-card.rank-champion .rank-honour-icon svg {{
+  display:grid !important; place-items:center !important;
+  width:62px !important; height:62px !important; flex:0 0 62px !important;
+  filter:drop-shadow(0 2px 2px rgba(133,93,20,.16)) !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour b,
+.rank-rows .rank-card.rank-champion .rank-honour b {{
+  display:block !important; margin:0 !important; color:#563C0C !important;
+  font-size:19px !important; line-height:1.25 !important; font-weight:950 !important;
+  letter-spacing:.02em !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-honour small,
+.rank-rows .rank-card.rank-champion .rank-honour small {{
+  display:block !important; margin-top:4px !important; color:#6F5A2C !important;
+  font-size:13px !important; line-height:1.45 !important; font-weight:800 !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-meta,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-meta span,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-meta em,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-movement,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-private,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-detail-body,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-detail-body span,
+.rank-rows .rank-card.rank-champion .rank-meta,
+.rank-rows .rank-card.rank-champion .rank-meta span,
+.rank-rows .rank-card.rank-champion .rank-meta em,
+.rank-rows .rank-card.rank-champion .rank-movement,
+.rank-rows .rank-card.rank-champion .rank-private,
+.rank-rows .rank-card.rank-champion .rank-detail-body,
+.rank-rows .rank-card.rank-champion .rank-detail-body span {{
+  color:#303B33 !important; font-size:13.5px !important; line-height:1.65 !important;
+  font-weight:750 !important;
+}}
+#app-page-content .rank-rows .rank-card.rank-champion .rank-detail > summary,
+.rank-rows .rank-card.rank-champion .rank-detail > summary {{
+  background:#FFF4D7 !important; color:#67470D !important; border:1.5px solid #D7B45B !important;
+  border-radius:9px !important; font-size:14px !important; font-weight:900 !important;
+}}
+#app-page-content .rank-rows .rank-champion-prompt,
+.rank-rows .rank-champion-prompt {{
+  display:block !important; margin:-7px 0 16px !important; padding:11px 13px !important;
+  background:#FFF9E9 !important; border:1px solid #E8D6A5 !important;
+  border-radius:10px !important; color:#75571C !important;
+  font-size:13.5px !important; line-height:1.5 !important; font-weight:850 !important;
+  text-align:center !important; letter-spacing:0 !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-return.up,
+.rank-rows .rank-card .rank-return.up {{
+  color:#B42318 !important; background:#FDE8E7 !important; border:1.5px solid #E9A09B !important;
+  border-radius:9px !important; padding:5px 9px !important; font-weight:950 !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-return.down,
+.rank-rows .rank-card .rank-return.down {{
+  color:#067647 !important; background:#D1FADF !important; border:1.5px solid #6CE9A6 !important;
+  border-radius:9px !important; padding:5px 9px !important; font-weight:950 !important;
+}}
+#app-page-content .rank-rows .rank-card .rank-return.flat,
+.rank-rows .rank-card .rank-return.flat {{
+  color:#344054 !important; background:#EAECF0 !important; border:1.5px solid #B8C0CC !important;
+  border-radius:9px !important; padding:5px 9px !important; font-weight:950 !important;
+}}
+#app-page-content .rank-rows .rank-card:not(.rank-champion) .rank-meta,
+#app-page-content .rank-rows .rank-card:not(.rank-champion) .rank-meta span,
+#app-page-content .rank-rows .rank-card:not(.rank-champion) .rank-movement,
+#app-page-content .rank-rows .rank-card:not(.rank-champion) .rank-private,
+.rank-rows .rank-card:not(.rank-champion) .rank-meta,
+.rank-rows .rank-card:not(.rank-champion) .rank-meta span,
+.rank-rows .rank-card:not(.rank-champion) .rank-movement,
+.rank-rows .rank-card:not(.rank-champion) .rank-private {{
+  color:#35413A !important; font-weight:700 !important;
+}}
+@media(max-width:420px) {{
+  #app-page-content .rank-rows .rank-card .rank-row-main,
+  .rank-rows .rank-card .rank-row-main {{ grid-template-columns:42px minmax(0,1fr) max-content !important; column-gap:8px !important; }}
+  #app-page-content .rank-rows .rank-card .rank-number,
+  .rank-rows .rank-card .rank-number {{ width:42px !important; min-width:42px !important; max-width:42px !important; }}
+  #app-page-content .rank-rows .rank-card .name,
+  .rank-rows .rank-card .name {{ font-size:16px !important; }}
+  #app-page-content .rank-rows .rank-card .rank-meta,
+  #app-page-content .rank-rows .rank-card .rank-detail,
+  #app-page-content .rank-rows .rank-card .rank-private,
+  .rank-rows .rank-card .rank-meta,
+  .rank-rows .rank-card .rank-detail,
+  .rank-rows .rank-card .rank-private {{ margin-left:50px !important; }}
+  #app-page-content .rank-rows .rank-card.rank-champion .rank-honour,
+  .rank-rows .rank-card.rank-champion .rank-honour {{ gap:10px !important; padding:10px !important; }}
+  #app-page-content .rank-rows .rank-card.rank-champion .rank-honour-icon,
+  #app-page-content .rank-rows .rank-card.rank-champion .rank-honour-icon svg,
+  .rank-rows .rank-card.rank-champion .rank-honour-icon,
+  .rank-rows .rank-card.rank-champion .rank-honour-icon svg {{ width:54px !important; height:54px !important; flex-basis:54px !important; }}
+}}
 </style>
 </div></body></html>"""
 
@@ -26236,6 +26472,8 @@ def web_positions(uid):
     if request.method == "POST":
         for _cache_page in ("positions", "positions-fast", "portfolio", "portfolio-fast"):
             _web_fragment_cache_clear(_cache_page, uid)
+        with _HOMEPAGE_CACHE_LOCK:
+            _HOMEPAGE_JOURNAL_CACHE.pop((uid, taiwan_today()), None)
     # GET 且不是要片段時，先秒回骨架讓使用者馬上看到畫面，
     # 真正的抓價工作交給後續的 fragment 請求。
     # POST 不能這樣做——表單送出必須當場處理完，否則新增／賣出會遺失。
@@ -26258,7 +26496,7 @@ def web_positions(uid):
             taiwan_today().isoformat(),
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
                          if k not in {"t", "fragment", "_nav", "refresh", "fast"})))
-        _positions_fast_ttl = 180.0 if _is_taiwan_intraday_window() else 300.0
+        _positions_fast_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_positions_fast_body = _web_fragment_cache_get(
             "positions-fast", _positions_fast_fragment_key, _positions_fast_ttl)
         if _cached_positions_fast_body is not None:
@@ -26399,7 +26637,7 @@ def web_positions(uid):
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
                          if k not in {"t", "fragment", "_nav"})))
         # 短時間切回持股時先回傳最近完整頁；行情 API 仍會更新即時報價。
-        _position_cache_ttl = 60.0 if _is_taiwan_intraday_window() else 300.0
+        _position_cache_ttl = 180.0 if _is_taiwan_intraday_window() else 600.0
         _cached_positions_body = _web_fragment_cache_get(
             "positions", _positions_fragment_cache_key, _position_cache_ttl)
         if _cached_positions_body is not None:
@@ -30974,20 +31212,20 @@ def web_leaderboard(uid):
                     '有效資料達標後才會出現正式名次。</span></div>')
         champion_svg = '''<svg viewBox="0 0 120 120" role="img" aria-label="冠軍獎盃" xmlns="http://www.w3.org/2000/svg">
   <defs><linearGradient id="cupGold" x1="0" y1="0" x2="1" y2="1">
-    <stop offset="0" stop-color="#EAF4FB"/><stop offset=".32" stop-color="#B8D0E0"/>
-    <stop offset=".68" stop-color="#507B99"/><stop offset="1" stop-color="#DDEBF5"/>
+    <stop offset="0" stop-color="#FFF2C2"/><stop offset=".32" stop-color="#E4B84E"/>
+    <stop offset=".68" stop-color="#9A681C"/><stop offset="1" stop-color="#F9E6A0"/>
   </linearGradient><linearGradient id="cupShadow" x1="0" y1="0" x2="0" y2="1">
-    <stop offset="0" stop-color="#375C75"/><stop offset="1" stop-color="#739EBB"/>
+    <stop offset="0" stop-color="#8B5B17"/><stop offset="1" stop-color="#D6A73A"/>
   </linearGradient></defs>
-  <path d="M31 23h58v18c0 18-12 31-29 34C43 72 31 59 31 41V23Z" fill="url(#cupGold)" stroke="#5E839C" stroke-width="2"/>
-  <path d="M31 28H17c0 20 8 30 23 32M89 28h14c0 20-8 30-23 32" fill="none" stroke="#6D94AF" stroke-width="7" stroke-linecap="round"/>
-  <path d="M42 24c8 10 28 10 36 0" fill="none" stroke="#FFFFFF" stroke-width="3" opacity=".9"/>
-  <path d="M60 75v15M40 94h40" stroke="#8A5215" stroke-width="7" stroke-linecap="round"/>
-  <path d="M36 96h48v9H36z" fill="url(#cupShadow)" stroke="#5E839C" stroke-width="2"/>
-  <path d="M60 9l3 7 8 1-6 5 2 8-7-4-7 4 2-8-6-5 8-1 3-7Z" fill="#B9D4E6" stroke="#557D98" stroke-width="1.5"/>
-  <path d="M18 88c-8-12-7-25 1-36M102 88c8-12 7-25-1-36" fill="none" stroke="#7199B1" stroke-width="2" opacity=".8"/>
-  <path d="M20 76l-8-3M20 66l-8-5M22 56l-7-7M100 76l8-3M100 66l8-5M98 56l7-7" stroke="#8AAEC7" stroke-width="2" stroke-linecap="round"/>
-  <circle cx="24" cy="48" r="2" fill="#EAF4FB"/><circle cx="96" cy="48" r="2" fill="#EAF4FB"/>
+  <path d="M31 23h58v18c0 18-12 31-29 34C43 72 31 59 31 41V23Z" fill="url(#cupGold)" stroke="#A87520" stroke-width="2"/>
+  <path d="M31 28H17c0 20 8 30 23 32M89 28h14c0 20-8 30-23 32" fill="none" stroke="#B88526" stroke-width="7" stroke-linecap="round"/>
+  <path d="M42 24c8 10 28 10 36 0" fill="none" stroke="#FFFDF5" stroke-width="3" opacity=".9"/>
+  <path d="M60 75v15M40 94h40" stroke="#8A5A16" stroke-width="7" stroke-linecap="round"/>
+  <path d="M36 96h48v9H36z" fill="url(#cupShadow)" stroke="#A87520" stroke-width="2"/>
+  <path d="M60 9l3 7 8 1-6 5 2 8-7-4-7 4 2-8-6-5 8-1 3-7Z" fill="#F4D779" stroke="#A87520" stroke-width="1.5"/>
+  <path d="M18 88c-8-12-7-25 1-36M102 88c8-12 7-25-1-36" fill="none" stroke="#B88224" stroke-width="2" opacity=".8"/>
+  <path d="M20 76l-8-3M20 66l-8-5M22 56l-7-7M100 76l8-3M100 66l8-5M98 56l7-7" stroke="#D3A641" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="24" cy="48" r="2" fill="#FFF2C2"/><circle cx="96" cy="48" r="2" fill="#FFF2C2"/>
 </svg>'''
         out = []
         for i, r in enumerate(rows):
@@ -31278,7 +31516,7 @@ def web_leaderboard(uid):
   {detail}
 </div>""")
             if current_rank == 1:
-                out.append('<div class="rank-champion-prompt">下一個站上這裡的人，會是誰？</div>')
+                out.append('<div class="rank-champion-prompt">冠軍領先中・持續追蹤報酬與最大回檔</div>')
         return f'<div class="rows rank-rows">{"".join(out)}</div>'
 
     # 兩榜都先渲染好。資料本來就都算過了（build_leaderboard 同時回 short/long），
@@ -34097,16 +34335,21 @@ def _homepage_quote_map_restore(payload, codes):
         return None
     expected = tuple(sorted(set(str(c).strip() for c in codes if c)))
     saved = tuple(sorted(set(str(c).strip() for c in (payload.get("codes") or []) if c)))
-    if not expected or saved != expected:
+    if not expected or not saved:
         return None
     prices = payload.get("prices")
-    if not isinstance(prices, dict) or not all(code in prices for code in expected):
+    if not isinstance(prices, dict):
+        return None
+    # V256: after a user adds/removes one holding, reuse the saved 3-month series for
+    # the overlapping codes instead of treating the entire user's quote cache as invalid.
+    overlap = [code for code in expected if code in saved and code in prices]
+    if not overlap:
         return None
     restored = {}
-    for code in expected:
+    for code in overlap:
         item = prices.get(code)
         if not isinstance(item, dict) or not item.get("close"):
-            return None
+            continue
         q = dict(item)
         # JSONB 會把 datetime.date 寫成 ISO 字串；圖表／相關係數邏輯使用 date 物件。
         fixed_dates = []
@@ -34131,7 +34374,7 @@ def _homepage_quote_map_restore(payload, codes):
                         cleaned.append(None)
                 q[list_key] = cleaned
         restored[code] = q
-    return restored
+    return restored or None
 
 
 def _homepage_quote_map_seed_realtime_cache(prices):
@@ -34202,12 +34445,18 @@ def _get_homepage_prices_cached(uid, codes):
             print("⚡ 首頁行情序列命中持久快照（%s 檔）" % len(restored), flush=True)
             # 官方 MIS 只更新當下價格；歷史序列沿用最近保存的 3mo 快照。
             current = get_realtime_stocks_bulk(codes, rng="3mo")
-            if current and all(current.get(code) for code in codes):
+            combined = dict(restored)
+            if isinstance(current, dict):
+                combined.update({code: value for code, value in current.items() if value})
+            if combined:
                 with _HOMEPAGE_QUOTE_MAP_LOCK:
                     _HOMEPAGE_QUOTE_MAP_CACHE[str(uid)] = {
-                        "at": time.monotonic(), "signature": signature, "prices": current,
+                        "at": time.monotonic(), "signature": signature, "prices": combined,
                     }
-            return current
+                if all(combined.get(code) for code in codes):
+                    _save_homepage_quote_map_async(uid, codes, combined)
+                return combined
+            return current or {}
     except Exception as exc:
         print("⚠️ 首頁行情快照讀取失敗，改用即時抓取：%s" % type(exc).__name__, flush=True)
 
@@ -34278,7 +34527,7 @@ def web_portfolio(uid):
             str(request.args.get("trend_benchmark") or "1"),
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
                          if k not in {"t", "fragment", "_nav", "refresh"})))
-        _home_fast_ttl = 180.0 if _is_taiwan_intraday_window() else 300.0
+        _home_fast_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_home_fast_body = _web_fragment_cache_get(
             "portfolio-fast", _home_fast_fragment_key, _home_fast_ttl)
         if _cached_home_fast_body is not None:
@@ -34322,7 +34571,7 @@ def web_portfolio(uid):
             str(request.args.get("trend_period") or "3m"),
             str(request.args.get("trend_benchmark") or "1"))
         # 首頁已載入完整摘要；短時間內切回先用既有內容，避免重新抓六份共享資料。
-        _home_cache_ttl = 60.0 if _is_taiwan_intraday_window() else 300.0
+        _home_cache_ttl = 180.0 if _is_taiwan_intraday_window() else 600.0
         _cached_home_body = _web_fragment_cache_get(
             "portfolio", _home_fragment_cache_key, _home_cache_ttl)
         if _cached_home_body is not None:
@@ -34375,9 +34624,13 @@ def web_portfolio(uid):
     shared_cache_hit = False
     shared_cache_stale = False
     with _HOMEPAGE_CACHE_LOCK:
-        if _HOMEPAGE_SHARED_CACHE.get("key") == shared_key:
-            _cache_age = time.monotonic() - _HOMEPAGE_SHARED_CACHE.get("ts", 0.0)
-            _cached_values = _HOMEPAGE_SHARED_CACHE.get("value")
+        _shared_entry = _HOMEPAGE_SHARED_CACHE_BY_KEY.get(shared_key)
+        if _shared_entry is None and _HOMEPAGE_SHARED_CACHE.get("key") == shared_key:
+            _shared_entry = {"ts": _HOMEPAGE_SHARED_CACHE.get("ts", 0.0),
+                             "value": _HOMEPAGE_SHARED_CACHE.get("value")}
+        if _shared_entry is not None:
+            _cache_age = time.monotonic() - _shared_entry.get("ts", 0.0)
+            _cached_values = _shared_entry.get("value")
             if _cached_values is not None and _cache_age <= _HOMEPAGE_SHARED_STALE_MAX_AGE:
                 shared_values = _cached_values
                 shared_cache_hit = True
@@ -34387,7 +34640,7 @@ def web_portfolio(uid):
                     # 將刷新工作交給 after_request，避免在本頁 HTML 組裝前重新爭用 DB pool。
                     request.environ["stockbot_homepage_shared_refresh"] = (shared_key, uid, position_codes)
                 else:
-                    print("⚡ 首頁共享資料命中短快取")
+                    print("⚡ 首頁共享資料命中個人快取")
 
     _home_cp("AUX_FUTURES_STARTED")
 
@@ -34429,8 +34682,20 @@ def web_portfolio(uid):
             shared_values = list(ex.map(
                 lambda item: safe_shared_loader(item[0], item[1]), shared_loaders))
         with _HOMEPAGE_CACHE_LOCK:
+            _shared_cache_now = time.monotonic()
+            _HOMEPAGE_SHARED_CACHE_BY_KEY[shared_key] = {
+                "ts": _shared_cache_now, "value": shared_values
+            }
+            if len(_HOMEPAGE_SHARED_CACHE_BY_KEY) > _HOMEPAGE_SHARED_CACHE_BY_KEY_MAX:
+                _oldest_shared_keys = sorted(
+                    _HOMEPAGE_SHARED_CACHE_BY_KEY.items(),
+                    key=lambda item: item[1].get("ts", 0.0)
+                )[:len(_HOMEPAGE_SHARED_CACHE_BY_KEY) - _HOMEPAGE_SHARED_CACHE_BY_KEY_MAX]
+                for _old_key, _old_entry in _oldest_shared_keys:
+                    _HOMEPAGE_SHARED_CACHE_BY_KEY.pop(_old_key, None)
+            # Legacy slot retained for older background helpers; page hits use the keyed map above.
             _HOMEPAGE_SHARED_CACHE.update({
-                "key": shared_key, "ts": time.monotonic(), "value": shared_values
+                "key": shared_key, "ts": _shared_cache_now, "value": shared_values
             })
     # 快取命中時先用最近一次大盤摘要完成渲染，再背景刷新；不讓指數來源等待卡住首頁。
     if shared_cache_hit:
