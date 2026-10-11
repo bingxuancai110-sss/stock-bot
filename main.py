@@ -44,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
 APP_BUILD = "V270_AUTH_ONLY_GOOGLE_LINE_OAUTH"
-UI_BUILD = "v12-clean-editorial"
+UI_BUILD = "v13-nav-timer-header-fix"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
 # index on page render so an upstream timeout cannot hold the whole page for six seconds.
@@ -22696,6 +22696,40 @@ html, body { background:#F2F4F7 !important; color:#111827 !important; }
 #app-page-content .rank-explainer-bottom b {color:#243A2B !important;}
 .auth-entry-page {background:#F3EEE3 !important;}
 .auth-entry-page .app-header,.auth-entry-page .top-nav,.auth-entry-page .app-bottom-nav,.auth-entry-page .app-account-link {display:none !important;}
+
+/* V253: iOS Safari already places web content below its browser chrome. Avoid the old
+   62px hard-coded top pad, keep the page heading visibly pinned, and place the load chip
+   just beneath the fixed header instead of over the title. */
+.app-header {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  z-index: 140 !important;
+}
+@media (max-width: 699px) {
+  .app-header {
+    padding-top: calc(env(safe-area-inset-top, 0px) + 12px) !important;
+    padding-bottom: 10px !important;
+  }
+  .app-header .page-back {
+    top: calc(env(safe-area-inset-top, 0px) + 10px) !important;
+  }
+  .wrap {
+    padding-top: calc(env(safe-area-inset-top, 0px) + 125px) !important;
+    padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+  #page-nav-progress-card.show {
+    top: calc(env(safe-area-inset-top, 0px) + 108px) !important;
+    padding: 8px 10px !important;
+  }
+}
+@media (min-width: 700px) {
+  #page-nav-progress-card.show {
+    top: 108px !important;
+  }
+}
+
 '''
 
 
@@ -22936,7 +22970,7 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="{'#F3EEE3' if title == '登入台股 BOT' else '#315E9B'}">
-<meta name="stockbot-ui-version" content="v12-clean-editorial">
+<meta name="stockbot-ui-version" content="v13-nav-timer-header-fix">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -22995,7 +23029,7 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
 @keyframes nav-progress-sweep{{0%{{transform:translateX(0)}}50%{{transform:translateX(85%)}}100%{{transform:translateX(0)}}}}
 @media(prefers-reduced-motion:reduce){{#page-nav-loader,#page-nav-loader .nav-loader-bar,#page-nav-loader .nav-loader-bar:after{{transition:none!important;animation:none!important}}}}
 </style>
-</head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v12-clean-editorial">
+</head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v13-nav-timer-header-fix">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
     <div class="nav-loader-head">
@@ -23025,7 +23059,7 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
   const progressPercent=document.getElementById('page-nav-progress-percent');
   const progressBar=document.getElementById('page-nav-progress-bar');
   const progressTime=document.getElementById('page-nav-progress-time');
-  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0,workbenchNavigationPending=false;
+  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0,progressStartedPerf=0,progressUsesWallClock=false,workbenchNavigationPending=false;
 
   function clearProgressTimers(){{
     window.clearTimeout(progressRevealTimer);window.clearInterval(progressTimer);
@@ -23033,7 +23067,9 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
   }}
   function paintEstimatedProgress(){{
     if(!active)return;
-    var sec=Math.max(0,(Date.now()-progressStartedAt)/1000);
+    // 同一文件內的頁面切換使用 performance.now()，不會被先前 sessionStorage 時間污染；
+    // 只有選股工作台的真正整頁導覽，才需要跨文件沿用 Date.now()。
+    var sec=Math.max(0,((progressUsesWallClock?Date.now():performance.now())-(progressUsesWallClock?progressStartedAt:progressStartedPerf))/1000);
     // 進度只用來呈現等待狀態；完成前保留少量空間，避免誤以為已載入完成。
     var pct=sec<1?20:sec<3?20+(sec-1)*20:sec<6?60+(sec-3)*9:Math.min(97,87+(sec-6)*1.7);
     pct=Math.min(97,Math.max(8,pct));
@@ -23042,14 +23078,30 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
     if(progressTime)progressTime.textContent=sec.toFixed(1)+' 秒';
   }}
 
-  window.showPageNavLoader=function(label, internalNavigation){{
-    var wasActive=active, now=Date.now(), savedStart=0;
-    try{{savedStart=Number(sessionStorage.getItem('stockbot_nav_started_at')||0);}}catch(ignore){{}}
+  window.showPageNavLoader=function(label, internalNavigation, handoffToNextPage){{
+    var wasActive=active, now=Date.now(), savedStart=0, isWorkbenchHandoff=false;
+    try{{
+      savedStart=Number(sessionStorage.getItem('stockbot_nav_started_at')||0);
+      var navQuery=new URLSearchParams(location.search);
+      isWorkbenchHandoff=(location.pathname==='/web/workbench'&&navQuery.get('_nav')==='1');
+    }}catch(ignore){{}}
     active=true;
-    if(wasActive&&progressStartedAt){{/* 同一切頁工作持續沿用原始起算時間。 */}}
-    else if(internalNavigation&&savedStart>0&&now-savedStart<120000)progressStartedAt=savedStart;
-    else progressStartedAt=now;
-    try{{sessionStorage.setItem('stockbot_nav_started_at',String(progressStartedAt));}}catch(ignore){{}}
+    if(wasActive&&progressStartedAt){{
+      // 同一個尚未完成的導覽可能會被共用函式啟動兩次；沿用這次導覽的起點。
+    }}else if(isWorkbenchHandoff&&savedStart>0&&now>=savedStart&&now-savedStart<120000){{
+      // 只有選股工作台使用整頁導覽，需要跨文件延續計時；一般頁面切換不能沿用舊時間。
+      progressStartedAt=savedStart;
+      progressStartedPerf=performance.now();
+      progressUsesWallClock=true;
+    }}else{{
+      progressStartedAt=now;
+      progressStartedPerf=performance.now();
+      progressUsesWallClock=false;
+    }}
+    try{{
+      if(handoffToNextPage||isWorkbenchHandoff)sessionStorage.setItem('stockbot_nav_started_at',String(progressStartedAt));
+      else sessionStorage.removeItem('stockbot_nav_started_at');
+    }}catch(ignore){{}}
     clearProgressTimers();
     window.clearTimeout(hideTimer);window.clearTimeout(resetTimer);
     if(title){{ title.textContent=label||'正在開啟頁面'; loader.setAttribute('aria-label',title.textContent); }}
@@ -23059,15 +23111,19 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
     if(progressBar)progressBar.style.width='0%';
     if(progressTime)progressTime.textContent='0.0 秒';
     loader.classList.remove('done');loader.classList.add('show');
-    // V251：真正啟動計時器。先前只定義 paintEstimatedProgress，卻沒有排程，
-    // 導致切頁超過 3 秒仍看不到持續更新的等待秒數。
     progressTimer=window.setInterval(paintEstimatedProgress,100);
     paintEstimatedProgress();
-    // 只有首次完整進站顯示整頁 Loader；站內切頁只保留頂部進度線及內容區提示。
   }};
 
   window.finishPageNavLoader=function(){{
-    if(!active)return;
+    if(!active){{
+      // 即使呼叫端已經完成或切頁被中斷，也要清掉舊的浮動提示與過期起始時間。
+      clearProgressTimers();
+      try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
+      if(progressCard)progressCard.classList.remove('show');
+      loader.classList.remove('show');
+      return;
+    }}
     active=false;clearProgressTimers();
     if(progressPercent)progressPercent.textContent='';
     if(progressBar)progressBar.style.width='100%';
@@ -23149,8 +23205,14 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
   }}catch(ignore){{}}
   window.addEventListener('pageshow',function(){{
     if(active&&!workbenchNavigationPending)finishPageNavLoader();
-    if(!active&&progressCard)progressCard.classList.remove('show');
-    if(!workbenchNavigationPending)clearProgressTimers();
+    if(!active){{
+      if(progressCard)progressCard.classList.remove('show');
+      loader.classList.remove('show','done');
+    }}
+    if(!workbenchNavigationPending){{
+      clearProgressTimers();
+      try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
+    }}
   }});
 }})();
 </script><div class="wrap">
@@ -23364,7 +23426,8 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
       // 工作台仍採正常文件導覽，避免其大型腳本在 fragment 插入後失效；
       // _nav=1 讓伺服器跳過首次進站的全螢幕 Loader，站內只給局部等待提示。
       showLocalPageLoading('正在開啟選股工作台…');
-      if (window.showPageNavLoader) window.showPageNavLoader('正在開啟選股工作台', true);
+      // 這一頁會執行整頁導覽；明確標記一次性的計時交接，其他頁面不沿用 sessionStorage 舊時間。
+      if (window.showPageNavLoader) window.showPageNavLoader('正在開啟選股工作台', true, true);
       target.searchParams.delete('fragment');
       target.searchParams.set('_nav', '1');
       window.location.assign(target.pathname + (target.search ? '?' + target.searchParams.toString() : ''));
