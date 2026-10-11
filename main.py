@@ -44,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
 APP_BUILD = "V270_AUTH_ONLY_GOOGLE_LINE_OAUTH"
-UI_BUILD = "v11-botanical-editorial-contrast"
+UI_BUILD = "v12-clean-editorial"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
 # index on page render so an upstream timeout cannot hold the whole page for six seconds.
@@ -22826,6 +22826,24 @@ body.auth-entry-page #app-page-content .auth-editorial-footer{display:flex!impor
 body.auth-entry-page #app-page-content .auth-editorial-footer strong{color:#596E50!important;}
 @media(max-width:700px){body.auth-entry-page .wrap{width:calc(100% - 22px)!important;padding-top:10px!important}body.auth-entry-page #app-page-content .auth-masthead{padding-bottom:11px!important;font-size:9px!important}body.auth-entry-page #app-page-content .auth-masthead-note{font-size:10px!important}body.auth-entry-page #app-page-content .auth-hero{margin:12px 0;padding:24px 19px 25px!important;border-radius:5px 24px 5px 24px!important}body.auth-entry-page #app-page-content .auth-hero h1{font-size:clamp(29px,7.7vw,41px)!important;margin-top:18px!important}body.auth-entry-page #app-page-content .auth-hero p{font-size:13px!important}body.auth-entry-page #app-page-content .auth-content{grid-template-columns:1fr!important;gap:12px!important}body.auth-entry-page #app-page-content .auth-panel{padding:18px!important}body.auth-entry-page #app-page-content .auth-editorial-footer{flex-wrap:wrap!important}}
 @media(max-width:360px){body.auth-entry-page #app-page-content .auth-masthead-note{display:none!important}body.auth-entry-page #app-page-content .auth-feature-grid{gap:7px!important}body.auth-entry-page #app-page-content .auth-feature{padding:10px!important}}
+/* v12: 少一點裝飾、多一點可讀性；避免 iOS 把 ✳ 顯示成突兀的彩色圖示。 */
+body.auth-entry-page{background:#F4F1E9!important;background-image:none!important;color:#29372F!important;}
+body.auth-entry-page #app-page-content .auth-hero{margin:14px 0!important;padding:clamp(23px,4.5vw,40px)!important;border:1px solid #D8D1C4!important;border-radius:10px!important;background:#F9F7F1!important;box-shadow:none!important;}
+body.auth-entry-page #app-page-content .auth-hero:before,body.auth-entry-page #app-page-content .auth-hero:after{content:none!important;display:none!important;}
+body.auth-entry-page #app-page-content .auth-hero h1{margin-top:18px!important;font-weight:760!important;letter-spacing:0!important;line-height:1.42!important;}
+body.auth-entry-page #app-page-content .auth-hero p{max-width:570px!important;font-weight:500!important;line-height:1.9!important;color:#4F5B50!important;}
+body.auth-entry-page #app-page-content .auth-panel{border-radius:9px!important;background:#FFFEFA!important;box-shadow:none!important;border-color:#DDD7CB!important;}
+body.auth-entry-page #app-page-content .auth-choice{border-radius:7px!important;background:#F8F7F2!important;border-color:#E1DDD3!important;}
+body.auth-entry-page #app-page-content .auth-choice-icon{border-radius:7px!important;background:#EBECE4!important;color:#485B49!important;}
+body.auth-entry-page #app-page-content .auth-btn{border-radius:8px!important;box-shadow:none!important;}
+body.auth-entry-page #app-page-content .auth-btn-primary{background:#405744!important;border-color:#405744!important;}
+body.auth-entry-page #app-page-content .auth-btn-secondary{border-color:#C9CFC2!important;background:#fffefa!important;}
+body.auth-entry-page #app-page-content .auth-feature{border-radius:7px!important;background:#FAF9F4!important;}
+body.auth-entry-page #app-page-content .auth-feature-icon{margin-bottom:9px!important;padding-bottom:5px!important;border-bottom:1px solid #E5DED1!important;color:#9C6A51!important;font-family:Georgia,serif!important;font-size:11px!important;letter-spacing:.12em!important;font-weight:700!important;}
+body.auth-entry-page #app-page-content .auth-install{border-radius:7px!important;border-left-width:2px!important;background:#F4F4ED!important;}
+body.auth-entry-page #app-page-content .auth-install-icon{font-size:17px!important;color:#64745D!important;}
+body.auth-entry-page #app-page-content .auth-editorial-footer{font-family:system-ui,-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",sans-serif!important;}
+@media(max-width:700px){body.auth-entry-page #app-page-content .auth-hero{padding:23px 19px!important;border-radius:9px!important}body.auth-entry-page #app-page-content .auth-panel{padding:17px!important}}
 '''
     elif title == "今日" and ("welcome-editorial" in body or "data-empty-home-version" in body):
         late_page_css = r'''
@@ -22864,6 +22882,30 @@ body #app-page-content .welcome-editorial-guide-body p{margin:8px 0!important;}
 body #app-page-content .welcome-editorial-guide-body b{color:#2D4534!important;font-weight:950!important;}
 body #app-page-content .welcome-editorial-footnote{margin:15px 1px 0!important;padding-top:12px!important;border-top:1px solid #DCD2C0!important;color:#435744!important;font-size:11.5px!important;line-height:1.85!important;font-weight:700!important;}
 @media(max-width:520px){body #app-page-content .welcome-editorial{margin:13px auto 23px!important;padding:21px 16px 20px!important;border-radius:5px 24px 5px 24px!important}body #app-page-content .welcome-editorial-topline{font-size:9px!important;margin-bottom:18px!important}body #app-page-content .welcome-editorial h2{font-size:29px!important}body #app-page-content .welcome-editorial-intro{font-size:13px!important;margin-bottom:19px!important}body #app-page-content .welcome-editorial-actions{grid-template-columns:1fr!important;gap:9px!important}body #app-page-content .welcome-editorial-action{min-height:0!important;padding:14px!important;display:grid!important;grid-template-columns:35px minmax(0,1fr)!important;column-gap:10px!important;row-gap:4px!important}body #app-page-content .welcome-editorial-icon{grid-row:1/4!important}body #app-page-content .welcome-editorial-action strong,body #app-page-content .welcome-editorial-action small,body #app-page-content .welcome-editorial-cta{grid-column:2!important}body #app-page-content .welcome-editorial-cta{margin-top:1px!important}body #app-page-content .welcome-editorial-install{align-items:flex-start!important;gap:9px!important;padding:12px 11px!important}body #app-page-content .welcome-editorial-install-cta{font-size:11px!important;white-space:normal!important}body #app-page-content .welcome-editorial:after{right:12px!important;top:20px!important;font-size:32px!important}}
+/* v12: 收掉生成感較重的幾何裝飾、漸層和浮起陰影，保留紙感與清楚的閱讀層次。 */
+body #app-page-content .welcome-editorial{isolation:auto!important;max-width:780px!important;margin:16px auto 26px!important;padding:clamp(21px,4.5vw,32px)!important;border:1px solid #D9D1C4!important;border-radius:10px!important;background:#F9F7F1!important;box-shadow:none!important;color:#29372F!important;}
+body #app-page-content .welcome-editorial:before,body #app-page-content .welcome-editorial:after{content:none!important;display:none!important;}
+body #app-page-content .welcome-editorial-topline{padding-bottom:11px!important;margin-bottom:20px!important;color:#77796C!important;letter-spacing:.08em!important;font-weight:750!important;}
+body #app-page-content .welcome-editorial-topline span:last-child{color:#8E6A55!important;font-family:system-ui,-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",sans-serif!important;font-weight:700!important;}
+body #app-page-content .welcome-editorial-kicker{color:#8C684F!important;font-weight:750!important;letter-spacing:.09em!important;}
+body #app-page-content .welcome-editorial h2{font-size:clamp(27px,5.1vw,36px)!important;font-weight:750!important;line-height:1.5!important;letter-spacing:0!important;}
+body #app-page-content .welcome-editorial-intro{padding-left:0!important;border-left:0!important;color:#4D5A4E!important;font-weight:500!important;line-height:1.9!important;}
+body #app-page-content .welcome-editorial-rule{color:#666B60!important;font-family:system-ui,-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",sans-serif!important;font-size:12px!important;font-weight:700!important;}
+body #app-page-content .welcome-editorial-action{border:1px solid #DED9CF!important;border-radius:8px!important;background:#FFFEFA!important;box-shadow:none!important;transition:border-color .15s,background .15s!important;}
+body #app-page-content .welcome-editorial-action:hover{transform:none!important;border-color:#AEB7A5!important;background:#FFFFFF!important;}
+body #app-page-content .welcome-editorial-icon{display:block!important;width:auto!important;height:auto!important;padding:0 0 5px!important;border-radius:0!important;border-bottom:1px solid #E6DED2!important;background:transparent!important;color:#9A6A52!important;font-size:11px!important;letter-spacing:.14em!important;font-weight:750!important;}
+body #app-page-content .welcome-editorial-action strong{font-weight:800!important;letter-spacing:0!important;}
+body #app-page-content .welcome-editorial-action small{font-weight:500!important;color:#596257!important;line-height:1.8!important;}
+body #app-page-content .welcome-editorial-cta{font-weight:750!important;}
+body #app-page-content .welcome-editorial-install{border:1px solid #DCDDD1!important;border-left:2px solid #7C896F!important;border-radius:8px!important;background:#F4F4ED!important;}
+body #app-page-content .welcome-editorial-install-icon{font-size:17px!important;color:#66765E!important;}
+body #app-page-content .welcome-editorial-install-copy strong{font-weight:800!important;}
+body #app-page-content .welcome-editorial-install-copy small{color:#596257!important;font-weight:500!important;}
+body #app-page-content .welcome-editorial-guide{border-radius:8px!important;background:#FFFEFA!important;}
+body #app-page-content .welcome-editorial-guide summary{font-weight:750!important;}
+body #app-page-content .welcome-editorial-guide-body{font-weight:500!important;}
+body #app-page-content .welcome-editorial-footnote{color:#5B6256!important;font-weight:500!important;}
+@media(max-width:520px){body #app-page-content .welcome-editorial{padding:20px 16px!important;border-radius:9px!important}body #app-page-content .welcome-editorial h2{font-size:28px!important}body #app-page-content .welcome-editorial-icon{grid-row:1/4!important;width:auto!important;height:auto!important}body #app-page-content .welcome-editorial-actions{gap:8px!important}body #app-page-content .welcome-editorial-action{border-radius:7px!important}}
 '''
     elif title == "排行榜" and "rank-situation" in body:
         late_page_css = r'''
@@ -22894,7 +22936,7 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="{'#F3EEE3' if title == '登入台股 BOT' else '#315E9B'}">
-<meta name="stockbot-ui-version" content="v11-botanical-editorial-contrast">
+<meta name="stockbot-ui-version" content="v12-clean-editorial">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -22953,7 +22995,7 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
 @keyframes nav-progress-sweep{{0%{{transform:translateX(0)}}50%{{transform:translateX(85%)}}100%{{transform:translateX(0)}}}}
 @media(prefers-reduced-motion:reduce){{#page-nav-loader,#page-nav-loader .nav-loader-bar,#page-nav-loader .nav-loader-bar:after{{transition:none!important;animation:none!important}}}}
 </style>
-</head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v11-botanical-editorial-contrast">
+</head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v12-clean-editorial">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
     <div class="nav-loader-head">
@@ -23116,7 +23158,7 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
 {nav}
 <main id="app-page-content" class="app-page-content">{body}</main>
 <style id="global-visual-refresh-v236">{GLOBAL_VISUAL_CSS}</style>
-<style id="v11-final-page-overrides">{late_page_css}</style>
+<style id="v12-final-page-overrides">{late_page_css}</style>
 <script>
 (function() {{
   // LINE WebView 可能清掉 cookie；把有效網址 token 保存到同一個網域，
@@ -25883,35 +25925,35 @@ def auth_google_choose():
 @media(max-width:360px){.auth-masthead-note{display:none}.auth-feature-grid{gap:7px}.auth-feature{padding:10px}.auth-feature span{font-size:10.5px}}
 </style>
 <main class="auth-landing" aria-label="台股 BOT 登入與註冊">
-  <div class="auth-masthead"><span class="auth-masthead-brand"><i class="auth-masthead-dot"></i> TAIWAN STOCK BOT</span><span class="auth-masthead-note">一份給自己的投資研究日誌</span></div>
+  <div class="auth-masthead"><span class="auth-masthead-brand"><i class="auth-masthead-dot"></i> TAIWAN STOCK BOT</span><span class="auth-masthead-note">持股紀錄・市場研究</span></div>
   <section class="auth-hero">
-    <div class="auth-brand">STOCK NOTES · INVESTMENT WORKSPACE</div>
-    <h1>把投資寫成自己的風景，<br><em>在市場裡找到節奏。</em></h1>
-    <p>記下持股的變化，整理每天遇見的市場線索。從投資組合、智慧選股到績效回顧，讓數字有脈絡，讓每一次決策多一點依據，也留一點從容。</p>
-    <div class="auth-hero-caption">看懂市場，也記錄自己的每一步。</div>
+    <div class="auth-brand">持股管理 · 選股工具 · 績效紀錄</div>
+    <h1>整理持股與市場線索，<br><em>慢慢建立自己的投資方法。</em></h1>
+    <p>集中查看持股、選股線索與投資紀錄。先從一個功能開始，熟悉之後再慢慢整理自己的研究流程。</p>
+    <div class="auth-hero-caption">持股、選股、交易紀錄，從一處開始。</div>
   </section>
   <div class="auth-content">
     <section class="auth-panel auth-login-panel">
       <div class="auth-panel-label">01 / 開始使用</div>
       <h2>你的投資日誌，<br>從這裡開始。</h2>
       <p class="auth-muted">第一次來，建立新的投資空間；已經使用過，請登入原有帳號。兩種流程分開處理，避免不小心建立重複帳號。</p>
-      <div class="auth-choice"><div class="auth-choice-icon">✦</div><div class="auth-choice-main"><div class="auth-choice-title">第一次使用？建立新帳號</div><p class="auth-choice-desc">以尚未註冊的 Google 帳號建立新的台股 BOT 帳號。</p></div></div>
+      <div class="auth-choice"><div class="auth-choice-icon">＋</div><div class="auth-choice-main"><div class="auth-choice-title">第一次使用？建立新帳號</div><p class="auth-choice-desc">以尚未註冊的 Google 帳號建立新的台股 BOT 帳號。</p></div></div>
       <a class="auth-btn auth-btn-primary" href="/auth/google?mode=register"><span class="auth-g">G</span> 使用 Google 註冊</a>
-      <div class="auth-choice"><div class="auth-choice-icon">↗</div><div class="auth-choice-main"><div class="auth-choice-title">已經有台股 BOT 帳號？</div><p class="auth-choice-desc">登入原本註冊的 Google 帳號，接續使用既有的投資資料。</p></div></div>
+      <div class="auth-choice"><div class="auth-choice-icon">→</div><div class="auth-choice-main"><div class="auth-choice-title">已經有台股 BOT 帳號？</div><p class="auth-choice-desc">登入原本註冊的 Google 帳號，接續使用既有的投資資料。</p></div></div>
       <a class="auth-btn auth-btn-secondary" href="/auth/google?mode=login"><span class="auth-g">G</span> 使用 Google 登入</a>
       <p class="auth-policy">登入只會開啟既有帳號；註冊只會建立新帳號。系統不會只因 Email 相同就自動合併帳號。</p>
     </section>
     <section class="auth-panel auth-feature-panel">
       <div class="auth-panel-label">02 / 工作台一覽</div>
-      <h2>不只是看盤，<br>也是整理思緒的地方。</h2>
-      <p class="auth-muted">登入後，若你還沒有持股，會先看到新手引導；你也可以先探索工具，再慢慢建立自己的紀錄。</p>
+      <h2>登入後，從常用功能開始。</h2>
+      <p class="auth-muted">新增持股後即可查看組合，也可以直接進入選股工作台。沒有持股也能先熟悉各項工具。</p>
       <div class="auth-feature-grid">
-        <div class="auth-feature"><span class="auth-feature-icon">▥</span><b>投資組合</b><span>追蹤持股、市值、損益與配置變化。</span></div>
-        <div class="auth-feature"><span class="auth-feature-icon">⌕</span><b>選股工作台</b><span>探索選股工具、黑馬股與籌碼線索。</span></div>
-        <div class="auth-feature"><span class="auth-feature-icon">✧</span><b>績效排行榜</b><span>比較不同期間的投資表現與報酬曲線。</span></div>
-        <div class="auth-feature"><span class="auth-feature-icon">▣</span><b>手機網頁 App</b><span>加到主畫面，像一般 App 一樣快速開啟。</span></div>
+        <div class="auth-feature"><span class="auth-feature-icon">01</span><b>投資組合</b><span>追蹤持股、市值、損益與配置變化。</span></div>
+        <div class="auth-feature"><span class="auth-feature-icon">02</span><b>選股工作台</b><span>探索選股工具、黑馬股與籌碼線索。</span></div>
+        <div class="auth-feature"><span class="auth-feature-icon">03</span><b>績效排行榜</b><span>比較不同期間的投資表現與報酬曲線。</span></div>
+        <div class="auth-feature"><span class="auth-feature-icon">04</span><b>手機網頁 App</b><span>加到主畫面，像一般 App 一樣快速開啟。</span></div>
       </div>
-      <div class="auth-install"><span class="auth-install-icon">☼</span><div><b>不用到 App Store 下載</b><p>登入後可依照 iPhone 或 Android 教學，把網站加入手機主畫面，方便隨時回來查看。</p></div></div>
+      <div class="auth-install"><span class="auth-install-icon">↗</span><div><b>不用到 App Store 下載</b><p>登入後可依照 iPhone 或 Android 教學，把網站加入手機主畫面，方便隨時回來查看。</p></div></div>
     </section>
   </div>
   <footer class="auth-editorial-footer"><span><strong>TAIWAN STOCK BOT</strong> · 你的投資研究空間</span><span>投資資訊僅供研究參考，不構成買賣建議。</span></footer>
@@ -36225,7 +36267,7 @@ def web_portfolio(uid):
             str(request.args.get("trend_benchmark") or "1"),
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
                          if k not in {"t", "fragment", "_nav", "refresh"})),
-            "empty-home-welcome-v11-botanical")
+            "empty-home-welcome-v12-clean-editorial")
         _home_fast_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_home_fast_body = _web_fragment_cache_get(
             "portfolio-fast", _home_fast_fragment_key, _home_fast_ttl)
@@ -36287,29 +36329,29 @@ def web_portfolio(uid):
 .welcome-editorial-footnote{margin:15px 1px 0;padding-top:12px;border-top:1px solid #DCD2C0;color:#596653;font-size:11.5px;line-height:1.8;font-weight:600}
 @media(max-width:400px){.welcome-editorial{padding:17px 15px;border-radius:4px 18px 4px 18px}.welcome-editorial:after{right:12px;top:20px;font-size:32px}.welcome-editorial-actions{gap:8px}.welcome-editorial-action{padding:12px 10px;min-height:168px}.welcome-editorial-action strong{font-size:13.5px}.welcome-editorial-action small{font-size:11px}.welcome-editorial-install{align-items:flex-start;gap:9px;padding:12px 10px}.welcome-editorial-install-cta{font-size:11px}.welcome-editorial-topline{font-size:9px}}
 </style>
-<section class="welcome-editorial" data-empty-home-version="v11-botanical-editorial" aria-label="新手開始使用">
-  <div class="welcome-editorial-topline"><span>TAIWAN STOCK BOT · INVESTMENT JOURNAL</span><span>01 / BEGIN</span></div>
-  <div class="welcome-editorial-kicker">給自己的投資研究日誌</div>
-  <h2>先記錄，再理解；<br><em>慢慢找到自己的節奏。</em></h2>
-  <p class="welcome-editorial-intro">投資不必從一筆交易開始。先認識工具、整理想法，再把持股與市場線索放進自己的研究日誌；每一步都可以慢慢來。</p>
+<section class="welcome-editorial" data-empty-home-version="v12-clean-editorial" aria-label="新手開始使用">
+  <div class="welcome-editorial-topline"><span>TAIWAN STOCK BOT · 投資筆記</span><span>新手指南</span></div>
+  <div class="welcome-editorial-kicker">開始前，先選一條路</div>
+  <h2>先記下持股與想法，<br><em>再慢慢整理自己的方法。</em></h2>
+  <p class="welcome-editorial-intro">可以先新增持股，也可以先逛選股工具。把看中的標的、持有理由和市場變化整理好，之後回頭看，會更清楚自己當初為什麼做決定。</p>
   <div class="welcome-editorial-rule">選擇你的下一步</div>
   <div class="welcome-editorial-actions">
     <a class="welcome-editorial-action" href="/web/positions" data-app-nav="1">
-      <span class="welcome-editorial-icon" aria-hidden="true">▥</span>
+      <span class="welcome-editorial-icon" aria-hidden="true">01</span>
       <strong>建立投資組合</strong>
-      <small>新增目前持有的股票，開始記錄市值、損益與配置變化。</small>
+      <small>記錄持有的股票、買進成本和股數，之後查看損益與配置。</small>
       <span class="welcome-editorial-cta">新增第一筆持股 →</span>
     </a>
     <a class="welcome-editorial-action" href="/web/workbench" data-app-nav="1">
-      <span class="welcome-editorial-icon" aria-hidden="true">⌕</span>
+      <span class="welcome-editorial-icon" aria-hidden="true">02</span>
       <strong>先探索選股工具</strong>
-      <small>看看選股工作台、黑馬股與籌碼線索，熟悉工具再開始。</small>
+      <small>先逛選股工作台，看看黑馬股、籌碼與技術條件。</small>
       <span class="welcome-editorial-cta">前往選股工作台 →</span>
     </a>
   </div>
   <a class="welcome-editorial-install" href="/web/install" data-app-nav="1">
-    <span class="welcome-editorial-install-icon" aria-hidden="true">▣</span>
-    <span class="welcome-editorial-install-copy"><strong>把台股 BOT 加到手機主畫面</strong><small>不用下載 App；提供 iPhone 與 Android 安裝教學，往後一點圖示就能開啟。</small></span>
+    <span class="welcome-editorial-install-icon" aria-hidden="true">↗</span>
+    <span class="welcome-editorial-install-copy"><strong>把台股 BOT 加到手機主畫面</strong><small>依照 iPhone 或 Android 教學加入主畫面，下次就能直接開啟。</small></span>
     <span class="welcome-editorial-install-cta">教我安裝 →</span>
   </a>
   <details class="welcome-editorial-guide">
@@ -36321,7 +36363,7 @@ def web_portfolio(uid):
       <p><b>LINE 通知：</b>網站登入與 LINE 推播是不同設定，請到「更多」確認通知設定。</p>
     </div>
   </details>
-  <p class="welcome-editorial-footnote">目前還沒有持股紀錄。可以先探索工具，也可以新增持股；你的投資資料會留在自己的帳號中。</p>
+  <p class="welcome-editorial-footnote">還沒有新增持股。你可以先熟悉工具，準備好再建立組合；新增的資料會保存在自己的帳號。</p>
 </section>"""
         if trend_html_empty:
             body += f"""
@@ -36339,7 +36381,7 @@ def web_portfolio(uid):
                          for p in positions)),
             str(request.args.get("trend_period") or "3m"),
             str(request.args.get("trend_benchmark") or "1"),
-             "empty-home-welcome-v11-botanical")
+             "empty-home-welcome-v12-clean-editorial")
         # 首頁已載入完整摘要；短時間內切回先用既有內容，避免重新抓六份共享資料。
         _home_cache_ttl = 180.0 if _is_taiwan_intraday_window() else 600.0
         _cached_home_body = _web_fragment_cache_get(
