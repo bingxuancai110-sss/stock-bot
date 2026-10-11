@@ -18875,7 +18875,9 @@ def _do_warmup():
     done = []
     shared_data = {}
     for label, fn in [
-        ("法人", lambda: fetch_institutional_data(codes=position_codes)),
+        # 預熱必須取得全市場法人資料，不能引用只存在於首頁請求中的 position_codes。
+        # 不帶 codes 時會走完整上市／上櫃資料流程並更新共享快取與資料庫。
+        ("法人", fetch_institutional_data),
         # Warm-up 是每日固定的背景入口；月營收不能走 homepage=True，
         # 因為 homepage 模式刻意只讀快照、不問官方。這裡強制重新確認
         # 「每一市場目前真正已公告的最新月份」，已公告就切新月份，
@@ -19015,16 +19017,22 @@ def _do_warmup():
     # 順便把選股台的候選池也算好，使用者進來就是快取命中；
     # compute_screener_rows 會在完整計算後保存 rows，若已命中持久化快照則不重掃 Yahoo。
     for mode in ("blackhorse", "radar"):
+        stage_started = time.perf_counter()
         try:
             rows, _s, _m = compute_screener_rows(mode)
             persisted = _load_persisted_screener_snapshot(mode)
+            elapsed = time.perf_counter() - stage_started
             if persisted and _screener_snapshot_valid_for_today(persisted):
-                done.append(f"{mode} {len(rows)} 檔（快照 {persisted.get('source_date') or '未標日期'}）")
+                done.append(f"{mode} {len(rows)} 檔（快照 {persisted.get('source_date') or '未標日期'}；{elapsed:.1f}s）")
             else:
-                done.append(f"{mode} {len(rows)} 檔（快照未命中）")
+                source_date = (persisted or {}).get("source_date") or "未標日期"
+                latest_date = _screener_source_date() or "未知"
+                print(f"⚠️ 預熱 {mode} 快照未命中：快照資料日={source_date}，最新法人資料日={latest_date}，耗時={elapsed:.1f}s")
+                done.append(f"{mode} {len(rows)} 檔（快照未命中；{elapsed:.1f}s）")
         except Exception as e:
-            print(f"❌ 預熱 {mode} 失敗: {e}")
-            done.append(f"{mode} 失敗")
+            elapsed = time.perf_counter() - stage_started
+            print(f"❌ 預熱 {mode} 失敗（{elapsed:.1f}s）: {e}")
+            done.append(f"{mode} 失敗（{elapsed:.1f}s）")
 
     # 排行榜在收盤後整合；週六、週日沒有盤中行情，因此直接用
     # 最近一個交易日的已保存快照建立排行榜。這樣週末 warmup 也能
@@ -37007,8 +37015,14 @@ def _load_persisted_screener_snapshot(mode):
             computed_at = (computed_at if computed_at.tzinfo
                            else computed_at.replace(tzinfo=timezone.utc))
             age = (datetime.now(timezone.utc) - computed_at).total_seconds()
-            if age < 0 or age > _SHARED_SNAPSHOT_MAX_AGE.get(
-                    "screener_" + mode, 3 * 86400):
+            max_age = _SHARED_SNAPSHOT_MAX_AGE.get("screener_" + mode, 3 * 86400)
+            # 週末、國定假日或補假可能讓最近交易日快照超過 72 小時；
+            # 非盤中時段允許讀取最多 7 日快照，但稍後仍須由
+            # _screener_snapshot_valid_for_today 確認 source_date 是最新可確認交易日。
+            # 盤中不放寬，避免舊快照冒充今日資料。
+            if not _is_taiwan_intraday_window():
+                max_age = max(max_age, 7 * 86400)
+            if age < 0 or age > max_age:
                 return None
         if not isinstance(rows, list):
             return None
@@ -37214,7 +37228,12 @@ def _is_taiwan_intraday_window(now=None):
 
 
 def _screener_snapshot_valid_for_today(snapshot):
-    """只在來源日符合今日或最近週末交易日時使用，避免舊行情冒充今日。"""
+    """判斷選股快照是否仍對應最近可確認的市場資料日。
+
+    台股遇到國定假日／補假時，最近交易日可能距離今天超過 3 個日曆日。
+    盤前、盤後與休市日可沿用「目前已確認的最新法人資料日」快照；盤中則
+    不可用前一交易日快照冒充當日資料。來源日期仍會在 UI 明確顯示。
+    """
     source_date = snapshot.get("source_date") if snapshot else None
     if isinstance(source_date, datetime):
         source_date = source_date.date()
@@ -37225,10 +37244,27 @@ def _screener_snapshot_valid_for_today(snapshot):
             return False
     if not isinstance(source_date, date):
         return False
+
     today = taiwan_today()
     if source_date == today:
         return True
-    return today.weekday() >= 5 and source_date <= today and (today - source_date).days <= 3
+    if source_date > today:
+        return False
+
+    # 交易時段內必須是今天的資料，避免舊快照遮住盤中更新。
+    now = taiwan_now()
+    if _is_taiwan_intraday_window(now):
+        return False
+
+    # 假日、補假與盤前／盤後：只接受目前法人快取已確認的最新資料日。
+    # 例如國慶補假後的星期一早上，最近交易日仍可能是上星期四。
+    latest_confirmed = _screener_source_date()
+    if latest_confirmed and source_date == latest_confirmed:
+        return True
+
+    # 沒有法人來源日可比較時，保留週末的短期回退，但不擴大一般工作日範圍。
+    return (today.weekday() >= 5 and
+            (today - source_date).days <= SCREENER_STALE_SNAPSHOT_MAX_AGE_SECONDS // 86400)
 
 
 def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
