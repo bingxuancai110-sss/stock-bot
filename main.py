@@ -20038,9 +20038,9 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
   .app-account-link.is-account:after{content:none!important}
   .app-account-link.is-account{gap:7px;padding:0 12px;color:#315E82}
   .app-account-settings-icon{font-size:17px;line-height:1;color:#315E82}
-  .app-account-settings-label{display:inline-block;font-size:11px;font-weight:900;color:#315E82}
+  .app-account-settings-label{display:inline-block;font-size:11px;font-weight:900;color:#315E82;white-space:nowrap}
   .app-account-link:focus-visible{outline:3px solid rgba(23,105,176,.28);outline-offset:2px}
-  @media(max-width:420px){.app-header{padding-right:12px}.app-account-link{top:-1px;min-height:36px;padding:0 8px;gap:5px;font-size:10px}.app-account-link svg{width:21px;height:21px}}
+  @media(max-width:420px){.app-header{padding-right:12px}.app-account-link{top:-1px;min-height:36px;padding:0 8px;gap:5px;font-size:10px}.app-account-link svg{width:21px;height:21px}.app-account-settings-label{font-size:10px}}
   /* iOS 分組列表：卡片是白的、圓角較大、不用外框——
      灰底本身就把卡片分出來了，再加邊框會顯得雜。
      這幾條放在共用樣式，讓所有頁面的卡片一次改變外觀。 */
@@ -22697,7 +22697,32 @@ html, body { background:#F2F4F7 !important; color:#111827 !important; }
 .auth-entry-page {background:#F3EEE3 !important;}
 .auth-entry-page .app-header,.auth-entry-page .top-nav,.auth-entry-page .app-bottom-nav,.auth-entry-page .app-account-link {display:none !important;}
 
-/* V253: iOS Safari already places web content below its browser chrome. Avoid the old
+/* V254: Separate the history-back control from the Google/account action.
+   On small screens both used to occupy the same upper-right area, causing the
+   “上一頁” pill to cover the account/login control. The auth landing has its own
+   navigation and must never render the shared back control. */
+.app-header .page-back {
+  position: absolute !important;
+  top: calc(env(safe-area-inset-top, 0px) + 10px) !important;
+  left: 16px !important;
+  right: auto !important;
+  z-index: 5 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+.app-header .page-back a {
+  min-height: 34px !important;
+  padding: 6px 11px !important;
+  border-radius: 12px !important;
+  background: #E8F1F7 !important;
+  border: 1px solid #C7DCEB !important;
+  color: #245B82 !important;
+  box-shadow: none !important;
+}
+body.auth-entry-page .page-back,
+body.auth-entry-page .app-header .page-back,
+.auth-entry-page .page-back { display: none !important; }
+/* V254: Separate back and account actions; V253: iOS Safari already places web content below its browser chrome. Avoid the old
    62px hard-coded top pad, keep the page heading visibly pinned, and place the load chip
    just beneath the fixed header instead of over the title. */
 .app-header {
@@ -22785,11 +22810,11 @@ def render_page(title, body, nav_active=None, user_name=None):
         page_back = preserve_web_token(
             '<div class="page-back"><a href="#" data-history-back="1" aria-label="回上一頁">‹ 上一頁</a></div>')
     header_user = current_web_user()
-    # 未登入者可以去登入／註冊；已登入者顯示「帳號設定」，不再誤標成「綁定 Google」。
+    # 右上角入口統一使用「註冊／登入 Google」文案，避免顯示「設定」。
     header_google_button = ""
     if title != "登入台股 BOT":
         if header_user:
-            header_google_button = '<a class="app-account-link is-account" href="/web/settings" aria-label="帳號設定" title="帳號設定"><span class="app-account-settings-icon" aria-hidden="true">⚙</span><span class="app-account-settings-label">帳號設定</span></a>'
+            header_google_button = '<a class="app-account-link is-account" href="/web/settings" aria-label="註冊／登入 Google" title="註冊／登入 Google"><svg viewBox="0 0 48 48" role="img" aria-label="Google"><path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.6c3.9-3.6 6.1-8.8 6.1-15z"/><path fill="#34A853" d="M24 44c5.5 0 10.1-1.8 13.5-4.9l-6.6-5.1c-1.8 1.2-4.1 2-6.9 2-5.3 0-9.8-3.6-11.4-8.4H5.8v5.3A20 20 0 0 0 24 44z"/><path fill="#FBBC05" d="M12.6 27.6a12 12 0 0 1 0-7.2v-5.3H5.8a20 20 0 0 0 0 17.8z"/><path fill="#EA4335" d="M24 12.1c3 0 5.7 1 7.8 3.1l5.8-5.8C34.1 6.1 29.5 4 24 4A20 20 0 0 0 5.8 15.1l6.8 5.3c1.6-4.8 6.1-8.3 11.4-8.3z"/></svg><span class="app-account-settings-label">註冊／登入 Google</span></a>'
         else:
             header_google_button = (
                 '<a class="app-account-link is-login" href="/auth/choose" aria-label="Google 登入／註冊" title="Google 登入／註冊">'
