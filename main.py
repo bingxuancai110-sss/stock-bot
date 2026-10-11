@@ -1714,9 +1714,15 @@ ETF_PRODUCT_METADATA = {
     },
 }
 
-# --- 1. 喚醒專用根路由 ---
+# --- 首頁與健康檢查 ---
 @app.route("/", methods=["GET"])
 def home():
+    # 使用者開啟網站根網址時，導向 Google 註冊／登入選擇頁；
+    # Render 健康檢查請改用 /health，避免首頁只顯示純文字。
+    return redirect("/auth/choose")
+
+@app.route("/health", methods=["GET"])
+def health_check():
     return "Bot is alive and awake!", 200
 
 # --- Supabase 連線池（程式啟動時建立一次，取代每次呼叫都開新連線） ---
