@@ -25366,7 +25366,12 @@ def respond_page(title, body, nav_active):
     畫面仍然是完整可用的，不會變成一段沒有樣式的裸 HTML。
     """
     if wants_fragment():
-        return preserve_web_token(inject_csrf_inputs(body))
+        # 分頁內容由 JS 以 fragment=1 載入；不可讓瀏覽器／代理沿用舊 HTML。
+        response = make_response(preserve_web_token(inject_csrf_inputs(body)))
+        response.headers["Cache-Control"] = "no-store, no-cache, max-age=0, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
     return render_page(title, body, nav_active=nav_active)
 
 
@@ -35845,7 +35850,8 @@ def web_portfolio(uid):
             str(request.args.get("trend_period") or "3m"),
             str(request.args.get("trend_benchmark") or "1"),
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
-                         if k not in {"t", "fragment", "_nav", "refresh"})))
+                         if k not in {"t", "fragment", "_nav", "refresh"})),
+            "empty-home-welcome-v5")
         _home_fast_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_home_fast_body = _web_fragment_cache_get(
             "portfolio-fast", _home_fast_fragment_key, _home_fast_ttl)
@@ -35869,9 +35875,44 @@ def web_portfolio(uid):
             uid, requested_period=str(request.args.get("trend_period") or "3m"),
             show_benchmark=str(request.args.get("trend_benchmark") or "1").lower() not in {"0", "false", "off", "no"},
             auth_token=str(request.args.get("t") or ""))
+        # 新手引導規則：只要目前沒有持股，就顯示歡迎／下一步引導。
+        # 不依賴「第一次登入」旗標，因此新註冊帳號與既有但尚未新增持股的帳號都能看見。
         body = f"""
-<div class="empty">還沒有持股紀錄。<br><br>
-<a href="/web/positions" style="color:var(--brass)">先去新增持股 →</a></div>"""
+<style>
+.welcome-empty{{max-width:760px;margin:18px auto 30px;padding:clamp(20px,4vw,32px);border:1px solid var(--line,#dce5ee);border-radius:22px;background:var(--card,#fff);box-shadow:0 8px 28px rgba(26,55,82,.06);text-align:left}}
+.welcome-empty .welcome-eyebrow{{font-size:12px;font-weight:800;letter-spacing:.13em;color:var(--brass,#315f87);margin-bottom:10px}}
+.welcome-empty h2{{font-size:clamp(24px,5vw,32px);line-height:1.25;margin:0 0 10px;color:var(--ink,#172b42)}}
+.welcome-empty .welcome-intro{{margin:0 0 22px;color:var(--ink-soft,#687b8d);line-height:1.75;font-size:15px}}
+.welcome-actions{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}}
+.welcome-action{{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0;padding:17px;border:1px solid var(--line,#dce5ee);border-radius:15px;background:var(--surface,#f7f9fc);text-decoration:none!important;color:var(--ink,#172b42)!important;transition:transform .15s ease,border-color .15s ease}}
+.welcome-action:hover{{transform:translateY(-1px);border-color:var(--brass,#315f87)}}
+.welcome-action .welcome-icon{{font-size:23px;line-height:1.2}}
+.welcome-action strong{{font-size:16px;line-height:1.4}}
+.welcome-action small{{font-size:13px;line-height:1.65;color:var(--ink-soft,#687b8d)}}
+.welcome-action .welcome-cta{{font-weight:750;font-size:14px;margin-top:5px;color:var(--brass,#315f87)}}
+.welcome-footnote{{font-size:12px;line-height:1.7;color:var(--ink-soft,#687b8d);margin:17px 0 0}}
+@media(max-width:520px){{.welcome-actions{{grid-template-columns:1fr}}.welcome-action{{padding:15px}}}}
+</style>
+<section class="welcome-empty" data-empty-home-version="v5" aria-label="新手開始使用">
+  <div class="welcome-eyebrow">TAIWAN STOCK BOT</div>
+  <h2>歡迎加入台股 BOT！</h2>
+  <p class="welcome-intro">你的投資管理空間已準備好了。先選擇接下來要做的事；之後也可以隨時從下方導覽列回到各項功能。</p>
+  <div class="welcome-actions">
+    <a class="welcome-action" href="/web/positions">
+      <span class="welcome-icon" aria-hidden="true">📊</span>
+      <strong>建立你的投資組合</strong>
+      <small>新增目前持有的股票，開始追蹤持股、市值與損益。</small>
+      <span class="welcome-cta">新增第一筆持股 →</span>
+    </a>
+    <a class="welcome-action" href="/web/workbench">
+      <span class="welcome-icon" aria-hidden="true">🔎</span>
+      <strong>先探索選股工具</strong>
+      <small>還沒買股票也沒關係，可以先看看選股工作台與市場機會。</small>
+      <span class="welcome-cta">前往選股工作台 →</span>
+    </a>
+  </div>
+  <p class="welcome-footnote">目前還沒有持股紀錄。新增持股後，首頁就會顯示你的投資組合與相關分析。</p>
+</section>"""
         if trend_html_empty:
             body += f"""
 <div class="section-head"><h2>組合走勢</h2>
@@ -35887,7 +35928,8 @@ def web_portfolio(uid):
             tuple(sorted((str(p.get("code") or ""), str(p.get("shares") or ""), str(p.get("cost") or ""))
                          for p in positions)),
             str(request.args.get("trend_period") or "3m"),
-            str(request.args.get("trend_benchmark") or "1"))
+            str(request.args.get("trend_benchmark") or "1"),
+             "empty-home-welcome-v5")
         # 首頁已載入完整摘要；短時間內切回先用既有內容，避免重新抓六份共享資料。
         _home_cache_ttl = 180.0 if _is_taiwan_intraday_window() else 600.0
         _cached_home_body = _web_fragment_cache_get(
