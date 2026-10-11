@@ -25610,23 +25610,80 @@ def _bind_google_identity(user_id, identity):
 
 @app.route("/auth/choose")
 def auth_google_choose():
-    """分開 Google 註冊與登入入口。"""
-    body = r'''<div class="card" style="padding:20px;margin:18px 0;">
-  <div style="font-size:12px;font-weight:900;letter-spacing:.16em;color:#315E82;margin-bottom:8px">TAIWAN STOCK BOT</div>
-  <h2 style="font-size:26px;line-height:1.25;color:#172B40;margin-bottom:10px">台股 BOT 帳號</h2>
-  <section style="border:1px solid #D5E2ED;border-radius:16px;padding:16px;margin:12px 0;background:#fff">
-    <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">第一次使用？建立新帳號</h3>
-    <p style="color:#526A80;margin-bottom:14px">只建立尚未註冊的 Google 身分；已註冊過就停止，請改用登入。</p>
-    <a href="/auth/google?mode=register" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800">使用 Google 註冊</a>
+    '''未登入入口：提供清楚的 Google 註冊與登入，成功後再進入新手教學。'''
+    body = r'''<style>
+.auth-landing{max-width:920px;margin:18px auto 34px;padding:0 2px;color:#172b40}
+.auth-hero{position:relative;overflow:hidden;border-radius:26px;padding:30px 26px 28px;background:linear-gradient(135deg,#10243d 0%,#1d456b 56%,#2f7091 100%);color:#fff;box-shadow:0 18px 40px rgba(27,57,84,.18)}
+.auth-hero:before{content:"";position:absolute;width:250px;height:250px;border-radius:50%;right:-72px;top:-105px;border:1px solid rgba(255,255,255,.16);box-shadow:0 0 0 28px rgba(255,255,255,.035),0 0 0 58px rgba(255,255,255,.025)}
+.auth-brand{font-size:11px;font-weight:900;letter-spacing:.19em;color:#b9dcf5;text-transform:uppercase}
+.auth-hero h1{position:relative;font-size:clamp(28px,5vw,43px);line-height:1.18;letter-spacing:-.035em;margin:17px 0 12px;color:#fff}
+.auth-hero p{position:relative;max-width:560px;color:#e2edf6;font-size:15px;line-height:1.85;margin:0}
+.auth-tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px;position:relative}
+.auth-tag{border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.09);border-radius:999px;padding:7px 11px;color:#f3f8fc;font-size:12px;font-weight:700}
+.auth-content{display:grid;grid-template-columns:minmax(0,1.04fr) minmax(0,.96fr);gap:16px;margin-top:17px}
+.auth-panel{border:1px solid #dce6ef;border-radius:22px;background:#fff;padding:22px;box-shadow:0 9px 26px rgba(27,57,84,.055)}
+.auth-panel h2{font-size:21px;line-height:1.35;margin:0 0 7px;color:#172b40}
+.auth-muted{font-size:13px;line-height:1.8;color:#61758a;margin:0}
+.auth-choice{display:flex;align-items:center;gap:12px;border:1px solid #d8e3ee;border-radius:15px;padding:14px;margin-top:13px;background:#f9fbfe}
+.auth-choice-icon{flex:0 0 42px;height:42px;border-radius:13px;background:#e9f1f8;display:flex;align-items:center;justify-content:center;font-size:21px}
+.auth-choice-main{min-width:0;flex:1}
+.auth-choice-title{font-size:15px;font-weight:850;color:#172b40;margin:0 0 4px}
+.auth-choice-desc{font-size:12px;line-height:1.65;color:#61758a;margin:0}
+.auth-btn{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;box-sizing:border-box;text-decoration:none!important;border-radius:13px;padding:14px 12px;font-weight:850;font-size:14px;transition:transform .15s,box-shadow .15s}
+.auth-btn:hover{transform:translateY(-1px)}
+.auth-btn-primary{background:#245c8b;color:#fff!important;box-shadow:0 8px 18px rgba(36,92,139,.2)}
+.auth-btn-secondary{background:#fff;border:1px solid #b9cfe0;color:#245c8b!important}
+.auth-g{font-size:19px;font-weight:900;background:conic-gradient(from -45deg,#4285f4 0 25%,#34a853 0 50%,#fbbc05 0 75%,#ea4335 0);background-clip:text;-webkit-background-clip:text;color:transparent}
+.auth-feature-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:17px}
+.auth-feature{border:1px solid #e1e9f0;background:#f8fafc;border-radius:15px;padding:14px}
+.auth-feature-icon{font-size:20px;margin-bottom:8px}
+.auth-feature b{display:block;color:#213950;font-size:13px;margin-bottom:5px}
+.auth-feature span{display:block;color:#667b8f;font-size:11px;line-height:1.65}
+.auth-install{display:flex;gap:12px;align-items:flex-start;margin-top:16px;padding:15px;border-radius:16px;background:#edf5fb;border:1px solid #d6e7f4}
+.auth-install-icon{font-size:22px;flex:0 0 auto}
+.auth-install b{display:block;font-size:13px;color:#234f73;margin-bottom:4px}
+.auth-install p{font-size:12px;line-height:1.7;color:#5b7388;margin:0}
+.auth-footnote{font-size:11px;line-height:1.8;color:#718397;text-align:center;margin:16px 8px 0}
+@media(max-width:680px){.auth-landing{margin:10px auto 25px}.auth-hero{padding:25px 20px 23px;border-radius:22px}.auth-content{grid-template-columns:1fr}.auth-panel{padding:19px}.auth-feature-grid{gap:8px}.auth-choice{padding:12px}}
+</style>
+<main class="auth-landing">
+  <section class="auth-hero">
+    <div class="auth-brand">TAIWAN STOCK BOT · INVESTMENT WORKSPACE</div>
+    <h1>讓每一次投資決策，<br>都有資料可以依據。</h1>
+    <p>整合持股追蹤、智慧選股、籌碼觀察與績效排行，打造屬於你的台股研究工作台。</p>
+    <div class="auth-tags"><span class="auth-tag">持股損益追蹤</span><span class="auth-tag">智慧選股工具</span><span class="auth-tag">績效排行榜</span></div>
   </section>
-  <section style="border:1px solid #D5E2ED;border-radius:16px;padding:16px;margin:12px 0;background:#F7FAFD">
-    <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">已經有帳號？直接登入</h3>
-    <p style="color:#526A80;margin-bottom:14px">只查找這個 Google 身分已綁定的舊帳號；找不到就停止，不會自動建立新帳號。</p>
-    <a href="/auth/google?mode=login" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#fff;border:1px solid #315E9B;color:#315E9B;font-weight:800">使用 Google 登入</a>
-  </section>
-  <p style="color:#526A80;font-size:13px">註冊只建立新帳號；登入只開啟既有帳號。相同 Google 身分不會因再次註冊而建立第二個帳號。更換 Gmail 請先登入原帳號再進入設定綁定；新 Google 若已綁定其他帳號，會拒絕覆蓋。</p>
-</div>'''
-    return render_page("台股 BOT 帳號", body)
+  <div class="auth-content">
+    <section class="auth-panel">
+      <h2>登入以開始使用</h2>
+      <p class="auth-muted">選擇符合你目前狀態的方式。註冊與登入分開處理，避免建立重複帳號。</p>
+      <div class="auth-choice">
+        <div class="auth-choice-icon">✨</div>
+        <div class="auth-choice-main"><div class="auth-choice-title">第一次使用？建立新帳號</div><p class="auth-choice-desc">使用尚未註冊的 Google 帳號建立你的投資空間。</p></div>
+      </div>
+      <a class="auth-btn auth-btn-primary" href="/auth/google?mode=register"><span class="auth-g">G</span> 使用 Google 註冊</a>
+      <div class="auth-choice" style="margin-top:17px">
+        <div class="auth-choice-icon">👋</div>
+        <div class="auth-choice-main"><div class="auth-choice-title">已經有台股 BOT 帳號？</div><p class="auth-choice-desc">登入原本的 Google 帳號，繼續使用既有投資資料。</p></div>
+      </div>
+      <a class="auth-btn auth-btn-secondary" href="/auth/google?mode=login"><span class="auth-g">G</span> 使用 Google 登入</a>
+      <p class="auth-footnote">登入只會開啟既有帳號；註冊只會建立新帳號。系統不會只因 Email 相同就自動合併帳號。</p>
+    </section>
+    <section class="auth-panel">
+      <h2>登入後，你可以使用</h2>
+      <p class="auth-muted">完成登入後，若尚未新增持股，系統會先帶你認識主要功能。</p>
+      <div class="auth-feature-grid">
+        <div class="auth-feature"><div class="auth-feature-icon">📊</div><b>投資組合</b><span>追蹤持股、市值、損益與配置變化。</span></div>
+        <div class="auth-feature"><div class="auth-feature-icon">🔎</div><b>選股工作台</b><span>探索選股工具、黑馬股與籌碼資訊。</span></div>
+        <div class="auth-feature"><div class="auth-feature-icon">🏆</div><b>績效排行榜</b><span>查看指定期間的績效與報酬曲線。</span></div>
+        <div class="auth-feature"><div class="auth-feature-icon">📱</div><b>手機網頁 App</b><span>可加入手機主畫面，方便快速開啟。</span></div>
+      </div>
+      <div class="auth-install"><div class="auth-install-icon">💡</div><div><b>不用到 App Store 下載</b><p>登入後可查看 iPhone 與 Android 的主畫面安裝教學，像 App 一樣快速開啟網站。</p></div></div>
+      <p class="auth-footnote">投資資訊僅供研究參考，不構成買賣建議。</p>
+    </section>
+  </div>
+</main>'''
+    return render_page("登入台股 BOT", body)
 
 @app.route("/auth/google")
 def auth_google_start():
