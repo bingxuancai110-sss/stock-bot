@@ -32249,6 +32249,26 @@ def web_leaderboard(uid):
 </div>'''
 
     situation_panels = "".join(render_situation_panel(name) for name in ("short", "long", "season"))
+    leaderboard_guide_html = f'''<section class="rank-explainer" aria-label="排行榜規則說明">
+  <div class="rank-explainer-kicker">HOW RANKING WORKS</div>
+  <h2>排行榜怎麼看？</h2>
+  <p class="rank-explainer-lead">排名依所選榜單的期間報酬率排序；其他指標用來幫助你理解報酬背後的風險與穩定度。這不是獲利保證，也不代表未來績效。</p>
+  <div class="rank-explainer-periods">
+    <div><b>短線｜近 30 天</b><span>所有參賽者用相同的近 30 天區間比較，觀察近期表現。</span></div>
+    <div><b>長線｜加入後累計</b><span>從各自加入排行榜的起算日累積，加入日期不同，觀察期間也不同。</span></div>
+    <div><b>賽季｜本季</b><span>每季重新起算，依本季有效交易日的績效比較。</span></div>
+  </div>
+  <div class="rank-explainer-metrics">
+    <b>卡片上的指標代表什麼？</b>
+    <ul>
+      <li><strong>報酬率：</strong>目前所選期間的組合累積表現，也是榜單排序依據。</li>
+      <li><strong>超額報酬：</strong>相對同期大盤多賺或少賺多少；不是單看正報酬。</li>
+      <li><strong>最大回檔：</strong>期間內從高點到低點的最大下跌幅度，幫助觀察風險。</li>
+      <li><strong>穩定度：</strong>依期間日報酬波動提供的輔助觀察；資料不足時不顯示評級。</li>
+    </ul>
+  </div>
+  <div class="rank-explainer-bottom"><b>如何參加？</b>往下找到「加入排行榜」，填寫顯示暱稱即可，<b>不需要先有持股</b>。加入後先進入排隊觀察；每日有效快照累積達到 {LEADERBOARD_MIN_SNAPSHOTS} 筆後，才納入正式名次。你可以選擇是否公開部分持股資訊；不勾選時，榜上只顯示績效，不顯示持股明細。</div>
+</section>'''
     my_rank_html = f'''<section class="rank-situation">
   <div class="rank-situation-title"><h2>🏆 我的排名戰況</h2>
     <span class="rank-situation-badge" data-situation-badge="1">{situation_labels[active_board]}</span></div>
@@ -32325,7 +32345,26 @@ def web_leaderboard(uid):
 .settlement-wrap{margin:0 0 18px;padding:16px;border:1px solid #d8c28d;border-radius:20px;background:linear-gradient(145deg,#fff8dd,#fffdf7);box-shadow:0 8px 22px rgba(120,95,35,.08)}
 .settlement-kicker{font-size:9px;letter-spacing:.18em;color:#9a7736;font-weight:900}.settlement-wrap h2{margin:5px 0 4px}.settlement-wrap>p{margin:0 0 12px;color:#766a55;font-size:12px;line-height:1.6}
 .settlement-report-card{border:1px solid #e4d2a5;border-radius:16px;background:#fffef8;padding:14px;margin-top:10px}.settlement-report-top{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d6538;font-weight:900}.settlement-report-top small{color:#8b8f98;font-weight:600}.settlement-report-title{margin-top:12px;font-size:15px;display:flex;align-items:center;gap:5px}.settlement-report-title b{font-size:12px;color:#7c8796;font-weight:700}.settlement-report-title em{margin-left:auto;font-style:normal;color:#9a8a6d;font-size:10.5px}.scorecard-rank{font-size:20px;font-weight:950;color:#18263a}.settlement-report-main{text-align:center;padding:9px 0 11px}.settlement-report-main strong{display:block;font-size:34px;line-height:1.05;font-weight:950}.settlement-report-main span{display:block;margin-top:5px;color:#7b8591;font-size:12px}.settlement-report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.settlement-report-grid div{padding:9px;border-radius:11px;background:#faf8f0;border:1px solid #eee6d5}.settlement-report-grid small{display:block;color:#7f8997;font-size:10.5px}.settlement-report-grid b{display:block;margin-top:3px;font-size:17px}.settlement-report-grid span{display:block;margin-top:2px;color:#9aa1aa;font-size:9.5px}.settlement-report-period{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding:9px 10px;border-radius:10px;background:#fbf8ef;color:#8a7b60;font-size:10.5px}.settlement-report-period b{color:#5d6570;font-size:10.5px}.settlement-report-foot{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #eee6d5;color:#7b8794;font-size:10.5px}.scorecard-chart{margin:4px 0 12px;padding:10px 10px 7px;border:1px solid #e8edf2;border-radius:12px;background:#fbfcfd}.scorecard-chart-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;color:#344255;font-size:11px}.scorecard-chart-head span{color:#8b97a5;font-weight:600}.scorecard-chart svg{display:block;width:100%;height:auto}.scorecard-chart-legend{display:flex;gap:14px;justify-content:flex-end;color:#8b97a5;font-size:9.5px}.scorecard-chart-legend span{display:flex;align-items:center;gap:4px}.scorecard-chart-legend i{display:inline-block;width:15px;height:3px;border-radius:3px}.legend-user{background:#1769aa}.legend-market{background:#a7b0ba}.scorecard-chart-empty{margin:4px 0 12px;padding:22px 10px;text-align:center;border:1px dashed #dfe5eb;border-radius:12px;color:#8b97a5;font-size:11px;background:#fbfcfd}
-.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}.history-more{border-top:1px solid var(--rule);background:var(--paper)}.history-more summary{list-style:none;cursor:pointer;padding:11px 12px;color:#1769aa;font-size:12px;font-weight:800;text-align:center}.history-more summary::-webkit-details-marker{display:none}.history-more summary:before{content:"⌄ ";font-size:13px}.history-more[open] summary:before{content:"⌃ "}.history-more-body{border-top:1px solid rgba(120,130,140,.12)}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>
+.leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}.history-more{border-top:1px solid var(--rule);background:var(--paper)}.history-more summary{list-style:none;cursor:pointer;padding:11px 12px;color:#1769aa;font-size:12px;font-weight:800;text-align:center}.history-more summary::-webkit-details-marker{display:none}.history-more summary:before{content:"⌄ ";font-size:13px}.history-more[open] summary:before{content:"⌃ "}.history-more-body{border-top:1px solid rgba(120,130,140,.12)}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* Rank explainer: accessible contrast on mobile and inside the app shell. */
+.rank-explainer{margin:0 0 16px;padding:17px 15px;border:1px solid #C9D9E5;border-radius:16px;background:#FFFFFF;color:#233D51;box-shadow:0 4px 14px rgba(31,63,87,.05)}
+.rank-explainer-kicker{font-size:10px;letter-spacing:.15em;font-weight:900;color:#315E80}
+.rank-explainer h2{margin:5px 0 7px;font-size:21px;line-height:1.3;color:#172B40}
+.rank-explainer-lead{margin:0 0 13px;font-size:13px;line-height:1.75;color:#425D72}
+.rank-explainer-periods{display:grid;grid-template-columns:1fr;gap:8px}
+.rank-explainer-periods>div{padding:10px 11px;border:1px solid #DFE8EF;border-radius:10px;background:#F5F8FB}
+.rank-explainer-periods b{display:block;color:#1F4F70;font-size:13px;margin-bottom:3px}
+.rank-explainer-periods span{display:block;color:#425D72;font-size:12px;line-height:1.6}
+.rank-explainer-metrics{margin-top:13px;padding-top:12px;border-top:1px solid #DFE8EF}
+.rank-explainer-metrics>b{font-size:13px;color:#172B40}
+.rank-explainer-metrics ul{margin:8px 0 0;padding-left:19px;color:#425D72;font-size:12px;line-height:1.75}
+.rank-explainer-metrics li{margin:4px 0}
+.rank-explainer-metrics strong{color:#243F55}
+.rank-explainer-bottom{margin-top:13px;padding:11px 12px;border-left:3px solid #315E80;border-radius:0 9px 9px 0;background:#EDF4F8;color:#314F65;font-size:12px;line-height:1.75}
+/* The old empty-state text was too pale on the light card in some theme overrides. */
+#app-page-content .rank-situation .rank-situation-empty,.rank-situation .rank-situation-empty{color:#344F63!important;font-size:13px!important;line-height:1.75!important;font-weight:650!important}
+@media(min-width:720px){.rank-explainer-periods{grid-template-columns:repeat(3,minmax(0,1fr))}}
+</style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>
 <style id="v258-rank-visual-system">
 /* V258: one consistent high-contrast fintech system; no large blue champion panel. */
 #app-page-content .rank-rows .rank-card,
@@ -32649,6 +32688,7 @@ def web_leaderboard(uid):
     body = f"""
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {settlement_html}
+{leaderboard_guide_html}
 {my_rank_html}
 {tabs}
 <div class="rank-list-caption" data-board-caption="short"
@@ -35851,7 +35891,7 @@ def web_portfolio(uid):
             str(request.args.get("trend_benchmark") or "1"),
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
                          if k not in {"t", "fragment", "_nav", "refresh"})),
-            "empty-home-welcome-v5")
+            "empty-home-welcome-v6")
         _home_fast_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_home_fast_body = _web_fragment_cache_get(
             "portfolio-fast", _home_fast_fragment_key, _home_fast_ttl)
@@ -35892,8 +35932,19 @@ def web_portfolio(uid):
 .welcome-action .welcome-cta{{font-weight:750;font-size:14px;margin-top:5px;color:var(--brass,#315f87)}}
 .welcome-footnote{{font-size:12px;line-height:1.7;color:var(--ink-soft,#687b8d);margin:17px 0 0}}
 @media(max-width:520px){{.welcome-actions{{grid-template-columns:1fr}}.welcome-action{{padding:15px}}}}
+.welcome-install{{display:flex;align-items:center;gap:12px;margin-top:13px;padding:15px;border:1px solid #BFD5E5;border-radius:15px;background:#EEF6FC;text-decoration:none!important;color:#173B57!important}}
+.welcome-install-icon{{font-size:25px;flex:0 0 auto}}
+.welcome-install-copy{{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}}
+.welcome-install-copy strong{{font-size:14px;line-height:1.45}}
+.welcome-install-copy small{{font-size:12px;line-height:1.6;color:#4F687D}}
+.welcome-install-cta{{font-size:12px;font-weight:850;white-space:nowrap;color:#245E86}}
+.welcome-guide{{margin-top:12px;border:1px solid var(--line,#dce5ee);border-radius:13px;background:#fff;overflow:hidden}}
+.welcome-guide summary{{padding:13px 14px;cursor:pointer;font-size:13px;font-weight:800;color:#294E6B}}
+.welcome-guide-body{{padding:0 14px 12px;color:#526B81;font-size:12.5px;line-height:1.7}}
+.welcome-guide-body p{{margin:8px 0}}
+@media(max-width:420px){{.welcome-install{{align-items:flex-start;flex-wrap:wrap}}.welcome-install-cta{{margin-left:37px}}}}
 </style>
-<section class="welcome-empty" data-empty-home-version="v5" aria-label="新手開始使用">
+<section class="welcome-empty" data-empty-home-version="v6" aria-label="新手開始使用">
   <div class="welcome-eyebrow">TAIWAN STOCK BOT</div>
   <h2>歡迎加入台股 BOT！</h2>
   <p class="welcome-intro">你的投資管理空間已準備好了。先選擇接下來要做的事；之後也可以隨時從下方導覽列回到各項功能。</p>
@@ -35911,7 +35962,21 @@ def web_portfolio(uid):
       <span class="welcome-cta">前往選股工作台 →</span>
     </a>
   </div>
-  <p class="welcome-footnote">目前還沒有持股紀錄。新增持股後，首頁就會顯示你的投資組合與相關分析。</p>
+  <a class="welcome-install" href="/web/install" data-app-nav="1">
+    <span class="welcome-install-icon" aria-hidden="true">📱</span>
+    <span class="welcome-install-copy"><strong>把台股 BOT 加到手機主畫面</strong><small>不用下載 App；iPhone／Android 都有安裝教學，之後像 App 一樣點圖示開啟。</small></span>
+    <span class="welcome-install-cta">教我安裝 →</span>
+  </a>
+  <details class="welcome-guide">
+    <summary>還有哪些功能？點我看新手導覽</summary>
+    <div class="welcome-guide-body">
+      <p><b>📊 持股：</b>新增持股後，查看投資組合、市值、損益與權重。</p>
+      <p><b>🔎 選股：</b>使用選股工作台、黑馬股與籌碼相關工具探索市場。</p>
+      <p><b>🏆 排行：</b>自願加入績效排行榜，查看不同期間的報酬表現；完整持股清單不會自動公開，是否顯示部分持股依排行榜設定而定。</p>
+      <p><b>💬 LINE 通知：</b>網站登入與 LINE 推播是不同設定；若要接收盤前／盤中／盤後通知，請到「更多」確認 LINE 通知設定。</p>
+    </div>
+  </details>
+  <p class="welcome-footnote">目前還沒有持股紀錄。你可以先探索選股工具，也可以新增持股開始追蹤投資組合。</p>
 </section>"""
         if trend_html_empty:
             body += f"""
@@ -35929,7 +35994,7 @@ def web_portfolio(uid):
                          for p in positions)),
             str(request.args.get("trend_period") or "3m"),
             str(request.args.get("trend_benchmark") or "1"),
-             "empty-home-welcome-v5")
+             "empty-home-welcome-v6")
         # 首頁已載入完整摘要；短時間內切回先用既有內容，避免重新抓六份共享資料。
         _home_cache_ttl = 180.0 if _is_taiwan_intraday_window() else 600.0
         _cached_home_body = _web_fragment_cache_get(
