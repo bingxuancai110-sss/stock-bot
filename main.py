@@ -44,6 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
 APP_BUILD = "V270_AUTH_ONLY_GOOGLE_LINE_OAUTH"
+UI_BUILD = "v11-botanical-editorial-contrast"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
 # index on page render so an upstream timeout cannot hold the whole page for six seconds.
@@ -1717,13 +1718,39 @@ ETF_PRODUCT_METADATA = {
 # --- 首頁與健康檢查 ---
 @app.route("/", methods=["GET"])
 def home():
-    # 使用者開啟網站根網址時，導向 Google 註冊／登入選擇頁；
-    # Render 健康檢查請改用 /health，避免首頁只顯示純文字。
-    return redirect("/auth/choose")
+    # 已登入者直接回到個人首頁；未登入者才進入 Google 註冊／登入入口。
+    # t 參數需保留給無法穩定使用 Cookie 的 LINE WebView。
+    uid = current_web_user()
+    if uid:
+        target = "/web/portfolio"
+        token = request.args.get("t") or request.cookies.get("stockbot_token")
+        if token:
+            target += "?t=" + quote(str(token), safe="")
+    else:
+        target = "/auth/choose?ui=v11-botanical-editorial"
+    response = redirect(target)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-StockBot-UI-Version"] = UI_BUILD
+    return response
 
 @app.route("/health", methods=["GET"])
 def health_check():
     return "Bot is alive and awake!", 200
+
+@app.route("/ui-version", methods=["GET"])
+def ui_version_check():
+    """公開的介面版本檢查，只回傳版本與測試路徑，不包含任何帳號資料。"""
+    response = make_response(jsonify({
+        "ui_version": UI_BUILD,
+        "login_entry": "/auth/choose",
+        "welcome_page": "/web/portfolio",
+        "leaderboard_page": "/web/leaderboard",
+    }), 200)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-StockBot-UI-Version"] = UI_BUILD
+    return response
 
 # --- Supabase 連線池（程式啟動時建立一次，取代每次呼叫都開新連線） ---
 _db_url = os.environ.get("DATABASE_URL")
@@ -20008,6 +20035,10 @@ input:focus,select:focus{outline:2px solid rgba(23,105,176,.25);border-color:#17
   .app-account-link svg{width:24px;height:24px;display:block;flex:none}
   .app-account-link:after{content:"Google 登入／註冊";display:inline-block}
   .app-account-link.is-bind:after{content:"綁定 Google"}
+  .app-account-link.is-account:after{content:none!important}
+  .app-account-link.is-account{gap:7px;padding:0 12px;color:#315E82}
+  .app-account-settings-icon{font-size:17px;line-height:1;color:#315E82}
+  .app-account-settings-label{display:inline-block;font-size:11px;font-weight:900;color:#315E82}
   .app-account-link:focus-visible{outline:3px solid rgba(23,105,176,.28);outline-offset:2px}
   @media(max-width:420px){.app-header{padding-right:12px}.app-account-link{top:-1px;min-height:36px;padding:0 8px;gap:5px;font-size:10px}.app-account-link svg{width:21px;height:21px}}
   /* iOS 分組列表：卡片是白的、圓角較大、不用外框——
@@ -22608,6 +22639,63 @@ html, body { background:#F2F4F7 !important; color:#111827 !important; }
 
 
 
+
+
+/* V9 FINAL FIX: make the empty/waiting participant state readable on its light surface.
+   Older CSS forced pale text with !important while the panel background stayed pale gray. */
+#app-page-content .rank-situation {
+  background:linear-gradient(145deg,#FFFEFA 0%,#F7F4EA 100%) !important;
+  color:#25372E !important;border:1px solid #CFC6B2 !important;
+  border-top:4px solid #718268 !important;box-shadow:0 6px 18px rgba(58,63,45,.075) !important;
+}
+#app-page-content .rank-situation .rank-situation-title h2,
+#app-page-content .rank-situation .rank-situation-title h3,
+#app-page-content .rank-situation .rank-situation-title {color:#26382D !important;font-weight:900 !important;}
+#app-page-content .rank-situation .rank-situation-badge {background:#E8EBDD !important;color:#354B38 !important;border:1px solid #B8C5AB !important;}
+#app-page-content .rank-situation .rank-situation-panel {
+  background:#F8F8F2 !important;color:#2E4333 !important;border:1px solid #D2D9CA !important;
+  border-radius:13px !important;box-shadow:none !important;
+}
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-empty,
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-empty * {
+  background:transparent !important;color:#344A38 !important;opacity:1 !important;
+  -webkit-text-fill-color:#344A38 !important;text-shadow:none !important;
+}
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-empty {
+  display:block !important;padding:16px !important;font-size:14px !important;line-height:1.9 !important;
+  font-weight:650 !important;text-align:left !important;
+}
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-empty b,
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-empty strong {
+  color:#21382A !important;-webkit-text-fill-color:#21382A !important;font-weight:900 !important;
+}
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-item {background:#F8F8F2 !important;border-color:#D2D9CA !important;}
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-item small,
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-sub,
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-item span {
+  color:#4B604D !important;-webkit-text-fill-color:#4B604D !important;opacity:1 !important;font-weight:750 !important;
+}
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-item b {color:#263B2C !important;-webkit-text-fill-color:#263B2C !important;}
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-item b.up,
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-item b.positive {color:#B42318 !important;-webkit-text-fill-color:#B42318 !important;}
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-item b.down,
+#app-page-content .rank-situation .rank-situation-panel .rank-situation-item b.negative {color:#067647 !important;-webkit-text-fill-color:#067647 !important;}
+#app-page-content .rank-explainer,
+#app-page-content .rank-explainer-details,
+#app-page-content .rank-explainer-content {color:#263746 !important;}
+#app-page-content .rank-explainer-summary-title,
+#app-page-content .rank-explainer-content b,
+#app-page-content .rank-explainer-content strong {color:#1F3444 !important;-webkit-text-fill-color:#1F3444 !important;font-weight:850 !important;}
+#app-page-content .rank-explainer-content p,
+#app-page-content .rank-explainer-content li,
+#app-page-content .rank-explainer-summary-lead {color:#344A5B !important;-webkit-text-fill-color:#344A5B !important;opacity:1 !important;}
+#app-page-content .rank-explainer-periods > div {background:#F7F4EA !important;border:1px solid #D8CEBC !important;}
+#app-page-content .rank-explainer-periods > div b {color:#3A4E3A !important;}
+#app-page-content .rank-explainer-periods > div span {color:#4F5E50 !important;}
+#app-page-content .rank-explainer-bottom {background:#EDF0E6 !important;color:#2F4432 !important;border-left-color:#718268 !important;}
+#app-page-content .rank-explainer-bottom b {color:#243A2B !important;}
+.auth-entry-page {background:#F3EEE3 !important;}
+.auth-entry-page .app-header,.auth-entry-page .top-nav,.auth-entry-page .app-bottom-nav,.auth-entry-page .app-account-link {display:none !important;}
 '''
 
 
@@ -22652,8 +22740,10 @@ def render_page(title, body, nav_active=None, user_name=None):
     page_extra_css = WORKBENCH_CSS if title == "選股工作台" else ""
     # 未登入入口是獨立的註冊／登入頁，不顯示登入後的底部分頁或「綁定 Google」按鈕，避免新使用者誤以為已登入。
     if title == "登入台股 BOT":
+        # 未登入入口不顯示任何登入後導覽元素；不能只靠視覺上縮小按鈕。
+        nav = ""
         bottom_nav = ""
-        page_extra_css += "\n.auth-entry-page .app-account-link,.app-account-link.auth-entry-hide{display:none!important}"
+        page_extra_css += "\n.auth-entry-page .app-header,.auth-entry-page .top-nav,.auth-entry-page .app-bottom-nav,.auth-entry-page .app-account-link{display:none!important}\n.auth-entry-page .wrap{padding-bottom:28px!important}\n.auth-entry-page #app-page-content{padding-top:0!important}"
     body = inject_csrf_inputs(body)
     body = preserve_web_token(body)
     page_back = ""
@@ -22661,16 +22751,150 @@ def render_page(title, body, nav_active=None, user_name=None):
         page_back = preserve_web_token(
             '<div class="page-back"><a href="#" data-history-back="1" aria-label="回上一頁">‹ 上一頁</a></div>')
     header_user = current_web_user()
-    # 首頁右上角固定提供 Google 登入／註冊，讓已登入 LINE 的使用者也能測試/切換 Google 身分。
-    # 綁定目前帳號的動作仍留在「設定」頁，避免首頁按鈕把另一個 Google 帳號誤綁到現有帳號。
-    header_google_mode = 'login'
-    header_google_label = 'Google 登入／註冊'
-    header_google_href = '/auth/choose'
+    # 未登入者可以去登入／註冊；已登入者顯示「帳號設定」，不再誤標成「綁定 Google」。
+    header_google_button = ""
+    if title != "登入台股 BOT":
+        if header_user:
+            header_google_button = '<a class="app-account-link is-account" href="/web/settings" aria-label="帳號設定" title="帳號設定"><span class="app-account-settings-icon" aria-hidden="true">⚙</span><span class="app-account-settings-label">帳號設定</span></a>'
+        else:
+            header_google_button = (
+                '<a class="app-account-link is-login" href="/auth/choose" aria-label="Google 登入／註冊" title="Google 登入／註冊">'
+                '<svg viewBox="0 0 48 48" role="img" aria-label="Google">'
+                '<path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.6c3.9-3.6 6.1-8.8 6.1-15z"/>'
+                '<path fill="#34A853" d="M24 44c5.5 0 10.1-1.8 13.5-4.9l-6.6-5.1c-1.8 1.2-4.1 2-6.9 2-5.3 0-9.8-3.6-11.4-8.4H5.8v5.3A20 20 0 0 0 24 44z"/>'
+                '<path fill="#FBBC05" d="M12.6 27.6a12 12 0 0 1 0-7.2v-5.3H5.8a20 20 0 0 0 0 17.8z"/>'
+                '<path fill="#EA4335" d="M24 12.1c3 0 5.7 1 7.8 3.1l5.8-5.8C34.1 6.1 29.5 4 24 4A20 20 0 0 0 5.8 15.1l6.8 5.3c1.6-4.8 6.1-8.3 11.4-8.3z"/>'
+                '</svg></a>'
+            )
+    # 登入入口使用自己的編輯式 masthead，不輸出登入後的共用頁首／Google 綁定鈕。
+    # 以 HTML 結構移除，比只靠 CSS 隱藏更可靠，也避免舊版樣式重新顯示。
+    if title == "登入台股 BOT":
+        header_html = ""
+    else:
+        header_html = f'''<header class="app-header">
+  {page_back}
+  {header_google_button}
+  <div class="eyebrow">TAIWAN STOCK BOT</div>
+  <h1>{title}</h1>
+  <div class="dateline">{taiwan_now().strftime('%Y / %m / %d')}
+    {'　' + user_name if user_name else ''}</div>
+</header>'''
+
+    # 路由專用的最後一層樣式放在共用視覺 CSS 之後，避免歷史全站 CSS 把顏色洗淡。
+    late_page_css = ""
+    if title == "登入台股 BOT":
+        late_page_css = r'''
+/* v11: 登入入口——紙感、植物線條與編輯式排版；不顯示登入後導覽。 */
+body.auth-entry-page{background:#F4EFE4!important;color:#27382F!important;background-image:radial-gradient(ellipse at 12% 4%,rgba(173,124,86,.13),transparent 34%),radial-gradient(ellipse at 92% 32%,rgba(93,117,82,.12),transparent 33%),linear-gradient(145deg,#F7F3EA,#EEE9DC)!important;}
+body.auth-entry-page .wrap{width:min(calc(100% - 26px),1000px)!important;max-width:1000px!important;margin:0 auto!important;padding:16px 0 28px!important;box-sizing:border-box!important;}
+body.auth-entry-page .app-header,body.auth-entry-page .top-nav,body.auth-entry-page .app-bottom-nav,body.auth-entry-page .app-account-link{display:none!important;}
+body.auth-entry-page #app-page-content{padding:0!important;margin:0!important;}
+body.auth-entry-page #app-page-content .auth-landing{max-width:950px!important;margin:0 auto!important;padding:4px 2px 20px!important;color:#27382F!important;font-family:system-ui,-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",sans-serif!important;}
+body.auth-entry-page #app-page-content .auth-masthead{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;padding:3px 4px 14px!important;border-bottom:1px solid #D4C9B7!important;color:#405446!important;font-size:10px!important;font-weight:900!important;letter-spacing:.15em!important;}
+body.auth-entry-page #app-page-content .auth-masthead-note{font-family:Georgia,"Noto Serif TC","Songti TC",serif!important;font-size:12px!important;letter-spacing:.04em!important;color:#777766!important;}
+body.auth-entry-page #app-page-content .auth-hero{position:relative!important;isolation:isolate!important;overflow:hidden!important;margin:17px 0 14px!important;padding:clamp(25px,5vw,48px)!important;border:1px solid #CFC1AA!important;border-radius:7px 38px 7px 38px!important;background:radial-gradient(ellipse at 94% 4%,rgba(140,157,112,.19),transparent 28%),linear-gradient(138deg,#FFFCF5 0%,#F2E8D8 61%,#E6E6D6 100%)!important;box-shadow:0 16px 34px rgba(70,62,44,.09)!important;color:#26372D!important;}
+body.auth-entry-page #app-page-content .auth-hero:before{content:""!important;position:absolute!important;z-index:-1!important;right:-55px!important;top:-105px!important;width:260px!important;height:260px!important;border:1px solid rgba(90,116,82,.30)!important;border-radius:46% 54% 51% 49%!important;transform:rotate(24deg)!important;box-shadow:0 0 0 15px rgba(90,116,82,.045),0 0 0 36px rgba(90,116,82,.028),0 0 0 60px rgba(169,103,78,.018)!important;}
+body.auth-entry-page #app-page-content .auth-hero:after{content:"✳"!important;position:absolute!important;right:23px!important;bottom:10px!important;font-size:64px!important;line-height:1!important;color:rgba(157,94,67,.20)!important;transform:rotate(-12deg)!important;pointer-events:none!important;}
+body.auth-entry-page #app-page-content .auth-brand{display:flex!important;align-items:center!important;gap:9px!important;color:#68785D!important;font-size:10px!important;font-weight:900!important;letter-spacing:.19em!important;text-transform:uppercase!important;}
+body.auth-entry-page #app-page-content .auth-brand:before{content:""!important;display:block!important;width:25px!important;border-top:1px solid #A9674E!important;}
+body.auth-entry-page #app-page-content .auth-hero h1{position:relative!important;max-width:680px!important;margin:21px 0 14px!important;color:#28382E!important;font-family:"Noto Serif TC","Songti TC","PMingLiU",serif!important;font-size:clamp(31px,6.4vw,53px)!important;font-weight:850!important;line-height:1.35!important;letter-spacing:.015em!important;}
+body.auth-entry-page #app-page-content .auth-hero h1 em{font-style:normal!important;color:#9D6047!important;}
+body.auth-entry-page #app-page-content .auth-hero p{position:relative!important;max-width:630px!important;margin:0!important;color:#435646!important;font-size:14px!important;line-height:1.95!important;font-weight:650!important;}
+body.auth-entry-page #app-page-content .auth-hero-caption{position:relative!important;display:flex!important;align-items:center!important;gap:10px!important;margin-top:23px!important;color:#707663!important;font-family:Georgia,"Noto Serif TC",serif!important;font-size:12px!important;letter-spacing:.04em!important;}
+body.auth-entry-page #app-page-content .auth-content{display:grid!important;grid-template-columns:minmax(0,1.02fr) minmax(0,.98fr)!important;gap:14px!important;align-items:stretch!important;}
+body.auth-entry-page #app-page-content .auth-panel{min-width:0!important;padding:clamp(17px,3vw,25px)!important;border:1px solid #D6D0C3!important;border-radius:22px 6px 22px 6px!important;background:rgba(255,253,248,.96)!important;box-shadow:0 8px 22px rgba(64,61,46,.055)!important;color:#2A3A30!important;}
+body.auth-entry-page #app-page-content .auth-panel-label{display:flex!important;align-items:center!important;gap:8px!important;margin-bottom:12px!important;color:#985D46!important;font-size:10px!important;font-weight:900!important;letter-spacing:.16em!important;}
+body.auth-entry-page #app-page-content .auth-panel-label:after{content:""!important;height:1px!important;flex:1!important;background:#E3D8C7!important;}
+body.auth-entry-page #app-page-content .auth-panel h2{margin:0 0 8px!important;color:#29372F!important;font-family:"Noto Serif TC","Songti TC","PMingLiU",serif!important;font-size:clamp(21px,3.8vw,26px)!important;line-height:1.45!important;font-weight:850!important;}
+body.auth-entry-page #app-page-content .auth-muted{margin:0!important;color:#4F6152!important;font-size:13px!important;line-height:1.85!important;font-weight:650!important;}
+body.auth-entry-page #app-page-content .auth-choice{display:flex!important;align-items:flex-start!important;gap:11px!important;margin-top:15px!important;padding:13px!important;border:1px solid #D9DCCE!important;border-radius:5px 15px 5px 15px!important;background:#F7F6EF!important;}
+body.auth-entry-page #app-page-content .auth-choice-icon{display:grid!important;place-items:center!important;flex:0 0 38px!important;width:38px!important;height:38px!important;border-radius:50%!important;background:#E7E9DD!important;color:#4D654B!important;font-size:19px!important;}
+body.auth-entry-page #app-page-content .auth-choice-title{margin:1px 0 4px!important;color:#28392E!important;font-size:14px!important;line-height:1.5!important;font-weight:900!important;}
+body.auth-entry-page #app-page-content .auth-choice-desc{margin:0!important;color:#4E6051!important;font-size:12px!important;line-height:1.75!important;font-weight:650!important;}
+body.auth-entry-page #app-page-content .auth-btn{display:flex!important;align-items:center!important;justify-content:center!important;gap:9px!important;min-height:49px!important;width:100%!important;box-sizing:border-box!important;margin-top:8px!important;padding:13px!important;text-decoration:none!important;text-align:center!important;border-radius:999px!important;font-size:14px!important;font-weight:900!important;transition:transform .15s ease,box-shadow .15s ease!important;}
+body.auth-entry-page #app-page-content .auth-btn-primary{color:#FFFDF7!important;background:#3E5B45!important;border:1px solid #3E5B45!important;box-shadow:0 7px 16px rgba(62,91,69,.16)!important;}
+body.auth-entry-page #app-page-content .auth-btn-secondary{color:#354F3A!important;background:#FFFEFA!important;border:1px solid #9EAF98!important;}
+body.auth-entry-page #app-page-content .auth-policy{margin:14px 4px 0!important;color:#596957!important;text-align:center!important;font-size:11px!important;line-height:1.85!important;}
+body.auth-entry-page #app-page-content .auth-feature-grid{display:grid!important;grid-template-columns:1fr 1fr!important;gap:9px!important;margin-top:16px!important;}
+body.auth-entry-page #app-page-content .auth-feature{min-width:0!important;padding:13px!important;border:1px solid #DFDACE!important;border-radius:5px 15px 5px 15px!important;background:#FCFAF5!important;}
+body.auth-entry-page #app-page-content .auth-feature b{display:block!important;margin-bottom:5px!important;color:#334A38!important;font-family:"Noto Serif TC","Songti TC",serif!important;font-size:13px!important;font-weight:900!important;}
+body.auth-entry-page #app-page-content .auth-feature span{display:block!important;color:#4D604F!important;font-size:11px!important;line-height:1.75!important;font-weight:650!important;}
+body.auth-entry-page #app-page-content .auth-install{display:flex!important;align-items:flex-start!important;gap:11px!important;margin-top:13px!important;padding:14px!important;border:1px solid #D2DCCB!important;border-left:3px solid #768767!important;border-radius:4px 13px 4px 13px!important;background:#EEF1E7!important;}
+body.auth-entry-page #app-page-content .auth-install b{display:block!important;margin-bottom:4px!important;color:#324A38!important;font-size:13px!important;font-weight:900!important;}
+body.auth-entry-page #app-page-content .auth-install p{margin:0!important;color:#4C604E!important;font-size:12px!important;line-height:1.8!important;font-weight:650!important;}
+body.auth-entry-page #app-page-content .auth-editorial-footer{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;margin:17px 2px 0!important;padding-top:12px!important;border-top:1px solid #D8CFBE!important;color:#626D5D!important;font-family:Georgia,"Noto Serif TC",serif!important;font-size:11px!important;line-height:1.75!important;}
+body.auth-entry-page #app-page-content .auth-editorial-footer strong{color:#596E50!important;}
+@media(max-width:700px){body.auth-entry-page .wrap{width:calc(100% - 22px)!important;padding-top:10px!important}body.auth-entry-page #app-page-content .auth-masthead{padding-bottom:11px!important;font-size:9px!important}body.auth-entry-page #app-page-content .auth-masthead-note{font-size:10px!important}body.auth-entry-page #app-page-content .auth-hero{margin:12px 0;padding:24px 19px 25px!important;border-radius:5px 24px 5px 24px!important}body.auth-entry-page #app-page-content .auth-hero h1{font-size:clamp(29px,7.7vw,41px)!important;margin-top:18px!important}body.auth-entry-page #app-page-content .auth-hero p{font-size:13px!important}body.auth-entry-page #app-page-content .auth-content{grid-template-columns:1fr!important;gap:12px!important}body.auth-entry-page #app-page-content .auth-panel{padding:18px!important}body.auth-entry-page #app-page-content .auth-editorial-footer{flex-wrap:wrap!important}}
+@media(max-width:360px){body.auth-entry-page #app-page-content .auth-masthead-note{display:none!important}body.auth-entry-page #app-page-content .auth-feature-grid{gap:7px!important}body.auth-entry-page #app-page-content .auth-feature{padding:10px!important}}
+'''
+    elif title == "今日" and ("welcome-editorial" in body or "data-empty-home-version" in body):
+        late_page_css = r'''
+/* v11: 無持股首頁的文藝式新手卡。此 CSS 在全站樣式之後載入，保證顏色不被覆蓋。 */
+body #app-page-content .welcome-editorial{position:relative!important;isolation:isolate!important;max-width:780px!important;margin:18px auto 30px!important;padding:clamp(22px,5vw,34px)!important;overflow:hidden!important;border:1px solid #D2C4AC!important;border-radius:7px 34px 7px 34px!important;background:radial-gradient(ellipse at 91% 7%,rgba(168,112,79,.11),transparent 28%),radial-gradient(ellipse at 0% 100%,rgba(111,132,91,.12),transparent 32%),linear-gradient(145deg,#FFFCF6 0%,#F4EBDD 60%,#EAE8D9 100%)!important;box-shadow:0 14px 32px rgba(64,60,43,.085)!important;color:#28382F!important;}
+body #app-page-content .welcome-editorial:before{content:""!important;position:absolute!important;z-index:-1!important;right:-42px!important;top:-74px!important;width:220px!important;height:220px!important;border:1px solid rgba(98,123,86,.28)!important;border-radius:47% 53% 46% 54%!important;transform:rotate(28deg)!important;box-shadow:0 0 0 14px rgba(103,125,92,.04),0 0 0 35px rgba(103,125,92,.028),0 0 0 58px rgba(169,103,78,.018)!important;}
+body #app-page-content .welcome-editorial:after{content:"✳"!important;position:absolute!important;right:22px!important;top:29px!important;color:rgba(167,100,74,.21)!important;font-size:44px!important;line-height:1!important;pointer-events:none!important;}
+body #app-page-content .welcome-editorial-topline{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;position:relative!important;padding-bottom:13px!important;margin-bottom:21px!important;border-bottom:1px solid #DCD2C0!important;color:#65785C!important;font-size:10px!important;letter-spacing:.14em!important;font-weight:900!important;}
+body #app-page-content .welcome-editorial-topline span:last-child{font-family:Georgia,"Noto Serif TC",serif!important;letter-spacing:.04em!important;color:#985F46!important;font-weight:800!important;}
+body #app-page-content .welcome-editorial-kicker{display:flex!important;align-items:center!important;gap:8px!important;margin-bottom:11px!important;color:#955F47!important;font-size:10px!important;letter-spacing:.15em!important;font-weight:950!important;}
+body #app-page-content .welcome-editorial-kicker:before{content:""!important;width:23px!important;border-top:1px solid #A9674E!important;}
+body #app-page-content .welcome-editorial h2{position:relative!important;max-width:600px!important;margin:0 0 13px!important;color:#28382F!important;font-family:"Noto Serif TC","Songti TC","PMingLiU",serif!important;font-size:clamp(28px,5.8vw,39px)!important;line-height:1.42!important;font-weight:900!important;letter-spacing:.015em!important;}
+body #app-page-content .welcome-editorial h2 em{font-style:normal!important;color:#9C6047!important;}
+body #app-page-content .welcome-editorial-intro{position:relative!important;max-width:620px!important;margin:0 0 23px!important;padding-left:13px!important;border-left:2px solid #B77A5B!important;color:#394F40!important;font-size:13.5px!important;line-height:2!important;font-weight:700!important;}
+body #app-page-content .welcome-editorial-rule{display:flex!important;align-items:center!important;gap:10px!important;margin:0 0 13px!important;color:#626E5C!important;font-family:Georgia,"Noto Serif TC",serif!important;font-size:12px!important;font-weight:800!important;}
+body #app-page-content .welcome-editorial-rule:after{content:""!important;height:1px!important;flex:1!important;background:#DCD2C0!important;}
+body #app-page-content .welcome-editorial-actions{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:11px!important;}
+body #app-page-content .welcome-editorial-action{display:flex!important;flex-direction:column!important;align-items:flex-start!important;gap:8px!important;min-width:0!important;min-height:160px!important;padding:16px 15px!important;border:1px solid #D3D6C8!important;border-radius:5px 17px 5px 17px!important;background:rgba(255,254,249,.90)!important;text-decoration:none!important;color:#293B30!important;transition:transform .15s,border-color .15s,background .15s!important;}
+body #app-page-content .welcome-editorial-action:hover{transform:translateY(-2px)!important;border-color:#8FA188!important;background:#FFFFFF!important;}
+body #app-page-content .welcome-editorial-icon{display:grid!important;place-items:center!important;width:36px!important;height:36px!important;border-radius:50%!important;background:#E7EBDD!important;color:#4E6948!important;font-size:20px!important;}
+body #app-page-content .welcome-editorial-action strong{font-family:"Noto Serif TC","Songti TC",serif!important;font-size:15px!important;line-height:1.5!important;font-weight:950!important;color:#293B30!important;}
+body #app-page-content .welcome-editorial-action small{color:#415746!important;font-size:12px!important;line-height:1.8!important;font-weight:700!important;}
+body #app-page-content .welcome-editorial-cta{margin-top:auto!important;padding-top:5px!important;color:#92583F!important;font-size:12px!important;font-weight:950!important;}
+body #app-page-content .welcome-editorial-install{display:flex!important;align-items:center!important;gap:12px!important;margin-top:12px!important;padding:14px!important;border:1px solid #CCD7C6!important;border-left:3px solid #78896A!important;border-radius:5px 15px 5px 15px!important;background:#EAF0E4!important;text-decoration:none!important;color:#2E4735!important;}
+body #app-page-content .welcome-editorial-install-icon{flex:0 0 auto!important;font-size:23px!important;color:#5E7655!important;}
+body #app-page-content .welcome-editorial-install-copy{flex:1!important;min-width:0!important;display:flex!important;flex-direction:column!important;gap:4px!important;}
+body #app-page-content .welcome-editorial-install-copy strong{font-size:13px!important;line-height:1.55!important;font-weight:950!important;color:#2F4735!important;}
+body #app-page-content .welcome-editorial-install-copy small{color:#405942!important;font-size:11.5px!important;line-height:1.8!important;font-weight:700!important;}
+body #app-page-content .welcome-editorial-install-cta{flex:0 0 auto!important;color:#8F553D!important;font-size:12px!important;font-weight:950!important;white-space:nowrap!important;}
+body #app-page-content .welcome-editorial-guide{margin-top:12px!important;border:1px solid #D8D4C7!important;border-radius:6px 14px 6px 14px!important;background:rgba(255,254,249,.86)!important;overflow:hidden!important;}
+body #app-page-content .welcome-editorial-guide summary{padding:14px!important;cursor:pointer!important;color:#334D3A!important;font-size:12.5px!important;font-weight:950!important;list-style:none!important;}
+body #app-page-content .welcome-editorial-guide summary:after{content:"＋"!important;float:right!important;color:#985F46!important;}
+body #app-page-content .welcome-editorial-guide[open] summary:after{content:"－"!important;}
+body #app-page-content .welcome-editorial-guide-body{padding:0 14px 12px!important;color:#3E5543!important;font-size:12px!important;line-height:1.9!important;font-weight:650!important;}
+body #app-page-content .welcome-editorial-guide-body p{margin:8px 0!important;}
+body #app-page-content .welcome-editorial-guide-body b{color:#2D4534!important;font-weight:950!important;}
+body #app-page-content .welcome-editorial-footnote{margin:15px 1px 0!important;padding-top:12px!important;border-top:1px solid #DCD2C0!important;color:#435744!important;font-size:11.5px!important;line-height:1.85!important;font-weight:700!important;}
+@media(max-width:520px){body #app-page-content .welcome-editorial{margin:13px auto 23px!important;padding:21px 16px 20px!important;border-radius:5px 24px 5px 24px!important}body #app-page-content .welcome-editorial-topline{font-size:9px!important;margin-bottom:18px!important}body #app-page-content .welcome-editorial h2{font-size:29px!important}body #app-page-content .welcome-editorial-intro{font-size:13px!important;margin-bottom:19px!important}body #app-page-content .welcome-editorial-actions{grid-template-columns:1fr!important;gap:9px!important}body #app-page-content .welcome-editorial-action{min-height:0!important;padding:14px!important;display:grid!important;grid-template-columns:35px minmax(0,1fr)!important;column-gap:10px!important;row-gap:4px!important}body #app-page-content .welcome-editorial-icon{grid-row:1/4!important}body #app-page-content .welcome-editorial-action strong,body #app-page-content .welcome-editorial-action small,body #app-page-content .welcome-editorial-cta{grid-column:2!important}body #app-page-content .welcome-editorial-cta{margin-top:1px!important}body #app-page-content .welcome-editorial-install{align-items:flex-start!important;gap:9px!important;padding:12px 11px!important}body #app-page-content .welcome-editorial-install-cta{font-size:11px!important;white-space:normal!important}body #app-page-content .welcome-editorial:after{right:12px!important;top:20px!important;font-size:32px!important}}
+'''
+    elif title == "排行榜" and "rank-situation" in body:
+        late_page_css = r'''
+/* v11: 排行榜閱讀性最後覆寫——深色字、無透明度、明確空白狀態。 */
+body #app-page-content .rank-explainer,body #app-page-content .rank-explainer *{opacity:1!important;filter:none!important;text-shadow:none!important;visibility:visible!important;}
+body #app-page-content .rank-explainer{color:#243D50!important;}
+body #app-page-content .rank-explainer-summary-title{color:#172F42!important;-webkit-text-fill-color:#172F42!important;font-weight:950!important;}
+body #app-page-content .rank-explainer-summary-lead,body #app-page-content .rank-explainer-lead,body #app-page-content .rank-explainer-periods span,body #app-page-content .rank-explainer-metrics ul,body #app-page-content .rank-explainer-bottom{color:#314B5E!important;-webkit-text-fill-color:#314B5E!important;font-weight:700!important;}
+body #app-page-content .rank-explainer-periods b,body #app-page-content .rank-explainer-metrics>b,body #app-page-content .rank-explainer-metrics strong,body #app-page-content .rank-explainer-bottom b{color:#173C55!important;-webkit-text-fill-color:#173C55!important;font-weight:950!important;}
+body #app-page-content .rank-explainer-toggle{background:#E2EDF3!important;color:#214E6B!important;-webkit-text-fill-color:#214E6B!important;border:1px solid #C3D5E1!important;font-weight:950!important;}
+body #app-page-content .rank-situation{color:#1E394D!important;background:linear-gradient(145deg,#FFFFFF 0%,#F0F5F8 100%)!important;border-color:#BACDD9!important;}
+body #app-page-content .rank-situation-title h2{color:#17364B!important;-webkit-text-fill-color:#17364B!important;}
+body #app-page-content .rank-situation-badge{color:#173E56!important;-webkit-text-fill-color:#173E56!important;background:#E3EDF4!important;border-color:#B9D0DE!important;}
+body #app-page-content .rank-situation .rank-situation-panel{opacity:1!important;filter:none!important;background:#F8FAFC!important;border:1px solid #C5D4DE!important;}
+body #app-page-content .rank-situation .rank-situation-empty{display:block!important;box-sizing:border-box!important;margin:0!important;padding:16px!important;background:#F1F6F9!important;border:1px solid #C5D5DF!important;border-radius:13px!important;color:#2A4355!important;-webkit-text-fill-color:#2A4355!important;opacity:1!important;filter:none!important;font-size:14px!important;line-height:1.9!important;font-weight:750!important;}
+body #app-page-content .rank-situation .rank-situation-empty .rank-state-title{display:block!important;margin:0 0 5px!important;color:#17364B!important;-webkit-text-fill-color:#17364B!important;font-size:15px!important;line-height:1.6!important;font-weight:950!important;}
+body #app-page-content .rank-situation .rank-situation-empty .rank-state-copy{display:block!important;margin:0!important;padding:0!important;background:transparent!important;border:0!important;color:#2A4355!important;-webkit-text-fill-color:#2A4355!important;opacity:1!important;filter:none!important;font-size:13px!important;line-height:1.9!important;font-weight:750!important;}
+body #app-page-content .rank-situation .rank-situation-empty .rank-state-copy b,body #app-page-content .rank-situation .rank-situation-empty .rank-state-copy strong{color:#17364B!important;-webkit-text-fill-color:#17364B!important;font-weight:950!important;}
+body #app-page-content .rank-tabs button{color:#233E52!important;-webkit-text-fill-color:#233E52!important;font-weight:900!important;}
+body #app-page-content .rank-switch-note{color:#24483F!important;-webkit-text-fill-color:#24483F!important;background:#E8F2EE!important;border:1px solid #B7D0C7!important;opacity:1!important;font-size:13px!important;font-weight:850!important;line-height:1.8!important;padding:12px 14px!important;border-radius:0 12px 12px 0!important;}
+body #app-page-content .rank-source-note,body #app-page-content .rank-list-caption{color:#455F72!important;-webkit-text-fill-color:#455F72!important;opacity:1!important;font-weight:750!important;}
+body #app-page-content .rank-card .name,body #app-page-content .rank-card .rank-meta,body #app-page-content .rank-card .rank-meta span,body #app-page-content .rank-card .rank-movement,body #app-page-content .rank-card .rank-private{color:#3C5365!important;-webkit-text-fill-color:#3C5365!important;opacity:1!important;}
+body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card .rank-return{font-weight:950!important;}
+'''
+
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#315E9B">
+<meta name="theme-color" content="{'#F3EEE3' if title == '登入台股 BOT' else '#315E9B'}">
+<meta name="stockbot-ui-version" content="v11-botanical-editorial-contrast">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -22729,7 +22953,7 @@ def render_page(title, body, nav_active=None, user_name=None):
 @keyframes nav-progress-sweep{{0%{{transform:translateX(0)}}50%{{transform:translateX(85%)}}100%{{transform:translateX(0)}}}}
 @media(prefers-reduced-motion:reduce){{#page-nav-loader,#page-nav-loader .nav-loader-bar,#page-nav-loader .nav-loader-bar:after{{transition:none!important;animation:none!important}}}}
 </style>
-</head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}">
+</head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v11-botanical-editorial-contrast">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
     <div class="nav-loader-head">
@@ -22888,19 +23112,11 @@ def render_page(title, body, nav_active=None, user_name=None):
   }});
 }})();
 </script><div class="wrap">
-<header class="app-header">
-  {page_back}
-  <a class="app-account-link {('is-bind' if header_user else 'is-login')}" href="{header_google_href}" aria-label="{header_google_label}" title="{header_google_label}">
-    <svg viewBox="0 0 48 48" role="img" aria-label="Google"><path fill="#4285F4" d="M43.6 24.5c0-1.4-.1-2.8-.4-4.1H24v7.8h11a9.4 9.4 0 0 1-4.1 6.2v5.1h6.6c3.9-3.6 6.1-8.8 6.1-15z"/><path fill="#34A853" d="M24 44c5.5 0 10.1-1.8 13.5-4.9l-6.6-5.1c-1.8 1.2-4.1 2-6.9 2-5.3 0-9.8-3.6-11.4-8.4H5.8v5.3A20 20 0 0 0 24 44z"/><path fill="#FBBC05" d="M12.6 27.6a12 12 0 0 1 0-7.2v-5.3H5.8a20 20 0 0 0 0 17.8z"/><path fill="#EA4335" d="M24 12.1c3 0 5.7 1 7.8 3.1l5.8-5.8C34.1 6.1 29.5 4 24 4A20 20 0 0 0 5.8 15.1l6.8 5.3c1.6-4.8 6.1-8.3 11.4-8.3z"/></svg>
-  </a>
-  <div class="eyebrow">TAIWAN STOCK BOT</div>
-  <h1>{title}</h1>
-  <div class="dateline">{taiwan_now().strftime('%Y / %m / %d')}
-    {'　' + user_name if user_name else ''}</div>
-</header>
+{header_html}
 {nav}
 <main id="app-page-content" class="app-page-content">{body}</main>
 <style id="global-visual-refresh-v236">{GLOBAL_VISUAL_CSS}</style>
+<style id="v11-final-page-overrides">{late_page_css}</style>
 <script>
 (function() {{
   // LINE WebView 可能清掉 cookie；把有效網址 token 保存到同一個網域，
@@ -25616,78 +25832,95 @@ def _bind_google_identity(user_id, identity):
 def auth_google_choose():
     '''未登入入口：提供清楚的 Google 註冊與登入，成功後再進入新手教學。'''
     body = r'''<style>
-.auth-landing{max-width:920px;margin:18px auto 34px;padding:0 2px;color:#172b40}
-.auth-hero{position:relative;overflow:hidden;border-radius:26px;padding:30px 26px 28px;background:linear-gradient(135deg,#10243d 0%,#1d456b 56%,#2f7091 100%);color:#fff;box-shadow:0 18px 40px rgba(27,57,84,.18)}
-.auth-hero:before{content:"";position:absolute;width:250px;height:250px;border-radius:50%;right:-72px;top:-105px;border:1px solid rgba(255,255,255,.16);box-shadow:0 0 0 28px rgba(255,255,255,.035),0 0 0 58px rgba(255,255,255,.025)}
-.auth-brand{font-size:11px;font-weight:900;letter-spacing:.19em;color:#b9dcf5;text-transform:uppercase}
-.auth-hero h1{position:relative;font-size:clamp(28px,5vw,43px);line-height:1.18;letter-spacing:-.035em;margin:17px 0 12px;color:#fff}
-.auth-hero p{position:relative;max-width:560px;color:#e2edf6;font-size:15px;line-height:1.85;margin:0}
-.auth-tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px;position:relative}
-.auth-tag{border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.09);border-radius:999px;padding:7px 11px;color:#f3f8fc;font-size:12px;font-weight:700}
-.auth-content{display:grid;grid-template-columns:minmax(0,1.04fr) minmax(0,.96fr);gap:16px;margin-top:17px}
-.auth-panel{border:1px solid #dce6ef;border-radius:22px;background:#fff;padding:22px;box-shadow:0 9px 26px rgba(27,57,84,.055)}
-.auth-panel h2{font-size:21px;line-height:1.35;margin:0 0 7px;color:#172b40}
-.auth-muted{font-size:13px;line-height:1.8;color:#61758a;margin:0}
-.auth-choice{display:flex;align-items:center;gap:12px;border:1px solid #d8e3ee;border-radius:15px;padding:14px;margin-top:13px;background:#f9fbfe}
-.auth-choice-icon{flex:0 0 42px;height:42px;border-radius:13px;background:#e9f1f8;display:flex;align-items:center;justify-content:center;font-size:21px}
+.auth-entry-page{background:#F3EEE3!important;color:#29372F!important;background-image:radial-gradient(ellipse at 6% 0%,rgba(194,169,120,.14),transparent 34%),radial-gradient(ellipse at 100% 35%,rgba(91,116,91,.10),transparent 28%)!important}
+.auth-entry-page .wrap{width:min(calc(100% - 28px),1040px)!important;max-width:1040px!important;margin:0 auto!important;padding:22px 0 32px!important;box-sizing:border-box!important}
+.auth-entry-page .app-header,.auth-entry-page .top-nav,.auth-entry-page .app-bottom-nav,.auth-entry-page .app-account-link{display:none!important}
+.auth-entry-page #app-page-content{padding:0!important;margin:0!important}
+.auth-landing{max-width:960px;margin:0 auto;color:#29372F;font-family:system-ui,-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",sans-serif}
+.auth-masthead{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 3px 14px;border-bottom:1px solid #D8CFBE;color:#405447;font-size:11px;font-weight:900;letter-spacing:.17em}
+.auth-masthead-brand{display:flex;align-items:center;gap:9px}
+.auth-masthead-dot{width:9px;height:9px;border-radius:50%;background:#A9674E;box-shadow:0 0 0 4px rgba(169,103,78,.12)}
+.auth-masthead-note{font-family:Georgia,"Noto Serif TC","Songti TC",serif;letter-spacing:.04em;font-size:12px;font-weight:600;color:#7B7869}
+.auth-hero{position:relative;isolation:isolate;overflow:hidden;margin:18px 0 15px;padding:clamp(24px,5vw,44px);border:1px solid #D5C9B5;border-radius:5px 28px 5px 28px;background:linear-gradient(133deg,#FBF8F0 0%,#F1E7D6 68%,#E8E4D4 100%);box-shadow:0 10px 28px rgba(68,61,44,.075)}
+.auth-hero:before{content:"";position:absolute;z-index:-1;width:260px;height:260px;right:-85px;top:-100px;border:1px solid rgba(87,111,85,.26);border-radius:48% 52% 50% 50%;transform:rotate(28deg);box-shadow:0 0 0 16px rgba(87,111,85,.035),0 0 0 38px rgba(87,111,85,.025)}
+.auth-hero:after{content:"✳";position:absolute;right:30px;bottom:12px;font-size:62px;line-height:1;color:rgba(169,103,78,.16);transform:rotate(-12deg)}
+.auth-brand{display:flex;align-items:center;gap:9px;color:#6C775F;font-size:10px;line-height:1.5;font-weight:900;letter-spacing:.2em;text-transform:uppercase}
+.auth-brand:before{content:"";width:24px;border-top:1px solid #A9674E}
+.auth-hero h1{position:relative;max-width:690px;margin:20px 0 13px;color:#29372F;font-family:"Noto Serif TC","Songti TC","PMingLiU",serif;font-size:clamp(30px,6.2vw,52px);font-weight:800;line-height:1.32;letter-spacing:.015em}
+.auth-hero h1 em{font-style:normal;color:#9E5E47}
+.auth-hero p{position:relative;max-width:600px;margin:0;color:#536354;font-size:14px;line-height:1.95;font-weight:600}
+.auth-hero-caption{position:relative;display:flex;align-items:center;gap:10px;margin-top:23px;color:#6D725F;font-family:Georgia,"Noto Serif TC",serif;font-size:12px;letter-spacing:.04em}
+.auth-hero-caption:before{content:"";width:34px;height:1px;background:#A9674E}
+.auth-content{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:15px;align-items:stretch}
+.auth-panel{min-width:0;border:1px solid #DCD5C8;border-radius:20px 5px 20px 5px;background:rgba(255,253,248,.94);padding:clamp(17px,3vw,25px);box-shadow:0 5px 18px rgba(66,61,47,.045)}
+.auth-panel-label{display:flex;align-items:center;gap:8px;margin-bottom:12px;color:#9E5E47;font-size:10px;font-weight:900;letter-spacing:.16em}
+.auth-panel-label:after{content:"";height:1px;flex:1;background:#E3D9C8}
+.auth-panel h2{margin:0 0 8px;color:#29372F;font-family:"Noto Serif TC","Songti TC","PMingLiU",serif;font-size:clamp(20px,3.8vw,25px);line-height:1.45;font-weight:800;letter-spacing:.01em}
+.auth-muted{margin:0;color:#596858;font-size:13px;line-height:1.85;font-weight:600}
+.auth-choice{display:flex;align-items:flex-start;gap:11px;margin-top:15px;padding:13px;border:1px solid #D8DCCF;border-radius:12px;background:#F7F7F0}
+.auth-choice-icon{display:grid;place-items:center;flex:0 0 38px;width:38px;height:38px;border-radius:50%;background:#E7E9DC;color:#51654D;font-size:19px}
 .auth-choice-main{min-width:0;flex:1}
-.auth-choice-title{font-size:15px;font-weight:850;color:#172b40;margin:0 0 4px}
-.auth-choice-desc{font-size:12px;line-height:1.65;color:#61758a;margin:0}
-.auth-btn{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;box-sizing:border-box;text-decoration:none!important;border-radius:13px;padding:14px 12px;font-weight:850;font-size:14px;transition:transform .15s,box-shadow .15s}
+.auth-choice-title{margin:1px 0 4px;color:#29372F;font-size:14px;line-height:1.5;font-weight:900}
+.auth-choice-desc{margin:0;color:#5B6A5C;font-size:12px;line-height:1.7;font-weight:600}
+.auth-btn{display:flex;align-items:center;justify-content:center;gap:9px;min-height:48px;width:100%;box-sizing:border-box;margin-top:8px;padding:13px;text-decoration:none!important;text-align:center;border-radius:999px;font-size:14px;font-weight:850;transition:transform .15s ease,box-shadow .15s ease}
 .auth-btn:hover{transform:translateY(-1px)}
-.auth-btn-primary{background:#245c8b;color:#fff!important;box-shadow:0 8px 18px rgba(36,92,139,.2)}
-.auth-btn-secondary{background:#fff;border:1px solid #b9cfe0;color:#245c8b!important}
-.auth-g{font-size:19px;font-weight:900;background:conic-gradient(from -45deg,#4285f4 0 25%,#34a853 0 50%,#fbbc05 0 75%,#ea4335 0);background-clip:text;-webkit-background-clip:text;color:transparent}
-.auth-feature-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:17px}
-.auth-feature{border:1px solid #e1e9f0;background:#f8fafc;border-radius:15px;padding:14px}
-.auth-feature-icon{font-size:20px;margin-bottom:8px}
-.auth-feature b{display:block;color:#213950;font-size:13px;margin-bottom:5px}
-.auth-feature span{display:block;color:#667b8f;font-size:11px;line-height:1.65}
-.auth-install{display:flex;gap:12px;align-items:flex-start;margin-top:16px;padding:15px;border-radius:16px;background:#edf5fb;border:1px solid #d6e7f4}
-.auth-install-icon{font-size:22px;flex:0 0 auto}
-.auth-install b{display:block;font-size:13px;color:#234f73;margin-bottom:4px}
-.auth-install p{font-size:12px;line-height:1.7;color:#5b7388;margin:0}
-.auth-footnote{font-size:11px;line-height:1.8;color:#718397;text-align:center;margin:16px 8px 0}
-@media(max-width:680px){.auth-landing{margin:10px auto 25px}.auth-hero{padding:25px 20px 23px;border-radius:22px}.auth-content{grid-template-columns:1fr}.auth-panel{padding:19px}.auth-feature-grid{gap:8px}.auth-choice{padding:12px}}
+.auth-btn-primary{color:#FFFDF7!important;background:#405D49;border:1px solid #405D49;box-shadow:0 5px 14px rgba(64,93,73,.16)}
+.auth-btn-secondary{color:#405D49!important;background:#FFFEFA;border:1px solid #9EAF99}
+.auth-g{font-family:Arial,sans-serif;font-size:18px;font-weight:900;color:#4285F4;background:conic-gradient(from -45deg,#4285f4 0 25%,#34a853 0 50%,#fbbc05 0 75%,#ea4335 0);background-clip:text;-webkit-background-clip:text;color:transparent}
+.auth-policy{margin:14px 4px 0;color:#777A6D;text-align:center;font-size:11px;line-height:1.8}
+.auth-feature-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:16px}
+.auth-feature{min-width:0;padding:13px;border:1px solid #E0DBD0;border-radius:5px 14px 5px 14px;background:#FCFAF4}
+.auth-feature-icon{display:block;margin-bottom:8px;font-size:20px}
+.auth-feature b{display:block;margin-bottom:5px;color:#344A39;font-family:"Noto Serif TC","Songti TC",serif;font-size:13px;font-weight:900}
+.auth-feature span{display:block;color:#586657;font-size:11px;line-height:1.7;font-weight:600}
+.auth-install{display:flex;align-items:flex-start;gap:11px;margin-top:13px;padding:14px;border:1px solid #D4DCCB;border-left:3px solid #788766;border-radius:4px 13px 4px 13px;background:#EEF1E7}
+.auth-install-icon{flex:0 0 auto;font-size:22px}
+.auth-install b{display:block;margin-bottom:4px;color:#344A39;font-size:13px;font-weight:900}
+.auth-install p{margin:0;color:#566654;font-size:12px;line-height:1.75;font-weight:600}
+.auth-editorial-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:18px 2px 0;padding-top:12px;border-top:1px solid #D8CFBE;color:#76796D;font-family:Georgia,"Noto Serif TC",serif;font-size:11px;line-height:1.7}
+.auth-editorial-footer strong{color:#6C775F;font-weight:800}
+@media(max-width:700px){.auth-entry-page .wrap{width:calc(100% - 22px)!important;padding-top:12px!important}.auth-masthead{padding-bottom:11px;font-size:9px}.auth-masthead-note{font-size:10px}.auth-hero{margin:12px 0;padding:24px 20px 25px;border-radius:4px 22px 4px 22px}.auth-hero h1{font-size:clamp(29px,7.8vw,41px);margin-top:18px}.auth-hero p{font-size:13px}.auth-content{grid-template-columns:1fr;gap:12px}.auth-panel{padding:18px}.auth-editorial-footer{flex-wrap:wrap}}
+@media(max-width:360px){.auth-masthead-note{display:none}.auth-feature-grid{gap:7px}.auth-feature{padding:10px}.auth-feature span{font-size:10.5px}}
 </style>
-<main class="auth-landing">
+<main class="auth-landing" aria-label="台股 BOT 登入與註冊">
+  <div class="auth-masthead"><span class="auth-masthead-brand"><i class="auth-masthead-dot"></i> TAIWAN STOCK BOT</span><span class="auth-masthead-note">一份給自己的投資研究日誌</span></div>
   <section class="auth-hero">
-    <div class="auth-brand">TAIWAN STOCK BOT · INVESTMENT WORKSPACE</div>
-    <h1>讓每一次投資決策，<br>都有資料可以依據。</h1>
-    <p>整合持股追蹤、智慧選股、籌碼觀察與績效排行，打造屬於你的台股研究工作台。</p>
-    <div class="auth-tags"><span class="auth-tag">持股損益追蹤</span><span class="auth-tag">智慧選股工具</span><span class="auth-tag">績效排行榜</span></div>
+    <div class="auth-brand">STOCK NOTES · INVESTMENT WORKSPACE</div>
+    <h1>把投資寫成自己的風景，<br><em>在市場裡找到節奏。</em></h1>
+    <p>記下持股的變化，整理每天遇見的市場線索。從投資組合、智慧選股到績效回顧，讓數字有脈絡，讓每一次決策多一點依據，也留一點從容。</p>
+    <div class="auth-hero-caption">看懂市場，也記錄自己的每一步。</div>
   </section>
   <div class="auth-content">
-    <section class="auth-panel">
-      <h2>登入以開始使用</h2>
-      <p class="auth-muted">選擇符合你目前狀態的方式。註冊與登入分開處理，避免建立重複帳號。</p>
-      <div class="auth-choice">
-        <div class="auth-choice-icon">✨</div>
-        <div class="auth-choice-main"><div class="auth-choice-title">第一次使用？建立新帳號</div><p class="auth-choice-desc">使用尚未註冊的 Google 帳號建立你的投資空間。</p></div>
-      </div>
+    <section class="auth-panel auth-login-panel">
+      <div class="auth-panel-label">01 / 開始使用</div>
+      <h2>你的投資日誌，<br>從這裡開始。</h2>
+      <p class="auth-muted">第一次來，建立新的投資空間；已經使用過，請登入原有帳號。兩種流程分開處理，避免不小心建立重複帳號。</p>
+      <div class="auth-choice"><div class="auth-choice-icon">✦</div><div class="auth-choice-main"><div class="auth-choice-title">第一次使用？建立新帳號</div><p class="auth-choice-desc">以尚未註冊的 Google 帳號建立新的台股 BOT 帳號。</p></div></div>
       <a class="auth-btn auth-btn-primary" href="/auth/google?mode=register"><span class="auth-g">G</span> 使用 Google 註冊</a>
-      <div class="auth-choice" style="margin-top:17px">
-        <div class="auth-choice-icon">👋</div>
-        <div class="auth-choice-main"><div class="auth-choice-title">已經有台股 BOT 帳號？</div><p class="auth-choice-desc">登入原本的 Google 帳號，繼續使用既有投資資料。</p></div>
-      </div>
+      <div class="auth-choice"><div class="auth-choice-icon">↗</div><div class="auth-choice-main"><div class="auth-choice-title">已經有台股 BOT 帳號？</div><p class="auth-choice-desc">登入原本註冊的 Google 帳號，接續使用既有的投資資料。</p></div></div>
       <a class="auth-btn auth-btn-secondary" href="/auth/google?mode=login"><span class="auth-g">G</span> 使用 Google 登入</a>
-      <p class="auth-footnote">登入只會開啟既有帳號；註冊只會建立新帳號。系統不會只因 Email 相同就自動合併帳號。</p>
+      <p class="auth-policy">登入只會開啟既有帳號；註冊只會建立新帳號。系統不會只因 Email 相同就自動合併帳號。</p>
     </section>
-    <section class="auth-panel">
-      <h2>登入後，你可以使用</h2>
-      <p class="auth-muted">完成登入後，若尚未新增持股，系統會先帶你認識主要功能。</p>
+    <section class="auth-panel auth-feature-panel">
+      <div class="auth-panel-label">02 / 工作台一覽</div>
+      <h2>不只是看盤，<br>也是整理思緒的地方。</h2>
+      <p class="auth-muted">登入後，若你還沒有持股，會先看到新手引導；你也可以先探索工具，再慢慢建立自己的紀錄。</p>
       <div class="auth-feature-grid">
-        <div class="auth-feature"><div class="auth-feature-icon">📊</div><b>投資組合</b><span>追蹤持股、市值、損益與配置變化。</span></div>
-        <div class="auth-feature"><div class="auth-feature-icon">🔎</div><b>選股工作台</b><span>探索選股工具、黑馬股與籌碼資訊。</span></div>
-        <div class="auth-feature"><div class="auth-feature-icon">🏆</div><b>績效排行榜</b><span>查看指定期間的績效與報酬曲線。</span></div>
-        <div class="auth-feature"><div class="auth-feature-icon">📱</div><b>手機網頁 App</b><span>可加入手機主畫面，方便快速開啟。</span></div>
+        <div class="auth-feature"><span class="auth-feature-icon">▥</span><b>投資組合</b><span>追蹤持股、市值、損益與配置變化。</span></div>
+        <div class="auth-feature"><span class="auth-feature-icon">⌕</span><b>選股工作台</b><span>探索選股工具、黑馬股與籌碼線索。</span></div>
+        <div class="auth-feature"><span class="auth-feature-icon">✧</span><b>績效排行榜</b><span>比較不同期間的投資表現與報酬曲線。</span></div>
+        <div class="auth-feature"><span class="auth-feature-icon">▣</span><b>手機網頁 App</b><span>加到主畫面，像一般 App 一樣快速開啟。</span></div>
       </div>
-      <div class="auth-install"><div class="auth-install-icon">💡</div><div><b>不用到 App Store 下載</b><p>登入後可查看 iPhone 與 Android 的主畫面安裝教學，像 App 一樣快速開啟網站。</p></div></div>
-      <p class="auth-footnote">投資資訊僅供研究參考，不構成買賣建議。</p>
+      <div class="auth-install"><span class="auth-install-icon">☼</span><div><b>不用到 App Store 下載</b><p>登入後可依照 iPhone 或 Android 教學，把網站加入手機主畫面，方便隨時回來查看。</p></div></div>
     </section>
   </div>
+  <footer class="auth-editorial-footer"><span><strong>TAIWAN STOCK BOT</strong> · 你的投資研究空間</span><span>投資資訊僅供研究參考，不構成買賣建議。</span></footer>
 </main>'''
-    return render_page("登入台股 BOT", body)
+    response = make_response(render_page("登入台股 BOT", body))
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-StockBot-UI-Version"] = UI_BUILD
+    return response
 
 @app.route("/auth/google")
 def auth_google_start():
@@ -32270,17 +32503,22 @@ def web_leaderboard(uid):
         panel_style = "" if board_name == active_board else "display:none"
         if not row:
             if me_is_waiting:
-                body = (f"<b>你已成功加入排行榜，目前正在排隊觀察。</b><br>"
-                        f"系統會累積有效的每日績效快照；達到 {LEADERBOARD_MIN_SNAPSHOTS} 筆後，才會列入正式名次。"
-                        "等待期間不會捏造排名，也不會提前公開你的持股明細。")
+                state_title = "你已成功加入排行榜，目前正在排隊觀察。"
+                state_copy = (f"系統會累積有效的每日績效快照；達到 {LEADERBOARD_MIN_SNAPSHOTS} 筆後，才會列入正式名次。"
+                              "等待期間不會捏造排名，也不會提前公開你的持股明細。")
             elif me:
-                body = (f"<b>你已加入排行榜，正在累積績效資料。</b><br>"
-                        f"有效每日快照累積達 {LEADERBOARD_MIN_SNAPSHOTS} 筆後，這裡就會顯示你的正式排名、期間報酬與相對大盤表現。"
-                        "資料尚不足時會先顯示狀態，不會用猜測數字代替。")
+                state_title = "你已加入排行榜，正在累積績效資料。"
+                state_copy = (f"有效每日快照累積達 {LEADERBOARD_MIN_SNAPSHOTS} 筆後，這裡就會顯示你的正式排名、期間報酬與相對大盤表現。"
+                              "資料尚不足時會先顯示狀態，不會用猜測數字代替。")
             else:
-                body = ("<b>你還沒加入排行榜。</b><br>加入後就會從加入日開始累積自己的績效與排名曲線，"
-                        "<b>不需要先有持股</b>。請往下找到「加入排行榜」，填寫顯示暱稱即可開始。")
-            return f'<div class="rank-situation-panel" data-situation-panel="{board_name}" style="{panel_style}"><div class="rank-situation-empty">{body}</div></div>'
+                state_title = "你還沒加入排行榜。"
+                state_copy = ("加入後就會從加入日開始累積自己的績效與排名曲線，"
+                              "不需要先有持股。請往下找到「加入排行榜」，填寫顯示暱稱即可開始。")
+            return (f'<div class="rank-situation-panel" data-situation-panel="{board_name}" style="{panel_style}">'
+                    f'<div class="rank-situation-empty">'
+                    f'<strong class="rank-state-title">{state_title}</strong>'
+                    f'<span class="rank-state-copy">{state_copy}</span>'
+                    f'</div></div>')
 
         key = {"short": "m30", "long": "ret", "season": "season_ret", "month": "month_ret"}[board_name]
         days_key = {"short": "m30_days", "long": "days", "season": "season_days", "month": "month_days"}[board_name]
@@ -32440,9 +32678,25 @@ def web_leaderboard(uid):
 .rank-explainer-metrics li{margin:4px 0}
 .rank-explainer-metrics strong{color:#243F55}
 .rank-explainer-bottom{margin-top:13px;padding:11px 12px;border-left:3px solid #315E80;border-radius:0 9px 9px 0;background:#EDF4F8;color:#314F65;font-size:12px;line-height:1.75}
-/* The old empty-state text was too pale on the light card in some theme overrides. */
-#app-page-content .rank-situation .rank-situation-empty,.rank-situation .rank-situation-empty{color:#344F63!important;font-size:13px!important;line-height:1.85!important;font-weight:650!important;padding:16px!important;background:#F5F8FB!important;border:1px solid #D9E4EC!important;border-radius:13px!important;text-align:left!important}
-#app-page-content .rank-situation .rank-situation-empty b,.rank-situation .rank-situation-empty b{color:#173F5B!important;font-weight:900!important}
+/* V10 final override: legacy dark/light palette blocks must never wash out the empty-state copy. */
+body #app-page-content .rank-situation .rank-situation-panel .rank-situation-empty,
+body #app-page-content .rank-situation .rank-situation-panel .rank-situation-empty * {
+  color:#253E50 !important;-webkit-text-fill-color:#253E50 !important;opacity:1 !important;
+  text-shadow:none !important;filter:none !important;visibility:visible !important;
+}
+body #app-page-content .rank-situation .rank-situation-panel .rank-situation-empty {
+  display:block !important;box-sizing:border-box !important;padding:16px !important;
+  background:#F4F7F9 !important;border:1px solid #C7D6E0 !important;border-radius:13px !important;
+  font-size:14px !important;line-height:1.9 !important;font-weight:700 !important;text-align:left !important;
+}
+body #app-page-content .rank-situation .rank-situation-panel .rank-situation-empty b,
+body #app-page-content .rank-situation .rank-situation-panel .rank-situation-empty strong {
+  color:#15364C !important;-webkit-text-fill-color:#15364C !important;font-weight:950 !important;
+}
+body #app-page-content .rank-situation .rank-situation-title h2,
+body #app-page-content .rank-situation .rank-situation-title .rank-situation-badge {
+  opacity:1 !important;text-shadow:none !important;
+}
 @media(min-width:720px){.rank-explainer-periods{grid-template-columns:repeat(3,minmax(0,1fr))}}
 </style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>
 <style id="v258-rank-visual-system">
@@ -35971,7 +36225,7 @@ def web_portfolio(uid):
             str(request.args.get("trend_benchmark") or "1"),
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
                          if k not in {"t", "fragment", "_nav", "refresh"})),
-            "empty-home-welcome-v6")
+            "empty-home-welcome-v11-botanical")
         _home_fast_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_home_fast_body = _web_fragment_cache_get(
             "portfolio-fast", _home_fast_fragment_key, _home_fast_ttl)
@@ -35997,66 +36251,77 @@ def web_portfolio(uid):
             auth_token=str(request.args.get("t") or ""))
         # 新手引導規則：只要目前沒有持股，就顯示歡迎／下一步引導。
         # 不依賴「第一次登入」旗標，因此新註冊帳號與既有但尚未新增持股的帳號都能看見。
-        body = f"""
-<style>
-.welcome-empty{{max-width:760px;margin:18px auto 30px;padding:clamp(20px,4vw,32px);border:1px solid var(--line,#dce5ee);border-radius:22px;background:var(--card,#fff);box-shadow:0 8px 28px rgba(26,55,82,.06);text-align:left}}
-.welcome-empty .welcome-eyebrow{{font-size:12px;font-weight:800;letter-spacing:.13em;color:var(--brass,#315f87);margin-bottom:10px}}
-.welcome-empty h2{{font-size:clamp(24px,5vw,32px);line-height:1.25;margin:0 0 10px;color:var(--ink,#172b42)}}
-.welcome-empty .welcome-intro{{margin:0 0 22px;color:var(--ink-soft,#687b8d);line-height:1.75;font-size:15px}}
-.welcome-actions{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}}
-.welcome-action{{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0;padding:17px;border:1px solid var(--line,#dce5ee);border-radius:15px;background:var(--surface,#f7f9fc);text-decoration:none!important;color:var(--ink,#172b42)!important;transition:transform .15s ease,border-color .15s ease}}
-.welcome-action:hover{{transform:translateY(-1px);border-color:var(--brass,#315f87)}}
-.welcome-action .welcome-icon{{font-size:23px;line-height:1.2}}
-.welcome-action strong{{font-size:16px;line-height:1.4}}
-.welcome-action small{{font-size:13px;line-height:1.65;color:var(--ink-soft,#687b8d)}}
-.welcome-action .welcome-cta{{font-weight:750;font-size:14px;margin-top:5px;color:var(--brass,#315f87)}}
-.welcome-footnote{{font-size:12px;line-height:1.7;color:var(--ink-soft,#687b8d);margin:17px 0 0}}
-@media(max-width:520px){{.welcome-actions{{grid-template-columns:1fr}}.welcome-action{{padding:15px}}}}
-.welcome-install{{display:flex;align-items:center;gap:12px;margin-top:13px;padding:15px;border:1px solid #BFD5E5;border-radius:15px;background:#EEF6FC;text-decoration:none!important;color:#173B57!important}}
-.welcome-install-icon{{font-size:25px;flex:0 0 auto}}
-.welcome-install-copy{{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px}}
-.welcome-install-copy strong{{font-size:14px;line-height:1.45}}
-.welcome-install-copy small{{font-size:12px;line-height:1.6;color:#4F687D}}
-.welcome-install-cta{{font-size:12px;font-weight:850;white-space:nowrap;color:#245E86}}
-.welcome-guide{{margin-top:12px;border:1px solid var(--line,#dce5ee);border-radius:13px;background:#fff;overflow:hidden}}
-.welcome-guide summary{{padding:13px 14px;cursor:pointer;font-size:13px;font-weight:800;color:#294E6B}}
-.welcome-guide-body{{padding:0 14px 12px;color:#526B81;font-size:12.5px;line-height:1.7}}
-.welcome-guide-body p{{margin:8px 0}}
-@media(max-width:420px){{.welcome-install{{align-items:flex-start;flex-wrap:wrap}}.welcome-install-cta{{margin-left:37px}}}}
+        body = r"""<style>
+.welcome-editorial{position:relative;isolation:isolate;max-width:780px;margin:17px auto 28px;padding:clamp(20px,4.5vw,32px);overflow:hidden;border:1px solid #D2C5AF;border-radius:5px 30px 5px 30px;background:radial-gradient(ellipse at 92% 7%,rgba(172,112,77,.095),transparent 26%),linear-gradient(148deg,#FFFCF6 0%,#F4EBDD 62%,#EAE8D9 100%);box-shadow:0 12px 30px rgba(64,60,43,.085);color:#26372D}
+.welcome-editorial:before{content:"";position:absolute;z-index:-1;right:-40px;top:-70px;width:210px;height:210px;border:1px solid rgba(103,125,92,.24);border-radius:47% 53% 46% 54%;transform:rotate(28deg);box-shadow:0 0 0 14px rgba(103,125,92,.035),0 0 0 34px rgba(103,125,92,.025)}
+.welcome-editorial:after{content:"✳";position:absolute;right:17px;top:24px;color:rgba(167,100,74,.18);font-size:42px;line-height:1;pointer-events:none}
+.welcome-editorial-topline{display:flex;align-items:center;justify-content:space-between;gap:12px;position:relative;padding-bottom:12px;margin-bottom:19px;border-bottom:1px solid #DCD2C0;color:#6B795F;font-size:10px;letter-spacing:.15em;font-weight:900}
+.welcome-editorial-topline span:last-child{font-family:Georgia,"Noto Serif TC","Songti TC",serif;letter-spacing:.04em;color:#9B674D;font-weight:700}
+.welcome-editorial-kicker{display:flex;align-items:center;gap:8px;margin-bottom:10px;color:#8F654E;font-size:10px;letter-spacing:.16em;font-weight:900}
+.welcome-editorial-kicker:before{content:"";width:22px;border-top:1px solid #A9674E}
+.welcome-editorial h2{position:relative;max-width:600px;margin:0 0 11px;color:#2B3B30;font-family:"Noto Serif TC","Songti TC","PMingLiU",serif;font-size:clamp(25px,5.2vw,34px);line-height:1.48;font-weight:850;letter-spacing:.015em}
+.welcome-editorial h2 em{font-style:normal;color:#9F6148}
+.welcome-editorial-intro{position:relative;max-width:620px;margin:0 0 22px;padding-left:13px;border-left:2px solid #B77A5B;color:#405546;font-size:13.5px;line-height:1.95;font-weight:650}
+.welcome-editorial-rule{display:flex;align-items:center;gap:10px;margin:0 0 12px;color:#777B6A;font-family:Georgia,"Noto Serif TC",serif;font-size:11px}
+.welcome-editorial-rule:after{content:"";height:1px;flex:1;background:#DCD2C0}
+.welcome-editorial-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.welcome-editorial-action{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0;min-height:155px;padding:15px 14px;border:1px solid #D8DCCF;border-radius:4px 15px 4px 15px;background:rgba(255,254,249,.8);text-decoration:none!important;color:#2F4235!important;transition:transform .15s,border-color .15s,background .15s}
+.welcome-editorial-action:hover{transform:translateY(-2px);border-color:#93A58A;background:#FFFFFF}
+.welcome-editorial-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:#E8EBDD;color:#58704F;font-size:19px}
+.welcome-editorial-action strong{font-family:"Noto Serif TC","Songti TC",serif;font-size:15px;line-height:1.45;font-weight:900}
+.welcome-editorial-action small{color:#5F6C5B;font-size:12px;line-height:1.75;font-weight:600}
+.welcome-editorial-cta{margin-top:auto;padding-top:4px;color:#985D44;font-size:12px;font-weight:900}
+.welcome-editorial-install{display:flex;align-items:center;gap:12px;margin-top:12px;padding:13px 14px;border:1px solid #D0D9C9;border-left:3px solid #7B8C6D;border-radius:4px 14px 4px 14px;background:#EEF1E7;text-decoration:none!important;color:#354B39!important}
+.welcome-editorial-install-icon{flex:0 0 auto;font-size:22px;color:#6C805D}
+.welcome-editorial-install-copy{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.welcome-editorial-install-copy strong{font-size:13px;line-height:1.5;font-weight:900}
+.welcome-editorial-install-copy small{color:#566953;font-size:11.5px;line-height:1.65;font-weight:600}
+.welcome-editorial-install-cta{flex:0 0 auto;color:#90563F;font-size:12px;font-weight:900;white-space:nowrap}
+.welcome-editorial-guide{margin-top:11px;border:1px solid #DED6C7;border-radius:12px;background:rgba(255,254,249,.78);overflow:hidden}
+.welcome-editorial-guide summary{padding:13px 14px;cursor:pointer;color:#405843;font-size:12.5px;font-weight:850;list-style:none}
+.welcome-editorial-guide summary::-webkit-details-marker{display:none}
+.welcome-editorial-guide summary:after{content:"＋";float:right;color:#9F6148}
+.welcome-editorial-guide[open] summary:after{content:"－"}
+.welcome-editorial-guide-body{padding:0 14px 12px;color:#4D614F;font-size:12px;line-height:1.85}
+.welcome-editorial-guide-body p{margin:7px 0}
+.welcome-editorial-footnote{margin:15px 1px 0;padding-top:12px;border-top:1px solid #DCD2C0;color:#596653;font-size:11.5px;line-height:1.8;font-weight:600}
+@media(max-width:400px){.welcome-editorial{padding:17px 15px;border-radius:4px 18px 4px 18px}.welcome-editorial:after{right:12px;top:20px;font-size:32px}.welcome-editorial-actions{gap:8px}.welcome-editorial-action{padding:12px 10px;min-height:168px}.welcome-editorial-action strong{font-size:13.5px}.welcome-editorial-action small{font-size:11px}.welcome-editorial-install{align-items:flex-start;gap:9px;padding:12px 10px}.welcome-editorial-install-cta{font-size:11px}.welcome-editorial-topline{font-size:9px}}
 </style>
-<section class="welcome-empty" data-empty-home-version="v6" aria-label="新手開始使用">
-  <div class="welcome-eyebrow">TAIWAN STOCK BOT</div>
-  <h2>歡迎加入台股 BOT！</h2>
-  <p class="welcome-intro">你的投資管理空間已準備好了。先選擇接下來要做的事；之後也可以隨時從下方導覽列回到各項功能。</p>
-  <div class="welcome-actions">
-    <a class="welcome-action" href="/web/positions">
-      <span class="welcome-icon" aria-hidden="true">📊</span>
-      <strong>建立你的投資組合</strong>
-      <small>新增目前持有的股票，開始追蹤持股、市值與損益。</small>
-      <span class="welcome-cta">新增第一筆持股 →</span>
+<section class="welcome-editorial" data-empty-home-version="v11-botanical-editorial" aria-label="新手開始使用">
+  <div class="welcome-editorial-topline"><span>TAIWAN STOCK BOT · INVESTMENT JOURNAL</span><span>01 / BEGIN</span></div>
+  <div class="welcome-editorial-kicker">給自己的投資研究日誌</div>
+  <h2>先記錄，再理解；<br><em>慢慢找到自己的節奏。</em></h2>
+  <p class="welcome-editorial-intro">投資不必從一筆交易開始。先認識工具、整理想法，再把持股與市場線索放進自己的研究日誌；每一步都可以慢慢來。</p>
+  <div class="welcome-editorial-rule">選擇你的下一步</div>
+  <div class="welcome-editorial-actions">
+    <a class="welcome-editorial-action" href="/web/positions" data-app-nav="1">
+      <span class="welcome-editorial-icon" aria-hidden="true">▥</span>
+      <strong>建立投資組合</strong>
+      <small>新增目前持有的股票，開始記錄市值、損益與配置變化。</small>
+      <span class="welcome-editorial-cta">新增第一筆持股 →</span>
     </a>
-    <a class="welcome-action" href="/web/workbench">
-      <span class="welcome-icon" aria-hidden="true">🔎</span>
+    <a class="welcome-editorial-action" href="/web/workbench" data-app-nav="1">
+      <span class="welcome-editorial-icon" aria-hidden="true">⌕</span>
       <strong>先探索選股工具</strong>
-      <small>還沒買股票也沒關係，可以先看看選股工作台與市場機會。</small>
-      <span class="welcome-cta">前往選股工作台 →</span>
+      <small>看看選股工作台、黑馬股與籌碼線索，熟悉工具再開始。</small>
+      <span class="welcome-editorial-cta">前往選股工作台 →</span>
     </a>
   </div>
-  <a class="welcome-install" href="/web/install" data-app-nav="1">
-    <span class="welcome-install-icon" aria-hidden="true">📱</span>
-    <span class="welcome-install-copy"><strong>把台股 BOT 加到手機主畫面</strong><small>不用下載 App；iPhone／Android 都有安裝教學，之後像 App 一樣點圖示開啟。</small></span>
-    <span class="welcome-install-cta">教我安裝 →</span>
+  <a class="welcome-editorial-install" href="/web/install" data-app-nav="1">
+    <span class="welcome-editorial-install-icon" aria-hidden="true">▣</span>
+    <span class="welcome-editorial-install-copy"><strong>把台股 BOT 加到手機主畫面</strong><small>不用下載 App；提供 iPhone 與 Android 安裝教學，往後一點圖示就能開啟。</small></span>
+    <span class="welcome-editorial-install-cta">教我安裝 →</span>
   </a>
-  <details class="welcome-guide">
-    <summary>還有哪些功能？點我看新手導覽</summary>
-    <div class="welcome-guide-body">
-      <p><b>📊 持股：</b>新增持股後，查看投資組合、市值、損益與權重。</p>
-      <p><b>🔎 選股：</b>使用選股工作台、黑馬股與籌碼相關工具探索市場。</p>
-      <p><b>🏆 排行：</b>自願加入績效排行榜，查看不同期間的報酬表現；完整持股清單不會自動公開，是否顯示部分持股依排行榜設定而定。</p>
-      <p><b>💬 LINE 通知：</b>網站登入與 LINE 推播是不同設定；若要接收盤前／盤中／盤後通知，請到「更多」確認 LINE 通知設定。</p>
+  <details class="welcome-editorial-guide">
+    <summary>再看看這個工作台有哪些功能</summary>
+    <div class="welcome-editorial-guide-body">
+      <p><b>投資組合：</b>新增持股後追蹤市值、損益與權重變化。</p>
+      <p><b>選股工作台：</b>使用選股工具、黑馬股與籌碼資訊探索市場。</p>
+      <p><b>績效排行榜：</b>自願加入不同期間的績效比較；完整持股明細不會自動公開，實際顯示依你的排行榜設定而定。</p>
+      <p><b>LINE 通知：</b>網站登入與 LINE 推播是不同設定，請到「更多」確認通知設定。</p>
     </div>
   </details>
-  <p class="welcome-footnote">目前還沒有持股紀錄。你可以先探索選股工具，也可以新增持股開始追蹤投資組合。</p>
+  <p class="welcome-editorial-footnote">目前還沒有持股紀錄。可以先探索工具，也可以新增持股；你的投資資料會留在自己的帳號中。</p>
 </section>"""
         if trend_html_empty:
             body += f"""
@@ -36074,7 +36339,7 @@ def web_portfolio(uid):
                          for p in positions)),
             str(request.args.get("trend_period") or "3m"),
             str(request.args.get("trend_benchmark") or "1"),
-             "empty-home-welcome-v6")
+             "empty-home-welcome-v11-botanical")
         # 首頁已載入完整摘要；短時間內切回先用既有內容，避免重新抓六份共享資料。
         _home_cache_ttl = 180.0 if _is_taiwan_intraday_window() else 600.0
         _cached_home_body = _web_fragment_cache_get(
