@@ -25605,15 +25605,15 @@ def auth_google_choose():
   <h2 style="font-size:26px;line-height:1.25;color:#172B40;margin-bottom:10px">台股 BOT 帳號</h2>
   <section style="border:1px solid #D5E2ED;border-radius:16px;padding:16px;margin:12px 0;background:#fff">
     <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">第一次使用？建立新帳號</h3>
-    <p style="color:#526A80;margin-bottom:14px">若這個 Google 身分已註冊，請改用登入，不會建立重複帳號。</p>
+    <p style="color:#526A80;margin-bottom:14px">只建立尚未註冊的 Google 身分；已註冊過就停止，請改用登入。</p>
     <a href="/auth/google?mode=register" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800">使用 Google 註冊</a>
   </section>
   <section style="border:1px solid #D5E2ED;border-radius:16px;padding:16px;margin:12px 0;background:#F7FAFD">
     <h3 style="font-size:18px;color:#172B40;margin-bottom:8px">已經有帳號？直接登入</h3>
-    <p style="color:#526A80;margin-bottom:14px">只允許已註冊的 Google 身分登入；尚未註冊時會提示先註冊。</p>
+    <p style="color:#526A80;margin-bottom:14px">只查找這個 Google 身分已綁定的舊帳號；找不到就停止，不會自動建立新帳號。</p>
     <a href="/auth/google?mode=login" style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#fff;border:1px solid #315E9B;color:#315E9B;font-weight:800">使用 Google 登入</a>
   </section>
-  <p style="color:#526A80;font-size:13px">更換 Gmail：先登入原帳號，再到設定綁定新 Google。若新 Google 已綁定其他 BOT 帳號，系統會拒絕覆蓋，避免資料混淆。</p>
+  <p style="color:#526A80;font-size:13px">註冊只建立新帳號；登入只開啟既有帳號。相同 Google 身分不會因再次註冊而建立第二個帳號。更換 Gmail 請先登入原帳號再進入設定綁定；新 Google 若已綁定其他帳號，會拒絕覆蓋。</p>
 </div>'''
     return render_page("台股 BOT 帳號", body)
 
@@ -25649,97 +25649,137 @@ def auth_google_start():
 
 @app.route("/auth/google/callback")
 def auth_google_callback():
+    """嚴格區分 Google 註冊、登入、綁定；以 Google sub 作為身分唯一鍵。"""
     state_result = _consume_oauth_state(request.args.get("state", ""))
     if not state_result:
         return render_page("登入連結已失效",
-            '<div class="msg">登入驗證已過期或已使用，請重新開始登入。</div>'), 400
+            '<div class="msg">登入驗證已過期或已使用，請重新開始。</div>'
+            '<a href="/auth/choose">返回登入／註冊</a>'), 400
     intent, bind_user_id = state_result
     if request.args.get("error"):
-        return render_page("Google 登入已取消",
-            '<div class="msg">你已取消 Google 登入，原本的帳號資料沒有變更。</div>'), 400
-    code = request.args.get("code", "")
+        return render_page("Google 授權已取消",
+            '<div class="msg">你已取消 Google 授權，原本的帳號與投資資料沒有變更。</div>'
+            '<a href="/auth/choose">返回登入／註冊</a>'), 400
+    code = (request.args.get("code") or "").strip()
     if not code:
-        return render_page("Google 登入失敗",
-            '<div class="msg">Google 沒有回傳有效授權碼，請重新操作。</div>'), 400
-    identity = _google_identity_from_code(code)
-    if not identity:
         return render_page("Google 驗證失敗",
-            '<div class="msg">無法驗證 Google 身分，請重新登入。</div>'), 401
+            '<div class="msg">Google 沒有回傳有效授權碼，請重新操作。</div>'
+            '<a href="/auth/choose">返回登入／註冊</a>'), 400
 
+    identity = _google_identity_from_code(code)
+    if not identity or not identity.get("subject"):
+        return render_page("Google 驗證失敗",
+            '<div class="msg">無法驗證 Google 身分，請重新登入。</div>'
+            '<a href="/auth/choose">返回登入／註冊</a>'), 401
+
+    # 綁定是獨立流程：必須從已登入的原帳號發起，不能退化成註冊或登入。
     if intent == "bind":
         if not bind_user_id:
             return render_page("綁定失敗",
-                '<div class="msg">綁定工作階段已失效，請重新從既有 LINE 帳號操作。</div>'), 401
-        ok, message = _bind_google_identity(bind_user_id, identity)
+                '<div class="msg">原帳號工作階段已失效。請先登入原帳號，再重新綁定 Google。</div>'), 401
+        ok, message = _bind_google_identity(str(bind_user_id), identity)
         if not ok:
             return render_page("Google 綁定未完成",
                 '<div class="msg">' + safe_html_text(message) + '</div>'), 409
         return render_page("Google 綁定完成",
-            '<div class="msg">Google 已綁定至原本的台股 BOT 帳號；持股與設定沒有搬移或重建。</div>'
+            '<div class="msg">Google 已綁定到原本的台股 BOT 帳號。帳號 ID 不變，持股、自選股與設定均保留。</div>'
             '<a href="/web/settings">返回設定</a>')
 
+    if intent not in ("login", "register"):
+        return render_page("登入流程無效",
+            '<div class="msg">無法辨識這次操作是註冊還是登入，請回到登入頁重新操作。</div>'
+            '<a href="/auth/choose">返回登入／註冊</a>'), 400
+
+    subject = str(identity["subject"])
+    email = str(identity.get("email") or "")[:320]
     conn = get_db_connection()
+    user_id = None
     try:
         cur = conn.cursor()
         cur.execute(
             "SELECT user_id FROM user_auth_identities "
             "WHERE provider='google' AND provider_subject=%s",
-            (identity["subject"],))
-        row = cur.fetchone()
-        conn.rollback()
-        cur.close()
-    except Exception as exc:
-        conn.rollback()
-        print(f"❌ 查詢 Google 身分失敗：{type(exc).__name__}")
-        return render_page("登入暫時失敗",
-            '<div class="msg">目前無法查詢帳號，請稍後再試。</div>'), 503
-    finally:
-        release_db_connection(conn)
-    if intent == "register" and row:
-        return render_page("這個 Google 帳號已註冊", '<div class="msg">這個 Google 帳號已經註冊，請改用 Google 登入，不會建立重複帳號。</div><a href="/auth/google?mode=login">前往登入</a>'), 409
-    if intent == "login" and not row:
-        return render_page("尚未註冊", '<div class="msg">這個 Google 帳號尚未註冊，請先建立新帳號。</div><a href="/auth/google?mode=register">前往註冊</a>'), 404
-    if not row:
-        # 只有明確選擇註冊時才會建立帳號。
-        # 使用 Google 的穩定 subject 作為內部 user_id，不用 email 當主鍵，
-        # 也絕不把它自動合併到任何既有 LINE 帳號。
-        google_user_id = "google:" + identity["subject"]
-        conn = get_db_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO user_auth_identities (provider, provider_subject, user_id, email) "
-                "VALUES ('google', %s, %s, %s) ON CONFLICT (provider, provider_subject) DO NOTHING",
-                (identity["subject"], google_user_id, identity.get("email", "")))
-            cur.execute(
-                "SELECT user_id FROM user_auth_identities "
-                "WHERE provider='google' AND provider_subject=%s",
-                (identity["subject"],))
-            row = cur.fetchone()
-            if not row or not row[0]:
+            (subject,))
+        existing = cur.fetchone()
+
+        if intent == "register":
+            # 註冊永遠不等於登入：只要此 Google sub 已有綁定，就拒絕重複註冊。
+            if existing:
                 conn.rollback()
                 cur.close()
-                return render_page("Google 註冊未完成",
-                    '<div class="msg">目前無法建立帳號，沒有變更任何既有資料，請稍後再試。</div>'), 503
+                return render_page("這個 Google 帳號已經註冊",
+                    '<div class="msg">這個 Google 身分已有台股 BOT 帳號。為避免建立第二份帳號或讓持股看起來遺失，這次不會登入也不會建立新帳號。請改按「使用 Google 登入」。</div>'
+                    '<a href="/auth/google?mode=login">使用 Google 登入</a>'), 409
+
+            # 使用 Google 穩定 subject 作為新帳號 ID；只在明確選註冊時建立。
+            new_user_id = "google:" + subject
+            cur.execute(
+                "INSERT INTO user_auth_identities (provider, provider_subject, user_id, email) "
+                "VALUES ('google', %s, %s, %s) "
+                "ON CONFLICT (provider, provider_subject) DO NOTHING "
+                "RETURNING user_id",
+                (subject, new_user_id, email))
+            inserted = cur.fetchone()
+            if not inserted:
+                # 避免兩個分頁同時註冊同一個 Google 身分時，意外把註冊當成登入。
+                conn.rollback()
+                cur.close()
+                return render_page("這個 Google 帳號已經註冊",
+                    '<div class="msg">這個 Google 身分剛完成註冊或已存在。為避免重複帳號，這次註冊已停止；請改按「使用 Google 登入」。</div>'
+                    '<a href="/auth/google?mode=login">使用 Google 登入</a>'), 409
+            user_id = str(inserted[0])
+            # 新 Google 帳號要建立 BOT 主帳號資料列；持股等其他資料仍以此固定 ID 關聯。
+            cur.execute(
+                "INSERT INTO users (user_id, notify, display_name) VALUES (%s, FALSE, %s) "
+                "ON CONFLICT (user_id) DO NOTHING",
+                (user_id, email or "Google 使用者"))
             conn.commit()
             cur.close()
-        except Exception as exc:
-            conn.rollback()
-            print(f"❌ Google 新帳號建立失敗：{type(exc).__name__}")
-            return render_page("Google 註冊未完成",
-                '<div class="msg">目前無法建立帳號，請稍後再試。原有 LINE 帳號與資料未被合併。</div>'), 503
-        finally:
-            release_db_connection(conn)
-    token = create_web_token(row[0])
+
+        else:  # intent == 'login'
+            # 登入永遠不等於註冊：沒有既有綁定就停止，不產生新帳號。
+            if not existing or not existing[0]:
+                conn.rollback()
+                cur.close()
+                email_note = safe_html_text(email) if email else "這個 Google 身分"
+                return render_page("這個 Google 帳號尚未註冊",
+                    '<div class="msg">' + email_note + ' 尚未建立台股 BOT 帳號。這次登入不會建立新帳號；請返回選擇「使用 Google 註冊」。</div>'
+                    '<a href="/auth/google?mode=register">使用 Google 註冊</a>'), 404
+            user_id = str(existing[0])
+            # 舊版已存在的 Google 身分若缺少 users 主資料列，安全補上，不改寫既有資料。
+            cur.execute(
+                "INSERT INTO users (user_id, notify, display_name) VALUES (%s, FALSE, %s) "
+                "ON CONFLICT (user_id) DO NOTHING",
+                (user_id, email or "Google 使用者"))
+            conn.commit()
+            cur.close()
+
+    except Exception as exc:
+        conn.rollback()
+        print(f"Google auth account resolution failed: {type(exc).__name__}")
+        return render_page("帳號處理暫時失敗",
+            '<div class="msg">這次沒有完成註冊或登入，也沒有刻意更動既有持股。請稍後再試。</div>'
+            '<a href="/auth/choose">返回登入／註冊</a>'), 503
+    finally:
+        release_db_connection(conn)
+
+    if not user_id:
+        return render_page("帳號處理暫時失敗",
+            '<div class="msg">沒有取得有效的台股 BOT 帳號，請重新操作。</div>'
+            '<a href="/auth/choose">返回登入／註冊</a>'), 503
+
+    token = create_web_token(user_id)
     if not token:
         return render_page("登入暫時失敗",
-            '<div class="msg">無法建立網頁工作階段，請稍後再試。</div>'), 503
+            '<div class="msg">帳號已保留，但目前無法建立網頁工作階段。請重試，不要重複註冊。</div>'
+            '<a href="/auth/choose">返回登入／註冊</a>'), 503
+
+    # OAuth 成功後設置同一個 cookie 名稱，以新帳號 session 取代舊瀏覽器 session。
     resp = make_response(redirect("/web/portfolio"))
     resp.set_cookie("stockbot_token", token,
                     max_age=WEB_SESSION_DAYS * 86400,
                     path="/", httponly=True, samesite="Lax", secure=True)
     return resp
-
 
 
 def _admin_history_candidates(limit=100):
