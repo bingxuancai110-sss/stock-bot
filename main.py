@@ -22794,7 +22794,7 @@ body.auth-entry-page #app-page-content .auth-masthead{display:flex!important;ali
 body.auth-entry-page #app-page-content .auth-masthead-note{font-family:Georgia,"Noto Serif TC","Songti TC",serif!important;font-size:12px!important;letter-spacing:.04em!important;color:#777766!important;}
 body.auth-entry-page #app-page-content .auth-hero{position:relative!important;isolation:isolate!important;overflow:hidden!important;margin:17px 0 14px!important;padding:clamp(25px,5vw,48px)!important;border:1px solid #CFC1AA!important;border-radius:7px 38px 7px 38px!important;background:radial-gradient(ellipse at 94% 4%,rgba(140,157,112,.19),transparent 28%),linear-gradient(138deg,#FFFCF5 0%,#F2E8D8 61%,#E6E6D6 100%)!important;box-shadow:0 16px 34px rgba(70,62,44,.09)!important;color:#26372D!important;}
 body.auth-entry-page #app-page-content .auth-hero:before{content:""!important;position:absolute!important;z-index:-1!important;right:-55px!important;top:-105px!important;width:260px!important;height:260px!important;border:1px solid rgba(90,116,82,.30)!important;border-radius:46% 54% 51% 49%!important;transform:rotate(24deg)!important;box-shadow:0 0 0 15px rgba(90,116,82,.045),0 0 0 36px rgba(90,116,82,.028),0 0 0 60px rgba(169,103,78,.018)!important;}
-body.auth-entry-page #app-page-content .auth-hero:after{content:"✳"!important;position:absolute!important;right:23px!important;bottom:10px!important;font-size:64px!important;line-height:1!important;color:rgba(157,94,67,.20)!important;transform:rotate(-12deg)!important;pointer-events:none!important;}
+body.auth-entry-page #app-page-content .auth-hero:after{content:none!important;display:none!important}
 body.auth-entry-page #app-page-content .auth-brand{display:flex!important;align-items:center!important;gap:9px!important;color:#68785D!important;font-size:10px!important;font-weight:900!important;letter-spacing:.19em!important;text-transform:uppercase!important;}
 body.auth-entry-page #app-page-content .auth-brand:before{content:""!important;display:block!important;width:25px!important;border-top:1px solid #A9674E!important;}
 body.auth-entry-page #app-page-content .auth-hero h1{position:relative!important;max-width:680px!important;margin:21px 0 14px!important;color:#28382E!important;font-family:"Noto Serif TC","Songti TC","PMingLiU",serif!important;font-size:clamp(31px,6.4vw,53px)!important;font-weight:850!important;line-height:1.35!important;letter-spacing:.015em!important;}
@@ -22826,10 +22826,10 @@ body.auth-entry-page #app-page-content .auth-editorial-footer{display:flex!impor
 body.auth-entry-page #app-page-content .auth-editorial-footer strong{color:#596E50!important;}
 @media(max-width:700px){body.auth-entry-page .wrap{width:calc(100% - 22px)!important;padding-top:10px!important}body.auth-entry-page #app-page-content .auth-masthead{padding-bottom:11px!important;font-size:9px!important}body.auth-entry-page #app-page-content .auth-masthead-note{font-size:10px!important}body.auth-entry-page #app-page-content .auth-hero{margin:12px 0;padding:24px 19px 25px!important;border-radius:5px 24px 5px 24px!important}body.auth-entry-page #app-page-content .auth-hero h1{font-size:clamp(29px,7.7vw,41px)!important;margin-top:18px!important}body.auth-entry-page #app-page-content .auth-hero p{font-size:13px!important}body.auth-entry-page #app-page-content .auth-content{grid-template-columns:1fr!important;gap:12px!important}body.auth-entry-page #app-page-content .auth-panel{padding:18px!important}body.auth-entry-page #app-page-content .auth-editorial-footer{flex-wrap:wrap!important}}
 @media(max-width:360px){body.auth-entry-page #app-page-content .auth-masthead-note{display:none!important}body.auth-entry-page #app-page-content .auth-feature-grid{gap:7px!important}body.auth-entry-page #app-page-content .auth-feature{padding:10px!important}}
-/* v12: 少一點裝飾、多一點可讀性；避免 iOS 把 ✳ 顯示成突兀的彩色圖示。 */
+/* v12: 少一點裝飾、多一點可讀性；移除突兀的彩色裝飾圖示。 */
 body.auth-entry-page{background:#F4F1E9!important;background-image:none!important;color:#29372F!important;}
 body.auth-entry-page #app-page-content .auth-hero{margin:14px 0!important;padding:clamp(23px,4.5vw,40px)!important;border:1px solid #D8D1C4!important;border-radius:10px!important;background:#F9F7F1!important;box-shadow:none!important;}
-body.auth-entry-page #app-page-content .auth-hero:before,body.auth-entry-page #app-page-content .auth-hero:after{content:none!important;display:none!important;}
+body.auth-entry-page #app-page-content .auth-hero:before,body.auth-entry-page #app-page-content .auth-hero:after{content:none!important;display:none!important}
 body.auth-entry-page #app-page-content .auth-hero h1{margin-top:18px!important;font-weight:760!important;letter-spacing:0!important;line-height:1.42!important;}
 body.auth-entry-page #app-page-content .auth-hero p{max-width:570px!important;font-weight:500!important;line-height:1.9!important;color:#4F5B50!important;}
 body.auth-entry-page #app-page-content .auth-panel{border-radius:9px!important;background:#FFFEFA!important;box-shadow:none!important;border-color:#DDD7CB!important;}
@@ -22850,7 +22850,7 @@ body.auth-entry-page #app-page-content .auth-editorial-footer{font-family:system
 /* v11: 無持股首頁的文藝式新手卡。此 CSS 在全站樣式之後載入，保證顏色不被覆蓋。 */
 body #app-page-content .welcome-editorial{position:relative!important;isolation:isolate!important;max-width:780px!important;margin:18px auto 30px!important;padding:clamp(22px,5vw,34px)!important;overflow:hidden!important;border:1px solid #D2C4AC!important;border-radius:7px 34px 7px 34px!important;background:radial-gradient(ellipse at 91% 7%,rgba(168,112,79,.11),transparent 28%),radial-gradient(ellipse at 0% 100%,rgba(111,132,91,.12),transparent 32%),linear-gradient(145deg,#FFFCF6 0%,#F4EBDD 60%,#EAE8D9 100%)!important;box-shadow:0 14px 32px rgba(64,60,43,.085)!important;color:#28382F!important;}
 body #app-page-content .welcome-editorial:before{content:""!important;position:absolute!important;z-index:-1!important;right:-42px!important;top:-74px!important;width:220px!important;height:220px!important;border:1px solid rgba(98,123,86,.28)!important;border-radius:47% 53% 46% 54%!important;transform:rotate(28deg)!important;box-shadow:0 0 0 14px rgba(103,125,92,.04),0 0 0 35px rgba(103,125,92,.028),0 0 0 58px rgba(169,103,78,.018)!important;}
-body #app-page-content .welcome-editorial:after{content:"✳"!important;position:absolute!important;right:22px!important;top:29px!important;color:rgba(167,100,74,.21)!important;font-size:44px!important;line-height:1!important;pointer-events:none!important;}
+body #app-page-content .welcome-editorial:after{content:none!important;display:none!important}
 body #app-page-content .welcome-editorial-topline{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;position:relative!important;padding-bottom:13px!important;margin-bottom:21px!important;border-bottom:1px solid #DCD2C0!important;color:#65785C!important;font-size:10px!important;letter-spacing:.14em!important;font-weight:900!important;}
 body #app-page-content .welcome-editorial-topline span:last-child{font-family:Georgia,"Noto Serif TC",serif!important;letter-spacing:.04em!important;color:#985F46!important;font-weight:800!important;}
 body #app-page-content .welcome-editorial-kicker{display:flex!important;align-items:center!important;gap:8px!important;margin-bottom:11px!important;color:#955F47!important;font-size:10px!important;letter-spacing:.15em!important;font-weight:950!important;}
@@ -22881,10 +22881,10 @@ body #app-page-content .welcome-editorial-guide-body{padding:0 14px 12px!importa
 body #app-page-content .welcome-editorial-guide-body p{margin:8px 0!important;}
 body #app-page-content .welcome-editorial-guide-body b{color:#2D4534!important;font-weight:950!important;}
 body #app-page-content .welcome-editorial-footnote{margin:15px 1px 0!important;padding-top:12px!important;border-top:1px solid #DCD2C0!important;color:#435744!important;font-size:11.5px!important;line-height:1.85!important;font-weight:700!important;}
-@media(max-width:520px){body #app-page-content .welcome-editorial{margin:13px auto 23px!important;padding:21px 16px 20px!important;border-radius:5px 24px 5px 24px!important}body #app-page-content .welcome-editorial-topline{font-size:9px!important;margin-bottom:18px!important}body #app-page-content .welcome-editorial h2{font-size:29px!important}body #app-page-content .welcome-editorial-intro{font-size:13px!important;margin-bottom:19px!important}body #app-page-content .welcome-editorial-actions{grid-template-columns:1fr!important;gap:9px!important}body #app-page-content .welcome-editorial-action{min-height:0!important;padding:14px!important;display:grid!important;grid-template-columns:35px minmax(0,1fr)!important;column-gap:10px!important;row-gap:4px!important}body #app-page-content .welcome-editorial-icon{grid-row:1/4!important}body #app-page-content .welcome-editorial-action strong,body #app-page-content .welcome-editorial-action small,body #app-page-content .welcome-editorial-cta{grid-column:2!important}body #app-page-content .welcome-editorial-cta{margin-top:1px!important}body #app-page-content .welcome-editorial-install{align-items:flex-start!important;gap:9px!important;padding:12px 11px!important}body #app-page-content .welcome-editorial-install-cta{font-size:11px!important;white-space:normal!important}body #app-page-content .welcome-editorial:after{right:12px!important;top:20px!important;font-size:32px!important}}
+@media(max-width:520px){body #app-page-content .welcome-editorial{margin:13px auto 23px!important;padding:21px 16px 20px!important;border-radius:5px 24px 5px 24px!important}body #app-page-content .welcome-editorial-topline{font-size:9px!important;margin-bottom:18px!important}body #app-page-content .welcome-editorial h2{font-size:29px!important}body #app-page-content .welcome-editorial-intro{font-size:13px!important;margin-bottom:19px!important}body #app-page-content .welcome-editorial-actions{grid-template-columns:1fr!important;gap:9px!important}body #app-page-content .welcome-editorial-action{min-height:0!important;padding:14px!important;display:grid!important;grid-template-columns:35px minmax(0,1fr)!important;column-gap:10px!important;row-gap:4px!important}body #app-page-content .welcome-editorial-icon{grid-row:1/4!important}body #app-page-content .welcome-editorial-action strong,body #app-page-content .welcome-editorial-action small,body #app-page-content .welcome-editorial-cta{grid-column:2!important}body #app-page-content .welcome-editorial-cta{margin-top:1px!important}body #app-page-content .welcome-editorial-install{align-items:flex-start!important;gap:9px!important;padding:12px 11px!important}body #app-page-content .welcome-editorial-install-cta{font-size:11px!important;white-space:normal!important}body #app-page-content .welcome-editorial:after{content:none!important;display:none!important}}
 /* v12: 收掉生成感較重的幾何裝飾、漸層和浮起陰影，保留紙感與清楚的閱讀層次。 */
 body #app-page-content .welcome-editorial{isolation:auto!important;max-width:780px!important;margin:16px auto 26px!important;padding:clamp(21px,4.5vw,32px)!important;border:1px solid #D9D1C4!important;border-radius:10px!important;background:#F9F7F1!important;box-shadow:none!important;color:#29372F!important;}
-body #app-page-content .welcome-editorial:before,body #app-page-content .welcome-editorial:after{content:none!important;display:none!important;}
+body #app-page-content .welcome-editorial:before,body #app-page-content .welcome-editorial:after{content:none!important;display:none!important}
 body #app-page-content .welcome-editorial-topline{padding-bottom:11px!important;margin-bottom:20px!important;color:#77796C!important;letter-spacing:.08em!important;font-weight:750!important;}
 body #app-page-content .welcome-editorial-topline span:last-child{color:#8E6A55!important;font-family:system-ui,-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",sans-serif!important;font-weight:700!important;}
 body #app-page-content .welcome-editorial-kicker{color:#8C684F!important;font-weight:750!important;letter-spacing:.09em!important;}
@@ -25885,7 +25885,7 @@ def auth_google_choose():
 .auth-masthead-note{font-family:Georgia,"Noto Serif TC","Songti TC",serif;letter-spacing:.04em;font-size:12px;font-weight:600;color:#7B7869}
 .auth-hero{position:relative;isolation:isolate;overflow:hidden;margin:18px 0 15px;padding:clamp(24px,5vw,44px);border:1px solid #D5C9B5;border-radius:5px 28px 5px 28px;background:linear-gradient(133deg,#FBF8F0 0%,#F1E7D6 68%,#E8E4D4 100%);box-shadow:0 10px 28px rgba(68,61,44,.075)}
 .auth-hero:before{content:"";position:absolute;z-index:-1;width:260px;height:260px;right:-85px;top:-100px;border:1px solid rgba(87,111,85,.26);border-radius:48% 52% 50% 50%;transform:rotate(28deg);box-shadow:0 0 0 16px rgba(87,111,85,.035),0 0 0 38px rgba(87,111,85,.025)}
-.auth-hero:after{content:"✳";position:absolute;right:30px;bottom:12px;font-size:62px;line-height:1;color:rgba(169,103,78,.16);transform:rotate(-12deg)}
+.auth-hero:after{content:none!important;display:none!important}
 .auth-brand{display:flex;align-items:center;gap:9px;color:#6C775F;font-size:10px;line-height:1.5;font-weight:900;letter-spacing:.2em;text-transform:uppercase}
 .auth-brand:before{content:"";width:24px;border-top:1px solid #A9674E}
 .auth-hero h1{position:relative;max-width:690px;margin:20px 0 13px;color:#29372F;font-family:"Noto Serif TC","Songti TC","PMingLiU",serif;font-size:clamp(30px,6.2vw,52px);font-weight:800;line-height:1.32;letter-spacing:.015em}
@@ -26499,12 +26499,119 @@ def web_admin_history(uid):
     body=f'<div class="more-hero"><div class="eyebrow">READ ONLY</div><h1>🔍 紀錄異常檢查</h1><p>這裡專門找疑似「誤新增後撤回」的舊資料，不是正常的歷史交易頁。</p></div><div class="more-group">{items}</div><div class="more-note">只讀安全檢查，不會自動刪除資料。</div>'
     return render_page('紀錄異常檢查',body,'more')
 
-@app.route('/web/admin/users')
+@app.route('/web/admin/users', methods=['GET', 'POST'])
 @web_login_required
 def web_admin_users(uid):
-    if not is_admin(uid): return make_response('Forbidden',403)
-    report=build_admin_user_list_report(status='all',limit=100,offset=0)
-    return render_page('使用者管理','<div class="more-hero"><h1>👥 使用者管理</h1></div><pre style="white-space:pre-wrap">'+html.escape(report)+'</pre>','more')
+    # 僅管理 LINE 通知與靜音設定，不讀取個別持股內容。
+    if not is_admin(uid):
+        return make_response('Forbidden', 403)
+
+    users = _admin_user_rows(status='all', limit=500, offset=0)
+    valid_ids = {str(r[0]).strip() for r in users}
+    msg = str(request.args.get('status') or '').strip()
+    target = str(request.values.get('target') or '').strip()
+    if target not in valid_ids:
+        target = str(users[0][0]).strip() if users else ''
+
+    if request.method == 'POST':
+        if not valid_web_csrf():
+            return make_response('安全驗證已過期，請重新整理頁面再試。', 400)
+        submitted_target = str(request.form.get('target') or '').strip()
+        if submitted_target not in valid_ids:
+            return make_response('找不到這位使用者，請重新選擇。', 400)
+        try:
+            daily_limit = int(request.form.get('anomaly_daily_limit', '5'))
+            cooldown = int(request.form.get('anomaly_cooldown_minutes', '60'))
+            quiet_start = int(request.form.get('quiet_start', '23'))
+            quiet_end = int(request.form.get('quiet_end', '7'))
+        except (TypeError, ValueError):
+            return make_response('設定格式不正確，請檢查數字欄位。', 400)
+
+        ok = set_push_flags(
+            submitted_target,
+            notify=request.form.get('notify') == '1',
+            requested=request.form.get('requested') == '1',
+            anomaly_notify=request.form.get('anomaly_notify') == '1',
+            anomaly_daily_limit=daily_limit,
+            anomaly_cooldown_minutes=cooldown,
+            anomaly_s_bypass_limit=request.form.get('anomaly_s_bypass_limit') == '1',
+            quiet_hours_enabled=request.form.get('quiet_hours_enabled') == '1',
+            quiet_start=quiet_start,
+            quiet_end=quiet_end,
+        )
+        message = '設定已儲存。' if ok else '儲存失敗：資料庫沒有更新這筆使用者設定。'
+        return redirect('/web/admin/users?target=' + quote(submitted_target, safe='') + '&status=' + quote(message, safe=''))
+
+    chosen = next((r for r in users if str(r[0]).strip() == target), None)
+    def esc(value):
+        return html.escape(str(value if value is not None else ''), quote=True)
+    def option_list(name, current, options):
+        return ''.join(
+            f'<option value="{esc(value)}"{" selected" if str(current) == str(value) else ""}>{esc(label)}</option>'
+            for value, label in options
+        )
+    def bool_select(current, yes_label='開啟', no_label='關閉'):
+        return option_list('', '1' if bool(current) else '0', [('1', yes_label), ('0', no_label)])
+
+    user_options = ''.join(
+        f'<option value="{esc(r[0])}"{" selected" if str(r[0]).strip() == target else ""}>{esc(r[1])}（ID…{esc(str(r[0])[-5:])}）</option>'
+        for r in users
+    ) or '<option value="">尚無使用者資料</option>'
+
+    status_html = f'<div class="user-settings-flash">{esc(msg)}</div>' if msg else ''
+    selected_html = '<div class="user-settings-panel">目前沒有可以管理的使用者。</div>'
+    if chosen:
+        user_id, display_name, last_seen, last_feature, notify, requested, anomaly_notify, limit, cooldown, bypass, quiet, quiet_start, quiet_end, activity_count = chosen
+        last_seen_text = _admin_format_time(last_seen) if last_seen else '尚無紀錄'
+        last_feature_text = _activity_feature_label(last_feature) if last_feature else '—'
+        selected_html = f'''<section class="user-settings-panel">
+  <div class="user-settings-kicker">使用者設定</div>
+  <h2>{esc(display_name)}</h2>
+  <div class="user-settings-meta">最近使用：{esc(last_seen_text)}　·　最近功能：{esc(last_feature_text)}　·　操作次數：{int(activity_count or 0)}</div>
+  <form method="post" action="/web/admin/users" class="user-settings-form">
+    {csrf_hidden_input()}
+    <input type="hidden" name="target" value="{esc(user_id)}">
+    <div class="user-setting-row"><div><b>盤前推播</b><small>每日盤前摘要是否推送給這位使用者</small></div><select name="notify">{bool_select(notify)}</select></div>
+    <div class="user-setting-row"><div><b>推播申請狀態</b><small>標記是否已提出推播申請</small></div><select name="requested">{bool_select(requested, '已申請', '未申請')}</select></div>
+    <div class="user-setting-row"><div><b>異常提醒</b><small>是否接收個股或市場異常通知</small></div><select name="anomaly_notify">{bool_select(anomaly_notify)}</select></div>
+    <div class="user-setting-row"><div><b>每日異常提醒上限</b><small>0 代表不發送；其餘最多 50 則</small></div><select name="anomaly_daily_limit">{option_list('anomaly_daily_limit', limit, [(0,'0 則'),(1,'1 則'),(3,'3 則'),(5,'5 則'),(8,'8 則'),(10,'10 則'),(15,'15 則'),(20,'20 則'),(30,'30 則'),(50,'50 則')])}</select></div>
+    <div class="user-setting-row"><div><b>異常提醒冷卻</b><small>同類提醒再次發送前至少間隔</small></div><select name="anomaly_cooldown_minutes">{option_list('anomaly_cooldown_minutes', cooldown, [(0,'0 分鐘'),(15,'15 分鐘'),(30,'30 分鐘'),(60,'1 小時'),(120,'2 小時'),(240,'4 小時'),(480,'8 小時'),(1440,'24 小時')])}</select></div>
+    <div class="user-setting-row"><div><b>S 級訊號不受額度限制</b><small>重要突破訊號是否略過每日額度限制</small></div><select name="anomaly_s_bypass_limit">{bool_select(bypass)}</select></div>
+    <div class="user-setting-row"><div><b>靜音時段</b><small>啟用後，安靜時間內不發送一般推播</small></div><select name="quiet_hours_enabled">{bool_select(quiet)}</select></div>
+    <div class="user-setting-row"><div><b>靜音開始時間</b><small>以台灣時間計算</small></div><select name="quiet_start">{option_list('quiet_start', quiet_start, [(h, f'{h:02d}:00') for h in range(24)])}</select></div>
+    <div class="user-setting-row"><div><b>靜音結束時間</b><small>到達此時間後恢復通知</small></div><select name="quiet_end">{option_list('quiet_end', quiet_end, [(h, f'{h:02d}:00') for h in range(24)])}</select></div>
+    <button type="submit" class="user-settings-save">儲存這位使用者的設定</button>
+  </form>
+</section>'''
+
+    body = f'''<style>
+.user-settings-wrap{{max-width:800px;margin:0 auto;color:var(--ink,#29372f)}}
+.user-settings-panel{{margin:12px 0;padding:17px;border:1px solid var(--rule,#ded8cd);border-radius:12px;background:var(--paper,#fffefa)}}
+.user-settings-kicker{{font-size:10px;letter-spacing:.1em;font-weight:800;color:#916b54;margin-bottom:7px}}
+.user-settings-panel h2{{margin:0 0 5px;font-size:19px}}
+.user-settings-meta{{font-size:12px;line-height:1.7;color:var(--ink-soft,#667067);padding-bottom:12px;border-bottom:1px solid var(--rule,#e6e0d6)}}
+.user-settings-flash{{margin:12px 0;padding:11px 13px;border:1px solid #d9ded1;border-radius:8px;background:#f1f4ec;color:#3e5943;font-size:13px}}
+.user-settings-form{{margin-top:4px}}
+.user-setting-row{{display:grid;grid-template-columns:minmax(0,1fr) minmax(130px,190px);gap:12px;align-items:center;padding:13px 0;border-bottom:1px solid #ece7df}}
+.user-setting-row:last-of-type{{border-bottom:0}}
+.user-setting-row b{{display:block;font-size:13px;font-weight:800}}
+.user-setting-row small{{display:block;margin-top:4px;font-size:11.5px;line-height:1.6;color:var(--ink-soft,#667067)}}
+.user-setting-row select,.user-settings-filter select{{width:100%;box-sizing:border-box;padding:10px 11px;border:1px solid #d6d2c8;border-radius:8px;background:#fffefa;color:var(--ink,#29372f);font-size:14px}}
+.user-settings-filter{{display:flex;gap:10px;align-items:end}}
+.user-settings-filter label{{flex:1;font-size:12px;font-weight:750;color:var(--ink-soft,#667067)}}
+.user-settings-filter button,.user-settings-save{{border:0;border-radius:8px;padding:11px 15px;background:#315E9B;color:#fff;font-weight:800;font-size:13px}}
+.user-settings-save{{width:100%;margin-top:16px;padding:13px}}
+.user-settings-note{{font-size:12px;line-height:1.8;color:var(--ink-soft,#667067);margin:10px 0}}
+@media(max-width:520px){{.user-settings-panel{{padding:14px}}.user-settings-filter{{align-items:stretch;flex-direction:column}}.user-settings-filter button{{width:100%}}.user-setting-row{{grid-template-columns:minmax(0,1fr) 130px;gap:8px}}.user-setting-row select{{font-size:13px;padding:9px 6px}}}}
+</style>
+<div class="user-settings-wrap">
+  <div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>使用者設定管理</h1><p>調整每位使用者的 LINE 推播與靜音設定。基於個人資料隱私，這裡不顯示任何人的持股明細。</p></div>
+  {status_html}
+  <section class="user-settings-panel"><form class="user-settings-filter" method="get" action="/web/admin/users"><label>選擇使用者<select name="target">{user_options}</select></label><button type="submit">載入設定</button></form><p class="user-settings-note">名單依最近使用時間排列；同名使用者以 ID 尾碼區分。修改後只會影響選取的這個帳號。</p></section>
+  {selected_html}
+  <p class="user-settings-note"><a href="/web/admin">← 返回管理員後台</a></p>
+</div>'''
+    return render_page('使用者管理', body, 'more')
 
 @app.route('/web/admin/notifications')
 @web_login_required
@@ -33327,70 +33434,57 @@ def web_compare(uid):
 @app.route("/web/settings", methods=["GET", "POST"])
 @web_login_required
 def web_settings(uid):
+    # 帳號與使用說明；已移除目前沒有實際用途的提醒門檻。
     msg = ""
-    # LINE WebView 若未保存 Cookie，綁定入口需沿用目前有效的網址 Token。
     _bind_token = request.args.get("t") or request.cookies.get("stockbot_token")
     google_bind_href = "/auth/google?mode=bind" + ("&t=" + quote(str(_bind_token), safe="") if _bind_token else "")
-    if request.method == "POST" and not valid_web_csrf():
-        return respond_page("設定", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "settings")
     if request.method == "POST":
-        updates = {}
-        for k in ("loss_alert_pct", "position_alert_pct"):
-            v = request.form.get(k)
-            updates[k] = int(v) if v and v.isdigit() else None
-        msg = "設定已儲存。" if update_profile(uid, updates) else "儲存失敗，請稍後再試或回報問題。"
+        if not valid_web_csrf():
+            return respond_page("設定", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "settings")
+        msg = "此頁目前沒有可儲存的欄位。"
 
-    p = get_profile(uid)
-    th = get_thresholds(p)
+    admin_users_panel = ""
+    if is_admin(uid):
+        admin_users_panel = (
+            '<section class="settings-panel settings-admin-panel">'
+            '<div class="settings-panel-kicker">管理員專用</div>'
+            '<h2>其他使用者設定</h2>'
+            '<p>查看與調整其他使用者的 LINE 盤前推播、異常提醒、每日額度及靜音時段。這裡不會顯示或修改對方的持股內容。</p>'
+            '<a class="settings-admin-link" href="/web/admin/users">開啟使用者設定管理　→</a>'
+            '</section>'
+        )
 
-    def sel(key, current, options):
-        return "".join(
-            f'<option value="{v}"{" selected" if str(current) == str(v) else ""}>{t}</option>'
-            for v, t in options)
-
-    body = f"""
-{f'<div class="msg">{msg}</div>' if msg else ''}
-<form method="post">
-
-<div class="section-head"><h2>提醒門檻</h2>
-  <span class="section-note">組合分析頁會依此判斷</span></div>
-<div class="fields" style="margin-bottom:6px">
-  <div><label>帳面虧損達多少時提醒</label>
-    <select name="loss_alert_pct">
-      <option value="">使用預設（{th['loss']}%）</option>
-      {sel('loss_alert_pct', p.get('loss_alert_pct'),
-           [(10, '10%'), (15, '15%'), (20, '20%'), (30, '30%')])}
-    </select></div>
-  <div><label>單一持股佔比超過多少時提醒</label>
-    <select name="position_alert_pct">
-      <option value="">使用預設（{th['position']}%）</option>
-      {sel('position_alert_pct', p.get('position_alert_pct'),
-           [(20, '20%'), (25, '25%'), (30, '30%'), (40, '40%')])}
-    </select></div>
-</div>
-{'<div class="hint">你表示尚無實際回檔經驗，預設門檻已自動調得較保守。</div>'
- if th['conservative'] else ''}
-
-<button type="submit">儲存設定</button>
-</form>
-
-<div class="section-head" style="margin-top:24px"><h2>帳號登入方式</h2>
-  <span class="section-note">跨裝置同步</span></div>
-<div class="hint">綁定 Google 後，可使用 LINE 登入網址或 Google 登入同一個帳號；不會另建一份持股資料。</div>
-<a href="{google_bind_href}" style="display:block;text-align:center;text-decoration:none;padding:12px;border-radius:12px;background:#315E9B;color:#fff;font-weight:800;margin-top:10px">綁定 Google 帳號</a>
-
-<div class="hint" style="margin-top:22px">
-  <b>關於交易成本</b><br>
-  手續費與證交稅改成在交易當下直接填寫——買進時填在「新增持股」的手續費欄，
-  賣出時填在賣出面板裡。只有你看得到對帳單上的實際金額，
-  用填的比用折扣推算準確得多。<br><br>
-  持股頁的「淨損益」是未實現的估計值（假如現在賣掉大概拿到多少），
-  以牌價 0.1425% 與證交稅試算；實際賣出時一律以你填的數字為準。
-</div>
-
-"""
+    body = f'''<style>
+.settings-page{{max-width:760px;margin:0 auto}}
+.settings-panel{{margin:12px 0;padding:18px;border:1px solid var(--rule,#ded8cd);border-radius:12px;background:var(--paper,#fffefa);color:var(--ink,#29372f)}}
+.settings-panel-kicker{{font-size:10px;letter-spacing:.1em;font-weight:800;color:#916b54;margin-bottom:8px}}
+.settings-panel h2{{font-size:18px;margin:0 0 8px;font-weight:800}}
+.settings-panel p{{margin:0;color:var(--ink-soft,#596257);font-size:13px;line-height:1.85}}
+.settings-panel .settings-admin-link{{display:block;margin-top:13px;padding:12px 14px;border:1px solid #d8d7cc;border-radius:8px;background:#f5f4ee;color:#334737;text-decoration:none;font-size:13px;font-weight:800;text-align:center}}
+.settings-muted{{font-size:12px!important;color:var(--ink-faint,#72766c)!important}}
+</style>
+<div class="settings-page">
+  {f'<div class="msg">{html.escape(msg)}</div>' if msg else ''}
+  <section class="settings-panel">
+    <div class="settings-panel-kicker">帳號與跨裝置同步</div>
+    <h2>帳號登入方式</h2>
+    <p>綁定 Google 後，可以從不同裝置登入同一個帳號，繼續使用原有投資資料；不會另外建立一份持股紀錄。</p>
+    <a href="{html.escape(google_bind_href, quote=True)}" style="display:block;text-align:center;text-decoration:none;padding:12px 14px;border-radius:8px;background:#315E9B;color:#fff;font-weight:800;margin-top:12px">綁定 Google 帳號</a>
+  </section>
+  <section class="settings-panel">
+    <div class="settings-panel-kicker">LINE 通知</div>
+    <h2>推播與靜音設定</h2>
+    <p>LINE 推播可直接在 Bot 對話中管理：輸入「推播開」或「推播關」調整每日盤前推播；輸入「靜音 23 07」設定靜音時段，輸入「靜音關」即可關閉。異常提醒依你的 Bot 權限與既有設定運作。</p>
+  </section>
+  {admin_users_panel}
+  <section class="settings-panel">
+    <div class="settings-panel-kicker">交易紀錄說明</div>
+    <h2>關於交易成本</h2>
+    <p>手續費與證交稅請在交易當下直接填寫：買進時填在「新增持股」的手續費欄，賣出時填在賣出面板。以對帳單上的實際金額為準，比用折扣推算準確。</p>
+    <p style="margin-top:10px">持股頁的「淨損益」是未實現的估計值，會依牌價手續費與證交稅試算；實際賣出時一律以你填寫的交易成本為準。</p>
+  </section>
+</div>'''
     return render_page("設定", body, nav_active="settings")
-
 
 
 def _render_report_lines_html(text, title=None):
@@ -34287,7 +34381,7 @@ def web_more(uid):
 
 <div class="more-group">
   <div class="more-group-title">我的設定</div>
-  <a class="more-item" href="/web/settings"><span class="more-icon">⚙</span><span><b>提醒門檻</b><small>調整損失與持股集中度提醒</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/settings"><span class="more-icon">⚙</span><span><b>帳號設定</b><small>Google 綁定、LINE 通知說明與交易成本</small></span><strong>›</strong></a>
 </div>
 
 <div class="more-group">
@@ -36267,7 +36361,7 @@ def web_portfolio(uid):
             str(request.args.get("trend_benchmark") or "1"),
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
                          if k not in {"t", "fragment", "_nav", "refresh"})),
-            "empty-home-welcome-v12-clean-editorial")
+            "empty-home-welcome-v13-quiet-editorial")
         _home_fast_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_home_fast_body = _web_fragment_cache_get(
             "portfolio-fast", _home_fast_fragment_key, _home_fast_ttl)
@@ -36294,42 +36388,42 @@ def web_portfolio(uid):
         # 新手引導規則：只要目前沒有持股，就顯示歡迎／下一步引導。
         # 不依賴「第一次登入」旗標，因此新註冊帳號與既有但尚未新增持股的帳號都能看見。
         body = r"""<style>
-.welcome-editorial{position:relative;isolation:isolate;max-width:780px;margin:17px auto 28px;padding:clamp(20px,4.5vw,32px);overflow:hidden;border:1px solid #D2C5AF;border-radius:5px 30px 5px 30px;background:radial-gradient(ellipse at 92% 7%,rgba(172,112,77,.095),transparent 26%),linear-gradient(148deg,#FFFCF6 0%,#F4EBDD 62%,#EAE8D9 100%);box-shadow:0 12px 30px rgba(64,60,43,.085);color:#26372D}
-.welcome-editorial:before{content:"";position:absolute;z-index:-1;right:-40px;top:-70px;width:210px;height:210px;border:1px solid rgba(103,125,92,.24);border-radius:47% 53% 46% 54%;transform:rotate(28deg);box-shadow:0 0 0 14px rgba(103,125,92,.035),0 0 0 34px rgba(103,125,92,.025)}
-.welcome-editorial:after{content:"✳";position:absolute;right:17px;top:24px;color:rgba(167,100,74,.18);font-size:42px;line-height:1;pointer-events:none}
-.welcome-editorial-topline{display:flex;align-items:center;justify-content:space-between;gap:12px;position:relative;padding-bottom:12px;margin-bottom:19px;border-bottom:1px solid #DCD2C0;color:#6B795F;font-size:10px;letter-spacing:.15em;font-weight:900}
-.welcome-editorial-topline span:last-child{font-family:Georgia,"Noto Serif TC","Songti TC",serif;letter-spacing:.04em;color:#9B674D;font-weight:700}
-.welcome-editorial-kicker{display:flex;align-items:center;gap:8px;margin-bottom:10px;color:#8F654E;font-size:10px;letter-spacing:.16em;font-weight:900}
-.welcome-editorial-kicker:before{content:"";width:22px;border-top:1px solid #A9674E}
-.welcome-editorial h2{position:relative;max-width:600px;margin:0 0 11px;color:#2B3B30;font-family:"Noto Serif TC","Songti TC","PMingLiU",serif;font-size:clamp(25px,5.2vw,34px);line-height:1.48;font-weight:850;letter-spacing:.015em}
-.welcome-editorial h2 em{font-style:normal;color:#9F6148}
-.welcome-editorial-intro{position:relative;max-width:620px;margin:0 0 22px;padding-left:13px;border-left:2px solid #B77A5B;color:#405546;font-size:13.5px;line-height:1.95;font-weight:650}
-.welcome-editorial-rule{display:flex;align-items:center;gap:10px;margin:0 0 12px;color:#777B6A;font-family:Georgia,"Noto Serif TC",serif;font-size:11px}
-.welcome-editorial-rule:after{content:"";height:1px;flex:1;background:#DCD2C0}
-.welcome-editorial-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.welcome-editorial-action{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0;min-height:155px;padding:15px 14px;border:1px solid #D8DCCF;border-radius:4px 15px 4px 15px;background:rgba(255,254,249,.8);text-decoration:none!important;color:#2F4235!important;transition:transform .15s,border-color .15s,background .15s}
-.welcome-editorial-action:hover{transform:translateY(-2px);border-color:#93A58A;background:#FFFFFF}
-.welcome-editorial-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:#E8EBDD;color:#58704F;font-size:19px}
-.welcome-editorial-action strong{font-family:"Noto Serif TC","Songti TC",serif;font-size:15px;line-height:1.45;font-weight:900}
-.welcome-editorial-action small{color:#5F6C5B;font-size:12px;line-height:1.75;font-weight:600}
-.welcome-editorial-cta{margin-top:auto;padding-top:4px;color:#985D44;font-size:12px;font-weight:900}
-.welcome-editorial-install{display:flex;align-items:center;gap:12px;margin-top:12px;padding:13px 14px;border:1px solid #D0D9C9;border-left:3px solid #7B8C6D;border-radius:4px 14px 4px 14px;background:#EEF1E7;text-decoration:none!important;color:#354B39!important}
-.welcome-editorial-install-icon{flex:0 0 auto;font-size:22px;color:#6C805D}
+/* v13: 空持股新手首頁。只保留紙白底、清楚排版與細邊框；不使用星號貼圖或幾何裝飾。 */
+.welcome-editorial{position:relative;max-width:760px;margin:16px auto 25px;padding:clamp(20px,4.2vw,30px);overflow:hidden;border:1px solid #DED8CD;border-radius:11px;background:#FBF9F4;box-shadow:none;color:#29372F}
+.welcome-editorial:before,.welcome-editorial:after{content:none!important;display:none!important}
+.welcome-editorial-topline{display:flex;align-items:center;justify-content:space-between;gap:12px;position:relative;padding-bottom:12px;margin-bottom:19px;border-bottom:1px solid #E5DED2;color:#727569;font-size:10px;letter-spacing:.09em;font-weight:750}
+.welcome-editorial-topline span:last-child{font-family:system-ui,-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",sans-serif;letter-spacing:.04em;color:#8D6C58;font-weight:700}
+.welcome-editorial-kicker{display:flex;align-items:center;gap:9px;margin-bottom:10px;color:#8F684F;font-size:11px;letter-spacing:.07em;font-weight:750}
+.welcome-editorial-kicker:before{content:"";width:22px;border-top:1px solid #B58A70}
+.welcome-editorial h2{position:relative;max-width:590px;margin:0 0 12px;color:#29372F;font-family:"Noto Serif TC","Songti TC","PMingLiU",serif;font-size:clamp(26px,4.9vw,35px);line-height:1.5;font-weight:760;letter-spacing:0}
+.welcome-editorial h2 em{font-style:normal;color:#98654D}
+.welcome-editorial-intro{position:relative;max-width:620px;margin:0 0 23px;color:#4F5B50;font-size:13.5px;line-height:1.95;font-weight:500}
+.welcome-editorial-rule{display:flex;align-items:center;gap:10px;margin:0 0 12px;color:#676B60;font-size:12px;font-weight:700}
+.welcome-editorial-rule:after{content:"";height:1px;flex:1;background:#E5DED2}
+.welcome-editorial-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}
+.welcome-editorial-action{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0;min-height:148px;padding:16px;border:1px solid #E1DCD2;border-radius:8px;background:#FFFEFB;text-decoration:none!important;color:#303E33!important;transition:border-color .15s,background .15s}
+.welcome-editorial-action:hover{border-color:#B9BBAE;background:#FFFFFF}
+.welcome-editorial-icon{display:block;width:auto;height:auto;padding:0 0 6px;border-bottom:1px solid #E9E1D6;border-radius:0;background:transparent;color:#9B7058;font-size:10px;letter-spacing:.12em;font-weight:750}
+.welcome-editorial-action strong{font-family:"Noto Serif TC","Songti TC",serif;font-size:15px;line-height:1.5;font-weight:800;letter-spacing:0}
+.welcome-editorial-action small{color:#596257;font-size:12px;line-height:1.8;font-weight:500}
+.welcome-editorial-cta{margin-top:auto;padding-top:4px;color:#8F5B43;font-size:12px;font-weight:750}
+.welcome-editorial-install{display:flex;align-items:center;gap:12px;margin-top:12px;padding:13px 14px;border:1px solid #E0DDD2;border-radius:8px;background:#F5F4EE;text-decoration:none!important;color:#354337!important}
+.welcome-editorial-install-icon{flex:0 0 auto;font-size:17px;color:#697661}
 .welcome-editorial-install-copy{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
-.welcome-editorial-install-copy strong{font-size:13px;line-height:1.5;font-weight:900}
-.welcome-editorial-install-copy small{color:#566953;font-size:11.5px;line-height:1.65;font-weight:600}
-.welcome-editorial-install-cta{flex:0 0 auto;color:#90563F;font-size:12px;font-weight:900;white-space:nowrap}
-.welcome-editorial-guide{margin-top:11px;border:1px solid #DED6C7;border-radius:12px;background:rgba(255,254,249,.78);overflow:hidden}
-.welcome-editorial-guide summary{padding:13px 14px;cursor:pointer;color:#405843;font-size:12.5px;font-weight:850;list-style:none}
+.welcome-editorial-install-copy strong{font-size:13px;line-height:1.55;font-weight:800}
+.welcome-editorial-install-copy small{color:#5A6358;font-size:11.5px;line-height:1.75;font-weight:500}
+.welcome-editorial-install-cta{flex:0 0 auto;color:#8F5B43;font-size:12px;font-weight:750;white-space:nowrap}
+.welcome-editorial-guide{margin-top:11px;border:1px solid #E0DDD2;border-radius:8px;background:#FFFEFB;overflow:hidden}
+.welcome-editorial-guide summary{padding:13px 14px;cursor:pointer;color:#3D4B3E;font-size:12.5px;font-weight:750;list-style:none}
 .welcome-editorial-guide summary::-webkit-details-marker{display:none}
-.welcome-editorial-guide summary:after{content:"＋";float:right;color:#9F6148}
+.welcome-editorial-guide summary:after{content:"＋";float:right;color:#98654D}
 .welcome-editorial-guide[open] summary:after{content:"－"}
-.welcome-editorial-guide-body{padding:0 14px 12px;color:#4D614F;font-size:12px;line-height:1.85}
+.welcome-editorial-guide-body{padding:0 14px 12px;color:#4D5B4E;font-size:12px;line-height:1.85}
 .welcome-editorial-guide-body p{margin:7px 0}
-.welcome-editorial-footnote{margin:15px 1px 0;padding-top:12px;border-top:1px solid #DCD2C0;color:#596653;font-size:11.5px;line-height:1.8;font-weight:600}
-@media(max-width:400px){.welcome-editorial{padding:17px 15px;border-radius:4px 18px 4px 18px}.welcome-editorial:after{right:12px;top:20px;font-size:32px}.welcome-editorial-actions{gap:8px}.welcome-editorial-action{padding:12px 10px;min-height:168px}.welcome-editorial-action strong{font-size:13.5px}.welcome-editorial-action small{font-size:11px}.welcome-editorial-install{align-items:flex-start;gap:9px;padding:12px 10px}.welcome-editorial-install-cta{font-size:11px}.welcome-editorial-topline{font-size:9px}}
+.welcome-editorial-footnote{margin:15px 1px 0;padding-top:12px;border-top:1px solid #E5DED2;color:#62675C;font-size:11.5px;line-height:1.8;font-weight:500}
+@media(max-width:520px){.welcome-editorial{margin:13px auto 22px;padding:20px 15px;border-radius:9px}.welcome-editorial-topline{font-size:9px;margin-bottom:17px}.welcome-editorial h2{font-size:28px;line-height:1.5}.welcome-editorial-intro{font-size:13px;margin-bottom:19px}.welcome-editorial-actions{grid-template-columns:1fr;gap:8px}.welcome-editorial-action{min-height:0;padding:13px;display:grid;grid-template-columns:30px minmax(0,1fr);column-gap:10px;row-gap:4px}.welcome-editorial-icon{grid-row:1/4;align-self:start;padding-top:2px;border:0}.welcome-editorial-action strong,.welcome-editorial-action small,.welcome-editorial-cta{grid-column:2}.welcome-editorial-cta{margin-top:1px}.welcome-editorial-install{align-items:flex-start;gap:9px;padding:12px 11px}.welcome-editorial-install-cta{font-size:11px;white-space:normal}}
 </style>
-<section class="welcome-editorial" data-empty-home-version="v12-clean-editorial" aria-label="新手開始使用">
+<section class="welcome-editorial" data-empty-home-version="v13-quiet-editorial" aria-label="新手開始使用">
   <div class="welcome-editorial-topline"><span>TAIWAN STOCK BOT · 投資筆記</span><span>新手指南</span></div>
   <div class="welcome-editorial-kicker">開始前，先選一條路</div>
   <h2>先記下持股與想法，<br><em>再慢慢整理自己的方法。</em></h2>
@@ -36381,7 +36475,7 @@ def web_portfolio(uid):
                          for p in positions)),
             str(request.args.get("trend_period") or "3m"),
             str(request.args.get("trend_benchmark") or "1"),
-             "empty-home-welcome-v12-clean-editorial")
+             "empty-home-welcome-v13-quiet-editorial")
         # 首頁已載入完整摘要；短時間內切回先用既有內容，避免重新抓六份共享資料。
         _home_cache_ttl = 180.0 if _is_taiwan_intraday_window() else 600.0
         _cached_home_body = _web_fragment_cache_get(
