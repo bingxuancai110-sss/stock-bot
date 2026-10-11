@@ -22650,6 +22650,10 @@ def render_page(title, body, nav_active=None, user_name=None):
     nav = preserve_web_token(nav)
     bottom_nav = preserve_web_token(bottom_nav)
     page_extra_css = WORKBENCH_CSS if title == "選股工作台" else ""
+    # 未登入入口是獨立的註冊／登入頁，不顯示登入後的底部分頁或「綁定 Google」按鈕，避免新使用者誤以為已登入。
+    if title == "登入台股 BOT":
+        bottom_nav = ""
+        page_extra_css += "\n.auth-entry-page .app-account-link,.app-account-link.auth-entry-hide{display:none!important}"
     body = inject_csrf_inputs(body)
     body = preserve_web_token(body)
     page_back = ""
@@ -22725,7 +22729,7 @@ def render_page(title, body, nav_active=None, user_name=None):
 @keyframes nav-progress-sweep{{0%{{transform:translateX(0)}}50%{{transform:translateX(85%)}}100%{{transform:translateX(0)}}}}
 @media(prefers-reduced-motion:reduce){{#page-nav-loader,#page-nav-loader .nav-loader-bar,#page-nav-loader .nav-loader-bar:after{{transition:none!important;animation:none!important}}}}
 </style>
-</head><body>
+</head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
     <div class="nav-loader-head">
@@ -32266,12 +32270,16 @@ def web_leaderboard(uid):
         panel_style = "" if board_name == active_board else "display:none"
         if not row:
             if me_is_waiting:
-                body = ("已報名，現在是<b>排隊觀察中</b>；有效每日快照達標前不列正式名次，"
-                        "也不會提前計算或公開最佳持股。")
+                body = (f"<b>你已成功加入排行榜，目前正在排隊觀察。</b><br>"
+                        f"系統會累積有效的每日績效快照；達到 {LEADERBOARD_MIN_SNAPSHOTS} 筆後，才會列入正式名次。"
+                        "等待期間不會捏造排名，也不會提前公開你的持股明細。")
             elif me:
-                body = "已加入排行榜，正在累積有效每日快照；資料不足時不先捏造排名或報酬。"
+                body = (f"<b>你已加入排行榜，正在累積績效資料。</b><br>"
+                        f"有效每日快照累積達 {LEADERBOARD_MIN_SNAPSHOTS} 筆後，這裡就會顯示你的正式排名、期間報酬與相對大盤表現。"
+                        "資料尚不足時會先顯示狀態，不會用猜測數字代替。")
             else:
-                body = "你尚未加入排行榜。加入後會從加入日開始累積自己的排名與報酬曲線。"
+                body = ("<b>你還沒加入排行榜。</b><br>加入後就會從加入日開始累積自己的績效與排名曲線，"
+                        "<b>不需要先有持股</b>。請往下找到「加入排行榜」，填寫顯示暱稱即可開始。")
             return f'<div class="rank-situation-panel" data-situation-panel="{board_name}" style="{panel_style}"><div class="rank-situation-empty">{body}</div></div>'
 
         key = {"short": "m30", "long": "ret", "season": "season_ret", "month": "month_ret"}[board_name]
@@ -32307,24 +32315,32 @@ def web_leaderboard(uid):
 
     situation_panels = "".join(render_situation_panel(name) for name in ("short", "long", "season"))
     leaderboard_guide_html = f'''<section class="rank-explainer" aria-label="排行榜規則說明">
-  <div class="rank-explainer-kicker">HOW RANKING WORKS</div>
-  <h2>排行榜怎麼看？</h2>
-  <p class="rank-explainer-lead">排名依所選榜單的期間報酬率排序；其他指標用來幫助你理解報酬背後的風險與穩定度。這不是獲利保證，也不代表未來績效。</p>
-  <div class="rank-explainer-periods">
-    <div><b>短線｜近 30 天</b><span>所有參賽者用相同的近 30 天區間比較，觀察近期表現。</span></div>
-    <div><b>長線｜加入後累計</b><span>從各自加入排行榜的起算日累積，加入日期不同，觀察期間也不同。</span></div>
-    <div><b>賽季｜本季</b><span>每季重新起算，依本季有效交易日的績效比較。</span></div>
-  </div>
-  <div class="rank-explainer-metrics">
-    <b>卡片上的指標代表什麼？</b>
-    <ul>
-      <li><strong>報酬率：</strong>目前所選期間的組合累積表現，也是榜單排序依據。</li>
-      <li><strong>超額報酬：</strong>相對同期大盤多賺或少賺多少；不是單看正報酬。</li>
-      <li><strong>最大回檔：</strong>期間內從高點到低點的最大下跌幅度，幫助觀察風險。</li>
-      <li><strong>穩定度：</strong>依期間日報酬波動提供的輔助觀察；資料不足時不顯示評級。</li>
-    </ul>
-  </div>
-  <div class="rank-explainer-bottom"><b>如何參加？</b>往下找到「加入排行榜」，填寫顯示暱稱即可，<b>不需要先有持股</b>。加入後先進入排隊觀察；每日有效快照累積達到 {LEADERBOARD_MIN_SNAPSHOTS} 筆後，才納入正式名次。你可以選擇是否公開部分持股資訊；不勾選時，榜上只顯示績效，不顯示持股明細。</div>
+  <details class="rank-explainer-details">
+    <summary>
+      <span class="rank-explainer-kicker">HOW RANKING WORKS</span>
+      <span class="rank-explainer-summary-title">排行榜怎麼看？</span>
+      <span class="rank-explainer-summary-lead">先看懂期間、報酬率與排隊規則，再比較績效。</span>
+      <span class="rank-explainer-toggle">查看完整規則 <span aria-hidden="true">＋</span></span>
+    </summary>
+    <div class="rank-explainer-content">
+      <p class="rank-explainer-lead">排名依所選榜單的期間報酬率排序；其他指標用來幫助你理解報酬背後的風險與穩定度。這不是獲利保證，也不代表未來績效。</p>
+      <div class="rank-explainer-periods">
+        <div><b>短線｜近 30 天</b><span>所有參賽者用相同的近 30 天區間比較，觀察近期表現。</span></div>
+        <div><b>長線｜加入後累計</b><span>從各自加入排行榜的起算日累積，加入日期不同，觀察期間也不同。</span></div>
+        <div><b>賽季｜本季</b><span>每季重新起算，依本季有效交易日的績效比較。</span></div>
+      </div>
+      <div class="rank-explainer-metrics">
+        <b>卡片上的指標代表什麼？</b>
+        <ul>
+          <li><strong>報酬率：</strong>目前所選期間的組合累積表現，也是榜單排序依據。</li>
+          <li><strong>超額報酬：</strong>相對同期大盤多賺或少賺多少；不是單看正報酬。</li>
+          <li><strong>最大回檔：</strong>期間內從高點到低點的最大下跌幅度，幫助觀察風險。</li>
+          <li><strong>穩定度：</strong>依期間日報酬波動提供的輔助觀察；資料不足時不顯示評級。</li>
+        </ul>
+      </div>
+      <div class="rank-explainer-bottom"><b>如何參加？</b>往下找到「加入排行榜」，填寫顯示暱稱即可，<b>不需要先有持股</b>。加入後先進入排隊觀察；每日有效快照累積達到 {LEADERBOARD_MIN_SNAPSHOTS} 筆後，才納入正式名次。你可以選擇是否公開部分持股資訊；不勾選時，榜上只顯示績效，不顯示持股明細。</div>
+    </div>
+  </details>
 </section>'''
     my_rank_html = f'''<section class="rank-situation">
   <div class="rank-situation-title"><h2>🏆 我的排名戰況</h2>
@@ -32403,11 +32419,17 @@ def web_leaderboard(uid):
 .settlement-kicker{font-size:9px;letter-spacing:.18em;color:#9a7736;font-weight:900}.settlement-wrap h2{margin:5px 0 4px}.settlement-wrap>p{margin:0 0 12px;color:#766a55;font-size:12px;line-height:1.6}
 .settlement-report-card{border:1px solid #e4d2a5;border-radius:16px;background:#fffef8;padding:14px;margin-top:10px}.settlement-report-top{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d6538;font-weight:900}.settlement-report-top small{color:#8b8f98;font-weight:600}.settlement-report-title{margin-top:12px;font-size:15px;display:flex;align-items:center;gap:5px}.settlement-report-title b{font-size:12px;color:#7c8796;font-weight:700}.settlement-report-title em{margin-left:auto;font-style:normal;color:#9a8a6d;font-size:10.5px}.scorecard-rank{font-size:20px;font-weight:950;color:#18263a}.settlement-report-main{text-align:center;padding:9px 0 11px}.settlement-report-main strong{display:block;font-size:34px;line-height:1.05;font-weight:950}.settlement-report-main span{display:block;margin-top:5px;color:#7b8591;font-size:12px}.settlement-report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.settlement-report-grid div{padding:9px;border-radius:11px;background:#faf8f0;border:1px solid #eee6d5}.settlement-report-grid small{display:block;color:#7f8997;font-size:10.5px}.settlement-report-grid b{display:block;margin-top:3px;font-size:17px}.settlement-report-grid span{display:block;margin-top:2px;color:#9aa1aa;font-size:9.5px}.settlement-report-period{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding:9px 10px;border-radius:10px;background:#fbf8ef;color:#8a7b60;font-size:10.5px}.settlement-report-period b{color:#5d6570;font-size:10.5px}.settlement-report-foot{display:flex;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid #eee6d5;color:#7b8794;font-size:10.5px}.scorecard-chart{margin:4px 0 12px;padding:10px 10px 7px;border:1px solid #e8edf2;border-radius:12px;background:#fbfcfd}.scorecard-chart-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;color:#344255;font-size:11px}.scorecard-chart-head span{color:#8b97a5;font-weight:600}.scorecard-chart svg{display:block;width:100%;height:auto}.scorecard-chart-legend{display:flex;gap:14px;justify-content:flex-end;color:#8b97a5;font-size:9.5px}.scorecard-chart-legend span{display:flex;align-items:center;gap:4px}.scorecard-chart-legend i{display:inline-block;width:15px;height:3px;border-radius:3px}.legend-user{background:#1769aa}.legend-market{background:#a7b0ba}.scorecard-chart-empty{margin:4px 0 12px;padding:22px 10px;text-align:center;border:1px dashed #dfe5eb;border-radius:12px;color:#8b97a5;font-size:11px;background:#fbfcfd}
 .leaderboard-history{margin-top:18px}.history-tabs{margin-bottom:10px}.history-tabs button{min-width:86px}.history-note{font-size:12px;color:var(--ink-soft);margin:0 0 10px}.history-grid{display:grid;gap:10px}.history-period{border:1px solid var(--rule);border-radius:12px;background:var(--paper);overflow:hidden}.history-period-head{display:flex;justify-content:space-between;padding:10px 12px;background:var(--paper-2,#f7f3ea);border-bottom:1px solid var(--rule)}.history-period-head span{font-size:11px;color:var(--ink-faint)}.history-rank-row{display:grid;grid-template-columns:28px 1fr auto;gap:8px;padding:9px 12px;border-bottom:1px solid rgba(120,130,140,.12)}.history-rank-row:last-child{border-bottom:0}.history-rank{font-weight:900;color:var(--ink-faint)}.history-name{font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-empty{padding:12px;color:var(--ink-faint);font-size:12px}.history-more{border-top:1px solid var(--rule);background:var(--paper)}.history-more summary{list-style:none;cursor:pointer;padding:11px 12px;color:#1769aa;font-size:12px;font-weight:800;text-align:center}.history-more summary::-webkit-details-marker{display:none}.history-more summary:before{content:"⌄ ";font-size:13px}.history-more[open] summary:before{content:"⌃ "}.history-more-body{border-top:1px solid rgba(120,130,140,.12)}@media(min-width:720px){.history-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-/* Rank explainer: accessible contrast on mobile and inside the app shell. */
-.rank-explainer{margin:0 0 16px;padding:17px 15px;border:1px solid #C9D9E5;border-radius:16px;background:#FFFFFF;color:#233D51;box-shadow:0 4px 14px rgba(31,63,87,.05)}
+/* Rank explainer: compact by default; full rules expand on demand. */
+.rank-explainer{margin:0 0 16px;padding:0;border:1px solid #C9D9E5;border-radius:16px;background:#FFFFFF;color:#233D51;box-shadow:0 4px 14px rgba(31,63,87,.05);overflow:hidden}
+.rank-explainer-details>summary{list-style:none;cursor:pointer;padding:15px;display:flex;flex-direction:column;gap:5px}
+.rank-explainer-details>summary::-webkit-details-marker{display:none}
 .rank-explainer-kicker{font-size:10px;letter-spacing:.15em;font-weight:900;color:#315E80}
-.rank-explainer h2{margin:5px 0 7px;font-size:21px;line-height:1.3;color:#172B40}
-.rank-explainer-lead{margin:0 0 13px;font-size:13px;line-height:1.75;color:#425D72}
+.rank-explainer-summary-title{font-size:20px;line-height:1.3;font-weight:900;color:#172B40}
+.rank-explainer-summary-lead{font-size:12.5px;line-height:1.65;color:#425D72}
+.rank-explainer-toggle{display:flex;align-items:center;justify-content:space-between;margin-top:5px;padding:9px 11px;border-radius:10px;background:#EDF4F8;color:#315E80;font-size:12px;font-weight:850}
+.rank-explainer-details[open] .rank-explainer-toggle span{transform:rotate(45deg)}
+.rank-explainer-content{padding:0 15px 15px;border-top:1px solid #DFE8EF}
+.rank-explainer-lead{margin:12px 0 13px;font-size:13px;line-height:1.75;color:#425D72}
 .rank-explainer-periods{display:grid;grid-template-columns:1fr;gap:8px}
 .rank-explainer-periods>div{padding:10px 11px;border:1px solid #DFE8EF;border-radius:10px;background:#F5F8FB}
 .rank-explainer-periods b{display:block;color:#1F4F70;font-size:13px;margin-bottom:3px}
@@ -32419,7 +32441,8 @@ def web_leaderboard(uid):
 .rank-explainer-metrics strong{color:#243F55}
 .rank-explainer-bottom{margin-top:13px;padding:11px 12px;border-left:3px solid #315E80;border-radius:0 9px 9px 0;background:#EDF4F8;color:#314F65;font-size:12px;line-height:1.75}
 /* The old empty-state text was too pale on the light card in some theme overrides. */
-#app-page-content .rank-situation .rank-situation-empty,.rank-situation .rank-situation-empty{color:#344F63!important;font-size:13px!important;line-height:1.75!important;font-weight:650!important}
+#app-page-content .rank-situation .rank-situation-empty,.rank-situation .rank-situation-empty{color:#344F63!important;font-size:13px!important;line-height:1.85!important;font-weight:650!important;padding:16px!important;background:#F5F8FB!important;border:1px solid #D9E4EC!important;border-radius:13px!important;text-align:left!important}
+#app-page-content .rank-situation .rank-situation-empty b,.rank-situation .rank-situation-empty b{color:#173F5B!important;font-weight:900!important}
 @media(min-width:720px){.rank-explainer-periods{grid-template-columns:repeat(3,minmax(0,1fr))}}
 </style><script>(function(){var t=document.getElementById('historyTabs');if(!t)return;t.addEventListener('click',function(e){var b=e.target.closest('button[data-history]');if(!b)return;var k=b.getAttribute('data-history');t.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});document.querySelectorAll('[data-history-panel]').forEach(function(x){x.style.display=x.getAttribute('data-history-panel')===k?'':'none'})})})();</script>
 <style id="v258-rank-visual-system">
