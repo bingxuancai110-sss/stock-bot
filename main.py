@@ -6643,12 +6643,13 @@ def _refresh_home_intraday_payload_sync(uid):
                 "basis_text": exposure_label(row),
                 "realized_pl": realized_value,
             })
-        # A partial sum is not the portfolio's total return. Individual fresh quote rows can
-        # still be listed, but the aggregate stays unavailable until every holding is current.
+        # 直接以有效行情算出的全部正負貢獻加總；不能因為另有少數股票缺價，
+        # 就把已經存在的正負貢獻與組合數字一起改成「資料不足」。
+        # stale_names / stale_count 仍會揭露缺漏，提醒這是目前有效行情的貢獻合計。
         stale_codes = [code for code in codes if code not in fresh_contribution_quotes]
         stale_names = [stock_display_name(code, {}, None) for code in stale_codes]
         portfolio_pct = (sum(item["contribution"] for item in contribution_rows)
-                         if contribution_rows and not stale_codes else None)
+                         if contribution_rows else None)
         positive = sorted((item for item in contribution_rows if item["contribution"] > 0),
                           key=lambda item: item["contribution"], reverse=True)[:5]
         negative = sorted((item for item in contribution_rows if item["contribution"] < 0),
@@ -34181,6 +34182,75 @@ body #app-page-content .rank-situation .rank-situation-title .rank-situation-bad
   #app-page-content .rank-rows .rank-card .rank-number,
   .rank-rows .rank-card .rank-number { width:31px !important; min-width:31px !important; max-width:31px !important; }
 }
+
+/* V261: final mobile leaderboard override. Treat narrow Safari viewports as phones,
+   even when the embedded page reports a wider CSS viewport. */
+@media (max-width: 760px) {{
+  #app-page-content .rank-rows .rank-card .rank-meta,
+  .rank-rows .rank-card .rank-meta {{
+    display:grid !important;
+    grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+    gap:10px 14px !important;
+    margin:12px 0 0 42px !important;
+    width:auto !important;
+    align-items:start !important;
+  }}
+  #app-page-content .rank-rows .rank-card .rank-meta > span,
+  .rank-rows .rank-card .rank-meta > span {{
+    display:flex !important;
+    flex-direction:column !important;
+    align-items:flex-start !important;
+    min-width:0 !important;
+    max-width:100% !important;
+    white-space:normal !important;
+    overflow-wrap:anywhere !important;
+    word-break:normal !important;
+    line-height:1.4 !important;
+  }}
+  #app-page-content .rank-rows .rank-card .rank-meta > span > em,
+  .rank-rows .rank-card .rank-meta > span > em {{
+    display:block !important;
+    margin:0 !important;
+    width:100% !important;
+    white-space:normal !important;
+  }}
+  #app-page-content .rank-rows .rank-card .rank-meta .num,
+  .rank-rows .rank-card .rank-meta .num {{
+    white-space:normal !important;
+    overflow-wrap:anywhere !important;
+  }}
+  #app-page-content .rank-rows .rank-card .rank-detail,
+  #app-page-content .rank-rows .rank-card .rank-private,
+  .rank-rows .rank-card .rank-detail,
+  .rank-rows .rank-card .rank-private {{
+    margin-left:0 !important;
+    width:100% !important;
+    max-width:100% !important;
+    box-sizing:border-box !important;
+  }}
+  #app-page-content .rank-rows .rank-card > .rank-detail > summary,
+  .rank-rows .rank-card > .rank-detail > summary {{
+    display:flex !important;
+    align-items:center !important;
+    justify-content:space-between !important;
+    gap:10px !important;
+    width:100% !important;
+    box-sizing:border-box !important;
+  }}
+  #app-page-content .rank-rows .rank-card .rank-honour,
+  .rank-rows .rank-card .rank-honour {{
+    display:flex !important;
+    align-items:center !important;
+    gap:10px !important;
+    padding:10px !important;
+  }}
+  #app-page-content .rank-rows .rank-card .rank-honour-icon,
+  .rank-rows .rank-card .rank-honour-icon {{
+    flex:0 0 42px !important;
+    width:42px !important;
+    height:42px !important;
+  }}
+}}
 </style>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
@@ -36073,8 +36143,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         except (TypeError, ValueError):
             return 0.0
 
-    # Do not label a partial sum as the whole portfolio's daily return. Individual fresh
-    # ticker contributions may still be shown, but the portfolio total needs complete coverage.
+    # 今日組合報酬直接加總已取得有效今日行情的正負貢獻。
+    # 若少數股票暫時缺價，不能因此把已經算出的貢獻整個清空；
+    # 缺漏股票會在 stale_notice 明確列出，數值代表「已取得有效行情的貢獻合計」。
     portfolio_pct = None
     relative = None
 
@@ -36099,7 +36170,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         holding for holding in contribution_holdings
         if holding_day_pct(holding) is None
     ]
-    if valid_changes and not stale_holdings:
+    if valid_changes:
         portfolio_pct = sum(contribution_value(h, pct) for h, pct in valid_changes)
         relative = (portfolio_pct - market_pct
                     if market_pct is not None else None)
@@ -37732,8 +37803,8 @@ def _render_fast_portfolio_entry(uid, positions, polling_enabled=True):
      if(d.portfolio&&d.portfolio.ready){{
        renderImpact('instant-positive',d.portfolio.positive||[],true);
        renderImpact('instant-negative',d.portfolio.negative||[],false);
-       if(Number(d.portfolio.stale_count||0)===0){{setText('instant-total-pct','今日組合 '+fmtPct(d.portfolio.pct)+' · 相對大盤 '+fmtPct(d.portfolio.relative));}}
-       else{{setText('instant-total-pct','今日貢獻資料不足：尚缺 '+Number(d.portfolio.stale_count)+' 檔有效行情');}}
+       if(d.portfolio.pct!=null){{var missing=Number(d.portfolio.stale_count||0);setText('instant-total-pct','今日組合 '+fmtPct(d.portfolio.pct)+' · 相對大盤 '+(d.portfolio.relative!=null?fmtPct(d.portfolio.relative):'—')+(missing?'（另缺 '+missing+' 檔行情）':''));}}
+       else{{setText('instant-total-pct','今日尚無可加總的有效正負貢獻');}}
      }}
      if(d.note)setText('instant-foot',d.note);
    }} }}catch(e){{failures++;}}
