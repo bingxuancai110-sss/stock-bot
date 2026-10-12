@@ -34302,6 +34302,189 @@ body #app-page-content .rank-situation .rank-situation-title .rank-situation-bad
   .rank-rows .rank-card .rank-meta-excess { grid-column:auto !important; }
 }
 
+
+/* V263: rebuild leaderboard detail panels on narrow screens.
+   Keep the ranking numbers/logic untouched. The prior global .rank-detail-body grid
+   leaked into bot-only details, pushing content sideways and clipping long rules. */
+#app-page-content .rank-rows .rank-card,
+.rank-rows .rank-card {
+  overflow:hidden !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail,
+#app-page-content .rank-rows .rank-card > .rank-private,
+.rank-rows .rank-card > .rank-detail,
+.rank-rows .rank-card > .rank-private {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:12px 0 0 !important;
+  padding:0 !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail > summary,
+.rank-rows .rank-card > .rank-detail > summary {
+  display:flex !important;
+  align-items:center !important;
+  justify-content:space-between !important;
+  gap:10px !important;
+  width:100% !important;
+  min-width:0 !important;
+  margin:0 !important;
+  padding:12px 0 !important;
+  box-sizing:border-box !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  border-top:1px solid #E5EAF0 !important;
+  border-radius:0 !important;
+  background:transparent !important;
+  text-align:left !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body,
+.rank-rows .rank-card > .rank-detail > .rank-detail-body {
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  align-items:start !important;
+  gap:12px !important;
+  position:static !important;
+  inset:auto !important;
+  transform:none !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:8px 0 0 !important;
+  padding:0 !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body > .rank-detail-item,
+.rank-rows .rank-card > .rank-detail > .rank-detail-body > .rank-detail-item {
+  display:flex !important;
+  flex-direction:column !important;
+  align-items:flex-start !important;
+  justify-content:flex-start !important;
+  gap:4px !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:0 !important;
+  padding:8px 0 10px !important;
+  box-sizing:border-box !important;
+  border:0 !important;
+  border-bottom:1px solid #E7ECF0 !important;
+  border-radius:0 !important;
+  background:transparent !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+}
+/* Bot portfolio/history panels use normal document flow, never the generic two-column grid. */
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-hold-list > .rank-detail-body,
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-history-list > .rank-detail-body,
+.rank-rows .rank-card > .rank-detail.bot-hold-list > .rank-detail-body,
+.rank-rows .rank-card > .rank-detail.bot-history-list > .rank-detail-body {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:8px 0 0 !important;
+  padding:0 !important;
+  box-sizing:border-box !important;
+  overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .bot-virtual-card,
+.rank-rows .rank-card .bot-virtual-card {
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  gap:10px !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:0 0 12px !important;
+  padding:12px !important;
+  box-sizing:border-box !important;
+  border:1px solid #DCE6ED !important;
+  border-radius:12px !important;
+  background:#F5F8FA !important;
+}
+#app-page-content .rank-rows .rank-card .bot-virtual-card > div,
+.rank-rows .rank-card .bot-virtual-card > div {
+  min-width:0 !important;
+  overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .bot-virtual-card small,
+.rank-rows .rank-card .bot-virtual-card small {
+  font-size:11px !important;
+  line-height:1.4 !important;
+}
+#app-page-content .rank-rows .rank-card .bot-virtual-card b,
+.rank-rows .rank-card .bot-virtual-card b {
+  font-size:clamp(14px,3.7vw,17px) !important;
+  line-height:1.4 !important;
+  overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .bot-rule,
+.rank-rows .rank-card .bot-rule {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:10px 0 !important;
+  padding:12px !important;
+  box-sizing:border-box !important;
+  border-radius:10px !important;
+  font-size:12px !important;
+  line-height:1.65 !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold,
+.rank-rows .rank-card .bot-hold {
+  display:grid !important;
+  grid-template-columns:minmax(0,1fr) 48px 58px !important;
+  gap:5px 8px !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-name,
+.rank-rows .rank-card .bot-hold-name,
+#app-page-content .rank-rows .rank-card .bot-hold-meta,
+.rank-rows .rank-card .bot-hold-meta {
+  min-width:0 !important;
+  overflow-wrap:anywhere !important;
+  white-space:normal !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-meta,
+.rank-rows .rank-card .bot-hold-meta { grid-column:1/-1 !important; }
+#app-page-content .rank-rows .rank-card .bot-hold-bar,
+.rank-rows .rank-card .bot-hold-bar { grid-column:1/-1 !important; width:100% !important; box-sizing:border-box !important; }
+#app-page-content .rank-rows .rank-card .bot-history-timeline,
+.rank-rows .rank-card .bot-history-timeline,
+#app-page-content .rank-rows .rank-card .bot-history-all-body,
+.rank-rows .rank-card .bot-history-all-body {
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  box-sizing:border-box !important;
+}
+@media (max-width:420px) {
+  #app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body,
+  .rank-rows .rank-card > .rank-detail > .rank-detail-body {
+    grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+    gap:10px !important;
+  }
+  #app-page-content .rank-rows .rank-card .bot-virtual-card,
+  .rank-rows .rank-card .bot-virtual-card { grid-template-columns:1fr !important; }
+  #app-page-content .rank-rows .rank-card .rank-meta,
+  .rank-rows .rank-card .rank-meta {
+    margin-left:42px !important;
+    width:calc(100% - 42px) !important;
+    grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+    gap:8px !important;
+  }
+}
+
 </style>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
