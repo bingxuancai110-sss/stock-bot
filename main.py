@@ -6726,7 +6726,8 @@ def _schedule_home_intraday_payload_refresh(uid):
         started = time.monotonic()
         try:
             payload = _refresh_home_intraday_payload_sync(uid_key)
-            if isinstance(payload, dict) and payload.get("ok") and payload.get("market_open"):
+            if (isinstance(payload, dict) and payload.get("ok") and
+                    (payload.get("market_open") or _taiwan_post_close())):
                 with _HOME_INTRADAY_PAYLOAD_CACHE_LOCK:
                     _HOME_INTRADAY_PAYLOAD_CACHE[uid_key] = {
                         "day": taiwan_today().isoformat(),
@@ -6754,14 +6755,18 @@ def _schedule_home_intraday_payload_refresh(uid):
 
 
 def _build_home_intraday_payload(uid):
-    """回傳今日盤中／收盤行情；收盤後首次呼叫同步計算正式收盤績效。"""
+    """回傳今日盤中／收盤行情；優先用同日已計算快取，避免首頁首屏重複等候行情。"""
     now = taiwan_now()
-    if not _is_taiwan_intraday_window(now):
-        if _taiwan_post_close(now):
-            # 收盤後不要回傳空 payload：仍需把今日正式收盤結果送到已開啟的首頁。
-            return _refresh_home_intraday_payload_sync(uid)
+    intraday_now = _is_taiwan_intraday_window(now)
+    post_close_now = _taiwan_post_close(now)
+    if not intraday_now and not post_close_now:
         return {"ok": True, "market_open": False, "updates": [],
                 "note": "目前非一般盤中時段；沒有新的今日行情可同步。"}
+
+    # 盤中與收盤後都先查同日計算快取。收盤後的正式收盤結果不會每次開首頁都重抓。
+    # 冷啟動或持股行情不完整時，才進入下面的同步／背景刷新路徑。
+    intraday = intraday_now
+    post_close = post_close_now
 
     # 冷啟動或持股行情不完整時，不先啟動另一個大盤背景請求，避免跟完整批次搶 MIS。
     # 需要同步刷新時由 _refresh_home_intraday_payload_sync 一次處理大盤與全部持股。
@@ -6810,7 +6815,8 @@ def _build_home_intraday_payload(uid):
                 cached_copy["market"].pop("stale", None)
                 cached_copy["market"].pop("cache_age_seconds", None)
         # <=2 秒的完整計算不用再觸發網路；其餘情況用背景刷新，不能讓 API 等外部行情。
-        if cached_stale == 0 and age <= 2 and cached_portfolio.get("ready"):
+        if (cached_stale == 0 and cached_portfolio.get("ready") and
+                (age <= 2 or (post_close and age <= 300))):
             return cached_copy
         refresh_started = _schedule_home_intraday_payload_refresh(uid)
         cached_copy["portfolio"]["refreshing"] = bool(refresh_started or cached_stale > 0 or age > 2)
@@ -6824,7 +6830,8 @@ def _build_home_intraday_payload(uid):
 
     started = time.monotonic()
     refreshed = _refresh_home_intraday_payload_sync(uid)
-    if isinstance(refreshed, dict) and refreshed.get("ok") and refreshed.get("market_open"):
+    if (isinstance(refreshed, dict) and refreshed.get("ok") and
+            (refreshed.get("market_open") or post_close)):
         with _HOME_INTRADAY_PAYLOAD_CACHE_LOCK:
             _HOME_INTRADAY_PAYLOAD_CACHE[str(uid).strip()] = {
                 "day": day, "at": time.time(), "data": refreshed,
@@ -36190,7 +36197,7 @@ def render_portfolio_fast_summary(uid):
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total,
                            taiex=None, position_journal_html="", daily_context=None,
                            rank_status=None, daily_pretrade_exposure=None,
-                           realized_by_code=None):
+                           realized_by_code=None, intraday_payload=None):
 
 
     # 新版首頁上半部：先講今天，再提供完整分析入口。
@@ -36207,6 +36214,13 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     taiex = (fetch_taiex_summary() if taiex is None else taiex) or {}
     intraday_window = _is_taiwan_intraday_window()
     intraday_taiex = fetch_taiex_intraday(stale_while_revalidate=True) if intraday_window else None
+    _first_payload_portfolio = (intraday_payload or {}).get("portfolio") or {}
+    _first_payload_complete = bool(
+        _first_payload_portfolio.get("ready") and
+        int(_first_payload_portfolio.get("stale_count") or 0) == 0 and
+        _first_payload_portfolio.get("pct") is not None and
+        _first_payload_portfolio.get("relative") is not None
+    )
 
     # 首頁「今日組合／相對大盤」必須用今天的官方個股報價計算；不能沿用
     # 持有至今的 pl_total，也不能把 Yahoo 歷史快取當成今日漲跌。先檢查現有
@@ -36225,7 +36239,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
                     _mis_quote_is_current_for_contribution(quote)):
                 valid_today_quotes[code] = dict(quote)
         missing_codes = [code for code in holding_codes if code not in valid_today_quotes]
-        for retry_round in range(3):
+        # 若首屏績效 worker 已取得完整、可驗證的今日報價，就不在 renderer 裡再抓一次。
+        # 避免同一個首頁請求重複佔用 MIS，也避免額外等三輪補抓。
+        for retry_round in range(0 if _first_payload_complete else 3):
             if not missing_codes:
                 break
             fetched = _fetch_twse_mis_quotes(
@@ -36407,6 +36423,24 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         portfolio_pct = sum(contribution_value(h, pct) for h, pct in valid_changes)
         relative = (portfolio_pct - market_pct
                     if market_pct is not None else None)
+
+    # 首屏直接採用已並行完成的首頁績效 payload，避免先顯示「資料不足」再等前端 API。
+    # 只有所有持股都有同日有效官方行情時才覆蓋；不以部分持股加總假裝整體報酬。
+    try:
+        _first_load_portfolio = (intraday_payload or {}).get("portfolio") or {}
+        _first_load_market = (intraday_payload or {}).get("market") or {}
+        if (_first_load_portfolio.get("ready") and
+                int(_first_load_portfolio.get("stale_count") or 0) == 0 and
+                _first_load_portfolio.get("pct") is not None and
+                _first_load_portfolio.get("relative") is not None):
+            portfolio_pct = float(_first_load_portfolio["pct"])
+            relative = float(_first_load_portfolio["relative"])
+            if _first_load_market.get("pct") is not None:
+                market_pct = float(_first_load_market["pct"])
+            print("⚡ 首頁首屏直接套用完整績效：組合=%+.4f%%、相對大盤=%+.4f%%" %
+                  (portfolio_pct, relative), flush=True)
+    except (TypeError, ValueError, OverflowError) as _first_load_exc:
+        print("⚠️ 首頁首屏績效 payload 不完整：%s" % type(_first_load_exc).__name__, flush=True)
 
     # 被排除的標的要說出來，不能讓它們無聲消失——
     # 使用者會以為自己看漏了，或以為那幾檔今天沒動。
@@ -38109,7 +38143,7 @@ def web_portfolio(uid):
             str(request.args.get("trend_benchmark") or "1"),
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
                          if k not in {"t", "fragment", "_nav", "refresh", "fast", "detail"})),
-            "empty-home-welcome-v13-quiet-editorial")
+            "empty-home-welcome-v13-quiet-editorial-firstload-performance-v1")
         _home_fast_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_home_fast_body = (None if request.args.get("detail") == "1" else
                                   _web_fragment_cache_get("portfolio-fast", _home_fast_fragment_key, _home_fast_ttl))
@@ -38239,7 +38273,7 @@ def web_portfolio(uid):
                          for p in positions)),
             str(request.args.get("trend_period") or "3m"),
             str(request.args.get("trend_benchmark") or "1"),
-             "empty-home-welcome-v13-quiet-editorial")
+             "empty-home-welcome-v13-quiet-editorial-firstload-performance-v1")
         # 首頁已載入完整摘要；短時間內切回先用既有內容，避免重新抓六份共享資料。
         _home_cache_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_home_body = _web_fragment_cache_get(
@@ -38272,7 +38306,12 @@ def web_portfolio(uid):
     # 導致走勢圖 future 例外、首頁只能顯示「暫時無法載入」。
     requested_trend_token = str(request.args.get("t") or "")
 
-    aux_executor = ThreadPoolExecutor(max_workers=2)
+    # 首屏組合／相對大盤先算好再輸出 HTML；與走勢、已實現損益、排名及首頁資料並行，
+    # 不再等首頁顯示後才由瀏覽器另外等待 10 秒以上的行情 API。
+    aux_executor = ThreadPoolExecutor(max_workers=4)
+    homepage_intraday_payload_future = None
+    if _is_taiwan_intraday_window() or _taiwan_post_close():
+        homepage_intraday_payload_future = aux_executor.submit(_build_home_intraday_payload, uid)
     def _render_home_trend_async():
         return render_portfolio_trend_chart_cached(
             uid, requested_period=requested_trend_period,
@@ -38538,6 +38577,12 @@ def web_portfolio(uid):
             trend_html = '<div class="empty">組合走勢暫時無法載入，其他首頁資料仍可使用。</div>'
         realized_trades = aux_realized_future.result()
         page_rank_status = aux_rank_future.result()
+        homepage_intraday_payload = None
+        if homepage_intraday_payload_future is not None:
+            try:
+                homepage_intraday_payload = homepage_intraday_payload_future.result(timeout=18)
+            except Exception as _home_payload_exc:
+                print("⚠️ 首頁首屏績效預先計算失敗：%s" % type(_home_payload_exc).__name__, flush=True)
     finally:
         aux_executor.shutdown(wait=True)
     aux_done = time.monotonic()
@@ -38601,7 +38646,8 @@ def web_portfolio(uid):
                                           daily_context=daily_context,
                                           rank_status=page_rank_status,
                                           daily_pretrade_exposure=daily_pretrade_exposure,
-                                          realized_by_code=realized_by_code)
+                                          realized_by_code=realized_by_code,
+                                          intraday_payload=homepage_intraday_payload)
     except Exception as exc:
         # 首頁上半部渲染失敗時，不要讓整頁回 500。
         # 整頁 500 的話畫面只會顯示「頁面暫時無法切換」，
