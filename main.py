@@ -7924,9 +7924,20 @@ def summarize_member_holdings(uid, prices, inst, positions=None, ind_map=None,
 def save_leaderboard_rank_snapshots(snapshot_date=None):
     # 每日收盤後保存短線／長線名次；沒有足夠快照不補造排名。
     snapshot_date = snapshot_date or taiwan_today()
-    # rank stage 是收盤資料完成後的明確更新點，不能沿用當天稍早的頁面快取。
-    clear_leaderboard_cache()
-    full_value = build_leaderboard(top_n=100, days=365)
+    # 這一步必須用剛寫入的 portfolio_snapshots 重算，不能讀到舊的完整頁快照。
+    # 不呼叫 clear_leaderboard_cache()：它會另啟背景重算，造成兩份昂貴的排行榜工作互相搶 DB／行情。
+    with _leaderboard_cache_lock:
+        _leaderboard_cache.clear()
+    try:
+        _web_fragment_cache_clear("leaderboard")
+    except Exception:
+        pass
+    try:
+        with _fast_rank_summary_cache_lock:
+            _fast_rank_summary_cache.clear()
+    except Exception:
+        pass
+    full_value = build_leaderboard(top_n=100, days=365, force_rebuild=True)
     boards, (series_map, market) = full_value
     rows = []
     for board_name in ("short", "long", "season", "month"):
@@ -18689,6 +18700,10 @@ def _job_mark_start(name):
             WHERE job_runs.running = FALSE
                OR job_runs.started_at IS NULL
                OR job_runs.started_at < NOW() - INTERVAL '%s minutes'
+               OR (job_runs.name = '每日快照'
+                   AND job_runs.progress_stage = 'picks'
+                   AND COALESCE(job_runs.progress_total, 0) = 2
+                   AND job_runs.started_at < NOW() - INTERVAL '5 minutes')
             RETURNING name
             """,
             (name, batch_id, JOB_STALE_MINUTES),
@@ -18808,6 +18823,62 @@ def run_in_background(name, fn):
     return f"{name} 已在背景啟動。稍候用 /job-status?token=... 看結果。"
 
 
+# Render 部署會直接終止 daemon thread，但 job_runs 的 running 狀態存在資料庫，
+# 因此重啟後可能永遠停在舊版「每日快照 picks 0/2」，而 cron 當天只觸發一次。
+# 首次收到請求時自動辨識這個明確的舊 checkpoint，重新啟動同日核心快照；
+# _job_mark_start 使用資料庫條件更新，避免多個請求重複啟動。
+_daily_snapshot_recovery_lock = threading.Lock()
+_daily_snapshot_recovery_last_check = 0.0
+
+
+def _recover_interrupted_daily_snapshot():
+    global _daily_snapshot_recovery_last_check
+    now_mono = time.monotonic()
+    with _daily_snapshot_recovery_lock:
+        if now_mono - _daily_snapshot_recovery_last_check < 30:
+            return
+        _daily_snapshot_recovery_last_check = now_mono
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT running, started_at, progress_stage, progress_index, progress_total
+            FROM job_runs WHERE name='每日快照' LIMIT 1
+        """)
+        row = cur.fetchone()
+        cur.close()
+    except Exception as exc:
+        print(f"⚠️ 檢查中斷的每日組合／排行榜快照失敗：{exc}")
+        return
+    finally:
+        release_db_connection(conn)
+
+    if not row:
+        return
+    running, started_at, stage, index, total = row
+    if not running or str(stage or '') != 'picks' or int(total or 0) != 2:
+        return
+    started_tw = as_taiwan_datetime(started_at)
+    age_seconds = ((taiwan_now() - started_tw).total_seconds()
+                   if started_tw else 0)
+    if age_seconds < 300:
+        return
+    if not _taiwan_post_close() or not is_twse_trading_day(taiwan_today()):
+        return
+
+    print("♻️ 偵測到部署中斷的每日快照（舊 checkpoint picks 0/2）；自動重跑今日組合報酬與排行榜快照")
+    # 同一個 _do_daily_snapshot 會辨識舊 checkpoint，先重建 portfolio_snapshots，
+    # 再寫 leaderboard_page 與 leaderboard_rank_snapshots；不會以選股快照代替兩者。
+    run_in_background("每日快照", _do_daily_snapshot)
+
+
+@app.before_request
+def _recover_daily_snapshot_after_restart():
+    # 只做輕量的節流檢查；一般頁面請求不等待快照工作完成。
+    _recover_interrupted_daily_snapshot()
+
+
 @app.route("/job-status", methods=["POST", "GET"])
 def job_status():
     """查背景工作的執行結果。用法：/job-status?token=..."""
@@ -18892,38 +18963,269 @@ def cron_snapshot_portfolio():
 
 
 def _do_daily_snapshot():
-    """實際的快照工作；依階段 checkpoint，逾時重試時從上次完成處續跑。"""
+    """先完成今日組合報酬與排行榜快照，再處理耗時的選股／自選／產業快照。
+
+    舊流程先掃黑馬股與雷達，兩個全市場計算可能耗時數分鐘，導致每日工作長期停在
+    picks 0/2，根本還沒寫 portfolio_snapshots／leaderboard_rank_snapshots。
+    這裡將兩項核心快照提到最前面，並且只接受同日官方收盤行情。
+    """
     job_name = "每日快照"
+    today = taiwan_today()
+    today_key = today.strftime("%Y%m%d")
     progress = _job_get_progress(job_name) or {
-        "stage": "industry", "index": 0, "total": None}
-    stage_order = {"industry": 0, "picks": 1, "portfolio": 2,
-                   "watchlist": 3, "rank": 4, "done": 5}
-    current_stage = progress.get("stage") or "industry"
-    if current_stage == "done":
-        missing_users = get_missing_portfolio_snapshot_user_ids(taiwan_today())
-        if missing_users:
-            # 之前可能在 portfolio index=1 後逾時，卻仍完成了後續 rank；
-            # 不能直接回報完成，改由同一個 job 在下一次重跑補齊所有使用者。
-            print(f"⚠️ 每日快照完成完整性檢查：缺少 {len(missing_users)} 位使用者，重新補跑 portfolio stage")
-            progress = {"stage": "portfolio", "index": 0,
-                        "total": len(get_all_position_user_ids())}
-            current_stage = "portfolio"
-        elif missing_users == []:
-            monthly_status = archive_monthly_reviews_if_due(taiwan_today())
-            return f"{taiwan_today()} 的每日快照已完成，避免重複抓取；{monthly_status}。"
-        else:
-            return f"{taiwan_today()} 的每日快照已完成，但無法確認所有使用者快照，請稍後重試。"
+        "stage": "portfolio", "index": 0, "total": None}
+    current_stage = str(progress.get("stage") or "portfolio")
+    stage_order = {"portfolio": 0, "rank": 1, "industry": 2,
+                   "watchlist": 3, "picks": 4, "done": 5}
+    user_ids = get_all_position_user_ids()
+    original_stage = current_stage
+
+    def portfolio_status():
+        missing = get_missing_portfolio_snapshot_user_ids(today)
+        if missing is None:
+            return False, None
+        return len(missing) == 0, missing
+
+    def leaderboard_status():
+        """排名頁必須是今日資料日；若有可排名的榜單，名次表也需完成寫入。"""
+        rank_rows_today = 0
+        member_count = 0
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM leaderboard_rank_snapshots WHERE snapshot_date=%s",
+                (today,))
+            rank_rows_today = int((cur.fetchone() or [0])[0] or 0)
+            cur.execute("SELECT COUNT(*) FROM leaderboard_members")
+            member_count = int((cur.fetchone() or [0])[0] or 0)
+            cur.close()
+        except Exception as exc:
+            print(f"⚠️ 檢查今日排行榜快照失敗：{exc}")
+            return False, rank_rows_today, member_count
+        finally:
+            release_db_connection(conn)
+
+        if member_count == 0:
+            return True, rank_rows_today, member_count
+        try:
+            persisted = _load_persisted_leaderboard_page(allow_stale=True)
+            page_date = _leaderboard_date(persisted.get("data_date")) if persisted else None
+            boards = (persisted.get("value") or ({}, ({}, [])))[0] if persisted else {}
+            expected = sum(len(boards.get(name) or [])
+                           for name in ("short", "long", "season", "month"))
+            ready = bool(page_date == today and (expected == 0 or rank_rows_today >= expected))
+            return ready, rank_rows_today, member_count
+        except Exception as exc:
+            print(f"⚠️ 讀取今日排行榜完整頁狀態失敗：{exc}")
+            return False, rank_rows_today, member_count
+
+    # 快照只代表交易日正式收盤；休市日／收盤前不能把上一日價格存成今天。
+    if today.weekday() >= 5 or not is_twse_trading_day(today):
+        return f"{today} 不是台股交易日，未建立每日組合／排行榜快照。"
+    if not _taiwan_post_close():
+        _job_mark_progress(job_name, current_stage, 0, progress.get("total"))
+        return f"{today} 尚未到 13:30 正式收盤時間，暫不建立每日組合／排行榜快照。"
+
+    portfolio_ready, missing_users = portfolio_status()
+    rank_ready, rank_rows_today, member_count = leaderboard_status()
+
+    # 舊版會在選股階段顯示 picks 0/2（實際有 3 個 mode），但該版本的 portfolio
+    # 與排行榜階段根本還沒跑到。遇到這種舊 checkpoint，必須回到核心快照重新補齊。
+    legacy_stuck_picks = (current_stage == "picks" and
+                          int(progress.get("total") or 0) == 2)
+    # 舊版預設 stage=industry；若今日排行榜未建立，代表核心階段尚未完成，先刷新組合快照。
+    force_portfolio_refresh = legacy_stuck_picks or (current_stage == "industry" and not rank_ready)
+
+    if current_stage == "done" and portfolio_ready and rank_ready:
+        monthly_status = archive_monthly_reviews_if_due(today)
+        return (f"{today} 的每日快照已完成；組合快照完整 {len(user_ids)}/{len(user_ids)}、"
+                f"排行榜名次 {rank_rows_today} 筆；{monthly_status}。")
+
+    if force_portfolio_refresh or not portfolio_ready:
+        current_stage = "portfolio"
+        progress = {"stage": "portfolio", "index": 0, "total": len(user_ids)}
+        _job_mark_progress(job_name, "portfolio", 0, len(user_ids))
+    elif not rank_ready and stage_order.get(current_stage, 0) > stage_order["rank"]:
+        current_stage = "rank"
+        progress = {"stage": "rank", "index": 0, "total": 1}
+        _job_mark_progress(job_name, "rank", 0, 1)
 
     def reached(stage):
         return stage_order.get(current_stage, 0) > stage_order[stage]
 
     taiex_close = None
-    try:
-        taiex = fetch_taiex_summary()
-        if taiex and taiex.get("close"):
+    portfolio_saved = len(user_ids) if portfolio_ready else 0
+    portfolio_skipped = 0
+    portfolio_missing_codes = {}
+    rank_saved = rank_rows_today if rank_ready else 0
+    if not reached("portfolio"):
+        # 本次若重新建組合快照，統計從零計起；完整性以實際寫入結果為準。
+        portfolio_saved = 0
+        portfolio_skipped = 0
+        # 先取得同日正式加權指數收盤，確保組合報酬與大盤曲線使用同一資料日。
+        try:
+            taiex = fetch_taiex_summary()
+            if (not taiex or not taiex.get("close") or
+                    not _market_date_matches(taiex.get("date"), today) or
+                    not taiex.get("close_is_final")):
+                raise ValueError("尚未取得同日 TWSE MIS 正式收盤加權指數")
             taiex_close = float(str(taiex["close"]).replace(",", ""))
-    except (TypeError, ValueError, Exception) as e:
-        print(f"⚠️ 讀取大盤收盤值失敗: {e}")
+            if taiex_close <= 0:
+                raise ValueError("加權指數收盤值無效")
+        except Exception as exc:
+            _job_mark_progress(job_name, "portfolio", 0, len(user_ids))
+            print(f"⚠️ 每日組合快照等待同日正式大盤收盤：{exc}")
+            return f"{today} 尚未取得同日正式加權指數收盤，未寫入不完整的組合／排行榜快照；請稍後重試。"
+
+        # 同一次批次取得全部使用者的持股，再一次抓齊跨使用者的股票代號；
+        # 不讓每位使用者分別打行情 API，也不讓 Yahoo 舊日 K 補成今日收盤。
+        positions_by_user = {}
+        all_codes = []
+        for uid in user_ids:
+            try:
+                positions = merge_positions(get_positions(uid))
+            except Exception as exc:
+                print(f"⚠️ 讀取每日快照持股失敗 {uid}: {exc}")
+                positions = []
+            positions_by_user[str(uid).strip()] = positions
+            all_codes.extend(str(p.get("code") or "").strip() for p in positions
+                             if p.get("code"))
+        all_codes = list(dict.fromkeys(code for code in all_codes if code))
+
+        # 用股票主檔決定上市／上櫃市場別；未知代號才讓 MIS 同時查兩種市場。
+        try:
+            _load_stock_info_file_cache()
+        except Exception:
+            pass
+        raw_market_map = _market_cache.get("map") or {}
+        suffix_map = {}
+        for code in all_codes:
+            market = str(raw_market_map.get(code) or "").strip().lower()
+            if market in ("上市", "twse", "listed", "tw", "tse"):
+                suffix_map[code] = ".TW"
+            elif market in ("上櫃", "上柜", "tpex", "otc", "two"):
+                suffix_map[code] = ".TWO"
+
+        def valid_close_quote(q):
+            if not isinstance(q, dict):
+                return False
+            try:
+                close = float(q.get("close") or 0)
+            except (TypeError, ValueError):
+                return False
+            quote_date = str(q.get("close_date") or "").replace("-", "")[:8]
+            return (close > 0 and quote_date == today_key and
+                    bool(q.get("close_is_final")) and
+                    str(q.get("source") or "").startswith("TWSE MIS"))
+
+        quotes = {}
+        if all_codes:
+            try:
+                quotes = _fetch_twse_mis_quotes(
+                    all_codes, market_suffix=suffix_map,
+                    force_refresh=True, cache_result=False, quick_mode=False)
+            except Exception as exc:
+                print(f"⚠️ 每日組合官方行情批次失敗：{exc}")
+                quotes = {}
+
+            # MIS 缺漏只針對缺少的代號補抓兩輪；所有請求仍只用官方當日資料。
+            for retry_round in range(1, 3):
+                missing_codes = [code for code in all_codes
+                                 if not valid_close_quote(quotes.get(code))]
+                if not missing_codes:
+                    break
+                print(f"⚠️ 每日組合行情補抓第 {retry_round}/2 輪：缺 {len(missing_codes)} 檔")
+                try:
+                    retry_quotes = _fetch_twse_mis_quotes(
+                        missing_codes,
+                        market_suffix={c: suffix_map[c] for c in missing_codes if c in suffix_map},
+                        force_refresh=True, cache_result=False, quick_mode=False)
+                    for code, quote in retry_quotes.items():
+                        if valid_close_quote(quote):
+                            quotes[code] = quote
+                except Exception as exc:
+                    print(f"⚠️ 每日組合行情補抓第 {retry_round} 輪失敗：{exc}")
+
+        # 進入重建流程時清除今天舊的快照列。若本次官方報價不完整，就留下「缺資料」而非
+        # 讓舊版可能只加總部分持股的市值繼續冒充完整組合報酬。
+        if user_ids:
+            conn = get_db_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM portfolio_snapshots WHERE snapshot_date=%s AND user_id = ANY(%s)",
+                            (today, [str(uid).strip() for uid in user_ids]))
+                conn.commit()
+                cur.close()
+            except Exception as exc:
+                conn.rollback()
+                print(f"⚠️ 清除待重建的今日組合快照失敗：{exc}")
+                raise
+            finally:
+                release_db_connection(conn)
+
+        _job_mark_progress(job_name, "portfolio", 0, len(user_ids))
+        for idx, uid in enumerate(user_ids):
+            uid_key = str(uid).strip()
+            positions = positions_by_user.get(uid_key) or []
+            if not positions:
+                portfolio_skipped += 1
+                _job_mark_progress(job_name, "portfolio", idx + 1, len(user_ids))
+                continue
+            missing_codes = [str(p.get("code") or "").strip() for p in positions
+                             if not valid_close_quote(quotes.get(str(p.get("code") or "").strip()))]
+            if missing_codes:
+                portfolio_missing_codes[uid_key] = missing_codes
+                portfolio_skipped += 1
+                print(f"⚠️ 組合收盤快照未保存 {uid_key}：官方同日收盤行情缺 {','.join(missing_codes[:12])}")
+                _job_mark_progress(job_name, "portfolio", idx + 1, len(user_ids))
+                continue
+
+            total_value = 0.0
+            total_cost = 0.0
+            for position in positions:
+                code = str(position.get("code") or "").strip()
+                quote = quotes[code]
+                total_value += float(quote["close"]) * float(position.get("shares") or 0)
+                total_cost += float(position.get("cost") or 0) * float(position.get("shares") or 0)
+            if total_value <= 0 or not save_portfolio_snapshot(
+                    uid, total_value, total_cost, taiex_close):
+                portfolio_skipped += 1
+            else:
+                portfolio_saved += 1
+            _job_mark_progress(job_name, "portfolio", idx + 1, len(user_ids))
+
+        portfolio_ready, missing_users = portfolio_status()
+        if not portfolio_ready:
+            _job_mark_progress(job_name, "portfolio", len(user_ids), len(user_ids))
+            missing_text = ",".join(str(uid) for uid in (missing_users or [])[:8])
+            codes_text = "; ".join(
+                f"{uid}:{','.join(codes[:8])}" for uid, codes in list(portfolio_missing_codes.items())[:5])
+            return (f"今日組合快照尚未完整：成功 {portfolio_saved} 位、略過 {portfolio_skipped} 位；"
+                    f"缺少使用者 {missing_text or '待確認'}；缺價代號 {codes_text or '請看 Logs'}。"
+                    "已暫緩排行榜快照，避免使用不完整的組合報酬計算排名。")
+
+        clear_leaderboard_cache()
+        _job_mark_progress(job_name, "rank", 0, 1)
+        current_stage = "rank"
+
+    if not reached("rank"):
+        rank_saved = save_leaderboard_rank_snapshots(snapshot_date=today)
+        rank_ready, rank_rows_today, member_count = leaderboard_status()
+        if not rank_ready:
+            print(f"⚠️ 今日排行榜快照尚未完整：保存名次 {rank_saved} 筆，頁面／名次列仍未確認完成")
+            _job_mark_progress(job_name, "rank", 0, 1)
+            return (f"今日組合報酬快照已完成；排行榜快照尚未確認完成（本次名次 {rank_saved} 筆），"
+                    "保留 rank checkpoint，請稍後重試。")
+        try:
+            ind_perf_saved = save_industry_recent_performance()
+        except Exception as exc:
+            print(f"❌ 產業近期表現快照失敗: {exc}")
+            ind_perf_saved = 0
+        _job_mark_progress(job_name, "industry", 0, 1)
+        current_stage = "industry"
+    else:
+        ind_perf_saved = 0
 
     ind_saved = 0
     if not reached("industry"):
@@ -18932,89 +19234,18 @@ def _do_daily_snapshot():
                                           get_industry_map() or {})
             save_industry_momentum(stats)
             ind_saved = len(stats)
-        except Exception as e:
-            print(f"❌ 產業動能快照失敗: {e}")
-            raise
-        _job_mark_progress(job_name, "picks", 0, 2)
-        current_stage = "picks"
-
-    picks_saved = 0
-    pick_failures = []
-    if not reached("picks"):
-        # turning 一併納入：轉折的核心主張是「已確認 > 觀察中 > 已失效」，
-        # 但那個排序從來沒被驗證過。黑馬雷達每天都存進 pick_history，
-        # 所以有成效可看；轉折不存就永遠是盲區。
-        modes = ("blackhorse", "radar", "turning")
-        start = progress.get("index", 0) if current_stage == "picks" else 0
-        for idx, mode in enumerate(modes):
-            if idx < start:
-                continue
-            try:
-                if mode == "turning":
-                    picks_saved += save_turning_picks()
-                    continue
-                rows, _skipped, _mom = compute_screener_rows(mode)
-                if mode == "radar":
-                    rows = sorted(rows, key=lambda r: (
-                        2 if r["breakout"] == "季線新高" else (1 if r["breakout"] else 0),
-                        r.get("vol_ratio") or 0, r["streak"], r["pct"]), reverse=True)
-                else:
-                    rows = sorted(rows, key=lambda r: (
-                        r["score"] if r["score"] is not None else -1), reverse=True)
-                picks_saved += save_picks(mode, rows, top_n=(10 if mode in ("blackhorse", "radar") else 5))
-            except Exception as e:
-                # 選股資料失敗不能阻止收盤後的持股、自選與排行榜快照；
-                # 記錄失敗並前進 checkpoint，避免每次重跑都卡在同一個 mode。
-                print(f"❌ {mode} 選股名單快照失敗，繼續後續階段: {e}")
-                pick_failures.append(mode)
-            _job_mark_progress(job_name, "picks", idx + 1, len(modes))
-        _job_mark_progress(job_name, "portfolio", 0, 0)
-        current_stage = "portfolio"
-
-    user_ids = get_all_position_user_ids()
-    saved, skipped = 0, 0
-    if not reached("portfolio"):
-        start = progress.get("index", 0) if current_stage == "portfolio" else 0
-        _job_mark_progress(job_name, "portfolio", start, len(user_ids))
-        for idx, uid in enumerate(user_ids):
-            if idx < start:
-                continue
-            try:
-                positions = merge_positions(get_positions(uid))
-                if not positions:
-                    skipped += 1
-                else:
-                    total_value, total_cost = 0.0, 0.0
-                    price_map = get_realtime_stocks_bulk([p["code"] for p in positions])
-                    for p in positions:
-                        pr = price_map.get(p["code"])
-                        if pr:
-                            total_value += pr["close"] * p["shares"]
-                        total_cost += p["cost"] * p["shares"]
-                    if total_value <= 0 or not save_portfolio_snapshot(
-                            uid, total_value, total_cost, taiex_close):
-                        skipped += 1
-                    else:
-                        saved += 1
-            except Exception as e:
-                # 單一使用者出錯不該讓其他人的快照一起沒了
-                print(f"❌ 組合快照失敗 {uid}: {e}")
-                skipped += 1
-            _job_mark_progress(job_name, "portfolio", idx + 1, len(user_ids))
-        # 所有使用者的每日組合快照完成後才失效一次，避免在迴圈內每人重複操作資料庫。
-        # 下一個 rank stage 會依最新每日快照重新計算 TWR，再保存排行榜完整頁 payload。
-        clear_leaderboard_cache()
+        except Exception as exc:
+            print(f"❌ 產業動能快照失敗: {exc}")
+            # 核心組合／排行榜快照已完成，非核心產業資料失敗不阻斷每日工作。
         _job_mark_progress(job_name, "watchlist", 0, 0)
+        progress = {"stage": "watchlist", "index": 0, "total": 0}
         current_stage = "watchlist"
 
     wl_users = get_all_watchlist_user_ids()
     wl_saved = 0
     if not reached("watchlist"):
-        start = progress.get("index", 0) if current_stage == "watchlist" else 0
-        _job_mark_progress(job_name, "watchlist", start, len(wl_users))
+        _job_mark_progress(job_name, "watchlist", 0, len(wl_users))
         for idx, uid in enumerate(wl_users):
-            if idx < start:
-                continue
             codes = get_user_watchlist(uid)
             if codes:
                 try:
@@ -19022,50 +19253,63 @@ def _do_daily_snapshot():
                     if scores:
                         save_watchlist_scores(uid, scores)
                         wl_saved += 1
-                except Exception as e:
-                    print(f"❌ 自選股評分快照失敗 {uid}: {e}")
+                except Exception as exc:
+                    print(f"❌ 自選股評分快照失敗 {uid}: {exc}")
             _job_mark_progress(job_name, "watchlist", idx + 1, len(wl_users))
-        _job_mark_progress(job_name, "rank", 0, 1)
-        current_stage = "rank"
+        _job_mark_progress(job_name, "picks", 0, 3)
+        progress = {"stage": "picks", "index": 0, "total": 3}
+        current_stage = "picks"
 
-    rank_saved = 0
-    # 先給預設值：這兩個變數在下面的回報字串會用到，
-    # 但續跑時整個 if 區塊會被跳過，沒有預設就會 NameError。
-    ind_perf_saved = 0
-    if not reached("rank"):
-        rank_saved = save_leaderboard_rank_snapshots()
-        # 產業近期表現：清單上要標，但它得抓所有推薦過標的的報價，
-        # 放在選股台現算會拖慢每一次載入。這裡算一次存起來，頁面只讀不算。
-        try:
-            ind_perf_saved = save_industry_recent_performance()
-        except Exception as exc:
-            print(f"❌ 產業近期表現快照失敗: {exc}")
-            ind_perf_saved = 0
+    picks_saved = 0
+    pick_failures = []
+    if not reached("picks"):
+        modes = ("blackhorse", "radar", "turning")
+        start = (int(progress.get("index") or 0)
+                 if original_stage == "picks" and
+                 int(progress.get("total") or 0) == len(modes) and
+                 not legacy_stuck_picks else 0)
+        _job_mark_progress(job_name, "picks", start, len(modes))
+        for idx, mode in enumerate(modes):
+            if idx < start:
+                continue
+            try:
+                if mode == "turning":
+                    picks_saved += save_turning_picks()
+                else:
+                    rows, _skipped, _mom = compute_screener_rows(mode)
+                    if mode == "radar":
+                        rows = sorted(rows, key=lambda r: (
+                            2 if r.get("breakout") == "季線新高" else (1 if r.get("breakout") else 0),
+                            r.get("vol_ratio") or 0, r.get("streak") or 0, r.get("pct") or 0),
+                            reverse=True)
+                    else:
+                        rows = sorted(rows, key=lambda r: (
+                            r.get("score") if r.get("score") is not None else -1), reverse=True)
+                    picks_saved += save_picks(mode, rows,
+                                              top_n=(10 if mode in ("blackhorse", "radar") else 5))
+            except Exception as exc:
+                print(f"❌ {mode} 選股名單快照失敗，繼續後續階段: {exc}")
+                pick_failures.append(mode)
+            _job_mark_progress(job_name, "picks", idx + 1, len(modes))
         _job_mark_progress(job_name, "done", 1, 1)
+        current_stage = "done"
 
-    # 月度回顧不另開一條 Render／CRON 工作；沿用每日快照的既有安全觸發。
-    # 當月最後一日才封存，且使用同月快照鍵 upsert，所以重試不會累積重複紀錄。
-    monthly_status = archive_monthly_reviews_if_due(taiwan_today())
-    # 每日快照完成後，若今天正好是月末／季末最後交易日，
-    # 排行榜結算通知改為管理員手動發送，不在每日快照自動推播。
-    settlement_push_status = "改為管理員手動發送"
-
-    missing_after = get_missing_portfolio_snapshot_user_ids(taiwan_today())
+    monthly_status = archive_monthly_reviews_if_due(today)
+    missing_after = get_missing_portfolio_snapshot_user_ids(today)
     if missing_after is None:
-        portfolio_status = "；持股快照完整性待確認"
+        portfolio_status_text = "；組合快照完整性待確認"
     elif missing_after:
-        portfolio_status = (f"；持股快照尚缺 {len(missing_after)} 位，下一次會自動補跑："
-                            f"{','.join(str(uid) for uid in missing_after[:5])}")
+        portfolio_status_text = (f"；組合快照尚缺 {len(missing_after)} 位："
+                                 f"{','.join(str(uid) for uid in missing_after[:5])}")
     else:
-        portfolio_status = f"；持股快照完整 {len(user_ids)}/{len(user_ids)}"
-    pick_status = (f"；選股失敗但未阻斷後續：{','.join(pick_failures)}"
+        portfolio_status_text = f"；組合快照完整 {len(user_ids)}/{len(user_ids)}"
+    pick_status = (f"；選股失敗但未阻斷核心快照：{','.join(pick_failures)}"
                    if pick_failures else "")
-    return (f"組合本次續跑處理 {saved}（略過 {skipped}，共 {len(user_ids)}）、"
-            f"自選本次 {wl_saved}/{len(wl_users)}、產業 {ind_saved}、"
-            f"選股名單 {picks_saved}、排行榜名次 {rank_saved}、"
-            f"產業近期表現 {ind_perf_saved}、大盤 {taiex_close}、"
-            f"排行榜結算提醒：{settlement_push_status}"
-            f"{portfolio_status}{pick_status}；{monthly_status}")
+    return (f"組合報酬快照 {portfolio_saved}/{len(user_ids)}（略過 {portfolio_skipped}）、"
+            f"排行榜名次快照 {rank_saved} 筆、今日排行榜資料日已驗證、"
+            f"自選評分快照 {wl_saved}/{len(wl_users)}、產業動能 {ind_saved}、"
+            f"選股名單 {picks_saved}、產業近期表現 {ind_perf_saved}、大盤收盤 {taiex_close}"
+            f"{portfolio_status_text}{pick_status}；{monthly_status}")
 
 
 # ── 系統健康／資料清理輔助 ──
@@ -19524,11 +19768,9 @@ def _do_warmup():
             print(f"❌ 預熱 {mode} 失敗（{elapsed:.1f}s）: {e}")
             done.append(f"{mode} 失敗（{elapsed:.1f}s）")
 
-    # 排行榜在收盤後整合；週六、週日沒有盤中行情，因此直接用
-    # 最近一個交易日的已保存快照建立排行榜。這樣週末 warmup 也能
-    # 產生 leaderboard_page，使用者開頁時就只需讀快照，不會卡在「建立最新快照」。
-    # 平日早上／中午仍不為了排行榜額外重算一年行情。
-    if taiwan_today().weekday() >= 5 or taiwan_now().hour >= 16:
+    # 排行榜在正式收盤後整合；台股 13:30 收盤，不必等到 16:00。
+    # 週末則使用最近一個交易日的已保存快照。
+    if taiwan_today().weekday() >= 5 or _taiwan_post_close():
         try:
             # 若持久化頁面的曲線最新日還不是今天，收盤 warmup 必須重建一次；
             # 不能因快照仍在有效期限內就把前一交易日排名當成今日排名。
