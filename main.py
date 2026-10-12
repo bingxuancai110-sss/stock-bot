@@ -6276,6 +6276,82 @@ _HOME_INTRADAY_REFRESH_LOCK = threading.Lock()
 _HOME_INTRADAY_REFRESH_RUNNING = set()
 _HOME_INTRADAY_REFRESH_LAST_START = {}
 _HOME_INTRADAY_REFRESH_MIN_GAP = 5.0
+_HOME_INTRADAY_PAYLOAD_SNAPSHOT_PREFIX = "homepage_intraday_payload:"
+_HOME_INTRADAY_PAYLOAD_SNAPSHOT_SAVE_LOCK = threading.Lock()
+_HOME_INTRADAY_PAYLOAD_SNAPSHOT_SAVE_LAST = {}
+
+
+def _home_intraday_payload_snapshot_key(uid):
+    return _HOME_INTRADAY_PAYLOAD_SNAPSHOT_PREFIX + str(uid).strip()
+
+
+def _save_home_intraday_payload_snapshot(uid, payload):
+    """Persist a completed same-day calculation so a Render restart can serve it immediately."""
+    uid_key = str(uid).strip()
+    if not uid_key or not isinstance(payload, dict):
+        return False
+    portfolio = payload.get("portfolio") or {}
+    if not portfolio.get("ready"):
+        return False
+    day = taiwan_today().isoformat()
+    now = time.time()
+    with _HOME_INTRADAY_PAYLOAD_SNAPSHOT_SAVE_LOCK:
+        if now - float(_HOME_INTRADAY_PAYLOAD_SNAPSHOT_SAVE_LAST.get(uid_key) or 0) < 20:
+            return False
+        _HOME_INTRADAY_PAYLOAD_SNAPSHOT_SAVE_LAST[uid_key] = now
+
+    snapshot_payload = {"day": day, "saved_at": now, "data": payload}
+    def writer():
+        try:
+            _save_shared_data_snapshot(
+                _home_intraday_payload_snapshot_key(uid_key), snapshot_payload,
+                data_date=taiwan_today(),
+                source_meta={"source": "homepage_intraday_completed_payload", "day": day},
+            )
+        except Exception as exc:
+            print("⚠️ 保存首頁今日績效快照失敗 uid=%s error=%s" % (
+                uid_key, type(exc).__name__), flush=True)
+    try:
+        threading.Thread(target=writer, name="home-intraday-payload-save", daemon=True).start()
+        return True
+    except Exception:
+        return False
+
+
+def _restore_home_intraday_payload_snapshot(uid, intraday_now, post_close_now):
+    """Load only today's completed calculation and never mix intraday with final-close data."""
+    try:
+        saved = _load_shared_data_snapshot(
+            _home_intraday_payload_snapshot_key(uid), max_age_seconds=24 * 3600)
+        today = taiwan_today().isoformat()
+        if not saved or str(saved.get("data_date") or "")[:10] != today:
+            return None
+        wrapper = saved.get("payload") or {}
+        if not isinstance(wrapper, dict) or str(wrapper.get("day") or "") != today:
+            return None
+        data = wrapper.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("portfolio"), dict):
+            return None
+        if not data["portfolio"].get("ready"):
+            return None
+        # After 13:30, only a completed official-close payload is safe to restore.
+        if post_close_now and bool(data.get("market_open")):
+            return None
+        if intraday_now and not bool(data.get("market_open")):
+            return None
+        restored = dict(data)
+        restored["portfolio"] = dict(data.get("portfolio") or {})
+        restored["market"] = dict(data.get("market") or {}) if data.get("market") else None
+        restored["quotes"] = dict(data.get("quotes") or {})
+        restored["portfolio"]["same_day_cache"] = True
+        restored["portfolio"]["cache_age_seconds"] = max(
+            0, int(time.time() - float(wrapper.get("saved_at") or 0)))
+        restored["note"] = "先顯示今天最近一次完整計算結果，背景正在驗證最新官方行情；資料更新後會自動刷新。"
+        return restored
+    except Exception as exc:
+        print("⚠️ 還原首頁今日績效快照失敗 uid=%s error=%s" % (
+            str(uid).strip(), type(exc).__name__), flush=True)
+        return None
 
 
 def _sticky_home_quotes(uid, fresh_quotes):
@@ -6456,14 +6532,14 @@ def _refresh_home_intraday_payload_sync(uid):
             len(home_suffix_map), len(codes)), flush=True)
         fresh_price_map = _fetch_twse_mis_quotes(
             codes, market_suffix=home_suffix_map, force_refresh=True,
-            cache_result=False, quick_mode=False)
+            cache_result=False, quick_mode=True)
         fresh_contribution_quotes = {
             str(code): dict(quote) for code, quote in (fresh_price_map or {}).items()
             if _mis_quote_is_current_for_contribution(quote)
         }
         # 再把缺漏的股票整批補抓兩輪；只請求缺漏代號，不重抓已成功的股票。
         # 這裡刻意不用短輪詢的重試冷卻，因為首頁首次載入必須先盡量取得完整組合。
-        for retry_round in range(2):
+        for retry_round in range(1):
             missing_codes = [code for code in codes if code not in fresh_contribution_quotes]
             if not missing_codes:
                 break
@@ -6471,7 +6547,7 @@ def _refresh_home_intraday_payload_sync(uid):
             try:
                 retry_quotes = _fetch_twse_mis_quotes(
                     missing_codes, market_suffix=_home_market_suffix_map(missing_codes),
-                    force_refresh=True, cache_result=False, quick_mode=False)
+                    force_refresh=True, cache_result=False, quick_mode=True)
             except Exception as retry_exc:
                 print("⚠️ 首頁缺漏行情整批重試 %s 失敗：%s" % (
                     retry_round + 1, type(retry_exc).__name__), flush=True)
@@ -6734,6 +6810,7 @@ def _schedule_home_intraday_payload_refresh(uid):
                         "at": time.time(),
                         "data": payload,
                     }
+                _save_home_intraday_payload_snapshot(uid_key, payload)
                 portfolio = payload.get("portfolio") or {}
                 print("⚡ 首頁盤中資料背景刷新完成 uid=%s contribution_rows=%s stale=%s elapsed=%.0fms" % (
                     uid_key, len(portfolio.get("positive") or []) + len(portfolio.get("negative") or []),
@@ -6828,20 +6905,42 @@ def _build_home_intraday_payload(uid):
         )
         return cached_copy
 
-    started = time.monotonic()
-    refreshed = _refresh_home_intraday_payload_sync(uid)
-    if (isinstance(refreshed, dict) and refreshed.get("ok") and
-            (refreshed.get("market_open") or post_close)):
+    # Cold start / Render restart: first try a persisted completed calculation from TODAY.
+    # If there is none, do not block the page on several MIS timeouts; start one background
+    # refresh and return a pending payload so the browser can poll for the completed result.
+    restored = _restore_home_intraday_payload_snapshot(uid, intraday_now, post_close_now)
+    if isinstance(restored, dict):
         with _HOME_INTRADAY_PAYLOAD_CACHE_LOCK:
             _HOME_INTRADAY_PAYLOAD_CACHE[str(uid).strip()] = {
-                "day": day, "at": time.time(), "data": refreshed,
+                "day": day, "at": time.time(), "data": restored,
             }
-        portfolio = refreshed.get("portfolio") or {}
-        print("⏱️ 首頁完整盤中行情回應：正負貢獻列 %s 筆、缺漏 %s 檔、耗時 %.0fms" % (
-            len(portfolio.get("positive") or []) + len(portfolio.get("negative") or []),
-            int(portfolio.get("stale_count") or 0),
-            (time.monotonic() - started) * 1000), flush=True)
-    return refreshed
+        _schedule_home_intraday_payload_refresh(uid)
+        return restored
+
+    refresh_started = _schedule_home_intraday_payload_refresh(uid)
+    market_cached = None
+    if intraday_now:
+        with _realtime_cache_lock:
+            cached_index = (_taiex_intraday_cache.get("data")
+                            if _taiex_intraday_cache.get("day") == day else None)
+            cached_index_at = float(_taiex_intraday_cache.get("at") or 0)
+        if isinstance(cached_index, dict):
+            market_cached = dict(cached_index)
+            market_cached["stale"] = bool(time.time() - cached_index_at > TAIEX_INTRADAY_MAX_AGE_SECONDS)
+            market_cached["cache_age_seconds"] = max(0, int(time.time() - cached_index_at))
+    return {
+        "ok": True,
+        # Keep polling enabled while the first completed calculation is being produced,
+        # even if this request happens just after market close.
+        "market_open": True,
+        "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
+        "market": market_cached,
+        "quotes": {},
+        "portfolio": {"pct": None, "relative": None, "positive": [], "negative": [],
+                      "stale_names": [], "stale_count": 0, "ready": False,
+                      "refreshing": bool(refresh_started)},
+        "note": "正在背景取得並驗證今日官方行情；完成後會自動顯示組合與相對大盤，不會用前一交易日數字代替。",
+    }
 
 
 def _position_change_journal_status(log):
@@ -9528,7 +9627,7 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
     def request_mis_batch(batch):
         last_exc = None
         attempts = 1 if quick_mode else 2
-        timeout_seconds = 2.5 if quick_mode else 6.0
+        timeout_seconds = 2.5 if quick_mode else 3.5
         for attempt in range(attempts):
             try:
                 response = requests.get(
@@ -34492,6 +34591,255 @@ body #app-page-content .rank-situation .rank-situation-title .rank-situation-bad
   }
 }
 
+
+/* V264: prevent ranking detail horizontal overflow.
+   Fixes two causes seen on iOS: nested history spans inheriting nowrap from the
+   legacy .rank-detail-body rule, and expanded bot-history summaries inheriting
+   the old 47px left margin. Layout is container-driven rather than relying only
+   on viewport media queries (some in-app browsers report a wider layout viewport). */
+#app-page-content,
+#app-page-content .rank-rows,
+#app-page-content .rank-rows .rank-card,
+#app-page-content .rank-rows .rank-card > .rank-detail,
+#app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body {
+  min-width:0 !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+}
+#app-page-content { overflow-x:clip !important; }
+#app-page-content .rank-rows { width:100% !important; overflow-x:clip !important; }
+#app-page-content .rank-rows .rank-card { overflow-x:clip !important; }
+
+/* Public holding details: columns respond to the card's usable width, not device DPI. */
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body {
+  display:grid !important;
+  grid-template-columns:repeat(auto-fit, minmax(min(100%, 250px), 1fr)) !important;
+  gap:8px 14px !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:8px 0 0 !important;
+  padding:0 !important;
+  overflow:visible !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > .rank-detail-item {
+  display:flex !important;
+  flex-direction:column !important;
+  align-items:flex-start !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  box-sizing:border-box !important;
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
+}
+#app-page-content .rank-rows .rank-card .rank-detail-item em,
+#app-page-content .rank-rows .rank-card .rank-detail-value,
+#app-page-content .rank-rows .rank-card .rank-detail-return,
+#app-page-content .rank-rows .rank-card .rank-holding-weight,
+#app-page-content .rank-rows .rank-card .rank-detail-item b,
+#app-page-content .rank-rows .rank-card .rank-detail-item strong {
+  min-width:0 !important;
+  max-width:100% !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  box-sizing:border-box !important;
+}
+
+/* Bot holdings and history panels must stay inside the rank card. */
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-hold-list,
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-history-list {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:10px 0 0 !important;
+  padding:0 !important;
+  box-sizing:border-box !important;
+  overflow:clip !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-hold-list > .rank-detail-body,
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-history-list > .rank-detail-body {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:8px 0 0 !important;
+  padding:0 !important;
+  box-sizing:border-box !important;
+  overflow:clip !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold,
+#app-page-content .rank-rows .rank-card .bot-cash-row {
+  display:grid !important;
+  grid-template-columns:minmax(0,1fr) 48px 58px !important;
+  gap:5px 7px !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-name,
+#app-page-content .rank-rows .rank-card .bot-hold-name small,
+#app-page-content .rank-rows .rank-card .bot-hold-meta,
+#app-page-content .rank-rows .rank-card .bot-cash-name,
+#app-page-content .rank-rows .rank-card .bot-cash-name small,
+#app-page-content .rank-rows .rank-card .bot-cash-note {
+  min-width:0 !important;
+  max-width:100% !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  box-sizing:border-box !important;
+}
+
+/* Repair nested history content: especially .bot-history-reason-buy, which used
+   to inherit white-space:nowrap from the old generic rank-detail span rule. */
+#app-page-content .rank-rows .rank-card .bot-history-timeline {
+  display:block !important;
+  position:relative !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  box-sizing:border-box !important;
+  overflow:visible !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-timeline-item {
+  display:grid !important;
+  grid-template-columns:58px minmax(0,1fr) !important;
+  column-gap:12px !important;
+  align-items:start !important;
+  position:relative !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  box-sizing:border-box !important;
+  overflow:hidden !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-timeline:before { left:62px !important; }
+#app-page-content .rank-rows .rank-card .bot-history-dot { left:58px !important; }
+#app-page-content .rank-rows .rank-card .bot-history-left {
+  display:block !important;
+  grid-column:1 !important;
+  grid-row:1 !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  text-align:right !important;
+  padding:1px 4px 0 0 !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-date,
+#app-page-content .rank-rows .rank-card .bot-history-pnl,
+#app-page-content .rank-rows .rank-card .bot-history-left small {
+  display:inline-block !important;
+  white-space:normal !important;
+  max-width:100% !important;
+  overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-content {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  padding:0 0 1px 12px !important;
+  margin:0 !important;
+  box-sizing:border-box !important;
+  overflow:clip !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-row {
+  display:flex !important;
+  flex-direction:column !important;
+  align-items:flex-start !important;
+  gap:3px !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-main {
+  display:flex !important;
+  flex-wrap:wrap !important;
+  align-items:baseline !important;
+  gap:4px 6px !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-price,
+#app-page-content .rank-rows .rank-card .bot-history-hold,
+#app-page-content .rank-rows .rank-card .bot-history-reason {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-main b,
+#app-page-content .rank-rows .rank-card .bot-history-main small {
+  display:inline-block !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  word-break:break-word !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-reason-buy,
+#app-page-content .rank-rows .rank-card .bot-history-reason span {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  word-break:break-word !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-reason {
+  padding:5px 7px !important;
+  margin:3px 0 0 !important;
+  line-height:1.45 !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-all {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:8px 0 0 !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-all > summary {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:8px 0 0 !important;
+  padding:10px 8px !important;
+  box-sizing:border-box !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
+  text-align:left !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-all-body {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:6px 0 0 !important;
+  padding:0 !important;
+  box-sizing:border-box !important;
+  overflow:clip !important;
+}
+
 </style>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
@@ -36965,8 +37313,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     }).catch(function(){});
   }
   function refresh(){
-    // 大盤有獨立 API；即使個股批次較慢或部分失敗，也會單獨更新大盤數字。
-    refreshMarket();
+    // 大盤與持股由同一份績效 payload 回傳，避免每輪再獨立打一次 MIS 指數請求，
+    // 減少重複連線與上游競爭；背景更新完成後由同一 API 一次更新兩者。
     // stopped 時仍然要送出請求（間隔已拉長到 5 分鐘），
     // 由伺服器的 market_open 決定要不要恢復——判斷時段的事交給伺服器，
     // 前端自己算時區在 iOS Safari 上出過事（持股頁那個 bug）。
