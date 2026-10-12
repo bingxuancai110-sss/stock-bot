@@ -6643,13 +6643,12 @@ def _refresh_home_intraday_payload_sync(uid):
                 "basis_text": exposure_label(row),
                 "realized_pl": realized_value,
             })
-        # 直接以有效行情算出的全部正負貢獻加總；不能因為另有少數股票缺價，
-        # 就把已經存在的正負貢獻與組合數字一起改成「資料不足」。
-        # stale_names / stale_count 仍會揭露缺漏，提醒這是目前有效行情的貢獻合計。
+        # A partial sum is not the portfolio's total return. Individual fresh quote rows can
+        # still be listed, but the aggregate stays unavailable until every holding is current.
         stale_codes = [code for code in codes if code not in fresh_contribution_quotes]
         stale_names = [stock_display_name(code, {}, None) for code in stale_codes]
         portfolio_pct = (sum(item["contribution"] for item in contribution_rows)
-                         if contribution_rows else None)
+                         if contribution_rows and not stale_codes else None)
         positive = sorted((item for item in contribution_rows if item["contribution"] > 0),
                           key=lambda item: item["contribution"], reverse=True)[:5]
         negative = sorted((item for item in contribution_rows if item["contribution"] < 0),
@@ -33367,8 +33366,9 @@ def web_leaderboard(uid):
                 span = r.get("days") or 0
             else:
                 span = r.get("season_days") or 0
-            span_html = (f'<span class="badge">樣本 {span} 天｜參考排名</span>'
-                         if span < 10 else f'<span>樣本 {span} 天</span>')
+            sample_note = '<small>樣本偏少・參考排名</small>' if span < 10 else ''
+            span_html = (f'<span class="rank-meta-item rank-meta-sample">'
+                         f'<em>有效樣本</em><b class="rank-meta-value">{span} 天{sample_note}</b></span>')
 
             supporting = []
             # 對照數字跟著目前所看的榜單走，避免短線／賽季畫面一直拿長線累計比較。
@@ -33377,13 +33377,16 @@ def web_leaderboard(uid):
             # 長線：主數字＝加入後累計，對照近30天。
             if key == "m30" and r.get("season_ret") is not None:
                 sc = "up" if r["season_ret"] >= 0 else "down"
-                supporting.append(f'<span><em>本季</em> <span class="num {sc}">{r["season_ret"]:+.1f}%</span></span>')
+                supporting.append(f'<span class="rank-meta-item"><em>本季</em>'
+                                  f'<b class="rank-meta-value num {sc}">{r["season_ret"]:+.1f}%</b></span>')
             elif key == "ret" and r.get("m30") is not None:
                 sc = "up" if r["m30"] >= 0 else "down"
-                supporting.append(f'<span><em>短線近30天</em> <span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
+                supporting.append(f'<span class="rank-meta-item"><em>短線近 30 天</em>'
+                                  f'<b class="rank-meta-value num {sc}">{r["m30"]:+.1f}%</b></span>')
             elif key == "season_ret" and r.get("m30") is not None:
                 sc = "up" if r["m30"] >= 0 else "down"
-                supporting.append(f'<span><em>短線近30天</em> <span class="num {sc}">{r["m30"]:+.1f}%</span></span>')
+                supporting.append(f'<span class="rank-meta-item"><em>短線近 30 天</em>'
+                                  f'<b class="rank-meta-value num {sc}">{r["m30"]:+.1f}%</b></span>')
             excess_key = {"m30": "m30_excess", "ret": "long_excess", "season_ret": "season_excess", "month_ret": "month_excess"}.get(key, "long_excess")
             mkt_key = {"m30": "mkt_ret", "ret": "mkt_ret", "season_ret": "season_mkt_ret", "month_ret": "month_mkt_ret"}.get(key, "mkt_ret")
             ex = r.get(excess_key)
@@ -33391,19 +33394,23 @@ def web_leaderboard(uid):
                 w = "贏" if ex >= 0 else "輸"
                 mkt = r.get(mkt_key)
                 mkt_txt = f"（大盤 {mkt:+.1f}%）" if mkt is not None else ""
-                supporting.append(f'<span><em>超額報酬</em> {w} {abs(ex):.1f}%{mkt_txt}</span>')
+                supporting.append(f'<span class="rank-meta-item rank-meta-excess"><em>超額報酬</em>'
+                                  f'<b class="rank-meta-value">{w} {abs(ex):.1f}% {mkt_txt}</b></span>')
             mdd_key = {"m30": "m30_mdd", "ret": "long_mdd", "season_ret": "season_mdd", "month_ret": "month_mdd"}.get(key, "long_mdd")
             mdd = r.get(mdd_key)
             if mdd is not None:
-                supporting.append(f'<span><em>最大回檔</em> <span class="num">-{mdd:.1f}%</span></span>')
+                supporting.append(f'<span class="rank-meta-item"><em>最大回檔</em>'
+                                  f'<b class="rank-meta-value num">-{mdd:.1f}%</b></span>')
             stab_key = {"m30": "m30_stability", "ret": "long_stability", "season_ret": "season_stability"}.get(key, "long_stability")
             stab = r.get(stab_key)
             if stab and stab != "資料不足":
-                supporting.append(f'<span><em>穩定度</em> {stab}</span>')
+                supporting.append(f'<span class="rank-meta-item"><em>穩定度</em>'
+                                  f'<b class="rank-meta-value">{safe_html_text(str(stab))}</b></span>')
             holdings_text = f'{r["holdings"]} 檔'
             if r.get("etf_holdings"):
                 holdings_text += f'（含 ETF {r["etf_holdings"]} 檔）'
-            supporting.append(f'<span><em>持股</em> {holdings_text}</span>')
+            supporting.append(f'<span class="rank-meta-item"><em>持股</em>'
+                              f'<b class="rank-meta-value">{holdings_text}</b></span>')
 
             # 機器人：只準備明細內容，卡片本身沿用真人那一套。
             # 先前另外寫了一份卡片 HTML，版面就跟真人不一致，
@@ -33623,7 +33630,7 @@ def web_leaderboard(uid):
     <span class="rank-return num {cls}">{main_v:+.2f}%</span>
     <span class="rank-movement">{movement}</span>
   </div>
-  <div class="rank-meta">{''.join(supporting)}<span>{span_html}</span></div>
+  <div class="rank-meta">{''.join(supporting)}{span_html}</div>
   {detail}
 </div>""")
         return f'<div class="rows rank-rows">{"".join(out)}</div>'
@@ -34166,9 +34173,9 @@ body #app-page-content .rank-situation .rank-situation-title .rank-situation-bad
 .rank-rows .rank-card .rank-honour { min-width:0 !important; max-width:100% !important; box-sizing:border-box !important; }
 #app-page-content .rank-rows .rank-card .rank-honour > div,
 .rank-rows .rank-card .rank-honour > div { min-width:0 !important; overflow-wrap:anywhere !important; }
-@media (min-width:600px) {
+@media (min-width:600px) and (max-width:1099px) {
   #app-page-content .rank-rows .rank-card .rank-meta,
-  .rank-rows .rank-card .rank-meta { grid-template-columns:repeat(3,minmax(0,1fr)) !important; }
+  .rank-rows .rank-card .rank-meta { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
 }
 @media (max-width:380px) {
   #app-page-content .rank-rows .rank-card,
@@ -34183,74 +34190,118 @@ body #app-page-content .rank-situation .rank-situation-title .rank-situation-bad
   .rank-rows .rank-card .rank-number { width:31px !important; min-width:31px !important; max-width:31px !important; }
 }
 
-/* V261: final mobile leaderboard override. Treat narrow Safari viewports as phones,
-   even when the embedded page reports a wider CSS viewport. */
-@media (max-width: 760px) {{
+/* V262: final leaderboard layout. No viewport-dependent columns: iOS webviews may report a 980px layout viewport.
+   Every metric gets its own label/value tile so line-wrapping cannot separate labels from their numbers. */
+#app-page-content .rank-rows,
+.rank-rows {
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+}
+#app-page-content .rank-rows .rank-card,
+.rank-rows .rank-card {
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+  box-sizing:border-box !important; overflow:hidden !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta,
+.rank-rows .rank-card .rank-meta {
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  align-items:stretch !important;
+  gap:8px !important;
+  margin:13px 0 0 42px !important;
+  width:auto !important; min-width:0 !important; box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta-item,
+.rank-rows .rank-card .rank-meta-item {
+  display:flex !important; flex-direction:column !important; align-items:flex-start !important;
+  justify-content:flex-start !important; gap:4px !important;
+  min-width:0 !important; max-width:100% !important; min-height:54px !important;
+  margin:0 !important; padding:8px 9px !important;
+  border:1px solid #E2E9EF !important; border-radius:10px !important;
+  background:#F5F8FA !important; color:#26394A !important;
+  box-sizing:border-box !important; white-space:normal !important; overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta-item > em,
+.rank-rows .rank-card .rank-meta-item > em {
+  display:block !important; margin:0 !important; padding:0 !important;
+  color:#718092 !important; font-size:10.5px !important; line-height:1.3 !important;
+  font-style:normal !important; font-weight:750 !important; white-space:normal !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta-value,
+.rank-rows .rank-card .rank-meta-value {
+  display:block !important; width:100% !important; max-width:100% !important; min-width:0 !important;
+  margin:0 !important; padding:0 !important; border:0 !important; border-radius:0 !important;
+  background:transparent !important; color:#26394A !important;
+  font-size:13px !important; line-height:1.4 !important; font-weight:850 !important;
+  text-align:left !important; white-space:normal !important; overflow-wrap:anywhere !important;
+  font-variant-numeric:tabular-nums !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta-value.up,
+.rank-rows .rank-card .rank-meta-value.up { color:#B42318 !important; }
+#app-page-content .rank-rows .rank-card .rank-meta-value.down,
+.rank-rows .rank-card .rank-meta-value.down { color:#067647 !important; }
+#app-page-content .rank-rows .rank-card .rank-meta-value small,
+.rank-rows .rank-card .rank-meta-value small {
+  display:block !important; margin-top:3px !important; color:#9A6B2F !important;
+  font-size:9px !important; line-height:1.3 !important; font-weight:700 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta-excess,
+.rank-rows .rank-card .rank-meta-excess { grid-column:auto !important; min-height:54px !important; }
+#app-page-content .rank-rows .rank-card .rank-meta-excess .rank-meta-value,
+.rank-rows .rank-card .rank-meta-excess .rank-meta-value { overflow-wrap:normal !important; }
+#app-page-content .rank-rows .rank-card .rank-row-main,
+.rank-rows .rank-card .rank-row-main {
+  grid-template-columns:minmax(0,1fr) max-content !important;
+  grid-template-areas:"primary returns" "movement movement" !important;
+  column-gap:8px !important; row-gap:7px !important; min-width:0 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-primary-line,
+.rank-rows .rank-card .rank-primary-line {
+  min-width:0 !important; grid-template-columns:34px minmax(0,1fr) !important; gap:8px !important;
+}
+#app-page-content .rank-rows .rank-card .name,
+.rank-rows .rank-card .name {
+  min-width:0 !important; max-width:100% !important; white-space:normal !important;
+  overflow:visible !important; text-overflow:clip !important; overflow-wrap:anywhere !important;
+  line-height:1.35 !important; font-size:clamp(14px,3.8vw,17px) !important;
+}
+#app-page-content .rank-rows .rank-card .rank-return,
+.rank-rows .rank-card .rank-return {
+  max-width:100% !important; white-space:nowrap !important; font-size:clamp(15px,4vw,19px) !important;
+  font-variant-numeric:tabular-nums !important; align-self:start !important;
+}
+#app-page-content .rank-rows .rank-card .rank-movement,
+.rank-rows .rank-card .rank-movement {
+  margin-left:42px !important; min-width:0 !important; white-space:normal !important; overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .rank-detail,
+#app-page-content .rank-rows .rank-card .rank-private,
+.rank-rows .rank-card .rank-detail,
+.rank-rows .rank-card .rank-private {
+  margin-left:0 !important; min-width:0 !important; max-width:100% !important; width:100% !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail > summary,
+.rank-rows .rank-card > .rank-detail > summary {
+  display:flex !important; align-items:center !important; justify-content:space-between !important;
+  gap:10px !important; width:100% !important; box-sizing:border-box !important;
+  margin-left:0 !important; white-space:normal !important; overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .rank-honour,
+.rank-rows .rank-card .rank-honour {
+  display:flex !important; align-items:center !important; gap:10px !important;
+  padding:10px !important; width:100% !important; box-sizing:border-box !important; min-width:0 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-honour-icon,
+.rank-rows .rank-card .rank-honour-icon {
+  flex:0 0 42px !important; width:42px !important; height:42px !important;
+}
+@media (min-width:1100px) {
   #app-page-content .rank-rows .rank-card .rank-meta,
-  .rank-rows .rank-card .rank-meta {{
-    display:grid !important;
-    grid-template-columns:repeat(2,minmax(0,1fr)) !important;
-    gap:10px 14px !important;
-    margin:12px 0 0 42px !important;
-    width:auto !important;
-    align-items:start !important;
-  }}
-  #app-page-content .rank-rows .rank-card .rank-meta > span,
-  .rank-rows .rank-card .rank-meta > span {{
-    display:flex !important;
-    flex-direction:column !important;
-    align-items:flex-start !important;
-    min-width:0 !important;
-    max-width:100% !important;
-    white-space:normal !important;
-    overflow-wrap:anywhere !important;
-    word-break:normal !important;
-    line-height:1.4 !important;
-  }}
-  #app-page-content .rank-rows .rank-card .rank-meta > span > em,
-  .rank-rows .rank-card .rank-meta > span > em {{
-    display:block !important;
-    margin:0 !important;
-    width:100% !important;
-    white-space:normal !important;
-  }}
-  #app-page-content .rank-rows .rank-card .rank-meta .num,
-  .rank-rows .rank-card .rank-meta .num {{
-    white-space:normal !important;
-    overflow-wrap:anywhere !important;
-  }}
-  #app-page-content .rank-rows .rank-card .rank-detail,
-  #app-page-content .rank-rows .rank-card .rank-private,
-  .rank-rows .rank-card .rank-detail,
-  .rank-rows .rank-card .rank-private {{
-    margin-left:0 !important;
-    width:100% !important;
-    max-width:100% !important;
-    box-sizing:border-box !important;
-  }}
-  #app-page-content .rank-rows .rank-card > .rank-detail > summary,
-  .rank-rows .rank-card > .rank-detail > summary {{
-    display:flex !important;
-    align-items:center !important;
-    justify-content:space-between !important;
-    gap:10px !important;
-    width:100% !important;
-    box-sizing:border-box !important;
-  }}
-  #app-page-content .rank-rows .rank-card .rank-honour,
-  .rank-rows .rank-card .rank-honour {{
-    display:flex !important;
-    align-items:center !important;
-    gap:10px !important;
-    padding:10px !important;
-  }}
-  #app-page-content .rank-rows .rank-card .rank-honour-icon,
-  .rank-rows .rank-card .rank-honour-icon {{
-    flex:0 0 42px !important;
-    width:42px !important;
-    height:42px !important;
-  }}
-}}
+  .rank-rows .rank-card .rank-meta { grid-template-columns:repeat(3,minmax(0,1fr)) !important; }
+  #app-page-content .rank-rows .rank-card .rank-meta-excess,
+  .rank-rows .rank-card .rank-meta-excess { grid-column:auto !important; }
+}
+
 </style>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
@@ -36143,9 +36194,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         except (TypeError, ValueError):
             return 0.0
 
-    # 今日組合報酬直接加總已取得有效今日行情的正負貢獻。
-    # 若少數股票暫時缺價，不能因此把已經算出的貢獻整個清空；
-    # 缺漏股票會在 stale_notice 明確列出，數值代表「已取得有效行情的貢獻合計」。
+    # Do not label a partial sum as the whole portfolio's daily return. Individual fresh
+    # ticker contributions may still be shown, but the portfolio total needs complete coverage.
     portfolio_pct = None
     relative = None
 
@@ -36170,7 +36220,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         holding for holding in contribution_holdings
         if holding_day_pct(holding) is None
     ]
-    if valid_changes:
+    if valid_changes and not stale_holdings:
         portfolio_pct = sum(contribution_value(h, pct) for h, pct in valid_changes)
         relative = (portfolio_pct - market_pct
                     if market_pct is not None else None)
@@ -37803,8 +37853,8 @@ def _render_fast_portfolio_entry(uid, positions, polling_enabled=True):
      if(d.portfolio&&d.portfolio.ready){{
        renderImpact('instant-positive',d.portfolio.positive||[],true);
        renderImpact('instant-negative',d.portfolio.negative||[],false);
-       if(d.portfolio.pct!=null){{var missing=Number(d.portfolio.stale_count||0);setText('instant-total-pct','今日組合 '+fmtPct(d.portfolio.pct)+' · 相對大盤 '+(d.portfolio.relative!=null?fmtPct(d.portfolio.relative):'—')+(missing?'（另缺 '+missing+' 檔行情）':''));}}
-       else{{setText('instant-total-pct','今日尚無可加總的有效正負貢獻');}}
+       if(Number(d.portfolio.stale_count||0)===0){{setText('instant-total-pct','今日組合 '+fmtPct(d.portfolio.pct)+' · 相對大盤 '+fmtPct(d.portfolio.relative));}}
+       else{{setText('instant-total-pct','今日貢獻資料不足：尚缺 '+Number(d.portfolio.stale_count)+' 檔有效行情');}}
      }}
      if(d.note)setText('instant-foot',d.note);
    }} }}catch(e){{failures++;}}
