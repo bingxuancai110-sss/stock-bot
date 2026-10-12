@@ -9197,13 +9197,13 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             official_quote = official_quote or (
                 _fetch_twse_mis_quotes([code], {code: suffix}).get(code)
                 if include_mis and _taiwan_post_close() else None)
+            # 僅官方 MIS 報價可當成「目前盤中價」。沒有官方報價時，
+            # Yahoo 的 regularMarketPrice 可能是延遲／舊值，不能只因它有數字
+            # 就當作今天成交價；一律退回 Yahoo 最後一根有日期的日 K，並由 UI
+            # 標示為「最近交易日」。沒有任何日 K 時才保留 meta 值供資料診斷，
+            # 但不得假造今天的日期。
             close = (official_quote.get("close") if official_quote else
-                     meta.get('regularMarketPrice', 0.0))
-            # 官方 MIS 偶爾短暫沒有回傳個別代號；收盤後若 Yahoo 日 K
-            # 已經有今天的最後一根，使用該日 K close，不能退回盤中 meta 價。
-            if (not official_quote and _taiwan_post_close() and bars and
-                    bars[-1][0] == today_date):
-                close = bars[-1][1]
+                     (bars[-1][1] if bars else meta.get('regularMarketPrice', 0.0)))
             if not close or close == 0:
                 close = bars[-1][1] if bars else 0.0
 
@@ -9266,12 +9266,13 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                     close = float(sticky["close"])
 
             pct = ((close - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+            latest_bar = bars[-1] if bars else None
             high = ((official_quote.get("high") if official_quote else None) or
-                    meta.get('regularMarketDayHigh', close) or close)
+                    (latest_bar[2] if latest_bar else None) or close)
             low = ((official_quote.get("low") if official_quote else None) or
-                   meta.get('regularMarketDayLow', close) or close)
+                   (latest_bar[3] if latest_bar else None) or close)
             volume = ((official_quote.get("volume") if official_quote else None) or
-                      meta.get('regularMarketVolume', 0) or 0)
+                      (latest_bar[4] if latest_bar else 0) or 0)
 
             # --- 位階與量能：判斷「這根K棒站在什麼位置」 ---
             h20 = [b[2] for b in hist[-20:]]
@@ -9409,7 +9410,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                                (sticky.get("updated_at") if sticky else None)),
                 "close_is_final": bool(official_quote and official_quote.get("close_is_final")),
                 "close_date": (official_quote.get("close_date") if official_quote else
-                               today_date.strftime("%Y%m%d")),
+                               (bars[-1][0].strftime("%Y%m%d") if bars else None)),
                 "close_time": (official_quote.get("close_time") if official_quote else None),
                 "resistance": resistance,
                 "support": support,
@@ -9438,7 +9439,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 # 對應的日期。畫損益走勢時要靠它標出「你買在哪一天」——
                 # 只有收盤價的話，圖上永遠只能寫「近 N 個交易日」，
                 # 而「什麼時候發生的」正是圖能回答、數字回答不了的問題。
-                "close_dates": [b[0] for b in hist] + [today_date],
+                "close_dates": [b[0] for b in hist] + [
+                    (today_date if official_quote else (bars[-1][0] if bars else today_date))],
                 # 逐日高低價，供籌碼分布把當日成交量攤到價格區間。
                 # 只有收盤價的話，整天的量會全部歸在收盤那一格——
                 # 一天內震盪 5% 的標的，位置就會明顯偏掉。
@@ -34973,15 +34975,33 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         updated_at 形如 "20260901 09:59:34"；取前 8 碼跟今天比對。
         取不到日期時保守顯示「最近交易日」，不假設它是今天的。
         """
-        stamp = str(((holding.get("price") or {}).get("updated_at")) or "")
+        price = holding.get("price") or {}
+        stamp = str(price.get("updated_at") or "").strip()
+        # 只有帶有「今天」日期戳記的官方盤中報價／同日黏著報價，才能標示今天。
+        # Yahoo 日線 fallback 常沒有 updated_at；盤中不能因此把舊日漲跌誤標成今天。
         day = stamp[:8]
         if len(day) == 8 and day.isdigit():
             return "今天" if day == calendar_today.strftime("%Y%m%d") else "最近交易日"
-        return "今天" if intraday_window else "最近交易日"
+        iso_day = stamp[:10].replace("-", "")
+        if len(iso_day) == 8 and iso_day.isdigit():
+            return "今天" if iso_day == calendar_today.strftime("%Y%m%d") else "最近交易日"
+        return "最近交易日"
 
     def holding_day_pct(holding):
+        price = holding.get("price") or {}
+        # 「今日貢獻」只接受日期明確為台灣今天的報價；不能因為已收盤或非盤中，
+        # 就把昨天／更早的 Yahoo 日線 pct 當成今天的漲跌。優先檢查官方報價日期，
+        # 再檢查更新時間；任何一項都無法證明是今天，就不納入今日貢獻。
+        today_key = calendar_today.strftime("%Y%m%d")
+        close_day = str(price.get("close_date") or "").strip().replace("-", "")[:8]
+        stamp = str(price.get("updated_at") or "").strip()
+        stamp_day = stamp[:8]
+        if not (len(stamp_day) == 8 and stamp_day.isdigit()):
+            stamp_day = stamp[:10].replace("-", "")
+        if close_day != today_key or stamp_day[:8] != today_key:
+            return None
         try:
-            value = (holding.get("price") or {}).get("pct")
+            value = price.get("pct")
             return float(value) if value is not None else None
         except (TypeError, ValueError):
             return None
@@ -36739,6 +36759,18 @@ def web_portfolio(uid):
                              time.monotonic() - journal_cached[0] < _HOMEPAGE_JOURNAL_TTL)
         journal_future = None if journal_fresh else exposure_executor.submit(get_position_change_logs, uid, 5000)
         price_map = price_future.result()
+        # 今日漲跌幅／組合貢獻不能直接使用首頁歷史序列快取。
+        # 歷史序列可以先快取以加速首屏，但在計算今日貢獻前，必須重新向官方 MIS
+        # 要求今日報價，再覆蓋現價與 pct；MIS 沒回傳的股票保留歷史資料供其他區塊使用，
+        # 但下方 holding_day_pct 會因缺少今日時間戳而排除，絕不把舊 pct 算成今日貢獻。
+        if position_codes:
+            try:
+                price_map = _homepage_merge_official_quotes(
+                    price_map, position_codes, force_refresh=True)
+                print("📈 首頁今日貢獻行情已強制刷新官方 MIS：%s 檔" % len(position_codes), flush=True)
+            except Exception as exc:
+                print("⚠️ 首頁今日貢獻官方行情刷新失敗：%s: %s" % (
+                    type(exc).__name__, exc), flush=True)
         if journal_fresh:
             journal_logs = journal_cached[1]
             print("⚡ 首頁操作日誌命中短快取")
