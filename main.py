@@ -6532,14 +6532,14 @@ def _refresh_home_intraday_payload_sync(uid):
             len(home_suffix_map), len(codes)), flush=True)
         fresh_price_map = _fetch_twse_mis_quotes(
             codes, market_suffix=home_suffix_map, force_refresh=True,
-            cache_result=False, quick_mode=True)
+            cache_result=False, quick_mode=False)
         fresh_contribution_quotes = {
             str(code): dict(quote) for code, quote in (fresh_price_map or {}).items()
             if _mis_quote_is_current_for_contribution(quote)
         }
         # 再把缺漏的股票整批補抓兩輪；只請求缺漏代號，不重抓已成功的股票。
         # 這裡刻意不用短輪詢的重試冷卻，因為首頁首次載入必須先盡量取得完整組合。
-        for retry_round in range(1):
+        for retry_round in range(2):
             missing_codes = [code for code in codes if code not in fresh_contribution_quotes]
             if not missing_codes:
                 break
@@ -6547,7 +6547,7 @@ def _refresh_home_intraday_payload_sync(uid):
             try:
                 retry_quotes = _fetch_twse_mis_quotes(
                     missing_codes, market_suffix=_home_market_suffix_map(missing_codes),
-                    force_refresh=True, cache_result=False, quick_mode=True)
+                    force_refresh=True, cache_result=False, quick_mode=False)
             except Exception as retry_exc:
                 print("⚠️ 首頁缺漏行情整批重試 %s 失敗：%s" % (
                     retry_round + 1, type(retry_exc).__name__), flush=True)
@@ -6559,6 +6559,21 @@ def _refresh_home_intraday_payload_sync(uid):
             print("⚡ 首頁行情補抓第 %s 輪：有效 %s/%s 檔；本輪補抓目標 %s 檔" % (
                 retry_round + 1, len(fresh_contribution_quotes), len(codes),
                 len(missing_codes)), flush=True)
+        backup_quote_count = 0
+        if intraday:
+            missing_for_backup = [code for code in codes if code not in fresh_contribution_quotes]
+            if missing_for_backup:
+                backup_quotes = _fetch_yahoo_intraday_backup_quotes(
+                    missing_for_backup, market_suffix=_home_market_suffix_map(missing_for_backup),
+                    max_age_minutes=30)
+                for code, quote in (backup_quotes or {}).items():
+                    if _mis_quote_is_current_for_contribution(quote):
+                        fresh_price_map[code] = dict(quote)
+                        fresh_contribution_quotes[code] = dict(quote)
+                        backup_quote_count += 1
+                if backup_quote_count:
+                    print("⚠️ 首頁組合以 Yahoo 1 分 K 備援 %s/%s 檔（可能延遲、非官方即時）" % (
+                        backup_quote_count, len(missing_for_backup)), flush=True)
         # A successful quote earlier TODAY remains usable when this MIS poll is partial.
         # _sticky_home_quotes date-bounds its state, so this fallback can never cross into yesterday.
         same_day_price_map = _sticky_home_quotes(uid, fresh_price_map)
@@ -6765,8 +6780,10 @@ def _refresh_home_intraday_payload_sync(uid):
                           "positive": positive, "negative": negative,
                     "stale_names": stale_names[:6],
                     "stale_count": len(stale_names), "ready": True},
-            "note": ("首頁盤中行情已更新；若 MIS 本輪漏回個股，會沿用今天先前已成功取得的有效報價；"
-                     "絕不沿用前一交易日行情。尚未有今天有效報價的標的暫不計入整體貢獻。"),
+            "note": ("首頁盤中行情已更新；" +
+                     (f"本輪有 {backup_quote_count} 檔使用 Yahoo 1 分 K 備援（可能延遲，非官方即時）；" if backup_quote_count else "") +
+                     "若 MIS 本輪漏回個股，會沿用今天先前已成功取得的有效報價；絕不沿用前一交易日行情。"
+                     "尚未有今天有效報價的標的暫不計入整體貢獻。"),
         }
     except Exception as exc:
         print(f"⚠️ 首頁盤中行情更新失敗（uid={uid}）：{exc}")
@@ -9477,6 +9494,34 @@ REALTIME_CACHE_SECONDS = max(30, int(os.environ.get("REALTIME_CACHE_SECONDS", "3
 _TWSE_MIS_CACHE = {"day": None, "at": 0, "data": {}}
 _TWSE_MIS_CACHE_SECONDS = 5
 _TWSE_MIS_BATCH_SIZE = 20  # 持股行情優先單批；失敗時自動拆批重試
+_TWSE_MIS_SESSION_LOCAL = threading.local()
+
+
+def _twse_mis_session():
+    """每個行情工作執行緒各自維持 MIS session/cookie，避免每次都從零連線。"""
+    session = getattr(_TWSE_MIS_SESSION_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=4, pool_maxsize=4, max_retries=0)
+        session.mount("https://", adapter)
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129 Safari/537.36",
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+            "Referer": "https://mis.twse.com.tw/stock/index.jsp",
+            "Connection": "keep-alive",
+        })
+        _TWSE_MIS_SESSION_LOCAL.session = session
+        _TWSE_MIS_SESSION_LOCAL.bootstrapped = False
+    # MIS 有時會因缺少初始網站 cookie 或連線狀態而拒絕行情請求。
+    # 首頁初始化失敗不直接中止，仍讓 API 請求及外層重試有機會成功。
+    if not getattr(_TWSE_MIS_SESSION_LOCAL, "bootstrapped", False):
+        try:
+            session.get("https://mis.twse.com.tw/stock/index.jsp", timeout=(2.5, 3.5))
+        except Exception:
+            pass
+        _TWSE_MIS_SESSION_LOCAL.bootstrapped = True
+    return session
 
 
 def _taiwan_post_close(now=None):
@@ -9593,14 +9638,24 @@ def _mis_quote_is_current_for_contribution(quote, now=None, max_age_seconds=None
     # 沿用舊版持股／貢獻取用方式：官方 MIS 明確回報台灣今天的資料，
     # 即使低成交量股票的成交時間較早或 tlong 欄位缺漏，也可以沿用今天最後有效報價。
     # 但絕不跨日：close_date 必須是今天；若時間戳明確落在未來或非盤中，仍拒絕。
+    source_text = str(quote.get("source") or "")
+    is_yahoo_backup = "Yahoo Finance 1 分 K 備援" in source_text
     if parsed is None:
-        return str(quote.get("source") or "").upper().find("MIS") >= 0
+        return (not is_yahoo_backup and "MIS" in source_text.upper())
     if parsed.strftime("%Y%m%d") != today_key:
         return False
     minute_of_day = parsed.hour * 60 + parsed.minute
     current_minute = current.hour * 60 + current.minute
-    return (8 * 60 + 55 <= minute_of_day <= 13 * 60 + 30 and
-            minute_of_day <= current_minute + 1)
+    if not (8 * 60 + 55 <= minute_of_day <= 13 * 60 + 30 and
+            minute_of_day <= current_minute + 1):
+        return False
+    # Yahoo's TW quotes may be delayed; use them only as explicitly labelled backup and
+    # only while the last 1-minute bar is recent enough not to become a stale price.
+    if is_yahoo_backup:
+        trade_age = (current - parsed).total_seconds()
+        if trade_age < -60 or trade_age > 30 * 60:
+            return False
+    return True
 
 
 def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache_result=True, quick_mode=False):
@@ -9618,26 +9673,28 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
             cached = _TWSE_MIS_CACHE.get("data") or {}
             valid_cached = {c: q for c, q in cached.items()
                             if isinstance(q, dict) and str(q.get("close_date") or "").replace("-", "")[:8] == today_key}
-            if valid_cached:
-                return {c: dict(valid_cached[c]) for c in codes if c in valid_cached}
+            # 只有「這次要求的每一檔」都在快取裡，才可以直接回傳。
+            # 以前只要快取有任何一檔就 return，會把未命中的持股整批漏掉。
+            if valid_cached and all(code in valid_cached for code in codes):
+                return {c: dict(valid_cached[c]) for c in codes}
 
     symbols = _twse_mis_quote_symbols(codes, market_suffix)
     batches = [symbols[i:i + _TWSE_MIS_BATCH_SIZE] for i in range(0, len(symbols), _TWSE_MIS_BATCH_SIZE)]
 
     def request_mis_batch(batch):
         last_exc = None
-        attempts = 1 if quick_mode else 2
-        timeout_seconds = 2.5 if quick_mode else 3.5
+        # Quick requests still get one retry for transient TLS/connection resets.
+        # Portfolio refreshes use quick_mode=False and retain the more resilient 3-attempt path.
+        attempts = 2 if quick_mode else 3
+        timeout_seconds = 3.0 if quick_mode else 4.5
+        session = _twse_mis_session()
         for attempt in range(attempts):
             try:
-                response = requests.get(
+                response = session.get(
                     "https://mis.twse.com.tw/stock/api/getStockInfo.jsp",
                     params={"ex_ch": "|".join(batch), "json": "1", "delay": "0",
                             "_": int(time.time() * 1000)},
-                    headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*",
-                             "Accept-Language": "zh-TW,zh;q=0.9",
-                             "Referer": "https://mis.twse.com.tw/stock/index.jsp"},
-                    timeout=timeout_seconds)
+                    timeout=(2.5, timeout_seconds))
                 response.raise_for_status()
                 payload = response.json()
                 if not isinstance(payload, dict) or not isinstance(payload.get("msgArray"), list):
@@ -9649,7 +9706,8 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
             except Exception as exc:
                 last_exc = exc
                 if attempt + 1 < attempts:
-                    time.sleep(0.15)
+                    # 退避重試，降低瞬間連線抖動／限流造成整批行情失敗的機率。
+                    time.sleep(0.2 * (attempt + 1))
         # 非互動背景工作可把壞掉的大批次拆小重試；首頁快路徑不在單一股票上等待多輪。
         if not quick_mode and len(batch) > 1:
             mid = len(batch) // 2
@@ -9753,6 +9811,111 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
     return {code: dict(todays_cache[code]) for code in codes
             if code in todays_cache and
             str((todays_cache[code] or {}).get("close_date") or "").replace("-", "")[:8] == today_key}
+
+
+def _fetch_yahoo_intraday_backup_quotes(codes, market_suffix=None, max_age_minutes=30):
+    """Fetch a labelled Yahoo 1-minute backup only during the Taiwan regular session.
+
+    Yahoo's Taiwan feed may be delayed. This is a continuity fallback, never represented as
+    official real-time MIS. A quote is eligible only when its latest 1m bar is from today,
+    timestamped within max_age_minutes, and Yahoo supplies a prior-close baseline.
+    """
+    if not _is_taiwan_intraday_window():
+        return {}
+    codes = list(dict.fromkeys(str(c).strip() for c in (codes or []) if c))
+    if not codes:
+        return {}
+    now = taiwan_now()
+    today_key = now.strftime("%Y%m%d")
+
+    def fetch_one(code):
+        suffix = market_suffix.get(code) if isinstance(market_suffix, dict) else market_suffix
+        suffixes = [suffix] if suffix in (".TW", ".TWO") else [
+            _suffix_cache.get(code), ".TW", ".TWO"]
+        seen = set()
+        for candidate in suffixes:
+            if candidate not in (".TW", ".TWO") or candidate in seen:
+                continue
+            seen.add(candidate)
+            symbol = f"{code}{candidate}"
+            try:
+                response = requests.get(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                    params={"range": "1d", "interval": "1m", "includePrePost": "false"},
+                    headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+                    timeout=(2.5, 4.0))
+                response.raise_for_status()
+                payload = response.json()
+                rows = ((payload.get("chart") or {}).get("result") or [])
+                if not rows:
+                    continue
+                row = rows[0]
+                meta = row.get("meta") or {}
+                indicators = row.get("indicators") or {}
+                quote = ((indicators.get("quote") or [{}])[0])
+                timestamps = row.get("timestamp") or []
+                closes = quote.get("close") or []
+                highs = quote.get("high") or []
+                lows = quote.get("low") or []
+                volumes = quote.get("volume") or []
+                previous = meta.get("chartPreviousClose") or meta.get("previousClose")
+                try:
+                    previous = float(previous)
+                except (TypeError, ValueError):
+                    previous = 0.0
+                if previous <= 0:
+                    continue
+                candidates = []
+                for index, ts in enumerate(timestamps):
+                    if index >= len(closes) or closes[index] is None:
+                        continue
+                    try:
+                        price = float(closes[index])
+                    except (TypeError, ValueError):
+                        continue
+                    if price <= 0:
+                        continue
+                    bar_time = datetime.fromtimestamp(float(ts), TW_TZ)
+                    if bar_time.strftime("%Y%m%d") != today_key:
+                        continue
+                    age = (now - bar_time).total_seconds()
+                    if age < -60 or age > max(1, int(max_age_minutes)) * 60:
+                        continue
+                    candidates.append((bar_time, index, price))
+                if not candidates:
+                    continue
+                bar_time, index, price = max(candidates, key=lambda item: item[0])
+                high = highs[index] if index < len(highs) and highs[index] is not None else price
+                low = lows[index] if index < len(lows) and lows[index] is not None else price
+                volume = volumes[index] if index < len(volumes) and volumes[index] is not None else 0
+                return code, {
+                    "close": price, "previous_close": previous,
+                    "pct": (price - previous) / previous * 100,
+                    "fetched_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                    "high": float(high or price), "low": float(low or price),
+                    "volume": int(volume or 0),
+                    "updated_at": bar_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "quote_updated_at": bar_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "trade_at": bar_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "has_live_trade_price": True,
+                    "source": "Yahoo Finance 1 分 K 備援（可能延遲，非官方即時）",
+                    "close_is_final": False, "close_date": today_key,
+                    "close_time": bar_time.strftime("%H:%M:%S"),
+                    "backup_delay_possible": True,
+                }
+            except Exception:
+                continue
+        return code, None
+
+    parsed = {}
+    with ThreadPoolExecutor(max_workers=min(6, len(codes))) as pool:
+        for code, quote in pool.map(fetch_one, codes):
+            if quote:
+                parsed[code] = quote
+    if parsed:
+        print("⚠️ MIS 備援行情：Yahoo 1 分 K 有效 %s/%s 檔；資料可能延遲，已標示來源" % (
+            len(parsed), len(codes)), flush=True)
+    return parsed
 
 
 def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
@@ -10094,9 +10257,9 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 "low": float(low),
                 "volume": int(volume),
                 "source": (official_quote.get("source") if official_quote else
-                           (f"{sticky.get('source') or 'TWSE MIS'}（本次 MIS 暫缺，"
+                           (f"{sticky.get('source') or 'TWSE MIS'}（本次官方 MIS 未回傳有效報價，"
                             f"沿用今日稍早報價）" if sticky else
-                            ("Yahoo Finance 今日最後日K（官方 MIS 暫缺）"
+                            ("Yahoo Finance 今日收盤日K（官方 MIS 目前未取得有效報價；非官方即時價）"
                              if _taiwan_post_close() and bars and bars[-1][0] == today_date
                              else "Yahoo Finance 日線行情"))),
                 "updated_at": (official_quote.get("updated_at") if official_quote else
@@ -34841,6 +35004,7 @@ body #app-page-content .rank-situation .rank-situation-title .rank-situation-bad
 }
 
 
+/* V266: final phone layout override. This must ship with the page template; old cached HTML can still show the earlier two-column layout. */
 /* V265: hard mobile containment fix. Previous rules still allowed two-column
    holding summaries at phone width, so long labels were clipped at card edge. */
 #app-page-content .rank-rows,
@@ -36675,20 +36839,28 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         _first_payload_portfolio.get("relative") is not None
     )
 
-    # 首頁「今日組合／相對大盤」必須用今天的官方個股報價計算；不能沿用
-    # 持有至今的 pl_total，也不能把 Yahoo 歷史快取當成今日漲跌。先檢查現有
-    # price_map，若今日官方行情不完整，整批補抓缺漏代號並重試，再更新 holdings。
+    # 首頁今日價格與組合計算統一採用已驗證的同日即時報價。
+    # 官方 MIS 是主來源；只有 MIS 暫缺時才允許已標示、時間新鮮的 Yahoo 1 分 K 備援。
+    # 不可以因顯示層只接受 MIS，就把 API 已驗證的備援價丟掉，造成日 K 與組合績效不一致。
     try:
         price_map = price_map if isinstance(price_map, dict) else dict(price_map or {})
+        payload_quotes = (intraday_payload or {}).get("quotes") or {}
+        for payload_code, payload_quote in payload_quotes.items():
+            if (isinstance(payload_quote, dict) and
+                    str(payload_quote.get("close_date") or "").replace("-", "")[:8] == calendar_today.strftime("%Y%m%d") and
+                    _mis_quote_is_current_for_contribution(payload_quote)):
+                price_map[str(payload_code)] = dict(payload_quote)
         today_key = calendar_today.strftime("%Y%m%d")
         holding_codes = [str(h.get("code") or "").strip() for h in holdings if h.get("code")]
         valid_today_quotes = {}
         for code in holding_codes:
             quote = price_map.get(code) or (next((h.get("price") for h in holdings
                                                    if str(h.get("code") or "").strip() == code), None))
-            if (isinstance(quote, dict) and
+            quote_source = str((quote or {}).get("source") or "") if isinstance(quote, dict) else ""
+            eligible_source = ("MIS" in quote_source.upper() or
+                               "Yahoo Finance 1 分 K 備援" in quote_source)
+            if (isinstance(quote, dict) and eligible_source and
                     str(quote.get("close_date") or "").replace("-", "")[:8] == today_key and
-                    "MIS" in str(quote.get("source") or "").upper() and
                     _mis_quote_is_current_for_contribution(quote)):
                 valid_today_quotes[code] = dict(quote)
         missing_codes = [code for code in holding_codes if code not in valid_today_quotes]
@@ -36701,14 +36873,33 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
                 missing_codes, market_suffix=_home_market_suffix_map(missing_codes),
                 force_refresh=True, cache_result=(retry_round == 0), quick_mode=False)
             for code, quote in (fetched or {}).items():
+                quote_source = str(quote.get("source") or "")
+                eligible_source = ("MIS" in quote_source.upper() or
+                                   "Yahoo Finance 1 分 K 備援" in quote_source)
                 if (str(quote.get("close_date") or "").replace("-", "")[:8] == today_key and
-                        "MIS" in str(quote.get("source") or "").upper() and
-                        _mis_quote_is_current_for_contribution(quote)):
+                        eligible_source and _mis_quote_is_current_for_contribution(quote)):
                     valid_today_quotes[code] = dict(quote)
                     price_map[code] = dict(quote)
             missing_codes = [code for code in holding_codes if code not in valid_today_quotes]
             if missing_codes and retry_round < 2:
                 time.sleep(0.25 * (retry_round + 1))
+        # After MIS retries, try a fresh intraday 1m bar for any still-missing position.
+        # Backup prices retain their source label and never qualify after market close.
+        if missing_codes and intraday_window:
+            try:
+                backup_quotes = _fetch_yahoo_intraday_backup_quotes(
+                    missing_codes, market_suffix=_home_market_suffix_map(missing_codes),
+                    max_age_minutes=30)
+                for code, quote in (backup_quotes or {}).items():
+                    if _mis_quote_is_current_for_contribution(quote):
+                        valid_today_quotes[code] = dict(quote)
+                        price_map[code] = dict(quote)
+                missing_codes = [code for code in holding_codes if code not in valid_today_quotes]
+                if backup_quotes:
+                    print("⚠️ 首頁 renderer 以 Yahoo 1 分 K 備援補上 %s 檔；可能延遲，非官方即時" % (
+                        len(set(backup_quotes) - set(missing_codes))), flush=True)
+            except Exception as backup_exc:
+                print("⚠️ 首頁 renderer Yahoo 1 分 K 備援失敗：%s" % type(backup_exc).__name__, flush=True)
         if valid_today_quotes:
             # 讓曝險計算與持股 renderer 使用同一份官方今日報價，不能讓 price_map
             # 裡殘留的舊 Yahoo／舊快取優先覆蓋 holding.price。
@@ -36721,7 +36912,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             today_logs = get_position_change_logs(uid, 5000, trade_date=calendar_today)
             daily_pretrade_exposure = _build_daily_pretrade_exposure(
                 holdings, price_map, today_logs, {})
-        print("⚡ 首頁今日官方行情覆蓋：%s/%s 檔" % (
+        print("⚡ 首頁今日有效行情覆蓋（MIS／標示備援）：%s/%s 檔" % (
             len(valid_today_quotes), len(holding_codes)), flush=True)
     except Exception as quote_refresh_exc:
         print("⚠️ 首頁今日官方行情同步失敗：%s" % type(quote_refresh_exc).__name__, flush=True)
@@ -37881,6 +38072,17 @@ def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_ref
                             quotes[code] = quote
                 valid_codes = {code for code, quote in (quotes or {}).items()
                                if _mis_quote_is_current_for_contribution(quote)}
+                backup_missing = [code for code in codes if code not in valid_codes]
+                if backup_missing and _is_taiwan_intraday_window():
+                    backup_quotes = _fetch_yahoo_intraday_backup_quotes(
+                        backup_missing, market_suffix=effective_market_suffix, max_age_minutes=30)
+                    for code, quote in (backup_quotes or {}).items():
+                        if _mis_quote_is_current_for_contribution(quote):
+                            quotes[code] = dict(quote)
+                    valid_codes = {code for code, quote in (quotes or {}).items()
+                                   if _mis_quote_is_current_for_contribution(quote)}
+                    if backup_quotes:
+                        print("⚠️ 首頁歷史序列已用標示的 Yahoo 1 分 K 備援；可能延遲，非官方即時", flush=True)
                 print("📈 首頁完整行情批次：有效 %s/%s 檔；本輪補抓 %s 檔" % (
                     len(valid_codes), len(codes), len(missing_codes)), flush=True)
                 quotes = {code: quote for code, quote in (quotes or {}).items()
