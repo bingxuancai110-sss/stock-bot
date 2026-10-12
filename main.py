@@ -3856,26 +3856,34 @@ def _web_csrf_secret():
             or "change-this-web-csrf-secret")
 
 
-def current_web_csrf_token():
-    """由登入 token 派生每個登入 session 的 CSRF token，不把新欄位寫進資料庫。"""
-    token = request.args.get("t") or request.cookies.get("stockbot_token")
-    if not token:
+def _web_csrf_user_signature(user_id):
+    """由已驗證的使用者 ID 派生 CSRF 簽章，不受 iOS/LINE URL 與 Cookie 差異影響。"""
+    uid = str(user_id or "").strip()
+    if not uid:
         return ""
-    return hmac.new(_web_csrf_secret().encode("utf-8"),
-                    str(token).encode("utf-8"), hashlib.sha256).hexdigest()
+    message = ("web-csrf-user-v2:" + uid).encode("utf-8")
+    return hmac.new(_web_csrf_secret().encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def current_web_csrf_token():
+    """新版 token 綁定已登入帳號，舊表單仍由 valid_web_csrf 的相容路徑驗證。"""
+    try:
+        uid = str(current_web_user() or "").strip()
+    except Exception:
+        uid = ""
+    return _web_csrf_user_signature(uid)
 
 
 def csrf_hidden_input():
-    # Keep the exact bearer token used to sign this form alongside the signature.
-    # iOS Safari / LINE WebView may POST a fragment form with a different URL token
-    # or without the cookie; the server can still validate the original session token
-    # while ensuring it resolves to the same authenticated user.
+    # 新版簽章綁定已驗證的 user_id；附帶 bearer token 只供舊版表單過渡驗證。
     auth_token = str(request.args.get("t") or request.cookies.get("stockbot_token") or "").strip()
     token = current_web_csrf_token()
-    if not token or not auth_token:
+    if not token:
         return ""
-    return (f'<input type="hidden" name="csrf_token" value="{html.escape(token, quote=True)}">'
-            f'<input type="hidden" name="csrf_auth_token" value="{html.escape(auth_token, quote=True)}">')
+    hidden = f'<input type="hidden" name="csrf_token" value="{html.escape(token, quote=True)}">'
+    if auth_token:
+        hidden += f'<input type="hidden" name="csrf_auth_token" value="{html.escape(auth_token, quote=True)}">'
+    return hidden
 
 
 def inject_csrf_inputs(markup):
@@ -3889,23 +3897,21 @@ def inject_csrf_inputs(markup):
 
 
 def valid_web_csrf(user_id=None):
-    """Validate against the active session token without being brittle to URL/cookie drift.
-
-    LINE WebView and the SPA can render a form from a fragment carrying ?t= while the
-    subsequent POST is sent with the same token in a cookie (or vice versa). The form's
-    CSRF signature is still bound to the authenticated token; check both carriers, but
-    only accept a candidate that resolves to the same authenticated user.
-    """
+    """Validate a user-bound CSRF signature, with safe token-bound legacy fallback."""
     supplied = str(request.form.get("csrf_token", "") or "").strip()
     if not supplied:
         return False
     active_uid = str(user_id or current_web_user() or "").strip()
     if not active_uid:
         return False
+    # Preferred v2 token survives iOS Safari / LINE WebView changing whether ?t or
+    # the same session token cookie is present on the POST.
+    expected_user = _web_csrf_user_signature(active_uid)
+    if expected_user and hmac.compare_digest(expected_user, supplied):
+        return True
+    # Backward compatibility: forms already open in users' browsers still submit
+    # the old token-bound signature, but only when that token resolves to this user.
     candidates = []
-    # csrf_auth_token is the token that was present when the form was rendered.
-    # URL/cookie carriers can legitimately drift in mobile webviews; validate the
-    # rendered token too, but never allow a token belonging to another user.
     for candidate in (request.form.get("csrf_auth_token"), request.args.get("t"),
                       request.cookies.get("stockbot_token")):
         candidate = str(candidate or "").strip()
@@ -3913,11 +3919,10 @@ def valid_web_csrf(user_id=None):
             candidates.append(candidate)
     secret = _web_csrf_secret().encode("utf-8")
     for candidate in candidates:
-        # A different authenticated account's cookie must never authorize the active URL user.
         if str(resolve_web_token(candidate) or "").strip() != active_uid:
             continue
-        expected = hmac.new(secret, candidate.encode("utf-8"), hashlib.sha256).hexdigest()
-        if hmac.compare_digest(expected, supplied):
+        legacy = hmac.new(secret, candidate.encode("utf-8"), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(legacy, supplied):
             return True
     return False
 
@@ -4511,6 +4516,8 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
         conn.commit()
         cursor.close()
         clear_leaderboard_cache()
+        try: _invalidate_home_intraday_payload_cache(user_id)
+        except Exception: pass
         return True
     except Exception as e:
         conn.rollback()
@@ -4646,6 +4653,8 @@ def delete_position_exact_id(user_id, pos_id):
         if voided_logs:
             print(f"🧹 已清除被刪除 lot 對應的操作日誌：{uid} {str(code_raw).strip()} {voided_logs} 筆")
         conn.commit(); cursor.close(); clear_leaderboard_cache()
+        try: _invalidate_home_intraday_payload_cache(uid)
+        except Exception: pass
         return True, "ok"
     except Exception as exc:
         try: conn.rollback()
@@ -4758,6 +4767,8 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None,
         cursor.close()
 
         if deleted > 0:
+            try: _invalidate_home_intraday_payload_cache(uid)
+            except Exception: pass
             clear_leaderboard_cache()
         return deleted > 0
 
@@ -5002,6 +5013,8 @@ def sell_position(user_id, pos_id, sell_shares,
         )
         conn.commit()
         cursor.close()
+        try: _invalidate_home_intraday_payload_cache(uid)
+        except Exception: pass
         clear_leaderboard_cache()
         return True, None, {
             "code": str(code).strip(), "shares": sell_shares,
@@ -6248,19 +6261,32 @@ _HOME_INTRADAY_STICKY_LOCK = threading.Lock()
 _HOME_INTRADAY_STICKY_TTL = 180
 _HOME_INTRADAY_DIAG_LOCK = threading.Lock()
 _HOME_INTRADAY_DIAG_LAST_AT = 0.0
+_HOME_MIS_SINGLE_RETRY_LOCK = threading.Lock()
+_HOME_MIS_SINGLE_RETRY_LAST = {}
+_HOME_MIS_SINGLE_RETRY_GAP_SECONDS = 15.0
+# The intraday API must never hold an iPhone page open while MIS retries time out.
+# Keep the latest completed same-day portfolio calculation and refresh it in one background
+# job per user. Same-day quote snapshots may be reused; cross-day data is always discarded.
+_HOME_INTRADAY_PAYLOAD_CACHE = {}
+_HOME_INTRADAY_PAYLOAD_CACHE_LOCK = threading.Lock()
+_HOME_INTRADAY_REFRESH_LOCK = threading.Lock()
+_HOME_INTRADAY_REFRESH_RUNNING = set()
+_HOME_INTRADAY_REFRESH_LAST_START = {}
+_HOME_INTRADAY_REFRESH_MIN_GAP = 5.0
 
 
 def _sticky_home_quotes(uid, fresh_quotes):
-    """Merge official MIS quotes without allowing a partial/older response to erase good data.
-
-    The homepage used to recompute the portfolio from each partial MIS response.  Because
-    MIS can return different subsets/timestamps on adjacent requests, the displayed
-    portfolio return could jump even when the underlying market had barely moved.
-    """
+    """Merge official MIS quotes, retaining the last good quote only within the same Taiwan day."""
     now = time.time()
     uid_key = str(uid)
+    today_key = taiwan_today().isoformat()
     with _HOME_INTRADAY_STICKY_LOCK:
-        state = _HOME_INTRADAY_STICKY_CACHE.setdefault(uid_key, {"at": now, "quotes": {}})
+        state = _HOME_INTRADAY_STICKY_CACHE.get(uid_key)
+        # Never migrate an un-dated or previous-day in-memory quote into today's contribution.
+        if not isinstance(state, dict) or state.get("day") != today_key:
+            state = {"day": today_key, "at": now, "quotes": {}}
+            _HOME_INTRADAY_STICKY_CACHE[uid_key] = state
+        state.setdefault("day", today_key)
         quotes = state.setdefault("quotes", {})
         for code, quote in (fresh_quotes or {}).items():
             if not isinstance(quote, dict):
@@ -6282,8 +6308,101 @@ def _sticky_home_quotes(uid, fresh_quotes):
         return {code: dict(q) for code, q in quotes.items()}
 
 
-def _build_home_intraday_payload(uid):
-    """建立首頁盤中局部更新資料；只讀取必要行情與今日操作，不重算完整首頁。"""
+_HOME_INTRADAY_SNAPSHOT_RESTORE_LOCK = threading.Lock()
+_HOME_INTRADAY_SNAPSHOT_RESTORED_DAYS = set()
+_HOME_INTRADAY_SNAPSHOT_SAVE_LOCK = threading.Lock()
+_HOME_INTRADAY_SNAPSHOT_SAVE_LAST = {}
+
+
+def _home_intraday_quote_snapshot_key(uid):
+    return "homepage_intraday_quotes:" + str(uid).strip()
+
+
+def _restore_home_intraday_quotes(uid):
+    """Restore only valid official quotes saved during THIS Taiwan trading day."""
+    uid_key = str(uid).strip()
+    day = taiwan_today().isoformat()
+    restore_key = (uid_key, day)
+    with _HOME_INTRADAY_SNAPSHOT_RESTORE_LOCK:
+        if restore_key in _HOME_INTRADAY_SNAPSHOT_RESTORED_DAYS:
+            return _sticky_home_quotes(uid_key, {})
+        _HOME_INTRADAY_SNAPSHOT_RESTORED_DAYS.add(restore_key)
+    try:
+        saved = _load_shared_data_snapshot(_home_intraday_quote_snapshot_key(uid_key),
+                                           max_age_seconds=24 * 3600)
+        if not saved or str(saved.get("data_date") or "")[:10] != day:
+            return _sticky_home_quotes(uid_key, {})
+        payload = saved.get("payload") or {}
+        if not isinstance(payload, dict) or str(payload.get("day") or "") != day:
+            return _sticky_home_quotes(uid_key, {})
+        restored = {}
+        for code, quote in (payload.get("quotes") or {}).items():
+            if not isinstance(quote, dict):
+                continue
+            if _mis_quote_is_current_for_contribution(quote):
+                restored[str(code)] = dict(quote)
+        if restored:
+            print("⚡ 還原今日最後有效行情快照 uid=%s quotes=%s" % (uid_key, len(restored)), flush=True)
+        return _sticky_home_quotes(uid_key, restored)
+    except Exception as exc:
+        print("⚠️ 還原今日行情快照失敗：%s" % type(exc).__name__, flush=True)
+        return _sticky_home_quotes(uid_key, {})
+
+
+def _schedule_save_home_intraday_quotes(uid, quotes):
+    """Persist today's quote continuity in the background, throttled per user."""
+    uid_key = str(uid).strip()
+    day = taiwan_today().isoformat()
+    clean = {}
+    for code, quote in (quotes or {}).items():
+        if not isinstance(quote, dict) or not _mis_quote_is_current_for_contribution(quote):
+            continue
+        try:
+            close = float(quote.get("close"))
+            previous = float(quote.get("previous_close"))
+            pct = float(quote.get("pct"))
+        except (TypeError, ValueError):
+            continue
+        if close <= 0 or previous <= 0:
+            continue
+        clean[str(code)] = {
+            "close": close, "previous_close": previous, "pct": pct,
+            "updated_at": str(quote.get("updated_at") or ""),
+            "quote_updated_at": str(quote.get("quote_updated_at") or ""),
+            "trade_at": str(quote.get("trade_at") or ""),
+            "source": str(quote.get("source") or "TWSE MIS"),
+            "close_date": str(quote.get("close_date") or "").replace("-", "")[:8],
+            "close_time": str(quote.get("close_time") or ""),
+            "has_live_trade_price": bool(quote.get("has_live_trade_price", True)),
+            "close_is_final": bool(quote.get("close_is_final", False)),
+        }
+    if not clean:
+        return False
+    now = time.time()
+    with _HOME_INTRADAY_SNAPSHOT_SAVE_LOCK:
+        if now - float(_HOME_INTRADAY_SNAPSHOT_SAVE_LAST.get(uid_key) or 0) < 30:
+            return False
+        _HOME_INTRADAY_SNAPSHOT_SAVE_LAST[uid_key] = now
+
+    def writer():
+        try:
+            _save_shared_data_snapshot(
+                _home_intraday_quote_snapshot_key(uid_key),
+                {"day": day, "quotes": clean, "saved_at": time.time()},
+                data_date=taiwan_today(),
+                source_meta={"source": "TWSE MIS same-day last-good quotes", "day": day},
+            )
+        except Exception as exc:
+            print("⚠️ 保存今日行情延續快照失敗：%s" % type(exc).__name__, flush=True)
+    try:
+        threading.Thread(target=writer, name="home-today-quote-snapshot", daemon=True).start()
+        return True
+    except Exception:
+        return False
+
+
+def _refresh_home_intraday_payload_sync(uid):
+    """Background-only full refresh; may wait for official MIS retries and database reads."""
     if not _is_taiwan_intraday_window():
         return {"ok": True, "market_open": False, "updates": [],
                 "note": "目前非一般盤中時段；首頁已停止行情輪詢。"}
@@ -6312,8 +6431,12 @@ def _build_home_intraday_payload(uid):
                 "note": "目前沒有可更新的持股。"}
     codes = [str(position.get("code") or "").strip() for position in positions]
     codes = [code for code in codes if code]
+    # Restore this user's last good quotes from today before contacting MIS; this is a
+    # background-only database read and can survive a Render process restart.
+    _restore_home_intraday_quotes(uid)
     try:
-        # 今日貢獻是財務數字，不使用歷史／黏著快取來補缺。首頁每次輪詢
+        # A quick bounded request keeps live refresh from tying up Gunicorn for 45 seconds.
+        # Partial/malformed data is supplemented by same-day quotes below and on next poll.
         # 都直接刷新官方 MIS；沒有取得台灣當日有效成交價的代號就不計入。
         # 這刻意優先保障漲跌方向與貢獻正確，不以快取命中率換取看似完整的數字。
         # 先用已快取的官方上市／上櫃對照選正確市場，避免每檔都同時查 TSE+OTC，
@@ -6331,43 +6454,59 @@ def _build_home_intraday_payload(uid):
             elif _market_name in ("上櫃", "上柜", "tpex", "otc", "two"):
                 _quote_market_suffix[_code] = ".TWO"
         fresh_price_map = _fetch_twse_mis_quotes(
-            codes, market_suffix=_quote_market_suffix, force_refresh=True)
+            codes, market_suffix=_quote_market_suffix, force_refresh=True, quick_mode=True)
         # A same-day quote is accepted only when its official trading date and time are valid.
         # Do not impose a two-minute last-trade cutoff: that incorrectly drops low-turnover stocks.
         fresh_contribution_quotes = {
             str(code): dict(quote) for code, quote in (fresh_price_map or {}).items()
             if _mis_quote_is_current_for_contribution(quote)
         }
-        # If MIS returns only part of a multi-symbol batch, make one focused retry for the
-        # missing/stale symbols. This retry is intentionally not written to the shared 5s cache,
-        # so a partial retry cannot overwrite other symbols' good quotes for other pages.
-        retry_codes = [code for code in codes if code not in fresh_contribution_quotes]
+        # First response is the fast primary pass. Do not immediately repeat the same market map:
+        # it doubles the network wait without changing the symbols. Missing codes get one focused
+        # cross-market retry below, which also covers stale or incomplete market metadata.
+        # MIS 有時會在批次回應中漏掉多個代號；不要再把所有缺漏塞回大批次。
+        # 對缺漏代號各自查一次 TSE/OTC，並行執行；只接受當日官方 z/y 報價。
+        missing_codes = [code for code in codes if code not in fresh_contribution_quotes]
+        retry_now = time.time()
+        with _HOME_MIS_SINGLE_RETRY_LOCK:
+            retry_codes = []
+            for code in missing_codes:
+                last_retry = float(_HOME_MIS_SINGLE_RETRY_LAST.get(code) or 0)
+                if retry_now - last_retry >= _HOME_MIS_SINGLE_RETRY_GAP_SECONDS:
+                    _HOME_MIS_SINGLE_RETRY_LAST[code] = retry_now
+                    retry_codes.append(code)
         if retry_codes:
-            try:
-                retry_map = _fetch_twse_mis_quotes(
-                    retry_codes, market_suffix=_quote_market_suffix,
-                    force_refresh=True, cache_result=False)
-                for code, quote in (retry_map or {}).items():
-                    if _mis_quote_is_current_for_contribution(quote):
+            def retry_one_symbol(code):
+                try:
+                    result = _fetch_twse_mis_quotes(
+                        [code], market_suffix=None, force_refresh=True,
+                        cache_result=False, quick_mode=True)
+                    quote = (result or {}).get(code)
+                    if quote and _mis_quote_is_current_for_contribution(quote):
+                        return code, quote
+                except Exception as retry_exc:
+                    print("⚠️ 個股獨立行情重試失敗 %s：%s" % (code, type(retry_exc).__name__), flush=True)
+                return code, None
+            with ThreadPoolExecutor(max_workers=min(8, len(retry_codes))) as retry_pool:
+                for code, quote in retry_pool.map(retry_one_symbol, retry_codes):
+                    if quote:
                         fresh_price_map[code] = dict(quote)
                         fresh_contribution_quotes[code] = dict(quote)
-            except Exception as retry_exc:
-                print("⚠️ 今日貢獻缺漏行情重試失敗：%s" % type(retry_exc).__name__, flush=True)
-        # The cached market map can be incomplete or stale (e.g. a recently listed stock).
-        # For still-missing codes, retry both exchanges rather than trusting a possibly wrong
-        # listed/OTC label. The parser still uses today's MIS date and real z/y prices, so this
-        # fallback does not introduce historical quotes into today's contribution.
-        retry_codes = [code for code in codes if code not in fresh_contribution_quotes]
-        if retry_codes:
-            try:
-                exchange_retry_map = _fetch_twse_mis_quotes(
-                    retry_codes, market_suffix=None, force_refresh=True, cache_result=False)
-                for code, quote in (exchange_retry_map or {}).items():
-                    if _mis_quote_is_current_for_contribution(quote):
-                        fresh_price_map[code] = dict(quote)
-                        fresh_contribution_quotes[code] = dict(quote)
-            except Exception as retry_exc:
-                print("⚠️ 今日貢獻跨市場重試失敗：%s" % type(retry_exc).__name__, flush=True)
+            print("⚡ 個股獨立行情重試完成：有效 %s/%s 檔；本輪單檔重試 %s 檔、冷卻略過 %s 檔" % (
+                len(fresh_contribution_quotes), len(codes), len(retry_codes),
+                max(0, len(missing_codes) - len(retry_codes))), flush=True)
+        # A successful quote earlier TODAY remains usable when this MIS poll is partial.
+        # _sticky_home_quotes date-bounds its state, so this fallback can never cross into yesterday.
+        same_day_price_map = _sticky_home_quotes(uid, fresh_price_map)
+        same_day_cache_codes = set()
+        for _code in codes:
+            if _code in fresh_contribution_quotes:
+                continue
+            _cached_quote = same_day_price_map.get(_code)
+            if _mis_quote_is_current_for_contribution(_cached_quote):
+                fresh_contribution_quotes[_code] = dict(_cached_quote)
+                same_day_cache_codes.add(_code)
+
         # Diagnose exactly why positions are missing instead of silently losing ten rows.
         global _HOME_INTRADAY_DIAG_LAST_AT
         if len(fresh_contribution_quotes) < len(codes):
@@ -6406,6 +6545,14 @@ def _build_home_intraday_payload(uid):
                 state["codes"] = current_codes
                 state["initialized"] = False
         price_map = _sticky_home_quotes(uid, fresh_price_map)
+        _schedule_save_home_intraday_quotes(uid, price_map)
+        # Same-day retained quotes are eligible for contribution when the current poll omitted
+        # them; a previous trading day's quote never reaches this function's sticky cache.
+        for _code in codes:
+            if _code not in fresh_contribution_quotes:
+                _same_day_quote = price_map.get(_code)
+                if _mis_quote_is_current_for_contribution(_same_day_quote):
+                    fresh_contribution_quotes[_code] = dict(_same_day_quote)
         today_logs = get_position_change_logs(uid, 5000, trade_date=taiwan_today())
         reduced_codes = {
             str(log.get("code") or "").strip() for log in today_logs
@@ -6518,21 +6665,144 @@ def _build_home_intraday_payload(uid):
                           key=lambda item: item["contribution"])[:5]
         relative = (portfolio_pct - market_pct
                     if portfolio_pct is not None and market_pct is not None else None)
+        quote_payload = {}
+        for _code, _quote in price_map.items():
+            if _code not in codes or not _mis_quote_is_current_for_contribution(_quote):
+                continue
+            try:
+                quote_payload[_code] = {
+                    "close": float(_quote.get("close")),
+                    "pct": float(_quote.get("pct")),
+                    "updated_at": str(_quote.get("updated_at") or _quote.get("trade_at") or ""),
+                    "close_date": str(_quote.get("close_date") or "").replace("-", "")[:8],
+                    "source": str(_quote.get("source") or "TWSE MIS same-day cache"),
+                }
+            except (TypeError, ValueError):
+                continue
         return {
             "ok": True, "market_open": True,
             "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
             "market": market_payload,
+            "quotes": quote_payload,
             "portfolio": {"pct": portfolio_pct, "relative": relative,
                           "positive": positive, "negative": negative,
                     "stale_names": stale_names[:6],
                     "stale_count": len(stale_names), "ready": True},
-            "note": ("首頁盤中行情已局部更新；今日貢獻只計入官方回傳的台灣當日有效成交價，"
-                     "不以最後成交距今幾秒作為唯一門檻；未取得當日有效報價就暫不計入。"),
+            "note": ("首頁盤中行情已更新；若 MIS 本輪漏回個股，會沿用今天先前已成功取得的有效報價；"
+                     "絕不沿用前一交易日行情。尚未有今天有效報價的標的暫不計入整體貢獻。"),
         }
     except Exception as exc:
         print(f"⚠️ 首頁盤中行情更新失敗（uid={uid}）：{exc}")
         return {"ok": False, "market_open": True, "updates": [], "market": market_payload,
                 "note": "首頁盤中行情暫時無法更新；保留頁面最後有效資料。"}
+
+
+def _invalidate_home_intraday_payload_cache(uid):
+    """Drop a user's cached contribution calculation immediately after a holdings mutation."""
+    try:
+        uid_key = str(uid).strip()
+        with _HOME_INTRADAY_PAYLOAD_CACHE_LOCK:
+            _HOME_INTRADAY_PAYLOAD_CACHE.pop(uid_key, None)
+        # Keep same-day official quote snapshots: only the share counts/weights changed.
+    except Exception:
+        pass
+
+
+def _schedule_home_intraday_payload_refresh(uid):
+    """Run slow MIS/DB work off-request-path; only one refresh at a time per user."""
+    uid_key = str(uid).strip()
+    now_epoch = time.time()
+    with _HOME_INTRADAY_REFRESH_LOCK:
+        if uid_key in _HOME_INTRADAY_REFRESH_RUNNING:
+            return False
+        last_start = float(_HOME_INTRADAY_REFRESH_LAST_START.get(uid_key) or 0)
+        if now_epoch - last_start < _HOME_INTRADAY_REFRESH_MIN_GAP:
+            return False
+        _HOME_INTRADAY_REFRESH_RUNNING.add(uid_key)
+        _HOME_INTRADAY_REFRESH_LAST_START[uid_key] = now_epoch
+
+    def worker():
+        started = time.monotonic()
+        try:
+            payload = _refresh_home_intraday_payload_sync(uid_key)
+            if isinstance(payload, dict) and payload.get("ok") and payload.get("market_open"):
+                with _HOME_INTRADAY_PAYLOAD_CACHE_LOCK:
+                    _HOME_INTRADAY_PAYLOAD_CACHE[uid_key] = {
+                        "day": taiwan_today().isoformat(),
+                        "at": time.time(),
+                        "data": payload,
+                    }
+                portfolio = payload.get("portfolio") or {}
+                print("⚡ 首頁盤中資料背景刷新完成 uid=%s contribution_rows=%s stale=%s elapsed=%.0fms" % (
+                    uid_key, len(portfolio.get("positive") or []) + len(portfolio.get("negative") or []),
+                    int(portfolio.get("stale_count") or 0), (time.monotonic()-started)*1000), flush=True)
+        except Exception as exc:
+            print("⚠️ 首頁盤中資料背景刷新失敗 uid=%s error=%s" % (
+                uid_key, type(exc).__name__), flush=True)
+        finally:
+            with _HOME_INTRADAY_REFRESH_LOCK:
+                _HOME_INTRADAY_REFRESH_RUNNING.discard(uid_key)
+
+    try:
+        threading.Thread(target=worker, name="home-intraday-refresh", daemon=True).start()
+        return True
+    except Exception:
+        with _HOME_INTRADAY_REFRESH_LOCK:
+            _HOME_INTRADAY_REFRESH_RUNNING.discard(uid_key)
+        return False
+
+
+def _build_home_intraday_payload(uid):
+    """Fast API path: return today's last completed payload immediately and refresh in background."""
+    if not _is_taiwan_intraday_window():
+        return {"ok": True, "market_open": False, "updates": [],
+                "note": "目前非一般盤中時段；首頁已停止行情輪詢。"}
+
+    # TAIEX is stale-while-revalidate too; never block on a 6-second upstream request.
+    taiex = fetch_taiex_intraday(stale_while_revalidate=True)
+    try:
+        market_pct = float(taiex.get("pct")) if taiex and taiex.get("pct") is not None else None
+    except (TypeError, ValueError):
+        market_pct = None
+    market_payload = ({"pct": market_pct, "source": taiex.get("source"),
+                       "updated_at": taiex.get("updated_at"), "stale": bool(taiex.get("stale")),
+                       "cache_age_seconds": taiex.get("cache_age_seconds")}
+                      if market_pct is not None else None)
+
+    day = taiwan_today().isoformat()
+    with _HOME_INTRADAY_PAYLOAD_CACHE_LOCK:
+        entry = _HOME_INTRADAY_PAYLOAD_CACHE.get(str(uid).strip())
+        cached = (entry.get("data") if isinstance(entry, dict) and entry.get("day") == day else None)
+        cache_at = float(entry.get("at") or 0) if isinstance(entry, dict) and entry.get("day") == day else 0
+        cached_copy = dict(cached) if isinstance(cached, dict) else None
+        if cached_copy is not None:
+            cached_copy["portfolio"] = dict(cached_copy.get("portfolio") or {})
+            cached_copy["market"] = dict(cached_copy.get("market") or {}) if cached_copy.get("market") else None
+            cached_copy["portfolio"]["same_day_cache"] = True
+            cached_copy["portfolio"]["cache_age_seconds"] = max(0, int(time.time() - cache_at))
+            # Prefer current TAIEX cache if it is available; otherwise retain the most recent
+            # same-day index already paired with the portfolio snapshot.
+            if market_payload is not None:
+                cached_copy["market"] = market_payload
+            cached_copy["fetched_at"] = cached_copy.get("fetched_at") or taiwan_now().strftime("%Y-%m-%d %H:%M:%S")
+            age = max(0, int(time.time() - cache_at))
+            if age > 0:
+                cached_copy["note"] = ("沿用今天最近一次成功行情（約 %s 秒前），背景同步最新報價；"
+                                       "若官方本輪漏回，會保留今天已取得的價格，不會改用前一交易日。" % age)
+
+    _schedule_home_intraday_payload_refresh(uid)
+    if cached_copy is not None:
+        return cached_copy
+
+    # Cold start: let the first render stand; the first live calculation runs in background.
+    # ready=False tells the browser not to replace the rendered figures with a temporary blank.
+    return {"ok": True, "market_open": True,
+            "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
+            "market": market_payload,
+            "portfolio": {"pct": None, "relative": None, "positive": [], "negative": [],
+                          "stale_names": [], "stale_count": 0, "ready": False,
+                          "same_day_cache": False},
+            "note": "正在背景同步今天的個股行情；先保留頁面已顯示的資料，完成後自動更新。"}
 
 
 def _position_change_journal_status(log):
@@ -9134,56 +9404,41 @@ def _mis_quote_is_current_for_contribution(quote, now=None, max_age_seconds=None
             minute_of_day <= current_minute + 1)
 
 
-def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache_result=True):
-    """批次讀 TWSE MIS 的盤中成交／收盤集合競價。
-
-    只保留官方回傳、日期為台灣今日且有 z/y 的標的。盤中為即時最後成交，
-    13:30 後才標記為正式收盤；查不到才走既有 Yahoo 降級路徑。
-    """
+def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache_result=True, quick_mode=False):
+    """並行批次讀取官方 TWSE MIS 當日報價；不以歷史日K補今日漲跌。"""
     codes = list(dict.fromkeys(str(code).strip() for code in (codes or []) if code))
-    if not codes:
-        return {}
-    # 週末不呼叫沒有當日報價的 MIS；直接使用上個交易日歷史行情快取。
-    if taiwan_now().weekday() >= 5:
+    if not codes or taiwan_now().weekday() >= 5:
         return {}
     today = taiwan_today().isoformat()
-    now = time.time()
+    today_key = today.replace("-", "")
+    now_epoch = time.time()
     with _realtime_cache_lock:
-        # 跨交易日絕對不能沿用昨天的代號資料；day 只是快取版本，
-        # data 必須同步清空，否則昨天有、今天沒回傳的股票會被誤當成今日行情。
         if _TWSE_MIS_CACHE.get("day") != today:
             _TWSE_MIS_CACHE.update({"day": today, "at": 0, "data": {}})
-        if (not force_refresh and
-                now - _TWSE_MIS_CACHE.get("at", 0) < _TWSE_MIS_CACHE_SECONDS):
+        if (not force_refresh and now_epoch - float(_TWSE_MIS_CACHE.get("at") or 0) < _TWSE_MIS_CACHE_SECONDS):
             cached = _TWSE_MIS_CACHE.get("data") or {}
-            valid_cached = {
-                code: item for code, item in cached.items()
-                if isinstance(item, dict) and str(item.get("close_date") or "") == today.replace("-", "")
-            }
-            # Do not force another network round-trip merely because MIS omitted one symbol.
-            # Return only real official quotes currently available; missing symbols are omitted
-            # and retried after the short cache TTL. Newly added symbols may wait at most 5s.
+            valid_cached = {c: q for c, q in cached.items()
+                            if isinstance(q, dict) and str(q.get("close_date") or "").replace("-", "")[:8] == today_key}
             if valid_cached:
-                return {code: valid_cached[code] for code in codes if code in valid_cached}
-            # No usable official quotes in this fresh cache: retry the batch once.
+                return {c: dict(valid_cached[c]) for c in codes if c in valid_cached}
 
     symbols = _twse_mis_quote_symbols(codes, market_suffix)
-    parsed = {}
+    batches = [symbols[i:i + _TWSE_MIS_BATCH_SIZE] for i in range(0, len(symbols), _TWSE_MIS_BATCH_SIZE)]
 
-    def request_mis_batch(batch, split_depth=0):
-        """Resiliently read one small MIS batch; retry truncated JSON then split if needed."""
+    def request_mis_batch(batch):
         last_exc = None
-        for attempt in range(3):
+        attempts = 1 if quick_mode else 2
+        timeout_seconds = 2.5 if quick_mode else 6.0
+        for attempt in range(attempts):
             try:
                 response = requests.get(
                     "https://mis.twse.com.tw/stock/api/getStockInfo.jsp",
                     params={"ex_ch": "|".join(batch), "json": "1", "delay": "0",
                             "_": int(time.time() * 1000)},
-                    headers={"User-Agent": "Mozilla/5.0",
-                             "Accept": "application/json,text/plain,*/*",
+                    headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*",
                              "Accept-Language": "zh-TW,zh;q=0.9",
                              "Referer": "https://mis.twse.com.tw/stock/index.jsp"},
-                    timeout=8)
+                    timeout=timeout_seconds)
                 response.raise_for_status()
                 payload = response.json()
                 if not isinstance(payload, dict) or not isinstance(payload.get("msgArray"), list):
@@ -9194,60 +9449,62 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
                 return payload
             except Exception as exc:
                 last_exc = exc
-                if attempt < 2:
-                    time.sleep(0.20 * (attempt + 1))
-        # A proxy may truncate a long response. Splitting a failed batch keeps one malformed
-        # response from making every holding look unavailable; recursion is strictly bounded.
-        if len(batch) > 1 and split_depth < 2:
+                if attempt + 1 < attempts:
+                    time.sleep(0.15)
+        # 非互動背景工作可把壞掉的大批次拆小重試；首頁快路徑不在單一股票上等待多輪。
+        if not quick_mode and len(batch) > 1:
             mid = len(batch) // 2
-            combined = []
+            merged_rows = []
             for part in (batch[:mid], batch[mid:]):
-                if not part:
-                    continue
-                try:
-                    combined.extend(request_mis_batch(part, split_depth + 1).get("msgArray") or [])
-                except Exception as split_exc:
-                    print("⚠️ TWSE MIS 子批次失敗（%s 個代號）：%s" %
-                          (len(part), type(split_exc).__name__), flush=True)
-            if combined:
-                return {"msgArray": combined, "rtcode": "0000"}
+                if part:
+                    try:
+                        merged_rows.extend((request_mis_batch(part).get("msgArray") or []))
+                    except Exception:
+                        pass
+            if merged_rows:
+                return {"msgArray": merged_rows, "rtcode": "0000"}
         raise last_exc or ValueError("MIS 回應無法解析")
 
-    for start in range(0, len(symbols), _TWSE_MIS_BATCH_SIZE):
-        batch = symbols[start:start + _TWSE_MIS_BATCH_SIZE]
+    def fetch_one(batch):
         try:
-            payload = request_mis_batch(batch)
+            return batch, request_mis_batch(batch), None
         except Exception as exc:
-            print(f"⚠️ TWSE MIS 行情批次失敗（{len(batch)} 個市場代號）：{type(exc).__name__}", flush=True)
+            return batch, None, exc
+
+    # 原本逐批序列等待：26 個上市／上櫃代號最多連等三次 timeout。
+    # 將獨立批次並行，總等待時間接近最慢的一批，而非每批等待時間相加。
+    parsed = {}
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(batches)))) as pool:
+        batch_results = list(pool.map(fetch_one, batches))
+    for batch, payload, error in batch_results:
+        if error is not None:
+            print("⚠️ TWSE MIS 行情批次失敗（%s 個市場代號）：%s" % (len(batch), type(error).__name__), flush=True)
             continue
-        for item in payload.get("msgArray") or []:
+        for item in (payload.get("msgArray") or []):
             if not isinstance(item, dict):
                 continue
             code = str(item.get("c") or "").strip()
-            if code not in codes or str(item.get("d") or "") != today.replace("-", ""):
+            if code not in codes or str(item.get("d") or "") != today_key:
                 continue
-            expected_suffix = (market_suffix.get(code)
-                               if isinstance(market_suffix, dict) else market_suffix)
+            expected_suffix = market_suffix.get(code) if isinstance(market_suffix, dict) else market_suffix
             actual_exchange = str(item.get("ex") or "").strip().lower()
             if expected_suffix == ".TW" and actual_exchange and actual_exchange not in ("tse", "twse"):
                 continue
             if expected_suffix == ".TWO" and actual_exchange and actual_exchange not in ("otc", "tpex"):
                 continue
+
             def number(key):
                 try:
                     value = str(item.get(key) or "").replace(",", "").strip()
                     return None if value in ("", "-", "--") else float(value)
                 except (TypeError, ValueError):
                     return None
-            # 今日貢獻只能用 MIS 的實際最後成交價 z；pz 的語意並非可靠的
-            #「當前成交價」欄位，不能拿它補洞，否則可能把非最新價算成今日行情。
+
+            # 今日漲跌只用官方最後成交價 z 與昨收 y；不把 pz 或 Yahoo 日K當盤中成交價。
             close = number("z")
             previous = number("y")
             if close is None or close <= 0 or previous is None or previous <= 0:
                 continue
-            # t 是最近成交時刻，不等於行情資料更新時刻。低週轉標的可能已更新
-            # 行情快照，但最近成交在兩分鐘前；以 tlong（epoch 毫秒）檢查快照新鮮度，
-            # 並另外保留 t 作為成交時刻，避免把正常標的整批誤判為舊資料。
             quote_updated_at = None
             try:
                 tlong_raw = str(item.get("tlong") or "").strip()
@@ -9258,38 +9515,42 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
                     quote_dt = datetime.fromtimestamp(tlong_value, TW_TZ)
                 else:
                     quote_dt = None
-                if quote_dt is not None and quote_dt.strftime("%Y%m%d") == str(item.get("d") or ""):
+                if quote_dt is not None and quote_dt.strftime("%Y%m%d") == today_key:
                     quote_updated_at = quote_dt.strftime("%Y-%m-%d %H:%M:%S")
             except (TypeError, ValueError, OverflowError, OSError):
                 quote_updated_at = None
             trade_at = f"{item.get('d')} {item.get('t')}".strip()
             volume_lots = number("v")
             parsed[code] = {
-                "close": close,
-                "previous_close": previous,
+                "close": close, "previous_close": previous,
                 "pct": (close - previous) / previous * 100,
-                "high": number("h") or close,
-                "low": number("l") or close,
+                "high": number("h") or close, "low": number("l") or close,
                 "volume": int(volume_lots * 1000) if volume_lots is not None else 0,
-                # updated_at 用資料快照更新時間；trade_at 才是最後成交時間。
                 "updated_at": quote_updated_at or trade_at,
-                "quote_updated_at": quote_updated_at,
-                "trade_at": trade_at,
+                "quote_updated_at": quote_updated_at, "trade_at": trade_at,
                 "has_live_trade_price": True,
-                "source": ("TWSE MIS 最後成交／收盤集合競價" if _taiwan_post_close()
-                           else "TWSE MIS 盤中最後成交"),
+                "source": "TWSE MIS 最後成交／收盤集合競價" if _taiwan_post_close() else "TWSE MIS 盤中最後成交",
                 "close_is_final": bool(_taiwan_post_close()),
-                "close_date": item.get("d"),
-                "close_time": item.get("t"),
+                "close_date": item.get("d"), "close_time": item.get("t"),
             }
+
     if cache_result:
         with _realtime_cache_lock:
-            # Cache only the symbols actually returned by this response. Merging yesterday's or
-            # earlier same-session symbols into this result made a partial MIS response look like a
-            # complete fresh snapshot. Per-user sticky caches may preserve display continuity, but
-            # callers deciding today's contribution must receive only quotes in this recent batch.
-            _TWSE_MIS_CACHE.update({"day": today, "at": time.time(), "data": dict(parsed)})
-    return {code: parsed[code] for code in codes if code in parsed}
+            existing = dict(_TWSE_MIS_CACHE.get("data") or {})
+            merged = dict(existing)
+            for code, quote in parsed.items():
+                old_quote = merged.get(code)
+                old_stamp = str((old_quote or {}).get("quote_updated_at") or (old_quote or {}).get("updated_at") or "")
+                new_stamp = str(quote.get("quote_updated_at") or quote.get("updated_at") or "")
+                if old_quote is None or (new_stamp and (not old_stamp or new_stamp >= old_stamp)):
+                    merged[code] = dict(quote)
+            _TWSE_MIS_CACHE.update({"day": today, "at": time.time(), "data": merged})
+            todays_cache = dict(merged)
+    else:
+        todays_cache = dict(parsed)
+    return {code: dict(todays_cache[code]) for code in codes
+            if code in todays_cache and
+            str((todays_cache[code] or {}).get("close_date") or "").replace("-", "")[:8] == today_key}
 
 
 def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
@@ -35864,6 +36125,12 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       if(market&&market.pct!=null){marketEl.innerHTML=pct(market.pct);var freshness=document.querySelector('[data-home-market-freshness]');if(freshness)freshness.textContent=(market.stale?'最近有效行情・背景更新中・':'')+(market.source||'TWSE MIS 即時加權指數')+(market.updated_at?'・更新 '+market.updated_at:'');}
       else {marketEl.textContent='資料尚未更新';var missing=document.querySelector('[data-home-market-freshness]');if(missing)missing.textContent='即時 TAIEX 暫時無法取得，未使用日K快照';}
       var liveReady=portfolio.ready!==false;
+      if(!liveReady){
+        var waitingTitle=document.querySelector('[data-home-live-title]'),waitingNote=document.querySelector('[data-home-live-note]');
+        if(waitingTitle)waitingTitle.textContent='今天行情同步中';
+        if(waitingNote)waitingNote.textContent=data.note||'先保留頁面已顯示的今天資料，正在背景更新。';
+        return;
+      }
       if(liveReady&&portfolio.pct!=null){
         var nextPortfolio=Number(portfolio.pct), currentEl=document.querySelector('[data-home-portfolio-pct]');
         var currentText=currentEl?String(currentEl.textContent||'').replace(/[^0-9+\-.]/g,''):'';
@@ -36272,20 +36539,44 @@ def _save_homepage_quote_map_async(uid, codes, prices):
     threading.Thread(target=writer, name="home-quote-cache-save", daemon=True).start()
 
 
-def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_refresh=False):
+def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_refresh=False, user_id=None, allow_network=True):
     """將官方 MIS 當下價格疊到已快取的歷史序列，不為更新現價重抓整段 Yahoo 日線。"""
     result = {str(code): dict(item) for code, item in (prices or {}).items()
               if isinstance(item, dict)}
     codes = list(dict.fromkeys(str(c).strip() for c in (codes or []) if c))
     if not codes:
         return result
-    try:
-        quotes = _fetch_twse_mis_quotes(codes, market_suffix=market_suffix,
-                                        force_refresh=force_refresh)
-    except Exception as exc:
-        print("⚠️ 快取行情的 MIS 疊加失敗，先沿用最近有效行情：%s" % type(exc).__name__, flush=True)
+    if allow_network:
+        try:
+            quotes = _fetch_twse_mis_quotes(codes, market_suffix=market_suffix,
+                                            force_refresh=force_refresh)
+        except Exception as exc:
+            print("⚠️ 快取行情的 MIS 疊加失敗，先沿用最近有效行情：%s" % type(exc).__name__, flush=True)
+            quotes = {}
+    else:
+        # A page render must not block on upstream MIS retries. Use only today's known official
+        # quotes; the dedicated live API refreshes them in the background.
         quotes = {}
+        if user_id is not None:
+            quotes.update(_sticky_home_quotes(user_id, {}))
+        today_key = taiwan_today().strftime("%Y%m%d")
+        with _realtime_cache_lock:
+            if _TWSE_MIS_CACHE.get("day") == taiwan_today().isoformat():
+                for code, quote in (_TWSE_MIS_CACHE.get("data") or {}).items():
+                    if (code in codes and isinstance(quote, dict) and
+                            str(quote.get("close_date") or "").replace("-", "")[:8] == today_key):
+                        quotes.setdefault(code, dict(quote))
+        quotes = {code: quote for code, quote in quotes.items()
+                  if _mis_quote_is_current_for_contribution(quote)}
     today = taiwan_today()
+    if user_id is not None:
+        try:
+            today_quotes = {str(code): dict(quote) for code, quote in (quotes or {}).items()
+                            if _mis_quote_is_current_for_contribution(quote)}
+            if today_quotes:
+                _sticky_home_quotes(user_id, today_quotes)
+        except Exception as cache_exc:
+            print("⚠️ 首頁同日行情快照預熱失敗：%s" % type(cache_exc).__name__, flush=True)
     for code, quote in (quotes or {}).items():
         if not isinstance(quote, dict):
             continue
@@ -36306,6 +36597,10 @@ def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_ref
             "volume": quote.get("volume") or item.get("volume") or 0,
             "source": quote.get("source") or "TWSE MIS 最近有效報價",
             "updated_at": quote.get("updated_at") or item.get("updated_at"),
+            "quote_updated_at": quote.get("quote_updated_at") or item.get("quote_updated_at"),
+            "trade_at": quote.get("trade_at") or item.get("trade_at"),
+            "previous_close": quote.get("previous_close") or item.get("previous_close"),
+            "has_live_trade_price": bool(quote.get("has_live_trade_price", item.get("has_live_trade_price", True))),
             "close_is_final": bool(quote.get("close_is_final")),
             "close_date": quote.get("close_date") or item.get("close_date"),
             "close_time": quote.get("close_time") or item.get("close_time"),
@@ -36343,6 +36638,45 @@ def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_ref
         item["volumes"] = volumes
         item["adj_closes"] = adj_closes
         result[code] = item
+
+    # Restore a saved official quote from earlier TODAY when the current MIS poll omitted a
+    # symbol. The persistent history cache is not itself a quote source: only entries carrying
+    # TWSE MIS provenance, today's trade date, and a valid same-day timestamp qualify.
+    if user_id is not None:
+        restored_today_quotes = {}
+        today_key = today.strftime("%Y%m%d")
+        for code, item in result.items():
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "")
+            if "MIS" not in source.upper() and "TWSE" not in source.upper():
+                continue
+            close_date = str(item.get("close_date") or "").replace("-", "")[:8]
+            if close_date != today_key:
+                continue
+            try:
+                close = float(item.get("close") or 0)
+                pct = float(item.get("pct"))
+                previous_close = float(item.get("previous_close") or 0)
+                if previous_close <= 0 and abs(1.0 + pct / 100.0) > 1e-9:
+                    previous_close = close / (1.0 + pct / 100.0)
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+            quote = {
+                "close": close, "previous_close": previous_close, "pct": pct,
+                "close_date": close_date, "close_time": item.get("close_time"),
+                "updated_at": item.get("quote_updated_at") or item.get("updated_at"),
+                "quote_updated_at": item.get("quote_updated_at") or item.get("updated_at"),
+                "trade_at": item.get("trade_at"),
+                "has_live_trade_price": True,
+                "close_is_final": bool(item.get("close_is_final")),
+                "source": source,
+            }
+            if _mis_quote_is_current_for_contribution(quote):
+                restored_today_quotes[str(code)] = quote
+        if restored_today_quotes:
+            _sticky_home_quotes(user_id, restored_today_quotes)
+
     return result
 
 
@@ -36702,6 +37036,167 @@ def _get_homepage_prices_cached(uid, codes, refresh_official=True):
     return usable
 
 
+
+def _same_day_home_quote_map(uid, codes=None):
+    # Fast in-memory view of official quotes from today only.
+    requested = set(str(code).strip() for code in (codes or []) if str(code).strip())
+    result = {}
+    try:
+        result.update(_sticky_home_quotes(uid, {}))
+    except Exception:
+        pass
+    today_iso = taiwan_today().isoformat()
+    with _realtime_cache_lock:
+        if _TWSE_MIS_CACHE.get("day") == today_iso:
+            for code, quote in (_TWSE_MIS_CACHE.get("data") or {}).items():
+                if isinstance(quote, dict) and str(quote.get("close_date") or "").replace("-", "")[:8] == taiwan_today().strftime("%Y%m%d"):
+                    result.setdefault(str(code), dict(quote))
+    return {code: quote for code, quote in result.items()
+            if (not requested or code in requested) and _mis_quote_is_current_for_contribution(quote)}
+
+
+def _render_fast_portfolio_entry(uid, positions):
+    # Small first-paint: latest same-day prices first.
+    positions = list(positions or [])
+    codes = [str(p.get("code") or "").strip() for p in positions if p.get("code")]
+    quotes = _same_day_home_quote_map(uid, codes)
+    taiex = fetch_taiex_intraday(stale_while_revalidate=True) if _is_taiwan_intraday_window() else None
+    try:
+        idx_pct = float(taiex.get("pct")) if taiex and taiex.get("pct") is not None else None
+    except (TypeError, ValueError):
+        idx_pct = None
+    indexed = {str(code): quote for code, quote in quotes.items() if isinstance(quote, dict)}
+    complete = bool(positions) and all(code in indexed for code in codes)
+    total_value = sum(float(indexed[code].get("close") or 0) * int(p.get("shares") or 0)
+                      for p in positions for code in [str(p.get("code") or "").strip()]
+                      if code in indexed) if complete else None
+    total_cost = sum(float(p.get("cost") or 0) * int(p.get("shares") or 0) for p in positions)
+    total_pl_pct = ((total_value / total_cost - 1) * 100
+                    if total_value is not None and total_cost > 0 else None)
+    def pct_text(value):
+        if value is None:
+            return "同步中"
+        try:
+            return f"{float(value):+.2f}%"
+        except (TypeError, ValueError):
+            return "同步中"
+    row_html = []
+    for p in positions:
+        code = str(p.get("code") or "").strip()
+        quote = indexed.get(code)
+        name = stock_display_name(code, {}, None) or code
+        if quote:
+            try:
+                close_text = f"{float(quote.get('close')):,.2f}"
+            except (TypeError, ValueError):
+                close_text = "同步中"
+            change_text = pct_text(quote.get("pct"))
+            style = "up" if str(change_text).startswith("+") else ("down" if str(change_text).startswith("-") else "")
+            updated = html.escape(str(quote.get("updated_at") or "今日有效行情"))
+        else:
+            close_text, change_text, style, updated = "同步中", "等待今日報價", "", "尚未取得今日有效報價"
+        row_html.append(
+            f'<div class="instant-holding" data-code="{html.escape(code, quote=True)}">'
+            f'<div><b>{html.escape(str(name))}</b><small>{html.escape(code)} · <span class="instant-updated">{updated}</span></small></div>'
+            f'<div class="instant-number"><b class="instant-price">{close_text}</b>'
+            f'<span class="instant-pct {style}">{change_text}</span></div></div>')
+    current_day = taiwan_today().strftime("%Y/%m/%d")
+    market_text = pct_text(idx_pct)
+    market_note = (f"TWSE MIS · 更新 {html.escape(str(taiex.get('updated_at') or '今日快照'))}"
+                   if idx_pct is not None and taiex else "背景同步今日加權指數；不使用前一交易日資料")
+    body = f'''<style>
+.instant-home{{max-width:820px;margin:0 auto 22px;color:#172D43}}
+.instant-hero{{padding:20px 17px;background:linear-gradient(145deg,#163B5D,#245B84);border-radius:18px;color:#fff;box-shadow:0 8px 24px rgba(20,50,80,.12)}}
+.instant-kicker{{font-size:10px;letter-spacing:.17em;color:#BED8EC;font-weight:800}}
+.instant-hero h1{{margin:7px 0 4px;font-size:25px;line-height:1.3;color:#fff}}
+.instant-note{{font-size:12px;color:#D6E4EF;line-height:1.7}}
+.instant-metrics{{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:12px 0}}
+.instant-metric{{padding:14px;border:1px solid #DCE7F0;border-radius:13px;background:#fff}}
+.instant-impact-grid{{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:0 0 12px}}
+.instant-impact{{min-width:0;padding:12px;border:1px solid #DCE7F0;border-radius:13px;background:#fff}}
+.instant-impact h3{{font-size:13px;margin:0 0 8px;color:#254F70}}
+.instant-impact-row{{padding:8px 0;border-top:1px solid #EDF1F5}}
+.instant-impact-row:first-child{{border-top:0}}
+.instant-impact-row b{{display:block;font-size:12px}}
+.instant-impact-row small{{display:block;color:#718397;font-size:10px;line-height:1.5;margin-top:3px}}
+.instant-impact-row strong{{display:block;font-size:12px;margin-top:4px}}
+.instant-impact-row .up{{color:#D7463A}}.instant-impact-row .down{{color:#078D64}}
+.instant-metric small{{display:block;color:#647A8E;font-size:11px;font-weight:700}}
+.instant-metric b{{display:block;font-size:23px;margin-top:5px;color:#173C5B}}
+.instant-holdings{{border:1px solid #DFE7EF;border-radius:14px;background:#fff;overflow:hidden}}
+.instant-holdings-head{{padding:13px 14px;background:#F1F6FA;display:flex;justify-content:space-between;gap:10px;font-weight:800}}
+.instant-holding{{display:flex;justify-content:space-between;gap:10px;padding:12px 14px;border-top:1px solid #E9EEF3;align-items:center}}
+.instant-holding b{{display:block;font-size:14px}}
+.instant-holding small{{display:block;color:#75879A;font-size:10px;margin-top:4px;line-height:1.45}}
+.instant-number{{text-align:right;white-space:nowrap}}
+.instant-number .instant-price{{font-variant-numeric:tabular-nums}}
+.instant-pct{{display:block;margin-top:4px;font-size:12px;font-weight:800;color:#738496}}
+.instant-pct.up{{color:#D7463A}}.instant-pct.down{{color:#078D64}}
+.instant-foot{{margin-top:10px;color:#63788B;font-size:11px;line-height:1.7}}
+@media(max-width:480px){{.instant-hero{{margin:0 -2px;border-radius:16px}}.instant-metric b{{font-size:20px}}}}
+</style>
+<section class="instant-home" id="instant-home" data-today="{taiwan_today().isoformat()}">
+  <div class="instant-hero"><div class="instant-kicker">TAIWAN STOCK BOT · {current_day}</div>
+    <h1>今日投資狀態</h1><div class="instant-note">先顯示今天已取得的有效行情；最新資料在背景同步，不使用昨天報價冒充今天。</div>
+  </div>
+  <div class="instant-metrics">
+    <div class="instant-metric"><small>加權指數今日漲跌</small><b id="instant-taiex">{market_text}</b><span class="instant-note" id="instant-taiex-note" style="color:#63788B">{market_note}</span></div>
+    <div class="instant-metric"><small>持股總市值</small><b id="instant-total-value">{f"{total_value:,.0f}" if total_value is not None else "同步中"}</b><span class="instant-note" id="instant-total-pct" style="color:#63788B">成本報酬 {pct_text(total_pl_pct)}</span></div>
+  </div>
+  <div class="instant-impact-grid">
+    <section class="instant-impact"><h3>今日正貢獻</h3><div id="instant-positive"><small>正在同步有效行情…</small></div></section>
+    <section class="instant-impact"><h3>今日負貢獻</h3><div id="instant-negative"><small>正在同步有效行情…</small></div></section>
+  </div>
+  <div class="instant-holdings"><div class="instant-holdings-head"><span>我的持股即時行情</span><span id="instant-covered">今日有效 {len(indexed)}/{len(codes)} 檔</span></div>
+  {''.join(row_html) if row_html else '<div class="instant-holding">尚未新增持股；行情區塊會在背景更新。</div>'}
+  </div>
+  <div class="instant-foot" id="instant-foot">今日有效行情會先沿用當天最近一次成功報價；資料刷新後自動更新。完整市場分析正在背景載入。</div>
+</section>
+<script>
+(function(){{
+ var root=document.getElementById('instant-home'); if(!root) return;
+ var codes={json.dumps(codes, ensure_ascii=False)};
+ var positions={json.dumps([{"code": str(p.get("code") or "").strip(), "shares": int(p.get("shares") or 0), "cost": float(p.get("cost") or 0)} for p in positions], ensure_ascii=False)};
+ var positionMap={{}}; positions.forEach(function(p){{positionMap[String(p.code)]=p;}});
+ var qs=new URLSearchParams(window.location.search); qs.delete('fragment'); qs.delete('fast'); qs.delete('detail'); qs.delete('_nav');
+ function url(path){{var q=new URLSearchParams(qs); return path+(q.toString()?'?'+q.toString():'');}}
+ function fmtPct(v){{var n=Number(v); return Number.isFinite(n)?((n>0?'+':'')+n.toFixed(2)+'%'):'同步中';}}
+ function fmtNum(v){{var n=Number(v); return Number.isFinite(n)?n.toLocaleString('en-US',{{maximumFractionDigits:2,minimumFractionDigits:2}}):'同步中';}}
+ function setText(id,value){{var e=document.getElementById(id);if(e)e.textContent=value;}}
+ function esc(v){{return String(v==null?'—':v).replace(/[&<>"']/g,function(c){{return ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}})[c];}});}}
+ function renderImpact(id,items,positive){{var el=document.getElementById(id);if(!el)return;if(!items||!items.length){{el.innerHTML='<small>目前沒有已驗證的今日貢獻</small>';return;}}el.innerHTML=items.slice(0,5).map(function(item){{var pct=Number(item.pct),con=Number(item.contribution),change=pct>0?'上漲':'下跌',dir=con>0?'增加約':'減少約',cls=con>0?'up':'down';return '<div class="instant-impact-row"><b>'+esc(item.name)+'</b><small>今日'+change+' '+Math.abs(pct).toFixed(2)+'% · '+esc(item.basis_text)+'</small><strong class="'+cls+'">'+dir+' '+Math.abs(con).toFixed(2)+'%</strong></div>';}}).join('');}}
+ function applyQuote(code,q){{var row=root.querySelector('.instant-holding[data-code="'+code+'"]');if(!row||!q)return;
+   setRow(row,'.instant-price',fmtNum(q.close)); var pct=row.querySelector('.instant-pct'); if(pct){{pct.textContent=fmtPct(q.pct);pct.classList.toggle('up',Number(q.pct)>0);pct.classList.toggle('down',Number(q.pct)<0);}}
+   var updated=row.querySelector('.instant-updated'); if(updated)updated.textContent=q.updated_at||'今日有效行情';
+ }}
+ var started=Date.now(),failures=0;
+ function setRow(row,selector,value){{var e=row.querySelector(selector);if(e)e.textContent=value;}}
+ async function poll(){{if(!document.getElementById('instant-home'))return;
+   try{{var r=await fetch(url('/web/api/portfolio/intraday'),{{credentials:'same-origin',cache:'no-store'}}); if(r.ok){{var d=await r.json(); failures=0;
+     if(d.market&&d.market.pct!=null){{setText('instant-taiex',fmtPct(d.market.pct));setText('instant-taiex-note',(d.market.source||'今日加權指數')+' · '+(d.market.updated_at||''));}}
+     var q=d.quotes||{{}};Object.keys(q).forEach(function(c){{applyQuote(c,q[c]);}});
+     setText('instant-covered','今日有效 '+Object.keys(q).length+'/'+codes.length+' 檔');
+     var complete=codes.length>0&&codes.every(function(c){{return !!q[c]&&Number(q[c].close)>0;}});
+     if(complete){{
+       var v=0,cost=0,valid=true;
+       codes.forEach(function(c){{var item=q[c],pos=positionMap[c];if(!pos||!item||!Number.isFinite(Number(item.close))||Number(item.close)<=0){{valid=false;return;}}v+=Number(item.close)*Number(pos.shares||0);cost+=Number(pos.cost||0)*Number(pos.shares||0);}});
+       if(valid&&cost>0){{setText('instant-total-value',Math.round(v).toLocaleString('en-US'));setText('instant-total-pct','成本報酬 '+fmtPct((v/cost-1)*100));}}
+     }}else{{setText('instant-total-value','同步中');}}
+     if(d.portfolio&&d.portfolio.ready){{
+       renderImpact('instant-positive',d.portfolio.positive||[],true);
+       renderImpact('instant-negative',d.portfolio.negative||[],false);
+       if(Number(d.portfolio.stale_count||0)===0){{setText('instant-total-pct','今日組合 '+fmtPct(d.portfolio.pct)+' · 相對大盤 '+fmtPct(d.portfolio.relative));}}
+       else{{setText('instant-total-pct','今日貢獻資料不足：尚缺 '+Number(d.portfolio.stale_count)+' 檔有效行情');}}
+     }}
+     if(d.note)setText('instant-foot',d.note);
+   }} }}catch(e){{failures++;}}
+   if(document.getElementById('instant-home'))window.setTimeout(poll, failures?4000:(Date.now()-started<20000?1200:3500));
+ }}
+ poll();
+}})();
+</script>'''
+    return body
+
 @app.route("/web/portfolio", methods=["GET", "POST"])
 @web_login_required
 def web_portfolio(uid):
@@ -36745,7 +37240,7 @@ def web_portfolio(uid):
                 "正在完成今日市場判讀…",
             ],
             note="資料量較大，請稍候；完成後會直接顯示完整首頁。",
-            staged=False,
+            staged=True,
         )
 
     # V255：個人首頁片段快取前移到 positions SQL 之前。
@@ -36758,14 +37253,27 @@ def web_portfolio(uid):
             str(request.args.get("trend_period") or "3m"),
             str(request.args.get("trend_benchmark") or "1"),
             tuple(sorted((k, tuple(request.args.getlist(k))) for k in request.args.keys()
-                         if k not in {"t", "fragment", "_nav", "refresh"})),
+                         if k not in {"t", "fragment", "_nav", "refresh", "fast", "detail"})),
             "empty-home-welcome-v13-quiet-editorial")
         _home_fast_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
-        _cached_home_fast_body = _web_fragment_cache_get(
-            "portfolio-fast", _home_fast_fragment_key, _home_fast_ttl)
+        _cached_home_fast_body = (None if request.args.get("detail") == "1" else
+                                  _web_fragment_cache_get("portfolio-fast", _home_fast_fragment_key, _home_fast_ttl))
         if _cached_home_fast_body is not None:
             print("⚡ 今日首頁命中前置 HTML 快取（跳過 positions SQL 與完整組裝）", flush=True)
             return respond_page("今日", _cached_home_fast_body, "portfolio")
+
+    # First paint: never wait for revenue/valuation, institutional data, history charts or MIS.
+    # The staged shell displays this fast fragment immediately while detail=1 computes below
+    # in a separate request. The browser polls the lightweight intraday API for today's quotes.
+    if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1":
+        try:
+            fast_positions = merge_positions(get_positions(uid))
+        except Exception as exc:
+            print("⚠️ 首頁即時首屏讀取持股失敗：%s" % type(exc).__name__, flush=True)
+            fast_positions = []
+        _schedule_home_intraday_payload_refresh(uid)
+        fast_body = _render_fast_portfolio_entry(uid, fast_positions)
+        return respond_page("今日", fast_body, "portfolio")
 
     # v184：首頁移除風險問卷與「值得注意」入口。
     profile = {}
@@ -36875,7 +37383,7 @@ def web_portfolio(uid):
             str(request.args.get("trend_benchmark") or "1"),
              "empty-home-welcome-v13-quiet-editorial")
         # 首頁已載入完整摘要；短時間內切回先用既有內容，避免重新抓六份共享資料。
-        _home_cache_ttl = 180.0 if _is_taiwan_intraday_window() else 600.0
+        _home_cache_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_home_body = _web_fragment_cache_get(
             "portfolio", _home_fragment_cache_key, _home_cache_ttl)
         if _cached_home_body is not None:
@@ -37048,8 +37556,8 @@ def web_portfolio(uid):
         if position_codes:
             try:
                 price_map = _homepage_merge_official_quotes(
-                    price_map, position_codes, force_refresh=True)
-                print("📈 首頁今日貢獻行情已強制刷新官方 MIS：%s 檔" % len(position_codes), flush=True)
+                    price_map, position_codes, force_refresh=False, user_id=uid, allow_network=False)
+                print("⚡ 首頁使用今日有效行情快照（MIS 更新由背景 API 執行）：%s 檔持股" % len(position_codes), flush=True)
             except Exception as exc:
                 print("⚠️ 首頁今日貢獻官方行情刷新失敗：%s: %s" % (
                     type(exc).__name__, exc), flush=True)
@@ -37284,9 +37792,9 @@ def web_taiex_intraday(uid):
         return _workbench_json_response({"ok": True, "market_open": False,
                                          "market": None,
                                          "note": "目前非一般盤中時段。"})
-    # This endpoint owns the synchronous attempt. If the official source fails, the
-    # fetch helper returns only a same-day last-valid value marked stale, or None.
-    data = fetch_taiex_intraday(stale_while_revalidate=False)
+    # Respond from the same-day cache immediately; a missing/outdated value triggers a
+    # single background refresh instead of holding the browser on a slow MIS request.
+    data = fetch_taiex_intraday(stale_while_revalidate=True)
     try:
         pct_value = float(data.get("pct")) if data and data.get("pct") is not None else None
     except (TypeError, ValueError):
