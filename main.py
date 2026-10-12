@@ -35426,6 +35426,55 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     taiex = (fetch_taiex_summary() if taiex is None else taiex) or {}
     intraday_window = _is_taiwan_intraday_window()
     intraday_taiex = fetch_taiex_intraday(stale_while_revalidate=True) if intraday_window else None
+
+    # 首頁「今日組合／相對大盤」必須用今天的官方個股報價計算；不能沿用
+    # 持有至今的 pl_total，也不能把 Yahoo 歷史快取當成今日漲跌。先檢查現有
+    # price_map，若今日官方行情不完整，整批補抓缺漏代號並重試，再更新 holdings。
+    try:
+        price_map = price_map if isinstance(price_map, dict) else dict(price_map or {})
+        today_key = calendar_today.strftime("%Y%m%d")
+        holding_codes = [str(h.get("code") or "").strip() for h in holdings if h.get("code")]
+        valid_today_quotes = {}
+        for code in holding_codes:
+            quote = price_map.get(code) or (next((h.get("price") for h in holdings
+                                                   if str(h.get("code") or "").strip() == code), None))
+            if (isinstance(quote, dict) and
+                    str(quote.get("close_date") or "").replace("-", "")[:8] == today_key and
+                    "MIS" in str(quote.get("source") or "").upper() and
+                    _mis_quote_is_current_for_contribution(quote)):
+                valid_today_quotes[code] = dict(quote)
+        missing_codes = [code for code in holding_codes if code not in valid_today_quotes]
+        for retry_round in range(3):
+            if not missing_codes:
+                break
+            fetched = _fetch_twse_mis_quotes(
+                missing_codes, market_suffix=None, force_refresh=True,
+                cache_result=(retry_round == 0), quick_mode=False)
+            for code, quote in (fetched or {}).items():
+                if (str(quote.get("close_date") or "").replace("-", "")[:8] == today_key and
+                        "MIS" in str(quote.get("source") or "").upper() and
+                        _mis_quote_is_current_for_contribution(quote)):
+                    valid_today_quotes[code] = dict(quote)
+                    price_map[code] = dict(quote)
+            missing_codes = [code for code in holding_codes if code not in valid_today_quotes]
+            if missing_codes and retry_round < 2:
+                time.sleep(0.25 * (retry_round + 1))
+        if valid_today_quotes:
+            # 讓曝險計算與持股 renderer 使用同一份官方今日報價，不能讓 price_map
+            # 裡殘留的舊 Yahoo／舊快取優先覆蓋 holding.price。
+            price_map.update({code: dict(quote) for code, quote in valid_today_quotes.items()})
+            for holding in holdings:
+                code = str(holding.get("code") or "").strip()
+                if code in valid_today_quotes:
+                    holding["price"] = dict(valid_today_quotes[code])
+            # 重算當日曝險；原本外層算出的曝險可能使用到過期價格。
+            today_logs = get_position_change_logs(uid, 5000, trade_date=calendar_today)
+            daily_pretrade_exposure = _build_daily_pretrade_exposure(
+                holdings, price_map, today_logs, {})
+        print("⚡ 首頁今日官方行情覆蓋：%s/%s 檔" % (
+            len(valid_today_quotes), len(holding_codes)), flush=True)
+    except Exception as quote_refresh_exc:
+        print("⚠️ 首頁今日官方行情同步失敗：%s" % type(quote_refresh_exc).__name__, flush=True)
     market_pct = None
     if intraday_window:
         # 盤中只認 TWSE MIS 當日、帶時間且未過時的 t00 指數；失敗絕不回退日K。
@@ -35914,8 +35963,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <a href="{focus_href}">{html.escape(focus_cta)} →</a>
 </section>'''
     market_text = fmt_pct(market_pct) if market_pct is not None else "資料尚未更新"
-    portfolio_text = fmt_pct(portfolio_pct) if portfolio_pct is not None else fmt_pct(pl_total)
-    relative_text = fmt_pct(relative) if relative is not None else "—"
+    # 今日組合不可回退成持有至今的未實現損益率；兩者口徑不同。
+    portfolio_text = fmt_pct(portfolio_pct) if portfolio_pct is not None else "資料不足"
+    relative_text = fmt_pct(relative) if relative is not None else "資料不足"
 
     quote_text = _homepage_quote_for(display_date)
 
