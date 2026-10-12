@@ -6262,8 +6262,16 @@ def _build_home_intraday_payload(uid):
         # 每個使用者每 15 秒都會真的打一次 MIS，人一多就放大請求量。
         # 首頁盤中同樣只採官方 MIS，避免 Yahoo 延遲行情混進組合損益。
         fresh_price_map = _fetch_twse_mis_quotes(codes, force_refresh=False)
-        # MIS may return a partial set or an older timestamp on adjacent polls.  Merge it
-        # into a per-user same-day sticky cache before calculating the portfolio return.
+        # A same-day cached quote is not automatically current. Only recent official last-trade
+        # timestamps may enter today's contribution; sticky values may still support display
+        # continuity but are not evidence of a current price.
+        fresh_contribution_quotes = {
+            str(code): dict(quote) for code, quote in (fresh_price_map or {}).items()
+            if _mis_quote_is_current_for_contribution(quote)
+        }
+        # MIS may return a partial set or an older timestamp on adjacent polls. Merge the quotes
+        # into a per-user cache for display continuity, but never use that sticky cache itself
+        # as proof that the quote is recent enough for today's contribution.
         cache_day = taiwan_today().isoformat()
         with _HOME_INTRADAY_STICKY_LOCK:
             state = _HOME_INTRADAY_STICKY_CACHE.setdefault(
@@ -6344,7 +6352,19 @@ def _build_home_intraday_payload(uid):
             return {"ok": False, "market_open": True, "updates": [],
                     "note": "目前還沒有任何一檔持股取得有效報價；保留頁面最後有效資料。"}
 
-        exposure_rows = _build_daily_pretrade_exposure(holdings, price_map, today_logs)
+        # Use the latest eligible official value when computing each valid row. The denominator
+        # still includes the full portfolio via its paired previous-close prices, while symbols
+        # without a sufficiently recent official tick will be omitted from the contribution list.
+        exposure_price_map = dict(price_map)
+        exposure_price_map.update(fresh_contribution_quotes)
+        exposure_holdings = []
+        for holding in holdings:
+            row_holding = dict(holding)
+            row_code = str(row_holding.get("code") or "").strip()
+            row_holding["price"] = exposure_price_map.get(row_code) or row_holding.get("price")
+            exposure_holdings.append(row_holding)
+        exposure_rows = _build_daily_pretrade_exposure(
+            exposure_holdings, exposure_price_map, today_logs)
         realized_by_code = (_today_realized_by_code(get_realized_trades(uid, 100))
                             if reduced_codes else {})
 
@@ -6362,8 +6382,12 @@ def _build_home_intraday_payload(uid):
 
         contribution_rows = []
         for row in exposure_rows:
-            quote_data = ((row.get("holding") or {}).get("price") or
-                          price_map.get(row.get("code")) or {})
+            code = str(row.get("code") or "").strip()
+            # Do not let a quote retained only in the same-day sticky cache appear in today's
+            # winner/loser list. No sufficiently fresh official quote means no contribution row.
+            quote_data = fresh_contribution_quotes.get(code)
+            if not quote_data:
+                continue
             try:
                 pct = float(quote_data.get("pct"))
             except (TypeError, ValueError):
@@ -6387,8 +6411,9 @@ def _build_home_intraday_payload(uid):
             })
         portfolio_pct = (sum(item["contribution"] for item in contribution_rows)
                          if contribution_rows else None)
-        # 只有「今天從未拿到過有效報價」才標 stale。
-        # 已經存在於 sticky cache 的股票，即使本輪 MIS 沒回，也仍用上一筆有效價格計算。
+        # 即使同日 sticky cache 裡有行情，只要本次沒有足夠新的官方成交時間，
+        # 就標示為暫不納入今日貢獻，避免把盤中舊價冒充最新漲跌。
+        stale_codes = [code for code in codes if code not in fresh_contribution_quotes]
         stale_names = [stock_display_name(code, {}, None) for code in stale_codes]
         positive = sorted((item for item in contribution_rows if item["contribution"] > 0),
                           key=lambda item: item["contribution"], reverse=True)[:5]
@@ -6413,8 +6438,8 @@ def _build_home_intraday_payload(uid):
                           "positive": positive, "negative": negative,
                     "stale_names": stale_names[:6],
                     "stale_count": len(stale_names), "ready": True},
-            "note": ("首頁盤中行情已局部更新；大盤採 TWSE MIS 當日即時指數，"
-                     "每檔持股有新報價就更新，沒回來的沿用上一筆有效價格，不重整操作日報。"),
+            "note": ("首頁盤中行情已局部更新；今日貢獻只計入最近 120 秒內有官方成交時間的股票，"
+                     "未取得足夠新的報價就暫不計入，避免舊行情改變漲跌方向。"),
         }
     except Exception as exc:
         print(f"⚠️ 首頁盤中行情更新失敗（uid={uid}）：{exc}")
@@ -8978,6 +9003,44 @@ def _twse_mis_quote_symbols(codes, market_suffix=None):
     return symbols
 
 
+def _mis_quote_is_current_for_contribution(quote, now=None, max_age_seconds=120):
+    """Only permit a recently traded, date-verified official quote in today's contribution.
+
+    A quote cached earlier in the same session is not necessarily current. During trading,
+    reject it once its last-trade timestamp is older than max_age_seconds. After the close,
+    accept only today's official final-close quote.
+    """
+    if not isinstance(quote, dict):
+        return False
+    current = now or taiwan_now()
+    today_key = current.date().strftime("%Y%m%d")
+    close_day = str(quote.get("close_date") or "").strip().replace("-", "")[:8]
+    if close_day != today_key:
+        return False
+
+    # After the closing auction, today's official final close is valid for the day even
+    # though its last-trade timestamp is naturally more than two minutes old.
+    if _taiwan_post_close(current):
+        return bool(quote.get("close_is_final"))
+    if not _is_taiwan_intraday_window(current):
+        return False
+
+    stamp = str(quote.get("updated_at") or "").strip()
+    if not stamp and quote.get("close_time"):
+        stamp = f"{close_day} {quote.get('close_time')}"
+    parsed = None
+    for fmt in ("%Y%m%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y%m%d %H:%M"):
+        try:
+            parsed = datetime.strptime(stamp[:19], fmt).replace(tzinfo=TW_TZ)
+            break
+        except (TypeError, ValueError):
+            continue
+    if parsed is None:
+        return False
+    age = (current - parsed).total_seconds()
+    return -30 <= age <= max(0, float(max_age_seconds))
+
+
 def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False):
     """批次讀 TWSE MIS 的盤中成交／收盤集合競價。
 
@@ -9057,10 +9120,12 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False):
                 "close_time": item.get("t"),
             }
     with _realtime_cache_lock:
-        merged = dict(_TWSE_MIS_CACHE.get("data") or {})
-        merged.update(parsed)
-        _TWSE_MIS_CACHE.update({"day": today, "at": time.time(), "data": merged})
-    return {code: merged[code] for code in codes if code in merged}
+        # Cache only the symbols actually returned by this response. Merging yesterday's or
+        # earlier same-session symbols into this result made a partial MIS response look like a
+        # complete fresh snapshot. Per-user sticky caches may preserve display continuity, but
+        # callers deciding today's contribution must receive only quotes in this recent batch.
+        _TWSE_MIS_CACHE.update({"day": today, "at": time.time(), "data": dict(parsed)})
+    return {code: parsed[code] for code in codes if code in parsed}
 
 
 def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
@@ -35000,6 +35065,10 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             stamp_day = stamp[:10].replace("-", "")
         if close_day != today_key or stamp_day[:8] != today_key:
             return None
+        # Date alone is not enough: an earlier quote from this morning can be several
+        # minutes old and may have the wrong direction versus the latest market price.
+        if not _mis_quote_is_current_for_contribution(price):
+            return None
         try:
             value = price.get("pct")
             return float(value) if value is not None else None
@@ -35067,21 +35136,27 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     # 一律沒有，於是被整批判成「非今日」排除掉，13 檔持股只剩 1 檔，
     # 摘要句子還會提到清單裡看不到的標的。修出來的問題比原本的大。
     #
-    # 跳動由 get_realtime_stock 的同日黏著快取處理：今天拿過的報價
-    # 就記住，MIS 暫缺時沿用而不是倒退回昨收。
-    stale_holdings = []
+    # 歷史／黏著快取可支援畫面其他區塊，但不能作為今日漲跌貢獻的依據。
+    # 只有最近 120 秒內有官方成交時間的盤中報價才可列入。
+    stale_holdings = [
+        holding for holding in contribution_holdings
+        if holding_day_pct(holding) is None
+    ]
 
     # 被排除的標的要說出來，不能讓它們無聲消失——
     # 使用者會以為自己看漏了，或以為那幾檔今天沒動。
-    stale_notice = ""
     if stale_holdings:
         names = "、".join(
             html.escape(str(h.get("name") or h.get("code")))
             for h in stale_holdings[:4])
         more = f" 等 {len(stale_holdings)} 檔" if len(stale_holdings) > 4 else ""
         stale_notice = (
-            f'<p class="impact-stale">{names}{more} 尚未取得今日報價，'
-            f'暫不計入今日貢獻；官方逐檔更新後會自動補上。</p>')
+            f'<p class="impact-stale">{names}{more} 尚未取得足夠新的盤中行情，'
+            f'暫不計入今日貢獻；取得有效行情後會自動補上。</p>')
+    else:
+        # Keep the element in the DOM so the 15-second live updater can reveal it if a
+        # later MIS batch misses a ticker or its last-trade timestamp becomes stale.
+        stale_notice = '<p class="impact-stale" style="display:none"></p>'
 
     # 「最大貢獻／最大拖累」看的是對組合的實際影響，不是單看個股漲跌幅。
     # 例如權重 40% 下跌 2%，通常比權重 1% 下跌 10% 更拖累整體組合。
@@ -35533,6 +35608,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       {impact_lead_card(negative_lead, "主要拖累組合", "impact-down")}
     </div>
   </div>
+  {stale_notice}
   <details class="impact-details" open>
     <summary>查看正貢獻明細（前 {min(positive_count, 5)} 檔）</summary>
     <div data-home-contribution-rows="positive">{positive_rows_html}</div>
@@ -35608,7 +35684,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         if(staleCount){
           staleEl.textContent=staleNames.map(esc).join('、')
             +(staleCount>staleNames.length?(' 等 '+staleCount+' 檔'):'')
-            +' 尚未取得今日報價，暫不計入今日貢獻；官方逐檔更新後會自動補上。';
+            +' 尚未取得足夠新的盤中報價，暫不計入今日貢獻；取得有效行情後會自動補上。';
           staleEl.style.display='';
         }else{
           staleEl.style.display='none';
