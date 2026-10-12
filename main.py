@@ -6402,18 +6402,19 @@ def _schedule_save_home_intraday_quotes(uid, quotes):
 
 
 def _refresh_home_intraday_payload_sync(uid):
-    """Background-only full refresh; may wait for official MIS retries and database reads."""
-    if not _is_taiwan_intraday_window():
+    """同步取得今日完整持股行情；收盤後也會計算正式收盤的今日績效。"""
+    now = taiwan_now()
+    intraday = _is_taiwan_intraday_window(now)
+    post_close = _taiwan_post_close(now)
+    if not intraday and not post_close:
         return {"ok": True, "market_open": False, "updates": [],
-                "note": "目前非一般盤中時段；首頁已停止行情輪詢。"}
-    # 大盤行情與個股行情是獨立資料流；先讀大盤，不能讓「尚未取得全部持股」
-    # 的早退分支把已成功更新的 TAIEX 藏掉。
-    # API poll 在沒有今日有效快取時同步取一次官方 t00；否則只排背景任務會連續回傳 None，
-    # 即使背景最後成功，前端也可能一直看見「資料尚未更新」。初始完整頁仍可使用背景刷新。
-    # Do not make the portfolio API wait for the index endpoint. The dedicated TAIEX
-    # endpoint below performs the synchronous fetch; this combined endpoint serves only
-    # a same-day cached value and schedules refresh if needed.
-    taiex = fetch_taiex_intraday(force_refresh=True, stale_while_revalidate=False)
+                "note": "目前非一般盤中或收盤後時段；沒有新的今日行情可同步。"}
+    # 盤中取即時指數；13:30 後改取同日官方正式收盤指數。不能因為市場已收盤，
+    # 就把尚未更新的盤中頁面留在「今日組合資料不足」。
+    if intraday:
+        taiex = fetch_taiex_intraday(force_refresh=True, stale_while_revalidate=False)
+    else:
+        taiex = fetch_taiex_official_close(now=now)
     try:
         market_pct = float(taiex.get("pct")) if taiex and taiex.get("pct") is not None else None
     except (TypeError, ValueError):
@@ -6426,7 +6427,7 @@ def _refresh_home_intraday_payload_sync(uid):
 
     positions = merge_positions(get_positions(uid))
     if not positions:
-        return {"ok": True, "market_open": True, "updates": [],
+        return {"ok": True, "market_open": intraday, "updates": [],
                 "market": market_payload,
                 "note": "目前沒有可更新的持股。"}
     codes = [str(position.get("code") or "").strip() for position in positions]
@@ -6653,7 +6654,9 @@ def _refresh_home_intraday_payload_sync(uid):
             except (TypeError, ValueError):
                 continue
         return {
-            "ok": True, "market_open": True,
+            # market_open=False 告訴前端更新完這份收盤資料後停止輪詢；payload 本身仍
+            # 含今日正式收盤的持股、組合與相對大盤數據，不能在前端提早丟掉。
+            "ok": True, "market_open": intraday,
             "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
             "market": market_payload,
             "quotes": quote_payload,
@@ -6726,10 +6729,14 @@ def _schedule_home_intraday_payload_refresh(uid):
 
 
 def _build_home_intraday_payload(uid):
-    """Fast API path: return today's last completed payload immediately and refresh in background."""
-    if not _is_taiwan_intraday_window():
+    """回傳今日盤中／收盤行情；收盤後首次呼叫同步計算正式收盤績效。"""
+    now = taiwan_now()
+    if not _is_taiwan_intraday_window(now):
+        if _taiwan_post_close(now):
+            # 收盤後不要回傳空 payload：仍需把今日正式收盤結果送到已開啟的首頁。
+            return _refresh_home_intraday_payload_sync(uid)
         return {"ok": True, "market_open": False, "updates": [],
-                "note": "目前非一般盤中時段；首頁已停止行情輪詢。"}
+                "note": "目前非一般盤中時段；沒有新的今日行情可同步。"}
 
     # 冷啟動或持股行情不完整時，不先啟動另一個大盤背景請求，避免跟完整批次搶 MIS。
     # 需要同步刷新時由 _refresh_home_intraday_payload_sync 一次處理大盤與全部持股。
@@ -36113,7 +36120,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 
     portfolio_label = "你的組合（今日基準）" if has_pretrade_basis else "你的組合"
     home_intraday_script = ""
-    if intraday_window:
+    # 盤中開啟的頁面需要收盤後補上正式收盤結果；收盤後新開的頁面也要執行一次同步，
+    # 避免只有大盤更新、今日組合／相對大盤仍停在舊的「資料不足」。
+    if intraday_window or _taiwan_post_close():
         home_intraday_script = r'''<script>
 (function(){
   var timer=null,busy=false,stopped=false,marketEl=document.querySelector('[data-home-market-pct]');
@@ -36157,8 +36166,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     busy=true;
     var url='/web/api/portfolio/intraday',t=token();if(t)url+='?t='+encodeURIComponent(t);
     fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
-      if(!data.market_open){stopped=true;var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');if(title)title.textContent='盤中已結束';if(note)note.textContent=data.note||'目前非一般盤中時段；開盤後會自動恢復更新。';schedule();return;}
-      if(stopped){stopped=false;var t0=document.querySelector('[data-home-live-title]');if(t0)t0.textContent='盤中更新中';}
+      // 即使已收盤，也必須先套用 API 回傳的「今日正式收盤」資料；不能因 market_open=false
+      // 就在前端提早 return，讓頁面永久停留在收盤前的「資料不足」。
+      if(data.market_open&&stopped){stopped=false;var t0=document.querySelector('[data-home-live-title]');if(t0)t0.textContent='盤中更新中';}
       var market=data.market,portfolio=data.portfolio||{};
       if(market&&market.pct!=null){marketEl.innerHTML=pct(market.pct);var freshness=document.querySelector('[data-home-market-freshness]');if(freshness)freshness.textContent=(market.stale?'最近有效行情・背景更新中・':'')+(market.source||'TWSE MIS 即時加權指數')+(market.updated_at?'・更新 '+market.updated_at:'');}
       else {marketEl.textContent='資料尚未更新';var missing=document.querySelector('[data-home-market-freshness]');if(missing)missing.textContent='即時 TAIEX 暫時無法取得，未使用日K快照';}
@@ -36202,7 +36212,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         }
       }
       if(liveReady){var positiveCount=document.querySelector('[data-home-positive-count]'),negativeCount=document.querySelector('[data-home-negative-count]');if(positiveCount)positiveCount.textContent=positive.length;if(negativeCount)negativeCount.textContent=negative.length;}
-      var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');if(title)title.textContent='盤中行情已局部更新';if(note)note.textContent=data.note||('已於 '+(data.fetched_at||'剛剛')+' 更新；操作日報未重新載入。');
+      var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');
+      if(!data.market_open){stopped=true;if(title)title.textContent='今日收盤資料已更新';if(note)note.textContent=data.note||('已於 '+(data.fetched_at||'剛剛')+' 同步今日正式收盤行情。');schedule();return;}
+      if(title)title.textContent='盤中行情已局部更新';if(note)note.textContent=data.note||('已於 '+(data.fetched_at||'剛剛')+' 更新；操作日報未重新載入。');
     }).catch(function(){var note=document.querySelector('[data-home-live-note]');if(note)note.textContent='首頁盤中行情暫時無法更新；保留頁面最後有效資料。';}).finally(function(){busy=false;schedule();});
   }
   document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
