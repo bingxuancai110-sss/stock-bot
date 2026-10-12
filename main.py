@@ -6454,7 +6454,7 @@ def _refresh_home_intraday_payload_sync(uid):
             elif _market_name in ("上櫃", "上柜", "tpex", "otc", "two"):
                 _quote_market_suffix[_code] = ".TWO"
         fresh_price_map = _fetch_twse_mis_quotes(
-            codes, market_suffix=_quote_market_suffix, force_refresh=True, quick_mode=True)
+            codes, market_suffix=_quote_market_suffix, force_refresh=True, quick_mode=False)
         # A same-day quote is accepted only when its official trading date and time are valid.
         # Do not impose a two-minute last-trade cutoff: that incorrectly drops low-turnover stocks.
         fresh_contribution_quotes = {
@@ -6480,7 +6480,7 @@ def _refresh_home_intraday_payload_sync(uid):
                 try:
                     result = _fetch_twse_mis_quotes(
                         [code], market_suffix=None, force_refresh=True,
-                        cache_result=False, quick_mode=True)
+                        cache_result=False, quick_mode=False)
                     quote = (result or {}).get(code)
                     if quote and _mis_quote_is_current_for_contribution(quote):
                         return code, quote
@@ -6551,7 +6551,9 @@ def _refresh_home_intraday_payload_sync(uid):
         for _code in codes:
             if _code not in fresh_contribution_quotes:
                 _same_day_quote = price_map.get(_code)
-                if _mis_quote_is_current_for_contribution(_same_day_quote):
+                if (_same_day_quote and
+                        str(_same_day_quote.get("close_date") or "").replace("-", "")[:8] == taiwan_today().strftime("%Y%m%d") and
+                        _mis_quote_is_current_for_contribution(_same_day_quote)):
                     fresh_contribution_quotes[_code] = dict(_same_day_quote)
         today_logs = get_position_change_logs(uid, 5000, trade_date=taiwan_today())
         reduced_codes = {
@@ -9395,9 +9397,13 @@ def _mis_quote_is_current_for_contribution(quote, now=None, max_age_seconds=None
             break
         except (TypeError, ValueError):
             continue
-    if parsed is None or parsed.strftime("%Y%m%d") != today_key:
+    # 沿用舊版持股／貢獻取用方式：官方 MIS 明確回報台灣今天的資料，
+    # 即使低成交量股票的成交時間較早或 tlong 欄位缺漏，也可以沿用今天最後有效報價。
+    # 但絕不跨日：close_date 必須是今天；若時間戳明確落在未來或非盤中，仍拒絕。
+    if parsed is None:
+        return str(quote.get("source") or "").upper().find("MIS") >= 0
+    if parsed.strftime("%Y%m%d") != today_key:
         return False
-    # 成交時刻必須落在今天盤中，且不能明顯晚於現在；不要求兩分鐘內有新成交。
     minute_of_day = parsed.hour * 60 + parsed.minute
     current_minute = current.hour * 60 + current.minute
     return (8 * 60 + 55 <= minute_of_day <= 13 * 60 + 30 and
@@ -9500,8 +9506,10 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
                 except (TypeError, ValueError):
                     return None
 
-            # 今日漲跌只用官方最後成交價 z 與昨收 y；不把 pz 或 Yahoo 日K當盤中成交價。
-            close = number("z")
+            # 沿用舊版 MIS 價格欄位解析：優先用今日最後成交價 z；若 MIS 只回 pz，
+            # 保留它供持股市值／持股頁顯示，但標記為非今日成交，不能拿來製造今日貢獻。
+            live_close = number("z")
+            close = live_close if live_close is not None and live_close > 0 else number("pz")
             previous = number("y")
             if close is None or close <= 0 or previous is None or previous <= 0:
                 continue
@@ -9528,7 +9536,7 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
                 "volume": int(volume_lots * 1000) if volume_lots is not None else 0,
                 "updated_at": quote_updated_at or trade_at,
                 "quote_updated_at": quote_updated_at, "trade_at": trade_at,
-                "has_live_trade_price": True,
+                "has_live_trade_price": bool(live_close is not None and live_close > 0),
                 "source": "TWSE MIS 最後成交／收盤集合競價" if _taiwan_post_close() else "TWSE MIS 盤中最後成交",
                 "close_is_final": bool(_taiwan_post_close()),
                 "close_date": item.get("d"), "close_time": item.get("t"),
@@ -35496,19 +35504,14 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 
     def holding_day_pct(holding):
         price = holding.get("price") or {}
-        # 「今日貢獻」只接受日期明確為台灣今天的報價；不能因為已收盤或非盤中，
-        # 就把昨天／更早的 Yahoo 日線 pct 當成今天的漲跌。優先檢查官方報價日期，
-        # 再檢查更新時間；任何一項都無法證明是今天，就不納入今日貢獻。
+        # 移植舊版正／負貢獻的取用方式，但保留新版的防跨日保護：
+        # 只讀取官方 MIS 明確標記為台灣今天的行情；同日最後有效報價可沿用，
+        # 不要求每檔都在最近兩分鐘成交，也不使用 Yahoo 歷史日K冒充今日漲跌。
         today_key = calendar_today.strftime("%Y%m%d")
         close_day = str(price.get("close_date") or "").strip().replace("-", "")[:8]
-        stamp = str(price.get("updated_at") or "").strip()
-        stamp_day = stamp[:8]
-        if not (len(stamp_day) == 8 and stamp_day.isdigit()):
-            stamp_day = stamp[:10].replace("-", "")
-        if close_day != today_key or stamp_day[:8] != today_key:
+        source = str(price.get("source") or "").upper()
+        if close_day != today_key or "MIS" not in source:
             return None
-        # Date alone is not enough: an earlier quote from this morning can be several
-        # minutes old and may have the wrong direction versus the latest market price.
         if not _mis_quote_is_current_for_contribution(price):
             return None
         try:
