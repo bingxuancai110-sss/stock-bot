@@ -34840,6 +34840,111 @@ body #app-page-content .rank-situation .rank-situation-title .rank-situation-bad
   overflow:clip !important;
 }
 
+
+/* V265: hard mobile containment fix. Previous rules still allowed two-column
+   holding summaries at phone width, so long labels were clipped at card edge. */
+#app-page-content .rank-rows,
+#app-page-content .rank-rows .rank-card,
+#app-page-content .rank-rows .rank-card * {
+  min-width:0 !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card {
+  width:100% !important;
+  max-width:100% !important;
+  overflow-x:hidden !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail,
+#app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body {
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body {
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr)) !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > .rank-detail-item,
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > .rank-detail-item em,
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > .rank-detail-item b,
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > .rank-detail-item strong {
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
+}
+#app-page-content .rank-rows .rank-card .bot-virtual-card {
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold,
+#app-page-content .rank-rows .rank-card .bot-cash-row {
+  grid-template-columns:minmax(0,1fr) 48px 58px !important;
+  gap:5px 6px !important;
+  overflow:hidden !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-name,
+#app-page-content .rank-rows .rank-card .bot-hold-meta,
+#app-page-content .rank-rows .rank-card .bot-cash-name,
+#app-page-content .rank-rows .rank-card .bot-cash-note {
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
+  white-space:normal !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-timeline,
+#app-page-content .rank-rows .rank-card .bot-history-all-body {
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  overflow:hidden !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-timeline-item {
+  grid-template-columns:48px minmax(0,1fr) !important;
+  column-gap:6px !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  overflow:hidden !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-timeline:before { left:49px !important; }
+#app-page-content .rank-rows .rank-card .bot-history-dot { left:45px !important; }
+#app-page-content .rank-rows .rank-card .bot-history-content {
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  padding:0 0 1px 7px !important;
+  overflow:hidden !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-all > summary {
+  width:100% !important;
+  max-width:100% !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+}
+@media (max-width:700px) {
+  #app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body {
+    grid-template-columns:minmax(0,1fr) !important;
+  }
+  #app-page-content .rank-rows .rank-card .bot-virtual-card {
+    grid-template-columns:minmax(0,1fr) !important;
+  }
+  #app-page-content .rank-rows .rank-card .bot-hold,
+  #app-page-content .rank-rows .rank-card .bot-cash-row {
+    grid-template-columns:minmax(0,1fr) 44px 54px !important;
+    gap:4px 5px !important;
+  }
+  #app-page-content .rank-rows .rank-card .bot-history-timeline-item {
+    grid-template-columns:44px minmax(0,1fr) !important;
+    column-gap:5px !important;
+  }
+  #app-page-content .rank-rows .rank-card .bot-history-timeline:before { left:45px !important; }
+  #app-page-content .rank-rows .rank-card .bot-history-dot { left:41px !important; }
+  #app-page-content .rank-rows .rank-card .bot-history-left { padding-right:2px !important; }
+  #app-page-content .rank-rows .rank-card .bot-history-content { padding-left:6px !important; }
+}
+
 </style>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
@@ -39083,6 +39188,32 @@ CATEGORY_NOTE = {
 # 選股台：黑馬／雷達的完整版
 # LINE 受限於訊息長度只能給 5 檔；網頁可以給 20 檔並支援排序篩選。
 # ============================================================
+def _screener_empty_result_has_scan_evidence(mode, snapshot):
+    """只有雷達留有完整掃描診斷時，才把空清單視為「有效的零結果」。"""
+    if str(mode or "").strip() not in ("radar", "radar_live") or not isinstance(snapshot, dict):
+        return False
+    meta = snapshot.get("source_meta") if isinstance(snapshot.get("source_meta"), dict) else {}
+    diag = snapshot.get("radar_diagnostics")
+    if not isinstance(diag, dict):
+        diag = meta.get("radar_diagnostics") if isinstance(meta.get("radar_diagnostics"), dict) else {}
+    def _count(key, default=0):
+        try:
+            return max(0, int(float(diag.get(key, default) or 0)))
+        except (TypeError, ValueError):
+            return default
+    universe = _count("universe_count")
+    quote_missing = _count("quote_missing_count")
+    pct_missing = _count("spark_pct_missing_count")
+    deep = _count("deep_candidate_count")
+    final_count = _count("final_count", len(snapshot.get("rows") or []))
+    finished = (snapshot.get("scan_finished_at") or meta.get("scan_finished_at")
+                or snapshot.get("computed_at"))
+    # 沒掃到候選、行情大量缺漏、或缺少完成時間，都不是可信的「零檔」。
+    return bool(finished and universe > 0 and deep > 0
+                and quote_missing + pct_missing < universe
+                and final_count == 0)
+
+
 def _load_persisted_screener_snapshot(mode):
     """讀取專用選股完整快照；過期、格式不符或資料庫錯誤就回傳 None。"""
     mode = str(mode).strip()
@@ -39129,14 +39260,18 @@ def _load_persisted_screener_snapshot(mode):
         if not isinstance(rows, list):
             return None
 
-        return {
+        payload = {
             "rows": rows,
             "skipped": int(skipped or 0),
             "momentum": momentum if isinstance(momentum, dict) else {},
             "source_date": snapshot_date,
             "computed_at": computed_at,
-            "source_meta": source_meta or {},
+            "source_meta": source_meta if isinstance(source_meta, dict) else {},
         }
+        if not rows and not _screener_empty_result_has_scan_evidence(mode, payload):
+            print(f"⚠️ 選股快照 {mode} 是空清單且沒有足夠掃描證據，視為不可用並觸發重建")
+            return None
+        return payload
     except Exception as exc:
         print(f"⚠️ 解析選股持久化快照失敗 {mode}: {exc}")
         return None
@@ -39222,6 +39357,22 @@ def _save_persisted_screener_snapshot(mode, rows, skipped, momentum,
         old_rec = old_cur.fetchone()
         old_snapshot_date = old_rec[0] if old_rec else None
         old_cur.close()
+        # 來源逾時時偶爾會產生空清單。沒有可信的完整雷達診斷，就不能覆蓋上一份有效資料。
+        if not rows:
+            empty_candidate = {
+                "rows": rows,
+                "source_meta": source_meta if isinstance(source_meta, dict) else {},
+                "radar_diagnostics": ((source_meta or {}).get("radar_diagnostics")
+                                      if isinstance(source_meta, dict) else {}),
+                "scan_finished_at": ((source_meta or {}).get("scan_finished_at")
+                                     if isinstance(source_meta, dict) else None),
+            }
+            empty_is_valid = _screener_empty_result_has_scan_evidence(mode, empty_candidate)
+            if not empty_is_valid:
+                old_count = len(old_rec[1]) if old_rec and len(old_rec) > 1 and isinstance(old_rec[1], list) else 0
+                print(f"⚠️ 選股快照 {mode} 本次結果為無效空清單；保留既有 {old_count} 檔快照，不覆蓋")
+                release_db_connection(conn)
+                return False
         # 只有同一天的前一份快照，才算「今日分數變化」。跨日不誤判。
         if old_rec and len(old_rec) > 1 and isinstance(old_rec[1], list):
             old_rows = old_rec[1]
@@ -39693,19 +39844,28 @@ def _screener_snapshot_is_recent(snapshot, max_days=3):
 
 
 def _screener_recent_snapshot(mode):
-    """優先取 process 記憶體，再取共享持久化快照；回傳可明示來源日的資料。"""
+    """優先取 process 記憶體，再取共享快照；休市日按交易日曆允許保留最近 7 日資料。"""
     mode = str(mode or "").strip()
+    # 休市日可能連續數個日曆日沒有新報價（例如週末接國定假日）；
+    # 仍可顯示最後有效快照，但 UI 必須保留來源日期，不冒充今日即時資料。
+    max_days = 3 if is_twse_trading_day(taiwan_today()) else 7
     cached = _screener_cache.get(mode)
-    if (cached and _screener_snapshot_is_recent(cached, 3) and
+    cached_rows = cached.get("rows") if isinstance(cached, dict) else None
+    cached_usable = bool(cached and isinstance(cached_rows, list)
+                         and (cached_rows or _screener_empty_result_has_scan_evidence(mode, cached)))
+    if (cached_usable and _screener_snapshot_is_recent(cached, max_days) and
             _radar_live_cache_is_fresh(cached)):
         return cached, "記憶體快照"
     persisted = _load_persisted_screener_snapshot(mode)
-    if persisted and _screener_snapshot_is_recent(persisted, 3):
+    if persisted and _screener_snapshot_is_recent(persisted, max_days):
         _screener_cache[mode] = {
             "at": time.time(), "rows": persisted["rows"],
             "skipped": persisted.get("skipped", 0),
             "momentum": persisted.get("momentum", {}),
             "source_date": persisted.get("source_date"),
+            "computed_at": persisted.get("computed_at"),
+            "source_meta": persisted.get("source_meta") or {},
+            "scan_finished_at": (persisted.get("source_meta") or {}).get("scan_finished_at"),
             "radar_diagnostics": (persisted.get("source_meta") or {}).get("radar_diagnostics", {}),
         }
         return _screener_cache[mode], "共享快照"
@@ -42268,7 +42428,7 @@ function bindFactors(){
     if(sel)sel.onchange=function(){state.scoreChangeSort=sel.value;renderScoreChanges();};
     scoreChangePanel.querySelectorAll('[data-score-change-code]').forEach(function(btn){btn.onclick=function(){var code=btn.getAttribute('data-score-change-code');var row=state.rows.find(function(r){return r.source==='黑馬'&&String(r.code)===String(code);});if(row)showDetail(row);};});
   }
-  function render(){renderScoreChanges();renderAssetTabs();renderTabs();var lab=state.assetMode==='lab'||state.source==='策略研究';root.classList.toggle('wb-lab-active',lab);var tools=document.querySelector('.wb-tools'),fp=document.getElementById('wb-filter-panel'),ms=document.getElementById('wb-mobile-sort'),meta=document.querySelector('.wb-meta'),table=document.getElementById('wb-table'),labEl=document.getElementById('wb-strategy-lab'),assetTabs=document.getElementById('wb-asset-tabs'),sourceTabs=document.getElementById('wb-tabs'),intro=document.querySelector('.wb-intro'),pulse=document.getElementById('wb-pulse');[tools,fp,ms,meta,table,assetTabs,sourceTabs,intro,pulse].forEach(function(el){if(el)el.hidden=lab;});if(labEl)labEl.hidden=!lab;if(lab){state.source='策略研究';status.textContent='策略研究實驗室';loadStrategyLab(false);return;}document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}if(state.source!=='黑馬'&&state.source!=='雷達'&&state.source!=='成效'&&state.source!=='我的排行'&&!state.loadedSources[state.source]){rowsEl.innerHTML='<div class="wb-empty">正在準備 '+esc(state.source)+'…</div>';return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
+  function render(){renderScoreChanges();renderAssetTabs();renderTabs();var lab=state.assetMode==='lab'||state.source==='策略研究';root.classList.toggle('wb-lab-active',lab);var tools=document.querySelector('.wb-tools'),fp=document.getElementById('wb-filter-panel'),ms=document.getElementById('wb-mobile-sort'),meta=document.querySelector('.wb-meta'),table=document.getElementById('wb-table'),labEl=document.getElementById('wb-strategy-lab'),assetTabs=document.getElementById('wb-asset-tabs'),sourceTabs=document.getElementById('wb-tabs'),intro=document.querySelector('.wb-intro'),pulse=document.getElementById('wb-pulse');[tools,fp,ms,meta,table,assetTabs,sourceTabs,intro,pulse].forEach(function(el){if(el)el.hidden=lab;});if(labEl)labEl.hidden=!lab;if(lab){state.source='策略研究';status.textContent='策略研究實驗室';loadStrategyLab(false);return;}document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}if(state.source!=='黑馬'&&state.source!=='雷達'&&state.source!=='成效'&&state.source!=='我的排行'&&!state.loadedSources[state.source]){rowsEl.innerHTML='<div class="wb-empty">正在準備 '+esc(state.source)+'…</div>';return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}var sourceTotal=(state.source==='黑馬'||state.source==='雷達')?state.rows.filter(function(r){return r.source===state.source;}).length:list.length;var sourceMeta=state.sources[state.source]||{};if((state.source==='黑馬'||state.source==='雷達')&&sourceMeta.building&&!sourceTotal){count.textContent='快照背景重建中';rowsEl.innerHTML='<div class="wb-empty"><b>'+esc(state.source)+'快照正在重新整理</b><small>'+esc(sourceMeta.note||'目前沒有可用快照，系統正在背景掃描；完成後會自動載入。')+'</small></div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){if(!list.length){var emptyMessage=sourceTotal?'目前的搜尋或篩選條件沒有符合資料。':(sourceMeta.no_candidates?'完整掃描已完成，但目前沒有符合雷達條件的標的。':'目前沒有可用的'+state.source+'結果。');var emptyNote=sourceTotal?'請清除搜尋文字或放寬篩選條件。':(sourceMeta.note||('資料日期：'+(sourceMeta.date||'未標日期')+'；可稍後重新整理。'));rowsEl.innerHTML='<div class="wb-empty"><b>'+esc(emptyMessage)+'</b><small>'+esc(emptyNote)+'</small></div>';return;}var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
     state.detailOpen=true;
     var host=document.getElementById('wb-detail'), dr=document.getElementById('wb-drawer'), mk=document.getElementById('wb-mask');
     if(!host||!dr)return;
@@ -42457,6 +42617,7 @@ function bindFactors(){
   state.detailOpen = !!state.detailOpen;
   state.closingDrawer = !!state.closingDrawer;
   state.loadingSources = state.loadingSources || {};
+  state.snapshotRetryCounts = state.snapshotRetryCounts || {};
   var workbenchSources = ['黑馬','雷達','轉折','籌碼','ETF'];
 
   // 選股台限制背景預載併發：目前可見來源優先，其他快照一次載一個，
@@ -42497,17 +42658,38 @@ function bindFactors(){
       })
       .then(function(data){
         if(!data.ok)throw new Error(data.error||'載入失敗');
-        state.rows=state.rows.filter(function(r){return r.source!==source;}).concat(Array.isArray(data.rows)?data.rows:[]);
+        var returnedRows=Array.isArray(data.rows)?data.rows:[];
+        var building=!!(data.meta&&data.meta.building&&!returnedRows.length);
+        state.rows=state.rows.filter(function(r){return r.source!==source;}).concat(returnedRows);
         if(source==='黑馬') state.scoreChanges=Array.isArray(data.score_changes)?data.score_changes:state.scoreChanges;
         if(source==='持股') note.textContent='持股已載入：優先使用最近已保存的自選股評分快照。';
         state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{available:true});
-        state.loadedSources[source]=true;
+        if(building){
+          delete state.loadedSources[source];
+          state.snapshotRetryCounts[source]=(state.snapshotRetryCounts[source]||0)+1;
+        }else{
+          state.loadedSources[source]=true;
+          state.snapshotRetryCounts[source]=0;
+        }
         delete state.loadingSources[source];
         var sourceElapsed=Math.max(0,(performance.now()-sourceStartedAt)/1000);
-        console.info('[台股 BOT] 選股快照 '+source+' API 耗時 '+sourceElapsed.toFixed(2)+' 秒');
-        if(source==='黑馬')finishWorkbenchLoad('完成');
+        console.info('[台股 BOT] 選股快照 '+source+' API 耗時 '+sourceElapsed.toFixed(2)+' 秒'+(building?'（背景重建中）':''));
+        if(source==='黑馬'&&!building)finishWorkbenchLoad('完成');
+        if(source==='黑馬'&&building)finishWorkbenchLoad('背景重建中');
         renderTabs();
         if(state.source===source && sourceViewEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer) render();
+        if(building){
+          var attempts=state.snapshotRetryCounts[source]||0;
+          if(attempts<=12){
+            window.setTimeout(function(){
+              if(!state.loadedSources[source]&&!state.loadingSources[source])fetchWorkbenchSource(source);
+            },8000);
+          }else{
+            state.sources[source].building=false;
+            state.sources[source].note='背景重建仍未完成，可能是行情來源或資料庫暫時不穩定；切換分頁或重新整理可再試。';
+            if(state.source===source&&!state.detailOpen&&!state.closingDrawer)render();
+          }
+        }
         return data;
       })
       .catch(function(e){
@@ -42535,6 +42717,7 @@ function bindFactors(){
     else if(source!=='ETF')state.assetMode='stock';
     render();
     if(state.loadedSources[source])return;
+    state.snapshotRetryCounts[source]=0;
     status.textContent='正在載入 '+source+' 快照…';
     rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
     fetchWorkbenchSource(source).then(function(){
@@ -42842,7 +43025,10 @@ def _build_workbench_core_payload(uid):
                 "date": str(snap.get("source_date") or "未標日期"),
                 "computed_at": str(snap.get("computed_at") or "")})
         else:
-            sources["黑馬"]["note"]="目前沒有可用的已保存黑馬快照。"
+            started = _start_screener_background_refresh("blackhorse")
+            sources["黑馬"].update({"building": True,
+                "note": "黑馬快照不存在、過期或內容為無效空清單；系統已在背景重新掃描。"})
+            print("⚠️ 工作台首屏黑馬快照不可用，背景重建%s" % ("已啟動" if started else "已在執行"))
     except Exception as exc:
         print(f"⚠️ 工作台黑馬快照讀取失敗：{exc}")
         sources["黑馬"]["note"]="黑馬快照暫時無法載入，其他來源不受影響。"
@@ -42867,9 +43053,18 @@ def _build_workbench_core_payload(uid):
                     "computed_at": str(radar.get("computed_at") or ""),
                     "intraday": False, "source": "最近已保存雷達快照"})
         if radar:
-            rows.extend(_workbench_screener_rows("radar", radar))
+            radar_rows = _workbench_screener_rows("radar", radar)
+            rows.extend(radar_rows)
+            if not radar_rows:
+                sources["雷達"].update({"no_candidates": True,
+                    "note": "完整掃描已完成，但目前沒有通過雷達條件的標的。"})
         else:
-            sources["雷達"]["note"]="目前沒有可用的雷達快照。"
+            started = _start_screener_background_refresh(
+                "radar", intraday=_is_taiwan_intraday_window(),
+                radar_deep_limit=RADAR_DEEP_SCAN_LIMIT if _is_taiwan_intraday_window() else None)
+            sources["雷達"].update({"building": True,
+                "note": "雷達快照不存在、過期或內容為無效空清單；系統已在背景重新掃描。"})
+            print("⚠️ 工作台首屏雷達快照不可用，背景重建%s" % ("已啟動" if started else "已在執行"))
     except Exception as exc:
         print(f"⚠️ 工作台雷達快照讀取失敗：{exc}")
         sources["雷達"]["note"]="雷達快照暫時無法載入，其他來源不受影響。"
@@ -42915,10 +43110,26 @@ def _workbench_source_payload(uid, source):
                 print(f"⚠️ 工作台讀取{source}最近快照失敗：{exc}")
                 snap = None
         rows=_workbench_screener_rows(mode, snap) if snap else []
+        # 快照缺失／過期／無效空清單不能被偽裝成「已載入 0 檔」；啟動背景重建並讓前端輪詢。
+        if not snap:
+            in_market = (mode == "radar" and _is_taiwan_intraday_window())
+            started = _start_screener_background_refresh(
+                mode, intraday=in_market,
+                radar_deep_limit=RADAR_DEEP_SCAN_LIMIT if in_market else None)
+            return {"ok":True,"source":source,"rows":[],"score_changes":[],
+                    "meta":{"available":False,"building":True,
+                            "date":"尚無可用快照",
+                            "source":"背景重新掃描",
+                            "note": ("已啟動背景掃描；完成後自動更新。" if started
+                                     else "背景掃描正在進行；完成後自動更新。")}}
         # 黑馬首屏只讀快照；今日分數變化需要額外資料庫比對，不能阻塞首屏。
         changes=[]
+        empty_radar = (mode == "radar" and not rows)
         return {"ok":True,"source":source,"rows":rows,"score_changes":changes,
-                "meta":{"available":bool(snap),
+                "meta":{"available":True,
+                        "building":False,
+                        "no_candidates":empty_radar,
+                        "note": ("完整掃描已完成，但目前沒有通過雷達條件的標的。" if empty_radar else ""),
                         "date":str((snap or {}).get("source_date") or "未標日期"),
                         "source":snap_source or "最近已保存快照"}}
     if source=="持股":
@@ -43960,7 +44171,8 @@ def web_workbench_source(uid):
             return _workbench_json_response(cached[1])
     try:
         payload = _workbench_source_payload(uid, source)
-        if isinstance(payload, dict) and payload.get("ok"):
+        if (isinstance(payload, dict) and payload.get("ok")
+                and not ((payload.get("meta") or {}).get("building"))):
             with _WORKBENCH_SOURCE_PAYLOAD_CACHE_LOCK:
                 if len(_WORKBENCH_SOURCE_PAYLOAD_CACHE) >= _WORKBENCH_SOURCE_PAYLOAD_CACHE_MAX:
                     oldest = min(_WORKBENCH_SOURCE_PAYLOAD_CACHE, key=lambda k: _WORKBENCH_SOURCE_PAYLOAD_CACHE[k][0])
