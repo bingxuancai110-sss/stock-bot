@@ -6413,7 +6413,7 @@ def _refresh_home_intraday_payload_sync(uid):
     # Do not make the portfolio API wait for the index endpoint. The dedicated TAIEX
     # endpoint below performs the synchronous fetch; this combined endpoint serves only
     # a same-day cached value and schedules refresh if needed.
-    taiex = fetch_taiex_intraday(stale_while_revalidate=True)
+    taiex = fetch_taiex_intraday(force_refresh=True, stale_while_revalidate=False)
     try:
         market_pct = float(taiex.get("pct")) if taiex and taiex.get("pct") is not None else None
     except (TypeError, ValueError):
@@ -6435,66 +6435,37 @@ def _refresh_home_intraday_payload_sync(uid):
     # background-only database read and can survive a Render process restart.
     _restore_home_intraday_quotes(uid)
     try:
-        # A quick bounded request keeps live refresh from tying up Gunicorn for 45 seconds.
-        # Partial/malformed data is supplemented by same-day quotes below and on next poll.
-        # 都直接刷新官方 MIS；沒有取得台灣當日有效成交價的代號就不計入。
-        # 這刻意優先保障漲跌方向與貢獻正確，不以快取命中率換取看似完整的數字。
-        # 先用已快取的官方上市／上櫃對照選正確市場，避免每檔都同時查 TSE+OTC，
-        # 將回應壓小並避免兩種市場回傳同代號時互相覆蓋。
-        try:
-            _load_stock_info_file_cache()
-        except Exception:
-            pass
-        _known_market_map = _market_cache.get("map") or {}
-        _quote_market_suffix = {}
-        for _code in codes:
-            _market_name = str(_known_market_map.get(_code) or "").strip().lower()
-            if _market_name in ("上市", "twse", "listed", "tw", "tse"):
-                _quote_market_suffix[_code] = ".TW"
-            elif _market_name in ("上櫃", "上柜", "tpex", "otc", "two"):
-                _quote_market_suffix[_code] = ".TWO"
+        # 首頁完整載入允許多等一點，先把全部持股的上市＋上櫃代號一起送入批次。
+        # 不依賴可能過期的市場別快取，也不因前一次短輪詢曾重試過而跳過本輪。
+        # 底層會將所有代號拆成數個批次並行請求，避免逐檔依序等待。
         fresh_price_map = _fetch_twse_mis_quotes(
-            codes, market_suffix=_quote_market_suffix, force_refresh=True, quick_mode=False)
-        # A same-day quote is accepted only when its official trading date and time are valid.
-        # Do not impose a two-minute last-trade cutoff: that incorrectly drops low-turnover stocks.
+            codes, market_suffix=None, force_refresh=True, quick_mode=False)
         fresh_contribution_quotes = {
             str(code): dict(quote) for code, quote in (fresh_price_map or {}).items()
             if _mis_quote_is_current_for_contribution(quote)
         }
-        # First response is the fast primary pass. Do not immediately repeat the same market map:
-        # it doubles the network wait without changing the symbols. Missing codes get one focused
-        # cross-market retry below, which also covers stale or incomplete market metadata.
-        # MIS 有時會在批次回應中漏掉多個代號；不要再把所有缺漏塞回大批次。
-        # 對缺漏代號各自查一次 TSE/OTC，並行執行；只接受當日官方 z/y 報價。
-        missing_codes = [code for code in codes if code not in fresh_contribution_quotes]
-        retry_now = time.time()
-        with _HOME_MIS_SINGLE_RETRY_LOCK:
-            retry_codes = []
-            for code in missing_codes:
-                last_retry = float(_HOME_MIS_SINGLE_RETRY_LAST.get(code) or 0)
-                if retry_now - last_retry >= _HOME_MIS_SINGLE_RETRY_GAP_SECONDS:
-                    _HOME_MIS_SINGLE_RETRY_LAST[code] = retry_now
-                    retry_codes.append(code)
-        if retry_codes:
-            def retry_one_symbol(code):
-                try:
-                    result = _fetch_twse_mis_quotes(
-                        [code], market_suffix=None, force_refresh=True,
-                        cache_result=False, quick_mode=False)
-                    quote = (result or {}).get(code)
-                    if quote and _mis_quote_is_current_for_contribution(quote):
-                        return code, quote
-                except Exception as retry_exc:
-                    print("⚠️ 個股獨立行情重試失敗 %s：%s" % (code, type(retry_exc).__name__), flush=True)
-                return code, None
-            with ThreadPoolExecutor(max_workers=min(8, len(retry_codes))) as retry_pool:
-                for code, quote in retry_pool.map(retry_one_symbol, retry_codes):
-                    if quote:
-                        fresh_price_map[code] = dict(quote)
-                        fresh_contribution_quotes[code] = dict(quote)
-            print("⚡ 個股獨立行情重試完成：有效 %s/%s 檔；本輪單檔重試 %s 檔、冷卻略過 %s 檔" % (
-                len(fresh_contribution_quotes), len(codes), len(retry_codes),
-                max(0, len(missing_codes) - len(retry_codes))), flush=True)
+        # 再把缺漏的股票整批補抓兩輪；只請求缺漏代號，不重抓已成功的股票。
+        # 這裡刻意不用短輪詢的重試冷卻，因為首頁首次載入必須先盡量取得完整組合。
+        for retry_round in range(2):
+            missing_codes = [code for code in codes if code not in fresh_contribution_quotes]
+            if not missing_codes:
+                break
+            time.sleep(0.35 * (retry_round + 1))
+            try:
+                retry_quotes = _fetch_twse_mis_quotes(
+                    missing_codes, market_suffix=None, force_refresh=True,
+                    cache_result=False, quick_mode=False)
+            except Exception as retry_exc:
+                print("⚠️ 首頁缺漏行情整批重試 %s 失敗：%s" % (
+                    retry_round + 1, type(retry_exc).__name__), flush=True)
+                continue
+            for code, quote in (retry_quotes or {}).items():
+                if _mis_quote_is_current_for_contribution(quote):
+                    fresh_price_map[code] = dict(quote)
+                    fresh_contribution_quotes[code] = dict(quote)
+            print("⚡ 首頁行情補抓第 %s 輪：有效 %s/%s 檔；本輪補抓目標 %s 檔" % (
+                retry_round + 1, len(fresh_contribution_quotes), len(codes),
+                len(missing_codes)), flush=True)
         # A successful quote earlier TODAY remains usable when this MIS poll is partial.
         # _sticky_home_quotes date-bounds its state, so this fallback can never cross into yesterday.
         same_day_price_map = _sticky_home_quotes(uid, fresh_price_map)
@@ -6760,16 +6731,9 @@ def _build_home_intraday_payload(uid):
         return {"ok": True, "market_open": False, "updates": [],
                 "note": "目前非一般盤中時段；首頁已停止行情輪詢。"}
 
-    # TAIEX is stale-while-revalidate too; never block on a 6-second upstream request.
-    taiex = fetch_taiex_intraday(stale_while_revalidate=True)
-    try:
-        market_pct = float(taiex.get("pct")) if taiex and taiex.get("pct") is not None else None
-    except (TypeError, ValueError):
-        market_pct = None
-    market_payload = ({"pct": market_pct, "source": taiex.get("source"),
-                       "updated_at": taiex.get("updated_at"), "stale": bool(taiex.get("stale")),
-                       "cache_age_seconds": taiex.get("cache_age_seconds")}
-                      if market_pct is not None else None)
+    # 冷啟動或持股行情不完整時，不先啟動另一個大盤背景請求，避免跟完整批次搶 MIS。
+    # 需要同步刷新時由 _refresh_home_intraday_payload_sync 一次處理大盤與全部持股。
+    market_payload = None
 
     day = taiwan_today().isoformat()
     with _HOME_INTRADAY_PAYLOAD_CACHE_LOCK:
@@ -6792,19 +6756,38 @@ def _build_home_intraday_payload(uid):
                 cached_copy["note"] = ("沿用今天最近一次成功行情（約 %s 秒前），背景同步最新報價；"
                                        "若官方本輪漏回，會保留今天已取得的價格，不會改用前一交易日。" % age)
 
-    _schedule_home_intraday_payload_refresh(uid)
+    # 使用者已明確接受首頁多等幾秒，換取「一次完整抓好」：只有同日、全持股有效且
+    # 很新的計算結果才可直接回快取；冷啟動／缺漏資料必須在這次 API 請求內完成批次抓取與重試。
     if cached_copy is not None:
-        return cached_copy
+        cached_portfolio = cached_copy.get("portfolio") or {}
+        cached_stale = int(cached_portfolio.get("stale_count") or 0)
+        age = max(0, int(time.time() - cache_at))
+        if cached_stale == 0 and age <= 12 and cached_portfolio.get("ready"):
+            # 完整同日行情很新時可以直接回快取；大盤只讀現有有效快取，不另開同步網路請求。
+            with _realtime_cache_lock:
+                cached_index = (_taiex_intraday_cache.get("data")
+                                if _taiex_intraday_cache.get("day") == taiwan_today().isoformat()
+                                else None)
+                index_at = float(_taiex_intraday_cache.get("at") or 0)
+            if isinstance(cached_index, dict) and index_at:
+                cached_copy["market"] = dict(cached_index)
+                cached_copy["market"].pop("stale", None)
+                cached_copy["market"].pop("cache_age_seconds", None)
+            return cached_copy
 
-    # Cold start: let the first render stand; the first live calculation runs in background.
-    # ready=False tells the browser not to replace the rendered figures with a temporary blank.
-    return {"ok": True, "market_open": True,
-            "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
-            "market": market_payload,
-            "portfolio": {"pct": None, "relative": None, "positive": [], "negative": [],
-                          "stale_names": [], "stale_count": 0, "ready": False,
-                          "same_day_cache": False},
-            "note": "正在背景同步今天的個股行情；先保留頁面已顯示的資料，完成後自動更新。"}
+    started = time.monotonic()
+    refreshed = _refresh_home_intraday_payload_sync(uid)
+    if isinstance(refreshed, dict) and refreshed.get("ok") and refreshed.get("market_open"):
+        with _HOME_INTRADAY_PAYLOAD_CACHE_LOCK:
+            _HOME_INTRADAY_PAYLOAD_CACHE[str(uid).strip()] = {
+                "day": day, "at": time.time(), "data": refreshed,
+            }
+        portfolio = refreshed.get("portfolio") or {}
+        print("⏱️ 首頁完整盤中行情回應：正負貢獻列 %s 筆、缺漏 %s 檔、耗時 %.0fms" % (
+            len(portfolio.get("positive") or []) + len(portfolio.get("negative") or []),
+            int(portfolio.get("stale_count") or 0),
+            (time.monotonic() - started) * 1000), flush=True)
+    return refreshed
 
 
 def _position_change_journal_status(log):
@@ -35255,7 +35238,9 @@ def render_portfolio_fast_summary(uid):
 
     market = snapshot.get("market") or {}
     intraday_window = _is_taiwan_intraday_window()
-    intraday_taiex = fetch_taiex_intraday(stale_while_revalidate=True) if intraday_window else None
+    # 完整首頁允許等待官方即時指數，避免首屏先顯示舊快照或「資料尚未更新」。
+    intraday_taiex = (fetch_taiex_intraday(force_refresh=True, stale_while_revalidate=False)
+                      if intraday_window else None)
     if _taiwan_post_close():
         # 先行摘要不能因為每日快照較早用 Yahoo 日K 擷取，而在收盤後顯示
         # 盤中最後一筆；完整首頁與先行摘要均以同一個官方正式收盤口徑重取。
@@ -36175,10 +36160,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   // stopped 是「伺服器說非盤中」的旗標，被離開頁面借去用之後，
   // 再導覽回首頁時它仍是 true，輪詢就再也不會恢復。
   document.addEventListener('stockbot:pageleaving',function(){if(timer)clearTimeout(timer);timer=null;});
-  // 立刻抓一次，不要等第一個 15 秒。
-  // 持股頁本來就是這樣做的；首頁只呼叫 schedule()，
-  // 使用者進來後要盯著舊數字看 15 秒才會更新，會以為沒在動。
-  refresh();
+  // 完整頁面伺服器端已同步抓完全部持股與大盤；不要立刻再打第二輪，
+  // 避免首頁剛顯示就重複佔用 MIS。之後每 15 秒更新一次即可。
+  schedule();
 })();
 </script>'''
     return f'''<style>
@@ -36551,8 +36535,30 @@ def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_ref
         return result
     if allow_network:
         try:
-            quotes = _fetch_twse_mis_quotes(codes, market_suffix=market_suffix,
-                                            force_refresh=force_refresh)
+            # 首頁需要完整的今日貢獻：不要只信任可能過期的市場別對照表。
+            # 一次把所有持股的上市＋上櫃代號送進批次抓取；底層會並行拆批，
+            # 比逐檔請求快，也避免市場別對照錯誤讓整檔漏行情。
+            quotes = _fetch_twse_mis_quotes(
+                codes, market_suffix=None, force_refresh=force_refresh)
+            if force_refresh:
+                valid_codes = {code for code, quote in (quotes or {}).items()
+                               if _mis_quote_is_current_for_contribution(quote)}
+                missing_codes = [code for code in codes if code not in valid_codes]
+                # 首頁允許多等一輪：把第一輪漏掉的代號再整批抓一次，不逐檔打網路。
+                if missing_codes:
+                    time.sleep(0.35)
+                    retry_quotes = _fetch_twse_mis_quotes(
+                        missing_codes, market_suffix=None, force_refresh=True,
+                        cache_result=False, quick_mode=False)
+                    for code, quote in (retry_quotes or {}).items():
+                        if _mis_quote_is_current_for_contribution(quote):
+                            quotes[code] = quote
+                valid_codes = {code for code, quote in (quotes or {}).items()
+                               if _mis_quote_is_current_for_contribution(quote)}
+                print("📈 首頁完整行情批次：有效 %s/%s 檔；本輪補抓 %s 檔" % (
+                    len(valid_codes), len(codes), len(missing_codes)), flush=True)
+                quotes = {code: quote for code, quote in (quotes or {}).items()
+                          if _mis_quote_is_current_for_contribution(quote)}
         except Exception as exc:
             print("⚠️ 快取行情的 MIS 疊加失敗，先沿用最近有效行情：%s" % type(exc).__name__, flush=True)
             quotes = {}
@@ -37058,12 +37064,13 @@ def _same_day_home_quote_map(uid, codes=None):
             if (not requested or code in requested) and _mis_quote_is_current_for_contribution(quote)}
 
 
-def _render_fast_portfolio_entry(uid, positions):
+def _render_fast_portfolio_entry(uid, positions, polling_enabled=True):
     # Small first-paint: latest same-day prices first.
     positions = list(positions or [])
     codes = [str(p.get("code") or "").strip() for p in positions if p.get("code")]
     quotes = _same_day_home_quote_map(uid, codes)
-    taiex = fetch_taiex_intraday(stale_while_revalidate=True) if _is_taiwan_intraday_window() else None
+    taiex = (fetch_taiex_intraday(stale_while_revalidate=True)
+             if _is_taiwan_intraday_window() and polling_enabled else None)
     try:
         idx_pct = float(taiex.get("pct")) if taiex and taiex.get("pct") is not None else None
     except (TypeError, ValueError):
@@ -37193,11 +37200,15 @@ def _render_fast_portfolio_entry(uid, positions):
      }}
      if(d.note)setText('instant-foot',d.note);
    }} }}catch(e){{failures++;}}
-   if(document.getElementById('instant-home'))window.setTimeout(poll, failures?4000:(Date.now()-started<20000?1200:3500));
+   if(document.getElementById('instant-home'))window.setTimeout(poll, failures?5000:15000);
  }}
  poll();
 }})();
 </script>'''
+    if not polling_enabled:
+        script_start = body.rfind("<script>")
+        if script_start >= 0:
+            body = body[:script_start]
     return body
 
 @app.route("/web/portfolio", methods=["GET", "POST"])
@@ -37261,9 +37272,11 @@ def web_portfolio(uid):
         _home_fast_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_home_fast_body = (None if request.args.get("detail") == "1" else
                                   _web_fragment_cache_get("portfolio-fast", _home_fast_fragment_key, _home_fast_ttl))
-        if _cached_home_fast_body is not None:
-            print("⚡ 今日首頁命中前置 HTML 快取（跳過 positions SQL 與完整組裝）", flush=True)
+        if _cached_home_fast_body is not None and not _is_taiwan_intraday_window():
+            print("⚡ 今日首頁命中前置 HTML 快取（非盤中時段）", flush=True)
             return respond_page("今日", _cached_home_fast_body, "portfolio")
+        elif _cached_home_fast_body is not None:
+            print("↻ 盤中略過前置 HTML 快取，後續完整頁會同步抓取今日行情", flush=True)
 
     # First paint: never wait for revenue/valuation, institutional data, history charts or MIS.
     # The staged shell displays this fast fragment immediately while detail=1 computes below
@@ -37274,8 +37287,9 @@ def web_portfolio(uid):
         except Exception as exc:
             print("⚠️ 首頁即時首屏讀取持股失敗：%s" % type(exc).__name__, flush=True)
             fast_positions = []
-        _schedule_home_intraday_payload_refresh(uid)
-        fast_body = _render_fast_portfolio_entry(uid, fast_positions)
+        # 快速片段只當載入過場，不另外啟動行情 API／背景抓取；避免它與 detail=1
+        # 的完整行情批次同時打 MIS，造成 13 檔只回來 1～2 檔的競爭與限流。
+        fast_body = _render_fast_portfolio_entry(uid, fast_positions, polling_enabled=False)
         return respond_page("今日", fast_body, "portfolio")
 
     # v184：首頁移除風險問卷與「值得注意」入口。
@@ -37389,9 +37403,11 @@ def web_portfolio(uid):
         _home_cache_ttl = 600.0 if _is_taiwan_intraday_window() else 900.0
         _cached_home_body = _web_fragment_cache_get(
             "portfolio", _home_fragment_cache_key, _home_cache_ttl)
-        if _cached_home_body is not None:
-            print("⚡ 今日首頁命中個人 HTML 快取（%s 檔持股）" % len(positions), flush=True)
+        if _cached_home_body is not None and not _is_taiwan_intraday_window():
+            print("⚡ 今日首頁命中個人 HTML 快取（%s 檔持股；非盤中時段）" % len(positions), flush=True)
             return respond_page("今日", _cached_home_body, "portfolio")
+        elif _cached_home_body is not None:
+            print("↻ 盤中略過首頁 HTML 快取，重新抓取今日持股行情（%s 檔）" % len(positions), flush=True)
 
     full_started = time.monotonic()
     home_diag_request = "home-%x-%s" % (int(time.time() * 1000) & 0xfffffff, threading.get_ident() % 10000)
@@ -37559,8 +37575,9 @@ def web_portfolio(uid):
         if position_codes:
             try:
                 price_map = _homepage_merge_official_quotes(
-                    price_map, position_codes, force_refresh=False, user_id=uid, allow_network=False)
-                print("⚡ 首頁使用今日有效行情快照（MIS 更新由背景 API 執行）：%s 檔持股" % len(position_codes), flush=True)
+                    price_map, position_codes, market_suffix=None, force_refresh=True,
+                    user_id=uid, allow_network=True)
+                print("⚡ 首頁完成官方 MIS 全持股同步：%s 檔目標持股" % len(position_codes), flush=True)
             except Exception as exc:
                 print("⚠️ 首頁今日貢獻官方行情刷新失敗：%s: %s" % (
                     type(exc).__name__, exc), flush=True)
