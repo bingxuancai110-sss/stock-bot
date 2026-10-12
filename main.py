@@ -6259,6 +6259,9 @@ def _today_realized_by_code(realized_trades, today=None):
 _HOME_INTRADAY_STICKY_CACHE = {}
 _HOME_INTRADAY_STICKY_LOCK = threading.Lock()
 _HOME_INTRADAY_STICKY_TTL = 180
+# 今日組合只接受最近一次官方 MIS 成功回應在 45 秒內的行情；低成交量可沿用當日最後成交價，
+# 但如果伺服器根本沒能在最近 45 秒重新取得資料，就不能把舊快照說成即時報價。
+_HOME_QUOTE_FEED_MAX_AGE_SECONDS = 45
 _HOME_INTRADAY_DIAG_LOCK = threading.Lock()
 _HOME_INTRADAY_DIAG_LAST_AT = 0.0
 _HOME_MIS_SINGLE_RETRY_LOCK = threading.Lock()
@@ -6298,11 +6301,16 @@ def _sticky_home_quotes(uid, fresh_quotes):
             if price <= 0:
                 continue
             stamp = str(quote.get("updated_at") or quote.get("close_time") or "")
+            fetched_stamp = str(quote.get("fetched_at") or "")
             old = quotes.get(str(code))
             old_stamp = str((old or {}).get("updated_at") or (old or {}).get("close_time") or "")
-            # Prefer the newer official tick.  If timestamp is unavailable, accept the fresh
-            # quote only when we do not already have a timestamped quote.
-            if old is None or (stamp and (not old_stamp or stamp >= old_stamp)) or (not stamp and not old_stamp):
+            old_fetched_stamp = str((old or {}).get("fetched_at") or "")
+            # Prefer the newest successful feed observation first. For quiet stocks the last-trade
+            # time can stay the same across many polls even though the server has just confirmed it.
+            if (old is None or
+                    (fetched_stamp and (not old_fetched_stamp or fetched_stamp >= old_fetched_stamp)) or
+                    (not fetched_stamp and not old_fetched_stamp and stamp and (not old_stamp or stamp >= old_stamp)) or
+                    (not fetched_stamp and not old_fetched_stamp and not stamp and not old_stamp)):
                 quotes[str(code)] = dict(quote)
         state["at"] = now
         return {code: dict(q) for code, q in quotes.items()}
@@ -6368,6 +6376,7 @@ def _schedule_save_home_intraday_quotes(uid, quotes):
         clean[str(code)] = {
             "close": close, "previous_close": previous, "pct": pct,
             "updated_at": str(quote.get("updated_at") or ""),
+            "fetched_at": str(quote.get("fetched_at") or ""),
             "quote_updated_at": str(quote.get("quote_updated_at") or ""),
             "trade_at": str(quote.get("trade_at") or ""),
             "source": str(quote.get("source") or "TWSE MIS"),
@@ -6439,8 +6448,15 @@ def _refresh_home_intraday_payload_sync(uid):
         # 首頁完整載入允許多等一點，先把全部持股的上市＋上櫃代號一起送入批次。
         # 不依賴可能過期的市場別快取，也不因前一次短輪詢曾重試過而跳過本輪。
         # 底層會將所有代號拆成數個批次並行請求，避免逐檔依序等待。
+        # 首頁今日貢獻必須使用「本次官方回應」，不能讓共用快取把同日較早的
+        # 盤中 quote 合併回來（收盤後 close_is_final 可能因此仍是 False）。
+        # 共用快取只供其他頁面顯示；此處以 cache_result=False 保證貢獻計算用本輪原始回應。
+        home_suffix_map = _home_market_suffix_map(codes)
+        print("⚡ 首頁行情市場別辨識：已知市場 %s/%s 檔；未辨識才雙市場查詢" % (
+            len(home_suffix_map), len(codes)), flush=True)
         fresh_price_map = _fetch_twse_mis_quotes(
-            codes, market_suffix=None, force_refresh=True, quick_mode=False)
+            codes, market_suffix=home_suffix_map, force_refresh=True,
+            cache_result=False, quick_mode=False)
         fresh_contribution_quotes = {
             str(code): dict(quote) for code, quote in (fresh_price_map or {}).items()
             if _mis_quote_is_current_for_contribution(quote)
@@ -6454,8 +6470,8 @@ def _refresh_home_intraday_payload_sync(uid):
             time.sleep(0.35 * (retry_round + 1))
             try:
                 retry_quotes = _fetch_twse_mis_quotes(
-                    missing_codes, market_suffix=None, force_refresh=True,
-                    cache_result=False, quick_mode=False)
+                    missing_codes, market_suffix=_home_market_suffix_map(missing_codes),
+                    force_refresh=True, cache_result=False, quick_mode=False)
             except Exception as retry_exc:
                 print("⚠️ 首頁缺漏行情整批重試 %s 失敗：%s" % (
                     retry_round + 1, type(retry_exc).__name__), flush=True)
@@ -6639,8 +6655,10 @@ def _refresh_home_intraday_payload_sync(uid):
                           key=lambda item: item["contribution"])[:5]
         relative = (portfolio_pct - market_pct
                     if portfolio_pct is not None and market_pct is not None else None)
+        # API 回傳行情也使用本輪已驗證的官方 quote，而非 sticky display cache。
+        # 收盤後尤其重要：快取中的同日盤中 quote 可能尚未帶 close_is_final。
         quote_payload = {}
-        for _code, _quote in price_map.items():
+        for _code, _quote in fresh_contribution_quotes.items():
             if _code not in codes or not _mis_quote_is_current_for_contribution(_quote):
                 continue
             try:
@@ -6648,11 +6666,18 @@ def _refresh_home_intraday_payload_sync(uid):
                     "close": float(_quote.get("close")),
                     "pct": float(_quote.get("pct")),
                     "updated_at": str(_quote.get("updated_at") or _quote.get("trade_at") or ""),
+                    "fetched_at": str(_quote.get("fetched_at") or ""),
                     "close_date": str(_quote.get("close_date") or "").replace("-", "")[:8],
                     "source": str(_quote.get("source") or "TWSE MIS same-day cache"),
                 }
             except (TypeError, ValueError):
                 continue
+        print("📊 首頁今日績效計算：uid=%s，官方有效行情=%s/%s，貢獻列=%s，缺漏=%s，組合=%s，相對大盤=%s，大盤=%s，盤中=%s" % (
+            str(uid).strip(), len(fresh_contribution_quotes), len(codes),
+            len(contribution_rows), len(stale_codes),
+            ("%.4f%%" % portfolio_pct) if portfolio_pct is not None else "資料不足",
+            ("%.4f%%" % relative) if relative is not None else "資料不足",
+            ("%.4f%%" % market_pct) if market_pct is not None else "資料不足", intraday), flush=True)
         return {
             # market_open=False 告訴前端更新完這份收盤資料後停止輪詢；payload 本身仍
             # 含今日正式收盤的持股、組合與相對大盤數據，不能在前端提早丟掉。
@@ -6763,24 +6788,39 @@ def _build_home_intraday_payload(uid):
                 cached_copy["note"] = ("沿用今天最近一次成功行情（約 %s 秒前），背景同步最新報價；"
                                        "若官方本輪漏回，會保留今天已取得的價格，不會改用前一交易日。" % age)
 
-    # 使用者已明確接受首頁多等幾秒，換取「一次完整抓好」：只有同日、全持股有效且
-    # 很新的計算結果才可直接回快取；冷啟動／缺漏資料必須在這次 API 請求內完成批次抓取與重試。
+    # 即時卡片不應等待 MIS 網路請求完成：同一天已有計算結果時先立即回傳，
+    # 並確實啟動唯一的背景刷新工作。快照不是計算來源；這裡回傳的是現有同日報價
+    # 計算結果，背景完成後下一次輪詢就會拿到新價格與重新計算的正負貢獻。
     if cached_copy is not None:
         cached_portfolio = cached_copy.get("portfolio") or {}
         cached_stale = int(cached_portfolio.get("stale_count") or 0)
         age = max(0, int(time.time() - cache_at))
-        if cached_stale == 0 and age <= 12 and cached_portfolio.get("ready"):
-            # 完整同日行情很新時可以直接回快取；大盤只讀現有有效快取，不另開同步網路請求。
-            with _realtime_cache_lock:
-                cached_index = (_taiex_intraday_cache.get("data")
-                                if _taiex_intraday_cache.get("day") == taiwan_today().isoformat()
-                                else None)
-                index_at = float(_taiex_intraday_cache.get("at") or 0)
-            if isinstance(cached_index, dict) and index_at:
-                cached_copy["market"] = dict(cached_index)
+        with _realtime_cache_lock:
+            cached_index = (_taiex_intraday_cache.get("data")
+                            if _taiex_intraday_cache.get("day") == taiwan_today().isoformat()
+                            else None)
+            index_at = float(_taiex_intraday_cache.get("at") or 0)
+        if isinstance(cached_index, dict) and index_at:
+            index_age = max(0, int(time.time() - index_at))
+            cached_copy["market"] = dict(cached_index)
+            if index_age > TAIEX_INTRADAY_MAX_AGE_SECONDS:
+                cached_copy["market"]["stale"] = True
+                cached_copy["market"]["cache_age_seconds"] = index_age
+            else:
                 cached_copy["market"].pop("stale", None)
                 cached_copy["market"].pop("cache_age_seconds", None)
+        # <=2 秒的完整計算不用再觸發網路；其餘情況用背景刷新，不能讓 API 等外部行情。
+        if cached_stale == 0 and age <= 2 and cached_portfolio.get("ready"):
             return cached_copy
+        refresh_started = _schedule_home_intraday_payload_refresh(uid)
+        cached_copy["portfolio"]["refreshing"] = bool(refresh_started or cached_stale > 0 or age > 2)
+        cached_copy["note"] = (
+            "正在背景同步最新官方行情；目前先顯示今天最近一次有效報價，"
+            "更新完成後會重新計算全部持股貢獻與相對大盤。"
+            if cached_stale == 0 else
+            "今日行情尚有缺漏，正在背景補抓；已取得的同日報價暫時保留，不拿前一交易日資料補值。"
+        )
+        return cached_copy
 
     started = time.monotonic()
     refreshed = _refresh_home_intraday_payload_sync(uid)
@@ -9330,7 +9370,7 @@ _realtime_cache_lock = threading.Lock()
 REALTIME_CACHE_SECONDS = max(30, int(os.environ.get("REALTIME_CACHE_SECONDS", "300")))
 _TWSE_MIS_CACHE = {"day": None, "at": 0, "data": {}}
 _TWSE_MIS_CACHE_SECONDS = 5
-_TWSE_MIS_BATCH_SIZE = 10
+_TWSE_MIS_BATCH_SIZE = 20  # 持股行情優先單批；失敗時自動拆批重試
 
 
 def _taiwan_post_close(now=None):
@@ -9347,6 +9387,34 @@ def _realtime_cache_period(now=None):
         last_weekday = current.date() - timedelta(days=current.weekday() - 4)
         return last_weekday.isoformat(), "postclose"
     return current.date().isoformat(), ("postclose" if _taiwan_post_close(current) else "intraday")
+
+
+def _home_market_suffix_map(codes):
+    """首頁即時行情先用公司基本資料辨識上市／上櫃，只向正確市場請求一次。
+
+    只有市場別未知時才讓 _twse_mis_quote_symbols 同時查 tse／otc 作 fallback；
+    不要把每一檔已知市場的持股都變成兩個請求代號。
+    """
+    try:
+        _load_stock_info_file_cache()
+    except Exception:
+        pass
+    market_map = _market_cache.get("map") or {}
+    result = {}
+    for raw_code in codes or []:
+        code = str(raw_code or "").strip()
+        if not code:
+            continue
+        market = str(market_map.get(code) or "").strip().lower()
+        if market in ("上市", "twse", "listed", "tw", "tse"):
+            result[code] = ".TW"
+        elif market in ("上櫃", "上柜", "tpex", "otc", "two"):
+            result[code] = ".TWO"
+        else:
+            known = _suffix_cache.get(code)
+            if known in (".TW", ".TWO"):
+                result[code] = known
+    return result
 
 
 def _twse_mis_quote_symbols(codes, market_suffix=None):
@@ -9386,6 +9454,24 @@ def _mis_quote_is_current_for_contribution(quote, now=None, max_age_seconds=None
     if not _is_taiwan_intraday_window(current):
         return False
     if quote.get("has_live_trade_price") is False:
+        return False
+
+    # Use the time this server successfully received the official feed as freshness; t/tlong are
+    # last-trade times and may remain old for a low-volume stock. Never treat an old persisted
+    # quote as live just because its trade date happens to be today.
+    fetched_stamp = str(quote.get("fetched_at") or "").strip()
+    if not fetched_stamp:
+        return False
+    try:
+        fetched_dt = datetime.fromisoformat(fetched_stamp)
+        if fetched_dt.tzinfo is None:
+            fetched_dt = fetched_dt.replace(tzinfo=TW_TZ)
+        else:
+            fetched_dt = fetched_dt.astimezone(TW_TZ)
+        feed_age = (current - fetched_dt).total_seconds()
+        if feed_age < -5 or feed_age > _HOME_QUOTE_FEED_MAX_AGE_SECONDS:
+            return False
+    except (TypeError, ValueError, OverflowError):
         return False
 
     stamp = str(quote.get("quote_updated_at") or quote.get("updated_at") or "").strip()
@@ -9533,6 +9619,7 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
             parsed[code] = {
                 "close": close, "previous_close": previous,
                 "pct": (close - previous) / previous * 100,
+                "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
                 "high": number("h") or close, "low": number("l") or close,
                 "volume": int(volume_lots * 1000) if volume_lots is not None else 0,
                 "updated_at": quote_updated_at or trade_at,
@@ -9609,6 +9696,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                     "volume": official_quote.get("volume") or refreshed.get("volume") or 0,
                     "source": official_quote.get("source") or "TWSE MIS 盤中最後成交",
                     "updated_at": official_quote.get("updated_at"),
+                    "fetched_at": official_quote.get("fetched_at"),
                     "close_is_final": bool(official_quote.get("close_is_final")),
                     "close_date": official_quote.get("close_date"),
                     "close_time": official_quote.get("close_time"),
@@ -9907,6 +9995,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                              else "Yahoo Finance 日線行情"))),
                 "updated_at": (official_quote.get("updated_at") if official_quote else
                                (sticky.get("updated_at") if sticky else None)),
+                "fetched_at": (official_quote.get("fetched_at") if official_quote else
+                               (sticky.get("fetched_at") if sticky else None)),
                 "close_is_final": bool(official_quote and official_quote.get("close_is_final")),
                 "close_date": (official_quote.get("close_date") if official_quote else
                                (bars[-1][0].strftime("%Y%m%d") if bars else None)),
@@ -18832,6 +18922,11 @@ _daily_snapshot_recovery_last_check = 0.0
 
 
 def _recover_interrupted_daily_snapshot():
+    """收盤後自動補跑未完成的組合報酬／排行榜核心快照。
+
+    不只處理舊版 picks 0/2：若快照工作因部署中斷、官方行情暫時失敗，或
+    排行榜重算逾時而結束，下一次請求也會檢查資料庫中的核心快照是否真的齊全。
+    """
     global _daily_snapshot_recovery_last_check
     now_mono = time.monotonic()
     with _daily_snapshot_recovery_lock:
@@ -18839,11 +18934,17 @@ def _recover_interrupted_daily_snapshot():
             return
         _daily_snapshot_recovery_last_check = now_mono
 
+    today = taiwan_today()
+    if (not _taiwan_post_close() or today.weekday() >= 5 or
+            not is_twse_trading_day(today)):
+        return
+
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT running, started_at, progress_stage, progress_index, progress_total
+            SELECT running, started_at, progress_stage, progress_index, progress_total,
+                   finished_at, result
             FROM job_runs WHERE name='每日快照' LIMIT 1
         """)
         row = cur.fetchone()
@@ -18856,20 +18957,56 @@ def _recover_interrupted_daily_snapshot():
 
     if not row:
         return
-    running, started_at, stage, index, total = row
-    if not running or str(stage or '') != 'picks' or int(total or 0) != 2:
-        return
-    started_tw = as_taiwan_datetime(started_at)
-    age_seconds = ((taiwan_now() - started_tw).total_seconds()
-                   if started_tw else 0)
-    if age_seconds < 300:
-        return
-    if not _taiwan_post_close() or not is_twse_trading_day(taiwan_today()):
-        return
+    running, started_at, stage, index, total, finished_at, result = row
+    now_tw = taiwan_now()
+    if running:
+        started_tw = as_taiwan_datetime(started_at)
+        age_seconds = ((now_tw - started_tw).total_seconds() if started_tw else 0)
+        legacy_stuck = (str(stage or '') == 'picks' and int(total or 0) == 2
+                        and age_seconds >= 300)
+        generic_stuck = age_seconds >= JOB_STALE_MINUTES * 60
+        if not (legacy_stuck or generic_stuck):
+            return
+    else:
+        # 避免剛結束就連續重跑；但失敗／未完成的核心快照每分鐘自動重試。
+        finished_tw = as_taiwan_datetime(finished_at)
+        finished_age = ((now_tw - finished_tw).total_seconds()
+                        if finished_tw else 10**9)
+        if finished_age < 60:
+            return
 
-    print("♻️ 偵測到部署中斷的每日快照（舊 checkpoint picks 0/2）；自動重跑今日組合報酬與排行榜快照")
-    # 同一個 _do_daily_snapshot 會辨識舊 checkpoint，先重建 portfolio_snapshots，
-    # 再寫 leaderboard_page 與 leaderboard_rank_snapshots；不會以選股快照代替兩者。
+        missing_users = get_missing_portfolio_snapshot_user_ids(today)
+        portfolio_ready = missing_users is not None and len(missing_users) == 0
+        rank_rows_today = 0
+        member_count = 0
+        try:
+            conn = get_db_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM leaderboard_rank_snapshots WHERE snapshot_date=%s", (today,))
+                rank_rows_today = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute("SELECT COUNT(*) FROM leaderboard_members")
+                member_count = int((cur.fetchone() or [0])[0] or 0)
+                cur.close()
+            finally:
+                release_db_connection(conn)
+            persisted = _load_persisted_leaderboard_page(allow_stale=True)
+            page_date = _leaderboard_date(persisted.get("data_date")) if persisted else None
+            boards = (persisted.get("value") or ({}, ({}, [])))[0] if persisted else {}
+            expected = sum(len(boards.get(name) or [])
+                           for name in ("short", "long", "season", "month"))
+            rank_ready = (member_count == 0 or
+                          (page_date == today and (expected == 0 or rank_rows_today >= expected)))
+        except Exception as exc:
+            print(f"⚠️ 驗證每日排行榜快照完整性失敗：{type(exc).__name__}")
+            rank_ready = False
+        if portfolio_ready and rank_ready:
+            return
+        print("♻️ 每日核心快照尚未完整，準備自動補跑：portfolio_ready=%s missing_users=%s rank_ready=%s rank_rows=%s result=%s" % (
+            portfolio_ready, (len(missing_users) if missing_users is not None else "unknown"),
+            rank_ready, rank_rows_today, str(result or "")[:100]), flush=True)
+
+    print("♻️ 偵測到中斷／未完成的每日組合報酬與排行榜快照，重新啟動核心快照")
     run_in_background("每日快照", _do_daily_snapshot)
 
 
@@ -19205,7 +19342,8 @@ def _do_daily_snapshot():
                     f"缺少使用者 {missing_text or '待確認'}；缺價代號 {codes_text or '請看 Logs'}。"
                     "已暫緩排行榜快照，避免使用不完整的組合報酬計算排名。")
 
-        clear_leaderboard_cache()
+        # 排行榜 stage 自己會清理快取並只啟動一次強制重算；這裡不能呼叫
+        # clear_leaderboard_cache()，它會額外啟動一個背景重算，反而拖慢今日快照。
         _job_mark_progress(job_name, "rank", 0, 1)
         current_stage = "rank"
 
@@ -19217,11 +19355,8 @@ def _do_daily_snapshot():
             _job_mark_progress(job_name, "rank", 0, 1)
             return (f"今日組合報酬快照已完成；排行榜快照尚未確認完成（本次名次 {rank_saved} 筆），"
                     "保留 rank checkpoint，請稍後重試。")
-        try:
-            ind_perf_saved = save_industry_recent_performance()
-        except Exception as exc:
-            print(f"❌ 產業近期表現快照失敗: {exc}")
-            ind_perf_saved = 0
+        # 核心排名已保存，立刻將 checkpoint 往下推；較慢的產業快照不能讓每日排名
+        # 一直顯示 rank 0/1，也不能逼下一次重跑重新計算排行榜。
         _job_mark_progress(job_name, "industry", 0, 1)
         current_stage = "industry"
     else:
@@ -19237,6 +19372,11 @@ def _do_daily_snapshot():
         except Exception as exc:
             print(f"❌ 產業動能快照失敗: {exc}")
             # 核心組合／排行榜快照已完成，非核心產業資料失敗不阻斷每日工作。
+        try:
+            ind_perf_saved = save_industry_recent_performance()
+        except Exception as exc:
+            print(f"❌ 產業近期表現快照失敗: {exc}")
+            ind_perf_saved = 0
         _job_mark_progress(job_name, "watchlist", 0, 0)
         progress = {"stage": "watchlist", "index": 0, "total": 0}
         current_stage = "watchlist"
@@ -19295,6 +19435,19 @@ def _do_daily_snapshot():
         current_stage = "done"
 
     monthly_status = archive_monthly_reviews_if_due(today)
+    if taiex_close is None and portfolio_ready:
+        try:
+            conn = get_db_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT MAX(taiex_close) FROM portfolio_snapshots WHERE snapshot_date=%s", (today,))
+                taiex_close = (cur.fetchone() or [None])[0]
+                cur.close()
+            finally:
+                release_db_connection(conn)
+        except Exception as exc:
+            print(f"⚠️ 讀取今日組合快照所用大盤收盤值失敗：{exc}")
+
     missing_after = get_missing_portfolio_snapshot_user_ids(today)
     if missing_after is None:
         portfolio_status_text = "；組合快照完整性待確認"
@@ -33953,6 +34106,81 @@ body #app-page-content .rank-situation .rank-situation-title .rank-situation-bad
   #app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body,
   .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
 }
+
+/* V260: mobile leaderboard typography/layout repair. Keep the ranking logic unchanged. */
+#app-page-content .rank-rows,
+.rank-rows { width:100% !important; max-width:100% !important; min-width:0 !important; }
+#app-page-content .rank-rows .rank-card,
+.rank-rows .rank-card { width:100% !important; max-width:100% !important; min-width:0 !important; box-sizing:border-box !important; }
+#app-page-content .rank-rows .rank-card .rank-row-main,
+.rank-rows .rank-card .rank-row-main {
+  grid-template-columns:minmax(0,1fr) max-content !important;
+  grid-template-areas:"primary returns" "movement movement" !important;
+  column-gap:8px !important; row-gap:7px !important; min-width:0 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-primary-line,
+.rank-rows .rank-card .rank-primary-line { min-width:0 !important; grid-template-columns:34px minmax(0,1fr) !important; gap:8px !important; }
+#app-page-content .rank-rows .rank-card .name,
+.rank-rows .rank-card .name {
+  min-width:0 !important; max-width:100% !important; overflow-wrap:anywhere !important;
+  word-break:normal !important; line-break:auto !important; font-size:clamp(14px,3.8vw,17px) !important;
+  line-height:1.4 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-return,
+.rank-rows .rank-card .rank-return {
+  max-width:100% !important; white-space:nowrap !important; font-size:clamp(15px,4vw,19px) !important;
+  font-variant-numeric:tabular-nums !important; align-self:start !important;
+}
+#app-page-content .rank-rows .rank-card .rank-movement,
+.rank-rows .rank-card .rank-movement { margin-left:42px !important; min-width:0 !important; white-space:normal !important; overflow-wrap:anywhere !important; }
+#app-page-content .rank-rows .rank-card .rank-meta,
+.rank-rows .rank-card .rank-meta {
+  display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  align-items:start !important; gap:10px 12px !important; margin:12px 0 0 42px !important;
+  min-width:0 !important; width:auto !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta > span,
+.rank-rows .rank-card .rank-meta > span {
+  display:flex !important; flex-direction:column !important; align-items:flex-start !important;
+  justify-content:flex-start !important; gap:3px !important; min-width:0 !important; max-width:100% !important;
+  white-space:normal !important; overflow-wrap:anywhere !important; word-break:normal !important;
+  line-height:1.45 !important; font-size:12.5px !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta > span > em,
+.rank-rows .rank-card .rank-meta > span > em {
+  display:block !important; width:100% !important; margin:0 !important; white-space:normal !important;
+  font-size:11px !important; line-height:1.35 !important; color:#667085 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta .num,
+.rank-rows .rank-card .rank-meta .num { white-space:normal !important; font-variant-numeric:tabular-nums !important; }
+#app-page-content .rank-rows .rank-card .rank-detail,
+#app-page-content .rank-rows .rank-card .rank-private,
+.rank-rows .rank-card .rank-detail,
+.rank-rows .rank-card .rank-private { margin-left:0 !important; min-width:0 !important; max-width:100% !important; }
+#app-page-content .rank-rows .rank-card .rank-detail > summary,
+.rank-rows .rank-card .rank-detail > summary { margin-left:0 !important; white-space:normal !important; overflow-wrap:anywhere !important; }
+#app-page-content .rank-rows .rank-card .rank-detail-body,
+.rank-rows .rank-card .rank-detail-body { min-width:0 !important; max-width:100% !important; }
+#app-page-content .rank-rows .rank-card .rank-honour,
+.rank-rows .rank-card .rank-honour { min-width:0 !important; max-width:100% !important; box-sizing:border-box !important; }
+#app-page-content .rank-rows .rank-card .rank-honour > div,
+.rank-rows .rank-card .rank-honour > div { min-width:0 !important; overflow-wrap:anywhere !important; }
+@media (min-width:600px) {
+  #app-page-content .rank-rows .rank-card .rank-meta,
+  .rank-rows .rank-card .rank-meta { grid-template-columns:repeat(3,minmax(0,1fr)) !important; }
+}
+@media (max-width:380px) {
+  #app-page-content .rank-rows .rank-card,
+  .rank-rows .rank-card { padding:11px 9px !important; }
+  #app-page-content .rank-rows .rank-card .rank-meta,
+  .rank-rows .rank-card .rank-meta { margin-left:0 !important; }
+  #app-page-content .rank-rows .rank-card .rank-movement,
+  .rank-rows .rank-card .rank-movement { margin-left:42px !important; }
+  #app-page-content .rank-rows .rank-card .rank-primary-line,
+  .rank-rows .rank-card .rank-primary-line { grid-template-columns:31px minmax(0,1fr) !important; gap:6px !important; }
+  #app-page-content .rank-rows .rank-card .rank-number,
+  .rank-rows .rank-card .rank-number { width:31px !important; min-width:31px !important; max-width:31px !important; }
+}
 </style>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
@@ -35697,8 +35925,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             if not missing_codes:
                 break
             fetched = _fetch_twse_mis_quotes(
-                missing_codes, market_suffix=None, force_refresh=True,
-                cache_result=(retry_round == 0), quick_mode=False)
+                missing_codes, market_suffix=_home_market_suffix_map(missing_codes),
+                force_refresh=True, cache_result=(retry_round == 0), quick_mode=False)
             for code, quote in (fetched or {}).items():
                 if (str(quote.get("close_date") or "").replace("-", "")[:8] == today_key and
                         "MIS" in str(quote.get("source") or "").upper() and
@@ -36377,7 +36605,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     // 停掉之後改成每 5 分鐘探一次，而不是永久停止。
     // 原本 stopped=true 就再也不排程，收盤後開著的頁面隔天開盤也不會恢復，
     // 使用者只會看到「盤中已結束」而價格永遠不動。
-    timer=setTimeout(refresh, stopped ? 300000 : 15000);
+    timer=setTimeout(refresh, stopped ? 300000 : 5000);
   }
   function setHtml(selector,value){var el=document.querySelector(selector);if(el)el.innerHTML=value;}
   function realized(item){if(item.realized_pl==null)return '';var n=Number(item.realized_pl);if(!Number.isFinite(n))return '';return '<small class="impact-realized '+(n>=0?'up':'down')+'">今日已實現損益：'+(n>=0?'+':'')+n.toLocaleString('zh-TW',{maximumFractionDigits:0})+' 元</small>';}
@@ -36839,11 +37067,12 @@ def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_ref
         return result
     if allow_network:
         try:
-            # 首頁需要完整的今日貢獻：不要只信任可能過期的市場別對照表。
-            # 一次把所有持股的上市＋上櫃代號送進批次抓取；底層會並行拆批，
-            # 比逐檔請求快，也避免市場別對照錯誤讓整檔漏行情。
+            # 先使用 stock_info 的真實市場別，只送對應的 tse／otc 代號；未知市場才雙查。
+            # 13 檔持股因此通常是 13 個代號，而不是 26 個，再由底層並行拆批。
+            effective_market_suffix = (market_suffix if market_suffix is not None
+                                       else _home_market_suffix_map(codes))
             quotes = _fetch_twse_mis_quotes(
-                codes, market_suffix=None, force_refresh=force_refresh)
+                codes, market_suffix=effective_market_suffix, force_refresh=force_refresh)
             if force_refresh:
                 valid_codes = {code for code, quote in (quotes or {}).items()
                                if _mis_quote_is_current_for_contribution(quote)}
@@ -36851,8 +37080,10 @@ def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_ref
                 # 首頁允許多等一輪：把第一輪漏掉的代號再整批抓一次，不逐檔打網路。
                 if missing_codes:
                     time.sleep(0.35)
+                    retry_suffixes = (_home_market_suffix_map(missing_codes)
+                                      if market_suffix is None else market_suffix)
                     retry_quotes = _fetch_twse_mis_quotes(
-                        missing_codes, market_suffix=None, force_refresh=True,
+                        missing_codes, market_suffix=retry_suffixes, force_refresh=True,
                         cache_result=False, quick_mode=False)
                     for code, quote in (retry_quotes or {}).items():
                         if _mis_quote_is_current_for_contribution(quote):
@@ -36910,6 +37141,7 @@ def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_ref
             "volume": quote.get("volume") or item.get("volume") or 0,
             "source": quote.get("source") or "TWSE MIS 最近有效報價",
             "updated_at": quote.get("updated_at") or item.get("updated_at"),
+            "fetched_at": quote.get("fetched_at") or item.get("fetched_at"),
             "quote_updated_at": quote.get("quote_updated_at") or item.get("quote_updated_at"),
             "trade_at": quote.get("trade_at") or item.get("trade_at"),
             "previous_close": quote.get("previous_close") or item.get("previous_close"),
@@ -36979,6 +37211,7 @@ def _homepage_merge_official_quotes(prices, codes, market_suffix=None, force_ref
                 "close": close, "previous_close": previous_close, "pct": pct,
                 "close_date": close_date, "close_time": item.get("close_time"),
                 "updated_at": item.get("quote_updated_at") or item.get("updated_at"),
+                "fetched_at": item.get("fetched_at"),
                 "quote_updated_at": item.get("quote_updated_at") or item.get("updated_at"),
                 "trade_at": item.get("trade_at"),
                 "has_live_trade_price": True,
@@ -37504,7 +37737,7 @@ def _render_fast_portfolio_entry(uid, positions, polling_enabled=True):
      }}
      if(d.note)setText('instant-foot',d.note);
    }} }}catch(e){{failures++;}}
-   if(document.getElementById('instant-home'))window.setTimeout(poll, failures?5000:15000);
+   if(document.getElementById('instant-home'))window.setTimeout(poll, failures?5000:5000);
  }}
  poll();
 }})();
