@@ -10082,7 +10082,10 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             elif bars and bars[-1][0] == today_date:
                 prev_close = bars[-2][1] if len(bars) >= 2 else meta.get('chartPreviousClose', close)
                 hist = bars[:-1]  # 計算位階時排除今天，避免今天自己抬高自己的高點
-                if prior_raw_missing and not _taiwan_post_close():
+                if prior_raw_missing:
+                    # 不論盤中或收盤後，只要 Yahoo 當日日K的前一筆原始 close 缺值，
+                    # 都必須用同來源 chartPreviousClose 校正；否則 bars[-2] 可能跳到
+                    # 前天或更早，讓正確現價配上錯誤的多日漲跌幅。
                     try:
                         prior_res = requests.get(
                             f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1d&interval=1d",
@@ -14906,23 +14909,62 @@ def fetch_quote(symbol):
             return None
         meta = result[0].get('meta', {})
         close = meta.get('regularMarketPrice')
-        closes = [c for c in (result[0].get('indicators', {}).get('quote', [{}])[0]
-                              .get('close', []) or []) if c is not None]
-        if not close and closes:
-            close = closes[-1]
+        quote_block = result[0].get('indicators', {}).get('quote', [{}])[0]
+        raw_closes = quote_block.get('close', []) or []
+        timestamps = result[0].get('timestamp', []) or []
         if not close:
+            close = next((c for c in reversed(raw_closes) if c is not None), None)
+        if close is None or float(close) <= 0:
             return None
-        # 前一交易日收盤：從尾端往回找第一筆「跟現價不同」的收盤。
-        # Yahoo 的日K陣列尾端偶爾會出現重複的收盤價（同一天被塞兩筆），
-        # 若死抓倒數第二筆就會拿到跟現價一樣的數字，算出假的 0.00%。
+
+        # 漲跌幅的基準必須是「報價日期之前最近一個有效交易日」，
+        # 不能從尾端找第一個不同價格。若昨天收盤恰好等於今天現價，
+        # 舊邏輯會跳過昨天、抓到前天，造成多日漲跌被誤標成單日漲跌。
+        # 以 Yahoo 日K時間戳與市場時區判斷今日 K 棒是否已存在，並跳過 null
+        # 價格但不跳過「價格相同」的有效交易日。
         prev = None
-        for c in reversed(closes):
-            if abs(c - close) > max(0.005, abs(close) * 1e-6):
-                prev = c
-                break
+        try:
+            from zoneinfo import ZoneInfo
+            tz_name = str(meta.get('exchangeTimezoneName') or '')
+            if not tz_name and str(symbol).upper().endswith(('.TW', '.TWO')):
+                tz_name = 'Asia/Taipei'
+            market_tz = ZoneInfo(tz_name) if tz_name else timezone.utc
+            quote_ts = meta.get('regularMarketTime')
+            quote_day = (datetime.fromtimestamp(int(quote_ts), market_tz).date()
+                         if quote_ts else None)
+            dated_closes = []
+            for ts, value in zip(timestamps, raw_closes):
+                if value is None:
+                    continue
+                bar_day = datetime.fromtimestamp(int(ts), market_tz).date()
+                dated_closes.append((bar_day, float(value)))
+            if dated_closes:
+                prior_days = [(day, value) for day, value in dated_closes
+                              if quote_day is None or day < quote_day]
+                same_day = [(day, value) for day, value in dated_closes
+                            if quote_day is not None and day == quote_day]
+                if prior_days:
+                    prev = prior_days[-1][1]
+                elif len(dated_closes) >= 2:
+                    prev = dated_closes[-2][1]
+                elif same_day and meta.get('chartPreviousClose'):
+                    prev = float(meta['chartPreviousClose'])
+        except (ImportError, TypeError, ValueError, OverflowError, OSError):
+            prev = None
+
+        # 時間戳缺失／格式異常時才使用保守 fallback；仍採最近一筆有效日K，
+        # 不再掃描並跳過「價格相同」的交易日。
         if prev is None:
-            prev = meta.get('chartPreviousClose')
-        if not prev:
+            valid_closes = [float(c) for c in raw_closes if c is not None]
+            if len(valid_closes) >= 2:
+                prev = valid_closes[-2] if abs(valid_closes[-1] - float(close)) <= max(0.005, abs(float(close)) * 1e-6) else valid_closes[-1]
+            else:
+                prev = meta.get('chartPreviousClose')
+        try:
+            prev = float(prev)
+        except (TypeError, ValueError):
+            return None
+        if prev <= 0:
             return None
         # 順手記下這筆報價的日期。回傳值維持既有的三元組（很多地方在用），
         # 日期改放進模組層的小字典，需要的頁面自己去查。
@@ -33019,6 +33061,11 @@ def get_leaderboard_historical_summary(months=6, seasons=4):
         if d is None or ret is None:
             continue
         key = str(user_id).strip()
+        # 00991A 經理人已下架：不要再把舊快照列入月榜／賽季歷史。
+        # 只從排行榜歷史彙總排除，不刪除資料庫中的原始快照。
+        _history_identity = f"{key} {nickname or ''}".casefold()
+        if "00991a" in _history_identity:
+            continue
         bot_display_names = {"bot:blackhorse": "黑馬", "bot:radar": "雷達", "bot:yaochi_00981a": "瑤池金母｜00981A 經理人", "bot:manager_00403a": "張哲瑋｜00403A 經理人"}
         display_name = bot_display_names.get(key) or (nickname or key)
         by_user.setdefault(key, []).append((d, float(ret), display_name))
@@ -33632,12 +33679,20 @@ def web_leaderboard(uid):
                 main_v_num = float(main_v) if main_v is not None else None
             except (TypeError, ValueError):
                 main_v_num = None
-            cls = "up" if (main_v_num is not None and main_v_num >= 0) else "down"
+            cls = "flat" if main_v_num == 0 else ("up" if (main_v_num is not None and main_v_num > 0) else "down")
             board_for_status = {"m30": "short", "ret": "long", "season_ret": "season", "month_ret": "month"}.get(key, "long")
             rank_state = status_map.get(
                 (board_for_status, str(r.get("user_id")).strip()),
                 _rank_status_from_previous(current_rank, []))
             movement = render_rank_status(rank_state)
+            # 內嵌重要樣式，避免後載入的主題 CSS 把正報酬誤染成綠色。
+            ret_inline_style = (
+                "color:#B42318 !important;background:#FEE4E2 !important;border:1px solid #F1A6A0 !important;"
+                if cls == "up" else
+                "color:#067647 !important;background:#D1FADF !important;border:1px solid #6CE9A6 !important;"
+                if cls == "down" else
+                "color:#344054 !important;background:#F2F4F7 !important;border:1px solid #D0D5DD !important;"
+            )
 
             # 三種榜各自看自己的樣本期間。
             if key == "m30":
@@ -33907,7 +33962,7 @@ def web_leaderboard(uid):
       <span class="rank-number">{rank}</span>
       <span class="name">{safe_html_text(r['nickname'])}</span>
     </div>
-    <span class="rank-return num {cls}">{main_v:+.2f}%</span>
+    <span class="rank-return num {cls}" style="{ret_inline_style}">{main_v:+.2f}%</span>
     <span class="rank-movement">{movement}</span>
   </div>
   <div class="rank-meta">{''.join(supporting)}{span_html}</div>
@@ -35672,6 +35727,35 @@ body #app-page-content .rank-rows .rank-card .bot-history-pnl {
   white-space:nowrap !important;
   overflow-wrap:normal !important;
   word-break:keep-all !important;
+}
+/* V272: Taiwan stock convention must win over older card/theme rules.
+   Class is derived from the numeric return: positive=red, negative=green, zero=neutral. */
+#app-page-content .rank-rows .rank-card .rank-return.up,
+body #app-page-content .rank-rows .rank-card .rank-return.up,
+#app-page-content .rank-rows .rank-card.rank-silver .rank-return.up,
+#app-page-content .rank-rows .rank-card.rank-bronze .rank-return.up,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-return.up {
+  color:#B42318 !important;
+  background:#FEE4E2 !important;
+  border:1px solid #F1A6A0 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-return.down,
+body #app-page-content .rank-rows .rank-card .rank-return.down,
+#app-page-content .rank-rows .rank-card.rank-silver .rank-return.down,
+#app-page-content .rank-rows .rank-card.rank-bronze .rank-return.down,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-return.down {
+  color:#067647 !important;
+  background:#D1FADF !important;
+  border:1px solid #6CE9A6 !important;
+}
+#app-page-content .rank-rows .rank-card .rank-return.flat,
+body #app-page-content .rank-rows .rank-card .rank-return.flat,
+#app-page-content .rank-rows .rank-card.rank-silver .rank-return.flat,
+#app-page-content .rank-rows .rank-card.rank-bronze .rank-return.flat,
+#app-page-content .rank-rows .rank-card.rank-champion .rank-return.flat {
+  color:#344054 !important;
+  background:#F2F4F7 !important;
+  border:1px solid #D0D5DD !important;
 }
 #app-page-content .rank-rows .rank-card .bot-history-left small,
 body #app-page-content .rank-rows .rank-card .bot-history-left small {
