@@ -35555,6 +35555,160 @@ body #app-page-content .rank-rows .rank-card .bot-history-row {
   line-height:1.45 !important;
 }
 
+/* V271: polished, non-tile leaderboard metrics and readable bot history. */
+#app-page-content .rank-rows .rank-card .rank-meta,
+body #app-page-content .rank-rows .rank-card .rank-meta {
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  gap:0 16px !important;
+  align-items:start !important;
+  margin:12px 0 0 42px !important;
+  padding:0 !important;
+  width:auto !important;
+  min-width:0 !important;
+  background:transparent !important;
+  border:0 !important;
+  border-radius:0 !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta-item,
+body #app-page-content .rank-rows .rank-card .rank-meta-item {
+  display:flex !important;
+  flex-direction:column !important;
+  align-items:flex-start !important;
+  justify-content:flex-start !important;
+  gap:3px !important;
+  min-width:0 !important;
+  max-width:100% !important;
+  min-height:0 !important;
+  margin:0 !important;
+  padding:9px 2px 10px !important;
+  border:0 !important;
+  border-bottom:1px solid #E7EDF2 !important;
+  border-radius:0 !important;
+  background:transparent !important;
+  box-shadow:none !important;
+  color:#26394A !important;
+  box-sizing:border-box !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta-item > em,
+body #app-page-content .rank-rows .rank-card .rank-meta-item > em {
+  display:block !important;
+  margin:0 !important;
+  padding:0 !important;
+  color:#7A8998 !important;
+  font-size:11px !important;
+  line-height:1.3 !important;
+  font-style:normal !important;
+  font-weight:700 !important;
+  white-space:normal !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta-value,
+body #app-page-content .rank-rows .rank-card .rank-meta-value {
+  display:block !important;
+  width:auto !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:0 !important;
+  padding:0 !important;
+  border:0 !important;
+  border-radius:0 !important;
+  background:transparent !important;
+  box-shadow:none !important;
+  color:#26394A !important;
+  font-size:14px !important;
+  line-height:1.4 !important;
+  font-weight:850 !important;
+  text-align:left !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  font-variant-numeric:tabular-nums !important;
+}
+#app-page-content .rank-rows .rank-card .rank-meta-excess {
+  grid-column:1 / -1 !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-timeline-item,
+body #app-page-content .rank-rows .rank-card .bot-history-timeline-item {
+  grid-template-columns:64px minmax(0,1fr) !important;
+  column-gap:8px !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-timeline:before,
+body #app-page-content .rank-rows .rank-card .bot-history-timeline:before {
+  left:59px !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-dot,
+body #app-page-content .rank-rows .rank-card .bot-history-dot {
+  left:55px !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-left,
+body #app-page-content .rank-rows .rank-card .bot-history-left {
+  width:64px !important;
+  max-width:64px !important;
+  min-width:64px !important;
+  padding:1px 3px 0 0 !important;
+  text-align:right !important;
+  overflow:visible !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-date,
+body #app-page-content .rank-rows .rank-card .bot-history-date {
+  display:block !important;
+  font-size:9px !important;
+  line-height:1.2 !important;
+  white-space:normal !important;
+  overflow-wrap:normal !important;
+  word-break:normal !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-pnl,
+body #app-page-content .rank-rows .rank-card .bot-history-pnl {
+  display:block !important;
+  width:max-content !important;
+  max-width:100% !important;
+  margin-left:auto !important;
+  font-size:12.5px !important;
+  line-height:1.15 !important;
+  letter-spacing:-.035em !important;
+  white-space:nowrap !important;
+  overflow-wrap:normal !important;
+  word-break:keep-all !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-left small,
+body #app-page-content .rank-rows .rank-card .bot-history-left small {
+  display:block !important;
+  font-size:8px !important;
+  line-height:1.2 !important;
+  white-space:normal !important;
+  overflow-wrap:normal !important;
+}
+@media (max-width:420px) {
+  #app-page-content .rank-rows .rank-card .rank-meta,
+  body #app-page-content .rank-rows .rank-card .rank-meta {
+    grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+    gap:0 12px !important;
+    margin-left:0 !important;
+  }
+  #app-page-content .rank-rows .rank-card .bot-history-timeline-item,
+  body #app-page-content .rank-rows .rank-card .bot-history-timeline-item {
+    grid-template-columns:60px minmax(0,1fr) !important;
+    column-gap:7px !important;
+  }
+  #app-page-content .rank-rows .rank-card .bot-history-left,
+  body #app-page-content .rank-rows .rank-card .bot-history-left {
+    width:60px !important;
+    max-width:60px !important;
+    min-width:60px !important;
+  }
+  #app-page-content .rank-rows .rank-card .bot-history-timeline:before,
+  body #app-page-content .rank-rows .rank-card .bot-history-timeline:before {
+    left:56px !important;
+  }
+  #app-page-content .rank-rows .rank-card .bot-history-dot,
+  body #app-page-content .rank-rows .rank-card .bot-history-dot {
+    left:52px !important;
+  }
+}
+
 </style>"""
 
     history_data = get_leaderboard_historical_summary(months=6, seasons=4)
