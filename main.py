@@ -35417,6 +35417,133 @@ body #app-page-content .rank-situation .rank-situation-title .rank-situation-bad
   }
 }
 
+/* V270 ROOT FIX: real leaderboard stylesheet (not screener/positions CSS).
+   The previous layout kept two separate 47px indents: one on .rank-detail and
+   another on .rank-detail-body. On mobile webviews those nested indents made
+   the second detail column extend past the card and get clipped by overflow:hidden.
+   Reset the full path from the rank card down; normal player details stay two columns,
+   robot detail bodies stay normal document flow, and robot virtual cards stack. */
+#app-page-content .rank-rows .rank-card > .rank-detail,
+#app-page-content .rank-rows .rank-card > .rank-private,
+body #app-page-content .rank-rows .rank-card > .rank-detail,
+body #app-page-content .rank-rows .rank-card > .rank-private {
+  display:block !important;
+  float:none !important;
+  clear:both !important;
+  position:relative !important;
+  inset:auto !important;
+  margin:12px 0 0 !important;
+  padding:0 !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  transform:none !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body,
+body #app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body {
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  gap:8px !important;
+  float:none !important;
+  clear:both !important;
+  position:static !important;
+  inset:auto !important;
+  margin:8px 0 0 !important;
+  padding:0 !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  transform:none !important;
+  overflow:visible !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body > span,
+body #app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body > span {
+  display:flex !important;
+  flex-direction:column !important;
+  align-items:flex-start !important;
+  width:auto !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:0 !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
+  box-sizing:border-box !important;
+}
+/* Bot-specific details are document flow; never inherit the player-detail grid. */
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-hold-list,
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-history-list,
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-history-all,
+body #app-page-content .rank-rows .rank-card > .rank-detail.bot-hold-list,
+body #app-page-content .rank-rows .rank-card > .rank-detail.bot-history-list,
+body #app-page-content .rank-rows .rank-card > .rank-detail.bot-history-all {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:12px 0 0 !important;
+  padding:0 !important;
+  overflow:visible !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-hold-list > .rank-detail-body,
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-history-list > .rank-detail-body,
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-history-all > .rank-detail-body,
+body #app-page-content .rank-rows .rank-card > .rank-detail.bot-hold-list > .rank-detail-body,
+body #app-page-content .rank-rows .rank-card > .rank-detail.bot-history-list > .rank-detail-body,
+body #app-page-content .rank-rows .rank-card > .rank-detail.bot-history-all > .rank-detail-body {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:8px 0 0 !important;
+  padding:0 !important;
+  overflow:visible !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-virtual-card,
+body #app-page-content .rank-rows .rank-card .bot-virtual-card {
+  display:grid !important;
+  grid-template-columns:minmax(0,1fr) !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:8px 0 12px !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold,
+#app-page-content .rank-rows .rank-card .bot-cash-row,
+#app-page-content .rank-rows .rank-card .bot-history-timeline-item,
+#app-page-content .rank-rows .rank-card .bot-history-content,
+#app-page-content .rank-rows .rank-card .bot-history-main,
+#app-page-content .rank-rows .rank-card .bot-history-row,
+body #app-page-content .rank-rows .rank-card .bot-hold,
+body #app-page-content .rank-rows .rank-card .bot-cash-row,
+body #app-page-content .rank-rows .rank-card .bot-history-timeline-item,
+body #app-page-content .rank-rows .rank-card .bot-history-content,
+body #app-page-content .rank-rows .rank-card .bot-history-main,
+body #app-page-content .rank-rows .rank-card .bot-history-row {
+  min-width:0 !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+}
+@media (max-width:700px) {
+  #app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body,
+  body #app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body {
+    grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+    margin-left:0 !important;
+    margin-right:0 !important;
+  }
+  #app-page-content .rank-rows .rank-card .bot-virtual-card,
+  body #app-page-content .rank-rows .rank-card .bot-virtual-card {
+    grid-template-columns:minmax(0,1fr) !important;
+  }
+}
+
 /* Season metadata must wrap, and the label itself includes both full dates. */
 #app-page-content .rank-situation-item,
 #app-page-content .rank-situation-item .rank-situation-sub {
