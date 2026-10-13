@@ -9003,7 +9003,7 @@ def leaderboard_season_info(today=None):
         end = date(today.year, start_month + 3, 1) - timedelta(days=1)
     return {
         "id": f"{today.year}Q{q}",
-        "label": f"第 {q} 季｜{today.year}/{start_month:02d}–{end.month:02d}",
+        "label": f"第 {q} 季｜{start:%Y/%m/%d}–{end:%Y/%m/%d}",
         "start": start,
         "end": end,
     }
@@ -33974,6 +33974,11 @@ def web_leaderboard(uid):
             vs_cls = "up" if excess >= 0 else "down"
         period_label = {"short": "近 30 天", "long": "加入後", "season": "本季", "month": "本月"}[board_name]
         sample_note = f"樣本 {sample_days} 天｜參考排名" if sample_days < 10 else f"樣本 {sample_days} 天"
+        if board_name == "season":
+            _season_info = all_boards.get("season_info") or leaderboard_season_info()
+            _season_start = _season_info["start"].strftime("%Y/%m/%d")
+            _season_end = _season_info["end"].strftime("%Y/%m/%d")
+            sample_note = f"{_season_start}–{_season_end}｜{sample_note}"
         market_key = {"short": "mkt_ret", "long": "mkt_ret", "season": "season_mkt_ret", "month": "month_mkt_ret"}.get(board_name, "mkt_ret")
         market_ret = row.get(market_key)
         market_txt = f"大盤 {market_ret:+.1f}%" if market_ret is not None else "尚無大盤資料"
@@ -34064,7 +34069,7 @@ def web_leaderboard(uid):
   長線：從各自加入日後累計；重點看長期複利、長期最大回檔與長期穩定度。
 </div>
 <div class="rank-switch-note" data-board-note="season" style="{' ' if active_board == 'season' else 'display:none'}">
-  賽季：本季重新計算；每一季從季初重新開始，不受加入日期以外的歷史績效影響。
+  賽季期間：{html.escape((all_boards.get('season_info') or leaderboard_season_info())['start'].strftime('%Y/%m/%d'))}–{html.escape((all_boards.get('season_info') or leaderboard_season_info())['end'].strftime('%Y/%m/%d'))}；本季重新計算，不納入本季開始前的歷史績效。
 </div>
 """
 
@@ -35118,6 +35123,232 @@ body #app-page-content .rank-situation .rank-situation-title .rank-situation-bad
   #app-page-content .rank-rows .rank-card .bot-history-dot { left:41px !important; }
   #app-page-content .rank-rows .rank-card .bot-history-left { padding-right:2px !important; }
   #app-page-content .rank-rows .rank-card .bot-history-content { padding-left:6px !important; }
+}
+
+/* V267: final fix based on real iPhone screenshots. Earlier rules depended on
+   viewport media queries and retained fixed-width robot table columns. Keep all
+   leaderboard content inside its available width, regardless of webview DPI. */
+#app-page-content,
+#app-page-content .rank-rows,
+#app-page-content [data-board-panel],
+#app-page-content .rank-rows .rank-card,
+#app-page-content .rank-rows .rank-card > .rank-detail,
+#app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body {
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows { display:block !important; overflow-x:clip !important; }
+#app-page-content .rank-rows .rank-card { overflow:hidden !important; }
+#app-page-content .rank-rows .rank-card.rank-champion,
+#app-page-content .rank-rows .rank-card.rank-silver,
+#app-page-content .rank-rows .rank-card.rank-bronze {
+  margin-left:0 !important;
+  margin-right:0 !important;
+  width:100% !important;
+  max-width:100% !important;
+}
+
+/* Ordinary public holding details: retain two equal, full-width columns. */
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body {
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:8px 0 0 !important;
+  padding:0 !important;
+  gap:8px !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > .rank-detail-item {
+  width:100% !important;
+  min-width:0 !important;
+  max-width:100% !important;
+  overflow:hidden !important;
+  overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .rank-detail-item,
+#app-page-content .rank-rows .rank-card .rank-detail-item em,
+#app-page-content .rank-rows .rank-card .rank-detail-item b,
+#app-page-content .rank-rows .rank-card .rank-detail-item strong {
+  min-width:0 !important;
+  max-width:100% !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
+  box-sizing:border-box !important;
+}
+
+/* Robot snapshot: stack virtual-account metrics; never squeeze into 3 columns. */
+#app-page-content .rank-rows .rank-card .bot-virtual-card {
+  display:grid !important;
+  grid-template-columns:minmax(0,1fr) !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:8px 0 12px !important;
+  padding:12px !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-virtual-card > div,
+#app-page-content .rank-rows .rank-card .bot-virtual-card small,
+#app-page-content .rank-rows .rank-card .bot-virtual-card b {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
+}
+
+/* Bot holdings use a two-column row card, not three fixed table columns.
+   The weight and return remain visible even when the webview is very narrow. */
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-hold-list,
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-history-list {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:10px 0 0 !important;
+  padding:0 !important;
+  overflow:hidden !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-hold-list > .rank-detail-body,
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-history-list > .rank-detail-body {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:8px 0 0 !important;
+  padding:0 !important;
+  overflow:hidden !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-head { display:none !important; }
+#app-page-content .rank-rows .rank-card .bot-hold {
+  display:grid !important;
+  grid-template-columns:minmax(0,1fr) minmax(0,auto) !important;
+  grid-template-rows:auto auto auto auto !important;
+  gap:3px 10px !important;
+  align-items:start !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin:0 !important;
+  padding:10px 0 !important;
+  overflow:hidden !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-name {
+  grid-column:1 !important; grid-row:1 !important;
+  display:block !important; width:100% !important; min-width:0 !important; max-width:100% !important;
+  white-space:normal !important; overflow-wrap:anywhere !important; word-break:normal !important;
+  font-size:13px !important; line-height:1.4 !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-name small {
+  display:block !important; margin:2px 0 0 !important; width:100% !important;
+  white-space:normal !important; overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-wt {
+  grid-column:1 !important; grid-row:2 !important; text-align:left !important;
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+  white-space:normal !important; overflow-wrap:anywhere !important;
+  color:#66788B !important; font-size:11px !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-wt:before {
+  content:'權重 ' !important; color:#8E959D !important; font-weight:650 !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-pct {
+  grid-column:2 !important; grid-row:1 / span 2 !important; align-self:center !important;
+  justify-self:end !important; max-width:100% !important; min-width:0 !important;
+  white-space:nowrap !important; text-align:right !important; font-size:14px !important;
+  line-height:1.3 !important; font-weight:850 !important; font-variant-numeric:tabular-nums !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-bar {
+  grid-column:1 / -1 !important; grid-row:3 !important;
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+  height:5px !important; margin:3px 0 0 !important; box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-meta {
+  grid-column:1 / -1 !important; grid-row:4 !important;
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+  white-space:normal !important; overflow-wrap:anywhere !important; word-break:normal !important;
+  font-size:10.5px !important; line-height:1.4 !important;
+}
+#app-page-content .rank-rows .rank-card .bot-cash-row {
+  display:grid !important; grid-template-columns:minmax(0,1fr) auto !important;
+  gap:5px 10px !important; align-items:start !important;
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+  overflow:hidden !important; box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-cash-name { grid-column:1 !important; min-width:0 !important; white-space:normal !important; }
+#app-page-content .rank-rows .rank-card .bot-cash-wt { grid-column:2 !important; white-space:nowrap !important; }
+#app-page-content .rank-rows .rank-card .bot-cash-note {
+  grid-column:1 / -1 !important; text-align:left !important; white-space:normal !important;
+  width:100% !important; max-width:100% !important; overflow-wrap:anywhere !important;
+}
+
+/* Bot history timeline: a narrow date rail plus one fluid content column. */
+#app-page-content .rank-rows .rank-card .bot-history-timeline,
+#app-page-content .rank-rows .rank-card .bot-history-all,
+#app-page-content .rank-rows .rank-card .bot-history-all-body {
+  display:block !important;
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+  margin-left:0 !important; padding-left:0 !important; padding-right:0 !important;
+  overflow:hidden !important; box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-timeline-item {
+  display:grid !important;
+  grid-template-columns:42px minmax(0,1fr) !important;
+  column-gap:7px !important;
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+  margin:0 !important; padding:0 0 12px !important;
+  overflow:hidden !important; box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-timeline:before { left:43px !important; }
+#app-page-content .rank-rows .rank-card .bot-history-dot { left:39px !important; }
+#app-page-content .rank-rows .rank-card .bot-history-left {
+  grid-column:1 !important; width:100% !important; max-width:100% !important; min-width:0 !important;
+  text-align:right !important; padding:1px 2px 0 0 !important; box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-content {
+  grid-column:2 !important; width:100% !important; max-width:100% !important; min-width:0 !important;
+  padding:0 0 1px 7px !important; margin:0 !important; overflow:hidden !important; box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-date,
+#app-page-content .rank-rows .rank-card .bot-history-pnl,
+#app-page-content .rank-rows .rank-card .bot-history-left small {
+  max-width:100% !important; white-space:normal !important; overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-main,
+#app-page-content .rank-rows .rank-card .bot-history-row,
+#app-page-content .rank-rows .rank-card .bot-history-price,
+#app-page-content .rank-rows .rank-card .bot-history-hold,
+#app-page-content .rank-rows .rank-card .bot-history-reason,
+#app-page-content .rank-rows .rank-card .bot-history-reason-buy,
+#app-page-content .rank-rows .rank-card .bot-history-reason span {
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+  white-space:normal !important; overflow-wrap:anywhere !important; word-break:normal !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-all > summary {
+  display:block !important; width:100% !important; max-width:100% !important; min-width:0 !important;
+  margin:8px 0 0 !important; padding:10px 8px !important;
+  white-space:normal !important; overflow-wrap:anywhere !important; box-sizing:border-box !important;
+}
+
+/* Season metadata must wrap, and the label itself includes both full dates. */
+#app-page-content .rank-situation-item,
+#app-page-content .rank-situation-item .rank-situation-sub {
+  min-width:0 !important; max-width:100% !important;
+  white-space:normal !important; overflow-wrap:anywhere !important; word-break:normal !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-situation-item .rank-situation-sub {
+  line-height:1.45 !important;
 }
 
 </style>"""
@@ -40759,6 +40990,78 @@ def render_screener_fast_summary(mode):
 .screener-fast-skeleton{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .screener-fast-skeleton span{height:20px;width:70px;border-radius:999px;background:#EFEFF4}
 .screener-fast-empty{padding:10px 0;color:var(--ink-soft);line-height:1.6}
+
+/* V268: mobile leaderboard/robot detail hardening based on iPhone screenshots. */
+#app-page-content .rank-rows,
+#app-page-content .rank-rows * {
+  box-sizing:border-box !important;
+  min-width:0 !important;
+}
+#app-page-content .rank-rows .rank-card,
+#app-page-content .rank-rows .rank-card > *,
+#app-page-content .rank-rows .rank-card .rank-detail,
+#app-page-content .rank-rows .rank-card .rank-detail-body,
+#app-page-content .rank-rows .rank-card .bot-hold-list,
+#app-page-content .rank-rows .rank-card .bot-history-list {
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold {
+  grid-template-columns:minmax(0,1fr) minmax(0,4.5rem) !important;
+  grid-template-rows:auto auto auto auto !important;
+  gap:4px 8px !important;
+  padding:10px 0 !important;
+  overflow:hidden !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-name {
+  grid-column:1 !important; grid-row:1 !important;
+  white-space:normal !important; overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-wt {
+  grid-column:1 !important; grid-row:2 !important;
+  text-align:left !important; white-space:normal !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-pct {
+  grid-column:2 !important; grid-row:1 / span 2 !important;
+  justify-self:stretch !important; align-self:center !important;
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+  padding:5px 4px !important; text-align:center !important;
+  white-space:normal !important; overflow-wrap:anywhere !important;
+  font-size:clamp(11px,3.1vw,14px) !important; line-height:1.2 !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-bar { grid-column:1 / -1 !important; grid-row:3 !important; }
+#app-page-content .rank-rows .rank-card .bot-hold-meta { grid-column:1 / -1 !important; grid-row:4 !important; white-space:normal !important; overflow-wrap:anywhere !important; }
+#app-page-content .rank-rows .rank-card .bot-cash-row {
+  grid-template-columns:minmax(0,1fr) minmax(0,4rem) !important;
+}
+#app-page-content .rank-rows .rank-card .bot-cash-wt { grid-column:2 !important; white-space:normal !important; }
+#app-page-content .rank-rows .rank-card .bot-cash-note { grid-column:1 / -1 !important; }
+#app-page-content .rank-rows .rank-card .bot-history-row {
+  display:grid !important; grid-template-columns:minmax(0,1fr) !important;
+  gap:5px !important; width:100% !important; max-width:100% !important;
+  white-space:normal !important; overflow-wrap:anywhere !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-timeline-item {
+  grid-template-columns:38px minmax(0,1fr) !important; column-gap:6px !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-timeline:before { left:39px !important; }
+#app-page-content .rank-rows .rank-card .bot-history-dot { left:35px !important; }
+#app-page-content .rank-rows .rank-card .bot-history-left,
+#app-page-content .rank-rows .rank-card .bot-history-content { min-width:0 !important; max-width:100% !important; }
+#app-page-content .rank-situation-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+#app-page-content .rank-situation-item,
+#app-page-content .rank-situation-item small,
+#app-page-content .rank-situation-item b,
+#app-page-content .rank-situation-item .rank-situation-sub {
+  min-width:0 !important; max-width:100% !important;
+  white-space:normal !important; overflow-wrap:anywhere !important;
+}
+@media(max-width:480px) {
+  #app-page-content .rank-rows .rank-card { padding-left:10px !important; padding-right:10px !important; }
+  #app-page-content .rank-rows .rank-card .bot-virtual-card { padding:10px !important; }
+  #app-page-content .rank-situation-item b { font-size:clamp(17px,5vw,24px) !important; }
+}
 </style>"""
     return style + f"""<section class="screener-fast-card" aria-live="polite">
   <h2>{label}選股分析</h2>
