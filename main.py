@@ -24026,6 +24026,99 @@ body #app-page-content .rank-rows .rank-card .bot-history-pnl {
   line-height:1.2 !important;
 }
 
+/* V275: ETF cards — repair narrow-column wrapping on mobile/tablet.
+   Presentation only: retain ETF data, ranking, category tabs and click behavior. */
+body #app-page-content .wb-shell #wb-rows .wb-etf-period,
+body #app-page-content .wb-shell #wb-rows .wb-etf-category {
+  width:100% !important;
+  min-width:0 !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+}
+body #app-page-content .wb-shell #wb-rows .wb-etf-category {
+  padding-left:12px !important;
+  padding-right:12px !important;
+}
+body #app-page-content .wb-shell #wb-rows .wb-etf-row {
+  display:block !important;
+  width:100% !important;
+  min-width:0 !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+  writing-mode:horizontal-tb !important;
+  text-align:left !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
+}
+body #app-page-content .wb-shell #wb-rows .wb-etf-row * {
+  min-width:0 !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+  writing-mode:horizontal-tb !important;
+  word-break:normal !important;
+}
+body #app-page-content .wb-shell #wb-rows .wb-etf-top {
+  display:grid !important;
+  grid-template-columns:minmax(0,1fr) auto !important;
+  align-items:start !important;
+  gap:10px !important;
+}
+body #app-page-content .wb-shell #wb-rows .wb-etf-title .wb-name {
+  display:block !important;
+  line-height:1.4 !important;
+  overflow-wrap:anywhere !important;
+}
+body #app-page-content .wb-shell #wb-rows .wb-etf-score {
+  min-width:74px !important;
+  white-space:nowrap !important;
+}
+body #app-page-content .wb-shell #wb-rows .wb-etf-breakdown,
+body #app-page-content .wb-shell #wb-rows .wb-etf-comment,
+body #app-page-content .wb-shell #wb-rows .wb-etf-period-note {
+  display:block !important;
+  width:100% !important;
+  line-height:1.6 !important;
+  overflow-wrap:anywhere !important;
+}
+body #app-page-content .wb-shell #wb-rows .wb-etf-metrics {
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  gap:7px !important;
+  width:100% !important;
+}
+body #app-page-content .wb-shell #wb-rows .wb-etf-metric {
+  min-width:0 !important;
+  overflow-wrap:anywhere !important;
+}
+body #app-page-content .wb-shell #wb-rows .wb-etf-metric:last-child:nth-child(odd) {
+  grid-column:1/-1 !important;
+}
+body #app-page-content .wb-shell #wb-rows .wb-etf-category-tabs {
+  display:flex !important;
+  width:100% !important;
+  max-width:100% !important;
+  box-sizing:border-box !important;
+  overflow-x:auto !important;
+}
+body #app-page-content #wb-rows .wb-etf-period-title {
+  display:block !important;
+  line-height:1.5 !important;
+  white-space:normal !important;
+  overflow-wrap:anywhere !important;
+}
+@media (max-width:420px) {
+  body #app-page-content .wb-shell #wb-rows .wb-etf-metrics {
+    grid-template-columns:minmax(0,1fr) !important;
+  }
+  body #app-page-content .wb-shell #wb-rows .wb-etf-metric:last-child:nth-child(odd) {
+    grid-column:auto !important;
+  }
+  body #app-page-content .wb-shell #wb-rows .wb-etf-row {
+    padding:13px 11px !important;
+  }
+}
+
 /* Workbench: keep the current stock information order, but soften the repeated-card effect. */
 body #app-page-content .wb-row.wb-rich-row {
   border-radius:13px !important;
