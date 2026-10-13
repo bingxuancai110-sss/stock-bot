@@ -6258,10 +6258,11 @@ def _today_realized_by_code(realized_trades, today=None):
 
 _HOME_INTRADAY_STICKY_CACHE = {}
 _HOME_INTRADAY_STICKY_LOCK = threading.Lock()
-_HOME_INTRADAY_STICKY_TTL = 180
-# 今日組合只接受最近一次官方 MIS 成功回應在 45 秒內的行情；低成交量可沿用當日最後成交價，
-# 但如果伺服器根本沒能在最近 45 秒重新取得資料，就不能把舊快照說成即時報價。
-_HOME_QUOTE_FEED_MAX_AGE_SECONDS = 45
+_HOME_INTRADAY_STICKY_TTL = 300
+# 首頁允許沿用「同一台灣交易日」最近一次成功取得的行情最多 5 分鐘，
+# 讓首輪載入不必先顯示缺漏再跳出結果；_mis_quote_is_current_for_contribution
+# 仍會檢查 close_date、時間戳與盤中區間，絕不跨日使用舊資料。
+_HOME_QUOTE_FEED_MAX_AGE_SECONDS = 300
 _HOME_INTRADAY_DIAG_LOCK = threading.Lock()
 _HOME_INTRADAY_DIAG_LAST_AT = 0.0
 _HOME_MIS_SINGLE_RETRY_LOCK = threading.Lock()
@@ -6321,13 +6322,20 @@ def _save_home_intraday_payload_snapshot(uid, payload):
 def _restore_home_intraday_payload_snapshot(uid, intraday_now, post_close_now):
     """Load only today's completed calculation and never mix intraday with final-close data."""
     try:
+        # 首頁只允許沿用最近 5 分鐘內的完整快照；同一天但過舊的資料也不能冒充盤中狀態。
         saved = _load_shared_data_snapshot(
-            _home_intraday_payload_snapshot_key(uid), max_age_seconds=24 * 3600)
+            _home_intraday_payload_snapshot_key(uid), max_age_seconds=300)
         today = taiwan_today().isoformat()
         if not saved or str(saved.get("data_date") or "")[:10] != today:
             return None
         wrapper = saved.get("payload") or {}
         if not isinstance(wrapper, dict) or str(wrapper.get("day") or "") != today:
+            return None
+        try:
+            snapshot_age = time.time() - float(wrapper.get("saved_at") or 0)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if snapshot_age < -5 or snapshot_age > 300:
             return None
         data = wrapper.get("data")
         if not isinstance(data, dict) or not isinstance(data.get("portfolio"), dict):
@@ -24340,7 +24348,7 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
       var valid=fs.filter(function(x){{return Number(x.max)>0;}});
       var best=valid.slice().sort(function(a,b){{return (Number(b.value)/Number(b.max))-(Number(a.value)/Number(a.max));}})[0];
       var worst=valid.slice().sort(function(a,b){{return (Number(a.value)/Number(a.max))-(Number(b.value)/Number(b.max));}})[0];
-      var bars=fs.map(function(x){{var v=Number(x.value)||0,m=Number(x.max)||0,r=m>0?Math.max(0,Math.min(1,v/m)):0;var details=Array.isArray(x.details)?x.details:[];var detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){{return '<div>'+esc(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\\/b&gt;/g,'</b>')+'</div>';}}).join('')+'</div>':'';return '<details class="position-factor-item '+cls(r)+'"><summary class="position-factor-head"><span>'+esc(x.name)+'</span><b>'+v.toFixed(0)+' / '+m.toFixed(0)+'　'+status(r)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(r*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}}).join('');
+      var bars=fs.map(function(x){{var v=Number(x.value)||0,m=Number(x.max)||0,r=m>0?Math.max(0,Math.min(1,v/m)):0;var details=Array.isArray(x.details)?x.details:[];var detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){{return '<div>'+esc(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\/b&gt;/g,'</b>')+'</div>';}}).join('')+'</div>':'';return '<details class="position-factor-item '+cls(r)+'"><summary class="position-factor-head"><span>'+esc(x.name)+'</span><b>'+v.toFixed(0)+' / '+m.toFixed(0)+'　'+status(r)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(r*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}}).join('');
       var note='';
       if(best)note+='<b>目前相對較強：</b>'+esc(best.name)+'（'+status(Number(best.value)/Number(best.max))+'）。';
       if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+esc(worst.name)+'（'+status(Number(worst.value)/Number(worst.max))+'）。';
@@ -29390,9 +29398,10 @@ def web_positions(uid):
     var date=(form.querySelector('[name="bought_on"]')||{}).value||'未填';
     var note=(form.querySelector('[name="position_note"]')||{}).value||'';
     var reason=(form.querySelector('[name="sell_reason"]')||{}).value||'';
-    var title=isAdd?'確認加碼':'確認換股';
-    var subtitle=isAdd?'確認後才會寫入持股與操作日報':'你選擇「換股」，確認後才會執行賣出並寫入交易紀錄';
-    var icon=isAdd?'＋':'⇄';
+    var isSwap=type==='swap';
+    var title=isAdd?'確認加碼':(isSwap?'確認換股':'確認賣出');
+    var subtitle=isAdd?'確認後才會寫入持股與操作日報':(isSwap?'你選擇「換股」，確認後才會執行賣出並寫入交易紀錄':'確認後才會執行賣出並更新持股與交易紀錄');
+    var icon=isAdd?'＋':(isSwap?'⇄':'−');
     var qty=num(s), unit=isAdd?num(cost):num(price);
     var total=qty!=null && unit!=null ? qty*unit : null;
     var rows=isAdd
@@ -29401,9 +29410,9 @@ def web_positions(uid):
     var html='<div class="position-confirm-backdrop" id="position-confirm-backdrop" role="dialog" aria-modal="true">'+
       '<div class="position-confirm-modal">'+
       '<div class="position-confirm-head"><div class="position-confirm-icon">'+icon+'</div><div><h3>'+esc(title)+'</h3><p>'+esc(subtitle)+'</p></div></div>'+
-      '<div class="position-confirm-body"><div class="position-confirm-stock"><b>'+esc(name||'股票')+' <span style="font-size:13px;color:#71859a">'+esc(code)+'</span></b><span>'+ (isAdd?'這筆資料將新增為一筆持股':'這筆資料將從目前持股中賣出') +'</span></div>'+
+      '<div class="position-confirm-body"><div class="position-confirm-stock"><b>'+esc(name||'股票')+' <span style="font-size:13px;color:#71859a">'+esc(code)+'</span></b><span>'+ (isAdd?'這筆資料將新增為一筆持股':(isSwap?'這筆資料將從目前持股中賣出並記錄換股':'這筆資料將從目前持股中賣出')) +'</span></div>'+
       '<div class="position-confirm-grid">'+rows.map(function(r){return '<div class="position-confirm-item"><small>'+esc(r[0])+'</small><b>'+esc(r[1])+'</b></div>'}).join('')+'</div>'+
-      (isAdd?'<div class="position-confirm-warning">送出後會立即寫入持股，並產生一筆加碼操作紀錄。若股數填錯，之後還要再修正，請先確認股數。</div>':'<div class="position-confirm-warning">「換股」會視為正式賣出：會更新持股、已實現損益與交易紀錄。請確認股數與成交價。</div>')+
+      (isAdd?'<div class="position-confirm-warning">送出後會立即寫入持股，並產生一筆加碼操作紀錄。若股數填錯，之後還要再修正，請先確認股數。</div>':'<div class="position-confirm-warning">這筆操作會正式賣出：更新持股、已實現損益與交易紀錄。為避免重複賣出，送出後請等待完成提示，不要重複點擊。</div>')+
       '</div><div class="position-confirm-actions"><button type="button" class="position-confirm-cancel">返回</button><button type="button" class="position-confirm-submit">確認送出</button></div></div></div>';
     document.body.insertAdjacentHTML('beforeend',html);
     var back=document.getElementById('position-confirm-backdrop');
@@ -29527,17 +29536,19 @@ def web_positions(uid):
     if(!form || !form.matches('form.add, form.sellpanel')) return;
     if(form.dataset.confirmed==='1'){delete form.dataset.confirmed;return}
     if(form.matches('form.add')){e.preventDefault();showConfirm(form,'add');return}
+    // 所有賣出（不只「換股」）都走同一個確認＋進度流程。
+    // 事件在 capture 階段攔截，避免原生表單先送出；showConfirm/go 內另有 confirmed 鎖。
+    e.preventDefault();
     var reason=form.querySelector('[name="sell_reason"]');
-    if(reason && reason.value==='換股'){e.preventDefault();showConfirm(form,'swap');}
+    showConfirm(form, reason && reason.value==='換股' ? 'swap' : 'sell');
   },true);
   document.addEventListener('keydown',function(e){
     if(e.key==='Escape'){var m=document.getElementById('position-confirm-backdrop');if(m)m.remove()}
   });
 })();
 </script>'''
-    body += '''<script>
+    body += '''<style>.position-success-overlay{position:fixed;inset:0;z-index:2147483640;display:flex;align-items:center;justify-content:center;background:rgba(20,31,43,.10);opacity:0;pointer-events:none;transition:opacity .18s}.position-success-overlay.show{opacity:1}.position-success-card{min-width:190px;padding:22px 24px;border-radius:18px;background:#fff;box-shadow:0 14px 45px rgba(20,31,43,.18);text-align:center;transform:translateY(8px) scale(.96);transition:transform .22s}.position-success-overlay.show .position-success-card{transform:translateY(0) scale(1)}.position-success-check{width:54px;height:54px;margin:0 auto 10px;border-radius:50%;display:grid;place-items:center;background:#e7f5ee;color:#27835d;font-size:31px;font-weight:900;animation:position-success-pop .42s cubic-bezier(.2,.9,.25,1.25)}.position-success-card b{display:block;font-size:16px;color:#203142}.position-success-card span{display:block;margin-top:4px;font-size:12px;color:#7b8995}@keyframes position-success-pop{0%{transform:scale(.4);opacity:0}70%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}@media(prefers-reduced-motion:reduce){.position-success-overlay,.position-success-card{transition:none}.position-success-check{animation:none}}</style><script>
 (function(){
-<style>.position-success-overlay{position:fixed;inset:0;z-index:2147483640;display:flex;align-items:center;justify-content:center;background:rgba(20,31,43,.10);opacity:0;pointer-events:none;transition:opacity .18s}.position-success-overlay.show{opacity:1}.position-success-card{min-width:190px;padding:22px 24px;border-radius:18px;background:#fff;box-shadow:0 14px 45px rgba(20,31,43,.18);text-align:center;transform:translateY(8px) scale(.96);transition:transform .22s}.position-success-overlay.show .position-success-card{transform:translateY(0) scale(1)}.position-success-check{width:54px;height:54px;margin:0 auto 10px;border-radius:50%;display:grid;place-items:center;background:#e7f5ee;color:#27835d;font-size:31px;font-weight:900;animation:position-success-pop .42s cubic-bezier(.2,.9,.25,1.25)}.position-success-card b{display:block;font-size:16px;color:#203142}.position-success-card span{display:block;margin-top:4px;font-size:12px;color:#7b8995}@keyframes position-success-pop{0%{transform:scale(.4);opacity:0}70%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}@media(prefers-reduced-motion:reduce){.position-success-overlay,.position-success-card{transition:none}.position-success-check{animation:none}}</style>
   var timer=null,busy=false,root=document.getElementById('positions-quote-status');
   if(!root)return;
   function numberText(value,digits){var n=Number(value);return Number.isFinite(n)?n.toLocaleString('zh-TW',{minimumFractionDigits:digits,maximumFractionDigits:digits}):'—';}
@@ -29604,7 +29615,7 @@ def web_positions(uid):
     var valid=fs.filter(function(x){return x.value!=null&&x.max>0;});
     var best=valid.slice().sort(function(a,b){return (b.value/b.max)-(a.value/a.max);})[0];
     var worst=valid.slice().sort(function(a,b){return (a.value/a.max)-(b.value/b.max);})[0];
-    var bars=fs.map(function(x){var v=Number(x.value),max=Number(x.max),ratio=max>0?Math.max(0,Math.min(1,v/max)):0,cls=factorClass(ratio),details=Array.isArray(x.details)?x.details:[],detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){return '<div>'+escText(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\\/b&gt;/g,'</b>')+'</div>';}).join('')+'</div>':'';return '<details class="position-factor-item '+cls+'"><summary class="position-factor-head"><span>'+escText(x.name)+'</span><b>'+v.toFixed(0)+' / '+max.toFixed(0)+'　'+factorStatus(ratio)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(ratio*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}).join('');
+    var bars=fs.map(function(x){var v=Number(x.value),max=Number(x.max),ratio=max>0?Math.max(0,Math.min(1,v/max)):0,cls=factorClass(ratio),details=Array.isArray(x.details)?x.details:[],detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){return '<div>'+escText(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\/b&gt;/g,'</b>')+'</div>';}).join('')+'</div>':'';return '<details class="position-factor-item '+cls+'"><summary class="position-factor-head"><span>'+escText(x.name)+'</span><b>'+v.toFixed(0)+' / '+max.toFixed(0)+'　'+factorStatus(ratio)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(ratio*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}).join('');
     var note='';
     if(best)note+='<b>目前相對較強：</b>'+escText(best.name)+'（'+factorStatus(best.value/best.max)+'）。';
     if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+escText(worst.name)+'（'+factorStatus(worst.value/worst.max)+'）。';
