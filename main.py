@@ -35340,6 +35340,83 @@ body #app-page-content .rank-situation .rank-situation-title .rank-situation-bad
   white-space:normal !important; overflow-wrap:anywhere !important; box-sizing:border-box !important;
 }
 
+/* V269: real fix for the layout shown in the latest iPhone screenshots.
+   The rank card is a grid; direct <details> children were auto-placed in a
+   later grid column, leaving a large empty left gutter and clipping the right.
+   Force all detail panels to span the full card and reset inherited offsets. */
+#app-page-content .rank-rows .rank-card > .rank-detail,
+#app-page-content .rank-rows .rank-card > .rank-private,
+#app-page-content .rank-rows .rank-card > details.rank-detail,
+#app-page-content .rank-rows .rank-card > details.bot-history-all,
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-hold-list,
+#app-page-content .rank-rows .rank-card > .rank-detail.bot-history-list {
+  grid-column:1 / -1 !important;
+  justify-self:stretch !important;
+  align-self:stretch !important;
+  display:block !important;
+  float:none !important;
+  position:relative !important;
+  left:auto !important; right:auto !important;
+  inset:auto !important;
+  transform:none !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin-left:0 !important;
+  margin-right:0 !important;
+  padding-left:0 !important;
+  padding-right:0 !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail > summary,
+#app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body,
+#app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body > span,
+#app-page-content .rank-rows .rank-card > .rank-detail > .rank-detail-body > .rank-detail-item {
+  grid-column:1 / -1 !important;
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  margin-left:0 !important;
+  margin-right:0 !important;
+  box-sizing:border-box !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body {
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  gap:10px !important;
+  padding:0 !important;
+  overflow:hidden !important;
+}
+#app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body > .rank-detail-item {
+  display:flex !important;
+  flex-direction:column !important;
+  align-items:flex-start !important;
+  justify-content:flex-start !important;
+  gap:4px !important;
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
+  white-space:normal !important;
+}
+#app-page-content .rank-rows .rank-card .bot-virtual-card {
+  grid-template-columns:minmax(0,1fr) !important;
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+  margin-left:0 !important; margin-right:0 !important;
+}
+#app-page-content .rank-rows .rank-card .bot-hold-list > summary,
+#app-page-content .rank-rows .rank-card .bot-history-list > summary,
+#app-page-content .rank-rows .rank-card .bot-history-all > summary {
+  display:block !important;
+  width:100% !important; max-width:100% !important; min-width:0 !important;
+  margin:0 !important; padding:12px 8px !important;
+  white-space:normal !important; overflow-wrap:anywhere !important;
+  box-sizing:border-box !important;
+}
+@media (max-width:700px) {
+  #app-page-content .rank-rows .rank-card > .rank-detail:not(.bot-hold-list):not(.bot-history-list):not(.bot-history-all) > .rank-detail-body {
+    grid-template-columns:minmax(0,1fr) !important;
+  }
+}
+
 /* Season metadata must wrap, and the label itself includes both full dates. */
 #app-page-content .rank-situation-item,
 #app-page-content .rank-situation-item .rank-situation-sub {
