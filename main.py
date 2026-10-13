@@ -23970,6 +23970,133 @@ body.auth-entry-page .app-header .page-back,
 '''
 
 
+
+# V274 visual-only polish. Intentionally CSS-only: do not modify data, calculations,
+# routes, requests, event handlers, or existing interaction logic.
+VISUAL_ONLY_POLISH_CSS = r"""
+/* Shared rhythm: calmer borders and clearer hierarchy without changing page structure. */
+body #app-page-content .rank-rows .rank-card {
+  border-radius:18px !important;
+  box-shadow:0 3px 13px rgba(20,48,75,.045) !important;
+  margin-top:12px !important;
+  margin-bottom:12px !important;
+}
+body #app-page-content .rank-rows .rank-card:not(.rank-champion) {
+  border-color:#DCE5ED !important;
+}
+body #app-page-content .rank-rows .rank-card .rank-meta {
+  row-gap:10px !important;
+  column-gap:14px !important;
+}
+body #app-page-content .rank-rows .rank-card .rank-meta-label {
+  color:#73879A !important;
+  font-weight:650 !important;
+}
+body #app-page-content .rank-rows .rank-card .rank-meta-value {
+  letter-spacing:-.015em !important;
+}
+
+/* Historical operation timeline: give the return figure enough horizontal room
+   so a percentage never breaks into an awkward vertical-looking two-line number. */
+body #app-page-content .rank-rows .rank-card .bot-history-timeline-item {
+  grid-template-columns:72px minmax(0,1fr) !important;
+  column-gap:8px !important;
+}
+body #app-page-content .rank-rows .rank-card .bot-history-timeline:before {
+  left:67px !important;
+}
+body #app-page-content .rank-rows .rank-card .bot-history-dot {
+  left:63px !important;
+}
+body #app-page-content .rank-rows .rank-card .bot-history-left {
+  width:72px !important;
+  max-width:72px !important;
+  min-width:72px !important;
+  padding-right:5px !important;
+}
+body #app-page-content .rank-rows .rank-card .bot-history-pnl {
+  display:inline-block !important;
+  width:auto !important;
+  max-width:none !important;
+  white-space:nowrap !important;
+  word-break:keep-all !important;
+  overflow-wrap:normal !important;
+  font-size:11.5px !important;
+  letter-spacing:-.045em !important;
+  line-height:1.2 !important;
+}
+
+/* Workbench: keep the current stock information order, but soften the repeated-card effect. */
+body #app-page-content .wb-row.wb-rich-row {
+  border-radius:13px !important;
+  border-color:#E0E8EF !important;
+  box-shadow:none !important;
+}
+body #app-page-content .wb-row.wb-rich-row:nth-child(even) {
+  background:#F8FAFC !important;
+}
+body #app-page-content .wb-row.wb-rich-row:hover {
+  box-shadow:none !important;
+  transform:none !important;
+}
+body #app-page-content .wb-row.wb-rich-row .wb-name {
+  letter-spacing:-.025em !important;
+}
+body #app-page-content .wb-row.wb-rich-row .wb-fact-line,
+body #app-page-content .wb-row.wb-rich-row .wb-score-parts {
+  line-height:1.5 !important;
+}
+
+/* Today's dashboard: preserve the existing operation journal design and interaction.
+   Only normalize surrounding section spacing and soften non-interactive panels. */
+body #app-page-content .daily-home .daily-card {
+  border-color:#DFE7EE !important;
+  box-shadow:0 3px 12px rgba(20,48,75,.035) !important;
+}
+body #app-page-content .daily-home .daily-section-title {
+  gap:10px !important;
+}
+body #app-page-content .daily-home .daily-section-title h2 {
+  letter-spacing:-.025em !important;
+}
+
+/* Holdings: keep the current list and all detail controls; only refine card rhythm. */
+body #app-page-content .position-card,
+body #app-page-content .position-fast-card {
+  border-radius:15px !important;
+  box-shadow:0 2px 9px rgba(20,48,75,.035) !important;
+}
+body #app-page-content .position-card-title h3,
+body #app-page-content .position-fast-card .position-card-title h3 {
+  letter-spacing:-.025em !important;
+}
+
+@media (max-width:420px) {
+  body #app-page-content .rank-rows .rank-card .bot-history-timeline-item {
+    grid-template-columns:70px minmax(0,1fr) !important;
+    column-gap:7px !important;
+  }
+  body #app-page-content .rank-rows .rank-card .bot-history-timeline:before {
+    left:65px !important;
+  }
+  body #app-page-content .rank-rows .rank-card .bot-history-dot {
+    left:61px !important;
+  }
+  body #app-page-content .rank-rows .rank-card .bot-history-left {
+    width:70px !important;
+    max-width:70px !important;
+    min-width:70px !important;
+  }
+  body #app-page-content .rank-rows .rank-card .bot-history-pnl {
+    font-size:11px !important;
+  }
+  body #app-page-content .wb-row.wb-rich-row {
+    padding:12px !important;
+    gap:8px 10px !important;
+  }
+}
+"""
+
 def render_page(title, body, nav_active=None, user_name=None):
     """所有網頁共用的外框。用字串組裝就好，這個規模不需要模板引擎。"""
     # 盤前是獨立頁面，不能因為底部沒有專屬分頁就誤亮「今日」。
@@ -24458,6 +24585,7 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
 <main id="app-page-content" class="app-page-content">{body}</main>
 <style id="global-visual-refresh-v236">{GLOBAL_VISUAL_CSS}</style>
 <style id="v12-final-page-overrides">{late_page_css}</style>
+<style id="v274-visual-only-polish">{VISUAL_ONLY_POLISH_CSS}</style>
 <script>
 (function() {{
   // LINE WebView 可能清掉 cookie；把有效網址 token 保存到同一個網域，
