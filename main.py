@@ -6890,6 +6890,35 @@ def _build_home_intraday_payload(uid):
             if market_payload is not None:
                 cached_copy["market"] = market_payload
             cached_copy["fetched_at"] = cached_copy.get("fetched_at") or taiwan_now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # V277: after 13:30, never let the last intraday TAIEX cache overwrite
+            # the official same-day closing quote. The old path reused a valid-looking
+            # intraday payload after close, so the homepage could show a stale/wrong
+            # percentage while still labeling it with the 13:30 MIS timestamp.
+            if post_close_now:
+                _cached_market = cached_copy.get("market") or {}
+                _cached_source = str(_cached_market.get("source") or "")
+                if "正式收盤" not in _cached_source:
+                    _official_close = fetch_taiex_official_close(now=now)
+                    try:
+                        _official_pct = float(_official_close.get("pct")) if (
+                            _official_close and _official_close.get("pct") is not None) else None
+                    except (TypeError, ValueError):
+                        _official_pct = None
+                    if _official_pct is not None:
+                        market_payload = {
+                            "pct": _official_pct,
+                            "source": _official_close.get("source") or "TWSE MIS 加權指數正式收盤",
+                            "updated_at": _official_close.get("updated_at"),
+                            "stale": False,
+                            "cache_age_seconds": 0,
+                        }
+                        cached_copy["market"] = market_payload
+                    else:
+                        # If official close cannot be verified, don't continue showing
+                        # an intraday percentage under a misleading 13:30 timestamp.
+                        cached_copy["market"] = None
+
             age = max(0, int(time.time() - cache_at))
             if age > 0:
                 cached_copy["note"] = ("沿用今天最近一次成功行情（約 %s 秒前），背景同步最新報價；"
@@ -6907,7 +6936,9 @@ def _build_home_intraday_payload(uid):
                             if _taiex_intraday_cache.get("day") == taiwan_today().isoformat()
                             else None)
             index_at = float(_taiex_intraday_cache.get("at") or 0)
-        if isinstance(cached_index, dict) and index_at:
+        # Intraday cache is only authoritative during the live session.
+        # After close, keep the official closing payload installed above.
+        if intraday_now and isinstance(cached_index, dict) and index_at:
             index_age = max(0, int(time.time() - index_at))
             cached_copy["market"] = dict(cached_index)
             if index_age > TAIEX_INTRADAY_MAX_AGE_SECONDS:
@@ -6917,8 +6948,12 @@ def _build_home_intraday_payload(uid):
                 cached_copy["market"].pop("stale", None)
                 cached_copy["market"].pop("cache_age_seconds", None)
         # <=2 秒的完整計算不用再觸發網路；其餘情況用背景刷新，不能讓 API 等外部行情。
+        _cached_market_after_refresh = cached_copy.get("market") or {}
+        _cached_market_is_official_close = "正式收盤" in str(
+            _cached_market_after_refresh.get("source") or "")
         if (cached_stale == 0 and cached_portfolio.get("ready") and
-                (age <= 2 or (post_close and age <= 300))):
+                (age <= 2 or (post_close and age <= 300)) and
+                (not post_close or _cached_market_is_official_close)):
             return cached_copy
         refresh_started = _schedule_home_intraday_payload_refresh(uid)
         cached_copy["portfolio"]["refreshing"] = bool(refresh_started or cached_stale > 0 or age > 2)
@@ -6935,6 +6970,25 @@ def _build_home_intraday_payload(uid):
     # refresh and return a pending payload so the browser can poll for the completed result.
     restored = _restore_home_intraday_payload_snapshot(uid, intraday_now, post_close_now)
     if isinstance(restored, dict):
+        if post_close_now:
+            _restored_market = restored.get("market") or {}
+            if "正式收盤" not in str(_restored_market.get("source") or ""):
+                _official_close = fetch_taiex_official_close(now=now)
+                try:
+                    _official_pct = float(_official_close.get("pct")) if (
+                        _official_close and _official_close.get("pct") is not None) else None
+                except (TypeError, ValueError):
+                    _official_pct = None
+                if _official_pct is not None:
+                    restored["market"] = {
+                        "pct": _official_pct,
+                        "source": _official_close.get("source") or "TWSE MIS 加權指數正式收盤",
+                        "updated_at": _official_close.get("updated_at"),
+                        "stale": False,
+                        "cache_age_seconds": 0,
+                    }
+                else:
+                    restored["market"] = None
         with _HOME_INTRADAY_PAYLOAD_CACHE_LOCK:
             _HOME_INTRADAY_PAYLOAD_CACHE[str(uid).strip()] = {
                 "day": day, "at": time.time(), "data": restored,
