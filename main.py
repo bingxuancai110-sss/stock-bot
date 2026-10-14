@@ -29797,7 +29797,7 @@ def web_positions(uid):
 {portfolio_trend_html}
 <div class="section-head"><h2>持股明細</h2>
   <span class="section-note">依市值排序　·　<a href="/web/trades" style="color:var(--brass)">操作日報 →</a></span></div>
-{(f'<section class="target-allocation-panel"><div class="target-allocation-head"><div><h3>目標持股比例</h3><p>股票與 ETF 持倉市值合計為 100%；只保存配置目標，不會自動買賣。</p></div><span class="target-allocation-total" data-target-total>尚未完成</span></div><form method="post" action="/web/positions" class="target-allocation-form" id="target-allocation-form">{csrf_hidden_input()}<input type="hidden" name="action" value="save_target_weights"><div class="target-allocation-list">' + ''.join(f'<label class="target-allocation-row"><span><b>{html.escape(stock_display_name(str(x.get("code") or "")))}</b><small>{html.escape(str(x.get("code") or ""))}</small></span><span class="target-allocation-input"><input type="number" name="target_weight_{html.escape(str(x.get("code") or ""), quote=True)}" min="0" max="100" step="0.1" inputmode="decimal" value="{target_weights.get(str(x.get("code") or ""), "")}" placeholder="0.0" required><i>%</i></span></label>' for x in sorted(positions, key=lambda z: str(z.get("code") or ""))) + '</div><div class="target-allocation-foot"><span>目前設定合計 <b id="target-allocation-sum">0.0%</b></span><button type="submit">儲存目標比例</button></div><p class="target-allocation-hint" id="target-allocation-hint">請為所有目前持股設定目標比例，合計必須為 100%。</p></form></section>' if positions else '')}
+{(f'<details class="target-allocation-disclosure" id="target-allocation"><summary><span><b>調整目標持股比例</b><small>直接修改每檔目標；股票與 ETF 合計 100%</small></span><span class="target-allocation-total" data-target-total>尚未完成</span></summary><section class="target-allocation-panel"><form method="post" action="/web/positions#target-allocation" class="target-allocation-form" id="target-allocation-form">{csrf_hidden_input()}<input type="hidden" name="action" value="save_target_weights"><div class="target-allocation-list">' + ''.join(f'<label class="target-allocation-row"><span><b>{html.escape(stock_display_name(str(x.get("code") or "")))}</b><small>{html.escape(str(x.get("code") or ""))}</small></span><span class="target-allocation-input"><input type="number" name="target_weight_{html.escape(str(x.get("code") or ""), quote=True)}" min="0" max="100" step="0.1" inputmode="decimal" value="{target_weights.get(str(x.get("code") or ""), "")}" placeholder="0.0" required><i>%</i></span></label>' for x in sorted(positions, key=lambda z: str(z.get("code") or ""))) + '</div><div class="target-allocation-foot"><span>目標合計 <b id="target-allocation-sum">0.0%</b></span><button type="submit">儲存目標比例</button></div><p class="target-allocation-hint" id="target-allocation-hint">比例只保存為目標，不會自動交易。合計必須等於 100%。</p></form></section></details>' if positions else '')}
 <div class="rows">
 {''.join(rows_html) if rows_html else '<div class="empty">還沒有持股紀錄，用下方表單新增。</div>'}
 </div>
@@ -29839,7 +29839,7 @@ def web_positions(uid):
       total=Math.round(total*100)/100;
       if(sumEl)sumEl.textContent=total.toFixed(1)+'%';
       var valid=complete&&Math.abs(total-100)<=0.05;
-      if(badgeEl){badgeEl.textContent=valid?'配置合計正確':(complete?'合計 '+total.toFixed(1)+'%':'尚未完成');badgeEl.classList.toggle('valid',valid);badgeEl.classList.toggle('invalid',!valid);}
+      if(badgeEl){badgeEl.textContent=valid?'合計 100%':(complete?'合計 '+total.toFixed(1)+'%':'待設定');badgeEl.classList.toggle('valid',valid);badgeEl.classList.toggle('invalid',!valid);}
       if(hintEl){hintEl.classList.toggle('valid',valid);hintEl.classList.toggle('error',complete&&!valid);hintEl.textContent=valid?'比例合計為 100%，可以儲存。':(complete?'目前合計 '+total.toFixed(1)+'%，必須等於 100% 才能儲存。':'請填寫所有持股的目標比例，合計必須為 100%。');}
       var submit=targetForm.querySelector('button[type="submit"]');if(submit)submit.disabled=!valid;
       return valid;
@@ -39038,6 +39038,32 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
  .position-journal-row > .position-journal-details .position-journal-detail-row{{grid-template-columns:44px 58px 82px minmax(0,1fr)!important;gap:6px!important;padding:7px 0!important;font-size:9.5px!important}}
  .position-journal-row > .position-journal-details .position-journal-detail-row b{{font-size:10px!important}}
 }}
+
+/* V279：目標配置直接整合今日持股權重，避免獨立空白面板。 */
+.today-target-section{{margin:18px 0 24px;padding:17px 16px 14px;border:1px solid #d7e4ee;border-radius:20px;background:linear-gradient(180deg,#fbfdff,#fff);box-shadow:0 8px 24px rgba(25,62,94,.05);scroll-margin-top:105px}}
+.today-target-section-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding-bottom:13px;border-bottom:1px solid #e5edf3}}
+.today-target-eyebrow{{font-size:9px;letter-spacing:.15em;font-weight:900;color:#3a79a3}}
+.today-target-section-head h2{{margin:4px 0 4px;font-size:20px;color:#173b5d;font-weight:900}}
+.today-target-section-head p{{margin:0;color:#71859a;font-size:11px;line-height:1.55}}
+.today-target-status{{flex:none;padding:7px 9px;border-radius:999px;font-size:10px;font-weight:850}}
+.today-target-status.is-ready{{background:#e9f7ef;color:#087443}}.today-target-status.is-pending{{background:#fff4e5;color:#9a651d}}
+.today-target-reminder{{display:flex;gap:10px;align-items:center;margin:12px 0;padding:11px 12px;border:1px solid #e0eaf2;border-radius:13px;background:#f3f8fc}}
+.today-target-reminder-icon{{display:grid;place-items:center;width:30px;height:30px;border-radius:10px;background:#e1eef8;color:#276b96;font-size:20px;flex:none}}
+.today-target-reminder b,.today-target-reminder span{{display:block}}.today-target-reminder b{{font-size:12px;color:#244f70}}.today-target-reminder span{{margin-top:3px;font-size:10px;line-height:1.5;color:#71859a}}
+.today-target-list{{display:grid;grid-template-columns:1fr;gap:0}}
+.today-target-row{{display:grid;grid-template-columns:minmax(0,1fr) 104px;gap:12px;align-items:center;padding:13px 0;border-bottom:1px solid #e9eff4;min-width:0}}
+.today-target-main{{min-width:0}}.today-target-name b{{display:block;font-size:13px;line-height:1.35;color:#244f70;overflow-wrap:anywhere}}.today-target-name small{{display:block;margin-top:3px;font-size:10px;color:#8998a6}}
+.today-target-current{{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 7px;margin-top:8px}}.today-target-current span{{font-size:10px;color:#71859a}}.today-target-current b{{font-size:12px;color:#294e6d}}.today-target-current i{{font-size:10px;font-style:normal;font-weight:800}}.target-gap-over{{color:#b45309}}.target-gap-under{{color:#0b6f9e}}.target-gap-ok{{color:#087443}}.target-gap-pending{{color:#8998a6}}
+.today-target-track{{height:5px;margin-top:7px;background:#edf2f6;border-radius:99px;overflow:hidden}}.today-target-track span{{display:block;height:100%;background:#7ba8c9;border-radius:99px}}
+.today-target-meta{{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:5px;color:#71859a;font-size:9px}}
+.today-target-input{{display:flex;flex-direction:column;gap:5px;min-width:0}}.today-target-input>span:first-child{{font-size:10px;font-weight:800;color:#71859a}}.today-target-input-wrap{{display:flex;align-items:center;gap:4px}}.today-target-input input{{width:100%;min-width:0;box-sizing:border-box;border:1px solid #c9d9e6;border-radius:10px;padding:10px 7px;background:#fff;text-align:right;font:inherit;font-size:15px;font-weight:900;color:#173b5d}}.today-target-input i{{font-style:normal;font-size:11px;color:#71859a}}
+.today-target-footer{{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:13px;padding-top:13px;border-top:1px solid #e1eaf1}}.today-target-footer>div{{min-width:0}}.today-target-footer span,.today-target-footer b,.today-target-footer small{{display:block}}.today-target-footer span{{font-size:10px;color:#71859a}}.today-target-footer b{{margin-top:2px;font-size:20px;color:#173b5d}}.today-target-footer small{{margin-top:4px;font-size:10px;line-height:1.45;color:#71859a}}.today-target-footer button{{flex:none;border:0;border-radius:11px;background:#1e5f8a;color:#fff;padding:12px 14px;font-size:11px;font-weight:900}}.today-target-footer button:disabled{{opacity:.42}}.today-target-footnote{{margin:10px 0 0;color:#8998a6;font-size:10px;line-height:1.6}}
+.target-allocation-disclosure{{margin:10px 0 16px;border:1px solid #dce7ef;border-radius:14px;background:#f8fbfd;overflow:hidden}}.target-allocation-disclosure>summary{{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 14px;cursor:pointer;list-style:none}}.target-allocation-disclosure>summary::-webkit-details-marker{{display:none}}.target-allocation-disclosure>summary b,.target-allocation-disclosure>summary small{{display:block}}.target-allocation-disclosure>summary b{{font-size:13px;color:#244f70}}.target-allocation-disclosure>summary small{{margin-top:4px;font-size:10px;color:#71859a}}.target-allocation-disclosure .target-allocation-panel{{margin:0;border:0;border-top:1px solid #e1eaf1;border-radius:0;box-shadow:none}}
+@media(max-width:520px){{.today-target-section{{padding:14px 12px;border-radius:17px}}.today-target-section-head h2{{font-size:18px}}.today-target-row{{grid-template-columns:minmax(0,1fr) 91px;gap:9px;padding:12px 0}}.today-target-name b{{font-size:12px}}.today-target-input input{{padding:10px 5px;font-size:14px}}.today-target-footer{{align-items:stretch;flex-direction:column}}.today-target-footer button{{width:100%;padding:13px}}.today-target-status{{font-size:9px;padding:6px 7px}}}}
+
+.today-target-top-reminder{{display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:11px 13px;border:1px solid #d5e4ef;border-radius:14px;background:#f7fbff;text-decoration:none;color:#244f70;scroll-margin-top:100px}}
+.today-target-top-icon{{display:grid;place-items:center;width:30px;height:30px;flex:none;border-radius:10px;background:#e1eef8;color:#276b96;font-size:19px}}
+.today-target-top-copy{{display:block;flex:1;min-width:0}}.today-target-top-copy b,.today-target-top-copy small{{display:block}}.today-target-top-copy b{{font-size:12px;font-weight:900}}.today-target-top-copy small{{margin-top:3px;color:#71859a;font-size:10px;line-height:1.4}}.today-target-top-reminder>strong{{flex:none;color:#276b96;font-size:10px;white-space:nowrap}}
 </style>
 <div class="daily-home">
   <section class="daily-hero" aria-label="台北 101 城市主視覺">
@@ -39913,14 +39939,43 @@ def web_portfolio(uid):
     if request.method == "POST" and not valid_web_csrf():
         return respond_page("今日", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "portfolio")
     if request.method == "POST":
-        updates = {k: (request.form.get(k) or None) for k, _, _, _ in PROFILE_FIELDS}
-        missing = [l for k, l, _r, _o in PROFILE_FIELDS if not updates.get(k)]
-        if not missing:
-            msg = "風險輪廓已儲存。" if update_profile(uid, updates) else "儲存失敗，請稍後再試。"
+        action = (request.form.get("action") or "").strip()
+        if action == "save_target_weights":
+            # 今日頁直接調整目標比例；只寫入偏好資料，不碰交易／持股／行情資料。
+            current_positions = merge_positions(get_positions(uid))
+            current_codes = {str(x.get("code") or "").strip() for x in current_positions}
+            submitted, missing_codes = {}, []
+            for code in sorted(current_codes):
+                raw = (request.form.get("target_weight_" + code) or "").strip()
+                if not raw:
+                    missing_codes.append(code)
+                    continue
+                try:
+                    submitted[code] = float(raw)
+                except (TypeError, ValueError):
+                    msg = f"{code} 的目標比例格式不正確，沒有儲存。"
+                    break
+            else:
+                if missing_codes:
+                    msg = "請填寫所有目前持股的目標比例；未填代號：" + "、".join(missing_codes[:8]) + (" 等" if len(missing_codes) > 8 else "")
+                elif set(submitted) != current_codes:
+                    msg = "持股清單已變動，請重新整理後再設定，沒有儲存。"
+                else:
+                    ok, info = save_portfolio_target_weights(uid, submitted)
+                    msg = ("✅ " if ok else "⚠️ ") + info
+            _web_fragment_cache_clear("positions", uid)
+            _web_fragment_cache_clear("positions-fast", uid)
+            _web_fragment_cache_clear("portfolio", uid)
+            _web_fragment_cache_clear("portfolio-fast", uid)
         else:
-            # 明確指出漏了哪幾題，不要只說「有必填未填」讓人自己找
-            msg = f"還有 {len(missing)} 題沒選：{'、'.join(missing[:3])}" + (
-                " 等" if len(missing) > 3 else "")
+            updates = {k: (request.form.get(k) or None) for k, _, _, _ in PROFILE_FIELDS}
+            missing = [l for k, l, _r, _o in PROFILE_FIELDS if not updates.get(k)]
+            if not missing:
+                msg = "風險輪廓已儲存。" if update_profile(uid, updates) else "儲存失敗，請稍後再試。"
+            else:
+                # 明確指出漏了哪幾題，不要只說「有必填未填」讓人自己找
+                msg = f"還有 {len(missing)} 題沒選：{'、'.join(missing[:3])}" + (
+                    " 等" if len(missing) > 3 else "")
 
     # 首頁完整內容只應由 fragment=1 請求計算；初次完整導覽先回快速載入殼。
     # 舊順序會在顯示載入殼前先查一次 positions，跟後續 fragment 重複查詢，
@@ -40328,6 +40383,104 @@ def web_portfolio(uid):
 
     _home_cp("HOLDINGS_CALC_DONE", holdings=len(holdings), total_value=round(total_value,2))
 
+    # V279：把目標比例設定整合進「今日」原有持股權重列表，不再放一個孤立的空白面板。
+    # 每檔可直接編輯；儲存只更新個人配置偏好，不會下單或更動持股／行情。
+    target_weights = get_portfolio_target_weights(uid)
+    _holding_by_code = {str(h.get("code") or ""): h for h in holdings}
+    _all_codes_for_targets = sorted(
+        {str(p.get("code") or "").strip() for p in positions if str(p.get("code") or "").strip()},
+        key=lambda code: (-float(_holding_by_code.get(code, {}).get("weight") or 0), code))
+    _today_target_rows = []
+    _target_has_missing_quotes = any(code not in _holding_by_code for code in _all_codes_for_targets)
+    # 第一次使用且每檔都有可用行情時，以目前權重帶入「未儲存草稿」；最後一檔吸收四捨五入差，合計精確 100%。
+    # 若行情有缺漏，不猜測缺漏標的權重，避免把不完整行情包裝成正確配置。
+    _target_draft_weights = {}
+    if not target_weights and _all_codes_for_targets and not _target_has_missing_quotes:
+        _draft_codes = list(_all_codes_for_targets)
+        _draft_sum = 0.0
+        for _draft_code in _draft_codes[:-1]:
+            _draft_pct = round(float(_holding_by_code[_draft_code].get('weight') or 0), 1)
+            _target_draft_weights[_draft_code] = _draft_pct
+            _draft_sum += _draft_pct
+        _target_draft_weights[_draft_codes[-1]] = round(max(0.0, 100.0 - _draft_sum), 1)
+    for _code in _all_codes_for_targets:
+        _h = _holding_by_code.get(_code)
+        _name = stock_display_name(_code, inst, (_h or {}).get("price", {}).get("name"))
+        _current_weight_text = (f'{float(_h.get("weight") or 0):.1f}%' if _h else '行情待確認')
+        _saved_target_value = target_weights.get(_code)
+        _target_value = _saved_target_value if _saved_target_value is not None else _target_draft_weights.get(_code)
+        _target_input_value = (f'{_target_value:.1f}' if _target_value is not None else '')
+        if _saved_target_value is None:
+            _gap_text, _gap_class = ('草稿，尚未儲存' if _target_value is not None else '尚未設定目標'), 'target-gap-pending'
+        elif _h is None:
+            _gap_text, _gap_class = '行情未完整，暫不比較', 'target-gap-pending'
+        else:
+            _gap = float(_h.get('weight') or 0) - float(_saved_target_value)
+            _gap_text = (f'高於目標 {abs(_gap):.1f} 個百分點' if _gap > .05 else
+                         f'低於目標 {abs(_gap):.1f} 個百分點' if _gap < -.05 else '符合目標')
+            _gap_class = 'target-gap-over' if _gap > .05 else 'target-gap-under' if _gap < -.05 else 'target-gap-ok'
+        _industry_text = html.escape(str((_h or {}).get('industry') or '持股'))
+        _pl_text = fmt_pct((_h or {}).get('pl')) if _h else '—'
+        _pct_text = fmt_pct((_h or {}).get('price', {}).get('pct')) if _h else '—'
+        _bar_width = min(100.0, max(0.0, float((_h or {}).get('weight') or 0) / 30.0 * 100))
+        _today_target_rows.append(f'''<div class="today-target-row">
+          <div class="today-target-main"><div class="today-target-name"><b>{html.escape(_name)}</b><small>{html.escape(_code)} · {_industry_text}</small></div>
+            <div class="today-target-current"><span>目前權重</span><b>{_current_weight_text}</b><i class="{_gap_class}">{html.escape(_gap_text)}</i></div>
+            <div class="today-target-track"><span style="width:{_bar_width:.1f}%"></span></div>
+            <div class="today-target-meta"><span>損益 {_pl_text}</span><span>今日 {_pct_text}</span></div>
+          </div>
+          <label class="today-target-input"><span>目標</span><span class="today-target-input-wrap"><input type="number" name="target_weight_{html.escape(_code, quote=True)}" min="0" max="100" step="0.1" inputmode="decimal" value="{_target_input_value}" placeholder="0.0" required><i>%</i></span></label>
+        </div>''')
+    _target_configured = bool(_all_codes_for_targets) and set(target_weights) == set(_all_codes_for_targets) and abs(sum(target_weights.get(c, 0) for c in _all_codes_for_targets) - 100) <= .05
+    _target_status_label = '已設定・合計 100%' if _target_configured else '待設定'
+    _target_status_class = 'is-ready' if _target_configured else 'is-pending'
+    _target_quote_note = ('部分持股尚未取得可用行情；仍可設定目標，但未取得行情的標的暫不顯示權重差距。' if _target_has_missing_quotes else '股票與 ETF 持倉市值目標合計必須為 100%。')
+    _target_drift_count = sum(
+        1 for code in _all_codes_for_targets
+        if code in target_weights and code in _holding_by_code and
+        abs(float(_holding_by_code[code].get('weight') or 0) - float(target_weights[code])) > 0.5)
+    if not _target_configured:
+        _top_target_reminder_text = '尚未完成配置，設定每檔目標並讓合計等於 100%。'
+    elif _target_has_missing_quotes:
+        _top_target_reminder_text = '部分持股行情待確認，暫不判定偏離。'
+    else:
+        _top_target_reminder_text = (f'{_target_drift_count} 檔與目標差距超過 0.5 個百分點。' if _target_drift_count else '目前持股權重都在目標附近。')
+    today_target_top_reminder = f'''<a class="today-target-top-reminder" href="#target-allocation"><span class="today-target-top-icon">◎</span><span class="today-target-top-copy"><b>持股目標提醒</b><small>{html.escape(_top_target_reminder_text)}</small></span><strong>{'立即設定' if not _target_configured else '查看配置'} →</strong></a>'''
+    today_target_allocation_html = f'''<section class="today-target-section" id="target-allocation">
+      <div class="today-target-section-head"><div><div class="today-target-eyebrow">PORTFOLIO PLAN</div><h2>持股目標比例</h2><p>就在今日的持股權重直接調整；只儲存配置目標，不會自動買賣。</p></div>
+        <span class="today-target-status {_target_status_class}">{_target_status_label}</span></div>
+      <div class="today-target-reminder"><span class="today-target-reminder-icon">◎</span><div><b>{'配置目標已保存' if _target_configured else '尚未完成目標配置'}</b><span>{'檢視每檔目前權重與目標差距；需要時可直接在下方修改。' if _target_configured else '已先帶入目前權重作為草稿，可直接調整；確認合計 100% 後按儲存才會生效。'}</span></div></div>
+      <form method="post" action="/web/portfolio#target-allocation" class="today-target-form" id="today-target-form">{csrf_hidden_input()}<input type="hidden" name="action" value="save_target_weights">
+        <div class="today-target-list">{''.join(_today_target_rows) if _today_target_rows else '<div class="empty">目前沒有可設定的股票或 ETF 持股。</div>'}</div>
+        <div class="today-target-footer"><div><span>目標合計</span><b id="today-target-sum">0.0%</b><small id="today-target-hint">請填寫所有持股，合計必須為 100%。</small></div><button type="submit" id="today-target-save">儲存目標比例</button></div>
+      </form>
+      <p class="today-target-footnote">{html.escape(_target_quote_note)} 目前權重僅依本頁可取得的持股行情計算；行情不足時不以舊資料冒充今日。</p>
+    </section>'''
+    today_target_script = '''<script>
+(function(){
+  var todayTargetForm=document.getElementById('today-target-form');
+  if(todayTargetForm){
+    var todayTargetInputs=Array.prototype.slice.call(todayTargetForm.querySelectorAll('input[name^="target_weight_"]'));
+    var todayTargetSum=document.getElementById('today-target-sum');
+    var todayTargetHint=document.getElementById('today-target-hint');
+    var todayTargetSave=document.getElementById('today-target-save');
+    function updateTodayTargetSum(){
+      var total=0, complete=todayTargetInputs.length>0;
+      todayTargetInputs.forEach(function(input){var raw=input.value.trim();if(raw===''){complete=false;return;}var n=Number(raw);if(!Number.isFinite(n)||n<0||n>100){complete=false;return;}total+=n;});
+      total=Math.round(total*100)/100;
+      var valid=complete&&Math.abs(total-100)<=0.05;
+      if(todayTargetSum)todayTargetSum.textContent=total.toFixed(1)+'%';
+      if(todayTargetHint){todayTargetHint.textContent=valid?'比例合計正確，可以儲存。':(complete?'目前合計 '+total.toFixed(1)+'%，必須等於 100%。':'請填寫每檔目標比例，合計必須等於 100%。');todayTargetHint.style.color=valid?'#087443':(complete?'#b45309':'#71859a');}
+      if(todayTargetSave)todayTargetSave.disabled=!valid;
+      return valid;
+    }
+    todayTargetInputs.forEach(function(input){input.addEventListener('input',updateTodayTargetSum);});
+    todayTargetForm.addEventListener('submit',function(ev){if(!updateTodayTargetSum()){ev.preventDefault();if(todayTargetHint)todayTargetHint.focus();}});
+    updateTodayTargetSum();
+  }
+})();
+</script>'''
+
     # v184 hotfix：這些首頁效能計時／總損益變數在 UI 重構時被移掉，
     # 但後面的首頁渲染仍會使用；重新在組合計算完成後建立，避免 fragment 500。
     calc_done = time.monotonic()
@@ -40481,11 +40634,14 @@ def web_portfolio(uid):
     _home_cp("ALLOCATION_SKIPPED")
     industry_css = ""
     body = f"""
+{today_target_top_reminder}
 {daily_top}
+{f'<div class="msg today-target-save-message">{msg}</div>' if msg and request.method == "POST" and request.form.get("action") == "save_target_weights" else ''}
 {industry_css}<div class="section-head"><h2>完整組合分析</h2><span class="section-note">往下查看詳細資料</span></div>
 <div class="totals"><div><div class="total-label">總市值</div><div class="total-value num">{total_value:,.0f}</div><div class="total-sub">{fmt_pct(pl_total)}</div></div><div><div class="total-label">持股檔數</div><div class="total-value num">{len(holdings)}</div><div class="total-sub">{len(by_industry)} 個產業</div></div><div><div class="total-label">最大單一持股</div><div class="total-value num">{top['weight']:.1f}%</div><div class="total-sub">{top['name']}</div></div></div>
 <div class="section-head"><h2>組合走勢</h2><span class="section-note">相對起始日漲跌幅</span></div><div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
-<div class="section-head"><h2>持股權重</h2><span class="section-note">依權重排序</span></div><div class="rows">{''.join(f'''<div class="row"><div><span class="name">{h['name']}</span><span class="code">{h['code']}</span></div><div class="price num">{h['weight']:.1f}%</div><div class="meta"><span><em>產業</em> {h['industry']}</span><span><em>損益</em> {fmt_pct(h['pl'])}</span><span><em>營收年增</em> {f"{h['cum_yoy']:+.1f}%" if h['cum_yoy'] is not None else '—'}</span><span><em>PE</em> {f"{h['pe']:.1f}" if h['pe'] else '—'}</span></div><div class="chg">{fmt_pct(h['price']['pct'])}</div><div class="wbar"><span class="wbar-track"><i style="width:{min(100.0, h['weight'] / 30.0 * 100):.1f}%"></i></span><em>{h['weight']:.1f}%</em></div></div>''' for h in sorted(holdings, key=lambda x: x['weight'], reverse=True))}</div>
+{today_target_allocation_html}
+{today_target_script}
 
 """
     if request.method == "GET" and wants_fragment():
