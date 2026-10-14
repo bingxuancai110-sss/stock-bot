@@ -39064,6 +39064,66 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .today-target-top-reminder{{display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:11px 13px;border:1px solid #d5e4ef;border-radius:14px;background:#f7fbff;text-decoration:none;color:#244f70;scroll-margin-top:100px}}
 .today-target-top-icon{{display:grid;place-items:center;width:30px;height:30px;flex:none;border-radius:10px;background:#e1eef8;color:#276b96;font-size:19px}}
 .today-target-top-copy{{display:block;flex:1;min-width:0}}.today-target-top-copy b,.today-target-top-copy small{{display:block}}.today-target-top-copy b{{font-size:12px;font-weight:900}}.today-target-top-copy small{{margin-top:3px;color:#71859a;font-size:10px;line-height:1.4}}.today-target-top-reminder>strong{{flex:none;color:#276b96;font-size:10px;white-space:nowrap}}
+
+
+/* V281：持股比例預設收合，展開後比較目前與目標配置。 */
+.today-target-column-head{{grid-template-columns:minmax(0,1fr) auto!important}}
+.today-target-column-head span:last-child{{text-align:right}}
+.today-target-row{{display:block!important;padding:0!important;border-bottom:1px solid #edf1f5}}
+.today-target-summary{{display:block;list-style:none;cursor:pointer;padding:13px 0;outline:none}}
+.today-target-summary::-webkit-details-marker{{display:none}}
+.today-target-summary-head{{display:grid;grid-template-columns:minmax(0,1fr) auto 18px;gap:9px;align-items:center}}
+.today-target-day{{font-size:11px;font-weight:850;font-variant-numeric:tabular-nums;white-space:nowrap}}
+.today-target-day-up{{color:#d94841}}.today-target-day-down{{color:#16845b}}.today-target-day-flat{{color:#8292a0}}
+.today-target-chevron{{color:#8297a8;font-size:17px;transition:transform .18s ease;text-align:center}}
+.today-target-row[open] .today-target-chevron{{transform:rotate(180deg)}}
+.today-target-summary-track{{height:6px;margin-top:9px;border-radius:99px;background:#edf3f7;overflow:hidden}}
+.today-target-summary-track span{{display:block;height:100%;border-radius:99px;background:#477fd1}}
+.today-target-expanded{{padding:0 0 14px}}
+.today-target-compare-grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}
+.today-target-compare{{min-width:0}}
+.today-target-bar-label{{display:flex;justify-content:space-between;align-items:baseline;gap:6px;margin-bottom:6px}}
+.today-target-bar-label span{{font-size:10px;color:#74899a}}.today-target-bar-label b{{font-size:13px;color:#243f56;font-variant-numeric:tabular-nums}}
+.today-target-compare-track{{height:7px;background:#edf2f6;border-radius:99px;overflow:hidden}}
+.today-target-compare-track span{{display:block;height:100%;border-radius:99px}}
+.today-target-current-fill{{background:#477fd1}}.today-target-target-fill{{background:#e5a34e}}
+.today-target-difference{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:13px 0;padding:11px 12px;background:#f7fafc;border:1px solid #e8eef3;border-radius:12px}}
+.today-target-difference span,.today-target-difference b{{display:block}}
+.today-target-difference span{{font-size:9px;color:#7c8e9d;line-height:1.5}}
+.today-target-difference b{{margin-top:4px;font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}}
+.today-target-input{{max-width:150px;margin-left:auto}}
+@media(max-width:520px){{.today-target-summary{{padding:12px 0}}.today-target-summary-head{{grid-template-columns:minmax(0,1fr) auto 15px;gap:6px}}.today-target-day{{font-size:10px}}.today-target-compare-grid{{gap:9px}}.today-target-bar-label span{{font-size:9px}}.today-target-bar-label b{{font-size:12px}}.today-target-difference{{gap:8px;padding:10px}}.today-target-difference b{{font-size:11px}}.today-target-input{{max-width:130px}}}}
+/* V280：移除今日頁頂部提醒，目標比例採精簡清單呈現。 */
+.today-target-section{{margin:18px 0 24px;padding:18px 17px 14px;border:1px solid #d8e4ed;border-radius:18px;background:#fff;box-shadow:0 5px 18px rgba(25,62,94,.035);scroll-margin-top:100px}}
+.today-target-section-head{{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:14px;border-bottom:1px solid #e8eef3}}
+.today-target-eyebrow{{font-size:9px;letter-spacing:.12em;font-weight:850;color:#64829a}}
+.today-target-section-head h2{{margin:3px 0 4px;font-size:20px;color:#18364e;font-weight:900}}
+.today-target-section-head p{{margin:0;color:#75889a;font-size:11px;line-height:1.5}}
+.today-target-status{{flex:none;padding:6px 9px;border-radius:999px;font-size:10px;font-weight:850;white-space:nowrap}}
+.today-target-status.is-ready{{background:#edf7f1;color:#18784c}}.today-target-status.is-pending{{background:#fff5e7;color:#95651e}}
+.today-target-column-head{{display:grid;grid-template-columns:minmax(0,1fr) 94px;gap:12px;padding:12px 0 7px;color:#8a9aaa;font-size:10px;font-weight:800}}
+.today-target-column-head span:last-child{{text-align:center}}
+.today-target-list{{display:grid;grid-template-columns:1fr;gap:0}}
+.today-target-row{{display:grid;grid-template-columns:minmax(0,1fr) 94px;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid #edf1f5;min-width:0}}
+.today-target-main{{min-width:0}}
+.today-target-name b{{display:block;font-size:13px;line-height:1.35;color:#263f54;overflow-wrap:anywhere}}
+.today-target-name small{{display:block;margin-top:3px;font-size:10px;color:#8a9aaa}}
+.today-target-current{{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 7px;margin-top:6px}}
+.today-target-current span{{font-size:10px;color:#8798a7}}.today-target-current b{{font-size:12px;color:#294e6d}}.today-target-current i{{font-size:10px;font-style:normal;font-weight:750}}
+.target-gap-over{{color:#b45309}}.target-gap-under{{color:#2879a7}}.target-gap-ok{{color:#178052}}.target-gap-pending{{color:#8998a6}}
+.today-target-track{{height:4px;margin-top:8px;border-radius:999px;background:#edf3f7;overflow:hidden}}.today-target-track span{{display:block;height:100%;border-radius:999px;background:#8bb4d2}}
+.today-target-input{{display:flex;flex-direction:column;gap:5px;align-items:stretch;min-width:0}}.today-target-input>span:first-child{{font-size:10px;color:#8798a7;text-align:center}}
+.today-target-input-wrap{{display:flex;align-items:center;gap:3px;padding:0 7px;border:1px solid #d5e1eb;border-radius:10px;background:#fbfdff}}
+.today-target-input-wrap:focus-within{{border-color:#5d91b6;box-shadow:0 0 0 2px rgba(93,145,182,.12)}}
+.today-target-input input{{width:100%;min-width:0;padding:10px 0;border:0;outline:0;background:transparent;color:#20394e;font-size:14px;font-weight:850;text-align:right}}
+.today-target-input-wrap i{{font-size:11px;font-style:normal;color:#8397a9}}
+.today-target-footer{{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:14px}}
+.today-target-footer>div span,.today-target-footer>div small{{display:block;color:#7b8d9d;font-size:10px;line-height:1.45}}
+.today-target-footer>div b{{display:block;margin:2px 0;font-size:22px;line-height:1.15;color:#1d4968;font-variant-numeric:tabular-nums}}
+.today-target-footer button{{flex:none;padding:11px 17px;border:0;border-radius:11px;background:#245f83;color:#fff;font-size:12px;font-weight:850;box-shadow:0 3px 8px rgba(36,95,131,.14)}}.today-target-footer button:disabled{{opacity:.4;box-shadow:none}}
+.today-target-footnote{{margin:11px 0 0;padding-top:10px;border-top:1px solid #edf1f5;color:#8a9aaa;font-size:10px;line-height:1.5}}
+.today-target-top-reminder,.today-target-reminder{{display:none!important}}
+@media(max-width:520px){{.today-target-section{{padding:15px 12px;border-radius:16px}}.today-target-section-head h2{{font-size:18px}}.today-target-row,.today-target-column-head{{grid-template-columns:minmax(0,1fr) 88px;gap:9px}}.today-target-row{{padding:11px 0}}.today-target-name b{{font-size:12px}}.today-target-current i{{font-size:9px}}.today-target-input-wrap{{padding:0 5px}}.today-target-input input{{font-size:14px}}.today-target-footer{{align-items:stretch;flex-direction:column}}.today-target-footer button{{width:100%;padding:13px}}.today-target-status{{font-size:9px;padding:6px 7px}}}}
 </style>
 <div class="daily-home">
   <section class="daily-hero" aria-label="台北 101 城市主視覺">
@@ -40406,31 +40466,45 @@ def web_portfolio(uid):
     for _code in _all_codes_for_targets:
         _h = _holding_by_code.get(_code)
         _name = stock_display_name(_code, inst, (_h or {}).get("price", {}).get("name"))
-        _current_weight_text = (f'{float(_h.get("weight") or 0):.1f}%' if _h else '行情待確認')
+        _current_weight = float((_h or {}).get('weight') or 0)
+        _current_weight_text = (f'{_current_weight:.1f}%' if _h else '行情待確認')
         _saved_target_value = target_weights.get(_code)
         _target_value = _saved_target_value if _saved_target_value is not None else _target_draft_weights.get(_code)
         _target_input_value = (f'{_target_value:.1f}' if _target_value is not None else '')
-        if _saved_target_value is None:
-            _gap_text, _gap_class = ('草稿，尚未儲存' if _target_value is not None else '尚未設定目標'), 'target-gap-pending'
+        if _target_value is None:
+            _gap_text, _gap_class, _money_gap_text = '尚未設定目標', 'target-gap-pending', '—'
         elif _h is None:
-            _gap_text, _gap_class = '行情未完整，暫不比較', 'target-gap-pending'
+            _gap_text, _gap_class, _money_gap_text = '行情待確認', 'target-gap-pending', '—'
         else:
-            _gap = float(_h.get('weight') or 0) - float(_saved_target_value)
-            _gap_text = (f'高於目標 {abs(_gap):.1f} 個百分點' if _gap > .05 else
-                         f'低於目標 {abs(_gap):.1f} 個百分點' if _gap < -.05 else '符合目標')
-            _gap_class = 'target-gap-over' if _gap > .05 else 'target-gap-under' if _gap < -.05 else 'target-gap-ok'
+            _gap_pp = float(_target_value) - _current_weight
+            _gap_text = (f'{_gap_pp:+.1f} 個百分點' if abs(_gap_pp) > .05 else '0.0 個百分點')
+            _gap_class = 'target-gap-over' if _gap_pp < -.05 else 'target-gap-under' if _gap_pp > .05 else 'target-gap-ok'
+            _money_gap_text = f'{total_value * _gap_pp / 100.0:+,.0f} 元'
         _industry_text = html.escape(str((_h or {}).get('industry') or '持股'))
-        _pl_text = fmt_pct((_h or {}).get('pl')) if _h else '—'
-        _pct_text = fmt_pct((_h or {}).get('price', {}).get('pct')) if _h else '—'
-        _bar_width = min(100.0, max(0.0, float((_h or {}).get('weight') or 0) / 30.0 * 100))
-        _today_target_rows.append(f'''<div class="today-target-row">
-          <div class="today-target-main"><div class="today-target-name"><b>{html.escape(_name)}</b><small>{html.escape(_code)} · {_industry_text}</small></div>
-            <div class="today-target-current"><span>目前權重</span><b>{_current_weight_text}</b><i class="{_gap_class}">{html.escape(_gap_text)}</i></div>
-            <div class="today-target-track"><span style="width:{_bar_width:.1f}%"></span></div>
-            <div class="today-target-meta"><span>損益 {_pl_text}</span><span>今日 {_pct_text}</span></div>
+        _bar_width = min(100.0, max(0.0, _current_weight / 30.0 * 100))
+        _target_bar_width = min(100.0, max(0.0, float(_target_value or 0) / 30.0 * 100))
+        _pr = (_h or {}).get('price') or {}
+        _day_change = next((_pr.get(k) for k in ('change_pct', 'pct_change', 'changePercent', 'percent') if _pr.get(k) is not None), None)
+        try:
+            _day_change = float(_day_change)
+            _day_change_text = f'{_day_change:+.2f}%'
+            _day_change_class = 'today-target-day-up' if _day_change > 0 else 'today-target-day-down' if _day_change < 0 else 'today-target-day-flat'
+        except (TypeError, ValueError):
+            _day_change_text, _day_change_class = '—', 'today-target-day-flat'
+        _today_target_rows.append(f'''<details class="today-target-row">
+          <summary class="today-target-summary">
+            <div class="today-target-summary-head"><div class="today-target-name"><b>{html.escape(_name)}</b><small>{html.escape(_code)} · {_industry_text}</small></div><span class="today-target-day {_day_change_class}">{_day_change_text}</span><span class="today-target-chevron" aria-hidden="true">⌄</span></div>
+            <div class="today-target-summary-track"><span style="width:{_bar_width:.1f}%"></span></div>
+          </summary>
+          <div class="today-target-expanded">
+            <div class="today-target-compare-grid">
+              <div class="today-target-compare"><div class="today-target-bar-label"><span>目前比例</span><b>{_current_weight_text}</b></div><div class="today-target-compare-track"><span class="today-target-current-fill" style="width:{_bar_width:.1f}%"></span></div></div>
+              <div class="today-target-compare"><div class="today-target-bar-label"><span>目標比例</span><b>{f'{float(_target_value):.1f}%' if _target_value is not None else '尚未設定'}</b></div><div class="today-target-compare-track"><span class="today-target-target-fill" style="width:{_target_bar_width:.1f}%"></span></div></div>
+            </div>
+            <div class="today-target-difference"><div><span>比例差距（目標－目前）</span><b class="{_gap_class}">{html.escape(_gap_text)}</b></div><div><span>金額差距（估算）</span><b class="{_gap_class}">{html.escape(_money_gap_text)}</b></div></div>
+            <label class="today-target-input"><span>編輯目標比例</span><span class="today-target-input-wrap"><input type="number" name="target_weight_{html.escape(_code, quote=True)}" min="0" max="100" step="0.1" inputmode="decimal" value="{_target_input_value}" placeholder="0.0" required><i>%</i></span></label>
           </div>
-          <label class="today-target-input"><span>目標</span><span class="today-target-input-wrap"><input type="number" name="target_weight_{html.escape(_code, quote=True)}" min="0" max="100" step="0.1" inputmode="decimal" value="{_target_input_value}" placeholder="0.0" required><i>%</i></span></label>
-        </div>''')
+        </details>''')
     _target_configured = bool(_all_codes_for_targets) and set(target_weights) == set(_all_codes_for_targets) and abs(sum(target_weights.get(c, 0) for c in _all_codes_for_targets) - 100) <= .05
     _target_status_label = '已設定・合計 100%' if _target_configured else '待設定'
     _target_status_class = 'is-ready' if _target_configured else 'is-pending'
@@ -40439,22 +40513,15 @@ def web_portfolio(uid):
         1 for code in _all_codes_for_targets
         if code in target_weights and code in _holding_by_code and
         abs(float(_holding_by_code[code].get('weight') or 0) - float(target_weights[code])) > 0.5)
-    if not _target_configured:
-        _top_target_reminder_text = '尚未完成配置，設定每檔目標並讓合計等於 100%。'
-    elif _target_has_missing_quotes:
-        _top_target_reminder_text = '部分持股行情待確認，暫不判定偏離。'
-    else:
-        _top_target_reminder_text = (f'{_target_drift_count} 檔與目標差距超過 0.5 個百分點。' if _target_drift_count else '目前持股權重都在目標附近。')
-    today_target_top_reminder = f'''<a class="today-target-top-reminder" href="#target-allocation"><span class="today-target-top-icon">◎</span><span class="today-target-top-copy"><b>持股目標提醒</b><small>{html.escape(_top_target_reminder_text)}</small></span><strong>{'立即設定' if not _target_configured else '查看配置'} →</strong></a>'''
     today_target_allocation_html = f'''<section class="today-target-section" id="target-allocation">
-      <div class="today-target-section-head"><div><div class="today-target-eyebrow">PORTFOLIO PLAN</div><h2>持股目標比例</h2><p>就在今日的持股權重直接調整；只儲存配置目標，不會自動買賣。</p></div>
+      <div class="today-target-section-head"><div><div class="today-target-eyebrow">PORTFOLIO ALLOCATION</div><h2>目標配置</h2><p>直接調整每檔目標比例；只保存配置，不會自動買賣。</p></div>
         <span class="today-target-status {_target_status_class}">{_target_status_label}</span></div>
-      <div class="today-target-reminder"><span class="today-target-reminder-icon">◎</span><div><b>{'配置目標已保存' if _target_configured else '尚未完成目標配置'}</b><span>{'檢視每檔目前權重與目標差距；需要時可直接在下方修改。' if _target_configured else '已先帶入目前權重作為草稿，可直接調整；確認合計 100% 後按儲存才會生效。'}</span></div></div>
       <form method="post" action="/web/portfolio#target-allocation" class="today-target-form" id="today-target-form">{csrf_hidden_input()}<input type="hidden" name="action" value="save_target_weights">
+        <div class="today-target-column-head"><span>持股比例與當日漲跌</span><span>點開查看比較</span></div>
         <div class="today-target-list">{''.join(_today_target_rows) if _today_target_rows else '<div class="empty">目前沒有可設定的股票或 ETF 持股。</div>'}</div>
-        <div class="today-target-footer"><div><span>目標合計</span><b id="today-target-sum">0.0%</b><small id="today-target-hint">請填寫所有持股，合計必須為 100%。</small></div><button type="submit" id="today-target-save">儲存目標比例</button></div>
+        <div class="today-target-footer"><div><span>目標合計</span><b id="today-target-sum">0.0%</b><small id="today-target-hint">請填寫所有持股，合計必須等於 100%。</small></div><button type="submit" id="today-target-save">儲存配置</button></div>
       </form>
-      <p class="today-target-footnote">{html.escape(_target_quote_note)} 目前權重僅依本頁可取得的持股行情計算；行情不足時不以舊資料冒充今日。</p>
+      <p class="today-target-footnote">{html.escape(_target_quote_note)} 行情不足時不以舊資料冒充今日。</p>
     </section>'''
     today_target_script = '''<script>
 (function(){
@@ -40634,13 +40701,12 @@ def web_portfolio(uid):
     _home_cp("ALLOCATION_SKIPPED")
     industry_css = ""
     body = f"""
-{today_target_top_reminder}
 {daily_top}
 {f'<div class="msg today-target-save-message">{msg}</div>' if msg and request.method == "POST" and request.form.get("action") == "save_target_weights" else ''}
+{today_target_allocation_html}
 {industry_css}<div class="section-head"><h2>完整組合分析</h2><span class="section-note">往下查看詳細資料</span></div>
 <div class="totals"><div><div class="total-label">總市值</div><div class="total-value num">{total_value:,.0f}</div><div class="total-sub">{fmt_pct(pl_total)}</div></div><div><div class="total-label">持股檔數</div><div class="total-value num">{len(holdings)}</div><div class="total-sub">{len(by_industry)} 個產業</div></div><div><div class="total-label">最大單一持股</div><div class="total-value num">{top['weight']:.1f}%</div><div class="total-sub">{top['name']}</div></div></div>
 <div class="section-head"><h2>組合走勢</h2><span class="section-note">相對起始日漲跌幅</span></div><div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
-{today_target_allocation_html}
 {today_target_script}
 
 """
