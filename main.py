@@ -34095,7 +34095,13 @@ def web_leaderboard(uid):
                         f'<div class="bot-history-row">'
                         f'<div class="bot-history-main"><b>{html.escape(str(tx.get("name") or tx.get("code") or ""))}</b>'
                         f'<small>{html.escape(str(tx.get("code") or ""))}</small></div>'
-                        f'<div class="bot-history-price">{html.escape(str(tx.get("buy_date") or "—"))} → {sell_date}　｜　買 {btxt} ／ 賣 {stxt}</div>'
+                        f'<div class="bot-history-price">'
+
+                        f'<span class="bot-history-price-dates">{html.escape(str(tx.get("buy_date") or "—"))} → {sell_date}</span>'
+
+                        f'<span class="bot-history-price-values">買 {btxt} ／ 賣 {stxt}</span>'
+
+                        f'</div>' 
                         f'<div class="bot-history-hold">持有 {int(tx.get("hold_days") or 0)} 日</div>'
                         f'<div class="bot-history-reason">'
                         f'<span class="bot-history-reason-buy">買入：{buy_reason}'
@@ -36011,6 +36017,38 @@ body #app-page-content .rank-rows .rank-card .bot-history-left small {
   #app-page-content .rank-rows .rank-card .bot-history-dot,
   body #app-page-content .rank-rows .rank-card .bot-history-dot {
     left:52px !important;
+  }
+}
+
+/* V276: date range on its own line; keep buy/sell prices together.
+   Presentation only — no history data, sorting, or expand/collapse behavior changed. */
+#app-page-content .rank-rows .rank-card .bot-history-price-dates,
+body #app-page-content .rank-rows .rank-card .bot-history-price-dates {
+  display:block !important;
+  width:100% !important;
+  max-width:100% !important;
+  line-height:1.3 !important;
+  white-space:normal !important;
+  overflow-wrap:normal !important;
+  word-break:normal !important;
+}
+#app-page-content .rank-rows .rank-card .bot-history-price-values,
+body #app-page-content .rank-rows .rank-card .bot-history-price-values {
+  display:inline-block !important;
+  width:auto !important;
+  max-width:100% !important;
+  margin-top:1px !important;
+  white-space:nowrap !important;
+  overflow-wrap:normal !important;
+  word-break:keep-all !important;
+  font-variant-numeric:tabular-nums !important;
+  letter-spacing:-.015em !important;
+}
+@media (max-width:360px) {
+  #app-page-content .rank-rows .rank-card .bot-history-price-values,
+  body #app-page-content .rank-rows .rank-card .bot-history-price-values {
+    font-size:10px !important;
+    letter-spacing:-.04em !important;
   }
 }
 
