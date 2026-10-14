@@ -2060,6 +2060,16 @@ def init_db():
             ALTER TABLE users ADD COLUMN IF NOT EXISTS quiet_end SMALLINT DEFAULT 7
         ''')
         cursor.execute('''
+            CREATE TABLE IF NOT EXISTS portfolio_target_weights (
+                user_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                target_pct NUMERIC(5,2) NOT NULL CHECK (target_pct >= 0 AND target_pct <= 100),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, code)
+            )
+        ''')
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_target_weights_user ON portfolio_target_weights (user_id)")
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS line_anomaly_sent (
                 id BIGSERIAL PRIMARY KEY,
                 snapshot_date DATE NOT NULL,
@@ -2589,6 +2599,84 @@ def init_db():
         release_db_connection(conn)
 
 init_db()
+
+
+def get_portfolio_target_weights(user_id):
+    """Read target percentages for one user; target weights never alter actual positions."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return {}
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT code, target_pct FROM portfolio_target_weights WHERE user_id=%s",
+            (uid,))
+        result = {str(code): float(value) for code, value in cur.fetchall()}
+        cur.close()
+        return result
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"⚠️ 讀取目標持股比例失敗：{type(exc).__name__}", flush=True)
+        return {}
+    finally:
+        release_db_connection(conn)
+
+
+def save_portfolio_target_weights(user_id, weights):
+    """Persist a complete, validated 100% target allocation for current holdings."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return False, "無法辨識使用者，沒有儲存。"
+    if not isinstance(weights, dict) or not weights:
+        return False, "目前沒有可設定的持股。"
+    cleaned = {}
+    try:
+        for code, value in weights.items():
+            code = normalize_code(code)
+            if not code:
+                return False, "持股代號無效，沒有儲存。"
+            pct = float(value)
+            if pct < 0 or pct > 100:
+                return False, f"{code} 的目標比例必須介於 0% 到 100%。"
+            if not math.isfinite(pct):
+                return False, f"{code} 的目標比例不是有效數字。"
+            cleaned[code] = round(pct, 2)
+    except (TypeError, ValueError):
+        return False, "請確認每檔目標比例都是有效數字。"
+    total = sum(cleaned.values())
+    if abs(total - 100.0) > 0.05:
+        return False, f"目標比例合計目前為 {total:.2f}%，必須等於 100% 才能儲存。"
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        # Replace the user's active allocation as one transaction so sold holdings
+        # cannot leave stale target rows that unexpectedly reappear on a later rebuy.
+        cur.execute("DELETE FROM portfolio_target_weights WHERE user_id=%s", (uid,))
+        for code, pct in cleaned.items():
+            cur.execute("""
+                INSERT INTO portfolio_target_weights (user_id, code, target_pct, updated_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (user_id, code) DO UPDATE SET
+                    target_pct=EXCLUDED.target_pct, updated_at=NOW()
+            """, (uid, code, pct))
+        conn.commit()
+        cur.close()
+        return True, f"目標配置已儲存（合計 {total:.2f}%）。"
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"⚠️ 儲存目標持股比例失敗：{type(exc).__name__}", flush=True)
+        return False, "儲存失敗，資料庫沒有確認完成；請稍後再試。"
+    finally:
+        release_db_connection(conn)
+
 
 def add_user_to_db(user_id):
     """
@@ -29160,7 +29248,32 @@ def web_positions(uid):
     msg = ""
     if request.method == "POST":
         action = request.form.get("action")
-        if action == "sell_all":
+        if action == "save_target_weights":
+            # Targets are personal preferences only; never modify position/trade tables.
+            current_codes = {str(x.get("code") or "").strip()
+                             for x in merge_positions(get_positions(uid))}
+            submitted = {}
+            missing_codes = []
+            for code in sorted(current_codes):
+                field = "target_weight_" + code
+                raw = (request.form.get(field) or "").strip()
+                if not raw:
+                    missing_codes.append(code)
+                    continue
+                try:
+                    submitted[code] = float(raw)
+                except ValueError:
+                    msg = f"{code} 的目標比例格式不正確，沒有儲存。"
+                    break
+            else:
+                if missing_codes:
+                    msg = "請先填寫所有目前持股的目標比例；未填代號：" + "、".join(missing_codes[:8]) + (" 等" if len(missing_codes) > 8 else "")
+                elif set(submitted) != current_codes:
+                    msg = "持股清單已變動，請重新整理後再設定，沒有儲存。"
+                else:
+                    ok, info = save_portfolio_target_weights(uid, submitted)
+                    msg = ("✅ " if ok else "⚠️ ") + info
+        elif action == "sell_all":
             def numv(field, cast=float):
                 v = (request.form.get(field) or "").strip()
                 if not v:
@@ -29272,6 +29385,7 @@ def web_positions(uid):
 
     positions_data_started = time.monotonic()
     positions = merge_positions(get_positions(uid))
+    target_weights = get_portfolio_target_weights(uid)
     positions_data_done = time.monotonic()
     _positions_fragment_cache_key = None
     if request.method == "GET" and wants_fragment() and request.args.get("refresh") != "1":
@@ -29469,6 +29583,17 @@ def web_positions(uid):
         name = stock_display_name(p["code"], inst,
                                   price["name"] if price else None)
         weight = (value / total_value * 100) if total_value else 0
+        target_pct = target_weights.get(str(p.get("code") or ""))
+        if target_pct is None:
+            target_line_html = '<div class="position-target-summary"><span>目標權重</span><b>尚未設定</b></div>'
+        else:
+            deviation = weight - target_pct
+            deviation_label = (f"高於目標 {deviation:.1f} 個百分點" if deviation > 0.05
+                               else f"低於目標 {abs(deviation):.1f} 個百分點" if deviation < -0.05
+                               else "符合目標")
+            deviation_class = "over" if deviation > 0.05 else "under" if deviation < -0.05 else "on-target"
+            target_line_html = (f'<div class="position-target-summary"><span>目標權重</span>'
+                                f'<b>{target_pct:.1f}%</b><em class="{deviation_class}">{deviation_label}</em></div>')
         if price:
             gross_pl = (price["close"] - p["cost"]) / p["cost"] * 100
             net_amt, pl, cost_fee = net_profit(
@@ -29521,6 +29646,7 @@ def web_positions(uid):
         <div><small>行情</small><b class="position-quote-stamp" data-position-stamp="1">{quote_stamp_safe}</b></div>
       </div>
       <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b>{weight:.1f}%</b></div>
+      {target_line_html}
       <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}">
         <summary class="position-factors-trigger">🧭 查看五大因子與目前狀況</summary>
         <div class="position-factors-body"><div class="position-factor-loading">展開後載入最近保存的五大因子…</div></div>
@@ -29540,6 +29666,9 @@ def web_positions(uid):
   </details>
 </article>""")
         else:
+            _noquote_target = target_weights.get(str(p.get("code") or ""))
+            _noquote_target_html = (f'<div class="position-target-summary"><span>目標權重</span><b>{_noquote_target:.1f}%</b><em>目前權重待行情確認</em></div>'
+                                    if _noquote_target is not None else '<div class="position-target-summary"><span>目標權重</span><b>尚未設定</b><em>目前權重待行情確認</em></div>')
             rows_html.append(f"""
 <article class="position-card position-card-noquote" data-position-code="{html.escape(str(p['code']), quote=True)}">
   <div class="position-card-top">
@@ -29551,6 +29680,7 @@ def web_positions(uid):
     <div><small>市值</small><b>—</b></div>
     <div><small>行情</small><b class="flat">暫無</b></div>
   </div>
+  {_noquote_target_html}
   <details class="position-more">
     <summary>查看詳細資料</summary>
     <div class="position-detail-body">
@@ -29627,6 +29757,7 @@ def web_positions(uid):
 .position-card{background:#fff;border:1px solid rgba(31,71,107,.14);border-radius:22px;padding:18px 18px 14px;margin:14px 0;box-shadow:0 10px 28px rgba(27,62,92,.07);overflow:hidden}
 .position-card-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
 .position-card-title{display:flex;gap:10px;min-width:0;align-items:flex-start}.position-card-title h3{margin:0;font-size:22px;line-height:1.2;color:#173b5d}.position-card-title small{display:block;margin-top:5px;color:#71859a;font-size:12px}.position-card-code{display:inline-flex;align-items:center;justify-content:center;min-width:44px;height:28px;padding:0 8px;border-radius:9px;background:#edf5fb;color:#1e5a86;font-size:12px;font-weight:800}.position-card-price{text-align:right;white-space:nowrap;min-width:0;flex:0 1 auto}.position-card-price b{display:block;font-size:24px;color:#173b5d;line-height:1.05;letter-spacing:-.35px;max-width:100%;overflow:hidden;text-overflow:ellipsis}.position-card-price span{display:block;margin-top:5px;font-size:14px;font-weight:800}.position-card-primary{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0 10px}.position-card-primary>div,.position-card-grid>div{background:#f7fafc;border-radius:13px;padding:10px}.position-card-primary small,.position-card-grid small{display:block;color:#7a8ea0;font-size:11px;margin-bottom:4px}.position-card-primary b{display:block;font-size:16px;color:#173b5d}.position-card-primary em{display:block;margin-top:2px;font-size:11px;font-style:normal;color:#7a8ea0}.position-card-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.position-card-grid b{font-size:14px;color:#294e6d;line-height:1.35;word-break:break-word}.position-card-weight{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;margin:12px 0 4px;color:#71859a;font-size:11px}.position-card-weight>div{height:7px;background:#e8eef3;border-radius:99px;overflow:hidden}.position-card-weight i{display:block;height:100%;background:linear-gradient(90deg,#4b88b1,#1d5f88);border-radius:99px}.position-card-weight b{font-size:12px;color:#294e6d}.position-card-actions{margin-top:8px}.position-card-actions>details{border-top:1px solid #edf1f4;padding:10px 0}.position-card-actions summary{color:#2a5b7f;font-weight:700;cursor:pointer}.position-card-noquote{opacity:.9}.position-quote-stamp{font-size:11px!important;color:#7a8ea0!important;font-weight:500!important}
+.target-allocation-panel{margin:14px 0 18px;padding:16px;border:1px solid #d8e4ee;border-radius:18px;background:linear-gradient(180deg,#f7fbff,#fff);box-shadow:0 8px 24px rgba(27,62,92,.05)}.target-allocation-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:10px}.target-allocation-head h3{margin:0;color:#173b5d;font-size:18px}.target-allocation-head p{margin:5px 0 0;color:#71859a;font-size:11px;line-height:1.6}.target-allocation-total{flex:0 0 auto;padding:6px 9px;border-radius:999px;background:#edf3f8;color:#526879;font-size:11px;font-weight:800}.target-allocation-total.valid{background:#eaf7ef;color:#087443}.target-allocation-total.invalid{background:#fff2e5;color:#9a651d}.target-allocation-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}.target-allocation-row{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;padding:10px 0;border-top:1px solid #e9eff4}.target-allocation-row>span:first-child{display:flex;flex-direction:column;gap:3px;min-width:0}.target-allocation-row b{font-size:12px;color:#294e6d;line-height:1.4;overflow-wrap:anywhere}.target-allocation-row small{font-size:10px;color:#8998a6}.target-allocation-input{display:flex;align-items:center;gap:4px;flex:0 0 88px}.target-allocation-input input{width:100%;min-width:0;box-sizing:border-box;border:1px solid #cfdce7;border-radius:9px;background:#fff;padding:9px 7px;text-align:right;font:inherit;font-size:14px;font-weight:800;color:#173b5d}.target-allocation-input i{font-style:normal;color:#71859a;font-size:12px}.target-allocation-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid #dfe8ef;color:#526879;font-size:12px}.target-allocation-foot button{border:0;border-radius:11px;background:#1e5f8a;color:#fff;padding:11px 14px;font-size:12px;font-weight:850;white-space:nowrap}.target-allocation-foot button:disabled{opacity:.45}.target-allocation-hint{margin:8px 0 0;color:#71859a;font-size:11px;line-height:1.5}.target-allocation-hint.error{color:#b45309}.target-allocation-hint.valid{color:#087443}.position-target-summary{display:flex;flex-wrap:wrap;align-items:center;gap:7px 10px;margin:8px 0;padding:9px 10px;border-radius:10px;background:#f5f9fc;border:1px solid #e1eaf1;color:#71859a;font-size:11px}.position-target-summary b{color:#294e6d;font-size:13px}.position-target-summary em{font-style:normal;font-weight:800}.position-target-summary .over{color:#b45309}.position-target-summary .under{color:#0b6f9e}.position-target-summary .on-target{color:#087443}
 .bot-virtual-card{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;background:linear-gradient(135deg,#eff7fc,#f8fbfd);border:1px solid #d8e8f2;border-radius:16px;padding:12px;margin-bottom:10px}.bot-virtual-card small{display:block;color:#71859a;font-size:10px}.bot-virtual-card b{display:block;margin-top:3px;color:#173b5d;font-size:15px}.bot-virtual-card .up{color:#16814c}.bot-virtual-card .down{color:#c63b3b}
 @media(max-width:520px){.position-card{border-radius:19px;padding:15px}.position-card-title h3{font-size:20px}.position-card-price{min-width:0;max-width:44%;}.position-card-price b{font-size:23px;letter-spacing:-.4px}.position-card-price span{font-size:13px}.position-card-primary{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}.position-card-primary>div:last-child{grid-column:auto}.bot-virtual-card{grid-template-columns:1fr}.position-card-grid{grid-template-columns:1fr 1fr}}
 .position-more{margin-top:8px;border-top:1px solid #edf1f4}.position-more>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:space-between}.position-more>summary::-webkit-details-marker{display:none}.position-more>summary:after{content:'＋';font-size:16px;font-weight:500;color:#8294a6}.position-more[open]>summary:after{content:'−'}.position-detail-body{padding:2px 0 4px}.position-card-grid{margin-top:8px!important}.position-card-actions{margin-top:8px!important}.position-card-primary>div{min-width:0!important;min-height:58px!important;display:flex!important;flex-direction:column!important;justify-content:center!important}.position-card-primary b{font-size:17px!important;line-height:1.15!important;overflow-wrap:anywhere}
@@ -29654,6 +29785,7 @@ def web_positions(uid):
 .position-confirm-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.position-confirm-item{background:#fafbfd;border:1px solid #edf1f4;border-radius:12px;padding:10px 11px;min-width:0}.position-confirm-item small{display:block;color:#7a8ea0;font-size:10px;margin-bottom:4px}.position-confirm-item b{display:block;color:#294e6d;font-size:14px;line-height:1.35;overflow-wrap:anywhere}.position-confirm-warning{margin:12px 0 6px;padding:10px 12px;border-radius:12px;background:#fff8ed;border:1px solid #f2d9aa;color:#8a631d;font-size:11px;line-height:1.6}
 .position-confirm-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:14px 20px 18px}.position-confirm-actions button{appearance:none;border:0;border-radius:13px;padding:13px 12px;font-size:15px;font-weight:850;cursor:pointer}.position-confirm-cancel{background:#f1f4f7;color:#526879}.position-confirm-submit{background:#1e5f8a;color:#fff;box-shadow:0 7px 16px rgba(30,95,138,.2)}
 @media(max-width:520px){.position-confirm-backdrop{padding:10px}.position-confirm-modal{border-radius:22px}.position-confirm-head{padding:18px 17px 13px}.position-confirm-body{padding:14px 17px 7px}.position-confirm-actions{padding:12px 17px 16px}.position-confirm-grid{gap:7px}.position-confirm-item{padding:9px}.position-confirm-item b{font-size:13px}}
+@media(max-width:520px){.target-allocation-panel{padding:13px;border-radius:16px}.target-allocation-list{grid-template-columns:1fr}.target-allocation-head h3{font-size:16px}.target-allocation-row{padding:9px 0}.target-allocation-foot{align-items:stretch;flex-direction:column}.target-allocation-foot button{width:100%;padding:13px}.position-target-summary{gap:5px 8px}}
 </style>"""
 
     body = f"""
@@ -29665,6 +29797,7 @@ def web_positions(uid):
 {portfolio_trend_html}
 <div class="section-head"><h2>持股明細</h2>
   <span class="section-note">依市值排序　·　<a href="/web/trades" style="color:var(--brass)">操作日報 →</a></span></div>
+{(f'<section class="target-allocation-panel"><div class="target-allocation-head"><div><h3>目標持股比例</h3><p>股票與 ETF 持倉市值合計為 100%；只保存配置目標，不會自動買賣。</p></div><span class="target-allocation-total" data-target-total>尚未完成</span></div><form method="post" action="/web/positions" class="target-allocation-form" id="target-allocation-form">{csrf_hidden_input()}<input type="hidden" name="action" value="save_target_weights"><div class="target-allocation-list">' + ''.join(f'<label class="target-allocation-row"><span><b>{html.escape(stock_display_name(str(x.get("code") or "")))}</b><small>{html.escape(str(x.get("code") or ""))}</small></span><span class="target-allocation-input"><input type="number" name="target_weight_{html.escape(str(x.get("code") or ""), quote=True)}" min="0" max="100" step="0.1" inputmode="decimal" value="{target_weights.get(str(x.get("code") or ""), "")}" placeholder="0.0" required><i>%</i></span></label>' for x in sorted(positions, key=lambda z: str(z.get("code") or ""))) + '</div><div class="target-allocation-foot"><span>目前設定合計 <b id="target-allocation-sum">0.0%</b></span><button type="submit">儲存目標比例</button></div><p class="target-allocation-hint" id="target-allocation-hint">請為所有目前持股設定目標比例，合計必須為 100%。</p></form></section>' if positions else '')}
 <div class="rows">
 {''.join(rows_html) if rows_html else '<div class="empty">還沒有持股紀錄，用下方表單新增。</div>'}
 </div>
@@ -29694,6 +29827,27 @@ def web_positions(uid):
 </form>"""
     body += '''<script>
 (function(){
+  var targetForm=document.getElementById('target-allocation-form');
+  if(targetForm){
+    var targetInputs=Array.prototype.slice.call(targetForm.querySelectorAll('input[name^="target_weight_"]'));
+    var sumEl=document.getElementById('target-allocation-sum');
+    var hintEl=document.getElementById('target-allocation-hint');
+    var badgeEl=targetForm.closest('.target-allocation-panel')?.querySelector('[data-target-total]');
+    function updateTargetSum(){
+      var total=0, complete=true;
+      targetInputs.forEach(function(input){var raw=input.value.trim();if(raw===''){complete=false;return;}var n=Number(raw);if(!Number.isFinite(n)||n<0||n>100){complete=false;return;}total+=n;});
+      total=Math.round(total*100)/100;
+      if(sumEl)sumEl.textContent=total.toFixed(1)+'%';
+      var valid=complete&&Math.abs(total-100)<=0.05;
+      if(badgeEl){badgeEl.textContent=valid?'配置合計正確':(complete?'合計 '+total.toFixed(1)+'%':'尚未完成');badgeEl.classList.toggle('valid',valid);badgeEl.classList.toggle('invalid',!valid);}
+      if(hintEl){hintEl.classList.toggle('valid',valid);hintEl.classList.toggle('error',complete&&!valid);hintEl.textContent=valid?'比例合計為 100%，可以儲存。':(complete?'目前合計 '+total.toFixed(1)+'%，必須等於 100% 才能儲存。':'請填寫所有持股的目標比例，合計必須為 100%。');}
+      var submit=targetForm.querySelector('button[type="submit"]');if(submit)submit.disabled=!valid;
+      return valid;
+    }
+    targetInputs.forEach(function(input){input.addEventListener('input',updateTargetSum);});
+    targetForm.addEventListener('submit',function(ev){if(!updateTargetSum()){ev.preventDefault();if(hintEl)hintEl.focus();}});
+    updateTargetSum();
+  }
   function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;')}
   function num(v){var n=Number(String(v||'').replace(/,/g,''));return Number.isFinite(n)?n:null}
   function money(v,digits){var n=num(v);return n==null?'未填':n.toLocaleString('zh-TW',{minimumFractionDigits:digits||0,maximumFractionDigits:digits||0})}
