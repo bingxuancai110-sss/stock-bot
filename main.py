@@ -32604,7 +32604,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         point_px = {"1m": 23, "3m": 19, "6m": 16, "ytd": 13, "all": 11}.get(key, 16)
         min_width = {"1m": 650, "3m": 850, "6m": 1000, "ytd": 1400, "all": 1550}.get(key, 850)
         W = max(min_width, 110 + len(norm) * point_px)
-        H, ML, MR, MT, MB = 600, 76, 22, 30, 66
+        H, ML, MR, MT, MB = 510, 76, 22, 28, 56  # V281.5：整體縮短約15%，保留足夠繪圖高度
         PW, PH = W - ML - MR, H - MT - MB
         def x(i): return ML + (i / max(1, len(norm) - 1)) * PW
         def y(v): return MT + (1 - (v - lo) / max(1e-9, hi - lo)) * PH
@@ -32722,25 +32722,16 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
         last_market = norm[last_market_i]["taiex"] if last_market_i is not None else None
         market_path = path_for("taiex")
         ey = max(MT + 5, y(last_port) - 23)
-        endpoint_labels.append(
-            f'<g class="endpoint port-end"><rect x="{max(ML, x(last_i)-154):.1f}" y="{ey:.1f}" width="146" height="29" rx="14"/><text x="{max(ML+73, x(last_i)-81):.1f}" y="{ey+19:.1f}" text-anchor="middle">我的組合 {fmt_pct(last_port)}</text></g>'
-        )
+        # 最新數值放在圖表下方的摘要卡，不覆蓋折線；避免兩個終點標籤重疊遮住走勢。
+        # 保留終點圓點，使用者仍可點擊各資料點查看當日數據。
+        endpoint_labels = []
         market_endpoint_marker = ""
         if last_market_i is not None and last_market is not None:
             market_x = x(last_market_i)
             market_y = y(last_market)
             market_endpoint_marker = f'<circle class="market-layer market-endpoint-marker" cx="{market_x:.1f}" cy="{market_y:.1f}" r="7"/>'
-            ey2 = min(H - MB - 28, max(MT + 6, market_y + 9))
-            if abs(ey2 - ey) < 35:
-                ey2 = min(H - MB - 28, ey + 35)
-                if abs(ey2 - ey) < 28:
-                    ey2 = max(MT + 6, ey - 35)
-            label_x = max(ML, min(market_x - 154, W - MR - 146))
-            label_mid = label_x + 73
-            latest_market_date = html.escape(fmt_date_full(norm[last_market_i]["date"]))
-            endpoint_labels.append(
-                f'<g class="endpoint market-end" aria-label="加權指數最後有效資料 {latest_market_date}"><rect x="{label_x:.1f}" y="{ey2:.1f}" width="146" height="27" rx="13"/><text x="{label_mid:.1f}" y="{ey2+18:.1f}" text-anchor="middle">大盤 {fmt_pct(last_market)}</text></g>'
-            )
+            # 不在折線區疊加「大盤」文字標籤，最新值已在圖表下方摘要區顯示。
+            # 這可避免組合線與大盤線靠近時被標籤遮擋。
 
         svg = (
             f'<svg class="portfolio-trend-svg" viewBox="0 0 {W} {H}" preserveAspectRatio="none" role="img" aria-label="{period_labels[key]}組合與加權指數績效圖">'
