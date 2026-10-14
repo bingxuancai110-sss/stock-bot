@@ -32778,8 +32778,8 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 .portfolio-trend-card{position:relative;margin:20px 0;padding:24px 20px 22px;border:1px solid #d9e3ea;border-radius:28px;background:radial-gradient(circle at 100% 0%,rgba(180,145,82,.10),transparent 32%),linear-gradient(180deg,#fff 0%,#f8fbfd 100%);box-shadow:0 18px 45px rgba(30,57,82,.10);overflow:hidden}
 .portfolio-trend-card:before{content:"";position:absolute;left:0;right:0;top:0;height:5px;background:linear-gradient(90deg,#315f80,#b18a4b,#315f80)}
 .portfolio-trend-header{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin:4px 0 20px}
-.portfolio-trend-title h2{margin:0;color:#142a40;font-size:36px;line-height:1.08;letter-spacing:-.6px;font-weight:950}
-.portfolio-trend-title p{margin:9px 0 0;color:#718397;font-size:17px;line-height:1.5;font-weight:750}
+.portfolio-trend-title h2{margin:0;color:#173b59;font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;font-size:30px;line-height:1.2;letter-spacing:.015em;font-weight:800}
+.portfolio-trend-title p{margin:7px 0 0;color:#74899b;font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;font-size:15px;line-height:1.55;font-weight:600;letter-spacing:.01em}
 .portfolio-trend-status{flex:0 0 auto;padding:9px 13px;border:1px solid #d6e2ea;border-radius:999px;background:#f8fbfd;color:#587085;font-size:13px;font-weight:950;white-space:nowrap}
 .trend-period-radio,.trend-benchmark-toggle{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
 .portfolio-trend-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px;padding:4px 0 16px}
@@ -32827,7 +32827,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 .portfolio-trend-legend{display:flex;align-items:center;gap:17px;flex-wrap:wrap;margin:13px 3px 0;color:#6e8090;font-size:12px;font-weight:850}.portfolio-trend-legend span{display:inline-flex;align-items:center;gap:6px}.portfolio-trend-legend i{display:inline-block;width:22px;height:4px;border-radius:4px;background:#8b6934}.portfolio-trend-legend i.market{height:3px;background:repeating-linear-gradient(90deg,#949c98 0 7px,transparent 7px 11px)}.portfolio-trend-legend i.point-up{width:9px;height:9px;border-radius:50%;background:#d64a45}.portfolio-trend-legend i.point-down{width:9px;height:9px;border-radius:50%;background:#159a62}.portfolio-trend-legend i.point-neutral{width:9px;height:9px;border-radius:50%;background:#6f8799}
 .portfolio-trend-note{margin:9px 3px 0;color:#8796a2;font-size:12px;line-height:1.55;font-weight:700}.portfolio-trend-plot:before{content:"← 左右滑動查看完整走勢 →";display:block;position:sticky;left:0;z-index:3;width:max-content;margin:8px auto -34px;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,.92);border:1px solid #dce6ec;color:#718493;font-size:12px;font-weight:850;pointer-events:none}.trend-hit-point{cursor:pointer;touch-action:manipulation}
 @media(max-width:640px){
-.portfolio-trend-card{padding:19px 11px 17px;border-radius:23px;margin:16px 0}.portfolio-trend-header{gap:8px;margin-bottom:15px}.portfolio-trend-title h2{font-size:35px}.portfolio-trend-title p{font-size:16px}.portfolio-trend-status{font-size:11px;padding:8px 9px}
+.portfolio-trend-card{padding:19px 11px 17px;border-radius:23px;margin:16px 0}.portfolio-trend-header{gap:8px;margin-bottom:15px}.portfolio-trend-title h2{font-size:28px;letter-spacing:.015em}.portfolio-trend-title p{font-size:14px}.portfolio-trend-status{font-size:11px;padding:8px 9px}
 .portfolio-trend-tabs{gap:5px;padding-bottom:15px}.portfolio-trend-tab{min-height:47px;padding:8px 1px;font-size:16px;border-radius:15px}.portfolio-trend-current{font-size:14px}.portfolio-trend-current b{font-size:24px}.portfolio-trend-benchmark-label{min-height:46px;font-size:13px;padding:8px 10px}
 .portfolio-trend-range{font-size:14px}.portfolio-trend-range b{font-size:17px}.portfolio-trend-svg .tick{font-size:22px}.portfolio-trend-svg .date{font-size:19px}
 .portfolio-trend-summary{gap:8px;margin-top:12px}.portfolio-trend-stat{padding:13px 12px;border-radius:16px}.portfolio-trend-stat small{font-size:13px}.portfolio-trend-stat strong{font-size:27px}.portfolio-trend-stat.excess-stat{min-height:102px;padding:14px 15px}.portfolio-trend-stat.excess-stat strong{font-size:34px}.excess-caption{font-size:12px}
@@ -39072,7 +39072,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .today-target-row{{display:block!important;padding:0!important;border-bottom:1px solid #edf1f5}}
 .today-target-summary{{display:block;list-style:none;cursor:pointer;padding:13px 0;outline:none}}
 .today-target-summary::-webkit-details-marker{{display:none}}
-.today-target-summary-head{{display:grid;grid-template-columns:minmax(0,1fr) auto 18px;gap:9px;align-items:center}}
+.today-target-summary-head{{display:grid;grid-template-columns:minmax(0,1fr) auto auto 18px;gap:9px;align-items:center}}
+.today-target-summary-weight{{font-size:12px;font-weight:900;color:#244c6a;font-variant-numeric:tabular-nums;white-space:nowrap}}
 .today-target-day{{font-size:11px;font-weight:850;font-variant-numeric:tabular-nums;white-space:nowrap}}
 .today-target-day-up{{color:#d94841}}.today-target-day-down{{color:#16845b}}.today-target-day-flat{{color:#8292a0}}
 .today-target-chevron{{color:#8297a8;font-size:17px;transition:transform .18s ease;text-align:center}}
@@ -39092,7 +39093,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .today-target-difference span{{font-size:9px;color:#7c8e9d;line-height:1.5}}
 .today-target-difference b{{margin-top:4px;font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}}
 .today-target-input{{max-width:150px;margin-left:auto}}
-@media(max-width:520px){{.today-target-summary{{padding:12px 0}}.today-target-summary-head{{grid-template-columns:minmax(0,1fr) auto 15px;gap:6px}}.today-target-day{{font-size:10px}}.today-target-compare-grid{{gap:9px}}.today-target-bar-label span{{font-size:9px}}.today-target-bar-label b{{font-size:12px}}.today-target-difference{{gap:8px;padding:10px}}.today-target-difference b{{font-size:11px}}.today-target-input{{max-width:130px}}}}
+@media(max-width:520px){{.today-target-summary{{padding:12px 0}}.today-target-summary-head{{grid-template-columns:minmax(0,1fr) auto auto 15px;gap:6px}}.today-target-summary-weight{{font-size:11px}}.today-target-day{{font-size:10px}}.today-target-compare-grid{{gap:9px}}.today-target-bar-label span{{font-size:9px}}.today-target-bar-label b{{font-size:12px}}.today-target-difference{{gap:8px;padding:10px}}.today-target-difference b{{font-size:11px}}.today-target-input{{max-width:130px}}}}
 /* V280：移除今日頁頂部提醒，目標比例採精簡清單呈現。 */
 .today-target-section{{margin:18px 0 24px;padding:18px 17px 14px;border:1px solid #d8e4ed;border-radius:18px;background:#fff;box-shadow:0 5px 18px rgba(25,62,94,.035);scroll-margin-top:100px}}
 .today-target-section-head{{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:14px;border-bottom:1px solid #e8eef3}}
@@ -39124,6 +39125,28 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .today-target-footnote{{margin:11px 0 0;padding-top:10px;border-top:1px solid #edf1f5;color:#8a9aaa;font-size:10px;line-height:1.5}}
 .today-target-top-reminder,.today-target-reminder{{display:none!important}}
 @media(max-width:520px){{.today-target-section{{padding:15px 12px;border-radius:16px}}.today-target-section-head h2{{font-size:18px}}.today-target-row,.today-target-column-head{{grid-template-columns:minmax(0,1fr) 88px;gap:9px}}.today-target-row{{padding:11px 0}}.today-target-name b{{font-size:12px}}.today-target-current i{{font-size:9px}}.today-target-input-wrap{{padding:0 5px}}.today-target-input input{{font-size:14px}}.today-target-footer{{align-items:stretch;flex-direction:column}}.today-target-footer button{{width:100%;padding:13px}}.today-target-status{{font-size:9px;padding:6px 7px}}}}
+/* V281.3：只調整「目標配置／持股比例表」中文字體，走勢區不變。 */
+.today-target-section,
+.today-target-section *{{
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif!important;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}}
+.today-target-section-head h2{{font-size:20px!important;font-weight:750!important;letter-spacing:.01em!important;}}
+.today-target-section-head p{{font-size:12px!important;font-weight:400!important;letter-spacing:.01em!important;}}
+.today-target-column-head{{font-size:11px!important;font-weight:600!important;letter-spacing:.01em!important;}}
+.today-target-name b{{font-size:14px!important;font-weight:650!important;letter-spacing:.005em!important;}}
+.today-target-name small{{font-size:11px!important;font-weight:450!important;letter-spacing:.01em!important;}}
+.today-target-summary-weight,.today-target-day{{font-size:12px!important;font-weight:650!important;font-variant-numeric:tabular-nums;letter-spacing:0!important;}}
+.today-target-bar-label span,.today-target-difference span,.today-target-input>span:first-child{{font-size:11px!important;font-weight:500!important;letter-spacing:.01em!important;}}
+.today-target-bar-label b,.today-target-difference b{{font-size:13px!important;font-weight:650!important;letter-spacing:0!important;font-variant-numeric:tabular-nums;}}
+.today-target-footer>div b{{font-size:21px!important;font-weight:700!important;letter-spacing:0!important;}}
+.today-target-footer button{{font-size:12px!important;font-weight:650!important;letter-spacing:.01em!important;}}
+@media(max-width:520px){{
+ .today-target-section-head h2{{font-size:19px!important}}
+ .today-target-name b{{font-size:13px!important}}
+ .today-target-summary-weight,.today-target-day{{font-size:11px!important}}
+}}
 </style>
 <div class="daily-home">
   <section class="daily-hero" aria-label="台北 101 城市主視覺">
@@ -40493,7 +40516,7 @@ def web_portfolio(uid):
             _day_change_text, _day_change_class = '—', 'today-target-day-flat'
         _today_target_rows.append(f'''<details class="today-target-row">
           <summary class="today-target-summary">
-            <div class="today-target-summary-head"><div class="today-target-name"><b>{html.escape(_name)}</b><small>{html.escape(_code)} · {_industry_text}</small></div><span class="today-target-day {_day_change_class}">{_day_change_text}</span><span class="today-target-chevron" aria-hidden="true">⌄</span></div>
+            <div class="today-target-summary-head"><div class="today-target-name"><b>{html.escape(_name)}</b><small>{html.escape(_code)} · {_industry_text}</small></div><span class="today-target-summary-weight">{_current_weight_text}</span><span class="today-target-day {_day_change_class}">{_day_change_text}</span><span class="today-target-chevron" aria-hidden="true">⌄</span></div>
             <div class="today-target-summary-track"><span style="width:{_bar_width:.1f}%"></span></div>
           </summary>
           <div class="today-target-expanded">
@@ -40703,10 +40726,10 @@ def web_portfolio(uid):
     body = f"""
 {daily_top}
 {f'<div class="msg today-target-save-message">{msg}</div>' if msg and request.method == "POST" and request.form.get("action") == "save_target_weights" else ''}
-{today_target_allocation_html}
 {industry_css}<div class="section-head"><h2>完整組合分析</h2><span class="section-note">往下查看詳細資料</span></div>
 <div class="totals"><div><div class="total-label">總市值</div><div class="total-value num">{total_value:,.0f}</div><div class="total-sub">{fmt_pct(pl_total)}</div></div><div><div class="total-label">持股檔數</div><div class="total-value num">{len(holdings)}</div><div class="total-sub">{len(by_industry)} 個產業</div></div><div><div class="total-label">最大單一持股</div><div class="total-value num">{top['weight']:.1f}%</div><div class="total-sub">{top['name']}</div></div></div>
 <div class="section-head"><h2>組合走勢</h2><span class="section-note">相對起始日漲跌幅</span></div><div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
+{today_target_allocation_html}
 {today_target_script}
 
 """
