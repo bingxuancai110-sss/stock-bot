@@ -3666,20 +3666,29 @@ def _digest_event_title(event):
 
 
 def _build_postmarket_anomaly_digest(events, snapshot_date, base_url=None):
-    """濃縮盤後精華：優先持股、方向反轉、黑馬大變動、雷達突破與大盤。"""
+    """盤後精華：最多 5 項，優先呈現持股與有明確證據的重大變化。"""
     events = list(events or [])
     if not events:
         return None
 
-    # 同類低價值事件不逐檔洗版；保留真正有辨識度的事件。
-    priority_categories = {"watchlist", "watchlist_position", "institutional", "blackhorse", "radar", "market", "news"}
-    selected = [e for e in events if str(e.get("category") or "") in priority_categories]
-    selected.sort(key=lambda e: (-CHANGE_LEVEL.get(str(e.get("severity") or "C").upper(), 1), str(e.get("category") or "")))
+    priority = {
+        "watchlist": 0, "watchlist_position": 0,
+        "institutional": 1, "radar": 2, "blackhorse": 3,
+        "market": 4, "news": 5,
+    }
+    selected = [
+        e for e in events
+        if str(e.get("category") or "") in priority
+    ]
+    # 法人連續性等例行變化不單獨佔版面，只保留方向反轉。
+    selected = [
+        e for e in selected
+        if not (
+            str(e.get("category") or "") == "institutional"
+            and "方向反轉" not in str(e.get("title") or "")
+        )
+    ]
 
-    # 單純法人連續 1→2、4→5 這類事件不單獨佔版面。
-    selected = [e for e in selected if not (str(e.get("category")) == "institutional" and "方向反轉" not in str(e.get("title")))]
-
-    # 黑馬 #1 只有真的換人才能報；前後同一名次直接丟掉。
     filtered = []
     for e in selected:
         title = str(e.get("title") or "")
@@ -3687,36 +3696,55 @@ def _build_postmarket_anomaly_digest(events, snapshot_date, base_url=None):
             m = re.search(r"換人[:：]?\s*([^，, ]+).*?([A-Za-z0-9一-龥\-]+)\s*上升至 #1", title)
             if m and m.group(1) == m.group(2):
                 continue
+        # 沒有實際內容的新聞標題不推播，避免只告知「有新聞」。
+        if str(e.get("category") or "") == "news":
+            detail = " ".join(str(e.get("detail") or "").split())
+            if len(detail) < 12:
+                continue
         filtered.append(e)
-    selected = filtered[:15]
+
+    # 先按事件嚴重度，再按使用者關聯性排序；最多五項，避免 LINE 長訊息洗版。
+    filtered.sort(key=lambda e: (
+        -CHANGE_LEVEL.get(str(e.get("severity") or "C").upper(), 1),
+        priority.get(str(e.get("category") or ""), 9)
+    ))
+    selected = filtered[:5]
+    if not selected:
+        return None
 
     has_s = any(str(e.get("severity") or "A").upper() == "S" for e in selected)
-    lines = [f"{'🚨' if has_s else '📊'} 【台股盤後精華】", "",
-             f"今日偵測 {len(events)} 項，精選 {len(selected)} 項", ""]
+    lines = ["📊 【台股盤後精華】", ""]
+    headings = {
+        "watchlist": "📌 持股變化",
+        "watchlist_position": "📌 持股變化",
+        "institutional": "🔄 法人異動",
+        "blackhorse": "🐎 黑馬異動",
+        "radar": "📡 雷達訊號",
+        "market": "🌎 市場變化",
+        "news": "📰 重要新聞",
+    }
+    last_category = None
+    for e in selected:
+        category = str(e.get("category") or "")
+        if category != last_category:
+            lines.append(headings.get(category, "📍 其他變化"))
+            last_category = category
+        title = _digest_event_title(e)
+        detail = " ".join(str(e.get("detail") or "").split())
+        if len(detail) > 90:
+            detail = detail[:87] + "..."
+        lines.append(f"• {title}" + (f"｜{detail}" if detail else ""))
 
-    groups = [("watchlist", "🔥 你的持股"), ("institutional", "🔄 法人異動"),
-              ("blackhorse", "🐎 黑馬異動"), ("radar", "📡 雷達"),
-              ("market", "🌎 市場"), ("news", "📰 重要新聞")]
-    for cat, heading in groups:
-        items = [e for e in selected if str(e.get("category") or "") == cat]
-        if not items:
-            continue
-        lines += [heading]
-        for e in items[:6]:
-            title = _digest_event_title(e)
-            detail = " ".join(str(e.get("detail") or "").split())
-            if len(detail) > 110:
-                detail = detail[:107] + "..."
-            # 法人連續性只保留方向反轉；其他低價值 streak 已被過濾。
-            lines.append(f"• {title}" + (f"｜{detail}" if detail else ""))
-        lines.append("")
-
-    lines += ["📌 事件提醒，不代表買賣建議。"]
+    lines += ["", "📌 以上為資料異動整理，不代表買賣建議。"]
     if base_url:
-        lines.append(f"👉 查看完整戰情：{base_url}/")
+        lines.append(f"👉 查看完整分析：{base_url}/")
     text = "\n".join(lines)
-    return {"severity": "S" if has_s else "A", "title": f"盤後精華｜{len(selected)} 項",
-            "detail": text, "event_key": f"postmarket_digest_{snapshot_date}"}
+    return {
+        "severity": "S" if has_s else "A",
+        "title": f"盤後精華｜{len(selected)} 項",
+        "detail": text,
+        "event_key": f"postmarket_digest_{snapshot_date}",
+    }
 
 
 def push_anomaly_events(snapshot_date, users=None, base_url=None):
@@ -4875,9 +4903,9 @@ SELL_REASONS = ["停利", "停損", "換股", "需要用錢", "看法改變", "�
 
 
 def sell_position_all(user_id, code, sell_price=None, fee=None, tax=None,
-                      sell_reason=None):
+                      sell_reason=None, sell_shares=None):
     """
-    把同一檔的所有買進筆數一次賣光。
+    依 FIFO（最早買進優先）賣出同一檔指定股數；未指定股數時才賣光。
 
     為什麼需要：分批買進的股票會拆成多筆，原本每一筆都要各自展開賣出面板
     再送一次表單——9 筆就要操作 9 次，而實際上券商是一次賣掉的。
@@ -4900,29 +4928,49 @@ def sell_position_all(user_id, code, sell_price=None, fee=None, tax=None,
     if not lots:
         return False, "找不到這檔持股"
 
-    total_shares = sum(int(l["shares"]) for l in lots)
-    if total_shares <= 0:
+    # FIFO：先賣最早買進的 lot；同日則以建立時間作穩定排序。
+    lots.sort(key=lambda l: (l.get("bought_on") or date.max,
+                             str(l.get("created_at") or ""), str(l.get("id") or "")))
+    available_shares = sum(int(l["shares"]) for l in lots)
+    if available_shares <= 0:
         return False, "持股股數為 0"
+    try:
+        requested_shares = available_shares if sell_shares in (None, "") else int(sell_shares)
+    except (TypeError, ValueError):
+        return False, "賣出股數必須是整數"
+    if requested_shares <= 0:
+        return False, "賣出股數必須大於 0"
+    if requested_shares > available_shares:
+        return False, f"賣出股數不能超過持有股數（{available_shares:,} 股）"
+
+    # 只處理實際會用到的 lot，手續費與稅依本次賣出股數比例分攤。
+    plan = []
+    remaining = requested_shares
+    for lot in lots:
+        if remaining <= 0:
+            break
+        lot_sell_shares = min(int(lot["shares"]), remaining)
+        plan.append((lot, lot_sell_shares))
+        remaining -= lot_sell_shares
 
     done, results = 0, []
     remain_fee = fee
     remain_tax = tax
-    for idx, lot in enumerate(lots):
-        shares = int(lot["shares"])
+    for idx, (lot, shares) in enumerate(plan):
         # 依股數比例分攤；最後一筆吃掉餘數，總額才不會因四捨五入而短少
         if fee is None:
             lot_fee = None
-        elif idx == len(lots) - 1:
+        elif idx == len(plan) - 1:
             lot_fee = round(remain_fee, 2)
         else:
-            lot_fee = round(float(fee) * shares / total_shares, 2)
+            lot_fee = round(float(fee) * shares / requested_shares, 2)
             remain_fee -= lot_fee
         if tax is None:
             lot_tax = None
-        elif idx == len(lots) - 1:
+        elif idx == len(plan) - 1:
             lot_tax = round(remain_tax, 2)
         else:
-            lot_tax = round(float(tax) * shares / total_shares, 2)
+            lot_tax = round(float(tax) * shares / requested_shares, 2)
             remain_tax -= lot_tax
 
         ok, err, summary = sell_position(
@@ -4937,7 +4985,7 @@ def sell_position_all(user_id, code, sell_price=None, fee=None, tax=None,
 
     # sell_position 的 summary 用的鍵是 pl（不是 realized_pl）
     total_pl = sum(float(r.get("pl") or 0) for r in results)
-    return True, {"lots": done, "shares": total_shares, "realized_pl": total_pl}
+    return True, {"lots": done, "shares": requested_shares, "realized_pl": total_pl}
 
 
 def normalize_sell_reason(raw):
@@ -29285,12 +29333,14 @@ def web_positions(uid):
             ok, info = sell_position_all(
                 uid, request.form.get("code"),
                 sell_price=numv("sell_price"), fee=numv("fee"), tax=numv("tax"),
-                sell_reason=request.form.get("sell_reason"))
+                sell_reason=request.form.get("sell_reason"),
+                sell_shares=numv("sell_shares", int))
             if ok:
-                msg = (f"✅ 已全部賣出：{info['lots']} 筆共 {info['shares']:,} 股，"
-                       f"已實現損益 {info['realized_pl']:+,.0f} 元。")
+                msg = (f"✅ 已賣出 {info['shares']:,} 股（FIFO：優先賣出最早買進的批次，"
+                       f"共涉及 {info['lots']} 筆），已實現損益 "
+                       f"{info['realized_pl']:+,.0f} 元。")
             else:
-                msg = f"全部賣出失敗：{info}"
+                msg = f"賣出失敗：{info}"
         elif action == "exright_apply":
             ok, info = apply_exright_adjustment(
                 uid, request.form.get("code"), request.form.get("ratio"))
@@ -29500,11 +29550,13 @@ def web_positions(uid):
         return f'''
 <details class="sellbox sellbox-all"><summary>全部賣出（{len(p.get("lots", []))} 筆・{total:,} 股）</summary>
 <form method="post" action="/web/positions" class="sellpanel"
-      onsubmit="return confirm('確定將 {html.escape(str(name))} 的 {total:,} 股全部賣出？');">
+      onsubmit="return confirm('確認依最早買進順序賣出所選股數？');">
   {csrf_hidden_input()}
   <input type="hidden" name="action" value="sell_all">
   <input type="hidden" name="code" value="{html.escape(str(code), quote=True)}">
   <div class="fields">
+    <div><label>賣出股數（依最早買進順序）</label>
+      <input type="number" name="sell_shares" min="1" max="{total}" step="1" placeholder="最多 {total:,} 股" required></div>
     <div><label>賣出價</label>
       <input type="number" step="0.01" name="sell_price" placeholder="{px}"></div>
     <div><label>手續費</label>
@@ -29517,10 +29569,10 @@ def web_positions(uid):
         {"".join(f'<option value="{r}">{r}</option>' for r in SELL_REASONS)}
       </select></div>
   </div>
-  <button type="submit">全部賣出</button>
+  <button type="submit">確認賣出指定股數</button>
   <div class="sell-hint">
-    一次賣掉這檔的全部 {len(p.get("lots", []))} 筆買進。
-    手續費與證交稅會依各筆股數比例分攤，總額等於你填的數字；
+    會先賣出最早買進的批次（FIFO）；若指定股數跨越多筆，系統會依各筆成本分別計算已實現損益。
+    手續費與證交稅會依本次賣出股數分攤，總額等於你填的數字；
     留空則以牌價試算（{est_fee:,} 與 {est_tax:,}）。<br>
     已實現損益仍以各筆自己的成本計算，分批紀錄不會消失。
   </div>
@@ -29534,16 +29586,14 @@ def web_positions(uid):
             if not lots:
                 return ""
             l = lots[0]
-            return (f'<div class="lot-actions">{delete_form(l["id"], name, l)}</div>'
-                    + sell_form(l["id"], l["shares"], p["code"],
-                                cur_price, l["cost"]))
+            return (sell_all_form(p, name, cur_price)
+                    + f'<div class="lot-actions">{delete_form(l["id"], name, l)}</div>')
         items = "".join(
             f'<div class="lot">'
             f'<span class="num">{l["shares"]:,}</span> 股　'
             f'成本 <span class="num">{l["cost"]:,.2f}</span>　'
             f'{l["bought_on"].strftime("%Y/%m/%d") if l["bought_on"] else "未填日期"}'
             f'<div class="lot-actions">{delete_form(l["id"], name, l)}</div>'
-            f'{sell_form(l["id"], l["shares"], p["code"], cur_price, l["cost"], "賣出這筆")}'
             f'</div>' for l in lots)
         return (sell_all_form(p, name, cur_price)
                 + f'<details class="lots"><summary>分 {len(lots)} 筆買進</summary>'
@@ -41648,7 +41698,8 @@ def _build_taiex_intraday_events(data, rows, now=None):
 
 
 def push_intraday_market_anomalies(now=None, base_url=None):
-    """盤中大盤異常即時推播；使用既有的每人上限、冷卻、S級突破與靜音設定。"""
+    """盤中大盤急漲急跌 LINE 推播已停用；保留函式以相容既有排程。"""
+    return "盤中股價異常提醒已停用；盤中雷達快照仍照常更新。"
     if not _admin_feature_enabled('line_anomaly'):
         return "盤中大盤異常目前已由管理員關閉。"
     now = now or taiwan_now()
