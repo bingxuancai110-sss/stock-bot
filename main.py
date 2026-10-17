@@ -2121,6 +2121,17 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_activity_log_feature_time
             ON activity_log(feature, occurred_at DESC)
         ''')
+        # 除權自動套用去重表：同一使用者、股票、除權日與配股率只處理一次。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS exright_auto_applied (
+                user_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                ex_date DATE NOT NULL,
+                ratio NUMERIC(10,4) NOT NULL,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, code, ex_date, ratio)
+            )
+        ''')
         # ── 網頁版：持股、問卷設定、登入權杖 ──
         # 持股與自選股分開存：自選股是「在看的」，持股是「真的買了的」，
         # 只有後者才有股數與成本，組合分析也只該算後者。
@@ -4349,7 +4360,7 @@ def merge_positions(positions):
 # 而且一律只提示、不自動套用，由使用者對照券商後自己按確認。
 EXRIGHT_MIN_RATIO = 1.4          # 低於此視為配息或雜訊，不提示
 EXRIGHT_MAX_RATIO = 20.0         # 超過此多半是資料異常，不是配股
-EXRIGHT_LOOKBACK_DAYS = 10       # 只看近期，避免翻出很久以前的除權
+EXRIGHT_LOOKBACK_DAYS = 10       # 即時候選偵測窗口；歷史補正需另走核對流程
 
 
 def _exright_cache_key(user_id):
@@ -4509,8 +4520,8 @@ def render_exright_cards(items, csrf_html=""):
   <div class="section-head"><h2>⚠️ 偵測到可能已除權</h2>
     <span class="section-note">{len(items)} 檔・需要你確認</span></div>
   <div class="mode-note">
-    股價已因除權下跌，但你的持股股數還是原本的，所以損益會顯示成大幅虧損。
-    確認券商的數字後按套用即可修正；不套用就不會有任何變動。
+    這是依還原價與未還原價差異找出的候選事件，並非官方公告核驗結果。
+    請先核對除權日期、配股比例與券商實際股數；確認無誤再手動套用。不套用就不會改動持股。
   </div>
   {''.join(cards)}
 </section>"""
@@ -4599,6 +4610,73 @@ def apply_exright_adjustment(user_id, code, ratio):
         return False, "調整失敗，持股未變更"
     finally:
         release_db_connection(conn)
+
+
+
+def auto_apply_verified_exrights(user_id, items):
+    """對近期偵測到的除權事件自動套用一次；使用資料庫唯一鍵避免重複處理。
+
+    只接受近期事件日期與合理配股率。每筆調整仍沿用 apply_exright_adjustment，
+    保留分批持股並寫入既有 position_change_logs。若日期／比率不可靠則不自動改動。
+    """
+    results = []
+    today = taiwan_today()
+    for item in items or []:
+        code = str(item.get('code') or '').strip()
+        ex_date = item.get('ex_date')
+        try:
+            ratio = round(float(item.get('ratio')), 4)
+            from datetime import date, datetime, timedelta
+            if isinstance(ex_date, str):
+                ex_date = date.fromisoformat(ex_date[:10])
+            elif isinstance(ex_date, datetime):
+                ex_date = ex_date.date()
+            if not isinstance(ex_date, date):
+                continue
+            if (today - ex_date).days < 0 or (today - ex_date).days > 5:
+                continue
+            if not (1.4 <= ratio <= 20.0) or not code:
+                continue
+        except Exception:
+            continue
+
+        conn = None
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM exright_auto_applied WHERE user_id=%s AND code=%s AND ex_date=%s AND ratio=%s",
+                (str(user_id).strip(), code, ex_date, ratio))
+            already = cur.fetchone()
+            cur.close()
+            release_db_connection(conn)
+            conn = None
+            if already:
+                continue
+
+            # 先套用既有批次保留邏輯；成功後再寫入唯一事件鍵。
+            ok, info = apply_exright_adjustment(user_id, code, ratio)
+            if not ok:
+                continue
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO exright_auto_applied (user_id, code, ex_date, ratio) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                (str(user_id).strip(), code, ex_date, ratio))
+            conn.commit()
+            cur.close()
+            results.append({"code": code, "ratio": ratio, "info": info})
+        except Exception as exc:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            print(f"⚠️ 自動除權調整未完成 {code}: {exc}")
+        finally:
+            if conn is not None:
+                release_db_connection(conn)
+    return results
 
 
 def add_position(user_id, code, shares, cost, bought_on=None, note=None):
@@ -29792,6 +29870,13 @@ def web_positions(uid):
     try:
         ignored = get_exright_ignored(uid)
         detected = detect_exright_adjustments(positions, price_map)
+        ignored = get_exright_ignored(uid)
+        # 使用者明確按過「忽略」的同一配股率不會被自動套用。
+        eligible = [x for x in detected
+                    if abs((ignored.get(x["code"]) or 0) - x["ratio"]) > 0.001]
+        # 安全模式：還原價比值只能當作「候選事件」，不是官方配股公告。
+        # 不在頁面載入時自動改動持股；歷史事件與未來事件都必須先核對券商實際股數。
+        # 避免開啟頁面、快取重算或行情資料修訂時重複／錯誤調整真實持股。
         # 浮點不能用等號比：忽略時存的 2.9842 和這次算出的 2.9843
         # 其實是同一次除權，差 0.001 以內就當作同一筆。
         found = [x for x in detected
@@ -40548,7 +40633,7 @@ def web_portfolio(uid):
         _bar_width = min(100.0, max(0.0, _current_weight / 30.0 * 100))
         _target_bar_width = min(100.0, max(0.0, float(_target_value or 0) / 30.0 * 100))
         _pr = (_h or {}).get('price') or {}
-        _day_change = next((_pr.get(k) for k in ('change_pct', 'pct_change', 'changePercent', 'percent') if _pr.get(k) is not None), None)
+        _day_change = next((_pr.get(k) for k in ('pct', 'change_pct', 'pct_change', 'changePercent', 'percent') if _pr.get(k) is not None), None)
         try:
             _day_change = float(_day_change)
             _day_change_text = f'{_day_change:+.2f}%'
