@@ -28347,8 +28347,8 @@ def _admin_exright_position_codes(user_id):
         release_db_connection(conn)
 
 
-def _admin_exright_batch_preview(user_id, code, target_shares, ex_date):
-    """Preview only lots bought before the ex-right date; post-event lots remain unchanged."""
+def _admin_exright_batch_preview(user_id, code, target_shares, ex_date, allow_missing_dates=False):
+    """Preview historical correction; missing buy dates need explicit one-time admin override."""
     try:
         exday = date.fromisoformat(str(ex_date))
         target_shares = int(target_shares)
@@ -28393,15 +28393,20 @@ def _admin_exright_batch_preview(user_id, code, target_shares, ex_date):
         if cost <= 0:
             return None, "有持股批次的每股成本為 0 或無效值；為避免成本錯帳，請先檢查該批資料。"
         bought_on = r[3]
+        assumed_pre_exdate = False
         if bought_on is None:
-            return None, "有持股批次缺少買進日期，無法判斷是否享有該次配股；請先補齊買進日期。"
+            if not allow_missing_dates:
+                return None, "有持股批次缺少買進日期。若你已核對該批在除權日前持有，可勾選「本次管理員例外」繼續；此例外只適用這次補正。"
+            # Explicit one-time override: treat undated lot as pre-ex-date, and disclose this assumption in preview/audit.
+            bought_on = exday.fromordinal(exday.toordinal() - 1)
+            assumed_pre_exdate = True
         if isinstance(bought_on, str):
             try:
                 bought_on = date.fromisoformat(bought_on)
             except ValueError:
                 return None, "有持股批次的買進日期格式異常，請先修正。"
         batches.append({"id": int(r[0]), "shares": shares, "cost": cost, "bought_on": bought_on,
-                        "eligible": bought_on < exday})
+                        "eligible": bought_on < exday, "assumed_pre_exdate": assumed_pre_exdate})
     if not batches:
         return None, "這位使用者目前沒有可補正的有效持股批次。"
 
@@ -28436,7 +28441,7 @@ def _admin_exright_batch_preview(user_id, code, target_shares, ex_date):
             "cost_before": cost_before, "cost_after": cost_after,
             "batch_count": len(batches)}, None
 
-def _admin_apply_historical_exright(user_id, code, ex_date, ratio, target_shares, admin_uid, note=""):
+def _admin_apply_historical_exright(user_id, code, ex_date, ratio, target_shares, admin_uid, note="", allow_missing_dates=False):
     """Apply a reviewed historical correction in one DB transaction; duplicate ex-date is blocked."""
     try:
         exday = date.fromisoformat(str(ex_date))
@@ -28488,11 +28493,16 @@ def _admin_apply_historical_exright(user_id, code, ex_date, ratio, target_shares
             if cost <= 0:
                 conn.rollback(); cur.close()
                 return False, "有持股批次的每股成本為 0 或無效值，已停止補正。"
+            assumed_pre_exdate = False
             if r[3] is None:
-                conn.rollback(); cur.close()
-                return False, "有持股批次缺少買進日期，無法安全判斷配股資格，已停止補正。"
-            bought_on = r[3] if not isinstance(r[3], str) else date.fromisoformat(r[3])
-            rows.append((int(r[0]), shares, cost, bought_on, r[4] or ""))
+                if not allow_missing_dates:
+                    conn.rollback(); cur.close()
+                    return False, "有持股批次缺少買進日期。若已核對該批於除權日前持有，請勾選本次管理員例外後重新預覽。"
+                bought_on = exday.fromordinal(exday.toordinal() - 1)
+                assumed_pre_exdate = True
+            else:
+                bought_on = r[3] if not isinstance(r[3], str) else date.fromisoformat(r[3])
+            rows.append((int(r[0]), shares, cost, bought_on, r[4] or "", assumed_pre_exdate))
         if not rows:
             conn.rollback(); cur.close()
             return False, "找不到可補正的持股批次。"
@@ -28508,14 +28518,14 @@ def _admin_apply_historical_exright(user_id, code, ex_date, ratio, target_shares
         if target_shares <= before_total or target_pre <= pre_before:
             conn.rollback(); cur.close()
             return False, f"資料庫目前總股數 {before_total:,}、除權前批次 {pre_before:,} 股；輸入的券商總股數不符合增加條件，已停止。"
-        cost_before = sum(sh * co for _, sh, co, _, _ in rows)
+        cost_before = sum(r[1] * r[2] for r in rows)
         eligible_total = sum(r[1] for r in eligible)
         allocated = 0
         cost_after = 0.0
         eligible_ids = {r[0] for r in eligible}
         eligible_index_by_id = {row[0]: i for i, row in enumerate(eligible)}
-        for pid, old_shares, old_cost, bought_on, old_note in rows:
-            # Allocate only the pre-ex-date lots; purchases on/after ex-date are left untouched.
+        for pid, old_shares, old_cost, bought_on, old_note, assumed_pre_exdate in rows:
+            # Allocate only pre-ex-date lots; missing-date lots enter only through explicit one-time admin override.
             if pid in eligible_ids:
                 eidx = eligible_index_by_id[pid]
                 if eidx == len(eligible) - 1:
@@ -28528,6 +28538,8 @@ def _admin_apply_historical_exright(user_id, code, ex_date, ratio, target_shares
                     return False, "目標股數無法合理分配到全部除權前批次，已停止。"
                 new_cost = round(old_shares * old_cost / new_shares, 4)
                 detail = f"歷史除權補正 {exday.isoformat()}｜倍率 {rate:.6f}｜{old_shares}股@{old_cost:.4f}→{new_shares}股@{new_cost:.4f}"
+                if assumed_pre_exdate:
+                    detail += "｜管理員本次例外：缺少買進日期，經人工確認按除權前批次處理"
                 merged_note = (str(old_note).strip() + " / " + detail).strip(" /")
                 cur.execute("UPDATE positions SET shares=%s, cost=%s, note=%s WHERE id=%s", (new_shares, new_cost, merged_note, pid))
             else:
@@ -28581,6 +28593,7 @@ def web_admin_exright_correction(uid):
         'ratio': str(request.values.get('ratio') or '').strip(),
         'target_shares': str(request.values.get('target_shares') or '').strip(),
         'note': str(request.values.get('note') or '').strip(),
+        'allow_missing_dates': request.values.get('allow_missing_dates') == '1',
     }
     if request.method == 'POST':
         if not valid_web_csrf():
@@ -28601,14 +28614,14 @@ def web_admin_exright_correction(uid):
                 if target_shares <= 0:
                     raise ValueError('除權後總股數必須是正整數。')
                 if action == 'preview':
-                    preview, err = _admin_exright_batch_preview(selected_user, selected_code, target_shares, exday)
+                    preview, err = _admin_exright_batch_preview(selected_user, selected_code, target_shares, exday, values['allow_missing_dates'])
                     if err:
                         message = err
                     else:
                         message = '這只是預覽，尚未修改任何持股。請核對預覽後再按「確認套用」。'
                 elif action == 'apply':
                     ok, result = _admin_apply_historical_exright(
-                        selected_user, selected_code, exday, ratio, target_shares, uid, values['note'])
+                        selected_user, selected_code, exday, ratio, target_shares, uid, values['note'], values['allow_missing_dates'])
                     if ok:
                         status_text = f"補正完成：{selected_code} 股數 {result['before']:,} → {result['after']:,}。"
                         return redirect('/web/admin/exright-correction?target_user=' + quote(selected_user, safe='')
@@ -28653,7 +28666,7 @@ def web_admin_exright_correction(uid):
     preview_html = ''
     if preview:
         p_rows = ''.join(
-            f'<tr><td>{esc(b["bought_on"] or "未記錄")}</td><td>{'除權前調整' if b['eligible'] else '除權日後不變'}</td><td>{b["shares"]:,}</td><td>{b["after_shares"]:,}</td><td>{b["cost"]:,.4f}</td><td>{b["after_cost"]:,.4f}</td></tr>'
+            f'<tr><td>{esc("未記錄（本次例外按除權前處理）" if b.get("assumed_pre_exdate") else (b["bought_on"] or "未記錄"))}</td><td>{'除權前調整' if b['eligible'] else '除權日後不變'}</td><td>{b["shares"]:,}</td><td>{b["after_shares"]:,}</td><td>{b["cost"]:,.4f}</td><td>{b["after_cost"]:,.4f}</td></tr>'
             for b in preview['batches'])
         try:
             ratio_expected_shares = int(preview['pre_before'] * float(values['ratio'])) + preview['post_shares']
@@ -28664,9 +28677,9 @@ def web_admin_exright_correction(uid):
         <div class="erc-stats"><div><small>目前股數</small><b>{preview['before']:,}</b></div><div><small>券商確認股數</small><b>{preview['after']:,}</b></div><div><small>批次數</small><b>{preview['batch_count']}</b></div><div><small>調整前總成本</small><b>{preview['cost_before']:,.2f}</b></div></div>
         {ratio_check_html}
         <div class="erc-table-wrap"><table class="erc-table"><thead><tr><th>買進日期</th><th>處理方式</th><th>原股數</th><th>預計股數</th><th>原每股成本</th><th>調整後每股成本</th></tr></thead><tbody>{p_rows}</tbody></table></div>
-        <p class="erc-warn">每個買進批次會保留；只調整除權日前的買進批次，除權日當天及之後買入的批次不變。成本以各批總取得成本不變為目標，實際總股數以券商紀錄為準。除權日後若有賣出紀錄或批次缺少買進日期，系統會停止補正。此工具不會自動連接券商帳戶。</p>
+        <p class="erc-warn">每個買進批次會保留；只調整除權日前的買進批次，除權日當天及之後買入的批次不變。成本以各批總取得成本不變為目標，實際總股數以券商紀錄為準。若使用本次管理員例外，缺少買進日期的批次會被視為除權前持有，請務必確認該批確實在除權日前買進。除權日後若有賣出紀錄，仍會停止補正。此工具不會自動連接券商帳戶。</p>
         <form method="post" action="/web/admin/exright-correction" onsubmit="return confirm('最後確認：這會立即改寫持股股數與每股成本，並留下歷史除權紀錄。請確定券商實際股數、官方除權日期與配股倍率都已核對。');">
-          {csrf_hidden_input()}<input type="hidden" name="action" value="apply"><input type="hidden" name="target_user" value="{esc(selected_user)}"><input type="hidden" name="code" value="{esc(selected_code)}"><input type="hidden" name="ex_date" value="{esc(values['ex_date'])}"><input type="hidden" name="ratio" value="{esc(values['ratio'])}"><input type="hidden" name="target_shares" value="{esc(values['target_shares'])}"><input type="hidden" name="note" value="{esc(values['note'])}"><input type="hidden" name="broker_confirmed" value="1"><button class="erc-primary" type="submit">✅ 確認套用這次歷史補正</button>
+          {csrf_hidden_input()}<input type="hidden" name="action" value="apply"><input type="hidden" name="target_user" value="{esc(selected_user)}"><input type="hidden" name="code" value="{esc(selected_code)}"><input type="hidden" name="ex_date" value="{esc(values['ex_date'])}"><input type="hidden" name="ratio" value="{esc(values['ratio'])}"><input type="hidden" name="target_shares" value="{esc(values['target_shares'])}"><input type="hidden" name="note" value="{esc(values['note'])}"><input type="hidden" name="broker_confirmed" value="1"><input type="hidden" name="allow_missing_dates" value="{'1' if values['allow_missing_dates'] else '0'}"><button class="erc-primary" type="submit">✅ 確認套用這次歷史補正</button>
         </form></section>'''
     msg_html = f'<div class="erc-flash">{esc(message)}</div>' if message else ''
     applied_html = ''.join(
@@ -28677,7 +28690,7 @@ def web_admin_exright_correction(uid):
 </style><div class="erc-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🧾 歷史除權息補正</h1><p>針對已完成除權、但系統股數仍未更新的資料進行人工核對。補正前先預覽，確認後才會修改。</p></div>
 {msg_html}<section class="erc-panel"><h2>① 選擇帳號與股票</h2><form method="get" action="/web/admin/exright-correction"><div class="erc-form-grid"><div class="erc-field"><label>使用者</label><select name="target_user" onchange="this.form.submit()">{user_options}</select></div><div class="erc-field"><label>股票</label><select name="code" onchange="this.form.submit()">{code_options}</select></div></div><noscript><button class="erc-secondary">載入選擇</button></noscript></form><p class="erc-note">目前只列出資料庫中有持股的帳號與股票。此頁是經管理員核對後的歷史補正工具，不會自動掃描／猜測官方事件；只調整除權日前買進批次。若除權後有賣出紀錄，會停止操作避免改錯帳。</p></section>
 <section class="erc-panel"><h2>② 目前買進批次</h2>{batch_table}</section>
-<section class="erc-panel"><h2>③ 輸入已核對的歷史事件</h2><form method="post" action="/web/admin/exright-correction">{csrf_hidden_input()}<input type="hidden" name="action" value="preview"><input type="hidden" name="target_user" value="{esc(selected_user)}"><input type="hidden" name="code" value="{esc(selected_code)}"><div class="erc-form-grid"><div class="erc-field"><label>除權日期（依官方公告）</label><input name="ex_date" type="date" value="{esc(values['ex_date'])}" required></div><div class="erc-field"><label>配股後倍率（例：1 股變 2.984 股）</label><input name="ratio" type="number" step="0.000001" min="1.000001" max="20" placeholder="例如 2.984226" value="{esc(values['ratio'])}" required></div><div class="erc-field"><label>券商核對後的目前持有總股數</label><input name="target_shares" type="number" step="1" min="1" placeholder="輸入券商目前實際總股數" value="{esc(values['target_shares'])}" required></div><div class="erc-field"><label>備註（選填）</label><input name="note" maxlength="500" placeholder="例如：已對照券商庫存" value="{esc(values['note'])}"></div></div><label class="erc-check"><input type="checkbox" name="broker_confirmed" value="1" required><span>我已核對官方除權公告及券商實際持股股數；以上倍率與日期不是由股價變化推測。</span></label><button class="erc-secondary" type="submit">🔎 先試算，不修改資料</button></form></section>
+<section class="erc-panel"><h2>③ 輸入已核對的歷史事件</h2><form method="post" action="/web/admin/exright-correction">{csrf_hidden_input()}<input type="hidden" name="action" value="preview"><input type="hidden" name="target_user" value="{esc(selected_user)}"><input type="hidden" name="code" value="{esc(selected_code)}"><div class="erc-form-grid"><div class="erc-field"><label>除權日期（依官方公告）</label><input name="ex_date" type="date" value="{esc(values['ex_date'])}" required></div><div class="erc-field"><label>配股後倍率（例：1 股變 2.984 股）</label><input name="ratio" type="number" step="0.000001" min="1.000001" max="20" placeholder="例如 2.984226" value="{esc(values['ratio'])}" required></div><div class="erc-field"><label>券商核對後的目前持有總股數</label><input name="target_shares" type="number" step="1" min="1" placeholder="輸入券商目前實際總股數" value="{esc(values['target_shares'])}" required></div><div class="erc-field"><label>備註（選填）</label><input name="note" maxlength="500" placeholder="例如：已對照券商庫存" value="{esc(values['note'])}"></div></div><label class="erc-check"><input type="checkbox" name="broker_confirmed" value="1" required><span>我已核對官方除權公告及券商實際持股股數；以上倍率與日期不是由股價變化推測。</span></label><label class="erc-check"><input type="checkbox" name="allow_missing_dates" value="1" {'checked' if values['allow_missing_dates'] else ''}><span><b>本次管理員例外：</b>若有批次缺少買進日期，我已另外核對並確認該批在除權日前持有，允許這次暫按除權前批次計算。只適用本次，不會修改買進日期，也不會改變全站規則。</span></label><button class="erc-secondary" type="submit">🔎 先試算，不修改資料</button></form></section>
 {preview_html}<section class="erc-panel"><h2>最近 30 筆補正紀錄</h2><div class="erc-table-wrap"><table class="erc-table"><thead><tr><th>除權日期</th><th>股票</th><th>使用者</th><th>股數變化</th><th>補正時間</th></tr></thead><tbody>{applied_html}</tbody></table></div></section><p class="erc-toplinks"><a href="/web/admin">← 返回管理員後台</a></p></div>'''
     return render_page('歷史除權息補正', body, 'more')
 
