@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V270_AUTH_ONLY_GOOGLE_LINE_OAUTH"
+APP_BUILD = "V282_1_EXRIGHT_ADMIN_HISTORICAL_CORRECTION"
 UI_BUILD = "v13-nav-timer-header-fix"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
@@ -2132,6 +2132,25 @@ def init_db():
                 PRIMARY KEY (user_id, code, ex_date, ratio)
             )
         ''')
+        # 管理員歷史除權息補正；同一帳號/股票/除權日只允許套用一次。
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS exright_manual_adjustments (
+                user_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                ex_date DATE NOT NULL,
+                ratio NUMERIC(12,6) NOT NULL,
+                shares_before BIGINT NOT NULL,
+                shares_after BIGINT NOT NULL,
+                cost_before NUMERIC(18,4) NOT NULL,
+                cost_after NUMERIC(18,4) NOT NULL,
+                applied_by TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, code, ex_date),
+                CHECK (shares_after > shares_before),
+                CHECK (ratio > 1)
+            )
+        """)
         # ── 網頁版：持股、問卷設定、登入權杖 ──
         # 持股與自選股分開存：自選股是「在看的」，持股是「真的買了的」，
         # 只有後者才有股數與成本，組合分析也只該算後者。
@@ -28157,7 +28176,7 @@ def web_admin(uid):
     if not is_admin(uid): return make_response('Forbidden',403)
     d=_admin_dashboard_data(); state=_maintenance_state(); status='🟢 正常' if not state.get('active') else '🟠 維護中'
     cards=f'''<div class="admin-grid"><div class="admin-stat"><b>{d['users']}</b><small>使用者</small></div><div class="admin-stat"><b>{d['active_today']}</b><small>今日活躍</small></div><div class="admin-stat"><b>{d['trades']}</b><small>正式賣出</small></div><div class="admin-stat"><b>{d['activity_today']}</b><small>今日操作</small></div></div>'''
-    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/leaderboard-settlement">🏆 排行榜結算通知<br><small>手動發送月榜／賽季結算 LINE</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股行事曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/international-calendar">🌎 國際行事曆<br><small>CPI、非農、PCE、GDP、FOMC</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>容量、RAM、可清理歷史資料</small></a><a class="admin-link" href="/web/admin/revenue-debug?code=2308">🧪 營收資料診斷<br><small>追查累計 YoY 到底斷在哪一層</small></a></div></div></div>'''
+    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/leaderboard-settlement">🏆 排行榜結算通知<br><small>手動發送月榜／賽季結算 LINE</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/exright-correction">🧾 歷史除權息補正<br><small>核對已完成配股事件、修正股數與成本</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股行事曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/international-calendar">🌎 國際行事曆<br><small>CPI、非農、PCE、GDP、FOMC</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>容量、RAM、可清理歷史資料</small></a><a class="admin-link" href="/web/admin/revenue-debug?code=2308">🧪 營收資料診斷<br><small>追查累計 YoY 到底斷在哪一層</small></a></div></div></div>'''
     return render_page('管理員後台',body,'more')
 
 
@@ -28287,6 +28306,381 @@ def web_admin_history(uid):
     cs=_admin_history_candidates(200); items=''.join(f'<div class="more-item"><span><b>{html.escape(str(r[2]))}｜{html.escape(str(r[1]))}</b><small>日期 {r[3]}｜新增 {r[4]} 股｜目前持股 {r[5]} 股｜此前累計 {r[6]} 股</small></span></div>' for r in cs) or '<div class="more-note">沒有符合高信心條件的候選。</div>'
     body=f'<div class="more-hero"><div class="eyebrow">READ ONLY</div><h1>🔍 紀錄異常檢查</h1><p>這裡專門找疑似「誤新增後撤回」的舊資料，不是正常的歷史交易頁。</p></div><div class="more-group">{items}</div><div class="more-note">只讀安全檢查，不會自動刪除資料。</div>'
     return render_page('紀錄異常檢查',body,'more')
+
+
+# 管理員工具：歷史除權息人工核對與補正。不根據股價變化猜測事件，也不自動改寫持股。
+def _admin_exright_users_with_positions():
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT DISTINCT p.user_id,
+                    COALESCE(NULLIF(u.display_name, ''), p.user_id) AS label
+                    FROM positions p LEFT JOIN users u ON u.user_id=p.user_id
+                    WHERE COALESCE(p.shares, 0) > 0
+                    ORDER BY label, p.user_id""")
+        rows = [(str(r[0]).strip(), str(r[1] or r[0])) for r in cur.fetchall()]
+        cur.close()
+        return rows
+    except Exception as exc:
+        print(f"⚠️ 讀取除權息補正使用者失敗：{exc}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def _admin_exright_position_codes(user_id):
+    if not user_id:
+        return []
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT code, SUM(shares)::BIGINT, COUNT(*)
+                    FROM positions WHERE user_id=%s AND COALESCE(shares,0)>0
+                    GROUP BY code ORDER BY code""", (str(user_id).strip(),))
+        rows = [(str(r[0]).strip(), int(r[1] or 0), int(r[2] or 0)) for r in cur.fetchall()]
+        cur.close()
+        return rows
+    except Exception as exc:
+        print(f"⚠️ 讀取除權息補正持股失敗：{exc}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def _admin_exright_batch_preview(user_id, code, target_shares, ex_date):
+    """Preview only lots bought before the ex-right date; post-event lots remain unchanged."""
+    try:
+        exday = date.fromisoformat(str(ex_date))
+        target_shares = int(target_shares)
+    except (TypeError, ValueError):
+        return None, "請檢查除權日期與券商核對後的總股數。"
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        # Earlier sell/reduce records mean current lots alone cannot safely reconstruct the event.
+        cur.execute("""SELECT 1 FROM position_change_logs
+                    WHERE user_id=%s AND code=%s AND trade_date>%s AND action='reduce'
+                    AND COALESCE(source,'') <> 'exright' LIMIT 1""",
+                    (str(user_id).strip(), str(code).strip(), exday))
+        if cur.fetchone():
+            cur.close()
+            return None, "這檔股票在除權日後有減碼／賣出紀錄，單靠目前持股批次無法安全回推。請先人工重建交易順序，暫勿套用。"
+        cur.execute("""SELECT 1 FROM realized_trades
+                    WHERE user_id=%s AND code=%s AND sold_on>%s LIMIT 1""",
+                    (str(user_id).strip(), str(code).strip(), exday))
+        if cur.fetchone():
+            cur.close()
+            return None, "這檔股票在除權日後已有正式賣出紀錄，為避免損益與股數錯帳，本工具先停止補正。"
+        cur.execute("""SELECT id, shares, cost, bought_on FROM positions
+                    WHERE user_id=%s AND code=%s AND COALESCE(shares,0)>0
+                    ORDER BY bought_on NULLS LAST, id""", (str(user_id).strip(), str(code).strip()))
+        rows = cur.fetchall()
+        cur.close()
+    except Exception as exc:
+        print(f"⚠️ 歷史除權息預覽失敗：{exc}")
+        return None, "讀取持股或交易紀錄失敗，請稍後重試。"
+    finally:
+        release_db_connection(conn)
+
+    batches = []
+    for r in rows:
+        try:
+            shares, cost = int(r[1] or 0), float(r[2] or 0)
+        except (TypeError, ValueError):
+            return None, "持股批次的股數或成本資料異常，請先修正資料再補正。"
+        if shares <= 0:
+            continue
+        if cost <= 0:
+            return None, "有持股批次的每股成本為 0 或無效值；為避免成本錯帳，請先檢查該批資料。"
+        bought_on = r[3]
+        if bought_on is None:
+            return None, "有持股批次缺少買進日期，無法判斷是否享有該次配股；請先補齊買進日期。"
+        if isinstance(bought_on, str):
+            try:
+                bought_on = date.fromisoformat(bought_on)
+            except ValueError:
+                return None, "有持股批次的買進日期格式異常，請先修正。"
+        batches.append({"id": int(r[0]), "shares": shares, "cost": cost, "bought_on": bought_on,
+                        "eligible": bought_on < exday})
+    if not batches:
+        return None, "這位使用者目前沒有可補正的有效持股批次。"
+
+    before = sum(b["shares"] for b in batches)
+    eligible = [b for b in batches if b["eligible"]]
+    post_event = [b for b in batches if not b["eligible"]]
+    pre_before = sum(b["shares"] for b in eligible)
+    post_shares = sum(b["shares"] for b in post_event)
+    target_pre = target_shares - post_shares
+    if not eligible:
+        return None, "找不到除權日前買進的持股批次，無可調整的配股基礎。"
+    if target_shares <= before or target_pre <= pre_before:
+        return None, f"輸入的券商總股數需高於目前資料庫的 {before:,} 股，且除權日前批次需由 {pre_before:,} 股增加；請核對是否已調整或是否有賣出。"
+    cost_before = sum(b["shares"] * b["cost"] for b in batches)
+    allocated = 0
+    for idx, b in enumerate(eligible):
+        if idx == len(eligible) - 1:
+            after_shares = target_pre - allocated
+        else:
+            after_shares = (target_pre * b["shares"]) // pre_before
+            allocated += after_shares
+        if after_shares <= 0:
+            return None, "目標股數太小，無法合理分配到全部除權前批次；請核對資料。"
+        b["after_shares"] = int(after_shares)
+        b["after_cost"] = round((b["shares"] * b["cost"]) / after_shares, 4)
+    for b in post_event:
+        b["after_shares"] = b["shares"]
+        b["after_cost"] = b["cost"]
+    cost_after = sum(b["after_shares"] * b["after_cost"] for b in batches)
+    return {"batches": batches, "before": before, "after": target_shares,
+            "pre_before": pre_before, "pre_after": target_pre, "post_shares": post_shares,
+            "cost_before": cost_before, "cost_after": cost_after,
+            "batch_count": len(batches)}, None
+
+def _admin_apply_historical_exright(user_id, code, ex_date, ratio, target_shares, admin_uid, note=""):
+    """Apply a reviewed historical correction in one DB transaction; duplicate ex-date is blocked."""
+    try:
+        exday = date.fromisoformat(str(ex_date))
+        rate = float(ratio)
+        target_shares = int(target_shares)
+    except (TypeError, ValueError):
+        return False, "除權日期、配股倍率或股數格式不正確。"
+    if exday > taiwan_today():
+        return False, "除權日期不可是未來日期。"
+    if not (1.0 < rate <= 20.0):
+        return False, "配股後倍率必須大於 1 且不超過 20。"
+    user_id, code = str(user_id).strip(), str(code).strip()
+    if not user_id or not code or target_shares <= 0:
+        return False, "請確認使用者、股票與股數。"
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT 1 FROM exright_manual_adjustments
+                    WHERE user_id=%s AND code=%s AND ex_date=%s""", (user_id, code, exday))
+        if cur.fetchone():
+            conn.rollback(); cur.close()
+            return False, "這檔股票在該除權日已經補正過，系統已阻止重複套用。"
+        # Old versions might already have auto-applied this suspected event; never layer another adjustment on it.
+        cur.execute("""SELECT 1 FROM exright_auto_applied
+                    WHERE user_id=%s AND code=%s AND ex_date=%s LIMIT 1""", (user_id, code, exday))
+        if cur.fetchone():
+            conn.rollback(); cur.close()
+            return False, "舊版已有這個除權日的自動套用紀錄。為避免重複加股，請先人工核對目前持股，不能直接再補正。"
+        cur.execute("""SELECT 1 FROM position_change_logs
+                    WHERE user_id=%s AND code=%s AND trade_date>%s AND action='reduce'
+                    AND COALESCE(source,'') <> 'exright' LIMIT 1""", (user_id, code, exday))
+        if cur.fetchone():
+            conn.rollback(); cur.close()
+            return False, "除權日後有減碼／賣出紀錄，需先重建交易順序，這次未修改持股。"
+        cur.execute("""SELECT 1 FROM realized_trades
+                    WHERE user_id=%s AND code=%s AND sold_on>%s LIMIT 1""", (user_id, code, exday))
+        if cur.fetchone():
+            conn.rollback(); cur.close()
+            return False, "除權日後已有正式賣出紀錄，為避免損益錯帳，這次未修改持股。"
+        cur.execute("""SELECT id, shares, cost, bought_on, note FROM positions
+                    WHERE user_id=%s AND code=%s AND COALESCE(shares,0)>0
+                    ORDER BY bought_on NULLS LAST, id FOR UPDATE""", (user_id, code))
+        fetched = cur.fetchall()
+        rows = []
+        for r in fetched:
+            shares, cost = int(r[1] or 0), float(r[2] or 0)
+            if shares <= 0:
+                continue
+            if cost <= 0:
+                conn.rollback(); cur.close()
+                return False, "有持股批次的每股成本為 0 或無效值，已停止補正。"
+            if r[3] is None:
+                conn.rollback(); cur.close()
+                return False, "有持股批次缺少買進日期，無法安全判斷配股資格，已停止補正。"
+            bought_on = r[3] if not isinstance(r[3], str) else date.fromisoformat(r[3])
+            rows.append((int(r[0]), shares, cost, bought_on, r[4] or ""))
+        if not rows:
+            conn.rollback(); cur.close()
+            return False, "找不到可補正的持股批次。"
+        before_total = sum(r[1] for r in rows)
+        eligible = [r for r in rows if r[3] < exday]
+        post_event = [r for r in rows if r[3] >= exday]
+        pre_before = sum(r[1] for r in eligible)
+        post_shares = sum(r[1] for r in post_event)
+        target_pre = target_shares - post_shares
+        if not eligible:
+            conn.rollback(); cur.close()
+            return False, "找不到除權日前買進的持股批次，已停止補正。"
+        if target_shares <= before_total or target_pre <= pre_before:
+            conn.rollback(); cur.close()
+            return False, f"資料庫目前總股數 {before_total:,}、除權前批次 {pre_before:,} 股；輸入的券商總股數不符合增加條件，已停止。"
+        cost_before = sum(sh * co for _, sh, co, _, _ in rows)
+        eligible_total = sum(r[1] for r in eligible)
+        allocated = 0
+        cost_after = 0.0
+        eligible_ids = {r[0] for r in eligible}
+        eligible_index_by_id = {row[0]: i for i, row in enumerate(eligible)}
+        for pid, old_shares, old_cost, bought_on, old_note in rows:
+            # Allocate only the pre-ex-date lots; purchases on/after ex-date are left untouched.
+            if pid in eligible_ids:
+                eidx = eligible_index_by_id[pid]
+                if eidx == len(eligible) - 1:
+                    new_shares = target_pre - allocated
+                else:
+                    new_shares = (target_pre * old_shares) // pre_before
+                    allocated += new_shares
+                if new_shares <= 0:
+                    conn.rollback(); cur.close()
+                    return False, "目標股數無法合理分配到全部除權前批次，已停止。"
+                new_cost = round(old_shares * old_cost / new_shares, 4)
+                detail = f"歷史除權補正 {exday.isoformat()}｜倍率 {rate:.6f}｜{old_shares}股@{old_cost:.4f}→{new_shares}股@{new_cost:.4f}"
+                merged_note = (str(old_note).strip() + " / " + detail).strip(" /")
+                cur.execute("UPDATE positions SET shares=%s, cost=%s, note=%s WHERE id=%s", (new_shares, new_cost, merged_note, pid))
+            else:
+                new_cost = old_cost
+                new_shares = old_shares
+            cost_after += new_shares * new_cost
+        cur.execute("""INSERT INTO exright_manual_adjustments
+                    (user_id, code, ex_date, ratio, shares_before, shares_after,
+                     cost_before, cost_after, applied_by, note)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (user_id, code, exday, rate, before_total, target_shares,
+                     cost_before, cost_after, str(admin_uid).strip(), str(note or "")[:500]))
+        cur.execute("""INSERT INTO position_change_logs
+                    (user_id, code, action, shares_delta, trade_price, trade_date, note, source)
+                    VALUES (%s,%s,'add',%s,NULL,%s,%s,'exright')""",
+                    (user_id, code, target_shares - before_total, exday,
+                     f"歷史除權補正（管理員核對券商股數）｜{before_total:,}→{target_shares:,} 股｜倍率 {rate:.6f}"))
+        conn.commit(); cur.close()
+        clear_leaderboard_cache()
+        return True, {"before": before_total, "after": target_shares,
+                      "cost_before": cost_before, "cost_after": cost_after}
+    except Exception as exc:
+        try: conn.rollback()
+        except Exception: pass
+        print(f"❌ 歷史除權息補正失敗 {code}: {exc}")
+        return False, "資料庫更新失敗，本次交易已回復，持股沒有部分套用。"
+    finally:
+        release_db_connection(conn)
+
+
+@app.route('/web/admin/exright-correction', methods=['GET', 'POST'])
+@web_login_required
+def web_admin_exright_correction(uid):
+    if not is_admin(uid):
+        return make_response('Forbidden', 403)
+    users = _admin_exright_users_with_positions()
+    valid_users = {u for u, _ in users}
+    selected_user = str(request.values.get('target_user') or '').strip()
+    if selected_user not in valid_users:
+        selected_user = users[0][0] if users else ''
+    codes = _admin_exright_position_codes(selected_user)
+    valid_codes = {c for c, _, _ in codes}
+    selected_code = str(request.values.get('code') or '').strip()
+    if selected_code not in valid_codes:
+        selected_code = codes[0][0] if codes else ''
+    action = str(request.form.get('action') or '').strip() if request.method == 'POST' else ''
+    message = str(request.args.get('status') or '').strip()
+    preview = None
+    values = {
+        'ex_date': str(request.values.get('ex_date') or taiwan_today().isoformat()).strip(),
+        'ratio': str(request.values.get('ratio') or '').strip(),
+        'target_shares': str(request.values.get('target_shares') or '').strip(),
+        'note': str(request.values.get('note') or '').strip(),
+    }
+    if request.method == 'POST':
+        if not valid_web_csrf():
+            return make_response('安全驗證已過期，請重新整理頁面再試。', 400)
+        if selected_user not in valid_users or selected_code not in valid_codes:
+            message = '請先選擇有持股的使用者與股票。'
+        elif request.form.get('broker_confirmed') != '1':
+            message = '請先勾選已核對券商庫存與官方除權公告。'
+        else:
+            try:
+                exday = date.fromisoformat(values['ex_date'])
+                ratio = float(values['ratio'])
+                target_shares = int(values['target_shares'])
+                if exday > taiwan_today():
+                    raise ValueError('除權日期不可是未來日期。')
+                if not (1.0 < ratio <= 20.0):
+                    raise ValueError('配股後倍率必須大於 1 且不超過 20。')
+                if target_shares <= 0:
+                    raise ValueError('除權後總股數必須是正整數。')
+                if action == 'preview':
+                    preview, err = _admin_exright_batch_preview(selected_user, selected_code, target_shares, exday)
+                    if err:
+                        message = err
+                    else:
+                        message = '這只是預覽，尚未修改任何持股。請核對預覽後再按「確認套用」。'
+                elif action == 'apply':
+                    ok, result = _admin_apply_historical_exright(
+                        selected_user, selected_code, exday, ratio, target_shares, uid, values['note'])
+                    if ok:
+                        status_text = f"補正完成：{selected_code} 股數 {result['before']:,} → {result['after']:,}。"
+                        return redirect('/web/admin/exright-correction?target_user=' + quote(selected_user, safe='')
+                                        + '&code=' + quote(selected_code, safe='') + '&status=' + quote(status_text))
+                    message = str(result)
+                else:
+                    message = '未知操作，請重新整理後再試。'
+            except (TypeError, ValueError) as exc:
+                message = str(exc) or '日期、倍率或股數格式不正確。'
+
+    def esc(v):
+        return html.escape(str(v if v is not None else ''), quote=True)
+    user_options = ''.join(
+        f'<option value="{esc(u)}"{" selected" if u == selected_user else ""}>{esc(label)}（ID…{esc(u[-5:])}）</option>'
+        for u, label in users) or '<option value="">目前沒有持股使用者</option>'
+    code_options = ''.join(
+        f'<option value="{esc(code)}"{" selected" if code == selected_code else ""}>{esc(code)}｜目前 {shares:,} 股｜{count} 批</option>'
+        for code, shares, count in codes) or '<option value="">目前沒有持股</option>'
+    batch_rows = []
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        if selected_user and selected_code:
+            cur.execute("""SELECT id, shares, cost, bought_on FROM positions
+                        WHERE user_id=%s AND code=%s AND COALESCE(shares,0)>0
+                        ORDER BY bought_on NULLS LAST, id""", (selected_user, selected_code))
+            for r in cur.fetchall():
+                batch_rows.append(f'<tr><td>{esc(r[3] or "未記錄")}</td><td>{int(r[1] or 0):,}</td><td>{float(r[2] or 0):,.4f}</td><td>{int(r[1] or 0)*float(r[2] or 0):,.2f}</td></tr>')
+        cur.execute("""SELECT a.user_id, a.code, a.ex_date, a.ratio, a.shares_before, a.shares_after, a.applied_at,
+                            COALESCE(NULLIF(u.display_name,''), a.user_id)
+                    FROM exright_manual_adjustments a LEFT JOIN users u ON u.user_id=a.user_id
+                    ORDER BY a.applied_at DESC LIMIT 30""")
+        applied_rows = cur.fetchall()
+        cur.close()
+    except Exception as exc:
+        print(f"⚠️ 歷史除權息補正頁面查詢失敗：{exc}")
+        applied_rows = []
+    finally:
+        release_db_connection(conn)
+    batch_table = (f'<div class="erc-table-wrap"><table class="erc-table"><thead><tr><th>買進日期</th><th>目前股數</th><th>每股成本</th><th>批次總成本</th></tr></thead><tbody>{"".join(batch_rows)}</tbody></table></div>'
+                   if batch_rows else '<p class="erc-muted">此使用者／股票目前沒有有效持股批次。</p>')
+    preview_html = ''
+    if preview:
+        p_rows = ''.join(
+            f'<tr><td>{esc(b["bought_on"] or "未記錄")}</td><td>{'除權前調整' if b['eligible'] else '除權日後不變'}</td><td>{b["shares"]:,}</td><td>{b["after_shares"]:,}</td><td>{b["cost"]:,.4f}</td><td>{b["after_cost"]:,.4f}</td></tr>'
+            for b in preview['batches'])
+        try:
+            ratio_expected_shares = int(preview['pre_before'] * float(values['ratio'])) + preview['post_shares']
+        except (TypeError, ValueError):
+            ratio_expected_shares = preview['before']
+        ratio_check_html = (f'<p class="erc-note">倍率試算的整數股數約 {ratio_expected_shares:,} 股；你輸入的券商實際股數為 {preview["after"]:,} 股。若兩者不同，請再次核對官方配股率與券商庫存。</p>')
+        preview_html = f'''<section class="erc-panel erc-preview"><h2>🔎 補正預覽（尚未寫入）</h2>
+        <div class="erc-stats"><div><small>目前股數</small><b>{preview['before']:,}</b></div><div><small>券商確認股數</small><b>{preview['after']:,}</b></div><div><small>批次數</small><b>{preview['batch_count']}</b></div><div><small>調整前總成本</small><b>{preview['cost_before']:,.2f}</b></div></div>
+        {ratio_check_html}
+        <div class="erc-table-wrap"><table class="erc-table"><thead><tr><th>買進日期</th><th>處理方式</th><th>原股數</th><th>預計股數</th><th>原每股成本</th><th>調整後每股成本</th></tr></thead><tbody>{p_rows}</tbody></table></div>
+        <p class="erc-warn">每個買進批次會保留；只調整除權日前的買進批次，除權日當天及之後買入的批次不變。成本以各批總取得成本不變為目標，實際總股數以券商紀錄為準。除權日後若有賣出紀錄或批次缺少買進日期，系統會停止補正。此工具不會自動連接券商帳戶。</p>
+        <form method="post" action="/web/admin/exright-correction" onsubmit="return confirm('最後確認：這會立即改寫持股股數與每股成本，並留下歷史除權紀錄。請確定券商實際股數、官方除權日期與配股倍率都已核對。');">
+          {csrf_hidden_input()}<input type="hidden" name="action" value="apply"><input type="hidden" name="target_user" value="{esc(selected_user)}"><input type="hidden" name="code" value="{esc(selected_code)}"><input type="hidden" name="ex_date" value="{esc(values['ex_date'])}"><input type="hidden" name="ratio" value="{esc(values['ratio'])}"><input type="hidden" name="target_shares" value="{esc(values['target_shares'])}"><input type="hidden" name="note" value="{esc(values['note'])}"><input type="hidden" name="broker_confirmed" value="1"><button class="erc-primary" type="submit">✅ 確認套用這次歷史補正</button>
+        </form></section>'''
+    msg_html = f'<div class="erc-flash">{esc(message)}</div>' if message else ''
+    applied_html = ''.join(
+        f'<tr><td>{esc(r[2])}</td><td>{esc(r[1])}</td><td>{esc(r[7])}</td><td>{int(r[4]):,} → {int(r[5]):,}</td><td>{esc(r[6])}</td></tr>'
+        for r in applied_rows) or '<tr><td colspan="5">尚無補正紀錄。</td></tr>'
+    body = f'''<style>
+.erc-wrap{{max-width:900px;margin:auto;color:#17324a}}.erc-panel{{background:#fff;border:1px solid #dce6ef;border-radius:18px;padding:16px;margin:12px 0;box-sizing:border-box}}.erc-panel h2{{font-size:17px;margin:0 0 12px}}.erc-note{{font-size:13px;line-height:1.8;color:#5d7488}}.erc-form-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}}.erc-field label{{display:block;font-size:12px;font-weight:800;color:#566e82;margin-bottom:6px}}.erc-field select,.erc-field input{{width:100%;box-sizing:border-box;padding:12px;border:1px solid #cbd9e5;border-radius:11px;background:#fff;font-size:15px;color:#17324a}}.erc-table-wrap{{overflow-x:auto}}.erc-table{{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}}.erc-table th,.erc-table td{{padding:10px 9px;border-bottom:1px solid #edf1f5;text-align:left}}.erc-table th{{color:#637b8f;font-size:11px}}.erc-muted{{color:#6c8193;font-size:13px}}.erc-warn{{font-size:12px;line-height:1.8;background:#fff8e7;color:#845c13;border-radius:10px;padding:11px}}.erc-primary{{width:100%;border:0;border-radius:12px;padding:14px;background:#24648b;color:#fff;font-weight:800;font-size:15px;margin-top:10px}}.erc-secondary{{border:0;border-radius:12px;padding:13px 16px;background:#e5f0f8;color:#1f5275;font-weight:800;width:100%;margin-top:14px}}.erc-flash{{margin:12px 0;padding:12px 14px;border-radius:12px;background:#eef6fc;color:#1c587d;line-height:1.6}}.erc-preview{{border-color:#87b5d7}}.erc-stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0 14px}}.erc-stats div{{background:#f3f7fa;border-radius:11px;padding:10px}}.erc-stats small{{display:block;color:#667f93;font-size:11px}}.erc-stats b{{display:block;font-size:16px;margin-top:5px;overflow-wrap:anywhere}}.erc-check{{display:flex;gap:9px;align-items:flex-start;font-size:13px;line-height:1.6;margin-top:14px;color:#425d72}}.erc-check input{{margin-top:4px}}.erc-toplinks{{margin:12px 0;font-size:13px}}@media(max-width:600px){{.erc-form-grid{{grid-template-columns:1fr}}.erc-stats{{grid-template-columns:repeat(2,1fr)}}.erc-panel{{padding:13px}}}}
+</style><div class="erc-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>🧾 歷史除權息補正</h1><p>針對已完成除權、但系統股數仍未更新的資料進行人工核對。補正前先預覽，確認後才會修改。</p></div>
+{msg_html}<section class="erc-panel"><h2>① 選擇帳號與股票</h2><form method="get" action="/web/admin/exright-correction"><div class="erc-form-grid"><div class="erc-field"><label>使用者</label><select name="target_user" onchange="this.form.submit()">{user_options}</select></div><div class="erc-field"><label>股票</label><select name="code" onchange="this.form.submit()">{code_options}</select></div></div><noscript><button class="erc-secondary">載入選擇</button></noscript></form><p class="erc-note">目前只列出資料庫中有持股的帳號與股票。此頁是經管理員核對後的歷史補正工具，不會自動掃描／猜測官方事件；只調整除權日前買進批次。若除權後有賣出紀錄，會停止操作避免改錯帳。</p></section>
+<section class="erc-panel"><h2>② 目前買進批次</h2>{batch_table}</section>
+<section class="erc-panel"><h2>③ 輸入已核對的歷史事件</h2><form method="post" action="/web/admin/exright-correction">{csrf_hidden_input()}<input type="hidden" name="action" value="preview"><input type="hidden" name="target_user" value="{esc(selected_user)}"><input type="hidden" name="code" value="{esc(selected_code)}"><div class="erc-form-grid"><div class="erc-field"><label>除權日期（依官方公告）</label><input name="ex_date" type="date" value="{esc(values['ex_date'])}" required></div><div class="erc-field"><label>配股後倍率（例：1 股變 2.984 股）</label><input name="ratio" type="number" step="0.000001" min="1.000001" max="20" placeholder="例如 2.984226" value="{esc(values['ratio'])}" required></div><div class="erc-field"><label>券商核對後的目前持有總股數</label><input name="target_shares" type="number" step="1" min="1" placeholder="輸入券商目前實際總股數" value="{esc(values['target_shares'])}" required></div><div class="erc-field"><label>備註（選填）</label><input name="note" maxlength="500" placeholder="例如：已對照券商庫存" value="{esc(values['note'])}"></div></div><label class="erc-check"><input type="checkbox" name="broker_confirmed" value="1" required><span>我已核對官方除權公告及券商實際持股股數；以上倍率與日期不是由股價變化推測。</span></label><button class="erc-secondary" type="submit">🔎 先試算，不修改資料</button></form></section>
+{preview_html}<section class="erc-panel"><h2>最近 30 筆補正紀錄</h2><div class="erc-table-wrap"><table class="erc-table"><thead><tr><th>除權日期</th><th>股票</th><th>使用者</th><th>股數變化</th><th>補正時間</th></tr></thead><tbody>{applied_html}</tbody></table></div></section><p class="erc-toplinks"><a href="/web/admin">← 返回管理員後台</a></p></div>'''
+    return render_page('歷史除權息補正', body, 'more')
+
 
 @app.route('/web/admin/users', methods=['GET', 'POST'])
 @web_login_required
