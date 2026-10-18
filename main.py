@@ -43,8 +43,8 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V282_1_EXRIGHT_ADMIN_HISTORICAL_CORRECTION"
-UI_BUILD = "v13-nav-timer-header-fix"
+APP_BUILD = "V284_FULL_TEMPLATE_V2"
+UI_BUILD = "v2-template-refactor"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
 # index on page render so an upstream timeout cannot hold the whole page for six seconds.
@@ -24477,6 +24477,376 @@ body #app-page-content .position-fast-card .position-card-title h3 {
 }
 """
 
+
+# V2 template: shared visual system and responsive shell. Feature components retain their
+# semantic classes and data/interaction behavior; this stylesheet standardizes presentation.
+STOCKBOT_V2_TEMPLATE_CSS = r"""
+:root {
+  color-scheme: light;
+  --ui-page: #F2F6FA;
+  --ui-surface: #FFFFFF;
+  --ui-surface-soft: #F7FAFD;
+  --ui-surface-blue: #EDF5FB;
+  --ui-ink: #172F45;
+  --ui-muted: #5E7387;
+  --ui-subtle: #8092A3;
+  --ui-line: #DCE6EF;
+  --ui-line-soft: #EAF0F5;
+  --ui-blue: #246B9B;
+  --ui-blue-strong: #1B567F;
+  --ui-blue-soft: #E7F1F8;
+  --ui-red: #D83D35;
+  --ui-green: #13845A;
+  --ui-amber: #9B6A24;
+  --ui-radius-sm: 10px;
+  --ui-radius-md: 15px;
+  --ui-radius-lg: 19px;
+  --ui-shadow-card: 0 2px 8px rgba(23, 47, 69, .035);
+  --ui-shadow-float: 0 8px 24px rgba(23, 47, 69, .08);
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 20px;
+  --paper: var(--ui-page) !important;
+  --paper-2: #E8EFF5 !important;
+  --card: var(--ui-surface) !important;
+  --ink: var(--ui-ink) !important;
+  --ink-soft: var(--ui-muted) !important;
+  --ink-faint: var(--ui-subtle) !important;
+  --rule: var(--ui-line) !important;
+  --sep: var(--ui-line-soft) !important;
+  --up: var(--ui-red) !important;
+  --down: var(--ui-green) !important;
+  --brass: var(--ui-blue) !important;
+  --brass-2: #79A8C9 !important;
+  --hero: #173B58 !important;
+  --hero-soft: #245E85 !important;
+  --radius: var(--ui-radius-md) !important;
+}
+
+html { min-height: 100%; background: var(--ui-page) !important; }
+body {
+  min-height: 100vh;
+  margin: 0 !important;
+  background: var(--ui-page) !important;
+  color: var(--ui-ink) !important;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif !important;
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+body * { min-width: 0; }
+.site-shell { width: 100%; min-height: 100vh; margin: 0 auto; }
+.wrap {
+  width: min(100%, 760px) !important;
+  max-width: 760px !important;
+  margin: 0 auto !important;
+  padding: 10px 16px calc(104px + env(safe-area-inset-bottom, 0px)) !important;
+  box-sizing: border-box;
+}
+.app-page-content { width: 100%; max-width: 100%; min-width: 0; margin: 0 auto; overflow-wrap: anywhere; }
+.app-page-content > * { min-width: 0; }
+
+/* Header: in-flow sticky masthead, so it no longer covers the first card on mobile. */
+.app-header, header.app-header {
+  position: sticky !important;
+  top: 0 !important;
+  left: auto !important;
+  right: auto !important;
+  z-index: 100 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  margin: 0 0 14px !important;
+  padding: 48px 0 13px !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(205, 220, 232, .94) !important;
+  border-radius: 0 0 14px 14px !important;
+  background: rgba(242, 246, 250, .97) !important;
+  background-image: none !important;
+  box-shadow: 0 5px 14px rgba(23, 47, 69, .045) !important;
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.app-header .eyebrow, header .eyebrow {
+  display: block;
+  margin: 0 0 4px !important;
+  color: #2B6A98 !important;
+  font-size: 10px !important;
+  line-height: 1.3 !important;
+  letter-spacing: .15em !important;
+  font-weight: 900 !important;
+  text-shadow: none !important;
+}
+.app-header h1, header h1 {
+  margin: 0 !important;
+  color: var(--ui-ink) !important;
+  font-size: clamp(25px, 6vw, 31px) !important;
+  line-height: 1.16 !important;
+  letter-spacing: -.025em !important;
+  font-weight: 850 !important;
+  text-shadow: none !important;
+  overflow-wrap: normal !important;
+}
+.app-header .dateline, header .dateline {
+  margin-top: 4px !important;
+  color: var(--ui-muted) !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+  font-weight: 750 !important;
+}
+.app-account-link {
+  top: 5px !important;
+  right: 0 !important;
+  min-height: 36px !important;
+  max-width: min(190px, 57vw) !important;
+  padding: 0 10px !important;
+  gap: 6px !important;
+  border: 1px solid #D5E3EE !important;
+  border-radius: 999px !important;
+  background: #FFFFFF !important;
+  box-shadow: 0 2px 7px rgba(24, 67, 98, .055) !important;
+  color: #315F82 !important;
+  font-size: 10px !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+.app-account-link svg { width: 20px !important; height: 20px !important; }
+.app-account-settings-label { font-size: 10px !important; }
+.page-back { position: absolute; top: 7px; left: 0; }
+.page-back a { text-decoration: none !important; font-size: 12px !important; font-weight: 750 !important; }
+.top-nav { gap: 6px !important; margin: 0 0 12px !important; padding: 2px 0 10px !important; }
+.top-nav a { border-radius: 999px !important; border: 1px solid var(--ui-line) !important; background: #FFFFFF !important; color: var(--ui-muted) !important; font-weight: 700 !important; }
+.top-nav a.on { border-color: var(--ui-blue) !important; background: var(--ui-blue) !important; color: #FFFFFF !important; }
+
+/* One shared rhythm for content sections, without altering feature markup or behavior. */
+.daily-home { max-width: 100% !important; margin: 0 !important; padding: 0 0 18px !important; background: transparent !important; }
+.daily-card, .card, .panel, .section-card, .stat-card, .position-card, .position-fast-card,
+.holding-card, .leaderboard-card, .trade-card, .more-group, .rank-spotlight, .chips-section,
+.position-journal, .position-history, .portfolio-chart-card, .contribution-card, .review-details,
+.chart-card, .chart-panel, .rank-situation, .exright-card, .today-target-section,
+.target-allocation-disclosure, .market-card, .summary-card {
+  box-sizing: border-box !important;
+  border: 1px solid var(--ui-line) !important;
+  border-radius: var(--ui-radius-lg) !important;
+  background: var(--ui-surface) !important;
+  box-shadow: var(--ui-shadow-card) !important;
+  color: var(--ui-ink) !important;
+}
+.daily-card { margin: 12px 0 !important; padding: 16px !important; }
+.daily-section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px !important; }
+.daily-section-title h2, .section-head h2, .position-journal-head h2, .position-history-head h2 {
+  margin: 0 !important; color: var(--ui-ink) !important; font-size: 18px !important;
+  line-height: 1.35 !important; letter-spacing: -.02em !important; font-weight: 850 !important;
+}
+.daily-section-title span, .section-note, .muted, .help-text { color: var(--ui-muted) !important; }
+.section-head { margin: 18px 0 11px !important; padding-left: 10px !important; border-left: 3px solid var(--ui-blue) !important; }
+.callout, .daily-complete-sync, .app-fragment-status, .position-journal-note, .position-history-note {
+  border-color: var(--ui-line) !important; border-radius: var(--ui-radius-md) !important;
+  background: var(--ui-surface-soft) !important; color: var(--ui-muted) !important;
+}
+button, .btn, input[type="submit"] {
+  min-height: 40px;
+  border-radius: 11px !important;
+  font-family: inherit !important;
+  font-weight: 800 !important;
+  box-shadow: none !important;
+  transition: background-color .15s ease, border-color .15s ease, transform .15s ease;
+}
+button:hover, .btn:hover, input[type="submit"]:hover { filter: brightness(.98); }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 3px solid rgba(36, 107, 155, .23) !important; outline-offset: 2px;
+}
+input, select, textarea {
+  max-width: 100%; box-sizing: border-box !important; font-family: inherit !important;
+  border: 1px solid #CBD9E5 !important; border-radius: 10px !important;
+  background: #FFFFFF !important; color: var(--ui-ink) !important;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--ui-blue) !important; }
+.tabs a, .tab-button, .filter-chip { border-radius: 999px !important; }
+.up, .positive, .gain, .is-up { color: var(--ui-red) !important; }
+.down, .negative, .loss, .is-down { color: var(--ui-green) !important; }
+.flat, .neutral { color: var(--ui-subtle) !important; }
+.num, .price, .chg, .rank-return, .history-return, .position-journal-cell b, .position-journal-pnl {
+  font-variant-numeric: tabular-nums !important; font-feature-settings: "tnum" 1 !important;
+}
+
+/* Homepage hero and market strip: one restrained, consistent financial dashboard visual. */
+.daily-hero, .daily-fast-hero, .daily-fast-hero-copy {
+  position: relative !important; overflow: hidden !important;
+  min-height: 0 !important; margin: 0 0 12px !important;
+  padding: 18px 17px 15px !important;
+  border: 0 !important; border-radius: var(--ui-radius-lg) !important;
+  background: linear-gradient(135deg, #173B58 0%, #245E85 100%) !important;
+  box-shadow: var(--ui-shadow-float) !important; color: #FFFFFF !important;
+}
+.daily-hero:before, .daily-hero:after { content: none !important; display: none !important; }
+.daily-hero h1, .daily-fast-hero h1 { font-size: clamp(24px, 6vw, 30px) !important; line-height: 1.28 !important; font-weight: 850 !important; }
+.daily-hero p, .daily-fast-hero p, .daily-fast-hero-copy p { color: #E9F3FA !important; font-size: 12px !important; line-height: 1.7 !important; }
+.daily-hero .eyebrow, .daily-fast-hero .eyebrow, .daily-fast-hero-copy .eyebrow { color: #D4E8F7 !important; }
+.market-strip { gap: 8px !important; margin-top: 14px !important; }
+.market-strip > span { min-width: 0; padding: 10px 9px !important; border: 1px solid rgba(255,255,255,.6) !important; border-radius: 12px !important; background: rgba(255,255,255,.96) !important; box-shadow: none !important; }
+.market-strip b { font-size: clamp(15px, 4vw, 20px) !important; font-variant-numeric: tabular-nums; }
+.daily-complete-sync { margin: 10px 0 !important; padding: 10px 12px !important; border-radius: 13px !important; box-shadow: none !important; }
+
+/* Contribution cards: keep both sides and their existing detail rows visible and compact. */
+.contribution-card { padding: 14px !important; }
+.impact-leads { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 9px !important; margin: 0 !important; }
+.impact-leads > div { min-width: 0 !important; }
+.impact-lead { min-height: 0 !important; height: auto !important; box-sizing: border-box !important; padding: 12px !important; border-radius: 13px !important; }
+.impact-lead.impact-up { background: #FFF5F3 !important; border: 1px solid #F1DEDA !important; }
+.impact-lead.impact-down { background: #F1F8F4 !important; border: 1px solid #DCEBE2 !important; }
+.impact-lead small { margin-bottom: 6px !important; font-size: 10px !important; color: var(--ui-muted) !important; }
+.impact-lead h3 { margin: 0 0 6px !important; font-size: 17px !important; line-height: 1.35 !important; overflow-wrap: anywhere !important; }
+.impact-lead p { margin: 0 !important; font-size: 11px !important; line-height: 1.5 !important; color: var(--ui-muted) !important; }
+.impact-lead > strong { display: block !important; margin-top: 12px !important; }
+.impact-lead > strong span { display: block !important; font-size: 10px !important; color: var(--ui-muted) !important; }
+.impact-lead > strong b { display: block !important; margin-top: 3px !important; font-size: 18px !important; line-height: 1.2 !important; }
+.impact-details { margin: 10px 0 0 !important; border: 1px solid var(--ui-line-soft) !important; border-radius: 12px !important; overflow: hidden !important; background: #FFFFFF !important; }
+.impact-details > summary { padding: 11px 12px !important; background: var(--ui-surface-soft) !important; color: var(--ui-blue-strong) !important; font-size: 12px !important; font-weight: 800 !important; cursor: pointer; }
+.impact-detail-row { display: grid !important; grid-template-columns: 23px minmax(0,1fr) auto !important; align-items: center !important; gap: 9px !important; padding: 10px 12px !important; border-top: 1px solid var(--ui-line-soft) !important; }
+.impact-detail-name { min-width: 0 !important; }
+.impact-detail-name b { display: block !important; font-size: 13px !important; line-height: 1.4 !important; overflow-wrap: anywhere !important; }
+.impact-detail-name small { display: block !important; margin-top: 3px !important; font-size: 10px !important; line-height: 1.5 !important; color: var(--ui-muted) !important; }
+.impact-detail-row > strong { font-size: 12px !important; white-space: nowrap !important; }
+.impact-empty, .impact-stale { margin: 9px 0 0 !important; padding: 10px 11px !important; border: 1px solid var(--ui-line) !important; border-radius: 11px !important; background: var(--ui-surface-soft) !important; color: var(--ui-muted) !important; font-size: 11px !important; line-height: 1.65 !important; }
+
+/* Target allocation: actual and target weights remain distinct; compact mobile rows. */
+.today-target-section { margin: 14px 0 18px !important; padding: 16px !important; scroll-margin-top: 100px !important; }
+.today-target-section-head { gap: 10px !important; padding-bottom: 12px !important; }
+.today-target-section-head h2 { color: var(--ui-ink) !important; font-size: 19px !important; font-weight: 850 !important; }
+.today-target-section-head p { color: var(--ui-muted) !important; font-size: 11px !important; line-height: 1.6 !important; }
+.today-target-status { border-radius: 999px !important; font-size: 10px !important; }
+.today-target-reminder, .today-target-top-reminder { border: 1px solid var(--ui-line) !important; border-radius: 12px !important; background: var(--ui-surface-soft) !important; }
+.today-target-row { padding: 0 !important; border-bottom: 1px solid var(--ui-line-soft) !important; }
+.today-target-summary { padding: 11px 0 !important; }
+.today-target-summary-head { grid-template-columns: minmax(0, 1fr) auto auto 16px !important; gap: 7px !important; }
+.today-target-summary-weight { font-size: 12px !important; }
+.today-target-summary-track { height: 5px !important; margin-top: 7px !important; }
+.today-target-expanded { padding: 0 0 11px !important; }
+.today-target-compare-grid { gap: 8px !important; }
+.today-target-compare { padding: 9px !important; border-radius: 11px !important; background: var(--ui-surface-soft) !important; }
+.today-target-current, .today-target-meta { line-height: 1.45 !important; }
+.today-target-footer { margin-top: 12px !important; padding-top: 12px !important; }
+.today-target-footer b { font-size: 20px !important; }
+.today-target-footer button, .today-target-footnote button { border-radius: 11px !important; background: var(--ui-blue-strong) !important; }
+.target-allocation-disclosure { margin: 12px 0 16px !important; border-radius: var(--ui-radius-md) !important; background: #FFFFFF !important; }
+.target-allocation-disclosure > summary { padding: 13px !important; }
+.target-allocation-panel { margin: 0 !important; padding: 12px !important; border: 0 !important; border-top: 1px solid var(--ui-line-soft) !important; border-radius: 0 !important; background: #FFFFFF !important; box-shadow: none !important; }
+.target-allocation-list { grid-template-columns: 1fr !important; gap: 0 !important; }
+.target-allocation-row { padding: 8px 0 !important; border-top: 1px solid var(--ui-line-soft) !important; }
+.target-allocation-row b { color: var(--ui-ink) !important; font-size: 12px !important; }
+.target-allocation-row small { font-size: 10px !important; }
+.target-allocation-input { flex-basis: 96px !important; }
+.target-allocation-input input { padding: 8px 7px !important; border-radius: 9px !important; }
+.target-allocation-foot { align-items: center !important; padding-top: 11px !important; }
+.target-allocation-foot button { background: var(--ui-blue-strong) !important; color: #FFFFFF !important; }
+.position-target-summary { gap: 6px 9px !important; padding: 8px 9px !important; border: 1px solid var(--ui-line-soft) !important; border-radius: 10px !important; background: var(--ui-surface-soft) !important; }
+
+/* Holdings, charts, operation journals, list rows: shared borders and predictable wrapping. */
+.position-card, .position-fast-card, .stock-card, .stock-row, .quote-card, .watch-card,
+.rank-card, .wb-stock-card, .wb-result-card, .wb-card, .watchlist-card, .history-period {
+  border-color: var(--ui-line) !important; border-radius: var(--ui-radius-md) !important;
+  box-shadow: var(--ui-shadow-card) !important;
+}
+.position-journal, .position-history { margin: 14px 0 !important; overflow: hidden !important; }
+.position-journal-head, .position-history-head { padding: 14px 15px !important; background: #FFFFFF !important; border-bottom: 1px solid var(--ui-line-soft) !important; }
+.position-journal-note, .position-history-note { padding: 10px 14px !important; max-height: none !important; overflow: visible !important; }
+.position-journal-table-head, .position-history-table-head { background: #F4F8FB !important; color: var(--ui-muted) !important; border-color: var(--ui-line-soft) !important; }
+.position-journal-row, .position-history-row, .stock-group { border-color: var(--ui-line-soft) !important; }
+.portfolio-chart-card, .chart-card, .chart-panel { padding: 14px !important; }
+.trend-chart, .trend-chart-viewport, .trend-chart-inner, .portfolio-trend-wrap { background: #FAFCFE !important; border-radius: 12px !important; }
+
+/* Fixed navigation: one aligned width, safe-area padding and clear active state. */
+.app-bottom-nav {
+  position: fixed !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
+  z-index: 200 !important; display: flex !important; justify-content: center !important;
+  padding: 7px 10px calc(7px + env(safe-area-inset-bottom, 0px)) !important;
+  border-top: 1px solid rgba(211, 224, 235, .98) !important;
+  background: rgba(255, 255, 255, .97) !important;
+  box-shadow: 0 -5px 18px rgba(23, 47, 69, .055) !important;
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+}
+.app-bottom-nav .bottom-inner { width: min(760px, 100%) !important; gap: 4px !important; }
+.app-bottom-nav a {
+  min-width: 0 !important; min-height: 46px !important; padding: 6px 2px !important;
+  justify-content: center !important; gap: 3px !important; border: 1px solid transparent !important;
+  border-radius: 12px !important; color: #71859A !important; font-size: 10.5px !important;
+  line-height: 1.2 !important; font-weight: 700 !important; text-decoration: none !important;
+}
+.app-bottom-nav a b { font-size: 18px !important; line-height: 1 !important; font-weight: 600 !important; }
+.app-bottom-nav a.on, .bottom-inner a.on {
+  color: var(--ui-blue-strong) !important; background: #E8F2F9 !important;
+  border-color: #D5E7F4 !important; box-shadow: none !important;
+}
+footer {
+  margin: 22px 0 0 !important; padding: 14px 2px 6px !important;
+  border-top: 1px solid var(--ui-line) !important; color: #8191A0 !important;
+  font-size: 10px !important; line-height: 1.8 !important; overflow-wrap: anywhere !important;
+}
+
+/* Responsive guardrails: prevent any module from widening the mobile page. */
+img, svg, canvas, video, iframe { max-width: 100%; }
+pre, code { max-width: 100%; overflow-x: auto; }
+table { max-width: 100%; }
+@media (max-width: 699px) {
+  .wrap { padding: 8px 12px calc(100px + env(safe-area-inset-bottom, 0px)) !important; }
+  .app-header { padding-top: 46px !important; margin-bottom: 12px !important; }
+  .app-account-link { max-width: min(178px, 58vw) !important; }
+  .daily-card { margin: 10px 0 !important; padding: 13px !important; border-radius: 16px !important; }
+  .daily-hero, .daily-fast-hero, .daily-fast-hero-copy { padding: 16px 14px 13px !important; border-radius: 16px !important; }
+  .daily-hero h1, .daily-fast-hero h1 { font-size: 25px !important; }
+  .home-portfolio-grid { grid-template-columns: repeat(2, minmax(0,1fr)) !important; }
+  .home-metric-main { grid-column: span 2 !important; }
+  .home-screener-pair { grid-template-columns: minmax(0,1fr) !important; margin: 0 !important; gap: 0 !important; }
+  .home-screener-pair > .daily-card { margin: 10px 0 !important; }
+  .home-market-focus .home-us-list { grid-template-columns: repeat(2, minmax(0,1fr)) !important; }
+  .home-us-list > span:last-child { grid-column: span 2; }
+  .today-target-section { padding: 13px !important; border-radius: 16px !important; }
+  .today-target-section-head h2 { font-size: 18px !important; }
+  .today-target-row { padding: 0 !important; }
+  .today-target-summary { padding: 10px 0 !important; }
+  .today-target-summary-head { gap: 5px !important; grid-template-columns: minmax(0,1fr) auto auto 14px !important; }
+  .today-target-summary-weight { font-size: 11.5px !important; }
+  .today-target-day { font-size: 10px !important; }
+  .today-target-expanded { padding-bottom: 9px !important; }
+  .today-target-compare-grid { grid-template-columns: repeat(2,minmax(0,1fr)) !important; gap: 7px !important; }
+  .impact-leads { grid-template-columns: repeat(2,minmax(0,1fr)) !important; gap: 7px !important; }
+  .impact-lead { padding: 10px !important; }
+  .impact-lead h3 { font-size: 15px !important; }
+  .impact-lead > strong b { font-size: 16px !important; }
+  .impact-detail-row { grid-template-columns: 20px minmax(0,1fr) auto !important; gap: 7px !important; padding: 9px 10px !important; }
+  .impact-detail-row > strong { font-size: 11px !important; }
+  .position-journal, .position-history { margin: 10px 0 !important; border-radius: 15px !important; }
+  .position-journal-row { padding: 10px !important; }
+  .position-journal-note { max-height: none !important; }
+  .app-bottom-nav a { min-height: 44px !important; font-size: 10px !important; }
+  .app-bottom-nav a b { font-size: 17px !important; }
+}
+@media (max-width: 390px) {
+  .wrap { padding-left: 10px !important; padding-right: 10px !important; }
+  .daily-card { padding: 12px !important; }
+  .impact-lead { padding: 9px !important; }
+  .impact-lead h3 { font-size: 14px !important; }
+  .impact-lead p { font-size: 10px !important; }
+  .today-target-compare-grid { grid-template-columns: minmax(0,1fr) !important; }
+  .app-bottom-nav { padding-left: 6px !important; padding-right: 6px !important; }
+  .app-bottom-nav .bottom-inner { gap: 2px !important; }
+  .app-bottom-nav a { border-radius: 10px !important; }
+}
+@media (min-width: 700px) {
+  .wrap { padding-top: 16px !important; }
+  .app-header { margin-bottom: 16px !important; }
+  .daily-card { padding: 18px !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+"""
+
 def render_page(title, body, nav_active=None, user_name=None):
     """所有網頁共用的外框。用字串組裝就好，這個規模不需要模板引擎。"""
     # 盤前是獨立頁面，不能因為底部沒有專屬分頁就誤亮「今日」。
@@ -24714,7 +25084,7 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="{'#F3EEE3' if title == '登入台股 BOT' else '#315E9B'}">
-<meta name="stockbot-ui-version" content="v13-nav-timer-header-fix">
+<meta name="stockbot-ui-version" content="v2-template-refactor">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -24724,767 +25094,9 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
 <title>{title}｜台股 BOT</title>
 <style>{BASE_CSS}</style>
 <style>{page_extra_css}</style>
-<style id="internal-top-loading">
-#page-nav-loader{{position:fixed;left:0;right:0;top:env(safe-area-inset-top,0px);z-index:2147483001;height:3px;overflow:hidden;transform:translateY(-110%);opacity:0;transition:transform .12s ease,opacity .12s ease;pointer-events:none;display:block;background:transparent}}
-#page-nav-loader.show{{transform:translateY(0);opacity:1}}
-#page-nav-loader .nav-loader-card{{width:100%;height:3px;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}}
-#page-nav-loader .nav-loader-head{{display:none!important}}
-#page-nav-loader .nav-loader-title,#page-nav-loader .nav-loader-spinner,#page-nav-loader .nav-loader-percent{{display:none!important}}
-/* 導覽等待狀態不顯示估算百分比或開發診斷文字。 */
-#page-nav-progress-card{{position:fixed;z-index:2147483000;top:calc(env(safe-area-inset-top,0px) + 14px);left:50%;transform:translateX(-50%);width:min(390px,calc(100vw - 28px));padding:13px 15px;border:1px solid #d8e3ec;border-radius:13px;background:rgba(250,252,254,.98);box-shadow:0 8px 26px rgba(29,41,57,.16);color:#27445d;display:none;box-sizing:border-box;pointer-events:none}}
-#page-nav-progress-card{{display:none!important}}
-#page-nav-progress-card.show{{
-  position:fixed!important;z-index:2147483000!important;top:calc(env(safe-area-inset-top,0px) + 8px)!important;
-  left:50%!important;right:auto!important;transform:translateX(-50%)!important;
-  width:min(450px,calc(100vw - 22px))!important;box-sizing:border-box!important;
-  display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;
-  padding:10px 11px!important;border:1px solid #BCD0DF!important;border-radius:12px!important;
-  background:rgba(255,255,255,.98)!important;color:#173F59!important;
-  box-shadow:0 6px 22px rgba(20,48,69,.18)!important;pointer-events:none!important;backdrop-filter:blur(8px)!important;
-}}
-#page-nav-progress-card.show:before{{content:"";position:absolute;left:0;right:0;top:0;height:3px;border-radius:12px 12px 0 0;
-  background:linear-gradient(90deg,#245B82 0%,#4C91C5 45%,#7DB9D7 70%,#B99A67 100%)}}
-#page-nav-progress-card.show #page-nav-progress-head{{flex:1;min-width:0;display:block!important;margin:0!important;padding:0!important;
-  color:#173F59!important;font-size:12px!important;font-weight:900!important;line-height:1.35!important}}
-#page-nav-progress-card.show #page-nav-progress-title{{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
-#page-nav-progress-card.show #page-nav-progress-percent{{display:none!important}}
-#page-nav-progress-card.show #page-nav-progress-track{{display:none!important}}
-#page-nav-progress-card.show #page-nav-progress-time{{display:inline-flex!important;flex:0 0 auto;align-items:center;justify-content:center;
-  margin:0!important;padding:5px 8px!important;border-radius:8px!important;color:#FFFFFF!important;
-  background:linear-gradient(90deg,#245B82 0%,#4C91C5 48%,#7DB9D7 72%,#B99A67 100%)!important;
-  font-size:12px!important;font-weight:950!important;line-height:1.2!important;white-space:nowrap!important;
-  font-variant-numeric:tabular-nums!important}}
-#page-nav-progress-card.show #page-nav-progress-time:before{{content:"";display:inline-block;width:6px;height:6px;margin-right:5px;border-radius:50%;background:#FFFFFF;opacity:.95}}
-@media(max-width:360px){{#page-nav-progress-card.show{{width:calc(100vw - 14px)!important;padding:8px!important;gap:6px!important}}
-#page-nav-progress-card.show #page-nav-progress-head{{font-size:11px!important}}#page-nav-progress-card.show #page-nav-progress-time{{font-size:11px!important;padding:5px 6px!important}}}}
-#page-nav-progress-head{{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:800}}
-#page-nav-progress-percent{{font-size:14px;font-variant-numeric:tabular-nums;color:#356b91}}
-#page-nav-progress-track{{height:5px;margin-top:10px;border-radius:99px;overflow:hidden;background:#e4ebf1}}
-#page-nav-progress-bar{{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,#356b91,#7ba8c7,#b99a67);transition:width .18s linear}}
-#page-nav-progress-time{{display:block;margin-top:6px;font-size:10.5px;line-height:1.35;color:#71879a;font-variant-numeric:tabular-nums}}
-@media(prefers-reduced-motion:reduce){{#page-nav-progress-card{{animation:none}}#page-nav-progress-bar{{transition:none}}}}
-#page-nav-loader .nav-loader-track{{display:block;height:3px;margin:0;border-radius:0;overflow:hidden;background:rgba(219,231,242,.40)}}
-#page-nav-loader .nav-loader-bar{{position:relative;height:100%;width:0;border-radius:0;background:linear-gradient(90deg,#245B82,#4C91C5,#B99A67);transition:width .12s linear;overflow:hidden}}
-#page-nav-loader.show .nav-loader-bar{{width:38%!important;animation:nav-progress-sweep 1.05s ease-in-out infinite}}
-#page-nav-loader.done .nav-loader-bar{{width:100%!important;animation:none;transition:width .10s linear}}
-#page-nav-loader .nav-loader-bar:after{{content:"";position:absolute;top:0;bottom:0;width:25%;left:-30%;background:rgba(255,255,255,.68);animation:nav-bar-shimmer 1s linear infinite}}
-#page-nav-loader.done .nav-loader-bar:after{{animation:none;display:none}}
-@keyframes nav-bar-shimmer{{to{{left:115%}}}}
-@keyframes nav-progress-sweep{{0%{{transform:translateX(0)}}50%{{transform:translateX(85%)}}100%{{transform:translateX(0)}}}}
-@media(prefers-reduced-motion:reduce){{#page-nav-loader,#page-nav-loader .nav-loader-bar,#page-nav-loader .nav-loader-bar:after{{transition:none!important;animation:none!important}}}}
-</style>
-</head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v13-nav-timer-header-fix">
-<div id="page-nav-loader" aria-hidden="true">
-  <div class="nav-loader-card">
-    <div class="nav-loader-head">
-      <div class="nav-loader-title">
-        <span class="nav-loader-spinner"></span>
-        <span id="page-nav-loader-title">正在開啟頁面</span>
-      </div>
-      <span class="nav-loader-percent" id="page-nav-loader-percent">0%</span>
-    </div>
-    <div class="nav-loader-track"><div class="nav-loader-bar" id="page-nav-loader-bar"></div></div>
-  </div>
-</div>
-<div id="page-nav-progress-card" role="status" aria-live="polite" aria-atomic="true">
-  <div id="page-nav-progress-head"><span id="page-nav-progress-title">正在載入頁面…</span><span id="page-nav-progress-percent">0%</span></div>
-  <div id="page-nav-progress-track"><div id="page-nav-progress-bar"></div></div>
-  <small id="page-nav-progress-time">已等待 0.0 秒</small>
-</div>
-<script id="internal-top-loading-js">
-(function(){{
-  const loader=document.getElementById('page-nav-loader');
-  if(!loader)return;
-  const bar=document.getElementById('page-nav-loader-bar');
-  const pct=document.getElementById('page-nav-loader-percent');
-  const title=document.getElementById('page-nav-loader-title');
-  const progressCard=document.getElementById('page-nav-progress-card');
-  const progressTitle=document.getElementById('page-nav-progress-title');
-  const progressPercent=document.getElementById('page-nav-progress-percent');
-  const progressBar=document.getElementById('page-nav-progress-bar');
-  const progressTime=document.getElementById('page-nav-progress-time');
-  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0,progressStartedPerf=0,progressUsesWallClock=false,workbenchNavigationPending=false;
-
-  function clearProgressTimers(){{
-    window.clearTimeout(progressRevealTimer);window.clearInterval(progressTimer);
-    progressRevealTimer=0;progressTimer=0;
-  }}
-  function paintEstimatedProgress(){{
-    if(!active)return;
-    // 同一文件內的頁面切換使用 performance.now()，不會被先前 sessionStorage 時間污染；
-    // 只有選股工作台的真正整頁導覽，才需要跨文件沿用 Date.now()。
-    var sec=Math.max(0,((progressUsesWallClock?Date.now():performance.now())-(progressUsesWallClock?progressStartedAt:progressStartedPerf))/1000);
-    // 進度只用來呈現等待狀態；完成前保留少量空間，避免誤以為已載入完成。
-    var pct=sec<1?20:sec<3?20+(sec-1)*20:sec<6?60+(sec-3)*9:Math.min(97,87+(sec-6)*1.7);
-    pct=Math.min(97,Math.max(8,pct));
-    if(progressPercent)progressPercent.textContent=Math.round(pct)+'%';
-    if(progressBar)progressBar.style.width=pct.toFixed(1)+'%';
-    if(progressTime)progressTime.textContent=sec.toFixed(1)+' 秒';
-  }}
-
-  window.showPageNavLoader=function(label, internalNavigation, handoffToNextPage){{
-    var wasActive=active, now=Date.now(), savedStart=0, isWorkbenchHandoff=false;
-    try{{
-      savedStart=Number(sessionStorage.getItem('stockbot_nav_started_at')||0);
-      var navQuery=new URLSearchParams(location.search);
-      isWorkbenchHandoff=(location.pathname==='/web/workbench'&&navQuery.get('_nav')==='1');
-    }}catch(ignore){{}}
-    active=true;
-    if(wasActive&&progressStartedAt){{
-      // 同一個尚未完成的導覽可能會被共用函式啟動兩次；沿用這次導覽的起點。
-    }}else if(isWorkbenchHandoff&&savedStart>0&&now>=savedStart&&now-savedStart<120000){{
-      // 只有選股工作台使用整頁導覽，需要跨文件延續計時；一般頁面切換不能沿用舊時間。
-      progressStartedAt=savedStart;
-      progressStartedPerf=performance.now();
-      progressUsesWallClock=true;
-    }}else{{
-      progressStartedAt=now;
-      progressStartedPerf=performance.now();
-      progressUsesWallClock=false;
-    }}
-    try{{
-      if(handoffToNextPage||isWorkbenchHandoff)sessionStorage.setItem('stockbot_nav_started_at',String(progressStartedAt));
-      else sessionStorage.removeItem('stockbot_nav_started_at');
-    }}catch(ignore){{}}
-    clearProgressTimers();
-    window.clearTimeout(hideTimer);window.clearTimeout(resetTimer);
-    if(title){{ title.textContent=label||'正在開啟頁面'; loader.setAttribute('aria-label',title.textContent); }}
-    if(progressTitle)progressTitle.textContent=label||'正在開啟頁面';
-    if(progressCard)progressCard.classList.add('show');
-    if(progressPercent)progressPercent.hidden=true;
-    if(progressBar)progressBar.style.width='0%';
-    if(progressTime)progressTime.textContent='0.0 秒';
-    loader.classList.remove('done');loader.classList.add('show');
-    progressTimer=window.setInterval(paintEstimatedProgress,100);
-    paintEstimatedProgress();
-  }};
-
-  window.finishPageNavLoader=function(){{
-    if(!active){{
-      // 即使呼叫端已經完成或切頁被中斷，也要清掉舊的浮動提示與過期起始時間。
-      clearProgressTimers();
-      try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
-      if(progressCard)progressCard.classList.remove('show');
-      loader.classList.remove('show');
-      return;
-    }}
-    active=false;clearProgressTimers();
-    if(progressPercent)progressPercent.textContent='';
-    if(progressBar)progressBar.style.width='100%';
-    try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
-    loader.classList.add('done');
-    hideTimer=window.setTimeout(function(){{
-      loader.classList.remove('show');
-      if(progressCard)progressCard.classList.remove('show');
-      resetTimer=window.setTimeout(function(){{
-        loader.classList.remove('done');
-        if(bar)bar.style.width='0%';
-        if(progressBar)progressBar.style.width='0%';
-      }},100);
-    }},120);
-  }};
-
-  // 持股五大因子放在持久 shell，fragment 導航後仍可用；避免長 inline JS 造成 HTML 引號解析錯誤。
-  (function(){{
-    function esc(v){{return String(v==null?'':v).replace(/[&<>"']/g,function(c){{return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c];}});}}
-    function status(r){{return r>=.8?'偏強':r>=.6?'中上':r>=.4?'中性':'偏弱';}}
-    function cls(r){{return r>=.8?'strong':r>=.6?'mid':r>=.4?'neutral':'weak';}}
-    function render(d){{
-      if(!d||!d.ok)return '<div class="position-factor-empty">五大因子暫時無法載入：'+esc(d&&d.error||'未知錯誤')+'</div>';
-      if(!d.scored)return '<div class="position-factor-empty">'+esc(d.note||'目前沒有可用的五大因子評分。')+'</div>';
-      var fs=Array.isArray(d.factors)?d.factors:[];
-      if(!fs.length)return '<div class="position-factor-empty">目前沒有可用的五大因子分項資料。</div>';
-      var valid=fs.filter(function(x){{return Number(x.max)>0;}});
-      var best=valid.slice().sort(function(a,b){{return (Number(b.value)/Number(b.max))-(Number(a.value)/Number(a.max));}})[0];
-      var worst=valid.slice().sort(function(a,b){{return (Number(a.value)/Number(a.max))-(Number(b.value)/Number(b.max));}})[0];
-      var bars=fs.map(function(x){{var v=Number(x.value)||0,m=Number(x.max)||0,r=m>0?Math.max(0,Math.min(1,v/m)):0;var details=Array.isArray(x.details)?x.details:[];var detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){{return '<div>'+esc(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\/b&gt;/g,'</b>')+'</div>';}}).join('')+'</div>':'';return '<details class="position-factor-item '+cls(r)+'"><summary class="position-factor-head"><span>'+esc(x.name)+'</span><b>'+v.toFixed(0)+' / '+m.toFixed(0)+'　'+status(r)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(r*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}}).join('');
-      var note='';
-      if(best)note+='<b>目前相對較強：</b>'+esc(best.name)+'（'+status(Number(best.value)/Number(best.max))+'）。';
-      if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+esc(worst.name)+'（'+status(Number(worst.value)/Number(worst.max))+'）。';
-      return '<div class="position-factor-overview"><div><small>五大因子綜合分數</small><b>'+esc(d.score==null?'—':Number(d.score).toFixed(0)+' 分')+'</b></div><em>'+esc(d.category||'個股')+'<br>資料日 '+esc(d.source_date||'未標日期')+'</em></div><div class="position-factor-list">'+bars+'</div>'+(note?'<div class="position-factor-note">'+note+'</div>':'')+'<div class="position-factor-source">分數沿用選股模型最近保存快照；不在手機端重新計算。</div>';
-    }}
-    window.loadPositionFactors=function(box){{
-      if(!box||box.dataset.loaded==='1')return;
-      var body=box.querySelector('.position-factors-body'),code=box.getAttribute('data-factor-code');
-      if(!body||!code)return;
-      box.dataset.loaded='1';
-      body.innerHTML='<div class="position-factor-loading">正在載入五大因子…</div>';
-      var token='';try{{token=new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}}catch(ignore){{}}
-      var url='/web/api/positions/factors?code='+encodeURIComponent(code)+(token?'&t='+encodeURIComponent(token):'');
-      fetch(url,{{credentials:'same-origin',cache:'no-store'}}).then(function(r){{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}}).then(function(d){{body.innerHTML=render(d);}}).catch(function(e){{box.dataset.loaded='';body.innerHTML='<div class="position-factor-empty">五大因子載入失敗：'+esc(e&&e.message||e)+'<br><small>請重新展開一次。</small></div>';}});
-    }};
-    document.addEventListener('click',function(e){{
-      var summary=e.target.closest('.position-factors-trigger');
-      if(!summary)return;
-      var box=summary.closest('.position-factors');
-      if(box)window.setTimeout(function(){{window.loadPositionFactors(box);}},0);
-    }},true);
-  }})();
-
-  document.addEventListener('click',function(e){{
-    const a=e.target.closest('a[href]');
-    if(!a||e.defaultPrevented)return;
-    if(a.target&&a.target!=='_self')return;
-    if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
-    const u=new URL(a.href,location.href);
-    if(u.origin!==location.origin)return;
-    if(!u.pathname.startsWith('/web/'))return;
-    if(u.href===location.href)return;
-    if(a.dataset && a.dataset.appNav === '1')return; // SPA／分頁導覽由 switchAppPage 統一顯示單一頂部進度條。
-    const labels={{
-      '/web/':'正在開啟首頁',
-      '/web/portfolio':'正在開啟首頁',
-      '/web/positions':'正在開啟持股',
-      '/web/workbench':'正在開啟選股台'
-    }};
-    showPageNavLoader(labels[u.pathname]||'正在開啟頁面', true);
-  }},true);
-
-  try{{
-    var bootQuery=new URLSearchParams(location.search);
-    if(location.pathname==='/web/workbench'&&bootQuery.get('_nav')==='1'){{
-      workbenchNavigationPending=true;
-      window.showPageNavLoader('正在開啟選股工作台',true);
-    }}
-  }}catch(ignore){{}}
-  window.addEventListener('pageshow',function(){{
-    if(active&&!workbenchNavigationPending)finishPageNavLoader();
-    if(!active){{
-      if(progressCard)progressCard.classList.remove('show');
-      loader.classList.remove('show','done');
-    }}
-    if(!workbenchNavigationPending){{
-      clearProgressTimers();
-      try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
-    }}
-  }});
-}})();
-</script><div class="wrap">
-{header_html}
-{nav}
-<main id="app-page-content" class="app-page-content">{body}</main>
 <style id="global-visual-refresh-v236">{GLOBAL_VISUAL_CSS}</style>
 <style id="v12-final-page-overrides">{late_page_css}</style>
 <style id="v274-visual-only-polish">{VISUAL_ONLY_POLISH_CSS}</style>
-<script>
-(function() {{
-  // LINE WebView 可能清掉 cookie；把有效網址 token 保存到同一個網域，
-  // 只有真正進入登入失效頁時才自動恢復，不干擾一般頁面。
-  try {{
-    var query = new URLSearchParams(window.location.search);
-    var incomingToken = query.get('t');
-    if (incomingToken) localStorage.setItem('stockbot_web_token', incomingToken);
-    var loginText = (document.title + ' ' + document.body.innerText).slice(0, 600);
-    var isLoginPage = /需要登入|登入狀態已失效/.test(loginText);
-    var savedToken = localStorage.getItem('stockbot_web_token');
-    var alreadyRecovered = query.get('auth_recover') === '1';
-    if (savedToken && isLoginPage && !alreadyRecovered) {{
-      window.location.replace(window.location.pathname + '?t=' + encodeURIComponent(savedToken) + '&auth_recover=1');
-      return;
-    }}
-    if (isLoginPage && alreadyRecovered) localStorage.removeItem('stockbot_web_token');
-  }} catch (authError) {{
-    // localStorage 在部分私密 WebView 可能被禁止，仍由 cookie／網址 token 工作。
-  }}
-
-  function prefersReducedMotion() {{
-    try {{ return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; }}
-    catch (ignore) {{ return false; }}
-  }}
-
-  // iOS／部分 LINE WebView 不提供 vibrate；不支援時只保留視覺回饋，不報錯。
-  function haptic(kind) {{
-    if (prefersReducedMotion() || !navigator.vibrate) return;
-    try {{
-      var pattern = kind === 'success' ? [8, 35, 8]
-                  : kind === 'error' ? [16, 35, 16]
-                  : kind === 'medium' ? 14 : 7;
-      navigator.vibrate(pattern);
-    }} catch (ignore) {{}}
-  }}
-
-  function pulse(target) {{
-    if (!target || prefersReducedMotion()) return;
-    target.classList.remove('tap-pulse');
-    void target.offsetWidth;
-    target.classList.add('tap-pulse');
-    window.setTimeout(function() {{ target.classList.remove('tap-pulse'); }}, 260);
-  }}
-
-  function isFeedbackTarget(target) {{
-    return target && (target.matches('button,[data-haptic]') ||
-      target.matches('.daily-focus a,.daily-card a,.app-bottom-nav a'));
-  }}
-
-  // 主導覽改為只替換內容 fragment：LINE WebView 不必每次切今日、持股、選股、排行
-  // 都重建整張頁面。資料仍由每個既有 route／權杖 decorator 提供，未更改任何計算流程。
-  var appContent = document.getElementById('app-page-content');
-  var appNavBusy = false;
-  var appNavSeq = 0;
-  var appNavController = null;
-  var appScrollRestore = {{}};
-  var appRouteKeys = {{
-    '/web/portfolio':'portfolio','/web/positions':'positions','/web/workbench':'screener',
-    '/web/leaderboard':'leaderboard','/web/trades':'trades','/web/compare':'compare',
-    '/web/settings':'settings','/web/more':'more','/web/chips':'screener','/web/etf':'more','/web/watchlist':'watchlist'
-  }};
-  var appTitles = {{
-    '/web/portfolio':'今日','/web/positions':'持股','/web/workbench':'選股工作台',
-    '/web/leaderboard':'排行榜','/web/trades':'紀錄','/web/compare':'比較',
-    '/web/settings':'設定','/web/more':'更多功能','/web/chips':'籌碼超人','/web/etf':'ETF 專區','/web/watchlist':'名單儀表板'
-  }};
-  // 賣出後走勢：定義在殼層而不是片段裡。
-  // 片段內的腳本標籤在這個環境不會執行（實測過三版都沒用）。
-  // 但殼層腳本一定會跑——籌碼分布的 window.loadPositionChips 就是這樣做的，
-  // 而那個是能用的。所以照同一套來。
-  window.loadTradeHabitsAfter = function (btn) {{
-    var box = document.getElementById('habitsAfterBox');
-    if (!box || box.dataset.loaded === '1') return;
-    box.dataset.loaded = '1';
-    if (btn) {{ btn.disabled = true; btn.textContent = '計算中…'; }}
-    box.innerHTML = '<div class="sub" style="margin-top:8px">'
-      + '正在抓取每一檔的目前報價…</div>';
-    var tk = '';
-    try {{
-      tk = new URLSearchParams(window.location.search).get('t')
-           || localStorage.getItem('stockbot_web_token') || '';
-    }} catch (ignore) {{ tk = ''; }}
-    fetch('/web/api/trade-habits?after=1' + (tk ? ('&t=' + encodeURIComponent(tk)) : ''),
-          {{ credentials: 'same-origin' }})
-      .then(function (r) {{
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.text();
-      }})
-      .then(function (html) {{
-        box.innerHTML = html;
-        if (btn) btn.parentNode.removeChild(btn);
-      }})
-      .catch(function (e) {{
-        box.dataset.loaded = '';
-        if (btn) {{ btn.disabled = false; btn.textContent = '計算「賣出後的走勢」'; }}
-        box.innerHTML = '<div class="sub" style="margin-top:8px">載入失敗：'
-          + (e && e.message ? e.message : e) + '</div>';
-      }});
-  }};
-  function upgradePreviewFragment(pathname, search) {{
-    // 片段導覽沒有「先給預覽、再補完整」的機制——拿到什麼就顯示什麼。
-    // 首次整頁載入的殼層有這套（finish() 裡的 detail 請求），
-    // 但那段抓的是 #content，片段導覽用的是 #app-page-content，走不到。
-    //
-    // 結果是：只要伺服器回了預覽殼，畫面就永遠停在
-    // 「系統正在跑・正在整合完整首頁」，即時貢獻與輪詢腳本都不會出現。
-    //
-    // 這裡在插入後檢查一次：還是預覽就自己去要完整版。
-    var preview = appContent.querySelector('.daily-fast-sync, [data-fast-preview]');
-    if (!preview) return;
-    var params = new URLSearchParams(search || window.location.search);
-    params.set('fragment', '1');
-    params.delete('fast');          // 關鍵：不帶 fast 才會拿到完整內容
-    var full = pathname + '?' + params.toString();
-    var tries = 0;
-    function load() {{
-      tries += 1;
-      fetch(full, {{credentials: 'same-origin', cache: 'no-store'}})
-        .then(function (r) {{
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.text();
-        }})
-        .then(function (html) {{
-          if (html.indexOf('AUTH_EXPIRED') >= 0) return;
-          appContent.innerHTML = html;
-          executeFragmentScripts(appContent);
-        }})
-        .catch(function (e) {{
-          // 完整內容比較慢，逾時或短暫 5xx 都重試；
-          // 但要把狀態寫出來，不要讓人對著「正在整合」乾等。
-          var note = appContent.querySelector('.daily-fast-sync p, .daily-fast-sync div');
-          if (tries < 6) {{
-            if (note) note.textContent = '完整內容尚未回應，5 秒後自動重試（第 '
-              + tries + ' 次）…';
-            window.setTimeout(load, 5000);
-          }} else if (note) {{
-            note.textContent = '完整內容載入失敗：'
-              + (e && e.message ? e.message : e) + '，請下拉重新整理。';
-          }}
-        }});
-    }}
-    load();
-  }}
-  function executeFragmentScripts(container) {{
-    container.querySelectorAll('script').forEach(function(oldScript) {{
-      var replacement = document.createElement('script');
-      Array.prototype.slice.call(oldScript.attributes).forEach(function(attr) {{
-        replacement.setAttribute(attr.name, attr.value);
-      }});
-      replacement.text = oldScript.text || oldScript.textContent || '';
-      oldScript.parentNode.replaceChild(replacement, oldScript);
-    }});
-  }}
-  function setAppNavState(path) {{
-    var key = appRouteKeys[path] || '';
-    document.querySelectorAll('[data-app-nav="1"]').forEach(function(link) {{
-      var linkPath = new URL(link.href, window.location.href).pathname;
-      var linkKey = appRouteKeys[linkPath] || '';
-      link.classList.toggle('on', !!key && linkKey === key);
-    }});
-    var h1 = document.querySelector('.app-header h1');
-    if (h1 && appTitles[path]) h1.textContent = appTitles[path];
-    if (appTitles[path]) document.title = appTitles[path] + '｜台股 BOT';
-  }}
-  function showAppToast(message, kind) {{
-    var old = document.querySelector('.app-ux-toast');
-    if (old && old.parentNode) old.parentNode.removeChild(old);
-    var toast = document.createElement('div');
-    toast.className = 'app-ux-toast ' + (kind === 'error' ? 'error' : 'success');
-    toast.setAttribute('role','status');
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    window.setTimeout(function() {{ if (toast.parentNode) toast.parentNode.removeChild(toast); }}, 1800);
-  }}
-  function ensureTopNavLoadingForFullNavigation(title, steps) {{
-    if (window.showPageNavLoader) window.showPageNavLoader(title || '正在開啟頁面');
-  }}
-  function finishTopNavLoading() {{
-    if (window.finishPageNavLoader) window.finishPageNavLoader();
-  }}
-  function showLocalPageLoading(message) {{
-    // V254：所有分頁共用固定在 viewport 頂端的彩色進度條與秒數膠囊。
-    // 不再把計時器插在可捲動內容內，避免使用者捲動後找不到載入秒數。
-    if (window.showPageNavLoader) window.showPageNavLoader(message || '正在開啟頁面', true);
-  }}
-  function hideLocalPageLoading() {{
-    var banner = document.getElementById('app-page-local-loading');
-    if (banner && banner._elapsedTimer) window.clearInterval(banner._elapsedTimer);
-    if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
-  }}
-  window.stockBotFinishPageLoading = finishTopNavLoading;
-
-  function switchAppPage(rawHref, pushState) {{
-    if (!appContent) {{ window.location.assign(rawHref); return; }}
-    if (appNavBusy) return;
-    var target = new URL(rawHref, window.location.href);
-    if (!appRouteKeys[target.pathname]) {{ window.location.assign(target.pathname + target.search); return; }}
-    // 選股工作台含有大量原生頁面腳本；SPA fragment 插入後，部分 WebView/Safari
-    // 情況下動態 script 不會穩定執行，會只留下「讀取最近有效快照…」骨架。
-    // 因此選股工作台改走一次正常文件導覽；仍保留上方小型 Loading，而不是全頁動畫。
-    if (target.pathname === '/web/workbench') {{
-      // 工作台仍採正常文件導覽，避免其大型腳本在 fragment 插入後失效；
-      // _nav=1 讓伺服器跳過首次進站的全螢幕 Loader，站內只給局部等待提示。
-      showLocalPageLoading('正在開啟選股工作台…');
-      // 這一頁會執行整頁導覽；明確標記一次性的計時交接，其他頁面不沿用 sessionStorage 舊時間。
-      if (window.showPageNavLoader) window.showPageNavLoader('正在開啟選股工作台', true, true);
-      target.searchParams.delete('fragment');
-      target.searchParams.set('_nav', '1');
-      window.location.assign(target.pathname + (target.search ? '?' + target.searchParams.toString() : ''));
-      return;
-    }}
-    // V244：頁內切換只使用共用頂部進度線，避免全螢幕遮罩、浮動卡片與第二條進度條互相覆蓋。
-    target.searchParams.set('fragment', '1');
-    target.searchParams.delete('fast');
-    var navSeq = ++appNavSeq;
-    appNavBusy = true;
-    if (appNavController) {{ try {{ appNavController.abort(); }} catch (ignore) {{}} }}
-    appNavController = window.AbortController ? new AbortController() : null;
-    var previousScroll = window.scrollY || 0;
-    if (pushState) appScrollRestore[window.location.pathname + window.location.search] = previousScroll;
-    if (target.pathname === '/web/portfolio') target.searchParams.set('_nav', String(Date.now()));
-    var requestUrl = target.pathname + '?' + target.searchParams.toString();
-    var navStartedAt = performance.now();
-    var routeTitle = appTitles[target.pathname] || '頁面';
-    showLocalPageLoading('正在開啟' + routeTitle + '…');
-    if (window.showPageNavLoader) window.showPageNavLoader('正在開啟' + routeTitle, true);
-    var routeLoadTimedOut = false;
-    var routeLoadTimeoutId = null;
-    appContent.setAttribute('aria-busy', 'true');
-    appContent.classList.add('app-page-loading');
-    var routeFetchPromise = fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, appNavController ? {{signal:appNavController.signal}} : {{}}));
-    var routeTimeoutPromise = new Promise(function(resolve, reject) {{
-      routeLoadTimeoutId = window.setTimeout(function() {{
-        routeLoadTimedOut = true;
-        if (appNavController) {{ try {{ appNavController.abort(); }} catch (ignore) {{}} }}
-        reject(new Error('頁面載入逾時（90 秒），請重新整理後再試。'));
-      }}, 90000);
-    }});
-        Promise.race([routeFetchPromise, routeTimeoutPromise])
-      .then(function(response) {{
-        if (response.status === 401) {{ window.location.assign(target.pathname + target.search.replace(/([?&])fragment=1&?/, '$1').replace(/[?&]$/, '')); return null; }}
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        return response.text();
-      }})
-      .then(function(fragment) {{
-        if (fragment === null) return;
-        if (navSeq !== appNavSeq) return;
-        if (fragment.indexOf('AUTH_EXPIRED') >= 0) {{ window.location.assign(target.pathname + target.search); return; }}
-        document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
-        appContent.innerHTML = fragment;
-        // 伺服器已回傳並插入頁面主內容時，先收起覆蓋卡片；大型頁面腳本隨後初始化，
-        // 避免文字與資料已可見，載入卡仍蓋在畫面上造成「明明載入完卻卡住」的錯覺。
-        if (window.finishPageNavLoader) window.finishPageNavLoader();
-        hideLocalPageLoading();
-        executeFragmentScripts(appContent);
-        if (target.pathname !== '/web/portfolio') {{
-            upgradePreviewFragment(target.pathname, target.search);
-        }}
-        appContent.classList.remove('app-page-enter');
-        if (!prefersReducedMotion()) {{
-          window.requestAnimationFrame(function() {{
-            appContent.classList.add('app-page-enter');
-            window.setTimeout(function() {{ appContent.classList.remove('app-page-enter'); }}, 170);
-          }});
-        }}
-        appNavBusy = false;
-        appContent.removeAttribute('aria-busy');
-        appContent.classList.remove('app-page-loading');
-        target.searchParams.delete('fragment');
-        if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', target.pathname + target.search);
-        setAppNavState(target.pathname);
-        try {{
-          var navElapsed = Math.round((performance.now() - navStartedAt) * 10) / 10;
-          console.info('[台股 BOT] 頁面切換完成', target.pathname, navElapsed + 'ms');
-        }} catch (ignore) {{}}
-        // 切換分頁不再彈出干擾閱讀的成功提示；新頁面直接定位頂部，避免額外平滑捲動延遲。
-        window.scrollTo({{top:0, behavior:'auto'}});
-      }})
-      .catch(function(error) {{
-        if (error && error.name === 'AbortError' && !routeLoadTimedOut) {{
-          if (window.finishPageNavLoader) window.finishPageNavLoader();
-          hideLocalPageLoading();
-          appContent.removeAttribute('aria-busy');
-          appContent.classList.remove('app-page-loading');
-          return;
-        }}
-        if (routeLoadTimedOut) error = new Error('頁面載入逾時（90 秒），請重新整理後再試。');
-        if (window.finishPageNavLoader) window.finishPageNavLoader();
-        hideLocalPageLoading();
-        appNavBusy = false;
-        appContent.removeAttribute('aria-busy');
-        appContent.classList.remove('app-page-loading');
-        var retryNotice = document.createElement('div');
-        retryNotice.className = 'app-fragment-status app-fragment-error';
-        // 把錯誤內容顯示出來。只寫「請稍後再試」的話，
-        // 到底是伺服器 500、逾時、還是網路斷線完全看不出來，
-        // 每次都要去翻 Render Logs 才知道發生什麼事。
-        var reason = (error && error.message) ? error.message : String(error || '');
-        retryNotice.textContent = '頁面暫時無法切換：' + reason
-          + '（HTTP 500 代表伺服器端出錯，請看 Render Logs；其他多半是逾時或網路問題）';
-        if (appContent.parentNode) {{
-          appContent.parentNode.insertBefore(retryNotice, appContent);
-          window.setTimeout(function() {{ if (retryNotice.parentNode) retryNotice.parentNode.removeChild(retryNotice); }}, 4200);
-        }}
-        showAppToast('頁面切換失敗，請再試一次','error');
-        console.error(error);
-      }})
-      .finally(function() {{
-        window.clearTimeout(routeLoadTimeoutId);
-        if (navSeq === appNavSeq) appNavBusy = false;
-      }});
-  }}
-  window.stockBotSwitchPage = switchAppPage;
-  document.addEventListener('pointerdown', function(e) {{
-    var target = e.target.closest ? e.target.closest('a,button,[role="button"],[data-haptic]') : null;
-    if (!target || target.disabled || target.dataset.haptic === 'none') return;
-    target.classList.add('app-press');
-    window.setTimeout(function() {{ target.classList.remove('app-press'); }}, 180);
-  }}, true);
-  document.addEventListener('touchstart', function(e) {{
-    var target = e.target.closest ? e.target.closest('a,button,[role="button"],[data-haptic]') : null;
-    if (!target || target.disabled || target.dataset.haptic === 'none') return;
-    target.classList.add('app-press');
-    window.setTimeout(function() {{ target.classList.remove('app-press'); }}, 180);
-  }}, {{capture:true, passive:true}});
-  document.addEventListener('click', function(e) {{
-    var backLink = e.target.closest ? e.target.closest('[data-history-back="1"]') : null;
-    if (backLink) {{
-      e.preventDefault();
-      if (appNavBusy) return;
-      try {{
-        var ref = document.referrer || '';
-        var sameOrigin = false;
-        try {{ sameOrigin = ref.indexOf(window.location.origin + '/') === 0; }} catch (ignoreRef) {{}}
-        var ownState = false;
-        try {{ ownState = !!(history.state && history.state.stockbotApp); }} catch (ignoreState) {{}}
-        if ((sameOrigin || ownState) && history.length > 1) history.back();
-        else window.location.assign('/web/more');
-      }} catch (ignore) {{ window.location.assign('/web/more'); }}
-      return;
-    }}
-    var fullNav = e.target.closest ? e.target.closest('a[data-full-navigation="1"]') : null;
-    if (fullNav) return;
-    var appLink = e.target.closest ? e.target.closest('a[data-app-nav="1"]') : null;
-    if (!appLink || appLink.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    e.preventDefault();
-    switchAppPage(appLink.href, true);
-  }}, true);
-  window.addEventListener('popstate', function() {{
-    if (appRouteKeys[window.location.pathname]) {{
-      switchAppPage(window.location.href, false);
-      window.setTimeout(function() {{
-        var key = window.location.pathname + window.location.search;
-        if (Object.prototype.hasOwnProperty.call(appScrollRestore, key)) window.scrollTo(0, appScrollRestore[key]);
-      }}, 80);
-    }}
-  }});
-
-  // 點擊後立即給回饋；不攔截錨點、下載與外部連結。
-  document.addEventListener('click', function(e) {{
-    var target = e.target.closest ? e.target.closest('a,button,[data-haptic]') : null;
-    if (!target || target.dataset.haptic === 'none') return;
-    if (isFeedbackTarget(target)) {{
-      pulse(target);
-      haptic(target.dataset.haptic || 'soft');
-    }}
-    var a = target.matches('a') ? target : (target.closest ? target.closest('a') : null);
-    if (!a) return;
-    var href = a.getAttribute('href') || '';
-    if (!href || href.charAt(0) === '#' || a.target === '_blank' || a.dataset.noBusy === '1' || a.dataset.fullNavigation === '1') return;
-  }}, true);
-
-  // 一般 POST 表單只允許送出一次。
-  // 「新增持股／換股」由下方自訂確認視窗接管：
-  // 第一次 submit 只開確認視窗，確認後才真正 requestSubmit。
-  // 這裡必須跳過這兩類表單，否則全域防重送會先攔掉 requestSubmit，
-  // 造成按「確認送出」後卡在處理中、實際沒有送出。
-  document.addEventListener('submit', function(e) {{
-    var form = e.target;
-    if (!form) return;
-    if (form.matches('form.add, form.sellpanel, form[data-form-purpose="leaderboard-settlement"]')) return;
-    if (form.dataset.submitted === '1') {{
-      e.preventDefault();
-      return;
-    }}
-    form.dataset.submitted = '1';
-    form.classList.add('tap-loading');
-    haptic('medium');
-    var button = form.querySelector('button[type="submit"],input[type="submit"]');
-    if (button) {{
-      button.dataset.oldText = button.textContent || button.value || '';
-      if (button.tagName === 'INPUT') button.value = '處理中…';
-      else button.textContent = '處理中…';
-      button.disabled = true;
-    }}
-  }}, true);
-
-  // 套牢籌碼分布同樣只在展開時載入。
-  // 它要重抓那一檔的三個月日K，若在頁面載入時就為每一檔計算，
-  // 十幾檔持股會多出十幾次請求，而多數人只會看其中一兩檔。
-  window.loadPositionChips = function (details) {{
-    if (!details || details.dataset.loaded === '1' || !details.open) return;
-    var code = details.getAttribute('data-code') || '';
-    var target = details.querySelector('.chipdist-body');
-    if (!code || !target) return;
-    details.dataset.loaded = '1';
-    target.innerHTML = '<div class="sub">計算中…</div>';
-    fetch('/web/api/chip-bins?code=' + encodeURIComponent(code),
-          {{credentials: 'same-origin'}})
-      .then(function (r) {{
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.text();
-      }})
-      .then(function (html) {{ target.innerHTML = html; }})
-      .catch(function (err) {{
-        details.dataset.loaded = '';
-        target.innerHTML = '<div class="sub">籌碼分布載入失敗：'
-          + (err && err.message ? err.message : err) + '</div>';
-      }});
-  }};
-
-  // 持股一年損益走勢只在使用者展開該檔時載入，避免主頁為所有圖表先抓歷史行情。
-  window.loadPositionTrend = function (details) {{
-    if (!details || details.dataset.loaded === '1' || !details.open) return;
-    var code = details.getAttribute('data-code') || '';
-    var target = details.querySelector('.trend-body');
-    if (!code || !target) return;
-    details.dataset.loaded = '1';
-    details.setAttribute('aria-busy', 'true');
-    target.textContent = '正在載入一年損益走勢…';
-    var query = new URLSearchParams(window.location.search);
-    var token = query.get('t');
-    var url = '/web/position-trend?code=' + encodeURIComponent(code) + '&fragment=1';
-    if (token) url += '&t=' + encodeURIComponent(token);
-    fetch(url, {{ credentials: 'same-origin' }})
-      .then(function (r) {{
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.text();
-      }})
-      .then(function (body) {{
-        target.innerHTML = body;
-        details.removeAttribute('aria-busy');
-      }})
-      .catch(function (e) {{
-        target.textContent = '一年走勢暫時載入失敗，請稍後再試。';
-        details.dataset.loaded = '0';
-        details.removeAttribute('aria-busy');
-        console.error(e);
-      }});
-  }};
-
-  // 新頁面載入後，讓成功／失敗訊息有一致的顏色、短動畫與觸覺回饋。
-  document.querySelectorAll('.msg,.callout').forEach(function(box) {{
-    var text = box.textContent || '';
-    if (/成功|完成|已儲存|已新增|已刪除/.test(text)) {{
-      box.classList.add('feedback-success'); haptic('success');
-    }} else if (/失敗|錯誤|無法|過期/.test(text)) {{
-      box.classList.add('feedback-error'); haptic('error');
-    }}
-  }});
-  // 首頁總市值隱私遮罩：只遮蔽顯示，不改動任何資料或計算；SPA 回到首頁也保留狀態。
-  var homePrivacyKey = 'stockbot_home_value_masked_v1';
-  window.__stockbotHomePrivacyMasked = false;
-  function readHomePrivacyMasked() {{
-    try {{ return window.sessionStorage.getItem(homePrivacyKey) === '1'; }}
-    catch (ignore) {{ return window.__stockbotHomePrivacyMasked === true; }}
-  }}
-  function applyHomePrivacy(scope) {{
-    var root = scope || document;
-    if (!root || !root.querySelectorAll) return;
-    var masked = readHomePrivacyMasked();
-    root.querySelectorAll('[data-home-sensitive]').forEach(function (node) {{
-      var original = node.getAttribute('data-home-original');
-      if (original === null) original = node.textContent.trim();
-      var shown = masked ? '******' : original;
-      if (node.textContent !== shown) node.textContent = shown;
-    }});
-    root.querySelectorAll('[data-home-privacy-card]').forEach(function (card) {{
-      card.classList.toggle('is-privacy-hidden', masked);
-      var button = card.querySelector('[data-home-privacy-toggle]');
-      if (button) {{
-        button.setAttribute('aria-pressed', masked ? 'true' : 'false');
-        button.setAttribute('aria-label', masked ? '顯示總市值與成本' : '隱藏總市值與成本');
-        button.setAttribute('title', masked ? '顯示總市值與成本' : '隱藏總市值與成本');
-      }}
-    }});
-  }}
-  document.addEventListener('click', function (event) {{
-    var button = event.target && event.target.closest ? event.target.closest('[data-home-privacy-toggle]') : null;
-    if (!button) return;
-    event.preventDefault(); event.stopPropagation();
-    var card = button.closest('[data-home-privacy-card]');
-    if (!card) return;
-    var next = !card.classList.contains('is-privacy-hidden');
-    window.__stockbotHomePrivacyMasked = next;
-    try {{ window.sessionStorage.setItem(homePrivacyKey, next ? '1' : '0'); }} catch (ignore) {{}}
-    applyHomePrivacy(document);
-  }}, true);
-  applyHomePrivacy(document);
-  if (appContent && window.MutationObserver) {{
-    new MutationObserver(function () {{ applyHomePrivacy(appContent); }}).observe(appContent, {{ childList: true, subtree: true }});
-  }}
-  // 首次整頁載入若拿到的是預覽殼，也要自動補完整內容。
-  // 殼層的 finish() 只在 staged 模式處理，直接開網址走不到那條。
-  if (appContent) {{
-    window.setTimeout(function () {{
-      upgradePreviewFragment(window.location.pathname, window.location.search);
-    }}, 300);
-  }}
-}})();
-</script>
-<footer>
-以上為你輸入之持股的數據整理，不構成投資建議。<br>
-你輸入的持股只用於產生你自己的分析，作者不會查看個別使用者的持股內容。<br>
-資料來源：臺灣證券交易所、櫃買中心、Yahoo Finance。作者：蔡秉軒
-</footer>
-{bottom_nav}
-
 <style id="visual-refresh-v234">
 /* V234 VISUAL-ONLY REFRESH
    Only presentation overrides: no data, calculations, routes, event handlers or DOM behavior changed. */
@@ -26879,7 +26491,767 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   .rank-rows .rank-card.rank-champion .rank-honour-icon svg {{ width:40px !important; height:40px !important; flex-basis:40px !important; }}
 }}
 </style>
-</div></body></html>"""
+<style id="stockbot-v2-template">{STOCKBOT_V2_TEMPLATE_CSS}</style>
+<style id="internal-top-loading">
+#page-nav-loader{{position:fixed;left:0;right:0;top:env(safe-area-inset-top,0px);z-index:2147483001;height:3px;overflow:hidden;transform:translateY(-110%);opacity:0;transition:transform .12s ease,opacity .12s ease;pointer-events:none;display:block;background:transparent}}
+#page-nav-loader.show{{transform:translateY(0);opacity:1}}
+#page-nav-loader .nav-loader-card{{width:100%;height:3px;margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}}
+#page-nav-loader .nav-loader-head{{display:none!important}}
+#page-nav-loader .nav-loader-title,#page-nav-loader .nav-loader-spinner,#page-nav-loader .nav-loader-percent{{display:none!important}}
+/* 導覽等待狀態不顯示估算百分比或開發診斷文字。 */
+#page-nav-progress-card{{position:fixed;z-index:2147483000;top:calc(env(safe-area-inset-top,0px) + 14px);left:50%;transform:translateX(-50%);width:min(390px,calc(100vw - 28px));padding:13px 15px;border:1px solid #d8e3ec;border-radius:13px;background:rgba(250,252,254,.98);box-shadow:0 8px 26px rgba(29,41,57,.16);color:#27445d;display:none;box-sizing:border-box;pointer-events:none}}
+#page-nav-progress-card{{display:none!important}}
+#page-nav-progress-card.show{{
+  position:fixed!important;z-index:2147483000!important;top:calc(env(safe-area-inset-top,0px) + 8px)!important;
+  left:50%!important;right:auto!important;transform:translateX(-50%)!important;
+  width:min(450px,calc(100vw - 22px))!important;box-sizing:border-box!important;
+  display:flex!important;align-items:center!important;justify-content:space-between!important;gap:10px!important;
+  padding:10px 11px!important;border:1px solid #BCD0DF!important;border-radius:12px!important;
+  background:rgba(255,255,255,.98)!important;color:#173F59!important;
+  box-shadow:0 6px 22px rgba(20,48,69,.18)!important;pointer-events:none!important;backdrop-filter:blur(8px)!important;
+}}
+#page-nav-progress-card.show:before{{content:"";position:absolute;left:0;right:0;top:0;height:3px;border-radius:12px 12px 0 0;
+  background:linear-gradient(90deg,#245B82 0%,#4C91C5 45%,#7DB9D7 70%,#B99A67 100%)}}
+#page-nav-progress-card.show #page-nav-progress-head{{flex:1;min-width:0;display:block!important;margin:0!important;padding:0!important;
+  color:#173F59!important;font-size:12px!important;font-weight:900!important;line-height:1.35!important}}
+#page-nav-progress-card.show #page-nav-progress-title{{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+#page-nav-progress-card.show #page-nav-progress-percent{{display:none!important}}
+#page-nav-progress-card.show #page-nav-progress-track{{display:none!important}}
+#page-nav-progress-card.show #page-nav-progress-time{{display:inline-flex!important;flex:0 0 auto;align-items:center;justify-content:center;
+  margin:0!important;padding:5px 8px!important;border-radius:8px!important;color:#FFFFFF!important;
+  background:linear-gradient(90deg,#245B82 0%,#4C91C5 48%,#7DB9D7 72%,#B99A67 100%)!important;
+  font-size:12px!important;font-weight:950!important;line-height:1.2!important;white-space:nowrap!important;
+  font-variant-numeric:tabular-nums!important}}
+#page-nav-progress-card.show #page-nav-progress-time:before{{content:"";display:inline-block;width:6px;height:6px;margin-right:5px;border-radius:50%;background:#FFFFFF;opacity:.95}}
+@media(max-width:360px){{#page-nav-progress-card.show{{width:calc(100vw - 14px)!important;padding:8px!important;gap:6px!important}}
+#page-nav-progress-card.show #page-nav-progress-head{{font-size:11px!important}}#page-nav-progress-card.show #page-nav-progress-time{{font-size:11px!important;padding:5px 6px!important}}}}
+#page-nav-progress-head{{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:800}}
+#page-nav-progress-percent{{font-size:14px;font-variant-numeric:tabular-nums;color:#356b91}}
+#page-nav-progress-track{{height:5px;margin-top:10px;border-radius:99px;overflow:hidden;background:#e4ebf1}}
+#page-nav-progress-bar{{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,#356b91,#7ba8c7,#b99a67);transition:width .18s linear}}
+#page-nav-progress-time{{display:block;margin-top:6px;font-size:10.5px;line-height:1.35;color:#71879a;font-variant-numeric:tabular-nums}}
+@media(prefers-reduced-motion:reduce){{#page-nav-progress-card{{animation:none}}#page-nav-progress-bar{{transition:none}}}}
+#page-nav-loader .nav-loader-track{{display:block;height:3px;margin:0;border-radius:0;overflow:hidden;background:rgba(219,231,242,.40)}}
+#page-nav-loader .nav-loader-bar{{position:relative;height:100%;width:0;border-radius:0;background:linear-gradient(90deg,#245B82,#4C91C5,#B99A67);transition:width .12s linear;overflow:hidden}}
+#page-nav-loader.show .nav-loader-bar{{width:38%!important;animation:nav-progress-sweep 1.05s ease-in-out infinite}}
+#page-nav-loader.done .nav-loader-bar{{width:100%!important;animation:none;transition:width .10s linear}}
+#page-nav-loader .nav-loader-bar:after{{content:"";position:absolute;top:0;bottom:0;width:25%;left:-30%;background:rgba(255,255,255,.68);animation:nav-bar-shimmer 1s linear infinite}}
+#page-nav-loader.done .nav-loader-bar:after{{animation:none;display:none}}
+@keyframes nav-bar-shimmer{{to{{left:115%}}}}
+@keyframes nav-progress-sweep{{0%{{transform:translateX(0)}}50%{{transform:translateX(85%)}}100%{{transform:translateX(0)}}}}
+@media(prefers-reduced-motion:reduce){{#page-nav-loader,#page-nav-loader .nav-loader-bar,#page-nav-loader .nav-loader-bar:after{{transition:none!important;animation:none!important}}}}
+</style>
+</head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
+<div id="page-nav-loader" aria-hidden="true">
+  <div class="nav-loader-card">
+    <div class="nav-loader-head">
+      <div class="nav-loader-title">
+        <span class="nav-loader-spinner"></span>
+        <span id="page-nav-loader-title">正在開啟頁面</span>
+      </div>
+      <span class="nav-loader-percent" id="page-nav-loader-percent">0%</span>
+    </div>
+    <div class="nav-loader-track"><div class="nav-loader-bar" id="page-nav-loader-bar"></div></div>
+  </div>
+</div>
+<div id="page-nav-progress-card" role="status" aria-live="polite" aria-atomic="true">
+  <div id="page-nav-progress-head"><span id="page-nav-progress-title">正在載入頁面…</span><span id="page-nav-progress-percent">0%</span></div>
+  <div id="page-nav-progress-track"><div id="page-nav-progress-bar"></div></div>
+  <small id="page-nav-progress-time">已等待 0.0 秒</small>
+</div>
+<script id="internal-top-loading-js">
+(function(){{
+  const loader=document.getElementById('page-nav-loader');
+  if(!loader)return;
+  const bar=document.getElementById('page-nav-loader-bar');
+  const pct=document.getElementById('page-nav-loader-percent');
+  const title=document.getElementById('page-nav-loader-title');
+  const progressCard=document.getElementById('page-nav-progress-card');
+  const progressTitle=document.getElementById('page-nav-progress-title');
+  const progressPercent=document.getElementById('page-nav-progress-percent');
+  const progressBar=document.getElementById('page-nav-progress-bar');
+  const progressTime=document.getElementById('page-nav-progress-time');
+  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0,progressStartedPerf=0,progressUsesWallClock=false,workbenchNavigationPending=false;
+
+  function clearProgressTimers(){{
+    window.clearTimeout(progressRevealTimer);window.clearInterval(progressTimer);
+    progressRevealTimer=0;progressTimer=0;
+  }}
+  function paintEstimatedProgress(){{
+    if(!active)return;
+    // 同一文件內的頁面切換使用 performance.now()，不會被先前 sessionStorage 時間污染；
+    // 只有選股工作台的真正整頁導覽，才需要跨文件沿用 Date.now()。
+    var sec=Math.max(0,((progressUsesWallClock?Date.now():performance.now())-(progressUsesWallClock?progressStartedAt:progressStartedPerf))/1000);
+    // 進度只用來呈現等待狀態；完成前保留少量空間，避免誤以為已載入完成。
+    var pct=sec<1?20:sec<3?20+(sec-1)*20:sec<6?60+(sec-3)*9:Math.min(97,87+(sec-6)*1.7);
+    pct=Math.min(97,Math.max(8,pct));
+    if(progressPercent)progressPercent.textContent=Math.round(pct)+'%';
+    if(progressBar)progressBar.style.width=pct.toFixed(1)+'%';
+    if(progressTime)progressTime.textContent=sec.toFixed(1)+' 秒';
+  }}
+
+  window.showPageNavLoader=function(label, internalNavigation, handoffToNextPage){{
+    var wasActive=active, now=Date.now(), savedStart=0, isWorkbenchHandoff=false;
+    try{{
+      savedStart=Number(sessionStorage.getItem('stockbot_nav_started_at')||0);
+      var navQuery=new URLSearchParams(location.search);
+      isWorkbenchHandoff=(location.pathname==='/web/workbench'&&navQuery.get('_nav')==='1');
+    }}catch(ignore){{}}
+    active=true;
+    if(wasActive&&progressStartedAt){{
+      // 同一個尚未完成的導覽可能會被共用函式啟動兩次；沿用這次導覽的起點。
+    }}else if(isWorkbenchHandoff&&savedStart>0&&now>=savedStart&&now-savedStart<120000){{
+      // 只有選股工作台使用整頁導覽，需要跨文件延續計時；一般頁面切換不能沿用舊時間。
+      progressStartedAt=savedStart;
+      progressStartedPerf=performance.now();
+      progressUsesWallClock=true;
+    }}else{{
+      progressStartedAt=now;
+      progressStartedPerf=performance.now();
+      progressUsesWallClock=false;
+    }}
+    try{{
+      if(handoffToNextPage||isWorkbenchHandoff)sessionStorage.setItem('stockbot_nav_started_at',String(progressStartedAt));
+      else sessionStorage.removeItem('stockbot_nav_started_at');
+    }}catch(ignore){{}}
+    clearProgressTimers();
+    window.clearTimeout(hideTimer);window.clearTimeout(resetTimer);
+    if(title){{ title.textContent=label||'正在開啟頁面'; loader.setAttribute('aria-label',title.textContent); }}
+    if(progressTitle)progressTitle.textContent=label||'正在開啟頁面';
+    if(progressCard)progressCard.classList.add('show');
+    if(progressPercent)progressPercent.hidden=true;
+    if(progressBar)progressBar.style.width='0%';
+    if(progressTime)progressTime.textContent='0.0 秒';
+    loader.classList.remove('done');loader.classList.add('show');
+    progressTimer=window.setInterval(paintEstimatedProgress,100);
+    paintEstimatedProgress();
+  }};
+
+  window.finishPageNavLoader=function(){{
+    if(!active){{
+      // 即使呼叫端已經完成或切頁被中斷，也要清掉舊的浮動提示與過期起始時間。
+      clearProgressTimers();
+      try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
+      if(progressCard)progressCard.classList.remove('show');
+      loader.classList.remove('show');
+      return;
+    }}
+    active=false;clearProgressTimers();
+    if(progressPercent)progressPercent.textContent='';
+    if(progressBar)progressBar.style.width='100%';
+    try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
+    loader.classList.add('done');
+    hideTimer=window.setTimeout(function(){{
+      loader.classList.remove('show');
+      if(progressCard)progressCard.classList.remove('show');
+      resetTimer=window.setTimeout(function(){{
+        loader.classList.remove('done');
+        if(bar)bar.style.width='0%';
+        if(progressBar)progressBar.style.width='0%';
+      }},100);
+    }},120);
+  }};
+
+  // 持股五大因子放在持久 shell，fragment 導航後仍可用；避免長 inline JS 造成 HTML 引號解析錯誤。
+  (function(){{
+    function esc(v){{return String(v==null?'':v).replace(/[&<>"']/g,function(c){{return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c];}});}}
+    function status(r){{return r>=.8?'偏強':r>=.6?'中上':r>=.4?'中性':'偏弱';}}
+    function cls(r){{return r>=.8?'strong':r>=.6?'mid':r>=.4?'neutral':'weak';}}
+    function render(d){{
+      if(!d||!d.ok)return '<div class="position-factor-empty">五大因子暫時無法載入：'+esc(d&&d.error||'未知錯誤')+'</div>';
+      if(!d.scored)return '<div class="position-factor-empty">'+esc(d.note||'目前沒有可用的五大因子評分。')+'</div>';
+      var fs=Array.isArray(d.factors)?d.factors:[];
+      if(!fs.length)return '<div class="position-factor-empty">目前沒有可用的五大因子分項資料。</div>';
+      var valid=fs.filter(function(x){{return Number(x.max)>0;}});
+      var best=valid.slice().sort(function(a,b){{return (Number(b.value)/Number(b.max))-(Number(a.value)/Number(a.max));}})[0];
+      var worst=valid.slice().sort(function(a,b){{return (Number(a.value)/Number(a.max))-(Number(b.value)/Number(b.max));}})[0];
+      var bars=fs.map(function(x){{var v=Number(x.value)||0,m=Number(x.max)||0,r=m>0?Math.max(0,Math.min(1,v/m)):0;var details=Array.isArray(x.details)?x.details:[];var detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){{return '<div>'+esc(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\\/b&gt;/g,'</b>')+'</div>';}}).join('')+'</div>':'';return '<details class="position-factor-item '+cls(r)+'"><summary class="position-factor-head"><span>'+esc(x.name)+'</span><b>'+v.toFixed(0)+' / '+m.toFixed(0)+'　'+status(r)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(r*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}}).join('');
+      var note='';
+      if(best)note+='<b>目前相對較強：</b>'+esc(best.name)+'（'+status(Number(best.value)/Number(best.max))+'）。';
+      if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+esc(worst.name)+'（'+status(Number(worst.value)/Number(worst.max))+'）。';
+      return '<div class="position-factor-overview"><div><small>五大因子綜合分數</small><b>'+esc(d.score==null?'—':Number(d.score).toFixed(0)+' 分')+'</b></div><em>'+esc(d.category||'個股')+'<br>資料日 '+esc(d.source_date||'未標日期')+'</em></div><div class="position-factor-list">'+bars+'</div>'+(note?'<div class="position-factor-note">'+note+'</div>':'')+'<div class="position-factor-source">分數沿用選股模型最近保存快照；不在手機端重新計算。</div>';
+    }}
+    window.loadPositionFactors=function(box){{
+      if(!box||box.dataset.loaded==='1')return;
+      var body=box.querySelector('.position-factors-body'),code=box.getAttribute('data-factor-code');
+      if(!body||!code)return;
+      box.dataset.loaded='1';
+      body.innerHTML='<div class="position-factor-loading">正在載入五大因子…</div>';
+      var token='';try{{token=new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}}catch(ignore){{}}
+      var url='/web/api/positions/factors?code='+encodeURIComponent(code)+(token?'&t='+encodeURIComponent(token):'');
+      fetch(url,{{credentials:'same-origin',cache:'no-store'}}).then(function(r){{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}}).then(function(d){{body.innerHTML=render(d);}}).catch(function(e){{box.dataset.loaded='';body.innerHTML='<div class="position-factor-empty">五大因子載入失敗：'+esc(e&&e.message||e)+'<br><small>請重新展開一次。</small></div>';}});
+    }};
+    document.addEventListener('click',function(e){{
+      var summary=e.target.closest('.position-factors-trigger');
+      if(!summary)return;
+      var box=summary.closest('.position-factors');
+      if(box)window.setTimeout(function(){{window.loadPositionFactors(box);}},0);
+    }},true);
+  }})();
+
+  document.addEventListener('click',function(e){{
+    const a=e.target.closest('a[href]');
+    if(!a||e.defaultPrevented)return;
+    if(a.target&&a.target!=='_self')return;
+    if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
+    const u=new URL(a.href,location.href);
+    if(u.origin!==location.origin)return;
+    if(!u.pathname.startsWith('/web/'))return;
+    if(u.href===location.href)return;
+    if(a.dataset && a.dataset.appNav === '1')return; // SPA／分頁導覽由 switchAppPage 統一顯示單一頂部進度條。
+    const labels={{
+      '/web/':'正在開啟首頁',
+      '/web/portfolio':'正在開啟首頁',
+      '/web/positions':'正在開啟持股',
+      '/web/workbench':'正在開啟選股台'
+    }};
+    showPageNavLoader(labels[u.pathname]||'正在開啟頁面', true);
+  }},true);
+
+  try{{
+    var bootQuery=new URLSearchParams(location.search);
+    if(location.pathname==='/web/workbench'&&bootQuery.get('_nav')==='1'){{
+      workbenchNavigationPending=true;
+      window.showPageNavLoader('正在開啟選股工作台',true);
+    }}
+  }}catch(ignore){{}}
+  window.addEventListener('pageshow',function(){{
+    if(active&&!workbenchNavigationPending)finishPageNavLoader();
+    if(!active){{
+      if(progressCard)progressCard.classList.remove('show');
+      loader.classList.remove('show','done');
+    }}
+    if(!workbenchNavigationPending){{
+      clearProgressTimers();
+      try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
+    }}
+  }});
+}})();
+</script><div class="site-shell"><div class="wrap">
+{header_html}
+{nav}
+<main id="app-page-content" class="app-page-content">{body}</main>
+
+<script>
+(function() {{
+  // LINE WebView 可能清掉 cookie；把有效網址 token 保存到同一個網域，
+  // 只有真正進入登入失效頁時才自動恢復，不干擾一般頁面。
+  try {{
+    var query = new URLSearchParams(window.location.search);
+    var incomingToken = query.get('t');
+    if (incomingToken) localStorage.setItem('stockbot_web_token', incomingToken);
+    var loginText = (document.title + ' ' + document.body.innerText).slice(0, 600);
+    var isLoginPage = /需要登入|登入狀態已失效/.test(loginText);
+    var savedToken = localStorage.getItem('stockbot_web_token');
+    var alreadyRecovered = query.get('auth_recover') === '1';
+    if (savedToken && isLoginPage && !alreadyRecovered) {{
+      window.location.replace(window.location.pathname + '?t=' + encodeURIComponent(savedToken) + '&auth_recover=1');
+      return;
+    }}
+    if (isLoginPage && alreadyRecovered) localStorage.removeItem('stockbot_web_token');
+  }} catch (authError) {{
+    // localStorage 在部分私密 WebView 可能被禁止，仍由 cookie／網址 token 工作。
+  }}
+
+  function prefersReducedMotion() {{
+    try {{ return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; }}
+    catch (ignore) {{ return false; }}
+  }}
+
+  // iOS／部分 LINE WebView 不提供 vibrate；不支援時只保留視覺回饋，不報錯。
+  function haptic(kind) {{
+    if (prefersReducedMotion() || !navigator.vibrate) return;
+    try {{
+      var pattern = kind === 'success' ? [8, 35, 8]
+                  : kind === 'error' ? [16, 35, 16]
+                  : kind === 'medium' ? 14 : 7;
+      navigator.vibrate(pattern);
+    }} catch (ignore) {{}}
+  }}
+
+  function pulse(target) {{
+    if (!target || prefersReducedMotion()) return;
+    target.classList.remove('tap-pulse');
+    void target.offsetWidth;
+    target.classList.add('tap-pulse');
+    window.setTimeout(function() {{ target.classList.remove('tap-pulse'); }}, 260);
+  }}
+
+  function isFeedbackTarget(target) {{
+    return target && (target.matches('button,[data-haptic]') ||
+      target.matches('.daily-focus a,.daily-card a,.app-bottom-nav a'));
+  }}
+
+  // 主導覽改為只替換內容 fragment：LINE WebView 不必每次切今日、持股、選股、排行
+  // 都重建整張頁面。資料仍由每個既有 route／權杖 decorator 提供，未更改任何計算流程。
+  var appContent = document.getElementById('app-page-content');
+  var appNavBusy = false;
+  var appNavSeq = 0;
+  var appNavController = null;
+  var appScrollRestore = {{}};
+  var appRouteKeys = {{
+    '/web/portfolio':'portfolio','/web/positions':'positions','/web/workbench':'screener',
+    '/web/leaderboard':'leaderboard','/web/trades':'trades','/web/compare':'compare',
+    '/web/settings':'settings','/web/more':'more','/web/chips':'screener','/web/etf':'more','/web/watchlist':'watchlist'
+  }};
+  var appTitles = {{
+    '/web/portfolio':'今日','/web/positions':'持股','/web/workbench':'選股工作台',
+    '/web/leaderboard':'排行榜','/web/trades':'紀錄','/web/compare':'比較',
+    '/web/settings':'設定','/web/more':'更多功能','/web/chips':'籌碼超人','/web/etf':'ETF 專區','/web/watchlist':'名單儀表板'
+  }};
+  // 賣出後走勢：定義在殼層而不是片段裡。
+  // 片段內的腳本標籤在這個環境不會執行（實測過三版都沒用）。
+  // 但殼層腳本一定會跑——籌碼分布的 window.loadPositionChips 就是這樣做的，
+  // 而那個是能用的。所以照同一套來。
+  window.loadTradeHabitsAfter = function (btn) {{
+    var box = document.getElementById('habitsAfterBox');
+    if (!box || box.dataset.loaded === '1') return;
+    box.dataset.loaded = '1';
+    if (btn) {{ btn.disabled = true; btn.textContent = '計算中…'; }}
+    box.innerHTML = '<div class="sub" style="margin-top:8px">'
+      + '正在抓取每一檔的目前報價…</div>';
+    var tk = '';
+    try {{
+      tk = new URLSearchParams(window.location.search).get('t')
+           || localStorage.getItem('stockbot_web_token') || '';
+    }} catch (ignore) {{ tk = ''; }}
+    fetch('/web/api/trade-habits?after=1' + (tk ? ('&t=' + encodeURIComponent(tk)) : ''),
+          {{ credentials: 'same-origin' }})
+      .then(function (r) {{
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      }})
+      .then(function (html) {{
+        box.innerHTML = html;
+        if (btn) btn.parentNode.removeChild(btn);
+      }})
+      .catch(function (e) {{
+        box.dataset.loaded = '';
+        if (btn) {{ btn.disabled = false; btn.textContent = '計算「賣出後的走勢」'; }}
+        box.innerHTML = '<div class="sub" style="margin-top:8px">載入失敗：'
+          + (e && e.message ? e.message : e) + '</div>';
+      }});
+  }};
+  function upgradePreviewFragment(pathname, search) {{
+    // 片段導覽沒有「先給預覽、再補完整」的機制——拿到什麼就顯示什麼。
+    // 首次整頁載入的殼層有這套（finish() 裡的 detail 請求），
+    // 但那段抓的是 #content，片段導覽用的是 #app-page-content，走不到。
+    //
+    // 結果是：只要伺服器回了預覽殼，畫面就永遠停在
+    // 「系統正在跑・正在整合完整首頁」，即時貢獻與輪詢腳本都不會出現。
+    //
+    // 這裡在插入後檢查一次：還是預覽就自己去要完整版。
+    var preview = appContent.querySelector('.daily-fast-sync, [data-fast-preview]');
+    if (!preview) return;
+    var params = new URLSearchParams(search || window.location.search);
+    params.set('fragment', '1');
+    params.delete('fast');          // 關鍵：不帶 fast 才會拿到完整內容
+    var full = pathname + '?' + params.toString();
+    var tries = 0;
+    function load() {{
+      tries += 1;
+      fetch(full, {{credentials: 'same-origin', cache: 'no-store'}})
+        .then(function (r) {{
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.text();
+        }})
+        .then(function (html) {{
+          if (html.indexOf('AUTH_EXPIRED') >= 0) return;
+          appContent.innerHTML = html;
+          executeFragmentScripts(appContent);
+        }})
+        .catch(function (e) {{
+          // 完整內容比較慢，逾時或短暫 5xx 都重試；
+          // 但要把狀態寫出來，不要讓人對著「正在整合」乾等。
+          var note = appContent.querySelector('.daily-fast-sync p, .daily-fast-sync div');
+          if (tries < 6) {{
+            if (note) note.textContent = '完整內容尚未回應，5 秒後自動重試（第 '
+              + tries + ' 次）…';
+            window.setTimeout(load, 5000);
+          }} else if (note) {{
+            note.textContent = '完整內容載入失敗：'
+              + (e && e.message ? e.message : e) + '，請下拉重新整理。';
+          }}
+        }});
+    }}
+    load();
+  }}
+  function executeFragmentScripts(container) {{
+    container.querySelectorAll('script').forEach(function(oldScript) {{
+      var replacement = document.createElement('script');
+      Array.prototype.slice.call(oldScript.attributes).forEach(function(attr) {{
+        replacement.setAttribute(attr.name, attr.value);
+      }});
+      replacement.text = oldScript.text || oldScript.textContent || '';
+      oldScript.parentNode.replaceChild(replacement, oldScript);
+    }});
+  }}
+  function setAppNavState(path) {{
+    var key = appRouteKeys[path] || '';
+    document.querySelectorAll('[data-app-nav="1"]').forEach(function(link) {{
+      var linkPath = new URL(link.href, window.location.href).pathname;
+      var linkKey = appRouteKeys[linkPath] || '';
+      link.classList.toggle('on', !!key && linkKey === key);
+    }});
+    var h1 = document.querySelector('.app-header h1');
+    if (h1 && appTitles[path]) h1.textContent = appTitles[path];
+    if (appTitles[path]) document.title = appTitles[path] + '｜台股 BOT';
+  }}
+  function showAppToast(message, kind) {{
+    var old = document.querySelector('.app-ux-toast');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var toast = document.createElement('div');
+    toast.className = 'app-ux-toast ' + (kind === 'error' ? 'error' : 'success');
+    toast.setAttribute('role','status');
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    window.setTimeout(function() {{ if (toast.parentNode) toast.parentNode.removeChild(toast); }}, 1800);
+  }}
+  function ensureTopNavLoadingForFullNavigation(title, steps) {{
+    if (window.showPageNavLoader) window.showPageNavLoader(title || '正在開啟頁面');
+  }}
+  function finishTopNavLoading() {{
+    if (window.finishPageNavLoader) window.finishPageNavLoader();
+  }}
+  function showLocalPageLoading(message) {{
+    // V254：所有分頁共用固定在 viewport 頂端的彩色進度條與秒數膠囊。
+    // 不再把計時器插在可捲動內容內，避免使用者捲動後找不到載入秒數。
+    if (window.showPageNavLoader) window.showPageNavLoader(message || '正在開啟頁面', true);
+  }}
+  function hideLocalPageLoading() {{
+    var banner = document.getElementById('app-page-local-loading');
+    if (banner && banner._elapsedTimer) window.clearInterval(banner._elapsedTimer);
+    if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
+  }}
+  window.stockBotFinishPageLoading = finishTopNavLoading;
+
+  function switchAppPage(rawHref, pushState) {{
+    if (!appContent) {{ window.location.assign(rawHref); return; }}
+    if (appNavBusy) return;
+    var target = new URL(rawHref, window.location.href);
+    if (!appRouteKeys[target.pathname]) {{ window.location.assign(target.pathname + target.search); return; }}
+    // 選股工作台含有大量原生頁面腳本；SPA fragment 插入後，部分 WebView/Safari
+    // 情況下動態 script 不會穩定執行，會只留下「讀取最近有效快照…」骨架。
+    // 因此選股工作台改走一次正常文件導覽；仍保留上方小型 Loading，而不是全頁動畫。
+    if (target.pathname === '/web/workbench') {{
+      // 工作台仍採正常文件導覽，避免其大型腳本在 fragment 插入後失效；
+      // _nav=1 讓伺服器跳過首次進站的全螢幕 Loader，站內只給局部等待提示。
+      showLocalPageLoading('正在開啟選股工作台…');
+      // 這一頁會執行整頁導覽；明確標記一次性的計時交接，其他頁面不沿用 sessionStorage 舊時間。
+      if (window.showPageNavLoader) window.showPageNavLoader('正在開啟選股工作台', true, true);
+      target.searchParams.delete('fragment');
+      target.searchParams.set('_nav', '1');
+      window.location.assign(target.pathname + (target.search ? '?' + target.searchParams.toString() : ''));
+      return;
+    }}
+    // V244：頁內切換只使用共用頂部進度線，避免全螢幕遮罩、浮動卡片與第二條進度條互相覆蓋。
+    target.searchParams.set('fragment', '1');
+    target.searchParams.delete('fast');
+    var navSeq = ++appNavSeq;
+    appNavBusy = true;
+    if (appNavController) {{ try {{ appNavController.abort(); }} catch (ignore) {{}} }}
+    appNavController = window.AbortController ? new AbortController() : null;
+    var previousScroll = window.scrollY || 0;
+    if (pushState) appScrollRestore[window.location.pathname + window.location.search] = previousScroll;
+    if (target.pathname === '/web/portfolio') target.searchParams.set('_nav', String(Date.now()));
+    var requestUrl = target.pathname + '?' + target.searchParams.toString();
+    var navStartedAt = performance.now();
+    var routeTitle = appTitles[target.pathname] || '頁面';
+    showLocalPageLoading('正在開啟' + routeTitle + '…');
+    if (window.showPageNavLoader) window.showPageNavLoader('正在開啟' + routeTitle, true);
+    var routeLoadTimedOut = false;
+    var routeLoadTimeoutId = null;
+    appContent.setAttribute('aria-busy', 'true');
+    appContent.classList.add('app-page-loading');
+    var routeFetchPromise = fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, appNavController ? {{signal:appNavController.signal}} : {{}}));
+    var routeTimeoutPromise = new Promise(function(resolve, reject) {{
+      routeLoadTimeoutId = window.setTimeout(function() {{
+        routeLoadTimedOut = true;
+        if (appNavController) {{ try {{ appNavController.abort(); }} catch (ignore) {{}} }}
+        reject(new Error('頁面載入逾時（90 秒），請重新整理後再試。'));
+      }}, 90000);
+    }});
+        Promise.race([routeFetchPromise, routeTimeoutPromise])
+      .then(function(response) {{
+        if (response.status === 401) {{ window.location.assign(target.pathname + target.search.replace(/([?&])fragment=1&?/, '$1').replace(/[?&]$/, '')); return null; }}
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.text();
+      }})
+      .then(function(fragment) {{
+        if (fragment === null) return;
+        if (navSeq !== appNavSeq) return;
+        if (fragment.indexOf('AUTH_EXPIRED') >= 0) {{ window.location.assign(target.pathname + target.search); return; }}
+        document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
+        appContent.innerHTML = fragment;
+        // 伺服器已回傳並插入頁面主內容時，先收起覆蓋卡片；大型頁面腳本隨後初始化，
+        // 避免文字與資料已可見，載入卡仍蓋在畫面上造成「明明載入完卻卡住」的錯覺。
+        if (window.finishPageNavLoader) window.finishPageNavLoader();
+        hideLocalPageLoading();
+        executeFragmentScripts(appContent);
+        if (target.pathname !== '/web/portfolio') {{
+            upgradePreviewFragment(target.pathname, target.search);
+        }}
+        appContent.classList.remove('app-page-enter');
+        if (!prefersReducedMotion()) {{
+          window.requestAnimationFrame(function() {{
+            appContent.classList.add('app-page-enter');
+            window.setTimeout(function() {{ appContent.classList.remove('app-page-enter'); }}, 170);
+          }});
+        }}
+        appNavBusy = false;
+        appContent.removeAttribute('aria-busy');
+        appContent.classList.remove('app-page-loading');
+        target.searchParams.delete('fragment');
+        if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', target.pathname + target.search);
+        setAppNavState(target.pathname);
+        try {{
+          var navElapsed = Math.round((performance.now() - navStartedAt) * 10) / 10;
+          console.info('[台股 BOT] 頁面切換完成', target.pathname, navElapsed + 'ms');
+        }} catch (ignore) {{}}
+        // 切換分頁不再彈出干擾閱讀的成功提示；新頁面直接定位頂部，避免額外平滑捲動延遲。
+        window.scrollTo({{top:0, behavior:'auto'}});
+      }})
+      .catch(function(error) {{
+        if (error && error.name === 'AbortError' && !routeLoadTimedOut) {{
+          if (window.finishPageNavLoader) window.finishPageNavLoader();
+          hideLocalPageLoading();
+          appContent.removeAttribute('aria-busy');
+          appContent.classList.remove('app-page-loading');
+          return;
+        }}
+        if (routeLoadTimedOut) error = new Error('頁面載入逾時（90 秒），請重新整理後再試。');
+        if (window.finishPageNavLoader) window.finishPageNavLoader();
+        hideLocalPageLoading();
+        appNavBusy = false;
+        appContent.removeAttribute('aria-busy');
+        appContent.classList.remove('app-page-loading');
+        var retryNotice = document.createElement('div');
+        retryNotice.className = 'app-fragment-status app-fragment-error';
+        // 把錯誤內容顯示出來。只寫「請稍後再試」的話，
+        // 到底是伺服器 500、逾時、還是網路斷線完全看不出來，
+        // 每次都要去翻 Render Logs 才知道發生什麼事。
+        var reason = (error && error.message) ? error.message : String(error || '');
+        retryNotice.textContent = '頁面暫時無法切換：' + reason
+          + '（HTTP 500 代表伺服器端出錯，請看 Render Logs；其他多半是逾時或網路問題）';
+        if (appContent.parentNode) {{
+          appContent.parentNode.insertBefore(retryNotice, appContent);
+          window.setTimeout(function() {{ if (retryNotice.parentNode) retryNotice.parentNode.removeChild(retryNotice); }}, 4200);
+        }}
+        showAppToast('頁面切換失敗，請再試一次','error');
+        console.error(error);
+      }})
+      .finally(function() {{
+        window.clearTimeout(routeLoadTimeoutId);
+        if (navSeq === appNavSeq) appNavBusy = false;
+      }});
+  }}
+  window.stockBotSwitchPage = switchAppPage;
+  document.addEventListener('pointerdown', function(e) {{
+    var target = e.target.closest ? e.target.closest('a,button,[role="button"],[data-haptic]') : null;
+    if (!target || target.disabled || target.dataset.haptic === 'none') return;
+    target.classList.add('app-press');
+    window.setTimeout(function() {{ target.classList.remove('app-press'); }}, 180);
+  }}, true);
+  document.addEventListener('touchstart', function(e) {{
+    var target = e.target.closest ? e.target.closest('a,button,[role="button"],[data-haptic]') : null;
+    if (!target || target.disabled || target.dataset.haptic === 'none') return;
+    target.classList.add('app-press');
+    window.setTimeout(function() {{ target.classList.remove('app-press'); }}, 180);
+  }}, {{capture:true, passive:true}});
+  document.addEventListener('click', function(e) {{
+    var backLink = e.target.closest ? e.target.closest('[data-history-back="1"]') : null;
+    if (backLink) {{
+      e.preventDefault();
+      if (appNavBusy) return;
+      try {{
+        var ref = document.referrer || '';
+        var sameOrigin = false;
+        try {{ sameOrigin = ref.indexOf(window.location.origin + '/') === 0; }} catch (ignoreRef) {{}}
+        var ownState = false;
+        try {{ ownState = !!(history.state && history.state.stockbotApp); }} catch (ignoreState) {{}}
+        if ((sameOrigin || ownState) && history.length > 1) history.back();
+        else window.location.assign('/web/more');
+      }} catch (ignore) {{ window.location.assign('/web/more'); }}
+      return;
+    }}
+    var fullNav = e.target.closest ? e.target.closest('a[data-full-navigation="1"]') : null;
+    if (fullNav) return;
+    var appLink = e.target.closest ? e.target.closest('a[data-app-nav="1"]') : null;
+    if (!appLink || appLink.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    switchAppPage(appLink.href, true);
+  }}, true);
+  window.addEventListener('popstate', function() {{
+    if (appRouteKeys[window.location.pathname]) {{
+      switchAppPage(window.location.href, false);
+      window.setTimeout(function() {{
+        var key = window.location.pathname + window.location.search;
+        if (Object.prototype.hasOwnProperty.call(appScrollRestore, key)) window.scrollTo(0, appScrollRestore[key]);
+      }}, 80);
+    }}
+  }});
+
+  // 點擊後立即給回饋；不攔截錨點、下載與外部連結。
+  document.addEventListener('click', function(e) {{
+    var target = e.target.closest ? e.target.closest('a,button,[data-haptic]') : null;
+    if (!target || target.dataset.haptic === 'none') return;
+    if (isFeedbackTarget(target)) {{
+      pulse(target);
+      haptic(target.dataset.haptic || 'soft');
+    }}
+    var a = target.matches('a') ? target : (target.closest ? target.closest('a') : null);
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (!href || href.charAt(0) === '#' || a.target === '_blank' || a.dataset.noBusy === '1' || a.dataset.fullNavigation === '1') return;
+  }}, true);
+
+  // 一般 POST 表單只允許送出一次。
+  // 「新增持股／換股」由下方自訂確認視窗接管：
+  // 第一次 submit 只開確認視窗，確認後才真正 requestSubmit。
+  // 這裡必須跳過這兩類表單，否則全域防重送會先攔掉 requestSubmit，
+  // 造成按「確認送出」後卡在處理中、實際沒有送出。
+  document.addEventListener('submit', function(e) {{
+    var form = e.target;
+    if (!form) return;
+    if (form.matches('form.add, form.sellpanel, form[data-form-purpose="leaderboard-settlement"]')) return;
+    if (form.dataset.submitted === '1') {{
+      e.preventDefault();
+      return;
+    }}
+    form.dataset.submitted = '1';
+    form.classList.add('tap-loading');
+    haptic('medium');
+    var button = form.querySelector('button[type="submit"],input[type="submit"]');
+    if (button) {{
+      button.dataset.oldText = button.textContent || button.value || '';
+      if (button.tagName === 'INPUT') button.value = '處理中…';
+      else button.textContent = '處理中…';
+      button.disabled = true;
+    }}
+  }}, true);
+
+  // 套牢籌碼分布同樣只在展開時載入。
+  // 它要重抓那一檔的三個月日K，若在頁面載入時就為每一檔計算，
+  // 十幾檔持股會多出十幾次請求，而多數人只會看其中一兩檔。
+  window.loadPositionChips = function (details) {{
+    if (!details || details.dataset.loaded === '1' || !details.open) return;
+    var code = details.getAttribute('data-code') || '';
+    var target = details.querySelector('.chipdist-body');
+    if (!code || !target) return;
+    details.dataset.loaded = '1';
+    target.innerHTML = '<div class="sub">計算中…</div>';
+    fetch('/web/api/chip-bins?code=' + encodeURIComponent(code),
+          {{credentials: 'same-origin'}})
+      .then(function (r) {{
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      }})
+      .then(function (html) {{ target.innerHTML = html; }})
+      .catch(function (err) {{
+        details.dataset.loaded = '';
+        target.innerHTML = '<div class="sub">籌碼分布載入失敗：'
+          + (err && err.message ? err.message : err) + '</div>';
+      }});
+  }};
+
+  // 持股一年損益走勢只在使用者展開該檔時載入，避免主頁為所有圖表先抓歷史行情。
+  window.loadPositionTrend = function (details) {{
+    if (!details || details.dataset.loaded === '1' || !details.open) return;
+    var code = details.getAttribute('data-code') || '';
+    var target = details.querySelector('.trend-body');
+    if (!code || !target) return;
+    details.dataset.loaded = '1';
+    details.setAttribute('aria-busy', 'true');
+    target.textContent = '正在載入一年損益走勢…';
+    var query = new URLSearchParams(window.location.search);
+    var token = query.get('t');
+    var url = '/web/position-trend?code=' + encodeURIComponent(code) + '&fragment=1';
+    if (token) url += '&t=' + encodeURIComponent(token);
+    fetch(url, {{ credentials: 'same-origin' }})
+      .then(function (r) {{
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      }})
+      .then(function (body) {{
+        target.innerHTML = body;
+        details.removeAttribute('aria-busy');
+      }})
+      .catch(function (e) {{
+        target.textContent = '一年走勢暫時載入失敗，請稍後再試。';
+        details.dataset.loaded = '0';
+        details.removeAttribute('aria-busy');
+        console.error(e);
+      }});
+  }};
+
+  // 新頁面載入後，讓成功／失敗訊息有一致的顏色、短動畫與觸覺回饋。
+  document.querySelectorAll('.msg,.callout').forEach(function(box) {{
+    var text = box.textContent || '';
+    if (/成功|完成|已儲存|已新增|已刪除/.test(text)) {{
+      box.classList.add('feedback-success'); haptic('success');
+    }} else if (/失敗|錯誤|無法|過期/.test(text)) {{
+      box.classList.add('feedback-error'); haptic('error');
+    }}
+  }});
+  // 首頁總市值隱私遮罩：只遮蔽顯示，不改動任何資料或計算；SPA 回到首頁也保留狀態。
+  var homePrivacyKey = 'stockbot_home_value_masked_v1';
+  window.__stockbotHomePrivacyMasked = false;
+  function readHomePrivacyMasked() {{
+    try {{ return window.localStorage.getItem(homePrivacyKey) === '1'; }}
+    catch (ignore) {{ return window.__stockbotHomePrivacyMasked === true; }}
+  }}
+  function applyHomePrivacy(scope) {{
+    var root = scope || document;
+    if (!root || !root.querySelectorAll) return;
+    var masked = readHomePrivacyMasked();
+    root.querySelectorAll('[data-home-sensitive]').forEach(function (node) {{
+      var original = node.getAttribute('data-home-original');
+      if (original === null) original = node.textContent.trim();
+      var shown = masked ? '******' : original;
+      if (node.textContent !== shown) node.textContent = shown;
+    }});
+    root.querySelectorAll('[data-home-privacy-card]').forEach(function (card) {{
+      card.classList.toggle('is-privacy-hidden', masked);
+      var button = card.querySelector('[data-home-privacy-toggle]');
+      if (button) {{
+        button.setAttribute('aria-pressed', masked ? 'true' : 'false');
+        button.setAttribute('aria-label', masked ? '顯示總市值與成本' : '隱藏總市值與成本');
+        button.setAttribute('title', masked ? '顯示總市值與成本' : '隱藏總市值與成本');
+      }}
+    }});
+  }}
+  document.addEventListener('click', function (event) {{
+    var button = event.target && event.target.closest ? event.target.closest('[data-home-privacy-toggle]') : null;
+    if (!button) return;
+    event.preventDefault(); event.stopPropagation();
+    var card = button.closest('[data-home-privacy-card]');
+    if (!card) return;
+    var next = !card.classList.contains('is-privacy-hidden');
+    window.__stockbotHomePrivacyMasked = next;
+    try {{ window.localStorage.setItem(homePrivacyKey, next ? '1' : '0'); }} catch (ignore) {{}}
+    applyHomePrivacy(document);
+  }}, true);
+  applyHomePrivacy(document);
+  if (appContent && window.MutationObserver) {{
+    new MutationObserver(function () {{ applyHomePrivacy(appContent); }}).observe(appContent, {{ childList: true, subtree: true }});
+  }}
+  // 首次整頁載入若拿到的是預覽殼，也要自動補完整內容。
+  // 殼層的 finish() 只在 staged 模式處理，直接開網址走不到那條。
+  if (appContent) {{
+    window.setTimeout(function () {{
+      upgradePreviewFragment(window.location.pathname, window.location.search);
+    }}, 300);
+  }}
+}})();
+</script>
+<footer>
+以上為你輸入之持股的數據整理，不構成投資建議。<br>
+你輸入的持股只用於產生你自己的分析，作者不會查看個別使用者的持股內容。<br>
+資料來源：臺灣證券交易所、櫃買中心、Yahoo Finance。作者：蔡秉軒
+</footer>
+{bottom_nav}
+
+</div></div></body></html>"""
 
 
 def fmt_pct(v):
@@ -30628,7 +31000,7 @@ def web_positions(uid):
     var valid=fs.filter(function(x){return x.value!=null&&x.max>0;});
     var best=valid.slice().sort(function(a,b){return (b.value/b.max)-(a.value/a.max);})[0];
     var worst=valid.slice().sort(function(a,b){return (a.value/a.max)-(b.value/b.max);})[0];
-    var bars=fs.map(function(x){var v=Number(x.value),max=Number(x.max),ratio=max>0?Math.max(0,Math.min(1,v/max)):0,cls=factorClass(ratio),details=Array.isArray(x.details)?x.details:[],detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){return '<div>'+escText(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\/b&gt;/g,'</b>')+'</div>';}).join('')+'</div>':'';return '<details class="position-factor-item '+cls+'"><summary class="position-factor-head"><span>'+escText(x.name)+'</span><b>'+v.toFixed(0)+' / '+max.toFixed(0)+'　'+factorStatus(ratio)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(ratio*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}).join('');
+    var bars=fs.map(function(x){var v=Number(x.value),max=Number(x.max),ratio=max>0?Math.max(0,Math.min(1,v/max)):0,cls=factorClass(ratio),details=Array.isArray(x.details)?x.details:[],detailHtml=details.length?'<div class="position-factor-details">'+details.map(function(line){return '<div>'+escText(line).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\\/b&gt;/g,'</b>')+'</div>';}).join('')+'</div>':'';return '<details class="position-factor-item '+cls+'"><summary class="position-factor-head"><span>'+escText(x.name)+'</span><b>'+v.toFixed(0)+' / '+max.toFixed(0)+'　'+factorStatus(ratio)+'　›</b></summary><div class="position-factor-track"><i style="width:'+(ratio*100).toFixed(1)+'%"></i></div>'+detailHtml+'</details>';}).join('');
     var note='';
     if(best)note+='<b>目前相對較強：</b>'+escText(best.name)+'（'+factorStatus(best.value/best.max)+'）。';
     if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+escText(worst.name)+'（'+factorStatus(worst.value/worst.max)+'）。';
@@ -38514,6 +38886,17 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     events = (timeline.get("new", []) + timeline.get("ongoing", []))[:3]
     taiex = (fetch_taiex_summary() if taiex is None else taiex) or {}
     intraday_window = _is_taiwan_intraday_window()
+    # Use the last completed Taiwan trading session outside live market hours. This is
+    # intentionally separate from display_date, which may be the next pre-market date.
+    market_data_target_day = calendar_today
+    _market_clock = taiwan_now()
+    if not intraday_window and (
+            not is_twse_trading_day(calendar_today) or _market_clock.hour < 9):
+        market_data_target_day = calendar_today - timedelta(days=1)
+        for _ in range(15):
+            if is_twse_trading_day(market_data_target_day):
+                break
+            market_data_target_day -= timedelta(days=1)
     intraday_taiex = fetch_taiex_intraday(stale_while_revalidate=True) if intraday_window else None
     _first_payload_portfolio = (intraday_payload or {}).get("portfolio") or {}
     _first_payload_complete = bool(
@@ -38550,7 +38933,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         missing_codes = [code for code in holding_codes if code not in valid_today_quotes]
         # 若首屏績效 worker 已取得完整、可驗證的今日報價，就不在 renderer 裡再抓一次。
         # 避免同一個首頁請求重複佔用 MIS，也避免額外等三輪補抓。
-        for retry_round in range(0 if _first_payload_complete else 3):
+        for retry_round in (range(0 if _first_payload_complete else 3) if intraday_window else range(0)):
             if not missing_codes:
                 break
             fetched = _fetch_twse_mis_quotes(
@@ -38619,7 +39002,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             home_sync_detail = "持股行情仍可顯示；大盤與相對大盤不使用昨日收盤或快照補值。"
     else:
         # 收盤／非交易時段才使用已驗證資料日的日K。
-        market_is_current = _market_date_matches(taiex.get("date"), display_date)
+        market_is_current = _market_date_matches(taiex.get("date"), market_data_target_day)
         if market_is_current:
             for key in ("pct", "change_pct", "percent"):
                 if taiex.get(key) is not None:
@@ -38637,47 +39020,86 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             market_status_text = "大盤正式收盤資料尚未確認，未使用舊快照"
         home_sync_title = "今日資料已整合完成"
         home_sync_detail = "收盤資料、今日事件與排名摘要已載入；詳細貢獻明細可往下展開查看。"
+    # The contribution date is a market-session date, not always the calendar date.
+    # On weekends/holidays and before the opening bell we use the latest prior TWSE session.
+    # After close we use today's completed daily bar; during a live session we require fresh
+    # same-session intraday quotes only.
+    _contribution_now = taiwan_now()
+    _contribution_live = _is_taiwan_intraday_window(_contribution_now)
+    contribution_target_day = market_data_target_day
+
+    def _norm_contribution_day(value):
+        if isinstance(value, datetime):
+            value = value.date()
+        if isinstance(value, date):
+            return value.strftime("%Y%m%d")
+        raw = str(value or "").strip()
+        digits = re.sub(r"\D", "", raw)
+        if len(digits) >= 8:
+            return digits[:8]
+        return ""
+
     def holding_day_word(holding):
-        """
-        逐檔判斷該說「今天」還是「最近交易日」。
-
-        不能用整頁一個值：MIS 是逐檔回報，同一時間可能有些標的已有盤中價、
-        有些還停在昨收（實測 13 檔裡 7 檔盤中、6 檔昨收）。整頁統一寫「今天」
-        會把昨天的跌幅講成今天的——實際發生過：09/01 早盤顯示
-        「環球晶今天下跌 6.17%」，那其實是 08/31 的跌幅。
-
-        updated_at 形如 "20260901 09:59:34"；取前 8 碼跟今天比對。
-        取不到日期時保守顯示「最近交易日」，不假設它是今天的。
-        """
-        price = holding.get("price") or {}
-        stamp = str(price.get("updated_at") or "").strip()
-        # 只有帶有「今天」日期戳記的官方盤中報價／同日黏著報價，才能標示今天。
-        # Yahoo 日線 fallback 常沒有 updated_at；盤中不能因此把舊日漲跌誤標成今天。
-        day = stamp[:8]
-        if len(day) == 8 and day.isdigit():
-            return "今天" if day == calendar_today.strftime("%Y%m%d") else "最近交易日"
-        iso_day = stamp[:10].replace("-", "")
-        if len(iso_day) == 8 and iso_day.isdigit():
-            return "今天" if iso_day == calendar_today.strftime("%Y%m%d") else "最近交易日"
-        return "最近交易日"
+        """逐檔顯示報價所屬日期；休市日不把最近交易日誤稱為今天。"""
+        if contribution_target_day != calendar_today:
+            return "最近交易日"
+        code = str(holding.get("code") or "").strip()
+        price = (price_map or {}).get(code) or holding.get("price") or {}
+        stamp = str(price.get("updated_at") or price.get("trade_at") or "").strip()
+        stamp_day = _norm_contribution_day(stamp)
+        return "今天" if stamp_day == calendar_today.strftime("%Y%m%d") else "最近交易日"
 
     def holding_day_pct(holding):
-        price = holding.get("price") or {}
-        # 移植舊版正／負貢獻的取用方式，但保留新版的防跨日保護：
-        # 只讀取官方 MIS 明確標記為台灣今天的行情；同日最後有效報價可沿用，
-        # 不要求每檔都在最近兩分鐘成交，也不使用 Yahoo 歷史日K冒充今日漲跌。
-        today_key = calendar_today.strftime("%Y%m%d")
-        close_day = str(price.get("close_date") or "").strip().replace("-", "")[:8]
+        code = str(holding.get("code") or "").strip()
+        price = (price_map or {}).get(code) or holding.get("price") or {}
         source = str(price.get("source") or "").upper()
-        if close_day != today_key or "MIS" not in source:
-            return None
-        if not _mis_quote_is_current_for_contribution(price):
-            return None
-        try:
-            value = price.get("pct")
-            return float(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
+        target_key = contribution_target_day.strftime("%Y%m%d")
+        close_day = _norm_contribution_day(price.get("close_date"))
+
+        # During trading hours, never substitute a previous close for a live value.
+        if _contribution_live:
+            if close_day != calendar_today.strftime("%Y%m%d"):
+                return None
+            if not ("MIS" in source or "YAHOO FINANCE 1 分 K 備援" in source):
+                return None
+            if not _mis_quote_is_current_for_contribution(price):
+                return None
+            try:
+                value = price.get("pct")
+                return float(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        # Closed-market path: use an exact-date completed daily bar from the existing history
+        # cache. Require both the target bar and a preceding bar; don't fabricate a percentage.
+        dates = list(price.get("close_dates") or [])
+        closes = list(price.get("closes") or [])
+        normalized_dates = [_norm_contribution_day(x) for x in dates]
+        matching = [i for i, d in enumerate(normalized_dates) if d == target_key and i < len(closes)]
+        if matching:
+            idx = matching[-1]
+            prev_idx = next((j for j in range(idx - 1, -1, -1)
+                             if normalized_dates[j] and normalized_dates[j] < target_key
+                             and j < len(closes)), None)
+            if prev_idx is not None:
+                try:
+                    close_value = float(closes[idx])
+                    prev_value = float(closes[prev_idx])
+                    if close_value > 0 and prev_value > 0:
+                        return (close_value / prev_value - 1.0) * 100.0
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+
+        # Some quote providers supply an explicit date and daily percent instead of a series.
+        # Accept it only when its date exactly matches the expected market session.
+        if close_day == target_key:
+            try:
+                value = price.get("pct")
+                if value is not None and ("MIS" in source or "YAHOO" in source or price.get("close_is_final")):
+                    return float(value)
+            except (TypeError, ValueError):
+                pass
+        return None
 
     raw_exposure = (daily_pretrade_exposure if daily_pretrade_exposure is not None
                     else _build_daily_pretrade_exposure(holdings, price_map, [], {}))
@@ -38777,9 +39199,14 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             html.escape(str(h.get("name") or h.get("code")))
             for h in stale_holdings[:4])
         more = f" 等 {len(stale_holdings)} 檔" if len(stale_holdings) > 4 else ""
-        stale_notice = (
-            f'<p class="impact-stale">{names}{more} 尚未取得足夠新的盤中行情，'
-            f'暫不計入今日貢獻；取得有效行情後會自動補上。</p>')
+        if contribution_target_day != calendar_today:
+            stale_notice = (
+                f'<p class="impact-stale">{names}{more} 尚未取得 {contribution_target_day:%m/%d} 最近交易日的有效收盤資料，'
+                f'暫不計入該日貢獻；資料更新後會自動補上。</p>')
+        else:
+            stale_notice = (
+                f'<p class="impact-stale">{names}{more} 尚未取得足夠新的盤中行情，'
+                f'暫不計入今日貢獻；取得有效行情後會自動補上。</p>')
     else:
         # Keep the element in the DOM so the 15-second live updater can reveal it if a
         # later MIS batch misses a ticker or its last-trade timestamp becomes stale.
@@ -39178,13 +39605,14 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 
     positive_lead = positive_entries[0] if positive_entries else None
     negative_lead = negative_entries[0] if negative_entries else None
+    _contribution_day_label = "今日" if contribution_target_day == calendar_today else f"最近交易日（{contribution_target_day:%m/%d}）"
     if positive_lead and negative_lead:
-        impact_sentence = (f"今天主要是 {negative_lead[0]['name']} 拉低組合，"
+        impact_sentence = (f"{_contribution_day_label}主要是 {negative_lead[0]['name']} 拉低組合，"
                            f"{positive_lead[0]['name']} 幫忙抵銷部分跌幅。")
     elif negative_lead:
-        impact_sentence = f"今天組合主要受到 {negative_lead[0]['name']} 影響而下跌。"
+        impact_sentence = f"{_contribution_day_label}組合主要受到 {negative_lead[0]['name']} 影響而下跌。"
     elif positive_lead:
-        impact_sentence = f"今天組合主要受到 {positive_lead[0]['name']} 支撐。"
+        impact_sentence = f"{_contribution_day_label}組合主要受到 {positive_lead[0]['name']} 支撐。"
     else:
         impact_sentence = "目前沒有足夠行情資料判斷是哪幾檔影響組合。"
 
@@ -39238,11 +39666,11 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   </div>
   {stale_notice}
   <details class="impact-details" open>
-    <summary>查看正貢獻明細（前 {min(positive_count, 5)} 檔）</summary>
+    <summary>查看{_contribution_day_label}正貢獻明細（前 {min(positive_count, 5)} 檔）</summary>
     <div data-home-contribution-rows="positive">{positive_rows_html}</div>
   </details>
   <details class="impact-details" open>
-    <summary>查看負貢獻明細（前 {min(negative_count, 5)} 檔）</summary>
+    <summary>查看{_contribution_day_label}負貢獻明細（前 {min(negative_count, 5)} 檔）</summary>
     <div data-home-contribution-rows="negative">{negative_rows_html}</div>
   </details>
 </section>'''
@@ -44057,7 +44485,7 @@ def render_workbench_body(initial_tab=""):
         var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
         var metric='—';
         if(n!=null){
-          if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<=0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\/\s*4/);if(mm)hc=Number(mm[1]);} metric=hc+'/4';}
+          if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<=0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\\/\s*4/);if(mm)hc=Number(mm[1]);} metric=hc+'/4';}
           else{var digits=(key==='低波動'||key==='ROE品質')?2:1;metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');}
         }
         return '<button type="button" class="wb-lab-pick" data-lab-code="'+esc(x.code)+'" data-lab-key="'+esc(key)+'"><span class="wb-lab-rank">'+(i+1)+'</span><span class="wb-lab-pick-main"><b>'+esc(x.code)+'　'+esc(x.name)+'</b><small>'+esc(x.industry||'未分類')+'</small><span class="wb-lab-pick-metric-mobile"><strong>'+esc(metric)+'</strong><em>'+esc(x.metric_label||'研究值')+'</em></span><span class="wb-lab-pick-tags">'+chips+'</span><span class="wb-lab-pick-reason-mobile">'+esc(x.reason||'')+'</span></span><span class="wb-lab-pick-metric"><strong>'+esc(metric)+'</strong><small>'+esc(x.metric_label||'研究值')+'</small></span><span class="wb-lab-pick-reason">'+esc(x.reason||'')+'</span><span class="wb-lab-arrow">›</span></button>';
@@ -44274,7 +44702,7 @@ def render_workbench_body(initial_tab=""):
       }
       var hitCount=Number(x.hit_count);
       if(!isFinite(hitCount)||hitCount<0){hitCount=names.filter(passFor).length;}
-      if(hitCount===0){var mm=String(reason||'').match(/(\d+)\s*\/\s*4/);if(mm)hitCount=Number(mm[1]);}
+      if(hitCount===0){var mm=String(reason||'').match(/(\d+)\s*\\/\s*4/);if(mm)hitCount=Number(mm[1]);}
       hitCount=Math.max(0,Math.min(4,hitCount));
       if(key==='混合'){
         whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>條件有排名</span></div><p>'+esc(hitCount===4?'四個研究因子都有可用排名。':'目前有 '+hitCount+' / 4 個研究因子納入共識；未納入者不會被當成通過。')+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';if(!v&&key==='混合'&&x.factor_rank_map&&x.factor_rank_map[n]!=null)v='第'+x.factor_rank_map[n]+'名';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'已納入':'未納入'))+'</strong></div>';}).join('')+'</div>';
@@ -44340,7 +44768,7 @@ def render_workbench_body(initial_tab=""):
       var hitCount=derivedHit;
       if(derivedHit===0){
         hitCount=Number(x.hit_count);
-        if(!isFinite(hitCount)||hitCount<0){var mm=String(reason||'').match(/(\d+)\s*\/\s*4/);hitCount=mm?Number(mm[1]):0;}
+        if(!isFinite(hitCount)||hitCount<0){var mm=String(reason||'').match(/(\d+)\s*\\/\s*4/);hitCount=mm?Number(mm[1]):0;}
       }
       hitCount=Math.max(0,Math.min(4,hitCount));
       whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(hitCount===4?'四項條件全部通過。':('共通過 '+hitCount+' / 4 項；只有標示「通過」的項目才算入選條件。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
