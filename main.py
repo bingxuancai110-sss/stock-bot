@@ -9,6 +9,7 @@ def _line_external_browser_url(url):
 
 
 import os
+import json
 import re
 import calendar
 import html
@@ -43,7 +44,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V282_1_EXRIGHT_ADMIN_HISTORICAL_CORRECTION"
+APP_BUILD = "V284_FACTOR_RESEARCH_ENDPOINTS"
 UI_BUILD = "v13-nav-timer-header-fix"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
@@ -12057,23 +12058,25 @@ def score_stock_by_category(code, ind_map, price, cum_yoy, val, streak,
     technical_score = score_from_technical_structure(price)
     chip_tech = round(chip_amount + technical_score)
 
+    # 黑馬 V2 權重：營收成長 20、估值 25、產業動能 30、
+    # 法人連續性 5、籌碼／技術 20，合計 100。
+    # 電子與傳產保留各自原有的原始評分門檻，再縮放至相同權重上限。
     if cat == "電子":
-        rev = round(score_from_cum_revenue_growth(cum_yoy) * 25 / 40)   # 0-25
-        val_score, peg, val_desc = score_from_valuation(pe, cum_yoy)     # 0-25
-        mom = mom_score                                                  # 0-20
-        streak_score = round(streak_score_raw * 20 / 30)                 # 0-20
-        caps = ("25", "25", "20", "20", "10")
-    else:  # 傳產：成長門檻放低、估值改看 PB 與殖利率、產業動能加重
-        rev = score_revenue_traditional(cum_yoy)                         # 0-20
-        val_score, val_desc = score_value_traditional(pb, dy, pe)        # 0-25
+        rev = round(score_from_cum_revenue_growth(cum_yoy) * 20 / 40)  # 0-20
+        val_score, peg, val_desc = score_from_valuation(pe, cum_yoy)    # 0-25
+    else:
+        rev = score_revenue_traditional(cum_yoy)                        # 0-20
+        val_score, val_desc = score_value_traditional(pb, dy, pe)       # 0-25
         peg = (pe / cum_yoy) if (pe and cum_yoy and cum_yoy > 0) else None
-        mom = round(mom_score * 25 / 20)                                 # 0-25
-        streak_score = round(streak_score_raw * 20 / 30)                 # 0-20
-        caps = ("20", "25", "25", "20", "10")
+
+    mom = round(mom_score * 30 / 20)                                    # 0-30
+    streak_score = round(streak_score_raw * 5 / 30)                     # 0-5
+    chip_tech = round((chip_amount + technical_score) * 2)              # 0-20
+    caps = ("20", "25", "30", "5", "20")
 
     return {
         "category": cat,
-        "total": rev + val_score + mom + streak_score + chip_tech,
+        "total": min(100, rev + val_score + mom + streak_score + chip_tech),
         "rev": rev, "val": val_score, "mom": mom,
         "streak_score": streak_score, "chip": chip_tech,
         "chip_amount_score": round(chip_amount, 1),
@@ -32772,6 +32775,285 @@ def web_score_validation(uid):
         print(f"❌ 分數驗證失敗 {mode} {code}: {type(e).__name__}: {e}")
         return jsonify({"error":f"{type(e).__name__}: {e}"}),500
 
+# V284：選股研究 API。只讀分析與實驗版本紀錄，不自動改正式選股權重。
+def _research_ensure_versions_table(cur):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pick_research_versions (
+            id BIGSERIAL PRIMARY KEY,
+            mode TEXT NOT NULL,
+            version_name TEXT NOT NULL,
+            weights JSONB NOT NULL DEFAULT '{}'::jsonb,
+            thresholds JSONB NOT NULL DEFAULT '{}'::jsonb,
+            note TEXT NOT NULL DEFAULT '',
+            created_by TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            effective_from DATE,
+            is_production BOOLEAN NOT NULL DEFAULT FALSE
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_pick_research_versions_mode_created ON pick_research_versions(mode, created_at DESC)")
+
+
+def _research_valid_mode(value):
+    value = str(value or 'blackhorse').strip().lower()
+    return value if value in ('blackhorse', 'radar', 'turning') else 'blackhorse'
+
+
+def _research_number(v):
+    try:
+        if v is None or isinstance(v, bool): return None
+        x = float(v)
+        return x if math.isfinite(x) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _research_rows_with_returns(mode, days):
+    """因子研究用的點時資料；報酬按推薦日後第 N 個交易日計算。"""
+    picks = get_picks_since(mode, days)
+    codes = sorted({normalize_code(p.get('code')) for p in picks if p.get('code')})
+    try:
+        price_map = get_realtime_stocks_bulk(codes, workers=8, rng='1y') if codes else {}
+    except Exception as exc:
+        print(f'⚠️ 研究報酬行情抓取失敗 {mode}: {type(exc).__name__}: {exc}')
+        price_map = {}
+    rows = []
+    for p in picks:
+        pd = p.get('date')
+        if isinstance(pd, datetime): pd = pd.date()
+        if isinstance(pd, str):
+            try: pd = datetime.fromisoformat(pd[:10]).date()
+            except Exception: continue
+        if not isinstance(pd, date): continue
+        cur = price_map.get(normalize_code(p.get('code')))
+        row = dict(p)
+        row['date'] = pd.isoformat()
+        for h in (5, 10, 20):
+            row['r%d' % h] = _score_validation_horizon_return(cur, pd, p.get('price'), h)
+        rows.append(row)
+    return picks, rows
+
+
+@app.route('/web/api/research/summary')
+@web_login_required
+def web_research_summary(uid):
+    """績效總覽：沿用既有 point-in-time 分數驗證，不回寫正式選股。"""
+    mode = _research_valid_mode(request.args.get('mode'))
+    try:
+        days = max(30, min(365, int(request.args.get('days', 180))))
+    except (TypeError, ValueError):
+        days = 180
+    try:
+        data = _score_validation(mode, days=days)
+        mature = data.get('mature') or {}
+        summary = {}
+        for h in ('5', '10', '20'):
+            m = mature.get(h) or {}
+            summary[h] = {k: m.get(k) for k in ('n', 'score_n', 'days', 'avg', 'median', 'win', 'corr', 'high_avg', 'low_avg', 'gap')}
+        return jsonify({'mode': mode, 'lookback_days': days, 'generated_at': datetime.now(TW_TZ).isoformat(),
+                        'n_total': data.get('n_total', 0), 'horizons': summary,
+                        'verdict': data.get('verdict', ''),
+                        'note': '報酬以推薦後第 N 個交易日計算；尚未成熟的樣本不納入該天期。'})
+    except Exception as e:
+        print(f'❌ 研究總覽失敗 {mode}: {type(e).__name__}: {e}')
+        return jsonify({'error': 'research_summary_failed', 'detail': type(e).__name__}), 500
+
+
+@app.route('/web/api/research/factors')
+@web_login_required
+def web_research_factors(uid):
+    """比較已保存的五項因子與 5/10/20 交易日報酬；缺欄位會明確標示，不補猜。"""
+    mode = _research_valid_mode(request.args.get('mode'))
+    try:
+        days = max(30, min(365, int(request.args.get('days', 180))))
+    except (TypeError, ValueError):
+        days = 180
+    factor_map = {'score_rev':'營收成長', 'score_val':'估值', 'score_mom':'產業動能',
+                  'score_streak':'法人連續性', 'score_chip':'籌碼／技術'}
+    try:
+        # 歷史報酬只在這個研究請求中計算；不更動任何正式分數或快照。
+        picks, hist = _research_rows_with_returns(mode, days)
+        hist_by_key = {(str(x.get('code')), str(x.get('date'))): x for x in hist}
+        output = []
+        for field, label in factor_map.items():
+            pairs = []
+            saved = 0
+            for p in picks:
+                fv = _research_number(p.get(field))
+                if fv is None: continue
+                saved += 1
+                pd = p.get('date')
+                if isinstance(pd, (date, datetime)): pd = pd.isoformat()[:10]
+                h = hist_by_key.get((str(p.get('code')), str(pd)))
+                if not h: continue
+                for horizon in (5, 10, 20):
+                    rv = _research_number(h.get('r%d' % horizon))
+                    if rv is not None: pairs.append((horizon, fv, rv, str(pd)))
+            horizon_results = {}
+            for horizon in (5, 10, 20):
+                rows = [(x,y,d) for h,x,y,d in pairs if h == horizon]
+                if len(rows) < 5:
+                    horizon_results[str(horizon)] = {'n':len(rows), 'avg_return_high':None, 'avg_return_low':None, 'gap':None, 'status':'樣本不足，至少需要 5 筆'}
+                    continue
+                vals = sorted(x for x,_,_ in rows)
+                cut = vals[len(vals)//2]
+                hi = [r for r in rows if r[0] >= cut]
+                lo = [r for r in rows if r[0] < cut]
+                ha = sum(r[1] for r in hi)/len(hi) if hi else None
+                la = sum(r[1] for r in lo)/len(lo) if lo else None
+                horizon_results[str(horizon)] = {'n':len(rows), 'factor_median':cut,
+                    'avg_return_high':ha, 'avg_return_low':la,
+                    'gap':ha-la if ha is not None and la is not None else None,
+                    'status':'觀察性結果；不是因果證明'}
+            output.append({'factor':field, 'label':label, 'saved_n':saved, 'horizons':horizon_results})
+        return jsonify({'mode':mode, 'lookback_days':days, 'n_picks':len(picks), 'factors':output,
+                        'note':'只分析推薦當時已保存的因子值；舊資料缺值不以今天的因子倒填，避免前視偏誤。'})
+    except Exception as e:
+        print(f'❌ 因子研究失敗 {mode}: {type(e).__name__}: {e}')
+        return jsonify({'error':'research_factors_failed', 'detail':type(e).__name__}), 500
+
+
+@app.route('/web/api/research/data-quality')
+@web_login_required
+def web_research_data_quality(uid):
+    """確認歷史推薦有無推薦價、五項因子與技術訊號；只回報品質，不虛構缺失欄位。"""
+    mode = _research_valid_mode(request.args.get('mode'))
+    conn = None
+    try:
+        conn = get_db_connection(); cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*),
+                   COUNT(*) FILTER (WHERE price IS NOT NULL AND price > 0),
+                   COUNT(*) FILTER (WHERE score IS NOT NULL),
+                   COUNT(*) FILTER (WHERE score_rev IS NOT NULL),
+                   COUNT(*) FILTER (WHERE score_val IS NOT NULL),
+                   COUNT(*) FILTER (WHERE score_mom IS NOT NULL),
+                   COUNT(*) FILTER (WHERE score_streak IS NOT NULL),
+                   COUNT(*) FILTER (WHERE score_chip IS NOT NULL),
+                   COUNT(*) FILTER (WHERE ma_cross IS NOT NULL OR macd_cross IS NOT NULL),
+                   COUNT(DISTINCT pick_date)
+              FROM pick_history WHERE mode=%s AND pick_date >= CURRENT_DATE - 180
+        """, (mode,))
+        r = cur.fetchone() or (0,)*10
+        n = int(r[0] or 0)
+        factors = {'score_rev':int(r[3] or 0), 'score_val':int(r[4] or 0), 'score_mom':int(r[5] or 0),
+                   'score_streak':int(r[6] or 0), 'score_chip':int(r[7] or 0)}
+        factor_complete = sum(1 for _ in [])
+        cur.close()
+        return jsonify({'mode':mode, 'lookback_days':180, 'n_picks':n,
+            'price_saved_n':int(r[1] or 0), 'total_score_saved_n':int(r[2] or 0),
+            'factor_saved_counts':factors, 'technical_signal_saved_n':int(r[8] or 0),
+            'distinct_pick_days':int(r[9] or 0),
+            'factor_completeness_pct':{k:round(v/n*100,1) if n else None for k,v in factors.items()},
+            'warnings':(['近 180 日沒有推薦紀錄'] if not n else []) +
+                (['部分歷史推薦缺少因子值；不可用目前因子值回填歷史'] if n and any(v<n for v in factors.values()) else []) +
+                (['技術面訊號保存量偏低，交叉訊號分組可能無法分析'] if n and int(r[8] or 0)<n*0.5 else []),
+            'missing_future_prices_note':'5／10／20 交易日報酬是否成熟，請以 /research/summary 的各天期樣本數為準。'})
+    except Exception as e:
+        if conn:
+            try: conn.rollback()
+            except Exception: pass
+        print(f'❌ 研究資料品質失敗 {mode}: {type(e).__name__}: {e}')
+        return jsonify({'error':'research_data_quality_failed', 'detail':type(e).__name__}), 500
+    finally:
+        if conn: release_db_connection(conn)
+
+
+@app.route('/web/api/research/versions', methods=['GET','POST'])
+@web_login_required
+def web_research_versions(uid):
+    """保存／讀取研究版本；POST 只建立研究紀錄，不會套用到正式評分。"""
+    conn = None
+    try:
+        conn = get_db_connection(); cur = conn.cursor(); _research_ensure_versions_table(cur)
+        if request.method == 'POST':
+            body = request.get_json(silent=True) or {}
+            mode = _research_valid_mode(body.get('mode'))
+            name = str(body.get('version_name') or '').strip()[:80]
+            if not name:
+                cur.close(); return jsonify({'error':'version_name_required'}), 400
+            weights = body.get('weights') if isinstance(body.get('weights'),dict) else {}
+            thresholds = body.get('thresholds') if isinstance(body.get('thresholds'),dict) else {}
+            # 避免任意大型 payload 或非 JSON 型別進資料庫。
+            if len(str(weights)) > 8000 or len(str(thresholds)) > 8000:
+                cur.close(); return jsonify({'error':'configuration_too_large'}), 400
+            note = str(body.get('note') or '')[:1000]
+            effective = body.get('effective_from')
+            if effective:
+                try: datetime.strptime(str(effective)[:10], '%Y-%m-%d'); effective=str(effective)[:10]
+                except ValueError:
+                    cur.close(); return jsonify({'error':'effective_from_must_be_YYYY-MM-DD'}), 400
+            cur.execute("""INSERT INTO pick_research_versions
+                (mode,version_name,weights,thresholds,note,created_by,effective_from,is_production)
+                VALUES (%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s,FALSE) RETURNING id,created_at""",
+                (mode,name,json.dumps(weights,ensure_ascii=False),json.dumps(thresholds,ensure_ascii=False),note,str(uid),effective))
+            row=cur.fetchone(); conn.commit(); cur.close()
+            return jsonify({'ok':True,'id':row[0],'created_at':row[1].isoformat() if row[1] else None,
+                            'mode':mode,'version_name':name,'is_production':False}), 201
+        mode = _research_valid_mode(request.args.get('mode'))
+        cur.execute("""SELECT id,mode,version_name,weights,thresholds,note,created_at,effective_from,is_production
+            FROM pick_research_versions WHERE mode=%s ORDER BY created_at DESC LIMIT 50""", (mode,))
+        rows=[]
+        for r in cur.fetchall():
+            rows.append({'id':r[0],'mode':r[1],'version_name':r[2],'weights':r[3],'thresholds':r[4],
+                'note':r[5],'created_at':r[6].isoformat() if r[6] else None,
+                'effective_from':r[7].isoformat() if r[7] else None,'is_production':bool(r[8])})
+        cur.close()
+        return jsonify({'mode':mode,'versions':rows,'note':'這裡只保存實驗設定，不會自動改正式選股邏輯。'})
+    except Exception as e:
+        if conn:
+            try: conn.rollback()
+            except Exception: pass
+        print(f'❌ 研究版本 API 失敗: {type(e).__name__}: {e}')
+        return jsonify({'error':'research_versions_failed','detail':type(e).__name__}),500
+    finally:
+        if conn: release_db_connection(conn)
+
+
+@app.route('/web/api/research/experiment', methods=['POST'])
+@web_login_required
+def web_research_experiment(uid):
+    """離線權重實驗：用已保存的因子分數重算組合分數，與後續報酬做相關；不改正式規則。"""
+    body=request.get_json(silent=True) or {}
+    mode=_research_valid_mode(body.get('mode'))
+    weights=body.get('weights') if isinstance(body.get('weights'),dict) else {}
+    factor_fields=('score_rev','score_val','score_mom','score_streak','score_chip')
+    labels={'score_rev':'營收成長','score_val':'估值','score_mom':'產業動能','score_streak':'法人連續性','score_chip':'籌碼／技術'}
+    parsed={k:_research_number(weights.get(k, 1)) for k in factor_fields}
+    parsed={k:v for k,v in parsed.items() if v is not None and v>=0}
+    if not parsed or sum(parsed.values())<=0:
+        return jsonify({'error':'weights_required','allowed_weights':list(factor_fields)}),400
+    try: days=max(30,min(365,int(body.get('days',180))))
+    except (TypeError,ValueError): days=180
+    picks, research_rows = _research_rows_with_returns(mode,days)
+    retmap={(str(x.get('code')),str(x.get('date'))):x for x in research_rows}
+    rows=[]
+    for p in picks:
+        vals={k:_research_number(p.get(k)) for k in parsed}
+        # 只有所有啟用因子都有保存的紀錄才參與，避免不同股票用不同分母比較。
+        if any(v is None for v in vals.values()): continue
+        den=sum(parsed.values())
+        score=sum(vals[k]*w for k,w in parsed.items())/den
+        pd=p.get('date'); pd=pd.isoformat()[:10] if isinstance(pd,(date,datetime)) else str(pd)[:10]
+        rr=retmap.get((str(p.get('code')),pd),{})
+        rows.append({'score':score,'returns':{str(h):_research_number(rr.get('r%d'%h)) for h in (5,10,20)}})
+    horizons={}
+    for h in (5,10,20):
+        a=[r for r in rows if r['returns'][str(h)] is not None]
+        if len(a)<10:
+            horizons[str(h)]={'n':len(a),'correlation':None,'status':'樣本不足；至少 10 筆才回報相關係數'}; continue
+        xs=[r['score'] for r in a]; ys=[r['returns'][str(h)] for r in a]
+        mx=sum(xs)/len(xs); my=sum(ys)/len(ys)
+        dx=sum((x-mx)**2 for x in xs); dy=sum((y-my)**2 for y in ys)
+        corr=sum((x-mx)*(y-my) for x,y in zip(xs,ys))/(dx*dy)**0.5 if dx>0 and dy>0 else None
+        horizons[str(h)]={'n':len(a),'correlation':corr,'avg_return':sum(ys)/len(ys),
+                          'win_rate_pct':sum(y>0 for y in ys)/len(ys)*100,
+                          'status':'探索性結果；需留出新樣本驗證'}
+    return jsonify({'mode':mode,'lookback_days':days,'weights_used':parsed,'factor_labels':labels,
+        'complete_factor_rows':len(rows),'horizons':horizons,
+        'warning':'此實驗僅使用歷史已保存的因子值；不修改正式權重。若缺值多，樣本會顯著縮小。'})
+
+
 @app.route("/web/api/trade-habits")
 @web_login_required
 def web_trade_habits(uid):
@@ -41867,9 +42149,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                 if mode == "radar":
                     radar_diagnostics["liquidity_rejected_count"] += 1
                 continue
-            if mode == "radar" and price["pct"] < 1.5:
-                radar_diagnostics["spark_pct_below_threshold_count"] += 1
-                continue
+            # 不再用「當日漲幅至少 1.5%」硬切候選股；由突破、量能、位置與過熱扣分排序。
 
             cum_yoy = revenue.get(code, {}).get("cum_yoy_pct")
             streak = streaks.get(code, 0)
@@ -41890,6 +42170,10 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             mom_score = sc.get("mom", 0); streak_score = sc.get("streak_score", 0)
             chip_tech = sc.get("chip", 0); caps = sc.get("caps", ("", "", "", "", ""))
 
+            radar_score = score_radar_breakout(price) if mode == "radar" else None
+            if radar_score:
+                total = radar_score["total"]
+
             breakout = ""
             if price.get("high_60d") and price["close"] >= price["high_60d"]:
                 breakout = "季線新高"
@@ -41906,6 +42190,10 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                 "category": sc["category"],
                 "cum_lots": info["cum_lots"], "buy_days": info["buy_days"],
                 "breakout": breakout, "vol_ratio": price.get("vol_ratio"),
+                "radar_score_detail": radar_score if mode == "radar" else None,
+                "radar_penalty": radar_score.get("penalty", 0) if mode == "radar" and radar_score else 0,
+                "radar_penalty_reason": radar_score.get("penalty_reason", "") if mode == "radar" and radar_score else "",
+                "breakout_type": radar_score.get("breakout_type", "") if mode == "radar" and radar_score else "",
                 # 20 日／60 日均線交叉。只標示不加分——
                 # 交接文件明訂不可因畫面需求自行改分數或排序，
                 # 所以雷達的篩選與名次完全不受影響，這只是多一個看得到的事實。
@@ -42357,6 +42645,80 @@ def build_screener_data_quality(cum_yoy, valuation, industry_stats,
         "missing": missing,
         "complete": valid == len(checks),
     }
+
+
+def score_radar_breakout(price, market_pct=None):
+    """雷達專用 100 分制：突破品質 30、趨勢 25、量能 20、進場位置 15、相對強度 10。
+    過度乖離會扣分；權重屬待歷史回測驗證的研究版，非已證實最佳值。
+    """
+    price = price or {}
+    close = price.get("close")
+    ma20, ma20_prev = price.get("ma20"), price.get("ma20_prev")
+    ma60, ma60_prev = price.get("ma60"), price.get("ma60_prev")
+    high20, high60 = price.get("high_20d"), price.get("high_60d")
+    vol_ratio = float(price.get("vol_ratio") or 0)
+    pct = float(price.get("pct") or 0)
+
+    def pct_diff(a, b):
+        try:
+            return (float(a) - float(b)) / float(b) * 100 if a is not None and b not in (None, 0) else None
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+
+    dist20 = pct_diff(close, ma20)
+    is_60d = bool(high60 and close is not None and close >= high60)
+    is_20d = bool(high20 and close is not None and close >= high20)
+    breakout_score = 30 if is_60d else (23 if is_20d else 0)
+    if not is_60d and not is_20d and ma20 and close is not None and close >= ma20:
+        breakout_score = 6  # 站上均線不等於真正突破
+
+    trend_score = 0
+    if ma20 and close is not None and close >= ma20: trend_score += 10
+    if ma20 and ma20_prev and ma20 > ma20_prev: trend_score += 8
+    if ma60 and close is not None and close >= ma60: trend_score += 4
+    if ma60 and ma60_prev and ma60 > ma60_prev: trend_score += 3
+
+    if vol_ratio >= 2.0: volume_score = 20
+    elif vol_ratio >= 1.5: volume_score = 16
+    elif vol_ratio >= 1.2: volume_score = 11
+    elif vol_ratio >= 1.0: volume_score = 6
+    else: volume_score = 0
+
+    if dist20 is None: entry_score = 5
+    elif 0 <= dist20 <= 5: entry_score = 15
+    elif 5 < dist20 <= 8: entry_score = 11
+    elif 8 < dist20 <= 12: entry_score = 7
+    elif -3 <= dist20 < 0: entry_score = 6
+    else: entry_score = 2
+
+    rel = None
+    try:
+        if market_pct is not None: rel = pct - float(market_pct)
+    except (TypeError, ValueError):
+        rel = None
+    if rel is None:
+        rel_score = 7 if pct >= 0 else (4 if pct > -2 else 1)
+    else:
+        rel_score = 10 if rel >= 2 else (8 if rel >= 1 else (6 if rel >= 0 else (3 if rel > -2 else 0)))
+
+    raw_score = breakout_score + trend_score + volume_score + entry_score + rel_score
+    penalty, reasons = 0, []
+    if dist20 is not None:
+        if dist20 > 20: penalty += 15; reasons.append("距20日均線超過20%")
+        elif dist20 > 15: penalty += 10; reasons.append("距20日均線超過15%")
+        elif dist20 > 10: penalty += 5; reasons.append("距20日均線超過10%")
+    # 不因單日漲幅直接扣分；追高風險改看月線／季線乖離。
+    dist60 = pct_diff(close, ma60)
+    if dist60 is not None:
+        if dist60 > 30: penalty += 5; reasons.append("距季線超過30%")
+        elif dist60 > 20: penalty += 3; reasons.append("距季線超過20%")
+    penalty = min(20, penalty)
+    total = max(0, min(100, raw_score - penalty))
+    return {"total": total, "breakout_score": breakout_score, "trend_score": trend_score,
+            "volume_score": volume_score, "entry_score": entry_score, "relative_score": rel_score,
+            "penalty": penalty, "penalty_reason": "、".join(reasons) if reasons else "無過熱扣分",
+            "dist20_pct": round(dist20, 2) if dist20 is not None else None,
+            "breakout_type": "60日新高" if is_60d else ("20日新高" if is_20d else "未確認突破")}
 
 
 def classify_radar_state(price):
@@ -43147,6 +43509,29 @@ def _workbench_text(value, fallback="未標示"):
     return text if text else fallback
 
 
+def _workbench_chase_warning(close, ma20, ma60):
+    """回傳卡片上的最高均線乖離風險與明確追高警戒線。"""
+    candidates = []
+    try:
+        if close is None:
+            return ""
+        close = float(close)
+        if ma20 not in (None, 0):
+            dist = (close - float(ma20)) / float(ma20) * 100
+            if dist >= 10:
+                candidates.append((dist / 10.0, dist, "月線", 10.0))
+        if ma60 not in (None, 0):
+            dist = (close - float(ma60)) / float(ma60) * 100
+            if dist >= 20:
+                candidates.append((dist / 20.0, dist, "季線", 20.0))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return ""
+    if not candidates:
+        return ""
+    _, actual, line_name, threshold = max(candidates, key=lambda item: item[0])
+    return f"⚠️ 注意追高｜{line_name}乖離 +{actual:.1f}%（追高警戒線 +{threshold:.0f}%）"
+
+
 def _workbench_display_name(raw, code):
     """工作台名稱回填：沿用正式名稱表；測試或名稱表未載入時安全退回代號。"""
     candidate = raw.get("name") or raw.get("stock_name") or raw.get("display_name")
@@ -43230,12 +43615,13 @@ def _workbench_screener_rows(mode, snapshot=None):
             "pb": _workbench_number(raw.get("pb")),
             "pos": _workbench_number(raw.get("pos")),
             "ma20": _workbench_number(raw.get("ma20")),
-            "chase_risk": (
-                "⚠️ 乖離偏大・注意追高"
-                if _workbench_number(raw.get("ma20")) not in (None, 0)
-                and _workbench_number(raw.get("close")) is not None
-                and ((_workbench_number(raw.get("close")) - _workbench_number(raw.get("ma20"))) / _workbench_number(raw.get("ma20")) * 100) >= 20
-                else ""
+            "ma60": _workbench_number(raw.get("ma60")),
+            # 顯示最需要注意的均線乖離：月線警戒線 10%，季線警戒線 20%。
+            # 卡片同時寫出實際乖離與警戒門檻，避免只顯示籠統的「最高風險」。
+            "chase_risk": _workbench_chase_warning(
+                _workbench_number(raw.get("close")),
+                _workbench_number(raw.get("ma20")),
+                _workbench_number(raw.get("ma60")),
             ),
             "category": _workbench_text(raw.get("category"), "未分類"),
             "score_policy": ("金融股不評分，僅列事實供判讀"
