@@ -28146,6 +28146,12 @@ def auth_google_choose():
     response.headers["X-StockBot-UI-Version"] = UI_BUILD
     return response
 
+@app.route("/auth/login")
+def auth_login_alias():
+    """直接進入既有 Google 帳號登入流程，不會建立新帳號。"""
+    return redirect("/auth/google?mode=login")
+
+
 @app.route("/auth/google")
 def auth_google_start():
     if not _google_oauth_configured():
@@ -28208,8 +28214,21 @@ def auth_google_callback():
                 '<div class="msg">原帳號工作階段已失效。請先登入原帳號，再重新綁定 Google。</div>'), 401
         ok, message = _bind_google_identity(str(bind_user_id), identity)
         if not ok:
-            return render_page("Google 綁定未完成",
-                '<div class="msg">' + safe_html_text(message) + '</div>'), 409
+            # 綁定衝突時提供明確的「登入既有 Google 帳號」入口。
+            # 使用者可能只是想登入，卻因瀏覽器仍帶著另一個 BOT session 而進入 bind 流程。
+            # 不在此處自動合併／改綁；改由使用者明確選擇 login intent。
+            body = (
+                '<div class="msg">' + safe_html_text(message) + '</div>'
+                '<div class="auth-conflict-actions" style="display:grid;gap:10px;margin-top:16px">'
+                '<a class="btn" href="/auth/google?mode=login" '
+                'style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#245779;color:#fff;font-weight:800">'
+                '使用這個 Google 帳號登入既有台股 BOT</a>'
+                '<a class="btn" href="/auth/choose" '
+                'style="display:block;text-align:center;text-decoration:none;padding:13px;border-radius:12px;background:#eef5fa;color:#245779;font-weight:800">'
+                '返回登入／註冊選擇</a></div>'
+                '<p class="sub" style="margin-top:12px">登入會開啟此 Google 身分已綁定的帳號；不會合併帳號，也不會更動持股資料。</p>'
+            )
+            return render_page("Google 綁定未完成", body), 409
         return render_page("Google 綁定完成",
             '<div class="msg">Google 已綁定到原本的台股 BOT 帳號。帳號 ID 不變，持股、自選股與設定均保留。</div>'
             '<a href="/web/settings">返回設定</a>')
