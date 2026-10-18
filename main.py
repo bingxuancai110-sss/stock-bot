@@ -45342,8 +45342,15 @@ function bindFactors(){
       .finally(function(){if(timeoutId)window.clearTimeout(timeoutId);})
       .then(function(r){
         if(r.status===401)throw new Error('AUTH');
-        if(!r.ok)throw new Error('HTTP '+r.status);
-        return r.json();
+        return r.text().then(function(raw){
+          var data=null;
+          try{data=raw?JSON.parse(raw):{};}catch(parseErr){
+            if(!r.ok)throw new Error('HTTP '+r.status+'（回傳非 JSON；可能是登入跳轉或伺服器錯誤頁）');
+            throw new Error('回傳資料不是有效 JSON');
+          }
+          if(!r.ok)throw new Error('HTTP '+r.status+(data&&data.error?'：'+data.error:''));
+          return data;
+        });
       })
       .then(function(data){
         if(!data.ok)throw new Error(data.error||'載入失敗');
@@ -45391,7 +45398,12 @@ function bindFactors(){
         state.sources[source]=Object.assign({},state.sources[source]||{},{available:false,error:em});
         if(source==='黑馬')finishWorkbenchLoad('失敗');
         renderTabs();
-        if(source===state.source){status.textContent=source+' 快照載入失敗（'+sourceElapsed.toFixed(2)+' 秒）';rowsEl.innerHTML='<div class="wb-empty wb-load-error"><b>'+esc(source)+' 快照載入失敗</b><small>'+esc(em)+'；可按「重新整理」重試，其他分頁仍可使用。</small></div>';}
+        var retryCount=state.snapshotRetryCounts[source]||0;
+        if(retryCount<3 && (!e || e.name==='AbortError' || /HTTP 5\d\d|非 JSON|有效 JSON|Failed to fetch|NetworkError|逾時/.test(em))){
+          state.snapshotRetryCounts[source]=retryCount+1;
+          if(source===state.source){status.textContent=source+' 載入失敗，正在重試 '+(retryCount+1)+'/3…';rowsEl.innerHTML='<div class="wb-empty"><b>暫時無法取得資料</b><small>'+esc(em)+'；系統正在自動重試。</small></div>';}
+          window.setTimeout(function(){if(!state.loadedSources[source]&&!state.loadingSources[source])fetchWorkbenchSource(source);},2000*(retryCount+1));
+        }else if(source===state.source){status.textContent=source+' 快照載入失敗（'+sourceElapsed.toFixed(2)+' 秒）';rowsEl.innerHTML='<div class="wb-empty wb-load-error"><b>'+esc(source)+' 快照載入失敗</b><small>'+esc(em)+'；可按「重新整理」重試，其他分頁仍可使用。</small></div>';}
         return null;
       });
     state.loadingSources[source]=promise;
@@ -46869,8 +46881,11 @@ def web_workbench_source(uid):
                 _WORKBENCH_SOURCE_PAYLOAD_CACHE[cache_key] = (time.monotonic(), payload)
         return _workbench_json_response(payload)
     except Exception as exc:
-        print(f"❌ 工作台分頁 API 失敗（uid={uid}）：{exc}")
-        return _workbench_json_response({"ok":False,"error":"此分頁暫時無法載入；其他分頁不受影響。"},503)
+        import traceback
+        print(f"❌ 工作台分頁 API 失敗（uid={uid}, source={source!r}）：{type(exc).__name__}: {exc}", flush=True)
+        traceback.print_exc()
+        # 回傳可辨識的錯誤類型，前端會顯示 HTTP 狀態與錯誤摘要；不暴露完整堆疊給使用者。
+        return _workbench_json_response({"ok":False,"error":f"{type(exc).__name__}: {str(exc)[:240]}"},503)
 
 
 @app.route("/web/api/workbench/quotes")
