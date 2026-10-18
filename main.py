@@ -43663,6 +43663,29 @@ def _workbench_text(value, fallback="未標示"):
     return text if text else fallback
 
 
+def _workbench_chase_warning(close, ma20, ma60):
+    """回傳卡片上的最高均線乖離風險與明確追高警戒線。"""
+    candidates = []
+    try:
+        if close is None:
+            return ""
+        close = float(close)
+        if ma20 not in (None, 0):
+            dist = (close - float(ma20)) / float(ma20) * 100
+            if dist >= 10:
+                candidates.append((dist / 10.0, dist, "月線", 10.0))
+        if ma60 not in (None, 0):
+            dist = (close - float(ma60)) / float(ma60) * 100
+            if dist >= 20:
+                candidates.append((dist / 20.0, dist, "季線", 20.0))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return ""
+    if not candidates:
+        return ""
+    _, actual, line_name, threshold = max(candidates, key=lambda item: item[0])
+    return f"⚠️ 注意追高｜{line_name}乖離 +{actual:.1f}%（追高警戒線 +{threshold:.0f}%）"
+
+
 def _workbench_display_name(raw, code):
     """工作台名稱回填：沿用正式名稱表；測試或名稱表未載入時安全退回代號。"""
     candidate = raw.get("name") or raw.get("stock_name") or raw.get("display_name")
