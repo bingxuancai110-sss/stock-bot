@@ -37546,8 +37546,9 @@ def web_settings(uid):
   <section class="settings-panel">
     <div class="settings-panel-kicker">帳號與跨裝置同步</div>
     <h2>帳號登入方式</h2>
-    <p>綁定 Google 後，可以從不同裝置登入同一個帳號，繼續使用原有投資資料；不會另外建立一份持股紀錄。</p>
-    <a href="{html.escape(google_bind_href, quote=True)}" style="display:block;text-align:center;text-decoration:none;padding:12px 14px;border-radius:8px;background:#315E9B;color:#fff;font-weight:800;margin-top:12px">綁定 Google 帳號</a>
+    <p>登入是進入已存在的台股 BOT 帳號；綁定則是把 Google 登入方式連到目前帳號。兩者不同，請依需求選擇，系統不會自動合併帳號。</p>
+    <a href="/auth/google?mode=login" style="display:block;text-align:center;text-decoration:none;padding:12px 14px;border-radius:8px;background:#245779;color:#fff;font-weight:800;margin-top:12px">使用 Google 登入既有帳號</a>
+    <a href="{html.escape(google_bind_href, quote=True)}" style="display:block;text-align:center;text-decoration:none;padding:12px 14px;border-radius:8px;background:#eef5fa;border:1px solid #c9dceb;color:#245779;font-weight:800;margin-top:10px">綁定 Google 到目前帳號</a>
   </section>
   <section class="settings-panel">
     <div class="settings-panel-kicker">LINE 通知</div>
