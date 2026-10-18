@@ -42405,7 +42405,12 @@ SCREENER_STALE_SNAPSHOT_MAX_AGE_SECONDS = 3 * 86400
 
 
 def _screener_snapshot_is_recent(snapshot, max_days=3):
-    """檢查快照是否仍可作為明示日期的暫時畫面，絕不把它冒充成今日。"""
+    """檢查快照是否可作為明示來源日期的暫時畫面。
+
+    休市日若資料供應端沒有回傳 source_date，不能因此直接丟棄一份
+    剛完成、且有實際股票列的快照；可用 computed_at 回推快照建立日期。
+    UI 必須顯示該日期，絕不把舊資料標成今日即時資料。
+    """
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("rows"), list):
         return False
     source_date = snapshot.get("source_date")
@@ -42415,7 +42420,18 @@ def _screener_snapshot_is_recent(snapshot, max_days=3):
         try:
             source_date = date.fromisoformat(source_date[:10])
         except ValueError:
-            return False
+            source_date = None
+    if not isinstance(source_date, date):
+        computed_at = snapshot.get("computed_at") or snapshot.get("scan_finished_at")
+        try:
+            if isinstance(computed_at, str):
+                computed_at = datetime.fromisoformat(computed_at.replace("Z", "+00:00"))
+            if isinstance(computed_at, datetime):
+                if computed_at.tzinfo is None:
+                    computed_at = computed_at.replace(tzinfo=timezone.utc)
+                source_date = computed_at.astimezone(TW_TZ).date()
+        except (TypeError, ValueError, OverflowError):
+            source_date = None
     if not isinstance(source_date, date):
         return False
     today = taiwan_today()
@@ -42427,7 +42443,9 @@ def _screener_recent_snapshot(mode):
     mode = str(mode or "").strip()
     # 休市日可能連續數個日曆日沒有新報價（例如週末接國定假日）；
     # 仍可顯示最後有效快照，但 UI 必須保留來源日期，不冒充今日即時資料。
-    max_days = 3 if is_twse_trading_day(taiwan_today()) else 7
+    # 休市日直接沿用最近一份有效收盤快照；資料來源日期可能因上游缺欄位
+    # 而為空，此時 _screener_snapshot_is_recent 會使用 computed_at 判斷新鮮度。
+    max_days = 3 if (is_twse_trading_day(taiwan_today()) and _is_taiwan_intraday_window()) else 7
     cached = _screener_cache.get(mode)
     cached_rows = cached.get("rows") if isinstance(cached, dict) else None
     cached_usable = bool(cached and isinstance(cached_rows, list)
@@ -42437,11 +42455,23 @@ def _screener_recent_snapshot(mode):
         return cached, "記憶體快照"
     persisted = _load_persisted_screener_snapshot(mode)
     if persisted and _screener_snapshot_is_recent(persisted, max_days):
+        persisted_source_date = persisted.get("source_date")
+        if not persisted_source_date:
+            computed_at = persisted.get("computed_at")
+            try:
+                if isinstance(computed_at, str):
+                    computed_at = datetime.fromisoformat(computed_at.replace("Z", "+00:00"))
+                if isinstance(computed_at, datetime):
+                    if computed_at.tzinfo is None:
+                        computed_at = computed_at.replace(tzinfo=timezone.utc)
+                    persisted_source_date = computed_at.astimezone(TW_TZ).date()
+            except (TypeError, ValueError, OverflowError):
+                persisted_source_date = None
         _screener_cache[mode] = {
             "at": time.time(), "rows": persisted["rows"],
             "skipped": persisted.get("skipped", 0),
             "momentum": persisted.get("momentum", {}),
-            "source_date": persisted.get("source_date"),
+            "source_date": persisted_source_date,
             "computed_at": persisted.get("computed_at"),
             "source_meta": persisted.get("source_meta") or {},
             "scan_finished_at": (persisted.get("source_meta") or {}).get("scan_finished_at"),
@@ -45333,13 +45363,13 @@ function bindFactors(){
         if(state.source===source && sourceViewEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer) render();
         if(building){
           var attempts=state.snapshotRetryCounts[source]||0;
-          if(attempts<=60){
+          if(attempts<=12){
             window.setTimeout(function(){
               if(!state.loadedSources[source]&&!state.loadingSources[source])fetchWorkbenchSource(source);
-            },5000);
+            },8000);
           }else{
             state.sources[source].building=false;
-            state.sources[source].note='背景重建超過 5 分鐘仍未完成，可能是行情來源、資料庫或背景工作失敗；可查看服務日誌。';
+            state.sources[source].note='背景重建仍未完成，可能是行情來源或資料庫暫時不穩定；切換分頁或重新整理可再試。';
             if(state.source===source&&!state.detailOpen&&!state.closingDrawer)render();
           }
         }
@@ -45763,25 +45793,18 @@ def _workbench_source_payload(uid, source):
                 print(f"⚠️ 工作台讀取{source}最近快照失敗：{exc}")
                 snap = None
         rows=_workbench_screener_rows(mode, snap) if snap else []
-        # 空快照且沒有資料日期，或原始快照有資料但轉換後全數無效，視為無效快照。
-        # 舊版把這種情況當成「掃描完成、0 檔」，造成 UI 很快載入但永遠沒有股票。
-        snap_rows = snap.get("rows") if isinstance(snap, dict) else None
-        snap_date = ((snap or {}).get("source_date") or (snap or {}).get("data_date")
-                     or (snap or {}).get("date")) if isinstance(snap, dict) else None
-        invalid_empty_snapshot = bool(
-            snap and not rows and (not isinstance(snap_rows, list) or not snap_rows or not snap_date)
-        )
-        if not snap or invalid_empty_snapshot:
+        # 快照缺失／過期／無效空清單不能被偽裝成「已載入 0 檔」；啟動背景重建並讓前端輪詢。
+        if not snap:
             in_market = (mode == "radar" and _is_taiwan_intraday_window())
             started = _start_screener_background_refresh(
                 mode, intraday=in_market,
                 radar_deep_limit=RADAR_DEEP_SCAN_LIMIT if in_market else None)
             return {"ok":True,"source":source,"rows":[],"score_changes":[],
                     "meta":{"available":False,"building":True,
-                            "date":str(snap_date or "尚無可用快照"),
+                            "date":"尚無可用快照",
                             "source":"背景重新掃描",
-                            "note": ("快照缺失或內容無效，已啟動背景掃描；完成後自動更新。" if started
-                                     else "快照缺失或內容無效；背景掃描正在進行，完成後自動更新。")}}
+                            "note": ("已啟動背景掃描；完成後自動更新。" if started
+                                     else "背景掃描正在進行；完成後自動更新。")}}
         # 黑馬首屏只讀快照；今日分數變化需要額外資料庫比對，不能阻塞首屏。
         changes=[]
         empty_radar = (mode == "radar" and not rows)
