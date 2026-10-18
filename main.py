@@ -42374,9 +42374,15 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             })
 
         source_date = _screener_source_date()
+        # 關鍵修正：法人來源日可能在週末／來源暫缺時為 None。
+        # 舊版記憶體快取沒有 computed_at，_screener_snapshot_is_recent() 因而
+        # 把剛算完的 rows 當成過期資料，工作台每次輪詢都看不到剛完成的結果。
+        # computed_at 只表示計算完成時間，不冒充行情來源日；UI 仍保留「未標日期」。
+        computed_at = taiwan_now().isoformat()
         cache_item = {"at": now, "rows": rows,
                       "skipped": skipped_liquidity, "momentum": momentum,
-                      "source_date": source_date}
+                      "source_date": source_date,
+                      "computed_at": computed_at}
         if mode == "radar":
             radar_diagnostics["final_count"] = len(rows)
             cache_item["scan_universe_count"] = radar_universe_count
