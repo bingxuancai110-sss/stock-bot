@@ -42686,9 +42686,9 @@ def _screener_building_fragment(mode, source_date=None):
     return f'''<section class="screener-fast-card" data-screener-pending="1">
   <div class="screener-fast-state"><span class="screener-fast-state-mark"></span><div>
     <b>{label}完整分析正在背景整理</b>
-    <div class="screener-fast-note">目前沒有可使用的完整快照（最近資料日：{html.escape(date_text)}）。本頁已立即回應；整理完成後重新整理即可看到真實排名。</div>
+    <div class="screener-fast-note">目前沒有可使用的完整快照（最近資料日：{html.escape(date_text)}）。本頁已立即回應，系統每 5 秒自動檢查背景結果；完成後會自動載入真實排名。</div>
   </div></div>
-  <div class="screener-fast-note">不在請求中同步掃描全市場，也不會用空白或虛構數字代替結果。</div>
+  <div class="screener-fast-note">不在請求中同步掃描全市場；若背景計算失敗，請查看服務日誌中的「選股背景刷新失敗」訊息。</div>
   <p><a class="btn" href="?mode={html.escape(str(mode))}">重新整理查看結果</a></p>
 </section>'''
 
@@ -44494,7 +44494,7 @@ def render_workbench_body(initial_tab=""):
         var n=(x.metric==null||isNaN(Number(x.metric)))?null:Number(x.metric);
         var metric='—';
         if(n!=null){
-          if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<=0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\\/\s*4/);if(mm)hc=Number(mm[1]);} metric=hc+'/4';}
+          if(key==='混合'||key==='四因子複合'){var hc=Number(x.hit_count); if(!isFinite(hc)||hc<=0){hc=Array.isArray(x.factor_names)?x.factor_names.length:(x.factor_rank_map?Object.keys(x.factor_rank_map).length:0);} if(!hc){var tx=(x.tags||[]).join(' ')+' '+(x.reason||'');var mm=tx.match(/(\d+)\s*\/\s*4/);if(mm)hc=Number(mm[1]);} metric=hc+'/4';}
           else{var digits=(key==='低波動'||key==='ROE品質')?2:1;metric=n.toFixed(digits)+((key==='營收動能'||key==='價格動能'||key==='低波動'||key==='ROE品質')?'%':'');}
         }
         return '<button type="button" class="wb-lab-pick" data-lab-code="'+esc(x.code)+'" data-lab-key="'+esc(key)+'"><span class="wb-lab-rank">'+(i+1)+'</span><span class="wb-lab-pick-main"><b>'+esc(x.code)+'　'+esc(x.name)+'</b><small>'+esc(x.industry||'未分類')+'</small><span class="wb-lab-pick-metric-mobile"><strong>'+esc(metric)+'</strong><em>'+esc(x.metric_label||'研究值')+'</em></span><span class="wb-lab-pick-tags">'+chips+'</span><span class="wb-lab-pick-reason-mobile">'+esc(x.reason||'')+'</span></span><span class="wb-lab-pick-metric"><strong>'+esc(metric)+'</strong><small>'+esc(x.metric_label||'研究值')+'</small></span><span class="wb-lab-pick-reason">'+esc(x.reason||'')+'</span><span class="wb-lab-arrow">›</span></button>';
@@ -44711,7 +44711,7 @@ def render_workbench_body(initial_tab=""):
       }
       var hitCount=Number(x.hit_count);
       if(!isFinite(hitCount)||hitCount<0){hitCount=names.filter(passFor).length;}
-      if(hitCount===0){var mm=String(reason||'').match(/(\d+)\s*\\/\s*4/);if(mm)hitCount=Number(mm[1]);}
+      if(hitCount===0){var mm=String(reason||'').match(/(\d+)\s*\/\s*4/);if(mm)hitCount=Number(mm[1]);}
       hitCount=Math.max(0,Math.min(4,hitCount));
       if(key==='混合'){
         whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>條件有排名</span></div><p>'+esc(hitCount===4?'四個研究因子都有可用排名。':'目前有 '+hitCount+' / 4 個研究因子納入共識；未納入者不會被當成通過。')+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';if(!v&&key==='混合'&&x.factor_rank_map&&x.factor_rank_map[n]!=null)v='第'+x.factor_rank_map[n]+'名';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'已納入':'未納入'))+'</strong></div>';}).join('')+'</div>';
@@ -44777,7 +44777,7 @@ def render_workbench_body(initial_tab=""):
       var hitCount=derivedHit;
       if(derivedHit===0){
         hitCount=Number(x.hit_count);
-        if(!isFinite(hitCount)||hitCount<0){var mm=String(reason||'').match(/(\d+)\s*\\/\s*4/);hitCount=mm?Number(mm[1]):0;}
+        if(!isFinite(hitCount)||hitCount<0){var mm=String(reason||'').match(/(\d+)\s*\/\s*4/);hitCount=mm?Number(mm[1]):0;}
       }
       hitCount=Math.max(0,Math.min(4,hitCount));
       whyHtml='<div class="wb-d-why-summary"><div><b>'+hitCount+'/4</b><span>符合經典條件</span></div><p>'+esc(hitCount===4?'四項條件全部通過。':('共通過 '+hitCount+' / 4 項；只有標示「通過」的項目才算入選條件。'))+'</p></div><div class="wb-d-why-grid">'+names.map(function(n){var ok=passFor(n);var v=detailsMap[n]||detailsMap[fm[n]]||'';return '<div class="wb-d-why-row '+(ok?'pass':'fail')+'"><span class="wb-d-why-icon">'+(ok?'✓':'×')+'</span><div><b>'+esc(n)+'</b><small>'+esc(fm[n])+'</small></div><strong class="'+(ok?'wb-d-why-pass':'wb-d-why-fail')+'">'+(v?esc(v):(ok?'通過':'未通過'))+'</strong></div>';}).join('')+'</div>';
@@ -47262,11 +47262,15 @@ def web_screener(uid):
                 # 無完整快照時不要讓使用者的頁面請求同步等待全市場抓價。
                 # 仍使用同一套 compute_screener_rows 選股邏輯，只把全量計算移至背景；
                 # 前端沿用既有 pending fragment 自動輪詢，不更動任何版面。
-                _start_screener_background_refresh(mode)
-                return respond_page(
-                    "選股台",
-                    _screener_building_fragment(mode, _screener_source_date()),
-                    "screener")
+                started = _start_screener_background_refresh(mode)
+                # 若同模式已有 worker，仍回傳 pending，前端會持續輪詢；
+                # 若本次成功啟動，背景 worker 完成後快照會由 compute_screener_rows 寫入。
+                pending_html = _screener_building_fragment(mode, _screener_source_date())
+                if not started:
+                    pending_html = pending_html.replace(
+                        '系統每 5 秒自動檢查背景結果',
+                        '同模式已有背景工作執行中，系統每 5 秒自動檢查結果')
+                return respond_page("選股台", pending_html, "screener")
     # 直接網址、warmup 快照與 fragment 走不同分支；統一從同一份
     # worker cache 回填雷達診斷，避免零結果頁只剩「沒有符合條件」。
     if mode == "radar" and not radar_diagnostics:
