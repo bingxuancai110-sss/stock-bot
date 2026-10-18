@@ -1718,7 +1718,7 @@ ETF_PRODUCT_METADATA = {
 # --- 首頁與健康檢查 ---
 @app.route("/", methods=["GET"])
 def home():
-    # 已登入者直接回到個人首頁；未登入者才進入 Google 註冊／登入入口。
+    # 首頁仍保留既有登入者導向；分享／QR Code 應使用 /auth/choose?fresh=1，避免首頁自動沿用已登入帳號。
     # t 參數需保留給無法穩定使用 Cookie 的 LINE WebView。
     uid = current_web_user()
     if uid:
@@ -28052,6 +28052,23 @@ def _bind_google_identity(user_id, identity):
         release_db_connection(conn)
 
 
+@app.route("/auth/logout", methods=["GET", "POST"])
+def auth_logout():
+    """只登出目前瀏覽器：清除 BOT Cookie，並移除網址中的舊 t 權杖。
+
+    不刪除帳號、持股、自選股或交易紀錄；也不撤銷其他裝置的登入工作階段。
+    """
+    response = make_response(redirect("/auth/choose?fresh=1"))
+    response.delete_cookie("stockbot_token", path="/", secure=True,
+                           httponly=True, samesite="Lax")
+    # 舊版部署若曾使用不同 Cookie 屬性，也嘗試清除同名 Cookie。
+    response.delete_cookie("stockbot_token", path="/")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-StockBot-UI-Version"] = UI_BUILD
+    return response
+
+
 @app.route("/auth/choose")
 def auth_google_choose():
     '''未登入入口：提供清楚的 Google 註冊與登入，成功後再進入新手教學。'''
@@ -28107,7 +28124,7 @@ def auth_google_choose():
 @media(max-width:360px){.auth-masthead-note{display:none}.auth-feature-grid{gap:7px}.auth-feature{padding:10px}.auth-feature span{font-size:10.5px}}
 </style>
 <main class="auth-landing" aria-label="台股 BOT 登入與註冊">
-  <div class="auth-masthead"><span class="auth-masthead-brand"><i class="auth-masthead-dot"></i> TAIWAN STOCK BOT</span><span class="auth-masthead-note">持股紀錄・市場研究</span></div>
+  <div class="auth-masthead"><span class="auth-masthead-brand"><i class="auth-masthead-dot"></i> TAIWAN STOCK BOT</span><span class="auth-masthead-note">持股紀錄・市場研究</span><a href="/auth/logout" style="color:#405D49;text-decoration:none;font-weight:800;border:1px solid #9EAF99;border-radius:999px;padding:7px 11px">登出／切換帳號</a></div>
   <section class="auth-hero">
     <div class="auth-brand">持股管理 · 選股工具 · 績效紀錄</div>
     <h1>整理持股與市場線索，<br><em>慢慢建立自己的投資方法。</em></h1>
