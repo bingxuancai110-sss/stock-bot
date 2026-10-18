@@ -12057,23 +12057,25 @@ def score_stock_by_category(code, ind_map, price, cum_yoy, val, streak,
     technical_score = score_from_technical_structure(price)
     chip_tech = round(chip_amount + technical_score)
 
+    # 黑馬 V2 權重：營收成長 20、估值 25、產業動能 30、
+    # 法人連續性 5、籌碼／技術 20，合計 100。
+    # 電子與傳產保留各自原有的原始評分門檻，再縮放至相同權重上限。
     if cat == "電子":
-        rev = round(score_from_cum_revenue_growth(cum_yoy) * 25 / 40)   # 0-25
-        val_score, peg, val_desc = score_from_valuation(pe, cum_yoy)     # 0-25
-        mom = mom_score                                                  # 0-20
-        streak_score = round(streak_score_raw * 20 / 30)                 # 0-20
-        caps = ("25", "25", "20", "20", "10")
-    else:  # 傳產：成長門檻放低、估值改看 PB 與殖利率、產業動能加重
-        rev = score_revenue_traditional(cum_yoy)                         # 0-20
-        val_score, val_desc = score_value_traditional(pb, dy, pe)        # 0-25
+        rev = round(score_from_cum_revenue_growth(cum_yoy) * 20 / 40)  # 0-20
+        val_score, peg, val_desc = score_from_valuation(pe, cum_yoy)    # 0-25
+    else:
+        rev = score_revenue_traditional(cum_yoy)                        # 0-20
+        val_score, val_desc = score_value_traditional(pb, dy, pe)       # 0-25
         peg = (pe / cum_yoy) if (pe and cum_yoy and cum_yoy > 0) else None
-        mom = round(mom_score * 25 / 20)                                 # 0-25
-        streak_score = round(streak_score_raw * 20 / 30)                 # 0-20
-        caps = ("20", "25", "25", "20", "10")
+
+    mom = round(mom_score * 30 / 20)                                    # 0-30
+    streak_score = round(streak_score_raw * 5 / 30)                     # 0-5
+    chip_tech = round((chip_amount + technical_score) * 2)              # 0-20
+    caps = ("20", "25", "30", "5", "20")
 
     return {
         "category": cat,
-        "total": rev + val_score + mom + streak_score + chip_tech,
+        "total": min(100, rev + val_score + mom + streak_score + chip_tech),
         "rev": rev, "val": val_score, "mom": mom,
         "streak_score": streak_score, "chip": chip_tech,
         "chip_amount_score": round(chip_amount, 1),
@@ -42307,9 +42309,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                 if mode == "radar":
                     radar_diagnostics["liquidity_rejected_count"] += 1
                 continue
-            if mode == "radar" and price["pct"] < 1.5:
-                radar_diagnostics["spark_pct_below_threshold_count"] += 1
-                continue
+            # 不再用「當日漲幅至少 1.5%」硬切候選股；由突破、量能、位置與過熱扣分排序。
 
             cum_yoy = revenue.get(code, {}).get("cum_yoy_pct")
             streak = streaks.get(code, 0)
@@ -42330,6 +42330,10 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             mom_score = sc.get("mom", 0); streak_score = sc.get("streak_score", 0)
             chip_tech = sc.get("chip", 0); caps = sc.get("caps", ("", "", "", "", ""))
 
+            radar_score = score_radar_breakout(price) if mode == "radar" else None
+            if radar_score:
+                total = radar_score["total"]
+
             breakout = ""
             if price.get("high_60d") and price["close"] >= price["high_60d"]:
                 breakout = "季線新高"
@@ -42346,6 +42350,10 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                 "category": sc["category"],
                 "cum_lots": info["cum_lots"], "buy_days": info["buy_days"],
                 "breakout": breakout, "vol_ratio": price.get("vol_ratio"),
+                "radar_score_detail": radar_score if mode == "radar" else None,
+                "radar_penalty": radar_score.get("penalty", 0) if mode == "radar" and radar_score else 0,
+                "radar_penalty_reason": radar_score.get("penalty_reason", "") if mode == "radar" and radar_score else "",
+                "breakout_type": radar_score.get("breakout_type", "") if mode == "radar" and radar_score else "",
                 # 20 日／60 日均線交叉。只標示不加分——
                 # 交接文件明訂不可因畫面需求自行改分數或排序，
                 # 所以雷達的篩選與名次完全不受影響，這只是多一個看得到的事實。
@@ -43670,12 +43678,13 @@ def _workbench_screener_rows(mode, snapshot=None):
             "pb": _workbench_number(raw.get("pb")),
             "pos": _workbench_number(raw.get("pos")),
             "ma20": _workbench_number(raw.get("ma20")),
-            "chase_risk": (
-                "⚠️ 乖離偏大・注意追高"
-                if _workbench_number(raw.get("ma20")) not in (None, 0)
-                and _workbench_number(raw.get("close")) is not None
-                and ((_workbench_number(raw.get("close")) - _workbench_number(raw.get("ma20"))) / _workbench_number(raw.get("ma20")) * 100) >= 20
-                else ""
+            "ma60": _workbench_number(raw.get("ma60")),
+            # 顯示最需要注意的均線乖離：月線警戒線 10%，季線警戒線 20%。
+            # 卡片同時寫出實際乖離與警戒門檻，避免只顯示籠統的「最高風險」。
+            "chase_risk": _workbench_chase_warning(
+                _workbench_number(raw.get("close")),
+                _workbench_number(raw.get("ma20")),
+                _workbench_number(raw.get("ma60")),
             ),
             "category": _workbench_text(raw.get("category"), "未分類"),
             "score_policy": ("金融股不評分，僅列事實供判讀"
@@ -47250,16 +47259,14 @@ def web_screener(uid):
                 source_note = (f'資料來源：warmup 完成快照，資料日 '
                                f'{persisted.get("source_date") or "未標日期"}')
             else:
-                inst = fetch_institutional_data()
-                if not inst:
-                    return respond_page("選股台", """
-<div class="empty">目前無法取得三大法人資料。<br>
-可能是非交易時段或資料尚未公布，請稍後再試。</div>""", "screener")
-                ind_map = get_industry_map() or {}
-                rows, skipped_liquidity, momentum = compute_screener_rows(
-                    mode, inst=inst, ind_map=ind_map)
-                source_note = (f'資料來源：本次完整計算，資料日 '
-                               f'{_screener_source_date()}')
+                # 無完整快照時不要讓使用者的頁面請求同步等待全市場抓價。
+                # 仍使用同一套 compute_screener_rows 選股邏輯，只把全量計算移至背景；
+                # 前端沿用既有 pending fragment 自動輪詢，不更動任何版面。
+                _start_screener_background_refresh(mode)
+                return respond_page(
+                    "選股台",
+                    _screener_building_fragment(mode, _screener_source_date()),
+                    "screener")
     # 直接網址、warmup 快照與 fragment 走不同分支；統一從同一份
     # worker cache 回填雷達診斷，避免零結果頁只剩「沒有符合條件」。
     if mode == "radar" and not radar_diagnostics:
