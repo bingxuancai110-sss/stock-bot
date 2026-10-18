@@ -41817,6 +41817,23 @@ def _load_persisted_screener_snapshot(mode):
 
     snapshot_date, computed_at, rows, skipped, momentum, source_meta = row
     try:
+        if isinstance(source_meta, str):
+            try:
+                source_meta = json.loads(source_meta)
+            except Exception:
+                source_meta = {}
+        source_meta = source_meta if isinstance(source_meta, dict) else {}
+        # 新版快照把資料來源日與「保存所需的索引日期」分開。
+        # 來源日未確認時，snapshot_date 只作為 DB 索引，不能冒充行情日期。
+        if source_meta.get("source_date_confirmed") is False:
+            actual_source_date = None
+        else:
+            actual_source_date = source_meta.get("source_data_date") or snapshot_date
+        if isinstance(actual_source_date, str):
+            try:
+                actual_source_date = date.fromisoformat(actual_source_date[:10])
+            except ValueError:
+                actual_source_date = None
         if computed_at:
             computed_at = (computed_at if computed_at.tzinfo
                            else computed_at.replace(tzinfo=timezone.utc))
@@ -41837,9 +41854,9 @@ def _load_persisted_screener_snapshot(mode):
             "rows": rows,
             "skipped": int(skipped or 0),
             "momentum": momentum if isinstance(momentum, dict) else {},
-            "source_date": snapshot_date,
+            "source_date": actual_source_date,
             "computed_at": computed_at,
-            "source_meta": source_meta if isinstance(source_meta, dict) else {},
+            "source_meta": source_meta,
         }
         if not rows and not _screener_empty_result_has_scan_evidence(mode, payload):
             print(f"⚠️ 選股快照 {mode} 是空清單且沒有足夠掃描證據，視為不可用並觸發重建")
@@ -41914,14 +41931,18 @@ def _load_recent_live_radar_snapshot(max_age_seconds=RADAR_LIVE_SNAPSHOT_MAX_AGE
 
 def _save_persisted_screener_snapshot(mode, rows, skipped, momentum,
                                       source_date=None, source_meta=None):
-    """保存 warmup 的完整選股結果；失敗不阻塞既有記憶體快取。"""
+    """保存完整選股結果。來源日不明時仍跨 worker 保存，但絕不將計算日冒充行情日。"""
     mode = str(mode).strip()
     if mode not in ("blackhorse", "radar", "radar_live") or rows is None:
         return False
-    effective_date = source_date or _screener_source_date()
-    if not effective_date:
-        print(f"⚠️ 選股快照 {mode} 缺少可確認的資料日，略過保存")
-        return False
+    confirmed_source_date = source_date or _screener_source_date()
+    computed_at_local = taiwan_now()
+    # snapshot_date 在舊 schema 中是必要索引欄位；若來源日未知，以計算日作 DB 索引，
+    # 並用 source_meta 明確標記「行情來源日期未確認」。讀取端會還原 source_date=None。
+    storage_date = confirmed_source_date or computed_at_local.date()
+    if not confirmed_source_date:
+        print(f"⚠️ 選股快照 {mode} 行情來源日未確認；仍保存計算結果供其他 worker 讀取，UI 必須標示未標日期", flush=True)
+    effective_date = confirmed_source_date or storage_date
     old_rows = []
     conn = get_db_connection()
     try:
@@ -41954,7 +41975,7 @@ def _save_persisted_screener_snapshot(mode, rows, skipped, momentum,
         old_rows = []
     try:
         old_by_code = {str(x.get("code") or ""): x for x in old_rows if isinstance(x, dict)}
-        same_day_previous = bool(old_snapshot_date and effective_date and str(old_snapshot_date) == str(effective_date))
+        same_day_previous = bool(confirmed_source_date and old_snapshot_date and str(old_snapshot_date) == str(confirmed_source_date))
         for new_row in rows if isinstance(rows, list) else []:
             if not same_day_previous:
                 break
@@ -42002,13 +42023,16 @@ def _save_persisted_screener_snapshot(mode, rows, skipped, momentum,
                 momentum_json = EXCLUDED.momentum_json,
                 source_meta = EXCLUDED.source_meta
             """,
-            (mode, effective_date,
+            (mode, storage_date,
              json.dumps(_jsonable(rows), ensure_ascii=False,
                         separators=(",", ":")), int(skipped or 0),
              json.dumps(_jsonable(momentum if isinstance(momentum, dict) else {}),
                         ensure_ascii=False, separators=(",", ":")),
             json.dumps({"source": "warmup_or_screener", "mode": mode,
-                         "row_count": len(rows), **(source_meta or {})},
+                         "row_count": len(rows), **(source_meta or {}),
+                         "source_date_confirmed": bool(confirmed_source_date),
+                         "source_data_date": (str(confirmed_source_date) if confirmed_source_date else None),
+                         "computed_at": computed_at_local.isoformat()},
                        ensure_ascii=False, separators=(",", ":"))),
         )
         conn.commit()
@@ -42061,6 +42085,23 @@ def _screener_snapshot_valid_for_today(snapshot):
     不可用前一交易日快照冒充當日資料。來源日期仍會在 UI 明確顯示。
     """
     source_date = snapshot.get("source_date") if snapshot else None
+    if not isinstance(source_date, (date, datetime, str)) or not source_date:
+        # 來源日期未確認的快照只允許在非盤中作為「來源日未標示」的暫用結果；
+        # 以 computed_at 限制保存時間，不把它當行情日期，也不在盤中遮住即時資料。
+        if _is_taiwan_intraday_window():
+            return False
+        computed_at = snapshot.get("computed_at") if isinstance(snapshot, dict) else None
+        try:
+            if isinstance(computed_at, str):
+                computed_at = datetime.fromisoformat(computed_at.replace("Z", "+00:00"))
+            if not isinstance(computed_at, datetime):
+                return False
+            if computed_at.tzinfo is None:
+                computed_at = computed_at.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - computed_at.astimezone(timezone.utc)).total_seconds()
+            return 0 <= age <= 7 * 86400 and bool(snapshot.get("rows"))
+        except (TypeError, ValueError, OverflowError):
+            return False
     if isinstance(source_date, datetime):
         source_date = source_date.date()
     if isinstance(source_date, str):
@@ -42461,18 +42502,9 @@ def _screener_recent_snapshot(mode):
         return cached, "記憶體快照"
     persisted = _load_persisted_screener_snapshot(mode)
     if persisted and _screener_snapshot_is_recent(persisted, max_days):
+        # 來源日未確認時，保留 None；computed_at 只用來判斷快照保存多久，
+        # 不可把計算日顯示成行情來源日。
         persisted_source_date = persisted.get("source_date")
-        if not persisted_source_date:
-            computed_at = persisted.get("computed_at")
-            try:
-                if isinstance(computed_at, str):
-                    computed_at = datetime.fromisoformat(computed_at.replace("Z", "+00:00"))
-                if isinstance(computed_at, datetime):
-                    if computed_at.tzinfo is None:
-                        computed_at = computed_at.replace(tzinfo=timezone.utc)
-                    persisted_source_date = computed_at.astimezone(TW_TZ).date()
-            except (TypeError, ValueError, OverflowError):
-                persisted_source_date = None
         _screener_cache[mode] = {
             "at": time.time(), "rows": persisted["rows"],
             "skipped": persisted.get("skipped", 0),
