@@ -48396,8 +48396,41 @@ def _line_hidden_combined_portfolio_flex(user_id):
     """單一隱藏指令：上半部顯示持股配置，下半部接續最近交易日操作日報。"""
     holdings_msg = _line_hidden_holdings_flex(user_id)
     report_msg = _line_hidden_operation_report(user_id)
-    holdings_bubble = getattr(holdings_msg, "contents", None) or {}
-    report_bubble = getattr(report_msg, "contents", None) or {}
+    # line-bot-sdk v3 的 FlexSendMessage.contents 通常是 FlexContainer 物件，
+    # 不是 dict。先轉成 JSON dict 再合併；否則 isinstance(dict) 判斷失敗，
+    # 持股與日報內容都會被丟掉，最後只剩「近期操作日報」標題。
+    def _flex_container_to_dict(value):
+        if isinstance(value, dict):
+            return value
+        if value is None:
+            return {}
+        for method_name in ("as_json_dict", "to_dict"):
+            method = getattr(value, method_name, None)
+            if callable(method):
+                try:
+                    converted = method()
+                    if isinstance(converted, dict):
+                        return converted
+                except Exception:
+                    pass
+        try:
+            import json
+            if hasattr(value, "model_dump"):
+                converted = value.model_dump(mode="json", exclude_none=True)
+                if isinstance(converted, dict):
+                    return converted
+            if hasattr(value, "dict"):
+                converted = value.dict(exclude_none=True)
+                if isinstance(converted, dict):
+                    return converted
+            converted = json.loads(json.dumps(value, default=lambda obj: obj.as_json_dict()))
+            return converted if isinstance(converted, dict) else {}
+        except Exception as exc:
+            print(f"⚠️ Flex 合併內容轉換失敗：{type(value).__name__}: {exc}")
+            return {}
+
+    holdings_bubble = _flex_container_to_dict(getattr(holdings_msg, "contents", None))
+    report_bubble = _flex_container_to_dict(getattr(report_msg, "contents", None))
     holdings_body = holdings_bubble.get("body", {}) if isinstance(holdings_bubble, dict) else {}
     report_body = report_bubble.get("body", {}) if isinstance(report_bubble, dict) else {}
     holdings_contents = list(holdings_body.get("contents", []) or [])
@@ -48426,11 +48459,31 @@ def _line_hidden_operation_report(user_id):
     if not logs:
         return FlexSendMessage(alt_text="秉軒操作日報", contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"16px","contents":[{"type":"text","text":"操作日報","size":"xl","weight":"bold","color":"#203449"},{"type":"text","text":"目前沒有操作紀錄。","size":"sm","color":"#667085","margin":"md"}]}})
 
-    dated = [(_position_change_date(x.get("trade_date")), x) for x in logs]
-    valid_dates = [d for d, _ in dated if d is not None]
+    # 日報只取「最近一個確實有有效操作」的日期：若今天沒有任何有效操作，
+    # 自動往前找上一個有操作的交易日，不顯示空白的當日區塊，也不硬顯示今天日期。
+    # 過濾掉日期無效、股數變動為 0、或不是加減碼的殘留日誌後，再挑最新日期。
+    dated = []
+    for item in logs:
+        trade_day = _position_change_date(item.get("trade_date"))
+        action = str(item.get("action") or "").strip()
+        try:
+            delta = int(float(item.get("shares_delta") or 0))
+        except (TypeError, ValueError):
+            delta = 0
+        if trade_day is None or delta == 0 or action not in {"add", "reduce"}:
+            continue
+        dated.append((trade_day, item))
+    valid_dates = [trade_day for trade_day, _ in dated]
     latest_day = max(valid_dates) if valid_dates else None
-    if latest_day is not None:
-        logs = [x for d, x in dated if d == latest_day]
+    logs = [item for trade_day, item in dated if trade_day == latest_day] if latest_day else []
+    if not logs:
+        return FlexSendMessage(
+            alt_text="近期操作日報",
+            contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"16px","contents":[
+                {"type":"text","text":"近期操作日報","size":"xl","weight":"bold","color":"#203449"},
+                {"type":"text","text":"目前沒有有效的持股操作紀錄。","size":"sm","color":"#667085","margin":"md","wrap":True}
+            ]}}
+        )
 
     try:
         positions = merge_positions(get_positions(user_id))
