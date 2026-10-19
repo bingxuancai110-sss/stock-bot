@@ -48538,11 +48538,12 @@ def _line_hidden_operation_report(user_id):
             status, _ = _position_change_journal_status(item)
             delta = item.get("shares_delta")
             try:
-                delta_num = int(delta)
-                delta_text = f"{delta_num:+d}"
+                delta_num = int(float(delta))
             except (TypeError, ValueError):
-                delta_num, delta_text = None, "待確認"
-            # LINE 操作日報依使用者要求不顯示實際股數，也不顯示操作前後股數。
+                delta_num = None
+            # LINE 版隱藏股數變動數字：不顯示 +3、-45 等股數，也不顯示操作前後股數。
+            # 以遮罩符號取代數字，保留欄位位置，避免破壞表格排版。
+            delta_text = "•••"
             share_detail = ""
             ratio = item.get("change_pct")
             try:
