@@ -48393,7 +48393,7 @@ def _line_hidden_holdings_flex(user_id):
 
 
 def _line_hidden_operation_report(user_id):
-    """隱藏指令：以網站操作日報下半部為模板，只顯示最近一個交易日，不顯示金額與說明文字。"""
+    """隱藏指令：以網站操作日報下半部為模板，只顯示最近一個交易日，不顯示金額與說明文字；狀態標籤使用合法 Flex box 容器。"""
     logs = _filter_voided_same_day_logs(get_position_change_logs(user_id, limit=100) or [])
     if not logs:
         return FlexSendMessage(alt_text="秉軒操作日報", contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"16px","contents":[{"type":"text","text":"操作日報","size":"xl","weight":"bold","color":"#203449"},{"type":"text","text":"目前沒有操作紀錄。","size":"sm","color":"#667085","margin":"md"}]}})
@@ -48490,7 +48490,9 @@ def _line_hidden_operation_report(user_id):
                 {"type":"text","text":name,"size":"sm","weight":"bold","color":navy,"wrap":True},
                 {"type":"text","text":code,"size":"xs","color":muted,"margin":"xs"}
             ]
-            status_cell = {"type":"text","text":status,"size":"xs","weight":"bold","color":state_color,"backgroundColor":state_bg,"align":"center","wrap":True,"paddingAll":"4px","cornerRadius":"8px"}
+            # LINE Flex Message 的 text 元件不支援 backgroundColor / paddingAll / cornerRadius。
+            # 將狀態文字包在 box 容器，避免整張 Flex 因不合法屬性被 LINE API 拒絕。
+            status_cell = {"type":"box","layout":"vertical","backgroundColor":state_bg,"cornerRadius":"8px","paddingAll":"4px","contents":[{"type":"text","text":status,"size":"xs","weight":"bold","color":state_color,"align":"center","wrap":True}]}
             delta_contents = [{"type":"text","text":delta_text,"size":"sm","weight":"bold","color":delta_color,"align":"center","wrap":True}]
             if share_detail:
                 delta_contents.append({"type":"text","text":share_detail,"size":"xxs","color":muted,"align":"center","wrap":True,"margin":"xs"})
