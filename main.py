@@ -24943,7 +24943,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     # 路由專用的最後一層樣式放在共用視覺 CSS 之後，避免歷史全站 CSS 把顏色洗淡。
     late_page_css = ""
     if title == "設定":
-        late_page_css += "\n/* Settings header: prevent mobile fragment animation from leaving a ghosted duplicate header. */\n#app-page-content.app-page-enter,.app-header{animation:none!important;transform:none!important;opacity:1!important;}\n"
+        late_page_css += "\n/* Settings page: disable fragment transitions and suppress duplicated adjacent headers on mobile. */\n#app-page-content.app-page-enter,.app-header{animation:none!important;transform:none!important;opacity:1!important;}\n.app-header + .app-header{display:none!important;}\n"
     if title == "登入台股 BOT":
         late_page_css = r'''
 /* v11: 登入入口——紙感、植物線條與編輯式排版；不顯示登入後導覽。 */
@@ -48355,6 +48355,87 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
         return False
 
 
+def _line_hidden_holdings_flex(user_id):
+    """隱藏指令：以 LINE Flex 圖卡呈現持股比例與報酬率，不輸出任何資產金額。"""
+    positions = merge_positions(get_positions(user_id))
+    if not positions:
+        return FlexSendMessage(alt_text="秉軒持股", contents={"type":"bubble","body":{"type":"box","layout":"vertical","contents":[{"type":"text","text":"目前沒有持股資料","weight":"bold","size":"lg"},{"type":"text","text":"請先在網頁持股頁新增持股。","size":"sm","color":"#667085","wrap":True,"margin":"md"}]}})
+    codes = [str(x.get("code") or "").strip() for x in positions if x.get("code")]
+    prices = get_realtime_stocks_bulk(codes, workers=8, rng="1d") or {}
+    rows=[]
+    total_market=0.0
+    staged=[]
+    for pos in positions:
+        code=str(pos.get("code") or "").strip(); shares=float(pos.get("shares") or 0)
+        q=prices.get(code) or {}
+        try: price=float(q.get("close") or q.get("price") or 0)
+        except (TypeError,ValueError): price=0
+        try: cost=float(pos.get("cost") or 0)
+        except (TypeError,ValueError): cost=0
+        market=price*shares if price>0 else 0
+        total_market += market
+        staged.append((pos,price,cost,shares,market,q))
+    colors=["#376A9B","#45A88B","#E9A34A","#8B78C6","#D97777","#5B9BD5"]
+    for i,(pos,price,cost,shares,market,q) in enumerate(staged):
+        code=str(pos.get("code") or "").strip()
+        weight=(market/total_market*100) if total_market>0 else 0
+        ret=((price-cost)/cost*100) if price>0 and cost>0 else None
+        name=short_company_name(stock_display_name(code, None, q.get("name")))
+        bar_color=colors[i%len(colors)]
+        # Flex has no native chart primitive; a proportional bar is robust in LINE and keeps payload light.
+        pct_label=(f"{ret:+.2f}%" if ret is not None else "報酬率暫缺")
+        ret_color=("#D93025" if ret is not None and ret>=0 else "#18845B" if ret is not None else "#667085")
+        rows.append({"type":"box","layout":"vertical","spacing":"xs","margin":"lg","contents":[
+            {"type":"box","layout":"horizontal","alignItems":"center","contents":[
+                {"type":"box","layout":"vertical","flex":1,"contents":[{"type":"text","text":f"{name}（{code}）","weight":"bold","size":"sm","color":"#24364B","wrap":True}]},
+                {"type":"text","text":f"{weight:.1f}%","weight":"bold","size":"md","color":"#24364B","align":"end"}]},
+            {"type":"box","layout":"horizontal","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"4px","contents":[{"type":"box","layout":"vertical","width":f"{max(1,min(100,weight)):.1f}%","height":"7px","backgroundColor":bar_color,"cornerRadius":"4px","contents":[]} ]},
+            {"type":"text","text":pct_label,"size":"sm","weight":"bold","color":ret_color,"align":"end"}
+        ]})
+    contents=[{"type":"text","text":"秉軒的投資組合","size":"xl","weight":"bold","color":"#203449"},
+              {"type":"text","text":"持股配置與個股報酬率","size":"xs","color":"#667085","margin":"sm"},
+              {"type":"separator","margin":"lg"}]
+    contents.extend(rows)
+    contents.append({"type":"text","text":"僅顯示百分比；不包含總市值、總成本或總損益金額。","size":"xxs","color":"#667085","wrap":True,"margin":"xl"})
+    # Flex limits: a bubble can carry at most 50 component nodes; cap very large portfolios.
+    contents=contents[:47]
+    return FlexSendMessage(alt_text="秉軒持股配置與報酬率",contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"18px","contents":contents}})
+
+
+def _line_hidden_operation_report(user_id):
+    """隱藏指令：回傳近期操作日報文字版，嚴格隱藏金額欄位，只保留百分比與股數。"""
+    logs=_filter_voided_same_day_logs(get_position_change_logs(user_id, limit=100) or [])
+    if not logs:
+        return TextSendMessage(text="📋 秉軒操作日報\n\n目前沒有操作紀錄。")
+    try:
+        positions=merge_positions(get_positions(user_id))
+        codes=sorted({str(x.get("code") or "").strip() for x in positions+logs if x.get("code")})
+        price_map=get_realtime_stocks_bulk(codes,workers=8,rng="1d") or {}
+        total_value=sum(float((price_map.get(x.get("code")) or {}).get("close") or 0)*float(x.get("shares") or 0) for x in positions)
+        enriched=enrich_position_change_logs(logs,positions,price_map,total_value)
+    except Exception as exc:
+        print(f"⚠️ 隱藏操作日報整理失敗：{exc}"); enriched=logs
+    lines=["📋 秉軒操作日報","近期操作（不顯示金額）","────────────"]
+    for item in enriched[:25]:
+        code=str(item.get("code") or "").strip()
+        label,_=_position_change_journal_status(item)
+        day=_position_change_date(item.get("trade_date"))
+        day_text=day.strftime("%m/%d") if day else "日期未提供"
+        delta=item.get("shares_delta")
+        try: delta_text=f"{int(delta):+d} 股" if delta is not None else "股數未提供"
+        except (TypeError,ValueError): delta_text="股數未提供"
+        ratio=None
+        for key in ("ratio_pct","change_pct","weight_pct","ratio"):
+            try:
+                if item.get(key) is not None:
+                    ratio=float(item.get(key)); break
+            except (TypeError,ValueError): pass
+        ratio_text=f"｜{ratio:+.2f}%" if ratio is not None and abs(ratio)<10000 else ""
+        lines.append(f"{day_text}｜{label}｜{code}｜{delta_text}{ratio_text}")
+    lines.append("\n※ 已隱藏金額欄位；持股資料與原始操作紀錄不會被修改。")
+    return TextSendMessage(text="\n".join(lines))
+
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
@@ -48414,6 +48495,24 @@ def handle_message(event):
                   f"每個指令都要即時抓取行情與財務資料，"
                   f"短時間內重複查詢會影響其他使用者。"),
             quick_reply=build_quick_reply()))
+        return
+
+    # 隱藏指令：不加入主選單或 quick reply，只有手動輸入完整指令才會觸發。
+    if text == "秉軒持股":
+        try:
+            line_bot_api.reply_message(event.reply_token, _line_hidden_holdings_flex(user_id))
+        except Exception as exc:
+            print(f"❌ 秉軒持股圖卡失敗 {user_id}: {type(exc).__name__}: {exc}")
+            try: line_bot_api.reply_message(event.reply_token, TextSendMessage(text="秉軒持股暫時無法載入，請稍後再試。"))
+            except Exception: pass
+        return
+    if text == "秉軒操作日報":
+        try:
+            line_bot_api.reply_message(event.reply_token, _line_hidden_operation_report(user_id))
+        except Exception as exc:
+            print(f"❌ 秉軒操作日報失敗 {user_id}: {type(exc).__name__}: {exc}")
+            try: line_bot_api.reply_message(event.reply_token, TextSendMessage(text="秉軒操作日報暫時無法載入，請稍後再試。"))
+            except Exception: pass
         return
 
     feature = infer_line_feature(text)
