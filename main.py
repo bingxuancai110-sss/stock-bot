@@ -1718,7 +1718,7 @@ ETF_PRODUCT_METADATA = {
 # --- 首頁與健康檢查 ---
 @app.route("/", methods=["GET"])
 def home():
-    # 首頁仍保留既有登入者導向；分享／QR Code 應使用 /auth/choose?fresh=1，避免首頁自動沿用已登入帳號。
+    # 已登入者直接回到個人首頁；未登入者才進入 Google 註冊／登入入口。
     # t 參數需保留給無法穩定使用 Cookie 的 LINE WebView。
     uid = current_web_user()
     if uid:
@@ -1733,6 +1733,16 @@ def home():
     response.headers["Pragma"] = "no-cache"
     response.headers["X-StockBot-UI-Version"] = UI_BUILD
     return response
+
+@app.route("/auth/logout", methods=["GET", "POST"])
+def auth_logout():
+    """只清除目前瀏覽器的登入憑證，不刪除 BOT 帳號或任何投資資料。"""
+    response = redirect("/auth/choose?logged_out=1", code=303 if request.method == "POST" else 302)
+    response.delete_cookie("stockbot_token", path="/")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -24932,6 +24942,8 @@ def render_page(title, body, nav_active=None, user_name=None):
 
     # 路由專用的最後一層樣式放在共用視覺 CSS 之後，避免歷史全站 CSS 把顏色洗淡。
     late_page_css = ""
+    if title == "設定":
+        late_page_css += "\n/* Settings header: prevent mobile fragment animation from leaving a ghosted duplicate header. */\n#app-page-content.app-page-enter,.app-header{animation:none!important;transform:none!important;opacity:1!important;}\n"
     if title == "登入台股 BOT":
         late_page_css = r'''
 /* v11: 登入入口——紙感、植物線條與編輯式排版；不顯示登入後導覽。 */
@@ -28052,23 +28064,6 @@ def _bind_google_identity(user_id, identity):
         release_db_connection(conn)
 
 
-@app.route("/auth/logout", methods=["GET", "POST"])
-def auth_logout():
-    """只登出目前瀏覽器：清除 BOT Cookie，並移除網址中的舊 t 權杖。
-
-    不刪除帳號、持股、自選股或交易紀錄；也不撤銷其他裝置的登入工作階段。
-    """
-    response = make_response(redirect("/auth/choose?fresh=1"))
-    response.delete_cookie("stockbot_token", path="/", secure=True,
-                           httponly=True, samesite="Lax")
-    # 舊版部署若曾使用不同 Cookie 屬性，也嘗試清除同名 Cookie。
-    response.delete_cookie("stockbot_token", path="/")
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["X-StockBot-UI-Version"] = UI_BUILD
-    return response
-
-
 @app.route("/auth/choose")
 def auth_google_choose():
     '''未登入入口：提供清楚的 Google 註冊與登入，成功後再進入新手教學。'''
@@ -28124,7 +28119,7 @@ def auth_google_choose():
 @media(max-width:360px){.auth-masthead-note{display:none}.auth-feature-grid{gap:7px}.auth-feature{padding:10px}.auth-feature span{font-size:10.5px}}
 </style>
 <main class="auth-landing" aria-label="台股 BOT 登入與註冊">
-  <div class="auth-masthead"><span class="auth-masthead-brand"><i class="auth-masthead-dot"></i> TAIWAN STOCK BOT</span><span class="auth-masthead-note">持股紀錄・市場研究</span><a href="/auth/logout" style="color:#405D49;text-decoration:none;font-weight:800;border:1px solid #9EAF99;border-radius:999px;padding:7px 11px">登出／切換帳號</a></div>
+  <div class="auth-masthead"><span class="auth-masthead-brand"><i class="auth-masthead-dot"></i> TAIWAN STOCK BOT</span><span class="auth-masthead-note">持股紀錄・市場研究</span></div>
   <section class="auth-hero">
     <div class="auth-brand">持股管理 · 選股工具 · 績效紀錄</div>
     <h1>整理持股與市場線索，<br><em>慢慢建立自己的投資方法。</em></h1>
@@ -30980,37 +30975,12 @@ def web_positions(uid):
   // 原本狀態列只在「渲染那一刻是盤中」才輸出，元素不存在就整段不啟動；
   // 於是開盤前開的頁面、或從別頁切換過來的，之後即使進入盤中也永遠不會跳，
   // 只能手動刷新。改成一律啟動，由這裡決定要不要真的去抓。
-  function twNow(){
-    // 用 UTC 加固定時差算台北時間，不要用 toLocaleString 再 new Date()。
-    //
-    // 那種寫法產生的字串（例如 "9/9/2026, 10:30:45 AM"）在 iOS Safari
-    // 解析不了，會得到 Invalid Date，getDay() 變成 NaN，
-    // 所有比較都成立為 false —— inMarket() 於是永遠回傳 false，
-    // 輪詢從不發送請求，而且是靜默失敗，畫面上看不出任何異常。
-    // 盤中價格一直停在昨收就是這個原因。
-    var d=new Date();
-    return new Date(d.getTime()+(8*60+d.getTimezoneOffset())*60000);
-  }
-  function inMarket(){
-    var tw=twNow();
-    var day=tw.getDay();
-    if(day===0||day===6)return false;
-    var mins=tw.getHours()*60+tw.getMinutes();
-    return mins>=(9*60-5) && mins<=(13*60+35);   // 08:55–13:35，涵蓋開盤前後
-  }
   function schedule(){if(timer)clearTimeout(timer);timer=setTimeout(refresh,5000);}
   function refresh(){
     if(document.hidden||busy){schedule();return;}
-    if(!inMarket()){
-      // 把判斷結果寫出來。先前這裡是靜默 return，
-      // 判斷錯了也看不出來——這正是上一個 bug 拖那麼久的原因。
-      var t=twNow();
-      root.textContent='目前非交易時段（台北 '
-        +('0'+t.getHours()).slice(-2)+':'+('0'+t.getMinutes()).slice(-2)
-        +'），顯示最近一次收盤價；09:00–13:30 會自動更新。';
-      root.style.display='';
-      schedule();return;
-    }
+    // 不在前端自行判斷交易時段：iOS Safari／時區或頁面片段導覽可能令
+    // inMarket() 靜默判錯，整個持股頁就完全不發請求。改由伺服器 API
+    // 依台灣交易時段決定是否回傳行情；非交易時段 API 只回狀態、不抓行情。
     if(root.style.display==='none')root.style.display='';
     busy=true;
     // token 也要看 localStorage：片段導覽會用 replaceState 改寫網址，
@@ -37566,6 +37536,12 @@ def web_settings(uid):
     <p>登入是進入已存在的台股 BOT 帳號；綁定則是把 Google 登入方式連到目前帳號。兩者不同，請依需求選擇，系統不會自動合併帳號。</p>
     <a href="/auth/google?mode=login" style="display:block;text-align:center;text-decoration:none;padding:12px 14px;border-radius:8px;background:#245779;color:#fff;font-weight:800;margin-top:12px">使用 Google 登入既有帳號</a>
     <a href="{html.escape(google_bind_href, quote=True)}" style="display:block;text-align:center;text-decoration:none;padding:12px 14px;border-radius:8px;background:#eef5fa;border:1px solid #c9dceb;color:#245779;font-weight:800;margin-top:10px">綁定 Google 到目前帳號</a>
+  </section>
+  <section class="settings-panel settings-logout-panel">
+    <div class="settings-panel-kicker">帳號安全</div>
+    <h2>登出／切換帳號</h2>
+    <p>只會登出這個瀏覽器，不會刪除台股 BOT 帳號、持股、交易紀錄、自選股或設定。要回到原帳號時，請使用原本綁定的 Google 帳號登入。</p>
+    <a href="/auth/logout" style="display:block;text-align:center;text-decoration:none;padding:12px 14px;border-radius:8px;background:#fff5f4;border:1px solid #e7c4c0;color:#a33b32;font-weight:800;margin-top:12px">登出目前帳號</a>
   </section>
   <section class="settings-panel">
     <div class="settings-panel-kicker">LINE 通知</div>
