@@ -48392,6 +48392,34 @@ def _line_hidden_holdings_flex(user_id):
     return FlexSendMessage(alt_text="秉軒持股配置比例",contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"18px","contents":contents[:48]}})
 
 
+def _line_hidden_combined_portfolio_flex(user_id):
+    """單一隱藏指令：上半部顯示持股配置，下半部接續最近交易日操作日報。"""
+    holdings_msg = _line_hidden_holdings_flex(user_id)
+    report_msg = _line_hidden_operation_report(user_id)
+    holdings_bubble = getattr(holdings_msg, "contents", None) or {}
+    report_bubble = getattr(report_msg, "contents", None) or {}
+    holdings_body = holdings_bubble.get("body", {}) if isinstance(holdings_bubble, dict) else {}
+    report_body = report_bubble.get("body", {}) if isinstance(report_bubble, dict) else {}
+    holdings_contents = list(holdings_body.get("contents", []) or [])
+    report_contents = list(report_body.get("contents", []) or [])
+
+    # 組成一張長圖卡：先持股、再操作日報，不再分兩次輸入指令。
+    # Flex body 的 contents 有數量限制，因此優先保留持股摘要與日報標題/欄位，
+    # 若內容過長則截斷日報最末端，不影響前面的持股配置。
+    contents = holdings_contents + [
+        {"type": "separator", "margin": "xl", "color": "#DDE5ED"},
+        {"type": "text", "text": "近期操作日報", "size": "xl", "weight": "bold", "color": "#203449", "margin": "xl"},
+    ]
+    # 日報本身已包含標題與日期；避免重複標題，只保留日期及下方表格內容。
+    report_contents = [x for x in report_contents if not (x.get("type") == "text" and x.get("text") == "操作日報")]
+    contents.extend(report_contents)
+    contents = contents[:48]
+    return FlexSendMessage(
+        alt_text="高雄許光漢持股與操作日報",
+        contents={"type": "bubble", "size": "giga", "body": {"type": "box", "layout": "vertical", "paddingAll": "14px", "spacing": "none", "contents": contents}},
+    )
+
+
 def _line_hidden_operation_report(user_id):
     """隱藏指令：以網站操作日報下半部為模板，只顯示最近一個交易日，不顯示金額與說明文字；狀態標籤使用合法 Flex box 容器。"""
     logs = _filter_voided_same_day_logs(get_position_change_logs(user_id, limit=100) or [])
@@ -48444,7 +48472,10 @@ def _line_hidden_operation_report(user_id):
 
     for label, group_items in grouped:
         state_color, state_bg = palette.get(label, ("#376A9B", "#EAF2F8"))
-        body.append({"type":"box","layout":"horizontal","paddingAll":"10px","backgroundColor":pale,"margin":"none","contents":[
+        # 四種操作分類都使用各自狀態色的淡底：加碼淡紅、減碼淡綠、刪除淡灰、新增淡藍。
+        # 與下方狀態標籤共用同一組 palette，避免只有加碼有底色。
+        group_bg = state_bg
+        body.append({"type":"box","layout":"horizontal","paddingAll":"10px","backgroundColor":group_bg,"margin":"none","contents":[
             {"type":"text","text":label,"size":"md","weight":"bold","color":state_color,"flex":0},
             {"type":"text","text":f"{len(group_items)} 檔","size":"sm","weight":"bold","color":muted,"margin":"md","flex":1}
         ]})
@@ -48455,18 +48486,11 @@ def _line_hidden_operation_report(user_id):
             delta = item.get("shares_delta")
             try:
                 delta_num = int(delta)
-                delta_text = f"{delta_num:+d} 股"
+                delta_text = f"{delta_num:+d}"
             except (TypeError, ValueError):
                 delta_num, delta_text = None, "待確認"
-            # 若紀錄有操作前後股數，沿用網站格式顯示「前 → 後 股」。
-            before = item.get("shares_before", item.get("before_shares"))
-            after = item.get("shares_after", item.get("after_shares"))
+            # LINE 操作日報依使用者要求不顯示實際股數，也不顯示操作前後股數。
             share_detail = ""
-            try:
-                if before is not None and after is not None:
-                    share_detail = f"{int(before):,} → {int(after):,} 股"
-            except (TypeError, ValueError):
-                share_detail = ""
             ratio = item.get("change_pct")
             try:
                 ratio_text = ("100.00%" if status == "新增" else f"{float(ratio):+.2f}%") if ratio is not None or status == "新增" else "—"
@@ -48485,7 +48509,7 @@ def _line_hidden_operation_report(user_id):
                 event_weight_num, event_weight_text = None, "待確認"
             name = short_company_name(stock_display_name(code, None, (price_map.get(code) or {}).get("name")))
             delta_color = "#D93025" if delta_num is not None and delta_num > 0 else "#18845B" if delta_num is not None and delta_num < 0 else navy
-            event_color = "#18845B" if event_weight_num is not None and event_weight_num >= 0 else "#D93025" if event_weight_num is not None else muted
+            event_color = "#D93025" if event_weight_num is not None and event_weight_num > 0 else "#18845B" if event_weight_num is not None and event_weight_num < 0 else muted
             left_contents = [
                 {"type":"text","text":name,"size":"sm","weight":"bold","color":navy,"wrap":True},
                 {"type":"text","text":code,"size":"xs","color":muted,"margin":"xs"}
@@ -48521,10 +48545,14 @@ def handle_message(event):
     # 隱藏指令別名：秉軒與「高雄許光漢」都是同一位使用者，
     # 只把不同說法統一成既有指令，不建立第二份資料或改變資料歸屬。
     hidden_command_text = "".join(text.split())
-    if hidden_command_text in {"高雄許光漢持股", "高雄許光漢的持股"}:
+    if hidden_command_text in {"高雄許光漢持股", "高雄許光漢的持股", "秉軒的持股"}:
         text = "秉軒持股"
-    elif hidden_command_text in {"高雄許光漢操作日報", "高雄許光漢的操作日報"}:
-        text = "秉軒操作日報"
+    elif hidden_command_text in {
+        "秉軒的操作日報", "秉軒操作日報",
+        "高雄許光漢操作日報", "高雄許光漢的操作日報",
+    }:
+        # 舊操作日報指令也統一導向合併圖卡，避免使用者要分開查詢。
+        text = "秉軒持股"
     text_upper = text.upper()
     pure_code = normalize_code(text)  # 保留主動式ETF的英文尾碼，如 00981A
 
@@ -48569,7 +48597,7 @@ def handle_message(event):
     # 使用者只看到自己送出的訊息、機器人卻完全沒有回覆。
     if text == "秉軒持股":
         try:
-            line_bot_api.reply_message(event.reply_token, _line_hidden_holdings_flex(user_id))
+            line_bot_api.reply_message(event.reply_token, _line_hidden_combined_portfolio_flex(user_id))
         except Exception as exc:
             print(f"❌ 秉軒持股圖卡失敗 {user_id}: {type(exc).__name__}: {exc}")
             try:
@@ -48578,17 +48606,6 @@ def handle_message(event):
                 print(f"❌ 秉軒持股錯誤回覆失敗 {user_id}: {fallback_exc}")
         return
 
-    if text == "秉軒操作日報":
-        try:
-            report = _line_hidden_operation_report(user_id)
-            line_bot_api.reply_message(event.reply_token, report)
-        except Exception as exc:
-            print(f"❌ 秉軒操作日報失敗 {user_id}: {type(exc).__name__}: {exc}")
-            try:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="操作日報暫時無法載入，請稍後再試。"))
-            except Exception as fallback_exc:
-                print(f"❌ 操作日報錯誤回覆失敗 {user_id}: {fallback_exc}")
-        return
 
     add_user_to_db(user_id)
 
