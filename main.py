@@ -48356,84 +48356,78 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
 
 
 def _line_hidden_holdings_flex(user_id):
-    """隱藏指令：以 LINE Flex 圖卡呈現持股比例與報酬率，不輸出任何資產金額。"""
+    """隱藏指令：持股配置圓餅圖、配置比例長條與個股報酬率；不顯示金額。"""
+    import json
+    from urllib.parse import quote
     positions = merge_positions(get_positions(user_id))
     if not positions:
         return FlexSendMessage(alt_text="秉軒持股", contents={"type":"bubble","body":{"type":"box","layout":"vertical","contents":[{"type":"text","text":"目前沒有持股資料","weight":"bold","size":"lg"},{"type":"text","text":"請先在網頁持股頁新增持股。","size":"sm","color":"#667085","wrap":True,"margin":"md"}]}})
-    codes = [str(x.get("code") or "").strip() for x in positions if x.get("code")]
-    prices = get_realtime_stocks_bulk(codes, workers=8, rng="1d") or {}
-    rows=[]
-    total_market=0.0
-    staged=[]
+    codes=[str(x.get("code") or "").strip() for x in positions if x.get("code")]
+    prices=get_realtime_stocks_bulk(codes,workers=8,rng="1d") or {}
+    colors=["#376A9B","#45A88B","#E9A34A","#8B78C6","#D97777","#5B9BD5","#D4A72C","#2C8C99","#B56B9A","#75808D"]
+    staged=[]; total_market=0.0
     for pos in positions:
-        code=str(pos.get("code") or "").strip(); shares=float(pos.get("shares") or 0)
-        q=prices.get(code) or {}
+        code=str(pos.get("code") or "").strip(); shares=float(pos.get("shares") or 0); q=prices.get(code) or {}
         try: price=float(q.get("close") or q.get("price") or 0)
         except (TypeError,ValueError): price=0
         try: cost=float(pos.get("cost") or 0)
         except (TypeError,ValueError): cost=0
-        market=price*shares if price>0 else 0
-        total_market += market
-        staged.append((pos,price,cost,shares,market,q))
-    colors=["#376A9B","#45A88B","#E9A34A","#8B78C6","#D97777","#5B9BD5"]
-    for i,(pos,price,cost,shares,market,q) in enumerate(staged):
-        code=str(pos.get("code") or "").strip()
-        weight=(market/total_market*100) if total_market>0 else 0
-        ret=((price-cost)/cost*100) if price>0 and cost>0 else None
-        name=short_company_name(stock_display_name(code, None, q.get("name")))
-        bar_color=colors[i%len(colors)]
-        # Flex has no native chart primitive; a proportional bar is robust in LINE and keeps payload light.
-        pct_label=(f"{ret:+.2f}%" if ret is not None else "報酬率暫缺")
-        ret_color=("#D93025" if ret is not None and ret>=0 else "#18845B" if ret is not None else "#667085")
-        rows.append({"type":"box","layout":"vertical","spacing":"xs","margin":"lg","contents":[
-            {"type":"box","layout":"horizontal","alignItems":"center","contents":[
-                {"type":"box","layout":"vertical","flex":1,"contents":[{"type":"text","text":f"{name}（{code}）","weight":"bold","size":"sm","color":"#24364B","wrap":True}]},
-                {"type":"text","text":f"{weight:.1f}%","weight":"bold","size":"md","color":"#24364B","align":"end"}]},
-            {"type":"box","layout":"horizontal","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"4px","contents":[{"type":"box","layout":"vertical","width":f"{max(1,min(100,weight)):.1f}%","height":"7px","backgroundColor":bar_color,"cornerRadius":"4px","contents":[]} ]},
-            {"type":"text","text":pct_label,"size":"sm","weight":"bold","color":ret_color,"align":"end"}
-        ]})
-    contents=[{"type":"text","text":"秉軒的投資組合","size":"xl","weight":"bold","color":"#203449"},
-              {"type":"text","text":"持股配置與個股報酬率","size":"xs","color":"#667085","margin":"sm"},
-              {"type":"separator","margin":"lg"}]
-    contents.extend(rows)
-    contents.append({"type":"text","text":"僅顯示百分比；不包含總市值、總成本或總損益金額。","size":"xxs","color":"#667085","wrap":True,"margin":"xl"})
-    # Flex limits: a bubble can carry at most 50 component nodes; cap very large portfolios.
-    contents=contents[:47]
-    return FlexSendMessage(alt_text="秉軒持股配置與報酬率",contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"18px","contents":contents}})
+        market=price*shares if price>0 else 0; total_market+=market
+        staged.append((pos,price,cost,market,q))
+    rows=[]
+    for i,(pos,price,cost,market,q) in enumerate(staged):
+        code=str(pos.get("code") or "").strip(); weight=market/total_market*100 if total_market>0 else 0
+        ret=(price-cost)/cost*100 if price>0 and cost>0 else None
+        name=short_company_name(stock_display_name(code,None,q.get("name")))
+        rows.append((name,code,weight,ret,colors[i%len(colors)]))
+    # 真正的圓餅圖由 QuickChart 圖片端點產生；只傳股票名稱、代號與比例，不傳金額或股數。
+    valid=[r for r in rows if r[2]>0]
+    config={"type":"doughnut","data":{"labels":[f"{r[0]} ({r[1]})" for r in valid],"datasets":[{"data":[round(r[2],2) for r in valid],"backgroundColor":[r[4] for r in valid],"borderColor":"#FFFFFF","borderWidth":2}]},"options":{"cutout":"58%","plugins":{"legend":{"position":"bottom","labels":{"boxWidth":10,"font":{"size":11}}}}}}
+    chart_url="https://quickchart.io/chart?width=640&height=420&backgroundColor=white&format=png&version=4&c="+quote(json.dumps(config,separators=(",",":"),ensure_ascii=False),safe="")
+    contents=[{"type":"text","text":"秉軒的投資組合","size":"xl","weight":"bold","color":"#203449"},{"type":"text","text":"持股配置比例","size":"sm","color":"#667085","margin":"sm"},{"type":"image","url":chart_url,"size":"full","aspectRatio":"5:4","aspectMode":"fit","margin":"md"},{"type":"separator","margin":"md"}]
+    for name,code,weight,ret,color in rows:
+        ret_text=f"{ret:+.2f}%" if ret is not None else "報酬率暫缺"
+        ret_color="#D93025" if ret is not None and ret>=0 else "#18845B" if ret is not None else "#667085"
+        contents.append({"type":"box","layout":"vertical","spacing":"xs","margin":"lg","contents":[{"type":"box","layout":"horizontal","alignItems":"center","contents":[{"type":"text","text":f"{name}（{code}）","weight":"bold","size":"sm","color":"#24364B","wrap":True,"flex":1},{"type":"text","text":f"{weight:.1f}%","weight":"bold","size":"md","color":"#24364B","align":"end","flex":0}]},{"type":"box","layout":"horizontal","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"4px","contents":[{"type":"box","layout":"vertical","width":f"{max(1,min(100,weight)):.1f}%","height":"7px","backgroundColor":color,"cornerRadius":"4px","contents":[]}]},{"type":"text","text":ret_text,"size":"sm","weight":"bold","color":ret_color,"align":"end"}]})
+    contents.append({"type":"text","text":"僅顯示持股比例與個股報酬率；不包含總市值、總成本或總損益金額。","size":"xxs","color":"#667085","wrap":True,"margin":"xl"})
+    contents=contents[:48]
+    return FlexSendMessage(alt_text="秉軒持股配置比例",contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"18px","contents":contents}})
 
 
 def _line_hidden_operation_report(user_id):
-    """隱藏指令：回傳近期操作日報文字版，嚴格隱藏金額欄位，只保留百分比與股數。"""
-    logs=_filter_voided_same_day_logs(get_position_change_logs(user_id, limit=100) or [])
+    """隱藏指令：用清楚的卡片式操作日報呈現股數與百分比，隱藏金額。"""
+    logs=_filter_voided_same_day_logs(get_position_change_logs(user_id,limit=100) or [])
     if not logs:
-        return TextSendMessage(text="📋 秉軒操作日報\n\n目前沒有操作紀錄。")
+        return FlexSendMessage(alt_text="秉軒操作日報",contents={"type":"bubble","body":{"type":"box","layout":"vertical","contents":[{"type":"text","text":"操作日報","size":"lg","weight":"bold","color":"#203449"},{"type":"text","text":"目前沒有操作紀錄。","size":"sm","color":"#667085","margin":"md"}]}})
     try:
-        positions=merge_positions(get_positions(user_id))
-        codes=sorted({str(x.get("code") or "").strip() for x in positions+logs if x.get("code")})
+        positions=merge_positions(get_positions(user_id)); codes=sorted({str(x.get("code") or "").strip() for x in positions+logs if x.get("code")})
         price_map=get_realtime_stocks_bulk(codes,workers=8,rng="1d") or {}
         total_value=sum(float((price_map.get(x.get("code")) or {}).get("close") or 0)*float(x.get("shares") or 0) for x in positions)
         enriched=enrich_position_change_logs(logs,positions,price_map,total_value)
     except Exception as exc:
-        print(f"⚠️ 隱藏操作日報整理失敗：{exc}"); enriched=logs
-    lines=["📋 秉軒操作日報","近期操作（不顯示金額）","────────────"]
-    for item in enriched[:25]:
-        code=str(item.get("code") or "").strip()
-        label,_=_position_change_journal_status(item)
-        day=_position_change_date(item.get("trade_date"))
-        day_text=day.strftime("%m/%d") if day else "日期未提供"
+        print(f"⚠️ 隱藏操作日報整理失敗：{exc}"); enriched=logs; price_map={}
+    palette={"加碼":("#D93025","#FDECEA"),"減碼":("#18845B","#E7F5EE"),"刪除":("#667085","#EEF1F5"),"新增":("#376A9B","#EAF2F8")}
+    body=[{"type":"text","text":"操作日報","size":"xl","weight":"bold","color":"#203449"},{"type":"text","text":"近期操作｜隱藏金額","size":"xs","color":"#667085","margin":"sm"},{"type":"separator","margin":"md"}]
+    current_day=None
+    for item in enriched[:18]:
+        code=str(item.get("code") or "").strip(); label,_=_position_change_journal_status(item); day=_position_change_date(item.get("trade_date")); day_text=day.strftime("%Y/%m/%d") if day else "日期未提供"
+        if day_text!=current_day:
+            current_day=day_text; body.append({"type":"box","layout":"vertical","backgroundColor":"#EAF2F8","paddingAll":"9px","margin":"md","contents":[{"type":"text","text":day_text,"weight":"bold","size":"sm","color":"#276A9B"}]})
         delta=item.get("shares_delta")
         try: delta_text=f"{int(delta):+d} 股" if delta is not None else "股數未提供"
         except (TypeError,ValueError): delta_text="股數未提供"
         ratio=None
         for key in ("ratio_pct","change_pct","weight_pct","ratio"):
             try:
-                if item.get(key) is not None:
-                    ratio=float(item.get(key)); break
+                if item.get(key) is not None: ratio=float(item.get(key)); break
             except (TypeError,ValueError): pass
-        ratio_text=f"｜{ratio:+.2f}%" if ratio is not None and abs(ratio)<10000 else ""
-        lines.append(f"{day_text}｜{label}｜{code}｜{delta_text}{ratio_text}")
-    lines.append("\n※ 已隱藏金額欄位；持股資料與原始操作紀錄不會被修改。")
-    return TextSendMessage(text="\n".join(lines))
+        ratio_text=f"{ratio:+.2f}%" if ratio is not None and abs(ratio)<10000 else "—"
+        state_color,state_bg=palette.get(label,("#376A9B","#EAF2F8")); name=short_company_name(stock_display_name(code,None,(price_map.get(code) or {}).get("name")))
+        delta_color="#D93025" if delta is not None and float(delta)>0 else "#18845B" if delta is not None and float(delta)<0 else "#24364B"
+        body.append({"type":"box","layout":"vertical","paddingAll":"10px","spacing":"sm","backgroundColor":"#FFFFFF","borderColor":"#E3EAF0","borderWidth":"1px","cornerRadius":"10px","margin":"sm","contents":[{"type":"box","layout":"horizontal","alignItems":"center","contents":[{"type":"text","text":name,"weight":"bold","size":"md","color":"#24364B","flex":1,"wrap":True},{"type":"text","text":label,"weight":"bold","size":"xs","color":state_color,"backgroundColor":state_bg,"paddingAll":"6px","cornerRadius":"10px","flex":0}]},{"type":"text","text":code,"size":"xs","color":"#667085"},{"type":"box","layout":"horizontal","spacing":"sm","contents":[{"type":"box","layout":"vertical","flex":1,"contents":[{"type":"text","text":"持股變動","size":"xxs","color":"#667085"},{"type":"text","text":delta_text,"size":"sm","weight":"bold","color":delta_color}]},{"type":"box","layout":"vertical","flex":1,"contents":[{"type":"text","text":"變動幅度","size":"xxs","color":"#667085"},{"type":"text","text":ratio_text,"size":"sm","weight":"bold","color":"#24364B"}]}]}]})
+    body.append({"type":"text","text":"僅顯示操作類型、股數與百分比；金額欄位已隱藏。","size":"xxs","color":"#667085","wrap":True,"margin":"lg"})
+    body=body[:48]
+    return FlexSendMessage(alt_text="秉軒操作日報",contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"14px","contents":body}})
 
 
 @handler.add(MessageEvent, message=TextMessage)
