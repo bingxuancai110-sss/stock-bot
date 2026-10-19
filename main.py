@@ -48501,7 +48501,7 @@ def _line_hidden_operation_report(user_id):
                 {"type":"box","layout":"vertical","flex":1,"alignItems":"center","contents":[status_cell]},
                 {"type":"box","layout":"vertical","flex":2,"alignItems":"center","contents":delta_contents},
                 {"type":"box","layout":"vertical","flex":2,"alignItems":"center","contents":[{"type":"text","text":ratio_text,"size":"sm","weight":"bold","color":navy,"align":"center","wrap":True}]},
-                {"type":"box","layout":"vertical","flex":2,"alignItems":"end","contents":[
+                {"type":"box","layout":"vertical","flex":2,"alignItems":"flex-end","contents":[
                     {"type":"text","text":weight_text,"size":"sm","weight":"bold","color":navy,"align":"end","wrap":True},
                     {"type":"text","text":event_weight_text,"size":"xs","weight":"bold","color":event_color,"align":"end","wrap":True,"margin":"xs"}
                 ]}
@@ -48517,6 +48517,14 @@ def handle_message(event):
     flex_reply = None  # 若為 Flex 訊息（彩色選單），改用這個回覆
     admin_quick_reply = None
     text = event.message.text.strip()
+    text_upper = text.upper()
+    # 隱藏指令別名：秉軒與「高雄許光漢」都是同一位使用者，
+    # 只把不同說法統一成既有指令，不建立第二份資料或改變資料歸屬。
+    hidden_command_text = "".join(text.split())
+    if hidden_command_text in {"高雄許光漢持股", "高雄許光漢的持股"}:
+        text = "秉軒持股"
+    elif hidden_command_text in {"高雄許光漢操作日報", "高雄許光漢的操作日報"}:
+        text = "秉軒操作日報"
     text_upper = text.upper()
     pure_code = normalize_code(text)  # 保留主動式ETF的英文尾碼，如 00981A
 
