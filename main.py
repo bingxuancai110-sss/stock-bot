@@ -8047,7 +8047,6 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
     export_url = "/web/position-journal.csv" + ("?" + "&".join(export_params) if export_params else "")
     return f'''<section class="position-journal">
   <div class="position-journal-head"><div class="position-journal-title-actions"><h2>操作日報</h2><a class="position-journal-export" href="{html.escape(export_url, quote=True)}">匯出 CSV</a></div><small>{displayed_stock_count} 檔標的・{len(enriched)} 筆原始操作<br>{html.escape(filter_text)}</small></div>
-  <div class="position-journal-note">同日同檔操作合併顯示；<b>點開可查看逐筆操作</b>。<b>變動幅度</b>＝本次持股變動 ÷ 操作前股數；<b>目前權重</b>＝最新可得價格 × 目前持股 ÷ 目前持股總市值。</div>
   <div class="position-journal-table-head"><span>標的</span><span>狀態</span><span>持股變動</span><span>持股變動幅度</span><span>目前權重<br>權重變動</span></div>
   {"".join(day_sections)}
   <div class="position-journal-foot">＊權重變化依目前持股市值計算，僅供紀錄參考；無有效價格時顯示「待確認」。</div>
@@ -48394,44 +48393,120 @@ def _line_hidden_holdings_flex(user_id):
 
 
 def _line_hidden_operation_report(user_id):
-    """隱藏指令：只顯示最近一個交易日操作，並包含目前權重及權重變動，不顯示金額。"""
-    logs=_filter_voided_same_day_logs(get_position_change_logs(user_id,limit=100) or [])
+    """隱藏指令：以網站操作日報下半部為模板，只顯示最近一個交易日，不顯示金額與說明文字。"""
+    logs = _filter_voided_same_day_logs(get_position_change_logs(user_id, limit=100) or [])
     if not logs:
-        return FlexSendMessage(alt_text="秉軒操作日報",contents={"type":"bubble","body":{"type":"box","layout":"vertical","contents":[{"type":"text","text":"操作日報","size":"lg","weight":"bold","color":"#203449"},{"type":"text","text":"目前沒有操作紀錄。","size":"sm","color":"#667085","margin":"md"}]}})
-    dated=[(_position_change_date(x.get("trade_date")),x) for x in logs]
-    valid_dates=[d for d,_ in dated if d is not None]
-    latest_day=max(valid_dates) if valid_dates else None
+        return FlexSendMessage(alt_text="秉軒操作日報", contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"16px","contents":[{"type":"text","text":"操作日報","size":"xl","weight":"bold","color":"#203449"},{"type":"text","text":"目前沒有操作紀錄。","size":"sm","color":"#667085","margin":"md"}]}})
+
+    dated = [(_position_change_date(x.get("trade_date")), x) for x in logs]
+    valid_dates = [d for d, _ in dated if d is not None]
+    latest_day = max(valid_dates) if valid_dates else None
     if latest_day is not None:
-        logs=[x for d,x in dated if d==latest_day]
+        logs = [x for d, x in dated if d == latest_day]
+
     try:
-        positions=merge_positions(get_positions(user_id)); codes=sorted({str(x.get("code") or "").strip() for x in positions+logs if x.get("code")})
-        price_map=get_realtime_stocks_bulk(codes,workers=8,rng="1d") or {}
-        total_value=sum(float((price_map.get(x.get("code")) or {}).get("close") or (price_map.get(x.get("code")) or {}).get("price") or 0)*float(x.get("shares") or 0) for x in positions)
-        enriched=enrich_position_change_logs(logs,positions,price_map,total_value)
+        positions = merge_positions(get_positions(user_id))
+        codes = sorted({str(x.get("code") or "").strip() for x in positions + logs if x.get("code")})
+        price_map = get_realtime_stocks_bulk(codes, workers=8, rng="1d") or {}
+        total_value = sum(float((price_map.get(x.get("code")) or {}).get("close") or (price_map.get(x.get("code")) or {}).get("price") or 0) * float(x.get("shares") or 0) for x in positions)
+        enriched = enrich_position_change_logs(logs, positions, price_map, total_value)
     except Exception as exc:
-        print(f"⚠️ 隱藏操作日報整理失敗：{exc}"); enriched=logs; price_map={}
-    palette={"加碼":("#D93025","#FDECEA"),"減碼":("#18845B","#E7F5EE"),"刪除":("#667085","#EEF1F5"),"新增":("#376A9B","#EAF2F8")}
-    day_text=latest_day.strftime("%Y/%m/%d") if latest_day else "最近交易日"
-    body=[{"type":"text","text":"操作日報","size":"xl","weight":"bold","color":"#203449"},{"type":"text","text":day_text,"size":"sm","color":"#667085","margin":"sm"},{"type":"separator","margin":"md"}]
-    for item in enriched:
-        code=str(item.get("code") or "").strip(); label,_=_position_change_journal_status(item)
-        delta=item.get("shares_delta")
-        try: delta_num=int(delta); delta_text=f"{delta_num:+d} 股"
-        except (TypeError,ValueError): delta_num=None; delta_text="股數待確認"
-        ratio=item.get("change_pct")
-        try: ratio_text=("100.00%" if label=="新增" else f"{float(ratio):+.2f}%") if ratio is not None or label=="新增" else "—"
-        except (TypeError,ValueError): ratio_text="—"
-        weight=item.get("current_weight")
-        try: weight_text=f"{float(weight):.2f}%" if weight is not None else "待確認"
-        except (TypeError,ValueError): weight_text="待確認"
-        event_weight=item.get("event_weight")
-        try: event_weight_text=f"{float(event_weight):+.2f}%" if event_weight is not None else "待確認"
-        except (TypeError,ValueError): event_weight_text="待確認"
-        state_color,state_bg=palette.get(label,("#376A9B","#EAF2F8"))
-        name=short_company_name(stock_display_name(code,None,(price_map.get(code) or {}).get("name")))
-        delta_color="#D93025" if delta_num is not None and delta_num>0 else "#18845B" if delta_num is not None and delta_num<0 else "#24364B"
-        body.append({"type":"box","layout":"vertical","paddingAll":"12px","spacing":"sm","backgroundColor":"#FFFFFF","borderColor":"#E3EAF0","borderWidth":"1px","cornerRadius":"10px","margin":"sm","contents":[{"type":"box","layout":"horizontal","alignItems":"center","contents":[{"type":"text","text":name,"weight":"bold","size":"md","color":"#24364B","flex":1,"wrap":True},{"type":"text","text":label,"weight":"bold","size":"xs","color":state_color,"backgroundColor":state_bg,"paddingAll":"6px","cornerRadius":"10px","flex":0}]},{"type":"text","text":code,"size":"xs","color":"#667085"},{"type":"box","layout":"horizontal","spacing":"sm","contents":[{"type":"box","layout":"vertical","flex":1,"contents":[{"type":"text","text":"持股變動","size":"xxs","color":"#667085"},{"type":"text","text":delta_text,"size":"sm","weight":"bold","color":delta_color}]},{"type":"box","layout":"vertical","flex":1,"contents":[{"type":"text","text":"變動幅度","size":"xxs","color":"#667085"},{"type":"text","text":ratio_text,"size":"sm","weight":"bold","color":"#24364B"}]},{"type":"box","layout":"vertical","flex":1,"contents":[{"type":"text","text":"目前權重","size":"xxs","color":"#667085"},{"type":"text","text":weight_text,"size":"sm","weight":"bold","color":"#24364B"},{"type":"text","text":"權重變動 "+event_weight_text,"size":"xxs","weight":"bold","color":"#18845B" if event_weight is not None and float(event_weight or 0)>=0 else "#D93025"}]}]}]})
-    return FlexSendMessage(alt_text="秉軒操作日報",contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"14px","contents":body[:48]}})
+        print(f"⚠️ 隱藏操作日報整理失敗：{exc}")
+        enriched, price_map = logs, {}
+
+    palette = {"加碼": ("#D93025", "#FDECEA"), "減碼": ("#18845B", "#E7F5EE"), "刪除": ("#667085", "#EEF1F5"), "新增": ("#376A9B", "#EAF2F8")}
+    day_text = latest_day.strftime("%Y/%m/%d") if latest_day else "最近交易日"
+    navy, muted, line, pale = "#203449", "#5B7085", "#DDE5ED", "#F4F7FB"
+    body = [
+        {"type":"text","text":"操作日報","size":"xl","weight":"bold","color":navy},
+        {"type":"text","text":day_text,"size":"md","weight":"bold","color":"#2D6F9F","margin":"sm"},
+        {"type":"separator","margin":"md","color":"#E5EAF0"},
+        {"type":"box","layout":"horizontal","paddingAll":"9px","backgroundColor":"#F7F9FC","contents":[
+            {"type":"text","text":"標的","size":"xs","weight":"bold","color":muted,"flex":3,"wrap":True},
+            {"type":"text","text":"狀態","size":"xs","weight":"bold","color":muted,"align":"center","flex":1,"wrap":True},
+            {"type":"text","text":"持股變動","size":"xs","weight":"bold","color":muted,"align":"center","flex":2,"wrap":True},
+            {"type":"text","text":"持股變動幅度","size":"xs","weight":"bold","color":muted,"align":"center","flex":2,"wrap":True},
+            {"type":"text","text":"目前權重\n權重變動","size":"xs","weight":"bold","color":muted,"align":"end","flex":2,"wrap":True}
+        ]},
+        {"type":"separator","color":"#E5EAF0"}
+    ]
+
+    # 和網站一樣依操作狀態分組，分組標題帶筆數；不顯示成交價、成本或任何金額。
+    grouped = []
+    for label in ("加碼", "減碼", "刪除", "新增"):
+        group_items = []
+        for item in enriched:
+            status, _ = _position_change_journal_status(item)
+            if status == label:
+                group_items.append(item)
+        if group_items:
+            grouped.append((label, group_items))
+
+    for label, group_items in grouped:
+        state_color, state_bg = palette.get(label, ("#376A9B", "#EAF2F8"))
+        body.append({"type":"box","layout":"horizontal","paddingAll":"10px","backgroundColor":pale,"margin":"none","contents":[
+            {"type":"text","text":label,"size":"md","weight":"bold","color":state_color,"flex":0},
+            {"type":"text","text":f"{len(group_items)} 檔","size":"sm","weight":"bold","color":muted,"margin":"md","flex":1}
+        ]})
+        body.append({"type":"separator","color":"#E1E7EE"})
+        for item in group_items:
+            code = str(item.get("code") or "").strip()
+            status, _ = _position_change_journal_status(item)
+            delta = item.get("shares_delta")
+            try:
+                delta_num = int(delta)
+                delta_text = f"{delta_num:+d} 股"
+            except (TypeError, ValueError):
+                delta_num, delta_text = None, "待確認"
+            # 若紀錄有操作前後股數，沿用網站格式顯示「前 → 後 股」。
+            before = item.get("shares_before", item.get("before_shares"))
+            after = item.get("shares_after", item.get("after_shares"))
+            share_detail = ""
+            try:
+                if before is not None and after is not None:
+                    share_detail = f"{int(before):,} → {int(after):,} 股"
+            except (TypeError, ValueError):
+                share_detail = ""
+            ratio = item.get("change_pct")
+            try:
+                ratio_text = ("100.00%" if status == "新增" else f"{float(ratio):+.2f}%") if ratio is not None or status == "新增" else "—"
+            except (TypeError, ValueError):
+                ratio_text = "—"
+            weight = item.get("current_weight")
+            try:
+                weight_text = f"{float(weight):.2f}%" if weight is not None else "待確認"
+            except (TypeError, ValueError):
+                weight_text = "待確認"
+            event_weight = item.get("event_weight")
+            try:
+                event_weight_num = float(event_weight) if event_weight is not None else None
+                event_weight_text = f"{event_weight_num:+.2f}%" if event_weight_num is not None else "待確認"
+            except (TypeError, ValueError):
+                event_weight_num, event_weight_text = None, "待確認"
+            name = short_company_name(stock_display_name(code, None, (price_map.get(code) or {}).get("name")))
+            delta_color = "#D93025" if delta_num is not None and delta_num > 0 else "#18845B" if delta_num is not None and delta_num < 0 else navy
+            event_color = "#18845B" if event_weight_num is not None and event_weight_num >= 0 else "#D93025" if event_weight_num is not None else muted
+            left_contents = [
+                {"type":"text","text":name,"size":"sm","weight":"bold","color":navy,"wrap":True},
+                {"type":"text","text":code,"size":"xs","color":muted,"margin":"xs"}
+            ]
+            status_cell = {"type":"text","text":status,"size":"xs","weight":"bold","color":state_color,"backgroundColor":state_bg,"align":"center","wrap":True,"paddingAll":"4px","cornerRadius":"8px"}
+            delta_contents = [{"type":"text","text":delta_text,"size":"sm","weight":"bold","color":delta_color,"align":"center","wrap":True}]
+            if share_detail:
+                delta_contents.append({"type":"text","text":share_detail,"size":"xxs","color":muted,"align":"center","wrap":True,"margin":"xs"})
+            body.append({"type":"box","layout":"horizontal","paddingAll":"10px","spacing":"xs","alignItems":"center","backgroundColor":"#FFFFFF","contents":[
+                {"type":"box","layout":"vertical","flex":3,"contents":left_contents},
+                {"type":"box","layout":"vertical","flex":1,"alignItems":"center","contents":[status_cell]},
+                {"type":"box","layout":"vertical","flex":2,"alignItems":"center","contents":delta_contents},
+                {"type":"box","layout":"vertical","flex":2,"alignItems":"center","contents":[{"type":"text","text":ratio_text,"size":"sm","weight":"bold","color":navy,"align":"center","wrap":True}]},
+                {"type":"box","layout":"vertical","flex":2,"alignItems":"end","contents":[
+                    {"type":"text","text":weight_text,"size":"sm","weight":"bold","color":navy,"align":"end","wrap":True},
+                    {"type":"text","text":event_weight_text,"size":"xs","weight":"bold","color":event_color,"align":"end","wrap":True,"margin":"xs"}
+                ]}
+            ]})
+            body.append({"type":"separator","color":line})
+
+    return FlexSendMessage(alt_text="秉軒操作日報", contents={"type":"bubble","size":"giga","body":{"type":"box","layout":"vertical","paddingAll":"12px","spacing":"none","contents":body[:48]}})
 
 
 @handler.add(MessageEvent, message=TextMessage)
