@@ -48496,12 +48496,12 @@ def _line_hidden_operation_report(user_id):
             delta_contents = [{"type":"text","text":delta_text,"size":"sm","weight":"bold","color":delta_color,"align":"center","wrap":True}]
             if share_detail:
                 delta_contents.append({"type":"text","text":share_detail,"size":"xxs","color":muted,"align":"center","wrap":True,"margin":"xs"})
-            body.append({"type":"box","layout":"horizontal","paddingAll":"10px","spacing":"xs","alignItems":"center","backgroundColor":"#FFFFFF","contents":[
+            body.append({"type":"box","layout":"horizontal","paddingAll":"10px","spacing":"xs","backgroundColor":"#FFFFFF","contents":[
                 {"type":"box","layout":"vertical","flex":3,"contents":left_contents},
-                {"type":"box","layout":"vertical","flex":1,"alignItems":"center","contents":[status_cell]},
-                {"type":"box","layout":"vertical","flex":2,"alignItems":"center","contents":delta_contents},
-                {"type":"box","layout":"vertical","flex":2,"alignItems":"center","contents":[{"type":"text","text":ratio_text,"size":"sm","weight":"bold","color":navy,"align":"center","wrap":True}]},
-                {"type":"box","layout":"vertical","flex":2,"alignItems":"flex-end","contents":[
+                {"type":"box","layout":"vertical","flex":1,"contents":[status_cell]},
+                {"type":"box","layout":"vertical","flex":2,"contents":delta_contents},
+                {"type":"box","layout":"vertical","flex":2,"contents":[{"type":"text","text":ratio_text,"size":"sm","weight":"bold","color":navy,"align":"center","wrap":True}]},
+                {"type":"box","layout":"vertical","flex":2,"contents":[
                     {"type":"text","text":weight_text,"size":"sm","weight":"bold","color":navy,"align":"end","wrap":True},
                     {"type":"text","text":event_weight_text,"size":"xs","weight":"bold","color":event_color,"align":"end","wrap":True,"margin":"xs"}
                 ]}
