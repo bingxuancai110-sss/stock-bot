@@ -48555,6 +48555,31 @@ def handle_message(event):
             print(f"⚠️ 選單背景紀錄執行緒啟動失敗 {user_id}: {exc}")
         return
 
+    # 隱藏指令要先回覆，避免資料庫 upsert 或一般限流流程失敗時，
+    # 使用者只看到自己送出的訊息、機器人卻完全沒有回覆。
+    if text == "秉軒持股":
+        try:
+            line_bot_api.reply_message(event.reply_token, _line_hidden_holdings_flex(user_id))
+        except Exception as exc:
+            print(f"❌ 秉軒持股圖卡失敗 {user_id}: {type(exc).__name__}: {exc}")
+            try:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="秉軒持股暫時無法載入，請稍後再試。"))
+            except Exception as fallback_exc:
+                print(f"❌ 秉軒持股錯誤回覆失敗 {user_id}: {fallback_exc}")
+        return
+
+    if text == "秉軒操作日報":
+        try:
+            report = _line_hidden_operation_report(user_id)
+            line_bot_api.reply_message(event.reply_token, report)
+        except Exception as exc:
+            print(f"❌ 秉軒操作日報失敗 {user_id}: {type(exc).__name__}: {exc}")
+            try:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="操作日報暫時無法載入，請稍後再試。"))
+            except Exception as fallback_exc:
+                print(f"❌ 操作日報錯誤回覆失敗 {user_id}: {fallback_exc}")
+        return
+
     add_user_to_db(user_id)
 
 
@@ -48568,24 +48593,6 @@ def handle_message(event):
                   f"每個指令都要即時抓取行情與財務資料，"
                   f"短時間內重複查詢會影響其他使用者。"),
             quick_reply=build_quick_reply()))
-        return
-
-    # 隱藏指令：不加入主選單或 quick reply，只有手動輸入完整指令才會觸發。
-    if text == "秉軒持股":
-        try:
-            line_bot_api.reply_message(event.reply_token, _line_hidden_holdings_flex(user_id))
-        except Exception as exc:
-            print(f"❌ 秉軒持股圖卡失敗 {user_id}: {type(exc).__name__}: {exc}")
-            try: line_bot_api.reply_message(event.reply_token, TextSendMessage(text="秉軒持股暫時無法載入，請稍後再試。"))
-            except Exception: pass
-        return
-    if text == "秉軒操作日報":
-        try:
-            line_bot_api.reply_message(event.reply_token, _line_hidden_operation_report(user_id))
-        except Exception as exc:
-            print(f"❌ 秉軒操作日報失敗 {user_id}: {type(exc).__name__}: {exc}")
-            try: line_bot_api.reply_message(event.reply_token, TextSendMessage(text="秉軒操作日報暫時無法載入，請稍後再試。"))
-            except Exception: pass
         return
 
     feature = infer_line_feature(text)
