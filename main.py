@@ -12427,7 +12427,7 @@ def save_picks(mode, rows, top_n=5):
                 score_chip = COALESCE(EXCLUDED.score_chip, pick_history.score_chip)
             """,
             picks,
-            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            template="(%s, %s, CURRENT_DATE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             page_size=100,
         )
         conn.commit()
@@ -42887,6 +42887,79 @@ def build_screener_data_quality(cum_yoy, valuation, industry_stats,
     }
 
 
+def score_radar_breakout(price, market_pct=None):
+    """雷達專用 100 分制：突破品質 30、趨勢 25、量能 20、進場位置 15、相對強度 10。
+    過度乖離會扣分；權重屬待歷史回測驗證的研究版，非已證實最佳值。
+    """
+    price = price or {}
+    close = price.get("close")
+    ma20, ma20_prev = price.get("ma20"), price.get("ma20_prev")
+    ma60, ma60_prev = price.get("ma60"), price.get("ma60_prev")
+    high20, high60 = price.get("high_20d"), price.get("high_60d")
+    vol_ratio = float(price.get("vol_ratio") or 0)
+    pct = float(price.get("pct") or 0)
+
+    def pct_diff(a, b):
+        try:
+            return (float(a) - float(b)) / float(b) * 100 if a is not None and b not in (None, 0) else None
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+
+    dist20 = pct_diff(close, ma20)
+    is_60d = bool(high60 and close is not None and close >= high60)
+    is_20d = bool(high20 and close is not None and close >= high20)
+    breakout_score = 30 if is_60d else (23 if is_20d else 0)
+    if not is_60d and not is_20d and ma20 and close is not None and close >= ma20:
+        breakout_score = 6  # 站上均線不等於真正突破
+
+    trend_score = 0
+    if ma20 and close is not None and close >= ma20: trend_score += 10
+    if ma20 and ma20_prev and ma20 > ma20_prev: trend_score += 8
+    if ma60 and close is not None and close >= ma60: trend_score += 4
+    if ma60 and ma60_prev and ma60 > ma60_prev: trend_score += 3
+
+    if vol_ratio >= 2.0: volume_score = 20
+    elif vol_ratio >= 1.5: volume_score = 16
+    elif vol_ratio >= 1.2: volume_score = 11
+    elif vol_ratio >= 1.0: volume_score = 6
+    else: volume_score = 0
+
+    if dist20 is None: entry_score = 5
+    elif 0 <= dist20 <= 5: entry_score = 15
+    elif 5 < dist20 <= 8: entry_score = 11
+    elif 8 < dist20 <= 12: entry_score = 7
+    elif -3 <= dist20 < 0: entry_score = 6
+    else: entry_score = 2
+
+    rel = None
+    try:
+        if market_pct is not None: rel = pct - float(market_pct)
+    except (TypeError, ValueError):
+        rel = None
+    if rel is None:
+        rel_score = 7 if pct >= 0 else (4 if pct > -2 else 1)
+    else:
+        rel_score = 10 if rel >= 2 else (8 if rel >= 1 else (6 if rel >= 0 else (3 if rel > -2 else 0)))
+
+    raw_score = breakout_score + trend_score + volume_score + entry_score + rel_score
+    penalty, reasons = 0, []
+    if dist20 is not None:
+        if dist20 > 20: penalty += 15; reasons.append("距20日均線超過20%")
+        elif dist20 > 15: penalty += 10; reasons.append("距20日均線超過15%")
+        elif dist20 > 10: penalty += 5; reasons.append("距20日均線超過10%")
+    # 不因單日漲幅直接扣分；追高風險改看月線／季線乖離。
+    dist60 = pct_diff(close, ma60)
+    if dist60 is not None:
+        if dist60 > 30: penalty += 5; reasons.append("距季線超過30%")
+        elif dist60 > 20: penalty += 3; reasons.append("距季線超過20%")
+    penalty = min(20, penalty)
+    total = max(0, min(100, raw_score - penalty))
+    return {"total": total, "breakout_score": breakout_score, "trend_score": trend_score,
+            "volume_score": volume_score, "entry_score": entry_score, "relative_score": rel_score,
+            "penalty": penalty, "penalty_reason": "、".join(reasons) if reasons else "無過熱扣分",
+            "dist20_pct": round(dist20, 2) if dist20 is not None else None,
+            "breakout_type": "60日新高" if is_60d else ("20日新高" if is_20d else "未確認突破")}
+
 def classify_radar_state(price):
     """把雷達訊號拆成突破／量能狀態，避免把普通上漲誤稱為帶量突破。"""
     price = price or {}
@@ -48538,12 +48611,11 @@ def _line_hidden_operation_report(user_id):
             status, _ = _position_change_journal_status(item)
             delta = item.get("shares_delta")
             try:
-                delta_num = int(float(delta))
+                delta_num = int(delta)
+                delta_text = f"{delta_num:+d}"
             except (TypeError, ValueError):
-                delta_num = None
-            # LINE 版隱藏股數變動數字：不顯示 +3、-45 等股數，也不顯示操作前後股數。
-            # 以遮罩符號取代數字，保留欄位位置，避免破壞表格排版。
-            delta_text = "•••"
+                delta_num, delta_text = None, "待確認"
+            # LINE 操作日報依使用者要求不顯示實際股數，也不顯示操作前後股數。
             share_detail = ""
             ratio = item.get("change_pct")
             try:
