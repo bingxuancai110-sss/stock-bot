@@ -49458,3 +49458,120 @@ def web_api_perf_test(uid):
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
+
+
+
+# ===== Research-only PIT backtest module (V284) =====
+# No changes to production stock selection, ranking, cron or snapshots.
+# An audit is always performed before any research-only backtest is allowed.
+import datetime as _bt_dt
+import calendar as _bt_calendar
+
+_BT_DEFAULTS = {"strategy":"five_factor", "universe":"electronics", "months":12,
+                "rebalance":"monthly", "top_n":25, "initial_capital":1000000,
+                "weighting":"equal", "commission_rate":0.001425,
+                "sell_tax_rate":0.003, "commission_discount":1.0}
+
+def _bt_db_coverage():
+    """Read-only metadata audit; do not infer publication timestamps from period."""
+    out={"ok":True,"tables":{},"limitations":[],"config":dict(_BT_DEFAULTS)}
+    conn=None
+    try:
+        conn=get_db_connection(); cur=conn.cursor()
+        for name,period_col in (("revenue_history","period"),("inst_history","trade_date"),("stock_info",None)):
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=%s",(name,))
+            columns=[r[0] for r in cur.fetchall()]
+            if not columns:
+                out["tables"][name]={"exists":False};continue
+            cur.execute('SELECT COUNT(*), COUNT(DISTINCT code) FROM "'+name+'"')
+            count,codes=cur.fetchone()
+            info={"exists":True,"rows":int(count),"codes":int(codes),"columns":columns}
+            if period_col:
+                cur.execute('SELECT MIN("'+period_col+'")::text,MAX("'+period_col+'")::text,COUNT(DISTINCT "'+period_col+'") FROM "'+name+'"')
+                a,b,n=cur.fetchone();info.update({"first":a,"last":b,"periods":int(n)})
+            out["tables"][name]=info
+        cur.close()
+    except Exception as exc:
+        out["ok"]=False;out["error"]="資料庫稽核失敗："+str(exc)[:180]
+    finally:
+        if conn is not None:
+            try: release_db_connection(conn)
+            except Exception: pass
+    out["limitations"]=[
+        "revenue_history 沒有公告日期或資料實際可取得時間；不可僅依 period 當成當月已知資料。",
+        "stock_info 為目前產業分類，沒有歷史成分股/下市股票時可能產生存活者偏誤。",
+        "inst_history 有交易日，但需要確認公布可用時間、缺漏日及完整電子股覆蓋率。",
+        "尚未確認完整的歷史價格、歷史估值、歷史產業動能與五因子版本化原始訊號。",
+        "缺少逐筆 PIT 因子資料及歷史可交易價格前，禁止產生績效數字。"]
+    out["ready_for_real_backtest"]=False
+    return out
+
+def _bt_simulate_verified_rows(rows, *, top_n=25, initial_capital=1000000,
+                               commission_rate=0.001425, sell_tax_rate=0.003,
+                               commission_discount=1.0):
+    """Pure research simulator. Input must be externally PIT-verified, no production calls.
+    rows: monthly list of {decision_date,execution_date,candidates:[{code,score,
+    known_at,execution_price}], next_execution_prices:{code:price}}.
+    Execution-price rows MUST refer to actual later executable sessions, never decision-day closes.
+    This engine deliberately refuses incomplete periods, so it cannot fabricate results.
+    """
+    if not rows or len(rows)<2: raise ValueError("至少需要兩個已驗證換股期，且須有下一期估值價格")
+    cash=float(initial_capital); holdings={}; ledger=[]; equity=[]
+    for idx, period in enumerate(rows):
+        decision=_bt_dt.date.fromisoformat(period['decision_date'])
+        execution=_bt_dt.date.fromisoformat(period['execution_date'])
+        if execution<=decision: raise ValueError("成交日必須晚於決策日")
+        if idx and decision<=_bt_dt.date.fromisoformat(rows[idx-1]['decision_date']):
+            raise ValueError("決策日期必須遞增")
+        candidates=period.get('candidates') or []
+        if len(candidates)<top_n: raise ValueError("候選股不足 Top N，禁止自動補股")
+        seen=set()
+        for c in candidates:
+            code=str(c['code']);known=_bt_dt.date.fromisoformat(c['known_at'])
+            if known>decision:raise ValueError("使用未來資料："+code)
+            if code in seen:raise ValueError("重複股票："+code)
+            seen.add(code)
+            if float(c['execution_price'])<=0:raise ValueError("無效成交價格")
+            if len(c.get('factor_scores',{}))!=5:raise ValueError("缺少五因子 PIT 分數")
+        selected=sorted(candidates,key=lambda x:(-float(x['score']),str(x['code'])))[:top_n]
+        price_map={str(c['code']):float(c['execution_price']) for c in candidates}
+        # Existing holdings must have an executable price, including delisted / removed symbols.
+        for code in holdings:
+            if code not in price_map:raise ValueError("缺少既有持股成交價："+code)
+        total=cash+sum(qty*price_map[code] for code,qty in holdings.items())
+        target=total/top_n
+        targets={str(c['code']):int(target//float(c['execution_price'])) for c in selected}
+        # Sells first, then buys; round down to whole shares, preserving cash.
+        for code,qty in list(holdings.items()):
+            delta=qty-targets.get(code,0)
+            if delta>0:
+                gross=delta*price_map[code];fee=gross*commission_rate*commission_discount;tax=gross*sell_tax_rate
+                cash+=gross-fee-tax;holdings[code]-=delta
+                ledger.append({"date":str(execution),"code":code,"side":"sell","shares":delta,"gross":round(gross,2),"fee":round(fee,2),"tax":round(tax,2)})
+                if holdings[code]==0:del holdings[code]
+        for c in selected:
+            code=str(c['code']);want=targets[code]-holdings.get(code,0)
+            if want<=0:continue
+            price=price_map[code];unit=price*(1+commission_rate*commission_discount)
+            qty=min(want,int(cash//unit))
+            if qty<=0:continue
+            gross=qty*price;fee=gross*commission_rate*commission_discount
+            cash-=gross+fee;holdings[code]=holdings.get(code,0)+qty
+            ledger.append({"date":str(execution),"code":code,"side":"buy","shares":qty,"gross":round(gross,2),"fee":round(fee,2),"tax":0})
+        equity.append({"date":str(execution),"equity":round(cash+sum(qty*price_map[code] for code,qty in holdings.items()),2),"cash":round(cash,2),"holdings":dict(holdings)})
+    return {"ok":True,"research_only":True,"equity":equity,"trades":ledger,
+            "warning":"僅對外部已驗證 PIT 資料模擬；未含最低手續費、滑價、股利與公司行動，不能視為完整正式績效。"}
+
+@app.route("/web/api/workbench/strategy-lab/backtest/audit")
+@web_login_required
+def web_strategy_lab_backtest_audit(uid):
+    return _workbench_json_response(_bt_db_coverage())
+
+@app.route("/web/api/workbench/strategy-lab/backtest")
+@web_login_required
+def web_strategy_lab_backtest(uid):
+    audit=_bt_db_coverage()
+    return _workbench_json_response({"ok":False,"status":"blocked_missing_pit_data",
+        "message":"回測已建立研究專用框架，但歷史五因子 point-in-time 資料尚未驗證完整；禁止產生虛構績效。",
+        "audit":audit},422)
+# ===== End research-only module =====
