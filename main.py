@@ -12066,8 +12066,8 @@ def score_stock_by_category(code, ind_map, price, cum_yoy, val, streak,
     technical_score = score_from_technical_structure(price)
     chip_tech = round(chip_amount + technical_score)
 
-    # 黑馬 V2 權重：營收成長 20、估值 25、產業動能 30、
-    # 法人連續性 5、籌碼／技術 20，合計 100。
+    # 五大因子 V2 權重：營收成長 20、估值 25、產業動能 30、
+    # 法人連續性 5、籌碼／技術 20，合計 100；前端與明細必須沿用同一組上限。
     # 電子與傳產保留各自原有的原始評分門檻，再縮放至相同權重上限。
     if cat == "電子":
         rev = round(score_from_cum_revenue_growth(cum_yoy) * 20 / 40)  # 0-20
@@ -12080,11 +12080,17 @@ def score_stock_by_category(code, ind_map, price, cum_yoy, val, streak,
     mom = round(mom_score * 30 / 20)                                    # 0-30
     streak_score = round(streak_score_raw * 5 / 30)                     # 0-5
     chip_tech = round((chip_amount + technical_score) * 2)              # 0-20
+    # 統一防線：五大因子先限制在模型正式權重內，避免來源資料或未來改動造成超額分數。
+    rev = max(0, min(20, int(round(rev))))
+    val_score = max(0, min(25, int(round(val_score))))
+    mom = max(0, min(30, int(round(mom))))
+    streak_score = max(0, min(5, int(round(streak_score))))
+    chip_tech = max(0, min(20, int(round(chip_tech))))
     caps = ("20", "25", "30", "5", "20")
 
     return {
         "category": cat,
-        "total": min(100, rev + val_score + mom + streak_score + chip_tech),
+        "total": rev + val_score + mom + streak_score + chip_tech,
         "rev": rev, "val": val_score, "mom": mom,
         "streak_score": streak_score, "chip": chip_tech,
         "chip_amount_score": round(chip_amount, 1),
@@ -12150,7 +12156,7 @@ def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, ca
 
     # 1) Revenue
     rev_score = float(model.get("rev") or 0)
-    rev_max = 25.0 if category == "電子" else 20.0
+    rev_max = 20.0
     if cum_yoy is None:
         rev_lines = ["⚪ 最新累計營收年增率無資料，模型使用缺資料基準分"]
     else:
@@ -12204,13 +12210,13 @@ def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, ca
 
     # 3) Industry momentum
     mom_score = float(model.get("mom") or 0)
-    mom_max = 20.0 if category == "電子" else 25.0
+    mom_max = 30.0
     mom_desc = str(model.get("mom_desc") or "產業動能資料不足").replace("\n", " ").strip()
     mom_lines = ["⚪ " + mom_desc, f"{icon(mom_score, mom_max)} 本因子得分 {mom_score:.0f}/{mom_max:.0f}"]
 
     # 4) Institutional continuity
     streak_score = float(model.get("streak_score") or 0)
-    streak_max = 20.0
+    streak_max = 5.0
     streak_val = int(streak or 0)
     if streak_val >= 8: streak_bucket = "≥8天 → 原始30分"
     elif streak_val >= 5: streak_bucket = "5～7天 → 原始25分"
@@ -12274,7 +12280,7 @@ def _build_factor_details(code, stock, model, cum_yoy, val, streak, cum_lots, ca
         else:
             tech_lines.append(f"⚪ 目前量能約為20日均量 {vol_ratio:.2f} 倍，未因量能額外加分")
     tech_lines.append(f"{icon(tech_score, 5)} 技術子分數 {tech_score:.1f}/5")
-    chip_lines.append(f"{icon(chip_tech_score, 10)} 籌碼／技術合計 {chip_tech_score:.0f}/10")
+    chip_lines.append(f"{icon(chip_tech_score, 20)} 籌碼／技術合計 {chip_tech_score:.0f}/20")
 
     return [
         {"name": "營收成長", "lines": rev_lines},
@@ -17310,7 +17316,7 @@ def _compute_stock_watchlist_scores(codes):
             }
             continue
 
-        caps = [float(x) for x in model.get("caps", (25,25,20,20,10))]
+        caps = [float(x) for x in model.get("caps", (20,25,30,5,20))]
         factors = [
             {"name": "營收成長", "value": model.get("rev"), "max": caps[0]},
             {"name": "估值", "value": model.get("val"), "max": caps[1]},
@@ -17537,7 +17543,7 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
     lines.append(f"🚧 壓力 {fmt_resistance(stock.get('resistance'))}")
 
     if score:
-        caps = score.get('caps',[25,25,20,20,10])
+        caps = score.get('caps',[20,25,30,5,20])
         lines += ["", "【五大因子】",
                   f"營收成長　{score.get('revenue', 0):.0f}/{caps[0]:.0f}",
                   f"估值　　　{score.get('valuation', 0):.0f}/{caps[1]:.0f}",
@@ -17960,7 +17966,7 @@ def build_healthcheck_report(user_id):
     has_etf = any(is_etf(code) for code in codes)
     formula_lines = []
     if has_stock:
-        formula_lines.append("個股評分＝營收成長25＋估值25＋產業動能20＋法人連續性20＋籌碼／技術10")
+        formula_lines.append("個股評分＝營收成長20＋估值25＋產業動能30＋法人連續性5＋籌碼／技術20")
     if has_etf:
         formula_lines.append("ETF評分＝依類別權重計算超額報酬、價格報酬、配息殖利率、回撤、波動與資料完整度")
     formula_text = "\n".join(formula_lines)
@@ -41850,14 +41856,13 @@ def _load_persisted_screener_snapshot(mode):
             computed_at = (computed_at if computed_at.tzinfo
                            else computed_at.replace(tzinfo=timezone.utc))
             age = (datetime.now(timezone.utc) - computed_at).total_seconds()
-            # 修正：非盤中時段也不能無條件放寬到 7 天，否則黑馬／雷達
-            # 的背景更新若漏跑，頁面會持續把數天前的快照當成可用資料。
-            # 交易資料快照最多保留 24 小時；超過就回傳 None，讓工作台
-            # 的既有背景重建流程重新計算，並明確呈現資料不可用而非冒充最新。
-            max_age = min(
-                float(_SHARED_SNAPSHOT_MAX_AGE.get("screener_" + mode, 86400)),
-                86400.0,
-            )
+            max_age = _SHARED_SNAPSHOT_MAX_AGE.get("screener_" + mode, 3 * 86400)
+            # 週末、國定假日或補假可能讓最近交易日快照超過 72 小時；
+            # 非盤中時段允許讀取最多 7 日快照，但稍後仍須由
+            # _screener_snapshot_valid_for_today 確認 source_date 是最新可確認交易日。
+            # 盤中不放寬，避免舊快照冒充今日資料。
+            if not _is_taiwan_intraday_window():
+                max_age = max(max_age, 7 * 86400)
             if age < 0 or age > max_age:
                 return None
         if not isinstance(rows, list):
@@ -42608,21 +42613,14 @@ def cron_radar_live():
     if secret != os.environ.get("CRON_SECRET"):
         abort(403)
     if not _is_taiwan_intraday_window():
-        print("ℹ️ /cron/radar-live 已觸發，但目前非台股一般盤中時段；略過掃描。", flush=True)
         return "目前非台股一般盤中時段，未啟動盤中雷達快照。", 200
-    print("🔔 /cron/radar-live 已觸發；檢查 radar_live 快照新鮮度。", flush=True)
     try:
         print(push_intraday_market_anomalies(base_url=DEFAULT_WEB_BASE_URL))
     except Exception as exc:
         print(f"⚠️ 盤中大盤異常檢查失敗：{exc}")
-    live_snapshot = _load_recent_live_radar_snapshot()
-    if live_snapshot:
-        computed_at = live_snapshot.get("computed_at")
-        print(f"⏭️ 盤中雷達快照仍有效 computed_at={computed_at}; 本次略過。", flush=True)
+    if _load_recent_live_radar_snapshot():
         return (f"最近 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘已有盤中雷達快照，本次略過。", 200)
-    started = run_in_background("盤中雷達快照", _do_scheduled_radar_live_snapshot)
-    print(f"🚀 盤中雷達快照背景工作觸發結果：{started}", flush=True)
-    return started, 200
+    return run_in_background("盤中雷達快照", _do_scheduled_radar_live_snapshot), 200
 
 
 def _taiex_intraday_history_points(now=None):
@@ -44702,7 +44700,7 @@ def render_workbench_body(initial_tab=""):
     /* v41：營收／成長改為資訊卡＋明細表，不使用折線與柱狀圖 */
     if(!document.getElementById('wb-clear-metrics-css')){
       var st=document.createElement('style');st.id='wb-clear-metrics-css';st.textContent=`
-      .wb-clear-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:4px 2px 12px}.wb-clear-head b{display:block;color:#294d6c;font-size:17px}.wb-clear-head small{display:block;color:#7a8b99;font-size:10px;margin-top:4px}.wb-clear-head>strong{padding:7px 11px;border-radius:999px;background:#f3f6f8;font-size:12px;white-space:nowrap}.wb-clear-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.wb-clear-kpis>div{padding:13px 12px;border:1px solid #dfe7ee;border-radius:13px;background:#fff}.wb-clear-kpis small{display:block;color:#81909d;font-size:10px}.wb-clear-kpis b{display:block;margin-top:5px;color:#294d6c;font-size:19px;line-height:1.15}.wb-clear-kpis em{display:block;margin-top:4px;color:#96a2ac;font-size:9px;font-style:normal}.wb-clear-table-title{display:flex;justify-content:space-between;align-items:center;margin:14px 2px 7px}.wb-clear-table-title b{color:#36566f;font-size:12px}.wb-clear-table-title span{color:#9aa6af;font-size:9px}.wb-clear-table{border:1px solid #dfe7ee;border-radius:13px;overflow:hidden;background:#fff}.wb-clear-row,.wb-growth-row{display:grid;grid-template-columns:1.05fr 1.2fr 1fr 1fr;gap:6px;align-items:center;padding:10px 11px;border-bottom:1px solid #edf1f4}.wb-clear-row:last-child,.wb-growth-row:last-child{border-bottom:0}.wb-clear-row.latest,.wb-growth-row.latest{background:#f5f9fc}.wb-clear-row .period,.wb-growth-row .period{font-size:11px;font-weight:800;color:#425e74}.wb-clear-row .period span,.wb-growth-row .period span{display:block;width:max-content;margin-top:3px;padding:2px 5px;border-radius:5px;background:#315b82;color:#fff;font-size:8px}.wb-clear-row small,.wb-growth-row small{display:block;color:#8a98a4;font-size:8px}.wb-clear-row b,.wb-growth-row b{display:block;margin-top:2px;font-size:11px;color:#405a70}.wb-clear-row .revenue b{font-size:12px}.wb-clear-row .positive b,.wb-growth-row .positive b,.wb-clear-kpis .positive b{color:#25805d}.wb-clear-row .negative b,.wb-growth-row .negative b,.wb-clear-kpis .negative b{color:#c5524b}.wb-clear-row .neutral b,.wb-growth-row .neutral b{color:#758592}.wb-clear-summary{margin-top:9px;padding:10px 11px;border-radius:11px;background:#f7fafc;color:#526b7d;font-size:10px;line-height:1.6}.wb-clear-summary b{color:#294d6c}.wb-growth-check{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:9px}.wb-growth-check>div{padding:9px;border:1px solid #e1e8ed;border-radius:10px;background:#f9fbfc}.wb-growth-check span{display:block;color:#8a98a4;font-size:9px}.wb-growth-check b{display:block;margin-top:3px;font-size:12px;color:#405a70}.wb-growth-check .positive{color:#25805d}.wb-growth-check .negative{color:#c5524b}
+      .wb-clear-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:4px 2px 12px}.wb-clear-head b{display:block;color:#294d6c;font-size:17px}.wb-clear-head small{display:block;color:#7a8b99;font-size:10px;margin-top:4px}.wb-clear-head>strong{padding:7px 11px;border-radius:999px;background:#f3f6f8;font-size:12px;white-space:nowrap}.wb-clear-head>strong.positive{color:#D83D35!important}.wb-clear-head>strong.negative{color:#078451!important}.wb-clear-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.wb-clear-kpis>div{padding:13px 12px;border:1px solid #dfe7ee;border-radius:13px;background:#fff}.wb-clear-kpis small{display:block;color:#81909d;font-size:10px}.wb-clear-kpis b{display:block;margin-top:5px;color:#294d6c;font-size:19px;line-height:1.15}.wb-clear-kpis em{display:block;margin-top:4px;color:#96a2ac;font-size:9px;font-style:normal}.wb-clear-table-title{display:flex;justify-content:space-between;align-items:center;margin:14px 2px 7px}.wb-clear-table-title b{color:#36566f;font-size:12px}.wb-clear-table-title span{color:#9aa6af;font-size:9px}.wb-clear-table{border:1px solid #dfe7ee;border-radius:13px;overflow:hidden;background:#fff}.wb-clear-row,.wb-growth-row{display:grid;grid-template-columns:1.05fr 1.2fr 1fr 1fr;gap:6px;align-items:center;padding:10px 11px;border-bottom:1px solid #edf1f4}.wb-clear-row:last-child,.wb-growth-row:last-child{border-bottom:0}.wb-clear-row.latest,.wb-growth-row.latest{background:#f5f9fc}.wb-clear-row .period,.wb-growth-row .period{font-size:11px;font-weight:800;color:#425e74}.wb-clear-row .period span,.wb-growth-row .period span{display:block;width:max-content;margin-top:3px;padding:2px 5px;border-radius:5px;background:#315b82;color:#fff;font-size:8px}.wb-clear-row small,.wb-growth-row small{display:block;color:#8a98a4;font-size:8px}.wb-clear-row b,.wb-growth-row b{display:block;margin-top:2px;font-size:11px;color:#405a70}.wb-clear-row .revenue b{font-size:12px}.wb-clear-row .positive b,.wb-growth-row .positive b,.wb-clear-kpis .positive b{color:#D83D35}.wb-clear-row .negative b,.wb-growth-row .negative b,.wb-clear-kpis .negative b{color:#078451}.wb-clear-row .neutral b,.wb-growth-row .neutral b{color:#758592}.wb-clear-summary{margin-top:9px;padding:10px 11px;border-radius:11px;background:#f7fafc;color:#526b7d;font-size:10px;line-height:1.6}.wb-clear-summary b{color:#294d6c}.wb-growth-check{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:9px}.wb-growth-check>div{padding:9px;border:1px solid #e1e8ed;border-radius:10px;background:#f9fbfc}.wb-growth-check span{display:block;color:#8a98a4;font-size:9px}.wb-growth-check b{display:block;margin-top:3px;font-size:12px;color:#405a70}.wb-growth-check .positive{color:#D83D35}.wb-growth-check .negative{color:#078451}
       @media(max-width:620px){.wb-clear-head{align-items:flex-start}.wb-clear-head b{font-size:15px}.wb-clear-head>strong{font-size:10px;padding:6px 9px}.wb-clear-kpis{gap:6px}.wb-clear-kpis>div{padding:10px 8px}.wb-clear-kpis b{font-size:15px}.wb-clear-kpis em{font-size:8px}.wb-clear-row,.wb-growth-row{grid-template-columns:.8fr 1.15fr 1fr 1fr;padding:9px 8px;gap:4px}.wb-clear-row b,.wb-growth-row b{font-size:9px}.wb-clear-row .revenue b{font-size:10px}.wb-clear-row small,.wb-growth-row small{font-size:7px}.wb-growth-check{gap:5px}.wb-growth-check>div{padding:7px 6px}.wb-growth-check b{font-size:10px}}
       `;document.head.appendChild(st);
     }
@@ -45305,7 +45303,7 @@ function bindFactors(){
       if(src==='黑馬'){
         if(scoreChange){
           var of=scoreChange.old_factors||{},nf=scoreChange.new_factors||{},items=[];
-          [['營收','rev',25],['估值','val',25],['產業動能','mom',20],['連續性','streak_score',20],['籌碼／技術','chip',10]].forEach(function(x){var ov=num(of[x[1]]),nv=num(nf[x[1]]);if(ov==null&&nv==null)return;var dd=(ov!=null&&nv!=null)?nv-ov:null;items.push('<div class="wb-d-change-row"><span>'+esc(x[0])+'</span><b>'+esc(ov==null?'—':ov.toFixed(0))+'</b><i>→</i><b>'+esc(nv==null?'—':nv.toFixed(0))+'</b><em class="'+(dd>0?'up':dd<0?'down':'flat')+'">'+(dd==null?'—':(dd>0?'+':'')+dd.toFixed(0))+'</em></div>')});
+          [['營收','rev',20],['估值','val',25],['產業動能','mom',30],['連續性','streak_score',5],['籌碼／技術','chip',20]].forEach(function(x){var ov=num(of[x[1]]),nv=num(nf[x[1]]);if(ov==null&&nv==null)return;var dd=(ov!=null&&nv!=null)?nv-ov:null;items.push('<div class="wb-d-change-row"><span>'+esc(x[0])+'</span><b>'+esc(ov==null?'—':ov.toFixed(0))+'</b><i>→</i><b>'+esc(nv==null?'—':nv.toFixed(0))+'</b><em class="'+(dd>0?'up':dd<0?'down':'flat')+'">'+(dd==null?'—':(dd>0?'+':'')+dd.toFixed(0))+'</em></div>')});
           changeHtml=section('今日分數變化','上次快照 → 最新快照','<div class="wb-d-change-summary"><b>'+esc(oldScore==null?'—':oldScore.toFixed(0))+' → '+esc(newScore==null?'—':newScore.toFixed(0))+' 分</b><span class="'+(delta>0?'wb-up':delta<0?'wb-down':'wb-flat')+'">'+esc(delta==null?'—':(delta>0?'+':'')+delta.toFixed(0)+' 分')+'</span></div>'+(items.length?'<div class="wb-d-change-list">'+items.join('')+'</div>':'<p class="wb-d-note">總分有變化，但五項分項沒有可辨識差異。</p>')+'<small class="wb-d-change-time">紀錄時間：'+escv(scoreChange.changed_at||'今日')+'</small>','wb-d-score-change');
         }else{
           changeHtml=section('今日分數變化','目前沒有第二次可比較快照','<div class="wb-d-empty-mini">今天目前沒有偵測到這檔黑馬的分數變化。第一次快照不會被當成變化。</div>','wb-d-score-change wb-d-score-change-none');
@@ -45314,7 +45312,7 @@ function bindFactors(){
 
       /* 3. Factor chart */
       var factors=[],factorBars='';
-      [['營收','score_rev','rev',25],['估值','score_val','val',25],['產業動能','score_mom','mom',20],['連續性','score_streak','streak_score',20],['籌碼／技術','score_chip','chip',10]].forEach(function(x){var v=num(d[x[1]]!=null?d[x[1]]:row[x[2]]);if(v==null)return;factors.push({name:x[0],v:v,max:x[3]});var w=Math.max(0,Math.min(100,v/x[3]*100));factorBars+='<div class="wb-d-factor"><div><span>'+esc(x[0])+'</span><b>'+v.toFixed(0)+' / '+x[3]+'</b></div><div class="wb-d-factor-track"><i style="width:'+w.toFixed(1)+'%"></i></div></div>';});
+      [['營收','score_rev','rev',20],['估值','score_val','val',25],['產業動能','score_mom','mom',30],['連續性','score_streak','streak_score',5],['籌碼／技術','score_chip','chip',20]].forEach(function(x){var v=num(d[x[1]]!=null?d[x[1]]:row[x[2]]);if(v==null)return;factors.push({name:x[0],v:v,max:x[3]});var w=Math.max(0,Math.min(100,v/x[3]*100));factorBars+='<div class="wb-d-factor"><div><span>'+esc(x[0])+'</span><b>'+v.toFixed(0)+' / '+x[3]+'</b></div><div class="wb-d-factor-track"><i style="width:'+w.toFixed(1)+'%"></i></div></div>';});
       var factorHtml=factors.length?section('五大因子評分','目前保存值；不在前端重新計算',factorBars,'wb-d-factor-section'):'';
 
       /* 4. Score vs price / validation */
@@ -45471,8 +45469,10 @@ function bindFactors(){
     next();
   }
 
-  function fetchWorkbenchSource(source){
+  function fetchWorkbenchSource(source, forceRefresh){
     if(!source || source==='成效' || source==='我的排行') return Promise.resolve(null);
+    // forceRefresh 只重新讀取後端已保存快照，不觸發全市場重掃；避免分頁永遠沿用初次進入時的舊資料。
+    if(forceRefresh) delete state.loadedSources[source];
     if(state.loadedSources[source]) return Promise.resolve({source:source,loaded:true});
     if(state.loadingSources[source]) return state.loadingSources[source];
 
@@ -45558,18 +45558,18 @@ function bindFactors(){
     return promise;
   }
 
-  function loadSource(source){
+  function loadSource(source, forceRefresh){
     if(!source||source==='成效'||source==='我的排行')return;
     state.source=source;
     var loadEpoch=state.viewEpoch||0;
     if(source==='ETF')state.assetMode='etf';
     else if(source!=='ETF')state.assetMode='stock';
     render();
-    if(state.loadedSources[source])return;
+    if(state.loadedSources[source]&&!forceRefresh)return;
     state.snapshotRetryCounts[source]=0;
     status.textContent='正在載入 '+source+' 快照…';
     rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
-    fetchWorkbenchSource(source).then(function(){
+    fetchWorkbenchSource(source, !!forceRefresh).then(function(){
       if(state.source===source && loadEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer){
         status.textContent=state.loadedSources[source]?'已載入 '+source:'正在等待 '+source+' 快照…';
         render();
@@ -45663,7 +45663,7 @@ function bindFactors(){
       targetSourcePromise.catch(function(){});
     }
   }
-  document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':(state.assetMode==='lab'?'策略研究':'黑馬');state.query='';render();if(state.assetMode!=='lab')loadSource(state.source);};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){if(state.assetMode==='lab'){loadStrategyLab(true);}else load();};document.getElementById('wb-lab-refresh').onclick=function(){loadStrategyLab(true);};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();loadSource(state.source);}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
+  document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':(state.assetMode==='lab'?'策略研究':'黑馬');state.query='';render();if(state.assetMode!=='lab')loadSource(state.source);};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){var p=document.getElementById('wb-filter-panel');p.hidden=!p.hidden;};document.getElementById('wb-refresh').onclick=function(){if(state.assetMode==='lab'){loadStrategyLab(true);}else{var source=state.source||'黑馬';status.textContent='正在重新讀取 '+source+' 最新快照…';loadSource(source,true);}};document.getElementById('wb-lab-refresh').onclick=function(){loadStrategyLab(true);};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();/* 雷達定時快照會在 Cron 更新；每次切入都重新讀取已保存快照，不沿用舊的 loadedSources。 */loadSource(state.source,state.source==='雷達');}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
   // 點擊保險：即使 rowsEl 被其他重新渲染／事件處理影響，仍由捕獲階段直接開啟詳情。
   document.addEventListener('click',function(e){
     var b=e.target&&e.target.closest?e.target.closest('#wb-rows .wb-row'):null;
