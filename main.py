@@ -41850,13 +41850,14 @@ def _load_persisted_screener_snapshot(mode):
             computed_at = (computed_at if computed_at.tzinfo
                            else computed_at.replace(tzinfo=timezone.utc))
             age = (datetime.now(timezone.utc) - computed_at).total_seconds()
-            max_age = _SHARED_SNAPSHOT_MAX_AGE.get("screener_" + mode, 3 * 86400)
-            # 週末、國定假日或補假可能讓最近交易日快照超過 72 小時；
-            # 非盤中時段允許讀取最多 7 日快照，但稍後仍須由
-            # _screener_snapshot_valid_for_today 確認 source_date 是最新可確認交易日。
-            # 盤中不放寬，避免舊快照冒充今日資料。
-            if not _is_taiwan_intraday_window():
-                max_age = max(max_age, 7 * 86400)
+            # 修正：非盤中時段也不能無條件放寬到 7 天，否則黑馬／雷達
+            # 的背景更新若漏跑，頁面會持續把數天前的快照當成可用資料。
+            # 交易資料快照最多保留 24 小時；超過就回傳 None，讓工作台
+            # 的既有背景重建流程重新計算，並明確呈現資料不可用而非冒充最新。
+            max_age = min(
+                float(_SHARED_SNAPSHOT_MAX_AGE.get("screener_" + mode, 86400)),
+                86400.0,
+            )
             if age < 0 or age > max_age:
                 return None
         if not isinstance(rows, list):
@@ -42144,101 +42145,6 @@ def _screener_snapshot_valid_for_today(snapshot):
     # 沒有法人來源日可比較時，保留週末的短期回退，但不擴大一般工作日範圍。
     return (today.weekday() >= 5 and
             (today - source_date).days <= SCREENER_STALE_SNAPSHOT_MAX_AGE_SECONDS // 86400)
-
-
-# 雷達計分與訊號分類必須先於選股計算函式定義，避免背景工作過早啟動時找不到名稱。
-def score_radar_breakout(price, market_pct=None):
-    """雷達專用 100 分制：突破品質 30、趨勢 25、量能 20、進場位置 15、相對強度 10。
-    過度乖離會扣分；權重屬待歷史回測驗證的研究版，非已證實最佳值。
-    """
-    price = price or {}
-    close = price.get("close")
-    ma20, ma20_prev = price.get("ma20"), price.get("ma20_prev")
-    ma60, ma60_prev = price.get("ma60"), price.get("ma60_prev")
-    high20, high60 = price.get("high_20d"), price.get("high_60d")
-    vol_ratio = float(price.get("vol_ratio") or 0)
-    pct = float(price.get("pct") or 0)
-
-    def pct_diff(a, b):
-        try:
-            return (float(a) - float(b)) / float(b) * 100 if a is not None and b not in (None, 0) else None
-        except (TypeError, ValueError, ZeroDivisionError):
-            return None
-
-    dist20 = pct_diff(close, ma20)
-    is_60d = bool(high60 and close is not None and close >= high60)
-    is_20d = bool(high20 and close is not None and close >= high20)
-    breakout_score = 30 if is_60d else (23 if is_20d else 0)
-    if not is_60d and not is_20d and ma20 and close is not None and close >= ma20:
-        breakout_score = 6  # 站上均線不等於真正突破
-
-    trend_score = 0
-    if ma20 and close is not None and close >= ma20: trend_score += 10
-    if ma20 and ma20_prev and ma20 > ma20_prev: trend_score += 8
-    if ma60 and close is not None and close >= ma60: trend_score += 4
-    if ma60 and ma60_prev and ma60 > ma60_prev: trend_score += 3
-
-    if vol_ratio >= 2.0: volume_score = 20
-    elif vol_ratio >= 1.5: volume_score = 16
-    elif vol_ratio >= 1.2: volume_score = 11
-    elif vol_ratio >= 1.0: volume_score = 6
-    else: volume_score = 0
-
-    if dist20 is None: entry_score = 5
-    elif 0 <= dist20 <= 5: entry_score = 15
-    elif 5 < dist20 <= 8: entry_score = 11
-    elif 8 < dist20 <= 12: entry_score = 7
-    elif -3 <= dist20 < 0: entry_score = 6
-    else: entry_score = 2
-
-    rel = None
-    try:
-        if market_pct is not None: rel = pct - float(market_pct)
-    except (TypeError, ValueError):
-        rel = None
-    if rel is None:
-        rel_score = 7 if pct >= 0 else (4 if pct > -2 else 1)
-    else:
-        rel_score = 10 if rel >= 2 else (8 if rel >= 1 else (6 if rel >= 0 else (3 if rel > -2 else 0)))
-
-    raw_score = breakout_score + trend_score + volume_score + entry_score + rel_score
-    penalty, reasons = 0, []
-    if dist20 is not None:
-        if dist20 > 20: penalty += 15; reasons.append("距20日均線超過20%")
-        elif dist20 > 15: penalty += 10; reasons.append("距20日均線超過15%")
-        elif dist20 > 10: penalty += 5; reasons.append("距20日均線超過10%")
-    # 不因單日漲幅直接扣分；追高風險改看月線／季線乖離。
-    dist60 = pct_diff(close, ma60)
-    if dist60 is not None:
-        if dist60 > 30: penalty += 5; reasons.append("距季線超過30%")
-        elif dist60 > 20: penalty += 3; reasons.append("距季線超過20%")
-    penalty = min(20, penalty)
-    total = max(0, min(100, raw_score - penalty))
-    return {"total": total, "breakout_score": breakout_score, "trend_score": trend_score,
-            "volume_score": volume_score, "entry_score": entry_score, "relative_score": rel_score,
-            "penalty": penalty, "penalty_reason": "、".join(reasons) if reasons else "無過熱扣分",
-            "dist20_pct": round(dist20, 2) if dist20 is not None else None,
-            "breakout_type": "60日新高" if is_60d else ("20日新高" if is_20d else "未確認突破")}
-
-def classify_radar_state(price):
-    """把雷達訊號拆成突破／量能狀態，避免把普通上漲誤稱為帶量突破。"""
-    price = price or {}
-    close = price.get("close")
-    high_60 = price.get("high_60d")
-    high_20 = price.get("high_20d")
-    vol_ratio = price.get("vol_ratio") or 0
-    breakout = ""
-    if high_60 and close is not None and close >= high_60:
-        breakout = "季線新高"
-    elif high_20 and close is not None and close >= high_20:
-        breakout = "破月高"
-    if breakout and vol_ratio >= 1.5:
-        return "真正帶量突破"
-    if breakout:
-        return "突破但量能普通"
-    if vol_ratio >= 1.5:
-        return "帶量上漲"
-    return "價格強、量能普通"
 
 
 def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
@@ -42702,14 +42608,21 @@ def cron_radar_live():
     if secret != os.environ.get("CRON_SECRET"):
         abort(403)
     if not _is_taiwan_intraday_window():
+        print("ℹ️ /cron/radar-live 已觸發，但目前非台股一般盤中時段；略過掃描。", flush=True)
         return "目前非台股一般盤中時段，未啟動盤中雷達快照。", 200
+    print("🔔 /cron/radar-live 已觸發；檢查 radar_live 快照新鮮度。", flush=True)
     try:
         print(push_intraday_market_anomalies(base_url=DEFAULT_WEB_BASE_URL))
     except Exception as exc:
         print(f"⚠️ 盤中大盤異常檢查失敗：{exc}")
-    if _load_recent_live_radar_snapshot():
+    live_snapshot = _load_recent_live_radar_snapshot()
+    if live_snapshot:
+        computed_at = live_snapshot.get("computed_at")
+        print(f"⏭️ 盤中雷達快照仍有效 computed_at={computed_at}; 本次略過。", flush=True)
         return (f"最近 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘已有盤中雷達快照，本次略過。", 200)
-    return run_in_background("盤中雷達快照", _do_scheduled_radar_live_snapshot), 200
+    started = run_in_background("盤中雷達快照", _do_scheduled_radar_live_snapshot)
+    print(f"🚀 盤中雷達快照背景工作觸發結果：{started}", flush=True)
+    return started, 200
 
 
 def _taiex_intraday_history_points(now=None):
@@ -42980,6 +42893,100 @@ def build_screener_data_quality(cum_yoy, valuation, industry_stats,
         "missing": missing,
         "complete": valid == len(checks),
     }
+
+
+def score_radar_breakout(price, market_pct=None):
+    """雷達專用 100 分制：突破品質 30、趨勢 25、量能 20、進場位置 15、相對強度 10。
+    過度乖離會扣分；權重屬待歷史回測驗證的研究版，非已證實最佳值。
+    """
+    price = price or {}
+    close = price.get("close")
+    ma20, ma20_prev = price.get("ma20"), price.get("ma20_prev")
+    ma60, ma60_prev = price.get("ma60"), price.get("ma60_prev")
+    high20, high60 = price.get("high_20d"), price.get("high_60d")
+    vol_ratio = float(price.get("vol_ratio") or 0)
+    pct = float(price.get("pct") or 0)
+
+    def pct_diff(a, b):
+        try:
+            return (float(a) - float(b)) / float(b) * 100 if a is not None and b not in (None, 0) else None
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+
+    dist20 = pct_diff(close, ma20)
+    is_60d = bool(high60 and close is not None and close >= high60)
+    is_20d = bool(high20 and close is not None and close >= high20)
+    breakout_score = 30 if is_60d else (23 if is_20d else 0)
+    if not is_60d and not is_20d and ma20 and close is not None and close >= ma20:
+        breakout_score = 6  # 站上均線不等於真正突破
+
+    trend_score = 0
+    if ma20 and close is not None and close >= ma20: trend_score += 10
+    if ma20 and ma20_prev and ma20 > ma20_prev: trend_score += 8
+    if ma60 and close is not None and close >= ma60: trend_score += 4
+    if ma60 and ma60_prev and ma60 > ma60_prev: trend_score += 3
+
+    if vol_ratio >= 2.0: volume_score = 20
+    elif vol_ratio >= 1.5: volume_score = 16
+    elif vol_ratio >= 1.2: volume_score = 11
+    elif vol_ratio >= 1.0: volume_score = 6
+    else: volume_score = 0
+
+    if dist20 is None: entry_score = 5
+    elif 0 <= dist20 <= 5: entry_score = 15
+    elif 5 < dist20 <= 8: entry_score = 11
+    elif 8 < dist20 <= 12: entry_score = 7
+    elif -3 <= dist20 < 0: entry_score = 6
+    else: entry_score = 2
+
+    rel = None
+    try:
+        if market_pct is not None: rel = pct - float(market_pct)
+    except (TypeError, ValueError):
+        rel = None
+    if rel is None:
+        rel_score = 7 if pct >= 0 else (4 if pct > -2 else 1)
+    else:
+        rel_score = 10 if rel >= 2 else (8 if rel >= 1 else (6 if rel >= 0 else (3 if rel > -2 else 0)))
+
+    raw_score = breakout_score + trend_score + volume_score + entry_score + rel_score
+    penalty, reasons = 0, []
+    if dist20 is not None:
+        if dist20 > 20: penalty += 15; reasons.append("距20日均線超過20%")
+        elif dist20 > 15: penalty += 10; reasons.append("距20日均線超過15%")
+        elif dist20 > 10: penalty += 5; reasons.append("距20日均線超過10%")
+    # 不因單日漲幅直接扣分；追高風險改看月線／季線乖離。
+    dist60 = pct_diff(close, ma60)
+    if dist60 is not None:
+        if dist60 > 30: penalty += 5; reasons.append("距季線超過30%")
+        elif dist60 > 20: penalty += 3; reasons.append("距季線超過20%")
+    penalty = min(20, penalty)
+    total = max(0, min(100, raw_score - penalty))
+    return {"total": total, "breakout_score": breakout_score, "trend_score": trend_score,
+            "volume_score": volume_score, "entry_score": entry_score, "relative_score": rel_score,
+            "penalty": penalty, "penalty_reason": "、".join(reasons) if reasons else "無過熱扣分",
+            "dist20_pct": round(dist20, 2) if dist20 is not None else None,
+            "breakout_type": "60日新高" if is_60d else ("20日新高" if is_20d else "未確認突破")}
+
+def classify_radar_state(price):
+    """把雷達訊號拆成突破／量能狀態，避免把普通上漲誤稱為帶量突破。"""
+    price = price or {}
+    close = price.get("close")
+    high_60 = price.get("high_60d")
+    high_20 = price.get("high_20d")
+    vol_ratio = price.get("vol_ratio") or 0
+    breakout = ""
+    if high_60 and close is not None and close >= high_60:
+        breakout = "季線新高"
+    elif high_20 and close is not None and close >= high_20:
+        breakout = "破月高"
+    if breakout and vol_ratio >= 1.5:
+        return "真正帶量突破"
+    if breakout:
+        return "突破但量能普通"
+    if vol_ratio >= 1.5:
+        return "帶量上漲"
+    return "價格強、量能普通"
 
 
 # ── 每日盤前變化偵測初始化 ──
