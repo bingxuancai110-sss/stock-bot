@@ -49490,6 +49490,34 @@ def _bt_db_coverage():
                 cur.execute('SELECT MIN("'+period_col+'")::text,MAX("'+period_col+'")::text,COUNT(DISTINCT "'+period_col+'") FROM "'+name+'"')
                 a,b,n=cur.fetchone();info.update({"first":a,"last":b,"periods":int(n)})
             out["tables"][name]=info
+        # Discover candidate historical market/factor tables without assuming their names.
+        # This is read-only and helps determine whether an existing source can be reused.
+        cur.execute("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema=current_schema() AND table_type='BASE TABLE'
+              AND (
+                table_name ILIKE '%price%' OR table_name ILIKE '%daily%'
+                OR table_name ILIKE '%quote%' OR table_name ILIKE '%valuation%'
+                OR table_name ILIKE '%factor%' OR table_name ILIKE '%snapshot%'
+                OR table_name ILIKE '%momentum%' OR table_name ILIKE '%revenue%'
+              )
+            ORDER BY table_name
+        """)
+        candidate_names=[r[0] for r in cur.fetchall()]
+        candidates={}
+        for candidate_name in candidate_names:
+            cur.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema=current_schema() AND table_name=%s ORDER BY ordinal_position",
+                (candidate_name,))
+            candidates[candidate_name]=[
+                {"name":r[0],"type":r[1]} for r in cur.fetchall()
+            ]
+        out["candidate_history_tables"]=candidates
+        out["candidate_history_tables_note"]=(
+            "僅列出資料庫中名稱可能相關的資料表及欄位；尚未證明其歷史資料完整、可交易或符合 PIT。"
+        )
         cur.close()
     except Exception as exc:
         out["ok"]=False;out["error"]="資料庫稽核失敗："+str(exc)[:180]
@@ -49502,6 +49530,7 @@ def _bt_db_coverage():
         "stock_info 為目前產業分類，沒有歷史成分股/下市股票時可能產生存活者偏誤。",
         "inst_history 有交易日，但需要確認公布可用時間、缺漏日及完整電子股覆蓋率。",
         "尚未確認完整的歷史價格、歷史估值、歷史產業動能與五因子版本化原始訊號。",
+        "稽核會列出名稱可能相關的歷史資料表供人工確認；表名或欄位存在不代表資料已驗證。",
         "缺少逐筆 PIT 因子資料及歷史可交易價格前，禁止產生績效數字。"]
     out["ready_for_real_backtest"]=False
     return out
