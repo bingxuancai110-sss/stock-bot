@@ -18182,7 +18182,6 @@ def render_watchlist_web_body(user_id):
         except (TypeError, ValueError, OverflowError):
             continue
     _home_preview_rows.sort(key=lambda _x: _x["value"], reverse=True)
-    _home_preview_rows = _home_preview_rows[:5]
     _home_alloc_colors = ["#1769aa", "#2b9bd8", "#8646c6", "#e64f91", "#f29a26", "#9aa8b7"]
     _home_alloc_parts = []
     _home_alloc_legend = []
@@ -39962,7 +39961,6 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         except (TypeError, ValueError, OverflowError):
             continue
     _home_preview_rows.sort(key=lambda _x: _x["value"], reverse=True)
-    _home_preview_rows = _home_preview_rows[:5]
     _home_alloc_colors = ["#1769aa", "#2b9bd8", "#8646c6", "#e64f91", "#f29a26", "#9aa8b7"]
     _home_alloc_parts, _home_alloc_legend = [], []
     _home_alloc_start = 0.0
@@ -39985,12 +39983,27 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     for _row in _home_preview_rows:
         _price_text = f'{_row["price"]:,.2f}' if _row["price"] is not None else "—"
         _weight = (_row["value"] / _home_preview_total * 100.0) if _home_preview_total else 0.0
-        _home_holding_rows.append(f'<a class="home-holding-row" href="/web/positions" data-app-nav="1"><span class="home-holding-name"><b>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span><span class="home-holding-price">{_price_text}</span><span class="home-holding-value">{_row["value"]:,.0f}<small>{_weight:.1f}%</small></span></a>')
-    _home_holdings_preview_html = ('<section class="home-dashboard-card home-holdings-preview" aria-label="持股明細"><div class="home-dashboard-card-head"><div><h2>持股明細</h2><small>依目前可取得的市值排序</small></div><a href="/web/positions" data-app-nav="1">查看全部 →</a></div><div class="home-holdings-table-head"><span>股票</span><span>現價</span><span>市值／權重</span></div>' + ("".join(_home_holding_rows) if _home_holding_rows else '<div class="home-dashboard-empty">目前沒有可顯示的持股行情。</div>') + '</section>')
-    _home_alloc_legend_html = "".join(_home_alloc_legend) if _home_alloc_legend else '<div class="home-dashboard-empty">行情資料尚未齊全。</div>'
-    _home_allocation_html = ('<section class="home-dashboard-card home-allocation-card" aria-label="持股配置"><div class="home-dashboard-card-head"><div><h2>資產配置</h2><small>前五大持股與其餘持股占比</small></div><a href="/web/positions" data-app-nav="1">完整分析 →</a></div>' + f'<div class="home-allocation-body"><div class="home-allocation-donut" style="background:{_home_alloc_gradient}"><div><small>持股市值</small><b>{_home_preview_total:,.0f}</b></div></div><div class="home-allocation-legend">{_home_alloc_legend_html}</div></div></section>')
+        _bar_width = min(100.0, max(0.0, _weight))
+        _home_holding_rows.append(f'<div class="home-holding-row"><span class="home-holding-name"><b>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span><span class="home-holding-price">{_price_text}</span><span class="home-holding-value">{_row["value"]:,.0f}<small>{_weight:.1f}%</small><i class="home-weight-track"><i style="width:{_bar_width:.1f}%"></i></i></span></div>')
+    _home_holdings_preview_html = ('<section class="home-dashboard-card home-holdings-preview" aria-label="首頁完整持股明細"><div class="home-dashboard-card-head"><div><h2>持股明細</h2><small>首頁直接查看全部持股，依市值由高至低排序</small></div><span class="home-holdings-count">' + str(len(_home_preview_rows)) + ' 檔</span></div><div class="home-holdings-table-head"><span>股票</span><span>現價</span><span>市值／權重</span></div>' + ("".join(_home_holding_rows) if _home_holding_rows else '<div class="home-dashboard-empty">目前沒有可顯示的持股行情。</div>') + '</section>')
+    # 首頁不再重複顯示圓餅圖；目標配置由原本的配置功能負責。
+    _home_allocation_html = ''
 
     return f'''<style>
+/* 首頁持股直讀版：完整清單、非跳轉列、權重長條取代圓餅圖。 */
+.home-holdings-only{{display:block!important;grid-template-columns:1fr!important}}
+.home-holdings-only .home-dashboard-card{{width:100%;min-width:0}}
+.home-holdings-only .home-holdings-preview{{overflow:hidden}}
+.home-holdings-only .home-holdings-table-head,.home-holdings-only .home-holding-row{{display:grid;grid-template-columns:minmax(90px,1.1fr) minmax(70px,.8fr) minmax(105px,1fr);gap:8px;align-items:center}}
+.home-holdings-only .home-holding-row{{padding:12px 2px;border-top:1px solid #E8EEF4;color:#253B52}}
+.home-holdings-only .home-holding-name b{{display:block;font-size:14px;line-height:1.35}}
+.home-holdings-only .home-holding-name small,.home-holdings-only .home-holding-value small{{display:block;margin-top:4px;color:#66809A;font-size:11px}}
+.home-holdings-only .home-holding-price{{font-weight:700;text-align:center;font-variant-numeric:tabular-nums}}
+.home-holdings-only .home-holding-value{{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}}
+.home-weight-track{{display:block;height:4px;margin-top:6px;border-radius:99px;background:#EAF0F5;overflow:hidden}}
+.home-weight-track>i{{display:block;height:100%;border-radius:99px;background:#3885D9}}
+.home-holdings-count{{font-size:12px;color:#47769D;font-weight:700;white-space:nowrap}}
+@media(max-width:560px){{.home-holdings-only .home-holdings-table-head,.home-holdings-only .home-holding-row{{grid-template-columns:minmax(80px,1fr) minmax(65px,.72fr) minmax(92px,.95fr);gap:5px}}.home-holdings-only .home-holding-name b{{font-size:12px}}.home-holdings-only .home-holding-price,.home-holdings-only .home-holding-value{{font-size:12px}}}}
 /* TODAY 首頁 V27：保留既有資料與操作日報，重做資訊層級與卡片視覺。 */
 .daily-home{{max-width:1180px;margin:0 auto;padding:0 4px 92px}}
 .daily-complete-sync{{display:flex;gap:10px;align-items:flex-start;background:#F4F8FC;border:1px solid #D8E5F0;border-radius:12px;padding:10px 13px;margin:0 0 12px;box-shadow:0 2px 10px rgba(24,55,88,.04)}}
@@ -40418,9 +40431,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     {contribution_html}
     {position_journal_html}
   </div>
-  <div class="home-lower-dashboard" aria-label="持股與資產配置">
+  <div class="home-lower-dashboard home-holdings-only" aria-label="首頁完整持股明細">
     {_home_holdings_preview_html}
-    {_home_allocation_html}
   </div>
   <!-- 首頁精簡：雷達／智慧黑馬保留在「選股」頁，不在今日首頁重複展示。 -->
   <details class="home-detail-collapse"><summary>查看完整組合判讀 →</summary>{home_judgement_html}</details>
