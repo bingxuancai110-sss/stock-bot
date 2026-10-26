@@ -16702,75 +16702,122 @@ def build_market_recap():
 
 
 def build_market_recap_line_message(user_id, base_url=None):
-    """LINE 盤後摘要：保留真實資料，改用分區卡片呈現並附網頁完整分析按鈕。"""
+    """完整盤後報告直接顯示於 LINE；不把主要分析藏在網頁按鈕後。"""
     recap_text = build_market_recap()
-    web_url = _line_feature_web_url(user_id, "debrief", base_url)
-    if not web_url:
-        return TextSendMessage(text=recap_text)
-    raw_lines = [line.rstrip() for line in recap_text.splitlines()]
+    # 使用現有資料來源，不以缺失資料推測市場事實。
+    try:
+        positions = merge_positions(get_positions(user_id))
+    except Exception as exc:
+        print(f"⚠️ 盤後報告讀取持股失敗：{exc}")
+        positions = []
+    try:
+        macro_news = _morning_macro_news() or []
+    except Exception as exc:
+        print(f"⚠️ 盤後報告讀取總經新聞失敗：{exc}")
+        macro_news = []
+
+    # LINE Flex 每個文字元件控制長度；把報告拆成明確區塊，完整內容留在 LINE。
+    raw_lines = [line.rstrip() for line in str(recap_text or "").splitlines()]
     clean_lines = [line for line in raw_lines if line.strip("─").strip()]
     if clean_lines and clean_lines[0].startswith("📊"):
-        clean_lines = clean_lines[1:]
+        report_title = clean_lines.pop(0)
+    else:
+        report_title = "📊 台股盤後完整分析"
 
-    def find_line(prefix, start=0):
-        return next((idx for idx in range(start, len(clean_lines))
-                     if clean_lines[idx].startswith(prefix)), len(clean_lines))
+    def add_text(text, size="sm", color="#454C55", weight=None, margin="sm"):
+        item = {"type": "text", "text": str(text)[:4000] or "資料暫缺",
+                "size": size, "color": color, "wrap": True, "margin": margin}
+        if weight:
+            item["weight"] = weight
+        return item
 
-    buy_idx = find_line("🟢")
-    sell_idx = find_line("🔴", buy_idx)
-    note_idx = find_line("※", sell_idx)
-    top_lines = clean_lines[:buy_idx]
-    buy_lines = clean_lines[buy_idx + 1:sell_idx] if buy_idx < len(clean_lines) else []
-    sell_lines = clean_lines[sell_idx + 1:note_idx] if sell_idx < len(clean_lines) else []
-    note_lines = clean_lines[note_idx:] if note_idx < len(clean_lines) else []
-
-    def text_block(text, color="#454C55", size="sm", margin="none"):
-        return {"type": "text", "text": text or "資料暫缺", "size": size,
-                "color": color, "wrap": True, "margin": margin,
-                "lineSpacing": "3px"}
-
-    def recap_section(title, lines, color):
-        if not lines:
-            return None
+    def add_section(title, body, color="#6E5228"):
+        if not body:
+            body = "目前沒有足夠的已確認資料。"
         return {"type": "box", "layout": "vertical", "spacing": "xs",
                 "margin": "md", "paddingAll": "12px", "cornerRadius": "10px",
-                "backgroundColor": "#F9F9FB", "contents": [
-                    {"type": "text", "text": title, "weight": "bold", "size": "sm",
-                     "color": color},
-                    text_block("\n".join(lines), margin="sm")
+                "backgroundColor": "#F7F9FC", "contents": [
+                    add_text(title, size="md", color=color, weight="bold", margin="none"),
+                    add_text("\n".join(body) if isinstance(body, list) else body,
+                             size="sm", margin="sm")
                 ]}
 
-    sections = []
-    top_block = recap_section("收盤與法人資料", top_lines, "#6E5228")
-    buy_block = recap_section("🟢 法人買超前 3", buy_lines, "#155C42")
-    sell_block = recap_section("🔴 法人賣超前 3", sell_lines, "#A82A20")
-    for block in (top_block, buy_block, sell_block):
-        if block:
-            sections.append(block)
-    if note_lines:
-        sections.append(text_block("\n".join(note_lines), color="#767D85", size="xs", margin="md"))
+    # 市場與法人：沿用已存在的正式資料，並明確標示資料不足。
+    market_lines = []
+    institutional_lines = []
+    section = "market"
+    for line in clean_lines:
+        if line.startswith("🟢"):
+            section = "buy"
+            continue
+        if line.startswith("🔴"):
+            section = "sell"
+            continue
+        if line.startswith("※") or line.startswith("　"):
+            target = market_lines if section == "market" else institutional_lines
+            target.append(line.strip())
+            continue
+        if section == "market":
+            market_lines.append(line)
+        else:
+            institutional_lines.append(line)
+    if not market_lines:
+        market_lines = ["大盤資料暫缺；不以舊資料冒充今日收盤。"]
+    if not institutional_lines:
+        institutional_lines = ["法人資料尚未完整取得，請以資料日期為準。"]
+
+    # 個人持股只呈現資料庫內實際記錄的股數與成本，不臆測現價／損益。
+    holdings_lines = []
+    for item in positions[:20]:
+        code = str(item.get("code") or "").strip()
+        shares = item.get("shares") or 0
+        cost = item.get("cost")
+        name = _stock_name_for_digest(code) if code else code
+        try:
+            cost_text = f"均價成本 {float(cost):,.2f}" if cost is not None else "成本資料暫缺"
+        except (TypeError, ValueError):
+            cost_text = "成本資料暫缺"
+        holdings_lines.append(f"• {name}（{code}）：{int(shares):,} 股；{cost_text}")
+    if not holdings_lines:
+        holdings_lines = ["目前沒有讀取到已登錄的持股。"]
+
+    news_lines = []
+    for item in macro_news[:5]:
+        title = str(item.get("title") or "").strip()
+        source = str(item.get("source") or "").strip()
+        if title:
+            news_lines.append(f"• {title}" + (f"（來源：{source}）" if source else ""))
+    if not news_lines:
+        news_lines = ["目前沒有取得可列出的近期總經新聞標題；不自行編造新聞。"]
+
+    sections = [
+        add_section("🌎 一、今日市場與資料日期", market_lines, "#315E9B"),
+        add_section("🏦 二、法人買賣超", institutional_lines, "#6E5228"),
+        add_section("📌 三、你的持股清單", holdings_lines, "#155C42"),
+        add_section("📰 四、近期總經新聞（原始標題）", news_lines, "#6B4C8A"),
+        add_section("🧭 五、解讀與風險", [
+            "本報告只對已取得的市場與持股資料做整理。新聞標題本身不足以證明營收或 EPS 影響，未核實的因果關係不會當成事實。",
+            "現有資料未提供足夠的即時持股價格與逐因子歷史版本，因此本則不虛構未實現損益、五大因子扣分原因或明日目標價。",
+            "以上為資料整理，不構成買賣建議。"
+        ], "#A82A20")
+    ]
 
     bubble = {
         "type": "bubble",
+        "size": "giga",
         "body": {"type": "box", "layout": "vertical", "spacing": "none",
-                 "paddingAll": "18px", "contents": [
-            {"type": "text", "text": "📊 盤後收盤摘要", "weight": "bold",
-             "size": "xl", "color": "#1B2027"},
-            {"type": "text", "text": "資料依公開來源日期整理", "size": "xs",
-             "color": "#767D85", "margin": "xs"},
+                 "paddingAll": "16px", "contents": [
+            add_text(report_title, size="xl", color="#1B2027", weight="bold", margin="none"),
+            add_text(f"產生時間：{taiwan_now().strftime('%Y/%m/%d %H:%M')}（台灣時間）｜各資料源日期可能不同，請以各區標示為準。",
+                     size="xs", color="#767D85", margin="sm"),
             {"type": "separator", "margin": "md", "color": "#E8EAE6"},
-            *sections,
-            {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
-            {"type": "text", "text": "想看完整持股損益、今日判讀、走勢與風險分析，請開啟網頁版。",
-             "size": "xs", "color": "#767D85", "wrap": True, "margin": "md"},
-            {"type": "button", "style": "primary", "height": "sm",
-             "color": "#6E5228", "margin": "md",
-             "action": {"type": "uri", "label": "查看網頁版完整分析",
-                        "uri": web_url}}
+            *sections
         ]},
         "styles": {"body": {"backgroundColor": "#FFFFFF"}}
     }
-    return FlexSendMessage(alt_text=recap_text[:400], contents=bubble)
+    # altText 僅放短摘要，避免 LINE 1500 字元限制拒收；完整報告放在 Flex 本文。
+    alt_text = "台股盤後完整分析：市場、法人、持股清單、近期新聞與風險說明。"
+    return FlexSendMessage(alt_text=alt_text[:400], contents=bubble)
 
 
 # --- 自選股健檢：用長線指標評估「這檔還健康嗎」，不是評估「今天漲不漲」 ---
@@ -18104,6 +18151,84 @@ def render_watchlist_web_body(user_id):
         cards = "".join(grouped[tag])
         sections.append(f'<section class="watchlist-group"><h2>{icon} {html.escape(label)}'
                         f'<small>（{len(grouped[tag])}）</small></h2>{cards}</section>')
+
+
+    # V284 Home Dashboard: use real account holdings for a compact preview and allocation ring.
+    # The display layer only; do not alter existing P/L, contribution or trade calculations.
+    _home_preview_rows = []
+    _home_preview_total = 0.0
+    for _h in (holdings or []):
+        try:
+            _code = str(_h.get("code") or "").strip()
+            _name = str(_h.get("name") or _code or "未命名").strip()
+            _shares = float(_h.get("shares") or _h.get("quantity") or _h.get("qty") or 0)
+            _quote = price_map.get(_code) if isinstance(price_map, dict) else None
+            if isinstance(_quote, dict):
+                _price = next((float(_quote[k]) for k in ("price", "close", "last", "current_price")
+                               if _quote.get(k) not in (None, "")), None)
+            else:
+                _price = float(_quote) if _quote not in (None, "") else None
+            if _price is None:
+                _raw_price = _h.get("current_price", _h.get("market_price", _h.get("price")))
+                if isinstance(_raw_price, dict):
+                    _price = next((float(_raw_price[k]) for k in ("price", "close", "last", "current_price")
+                                   if _raw_price.get(k) not in (None, "")), None)
+                elif _raw_price not in (None, ""):
+                    _price = float(_raw_price)
+            _value = max(0.0, _shares * _price) if _price is not None and _shares > 0 else 0.0
+            _home_preview_total += _value
+            _home_preview_rows.append({"code": _code, "name": _name, "shares": _shares,
+                                       "price": _price, "value": _value})
+        except (TypeError, ValueError, OverflowError):
+            continue
+    _home_preview_rows.sort(key=lambda _x: _x["value"], reverse=True)
+    _home_preview_rows = _home_preview_rows[:5]
+    _home_alloc_colors = ["#1769aa", "#2b9bd8", "#8646c6", "#e64f91", "#f29a26", "#9aa8b7"]
+    _home_alloc_parts = []
+    _home_alloc_legend = []
+    _home_alloc_start = 0.0
+    _home_alloc_items = list(_home_preview_rows)
+    _home_alloc_visible_value = sum(_x["value"] for _x in _home_alloc_items)
+    _home_alloc_other = max(0.0, _home_preview_total - _home_alloc_visible_value)
+    if _home_alloc_other > 0.5:
+        _home_alloc_items.append({"name": "其他持股", "code": "其餘", "value": _home_alloc_other})
+    if _home_preview_total > 0:
+        for _idx, _row in enumerate(_home_alloc_items):
+            _pct = max(0.0, _row["value"] / _home_preview_total * 100.0)
+            if _pct <= 0:
+                continue
+            _color = "#9aa8b7" if _row.get("code") == "其餘" else _home_alloc_colors[_idx % len(_home_alloc_colors)]
+            _home_alloc_parts.append(f"{_color} {_home_alloc_start:.2f}% {_home_alloc_start + _pct:.2f}%")
+            _home_alloc_start += _pct
+            _home_alloc_legend.append(
+                f'<div class="home-allocation-legend-row"><i style="background:{_color}"></i>'
+                f'<span>{html.escape(_row["name"])} <small>{html.escape(_row["code"])}</small></span>'
+                f'<b>{_pct:.1f}%</b></div>')
+    _home_alloc_gradient = ("conic-gradient(" + ", ".join(_home_alloc_parts) + ")") if _home_alloc_parts else "conic-gradient(#d9e3ed 0 100%)"
+    _home_holding_rows = []
+    for _row in _home_preview_rows:
+        _price_text = f'{_row["price"]:,.2f}' if _row["price"] is not None else "—"
+        _weight = (_row["value"] / _home_preview_total * 100.0) if _home_preview_total else 0.0
+        _home_holding_rows.append(
+            f'<a class="home-holding-row" href="/web/positions" data-app-nav="1">'
+            f'<span class="home-holding-name"><b>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span>'
+            f'<span class="home-holding-price">{_price_text}</span>'
+            f'<span class="home-holding-value">{_row["value"]:,.0f}<small>{_weight:.1f}%</small></span></a>')
+    _home_holdings_preview_html = (
+        '<section class="home-dashboard-card home-holdings-preview" aria-label="持股明細">'
+        '<div class="home-dashboard-card-head"><div><h2>持股明細</h2><small>依目前可取得的市值排序</small></div>'
+        '<a href="/web/positions" data-app-nav="1">查看全部 →</a></div>'
+        '<div class="home-holdings-table-head"><span>股票</span><span>現價</span><span>市值／權重</span></div>'
+        + ("".join(_home_holding_rows) if _home_holding_rows else '<div class="home-dashboard-empty">目前沒有可顯示的持股行情。</div>')
+        + '</section>')
+    _home_alloc_legend_html = "".join(_home_alloc_legend) if _home_alloc_legend else '<div class="home-dashboard-empty">行情資料尚未齊全。</div>'
+    _home_allocation_html = (
+        '<section class="home-dashboard-card home-allocation-card" aria-label="持股配置">'
+        '<div class="home-dashboard-card-head"><div><h2>資產配置</h2><small>前五大持股與其餘持股占比</small></div>'
+        '<a href="/web/positions" data-app-nav="1">完整分析 →</a></div>'
+        f'<div class="home-allocation-body"><div class="home-allocation-donut" style="background:{_home_alloc_gradient}">'
+        f'<div><small>持股市值</small><b>{_home_preview_total:,.0f}</b></div></div>'
+        f'<div class="home-allocation-legend">{_home_alloc_legend_html}</div></div></section>')
 
     return f'''<style>
 .watchlist-meta{{padding:13px 15px;margin:0 0 14px;border-left:3px solid var(--brass);background:#F9F9FB;color:var(--ink-soft);font-size:12px;line-height:1.6}}
@@ -40136,6 +40261,64 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
  .today-target-name b{{font-size:13px!important}}
  .today-target-summary-weight,.today-target-day{{font-size:11px!important}}
 }}
+
+/* V284 首頁重整：參考投資帳戶 App 的資訊層級，保留原有資料來源與互動。 */
+.daily-home{{max-width:1180px!important;margin:0 auto!important}}
+.daily-hero{{background:linear-gradient(135deg,#073566,#0b477c)!important;border-radius:20px!important}}
+.daily-home .pwa-install-card{{display:none!important}}
+.home-portfolio-card{{margin-bottom:12px!important}}
+.home-insight-grid,.home-lower-dashboard{{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(300px,.8fr);gap:12px;align-items:start;margin:12px 0}}
+.home-insight-grid>.daily-card,.home-insight-grid>.position-journal{{min-width:0;margin:0!important;height:100%;box-sizing:border-box}}
+.home-insight-grid .position-journal{{background:#fff;border:1px solid #dce6f0;border-radius:18px;box-shadow:0 5px 18px rgba(22,49,78,.055);padding:15px!important}}
+.home-lower-dashboard{{grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr)}}
+.home-dashboard-card{{min-width:0;background:#fff;border:1px solid #dce6f0;border-radius:18px;padding:16px;box-shadow:0 5px 18px rgba(22,49,78,.055);box-sizing:border-box}}
+.home-dashboard-card-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;padding-bottom:11px;border-bottom:1px solid #e7edf4}}
+.home-dashboard-card-head h2{{margin:0;color:#173b5d;font-size:19px;font-weight:850}}
+.home-dashboard-card-head small{{display:block;margin-top:4px;color:#7b8ea1;font-size:11px;line-height:1.5}}
+.home-dashboard-card-head a{{color:#426e98;font-size:11px;font-weight:750;text-decoration:none;white-space:nowrap}}
+.home-holdings-table-head,.home-holding-row{{display:grid;grid-template-columns:minmax(0,1fr) 75px minmax(86px,.75fr);gap:8px;align-items:center}}
+.home-holdings-table-head{{padding:8px 3px;color:#7d8c9b;font-size:10px;font-weight:750}}
+.home-holdings-table-head span:last-child{{text-align:right}}
+.home-holding-row{{padding:11px 3px;border-top:1px solid #edf1f5;color:#26394d;text-decoration:none}}
+.home-holding-name{{min-width:0;display:flex;flex-direction:column;gap:3px}}
+.home-holding-name b{{font-size:13px;font-weight:800;overflow-wrap:anywhere}}
+.home-holding-name small,.home-holding-value small{{color:#8291a0;font-size:10px}}
+.home-holding-price{{font-size:12px;font-weight:750;font-variant-numeric:tabular-nums}}
+.home-holding-value{{text-align:right;font-size:12px;font-weight:850;font-variant-numeric:tabular-nums}}
+.home-holding-value small{{display:block;margin-top:3px}}
+.home-allocation-body{{display:grid;grid-template-columns:minmax(100px,.9fr) minmax(0,1.1fr);gap:14px;align-items:center}}
+.home-allocation-donut{{width:min(100%,190px);aspect-ratio:1;border-radius:50%;display:grid;place-items:center;margin:0 auto;position:relative}}
+.home-allocation-donut:before{{content:"";position:absolute;inset:23%;border-radius:50%;background:#fff;box-shadow:inset 0 0 0 1px #edf1f5}}
+.home-allocation-donut>div{{z-index:1;text-align:center;max-width:68%;display:flex;flex-direction:column;gap:4px}}
+.home-allocation-donut small{{color:#75879a;font-size:10px}}
+.home-allocation-donut b{{color:#173b5d;font-size:15px;overflow-wrap:anywhere}}
+.home-allocation-legend{{min-width:0}}
+.home-allocation-legend-row{{display:grid;grid-template-columns:9px minmax(0,1fr) auto;align-items:center;gap:7px;padding:7px 0;border-bottom:1px solid #eff2f6;font-size:11px}}
+.home-allocation-legend-row:last-child{{border-bottom:0}}
+.home-allocation-legend-row i{{width:8px;height:8px;border-radius:3px}}
+.home-allocation-legend-row span{{min-width:0;overflow-wrap:anywhere;font-weight:700}}
+.home-allocation-legend-row span small{{display:block;color:#8b99a7;font-size:9px;font-weight:500}}
+.home-allocation-legend-row>b{{font-variant-numeric:tabular-nums}}
+.home-dashboard-empty{{padding:18px 6px;color:#8796a5;font-size:12px;line-height:1.7}}
+.home-insight-grid .contribution-card{{height:100%;box-sizing:border-box}}
+.home-insight-grid .position-journal-head h2{{font-size:19px!important}}
+@media(max-width:760px){{
+ .daily-home{{padding-left:0!important;padding-right:0!important}}
+ .daily-hero{{margin-left:0!important;margin-right:0!important;border-radius:0 0 18px 18px!important}}
+ .home-insight-grid,.home-lower-dashboard{{grid-template-columns:minmax(0,1fr);gap:10px;margin:10px 0}}
+ .home-insight-grid>.daily-card,.home-insight-grid>.position-journal{{margin:0 8px!important}}
+ .home-dashboard-card{{margin:0 8px!important;padding:14px;border-radius:16px}}
+ .home-allocation-body{{grid-template-columns:minmax(105px,.8fr) minmax(0,1.2fr);gap:10px}}
+ .home-allocation-donut{{max-width:155px}}
+ .home-dashboard-card-head h2{{font-size:17px}}
+}}
+@media(max-width:370px){{
+ .home-allocation-body{{grid-template-columns:1fr}}
+ .home-allocation-donut{{max-width:165px}}
+ .home-allocation-legend{{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}}
+ .home-holdings-table-head,.home-holding-row{{grid-template-columns:minmax(0,1fr) 60px minmax(76px,.75fr);gap:5px}}
+}}
+
 </style>
 <div class="daily-home">
   <section class="daily-hero" aria-label="台北 101 城市主視覺">
@@ -40176,9 +40359,15 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       <div class="home-metric"><small>持倉損益</small><b class="{pl_class}">{fmt_pct(pl_total)}</b></div>
       <div class="home-metric"><small>持股檔數</small><b>{len(holdings)} 檔</b></div>
     </div>
-    {contribution_html}
   </section>
-  {position_journal_html}
+  <div class="home-insight-grid" aria-label="正負貢獻與操作日報">
+    {contribution_html}
+    {position_journal_html}
+  </div>
+  <div class="home-lower-dashboard" aria-label="持股與資產配置">
+    {_home_holdings_preview_html}
+    {_home_allocation_html}
+  </div>
   <!-- 首頁精簡：雷達／智慧黑馬保留在「選股」頁，不在今日首頁重複展示。 -->
   <details class="home-detail-collapse"><summary>查看完整組合判讀 →</summary>{home_judgement_html}</details>
   {home_intraday_script}
