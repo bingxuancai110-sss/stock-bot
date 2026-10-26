@@ -40003,6 +40003,16 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .home-weight-track{{display:block;height:4px;margin-top:6px;border-radius:99px;background:#EAF0F5;overflow:hidden}}
 .home-weight-track>i{{display:block;height:100%;border-radius:99px;background:#3885D9}}
 .home-holdings-count{{font-size:12px;color:#47769D;font-weight:700;white-space:nowrap}}
+/* 首頁資訊階層：目標配置預設收合，避免與完整持股清單搶版面。 */
+.home-target-collapse{{margin:18px 0 24px;border:1px solid #D9E5F0;border-radius:18px;background:#fff;box-shadow:0 5px 18px rgba(29,67,102,.045);overflow:hidden}}
+.home-target-collapse>summary{{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px;cursor:pointer;background:linear-gradient(135deg,#F7FBFF,#FFFFFF)}}
+.home-target-collapse>summary::-webkit-details-marker{{display:none}}
+.home-target-collapse>summary b{{display:block;color:#173B5D;font-size:17px}}
+.home-target-collapse>summary small{{display:block;margin-top:5px;color:#6B8197;font-size:12px;line-height:1.5}}
+.home-target-summary-action{{flex:0 0 auto;color:#2876B8;font-size:12px;font-weight:800}}
+.home-target-collapse[open]>summary{{border-bottom:1px solid #E5EDF5}}
+.home-target-collapse[open] .today-target-section{{margin:0;border:0;border-radius:0;box-shadow:none}}
+@media(max-width:480px){{.home-target-collapse>summary{{padding:14px}}.home-target-summary-action{{font-size:11px}}}}
 @media(max-width:560px){{.home-holdings-only .home-holdings-table-head,.home-holdings-only .home-holding-row{{grid-template-columns:minmax(80px,1fr) minmax(65px,.72fr) minmax(92px,.95fr);gap:5px}}.home-holdings-only .home-holding-name b{{font-size:12px}}.home-holdings-only .home-holding-price,.home-holdings-only .home-holding-value{{font-size:12px}}}}
 /* TODAY 首頁 V27：保留既有資料與操作日報，重做資訊層級與卡片視覺。 */
 .daily-home{{max-width:1180px;margin:0 auto;padding:0 4px 92px}}
@@ -40334,9 +40344,10 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .daily-hero{{background:linear-gradient(135deg,#073566,#0b477c)!important;border-radius:20px!important}}
 .daily-home .pwa-install-card{{display:none!important}}
 .home-portfolio-card{{margin-bottom:12px!important}}
-.home-insight-grid,.home-lower-dashboard{{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(300px,.8fr);gap:12px;align-items:start;margin:12px 0}}
-.home-insight-grid>.daily-card,.home-insight-grid>.position-journal{{min-width:0;margin:0!important;height:100%;box-sizing:border-box}}
-.home-insight-grid .position-journal{{background:#fff;border:1px solid #dce6f0;border-radius:18px;box-shadow:0 5px 18px rgba(22,49,78,.055);padding:15px!important}}
+.home-contribution-section,.home-journal-section{{display:block;min-width:0;margin:12px 0}}
+.home-contribution-section>.daily-card{{min-width:0;margin:0!important;box-sizing:border-box}}
+.home-journal-section>.position-journal{{min-width:0;margin:0!important;background:#fff;border:1px solid #dce6f0;border-radius:18px;box-shadow:0 5px 18px rgba(22,49,78,.055);padding:15px!important;box-sizing:border-box}}
+.home-lower-dashboard{{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start;margin:12px 0}}
 .home-lower-dashboard{{grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr)}}
 .home-dashboard-card{{min-width:0;background:#fff;border:1px solid #dce6f0;border-radius:18px;padding:16px;box-shadow:0 5px 18px rgba(22,49,78,.055);box-sizing:border-box}}
 .home-dashboard-card-head{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;padding-bottom:11px;border-bottom:1px solid #e7edf4}}
@@ -40367,13 +40378,13 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
 .home-allocation-legend-row span small{{display:block;color:#8b99a7;font-size:9px;font-weight:500}}
 .home-allocation-legend-row>b{{font-variant-numeric:tabular-nums}}
 .home-dashboard-empty{{padding:18px 6px;color:#8796a5;font-size:12px;line-height:1.7}}
-.home-insight-grid .contribution-card{{height:100%;box-sizing:border-box}}
-.home-insight-grid .position-journal-head h2{{font-size:19px!important}}
+.home-contribution-section .contribution-card{{height:auto;box-sizing:border-box}}
+.home-journal-section .position-journal-head h2{{font-size:19px!important}}
 @media(max-width:760px){{
  .daily-home{{padding-left:0!important;padding-right:0!important}}
  .daily-hero{{margin-left:0!important;margin-right:0!important;border-radius:0 0 18px 18px!important}}
- .home-insight-grid,.home-lower-dashboard{{grid-template-columns:minmax(0,1fr);gap:10px;margin:10px 0}}
- .home-insight-grid>.daily-card,.home-insight-grid>.position-journal{{margin:0 8px!important}}
+ .home-contribution-section,.home-journal-section,.home-lower-dashboard{{grid-template-columns:minmax(0,1fr);gap:10px;margin:10px 0}}
+ .home-contribution-section>.daily-card,.home-journal-section>.position-journal{{margin:0 8px!important}}
  .home-dashboard-card{{margin:0 8px!important;padding:14px;border-radius:16px}}
  .home-allocation-body{{grid-template-columns:minmax(105px,.8fr) minmax(0,1.2fr);gap:10px}}
  .home-allocation-donut{{max-width:155px}}
@@ -40403,16 +40414,12 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       <section class="hero-quote-panel"><p class="hero-quote-text">{html.escape(quote_text)}</p></section>
     </div>
   </section>
-  <section class="daily-card pwa-install-card" aria-label="加入主畫面" style="border:1px solid #D9E4EF;background:linear-gradient(135deg,#F7FBFF,#FFFFFF);">
-    <div class="daily-section-title"><div><h2>📱 把台股 BOT 變成手機 App</h2><span>不用下載 App，從 Safari 加入主畫面即可</span></div><a href="/web/install" data-app-nav="1">查看教學 →</a></div>
-    <p style="margin:0;color:#5F6F80;font-size:12px;line-height:1.6">第一次使用？照著 4 個步驟操作，之後直接從 iPhone 主畫面開啟。</p>
-  </section>
   <div class="daily-complete-sync" aria-live="polite">
     <span class="daily-complete-sync-dot" aria-hidden="true"></span>
     <div><b data-home-live-title>{html.escape(home_sync_title)}</b><span data-home-live-note>{html.escape(home_sync_detail)}</span></div>
   </div>
   <section class="daily-card home-portfolio-card">
-    <div class="daily-section-title"><div><h2>💰 我的投資</h2><span>你現在的組合狀態</span></div><a href="/web/positions">查看持股明細 →</a></div>
+    <div class="daily-section-title"><div><h2>💰 我的投資</h2><span>先看組合狀態，再看個股細節</span></div><a href="#home-holdings" data-home-scroll="holdings">查看首頁持股 ↓</a></div>
     <div class="home-portfolio-grid">
       <div class="home-metric home-metric-main" data-home-privacy-card>
         <div class="home-metric-heading"><small>總市值</small><button type="button" class="home-privacy-toggle" data-home-privacy-toggle aria-label="隱藏總市值與成本" aria-pressed="false" title="隱藏總市值與成本">
@@ -40427,11 +40434,13 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       <div class="home-metric"><small>持股檔數</small><b>{len(holdings)} 檔</b></div>
     </div>
   </section>
-  <div class="home-insight-grid" aria-label="正負貢獻與操作日報">
+  <div class="home-contribution-section" aria-label="今日正負貢獻">
     {contribution_html}
+  </div>
+  <div class="home-journal-section" aria-label="近期操作日報">
     {position_journal_html}
   </div>
-  <div class="home-lower-dashboard home-holdings-only" aria-label="首頁完整持股明細">
+  <div class="home-lower-dashboard home-holdings-only" id="home-holdings" aria-label="首頁完整持股明細">
     {_home_holdings_preview_html}
   </div>
   <!-- 首頁精簡：雷達／智慧黑馬保留在「選股」頁，不在今日首頁重複展示。 -->
@@ -41977,7 +41986,10 @@ def web_portfolio(uid):
 {industry_css}<div class="section-head"><h2>完整組合分析</h2><span class="section-note">往下查看詳細資料</span></div>
 <div class="totals"><div><div class="total-label">總市值</div><div class="total-value num">{total_value:,.0f}</div><div class="total-sub">{fmt_pct(pl_total)}</div></div><div><div class="total-label">持股檔數</div><div class="total-value num">{len(holdings)}</div><div class="total-sub">{len(by_industry)} 個產業</div></div><div><div class="total-label">最大單一持股</div><div class="total-value num">{top['weight']:.1f}%</div><div class="total-sub">{top['name']}</div></div></div>
 <div class="section-head"><h2>組合走勢</h2><span class="section-note">相對起始日漲跌幅</span></div><div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
-{today_target_allocation_html}
+<details class="home-target-collapse" id="home-target-settings">
+  <summary><span><b>目標配置</b><small>調整理想比例，對照目前持股；不會自動買賣</small></span><span class="home-target-summary-action">展開設定 ↓</span></summary>
+  {today_target_allocation_html}
+</details>
 {today_target_script}
 
 """
