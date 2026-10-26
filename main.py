@@ -39957,7 +39957,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
                     _price = float(_raw_price)
             _value = max(0.0, _shares * _price) if _price is not None and _shares > 0 else 0.0
             _home_preview_total += _value
-            _home_preview_rows.append({"code": _code, "name": _name, "shares": _shares, "price": _price, "value": _value})
+            _home_preview_rows.append({"code": _code, "name": _name, "shares": _shares, "price": _price, "value": _value, "holding": dict(_h)})
         except (TypeError, ValueError, OverflowError):
             continue
     _home_preview_rows.sort(key=lambda _x: _x["value"], reverse=True)
@@ -39984,8 +39984,47 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         _price_text = f'{_row["price"]:,.2f}' if _row["price"] is not None else "—"
         _weight = (_row["value"] / _home_preview_total * 100.0) if _home_preview_total else 0.0
         _bar_width = min(100.0, max(0.0, _weight))
-        _home_holding_rows.append(f'<div class="home-holding-row"><span class="home-holding-name"><b>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span><span class="home-holding-price">{_price_text}</span><span class="home-holding-value">{_row["value"]:,.0f}<small>{_weight:.1f}%</small><i class="home-weight-track"><i style="width:{_bar_width:.1f}%"></i></i></span></div>')
-    _home_holdings_preview_html = ('<section class="home-dashboard-card home-holdings-preview" aria-label="首頁完整持股明細"><div class="home-dashboard-card-head"><div><h2>持股明細</h2><small>首頁直接查看全部持股，依市值由高至低排序</small></div><span class="home-holdings-count">' + str(len(_home_preview_rows)) + ' 檔</span></div><div class="home-holdings-table-head"><span>股票</span><span>現價</span><span>市值／權重</span></div>' + ("".join(_home_holding_rows) if _home_holding_rows else '<div class="home-dashboard-empty">目前沒有可顯示的持股行情。</div>') + '</section>')
+        _holding = _row.get("holding") or {}
+        _cost_raw = _holding.get("avg_cost", _holding.get("cost_price", _holding.get("cost", _holding.get("avg_price"))))
+        try:
+            _cost_num = float(_cost_raw) if _cost_raw not in (None, "") else None
+            _cost_text = f"{_cost_num:,.2f}" if _cost_num is not None else "尚無成本資料"
+        except (TypeError, ValueError, OverflowError):
+            _cost_num, _cost_text = None, "尚無成本資料"
+        _pnl_raw = _holding.get("unrealized_pnl", _holding.get("pnl", _holding.get("profit")))
+        try:
+            _pnl_num = float(_pnl_raw) if _pnl_raw not in (None, "") else None
+            _pnl_text = f"{_pnl_num:+,.0f} 元" if _pnl_num is not None else "尚無損益資料"
+        except (TypeError, ValueError, OverflowError):
+            _pnl_num, _pnl_text = None, "尚無損益資料"
+        _shares_text = f'{_row["shares"]:,.0f} 股' if _row["shares"] else "股數未提供"
+        _home_holding_rows.append(
+            f'<details class="home-holding-detail" data-home-holding-row data-code="{html.escape(_row["code"], quote=True)}" '
+            f'data-value="{_row["value"]:.4f}" data-weight="{_weight:.4f}" data-pnl="{_pnl_num if _pnl_num is not None else -1e99:.4f}">'
+            f'<summary class="home-holding-row"><span class="home-holding-name"><b>{html.escape(_row["name"])}</b>'
+            f'<small>{html.escape(_row["code"])}</small></span><span class="home-holding-price">{_price_text}</span>'
+            f'<span class="home-holding-value">{_row["value"]:,.0f}<small>{_weight:.1f}%</small>'
+            f'<i class="home-weight-track"><i style="width:{_bar_width:.1f}%"></i></i></span>'
+            f'<span class="home-holding-chevron" aria-hidden="true">⌄</span></summary>'
+            f'<div class="home-holding-expanded"><div><small>持有股數</small><b>{_shares_text}</b></div>'
+            f'<div><small>平均成本</small><b>{html.escape(_cost_text)}</b></div>'
+            f'<div><small>未實現損益</small><b>{html.escape(_pnl_text)}</b></div>'
+            f'<div><small>目前權重</small><b>{_weight:.1f}%</b></div>'
+            f'<a href="/web/positions" data-app-nav="1">查看完整持股分析 →</a></div></details>'
+        )
+    _home_holdings_preview_html = (
+        '<section class="home-dashboard-card home-holdings-preview" aria-label="首頁完整持股明細">'
+        '<div class="home-dashboard-card-head"><div><h2>持股明細</h2>'
+        '<small>點擊個股可展開資訊；市值與權重不重複顯示</small></div>'
+        '<span class="home-holdings-count">' + str(len(_home_preview_rows)) + ' 檔</span></div>'
+        '<div class="home-holding-sort" role="group" aria-label="持股排序">'
+        '<button type="button" class="is-active" data-home-sort="value">市值排序</button>'
+        '<button type="button" data-home-sort="weight">權重排序</button>'
+        '<button type="button" data-home-sort="pnl">損益排序</button></div>'
+        '<div class="home-holdings-table-head"><span>股票</span><span>現價</span><span>市值／權重</span><span></span></div>'
+        + ("".join(_home_holding_rows) if _home_holding_rows else '<div class="home-dashboard-empty">目前沒有可顯示的持股行情。</div>')
+        + '</section>'
+    )
     # 首頁不再重複顯示圓餅圖；目標配置由原本的配置功能負責。
     _home_allocation_html = ''
 
@@ -40397,6 +40436,21 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
  .home-holdings-table-head,.home-holding-row{{grid-template-columns:minmax(0,1fr) 60px minmax(76px,.75fr);gap:5px}}
 }}
 
+/* 首頁互動持股：原地展開、三種排序，維持市值金額＋權重百分比長條。 */
+.home-holdings-preview .home-holding-sort{{display:flex;gap:7px;flex-wrap:wrap;margin:8px 0 5px}}
+.home-holdings-preview .home-holding-sort button{{border:1px solid #d8e5f0;background:#f5f9fc;color:#48647d;border-radius:999px;padding:7px 12px;font-size:11px;font-weight:750;cursor:pointer}}
+.home-holdings-preview .home-holding-sort button.is-active{{background:#dcecf9;border-color:#b7d5ee;color:#185e91}}
+.home-holdings-preview .home-holding-detail{{border-top:1px solid #edf1f5}}
+.home-holdings-preview .home-holding-detail>summary{{list-style:none;cursor:pointer;position:relative;padding-right:17px}}
+.home-holdings-preview .home-holding-detail>summary::-webkit-details-marker{{display:none}}
+.home-holdings-preview .home-holding-chevron{{position:absolute;right:1px;color:#7790a5;font-size:13px;transition:transform .15s}}
+.home-holdings-preview .home-holding-detail[open] .home-holding-chevron{{transform:rotate(180deg)}}
+.home-holdings-preview .home-holding-expanded{{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px;background:#f5f9fc;border-radius:0 0 12px 12px;margin-bottom:8px}}
+.home-holdings-preview .home-holding-expanded>div{{display:flex;flex-direction:column;gap:4px;min-width:0}}
+.home-holdings-preview .home-holding-expanded small{{font-size:10px;color:#7a8ea1}}
+.home-holdings-preview .home-holding-expanded b{{font-size:12px;color:#243f58;overflow-wrap:anywhere}}
+.home-holdings-preview .home-holding-expanded a{{grid-column:1/-1;color:#2475ad;font-size:12px;font-weight:750;text-decoration:none;padding-top:4px}}
+@media(max-width:560px){{.home-holdings-preview .home-holding-row{{grid-template-columns:minmax(75px,1fr) minmax(58px,.7fr) minmax(82px,.9fr) 10px;gap:5px}}.home-holdings-preview .home-holding-price{{font-size:11px}}.home-holdings-preview .home-holding-value{{font-size:11px}}.home-holdings-preview .home-holding-sort button{{padding:7px 9px}}}}
 </style>
 <div class="daily-home">
   <section class="daily-hero" aria-label="台北 101 城市主視覺">
@@ -41247,6 +41301,22 @@ def _render_fast_portfolio_entry(uid, positions, polling_enabled=True):
  }}
  poll();
 }})();
+
+  // 首頁持股排序：只重排顯示列，不改動持股資料或交易狀態。
+  document.querySelectorAll('[data-home-sort]').forEach(function(btn){{
+    btn.addEventListener('click',function(){{
+      var key=btn.getAttribute('data-home-sort');
+      var section=btn.closest('.home-holdings-preview');
+      if(!section)return;
+      var rows=Array.from(section.querySelectorAll('[data-home-holding-row]'));
+      rows.sort(function(a,b){{
+        var av=Number(a.getAttribute('data-'+key)||0),bv=Number(b.getAttribute('data-'+key)||0);
+        return bv-av;
+      }});
+      rows.forEach(function(row){{section.appendChild(row);}});
+      section.querySelectorAll('[data-home-sort]').forEach(function(b){{b.classList.toggle('is-active',b===btn);}});
+    }});
+  }});
 </script>'''
     if not polling_enabled:
         script_start = body.rfind("<script>")
