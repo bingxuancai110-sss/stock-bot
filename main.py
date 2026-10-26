@@ -17758,9 +17758,9 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
     def section(title, items):
         return {"type":"box","layout":"vertical","spacing":"sm","margin":"lg","contents":[txt(title,"md",navy,"bold","none"), {"type":"separator","color":line,"margin":"sm"}, *items]}
     def metric(label, value, color=navy):
-        return {"type":"box","layout":"vertical","flex":1,"paddingAll":"10px","backgroundColor":"#F6F8FB","cornerRadius":"10px","contents":[txt(label,"xs",muted,None,"none"),txt(value,"lg",color,"bold","xs")]}
+        return {"type":"box","layout":"vertical","flex":1,"paddingAll":"12px","backgroundColor":"#F3F6FA","cornerRadius":"12px","contents":[txt(label,"xs",muted,None,"none"),txt(value,"lg",color,"bold","xs")]}
     def bubble(title, subtitle, body):
-        return {"type":"bubble","size":"giga","body":{"type":"box","layout":"vertical","paddingAll":"16px","spacing":"sm","contents":[txt(title,"xl",navy,"bold","none"),txt(subtitle,"xs",muted,None,"none"),{"type":"separator","color":line,"margin":"md"},*body]},"styles":{"body":{"backgroundColor":"#FFFFFF"}}}
+        return {"type":"bubble","size":"giga","body":{"type":"box","layout":"vertical","paddingAll":"18px","spacing":"md","contents":[txt(title,"xl",navy,"bold","none"),txt(subtitle,"xs",muted,None,"none"),{"type":"separator","color":"#DCE4EC","margin":"md"},*body]},"styles":{"body":{"backgroundColor":"#FFFFFF"}}}
     # Parsed values are taken from the existing report formatter, not fabricated.
     def find(prefix, default="暫無資料"):
         for ln in lines:
@@ -17845,26 +17845,28 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
     inst_lines=[]
     if inst_history:
         _max_abs=max([abs(x['total']) for x in inst_history] or [1]) or 1
-        inst_lines.append(txt("近 20 個交易日｜三大法人合計（張）","xs",muted,None,"none"))
+        inst_lines.append(txt("紅色＝買超｜綠色＝賣超；柱高代表張數相對大小", "xs", muted, None, "none"))
+        # 直向正負柱狀圖：零軸水平，買超向上、賣超向下；不再用左右延伸的橫條。
+        _chart_cols=[]
+        _count=len(inst_history)
+        for _idx,_d in enumerate(inst_history):
+            _v=_d['total']; _color=red if _v>0 else green if _v<0 else "#98A2B3"
+            _height=max(2, int(abs(_v)/_max_abs*30))
+            _pos={"type":"box","layout":"vertical","height":"30px","contents":([{"type":"filler"},{"type":"box","layout":"vertical","height":f"{_height}px","backgroundColor":_color,"cornerRadius":"2px","contents":[]}] if _v>0 else [{"type":"filler"}])}
+            _neg={"type":"box","layout":"vertical","height":"30px","contents":([{"type":"box","layout":"vertical","height":f"{_height}px","backgroundColor":_color,"cornerRadius":"2px","contents":[]},{"type":"filler"}] if _v<0 else [{"type":"filler"}])}
+            _date_label=_d['date'] if (_idx % 2 == 0 or _idx == _count-1) else ""
+            _col={"type":"box","layout":"vertical","flex":1,"spacing":"none","contents":[_pos,{"type":"box","layout":"horizontal","height":"1px","backgroundColor":"#98A2B3","contents":[]},_neg,{"type":"text","text":_date_label or "·","size":"xxs","color":muted,"align":"center","wrap":False,"margin":"xs"}]}
+            # 保留逐日精確數字，使用者點閱前仍可從圖下方對照，不讓標籤擠在每根柱旁。
+            _chart_cols.append(_col)
+        inst_lines.append({"type":"box","layout":"horizontal","spacing":"xs","alignItems":"center","contents":_chart_cols})
+        _detail_lines=[]
         for _d in inst_history:
-            _v=_d['total']; _w=max(2, min(100, abs(_v)/_max_abs*100))
-            _color=red if _v>0 else green if _v<0 else "#98A2B3"
-            _label=f"{_d['date']}  {_v:+,}"
-            # 以左右兩欄模擬零軸：買超向右、賣超向左，並保留日期及張數。
-            _bar={"type":"box","layout":"horizontal","spacing":"xs","alignItems":"center","contents":[
-                {"type":"box","layout":"horizontal","flex":1,"contents":[
-                    ({"type":"filler"} if _v<0 else {"type":"filler"}),
-                    ({"type":"box","layout":"vertical","width":f"{_w/2:.1f}%","height":"8px","backgroundColor":_color,"cornerRadius":"3px","contents":[]} if _v<0 else {"type":"filler"})]},
-                {"type":"box","layout":"vertical","width":"1px","height":"12px","backgroundColor":"#98A2B3","contents":[]},
-                {"type":"box","layout":"horizontal","flex":1,"contents":[
-                    ({"type":"box","layout":"vertical","width":f"{_w/2:.1f}%","height":"8px","backgroundColor":_color,"cornerRadius":"3px","contents":[]} if _v>0 else {"type":"filler"})]},
-                {"type":"text","text":_label,"size":"xxs","color":_color,"align":"end","flex":2,"wrap":False}
-            ]}
-            inst_lines.append(_bar)
+            _v=_d['total']; _color=red if _v>0 else green if _v<0 else muted
+            _detail_lines.append({"type":"box","layout":"horizontal","spacing":"sm","contents":[txt(_d['date'],"xxs",muted,None,"none"),{"type":"text","text":f"{_v:+,} 張","size":"xxs","color":_color,"align":"end","flex":1,"wrap":False}]})
+        inst_lines.append({"type":"box","layout":"vertical","spacing":"xs","margin":"sm","contents":_detail_lines})
         _sums={k:sum(x[k] for x in inst_history) for k in ("foreign","trust","dealer")}
         inst_lines.append(txt(f"外資 {_sums['foreign']:+,} 張　投信 {_sums['trust']:+,} 張　自營商 {_sums['dealer']:+,} 張","xs",navy,"bold","sm"))
     else:
-        # 若歷史表沒有資料，保留目前報告裡可用的法人摘要，但不偽稱 20 日圖。
         _in=False
         for ln in lines:
             if "【法人籌碼】" in ln: _in=True; continue
@@ -17873,8 +17875,10 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         inst_lines.insert(0,txt("近 20 日法人圖：暫無歷史資料","xs",muted,"bold","none"))
         if not inst_lines: inst_lines=[txt("法人歷史資料暫無資料","sm",muted)]
     tech_lines=[]; in_tech=False
+    _tech_end_markers=("【關鍵數據】","【模型解讀】","【模型解讀與風險】","【法人籌碼】","【相關新聞】","📰 相關新聞")
     for ln in lines:
         if "【位階】" in ln: in_tech=True; continue
+        if in_tech and any(mark in ln for mark in _tech_end_markers): break
         if in_tech and ln.strip(): tech_lines.append(txt(ln.strip(),"sm"))
     if not tech_lines: tech_lines=[txt("均線與位階資料暫無資料","sm",muted)]
     # 模型解讀只取第一段唯一的觀察文字，避免舊報告中的同句重複出現。
@@ -17883,8 +17887,10 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         _st=_ln.strip()
         if not _st: continue
         if ("目前相對較強" in _st or "主要較弱" in _st or "不代表買賣建議" in _st or "風險提醒" in _st):
-            if _st not in _seen_model:
-                _seen_model.add(_st); _model_items.append(txt(_st,"sm"))
+            _normalized=" ".join(_st.replace("📌","").replace("📍","").split())
+            if _normalized not in _seen_model:
+                _seen_model.add(_normalized); _model_items.append(txt(_st,"sm"))
+            if len(_model_items)>=1: break
     if not _model_items: _model_items=[txt("模型解讀請以已取得的五大因子資料為準。","sm",muted)]
     _news_items=[]
     for it in (news or []):
@@ -17894,9 +17900,11 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         _label=' · '.join(x for x in (_date,_src) if x)
         _news_items.append(section(_title,([txt(_label,"xs",muted,None,"none")] if _label else []) + ([{"type":"text","text":"閱讀原文 ↗","size":"sm","color":blue,"wrap":True,"decoration":"underline","action":{"type":"uri","uri":_valid_news_uri(it.get('link'))},"margin":"sm"}] if _valid_news_uri(it.get('link')) else [txt("暫無原文連結","xs",muted)])))
     if not _news_items: _news_items=[txt("目前沒有取得相關新聞。","sm",muted)]
+    # 第三張只保留技術面、一次模型觀察與新聞；不重複堆疊關鍵數據。
+    _risk_items=[txt("模型為相對強弱篩選，不是獲利保證或買賣指令。","xs",muted)]
     cards=[bubble(f"📊 {code} {name}",f"個股總覽｜行情資料日 {quote_day}",quote_items+[factor_section]),
            bubble(f"🏦 {code} {name}","基本面與法人籌碼",[section("關鍵基本面與估值",fundamentals),section("近 20 日法人買賣超",inst_lines)]),
-           bubble(f"📈 {code} {name}","技術位階、模型觀察與相關新聞",[section("技術位階",tech_lines),section("模型解讀與風險",_model_items),section("相關新聞",_news_items)])]
+           bubble(f"📈 {code} {name}","技術位階、模型觀察與相關新聞",[section("技術位階",tech_lines),section("模型觀察",_model_items),section("風險提醒",_risk_items),section("相關新聞",_news_items)])]
     messages=[]
     for i,bub in enumerate(cards,1):
         n=len(json.dumps(bub,ensure_ascii=False,separators=(',',':')).encode('utf-8'))
