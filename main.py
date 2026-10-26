@@ -17588,30 +17588,38 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
     else:
         lines.append("💰 股價資料不足")
     high, low = stock.get("high"), stock.get("low")
-    try:
-        high = float(high) if high is not None and float(high) > 0 else None
-        low = float(low) if low is not None and float(low) > 0 else None
-    except (TypeError, ValueError):
-        high, low = None, None
     lines.append(f"高低 {high:.2f}/{low:.2f}" if high is not None and low is not None else "高低資料不足")
     volume = stock.get("volume")
-    try:
-        volume = float(volume) if volume is not None and float(volume) >= 0 else None
-    except (TypeError, ValueError):
-        volume = None
     lines.append(f"📦 {int(volume / 1000):,} 張" if volume is not None else "📦 成交量資料不足")
     lines.append(f"🛡️ 支撐 {fmt_support(stock)}")
     lines.append(f"🚧 壓力 {fmt_resistance(stock.get('resistance'))}")
 
     if score:
         caps = score.get('caps',[20,25,30,5,20])
-        lines += ["", "【五大因子】",
-                  f"營收成長　{score.get('revenue', 0):.0f}/{caps[0]:.0f}",
-                  f"估值　　　{score.get('valuation', 0):.0f}/{caps[1]:.0f}",
-                  f"產業動能　{score.get('momentum', 0):.0f}/{caps[2]:.0f}",
-                  f"法人連續性 {score.get('streak_score', 0):.0f}/{caps[3]:.0f}",
-                  f"籌碼／技術 {score.get('chip_tech', 0):.0f}/{caps[4]:.0f}",
-                  f"模型分數　{score['total']}／100"]
+        current_factors = [
+            ("營收成長", float(score.get("revenue", 0) or 0), float(caps[0])),
+            ("估值", float(score.get("valuation", 0) or 0), float(caps[1])),
+            ("產業動能", float(score.get("momentum", 0) or 0), float(caps[2])),
+            ("法人連續性", float(score.get("streak_score", 0) or 0), float(caps[3])),
+            ("籌碼／技術", float(score.get("chip_tech", 0) or 0), float(caps[4])),
+        ]
+        lines += ["", "【五大因子】"]
+        for factor_name, factor_value, factor_max in current_factors:
+            lines.append(f"{factor_name}　{factor_value:.0f}/{factor_max:.0f}")
+        lines.append(f"模型分數　{score['total']}／100")
+        # 歷史分項只有在資料來源確實提供時才呈現，不能用推估值假造。
+        previous_factor_snapshot = score.get("previous_factors")
+        if isinstance(previous_factor_snapshot, dict):
+            lines += ["", "【變化重點】"]
+            for factor_name, factor_value, factor_max in current_factors:
+                previous_value = previous_factor_snapshot.get(factor_name)
+                try:
+                    previous_value = float(previous_value)
+                except (TypeError, ValueError):
+                    continue
+                delta = factor_value - previous_value
+                delta_text = f"{delta:+.0f}" if delta else "0"
+                lines.append(f"{factor_name}　{previous_value:.0f} → {factor_value:.0f}　{delta_text} 分")
         if score_change:
             lines.append(score_change)
 
@@ -17713,9 +17721,6 @@ def build_single_stock_report(code, user_id=None):
     if quote_day and quote_day != today_key and quote_pct == 0 and quote_volume == 0:
         stock_for_display["pct"] = None
         stock_for_display["volume"] = None
-        # 舊日線的 high/low 常被資料源補成 close；不能把它們誤呈現成今日高低點。
-        stock_for_display["high"] = None
-        stock_for_display["low"] = None
 
     inst = fetch_institutional_data() or {}
     scores = compute_watchlist_scores([code])
@@ -24651,49 +24656,6 @@ body #app-page-content .position-fast-card .position-card-title h3 {
     gap:8px 10px !important;
   }
 }
-/* V284 touch-state repair: keep portfolio/stock cards light during iOS press. */
-body #app-page-content .position-card,
-body #app-page-content .position-fast-card,
-body #app-page-content .holding-card,
-body #app-page-content .stock-card,
-body #app-page-content .stock-row,
-body #app-page-content .quote-card,
-body #app-page-content .watch-card,
-body #app-page-content .position-card:active,
-body #app-page-content .position-fast-card:active,
-body #app-page-content .holding-card:active,
-body #app-page-content .stock-card:active,
-body #app-page-content .stock-row:active,
-body #app-page-content .quote-card:active,
-body #app-page-content .watch-card:active {
-  background-color:#FFFFFF !important;
-  color:#172B40;
-  filter:none !important;
-  -webkit-tap-highlight-color:transparent !important;
-}
-body #app-page-content .position-card:active *,
-body #app-page-content .position-fast-card:active *,
-body #app-page-content .holding-card:active *,
-body #app-page-content .stock-card:active *,
-body #app-page-content .stock-row:active *,
-body #app-page-content .quote-card:active *,
-body #app-page-content .watch-card:active * { filter:none !important; }
-body #app-page-content .position-card:active .position-card-top,
-body #app-page-content .position-card:active .position-card-primary,
-body #app-page-content .position-card:active .position-card-grid,
-body #app-page-content .position-fast-card:active .position-card-top,
-body #app-page-content .holding-card:active .card-head,
-body #app-page-content .holding-card:active .card-body { background-color:#FFFFFF !important; }
-body #app-page-content .position-card a:active,
-body #app-page-content .position-card button:active,
-body #app-page-content .position-fast-card a:active,
-body #app-page-content .position-fast-card button:active,
-body #app-page-content .holding-card a:active,
-body #app-page-content .holding-card button:active {
-  background-color:#EDF4FA !important; color:#245B82 !important;
-  opacity:1 !important; -webkit-tap-highlight-color:transparent !important;
-}
-
 """
 
 
@@ -25063,48 +25025,6 @@ table { max-width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
-}
-/* V284 touch-state repair: keep portfolio/stock cards light during iOS press. */
-body #app-page-content .position-card,
-body #app-page-content .position-fast-card,
-body #app-page-content .holding-card,
-body #app-page-content .stock-card,
-body #app-page-content .stock-row,
-body #app-page-content .quote-card,
-body #app-page-content .watch-card,
-body #app-page-content .position-card:active,
-body #app-page-content .position-fast-card:active,
-body #app-page-content .holding-card:active,
-body #app-page-content .stock-card:active,
-body #app-page-content .stock-row:active,
-body #app-page-content .quote-card:active,
-body #app-page-content .watch-card:active {
-  background-color:#FFFFFF !important;
-  color:#172B40;
-  filter:none !important;
-  -webkit-tap-highlight-color:transparent !important;
-}
-body #app-page-content .position-card:active *,
-body #app-page-content .position-fast-card:active *,
-body #app-page-content .holding-card:active *,
-body #app-page-content .stock-card:active *,
-body #app-page-content .stock-row:active *,
-body #app-page-content .quote-card:active *,
-body #app-page-content .watch-card:active * { filter:none !important; }
-body #app-page-content .position-card:active .position-card-top,
-body #app-page-content .position-card:active .position-card-primary,
-body #app-page-content .position-card:active .position-card-grid,
-body #app-page-content .position-fast-card:active .position-card-top,
-body #app-page-content .holding-card:active .card-head,
-body #app-page-content .holding-card:active .card-body { background-color:#FFFFFF !important; }
-body #app-page-content .position-card a:active,
-body #app-page-content .position-card button:active,
-body #app-page-content .position-fast-card a:active,
-body #app-page-content .position-fast-card button:active,
-body #app-page-content .holding-card a:active,
-body #app-page-content .holding-card button:active {
-  background-color:#EDF4FA !important; color:#245B82 !important;
-  opacity:1 !important; -webkit-tap-highlight-color:transparent !important;
 }
 """
 
@@ -26882,7 +26802,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   const progressPercent=document.getElementById('page-nav-progress-percent');
   const progressBar=document.getElementById('page-nav-progress-bar');
   const progressTime=document.getElementById('page-nav-progress-time');
-  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0,progressStartedPerf=0,progressElapsedBase=0,progressUsesWallClock=false,workbenchNavigationPending=false;
+  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0,progressStartedPerf=0,progressUsesWallClock=false,workbenchNavigationPending=false;
 
   function clearProgressTimers(){{
     window.clearTimeout(progressRevealTimer);window.clearInterval(progressTimer);
@@ -26890,9 +26810,14 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   }}
   function paintEstimatedProgress(){{
     if(!active)return;
-    // 使用 performance.now() 計算頁內經過時間，避免系統時間校正造成計時停住；
-    // 跨整頁導覽時只把保存的牆鐘差值當作起始偏移。
-    var sec=Math.max(0,progressElapsedBase+(performance.now()-progressStartedPerf)/1000);
+    // 同一文件內的頁面切換使用 performance.now()，不會被先前 sessionStorage 時間污染；
+    // 只有選股工作台的真正整頁導覽，才需要跨文件沿用 Date.now()。
+    // 同頁計時使用 performance.now()，避免系統時鐘調整造成計時停住；
+    // 只有跨頁接力才使用 sessionStorage 保存的 wall-clock 起點。
+    var elapsedMs = progressUsesWallClock
+      ? (Date.now() - progressStartedAt)
+      : (performance.now() - progressStartedPerf);
+    var sec=Math.max(0,elapsedMs/1000);
     // 進度只用來呈現等待狀態；完成前保留少量空間，避免誤以為已載入完成。
     var pct=sec<1?20:sec<3?20+(sec-1)*20:sec<6?60+(sec-3)*9:Math.min(97,87+(sec-6)*1.7);
     pct=Math.min(97,Math.max(8,pct));
@@ -26915,12 +26840,10 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       // 只有選股工作台使用整頁導覽，需要跨文件延續計時；一般頁面切換不能沿用舊時間。
       progressStartedAt=savedStart;
       progressStartedPerf=performance.now();
-      progressElapsedBase=(now-savedStart)/1000;
       progressUsesWallClock=true;
     }}else{{
       progressStartedAt=now;
       progressStartedPerf=performance.now();
-      progressElapsedBase=0;
       progressUsesWallClock=false;
     }}
     try{{
@@ -26936,8 +26859,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     if(progressBar)progressBar.style.width='0%';
     if(!wasActive && progressTime)progressTime.textContent='0.0 秒';
     loader.classList.remove('done');loader.classList.add('show');
-    progressTimer=window.setInterval(paintEstimatedProgress,100);
     paintEstimatedProgress();
+    progressTimer=window.setInterval(paintEstimatedProgress,100);
   }};
 
   window.finishPageNavLoader=function(){{
@@ -26949,6 +26872,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       loader.classList.remove('show');
       return;
     }}
+    // 完成前最後刷新一次，避免畫面停留在初始的 0.0 秒。
+    paintEstimatedProgress();
     active=false;clearProgressTimers();window.__stockAnalysisNavPending=false;
     if(progressPercent)progressPercent.textContent='';
     if(progressBar)progressBar.style.width='100%';
