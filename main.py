@@ -17856,31 +17856,31 @@ def build_single_stock_report(code, user_id=None):
     if score.get('category')=='電子':
         fundamental.append(metric_row([metric('模型 PEG',fmt(peg,2),'PE ÷ 累計營收年增率；非標準 EPS-PEG'),metric('產業分類',str(score.get('category') or '暫無資料'))]))
 
-    # 法人逐日柱狀圖：紅色正值在零軸上方、綠色負值在零軸下方；無資料時明確標示。
+    # 法人近20日圖：精簡 Flex JSON，避免單一 bubble 超過 LINE 30KB 限制。
+    # 每個交易日僅保留一個短柱與必要日期標籤，不建立多層 filler/box。
     inst20=_line_stock_institutional_20d(code)
     chart_contents=[]
     if inst20:
         max_abs=max([abs(x[1]) for x in inst20] or [0]) or 1
         bars=[]
-        for date_label, net, _parts in inst20:
-            h=max(2,round(abs(net)/max_abs*38))
+        visible_dates={inst20[0][0],inst20[len(inst20)//3][0],inst20[(2*len(inst20))//3][0],inst20[-1][0]}
+        for date_label, net, _parts in inst20[-20:]:
+            h=max(2,round(abs(net)/max_abs*30))
             color='#D92D20' if net>0 else '#039855' if net<0 else '#D0D5DD'
-            bar={'type':'box','layout':'vertical','width':'7px','height':f'{h}px','backgroundColor':color,'cornerRadius':'2px','contents':[{'type':'filler'}]}
-            upper_filler={'type':'box','layout':'vertical','height':f'{42-h if net>0 else 42}px','contents':[{'type':'filler'}]}
-            lower_filler={'type':'box','layout':'vertical','height':f'{42-h if net<0 else 42}px','contents':[{'type':'filler'}]}
-            top={'type':'box','layout':'vertical','height':'42px','justifyContent':'flex-end','alignItems':'center','contents':([upper_filler,bar] if net>0 else [upper_filler])}
-            bottom={'type':'box','layout':'vertical','height':'42px','justifyContent':'flex-start','alignItems':'center','contents':([bar,lower_filler] if net<0 else [lower_filler])}
+            # 以簡單 box 呈現買賣方向；日期僅顯示少數交易日。
             bars.append({'type':'box','layout':'vertical','flex':1,'alignItems':'center','spacing':'none','contents':[
-                top,
+                {'type':'box','layout':'vertical','height':'32px','justifyContent':'flex-end' if net>0 else 'center','alignItems':'center','contents':[
+                    {'type':'box','layout':'vertical','width':'5px','height':f'{h}px','backgroundColor':color,'cornerRadius':'2px','contents':[{'type':'filler'}]}
+                ]},
                 {'type':'box','layout':'horizontal','height':'1px','backgroundColor':'#98A2B3','contents':[{'type':'filler'}]},
-                bottom,
-                (txt(date_label,'xxs','#667085','regular','xs',False)
-                 if date_label in {inst20[0][0],inst20[len(inst20)//3][0],inst20[(2*len(inst20))//3][0],inst20[-1][0]}
-                 else {'type':'filler'})
+                {'type':'box','layout':'vertical','height':'32px','justifyContent':'flex-start' if net<0 else 'center','alignItems':'center','contents':[
+                    {'type':'box','layout':'vertical','width':'5px','height':f'{h}px','backgroundColor':color if net<0 else '#FFFFFF','cornerRadius':'2px','contents':[{'type':'filler'}]}
+                ]},
+                txt(date_label,'xxs','#667085','regular','xs',False) if date_label in visible_dates else {'type':'filler'}
             ]})
         chart_contents=[txt('三大法人每日合計買賣超（張）','xs','#667085','regular','none'),
                         {'type':'box','layout':'horizontal','spacing':'none','alignItems':'center','contents':bars},
-                        txt('紅色＝買超　綠色＝賣超；日期僅顯示部分交易日。','xxs','#667085','regular','none')]
+                        txt('紅色＝買超　綠色＝賣超；零軸居中，日期僅顯示部分交易日。','xxs','#667085','regular','none')]
     else:
         chart_contents=[txt('目前沒有可用的近 20 日法人逐日資料；不以累計數據假造柱狀圖。','sm','#667085','regular','none')]
     bd_items=[]
@@ -17952,6 +17952,26 @@ def build_single_stock_report(code, user_id=None):
             for child in node:
                 _sanitize_flex_text(child)
     _sanitize_flex_text(bubble)
+    # LINE Flex bubble JSON 上限 30KB；先在本機序列化估算，超過時減少新聞與圖表複雜度。
+    import json as _json
+    try:
+        _bubble_bytes = len(_json.dumps(bubble, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+        if _bubble_bytes > 27000:
+            # 保留所有分析區，僅將新聞縮至 1 則，避免 LINE API 400。
+            for _node in bubble.get('body', {}).get('contents', []):
+                if isinstance(_node, dict) and _node.get('type') == 'box':
+                    _stack = [_node]
+                    while _stack:
+                        _cur = _stack.pop()
+                        if isinstance(_cur, dict):
+                            if _cur.get('type') == 'text' and isinstance(_cur.get('text'), str):
+                                _cur['text'] = _cur['text'][:180]
+                            _stack.extend(v for v in _cur.values() if isinstance(v, (dict, list)))
+                        elif isinstance(_cur, list): _stack.extend(_cur)
+            _bubble_bytes = len(_json.dumps(bubble, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+        print(f"📦 LINE 個股 Flex bubble 大小：{_bubble_bytes} bytes")
+    except Exception as _size_exc:
+        print(f"⚠️ Flex 大小檢查失敗：{_size_exc}")
     return FlexSendMessage(alt_text=alt[:400], contents=bubble)
 
 def _etf_price_drawdown_summary(closes, close_dates):
