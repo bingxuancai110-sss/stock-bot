@@ -17796,20 +17796,90 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         val=find(prefix)
         if val!="暫無資料": fundamentals.append(txt(prefix+val,"sm",muted if prefix.startswith("※") else "#344054"))
     if not fundamentals: fundamentals=[txt("基本面資料暫無資料","sm",muted)]
-    inst_lines=[]; in_inst=False
-    for ln in lines:
-        if "【法人籌碼】" in ln: in_inst=True; inst_lines.append(txt("近 10 日法人摘要","sm",navy,"bold","none")); continue
-        if in_inst and "【位階】" in ln: break
-        if in_inst and ln.strip(): inst_lines.append(txt(ln.strip(),"sm"))
-    if len(inst_lines)==1: inst_lines.append(txt("暫無法人歷史資料","sm",muted))
+    # 直接讀 inst_history 最近 20 個交易日，畫出每日三大法人合計買賣超。
+    # 資料不存在時明確顯示缺資料，不以近 10 日摘要假裝成歷史圖表。
+    inst_history=[]
+    try:
+        _conn=get_db_connection()
+        try:
+            _cur=_conn.cursor()
+            _cur.execute("""
+                SELECT h.trade_date, h.foreign_net_lots, h.trust_net_lots,
+                       h.dealer_net_lots, h.total_net_lots
+                FROM inst_history h
+                WHERE h.code=%s
+                  AND h.trade_date IN (
+                    SELECT trade_date FROM (
+                      SELECT DISTINCT trade_date FROM inst_history
+                      ORDER BY trade_date DESC LIMIT 20
+                    ) d
+                  )
+                ORDER BY h.trade_date ASC
+            """, (str(code),))
+            inst_history=[{"date":r[0].strftime("%m/%d") if r[0] else "—",
+                           "foreign":int(r[1] or 0),"trust":int(r[2] or 0),
+                           "dealer":int(r[3] or 0),"total":int(r[4] or 0)} for r in _cur.fetchall()]
+            _cur.close()
+        finally:
+            release_db_connection(_conn)
+    except Exception as _hist_exc:
+        print(f"⚠️ 個股法人20日圖讀取失敗 {code}: {_hist_exc}")
+        inst_history=[]
+
+    inst_lines=[]
+    if inst_history:
+        _max_abs=max([abs(x['total']) for x in inst_history] or [1]) or 1
+        inst_lines.append(txt("近 20 個交易日｜三大法人合計（張）","xs",muted,None,"none"))
+        for _d in inst_history:
+            _v=_d['total']; _w=max(2, min(100, abs(_v)/_max_abs*100))
+            _color=red if _v>0 else green if _v<0 else "#98A2B3"
+            _label=f"{_d['date']}  {_v:+,}"
+            # 以左右兩欄模擬零軸：買超向右、賣超向左，並保留日期及張數。
+            _bar={"type":"box","layout":"horizontal","spacing":"xs","alignItems":"center","contents":[
+                {"type":"box","layout":"horizontal","justifyContent":"end","flex":1,"contents":[
+                    ({"type":"box","layout":"vertical","width":f"{_w/2:.1f}%","height":"8px","backgroundColor":_color,"cornerRadius":"3px","contents":[]} if _v<0 else {"type":"filler"})]},
+                {"type":"box","layout":"vertical","width":"1px","height":"12px","backgroundColor":"#98A2B3","contents":[]},
+                {"type":"box","layout":"horizontal","flex":1,"contents":[
+                    ({"type":"box","layout":"vertical","width":f"{_w/2:.1f}%","height":"8px","backgroundColor":_color,"cornerRadius":"3px","contents":[]} if _v>0 else {"type":"filler"})]},
+                {"type":"text","text":_label,"size":"xxs","color":_color,"align":"end","flex":2,"wrap":False}
+            ]}
+            inst_lines.append(_bar)
+        _sums={k:sum(x[k] for x in inst_history) for k in ("foreign","trust","dealer")}
+        inst_lines.append(txt(f"外資 {_sums['foreign']:+,} 張　投信 {_sums['trust']:+,} 張　自營商 {_sums['dealer']:+,} 張","xs",navy,"bold","sm"))
+    else:
+        # 若歷史表沒有資料，保留目前報告裡可用的法人摘要，但不偽稱 20 日圖。
+        _in=False
+        for ln in lines:
+            if "【法人籌碼】" in ln: _in=True; continue
+            if _in and "【位階】" in ln: break
+            if _in and ln.strip(): inst_lines.append(txt(ln.strip(),"sm"))
+        inst_lines.insert(0,txt("近 20 日法人圖：暫無歷史資料","xs",muted,"bold","none"))
+        if not inst_lines: inst_lines=[txt("法人歷史資料暫無資料","sm",muted)]
     tech_lines=[]; in_tech=False
     for ln in lines:
         if "【位階】" in ln: in_tech=True; continue
         if in_tech and ln.strip(): tech_lines.append(txt(ln.strip(),"sm"))
     if not tech_lines: tech_lines=[txt("均線與位階資料暫無資料","sm",muted)]
+    # 模型解讀只取第一段唯一的觀察文字，避免舊報告中的同句重複出現。
+    _model_items=[]; _seen_model=set()
+    for _ln in lines:
+        _st=_ln.strip()
+        if not _st: continue
+        if ("目前相對較強" in _st or "主要較弱" in _st or "不代表買賣建議" in _st or "風險提醒" in _st):
+            if _st not in _seen_model:
+                _seen_model.add(_st); _model_items.append(txt(_st,"sm"))
+    if not _model_items: _model_items=[txt("模型解讀請以已取得的五大因子資料為準。","sm",muted)]
+    _news_items=[]
+    for it in (news or []):
+        _title=str(it.get('title') or '相關新聞').strip()
+        _src=str(it.get('source') or '').strip()
+        _date=str(it.get('date') or it.get('published') or '').strip()
+        _label=' · '.join(x for x in (_date,_src) if x)
+        _news_items.append(section(_title,([txt(_label,"xs",muted,None,"none")] if _label else []) + ([{"type":"text","text":"閱讀原文 ↗","size":"sm","color":blue,"wrap":True,"decoration":"underline","action":{"type":"uri","uri":_valid_news_uri(it.get('link'))},"margin":"sm"}] if _valid_news_uri(it.get('link')) else [txt("暫無原文連結","xs",muted)])))
+    if not _news_items: _news_items=[txt("目前沒有取得相關新聞。","sm",muted)]
     cards=[bubble(f"📊 {code} {name}",f"個股總覽｜行情資料日 {quote_day}",quote_items+[factor_section]),
-           bubble(f"🏦 {code} {name}","基本面與法人籌碼",[section("關鍵基本面與估值",fundamentals),section("法人買賣超",inst_lines)]),
-           bubble(f"📈 {code} {name}","技術位階、模型觀察與相關新聞",[section("技術位階",tech_lines),section("模型解讀與風險",[txt(ln.strip(),"sm") for ln in lines if "目前相對較強" in ln or "主要較弱" in ln or "不代表買賣建議" in ln or "風險提醒" in ln] or [txt("模型解讀請以已取得的五大因子資料為準。","sm",muted)]),section("相關新聞",[({"type":"text","text":f"• {it.get('title','相關新聞')}","size":"sm","color":blue,"wrap":True,"decoration":"underline","action":{"type":"uri","uri":_valid_news_uri(it.get('link'))},"margin":"sm"} if _valid_news_uri(it.get('link')) else txt(it.get('title','相關新聞'),"sm")) for it in (news or [])] or [txt("目前沒有取得相關新聞。","sm",muted)])])]
+           bubble(f"🏦 {code} {name}","基本面與法人籌碼",[section("關鍵基本面與估值",fundamentals),section("近 20 日法人買賣超",inst_lines)]),
+           bubble(f"📈 {code} {name}","技術位階、模型觀察與相關新聞",[section("技術位階",tech_lines),section("模型解讀與風險",_model_items),section("相關新聞",_news_items)])]
     messages=[]
     for i,bub in enumerate(cards,1):
         n=len(json.dumps(bub,ensure_ascii=False,separators=(',',':')).encode('utf-8'))
