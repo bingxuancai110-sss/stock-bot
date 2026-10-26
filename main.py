@@ -39936,6 +39936,60 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   schedule();
 })();
 </script>'''
+    # V284 Home Dashboard: render holdings preview locally inside this function.
+    # Keep this strictly display-only; never modify portfolio or contribution calculations.
+    _home_preview_rows = []
+    _home_preview_total = 0.0
+    for _h in (holdings or []):
+        try:
+            _code = str(_h.get("code") or "").strip()
+            _name = str(_h.get("name") or _code or "未命名").strip()
+            _shares = float(_h.get("shares") or _h.get("quantity") or _h.get("qty") or 0)
+            _quote = price_map.get(_code) if isinstance(price_map, dict) else None
+            if isinstance(_quote, dict):
+                _price = next((float(_quote[k]) for k in ("price", "close", "last", "current_price") if _quote.get(k) not in (None, "")), None)
+            else:
+                _price = float(_quote) if _quote not in (None, "") else None
+            if _price is None:
+                _raw_price = _h.get("current_price", _h.get("market_price", _h.get("price")))
+                if isinstance(_raw_price, dict):
+                    _price = next((float(_raw_price[k]) for k in ("price", "close", "last", "current_price") if _raw_price.get(k) not in (None, "")), None)
+                elif _raw_price not in (None, ""):
+                    _price = float(_raw_price)
+            _value = max(0.0, _shares * _price) if _price is not None and _shares > 0 else 0.0
+            _home_preview_total += _value
+            _home_preview_rows.append({"code": _code, "name": _name, "shares": _shares, "price": _price, "value": _value})
+        except (TypeError, ValueError, OverflowError):
+            continue
+    _home_preview_rows.sort(key=lambda _x: _x["value"], reverse=True)
+    _home_preview_rows = _home_preview_rows[:5]
+    _home_alloc_colors = ["#1769aa", "#2b9bd8", "#8646c6", "#e64f91", "#f29a26", "#9aa8b7"]
+    _home_alloc_parts, _home_alloc_legend = [], []
+    _home_alloc_start = 0.0
+    _home_alloc_items = list(_home_preview_rows)
+    _home_alloc_visible_value = sum(_x["value"] for _x in _home_alloc_items)
+    _home_alloc_other = max(0.0, _home_preview_total - _home_alloc_visible_value)
+    if _home_alloc_other > 0.5:
+        _home_alloc_items.append({"name": "其他持股", "code": "其餘", "value": _home_alloc_other})
+    if _home_preview_total > 0:
+        for _idx, _row in enumerate(_home_alloc_items):
+            _pct = max(0.0, _row["value"] / _home_preview_total * 100.0)
+            if _pct <= 0:
+                continue
+            _color = "#9aa8b7" if _row.get("code") == "其餘" else _home_alloc_colors[_idx % len(_home_alloc_colors)]
+            _home_alloc_parts.append(f"{_color} {_home_alloc_start:.2f}% {_home_alloc_start + _pct:.2f}%")
+            _home_alloc_start += _pct
+            _home_alloc_legend.append(f'<div class="home-allocation-legend-row"><i style="background:{_color}"></i><span>{html.escape(_row["name"])} <small>{html.escape(_row["code"])}</small></span><b>{_pct:.1f}%</b></div>')
+    _home_alloc_gradient = ("conic-gradient(" + ", ".join(_home_alloc_parts) + ")") if _home_alloc_parts else "conic-gradient(#d9e3ed 0 100%)"
+    _home_holding_rows = []
+    for _row in _home_preview_rows:
+        _price_text = f'{_row["price"]:,.2f}' if _row["price"] is not None else "—"
+        _weight = (_row["value"] / _home_preview_total * 100.0) if _home_preview_total else 0.0
+        _home_holding_rows.append(f'<a class="home-holding-row" href="/web/positions" data-app-nav="1"><span class="home-holding-name"><b>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span><span class="home-holding-price">{_price_text}</span><span class="home-holding-value">{_row["value"]:,.0f}<small>{_weight:.1f}%</small></span></a>')
+    _home_holdings_preview_html = ('<section class="home-dashboard-card home-holdings-preview" aria-label="持股明細"><div class="home-dashboard-card-head"><div><h2>持股明細</h2><small>依目前可取得的市值排序</small></div><a href="/web/positions" data-app-nav="1">查看全部 →</a></div><div class="home-holdings-table-head"><span>股票</span><span>現價</span><span>市值／權重</span></div>' + ("".join(_home_holding_rows) if _home_holding_rows else '<div class="home-dashboard-empty">目前沒有可顯示的持股行情。</div>') + '</section>')
+    _home_alloc_legend_html = "".join(_home_alloc_legend) if _home_alloc_legend else '<div class="home-dashboard-empty">行情資料尚未齊全。</div>'
+    _home_allocation_html = ('<section class="home-dashboard-card home-allocation-card" aria-label="持股配置"><div class="home-dashboard-card-head"><div><h2>資產配置</h2><small>前五大持股與其餘持股占比</small></div><a href="/web/positions" data-app-nav="1">完整分析 →</a></div>' + f'<div class="home-allocation-body"><div class="home-allocation-donut" style="background:{_home_alloc_gradient}"><div><small>持股市值</small><b>{_home_preview_total:,.0f}</b></div></div><div class="home-allocation-legend">{_home_alloc_legend_html}</div></div></section>')
+
     return f'''<style>
 /* TODAY 首頁 V27：保留既有資料與操作日報，重做資訊層級與卡片視覺。 */
 .daily-home{{max-width:1180px;margin:0 auto;padding:0 4px 92px}}
