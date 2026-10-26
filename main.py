@@ -17573,6 +17573,11 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
     lines = [f"📊 {code} {name}"]
     if industry_label:
         lines.append(industry_label)
+    close_day = str(stock.get("close_date") or "").replace("-", "")[:8]
+    if len(close_day) == 8 and close_day.isdigit():
+        lines.append(f"📅 行情資料日 {close_day[:4]}/{close_day[4:6]}/{close_day[6:8]}")
+    else:
+        lines.append("📅 行情資料日未提供")
     lines.append("─" * 14)
 
     close, pct = stock.get("close"), stock.get("pct")
@@ -17583,8 +17588,17 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
     else:
         lines.append("💰 股價資料不足")
     high, low = stock.get("high"), stock.get("low")
+    try:
+        high = float(high) if high is not None and float(high) > 0 else None
+        low = float(low) if low is not None and float(low) > 0 else None
+    except (TypeError, ValueError):
+        high, low = None, None
     lines.append(f"高低 {high:.2f}/{low:.2f}" if high is not None and low is not None else "高低資料不足")
     volume = stock.get("volume")
+    try:
+        volume = float(volume) if volume is not None and float(volume) >= 0 else None
+    except (TypeError, ValueError):
+        volume = None
     lines.append(f"📦 {int(volume / 1000):,} 張" if volume is not None else "📦 成交量資料不足")
     lines.append(f"🛡️ 支撐 {fmt_support(stock)}")
     lines.append(f"🚧 壓力 {fmt_resistance(stock.get('resistance'))}")
@@ -17682,6 +17696,27 @@ def build_single_stock_report(code, user_id=None):
     if not stock:
         return f"❌ 查無代號 {code} 的行情，請確認代號是否正確。"
 
+    # 資料品質保護：若只有舊日線收盤價，且來源同時回傳 0 漲跌與 0 成交量，
+    # 這通常代表當日行情欄位缺值，不應把缺值包裝成「當日 +0.00%、成交量 0 張」。
+    # 僅調整 LINE 顯示副本，不改動原始 stock，也不影響五大因子計算。
+    stock_for_display = dict(stock)
+    quote_day = str(stock_for_display.get("close_date") or "").replace("-", "")[:8]
+    today_key = taiwan_today().strftime("%Y%m%d")
+    try:
+        quote_pct = float(stock_for_display.get("pct")) if stock_for_display.get("pct") is not None else None
+    except (TypeError, ValueError):
+        quote_pct = None
+    try:
+        quote_volume = float(stock_for_display.get("volume")) if stock_for_display.get("volume") is not None else None
+    except (TypeError, ValueError):
+        quote_volume = None
+    if quote_day and quote_day != today_key and quote_pct == 0 and quote_volume == 0:
+        stock_for_display["pct"] = None
+        stock_for_display["volume"] = None
+        # 舊日線的 high/low 常被資料源補成 close；不能把它們誤呈現成今日高低點。
+        stock_for_display["high"] = None
+        stock_for_display["low"] = None
+
     inst = fetch_institutional_data() or {}
     scores = compute_watchlist_scores([code])
     score = scores.get(code)
@@ -17704,7 +17739,7 @@ def build_single_stock_report(code, user_id=None):
                             else f"※ 輸入「加 {code}」加入自選")
 
     lines = _format_stock_detail_lines(
-        code, name, stock, score=score, bd=bd,
+        code, name, stock_for_display, score=score, bd=bd,
         industry_label=(f"📌 {score.get('category') or '個股'}" + (f"｜{industry_name(industry)}" if industry else "")) if score else (industry_name(industry) if industry else None),
         score_change=score_change, watchlist_status=watchlist_status)
 
@@ -24616,6 +24651,49 @@ body #app-page-content .position-fast-card .position-card-title h3 {
     gap:8px 10px !important;
   }
 }
+/* V284 touch-state repair: keep portfolio/stock cards light during iOS press. */
+body #app-page-content .position-card,
+body #app-page-content .position-fast-card,
+body #app-page-content .holding-card,
+body #app-page-content .stock-card,
+body #app-page-content .stock-row,
+body #app-page-content .quote-card,
+body #app-page-content .watch-card,
+body #app-page-content .position-card:active,
+body #app-page-content .position-fast-card:active,
+body #app-page-content .holding-card:active,
+body #app-page-content .stock-card:active,
+body #app-page-content .stock-row:active,
+body #app-page-content .quote-card:active,
+body #app-page-content .watch-card:active {
+  background-color:#FFFFFF !important;
+  color:#172B40;
+  filter:none !important;
+  -webkit-tap-highlight-color:transparent !important;
+}
+body #app-page-content .position-card:active *,
+body #app-page-content .position-fast-card:active *,
+body #app-page-content .holding-card:active *,
+body #app-page-content .stock-card:active *,
+body #app-page-content .stock-row:active *,
+body #app-page-content .quote-card:active *,
+body #app-page-content .watch-card:active * { filter:none !important; }
+body #app-page-content .position-card:active .position-card-top,
+body #app-page-content .position-card:active .position-card-primary,
+body #app-page-content .position-card:active .position-card-grid,
+body #app-page-content .position-fast-card:active .position-card-top,
+body #app-page-content .holding-card:active .card-head,
+body #app-page-content .holding-card:active .card-body { background-color:#FFFFFF !important; }
+body #app-page-content .position-card a:active,
+body #app-page-content .position-card button:active,
+body #app-page-content .position-fast-card a:active,
+body #app-page-content .position-fast-card button:active,
+body #app-page-content .holding-card a:active,
+body #app-page-content .holding-card button:active {
+  background-color:#EDF4FA !important; color:#245B82 !important;
+  opacity:1 !important; -webkit-tap-highlight-color:transparent !important;
+}
+
 """
 
 
@@ -24985,6 +25063,48 @@ table { max-width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+/* V284 touch-state repair: keep portfolio/stock cards light during iOS press. */
+body #app-page-content .position-card,
+body #app-page-content .position-fast-card,
+body #app-page-content .holding-card,
+body #app-page-content .stock-card,
+body #app-page-content .stock-row,
+body #app-page-content .quote-card,
+body #app-page-content .watch-card,
+body #app-page-content .position-card:active,
+body #app-page-content .position-fast-card:active,
+body #app-page-content .holding-card:active,
+body #app-page-content .stock-card:active,
+body #app-page-content .stock-row:active,
+body #app-page-content .quote-card:active,
+body #app-page-content .watch-card:active {
+  background-color:#FFFFFF !important;
+  color:#172B40;
+  filter:none !important;
+  -webkit-tap-highlight-color:transparent !important;
+}
+body #app-page-content .position-card:active *,
+body #app-page-content .position-fast-card:active *,
+body #app-page-content .holding-card:active *,
+body #app-page-content .stock-card:active *,
+body #app-page-content .stock-row:active *,
+body #app-page-content .quote-card:active *,
+body #app-page-content .watch-card:active * { filter:none !important; }
+body #app-page-content .position-card:active .position-card-top,
+body #app-page-content .position-card:active .position-card-primary,
+body #app-page-content .position-card:active .position-card-grid,
+body #app-page-content .position-fast-card:active .position-card-top,
+body #app-page-content .holding-card:active .card-head,
+body #app-page-content .holding-card:active .card-body { background-color:#FFFFFF !important; }
+body #app-page-content .position-card a:active,
+body #app-page-content .position-card button:active,
+body #app-page-content .position-fast-card a:active,
+body #app-page-content .position-fast-card button:active,
+body #app-page-content .holding-card a:active,
+body #app-page-content .holding-card button:active {
+  background-color:#EDF4FA !important; color:#245B82 !important;
+  opacity:1 !important; -webkit-tap-highlight-color:transparent !important;
 }
 """
 
@@ -26706,6 +26826,31 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 #page-nav-progress-card.stock-analysis-loader.show #page-nav-progress-bar{{height:100%!important;border-radius:99px!important;background:linear-gradient(90deg,#557b62,#b8c7a9,#b49a6b)!important;transition:width .18s linear!important}}
 @keyframes stock-analysis-loader-spin{{to{{transform:rotate(360deg)}}}}
 @media(prefers-reduced-motion:reduce){{#page-nav-progress-card.stock-analysis-loader.show:before{{animation:none!important}}}}
+/* Final iOS touch-state override: prevent the dark flash on holdings cards. */
+.home-holdings-preview .home-holding-card > .home-holding-trigger,
+.home-holdings-preview .home-holding-card > .home-holding-trigger:active,
+.home-holdings-preview .home-holding-card > .home-holding-trigger:focus,
+.home-holdings-preview .home-holding-card > .home-holding-trigger:focus-visible,
+.home-holdings-preview .home-holding-card > .home-holding-trigger:active:focus {{
+  -webkit-appearance:none!important; appearance:none!important;
+  background:linear-gradient(100deg,var(--holding-tint,#F5F8F5),rgba(255,255,255,.98) 88%)!important;
+  background-color:var(--holding-tint,#F5F8F5)!important; background-image:none!important;
+  color:#17324D!important; -webkit-text-fill-color:#17324D!important;
+  opacity:1!important; filter:none!important; -webkit-filter:none!important;
+  mix-blend-mode:normal!important; box-shadow:none!important; outline:none!important;
+  -webkit-tap-highlight-color:rgba(72,137,174,.08)!important;
+}}
+.home-holdings-preview .home-holding-card > .home-holding-trigger * {{
+  -webkit-text-fill-color:currentColor;
+}}
+.home-holdings-preview .home-holding-card > .home-holding-trigger:active {{
+  transform:scale(.995)!important;
+  box-shadow:inset 0 0 0 1px rgba(112,151,177,.16)!important;
+}}
+.home-holdings-preview .home-holding-card > .home-holding-trigger .home-holding-chevron {{
+  background:#fff!important; color:var(--holding-accent,#557b62)!important;
+  -webkit-text-fill-color:var(--holding-accent,#557b62)!important;
+}}
 </style>
 </head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
@@ -26737,7 +26882,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   const progressPercent=document.getElementById('page-nav-progress-percent');
   const progressBar=document.getElementById('page-nav-progress-bar');
   const progressTime=document.getElementById('page-nav-progress-time');
-  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0,progressStartedPerf=0,progressUsesWallClock=false,workbenchNavigationPending=false;
+  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0,progressStartedPerf=0,progressElapsedBase=0,progressUsesWallClock=false,workbenchNavigationPending=false;
 
   function clearProgressTimers(){{
     window.clearTimeout(progressRevealTimer);window.clearInterval(progressTimer);
@@ -26745,9 +26890,9 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   }}
   function paintEstimatedProgress(){{
     if(!active)return;
-    // 同一文件內的頁面切換使用 performance.now()，不會被先前 sessionStorage 時間污染；
-    // 只有選股工作台的真正整頁導覽，才需要跨文件沿用 Date.now()。
-    var sec=Math.max(0,((progressUsesWallClock?Date.now():performance.now())-(progressUsesWallClock?progressStartedAt:progressStartedPerf))/1000);
+    // 使用 performance.now() 計算頁內經過時間，避免系統時間校正造成計時停住；
+    // 跨整頁導覽時只把保存的牆鐘差值當作起始偏移。
+    var sec=Math.max(0,progressElapsedBase+(performance.now()-progressStartedPerf)/1000);
     // 進度只用來呈現等待狀態；完成前保留少量空間，避免誤以為已載入完成。
     var pct=sec<1?20:sec<3?20+(sec-1)*20:sec<6?60+(sec-3)*9:Math.min(97,87+(sec-6)*1.7);
     pct=Math.min(97,Math.max(8,pct));
@@ -26770,10 +26915,12 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       // 只有選股工作台使用整頁導覽，需要跨文件延續計時；一般頁面切換不能沿用舊時間。
       progressStartedAt=savedStart;
       progressStartedPerf=performance.now();
+      progressElapsedBase=(now-savedStart)/1000;
       progressUsesWallClock=true;
     }}else{{
       progressStartedAt=now;
       progressStartedPerf=performance.now();
+      progressElapsedBase=0;
       progressUsesWallClock=false;
     }}
     try{{
@@ -26787,7 +26934,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     if(progressCard){{progressCard.classList.add('show');progressCard.classList.toggle('stock-analysis-loader',String(label||'').indexOf('個股分析')>=0||window.__stockAnalysisNavPending===true);}}
     if(progressPercent)progressPercent.hidden=true;
     if(progressBar)progressBar.style.width='0%';
-    if(progressTime)progressTime.textContent='0.0 秒';
+    if(!wasActive && progressTime)progressTime.textContent='0.0 秒';
     loader.classList.remove('done');loader.classList.add('show');
     progressTimer=window.setInterval(paintEstimatedProgress,100);
     paintEstimatedProgress();
@@ -40648,6 +40795,29 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
  .home-holdings-table-head,.home-holding-row{{grid-template-columns:minmax(0,1fr) 60px minmax(76px,.75fr);gap:5px}}
 }}
 
+
+/* Highest-priority iOS touch-state fix, deliberately last in the homepage stylesheet. */
+.home-holdings-preview .home-holding-card > .home-holding-trigger,
+.home-holdings-preview .home-holding-card > .home-holding-trigger:active,
+.home-holdings-preview .home-holding-card > .home-holding-trigger:focus,
+.home-holdings-preview .home-holding-card > .home-holding-trigger:focus-visible,
+.home-holdings-preview .home-holding-card > .home-holding-trigger:active:focus {{
+  -webkit-appearance:none!important; appearance:none!important;
+  background:linear-gradient(100deg,var(--holding-tint,#F5F8F5),rgba(255,255,255,.98) 88%)!important;
+  background-color:var(--holding-tint,#F5F8F5)!important; background-image:none!important;
+  color:#17324D!important; -webkit-text-fill-color:#17324D!important;
+  opacity:1!important; filter:none!important; -webkit-filter:none!important;
+  mix-blend-mode:normal!important; outline:none!important;
+  -webkit-tap-highlight-color:rgba(72,137,174,.08)!important;
+}}
+.home-holdings-preview .home-holding-card > .home-holding-trigger:active {{
+  transform:scale(.995)!important;
+  box-shadow:inset 0 0 0 1px rgba(112,151,177,.16)!important;
+}}
+.home-holdings-preview .home-holding-card > .home-holding-trigger .home-holding-chevron {{
+  background:#fff!important; color:var(--holding-accent,#557b62)!important;
+  -webkit-text-fill-color:var(--holding-accent,#557b62)!important;
+}}
 </style>
 <div class="daily-home">
   <section class="daily-hero" aria-label="台北 101 城市主視覺">
@@ -49444,6 +49614,8 @@ def handle_message(event):
         async_feature = "etf"
         async_builder = lambda: build_single_etf_report(pure_code, user_id)
     elif 4 <= len(pure_code) <= 7 and len(text) <= 8 and " " not in text:
+        # 純股票代號（例如 2308）直接在 LINE 對話回傳個股健檢 Flex 訊息；
+        # 網頁完整分析連結只是附加入口，不取代聊天內的分析內容。
         async_feature = "quote"
         async_builder = lambda: build_single_stock_report(pure_code, user_id)
     elif text in ("新聞", "自選新聞"):
