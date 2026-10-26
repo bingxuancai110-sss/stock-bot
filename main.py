@@ -17492,7 +17492,8 @@ def get_previous_scores(user_id, codes, days_back=7):
             """
             SELECT DISTINCT ON (code)
                    code, snapshot_date, total, chip, position, revenue, valuation,
-                   asset_type
+                   asset_type, factor_revenue, factor_valuation, factor_momentum,
+                   factor_streak, factor_chip_tech, factor_caps
             FROM watchlist_scores
             WHERE user_id = %s AND code = ANY(%s)
               AND snapshot_date < CURRENT_DATE
@@ -17505,7 +17506,10 @@ def get_previous_scores(user_id, codes, days_back=7):
         cursor.close()
         return {r[0]: {"date": r[1], "total": r[2], "chip": r[3],
                        "position": r[4], "revenue": r[5], "valuation": r[6],
-                       "asset_type": r[7] or "stock"}
+                       "asset_type": r[7] or "stock",
+                       "factor_revenue": r[8], "factor_valuation": r[9],
+                       "factor_momentum": r[10], "factor_streak": r[11],
+                       "factor_chip_tech": r[12], "factor_caps": r[13]}
                 for r in rows}
     except Exception as e:
         print(f"❌ 讀取歷史評分失敗: {e}")
@@ -17775,10 +17779,22 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
     if score:
         caps=score.get('caps',[20,25,30,5,20]); vals=[score.get('revenue',0),score.get('valuation',0),score.get('momentum',0),score.get('streak_score',0),score.get('chip_tech',0)]
         labels=['營收成長','估值','產業動能','法人連續性','籌碼／技術']; factor_rows=[]
-        for label,val,cap in zip(labels,vals,caps):
+        previous = score.get("previous_snapshot") or {}
+        previous_vals = [previous.get("factor_revenue"), previous.get("factor_valuation"), previous.get("factor_momentum"), previous.get("factor_streak"), previous.get("factor_chip_tech")]
+        for label,val,cap,prev_val in zip(labels,vals,caps,previous_vals):
             try: v=float(val); c=max(float(cap),1); ratio=max(0,min(100,v/c*100))
             except (TypeError,ValueError): v=0; c=1; ratio=0
-            factor_rows.append({"type":"box","layout":"vertical","spacing":"xs","margin":"sm","contents":[{"type":"box","layout":"horizontal","contents":[txt(label,"sm",navy,"bold","none"),{"type":"text","text":f"{v:g}/{c:g}","size":"sm","weight":"bold","color":navy,"align":"end","flex":1}]},{"type":"box","layout":"vertical","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"5px","contents":[{"type":"box","layout":"vertical","width":f"{ratio:.1f}%","height":"7px","backgroundColor":blue,"cornerRadius":"5px","contents":[]}]}]})
+            try: prev_ratio=max(0,min(100,float(prev_val)/c*100)) if prev_val is not None else None
+            except (TypeError,ValueError): prev_ratio=None
+            # 歷史快照用淺藍底條，今日分數用深藍前景疊在上面；沒有歷史值就不假造。
+            if prev_ratio is not None:
+                bar_inner={"type":"box","layout":"vertical","width":f"{min(100,ratio/max(prev_ratio,0.1)*100):.1f}%","height":"7px","backgroundColor":blue,"cornerRadius":"5px","contents":[]}
+                bar_track={"type":"box","layout":"vertical","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"5px","contents":[{"type":"box","layout":"vertical","width":f"{prev_ratio:.1f}%","height":"7px","backgroundColor":"#B8CDE0","cornerRadius":"5px","contents":[bar_inner]}]}
+                change_label=f"前次 {float(prev_val):g} → 今日 {v:g}"
+            else:
+                bar_track={"type":"box","layout":"vertical","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"5px","contents":[{"type":"box","layout":"vertical","width":f"{ratio:.1f}%","height":"7px","backgroundColor":blue,"cornerRadius":"5px","contents":[]}]}
+                change_label=f"今日 {v:g}（尚無前次分項快照）"
+            factor_rows.append({"type":"box","layout":"vertical","spacing":"xs","margin":"sm","contents":[{"type":"box","layout":"horizontal","contents":[txt(label,"sm",navy,"bold","none"),{"type":"text","text":f"{v:g}/{c:g}","size":"sm","weight":"bold","color":navy,"align":"end","flex":1}]},bar_track,txt(change_label,"xxs",muted,None,"none")]})
         total=score.get('total','暫無資料')
         change=find('模型分數')
         factor_body=[{"type":"box","layout":"horizontal","alignItems":"center","contents":[txt("五大因子綜合分數","sm",muted,None,"none"),{"type":"text","text":f"{total}/100","size":"xxl","weight":"bold","color":navy,"align":"end","flex":1}]},*factor_rows]
@@ -17836,7 +17852,8 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
             _label=f"{_d['date']}  {_v:+,}"
             # 以左右兩欄模擬零軸：買超向右、賣超向左，並保留日期及張數。
             _bar={"type":"box","layout":"horizontal","spacing":"xs","alignItems":"center","contents":[
-                {"type":"box","layout":"horizontal","justifyContent":"end","flex":1,"contents":[
+                {"type":"box","layout":"horizontal","flex":1,"contents":[
+                    ({"type":"filler"} if _v<0 else {"type":"filler"}),
                     ({"type":"box","layout":"vertical","width":f"{_w/2:.1f}%","height":"8px","backgroundColor":_color,"cornerRadius":"3px","contents":[]} if _v<0 else {"type":"filler"})]},
                 {"type":"box","layout":"vertical","width":"1px","height":"12px","backgroundColor":"#98A2B3","contents":[]},
                 {"type":"box","layout":"horizontal","flex":1,"contents":[
@@ -17937,6 +17954,8 @@ def build_single_stock_report(code, user_id=None):
     score_change = None
     if score and user_id:
         prev = get_previous_scores(user_id, [code]).get(code)
+        if prev:
+            score["previous_snapshot"] = prev
         arrow, change_txt = describe_score_change(score, prev)
         if arrow:
             score_change = f"{arrow} {change_txt}"
