@@ -17742,6 +17742,91 @@ def _build_split_stock_flex_messages(contents, code, name, alt_text, target_byte
     return messages
 
 
+
+def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=None, target_bytes=23000):
+    """以真正的視覺化 Flex 元件呈現個股分析；每張卡片獨立控管大小。"""
+    import json
+    navy, muted, line, red, green, blue = "#203A52", "#667085", "#E5EAF0", "#D93025", "#0B8F55", "#527FA5"
+    def txt(text, size="sm", color="#344054", weight=None, margin="sm", wrap=True):
+        d={"type":"text","text":str(text) if text not in (None, "") else "暫無資料","size":size,"color":color,"wrap":wrap,"margin":margin}
+        if weight: d["weight"]=weight
+        return d
+    def section(title, items):
+        return {"type":"box","layout":"vertical","spacing":"sm","margin":"lg","contents":[txt(title,"md",navy,"bold","none"), {"type":"separator","color":line,"margin":"sm"}, *items]}
+    def metric(label, value, color=navy):
+        return {"type":"box","layout":"vertical","flex":1,"paddingAll":"10px","backgroundColor":"#F6F8FB","cornerRadius":"10px","contents":[txt(label,"xs",muted,None,"none"),txt(value,"lg",color,"bold","xs")]}
+    def bubble(title, subtitle, body):
+        return {"type":"bubble","size":"giga","body":{"type":"box","layout":"vertical","paddingAll":"16px","spacing":"sm","contents":[txt(title,"xl",navy,"bold","none"),txt(subtitle,"xs",muted,None,"none"),{"type":"separator","color":line,"margin":"md"},*body]},"styles":{"body":{"backgroundColor":"#FFFFFF"}}}
+    # Parsed values are taken from the existing report formatter, not fabricated.
+    def find(prefix, default="暫無資料"):
+        for ln in lines:
+            st=ln.strip()
+            if st.startswith(prefix): return st[len(prefix):].strip()
+        return default
+    close=stock.get('close'); pct=stock.get('pct'); volume=stock.get('volume')
+    close_txt=f"{float(close):,.2f}" if close is not None else "暫無資料"
+    try: pct_txt=f"{float(pct):+.2f}%" if pct is not None else "暫無資料"
+    except (ValueError,TypeError): pct_txt="暫無資料"
+    try: volume_txt=f"{int(float(volume)/1000):,} 張" if volume is not None else "暫無資料"
+    except (ValueError,TypeError): volume_txt="暫無資料"
+    quote_day=str(stock.get('close_date') or '日期未提供').replace('-', '/')
+    quote_items=[{ "type":"box","layout":"horizontal","spacing":"sm","contents":[metric("最新價",close_txt),metric("漲跌幅",pct_txt,red if pct is not None and float(pct or 0)>=0 else green),metric("成交量",volume_txt)]},
+      section("價位參考",[ {"type":"box","layout":"horizontal","spacing":"sm","contents":[metric("支撐",find("🛡️ 支撐")),metric("壓力",find("🚧 壓力"))]} ])]
+    if score:
+        caps=score.get('caps',[20,25,30,5,20]); vals=[score.get('revenue',0),score.get('valuation',0),score.get('momentum',0),score.get('streak_score',0),score.get('chip_tech',0)]
+        labels=['營收成長','估值','產業動能','法人連續性','籌碼／技術']; factor_rows=[]
+        for label,val,cap in zip(labels,vals,caps):
+            try: v=float(val); c=max(float(cap),1); ratio=max(0,min(100,v/c*100))
+            except (TypeError,ValueError): v=0; c=1; ratio=0
+            factor_rows.append({"type":"box","layout":"vertical","spacing":"xs","margin":"sm","contents":[{"type":"box","layout":"horizontal","contents":[txt(label,"sm",navy,"bold","none"),{"type":"text","text":f"{v:g}/{c:g}","size":"sm","weight":"bold","color":navy,"align":"end","flex":1}]},{"type":"box","layout":"vertical","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"5px","contents":[{"type":"box","layout":"vertical","width":f"{ratio:.1f}%","height":"7px","backgroundColor":blue,"cornerRadius":"5px","contents":[]}]}]})
+        total=score.get('total','暫無資料')
+        change=find('模型分數')
+        factor_body=[{"type":"box","layout":"horizontal","alignItems":"center","contents":[txt("五大因子綜合分數","sm",muted,None,"none"),{"type":"text","text":f"{total}/100","size":"xxl","weight":"bold","color":navy,"align":"end","flex":1}]},*factor_rows]
+        sc=find("📉")
+        if sc!="暫無資料": factor_body.append(txt(sc,"xs",muted,None,"md"))
+        factor_section=section("五大因子評分",factor_body)
+        key_items=[txt(find("累計營收年增"),"sm"),txt(find("PE "),"sm"),txt(find("估值模型："),"sm"),txt(find("※ 這裡的 PEG"),"xs",muted)]
+        model=find("", "")
+    else:
+        factor_section=section("五大因子評分",[txt("目前沒有取得可用的五大因子分數。","sm",muted)])
+        key_items=[txt("基本面與估值資料暫無資料","sm",muted)]
+    # Second card: fundamentals + institutional summaries. Keep values grounded in the report text.
+    fundamentals=[]
+    for prefix in ("累計營收年增", "PE ", "PB ", "殖利率 ", "估值模型：", "※ 這裡的 PEG"):
+        val=find(prefix)
+        if val!="暫無資料": fundamentals.append(txt(prefix+val,"sm",muted if prefix.startswith("※") else "#344054"))
+    if not fundamentals: fundamentals=[txt("基本面資料暫無資料","sm",muted)]
+    inst_lines=[]; in_inst=False
+    for ln in lines:
+        if "【法人籌碼】" in ln: in_inst=True; inst_lines.append(txt("近 10 日法人摘要","sm",navy,"bold","none")); continue
+        if in_inst and "【位階】" in ln: break
+        if in_inst and ln.strip(): inst_lines.append(txt(ln.strip(),"sm"))
+    if len(inst_lines)==1: inst_lines.append(txt("暫無法人歷史資料","sm",muted))
+    tech_lines=[]; in_tech=False
+    for ln in lines:
+        if "【位階】" in ln: in_tech=True; continue
+        if in_tech and ln.strip(): tech_lines.append(txt(ln.strip(),"sm"))
+    if not tech_lines: tech_lines=[txt("均線與位階資料暫無資料","sm",muted)]
+    cards=[bubble(f"📊 {code} {name}",f"個股總覽｜行情資料日 {quote_day}",quote_items+[factor_section]),
+           bubble(f"🏦 {code} {name}","基本面與法人籌碼",[section("關鍵基本面與估值",fundamentals),section("法人買賣超",inst_lines)]),
+           bubble(f"📈 {code} {name}","技術位階、模型觀察與相關新聞",[section("技術位階",tech_lines),section("模型解讀與風險",[txt(ln.strip(),"sm") for ln in lines if "目前相對較強" in ln or "主要較弱" in ln or "不代表買賣建議" in ln or "風險提醒" in ln] or [txt("模型解讀請以已取得的五大因子資料為準。","sm",muted)]),section("相關新聞",[({"type":"text","text":f"• {it.get('title','相關新聞')}","size":"sm","color":blue,"wrap":True,"decoration":"underline","action":{"type":"uri","uri":_valid_news_uri(it.get('link'))},"margin":"sm"} if _valid_news_uri(it.get('link')) else txt(it.get('title','相關新聞'),"sm")) for it in (news or [])] or [txt("目前沒有取得相關新聞。","sm",muted)])])]
+    messages=[]
+    for i,bub in enumerate(cards,1):
+        n=len(json.dumps(bub,ensure_ascii=False,separators=(',',':')).encode('utf-8'))
+        if n>target_bytes:
+            # If content-rich card is too large, shorten only long text fields and recheck.
+            def shorten(node):
+                if isinstance(node,dict):
+                    if node.get('type')=='text' and isinstance(node.get('text'),str): node['text']=node['text'][:220]
+                    for vv in node.values(): shorten(vv)
+                elif isinstance(node,list):
+                    for vv in node: shorten(vv)
+            shorten(bub); n=len(json.dumps(bub,ensure_ascii=False,separators=(',',':')).encode('utf-8'))
+        if n>25000: raise ValueError(f"個股視覺卡第{i}張仍超過安全大小：{n} bytes")
+        print(f"📦 LINE 個股視覺卡 {i}/{len(cards)}：{n} bytes")
+        messages.append(FlexSendMessage(alt_text=f"{code} {name} 個股分析 {i}/{len(cards)}"[:400],contents=bub))
+    return messages
+
 def build_single_stock_report(code, user_id=None):
     """
     單檔完整健檢。LINE 直接輸入代號就走這裡——
@@ -17805,7 +17890,7 @@ def build_single_stock_report(code, user_id=None):
     if not news:
         core_report += ("\n\n📰 相關新聞\n"
                         f"目前沒有抓到以{name}為主體的相關新聞。")
-        return _build_split_stock_flex_messages(_flex_report_contents(core_report), code, name, f"{code} {name} 個股分析")
+        return _build_stock_visual_flex_messages(code, name, stock_for_display, score, bd, lines + ["", "【關鍵數據】", f"累計營收年增 {score.get('cum_yoy'):+.1f}%" if score and score.get('cum_yoy') is not None else "累計營收年增：資料不足", f"PE {score.get('pe'):.1f} 倍" if score and score.get('pe') is not None else "PE：資料不足", f"PB {score.get('pb'):.2f} 倍" if score and score.get('pb') is not None else "PB：資料不足", f"殖利率 {score.get('yield'):.2f}%" if score and score.get('yield') is not None else "殖利率：資料不足", "【模型解讀】", build_web_factor_observation(score) if score else "模型解讀暫無資料"], news=[])
 
     # 單檔查詢保留完整健檢文字，但新聞標題使用可點擊 Flex 元件，
     # 不把 Google News 的長網址直接顯示在聊天室。
@@ -17830,7 +17915,7 @@ def build_single_stock_report(code, user_id=None):
         contents.append(component)
     alt_text = core_report + "\n📰 相關新聞\n" + "；".join(
         item.get("title", "") for item in news)
-    return _build_split_stock_flex_messages(contents, code, name, f"{code} {name} 個股分析")
+    return _build_stock_visual_flex_messages(code, name, stock_for_display, score, bd, lines + ["", "【關鍵數據】", f"累計營收年增 {score.get('cum_yoy'):+.1f}%" if score and score.get('cum_yoy') is not None else "累計營收年增：資料不足", f"PE {score.get('pe'):.1f} 倍" if score and score.get('pe') is not None else "PE：資料不足", f"PB {score.get('pb'):.2f} 倍" if score and score.get('pb') is not None else "PB：資料不足", f"殖利率 {score.get('yield'):.2f}%" if score and score.get('yield') is not None else "殖利率：資料不足", "【模型解讀】", build_web_factor_observation(score) if score else "模型解讀暫無資料"], news=news)
 
 def _etf_price_drawdown_summary(closes, close_dates):
     """用可取得的價格序列計算觀測期間最大回撤與是否回到前高。"""
