@@ -17588,8 +17588,17 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
     else:
         lines.append("💰 股價資料不足")
     high, low = stock.get("high"), stock.get("low")
+    try:
+        high = float(high) if high is not None and float(high) > 0 else None
+        low = float(low) if low is not None and float(low) > 0 else None
+    except (TypeError, ValueError):
+        high, low = None, None
     lines.append(f"高低 {high:.2f}/{low:.2f}" if high is not None and low is not None else "高低資料不足")
     volume = stock.get("volume")
+    try:
+        volume = float(volume) if volume is not None and float(volume) >= 0 else None
+    except (TypeError, ValueError):
+        volume = None
     lines.append(f"📦 {int(volume / 1000):,} 張" if volume is not None else "📦 成交量資料不足")
     lines.append(f"🛡️ 支撐 {fmt_support(stock)}")
     lines.append(f"🚧 壓力 {fmt_resistance(stock.get('resistance'))}")
@@ -17678,347 +17687,150 @@ def _build_text_flex_message(text, alt_text=None):
                   "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
 
 
-def _line_stock_institutional_20d(code):
-    """讀取法人近 20 個交易日逐日資料；無資料時回傳空列，不造假。"""
-    rows = []
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            """SELECT trade_date, foreign_net_lots, trust_net_lots, dealer_net_lots
-               FROM inst_history WHERE code=%s
-               ORDER BY trade_date DESC LIMIT 20""", (str(code),))
-        rows = cur.fetchall()
-        cur.close()
-    except Exception as exc:
-        print(f"⚠️ LINE 個股近20日法人序列讀取失敗 {code}: {type(exc).__name__}: {exc}")
-    finally:
-        if conn is not None:
-            try: release_db_connection(conn)
-            except Exception: pass
-    out=[]
-    for row in reversed(rows or []):
-        d=row[0]
-        try:
-            date_text = d.strftime('%m/%d') if hasattr(d, 'strftime') else str(d)[5:10].replace('-', '/')
-            vals=[]
-            for raw in row[1:4]:
-                try: vals.append(float(raw or 0))
-                except (TypeError, ValueError): vals.append(0.0)
-            out.append((date_text, sum(vals), vals))
-        except Exception:
-            continue
-    return out
+def _build_split_stock_flex_messages(contents, code, name, alt_text, target_bytes=23000):
+    """將個股報告的 Flex 元件分成多張有格式的 bubble；每張保留安全大小餘裕。"""
+    import json
+    base_prefix = f"📊 {code} {name} 個股分析"
+    chunks, current = [], []
+    def make_bubble(items, part, total_hint=""):
+        title = f"{base_prefix}｜第 {part} 張"
+        payload = {"type": "bubble", "size": "giga", "body": {
+            "type": "box", "layout": "vertical", "contents": items,
+            "paddingAll": "16px", "backgroundColor": "#FFFFFF"},
+            "styles": {"body": {"backgroundColor": "#FFFFFF"}}}
+        return payload
+    def size_of(items, part=1):
+        return len(json.dumps(make_bubble(items, part), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    for component in contents:
+        candidate = current + [component]
+        if current and size_of(candidate, len(chunks)+1) > target_bytes:
+            chunks.append(current)
+            current = [component]
+        else:
+            current = candidate
+        if size_of(current, len(chunks)+1) > target_bytes:
+            # A single pathological component should be shortened safely rather than sent oversized.
+            comp = dict(current[-1])
+            if comp.get("type") == "text" and isinstance(comp.get("text"), str):
+                comp["text"] = comp["text"][:180]
+                current[-1] = comp
+            if size_of(current, len(chunks)+1) > 25000:
+                current[-1] = {"type":"text", "text":"此項內容過長，請查看完整個股分析頁。", "size":"xs", "color":"#6F7782", "wrap":True}
+    if current:
+        chunks.append(current)
+    total = len(chunks)
+    messages = []
+    for idx, items in enumerate(chunks, 1):
+        heading = {"type":"text", "text":f"📊 {code} {name} 個股分析  ·  {idx}/{total}",
+                   "size":"md", "weight":"bold", "color":"#1B3552", "wrap":True, "margin":"none"}
+        card_contents = [heading, {"type":"separator", "margin":"md", "color":"#D9E2EC"}] + items
+        bubble = make_bubble(card_contents, idx)
+        nbytes = len(json.dumps(bubble, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        if nbytes > 25000:
+            # Last-resort safe bubble: keep the key heading and compact text-only summary.
+            compact = []
+            for c in items:
+                if c.get("type") == "text":
+                    t = str(c.get("text") or "")[:120]
+                    compact.append({"type":"text", "text":t, "size":"xs", "color":"#454C55", "wrap":True})
+            bubble = make_bubble([heading] + compact[:24], idx)
+            nbytes = len(json.dumps(bubble, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        if nbytes > 30000:
+            raise ValueError(f"個股分析第 {idx} 張 Flex 仍超限：{nbytes} bytes")
+        print(f"📦 LINE 個股 Flex 第 {idx}/{total} 張大小：{nbytes} bytes")
+        messages.append(FlexSendMessage(alt_text=f"{alt_text}（{idx}/{total}）"[:400], contents=bubble))
+    return messages
 
 
 def build_single_stock_report(code, user_id=None):
-    """新版 LINE 個股分析長卡：獨立版型，沿用既有資料與非同步推播流程。"""
+    """
+    單檔完整健檢。LINE 直接輸入代號就走這裡——
+    單檔與多檔自選股共用同一套手機版欄位，避免相同功能出現兩種格式。
+    """
     stock = get_realtime_stock(code)
     if not stock:
-        return TextSendMessage(text=f"❌ 查無代號 {code} 的行情，請確認代號是否正確。")
+        return f"❌ 查無代號 {code} 的行情，請確認代號是否正確。"
 
-    # 避免把舊日線的零漲跌、零成交量誤當成今日真實數據。
-    shown = dict(stock)
-    quote_day = str(shown.get('close_date') or '').replace('-', '')[:8]
-    today_key = taiwan_today().strftime('%Y%m%d')
-    try: pct_num = float(shown.get('pct')) if shown.get('pct') is not None else None
-    except (TypeError, ValueError): pct_num = None
-    try: vol_num = float(shown.get('volume')) if shown.get('volume') is not None else None
-    except (TypeError, ValueError): vol_num = None
-    if quote_day and quote_day != today_key and pct_num == 0 and vol_num == 0:
-        shown['pct'] = None; shown['volume'] = None
+    # 資料品質保護：若只有舊日線收盤價，且來源同時回傳 0 漲跌與 0 成交量，
+    # 這通常代表當日行情欄位缺值，不應把缺值包裝成「當日 +0.00%、成交量 0 張」。
+    # 僅調整 LINE 顯示副本，不改動原始 stock，也不影響五大因子計算。
+    stock_for_display = dict(stock)
+    quote_day = str(stock_for_display.get("close_date") or "").replace("-", "")[:8]
+    today_key = taiwan_today().strftime("%Y%m%d")
+    try:
+        quote_pct = float(stock_for_display.get("pct")) if stock_for_display.get("pct") is not None else None
+    except (TypeError, ValueError):
+        quote_pct = None
+    try:
+        quote_volume = float(stock_for_display.get("volume")) if stock_for_display.get("volume") is not None else None
+    except (TypeError, ValueError):
+        quote_volume = None
+    if quote_day and quote_day != today_key and quote_pct == 0 and quote_volume == 0:
+        stock_for_display["pct"] = None
+        stock_for_display["volume"] = None
+        # 舊日線的 high/low 常被資料源補成 close；不能把它們誤呈現成今日高低點。
+        stock_for_display["high"] = None
+        stock_for_display["low"] = None
 
-    try: inst = fetch_institutional_data() or {}
-    except Exception: inst = {}
-    try: score = (compute_watchlist_scores([code]) or {}).get(code) or {}
-    except Exception as exc:
-        print(f"⚠️ LINE 個股評分讀取失敗 {code}: {exc}"); score = {}
-    try: bd = (get_investor_breakdown([code], days=10) or {}).get(code) or {}
-    except Exception: bd = {}
-    try: revenue = (fetch_monthly_revenue() or {}).get(code) or {}
-    except Exception: revenue = {}
-    try: valuation = (fetch_valuation() or {}).get(code) or {}
-    except Exception: valuation = {}
-    try: industry = (get_industry_map() or {}).get(code)
-    except Exception: industry = None
-    name = short_company_name(stock_display_name(code, inst, shown.get('name')))
+    inst = fetch_institutional_data() or {}
+    scores = compute_watchlist_scores([code])
+    score = scores.get(code)
+    ind_map = get_industry_map() or {}
+    industry = ind_map.get(code)
+    name = short_company_name(stock_display_name(code, inst, stock["name"]))
 
-    def n(v):
-        try:
-            x=float(str(v).replace(',', '').replace('%', '').strip())
-            return x if math.isfinite(x) else None
-        except (TypeError, ValueError): return None
-    def fmt(v, digits=2, suffix=''):
-        x=n(v)
-        return f"{x:,.{digits}f}{suffix}" if x is not None else '暫無資料'
-    def txt(value, size='sm', color='#344054', weight=None, margin='xs', wrap=True):
-        d={'type':'text','text':str(value),'size':size,'color':color,'wrap':wrap,'margin':margin}
-        if weight: d['weight']=weight
-        return d
-    def section(title, contents, accent='#315E9B'):
-        return {'type':'box','layout':'vertical','spacing':'xs','margin':'lg','contents':[
-            {'type':'box','layout':'horizontal','spacing':'sm','alignItems':'center','contents':[
-                {'type':'box','layout':'vertical','width':'4px','height':'18px','backgroundColor':accent,'contents':[{'type':'filler'}]},
-                txt(title,'md','#182230','bold','none')
-            ]},
-            *contents
-        ]}
-    def metric(label, value, note=None):
-        c=[txt(label,'xs','#667085','regular','none'), txt(value,'sm','#182230','bold','xs')]
-        if note: c.append(txt(note,'xxs','#667085','regular','xs'))
-        return {'type':'box','layout':'vertical','flex':1,'paddingAll':'9px','backgroundColor':'#F7F8FA','cornerRadius':'8px','spacing':'xs','contents':c}
-    def metric_row(items):
-        return {'type':'box','layout':'horizontal','spacing':'sm','contents':items}
+    score_change = None
+    if score and user_id:
+        prev = get_previous_scores(user_id, [code]).get(code)
+        arrow, change_txt = describe_score_change(score, prev)
+        if arrow:
+            score_change = f"{arrow} {change_txt}"
 
-    price=n(shown.get('close') or shown.get('price')); pct=n(shown.get('pct'))
-    change_color='#D92D20' if pct is not None and pct>0 else '#039855' if pct is not None and pct<0 else '#667085'
-    date_raw=str(shown.get('close_date') or '日期未提供')
-    try: date_text=f'{date_raw[:4]}/{date_raw[4:6]}/{date_raw[6:8]}' if len(date_raw.replace('-',''))>=8 else date_raw
-    except Exception: date_text=date_raw
-    header=[txt(f'{code}  {name}','xl','#182230','bold','none'),
-            txt(f"{industry_name(industry) if industry else (score.get('category') or '個股分析')}  ·  行情資料日 {date_text}",'xs','#667085','regular','sm')]
-    header.append({'type':'box','layout':'horizontal','alignItems':'flex-end','spacing':'md','margin':'md','contents':[
-        {'type':'box','layout':'vertical','flex':3,'spacing':'xs','contents':[
-            txt(fmt(price,2),'xxl','#182230','bold','none'),
-            txt(f"{pct:+.2f}%" if pct is not None else '漲跌幅：暫無資料','md',change_color,'bold','none')
-        ]},
-        {'type':'box','layout':'vertical','flex':2,'spacing':'xs','contents':[
-            txt(f"高 {fmt(shown.get('high'))}  /  低 {fmt(shown.get('low'))}",'xs','#475467','regular','none'),
-            txt(f"成交量 {fmt((n(shown.get('volume'))/1000) if n(shown.get('volume')) is not None else None,0,' 張')}",'xs','#475467','regular','none'),
-            txt(f"支撐 {fmt_support(shown)}  ·  壓力 {fmt(shown.get('resistance'))}",'xs','#475467','regular','none')
-        ]}
-    ]})
-
-    # 五大因子：總分與分項變化集中在同一區。只在資料庫有歷史快照時比較。
-    prev={}
+    bd = get_investor_breakdown([code]).get(code)
+    watchlist_status = None
     if user_id:
-        try:
-            conn=get_db_connection(); cur=conn.cursor()
-            cur.execute("""SELECT snapshot_date,total,factor_revenue,factor_valuation,factor_momentum,
-                                  factor_streak,factor_chip_tech
-                           FROM watchlist_scores WHERE user_id=%s AND code=%s
-                             AND snapshot_date<CURRENT_DATE
-                           ORDER BY snapshot_date DESC LIMIT 1""", (str(user_id),str(code)))
-            row=cur.fetchone(); cur.close()
-            if row:
-                prev={'date':row[0],'total':row[1], 'factors':list(row[2:7])}
-            release_db_connection(conn)
-        except Exception as exc:
-            print(f"⚠️ LINE 個股歷史因子快照讀取失敗 {code}: {exc}")
-            try: release_db_connection(conn)
-            except Exception: pass
-    factor_defs=[('營收成長',score.get('revenue'),(score.get('caps') or [20,25,30,5,20])[0]),
-                 ('估值',score.get('valuation'),(score.get('caps') or [20,25,30,5,20])[1]),
-                 ('產業動能',score.get('momentum'),(score.get('caps') or [20,25,30,5,20])[2]),
-                 ('法人連續性',score.get('streak_score'),(score.get('caps') or [20,25,30,5,20])[3]),
-                 ('籌碼／技術',score.get('chip_tech'),(score.get('caps') or [20,25,30,5,20])[4])]
-    factor_contents=[]
-    for i,(label,value,cap) in enumerate(factor_defs):
-        value_n=n(value); cap_n=n(cap) or 0
-        old=n(prev.get('factors',[None]*5)[i]) if i<len(prev.get('factors',[])) else None
-        if value_n is None:
-            detail='本次暫無資料'
-        elif old is not None:
-            diff=value_n-old; detail=f"前次 {old:.0f} → 本次 {value_n:.0f}（{diff:+.0f}）"
-        else:
-            detail=f"本次 {value_n:.0f}/{cap_n:.0f} · 前次暫無資料"
-        current_width=min(100,max(0,value_n/cap_n*100)) if value_n is not None and cap_n>0 else 0
-        old_width=min(100,max(0,old/cap_n*100)) if old is not None and cap_n>0 else 0
-        bars=[]
-        if old is not None:
-            bars.append({'type':'box','layout':'horizontal','height':'4px','backgroundColor':'#EAECF0','cornerRadius':'3px','contents':[
-                {'type':'box','layout':'vertical','width':f'{old_width:.1f}%','height':'4px','backgroundColor':'#98A2B3','cornerRadius':'3px','contents':[{'type':'filler'}]}]})
-        bars.append({'type':'box','layout':'horizontal','height':'6px','backgroundColor':'#EAECF0','cornerRadius':'3px','contents':[
-            {'type':'box','layout':'vertical','width':f'{current_width:.1f}%','height':'6px','backgroundColor':'#315E9B','cornerRadius':'3px','contents':[{'type':'filler'}]}]})
-        factor_contents.append({'type':'box','layout':'vertical','spacing':'xs','margin':'sm','contents':[
-            {'type':'box','layout':'horizontal','contents':[txt(label,'sm','#344054','bold','none'),{'type':'filler'},txt(f"{value_n:.0f}/{cap_n:.0f}" if value_n is not None else '暫無資料','sm','#182230','bold','none')]},
-            *bars, txt(detail,'xs','#667085','regular','none')
-        ]})
-    total=n(score.get('total')); prev_total=n(prev.get('total'))
-    if total is not None and prev_total is not None:
-        delta=total-prev_total; total_line=f"總分 {prev_total:.0f} → {total:.0f}（{delta:+.0f} 分）"
-        total_color='#039855' if delta>0 else '#D92D20' if delta<0 else '#667085'
-    elif total is not None: total_line=f"目前總分 {total:.0f}/100 · 前次快照暫無資料"; total_color='#182230'
-    else: total_line='目前沒有可用的模型總分'; total_color='#667085'
-    factor_contents.insert(0, {'type':'box','layout':'vertical','paddingAll':'12px','backgroundColor':'#F2F4F7','cornerRadius':'10px','spacing':'xs','contents':[
-        txt(total_line,'lg',total_color,'bold','none'),
-        txt(f"前次快照：{prev.get('date')}" if prev.get('date') else '灰色代表前次分數；藍色代表本次分數。沒有歷史快照時不補造前次分數。','xs','#667085','regular','none')
-    ]})
+        in_wl = code in get_user_watchlist(user_id)
+        watchlist_status = ("※ 已在自選清單" if in_wl
+                            else f"※ 輸入「加 {code}」加入自選")
 
-    # 基本面與估值，優先使用既有模型欄位，不產生估算替代值。
-    cum_yoy=n(score.get('cum_yoy',revenue.get('cum_yoy_pct')))
-    pe=n(valuation.get('pe',score.get('pe'))); pb=n(valuation.get('pb',score.get('pb')))
-    dy=n(valuation.get('yield',score.get('yield'))); peg=n(score.get('peg'))
-    fundamental=[metric_row([metric('累計營收年增',f'{cum_yoy:+.1f}%' if cum_yoy is not None else '暫無資料',str(revenue.get('period') or revenue.get('month') or '期別未提供')),
-                            metric('本益比 PE',fmt(pe,1,' 倍'))]),
-                 metric_row([metric('股價淨值比 PB',fmt(pb,2,' 倍')),metric('殖利率',fmt(dy,2,'%'))])]
-    if score.get('category')=='電子':
-        fundamental.append(metric_row([metric('模型 PEG',fmt(peg,2),'PE ÷ 累計營收年增率；非標準 EPS-PEG'),metric('產業分類',str(score.get('category') or '暫無資料'))]))
+    lines = _format_stock_detail_lines(
+        code, name, stock_for_display, score=score, bd=bd,
+        industry_label=(f"📌 {score.get('category') or '個股'}" + (f"｜{industry_name(industry)}" if industry else "")) if score else (industry_name(industry) if industry else None),
+        score_change=score_change, watchlist_status=watchlist_status)
 
-    # 法人近20日圖：精簡 Flex JSON，避免單一 bubble 超過 LINE 30KB 限制。
-    # 每個交易日僅保留一個短柱與必要日期標籤，不建立多層 filler/box。
-    inst20=_line_stock_institutional_20d(code)
-    chart_contents=[]
-    if inst20:
-        max_abs=max([abs(x[1]) for x in inst20] or [0]) or 1
-        bars=[]
-        visible_dates={inst20[0][0],inst20[len(inst20)//3][0],inst20[(2*len(inst20))//3][0],inst20[-1][0]}
-        for date_label, net, _parts in inst20[-20:]:
-            h=max(2,round(abs(net)/max_abs*30))
-            color='#D92D20' if net>0 else '#039855' if net<0 else '#D0D5DD'
-            # 以簡單 box 呈現買賣方向；日期僅顯示少數交易日。
-            bars.append({'type':'box','layout':'vertical','flex':1,'alignItems':'center','spacing':'none','contents':[
-                {'type':'box','layout':'vertical','height':'32px','justifyContent':'flex-end' if net>0 else 'center','alignItems':'center','contents':[
-                    {'type':'box','layout':'vertical','width':'5px','height':f'{h}px','backgroundColor':color,'cornerRadius':'2px','contents':[{'type':'filler'}]}
-                ]},
-                {'type':'box','layout':'horizontal','height':'1px','backgroundColor':'#98A2B3','contents':[{'type':'filler'}]},
-                {'type':'box','layout':'vertical','height':'32px','justifyContent':'flex-start' if net<0 else 'center','alignItems':'center','contents':[
-                    {'type':'box','layout':'vertical','width':'5px','height':f'{h}px','backgroundColor':color if net<0 else '#FFFFFF','cornerRadius':'2px','contents':[{'type':'filler'}]}
-                ]},
-                txt(date_label,'xxs','#667085','regular','xs',False) if date_label in visible_dates else {'type':'filler'}
-            ]})
-        chart_contents=[txt('三大法人每日合計買賣超（張）','xs','#667085','regular','none'),
-                        {'type':'box','layout':'horizontal','spacing':'none','alignItems':'center','contents':bars},
-                        txt('紅色＝買超　綠色＝賣超；零軸居中，日期僅顯示部分交易日。','xxs','#667085','regular','none')]
-    else:
-        chart_contents=[txt('目前沒有可用的近 20 日法人逐日資料；不以累計數據假造柱狀圖。','sm','#667085','regular','none')]
-    bd_items=[]
-    for key,label in [('foreign','外資'),('trust','投信'),('dealer','自營商')]:
-        entry=bd.get(key) or {}; cum=n(entry.get('cum'))
-        col='#D92D20' if cum is not None and cum>0 else '#039855' if cum is not None and cum<0 else '#667085'
-        bd_items.append(metric(label, f'{cum:+,.0f} 張' if cum is not None else '暫無資料', f"連買 {entry.get('streak',0)} 日" if entry.get('streak') is not None else ''))
-    chart_contents.append(metric_row(bd_items))
+    news = fetch_stock_news(
+        name, max_items=2, within_hours=36,
+        subject_name=name, known_names=_news_company_names([name]))
+    core_report = "\n".join(lines)
+    if not news:
+        core_report += ("\n\n📰 相關新聞\n"
+                        f"目前沒有抓到以{name}為主體的相關新聞。")
+        return _build_split_stock_flex_messages(_flex_report_contents(core_report), code, name, f"{code} {name} 個股分析")
 
-    # 技術位階：只用可用歷史價格；不把缺資料當 0。
-    dates=shown.get('close_dates') or []; closes=shown.get('closes') or []
-    prices=[]
-    for v in closes:
-        x=n(v)
-        if x is not None and x>0: prices.append(x)
-    tech=[]
-    for label,period in [('MA5',5),('MA20',20),('MA60',60)]:
-        avg=sum(prices[-period:])/period if len(prices)>=period else None
-        relation='現價高於均線' if price is not None and avg is not None and price>avg else '現價低於均線' if price is not None and avg is not None and price<avg else '資料不足'
-        gap=(price/avg-1)*100 if price is not None and avg else None
-        tech.append(metric(label,fmt(avg),f"{relation}；差距 {gap:+.1f}%" if gap is not None else relation))
-    support=n(shown.get('support')); resistance=n(shown.get('resistance'))
-    if prices:
-        support=support if support is not None else min(prices[-20:])
-        resistance=resistance if resistance is not None else max(prices[-20:])
-    technical=[metric_row(tech),metric_row([metric('支撐參考',fmt(support)),metric('壓力參考',fmt(resistance))]),
-               txt('均線與價位為歷史資料計算的觀察參考，不保證有效。','xxs','#667085','regular','sm')]
-
-    try:
-        observation=build_web_factor_observation(score) if score else '目前資料不足，無法產生模型解讀。'
-    except Exception: observation='目前資料不足，無法產生模型解讀。'
-    model=[txt(str(observation),'sm','#344054','regular','none'),
-           txt('風險提醒：模型分數是相對篩選工具，不是獲利保證；行情與財務資料可能有延遲，請核對各區資料日期。','xs','#667085','regular','sm')]
-
-    try: news=fetch_stock_news(name,max_items=3,within_hours=36,subject_name=name,known_names=_news_company_names([name])) or []
-    except Exception as exc:
-        print(f"⚠️ LINE 個股新聞讀取失敗 {code}: {exc}"); news=[]
-    news_contents=[]
-    for item in news:
-        title=str(item.get('title') or '').strip()
-        if not title: continue
-        uri=_valid_news_uri(item.get('link'))
-        news_contents.append({'type':'text','text':f"{title}  ·  {item.get('source') or '來源未提供'}",'size':'sm','color':'#315E9B' if uri else '#475467','wrap':True,'margin':'sm','action':({'type':'uri','uri':uri} if uri else None)})
-        if news_contents[-1].get('action') is None: news_contents[-1].pop('action',None)
-    if not news_contents: news_contents=[txt('目前沒有取得符合條件的相關新聞；不代表沒有消息。','sm','#667085','regular','none')]
-
-    body_contents = header + [
-        {'type':'separator','margin':'lg','color':'#E4E7EC'},
-        section('五大因子｜總分變化',factor_contents,'#315E9B'),
-        section('基本面與估值',fundamental,'#7F56D9'),
-        section('法人買賣超｜近 20 日',chart_contents,'#B54708'),
-        section('技術位階',technical,'#039855'),
-        section('模型解讀與風險',model,'#667085'),
-        section('相關新聞｜點擊閱讀原文',news_contents,'#315E9B'),
-        txt('資料缺漏會標示「暫無資料」；本卡不補造行情、分數或法人數據。','xxs','#98A2B3','regular','lg')
+    # 單檔查詢保留完整健檢文字，但新聞標題使用可點擊 Flex 元件，
+    # 不把 Google News 的長網址直接顯示在聊天室。
+    contents = _flex_report_contents(core_report)
+    contents += [
+        {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+        {"type": "text", "text": "📰 相關新聞", "weight": "bold",
+         "size": "sm", "color": "#1B2027", "margin": "lg"},
     ]
-    # LINE Flex bubble 單一 body 的直接元件數有限，所有內容以分區 box 收納。
-    bubble={'type':'bubble','size':'giga','body':{'type':'box','layout':'vertical','paddingAll':'16px','spacing':'none','contents':body_contents},'styles':{'body':{'backgroundColor':'#FFFFFF'}}}
-    alt=f"{code} {name}個股分析：行情、五大因子、基本面、法人、技術位階與新聞。"
-    # LINE Flex Message 不接受空字串 text。推播前遞迴檢查整張卡，
-    # 將任何意外的空文字替換成安全的短橫線，避免整張卡被 HTTP 400 拒收。
-    def _sanitize_flex_text(node):
-        if isinstance(node, dict):
-            if node.get('type') == 'text' and not str(node.get('text') or '').strip():
-                node['text'] = '—'
-            for child in node.values():
-                _sanitize_flex_text(child)
-        elif isinstance(node, list):
-            for child in node:
-                _sanitize_flex_text(child)
-    _sanitize_flex_text(bubble)
-    # LINE 單一 Flex bubble 上限 30KB。採保守 25KB 門檻，必須確保超限時不送出大卡。
-    import json as _json
-    _FLEX_SAFE_BYTES = 25 * 1024
-    def _serialized_size(_obj):
-        return len(_json.dumps(_obj, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
-    def _collect_text(_node, _out):
-        if isinstance(_node, dict):
-            if _node.get('type') == 'text':
-                _value = str(_node.get('text') or '').strip()
-                if _value and _value not in ('—', '暫無資料'):
-                    _out.append(_value)
-            for _value in _node.values(): _collect_text(_value, _out)
-        elif isinstance(_node, list):
-            for _value in _node: _collect_text(_value, _out)
-    try:
-        _bubble_bytes = _serialized_size(bubble)
-        if _bubble_bytes > _FLEX_SAFE_BYTES:
-            _body_nodes = bubble.get('body', {}).get('contents', [])
-            # 第一階段：新聞保留最多 1 則，避免來源連結與長標題吃掉大量空間。
-            for _node in _body_nodes:
-                if isinstance(_node, dict) and _node.get('type') == 'box' and '相關新聞' in str(_json.dumps(_node, ensure_ascii=False)):
-                    _contents = _node.get('contents', [])
-                    _news_section = next((_x for _x in _contents if isinstance(_x, dict) and _x.get('type') == 'box'), None)
-                    if _news_section and isinstance(_news_section.get('contents'), list):
-                        _news_section['contents'] = _news_section['contents'][:1]
-            _bubble_bytes = _serialized_size(bubble)
-        if _bubble_bytes > _FLEX_SAFE_BYTES:
-            # 第二階段：減少法人圖表的重複圖形元件，保留區塊標題與統計摘要。
-            for _node in _body_nodes:
-                if isinstance(_node, dict) and '法人買賣超' in str(_json.dumps(_node, ensure_ascii=False)):
-                    _stack = [_node]
-                    while _stack:
-                        _cur = _stack.pop()
-                        if isinstance(_cur, dict):
-                            if _cur.get('type') == 'box' and isinstance(_cur.get('contents'), list) and len(_cur['contents']) > 12:
-                                _cur['contents'] = _cur['contents'][:12]
-                            _stack.extend(v for v in _cur.values() if isinstance(v, (dict, list)))
-                        elif isinstance(_cur, list): _stack.extend(_cur)
-            _bubble_bytes = _serialized_size(bubble)
-        if _bubble_bytes > _FLEX_SAFE_BYTES:
-            # 第三階段：逐步縮短所有文字，重新量測；不把「截短一次」當成保證。
-            for _limit in (140, 100, 70, 45):
-                _stack = [bubble]
-                while _stack:
-                    _cur = _stack.pop()
-                    if isinstance(_cur, dict):
-                        if _cur.get('type') == 'text' and isinstance(_cur.get('text'), str):
-                            _cur['text'] = _cur['text'][:_limit]
-                        _stack.extend(v for v in _cur.values() if isinstance(v, (dict, list)))
-                    elif isinstance(_cur, list): _stack.extend(_cur)
-                _bubble_bytes = _serialized_size(bubble)
-                if _bubble_bytes <= _FLEX_SAFE_BYTES: break
-        print(f"📦 LINE 個股 Flex bubble 大小：{_bubble_bytes} bytes（安全上限 {_FLEX_SAFE_BYTES}）")
-        if _bubble_bytes <= _FLEX_SAFE_BYTES:
-            return FlexSendMessage(alt_text=alt[:400], contents=bubble)
-        # 最後保險：超限時改成文字版，不送出已知會被 LINE 拒收的 Flex 卡片。
-        _plain = []
-        _collect_text(bubble.get('body', {}), _plain)
-        _text_report = f"📊 {code} {name} 個股分析（文字精簡版）\n\n" + '\n'.join(_plain)
-        _text_report = _text_report[:4500]
-        print(f"⚠️ LINE 個股分析卡仍超過安全上限（{_bubble_bytes} bytes），改送文字版")
-        return TextSendMessage(text=_text_report)
-    except Exception as _size_exc:
-        print(f"❌ Flex 大小檢查失敗，為避免 LINE 拒收改送文字版：{_size_exc}")
-        _plain = []
-        _collect_text(bubble.get('body', {}), _plain)
-        return TextSendMessage(text=(f"📊 {code} {name} 個股分析\n\n" + '\n'.join(_plain))[:4500])
+    for index, item in enumerate(news):
+        src = f"（{item['source']}）" if item.get("source") else ""
+        component = {"type": "text", "text": f"・{item['title']}{src}",
+                     "size": "sm", "color": "#4A5F7A", "wrap": True,
+                     "decoration": "underline",
+                     "margin": "md" if index else "sm"}
+        uri = _valid_news_uri(item.get("link"))
+        if uri:
+            component["action"] = {"type": "uri", "uri": uri}
+        else:
+            component.pop("decoration", None)
+            component["color"] = "#454C55"
+        contents.append(component)
+    alt_text = core_report + "\n📰 相關新聞\n" + "；".join(
+        item.get("title", "") for item in news)
+    return _build_split_stock_flex_messages(contents, code, name, f"{code} {name} 個股分析")
 
 def _etf_price_drawdown_summary(closes, close_dates):
     """用可取得的價格序列計算觀測期間最大回撤與是否回到前高。"""
@@ -24888,6 +24700,49 @@ body #app-page-content .position-fast-card .position-card-title h3 {
     gap:8px 10px !important;
   }
 }
+/* V284 touch-state repair: keep portfolio/stock cards light during iOS press. */
+body #app-page-content .position-card,
+body #app-page-content .position-fast-card,
+body #app-page-content .holding-card,
+body #app-page-content .stock-card,
+body #app-page-content .stock-row,
+body #app-page-content .quote-card,
+body #app-page-content .watch-card,
+body #app-page-content .position-card:active,
+body #app-page-content .position-fast-card:active,
+body #app-page-content .holding-card:active,
+body #app-page-content .stock-card:active,
+body #app-page-content .stock-row:active,
+body #app-page-content .quote-card:active,
+body #app-page-content .watch-card:active {
+  background-color:#FFFFFF !important;
+  color:#172B40;
+  filter:none !important;
+  -webkit-tap-highlight-color:transparent !important;
+}
+body #app-page-content .position-card:active *,
+body #app-page-content .position-fast-card:active *,
+body #app-page-content .holding-card:active *,
+body #app-page-content .stock-card:active *,
+body #app-page-content .stock-row:active *,
+body #app-page-content .quote-card:active *,
+body #app-page-content .watch-card:active * { filter:none !important; }
+body #app-page-content .position-card:active .position-card-top,
+body #app-page-content .position-card:active .position-card-primary,
+body #app-page-content .position-card:active .position-card-grid,
+body #app-page-content .position-fast-card:active .position-card-top,
+body #app-page-content .holding-card:active .card-head,
+body #app-page-content .holding-card:active .card-body { background-color:#FFFFFF !important; }
+body #app-page-content .position-card a:active,
+body #app-page-content .position-card button:active,
+body #app-page-content .position-fast-card a:active,
+body #app-page-content .position-fast-card button:active,
+body #app-page-content .holding-card a:active,
+body #app-page-content .holding-card button:active {
+  background-color:#EDF4FA !important; color:#245B82 !important;
+  opacity:1 !important; -webkit-tap-highlight-color:transparent !important;
+}
+
 """
 
 
@@ -25257,6 +25112,48 @@ table { max-width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+/* V284 touch-state repair: keep portfolio/stock cards light during iOS press. */
+body #app-page-content .position-card,
+body #app-page-content .position-fast-card,
+body #app-page-content .holding-card,
+body #app-page-content .stock-card,
+body #app-page-content .stock-row,
+body #app-page-content .quote-card,
+body #app-page-content .watch-card,
+body #app-page-content .position-card:active,
+body #app-page-content .position-fast-card:active,
+body #app-page-content .holding-card:active,
+body #app-page-content .stock-card:active,
+body #app-page-content .stock-row:active,
+body #app-page-content .quote-card:active,
+body #app-page-content .watch-card:active {
+  background-color:#FFFFFF !important;
+  color:#172B40;
+  filter:none !important;
+  -webkit-tap-highlight-color:transparent !important;
+}
+body #app-page-content .position-card:active *,
+body #app-page-content .position-fast-card:active *,
+body #app-page-content .holding-card:active *,
+body #app-page-content .stock-card:active *,
+body #app-page-content .stock-row:active *,
+body #app-page-content .quote-card:active *,
+body #app-page-content .watch-card:active * { filter:none !important; }
+body #app-page-content .position-card:active .position-card-top,
+body #app-page-content .position-card:active .position-card-primary,
+body #app-page-content .position-card:active .position-card-grid,
+body #app-page-content .position-fast-card:active .position-card-top,
+body #app-page-content .holding-card:active .card-head,
+body #app-page-content .holding-card:active .card-body { background-color:#FFFFFF !important; }
+body #app-page-content .position-card a:active,
+body #app-page-content .position-card button:active,
+body #app-page-content .position-fast-card a:active,
+body #app-page-content .position-fast-card button:active,
+body #app-page-content .holding-card a:active,
+body #app-page-content .holding-card button:active {
+  background-color:#EDF4FA !important; color:#245B82 !important;
+  opacity:1 !important; -webkit-tap-highlight-color:transparent !important;
 }
 """
 
@@ -27034,7 +26931,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   const progressPercent=document.getElementById('page-nav-progress-percent');
   const progressBar=document.getElementById('page-nav-progress-bar');
   const progressTime=document.getElementById('page-nav-progress-time');
-  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0,progressStartedPerf=0,progressUsesWallClock=false,workbenchNavigationPending=false;
+  let active=false,hideTimer=0,resetTimer=0,progressRevealTimer=0,progressTimer=0,progressStartedAt=0,progressStartedPerf=0,progressElapsedBase=0,progressUsesWallClock=false,workbenchNavigationPending=false;
 
   function clearProgressTimers(){{
     window.clearTimeout(progressRevealTimer);window.clearInterval(progressTimer);
@@ -27042,9 +26939,9 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   }}
   function paintEstimatedProgress(){{
     if(!active)return;
-    // 同一文件內的頁面切換使用 performance.now()，不會被先前 sessionStorage 時間污染；
-    // 只有選股工作台的真正整頁導覽，才需要跨文件沿用 Date.now()。
-    var sec=Math.max(0,(Date.now()-progressStartedAt)/1000);
+    // 使用 performance.now() 計算頁內經過時間，避免系統時間校正造成計時停住；
+    // 跨整頁導覽時只把保存的牆鐘差值當作起始偏移。
+    var sec=Math.max(0,progressElapsedBase+(performance.now()-progressStartedPerf)/1000);
     // 進度只用來呈現等待狀態；完成前保留少量空間，避免誤以為已載入完成。
     var pct=sec<1?20:sec<3?20+(sec-1)*20:sec<6?60+(sec-3)*9:Math.min(97,87+(sec-6)*1.7);
     pct=Math.min(97,Math.max(8,pct));
@@ -27067,10 +26964,12 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       // 只有選股工作台使用整頁導覽，需要跨文件延續計時；一般頁面切換不能沿用舊時間。
       progressStartedAt=savedStart;
       progressStartedPerf=performance.now();
+      progressElapsedBase=(now-savedStart)/1000;
       progressUsesWallClock=true;
     }}else{{
       progressStartedAt=now;
       progressStartedPerf=performance.now();
+      progressElapsedBase=0;
       progressUsesWallClock=false;
     }}
     try{{
@@ -49281,6 +49180,14 @@ def _line_loading_message(user_id, feature, base_url=None):
 def _line_async_normalize_result(result):
     if isinstance(result, (TextSendMessage, FlexSendMessage)):
         return result
+    if isinstance(result, (list, tuple)):
+        normalized = []
+        for item in result:
+            if isinstance(item, (TextSendMessage, FlexSendMessage)):
+                normalized.append(item)
+            elif item is not None:
+                normalized.append(TextSendMessage(text=str(item)))
+        return normalized or [TextSendMessage(text="目前沒有可用結果，請稍後再試。")]
     if result is None:
         return TextSendMessage(text="目前沒有可用結果，請稍後再試。")
     return TextSendMessage(text=str(result))
@@ -49328,26 +49235,30 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
         try:
             result = build_fn()
             outbound = _line_async_normalize_result(result)
+            outbound_messages = outbound if isinstance(outbound, list) else [outbound]
             if web_code and feature in {"quote", "etf"}:
                 web_url = _line_feature_web_url(user_id, feature, base_url, code=web_code)
-                if web_url and isinstance(outbound, FlexSendMessage):
-                    body = outbound.contents
-                    if isinstance(body, dict):
-                        body.setdefault("body", {}).setdefault("contents", [])
-                        body["body"]["contents"] += [
-                            {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
-                            {"type": "button", "style": "primary", "height": "sm",
-                             "color": "#6E5228", "margin": "md",
-                             "action": {"type": "uri",
-                                        "label": ("查看完整個股分析" if feature == "quote" else "查看完整 ETF 分析"),
-                                        "uri": web_url}}
-                        ]
-            try:
-                outbound.quick_reply = (quick_reply_builder() if quick_reply_builder else build_quick_reply())
-            except Exception:
-                pass
-            _push_line_with_retry(user_id, outbound)
-            print(f"✅ LINE 背景查詢完成 {user_id} {cfg['name']}（{time.time()-t0:.1f}s，CustomLoading={'有' if loading_started.is_set() else '無'}）")
+                for message in outbound_messages:
+                    if web_url and isinstance(message, FlexSendMessage):
+                        body = message.contents
+                        if isinstance(body, dict):
+                            body.setdefault("body", {}).setdefault("contents", [])
+                            body["body"]["contents"] += [
+                                {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
+                                {"type": "button", "style": "primary", "height": "sm",
+                                 "color": "#6E5228", "margin": "md",
+                                 "action": {"type": "uri",
+                                            "label": ("查看完整個股分析" if feature == "quote" else "查看完整 ETF 分析"),
+                                            "uri": web_url}}
+                            ]
+            for index, message in enumerate(outbound_messages, 1):
+                try:
+                    message.quick_reply = (quick_reply_builder() if quick_reply_builder else build_quick_reply())
+                except Exception:
+                    pass
+                _push_line_with_retry(user_id, message)
+                print(f"📤 LINE 背景查詢分段送出 {user_id} {cfg['name']} {index}/{len(outbound_messages)}")
+            print(f"✅ LINE 背景查詢完成 {user_id} {cfg['name']}（{time.time()-t0:.1f}s，訊息數={len(outbound_messages)}，CustomLoading={'有' if loading_started.is_set() else '無'}）")
         except Exception as exc:
             print(f"❌ LINE 背景查詢失敗 {user_id} {cfg['name']}: {type(exc).__name__}: {exc}")
             try:
