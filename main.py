@@ -37706,6 +37706,166 @@ def _render_report_lines_html(text, title=None):
     return '<section class="card">' + ''.join(blocks) + '</section>'
 
 
+
+
+@app.route("/web/stock-analysis")
+@web_login_required
+def web_stock_analysis(uid):
+    """獨立個股分析頁，沿用 BOT 現有行情與評分資料。"""
+    code = normalize_code(request.args.get("code", ""))
+    if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code or ""):
+        return respond_page("個股分析", '<section class="card">股票代號不正確。</section>', "portfolio")
+
+    def num(v):
+        try:
+            x = float(str(v).replace(",", "").replace("%", "").strip())
+            return x if math.isfinite(x) else None
+        except (TypeError, ValueError):
+            return None
+
+    def fmt(v, digits=2, suffix=""):
+        x = num(v)
+        return f"{x:,.{digits}f}{suffix}" if x is not None else "資料不足"
+
+    def card(title, content):
+        return f'<section class="sa-card"><h2>{title}</h2>{content}</section>'
+
+    try:
+        stock = get_realtime_stock(code, rng="1y") or {}
+        if not stock:
+            return respond_page("個股分析", '<section class="card">目前無法取得有效行情，請稍後重試。</section>', "portfolio")
+        inst = fetch_institutional_data() or {}
+        score = (compute_watchlist_scores([code]) or {}).get(code) or {}
+        bd = (get_investor_breakdown([code], days=10) or {}).get(code) or {}
+        revenue = (fetch_monthly_revenue() or {}).get(code) or {}
+        valuation = (fetch_valuation() or {}).get(code) or {}
+        industry = (get_industry_map() or {}).get(code)
+        name = short_company_name(stock_display_name(code, inst, stock.get("name")))
+        price, pct = num(stock.get("close") or stock.get("price")), num(stock.get("pct"))
+        update_at = str(stock.get("updated_at") or stock.get("close_date") or stock.get("fetched_at") or "更新時間未提供")
+        source = str(stock.get("source") or "來源未提供")
+
+        dates, closes = stock.get("close_dates") or [], stock.get("closes") or []
+        pts = [(str(dates[i]) if i < len(dates) else str(i+1), num(v)) for i,v in enumerate(closes)]
+        pts = [(d,v) for d,v in pts if v is not None and v > 0][-120:]
+        chart = '<div class="sa-empty">歷史價格序列不足，暫時無法繪製走勢圖。</div>'
+        if len(pts) > 1:
+            vals=[v for _,v in pts]; lo=min(vals); hi=max(vals); span=max(hi-lo,hi*.01,.01)
+            W,H,P=900,280,24
+            xy=[(P+i*(W-2*P)/(len(vals)-1),H-P-(v-lo)/span*(H-2*P)) for i,v in enumerate(vals)]
+            poly=" ".join(f"{x:.1f},{y:.1f}" for x,y in xy)
+            grid="".join(f'<line x1="{P}" y1="{y}" x2="{W-P}" y2="{y}" stroke="#e4edf5"/>' for y in [50,100,150,200,250])
+            inds=sorted(set([0,len(pts)//3,2*len(pts)//3,len(pts)-1]))
+            labels="".join(f'<text x="{xy[i][0]:.1f}" y="{H-3}" text-anchor="middle" fill="#71849a" font-size="13">{html.escape(pts[i][0][-5:])}</text>' for i in inds)
+            chart=f'<svg viewBox="0 0 {W} {H}" class="sa-chart" role="img" aria-label="歷史價格走勢">{grid}<polygon points="{P},{H-P} {poly} {W-P},{H-P}" fill="#d9edff"/><polyline points="{poly}" fill="none" stroke="#1678c8" stroke-width="4" stroke-linejoin="round"/>{labels}</svg><div class="sa-note">近一年有效資料點 {len(pts)} 個；區間低點 {lo:,.2f}、高點 {hi:,.2f}</div>'
+
+        score_total=score.get("total")
+        factor_rows=[]
+        for f in score.get("factors") or []:
+            v,mx=num(f.get("value")),num(f.get("max")) or 0
+            width=min(100,max(0,v/mx*100)) if v is not None and mx>0 else 0
+            details="；".join(str(x) for x in (f.get("details") or [])[:2] if x)
+            factor_rows.append(f'<div class="sa-factor"><div><b>{html.escape(str(f.get("name") or ""))}</b><strong>{fmt(v,1)} <small>/ {fmt(mx,0)}</small></strong></div><i><em style="width:{width:.1f}%"></em></i><p>{html.escape(details or "目前沒有可用的分項說明。")}</p></div>')
+        factors=''.join(factor_rows) or '<div class="sa-empty">目前沒有可用的五大因子分項資料，不以預設分數代替。</div>'
+        score_html=f'<div class="sa-score"><strong>{fmt(score_total,0," / 100") if score_total is not None else "暫無評分"}</strong><p>沿用 BOT 現行評分模型；分數是篩選參考，不代表未來獲利保證。</p></div>{factors}'
+
+        # 個人持倉查詢沿用 positions 表；若 schema 不同，頁面仍可顯示其他分析區。
+        personal='<div class="sa-empty">尚未取得這檔股票的個人持倉成本資料。</div>'
+        try:
+            conn=get_db_connection()
+            try:
+                cur=conn.cursor()
+                cur.execute("SELECT COALESCE(SUM(shares),0), COALESCE(SUM(shares*cost),0) FROM positions WHERE user_id=%s AND code=%s",(str(uid),code))
+                row=cur.fetchone(); cur.close()
+            finally:
+                release_db_connection(conn)
+            shares=num(row[0] if row else 0) or 0; cost_total=num(row[1] if row else 0) or 0
+            if shares>0 and cost_total>0 and price is not None:
+                avg=cost_total/shares; pnl=(price-avg)*shares; pctp=(price/avg-1)*100
+                color="#c62828" if pnl>=0 else "#16804a"
+                personal=f'<div class="sa-metrics"><div><span>持有股數</span><b>{shares:,.0f} 股</b></div><div><span>平均成本</span><b>{avg:,.2f}</b></div><div><span>持股市值</span><b>{shares*price:,.0f} 元</b></div><div><span>未實現損益</span><b style="color:{color}">{pnl:+,.0f} 元</b><small>{pctp:+.2f}%</small></div></div>'
+        except Exception as e:
+            print(f"⚠️ 個股分析持倉查詢失敗 {code}: {e}")
+
+        def metric(label,value,note=""):
+            return f'<div class="sa-metric"><span>{html.escape(label)}</span><b>{html.escape(str(value))}</b><small>{html.escape(note)}</small></div>'
+        fundamentals=''.join([
+            metric("本益比 PE",fmt(valuation.get("pe",score.get("pe")),2," 倍"),"官方歷史本益比，非預估本益比"),
+            metric("股價淨值比 PB",fmt(valuation.get("pb",score.get("pb")),2," 倍")),
+            metric("殖利率",fmt(valuation.get("yield",score.get("yield")),2,"%")),
+            metric("單月營收年增",fmt(revenue.get("yoy_pct",revenue.get("monthly_yoy_pct")),2,"%"),str(revenue.get("period") or revenue.get("month") or "期別未提供")),
+            metric("累計營收年增",fmt(revenue.get("cum_yoy_pct",score.get("cum_yoy")),2,"%"))
+        ])
+
+        # 法人欄位名稱依 helper 回傳值解析，找不到就標示資料不足。
+        def first_num(keys):
+            for k in keys:
+                value = bd.get(k)
+                if isinstance(value, dict):
+                    value = value.get("cum")
+                if value is not None:
+                    return num(value)
+            return None
+        chips=''.join([
+            metric("外資近 10 日",fmt(first_num(["foreign","foreign_net","外資","外資買賣超"]),0," 張")),
+            metric("投信近 10 日",fmt(first_num(["trust","investment_trust","投信","投信買賣超"]),0," 張")),
+            metric("自營商近 10 日",fmt(first_num(["dealer","自營商","自營商買賣超"]),0," 張")),
+            metric("模型累計買超",fmt(score.get("cum_lots"),0," 張")),
+            metric("連續買超天數",fmt(score.get("streak"),0," 天"))
+        ])
+
+        technical=[]
+        for label,n in [("MA5",5),("MA20",20),("MA60",60)]:
+            avg=sum(v for _,v in pts[-n:])/n if len(pts)>=n else None
+            rel=("現價高於均線" if price is not None and avg is not None and price>avg else "現價低於均線" if price is not None and avg is not None and price<avg else "均線資料不足")
+            technical.append(metric(label,fmt(avg),rel))
+        if len(pts)>=20:
+            support=min(v for _,v in pts[-20:]); resistance=max(v for _,v in pts[-20:])
+        else: support=resistance=None
+        technical += [metric("近 20 日區間低點",fmt(support),"支撐參考，不保證有效"),metric("近 20 日區間高點",fmt(resistance),"壓力參考，不保證有效")]
+        technical_html='<div class="sa-metrics">'+''.join(technical)+'</div><p class="sa-note">均線與區間價位由可用日線收盤價計算，不是保證支撐或目標價。</p>'
+
+        try: news=fetch_stock_news(name,max_items=8,within_hours=72,subject_name=name,known_names=_news_company_names([name])) or []
+        except Exception as e:
+            print(f"⚠️ 個股分析新聞載入失敗 {code}: {e}"); news=[]
+        news_html=''
+        for item in news:
+            title=str(item.get("title") or "").strip()
+            if not title: continue
+            uri=_valid_news_uri(item.get("link"))
+            link=f'<a href="{html.escape(uri,quote=True)}" target="_blank" rel="noopener">閱讀原文 ↗</a>' if uri else ''
+            news_html+=f'<article class="sa-news"><b>{html.escape(title)}</b><div>{html.escape(str(item.get("source") or "來源未提供"))}{link}</div></article>'
+        if not news_html: news_html='<div class="sa-empty">目前沒有取得符合條件的相關新聞；不代表沒有消息。</div>'
+
+        change=f'{pct:+.2f}%' if pct is not None else '漲跌幅待確認'
+        change_color='#c62828' if (pct or 0)>0 else '#16804a' if (pct or 0)<0 else '#e8f1f8'
+        body=f"""
+        <style>
+        .sa-wrap{{max-width:1160px;margin:auto;color:#173650}}.sa-wrap *{{box-sizing:border-box}}
+        .sa-hero{{background:linear-gradient(125deg,#102f53,#17649b);color:white;border-radius:20px;padding:21px;margin:12px 0 15px}}
+        .sa-top{{display:flex;justify-content:space-between;gap:12px;align-items:start}}.sa-kicker{{font-size:10px;letter-spacing:2px;opacity:.75;font-weight:900}}.sa-hero h1{{font-size:28px;margin:7px 0}}.sa-hero h1 small{{font-size:15px;opacity:.8}}.sa-hero p{{color:#d5e6f4;margin:0;font-size:13px}}.sa-back{{white-space:nowrap;color:white;text-decoration:none;border:1px solid #ffffff77;border-radius:10px;padding:10px 12px;font-size:12px;font-weight:800}}
+        .sa-price-row{{display:grid;grid-template-columns:2fr repeat(3,minmax(0,1fr));gap:9px;margin-top:18px}}.sa-price-row>div{{background:#ffffff12;border:1px solid #ffffff24;border-radius:12px;padding:11px}}.sa-price-row span{{display:block;font-size:11px;color:#d5e5f2}}.sa-price-row strong{{display:block;font-size:30px;margin:5px 0}}.sa-price-row b{{display:block;font-size:18px;margin-top:7px}}.sa-source{{font-size:10px;color:#c9dbea;margin-top:12px;line-height:1.6}}
+        .sa-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}.sa-card{{background:white;border:1px solid #dce7f0;border-radius:17px;padding:16px;margin-bottom:14px;box-shadow:0 5px 18px #163c5b0b;min-width:0}}.sa-card h2{{font-size:17px;margin:0 0 13px;color:#163e62}}.sa-card h2:before{{content:"";display:inline-block;width:4px;height:18px;background:#1e83c7;border-radius:5px;margin-right:8px;vertical-align:-3px}}
+        .sa-chart{{display:block;width:100%;height:auto}}.sa-metrics{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.sa-metric{{background:#f4f8fc;border:1px solid #e4edf5;border-radius:11px;padding:11px;min-width:0}}.sa-metric span{{display:block;color:#71859a;font-size:11px}}.sa-metric b{{display:block;font-size:17px;margin-top:6px;overflow-wrap:anywhere;color:#193d5d}}.sa-metric small,.sa-note{{display:block;color:#71859a;font-size:10px;margin-top:5px;line-height:1.55}}
+        .sa-score{{background:#eaf6ff;border-radius:12px;padding:13px;margin-bottom:9px}}.sa-score strong{{font-size:26px;color:#126bb1}}.sa-score p{{font-size:11px;color:#6b8195;margin:6px 0 0}}.sa-factor{{padding:11px 0;border-bottom:1px solid #e8eef4}}.sa-factor:last-child{{border-bottom:0}}.sa-factor>div{{display:flex;justify-content:space-between;gap:8px;font-size:13px}}.sa-factor strong{{color:#126bb1}}.sa-factor small{{font-size:10px;color:#8192a3}}.sa-factor>i{{display:block;background:#eaf1f7;height:7px;border-radius:99px;margin-top:7px;overflow:hidden}}.sa-factor em{{display:block;background:linear-gradient(90deg,#40a5e7,#1469ad);height:100%;border-radius:99px}}.sa-factor p{{font-size:11px;color:#71859a;line-height:1.55;margin:6px 0 0}}
+        .sa-news{{padding:11px 0;border-bottom:1px solid #e7edf3}}.sa-news b{{font-size:13px;line-height:1.6}}.sa-news div{{display:flex;justify-content:space-between;gap:8px;margin-top:7px;font-size:10px;color:#8293a3}}.sa-news a{{color:#176ca9;text-decoration:none;font-weight:800}}.sa-empty{{background:#f6f8fa;border:1px dashed #d3dee8;border-radius:11px;padding:13px;color:#75879a;font-size:12px;line-height:1.6}}
+        @media(max-width:680px){{.sa-hero{{padding:15px;border-radius:15px}}.sa-top{{display:block}}.sa-back{{display:inline-block;margin-top:12px}}.sa-hero h1{{font-size:23px}}.sa-price-row{{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}}.sa-price-row>div:first-child{{grid-column:1/-1}}.sa-price-row strong{{font-size:28px}}.sa-price-row b{{font-size:16px}}.sa-grid{{grid-template-columns:1fr;gap:0}}.sa-card{{padding:13px;border-radius:14px}}.sa-metric b{{font-size:15px}}}}
+        </style>
+        <div class="sa-wrap"><section class="sa-hero"><div class="sa-top"><div><div class="sa-kicker">STOCK ANALYSIS / 個股研究</div><h1>{html.escape(name)} <small>{html.escape(code)}</small></h1><p>{html.escape(industry_name(industry) if industry else "產業分類待確認")} · 基本面、籌碼與技術面</p></div><a class="sa-back" href="/web/portfolio">← 返回持股總覽</a></div>
+        <div class="sa-price-row"><div><span>最新可用價格</span><strong>{fmt(price)}</strong><b style="color:{'#ffb3b3' if (pct or 0)>0 else '#a8f0c7' if (pct or 0)<0 else '#fff'}">{html.escape(change)}</b></div><div><span>當日高</span><b>{fmt(stock.get("high"))}</b></div><div><span>當日低</span><b>{fmt(stock.get("low"))}</b></div><div><span>成交量</span><b>{fmt(stock.get("volume"),0)}</b></div></div>
+        <div class="sa-source">資料來源：{html.escape(source)} · 資料時間：{html.escape(update_at)} · 缺值不以推測補上</div></section>
+        <div class="sa-grid">{card("我的持股",personal)}{card("五大因子評分",score_html)}</div>
+        {card("近一年價格走勢",chart)}
+        <div class="sa-grid">{card("基本面與估值",fundamentals)}{card("技術面與關鍵價位",technical_html)}</div>
+        <div class="sa-grid">{card("法人籌碼",chips)}{card("近期相關新聞",news_html)}</div>
+        {card("閱讀分析時要注意",'<ul><li>評分是篩選參考，不代表未來報酬或買賣保證。</li><li>行情、財報、法人資料更新時間可能不同，請以來源資料為準。</li><li>資料不足時會明確標示，不會自動補成看多或看空結論。</li></ul>')}
+        <p class="sa-note">獨立個股研究頁。技術指標與區間價位依可用歷史收盤價計算，不構成投資建議。</p></div>"""
+        return respond_page(f"{name} 個股分析", body, "portfolio")
+    except Exception as exc:
+        print(f"❌ 獨立個股分析頁失敗 {code}: {type(exc).__name__}: {exc}")
+        return respond_page("個股分析", f'<section class="card"><h2>個股分析暫時無法完成</h2><p>資料來源或欄位發生錯誤，請稍後重試。</p><p class="sub">{html.escape(type(exc).__name__)}</p></section>', "portfolio")
+
+
 @app.route("/web/stock")
 @web_login_required
 def web_line_stock_detail(uid):
@@ -39986,7 +40146,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         _bar_width = min(100.0, max(0.0, _weight))
         _code_attr = html.escape(_row["code"], quote=True)
         _name_attr = html.escape(_row["name"], quote=True)
-        _home_holding_rows.append(f'<article class="home-holding-card" data-code="{_code_attr}" data-name="{_name_attr}" data-value="{_row["value"]:.2f}" data-weight="{_weight:.4f}"><button type="button" class="home-holding-trigger" aria-expanded="false"><span class="home-holding-rank">{len(_home_holding_rows)+1:02d}</span><span class="home-holding-name"><b>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span><span class="home-holding-price"><small>現價</small><b>{_price_text}</b></span><span class="home-holding-value"><b>{_row["value"]:,.0f}</b><small>{_weight:.1f}% 權重</small><i class="home-weight-track"><i style="width:{_bar_width:.1f}%"></i></i></span><span class="home-holding-chevron" aria-hidden="true">⌄</span></button><div class="home-holding-expanded" hidden><div class="home-holding-expanded-grid"><span><small>持有股數</small><b>{_row["shares"]:,.0f} 股</b></span><span><small>持股市值</small><b>{_row["value"]:,.0f} 元</b></span><span><small>目前權重</small><b>{_weight:.1f}%</b></span></div><div class="home-holding-actions"><a class="home-holding-action primary" href="/web/holdings">查看持股分析 <span>→</span></a><button type="button" class="home-holding-action" data-holding-action="target">檢視配置差距</button></div></div></article>')
+        _home_holding_rows.append(f'<article class="home-holding-card" data-code="{_code_attr}" data-name="{_name_attr}" data-value="{_row["value"]:.2f}" data-weight="{_weight:.4f}"><button type="button" class="home-holding-trigger" aria-expanded="false"><span class="home-holding-rank">{len(_home_holding_rows)+1:02d}</span><span class="home-holding-name"><b>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span><span class="home-holding-price"><small>現價</small><b>{_price_text}</b></span><span class="home-holding-value"><b>{_row["value"]:,.0f}</b><small>{_weight:.1f}% 權重</small><i class="home-weight-track"><i style="width:{_bar_width:.1f}%"></i></i></span><span class="home-holding-chevron" aria-hidden="true">⌄</span></button><div class="home-holding-expanded" hidden><div class="home-holding-expanded-grid"><span><small>持有股數</small><b>{_row["shares"]:,.0f} 股</b></span><span><small>持股市值</small><b>{_row["value"]:,.0f} 元</b></span><span><small>目前權重</small><b>{_weight:.1f}%</b></span></div><div class="home-holding-actions"><a class="home-holding-action primary" href="/web/stock-analysis?code={quote(_row["code"], safe="")}">分析這檔股票 <span>→</span></a><button type="button" class="home-holding-action" data-holding-action="target">檢視配置差距</button></div></div></article>')
     _home_holdings_preview_html = ('<section class="home-dashboard-card home-holdings-preview" aria-label="首頁完整持股明細"><div class="home-dashboard-card-head"><div><h2>我的持股</h2><small>點擊持股卡片展開明細；可切換排序</small></div><span class="home-holdings-count">' + str(len(_home_preview_rows)) + ' 檔持股</span></div><div class="home-holdings-sort" role="group" aria-label="持股排序"><button type="button" class="is-active" data-home-sort="value">市值排序</button><button type="button" data-home-sort="weight">權重排序</button><button type="button" data-home-sort="name">名稱排序</button></div><div class="home-holding-list" data-home-holding-list>' + ("".join(_home_holding_rows) if _home_holding_rows else '<div class="home-dashboard-empty">目前沒有可顯示的持股行情。</div>') + '</div></section>')
     # 首頁不再重複顯示圓餅圖；目標配置由原本的配置功能負責。
     _home_allocation_html = ''
