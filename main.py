@@ -2774,6 +2774,34 @@ FEATURE_LABELS = {
 }
 
 
+def _sanitize_line_flex_payload(value):
+    """Recursively remove unsupported Flex keys before sending a LINE reply."""
+    if isinstance(value, dict):
+        value.pop("alignItems", None)
+        for child in value.values():
+            _sanitize_line_flex_payload(child)
+    elif isinstance(value, list):
+        for child in value:
+            _sanitize_line_flex_payload(child)
+    return value
+
+
+def _sanitize_line_flex_message(message):
+    """Sanitize dictionary-based FlexSendMessage contents in-place."""
+    try:
+        if isinstance(message, FlexSendMessage):
+            contents = getattr(message, "contents", None)
+            if isinstance(contents, dict):
+                _sanitize_line_flex_payload(contents)
+            elif hasattr(contents, "as_json_dict"):
+                payload = contents.as_json_dict()
+                _sanitize_line_flex_payload(payload)
+                message.contents = payload
+    except Exception as exc:
+        print(f"⚠️ LINE Flex 安全修補略過：{type(exc).__name__}: {str(exc)[:160]}")
+    return message
+
+
 def _push_line_with_retry(user_id, message, max_attempts=3):
     """LINE push 的有限重試：429/5xx/網路錯誤才重試，避免瞬間故障直接丟失通知。"""
     last_exc = None
@@ -21567,7 +21595,7 @@ def build_menu_flex(is_admin_user=False):
         """一列＝左邊指令按鈕（該分區的淡色底），右邊說明文字。"""
         return {
             "type": "box", "layout": "horizontal", "margin": "lg",
-            "spacing": "md",
+            "alignItems": "center", "spacing": "md",
             "contents": [
                 {
                     "type": "button", "style": "secondary", "height": "md",
@@ -21593,7 +21621,7 @@ def build_menu_flex(is_admin_user=False):
     for title, color, tint, items in groups:
         body.append({
             "type": "box", "layout": "horizontal", "margin": "lg",
-            "spacing": "sm",
+            "alignItems": "center", "spacing": "sm",
             "contents": [
                 {"type": "box", "layout": "vertical", "width": "4px", "height": "18px",
                  "backgroundColor": color, "cornerRadius": "2px", "contents": []},
@@ -26795,7 +26823,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     if(!active)return;
     // 同一文件內的頁面切換使用 performance.now()，不會被先前 sessionStorage 時間污染；
     // 只有選股工作台的真正整頁導覽，才需要跨文件沿用 Date.now()。
-    var sec=Math.max(0,((progressUsesWallClock?Date.now():performance.now())-(progressUsesWallClock?progressStartedAt:progressStartedPerf))/1000);
+    var elapsedMs=progressUsesWallClock?(Date.now()-progressStartedAt):(performance.now()-progressStartedPerf);var sec=Math.max(0,elapsedMs/1000);
     // 進度只用來呈現等待狀態；完成前保留少量空間，避免誤以為已載入完成。
     var pct=sec<1?20:sec<3?20+(sec-1)*20:sec<6?60+(sec-3)*9:Math.min(97,87+(sec-6)*1.7);
     pct=Math.min(97,Math.max(8,pct));
@@ -26850,7 +26878,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       loader.classList.remove('show');
       return;
     }}
-    active=false;clearProgressTimers();window.__stockAnalysisNavPending=false;
+    paintEstimatedProgress();active=false;clearProgressTimers();window.__stockAnalysisNavPending=false;
     if(progressPercent)progressPercent.textContent='';
     if(progressBar)progressBar.style.width='100%';
     try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
@@ -29475,7 +29503,7 @@ def _line_big_calendar_flex(user_id=None, base_url=None, year=None, month=None):
     intl=_international_calendar_events(year,month); intl_dates={e['date'] for e in intl}; weeks=calendar.monthcalendar(year,month)
     cells=[]
     for n in ['一','二','三','四','五','六','日']:
-        cells.append({'type':'box','layout':'vertical','flex':1,'contents':[{'type':'text','text':n,'size':'xxs','color':'#667085','weight':'bold'}]})
+        cells.append({'type':'box','layout':'vertical','flex':1,'alignItems':'center','contents':[{'type':'text','text':n,'size':'xxs','color':'#667085','weight':'bold'}]})
     for week in weeks:
         for num in week:
             if not num:
@@ -49016,7 +49044,8 @@ def _line_loading_message(user_id, feature, base_url=None):
     for idx,stage in enumerate(stages):
         dot_url = f"{base}/line-assets/loading-v99/{quote(str(feature), safe='')}/stage-{idx}.png"
         contents.append({
-            "type": "box", "layout": "horizontal",             "margin": "md" if idx == 0 else "xs", "spacing": "xs",
+            "type": "box", "layout": "horizontal", "alignItems": "center",
+            "margin": "md" if idx == 0 else "xs", "spacing": "xs",
             "contents": [
                 {"type": "image", "url": dot_url, "animated": True, "size": "18px",
                  "aspectMode": "fit", "flex": 0},
@@ -49161,7 +49190,7 @@ def _line_hidden_holdings_flex(user_id):
         pct_text=f"{today_pct:+.2f}%" if today_pct is not None else "待確認"
         pct_color="#D93025" if today_pct is not None and today_pct>=0 else "#18845B" if today_pct is not None else "#667085"
         color=colors[i%len(colors)]
-        contents.append({"type":"box","layout":"vertical","spacing":"xs","margin":"lg","contents":[{"type":"box","layout":"horizontal","contents":[{"type":"text","text":f"{name}（{code}）","weight":"bold","size":"sm","color":"#24364B","wrap":True,"flex":1},{"type":"text","text":f"{weight:.1f}%","weight":"bold","size":"md","color":"#24364B","align":"end","flex":0}]},{"type":"box","layout":"horizontal","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"4px","contents":[{"type":"box","layout":"vertical","width":f"{max(1,min(100,weight)):.1f}%","height":"7px","backgroundColor":color,"cornerRadius":"4px","contents":[]}]},{"type":"box","layout":"horizontal","contents":[{"type":"text","text":"今日漲幅","size":"xxs","color":"#667085","flex":1},{"type":"text","text":pct_text,"size":"sm","weight":"bold","color":pct_color,"align":"end"}]}]})
+        contents.append({"type":"box","layout":"vertical","spacing":"xs","margin":"lg","contents":[{"type":"box","layout":"horizontal","alignItems":"center","contents":[{"type":"text","text":f"{name}（{code}）","weight":"bold","size":"sm","color":"#24364B","wrap":True,"flex":1},{"type":"text","text":f"{weight:.1f}%","weight":"bold","size":"md","color":"#24364B","align":"end","flex":0}]},{"type":"box","layout":"horizontal","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"4px","contents":[{"type":"box","layout":"vertical","width":f"{max(1,min(100,weight)):.1f}%","height":"7px","backgroundColor":color,"cornerRadius":"4px","contents":[]}]},{"type":"box","layout":"horizontal","contents":[{"type":"text","text":"今日漲幅","size":"xxs","color":"#667085","flex":1},{"type":"text","text":pct_text,"size":"sm","weight":"bold","color":pct_color,"align":"end"}]}]})
     return FlexSendMessage(alt_text="秉軒持股配置比例",contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"18px","contents":contents[:48]}})
 
 
@@ -50010,14 +50039,17 @@ def handle_message(event):
 
     qr = admin_quick_reply or build_quick_reply()
     if isinstance(flex_reply, list):
+        safe_flex_replies = []
         for msg in flex_reply:
             try:
                 msg.quick_reply = qr
             except Exception:
                 pass
-        line_bot_api.reply_message(event.reply_token, flex_reply)
+            safe_flex_replies.append(_sanitize_line_flex_message(msg))
+        line_bot_api.reply_message(event.reply_token, safe_flex_replies)
     elif flex_reply is not None:
         flex_reply.quick_reply = qr
+        flex_reply = _sanitize_line_flex_message(flex_reply)
         line_bot_api.reply_message(event.reply_token, flex_reply)
     else:
         line_bot_api.reply_message(
