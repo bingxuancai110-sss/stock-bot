@@ -17952,27 +17952,73 @@ def build_single_stock_report(code, user_id=None):
             for child in node:
                 _sanitize_flex_text(child)
     _sanitize_flex_text(bubble)
-    # LINE Flex bubble JSON 上限 30KB；先在本機序列化估算，超過時減少新聞與圖表複雜度。
+    # LINE 單一 Flex bubble 上限 30KB。採保守 25KB 門檻，必須確保超限時不送出大卡。
     import json as _json
+    _FLEX_SAFE_BYTES = 25 * 1024
+    def _serialized_size(_obj):
+        return len(_json.dumps(_obj, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+    def _collect_text(_node, _out):
+        if isinstance(_node, dict):
+            if _node.get('type') == 'text':
+                _value = str(_node.get('text') or '').strip()
+                if _value and _value not in ('—', '暫無資料'):
+                    _out.append(_value)
+            for _value in _node.values(): _collect_text(_value, _out)
+        elif isinstance(_node, list):
+            for _value in _node: _collect_text(_value, _out)
     try:
-        _bubble_bytes = len(_json.dumps(bubble, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
-        if _bubble_bytes > 27000:
-            # 保留所有分析區，僅將新聞縮至 1 則，避免 LINE API 400。
-            for _node in bubble.get('body', {}).get('contents', []):
-                if isinstance(_node, dict) and _node.get('type') == 'box':
+        _bubble_bytes = _serialized_size(bubble)
+        if _bubble_bytes > _FLEX_SAFE_BYTES:
+            _body_nodes = bubble.get('body', {}).get('contents', [])
+            # 第一階段：新聞保留最多 1 則，避免來源連結與長標題吃掉大量空間。
+            for _node in _body_nodes:
+                if isinstance(_node, dict) and _node.get('type') == 'box' and '相關新聞' in str(_json.dumps(_node, ensure_ascii=False)):
+                    _contents = _node.get('contents', [])
+                    _news_section = next((_x for _x in _contents if isinstance(_x, dict) and _x.get('type') == 'box'), None)
+                    if _news_section and isinstance(_news_section.get('contents'), list):
+                        _news_section['contents'] = _news_section['contents'][:1]
+            _bubble_bytes = _serialized_size(bubble)
+        if _bubble_bytes > _FLEX_SAFE_BYTES:
+            # 第二階段：減少法人圖表的重複圖形元件，保留區塊標題與統計摘要。
+            for _node in _body_nodes:
+                if isinstance(_node, dict) and '法人買賣超' in str(_json.dumps(_node, ensure_ascii=False)):
                     _stack = [_node]
                     while _stack:
                         _cur = _stack.pop()
                         if isinstance(_cur, dict):
-                            if _cur.get('type') == 'text' and isinstance(_cur.get('text'), str):
-                                _cur['text'] = _cur['text'][:180]
+                            if _cur.get('type') == 'box' and isinstance(_cur.get('contents'), list) and len(_cur['contents']) > 12:
+                                _cur['contents'] = _cur['contents'][:12]
                             _stack.extend(v for v in _cur.values() if isinstance(v, (dict, list)))
                         elif isinstance(_cur, list): _stack.extend(_cur)
-            _bubble_bytes = len(_json.dumps(bubble, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
-        print(f"📦 LINE 個股 Flex bubble 大小：{_bubble_bytes} bytes")
+            _bubble_bytes = _serialized_size(bubble)
+        if _bubble_bytes > _FLEX_SAFE_BYTES:
+            # 第三階段：逐步縮短所有文字，重新量測；不把「截短一次」當成保證。
+            for _limit in (140, 100, 70, 45):
+                _stack = [bubble]
+                while _stack:
+                    _cur = _stack.pop()
+                    if isinstance(_cur, dict):
+                        if _cur.get('type') == 'text' and isinstance(_cur.get('text'), str):
+                            _cur['text'] = _cur['text'][:_limit]
+                        _stack.extend(v for v in _cur.values() if isinstance(v, (dict, list)))
+                    elif isinstance(_cur, list): _stack.extend(_cur)
+                _bubble_bytes = _serialized_size(bubble)
+                if _bubble_bytes <= _FLEX_SAFE_BYTES: break
+        print(f"📦 LINE 個股 Flex bubble 大小：{_bubble_bytes} bytes（安全上限 {_FLEX_SAFE_BYTES}）")
+        if _bubble_bytes <= _FLEX_SAFE_BYTES:
+            return FlexSendMessage(alt_text=alt[:400], contents=bubble)
+        # 最後保險：超限時改成文字版，不送出已知會被 LINE 拒收的 Flex 卡片。
+        _plain = []
+        _collect_text(bubble.get('body', {}), _plain)
+        _text_report = f"📊 {code} {name} 個股分析（文字精簡版）\n\n" + '\n'.join(_plain)
+        _text_report = _text_report[:4500]
+        print(f"⚠️ LINE 個股分析卡仍超過安全上限（{_bubble_bytes} bytes），改送文字版")
+        return TextSendMessage(text=_text_report)
     except Exception as _size_exc:
-        print(f"⚠️ Flex 大小檢查失敗：{_size_exc}")
-    return FlexSendMessage(alt_text=alt[:400], contents=bubble)
+        print(f"❌ Flex 大小檢查失敗，為避免 LINE 拒收改送文字版：{_size_exc}")
+        _plain = []
+        _collect_text(bubble.get('body', {}), _plain)
+        return TextSendMessage(text=(f"📊 {code} {name} 個股分析\n\n" + '\n'.join(_plain))[:4500])
 
 def _etf_price_drawdown_summary(closes, close_dates):
     """用可取得的價格序列計算觀測期間最大回撤與是否回到前高。"""
