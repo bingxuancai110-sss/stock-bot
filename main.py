@@ -2775,10 +2775,24 @@ FEATURE_LABELS = {
 
 
 def _sanitize_line_flex_payload(value):
-    """Recursively remove unsupported Flex keys before sending a LINE reply."""
+    """Validate LINE Flex alignment fields recursively before sending.
+
+    LINE Flex supports alignItems only on box components, with values:
+    flex-start, center, flex-end. Shorthand values start/end are not valid.
+    """
     if isinstance(value, dict):
-        value.pop("alignItems", None)
-        for child in value.values():
+        node_type = value.get("type")
+        if "alignItems" in value:
+            if node_type != "box":
+                value.pop("alignItems", None)
+            else:
+                alignment = str(value.get("alignItems") or "").strip()
+                alignment = {"start": "flex-start", "end": "flex-end"}.get(alignment, alignment)
+                if alignment not in {"flex-start", "center", "flex-end"}:
+                    value.pop("alignItems", None)
+                else:
+                    value["alignItems"] = alignment
+        for child in list(value.values()):
             _sanitize_line_flex_payload(child)
     elif isinstance(value, list):
         for child in value:
@@ -2803,7 +2817,11 @@ def _sanitize_line_flex_message(message):
 
 
 def _push_line_with_retry(user_id, message, max_attempts=3):
-    """LINE push 的有限重試：429/5xx/網路錯誤才重試，避免瞬間故障直接丟失通知。"""
+    """LINE push 的有限重試：先清理 Flex payload，再對可重試錯誤重試。"""
+    # 關鍵修正：股票分析走背景執行緒，最後是 push_message，不會經過
+    # webhook reply 分支原本的 _sanitize_line_flex_message；因此舊版 400 仍會發生。
+    # 所有 push 一律先清除 LINE 不接受的 alignItems，避免整張 Flex 被拒收。
+    message = _sanitize_line_flex_message(message)
     last_exc = None
     for attempt in range(1, max_attempts + 1):
         try:
@@ -26869,6 +26887,33 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     paintEstimatedProgress();
   }};
 
+  // 兜底計時：部分個股分析入口只切換 .show class，沒有呼叫 showPageNavLoader，
+  // 因此原本依賴 active=true 的 interval 根本不會啟動，畫面會永遠停在 0.0 秒。
+  // 只要載入卡片實際顯示，就以單調時鐘獨立更新可見秒數。
+  let visibleClockTimer=0, visibleClockStarted=0, visibleClockWasShown=false;
+  function updateVisibleLoaderClock(){{
+    if(!progressCard || !progressTime) return;
+    const isShown=progressCard.classList.contains('show');
+    if(isShown && !visibleClockWasShown){{
+      visibleClockStarted=performance.now();
+      visibleClockWasShown=true;
+    }}
+    if(isShown && visibleClockWasShown){{
+      const visibleSec=Math.max(0,(performance.now()-visibleClockStarted)/1000);
+      // 若正式導覽計時已經運作，以兩者較大的值呈現，避免重複計時造成倒退。
+      const existing=parseFloat(String(progressTime.textContent||'').replace(/[^0-9.]/g,''))||0;
+      progressTime.textContent=Math.max(visibleSec,existing).toFixed(1)+' 秒';
+    }} else if(!isShown){{
+      visibleClockWasShown=false;
+      visibleClockStarted=0;
+    }}
+  }}
+  visibleClockTimer=window.setInterval(updateVisibleLoaderClock,100);
+  try{{
+    const loaderClockObserver=new MutationObserver(updateVisibleLoaderClock);
+    if(progressCard)loaderClockObserver.observe(progressCard,{{attributes:true,attributeFilter:['class']}});
+  }}catch(ignore){{}}
+
   window.finishPageNavLoader=function(){{
     if(!active){{
       // 即使呼叫端已經完成或切頁被中斷，也要清掉舊的浮動提示與過期起始時間。
@@ -26876,6 +26921,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
       if(progressCard)progressCard.classList.remove('show','stock-analysis-loader');
       loader.classList.remove('show');
+      visibleClockWasShown=false;visibleClockStarted=0;
       return;
     }}
     paintEstimatedProgress();active=false;clearProgressTimers();window.__stockAnalysisNavPending=false;
@@ -26886,6 +26932,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     hideTimer=window.setTimeout(function(){{
       loader.classList.remove('show');
       if(progressCard)progressCard.classList.remove('show','stock-analysis-loader');
+      visibleClockWasShown=false;visibleClockStarted=0;
       resetTimer=window.setTimeout(function(){{
         loader.classList.remove('done');
         if(bar)bar.style.width='0%';
