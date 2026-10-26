@@ -17874,7 +17874,9 @@ def build_single_stock_report(code, user_id=None):
                 top,
                 {'type':'box','layout':'horizontal','height':'1px','backgroundColor':'#98A2B3','contents':[{'type':'filler'}]},
                 bottom,
-                txt(date_label if date_label in {inst20[0][0],inst20[len(inst20)//3][0],inst20[(2*len(inst20))//3][0],inst20[-1][0]} else '','xxs','#667085','regular','xs',False)
+                (txt(date_label,'xxs','#667085','regular','xs',False)
+                 if date_label in {inst20[0][0],inst20[len(inst20)//3][0],inst20[(2*len(inst20))//3][0],inst20[-1][0]}
+                 else {'type':'filler'})
             ]})
         chart_contents=[txt('三大法人每日合計買賣超（張）','xs','#667085','regular','none'),
                         {'type':'box','layout':'horizontal','spacing':'none','alignItems':'center','contents':bars},
@@ -17938,6 +17940,18 @@ def build_single_stock_report(code, user_id=None):
     # LINE Flex bubble 單一 body 的直接元件數有限，所有內容以分區 box 收納。
     bubble={'type':'bubble','size':'giga','body':{'type':'box','layout':'vertical','paddingAll':'16px','spacing':'none','contents':body_contents},'styles':{'body':{'backgroundColor':'#FFFFFF'}}}
     alt=f"{code} {name}個股分析：行情、五大因子、基本面、法人、技術位階與新聞。"
+    # LINE Flex Message 不接受空字串 text。推播前遞迴檢查整張卡，
+    # 將任何意外的空文字替換成安全的短橫線，避免整張卡被 HTTP 400 拒收。
+    def _sanitize_flex_text(node):
+        if isinstance(node, dict):
+            if node.get('type') == 'text' and not str(node.get('text') or '').strip():
+                node['text'] = '—'
+            for child in node.values():
+                _sanitize_flex_text(child)
+        elif isinstance(node, list):
+            for child in node:
+                _sanitize_flex_text(child)
+    _sanitize_flex_text(bubble)
     return FlexSendMessage(alt_text=alt[:400], contents=bubble)
 
 def _etf_price_drawdown_summary(closes, close_dates):
