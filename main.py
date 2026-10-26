@@ -17806,12 +17806,28 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
     else:
         factor_section=section("五大因子評分",[txt("目前沒有取得可用的五大因子分數。","sm",muted)])
         key_items=[txt("基本面與估值資料暫無資料","sm",muted)]
-    # Second card: fundamentals + institutional summaries. Keep values grounded in the report text.
+    # 第二張：基本面＋法人籌碼。所有數值均從既有 score/report 資料讀取；不捏造財報欄位。
+    # PEG 目前沿用模型既有口徑（PE ÷ 累計營收年增率），不是標準 EPS-PEG，明確標註避免誤讀。
     fundamentals=[]
-    for prefix in ("累計營收年增", "PE ", "PB ", "殖利率 ", "估值模型：", "※ 這裡的 PEG"):
-        val=find(prefix)
-        if val!="暫無資料": fundamentals.append(txt(prefix+val,"sm",muted if prefix.startswith("※") else "#344054"))
-    if not fundamentals: fundamentals=[txt("基本面資料暫無資料","sm",muted)]
+    _cum_yoy = score.get("cum_yoy") if isinstance(score, dict) else None
+    _pe = score.get("pe") if isinstance(score, dict) else None
+    _peg = score.get("peg") if isinstance(score, dict) else None
+    _yield = score.get("yield") if isinstance(score, dict) else None
+    def _metric_card(label, value, color=navy, note=None):
+        _contents=[txt(label,"xs",muted,None,"none"),txt(value,"lg",color,"bold","xs")]
+        if note: _contents.append(txt(note,"xs",muted,None,"none"))
+        return {"type":"box","layout":"vertical","flex":1,"paddingAll":"12px","backgroundColor":"#F3F6FA","cornerRadius":"12px","spacing":"xs","contents":_contents}
+    _fund_grid=[]
+    if _cum_yoy is not None:
+        _fund_grid.append(_metric_card("累計營收年增",f"{float(_cum_yoy):+.1f}%",red if float(_cum_yoy)>=0 else green,"營運成長指標"))
+    else:
+        _fund_grid.append(_metric_card("累計營收年增","暫無資料",muted))
+    _fund_grid.append(_metric_card("本益比 PE",f"{float(_pe):.1f} 倍" if _pe is not None else "暫無資料",navy,"目前獲利估值"))
+    _fund_grid.append(_metric_card("模型 PEG",f"{float(_peg):.2f}" if _peg is not None else "不適用／暫無",navy,"非標準 EPS-PEG"))
+    _fund_grid.append(_metric_card("現金殖利率",f"{float(_yield):.2f}%" if _yield is not None else "暫無資料",navy,"依可用股利資料"))
+    fundamentals=[{"type":"box","layout":"horizontal","spacing":"sm","contents":_fund_grid[:2]},
+                  {"type":"box","layout":"horizontal","spacing":"sm","contents":_fund_grid[2:]},
+                  txt("獲利能力（毛利率、營業利益率、EPS）與財務體質（現金流、負債比）目前僅在資料源確實提供時顯示；缺值不以估算代替。","xs",muted)]
     # 直接讀 inst_history 最近 20 個交易日，畫出每日三大法人合計買賣超。
     # 資料不存在時明確顯示缺資料，不以近 10 日摘要假裝成歷史圖表。
     inst_history=[]
@@ -17820,17 +17836,17 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         try:
             _cur=_conn.cursor()
             _cur.execute("""
-                SELECT h.trade_date, h.foreign_net_lots, h.trust_net_lots,
-                       h.dealer_net_lots, h.total_net_lots
-                FROM inst_history h
-                WHERE h.code=%s
-                  AND h.trade_date IN (
-                    SELECT trade_date FROM (
-                      SELECT DISTINCT trade_date FROM inst_history
-                      ORDER BY trade_date DESC LIMIT 20
-                    ) d
-                  )
-                ORDER BY h.trade_date ASC
+                SELECT recent.trade_date, recent.foreign_net_lots, recent.trust_net_lots,
+                       recent.dealer_net_lots, recent.total_net_lots
+                FROM (
+                    SELECT trade_date, foreign_net_lots, trust_net_lots,
+                           dealer_net_lots, total_net_lots
+                    FROM inst_history
+                    WHERE code=%s
+                    ORDER BY trade_date DESC
+                    LIMIT 20
+                ) recent
+                ORDER BY recent.trade_date ASC
             """, (str(code),))
             inst_history=[{"date":r[0].strftime("%m/%d") if r[0] else "—",
                            "foreign":int(r[1] or 0),"trust":int(r[2] or 0),
@@ -18033,7 +18049,7 @@ def build_single_stock_report(code, user_id=None):
     if not news:
         core_report += ("\n\n📰 相關新聞\n"
                         f"目前沒有抓到以{name}為主體的相關新聞。")
-        return _build_stock_visual_flex_messages(code, name, stock_for_display, score, bd, lines + ["", "【關鍵數據】", f"累計營收年增 {score.get('cum_yoy'):+.1f}%" if score and score.get('cum_yoy') is not None else "累計營收年增：資料不足", f"PE {score.get('pe'):.1f} 倍" if score and score.get('pe') is not None else "PE：資料不足", f"PB {score.get('pb'):.2f} 倍" if score and score.get('pb') is not None else "PB：資料不足", f"殖利率 {score.get('yield'):.2f}%" if score and score.get('yield') is not None else "殖利率：資料不足", "【模型解讀】", build_web_factor_observation(score) if score else "模型解讀暫無資料"], news=[])
+        return _build_stock_visual_flex_messages(code, name, stock_for_display, score, bd, lines + ["", "【關鍵數據】", f"累計營收年增 {score.get('cum_yoy'):+.1f}%" if score and score.get('cum_yoy') is not None else "累計營收年增：資料不足", f"PE {score.get('pe'):.1f} 倍" if score and score.get('pe') is not None else "PE：資料不足", f"PEG {score.get('peg'):.2f}（模型口徑，非標準 EPS-PEG）" if score and score.get('peg') is not None else "PEG：資料不足", f"殖利率 {score.get('yield'):.2f}%" if score and score.get('yield') is not None else "殖利率：資料不足", "【模型解讀】", build_web_factor_observation(score) if score else "模型解讀暫無資料"], news=[])
 
     # 單檔查詢保留完整健檢文字，但新聞標題使用可點擊 Flex 元件，
     # 不把 Google News 的長網址直接顯示在聊天室。
@@ -18058,7 +18074,7 @@ def build_single_stock_report(code, user_id=None):
         contents.append(component)
     alt_text = core_report + "\n📰 相關新聞\n" + "；".join(
         item.get("title", "") for item in news)
-    return _build_stock_visual_flex_messages(code, name, stock_for_display, score, bd, lines + ["", "【關鍵數據】", f"累計營收年增 {score.get('cum_yoy'):+.1f}%" if score and score.get('cum_yoy') is not None else "累計營收年增：資料不足", f"PE {score.get('pe'):.1f} 倍" if score and score.get('pe') is not None else "PE：資料不足", f"PB {score.get('pb'):.2f} 倍" if score and score.get('pb') is not None else "PB：資料不足", f"殖利率 {score.get('yield'):.2f}%" if score and score.get('yield') is not None else "殖利率：資料不足", "【模型解讀】", build_web_factor_observation(score) if score else "模型解讀暫無資料"], news=news)
+    return _build_stock_visual_flex_messages(code, name, stock_for_display, score, bd, lines + ["", "【關鍵數據】", f"累計營收年增 {score.get('cum_yoy'):+.1f}%" if score and score.get('cum_yoy') is not None else "累計營收年增：資料不足", f"PE {score.get('pe'):.1f} 倍" if score and score.get('pe') is not None else "PE：資料不足", f"PEG {score.get('peg'):.2f}（模型口徑，非標準 EPS-PEG）" if score and score.get('peg') is not None else "PEG：資料不足", f"殖利率 {score.get('yield'):.2f}%" if score and score.get('yield') is not None else "殖利率：資料不足", "【模型解讀】", build_web_factor_observation(score) if score else "模型解讀暫無資料"], news=news)
 
 def _etf_price_drawdown_summary(closes, close_dates):
     """用可取得的價格序列計算觀測期間最大回撤與是否回到前高。"""
