@@ -17596,30 +17596,13 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
 
     if score:
         caps = score.get('caps',[20,25,30,5,20])
-        current_factors = [
-            ("營收成長", float(score.get("revenue", 0) or 0), float(caps[0])),
-            ("估值", float(score.get("valuation", 0) or 0), float(caps[1])),
-            ("產業動能", float(score.get("momentum", 0) or 0), float(caps[2])),
-            ("法人連續性", float(score.get("streak_score", 0) or 0), float(caps[3])),
-            ("籌碼／技術", float(score.get("chip_tech", 0) or 0), float(caps[4])),
-        ]
-        lines += ["", "【五大因子】"]
-        for factor_name, factor_value, factor_max in current_factors:
-            lines.append(f"{factor_name}　{factor_value:.0f}/{factor_max:.0f}")
-        lines.append(f"模型分數　{score['total']}／100")
-        # 歷史分項只有在資料來源確實提供時才呈現，不能用推估值假造。
-        previous_factor_snapshot = score.get("previous_factors")
-        if isinstance(previous_factor_snapshot, dict):
-            lines += ["", "【變化重點】"]
-            for factor_name, factor_value, factor_max in current_factors:
-                previous_value = previous_factor_snapshot.get(factor_name)
-                try:
-                    previous_value = float(previous_value)
-                except (TypeError, ValueError):
-                    continue
-                delta = factor_value - previous_value
-                delta_text = f"{delta:+.0f}" if delta else "0"
-                lines.append(f"{factor_name}　{previous_value:.0f} → {factor_value:.0f}　{delta_text} 分")
+        lines += ["", "【五大因子】",
+                  f"營收成長　{score.get('revenue', 0):.0f}/{caps[0]:.0f}",
+                  f"估值　　　{score.get('valuation', 0):.0f}/{caps[1]:.0f}",
+                  f"產業動能　{score.get('momentum', 0):.0f}/{caps[2]:.0f}",
+                  f"法人連續性 {score.get('streak_score', 0):.0f}/{caps[3]:.0f}",
+                  f"籌碼／技術 {score.get('chip_tech', 0):.0f}/{caps[4]:.0f}",
+                  f"模型分數　{score['total']}／100"]
         if score_change:
             lines.append(score_change)
 
@@ -17695,98 +17678,350 @@ def _build_text_flex_message(text, alt_text=None):
                   "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
 
 
+def _line_flex_safe_num(value, default=None):
+    try:
+        return default if value is None or value == "" else float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _line_flex_text(value, size="sm", color="#344054", weight=None, **extra):
+    item = {"type": "text", "text": str(value), "size": size, "color": color, "wrap": True}
+    if weight:
+        item["weight"] = weight
+    item.update(extra)
+    return item
+
+
+def _line_flex_kv(label, value, color="#344054"):
+    return {"type": "box", "layout": "horizontal", "alignItems": "center", "spacing": "sm", "contents": [
+        _line_flex_text(label, color="#667085", flex=1),
+        _line_flex_text(value, color=color, weight="bold", align="end")
+    ]}
+
+
+def _line_factor_history(code, user_id):
+    if not user_id:
+        return None
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT snapshot_date, total, factor_revenue, factor_valuation,
+                   factor_momentum, factor_streak, factor_chip_tech
+            FROM watchlist_scores
+            WHERE user_id=%s AND code=%s AND snapshot_date<CURRENT_DATE
+            ORDER BY snapshot_date DESC LIMIT 1
+        """, (str(user_id).strip(), str(code).strip()))
+        r = cur.fetchone()
+        cur.close()
+        if not r:
+            return None
+        return {"date": str(r[0]) if r[0] else "", "total": _line_flex_safe_num(r[1]),
+                "factors": {"營收成長": _line_flex_safe_num(r[2]),
+                            "估值": _line_flex_safe_num(r[3]),
+                            "產業動能": _line_flex_safe_num(r[4]),
+                            "法人連續性": _line_flex_safe_num(r[5]),
+                            "籌碼／技術": _line_flex_safe_num(r[6])}}
+    except Exception as exc:
+        print(f"⚠️ LINE 歷史因子讀取失敗：{type(exc).__name__}: {str(exc)[:160]}")
+        return None
+    finally:
+        if conn is not None:
+            try:
+                release_db_connection(conn)
+            except Exception:
+                pass
+
+
+def _line_institution_history(code):
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            WITH recent AS (
+                SELECT DISTINCT trade_date FROM inst_history ORDER BY trade_date DESC LIMIT 20
+            )
+            SELECT h.trade_date, h.foreign_net_lots, h.trust_net_lots,
+                   h.dealer_net_lots, h.total_net_lots
+            FROM inst_history h JOIN recent r ON r.trade_date=h.trade_date
+            WHERE h.code=%s ORDER BY h.trade_date ASC
+        """, (str(code).strip(),))
+        rows = cur.fetchall()
+        cur.close()
+        out = []
+        for r in rows or []:
+            d = r[0].strftime("%m/%d") if hasattr(r[0], "strftime") else str(r[0] or "")[-5:]
+            f, t, dealer = (_line_flex_safe_num(r[i], 0) or 0 for i in (1, 2, 3))
+            total = _line_flex_safe_num(r[4], f + t + dealer)
+            out.append({"day": d, "foreign": f, "trust": t, "dealer": dealer, "total": total or 0})
+        return out[-20:]
+    except Exception as exc:
+        print(f"⚠️ LINE 法人歷史讀取失敗：{type(exc).__name__}: {str(exc)[:160]}")
+        return []
+    finally:
+        if conn is not None:
+            try:
+                release_db_connection(conn)
+            except Exception:
+                pass
+
+
+def _line_compare_bar(current, previous, maximum):
+    maximum = max(1.0, float(maximum or 1))
+    current = max(0.0, min(maximum, float(current or 0)))
+    previous = None if previous is None else max(0.0, min(maximum, float(previous or 0)))
+    segments = []
+    if current > 0:
+        segments.append({"type": "box", "layout": "vertical", "width": f"{current / maximum * 100:.2f}%",
+                         "height": "14px", "backgroundColor": "#C43D3D", "cornerRadius": "7px",
+                         "contents": [_line_flex_text(" ", size="xxs", color="#C43D3D", wrap=False)]})
+    # 上次比本次高的部分以灰色接在本次紅色尾端，讓下降幅度一眼可見。
+    if previous is not None and previous > current:
+        diff = previous - current
+        segments.append({"type": "box", "layout": "vertical", "width": f"{diff / maximum * 100:.2f}%",
+                         "height": "14px", "backgroundColor": "#CBD2DA", "cornerRadius": "7px",
+                         "contents": [_line_flex_text(" ", size="xxs", color="#CBD2DA", wrap=False)]})
+    if not segments:
+        segments.append({"type": "box", "layout": "vertical", "width": "1%", "height": "14px",
+                         "backgroundColor": "#EDF0F4", "cornerRadius": "7px",
+                         "contents": [_line_flex_text(" ", size="xxs", color="#EDF0F4", wrap=False)]})
+    return {"type": "box", "layout": "horizontal", "height": "14px", "backgroundColor": "#EDF0F4",
+            "cornerRadius": "7px", "contents": segments}
+
+
+def _line_institution_chart(rows):
+    if not rows:
+        return [_line_flex_text("目前沒有足夠的近 20 日法人歷史資料，暫不繪製圖表。", color="#667085")]
+    maximum = max([abs(float(r.get("total") or 0)) for r in rows] + [1.0])
+    columns = []
+    for r in rows[-20:]:
+        value = float(r.get("total") or 0)
+        height = max(1, min(34, round(abs(value) / maximum * 34))) if value else 1
+        color = "#C43D3D" if value > 0 else "#218653" if value < 0 else "#CBD2DA"
+        top = {"type":"box","layout":"vertical","width":"7px","height":f"{height if value > 0 else 1}px",
+               "backgroundColor": color if value > 0 else "#FFFFFF","cornerRadius":"2px",
+               "contents":[_line_flex_text(" ",size="xxs",wrap=False)]}
+        bottom = {"type":"box","layout":"vertical","width":"7px","height":f"{height if value < 0 else 1}px",
+                  "backgroundColor": color if value < 0 else "#FFFFFF","cornerRadius":"2px",
+                  "contents":[_line_flex_text(" ",size="xxs",wrap=False)]}
+        columns.append({"type":"box","layout":"vertical","flex":1,"spacing":"none","contents":[
+            {"type":"box","layout":"vertical","height":"38px","justifyContent":"flex-end","alignItems":"center","contents":[top]},
+            {"type":"box","layout":"vertical","height":"1px","backgroundColor":"#8A99A8","contents":[_line_flex_text(" ",size="xxs",wrap=False)]},
+            {"type":"box","layout":"vertical","height":"38px","justifyContent":"flex-start","alignItems":"center","contents":[bottom]}
+        ]})
+    dates = rows[-20:]
+    tick_indexes = sorted(set([0, max(0,len(dates)//4), max(0,len(dates)//2), max(0,3*len(dates)//4), len(dates)-1]))
+    ticks = "　　".join(str(dates[i].get("day") or "") for i in tick_indexes if 0 <= i < len(dates))
+    return [
+        {"type":"box","layout":"horizontal","justifyContent":"space-between","contents":[
+            _line_flex_text("紅柱＝買超",size="xs",color="#C43D3D"),
+            _line_flex_text("綠柱＝賣超",size="xs",color="#218653")
+        ]},
+        {"type":"box","layout":"horizontal","spacing":"xs","contents":columns},
+        _line_flex_text(ticks,size="xxs",color="#98A2B3",align="center"),
+        _line_flex_text("零軸固定在中間，只顯示最近 20 個交易日；柱高依實際法人張數縮放。",size="xs",color="#667085")
+    ]
+
+
+def _line_news_items(name, code, limit=3):
+    import xml.etree.ElementTree as ET
+    from urllib.parse import quote
+    from datetime import datetime, timezone, timedelta
+    from zoneinfo import ZoneInfo
+    query = f'"{name}" (營收 OR 股價 OR 法人 OR 財報 OR 訂單 OR 產能 OR 公告 OR 供應鏈 OR AI OR 液冷 OR 擴產)'
+    url = "https://news.google.com/rss/search?q=" + quote(query) + "&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    try:
+        response = requests.get(url, timeout=7, headers={"User-Agent":"Mozilla/5.0"})
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+    except Exception as exc:
+        print(f"⚠️ LINE 個股新聞讀取失敗：{type(exc).__name__}: {str(exc)[:120]}")
+        return []
+    now = datetime.now(timezone.utc)
+    accepted = ("營收","股價","法人","財報","訂單","產能","公告","供應鏈","AI","液冷","散熱","擴產","獲利","法說","投資")
+    out, seen = [], set()
+    for item in root.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        source = (item.findtext("source") or "").strip()
+        pub = (item.findtext("pubDate") or "").strip()
+        if not title or title.casefold() in seen:
+            continue
+        clean = title.rsplit(" - ",1)[0].strip() if " - " in title else title
+        if name not in clean and code not in clean and not any(t in clean for t in ("液冷","散熱","AI伺服器","資料中心")):
+            continue
+        if not any(t in clean for t in accepted) or not _valid_news_uri(link):
+            continue
+        date_text = "日期未提供"
+        if pub:
+            try:
+                dt = datetime.strptime(pub,"%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
+                if (now-dt)>timedelta(days=14) or dt>now+timedelta(hours=2):
+                    continue
+                date_text = dt.astimezone(ZoneInfo("Asia/Taipei")).strftime("%Y/%m/%d")
+            except Exception:
+                pass
+        seen.add(title.casefold())
+        out.append({"title":clean,"link":link,"source":source or "新聞來源","date":date_text})
+        if len(out)>=limit:
+            break
+    return out
+
+
 def build_single_stock_report(code, user_id=None):
-    """
-    單檔完整健檢。LINE 直接輸入代號就走這裡——
-    單檔與多檔自選股共用同一套手機版欄位，避免相同功能出現兩種格式。
-    """
+    """LINE 個股完整 Flex 卡：比較分數、變化重點、法人零軸圖與新聞。"""
+    code = str(code or "").strip()
+    if not code or is_etf(code):
+        return TextSendMessage(text="請輸入有效的個股代號。")
     stock = get_realtime_stock(code)
     if not stock:
-        return f"❌ 查無代號 {code} 的行情，請確認代號是否正確。"
+        return TextSendMessage(text=f"❌ 查無代號 {code} 的行情，請確認代號是否正確。")
+    stock = dict(stock)
+    score = (compute_watchlist_scores([code]) or {}).get(code)
+    if not score or score.get("total") is None:
+        return _build_text_flex_message("目前無法取得這檔股票的完整模型資料，請稍後再試。")
 
-    # 資料品質保護：若只有舊日線收盤價，且來源同時回傳 0 漲跌與 0 成交量，
-    # 這通常代表當日行情欄位缺值，不應把缺值包裝成「當日 +0.00%、成交量 0 張」。
-    # 僅調整 LINE 顯示副本，不改動原始 stock，也不影響五大因子計算。
-    stock_for_display = dict(stock)
-    quote_day = str(stock_for_display.get("close_date") or "").replace("-", "")[:8]
+    prev = _line_factor_history(code,user_id)
+    caps = score.get("caps") or [20,25,30,5,20]
+    factor_previous = (prev or {}).get("factors") or {}
+    quote_day = str(stock.get("close_date") or "").replace("-","")[:8]
     today_key = taiwan_today().strftime("%Y%m%d")
+    pct = _line_flex_safe_num(stock.get("pct")); volume = _line_flex_safe_num(stock.get("volume"))
+    if quote_day and quote_day != today_key and pct == 0 and volume == 0:
+        pct, volume = None, None
+        stock["high"], stock["low"] = None, None
+    close = _line_flex_safe_num(stock.get("close"))
+    high, low = _line_flex_safe_num(stock.get("high")), _line_flex_safe_num(stock.get("low"))
+    pct_color = "#C43D3D" if pct is not None and pct > 0 else "#218653" if pct is not None and pct < 0 else "#667085"
+    pct_txt = "暫無資料" if pct is None else f"{pct:+.2f}%"
+    close_txt = "暫無資料" if close is None else f"{close:,.2f}"
+    hi_lo_txt = f"{high:,.2f} / {low:,.2f}" if high is not None and low is not None else "暫無資料"
+    volume_txt = "暫無資料" if volume is None else f"{int(volume/1000):,} 張"
+    date_txt = f"{quote_day[:4]}/{quote_day[4:6]}/{quote_day[6:8]}" if len(quote_day)==8 else "未提供"
+    name = short_company_name(stock_display_name(code,None,stock.get("name")))
     try:
-        quote_pct = float(stock_for_display.get("pct")) if stock_for_display.get("pct") is not None else None
-    except (TypeError, ValueError):
-        quote_pct = None
-    try:
-        quote_volume = float(stock_for_display.get("volume")) if stock_for_display.get("volume") is not None else None
-    except (TypeError, ValueError):
-        quote_volume = None
-    if quote_day and quote_day != today_key and quote_pct == 0 and quote_volume == 0:
-        stock_for_display["pct"] = None
-        stock_for_display["volume"] = None
+        industry = (get_industry_map() or {}).get(code)
+        industry_txt = industry_name(industry) if industry else str(score.get("category") or "個股")
+    except Exception:
+        industry_txt = str(score.get("category") or "個股")
+    total_now = float(score.get("total") or 0); total_prev = (prev or {}).get("total")
 
-    inst = fetch_institutional_data() or {}
-    scores = compute_watchlist_scores([code])
-    score = scores.get(code)
-    ind_map = get_industry_map() or {}
-    industry = ind_map.get(code)
-    name = short_company_name(stock_display_name(code, inst, stock["name"]))
+    def section(title, children, margin="lg"):
+        return {"type":"box","layout":"vertical","spacing":"sm","margin":margin,
+                "contents":[_line_flex_text(title,size="md",color="#203449",weight="bold")]+list(children)}
 
-    score_change = None
-    if score and user_id:
-        prev = get_previous_scores(user_id, [code]).get(code)
-        arrow, change_txt = describe_score_change(score, prev)
-        if arrow:
-            score_change = f"{arrow} {change_txt}"
+    factor_rows=[]
+    normalized_factors=[]
+    for f in score.get("factors") or []:
+        if not isinstance(f,dict): continue
+        fname=str(f.get("name") or "因子"); cur=float(f.get("value") or 0); mx=float(f.get("max") or 1)
+        old=factor_previous.get(fname)
+        normalized_factors.append((fname,cur,mx,old))
+        delta=(cur-float(old)) if old is not None else None
+        dcolor="#C43D3D" if delta is not None and delta>0 else "#218653" if delta is not None and delta<0 else "#667085"
+        head={"type":"box","layout":"horizontal","alignItems":"center","spacing":"xs","contents":[
+            _line_flex_text(fname,color="#27364A",weight="bold",flex=1),
+            _line_flex_text((f"{float(old):.0f} → " if old is not None else "")+f"{cur:.0f}/{mx:.0f}",color="#536579",weight="bold",align="end"),
+            _line_flex_text((f"{delta:+.0f}" if delta else "0") if delta is not None else "—",color=dcolor,weight="bold",align="end")
+        ]}
+        factor_rows.append({"type":"box","layout":"vertical","spacing":"xs","margin":"md","contents":[
+            head,_line_compare_bar(cur,old,mx)]})
 
-    bd = get_investor_breakdown([code]).get(code)
-    watchlist_status = None
-    if user_id:
-        in_wl = code in get_user_watchlist(user_id)
-        watchlist_status = ("※ 已在自選清單" if in_wl
-                            else f"※ 輸入「加 {code}」加入自選")
+    summary=[]
+    if prev and any(old is not None for _,_,_,old in normalized_factors):
+        for fname,cur,mx,old in normalized_factors:
+            if old is None: continue
+            delta=cur-float(old); dcolor="#C43D3D" if delta>0 else "#218653" if delta<0 else "#667085"
+            summary.append({"type":"box","layout":"horizontal","alignItems":"center","spacing":"sm","contents":[
+                _line_flex_text(fname,color="#475467",flex=1),
+                _line_flex_text(f"{float(old):.0f} → {cur:.0f}",color="#344054",weight="bold",align="end"),
+                _line_flex_text((f"{delta:+.0f}" if delta else "0")+" 分",color=dcolor,weight="bold",align="end")
+            ]})
+        if total_prev is not None:
+            delta_total=total_now-float(total_prev)
+            summary += [{"type":"separator","margin":"md","color":"#DDE3EA"},
+                        {"type":"box","layout":"horizontal","alignItems":"center","contents":[
+                            _line_flex_text("模型總分",color="#344054",weight="bold",flex=1),
+                            _line_flex_text(f"{float(total_prev):.0f} → {total_now:.0f}（{delta_total:+.0f}）",
+                                color="#C43D3D" if delta_total>0 else "#218653" if delta_total<0 else "#667085",weight="bold",align="end")]}]
+    else:
+        summary=[_line_flex_text("尚無可比較的前次五大因子快照；有歷史資料後會自動顯示各項變化。",color="#667085")]
 
-    lines = _format_stock_detail_lines(
-        code, name, stock_for_display, score=score, bd=bd,
-        industry_label=(f"📌 {score.get('category') or '個股'}" + (f"｜{industry_name(industry)}" if industry else "")) if score else (industry_name(industry) if industry else None),
-        score_change=score_change, watchlist_status=watchlist_status)
-
-    news = fetch_stock_news(
-        name, max_items=2, within_hours=36,
-        subject_name=name, known_names=_news_company_names([name]))
-    core_report = "\n".join(lines)
-    if not news:
-        core_report += ("\n\n📰 相關新聞\n"
-                        f"目前沒有抓到以{name}為主體的相關新聞。")
-        return _build_text_flex_message(core_report)
-
-    # 單檔查詢保留完整健檢文字，但新聞標題使用可點擊 Flex 元件，
-    # 不把 Google News 的長網址直接顯示在聊天室。
-    contents = _flex_report_contents(core_report)
-    contents += [
-        {"type": "separator", "margin": "lg", "color": "#E8EAE6"},
-        {"type": "text", "text": "📰 相關新聞", "weight": "bold",
-         "size": "sm", "color": "#1B2027", "margin": "lg"},
+    def metric(label,value,color="#344054"):
+        return {"type":"box","layout":"vertical","flex":1,"backgroundColor":"#F5F7FA","cornerRadius":"10px","paddingAll":"10px",
+                "contents":[_line_flex_text(label,size="xs",color="#667085"),_line_flex_text(value,size="lg",color=color,weight="bold")]}
+    cum_yoy=_line_flex_safe_num(score.get("cum_yoy")); pe=_line_flex_safe_num(score.get("pe")); pb=_line_flex_safe_num(score.get("pb")); peg=_line_flex_safe_num(score.get("peg"))
+    metrics=[
+        {"type":"box","layout":"horizontal","spacing":"sm","contents":[
+            metric("累計營收年增","資料不足" if cum_yoy is None else f"{cum_yoy:+.1f}%","#C43D3D" if cum_yoy is not None and cum_yoy>0 else "#218653" if cum_yoy is not None and cum_yoy<0 else "#344054"),
+            metric("本益比 PE","資料不足" if pe is None else f"{pe:.1f} 倍") ]},
+        {"type":"box","layout":"horizontal","spacing":"sm","contents":[
+            metric("模型 PEG","資料不足" if peg is None else f"{peg:.2f}"),
+            metric("股價淨值比 PB","資料不足" if pb is None else f"{pb:.2f} 倍") ]}
     ]
-    for index, item in enumerate(news):
-        src = f"（{item['source']}）" if item.get("source") else ""
-        component = {"type": "text", "text": f"・{item['title']}{src}",
-                     "size": "sm", "color": "#4A5F7A", "wrap": True,
-                     "decoration": "underline",
-                     "margin": "md" if index else "sm"}
-        uri = _valid_news_uri(item.get("link"))
-        if uri:
-            component["action"] = {"type": "uri", "uri": uri}
-        else:
-            component.pop("decoration", None)
-            component["color"] = "#454C55"
-        contents.append(component)
-    alt_text = core_report + "\n📰 相關新聞\n" + "；".join(
-        item.get("title", "") for item in news)
-    return FlexSendMessage(
-        alt_text=alt_text[:400],
-        contents={"type": "bubble",
-                  "body": {"type": "box", "layout": "vertical",
-                           "contents": contents, "paddingAll": "18px",
-                           "backgroundColor": "#FFFFFF"},
-                  "styles": {"body": {"backgroundColor": "#FFFFFF"}}})
+    try: support=fmt_support(stock)
+    except Exception: support=str(stock.get("support") or "資料不足")
+    try: resistance=fmt_resistance(stock.get("resistance"))
+    except Exception: resistance=str(stock.get("resistance") or "資料不足")
+    quote_section={"type":"box","layout":"vertical","spacing":"sm","margin":"md","backgroundColor":"#F5F7FA","cornerRadius":"12px","paddingAll":"12px","contents":[
+        {"type":"box","layout":"horizontal","alignItems":"center","contents":[
+            {"type":"box","layout":"vertical","flex":1,"contents":[_line_flex_text(f"💰 {close_txt}",size="xxl",color="#203449",weight="bold"),_line_flex_text(f"漲跌幅 {pct_txt}",color=pct_color,weight="bold")]},
+            {"type":"box","layout":"vertical","alignItems":"end","contents":[_line_flex_text("行情日期",size="xs",color="#667085"),_line_flex_text(date_txt,color="#344054",weight="bold")]}
+        ]},
+        {"type":"separator","margin":"sm","color":"#DDE3EA"},
+        _line_flex_kv("當日最高／最低",hi_lo_txt),_line_flex_kv("成交量",volume_txt),
+        _line_flex_kv("支撐參考",support),_line_flex_kv("壓力參考",resistance)
+    ]}
+    totalbar=_line_compare_bar(total_now,total_prev,100)
+    totaldelta=(total_now-float(total_prev)) if total_prev is not None else None
+    model_section=section("二、模型總分比較",[
+        {"type":"box","layout":"horizontal","alignItems":"center","contents":[
+            {"type":"box","layout":"vertical","flex":1,"contents":[_line_flex_text("上次 → 本次",size="xs",color="#667085"),_line_flex_text(f"{float(total_prev):.0f} → {total_now:.0f}" if total_prev is not None else f"{total_now:.0f} / 100（目前）",size="xxl",color="#203449",weight="bold")]},
+            {"type":"box","layout":"vertical","alignItems":"end","contents":[_line_flex_text("差異",size="xs",color="#667085"),_line_flex_text(f"{totaldelta:+.0f} 分" if totaldelta is not None else "無前次資料",size="lg",weight="bold",color="#C43D3D" if totaldelta is not None and totaldelta>0 else "#218653" if totaldelta is not None and totaldelta<0 else "#667085")]}
+        ]},
+        totalbar
+    ])
+    summary_block={"type":"box","layout":"vertical","spacing":"md","margin":"lg","backgroundColor":"#F2F4F7","cornerRadius":"12px","paddingAll":"14px","contents":[_line_flex_text("變化重點",size="lg",color="#203449",weight="bold")]+summary}
+
+    try: bd=(get_investor_breakdown([code]) or {}).get(code)
+    except Exception: bd=None
+    investor_rows=[]
+    for key,label in (("foreign","外資"),("trust","投信"),("dealer","自營商")):
+        item=(bd or {}).get(key) or {}; val=_line_flex_safe_num(item.get("cum")); streak=int(_line_flex_safe_num(item.get("streak"),0) or 0)
+        text="資料不足" if val is None else f"{val:+,.0f} 張"+(f"　連買 {streak} 日" if streak>=2 else "")
+        investor_rows.append(_line_flex_kv(label,text,"#C43D3D" if val is not None and val>0 else "#218653" if val is not None and val<0 else "#667085"))
+    chart_rows=_line_institution_history(code)
+    chart_items=_line_institution_chart(chart_rows)
+    pos_lines=[]
+    try: pos_lines=[x.strip() for x in build_position_desc(stock).splitlines() if x.strip()]
+    except Exception: pass
+    position_items=[_line_flex_text(x,color="#475467") for x in pos_lines] or [_line_flex_text("位階資料不足",color="#667085")]
+    if user_id:
+        try: position_items.append(_line_flex_text("已在自選清單" if code in set(get_user_watchlist(user_id) or []) else f"輸入「加 {code}」加入自選",size="xs",color="#667085"))
+        except Exception: pass
+    try: observation=build_web_factor_observation(score)
+    except Exception: observation="目前沒有足夠的模型解讀資料。"
+    news=[]
+    try: news=_line_news_items(name,code,3)
+    except Exception as exc: print(f"⚠️ LINE 新聞區塊失敗：{type(exc).__name__}: {str(exc)[:100]}")
+    news_rows=[]
+    for idx,item in enumerate(news):
+        comp=_line_flex_text(f"{item['title']}\n{item['date']}｜{item['source']}",color="#315F94",weight="medium",margin="md" if idx else "sm")
+        comp["decoration"]="underline"; comp["action"]={"type":"uri","uri":item["link"]}; news_rows.append(comp)
+    if not news_rows: news_rows=[_line_flex_text("目前沒有找到符合條件的相關新聞。",color="#667085")]
+    contents=[
+        {"type":"box","layout":"vertical","spacing":"xs","contents":[_line_flex_text(f"📊 {code} {name}",size="xl",color="#203449",weight="bold"),_line_flex_text(f"{score.get('category') or '個股'}｜{industry_txt}",size="xs",color="#667085"),_line_flex_text(f"📅 行情資料日 {date_txt}",size="xs",color="#667085")]},
+        quote_section,model_section,section("三、五大因子｜前次與本次比較",factor_rows),summary_block,
+        section("四、基本面與估值",metrics),section("五、法人籌碼｜近 10 日",investor_rows),
+        section("六、法人近 20 日柱狀圖",chart_items),section("七、位階與技術面",position_items),
+        section("八、模型解讀與風險提醒",[_line_flex_text(observation,color="#475467"),_line_flex_text("模型分數用來比較五大面向的相對強弱，不代表買賣保證。請同時留意估值、法人方向與行情日期。",size="xs",color="#667085")]),
+        section("九、📰 個股相關新聞",news_rows)
+    ]
+    alt=f"{code} {name}模型分數 {total_now:.0f} 分"+(f"，較前次 {totaldelta:+.0f} 分" if totaldelta is not None else "")
+    return FlexSendMessage(alt_text=alt[:400],contents={"type":"bubble","size":"giga","body":{"type":"box","layout":"vertical","paddingAll":"16px","spacing":"none","contents":contents},"styles":{"body":{"backgroundColor":"#FFFFFF"}}})
 
 def _etf_price_drawdown_summary(closes, close_dates):
     """用可取得的價格序列計算觀測期間最大回撤與是否回到前高。"""
@@ -26812,12 +27047,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     if(!active)return;
     // 同一文件內的頁面切換使用 performance.now()，不會被先前 sessionStorage 時間污染；
     // 只有選股工作台的真正整頁導覽，才需要跨文件沿用 Date.now()。
-    // 同頁計時使用 performance.now()，避免系統時鐘調整造成計時停住；
-    // 只有跨頁接力才使用 sessionStorage 保存的 wall-clock 起點。
-    var elapsedMs = progressUsesWallClock
-      ? (Date.now() - progressStartedAt)
-      : (performance.now() - progressStartedPerf);
-    var sec=Math.max(0,elapsedMs/1000);
+    var elapsedMs=progressUsesWallClock?(Date.now()-progressStartedAt):(performance.now()-progressStartedPerf);var sec=Math.max(0,elapsedMs/1000);
     // 進度只用來呈現等待狀態；完成前保留少量空間，避免誤以為已載入完成。
     var pct=sec<1?20:sec<3?20+(sec-1)*20:sec<6?60+(sec-3)*9:Math.min(97,87+(sec-6)*1.7);
     pct=Math.min(97,Math.max(8,pct));
@@ -26859,8 +27089,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     if(progressBar)progressBar.style.width='0%';
     if(!wasActive && progressTime)progressTime.textContent='0.0 秒';
     loader.classList.remove('done');loader.classList.add('show');
-    paintEstimatedProgress();
     progressTimer=window.setInterval(paintEstimatedProgress,100);
+    paintEstimatedProgress();
   }};
 
   window.finishPageNavLoader=function(){{
@@ -26872,9 +27102,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       loader.classList.remove('show');
       return;
     }}
-    // 完成前最後刷新一次，避免畫面停留在初始的 0.0 秒。
-    paintEstimatedProgress();
-    active=false;clearProgressTimers();window.__stockAnalysisNavPending=false;
+    paintEstimatedProgress();active=false;clearProgressTimers();window.__stockAnalysisNavPending=false;
     if(progressPercent)progressPercent.textContent='';
     if(progressBar)progressBar.style.width='100%';
     try{{sessionStorage.removeItem('stockbot_nav_started_at');}}catch(ignore){{}}
