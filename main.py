@@ -49811,9 +49811,9 @@ def _line_hidden_operation_report(user_id):
             delta = item.get("shares_delta")
             try:
                 delta_num = int(delta)
-                delta_text = f"{delta_num:+d}"
+                delta_text = "…"
             except (TypeError, ValueError):
-                delta_num, delta_text = None, "待確認"
+                delta_num, delta_text = None, "…"
             # LINE 操作日報依使用者要求不顯示實際股數，也不顯示操作前後股數。
             share_detail = ""
             ratio = item.get("change_pct")
