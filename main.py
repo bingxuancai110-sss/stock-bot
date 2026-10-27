@@ -17786,15 +17786,22 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
             except (TypeError,ValueError): v=0; c=1; ratio=0
             try: prev_ratio=max(0,min(100,float(prev_val)/c*100)) if prev_val is not None else None
             except (TypeError,ValueError): prev_ratio=None
-            # 歷史快照用淺藍底條，今日分數用深藍前景疊在上面；沒有歷史值就不假造。
-            if prev_ratio is not None:
-                bar_inner={"type":"box","layout":"vertical","width":f"{min(100,ratio/max(prev_ratio,0.1)*100):.1f}%","height":"7px","backgroundColor":blue,"cornerRadius":"5px","contents":[]}
-                bar_track={"type":"box","layout":"vertical","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"5px","contents":[{"type":"box","layout":"vertical","width":f"{prev_ratio:.1f}%","height":"7px","backgroundColor":"#B8CDE0","cornerRadius":"5px","contents":[bar_inner]}]}
-                change_label=f"前次 {float(prev_val):g} → 今日 {v:g}"
-            else:
-                bar_track={"type":"box","layout":"vertical","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"5px","contents":[{"type":"box","layout":"vertical","width":f"{ratio:.1f}%","height":"7px","backgroundColor":blue,"cornerRadius":"5px","contents":[]}]}
-                change_label=f"今日 {v:g}（尚無前次分項快照）"
-            factor_rows.append({"type":"box","layout":"vertical","spacing":"xs","margin":"sm","contents":[{"type":"box","layout":"horizontal","contents":[txt(label,"sm",navy,"bold","none"),{"type":"text","text":f"{v:g}/{c:g}","size":"sm","weight":"bold","color":navy,"align":"end","flex":1}]},bar_track,txt(change_label,"xxs",muted,None,"none")]})
+            # 單列比較：前次與今日各一條細軌，名稱、分數與變化同列；不再附加說明行。
+            prev_width = prev_ratio if prev_ratio is not None else 0.0
+            delta = (v - float(prev_val)) if prev_val is not None else None
+            delta_color = red if delta is not None and delta > 0 else green if delta is not None and delta < 0 else muted
+            mini_tracks = {"type":"box","layout":"vertical","flex":1,"spacing":"xs","contents":[
+                {"type":"box","layout":"vertical","height":"5px","backgroundColor":"#E9EEF3","cornerRadius":"4px","contents":[{"type":"box","layout":"vertical","width":f"{prev_width:.1f}%","height":"5px","backgroundColor":"#B8CDE0","cornerRadius":"4px","contents":[]}]},
+                {"type":"box","layout":"vertical","height":"5px","backgroundColor":"#E9EEF3","cornerRadius":"4px","contents":[{"type":"box","layout":"vertical","width":f"{ratio:.1f}%","height":"5px","backgroundColor":(red if delta is not None and delta > 0 else green if delta is not None and delta < 0 else blue),"cornerRadius":"4px","contents":[]}]}
+            ]}
+            score_text = f"{float(prev_val):g}→{v:g}" if prev_val is not None else f"今日 {v:g}"
+            delta_text = (f"{delta:+g}" if delta is not None else "—")
+            factor_rows.append({"type":"box","layout":"horizontal","spacing":"sm","margin":"sm","alignItems":"center","contents":[
+                {"type":"box","layout":"vertical","width":"82px","contents":[txt(label,"sm",navy,"bold","none")]},
+                mini_tracks,
+                {"type":"text","text":score_text,"size":"xs","weight":"bold","color":navy,"align":"end","flex":0,"wrap":False},
+                {"type":"text","text":delta_text,"size":"xs","weight":"bold","color":delta_color,"align":"end","flex":0,"wrap":False}
+            ]})
         total=score.get('total','暫無資料')
         change=find('模型分數')
         factor_body=[{"type":"box","layout":"horizontal","alignItems":"center","contents":[txt("五大因子綜合分數","sm",muted,None,"none"),{"type":"text","text":f"{total}/100","size":"xxl","weight":"bold","color":navy,"align":"end","flex":1}]},*factor_rows]
@@ -17822,12 +17829,45 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         _fund_grid.append(_metric_card("累計營收年增",f"{float(_cum_yoy):+.1f}%",red if float(_cum_yoy)>=0 else green,"營運成長指標"))
     else:
         _fund_grid.append(_metric_card("累計營收年增","暫無資料",muted))
-    _fund_grid.append(_metric_card("本益比 PE",f"{float(_pe):.1f} 倍" if _pe is not None else "暫無資料",navy,"目前獲利估值"))
-    _fund_grid.append(_metric_card("模型 PEG",f"{float(_peg):.2f}" if _peg is not None else "不適用／暫無",navy,"非標準 EPS-PEG"))
-    _fund_grid.append(_metric_card("現金殖利率",f"{float(_yield):.2f}%" if _yield is not None else "暫無資料",navy,"依可用股利資料"))
+    _fund_grid.append(_metric_card("本益比 PE",f"{float(_pe):.1f} 倍" if _pe is not None else "暫無資料",navy))
+    _fund_grid.append(_metric_card("PEG",f"{float(_peg):.2f}" if _peg is not None else "不適用／暫無",navy))
+    _fund_grid.append(_metric_card("現金殖利率",f"{float(_yield):.2f}%" if _yield is not None else "暫無資料",navy))
     fundamentals=[{"type":"box","layout":"horizontal","spacing":"sm","contents":_fund_grid[:2]},
-                  {"type":"box","layout":"horizontal","spacing":"sm","contents":_fund_grid[2:]},
-                  txt("獲利能力（毛利率、營業利益率、EPS）與財務體質（現金流、負債比）目前僅在資料源確實提供時顯示；缺值不以估算代替。","xs",muted)]
+                  {"type":"box","layout":"horizontal","spacing":"sm","contents":_fund_grid[2:]}]
+    # 月營收：從既有 monthly_revenue 快照取最新一期；歷史趨勢則讀 revenue_history，沒有資料不造值。
+    try:
+        _revenue_map = fetch_monthly_revenue(homepage=True) or {}
+        _rev = _revenue_map.get(str(code)) or _revenue_map.get(str(code).zfill(4)) or {}
+    except Exception as _rev_exc:
+        print(f"⚠️ 個股月營收讀取失敗 {code}: {_rev_exc}")
+        _rev = {}
+    _monthly_cards=[]
+    _month_rev = _rev.get("month_revenue")
+    _month_yoy = _rev.get("yoy_pct")
+    _month_mom = _rev.get("mom_pct")
+    _period = str(_rev.get("period") or _rev.get("month") or "最新一期")
+    def _fmt_revenue(v):
+        try: return f"{float(v)/100000:.2f} 億" if abs(float(v)) >= 100000 else f"{float(v):,.0f}"
+        except (TypeError, ValueError): return "暫無資料"
+    _monthly_cards.append(_metric_card("最新月營收", _fmt_revenue(_month_rev), navy, _period))
+    _monthly_cards.append(_metric_card("單月營收年增", f"{float(_month_yoy):+.1f}%" if _month_yoy is not None else "暫無資料", red if _month_yoy is not None and float(_month_yoy)>=0 else green))
+    _monthly_cards.append(_metric_card("單月營收月增", f"{float(_month_mom):+.1f}%" if _month_mom is not None else "暫無資料", red if _month_mom is not None and float(_month_mom)>=0 else green))
+    fundamentals = [section("營收成長", [{"type":"box","layout":"horizontal","spacing":"sm","contents":_monthly_cards}])] + fundamentals
+    try:
+        _conn_rev=get_db_connection()
+        try:
+            _cur_rev=_conn_rev.cursor()
+            _cur_rev.execute("SELECT period, month_revenue, yoy_pct, mom_pct FROM revenue_history WHERE code=%s ORDER BY period DESC LIMIT 3", (str(code),))
+            _rev_rows=_cur_rev.fetchall(); _cur_rev.close()
+        finally:
+            release_db_connection(_conn_rev)
+        if _rev_rows:
+            _trend=[]
+            for _rr in reversed(_rev_rows):
+                _trend.append(txt(f"{_rr[0]}　營收 {_fmt_revenue(_rr[1])}　YoY {float(_rr[2]):+.1f}%" if _rr[2] is not None else f"{_rr[0]}　營收 {_fmt_revenue(_rr[1])}　YoY 暫無資料", "xs", muted, None, "none"))
+            fundamentals.append(section("近 3 期營收趨勢", _trend))
+    except Exception as _trend_exc:
+        print(f"⚠️ 個股近3期營收趨勢讀取失敗 {code}: {_trend_exc}")
     # 直接讀 inst_history 最近 20 個交易日，畫出每日三大法人合計買賣超。
     # 資料不存在時明確顯示缺資料，不以近 10 日摘要假裝成歷史圖表。
     inst_history=[]
@@ -17931,14 +17971,18 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         return {"type":"box", "layout":"vertical", "spacing":"md", "margin":"lg",
                 "paddingAll":"16px", "cornerRadius":"14px", "backgroundColor":bg,
                 "contents":[txt(title,"lg",title_color,"bold","none"), *clean_items]}
-    # 把技術資訊文字稍微放大，讓手機上不必瞇眼閱讀。
-    _tech_display=[]
-    for _item in tech_lines:
-        _copy=dict(_item)
-        _copy["size"]="md"
-        _copy["color"]="#243B53"
-        _copy["margin"]="sm"
-        _tech_display.append(_copy)
+    # 第三張技術位階改為兩個大型並排方塊，正值紅、負值綠。
+    import re as _re_tech
+    _tech_text = " ".join(str(x.get("text", "")) for x in tech_lines if isinstance(x, dict))
+    _high_match = _re_tech.search(r"距\s*60\s*日高點.*?([+-]?\d+(?:\.\d+)?)\s*%", _tech_text)
+    _ma_match = _re_tech.search(r"20\s*日均線.*?\(([+-]?\d+(?:\.\d+)?)\s*%\)", _tech_text)
+    _high_val = float(_high_match.group(1)) if _high_match else None
+    _ma_val = float(_ma_match.group(1)) if _ma_match else None
+    def _tech_tile(label, value, suffix):
+        _col = red if value is not None and value > 0 else green if value is not None and value < 0 else muted
+        _bg = "#FDECEC" if value is not None and value > 0 else "#EAF7F0" if value is not None and value < 0 else "#F2F5F9"
+        return {"type":"box","layout":"vertical","flex":1,"paddingAll":"14px","spacing":"md","cornerRadius":"14px","backgroundColor":_bg,"contents":[txt(label,"sm",muted,"bold","none"),txt(f"{value:+.1f}%" if value is not None else "暫無資料","xxl",_col,"bold","none"),txt(suffix,"xs",_col,None,"none")]}
+    _tech_display=[{"type":"box","layout":"horizontal","spacing":"sm","contents":[_tech_tile("距 60 日高點",_high_val,"相對前高"),_tech_tile("20 日均線差",_ma_val,"相對均線")]}]
     _model_display=[]
     for _item in _model_items:
         _copy=dict(_item)
