@@ -17799,7 +17799,7 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
             factor_rows.append({"type":"box","layout":"horizontal","spacing":"sm","margin":"sm","alignItems":"center","contents":[
                 {"type":"box","layout":"vertical","width":"82px","contents":[txt(label,"sm",navy,"bold","none")]},
                 mini_tracks,
-                {"type":"text","text":score_text,"size":"xs","weight":"bold","color":navy,"align":"end","flex":0,"wrap":False},
+                {"type":"text","text":score_text,"size":"xs","weight":"bold","color":(red if delta is not None and delta > 0 else green if delta is not None and delta < 0 else navy),"align":"end","flex":0,"wrap":False},
                 {"type":"text","text":delta_text,"size":"xs","weight":"bold","color":delta_color,"align":"end","flex":0,"wrap":False}
             ]})
         total=score.get('total','暫無資料')
@@ -17873,14 +17873,9 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
                 _mom_text=f"{float(_rr[3]):+.1f}%" if len(_rr)>3 and _rr[3] is not None else "暫無資料"
                 _yoy_color=red if _rr[2] is not None and float(_rr[2])>=0 else green if _rr[2] is not None else muted
                 _mom_color=red if len(_rr)>3 and _rr[3] is not None and float(_rr[3])>=0 else green if len(_rr)>3 and _rr[3] is not None else muted
-                # 將 MoM / YoY 拆成兩個等寬直欄，各自標籤在上、數值在下，
-                # 避免長百分比彼此碰撞；月份與營收仍獨立放在第一行。
-                _trend.append({"type":"box","layout":"vertical","spacing":"sm","paddingAll":"10px","backgroundColor":"#F5F7FA","cornerRadius":"10px","contents":[
+                _trend.append({"type":"box","layout":"vertical","spacing":"xs","paddingAll":"10px","backgroundColor":"#F5F7FA","cornerRadius":"10px","contents":[
                     txt(f"{_period_text}　營收 {_revenue_text}","sm",navy,"bold","none"),
-                    {"type":"box","layout":"horizontal","spacing":"md","contents":[
-                        {"type":"box","layout":"vertical","flex":1,"spacing":"xs","contents":[txt("月增 MoM","xs",muted,None,"none"),{"type":"text","text":_mom_text,"size":"sm","weight":"bold","color":_mom_color,"align":"start","flex":1,"wrap":True}]},
-                        {"type":"box","layout":"vertical","flex":1,"spacing":"xs","contents":[txt("年增 YoY","xs",muted,None,"none"),{"type":"text","text":_yoy_text,"size":"sm","weight":"bold","color":_yoy_color,"align":"start","flex":1,"wrap":True}]}
-                    ]}
+                    {"type":"box","layout":"horizontal","spacing":"sm","contents":[txt("月增 MoM","xs",muted,None,"none"),{"type":"text","text":_mom_text,"size":"sm","weight":"bold","color":_mom_color,"align":"end","flex":1,"wrap":False},txt("年增 YoY","xs",muted,None,"none"),{"type":"text","text":_yoy_text,"size":"sm","weight":"bold","color":_yoy_color,"align":"end","flex":1,"wrap":False}]}
                 ]})
             fundamentals.append(section("近 3 個月營收｜每月 MoM＋YoY", _trend))
         else:
@@ -18025,9 +18020,8 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
     # 第三張技術位階改為兩個大型並排方塊，正值紅、負值綠。
     import re as _re_tech
     _tech_text = " ".join(str(x.get("text", "")) for x in tech_lines if isinstance(x, dict))
-    # build_position_desc 的實際文案是「距近60日高點 -x.x%」；同時兼容舊格式。
-    _high_match = _re_tech.search(r"距\s*(?:近\s*)?60\s*日高點.*?([+-]?\d+(?:\.\d+)?)\s*%", _tech_text)
-    _ma_match = _re_tech.search(r"20\s*日均線.*?\(([+-]?\d+(?:\.\d+)?)\s*%\)", _tech_text)
+    _high_match = _re_tech.search(r"距\s*近?\s*60\s*日高點.*?([+-]?\d+(?:\.\d+)?)\s*%", _tech_text)
+    _ma_match = _re_tech.search(r"20\s*日均線.*?[（(]\s*([+-]?\d+(?:\.\d+)?)\s*%\s*[）)]", _tech_text)
     _high_val = float(_high_match.group(1)) if _high_match else None
     _ma_val = float(_ma_match.group(1)) if _ma_match else None
     def _tech_tile(label, value, suffix):
