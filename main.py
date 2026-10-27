@@ -17852,9 +17852,10 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
     def _fmt_revenue(v):
         try: return f"{float(v)/100000:.2f} 億" if abs(float(v)) >= 100000 else f"{float(v):,.0f}"
         except (TypeError, ValueError): return "暫無資料"
-    _monthly_cards.append(_metric_card("最新月營收", _fmt_revenue(_month_rev), navy, _period))
-    _monthly_cards.append(_metric_card("單月營收年增", f"{float(_month_yoy):+.1f}%" if _month_yoy is not None else "暫無資料", red if _month_yoy is not None and float(_month_yoy)>=0 else green))
-    _monthly_cards.append(_metric_card("單月營收月增", f"{float(_month_mom):+.1f}%" if _month_mom is not None else "暫無資料", red if _month_mom is not None and float(_month_mom)>=0 else green))
+    # 營收 KPI：營收金額欄加寬、金額與「億」不留空格；百分比不換行，避免擠到相鄰欄。
+    _monthly_cards.append({"type":"box","layout":"vertical","flex":12,"paddingAll":"10px","backgroundColor":"#F3F6FA","cornerRadius":"12px","spacing":"xs","contents":[txt("最新月營收","xs",muted,None,"none"),{"type":"text","text":_fmt_revenue(_month_rev).replace(" 億","億"),"size":"md","weight":"bold","color":navy,"wrap":False},txt(_period,"xs",muted,None,"none")]})
+    _monthly_cards.append({"type":"box","layout":"vertical","flex":10,"paddingAll":"10px","backgroundColor":"#F3F6FA","cornerRadius":"12px","spacing":"xs","contents":[txt("單月營收年增","xs",muted,None,"none"),{"type":"text","text":f"{float(_month_yoy):+.1f}%" if _month_yoy is not None else "暫無資料","size":"md","weight":"bold","color":red if _month_yoy is not None and float(_month_yoy)>=0 else green if _month_yoy is not None else muted,"wrap":False}]})
+    _monthly_cards.append({"type":"box","layout":"vertical","flex":10,"paddingAll":"10px","backgroundColor":"#F3F6FA","cornerRadius":"12px","spacing":"xs","contents":[txt("單月營收月增","xs",muted,None,"none"),{"type":"text","text":f"{float(_month_mom):+.1f}%" if _month_mom is not None else "暫無資料","size":"md","weight":"bold","color":red if _month_mom is not None and float(_month_mom)>=0 else green if _month_mom is not None else muted,"wrap":False}]})
     fundamentals = [section("營收成長", [{"type":"box","layout":"horizontal","spacing":"sm","contents":_monthly_cards}])] + fundamentals
     try:
         _conn_rev=get_db_connection()
@@ -17873,9 +17874,12 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
                 _mom_text=f"{float(_rr[3]):+.1f}%" if len(_rr)>3 and _rr[3] is not None else "暫無資料"
                 _yoy_color=red if _rr[2] is not None and float(_rr[2])>=0 else green if _rr[2] is not None else muted
                 _mom_color=red if len(_rr)>3 and _rr[3] is not None and float(_rr[3])>=0 else green if len(_rr)>3 and _rr[3] is not None else muted
-                _trend.append({"type":"box","layout":"vertical","spacing":"xs","paddingAll":"10px","backgroundColor":"#F5F7FA","cornerRadius":"10px","contents":[
-                    txt(f"{_period_text}　營收 {_revenue_text}","sm",navy,"bold","none"),
-                    {"type":"box","layout":"horizontal","spacing":"sm","contents":[txt("月增 MoM","xs",muted,None,"none"),{"type":"text","text":_mom_text,"size":"sm","weight":"bold","color":_mom_color,"align":"end","flex":1,"wrap":False},txt("年增 YoY","xs",muted,None,"none"),{"type":"text","text":_yoy_text,"size":"sm","weight":"bold","color":_yoy_color,"align":"end","flex":1,"wrap":False}]}
+                _trend.append({"type":"box","layout":"vertical","spacing":"sm","paddingAll":"10px","backgroundColor":"#F5F7FA","cornerRadius":"10px","contents":[
+                    txt(f"{_period_text}　營收 {_revenue_text.replace(' 億','億')}","sm",navy,"bold","none",False),
+                    {"type":"box","layout":"horizontal","spacing":"md","contents":[
+                        {"type":"box","layout":"vertical","flex":1,"spacing":"xs","contents":[txt("月增 MoM","xs",muted,None,"none"),{"type":"text","text":_mom_text,"size":"sm","weight":"bold","color":_mom_color,"wrap":False}]},
+                        {"type":"box","layout":"vertical","flex":1,"spacing":"xs","contents":[txt("年增 YoY","xs",muted,None,"none"),{"type":"text","text":_yoy_text,"size":"sm","weight":"bold","color":_yoy_color,"wrap":False}]}
+                    ]}
                 ]})
             fundamentals.append(section("近 3 個月營收｜每月 MoM＋YoY", _trend))
         else:
