@@ -17804,7 +17804,11 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
             ]})
         total=score.get('total','暫無資料')
         change=find('模型分數')
-        factor_body=[{"type":"box","layout":"horizontal","alignItems":"center","contents":[txt("五大因子綜合分數","sm",muted,None,"none"),{"type":"text","text":f"{total}/100","size":"xxl","weight":"bold","color":navy,"align":"end","flex":1}]},*factor_rows]
+        factor_legend={"type":"box","layout":"horizontal","spacing":"md","contents":[
+            {"type":"box","layout":"horizontal","flex":1,"spacing":"xs","contents":[{"type":"box","layout":"vertical","width":"10px","height":"5px","backgroundColor":"#B8CDE0","cornerRadius":"2px","contents":[]},txt("前次分數","xs",muted,None,"none")]},
+            {"type":"box","layout":"horizontal","flex":1,"spacing":"xs","contents":[{"type":"box","layout":"vertical","width":"10px","height":"5px","backgroundColor":blue,"cornerRadius":"2px","contents":[]},txt("今日分數（升紅降綠）","xs",muted,None,"none")]}
+        ]}
+        factor_body=[{"type":"box","layout":"horizontal","alignItems":"center","contents":[txt("五大因子綜合分數","sm",muted,None,"none"),{"type":"text","text":f"{total}/100","size":"xxl","weight":"bold","color":navy,"align":"end","flex":1}]},factor_legend,*factor_rows]
         sc=find("📉")
         if sc!="暫無資料": factor_body.append(txt(sc,"xs",muted,None,"md"))
         factor_section=section("五大因子評分",factor_body)
@@ -17814,7 +17818,6 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         factor_section=section("五大因子評分",[txt("目前沒有取得可用的五大因子分數。","sm",muted)])
         key_items=[txt("基本面與估值資料暫無資料","sm",muted)]
     # 第二張：基本面＋法人籌碼。所有數值均從既有 score/report 資料讀取；不捏造財報欄位。
-    # PEG 目前沿用模型既有口徑（PE ÷ 累計營收年增率），不是標準 EPS-PEG，明確標註避免誤讀。
     fundamentals=[]
     _cum_yoy = score.get("cum_yoy") if isinstance(score, dict) else None
     _pe = score.get("pe") if isinstance(score, dict) else None
@@ -17864,8 +17867,19 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         if _rev_rows:
             _trend=[]
             for _rr in reversed(_rev_rows):
-                _trend.append(txt(f"{_rr[0]}　營收 {_fmt_revenue(_rr[1])}　YoY {float(_rr[2]):+.1f}%" if _rr[2] is not None else f"{_rr[0]}　營收 {_fmt_revenue(_rr[1])}　YoY 暫無資料", "xs", muted, None, "none"))
-            fundamentals.append(section("近 3 期營收趨勢", _trend))
+                _period_text=str(_rr[0] or "月份未提供")
+                _revenue_text=_fmt_revenue(_rr[1])
+                _yoy_text=f"{float(_rr[2]):+.1f}%" if _rr[2] is not None else "暫無資料"
+                _mom_text=f"{float(_rr[3]):+.1f}%" if len(_rr)>3 and _rr[3] is not None else "暫無資料"
+                _yoy_color=red if _rr[2] is not None and float(_rr[2])>=0 else green if _rr[2] is not None else muted
+                _mom_color=red if len(_rr)>3 and _rr[3] is not None and float(_rr[3])>=0 else green if len(_rr)>3 and _rr[3] is not None else muted
+                _trend.append({"type":"box","layout":"vertical","spacing":"xs","paddingAll":"10px","backgroundColor":"#F5F7FA","cornerRadius":"10px","contents":[
+                    txt(f"{_period_text}　營收 {_revenue_text}","sm",navy,"bold","none"),
+                    {"type":"box","layout":"horizontal","spacing":"sm","contents":[txt("月增 MoM","xs",muted,None,"none"),{"type":"text","text":_mom_text,"size":"sm","weight":"bold","color":_mom_color,"align":"end","flex":1,"wrap":False},txt("年增 YoY","xs",muted,None,"none"),{"type":"text","text":_yoy_text,"size":"sm","weight":"bold","color":_yoy_color,"align":"end","flex":1,"wrap":False}]}
+                ]})
+            fundamentals.append(section("近 3 個月營收｜每月 MoM＋YoY", _trend))
+        else:
+            fundamentals.append(section("近 3 個月營收｜每月 MoM＋YoY", [txt("營收歷史尚無資料，請確認 revenue_history 是否已累積。","sm",muted)]))
     except Exception as _trend_exc:
         print(f"⚠️ 個股近3期營收趨勢讀取失敗 {code}: {_trend_exc}")
     # 直接讀 inst_history 最近 20 個交易日，畫出每日三大法人合計買賣超。
@@ -17944,17 +17958,37 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         if in_tech and any(mark in ln for mark in _tech_end_markers): break
         if in_tech and ln.strip(): tech_lines.append(txt(ln.strip(),"sm"))
     if not tech_lines: tech_lines=[txt("均線與位階資料暫無資料","sm",muted)]
-    # 模型解讀只取第一段唯一的觀察文字，避免舊報告中的同句重複出現。
-    _model_items=[]; _seen_model=set()
+    # 模型觀察要寫有用的結論：以當次五大因子實際分數找出相對強弱，並帶上產業標籤；不寫模型原理或固定空話。
+    _model_items=[]
+    _industry_label=None
     for _ln in lines:
         _st=_ln.strip()
-        if not _st: continue
-        if ("目前相對較強" in _st or "主要較弱" in _st or "不代表買賣建議" in _st or "風險提醒" in _st):
-            _normalized=" ".join(_st.replace("📌","").replace("📍","").split())
-            if _normalized not in _seen_model:
-                _seen_model.add(_normalized); _model_items.append(txt(_st,"sm"))
-            if len(_model_items)>=1: break
-    if not _model_items: _model_items=[txt("模型解讀請以已取得的五大因子資料為準。","sm",muted)]
+        if _st.startswith("📌"):
+            _industry_label=_st.replace("📌", "", 1).strip()
+            break
+    _factor_defs=[("營收成長", "revenue"), ("估值", "valuation"), ("產業動能", "momentum"), ("法人連續性", "streak_score"), ("籌碼／技術", "chip_tech")]
+    _available_factors=[]
+    if isinstance(score, dict):
+        for _factor_label, _factor_key in _factor_defs:
+            try:
+                _factor_value=float(score.get(_factor_key))
+                _caps=score.get("caps") or [20,25,30,5,20]
+                _factor_index=[x[1] for x in _factor_defs].index(_factor_key)
+                _factor_cap=float(_caps[_factor_index]) if len(_caps)>_factor_index else 0
+                if _factor_cap>0: _available_factors.append((_factor_label,_factor_value/_factor_cap))
+            except (TypeError,ValueError,IndexError):
+                continue
+    if _available_factors:
+        _strong=max(_available_factors,key=lambda x:x[1])[0]
+        _weak=min(_available_factors,key=lambda x:x[1])[0]
+        _prefix=f"{_industry_label}｜" if _industry_label else ""
+        if _strong==_weak:
+            _observation=f"{_prefix}五大因子目前分布接近，持續觀察營收與法人變化。"
+        else:
+            _observation=f"{_prefix}{_strong}相對突出，{_weak}是目前較弱的一環。"
+        _model_items=[txt(_observation,"md", "#243B53")]
+    else:
+        _model_items=[txt(f"{_industry_label}｜五大因子分數資料不足，暫時無法判斷強弱。" if _industry_label else "五大因子分數資料不足，暫時無法判斷強弱。", "md", "#243B53")]
     _news_items=[]
     for it in (news or []):
         _title=str(it.get('title') or '相關新聞').strip()
@@ -17965,7 +17999,19 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
     if not _news_items: _news_items=[txt("目前沒有取得相關新聞。","sm",muted)]
     # 第三張：加強視覺層級與留白，避免細小文字、細分隔線和重複巢狀區塊。
     # 保留簡短內容：技術位階、模型觀察、風險、新聞。
-    _risk_items=[txt("估值偏高，留意法人籌碼轉弱。","md", "#8A4B10", "bold", "none")]
+    _risk_text="資料不足，留意估值與法人籌碼變化。"
+    try:
+        _risk_pe=float(score.get("pe")) if isinstance(score,dict) and score.get("pe") is not None else None
+        _risk_chip=float(score.get("chip_tech")) if isinstance(score,dict) and score.get("chip_tech") is not None else None
+        _risk_cap=float((score.get("caps") or [20,25,30,5,20])[4]) if isinstance(score,dict) else 0
+        _risk_parts=[]
+        if _risk_pe is not None and _risk_pe>=35: _risk_parts.append("本益比偏高")
+        if _risk_chip is not None and _risk_cap>0 and _risk_chip/_risk_cap<0.4: _risk_parts.append("籌碼／技術分數偏弱")
+        if _risk_parts: _risk_text="、".join(_risk_parts)+"，留意回檔風險。"
+        elif _risk_pe is not None and _risk_chip is not None: _risk_text="目前未觸發明顯估值／籌碼警示，仍須留意資料變化。"
+    except (TypeError,ValueError,IndexError):
+        pass
+    _risk_items=[txt(_risk_text,"md", "#8A4B10", "bold", "none")]
     def feature_section(title, items, bg="#F3F6FA", title_color=navy):
         clean_items = items or [txt("暫無資料", "md", muted)]
         return {"type":"box", "layout":"vertical", "spacing":"md", "margin":"lg",
