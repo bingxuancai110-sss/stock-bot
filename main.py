@@ -49763,6 +49763,45 @@ def _line_hidden_operation_report(user_id):
         price_map = get_realtime_stocks_bulk(codes, workers=8, rng="1d") or {}
         total_value = sum(float((price_map.get(x.get("code")) or {}).get("close") or (price_map.get(x.get("code")) or {}).get("price") or 0) * float(x.get("shares") or 0) for x in positions)
         enriched = enrich_position_change_logs(logs, positions, price_map, total_value)
+        # LINE 日報與網頁一致：同一交易日、同一股票的多筆原始操作合併成一列。
+        # 例如同一天「新增 +1」和「加碼 +1」合併為「新增」一列，而不是重複顯示。
+        merged_by_code = {}
+        for entry in sorted(enriched, key=lambda x: int(x.get("id") or 0)):
+            code = str(entry.get("code") or "").strip()
+            if not code:
+                continue
+            delta = int(float(entry.get("shares_delta") or 0))
+            if code not in merged_by_code:
+                merged = dict(entry)
+                merged["shares_delta"] = delta
+                merged["_first_before"] = entry.get("shares_before")
+                merged["_last_after"] = entry.get("shares_after")
+                merged["_first_id"] = int(entry.get("id") or 0)
+                merged["_event_weight_sum"] = float(entry.get("event_weight") or 0)
+                merged_by_code[code] = merged
+            else:
+                merged = merged_by_code[code]
+                merged["shares_delta"] = int(merged.get("shares_delta") or 0) + delta
+                merged["_last_after"] = entry.get("shares_after", merged.get("_last_after"))
+                merged["_event_weight_sum"] += float(entry.get("event_weight") or 0)
+                # 同一股票合併後的變動幅度，以當日第一筆操作前持股為基準。
+                merged["trade_price"] = entry.get("trade_price", merged.get("trade_price"))
+        merged_enriched = []
+        for code, merged in merged_by_code.items():
+            net_delta = int(merged.get("shares_delta") or 0)
+            before = int(merged.get("_first_before") or 0)
+            after = max(0, int(merged.get("_last_after") or 0))
+            merged["shares_before"] = before
+            merged["shares_after"] = after
+            merged["change_pct"] = (net_delta / before * 100) if before > 0 else None
+            merged["event_weight"] = merged.get("_event_weight_sum")
+            merged["action"] = "add" if net_delta > 0 else "reduce" if net_delta < 0 else merged.get("action")
+            merged["id"] = merged.get("_first_id")
+            for internal_key in ("_first_before", "_last_after", "_first_id", "_event_weight_sum"):
+                merged.pop(internal_key, None)
+            if net_delta != 0:
+                merged_enriched.append(merged)
+        enriched = merged_enriched
     except Exception as exc:
         print(f"⚠️ 隱藏操作日報整理失敗：{exc}")
         enriched, price_map = logs, {}
