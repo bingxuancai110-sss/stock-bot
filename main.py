@@ -17780,7 +17780,16 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         caps=score.get('caps',[20,25,30,5,20]); vals=[score.get('revenue',0),score.get('valuation',0),score.get('momentum',0),score.get('streak_score',0),score.get('chip_tech',0)]
         labels=['營收成長','估值','產業動能','法人連續性','籌碼／技術']; factor_rows=[]
         previous = score.get("previous_snapshot") or {}
-        previous_vals = [previous.get("factor_revenue"), previous.get("factor_valuation"), previous.get("factor_momentum"), previous.get("factor_streak"), previous.get("factor_chip_tech")]
+        # 歷史快照可能來自新舊欄位版本：優先讀 factor_*，若該欄為 NULL 才回退舊欄位。
+        # 舊版只保存 revenue / valuation 等欄位時，至少要顯示實際有保存的前次分數；
+        # 沒有對應因子資料就保留 None，不拿其他不同意義的欄位猜分數。
+        previous_vals = [
+            previous.get("factor_revenue") if previous.get("factor_revenue") is not None else previous.get("revenue"),
+            previous.get("factor_valuation") if previous.get("factor_valuation") is not None else previous.get("valuation"),
+            previous.get("factor_momentum"),
+            previous.get("factor_streak"),
+            previous.get("factor_chip_tech"),
+        ]
         for label,val,cap,prev_val in zip(labels,vals,caps,previous_vals):
             try: v=float(val); c=max(float(cap),1); ratio=max(0,min(100,v/c*100))
             except (TypeError,ValueError): v=0; c=1; ratio=0
