@@ -17780,7 +17780,16 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
         caps=score.get('caps',[20,25,30,5,20]); vals=[score.get('revenue',0),score.get('valuation',0),score.get('momentum',0),score.get('streak_score',0),score.get('chip_tech',0)]
         labels=['營收成長','估值','產業動能','法人連續性','籌碼／技術']; factor_rows=[]
         previous = score.get("previous_snapshot") or {}
-        previous_vals = [previous.get("factor_revenue"), previous.get("factor_valuation"), previous.get("factor_momentum"), previous.get("factor_streak"), previous.get("factor_chip_tech")]
+        # 歷史快照可能來自新舊欄位版本：優先讀 factor_*，若該欄為 NULL 才回退舊欄位。
+        # 舊版只保存 revenue / valuation 等欄位時，至少要顯示實際有保存的前次分數；
+        # 沒有對應因子資料就保留 None，不拿其他不同意義的欄位猜分數。
+        previous_vals = [
+            previous.get("factor_revenue") if previous.get("factor_revenue") is not None else previous.get("revenue"),
+            previous.get("factor_valuation") if previous.get("factor_valuation") is not None else previous.get("valuation"),
+            previous.get("factor_momentum"),
+            previous.get("factor_streak"),
+            previous.get("factor_chip_tech"),
+        ]
         for label,val,cap,prev_val in zip(labels,vals,caps,previous_vals):
             try: v=float(val); c=max(float(cap),1); ratio=max(0,min(100,v/c*100))
             except (TypeError,ValueError): v=0; c=1; ratio=0
@@ -49205,8 +49214,8 @@ def handle_follow(event):
 # LINE V95 UX：版本化自訂 APNG Loading → 背景分析 → 完成結果
 # ============================================================
 # V95 使用真正可見的自訂 APNG 雷達掃描動畫；資產路徑使用版本號，避免 LINE/CDN 沿用舊版靜態圖。
-# 黑馬／雷達不顯示 Loading；其他重型查詢才使用自訂動畫卡，完成後背景推送正式結果。
-# 這個動畫卡會多佔 1 則 LINE 訊息，因此只對真正的重型查詢使用。
+# 黑馬／雷達不顯示 Loading；其他重型查詢使用 LINE 官方原生 Loading，完成後優先 Reply 正式結果。
+# 官方原生 Loading 不會送出計費訊息；只對真正的重型查詢使用。
 _LINE_UX_CONFIG = {
     "quote":       {"emoji": "📊", "name": "個股", "seconds": 30,
                      "accent": "#2F6FD6", "stages": ["抓取即時行情", "分析估值與基本面", "整理法人與新聞"]},
@@ -49533,12 +49542,12 @@ def _line_async_normalize_result(result):
 
 def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
                       quick_reply_builder=None, web_code=None):
-    """自訂 Loading：查詢超過短暫門檻才送出真正的 APNG Loading 卡。
+    """先用 LINE 原生 Loading（不傳送訊息），完成後優先使用 Reply API。
 
-    黑馬／雷達不會走到這裡；它們直接回覆 Top 5。
-    其他重型功能先在背景開始工作，約 0.7 秒仍未完成才使用 reply token
-    顯示我們自己的功能專屬 APNG 動畫。APNG 會在 LINE Flex 中以
-    animated=true 無限循環；分析完成後再 push 最終結果。
+    Reply Token 只能使用一次且須在 webhook 收到後一分鐘內使用。
+    舊版先用 Reply Token 傳送自訂 Loading Flex，導致正式結果只能改走
+    Push API，查詢功能因此受到月推播額度影響。新版改用獨立的
+    /v2/bot/chat/loading/start 顯示原生動畫，保留 Reply Token 給分析結果。
     """
     cfg = _line_ux_config(feature)
     if not _line_async_claim(user_id, feature):
@@ -49552,21 +49561,46 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
             print(f"⚠️ LINE 重複查詢回覆失敗 {user_id}: {exc}")
         return False
 
-    finished = threading.Event()
-    loading_started = threading.Event()
+    # 官方 Loading API 不會消耗 Reply Token，也不會送出一則計費訊息。
+    # 即使 Loading API 暫時失敗，也不能中斷正式分析與結果回覆。
+    # 設為官方允許的最長 60 秒，讓較慢的持股／個股分析期間 Loading 不會太早消失。
+    loading_seconds = 60
+    loading_ok = start_loading_animation(user_id, loading_seconds)
+    if not loading_ok:
+        print(f"⚠️ LINE 原生 Loading 未啟動，仍繼續分析：{user_id} / {cfg['name']}")
 
-    # 先回覆 Loading，再啟動真正的資料分析。
-    # V97 的問題是「分析 worker 與 Loading thread 同時搶 CPU」；
-    # 盤前／盤後這種重工作業會讓 Loading 卡在 10 秒以上才出現。
-    # V99 改成明確的先後順序：LINE Loading 回覆完成 → 才開始 build_fn。
-    try:
-        loading_card = _line_loading_message(user_id, feature, base_url)
-        line_bot_api.reply_message(reply_token, loading_card)
-        loading_started.set()
-        print(f"🎞️ 自訂 APNG Loading 已立即送出：{user_id} / {cfg['name']}")
-    except Exception as exc:
-        print(f"❌ 自訂 APNG Loading 送出失敗 {user_id} / {cfg['name']}: {type(exc).__name__}: {exc}")
-        # Loading 回覆失敗時仍然繼續背景工作，避免功能整個中斷。
+    def _send_final_messages(messages):
+        """最多五則使用同一個 Reply Token；超出部分才使用 Push。"""
+        normalized = list(messages or [])
+        if not normalized:
+            normalized = [TextSendMessage(text="目前沒有可用結果，請稍後再試。")]
+        for message in normalized:
+            try:
+                message.quick_reply = (quick_reply_builder() if quick_reply_builder else build_quick_reply())
+            except Exception:
+                pass
+
+        reply_batch = normalized[:5]
+        push_batch = normalized[5:]
+        try:
+            line_bot_api.reply_message(reply_token, reply_batch)
+            print(f"📩 LINE 背景查詢使用 Reply 回傳 {user_id} {cfg['name']}（{len(reply_batch)} 則）")
+        except Exception as reply_exc:
+            print(f"⚠️ LINE Reply 回傳失敗，改用 Push 備援 {user_id} {cfg['name']}: {type(reply_exc).__name__}: {reply_exc}")
+            # 僅在 Reply API 失敗時才退回 Push；正常主動查詢不再固定消耗 Push 額度。
+            for index, message in enumerate(reply_batch, 1):
+                _push_line_with_retry(user_id, message)
+                print(f"📤 LINE Push 備援送出 {user_id} {cfg['name']} {index}/{len(reply_batch)}")
+
+        # LINE 單次 Reply 最多五則；超出的結果保留原有 Push 傳送能力。
+        for index, message in enumerate(push_batch, 1):
+            try:
+                _push_line_with_retry(user_id, message)
+                print(f"📤 LINE 超量分段 Push 送出 {user_id} {cfg['name']} {index}/{len(push_batch)}")
+            except Exception as push_exc:
+                # 前五則已成功 Reply；額外分段失敗只記錄，不再補發錯誤訊息造成重複通知。
+                print(f"❌ LINE 額外分段 Push 失敗 {user_id} {cfg['name']} {index}/{len(push_batch)}: {push_exc}")
+                break
 
     def worker():
         t0 = time.time()
@@ -49589,28 +49623,25 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
                                             "label": ("查看完整個股分析" if feature == "quote" else "查看完整 ETF 分析"),
                                             "uri": web_url}}
                             ]
-            for index, message in enumerate(outbound_messages, 1):
-                try:
-                    message.quick_reply = (quick_reply_builder() if quick_reply_builder else build_quick_reply())
-                except Exception:
-                    pass
-                _push_line_with_retry(user_id, message)
-                print(f"📤 LINE 背景查詢分段送出 {user_id} {cfg['name']} {index}/{len(outbound_messages)}")
-            print(f"✅ LINE 背景查詢完成 {user_id} {cfg['name']}（{time.time()-t0:.1f}s，訊息數={len(outbound_messages)}，CustomLoading={'有' if loading_started.is_set() else '無'}）")
+            _send_final_messages(outbound_messages)
+            print(f"✅ LINE 背景查詢完成 {user_id} {cfg['name']}（{time.time()-t0:.1f}s，訊息數={len(outbound_messages)}，NativeLoading={'有' if loading_ok else '無'}）")
         except Exception as exc:
             print(f"❌ LINE 背景查詢失敗 {user_id} {cfg['name']}: {type(exc).__name__}: {exc}")
+            error_message = TextSendMessage(
+                text=(f"{cfg['emoji']} 【{cfg['name']}】\n\n"
+                      "這次資料整理沒有完成，可能是外部資料源暫時延遲。\n"
+                      "請稍後再試一次；如果連續失敗，再告訴我。"),
+                quick_reply=build_quick_reply())
             try:
-                _push_line_with_retry(
-                    user_id,
-                    TextSendMessage(
-                        text=(f"{cfg['emoji']} 【{cfg['name']}】\n\n"
-                              "這次資料整理沒有完成，可能是外部資料源暫時延遲。\n"
-                              "請稍後再試一次；如果連續失敗，再告訴我。"),
-                        quick_reply=build_quick_reply()))
-            except Exception as push_exc:
-                print(f"❌ LINE 背景查詢失敗通知也送不出去 {user_id}: {push_exc}")
+                # build_fn 失敗時，Reply Token 尚未使用，先嘗試免費 Reply。
+                line_bot_api.reply_message(reply_token, error_message)
+            except Exception as reply_exc:
+                print(f"⚠️ LINE 錯誤通知 Reply 失敗，改用 Push 備援 {user_id}: {reply_exc}")
+                try:
+                    _push_line_with_retry(user_id, error_message)
+                except Exception as push_exc:
+                    print(f"❌ LINE 背景查詢失敗通知也送不出去 {user_id}: {push_exc}")
         finally:
-            finished.set()
             _line_async_release(user_id)
 
     try:
@@ -49620,9 +49651,14 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
             daemon=True).start()
         return True
     except Exception as exc:
-        finished.set()
         _line_async_release(user_id)
         print(f"❌ LINE 背景查詢執行緒啟動失敗 {user_id}: {exc}")
+        try:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=f"{cfg['emoji']} {cfg['name']}暫時無法啟動，請稍後再試。"))
+        except Exception as reply_exc:
+            print(f"❌ LINE 啟動失敗通知送出失敗 {user_id}: {reply_exc}")
         return False
 
 
@@ -50103,11 +50139,10 @@ def handle_message(event):
     if async_feature and async_builder:
         _line_async_query(user_id, async_feature, async_builder,
                           event.reply_token, line_base_url, web_code=(pure_code if async_feature in {"quote","etf"} else None))
-        # 其他重型查詢只有超過約 0.7 秒才啟動 LINE 官方 Loading。
+        # 重型查詢已在 _line_async_query 統一啟動 LINE 官方原生 Loading。
         return
 
     # 非重型／管理流程維持原本同步回覆。
-    # 真正的重型功能已在上方統一使用動畫卡，不再顯示只有三個點的內建 loading。
 
     # 0. 管理指令（只有 ADMIN_USER_ID 本人可用，其他人輸入等同無效指令）
     if is_admin(user_id) and text in ["管理", "管理中心"]:
