@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V290_HOME_DARK"
+APP_BUILD = "V291_HOME_TRADING"
 UI_BUILD = "v2-template-refactor"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
@@ -39776,173 +39776,107 @@ def render_portfolio_fast_summary(uid):
 <div class="daily-fast-summary-stack"><section class="daily-fast-panel daily-fast-rank-panel"><div class="daily-fast-panel-title"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section><section class="daily-fast-quote"><strong>{fast_quote_text}</strong></section></div>'''
 
 
-# ===== V287 首頁 v2：獨立樣式（只吃 #hv2 底下的樣式，不依賴舊的 !important 堆疊） =====
-_HV2_CSS = r'''
-#hv2{max-width:780px;margin:0 auto;padding:0 0 24px;color:#172033;font-size:16px;line-height:1.5;background:transparent}
+# ===== V291 首頁 v2：看盤軟體版型（無卡片、分隔線＋表格） =====
+
+_HV2_CSS = r"""
+#hv2{display:block;margin:0 -10px 14px;padding:0 14px 8px;background:#131722;color:#D1D4DC;font-size:15px;line-height:1.45;border-radius:0}
 #hv2 *,#hv2 *::before,#hv2 *::after{box-sizing:border-box}
 #hv2 [hidden]{display:none}
 #hv2 .num{font:inherit}
-#hv2 .up{color:#C9332C}
-#hv2 .down{color:#067647}
-#hv2 .flat{color:#667085}
-#hv2 .hv2-top{display:flex;justify-content:space-between;gap:8px;padding:4px 4px 12px;color:#667085;font-size:14px}
-#hv2 .hv2-card{display:block;background:#fff;border:1px solid #E6EAF0;border-radius:16px;padding:18px;margin:0 0 12px;box-shadow:none}
-#hv2 .hv2-label{display:block;font-size:14px;font-weight:600;color:#667085;margin:0}
-#hv2 .hv2-big{display:block;font-size:34px;line-height:1.2;font-weight:700;margin:6px 0 0}
-#hv2 .hv2-mid{display:block;font-size:24px;line-height:1.25;font-weight:700;margin:4px 0 0}
-#hv2 .hv2-note{display:block;font-size:14px;line-height:1.5;color:#667085;margin:6px 0 0}
-#hv2 .hv2-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 12px}
-#hv2 .hv2-pair .hv2-card{margin:0;padding:16px;min-width:0}
-#hv2 .hv2-fresh{display:block;font-size:12px;line-height:1.4;color:#667085;margin:6px 0 0}
-#hv2 .hv2-assets-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
-#hv2 .hv2-stats{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px;margin:10px 0 0}
-#hv2 .hv2-stats>div{min-width:0}
-#hv2 .hv2-val{display:block;font-size:20px;font-weight:700;margin:2px 0 0;font-variant-numeric:tabular-nums}
-#hv2 .hv2-cost{display:block;font-size:13px;color:#667085;margin:2px 0 0}
-#hv2 .hv2-rank{display:flex;align-items:center;justify-content:space-between;gap:12px}
+#hv2 .up{color:#FF5D6C}
+#hv2 .down{color:#2EBD85}
+#hv2 .flat{color:#787B86}
+#hv2 .hv2-sec{display:block;padding:16px 0;border-top:1px solid #2A2E39}
+#hv2 .hv2-sec.first{border-top:0;padding-top:14px}
+#hv2 .hv2-k{display:block;font-size:12px;font-weight:600;letter-spacing:.04em;color:#787B86}
+#hv2 .hv2-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+#hv2 .hv2-px{display:block;font-size:34px;line-height:1.15;font-weight:700;color:#fff;margin-top:4px;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+#hv2 .hv2-sub2{display:block;font-size:13px;color:#787B86;margin-top:2px}
+#hv2 .hv2-head-r{text-align:right}
+#hv2 .hv2-head-r b{display:block;font-size:22px;font-weight:700;line-height:1.3;margin-top:4px}
+#hv2 .hv2-cmp{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0}
+#hv2 .hv2-cmp>div{padding:0 10px;border-left:1px solid #2A2E39;min-width:0}
+#hv2 .hv2-cmp>div:first-child{padding-left:0;border-left:0}
+#hv2 .hv2-cmp b{display:block;font-size:17px;line-height:1.4;font-weight:600;margin-top:4px;color:#787B86;word-break:keep-all}
+#hv2 .hv2-cmp b:has(.num){font-size:24px;font-weight:700;color:inherit;font-variant-numeric:tabular-nums}
+#hv2 .hv2-src{display:block;font-size:12px;color:#787B86;margin-top:10px}
+#hv2 .hv2-rank{display:flex;align-items:center;justify-content:space-between;gap:10px}
 #hv2 .hv2-rank-item{min-width:0}
 #hv2 .hv2-rank .hv2-link{flex:none;width:auto}
-#hv2 .hv2-rank-item b{display:block;font-size:22px;font-weight:700;line-height:1.3}
-#hv2 .hv2-rank-item b em{font-style:normal;font-size:14px;font-weight:600;margin-left:6px}
-#hv2 .hv2-rank-item small{display:block;font-size:12px;color:#667085}
-#hv2 .hv2-sync{display:block;margin:0 4px 12px;font-size:13px;line-height:1.5;color:#667085}
-#hv2 .hv2-sync b{font-weight:600;color:#475467}
-#hv2 .hv2-h{display:block;font-size:20px;font-weight:700;line-height:1.3;margin:0}
-#hv2 .hv2-sub{display:block;font-size:14px;color:#667085;margin:2px 0 8px}
-#hv2 .hv2-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
-#hv2 .hv2-ghead{display:flex;align-items:center;justify-content:space-between;margin:12px 0 2px}
-#hv2 .hv2-pill{display:inline-block;font-size:13px;font-weight:700;padding:3px 10px;border-radius:999px}
-#hv2 .hv2-pill.up{background:#FEF1F0}
-#hv2 .hv2-pill.down{background:#ECFDF3}
-#hv2 .hv2-cnt{font-size:13px;color:#667085}
-#hv2 .hv2-row{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:12px 0;border-top:1px solid #F2F4F7}
-#hv2 [data-hv2-rows]>.hv2-row:first-child{border-top:0}
+#hv2 .hv2-rank-item small{display:inline;font-size:12px;color:#787B86}
+#hv2 .hv2-rank-item b{display:inline;font-size:20px;font-weight:700;color:#fff;margin:0 4px}
+#hv2 .hv2-rank-item b em{font-style:normal;font-size:12px;font-weight:600;margin-left:4px}
+#hv2 .hv2-rank-item small:last-child{display:block;margin-top:2px}
+#hv2 .hv2-sync{display:block;padding:10px 0;border-top:1px solid #2A2E39;font-size:12px;line-height:1.6;color:#787B86}
+#hv2 .hv2-sync b{color:#D1D4DC;font-weight:600}
+#hv2 .hv2-st{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:0 0 4px}
+#hv2 .hv2-h{display:block;font-size:17px;font-weight:700;color:#fff}
+#hv2 .hv2-cnt{font-size:12px;color:#787B86}
+#hv2 .hv2-sub{display:block;font-size:12px;color:#787B86;margin:0 0 6px}
+#hv2 .hv2-ghead{display:flex;justify-content:space-between;align-items:center;margin:14px 0 0;padding-bottom:4px;font-size:12px;font-weight:700;letter-spacing:.04em}
+#hv2 .hv2-g-up .hv2-ghead .hv2-pill{color:#FF5D6C}
+#hv2 .hv2-g-down .hv2-ghead .hv2-pill{color:#2EBD85}
+#hv2 .hv2-pill{display:inline;font-size:12px;font-weight:700}
+#hv2 .hv2-row{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:10px 0;border-top:1px solid #20242F}
+#hv2 [data-hv2-rows]>.hv2-row:first-child,#hv2 [data-hv2-rows]>.hv2-hold:first-child{border-top:0}
 #hv2 .hv2-row-main{min-width:0;flex:1}
-#hv2 .hv2-row-main b{display:block;font-size:16px;font-weight:600}
-#hv2 .hv2-row-main small{display:block;font-size:13px;line-height:1.5;color:#667085}
-#hv2 .hv2-row strong{flex:none;font-size:16px;font-weight:700;white-space:nowrap}
-#hv2 .hv2-empty{padding:10px 0;font-size:15px;color:#667085}
-#hv2 .hv2-group[data-limit="3"]:not(.is-open) [data-hv2-item]:nth-child(n+4){display:none}
-#hv2 .hv2-group[data-limit="5"]:not(.is-open) [data-hv2-item]:nth-child(n+6){display:none}
-#hv2 .hv2-hold{border-top:1px solid #F2F4F7}
-#hv2 [data-hv2-rows]>.hv2-hold:first-child{border-top:0}
-#hv2 .hv2-hold-line{display:flex;justify-content:space-between;align-items:center;gap:12px}
-#hv2 .hv2-hold-name{min-width:0}
-#hv2 .hv2-hold-name b{display:block;font-size:16px;font-weight:600}
-#hv2 .hv2-hold-name small{display:block;font-size:13px;color:#667085}
-#hv2 .hv2-hold-val{text-align:right;flex:none}
-#hv2 .hv2-hold-val b{display:block;font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
-#hv2 .hv2-hold-val small{display:block;font-size:13px;color:#667085}
-#hv2 .hv2-bar{display:block;height:4px;border-radius:2px;background:#E9EEF5;margin-top:8px;overflow:hidden}
-#hv2 .hv2-bar i{display:block;height:100%;border-radius:2px}
-#hv2 .hv2-hold-more{padding:4px 0 14px}
-#hv2 .hv2-facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-#hv2 .hv2-facts small{display:block;font-size:12px;color:#667085}
-#hv2 .hv2-facts b{display:block;font-size:15px;font-weight:600}
-#hv2 .hv2-acts{display:flex;gap:8px;margin-top:10px}
-#hv2 .hv2-journal-wrap{margin:0 0 12px}
-#hv2 .hv2-fold{display:block;background:#fff;border:1px solid #E6EAF0;border-radius:16px;margin:0 0 12px;overflow:hidden}
-#hv2 .hv2-fold-body{padding:0 8px 8px}
-
-#hv2{line-break:strict}
-#hv2 .hv2-note,#hv2 .hv2-sub,#hv2 .hv2-sync{text-wrap:balance}
-#hv2 .hv2-hero{display:block;border-radius:20px;padding:20px 20px 16px;margin:0 0 12px;color:#fff;background:linear-gradient(145deg,#14233B 0%,#23406B 100%)}
-#hv2 .hv2-hero-label{display:block;font-size:14px;font-weight:600;color:#B9C6D8}
-#hv2 .hv2-hero-big{display:block;font-size:44px;line-height:1.15;font-weight:800;margin:6px 0 0;letter-spacing:-.5px}
-#hv2 .hv2-hero-note{display:block;font-size:13px;color:#B9C6D8;margin:6px 0 0}
-#hv2 .hv2-hero-pair{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0 0}
-#hv2 .hv2-hero-pair>div{background:rgba(255,255,255,.10);border-radius:14px;padding:12px 14px;min-width:0}
-#hv2 .hv2-hero-pair span.k{display:block;font-size:13px;color:#B9C6D8}
-#hv2 .hv2-hero-pair b{display:block;font-size:22px;font-weight:700;line-height:1.3;margin-top:2px}
-#hv2 .hv2-hero-src{display:block;font-size:12px;line-height:1.5;color:#93A4BC;margin:12px 0 0}
-#hv2 .hv2-hero .up{color:#FF9B93}
-#hv2 .hv2-hero .down{color:#5FD8A0}
-#hv2 .hv2-hero .flat{color:#D5DDE8}
-#hv2 .hv2-tint{background:#EEF4FB;border-color:#DCE7F5}
-#hv2 .hv2-gold{background:#FFF8E6;border-color:#F6E4B0}
-#hv2 .hv2-sync{background:#E8EEF6;border-radius:12px;padding:10px 14px;margin:0 0 12px;color:#475467}
-#hv2 .hv2-h::before{content:"";display:inline-block;width:4px;height:18px;border-radius:2px;background:#1F4E8C;margin-right:8px;vertical-align:-3px}
-#hv2 .hv2-group.hv2-g-up{background:#FFF5F4;border-radius:14px;padding:4px 14px 4px;margin-top:12px}
-#hv2 .hv2-group.hv2-g-down{background:#F0FBF5;border-radius:14px;padding:4px 14px 4px;margin-top:12px}
-#hv2 .hv2-g-up .hv2-row{border-top-color:#F9DAD7}
-#hv2 .hv2-g-down .hv2-row{border-top-color:#CFEBDD}
-#hv2 .hv2-row-main small.hv2-meta{display:flex;flex-wrap:wrap;column-gap:12px;row-gap:0}
+#hv2 .hv2-row-main b{display:block;font-size:16px;font-weight:600;color:#fff}
+#hv2 .hv2-row-main small.hv2-meta{display:flex;flex-wrap:wrap;column-gap:10px;font-size:12px;color:#787B86}
 #hv2 .hv2-meta>span{white-space:nowrap}
-#hv2 .hv2-cbar{display:block;height:5px;border-radius:3px;background:rgba(16,24,40,.07);margin-top:8px;overflow:hidden}
-#hv2 .hv2-cbar i{display:block;height:100%;border-radius:3px}
-#hv2 .hv2-g-up .hv2-cbar i{background:#E5605A}
-#hv2 .hv2-g-down .hv2-cbar i{background:#2DAA73}
-#hv2 .hv2-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px;background:var(--c,#1F4E8C)}
-#hv2 .hv2-bar i{background:var(--c,#1F4E8C)}
-#hv2 .hv2-hold-name b{display:flex;align-items:center}
-#hv2 .hv2-sync b{color:#172033}
-'''
-# 互動元件（button / summary / a）：所有宣告一律加 !important，蓋過舊版對裸標籤的全域樣式。
-_HV2_CTRL_CSS = r'''
+#hv2 .hv2-row-main small{display:block;font-size:12px;color:#787B86}
+#hv2 .hv2-row strong{flex:none;font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
+#hv2 .hv2-cbar{display:block;height:3px;border-radius:2px;background:#20242F;margin-top:7px;overflow:hidden}
+#hv2 .hv2-cbar i{display:block;height:100%;border-radius:2px}
+#hv2 .hv2-g-up .hv2-cbar i{background:#FF5D6C}
+#hv2 .hv2-g-down .hv2-cbar i{background:#2EBD85}
+#hv2 .hv2-empty{padding:10px 0;font-size:14px;color:#787B86}
+#hv2 .impact-stale{margin:6px 0 0;padding:8px 10px;border-left:3px solid #F2A93B;background:#1B1D27;color:#F2C879;font-size:12px;line-height:1.6;border-radius:0}
+#hv2 .hv2-th{display:grid;grid-template-columns:1.5fr .9fr .8fr .7fr;gap:6px;padding:6px 0;font-size:12px;color:#787B86;border-bottom:1px solid #2A2E39}
+#hv2 .hv2-th span:not(:first-child){text-align:right}
+#hv2 .hv2-hold{border-top:1px solid #20242F}
+#hv2 .hv2-hold-line{display:grid;grid-template-columns:1.5fr .9fr .8fr .7fr;gap:6px;align-items:center}
+#hv2 .hv2-hold-name{min-width:0}
+#hv2 .hv2-hold-name b{display:block;font-size:15px;font-weight:600;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#hv2 .hv2-hold-name small{display:block;font-size:12px;color:#787B86}
+#hv2 .hv2-c{text-align:right;font-size:14px;font-variant-numeric:tabular-nums;color:#D1D4DC}
+#hv2 .hv2-c.px{color:#fff}
+#hv2 .hv2-bar{display:block;height:2px;border-radius:1px;background:#20242F;margin-top:8px;overflow:hidden}
+#hv2 .hv2-bar i{display:block;height:100%;background:#5B8DEF}
+#hv2 .hv2-hold-more{padding:4px 0 12px}
+#hv2 .hv2-facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+#hv2 .hv2-facts small{display:block;font-size:12px;color:#787B86}
+#hv2 .hv2-facts b{display:block;font-size:14px;font-weight:600;color:#fff}
+#hv2 .hv2-acts{display:flex;gap:8px;margin-top:10px}
+#hv2 .hv2-journal-wrap{display:block;padding:16px 0;border-top:1px solid #2A2E39}
+#hv2 .hv2-journal-wrap>*{background:transparent!important;border:0!important;box-shadow:none!important;color:#D1D4DC!important;padding:0!important;margin:0!important}
+#hv2 .hv2-journal-wrap *{color:inherit!important;background-color:transparent!important;border-color:#2A2E39!important;box-shadow:none!important}
+#hv2 .hv2-fold{display:block;border-top:1px solid #2A2E39}
+#hv2 .hv2-fold-body{padding:0 0 10px}
+#hv2 .hv2-fold-body *{color:inherit;background-color:transparent!important;box-shadow:none!important;border-color:#2A2E39!important}
+"""
+_HV2_CTRL_CSS = r"""
 #hv2 button,#hv2 summary,#hv2 a{all:unset;box-sizing:border-box;cursor:pointer;-webkit-tap-highlight-color:transparent;display:block;transition:none}
 #hv2 summary::-webkit-details-marker{display:none}
-#hv2 .hv2-more{width:100%;min-height:44px;padding:10px;text-align:center;color:#1F4E8C;font-size:15px;font-weight:600;border-radius:12px}
+#hv2 .hv2-more{width:100%;min-height:44px;padding:10px 0;text-align:center;color:#5B8DEF;font-size:14px;font-weight:600;border-top:1px solid #20242F}
 #hv2 .hv2-more[hidden]{display:none}
-#hv2 .hv2-seg{display:flex;gap:6px;margin:0 0 8px}
-#hv2 .hv2-seg button{flex:1;min-height:40px;padding:8px 6px;text-align:center;border-radius:10px;background:#F2F4F7;color:#475467;font-size:14px;font-weight:600}
-#hv2 .hv2-seg button.is-active{background:#172033;color:#fff}
-#hv2 .hv2-hold-trigger{width:100%;padding:12px 0 10px;text-align:left}
-#hv2 .hv2-act{flex:1;min-height:44px;padding:10px;text-align:center;border-radius:12px;background:#F2F4F7;color:#172033;font-size:15px;font-weight:600}
-#hv2 .hv2-link{display:block;font-size:15px;font-weight:600;color:#1F4E8C;min-height:44px;padding:10px 0;border-radius:12px}
-#hv2 .hv2-eye{width:44px;height:44px;margin:-8px -8px -8px 0;display:flex;align-items:center;justify-content:center;border-radius:12px;color:#667085}
-#hv2 .hv2-eye svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+#hv2 .hv2-seg{display:flex;gap:2px}
+#hv2 .hv2-seg button{min-height:32px;padding:4px 10px;text-align:center;border-radius:6px;color:#787B86;font-size:13px;font-weight:600}
+#hv2 .hv2-seg button.is-active{background:#2A2E39;color:#fff}
+#hv2 .hv2-hold-trigger{width:100%;padding:11px 0 10px;text-align:left}
+#hv2 .hv2-act{flex:1;min-height:40px;padding:8px;text-align:center;border-radius:6px;background:#2A2E39;color:#fff;font-size:14px;font-weight:600}
+#hv2 .hv2-link{display:block;font-size:14px;font-weight:600;color:#5B8DEF;min-height:36px;padding:8px 0}
+#hv2 .hv2-eye{width:40px;height:40px;margin:-6px -8px -6px 0;display:flex;align-items:center;justify-content:center;border-radius:8px;color:#787B86}
+#hv2 .hv2-eye svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 #hv2 .hv2-eye .eye-closed{display:none}
 #hv2 .hv2-eye[aria-pressed="true"] .eye-open{display:none}
 #hv2 .hv2-eye[aria-pressed="true"] .eye-closed{display:block}
-#hv2 .hv2-sum{padding:16px 18px;font-size:16px;font-weight:600;color:#1F4E8C;border-radius:16px}
-#hv2 .hv2-more:active,#hv2 .hv2-hold-trigger:active,#hv2 .hv2-link:active,#hv2 .hv2-eye:active,#hv2 .hv2-sum:active{background:rgba(16,24,40,.06);transform:none;opacity:1;box-shadow:none}
-#hv2 .hv2-act:active{background:#E4E7EC;transform:none;opacity:1}
-#hv2 .hv2-seg button:active{opacity:1;transform:none}
-#hv2 .hv2-seg button:not(.is-active):active{background:#E4E7EC}
-'''
-
-_HV2_PALETTE = ["#4C8DFF", "#38C8F0", "#A78BFA", "#F472B6", "#FBBF24", "#2DD4BF", "#FB923C", "#94A3B8", "#64748B", "#CBD5E1"]
-
-
-_HV2_DARK = r"""
-#hv2{background:#0B1220;color:#E6EDF7;border-radius:22px;padding:12px 12px 14px;margin:0 0 14px}
-#hv2 .up{color:#FF6B66}
-#hv2 .down{color:#34D882}
-#hv2 .flat{color:#8FA0B8}
-#hv2 .hv2-card{background:#121B2E;border-color:#223250;color:#E6EDF7}
-#hv2 .hv2-label,#hv2 .hv2-sub,#hv2 .hv2-note,#hv2 .hv2-cnt,#hv2 .hv2-fresh,#hv2 .hv2-cost,#hv2 .hv2-rank-item small,#hv2 .hv2-row-main small,#hv2 .hv2-hold-name small,#hv2 .hv2-hold-val small,#hv2 .hv2-facts small,#hv2 .hv2-empty{color:#8FA0B8}
-#hv2 .hv2-h,#hv2 .hv2-val,#hv2 .hv2-mid,#hv2 .hv2-row-main b,#hv2 .hv2-hold-name b,#hv2 .hv2-hold-val b,#hv2 .hv2-facts b,#hv2 .hv2-rank-item b{color:#F3F7FD}
-#hv2 .hv2-h::before{background:#4C8DFF}
-#hv2 .hv2-tint{background:#13203A;border-color:#24406E}
-#hv2 .hv2-gold{background:#1B1A14;border-color:#4A3F1E}
-#hv2 .hv2-gold .hv2-rank-item b{color:#FBD27A}
-#hv2 .hv2-hero{background:radial-gradient(120% 140% at 0% 0%,#24508F 0%,#142849 55%,#0F1D36 100%);border:1px solid #2B4A7C}
-#hv2 .hv2-sync{background:#121B2E;color:#8FA0B8;border:1px solid #223250}
-#hv2 .hv2-sync b{color:#E6EDF7}
-#hv2 .hv2-group.hv2-g-up{background:rgba(255,92,87,.10)}
-#hv2 .hv2-group.hv2-g-down{background:rgba(46,212,122,.10)}
-#hv2 .hv2-g-up .hv2-row{border-top-color:rgba(255,92,87,.20)}
-#hv2 .hv2-g-down .hv2-row{border-top-color:rgba(46,212,122,.20)}
-#hv2 .hv2-pill.up{background:rgba(255,92,87,.18);color:#FF8A85}
-#hv2 .hv2-pill.down{background:rgba(46,212,122,.18);color:#5BE09B}
-#hv2 .hv2-cbar,#hv2 .hv2-bar{background:rgba(255,255,255,.09)}
-#hv2 .hv2-g-up .hv2-cbar i{background:#FF5C57}
-#hv2 .hv2-g-down .hv2-cbar i{background:#2ED47A}
-#hv2 .hv2-hold{border-top-color:rgba(255,255,255,.07)}
-#hv2 .hv2-fold{background:#121B2E;border-color:#223250}
-#hv2 .hv2-journal-wrap>*{background:#121B2E!important;border:1px solid #223250!important;box-shadow:none!important;color:#E6EDF7!important;border-radius:16px!important}
-#hv2 .hv2-journal-wrap *{color:inherit!important;background-color:transparent!important;border-color:rgba(255,255,255,.12)!important}
-#hv2 .hv2-fold-body *{color:inherit}
-#hv2 .hv2-fold-body>*{background:transparent!important;border-color:rgba(255,255,255,.12)!important;box-shadow:none!important}
-#hv2 .hv2-more,#hv2 .hv2-link,#hv2 .hv2-sum{color:#7FB0FF}
-#hv2 .hv2-seg button{background:#1A2740;color:#A8B8D0}
-#hv2 .hv2-seg button.is-active{background:#2F6BFF;color:#fff}
-#hv2 .hv2-seg button:not(.is-active):active{background:#24344F}
-#hv2 .hv2-act{background:#1A2740;color:#E6EDF7}
-#hv2 .hv2-act:active{background:#24344F}
-#hv2 .hv2-eye{color:#8FA0B8}
-#hv2 .hv2-more:active,#hv2 .hv2-hold-trigger:active,#hv2 .hv2-link:active,#hv2 .hv2-eye:active,#hv2 .hv2-sum:active{background:rgba(255,255,255,.08)}
+#hv2 .hv2-sum{padding:14px 0;font-size:15px;font-weight:600;color:#5B8DEF}
+#hv2 .hv2-more:active,#hv2 .hv2-hold-trigger:active,#hv2 .hv2-link:active,#hv2 .hv2-eye:active,#hv2 .hv2-sum:active,#hv2 .hv2-seg button:active{background:rgba(255,255,255,.07);transform:none;opacity:1}
+#hv2 .hv2-act:active{background:#3A3F4C}
 """
+_HV2_PLAIN_CSS = ''
+
+_HV2_PALETTE = ["#5B8DEF"] * 10
 
 def _hv2_bang(css):
     out = []
@@ -39954,7 +39888,7 @@ def _hv2_bang(css):
     return ''.join(out)
 
 _HV2_PLAIN_CSS = '#hv2 .impact-stale{margin:8px 0 0;padding:10px 12px;border-radius:10px;background:rgba(246,173,60,.14);color:#F6C36A;border:1px solid rgba(246,173,60,.28);font-size:13px;line-height:1.5}'
-_HV2_STYLE = '<style id="hv2-style">' + _hv2_bang(_HV2_CSS) + _hv2_bang(_HV2_CTRL_CSS) + _hv2_bang(_HV2_DARK) + _HV2_PLAIN_CSS + '</style>'
+_HV2_STYLE = '<style id="hv2-style">' + _hv2_bang(_HV2_CSS) + _hv2_bang(_HV2_CTRL_CSS) + _HV2_PLAIN_CSS + '</style>'
 
 _HV2_JS = r'''<script>
 (function(){
@@ -40010,45 +39944,39 @@ def _hv2_group_html(kind, title, count, rows_html, limit=3, holdings=False):
             f'<button type="button" class="hv2-more" data-hv2-more hidden>查看其餘 ▾</button></div>')
 
 def _render_home_v2(d):
-    """首頁 v2 本體：純函式，只吃已算好的字串／數值，方便單獨測試。"""
+    """首頁 v2（看盤軟體版型）：純函式，只吃已算好的字串／數值。"""
     rank_html = d.get("rank_html") or ""
-    return (_HV2_STYLE + f'''
+    return (_HV2_STYLE + f"""
 <div id="hv2" class="hv2">
-  <section class="hv2-hero" aria-label="今天相對大盤">
-    <span class="hv2-hero-label">今天相對大盤</span>
-    <b class="hv2-hero-big" data-home-relative>{d["relative_html"]}</b>
-    <span class="hv2-hero-note">你的組合漲跌幅，減去大盤漲跌幅（百分點）</span>
-    <div class="hv2-hero-pair">
-      <div><span class="k">大盤</span><b data-home-market-pct>{d["market_html"]}</b></div>
-      <div><span class="k">{html.escape(d["portfolio_label"])}</span><b data-home-portfolio-pct>{d["portfolio_html"]}</b></div>
-    </div>
-    <span class="hv2-hero-src" data-home-market-freshness>{html.escape(d["market_status"])}</span>
-  </section>
-
-  <section class="hv2-card hv2-tint" data-home-privacy-card aria-label="我的投資">
-    <div class="hv2-assets-head"><span class="hv2-label">我的投資</span>
-      <button type="button" class="hv2-eye" data-home-privacy-toggle aria-label="隱藏總市值與成本" aria-pressed="false">
-        <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3.2"/></svg>
-        <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.7 5.2A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3 3.8M6.2 6.5C3.5 8.4 2 12 2 12s3.5 7 10 7a10.5 10.5 0 0 0 4-.8M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
-      </button></div>
-    <div class="hv2-stats">
-      <div><span class="hv2-label">總市值</span><b class="hv2-val" data-home-sensitive data-home-original="{d["total_value"]:,.0f}">{d["total_value"]:,.0f}</b>
-        <span class="hv2-cost">成本 <span data-home-sensitive data-home-original="{d["total_cost"]:,.0f}">{d["total_cost"]:,.0f}</span></span></div>
-      <div><span class="hv2-label">持倉損益</span><b class="hv2-val">{d["pl_html"]}</b></div>
-      <div><span class="hv2-label">持股</span><b class="hv2-val">{d["holdings_count"]} 檔</b></div>
+  <section class="hv2-sec first" data-home-privacy-card aria-label="我的投資">
+    <div class="hv2-head">
+      <div><span class="hv2-k">我的投資 · 總市值</span>
+        <b class="hv2-px" data-home-sensitive data-home-original="{d["total_value"]:,.0f}">{d["total_value"]:,.0f}</b>
+        <span class="hv2-sub2">成本 <span data-home-sensitive data-home-original="{d["total_cost"]:,.0f}">{d["total_cost"]:,.0f}</span>　·　{d["holdings_count"]} 檔</span></div>
+      <div class="hv2-head-r"><span class="hv2-k">持倉損益</span><b>{d["pl_html"]}</b>
+        <button type="button" class="hv2-eye" data-home-privacy-toggle aria-label="隱藏總市值與成本" aria-pressed="false" style="margin-left:auto">
+          <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3.2"/></svg>
+          <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.7 5.2A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3 3.8M6.2 6.5C3.5 8.4 2 12 2 12s3.5 7 10 7a10.5 10.5 0 0 0 4-.8M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+        </button></div>
     </div>
   </section>
 
-  <section class="hv2-card hv2-gold hv2-rank" aria-label="我的排名">
-    {rank_html}
-    <a class="hv2-link" href="/web/leaderboard" >看榜單 →</a>
+  <section class="hv2-sec" aria-label="大盤與我的組合">
+    <div class="hv2-cmp">
+      <div><span class="hv2-k">加權指數</span><b data-home-market-pct>{d["market_html"]}</b></div>
+      <div><span class="hv2-k">{html.escape(d["portfolio_label"])}</span><b data-home-portfolio-pct>{d["portfolio_html"]}</b></div>
+      <div class="rel"><span class="hv2-k">相對大盤</span><b data-home-relative>{d["relative_html"]}</b></div>
+    </div>
+    <span class="hv2-src" data-home-market-freshness>{html.escape(d["market_status"])}</span>
   </section>
+
+  <section class="hv2-sec" aria-label="我的排名"><div class="hv2-rank">{rank_html}<a class="hv2-link" href="/web/leaderboard">看榜單 →</a></div></section>
 
   <div class="hv2-sync" aria-live="polite"><b data-home-live-title>{html.escape(d["sync_title"])}</b>　<span data-home-live-note>{html.escape(d["sync_detail"])}</span></div>
 
-  <section class="hv2-card" aria-label="我的正負貢獻">
-    <span class="hv2-h">誰在漲、誰在跌</span>
-    <span class="hv2-sub">{html.escape(d["contribution_day_label"])}對組合的貢獻（佔組合 %）</span>
+  <section class="hv2-sec" aria-label="我的正負貢獻">
+    <div class="hv2-st"><span class="hv2-h">今日貢獻</span><span class="hv2-cnt">{html.escape(d["contribution_day_label"])}</span></div>
+    <span class="hv2-sub">個股對整體組合的百分點貢獻</span>
     {d["stale_notice"]}
     {d["contribution_groups"]}
   </section>
@@ -40060,7 +39988,45 @@ def _render_home_v2(d):
   <details class="hv2-fold"><summary class="hv2-sum">查看完整組合判讀 →</summary><div class="hv2-fold-body">{d["judgement_html"]}</div></details>
   {d["live_script"]}
 </div>
-''' + _HV2_JS)
+""" + _HV2_JS)
+
+
+_HV2_OFFICIAL = {"at": 0.0, "data": {}}
+
+
+def _hv2_official_closes():
+    """證交所 OpenAPI 全市場最新交易日收盤（含 ETF）。回傳 {代號: (漲跌幅%, 日期YYYYMMDD或空字串)}；失敗回傳 {}。"""
+    now = time.time()
+    if _HV2_OFFICIAL["data"] and now - _HV2_OFFICIAL["at"] < 900:
+        return _HV2_OFFICIAL["data"]
+    out = {}
+    try:
+        resp = requests.get(f"{TWSE_BASE}/exchangeReport/STOCK_DAY_ALL", timeout=6,
+                            headers={"accept": "application/json", "user-agent": "Mozilla/5.0"})
+        rows = resp.json() if resp.ok else []
+        for r in rows if isinstance(rows, list) else []:
+            code = str(r.get("Code") or r.get("證券代號") or "").strip()
+            try:
+                close = float(str(r.get("ClosingPrice") or r.get("收盤價") or "").replace(",", ""))
+                change = float(str(r.get("Change") or r.get("漲跌價差") or "").replace(",", "").replace("+", "").strip())
+            except (TypeError, ValueError):
+                continue
+            prev = close - change
+            if not code or close <= 0 or prev <= 0:
+                continue
+            raw_day = str(r.get("Date") or r.get("日期") or "").strip().replace("/", "").replace("-", "")
+            day = ""
+            if len(raw_day) == 7 and raw_day.isdigit():
+                day = "%04d%s" % (int(raw_day[:3]) + 1911, raw_day[3:])
+            elif len(raw_day) == 8 and raw_day.isdigit():
+                day = raw_day
+            out[code] = ((close / prev - 1.0) * 100.0, day)
+    except Exception as exc:
+        print("⚠️ 證交所官方收盤抓取失敗：%s" % type(exc).__name__, flush=True)
+        return _HV2_OFFICIAL["data"] or {}
+    if out:
+        _HV2_OFFICIAL.update({"at": now, "data": out})
+    return out
 
 
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total,
@@ -40314,6 +40280,24 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
                     print("⚠️ 首頁收盤資料偏舊 %s：最後日線=%s 目標日=%s 來源=%s" % (code, _last, target_key, source or "—"), flush=True)
         except (TypeError, ValueError, ZeroDivisionError):
             pass
+        # V291：歷史日線落後時（ETF 常見），改用證交所官方「全市場最新交易日收盤」。
+        try:
+            _off = _hv2_official_closes().get(code)
+            if _off is not None:
+                _logged2 = holding_day_pct.__dict__.setdefault("_logged", set())
+                if (not _off[1]) or _off[1] == target_key:
+                    if (code, "off") not in _logged2:
+                        _logged2.add((code, "off"))
+                        print("ℹ️ 首頁收盤補值（證交所官方）%s：日期=%s 目標日=%s pct=%.2f" % (code, _off[1] or "無日期", target_key, _off[0]), flush=True)
+                    return float(_off[0])
+                if (code, "offold") not in _logged2:
+                    _logged2.add((code, "offold"))
+                    print("⚠️ 證交所官方收盤日期不符 %s：官方=%s 目標日=%s" % (code, _off[1], target_key), flush=True)
+            elif (code, "offnone") not in holding_day_pct.__dict__.setdefault("_logged", set()):
+                holding_day_pct.__dict__["_logged"].add((code, "offnone"))
+                print("⚠️ 證交所官方收盤查無 %s（可能是上櫃或欄位不同）" % code, flush=True)
+        except Exception as _exc:
+            print("⚠️ 證交所官方收盤補值失敗：%s" % type(_exc).__name__, flush=True)
         return None
 
     raw_exposure = (daily_pretrade_exposure if daily_pretrade_exposure is not None
@@ -41054,16 +41038,18 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         _pnl_sort = _pnl if _pnl is not None else -1e30
         _code_attr = html.escape(_row["code"], quote=True)
         _name_attr = html.escape(_row["name"], quote=True)
+        _hv2_q = (price_map or {}).get(_row["code"]) or {}
+        _hv2_pct = _hv2_q.get("pct")
         _home_holding_rows.append(
             f'<article class="hv2-hold" data-hv2-item data-code="{_code_attr}" data-name="{_name_attr}" data-value="{_row["value"]:.2f}" data-weight="{_weight:.4f}" data-pnl="{_pnl_sort:.2f}">'
-            f'<button type="button" class="hv2-hold-trigger" aria-expanded="false"><span class="hv2-hold-line"><span class="hv2-hold-name"><b><i class="hv2-dot" style="--c:{_HV2_PALETTE[len(_home_holding_rows) % len(_HV2_PALETTE)]}"></i>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span>'
-            f'<span class="hv2-hold-val"><b>{_row["value"]:,.0f}</b><small>{_weight:.1f}%</small></span></span><i class="hv2-bar"><i style="width:{_bar_width:.1f}%;--c:{_HV2_PALETTE[len(_home_holding_rows) % len(_HV2_PALETTE)]}"></i></i></button>'
-            f'<div class="hv2-hold-more" hidden><div class="hv2-facts"><div><small>現價</small><b>{_price_text}</b></div><div><small>持有股數</small><b>{_row["shares"]:,.0f} 股</b></div><div><small>目前權重</small><b>{_weight:.1f}%</b></div></div>'
+            f'<button type="button" class="hv2-hold-trigger" aria-expanded="false"><span class="hv2-hold-line"><span class="hv2-hold-name"><b>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span>'
+            f'<span class="hv2-c px">{_price_text}</span><span class="hv2-c">{fmt_pct(_hv2_pct) if _hv2_pct is not None else "—"}</span><span class="hv2-c">{_weight:.1f}%</span></span><i class="hv2-bar"><i style="width:{_bar_width:.1f}%"></i></i></button>'
+            f'<div class="hv2-hold-more" hidden><div class="hv2-facts"><div><small>市值</small><b>{_row["value"]:,.0f}</b></div><div><small>持有股數</small><b>{_row["shares"]:,.0f} 股</b></div><div><small>目前權重</small><b>{_weight:.1f}%</b></div></div>'
             f'<div class="hv2-acts"><a class="hv2-act" href="/web/stock-analysis?code={html.escape(_row["code"], quote=True)}">分析這檔股票 →</a><button type="button" class="hv2-act" data-holding-action="target">檢視配置差距</button></div></div></article>')
     _home_holdings_preview_html = (
-        '<section class="hv2-card" aria-label="首頁完整持股明細">'
-        '<div class="hv2-head"><div><span class="hv2-h">我的持股</span><span class="hv2-sub">點擊持股展開明細</span></div><span class="hv2-cnt">' + str(len(_home_preview_rows)) + ' 檔</span></div>'
-        '<div class="hv2-seg" role="group" aria-label="持股排序"><button type="button" data-hv2-sort="weight" class="is-active" aria-pressed="true">權重</button><button type="button" data-hv2-sort="pnl" aria-pressed="false">損益</button><button type="button" data-hv2-sort="name" aria-pressed="false">名稱</button></div>'
+        '<section class="hv2-sec" aria-label="首頁完整持股明細">'
+        '<div class="hv2-st"><span class="hv2-h">我的持股</span><div class="hv2-seg" role="group" aria-label="持股排序"><button type="button" data-hv2-sort="weight" class="is-active" aria-pressed="true">權重</button><button type="button" data-hv2-sort="pnl" aria-pressed="false">損益</button><button type="button" data-hv2-sort="name" aria-pressed="false">名稱</button></div></div>'
+        '<div class="hv2-th"><span>名稱</span><span>現價</span><span>今日</span><span>權重</span></div>'
         '<div class="hv2-group" data-hv2-group data-hv2-holdings data-limit="5"><div data-hv2-list data-hv2-rows>'
         + (''.join(_home_holding_rows) if _home_holding_rows else '<div class="hv2-empty">尚無持股資料。</div>')
         + '</div><button type="button" class="hv2-more" data-hv2-more hidden>查看其餘持股 ▾</button></div></section>')
