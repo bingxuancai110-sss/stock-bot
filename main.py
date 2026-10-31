@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V284_FULL_TEMPLATE_V2"
+APP_BUILD = "V285_HOME_SIMPLE"
 UI_BUILD = "v2-template-refactor"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
@@ -40577,10 +40577,12 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   <details class="impact-details" open>
     <summary>查看{_contribution_day_label}正貢獻明細（前 {min(positive_count, 5)} 檔）</summary>
     <div data-home-contribution-rows="positive">{positive_rows_html}</div>
+    <button type="button" class="home-more-btn" data-more-toggle="contribution" data-limit="3" hidden>查看其餘 ▾</button>
   </details>
   <details class="impact-details" open>
     <summary>查看{_contribution_day_label}負貢獻明細（前 {min(negative_count, 5)} 檔）</summary>
     <div data-home-contribution-rows="negative">{negative_rows_html}</div>
+    <button type="button" class="home-more-btn" data-more-toggle="contribution" data-limit="3" hidden>查看其餘 ▾</button>
   </details>
 </section>'''
 
@@ -40768,7 +40770,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         _code_attr = html.escape(_row["code"], quote=True)
         _name_attr = html.escape(_row["name"], quote=True)
         _home_holding_rows.append(f'<article class="home-holding-card" data-code="{_code_attr}" data-name="{_name_attr}" data-value="{_row["value"]:.2f}" data-weight="{_weight:.4f}" data-pnl="{_pnl_sort:.2f}"><button type="button" class="home-holding-trigger" aria-expanded="false"><span class="home-holding-rank">{len(_home_holding_rows)+1:02d}</span><span class="home-holding-name"><b>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span><span class="home-holding-price"><small>現價</small><b>{_price_text}</b></span><span class="home-holding-value"><b>{_row["value"]:,.0f}</b><small>{_weight:.1f}% 權重</small><i class="home-weight-track"><i style="width:{_bar_width:.1f}%"></i></i></span><span class="home-holding-chevron" aria-hidden="true">⌄</span></button><div class="home-holding-expanded" hidden><div class="home-holding-expanded-grid"><span><small>持有股數</small><b>{_row["shares"]:,.0f} 股</b></span><span><small>持股市值</small><b>{_row["value"]:,.0f} 元</b></span><span><small>目前權重</small><b>{_weight:.1f}%</b></span></div><div class="home-holding-actions"><a class="home-holding-action primary" href="/web/stock-analysis?code={html.escape(_row["code"], quote=True)}">分析這檔股票 <span>→</span></a><button type="button" class="home-holding-action" data-holding-action="target">檢視配置差距</button></div></div></article>')
-    _home_holdings_preview_html = ('<section class="home-dashboard-card home-holdings-preview" aria-label="首頁完整持股明細"><div class="home-dashboard-card-head"><div><h2>我的持股</h2><small>點擊持股卡片展開明細；可切換排序</small></div><span class="home-holdings-count">' + str(len(_home_preview_rows)) + ' 檔持股</span></div><div class="home-holdings-sort" role="group" aria-label="持股排序"><button type="button" data-home-sort="weight" class="is-active">權重排序</button><button type="button" data-home-sort="pnl">損益排序</button><button type="button" data-home-sort="name">名稱</button></div><div class="home-holding-list" data-home-holding-list>' + ("".join(_home_holding_rows) if _home_holding_rows else '<div class="home-dashboard-empty">目前沒有可顯示的持股行情。</div>') + '</div></section>')
+    _home_holdings_preview_html = ('<section class="home-dashboard-card home-holdings-preview" aria-label="首頁完整持股明細"><div class="home-dashboard-card-head"><div><h2>我的持股</h2><small>點擊持股卡片展開明細；可切換排序</small></div><span class="home-holdings-count">' + str(len(_home_preview_rows)) + ' 檔持股</span></div><div class="home-holdings-sort" role="group" aria-label="持股排序"><button type="button" data-home-sort="weight" class="is-active">權重排序</button><button type="button" data-home-sort="pnl">損益排序</button><button type="button" data-home-sort="name">名稱</button></div><div class="home-holding-list" data-home-holding-list>' + ("".join(_home_holding_rows) if _home_holding_rows else '<div class="home-dashboard-empty">目前沒有可顯示的持股行情。</div>') + '</div><button type="button" class="home-more-btn" data-more-toggle="holdings" data-limit="5" hidden>查看其餘持股 ▾</button></section>')
     # 首頁不再重複顯示圓餅圖；目標配置由原本的配置功能負責。
     _home_allocation_html = ''
 
@@ -41249,8 +41251,25 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   background:#fff!important; color:var(--holding-accent,#557b62)!important;
   -webkit-text-fill-color:var(--holding-accent,#557b62)!important;
 }}
+
+/* V285 首頁簡化：相對大盤卡、貢獻前3檔、持股前5檔，其餘按下去展開 */
+.market-strip{{grid-template-columns:1fr 1fr!important}}
+.home-relative-card{{background:#fff;border:1px solid #E4E7EC;border-radius:16px;padding:18px;margin:0 0 12px}}
+.home-relative-card small{{display:block;font-size:14px;font-weight:700;color:#475467}}
+.home-relative-card>b{{display:block;font-size:34px;line-height:1.2;margin-top:6px}}
+.home-relative-card p{{margin:6px 0 0;font-size:14px;color:#667085;line-height:1.5}}
+.contribution-card .impact-leads{{display:none!important}}
+.impact-details:not(.show-all) [data-home-contribution-rows] .impact-detail-row:nth-child(n+4){{display:none!important}}
+.home-holding-list:not(.show-all) .home-holding-card:nth-child(n+6){{display:none!important}}
+.home-more-btn{{display:block;width:100%;min-height:44px;margin-top:6px;padding:10px;border:0;background:transparent;color:#1F4E8C;font-size:15px;font-weight:700;cursor:pointer;text-align:center}}
+.home-more-btn[hidden]{{display:none!important}}
 </style>
 <div class="daily-home">
+  <section class="home-relative-card" aria-label="今天相對大盤">
+    <small>今天相對大盤</small>
+    <b data-home-relative>{relative_text}</b>
+    <p>你的組合漲跌幅，減去大盤漲跌幅（百分點）</p>
+  </section>
   <section class="daily-hero" aria-label="台北 101 城市主視覺">
     <div class="hero-finance-visual" aria-hidden="true"></div>
     <div class="eyebrow">{hero_eyebrow}</div>
@@ -41259,7 +41278,6 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     <div class="market-strip">
       <span>大盤 <b data-home-market-pct>{market_text}</b><small class="market-freshness" data-home-market-freshness>{html.escape(market_status_text)}</small></span>
       <span>{portfolio_label} <b data-home-portfolio-pct>{portfolio_text}</b></span>
-      <span>相對大盤 <b data-home-relative>{relative_text}</b></span>
     </div>
     <div class="hero-summary-stack">
       <section class="hero-summary-panel hero-rank-panel"><div class="hero-summary-panel-head"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="rank-grid">{rank_line('short')}{rank_line('long')}</div></section>
@@ -41304,6 +41322,17 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       var sortButton=ev.target.closest('[data-home-sort]');if(sortButton){{var list=root.querySelector('[data-home-holding-list]');if(!list)return;var cards=Array.from(list.querySelectorAll('.home-holding-card')),key=sortButton.getAttribute('data-home-sort');cards.sort(function(a,b){{if(key==='name')return(a.dataset.name||'').localeCompare(b.dataset.name||'','zh-Hant');return Number(b.dataset[key]||0)-Number(a.dataset[key]||0)}});cards.forEach(function(card,i){{list.appendChild(card);var rank=card.querySelector('.home-holding-rank');if(rank)rank.textContent=String(i+1).padStart(2,'0')}});root.querySelectorAll('[data-home-sort]').forEach(function(btn){{btn.classList.toggle('is-active',btn===sortButton)}});return;}}
       var targetButton=ev.target.closest('[data-holding-action="target"]');if(targetButton){{var target=document.querySelector('.home-target-collapse');if(target){{target.open=true;target.scrollIntoView({{behavior:'smooth',block:'start'}});}}else{{var details=document.querySelector('.home-detail-collapse');if(details){{details.open=true;details.scrollIntoView({{behavior:'smooth',block:'start'}});}}}}}}
     }});
+  }})();
+  </script>
+  <script>
+  (function(){{
+    function box(b){{return b.dataset.moreToggle==='holdings'?b.previousElementSibling:b.closest('details');}}
+    function sync(b){{var t=box(b);if(!t)return;var lim=parseInt(b.dataset.limit,10)||3,n=t.querySelectorAll(b.dataset.moreToggle==='holdings'?'.home-holding-card':'.impact-detail-row').length,open=t.classList.contains('show-all'),label=open?'收合 ▴':'查看其餘 '+Math.max(0,n-lim)+' 檔 ▾',hide=n<=lim;if(b.hidden!==hide)b.hidden=hide;if(b.textContent!==label)b.textContent=label;}}
+    function syncAll(){{document.querySelectorAll('[data-more-toggle]').forEach(sync);}}
+    document.addEventListener('click',function(ev){{var b=ev.target.closest('[data-more-toggle]');if(!b)return;var t=box(b);if(t){{t.classList.toggle('show-all');sync(b);}}}});
+    var root=document.querySelector('.daily-home'),busy=false;
+    if(root&&window.MutationObserver){{new MutationObserver(function(){{if(busy)return;busy=true;setTimeout(function(){{busy=false;syncAll();}},50);}}).observe(root,{{childList:true,subtree:true}});}}
+    syncAll();
   }})();
   </script>
   <!-- 首頁精簡：雷達／智慧黑馬保留在「選股」頁，不在今日首頁重複展示。 -->
