@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V288_HOME_V2_RICH"
+APP_BUILD = "V290_HOME_DARK"
 UI_BUILD = "v2-template-refactor"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
@@ -39901,7 +39901,48 @@ _HV2_CTRL_CSS = r'''
 #hv2 .hv2-seg button:not(.is-active):active{background:#E4E7EC}
 '''
 
-_HV2_PALETTE = ["#1F4E8C", "#2B9BD8", "#7C4DFF", "#E64F91", "#F29A26", "#12A594", "#C77D3A", "#5B7C99", "#9AA8B7", "#8A8F98"]
+_HV2_PALETTE = ["#4C8DFF", "#38C8F0", "#A78BFA", "#F472B6", "#FBBF24", "#2DD4BF", "#FB923C", "#94A3B8", "#64748B", "#CBD5E1"]
+
+
+_HV2_DARK = r"""
+#hv2{background:#0B1220;color:#E6EDF7;border-radius:22px;padding:12px 12px 14px;margin:0 0 14px}
+#hv2 .up{color:#FF6B66}
+#hv2 .down{color:#34D882}
+#hv2 .flat{color:#8FA0B8}
+#hv2 .hv2-card{background:#121B2E;border-color:#223250;color:#E6EDF7}
+#hv2 .hv2-label,#hv2 .hv2-sub,#hv2 .hv2-note,#hv2 .hv2-cnt,#hv2 .hv2-fresh,#hv2 .hv2-cost,#hv2 .hv2-rank-item small,#hv2 .hv2-row-main small,#hv2 .hv2-hold-name small,#hv2 .hv2-hold-val small,#hv2 .hv2-facts small,#hv2 .hv2-empty{color:#8FA0B8}
+#hv2 .hv2-h,#hv2 .hv2-val,#hv2 .hv2-mid,#hv2 .hv2-row-main b,#hv2 .hv2-hold-name b,#hv2 .hv2-hold-val b,#hv2 .hv2-facts b,#hv2 .hv2-rank-item b{color:#F3F7FD}
+#hv2 .hv2-h::before{background:#4C8DFF}
+#hv2 .hv2-tint{background:#13203A;border-color:#24406E}
+#hv2 .hv2-gold{background:#1B1A14;border-color:#4A3F1E}
+#hv2 .hv2-gold .hv2-rank-item b{color:#FBD27A}
+#hv2 .hv2-hero{background:radial-gradient(120% 140% at 0% 0%,#24508F 0%,#142849 55%,#0F1D36 100%);border:1px solid #2B4A7C}
+#hv2 .hv2-sync{background:#121B2E;color:#8FA0B8;border:1px solid #223250}
+#hv2 .hv2-sync b{color:#E6EDF7}
+#hv2 .hv2-group.hv2-g-up{background:rgba(255,92,87,.10)}
+#hv2 .hv2-group.hv2-g-down{background:rgba(46,212,122,.10)}
+#hv2 .hv2-g-up .hv2-row{border-top-color:rgba(255,92,87,.20)}
+#hv2 .hv2-g-down .hv2-row{border-top-color:rgba(46,212,122,.20)}
+#hv2 .hv2-pill.up{background:rgba(255,92,87,.18);color:#FF8A85}
+#hv2 .hv2-pill.down{background:rgba(46,212,122,.18);color:#5BE09B}
+#hv2 .hv2-cbar,#hv2 .hv2-bar{background:rgba(255,255,255,.09)}
+#hv2 .hv2-g-up .hv2-cbar i{background:#FF5C57}
+#hv2 .hv2-g-down .hv2-cbar i{background:#2ED47A}
+#hv2 .hv2-hold{border-top-color:rgba(255,255,255,.07)}
+#hv2 .hv2-fold{background:#121B2E;border-color:#223250}
+#hv2 .hv2-journal-wrap>*{background:#121B2E!important;border:1px solid #223250!important;box-shadow:none!important;color:#E6EDF7!important;border-radius:16px!important}
+#hv2 .hv2-journal-wrap *{color:inherit!important;background-color:transparent!important;border-color:rgba(255,255,255,.12)!important}
+#hv2 .hv2-fold-body *{color:inherit}
+#hv2 .hv2-fold-body>*{background:transparent!important;border-color:rgba(255,255,255,.12)!important;box-shadow:none!important}
+#hv2 .hv2-more,#hv2 .hv2-link,#hv2 .hv2-sum{color:#7FB0FF}
+#hv2 .hv2-seg button{background:#1A2740;color:#A8B8D0}
+#hv2 .hv2-seg button.is-active{background:#2F6BFF;color:#fff}
+#hv2 .hv2-seg button:not(.is-active):active{background:#24344F}
+#hv2 .hv2-act{background:#1A2740;color:#E6EDF7}
+#hv2 .hv2-act:active{background:#24344F}
+#hv2 .hv2-eye{color:#8FA0B8}
+#hv2 .hv2-more:active,#hv2 .hv2-hold-trigger:active,#hv2 .hv2-link:active,#hv2 .hv2-eye:active,#hv2 .hv2-sum:active{background:rgba(255,255,255,.08)}
+"""
 
 def _hv2_bang(css):
     out = []
@@ -39912,8 +39953,8 @@ def _hv2_bang(css):
         out.append(chunk)
     return ''.join(out)
 
-_HV2_PLAIN_CSS = '#hv2 .impact-stale{margin:8px 0 0;padding:10px 12px;border-radius:10px;background:#FFFAEB;color:#93370D;font-size:13px;line-height:1.5}'
-_HV2_STYLE = '<style id="hv2-style">' + _hv2_bang(_HV2_CSS) + _hv2_bang(_HV2_CTRL_CSS) + _HV2_PLAIN_CSS + '</style>'
+_HV2_PLAIN_CSS = '#hv2 .impact-stale{margin:8px 0 0;padding:10px 12px;border-radius:10px;background:rgba(246,173,60,.14);color:#F6C36A;border:1px solid rgba(246,173,60,.28);font-size:13px;line-height:1.5}'
+_HV2_STYLE = '<style id="hv2-style">' + _hv2_bang(_HV2_CSS) + _hv2_bang(_HV2_CTRL_CSS) + _hv2_bang(_HV2_DARK) + _HV2_PLAIN_CSS + '</style>'
 
 _HV2_JS = r'''<script>
 (function(){
@@ -40254,6 +40295,25 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
                     return float(value)
             except (TypeError, ValueError):
                 pass
+        # V289：與「持股」頁共用同一份日線快取（close／pct）。ETF 常沒有逐日序列、
+        # 也沒有明確的 close_date，原本會被誤判成「沒有收盤資料」，造成整個首頁顯示資料不足。
+        # 規則：這筆日線最後一根的日期就是目標交易日，或快取根本沒帶日期，就採用它的 pct；
+        # 只有「帶了日期而且日期比目標日舊」才視為真的缺資料。每檔只在日誌記一次原因。
+        try:
+            _pc, _pp = price.get("close"), price.get("pct")
+            if _pc is not None and _pp is not None and float(_pc) > 0:
+                _last = next((d for d in reversed(normalized_dates) if d), "") or close_day
+                _logged = holding_day_pct.__dict__.setdefault("_logged", set())
+                if _last == target_key or _last == "":
+                    if (code, "ok") not in _logged:
+                        _logged.add((code, "ok"))
+                        print("ℹ️ 首頁收盤補值 %s：最後日線=%s 目標日=%s 來源=%s" % (code, _last or "無日期", target_key, source or "—"), flush=True)
+                    return float(_pp)
+                if (code, "old") not in _logged:
+                    _logged.add((code, "old"))
+                    print("⚠️ 首頁收盤資料偏舊 %s：最後日線=%s 目標日=%s 來源=%s" % (code, _last, target_key, source or "—"), flush=True)
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
         return None
 
     raw_exposure = (daily_pretrade_exposure if daily_pretrade_exposure is not None
