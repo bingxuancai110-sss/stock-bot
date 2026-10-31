@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
-APP_BUILD = "V287_HOME_V2"
+APP_BUILD = "V288_HOME_V2_RICH"
 UI_BUILD = "v2-template-refactor"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
 # refreshing 3mo history, use known exchange suffixes, and stale-while-revalidate the TAIEX
@@ -39834,7 +39834,7 @@ _HV2_CSS = r'''
 #hv2 .hv2-hold-val b{display:block;font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
 #hv2 .hv2-hold-val small{display:block;font-size:13px;color:#667085}
 #hv2 .hv2-bar{display:block;height:4px;border-radius:2px;background:#E9EEF5;margin-top:8px;overflow:hidden}
-#hv2 .hv2-bar i{display:block;height:100%;background:#1F4E8C;border-radius:2px}
+#hv2 .hv2-bar i{display:block;height:100%;border-radius:2px}
 #hv2 .hv2-hold-more{padding:4px 0 14px}
 #hv2 .hv2-facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 #hv2 .hv2-facts small{display:block;font-size:12px;color:#667085}
@@ -39843,6 +39843,39 @@ _HV2_CSS = r'''
 #hv2 .hv2-journal-wrap{margin:0 0 12px}
 #hv2 .hv2-fold{display:block;background:#fff;border:1px solid #E6EAF0;border-radius:16px;margin:0 0 12px;overflow:hidden}
 #hv2 .hv2-fold-body{padding:0 8px 8px}
+
+#hv2{line-break:strict}
+#hv2 .hv2-note,#hv2 .hv2-sub,#hv2 .hv2-sync{text-wrap:balance}
+#hv2 .hv2-hero{display:block;border-radius:20px;padding:20px 20px 16px;margin:0 0 12px;color:#fff;background:linear-gradient(145deg,#14233B 0%,#23406B 100%)}
+#hv2 .hv2-hero-label{display:block;font-size:14px;font-weight:600;color:#B9C6D8}
+#hv2 .hv2-hero-big{display:block;font-size:44px;line-height:1.15;font-weight:800;margin:6px 0 0;letter-spacing:-.5px}
+#hv2 .hv2-hero-note{display:block;font-size:13px;color:#B9C6D8;margin:6px 0 0}
+#hv2 .hv2-hero-pair{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0 0}
+#hv2 .hv2-hero-pair>div{background:rgba(255,255,255,.10);border-radius:14px;padding:12px 14px;min-width:0}
+#hv2 .hv2-hero-pair span.k{display:block;font-size:13px;color:#B9C6D8}
+#hv2 .hv2-hero-pair b{display:block;font-size:22px;font-weight:700;line-height:1.3;margin-top:2px}
+#hv2 .hv2-hero-src{display:block;font-size:12px;line-height:1.5;color:#93A4BC;margin:12px 0 0}
+#hv2 .hv2-hero .up{color:#FF9B93}
+#hv2 .hv2-hero .down{color:#5FD8A0}
+#hv2 .hv2-hero .flat{color:#D5DDE8}
+#hv2 .hv2-tint{background:#EEF4FB;border-color:#DCE7F5}
+#hv2 .hv2-gold{background:#FFF8E6;border-color:#F6E4B0}
+#hv2 .hv2-sync{background:#E8EEF6;border-radius:12px;padding:10px 14px;margin:0 0 12px;color:#475467}
+#hv2 .hv2-h::before{content:"";display:inline-block;width:4px;height:18px;border-radius:2px;background:#1F4E8C;margin-right:8px;vertical-align:-3px}
+#hv2 .hv2-group.hv2-g-up{background:#FFF5F4;border-radius:14px;padding:4px 14px 4px;margin-top:12px}
+#hv2 .hv2-group.hv2-g-down{background:#F0FBF5;border-radius:14px;padding:4px 14px 4px;margin-top:12px}
+#hv2 .hv2-g-up .hv2-row{border-top-color:#F9DAD7}
+#hv2 .hv2-g-down .hv2-row{border-top-color:#CFEBDD}
+#hv2 .hv2-row-main small.hv2-meta{display:flex;flex-wrap:wrap;column-gap:12px;row-gap:0}
+#hv2 .hv2-meta>span{white-space:nowrap}
+#hv2 .hv2-cbar{display:block;height:5px;border-radius:3px;background:rgba(16,24,40,.07);margin-top:8px;overflow:hidden}
+#hv2 .hv2-cbar i{display:block;height:100%;border-radius:3px}
+#hv2 .hv2-g-up .hv2-cbar i{background:#E5605A}
+#hv2 .hv2-g-down .hv2-cbar i{background:#2DAA73}
+#hv2 .hv2-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px;background:var(--c,#1F4E8C)}
+#hv2 .hv2-bar i{background:var(--c,#1F4E8C)}
+#hv2 .hv2-hold-name b{display:flex;align-items:center}
+#hv2 .hv2-sync b{color:#172033}
 '''
 # 互動元件（button / summary / a）：所有宣告一律加 !important，蓋過舊版對裸標籤的全域樣式。
 _HV2_CTRL_CSS = r'''
@@ -39867,6 +39900,8 @@ _HV2_CTRL_CSS = r'''
 #hv2 .hv2-seg button:active{opacity:1;transform:none}
 #hv2 .hv2-seg button:not(.is-active):active{background:#E4E7EC}
 '''
+
+_HV2_PALETTE = ["#1F4E8C", "#2B9BD8", "#7C4DFF", "#E64F91", "#F29A26", "#12A594", "#C77D3A", "#5B7C99", "#9AA8B7", "#8A8F98"]
 
 def _hv2_bang(css):
     out = []
@@ -39927,7 +39962,7 @@ def _hv2_rank_item(label, s):
 
 def _hv2_group_html(kind, title, count, rows_html, limit=3, holdings=False):
     """正／負貢獻群組；rows_html 為已組好的列。"""
-    return (f'<div class="hv2-group" data-hv2-group data-limit="{limit}">'
+    return (f'<div class="hv2-group hv2-g-{kind}" data-hv2-group data-limit="{limit}">'
             f'<div class="hv2-ghead"><span class="hv2-pill {kind}">{title}</span>'
             f'<span class="hv2-cnt"><span data-home-{"positive" if kind == "up" else "negative"}-count>{count}</span> 檔</span></div>'
             f'<div data-home-contribution-rows="{"positive" if kind == "up" else "negative"}" data-hv2-rows>{rows_html}</div>'
@@ -39938,25 +39973,18 @@ def _render_home_v2(d):
     rank_html = d.get("rank_html") or ""
     return (_HV2_STYLE + f'''
 <div id="hv2" class="hv2">
-  <section class="hv2-card" aria-label="今天相對大盤">
-    <span class="hv2-label">今天相對大盤</span>
-    <b class="hv2-big" data-home-relative>{d["relative_html"]}</b>
-    <span class="hv2-note">你的組合漲跌幅，減去大盤漲跌幅（百分點）</span>
+  <section class="hv2-hero" aria-label="今天相對大盤">
+    <span class="hv2-hero-label">今天相對大盤</span>
+    <b class="hv2-hero-big" data-home-relative>{d["relative_html"]}</b>
+    <span class="hv2-hero-note">你的組合漲跌幅，減去大盤漲跌幅（百分點）</span>
+    <div class="hv2-hero-pair">
+      <div><span class="k">大盤</span><b data-home-market-pct>{d["market_html"]}</b></div>
+      <div><span class="k">{html.escape(d["portfolio_label"])}</span><b data-home-portfolio-pct>{d["portfolio_html"]}</b></div>
+    </div>
+    <span class="hv2-hero-src" data-home-market-freshness>{html.escape(d["market_status"])}</span>
   </section>
 
-  <div class="hv2-pair">
-    <section class="hv2-card" aria-label="大盤">
-      <span class="hv2-label">大盤</span>
-      <b class="hv2-mid" data-home-market-pct>{d["market_html"]}</b>
-      <span class="hv2-fresh" data-home-market-freshness>{html.escape(d["market_status"])}</span>
-    </section>
-    <section class="hv2-card" aria-label="我的組合今日">
-      <span class="hv2-label">{html.escape(d["portfolio_label"])}</span>
-      <b class="hv2-mid" data-home-portfolio-pct>{d["portfolio_html"]}</b>
-    </section>
-  </div>
-
-  <section class="hv2-card" data-home-privacy-card aria-label="我的投資">
+  <section class="hv2-card hv2-tint" data-home-privacy-card aria-label="我的投資">
     <div class="hv2-assets-head"><span class="hv2-label">我的投資</span>
       <button type="button" class="hv2-eye" data-home-privacy-toggle aria-label="隱藏總市值與成本" aria-pressed="false">
         <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3.2"/></svg>
@@ -39970,7 +39998,7 @@ def _render_home_v2(d):
     </div>
   </section>
 
-  <section class="hv2-card hv2-rank" aria-label="我的排名">
+  <section class="hv2-card hv2-gold hv2-rank" aria-label="我的排名">
     {rank_html}
     <a class="hv2-link" href="/web/leaderboard" >看榜單 →</a>
   </section>
@@ -40715,6 +40743,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         if not entries:
             return '<div class="hv2-empty">目前沒有可顯示的項目。</div>'
         rows = []
+        _mx = max([abs(_e[2]) for _e in entries] + [0.0001])
         for idx, (holding, pct, contribution) in enumerate(entries, 1):
             direction = "增加" if contribution > 0 else "減少"
             change_word = "上漲" if pct > 0 else "下跌"
@@ -40722,7 +40751,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             realized_html = (f'<small class="impact-realized {"up" if holding.get("today_realized_pl", 0) >= 0 else "down"}">'
                              f'{html.escape(realized_text)}</small>' if realized_text else "")
             rows.append(
-                f'''<div class="hv2-row" data-hv2-item><div class="hv2-row-main"><b>{html.escape(str(holding['name']))}</b><small>{holding_day_word(holding)}{change_word} {abs(pct):.2f}%　{html.escape(contribution_basis_text(holding))}</small>{realized_html}</div><strong class="{value_class}">{direction}約 {abs(contribution):.2f}%</strong></div>''')
+                f'''<div class="hv2-row" data-hv2-item><div class="hv2-row-main"><b>{html.escape(str(holding['name']))}</b><small class="hv2-meta"><span>{holding_day_word(holding)}{change_word} {abs(pct):.2f}%</span><span>{html.escape(contribution_basis_text(holding))}</span></small>{realized_html}<i class="hv2-cbar"><i style="width:{min(100.0, abs(contribution) / _mx * 100.0):.0f}%"></i></i></div><strong class="{value_class}">{direction}約 {abs(contribution):.2f}%</strong></div>''')
         return ''.join(rows)
 
     positive_lead = positive_entries[0] if positive_entries else None
@@ -40811,7 +40840,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   function setHtml(selector,value){var el=document.querySelector(selector);if(el)el.innerHTML=value;}
   function realized(item){if(item.realized_pl==null)return '';var n=Number(item.realized_pl);if(!Number.isFinite(n))return '';return '<small class="impact-realized '+(n>=0?'up':'down')+'">今日已實現損益：'+(n>=0?'+':'')+n.toLocaleString('zh-TW',{maximumFractionDigits:0})+' 元</small>';}
   function leadHtml(item,title,kind){if(!item)return '<div class="impact-lead impact-muted"><small>'+esc(title)+'</small><b>目前沒有資料</b></div>';var change=item.pct>0?'上漲':'下跌',amount=item.contribution>0?'增加約':'減少約';return '<div class="impact-lead '+kind+'"><small>'+esc(title)+'</small><h3>'+esc(item.name)+'</h3><p>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%・'+esc(item.basis_text)+'</p><strong><span>對整體組合'+amount+'</span><b>'+Math.abs(Number(item.contribution)).toFixed(2)+'%</b></strong></div>'; }
-  function rowsHtml(items,kind){if(!items||!items.length)return '<div class=\"hv2-empty\">目前沒有可顯示的項目。</div>';return items.map(function(item){var positive=item.contribution>0,change=item.pct>0?'上漲':'下跌',direction=positive?'增加':'減少';return '<div class=\"hv2-row\" data-hv2-item><div class=\"hv2-row-main\"><b>'+esc(item.name)+'</b><small>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%　'+esc(item.basis_text)+'</small>'+realized(item)+'</div><strong class=\"'+kind+'\">'+direction+'約 '+Math.abs(Number(item.contribution)).toFixed(2)+'%</strong></div>';}).join('');}
+  function rowsHtml(items,kind){if(!items||!items.length)return '<div class=\"hv2-empty\">目前沒有可顯示的項目。</div>';var mx=Math.max.apply(null,items.map(function(x){return Math.abs(Number(x.contribution))||0;}).concat([0.0001]));return items.map(function(item){var positive=item.contribution>0,change=item.pct>0?'上漲':'下跌',direction=positive?'增加':'減少';return '<div class=\"hv2-row\" data-hv2-item><div class=\"hv2-row-main\"><b>'+esc(item.name)+'</b><small class=\"hv2-meta\"><span>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%</span><span>'+esc(item.basis_text)+'</span></small>'+realized(item)+'<i class=\"hv2-cbar\"><i style=\"width:'+Math.min(100,Math.abs(Number(item.contribution))/mx*100).toFixed(0)+'%\"></i></i></div><strong class=\"'+kind+'\">'+direction+'約 '+Math.abs(Number(item.contribution)).toFixed(2)+'%</strong></div>';}).join('');}
   function refreshMarket(){
     var marketUrl='/web/api/taiex/intraday',marketToken=token();
     if(marketToken)marketUrl+='?t='+encodeURIComponent(marketToken);
@@ -40967,8 +40996,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         _name_attr = html.escape(_row["name"], quote=True)
         _home_holding_rows.append(
             f'<article class="hv2-hold" data-hv2-item data-code="{_code_attr}" data-name="{_name_attr}" data-value="{_row["value"]:.2f}" data-weight="{_weight:.4f}" data-pnl="{_pnl_sort:.2f}">'
-            f'<button type="button" class="hv2-hold-trigger" aria-expanded="false"><span class="hv2-hold-line"><span class="hv2-hold-name"><b>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span>'
-            f'<span class="hv2-hold-val"><b>{_row["value"]:,.0f}</b><small>{_weight:.1f}%</small></span></span><i class="hv2-bar"><i style="width:{_bar_width:.1f}%"></i></i></button>'
+            f'<button type="button" class="hv2-hold-trigger" aria-expanded="false"><span class="hv2-hold-line"><span class="hv2-hold-name"><b><i class="hv2-dot" style="--c:{_HV2_PALETTE[len(_home_holding_rows) % len(_HV2_PALETTE)]}"></i>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span>'
+            f'<span class="hv2-hold-val"><b>{_row["value"]:,.0f}</b><small>{_weight:.1f}%</small></span></span><i class="hv2-bar"><i style="width:{_bar_width:.1f}%;--c:{_HV2_PALETTE[len(_home_holding_rows) % len(_HV2_PALETTE)]}"></i></i></button>'
             f'<div class="hv2-hold-more" hidden><div class="hv2-facts"><div><small>現價</small><b>{_price_text}</b></div><div><small>持有股數</small><b>{_row["shares"]:,.0f} 股</b></div><div><small>目前權重</small><b>{_weight:.1f}%</b></div></div>'
             f'<div class="hv2-acts"><a class="hv2-act" href="/web/stock-analysis?code={html.escape(_row["code"], quote=True)}">分析這檔股票 →</a><button type="button" class="hv2-act" data-holding-action="target">檢視配置差距</button></div></div></article>')
     _home_holdings_preview_html = (
