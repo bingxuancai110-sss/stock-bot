@@ -1,3 +1,4 @@
+Warning: fs was declared with const; use let for reassignable variables.
 
 
 def _line_external_browser_url(url):
@@ -39860,6 +39861,7 @@ _HV2_CTRL_CSS = r"""
 #hv2 summary::-webkit-details-marker{display:none}
 #hv2 .hv2-more{width:100%;min-height:44px;padding:10px 0;text-align:center;color:#1A56DB;font-size:14px;font-weight:600;border-top:1px solid #F0F1F4}
 #hv2 .hv2-more[hidden]{display:none}
+#hv2 [data-hv2-item][hidden]{display:none!important}
 #hv2 .hv2-seg{display:flex;gap:2px}
 #hv2 .hv2-seg button{min-height:32px;padding:4px 10px;text-align:center;border-radius:6px;color:#6B7280;font-size:13px;font-weight:600}
 #hv2 .hv2-seg button.is-active{background:#E5E7EB;color:#111827}
@@ -39952,7 +39954,8 @@ _HV2_JS = r'''<script>
   function itemSel(g){return g.hasAttribute('data-hv2-holdings')?'.hv2-hold':'.hv2-row';}
   function syncGroup(g){
     var b=g.querySelector('[data-hv2-more]');if(!b)return;
-    var lim=parseInt(g.getAttribute('data-limit'),10)||3,n=g.querySelectorAll('[data-hv2-item]').length,open=g.classList.contains('is-open');
+    var lim=parseInt(g.getAttribute('data-limit'),10)||3,items=g.querySelectorAll(itemSel(g)+'[data-hv2-item]'),n=items.length,open=g.classList.contains('is-open');
+    items.forEach(function(item,index){item.hidden=!open&&index>=lim;});
     var label=open?'收合 ▴':'查看其餘 '+Math.max(0,n-lim)+' 檔 ▾',hide=n<=lim;
     if(b.hidden!==hide)b.hidden=hide;if(b.textContent!==label)b.textContent=label;
   }
@@ -39966,7 +39969,7 @@ _HV2_JS = r'''<script>
     if(sort){var list=root.querySelector('[data-hv2-list]');if(!list)return;var key=sort.getAttribute('data-hv2-sort'),cards=Array.prototype.slice.call(list.querySelectorAll('.hv2-hold'));
       cards.sort(function(a,b){if(key==='name')return(a.dataset.name||'').localeCompare(b.dataset.name||'','zh-Hant');return Number(b.dataset[key]||0)-Number(a.dataset[key]||0);});
       cards.forEach(function(c){list.appendChild(c);});
-      root.querySelectorAll('[data-hv2-sort]').forEach(function(x){x.classList.toggle('is-active',x===sort);x.setAttribute('aria-pressed',x===sort?'true':'false');});return;}
+      root.querySelectorAll('[data-hv2-sort]').forEach(function(x){x.classList.toggle('is-active',x===sort);x.setAttribute('aria-pressed',x===sort?'true':'false');});syncAll();return;}
     var act=ev.target.closest('[data-holding-action="target"]');
     if(act){var t=document.querySelector('.home-target-collapse')||document.querySelector('.home-detail-collapse');if(t){t.open=true;t.scrollIntoView({behavior:'smooth',block:'start'});}}
   });
@@ -43136,7 +43139,22 @@ def web_portfolio(uid):
     body = f"""
 {daily_top}
 {f'<div class="msg today-target-save-message">{msg}</div>' if msg and request.method == "POST" and request.form.get("action") == "save_target_weights" else ''}
-{industry_css}<div class="section-head"><h2>完整組合分析</h2><span class="section-note">往下查看詳細資料</span></div>
+<style>
+.home-analysis-disclosure{{margin:14px 0 22px;border:1px solid #DDE6EF;border-radius:14px;background:#F7FAFD;overflow:hidden;box-shadow:0 2px 10px rgba(24,55,88,.035)}}
+.home-analysis-disclosure>summary{{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 16px;cursor:pointer;list-style:none;color:#173A5E}}
+.home-analysis-disclosure>summary::-webkit-details-marker{{display:none}}
+.home-analysis-disclosure>summary b{{display:block;font-size:16px;line-height:1.35}}
+.home-analysis-disclosure>summary small{{display:block;margin-top:3px;color:#71839A;font-size:11px;line-height:1.45}}
+.home-analysis-disclosure>summary em{{flex:none;color:#1769B0;font-size:12px;font-style:normal;font-weight:800}}
+.home-analysis-disclosure[open]>summary{{border-bottom:1px solid #DDE6EF;background:#fff}}
+.home-analysis-body{{padding:14px 12px 4px}}
+.home-analysis-body>.section-head:first-child{{margin-top:0}}
+@media(max-width:480px){{.home-analysis-disclosure>summary{{padding:13px 14px}}.home-analysis-body{{padding:12px 10px 3px}}}}
+</style>
+<details class="home-analysis-disclosure" id="home-analysis">
+<summary><span><b>完整組合分析</b><small>總覽、組合走勢與目標配置</small></span><em>展開查看 ↓</em></summary>
+<div class="home-analysis-body">
+{industry_css}<div class="section-head"><h2>組合總覽</h2><span class="section-note">目前持倉摘要</span></div>
 <div class="totals"><div><div class="total-label">總市值</div><div class="total-value num">{total_value:,.0f}</div><div class="total-sub">{fmt_pct(pl_total)}</div></div><div><div class="total-label">持股檔數</div><div class="total-value num">{len(holdings)}</div><div class="total-sub">{len(by_industry)} 個產業</div></div><div><div class="total-label">最大單一持股</div><div class="total-value num">{top['weight']:.1f}%</div><div class="total-sub">{top['name']}</div></div></div>
 <div class="section-head"><h2>組合走勢</h2><span class="section-note">相對起始日漲跌幅</span></div><div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
 <details class="home-target-collapse" id="home-target-settings">
@@ -43144,6 +43162,8 @@ def web_portfolio(uid):
   {today_target_allocation_html}
 </details>
 {today_target_script}
+</div>
+</details>
 
 """
     if request.method == "GET" and wants_fragment():
