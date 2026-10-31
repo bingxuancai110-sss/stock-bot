@@ -31444,6 +31444,25 @@ def web_positions(uid):
 @media(max-width:520px){.position-card-primary>div{padding:8px 6px!important;min-height:54px!important;border-radius:11px!important}.position-card-primary small{font-size:10px!important;white-space:nowrap}.position-card-primary b{font-size:14px!important}}
 .position-card{position:relative;border-left:4px solid #d9e3ec;transition:border-color .18s,box-shadow .18s;background:#fff}.position-card:has(.position-card-primary .up){border-left-color:#d93025}.position-card:has(.position-card-primary .down){border-left-color:#0b8f55}.position-card .up{color:#d93025!important}.position-card .down{color:#0b8f55!important}.position-factors{margin-top:10px;border-top:1px solid #edf1f4;padding-top:2px}.position-factors>summary{list-style:none;cursor:pointer;padding:11px 2px 9px;color:#2a5b7f;font-size:13px;font-weight:850;display:flex;align-items:center;justify-content:space-between}.position-factors>summary::-webkit-details-marker{display:none}.position-factors>summary:after{content:'＋';font-size:17px;font-weight:500;color:#8294a6}.position-factors[open]>summary:after{content:'−'}.position-factors-body{padding:4px 0 10px}.position-factor-loading,.position-factor-empty{padding:11px 12px;border:1px dashed #d7e2ea;border-radius:11px;background:#f8fafc;color:#71808f;font-size:12px;line-height:1.6}.position-factor-overview{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-radius:12px;background:#f5f9fc;border:1px solid #dfe9f1;margin-bottom:9px}.position-factor-overview small{display:block;color:#71808f;font-size:10px}.position-factor-overview b{display:block;margin-top:2px;color:#173b5d;font-size:22px;line-height:1}.position-factor-overview em{font-style:normal;color:#607789;font-size:11px;line-height:1.45;text-align:right}.position-factor-list{display:grid;gap:7px}.position-factor-item>summary{list-style:none;cursor:pointer}.position-factor-item>summary::-webkit-details-marker{display:none}.position-factor-item>summary b{white-space:nowrap}.position-factor-item[open]>summary b{ }.position-factor-details{margin-top:8px;padding:9px 10px;border-top:1px solid rgba(120,140,155,.18);background:rgba(255,255,255,.62);border-radius:8px;color:#526879;font-size:11px;line-height:1.7}.position-factor-details>div{margin:2px 0}.position-factor-details b{color:#244f70;font-weight:900}.position-factor-item.strong .position-factor-details{background:#fffafa}.position-factor-item.weak .position-factor-details{background:#f7fcf8}.position-factor-item.mid .position-factor-details{background:#fffdf8}.position-factor-item{padding:9px 10px;border:1px solid #e4ebf0;border-radius:10px;background:#fff}.position-factor-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.position-factor-head span{font-size:12px;font-weight:850;color:#294e6d}.position-factor-head b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.position-factor-track{height:8px;margin-top:6px;background:#e9eff3;border-radius:99px;overflow:hidden}.position-factor-track i{display:block;height:100%;border-radius:99px}.position-factor-item.strong .position-factor-head b{color:#1f638f}.position-factor-item.strong .position-factor-track i{background:#2d78a8}.position-factor-item.mid .position-factor-head b{color:#a66b18}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral .position-factor-head b{color:#667788}.position-factor-item.neutral .position-factor-track i{background:#91a2af}.position-factor-item.weak .position-factor-head b{color:#a14d4d}.position-factor-item.weak .position-factor-track i{background:#c56b6b}.position-factor-note{margin:8px 0 0;padding:9px 10px;border-radius:9px;background:#f8fafc;color:#526879;font-size:11px;line-height:1.6}.position-factor-note b{color:#244f70}.position-live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#12a150;margin-right:5px;vertical-align:1px;box-shadow:0 0 0 3px rgba(18,161,80,.12)}.position-factor-source{margin-top:7px;color:#8997a4;font-size:10px}.position-factor-status{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.position-factor-status span{padding:4px 7px;border-radius:999px;font-size:10px;font-weight:800;background:#eef4f8;color:#45647a}.position-factor-status span.good{background:#fff0f0;color:#c62828}.position-factor-status span.warn{background:#fff4e4;color:#9a651d}.position-factor-status span.weak{background:#eaf4ef;color:#087443}.position-factor-legend{display:flex;flex-wrap:wrap;gap:5px 9px;padding:0 2px 8px;color:#71808f;font-size:10px;line-height:1.4}.pf-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:3px;vertical-align:-1px}.pf-dot.strong{background:#d93025}.pf-dot.mid{background:#d59a37}.pf-dot.weak{background:#0b8f55}.pf-dot.neutral{background:#d8dee3}.position-factor-item.strong{border-color:#efc3c3;background:#fff5f5}.position-factor-item.strong .position-factor-head b{color:#c62828}.position-factor-item.strong .position-factor-track i{background:#d93025}.position-factor-item.mid{border-color:#f1d8a7;background:#fffaf0}.position-factor-item.mid .position-factor-head b{color:#9a651d}.position-factor-item.mid .position-factor-track i{background:#d59a37}.position-factor-item.neutral{border-color:#d9e1e8;background:#f8fafc}.position-factor-item.weak{border-color:#bfe3cf;background:#f3fbf6}.position-factor-item.weak .position-factor-head b{color:#087443}.position-factor-item.weak .position-factor-track i{background:#0b8f55}.position-factor-note{border-left:4px solid #52718d}.position-factor-note b{color:#244f70}
 
+/* V37: holdings read as one native portfolio list; keep every detail/action available on expand. */
+body #app-page-content .rows:has(.position-card){display:block!important;margin:8px 0 18px!important;padding:0 14px!important;border-radius:18px!important;background:#fff!important;border:1px solid #E4E9ED!important;box-shadow:0 3px 12px rgba(25,48,68,.035)!important;overflow:hidden!important}
+body #app-page-content .rows:has(.position-card) .position-card{display:block!important;margin:0!important;padding:15px 2px 11px!important;border:0!important;border-bottom:1px solid #E7EBEE!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;overflow:visible!important}
+body #app-page-content .rows:has(.position-card) .position-card:last-child{border-bottom:0!important}
+body #app-page-content .rows:has(.position-card) .position-card:has(.position-card-primary .up),body #app-page-content .rows:has(.position-card) .position-card:has(.position-card-primary .down){border-left:0!important}
+body #app-page-content .rows:has(.position-card) .position-card-top{align-items:center!important;gap:8px!important}
+body #app-page-content .rows:has(.position-card) .position-card-title h3{font-size:18px!important;color:#182F42!important}
+body #app-page-content .rows:has(.position-card) .position-card-code{min-width:42px!important;height:26px!important;border-radius:8px!important;background:#EFF3F5!important;color:#466173!important;font-size:11px!important}
+body #app-page-content .rows:has(.position-card) .position-card-price b{font-size:20px!important;color:#20384B!important}
+body #app-page-content .rows:has(.position-card) .position-card-primary{margin:11px 0 4px!important;padding:8px 0!important;gap:0!important;border-top:1px solid #EEF1F3!important;border-bottom:1px solid #EEF1F3!important}
+body #app-page-content .rows:has(.position-card) .position-card-primary>div{min-height:0!important;padding:3px 7px!important;border-radius:0!important;background:transparent!important;border-left:1px solid #EEF1F3!important}
+body #app-page-content .rows:has(.position-card) .position-card-primary>div:first-child{border-left:0!important;padding-left:0!important}
+body #app-page-content .rows:has(.position-card) .position-card-primary small{font-size:10px!important;color:#82909A!important}
+body #app-page-content .rows:has(.position-card) .position-card-primary b{font-size:14px!important;color:#263F52!important}
+body #app-page-content .rows:has(.position-card) .position-more{margin-top:2px!important;border-top:0!important}
+body #app-page-content .rows:has(.position-card) .position-more>summary{padding:7px 0 2px!important;font-size:11px!important;color:#587488!important}
+body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-radius:9px!important;background:#F6F8F9!important}
+@media(max-width:520px){body #app-page-content .rows:has(.position-card){padding:0 11px!important;border-radius:15px!important}body #app-page-content .rows:has(.position-card) .position-card{padding-top:13px!important}body #app-page-content .rows:has(.position-card) .position-card-title h3{font-size:17px!important}body #app-page-content .rows:has(.position-card) .position-card-price b{font-size:19px!important}body #app-page-content .rows:has(.position-card) .position-card-primary>div{padding:3px 5px!important}}
+
 .position-submit-progress-backdrop{position:fixed;inset:0;background:rgba(18,38,56,.42);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);z-index:100000;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box}
 .position-submit-progress-card{width:min(390px,100%);background:#fff;border:1px solid rgba(31,71,107,.12);border-radius:24px;box-shadow:0 24px 70px rgba(14,36,55,.28);padding:24px 22px 22px;text-align:center;animation:positionProgressIn .2s ease-out}
 @keyframes positionProgressIn{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
@@ -38110,6 +38129,28 @@ body #app-page-content .rank-rows .rank-card .bot-history-price-values {
     先確認自己的操作有沒有理由。</span>
 </div>
 </details>"""
+    body += """<style id="app-native-board-v1">
+/* Make the leaderboard scan like one ranked list, while retaining all expanded detail. */
+body #app-page-content .rank-rows{display:block!important;margin:9px 0 18px!important;padding:0 14px!important;border:1px solid #E3E8EC!important;border-radius:17px!important;background:#fff!important;box-shadow:0 3px 12px rgba(25,48,68,.035)!important;overflow:hidden!important}
+body #app-page-content .rank-rows .rank-card,body #app-page-content .rank-rows .rank-card.rank-champion,body #app-page-content .rank-rows .rank-card.rank-silver,body #app-page-content .rank-rows .rank-card.rank-bronze{margin:0!important;padding:13px 1px!important;border:0!important;border-bottom:1px solid #E7EBEE!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+body #app-page-content .rank-rows .rank-card:last-child{border-bottom:0!important}
+body #app-page-content .rank-rows .rank-card.rank-mine{background:#F5F9FC!important}
+body #app-page-content .rank-rows .rank-row-main{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;align-items:center!important;gap:4px 8px!important}
+body #app-page-content .rank-rows .rank-primary-line{grid-column:1;grid-row:1;display:flex!important;align-items:center!important;gap:9px!important;min-width:0!important}
+body #app-page-content .rank-rows .rank-number{display:inline-flex!important;align-items:center!important;justify-content:center!important;width:30px!important;height:30px!important;flex:none!important;border-radius:10px!important;background:#F0F3F5!important;color:#5B6D79!important;font-size:12px!important;font-weight:850!important}
+body #app-page-content .rank-rows .rank-champion .rank-number{background:#F8F0DC!important;color:#916719!important}
+body #app-page-content .rank-rows .rank-primary-line .name{overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;font-size:14px!important;font-weight:800!important}
+body #app-page-content .rank-rows .rank-return{grid-column:2!important;grid-row:1!important;justify-self:end!important;margin:0!important;padding:5px 9px!important;border-radius:9px!important;font-size:15px!important;font-weight:900!important;white-space:nowrap!important}
+body #app-page-content .rank-rows .rank-movement{grid-column:1/-1!important;margin-left:39px!important;font-size:10px!important}
+body #app-page-content .rank-rows .rank-meta{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:0 10px!important;margin:7px 0 0 39px!important;padding:0!important;border:0!important;background:transparent!important}
+body #app-page-content .rank-rows .rank-meta-item{padding:5px 0!important;border-bottom:0!important}
+body #app-page-content .rank-rows .rank-meta-item>em{font-size:9px!important}
+body #app-page-content .rank-rows .rank-meta-value{font-size:12px!important}
+body #app-page-content .rank-rows .rank-detail,body #app-page-content .rank-rows .rank-private{margin:5px 0 0 39px!important}
+body #app-page-content .rank-rows .rank-honour{display:none!important}
+body #app-page-content .rank-rows .rank-detail>summary{padding:8px 0 2px!important;font-size:11px!important}
+@media(max-width:480px){body #app-page-content .rank-rows{padding:0 11px!important}body #app-page-content .rank-rows .rank-meta{grid-template-columns:repeat(2,minmax(0,1fr))!important;margin-left:39px!important}}
+</style>"""
     print("⏱️ 排行榜頁：榜單 %.0fms、排名狀態 %.0fms、HTML %.0fms、合計 %.0fms" % (
         (board_done - board_started) * 1000,
         (rank_status_done - board_done) * 1000,
@@ -39934,6 +39975,30 @@ _HV2_CSS = r"""
  #hv2 .hv2-hold-line{grid-template-columns:minmax(0,1.25fr) .78fr .68fr .58fr!important;gap:3px!important}
  #hv2 .hv2-c{font-size:11px!important}
 }
+/* V37: a compact, touch-first portfolio overview instead of nested report cards. */
+#hv2{background:#F5F7F8!important;padding-top:4px!important}
+#hv2 .hv2-sec{border:0!important;border-radius:0!important;box-shadow:none!important;background:transparent!important;margin:0!important;padding:16px 3px!important}
+#hv2 .hv2-sec.first{margin:0 -14px 7px!important;padding:20px 18px!important;border-radius:0 0 22px 22px!important;background:linear-gradient(135deg,#102B45,#24577D)!important;box-shadow:0 8px 22px rgba(20,43,67,.14)!important}
+#hv2 .hv2-sec[aria-label="大盤與我的組合"]{margin:0 0 8px!important;padding:14px 12px!important;border-radius:14px!important;background:#fff!important}
+#hv2 .hv2-sec[aria-label="我的排名"]{padding:11px 3px!important;border-bottom:1px solid #E2E7EB!important}
+#hv2 .hv2-sync{margin:0;padding:9px 3px;border:0;font-size:11px}
+#hv2 .hv2-sec[aria-label="我的正負貢獻"]{padding-top:14px!important}
+#hv2 .hv2-h{font-size:18px!important}
+#hv2 .hv2-sub{margin:0 0 4px!important}
+#hv2 .hv2-ghead{margin-top:11px!important;padding:8px 0 5px!important;border-top:1px solid #E5E9EC!important}
+#hv2 .hv2-pill{font-size:13px!important}
+#hv2 .hv2-row{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:2px 12px!important;padding:9px 0 11px!important}
+#hv2 .hv2-row-main b{font-size:14px!important}
+#hv2 .hv2-row-main b small{display:inline!important;font-size:10px!important;font-weight:600!important;color:#85919C!important}
+#hv2 .hv2-row-main .hv2-meta,#hv2 .hv2-row-main .impact-realized{display:none!important}
+#hv2 .hv2-row strong{grid-column:2;grid-row:1;align-self:center;font-size:15px!important;font-variant-numeric:tabular-nums}
+#hv2 .hv2-cbar{grid-column:1/-1;height:5px!important;margin-top:4px!important;border-radius:99px!important;background:#E9EDF0!important}
+#hv2 .hv2-cbar i{border-radius:99px!important}
+#hv2 .hv2-sec[aria-label="我的正負貢獻"] .hv2-g-up .hv2-pill:before{content:'↗ ';}
+#hv2 .hv2-sec[aria-label="我的正負貢獻"] .hv2-g-down .hv2-pill:before{content:'↘ ';}
+#hv2 .hv2-journal-wrap{margin:0;padding:14px 3px!important}
+#hv2 .hv2-fold{border:0!important;border-top:1px solid #E1E6EA!important;border-radius:0!important;background:transparent!important}
+@media(max-width:480px){#hv2 .hv2-sec.first{margin-left:-11px!important;margin-right:-11px!important;padding:18px 15px!important}#hv2 .hv2-sec[aria-label="大盤與我的組合"]{padding:12px 9px!important}}
 """
 _HV2_CTRL_CSS = r"""
 #hv2 button,#hv2 summary,#hv2 a{all:unset;box-sizing:border-box;cursor:pointer;-webkit-tap-highlight-color:transparent;display:block;transition:none}
@@ -40927,13 +40992,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         rows = []
         _mx = max([abs(_e[2]) for _e in entries] + [0.0001])
         for idx, (holding, pct, contribution) in enumerate(entries, 1):
-            direction = "增加" if contribution > 0 else "減少"
-            change_word = "上漲" if pct > 0 else "下跌"
-            realized_text = realized_today_text(holding)
-            realized_html = (f'<small class="impact-realized {"up" if holding.get("today_realized_pl", 0) >= 0 else "down"}">'
-                             f'{html.escape(realized_text)}</small>' if realized_text else "")
+            code = html.escape(str(holding.get("code") or ""))
             rows.append(
-                f'''<div class="hv2-row" data-hv2-item><div class="hv2-row-main"><b>{html.escape(str(holding['name']))}</b><small class="hv2-meta"><span>{holding_day_word(holding)}{change_word} {abs(pct):.2f}%</span><span>{html.escape(contribution_basis_text(holding))}</span></small>{realized_html}<i class="hv2-cbar"><i style="width:{min(100.0, abs(contribution) / _mx * 100.0):.0f}%"></i></i></div><strong class="{value_class}">{direction}約 {abs(contribution):.2f}%</strong></div>''')
+                f'''<div class="hv2-row" data-hv2-item><div class="hv2-row-main"><b>{html.escape(str(holding['name']))}{f' <small>({code})</small>' if code else ''}</b><i class="hv2-cbar"><i style="width:{min(100.0, abs(contribution) / _mx * 100.0):.0f}%"></i></i></div><strong class="{value_class}">{contribution:+.2f}%</strong></div>''')
         return ''.join(rows)
 
     positive_lead = positive_entries[0] if positive_entries else None
@@ -40989,8 +41050,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     positive_rows_html = contribution_detail_rows(positive_entries, "up")
     negative_rows_html = contribution_detail_rows(negative_entries, "down")
     contribution_groups = (
-        _hv2_group_html("up", "正貢獻", len(positive_entries), positive_rows_html)
-        + _hv2_group_html("down", "負貢獻", len(negative_entries), negative_rows_html))
+        _hv2_group_html("up", "推升組合", len(positive_entries), positive_rows_html)
+        + _hv2_group_html("down", "拖累組合", len(negative_entries), negative_rows_html))
     contribution_html = contribution_groups
 
 
