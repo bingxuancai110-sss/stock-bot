@@ -17503,14 +17503,43 @@ def get_previous_scores(user_id, codes, days_back=7):
             (str(user_id).strip(), codes, days_back),
         )
         rows = cursor.fetchall()
+        result = {r[0]: {"date": r[1], "total": r[2], "chip": r[3],
+                         "position": r[4], "revenue": r[5], "valuation": r[6],
+                         "asset_type": r[7] or "stock",
+                         "factor_revenue": r[8], "factor_valuation": r[9],
+                         "factor_momentum": r[10], "factor_streak": r[11],
+                         "factor_chip_tech": r[12], "factor_caps": r[13]}
+                  for r in rows}
+
+        # LINE 單次查詢的股票不一定在該使用者自選清單內，因此個人快照可能不存在。
+        # 五大因子是全站共用模型，前次分數可安全地從其他使用者已保存的同股票快照補齊；
+        # 僅讀取股票代號與分數，不讀取或暴露其他使用者識別資料。
+        missing_codes = [code for code in codes if code not in result]
+        if missing_codes:
+            cursor.execute(
+                """
+                SELECT DISTINCT ON (code)
+                       code, snapshot_date, total, chip, position, revenue, valuation,
+                       asset_type, factor_revenue, factor_valuation, factor_momentum,
+                       factor_streak, factor_chip_tech, factor_caps
+                FROM watchlist_scores
+                WHERE code = ANY(%s)
+                  AND snapshot_date < CURRENT_DATE
+                  AND snapshot_date >= CURRENT_DATE - %s
+                ORDER BY code, snapshot_date DESC
+                """,
+                (missing_codes, days_back),
+            )
+            fallback_rows = cursor.fetchall()
+            for r in fallback_rows:
+                result[r[0]] = {"date": r[1], "total": r[2], "chip": r[3],
+                                "position": r[4], "revenue": r[5], "valuation": r[6],
+                                "asset_type": r[7] or "stock",
+                                "factor_revenue": r[8], "factor_valuation": r[9],
+                                "factor_momentum": r[10], "factor_streak": r[11],
+                                "factor_chip_tech": r[12], "factor_caps": r[13]}
         cursor.close()
-        return {r[0]: {"date": r[1], "total": r[2], "chip": r[3],
-                       "position": r[4], "revenue": r[5], "valuation": r[6],
-                       "asset_type": r[7] or "stock",
-                       "factor_revenue": r[8], "factor_valuation": r[9],
-                       "factor_momentum": r[10], "factor_streak": r[11],
-                       "factor_chip_tech": r[12], "factor_caps": r[13]}
-                for r in rows}
+        return result
     except Exception as e:
         print(f"❌ 讀取歷史評分失敗: {e}")
         return {}
@@ -18126,12 +18155,18 @@ def build_single_stock_report(code, user_id=None):
 
     score_change = None
     if score and user_id:
+        # 先讀取前次快照，再保存本次查詢分數；如此首次查詢不會把自己當成前次，
+        # 但從這次起，即使股票不在自選清單，後續查詢也能累積個股歷史分數。
         prev = get_previous_scores(user_id, [code]).get(code)
         if prev:
             score["previous_snapshot"] = prev
         arrow, change_txt = describe_score_change(score, prev)
         if arrow:
             score_change = f"{arrow} {change_txt}"
+        try:
+            save_watchlist_scores(user_id, {code: score})
+        except Exception as snapshot_exc:
+            print(f"⚠️ LINE 個股歷史分數快照保存失敗 {code}: {snapshot_exc}")
 
     bd = get_investor_breakdown([code]).get(code)
     watchlist_status = None
