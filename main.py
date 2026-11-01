@@ -44273,10 +44273,23 @@ def web_portfolio(uid):
 #hv2 .hv2-journal-wrap .position-journal-category.delete b,#hv2 .hv2-journal-wrap .position-journal-category.delete small{{color:#626C76!important}}
 #hv2 .hv2-journal-wrap .position-journal-category.new{{background:#F8F4E8!important;background-color:#F8F4E8!important;color:#78663B!important;border-color:#E9E0C9!important}}
 #hv2 .hv2-journal-wrap .position-journal-category.new b,#hv2 .hv2-journal-wrap .position-journal-category.new small{{color:#78663B!important}}
+#hv2 .hv2-journal-wrap .position-journal-row.state-add,#hv2 .hv2-journal-wrap .position-journal-row.state-reduce,#hv2 .hv2-journal-wrap .position-journal-row.state-new,#hv2 .hv2-journal-wrap .position-journal-row.state-delete{{background:transparent!important;background-color:transparent!important}}
 .hv2 .position-journal,.hv2 .position-journal-row{{animation:home-journal-arrive .42s ease both}}
 @keyframes home-journal-arrive{{from{{opacity:0;transform:translateY(10px)}}to{{opacity:1;transform:translateY(0)}}}}
 @keyframes home-hero-arrive{{from{{opacity:.5;transform:translateY(-10px)}}to{{opacity:1;transform:translateY(0)}}}}
 @keyframes home-card-arrive{{from{{opacity:0;transform:translateY(12px)}}to{{opacity:1;transform:translateY(0)}}}}
+@media(max-width:640px){{
+#hv2 .hv2-journal-wrap .position-journal-table-head{{display:grid!important;grid-template-columns:minmax(0,1.3fr) .55fr .7fr .76fr .62fr!important;gap:4px!important;padding:8px!important;font-size:9px!important}}
+#hv2 .hv2-journal-wrap .position-journal-row{{grid-template-columns:minmax(0,1.3fr) .55fr .7fr .76fr .62fr!important;gap:4px!important;padding:10px 8px!important;align-items:center!important}}
+#hv2 .hv2-journal-wrap .position-journal-name{{grid-column:1!important;grid-row:1!important}}
+#hv2 .hv2-journal-wrap .position-journal-status{{grid-column:2!important;grid-row:1!important;text-align:center!important}}
+#hv2 .hv2-journal-wrap .position-journal-cell:nth-of-type(3){{grid-column:3!important;grid-row:1!important}}
+#hv2 .hv2-journal-wrap .position-journal-cell:nth-of-type(4){{grid-column:4!important;grid-row:1!important;text-align:center!important}}
+#hv2 .hv2-journal-wrap .position-journal-cell:nth-of-type(5){{grid-column:5!important;grid-row:1!important;text-align:center!important;display:block!important}}
+#hv2 .hv2-journal-wrap .position-journal-cell{{padding-top:0!important;border-top:0!important;font-size:9px!important;line-height:1.25!important}}
+#hv2 .hv2-journal-wrap .position-journal-cell b{{font-size:10px!important}}
+#hv2 .hv2-journal-wrap .position-journal-cell small{{font-size:8px!important}}
+}}
 @media(prefers-reduced-motion:reduce){{.hv2 .daily-hero,.hv2 .daily-card,.hv2 .home-dashboard-card,.hv2 .home-contribution-section,.hv2 .position-journal,.hv2 .position-journal-row{{animation:none!important;transition:none!important}}}}
 </style>
 {f'<div class="msg today-target-save-message">{msg}</div>' if msg and request.method == "POST" and request.form.get("action") == "save_target_weights" else ''}
