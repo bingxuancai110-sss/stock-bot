@@ -38841,6 +38841,15 @@ def web_market(uid):
     if(lb.low<=Math.min.apply(null,lw.map(function(q){return q.low;})) && lb.low<levelClose) supportCandidates.push(lb.low);
     if(lb.high>=Math.max.apply(null,lw.map(function(q){return q.high;})) && lb.high>levelClose) resistanceCandidates.push(lb.high);
   }
+  // If recent daily bars contain no confirmed swing low, use the nearest older confirmed low.
+  // Keep this fixed to source bars so zooming or panning cannot change the reference price.
+  if(!supportCandidates.length && bars.length>levelBars.length) {
+    var fallbackEnd=bars.length-levelBars.length, fallbackStart=Math.max(2,fallbackEnd-120);
+    for(var fi=fallbackStart;fi<fallbackEnd;fi++) {
+      var fw=bars.slice(fi-2,fi+3), fb=bars[fi];
+      if(fw.length===5 && fb.low<=Math.min.apply(null,fw.map(function(q){return q.low;})) && fb.low<levelClose) supportCandidates.push(fb.low);
+    }
+  }
   var fixedLevels=[];
   if(supportCandidates.length) fixedLevels.push({price:Math.max.apply(null,supportCandidates),label:'支撐參考',color:'#278A70'});
   if(resistanceCandidates.length) fixedLevels.push({price:Math.min.apply(null,resistanceCandidates),label:'壓力參考',color:'#C16C53'});
