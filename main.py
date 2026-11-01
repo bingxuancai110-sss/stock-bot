@@ -38699,7 +38699,8 @@ def web_market(uid):
         visible_daily_bars = min(60, count) if period == "day" else count
         chart_initial_x = max(0, round(W - right - plot_w * visible_daily_bars / count, 3)) if period == "day" else 0
         chart_initial_w = round(W - chart_initial_x, 3)
-        vals = [b["high"] for b in bars] + [b["low"] for b in bars]
+        scale_bars = bars[-visible_daily_bars:] if period == "day" else bars
+        vals = [b["high"] for b in scale_bars] + [b["low"] for b in scale_bars]
         lo, hi = min(vals), max(vals)
         pad = max((hi - lo) * .06, hi * .003, .02)
         lo, hi = lo - pad, hi + pad
@@ -38713,11 +38714,11 @@ def web_market(uid):
             yy = _my(val)
             y_grid.append(f'<line x1="{left}" y1="{yy:.1f}" x2="{W-right}" y2="{yy:.1f}"/><text class="market-price-label" x="{left-9}" y="{yy+4:.1f}" text-anchor="end">{val:,.0f}</text>')
         pivot_highs, pivot_lows = [], []
-        for i in range(2, count - 2):
-            if bars[i]["high"] >= max(b["high"] for b in bars[i-2:i+3]):
-                pivot_highs.append(bars[i]["high"])
-            if bars[i]["low"] <= min(b["low"] for b in bars[i-2:i+3]):
-                pivot_lows.append(bars[i]["low"])
+        for i in range(2, len(scale_bars) - 2):
+            if scale_bars[i]["high"] >= max(b["high"] for b in scale_bars[i-2:i+3]):
+                pivot_highs.append(scale_bars[i]["high"])
+            if scale_bars[i]["low"] <= min(b["low"] for b in scale_bars[i-2:i+3]):
+                pivot_lows.append(scale_bars[i]["low"])
         current_close = bars[-1]["close"]
         support_levels = sorted(set(round(v, 2) for v in pivot_lows if v < current_close))
         resistance_levels = sorted(set(round(v, 2) for v in pivot_highs if v > current_close))
