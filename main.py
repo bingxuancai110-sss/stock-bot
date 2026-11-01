@@ -21349,6 +21349,23 @@ def _do_warmup():
         print(f"❌ 預熱美股指數失敗: {e}")
         done.append("美股指數 失敗")
 
+    # Keep the US → Taiwan industry radar in the existing morning warm-up window.
+    # Other warm-up calls happen later in the day too, so fetch this history only
+    # during the 07:00 Taiwan run, after the US close, and never on weekends.
+    try:
+        if taiwan_today().weekday() < 5 and taiwan_now().hour == 7:
+            radar_blueprint = app.blueprints.get("us_rotation")
+            radar_refresh = getattr(radar_blueprint, "us_rotation_refresh_job", None)
+            if callable(radar_refresh):
+                done.append(radar_refresh(allow_unofficial_override=True))
+            else:
+                done.append("美股輪動 略過（更新工作尚未註冊）")
+        else:
+            done.append("美股輪動 略過（僅交易日早上更新）")
+    except Exception as e:
+        print(f"❌ 預熱美股輪動失敗: {e}")
+        done.append("美股輪動 失敗")
+
     return "、".join(done)
 
 
