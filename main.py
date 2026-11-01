@@ -38804,6 +38804,21 @@ def web_market(uid):
    var deaValues = ema(dif.filter(function (v) { return v !== null; }), 9), dea = bars.map(function () { return null; });
    deaValues.forEach(function (v, i) { if (v !== null && firstDif + i < dea.length) dea[firstDif + i] = v; });
   });
+  function ema(values, period) {
+    var out = values.map(function () { return null; });
+    if (values.length < period) return out;
+    var value = values.slice(0, period).reduce(function (a, b) { return a + b; }, 0) / period;
+    out[period - 1] = value;
+    var alpha = 2 / (period + 1);
+    for (var i = period; i < values.length; i++) { value = values[i] * alpha + value * (1 - alpha); out[i] = value; }
+    return out;
+  }
+  var fastEma = ema(bars.map(function (b) { return b.close; }), 12);
+  var slowEma = ema(bars.map(function (b) { return b.close; }), 26);
+  var dif = bars.map(function (b, i) { return fastEma[i] === null || slowEma[i] === null ? null : fastEma[i] - slowEma[i]; });
+  var firstDif = dif.findIndex(function (v) { return v !== null; });
+  var deaValues = ema(dif.filter(function (v) { return v !== null; }), 9), dea = bars.map(function () { return null; });
+  deaValues.forEach(function (v, i) { if (v !== null && firstDif + i < dea.length) dea[firstDif + i] = v; });
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
   function el(tag, attrs, parent, text) {
     var node = document.createElementNS(ns, tag);
