@@ -38935,7 +38935,7 @@ def web_market(uid):
       var g=el('g',{class:'market-auto-level'}), yy=y(l.price);
       el('line',{x1:left,y1:yy,x2:width-right,y2:yy,stroke:l.color,'stroke-width':1,'stroke-dasharray':'7 5'},g);
     });
-     [[highBar,'#C16C53','high'],[lowBar,'#278A70','low']].forEach(function(q){
+     [[highBar,'#D74642','high'],[lowBar,'#16856B','low']].forEach(function(q){
        var b=q[0],cx=x(nearestDate(b.date)),yy=y(b[q[2]]),rightSide=cx<width*.72,tx=cx+(rightSide?6:-6),anchor=rightSide?'start':'end',g=el('g',{class:'market-extreme'});
        el('circle',{cx:cx,cy:yy,r:2.5,fill:q[1],opacity:'.8'},g);
        el('text',{x:tx,y:yy+(q[2]==='high'?-7:13),'text-anchor':anchor,fill:q[1],class:'market-extreme-price'},g,Number(b[q[2]]).toFixed(2));
