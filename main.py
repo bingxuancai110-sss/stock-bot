@@ -25567,6 +25567,24 @@ body #app-page-content .holding-card button:active {
   background-color:#EDF4FA !important; color:#245B82 !important;
   opacity:1 !important; -webkit-tap-highlight-color:transparent !important;
 }
+/* Preserve the operation journal's action colors across the shared visual theme. */
+#app-page-content .position-journal-category.new { background:#F6F0D7 !important; color:#927A12 !important; border-color:#E8DCAD !important; }
+#app-page-content .position-journal-category.new b,
+#app-page-content .position-journal-badge.new { color:#927A12 !important; }
+#app-page-content .position-journal-badge.new { background:#F6F0D7 !important; }
+#app-page-content .position-journal-category.add { background:#FCE9E6 !important; color:#D93025 !important; border-color:#F4C9C3 !important; }
+#app-page-content .position-journal-category.add b,
+#app-page-content .position-journal-badge.add { color:#D93025 !important; }
+#app-page-content .position-journal-badge.add { background:#FCE9E6 !important; }
+#app-page-content .position-journal-category.reduce { background:#E8F2EA !important; color:#0B8F55 !important; border-color:#CDE3D2 !important; }
+#app-page-content .position-journal-category.reduce b,
+#app-page-content .position-journal-badge.reduce { color:#0B8F55 !important; }
+#app-page-content .position-journal-badge.reduce { background:#E8F2EA !important; }
+#app-page-content .position-journal-category.delete { background:#EDF0F3 !important; color:#667085 !important; border-color:#DCE1E6 !important; }
+#app-page-content .position-journal-category.delete b,
+#app-page-content .position-journal-badge.delete { color:#667085 !important; }
+#app-page-content .position-journal-badge.delete { background:#EDF0F3 !important; }
+
 """
 
 def render_page(title, body, nav_active=None, user_name=None):
