@@ -151,10 +151,14 @@ __RESULT__
         expected = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
         return bool(supplied and uid and hmac.compare_digest(expected, supplied))
 
-    def _refresh_job():
+    def _refresh_job(allow_unofficial_override=False):
         from .providers import ProviderDisabled
         from .config import SOURCE_NAME
-        allow = os.environ.get("US_ROTATION_YAHOO_TERMS_ACKNOWLEDGED", "").strip().lower() in {"1", "true", "yes"}
+        # The existing morning warm-up already refreshes US quotes through the
+        # project's Yahoo adapter. Reuse that explicit operational path for the
+        # rotation snapshot; direct/manual refresh remains behind the source gate.
+        allow = bool(allow_unofficial_override) or os.environ.get(
+            "US_ROTATION_YAHOO_TERMS_ACKNOWLEDGED", "").strip().lower() in {"1", "true", "yes"}
         histories, errors, fetched_at = fetch_market_histories(allow_unofficial=allow)
         if not histories:
             raise ProviderDisabled("行情來源尚未啟用或所有代號抓取失敗")
@@ -173,6 +177,10 @@ __RESULT__
                 (len(snapshot.get("industries") or []),
                  len((taiwan_snapshot or {}).get("rows") or []),
                  ", ".join(sorted(errors)) or "無"))
+
+    # Allow the existing authenticated daily warm-up to invoke this same job
+    # without exposing a second public refresh path.
+    bp.us_rotation_refresh_job = _refresh_job
 
     @bp.route("/web/us-rotation")
     @web_login_required
