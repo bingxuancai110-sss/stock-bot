@@ -27323,6 +27323,33 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   -webkit-text-fill-color:var(--holding-accent,#557b62)!important;
 }}
 </style>
+<style id="stockbot-motion-performance-v1">
+@keyframes stockbot-rise-in{{from{{opacity:0;transform:translate3d(0,10px,0)}}to{{opacity:1;transform:translate3d(0,0,0)}}}}
+@keyframes stockbot-focus-in{{from{{opacity:0;transform:scale(.985)}}to{{opacity:1;transform:scale(1)}}}}
+@keyframes stockbot-row-in{{from{{opacity:0;transform:translate3d(0,6px,0)}}to{{opacity:1;transform:translate3d(0,0,0)}}}}
+/* Each major area gets a short entrance in its own visual rhythm. */
+#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card){{animation:stockbot-focus-in .28s cubic-bezier(.2,.7,.25,1) both}}
+#app-page-content.app-page-enter :is(.daily-fast-card,.portfolio-chart-card,.daily-operation-report){{animation:stockbot-rise-in .28s cubic-bezier(.2,.7,.25,1) both;animation-delay:35ms}}
+#app-page-content.app-page-enter :is(.position-card,.position-fast-card,.holding-card){{animation:stockbot-row-in .22s ease-out both}}
+#app-page-content.app-page-enter :is(.position-card,.position-fast-card,.holding-card):nth-of-type(2){{animation-delay:25ms}}
+#app-page-content.app-page-enter :is(.position-card,.position-fast-card,.holding-card):nth-of-type(3){{animation-delay:50ms}}
+#app-page-content.app-page-enter :is(.position-card,.position-fast-card,.holding-card):nth-of-type(4){{animation-delay:75ms}}
+#app-page-content.app-page-enter :is(.rank-situation,.rank-spotlight){{animation:stockbot-focus-in .28s ease-out both}}
+#app-page-content.app-page-enter .rank-card{{animation:stockbot-row-in .22s ease-out both}}
+#app-page-content.app-page-enter .rank-card:nth-of-type(2){{animation-delay:25ms}}
+#app-page-content.app-page-enter .rank-card:nth-of-type(3){{animation-delay:50ms}}
+#app-page-content.app-page-enter .rank-card:nth-of-type(4){{animation-delay:75ms}}
+#app-page-content.app-page-enter .rank-card:nth-of-type(5){{animation-delay:100ms}}
+#app-page-content.app-page-enter :is(.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row){{animation:stockbot-row-in .2s ease-out both}}
+#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card{{animation:stockbot-focus-in .24s ease-out both}}
+.market-chart-card.is-fullscreen{{animation:stockbot-focus-in .2s ease-out both}}
+.app-bottom-nav a,.top-nav a{{transition:color .18s ease,background-color .18s ease,transform .18s ease}}
+.app-bottom-nav a.on{{animation:stockbot-rise-in .2s ease-out both}}
+/* Defer painting long history sections until they approach the viewport. */
+#app-page-content .leaderboard-history,#app-page-content .position-history,
+#app-page-content .position-journal,#app-page-content .rank-chart-panel{{content-visibility:auto;contain-intrinsic-size:auto 360px}}
+@media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
+</style>
 </head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -38781,6 +38808,7 @@ def web_market(uid):
   var initialSpan = span, lo, hi, width = 1000, height = 500, left = 62, right = 12, top = 16;
    var bottom, volumeTop, volumeBottom, macdTop, macdBottom, plotWidth, frame = null, gesture = null, pointers = new Map();
   var ma = {5: true, 20: true, 60: false}, averages = {};
+  var barTimes = bars.map(function (b) { return Date.parse(b.date); });
   [5, 20, 60].forEach(function (n) {
     var sum = 0;
     averages[n] = bars.map(function (b, i) {
@@ -38804,6 +38832,21 @@ def web_market(uid):
    var deaValues = ema(dif.filter(function (v) { return v !== null; }), 9), dea = bars.map(function () { return null; });
    deaValues.forEach(function (v, i) { if (v !== null && firstDif + i < dea.length) dea[firstDif + i] = v; });
   });
+  function ema(values, period) {
+    var out = values.map(function () { return null; });
+    if (values.length < period) return out;
+    var value = values.slice(0, period).reduce(function (a, b) { return a + b; }, 0) / period;
+    out[period - 1] = value;
+    var alpha = 2 / (period + 1);
+    for (var i = period; i < values.length; i++) { value = values[i] * alpha + value * (1 - alpha); out[i] = value; }
+    return out;
+  }
+  var fastEma = ema(bars.map(function (b) { return b.close; }), 12);
+  var slowEma = ema(bars.map(function (b) { return b.close; }), 26);
+  var dif = bars.map(function (b, i) { return fastEma[i] === null || slowEma[i] === null ? null : fastEma[i] - slowEma[i]; });
+  var firstDif = dif.findIndex(function (v) { return v !== null; });
+  var deaValues = ema(dif.filter(function (v) { return v !== null; }), 9), dea = bars.map(function () { return null; });
+  deaValues.forEach(function (v, i) { if (v !== null && firstDif + i < dea.length) dea[firstDif + i] = v; });
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
   function el(tag, attrs, parent, text) {
     var node = document.createElementNS(ns, tag);
@@ -38815,9 +38858,11 @@ def web_market(uid):
   function y(price) { return top + (hi - price) / (hi - lo) * (bottom - top); }
   function local(e) { var r = svg.getBoundingClientRect(); return {x: (e.clientX - r.left) * width / r.width, y: (e.clientY - r.top) * height / r.height}; }
   function nearestDate(date) {
-    var t = Date.parse(date), best = 0, distance = Infinity;
-    bars.forEach(function (b, i) { var d = Math.abs(Date.parse(b.date) - t); if (d < distance) { distance = d; best = i; } });
-    return best;
+    var t = typeof date === 'number' ? date : Date.parse(date), lo = 0, hi = barTimes.length;
+    while (lo < hi) { var mid = (lo + hi) >> 1; if (barTimes[mid] < t) lo = mid + 1; else hi = mid; }
+    if (lo <= 0) return 0;
+    if (lo >= barTimes.length) return barTimes.length - 1;
+    return t - barTimes[lo - 1] <= barTimes[lo] - t ? lo - 1 : lo;
   }
   function anchor(e, report) {
     var p = local(e), i = clamp(Math.round(start + (p.x - left) / plotWidth * span - .5), 0, bars.length - 1);
@@ -38977,7 +39022,10 @@ def web_market(uid):
     paintDrawings();
   }
   svg.addEventListener('pointerdown',function(e){
-    if(e.button!==0)return;e.preventDefault();pointers.set(e.pointerId,{clientX:e.clientX,clientY:e.clientY});svg.setPointerCapture(e.pointerId);
+    if(e.button!==0)return;e.preventDefault();
+    if(card.classList.contains('is-fullscreen'))svg.style.touchAction='none';
+    pointers.set(e.pointerId,{clientX:e.clientX,clientY:e.clientY});
+    try{svg.setPointerCapture(e.pointerId);}catch(ignore){}
     if(pointers.size===2){startPinch();return;}if(pointers.size>2)return;
      var p=local(e); if(p.x<left||p.x>width-right||p.y<top||p.y>macdBottom||(mode!=='move'&&p.y>bottom)){gesture=null;return;}
     var a=anchor(e,mode!=='move');show(nearestDate(a.date));
@@ -38986,7 +39034,7 @@ def web_market(uid):
     else if(mode==='move')gesture={kind:'pan',x:e.clientX,start:start,span:span};
     else gesture={kind:mode,a:a,b:a,down:{clientX:e.clientX,clientY:e.clientY}};
   });
-  svg.addEventListener('pointermove',function(e){
+  function handlePointerMove(e){
     if(pointers.has(e.pointerId))pointers.set(e.pointerId,{clientX:e.clientX,clientY:e.clientY});
     if(gesture&&gesture.kind==='pinch'){
       if(pointers.size!==2)return;var p=Array.from(pointers.values()),r=svg.getBoundingClientRect(),ratio=clamp(((p[0].clientX+p[1].clientX)/2-r.left-left)/plotWidth,0,1);
@@ -39001,7 +39049,11 @@ def web_market(uid):
       gesture.drawing.points=gesture.points.map(function(q){return{date:bars[clamp(nearestDate(q.date)+shift,0,bars.length-1)].date,price:Math.max(.01,q.price+delta)};});
     }else gesture.b=p;
     paintDrawings();
-  });
+  }
+  svg.addEventListener('pointermove',handlePointerMove);
+  // Fullscreen browsers may cancel pointer capture when the gesture crosses a viewport edge.
+  // Continue the active gesture at window level so the preview and final pointerup are not lost.
+  window.addEventListener('pointermove',function(e){if(pointers.has(e.pointerId)&&!svg.contains(e.target))handlePointerMove(e);},true);
   function endPointer(e,cancel){
     if(!pointers.has(e.pointerId))return;
     var g=gesture; pointers.delete(e.pointerId);gesture=null;
@@ -39024,6 +39076,8 @@ def web_market(uid):
   svg.addEventListener('pointerup',function(e){endPointer(e,false);});
   svg.addEventListener('pointercancel',function(e){endPointer(e,true);});
   svg.addEventListener('lostpointercapture',function(e){endPointer(e,true);});
+  window.addEventListener('pointerup',function(e){endPointer(e,false);},true);
+  window.addEventListener('pointercancel',function(e){endPointer(e,true);},true);
   svg.addEventListener('wheel',function(e){e.preventDefault();zoom(e.deltaY<0?.85:1.18,clamp((local(e).x-left)/plotWidth,0,1));},{passive:false});
   svg.addEventListener('keydown',function(e){if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();var i=clamp(idx+(e.key==='ArrowLeft'?-1:1),0,bars.length-1);if(i<start||i>=start+span)view(i-span/2,span);show(i);}});
   card.querySelectorAll('[data-chart-zoom]').forEach(function(b){b.onclick=function(){if(b.dataset.chartZoom==='reset')view(bars.length-initialSpan,initialSpan);else zoom(b.dataset.chartZoom==='in'?.75:1.33,.5);};});
