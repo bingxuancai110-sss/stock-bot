@@ -23,7 +23,7 @@ def seed_supply_chain(cursor):
 
 
 def save_snapshot(get_db_connection, release_db_connection, snapshot, price_histories,
-                  errors=None):
+                  errors=None, source_meta=None):
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -38,7 +38,8 @@ def save_snapshot(get_db_connection, release_db_connection, snapshot, price_hist
             RETURNING id
         """, (as_of, snapshot["algorithm_version"], snapshot["source"], snapshot["fetched_at"],
               json.dumps(snapshot, ensure_ascii=False),
-              json.dumps({"errors": errors or {}, "unofficial_source": True}, ensure_ascii=False)))
+              json.dumps({"errors": errors or {}, "unofficial_source": True,
+                          **(source_meta or {})}, ensure_ascii=False)))
         snapshot_id = int(cur.fetchone()[0])
         values = [
             (symbol, row["trade_date"], row.get("close"), row.get("adjusted_close"),
@@ -220,3 +221,4 @@ def read_latest_tw_company_snapshots(get_db_connection, release_db_connection):
         raise
     finally:
         release_db_connection(conn)
+
