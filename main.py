@@ -25145,6 +25145,15 @@ body #app-page-content .holding-card button:active {
   background-color:#EDF4FA !important; color:#245B82 !important;
   opacity:1 !important; -webkit-tap-highlight-color:transparent !important;
 }
+@media (min-width: 761px) {
+  body .app-bottom-nav { display:none !important; }
+  body { padding-bottom:0 !important; }
+  body .wrap { padding-bottom:56px !important; }
+}
+@media (max-width: 760px) {
+  body .top-nav { display:none !important; }
+  body .app-bottom-nav { display:flex !important; }
+}
 
 """
 
@@ -25578,7 +25587,6 @@ def render_page(title, body, nav_active=None, user_name=None):
     if nav_active:
         nav = ("<nav class=\"top-nav\">"
                + tab("/web/portfolio", "今日", "portfolio")
-                       + tab("/web/market", "看盤", "market")
                + tab("/web/leaderboard", "排行榜", "leaderboard")
                + tab("/web/positions", "持股", "positions")
                + tab("/web/market", "看盤", "market")
@@ -25594,7 +25602,7 @@ def render_page(title, body, nav_active=None, user_name=None):
                   + bottom_tab("/web/market", "⌁", "看盤", "market")
                   + bottom_tab("/web/positions", "▣", "持股", "positions")
                   + bottom_tab("/web/workbench", "⌕", "選股", "screener")
-                  + bottom_tab("/web/leaderboard", "≡", "排行", "leaderboard")
+                  + bottom_tab("/web/leaderboard", "≡", "排行榜", "leaderboard")
                   + f'<a href="/web/more" class="{"on" if more_on else ""}" data-app-nav="1"><b>⋯</b>更多</a>'
                   + "</div></div>")
 
@@ -31478,7 +31486,8 @@ def web_positions(uid):
 <section class="portfolio-chart-card portfolio-trend-card" id="portfolio-trend">
   <div class="section-head"><h2>組合 vs 加權指數</h2>
     <span class="section-note">相對起始日漲跌幅</span></div>
-  <p class="portfolio-chart-note">同一張圖比較你的組合與台灣加權指數。組合採時間加權報酬，加碼與贖回不影響曲線；除權當天股價機械性下跌但股數尚未調整，那一天會持平不計入。若快照不足兩天，會明確顯示資料累積狀態。</p>
+  <p class="portfolio-chart-note">比較持股組合與加權指數的報酬走勢。</p>
+  <details class="portfolio-chart-method"><summary>計算方式</summary><p>組合採時間加權報酬，加碼與贖回不影響曲線；除權當天股價已調整但股數尚未更新時，該日持平不計入。快照不足兩天時會標示資料累積狀態。</p></details>
   <div class="portfolio-trend-body">{position_trend_html}</div>
 </section>"""
 
@@ -31590,6 +31599,10 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
  .position-card-primary b{font-size:12px!important}
  .position-more>summary{min-height:38px!important;padding-top:8px!important}
 }
+.portfolio-chart-note{margin:0 0 10px;color:#687C8D;font-size:12px;line-height:1.5}
+.portfolio-chart-method{margin:0 0 12px;color:#627487;font-size:11px}
+.portfolio-chart-method summary{cursor:pointer;font-weight:800}
+.portfolio-chart-method p{margin:6px 0 0;line-height:1.55}
 </style>"""
 
     body = f"""
@@ -38820,6 +38833,17 @@ def web_market(uid):
   var deaValues = ema(dif.filter(function (v) { return v !== null; }), 9), dea = bars.map(function () { return null; });
   deaValues.forEach(function (v, i) { if (v !== null && firstDif + i < dea.length) dea[firstDif + i] = v; });
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  // Fixed to the selected period's source data; zoom and pan never recalculate these prices.
+  var levelBars=config.period==='day'?bars.slice(-60):bars.slice();
+  var levelClose=bars.length?bars[bars.length-1].close:0, supportCandidates=[], resistanceCandidates=[];
+  for(var li=2;li<levelBars.length-2;li++) {
+    var lw=levelBars.slice(li-2,li+3), lb=levelBars[li];
+    if(lb.low<=Math.min.apply(null,lw.map(function(q){return q.low;})) && lb.low<levelClose) supportCandidates.push(lb.low);
+    if(lb.high>=Math.max.apply(null,lw.map(function(q){return q.high;})) && lb.high>levelClose) resistanceCandidates.push(lb.high);
+  }
+  var fixedLevels=[];
+  if(supportCandidates.length) fixedLevels.push({price:Math.max.apply(null,supportCandidates),label:'支撐參考',color:'#278A70'});
+  if(resistanceCandidates.length) fixedLevels.push({price:Math.min.apply(null,resistanceCandidates),label:'壓力參考',color:'#C16C53'});
   function el(tag, attrs, parent, text) {
     var node = document.createElementNS(ns, tag);
     Object.keys(attrs || {}).forEach(function (k) { node.setAttribute(k, attrs[k]); });
@@ -38915,22 +38939,7 @@ def web_market(uid):
       for(var i=Math.max(0,first-1);i<=Math.min(bars.length-1,last+1);i++) if(averages[n][i]!==null) points.push(x(i)+','+y(averages[n][i]));
       el('polyline',{class:'market-ma','data-ma':n,points:points.join(' '),fill:'none',stroke:{5:'#D49B2D',20:'#397FB3',60:'#9A65B1'}[n],'stroke-width':1.6,display:ma[n]?'':'none'},plot);
     });
-    var supports=[],resistances=[],close=visible[visible.length-1].close;
-    for(var i=2;i<visible.length-2;i++) {
-      var around=visible.slice(i-2,i+3), b=visible[i];
-      if(b.low<=Math.min.apply(null,around.map(function(q){return q.low;})) && b.low<close) supports.push(b.low);
-      if(b.high>=Math.max.apply(null,around.map(function(q){return q.high;})) && b.high>close) resistances.push(b.high);
-    }
-    if(!supports.length && first>2) {
-      var earlierSupportStart=Math.max(2,first-60);
-      for(var i=earlierSupportStart;i<first;i++) {
-        var earlierWindow=bars.slice(i-2,i+3), earlierLow=bars[i];
-        if(earlierWindow.length===5 && earlierLow.low<=Math.min.apply(null,earlierWindow.map(function(q){return q.low;})) && earlierLow.low<close && earlierLow.low>=lo) supports.push(earlierLow.low);
-      }
-    }
-    var levels=[];
-    if(supports.length) levels.push({price:Math.max.apply(null,supports),label:'支撐參考',color:'#278A70'});
-    if(resistances.length) levels.push({price:Math.min.apply(null,resistances),label:'壓力參考',color:'#C16C53'});
+    var levels=fixedLevels;
     var highBar=visible.reduce(function(a,b){return b.high>a.high?b:a;}), lowBar=visible.reduce(function(a,b){return b.low<a.low?b:a;});
     var summary=card.querySelector('#market-level-summary');
     if(summary){
@@ -38939,6 +38948,7 @@ def web_market(uid):
       summary.querySelector('[data-summary="resistance"]').textContent=resistance?resistance.price.toFixed(2):'—';
     }
     levels.forEach(function (l) {
+      if(l.price<lo||l.price>hi)return;
       var g=el('g',{class:'market-auto-level'}), yy=y(l.price);
       el('line',{x1:left,y1:yy,x2:width-right,y2:yy,stroke:l.color,'stroke-width':1,'stroke-dasharray':'7 5'},g);
     });
@@ -40654,32 +40664,7 @@ def render_portfolio_fast_summary(uid):
     )
 
     fast_quote_text = html.escape(_homepage_quote_for(snapshot_date))
-    rank_status = get_fast_rank_summary(uid)
-    print("⏱️ 今日首頁 fast：快照＋事件 %.0fms、排名 %.0fms、合計 %.0fms" % (
-        (context_done - fast_started) * 1000,
-        (time.monotonic() - context_done) * 1000,
-        (time.monotonic() - fast_started) * 1000))
-    rank_html = []
-    for board in ("short", "long"):
-        status = rank_status[board]
-        if status.get("rank") is None:
-            value = "尚未上榜"
-            note = "累積有效快照後開始顯示"
-        elif status.get("delta") is None:
-            value = f'#{status["rank"]}'
-            note = "等待前一日排名快照"
-        elif status.get("direction") == "up":
-            value = f'#{status["rank"]}　<span class="up">↑ {status["delta"]} 名</span>'
-            note = f'昨日 #{status["previous"]}'
-        elif status.get("direction") == "down":
-            value = f'#{status["rank"]}　<span class="down">↓ {abs(status["delta"])} 名</span>'
-            note = f'昨日 #{status["previous"]}'
-        else:
-            value = f'#{status["rank"]}　<span class="flat">— 無變化</span>'
-            note = f'昨日 #{status["previous"]}'
-        rank_html.append(
-            f'<div class="daily-fast-rank"><small>{html.escape(str(status["label"]))}</small>'
-            f'<b>{value}</b><span>{note}</span></div>')
+    print("⏱️ 今日首頁 fast：快照與事件 %.0fms" % ((time.monotonic() - fast_started) * 1000))
 
     return f'''<style>
 .daily-fast-sync{{display:flex;gap:11px;align-items:flex-start;background:#F2F2F7;border:1px solid #D9C9A7;border-left:4px solid var(--brass);border-radius:12px;padding:14px 15px;margin:-4px 0 14px;box-shadow:0 3px 12px rgba(35,39,35,.05)}}.daily-fast-sync-dot{{width:10px;height:10px;margin-top:5px;border-radius:50%;background:var(--brass);box-shadow:0 0 0 4px rgba(139,105,52,.12);flex:none}}.daily-fast-sync b{{display:block;color:var(--ink);font-size:15px;line-height:1.35}}.daily-fast-sync-copy span{{display:block;margin-top:4px;color:var(--ink-soft);font-size:12px;line-height:1.65}}.daily-fast-hero{{background:linear-gradient(135deg,#F9F9FB,#e7ece8);padding:22px 18px 18px;margin:-8px -2px 14px;border-bottom:1px solid #d7d4ca}}.daily-fast-hero .eyebrow{{letter-spacing:.14em;color:var(--brass);font-size:11px}}.daily-fast-hero h1{{font-size:26px;line-height:1.25;margin:8px 0 14px}}.daily-fast-market{{display:flex;gap:8px;flex-wrap:wrap}}.daily-fast-market span{{background:rgba(255,255,255,.72);padding:8px 10px;border-radius:8px;font-size:12px}}.daily-fast-market b{{display:block;font-size:16px;margin-top:3px}}.daily-fast-market small{{display:block;margin-top:3px;color:var(--ink-soft);font-size:9px;line-height:1.35}}.daily-fast-card{{background:#fff;border:1px solid #E5E5EA;border-radius:12px;padding:15px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}}.daily-fast-title{{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:7px}}.daily-fast-title h2{{margin:0;font-size:19px}}.daily-fast-event{{display:flex;gap:10px;padding:11px 0;border-top:1px solid #eee}}.daily-fast-number{{background:var(--brass);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;line-height:22px;flex:none;font-size:12px}}.daily-fast-detail{{font-size:12.5px;color:var(--ink-soft);margin-top:3px}}.daily-fast-empty{{padding:11px 0;color:var(--ink-soft);font-size:13px}}.daily-fast-empty span{{font-size:12px}}.daily-fast-ranks{{display:grid;grid-template-columns:1fr;gap:0}}.daily-fast-rank{{background:transparent;border-bottom:1px solid #E5E5EA;border-radius:0;padding:9px 0}}.daily-fast-rank:last-child{{border-bottom:0}}.daily-fast-rank small,.daily-fast-rank>span{{display:block;color:var(--ink-soft);font-size:11px}}.daily-fast-rank b{{display:block;font-size:18px;margin:4px 0}}.daily-fast-panels{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px}}.daily-fast-panel{{min-width:0;padding:11px 10px;border:1px solid rgba(139,105,52,.24);border-radius:9px;background:rgba(255,255,255,.58)}}.daily-fast-panel-title{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding-bottom:7px;border-bottom:1px solid rgba(139,105,52,.16)}}.daily-fast-panel-title b{{font-size:12px}}.daily-fast-panel-title a,.daily-fast-panel-title span{{font-size:8px;color:var(--brass);white-space:nowrap}}.daily-fast-index-row{{display:flex;justify-content:space-between;align-items:center;gap:4px;padding:8px 0;border-bottom:1px solid #E5E5EA}}.daily-fast-index-row:last-child{{border-bottom:0}}.daily-fast-index-row b{{font-size:10px}}.daily-fast-index-row span{{font-size:9px;text-align:right;white-space:nowrap}}.daily-fast-index-row strong{{display:block;font-size:10px;color:var(--ink)}}.daily-fast-index-row em{{font-style:normal;font-size:9px}}@media (max-width:640px){{.daily-fast-panels{{grid-template-columns:1fr}}}}.daily-fast-summary-stack{{display:block;margin-top:11px}}.daily-fast-rank-panel{{padding:10px 13px}}.daily-fast-rank-panel .daily-fast-panel-title{{padding-bottom:6px}}.daily-fast-rank-panel .daily-fast-ranks{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}.daily-fast-rank-panel .daily-fast-rank{{border:0;padding:8px 0}}.daily-fast-rank-panel .daily-fast-rank b{{font-size:16px;margin:3px 0}}.daily-fast-quote{{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:8px;padding:12px 13px;border:1px solid rgba(139,105,52,.22);border-radius:9px;background:#F9F9FB}}.daily-fast-quote strong{{color:var(--ink);font-family:"Kaiti TC","BiauKai","DFKai-SB","STKaiti","Noto Serif CJK TC","Noto Serif TC",serif;font-size:16px;font-weight:700;letter-spacing:.12em;line-height:1.5;text-align:center;white-space:nowrap}}@media (max-width:640px){{.daily-fast-rank-panel .daily-fast-ranks{{gap:6px}}.daily-fast-quote{{align-items:center;display:flex}}.daily-fast-quote strong{{display:block;margin-top:0;text-align:center;font-size:17px}}}}
@@ -40741,7 +40726,7 @@ def render_portfolio_fast_summary(uid):
     <div class="daily-fast-market">{market_html}</div>
   </div>
 </section>
-<div class="daily-fast-summary-stack"><section class="daily-fast-panel daily-fast-rank-panel"><div class="daily-fast-panel-title"><b>🏆 我的排名</b><a href="/web/leaderboard">查看完整榜單 →</a></div><div class="daily-fast-ranks">{"".join(rank_html)}</div></section><section class="daily-fast-quote"><strong>{fast_quote_text}</strong></section></div>'''
+<div class="daily-fast-summary-stack"><section class="daily-fast-quote"><strong>{fast_quote_text}</strong></section></div>'''
 
 
 # ===== V291 首頁 v2：看盤軟體版型（無卡片、分隔線＋表格） =====
@@ -41061,7 +41046,6 @@ def _hv2_group_html(kind, title, count, rows_html, limit=3, holdings=False):
 
 def _render_home_v2(d):
     """首頁 v2（看盤軟體版型）：純函式，只吃已算好的字串／數值。"""
-    rank_html = d.get("rank_html") or ""
     return (_HV2_STYLE + f"""
 <div id="hv2" class="hv2">
   <section class="hv2-sec first" data-home-privacy-card aria-label="我的投資">
@@ -41083,7 +41067,7 @@ def _render_home_v2(d):
       <a class="market" href="/web/market" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18V8m5 10V4m5 14v-7m6 7V6M2 21h20"/></svg></i><span><b>個股看盤</b><small>走勢・K 線圖</small></span><em aria-hidden="true">›</em></a>
       <a class="holdings" href="/web/positions" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V5m0 14h17M7 15l4-5 3 2 6-7"/><circle cx="20" cy="5" r="1"/></svg></i><span><b>我的持股</b><small>部位・損益分析</small></span><em aria-hidden="true">›</em></a>
       <a class="screen" href="/web/workbench" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5M8 11h6m-3-3v6"/></svg></i><span><b>智慧選股</b><small>找出市場機會</small></span><em aria-hidden="true">›</em></a>
-      <a class="rank" href="/web/leaderboard" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V9h4v10m4 0V4h4v15m4 0v-7h-4"/><path d="M2 21h20"/></svg></i><span><b>市場排行</b><small>熱門・績效榜</small></span><em aria-hidden="true">›</em></a>
+      <a class="rank" href="/web/leaderboard" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V9h4v10m4 0V4h4v15m4 0v-7h-4"/><path d="M2 21h20"/></svg></i><span><b>排行榜</b><small>績效榜・賽季榜</small></span><em aria-hidden="true">›</em></a>
     </div>
   </section>
   <style>
@@ -41103,6 +41087,15 @@ def _render_home_v2(d):
   #hv2 .hv2-feature-launcher em{{flex:none;color:#94A3AE;font-size:21px;font-style:normal;font-weight:500}}
   @media(min-width:700px){{#hv2 .hv2-feature-launcher{{grid-template-columns:repeat(4,minmax(0,1fr))}}}}
   @media(max-width:360px){{#hv2 .hv2-feature-launcher{{gap:6px}}#hv2 .hv2-feature-launcher>a{{gap:7px;padding:9px 8px}}#hv2 .hv2-feature-launcher i{{width:34px;height:34px}}}}
+  #hv2 .hv2-feature-launcher>a{{position:relative;overflow:hidden;border:1px solid #E4EAF0;background:linear-gradient(135deg,#fff,#F3F7FB);box-shadow:0 5px 14px rgba(31,54,74,.06);transition:transform .16s ease,box-shadow .16s ease}}
+  #hv2 .hv2-feature-launcher>a:active{{transform:scale(.98);box-shadow:0 2px 7px rgba(31,54,74,.08)}}
+  #hv2 .hv2-feature-launcher>a:nth-child(1) i{{background:#E7F2FC;color:#347FB4}}
+  #hv2 .hv2-feature-launcher>a:nth-child(2) i{{background:#E6F5EF;color:#28866B}}
+  #hv2 .hv2-feature-launcher>a:nth-child(3) i{{background:#FFF2DF;color:#B77D27}}
+  #hv2 .hv2-feature-launcher>a:nth-child(4) i{{background:#F1EBFA;color:#8064A9}}
+  #hv2 .hv2-feature-launcher>a:nth-child(5) i{{background:#FCEAE8;color:#C2675E}}
+  #hv2 .hv2-feature-launcher small{{color:#72859A}}
+  #hv2 .hv2-sec[aria-label="大盤比較"]{{background:linear-gradient(120deg,#F3F8FC,#F8F6EF);border:1px solid #E5ECF2;border-radius:14px;padding:12px;margin:10px 0}}
   </style>
 
   <section class="hv2-sec" aria-label="大盤與我的組合">
@@ -41113,8 +41106,6 @@ def _render_home_v2(d):
     </div>
     <span class="hv2-src" data-home-market-freshness>{html.escape(d["market_status"])}</span>
   </section>
-
-  <section class="hv2-sec" aria-label="我的排名"><div class="hv2-rank">{rank_html}<a class="hv2-link" href="/web/leaderboard">看榜單 →</a></div></section>
 
   <div class="hv2-sync" aria-live="polite"><b data-home-live-title>{html.escape(d["sync_title"])}</b>　<span data-home-live-note>{html.escape(d["sync_detail"])}</span></div>
 
@@ -41176,7 +41167,7 @@ def _hv2_official_closes():
 
 def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_total,
                            taiex=None, position_journal_html="", daily_context=None,
-                           rank_status=None, daily_pretrade_exposure=None,
+                           daily_pretrade_exposure=None,
                            realized_by_code=None, intraday_payload=None):
 
 
@@ -41326,7 +41317,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         else:
             market_status_text = "大盤正式收盤資料尚未確認，未使用舊快照"
         home_sync_title = "今日資料已整合完成"
-        home_sync_detail = "收盤資料、今日事件與排名摘要已載入；詳細貢獻明細可往下展開查看。"
+        home_sync_detail = "收盤資料、今日事件已載入；詳細貢獻明細可往下展開查看。"
     # The contribution date is a market-session date, not always the calendar date.
     # On weekends/holidays and before the opening bell we use the latest prior TWSE session.
     # After close we use today's completed daily bar; during a live session we require fresh
@@ -41584,13 +41575,6 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     basis_fallback = any(not h.get("basis_available", True)
                          for h in reduced_contribution_holdings)
     realized_today_total = sum(float(value) for value in realized_by_code.values()) if realized_by_code else 0.0
-    # 首頁只需要顯示自己的排名與升降，不需要為此阻塞整個完整排行榜重算。
-    # 使用最近兩次已保存的收盤快照；若外層已平行取得就直接重用。
-    if rank_status is None:
-        rank_started = time.monotonic()
-        rank_status = get_fast_rank_summary(uid)
-        print("⏱️ 今日完整頁：排名摘要 %.0fms" % ((time.monotonic() - rank_started) * 1000))
-
     # 首頁事件視覺化：代號永遠有名稱；支撐／壓力／收盤價格用漲跌語意著色。
     # 紅＝數值往上、綠＝數值往下；不是單純依事件 severity 上色。
     position_name_map = {}
@@ -41772,23 +41756,6 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       <b>{state_icon} {html.escape(signal_state["title"])}</b><br><span>{html.escape(signal_state["detail"])}</span>
     </div>'''
 
-    def rank_line(board):
-        s = rank_status[board]
-        if s["rank"] is None:
-            return f'''<div class="rank-mini"><span>{s["label"]}</span><b>尚未上榜</b><small>累積有效快照後開始顯示</small></div>'''
-        if s["delta"] is None:
-            return f'''<div class="rank-mini"><span>{s["label"]}</span><b>#{s["rank"]}</b><small>收盤快照後更新排名變化</small></div>'''
-        previous_label = "前次收盤"
-        if s["direction"] == "up":
-            movement = f'<em class="up">↑ {s["delta"]} 名</em>'
-            streak = f"・連續 {s['streak']} 次上升" if s["streak"] >= 2 else ""
-        elif s["direction"] == "down":
-            movement = f'<em class="down">↓ {abs(s["delta"])} 名</em>'
-            streak = f"・連續 {s['streak']} 次下降" if s["streak"] >= 2 else ""
-        else:
-            movement, streak = '<em class="flat">— 無變化</em>', ""
-        return f'''<div class="rank-mini"><span>{s["label"]}</span><b>#{s["rank"]} {movement}</b><small>{previous_label} #{s["previous"]}{streak}</small></div>'''
-
     def contribution_basis_text(holding, compact=False):
         basis = holding.get("contribution_basis")
         if basis == "intraday_trade_segments":
@@ -41856,19 +41823,10 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
                             "查看組合貢獻與完整資料。")
             focus_href, focus_cta, focus_class = "/web/positions", "查看持股", "focus-up"
         else:
-            moved = next((rank_status[b] for b in ("short", "long")
-                          if rank_status[b].get("direction") in ("up", "down")), None)
-            if moved:
-                focus_kicker = "你的排行榜有變化"
-                direction_text = "上升" if moved.get("direction") == "up" else "下降"
-                focus_title = f"{moved['label']}排名{direction_text}至 #{moved['rank']}"
-                focus_detail = f"昨日 #{moved['previous']}，查看完整排行榜戰況。"
-                focus_href, focus_cta, focus_class = "/web/leaderboard", "查看排行榜", "focus-rank"
-            else:
-                focus_kicker = "今天先確認狀態"
-                focus_title = "今天沒有新的重大提醒"
-                focus_detail = "市場與你的持股目前沒有符合提醒規則的新變化。"
-                focus_href, focus_cta, focus_class = "/web/positions", "查看持股", "focus-quiet"
+            focus_kicker = "今日觀察"
+            focus_title = "留意持股與市場變化"
+            focus_detail = "查看個股行情、持股表現與市場資訊。"
+            focus_href, focus_cta, focus_class = "/web/market", "前往看盤", "focus-neutral"
 
     focus_html = f'''<section class="daily-focus {focus_class}">
   <div class="daily-focus-head"><span>{html.escape(focus_kicker)}</span><small>今日焦點</small></div>
@@ -42684,7 +42642,6 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         "market_status": market_status_text, "portfolio_label": portfolio_label, "portfolio_html": portfolio_text,
         "total_value": float(total_value or 0), "total_cost": float(total_cost or 0),
         "pl_html": fmt_pct(pl_total) if pl_total is not None else "—", "holdings_count": len(holdings or []),
-        "rank_html": _hv2_rank_item("短線", rank_status["short"]) + _hv2_rank_item("長線", rank_status["long"]),
         "sync_title": home_sync_title, "sync_detail": home_sync_detail,
         "contribution_day_label": _contribution_day_label, "stale_notice": stale_notice,
         "contribution_groups": contribution_html, "holdings_html": _home_holdings_preview_html,
@@ -43760,7 +43717,6 @@ def web_portfolio(uid):
     # V247：快照 DB 讀取也移入 worker，與首頁共享資料載入重疊執行。
     aux_trend_future = aux_executor.submit(_render_home_trend_async)
     aux_realized_future = aux_executor.submit(get_realized_trades, uid, 500)
-    aux_rank_future = aux_executor.submit(get_fast_rank_summary, uid)
 
     # 六份共享資料快取 300 秒，避免頁面切換重複打 Supabase；大盤摘要命中時另行刷新。
     # 個股即時價格不走這個共享快取，而是使用帶日期／時段的行情快取並疊加官方報價。
@@ -44125,7 +44081,6 @@ def web_portfolio(uid):
             print(f"⚠️ 首頁組合走勢載入失敗（不阻塞首頁）: {type(exc).__name__}: {exc}", flush=True)
             trend_html = '<div class="empty">組合走勢暫時無法載入，其他首頁資料仍可使用。</div>'
         realized_trades = aux_realized_future.result()
-        page_rank_status = aux_rank_future.result()
         homepage_intraday_payload = None
         if homepage_intraday_payload_future is not None:
             try:
@@ -44193,7 +44148,6 @@ def web_portfolio(uid):
                                           price_map, pl_total, taiex=taiex,
                                           position_journal_html=journal_html,
                                           daily_context=daily_context,
-                                          rank_status=page_rank_status,
                                           daily_pretrade_exposure=daily_pretrade_exposure,
                                           realized_by_code=realized_by_code,
                                           intraday_payload=homepage_intraday_payload)
