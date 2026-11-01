@@ -10,7 +10,10 @@ from math import isfinite
 from .config import INDUSTRIES
 
 
-SYMBOLS = {item["ticker"] for item in INDUSTRIES} | {"SPY"}
+REQUIRED_SYMBOLS = {item["ticker"] for item in INDUSTRIES} | {"SPY"}
+OPTIONAL_SYMBOLS = {"^VIX", "HYG", "IEF", "^GSPC", "^TWII"}
+SYMBOLS = REQUIRED_SYMBOLS | OPTIONAL_SYMBOLS
+INDEX_CLOSE_SYMBOLS = {"^VIX", "^GSPC", "^TWII"}
 REQUIRED_COLUMNS = {"symbol", "trade_date", "open", "high", "low", "close", "volume"}
 MAX_ROWS = 20_000
 
@@ -30,7 +33,7 @@ def parse_history_csv(text):
     histories = {symbol: [] for symbol in SYMBOLS}
     seen = set()
     today = date.today()
-    adjusted_seen = 0
+    adjusted_seen = set()
 
     for row_number, raw in enumerate(reader, start=2):
         if row_number > MAX_ROWS + 1:
@@ -57,11 +60,13 @@ def parse_history_csv(text):
             volume = int(float(row["volume"]))
             if has_adjusted and row.get("adjusted_close"):
                 adjusted_close = float(row["adjusted_close"])
-                adjusted_seen += 1
+                adjusted_seen.add(key)
             else:
                 adjusted_close = values["close"]
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise ImportValidationError(f"第 {row_number} 列價格或成交量不是有效數字。") from exc
+        if has_adjusted and not row.get("adjusted_close") and symbol not in INDEX_CLOSE_SYMBOLS:
+            raise ImportValidationError(f"第 {row_number} 列 {symbol} 缺少 adjusted_close；ETF 請使用還原收盤價。")
         if (any(not isfinite(value) or value <= 0 for value in values.values())
                 or not isfinite(adjusted_close) or adjusted_close <= 0 or volume < 0):
             raise ImportValidationError(f"第 {row_number} 列價格必須大於 0、成交量不可小於 0。")
@@ -73,25 +78,28 @@ def parse_history_csv(text):
             "close": values["close"], "adjusted_close": adjusted_close, "volume": volume,
         })
 
-    empty = sorted(symbol for symbol, rows in histories.items() if not rows)
-    if has_adjusted and adjusted_seen != len(seen):
-        raise ImportValidationError("有提供 adjusted_close 欄位時，每一列都必須填寫，不能混用還原與未還原價格。")
+    empty = sorted(symbol for symbol in REQUIRED_SYMBOLS if not histories[symbol])
     if empty:
         raise ImportValidationError("缺少以下代號資料：" + ", ".join(empty))
-    too_short = sorted(f"{symbol}（{len(rows)} 日）" for symbol, rows in histories.items() if len(rows) < 61)
+    too_short = sorted(f"{symbol}（{len(histories[symbol])} 日）" for symbol in REQUIRED_SYMBOLS if len(histories[symbol]) < 61)
     if too_short:
         raise ImportValidationError("每個代號至少需 61 個交易日，缺少：" + ", ".join(too_short))
     for rows in histories.values():
         rows.sort(key=lambda item: item["trade_date"])
-    date_sets = {tuple(row["trade_date"] for row in rows) for rows in histories.values()}
+    date_sets = {tuple(row["trade_date"] for row in histories[symbol]) for symbol in REQUIRED_SYMBOLS}
     if len(date_sets) != 1:
         raise ImportValidationError("所有代號的交易日期必須完整對齊，避免不同交易日混算。")
-    last_days = {rows[-1]["trade_date"] for rows in histories.values()}
+    last_days = {histories[symbol][-1]["trade_date"] for symbol in REQUIRED_SYMBOLS}
     if len(last_days) != 1:
         raise ImportValidationError("所有代號的最後交易日必須一致，避免不同日期混算。")
-    return histories, has_adjusted
+    has_adjusted = all((symbol, row["trade_date"]) in adjusted_seen
+                       for symbol in REQUIRED_SYMBOLS for row in histories[symbol])
+    for symbol in histories:
+        histories[symbol].sort(key=lambda item: item["trade_date"])
+    return {symbol: rows for symbol, rows in histories.items() if rows}, has_adjusted
 
 
 def csv_template():
     return "symbol,trade_date,open,high,low,close,adjusted_close,volume\n"
+
 

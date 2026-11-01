@@ -155,8 +155,10 @@ def calculate_snapshot(price_histories, as_of=None, source="unknown", fetched_at
         elif record.get("score") is None:
             record["rank"] = None
 
-    all_dates = sorted({str(row.get("trade_date")) for rows in price_histories.values() for row in rows if row.get("trade_date")})
-    date_value = as_of or (all_dates[-1] if all_dates else None)
+    # Optional risk/index series can have different holidays; the sector snapshot date
+    # follows its required SPY benchmark, not whichever optional series is newest.
+    benchmark_dates = [str(row.get("trade_date")) for row in benchmark if row.get("trade_date")]
+    date_value = as_of or (benchmark_dates[-1] if benchmark_dates else None)
     return {
         "algorithm_version": ALGORITHM_VERSION,
         "as_of": str(date_value) if date_value else None,
@@ -171,4 +173,5 @@ def calculate_snapshot(price_histories, as_of=None, source="unknown", fetched_at
         "breadth_available": False,
         "industries": sorted(records, key=lambda row: (row.get("overlay", False), row.get("rank") or 99, row["id"])),
     }
+
 
