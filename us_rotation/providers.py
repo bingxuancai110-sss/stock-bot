@@ -46,8 +46,12 @@ def fetch_symbol_history(symbol, timeout=12):
             close = quotes.get("close", [])[index]
             volume = quotes.get("volume", [])[index]
             adj_close = adjusted[index] if index < len(adjusted) else None
-            # No unadjusted substitute: dividend-adjusted return cannot be asserted without it.
-            if close is None or adj_close is None:
+            # Index and volatility series have no meaningful dividend-adjusted close.
+            if close is None:
+                continue
+            if adj_close is None and symbol in {"^VIX", "^GSPC", "^TWII"}:
+                adj_close = close
+            if adj_close is None:
                 continue
             trade_day = datetime.fromtimestamp(int(stamp), timezone.utc).date().isoformat()
             rows.append({
@@ -70,7 +74,9 @@ def fetch_market_histories(allow_unofficial=False):
         raise ProviderDisabled(
             "行情來源為非官方 Yahoo Finance 端點；公開展示／再散布條件尚未確認，未啟用資料更新。"
         )
-    symbols = [item["ticker"] for item in INDUSTRIES] + ["SPY"]
+    # Risk indicators and index closes are optional for sector ranking; failed requests
+    # must not prevent the core industry snapshot from being saved.
+    symbols = [item["ticker"] for item in INDUSTRIES] + ["SPY", "^VIX", "HYG", "IEF", "^GSPC", "^TWII"]
     output, errors = {}, {}
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="us-rotation") as pool:
         futures = {pool.submit(fetch_symbol_history, symbol): symbol for symbol in symbols}
@@ -78,10 +84,11 @@ def fetch_market_histories(allow_unofficial=False):
             symbol = futures[future]
             try:
                 rows = future.result()
-                if len(rows) < 61:
+                if len(rows) < (61 if symbol in {item["ticker"] for item in INDUSTRIES} | {"SPY"} else 6):
                     errors[symbol] = "有效交易日不足 61 日"
                 else:
                     output[symbol] = rows
             except Exception as exc:
                 errors[symbol] = f"{type(exc).__name__}: {str(exc)[:180]}"
     return output, errors, datetime.now(timezone.utc).isoformat()
+
