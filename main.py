@@ -25773,6 +25773,18 @@ body #app-page-content .rank-card .name,body #app-page-content .rank-card .rank-
 body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card .rank-return{font-weight:950!important;}
 '''
 
+    # 手機頁首不要固定在安全區上方；讓整個 masthead 隨頁面自然滑走。
+    # 固定頁首在 iOS 瀏海／LINE WebView 內會蓋住正在閱讀的首頁內容。
+    if nav_active:
+        late_page_css += r'''
+@media(max-width:699px){
+  body .wrap{padding-top:12px!important}
+  body .app-header,body header.app-header{position:relative!important;inset:auto!important;width:100%!important;max-width:760px!important;margin:0 auto 10px!important;padding-top:calc(env(safe-area-inset-top,0px) + 10px)!important;z-index:1!important;transform:none!important}
+  body .app-header .page-back{position:relative!important;inset:auto!important;display:block!important;margin:0 0 8px!important}
+  body .app-header .app-account-link{top:calc(env(safe-area-inset-top,0px) + 10px)!important}
+}
+'''
+
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head>
 <meta charset="UTF-8">
@@ -31422,6 +31434,7 @@ def web_positions(uid):
         allocation_html = f'''<section class="position-allocation" aria-label="持股配置互動圖表">
   <div class="position-allocation-head"><div><h2>持股配置</h2><small>點選圖表或名稱查看市值與權重</small></div><button type="button" data-allocation-reset>顯示全部</button></div>
   <div class="position-allocation-body"><div class="position-allocation-visual"><svg viewBox="0 0 100 100" role="img" aria-label="已取得行情的持股市值權重分布">{''.join(_arc_html)}<circle cx="50" cy="50" r="31" fill="#fff" stroke="#eef1f3" stroke-width=".5"/></svg><div class="position-allocation-center"><b data-allocation-center-title>全部持股</b><strong data-allocation-center-weight>{sum(x["weight"] for x in allocation_items):.1f}%</strong><small data-allocation-center-value>{total_value:,.0f} 元</small></div></div><div class="position-allocation-legend">{''.join(_legend_html)}</div></div>
+  <div class="allocation-selection" aria-live="polite"><span>組合概覽</span><strong>點選圓環或股票名稱</strong><small>立即查看該持股占比與市值，並可跳到持股明細。</small></div>
 </section>'''
 
     # v194：移除組合配置圖；持股頁直接呈現持股明細與組合走勢。
@@ -31903,7 +31916,42 @@ body #app-page-content .allocation-item i{width:8px!important;height:8px!importa
 body #app-page-content .allocation-item span{overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important}
 body #app-page-content .allocation-item b{font-size:10px!important;font-variant-numeric:tabular-nums!important}
 body #app-page-content .allocation-item:focus-visible,body #app-page-content .allocation-slice:focus-visible{outline:2px solid #2875A3!important;outline-offset:2px!important}
+body #app-page-content .allocation-selection{display:grid!important;grid-template-columns:1fr auto!important;gap:4px 10px!important;align-items:center!important;margin-top:12px!important;padding:11px 12px!important;border-radius:12px!important;background:#F3F7FA!important;border:1px solid #E1EAF0!important}
+body #app-page-content .allocation-selection span{grid-column:1!important;color:#718494!important;font-size:10px!important;font-weight:800!important}
+body #app-page-content .allocation-selection strong{grid-column:1!important;color:#19384F!important;font-size:14px!important}
+body #app-page-content .allocation-selection small{grid-column:1!important;color:#667D8F!important;font-size:11px!important;line-height:1.5!important}
+body #app-page-content .allocation-selection button{grid-column:2!important;grid-row:1/4!important;border:0!important;border-radius:9px!important;padding:9px 11px!important;background:#1D5878!important;color:white!important;font-size:11px!important;font-weight:850!important;cursor:pointer!important}
+body #app-page-content .position-card.allocation-focused{background:#F3F8FB!important;box-shadow:inset 3px 0 #2676A5!important}
 </style>"""
+    body += """<script id="positions-allocation-interactions">
+(function(){
+  if(window.__positionAllocationBound)return;
+  window.__positionAllocationBound=true;
+  function selectAllocation(root,code){
+    var button=root.querySelector('[data-allocation-select="'+CSS.escape(code)+'"]');
+    var slice=root.querySelector('.allocation-slice[data-allocation-code="'+CSS.escape(code)+'"]');
+    if(!button)return;
+    root.querySelectorAll('.allocation-item').forEach(function(x){x.setAttribute('aria-pressed',String(x===button));});
+    root.querySelectorAll('.allocation-slice').forEach(function(x){x.classList.toggle('is-selected',x===slice);x.style.opacity=x===slice?'1':'.28';});
+    var title=root.querySelector('[data-allocation-center-title]'),weight=root.querySelector('[data-allocation-center-weight]'),value=root.querySelector('[data-allocation-center-value]');
+    if(title)title.textContent=button.dataset.allocationName||code;
+    if(weight)weight.textContent=Number(button.dataset.allocationWeight||0).toFixed(1)+'%';
+    if(value)value.textContent=Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元';
+    var panel=root.querySelector('.allocation-selection');
+    if(panel){panel.innerHTML='<span>已選取持股</span><strong>'+((button.dataset.allocationName||code).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}))+'（'+code+'）</strong><small>組合占比 '+Number(button.dataset.allocationWeight||0).toFixed(1)+'% ・ 市值 '+Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元</small><button type="button" data-allocation-open="'+code+'">查看持股明細　›</button>';}
+    root.querySelectorAll('.position-card').forEach(function(card){card.classList.toggle('allocation-focused',card.dataset.positionCode===code);});
+  }
+  document.addEventListener('click',function(event){
+    var choose=event.target.closest('[data-allocation-select],[data-allocation-code]');
+    if(choose){var root=choose.closest('.position-allocation');if(root)selectAllocation(root,choose.dataset.allocationSelect||choose.dataset.allocationCode);return;}
+    var reset=event.target.closest('[data-allocation-reset]');
+    if(reset){var root=reset.closest('.position-allocation');if(!root)return;root.querySelectorAll('.allocation-item').forEach(function(x){x.setAttribute('aria-pressed','false');});root.querySelectorAll('.allocation-slice').forEach(function(x){x.classList.remove('is-selected');x.style.opacity='1';});root.querySelector('[data-allocation-center-title]').textContent='全部持股';root.querySelector('[data-allocation-center-weight]').textContent=root.querySelectorAll('.allocation-item').length?Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationWeight||0);},0).toFixed(1)+'%':'0.0%';root.querySelector('[data-allocation-center-value]').textContent=Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationValue||0);},0).toLocaleString('zh-TW')+' 元';root.querySelector('.allocation-selection').innerHTML='<span>組合概覽</span><strong>點選圓環或股票名稱</strong><small>立即查看該持股占比與市值，並可跳到持股明細。</small>';root.querySelectorAll('.position-card').forEach(function(card){card.classList.remove('allocation-focused');});return;}
+    var open=event.target.closest('[data-allocation-open]');
+    if(open){var card=document.querySelector('.position-card[data-position-code="'+CSS.escape(open.dataset.allocationOpen)+'"]');if(card){var detail=card.querySelector('.position-more');if(detail)detail.open=true;card.scrollIntoView({behavior:'smooth',block:'center'});card.classList.add('allocation-focused');}}
+  });
+  document.addEventListener('keydown',function(event){if((event.key==='Enter'||event.key===' ')&&event.target.matches('.allocation-slice')){event.preventDefault();var root=event.target.closest('.position-allocation');if(root)selectAllocation(root,event.target.dataset.allocationCode);}});
+})();
+</script>"""
     print("⏱️ 持股頁：持股資料 %.0fms、法人(持股) %.0fms、3mo行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
         (positions_data_done - positions_data_started) * 1000,
         (inst_done - inst_started) * 1000,
