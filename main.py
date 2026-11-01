@@ -2256,6 +2256,7 @@ def init_db():
             ("holding_period", "TEXT"),
             ("other_assets", "TEXT"),
             ("drawdown_experience", "TEXT"),
+            ("ui_theme", "TEXT"),
         ]:
             cursor.execute(
                 f"ALTER TABLE user_profile ADD COLUMN IF NOT EXISTS {_col} {_type}")
@@ -2654,6 +2655,63 @@ def init_db():
         release_db_connection(conn)
 
 init_db()
+
+
+WEB_UI_THEMES = {
+    "mist": {"label": "霧藍灰", "description": "清爽穩定，延續目前的深藍主視覺。", "page": "#F1F4F7", "surface": "#FFFFFF", "soft": "#E9EEF2", "ink": "#243647", "muted": "#708092", "line": "#DCE3E9", "brand": "#244D68", "hero": "#244D68"},
+    "warm": {"label": "暖白青綠", "description": "偏暖的底色搭配沉穩青綠。", "page": "#F5F3EE", "surface": "#FFFEFB", "soft": "#EBF1EC", "ink": "#2C3935", "muted": "#78827C", "line": "#E4E1D9", "brand": "#315F56", "hero": "#315F56"},
+    "stone": {"label": "淺石墨藍", "description": "低彩度灰藍，俐落、安靜。", "page": "#EFF1F3", "surface": "#FFFFFF", "soft": "#E8EAED", "ink": "#29333D", "muted": "#737C86", "line": "#DDE1E5", "brand": "#354B60", "hero": "#354B60"},
+}
+
+
+def get_web_ui_theme(user_id):
+    """Return the signed-in user's saved site color theme, defaulting to mist blue-gray."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return "mist"
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT ui_theme FROM user_profile WHERE user_id=%s", (uid,))
+        row = cur.fetchone()
+        cur.close()
+        theme = str(row[0] or "").strip() if row else ""
+        return theme if theme in WEB_UI_THEMES else "mist"
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"⚠️ 讀取網站配色偏好失敗：{type(exc).__name__}", flush=True)
+        return "mist"
+    finally:
+        release_db_connection(conn)
+
+
+def save_web_ui_theme(user_id, theme):
+    """Persist a validated site color theme for one user without touching survey fields."""
+    uid = str(user_id or "").strip()
+    theme = str(theme or "").strip()
+    if not uid or theme not in WEB_UI_THEMES:
+        return False
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO user_profile (user_id, ui_theme, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (user_id) DO UPDATE
+            SET ui_theme=EXCLUDED.ui_theme, updated_at=NOW()
+        """, (uid, theme))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as exc:
+        conn.rollback()
+        print(f"⚠️ 儲存網站配色偏好失敗：{type(exc).__name__}", flush=True)
+        return False
+    finally:
+        release_db_connection(conn)
 
 
 def get_portfolio_target_weights(user_id):
@@ -25153,6 +25211,71 @@ body #app-page-content .holding-card button:active {
 
 # V2 template: shared visual system and responsive shell. Feature components retain their
 # semantic classes and data/interaction behavior; this stylesheet standardizes presentation.
+USER_UI_THEME_CSS = r'''
+/* Per-account palette choice: color tokens and shared surfaces only. */
+:root[data-ui-theme="mist"] {
+  color-scheme: light;
+  --ui-page:#F1F4F7 !important; --paper:#F1F4F7 !important; --paper-2:#E9EEF2 !important;
+  --ui-surface:#FFFFFF !important; --card:#FFFFFF !important; --ui-surface-soft:#E9EEF2 !important;
+  --ui-ink:#243647 !important; --ink:#243647 !important; --ink-soft:#586B7D !important; --ink-faint:#708092 !important;
+  --ui-line:#DCE3E9 !important; --rule:#DCE3E9 !important; --sep:#E8EDF1 !important;
+  --ui-blue:#244D68 !important; --ui-blue-strong:#244D68 !important; --ui-blue-soft:#E9EEF2 !important;
+  --brass:#244D68 !important; --hero:#244D68 !important; --hero-soft:#356B86 !important;
+}
+:root[data-ui-theme="warm"] {
+  color-scheme: light;
+  --ui-page:#F5F3EE !important; --paper:#F5F3EE !important; --paper-2:#EBF1EC !important;
+  --ui-surface:#FFFEFB !important; --card:#FFFEFB !important; --ui-surface-soft:#EBF1EC !important;
+  --ui-ink:#2C3935 !important; --ink:#2C3935 !important; --ink-soft:#59665F !important; --ink-faint:#78827C !important;
+  --ui-line:#E4E1D9 !important; --rule:#E4E1D9 !important; --sep:#EAE8E1 !important;
+  --ui-blue:#315F56 !important; --ui-blue-strong:#315F56 !important; --ui-blue-soft:#EBF1EC !important;
+  --brass:#315F56 !important; --hero:#315F56 !important; --hero-soft:#4E8877 !important;
+}
+:root[data-ui-theme="stone"] {
+  color-scheme: light;
+  --ui-page:#EFF1F3 !important; --paper:#EFF1F3 !important; --paper-2:#E8EAED !important;
+  --ui-surface:#FFFFFF !important; --card:#FFFFFF !important; --ui-surface-soft:#E8EAED !important;
+  --ui-ink:#29333D !important; --ink:#29333D !important; --ink-soft:#58616B !important; --ink-faint:#737C86 !important;
+  --ui-line:#DDE1E5 !important; --rule:#DDE1E5 !important; --sep:#E7E9EC !important;
+  --ui-blue:#354B60 !important; --ui-blue-strong:#354B60 !important; --ui-blue-soft:#E8EAED !important;
+  --brass:#354B60 !important; --hero:#354B60 !important; --hero-soft:#687E92 !important;
+}
+html[data-ui-theme] { min-height:100%; background:var(--ui-page) !important; }
+html[data-ui-theme] body:not(.auth-entry-page) { background:var(--ui-page) !important; color:var(--ui-ink) !important; }
+html[data-ui-theme] body:not(.auth-entry-page) .app-header {
+  background:var(--ui-page) !important; background-image:none !important;
+  border-color:var(--ui-line) !important; color:var(--ui-ink) !important;
+}
+html[data-ui-theme] body:not(.auth-entry-page) .app-header .eyebrow,
+html[data-ui-theme] body:not(.auth-entry-page) .section-head { color:var(--ui-blue) !important; }
+html[data-ui-theme] body:not(.auth-entry-page) .app-header h1,
+html[data-ui-theme] body:not(.auth-entry-page) .section-head h2,
+html[data-ui-theme] body:not(.auth-entry-page) .daily-section-title { color:var(--ui-ink) !important; }
+html[data-ui-theme] body:not(.auth-entry-page) :is(.card,.panel,.section-card,.stat-card,.position-card,.holding-card,.leaderboard-card,.trade-card,.daily-card,.more-group,.rank-spotlight,.chips-section,.position-journal,.position-history,.review-details,.portfolio-chart-card,.contribution-card,.rank-situation,.exright-card,.screener-fast-card,.turning-section,.rank-mine,.rank-honour,.history-period,.settings-panel) {
+  background:var(--ui-surface) !important; border-color:var(--ui-line) !important;
+}
+html[data-ui-theme] body:not(.auth-entry-page) .app-bottom-nav,
+html[data-ui-theme] body:not(.auth-entry-page) .top-nav {
+  background:var(--ui-surface) !important; border-color:var(--ui-line) !important;
+}
+html[data-ui-theme] body:not(.auth-entry-page) .app-bottom-nav a.on,
+html[data-ui-theme] body:not(.auth-entry-page) .top-nav a.on,
+html[data-ui-theme] body:not(.auth-entry-page) :is(.tabs a.on,.tab-button.active,.filter-chip.active,.history-tabs button.on,.wb-asset-tabs button.on) {
+  color:var(--ui-blue) !important; border-color:var(--ui-blue) !important;
+}
+html[data-ui-theme] body:not(.auth-entry-page) .daily-fast-hero,
+html[data-ui-theme] body:not(.auth-entry-page) .daily-fast-hero-copy,
+html[data-ui-theme] body:not(.auth-entry-page) .daily-hero,
+html[data-ui-theme] body:not(.auth-entry-page) .home-portfolio-card {
+  background:linear-gradient(132deg,var(--hero) 0%,var(--hero-soft) 100%) !important;
+}
+html[data-ui-theme] body:not(.auth-entry-page) :is(input,select,textarea) {
+  background:var(--ui-surface) !important; color:var(--ui-ink) !important; border-color:var(--ui-line) !important;
+}
+html[data-ui-theme] body:not(.auth-entry-page) :is(.settings-panel p,.section-note,.muted,.help-text,.section-subtitle) { color:var(--ink-soft) !important; }
+'''
+
+
 STOCKBOT_V2_TEMPLATE_CSS = r"""
 :root {
   color-scheme: light;
@@ -25617,6 +25740,7 @@ def render_page(title, body, nav_active=None, user_name=None):
         page_back = preserve_web_token(
             '<div class="page-back"><a href="#" data-history-back="1" aria-label="回上一頁">‹ 上一頁</a></div>')
     header_user = current_web_user()
+    page_theme = get_web_ui_theme(header_user) if header_user and title != "登入台股 BOT" else "mist"
     # 右上角入口統一使用「註冊／登入 Google」文案，避免顯示「設定」。
     header_google_button = ""
     if title != "登入台股 BOT":
@@ -25815,10 +25939,10 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
 '''
 
     return f"""<!DOCTYPE html>
-<html lang="zh-Hant"><head>
+<html lang="zh-Hant" data-ui-theme="{page_theme}"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="{'#F3EEE3' if title == '登入台股 BOT' else '#315E9B'}">
+<meta name="theme-color" content="{'#F3EEE3' if title == '登入台股 BOT' else WEB_UI_THEMES[page_theme]['page']}">
 <meta name="stockbot-ui-version" content="v2-template-refactor">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -27352,6 +27476,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 #app-page-content .position-journal,#app-page-content .rank-chart-panel{{content-visibility:auto;contain-intrinsic-size:auto 360px}}
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
+<style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
 </head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -38495,7 +38620,28 @@ def web_settings(uid):
     if request.method == "POST":
         if not valid_web_csrf():
             return respond_page("設定", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "settings")
-        msg = "此頁目前沒有可儲存的欄位。"
+        action = (request.form.get("action") or "").strip()
+        if action == "save_ui_theme":
+            selected = (request.form.get("ui_theme") or "").strip()
+            if selected not in WEB_UI_THEMES:
+                msg = "請選擇有效的首頁配色。"
+            elif save_web_ui_theme(uid, selected):
+                msg = f"配色已儲存：{WEB_UI_THEMES[selected]['label']}。"
+            else:
+                msg = "配色儲存失敗，請稍後再試。"
+        else:
+            msg = "此頁目前沒有可儲存的欄位。"
+
+    selected_theme = get_web_ui_theme(uid)
+    theme_options_html = "".join(
+        f'''<label class="settings-theme-option">
+          <input type="radio" name="ui_theme" value="{key}"{' checked' if key == selected_theme else ''}>
+          <span class="settings-theme-option-card">
+            <span class="settings-theme-swatches" aria-hidden="true"><i style="background:{theme['page']}"></i><i style="background:{theme['surface']}"></i><i style="background:{theme['brand']}"></i><i style="background:#D83D35"></i></span>
+            <b>{theme['label']}</b><small>{theme['description']}</small>
+          </span>
+        </label>'''
+        for key, theme in WEB_UI_THEMES.items())
 
     admin_users_panel = ""
     if is_admin(uid):
@@ -38516,9 +38662,30 @@ def web_settings(uid):
 .settings-panel p{{margin:0;color:var(--ink-soft,#596257);font-size:13px;line-height:1.85}}
 .settings-panel .settings-admin-link{{display:block;margin-top:13px;padding:12px 14px;border:1px solid #d8d7cc;border-radius:8px;background:#f5f4ee;color:#334737;text-decoration:none;font-size:13px;font-weight:800;text-align:center}}
 .settings-muted{{font-size:12px!important;color:var(--ink-faint,#72766c)!important}}
+.settings-theme-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}}
+.settings-theme-option{{display:block;cursor:pointer;min-width:0}}
+.settings-theme-option>input{{position:absolute;opacity:0;pointer-events:none}}
+.settings-theme-option>input:focus-visible+.settings-theme-option-card{{outline:3px solid color-mix(in srgb,var(--brass) 28%,transparent);outline-offset:2px}}
+.settings-theme-option-card{{display:block;height:100%;padding:11px;border:1px solid var(--rule);border-radius:10px;background:var(--paper);transition:border-color .16s,box-shadow .16s}}
+.settings-theme-option>input:checked+.settings-theme-option-card{{border:2px solid var(--brass);padding:10px;box-shadow:0 0 0 2px color-mix(in srgb,var(--brass) 12%,transparent)}}
+.settings-theme-swatches{{display:flex;height:20px;overflow:hidden;border-radius:6px;margin-bottom:9px;border:1px solid var(--rule)}}
+.settings-theme-swatches i{{flex:1;border-right:1px solid rgba(40,50,60,.08)}}
+.settings-theme-option-card>b{{display:block;font-size:12px;color:var(--ink)}}
+.settings-theme-option-card>small{{display:block;margin-top:4px;color:var(--ink-soft);font-size:10px;line-height:1.5}}
+.settings-theme-save{{display:block;width:100%;margin-top:12px;padding:11px;border:0;border-radius:9px;background:var(--brass);color:#fff;font-weight:850;cursor:pointer}}
+@media(max-width:480px){{.settings-theme-grid{{grid-template-columns:1fr}}.settings-theme-option-card{{display:grid;grid-template-columns:68px 1fr;column-gap:10px;align-items:center}}.settings-theme-swatches{{grid-row:span 2;margin:0;height:42px;flex-direction:column}}.settings-theme-option-card>small{{margin-top:1px}}}}
 </style>
 <div class="settings-page">
   {f'<div class="msg">{html.escape(msg)}</div>' if msg else ''}
+  <section class="settings-panel" id="appearance">
+    <div class="settings-panel-kicker">個人化外觀</div>
+    <h2>首頁配色</h2>
+    <p>選擇你喜歡的色調，套用到網站各頁。這項偏好會跟著你的帳號保存。</p>
+    <form method="post" action="/web/settings#appearance">{csrf_hidden_input()}<input type="hidden" name="action" value="save_ui_theme">
+      <div class="settings-theme-grid">{theme_options_html}</div>
+      <button class="settings-theme-save" type="submit">套用並儲存配色</button>
+    </form>
+  </section>
   <section class="settings-panel">
     <div class="settings-panel-kicker">帳號與跨裝置同步</div>
     <h2>帳號登入方式</h2>
