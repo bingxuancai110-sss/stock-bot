@@ -40490,12 +40490,12 @@ def _render_home_v2(d):
     <a href="/web/more" data-app-nav="1"><i>⋯</i><b>更多</b><small>全部工具</small></a>
   </section>
   <style>
-  #hv2 .hv2-feature-launcher{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:0 0 10px;padding:10px 0 13px;border-bottom:1px solid #E8EDF1}
-  #hv2 .hv2-feature-launcher a{display:flex;min-width:0;flex-direction:column;align-items:center;gap:3px;padding:9px 3px 7px;border:1px solid #E5EBF0;border-radius:13px;background:#FBFCFD;color:#223B50;text-decoration:none;text-align:center}
-  #hv2 .hv2-feature-launcher i{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:#EAF2F7;color:#2B648A;font-size:21px;font-style:normal;font-weight:800}
-  #hv2 .hv2-feature-launcher b{font-size:11px;line-height:1.25}
-  #hv2 .hv2-feature-launcher small{font-size:8px;color:#748697;white-space:nowrap}
-  @media(max-width:430px){#hv2 .hv2-feature-launcher{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;padding-top:8px}#hv2 .hv2-feature-launcher a{min-height:79px}}
+  #hv2 .hv2-feature-launcher{{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:0 0 10px;padding:10px 0 13px;border-bottom:1px solid #E8EDF1}}
+  #hv2 .hv2-feature-launcher a{{display:flex;min-width:0;flex-direction:column;align-items:center;gap:3px;padding:9px 3px 7px;border:1px solid #E5EBF0;border-radius:13px;background:#FBFCFD;color:#223B50;text-decoration:none;text-align:center}}
+  #hv2 .hv2-feature-launcher i{{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:#EAF2F7;color:#2B648A;font-size:21px;font-style:normal;font-weight:800}}
+  #hv2 .hv2-feature-launcher b{{font-size:11px;line-height:1.25}}
+  #hv2 .hv2-feature-launcher small{{font-size:8px;color:#748697;white-space:nowrap}}
+  @media(max-width:430px){{#hv2 .hv2-feature-launcher{{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;padding-top:8px}}#hv2 .hv2-feature-launcher a{{min-height:79px}}}}
   </style>
 
   <section class="hv2-sec" aria-label="大盤與我的組合">
