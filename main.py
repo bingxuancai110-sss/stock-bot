@@ -2021,6 +2021,21 @@ def init_db():
                 PRIMARY KEY (user_id, code)
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS market_chart_drawings (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('horizontal','trendline')),
+                points JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_market_chart_drawings_user_code
+            ON market_chart_drawings(user_id, code)
+        ''')
         # 自選股分類（長線／短線／觀察）。用 ALTER 而非寫在 CREATE 裡，
         # 因為 CREATE TABLE IF NOT EXISTS 對既有的表不會補欄位，
         # 舊使用者的自選清單早就建好了，只靠 CREATE 這個欄位永遠不會出現。
@@ -3697,6 +3712,10 @@ def _digest_event_title(event):
     evidence = event.get("evidence") or {}
     code = evidence.get("code")
     if not code:
+        market_add_action = "/web/market/watchlist"
+        _market_auth_token = request.args.get("t") or request.cookies.get("stockbot_token")
+        if _market_auth_token:
+            market_add_action += "?t=" + quote(str(_market_auth_token), safe="")
         m = re.search(r"(?:你的)?([0-9]{4,6}[A-Z]?)", title)
         code = m.group(1) if m else None
     if code and code in title:
@@ -38560,7 +38579,30 @@ def web_market(uid):
         f'<a class="{"active" if period == key else ""}" href="/web/market?code={quote(code)}&amp;period={key}">{label}</a>'
         for key, label in (("1m", "1月"), ("3m", "3月"), ("6m", "6月"), ("1y", "1年")))
     if not code:
-        chips = quick_links or '<div class="market-empty">還沒有持股或自選股。輸入股票代號即可開始看盤。</div>'
+        board_quotes = {}
+        if tracked:
+            try:
+                board_quotes = get_realtime_stocks_bulk([c for c, _ in tracked], workers=8,
+                                                        rng="5d", force_refresh=False,
+                                                        skip_mis=True, request_timeout=5)
+            except Exception as exc:
+                print("⚠️ 看盤報價板載入失敗：%s" % type(exc).__name__, flush=True)
+        tile_html = []
+        for c, kind in tracked:
+            q = board_quotes.get(c) or {}
+            try:
+                tile_price = f'{float(q.get("close")):,.2f}' if q.get("close") is not None else "—"
+                tile_pct_value = float(q.get("pct")) if q.get("pct") is not None else None
+                tile_pct = f'{tile_pct_value:+.2f}%' if tile_pct_value is not None else "行情暫缺"
+                tile_cls = "up" if (tile_pct_value or 0) > 0 else "down" if (tile_pct_value or 0) < 0 else "flat"
+            except (TypeError, ValueError, OverflowError):
+                tile_price, tile_pct, tile_cls = "—", "行情暫缺", "flat"
+            tile_html.append(
+                f'<a class="market-quote-tile" href="/web/market?code={quote(c)}" data-app-nav="1">'
+                f'<span class="tile-name">{html.escape(short_company_name(stock_display_name(c)))}</span>'
+                f'<span class="tile-code">{html.escape(c)}　{kind}</span>'
+                f'<strong>{tile_price}</strong><span class="tile-change {tile_cls}">{tile_pct}</span></a>')
+        chips = "".join(tile_html) or '<div class="market-empty">還沒有持股或自選股。輸入股票代號即可開始看盤。</div>'
         search_feedback = (f'<div class="market-empty">找不到「{html.escape(raw_query)}」對應的股票，請輸入正確代號或完整名稱。</div>'
                            if raw_query else "")
         body = f'''<style>
@@ -38569,11 +38611,11 @@ def web_market(uid):
         .market-welcome h2{{margin:5px 0 4px;font-size:25px;color:#172D40}}.market-welcome p{{margin:0;color:#718394;font-size:12px;line-height:1.6}}
         .market-search{{display:flex;align-items:center;gap:9px;margin:10px 0 18px;padding:7px 8px 7px 13px;border:1px solid #D8E2EA;border-radius:15px;background:#fff;box-shadow:0 5px 18px rgba(30,57,78,.05)}}
         .market-search>span{{font-size:24px;color:#638199}}.market-search input{{flex:1;min-width:0;border:0!important;box-shadow:none!important;background:transparent!important;font-size:14px}}.market-search button{{border:0;border-radius:10px!important;padding:8px 14px;background:#245D80;color:white;font-weight:850}}
-        .market-subhead{{display:flex;justify-content:space-between;align-items:baseline;margin:18px 0 8px}}.market-subhead b{{font-size:15px}}.market-subhead small{{color:#8493A0;font-size:10px}}
-        .market-chip-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.market-chip{{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px;border:1px solid #E0E8EE;border-radius:13px;background:#fff;color:#233D51;text-decoration:none}}
-        .market-chip b{{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.market-chip small{{flex:none;color:#7B8D9B;font-size:10px}}.market-empty{{padding:16px;border-radius:12px;background:#F5F8FA;color:#728392;font-size:12px;line-height:1.6}}
-        @media(max-width:430px){{.market-welcome h2{{font-size:23px}}.market-chip-grid{{gap:7px}}.market-chip{{padding:11px 9px}}.market-chip b{{font-size:12px}}}}
-        </style><main class="market-page"><header class="market-welcome"><span class="market-eyebrow">TAIWAN STOCK BOT / MARKET</span><h2>看盤</h2><p>輸入代號查走勢，或從持股、自選股快速開啟。</p></header>{search}{search_feedback}<div class="market-subhead"><b>快速開啟</b><small>你的持股與自選</small></div><div class="market-chip-grid">{chips}</div></main>'''
+        .market-board-head{{display:flex;justify-content:space-between;align-items:center;margin:16px 0 9px}}.market-board-head b{{font-size:15px}}.market-board-head small{{color:#8493A0;font-size:10px}}
+        .market-chip-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.market-quote-tile{{position:relative;display:flex;min-height:108px;flex-direction:column;justify-content:center;gap:3px;padding:11px 12px;border:1px solid #DCE5EA;border-radius:13px;background:#fff;color:#233D51;text-decoration:none;box-shadow:0 3px 12px rgba(30,57,78,.045);transition:transform .15s,box-shadow .15s}}.market-quote-tile:active{{transform:scale(.98)}}.tile-name{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:850}}.tile-code{{color:#82919D;font-size:9px}}.market-quote-tile strong{{margin-top:5px;font-size:22px;font-variant-numeric:tabular-nums;letter-spacing:-.03em}}.tile-change{{font-size:11px;font-weight:800;font-variant-numeric:tabular-nums}}.tile-change.up{{color:#D74642}}.tile-change.down{{color:#16856B}}.tile-change.flat{{color:#788894}}.market-empty{{padding:16px;border-radius:12px;background:#F5F8FA;color:#728392;font-size:12px;line-height:1.6}}
+        .market-theme-toggle{{border:1px solid #DCE5EA;border-radius:999px;background:#fff;color:#425E72;padding:7px 11px;font-size:11px;font-weight:800}}.market-add-form{{display:flex;gap:7px;margin:12px 0 5px}}.market-add-form input{{flex:1;min-width:0;border:1px solid #DCE5EA!important;border-radius:11px!important;background:#fff!important;padding:9px 11px;font-size:12px}}.market-add-form button{{border:0;border-radius:11px;background:#245D80;color:#fff;font-size:11px;font-weight:850;padding:0 14px}}.market-page.market-dark{{color:#E6EEF4}}.market-page.market-dark .market-welcome h2{{color:#F1F5F8}}.market-page.market-dark .market-welcome p,.market-page.market-dark .market-board-head small{{color:#AAB8C3}}.market-page.market-dark .market-search,.market-page.market-dark .market-quote-tile{{background:#19242D;border-color:#31414C;color:#E6EEF4}}.market-page.market-dark .market-theme-toggle{{background:#19242D;border-color:#31414C;color:#E6EEF4}}.market-page.market-dark .tile-code{{color:#AAB8C3}}.market-page.market-dark .market-empty{{background:#202E38;color:#B9C5CE}}.market-page.market-dark .market-add-form input{{background:#19242D!important;border-color:#31414C!important;color:#E6EEF4}}
+        @media(max-width:430px){{.market-welcome h2{{font-size:23px}}.market-chip-grid{{gap:7px}}.market-quote-tile{{min-height:101px;padding:10px}}.market-quote-tile strong{{font-size:20px}}}}
+        </style><main class="market-page" id="market-page"><header class="market-welcome"><span class="market-eyebrow">TAIWAN STOCK BOT / MARKET</span><div style="display:flex;align-items:center;justify-content:space-between"><h2>看盤</h2><button class="market-theme-toggle" id="market-theme-toggle" type="button">深色模式</button></div><p>輸入代號查走勢，或從持股、自選股快速開啟。</p></header>{search}{search_feedback}<div class="market-board-head"><b>我的報價</b><small>持股優先・點擊查看 K 線</small></div><div class="market-chip-grid">{chips}</div><form class="market-add-form" method="post" action="{html.escape(market_add_action, quote=True)}">{csrf_hidden_input()}<input name="code" inputmode="numeric" pattern="[0-9A-Za-z]{4,6}" maxlength="6" placeholder="加入自選代號" aria-label="加入自選代號"><button type="submit">＋ 加入自選</button></form><script>(function(){{var p=document.getElementById('market-page'),b=document.getElementById('market-theme-toggle'),key='stockbot_market_theme';function set(v){{p.classList.toggle('market-dark',v==='dark');b.textContent=v==='dark'?'淺色模式':'深色模式';try{{localStorage.setItem(key,v)}}catch(e){{}}}}try{{set(localStorage.getItem(key)||'light')}}catch(e){{set('light')}}b.addEventListener('click',function(){{set(p.classList.contains('market-dark')?'light':'dark')}})}})();</script></main>'''
         return respond_page("看盤", body, "market")
 
     if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code):
@@ -38608,8 +38650,23 @@ def web_market(uid):
             except (TypeError, ValueError, OverflowError):
                 continue
 
+    saved_drawings = []
+    try:
+        _draw_conn = get_db_connection()
+        try:
+            _draw_cur = _draw_conn.cursor()
+            _draw_cur.execute("SELECT id,kind,points FROM market_chart_drawings WHERE user_id=%s AND code=%s ORDER BY id",
+                              (str(uid), code))
+            saved_drawings = [{"id": r[0], "kind": r[1], "points": r[2]} for r in _draw_cur.fetchall()]
+            _draw_cur.close()
+        finally:
+            release_db_connection(_draw_conn)
+    except Exception as exc:
+        print("⚠️ 看盤圖表標線載入失敗：%s" % type(exc).__name__, flush=True)
+
     chart_svg = '<div class="market-chart-empty">目前沒有足夠的有效日線資料可繪製圖表。</div>'
     chart_script = ""
+    auto_level_note = "目前沒有可用的支撐／壓力參考線。"
     latest_text = "行情暫缺"
     latest_change = (stock or {}).get("pct")
     if bars:
@@ -38629,6 +38686,25 @@ def web_market(uid):
             val = hi - j * (hi - lo) / 4
             yy = _my(val)
             y_grid.append(f'<line x1="{left}" y1="{yy:.1f}" x2="{W-right}" y2="{yy:.1f}"/><text x="{left-9}" y="{yy+4:.1f}" text-anchor="end">{val:,.0f}</text>')
+        pivot_highs, pivot_lows = [], []
+        for i in range(2, count - 2):
+            if bars[i]["high"] >= max(b["high"] for b in bars[i-2:i+3]):
+                pivot_highs.append(bars[i]["high"])
+            if bars[i]["low"] <= min(b["low"] for b in bars[i-2:i+3]):
+                pivot_lows.append(bars[i]["low"])
+        current_close = bars[-1]["close"]
+        support_levels = sorted(set(round(v, 2) for v in pivot_lows if v < current_close))
+        resistance_levels = sorted(set(round(v, 2) for v in pivot_highs if v > current_close))
+        auto_levels = []
+        if support_levels:
+            auto_levels.append((support_levels[-1], "支撐參考", "#278A70"))
+        if resistance_levels:
+            auto_levels.append((resistance_levels[0], "壓力參考", "#C16C53"))
+        auto_level_note = ("虛線為近期波段支撐／壓力參考，不代表預測。" if auto_levels
+                           else "所選區間沒有明顯支撐／壓力參考。")
+        auto_svg = "".join(
+            f'<g class="market-auto-level"><line x1="{left}" y1="{_my(level):.2f}" x2="{W-right}" y2="{_my(level):.2f}" stroke="{color}" stroke-width="1.5" stroke-dasharray="7 5"/><text x="{W-right-5}" y="{_my(level)-4:.2f}" text-anchor="end" fill="{color}">{label} {level:.2f}</text></g>'
+            for level, label, color in auto_levels)
         candles, volume_bars = [], []
         for i, bar in enumerate(bars):
             x = xs[i]; yo = _my(bar["open"]); yc = _my(bar["close"]); yh = _my(bar["high"]); yl = _my(bar["low"])
@@ -38651,13 +38727,18 @@ def web_market(uid):
         svg_volumes = "".join(volume_bars)
         chart_svg = f'''<div class="market-svg-wrap"><svg id="market-kline" viewBox="0 0 {W} {H}" role="slider" tabindex="0" aria-label="{html.escape(name)}日K線圖，可在圖上拖動查看每日 OHLC 與成交量">
           <g class="market-grid">{"".join(y_grid)}<line x1="{left}" y1="{volume_top-8}" x2="{W-right}" y2="{volume_top-8}"/><text x="{left}" y="{volume_top+11}">成交量</text></g>
-          <g class="market-volumes">{svg_volumes}</g><g class="market-candles">{svg_candles}</g>{"".join(ma_svg)}
+          <g class="market-volumes">{svg_volumes}</g><g class="market-candles">{svg_candles}</g>{"".join(ma_svg)}{auto_svg}<g id="market-user-drawings"></g>
           <rect class="market-hit-zone" x="{left}" y="{top}" width="{plot_w}" height="{volume_bottom-top}" fill="transparent"/>
           <line class="market-crosshair" x1="{xs[-1]:.2f}" x2="{xs[-1]:.2f}" y1="{top}" y2="{volume_bottom}"/><circle class="market-focus-dot" cx="{xs[-1]:.2f}" cy="{_my(bars[-1]["close"]):.2f}" r="4"/>{x_labels}
         </svg></div>'''
         chart_data = [{**b, "x": round(xs[i], 3), "y": round(_my(b["close"]), 3)} for i,b in enumerate(bars)]
         import json as _market_json
         chart_script = '<script>(function(){var svg=document.getElementById("market-kline");if(!svg)return;var card=document.querySelector(".market-chart-card"),openBtn=document.getElementById("market-fullscreen-open"),closeBtn=document.getElementById("market-fullscreen-close");var bars='+_market_json.dumps(chart_data, ensure_ascii=False)+r''';var line=svg.querySelector('.market-crosshair'),dot=svg.querySelector('.market-focus-dot'),readout=document.getElementById('market-ohlc');var idx=bars.length-1;function show(i){if(!bars.length)return;i=Math.max(0,Math.min(bars.length-1,i));idx=i;var b=bars[i];line.setAttribute('x1',b.x);line.setAttribute('x2',b.x);dot.setAttribute('cx',b.x);dot.setAttribute('cy',b.y);readout.querySelector('[data-field=date]').textContent=b.date;['open','high','low','close','volume'].forEach(function(k){var el=readout.querySelector('[data-field='+k+']');if(el)el.textContent=k==='volume'?Math.round(b[k]).toLocaleString('zh-TW'):Number(b[k]).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2});});}function move(e){var p=svg.createSVGPoint();p.x=e.clientX;p.y=e.clientY;p=p.matrixTransform(svg.getScreenCTM().inverse());var best=0,dist=Infinity;for(var i=0;i<bars.length;i++){var d=Math.abs(bars[i].x-p.x);if(d<dist){dist=d;best=i;}}show(best);}function toggleFull(on){if(!card)return;card.classList.toggle('is-fullscreen',on);document.body.classList.toggle('market-chart-open',on);if(openBtn){openBtn.setAttribute('aria-pressed',on?'true':'false');openBtn.textContent=on?'縮小':'全螢幕';}if(closeBtn)closeBtn.hidden=!on;if(on){svg.setAttribute('preserveAspectRatio','none');if(closeBtn)closeBtn.focus();}else{svg.removeAttribute('preserveAspectRatio');if(openBtn)openBtn.focus();}}if(openBtn)openBtn.addEventListener('click',function(){toggleFull(true);});if(closeBtn)closeBtn.addEventListener('click',function(){toggleFull(false);});document.addEventListener('keydown',function(e){if(e.key==='Escape'&&card&&card.classList.contains('is-fullscreen'))toggleFull(false);});show(idx);svg.addEventListener('pointerdown',move);svg.addEventListener('pointermove',move);svg.addEventListener('keydown',function(e){if(e.key==='ArrowLeft'){e.preventDefault();show(idx-1);}if(e.key==='ArrowRight'){e.preventDefault();show(idx+1);}});document.querySelectorAll('[data-ma-toggle]').forEach(function(btn){btn.addEventListener('click',function(){var key=btn.dataset.maToggle,on=btn.getAttribute('aria-pressed')!=='true';btn.setAttribute('aria-pressed',on?'true':'false');svg.querySelectorAll('[data-ma="'+key+'"]').forEach(function(path){path.style.display=on?'':'none';});});});})();</script>'''
+        _draw_url = '/web/market/drawings?code=' + quote(code)
+        if request.args.get('t'):
+            _draw_url += '&t=' + quote(str(request.args.get('t')), safe='')
+        chart_script += '<script>(function(){var s=document.getElementById("market-kline"),g=document.getElementById("market-user-drawings");if(!s||!g)return;var b='+_market_json.dumps(chart_data,ensure_ascii=False)+',d='+_market_json.dumps(saved_drawings,ensure_ascii=False)+',u='+_market_json.dumps(_draw_url)+',c='+_market_json.dumps(current_web_csrf_token())+',lo='+_market_json.dumps(lo)+',hi='+_market_json.dumps(hi)+',t='+top+',bt='+price_bottom+',mode="",pending=[],sel=null,drag=null,st=document.getElementById("market-drawing-status");function xy(p){var n=0,z=1e9;b.forEach(function(x,i){var q=Math.abs(x.date.localeCompare(p.date));if(q<z){z=q;n=i}});return{x:b[n].x,y:t+(hi-p.price)/(hi-lo)*(bt-t)}}function paint(){g.innerHTML="";d.forEach(function(x){var a=xy(x.points[0]),q=x.kind==="trendline"?xy(x.points[1]):{x:980,y:a.y},l=document.createElementNS("http://www.w3.org/2000/svg","line");if(x.kind==="horizontal")a.x=72;l.setAttribute("x1",a.x);l.setAttribute("y1",a.y);l.setAttribute("x2",q.x);l.setAttribute("y2",q.y);l.setAttribute("stroke",String(x.id)===String(sel)?"#156FA4":"#3287B5");l.setAttribute("stroke-width",String(x.id)===String(sel)?3:2);l.setAttribute("stroke-dasharray",x.kind==="horizontal"?"":"6 3");l.setAttribute("pointer-events","stroke");l.dataset.id=x.id;g.appendChild(l)})}function pt(e){var p=s.createSVGPoint();p.x=e.clientX;p.y=e.clientY;p=p.matrixTransform(s.getScreenCTM().inverse());var n=0,z=1e9;b.forEach(function(x,i){var q=Math.abs(x.x-p.x);if(q<z){z=q;n=i}});return{date:b[n].date,price:Math.max(.01,hi-(p.y-t)/(bt-t)*(hi-lo))}}function save(x){fetch(u,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-CSRF-Token":c},body:JSON.stringify(x)}).then(function(r){return r.json().then(function(o){if(!r.ok)throw o;return o})}).then(function(o){if(x.action==="delete"){d=d.filter(function(v){return String(v.id)!==String(x.id)});sel=null}else{d=d.filter(function(v){return String(v.id)!==String(o.id)});d.push({id:o.id,kind:x.kind,points:x.points});sel=o.id}paint();if(st)st.textContent="標線已同步保存"}).catch(function(){if(st)st.textContent="標線保存失敗，請重新整理再試"})}function set(m){mode=m;pending=[];document.querySelectorAll("[data-draw-mode]").forEach(function(x){x.setAttribute("aria-pressed",x.dataset.drawMode===m?"true":"false")});if(st)st.textContent=m==="horizontal"?"點擊圖表放置水平線":m==="trendline"?"點擊兩處完成趨勢線":m==="move"?"拖曳已選取的標線調整位置":"選取標線後可刪除"}document.querySelectorAll("[data-draw-mode]").forEach(function(x){x.onclick=function(){set(x.dataset.drawMode)}});var del=document.getElementById("market-delete-drawing");if(del)del.onclick=function(){if(sel)save({action:"delete",id:sel})};s.addEventListener("click",function(e){if(mode!=="horizontal"&&mode!=="trendline")return;pending.push(pt(e));if(mode==="horizontal"){save({kind:mode,points:pending.slice()});set("")}else if(pending.length===2){save({kind:mode,points:pending.slice()});set("")}});g.onclick=function(e){if(e.target.dataset.id){sel=e.target.dataset.id;paint();if(st)st.textContent="已選取，可拖曳或刪除"}};g.onpointerdown=function(e){if(mode!=="move")return;var x=d.find(function(v){return String(v.id)===String(e.target.dataset.id)});if(!x)return;sel=x.id;drag=x;s.setPointerCapture(e.pointerId)};s.addEventListener("pointermove",function(e){if(!drag)return;var p=pt(e);if(drag.kind==="horizontal")drag.points[0].price=p.price;else{drag.points[0].date=p.date;drag.points[1].date=p.date;var delta=p.price-drag.points[0].price;drag.points.forEach(function(x){x.price=Math.max(.01,x.price+delta)})}paint()});s.addEventListener("pointerup",function(){if(drag){var x=drag;drag=null;save({id:x.id,kind:x.kind,points:x.points})}});paint()})();</script>'
+        chart_script += '<script>(function(){var p=document.getElementById("market-page"),b=document.getElementById("market-theme-toggle"),k="stockbot_market_theme";if(!p||!b)return;function set(v){p.classList.toggle("market-dark",v==="dark");b.textContent=v==="dark"?"淺色模式":"深色模式";try{localStorage.setItem(k,v)}catch(e){}}try{set(localStorage.getItem(k)||"light")}catch(e){set("light")}b.onclick=function(){set(p.classList.contains("market-dark")?"light":"dark")}})();</script>'
         latest = bars[-1]
         latest_text = latest["date"]
     price = (stock or {}).get("close")
@@ -38670,16 +38751,113 @@ def web_market(uid):
     except (TypeError, ValueError):
         change_text, change_cls = "漲跌待確認", "flat"
     change_notice = ("最新有效行情" if stock else "目前無法取得行情；請稍後重試。")
+    if not bars:
+        chart_script = '<script>(function(){var p=document.getElementById("market-page"),b=document.getElementById("market-theme-toggle"),k="stockbot_market_theme";if(!p||!b)return;function set(v){p.classList.toggle("market-dark",v==="dark");b.textContent=v==="dark"?"淺色模式":"深色模式";try{localStorage.setItem(k,v)}catch(e){}}try{set(localStorage.getItem(k)||"light")}catch(e){set("light")}b.onclick=function(){set(p.classList.contains("market-dark")?"light":"dark")}})();</script>'
     body = f'''<style>
     .market-page{{max-width:980px;margin:0 auto;color:#1C3448}}.market-welcome{{padding:12px 2px 10px}}.market-eyebrow{{font-size:9px;letter-spacing:.17em;color:#557991;font-weight:900}}.market-welcome h2{{margin:4px 0;font-size:23px;color:#182F42}}.market-search{{display:flex;align-items:center;gap:8px;margin:8px 0 13px;padding:6px 7px 6px 12px;border:1px solid #DBE4EA;border-radius:13px;background:#fff}}.market-search>span{{font-size:21px;color:#668196}}.market-search input{{flex:1;min-width:0;border:0!important;box-shadow:none!important;background:transparent!important;font-size:13px}}.market-search button{{border:0;border-radius:9px!important;padding:7px 12px;background:#245D80;color:white;font-weight:850;font-size:12px}}.market-quote-head{{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;padding:12px 0 9px}}.market-name-block h3{{margin:0;font-size:19px;color:#1B3449}}.market-name-block small,.market-updated{{display:block;margin-top:3px;color:#7C8E9B;font-size:10px}}.market-current{{text-align:right;font-size:25px;font-weight:900;font-variant-numeric:tabular-nums;color:#1D3447}}.market-current small{{display:block;margin-top:1px;font-size:12px}}.market-current .up{{color:#D74642}}.market-current .down{{color:#16856B}}.market-current .flat{{color:#768795}}.market-ranges{{display:flex;gap:5px;overflow-x:auto;padding:5px 0 9px;scrollbar-width:none}}.market-ranges a{{flex:1;text-align:center;white-space:nowrap;padding:7px 4px;border-radius:9px;background:#F1F5F8;color:#607586;text-decoration:none;font-size:11px;font-weight:800}}.market-ranges a.active{{background:#245D80;color:white}}.market-chart-card{{overflow:hidden;padding:10px 10px 8px;border:1px solid #DDE6EC;border-radius:16px;background:#fff;box-shadow:0 5px 18px rgba(24,51,72,.045)}}.market-chart-toolbar{{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 3px 7px}}.market-ma-toggles{{display:flex;gap:5px}}.market-ma-toggles button{{min-height:30px!important;padding:4px 8px;border:1px solid #DFE7EC;border-radius:8px!important;background:white;color:#607487;font-size:10px;font-weight:850}}.market-ma-toggles button[aria-pressed="true"]{{background:#F0F5F8;color:#284D68;border-color:#CADCE7}}.market-data-note{{font-size:9px;color:#8897A2;white-space:nowrap}}.market-fullscreen-button,.market-fullscreen-close{{min-height:34px;padding:6px 10px;border:1px solid #DCE5EB;border-radius:9px;background:#F6F9FB;color:#284D68;font-size:11px;font-weight:850}}.market-fullscreen-head{{display:none}}.market-chart-card.is-fullscreen{{position:fixed;inset:0;z-index:10000;display:flex;flex-direction:column;box-sizing:border-box;width:100vw;height:100vh;height:100dvh;overflow:auto;padding:calc(env(safe-area-inset-top) + 10px) 12px calc(env(safe-area-inset-bottom) + 12px);border:0;border-radius:0;background:#fff;box-shadow:none}}body.market-chart-open{{overflow:hidden!important}}.market-chart-card.is-fullscreen .market-fullscreen-head{{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:2px 0 12px;font-size:15px;font-weight:900}}.market-chart-card.is-fullscreen .market-chart-toolbar{{position:sticky;top:0;z-index:2;padding:8px 0;background:#fff}}.market-chart-card.is-fullscreen .market-ranges{{position:sticky;top:46px;z-index:2;padding:8px 0;background:#fff}}.market-chart-card.is-fullscreen .market-ohlc{{padding:8px 0 12px;font-size:12px}}.market-chart-card.is-fullscreen .market-svg-wrap{{flex:1;min-height:360px;overflow:hidden}}.market-chart-card.is-fullscreen #market-kline{{width:100%;height:calc(100dvh - 245px);min-height:360px;touch-action:none}}.market-chart-card.is-fullscreen .market-under-chart{{padding-top:10px}}.market-ma-toggles button[aria-pressed="true"]{{background:#F0F5F8;color:#284D68;border-color:#CADCE7}}.market-data-note{{font-size:9px;color:#8897A2;white-space:nowrap}}.market-ohlc{{display:flex;flex-wrap:wrap;gap:5px 12px;align-items:center;min-height:28px;padding:0 3px 6px;color:#687E8F;font-size:10px;font-variant-numeric:tabular-nums}}.market-ohlc b{{color:#314D63;font-weight:850}}.market-ohlc .date{{color:#263E52;font-weight:900;margin-right:3px}}.market-svg-wrap{{width:100%;overflow:hidden}}#market-kline{{display:block;width:100%;height:auto;touch-action:pan-y;user-select:none}}#market-kline .market-grid line{{stroke:#E6EDF2;stroke-width:1}}#market-kline .market-grid text,#market-kline .x-label{{fill:#81909C;font-size:11px}}#market-kline .market-hit-zone{{pointer-events:all;cursor:crosshair}}#market-kline .market-crosshair{{stroke:#526F84;stroke-width:1;stroke-dasharray:4 4;pointer-events:none}}#market-kline .market-focus-dot{{fill:#fff;stroke:#2B6D97;stroke-width:2.5;pointer-events:none}}.market-chart-empty{{padding:42px 10px;text-align:center;color:#7B8C99;font-size:12px}}.market-under-chart{{display:flex;justify-content:space-between;gap:10px;padding:7px 2px 0;color:#7A8C9B;font-size:9px;line-height:1.5}}.market-analysis-link{{display:block;margin:12px 0 4px;padding:13px 14px;border:1px solid #E0E8EE;border-radius:12px;background:#fff;color:#285A79;text-decoration:none;font-size:12px;font-weight:850}}.market-chip-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:8px 0 12px}}.market-chip{{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:10px;border:1px solid #E0E8EE;border-radius:11px;background:#fff;color:#233D51;text-decoration:none}}.market-chip b{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}}.market-chip small{{flex:none;color:#7B8D9B;font-size:9px}}@media(max-width:520px){{.market-page{{margin:0 -1px}}.market-welcome{{padding-top:5px}}.market-chart-card{{padding:8px 6px 7px;border-radius:13px}}.market-quote-head{{padding:8px 0}}.market-current{{font-size:22px}}.market-ma-toggles button{{padding-left:6px;padding-right:6px}}.market-ohlc{{gap:4px 8px;font-size:9px}}.market-under-chart{{font-size:8px}}}}
-    </style><main class="market-page"><header class="market-welcome"><span class="market-eyebrow">TAIWAN STOCK BOT / MARKET</span><h2>個股看盤</h2></header>{search}
+    </style><style>.market-draw-tools{{display:flex;flex-wrap:wrap;gap:6px;padding:0 2px 8px}}.market-draw-tools button,.market-theme-toggle{{min-height:30px;padding:5px 9px;border:1px solid #DCE5EB;border-radius:9px;background:#fff;color:#405C70;font-size:10px;font-weight:800}}.market-draw-tools button[aria-pressed="true"]{{background:#245D80;color:#fff}}.market-drawing-status{{align-self:center;color:#748896;font-size:10px}}.market-auto-level text{{font-size:11px;font-weight:800;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}}.market-page.market-dark{{color:#E7EEF3}}.market-page.market-dark .market-welcome h2,.market-page.market-dark .market-name-block h3,.market-page.market-dark .market-current{{color:#F1F5F8}}.market-page.market-dark .market-name-block small,.market-page.market-dark .market-under-chart,.market-page.market-dark .market-data-note{{color:#A9B8C3}}.market-page.market-dark .market-search,.market-page.market-dark .market-chart-card,.market-page.market-dark .market-analysis-link{{background:#19242D;border-color:#31414C;color:#E6EEF4}}.market-page.market-dark .market-ranges a,.market-page.market-dark .market-draw-tools button,.market-page.market-dark .market-theme-toggle{{background:#202E38;border-color:#3B4A55;color:#DCE7EE}}.market-page.market-dark .market-ranges a.active,.market-page.market-dark .market-draw-tools button[aria-pressed="true"]{{background:#316F91;color:#fff}}.market-page.market-dark #market-kline .market-grid line{{stroke:#34434D}}.market-page.market-dark #market-kline .market-grid text,.market-page.market-dark #market-kline .x-label{{fill:#A8B7C1}}.market-page.market-dark .market-fullscreen-head,.market-page.market-dark .market-chart-card.is-fullscreen .market-chart-toolbar,.market-page.market-dark .market-chart-card.is-fullscreen .market-ranges{{background:#19242D}}.market-page.market-dark .market-auto-level text{{stroke:#19242D}}</style><main class="market-page" id="market-page"><header class="market-welcome"><span class="market-eyebrow">TAIWAN STOCK BOT / MARKET</span><div style="display:flex;align-items:center;justify-content:space-between"><h2>個股看盤</h2><button class="market-theme-toggle" id="market-theme-toggle" type="button">深色模式</button></div></header>{search}
     <section class="market-quote-head"><div class="market-name-block"><h3>{html.escape(name)} <small>{html.escape(code)}</small></h3><small>{change_notice}・{html.escape(latest_text)}</small></div><div class="market-current">{price_text}<small class="{change_cls}">{html.escape(change_text)}</small></div></section>
-    <section class="market-chart-card" aria-label="互動 K 線圖"><div class="market-fullscreen-head"><span>{html.escape(name)}　{html.escape(code)}・日 K 線</span><button type="button" class="market-fullscreen-close" id="market-fullscreen-close" hidden aria-label="關閉全螢幕圖表">完成</button></div><div class="market-chart-toolbar"><div class="market-ma-toggles" role="group" aria-label="移動平均線"><button type="button" data-ma-toggle="5" aria-pressed="true">MA5</button><button type="button" data-ma-toggle="20" aria-pressed="true">MA20</button><button type="button" data-ma-toggle="60" aria-pressed="false">MA60</button></div><small class="market-data-note">日線・紅漲綠跌</small><button type="button" class="market-fullscreen-button" id="market-fullscreen-open" aria-pressed="false" aria-label="全螢幕檢視 K 線圖">全螢幕</button></div><nav class="market-ranges" aria-label="K線區間">{period_tabs}</nav>
+    <section class="market-chart-card" aria-label="互動 K 線圖"><div class="market-fullscreen-head"><span>{html.escape(name)}　{html.escape(code)}・日 K 線</span><button type="button" class="market-fullscreen-close" id="market-fullscreen-close" hidden aria-label="關閉全螢幕圖表">完成</button></div><div class="market-chart-toolbar"><div class="market-ma-toggles" role="group" aria-label="移動平均線"><button type="button" data-ma-toggle="5" aria-pressed="true">MA5</button><button type="button" data-ma-toggle="20" aria-pressed="true">MA20</button><button type="button" data-ma-toggle="60" aria-pressed="false">MA60</button></div><small class="market-data-note">日線・紅漲綠跌</small><button type="button" class="market-fullscreen-button" id="market-fullscreen-open" aria-pressed="false" aria-label="全螢幕檢視 K 線圖">全螢幕</button></div><nav class="market-ranges" aria-label="K線區間">{period_tabs}</nav><div class="market-draw-tools" aria-label="圖表標線工具"><button type="button" data-draw-mode="horizontal">＋水平線</button><button type="button" data-draw-mode="trendline">╱趨勢線</button><button type="button" data-draw-mode="move">↔ 移動</button><button type="button" id="market-delete-drawing">刪除選取</button><span class="market-drawing-status" id="market-drawing-status">藍色為我的標線；支撐壓力為參考</span></div>
     <div class="market-ohlc" id="market-ohlc"><span class="date" data-field="date">{html.escape(latest_text)}</span><span>開 <b data-field="open">—</b></span><span>高 <b data-field="high">—</b></span><span>低 <b data-field="low">—</b></span><span>收 <b data-field="close">—</b></span><span>量 <b data-field="volume">—</b></span></div>{chart_svg}
-    <div class="market-under-chart"><span>拖動圖表查看每日開高低收與成交量</span><span>資料來源：Yahoo Finance 日線</span></div></section>
+    <div class="market-under-chart"><span>拖動圖表查看每日開高低收與成交量・{html.escape(auto_level_note)}</span><span>資料來源：Yahoo Finance 日線</span></div></section>
     <a class="market-analysis-link" href="/web/stock-analysis?code={quote(code)}" data-app-nav="1">查看 {html.escape(name)} 基本面、法人與技術摘要　›</a>
     <div class="market-subhead"><b>快速切換</b><small>持股／自選股</small></div><div class="market-chip-grid">{quick_links or '<div class="market-empty">可以在上方搜尋其他股票。</div>'}</div></main>{chart_script}'''
     return respond_page("看盤", body, "market")
+
+
+@app.route("/web/market/watchlist", methods=["POST"])
+@web_login_required
+def web_market_add_watchlist(uid):
+    if not valid_web_csrf(uid):
+        return make_response("CSRF validation failed", 403)
+    code = normalize_code(request.form.get("code", ""))
+    if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code or ""):
+        return redirect("/web/market")
+    add_watchlist_db(uid, code)
+    target = "/web/market"
+    token = request.args.get("t") or request.cookies.get("stockbot_token")
+    if token:
+        target += "?t=" + quote(str(token), safe="")
+    return redirect(target)
+
+
+@app.route("/web/market/drawings", methods=["GET", "POST"])
+@web_login_required
+def web_market_drawings(uid):
+    code = normalize_code(request.values.get("code", ""))
+    if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code or ""):
+        return jsonify({"error": "invalid_code"}), 400
+    if request.method == "POST":
+        supplied = str(request.headers.get("X-CSRF-Token") or "")
+        expected = _web_csrf_user_signature(uid)
+        if not supplied or not expected or not hmac.compare_digest(supplied, expected):
+            return jsonify({"error": "csrf"}), 403
+        payload = request.get_json(silent=True) or {}
+        action = str(payload.get("action") or "save")
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            if action == "delete":
+                cur.execute("DELETE FROM market_chart_drawings WHERE id=%s AND user_id=%s AND code=%s",
+                            (int(payload.get("id") or 0), str(uid), code))
+                conn.commit()
+                return jsonify({"ok": True, "deleted": cur.rowcount})
+            kind = str(payload.get("kind") or "")
+            points = payload.get("points")
+            if kind not in ("horizontal", "trendline") or not isinstance(points, list):
+                return jsonify({"error": "invalid_drawing"}), 400
+            expected_points = 1 if kind == "horizontal" else 2
+            if len(points) != expected_points:
+                return jsonify({"error": "invalid_points"}), 400
+            clean = []
+            for point in points:
+                if not isinstance(point, dict):
+                    return jsonify({"error": "invalid_point"}), 400
+                day = str(point.get("date") or "")[:10]
+                try:
+                    datetime.strptime(day, "%Y-%m-%d")
+                    price_value = float(point.get("price"))
+                    if not math.isfinite(price_value) or price_value <= 0:
+                        raise ValueError
+                except (TypeError, ValueError, OverflowError):
+                    return jsonify({"error": "invalid_point"}), 400
+                clean.append({"date": day, "price": price_value})
+            drawing_id = payload.get("id")
+            if drawing_id:
+                cur.execute("""UPDATE market_chart_drawings SET kind=%s, points=CAST(%s AS JSONB),
+                               updated_at=NOW() WHERE id=%s AND user_id=%s AND code=%s RETURNING id""",
+                            (kind, json.dumps(clean), int(drawing_id), str(uid), code))
+                row = cur.fetchone()
+                if not row:
+                    conn.rollback()
+                    return jsonify({"error": "not_found"}), 404
+                drawing_id = row[0]
+            else:
+                cur.execute("""INSERT INTO market_chart_drawings(user_id,code,kind,points)
+                               VALUES (%s,%s,%s,CAST(%s AS JSONB)) RETURNING id""",
+                            (str(uid), code, kind, json.dumps(clean)))
+                drawing_id = cur.fetchone()[0]
+            conn.commit()
+            return jsonify({"ok": True, "id": drawing_id})
+        except Exception as exc:
+            conn.rollback()
+            print("⚠️ 圖表標線保存失敗：%s" % type(exc).__name__, flush=True)
+            return jsonify({"error": "storage_error"}), 500
+        finally:
+            release_db_connection(conn)
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id,kind,points FROM market_chart_drawings WHERE user_id=%s AND code=%s ORDER BY id",
+                    (str(uid), code))
+        rows = cur.fetchall()
+        drawings = [{"id": row[0], "kind": row[1], "points": row[2]} for row in rows]
+        return jsonify({"drawings": drawings})
+    except Exception as exc:
+        print("⚠️ 圖表標線讀取失敗：%s" % type(exc).__name__, flush=True)
+        return jsonify({"drawings": [], "error": "storage_error"}), 500
+    finally:
+        release_db_connection(conn)
 
 
 @app.route("/web/stock-analysis")
