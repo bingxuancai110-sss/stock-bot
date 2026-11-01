@@ -38921,6 +38921,13 @@ def web_market(uid):
       if(b.low<=Math.min.apply(null,around.map(function(q){return q.low;})) && b.low<close) supports.push(b.low);
       if(b.high>=Math.max.apply(null,around.map(function(q){return q.high;})) && b.high>close) resistances.push(b.high);
     }
+    if(!supports.length && first>2) {
+      var earlierSupportStart=Math.max(2,first-60);
+      for(var i=earlierSupportStart;i<first;i++) {
+        var earlierWindow=bars.slice(i-2,i+3), earlierLow=bars[i];
+        if(earlierWindow.length===5 && earlierLow.low<=Math.min.apply(null,earlierWindow.map(function(q){return q.low;})) && earlierLow.low<close && earlierLow.low>=lo) supports.push(earlierLow.low);
+      }
+    }
     var levels=[];
     if(supports.length) levels.push({price:Math.max.apply(null,supports),label:'支撐參考',color:'#278A70'});
     if(resistances.length) levels.push({price:Math.min.apply(null,resistances),label:'壓力參考',color:'#C16C53'});
