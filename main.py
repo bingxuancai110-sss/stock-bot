@@ -31223,6 +31223,7 @@ def web_positions(uid):
                   f'{items}</details>')
 
     rows_html, total_value, total_cost = [], 0.0, 0.0
+    allocation_items = []
     total_day_pl = 0.0
     enriched = []
     # 主頁抓 3mo 日線：這已足夠計算近 60 日位階／均線，且能直接重用
@@ -31256,6 +31257,9 @@ def web_positions(uid):
         name = stock_display_name(p["code"], inst,
                                   price["name"] if price else None)
         weight = (value / total_value * 100) if total_value else 0
+        if price and value > 0 and total_value > 0:
+            allocation_items.append({"code": str(p["code"]), "name": str(name),
+                                     "weight": weight, "value": value})
         target_pct = target_weights.get(str(p.get("code") or ""))
         if target_pct is None:
             target_line_html = '<div class="position-target-summary"><span>目標權重</span><b>尚未設定</b></div>'
@@ -31390,6 +31394,35 @@ def web_positions(uid):
   <div><div class="total-label">持股檔數</div>
        <div class="total-value num">{len(positions)}</div></div>
 </div>""" if positions else ""
+
+    allocation_html = ""
+    if allocation_items:
+        _allocation_colors = ["#2676A5", "#D84B45", "#14916C", "#8165B5",
+                              "#D29430", "#3A8FA3", "#CF6A36", "#6E8498"]
+        _circ = 2 * math.pi * 40
+        _arc_offset = 0.0
+        _arc_html, _legend_html = [], []
+        for _i, _item in enumerate(allocation_items):
+            _color = _allocation_colors[_i % len(_allocation_colors)]
+            _arc_len = _circ * max(0.0, min(100.0, _item["weight"])) / 100.0
+            _code_attr = html.escape(_item["code"], quote=True)
+            _name_text = html.escape(_item["name"])
+            _arc_html.append(
+                f'<circle class="allocation-slice" data-allocation-code="{_code_attr}" '
+                f'cx="50" cy="50" r="40" fill="none" stroke="{_color}" stroke-width="14" '
+                f'stroke-dasharray="{_arc_len:.3f} {_circ:.3f}" '
+                f'stroke-dashoffset="{-_arc_offset:.3f}" transform="rotate(-90 50 50)" '
+                f'tabindex="0" role="button" aria-label="{_name_text}，權重 {_item["weight"]:.1f}%"></circle>')
+            _legend_html.append(
+                f'<button type="button" class="allocation-item" data-allocation-select="{_code_attr}" '
+                f'data-allocation-name="{_name_text}" data-allocation-weight="{_item["weight"]:.4f}" data-allocation-value="{_item["value"]:.2f}" '
+                f'aria-pressed="false"><i style="background:{_color}"></i><span>{_name_text}</span>'
+                f'<b>{_item["weight"]:.1f}%</b></button>')
+            _arc_offset += _arc_len
+        allocation_html = f'''<section class="position-allocation" aria-label="持股配置互動圖表">
+  <div class="position-allocation-head"><div><h2>持股配置</h2><small>點選圖表或名稱查看市值與權重</small></div><button type="button" data-allocation-reset>顯示全部</button></div>
+  <div class="position-allocation-body"><div class="position-allocation-visual"><svg viewBox="0 0 100 100" role="img" aria-label="已取得行情的持股市值權重分布">{''.join(_arc_html)}<circle cx="50" cy="50" r="31" fill="#fff" stroke="#eef1f3" stroke-width=".5"/></svg><div class="position-allocation-center"><b data-allocation-center-title>全部持股</b><strong data-allocation-center-weight>{sum(x["weight"] for x in allocation_items):.1f}%</strong><small data-allocation-center-value>{total_value:,.0f} 元</small></div></div><div class="position-allocation-legend">{''.join(_legend_html)}</div></div>
+</section>'''
 
     # v194：移除組合配置圖；持股頁直接呈現持股明細與組合走勢。
     try:
@@ -31526,6 +31559,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
 {totals}
 {f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px;{"" if _is_taiwan_intraday_window() else "display:none"}">歷史行情優先使用最近有效快取並在背景更新；盤中現價由官方 MIS 局部同步，約每 5 秒檢查一次。若官方報價暫缺，保留最後有效價格並顯示來源時間。</div>' if positions else ''}
 {portfolio_trend_html}
+{allocation_html}
 <div class="section-head"><h2>持股明細</h2>
   <span class="section-note">依市值排序　·　<a href="/web/trades" style="color:var(--brass)">操作日報 →</a></span></div>
 {(f'<details class="target-allocation-disclosure" id="target-allocation"><summary><span><b>調整目標持股比例</b><small>直接修改每檔目標；股票與 ETF 合計 100%</small></span><span class="target-allocation-total" data-target-total>尚未完成</span></summary><section class="target-allocation-panel"><form method="post" action="/web/positions#target-allocation" class="target-allocation-form" id="target-allocation-form">{csrf_hidden_input()}<input type="hidden" name="action" value="save_target_weights"><div class="target-allocation-list">' + ''.join(f'<label class="target-allocation-row"><span><b>{html.escape(stock_display_name(str(x.get("code") or "")))}</b><small>{html.escape(str(x.get("code") or ""))}</small></span><span class="target-allocation-input"><input type="number" name="target_weight_{html.escape(str(x.get("code") or ""), quote=True)}" min="0" max="100" step="0.1" inputmode="decimal" value="{target_weights.get(str(x.get("code") or ""), "")}" placeholder="0.0" required><i>%</i></span></label>' for x in sorted(positions, key=lambda z: str(z.get("code") or ""))) + '</div><div class="target-allocation-foot"><span>目標合計 <b id="target-allocation-sum">0.0%</b></span><button type="submit">儲存目標比例</button></div><p class="target-allocation-hint" id="target-allocation-hint">比例只保存為目標，不會自動交易。合計必須等於 100%。</p></form></section></details>' if positions else '')}
@@ -31831,6 +31865,45 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
 
     if positions and _is_taiwan_intraday_window():
         body += ''''''
+    body += """<style id="positions-interactive-list-final">
+body #app-page-content .rows:has(.position-card){display:block!important;margin:8px 0 18px!important;padding:0 14px!important;border:1px solid #E4E9ED!important;border-radius:18px!important;background:#fff!important;box-shadow:0 3px 12px rgba(25,48,68,.035)!important;overflow:hidden!important}
+body #app-page-content .rows:has(.position-card)>.position-card{display:block!important;margin:0!important;padding:15px 2px 11px!important;border:0!important;border-bottom:1px solid #E7EBEE!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;overflow:visible!important}
+body #app-page-content .rows:has(.position-card)>.position-card:last-child{border-bottom:0!important}
+body #app-page-content .rows:has(.position-card) .position-card-top{align-items:center!important;gap:8px!important}
+body #app-page-content .rows:has(.position-card) .position-card-title h3{font-size:18px!important;color:#182F42!important}
+body #app-page-content .rows:has(.position-card) .position-card-code{min-width:42px!important;height:26px!important;border-radius:8px!important;background:#EFF3F5!important;color:#466173!important;font-size:11px!important}
+body #app-page-content .rows:has(.position-card) .position-card-price b{font-size:20px!important;color:#20384B!important}
+body #app-page-content .rows:has(.position-card) .position-card-primary{margin:11px 0 4px!important;padding:8px 0!important;gap:0!important;border-top:1px solid #EEF1F3!important;border-bottom:1px solid #EEF1F3!important}
+body #app-page-content .rows:has(.position-card) .position-card-primary>div{min-height:0!important;padding:3px 7px!important;border-radius:0!important;background:transparent!important;border-left:1px solid #EEF1F3!important}
+body #app-page-content .rows:has(.position-card) .position-card-primary>div:first-child{border-left:0!important;padding-left:0!important}
+body #app-page-content .rows:has(.position-card) .position-card-primary small{font-size:10px!important;color:#82909A!important}
+body #app-page-content .rows:has(.position-card) .position-card-primary b{font-size:14px!important;color:#263F52!important}
+body #app-page-content .rows:has(.position-card) .position-more{margin-top:2px!important;border-top:0!important}
+body #app-page-content .rows:has(.position-card) .position-more>summary{padding:7px 0 2px!important;font-size:11px!important;color:#587488!important}
+@media(max-width:520px){body #app-page-content .rows:has(.position-card){padding:0 11px!important;border-radius:15px!important}body #app-page-content .rows:has(.position-card)>.position-card{padding-top:13px!important}body #app-page-content .rows:has(.position-card) .position-card-title h3{font-size:17px!important}body #app-page-content .rows:has(.position-card) .position-card-price b{font-size:19px!important}}
+
+body #app-page-content .position-allocation{margin:4px 0 18px!important;padding:15px!important;border:1px solid #E3E9ED!important;border-radius:17px!important;background:#fff!important;box-shadow:0 3px 12px rgba(25,48,68,.035)!important}
+body #app-page-content .position-allocation-head{display:flex!important;justify-content:space-between!important;align-items:center!important;gap:10px!important;margin-bottom:12px!important}
+body #app-page-content .position-allocation-head h2{margin:0!important;font-size:17px!important;color:#20384B!important}
+body #app-page-content .position-allocation-head small{display:block!important;margin-top:3px!important;color:#7E8D99!important;font-size:10px!important}
+body #app-page-content .position-allocation-head button{border:0!important;border-radius:9px!important;padding:7px 9px!important;background:#EFF3F5!important;color:#4A6578!important;font-size:10px!important;font-weight:800!important;cursor:pointer!important}
+body #app-page-content .position-allocation-body{display:grid!important;grid-template-columns:126px minmax(0,1fr)!important;gap:13px!important;align-items:center!important}
+body #app-page-content .position-allocation-visual{position:relative!important;width:126px!important;height:126px!important}
+body #app-page-content .position-allocation-visual svg{display:block!important;width:100%!important;height:100%!important;overflow:visible!important}
+body #app-page-content .allocation-slice{cursor:pointer!important;transition:stroke-width .16s ease,opacity .16s ease!important}
+body #app-page-content .allocation-slice.is-selected{stroke-width:18!important}
+body #app-page-content .position-allocation-center{position:absolute!important;inset:0!important;display:flex!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;text-align:center!important;pointer-events:none!important;padding:30px!important}
+body #app-page-content .position-allocation-center b{max-width:100%!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;color:#596F7F!important;font-size:9px!important}
+body #app-page-content .position-allocation-center strong{margin-top:3px!important;color:#20384B!important;font-size:17px!important;font-variant-numeric:tabular-nums!important}
+body #app-page-content .position-allocation-center small{margin-top:2px!important;color:#7C8D99!important;font-size:8px!important;white-space:nowrap!important}
+body #app-page-content .position-allocation-legend{display:grid!important;gap:2px!important;min-width:0!important}
+body #app-page-content .allocation-item{display:grid!important;grid-template-columns:9px minmax(0,1fr) auto!important;align-items:center!important;gap:6px!important;width:100%!important;min-width:0!important;padding:5px 4px!important;border:0!important;border-radius:7px!important;background:transparent!important;text-align:left!important;color:#536B7C!important;font-size:10px!important;cursor:pointer!important}
+body #app-page-content .allocation-item[aria-pressed="true"]{background:#F0F5F7!important;color:#20384B!important}
+body #app-page-content .allocation-item i{width:8px!important;height:8px!important;border-radius:50%!important}
+body #app-page-content .allocation-item span{overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important}
+body #app-page-content .allocation-item b{font-size:10px!important;font-variant-numeric:tabular-nums!important}
+body #app-page-content .allocation-item:focus-visible,body #app-page-content .allocation-slice:focus-visible{outline:2px solid #2875A3!important;outline-offset:2px!important}
+</style>"""
     print("⏱️ 持股頁：持股資料 %.0fms、法人(持股) %.0fms、3mo行情 %.0fms、HTML %.0fms、合計 %.0fms" % (
         (positions_data_done - positions_data_started) * 1000,
         (inst_done - inst_started) * 1000,
@@ -35036,7 +35109,7 @@ def render_leaderboard_chart(series_map, chart_market, top_keys, highlight_key=N
              f'stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,3"/>']
     if chart_market:
         p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in chart_market)
-        parts.append(f'<path d="{p}" fill="none" stroke="#8799A8" '
+        parts.append(f'<path class="leaderboard-chart-market" d="{p}" fill="none" stroke="#8799A8" '
                      f'stroke-width="1.8" stroke-dasharray="5,5"/>')
 
     tints = ["#2A72A5", "#D8443E", "#138568", "#7867B7", "#C18A2C"]
@@ -35044,12 +35117,13 @@ def render_leaderboard_chart(series_map, chart_market, top_keys, highlight_key=N
     for i, (key, name, curve) in enumerate(lines):
         color = "#1E6B9D" if str(key) == str(highlight_key) else tints[i % len(tints)]
         p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in curve)
-        parts.append(f'<path d="{p}" fill="none" stroke="{color}" '
+        series_key_attr = html.escape(str(key), quote=True)
+        parts.append(f'<path class="leaderboard-chart-series" data-series-key="{series_key_attr}" d="{p}" fill="none" stroke="{color}" '
                      f'stroke-width="2"/>')
-        legend.append(f'<span><i style="background:{color}"></i>{name} '
-                      f'{curve[-1][1]:+.1f}%</span>')
+        legend.append(f'<button type="button" class="leaderboard-chart-toggle" data-series-toggle="{series_key_attr}" aria-pressed="true"><i style="background:{color}"></i>{name} '
+                      f'{curve[-1][1]:+.1f}%</button>')
     if chart_market:
-        legend.append(f'<span><i style="background:#8799A8"></i>'
+        legend.append(f'<span class="leaderboard-chart-market-toggle"><i style="background:#8799A8"></i>'
                       f'大盤 {chart_market[-1][1]:+.1f}%</span>')
 
     # X 軸刻度：依涵蓋期間自動切換單位。
@@ -38131,6 +38205,11 @@ body #app-page-content .rank-rows .rank-card .bot-history-price-values {
 </details>"""
     body += """<style id="app-native-board-v1">
 /* Make the leaderboard scan like one ranked list, while retaining all expanded detail. */
+body #app-page-content .legend .leaderboard-chart-toggle{appearance:none!important;display:inline-flex!important;align-items:center!important;gap:5px!important;margin:0!important;padding:4px 6px!important;border:1px solid transparent!important;border-radius:8px!important;background:transparent!important;color:inherit!important;font:inherit!important;font-size:10px!important;line-height:1.3!important;cursor:pointer!important;-webkit-tap-highlight-color:transparent!important}
+body #app-page-content .legend .leaderboard-chart-toggle[aria-pressed="false"]{opacity:.38!important;text-decoration:line-through!important}
+body #app-page-content .legend .leaderboard-chart-toggle:focus-visible{outline:2px solid #2875A3!important;outline-offset:1px!important}
+body #app-page-content .legend .leaderboard-chart-toggle i{width:8px!important;height:8px!important;border-radius:50%!important;flex:none!important}
+body #app-page-content .leaderboard-chart-series{transition:opacity .15s ease}
 body #app-page-content .rank-rows{display:block!important;margin:9px 0 18px!important;padding:0 14px!important;border:1px solid #E3E8EC!important;border-radius:17px!important;background:#fff!important;box-shadow:0 3px 12px rgba(25,48,68,.035)!important;overflow:hidden!important}
 body #app-page-content .rank-rows .rank-card,body #app-page-content .rank-rows .rank-card.rank-champion,body #app-page-content .rank-rows .rank-card.rank-silver,body #app-page-content .rank-rows .rank-card.rank-bronze{margin:0!important;padding:13px 1px!important;border:0!important;border-bottom:1px solid #E7EBEE!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
 body #app-page-content .rank-rows .rank-card:last-child{border-bottom:0!important}
@@ -38150,7 +38229,7 @@ body #app-page-content .rank-rows .rank-detail,body #app-page-content .rank-rows
 body #app-page-content .rank-rows .rank-honour{display:none!important}
 body #app-page-content .rank-rows .rank-detail>summary{padding:8px 0 2px!important;font-size:11px!important}
 @media(max-width:480px){body #app-page-content .rank-rows{padding:0 11px!important}body #app-page-content .rank-rows .rank-meta{grid-template-columns:repeat(2,minmax(0,1fr))!important;margin-left:39px!important}}
-</style>"""
+</style><script>(function(){document.addEventListener('click',function(e){var b=e.target.closest('[data-series-toggle]');if(!b)return;var legend=b.closest('.legend'),host=legend&&legend.parentElement,svg=host&&host.querySelector('svg');if(!svg)return;var key=b.getAttribute('data-series-toggle'),line=Array.prototype.find.call(svg.querySelectorAll('.leaderboard-chart-series'),function(x){return x.getAttribute('data-series-key')===key;});if(!line)return;var show=b.getAttribute('aria-pressed')!=='true';b.setAttribute('aria-pressed',show?'true':'false');line.style.display=show?'':'none';});})();</script>"""
     print("⏱️ 排行榜頁：榜單 %.0fms、排名狀態 %.0fms、HTML %.0fms、合計 %.0fms" % (
         (board_done - board_started) * 1000,
         (rank_status_done - board_done) * 1000,
@@ -39985,6 +40064,10 @@ _HV2_CSS = r"""
 #hv2 .hv2-sec[aria-label="我的正負貢獻"]{padding-top:14px!important}
 #hv2 .hv2-h{font-size:18px!important}
 #hv2 .hv2-sub{margin:0 0 4px!important}
+#hv2 .hv2-impact-toggle{display:inline-flex;gap:3px;padding:3px;margin:7px 0 2px;border-radius:11px;background:#E9EEF1}
+#hv2 .hv2-impact-toggle button{display:block;min-height:32px;padding:5px 10px;border-radius:8px;color:#657681;font-size:11px;font-weight:800}
+#hv2 .hv2-impact-toggle button[aria-pressed="true"]{background:#fff;color:#20394D;box-shadow:0 1px 3px rgba(20,40,55,.12)}
+#hv2 .hv2-impact-toggle button:focus-visible{outline:2px solid #2875A3;outline-offset:2px}
 #hv2 .hv2-ghead{margin-top:11px!important;padding:8px 0 5px!important;border-top:1px solid #E5E9EC!important}
 #hv2 .hv2-pill{font-size:13px!important}
 #hv2 .hv2-row{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:2px 12px!important;padding:9px 0 11px!important}
@@ -39994,6 +40077,10 @@ _HV2_CSS = r"""
 #hv2 .hv2-row strong{grid-column:2;grid-row:1;align-self:center;font-size:15px!important;font-variant-numeric:tabular-nums}
 #hv2 .hv2-cbar{grid-column:1/-1;height:5px!important;margin-top:4px!important;border-radius:99px!important;background:#E9EDF0!important}
 #hv2 .hv2-cbar i{border-radius:99px!important}
+#hv2 .hv2-row[data-home-chart-row]{cursor:pointer}
+#hv2 .hv2-row[data-home-chart-row]:focus-visible{outline:2px solid #2875A3;outline-offset:2px;border-radius:7px}
+#hv2 .hv2-row .hv2-chart-detail{grid-column:1/-1;padding:8px 10px;border-radius:9px;background:#F3F6F7;color:#657681;font-size:11px;line-height:1.5}
+#hv2 .hv2-row .hv2-chart-detail[hidden]{display:none!important}
 #hv2 .hv2-sec[aria-label="我的正負貢獻"] .hv2-g-up .hv2-pill:before{content:'↗ ';}
 #hv2 .hv2-sec[aria-label="我的正負貢獻"] .hv2-g-down .hv2-pill:before{content:'↘ ';}
 #hv2 .hv2-journal-wrap{margin:0;padding:14px 3px!important}
@@ -40103,8 +40190,18 @@ _HV2_JS = r'''<script>
     var label=open?'收合 ▴':'查看其餘 '+Math.max(0,n-lim)+' 檔 ▾',hide=n<=lim;
     if(b.hidden!==hide)b.hidden=hide;if(b.textContent!==label)b.textContent=label;
   }
-  function syncAll(){root.querySelectorAll('[data-hv2-group]').forEach(syncGroup);}
+  function syncAll(){root.querySelectorAll('[data-hv2-group]').forEach(syncGroup);setImpactMode(root.dataset.impactMode||'contribution');}
+  function setImpactMode(mode){
+    root.dataset.impactMode=mode;
+    root.querySelectorAll('[data-home-impact-mode]').forEach(function(btn){var on=btn.getAttribute('data-home-impact-mode')===mode;btn.setAttribute('aria-pressed',on?'true':'false');});var caption=root.querySelector('[data-home-impact-caption]');if(caption)caption.textContent=mode==='stock'?'各持股當日漲跌幅':'每檔對整體組合的百分點影響';
+    root.querySelectorAll('[data-home-chart-row]').forEach(function(row){var raw=Number(row.getAttribute(mode==='stock'?'data-stock-pct':'data-contribution'))||0;var strong=row.querySelector('strong');if(strong)strong.textContent=(raw>0?'+':'')+raw.toFixed(2)+'%';});
+    root.querySelectorAll('[data-home-contribution-rows]').forEach(function(group){var rows=Array.prototype.slice.call(group.querySelectorAll('[data-home-chart-row]'));var mx=Math.max.apply(null,rows.map(function(row){return Math.abs(Number(row.getAttribute(mode==='stock'?'data-stock-pct':'data-contribution')))||0;}).concat([0.0001]));rows.forEach(function(row){var raw=Number(row.getAttribute(mode==='stock'?'data-stock-pct':'data-contribution'))||0,bar=row.querySelector('.hv2-cbar i');if(bar)bar.style.width=Math.min(100,Math.abs(raw)/mx*100).toFixed(0)+'%';});});
+  }
   root.addEventListener('click',function(ev){
+    var modeButton=ev.target.closest('[data-home-impact-mode]');
+    if(modeButton){setImpactMode(modeButton.getAttribute('data-home-impact-mode'));return;}
+    var chartRow=ev.target.closest('[data-home-chart-row]');
+    if(chartRow){var detail=chartRow.querySelector('[data-hv2-chart-detail]'),open=chartRow.getAttribute('aria-expanded')!=='true';if(detail)detail.hidden=!open;chartRow.setAttribute('aria-expanded',open?'true':'false');return;}
     var more=ev.target.closest('[data-hv2-more]');
     if(more){var g=more.closest('[data-hv2-group]');if(g){g.classList.toggle('is-open');syncGroup(g);}return;}
     var trig=ev.target.closest('.hv2-hold-trigger');
@@ -40117,6 +40214,7 @@ _HV2_JS = r'''<script>
     var act=ev.target.closest('[data-holding-action="target"]');
     if(act){var t=document.querySelector('.home-target-collapse')||document.querySelector('.home-detail-collapse');if(t){t.open=true;t.scrollIntoView({behavior:'smooth',block:'start'});}}
   });
+  root.addEventListener('keydown',function(ev){if((ev.key==='Enter'||ev.key===' ')&&ev.target.matches('[data-home-chart-row]')){ev.preventDefault();ev.target.click();}});
   var busy=false;
   if(window.MutationObserver){new MutationObserver(function(){if(busy)return;busy=true;setTimeout(function(){busy=false;syncAll();},50);}).observe(root,{childList:true,subtree:true});}
   syncAll();
@@ -40179,7 +40277,8 @@ def _render_home_v2(d):
 
   <section class="hv2-sec" aria-label="我的正負貢獻">
     <div class="hv2-st"><span class="hv2-h">今日貢獻</span><span class="hv2-cnt">{html.escape(d["contribution_day_label"])}</span></div>
-    <span class="hv2-sub">個股對整體組合的百分點貢獻</span>
+    <span class="hv2-sub" data-home-impact-caption>每檔對整體組合的百分點影響</span>
+    <div class="hv2-impact-toggle" role="group" aria-label="貢獻圖表顯示方式"><button type="button" data-home-impact-mode="contribution" aria-pressed="true">組合影響</button><button type="button" data-home-impact-mode="stock" aria-pressed="false">個股漲跌</button></div>
     {d["stale_notice"]}
     {d["contribution_groups"]}
   </section>
@@ -40993,8 +41092,13 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         _mx = max([abs(_e[2]) for _e in entries] + [0.0001])
         for idx, (holding, pct, contribution) in enumerate(entries, 1):
             code = html.escape(str(holding.get("code") or ""))
+            detail_basis = html.escape(contribution_basis_text(holding))
+            realized_text = realized_today_text(holding)
+            realized_note = (f'・今日已實現 {html.escape(realized_text)}' if realized_text else '')
+            detail_html = (f'<div class="hv2-chart-detail" data-hv2-chart-detail hidden>'
+                           f'個股漲跌 {pct:+.2f}%・{detail_basis}{realized_note}</div>')
             rows.append(
-                f'''<div class="hv2-row" data-hv2-item><div class="hv2-row-main"><b>{html.escape(str(holding['name']))}{f' <small>({code})</small>' if code else ''}</b><i class="hv2-cbar"><i style="width:{min(100.0, abs(contribution) / _mx * 100.0):.0f}%"></i></i></div><strong class="{value_class}">{contribution:+.2f}%</strong></div>''')
+                f'''<div class="hv2-row" data-hv2-item data-home-chart-row data-contribution="{contribution:.6f}" data-stock-pct="{pct:.6f}" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>{html.escape(str(holding['name']))}{f' <small>({code})</small>' if code else ''}</b><i class="hv2-cbar"><i style="width:{min(100.0, abs(contribution) / _mx * 100.0):.0f}%"></i></i></div><strong class="{value_class}">{contribution:+.2f}%</strong>{detail_html}</div>''')
         return ''.join(rows)
 
     positive_lead = positive_entries[0] if positive_entries else None
@@ -41083,7 +41187,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   function setHtml(selector,value){var el=document.querySelector(selector);if(el)el.innerHTML=value;}
   function realized(item){if(item.realized_pl==null)return '';var n=Number(item.realized_pl);if(!Number.isFinite(n))return '';return '<small class="impact-realized '+(n>=0?'up':'down')+'">今日已實現損益：'+(n>=0?'+':'')+n.toLocaleString('zh-TW',{maximumFractionDigits:0})+' 元</small>';}
   function leadHtml(item,title,kind){if(!item)return '<div class="impact-lead impact-muted"><small>'+esc(title)+'</small><b>目前沒有資料</b></div>';var change=item.pct>0?'上漲':'下跌',amount=item.contribution>0?'增加約':'減少約';return '<div class="impact-lead '+kind+'"><small>'+esc(title)+'</small><h3>'+esc(item.name)+'</h3><p>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%・'+esc(item.basis_text)+'</p><strong><span>對整體組合'+amount+'</span><b>'+Math.abs(Number(item.contribution)).toFixed(2)+'%</b></strong></div>'; }
-  function rowsHtml(items,kind){if(!items||!items.length)return '<div class=\"hv2-empty\">目前沒有可顯示的項目。</div>';var mx=Math.max.apply(null,items.map(function(x){return Math.abs(Number(x.contribution))||0;}).concat([0.0001]));return items.map(function(item){var positive=item.contribution>0,change=item.pct>0?'上漲':'下跌',direction=positive?'增加':'減少';return '<div class=\"hv2-row\" data-hv2-item><div class=\"hv2-row-main\"><b>'+esc(item.name)+'</b><small class=\"hv2-meta\"><span>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%</span><span>'+esc(item.basis_text)+'</span></small>'+realized(item)+'<i class=\"hv2-cbar\"><i style=\"width:'+Math.min(100,Math.abs(Number(item.contribution))/mx*100).toFixed(0)+'%\"></i></i></div><strong class=\"'+kind+'\">'+direction+'約 '+Math.abs(Number(item.contribution)).toFixed(2)+'%</strong></div>';}).join('');}
+  function rowsHtml(items,kind){if(!items||!items.length)return '<div class="hv2-empty">目前沒有可顯示的項目。</div>';var mx=Math.max.apply(null,items.map(function(x){return Math.abs(Number(x.contribution))||0;}).concat([0.0001]));return items.map(function(item){var contribution=Number(item.contribution)||0,pct=Number(item.pct)||0,realizedText=item.realized_pl==null?'':'・今日已實現 '+esc(Number(item.realized_pl).toLocaleString('zh-TW',{maximumFractionDigits:0}))+' 元';return '<div class="hv2-row" data-hv2-item data-home-chart-row data-contribution="'+contribution.toFixed(6)+'" data-stock-pct="'+pct.toFixed(6)+'" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>'+esc(item.name)+'</b><i class="hv2-cbar"><i style="width:'+Math.min(100,Math.abs(contribution)/mx*100).toFixed(0)+'%"></i></i></div><strong class="'+kind+'">'+(contribution>0?'+':'')+contribution.toFixed(2)+'%</strong><div class="hv2-chart-detail" data-hv2-chart-detail hidden>個股漲跌 '+(pct>0?'+':'')+pct.toFixed(2)+'%・'+esc(item.basis_text)+realizedText+'</div></div>';}).join('');}
   function refreshMarket(){
     var marketUrl='/web/api/taiex/intraday',marketToken=token();
     if(marketToken)marketUrl+='?t='+encodeURIComponent(marketToken);
