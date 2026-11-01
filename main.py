@@ -6320,8 +6320,9 @@ def enrich_position_change_logs(logs, current_positions, price_map, total_value)
                        if trade_price is not None else None)
         current_price = (price_map.get(code) or {}).get("close") if price_map else None
         current_shares = current_by_code.get(code, 0)
-        current_weight = ((float(current_price) * current_shares / total_value * 100)
-                          if current_price is not None and total_value > 0 else None)
+        current_weight = (0.0 if after == 0 else
+                          ((float(current_price) * current_shares / total_value * 100)
+                           if current_price is not None and total_value > 0 else None))
         event_weight = ((delta * float(trade_price) / total_value * 100)
                         if trade_price is not None and total_value > 0 else None)
         change_pct = (delta / before * 100) if before > 0 else None
@@ -8037,7 +8038,7 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
                         f'<div class="position-journal-detail-body">{"".join(detail_rows)}</div>'
                         f'</details>')
 
-                row_parts.append(f'''<div class="position-journal-row">
+                row_parts.append(f'''<div class="position-journal-row {status_cls}">
   <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
   <div class="position-journal-status"><span class="position-journal-badge {status_cls}">{status_label}</span></div>
   <div class="position-journal-cell"><b class="{delta_class}">{delta_text}</b><small>{before:,} → {after:,} 股</small></div>
@@ -25584,6 +25585,10 @@ body #app-page-content .holding-card button:active {
 #app-page-content .position-journal-category.delete b,
 #app-page-content .position-journal-badge.delete { color:#667085 !important; }
 #app-page-content .position-journal-badge.delete { background:#EDF0F3 !important; }
+#app-page-content .position-journal-row.add { background:#FCE9E6 !important; }
+#app-page-content .position-journal-row.reduce { background:#E8F2EA !important; }
+#app-page-content .position-journal-row.new { background:#F6F0D7 !important; }
+#app-page-content .position-journal-row.delete { background:#EDF0F3 !important; }
 
 """
 
