@@ -8038,7 +8038,7 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
                         f'<div class="position-journal-detail-body">{"".join(detail_rows)}</div>'
                         f'</details>')
 
-                row_parts.append(f'''<div class="position-journal-row {status_cls}">
+                row_parts.append(f'''<div class="position-journal-row">
   <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
   <div class="position-journal-status"><span class="position-journal-badge {status_cls}">{status_label}</span></div>
   <div class="position-journal-cell"><b class="{delta_class}">{delta_text}</b><small>{before:,} → {after:,} 股</small></div>
@@ -25585,10 +25585,6 @@ body #app-page-content .holding-card button:active {
 #app-page-content .position-journal-category.delete b,
 #app-page-content .position-journal-badge.delete { color:#667085 !important; }
 #app-page-content .position-journal-badge.delete { background:#EDF0F3 !important; }
-#app-page-content .position-journal-row.add { background:#FCE9E6 !important; }
-#app-page-content .position-journal-row.reduce { background:#E8F2EA !important; }
-#app-page-content .position-journal-row.new { background:#F6F0D7 !important; }
-#app-page-content .position-journal-row.delete { background:#EDF0F3 !important; }
 
 """
 
@@ -41154,7 +41150,12 @@ def _render_home_v2(d):
   #hv2 .hv2-feature-launcher>a:nth-child(4) i{{background:#F1EBFA;color:#8064A9}}
   #hv2 .hv2-feature-launcher>a:nth-child(5) i{{background:#FCEAE8;color:#C2675E}}
   #hv2 .hv2-feature-launcher small{{color:#72859A}}
-  #hv2 .hv2-sec[aria-label="大盤比較"]{{background:linear-gradient(120deg,#F3F8FC,#F8F6EF);border:1px solid #E5ECF2;border-radius:14px;padding:12px;margin:10px 0}}
+  #hv2 .hv2-sec[aria-label="大盤與我的組合"]{{background:linear-gradient(120deg,#F2F8FB,#FAF7F0);border:1px solid #E4EBEF;border-radius:16px;padding:14px;margin:10px 0;box-shadow:0 5px 16px rgba(40,72,96,.045)}}
+  #hv2 .hv2-sec[aria-label="我的正負貢獻"]{{background:rgba(255,255,255,.82);border:1px solid rgba(214,222,228,.9);border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 6px 20px rgba(40,72,96,.05)}}
+  #hv2 .hv2-journal-wrap{{padding:0 14px;border:1px solid rgba(214,222,228,.9);border-radius:18px;background:rgba(255,255,255,.86);box-shadow:0 6px 20px rgba(40,72,96,.045)}}
+  #hv2{{background:transparent}}
+  body:has(#hv2){{background:radial-gradient(ellipse at 9% 4%,rgba(95,151,182,.15),transparent 28%),radial-gradient(ellipse at 92% 32%,rgba(203,174,118,.13),transparent 30%),linear-gradient(180deg,#E9F0F5 0%,#F4F0E8 52%,#E9F0F5 100%) !important}}
+  body:has(#hv2) .wrap,body:has(#hv2) #app-page-content{{background:transparent !important}}
   </style>
 
   <section class="hv2-sec" aria-label="大盤與我的組合">
