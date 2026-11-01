@@ -3712,10 +3712,6 @@ def _digest_event_title(event):
     evidence = event.get("evidence") or {}
     code = evidence.get("code")
     if not code:
-        market_add_action = "/web/market/watchlist"
-        _market_auth_token = request.args.get("t") or request.cookies.get("stockbot_token")
-        if _market_auth_token:
-            market_add_action += "?t=" + quote(str(_market_auth_token), safe="")
         m = re.search(r"(?:你的)?([0-9]{4,6}[A-Z]?)", title)
         code = m.group(1) if m else None
     if code and code in title:
@@ -38579,6 +38575,10 @@ def web_market(uid):
         f'<a class="{"active" if period == key else ""}" href="/web/market?code={quote(code)}&amp;period={key}">{label}</a>'
         for key, label in (("1m", "1月"), ("3m", "3月"), ("6m", "6月"), ("1y", "1年")))
     if not code:
+        market_add_action = "/web/market/watchlist"
+        _market_auth_token = request.args.get("t") or request.cookies.get("stockbot_token")
+        if _market_auth_token:
+            market_add_action += "?t=" + quote(str(_market_auth_token), safe="")
         board_quotes = {}
         if tracked:
             try:
