@@ -2597,6 +2597,90 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_shared_data_snapshots_computed
             ON shared_data_snapshots (computed_at DESC)
         ''')
+        # US industry rotation research: daily method-version snapshots, normalized
+        # price history, and evidence-backed Taiwan product mappings.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS us_rotation_snapshots (
+                id BIGSERIAL PRIMARY KEY,
+                as_of_date DATE NOT NULL,
+                algorithm_version TEXT NOT NULL,
+                source TEXT NOT NULL,
+                fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                payload JSONB NOT NULL,
+                source_meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+                UNIQUE (as_of_date, algorithm_version)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_us_rotation_snapshots_date
+            ON us_rotation_snapshots (as_of_date DESC, id DESC)
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS us_rotation_prices (
+                symbol TEXT NOT NULL,
+                trade_date DATE NOT NULL,
+                close NUMERIC,
+                adjusted_close NUMERIC,
+                volume BIGINT,
+                source TEXT NOT NULL,
+                fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (symbol, trade_date)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_us_rotation_prices_date
+            ON us_rotation_prices (trade_date DESC, symbol)
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS us_rotation_forward_returns (
+                snapshot_id BIGINT NOT NULL REFERENCES us_rotation_snapshots(id) ON DELETE CASCADE,
+                symbol TEXT NOT NULL,
+                horizon_sessions INTEGER NOT NULL CHECK (horizon_sessions IN (5,20,60)),
+                start_date DATE NOT NULL,
+                end_date DATE NOT NULL,
+                return_pct NUMERIC NOT NULL,
+                computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (snapshot_id, symbol, horizon_sessions)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS us_tw_company_snapshots (
+                as_of_date DATE NOT NULL,
+                tw_code TEXT NOT NULL,
+                captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                payload JSONB NOT NULL,
+                source_meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+                PRIMARY KEY (as_of_date, tw_code)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_us_tw_company_snapshots_date
+            ON us_tw_company_snapshots (as_of_date DESC, tw_code)
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS us_supply_chain_map (
+                map_key TEXT PRIMARY KEY,
+                us_industry TEXT NOT NULL,
+                chain TEXT NOT NULL,
+                tw_code TEXT NOT NULL,
+                tw_name TEXT NOT NULL,
+                product TEXT NOT NULL,
+                role TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                evidence_url TEXT NOT NULL,
+                evidence_date TEXT NOT NULL,
+                confidence TEXT NOT NULL,
+                evidence_status TEXT NOT NULL DEFAULT 'relationship_unverified',
+                active BOOLEAN NOT NULL DEFAULT TRUE,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_us_supply_chain_industry
+            ON us_supply_chain_map (us_industry, active, chain)
+        ''')
+        from us_rotation.repository import seed_supply_chain
+        seed_supply_chain(cursor)
         # 背景工作狀態。
         # 原本只存在記憶體，但那有兩個問題：gunicorn 開多個 worker 時，
         # 工作在 A 執行、查詢卻可能連到 B，看到的是空的；服務一重啟也全沒了。
@@ -4324,6 +4408,7 @@ def web_login_required(view):
             '/web/settings': 'settings', '/web/more': 'more',
             '/web/chips': 'chips', '/web/etf': 'etf',
             '/web/watchlist': 'watchlist', '/web/premarket': 'premarket',
+            '/web/us-rotation': 'us_rotation',
         }
         gate_key = feature_gate.get(request.path)
         if request.path == '/web/screener':
@@ -4346,6 +4431,7 @@ def web_login_required(view):
                 "/web/compare": "compare",
                 "/web/more": "more",
                 "/web/settings": "settings",
+                "/web/us-rotation": "us_rotation",
             }.get(path)
             if path == "/web/screener":
                 mode = request.args.get("mode", "blackhorse")
@@ -4373,6 +4459,7 @@ def web_login_required(view):
             "/web/compare": ("比較", "compare", ["正在讀取自選清單…", "正在抓報價與估值…", "正在整理對照表…"], False),
             "/web/settings": ("設定", "settings", ["正在讀取設定…", "正在整理你的偏好…"], False),
             "/web/more": ("更多", "more", ["正在讀取功能清單…", "正在整理可用功能…"], False),
+            "/web/us-rotation": ("美股輪動", "us_rotation", ["正在讀取產業快照…", "正在整理相對強度…"], False),
             "/web/watchlist": ("自選股", "watchlist", ["正在讀取自選股…", "正在整理行情…", "正在完成自選股頁面…"], False),
             "/web/leaderboard/history": ("排行榜歷史", "leaderboard", ["正在讀取歷史排名…", "正在整理賽季資料…"], False),
             "/web/position-trend": ("持股走勢", "positions", ["正在讀取持股快照…", "正在整理走勢資料…"], False),
@@ -25709,6 +25796,7 @@ def render_page(title, body, nav_active=None, user_name=None):
                + tab("/web/market", "看盤", "market")
                + tab("/web/trades", "紀錄", "trades")
                + tab("/web/workbench", "選股", "screener")
+               + tab("/web/us-rotation", "美股輪動", "us_rotation")
                + tab("/web/compare", "比較", "compare")
                + tab("/web/settings", "設定", "settings")
                + "</nav>")
@@ -25720,6 +25808,7 @@ def render_page(title, body, nav_active=None, user_name=None):
                   + bottom_tab("/web/positions", "▣", "持股", "positions")
                   + bottom_tab("/web/workbench", "⌕", "選股", "screener")
                   + bottom_tab("/web/leaderboard", "≡", "排行", "leaderboard")
+                  + bottom_tab("/web/us-rotation", "↗", "美股輪動", "us_rotation")
                   + f'<a href="/web/more" class="{"on" if more_on else ""}" data-app-nav="1"><b>⋯</b>更多</a>'
                   + "</div></div>")
 
@@ -25932,9 +26021,9 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
   body .app-header,body header.app-header{position:relative!important;inset:auto!important;width:100%!important;max-width:760px!important;margin:0 auto 10px!important;padding-top:calc(env(safe-area-inset-top,0px) + 10px)!important;z-index:1!important;transform:none!important}
   body .app-header .page-back{position:relative!important;inset:auto!important;display:block!important;margin:0 0 8px!important}
   body .app-header .app-account-link{top:calc(env(safe-area-inset-top,0px) + 10px)!important}
-  body .app-bottom-nav .bottom-inner{grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:1px!important}
-  body .app-bottom-nav .bottom-inner a{font-size:9px!important;padding-left:1px!important;padding-right:1px!important}
-  body .app-bottom-nav .bottom-inner a b{font-size:18px!important}
+  body .app-bottom-nav .bottom-inner{grid-template-columns:repeat(7,minmax(0,1fr))!important;gap:1px!important}
+  body .app-bottom-nav .bottom-inner a{font-size:8px!important;padding-left:0!important;padding-right:0!important;letter-spacing:-.02em!important}
+  body .app-bottom-nav .bottom-inner a b{font-size:17px!important}
 }
 '''
 
@@ -40515,7 +40604,7 @@ def web_more(uid):
 
 <div class="more-group">
   <div class="more-group-title">我的設定</div>
-  <a class="more-item" href="/web/settings"><span class="more-icon">⚙</span><span><b>帳號設定</b><small>Google 綁定、LINE 通知說明與交易成本</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/settings#appearance"><span class="more-icon">◉</span><span><b>網站配色與帳號設定</b><small>選擇首頁色調，也可管理 Google 登入與 LINE 通知</small></span><strong>›</strong></a>
 </div>
 
 <div class="more-group">
@@ -52388,12 +52477,6 @@ def web_api_perf_test(uid):
         _db_diag_set(operation="-", request_id="-")
 
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
-
-
-
 # ===== Research-only PIT backtest module (V284) =====
 # No changes to production stock selection, ranking, cron or snapshots.
 # An audit is always performed before any research-only backtest is allowed.
@@ -52508,3 +52591,136 @@ def web_strategy_lab_backtest(uid):
         "message":"回測已建立研究專用框架，但歷史五因子 point-in-time 資料尚未驗證完整；禁止產生虛構績效。",
         "audit":audit},422)
 # ===== End research-only module =====
+
+
+# Isolated US → Taiwan intelligence feature. Reuses the authenticated site shell
+# and existing PostgreSQL/background-job helpers without changing LINE messaging.
+from us_rotation import create_blueprint as create_us_rotation_blueprint
+
+
+def _build_us_rotation_tw_snapshot(codes):
+    """Capture only mapped Taiwan companies using existing cached/raw-data functions.
+
+    This runs inside the scheduled background job, never in a page request. Unknown
+    EPS/margin fields remain null instead of being inferred from the five-factor model.
+    """
+    requested = sorted({str(code).strip() for code in (codes or []) if str(code).strip()})
+    if not requested:
+        return None
+    try:
+        prices = get_realtime_stocks_bulk(
+            requested, workers=4, rng="6mo", skip_mis=True, request_timeout=12) or {}
+    except Exception as exc:
+        print(f"⚠️ US→TW 雷達台股歷史資料擷取失敗：{type(exc).__name__}", flush=True)
+        prices = {}
+    try:
+        revenue_map = fetch_monthly_revenue(homepage=True) or {}
+    except Exception:
+        revenue_map = {}
+    try:
+        institutional_map = fetch_institutional_data(requested) or {}
+    except Exception:
+        institutional_map = {}
+    try:
+        valuation_map = fetch_valuation() or {}
+    except Exception:
+        valuation_map = {}
+
+    rows = []
+    observed_dates = []
+    for code in requested:
+        stock = prices.get(code) or {}
+        revenue = revenue_map.get(code) or revenue_map.get(code.zfill(4)) or {}
+        institutional = institutional_map.get(code) or {}
+        valuation = valuation_map.get(code) or {}
+        closes = stock.get("adj_closes") or []
+        close_dates = stock.get("close_dates") or []
+        price_date = close_dates[-1] if close_dates else stock.get("close_date")
+        try:
+            price_date = price_date.isoformat() if hasattr(price_date, "isoformat") else str(price_date or "")
+            if price_date:
+                observed_dates.append(price_date)
+        except Exception:
+            price_date = None
+
+        def _return_for(sessions):
+            try:
+                current = float(closes[-1])
+                previous = float(closes[-sessions - 1])
+                return round((current / previous - 1) * 100, 4) if previous > 0 else None
+            except (IndexError, TypeError, ValueError, ZeroDivisionError):
+                return None
+
+        close = stock.get("close")
+        ma5 = None
+        try:
+            ma5 = round(sum(float(x) for x in (stock.get("closes") or [])[-5:]) / 5, 4) if len(stock.get("closes") or []) >= 5 else None
+        except (TypeError, ValueError):
+            pass
+        missing = []
+        if not stock:
+            missing.append("行情")
+        if not revenue:
+            missing.append("月營收")
+        if not institutional:
+            missing.append("法人")
+        if not valuation:
+            missing.append("估值")
+        rows.append({
+            "code": code,
+            "name": stock.get("name") or institutional.get("name") or code,
+            "price_date": price_date or None,
+            "close": close,
+            "return_5d_pct": _return_for(5),
+            "return_20d_pct": _return_for(20),
+            "return_60d_pct": _return_for(60),
+            "ma5": ma5,
+            "ma20": stock.get("ma20"),
+            "ma60": stock.get("ma60"),
+            "high_60d": stock.get("high_60d"),
+            "low_60d": stock.get("low_60d"),
+            "volume_ratio_20d": stock.get("vol_ratio"),
+            "revenue_period": str(_revenue_cache.get("period") or "") or None,
+            "revenue_yoy_pct": revenue.get("yoy_pct"),
+            "revenue_mom_pct": revenue.get("mom_pct"),
+            "revenue_cum_yoy_pct": revenue.get("cum_yoy_pct"),
+            "revenue_source_date": str(_revenue_cache.get("source_date") or "") or None,
+            "foreign_net_lots": institutional.get("foreign_net_lots"),
+            "trust_net_lots": institutional.get("trust_net_lots"),
+            "dealer_net_lots": institutional.get("dealer_net_lots"),
+            "total_net_lots": institutional.get("total_net_lots"),
+            "institutional_source_date": str(_t86_cache.get("data_date") or "") or None,
+            "pe": valuation.get("pe"),
+            "pb": valuation.get("pb"),
+            "dividend_yield_pct": valuation.get("yield"),
+            "eps": None,
+            "gross_margin_pct": None,
+            "operating_margin_pct": None,
+            "missing_fields": missing + ["季 EPS", "毛利率", "營業利益率", "法人連買日數"],
+            "note": "各資料日分開標示；缺少的財報或籌碼欄位維持空值。",
+        })
+    as_of_date = max(observed_dates) if observed_dates else taiwan_today().isoformat()
+    return {
+        "as_of_date": as_of_date,
+        "rows": rows,
+        "source_meta": {
+            "price": "既有台股歷史行情函式；跳過盤中 MIS",
+            "monthly_revenue": str(_revenue_cache.get("source") or "unavailable"),
+            "institutional": "既有法人快照函式",
+            "valuation": str(_valuation_cache.get("source") or "unavailable"),
+        },
+    }
+
+
+app.register_blueprint(create_us_rotation_blueprint(
+    web_login_required=web_login_required,
+    render_page=render_page,
+    get_db_connection=get_db_connection,
+    release_db_connection=release_db_connection,
+    run_in_background=run_in_background,
+    fetch_tw_company_snapshot=_build_us_rotation_tw_snapshot,
+))
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
