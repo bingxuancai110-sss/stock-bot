@@ -10308,6 +10308,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
             meta = result_meta[0].get('meta', {})
             timestamps = result_meta[0].get('timestamp', [])
             indicators = result_meta[0].get('indicators', {}).get('quote', [{}])[0]
+            raw_opens = indicators.get('open', [])
             raw_closes = indicators.get('close', [])
             raw_highs = indicators.get('high', [])
             raw_lows = indicators.get('low', [])
@@ -10339,9 +10340,10 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 h = raw_highs[i] if i < len(raw_highs) and raw_highs[i] is not None else c
                 l = raw_lows[i] if i < len(raw_lows) and raw_lows[i] is not None else c
                 v = raw_volumes[i] if i < len(raw_volumes) and raw_volumes[i] is not None else 0
+                o = raw_opens[i] if i < len(raw_opens) and raw_opens[i] is not None else c
                 adj = (raw_adjs[i] if i < len(raw_adjs)
                        and raw_adjs[i] is not None else c)
-                bars.append((bar_date, c, h, l, v, adj))
+                bars.append((bar_date, c, h, l, v, adj, o))
 
             # Yahoo 長區間日線偶爾把「前一交易日」列為 null；先過濾 null 後
             # 若直接用 bars[-2]，會跳到更早一日並把當日漲幅大幅放大。
@@ -10606,6 +10608,10 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 # 而「什麼時候發生的」正是圖能回答、數字回答不了的問題。
                 "close_dates": [b[0] for b in hist] + [
                     (today_date if official_quote else (bars[-1][0] if bars else today_date))],
+                "opens": [b[6] for b in hist] + [float(
+                    (official_quote or {}).get("open") or
+                    (raw_opens[today_raw_index] if today_raw_index is not None and today_raw_index < len(raw_opens) and raw_opens[today_raw_index] else
+                     (bars[-1][6] if bars else close)))],
                 # 逐日高低價，供籌碼分布把當日成交量攤到價格區間。
                 # 只有收盤價的話，整天的量會全部歸在收盤那一格——
                 # 一天內震盪 5% 的標的，位置就會明顯偏掉。
@@ -25557,8 +25563,10 @@ def render_page(title, body, nav_active=None, user_name=None):
     if nav_active:
         nav = ("<nav class=\"top-nav\">"
                + tab("/web/portfolio", "今日", "portfolio")
+                       + tab("/web/market", "看盤", "market")
                + tab("/web/leaderboard", "排行榜", "leaderboard")
                + tab("/web/positions", "持股", "positions")
+               + tab("/web/market", "看盤", "market")
                + tab("/web/trades", "紀錄", "trades")
                + tab("/web/workbench", "選股", "screener")
                + tab("/web/compare", "比較", "compare")
@@ -25568,8 +25576,9 @@ def render_page(title, body, nav_active=None, user_name=None):
     more_on = active_nav in {"settings", "trades", "compare", "watchlist", "more"}
     bottom_nav = ("<div class=\"app-bottom-nav\"><div class=\"bottom-inner\">"
                   + bottom_tab("/web/portfolio", "⌂", "今日", "portfolio")
+                  + bottom_tab("/web/market", "⌁", "看盤", "market")
                   + bottom_tab("/web/positions", "▣", "持股", "positions")
-                  + bottom_tab("/web/workbench", "⌁", "選股", "screener")
+                  + bottom_tab("/web/workbench", "⌕", "選股", "screener")
                   + bottom_tab("/web/leaderboard", "≡", "排行", "leaderboard")
                   + f'<a href="/web/more" class="{"on" if more_on else ""}" data-app-nav="1"><b>⋯</b>更多</a>'
                   + "</div></div>")
@@ -25782,6 +25791,9 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
   body .app-header,body header.app-header{position:relative!important;inset:auto!important;width:100%!important;max-width:760px!important;margin:0 auto 10px!important;padding-top:calc(env(safe-area-inset-top,0px) + 10px)!important;z-index:1!important;transform:none!important}
   body .app-header .page-back{position:relative!important;inset:auto!important;display:block!important;margin:0 0 8px!important}
   body .app-header .app-account-link{top:calc(env(safe-area-inset-top,0px) + 10px)!important}
+  body .app-bottom-nav .bottom-inner{grid-template-columns:repeat(6,minmax(0,1fr))!important;gap:1px!important}
+  body .app-bottom-nav .bottom-inner a{font-size:9px!important;padding-left:1px!important;padding-right:1px!important}
+  body .app-bottom-nav .bottom-inner a b{font-size:18px!important}
 }
 '''
 
@@ -38512,6 +38524,165 @@ def _render_report_lines_html(text, title=None):
 
 
 
+@app.route("/web/market", methods=["GET", "POST"])
+@web_login_required
+def web_market(uid):
+    """手機優先個股看盤頁：沿用現有 Yahoo 日線快取，不另建行情來源。"""
+    raw_query = str(request.values.get("q") or request.args.get("code") or "").strip()
+    code_match = re.search(r"(?<!\d)(\d{4,6}[A-Za-z]?)(?!\d)", raw_query)
+    code = normalize_code(code_match.group(1)) if code_match else ""
+    if not code and raw_query:
+        folded = raw_query.casefold()
+        code = next((str(k) for k, v in STOCK_NAME_MAP.items()
+                     if folded == str(v).casefold() or folded in str(v).casefold()), "")
+    period = str(request.args.get("period") or "3m").lower()
+    period_days = {"1m": 31, "3m": 93, "6m": 186, "1y": 366}
+    if period not in period_days:
+        period = "3m"
+
+    tracked = []
+    try:
+        tracked += [(str(p.get("code") or "").strip(), "持股")
+                    for p in merge_positions(get_positions(uid))]
+        tracked += [(str(c or "").strip(), "自選") for c in (get_user_watchlist(uid) or [])]
+    except Exception as exc:
+        print("⚠️ 看盤頁讀取個人名單失敗：%s" % type(exc).__name__, flush=True)
+    seen = set()
+    tracked = [(c, kind) for c, kind in tracked
+               if c and not (c in seen or seen.add(c))][:16]
+    quick_links = "".join(
+        f'<a class="market-chip" href="/web/market?code={quote(c)}" data-app-nav="1"><b>{html.escape(short_company_name(stock_display_name(c)))}</b><small>{html.escape(c)}・{kind}</small></a>'
+        for c, kind in tracked)
+    search = f'''<form class="market-search" method="get" action="/web/market">
+      <span aria-hidden="true">⌕</span><input name="q" value="{html.escape(raw_query, quote=True)}" placeholder="輸入股票代號或名稱，例如 2330" autocomplete="off" aria-label="搜尋股票"><button type="submit">查看</button>
+    </form>'''
+    period_tabs = "".join(
+        f'<a class="{"active" if period == key else ""}" href="/web/market?code={quote(code)}&amp;period={key}">{label}</a>'
+        for key, label in (("1m", "1月"), ("3m", "3月"), ("6m", "6月"), ("1y", "1年")))
+    if not code:
+        chips = quick_links or '<div class="market-empty">還沒有持股或自選股。輸入股票代號即可開始看盤。</div>'
+        search_feedback = (f'<div class="market-empty">找不到「{html.escape(raw_query)}」對應的股票，請輸入正確代號或完整名稱。</div>'
+                           if raw_query else "")
+        body = f'''<style>
+        .market-page{{max-width:920px;margin:0 auto;color:#1D3447}}
+        .market-welcome{{padding:17px 2px 13px}}.market-eyebrow{{color:#53738B;font-size:10px;font-weight:900;letter-spacing:.16em}}
+        .market-welcome h2{{margin:5px 0 4px;font-size:25px;color:#172D40}}.market-welcome p{{margin:0;color:#718394;font-size:12px;line-height:1.6}}
+        .market-search{{display:flex;align-items:center;gap:9px;margin:10px 0 18px;padding:7px 8px 7px 13px;border:1px solid #D8E2EA;border-radius:15px;background:#fff;box-shadow:0 5px 18px rgba(30,57,78,.05)}}
+        .market-search>span{{font-size:24px;color:#638199}}.market-search input{{flex:1;min-width:0;border:0!important;box-shadow:none!important;background:transparent!important;font-size:14px}}.market-search button{{border:0;border-radius:10px!important;padding:8px 14px;background:#245D80;color:white;font-weight:850}}
+        .market-subhead{{display:flex;justify-content:space-between;align-items:baseline;margin:18px 0 8px}}.market-subhead b{{font-size:15px}}.market-subhead small{{color:#8493A0;font-size:10px}}
+        .market-chip-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}.market-chip{{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px;border:1px solid #E0E8EE;border-radius:13px;background:#fff;color:#233D51;text-decoration:none}}
+        .market-chip b{{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.market-chip small{{flex:none;color:#7B8D9B;font-size:10px}}.market-empty{{padding:16px;border-radius:12px;background:#F5F8FA;color:#728392;font-size:12px;line-height:1.6}}
+        @media(max-width:430px){{.market-welcome h2{{font-size:23px}}.market-chip-grid{{gap:7px}}.market-chip{{padding:11px 9px}}.market-chip b{{font-size:12px}}}}
+        </style><main class="market-page"><header class="market-welcome"><span class="market-eyebrow">TAIWAN STOCK BOT / MARKET</span><h2>看盤</h2><p>輸入代號查走勢，或從持股、自選股快速開啟。</p></header>{search}{search_feedback}<div class="market-subhead"><b>快速開啟</b><small>你的持股與自選</small></div><div class="market-chip-grid">{chips}</div></main>'''
+        return respond_page("看盤", body, "market")
+
+    if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code):
+        return respond_page("看盤", '<div class="market-empty">請輸入有效的股票代號，例如 2330。</div>' + search, "market")
+    try:
+        stock = get_realtime_stock(code, rng="1y") or {}
+    except Exception as exc:
+        print("⚠️ 看盤頁載入行情失敗 %s：%s" % (code, type(exc).__name__), flush=True)
+        stock = {}
+    name = short_company_name(stock_display_name(code, None, (stock or {}).get("name")))
+    bars = []
+    if stock:
+        dates = stock.get("close_dates") or []
+        opens = stock.get("opens") or []
+        highs = stock.get("highs") or []
+        lows = stock.get("lows") or []
+        closes = stock.get("closes") or []
+        volumes = stock.get("volumes") or []
+        n = min(len(dates), len(closes))
+        cutoff = taiwan_now().date() - timedelta(days=period_days[period])
+        for i in range(n):
+            try:
+                d = dates[i]
+                d = d if hasattr(d, "isoformat") else datetime.strptime(str(d)[:10], "%Y-%m-%d").date()
+                c = float(closes[i]); o = float(opens[i] if i < len(opens) and opens[i] is not None else c)
+                h = float(highs[i] if i < len(highs) and highs[i] is not None else max(o, c))
+                l = float(lows[i] if i < len(lows) and lows[i] is not None else min(o, c))
+                v = float(volumes[i] if i < len(volumes) and volumes[i] is not None else 0)
+                if d >= cutoff and all(math.isfinite(x) for x in (o, h, l, c, v)) and min(o, h, l, c) > 0:
+                    bars.append({"date": d.isoformat(), "open": o, "high": h, "low": l,
+                                 "close": c, "volume": max(0, v)})
+            except (TypeError, ValueError, OverflowError):
+                continue
+
+    chart_svg = '<div class="market-chart-empty">目前沒有足夠的有效日線資料可繪製圖表。</div>'
+    chart_script = ""
+    latest_text = "行情暫缺"
+    latest_change = (stock or {}).get("pct")
+    if bars:
+        count = len(bars)
+        W, H, left, right, top, price_bottom, volume_top, volume_bottom = 1000, 500, 72, 20, 24, 330, 362, 454
+        plot_w = W - left - right
+        vals = [b["high"] for b in bars] + [b["low"] for b in bars]
+        lo, hi = min(vals), max(vals)
+        pad = max((hi - lo) * .06, hi * .003, .02)
+        lo, hi = lo - pad, hi + pad
+        def _my(v): return top + (hi - v) / (hi - lo) * (price_bottom - top)
+        xs = [left + (i + .5) * plot_w / count for i in range(count)]
+        candle_w = max(1.5, min(8.0, plot_w / count * .56))
+        volume_max = max([b["volume"] for b in bars] + [1])
+        y_grid = []
+        for j in range(5):
+            val = hi - j * (hi - lo) / 4
+            yy = _my(val)
+            y_grid.append(f'<line x1="{left}" y1="{yy:.1f}" x2="{W-right}" y2="{yy:.1f}"/><text x="{left-9}" y="{yy+4:.1f}" text-anchor="end">{val:,.0f}</text>')
+        candles, volume_bars = [], []
+        for i, bar in enumerate(bars):
+            x = xs[i]; yo = _my(bar["open"]); yc = _my(bar["close"]); yh = _my(bar["high"]); yl = _my(bar["low"])
+            color = "#D74642" if bar["close"] >= bar["open"] else "#16856B"
+            body_y = min(yo, yc); body_h = max(1.5, abs(yc-yo))
+            candles.append(f'<g class="market-candle {"up" if bar["close"]>=bar["open"] else "down"}"><line x1="{x:.2f}" y1="{yh:.2f}" x2="{x:.2f}" y2="{yl:.2f}" stroke="{color}"/><rect x="{x-candle_w/2:.2f}" y="{body_y:.2f}" width="{candle_w:.2f}" height="{body_h:.2f}" fill="{color}" data-i="{i}"/></g>')
+            vh = min(volume_bottom-volume_top, bar["volume"]/volume_max*(volume_bottom-volume_top))
+            volume_bars.append(f'<rect x="{x-candle_w/2:.2f}" y="{volume_bottom-vh:.2f}" width="{candle_w:.2f}" height="{max(1,vh):.2f}" fill="{color}" opacity=".48"/>')
+        ma_svg = []
+        for window, color in ((5, "#D49B2D"), (20, "#397FB3"), (60, "#9A65B1")):
+            points = []
+            for i in range(window-1, count):
+                avg = sum(b["close"] for b in bars[i-window+1:i+1]) / window
+                points.append(f'{xs[i]:.2f},{_my(avg):.2f}')
+            ma_svg.append(f'<polyline class="market-ma" data-ma="{window}" points="{" ".join(points)}" fill="none" stroke="{color}" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>')
+        date_label_count = max(1, min(5, count))
+        date_indices = sorted(set(round(i*(count-1)/max(1,date_label_count-1)) for i in range(date_label_count)))
+        x_labels = "".join(f'<text class="x-label" x="{xs[i]:.1f}" y="{H-19}" text-anchor="middle">{bars[i]["date"][5:].replace("-","/")}</text>' for i in date_indices)
+        svg_candles = "".join(candles)
+        svg_volumes = "".join(volume_bars)
+        chart_svg = f'''<div class="market-svg-wrap"><svg id="market-kline" viewBox="0 0 {W} {H}" role="slider" tabindex="0" aria-label="{html.escape(name)}日K線圖，可在圖上拖動查看每日 OHLC 與成交量">
+          <g class="market-grid">{"".join(y_grid)}<line x1="{left}" y1="{volume_top-8}" x2="{W-right}" y2="{volume_top-8}"/><text x="{left}" y="{volume_top+11}">成交量</text></g>
+          <g class="market-volumes">{svg_volumes}</g><g class="market-candles">{svg_candles}</g>{"".join(ma_svg)}
+          <rect class="market-hit-zone" x="{left}" y="{top}" width="{plot_w}" height="{volume_bottom-top}" fill="transparent"/>
+          <line class="market-crosshair" x1="{xs[-1]:.2f}" x2="{xs[-1]:.2f}" y1="{top}" y2="{volume_bottom}"/><circle class="market-focus-dot" cx="{xs[-1]:.2f}" cy="{_my(bars[-1]["close"]):.2f}" r="4"/>{x_labels}
+        </svg></div>'''
+        chart_data = [{**b, "x": round(xs[i], 3), "y": round(_my(b["close"]), 3)} for i,b in enumerate(bars)]
+        import json as _market_json
+        chart_script = '<script>(function(){var svg=document.getElementById("market-kline");if(!svg)return;var bars='+_market_json.dumps(chart_data, ensure_ascii=False)+r''';var line=svg.querySelector('.market-crosshair'),dot=svg.querySelector('.market-focus-dot'),readout=document.getElementById('market-ohlc');var idx=bars.length-1;function show(i){if(!bars.length)return;i=Math.max(0,Math.min(bars.length-1,i));idx=i;var b=bars[i];line.setAttribute('x1',b.x);line.setAttribute('x2',b.x);dot.setAttribute('cx',b.x);dot.setAttribute('cy',b.y);readout.querySelector('[data-field=date]').textContent=b.date;['open','high','low','close','volume'].forEach(function(k){var el=readout.querySelector('[data-field='+k+']');if(el)el.textContent=k==='volume'?Math.round(b[k]).toLocaleString('zh-TW'):Number(b[k]).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2});});}function move(e){var p=svg.createSVGPoint();p.x=e.clientX;p.y=e.clientY;p=p.matrixTransform(svg.getScreenCTM().inverse());var best=0,dist=Infinity;for(var i=0;i<bars.length;i++){var d=Math.abs(bars[i].x-p.x);if(d<dist){dist=d;best=i;}}show(best);}show(idx);svg.addEventListener('pointerdown',move);svg.addEventListener('pointermove',move);svg.addEventListener('keydown',function(e){if(e.key==='ArrowLeft'){e.preventDefault();show(idx-1);}if(e.key==='ArrowRight'){e.preventDefault();show(idx+1);}});document.querySelectorAll('[data-ma-toggle]').forEach(function(btn){btn.addEventListener('click',function(){var key=btn.dataset.maToggle,on=btn.getAttribute('aria-pressed')!=='true';btn.setAttribute('aria-pressed',on?'true':'false');svg.querySelectorAll('[data-ma="'+key+'"]').forEach(function(path){path.style.display=on?'':'none';});});});})();</script>'''
+        latest = bars[-1]
+        latest_text = latest["date"]
+    price = (stock or {}).get("close")
+    try: price_text = f'{float(price):,.2f}' if price is not None else "—"
+    except (TypeError, ValueError): price_text = "—"
+    try:
+        change = float(latest_change)
+        change_text = f'{change:+.2f}%'
+        change_cls = "up" if change > 0 else "down" if change < 0 else "flat"
+    except (TypeError, ValueError):
+        change_text, change_cls = "漲跌待確認", "flat"
+    change_notice = ("最新有效行情" if stock else "目前無法取得行情；請稍後重試。")
+    body = f'''<style>
+    .market-page{{max-width:980px;margin:0 auto;color:#1C3448}}.market-welcome{{padding:12px 2px 10px}}.market-eyebrow{{font-size:9px;letter-spacing:.17em;color:#557991;font-weight:900}}.market-welcome h2{{margin:4px 0;font-size:23px;color:#182F42}}.market-search{{display:flex;align-items:center;gap:8px;margin:8px 0 13px;padding:6px 7px 6px 12px;border:1px solid #DBE4EA;border-radius:13px;background:#fff}}.market-search>span{{font-size:21px;color:#668196}}.market-search input{{flex:1;min-width:0;border:0!important;box-shadow:none!important;background:transparent!important;font-size:13px}}.market-search button{{border:0;border-radius:9px!important;padding:7px 12px;background:#245D80;color:white;font-weight:850;font-size:12px}}.market-quote-head{{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;padding:12px 0 9px}}.market-name-block h3{{margin:0;font-size:19px;color:#1B3449}}.market-name-block small,.market-updated{{display:block;margin-top:3px;color:#7C8E9B;font-size:10px}}.market-current{{text-align:right;font-size:25px;font-weight:900;font-variant-numeric:tabular-nums;color:#1D3447}}.market-current small{{display:block;margin-top:1px;font-size:12px}}.market-current .up{{color:#D74642}}.market-current .down{{color:#16856B}}.market-current .flat{{color:#768795}}.market-ranges{{display:flex;gap:5px;overflow-x:auto;padding:5px 0 9px;scrollbar-width:none}}.market-ranges a{{flex:1;text-align:center;white-space:nowrap;padding:7px 4px;border-radius:9px;background:#F1F5F8;color:#607586;text-decoration:none;font-size:11px;font-weight:800}}.market-ranges a.active{{background:#245D80;color:white}}.market-chart-card{{overflow:hidden;padding:10px 10px 8px;border:1px solid #DDE6EC;border-radius:16px;background:#fff;box-shadow:0 5px 18px rgba(24,51,72,.045)}}.market-chart-toolbar{{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 3px 7px}}.market-ma-toggles{{display:flex;gap:5px}}.market-ma-toggles button{{min-height:30px!important;padding:4px 8px;border:1px solid #DFE7EC;border-radius:8px!important;background:white;color:#607487;font-size:10px;font-weight:850}}.market-ma-toggles button[aria-pressed="true"]{{background:#F0F5F8;color:#284D68;border-color:#CADCE7}}.market-data-note{{font-size:9px;color:#8897A2;white-space:nowrap}}.market-ohlc{{display:flex;flex-wrap:wrap;gap:5px 12px;align-items:center;min-height:28px;padding:0 3px 6px;color:#687E8F;font-size:10px;font-variant-numeric:tabular-nums}}.market-ohlc b{{color:#314D63;font-weight:850}}.market-ohlc .date{{color:#263E52;font-weight:900;margin-right:3px}}.market-svg-wrap{{width:100%;overflow:hidden}}#market-kline{{display:block;width:100%;height:auto;touch-action:pan-y;user-select:none}}#market-kline .market-grid line{{stroke:#E6EDF2;stroke-width:1}}#market-kline .market-grid text,#market-kline .x-label{{fill:#81909C;font-size:11px}}#market-kline .market-hit-zone{{pointer-events:all;cursor:crosshair}}#market-kline .market-crosshair{{stroke:#526F84;stroke-width:1;stroke-dasharray:4 4;pointer-events:none}}#market-kline .market-focus-dot{{fill:#fff;stroke:#2B6D97;stroke-width:2.5;pointer-events:none}}.market-chart-empty{{padding:42px 10px;text-align:center;color:#7B8C99;font-size:12px}}.market-under-chart{{display:flex;justify-content:space-between;gap:10px;padding:7px 2px 0;color:#7A8C9B;font-size:9px;line-height:1.5}}.market-analysis-link{{display:block;margin:12px 0 4px;padding:13px 14px;border:1px solid #E0E8EE;border-radius:12px;background:#fff;color:#285A79;text-decoration:none;font-size:12px;font-weight:850}}.market-chip-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:8px 0 12px}}.market-chip{{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:10px;border:1px solid #E0E8EE;border-radius:11px;background:#fff;color:#233D51;text-decoration:none}}.market-chip b{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}}.market-chip small{{flex:none;color:#7B8D9B;font-size:9px}}@media(max-width:520px){{.market-page{{margin:0 -1px}}.market-welcome{{padding-top:5px}}.market-chart-card{{padding:8px 6px 7px;border-radius:13px}}.market-quote-head{{padding:8px 0}}.market-current{{font-size:22px}}.market-ma-toggles button{{padding-left:6px;padding-right:6px}}.market-ohlc{{gap:4px 8px;font-size:9px}}.market-under-chart{{font-size:8px}}}}
+    </style><main class="market-page"><header class="market-welcome"><span class="market-eyebrow">TAIWAN STOCK BOT / MARKET</span><h2>個股看盤</h2></header>{search}
+    <section class="market-quote-head"><div class="market-name-block"><h3>{html.escape(name)} <small>{html.escape(code)}</small></h3><small>{change_notice}・{html.escape(latest_text)}</small></div><div class="market-current">{price_text}<small class="{change_cls}">{html.escape(change_text)}</small></div></section>
+    <nav class="market-ranges" aria-label="K線區間">{period_tabs}</nav>
+    <section class="market-chart-card" aria-label="互動 K 線圖"><div class="market-chart-toolbar"><div class="market-ma-toggles" role="group" aria-label="移動平均線"><button type="button" data-ma-toggle="5" aria-pressed="true">MA5</button><button type="button" data-ma-toggle="20" aria-pressed="true">MA20</button><button type="button" data-ma-toggle="60" aria-pressed="false">MA60</button></div><small class="market-data-note">日線・紅漲綠跌</small></div>
+    <div class="market-ohlc" id="market-ohlc"><span class="date" data-field="date">{html.escape(latest_text)}</span><span>開 <b data-field="open">—</b></span><span>高 <b data-field="high">—</b></span><span>低 <b data-field="low">—</b></span><span>收 <b data-field="close">—</b></span><span>量 <b data-field="volume">—</b></span></div>{chart_svg}
+    <div class="market-under-chart"><span>拖動圖表查看每日開高低收與成交量</span><span>資料來源：Yahoo Finance 日線</span></div></section>
+    <a class="market-analysis-link" href="/web/stock-analysis?code={quote(code)}" data-app-nav="1">查看 {html.escape(name)} 基本面、法人與技術摘要　›</a>
+    <div class="market-subhead"><b>快速切換</b><small>持股／自選股</small></div><div class="market-chip-grid">{quick_links or '<div class="market-empty">可以在上方搜尋其他股票。</div>'}</div></main>{chart_script}'''
+    return respond_page("看盤", body, "market")
+
+
 @app.route("/web/stock-analysis")
 @web_login_required
 def web_stock_analysis(uid):
@@ -40309,6 +40480,23 @@ def _render_home_v2(d):
         </button></div>
     </div>
   </section>
+
+  <section class="hv2-feature-launcher" aria-label="功能捷徑">
+    <a href="/web/market" data-app-nav="1"><i>⌁</i><b>看盤</b><small>個股走勢</small></a>
+    <a href="/web/positions" data-app-nav="1"><i>▣</i><b>持股</b><small>部位與損益</small></a>
+    <a href="/web/workbench" data-app-nav="1"><i>⌕</i><b>選股</b><small>研究候選</small></a>
+    <a href="/web/leaderboard" data-app-nav="1"><i>≡</i><b>排行</b><small>績效榜單</small></a>
+    <a href="/web/compare" data-app-nav="1"><i>⇄</i><b>比較</b><small>個股比較</small></a>
+    <a href="/web/more" data-app-nav="1"><i>⋯</i><b>更多</b><small>全部工具</small></a>
+  </section>
+  <style>
+  #hv2 .hv2-feature-launcher{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:0 0 10px;padding:10px 0 13px;border-bottom:1px solid #E8EDF1}
+  #hv2 .hv2-feature-launcher a{display:flex;min-width:0;flex-direction:column;align-items:center;gap:3px;padding:9px 3px 7px;border:1px solid #E5EBF0;border-radius:13px;background:#FBFCFD;color:#223B50;text-decoration:none;text-align:center}
+  #hv2 .hv2-feature-launcher i{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:#EAF2F7;color:#2B648A;font-size:21px;font-style:normal;font-weight:800}
+  #hv2 .hv2-feature-launcher b{font-size:11px;line-height:1.25}
+  #hv2 .hv2-feature-launcher small{font-size:8px;color:#748697;white-space:nowrap}
+  @media(max-width:430px){#hv2 .hv2-feature-launcher{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;padding-top:8px}#hv2 .hv2-feature-launcher a{min-height:79px}}
+  </style>
 
   <section class="hv2-sec" aria-label="大盤與我的組合">
     <div class="hv2-cmp">
