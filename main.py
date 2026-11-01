@@ -1,3 +1,5 @@
+Warning: fs was declared with const; use let for reassignable variables.
+Warning: s was declared with const; use let for reassignable variables.
 
 
 def _line_external_browser_url(url):
@@ -38779,7 +38781,7 @@ def web_market(uid):
   var ns = 'http://www.w3.org/2000/svg', mode = 'move', selected = null, idx = bars.length - 1;
   var span = config.period === 'day' ? Math.min(60, bars.length) : bars.length, start = bars.length - span;
   var initialSpan = span, lo, hi, width = 1000, height = 500, left = 62, right = 12, top = 16;
-  var bottom, volumeTop, volumeBottom, plotWidth, frame = null, gesture = null, pointers = new Map();
+   var bottom, volumeTop, volumeBottom, macdTop, macdBottom, plotWidth, frame = null, gesture = null, pointers = new Map();
   var ma = {5: true, 20: true, 60: false}, averages = {};
   [5, 20, 60].forEach(function (n) {
     var sum = 0;
@@ -38788,6 +38790,21 @@ def web_market(uid):
       if (i >= n) sum -= bars[i - n].close;
       return i >= n - 1 ? sum / n : null;
     });
+   function ema(values, period) {
+     var out = values.map(function () { return null; });
+     if (values.length < period) return out;
+     var value = values.slice(0, period).reduce(function (a, b) { return a + b; }, 0) / period;
+     out[period - 1] = value;
+     var alpha = 2 / (period + 1);
+     for (var i = period; i < values.length; i++) { value = values[i] * alpha + value * (1 - alpha); out[i] = value; }
+     return out;
+   }
+   var fastEma = ema(bars.map(function (b) { return b.close; }), 12);
+   var slowEma = ema(bars.map(function (b) { return b.close; }), 26);
+   var dif = bars.map(function (b, i) { return fastEma[i] === null || slowEma[i] === null ? null : fastEma[i] - slowEma[i]; });
+   var firstDif = dif.findIndex(function (v) { return v !== null; });
+   var deaValues = ema(dif.filter(function (v) { return v !== null; }), 9), dea = bars.map(function () { return null; });
+   deaValues.forEach(function (v, i) { if (v !== null && firstDif + i < dea.length) dea[firstDif + i] = v; });
   });
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
   function el(tag, attrs, parent, text) {
@@ -38849,7 +38866,8 @@ def web_market(uid):
     } else svg.style.height = '';
     var r = svg.getBoundingClientRect(); if (!r.width || !r.height) return;
     width = Math.max(280, r.width); height = Math.max(160, r.height);
-    bottom = Math.max(70, height * .67); volumeTop = bottom + 24; volumeBottom = height - 28; plotWidth = width-left-right;
+     bottom = Math.max(65, height * .56); volumeTop = bottom + 16; volumeBottom = height * .72;
+     macdTop = height * .78; macdBottom = height - 26; plotWidth = width-left-right;
     svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
     svg.setAttribute('aria-label', config.name + ' ' + {day:'日',week:'週',year:'年'}[config.period] + 'K線圖，可平移及縮放');
     var first = Math.max(0, Math.ceil(start - .5)), last = Math.min(bars.length - 1, Math.ceil(start + span - .5) - 1);
@@ -38898,13 +38916,33 @@ def web_market(uid):
       el('line',{x1:left,y1:yy,x2:width-right,y2:yy,stroke:l.color,'stroke-width':1,'stroke-dasharray':'7 5'},g);
       el('text',{x:width-right-4,y:clamp(yy-5,top+12,bottom-4),'text-anchor':'end',fill:l.color},g,l.label+' '+l.price.toFixed(2));
     });
+     var highBar=visible.reduce(function(a,b){return b.high>a.high?b:a;}), lowBar=visible.reduce(function(a,b){return b.low<a.low?b:a;});
+     [[highBar,'區間高','#C16C53','high'],[lowBar,'區間低','#278A70','low']].forEach(function(q){
+       var b=q[0],cx=x(nearestDate(b.date)),yy=y(b[q[3]]),rightSide=cx<width*.72,tx=cx+(rightSide?9:-9),anchor=rightSide?'start':'end',g=el('g',{class:'market-extreme'});
+       el('circle',{cx:cx,cy:yy,r:3.5,fill:q[2]},g);el('line',{x1:cx,y1:yy,x2:tx,y2:yy,stroke:q[2],'stroke-width':1.2},g);
+       el('text',{x:tx,y:yy-6,'text-anchor':anchor,fill:q[2]},g,q[1]+' '+Number(b[q[3]]).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2}));
+     });
+     var macdMax=.01;
+     for(var i=first;i<=last;i++) if(dif[i]!==null&&dea[i]!==null) macdMax=Math.max(macdMax,Math.abs(dif[i]),Math.abs(dea[i]),Math.abs(dif[i]-dea[i]));
+     var macdMid=(macdTop+macdBottom)/2,macdAmp=Math.max(1,(macdBottom-macdTop)/2-7),macdY=function(v){return macdMid-v/macdMax*macdAmp;};
+     var macdGroup=el('g',{class:'market-macd'}),zero=macdY(0),difPoints=[],deaPoints=[];
+     el('line',{x1:left,y1:macdTop-4,x2:width-right,y2:macdTop-4,class:'market-macd-divider'},macdGroup);
+     el('line',{x1:left,y1:zero,x2:width-right,y2:zero,class:'market-macd-zero'},macdGroup);
+     el('text',{x:left,y:macdTop+8,class:'market-macd-title'},macdGroup,'MACD (12,26,9)・DIF 藍／DEA 黃／柱體');
+     for(var i=first;i<=last;i++) if(dif[i]!==null&&dea[i]!==null){
+       var hist=dif[i]-dea[i],hy=macdY(hist),cx=x(i),color=hist>=0?'#D74642':'#16856B';
+       el('rect',{x:cx-cw/2,y:Math.min(zero,hy),width:cw,height:Math.max(1,Math.abs(hy-zero)),fill:color,opacity:'.72'},macdGroup);
+       difPoints.push(cx+','+macdY(dif[i]));deaPoints.push(cx+','+macdY(dea[i]));
+     }
+     el('polyline',{points:difPoints.join(' '),fill:'none',stroke:'#397FB3','stroke-width':1.6},macdGroup);
+     el('polyline',{points:deaPoints.join(' '),fill:'none',stroke:'#D49B2D','stroke-width':1.6},macdGroup);
     var labels = Math.max(2,Math.min(5,Math.floor(plotWidth/78))), used = new Set();
     for(var j=0;j<labels;j++) {
       var i=Math.round(first+(last-first)*j/(labels-1)); if(used.has(i))continue; used.add(i);
       el('text',{class:'x-label',x:clamp(x(i),left+18,width-right-18),y:height-9,'text-anchor':'middle'},svg,config.period==='year'?bars[i].date.slice(0,4):bars[i].date.slice(5).replace('-','/'));
     }
     var cross=el('g',{'clip-path':'url(#market-clip-'+config.period+')'});
-    el('line',{class:'market-crosshair',y1:top,y2:volumeBottom},cross);
+     el('line',{class:'market-crosshair',y1:top,y2:macdBottom},cross);
     el('circle',{class:'market-focus-dot',r:3},cross);
     el('g',{id:'market-user-drawings','clip-path':'url(#market-clip-'+config.period+')'});
     paintDrawings(); show(idx);
@@ -38938,7 +38976,7 @@ def web_market(uid):
   svg.addEventListener('pointerdown',function(e){
     if(e.button!==0)return;e.preventDefault();pointers.set(e.pointerId,{clientX:e.clientX,clientY:e.clientY});svg.setPointerCapture(e.pointerId);
     if(pointers.size===2){startPinch();return;}if(pointers.size>2)return;
-    var p=local(e); if(p.x<left||p.x>width-right||p.y<top||p.y>volumeBottom){gesture=null;return;}
+     var p=local(e); if(p.x<left||p.x>width-right||p.y<top||p.y>macdBottom||(mode!=='move'&&p.y>bottom)){gesture=null;return;}
     var a=anchor(e,mode!=='move');show(nearestDate(a.date));
     var d=drawings.find(function(d){return String(d.id)===String(e.target.dataset.id);});
     if(mode==='move'&&d){selected=d.id;gesture={kind:'drawing',drawing:d,origin:a,points:d.points.map(function(p){return Object.assign({},p);}),down:e};paintDrawings();status.textContent='已選取，可拖曳或刪除';}
@@ -38990,8 +39028,18 @@ def web_market(uid):
   card.querySelector('#market-delete-drawing').onclick=function(){if(selected!==null)save({action:'delete',id:selected});};
   card.querySelectorAll('[data-ma-toggle]').forEach(function(b){b.onclick=function(){ma[b.dataset.maToggle]=!ma[b.dataset.maToggle];b.setAttribute('aria-pressed',String(ma[b.dataset.maToggle]));render();};});
   var open=card.querySelector('#market-fullscreen-open'),close=card.querySelector('#market-fullscreen-close');
-  function full(on){card.classList.toggle('is-fullscreen',on);document.body.classList.toggle('market-chart-open',on);open.setAttribute('aria-pressed',String(on));close.hidden=!on;(on?close:open).focus();schedule();}
+   function full(on){
+     if(on){card.classList.add('is-fullscreen');document.body.classList.add('market-chart-open');open.setAttribute('aria-pressed','true');close.hidden=false;
+       if(card.requestFullscreen&&!document.fullscreenElement){try{var request=card.requestFullscreen({navigationUI:'hide'});if(request&&request.catch)request.catch(function(){});}catch(e){}}
+       close.focus();
+     }else{
+       if(document.fullscreenElement===card&&document.exitFullscreen){var exit=document.exitFullscreen();if(exit&&exit.catch)exit.catch(function(){});}
+       card.classList.remove('is-fullscreen');document.body.classList.remove('market-chart-open');open.setAttribute('aria-pressed','false');close.hidden=true;open.focus();
+     }
+     schedule();
+   }
   open.onclick=function(){full(true);};close.onclick=function(){full(false);};
+   document.addEventListener('fullscreenchange',function(){if(card.isConnected&&document.fullscreenElement!==card&&card.classList.contains('is-fullscreen'))full(false);});
   document.addEventListener('keydown',function(e){if(e.key==='Escape'&&card.isConnected&&card.classList.contains('is-fullscreen'))full(false);});
   card.addEventListener('market-activate',function(){card.querySelector('#market-theme-toggle').textContent=page.classList.contains('market-dark')?'淺色模式':'深色模式';schedule();});
   new ResizeObserver(schedule).observe(svg);
@@ -39071,6 +39119,14 @@ def web_market(uid):
     .market-chart-card.is-fullscreen .market-draw-tools button{{min-height:32px;padding:4px}}
     .market-chart-card.is-fullscreen .market-ohlc{{padding:4px 0;font-size:10px}}
     .market-chart-card.is-fullscreen .market-under-chart{{padding-top:4px}}
+    .market-extreme text{{font-size:11px;font-weight:900;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}}
+    .market-macd-divider,.market-macd-zero{{stroke:#DCE5EB;stroke-width:1}}
+    .market-macd-zero{{stroke-dasharray:4 3}}
+    .market-macd-title{{fill:#7C8E9B;font-size:10px;font-weight:800}}
+    .market-page.market-dark #market-kline .market-extreme text{{stroke:#19242D}}
+    .market-page.market-dark #market-kline .market-macd-divider,.market-page.market-dark #market-kline .market-macd-zero{{stroke:#3B4A55}}
+    .market-page.market-dark #market-kline .market-macd-title{{fill:#A9B8C3}}
+    .market-chart-card:fullscreen{{inset:0;width:100vw;height:100vh;height:100dvh;max-width:none;max-height:none}}
     @media(max-height:480px){{.market-chart-card.is-fullscreen{{overflow:auto}}.market-chart-card.is-fullscreen>.market-svg-wrap{{flex:1 0 180px}}}}
 </style><main class="market-page" id="market-page"><header class="market-welcome"><span class="market-eyebrow">TAIWAN STOCK BOT / MARKET</span><div style="display:flex;align-items:center;justify-content:space-between"><h2>個股看盤</h2></div></header>{search}
     <section class="market-quote-head"><div class="market-name-block"><h3>{html.escape(name)} <small>{html.escape(code)}</small></h3><small>{change_notice}・{html.escape(latest_text)}</small></div><div class="market-current">{price_text}<small class="{change_cls}">{html.escape(change_text)}</small></div></section>
