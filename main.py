@@ -39193,6 +39193,33 @@ def web_market(uid):
     .market-page.market-dark #market-kline .market-macd-title{{fill:#A9B8C3}}
     .market-chart-card:fullscreen{{inset:0;width:100vw;height:100vh;height:100dvh;max-width:none;max-height:none}}
     @media(max-height:480px){{.market-chart-card.is-fullscreen{{overflow:auto}}.market-chart-card.is-fullscreen>.market-svg-wrap{{flex:1 0 180px}}}}
+
+/* Fullscreen chart workspace: dedicate the viewport to the chart and keep tools compact. */
+.market-chart-card.is-fullscreen{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;max-width:none!important;max-height:none!important;overflow:hidden!important;display:flex!important;flex-direction:column!important;gap:0!important;padding:calc(env(safe-area-inset-top) + 4px) max(env(safe-area-inset-right),8px) calc(env(safe-area-inset-bottom) + 5px) max(env(safe-area-inset-left),8px)!important;background:#fff!important}
+body.market-chart-open{overflow:hidden!important;height:100dvh!important}
+body.market-chart-open .app-bottom-nav,body.market-chart-open .top-nav{display:none!important}
+.market-chart-card.is-fullscreen>.market-fullscreen-head{flex:0 0 34px!important;min-height:34px!important;padding:0 2px 3px!important;font-size:14px!important}
+.market-chart-card.is-fullscreen>.market-chart-toolbar{position:relative!important;top:auto!important;flex:0 0 38px!important;min-height:38px!important;overflow-x:auto!important;flex-wrap:nowrap!important;justify-content:flex-start!important;gap:6px!important;padding:2px 0!important;background:#fff!important}
+.market-chart-card.is-fullscreen .market-theme-toggle,.market-chart-card.is-fullscreen .market-ma-toggles button,.market-chart-card.is-fullscreen .market-zoom-tools button,.market-chart-card.is-fullscreen .market-fullscreen-close{min-height:30px!important;height:30px!important;padding:3px 8px!important;font-size:10px!important;white-space:nowrap!important}
+.market-chart-card.is-fullscreen .market-data-note{display:none!important}
+.market-chart-card.is-fullscreen>.market-ranges{position:relative!important;top:auto!important;flex:0 0 36px!important;min-height:36px!important;padding:3px 0!important;background:#fff!important}
+.market-chart-card.is-fullscreen .market-ranges button{min-height:30px!important;padding:4px!important}
+.market-chart-card.is-fullscreen>.market-draw-tools{position:relative!important;top:auto!important;flex:0 0 38px!important;min-height:38px!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:5px!important;margin:0!important;padding:3px 0!important;background:#fff!important}
+.market-chart-card.is-fullscreen .market-draw-tools button{min-height:31px!important;height:31px!important;padding:3px 5px!important;font-size:10px!important;white-space:nowrap!important}
+.market-chart-card.is-fullscreen .market-drawing-status{display:none!important}
+.market-chart-card.is-fullscreen>.market-ohlc{flex:0 0 auto!important;min-height:25px!important;padding:3px 0!important;font-size:9px!important;gap:3px 8px!important}
+.market-chart-card.is-fullscreen>.market-svg-wrap{flex:1 1 0!important;min-height:120px!important;height:0!important;overflow:hidden!important}
+.market-chart-card.is-fullscreen #market-kline{display:block!important;width:100%!important;height:100%!important;min-height:0!important;max-height:none!important;touch-action:none}
+.market-chart-card.is-fullscreen>.market-under-chart{flex:0 0 auto!important;min-height:24px!important;gap:6px!important;padding:3px 0 0!important;font-size:9px!important}
+.market-chart-card.is-fullscreen .market-under-chart>span:first-child{display:none!important}
+@media (orientation:landscape){
+ .market-chart-card.is-fullscreen>.market-fullscreen-head{flex-basis:27px!important;min-height:27px!important;padding-bottom:1px!important}
+ .market-chart-card.is-fullscreen>.market-chart-toolbar{flex-basis:32px!important;min-height:32px!important}
+ .market-chart-card.is-fullscreen>.market-ranges{flex-basis:31px!important;min-height:31px!important;padding:1px 0!important}
+ .market-chart-card.is-fullscreen>.market-draw-tools{flex-basis:31px!important;min-height:31px!important;padding:1px 0!important}
+ .market-chart-card.is-fullscreen>.market-ohlc{display:none!important}
+ .market-chart-card.is-fullscreen>.market-under-chart{min-height:18px!important;padding-top:1px!important}
+}
 </style><style>
     .market-chart-card:not(.is-fullscreen) #market-kline{{height:clamp(400px,52dvh,480px);min-height:400px}}
     .market-level-summary{{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;padding:7px 3px 3px;color:#657B8C;font-size:10px;font-variant-numeric:tabular-nums}}
