@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from math import isfinite
 
-from .config import ALGORITHM_VERSION, INDUSTRIES, WEIGHTS
+from .config import ALGORITHM_VERSION, BENCHMARK, INDUSTRIES, WEIGHTS
 
 
 def _finite(value):
@@ -100,7 +100,7 @@ def _score_and_state(records):
 
 def calculate_snapshot(price_histories, as_of=None, source="unknown", fetched_at=None):
     """Calculate a transparent snapshot from symbol -> chronological daily OHLCV rows."""
-    benchmark = price_histories.get("SPY") or []
+    benchmark = price_histories.get(BENCHMARK) or []
     benchmark_return = {period: _session_return(benchmark, period)
                         for period in (5, 20, 60)}
     records = []
