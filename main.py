@@ -44290,10 +44290,10 @@ def web_portfolio(uid):
 .hv2 .position-journal-category.delete{{background:#7D8792!important;color:#fff!important;border-left:5px solid #626B74!important}}
 .hv2 .position-journal-category.delete b,.hv2 .position-journal-category.delete small{{color:#fff!important}}
 .hv2 .position-journal-row{{transition:transform .2s ease,box-shadow .2s ease,filter .2s ease!important;animation:home-row-arrive .4s ease both}}
-.hv2 .position-journal-row.state-add{{background:#FFF0EE!important;border-top-color:#F2D6D2!important}}
-.hv2 .position-journal-row.state-reduce{{background:#EEF7F1!important;border-top-color:#D5E9DD!important}}
-.hv2 .position-journal-row.state-new{{background:#FBF8EF!important;border-top-color:#EEE5CB!important}}
-.hv2 .position-journal-row.state-delete{{background:#F0F2F4!important;border-top-color:#DEE2E6!important}}
+#hv2 .hv2-journal-wrap .position-journal-row.state-add{{background:#FFF0EE!important;background-color:#FFF0EE!important;border-top-color:#F2D6D2!important}}
+#hv2 .hv2-journal-wrap .position-journal-row.state-reduce{{background:#EEF7F1!important;background-color:#EEF7F1!important;border-top-color:#D5E9DD!important}}
+#hv2 .hv2-journal-wrap .position-journal-row.state-new{{background:#FBF8EF!important;background-color:#FBF8EF!important;border-top-color:#EEE5CB!important}}
+#hv2 .hv2-journal-wrap .position-journal-row.state-delete{{background:#F0F2F4!important;background-color:#F0F2F4!important;border-top-color:#DEE2E6!important}}
 .hv2 .position-journal-row:hover{{filter:saturate(1.04);box-shadow:inset 3px 0 rgba(33,75,103,.35)}}
 .hv2 .position-journal-badge.add{{background:#FBE1DE!important;color:#B63732!important}}
 .hv2 .position-journal-badge.reduce{{background:#DCEFE3!important;color:#287257!important}}
