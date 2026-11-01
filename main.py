@@ -44260,79 +44260,79 @@ def web_portfolio(uid):
 {daily_top}
 <style>
 /* TODAY V33: 手機操作日報由密集表格改為彩色分組卡片，首頁採用一致的暖灰藍底色與清楚動態。 */
-.daily-home{{background:linear-gradient(155deg,#F8EFE3 0%,#E9F0F6 48%,#EEF4EA 100%)!important;color:#172B43!important}}
-.daily-home>.daily-hero{{animation:home-hero-arrive .58s cubic-bezier(.2,.75,.25,1) both}}
-.daily-home .daily-card,.daily-home .home-dashboard-card,.daily-home .home-contribution-section{{animation:home-card-arrive .48s cubic-bezier(.2,.75,.25,1) both}}
-.daily-home .daily-card:nth-of-type(2),.daily-home .home-contribution-section{{animation-delay:.06s}}
-.daily-home .daily-card:nth-of-type(3),.daily-home .home-dashboard-card{{animation-delay:.12s}}
-.daily-home .position-journal{{border:1px solid #D7E0E8!important;border-radius:20px!important;background:#fff!important;box-shadow:0 12px 32px rgba(29,55,76,.10)!important;overflow:hidden!important;animation:home-journal-arrive .62s cubic-bezier(.2,.75,.25,1) both}}
-.daily-home .position-journal-head{{position:relative;min-height:76px;padding:18px 17px!important;background:linear-gradient(105deg,#FFF8F3 0%,#FFF 66%,#F1F7FA 100%)!important;border-bottom:1px solid #E7EDF1!important}}
-.daily-home .position-journal-head:before{{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:linear-gradient(180deg,#C7463D,#E48372);border-radius:0 5px 5px 0}}
-.daily-home .position-journal-head h2{{font-size:21px!important;letter-spacing:.02em;color:#17324D!important}}
-.daily-home .position-journal-head small{{color:#566C80!important;font-weight:750!important}}
-.daily-home .position-journal-empty{{margin:12px 14px;padding:14px 15px;border:1px solid #DBE8DF;border-radius:13px;background:linear-gradient(110deg,#F1F8F2,#FBFDFB);color:#456653;font-weight:700}}
-.daily-home .home-journal-history{{margin:4px 14px 14px;border:0!important;border-radius:14px!important;background:#F7F9FB!important;overflow:hidden}}
-.daily-home .home-journal-history>summary{{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 15px!important;border:1px solid #E3E9EF;border-radius:13px;background:linear-gradient(100deg,#FFF4F1,#FFF 62%,#F7FAFC);color:#A93631!important;font-size:13px!important;font-weight:850!important;transition:background .22s,transform .22s,box-shadow .22s}}
-.daily-home .home-journal-history>summary:active{{transform:scale(.99);box-shadow:inset 0 0 0 1px rgba(190,63,55,.16)}}
-.daily-home .home-journal-history>summary span{{margin-left:auto;color:#A93631!important;transition:transform .22s}}
-.daily-home .home-journal-history[open]>summary{{border-radius:13px 13px 0 0;background:#FFF0EC}}
-.daily-home .home-journal-history[open]>summary span{{transform:rotate(180deg)}}
-.daily-home .home-journal-history[open]>.position-journal{{animation:home-history-open .42s cubic-bezier(.2,.75,.25,1) both}}
-.daily-home .position-journal-table-head{{background:#F3F6F9!important;color:#65788A!important;border-bottom:1px solid #E1E7ED!important}}
-.daily-home .position-journal-day-title{{padding:11px 15px!important;background:#EAF0F5!important;color:#284D6B!important;border-top:0!important}}
-.daily-home .position-journal-category{{min-height:40px;padding:10px 15px!important;border-top:0!important;border-bottom:1px solid rgba(31,49,65,.06)!important;font-weight:800!important}}
-.daily-home .position-journal-category b{{font-size:13px!important}}
-.daily-home .position-journal-category.new{{background:#F8F4E8!important;color:#78663B!important;border-left:5px solid #C7AE72!important}}
-.daily-home .position-journal-category.add{{background:#C94B43!important;color:#fff!important;border-left:5px solid #A93430!important}}
-.daily-home .position-journal-category.add b,.daily-home .position-journal-category.add small{{color:#fff!important}}
-.daily-home .position-journal-category.reduce{{background:#398269!important;color:#fff!important;border-left:5px solid #246B54!important}}
-.daily-home .position-journal-category.reduce b,.daily-home .position-journal-category.reduce small{{color:#fff!important}}
-.daily-home .position-journal-category.delete{{background:#7D8792!important;color:#fff!important;border-left:5px solid #626B74!important}}
-.daily-home .position-journal-category.delete b,.daily-home .position-journal-category.delete small{{color:#fff!important}}
-.daily-home .position-journal-row{{transition:transform .2s ease,box-shadow .2s ease,filter .2s ease!important;animation:home-row-arrive .4s ease both}}
-.daily-home .position-journal-row.state-add{{background:#FFF0EE!important;border-top-color:#F2D6D2!important}}
-.daily-home .position-journal-row.state-reduce{{background:#EEF7F1!important;border-top-color:#D5E9DD!important}}
-.daily-home .position-journal-row.state-new{{background:#FBF8EF!important;border-top-color:#EEE5CB!important}}
-.daily-home .position-journal-row.state-delete{{background:#F0F2F4!important;border-top-color:#DEE2E6!important}}
-.daily-home .position-journal-row:hover{{filter:saturate(1.04);box-shadow:inset 3px 0 rgba(33,75,103,.35)}}
-.daily-home .position-journal-badge.add{{background:#FBE1DE!important;color:#B63732!important}}
-.daily-home .position-journal-badge.reduce{{background:#DCEFE3!important;color:#287257!important}}
-.daily-home .position-journal-badge.new{{background:#F1EAD5!important;color:#78652E!important}}
-.daily-home .position-journal-badge.delete{{background:#DDE2E7!important;color:#626C76!important}}
-.daily-home .position-journal-foot{{background:#F5F7F9!important;color:#718092!important}}
+.hv2{{background:linear-gradient(155deg,#F8EFE3 0%,#E9F0F6 48%,#EEF4EA 100%)!important;color:#172B43!important}}
+.hv2>.daily-hero{{animation:home-hero-arrive .58s cubic-bezier(.2,.75,.25,1) both}}
+.hv2 .daily-card,.hv2 .home-dashboard-card,.hv2 .home-contribution-section{{animation:home-card-arrive .48s cubic-bezier(.2,.75,.25,1) both}}
+.hv2 .daily-card:nth-of-type(2),.hv2 .home-contribution-section{{animation-delay:.06s}}
+.hv2 .daily-card:nth-of-type(3),.hv2 .home-dashboard-card{{animation-delay:.12s}}
+.hv2 .position-journal{{border:1px solid #D7E0E8!important;border-radius:20px!important;background:#fff!important;box-shadow:0 12px 32px rgba(29,55,76,.10)!important;overflow:hidden!important;animation:home-journal-arrive .62s cubic-bezier(.2,.75,.25,1) both}}
+.hv2 .position-journal-head{{position:relative;min-height:76px;padding:18px 17px!important;background:linear-gradient(105deg,#FFF8F3 0%,#FFF 66%,#F1F7FA 100%)!important;border-bottom:1px solid #E7EDF1!important}}
+.hv2 .position-journal-head:before{{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:linear-gradient(180deg,#C7463D,#E48372);border-radius:0 5px 5px 0}}
+.hv2 .position-journal-head h2{{font-size:21px!important;letter-spacing:.02em;color:#17324D!important}}
+.hv2 .position-journal-head small{{color:#566C80!important;font-weight:750!important}}
+.hv2 .position-journal-empty{{margin:12px 14px;padding:14px 15px;border:1px solid #DBE8DF;border-radius:13px;background:linear-gradient(110deg,#F1F8F2,#FBFDFB);color:#456653;font-weight:700}}
+.hv2 .home-journal-history{{margin:4px 14px 14px;border:0!important;border-radius:14px!important;background:#F7F9FB!important;overflow:hidden}}
+.hv2 .home-journal-history>summary{{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 15px!important;border:1px solid #E3E9EF;border-radius:13px;background:linear-gradient(100deg,#FFF4F1,#FFF 62%,#F7FAFC);color:#A93631!important;font-size:13px!important;font-weight:850!important;transition:background .22s,transform .22s,box-shadow .22s}}
+.hv2 .home-journal-history>summary:active{{transform:scale(.99);box-shadow:inset 0 0 0 1px rgba(190,63,55,.16)}}
+.hv2 .home-journal-history>summary span{{margin-left:auto;color:#A93631!important;transition:transform .22s}}
+.hv2 .home-journal-history[open]>summary{{border-radius:13px 13px 0 0;background:#FFF0EC}}
+.hv2 .home-journal-history[open]>summary span{{transform:rotate(180deg)}}
+.hv2 .home-journal-history[open]>.position-journal{{animation:home-history-open .42s cubic-bezier(.2,.75,.25,1) both}}
+.hv2 .position-journal-table-head{{background:#F3F6F9!important;color:#65788A!important;border-bottom:1px solid #E1E7ED!important}}
+.hv2 .position-journal-day-title{{padding:11px 15px!important;background:#EAF0F5!important;color:#284D6B!important;border-top:0!important}}
+.hv2 .position-journal-category{{min-height:40px;padding:10px 15px!important;border-top:0!important;border-bottom:1px solid rgba(31,49,65,.06)!important;font-weight:800!important}}
+.hv2 .position-journal-category b{{font-size:13px!important}}
+.hv2 .position-journal-category.new{{background:#F8F4E8!important;color:#78663B!important;border-left:5px solid #C7AE72!important}}
+.hv2 .position-journal-category.add{{background:#C94B43!important;color:#fff!important;border-left:5px solid #A93430!important}}
+.hv2 .position-journal-category.add b,.hv2 .position-journal-category.add small{{color:#fff!important}}
+.hv2 .position-journal-category.reduce{{background:#398269!important;color:#fff!important;border-left:5px solid #246B54!important}}
+.hv2 .position-journal-category.reduce b,.hv2 .position-journal-category.reduce small{{color:#fff!important}}
+.hv2 .position-journal-category.delete{{background:#7D8792!important;color:#fff!important;border-left:5px solid #626B74!important}}
+.hv2 .position-journal-category.delete b,.hv2 .position-journal-category.delete small{{color:#fff!important}}
+.hv2 .position-journal-row{{transition:transform .2s ease,box-shadow .2s ease,filter .2s ease!important;animation:home-row-arrive .4s ease both}}
+.hv2 .position-journal-row.state-add{{background:#FFF0EE!important;border-top-color:#F2D6D2!important}}
+.hv2 .position-journal-row.state-reduce{{background:#EEF7F1!important;border-top-color:#D5E9DD!important}}
+.hv2 .position-journal-row.state-new{{background:#FBF8EF!important;border-top-color:#EEE5CB!important}}
+.hv2 .position-journal-row.state-delete{{background:#F0F2F4!important;border-top-color:#DEE2E6!important}}
+.hv2 .position-journal-row:hover{{filter:saturate(1.04);box-shadow:inset 3px 0 rgba(33,75,103,.35)}}
+.hv2 .position-journal-badge.add{{background:#FBE1DE!important;color:#B63732!important}}
+.hv2 .position-journal-badge.reduce{{background:#DCEFE3!important;color:#287257!important}}
+.hv2 .position-journal-badge.new{{background:#F1EAD5!important;color:#78652E!important}}
+.hv2 .position-journal-badge.delete{{background:#DDE2E7!important;color:#626C76!important}}
+.hv2 .position-journal-foot{{background:#F5F7F9!important;color:#718092!important}}
 @keyframes home-journal-arrive{{from{{opacity:0;transform:translateY(18px) scale(.985)}}to{{opacity:1;transform:translateY(0) scale(1)}}}}
 @keyframes home-hero-arrive{{from{{opacity:.5;transform:translateY(-10px)}}to{{opacity:1;transform:translateY(0)}}}}
 @keyframes home-card-arrive{{from{{opacity:0;transform:translateY(12px)}}to{{opacity:1;transform:translateY(0)}}}}
 @keyframes home-history-open{{from{{opacity:0;transform:translateY(12px)}}to{{opacity:1;transform:translateY(0)}}}}
 @keyframes home-row-arrive{{from{{opacity:0;transform:translateY(8px)}}to{{opacity:1;transform:translateY(0)}}}}
-.daily-home .position-journal-row:nth-of-type(3){{animation-delay:.03s}}.daily-home .position-journal-row:nth-of-type(4){{animation-delay:.07s}}.daily-home .position-journal-row:nth-of-type(5){{animation-delay:.11s}}.daily-home .position-journal-row:nth-of-type(6){{animation-delay:.15s}}
+.hv2 .position-journal-row:nth-of-type(3){{animation-delay:.03s}}.hv2 .position-journal-row:nth-of-type(4){{animation-delay:.07s}}.hv2 .position-journal-row:nth-of-type(5){{animation-delay:.11s}}.hv2 .position-journal-row:nth-of-type(6){{animation-delay:.15s}}
 @media(max-width:640px){{
- .daily-home{{padding-bottom:96px!important}}
- .daily-home .position-journal{{margin:10px 9px!important;border-radius:18px!important}}
- .daily-home .position-journal-head{{min-height:72px;padding:16px 14px 14px 17px!important;align-items:center!important}}
- .daily-home .position-journal-head h2{{font-size:20px!important}}
- .daily-home .position-journal-table-head{{display:none!important}}
- .daily-home .position-journal-day-title{{margin:0!important;padding:10px 13px!important;font-size:13px!important}}
- .daily-home .position-journal-category{{padding:9px 13px!important}}
- .daily-home .position-journal-row{{grid-template-columns:minmax(0,1fr) auto!important;gap:8px 10px!important;padding:13px 12px!important;align-items:center!important}}
- .daily-home .position-journal-name{{grid-column:1!important;grid-row:1!important}}
- .daily-home .position-journal-name b{{font-size:15px!important}}
- .daily-home .position-journal-name small{{font-size:10px!important}}
- .daily-home .position-journal-status{{grid-column:2!important;grid-row:1!important;text-align:right!important}}
- .daily-home .position-journal-badge{{padding:5px 9px!important;font-size:11px!important}}
- .daily-home .position-journal-cell{{padding-top:7px;border-top:1px solid rgba(45,65,82,.09);text-align:left!important;font-size:10px!important;line-height:1.35!important}}
- .daily-home .position-journal-cell b{{font-size:13px!important}}
- .daily-home .position-journal-cell small{{font-size:9px!important}}
- .daily-home .position-journal-cell:nth-of-type(3){{grid-column:1!important;grid-row:2!important}}
- .daily-home .position-journal-cell:nth-of-type(4){{grid-column:2!important;grid-row:2!important;text-align:right!important}}
- .daily-home .position-journal-cell:nth-of-type(5){{grid-column:1 / -1!important;grid-row:3!important;text-align:left!important;display:grid;grid-template-columns:1fr 1fr;column-gap:8px}}
- .daily-home .position-journal-cell:nth-of-type(5)>b{{grid-column:1 / -1}}
- .daily-home .position-journal-cell:nth-of-type(5)>small{{grid-column:auto}}
- .daily-home .home-journal-history{{margin:3px 10px 12px!important}}
- .daily-home .home-journal-history>summary{{padding:13px!important;font-size:12px!important}}
- .daily-home .position-journal-details{{grid-column:1/-1!important}}
+ .hv2{{padding-bottom:96px!important}}
+ .hv2 .position-journal{{margin:10px 9px!important;border-radius:18px!important}}
+ .hv2 .position-journal-head{{min-height:72px;padding:16px 14px 14px 17px!important;align-items:center!important}}
+ .hv2 .position-journal-head h2{{font-size:20px!important}}
+ .hv2 .position-journal-table-head{{display:none!important}}
+ .hv2 .position-journal-day-title{{margin:0!important;padding:10px 13px!important;font-size:13px!important}}
+ .hv2 .position-journal-category{{padding:9px 13px!important}}
+ .hv2 .position-journal-row{{grid-template-columns:minmax(0,1fr) auto!important;gap:8px 10px!important;padding:13px 12px!important;align-items:center!important}}
+ .hv2 .position-journal-name{{grid-column:1!important;grid-row:1!important}}
+ .hv2 .position-journal-name b{{font-size:15px!important}}
+ .hv2 .position-journal-name small{{font-size:10px!important}}
+ .hv2 .position-journal-status{{grid-column:2!important;grid-row:1!important;text-align:right!important}}
+ .hv2 .position-journal-badge{{padding:5px 9px!important;font-size:11px!important}}
+ .hv2 .position-journal-cell{{padding-top:7px;border-top:1px solid rgba(45,65,82,.09);text-align:left!important;font-size:10px!important;line-height:1.35!important}}
+ .hv2 .position-journal-cell b{{font-size:13px!important}}
+ .hv2 .position-journal-cell small{{font-size:9px!important}}
+ .hv2 .position-journal-cell:nth-of-type(3){{grid-column:1!important;grid-row:2!important}}
+ .hv2 .position-journal-cell:nth-of-type(4){{grid-column:2!important;grid-row:2!important;text-align:right!important}}
+ .hv2 .position-journal-cell:nth-of-type(5){{grid-column:1 / -1!important;grid-row:3!important;text-align:left!important;display:grid;grid-template-columns:1fr 1fr;column-gap:8px}}
+ .hv2 .position-journal-cell:nth-of-type(5)>b{{grid-column:1 / -1}}
+ .hv2 .position-journal-cell:nth-of-type(5)>small{{grid-column:auto}}
+ .hv2 .home-journal-history{{margin:3px 10px 12px!important}}
+ .hv2 .home-journal-history>summary{{padding:13px!important;font-size:12px!important}}
+ .hv2 .position-journal-details{{grid-column:1/-1!important}}
 }}
-@media(prefers-reduced-motion:reduce){{.daily-home .daily-hero,.daily-home .daily-card,.daily-home .home-dashboard-card,.daily-home .home-contribution-section,.daily-home .position-journal,.daily-home .position-journal-row,.daily-home .home-journal-history[open]>.position-journal{{animation:none!important;transition:none!important}}}}
+@media(prefers-reduced-motion:reduce){{.hv2 .daily-hero,.hv2 .daily-card,.hv2 .home-dashboard-card,.hv2 .home-contribution-section,.hv2 .position-journal,.hv2 .position-journal-row,.hv2 .home-journal-history[open]>.position-journal{{animation:none!important;transition:none!important}}}}
 </style>
 {f'<div class="msg today-target-save-message">{msg}</div>' if msg and request.method == "POST" and request.form.get("action") == "save_target_weights" else ''}
 <style>
