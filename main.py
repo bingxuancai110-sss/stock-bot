@@ -8038,7 +8038,7 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
                         f'<div class="position-journal-detail-body">{"".join(detail_rows)}</div>'
                         f'</details>')
 
-                row_parts.append(f'''<div class="position-journal-row">
+                row_parts.append(f'''<div class="position-journal-row {status_cls}">
   <div class="position-journal-name"><b>{name}</b><small>{html.escape(code)} · {price_text}</small></div>
   <div class="position-journal-status"><span class="position-journal-badge {status_cls}">{status_label}</span></div>
   <div class="position-journal-cell"><b class="{delta_class}">{delta_text}</b><small>{before:,} → {after:,} 股</small></div>
@@ -25585,6 +25585,10 @@ body #app-page-content .holding-card button:active {
 #app-page-content .position-journal-category.delete b,
 #app-page-content .position-journal-badge.delete { color:#667085 !important; }
 #app-page-content .position-journal-badge.delete { background:#EDF0F3 !important; }
+#app-page-content .position-journal-row.add { background:#FCE9E6 !important; }
+#app-page-content .position-journal-row.reduce { background:#E8F2EA !important; }
+#app-page-content .position-journal-row.new { background:#F6F0D7 !important; }
+#app-page-content .position-journal-row.delete { background:#EDF0F3 !important; }
 
 """
 
@@ -41150,12 +41154,27 @@ def _render_home_v2(d):
   #hv2 .hv2-feature-launcher>a:nth-child(4) i{{background:#F1EBFA;color:#8064A9}}
   #hv2 .hv2-feature-launcher>a:nth-child(5) i{{background:#FCEAE8;color:#C2675E}}
   #hv2 .hv2-feature-launcher small{{color:#72859A}}
-  #hv2 .hv2-sec[aria-label="大盤與我的組合"]{{background:linear-gradient(120deg,#F2F8FB,#FAF7F0);border:1px solid #E4EBEF;border-radius:16px;padding:14px;margin:10px 0;box-shadow:0 5px 16px rgba(40,72,96,.045)}}
-  #hv2 .hv2-sec[aria-label="我的正負貢獻"]{{background:rgba(255,255,255,.82);border:1px solid rgba(214,222,228,.9);border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 6px 20px rgba(40,72,96,.05)}}
-  #hv2 .hv2-journal-wrap{{padding:0 14px;border:1px solid rgba(214,222,228,.9);border-radius:18px;background:rgba(255,255,255,.86);box-shadow:0 6px 20px rgba(40,72,96,.045)}}
-  #hv2{{background:transparent}}
-  body:has(#hv2){{background:radial-gradient(ellipse at 9% 4%,rgba(95,151,182,.15),transparent 28%),radial-gradient(ellipse at 92% 32%,rgba(203,174,118,.13),transparent 30%),linear-gradient(180deg,#E9F0F5 0%,#F4F0E8 52%,#E9F0F5 100%) !important}}
-  body:has(#hv2) .wrap,body:has(#hv2) #app-page-content{{background:transparent !important}}
+  /* Homepage dashboard hierarchy */
+  #hv2 .hv2-sec.first{{position:relative;overflow:hidden;margin:8px 0 16px!important;padding:20px!important;border:0!important;border-radius:22px!important;background:linear-gradient(125deg,#163A56 0%,#205B78 62%,#31869A 100%)!important;box-shadow:0 14px 30px rgba(22,58,86,.22)!important;color:#fff!important}}
+  #hv2 .hv2-sec.first:after{{content:"";position:absolute;right:-38px;top:-56px;width:190px;height:190px;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.17),rgba(255,255,255,0) 68%);pointer-events:none}}
+  #hv2 .hv2-sec.first .hv2-k,#hv2 .hv2-sec.first .hv2-sub2{{color:#D3E5EE!important}}
+  #hv2 .hv2-sec.first .hv2-px{{color:#fff!important;font-size:38px!important;font-weight:850!important;letter-spacing:-.04em}}
+  #hv2 .hv2-sec.first .hv2-head-r b{{color:#F7D7D2!important;font-size:25px!important;font-weight:850!important}}
+  #hv2 .hv2-feature-section{{padding:5px 0 16px!important;margin-bottom:14px!important;border-bottom:0!important}}
+  #hv2 .hv2-feature-heading>b{{font-size:16px!important;color:#173B57!important}}
+  #hv2 .hv2-feature-launcher{{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:10px!important}}
+  #hv2 .hv2-feature-launcher>a{{min-height:76px!important;padding:12px!important;border-radius:17px!important;border-color:#E0E7EB!important;background:linear-gradient(145deg,#fff,#F8FAFB)!important;box-shadow:0 6px 16px rgba(31,58,77,.075)!important}}
+  #hv2 .hv2-feature-launcher>a i{{width:44px!important;height:44px!important;border-radius:14px!important}}
+  #hv2 .hv2-feature-launcher>a b{{font-size:14px!important;color:#203B50!important}}
+  #hv2 .hv2-feature-launcher>a small{{font-size:11px!important;color:#718395!important}}
+  #hv2 .hv2-sec[aria-label="大盤與我的組合"]{{padding:15px!important;border:1px solid #E0E8ED!important;border-radius:18px!important;background:linear-gradient(120deg,#FFFFFF 0%,#F8FBFC 58%,#F8F4EA 100%)!important;box-shadow:0 7px 18px rgba(35,61,80,.07)!important}}
+  #hv2 .hv2-cmp>div{{padding:8px 10px!important;border-left:0!important;border-radius:12px;background:rgba(228,238,243,.55);margin:0 4px}}
+  #hv2 .hv2-cmp>div:first-child{{margin-left:0}}
+  #hv2 .hv2-cmp .rel{{background:rgba(233,241,234,.75)}}
+  #hv2 .hv2-sec[aria-label="我的正負貢獻"]{{border:1px solid #E0E7EC!important;border-radius:18px!important;padding:17px!important;background:rgba(255,255,255,.94)!important;box-shadow:0 7px 18px rgba(35,61,80,.06)!important}}
+  @media(max-width:420px){{#hv2 .hv2-feature-launcher>a{{min-height:70px!important;padding:9px!important}}#hv2 .hv2-feature-launcher>a i{{width:38px!important;height:38px!important}}}}
+
+  #hv2 .hv2-sec[aria-label="大盤比較"]{{background:linear-gradient(120deg,#F3F8FC,#F8F6EF);border:1px solid #E5ECF2;border-radius:14px;padding:12px;margin:10px 0}}
   </style>
 
   <section class="hv2-sec" aria-label="大盤與我的組合">
