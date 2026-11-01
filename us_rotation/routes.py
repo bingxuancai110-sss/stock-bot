@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 from datetime import date, datetime, timezone
 
-from flask import Blueprint, abort, jsonify, request
+from flask import Blueprint, Response, abort, jsonify, request
 
 from .calculations import calculate_snapshot
 from .config import ALGORITHM_VERSION, CHAIN_CATEGORIES, INDUSTRIES, SOURCE_NAME
 from .providers import fetch_market_histories
+from .importer import ImportValidationError, csv_template, parse_history_csv
 from .repository import (read_history, read_latest, read_latest_tw_company_snapshots,
                          read_supply_chain, save_snapshot, save_tw_company_snapshots)
 
@@ -52,7 +55,7 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
   <section class="us-hero">
     <div class="us-kicker">US → TW INTELLIGENCE</div><h1>美股輪動雷達</h1>
     <p>追蹤美國產業強弱，接著檢視台灣產品與供應鏈證據。產業走強只代表研究線索，不是台股買進訊號。</p>
-    <div class="us-meta"><span class="us-pill" id="us-asof">資料日期載入中</span><span class="us-pill">日線 · 交易日計算</span><span class="us-pill">SPY 為市場基準</span></div>
+    <div class="us-meta"><span class="us-pill" id="us-asof">資料日期載入中</span><span class="us-pill">日線 · 交易日計算</span><span class="us-pill">SPY 為市場基準</span><a class="us-pill" id="us-import-link" href="/web/us-rotation/import" style="color:inherit;text-decoration:none">匯入歷史資料</a></div>
   </section>
   <section class="us-section">
     <div class="us-section-head"><div><h2>市場輪動概況</h2><p id="us-status">載入最近完成的產業快照</p></div></div>
@@ -70,6 +73,7 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
 <script>
 (function(){
  const root=document.getElementById('us-radar');if(!root)return;
+ const importLink=document.getElementById('us-import-link');const authToken=new URLSearchParams(location.search).get('t');if(importLink&&authToken)importLink.href+="?t="+encodeURIComponent(authToken);
  const $=s=>root.querySelector(s),esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const fmt=(v,d=2)=>v==null?'—':(Number(v)>0?'+':'')+Number(v).toFixed(d)+'%';
  const cls=v=>v==null?'us-neutral':Number(v)>0?'us-positive':Number(v)<0?'us-negative':'us-neutral';
@@ -103,6 +107,43 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
         tw_companies = read_latest_tw_company_snapshots(get_db_connection, release_db_connection)
         return latest, history, mapping, tw_companies
 
+    def _import_page(message="", error=False):
+        symbols = ", ".join(item["ticker"] for item in INDUSTRIES) + ", SPY"
+        token = request.args.get("t") or ""
+        suffix = "?t=" + _esc(token) if token else ""
+        result = ""
+        if message:
+            bg, color = ("#FCECEC", "#B74747") if error else ("#EAF5EF", "#276B55")
+            result = (f'<div style="margin:12px 0;padding:11px;border-radius:9px;'
+                      f'background:{bg};color:{color};font-weight:800">{_esc(message)}</div>')
+        page = '''<main style="max-width:760px;margin:16px auto;padding:16px;color:var(--ink,#243647)">
+<section style="padding:20px;border:1px solid var(--ui-line,#DCE3E9);border-radius:16px;background:var(--ui-surface,#fff)">
+<a href="/web/us-rotation__SUFFIX__" style="color:#286D9A;text-decoration:none;font-weight:800">← 回美股輪動</a>
+<h1 style="font-size:22px;margin:18px 0 8px">匯入美股歷史日線</h1>
+<p style="line-height:1.8;color:#617487">上傳 CSV 後會先完整檢查，通過才寫入資料庫。每個代號至少 61 個交易日，且最後交易日需一致；不會用不完整資料補成零。</p>
+<p style="line-height:1.8"><b>必須包含的代號：</b>__SYMBOLS__</p>
+<p style="line-height:1.8"><b>CSV 欄位：</b><code>symbol,trade_date,open,high,low,close,adjusted_close,volume</code><br>
+每個代號每天一列，日期格式 YYYY-MM-DD。若沒有股息還原收盤價，可省略整個 adjusted_close 欄位，系統會標示為未還原價格報酬；不可只填部分列。</p>
+<p><a href="/web/us-rotation/import/template.csv__SUFFIX__" style="color:#286D9A;font-weight:800">下載 CSV 欄位範本</a></p>
+<p style="font-size:12px;color:#617487">請確認你提供的資料來源允許匯入及在此網站使用；來源名稱會與快照一起保存。建議匯入至最近已完成的美股交易日。</p>
+__RESULT__
+<form method="post" enctype="multipart/form-data" action="/web/us-rotation/import__SUFFIX__" style="display:grid;gap:12px;margin-top:16px">
+<label style="font-weight:800">資料來源名稱<input name="source_name" required maxlength="120" placeholder="請填行情來源名稱" style="display:block;width:100%;box-sizing:border-box;padding:11px;margin-top:6px;border:1px solid #CAD5DE;border-radius:9px"></label>
+<label style="font-weight:800">CSV 檔案<input name="file" type="file" accept=".csv,text/csv" required style="display:block;width:100%;margin-top:8px"></label>
+<button type="submit" style="border:0;border-radius:10px;background:#245779;color:white;padding:12px;font-weight:900;font-size:15px">檢查並匯入</button>
+</form></section></main>'''
+        return (page.replace("__SUFFIX__", suffix)
+                    .replace("__SYMBOLS__", _esc(symbols))
+                    .replace("__RESULT__", result))
+
+    def _valid_import_csrf(uid):
+        supplied = str(request.form.get("csrf_token") or "").strip()
+        secret = (os.environ.get("WEB_CSRF_SECRET") or os.environ.get("CRON_SECRET")
+                  or "change-this-web-csrf-secret")
+        message = ("web-csrf-user-v2:" + str(uid or "").strip()).encode("utf-8")
+        expected = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+        return bool(supplied and uid and hmac.compare_digest(expected, supplied))
+
     def _refresh_job():
         from .providers import ProviderDisabled
         from .config import SOURCE_NAME
@@ -129,6 +170,47 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
     @web_login_required
     def page(uid):
         return render_page("美股輪動", _page_html(), "us_rotation")
+
+    @bp.route("/web/us-rotation/import", methods=["GET", "POST"])
+    @web_login_required
+    def import_page(uid):
+        if request.method == "GET":
+            return render_page("匯入美股資料", _import_page(), "us_rotation")
+        if not _valid_import_csrf(uid):
+            abort(403)
+        source_name = (request.form.get("source_name") or "").strip()[:120]
+        uploaded = request.files.get("file")
+        if not source_name or not uploaded or not uploaded.filename:
+            return render_page("匯入美股資料", _import_page("請填寫資料來源並選擇 CSV 檔案。", True), "us_rotation")
+        raw = uploaded.stream.read(5 * 1024 * 1024 + 1)
+        if len(raw) > 5 * 1024 * 1024:
+            return render_page("匯入美股資料", _import_page("檔案超過 5 MB，請縮小後再上傳。", True), "us_rotation")
+        try:
+            text = raw.decode("utf-8-sig")
+            histories, has_adjusted = parse_history_csv(text)
+            fetched_at = datetime.now(timezone.utc).isoformat()
+            snapshot = calculate_snapshot(histories, source=source_name, fetched_at=fetched_at)
+            snapshot["price_basis"] = ("股息還原收盤價" if has_adjusted
+                                       else "未還原收盤價（價格報酬，不含股息）")
+            save_snapshot(
+                get_db_connection, release_db_connection, snapshot, histories,
+                source_meta={"imported": True, "unofficial_source": False,
+                             "price_basis": snapshot["price_basis"],
+                             "original_filename": uploaded.filename[:200]},
+            )
+            message = (f"匯入完成：{sum(len(rows) for rows in histories.values()):,} 筆日線，"
+                       f"最新交易日 {snapshot.get('as_of')}；{snapshot['price_basis']}。")
+            return render_page("匯入美股資料", _import_page(message), "us_rotation")
+        except (UnicodeDecodeError, ImportValidationError) as exc:
+            return render_page("匯入美股資料", _import_page(str(exc), True), "us_rotation")
+        except Exception:
+            return render_page("匯入美股資料", _import_page("資料庫匯入失敗，請稍後重新載入輪動頁確認。", True), "us_rotation")
+
+    @bp.route("/web/us-rotation/import/template.csv")
+    @web_login_required
+    def import_template(uid):
+        return Response(csv_template(), mimetype="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=us_rotation_template.csv"})
 
     @bp.route("/web/api/us-rotation")
     @web_login_required
