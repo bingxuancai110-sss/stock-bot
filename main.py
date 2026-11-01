@@ -38874,13 +38874,13 @@ def web_market(uid):
     if (!card.classList.contains('is-fullscreen')) {
       var nav = document.querySelector('.app-bottom-nav'), edge = window.innerHeight;
       if (nav && getComputedStyle(nav).display !== 'none') edge = nav.getBoundingClientRect().top;
-      var desired = Math.max(160, Math.min(380, edge - (svg.getBoundingClientRect().top + window.scrollY) - 12));
+      var desired = Math.max(400, Math.min(480, edge - (svg.getBoundingClientRect().top + window.scrollY) - 12));
       svg.style.height = desired + 'px';
     } else svg.style.height = '';
     var r = svg.getBoundingClientRect(); if (!r.width || !r.height) return;
     width = Math.max(280, r.width); height = Math.max(160, r.height);
-     bottom = Math.max(65, height * .56); volumeTop = bottom + 16; volumeBottom = height * .72;
-     macdTop = height * .78; macdBottom = height - 26; plotWidth = width-left-right;
+     bottom = Math.max(65, height * .50); volumeTop = bottom + 12; volumeBottom = height * .66;
+     macdTop = height * .70; macdBottom = height - 26; plotWidth = width-left-right;
     svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
     svg.setAttribute('aria-label', config.name + ' ' + {day:'日',week:'週',year:'年'}[config.period] + 'K線圖，可平移及縮放');
     var first = Math.max(0, Math.ceil(start - .5)), last = Math.min(bars.length - 1, Math.ceil(start + span - .5) - 1);
@@ -38924,16 +38924,22 @@ def web_market(uid):
     var levels=[];
     if(supports.length) levels.push({price:Math.max.apply(null,supports),label:'支撐參考',color:'#278A70'});
     if(resistances.length) levels.push({price:Math.min.apply(null,resistances),label:'壓力參考',color:'#C16C53'});
+    var highBar=visible.reduce(function(a,b){return b.high>a.high?b:a;}), lowBar=visible.reduce(function(a,b){return b.low<a.low?b:a;});
+    var summary=card.querySelector('#market-level-summary');
+    if(summary){
+      summary.querySelector('[data-summary="high"]').textContent=highBar.high.toFixed(2);
+      summary.querySelector('[data-summary="low"]').textContent=lowBar.low.toFixed(2);
+      var support=levels.find(function(l){return l.label==='支撐參考';}), resistance=levels.find(function(l){return l.label==='壓力參考';});
+      summary.querySelector('[data-summary="support"]').textContent=support?support.price.toFixed(2):'—';
+      summary.querySelector('[data-summary="resistance"]').textContent=resistance?resistance.price.toFixed(2):'—';
+    }
     levels.forEach(function (l) {
       var g=el('g',{class:'market-auto-level'}), yy=y(l.price);
       el('line',{x1:left,y1:yy,x2:width-right,y2:yy,stroke:l.color,'stroke-width':1,'stroke-dasharray':'7 5'},g);
-      el('text',{x:width-right-4,y:clamp(yy-5,top+12,bottom-4),'text-anchor':'end',fill:l.color},g,l.label+' '+l.price.toFixed(2));
     });
-     var highBar=visible.reduce(function(a,b){return b.high>a.high?b:a;}), lowBar=visible.reduce(function(a,b){return b.low<a.low?b:a;});
-     [[highBar,'區間高','#C16C53','high'],[lowBar,'區間低','#278A70','low']].forEach(function(q){
-       var b=q[0],cx=x(nearestDate(b.date)),yy=y(b[q[3]]),rightSide=cx<width*.72,tx=cx+(rightSide?9:-9),anchor=rightSide?'start':'end',g=el('g',{class:'market-extreme'});
-       el('circle',{cx:cx,cy:yy,r:3.5,fill:q[2]},g);el('line',{x1:cx,y1:yy,x2:tx,y2:yy,stroke:q[2],'stroke-width':1.2},g);
-       el('text',{x:tx,y:yy-6,'text-anchor':anchor,fill:q[2]},g,q[1]+' '+Number(b[q[3]]).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2}));
+     [[highBar,'#C16C53','high'],[lowBar,'#278A70','low']].forEach(function(q){
+       var b=q[0],cx=x(nearestDate(b.date)),yy=y(b[q[2]]),g=el('g',{class:'market-extreme'});
+       el('circle',{cx:cx,cy:yy,r:2.5,fill:q[1],opacity:'.8'},g);
      });
      var macdMax=.01;
      for(var i=first;i<=last;i++) if(dif[i]!==null&&dea[i]!==null) macdMax=Math.max(macdMax,Math.abs(dif[i]),Math.abs(dea[i]),Math.abs(dif[i]-dea[i]));
@@ -39141,10 +39147,22 @@ def web_market(uid):
     .market-page.market-dark #market-kline .market-macd-title{{fill:#A9B8C3}}
     .market-chart-card:fullscreen{{inset:0;width:100vw;height:100vh;height:100dvh;max-width:none;max-height:none}}
     @media(max-height:480px){{.market-chart-card.is-fullscreen{{overflow:auto}}.market-chart-card.is-fullscreen>.market-svg-wrap{{flex:1 0 180px}}}}
+</style><style>
+    .market-chart-card:not(.is-fullscreen) #market-kline{{height:clamp(400px,52dvh,480px);min-height:400px}}
+    .market-level-summary{{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;padding:7px 3px 3px;color:#657B8C;font-size:10px;font-variant-numeric:tabular-nums}}
+    .market-level-summary span{{padding:4px 8px;border:1px solid #E3EAF0;border-radius:999px;background:#F8FAFB;white-space:nowrap}}
+    .market-level-summary b{{margin-left:3px;color:#304B60;font-weight:900}}
+    .market-level-summary .summary-high b,.market-level-summary .summary-resistance b{{color:#C16C53}}
+    .market-level-summary .summary-low b,.market-level-summary .summary-support b{{color:#278A70}}
+    .market-page.market-dark .market-level-summary span{{background:#202E38;border-color:#3B4A55;color:#B8C5CE}}
+    .market-page.market-dark .market-level-summary b{{color:#E6EEF4}}
+    .market-chart-card.is-fullscreen .market-level-summary{{flex:none;order:initial;padding:5px 0}}
+    @media(max-width:640px){{.market-chart-card:not(.is-fullscreen) .market-level-summary{{order:6}}.market-chart-card:not(.is-fullscreen) .market-under-chart{{order:7}}}}
 </style><main class="market-page" id="market-page"><header class="market-welcome"><span class="market-eyebrow">TAIWAN STOCK BOT / MARKET</span><div style="display:flex;align-items:center;justify-content:space-between"><h2>個股看盤</h2></div></header>{search}
     <section class="market-quote-head"><div class="market-name-block"><h3>{html.escape(name)} <small>{html.escape(code)}</small></h3><small>{change_notice}・{html.escape(latest_text)}</small></div><div class="market-current">{price_text}<small class="{change_cls}">{html.escape(change_text)}</small></div></section>
     <section class="market-chart-card" aria-label="互動 K 線圖"><div class="market-fullscreen-head"><span>{html.escape(name)}　{html.escape(code)}・{ {'day':'日','week':'週','year':'年'}[period] } K 線</span><button type="button" class="market-fullscreen-close" id="market-fullscreen-close" hidden aria-label="關閉全螢幕圖表">完成</button></div><div class="market-chart-toolbar"><button class="market-theme-toggle" id="market-theme-toggle" type="button">深色模式</button><div class="market-ma-toggles" role="group" aria-label="移動平均線"><button type="button" data-ma-toggle="5" aria-pressed="true">MA5</button><button type="button" data-ma-toggle="20" aria-pressed="true">MA20</button><button type="button" data-ma-toggle="60" aria-pressed="false">MA60</button></div><small class="market-data-note">{ {'day':'日','week':'週','year':'年'}[period] }線・{'近 3 個月・' if period == 'day' else ''}紅漲綠跌</small><div class="market-zoom-tools" role="group" aria-label="圖表縮放"><button type="button" data-chart-zoom="in" aria-label="放大圖表">＋</button><button type="button" data-chart-zoom="out" aria-label="縮小圖表">－</button><button type="button" data-chart-zoom="reset">重設</button></div><button type="button" class="market-fullscreen-button" id="market-fullscreen-open" aria-pressed="false" aria-label="全螢幕檢視 K 線圖">全螢幕</button></div><nav class="market-ranges" aria-label="K線週期">{period_tabs}</nav><div class="market-draw-tools" aria-label="圖表標線工具"><button type="button" data-draw-mode="horizontal">＋水平線</button><button type="button" data-draw-mode="trendline">╱趨勢線</button><button type="button" data-draw-mode="move">↔ 移動</button><button type="button" id="market-delete-drawing">刪除選取</button><span class="market-drawing-status" id="market-drawing-status">藍色為我的標線；支撐壓力為參考</span></div>
     <div class="market-ohlc" id="market-ohlc"><span class="date" data-field="date">{html.escape(latest_text)}</span><span>開 <b data-field="open">—</b></span><span>高 <b data-field="high">—</b></span><span>低 <b data-field="low">—</b></span><span>收 <b data-field="close">—</b></span><span>量 <b data-field="volume">—</b></span></div>{chart_svg}
+    <div class="market-level-summary" id="market-level-summary" aria-label="圖表關鍵價位"><span class="summary-high">區間高 <b data-summary="high">—</b></span><span class="summary-low">區間低 <b data-summary="low">—</b></span><span class="summary-support">支撐 <b data-summary="support">—</b></span><span class="summary-resistance">壓力 <b data-summary="resistance">—</b></span></div>
     <div class="market-under-chart"><span>拖動圖表查看 OHLC 與成交量・{html.escape(auto_level_note)}</span><span>資料來源：Yahoo Finance</span></div></section>
     <a class="market-analysis-link" href="/web/stock-analysis?code={quote(code)}" data-app-nav="1">查看 {html.escape(name)} 基本面、法人與技術摘要　›</a>
     <div class="market-subhead"><b>快速切換</b><small>持股／自選股</small></div><div class="market-chip-grid">{quick_links or '<div class="market-empty">可以在上方搜尋其他股票。</div>'}</div></main>{chart_script}{market_period_script}'''
