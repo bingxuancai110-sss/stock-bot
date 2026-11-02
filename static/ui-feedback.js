@@ -150,7 +150,8 @@
     function finish(){if(detailsAnimations.get(node)===a){node.style.overflow=overflow;detailsAnimations.delete(node);disclosureSizes.set(node,node.getBoundingClientRect().height);}}
     a.onfinish=finish;a.oncancel=finish;
   }
-  var resizeObserver = window.ResizeObserver ? new ResizeObserver(function(entries){entries.forEach(function(entry){var d=entry.target,wasOpen=disclosureOpen.get(d);disclosureOpen.set(d,d.open);if(detailsAnimations.has(d))return;var next=d.getBoundingClientRect().height,previous=disclosureSizes.get(d);disclosureSizes.set(d,next);if((d.open||wasOpen)&&previous!=null)animateSize(d,previous,next);});}) : null;
+  // Defer height writes so nested disclosures do not resize during observer delivery.
+  var resizeObserver = window.ResizeObserver ? new ResizeObserver(function(entries){entries.forEach(function(entry){var d=entry.target,wasOpen=disclosureOpen.get(d);disclosureOpen.set(d,d.open);if(detailsAnimations.has(d))return;var next=d.getBoundingClientRect().height,previous=disclosureSizes.get(d);disclosureSizes.set(d,next);if((d.open||wasOpen)&&previous!=null)requestAnimationFrame(function(){if(d.isConnected&&!detailsAnimations.has(d))animateSize(d,previous,next);});});}) : null;
   function toggleDetails(d) {
     var summary=d.querySelector('summary'),start=d.getBoundingClientRect().height;
     d.open=!d.open;summary.setAttribute('aria-expanded',String(d.open));
