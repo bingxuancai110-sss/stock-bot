@@ -27604,9 +27604,9 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261102-1">
-<script defer src="/static/ui-feedback.js?v=20261102-1"></script>
-</head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261102-2">
+<script defer src="/static/ui-feedback.js?v=20261102-2"></script>
+</head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
     <div class="nav-loader-head">
@@ -27796,7 +27796,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     }}
   }});
 }})();
-</script><div class="site-shell"><div class="wrap">
+</script><div class="site-shell" id="stockbot-shell"><div class="wrap">
 {header_html}
 {nav}
 <main id="app-page-content" class="app-page-content">{body}</main>
@@ -31639,7 +31639,7 @@ def web_positions(uid):
   <div class="position-card-top">
     <div class="position-card-title">
       <span class="position-card-code">{html.escape(str(p['code']))}</span>
-      <div><h3>{name}</h3><small>{p['shares']:,} 股 · {f'持有 {held} 天' if held is not None else '持有天數未提供'}</small></div>
+      <div><h3>{name}</h3><small><span class="position-lot-size">{p['shares']:,} 股</span><span class="position-held-days">{f'持有 {held} 天' if held is not None else '持有天數未提供'}</span></small></div>
     </div>
     <div class="position-card-price">
       <b data-position-price="1">{price['close']:,.2f}</b>
