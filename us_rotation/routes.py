@@ -15,9 +15,9 @@ from .config import ALGORITHM_VERSION, CHAIN_CATEGORIES, INDUSTRIES, SOURCE_NAME
 from .providers import fetch_market_histories
 from .importer import ImportValidationError, csv_template, parse_history_csv
 from .repository import (read_history, read_latest, read_latest_tw_company_snapshots,
-                         read_supply_chain, save_snapshot, save_tw_company_snapshots)
+                         read_signal_prices, read_supply_chain, save_snapshot, save_tw_company_snapshots)
 from .risk_warning import (HISTORICAL_RISK_PROFILES, calculate_current_risk,
-                           describe_current_risk, public_stop_profiles)
+                           build_signal_trends, describe_current_risk, public_stop_profiles)
 
 
 def _esc(value):
@@ -107,6 +107,34 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
 #us-radar .us-history table{font-size:11px}#us-radar .us-history th,#us-radar .us-history td{padding:10px 7px}
 @media(max-width:700px){#us-radar .us-hero{padding:18px}#us-radar .us-hero h1{font-size:22px}#us-radar .us-section{padding:16px;margin-top:12px}#us-radar .us-section-head{flex-direction:column;align-items:stretch;gap:12px}#us-radar .us-section-head h2{font-size:17px}#us-radar .us-summary-grid{gap:7px}#us-radar .us-summary{padding:12px 9px}#us-radar .us-summary b{font-size:15px}#us-radar .us-summary small{font-size:10px}#us-radar .us-summary em{font-size:11px}#us-radar .us-heat{gap:9px}#app-page-content #us-radar .us-heat-card{padding:12px!important;min-height:126px}#app-page-content #us-radar .us-heat-card.selected{padding:11px!important}#us-radar .us-heat-top{flex-direction:column;gap:3px}#us-radar .us-heat-value{font-size:23px}#us-radar .us-heat-foot{flex-direction:column;gap:1px}#us-radar .us-rank-row{grid-template-columns:22px minmax(0,1fr) 48px 66px;gap:6px}#us-radar .us-rank-track{display:none}#us-radar .us-state{font-size:10px}#us-radar .us-alert-grid{grid-template-columns:1fr}#us-radar .us-alert-card{padding:16px}#us-radar .us-company{flex-wrap:wrap}#us-radar .us-company>a{align-self:flex-start}#us-radar .us-detail-box{padding:13px}}
 @media print{#us-radar .us-section{break-inside:avoid}#us-radar .us-research{display:block}#us-radar .us-hero{background:#f1f6f9;color:#203d50}#us-radar .us-hero h1{color:#203d50}}
+#us-radar .us-tw-intro{padding:14px 16px;background:#edf6fa;border-radius:12px;margin-bottom:14px;color:#345f75;font-size:13px;line-height:1.8}
+#us-radar .us-tw-intro p{margin:5px 0 0;font-size:12px}
+#us-radar .us-return-table{overflow:auto}#us-radar .us-return-table table{width:100%;border-collapse:collapse;font-size:12px;line-height:1.7}
+#us-radar .us-return-table th,#us-radar .us-return-table td{padding:9px 5px;border-bottom:1px solid #dfe8ee;text-align:left}
+#us-radar .us-return-table thead{color:#5b7587;font-size:11px}#us-radar .us-return-table tbody th{font-weight:700;white-space:nowrap}
+#us-radar .us-tw-company{padding:14px 0;border-top:1px solid #dbe5eb}#us-radar .us-tw-company:first-of-type{border-top:0}
+#us-radar .us-tw-company h4{font-size:16px;margin:0 0 7px;color:#294e65}#us-radar .us-tw-company h4 small{font-size:12px;color:#6e8595;margin-left:4px}
+#us-radar .us-tw-company p{font-size:12px;line-height:1.85;margin:7px 0}#us-radar .us-tw-product{color:#326c86}
+#us-radar .us-tw-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:12px 0}
+#us-radar .us-tw-metrics>div{padding:10px 8px;border:1px solid #e0e9ef;background:#fff;border-radius:9px;min-width:0}
+#us-radar .us-tw-metrics small,#us-radar .us-tw-metrics span{display:block;font-size:10px;color:#6f8494;line-height:1.6}
+#us-radar .us-tw-metrics b{display:block;font-size:16px;margin:5px 0;color:#294f65;overflow-wrap:anywhere}
+#us-radar .us-tw-company a{font-size:12px;color:#266d8e;font-weight:800}#us-radar .us-tw-shortcuts{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:12px}
+#us-radar .us-signal-chart{margin:16px 0 0;padding-top:14px;border-top:1px solid #dce6ec}
+#us-radar .us-trend-head{display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:13px;color:#34596f}
+#us-radar .us-trend-periods{display:flex;flex:none;gap:4px;padding:3px;background:#eaf2f6;border-radius:9px}
+#app-page-content #us-radar .us-trend-periods button{padding:6px 10px!important;margin:0!important;min-height:32px;border:1px solid transparent!important;background:transparent!important;color:#547285!important;border-radius:7px!important;font-size:11px!important;font-weight:800;white-space:nowrap;transform:none!important}
+#app-page-content #us-radar .us-trend-periods button[aria-pressed=true]{background:#d5eaf3!important;border-color:#a2c8d9!important;color:#235c77!important}
+#app-page-content #us-radar .us-trend-periods button:active{background:#cbe2ed!important}
+#us-radar .us-trend-legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin:10px 0 8px;font-size:10px;color:#647e8e}
+#us-radar .us-trend-legend span{display:inline-flex;align-items:center;gap:5px}#us-radar .us-trend-legend i{width:18px;border-top:2px solid #297a9d}#us-radar .us-trend-legend i.threshold{border-top:2px dashed #b07a43}
+#us-radar .us-signal-svg{width:100%;height:auto;display:block;touch-action:pan-y;overflow:hidden;outline-offset:2px}
+#us-radar .us-value-path{fill:none;stroke:#297a9d;stroke-width:2;vector-effect:non-scaling-stroke;stroke-linejoin:round}
+#us-radar .us-threshold-path{fill:none;stroke:#b07a43;stroke-width:1.5;stroke-dasharray:5 4;vector-effect:non-scaling-stroke}
+#us-radar .us-trend-cursor{stroke:#92adbd;stroke-width:1;stroke-dasharray:3 3}#us-radar .us-trend-dot{fill:#fff;stroke:#297a9d;stroke-width:2;pointer-events:none}
+#us-radar .us-trend-readout{font-size:11px;color:#3f677e;line-height:1.8;min-height:22px;font-variant-numeric:tabular-nums}
+#us-radar .us-trend-caption{font-size:10px;line-height:1.7;margin:4px 0 0;color:#6e8494}
+@media(max-width:700px){#us-radar .us-tw-metrics b{font-size:15px}#us-radar .us-return-table table{font-size:11px}#us-radar .us-signal-svg{min-height:160px}#us-radar .us-trend-readout{font-size:10px}}
 </style>
 <main class="us-radar" id="us-radar" data-api="/web/api/us-rotation">
   <section class="us-hero">
@@ -122,7 +150,7 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
   <section class="us-section"><div class="us-section-head"><div><h2>產業熱度圖</h2><p>紅綠採美股習慣：上漲綠、下跌紅；半導體為資訊科技子產業觀察，獨立標示。</p></div><div class="us-periods" role="group" aria-label="報酬期間"><button type="button" data-period="5" aria-pressed="false">5 日</button><button type="button" class="on" data-period="20" aria-pressed="true">20 日</button><button type="button" data-period="60" aria-pressed="false">60 日</button></div></div><div class="us-heat" id="us-heat"></div><p class="us-selection-note" id="us-selection-note" aria-live="polite"></p></section>
   <section class="us-section"><div class="us-section-head"><div><h2>相對強度排行榜</h2><p>相對 SPY 報酬；排名依透明分數，市場廣度缺資料時不當成零分。</p></div></div><div class="us-rank-list" id="us-ranking"></div><p class="us-note" id="us-score-note"></p></section>
   <section class="us-section"><div class="us-section-head"><div><h2>輪動象限</h2><p>橫軸：20 日相對 SPY 報酬；縱軸：最近 20 日相對強度減去前 20 日。</p></div></div><div id="us-quadrant"></div></section>
-  <section class="us-section"><div class="us-section-head"><div><h2>產業與台灣供應鏈</h2><p id="us-detail-title">點選上方任一產業查看產品關聯與證據</p></div></div><div id="us-detail"></div></section>
+  <section class="us-section"><div class="us-section-head"><div><h2>美股產業，對照哪些台灣公司？</h2><p id="us-detail-title">先看美國產業表現，再看台灣公司的相關業務與數據。</p></div></div><div id="us-detail"></div></section>
   <section class="us-section"><div class="us-section-head"><div><h2>美台相對表現落差</h2><p>只比較已有產業映射、時間一致的實際報酬；不把落後解讀成必然補漲。</p></div></div><div id="us-gap"></div></section>
   <section class="us-section"><div class="us-section-head"><div><h2>台美起跌風險與止跌確認</h2><p>逐項顯示目前數值、判定門檻與差距。未觸發只表示尚未達標；差距是數值距離，不是觸發機率。</p></div></div><div class="us-alert-grid" id="us-risk-alerts"></div><p class="us-note">歷史命中率是研究樣本中的條件比例，非預測保證；起跌與止跌訊號會明確標示資料日期。HYG/IEF 是美國信用債代理，不能直接等同台股指數。</p></section>
   <section class="us-section"><div class="us-section-head"><div><h2>輪動排名歷史</h2><p>每日快照累積後才形成趨勢；首次建立時歷史不足會明確標示。</p></div></div><div class="us-history" id="us-history"></div></section>
@@ -136,10 +164,10 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
  ['pointerup','pointercancel','pointerleave'].forEach(name=>root.addEventListener(name,()=>root.querySelectorAll('.is-pressed').forEach(b=>b.classList.remove('is-pressed'))));
  const fmt=(v,d=2)=>v==null?'—':(Number(v)>0?'+':'')+Number(v).toFixed(d)+'%';
  const cls=v=>v==null?'us-neutral':Number(v)>0?'us-positive':Number(v)<0?'us-negative':'us-neutral';
- let state={snapshot:null,history:[],mapping:[],twCompanies:[],riskProfiles:[],stopProfiles:[],signalExplanations:{},period:20,selected:null};
+ let state={snapshot:null,history:[],mapping:[],twCompanies:[],riskProfiles:[],stopProfiles:[],signalExplanations:{},signalTrends:{},signalTrendsUnavailable:false,trendPeriods:{},period:20,selected:null};
  function empty(el,title,copy){el.innerHTML='<div class="us-empty"><b>'+esc(title)+'</b><p>'+esc(copy)+'</p></div>';}
  function renderSummary(data){const rows=data.industries||[];const scored=rows.filter(x=>!x.overlay&&x.score!=null).sort((a,b)=>a.rank-b.rank);const top=scored[0],weak=scored[scored.length-1],turn=rows.find(x=>x.trend_state==='轉強觀察');const items=[['目前領先',top?top.name:'—',top?fmt(top.relative_20d_pct):'尚無快照'],['轉強觀察',turn?turn.name:'—',turn?fmt(turn.relative_20d_pct):'等待連續資料'],['相對落後',weak?weak.name:'—',weak?fmt(weak.relative_20d_pct):'尚無快照']];$('#us-summary').innerHTML=items.map(x=>'<div class="us-summary"><small>'+esc(x[0])+'</small><b>'+esc(x[1])+'</b><em>'+esc(x[2])+'</em></div>').join('');}
- function renderHeat(){const rows=state.snapshot&&state.snapshot.industries||[];if(rows.length&&!state.selected)state.selected=rows[0].id;const selected=rows.find(r=>r.id===state.selected);$('#us-selection-note').textContent=selected?'已選取 '+selected.name+'（'+selected.ticker+'） · 下方查看產業與台灣供應鏈':'';if(!rows.length){empty($('#us-heat'),'尚無美股產業快照','完成第一次批次更新後，這裡會顯示 12 個產業代理 ETF。');return;}
+ function renderHeat(){const rows=state.snapshot&&state.snapshot.industries||[];if(rows.length&&!state.selected)state.selected=rows[0].id;const selected=rows.find(r=>r.id===state.selected);$('#us-selection-note').textContent=selected?'已選取 '+selected.name+'（'+selected.ticker+'） · 下方查看台灣相關業務與公司資料':'';if(!rows.length){empty($('#us-heat'),'尚無美股產業快照','完成第一次批次更新後，這裡會顯示 12 個產業代理 ETF。');return;}
   const key='return_'+state.period+'d_pct';$('#us-heat').innerHTML=rows.map(r=>'<button type="button" aria-pressed="'+String(state.selected===r.id)+'" class="us-heat-card '+(state.selected===r.id?'selected':'')+'" data-industry="'+esc(r.id)+'"><span class="us-heat-top"><b>'+esc(r.name)+'</b><small>'+esc(r.ticker)+(r.overlay?' · 子產業':'')+'</small></span><div class="us-heat-value '+cls(r[key])+'">'+esc(fmt(r[key]))+'</div><span class="us-heat-foot"><span>相對 SPY</span><b class="'+cls(r['relative_'+state.period+'d_pct'])+'">'+esc(fmt(r['relative_'+state.period+'d_pct']))+'</b></span></button>').join('');root.querySelectorAll('.us-heat-card').forEach(b=>b.addEventListener('click',()=>selectIndustry(b.dataset.industry)));}
  function renderRanking(){const rows=(state.snapshot&&state.snapshot.industries||[]).filter(x=>!x.overlay).sort((a,b)=>(a.rank||99)-(b.rank||99));if(!rows.length){empty($('#us-ranking'),'尚無可排名資料','資料不足時不會補成零分。');return;}
   const max=Math.max(1,...rows.map(x=>Number(x.score)||0));$('#us-ranking').innerHTML=rows.map(r=>'<div class="us-rank-row"><span class="us-rank-no">'+(r.rank||'—')+'</span><span class="us-rank-name"><b>'+esc(r.name)+'</b><small>'+esc(r.ticker)+' · '+esc(r.quadrant||'資料不足')+'</small></span><span class="us-rank-track"><i style="width:'+Math.max(1,(Number(r.score)||0)/max*100)+'%"></i></span><b class="us-rank-score">'+(r.score==null?'—':Number(r.score).toFixed(0)+' 分')+'</b><span class="us-state">'+esc(r.trend_state||'資料不足')+'</span></div>').join('');$('#us-score-note').textContent=(state.snapshot.score_note||'')+' 權重覆蓋度逐產業顯示；廣度未提供，當前最高分覆蓋 90%。';}
@@ -149,10 +177,52 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
   svg+=rows.map(r=>'<circle class="us-dot" cx="'+X(Number(r.relative_20d_pct))+'" cy="'+Y(Number(r.relative_momentum_20d_pct))+'" r="'+(state.selected===r.id?9:6)+'" fill="'+color(r)+'"><title>'+esc(r.name)+' · '+esc(fmt(r.relative_20d_pct))+' · '+esc(r.quadrant)+'</title></circle>').join('')+'</svg>';
   $('#us-quadrant').innerHTML=svg+'<div class="us-quadrant-legend">'+rows.map(r=>'<button type="button" class="us-legend-button" data-quadrant-industry="'+esc(r.id)+'" aria-pressed="'+String(state.selected===r.id)+'"><span class="us-legend-dot" style="background:'+color(r)+'"></span>'+esc(r.name)+' · '+esc(r.quadrant)+'</button>').join('')+'</div>';
   root.querySelectorAll('[data-quadrant-industry]').forEach(b=>b.addEventListener('click',()=>selectIndustry(b.dataset.quadrantIndustry)));}
- function renderDetail(){const id=state.selected||((state.snapshot&&state.snapshot.industries||[])[0]||{}).id;const r=(state.snapshot&&state.snapshot.industries||[]).find(x=>x.id===id);if(!r){empty($('#us-detail'),'尚無產業資料','資料載入完成後，點選產業卡片。');return;}state.selected=r.id;$('#us-detail-title').textContent=r.name+' · '+r.ticker+' · '+(r.gics||'');const links=state.mapping.filter(x=>x.us_industry===r.id);const byCode={};(state.twCompanies||[]).forEach(x=>byCode[x.code]=x);const mapHtml=links.length?links.map(x=>{const d=byCode[x.code]||{};const metrics=d.code?'<small>台股資料日 '+esc(d.price_date||d.as_of_date||'—')+' · 收盤 '+esc(d.close==null?'—':Number(d.close).toFixed(2))+' · 20 日 '+esc(fmt(d.return_20d_pct))+'</small><small>月營收年增 '+esc(fmt(d.revenue_yoy_pct))+'（'+esc(d.revenue_period||'資料月未標')+'） · 法人合計 '+esc(d.total_net_lots==null?'—':Number(d.total_net_lots).toLocaleString()+' 張')+'</small><small>MA5 / 20 / 60：'+esc(d.ma5==null?'—':Number(d.ma5).toFixed(2))+' / '+esc(d.ma20==null?'—':Number(d.ma20).toFixed(2))+' / '+esc(d.ma60==null?'—':Number(d.ma60).toFixed(2))+' · PE / PB / 殖利率：'+esc(d.pe==null?'—':Number(d.pe).toFixed(1))+' / '+esc(d.pb==null?'—':Number(d.pb).toFixed(2))+' / '+esc(d.dividend_yield_pct==null?'—':Number(d.dividend_yield_pct).toFixed(2)+'%')+'</small><small>EPS、毛利率、營業利益率：尚無可確認欄位；缺資料不補值。</small>':'<small>尚無台股觀察快照；產品關聯有證據，但行情與基本面尚未同步。</small>';return '<div class="us-company"><span><b>'+esc(x.name)+'（'+esc(x.code)+'）</b><small>'+esc(x.chain)+' · '+esc(x.product)+' · '+esc(x.role)+'</small><small>'+esc(x.confidence)+'；'+esc(x.reason)+'</small>'+metrics+'</span><a href="'+esc(x.evidence_url)+'" target="_blank" rel="noopener">證據 ↗</a></div>';}).join(''):'<p>目前沒有已建檔的台灣公司證據關聯；不會只因題材相同就列為供應商。</p>';
-  $('#us-detail').innerHTML='<div class="us-detail"><div class="us-detail-box"><h3>美股產業表現</h3><p>資料日 '+esc(r.as_of||'—')+' · 狀態 '+esc(r.trend_state||'資料不足')+' · '+esc(r.quadrant||'資料不足')+'</p><p>5 日 '+esc(fmt(r.return_5d_pct))+'（相對 '+esc(fmt(r.relative_5d_pct))+'）<br>20 日 '+esc(fmt(r.return_20d_pct))+'（相對 '+esc(fmt(r.relative_20d_pct))+'）<br>60 日 '+esc(fmt(r.return_60d_pct))+'（相對 '+esc(fmt(r.relative_60d_pct))+'）</p><p>ETF 相對 20 日均量：'+(r.relative_volume==null?'—':Number(r.relative_volume).toFixed(2)+' 倍')+'；廣度：資料不足。</p><p>目前沒有與此產業有日期及來源佐證的事件資料；無法確認主要漲跌原因。</p></div><div class="us-detail-box"><h3>台灣產品與供應鏈證據</h3>'+mapHtml+'</div></div>';
+ function renderDetail(){
+  const r=(state.snapshot&&state.snapshot.industries||[]).find(x=>x.id===state.selected)||((state.snapshot&&state.snapshot.industries||[])[0]);
+  if(!r){empty($('#us-detail'),'先選一個美股產業','資料載入後，可點選上方產業卡片查看台灣業務對照。');return;}
+  state.selected=r.id;
+  const links=state.mapping.filter(x=>x.us_industry===r.id),byCode={};state.twCompanies.forEach(x=>byCode[x.code]=x);
+  $('#us-detail-title').textContent='目前選擇：'+r.name+'（'+r.ticker+'） · '+(links.length?links.length+' 家已整理的台灣公司':'台灣對照名單尚未建檔');
+  const difference=v=>v==null?'資料不足':v===0?'與大盤相同':(v>0?'多':'少')+' '+Math.abs(v).toFixed(2)+' 個百分點';
+  const money=v=>v==null?'—':Number(v).toLocaleString('zh-TW',{maximumFractionDigits:2});
+  const metrics=[5,20,60].map(n=>'<tr><th scope="row">'+n+' 個交易日</th><td class="'+cls(r['return_'+n+'d_pct'])+'">'+esc(fmt(r['return_'+n+'d_pct']))+'</td><td>'+esc(difference(r['relative_'+n+'d_pct']))+'</td></tr>').join('');
+  const sector='<div class="us-detail-box"><h3>① 美國這個產業最近怎麼走？</h3><p><b>'+esc(r.ticker)+'</b> 是觀察「'+esc(r.name)+'」表現的產業 ETF。下表比較它自己的漲跌，以及比美股大盤 ETF（SPY）多漲或少漲多少。</p><div class="us-return-table"><table><thead><tr><th>期間</th><th>產業漲跌</th><th>與美股大盤比較</th></tr></thead><tbody>'+metrics+'</tbody></table></div><p class="us-note">美股資料日 '+esc(r.as_of||'—')+' · 目前分類：'+esc(r.trend_state||'資料不足')+'</p><details class="us-research"><summary>其他產業指標</summary><p>ETF 成交量是前 20 日均量的 '+(r.relative_volume==null?'—':Number(r.relative_volume).toFixed(2))+' 倍。產業內上漲公司占比：尚無可靠資料。漲跌原因：目前沒有已驗證、附日期的事件資料。</p></details></div>';
+  let companies='';
+  if(links.length){companies=links.map(x=>{
+   const d=byCode[x.code]||{},has=Boolean(d.code);
+   const metric=(label,value,note)=>'<div><small>'+esc(label)+'</small><b>'+esc(value)+'</b><span>'+esc(note)+'</span></div>';
+   const numbers=has?'<div class="us-tw-metrics">'+metric('股價收盤',money(d.close),d.price_date||d.as_of_date||'日期未提供')+metric('近 20 日股價漲跌',fmt(d.return_20d_pct),'台股自身漲跌')+metric('營收比去年同月',fmt(d.revenue_yoy_pct),d.revenue_period||'營收月份未提供')+'</div>':'<p class="us-note">目前已整理業務關聯，股價與財務資料尚未完成更新。</p>';
+   const extra=has?'<p>法人合計：'+esc(d.total_net_lots==null?'資料不足':money(d.total_net_lots)+' 張')+'；近 20 日股價漲跌 '+esc(fmt(d.return_20d_pct))+'。<br>5／20／60 日均價：'+esc([d.ma5,d.ma20,d.ma60].map(money).join(' / '))+'<br>本益比 '+esc(money(d.pe))+' 倍；股價淨值比 '+esc(money(d.pb))+' 倍；殖利率 '+esc(d.dividend_yield_pct==null?'—':money(d.dividend_yield_pct)+'%')+'。</p><p>季 EPS、毛利率與營業利益率：尚無可確認欄位。</p>':'';
+   return '<article class="us-tw-company"><h4>'+esc(x.name)+' <small>'+esc(x.code)+'</small></h4><p class="us-tw-product">相關業務：'+esc(x.product)+'</p><p><b>為什麼列在這裡？</b>'+esc(x.reason)+'</p>'+numbers+'<details class="us-research"><summary>更多數據與資料依據</summary>'+extra+'<p>產品分類：'+esc(x.chain)+'<br>公司角色：'+esc(x.role)+'<br>關聯確認程度：'+esc(x.confidence)+'</p><a href="'+esc(x.evidence_url)+'" target="_blank" rel="noopener">查看公司公開資料 ↗</a></details></article>';
+  }).join('');}
+  else{
+   const available=(state.snapshot.industries||[]).filter(s=>state.mapping.some(m=>m.us_industry===s.id));
+   companies='<div class="us-empty"><b>「'+esc(r.name)+'」的台灣對照名單尚未整理</b><p>這代表目前建檔資料不足，不能據此判定台灣沒有相關公司。</p>'+(available.length?'<p>可先查看已整理的產業：</p><div class="us-tw-shortcuts">'+available.map(s=>'<button type="button" class="us-legend-button" data-tw-industry="'+esc(s.id)+'">'+esc(s.name)+'</button>').join('')+'</div>':'')+'</div>';
+  }
+  $('#us-detail').innerHTML='<div class="us-tw-intro"><b>看美國產業，對照台灣的相關業務。</b><p>我們依公司公開的產品與業務整理名單，再分開看股價、營收與法人資料。列入名單不代表已確認供貨給某一家美國公司，也不表示股價會跟漲。</p></div><div class="us-detail">'+sector+'<div class="us-detail-box"><h3>② 台灣有哪些公司做相關業務？</h3>'+companies+'</div></div>';
+  root.querySelectorAll('[data-tw-industry]').forEach(b=>b.addEventListener('click',()=>selectIndustry(b.dataset.twIndustry)));
  }
  function renderHistory(){const history=state.history||[];if(history.length<2){empty($('#us-history'),'歷史快照尚在累積','至少保存兩個更新日，才顯示產業名次變化；目前不使用今日成分反推過去。');return;}const dates=history.slice(-12);const keys=dates.map(x=>x.as_of);const topIds=(dates[dates.length-1].industries||[]).filter(x=>!x.overlay).sort((a,b)=>(a.rank||99)-(b.rank||99)).slice(0,5).map(x=>x.id);let html='<table><thead><tr><th>產業</th>'+keys.map(x=>'<th>'+esc(x.slice(5))+'</th>').join('')+'</tr></thead><tbody>';topIds.forEach(id=>{const nm=((dates[dates.length-1].industries||[]).find(x=>x.id===id)||{}).name||id;html+='<tr><td>'+esc(nm)+'</td>'+dates.map(day=>{const row=(day.industries||[]).find(x=>x.id===id);return '<td>'+(row&&row.rank?'第 '+row.rank+' 名':'—')+'</td>';}).join('')+'</tr>';});$('#us-history').innerHTML=html+'</tbody></table>';}
+ function renderSignalTrends(){
+  root.querySelectorAll('[data-signal-chart]').forEach(host=>{
+   const key=host.dataset.signalChart,series=(state.signalTrends[key]||{}),all=series.points||[],period=state.trendPeriods[key]||60,points=all.slice(-period);
+   if(points.length<2){host.innerHTML='<p class="us-note">'+(state.signalTrendsUnavailable?'近期走勢暫時無法讀取，請稍後重新整理。':'已保存的交易日不足，暫時無法繪製近期走勢。')+'</p>';return;}
+   const unit=key==='taiwan'?'個百分點':key.endsWith('_stop')?'點':'',format=v=>Number(v).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2});
+   const w=Math.max(260,Math.round(host.getBoundingClientRect().width||320)),h=220,p={l:66,r:12,t:18,b:32},values=points.flatMap(x=>[Number(x.value),Number(x.threshold)]);
+   let low=Math.min(...values),high=Math.max(...values),pad=Math.max((high-low)*.12,Math.abs(high)*.005,.05);low-=pad;high+=pad;
+   const X=i=>p.l+i/(points.length-1)*(w-p.l-p.r),Y=v=>p.t+(high-v)/(high-low)*(h-p.t-p.b);
+   const path=field=>points.map((x,i)=>(i?'L':'M')+X(i).toFixed(2)+' '+Y(Number(x[field])).toFixed(2)).join(' ');
+   const thresholdLabel=key.endsWith('_stop')?'前五日最高收盤':key==='us'?'VIX 25 門檻':'−3 個百分點門檻';
+   let grid='';for(let i=0;i<4;i++){const v=low+(high-low)*i/3,yy=Y(v);grid+='<line x1="'+p.l+'" y1="'+yy+'" x2="'+(w-p.r)+'" y2="'+yy+'" stroke="#e1eaf0"/><text x="'+(p.l-7)+'" y="'+(yy+4)+'" text-anchor="end" fill="#6c8190" font-size="11">'+esc(format(v))+'</text>';}
+   const labels=[0,Math.floor((points.length-1)/2),points.length-1].map((i,j)=>'<text x="'+X(i)+'" y="'+(h-10)+'" text-anchor="'+(j===0?'start':j===2?'end':'middle')+'" fill="#6c8190" font-size="12">'+esc(points[i].date.slice(5).replace('-','/'))+'</text>').join('');
+   host.innerHTML='<div class="us-trend-head"><b>近期走勢</b><div class="us-trend-periods" role="group" aria-label="'+esc(key)+' 走勢期間">'+[30,60].map(n=>'<button type="button" data-trend-period="'+n+'" aria-pressed="'+String(period===n)+'">'+n+' 日</button>').join('')+'</div></div><div class="us-trend-legend"><span><i></i>'+(key==='taiwan'?'HYG − IEF 20 日報酬差':key==='us'?'VIX 收盤':'指數收盤')+'</span><span><i class="threshold"></i>'+thresholdLabel+'</span></div><div class="us-trend-readout" aria-live="polite"></div><svg class="us-signal-svg" viewBox="0 0 '+w+' '+h+'" tabindex="0" role="group" aria-label="'+esc(key)+' 近 '+points.length+' 個交易日走勢，可點選查看日期與數值"><title>實線為每日數值，虛線為當日門檻</title>'+grid+'<path d="'+path('threshold')+'" class="us-threshold-path"/><path d="'+path('value')+'" class="us-value-path"/><line class="us-trend-cursor" y1="'+p.t+'" y2="'+(h-p.b)+'"/><circle class="us-trend-dot" r="4"/>'+labels+'<rect x="'+p.l+'" y="'+p.t+'" width="'+(w-p.l-p.r)+'" height="'+(h-p.t-p.b)+'" fill="transparent"/></svg><p class="us-trend-caption">'+esc(points[0].date)+' ～ '+esc(points[points.length-1].date)+' · '+points.length+' 個交易日 · 點選曲線查看數值'+(unit?'（'+unit+'）':'')+(series.symbol==='SPY'?' · 使用 SPY 代理':'')+'</p>';
+   let index=points.length-1;const svg=host.querySelector('svg');
+   const show=i=>{index=Math.max(0,Math.min(points.length-1,i));const q=points[index];host.querySelector('.us-trend-readout').textContent=q.date+' · '+format(q.value)+' · 門檻 '+format(q.threshold);const line=svg.querySelector('.us-trend-cursor');line.setAttribute('x1',X(index));line.setAttribute('x2',X(index));const dot=svg.querySelector('.us-trend-dot');dot.setAttribute('cx',X(index));dot.setAttribute('cy',Y(q.value));};
+   const inspect=e=>{const q=svg.createSVGPoint();q.x=e.clientX;q.y=e.clientY;const local=q.matrixTransform(svg.getScreenCTM().inverse());show(Math.round((local.x-p.l)/(w-p.l-p.r)*(points.length-1)));};
+   svg.addEventListener('pointerdown',inspect);svg.addEventListener('pointermove',e=>{if(e.pointerType!=='touch')inspect(e);});svg.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();show(index+(e.key==='ArrowLeft'?-1:1));}});show(index);
+   host.querySelectorAll('[data-trend-period]').forEach(b=>b.addEventListener('click',()=>{state.trendPeriods[key]=Number(b.dataset.trendPeriod);renderSignalTrends();}));
+  });
+ }
  function renderRiskAlerts(){
   const all=state.signalExplanations||{},cur=(state.snapshot&&state.snapshot.current_risk_warning)||{};
   const num=(n,d=2)=>Number(n).toLocaleString('zh-TW',{minimumFractionDigits:d,maximumFractionDigits:d});
@@ -174,7 +244,7 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
     else distance=key==='us'?'距觸發還需上升 '+num(c.distance)+'。':'距觸發還需下降 '+num(c.distance)+' 個百分點。';
    }
    const proxy=c.proxy_note||((cur[key]||{}).proxy_note)||'';
-   return '<article class="us-alert-card '+(active?(stop?'confirm-on':'signal-on'):'')+'" data-signal="'+key+'"><div class="us-alert-head"><h3>'+esc(title)+'</h3><span class="us-alert-badge '+(active?(stop?'confirmed':'alert'):'')+'">'+badge+'</span></div><div class="us-alert-value">'+value+'</div><p class="us-signal-condition">'+esc(condition)+'</p><div class="us-signal-distance">'+esc(distance)+'</div>'+dateNote(c)+(proxy?'<p class="us-note">'+esc(proxy)+'</p>':'')+'<details class="us-research"><summary>歷史研究統計</summary>'+research+'</details></article>';
+   return '<article class="us-alert-card '+(active?(stop?'confirm-on':'signal-on'):'')+'" data-signal="'+key+'"><div class="us-alert-head"><h3>'+esc(title)+'</h3><span class="us-alert-badge '+(active?(stop?'confirmed':'alert'):'')+'">'+badge+'</span></div><div class="us-alert-value">'+value+'</div><p class="us-signal-condition">'+esc(condition)+'</p><div class="us-signal-distance">'+esc(distance)+'</div>'+dateNote(c)+(proxy?'<p class="us-note">'+esc(proxy)+'</p>':'')+'<div class="us-signal-chart" data-signal-chart="'+key+'"></div><details class="us-research"><summary>歷史研究統計</summary>'+research+'</details></article>';
   };
   const cards=state.riskProfiles.map(x=>{
    const key=x.market==='美股'?'us':'taiwan';
@@ -186,12 +256,13 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
    research+='<p class="us-alert-foot">命中定義：訊號後十個交易日不破訊號日前十日低點，且第十日收盤高於訊號日。兩組歷史樣本共用目前的突破判定；突破不保證已見底。</p>';
    cards.push(card(x.market==='美股'?'us_stop':'taiwan_stop',x.market+'止跌確認 · '+x.index,research));
   });
-  $('#us-risk-alerts').innerHTML=cards.join('');
+  $('#us-risk-alerts').innerHTML=cards.join('');renderSignalTrends();
  }
  function renderGap(){const mapping=state.mapping||[];const snap=state.snapshot;if(!snap){empty($('#us-gap'),'尚無可比較快照','需先有美股與台股同期報酬資料。');return;}const tw={};(state.twCompanies||[]).forEach(x=>tw[x.code]=x);const industries={};(snap.industries||[]).forEach(x=>industries[x.id]=x);const observations=mapping.map(m=>{const u=industries[m.us_industry],t=tw[m.code];if(!u||!t||u.return_20d_pct==null||t.return_20d_pct==null)return null;return {map:m,us:u,tw:t,gap:Number(u.return_20d_pct)-Number(t.return_20d_pct)};}).filter(x=>x&&x.us.return_20d_pct>0&&x.gap>=5).sort((a,b)=>b.gap-a.gap);if(!observations.length){empty($('#us-gap'),'目前沒有資料完整的落差候選','只在美股產業 20 日上漲、台股價格與營收資料均可對齊時顯示。資料日期可能不同，落後不是補漲訊號。');return;}$('#us-gap').innerHTML=observations.map(x=>'<div class="us-company"><span><b>'+esc(x.map.name)+'（'+esc(x.map.code)+'） · 觀察差距 '+esc(x.gap.toFixed(2))+' 個百分點</b><small>'+esc(x.map.chain)+' · 美股 '+esc(x.map.name)+' 所屬產業代理 '+esc(fmt(x.us.return_20d_pct))+'（截至 '+esc(x.us.as_of||'—')+'），台股 '+esc(fmt(x.tw.return_20d_pct))+'（截至 '+esc(x.tw.price_date||'—')+'）</small><small>月營收年增 '+esc(fmt(x.tw.revenue_yoy_pct))+'；法人合計 '+esc(x.tw.total_net_lots==null?'資料不足':Number(x.tw.total_net_lots).toLocaleString()+' 張')+'。可能原因與估值需另查；此差距不代表補漲。</small><small>供應鏈產品證據：'+esc(x.map.confidence)+'；特定客戶／直接供貨關係未確認。</small></span><a href="'+esc(x.map.evidence_url)+'" target="_blank" rel="noopener">證據 ↗</a></div>').join('');}
  function selectIndustry(id){state.selected=id;renderHeat();renderDetail();renderQuadrant();}
- function draw(){renderRiskAlerts();if(!state.snapshot){$('#us-asof').textContent='等待完成快照';$('#us-status').textContent='尚未有完成快照';empty($('#us-summary'),'等待第一筆可信資料','頁面只讀已完成快照，不會在開頁時同步抓行情。');renderHeat();renderRanking();renderQuadrant();renderDetail();renderGap();renderHistory();return;}const s=state.snapshot;$('#us-asof').textContent='美股交易日 '+(s.as_of||'—');let stamp='';try{const d=new Date(String(s.fetched_at||'').replace(' ','T').replace(/(\.\d{3})\d+/,'$1'));if(!Number.isNaN(d.getTime()))stamp=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(d);}catch(e){} const source=String(s.source||'');$('#us-status').textContent='更新 '+(stamp?stamp+'（台北時間）':'時間未提供')+' · '+(source.includes('Yahoo')?'Yahoo Finance 日線':source||'來源未提供');renderSummary(s);renderHeat();renderRanking();renderQuadrant();renderDetail();renderGap();renderHistory();}
- fetch(root.dataset.api+'?t='+encodeURIComponent(new URLSearchParams(location.search).get('t')||''),{credentials:'same-origin',cache:'no-store'}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(d=>{state.snapshot=d.snapshot||null;state.history=d.history||[];state.mapping=d.supply_chain||[];state.twCompanies=d.tw_companies||[];state.riskProfiles=d.risk_profiles||[];state.stopProfiles=d.stop_profiles||[];state.signalExplanations=d.signal_explanations||{};draw();}).catch(()=>{draw();$('#us-status').textContent='載入失敗，請重新整理頁面';});
+ window.addEventListener('resize',()=>{if(root.isConnected)renderSignalTrends();});
+ function draw(){renderRiskAlerts();if(!state.snapshot){$('#us-asof').textContent='等待完成快照';$('#us-status').textContent='尚未有完成快照';empty($('#us-summary'),'等待第一筆可信資料','頁面只讀已完成快照，不會在開頁時同步抓行情。');renderHeat();renderRanking();renderQuadrant();renderDetail();renderGap();renderHistory();return;}const s=state.snapshot;$('#us-asof').textContent='美股交易日 '+(s.as_of||'—');let stamp='';try{const d=new Date(String(s.fetched_at||'').replace(' ','T').replace(/(\.\d{3})\d+/,'$1').replace(/([+-]\d{2})$/,'$1:00').replace(/([+-]\d{2})(\d{2})$/,'$1:$2'));if(!Number.isNaN(d.getTime()))stamp=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(d);}catch(e){} const source=String(s.source||'');$('#us-status').textContent='更新 '+(stamp?stamp+'（台北時間）':'時間未提供')+' · '+(source.includes('Yahoo')?'Yahoo Finance 日線':source||'來源未提供');renderSummary(s);renderHeat();renderRanking();renderQuadrant();renderDetail();renderGap();renderHistory();}
+ fetch(root.dataset.api+'?t='+encodeURIComponent(new URLSearchParams(location.search).get('t')||''),{credentials:'same-origin',cache:'no-store'}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(d=>{state.snapshot=d.snapshot||null;state.history=d.history||[];state.mapping=d.supply_chain||[];state.twCompanies=d.tw_companies||[];state.riskProfiles=d.risk_profiles||[];state.stopProfiles=d.stop_profiles||[];state.signalExplanations=d.signal_explanations||{};state.signalTrends=d.signal_trends||{};state.signalTrendsUnavailable=Boolean(d.signal_trends_unavailable);draw();}).catch(()=>{draw();$('#us-status').textContent='載入失敗，請重新整理頁面';});
  root.querySelectorAll('[data-period]').forEach(b=>b.addEventListener('click',()=>{root.querySelectorAll('[data-period]').forEach(x=>{x.classList.toggle('on',x===b);x.setAttribute('aria-pressed',String(x===b));});state.period=Number(b.dataset.period);renderHeat();}));
 })();
 </script>'''
@@ -326,7 +397,18 @@ __RESULT__
     def api(uid):
         try:
             latest, history, mapping, tw_companies = _read_status()
+            trend_error = False
+            try:
+                risk = (latest or {}).get("current_risk_warning") or {}
+                dates = [str(r.get("as_of"))[:10] for r in risk.values()
+                         if isinstance(r, dict) and r.get("as_of")]
+                end_date = max(dates) if dates else (latest or {}).get("as_of")
+                prices = read_signal_prices(get_db_connection, release_db_connection, end_date)
+                trends = build_signal_trends(prices, risk)
+            except Exception:
+                trends, trend_error = {}, True
             return jsonify({"ok": True, "snapshot": latest, "history": history,
+                            "signal_trends": trends, "signal_trends_unavailable": trend_error,
                             "signal_explanations": describe_current_risk(
                                 (latest or {}).get("current_risk_warning")),
                             "supply_chain": mapping, "tw_companies": tw_companies,

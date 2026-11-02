@@ -40,6 +40,50 @@ def describe_current_risk(current):
     return output
 
 
+def build_signal_trends(histories, current, limit=60):
+    """Build chart values from saved closes, using the same rules as current signals."""
+    limit = max(2, min(60, int(limit)))
+
+    def rows(symbol, key, adjusted=False):
+        cutoff = ((current or {}).get(key) or {}).get("as_of")
+        if not cutoff:
+            return []
+        values = {}
+        for row in histories.get(symbol) or []:
+            day = str(row.get("trade_date") or "")[:10]
+            try:
+                value = float((row.get("adjusted_close") or row.get("close"))
+                              if adjusted else row.get("close"))
+                if day and day <= str(cutoff)[:10] and isfinite(value) and value > 0:
+                    values[day] = value
+            except (TypeError, ValueError, OverflowError):
+                continue
+        return sorted(values.items())
+
+    result = {}
+    result["us"] = {"points": [{"date": d, "value": v, "threshold": 25}
+                               for d, v in rows("^VIX", "us")[-limit:]], "symbol": "^VIX"}
+    hyg, ief = dict(rows("HYG", "taiwan", True)), dict(rows("IEF", "taiwan", True))
+    common = sorted(set(hyg) & set(ief))
+    credit = []
+    for i in range(20, len(common)):
+        day, prior = common[i], common[i - 20]
+        value = ((hyg[day] / hyg[prior] - 1) - (ief[day] / ief[prior] - 1)) * 100
+        credit.append({"date": day, "value": value, "threshold": -3})
+    result["taiwan"] = {"points": credit[-limit:], "symbol": "HYG/IEF"}
+    for key, symbol in (("us_stop", "^GSPC"), ("taiwan_stop", "^TWII")):
+        # Use the same proxy selected for the saved current signal, not a mixed series.
+        proxy_note = ((current or {}).get(key) or {}).get("proxy_note") or ""
+        if key == "us_stop" and "SPY" in proxy_note:
+            symbol = "SPY"
+        data = rows(symbol, key)
+        points = [{"date": day, "value": value,
+                   "threshold": max(v for _, v in data[i - 5:i])}
+                  for i, (day, value) in enumerate(data) if i >= 5]
+        result[key] = {"points": points[-limit:], "symbol": symbol}
+    return result
+
+
 HISTORICAL_RISK_PROFILES = [
     {"market": "美股", "indicator": "VIX ≥ 25", "threshold_label": "VIX 收盤達 25",
      "target": "未來 20 個美股交易日急跌", "daily_trigger_probability_pct": 65.2,
