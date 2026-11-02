@@ -101,3 +101,7 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 #stockbot-app #stockbot-shell #app-page-content .position-detail-body{padding:8px 0!important}
 @media(max-width:360px){#stockbot-app #stockbot-shell #app-page-content .rows>.position-card{padding:13px 11px 7px!important}#stockbot-app #stockbot-shell #app-page-content .position-card-top{gap:8px!important}#stockbot-app #stockbot-shell #app-page-content .position-card-title h3{font-size:15px!important}#stockbot-app #stockbot-shell #app-page-content .position-card-price b{font-size:20px!important}#stockbot-app #stockbot-shell #app-page-content .position-card-primary>div{padding:7px!important}}
 #stockbot-app #stockbot-shell #app-page-content .rows>.position-card.ui-allocation-selected{border-color:#92b59f!important;background:#f1f7f3!important;box-shadow:inset 3px 0 0 #80a78d!important}
+
+/* Restore the original non-blocking full-page route transition. */
+.ui-route-pending{opacity:1;pointer-events:auto;transition:none}
+.ui-feedback-route[data-state=error],.ui-feedback-route[data-state=waiting]{min-height:0;padding:10px 13px}
