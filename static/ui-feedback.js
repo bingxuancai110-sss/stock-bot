@@ -43,7 +43,7 @@
     var old = route; route = null; clearTimeout(old.timer);
     if (old.content) { old.content.classList.remove('ui-route-pending'); old.content.removeAttribute('aria-busy'); }
     each(document, '.ui-nav-pending', function (n) { n.classList.remove('ui-nav-pending'); n.removeAttribute('aria-busy'); });
-    if (old.box.isConnected) old.box.remove();
+    if (old.box && old.box.isConnected) old.box.remove();
     if (!ok && old.content && old.content.isConnected) {
       var error = el('div', 'ui-feedback-route'); error.dataset.state = 'error'; error.setAttribute('role', 'alert');
       error.appendChild(el('p', '', message || '頁面未能載入，保留原本內容。請再次點選分頁重試。'));
@@ -54,16 +54,21 @@
   function routeStart(label, path, cancel) {
     routeEnd(true); each(document, '.ui-feedback-route[data-state=error]', function (n) { n.remove(); });
     var content = root(); if (!content) return;
-    var box = skeleton(label, false); content.before(box); content.classList.add('ui-route-pending');
+    // Keep the current page in place while the next fragment loads. The shared
+    // top progress line and pending tab provide feedback without covering the
+    // whole screen with a second skeleton card.
+    content.classList.remove('ui-route-pending'); content.setAttribute('aria-busy', 'true');
     each(document, 'a[data-app-nav]', function (a) { if (new URL(a.href, location.href).pathname === path) { a.classList.add('ui-nav-pending'); a.setAttribute('aria-busy', 'true'); } });
-    var state = { box: box, content: content, timer: 0 }; route = state;
+    var state = { box: null, content: content, timer: 0 }; route = state;
     state.timer = setTimeout(function () {
       if (route !== state) return;
-      box.classList.add('ui-loading-ended'); box.replaceChildren(el('p', '', '載入時間較長，原頁資料仍保留。'));
-      var button = el('button', '', cancel ? '取消等待' : '收起等待提示'); button.type = 'button'; button.onclick = function () { if (cancel) { cancel(); routeEnd(false, '已取消等待，原頁面仍可使用。'); } else routeEnd(true); };
-      box.appendChild(button);
-      // A pending network response never leaves an infinite skeleton.
-      content.classList.remove('ui-route-pending');
+      var notice = el('div', 'ui-feedback-route'); notice.dataset.state = 'waiting'; notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite');
+      notice.appendChild(el('p', '', '頁面載入時間較長，原頁面仍可操作。'));
+      var button = el('button', '', cancel ? '取消等待' : '收起提示'); button.type = 'button'; button.onclick = function () {
+        if (cancel) { cancel(); routeEnd(false, '已取消等待，原頁面仍可使用。'); }
+        else { if (notice.isConnected) notice.remove(); state.box = null; }
+      };
+      notice.appendChild(button); content.before(notice); state.box = notice;
     }, 18000);
   }
   function notify(message,state){

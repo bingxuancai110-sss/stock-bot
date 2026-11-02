@@ -96,14 +96,15 @@ with sync_playwright() as p:
  count=state['post_count'];state['post']='success';form.locator('button[type=submit]').click();page.locator('.position-confirm-submit').click();page.wait_for_selector('.msg')
  check('success sends one write',state['post_count']==count+1)
  check('server-confirmed success remains visible','已新增' in page.locator('.msg').first.inner_text())
- # SPA route -> skeleton -> selected tab -> actual page; no added data calls.
+ # SPA route keeps the current page visible and uses the shared top progress line.
  state['delay_nav']=True
  page.evaluate('window.stockBotSwitchPage("/web/leaderboard",true)')
- check('route skeleton visible immediately',page.locator('.ui-feedback-route').is_visible())
+ check('route does not insert a blocking skeleton card',page.locator('.ui-feedback-route').count()==0)
+ check('route keeps previous page visible and interactive',page.locator('#app-page-content').evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).pointerEvents!=="none"') and page.locator('form.add').is_visible())
  check('bottom navigation immediately acknowledges selection',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').evaluate('(e)=>e.classList.contains("ui-nav-pending")'))
  state['delay_nav']=False;held_route().fulfill(body=ROOT.joinpath('rank-fragment.html').read_text(),content_type='text/html')
  page.wait_for_selector('#rankTabs');page.wait_for_timeout(150)
- check('route skeleton ends on success',page.locator('.ui-feedback-route').count()==0)
+ check('route remains free of a blocking card after success',page.locator('.ui-feedback-route').count()==0)
  check('nav selection committed only after success',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').get_attribute('aria-current')=='page')
  count=len(requests);page.locator('#rankTabs [data-board=long]').click();check('period selection applies immediately',page.locator('[data-board-panel=long]').is_visible())
  check('real rank delta retained','↑ 2 名' in page.locator('[data-board-panel=long] .rank-move').first.inner_text())
@@ -152,7 +153,7 @@ with sync_playwright() as p:
  edge.evaluate("var f=document.getElementById('settings-form');f.addEventListener('submit',e=>e.preventDefault(),{once:true});f.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
  edge.clock.run_for(20);check('client-cancelled submit restores original button',not edge.locator('#settings-form button').is_disabled() and edge.locator('#settings-form button').inner_text()=='儲存設定')
  state['delay_nav']=True;edge.evaluate('window.stockBotSwitchPage("/web/leaderboard",true)');held=held_route();edge.clock.fast_forward(18001)
- check('slow navigation stops skeleton instead of looping',edge.locator('.ui-feedback-route .ui-skeleton').count()==0 and edge.locator('.ui-feedback-route button').inner_text()=='取消等待')
+ check('slow navigation keeps old page and offers cancel',edge.locator('.ui-feedback-route[data-state=waiting] .ui-skeleton').count()==0 and edge.locator('.ui-feedback-route button').inner_text()=='取消等待' and edge.locator('#settings-form').is_visible())
  edge.locator('.ui-feedback-route button').click();edge.clock.run_for(40);check('cancel restores old page and pending navigation',edge.locator('#settings-form').count()==1 and edge.locator('.ui-nav-pending').count()==0)
  try:held.fulfill(body=ROOT.joinpath('rank-fragment.html').read_text(),content_type='text/html')
  except Exception:pass
