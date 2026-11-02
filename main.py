@@ -41300,6 +41300,61 @@ def _hv2_bang(css):
 _HV2_PLAIN_CSS = '#hv2 .impact-stale{margin:8px 0 0;padding:10px 12px;border-radius:10px;background:rgba(246,173,60,.14);color:#F6C36A;border:1px solid rgba(246,173,60,.28);font-size:13px;line-height:1.5}'
 _HV2_STYLE = '<style id="hv2-style">' + _hv2_bang(_HV2_CSS) + _hv2_bang(_HV2_CTRL_CSS) + _HV2_PLAIN_CSS + '</style>'
 
+_HOME_IMPACT_STYLE = r'''<style id="home-impact-visual">
+#app-page-content #hv2 .home-impact-section{padding:18px 0!important;border-top:1px solid #dfe8ee!important;border-bottom:1px solid #dfe8ee!important}
+#app-page-content #hv2 .home-impact-section .hv2-h{font-size:19px!important;color:#233f53!important;line-height:1.5!important}
+#app-page-content #hv2 .home-impact-intro{font-size:12px!important;line-height:1.8!important;color:#6e8392!important;margin:4px 0 14px!important}
+#app-page-content #hv2 .home-impact-highlights{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:10px!important;margin:0 0 18px!important}
+#app-page-content #hv2 .home-impact-card{display:flex!important;flex-direction:column!important;min-width:0!important;min-height:174px!important;padding:15px 13px!important;border-radius:14px!important;border:1px solid #f0d7d1!important;background:#fff7f4!important;box-sizing:border-box!important}
+#app-page-content #hv2 .home-impact-card.negative{background:#f0f9f5!important;border-color:#d3e8dc!important}
+#app-page-content #hv2 .home-impact-card-label{display:flex!important;align-items:center!important;gap:6px!important;color:#97665c!important;font-size:11px!important;font-weight:800!important;line-height:1.6!important}
+#app-page-content #hv2 .negative .home-impact-card-label{color:#527d68!important}
+#app-page-content #hv2 .home-impact-card-label i{display:grid!important;place-items:center!important;width:23px!important;height:23px!important;border-radius:7px!important;background:#fbe8e3!important;font-size:15px!important;font-style:normal!important}
+#app-page-content #hv2 .negative .home-impact-card-label i{background:#e0f0e7!important}
+#app-page-content #hv2 .home-impact-card h3{margin:10px 0 12px!important;color:#29465a!important;font-size:17px!important;line-height:1.5!important;letter-spacing:0!important;font-weight:850!important;white-space:normal!important;overflow-wrap:anywhere!important}
+#app-page-content #hv2 .home-impact-number{margin-top:auto!important;font-variant-numeric:tabular-nums!important}
+#app-page-content #hv2 .home-impact-number b{font-size:30px!important;line-height:1.2!important;letter-spacing:-.02em!important;font-weight:850!important}
+#app-page-content #hv2 .home-impact-number small{display:block!important;font-size:11px!important;margin:4px 0 0!important;color:#7a8b96!important;font-weight:650!important}
+#app-page-content #hv2 .home-impact-number small[hidden]{display:none!important}
+#app-page-content #hv2 .home-impact-card p{margin:10px 0 0!important;font-size:11px!important;line-height:1.7!important;color:#718592!important}
+#app-page-content #hv2 .home-impact-card.is-empty{background:#f7f9fa!important;border-color:#e1e8ec!important}
+#app-page-content #hv2 .home-impact-card.is-empty h3{font-size:14px!important;color:#6f8493!important}
+#app-page-content #hv2 .home-impact-groups{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:20px!important}
+#app-page-content #hv2 .home-impact-section .hv2-group{margin:0!important;padding:0!important;min-width:0!important;border:0!important;background:transparent!important}
+#app-page-content #hv2 .home-impact-section .hv2-ghead{display:flex!important;justify-content:space-between!important;align-items:center!important;margin:0 0 4px!important;padding:0!important;border:0!important}
+#app-page-content #hv2 .home-impact-section .hv2-pill{font-size:13px!important;font-weight:850!important;background:transparent!important;padding:0!important;line-height:1.8!important}
+#app-page-content #hv2 .home-impact-section .hv2-cnt{font-size:11px!important;color:#78909f!important;white-space:nowrap!important}
+#app-page-content #hv2 .home-impact-section .hv2-row{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:8px 12px!important;padding:13px 0!important;border-bottom:1px solid #e8eef2!important;border-top:0!important;align-items:center!important;cursor:pointer!important;transform:none!important}
+#app-page-content #hv2 .home-impact-section .hv2-row[hidden]{display:none!important}
+#app-page-content #hv2 .home-impact-section .hv2-row-main{display:block!important;min-width:0!important}
+#app-page-content #hv2 .home-impact-section .hv2-row-main>b{display:block!important;margin:0!important;color:#29485d!important;font-size:14px!important;line-height:1.6!important;font-weight:800!important;white-space:normal!important;overflow-wrap:anywhere!important}
+#app-page-content #hv2 .home-impact-section .hv2-row-main>b small{display:inline!important;color:#8a9ba6!important;font-size:10px!important;font-weight:500!important}
+#app-page-content #hv2 .home-impact-section .hv2-row>strong{display:block!important;grid-column:2!important;grid-row:1!important;font-size:13px!important;text-align:right!important;white-space:nowrap!important;font-weight:850!important;font-variant-numeric:tabular-nums!important}
+#app-page-content #hv2 .home-impact-section .hv2-cbar{display:block!important;width:100%!important;height:7px!important;margin-top:8px!important;border-radius:99px!important;background:#e9eff3!important;overflow:hidden!important}
+#app-page-content #hv2 .home-impact-section .hv2-cbar>i{display:block!important;height:100%!important;border-radius:99px!important;min-width:0!important;transition:width .2s ease!important}
+#app-page-content #hv2 .home-impact-section .hv2-cbar>i[data-direction=up]{background:#cc4f46!important}
+#app-page-content #hv2 .home-impact-section .hv2-cbar>i[data-direction=down]{background:#16835d!important}
+#app-page-content #hv2 .home-impact-section .hv2-cbar>i[data-direction=flat]{background:#9aacb7!important}
+#app-page-content #hv2 .home-impact-section .up{color:#cc4f46!important}
+#app-page-content #hv2 .home-impact-section .down{color:#16835d!important}
+#app-page-content #hv2 .home-impact-section .flat{color:#7d919e!important}
+#app-page-content #hv2 .home-impact-section .hv2-impact-toggle{display:inline-flex!important;gap:4px!important;padding:4px!important;margin:0 0 7px!important;background:#edf4f7!important;border-radius:11px!important}
+#app-page-content #hv2 .home-impact-section .hv2-impact-toggle button{min-height:40px!important;padding:8px 14px!important;border:1px solid transparent!important;border-radius:8px!important;background:transparent!important;color:#5b798d!important;font-size:12px!important;font-weight:800!important;transform:none!important}
+#app-page-content #hv2 .home-impact-section .hv2-impact-toggle button[aria-pressed=true]{background:#dcecf4!important;border-color:#a8cadb!important;color:#235e7c!important;box-shadow:none!important}
+#app-page-content #hv2 .home-impact-section button:active{background:#e0eef5!important;color:#285c78!important;transform:none!important}
+#app-page-content #hv2 .home-impact-section .hv2-more{display:block!important;width:100%!important;min-height:40px!important;padding:8px!important;margin-top:5px!important;background:#f4f8fa!important;border:1px solid #e0e9ee!important;border-radius:9px!important;color:#54798e!important;font-size:11px!important;font-weight:750!important}
+#app-page-content #hv2 .home-impact-section .hv2-more[hidden]{display:none!important}
+#app-page-content #hv2 .home-impact-section .hv2-chart-detail{grid-column:1/-1!important;padding:10px!important;background:#f1f6f9!important;color:#59798d!important;border-radius:8px!important;font-size:11px!important;line-height:1.8!important}
+#app-page-content #hv2 .home-impact-section .hv2-chart-detail[hidden]{display:none!important}
+#app-page-content #hv2 .home-impact-section .impact-stale,#app-page-content #hv2 .home-impact-section .contribution-basis-notice{font-size:11px!important;line-height:1.8!important;color:#8b6e39!important;background:#fff8e9!important;border:1px solid #eee0c3!important;border-radius:10px!important;padding:10px 12px!important;margin:10px 0!important}
+#app-page-content #hv2 .home-impact-section .impact-stale[style*="display:none"]{display:none!important}
+#app-page-content #hv2 .home-impact-section .home-impact-caption{display:block!important;font-size:11px!important;line-height:1.8!important;margin:0 0 12px!important;color:#6d8393!important}
+#app-page-content #hv2 .home-impact-section .home-impact-help{margin:10px 0 0!important;font-size:10px!important;line-height:1.8!important;color:#8497a3!important}
+@media(max-width:699px){#app-page-content #hv2 .home-impact-groups{grid-template-columns:minmax(0,1fr)!important;gap:20px!important}#app-page-content #hv2 .home-impact-section{padding:16px 0!important}#app-page-content #hv2 .home-impact-card{padding:13px 11px!important;min-height:172px!important}#app-page-content #hv2 .home-impact-card h3{font-size:16px!important}#app-page-content #hv2 .home-impact-number b{font-size:27px!important}}
+@media(prefers-reduced-motion:reduce){#app-page-content #hv2 .home-impact-section .hv2-cbar>i{transition:none!important}}
+</style>
+'''
+
 _HV2_JS = r'''<script>
 (function(){
   var root=document.getElementById('hv2');if(!root||root.dataset.ready==='1')return;root.dataset.ready='1';
@@ -41312,11 +41367,32 @@ _HV2_JS = r'''<script>
     if(b.hidden!==hide)b.hidden=hide;if(b.textContent!==label)b.textContent=label;
   }
   function syncAll(){root.querySelectorAll('[data-hv2-group]').forEach(syncGroup);setImpactMode(root.dataset.impactMode||'contribution');}
+  function writeText(el,value){if(el&&el.textContent!==value)el.textContent=value;}
+  function signed(value){return(value>0?'+':'')+value.toFixed(2);}
+  function syncImpactCards(){
+    ['positive','negative'].forEach(function(side){
+      var card=root.querySelector('[data-impact-card="'+side+'"]'),group=root.querySelector('[data-home-contribution-rows="'+side+'"]');if(!card)return;
+      var row=group&&group.querySelector('[data-home-chart-row]'),value=row?Number(row.dataset.contribution):NaN,pct=row?Number(row.dataset.stockPct):NaN,valid=!!row&&Number.isFinite(value);
+      writeText(card.querySelector('[data-impact-name]'),valid?row.dataset.name:'目前無可顯示持股');
+      writeText(card.querySelector('[data-impact-value]'),valid?signed(value):'—');
+      var unit=card.querySelector('[data-impact-unit]');if(unit)unit.hidden=!valid;
+      writeText(card.querySelector('[data-impact-quote-line]'),valid&&Number.isFinite(pct)?'個股今日 '+signed(pct)+'%':'依目前可用行情');
+      card.classList.toggle('is-empty',!valid);
+    });
+  }
   function setImpactMode(mode){
     root.dataset.impactMode=mode;
-    root.querySelectorAll('[data-home-impact-mode]').forEach(function(btn){var on=btn.getAttribute('data-home-impact-mode')===mode;btn.setAttribute('aria-pressed',on?'true':'false');});var caption=root.querySelector('[data-home-impact-caption]');if(caption)caption.textContent=mode==='stock'?'各持股當日漲跌幅':'每檔對整體組合的百分點影響';
-    root.querySelectorAll('[data-home-chart-row]').forEach(function(row){var raw=Number(row.getAttribute(mode==='stock'?'data-stock-pct':'data-contribution'))||0;var strong=row.querySelector('strong');if(strong)strong.textContent=(raw>0?'+':'')+raw.toFixed(2)+'%';});
-    root.querySelectorAll('[data-home-contribution-rows]').forEach(function(group){var rows=Array.prototype.slice.call(group.querySelectorAll('[data-home-chart-row]'));var mx=Math.max.apply(null,rows.map(function(row){return Math.abs(Number(row.getAttribute(mode==='stock'?'data-stock-pct':'data-contribution')))||0;}).concat([0.0001]));rows.forEach(function(row){var raw=Number(row.getAttribute(mode==='stock'?'data-stock-pct':'data-contribution'))||0,bar=row.querySelector('.hv2-cbar i');if(bar)bar.style.width=Math.min(100,Math.abs(raw)/mx*100).toFixed(0)+'%';});});
+    root.querySelectorAll('[data-home-impact-mode]').forEach(function(btn){btn.setAttribute('aria-pressed',btn.getAttribute('data-home-impact-mode')===mode?'true':'false');});
+    writeText(root.querySelector('[data-home-impact-caption]'),mode==='stock'?'個股自身漲跌幅（分組仍依組合影響）。':'長條越長，對組合影響越大；數字單位為個百分點。');
+    var rows=Array.prototype.slice.call(root.querySelectorAll('[data-home-chart-row]'));
+    var mx=Math.max.apply(null,rows.map(function(row){return Math.abs(Number(row.getAttribute(mode==='stock'?'data-stock-pct':'data-contribution')))||0;}).concat([0.0001]));
+    rows.forEach(function(row){
+      var raw=Number(row.getAttribute(mode==='stock'?'data-stock-pct':'data-contribution')),strong=row.querySelector('strong'),bar=row.querySelector('.hv2-cbar i'),direction=raw>0?'up':raw<0?'down':'flat';
+      writeText(strong,Number.isFinite(raw)?signed(raw)+(mode==='stock'?'%':' 個百分點'):'—');
+      if(strong){strong.classList.remove('up','down','flat');strong.classList.add(direction);}
+      if(bar){bar.style.width=(Number.isFinite(raw)?Math.min(100,Math.abs(raw)/mx*100):0).toFixed(1)+'%';bar.dataset.direction=direction;}
+    });
+    syncImpactCards();
   }
   root.addEventListener('click',function(ev){
     var modeButton=ev.target.closest('[data-home-impact-mode]');
@@ -41365,10 +41441,24 @@ def _hv2_group_html(kind, title, count, rows_html, limit=3, holdings=False):
             f'<div data-home-contribution-rows="{"positive" if kind == "up" else "negative"}" data-hv2-rows>{rows_html}</div>'
             f'<button type="button" class="hv2-more" data-hv2-more hidden>查看其餘 ▾</button></div>')
 
+def _hv2_impact_card(item, label, side):
+    """Display an existing leading contribution without computing portfolio performance."""
+    present = item is not None
+    name = html.escape(str(item["name"])) if present else "目前無可顯示持股"
+    value = f'{item["contribution"]:+.2f}' if present else "—"
+    quote = f'個股今日 {item["pct"]:+.2f}%' if present else "依目前可用行情"
+    tone = "up" if side == "positive" else "down"
+    return (f'<div class="home-impact-card {side}{"" if present else " is-empty"}" data-impact-card="{side}">'
+            f'<div class="home-impact-card-label"><i aria-hidden="true">{"↗" if side == "positive" else "↘"}</i><span>{label}</span></div>'
+            f'<h3 data-impact-name>{name}</h3><div class="home-impact-number {tone}"><b data-impact-value>{value}</b>'
+            f'<small data-impact-unit{"" if present else " hidden"}>個百分點</small></div>'
+            f'<p data-impact-quote-line>{html.escape(quote)}</p></div>')
+
+
 def _render_home_v2(d):
     """首頁 v2（看盤軟體版型）：純函式，只吃已算好的字串／數值。"""
     rank_html = d.get("rank_html") or ""
-    return (_HV2_STYLE + f"""
+    return (_HV2_STYLE + _HOME_IMPACT_STYLE + f"""
 <div id="hv2" class="hv2">
   <section class="hv2-sec first" data-home-privacy-card aria-label="我的投資">
     <div class="hv2-head">
@@ -41424,12 +41514,15 @@ def _render_home_v2(d):
 
   <div class="hv2-sync" aria-live="polite"><b data-home-live-title>{html.escape(d["sync_title"])}</b>　<span data-home-live-note>{html.escape(d["sync_detail"])}</span></div>
 
-  <section class="hv2-sec" aria-label="我的正負貢獻">
-    <div class="hv2-st"><span class="hv2-h">今日貢獻</span><span class="hv2-cnt">{html.escape(d["contribution_day_label"])}</span></div>
-    <span class="hv2-sub" data-home-impact-caption>每檔對整體組合的百分點影響</span>
-    <div class="hv2-impact-toggle" role="group" aria-label="貢獻圖表顯示方式"><button type="button" data-home-impact-mode="contribution" aria-pressed="true">組合影響</button><button type="button" data-home-impact-mode="stock" aria-pressed="false">個股漲跌</button></div>
-    {d["stale_notice"]}
-    {d["contribution_groups"]}
+  <section class="hv2-sec home-impact-section" aria-label="今日持股對組合的影響">
+    <div class="hv2-st"><span class="hv2-h">今天誰在拉抬、誰在拖累？</span><span class="hv2-cnt">{html.escape(d["contribution_day_label"])}</span></div>
+    <p class="home-impact-intro">依持股比重與今日交易，換算每檔對組合的影響。</p>
+    <div class="home-impact-highlights">{_hv2_impact_card(d.get("impact_positive"), "最大拉抬", "positive")}{_hv2_impact_card(d.get("impact_negative"), "最大拖累", "negative")}</div>
+    <div class="hv2-impact-toggle" role="group" aria-label="貢獻圖表顯示方式"><button type="button" data-home-impact-mode="contribution" aria-pressed="true">對組合的影響</button><button type="button" data-home-impact-mode="stock" aria-pressed="false">個股自身漲跌</button></div>
+    <span class="home-impact-caption" data-home-impact-caption>長條越長，對組合影響越大；數字單位為個百分點。</span>
+    {d["stale_notice"]}{d.get("impact_basis_notice", "")}
+    <div class="home-impact-groups">{d["contribution_groups"]}</div>
+    <p class="home-impact-help">各側最多列出 5 檔；點選持股可看當日漲跌與計算依據。</p>
   </section>
 
   {d["holdings_html"]}
@@ -42247,7 +42340,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             detail_html = (f'<div class="hv2-chart-detail" data-hv2-chart-detail hidden>'
                            f'個股漲跌 {pct:+.2f}%・{detail_basis}{realized_note}</div>')
             rows.append(
-                f'''<div class="hv2-row" data-hv2-item data-home-chart-row data-contribution="{contribution:.6f}" data-stock-pct="{pct:.6f}" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>{html.escape(str(holding['name']))}{f' <small>({code})</small>' if code else ''}</b><i class="hv2-cbar"><i style="width:{min(100.0, abs(contribution) / _mx * 100.0):.0f}%"></i></i></div><strong class="{value_class}">{contribution:+.2f}%</strong>{detail_html}</div>''')
+                f'''<div class="hv2-row" data-hv2-item data-home-chart-row data-name="{html.escape(str(holding['name']), quote=True)}" data-contribution="{contribution:.6f}" data-stock-pct="{pct:.6f}" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>{html.escape(str(holding['name']))}{f' <small>({code})</small>' if code else ''}</b><i class="hv2-cbar"><i style="width:{min(100.0, abs(contribution) / _mx * 100.0):.0f}%"></i></i></div><strong class="{value_class}">{contribution:+.2f} 個百分點</strong>{detail_html}</div>''')
         return ''.join(rows)
 
     positive_lead = positive_entries[0] if positive_entries else None
@@ -42336,7 +42429,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   function setHtml(selector,value){var el=document.querySelector(selector);if(el)el.innerHTML=value;}
   function realized(item){if(item.realized_pl==null)return '';var n=Number(item.realized_pl);if(!Number.isFinite(n))return '';return '<small class="impact-realized '+(n>=0?'up':'down')+'">今日已實現損益：'+(n>=0?'+':'')+n.toLocaleString('zh-TW',{maximumFractionDigits:0})+' 元</small>';}
   function leadHtml(item,title,kind){if(!item)return '<div class="impact-lead impact-muted"><small>'+esc(title)+'</small><b>目前沒有資料</b></div>';var change=item.pct>0?'上漲':'下跌',amount=item.contribution>0?'增加約':'減少約';return '<div class="impact-lead '+kind+'"><small>'+esc(title)+'</small><h3>'+esc(item.name)+'</h3><p>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%・'+esc(item.basis_text)+'</p><strong><span>對整體組合'+amount+'</span><b>'+Math.abs(Number(item.contribution)).toFixed(2)+'%</b></strong></div>'; }
-  function rowsHtml(items,kind){if(!items||!items.length)return '<div class="hv2-empty">目前沒有可顯示的項目。</div>';var mx=Math.max.apply(null,items.map(function(x){return Math.abs(Number(x.contribution))||0;}).concat([0.0001]));return items.map(function(item){var contribution=Number(item.contribution)||0,pct=Number(item.pct)||0,realizedText=item.realized_pl==null?'':'・今日已實現 '+esc(Number(item.realized_pl).toLocaleString('zh-TW',{maximumFractionDigits:0}))+' 元';return '<div class="hv2-row" data-hv2-item data-home-chart-row data-contribution="'+contribution.toFixed(6)+'" data-stock-pct="'+pct.toFixed(6)+'" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>'+esc(item.name)+'</b><i class="hv2-cbar"><i style="width:'+Math.min(100,Math.abs(contribution)/mx*100).toFixed(0)+'%"></i></i></div><strong class="'+kind+'">'+(contribution>0?'+':'')+contribution.toFixed(2)+'%</strong><div class="hv2-chart-detail" data-hv2-chart-detail hidden>個股漲跌 '+(pct>0?'+':'')+pct.toFixed(2)+'%・'+esc(item.basis_text)+realizedText+'</div></div>';}).join('');}
+  function rowsHtml(items,kind){if(!items||!items.length)return '<div class="hv2-empty">目前沒有可顯示的項目。</div>';var mx=Math.max.apply(null,items.map(function(x){return Math.abs(Number(x.contribution))||0;}).concat([0.0001]));return items.map(function(item){var contribution=Number(item.contribution)||0,pct=Number(item.pct)||0,realizedText=item.realized_pl==null?'':'・今日已實現 '+esc(Number(item.realized_pl).toLocaleString('zh-TW',{maximumFractionDigits:0}))+' 元';return '<div class="hv2-row" data-hv2-item data-home-chart-row data-name="'+esc(item.name)+'" data-contribution="'+contribution.toFixed(6)+'" data-stock-pct="'+pct.toFixed(6)+'" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>'+esc(item.name)+'</b><i class="hv2-cbar"><i style="width:'+Math.min(100,Math.abs(contribution)/mx*100).toFixed(0)+'%"></i></i></div><strong class="'+kind+'">'+(contribution>0?'+':'')+contribution.toFixed(2)+' 個百分點</strong><div class="hv2-chart-detail" data-hv2-chart-detail hidden>個股漲跌 '+(pct>0?'+':'')+pct.toFixed(2)+'%・'+esc(item.basis_text)+realizedText+'</div></div>';}).join('');}
   function refreshMarket(){
     var marketUrl='/web/api/taiex/intraday',marketToken=token();
     if(marketToken)marketUrl+='?t='+encodeURIComponent(marketToken);
@@ -42993,6 +43086,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         "rank_html": _hv2_rank_item("短線", rank_status["short"]) + _hv2_rank_item("長線", rank_status["long"]),
         "sync_title": home_sync_title, "sync_detail": home_sync_detail,
         "contribution_day_label": _contribution_day_label, "stale_notice": stale_notice,
+        "impact_positive": ({"name": positive_lead[0]["name"], "pct": positive_lead[1], "contribution": positive_lead[2]} if positive_lead else None),
+        "impact_negative": ({"name": negative_lead[0]["name"], "pct": negative_lead[1], "contribution": negative_lead[2]} if negative_lead else None),
+        "impact_basis_notice": basis_notice,
         "contribution_groups": contribution_html, "holdings_html": _home_holdings_preview_html,
         "journal_html": position_journal_html, "judgement_html": home_judgement_html,
         "live_script": home_intraday_script})
