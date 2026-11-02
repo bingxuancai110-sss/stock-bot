@@ -52867,14 +52867,21 @@ app.register_blueprint(create_quote_lab_blueprint(
 ))
 
 
-def _bootstrap_tw_research():
+def _bootstrap_tw_research(attempt=0):
     job_name = "台美台股研究快照"
     bp = app.blueprints.get("us_rotation")
     needs = getattr(bp, "us_rotation_research_needs_refresh", None)
     job = getattr(bp, "us_rotation_research_job", None)
     try:
-        if not callable(needs) or not needs() or not callable(job) or not _job_mark_start(job_name):
+        if not callable(needs) or not callable(job):
             return
+        if not needs():
+            print("✅ 台美研究快照已就緒，本次略過補建。", flush=True)
+            return
+        if not _job_mark_start(job_name):
+            print("ℹ️ 台美研究補建已有背景工作執行中。", flush=True)
+            return
+        print("▶ 台美研究開始補建觀察名單。", flush=True)
         started = time.time()
         try:
             result = job()
@@ -52882,9 +52889,13 @@ def _bootstrap_tw_research():
             print("✅ 台美研究自動補建完成：%s" % result, flush=True)
         except Exception as exc:
             _job_mark_done(job_name, "失敗："+type(exc).__name__, time.time()-started)
-            print("⚠️ 台美研究自動補建失敗：%s" % type(exc).__name__, flush=True)
+            raise
     except Exception as exc:
-        print("⚠️ 台美研究補建檢查失敗：%s" % type(exc).__name__, flush=True)
+        print("⚠️ 台美研究補建暫停（第 %s 次）：%s" % (attempt+1,type(exc).__name__), flush=True)
+        if attempt < 2:
+            retry = threading.Timer(30*(attempt+1), lambda: _bootstrap_tw_research(attempt+1))
+            retry.daemon = True
+            retry.start()
 
 
 _tw_research_bootstrap_timer = threading.Timer(20, _bootstrap_tw_research)

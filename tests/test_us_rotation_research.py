@@ -115,3 +115,27 @@ def test_collector_excludes_intraday_prices_and_uses_raw_completed_close_ma():
     assert result['relative_market_20d_pp']==0
     assert result['revenue_yoy_pct'] is None and result['total_net_lots'] == 0
     assert result['institutional_source_date']==END
+
+
+def test_bootstrap_retries_transient_db_failure_and_stops_after_three_attempts(monkeypatch):
+    tree=ast.parse(Path(__file__).parents[1].joinpath('main.py').read_text())
+    fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='_bootstrap_tw_research')
+    timer=Mock();needs=Mock(side_effect=RuntimeError('connection unavailable'))
+    bp=Mock(us_rotation_research_needs_refresh=needs)
+    ns=dict(app=Mock(blueprints={'us_rotation':bp}),threading=Mock(Timer=timer))
+    exec(compile(ast.Module(body=[fn],type_ignores=[]),'<bootstrap>','exec'),ns)
+    ns[fn.name]()
+    assert timer.call_args.args[0]==30
+    timer.call_args.args[1]()
+    assert timer.call_args.args[0]==60
+    timer.call_args.args[1]()
+    assert timer.call_count==2 and needs.call_count==3
+    bp.us_rotation_research_job.assert_not_called()
+
+
+def test_snapshot_read_failure_is_not_mistaken_for_completed_data(monkeypatch):
+    monkeypatch.setattr(routes,'read_latest_tw_company_snapshots',Mock(side_effect=RuntimeError('connection unavailable')))
+    bp=routes.create_blueprint(web_login_required=lambda f:f, render_page=Mock(),
+         get_db_connection=Mock(),release_db_connection=Mock(),run_in_background=Mock(),fetch_tw_company_snapshot=Mock())
+    with pytest.raises(RuntimeError):
+        bp.us_rotation_research_needs_refresh()
