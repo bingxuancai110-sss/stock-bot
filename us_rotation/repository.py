@@ -123,6 +123,37 @@ def read_latest(get_db_connection, release_db_connection):
         release_db_connection(conn)
 
 
+def read_signal_prices(get_db_connection, release_db_connection, end_date):
+    """Read bounded saved history: 60 displayed sessions plus 20 for credit returns."""
+    if not end_date:
+        return {}
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            WITH recent AS (
+                SELECT symbol, trade_date, close, adjusted_close,
+                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) AS n
+                FROM us_rotation_prices
+                WHERE symbol=ANY(%s) AND trade_date<=%s
+            )
+            SELECT symbol, trade_date::text, close, adjusted_close
+            FROM recent WHERE n<=81 ORDER BY symbol, trade_date
+        """, (["^VIX", "HYG", "IEF", "^GSPC", "SPY", "^TWII"], end_date))
+        histories = {}
+        for symbol, day, close, adjusted in cur.fetchall():
+            histories.setdefault(symbol, []).append({
+                "trade_date": day, "close": float(close) if close is not None else None,
+                "adjusted_close": float(adjusted) if adjusted is not None else None})
+        cur.close()
+        return histories
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_db_connection(conn)
+
+
 def read_history(get_db_connection, release_db_connection, limit=25):
     conn = get_db_connection()
     try:
