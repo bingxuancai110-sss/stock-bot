@@ -41392,6 +41392,7 @@ _HV2_JS = r'''<script>
     items.forEach(function(item,index){item.hidden=!open&&index>=lim;});
     var label=open?'收合 ▴':'查看其餘 '+Math.max(0,n-lim)+' 檔 ▾',hide=n<=lim;
     if(b.hidden!==hide)b.hidden=hide;if(b.textContent!==label)b.textContent=label;
+    b.setAttribute('aria-expanded',String(open));
   }
   function syncAll(){root.querySelectorAll('[data-hv2-group]').forEach(syncGroup);setImpactMode(root.dataset.impactMode||'contribution');}
   function writeText(el,value){if(el&&el.textContent!==value)el.textContent=value;}
@@ -41483,9 +41484,52 @@ def _hv2_impact_card(item, label, side):
             f'<p data-impact-quote-line>{html.escape(quote)}</p></div>')
 
 
+_HOME_FEEDBACK_STYLE = r'''<style>
+/* Home interaction feedback: readable states without changing market colors. */
+#app-page-content #hv2.hv2 .hv2-feature-launcher>a{display:flex!important;align-items:center!important;gap:9px!important;padding:12px 10px!important;min-height:82px!important;border:1px solid #d5e2e8!important;border-radius:14px!important;background:#fff!important;box-shadow:0 3px 10px rgba(32,65,78,.06)!important;color:#254858!important;text-decoration:none!important;transition:transform .1s ease,box-shadow .1s ease!important}
+#app-page-content #hv2.hv2 .hv2-feature-launcher>a>span{display:flex!important;flex:1!important;min-width:0!important;flex-direction:column!important;gap:5px!important}
+#app-page-content #hv2.hv2 .hv2-feature-launcher>a>em{display:block!important;flex:none!important;margin:0!important;color:#5d8177!important;font-size:22px!important}
+#app-page-content #hv2.hv2 .hv2-feature-launcher>a b{font-size:13px!important;line-height:1.5!important}
+#app-page-content #hv2.hv2 .hv2-feature-launcher>a small{font-size:10px!important;line-height:1.5!important;white-space:normal!important}
+#app-page-content #hv2.hv2 :is(button,[role=button],summary,.hv2-feature-launcher>a){cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:rgba(71,124,103,.12)!important}
+#app-page-content #hv2.hv2 :is(button,[role=button],summary,.hv2-feature-launcher>a):focus-visible{outline:3px solid #6eaa91!important;outline-offset:3px!important}
+#app-page-content #hv2.hv2 :is(.hv2-seg,.hv2-impact-toggle){display:flex!important;gap:5px!important;padding:4px!important;background:#e9f0ee!important;border:1px solid #d7e3dd!important;border-radius:12px!important}
+#app-page-content #hv2.hv2 :is(.hv2-seg,.hv2-impact-toggle)>button{min-height:42px!important;margin:0!important;padding:8px 10px!important;border:1px solid transparent!important;border-radius:8px!important;background:transparent!important;color:#597267!important;-webkit-text-fill-color:#597267!important;font-weight:800!important;box-shadow:none!important;transition:none!important;transform:none!important}
+#app-page-content #hv2.hv2 :is(.hv2-seg,.hv2-impact-toggle)>button[aria-pressed=true]{background:#fff!important;color:#285d48!important;-webkit-text-fill-color:#285d48!important;border-color:#92b9a5!important;box-shadow:0 2px 5px rgba(37,83,62,.1),inset 0 -2px 0 #65987d!important}
+#app-page-content #hv2.hv2 .hv2-impact-toggle>button[aria-pressed=true]::before{content:'✓';margin-right:4px}
+#app-page-content #hv2.hv2 .hv2-more{display:block!important;width:100%!important;min-height:44px!important;margin:10px 0 4px!important;padding:11px!important;border:1px solid #bad2c5!important;border-radius:10px!important;background:#f1f7f3!important;color:#315f49!important;-webkit-text-fill-color:#315f49!important;font-size:12px!important;font-weight:800!important;text-decoration:none!important;box-shadow:0 2px 0 rgba(39,80,57,.05)!important;transition:none!important}
+#app-page-content #hv2.hv2 .hv2-more[aria-expanded=true]{background:#e4f0e8!important;border-color:#89ae98!important;box-shadow:inset 0 0 0 1px #b9d1c2!important}
+#app-page-content #hv2.hv2 :is([data-home-chart-row],.hv2-hold){border:1px solid #dce6e9!important;border-radius:12px!important;background:#fff!important;margin:8px 0!important;overflow:hidden!important}
+#app-page-content #hv2.hv2 [data-home-chart-row]{padding:12px!important;transition:none!important}
+#app-page-content #hv2.hv2 [data-home-chart-row][aria-expanded=true]{background:#f1f7f3!important;border-color:#91b6a1!important;box-shadow:inset 3px 0 0 #759c82!important}
+#app-page-content #hv2.hv2 [data-home-chart-row] .hv2-row-main::after{content:'點看計算依據 ⌄';display:block;font-size:10px;line-height:1.7;margin-top:7px;color:#71877c}
+#app-page-content #hv2.hv2 [data-home-chart-row][aria-expanded=true] .hv2-row-main::after{content:'收合計算依據 ⌃';color:#315f49}
+#app-page-content #hv2.hv2 .hv2-chart-detail{border-top:1px solid #d2e1d7!important;padding:10px 0 0!important;margin-top:3px!important;color:#4f6b5a!important;font-size:11px!important;line-height:1.9!important}
+#app-page-content #hv2.hv2 .hv2-hold-trigger{display:block!important;width:100%!important;min-height:58px!important;text-align:left!important;padding:12px 10px!important;border:0!important;border-radius:11px!important;background:transparent!important;color:inherit!important;-webkit-text-fill-color:currentColor!important;transition:none!important;box-shadow:none!important}
+#app-page-content #hv2.hv2 .hv2-hold-trigger[aria-expanded=true]{background:#edf5ef!important;box-shadow:inset 3px 0 0 #759c82!important}
+#app-page-content #hv2.hv2 .hv2-hold-more{padding:12px!important;border-top:1px solid #d3e1d8!important;background:#f7faf8!important}
+#app-page-content #hv2.hv2 .hv2-hold-trigger .hv2-hold-name small::after{content:' · 明細 ⌄';color:#7b9184;font-size:10px}
+#app-page-content #hv2.hv2 .hv2-hold-trigger[aria-expanded=true] .hv2-hold-name small::after{content:' · 收合 ⌃'}
+#app-page-content #hv2.hv2 .hv2-eye{display:grid!important;place-items:center!important;width:44px!important;height:44px!important;border:1px solid rgba(216,235,223,.4)!important;border-radius:50%!important;background:rgba(255,255,255,.08)!important}
+#app-page-content #hv2.hv2 .hv2-eye[aria-pressed=true]{background:rgba(190,226,204,.22)!important;border-color:#a4d6b9!important}
+#app-page-content #hv2.hv2 :is(.hv2-sum,.hv2-sum2){display:flex!important;justify-content:space-between!important;align-items:center!important;min-height:52px!important;padding:13px!important;border:1px solid #c5d8cc!important;border-radius:12px!important;background:#f4f8f5!important;color:#315d47!important}
+#app-page-content #hv2.hv2 .hv2-sum::after{content:'⌄';flex:none;margin-left:8px;color:#568067;font-size:19px}
+#app-page-content #hv2.hv2 .hv2-fold[open]>.hv2-sum::after{content:'⌃'}
+#app-page-content #hv2.hv2 .hv2-fold[open]>.hv2-sum{background:#e6f1e9!important;border-color:#8eb69e!important}
+#app-page-content #hv2.hv2 .hv2-journal-wrap:empty{display:none!important}
+#app-page-content #hv2.hv2 :is(.hv2-feature-launcher>a,.hv2-more,.hv2-seg button,.hv2-impact-toggle button,.hv2-hold-trigger,[data-home-chart-row],.hv2-sum):active{background:#dfeee4!important;border-color:#80ab91!important;box-shadow:inset 0 0 0 2px #a3c3af!important;filter:none!important;transform:scale(.985)!important}
+@media(hover:hover){#app-page-content #hv2.hv2 :is(.hv2-feature-launcher>a,.hv2-more,.hv2-hold-trigger,[data-home-chart-row]):hover{background:#f0f6f2!important;border-color:#99b9a6!important}}
+@media(max-width:380px){#app-page-content #hv2.hv2 .hv2-feature-launcher>a{gap:7px!important;padding:10px 8px!important}#app-page-content #hv2.hv2 .hv2-feature-launcher i{width:32px!important;height:36px!important}#app-page-content #hv2.hv2 .hv2-feature-launcher>a b{font-size:12px!important}#app-page-content #hv2.hv2 :is(.hv2-seg,.hv2-impact-toggle)>button{padding:8px!important;font-size:11px!important}}
+@media(prefers-reduced-motion:reduce){#app-page-content #hv2.hv2 :is(button,[role=button],.hv2-feature-launcher>a){transition:none!important}#app-page-content #hv2.hv2 :is(button,[role=button],.hv2-feature-launcher>a):active{transform:none!important}}
+@media print{#app-page-content .position-journal{content-visibility:visible!important;contain-intrinsic-size:none!important}#app-page-content #hv2.hv2 .hv2-journal-wrap{content-visibility:visible!important;contain-intrinsic-size:none!important}}
+/* Explicit hidden rule must win over interactive layout rules. */
+#app-page-content #hv2.hv2 [hidden]{display:none!important}
+</style>'''
+
+
 def _render_home_v2(d):
     """首頁 v2（看盤軟體版型）：純函式，只吃已算好的字串／數值。"""
-    return (_HV2_STYLE + _HOME_IMPACT_STYLE + f"""
+    return (_HV2_STYLE + _HOME_IMPACT_STYLE + _HOME_FEEDBACK_STYLE + f"""
 <div id="hv2" class="hv2">
   <section class="hv2-sec first" data-home-privacy-card aria-label="我的投資">
     <div class="hv2-head">
