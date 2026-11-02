@@ -41302,6 +41302,11 @@ _HV2_PLAIN_CSS = '#hv2 .impact-stale{margin:8px 0 0;padding:10px 12px;border-rad
 _HV2_STYLE = '<style id="hv2-style">' + _hv2_bang(_HV2_CSS) + _hv2_bang(_HV2_CTRL_CSS) + _HV2_PLAIN_CSS + '</style>'
 
 _HOME_IMPACT_STYLE = r'''<style id="home-impact-visual">
+#app-page-content #hv2 .hv2-journal-wrap .position-journal-badge.add{color:#B63732!important;-webkit-text-fill-color:#B63732!important}
+#app-page-content #hv2 .hv2-journal-wrap .position-journal-badge.reduce{color:#287257!important;-webkit-text-fill-color:#287257!important}
+#app-page-content #hv2 .hv2-journal-wrap .position-journal-badge.new{color:#78663B!important;-webkit-text-fill-color:#78663B!important}
+#app-page-content #hv2 .hv2-journal-wrap .position-journal-badge.delete{color:#626C76!important;-webkit-text-fill-color:#626C76!important}
+
 #app-page-content #hv2 .home-quote-quality{font-size:11px!important;line-height:1.8!important;color:#687f90!important;padding:10px 12px!important;background:#edf4f8!important;border-radius:10px!important;overflow-wrap:anywhere!important}
 #app-page-content #hv2 .home-impact-section{padding:18px 0!important;border-top:1px solid #dfe8ee!important;border-bottom:1px solid #dfe8ee!important}
 #app-page-content #hv2 .home-impact-section .hv2-h{font-size:19px!important;color:#233f53!important;line-height:1.5!important}
@@ -41416,6 +41421,7 @@ _HV2_JS = r'''<script>
   root.addEventListener('keydown',function(ev){if((ev.key==='Enter'||ev.key===' ')&&ev.target.matches('[data-home-chart-row]')){ev.preventDefault();ev.target.click();}});
   var busy=false;
   if(window.MutationObserver){new MutationObserver(function(){if(busy)return;busy=true;setTimeout(function(){busy=false;syncAll();},50);}).observe(root,{childList:true,subtree:true});}
+  root.addEventListener('home:contributionsupdated',syncAll);
   syncAll();
 })();
 </script>'''
@@ -42341,7 +42347,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             detail_html = (f'<div class="hv2-chart-detail" data-hv2-chart-detail hidden>'
                            f'個股漲跌 {pct:+.2f}%・{detail_basis}{realized_note}</div>')
             rows.append(
-                f'''<div class="hv2-row" data-hv2-item data-home-chart-row data-name="{html.escape(str(holding['name']), quote=True)}" data-contribution="{contribution:.6f}" data-stock-pct="{pct:.6f}" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>{html.escape(str(holding['name']))}{f' <small>({code})</small>' if code else ''}</b><i class="hv2-cbar"><i style="width:{min(100.0, abs(contribution) / _mx * 100.0):.0f}%"></i></i></div><strong class="{value_class}">{contribution:+.2f} 個百分點</strong>{detail_html}</div>''')
+                f'''<div class="hv2-row" data-hv2-item data-home-chart-row data-code="{code}" data-name="{html.escape(str(holding['name']), quote=True)}" data-contribution="{contribution:.6f}" data-stock-pct="{pct:.6f}" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>{html.escape(str(holding['name']))}{f' <small>({code})</small>' if code else ''}</b><i class="hv2-cbar"><i style="width:{min(100.0, abs(contribution) / _mx * 100.0):.0f}%"></i></i></div><strong class="{value_class}">{contribution:+.2f} 個百分點</strong>{detail_html}</div>''')
         return ''.join(rows)
 
     positive_lead = positive_entries[0] if positive_entries else None
@@ -42427,19 +42433,41 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     // 使用者只會看到「盤中已結束」而價格永遠不動。
     timer=setTimeout(refresh, stopped ? 300000 : 5000);
   }
-  function setHtml(selector,value){var el=document.querySelector(selector);if(el)el.innerHTML=value;}
+  function setHtml(selector,value){var el=document.querySelector(selector);if(el&&el.innerHTML!==value)el.innerHTML=value;}
+  function setText(el,value){if(el&&el.textContent!==value)el.textContent=value;}
   function realized(item){if(item.realized_pl==null)return '';var n=Number(item.realized_pl);if(!Number.isFinite(n))return '';return '<small class="impact-realized '+(n>=0?'up':'down')+'">今日已實現損益：'+(n>=0?'+':'')+n.toLocaleString('zh-TW',{maximumFractionDigits:0})+' 元</small>';}
   function leadHtml(item,title,kind){if(!item)return '<div class="impact-lead impact-muted"><small>'+esc(title)+'</small><b>目前沒有資料</b></div>';var change=item.pct>0?'上漲':'下跌',amount=item.contribution>0?'增加約':'減少約';return '<div class="impact-lead '+kind+'"><small>'+esc(title)+'</small><h3>'+esc(item.name)+'</h3><p>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%・'+esc(item.basis_text)+'</p><strong><span>對整體組合'+amount+'</span><b>'+Math.abs(Number(item.contribution)).toFixed(2)+'%</b></strong></div>'; }
-  function rowsHtml(items,kind){if(!items||!items.length)return '<div class="hv2-empty">目前沒有可顯示的項目。</div>';var mx=Math.max.apply(null,items.map(function(x){return Math.abs(Number(x.contribution))||0;}).concat([0.0001]));return items.map(function(item){var contribution=Number(item.contribution)||0,pct=Number(item.pct)||0,realizedText=item.realized_pl==null?'':'・今日已實現 '+esc(Number(item.realized_pl).toLocaleString('zh-TW',{maximumFractionDigits:0}))+' 元';return '<div class="hv2-row" data-hv2-item data-home-chart-row data-name="'+esc(item.name)+'" data-contribution="'+contribution.toFixed(6)+'" data-stock-pct="'+pct.toFixed(6)+'" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>'+esc(item.name)+'</b><i class="hv2-cbar"><i style="width:'+Math.min(100,Math.abs(contribution)/mx*100).toFixed(0)+'%"></i></i></div><strong class="'+kind+'">'+(contribution>0?'+':'')+contribution.toFixed(2)+' 個百分點</strong><div class="hv2-chart-detail" data-hv2-chart-detail hidden>個股漲跌 '+(pct>0?'+':'')+pct.toFixed(2)+'%・'+esc(item.basis_text)+realizedText+'</div></div>';}).join('');}
+  function rowsHtml(items,kind){if(!items||!items.length)return '<div class="hv2-empty">目前沒有可顯示的項目。</div>';var mx=Math.max.apply(null,items.map(function(x){return Math.abs(Number(x.contribution))||0;}).concat([0.0001]));return items.map(function(item){var contribution=Number(item.contribution)||0,pct=Number(item.pct)||0,realizedText=item.realized_pl==null?'':'・今日已實現 '+esc(Number(item.realized_pl).toLocaleString('zh-TW',{maximumFractionDigits:0}))+' 元';return '<div class="hv2-row" data-hv2-item data-home-chart-row data-code="'+esc(item.code||'')+'" data-name="'+esc(item.name)+'" data-contribution="'+contribution.toFixed(6)+'" data-stock-pct="'+pct.toFixed(6)+'" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>'+esc(item.name)+'</b><i class="hv2-cbar"><i style="width:'+Math.min(100,Math.abs(contribution)/mx*100).toFixed(0)+'%"></i></i></div><strong class="'+kind+'">'+(contribution>0?'+':'')+contribution.toFixed(2)+' 個百分點</strong><div class="hv2-chart-detail" data-hv2-chart-detail hidden>個股漲跌 '+(pct>0?'+':'')+pct.toFixed(2)+'%・'+esc(item.basis_text)+realizedText+'</div></div>';}).join('');}
+  function patchContributionRows(container,items,kind){
+    if(!container)return;
+    if((!items||!items.length)&&!container.querySelector('[data-home-chart-row]')&&container.querySelector('.hv2-empty'))return;
+    var oldRows=Array.prototype.slice.call(container.querySelectorAll('[data-home-chart-row]')),byKey=new Map(),kept=new Set();
+    oldRows.forEach(function(row){byKey.set(row.dataset.code||row.dataset.name,row);});
+    (items||[]).forEach(function(item,index){
+      var key=String(item.code||item.name),row=byKey.get(key);
+      if(!row){var wrapper=document.createElement('div');wrapper.innerHTML=rowsHtml([item],kind);row=wrapper.firstElementChild;row.hidden=true;}
+      kept.add(row);
+      row.dataset.code=String(item.code||'');row.dataset.name=String(item.name||'');
+      row.dataset.contribution=(Number(item.contribution)||0).toFixed(6);row.dataset.stockPct=(Number(item.pct)||0).toFixed(6);
+      var label=row.querySelector('.hv2-row-main>b'),labelHtml=esc(item.name)+(item.code?' <small>('+esc(item.code)+')</small>':'');
+      if(label&&label.innerHTML!==labelHtml)label.innerHTML=labelHtml;
+      var stock=Number(item.pct)||0,realizedText=item.realized_pl==null?'':'・今日已實現 '+Number(item.realized_pl).toLocaleString('zh-TW',{maximumFractionDigits:0})+' 元';
+      setText(row.querySelector('[data-hv2-chart-detail]'),'個股漲跌 '+(stock>0?'+':'')+stock.toFixed(2)+'%・'+String(item.basis_text||'')+realizedText);
+      var current=container.children[index];if(current!==row)container.insertBefore(row,current||null);
+    });
+    oldRows.forEach(function(row){if(!kept.has(row))row.remove();});
+    Array.prototype.slice.call(container.querySelectorAll('.hv2-empty')).forEach(function(el){el.remove();});
+    if(!items||!items.length){var empty=document.createElement('div');empty.className='hv2-empty';empty.textContent='目前沒有可顯示的項目。';container.appendChild(empty);}
+  }
   function updateHoldingQuotes(quotes){
     document.querySelectorAll('#hv2 .hv2-hold[data-code]').forEach(function(card){
       var q=quotes[card.dataset.code];if(!q||q.close==null||!Number.isFinite(Number(q.close))||Number(q.close)<=0)return;
       var price=card.querySelector('[data-home-holding-price]'),day=card.querySelector('[data-home-holding-day]');
-      if(price)price.textContent=Number(q.close).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2});
-      if(day&&q.pct!=null)day.innerHTML=pct(q.pct);
+      setText(price,Number(q.close).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2}));
+      if(day&&q.pct!=null){var value=pct(q.pct);if(day.innerHTML!==value)day.innerHTML=value;}
       var stamp=(q.source||'來源未提供')+' · 行情 '+(q.updated_at||'時間未提供')+' · 讀取 '+(q.fetched_at||'時間未提供');
       if(price)price.title=stamp;
-      var source=card.querySelector('[data-home-holding-source]');if(source)source.textContent=stamp;
+      var source=card.querySelector('[data-home-holding-source]');setText(source,stamp);
     });
   }
   function refreshMarket(){
@@ -42499,7 +42527,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       var positive=liveReady?(portfolio.positive||[]):null,negative=liveReady?(portfolio.negative||[]):null;
       if(liveReady){
         var positiveLead=document.querySelector('[data-home-impact-lead="positive"]'),negativeLead=document.querySelector('[data-home-impact-lead="negative"]');if(positiveLead)positiveLead.innerHTML=leadHtml(positive[0],'幫你撐住組合','impact-up');if(negativeLead)negativeLead.innerHTML=leadHtml(negative[0],'主要拖累組合','impact-down');
-        var positiveRows=document.querySelector('[data-home-contribution-rows="positive"]'),negativeRows=document.querySelector('[data-home-contribution-rows="negative"]');if(positiveRows)positiveRows.innerHTML=rowsHtml(positive,'up');if(negativeRows)negativeRows.innerHTML=rowsHtml(negative,'down');
+        var positiveRows=document.querySelector('[data-home-contribution-rows="positive"]'),negativeRows=document.querySelector('[data-home-contribution-rows="negative"]');patchContributionRows(positiveRows,positive,'up');patchContributionRows(negativeRows,negative,'down');var home=document.getElementById('hv2');if(home)home.dispatchEvent(new CustomEvent('home:contributionsupdated'));
       }
       // 尚未取得今日報價的檔要說出來，不能讓它們無聲消失——
       // 使用者會以為自己看漏了，或以為那幾檔今天沒動。
