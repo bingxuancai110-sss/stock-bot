@@ -1,0 +1,467 @@
+{
+  "technology": {
+    "scope": "科技硬體、伺服器與零組件",
+    "companies": [
+      {
+        "code": "2317",
+        "name": "鴻海",
+        "official_industry_code": "31",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2382",
+        "name": "廣達",
+        "official_industry_code": "25",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "3231",
+        "name": "緯創",
+        "official_industry_code": "25",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "6669",
+        "name": "緯穎",
+        "official_industry_code": "25",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2308",
+        "name": "台達電",
+        "official_industry_code": "28",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2357",
+        "name": "華碩",
+        "official_industry_code": "25",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2376",
+        "name": "技嘉",
+        "official_industry_code": "25",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2383",
+        "name": "台光電",
+        "official_industry_code": "28",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "3017",
+        "name": "奇鋐",
+        "official_industry_code": "25",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2368",
+        "name": "金像電",
+        "official_industry_code": "28",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      }
+    ]
+  },
+  "semiconductors": {
+    "scope": "晶片設計、代工、封裝與記憶體",
+    "companies": [
+      {
+        "code": "2330",
+        "name": "台積電",
+        "official_industry_code": "24",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2454",
+        "name": "聯發科",
+        "official_industry_code": "24",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2303",
+        "name": "聯電",
+        "official_industry_code": "24",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "3711",
+        "name": "日月光投控",
+        "official_industry_code": "24",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "3034",
+        "name": "聯詠",
+        "official_industry_code": "24",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2379",
+        "name": "瑞昱",
+        "official_industry_code": "24",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2344",
+        "name": "華邦電",
+        "official_industry_code": "24",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2408",
+        "name": "南亞科",
+        "official_industry_code": "24",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      }
+    ]
+  },
+  "financials": {
+    "scope": "台灣金控同業",
+    "companies": [
+      {
+        "code": "2881",
+        "name": "富邦金",
+        "official_industry_code": "17",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2882",
+        "name": "國泰金",
+        "official_industry_code": "17",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2891",
+        "name": "中信金",
+        "official_industry_code": "17",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2884",
+        "name": "玉山金",
+        "official_industry_code": "17",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2886",
+        "name": "兆豐金",
+        "official_industry_code": "17",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2892",
+        "name": "第一金",
+        "official_industry_code": "17",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      }
+    ]
+  },
+  "healthcare": {
+    "scope": "生技、製藥與醫材子產業",
+    "companies": [
+      {
+        "code": "6446",
+        "name": "藥華藥",
+        "official_industry_code": "22",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "4743",
+        "name": "合一",
+        "official_industry_code": "22",
+        "market": "上櫃",
+        "source_url": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
+      },
+      {
+        "code": "4105",
+        "name": "東洋",
+        "official_industry_code": "22",
+        "market": "上櫃",
+        "source_url": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
+      },
+      {
+        "code": "1565",
+        "name": "精華",
+        "official_industry_code": "22",
+        "market": "上櫃",
+        "source_url": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
+      },
+      {
+        "code": "4162",
+        "name": "智擎",
+        "official_industry_code": "22",
+        "market": "上櫃",
+        "source_url": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
+      }
+    ]
+  },
+  "industrials": {
+    "scope": "工業設備、自動化與電力設備",
+    "companies": [
+      {
+        "code": "2049",
+        "name": "上銀",
+        "official_industry_code": "05",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1590",
+        "name": "亞德客-KY",
+        "official_industry_code": "05",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1504",
+        "name": "東元",
+        "official_industry_code": "05",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1519",
+        "name": "華城",
+        "official_industry_code": "05",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1503",
+        "name": "士電",
+        "official_industry_code": "05",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1513",
+        "name": "中興電",
+        "official_industry_code": "05",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      }
+    ]
+  },
+  "consumer_discretionary": {
+    "scope": "汽車與餐旅消費子產業",
+    "companies": [
+      {
+        "code": "2207",
+        "name": "和泰車",
+        "official_industry_code": "12",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2201",
+        "name": "裕隆",
+        "official_industry_code": "12",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2707",
+        "name": "晶華",
+        "official_industry_code": "16",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2727",
+        "name": "王品",
+        "official_industry_code": "16",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      }
+    ]
+  },
+  "consumer_staples": {
+    "scope": "食品與必需品零售",
+    "companies": [
+      {
+        "code": "1216",
+        "name": "統一",
+        "official_industry_code": "02",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1227",
+        "name": "佳格",
+        "official_industry_code": "02",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1231",
+        "name": "聯華食",
+        "official_industry_code": "02",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "2912",
+        "name": "統一超",
+        "official_industry_code": "18",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "5903",
+        "name": "全家",
+        "official_industry_code": "38",
+        "market": "上櫃",
+        "source_url": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
+      }
+    ]
+  },
+  "energy": {
+    "scope": "煉油子產業，非美國油氣開採全產業",
+    "companies": [
+      {
+        "code": "6505",
+        "name": "台塑化",
+        "official_industry_code": "23",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      }
+    ]
+  },
+  "utilities": {
+    "scope": "電力與燃氣公用服務子產業",
+    "companies": [
+      {
+        "code": "8926",
+        "name": "台汽電",
+        "official_industry_code": "23",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "9908",
+        "name": "大台北",
+        "official_industry_code": "23",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "9931",
+        "name": "欣高",
+        "official_industry_code": "23",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "9918",
+        "name": "欣天然",
+        "official_industry_code": "23",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      }
+    ]
+  },
+  "materials": {
+    "scope": "鋼鐵、石化、建材與紙業",
+    "companies": [
+      {
+        "code": "2002",
+        "name": "中鋼",
+        "official_industry_code": "10",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1301",
+        "name": "台塑",
+        "official_industry_code": "03",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1303",
+        "name": "南亞",
+        "official_industry_code": "03",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1326",
+        "name": "台化",
+        "official_industry_code": "03",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1101",
+        "name": "台泥",
+        "official_industry_code": "01",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "1907",
+        "name": "永豐餘",
+        "official_industry_code": "09",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      }
+    ]
+  },
+  "real_estate": {
+    "scope": "美國以 REITs 為主，暫不把台灣建商硬列為同業",
+    "companies": []
+  },
+  "communication_services": {
+    "scope": "僅電信服務，不代表美國平台與媒體",
+    "companies": [
+      {
+        "code": "2412",
+        "name": "中華電",
+        "official_industry_code": "27",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "3045",
+        "name": "台灣大",
+        "official_industry_code": "27",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      },
+      {
+        "code": "4904",
+        "name": "遠傳",
+        "official_industry_code": "27",
+        "market": "上市",
+        "source_url": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+      }
+    ]
+  }
+}

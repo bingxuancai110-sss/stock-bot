@@ -232,7 +232,7 @@ def read_latest_tw_company_snapshots(get_db_connection, release_db_connection):
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT as_of_date::text, tw_code, payload, source_meta
+            SELECT as_of_date::text, tw_code, payload, source_meta, captured_at::text
             FROM us_tw_company_snapshots
             WHERE as_of_date=(SELECT MAX(as_of_date) FROM us_tw_company_snapshots)
             ORDER BY tw_code
@@ -240,9 +240,10 @@ def read_latest_tw_company_snapshots(get_db_connection, release_db_connection):
         rows = cur.fetchall()
         cur.close()
         output = []
-        for as_of_date, code, payload, source_meta in rows:
+        for as_of_date, code, payload, source_meta, captured_at in rows:
             payload = payload if isinstance(payload, dict) else json.loads(payload or "{}")
             payload["as_of_date"] = as_of_date
+            payload["captured_at"] = captured_at
             payload["code"] = code
             payload["source_meta"] = source_meta if isinstance(source_meta, dict) else json.loads(source_meta or "{}")
             output.append(payload)
