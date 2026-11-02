@@ -2,6 +2,43 @@
 
 from __future__ import annotations
 
+from math import isfinite
+
+
+def describe_current_risk(current):
+    """Explain existing snapshot values without changing or predicting signals."""
+    def number(value):
+        try:
+            value = float(value)
+            return value if isfinite(value) else None
+        except (TypeError, ValueError):
+            return None
+
+    output = {}
+    for key in ("us", "taiwan", "us_stop", "taiwan_stop"):
+        row = (current or {}).get(key) or {}
+        is_stop = key.endswith("_stop")
+        field = "close" if is_stop else "value" if key == "us" else "relative_return_20d_pp"
+        threshold = number(row.get("previous_5d_high") if is_stop else
+                           row.get("threshold", 25) if key == "us" else row.get("threshold_pp", -3))
+        value = number(row.get(field))
+        result = {"value": value, "threshold": threshold, "as_of": row.get("as_of"),
+                  "available": value is not None and threshold is not None,
+                  "unit": "點" if is_stop else "" if key == "us" else "個百分點",
+                  "comparison": ">" if is_stop else ">=" if key == "us" else "<=",
+                  "proxy_note": row.get("proxy_note") or ""}
+        if result["available"]:
+            active = value > threshold if is_stop else value >= threshold if key == "us" else value <= threshold
+            gap = threshold - value if key != "taiwan" else value - threshold
+            result.update(triggered=active, distance=abs(gap),
+                          distance_pct=(abs(value / threshold - 1) * 100
+                                        if is_stop and active and threshold > 0 else
+                                        abs(threshold / value - 1) * 100
+                                        if is_stop and value > 0 else None),
+                          equal=value == threshold)
+        output[key] = result
+    return output
+
 
 HISTORICAL_RISK_PROFILES = [
     {"market": "美股", "indicator": "VIX ≥ 25", "threshold_label": "VIX 收盤達 25",
