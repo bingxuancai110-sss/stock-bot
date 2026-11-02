@@ -425,16 +425,15 @@ __RESULT__
         return result
 
     def _needs_research_refresh():
-        try:
-            rows = read_latest_tw_company_snapshots(get_db_connection, release_db_connection)
-            current = {str(r.get("code")):r for r in rows}
-            if any(code not in current or current[code].get("research_version")!=RESEARCH_VERSION for code in research_codes()):
-                return True
-            now = datetime.now(ZoneInfo("Asia/Taipei"))
-            captured = max((str(r.get("captured_at") or "")[:10] for r in rows), default="")
-            return now.weekday()<5 and now.hour>=14 and captured<now.date().isoformat()
-        except Exception:
-            return False
+        # Let the startup scheduler retry transient database failures rather than
+        # silently treating a failed read as an already-complete snapshot.
+        rows = read_latest_tw_company_snapshots(get_db_connection, release_db_connection)
+        current = {str(r.get("code")):r for r in rows}
+        if any(code not in current or current[code].get("research_version")!=RESEARCH_VERSION for code in research_codes()):
+            return True
+        now = datetime.now(ZoneInfo("Asia/Taipei"))
+        captured = max((str(r.get("captured_at") or "")[:10] for r in rows), default="")
+        return now.weekday()<5 and now.hour>=14 and captured<now.date().isoformat()
 
     def _research_job(force=False):
         if not force and not _needs_research_refresh():
