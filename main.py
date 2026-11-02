@@ -52884,5 +52884,14 @@ app.register_blueprint(create_us_rotation_blueprint(
 ))
 
 
+from quote_lab import create_blueprint as create_quote_lab_blueprint
+app.register_blueprint(create_quote_lab_blueprint(
+    web_login_required=web_login_required,
+    render_page=render_page,
+    get_db_connection=get_db_connection,
+    release_db_connection=release_db_connection,
+))
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
