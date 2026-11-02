@@ -163,6 +163,11 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
 #us-radar .us-signal-chart{margin-top:12px;padding-top:12px}
 #us-radar .us-signal-distance{margin:12px 0}
 #us-radar #us-market-help{margin:8px 0 0}
+
+#us-radar #us-tw-companies{scroll-margin-top:14px;overflow-anchor:none}
+#us-radar .us-tw-company-actions{display:flex;flex-wrap:wrap;gap:7px;margin:9px 0 12px}
+#app-page-content #us-radar .us-tw-company-actions button{min-height:44px}
+#us-radar #us-tw-companies-heading:focus{outline:none}
 </style>
 <main class="us-radar" id="us-radar" data-api="/web/api/us-rotation">
   <section class="us-hero">
@@ -239,9 +244,10 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
    const available=(state.snapshot.industries||[]).filter(s=>state.mapping.some(m=>m.us_industry===s.id));
    companies='<div class="us-empty"><b>「'+esc(r.name)+'」的台灣對照名單尚未整理</b><p>這代表目前建檔資料不足，不能據此判定台灣沒有相關公司。</p>'+(available.length?'<p>可先查看已整理的產業：</p><div class="us-tw-shortcuts">'+available.map(s=>'<button type="button" class="us-legend-button" data-tw-industry="'+esc(s.id)+'">'+esc(s.name)+'</button>').join('')+'</div>':'')+'</div>';
   }
-  $('#us-detail').innerHTML=controls+'<div class="us-tw-intro"><b>看美國產業，對照台灣的相關業務。</b><p>我們依公司公開的產品與業務整理名單，再分開看股價、營收與法人資料。列入名單不代表已確認供貨給某一家美國公司，也不表示股價會跟漲。</p></div><div class="us-detail">'+sector+'<div class="us-detail-box"><h3>② 台灣有哪些公司做相關業務？</h3>'+companies+'</div></div>';
+  $('#us-detail').innerHTML=controls+'<div class="us-tw-intro"><b>看美國產業，對照台灣的相關業務。</b><p>我們依公司公開的產品與業務整理名單，再分開看股價、營收與法人資料。列入名單不代表已確認供貨給某一家美國公司，也不表示股價會跟漲。</p></div><div class="us-detail">'+sector+'<div class="us-detail-box" id="us-tw-companies"><h3 id="us-tw-companies-heading" tabindex="-1">② '+esc(r.name)+'：台灣相關公司</h3><div class="us-tw-company-actions">'+(previous?'<button type="button" class="us-legend-button" data-tw-company-back>← 返回'+esc(previous.name)+'</button>':'')+'<button type="button" class="us-legend-button" data-tw-choose>切換其他產業</button></div>'+companies+'</div></div>';
   $('#us-tw-sector').addEventListener('change',e=>selectIndustry(e.target.value,'tw'));
-  const back=$('#us-tw-back');if(back)back.addEventListener('click',()=>{const id=state.selectionHistory.pop();if(id)selectIndustry(id,'back');});
+  root.querySelectorAll('#us-tw-back,[data-tw-company-back]').forEach(b=>b.addEventListener('click',()=>{const id=state.selectionHistory.pop();if(id)selectIndustry(id,'back');}));
+  root.querySelectorAll('[data-tw-choose]').forEach(b=>b.addEventListener('click',()=>{const picker=$('#us-tw-sector');picker.scrollIntoView({block:'center',behavior:'instant'});picker.focus({preventScroll:true});}));
   $('#us-tw-overview').addEventListener('click',()=>{const selected=root.querySelector('.us-heat-card.selected');if(selected){selected.scrollIntoView({block:'center',behavior:'auto'});selected.focus({preventScroll:true});}else{$('#us-heat').closest('section').scrollIntoView({block:'start',behavior:'auto'});}});
   root.querySelectorAll('[data-close-company]').forEach(b=>b.addEventListener('click',()=>{const details=b.closest('details');details.open=false;const summary=details.querySelector('summary');requestAnimationFrame(()=>{summary.scrollIntoView({block:'center',behavior:'instant'});summary.focus({preventScroll:true});});}));
   root.querySelectorAll('[data-tw-industry]').forEach(b=>b.addEventListener('click',()=>selectIndustry(b.dataset.twIndustry,'tw')));
@@ -310,7 +316,7 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
   if(!(state.snapshot&&state.snapshot.industries||[]).some(r=>r.id===id))return;
   if(id!==state.selected&&state.selected&&source!=='back'){state.selectionHistory.push(state.selected);if(state.selectionHistory.length>30)state.selectionHistory.shift();}
   state.selected=id;renderHeat();renderDetail();renderQuadrant();
-  if(source==='tw'||source==='back'){$('#us-tw-sector').focus({preventScroll:true});$('#us-tw-section').scrollIntoView({block:'start',behavior:'auto'});}
+  if(source==='tw'||source==='back'){const target=$('#us-tw-companies');requestAnimationFrame(()=>{if(!root.isConnected||!target||!target.isConnected||state.selected!==id)return;target.scrollIntoView({block:'start',behavior:'instant'});$('#us-tw-companies-heading').focus({preventScroll:true});});}
  }
  window.addEventListener('resize',()=>{if(root.isConnected)renderSignalTrends();});
  function draw(){renderRiskAlerts();if(!state.snapshot){$('#us-asof').textContent='等待完成快照';$('#us-status').textContent='尚未有完成快照';empty($('#us-summary'),'等待第一筆可信資料','頁面只讀已完成快照，不會在開頁時同步抓行情。');renderHeat();renderRanking();renderQuadrant();renderDetail();renderGap();renderHistory();return;}const s=state.snapshot;$('#us-asof').textContent='美股交易日 '+(s.as_of||'—');let stamp='';try{const d=new Date(String(s.fetched_at||'').replace(' ','T').replace(/(\.\d{3})\d+/,'$1').replace(/([+-]\d{2})$/,'$1:00').replace(/([+-]\d{2})(\d{2})$/,'$1:$2'));if(!Number.isNaN(d.getTime()))stamp=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(d);}catch(e){} const source=String(s.source||'');$('#us-status').textContent='更新 '+(stamp?stamp+'（台北時間）':'時間未提供')+' · '+(source.includes('Yahoo')?'Yahoo Finance 日線':source||'來源未提供');renderSummary(s);renderHeat();renderRanking();renderQuadrant();renderDetail();renderGap();renderHistory();}
