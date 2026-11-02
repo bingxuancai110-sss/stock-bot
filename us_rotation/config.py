@@ -68,3 +68,13 @@ SEED_SUPPLY_CHAIN = [
      "evidence_url": "https://www.hiwin.tw/stock/annual_report/2024_Annual_report.pdf",
      "evidence_date": "2024", "confidence": "產品關聯已驗證；美國終端客戶關係未確認"},
 ]
+
+# A verified steel business example for XLB's metals/materials subset, not a US customer claim.
+SEED_SUPPLY_CHAIN.append({
+    "map_key": "materials-steel-2002", "us_industry": "materials", "chain": "鋼鐵材料",
+    "code": "2002", "name": "中鋼", "product": "鋼材及鋼鐵產品應用",
+    "role": "鋼鐵材料製造；對照 XLB 的金屬材料部分",
+    "reason": "公司官網列有鋼材應用、產品業務營收與鋼品研發；與美股原物料中的金屬材料作業務比較，不代表與整個 XLB 同漲跌。",
+    "evidence_url": "https://www.csc.com.tw/index.html", "evidence_date": "2026-11-02",
+    "confidence": "公司鋼鐵業務已查核；美國特定客戶與訂單關係未確認",
+})

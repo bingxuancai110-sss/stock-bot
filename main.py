@@ -19,6 +19,7 @@ import ssl
 import socket
 import time
 import threading
+from market_quotes import quote_freshness, prefer_quote
 import math
 import struct
 import zlib
@@ -6787,17 +6788,9 @@ def _sticky_home_quotes(uid, fresh_quotes):
                 continue
             if price <= 0:
                 continue
-            stamp = str(quote.get("updated_at") or quote.get("close_time") or "")
-            fetched_stamp = str(quote.get("fetched_at") or "")
             old = quotes.get(str(code))
-            old_stamp = str((old or {}).get("updated_at") or (old or {}).get("close_time") or "")
-            old_fetched_stamp = str((old or {}).get("fetched_at") or "")
-            # Prefer the newest successful feed observation first. For quiet stocks the last-trade
-            # time can stay the same across many polls even though the server has just confirmed it.
-            if (old is None or
-                    (fetched_stamp and (not old_fetched_stamp or fetched_stamp >= old_fetched_stamp)) or
-                    (not fetched_stamp and not old_fetched_stamp and stamp and (not old_stamp or stamp >= old_stamp)) or
-                    (not fetched_stamp and not old_fetched_stamp and not stamp and not old_stamp)):
+            # A freshly downloaded delayed Yahoo bar cannot overwrite a newer official trade.
+            if prefer_quote(old, quote):
                 quotes[str(code)] = dict(quote)
         state["at"] = now
         return {code: dict(q) for code, q in quotes.items()}
@@ -6990,11 +6983,17 @@ def _refresh_home_intraday_payload_sync(uid):
         same_day_price_map = _sticky_home_quotes(uid, fresh_price_map)
         same_day_cache_codes = set()
         for _code in codes:
-            if _code in fresh_contribution_quotes:
-                continue
             _cached_quote = same_day_price_map.get(_code)
+            _incoming_quote = fresh_contribution_quotes.get(_code)
+            if _incoming_quote and prefer_quote(_cached_quote, _incoming_quote):
+                continue
+            if _incoming_quote and not _mis_quote_is_current_for_contribution(_cached_quote):
+                # Retain the newer display price, but don't calculate a fresh return from an
+                # older delayed bar or reclassify an expired official observation as current.
+                fresh_contribution_quotes.pop(_code, None)
             if _mis_quote_is_current_for_contribution(_cached_quote):
                 fresh_contribution_quotes[_code] = dict(_cached_quote)
+                fresh_price_map[_code] = dict(_cached_quote)
                 same_day_cache_codes.add(_code)
 
         # Diagnose exactly why positions are missing instead of silently losing ten rows.
@@ -7142,7 +7141,7 @@ def _refresh_home_intraday_payload_sync(uid):
                 "name": row.get("name") or code,
                 "pct": pct,
                 "contribution": contribution,
-                "basis_text": exposure_label(row),
+                "basis_text": exposure_label(row) + "；" + str(quote_data.get("source") or "來源未提供") + "；行情 " + str(quote_data.get("updated_at") or quote_data.get("trade_at") or "時間未提供"),
                 "realized_pl": realized_value,
             })
         # A partial sum is not the portfolio's total return. Individual fresh quote rows can
@@ -9961,6 +9960,8 @@ _TWSE_MIS_CACHE = {"day": None, "at": 0, "data": {}}
 _TWSE_MIS_CACHE_SECONDS = 5
 _TWSE_MIS_BATCH_SIZE = 20  # 持股行情優先單批；失敗時自動拆批重試
 _TWSE_MIS_SESSION_LOCAL = threading.local()
+# Persistent workers retain their thread-local MIS sessions/cookies between polls.
+_TWSE_MIS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mis-quotes")
 
 
 def _twse_mis_session():
@@ -10197,8 +10198,7 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
     # 原本逐批序列等待：26 個上市／上櫃代號最多連等三次 timeout。
     # 將獨立批次並行，總等待時間接近最慢的一批，而非每批等待時間相加。
     parsed = {}
-    with ThreadPoolExecutor(max_workers=min(4, max(1, len(batches)))) as pool:
-        batch_results = list(pool.map(fetch_one, batches))
+    batch_results = list(_TWSE_MIS_EXECUTOR.map(fetch_one, batches))
     for batch, payload, error in batch_results:
         if error is not None:
             print("⚠️ TWSE MIS 行情批次失敗（%s 個市場代號）：%s" % (len(batch), type(error).__name__), flush=True)
@@ -21140,6 +21140,7 @@ def _warm_current_position_quotes():
 
 
 def _do_warmup():
+    warmup_started_at = taiwan_now()
     done = []
     shared_data = {}
     for label, fn in [
@@ -21353,7 +21354,7 @@ def _do_warmup():
     # Other warm-up calls happen later in the day too, so fetch this history only
     # during the 07:00 Taiwan run, after the US close, and never on weekends.
     try:
-        if taiwan_today().weekday() < 5 and taiwan_now().hour == 7:
+        if warmup_started_at.weekday() < 5 and warmup_started_at.hour == 7:
             radar_blueprint = app.blueprints.get("us_rotation")
             radar_refresh = getattr(radar_blueprint, "us_rotation_refresh_job", None)
             if callable(radar_refresh):
@@ -41301,6 +41302,7 @@ _HV2_PLAIN_CSS = '#hv2 .impact-stale{margin:8px 0 0;padding:10px 12px;border-rad
 _HV2_STYLE = '<style id="hv2-style">' + _hv2_bang(_HV2_CSS) + _hv2_bang(_HV2_CTRL_CSS) + _HV2_PLAIN_CSS + '</style>'
 
 _HOME_IMPACT_STYLE = r'''<style id="home-impact-visual">
+#app-page-content #hv2 .home-quote-quality{font-size:11px!important;line-height:1.8!important;color:#687f90!important;padding:10px 12px!important;background:#edf4f8!important;border-radius:10px!important;overflow-wrap:anywhere!important}
 #app-page-content #hv2 .home-impact-section{padding:18px 0!important;border-top:1px solid #dfe8ee!important;border-bottom:1px solid #dfe8ee!important}
 #app-page-content #hv2 .home-impact-section .hv2-h{font-size:19px!important;color:#233f53!important;line-height:1.5!important}
 #app-page-content #hv2 .home-impact-intro{font-size:12px!important;line-height:1.8!important;color:#6e8392!important;margin:4px 0 14px!important}
@@ -41457,7 +41459,6 @@ def _hv2_impact_card(item, label, side):
 
 def _render_home_v2(d):
     """首頁 v2（看盤軟體版型）：純函式，只吃已算好的字串／數值。"""
-    rank_html = d.get("rank_html") or ""
     return (_HV2_STYLE + _HOME_IMPACT_STYLE + f"""
 <div id="hv2" class="hv2">
   <section class="hv2-sec first" data-home-privacy-card aria-label="我的投資">
@@ -41510,10 +41511,10 @@ def _render_home_v2(d):
     <span class="hv2-src" data-home-market-freshness>{html.escape(d["market_status"])}</span>
   </section>
 
-  <section class="hv2-sec" aria-label="我的排名"><div class="hv2-rank">{rank_html}<a class="hv2-link" href="/web/leaderboard">看榜單 →</a></div></section>
 
   <div class="hv2-sync" aria-live="polite"><b data-home-live-title>{html.escape(d["sync_title"])}</b>　<span data-home-live-note>{html.escape(d["sync_detail"])}</span></div>
 
+  <p class="home-quote-quality" data-home-quote-quality aria-live="polite">{html.escape(d.get("quote_quality", "持股行情同步中"))}</p>
   <section class="hv2-sec home-impact-section" aria-label="今日持股對組合的影響">
     <div class="hv2-st"><span class="hv2-h">今天誰在拉抬、誰在拖累？</span><span class="hv2-cnt">{html.escape(d["contribution_day_label"])}</span></div>
     <p class="home-impact-intro">依持股比重與今日交易，換算每檔對組合的影響。</p>
@@ -41701,7 +41702,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
             else:
                 market_status_text = f"即時 TAIEX・更新 {intraday_taiex.get('updated_at')}"
                 home_sync_title = "今日資料已整合完成"
-                home_sync_detail = "持股與大盤均採盤中即時行情；詳細貢獻明細可往下展開查看。"
+                home_sync_detail = "大盤與持股分開標示來源；個股可能使用延遲備援，請看下方行情時間。"
         else:
             market_status_text = "即時 TAIEX 暫時無法取得，未使用日K快照"
             home_sync_title = "即時大盤暫時無法取得"
@@ -41725,7 +41726,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         else:
             market_status_text = "大盤正式收盤資料尚未確認，未使用舊快照"
         home_sync_title = "今日資料已整合完成"
-        home_sync_detail = "收盤資料、今日事件與排名摘要已載入；詳細貢獻明細可往下展開查看。"
+        home_sync_detail = "收盤資料與今日事件已載入；詳細貢獻明細可往下展開查看。"
     # The contribution date is a market-session date, not always the calendar date.
     # On weekends/holidays and before the opening bell we use the latest prior TWSE session.
     # After close we use today's completed daily bar; during a live session we require fresh
@@ -42430,6 +42431,17 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   function realized(item){if(item.realized_pl==null)return '';var n=Number(item.realized_pl);if(!Number.isFinite(n))return '';return '<small class="impact-realized '+(n>=0?'up':'down')+'">今日已實現損益：'+(n>=0?'+':'')+n.toLocaleString('zh-TW',{maximumFractionDigits:0})+' 元</small>';}
   function leadHtml(item,title,kind){if(!item)return '<div class="impact-lead impact-muted"><small>'+esc(title)+'</small><b>目前沒有資料</b></div>';var change=item.pct>0?'上漲':'下跌',amount=item.contribution>0?'增加約':'減少約';return '<div class="impact-lead '+kind+'"><small>'+esc(title)+'</small><h3>'+esc(item.name)+'</h3><p>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%・'+esc(item.basis_text)+'</p><strong><span>對整體組合'+amount+'</span><b>'+Math.abs(Number(item.contribution)).toFixed(2)+'%</b></strong></div>'; }
   function rowsHtml(items,kind){if(!items||!items.length)return '<div class="hv2-empty">目前沒有可顯示的項目。</div>';var mx=Math.max.apply(null,items.map(function(x){return Math.abs(Number(x.contribution))||0;}).concat([0.0001]));return items.map(function(item){var contribution=Number(item.contribution)||0,pct=Number(item.pct)||0,realizedText=item.realized_pl==null?'':'・今日已實現 '+esc(Number(item.realized_pl).toLocaleString('zh-TW',{maximumFractionDigits:0}))+' 元';return '<div class="hv2-row" data-hv2-item data-home-chart-row data-name="'+esc(item.name)+'" data-contribution="'+contribution.toFixed(6)+'" data-stock-pct="'+pct.toFixed(6)+'" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>'+esc(item.name)+'</b><i class="hv2-cbar"><i style="width:'+Math.min(100,Math.abs(contribution)/mx*100).toFixed(0)+'%"></i></i></div><strong class="'+kind+'">'+(contribution>0?'+':'')+contribution.toFixed(2)+' 個百分點</strong><div class="hv2-chart-detail" data-hv2-chart-detail hidden>個股漲跌 '+(pct>0?'+':'')+pct.toFixed(2)+'%・'+esc(item.basis_text)+realizedText+'</div></div>';}).join('');}
+  function updateHoldingQuotes(quotes){
+    document.querySelectorAll('#hv2 .hv2-hold[data-code]').forEach(function(card){
+      var q=quotes[card.dataset.code];if(!q||q.close==null||!Number.isFinite(Number(q.close))||Number(q.close)<=0)return;
+      var price=card.querySelector('[data-home-holding-price]'),day=card.querySelector('[data-home-holding-day]');
+      if(price)price.textContent=Number(q.close).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2});
+      if(day&&q.pct!=null)day.innerHTML=pct(q.pct);
+      var stamp=(q.source||'來源未提供')+' · 行情 '+(q.updated_at||'時間未提供')+' · 讀取 '+(q.fetched_at||'時間未提供');
+      if(price)price.title=stamp;
+      var source=card.querySelector('[data-home-holding-source]');if(source)source.textContent=stamp;
+    });
+  }
   function refreshMarket(){
     var marketUrl='/web/api/taiex/intraday',marketToken=token();
     if(marketToken)marketUrl+='?t='+encodeURIComponent(marketToken);
@@ -42481,6 +42493,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         setHtml('[data-home-relative]',portfolio.relative!=null?pct(portfolio.relative):(portfolio.pct==null?'資料不足':'—'));
         setHtml('[data-home-judgement-relative]',portfolio.relative!=null?pct(portfolio.relative):(portfolio.pct==null?'資料不足':'資料不足'));
       }
+      var quality=document.querySelector('[data-home-quote-quality]');
+      if(quality&&data.quote_freshness)quality.textContent=data.quote_freshness.text;
+      if(liveReady)updateHoldingQuotes(data.quotes||{});
       var positive=liveReady?(portfolio.positive||[]):null,negative=liveReady?(portfolio.negative||[]):null;
       if(liveReady){
         var positiveLead=document.querySelector('[data-home-impact-lead="positive"]'),negativeLead=document.querySelector('[data-home-impact-lead="negative"]');if(positiveLead)positiveLead.innerHTML=leadHtml(positive[0],'幫你撐住組合','impact-up');if(negativeLead)negativeLead.innerHTML=leadHtml(negative[0],'主要拖累組合','impact-down');
@@ -42512,7 +42527,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   // 再導覽回首頁時它仍是 true，輪詢就再也不會恢復。
   document.addEventListener('stockbot:pageleaving',function(){if(timer)clearTimeout(timer);timer=null;});
   // 完整頁面伺服器端已同步抓完全部持股與大盤；不要立刻再打第二輪，
-  // 避免首頁剛顯示就重複佔用 MIS。之後每 15 秒更新一次即可。
+  // 避免首頁剛顯示就重複佔用 MIS。之後每 5 秒查詢一次完成結果。
   schedule();
 })();
 </script>'''
@@ -42585,11 +42600,15 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         _name_attr = html.escape(_row["name"], quote=True)
         _hv2_q = (price_map or {}).get(_row["code"]) or {}
         _hv2_pct = _hv2_q.get("pct")
+        _hv2_quote_info = (str(_hv2_q.get("source") or "來源尚待確認") + " · 行情 " +
+                           str(_hv2_q.get("updated_at") or _hv2_q.get("trade_at") or "時間未提供") +
+                           " · 讀取 " + str(_hv2_q.get("fetched_at") or "時間未提供"))
         _home_holding_rows.append(
-            f'<article class="hv2-hold" data-hv2-item data-code="{_code_attr}" data-name="{_name_attr}" data-value="{_row["value"]:.2f}" data-weight="{_weight:.4f}" data-pnl="{_pnl_sort:.2f}">'
+            f'<article class="hv2-hold" data-hv2-item data-code="{_code_attr}" data-shares="{_row["shares"]:.6f}" data-name="{_name_attr}" data-value="{_row["value"]:.2f}" data-weight="{_weight:.4f}" data-pnl="{_pnl_sort:.2f}">'
             f'<button type="button" class="hv2-hold-trigger" aria-expanded="false"><span class="hv2-hold-line"><span class="hv2-hold-name"><b>{html.escape(_row["name"])}</b><small>{html.escape(_row["code"])}</small></span>'
-            f'<span class="hv2-c px">{_price_text}</span><span class="hv2-c">{fmt_pct(_hv2_pct) if _hv2_pct is not None else "—"}</span><span class="hv2-c">{_weight:.1f}%</span></span><i class="hv2-bar"><i style="width:{_bar_width:.1f}%"></i></i></button>'
+            f'<span class="hv2-c px" data-home-holding-price>{_price_text}</span><span class="hv2-c" data-home-holding-day>{fmt_pct(_hv2_pct) if _hv2_pct is not None else "—"}</span><span class="hv2-c">{_weight:.1f}%</span></span><i class="hv2-bar"><i style="width:{_bar_width:.1f}%"></i></i></button>'
             f'<div class="hv2-hold-more" hidden><div class="hv2-facts"><div><small>市值</small><b>{_row["value"]:,.0f}</b></div><div><small>持有股數</small><b>{_row["shares"]:,.0f} 股</b></div><div><small>目前權重</small><b>{_weight:.1f}%</b></div></div>'
+            f'<p class="hv2-sub" data-home-holding-source>{html.escape(_hv2_quote_info)}</p>'
             f'<div class="hv2-acts"><a class="hv2-act" href="/web/stock-analysis?code={html.escape(_row["code"], quote=True)}">分析這檔股票 →</a><button type="button" class="hv2-act" data-holding-action="target">檢視配置差距</button></div></div></article>')
     _home_holdings_preview_html = (
         '<section class="hv2-sec" aria-label="首頁完整持股明細">'
@@ -43083,7 +43102,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         "market_status": market_status_text, "portfolio_label": portfolio_label, "portfolio_html": portfolio_text,
         "total_value": float(total_value or 0), "total_cost": float(total_cost or 0),
         "pl_html": fmt_pct(pl_total) if pl_total is not None else "—", "holdings_count": len(holdings or []),
-        "rank_html": _hv2_rank_item("短線", rank_status["short"]) + _hv2_rank_item("長線", rank_status["long"]),
+        "quote_quality": quote_freshness({str(h.get("code")): (price_map or {}).get(str(h.get("code"))) for h in holdings}, now=taiwan_now())["text"],
         "sync_title": home_sync_title, "sync_detail": home_sync_detail,
         "contribution_day_label": _contribution_day_label, "stale_notice": stale_notice,
         "impact_positive": ({"name": positive_lead[0]["name"], "pct": positive_lead[1], "contribution": positive_lead[2]} if positive_lead else None),
@@ -44299,7 +44318,7 @@ def web_portfolio(uid):
                 price_map = _homepage_merge_official_quotes(
                     price_map, position_codes, market_suffix=None, force_refresh=True,
                     user_id=uid, allow_network=True)
-                print("⚡ 首頁完成官方 MIS 全持股同步：%s 檔目標持股" % len(position_codes), flush=True)
+                print("⚡ 首頁完成持股行情同步（來源依各檔標示）：%s 檔目標持股" % len(position_codes), flush=True)
             except Exception as exc:
                 print("⚠️ 首頁今日貢獻官方行情刷新失敗：%s: %s" % (
                     type(exc).__name__, exc), flush=True)
@@ -44726,7 +44745,9 @@ def web_taiex_intraday(uid):
 @web_login_required
 def web_portfolio_intraday(uid):
     """首頁盤中局部行情；不回傳完整頁面、日報或非本人持股資料。"""
-    return _workbench_json_response(_build_home_intraday_payload(uid))
+    payload = _build_home_intraday_payload(uid)
+    payload["quote_freshness"] = quote_freshness(payload.get("quotes"), now=taiwan_now())
+    return _workbench_json_response(payload)
 
 
 CATEGORY_NOTE = {
