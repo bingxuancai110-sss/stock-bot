@@ -1,0 +1,206 @@
+from playwright.sync_api import sync_playwright
+from pathlib import Path
+from urllib.parse import urlparse,parse_qs
+import json,sys,time,os
+REPO=Path(__file__).resolve().parents[2];ROOT=Path(os.environ.get('STOCKBOT_UI_ARTIFACTS','/tmp/stockbot-ui-validation'))
+engine=sys.argv[1] if len(sys.argv)>1 else 'chromium';results=[];errors=[];requests=[]
+state=dict(fail_nav=False,delay_nav=False,post='success',post_count=0)
+def check(name,ok,detail=None):
+ results.append(dict(check=name,passed=bool(ok),detail=detail))
+ assert ok,(name,detail)
+with sync_playwright() as p:
+ browser=p.webkit.launch(headless=True) if engine=='webkit' else p.chromium.launch(**({'executable_path':os.environ['STOCKBOT_CHROMIUM_EXECUTABLE']} if os.environ.get('STOCKBOT_CHROMIUM_EXECUTABLE') else {}),args=['--no-sandbox','--disable-dev-shm-usage'])
+ context=browser.new_context(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
+ page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
+ def fulfill(r):
+  u=urlparse(r.request.url);query=parse_qs(u.query);requests.append((r.request.method,u.path,query))
+  if u.path.startswith('/static/'):
+   file=REPO/u.path.lstrip('/');r.fulfill(body=file.read_text(),content_type='text/css' if file.suffix=='.css' else 'application/javascript');return
+  if '/api/workbench/strategy-lab' in u.path:r.fulfill(json=dict(ok=True,active_strategy='四因子複合',strategy_library=[dict(key=k,available=True,status_label='可運作') for k in ['四因子複合','營收動能','價格動能']],strategy_data={},factors=[],reference={}));return
+  if '/api/workbench/' in u.path:r.fulfill(json=dict(ok=True,rows=[],sources={},personal={},meta={'market_open':False,'available':True}));return
+  if '/api/' in u.path:r.fulfill(json=dict(market_open=False,updates=[],note='測試收盤快照'));return
+  if u.path=='/web/position-trend':r.fulfill(body='<div>走勢載入測試</div>');return
+  if r.request.method=='POST':
+   state['post_count']+=1
+   if state['post']=='hold':state['held_post']=r;return
+   if state['post']=='error':r.fulfill(status=500,body='測試失敗');return
+   html=ROOT.joinpath('positions.html').read_text()
+   msg='請填入正確的代號、股數與成本價。' if state['post']=='invalid' else '已新增測試持股。'
+   html=html.replace('<article class="position-card"','<div class="msg">'+msg+'</div><article class="position-card"',1)
+   r.fulfill(body=html,content_type='text/html');return
+  mapping={'/web/positions':'positions','/web/leaderboard':'rank','/web/settings':'settings','/web/more':'settings','/shell':'loading','/web/portfolio':'home','/web/workbench':'workbench'}
+  name=mapping.get(u.path,'settings');name='positions' if u.path=='/shell' and query.get('fragment') else name;suffix='-fragment' if query.get('fragment') else ''
+  if query.get('fragment') and state['delay_nav']:state['held']=r;return
+  if query.get('fragment') and state['fail_nav']:r.fulfill(status=503,body='測試失敗');return
+  r.fulfill(body=ROOT.joinpath(name+suffix+'.html').read_text(),content_type='text/html')
+ page.route('https://fixture.test/**',fulfill)
+ def held_route():
+  for _ in range(100):
+   if 'held' in state:return state.pop('held')
+   page.wait_for_timeout(10)
+  raise AssertionError(('held navigation did not arrive',requests[-6:]))
+ def ready(path):
+  page.bring_to_front()
+  page.emulate_media(reduced_motion='no-preference')
+  page.goto('https://fixture.test'+path);page.wait_for_function('!!window.StockBotUI');page.wait_for_timeout(100)
+ def css(loc,prop):return loc.evaluate('(e,p)=>getComputedStyle(e)[p]',prop)
+ ready('/web/positions')
+ check('actual holdings initialize without JS parse errors',not errors,errors)
+ check('shared runtime only loaded once',page.locator('script[src*="ui-feedback.js"]').count()==1)
+ check('seven actual cards and donut legends',page.locator('.position-card').count()==7 and page.locator('.allocation-item').count()==7)
+ check('each holding gets shared circle selector',page.locator('[data-ui-allocation-select]').count()==7)
+ page.locator('[data-allocation-select="1002"]').click()
+ check('legend updates circle center',page.locator('[data-allocation-center-title]').inner_text()=='測試公司2')
+ check('legend highlights corresponding holding',page.locator('.position-card[data-position-code="1002"]').evaluate('(e)=>e.classList.contains("ui-allocation-selected")'))
+ check('circle exposes selected aria state',page.locator('.allocation-slice[data-allocation-code="1002"]').get_attribute('aria-pressed')=='true')
+ page.locator('[data-ui-allocation-select="1003"]').click()
+ check('holding list selects corresponding circle',page.locator('[data-allocation-select="1003"]').get_attribute('aria-pressed')=='true')
+ page.locator('[data-allocation-reset]').click();check('reset clears both sides',page.locator('.ui-allocation-selected').count()==0 and page.locator('.allocation-item[aria-pressed=true]').count()==0)
+ card=page.locator('.position-card[data-position-code="1001"]');summary=card.locator('.position-more>summary')
+ summary.click();check('details respond immediately',card.locator('.position-more').get_attribute('open') is not None)
+ check('shared height animation starts',page.evaluate('document.getAnimations().some(a=>a.effect&&a.effect.target.classList.contains("ui-disclosure"))'))
+ summary.click();summary.click();page.wait_for_timeout(260);check('rapid toggle ends in correct state',card.locator('.position-more').get_attribute('open') is not None)
+ check('chevron tracks aria-expanded',summary.get_attribute('aria-expanded')=='true')
+ # No data request is made for animation or allocation selection.
+ check('no extra data requests from circle interactions',not any(path not in ['/web/api/positions/quotes'] for method,path,q in requests if '/api/' in path))
+ price=card.locator('[data-position-price]');price.scroll_into_view_if_needed();old=price.inner_text()
+ price.evaluate('(e)=>e.textContent="101.25"')
+ page.wait_for_function('document.querySelectorAll(".ui-number-tween").length>0')
+ check('real numeric value updates before tween ends',price.inner_text()=='101.25')
+ check('number overlay is aria-hidden',page.locator('.ui-number-tween').first.get_attribute('aria-hidden')=='true')
+ page.wait_for_timeout(450);check('number tween cleans up',page.locator('.ui-number-tween').count()==0 and 'ui-number-source' not in (price.get_attribute('class') or ''))
+ price.evaluate('(e)=>e.textContent="101.25"');page.wait_for_timeout(50)
+ check('equal value does not retrigger tween',page.locator('.ui-number-tween').count()==0)
+ page.emulate_media(reduced_motion='reduce');price.evaluate('(e)=>e.textContent="102.25"');page.wait_for_timeout(50)
+ check('reduced motion skips numeric animation',price.inner_text()=='102.25' and page.locator('.ui-number-tween').count()==0);page.emulate_media(reduced_motion='no-preference')
+ # Existing point dialogs still work, with new in-place hover/touch and keyboard tracking.
+ svg=page.locator('.portfolio-trend-panel:visible svg.portfolio-trend-svg');svg.scroll_into_view_if_needed()
+ readout=page.locator('.portfolio-trend-panel:visible .ui-chart-readout');readout.locator('button').click();check('touch tracking mode explicitly enabled',readout.locator('button').get_attribute('aria-pressed')=='true')
+ box=svg.bounding_box();page.mouse.move(box['x']+150,box['y']+120);page.wait_for_timeout(70)
+ check('touch chart readout includes cached values','組合' in readout.inner_text() and '加權' in readout.inner_text())
+ check('crosshair and data point highlight',svg.locator('.ui-chart-dot').evaluate('(e)=>getComputedStyle(e).display')!='none')
+ svg.focus();before=readout.inner_text();page.keyboard.press('ArrowRight');check('keyboard tracks next cached day',readout.inner_text()!=before)
+ period=page.locator('label[for="trend-period-6m"]');period.click();page.wait_for_timeout(30)
+ check('period uses existing cached panels',page.locator('.portfolio-trend-panel.panel-6m').is_visible())
+ # Form confirmation + one request; backend validation 200 must not be shown as success.
+ form=page.locator('form.add');form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100')
+ state['post']='invalid';form.locator('button[type=submit]').click();page.wait_for_selector('.position-confirm-submit');page.locator('.position-confirm-submit').click()
+ page.wait_for_selector('form.add .ui-form-status[data-state=error]')
+ check('HTTP 200 validation failure is error state','請填入正確' in form.locator('.ui-form-status').inner_text())
+ check('failed form retains user inputs',form.locator('[name=code]').input_value()=='2330')
+ check('no success overlay on validation failure',page.locator('.position-success-overlay').count()==0)
+ count=state['post_count'];state['post']='success';form.locator('button[type=submit]').click();page.locator('.position-confirm-submit').click();page.wait_for_selector('.msg')
+ check('success sends one write',state['post_count']==count+1)
+ check('server-confirmed success remains visible','已新增' in page.locator('.msg').first.inner_text())
+ # SPA route -> skeleton -> selected tab -> actual page; no added data calls.
+ state['delay_nav']=True
+ page.evaluate('window.stockBotSwitchPage("/web/leaderboard",true)')
+ check('route skeleton visible immediately',page.locator('.ui-feedback-route').is_visible())
+ check('bottom navigation immediately acknowledges selection',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').evaluate('(e)=>e.classList.contains("ui-nav-pending")'))
+ state['delay_nav']=False;held_route().fulfill(body=ROOT.joinpath('rank-fragment.html').read_text(),content_type='text/html')
+ page.wait_for_selector('#rankTabs');page.wait_for_timeout(150)
+ check('route skeleton ends on success',page.locator('.ui-feedback-route').count()==0)
+ check('nav selection committed only after success',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').get_attribute('aria-current')=='page')
+ count=len(requests);page.locator('#rankTabs [data-board=long]').click();check('period selection applies immediately',page.locator('[data-board-panel=long]').is_visible())
+ check('real rank delta retained','↑ 2 名' in page.locator('[data-board-panel=long] .rank-move').first.inner_text())
+ check('rank period visible feedback','已切換' in page.locator('.ui-rank-feedback').inner_text())
+ check('rank period triggers no fetch',len(requests)==count)
+ rank_svg=page.locator('[data-board-panel=long] svg.ui-interactive-chart');rank_svg.scroll_into_view_if_needed();rank_svg.focus();page.keyboard.press('ArrowRight')
+ check('leaderboard chart tracks cached series','測試會員' in page.locator('[data-board-panel=long] .ui-chart-readout').inner_text())
+ for width in [360,375,390,430,1280]:
+  page.set_viewport_size({'width':width,'height':900});page.evaluate('scrollTo(0,0)')
+  check('rank no horizontal overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+  page.screenshot(path=str(ROOT/(engine+'-rank-'+str(width)+'.png')))
+ # Preserve old content and selected nav if a route fails.
+ state['fail_nav']=True;page.evaluate('window.stockBotSwitchPage("/web/positions",true)');page.wait_for_selector('.ui-feedback-route[data-state=error]');state['fail_nav']=False
+ check('failed route retains current leaderboard',page.locator('#rankTabs').count()==1)
+ check('failed route clears pending state',page.locator('.ui-nav-pending').count()==0 and page.locator('.ui-route-pending').count()==0)
+ # Return and verify confirmation does not multiply on repeated fragments.
+ page.evaluate('window.stockBotSwitchPage("/web/positions",true)');page.wait_for_selector('form.add');page.wait_for_timeout(100)
+ check('shared runtime reused after route reentry',page.locator('script[src*="ui-feedback.js"]').count()==1)
+ form=page.locator('form.add');form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100');form.locator('button[type=submit]').click()
+ check('one confirmation dialog after route reentry',page.locator('#position-confirm-backdrop').count()==1);page.locator('.position-confirm-cancel').click()
+ for width in [360,390,430,1280]:
+  page.set_viewport_size({'width':width,'height':900});page.evaluate('scrollTo(0,0)');check('holdings no overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'));page.screenshot(path=str(ROOT/(engine+'-positions-'+str(width)+'.png')))
+ page.emulate_media(reduced_motion='reduce');summary=page.locator('.position-more>summary').first;summary.click();check('reduced motion details have no active height tween',not page.evaluate('document.getAnimations().some(a=>a.effect&&a.effect.target.classList.contains("ui-disclosure"))'))
+ # Edge cases use a separate real shell and a controllable browser clock.
+ edge=context.new_page();edge.on('pageerror',lambda e:errors.append(str(e)));edge.route('https://fixture.test/**',fulfill)
+ edge.goto('https://fixture.test/web/settings');edge.wait_for_function('!!window.StockBotUI');edge.wait_for_timeout(80);edge.clock.install()
+ edge.evaluate("window.StockBotUI.load(document.getElementById('load-test'),'讀取測試資料…')")
+ check('shared lazy pane displays skeleton',edge.locator('#load-test .ui-skeleton').count()==3)
+ edge.clock.fast_forward(20001);check('slow pane ends skeleton after deadline',edge.locator('#load-test .ui-skeleton').count()==0 and '讀取時間較長' in edge.locator('#load-test').inner_text())
+ edge.evaluate("document.getElementById('load-test').textContent='已回傳資料'");edge.clock.run_for(50);check('late successful data remains usable',edge.locator('#load-test').inner_text()=='已回傳資料')
+ edge.evaluate("window.StockBotUI.formState(document.getElementById('settings-form'),'loading','儲存中')")
+ check('shared form loading status accessible',edge.locator('.ui-form-status').get_attribute('role')=='status')
+ edge.clock.fast_forward(30001);check('unknown write result does not claim failure or success',edge.locator('.ui-form-status').get_attribute('data-state')=='waiting' and '避免重複送出' in edge.locator('.ui-form-status').inner_text())
+ edge.evaluate("var f=document.getElementById('settings-form');f.addEventListener('submit',e=>e.preventDefault(),{once:true});f.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
+ edge.clock.run_for(20);check('client-cancelled submit restores original button',not edge.locator('#settings-form button').is_disabled() and edge.locator('#settings-form button').inner_text()=='儲存設定')
+ state['delay_nav']=True;edge.evaluate('window.stockBotSwitchPage("/web/leaderboard",true)');held=held_route();edge.clock.fast_forward(18001)
+ check('slow navigation stops skeleton instead of looping',edge.locator('.ui-feedback-route .ui-skeleton').count()==0 and edge.locator('.ui-feedback-route button').inner_text()=='取消等待')
+ edge.locator('.ui-feedback-route button').click();edge.clock.run_for(40);check('cancel restores old page and pending navigation',edge.locator('#settings-form').count()==1 and edge.locator('.ui-nav-pending').count()==0)
+ try:held.fulfill(body=ROOT.joinpath('rank-fragment.html').read_text(),content_type='text/html')
+ except Exception:pass
+ # Two quick navigation requests: stale completion cannot replace the newer page.
+ edge.evaluate('window.stockBotSwitchPage("/web/leaderboard",true)');old=held_route()
+ edge.evaluate('window.stockBotSwitchPage("/web/positions",true)');new=held_route();state['delay_nav']=False
+ new.fulfill(body=ROOT.joinpath('positions-fragment.html').read_text(),content_type='text/html');edge.clock.run_for(80);edge.wait_for_selector('form.add')
+ try:old.fulfill(body=ROOT.joinpath('rank-fragment.html').read_text(),content_type='text/html')
+ except Exception:pass
+ edge.clock.run_for(80);check('latest route wins rapid navigation',edge.locator('form.add').count()==1 and edge.locator('#rankTabs').count()==0 and edge.locator('.ui-nav-pending').count()==0)
+ edge.screenshot(path=str(ROOT/(engine+'-latest-route.png')))
+ # Many simultaneous quote changes stay bounded and release their overlays.
+ edge.evaluate("document.getElementById('app-page-content').innerHTML='<div id=stress>'+Array.from({length:50},(_,i)=>'<span data-ui-number style=display:block>100.00</span>').join('')+'</div>'")
+ edge.clock.run_for(50);edge.evaluate("document.querySelectorAll('[data-ui-number]').forEach((e,i)=>e.textContent=(101+i).toFixed(2))");edge.clock.run_for(30)
+ check('numeric animations capped on mobile',edge.locator('.ui-number-tween').count()<=12)
+ edge.clock.run_for(500);check('all numeric overlays released after batch update',edge.locator('.ui-number-tween').count()==0 and edge.locator('.ui-number-source').count()==0)
+ edge.evaluate("document.querySelector('[data-ui-number]').textContent='—'");edge.clock.run_for(40);check('missing value is not animated as zero',edge.locator('.ui-number-tween').count()==0)
+ edge.evaluate("window.uiMutations=0;new MutationObserver(m=>window.uiMutations+=m.length).observe(document.getElementById('app-page-content'),{subtree:true,childList:true})")
+ edge.clock.run_for(300);check('shared observer has no idle mutation loop',edge.evaluate('window.uiMutations')==0)
+ edge.close()
+ # The initial server shell shares skeletons and stops them on real failures.
+ shell=context.new_page();shell.on('pageerror',lambda e:errors.append(str(e)));shell.route('https://fixture.test/**',fulfill);state['delay_nav']=True
+ shell.goto('https://fixture.test/shell',wait_until='domcontentloaded');shell.wait_for_function('!!window.StockBotUI');initial=held_route()
+ check('initial page displays shared skeleton',shell.locator('#loading .ui-skeleton').count()==3 and shell.locator('#loading').is_visible())
+ check('initial skeleton is in page flow, not black fullscreen',css(shell.locator('#loading'),'position')=='relative' and css(shell.locator('#loading'),'backgroundColor')=='rgb(249, 251, 250)')
+ state['delay_nav']=False;initial.fulfill(body=ROOT.joinpath('positions-fragment.html').read_text(),content_type='text/html');shell.wait_for_selector('form.add');shell.wait_for_timeout(100)
+ check('initial skeleton releases as soon as real content arrives',not shell.locator('#loading').is_visible() and shell.locator('.position-card').count()==7)
+ shell.close();state['fail_nav']=True
+ shell=context.new_page();shell.on('pageerror',lambda e:errors.append(str(e)));shell.route('https://fixture.test/**',fulfill);shell.goto('https://fixture.test/shell');shell.wait_for_selector('#loading[data-ui-load-state=error]');state['fail_nav']=False
+ check('failed initial load has no indefinite skeleton',not shell.locator('.ui-shell-skeleton').is_visible())
+ check('failed initial load offers explicit retry',shell.locator('.market-loader-retry').is_visible())
+ shell.close()
+ # Slow writes remain single-submit; a late completion cannot replace a newer route.
+ post=context.new_page();post.on('pageerror',lambda e:errors.append(str(e)));post.route('https://fixture.test/**',fulfill);post.goto('https://fixture.test/web/positions');post.wait_for_function('!!window.StockBotUI');post.clock.install()
+ form=post.locator('form.add');form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100');state['post']='error'
+ form.locator('button[type=submit]').click();post.locator('.position-confirm-submit').click();post.wait_for_selector('form.add .ui-form-status[data-state=error]')
+ check('HTTP failure restores form without success indication',form.locator('[name=code]').input_value()=='2330' and post.locator('.position-success-overlay').count()==0)
+ state['post']='hold';before_post=state['post_count'];form.locator('button[type=submit]').click();post.locator('.position-confirm-submit').click()
+ for _ in range(100):
+  if 'held_post' in state:break
+  post.wait_for_timeout(10)
+ pending_post=state.pop('held_post');post.clock.fast_forward(30001)
+ check('slow write shows unconfirmed status and exit',form.locator('.ui-form-status[data-state=waiting]').count()==1 and post.locator('.position-submit-progress-card button').is_visible())
+ form.evaluate('(e)=>e.requestSubmit()');post.clock.run_for(40);check('slow write cannot be double submitted',state['post_count']==before_post+1 and post.locator('#position-confirm-backdrop').count()==0)
+ post.locator('.position-submit-progress-card button').click();post.evaluate('window.stockBotSwitchPage("/web/leaderboard",true)');post.clock.run_for(100);post.wait_for_selector('#rankTabs')
+ pending_post.fulfill(body=ROOT.joinpath('positions.html').read_text().replace('<article class="position-card"','<div class="msg">已新增測試持股。</div><article class="position-card"',1),content_type='text/html');post.clock.run_for(100)
+ check('late write completion preserves newer route',post.locator('#rankTabs').count()==1 and post.locator('form.add').count()==0)
+ check('late write completion provides visible outcome',post.locator('.ui-global-status').is_visible())
+ post.close();state['post']='success'
+ # Existing homepage custom expansions and privacy participate in the shared layer.
+ ready('/web/portfolio');group=page.locator('.hv2-g-up');group.locator('[data-hv2-more]').click()
+ check('homepage custom more state retained',group.locator('[data-home-chart-row]:visible').count()==4 and group.locator('[data-hv2-more]').get_attribute('aria-expanded')=='true')
+ row=group.locator('[data-home-chart-row]').first;row.click();check('homepage calculation details still open',row.get_attribute('aria-expanded')=='true')
+ page.locator('[data-home-impact-mode=stock]').click();check('homepage period uses its actual cached percentage','%' in row.locator('strong').inner_text())
+ page.locator('[data-hv2-sort=name]').click();check('homepage sorting feedback remains selected',page.locator('[data-hv2-sort=name]').get_attribute('aria-pressed')=='true')
+ sensitive=page.locator('[data-home-sensitive]').first;sensitive.scroll_into_view_if_needed();page.wait_for_timeout(120);sensitive.evaluate('(e)=>{e.dataset.homeOriginal="71,000";e.textContent="71,000";}');page.wait_for_function('document.querySelectorAll(".ui-number-tween").length>0')
+ page.locator('[data-home-privacy-toggle]').click();check('privacy immediately clears financial animation overlay',page.locator('.ui-number-tween').count()==0 and sensitive.inner_text()!='71,000')
+ for width in [360,390,430]:
+  page.set_viewport_size({'width':width,'height':900});check('homepage no overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+ ready('/web/workbench');page.locator('[data-asset=lab]').click();page.wait_for_selector('.wb-lab-strategy.active')
+ check('strategy lab still initializes after shared upgrades','經典四項選股' in page.locator('.wb-lab-strategy.active').inner_text())
+ page.locator('.wb-lab-strategy').nth(1).click();check('strategy selection still works',page.locator('.wb-lab-strategy.active').get_attribute('data-lab-strategy')=='營收動能')
+ check('strategy text stays readable with shared feedback',page.locator('.wb-lab-strategy.active strong').evaluate('(e)=>getComputedStyle(e).webkitTextFillColor') not in ['rgb(255, 255, 255)','rgba(0, 0, 0, 0)'])
+ page.screenshot(path=str(ROOT/(engine+'-workbench.png')))
+ check('all actual renderer scripts free of errors',not errors,errors)
+ browser.close()
+ROOT.joinpath(engine+'-results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2));print(json.dumps({'engine':engine,'passed':len(results),'errors':errors,'requests':len(requests)},ensure_ascii=False))

@@ -27604,6 +27604,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261102-1">
+<script defer src="/static/ui-feedback.js?v=20261102-1"></script>
 </head><body class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -27837,7 +27839,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   }}
 
   function pulse(target) {{
-    if (!target || prefersReducedMotion()) return;
+    if (window.StockBotUI || !target || prefersReducedMotion()) return;
     target.classList.remove('tap-pulse');
     void target.offsetWidth;
     target.classList.add('tap-pulse');
@@ -27959,6 +27961,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       var linkPath = new URL(link.href, window.location.href).pathname;
       var linkKey = appRouteKeys[linkPath] || '';
       link.classList.toggle('on', !!key && linkKey === key);
+      if (!!key && linkKey === key) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current');
     }});
     var h1 = document.querySelector('.app-header h1');
     if (h1 && appTitles[path]) h1.textContent = appTitles[path];
@@ -27994,7 +27997,6 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 
   function switchAppPage(rawHref, pushState) {{
     if (!appContent) {{ window.location.assign(rawHref); return; }}
-    if (appNavBusy) return;
     var target = new URL(rawHref, window.location.href);
     if (!appRouteKeys[target.pathname]) {{ window.location.assign(target.pathname + target.search); return; }}
     // 選股工作台含有大量原生頁面腳本；SPA fragment 插入後，部分 WebView/Safari
@@ -28006,6 +28008,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       showLocalPageLoading('正在開啟選股工作台…');
       // 這一頁會執行整頁導覽；明確標記一次性的計時交接，其他頁面不沿用 sessionStorage 舊時間。
       if (window.showPageNavLoader) window.showPageNavLoader('正在開啟選股工作台', true, true);
+      if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟選股工作台…', target.pathname);
       target.searchParams.delete('fragment');
       target.searchParams.set('_nav', '1');
       window.location.assign(target.pathname + (target.search ? '?' + target.searchParams.toString() : ''));
@@ -28030,6 +28033,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     var routeLoadTimeoutId = null;
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
+    if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟' + routeTitle + '…', target.pathname, function() {{ if(appNavController) appNavController.abort(); }});
     var routeFetchPromise = fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, appNavController ? {{signal:appNavController.signal}} : {{}}));
     var routeTimeoutPromise = new Promise(function(resolve, reject) {{
       routeLoadTimeoutId = window.setTimeout(function() {{
@@ -28040,6 +28044,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     }});
         Promise.race([routeFetchPromise, routeTimeoutPromise])
       .then(function(response) {{
+        if (navSeq !== appNavSeq) return null;
         if (response.status === 401) {{ window.location.assign(target.pathname + target.search.replace(/([?&])fragment=1&?/, '$1').replace(/[?&]$/, '')); return null; }}
         if (!response.ok) throw new Error('HTTP ' + response.status);
         return response.text();
@@ -28071,6 +28076,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
         target.searchParams.delete('fragment');
         if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', target.pathname + target.search);
         setAppNavState(target.pathname);
+        if (window.StockBotUI) {{ window.StockBotUI.routeEnd(true); window.StockBotUI.scan(); }}
         try {{
           var navElapsed = Math.round((performance.now() - navStartedAt) * 10) / 10;
           console.info('[台股 BOT] 頁面切換完成', target.pathname, navElapsed + 'ms');
@@ -28079,6 +28085,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
         window.scrollTo({{top:0, behavior:'auto'}});
       }})
       .catch(function(error) {{
+        if (navSeq !== appNavSeq) return;
+        if (window.StockBotUI) window.StockBotUI.routeEnd(false, routeLoadTimedOut ? '讀取逾時，保留原本內容；請再次點選分頁重試。' : '未能開啟頁面，原本內容仍保留。');
         if (error && error.name === 'AbortError' && !routeLoadTimedOut) {{
           if (window.finishPageNavLoader) window.finishPageNavLoader();
           hideLocalPageLoading();
@@ -28092,6 +28100,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
         appNavBusy = false;
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
+        if(!window.StockBotUI) {{
         var retryNotice = document.createElement('div');
         retryNotice.className = 'app-fragment-status app-fragment-error';
         // 把錯誤內容顯示出來。只寫「請稍後再試」的話，
@@ -28099,12 +28108,13 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
         // 每次都要去翻 Render Logs 才知道發生什麼事。
         var reason = (error && error.message) ? error.message : String(error || '');
         retryNotice.textContent = '頁面暫時無法切換：' + reason
-          + '（HTTP 500 代表伺服器端出錯，請看 Render Logs；其他多半是逾時或網路問題）';
+          + '；原本資料仍保留，請確認連線後重試。';
         if (appContent.parentNode) {{
           appContent.parentNode.insertBefore(retryNotice, appContent);
           window.setTimeout(function() {{ if (retryNotice.parentNode) retryNotice.parentNode.removeChild(retryNotice); }}, 4200);
         }}
-        showAppToast('頁面切換失敗，請再試一次','error');
+        }}
+        if(!window.StockBotUI) showAppToast('頁面切換失敗，請再試一次','error');
         console.error(error);
       }})
       .finally(function() {{
@@ -28114,16 +28124,18 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   }}
   window.stockBotSwitchPage = switchAppPage;
   document.addEventListener('pointerdown', function(e) {{
+    if(window.StockBotUI)return;
     var target = e.target.closest ? e.target.closest('a,button,[role="button"],[data-haptic]') : null;
     if (!target || target.disabled || target.dataset.haptic === 'none') return;
     target.classList.add('app-press');
-    window.setTimeout(function() {{ target.classList.remove('app-press'); }}, 180);
+    window.setTimeout(function() {{ target.classList.remove('app-press'); }}, 110);
   }}, true);
   document.addEventListener('touchstart', function(e) {{
+    if(window.StockBotUI)return;
     var target = e.target.closest ? e.target.closest('a,button,[role="button"],[data-haptic]') : null;
     if (!target || target.disabled || target.dataset.haptic === 'none') return;
     target.classList.add('app-press');
-    window.setTimeout(function() {{ target.classList.remove('app-press'); }}, 180);
+    window.setTimeout(function() {{ target.classList.remove('app-press'); }}, 110);
   }}, {{capture:true, passive:true}});
   document.addEventListener('click', function(e) {{
     var backLink = e.target.closest ? e.target.closest('[data-history-back="1"]') : null;
@@ -28187,6 +28199,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     }}
     form.dataset.submitted = '1';
     form.classList.add('tap-loading');
+    if (window.StockBotUI) window.StockBotUI.formState(form, 'loading', '正在儲存，請稍候…');
+    queueMicrotask(function() {{ if(e.defaultPrevented) {{ delete form.dataset.submitted; form.classList.remove('tap-loading'); var restore=form.querySelector('[data-old-text]'); if(restore) {{restore.disabled=false;if(restore.tagName==='INPUT')restore.value=restore.dataset.oldText;else restore.textContent=restore.dataset.oldText;}} if(window.StockBotUI)window.StockBotUI.formState(form,'error','尚未送出，請檢查輸入內容或確認操作。'); }} }});
     haptic('medium');
     var button = form.querySelector('button[type="submit"],input[type="submit"]');
     if (button) {{
@@ -28207,6 +28221,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     if (!code || !target) return;
     details.dataset.loaded = '1';
     target.innerHTML = '<div class="sub">計算中…</div>';
+    if(window.StockBotUI)window.StockBotUI.load(target,'正在載入籌碼分布…');
     fetch('/web/api/chip-bins?code=' + encodeURIComponent(code),
           {{credentials: 'same-origin'}})
       .then(function (r) {{
@@ -28230,6 +28245,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     details.dataset.loaded = '1';
     details.setAttribute('aria-busy', 'true');
     target.textContent = '正在載入一年損益走勢…';
+    if(window.StockBotUI)window.StockBotUI.load(target,'正在載入一年損益走勢…');
     var query = new URLSearchParams(window.location.search);
     var token = query.get('t');
     var url = '/web/position-trend?code=' + encodeURIComponent(code) + '&fragment=1';
@@ -28568,6 +28584,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     loader_foot = "資料準備完成後將自動進入首頁" if title == "今日" else "資料準備完成後將自動進入頁面"
     shell = f"""
 <div id="loading" class="loading{' market-loading-screen' if market_loader else ''}">
+  <div class="ui-shell-skeleton ui-skeleton-grid" aria-hidden="true"><div class="ui-skeleton"></div><div class="ui-skeleton"></div><div class="ui-skeleton wide"></div></div>
   {('<div class="market-loader-inner"><div class="market-loader-brand">TAIWAN MARKET <span>· LIVE ANALYSIS</span></div><div class="market-loader-visual" aria-hidden="true"><div class="market-loader-grid"></div><div class="market-loader-scan"></div><div class="market-loader-glow"></div><div class="market-loader-orbit"><div class="market-loader-ring"></div><div class="market-loader-ring ring-2"></div><div class="market-loader-dot"></div></div><div class="market-loader-chart"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div class="market-loader-title">{loader_title}</div><div class="market-loader-status" id="market-loader-status">{loader_status}</div><div class="market-loader-progress-row"><div class="market-loader-bar"><i style="width:38%"></i></div></div><div class="market-loader-steps"><div class="app-load-step active"><span>●</span><span>市場資料</span></div><div class="app-load-step pending"><span>○</span><span>法人與估值</span></div><div class="app-load-step pending"><span>○</span><span>你的持股行情</span></div><div class="app-load-step pending"><span>○</span><span>今日市場判讀</span></div></div><div class="market-loader-foot">{loader_foot}</div></div>') if market_loader else ('<div class="load-stage"><span id="loadstage">正在準備…</span></div>' + render_quote_block() + '<div class="load-note">' + note + '</div>')}
 </div>
 <div id="content" class="loading-content" aria-live="polite" style="display:none"></div>
@@ -28691,9 +28708,9 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
           content.classList.remove('market-page-enter');
           void content.offsetWidth;
           content.classList.add('market-page-enter');
-          window.setTimeout(function() {{ content.classList.remove('market-page-enter'); }}, 380);
+          window.setTimeout(function() {{ content.classList.remove('market-page-enter'); }}, 180);
         }}
-      }}, 140);
+      }}, 0);
       if ({staged_literal}) {{
         var status = document.getElementById('detail-status');
         if (status) status.style.display = 'block';
@@ -28799,6 +28816,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
       var marketStatus = document.getElementById('market-loader-status');
       var marketFoot = document.querySelector('.market-loader-foot');
       var loadingEl = document.getElementById('loading');
+      if(loadingEl)loadingEl.dataset.uiLoadState='error';
       var marketMode = !!document.querySelector('.market-loading-screen');
 
       // 今日首頁使用全螢幕市場 Loader；其他頁面仍沿用原本的 loadstage。
@@ -31996,14 +32014,18 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
       var subEl=wrap.querySelector('.position-submit-progress-sub');
       var value=8, finished=false;
       function setProgress(v){ value=Math.max(0,Math.min(100,v)); if(bar){bar.classList.remove('is-waiting');bar.style.width=value+'%';} }
-      var timer=setInterval(function(){
-        if(value < 45) value += 5;
-        else if(value < 72) value += 2.5;
-        else if(value < 92) value += 0.8;
-        setProgress(value);
-        if(value >= 92){ clearInterval(timer); if(bar) bar.classList.add('is-waiting'); if(subEl) subEl.textContent='資料已送出，正在等待系統完成寫入…'; }
-      },180);
+      var timer=null;
+      if(bar)bar.classList.add('is-waiting');
+      var responseDeadline=setTimeout(function(){
+        if(finished)return;
+        if(subEl)subEl.textContent='回應時間較長，請先確認持股與操作日報；不要重複送出。';
+        var close=document.createElement('button');close.type='button';close.textContent='返回查看原頁面';
+        close.onclick=function(){if(wrap.parentNode)wrap.remove();};
+        var content=wrap.querySelector('.position-submit-progress-card');if(content)content.appendChild(close);
+      },30000);
 
+      if(window.StockBotUI)window.StockBotUI.formState(form,'loading','正在儲存持股與操作日報…');
+      form.dataset.uiSubmitting='1';
       var body=new FormData(form);
       // 持股頁可能是以 fragment 動態載入，window.location.href 不一定是 /web/positions。
       // 使用表單自身已保留的 action（含 ?t=），避免 LINE WebView 的 URL token 與 cookie 不一致。
@@ -32032,6 +32054,11 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
       }).then(function(result){
         var url=result.url || '/web/positions';
         var responseHtml=result.html;
+        clearTimeout(responseDeadline);
+        var responseDoc=new DOMParser().parseFromString(responseHtml,'text/html');
+        var responseMessage=responseDoc.querySelector('#app-page-content .msg');
+        if(responseMessage && /失敗|錯誤|沒有|不正確|請填|過期|無法|⚠/.test(responseMessage.textContent||'')) throw new Error(responseMessage.textContent);
+        if(!responseDoc.getElementById('app-page-content') || !responseMessage || !/已新增|已賣出|✅|成功/.test(responseMessage.textContent||'')) throw new Error((responseMessage&&responseMessage.textContent)||'未能確認處理結果，請先檢查持股與操作日報。');
         finished=true;
         if(timer) clearInterval(timer);
         setProgress(100);
@@ -32040,7 +32067,8 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
         // 不再整頁跳轉／重新載入。後端仍然照正常 POST 寫入資料，
         // 成功後只把目前的 #app-page-content 換成最新內容，
         // 因此手機不會重新跑整個首頁 loader，也不會把使用者帶回頁面頂端。
-        setTimeout(function(){
+        (function(){
+          if(!form.isConnected){if(wrap.parentNode)wrap.remove();if(window.StockBotUI)window.StockBotUI.notify('持股已完成處理，可返回持股頁查看最新內容。','success');return;}
           var target=document.getElementById('app-page-content');
           if(!target){ window.location.href=url; return; }
           Promise.resolve(responseHtml)
@@ -32048,6 +32076,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
               var doc=new DOMParser().parseFromString(html,'text/html');
               var fresh=doc.getElementById('app-page-content');
               if(!fresh) throw new Error('找不到更新後的持股內容');
+              document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
               target.innerHTML=fresh.innerHTML;
               // innerHTML 插入的 script 不會自動執行，這裡只重新啟動片段內原本需要的腳本。
               target.querySelectorAll('script').forEach(function(oldScript){
@@ -32057,12 +32086,12 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
                 oldScript.parentNode.replaceChild(replacement,oldScript);
               });
               if(isAddAction){
-                try{window.scrollTo({top:0,left:0,behavior:'smooth'});}catch(ignore){window.scrollTo(0,0);}
+                try{window.scrollTo({top:0,left:0,behavior:(window.StockBotUI&&window.StockBotUI.reducedMotion()?'auto':'smooth')});}catch(ignore){window.scrollTo(0,0);}
                 var success=document.createElement('div');success.className='position-success-overlay';
                 success.innerHTML='<div class="position-success-card" role="status"><div class="position-success-check">✓</div><b>持股新增成功</b><span>持股已載入完成</span></div>';
                 document.body.appendChild(success);requestAnimationFrame(function(){success.classList.add('show');});
                 setTimeout(function(){success.classList.remove('show');setTimeout(function(){if(success.parentNode)success.parentNode.removeChild(success)},220)},1050);
-              }else{try{window.scrollTo({top:0,left:0,behavior:'smooth'});}catch(ignore){window.scrollTo(0,0);}}
+              }else{try{window.scrollTo({top:0,left:0,behavior:(window.StockBotUI&&window.StockBotUI.reducedMotion()?'auto':'smooth')});}catch(ignore){window.scrollTo(0,0);}}
               if(wrap && wrap.parentNode) wrap.remove();
             })
             .catch(function(err){
@@ -32070,12 +32099,15 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
               if(subEl) subEl.textContent='資料已完成寫入，正在重新同步畫面…';
               setTimeout(function(){ window.location.href=url; },300);
             });
-        },220);
+        })();
       }).catch(function(err){
+        clearTimeout(responseDeadline);
         if(timer) clearInterval(timer);
         if(wrap && wrap.parentNode) wrap.remove();
         confirmed=false; submit.disabled=false;
-        alert('送出失敗：'+(err && err.message ? err.message : '網路或伺服器錯誤'));
+        delete form.dataset.uiSubmitting;
+        if(window.StockBotUI) window.StockBotUI.formState(form,'error','送出未完成：'+(err && err.message ? err.message : '網路或伺服器錯誤')+'；請先確認持股與日報再決定是否重送。');
+        else alert('送出未完成：'+(err && err.message ? err.message : '網路或伺服器錯誤'));
       });
     }
     function go(){
@@ -32088,9 +32120,12 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
     submit.onclick=go;
     setTimeout(function(){cancel.focus()},30);
   }
+  if(!window.__positionConfirmBound){
+  window.__positionConfirmBound=true;
   document.addEventListener('submit',function(e){
     var form=e.target;
     if(!form || !form.matches('form.add, form.sellpanel')) return;
+    if(form.dataset.uiSubmitting==='1'){e.preventDefault();return;}
     if(form.dataset.confirmed==='1'){delete form.dataset.confirmed;return}
     if(form.matches('form.add')){e.preventDefault();showConfirm(form,'add');return}
     // 所有賣出（不只「換股」）都走同一個確認＋進度流程。
@@ -32102,11 +32137,12 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
   document.addEventListener('keydown',function(e){
     if(e.key==='Escape'){var m=document.getElementById('position-confirm-backdrop');if(m)m.remove()}
   });
+  }
 })();
 </script>'''
     body += '''<style>.position-success-overlay{position:fixed;inset:0;z-index:2147483640;display:flex;align-items:center;justify-content:center;background:rgba(20,31,43,.10);opacity:0;pointer-events:none;transition:opacity .18s}.position-success-overlay.show{opacity:1}.position-success-card{min-width:190px;padding:22px 24px;border-radius:18px;background:#fff;box-shadow:0 14px 45px rgba(20,31,43,.18);text-align:center;transform:translateY(8px) scale(.96);transition:transform .22s}.position-success-overlay.show .position-success-card{transform:translateY(0) scale(1)}.position-success-check{width:54px;height:54px;margin:0 auto 10px;border-radius:50%;display:grid;place-items:center;background:#e7f5ee;color:#27835d;font-size:31px;font-weight:900;animation:position-success-pop .42s cubic-bezier(.2,.9,.25,1.25)}.position-success-card b{display:block;font-size:16px;color:#203142}.position-success-card span{display:block;margin-top:4px;font-size:12px;color:#7b8995}@keyframes position-success-pop{0%{transform:scale(.4);opacity:0}70%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}@media(prefers-reduced-motion:reduce){.position-success-overlay,.position-success-card{transition:none}.position-success-check{animation:none}}</style><script>
 (function(){
-  var timer=null,busy=false,root=document.getElementById('positions-quote-status');
+  var timer=null,busy=false,stopped=false,root=document.getElementById('positions-quote-status');
   if(!root)return;
   function numberText(value,digits){var n=Number(value);return Number.isFinite(n)?n.toLocaleString('zh-TW',{minimumFractionDigits:digits,maximumFractionDigits:digits}):'—';}
   function signedText(value,digits){var n=Number(value);return Number.isFinite(n)?(n>=0?'+':'')+numberText(n,digits):'—';}
@@ -32114,8 +32150,10 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
   // 原本狀態列只在「渲染那一刻是盤中」才輸出，元素不存在就整段不啟動；
   // 於是開盤前開的頁面、或從別頁切換過來的，之後即使進入盤中也永遠不會跳，
   // 只能手動刷新。改成一律啟動，由這裡決定要不要真的去抓。
-  function schedule(){if(timer)clearTimeout(timer);timer=setTimeout(refresh,5000);}
+  function stop(){stopped=true;if(timer)clearTimeout(timer);timer=null;document.removeEventListener('visibilitychange',onVisibility);document.removeEventListener('stockbot:pageleaving',stop);}
+  function schedule(){if(stopped||!root.isConnected){stop();return;}if(timer)clearTimeout(timer);timer=setTimeout(refresh,5000);}
   function refresh(){
+    if(stopped||!root.isConnected){stop();return;}
     if(document.hidden||busy){schedule();return;}
     // 不在前端自行判斷交易時段：iOS Safari／時區或頁面片段導覽可能令
     // inMarket() 靜默判錯，整個持股頁就完全不發請求。改由伺服器 API
@@ -32132,6 +32170,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
     var url='/web/api/positions/quotes';
     if(token)url+='?t='+encodeURIComponent(token);
     fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
+      if(stopped||!root.isConnected){stop();return;}
       (data.updates||[]).forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
       root.textContent=(data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。'))+' 約 5 秒檢查一次。';
     }).catch(function(e){root.textContent='盤中行情暫時無法更新：'+(e&&e.message?e.message:e)+'（HTTP 401 代表登入已過期，請從 LINE 重新開啟）；保留最後有效價格。';}).finally(function(){busy=false;schedule();});
@@ -32151,8 +32190,8 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
     var note='';
     if(best)note+='<b>目前相對較強：</b>'+escText(best.name)+'（'+factorStatus(best.value/best.max)+'）。';
     if(worst&&(!best||worst.name!==best.name))note+=' <b>主要拖累：</b>'+escText(worst.name)+'（'+factorStatus(worst.value/worst.max)+'）。';
-    if(data.val_desc)note+=' '+escText(String(data.val_desc).replace(/\n/g,' '));
-    if(data.mom_desc)note+=' '+escText(String(data.mom_desc).replace(/\n/g,' '));
+    if(data.val_desc)note+=' '+escText(String(data.val_desc).replace(/\\n/g,' '));
+    if(data.mom_desc)note+=' '+escText(String(data.mom_desc).replace(/\\n/g,' '));
     return '<div class="position-factor-overview"><div><small>五大因子綜合分數</small><b>'+escText(total)+'</b></div><em>'+escText(data.category||'個股')+'<br>資料日 '+escText(data.source_date||'未標日期')+'</em></div><div class="position-factor-legend"><span><i class="pf-dot strong"></i>強（≥80%）</span><span><i class="pf-dot mid"></i>中（60～79%）</span><span><i class="pf-dot weak"></i>弱（&gt;0～59%）</span><span><i class="pf-dot neutral"></i>資料／無貢獻</span></div><div class="position-factor-list">'+bars+'</div>'+(note?'<div class="position-factor-note">'+note+'</div>':'')+'<div class="position-factor-source">分數沿用選股模型最近保存快照；不在手機端重新計算。</div>';
   }
   function escText(v){return String(v==null?'':v).replace(/[&<>'"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[c]});}
@@ -32175,8 +32214,9 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
     });
   }
   bindFactorDetails();
-  document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
-  document.addEventListener('stockbot:pageleaving',function(){if(timer)clearTimeout(timer);timer=null;});
+  function onVisibility(){if(!document.hidden)refresh();}
+  document.addEventListener('visibilitychange',onVisibility);
+  document.addEventListener('stockbot:pageleaving',stop);
   // 立刻抓一次，不要等第一個 15 秒。
   // 頁面本身要載入十幾秒，再等 15 秒才第一次更新的話，
   // 使用者開頁後約半分鐘內看到的都是昨收，會以為行情沒更新。
@@ -32247,15 +32287,15 @@ body #app-page-content .position-card.allocation-focused{background:#F3F8FB!impo
     if(value)value.textContent=Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元';
     var panel=root.querySelector('.allocation-selection');
     if(panel){panel.innerHTML='<span>已選取持股</span><strong>'+((button.dataset.allocationName||code).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}))+'（'+code+'）</strong><small>組合占比 '+Number(button.dataset.allocationWeight||0).toFixed(1)+'% ・ 市值 '+Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元</small><button type="button" data-allocation-open="'+code+'">查看持股明細　›</button>';}
-    root.querySelectorAll('.position-card').forEach(function(card){card.classList.toggle('allocation-focused',card.dataset.positionCode===code);});
+    document.querySelectorAll('#app-page-content .position-card').forEach(function(card){card.classList.toggle('allocation-focused',card.dataset.positionCode===code);});
   }
   document.addEventListener('click',function(event){
     var choose=event.target.closest('[data-allocation-select],[data-allocation-code]');
     if(choose){var root=choose.closest('.position-allocation');if(root)selectAllocation(root,choose.dataset.allocationSelect||choose.dataset.allocationCode);return;}
     var reset=event.target.closest('[data-allocation-reset]');
-    if(reset){var root=reset.closest('.position-allocation');if(!root)return;root.querySelectorAll('.allocation-item').forEach(function(x){x.setAttribute('aria-pressed','false');});root.querySelectorAll('.allocation-slice').forEach(function(x){x.classList.remove('is-selected');x.style.opacity='1';});root.querySelector('[data-allocation-center-title]').textContent='全部持股';root.querySelector('[data-allocation-center-weight]').textContent=root.querySelectorAll('.allocation-item').length?Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationWeight||0);},0).toFixed(1)+'%':'0.0%';root.querySelector('[data-allocation-center-value]').textContent=Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationValue||0);},0).toLocaleString('zh-TW')+' 元';root.querySelector('.allocation-selection').innerHTML='<span>組合概覽</span><strong>點選圓環或股票名稱</strong><small>立即查看該持股占比與市值，並可跳到持股明細。</small>';root.querySelectorAll('.position-card').forEach(function(card){card.classList.remove('allocation-focused');});return;}
+    if(reset){var root=reset.closest('.position-allocation');if(!root)return;root.querySelectorAll('.allocation-item').forEach(function(x){x.setAttribute('aria-pressed','false');});root.querySelectorAll('.allocation-slice').forEach(function(x){x.classList.remove('is-selected');x.style.opacity='1';});root.querySelector('[data-allocation-center-title]').textContent='全部持股';root.querySelector('[data-allocation-center-weight]').textContent=root.querySelectorAll('.allocation-item').length?Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationWeight||0);},0).toFixed(1)+'%':'0.0%';root.querySelector('[data-allocation-center-value]').textContent=Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationValue||0);},0).toLocaleString('zh-TW')+' 元';root.querySelector('.allocation-selection').innerHTML='<span>組合概覽</span><strong>點選圓環或股票名稱</strong><small>立即查看該持股占比與市值，並可跳到持股明細。</small>';document.querySelectorAll('#app-page-content .position-card').forEach(function(card){card.classList.remove('allocation-focused');});return;}
     var open=event.target.closest('[data-allocation-open]');
-    if(open){var card=document.querySelector('.position-card[data-position-code="'+CSS.escape(open.dataset.allocationOpen)+'"]');if(card){var detail=card.querySelector('.position-more');if(detail)detail.open=true;card.scrollIntoView({behavior:'smooth',block:'center'});card.classList.add('allocation-focused');}}
+    if(open){var card=document.querySelector('.position-card[data-position-code="'+CSS.escape(open.dataset.allocationOpen)+'"]');if(card){var detail=card.querySelector('.position-more');if(detail)detail.open=true;card.scrollIntoView({behavior:(window.StockBotUI&&window.StockBotUI.reducedMotion()?'auto':'smooth'),block:'center'});card.classList.add('allocation-focused');}}
   });
   document.addEventListener('keydown',function(event){if((event.key==='Enter'||event.key===' ')&&event.target.matches('.allocation-slice')){event.preventDefault();var root=event.target.closest('.position-allocation');if(root)selectAllocation(root,event.target.dataset.allocationCode);}});
 })();
@@ -35465,7 +35505,8 @@ def render_leaderboard_chart(series_map, chart_market, top_keys, highlight_key=N
              f'stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,3"/>']
     if chart_market:
         p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in chart_market)
-        parts.append(f'<path class="leaderboard-chart-market" d="{p}" fill="none" stroke="#8799A8" '
+        ui_market_points = html.escape(json.dumps([{'x':round(X(d),1),'y':round(Y(v),1),'date':d.isoformat(),'value':v,'name':'加權指數'} for d,v in chart_market],ensure_ascii=False),quote=True)
+        parts.append(f'<path class="leaderboard-chart-market" data-ui-points="{ui_market_points}" d="{p}" fill="none" stroke="#8799A8" '
                      f'stroke-width="1.8" stroke-dasharray="5,5"/>')
 
     tints = ["#2A72A5", "#D8443E", "#138568", "#7867B7", "#C18A2C"]
@@ -35474,7 +35515,8 @@ def render_leaderboard_chart(series_map, chart_market, top_keys, highlight_key=N
         color = "#1E6B9D" if str(key) == str(highlight_key) else tints[i % len(tints)]
         p = "M " + " L ".join(f"{X(d):.1f},{Y(v):.1f}" for d, v in curve)
         series_key_attr = html.escape(str(key), quote=True)
-        parts.append(f'<path class="leaderboard-chart-series" data-series-key="{series_key_attr}" d="{p}" fill="none" stroke="{color}" '
+        ui_points = html.escape(json.dumps([{'x':round(X(d),1),'y':round(Y(v),1),'date':d.isoformat(),'value':v,'name':name} for d,v in curve],ensure_ascii=False),quote=True)
+        parts.append(f'<path class="leaderboard-chart-series" data-ui-points="{ui_points}" data-series-key="{series_key_attr}" d="{p}" fill="none" stroke="{color}" '
                      f'stroke-width="2"/>')
         legend.append(f'<button type="button" class="leaderboard-chart-toggle" data-series-toggle="{series_key_attr}" aria-pressed="true"><i style="background:{color}"></i>{name} '
                       f'{curve[-1][1]:+.1f}%</button>')
@@ -35535,7 +35577,7 @@ def render_leaderboard_chart(series_map, chart_market, top_keys, highlight_key=N
         for d, label in ticks)
 
     return f"""
-<svg viewBox="0 0 {W} {H}" width="100%" height="{H}" preserveAspectRatio="none"
+<svg class="ui-interactive-chart" viewBox="0 0 {W} {H}" width="100%" height="{H}" preserveAspectRatio="none"
      style="display:block">{''.join(axis_parts)}{''.join(parts)}</svg>
 <div class="chart-axis" style="position:relative;height:16px;margin-top:3px;
      color:var(--ink-faint);font-size:10.5px">{axis_html}</div>
@@ -47939,7 +47981,7 @@ def render_workbench_body(initial_tab=""):
         fetch(api('/web/api/workbench/strategy-detail?code='+encodeURIComponent(code)+'&kind='+encodeURIComponent(kind)),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).then(function(d){
           if(timer)clearInterval(timer);if(animTimer)clearInterval(animTimer);if(progressBox){progressBox.querySelector('.wb-d-progress-bar').style.width='100%';progressBox.querySelector('.wb-d-progress-top strong').textContent='100%';progressBox.querySelector('.wb-d-progress-note').textContent='完成，正在顯示結果…';}
           if(!d.ok)throw new Error(d.error||'載入失敗');
-          var wait=Math.max(0,700-(Date.now()-loadStarted));
+          var wait=0; // Render as soon as the existing request completes.
           setTimeout(function(){
             drawLazyChart(box,d.data,kind);
             btn.disabled=false;btn.classList.remove('wb-loading');btn.removeAttribute('aria-busy');
@@ -48130,7 +48172,7 @@ def render_workbench_body(initial_tab=""):
     if(labBody)labBody.innerHTML='<div class="wb-lab-loading wb-lab-loading-live"><div class="wb-lab-loading-head"><b>正在載入策略研究資料</b><strong class="wb-lab-loading-pct">0.0 秒</strong></div><div class="wb-lab-loading-track"><div class="wb-lab-loading-bar"></div></div><small class="wb-lab-loading-note">正在讀取研究快照與策略候選資料</small></div>';
     var bar=labBody&&labBody.querySelector('.wb-lab-loading-bar'),pct=labBody&&labBody.querySelector('.wb-lab-loading-pct');
     if(bar){bar.style.width='35%';progressTimer=window.setInterval(function(){if(pct)pct.textContent=((performance.now()-labStarted)/1000).toFixed(1)+' 秒';},100);}
-    fetch(api('/web/api/workbench/strategy-lab'+(force?'?refresh=1':'')),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');if(progressTimer)clearInterval(progressTimer);if(pct)pct.textContent='實際耗時 '+((performance.now()-labStarted)/1000).toFixed(2)+' 秒';if(bar)bar.style.width='100%';finishWorkbenchLoad('策略研究完成');setTimeout(function(){labLoaded=true;renderStrategyLab(data);},180);}).catch(function(e){if(progressTimer)clearInterval(progressTimer);finishWorkbenchLoad('策略研究失敗');if(labBody)labBody.innerHTML='<div class="wb-lab-note">策略研究資料暫時無法載入：'+esc(String(e.message||e))+'；請按重新讀取重試。</div>';});
+    fetch(api('/web/api/workbench/strategy-lab'+(force?'?refresh=1':'')),{credentials:'same-origin',cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');if(progressTimer)clearInterval(progressTimer);if(pct)pct.textContent='實際耗時 '+((performance.now()-labStarted)/1000).toFixed(2)+' 秒';if(bar)bar.style.width='100%';finishWorkbenchLoad('策略研究完成');labLoaded=true;renderStrategyLab(data);}).catch(function(e){if(progressTimer)clearInterval(progressTimer);finishWorkbenchLoad('策略研究失敗');if(labBody)labBody.innerHTML='<div class="wb-lab-note">策略研究資料暫時無法載入：'+esc(String(e.message||e))+'；請按重新讀取重試。</div>';});
   }
   function renderTabs(){var list=sources();if(list.indexOf(state.source)<0)state.source=list[0]||'';tabs.innerHTML=list.map(function(s){var loaded=!!state.loadedSources[s];var n=s==='成效'||s==='我的排行'?'':(loaded?' <small>'+state.rows.filter(function(r){return r.source===s}).length+'</small>':'');return '<button type="button" class="'+(state.source===s?'on':'')+'" data-source="'+esc(s)+'">'+esc(s)+n+'</button>'}).join('');}
   function filtered(){var q=state.query.trim().toLowerCase();return state.rows.filter(function(r){var etf=r.source==='ETF';return (state.source==='全部'||r.source===state.source)&&(!q||[r.code,r.name,r.industry].join(' ').toLowerCase().indexOf(q)>-1)&&(state.kind==='all'||(state.kind==='etf'?etf:!etf))&&(state.dir==='all'||(state.dir==='up'&&Number(r.change_pct)>0)||(state.dir==='down'&&Number(r.change_pct)<0));}).sort(function(a,b){var av=a[state.sort],bv=b[state.sort];av=av==null?-Infinity:Number(av);bv=bv==null?-Infinity:Number(bv);return state.desc?bv-av:av-bv;});}
