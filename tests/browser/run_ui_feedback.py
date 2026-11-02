@@ -52,6 +52,7 @@ with sync_playwright() as p:
  page.locator('[data-allocation-select="1002"]').click()
  check('legend updates circle center',page.locator('[data-allocation-center-title]').inner_text()=='測試公司2')
  check('legend highlights corresponding holding',page.locator('.position-card[data-position-code="1002"]').evaluate('(e)=>e.classList.contains("ui-allocation-selected")'))
+ check('selected holding is visibly highlighted',page.locator('.position-card[data-position-code="1002"]').evaluate('(e)=>getComputedStyle(e).backgroundColor!=="rgb(255, 255, 255)"'))
  check('circle exposes selected aria state',page.locator('.allocation-slice[data-allocation-code="1002"]').get_attribute('aria-pressed')=='true')
  page.locator('[data-ui-allocation-select="1003"]').click()
  check('holding list selects corresponding circle',page.locator('[data-allocation-select="1003"]').get_attribute('aria-pressed')=='true')
@@ -80,6 +81,9 @@ with sync_playwright() as p:
  check('touch chart readout includes cached values','組合' in readout.inner_text() and '加權' in readout.inner_text())
  check('crosshair and data point highlight',svg.locator('.ui-chart-dot').evaluate('(e)=>getComputedStyle(e).display')!='none')
  svg.focus();before=readout.inner_text();page.keyboard.press('ArrowRight');check('keyboard tracks next cached day',readout.inner_text()!=before)
+ check('tracking control is below the portfolio plot',readout.bounding_box()['y']>=svg.bounding_box()['y']+svg.bounding_box()['height']-2)
+ check('tracking toolbar has no frame or reserved height',readout.evaluate('(e)=>{let s=getComputedStyle(e);return s.borderTopWidth==="0px"&&s.backgroundColor==="rgba(0, 0, 0, 0)"&&e.getBoundingClientRect().height<60}'))
+
  period=page.locator('label[for="trend-period-6m"]');period.click();page.wait_for_timeout(30)
  check('period uses existing cached panels',page.locator('.portfolio-trend-panel.panel-6m').is_visible())
  # Form confirmation + one request; backend validation 200 must not be shown as success.
@@ -105,8 +109,19 @@ with sync_playwright() as p:
  check('real rank delta retained','↑ 2 名' in page.locator('[data-board-panel=long] .rank-move').first.inner_text())
  check('rank period visible feedback','已切換' in page.locator('.ui-rank-feedback').inner_text())
  check('rank period triggers no fetch',len(requests)==count)
+ check('rank selected button has a light background',page.locator('#rankTabs [data-board=long]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
+ history=page.locator('#historyTabs');check('history initially selected month is light',history.locator('[data-history=months]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
+ history.locator('[data-history=seasons]').click();page.wait_for_timeout(40)
+ check('history switches actual panel and aria state',page.locator('[data-history-panel=seasons]').is_visible() and history.locator('[data-history=seasons]').get_attribute('aria-pressed')=='true' and history.locator('[data-history=months]').get_attribute('aria-pressed')=='false')
+ check('selected history text and WebKit fill remain dark',history.locator('[data-history=seasons]').evaluate('(e)=>getComputedStyle(e).color==="rgb(44, 94, 70)"&&getComputedStyle(e).webkitTextFillColor==="rgb(44, 94, 70)"'))
+ check('selected history tab stays light after mouseup',history.locator('[data-history=seasons]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
+ history.locator('[data-history=seasons]').hover();page.mouse.down()
+ check('pressed history tab never becomes dark blue',history.locator('[data-history=seasons]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'));page.mouse.up()
+
  rank_svg=page.locator('[data-board-panel=long] svg.ui-interactive-chart');rank_svg.scroll_into_view_if_needed();rank_svg.focus();page.keyboard.press('ArrowRight')
  check('leaderboard chart tracks cached series','測試會員' in page.locator('[data-board-panel=long] .ui-chart-readout').inner_text())
+ check('ranking tracking toolbar follows the plot',page.locator('[data-board-panel=long] .ui-chart-readout').bounding_box()['y']>=rank_svg.bounding_box()['y']+rank_svg.bounding_box()['height']-2)
+
  for width in [360,375,390,430,1280]:
   page.set_viewport_size({'width':width,'height':900});page.evaluate('scrollTo(0,0)')
   check('rank no horizontal overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
@@ -121,7 +136,8 @@ with sync_playwright() as p:
  form=page.locator('form.add');form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100');form.locator('button[type=submit]').click()
  check('one confirmation dialog after route reentry',page.locator('#position-confirm-backdrop').count()==1);page.locator('.position-confirm-cancel').click()
  for width in [360,390,430,1280]:
-  page.set_viewport_size({'width':width,'height':900});page.evaluate('scrollTo(0,0)');check('holdings no overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'));page.screenshot(path=str(ROOT/(engine+'-positions-'+str(width)+'.png')))
+  page.set_viewport_size({'width':width,'height':900});page.evaluate('scrollTo(0,0)');check('holdings no overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'));page.locator('.rows:has(.position-card)').screenshot(path=str(ROOT/(engine+'-holdings-cards-'+str(width)+'.png')));page.screenshot(path=str(ROOT/(engine+'-positions-'+str(width)+'.png')))
+ held=page.locator('[data-position-code="00981A"] .position-held-days');check('ETF holding days stay together',held.evaluate('(e)=>e.getBoundingClientRect().height<=parseFloat(getComputedStyle(e).lineHeight)+1'))
  page.emulate_media(reduced_motion='reduce');summary=page.locator('.position-more>summary').first;summary.click();check('reduced motion details have no active height tween',not page.evaluate('document.getAnimations().some(a=>a.effect&&a.effect.target.classList.contains("ui-disclosure"))'))
  # Edge cases use a separate real shell and a controllable browser clock.
  edge=context.new_page();edge.on('pageerror',lambda e:errors.append(str(e)));edge.route('https://fixture.test/**',fulfill)

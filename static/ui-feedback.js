@@ -4,7 +4,7 @@
   if (window.StockBotUI) return;
   var motion = window.matchMedia('(prefers-reduced-motion: reduce)');
   var reduced = function () { return motion.matches || document.hidden; };
-  function duration(name,fallback){var raw=getComputedStyle(document.documentElement).getPropertyValue('--ui-'+name).trim(),value=parseFloat(raw);return Number.isFinite(value)?value*(raw.endsWith('ms')?1:1000):fallback;}
+  function duration(name,fallback){var raw=getComputedStyle(document.documentElement).getPropertyValue('--sb-feedback-'+name).trim(),value=parseFloat(raw);return Number.isFinite(value)?value*(raw.endsWith('ms')?1:1000):fallback;}
   var root = function () { return document.getElementById('app-page-content'); };
   var notification=null, notificationTimer=0;
   var route = null, scanFrame = 0, observer = null;
@@ -126,9 +126,12 @@
   function selectedControls(scope) {
     each(scope,'.portfolio-trend-tab',function(label){var input=document.getElementById(label.htmlFor);label.classList.toggle('ui-selected-control',!!input&&input.checked);});
 
-    each(scope, 'button[aria-pressed],#rankTabs button,.wb-asset-tabs button,.wb-tabs button,.wb-lab-strategy', function (n) {
-      var isOn = n.getAttribute('aria-pressed') === 'true' || n.classList.contains('on') || n.classList.contains('active');
-      n.classList.toggle('ui-selected-control', isOn);
+    each(scope,'button,summary,label[for],[role=button],a[data-app-nav]',function(n){n.classList.add('ui-control');});
+    each(scope, 'button[aria-pressed],.tabs button,#rankTabs button,#historyTabs button,.wb-asset-tabs button,.wb-tabs button,.wb-lab-strategy', function (n) {
+      var classDriven=n.matches('.tabs button,#rankTabs button,#historyTabs button,.wb-asset-tabs button,.wb-tabs button,.wb-lab-strategy');
+      var isOn=classDriven ? n.classList.contains('on')||n.classList.contains('active') : n.getAttribute('aria-pressed')==='true';
+      n.classList.toggle('ui-selected-control',isOn);
+      if(classDriven)n.setAttribute('aria-pressed',String(isOn));
     });
     each(document, 'a[data-app-nav]', function (a) { if (a.classList.contains('on')) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   }
@@ -169,19 +172,23 @@
   function bindChart(svg) {
     if (svg.dataset.uiChartBound) return; svg.dataset.uiChartBound = '1';
     var panel = svg.closest('.portfolio-trend-panel') || svg.parentElement;
-    var readout = el('div', 'ui-chart-readout '+(svg.matches('.portfolio-trend-svg')?'ui-portfolio-readout':'ui-rank-readout')), values = el('span', 'ui-chart-values', '滑鼠移入或開啟觸控追蹤，查看資料點');
+    var readout = el('div', 'ui-chart-readout '+(svg.matches('.portfolio-trend-svg')?'ui-portfolio-readout':'ui-rank-readout')), values = el('span', 'ui-chart-values');
+    values.hidden=true;values.setAttribute('role','tooltip');
     var button = el('button', '', '觸控追蹤'); button.type = 'button'; button.setAttribute('aria-pressed', 'false'); readout.append(values, button);
-    var host = svg.closest('.portfolio-trend-plot') || svg; host.before(readout);
+    panel.classList.add('ui-chart-host');
+    var host = svg.closest('.portfolio-trend-plot') || svg;
+    var anchor=svg.matches('.portfolio-trend-svg')?host:svg.parentElement.querySelector('.legend')||svg;anchor.after(readout);
     var ns = 'http://www.w3.org/2000/svg', guide = document.createElementNS(ns, 'line'), dot = document.createElementNS(ns, 'circle');
     guide.setAttribute('class', 'ui-chart-crosshair'); dot.setAttribute('class', 'ui-chart-dot'); dot.setAttribute('r', '5'); guide.style.display = dot.style.display = 'none'; svg.append(guide, dot);
     svg.setAttribute('tabindex', '0'); svg.setAttribute('aria-label', (svg.getAttribute('aria-label') || '走勢圖') + '，左右方向鍵追蹤資料');
     var tracking = false, frame = 0, lastX = null, selected = 0;
-    function clear() { guide.style.display = dot.style.display = 'none'; each(svg, '.ui-chart-point-active', function (n) { n.classList.remove('ui-chart-point-active'); }); }
+    function clear() { values.hidden=true; guide.style.display = dot.style.display = 'none'; each(svg, '.ui-chart-point-active', function (n) { n.classList.remove('ui-chart-point-active'); }); }
     function show(index) {
       var points = chartPoints(svg); if (!points.length) return;
       selected = Math.max(0, Math.min(points.length - 1, index)); var p = points[selected];
       var same = points.filter(function (other) { return Math.abs(other.x - p.x) < .1; });
       values.textContent = p.label + ' · ' + same.map(function (v) { return v.text; }).join(' ／ ');
+      values.hidden=false;var panelBox=panel.getBoundingClientRect(),svgBox=svg.getBoundingClientRect();values.style.top=Math.max(8,svgBox.top-panelBox.top+8)+'px';values.style.left=Math.max(8,Math.min(panelBox.width-300-8,svgBox.left-panelBox.left+8))+'px';
       guide.setAttribute('x1', p.x); guide.setAttribute('x2', p.x); guide.setAttribute('y1', '0'); guide.setAttribute('y2', svg.viewBox.baseVal.height); dot.setAttribute('cx', p.x); dot.setAttribute('cy', p.y); guide.style.display = dot.style.display = '';
       each(svg, '.ui-chart-point-active', function (n) { n.classList.remove('ui-chart-point-active'); }); if (p.node) p.node.classList.add('ui-chart-point-active');
     }

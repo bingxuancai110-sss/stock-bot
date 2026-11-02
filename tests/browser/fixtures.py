@@ -18,7 +18,8 @@ for n in tree.body:
    if not isinstance(n.value,ast.Call):compile_node(n)
 # Actual holdings renderer statements; only portfolio and DB-derived inputs are synthetic.
 positions=[dict(code=str(1001+i),name='測試公司'+str(i+1),shares=100,cost=90,bought_on=date(2026,10,1),lots=[]) for i in range(7)]
-enriched=[(p,dict(name=p['name'],close=100+i*10,pct=1.2 if i%2==0 else -2.1,source='隔離測試行情'),100*(100+i*10),9000) for i,p in enumerate(positions)]
+positions[3].update(code='00981A',name='主動統一台股增長',shares=1063,bought_on=date(2026,4,22))
+enriched=[(p,dict(name=p['name'],close=[1355,1510,4705,26.57,1265,1060,637][i],pct=1.2 if i%2==0 else -2.1,source='隔離測試行情'),p['shares']*[1355,1510,4705,26.57,1265,1060,637][i],p['shares']*90) for i,p in enumerate(positions)]
 local=dict(ns,positions=positions,enriched=enriched,total_value=sum(r[2] for r in enriched),total_cost=63000,pl_total=20,fee_total=100,total_fee=100,total_day_pl=0,rows_html=[],allocation_items=[],target_weights={},inst={},fee_disc=1,min_fee=20,
  stock_display_name=lambda code,*args:next((p['name'] for p in positions if p['code']==code),code),net_profit=lambda *args:(1000,11.11,20),lots_html=lambda *args:'',csrf_hidden_input=lambda:'<input type="hidden" name="csrf_token" value="fixture-only">',_is_taiwan_intraday_window=lambda:False,msg='',exright_html='')
 pts=[]
@@ -41,12 +42,17 @@ root.joinpath('positions.html').write_text(ns['render_page']('持股',body,'posi
 series={str(i):dict(nickname='測試會員'+str(i),curve=[(p['date'],i+j*.1) for j,p in enumerate(pts)]) for i in range(1,5)}
 ns['safe_html_text']=lambda text:html.escape(str(text))
 chart=ns['render_leaderboard_chart'](series,[(p['date'],j*.07) for j,p in enumerate(pts)],list(series))
-rank='<div id="rankTabs">'+''.join('<button type="button" data-board="'+k+'" class="'+('on' if k=='short' else '')+'">'+label+'</button>' for k,label in [('short','短線 近30天'),('long','長線 累計'),('season','賽季 本季')])+'</div>'
+rank='<div class="tabs rank-tabs" id="rankTabs">'+''.join('<button type="button" data-board="'+k+'" class="'+('on' if k=='short' else '')+'">'+label+'</button>' for k,label in [('short','短線 近30天'),('long','長線 累計'),('season','賽季 本季')])+'</div>'
 for k in ['short','long','season']:
  rank+='<section data-board-panel="'+k+'" style="'+('' if k=='short' else 'display:none')+'"><div class="rank-rows">'+''.join('<article class="rank-card"><div class="rank-primary-line"><b class="rank-number">#'+str(i)+'</b><span class="name">測試會員'+str(i)+'</span></div><b class="rank-return up">+'+str(i)+'.20%</b><span class="rank-move '+('up' if i%2 else 'down')+'">'+('↑ 2 名' if i%2 else '↓ 1 名')+'</span><details class="rank-detail"><summary>持股明細</summary><div>合成持股明細</div></details></article>' for i in range(1,5))+'</div>'+chart+'</section>'
 # Use the actual existing board-switch listener, not a test replacement.
 rank_fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='web_leaderboard');rank_source=''.join(lines[rank_fn.lineno-1:rank_fn.end_lineno]);start=rank_source.index('var tabs = document.getElementById(\'rankTabs\')');end=rank_source.index('</script>',start)
 rank+='<script>(function(){'+rank_source[start:end].replace('{{','{').replace('}}','}')+'</script>'
+# Include every legacy leaderboard style block so specificity regressions are tested.
+rank='<style>'+ '\n'.join(re.findall(r'<style[^>]*>(.*?)</style>',rank_source,re.S)).replace('{{','{').replace('}}','}')+'</style>'+rank
+rank+='<section class="leaderboard-history" id="leaderboard-history"><div class="tabs history-tabs" id="historyTabs"><button type="button" class="on" data-history="months">月榜</button><button type="button" data-history="seasons">賽季榜</button></div><div data-history-panel="months">合成月榜資料</div><div data-history-panel="seasons" style="display:none">合成賽季資料</div></section>'
+history_start=rank_source.index("var t=document.getElementById('historyTabs')");history_end=rank_source.index('</script>',history_start)
+rank+='<script>(function(){'+rank_source[history_start:history_end].replace('{{','{').replace('}}','}')+'</script>'
 root.joinpath('rank-fragment.html').write_text(rank);root.joinpath('rank.html').write_text(ns['render_page']('排行榜',rank,'leaderboard'))
 # Native settings forms, slow/error lazy pane, and numeric contracts.
 settings='<form id="settings-form" method="post" action="/web/settings"><input name="nickname" value="合成帳號" required><button type="submit">儲存設定</button></form><details><summary>展開內容</summary><div style="height:160px">資料內容</div></details><div id="number-test" data-ui-number>1,234.50</div><div id="load-test"></div>'
