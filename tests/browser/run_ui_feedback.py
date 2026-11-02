@@ -62,6 +62,16 @@ with sync_playwright() as p:
  check('shared height animation starts',page.evaluate('document.getAnimations().some(a=>a.effect&&a.effect.target.classList.contains("ui-disclosure"))'))
  summary.click();summary.click();page.wait_for_timeout(260);check('rapid toggle ends in correct state',card.locator('.position-more').get_attribute('open') is not None)
  check('chevron tracks aria-expanded',summary.get_attribute('aria-expanded')=='true')
+ # Nested research disclosures must not write height during ResizeObserver delivery.
+ card.evaluate('(e,markup)=>e.insertAdjacentHTML("beforeend",markup)', '<details id="nested-research-check"><summary>歷史表現</summary><details><summary>統計定義</summary><p>分母與限制</p></details></details>')
+ page.wait_for_timeout(100)
+ nested=page.locator('#nested-research-check');nested.locator('summary').first.click();page.wait_for_timeout(260)
+ child=nested.locator('details');child.locator('summary').click();page.wait_for_timeout(300)
+ check('nested disclosures both remain open',nested.evaluate('(e)=>e.open') and child.evaluate('(e)=>e.open'))
+ child.locator('summary').click();page.wait_for_timeout(300)
+ check('child collapses independently',nested.evaluate('(e)=>e.open') and not child.evaluate('(e)=>e.open'))
+ check('nested height changes have no observer errors',not errors,errors)
+ nested.evaluate('(e)=>e.remove()')
  # No data request is made for animation or allocation selection.
  check('no extra data requests from circle interactions',not any(path not in ['/web/api/positions/quotes'] for method,path,q in requests if '/api/' in path))
  price=card.locator('[data-position-price]');price.scroll_into_view_if_needed();old=price.inner_text()

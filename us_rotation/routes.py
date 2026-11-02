@@ -36,7 +36,7 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
 
     def _page_html():
         return r'''<style>
-#app-page-content #us-radar .us-research-verification{padding:12px;border:1px solid #d7c59c;border-radius:10px;background:#fff9eb;color:#765f30;font-size:11px;line-height:1.85;margin:12px 0}#app-page-content #us-radar .us-study-title{font-size:13px;margin:18px 0 7px}#app-page-content #us-radar .us-alert-stat{align-items:start;gap:12px}#app-page-content #us-radar .us-alert-stat span{min-width:0}#app-page-content #us-radar .us-alert-stat b{font-variant-numeric:tabular-nums}
+#app-page-content #us-radar .us-research-verification{margin:10px 0 4px;color:#765f30;font-size:11px;line-height:1.7}#app-page-content #us-radar .us-study-title{font-size:13px;margin:14px 0 5px}#app-page-content #us-radar .us-alert-stat{align-items:start;gap:12px}#app-page-content #us-radar .us-alert-stat span{min-width:0}#app-page-content #us-radar .us-alert-stat b{font-variant-numeric:tabular-nums}#app-page-content #us-radar .us-alert-stat b small{display:block;font-size:10px;font-weight:600;color:#607687;line-height:1.6;margin-top:2px}#app-page-content #us-radar .us-stat-definitions>summary{min-height:44px;box-sizing:border-box;display:flex;align-items:center;font-size:11px}#app-page-content #us-radar .us-stat-definitions .us-note{margin:9px 0}
 
 #app-page-content #us-radar .us-research-summary{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0 22px}
 #app-page-content #us-radar .us-research-summary>div{padding:13px;border:1px solid #dfe8ec;background:#f6f9fa;border-radius:12px;min-width:0}
@@ -312,7 +312,8 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
   const all=state.signalExplanations||{},cur=(state.snapshot&&state.snapshot.current_risk_warning)||{};
   const num=(n,d=2)=>Number(n).toLocaleString('zh-TW',{minimumFractionDigits:d,maximumFractionDigits:d});
   const dateNote=c=>'<span class="us-signal-date">資料日 '+esc(c.as_of||'尚無資料')+' · 採日線收盤判定</span>';
-  const stat=(label,value)=>'<div class="us-alert-stat"><span>'+esc(label)+'</span><b>'+esc(value)+'</b></div>';
+  const stat=(label,value,detail)=>'<div class="us-alert-stat"><span>'+esc(label)+'</span><b>'+esc(value)+(detail?'<small>'+esc(detail)+'</small>':'')+'</b></div>';
+  const definitions=body=>'<details class="us-research us-stat-definitions"><summary>統計定義與限制</summary>'+body+'</details>';
   const card=(key,title,research)=>{
    const c=all[key]||{},stop=key.endsWith('_stop'),active=c.available&&c.triggered;
    const badge=active?(stop?'已突破':'已達警戒'):(c.available?(stop?'尚未突破':'未達警戒'):'資料不足');
@@ -328,40 +329,44 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
     else distance=key==='us'?'距警戒線還差 '+num(c.distance)+'。':'再下降 '+num(c.distance)+' 個百分點，就到警戒線。';
    }
    const intro=stop?'比較當日收盤與前 5 個交易日最高收盤，辨識短線價格是否轉強。突破是價格確認條件，不能單獨確認中長期底部。':key==='us'?'VIX 反映 S&P 500 選擇權隱含的未來約 30 日年化波動預期；升高代表預期波動加大，不直接代表下跌幅度或機率。':'HYG 為美國高收益公司債 ETF，IEF 為美國 7–10 年期公債 ETF。比較兩者近 20 日報酬，觀察信用風險偏好；差值為負代表 HYG 相對落後，不代表台股跌幅。';
-   const proxy=c.proxy_note||((cur[key]||{}).proxy_note)||'';
-   return '<article class="us-alert-card '+(active?(stop?'confirm-on':'signal-on'):'')+'" data-signal="'+key+'" data-signal-market="'+(key.startsWith('us')?'us':'taiwan')+'"><div class="us-alert-head"><h3>'+esc(title)+'</h3><span class="us-alert-badge '+(active?(stop?'confirmed':'alert'):'')+'">'+badge+'</span></div><p class="us-signal-intro">'+esc(intro)+'</p><div class="us-alert-value">'+value+'</div><p class="us-signal-condition">'+esc(condition)+'</p><div class="us-signal-distance">'+esc(distance)+'</div>'+dateNote(c)+'<div class="us-signal-chart" data-signal-chart="'+key+'"></div><details class="us-research"><summary>判斷規則與歷史統計（展開核對）</summary><p class="us-note">'+(stop?'判斷方式：取前五個交易日的最高收盤價，當日收盤必須更高；等於不算突破。':key==='us'?'判斷方式：VIX 收盤大於或等於 25，列為風險警戒。':'判斷方式：HYG 的 20 日報酬減去 IEF 的 20 日報酬，小於或等於 −3 個百分點，列為風險警戒。')+'</p>'+(proxy?'<p class="us-note">'+esc(proxy)+'</p>':'')+research+'</details></article>';
+   return '<article class="us-alert-card '+(active?(stop?'confirm-on':'signal-on'):'')+'" data-signal="'+key+'" data-signal-market="'+(key.startsWith('us')?'us':'taiwan')+'"><div class="us-alert-head"><h3>'+esc(title)+'</h3><span class="us-alert-badge '+(active?(stop?'confirmed':'alert'):'')+'">'+badge+'</span></div><p class="us-signal-intro">'+esc(intro)+'</p><div class="us-alert-value">'+value+'</div><p class="us-signal-condition">'+esc(condition)+'</p><div class="us-signal-distance">'+esc(distance)+'</div>'+dateNote(c)+'<div class="us-signal-chart" data-signal-chart="'+key+'"></div><details class="us-research"><summary>歷史表現與統計依據</summary>'+research+'</details></article>';
   };
   const cards=state.riskProfiles.map(x=>{
    const key=x.market==='美股'?'us':'taiwan';
-   const research='<p class="us-research-verification"><b>歷史研究數據待核驗</b><br>以下保留程式既有研究數字，非網站即時回測。原始研究來源、樣本截止日及急跌定義尚未補齊，不能視為已核實的預測勝率。</p>'
-    +'<h4 class="us-study-title">按交易日統計 · 未來 20 個交易日</h4>'
-    +stat('警示日後出現急跌的比例',num(x.daily_trigger_probability_pct,1)+'%')
-    +stat('未警示日後出現急跌的比例',num(x.daily_no_trigger_probability_pct,1)+'%')
+   const c=all[key]||{},proxy=c.proxy_note||((cur[key]||{}).proxy_note)||'';
+   const research='<p class="us-research-verification">歷史研究數據待核驗 · 非即時回測</p>'
+    +'<h4 class="us-study-title">歷史警示表現</h4>'
+    +stat('警示事件命中率',num(x.episode_success_rate_pct,1)+'%',x.alert_episode_hits+'／'+x.alert_episodes+' 次')
+    +stat('未伴隨急跌',num(x.episode_no_hit_rate_pct,1)+'%',x.episode_no_hit_count+'／'+x.alert_episodes+' 次')
+    +stat('成功預警提前天數（中位數）',x.median_lead_sessions+' 個交易日')
+    +stat('急跌事件涵蓋率',num(x.event_capture_rate_pct,1)+'%',x.event_capture_count+'／'+x.event_count+' 次急跌前有警示')
+    +'<p class="us-note">提前天數僅含成功案例，不是本次訊號的倒數。</p>'
+    +'<details class="us-research us-stat-definitions"><summary>交易日比較 · 未來 20 個交易日</summary>'
+    +stat('警示日後急跌比例',num(x.daily_trigger_probability_pct,1)+'%')
+    +stat('未警示日後急跌比例',num(x.daily_no_trigger_probability_pct,1)+'%')
     +stat('兩組比例差',num(x.daily_trigger_probability_pct-x.daily_no_trigger_probability_pct,1)+' 個百分點')
-    +stat('全部樣本的基準急跌比例',num(x.base_probability_pct,1)+'%')
-    +'<p class="us-note">分母是交易日；連續警示日可能涵蓋同一次跌勢，樣本會重疊。上列比例不能直接與下方按警示事件計算的命中率相比。</p>'
-    +'<h4 class="us-study-title">按警示事件統計 · 每次警示分開計數</h4>'
-    +stat('警示後符合急跌條件',x.alert_episode_hits+'／'+x.alert_episodes+' 次 · '+num(x.episode_success_rate_pct,1)+'%')
-    +stat('警示後未符合急跌條件',x.episode_no_hit_count+'／'+x.alert_episodes+' 次 · '+num(x.episode_no_hit_rate_pct,1)+'%')
-    +stat('成功預警的提前天數中位數',x.median_lead_sessions+' 個交易日')
-    +'<p class="us-note">提前天數只統計成功預警的案例，不是本次訊號的倒數計時。連續警示如何合併為一次事件，仍待原始研究確認。</p>'
-    +'<h4 class="us-study-title">從急跌事件反查 · 觀察漏報</h4>'
-    +stat('急跌前曾出現警示的比例',x.event_capture_count+'／'+x.event_count+' 次 · '+num(x.event_capture_rate_pct,1)+'%')
-    +'<p class="us-note">分母改為全部急跌事件；用來看指標涵蓋多少次急跌，不是警示後的命中率。警示事件與急跌事件未必一對一。</p>'
-    +'<p class="us-alert-foot">樣本起始：'+esc(x.source_start)+' 年；截止日未提供。統計目標：'+esc(x.target)+'。本次數值只決定是否達到警戒條件，不把上述比例當成今天的急跌機率。</p>';
-
+    +stat('全部樣本基準',num(x.base_probability_pct,1)+'%')
+    +'<p class="us-note">按交易日計數；連續警示可能涵蓋同一次跌勢，不能直接與事件命中率相比。</p></details>'
+    +definitions('<p class="us-note">判斷規則：'+(key==='us'?'VIX 收盤大於或等於 25。':'HYG 的 20 日報酬減去 IEF 的 20 日報酬，小於或等於 −3 個百分點。')+'</p>'
+    +(proxy?'<p class="us-note">'+esc(proxy)+'</p>':'')
+    +'<p class="us-note">事件命中率與未伴隨急跌比例：分母為警示事件；連續警示如何合併為一次事件，仍待原始研究確認。提前天數只統計成功預警案例。</p>'
+    +'<p class="us-note">急跌事件涵蓋率：分母為全部急跌事件，觀察急跌前曾有警示的比例；不是警示後的命中率，兩類事件未必一對一。</p>'
+    +'<p class="us-note">研究為程式既有固定數字；原始研究來源、樣本截止日及急跌定義尚未補齊，不能視為已核實的預測勝率。</p>'
+    +'<p class="us-alert-foot">樣本起始：'+esc(x.source_start)+' 年；截止日未提供。統計目標：'+esc(x.target)+'。目前數值只判斷警戒條件，上述比例不是今天的急跌機率。</p>');
    return card(key,key==='us'?'市場波動風險 · VIX':'信用風險警戒 · HYG／IEF',research);
   });
   state.stopProfiles.forEach(x=>{
-   let research='<p class="us-research-verification"><b>歷史研究數據待核驗</b><br>以下為程式既有固定研究數字，非網站即時回測。原始來源、完整樣本期間與緩跌／急跌分組條件尚未補齊。</p>';
+   let research='<p class="us-research-verification">歷史研究數據待核驗 · 非即時回測</p>';
    ['gradual','fast'].forEach(k=>{const p=x[k];research+='<h4 class="us-study-title">'+(k==='fast'?'急跌後的突破樣本':'緩跌後的突破樣本')+'</h4>'
-    +stat('符合研究確認條件的訊號',p.hits+'／'+p.signals+' 次 · '+num(p.success_rate_pct,1)+'%')
-    +stat('研究列示的基準比例',num(p.baseline_pct,1)+'%')
-    +stat('相對基準的比例差',num(p.success_rate_pct-p.baseline_pct,1)+' 個百分點')
-    +stat('距後續 20 日區間最低點（中位數）',p.median_days_to_next_20d_low+' 個交易日')
-    +'<p class="us-note">比例的分母為該組突破訊號數；基準樣本的選取方式仍待核驗。距低點天數是在歷史資料中回看訊號日與後續低點的間隔，不代表本次還有幾天見底。</p>';});
-   research+='<h4 class="us-study-title">研究確認條件</h4><p class="us-note">程式記載：訊號後 10 個交易日，不跌破訊號日前 10 日的最低點，且第 10 日收盤高於訊號日收盤；兩項同時成立才列為命中。這個條件不等於確認長期底部。</p><p class="us-alert-foot">目前突破條件：收盤嚴格高於前 5 個交易日最高收盤，等於不算。兩組歷史樣本共用這個現行判定，但完整研究方法尚待核驗；本次突破與否不直接轉換為未來成功機率。</p>';
-
+    +stat('歷史命中率',num(p.success_rate_pct,1)+'%',p.hits+'／'+p.signals+' 次')
+    +stat('研究基準',num(p.baseline_pct,1)+'%','比例差 '+num(p.success_rate_pct-p.baseline_pct,1)+' 個百分點')
+    +stat('距後續低點（中位數）',p.median_days_to_next_20d_low+' 個交易日');});
+   research+='<p class="us-note">天數為歷史訊號距後續低點的間隔，不是本次見底倒數。</p>'
+    +definitions('<p class="us-note">突破規則：收盤嚴格高於前 5 個交易日最高收盤，等於不算。</p>'
+    +'<p class="us-note">命中條件：訊號後 10 個交易日，不跌破訊號日前 10 日的最低點，且第 10 日收盤高於訊號日收盤；兩項同時成立才列為命中，不等於確認長期底部。</p>'
+    +'<p class="us-note">命中率分母為該組突破訊號數；比例差為命中率減去研究基準。距低點天數是在歷史資料回看訊號日與後續 20 個交易日區間最低點的間隔。</p>'
+    +'<p class="us-note">研究為程式既有固定數字；原始來源、完整樣本期間、緩跌／急跌分組條件及基準樣本選取方式尚待核驗。</p>'
+    +'<p class="us-alert-foot">兩組歷史樣本共用現行突破判定，但完整研究方法尚待核驗；本次突破與否不直接轉換為未來成功機率。</p>');
    cards.push(card(x.market==='美股'?'us_stop':'taiwan_stop','短線價格突破 · '+x.index,research));
   });
   $('#us-risk-alerts').innerHTML='<div class="us-risk-market-tools"><div class="us-market-switch" role="group" aria-label="風險觀察市場"><button type="button" data-signal-market-select="us">美股</button><button type="button" data-signal-market-select="taiwan">台股</button></div><p class="us-note" id="us-market-help"></p></div>'+cards.join('');
