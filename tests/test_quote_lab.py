@@ -88,3 +88,38 @@ def test_explicit_uid_precedes_email_without_query(monkeypatch):
     assert allowed_user('owner',get,Mock())
     assert not allowed_user('other',get,Mock())
     get.assert_not_called()
+
+
+def test_holdings_endpoint_owner_only_and_positive_lots_merged(monkeypatch):
+    monkeypatch.setenv('FUGLE_TEST_USER_ID','owner')
+    c,cur=client(monkeypatch,[('2308','台達電'),('00981A','測試 ETF')])
+    assert c.get('/web/quote-lab/holdings').status_code==401
+    assert c.get('/web/quote-lab/holdings',headers={'X-Fixture-User':'other'}).status_code==403
+    cur.execute.assert_not_called()
+    r=c.get('/web/quote-lab/holdings?uid=someone-else',headers={'X-Fixture-User':'owner'})
+    assert r.status_code==200
+    assert r.json['holdings']==[{'code':'2308','name':'台達電'},{'code':'00981A','name':'測試 ETF'}]
+    query,params=cur.execute.call_args.args
+    assert params==('owner',)
+    assert 'COALESCE(p.shares,0)>0' in query and 'GROUP BY p.code' in query
+    assert 'no-store' in r.headers['Cache-Control']
+
+
+def test_holdings_query_failure_is_not_an_empty_portfolio(monkeypatch):
+    monkeypatch.setenv('FUGLE_TEST_USER_ID','owner')
+    c,cur=client(monkeypatch)
+    cur.execute.side_effect=RuntimeError('database unavailable')
+    r=c.get('/web/quote-lab/holdings',headers={'X-Fixture-User':'owner'})
+    assert r.status_code==503
+    assert r.json['ok'] is False
+    assert 'holdings' not in r.json
+
+
+def test_empty_holdings_is_valid_and_bad_codes_are_reported(monkeypatch):
+    monkeypatch.setenv('FUGLE_TEST_USER_ID','owner')
+    c,cur=client(monkeypatch)
+    assert c.get('/web/quote-lab/holdings',headers={'X-Fixture-User':'owner'}).json['holdings']==[]
+    cur.fetchall.return_value=[('2308','台達電'),('<bad>','invalid')]
+    result=c.get('/web/quote-lab/holdings',headers={'X-Fixture-User':'owner'}).json
+    assert len(result['holdings'])==1 and result['unsupported_count']==1
+    assert c.post('/web/quote-lab/holdings',headers={'X-Fixture-User':'owner'}).status_code==405
