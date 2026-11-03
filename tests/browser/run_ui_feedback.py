@@ -28,7 +28,7 @@ with sync_playwright() as p:
    msg='請填入正確的代號、股數與成本價。' if state['post']=='invalid' else '已新增測試持股。'
    html=html.replace('<article class="position-card"','<div class="msg">'+msg+'</div><article class="position-card"',1)
    r.fulfill(body=html,content_type='text/html');return
-  mapping={'/web/positions':'positions','/web/leaderboard':'rank','/web/settings':'settings','/web/more':'settings','/shell':'loading','/web/portfolio':'home','/web/workbench':'workbench'}
+  mapping={'/web/positions':'positions','/web/leaderboard':'rank','/web/settings':'settings','/web/more':'more','/shell':'loading','/web/portfolio':'home','/web/workbench':'workbench'}
   name=mapping.get(u.path,'settings');name='positions' if u.path=='/shell' and query.get('fragment') else name;suffix='-fragment' if query.get('fragment') else ''
   if query.get('fragment') and state['delay_nav']:state['held']=r;return
   if query.get('fragment') and state['fail_nav']:r.fulfill(status=503,body='測試失敗');return
@@ -47,6 +47,11 @@ with sync_playwright() as p:
  ready('/web/positions')
  check('actual holdings initialize without JS parse errors',not errors,errors)
  check('shared runtime only loaded once',page.locator('script[src*="ui-feedback.js"]').count()==1)
+ check('mobile app bar exposes all seven destinations',page.locator('.app-bottom-nav a').count()==7 and [x.inner_text().strip() for x in page.locator('.app-bottom-nav a').all()]==['今日','看盤','持股','選股','排行榜','美股輪動','更多'])
+ check('all seven destinations share one bottom bar',page.locator('.bottom-inner').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===7 and e.scrollHeight<90'))
+ check('holdings use a two-column app layout',page.locator('.rows').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===2'))
+ check('holdings read as a board rather than floating tiles',page.locator('.position-card').first.evaluate('(e)=>getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none"'))
+ check('holding summary numbers stay on one line',page.locator('.position-card-primary b').evaluateAll('(es)=>es.every(e=>getComputedStyle(e).whiteSpace==="nowrap")'))
  check('seven actual cards and donut legends',page.locator('.position-card').count()==7 and page.locator('.allocation-item').count()==7)
  check('each holding gets shared circle selector',page.locator('[data-ui-allocation-select]').count()==7)
  page.locator('[data-allocation-select="1002"]').click()
@@ -57,6 +62,9 @@ with sync_playwright() as p:
  page.locator('[data-ui-allocation-select="1003"]').click()
  check('holding list selects corresponding circle',page.locator('[data-allocation-select="1003"]').get_attribute('aria-pressed')=='true')
  page.locator('[data-allocation-reset]').click();check('reset clears both sides',page.locator('.ui-allocation-selected').count()==0 and page.locator('.allocation-item[aria-pressed=true]').count()==0)
+ page.set_viewport_size({'width':1280,'height':900})
+ check('desktop switches to sidebar navigation and three holding columns',css(page.locator('.top-nav'),'position')=='fixed' and css(page.locator('.app-bottom-nav'),'display')=='none' and page.locator('.rows').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===3'))
+ page.set_viewport_size({'width':390,'height':844})
  card=page.locator('.position-card[data-position-code="1001"]');summary=card.locator('.position-more>summary')
  summary.click();check('details respond immediately',card.locator('.position-more').get_attribute('open') is not None)
  check('shared height animation starts',page.evaluate('document.getAnimations().some(a=>a.effect&&a.effect.target.classList.contains("ui-disclosure"))'))
@@ -111,15 +119,18 @@ with sync_playwright() as p:
  page.evaluate('window.stockBotSwitchPage("/web/leaderboard",true)')
  check('route does not insert a blocking skeleton card',page.locator('.ui-feedback-route').count()==0)
  check('route keeps previous page visible and interactive',page.locator('#app-page-content').evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).pointerEvents!=="none"') and page.locator('form.add').is_visible())
- check('bottom navigation immediately acknowledges selection',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').evaluate('(e)=>e.classList.contains("ui-nav-pending")'))
+ check('navigation immediately acknowledges leaderboard selection',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').evaluate('(e)=>e.classList.contains("ui-nav-pending")'))
  state['delay_nav']=False;held_route().fulfill(body=ROOT.joinpath('rank-fragment.html').read_text(),content_type='text/html')
  page.wait_for_selector('#rankTabs');page.wait_for_timeout(150)
  check('route remains free of a blocking card after success',page.locator('.ui-feedback-route').count()==0)
- check('nav selection committed only after success',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').get_attribute('aria-current')=='page')
+ check('selected destination follows the loaded page',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').get_attribute('aria-current')=='page')
  count=len(requests);page.locator('#rankTabs [data-board=long]').click();check('period selection applies immediately',page.locator('[data-board-panel=long]').is_visible())
  check('real rank delta retained','↑ 2 名' in page.locator('[data-board-panel=long] .rank-move').first.inner_text())
  check('rank period visible feedback','已切換' in page.locator('.ui-rank-feedback').inner_text())
  check('rank period triggers no fetch',len(requests)==count)
+ member_toggle=page.locator('.rank-chart-panel .leaderboard-chart-toggle').first;member_line=page.locator('.rank-chart-panel .leaderboard-chart-series').first
+ member_toggle.click();check('ranking member name hides its own comparison line',member_toggle.get_attribute('aria-pressed')=='false' and member_line.evaluate('(e)=>getComputedStyle(e).display==="none"'))
+ member_toggle.click();check('ranking member name restores its comparison line',member_toggle.get_attribute('aria-pressed')=='true' and member_line.evaluate('(e)=>getComputedStyle(e).display!=="none"'))
  # Check the settled selected color after the brief press/release feedback.
  page.wait_for_timeout(220)
  check('rank selected button has a light background',page.locator('#rankTabs [data-board=long]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))

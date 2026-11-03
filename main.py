@@ -25876,41 +25876,37 @@ def render_page(title, body, nav_active=None, user_name=None):
     """所有網頁共用的外框。用字串組裝就好，這個規模不需要模板引擎。"""
     # 盤前是獨立頁面，不能因為底部沒有專屬分頁就誤亮「今日」。
     active_nav = nav_active
-    def tab(href, label, key):
-        on = " class=\"on\"" if key == active_nav else ""
-        refresh = ' data-fresh-nav="1"' if href == "/web/portfolio" else ""
-        return f'<a href="{href}"{on}{refresh} data-app-nav="1">{label}</a>'
+    primary_nav_keys = {"portfolio", "market", "positions", "screener", "leaderboard", "us_rotation"}
+    more_on = bool(active_nav and active_nav not in primary_nav_keys)
+    nav_items = [
+        ("/web/portfolio", "今日", "portfolio", "M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"),
+        ("/web/market", "看盤", "market", "M3 18l6-6 4 3 8-9M15 6h6v6"),
+        ("/web/positions", "持股", "positions", "M4 5h16v14H4zM8 9h8M8 13h5"),
+        ("/web/workbench", "選股", "screener", "M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4zM16 16l5 5"),
+        ("/web/leaderboard", "排行榜", "leaderboard", "M4 19V9h4v10m4 0V4h4v15m4 0v-7h-4M2 21h20"),
+        ("/web/us-rotation", "美股輪動", "us_rotation", "M4 18l5-5 4 3 7-9M15 7h5v5"),
+    ]
 
-    def bottom_tab(href, icon, label, key):
-        on = " on" if key == active_nav else ""
+    def nav_link(href, label, key, icon_path):
+        selected = key == active_nav or (key == "more" and more_on)
+        classes = "on" if selected else ""
+        current = ' aria-current="page"' if selected else ""
         refresh = ' data-fresh-nav="1"' if href == "/web/portfolio" else ""
-        return f'<a href="{href}" class="{on.strip()}"{refresh} data-app-nav="1"><b>{icon}</b>{label}</a>'
+        return (f'<a href="{href}" class="{classes}"{current}{refresh} data-app-nav="1" '
+                f'aria-label="{label}"><svg class="app-nav-icon" viewBox="0 0 24 24" '
+                f'aria-hidden="true"><path d="{icon_path}"/></svg><span>{label}</span></a>')
 
     nav = ""
     if nav_active:
-        nav = ("<nav class=\"top-nav\">"
-               + tab("/web/portfolio", "今日", "portfolio")
-                       + tab("/web/market", "看盤", "market")
-               + tab("/web/leaderboard", "排行榜", "leaderboard")
-               + tab("/web/positions", "持股", "positions")
-               + tab("/web/market", "看盤", "market")
-               + tab("/web/trades", "紀錄", "trades")
-               + tab("/web/workbench", "選股", "screener")
-               + tab("/web/us-rotation", "美股輪動", "us_rotation")
-               + tab("/web/compare", "比較", "compare")
-               + tab("/web/settings", "設定", "settings")
+        nav = ('<nav class="top-nav" aria-label="主要導覽">'
+               + "".join(nav_link(href, label, key, icon) for href, label, key, icon in nav_items)
+               + nav_link("/web/more", "更多", "more", "M5 5h14M5 12h14M5 19h14")
                + "</nav>")
 
-    more_on = active_nav in {"settings", "trades", "compare", "watchlist", "more"}
-    bottom_nav = ("<div class=\"app-bottom-nav\"><div class=\"bottom-inner\">"
-                  + bottom_tab("/web/portfolio", "⌂", "今日", "portfolio")
-                  + bottom_tab("/web/market", "⌁", "看盤", "market")
-                  + bottom_tab("/web/positions", "▣", "持股", "positions")
-                  + bottom_tab("/web/workbench", "⌕", "選股", "screener")
-                  + bottom_tab("/web/leaderboard", "≡", "排行", "leaderboard")
-                  + bottom_tab("/web/us-rotation", "↗", "美股輪動", "us_rotation")
-                  + f'<a href="/web/more" class="{"on" if more_on else ""}" data-app-nav="1"><b>⋯</b>更多</a>'
-                  + "</div></div>")
+    bottom_nav = ('<nav class="app-bottom-nav" aria-label="主要導覽"><div class="bottom-inner">'
+                  + "".join(nav_link(href, label, key, icon) for href, label, key, icon in nav_items)
+                  + nav_link("/web/more", "更多", "more", "M5 5h14M5 12h14M5 19h14")
+                  + "</div></nav>")
 
     # LINE WebView 偶爾不保留 cookie；導覽列也必須帶著有效 token，不能只有內容區帶。
     nav = preserve_web_token(nav)
@@ -25925,7 +25921,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     body = inject_csrf_inputs(body)
     body = preserve_web_token(body)
     page_back = ""
-    if nav_active and nav_active != "portfolio":
+    if nav_active and nav_active not in primary_nav_keys and title != "更多":
         page_back = preserve_web_token(
             '<div class="page-back"><a href="#" data-history-back="1" aria-label="回上一頁">‹ 上一頁</a></div>')
     header_user = current_web_user()
@@ -26121,9 +26117,7 @@ body #app-page-content .rank-card .rank-number,body #app-page-content .rank-card
   body .app-header,body header.app-header{position:relative!important;inset:auto!important;width:100%!important;max-width:760px!important;margin:0 auto 10px!important;padding-top:calc(env(safe-area-inset-top,0px) + 10px)!important;z-index:1!important;transform:none!important}
   body .app-header .page-back{position:relative!important;inset:auto!important;display:block!important;margin:0 0 8px!important}
   body .app-header .app-account-link{top:calc(env(safe-area-inset-top,0px) + 10px)!important}
-  body .app-bottom-nav .bottom-inner{grid-template-columns:repeat(7,minmax(0,1fr))!important;gap:1px!important}
-  body .app-bottom-nav .bottom-inner a{font-size:8px!important;padding-left:0!important;padding-right:0!important;letter-spacing:-.02em!important}
-  body .app-bottom-nav .bottom-inner a b{font-size:17px!important}
+  body .app-bottom-nav .bottom-inner{grid-template-columns:repeat(7,minmax(0,1fr))!important;gap:2px!important}
 }
 '''
 
@@ -27666,10 +27660,11 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261103-11">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261103-13">
+<link rel="stylesheet" href="/static/app-shell.css?v=20261103-6">
 <script defer src="/static/ui-feedback.js?v=20261103-4"></script>
 <script defer src="/static/fugle-live.js?v=20261103-6"></script>
-</head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
+</head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
     <div class="nav-loader-head">
@@ -27930,12 +27925,14 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   var appRouteKeys = {{
     '/web/portfolio':'portfolio','/web/positions':'positions','/web/workbench':'screener',
     '/web/leaderboard':'leaderboard','/web/trades':'trades','/web/compare':'compare',
-    '/web/settings':'settings','/web/more':'more','/web/chips':'screener','/web/etf':'more','/web/watchlist':'watchlist'
+    '/web/settings':'settings','/web/more':'more','/web/chips':'screener','/web/etf':'more','/web/watchlist':'watchlist',
+    '/web/market':'market'
   }};
   var appTitles = {{
-    '/web/portfolio':'今日','/web/positions':'持股','/web/workbench':'選股工作台',
+    '/web/portfolio':'今日','/web/positions':'持股','/web/workbench':'選股',
     '/web/leaderboard':'排行榜','/web/trades':'紀錄','/web/compare':'比較',
-    '/web/settings':'設定','/web/more':'更多功能','/web/chips':'籌碼超人','/web/etf':'ETF 專區','/web/watchlist':'名單儀表板'
+    '/web/settings':'設定','/web/more':'更多','/web/chips':'籌碼超人','/web/etf':'ETF 專區','/web/watchlist':'名單儀表板',
+    '/web/market':'看盤','/web/us-rotation':'美股輪動','/web/stock-analysis':'個股研究'
   }};
   // 賣出後走勢：定義在殼層而不是片段裡。
   // 片段內的腳本標籤在這個環境不會執行（實測過三版都沒用）。
@@ -28026,11 +28023,14 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   }}
   function setAppNavState(path) {{
     var key = appRouteKeys[path] || '';
+    var primaryKeys = {{portfolio:1,market:1,positions:1,screener:1,leaderboard:1,us_rotation:1}};
+    var selectedKey = key ? (primaryKeys[key] ? key : 'more') : '';
     document.querySelectorAll('[data-app-nav="1"]').forEach(function(link) {{
       var linkPath = new URL(link.href, window.location.href).pathname;
       var linkKey = appRouteKeys[linkPath] || '';
-      link.classList.toggle('on', !!key && linkKey === key);
-      if (!!key && linkKey === key) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current');
+      var navKey = linkPath === '/web/more' ? 'more' : (primaryKeys[linkKey] ? linkKey : (linkKey ? 'more' : ''));
+      link.classList.toggle('on', !!selectedKey && navKey === selectedKey);
+      if (!!selectedKey && navKey === selectedKey) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current');
     }});
     var h1 = document.querySelector('.app-header h1');
     if (h1 && appTitles[path]) h1.textContent = appTitles[path];
@@ -28067,7 +28067,13 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   function switchAppPage(rawHref, pushState) {{
     if (!appContent) {{ window.location.assign(rawHref); return; }}
     var target = new URL(rawHref, window.location.href);
-    if (!appRouteKeys[target.pathname]) {{ window.location.assign(target.pathname + target.search); return; }}
+    if (!appRouteKeys[target.pathname]) {{
+      var fullRouteTitle = appTitles[target.pathname] || '頁面';
+      if (window.showPageNavLoader) window.showPageNavLoader('正在開啟' + fullRouteTitle, true, true);
+      if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟' + fullRouteTitle + '…', target.pathname);
+      window.location.assign(target.pathname + target.search);
+      return;
+    }}
     // 選股工作台含有大量原生頁面腳本；SPA fragment 插入後，部分 WebView/Safari
     // 情況下動態 script 不會穩定執行，會只留下「讀取最近有效快照…」骨架。
     // 因此選股工作台改走一次正常文件導覽；仍保留上方小型 Loading，而不是全頁動畫。
@@ -31985,14 +31991,14 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
 {exright_html}
 {totals}
 {f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px;{"" if _is_taiwan_intraday_window() else "display:none"}">歷史行情優先使用最近有效快取並在背景更新；盤中現價由官方 MIS 局部同步，約每 5 秒檢查一次。若官方報價暫缺，保留最後有效價格並顯示來源時間。</div>' if positions else ''}
-{portfolio_trend_html}
-{allocation_html}
 <div class="section-head"><h2>持股明細</h2>
   <span class="section-note">依市值排序　·　<a href="/web/trades" style="color:var(--brass)">操作日報 →</a></span></div>
-{(f'<details class="target-allocation-disclosure" id="target-allocation"><summary><span><b>調整目標持股比例</b><small>直接修改每檔目標；股票與 ETF 合計 100%</small></span><span class="target-allocation-total" data-target-total>尚未完成</span></summary><section class="target-allocation-panel"><form method="post" action="/web/positions#target-allocation" class="target-allocation-form" id="target-allocation-form">{csrf_hidden_input()}<input type="hidden" name="action" value="save_target_weights"><div class="target-allocation-list">' + ''.join(f'<label class="target-allocation-row"><span><b>{html.escape(stock_display_name(str(x.get("code") or "")))}</b><small>{html.escape(str(x.get("code") or ""))}</small></span><span class="target-allocation-input"><input type="number" name="target_weight_{html.escape(str(x.get("code") or ""), quote=True)}" min="0" max="100" step="0.1" inputmode="decimal" value="{target_weights.get(str(x.get("code") or ""), "")}" placeholder="0.0" required><i>%</i></span></label>' for x in sorted(positions, key=lambda z: str(z.get("code") or ""))) + '</div><div class="target-allocation-foot"><span>目標合計 <b id="target-allocation-sum">0.0%</b></span><button type="submit">儲存目標比例</button></div><p class="target-allocation-hint" id="target-allocation-hint">比例只保存為目標，不會自動交易。合計必須等於 100%。</p></form></section></details>' if positions else '')}
 <div class="rows">
 {''.join(rows_html) if rows_html else '<div class="empty">還沒有持股紀錄，用下方表單新增。</div>'}
 </div>
+{(f'<details class="target-allocation-disclosure" id="target-allocation"><summary><span><b>調整目標持股比例</b><small>直接修改每檔目標；股票與 ETF 合計 100%</small></span><span class="target-allocation-total" data-target-total>尚未完成</span></summary><section class="target-allocation-panel"><form method="post" action="/web/positions#target-allocation" class="target-allocation-form" id="target-allocation-form">{csrf_hidden_input()}<input type="hidden" name="action" value="save_target_weights"><div class="target-allocation-list">' + ''.join(f'<label class="target-allocation-row"><span><b>{html.escape(stock_display_name(str(x.get("code") or "")))}</b><small>{html.escape(str(x.get("code") or ""))}</small></span><span class="target-allocation-input"><input type="number" name="target_weight_{html.escape(str(x.get("code") or ""), quote=True)}" min="0" max="100" step="0.1" inputmode="decimal" value="{target_weights.get(str(x.get("code") or ""), "")}" placeholder="0.0" required><i>%</i></span></label>' for x in sorted(positions, key=lambda z: str(z.get("code") or ""))) + '</div><div class="target-allocation-foot"><span>目標合計 <b id="target-allocation-sum">0.0%</b></span><button type="submit">儲存目標比例</button></div><p class="target-allocation-hint" id="target-allocation-hint">比例只保存為目標，不會自動交易。合計必須等於 100%。</p></form></section></details>' if positions else '')}
+{portfolio_trend_html}
+{allocation_html}
 
 <form class="add" method="post" action="/web/positions">
   {csrf_hidden_input()}
@@ -40807,10 +40813,13 @@ def web_more(uid):
 
 <div class="more-group">
   <div class="more-group-title">分析工具</div>
-  <a class="more-item" href="/web/watchlist"><span class="more-icon">▤</span><span><b>名單儀表板</b><small>輸入或帶入自選名單，一次看完既有資料</small></span><strong>›</strong></a>
-  <a class="more-item" href="/web/trades"><span class="more-icon">▤</span><span><b>交易紀錄</b><small>查看已實現損益與交易統計</small></span><strong>›</strong></a>
-  <a class="more-item" href="/web/compare"><span class="more-icon">⌕</span><span><b>股票比較</b><small>一次比較最多 4 檔股票</small></span><strong>›</strong></a>
-  <a class="more-item" href="/web/etf"><span class="more-icon">▦</span><span><b>ETF 專區</b><small>主動式、高股息、市值型、主題型</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/leaderboard" data-app-nav="1"><span class="more-icon">▤</span><span><b>排行榜</b><small>查看會員組合績效與排名變化</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/us-rotation" data-app-nav="1"><span class="more-icon">↗</span><span><b>美股輪動</b><small>追蹐美國產業趨勢與台灣供應鏈</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/workbench" data-app-nav="1"><span class="more-icon">⌕</span><span><b>智慧選股</b><small>既有因子、策略研究與選股工具</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/watchlist" data-app-nav="1"><span class="more-icon">▤</span><span><b>名單儀表板</b><small>輸入或帶入自選名單，一次看完既有資料</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/trades" data-app-nav="1"><span class="more-icon">▤</span><span><b>交易紀錄</b><small>查看已實現損益與交易統計</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/compare" data-app-nav="1"><span class="more-icon">⌕</span><span><b>股票比較</b><small>一次比較最多 4 檔股票</small></span><strong>›</strong></a>
+  <a class="more-item" href="/web/etf" data-app-nav="1"><span class="more-icon">▦</span><span><b>ETF 專區</b><small>主動式、高股息、市值型、主題型</small></span><strong>›</strong></a>
 </div>
 
 <div class="more-group">
@@ -40834,7 +40843,7 @@ def web_more(uid):
 """
     if is_admin(uid):
         body = body.replace('<div class="more-note">部分功能僅在其他入口或管理端使用，不會顯示於此處。</div>', '<div class="more-group"><div class="more-group-title">管理員</div><a class="more-item" href="/web/admin"><span class="more-icon">⚙</span><span><b>管理員後台</b><small>使用者、LINE 通知、系統狀態與歷史紀錄維護</small></span><strong>›</strong></a></div><div class="more-note">管理員專用功能。</div>')
-    return render_page("更多", body, nav_active="more")
+    return respond_page("更多", body, nav_active="more")
 
 
 @app.route("/web/watchlist")
@@ -41723,7 +41732,7 @@ def _render_home_v2(d):
       <a class="market" href="/web/market" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18V8m5 10V4m5 14v-7m6 7V6M2 21h20"/></svg></i><span><b>個股看盤</b><small>走勢・K 線圖</small></span><em aria-hidden="true">›</em></a>
       <a class="holdings" href="/web/positions" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V5m0 14h17M7 15l4-5 3 2 6-7"/><circle cx="20" cy="5" r="1"/></svg></i><span><b>我的持股</b><small>部位・損益分析</small></span><em aria-hidden="true">›</em></a>
       <a class="screen" href="/web/workbench" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5M8 11h6m-3-3v6"/></svg></i><span><b>智慧選股</b><small>找出市場機會</small></span><em aria-hidden="true">›</em></a>
-      <a class="rank" href="/web/leaderboard" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V9h4v10m4 0V4h4v15m4 0v-7h-4"/><path d="M2 21h20"/></svg></i><span><b>市場排行</b><small>熱門・績效榜</small></span><em aria-hidden="true">›</em></a>
+      <a class="rank" href="/web/leaderboard" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V9h4v10m4 0V4h4v15m4 0v-7h-4"/><path d="M2 21h20"/></svg></i><span><b>排行榜</b><small>熱門・績效榜</small></span><em aria-hidden="true">›</em></a>
     </div>
   </section>
   <style>
@@ -50122,7 +50131,7 @@ def web_workbench(uid):
     body = render_workbench_body(request.args.get("tab"))
     if wants_fragment():
         return preserve_web_token(inject_csrf_inputs(body))
-    return render_page("選股工作台", body, nav_active="screener")
+    return render_page("選股", body, nav_active="screener")
 
 
 
