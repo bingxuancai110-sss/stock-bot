@@ -27661,7 +27661,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261103-13">
-<link rel="stylesheet" href="/static/app-shell.css?v=20261103-6">
+<link rel="stylesheet" href="/static/app-shell.css?v=20261103-7">
 <script defer src="/static/ui-feedback.js?v=20261103-4"></script>
 <script defer src="/static/fugle-live.js?v=20261103-6"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
@@ -28025,6 +28025,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     var key = appRouteKeys[path] || '';
     var primaryKeys = {{portfolio:1,market:1,positions:1,screener:1,leaderboard:1,us_rotation:1}};
     var selectedKey = key ? (primaryKeys[key] ? key : 'more') : '';
+    document.body.dataset.appView = key || 'page';
     document.querySelectorAll('[data-app-nav="1"]').forEach(function(link) {{
       var linkPath = new URL(link.href, window.location.href).pathname;
       var linkKey = appRouteKeys[linkPath] || '';
