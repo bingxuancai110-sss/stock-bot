@@ -86,3 +86,13 @@ def test_batch_missing_prices_recover_individually_without_refetching_successes(
     calls=[call.kwargs['params']['ex_ch'] for call in session.get.call_args_list]
     assert len(calls)==3
     assert 'tse_3026.tw_20261103' not in calls
+
+
+def test_failed_single_recovery_is_throttled_across_outer_retries():
+    rows=[dict(c=c,d='20261103',ex='tse',z='-',pz='-',y='100') for c in ['2308','2330']]
+    ns,session=context(rows)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        ns['_TWSE_MIS_EXECUTOR']=executor
+        for _ in range(3):
+            assert ns['_fetch_twse_mis_quotes'](['2308','2330'],'.TW',force_refresh=True,cache_result=False)=={}
+    assert len(session.get.call_args_list)==5  # three batches, two single attempts total

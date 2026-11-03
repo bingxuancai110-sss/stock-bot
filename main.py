@@ -7190,7 +7190,7 @@ def _refresh_home_intraday_payload_sync(uid):
                           "positive": positive, "negative": negative,
                     "stale_names": stale_names[:6],
                     "stale_count": len(stale_names), "ready": True},
-            "note": ("首頁盤中行情已更新；" +
+            "note": (("盤中報價尚未補齊；官方快照缺價，延遲備援尚未涵蓋全部持股；" if stale_codes else "首頁盤中行情已更新；") +
                      (f"本輪有 {backup_quote_count} 檔使用 Yahoo 1 分 K 備援（可能延遲，非官方即時）；" if backup_quote_count else "") +
                      "若 MIS 本輪漏回個股，會沿用今天先前已成功取得的有效報價；絕不沿用前一交易日行情。"
                      "尚未有今天有效報價的標的暫不計入整體貢獻。"),
@@ -10036,8 +10036,7 @@ def _home_market_suffix_map(codes):
 
 
 def _twse_mis_quote_symbols(codes, market_suffix=None):
-    # Use the explicit daily channel returned by MIS getStock; undated incremental
-    # channels can return today's metadata with z/pz absent on the initial poll.
+    # Request an explicit daily channel so the requested trading date is unambiguous.
     symbols = []
     trade_day = taiwan_today().strftime("%Y%m%d")
     for code in codes:
@@ -10234,7 +10233,13 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
         recovery_symbols.extend(symbol for symbol in batch
                                 if symbol.split(".tw", 1)[0] not in live_channels)
     if recovery_symbols:
-        single_batches = [[symbol] for symbol in dict.fromkeys(recovery_symbols)]
+        with _realtime_cache_lock:
+            attempts = _TWSE_MIS_CACHE.setdefault("single_attempt_at", {})
+            single_batches = []
+            for symbol in dict.fromkeys(recovery_symbols):
+                if time.time() - attempts.get(symbol, 0) >= 15:
+                    attempts[symbol] = time.time()
+                    single_batches.append([symbol])
         batch_results.extend(_TWSE_MIS_EXECUTOR.map(fetch_one, single_batches))
     for batch, payload, error in batch_results:
         if error is not None:
@@ -53022,27 +53027,6 @@ def _bootstrap_tw_research(attempt=0):
 _tw_research_bootstrap_timer = threading.Timer(20, _bootstrap_tw_research)
 _tw_research_bootstrap_timer.daemon = True
 _tw_research_bootstrap_timer.start()
-
-
-# Temporary, read-only public-market probe for the missing-quote incident.
-def _probe_missing_mis_quotes():
-    if not _is_taiwan_intraday_window():
-        return
-    try:
-        codes = ["2308", "009816", "00981A", "6442", "6669", "8996", "6223", "2368", "2383", "3026"]
-        suffixes = {c: ".TW" for c in codes}
-        suffixes["6223"] = ".TWO"
-        quotes = _fetch_twse_mis_quotes(codes, suffixes, force_refresh=True, cache_result=False)
-        valid = {c:q for c,q in quotes.items() if _mis_quote_is_current_for_contribution(q)}
-        print("MIS 日期頻道驗證：valid=%s/%s quotes=%s" % (len(valid),len(codes),
-            [{"code":c,"price":q.get("close"),"time":q.get("updated_at"),"source":q.get("source")}
-             for c,q in valid.items()]), flush=True)
-    except Exception as exc:
-        print("MIS 開機診斷失敗：%s" % type(exc).__name__, flush=True)
-
-_missing_mis_probe = threading.Timer(5, _probe_missing_mis_quotes)
-_missing_mis_probe.daemon = True
-_missing_mis_probe.start()
 
 
 if __name__ == "__main__":
