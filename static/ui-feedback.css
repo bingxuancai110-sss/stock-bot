@@ -278,6 +278,8 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals .total-value{color:#fff!important;font-size:clamp(19px,5.2vw,27px)!important;font-weight:820!important;line-height:1.1!important;letter-spacing:-.035em!important;font-variant-numeric:tabular-nums!important;white-space:nowrap!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:first-child .total-value{font-size:clamp(26px,7vw,36px)!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals .total-sub{margin-top:4px!important;color:rgba(255,255,255,.78)!important;font-size:10px!important;line-height:1.35!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="net_pct"].up{color:#ffb2a5!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="net_pct"].down{color:#a7edce!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="net_pl"].up,
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="day_pl"].up{color:#ffb2a5!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="net_pl"].down,

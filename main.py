@@ -27656,7 +27656,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261103-6">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261103-7">
 <script defer src="/static/ui-feedback.js?v=20261103-4"></script>
 <script defer src="/static/fugle-live.js?v=20261103-5"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
@@ -31778,7 +31778,7 @@ def web_positions(uid):
 <div class="totals">
   <div><div class="total-label">總市值</div>
        <div class="total-value num" data-fugle-total="value">{total_value:,.0f}</div>
-       <div class="total-sub" data-fugle-total="net_pct">{fmt_pct(pl_total)}</div></div>
+       <div class="total-sub {'up' if pl_total is not None and pl_total >= 0 else 'down' if pl_total is not None else 'flat'}" data-fugle-total="net_pct">{fmt_pct(pl_total)}</div></div>
   <div><div class="total-label">淨損益</div>
        <div data-fugle-total="net_pl" class="total-value num {'up' if total_value - total_cost - total_fee >= 0 else 'down'}">
          {total_value - total_cost - total_fee:+,.0f}</div>
