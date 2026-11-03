@@ -454,3 +454,57 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 /* Restore the original non-blocking full-page route transition. */
 .ui-route-pending{opacity:1;pointer-events:auto;transition:none}
 .ui-feedback-route[data-state=error],.ui-feedback-route[data-state=waiting]{min-height:0;padding:10px 13px}
+
+/* Shared app shell: stable navigation, readable content width, and safe-area spacing. */
+:root{--sb-shell-ink:var(--ui-ink,#193247);--sb-shell-muted:var(--ink-soft,#6d8291);--sb-shell-line:var(--ui-line,#dce5e9);--sb-shell-canvas:var(--ui-page,#f3f6f7);--sb-shell-accent:var(--ui-blue,#246786);--sb-shell-surface:var(--ui-surface,#fff);--sb-shell-soft:var(--ui-blue-soft,#eaf3f4)}
+html body#stockbot-app{background:var(--sb-shell-canvas)!important;color:var(--sb-shell-ink)}
+html body#stockbot-app #stockbot-shell{box-sizing:border-box!important;width:100%!important;max-width:100%!important;margin:0 auto!important}
+html body#stockbot-app #stockbot-shell>.wrap{box-sizing:border-box!important;width:100%!important;max-width:100%!important;margin:0 auto!important;padding:0 18px calc(92px + env(safe-area-inset-bottom,0px))!important}
+html body#stockbot-app #stockbot-shell>.wrap>.app-header{position:relative!important;inset:auto!important;width:auto!important;max-width:none!important;margin:0 -18px 16px!important;padding:calc(env(safe-area-inset-top,0px) + 17px) 20px 15px!important;border:0!important;border-bottom:1px solid var(--sb-shell-line)!important;border-radius:0 0 20px 20px!important;background:var(--sb-shell-surface)!important;box-shadow:0 7px 24px rgba(26,53,70,.045)!important;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+html body#stockbot-app #stockbot-shell>.wrap>.app-header h1{font-size:clamp(26px,5vw,34px)!important;letter-spacing:-.04em!important}
+html body#stockbot-app #stockbot-shell>.wrap>.app-header .eyebrow{font-size:10px!important;letter-spacing:.16em!important}
+html body#stockbot-app #stockbot-shell>.wrap>.app-header .dateline{font-size:13px!important}
+html body#stockbot-app #stockbot-shell>.wrap>.top-nav{display:none!important}
+html body#stockbot-app #stockbot-shell>.wrap>#app-page-content{box-sizing:border-box!important;width:100%!important;max-width:920px!important;margin:0 auto!important;padding-top:4px}
+html body#stockbot-app #stockbot-shell .more-hero{position:relative!important;overflow:visible!important;margin:2px 0 12px!important;padding:8px 2px 12px!important;border:0!important;border-bottom:1px solid var(--sb-shell-line)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+html body#stockbot-app #stockbot-shell .more-hero::after{display:none!important;content:none!important}
+html body#stockbot-app #stockbot-shell .more-hero h1{margin:4px 0!important;color:var(--sb-shell-ink)!important;font-size:25px!important;letter-spacing:-.025em!important}
+html body#stockbot-app #stockbot-shell .more-hero p{max-width:40em!important;margin:0!important;color:var(--sb-shell-muted)!important;font-size:12px!important;line-height:1.65!important}
+html body#stockbot-app .app-bottom-nav{position:fixed!important;z-index:1000!important;inset:auto 0 0!important;display:flex!important;justify-content:center!important;box-sizing:border-box!important;width:100%!important;padding:7px 12px calc(7px + env(safe-area-inset-bottom,0px))!important;border-top:1px solid rgba(210,222,228,.92)!important;background:var(--sb-shell-surface)!important;box-shadow:0 -8px 28px rgba(25,50,71,.08)!important;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+html body#stockbot-app .app-bottom-nav .bottom-inner{display:grid!important;grid-template-columns:repeat(7,minmax(0,1fr))!important;gap:0!important;width:min(100%,820px)!important;margin:0 auto!important}
+html body#stockbot-app .app-bottom-nav .bottom-inner>a{display:flex!important;min-width:0!important;min-height:54px!important;flex-direction:column!important;align-items:center!important;justify-content:center!important;gap:3px!important;padding:5px 2px!important;border:1px solid transparent!important;border-radius:14px!important;background:transparent!important;color:#718391!important;text-decoration:none!important;font-size:10px!important;font-weight:700!important;line-height:1.15!important;letter-spacing:0!important;transition:background-color .18s ease,color .18s ease,transform .18s ease!important}
+html body#stockbot-app .app-bottom-nav .bottom-inner>a .app-nav-icon{display:block!important;width:21px!important;height:21px!important;overflow:visible!important;fill:none!important;stroke:currentColor!important;stroke-width:1.8!important;stroke-linecap:round!important;stroke-linejoin:round!important}
+html body#stockbot-app .app-bottom-nav .bottom-inner>a:first-child .app-nav-icon path{fill:currentColor;stroke:none}
+html body#stockbot-app .app-bottom-nav .bottom-inner>a.on{border-color:var(--sb-shell-line)!important;background:var(--sb-shell-soft)!important;color:var(--sb-shell-accent)!important;box-shadow:none!important}
+html body#stockbot-app .app-bottom-nav .bottom-inner>a:active{transform:scale(.94)!important}
+html body#stockbot-app .app-bottom-nav .bottom-inner>a:focus-visible{outline:2px solid #3c8599!important;outline-offset:2px!important}
+html body#stockbot-app #stockbot-shell .more-group{padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+html body#stockbot-app #stockbot-shell .more-group-title{margin:20px 2px 7px!important;color:var(--sb-shell-muted)!important;font-size:11px!important;letter-spacing:.04em}
+html body#stockbot-app #stockbot-shell .more-item{display:flex!important;align-items:center!important;gap:12px!important;min-height:66px!important;margin:0!important;padding:10px 4px!important;border:0!important;border-bottom:1px solid var(--sb-shell-line)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;color:var(--sb-shell-ink)!important;text-decoration:none!important}
+html body#stockbot-app #stockbot-shell .more-item .more-icon{display:grid!important;place-items:center!important;flex:0 0 38px!important;width:38px!important;height:38px!important;border-radius:12px!important;background:var(--sb-shell-soft)!important;color:var(--sb-shell-accent)!important;font-size:17px!important}
+html body#stockbot-app #stockbot-shell .more-item>span:nth-child(2){display:grid!important;gap:3px!important;min-width:0!important;flex:1}
+html body#stockbot-app #stockbot-shell .more-item b{font-size:14px!important}
+html body#stockbot-app #stockbot-shell .more-item small{color:var(--sb-shell-muted)!important;font-size:11px!important;line-height:1.45!important}
+html body#stockbot-app #stockbot-shell .more-item strong{color:#8ba0ab!important;font-size:21px!important;font-weight:500!important}
+html body#stockbot-app #stockbot-shell .more-item:active{background:#eaf1f3!important;transform:scale(.99)}
+@media(min-width:900px){
+  html body#stockbot-app #stockbot-shell{width:auto!important;max-width:none!important;margin:0 0 0 244px!important}
+  html body#stockbot-app #stockbot-shell>.wrap{width:100%!important;max-width:none!important;padding:0 34px 42px!important}
+  html body#stockbot-app #stockbot-shell>.wrap>.app-header{min-height:82px!important;margin:0 -34px 24px!important;padding:16px 34px!important;border-radius:0!important}
+  html body#stockbot-app #stockbot-shell>.wrap>.app-header h1{font-size:29px!important}
+  html body#stockbot-app #stockbot-shell>.wrap>.top-nav{position:fixed!important;z-index:1001!important;inset:0 auto 0 0!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;justify-content:flex-start!important;gap:6px!important;box-sizing:border-box!important;width:224px!important;height:100dvh!important;margin:0!important;padding:30px 14px!important;border:0!important;border-right:1px solid var(--sb-shell-line)!important;border-radius:0!important;background:var(--sb-shell-surface)!important;box-shadow:4px 0 22px rgba(25,50,71,.035)!important}
+  html body#stockbot-app #stockbot-shell>.wrap>.top-nav::before{content:"台股 BOT"!important;display:block!important;margin:2px 12px 25px!important;padding:5px 0 17px!important;border-bottom:1px solid var(--sb-shell-line)!important;color:var(--sb-shell-ink)!important;font-size:19px!important;font-weight:900!important;letter-spacing:-.03em!important}
+  html body#stockbot-app #stockbot-shell>.wrap>.top-nav>a{display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:12px!important;min-height:48px!important;padding:0 13px!important;border:1px solid transparent!important;border-radius:12px!important;background:transparent!important;color:#5f7685!important;text-decoration:none!important;font-size:13px!important;font-weight:750!important}
+  html body#stockbot-app #stockbot-shell>.wrap>.top-nav>a .app-nav-icon{width:20px!important;height:20px!important;fill:none!important;stroke:currentColor!important;stroke-width:1.8!important;stroke-linecap:round!important;stroke-linejoin:round!important}
+  html body#stockbot-app #stockbot-shell>.wrap>.top-nav>a.on{background:var(--sb-shell-soft)!important;color:var(--sb-shell-accent)!important;border-color:var(--sb-shell-line)!important}
+  html body#stockbot-app #stockbot-shell>.wrap>#app-page-content{max-width:1320px!important;margin:0 auto!important}
+  html body#stockbot-app .app-bottom-nav{display:none!important}
+}
+@media(max-width:420px){
+  html body#stockbot-app #stockbot-shell>.wrap{padding-left:13px!important;padding-right:13px!important}
+  html body#stockbot-app #stockbot-shell>.wrap>.app-header{margin-left:-13px!important;margin-right:-13px!important;padding-left:16px!important;padding-right:16px!important}
+  html body#stockbot-app .app-bottom-nav{padding-left:7px!important;padding-right:7px!important}
+  html body#stockbot-app .app-bottom-nav .bottom-inner{gap:2px!important}
+  html body#stockbot-app .app-bottom-nav .bottom-inner>a{font-size:9px!important}
+}
+@media(prefers-reduced-motion:reduce){html body#stockbot-app .app-bottom-nav .bottom-inner>a{transition:none!important}}

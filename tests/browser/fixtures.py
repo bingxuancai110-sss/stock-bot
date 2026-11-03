@@ -5,11 +5,12 @@ repo=Path(__file__).resolve().parents[2]
 root=Path(os.environ.get('STOCKBOT_UI_ARTIFACTS','/tmp/stockbot-ui-validation'));root.mkdir(parents=True,exist_ok=True)
 s=repo.joinpath('main.py').read_text();lines=s.splitlines(True);tree=ast.parse(s)
 ns=dict(html=html,re=re,json=json,math=math,date=date,datetime=datetime,timedelta=timedelta,taiwan_today=lambda:date(2026,11,2),taiwan_now=lambda:datetime(2026,11,2,15),current_web_user=lambda:None,get_web_ui_theme=lambda u:'mist',inject_csrf_inputs=lambda b:b,preserve_web_token=lambda b:b)
+ns['respond_page']=lambda title,body,nav_active=None:ns['render_page'](title,body,nav_active)
 def compile_node(n,local=ns):
  # Strip Flask decorators: these are isolated renderers, no app/database import.
  if isinstance(n,ast.FunctionDef):n.decorator_list=[]
  exec(compile(ast.Module(body=[n],type_ignores=[]),'<actual-renderer>','exec'),local)
-for name in ['_hv2_scope','_hv2_bang','compute_twr','fmt_pct','render_page','render_trend_chart','render_leaderboard_chart','_hv2_group_html','_hv2_impact_card','_render_home_v2','render_workbench_body']:
+for name in ['_hv2_scope','_hv2_bang','compute_twr','fmt_pct','render_page','render_trend_chart','render_leaderboard_chart','_hv2_group_html','_hv2_impact_card','_render_home_v2','render_workbench_body','web_more']:
  n=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name);compile_node(n)
 for n in tree.body:
  if isinstance(n,ast.Assign):
@@ -32,7 +33,7 @@ fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='web_p
 x=ast.parse(''.join(lines[fn.lineno-1:fn.end_lineno])).body[0]
 for node in x.body:
  selected=isinstance(node,ast.For) and any(isinstance(a,ast.Call) and isinstance(a.func,ast.Attribute) and isinstance(a.func.value,ast.Name) and a.func.value.id=='rows_html' and a.func.attr=='append' for a in ast.walk(node))
- selected=selected or isinstance(node,ast.Assign) and any(getattr(t,'id','') in {'totals','allocation_html','holding_card_css','body'} for t in node.targets)
+ selected=selected or isinstance(node,ast.Assign) and any(getattr(t,'id','') in {'pl_total','pl_total_text','totals','allocation_html','holding_card_css','body'} for t in node.targets)
  selected=selected or isinstance(node,ast.If) and isinstance(node.test,ast.Name) and node.test.id=='allocation_items'
  selected=selected or isinstance(node,ast.AugAssign) and getattr(node.target,'id','')=='body'
  if selected:compile_node(node,local)
@@ -44,10 +45,14 @@ ns['safe_html_text']=lambda text:html.escape(str(text))
 chart=ns['render_leaderboard_chart'](series,[(p['date'],j*.07) for j,p in enumerate(pts)],list(series))
 rank='<div class="tabs rank-tabs" id="rankTabs">'+''.join('<button type="button" data-board="'+k+'" class="'+('on' if k=='short' else '')+'">'+label+'</button>' for k,label in [('short','短線 近30天'),('long','長線 累計'),('season','賽季 本季')])+'</div>'
 for k in ['short','long','season']:
- rank+='<section data-board-panel="'+k+'" style="'+('' if k=='short' else 'display:none')+'"><div class="rank-rows">'+''.join('<article class="rank-card"><div class="rank-primary-line"><b class="rank-number">#'+str(i)+'</b><span class="name">測試會員'+str(i)+'</span></div><b class="rank-return up">+'+str(i)+'.20%</b><span class="rank-move '+('up' if i%2 else 'down')+'">'+('↑ 2 名' if i%2 else '↓ 1 名')+'</span><details class="rank-detail"><summary>持股明細</summary><div>合成持股明細</div></details></article>' for i in range(1,5))+'</div>'+chart+'</section>'
+ rank+='<section data-board-panel="'+k+'" style="'+('' if k=='short' else 'display:none')+'"><div class="rank-rows">'+''.join('<article class="rank-card"><div class="rank-primary-line"><b class="rank-number">#'+str(i)+'</b><span class="name">測試會員'+str(i)+'</span></div><b class="rank-return up">+'+str(i)+'.20%</b><span class="rank-move '+('up' if i%2 else 'down')+'">'+('↑ 2 名' if i%2 else '↓ 1 名')+'</span><details class="rank-detail"><summary>持股明細</summary><div>合成持股明細</div></details></article>' for i in range(1,5))+'</div></section>'
+rank+='<div class="section-head"><h2>走勢比較</h2><span class="section-note">短期與長期分開看</span></div>'
+for title,note in [('短期｜近30天','所有人從相同的30天區間重新歸零比較。'),('長期｜加入後累計','從各自加入排行榜的日期開始計算。'),('賽季｜本季','從本季第一個有效交易日重新計算。')]:rank+='<div class="callout rank-chart-panel"><div style="font-weight:800;font-size:15px;margin-bottom:4px">'+title+'</div><div class="sub" style="margin-bottom:10px">'+note+'</div>'+chart+'</div>'
 # Use the actual existing board-switch listener, not a test replacement.
 rank_fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='web_leaderboard');rank_source=''.join(lines[rank_fn.lineno-1:rank_fn.end_lineno]);start=rank_source.index('var tabs = document.getElementById(\'rankTabs\')');end=rank_source.index('</script>',start)
 rank+='<script>(function(){'+rank_source[start:end].replace('{{','{').replace('}}','}')+'</script>'
+toggle_start=rank_source.index('function toggleLeaderboardSeries(event){');toggle_end=rank_source.index('})();',toggle_start)+4
+rank+='<script>(function(){'+rank_source[toggle_start:toggle_end].replace('{{','{').replace('}}','}')+'</script>'
 # Include every legacy leaderboard style block so specificity regressions are tested.
 rank='<style>'+ '\n'.join(re.findall(r'<style[^>]*>(.*?)</style>',rank_source,re.S)).replace('{{','{').replace('}}','}')+'</style>'+rank
 rank+='<section class="leaderboard-history" id="leaderboard-history"><div class="tabs history-tabs" id="historyTabs"><button type="button" class="on" data-history="months">月榜</button><button type="button" data-history="seasons">賽季榜</button></div><div data-history-panel="months">合成月榜資料</div><div data-history-panel="seasons" style="display:none">合成賽季資料</div></section>'
@@ -83,3 +88,6 @@ groups=ns['_hv2_group_html']('up','推升組合',len(pos),home_ns['contribution_
 data=dict(total_value=70000,total_cost=63000,holdings_count=7,pl_html=ns['fmt_pct'](11.1),market_html=ns['fmt_pct'](-1),portfolio_label='你的組合',portfolio_html=ns['fmt_pct'](1),relative_html=ns['fmt_pct'](2),market_status='合成測試行情',sync_title='測試資料',sync_detail='畫面測試用',contribution_day_label='今日',stale_notice='',impact_positive=dict(name=pos[0][0]['name'],pct=1.2,contribution=.1),impact_negative=dict(name=neg[0][0]['name'],pct=-1.5,contribution=-.2),contribution_groups=groups,holdings_html=home_ns['_home_holdings_preview_html'],journal_html='',judgement_html='<p>合成組合判讀</p>',live_script='')
 home=ns['_render_home_v2'](data);root.joinpath('home-fragment.html').write_text(home);root.joinpath('home.html').write_text(ns['render_page']('今日',home,'portfolio'))
 workbench=ns['render_workbench_body']();root.joinpath('workbench.html').write_text(ns['render_page']('選股工作台',workbench,'screener'))
+ns['is_admin']=lambda uid:False
+more=ns['web_more']('fixture-user')
+root.joinpath('more.html').write_text(more)
