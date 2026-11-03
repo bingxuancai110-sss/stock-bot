@@ -41783,13 +41783,6 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
                 break
             market_data_target_day -= timedelta(days=1)
     intraday_taiex = fetch_taiex_intraday(stale_while_revalidate=True) if intraday_window else None
-    _first_payload_portfolio = (intraday_payload or {}).get("portfolio") or {}
-    _first_payload_complete = bool(
-        _first_payload_portfolio.get("ready") and
-        int(_first_payload_portfolio.get("stale_count") or 0) == 0 and
-        _first_payload_portfolio.get("pct") is not None and
-        _first_payload_portfolio.get("relative") is not None
-    )
 
     # 首頁今日價格與組合計算統一採用已驗證的同日即時報價。
     # 官方 MIS 是主來源；只有 MIS 暫缺時才允許已標示、時間新鮮的 Yahoo 1 分 K 備援。
@@ -41815,43 +41808,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
                     str(quote.get("close_date") or "").replace("-", "")[:8] == today_key and
                     _mis_quote_is_current_for_contribution(quote)):
                 valid_today_quotes[code] = dict(quote)
-        missing_codes = [code for code in holding_codes if code not in valid_today_quotes]
-        # 若首屏績效 worker 已取得完整、可驗證的今日報價，就不在 renderer 裡再抓一次。
-        # 避免同一個首頁請求重複佔用 MIS，也避免額外等三輪補抓。
-        for retry_round in (range(0 if _first_payload_complete else 3) if intraday_window else range(0)):
-            if not missing_codes:
-                break
-            fetched = _fetch_twse_mis_quotes(
-                missing_codes, market_suffix=_home_market_suffix_map(missing_codes),
-                force_refresh=True, cache_result=(retry_round == 0), quick_mode=False)
-            for code, quote in (fetched or {}).items():
-                quote_source = str(quote.get("source") or "")
-                eligible_source = ("MIS" in quote_source.upper() or
-                                   "Yahoo Finance 1 分 K 備援" in quote_source)
-                if (str(quote.get("close_date") or "").replace("-", "")[:8] == today_key and
-                        eligible_source and _mis_quote_is_current_for_contribution(quote)):
-                    valid_today_quotes[code] = dict(quote)
-                    price_map[code] = dict(quote)
-            missing_codes = [code for code in holding_codes if code not in valid_today_quotes]
-            if missing_codes and retry_round < 2:
-                time.sleep(0.25 * (retry_round + 1))
-        # After MIS retries, try a fresh intraday 1m bar for any still-missing position.
-        # Backup prices retain their source label and never qualify after market close.
-        if missing_codes and intraday_window:
-            try:
-                backup_quotes = _fetch_yahoo_intraday_backup_quotes(
-                    missing_codes, market_suffix=_home_market_suffix_map(missing_codes),
-                    max_age_minutes=30)
-                for code, quote in (backup_quotes or {}).items():
-                    if _mis_quote_is_current_for_contribution(quote):
-                        valid_today_quotes[code] = dict(quote)
-                        price_map[code] = dict(quote)
-                missing_codes = [code for code in holding_codes if code not in valid_today_quotes]
-                if backup_quotes:
-                    print("⚠️ 首頁 renderer 以 Yahoo 1 分 K 備援補上 %s 檔；可能延遲，非官方即時" % (
-                        len(set(backup_quotes) - set(missing_codes))), flush=True)
-            except Exception as backup_exc:
-                print("⚠️ 首頁 renderer Yahoo 1 分 K 備援失敗：%s" % type(backup_exc).__name__, flush=True)
+        # Rendering is cache-only. Live quote workers and the private Fugle feed
+        # refresh prices after the page is interactive; missing quotes are not zero.
         if valid_today_quotes:
             # 讓曝險計算與持股 renderer 使用同一份官方今日報價，不能讓 price_map
             # 裡殘留的舊 Yahoo／舊快取優先覆蓋 holding.price。
@@ -43962,6 +43920,13 @@ def _get_homepage_prices_cached(uid, codes, refresh_official=True):
 
 
 
+def _get_homepage_render_prices(uid, codes):
+    """Page HTML uses cached history plus validated local quotes, never live MIS retries."""
+    history = _get_homepage_prices_cached(uid, codes, refresh_official=False)
+    return _homepage_merge_official_quotes(
+        history, codes, user_id=uid, force_refresh=False, allow_network=False)
+
+
 def _same_day_home_quote_map(uid, codes=None):
     # Fast in-memory view of official quotes from today only.
     requested = set(str(code).strip() for code in (codes or []) if str(code).strip())
@@ -44510,7 +44475,7 @@ def web_portfolio(uid):
     # 日內首頁同時需要目前持股行情與當日操作日誌。兩者互不相依，並行讀取；
     # 若當天已全部賣出某標的，再補抓該代號行情，保留它在日初至減碼前的貢獻。
     with ThreadPoolExecutor(max_workers=2) as exposure_executor:
-        price_future = exposure_executor.submit(_get_homepage_prices_cached, uid, position_codes, False)
+        price_future = exposure_executor.submit(_get_homepage_render_prices, uid, position_codes)
         journal_key = (uid, taiwan_today())
         with _HOMEPAGE_CACHE_LOCK:
             journal_cached = _HOMEPAGE_JOURNAL_CACHE.get(journal_key)
@@ -44518,19 +44483,6 @@ def web_portfolio(uid):
                              time.monotonic() - journal_cached[0] < _HOMEPAGE_JOURNAL_TTL)
         journal_future = None if journal_fresh else exposure_executor.submit(get_position_change_logs, uid, 5000)
         price_map = price_future.result()
-        # 今日漲跌幅／組合貢獻不能直接使用首頁歷史序列快取。
-        # 歷史序列可以先快取以加速首屏，但在計算今日貢獻前，必須重新向官方 MIS
-        # 要求今日報價，再覆蓋現價與 pct；MIS 沒回傳的股票保留歷史資料供其他區塊使用，
-        # 但下方 holding_day_pct 會因缺少今日時間戳而排除，絕不把舊 pct 算成今日貢獻。
-        if position_codes:
-            try:
-                price_map = _homepage_merge_official_quotes(
-                    price_map, position_codes, market_suffix=None, force_refresh=True,
-                    user_id=uid, allow_network=True)
-                print("⚡ 首頁完成持股行情同步（來源依各檔標示）：%s 檔目標持股" % len(position_codes), flush=True)
-            except Exception as exc:
-                print("⚠️ 首頁今日貢獻官方行情刷新失敗：%s: %s" % (
-                    type(exc).__name__, exc), flush=True)
         if journal_fresh:
             journal_logs = journal_cached[1]
             print("⚡ 首頁操作日誌命中短快取")
@@ -44547,7 +44499,7 @@ def web_portfolio(uid):
     missing_reduced_quotes = sorted(code for code in reduced_today_codes
                                    if code and code not in price_map)
     if missing_reduced_quotes:
-        price_map.update(get_realtime_stocks_bulk(missing_reduced_quotes))
+        price_map.update(_same_day_home_quote_map(uid, missing_reduced_quotes))
     price_done = time.monotonic()
     _home_cp("PRICE_JOURNAL_DONE", ms=round((price_done-shared_done)*1000), price_count=len(price_map), journal_count=len(journal_logs))
     total_value, total_cost = 0.0, 0.0
@@ -53019,13 +52971,46 @@ app.register_blueprint(create_us_rotation_blueprint(
 ))
 
 
+_FUGLE_MARKET_CLOSE_LOCK = threading.Lock()
+_FUGLE_MARKET_CLOSE_CACHE = {"day": None, "data": None, "attempt_at": 0, "running": False}
+
+
+def _fugle_market_quote(now):
+    """Index failure cannot delay a portfolio that already has all Fugle stock prices."""
+    if _is_taiwan_intraday_window(now):
+        return fetch_taiex_intraday(stale_while_revalidate=True)
+    if not _taiwan_post_close(now):
+        return None
+    day = now.date().isoformat()
+    with _FUGLE_MARKET_CLOSE_LOCK:
+        state = _FUGLE_MARKET_CLOSE_CACHE
+        if state["day"] != day:
+            state.update(day=day, data=None, attempt_at=0, running=False)
+        result = dict(state["data"]) if state["data"] else None
+        if state["running"] or time.time()-state["attempt_at"] < 30:
+            return result
+        state.update(running=True, attempt_at=time.time())
+    def refresh():
+        try:
+            value = fetch_taiex_official_close(now=now)
+            with _FUGLE_MARKET_CLOSE_LOCK:
+                if state["day"] == day and value:
+                    state["data"] = value
+        finally:
+            with _FUGLE_MARKET_CLOSE_LOCK:
+                if state["day"] == day:
+                    state["running"] = False
+    threading.Thread(target=refresh, name="fugle-market-close", daemon=True).start()
+    return result
+
+
 def _apply_fugle_browser_quotes(uid, raw):
     from fugle_live import normalize_quotes
     positions = merge_positions(get_positions(uid))
     codes = {str(p.get("code") or "").strip() for p in positions}
     now = taiwan_now()
     quotes = normalize_quotes(raw, codes, now)
-    market = fetch_taiex_intraday() if _is_taiwan_intraday_window(now) else fetch_taiex_official_close(now=now)
+    market = _fugle_market_quote(now)
     market_payload = ({"pct": market.get("pct"), "source": market.get("source"),
                        "updated_at": market.get("updated_at"), "stale": bool(market.get("stale"))}
                       if market and market.get("pct") is not None else None)

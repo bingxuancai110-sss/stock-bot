@@ -1,5 +1,7 @@
 """Use the real holdings/fee/contribution functions with isolated positions and feeds."""
 import ast
+import threading
+import time
 from datetime import datetime, date
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -9,11 +11,13 @@ NOW=datetime(2026,11,3,10,0,tzinfo=ZoneInfo('Asia/Taipei'))
 
 
 def actual_namespace():
-    ns=dict(datetime=datetime,date=date,taiwan_now=lambda:NOW,taiwan_today=lambda:NOW.date(),
+    ns=dict(datetime=datetime,date=date,threading=threading,time=time,
+            _FUGLE_MARKET_CLOSE_LOCK=threading.Lock(),_FUGLE_MARKET_CLOSE_CACHE={"day":None,"data":None,"attempt_at":0,"running":False},
+            _taiwan_post_close=lambda now=None:False,taiwan_now=lambda:NOW,taiwan_today=lambda:NOW.date(),
             stock_display_name=lambda code,inst=None,name=None:name or code,
             merge_positions=lambda p:p,get_positions=lambda uid:[dict(code='2308',shares=10,cost=90,lots=[]),dict(code='00981A',shares=20,cost=40,lots=[])],
             get_position_change_logs=lambda *a,**kw:[],get_realized_trades=lambda *a:[],
-            fetch_taiex_intraday=lambda:{'pct':1,'source':'fixture market','updated_at':'2026-11-03 10:00:00'},
+            fetch_taiex_intraday=lambda **kwargs:{'pct':1,'source':'fixture market','updated_at':'2026-11-03 10:00:00'},
             fetch_taiex_official_close=lambda **kw:{'pct':1},_is_taiwan_intraday_window=lambda now=None:True,
             get_profile=lambda uid:{},get_portfolio_target_weights=lambda uid:{'2308':50},
             _mis_quote_is_current_for_contribution=lambda q:True)
@@ -21,7 +25,7 @@ def actual_namespace():
     constants={'BROKER_FEE_RATE','TAX_RATE_STOCK','TAX_RATE_ETF','DEFAULT_FEE_DISCOUNT','DEFAULT_MIN_FEE'}
     for n in tree.body:
         if isinstance(n,ast.Assign) and any(getattr(t,'id','') in constants for t in n.targets):exec(compile(ast.Module(body=[n],type_ignores=[]),'<actual-constants>','exec'),ns)
-    names={'_position_change_date','_build_daily_pretrade_exposure','_today_realized_by_code','is_etf','broker_fee','net_profit','get_fee_settings','_calculate_home_quote_payload','_apply_fugle_browser_quotes'}
+    names={'_position_change_date','_build_daily_pretrade_exposure','_today_realized_by_code','is_etf','broker_fee','net_profit','get_fee_settings','_calculate_home_quote_payload','_apply_fugle_browser_quotes','_fugle_market_quote'}
     for n in tree.body:
         if isinstance(n,ast.FunctionDef) and n.name in names:exec(compile(ast.Module(body=[n],type_ignores=[]),'<actual-calculation>','exec'),ns)
     return ns
