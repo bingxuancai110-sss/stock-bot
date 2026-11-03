@@ -124,6 +124,7 @@ with sync_playwright() as p:
  page.wait_for_selector('#rankTabs');page.wait_for_timeout(150)
  check('route remains free of a blocking card after success',page.locator('.ui-feedback-route').count()==0)
  check('selected destination follows the loaded page',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').get_attribute('aria-current')=='page')
+ check('page-specific styling follows SPA navigation',page.locator('body').get_attribute('data-app-view')=='leaderboard')
  count=len(requests);page.locator('#rankTabs [data-board=long]').click();check('period selection applies immediately',page.locator('[data-board-panel=long]').is_visible())
  check('real rank delta retained','↑ 2 名' in page.locator('[data-board-panel=long] .rank-move').first.inner_text())
  check('rank period visible feedback','已切換' in page.locator('.ui-rank-feedback').inner_text())
