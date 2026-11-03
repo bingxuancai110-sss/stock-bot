@@ -482,3 +482,39 @@ body#stockbot-app[data-app-view="more"] #app-page-content .more-item:active {
     padding-left: 12px !important;
   }
 }
+
+/* Production review at 805px found the quote itself falling back to white
+   inherited text and the supporting facts losing contrast against the canvas. */
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-row.wb-rich-row .wb-price-block .wb-num {
+  color: var(--sb-app-ink) !important;
+  -webkit-text-fill-color: var(--sb-app-ink) !important;
+  font-size: 17px !important;
+  font-weight: 800 !important;
+  line-height: 1.25 !important;
+  font-variant-numeric: tabular-nums !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-row.wb-rich-row .wb-price-block small {
+  font-size: 12px !important;
+  font-weight: 800 !important;
+  line-height: 1.35 !important;
+  white-space: nowrap !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-row.wb-rich-row .wb-row-main {
+  color: var(--sb-app-ink) !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-row.wb-rich-row :is(.wb-fact-line,.wb-industry,.wb-small,.wb-code) {
+  color: #526878 !important;
+  -webkit-text-fill-color: #526878 !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-row.wb-rich-row .wb-score-block {
+  color: var(--sb-app-ink) !important;
+  -webkit-text-fill-color: var(--sb-app-ink) !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-row.wb-rich-row .wb-score-parts {
+  color: #526878 !important;
+  -webkit-text-fill-color: #526878 !important;
+  font-size: 11px !important;
+  line-height: 1.45 !important;
+}
