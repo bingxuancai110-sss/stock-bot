@@ -10213,6 +10213,29 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
     # 將獨立批次並行，總等待時間接近最慢的一批，而非每批等待時間相加。
     parsed = {}
     batch_results = list(_TWSE_MIS_EXECUTOR.map(fetch_one, batches))
+    # MIS may return metadata for an entire batch but omit z/pz for most symbols.
+    # Repeating that same batch does not recover the missing prices. Retry only
+    # missing daily channels individually, using the same bounded session pool.
+    recovery_symbols = []
+    for batch, payload, error in batch_results:
+        if error is not None or len(batch) <= 1:
+            continue
+        live_channels = set()
+        for row in (payload.get("msgArray") or []):
+            if not isinstance(row, dict) or str(row.get("d") or "") != today_key:
+                continue
+            try:
+                if not (0 < float(row.get("z")) < float("inf") and
+                        0 < float(row.get("y")) < float("inf")):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            live_channels.add(str(row.get("ex") or "").lower() + "_" + str(row.get("c") or ""))
+        recovery_symbols.extend(symbol for symbol in batch
+                                if symbol.split(".tw", 1)[0] not in live_channels)
+    if recovery_symbols:
+        single_batches = [[symbol] for symbol in dict.fromkeys(recovery_symbols)]
+        batch_results.extend(_TWSE_MIS_EXECUTOR.map(fetch_one, single_batches))
     for batch, payload, error in batch_results:
         if error is not None:
             print("⚠️ TWSE MIS 行情批次失敗（%s 個市場代號）：%s" % (len(batch), type(error).__name__), flush=True)
