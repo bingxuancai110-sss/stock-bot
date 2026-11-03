@@ -19,7 +19,7 @@ import ssl
 import socket
 import time
 import threading
-from market_quotes import quote_freshness, prefer_quote, mis_intraday_trade
+from market_quotes import quote_freshness, prefer_quote
 import math
 import struct
 import zlib
@@ -10036,17 +10036,20 @@ def _home_market_suffix_map(codes):
 
 
 def _twse_mis_quote_symbols(codes, market_suffix=None):
+    # Use the explicit daily channel returned by MIS getStock; undated incremental
+    # channels can return today's metadata with z/pz absent on the initial poll.
     symbols = []
+    trade_day = taiwan_today().strftime("%Y%m%d")
     for code in codes:
         suffix = market_suffix.get(code) if isinstance(market_suffix, dict) else market_suffix
         suffix = str(suffix or "").upper()
         if suffix == ".TW":
-            symbols.append(f"tse_{code}.tw")
+            symbols.append(f"tse_{code}.tw_{trade_day}")
         elif suffix == ".TWO":
-            symbols.append(f"otc_{code}.tw")
+            symbols.append(f"otc_{code}.tw_{trade_day}")
         else:
             # 未知市場才查兩種；已知市場只查一種，避免端點與結果重複。
-            symbols.extend((f"tse_{code}.tw", f"otc_{code}.tw"))
+            symbols.extend((f"tse_{code}.tw_{trade_day}", f"otc_{code}.tw_{trade_day}"))
     return symbols
 
 
@@ -10125,70 +10128,6 @@ def _mis_quote_is_current_for_contribution(quote, now=None, max_age_seconds=None
     return True
 
 
-def _fetch_twse_mis_chart_trade(task):
-    """MIS z/pz can be absent on a snapshot; its same-day chart still has real trades."""
-    code, item = task
-    try:
-        previous = float(str(item["y"]).replace(",", ""))
-        if not 0 < previous < float("inf"):
-            return code, None
-    except (TypeError, ValueError, KeyError):
-        return code, None
-    exchange = str(item.get("ex") or "").lower()
-    if exchange not in ("tse", "otc"):
-        return code, None
-    cache_key = exchange + "_" + code
-    current = taiwan_now()
-    with _realtime_cache_lock:
-        cached = (_TWSE_MIS_CACHE.get("chart_data") or {}).get(cache_key)
-        if (cached and cached.get("close_date") == current.strftime("%Y%m%d") and
-                time.time() - cached.get("_cached_at", 0) < 15):
-            result = dict(cached)
-            result.pop("_cached_at", None)
-            result["previous_close"] = previous
-            result["pct"] = (result["close"] - previous) / previous * 100
-            return code, result
-        attempts = _TWSE_MIS_CACHE.setdefault("chart_attempts", {})
-        if time.time() - attempts.get(cache_key, 0) < 15:
-            return code, None
-        attempts[cache_key] = time.time()
-    try:
-        response = _twse_mis_session().get(
-            "https://mis.twse.com.tw/stock/api/getOhlc.jsp",
-            params={"ex_ch": exchange + "_" + code + ".tw", "d0": current.strftime("%Y%m%d"),
-                    "json": "1", "_": int(time.time() * 1000)}, timeout=(2.5, 4.5))
-        response.raise_for_status()
-        payload = response.json()
-        trade = mis_intraday_trade(payload, current)
-        if not trade:
-            with _realtime_cache_lock:
-                should_log = time.time() - float(_TWSE_MIS_CACHE.get("chart_diag_at") or 0) >= 60
-                if should_log:
-                    _TWSE_MIS_CACHE["chart_diag_at"] = time.time()
-            if should_log:
-                rows = payload.get("msgArray") if isinstance(payload, dict) else None
-                print("MIS 分時成交診斷：code=%s keys=%s sample=%s" % (
-                    code, list(payload)[:10] if isinstance(payload, dict) else [],
-                    rows[:1] if isinstance(rows, list) else None), flush=True)
-            return code, None
-        close, trade_time = trade["close"], trade["time"]
-        result = {"close": close, "previous_close": previous,
-                  "pct": (close - previous) / previous * 100,
-                  "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
-                  "updated_at": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
-                  "quote_updated_at": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
-                  "trade_at": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
-                  "has_live_trade_price": True, "close_is_final": False,
-                  "source": "TWSE MIS 當日分時成交", "close_date": current.strftime("%Y%m%d"),
-                  "close_time": trade_time.strftime("%H:%M:%S")}
-        with _realtime_cache_lock:
-            _TWSE_MIS_CACHE.setdefault("chart_data", {})[cache_key] = dict(result, _cached_at=time.time())
-        return code, result
-    except Exception as exc:
-        print("MIS 分時成交讀取失敗：%s %s" % (code, type(exc).__name__), flush=True)
-        return code, None
-
-
 def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache_result=True, quick_mode=False):
     """並行批次讀取官方 TWSE MIS 當日報價；不以歷史日K補今日漲跌。"""
     codes = list(dict.fromkeys(str(code).strip() for code in (codes or []) if code))
@@ -10223,7 +10162,7 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
             try:
                 response = session.get(
                     "https://mis.twse.com.tw/stock/api/getStockInfo.jsp",
-                    params={"ex_ch": "|".join(batch), "json": "1", "delay": "0",
+                    params={"ex_ch": "|".join(batch), "json": "1",
                             "_": int(time.time() * 1000)},
                     timeout=(2.5, timeout_seconds))
                 response.raise_for_status()
@@ -10273,7 +10212,6 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
     # 原本逐批序列等待：26 個上市／上櫃代號最多連等三次 timeout。
     # 將獨立批次並行，總等待時間接近最慢的一批，而非每批等待時間相加。
     parsed = {}
-    missing_trade_rows = {}
     batch_results = list(_TWSE_MIS_EXECUTOR.map(fetch_one, batches))
     for batch, payload, error in batch_results:
         if error is not None:
@@ -10304,10 +10242,6 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
             live_close = number("z")
             close = live_close if live_close is not None and live_close > 0 else number("pz")
             previous = number("y")
-            if (previous is not None and previous > 0 and
-                    not (live_close is not None and live_close > 0) and
-                    _is_taiwan_intraday_window()):
-                missing_trade_rows[code] = dict(item)
             if close is None or close <= 0 or previous is None or previous <= 0:
                 continue
             quote_updated_at = None
@@ -10339,13 +10273,6 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
                 "close_is_final": bool(_taiwan_post_close()),
                 "close_date": item.get("d"), "close_time": item.get("t"),
             }
-
-    # Only missing snapshot prices need the official same-day time-and-sales series.
-    # The shared executor bounds concurrency; no bid/ask midpoint or yesterday's close is used.
-    if missing_trade_rows:
-        for code, quote in _TWSE_MIS_EXECUTOR.map(_fetch_twse_mis_chart_trade, missing_trade_rows.items()):
-            if quote:
-                parsed[code] = quote
 
     if cache_result:
         with _realtime_cache_lock:
@@ -53079,27 +53006,14 @@ def _probe_missing_mis_quotes():
     if not _is_taiwan_intraday_window():
         return
     try:
-        session = _twse_mis_session()
-        day = taiwan_today().strftime("%Y%m%d")
-        checks = [
-            ("dated-snapshot", "getStockInfo.jsp", {"ex_ch": "tse_2330.tw_" + day, "json": "1", "delay": "0"}),
-            ("snapshot-default-delay", "getStockInfo.jsp", {"ex_ch": "tse_2330.tw", "json": "1"}),
-            ("dated-chart", "getOhlc.jsp", {"ex_ch": "tse_2330.tw_" + day, "d0": day}),
-            ("ohlc-statis", "getChartOhlcStatis.jsp", {"ex": "tse", "ch": "2330.tw", "fqy": "1"}),
-        ]
-        for label, endpoint, params in checks:
-            try:
-                response = session.get("https://mis.twse.com.tw/stock/api/" + endpoint,
-                                       params=params, timeout=(2.5, 4.5))
-                payload = response.json()
-                rows = payload.get("msgArray") or []
-                print("MIS 端點核對：%s status=%s meta=%s sample=%s" % (
-                    label, response.status_code,
-                    {k:payload.get(k) for k in ("rtcode", "rtmessage", "userDelay")},
-                    [{k:r.get(k) for k in ("c","d","t","tlong","z","pz","y","ch")}
-                     for r in rows[-2:] if isinstance(r,dict)]), flush=True)
-            except Exception as exc:
-                print("MIS 端點核對：%s %s" % (label,type(exc).__name__), flush=True)
+        codes = ["2308", "009816", "00981A", "6442", "6669", "8996", "6223", "2368", "2383", "3026"]
+        suffixes = {c: ".TW" for c in codes}
+        suffixes["6223"] = ".TWO"
+        quotes = _fetch_twse_mis_quotes(codes, suffixes, force_refresh=True, cache_result=False)
+        valid = {c:q for c,q in quotes.items() if _mis_quote_is_current_for_contribution(q)}
+        print("MIS 日期頻道驗證：valid=%s/%s quotes=%s" % (len(valid),len(codes),
+            [{"code":c,"price":q.get("close"),"time":q.get("updated_at"),"source":q.get("source")}
+             for c,q in valid.items()]), flush=True)
     except Exception as exc:
         print("MIS 開機診斷失敗：%s" % type(exc).__name__, flush=True)
 
