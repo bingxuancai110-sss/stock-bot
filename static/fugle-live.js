@@ -51,7 +51,7 @@
   }
   function showRemember(){
     text(rememberStatus,storageFailed?'這個瀏覽器無法保存或清除裝置記錄，變更未儲存；本次仍可連線，請檢查瀏覽器設定。':saved?(saved.autoStart?'已記住此裝置，下次開網站會自動連線。':'已記住金鑰；自動連線已停止，按「啟用」可恢復。'):'尚未儲存金鑰；未勾選時僅在本次開啟期間使用。');
-    forgetButton.disabled=!saved&&!storageFailed;changeButton.disabled=!running&&!saved;
+    forgetButton.disabled=!saved&&!storageFailed&&!lastCompleteView&&!readView();changeButton.disabled=!running&&!saved;
   }
   function removeSaved(){
     saved=null;
@@ -382,15 +382,15 @@
     const positions=data.positions||{},totals=positions.totals||{},complete=totals.complete===true;
     const money=(n,d=0)=>Number(n).toLocaleString('zh-TW',{minimumFractionDigits:d,maximumFractionDigits:d});
     const pct=n=>(Number(n)>=0?'+':'')+money(n,2)+'%';
-    document.querySelectorAll('[data-fugle-total]').forEach(el=>{const field=el.dataset.fugleTotal,value=totals[field];el.textContent=value==null?'資料不足':field==='net_pct'?pct(value):money(value);if(['net_pl','net_pct','day_pl'].includes(field)){el.classList.toggle('up',value>=0);el.classList.toggle('down',value<0);}});
+    if(complete)document.querySelectorAll('[data-fugle-total]').forEach(el=>{const field=el.dataset.fugleTotal,value=totals[field];el.textContent=value==null?'資料不足':field==='net_pct'?pct(value):money(value);if(['net_pl','net_pct','day_pl'].includes(field)){el.classList.toggle('up',value>=0);el.classList.toggle('down',value<0);}});
     const hero=document.querySelector('[data-home-privacy-card] .hv2-px[data-home-sensitive]');
-    if(hero){const value=totals.value==null?'資料不足':money(totals.value);hero.dataset.homeOriginal=value;if(!hero.closest('.is-privacy-hidden'))hero.textContent=value;const gain=document.querySelector('#hv2 .hv2-head-r>b');if(gain){gain.textContent=totals.net_pct==null?'資料不足':pct(totals.net_pct);gain.classList.toggle('up',totals.net_pct>=0);gain.classList.toggle('down',totals.net_pct<0);}}
+    if(hero&&complete){const value=totals.value==null?'資料不足':money(totals.value);hero.dataset.homeOriginal=value;if(!hero.closest('.is-privacy-hidden'))hero.textContent=value;const gain=document.querySelector('#hv2 .hv2-head-r>b');if(gain){gain.textContent=totals.net_pct==null?'資料不足':pct(totals.net_pct);gain.classList.toggle('up',totals.net_pct>=0);gain.classList.toggle('down',totals.net_pct<0);}}
     (positions.updates||[]).forEach(item=>{
       const card=document.querySelector('[data-position-code="'+item.code+'"]');
       if(card){
         const target=card.querySelector('.position-target-summary em');if(target&&item.target_pct!=null&&item.weight!=null){const diff=item.weight-item.target_pct;target.textContent=Math.abs(diff)<=0.05?'符合目標':(diff>0?'高於目標 ':'低於目標 ')+money(Math.abs(diff),1)+' 個百分點';}
-        const weightBar=card.querySelector('.position-card-weight i');if(weightBar)weightBar.style.width=(item.weight==null?0:Math.min(100,item.weight/30*100))+'%';
-        const summary=card.querySelector('.position-card-weight>b');if(summary)summary.textContent=item.weight==null?'資料不足':money(item.weight,1)+'%';
+        const weightBar=card.querySelector('.position-card-weight i');if(weightBar&&item.weight!=null)weightBar.style.width=(item.weight==null?0:Math.min(100,item.weight/30*100))+'%';
+        const summary=card.querySelector('.position-card-weight>b');if(summary&&item.weight!=null)summary.textContent=money(item.weight,1)+'%';
         if(card.classList.contains('position-card-noquote')){
           card.classList.remove('position-card-noquote');const primary=card.querySelector('.position-card-primary');if(primary){primary.replaceChildren();[['今日損益',item.day_pl,'data-position-day-pl'],['市值',item.value,'data-position-value'],['持有報酬',item.gross_pct,'data-position-gross']].forEach(([label,value,attr])=>{const col=document.createElement('div'),small=document.createElement('small'),b=document.createElement('b');small.textContent=label;b.setAttribute(attr,'');b.textContent=value==null?'—':attr==='data-position-gross'?pct(value):money(value);if(attr!=='data-position-value'){b.classList.toggle('up',value>=0);b.classList.toggle('down',value<0);}col.append(small,b);primary.append(col);});}
         }
@@ -403,6 +403,52 @@
       allocation.setAttribute('aria-label',complete?'富果行情持股配置':'等待完整富果行情，配置保留前次資料');
       if(complete){let offset=0;allocation.querySelectorAll('.allocation-slice').forEach(slice=>{const item=(positions.updates||[]).find(x=>x.code===slice.dataset.allocationCode);if(!item)return;const legend=allocation.querySelector('[data-allocation-select="'+item.code+'"]');if(legend){legend.dataset.allocationWeight=item.weight;legend.dataset.allocationValue=item.value;legend.querySelector('b').textContent=money(item.weight,1)+'%';}const arc=2*Math.PI*40*item.weight/100;slice.setAttribute('stroke-dasharray',arc+' '+(2*Math.PI*40-arc));slice.setAttribute('stroke-dashoffset',-offset);offset+=arc;});const selected=allocation.querySelector('[data-allocation-select][aria-pressed=true]');const title=allocation.querySelector('[data-allocation-center-title]'),weight=allocation.querySelector('[data-allocation-center-weight]'),value=allocation.querySelector('[data-allocation-center-value]');if(weight)weight.textContent=selected?money(selected.dataset.allocationWeight,1)+'%':'100%';if(value)value.textContent=money(selected?selected.dataset.allocationValue:totals.value)+' 元';}
     }
+  }
+  // Keep complete valuation snapshots intact while a new quote batch is incomplete.
+  // A server-generated context prevents restoring valuations after position/settings changes.
+  const viewStorageKey=storageKey?storageKey.replace('fugle_device_v1:','fugle_view_v1:'):null;
+  let lastCompleteView=null,lastViewContext=null,lastViewWrite=0;
+  function validView(record){
+    const data=record&&record.data,updates=data?.positions?.updates,totals=data?.positions?.totals;
+    return record?.version===1&&Number.isFinite(record.savedAt)&&Date.now()-record.savedAt>=-300000&&Date.now()-record.savedAt<7*86400000&&
+      /^[a-f0-9]{64}$/.test(data?.view_context||'')&&/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(data?.view_as_of||'')&&totals?.complete===true&&Number.isFinite(totals.value)&&
+      Number.isFinite(data?.home?.portfolio?.pct)&&Array.isArray(updates)&&updates.length>0&&updates.length<=60&&
+      updates.every(row=>row&&typeof row.code==='string'&&/^\d{4,6}[A-Z]?$/.test(row.code)&&Number.isFinite(row.price)&&Number.isFinite(row.value));
+  }
+  function clearView(){lastCompleteView=null;lastViewWrite=0;try{if(viewStorageKey)localStorage.removeItem(viewStorageKey);}catch(ignore){}}
+  function readView(){
+    try{const raw=viewStorageKey&&localStorage.getItem(viewStorageKey);if(raw&&raw.length<=131072){const record=JSON.parse(raw);if(validView(record))return record;}}catch(ignore){}
+    return null;
+  }
+  function clearOldAggregates(){
+    document.querySelectorAll('[data-fugle-total],[data-home-portfolio-pct],[data-home-relative],[data-home-judgement-relative]').forEach(el=>{el.textContent='更新中';el.classList.remove('up','down');});
+    const hero=document.querySelector('[data-home-privacy-card] .hv2-px[data-home-sensitive]');
+    if(hero){hero.dataset.homeOriginal='更新中';if(!hero.closest('.is-privacy-hidden'))hero.textContent='更新中';}
+    const gain=document.querySelector('#hv2 .hv2-head-r>b');if(gain){gain.textContent='更新中';gain.classList.remove('up','down');}
+  }
+  function viewFor(data){
+    if(lastCompleteView&&!validView(lastCompleteView))clearView();
+    if(!lastCompleteView)lastCompleteView=readView();
+    const context=data.view_context,changed=!!context&&((lastViewContext&&lastViewContext!==context)||(lastCompleteView&&lastCompleteView.data.view_context!==context));
+    lastViewContext=context||lastViewContext;
+    if(changed){clearView();clearOldAggregates();}
+    const complete=data.positions?.totals?.complete===true&&Number.isFinite(data.home?.portfolio?.pct);
+    if(complete){
+      const record={version:1,savedAt:Date.now(),data};
+      if(validView(record)){
+        lastCompleteView=record;
+        if(Date.now()-lastViewWrite>=15000){try{if(viewStorageKey)localStorage.setItem(viewStorageKey,JSON.stringify(record));lastViewWrite=Date.now();}catch(ignore){}}
+      }
+      return data;
+    }
+    const count=data.positions?.updates?.length||0,progress='富果行情更新中 '+count+'／'+allSymbols.length+' 檔';
+    const previous=lastCompleteView?.data;
+    if(previous&&previous.view_context===context){
+      const message=progress+'；沿用上次完整資料 '+previous.view_as_of+'，新行情完整後更新。';
+      return {...previous,home:{...previous.home,market:previous.home.market?{...previous.home.market,stale:true}:null,note:message,quote_freshness:{text:message},view_retained:true},positions:{...previous.positions,note:message,view_retained:true}};
+    }
+    const message=progress+(changed?'；持股或設定已變更，正在重新計算。':'；保留頁面原有數值，等待完整行情。');
+    return {...data,home:{...data.home,portfolio:{...data.home.portfolio,ready:false},note:message,quote_freshness:{text:message}}};
   }
   function quoteRows(){
     const now=Date.now(),healthy=authenticated&&ws&&ws.readyState===1&&now-lastMessage<45000;
@@ -425,8 +471,12 @@
       if(response.status===401||response.status===403){failed('BOT 登入已失效，已停止富果行情，請重新登入 BOT。');return;}
       if(!response.ok)throw new Error('calculation unavailable');
       const data=await response.json();if(!running||mine!==generation||!data.ok)return;
-      document.dispatchEvent(new CustomEvent('stockbot:fuglequotes',{detail:data}));applyValuations(data);text(panelLabel,'富果行情 · '+(data.positions?.updates?.length||0)+'／'+allSymbols.length+' 檔已更新');
-    }catch(ignore){if(running&&mine===generation)text($('#ql-message'),'富果行情計算暫時未完成，保留最後資料；不會切換成另一來源冒充富果。');}
+      const view=viewFor(data);document.dispatchEvent(new CustomEvent('stockbot:fuglequotes',{detail:view}));applyValuations(view);text(panelLabel,'富果行情 · '+(data.positions?.updates?.length||0)+'／'+allSymbols.length+(data.positions?.totals?.complete?' 檔已更新':' 檔 · 更新中'));
+    }catch(ignore){if(running&&mine===generation){
+      const message='行情更新暫時失敗；'+(lastCompleteView?'沿用上次完整資料 '+lastCompleteView.data.view_as_of:'保留畫面現有資料')+'，稍後自動重試。';
+      text($('#ql-message'),message);document.querySelectorAll('[data-home-quote-quality],[data-home-live-note]').forEach(el=>text(el,message));
+      const title=document.querySelector('[data-home-live-title]');if(title)text(title,'行情暫時無法更新');
+    }}
     finally{clearTimeout(deadline);if(applyController===controller)applyController=null;if(running&&mine===generation&&!paused)applyTimer=setTimeout(()=>{applyTimer=null;requestApply();},5000);}
   }
   function detach(){panel.hidden=true;document.body.appendChild(panel);queueMount();}
@@ -440,7 +490,7 @@
   }
   function pagehide(){stop('頁面已關閉；已記住的裝置記錄會保留。');}
   start.addEventListener('click',begin);stopButton.addEventListener('click',()=>{disableAutoStart();stop('連線已停止；已記住的金鑰保留，按啟用可恢復。');});
-  function forget(message){const cleared=removeSaved();restoreBlocked=true;rememberInput.checked=false;stop(cleared?message:'本次連線已停止，但裝置記錄無法清除；請至瀏覽器設定清除這個網站的資料。');}
+  function forget(message){clearView();const cleared=removeSaved();restoreBlocked=true;rememberInput.checked=false;stop(cleared?message:'本次連線已停止，但裝置記錄無法清除；請至瀏覽器設定清除這個網站的資料。');}
   forgetButton.addEventListener('click',()=>forget('已清除這個裝置的金鑰與自動連線記錄。'));
   changeButton.addEventListener('click',()=>{forget('請輸入新的富果 API Key。');panel.open=true;keyInput.focus();});
   rememberInput.addEventListener('change',()=>{if(!rememberInput.checked)removeSaved();else rememberVerified();});

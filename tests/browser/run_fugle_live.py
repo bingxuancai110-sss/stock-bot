@@ -28,11 +28,11 @@ class FakeSocket{
 }
 window.WebSocket=FakeSocket;window.emit=m=>sockets.at(-1).server(m);
 '''
-engine=sys.argv[1] if len(sys.argv)>1 else 'chromium';checks=[];errors=[];posts=[];external=[];provider_status={'status':200};ns=actual_namespace()
+engine=sys.argv[1] if len(sys.argv)>1 else 'chromium';checks=[];errors=[];posts=[];external=[];provider_status={'status':200};force_partial={'enabled':False};apply_error={'enabled':False};ns=actual_namespace()
 ns['get_positions']=lambda uid:[dict(code=c,shares=1063 if c=='00981A' else 100,cost=90,lots=[]) for c in CODES]
 with sync_playwright() as p:
  browser=p.webkit.launch() if engine=='webkit' else p.chromium.launch(executable_path='/usr/bin/chromium',args=['--no-sandbox'])
- page=browser.new_page(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
+ context=browser.new_context(viewport={'width':390,'height':844},is_mobile=True,has_touch=True);page=context.new_page()
  page.clock.install(time=NOW);page.add_init_script(MOCK);capture_error=lambda e:errors.append(str(e));page.on('pageerror',capture_error)
  def route(r):
   u=urlparse(r.request.url);q=parse_qs(u.query)
@@ -41,8 +41,9 @@ with sync_playwright() as p:
   if u.path=='/web/quote-lab/app-config':r.fulfill(json={'ok':True,'csrf_token':'fixture-csrf','storage_scope':'a'*64,'panel_html':page_markup()});return
   if u.path=='/web/quote-lab/holdings':r.fulfill(json={'ok':True,'holdings':[{'code':c,'name':'測試公司 '+c} for c in CODES]});return
   if u.path=='/web/quote-lab/apply':
+   if apply_error['enabled']:r.fulfill(status=503,json={'ok':False});return
    body=parse_qs(r.request.post_data or '');assert set(body) in ({'quotes','csrf_token'},{'quotes','csrf_token','market'}) and body['csrf_token']==['fixture-csrf'];posts.append(body)
-   raw=json.loads(body['quotes'][0]);latest=max((x['observed_at'] for x in raw),default=int(NOW.timestamp()*1000))
+   raw=json.loads(body['quotes'][0]);raw=raw[:-1] if force_partial['enabled'] else raw;latest=max((x['observed_at'] for x in raw),default=int(NOW.timestamp()*1000))
    ns['taiwan_now']=lambda:datetime.fromtimestamp(latest/1000,ZoneInfo('Asia/Taipei'))
    try:r.fulfill(json=ns['_apply_fugle_browser_quotes']('fixture-owner',raw,market_raw=json.loads(body.get('market',['null'])[0])))
    except Exception as e:raise AssertionError('Actual accounting failed: '+str(e))
@@ -62,7 +63,11 @@ with sync_playwright() as p:
   r.fulfill(body=(ROOT/(name+suffix+'.html')).read_text(),content_type='text/html')
  page.route('https://fixture.test/**',route);page.route('https://api.fugle.tw/**',route)
  page.goto('https://fixture.test/web/more');page.wait_for_selector('#stockbot-fugle-panel')
+ initial_total=page.locator('[data-fugle-total="value"]').inner_text()
  page.locator('#stockbot-fugle-panel>summary').click();page.locator('#ql-key').fill('fixture-provider-key');page.locator('#ql-start').click()
+ page.clock.run_for(1500);page.wait_for_timeout(100)
+ assert page.locator('[data-fugle-total="value"]').inner_text()==initial_total
+ checks.append('partial startup keeps existing complete valuation')
  # Drive the same event loop and real HTTP callbacks without waiting a trading minute.
  for i in range(30):
   page.clock.run_for(1500);page.wait_for_timeout(20)
@@ -88,6 +93,21 @@ with sync_playwright() as p:
  assert '富果' in page.locator('[data-home-quote-quality]').inner_text()
  assert page.locator('[data-home-portfolio-pct]').inner_text()!='資料不足';checks+=['same connection across pages','home calculation uses Fugle']
  assert '-1.00%' in page.locator('[data-home-market-pct]').inner_text();checks.append('actual index used separately from ten holdings')
+ page.locator('[data-home-privacy-toggle]').click()
+ assert page.locator('[data-home-privacy-card]').evaluate('(e)=>e.classList.contains("is-privacy-hidden")')
+ force_partial['enabled']=True
+ before=page.locator('[data-home-portfolio-pct]').inner_text()
+ page.clock.run_for(7000);page.wait_for_timeout(150)
+ assert page.locator('[data-home-portfolio-pct]').inner_text()==before
+ assert page.locator('[data-home-privacy-card] .hv2-px[data-home-sensitive]').inner_text()=='******'
+ page.locator('[data-home-privacy-toggle]').click()
+ assert '更新中' in page.locator('[data-home-quote-quality]').inner_text() and '上次完整資料' in page.locator('[data-home-quote-quality]').inner_text()
+ assert page.locator('[data-home-live-title]').inner_text()=='行情更新中'
+ force_partial['enabled']=False;checks.append('partial refresh retains coherent complete view with original timestamp')
+ apply_error['enabled']=True;page.clock.run_for(7000);page.wait_for_timeout(150)
+ assert page.locator('[data-home-portfolio-pct]').inner_text()==before
+ assert '更新暫時失敗' in page.locator('[data-home-quote-quality]').inner_text()
+ apply_error['enabled']=False;checks.append('failed update retains numbers and reports failure instead of endless loading')
  # On return the new page handlers use the existing feed, not a second WebSocket.
  page.locator('a[data-app-nav][href="/web/positions"]').last.click();page.wait_for_selector('[data-position-code="1001"]')
  page.evaluate("emit({event:'data',channel:'trades',data:{symbol:'1001',price:120,time:Date.now()*1000,serial:2}})")
@@ -111,16 +131,21 @@ with sync_playwright() as p:
  page.locator('a[data-app-nav][href="/web/more"]').last.click();page.wait_for_selector('#stockbot-fugle-panel');checks.append('controls live in More')
  page.locator('#stockbot-fugle-panel>summary').click() if not page.locator('#stockbot-fugle-panel').evaluate('(e)=>e.open') else None
  page.locator('#ql-stop').click();assert page.locator('#ql-key').input_value()=='' and page.evaluate('StockBotFugle.active()') is False;checks.append('stop clears credentials and feed')
+ cached_value=page.evaluate("JSON.parse(localStorage.getItem('stockbot_fugle_view_v1:'+ 'a'.repeat(64))).data.positions.totals.value")
  # Exercise direct entry in a separate document, without WebKit unload-abort noise.
  assert not errors,errors
  page.remove_listener('pageerror',capture_error);page.close()
- page=browser.new_page(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
+ page=context.new_page()
  page.clock.install(time=NOW);page.add_init_script(MOCK);page.on('pageerror',capture_error)
  page.add_init_script("localStorage.setItem('stockbot_fugle_device_v1:'+ 'a'.repeat(64),JSON.stringify({version:1,key:'fixture-provider-key',symbols:'2308',follow:true,autoStart:true}))")
  page.route('https://fixture.test/**',route);page.route('https://api.fugle.tw/**',route)
- provider_status['status']=200;posts.clear();page.goto('https://fixture.test/web/portfolio?initial=1');page.wait_for_selector('#hv2')
+ provider_status['status']=200;force_partial['enabled']=True;posts.clear();page.goto('https://fixture.test/web/portfolio?initial=1');page.wait_for_selector('#hv2')
  assert not page.locator('#loading').is_visible()
  page.wait_for_function('StockBotFugle.active()&&sockets.length===1')
+ page.clock.run_for(2500);page.wait_for_timeout(150)
+ assert '上次完整資料' in page.locator('[data-home-quote-quality]').inner_text()
+ assert page.locator('[data-home-privacy-card] .hv2-px[data-home-sensitive]').evaluate('(e)=>Number(e.dataset.homeOriginal.replaceAll(",",""))')==cached_value
+ force_partial['enabled']=False;checks.append('reload restores context-matched last complete view while new quotes load')
  for i in range(30):
   page.clock.run_for(1500);page.wait_for_timeout(20)
   if posts and len(json.loads(posts[-1]['quotes'][0]))==10:break
@@ -128,5 +153,12 @@ with sync_playwright() as p:
  checks.append('remembered key connects and updates actual direct-entry Home without More')
  assert page.locator('#stockbot-fugle-panel').count()==1
  checks.append('direct-entry shell releases into real home')
+ force_partial['enabled']=True
+ current_positions=ns['get_positions']('fixture-owner');current_positions[0]['shares']+=1
+ ns['get_positions']=lambda uid:current_positions
+ page.clock.run_for(7000);page.wait_for_timeout(150)
+ assert page.locator('[data-home-portfolio-pct]').inner_text()=='更新中'
+ assert '持股或設定已變更' in page.locator('[data-home-quote-quality]').inner_text()
+ checks.append('position change invalidates old aggregate instead of restoring mismatched values')
  assert not errors,errors
  print(json.dumps({'engine':engine,'passed':len(checks),'errors':errors,'provider_requests':len(external),'calculation_posts':len(posts)}));browser.close()

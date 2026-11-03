@@ -27658,7 +27658,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261102-3">
 <script defer src="/static/ui-feedback.js?v=20261102-4"></script>
-<script defer src="/static/fugle-live.js?v=20261103-4"></script>
+<script defer src="/static/fugle-live.js?v=20261103-5"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -42625,7 +42625,9 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       var market=data.market,portfolio=data.portfolio||{};
       if(market&&market.pct!=null){marketEl.innerHTML=pct(market.pct);var freshness=document.querySelector('[data-home-market-freshness]');if(freshness)freshness.textContent=(market.stale?'最近有效行情・背景更新中・':'')+(market.source||'TWSE MIS 即時加權指數')+(market.updated_at?'・更新 '+market.updated_at:'');}
       else {marketEl.textContent='資料尚未更新';var missing=document.querySelector('[data-home-market-freshness]');if(missing)missing.textContent='即時 TAIEX 暫時無法取得，未使用日K快照';}
-      var liveReady=portfolio.ready!==false;
+      var quality=document.querySelector('[data-home-quote-quality]');
+      if(quality&&data.quote_freshness)quality.textContent=data.quote_freshness.text;
+      var liveReady=portfolio.ready!==false&&!(portfolio.pct==null&&Number(portfolio.stale_count||0)>0);
       if(!liveReady){
         var waitingTitle=document.querySelector('[data-home-live-title]'),waitingNote=document.querySelector('[data-home-live-note]');
         if(waitingTitle)waitingTitle.textContent='今天行情同步中';
@@ -42638,15 +42640,13 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         var currentValue=Number(currentText);
         if(!Number.isFinite(currentValue)||Math.abs(currentValue-nextPortfolio)>0.00001)setHtml('[data-home-portfolio-pct]',pct(nextPortfolio));
       }else if(liveReady){
-        // Never leave the previous/partial aggregate on screen when current quote coverage is incomplete.
+        // Loading gaps keep the previous view above; only a missing baseline reaches this branch.
         setHtml('[data-home-portfolio-pct]','資料不足');
       }
       if(liveReady){
         setHtml('[data-home-relative]',portfolio.relative!=null?pct(portfolio.relative):(portfolio.pct==null?'資料不足':'—'));
         setHtml('[data-home-judgement-relative]',portfolio.relative!=null?pct(portfolio.relative):(portfolio.pct==null?'資料不足':'資料不足'));
       }
-      var quality=document.querySelector('[data-home-quote-quality]');
-      if(quality&&data.quote_freshness)quality.textContent=data.quote_freshness.text;
       if(liveReady)updateHoldingQuotes(data.quotes||{});
       var positive=liveReady?(portfolio.positive||[]):null,negative=liveReady?(portfolio.negative||[]):null;
       if(liveReady){
@@ -42669,6 +42669,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       }
       if(liveReady){var positiveCount=document.querySelector('[data-home-positive-count]'),negativeCount=document.querySelector('[data-home-negative-count]');if(positiveCount)positiveCount.textContent=positive.length;if(negativeCount)negativeCount.textContent=negative.length;}
       var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');
+      if(data.view_retained){if(title)title.textContent='行情更新中';if(note)note.textContent=data.note;schedule();return;}
       if(!data.market_open){stopped=true;if(title)title.textContent='今日收盤資料已更新';if(note)note.textContent=data.note||('已於 '+(data.fetched_at||'剛剛')+' 同步今日正式收盤行情。');schedule();return;}
       if(title)title.textContent='盤中行情已局部更新';if(note)note.textContent=data.note||('已於 '+(data.fetched_at||'剛剛')+' 更新；操作日報未重新載入。');
   }
@@ -53044,13 +53045,20 @@ def _apply_fugle_browser_quotes(uid, raw, market_raw=None):
                             gross_pct=(price-cost)/cost*100 if cost else None,
                             net_pl=net,net_pct=net_pct,source=q["source"],updated_at=q["updated_at"]))
     complete = len(quotes) == len(codes) and bool(codes)
+    home["portfolio"]["ready"] = complete
     for row in updates:
         row["weight"] = row["value"] / total_value * 100 if complete and total_value else None
     totals = dict(complete=complete,value=total_value if complete else None,
                   net_pl=total_value-total_cost-total_fee if complete else None,
                   net_pct=(total_value-total_cost-total_fee)/total_cost*100 if complete and total_cost else None,
                   day_pl=total_day if complete else None,fee=total_fee if complete else None)
-    return dict(ok=True,home=home,positions=dict(ok=True,updates=updates,totals=totals,
+    import hashlib, json
+    view_context = hashlib.sha256(json.dumps(
+        {"uid": str(uid), "positions": sorted(positions, key=lambda p: str(p.get("code"))),
+         "fees": [fee_disc, min_fee], "targets": targets, "logs": logs},
+        sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
+    return dict(ok=True,view_context=view_context,view_as_of=now.strftime("%Y-%m-%d %H:%M:%S"),
+                home=home,positions=dict(ok=True,updates=updates,totals=totals,
                 market_open=_is_taiwan_intraday_window(now),note=home["quote_freshness"]["text"]))
 
 

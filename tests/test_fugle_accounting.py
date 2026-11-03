@@ -50,6 +50,7 @@ def test_fugle_prices_use_original_previous_close_weights_and_fee_calculation():
 def test_partial_fugle_coverage_does_not_show_a_partial_sum_as_whole_portfolio():
     r=actual_namespace()['_apply_fugle_browser_quotes']('owner',quotes()[:1])
     assert r['home']['portfolio']['pct'] is None and r['home']['portfolio']['stale_count']==1
+    assert r['home']['portfolio']['ready'] is False
     assert r['positions']['totals']['complete'] is False and r['positions']['totals']['value'] is None
     assert r['positions']['updates'][0]['weight'] is None
 
@@ -74,3 +75,16 @@ def test_fugle_actual_index_replaces_missing_official_market():
     market['observed_at']-=121000
     r=ns['_apply_fugle_browser_quotes']('owner',quotes(),market_raw=market)
     assert r['home']['portfolio']['relative'] is None
+
+
+def test_view_context_matches_partial_batch_but_changes_with_financial_inputs():
+    ns=actual_namespace()
+    full=ns['_apply_fugle_browser_quotes']('owner',quotes())
+    partial=ns['_apply_fugle_browser_quotes']('owner',quotes()[:1])
+    assert full['view_context']==partial['view_context']
+    assert full['view_as_of']=='2026-11-03 10:00:00'
+    positions=ns['get_positions']('owner')
+    positions[0]['shares']+=1
+    ns['get_positions']=lambda uid:positions
+    changed=ns['_apply_fugle_browser_quotes']('owner',quotes()[:1])
+    assert changed['view_context']!=full['view_context']
