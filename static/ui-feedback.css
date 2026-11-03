@@ -249,61 +249,102 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
   border:0!important;border-radius:0!important;box-shadow:none!important
 }
 
-/* Positions: make the first screen read like a portfolio dashboard, not a metric row. */
+/* Positions: an open account overview and a compact two-column holdings board. */
 #stockbot-app #stockbot-shell:has(#app-page-content .rows>.position-card) .app-header{
   display:grid!important;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"back account" "title date";
-  align-items:center!important;gap:7px 12px!important;margin:0 0 8px!important;padding:8px 0 12px!important;
+  align-items:center!important;gap:7px 12px!important;margin:0 0 4px!important;padding:8px 0 10px!important;
   border:0!important;border-bottom:1px solid var(--ui-line,#dce3e9)!important;border-radius:0!important;
   background:transparent!important;box-shadow:none!important
 }
 #stockbot-app #stockbot-shell:has(#app-page-content .rows>.position-card) .app-header .page-back{grid-area:back;width:auto!important;margin:0!important}
-#stockbot-app #stockbot-shell:has(#app-page-content .rows>.position-card) .app-header .page-back>a{min-height:34px!important;padding:6px 11px!important;border-radius:11px!important;font-size:11px!important}
+#stockbot-app #stockbot-shell:has(#app-page-content .rows>.position-card) .app-header .page-back>a{min-height:32px!important;padding:5px 10px!important;border-radius:999px!important;font-size:11px!important}
 #stockbot-app #stockbot-shell:has(#app-page-content .rows>.position-card) .app-header .app-account-link{grid-area:account;position:static!important;justify-self:end!important;max-width:100%!important;margin:0!important}
 #stockbot-app #stockbot-shell:has(#app-page-content .rows>.position-card) .app-header .eyebrow{display:none!important}
 #stockbot-app #stockbot-shell:has(#app-page-content .rows>.position-card) .app-header h1{grid-area:title!important;align-self:end!important;margin:0!important;font-size:25px!important;line-height:1.12!important;letter-spacing:-.035em!important}
 #stockbot-app #stockbot-shell:has(#app-page-content .rows>.position-card) .app-header .dateline{grid-area:date;align-self:end!important;width:auto!important;margin:0!important;font-size:10px!important;line-height:1.2!important;white-space:nowrap!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals{
   display:grid!important;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr)!important;
-  grid-template-areas:"value net" "today count";gap:0!important;margin:10px 0 7px!important;padding:17px 17px 14px!important;
-  border:0!important;border-radius:22px!important;overflow:hidden!important;
-  background:linear-gradient(135deg,var(--hero,#244d68) 0%,var(--hero-soft,#356b86) 100%)!important;
-  color:#fff!important;box-shadow:0 8px 22px rgba(36,77,104,.16)!important
+  grid-template-areas:"value net" "today count";gap:0!important;margin:9px 0 6px!important;padding:10px 0 12px!important;
+  border:0!important;border-bottom:1px solid var(--ui-line,#dce3e9)!important;border-radius:0!important;
+  overflow:visible!important;background:transparent!important;color:var(--ui-text,#172b40)!important;box-shadow:none!important
 }
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div{min-width:0!important;padding:0!important;color:#fff!important;background:transparent!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(1){grid-area:value;padding:0 12px 13px 0!important;border-bottom:1px solid rgba(255,255,255,.2)!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(2){grid-area:net;padding:0 0 13px 13px!important;border-left:1px solid rgba(255,255,255,.2)!important;border-bottom:1px solid rgba(255,255,255,.2)!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(3){grid-area:today;padding:12px 12px 0 0!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(4){grid-area:count;padding:12px 0 0 13px!important;border-left:1px solid rgba(255,255,255,.2)!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals .total-label{margin:0 0 5px!important;color:rgba(255,255,255,.76)!important;font-size:10px!important;font-weight:750!important;letter-spacing:.045em!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals .total-value{color:#fff!important;font-size:clamp(19px,5.2vw,27px)!important;font-weight:820!important;line-height:1.1!important;letter-spacing:-.035em!important;font-variant-numeric:tabular-nums!important;white-space:nowrap!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:first-child .total-value{font-size:clamp(26px,7vw,36px)!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals .total-sub{margin-top:4px!important;color:rgba(255,255,255,.78)!important;font-size:10px!important;line-height:1.35!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="net_pct"].up{color:#ffb2a5!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="net_pct"].down{color:#a7edce!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div{min-width:0!important;padding:0!important;color:var(--ui-text,#172b40)!important;background:transparent!important;border:0!important;border-radius:0!important;box-shadow:none!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(1){grid-area:value;padding:0 12px 11px 0!important;border-bottom:1px solid var(--ui-line,#dce3e9)!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(2){grid-area:net;padding:0 0 11px 13px!important;border-bottom:1px solid var(--ui-line,#dce3e9)!important;border-left:1px solid var(--ui-line,#dce3e9)!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(3){grid-area:today;padding:10px 12px 0 0!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(4){grid-area:count;padding:10px 0 0 13px!important;border-left:1px solid var(--ui-line,#dce3e9)!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals .total-label{margin:0 0 4px!important;color:var(--ui-muted,#687e91)!important;font-size:10px!important;font-weight:750!important;letter-spacing:.035em!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals .total-value{color:var(--ui-text,#172b40)!important;font-size:clamp(18px,5vw,25px)!important;font-weight:820!important;line-height:1.1!important;letter-spacing:-.035em!important;font-variant-numeric:tabular-nums!important;white-space:nowrap!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:first-child .total-value{font-size:clamp(27px,7.2vw,35px)!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals .total-sub{margin-top:3px!important;color:var(--ui-muted,#687e91)!important;font-size:10px!important;line-height:1.35!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="net_pct"].up,
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="net_pl"].up,
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="day_pl"].up{color:#ffb2a5!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="day_pl"].up{color:#c84c45!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="net_pct"].down,
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="net_pl"].down,
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="day_pl"].down{color:#a7edce!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals [data-fugle-total="day_pl"].down{color:#23866c!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card{
-  margin:16px 0 20px!important;padding:0!important;border:0!important;border-radius:0!important;
+  margin:13px 0 20px!important;padding:0!important;border:0!important;border-radius:0!important;
   background:transparent!important;box-shadow:none!important;overflow:visible!important
 }
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card>.section-head{margin:0 0 8px!important;padding:0!important;border:0!important;align-items:baseline!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card>.section-head h2{font-size:19px!important;letter-spacing:-.025em!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card .portfolio-chart-about{margin:0 0 9px!important;padding:0!important;border:0!important;background:transparent!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card .portfolio-chart-about>summary{width:max-content;min-height:34px;padding:5px 10px!important;border:1px solid var(--ui-line,#dce3e9)!important;border-radius:999px!important;background:var(--ui-surface-soft,#e9eef2)!important;color:var(--ui-muted,#586b7d)!important;font-size:10px!important;font-weight:750!important;cursor:pointer}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card .portfolio-chart-note{margin:8px 0 10px!important;padding:0!important;color:var(--ui-muted,#586b7d)!important;font-size:11px!important;line-height:1.65!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card>.section-head{margin:0 0 7px!important;padding:0!important;border:0!important;align-items:baseline!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card>.section-head h2{font-size:18px!important;letter-spacing:-.025em!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card .portfolio-chart-about{margin:0 0 7px!important;padding:0!important;border:0!important;background:transparent!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card .portfolio-chart-about>summary{width:max-content;min-height:30px;padding:4px 9px!important;border:0!important;border-radius:999px!important;background:var(--ui-surface-soft,#e9eef2)!important;color:var(--ui-muted,#586b7d)!important;font-size:10px!important;font-weight:750!important;cursor:pointer}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card .portfolio-chart-note{margin:7px 0 9px!important;padding:0!important;color:var(--ui-muted,#586b7d)!important;font-size:11px!important;line-height:1.65!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card .portfolio-trend-body>.portfolio-trend-card{margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .portfolio-chart-card .portfolio-trend-header{display:none!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .rows{
+  display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;column-gap:18px!important;row-gap:0!important;
+  align-items:start!important;margin-top:4px!important;border-top:1px solid var(--ui-line,#dce3e9)!important
+}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card{
+  min-width:0!important;margin:0!important;padding:12px 0 10px!important;border:0!important;border-bottom:1px solid var(--ui-line,#dce3e9)!important;
+  border-radius:0!important;background:transparent!important;box-shadow:none!important;transform:none!important;overflow:visible!important
+}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:hover,
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:active{border-color:var(--ui-line,#dce3e9)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;transform:none!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-top{
+  display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:6px!important;padding:0 0 8px!important;
+  border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title{gap:6px!important;align-items:flex-start!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-code{min-width:0!important;padding:3px 5px!important;border:1px solid var(--ui-line,#dce3e9)!important;border-radius:6px!important;background:transparent!important;color:var(--ui-muted,#687e91)!important;font-size:9px!important;font-weight:750!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3{margin:0!important;color:var(--ui-text,#172b40)!important;font-size:clamp(12px,3.4vw,15px)!important;line-height:1.25!important;font-weight:850!important;overflow-wrap:anywhere!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title small{display:flex!important;flex-wrap:wrap!important;gap:2px 6px!important;margin-top:3px!important;color:var(--ui-muted,#687e91)!important;font-size:9px!important;line-height:1.3!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price{min-width:0!important;max-width:none!important;text-align:right!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price b{display:block!important;max-width:100%!important;font-size:clamp(15px,4vw,19px)!important;line-height:1.1!important;letter-spacing:-.025em!important;color:var(--ui-text,#172b40)!important;white-space:nowrap!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price span{display:block!important;margin-top:3px!important;font-size:10px!important;font-weight:800!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-primary{
+  display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:0!important;margin:0!important;padding:0!important;
+  border:0!important;border-top:1px solid var(--ui-line,#dce3e9)!important;border-radius:0!important;background:transparent!important
+}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-primary>div{
+  min-width:0!important;padding:7px 6px 4px!important;border:0!important;border-left:1px solid var(--ui-line,#dce3e9)!important;
+  border-radius:0!important;background:transparent!important;box-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-primary>div:first-child{padding-left:0!important;border-left:0!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-primary small{display:block!important;margin:0 0 3px!important;color:var(--ui-muted,#687e91)!important;font-size:9px!important;line-height:1.25!important;font-weight:700!important;white-space:nowrap!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-primary b{display:block!important;margin:0!important;color:var(--ui-text,#172b40)!important;font-size:clamp(11px,3vw,14px)!important;line-height:1.2!important;font-weight:800!important;overflow-wrap:anywhere!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-primary b.up{color:#c84c45!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-primary b.down{color:#23866c!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-more{margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-more>summary{min-height:32px!important;padding:7px 0 0!important;color:var(--ui-muted,#687e91)!important;font-size:10px!important;font-weight:750!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-detail-body{padding:7px 0 3px!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:0!important;margin:0!important;border-top:1px solid var(--ui-line,#dce3e9)!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-grid>div{min-width:0!important;padding:7px 6px!important;border:0!important;border-bottom:1px solid var(--ui-line,#dce3e9)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-grid>div:nth-child(odd){padding-left:0!important;border-right:1px solid var(--ui-line,#dce3e9)!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-grid small{color:var(--ui-muted,#687e91)!important;font-size:9px!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-grid b{font-size:12px!important;overflow-wrap:anywhere!important}
+@media(max-width:370px){#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .rows{grid-template-columns:1fr!important;column-gap:0!important}}
 @media(min-width:760px){
-  #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals{grid-template-columns:1.4fr 1fr 1fr .65fr!important;grid-template-areas:"value net today count";align-items:center!important;padding:18px 21px!important}
+  #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals{grid-template-columns:1.45fr 1fr 1fr .65fr!important;grid-template-areas:"value net today count";align-items:center!important;padding:10px 0 12px!important}
   #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(1),
-  #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(2){padding:0 12px 0 0!important;border:0!important}
+  #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(2){padding:0 13px 0 0!important;border:0!important}
   #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(2),
   #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(3),
-  #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(4){padding:0 10px!important;border-left:1px solid rgba(255,255,255,.2)!important}
+  #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals>div:nth-child(4){padding:0 10px!important;border-left:1px solid var(--ui-line,#dce3e9)!important}
 }
-
 /* The research radar keeps heat cells and alerts, while removing stacked section cards. */
 #stockbot-app #stockbot-shell #app-page-content #us-radar .us-section{
   margin-top:18px!important;padding:19px 2px!important;border:0!important;border-top:1px solid #dbe4e5!important;
