@@ -1,4 +1,4 @@
-:root{--sb-feedback-press:110ms;--sb-feedback-expand:220ms;--sb-feedback-page:180ms;--sb-feedback-number:400ms;--sb-feedback-ease:cubic-bezier(.2,.7,.2,1);--sb-feedback-surface:#e9f3ed;--sb-feedback-selected:#dcece2;--sb-feedback-border:#88af97;--sb-feedback-ink:#2c5e46;--sb-feedback-up:#c74343;--sb-feedback-down:#0b8159}
+:root{--sb-feedback-press:110ms;--sb-feedback-expand:220ms;--sb-feedback-page:220ms;--sb-feedback-number:400ms;--sb-feedback-ease:cubic-bezier(.2,.7,.2,1);--sb-feedback-surface:#e9f3ed;--sb-feedback-selected:#dcece2;--sb-feedback-border:#88af97;--sb-feedback-ink:#2c5e46;--sb-feedback-up:#c74343;--sb-feedback-down:#0b8159}
 #stockbot-app #stockbot-shell #app-page-content :is(button,a[role=button],[role=button],summary,a[data-app-nav],label[for]){touch-action:manipulation;-webkit-tap-highlight-color:rgba(67,119,89,.12)}
 #stockbot-app #stockbot-shell #app-page-content :is(button,[role=button],summary,a[data-app-nav],label[for]):focus-visible,html body .bottom-nav a:focus-visible{outline:3px solid var(--sb-feedback-border)!important;outline-offset:3px!important}
 #stockbot-app #stockbot-shell #app-page-content .ui-pressed{transform:scale(.984)!important;filter:none!important;box-shadow:inset 0 0 0 2px #9abdA6!important;transition:transform var(--sb-feedback-press) var(--sb-feedback-ease)!important}
@@ -19,6 +19,9 @@ html body a.ui-nav-pending::after{content:'';position:absolute;bottom:3px;left:c
 .ui-loading-ended .ui-skeleton::after{animation:none}.ui-feedback-route[data-state=error]{border-color:#d7ab92;background:#fff8f0;min-height:0}
 .ui-feedback-route button,.ui-load-inline button{min-height:44px;border:1px solid #b9d1c1;border-radius:9px;background:#f1f6f2;color:#315a43;font-weight:750;padding:9px 13px;margin:8px 6px 0 0}
 .ui-route-pending{opacity:.5;pointer-events:none;transition:opacity var(--sb-feedback-page) var(--sb-feedback-ease)}
+#stockbot-app #stockbot-shell #app-page-content.app-page-loading{opacity:.94;transition:opacity 240ms var(--sb-feedback-ease)}
+#stockbot-app #stockbot-shell #app-page-content.app-page-enter{animation:sb-page-enter 240ms var(--sb-feedback-ease) both}
+@keyframes sb-page-enter{from{opacity:.9;transform:translate3d(0,6px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
 .ui-form-status{display:flex;align-items:center;gap:9px;border:1px solid #cbdbd1;border-radius:11px;padding:12px;margin:12px 0;background:#f3f8f4;color:#41644c;font-size:13px;line-height:1.7}
 .ui-form-status[data-state=error]{background:#fff5f0;border-color:#deb49d;color:#8a4d33}.ui-form-status[data-state=success]{background:#eaf5ed;border-color:#a8cbb3;color:#2d6541}
 .ui-status-spinner{width:15px;height:15px;flex:none;border:2px solid #c4d8ca;border-top-color:#427854;border-radius:50%;animation:ui-spin .8s linear infinite}@keyframes ui-spin{to{transform:rotate(360deg)}}
@@ -45,17 +48,58 @@ html body a.ui-nav-pending::after{content:'';position:absolute;bottom:3px;left:c
 @media(max-width:600px){.ui-feedback-route{min-height:218px}}
 @media(prefers-reduced-motion:reduce){:root{--sb-feedback-press:0ms;--sb-feedback-expand:0ms;--sb-feedback-page:0ms;--sb-feedback-number:0ms}.ui-skeleton::after,.ui-status-spinner,.ui-chart-period,.ui-rank-enter,.ui-rank-moved{animation:none!important}#stockbot-app #stockbot-shell #app-page-content :is(.ui-pressed,.ui-selected-control){transition:none!important;transform:none!important}}
 @media print{.ui-feedback-route,.ui-chart-readout,.ui-form-status,.ui-number-tween{display:none!important}.ui-number-source,.ui-number-source *{color:inherit!important;-webkit-text-fill-color:currentColor!important}#app-page-content :is(.position-journal,.rank-chart-panel){content-visibility:visible!important;contain-intrinsic-size:none!important}#stockbot-app #stockbot-shell #app-page-content details.ui-disclosure{height:auto!important;overflow:visible!important}}
-/* The initial server shell uses the same skeleton as in-app navigation. */
-#stockbot-app #stockbot-shell #app-page-content #loading.market-loading-screen{position:relative!important;inset:auto!important;width:100%!important;height:auto!important;min-height:250px!important;z-index:auto!important;flex-direction:column!important;align-items:stretch!important;background:#f9fbfa!important;color:#41614e!important;padding:18px!important;border:1px solid #d9e4dd!important;border-radius:17px!important;box-shadow:none!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-inner{position:static!important;display:block!important;width:auto!important;padding:10px 0!important;color:#41614e!important}
-#stockbot-app #stockbot-shell #app-page-content #loading :is(.market-loader-visual,.market-loader-brand,.market-loader-progress-row,.market-loader-steps,.market-loader-foot){display:none!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-title{font-size:17px!important;color:#315b41!important;text-shadow:none!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-status{font-size:12px!important;color:#617c68!important}
+/* Initial document load: one composed full-screen motion scene, never a stack of skeleton cards. */
+#stockbot-app #stockbot-shell #app-page-content #loading.market-loading-screen{
+  position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;min-height:0!important;
+  z-index:2147483000!important;display:flex!important;flex-direction:column!important;align-items:center!important;
+  justify-content:center!important;box-sizing:border-box!important;margin:0!important;
+  padding:24px 20px calc(24px + env(safe-area-inset-bottom,0px))!important;overflow:hidden!important;
+  border:0!important;border-radius:0!important;background:
+    radial-gradient(ellipse at 78% 18%,rgba(119,166,190,.18),transparent 38%),
+    linear-gradient(155deg,#f5f8f8 0%,#edf3f4 54%,#f8f7f2 100%)!important;
+  box-shadow:none!important;color:#1d3445!important;animation:sb-loader-arrive 260ms var(--sb-feedback-ease) both
+}
+#stockbot-app #stockbot-shell #app-page-content #loading .ui-shell-skeleton{display:none!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-inner{
+  position:relative!important;display:block!important;width:min(420px,88vw)!important;padding:0!important;
+  color:#1d3445!important;text-align:center!important
+}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-brand{
+  margin:0 0 10px!important;color:#557287!important;font-size:10px!important;font-weight:850!important;
+  letter-spacing:.2em!important;opacity:.9!important
+}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-visual{
+  height:148px!important;margin:0 auto 14px!important;max-width:100%!important
+}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-orbit{width:78px!important;height:78px!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-ring{border-color:rgba(48,92,119,.13)!important;border-top-color:#32738a!important;border-right-color:#b58b54!important;filter:none!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-dot{background:#b58b54!important;box-shadow:0 0 0 7px rgba(181,139,84,.12)!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-grid{opacity:.52!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-scan{background:linear-gradient(90deg,transparent,rgba(50,115,138,.55),transparent)!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-chart{right:4%!important;width:min(136px,34vw)!important;opacity:.72!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-title{
+  color:#1d3445!important;font-size:23px!important;font-weight:900!important;letter-spacing:-.025em!important;
+  text-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-status{
+  min-height:22px!important;margin-top:7px!important;color:#627b89!important;font-size:13px!important
+}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-progress-row{margin:17px auto 16px!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-bar{height:4px!important;margin:0!important;background:#dce6e7!important;box-shadow:none!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-bar i{background:linear-gradient(90deg,#32738a,#85adb2,#b58b54)!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-steps{width:100%!important;max-width:330px!important;gap:7px!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-steps .app-load-step{color:#87969d!important;font-size:11px!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-steps .app-load-step.active,
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-steps .app-load-step.done{color:#32738a!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-foot{margin-top:15px!important;color:#819097!important;font-size:10px!important}
+@keyframes sb-loader-arrive{from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){#stockbot-app #stockbot-shell #app-page-content #loading.market-loading-screen{animation:none!important}#stockbot-app #stockbot-shell #app-page-content #loading :is(.market-loader-grid,.market-loader-scan,.market-loader-glow,.market-loader-chart i,.market-loader-ring,.market-loader-dot,.market-loader-bar i){animation:none!important;transition:none!important}}
 #loading[data-ui-load-state=error] .ui-shell-skeleton{display:none}
 html body .app-bottom-nav a{position:relative;transition:transform var(--sb-feedback-press) var(--sb-feedback-ease),background-color var(--sb-feedback-press) var(--sb-feedback-ease)}
 html body .app-bottom-nav a.ui-pressed{transform:scale(.95)!important;background:#e5f0e9!important;color:#315e45!important}
 #stockbot-app #stockbot-shell #app-page-content :is(.wb-skeleton,.wb-lab-loading){animation-duration:1.4s!important;animation-iteration-count:8!important}
 @media(prefers-reduced-motion:reduce){#stockbot-app #stockbot-shell #app-page-content :is(.wb-skeleton,.wb-lab-loading){animation:none!important}html body .app-bottom-nav a{transition:none!important}html body .app-bottom-nav a.ui-pressed{transform:none!important}}
+@media(prefers-reduced-motion:reduce){#stockbot-app #stockbot-shell #app-page-content.app-page-enter{animation:none!important}}
 /* Do not replace SVG rotation transforms used to position donut arcs. */
 #stockbot-app #stockbot-shell #app-page-content svg .ui-pressed{transform:none!important;opacity:.82}
 #stockbot-app #stockbot-shell #app-page-content :is(button,summary,a,[role=button]).ui-pressed{background-color:var(--sb-feedback-surface)!important;background-image:none!important;color:var(--sb-feedback-ink)!important;-webkit-text-fill-color:var(--sb-feedback-ink)!important}
@@ -64,7 +108,186 @@ html body .app-bottom-nav a.ui-pressed{transform:scale(.95)!important;background
 #stockbot-app #stockbot-shell #app-page-content .ui-pressed :is(.up,.us-positive,.wb-up){color:var(--sb-feedback-up)!important;-webkit-text-fill-color:currentColor!important}#stockbot-app #stockbot-shell #app-page-content .ui-pressed :is(.down,.us-negative,.wb-down){color:var(--sb-feedback-down)!important;-webkit-text-fill-color:currentColor!important}
 html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-backdrop) .ui-pressed{transform:scale(.984)!important;background-color:var(--sb-feedback-surface)!important;color:var(--sb-feedback-ink)!important;-webkit-text-fill-color:var(--sb-feedback-ink)!important;box-shadow:inset 0 0 0 2px var(--sb-feedback-border)!important;transition:transform var(--sb-feedback-press) var(--sb-feedback-ease)!important}
 html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-backdrop) :is(a,button):focus-visible{outline:3px solid var(--sb-feedback-border)!important;outline-offset:3px!important}
+/* App-wide editorial layout: reserve containers for distinct interactive surfaces. */
+#stockbot-app #stockbot-shell #app-page-content :is(.section-card,.stat-card,.position-card,.holding-card,.trade-card,.rank-card,.leaderboard-card){box-shadow:none!important}
+#stockbot-app #stockbot-shell #app-page-content :is(.section-card,.stat-card,.position-card,.holding-card,.trade-card,.rank-card,.leaderboard-card){border-radius:12px!important}
+#stockbot-app #stockbot-shell #app-page-content .rank-rows{border:0!important;border-radius:0!important;box-shadow:none!important;background:transparent!important;padding:0 4px!important}
+#stockbot-app #stockbot-shell #app-page-content .rank-rows .rank-card{border-bottom:1px solid #dce3e6!important;border-radius:0!important}
+#stockbot-app #stockbot-shell #app-page-content .rank-chart-panel{border:0!important;border-bottom:1px solid #dce3e6!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;padding:16px 4px!important}
+#stockbot-app #stockbot-shell #app-page-content :is(.section-head,.section-title){margin-top:24px!important}
 @media(prefers-reduced-motion:reduce){html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-backdrop) .ui-pressed{transform:none!important;transition:none!important}}
+
+/* Flatten repeated dashboard panels into native-feeling sections and rows. */
+#stockbot-app #stockbot-shell #app-page-content :is(.rows,.rank-rows,.wb-rows){gap:0!important}
+#stockbot-app #stockbot-shell #app-page-content .rows>.position-card{
+  border:0!important;border-bottom:1px solid #dfe6e8!important;border-radius:0!important;
+  background:transparent!important;box-shadow:none!important;transform:none!important;
+  padding:17px 4px 15px!important;overflow:visible!important
+}
+#stockbot-app #stockbot-shell #app-page-content .rows>.position-card:first-child{border-top:1px solid #dfe6e8!important}
+#stockbot-app #stockbot-shell #app-page-content .rows>.position-card.ui-allocation-selected{
+  border-left:3px solid #78a389!important;padding-left:10px!important;background:#f0f6f1!important
+}
+#stockbot-app #stockbot-shell #app-page-content .position-card .card-head,
+#stockbot-app #stockbot-shell #app-page-content .position-card .card-body{background:transparent!important}
+#stockbot-app #stockbot-shell #app-page-content .position-card-primary>div{
+  border-radius:0!important;background:transparent!important;border-left:1px solid #e3e9e8!important;
+  padding:5px 8px!important
+}
+#stockbot-app #stockbot-shell #app-page-content :is(.position-journal,.position-history){
+  border:0!important;border-top:1px solid #dce4e5!important;border-bottom:1px solid #dce4e5!important;
+  border-radius:0!important;background:transparent!important;box-shadow:none!important;overflow:visible!important
+}
+#stockbot-app #stockbot-shell #app-page-content :is(.position-journal-head,.position-history-head){
+  background:transparent!important;padding-left:2px!important;padding-right:2px!important
+}
+#stockbot-app #stockbot-shell #app-page-content :is(.position-journal-table-head,.position-history-table-head){
+  background:#f1f4f3!important;border-color:#e1e7e6!important
+}
+#stockbot-app #stockbot-shell #app-page-content :is(.position-journal-day,.position-history-day){
+  color:#496477!important;background:transparent!important
+}
+#stockbot-app #stockbot-shell #app-page-content :is(.rank-card:not(.rank-champion),.rank-card.rank-silver,.rank-card.rank-bronze){
+  border:0!important;border-bottom:1px solid #dfe6e8!important;border-radius:0!important;
+  background:transparent!important;box-shadow:none!important;transform:none!important;padding:15px 4px!important
+}
+#stockbot-app #stockbot-shell #app-page-content .rank-card.rank-champion{
+  border:0!important;border-left:3px solid #b58a4a!important;border-radius:0 12px 12px 0!important;
+  box-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content :is(.wb-shell,.wb-table){
+  border:0!important;border-radius:0!important;box-shadow:none!important;background:transparent!important
+}
+#stockbot-app #stockbot-shell #app-page-content .wb-shell:before{display:none!important}
+#stockbot-app #stockbot-shell #app-page-content :is(.wb-intro,.wb-d-section-head){border-color:#dfe6e8!important}
+#stockbot-app #stockbot-shell #app-page-content .wb-row{
+  background:transparent!important;border-radius:0!important;box-shadow:none!important;transform:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content :is(.wb-lab-card,.wb-filter-panel,.wb-pulse){
+  border-radius:14px!important;box-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content :is(.portfolio-trend-card,.portfolio-chart-card){
+  box-shadow:none!important;border-radius:16px!important
+}
+#stockbot-app #stockbot-shell #app-page-content :is(.portfolio-trend-stat,.home-metric){
+  box-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content .home-impact-groups{gap:22px!important}
+#stockbot-app #stockbot-shell #app-page-content .home-impact-groups:has(>.hv2-group:first-child .hv2-empty):not(:has(>.hv2-group:last-child .hv2-empty)){grid-template-columns:minmax(0,1fr)!important}
+#stockbot-app #stockbot-shell #app-page-content .home-impact-groups:has(>.hv2-group:last-child .hv2-empty):not(:has(>.hv2-group:first-child .hv2-empty)){grid-template-columns:minmax(0,1fr)!important}
+#stockbot-app #stockbot-shell #app-page-content .home-impact-groups:has(>.hv2-group:first-child .hv2-empty):not(:has(>.hv2-group:last-child .hv2-empty))>.hv2-group:first-child,
+#stockbot-app #stockbot-shell #app-page-content .home-impact-groups:has(>.hv2-group:last-child .hv2-empty):not(:has(>.hv2-group:first-child .hv2-empty))>.hv2-group:last-child{display:none!important}
+#stockbot-app #stockbot-shell #app-page-content .hv2-group{background:transparent!important;border:0!important;box-shadow:none!important;padding:0!important}
+#stockbot-app #stockbot-shell #app-page-content .hv2-ghead{margin-bottom:5px!important;padding:0 1px 8px!important;border-bottom:1px solid #e1e7e6!important}
+#stockbot-app #stockbot-shell #app-page-content .hv2-row{
+  margin:0!important;padding:13px 2px!important;border:0!important;border-bottom:1px solid #e4e9e8!important;
+  border-radius:0!important;background:transparent!important;box-shadow:none!important;transform:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content .hv2-row:hover{background:#f5f8f6!important;box-shadow:none!important}
+#stockbot-app #stockbot-shell #app-page-content .hv2-row[aria-expanded=true]{background:#f1f6f2!important;box-shadow:inset 3px 0 #7ca58a!important;padding-left:9px!important}
+#stockbot-app #stockbot-shell #app-page-content .hv2-hold-trigger,
+#stockbot-app #stockbot-shell #app-page-content .hv2-hold-line{border-radius:0!important;box-shadow:none!important}
+#stockbot-app #stockbot-shell #app-page-content .hv2-hold-trigger{border-bottom:1px solid #e2e8e7!important}
+#stockbot-app #stockbot-shell #app-page-content .hv2-hold-trigger[aria-expanded=true]{background:#f1f6f2!important}
+#stockbot-app #stockbot-shell #app-page-content .hv2-hold-more{border-top:1px solid #e2e8e7!important;background:transparent!important}
+#stockbot-app #stockbot-shell #app-page-content .hv2-cbar{border-radius:999px!important;background:#e7ecea!important}
+#stockbot-app #stockbot-shell #app-page-content .hv2-cbar>i{border-radius:999px!important}
+@media(max-width:600px){
+  #stockbot-app #stockbot-shell #app-page-content :is(.position-journal,.position-history){margin-left:-2px!important;margin-right:-2px!important}
+  #stockbot-app #stockbot-shell #app-page-content .rows>.position-card{padding-top:15px!important;padding-bottom:13px!important}
+  #stockbot-app #stockbot-shell #app-page-content .rank-card:not(.rank-champion){padding-left:2px!important;padding-right:2px!important}
+}
+
+/* Desktop app shell: one clear navigation dock, no duplicate top menu or wrapped tabs. */
+@media(min-width:700px){
+  html body:not(.auth-entry-page) .wrap{
+    width:calc(100% - 48px)!important;max-width:1100px!important;margin-left:auto!important;margin-right:auto!important;
+    padding-left:0!important;padding-right:0!important;padding-bottom:104px!important
+  }
+  html body:not(.auth-entry-page) .app-header{max-width:1100px!important;width:calc(100% - 48px)!important}
+  html body:not(.auth-entry-page) .top-nav{display:none!important}
+  html body:not(.auth-entry-page) .app-bottom-nav{display:flex!important;justify-content:center!important;padding:8px 24px calc(8px + env(safe-area-inset-bottom,0px))!important}
+  html body:not(.auth-entry-page) .app-bottom-nav .bottom-inner{
+    width:min(760px,100%)!important;max-width:760px!important;display:grid!important;
+    grid-template-columns:repeat(7,minmax(0,1fr))!important;gap:8px!important
+  }
+  html body:not(.auth-entry-page) .app-bottom-nav .bottom-inner>a{
+    min-width:0!important;min-height:50px!important;padding:6px 3px!important;white-space:nowrap!important;
+    font-size:11px!important;line-height:1.2!important;border-radius:12px!important
+  }
+  html body:not(.auth-entry-page) .app-bottom-nav .bottom-inner>a>b{font-size:19px!important}
+}
+
+/* Keep the other destinations in the same calm, editorial app language. */
+#stockbot-app #stockbot-shell #app-page-content .more-group{
+  margin:18px 0 24px!important;padding:0!important;border:0!important;border-top:1px solid #dce4e4!important;
+  border-radius:0!important;background:transparent!important;box-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content .more-group-title{
+  padding:14px 2px 7px!important;color:#658091!important;font-size:11px!important;letter-spacing:.12em!important
+}
+#stockbot-app #stockbot-shell #app-page-content .more-item{
+  min-height:60px!important;padding:12px 3px!important;border-color:#e1e7e6!important;
+  background:transparent!important;transition:background-color 160ms var(--sb-feedback-ease),padding 160ms var(--sb-feedback-ease)
+}
+#stockbot-app #stockbot-shell #app-page-content .more-item:active{padding-left:8px!important;background:#edf3f1!important}
+#stockbot-app #stockbot-shell #app-page-content .more-item .more-icon{background:#eaf1ef!important;color:#426b70!important}
+#stockbot-app #stockbot-shell #app-page-content .market-page .market-chart-card{
+  border-color:#d8e2e3!important;border-radius:14px!important;box-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content .market-page .market-draw-tools{
+  border-top:1px solid #e0e7e7!important;padding-top:10px!important
+}
+#stockbot-app #stockbot-shell #app-page-content .market-page .market-draw-tools button[aria-pressed=true]{
+  background:#e4f0ed!important;border-color:#8caea2!important;color:#315e52!important
+}
+#stockbot-app #stockbot-shell #app-page-content .market-page :is(.market-ranges,.market-ma-toggles,.market-zoom-tools){gap:5px!important}
+#stockbot-app #stockbot-shell #app-page-content .market-page :is(.market-ranges button,.market-ranges a,.market-draw-tools button,.market-zoom-tools button,.market-theme-toggle){
+  min-height:40px!important;border-radius:9px!important;box-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content .market-chart-card.is-fullscreen{
+  border:0!important;border-radius:0!important;box-shadow:none!important
+}
+
+/* The research radar keeps heat cells and alerts, while removing stacked section cards. */
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-section{
+  margin-top:18px!important;padding:19px 2px!important;border:0!important;border-top:1px solid #dbe4e5!important;
+  border-radius:0!important;background:transparent!important;box-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-hero{
+  border-radius:18px!important;box-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-summary{
+  padding:12px 9px!important;border:0!important;border-left:2px solid #9ab6b4!important;
+  border-radius:0!important;background:transparent!important
+}
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-heat-card{
+  border-radius:10px!important;box-shadow:none!important;transform:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-rank-list{gap:0!important}
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-detail-box{
+  padding:13px 0!important;border:0!important;border-top:1px solid #e1e8e8!important;
+  border-radius:0!important;background:transparent!important
+}
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-alert-card{
+  padding:14px 12px!important;border:0!important;border-left:3px solid #c7d5d3!important;
+  border-bottom:1px solid #e1e7e6!important;border-radius:0!important;background:transparent!important
+}
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-alert-card.signal-on{border-left-color:#cf7567!important;background:#fff5f2!important}
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-alert-card.confirm-on{border-left-color:#4a9a7d!important;background:#f0f7f3!important}
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-tw-metrics>div{
+  border:0!important;border-left:1px solid #e0e7e6!important;border-radius:0!important;background:transparent!important
+}
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-advanced{
+  margin-top:10px!important;border:0!important;border-top:1px solid #dce4e4!important;border-bottom:1px solid #dce4e4!important;
+  border-radius:0!important;background:transparent!important;box-shadow:none!important
+}
+#stockbot-app #stockbot-shell #app-page-content #us-radar .us-advanced>summary{padding:14px 2px!important;color:#456b7e!important}
+@media(max-width:600px){
+  #stockbot-app #stockbot-shell #app-page-content #us-radar .us-section{padding:16px 1px!important}
+  #stockbot-app #stockbot-shell #app-page-content #us-radar .us-hero{border-radius:14px!important}
+  #stockbot-app #stockbot-shell #app-page-content #us-radar .us-alert-card{padding-left:9px!important;padding-right:8px!important}
+}
 .ui-global-status{position:fixed;top:calc(env(safe-area-inset-top,0px) + 12px);left:50%;transform:translateX(-50%);z-index:20000;display:flex;align-items:center;gap:12px;width:max-content;max-width:calc(100vw - 28px);box-sizing:border-box;padding:12px 15px;border:1px solid #a2c4ad;border-radius:12px;background:#edf6ef;color:#355f42;font-size:13px;line-height:1.7;box-shadow:0 6px 24px rgba(36,70,48,.12)}.ui-global-status button{flex:none;border:0;background:transparent;color:inherit;min-height:40px;font-weight:750}
 #stockbot-app #stockbot-shell #app-page-content .position-card-code.ui-allocation-row-select{min-height:36px!important;min-width:44px!important;margin:0!important;padding:6px 8px!important;white-space:nowrap!important;flex:none!important;font-size:11px!important}.ui-allocation-row-select::after{content:'◎';font-size:10px;margin-left:4px;opacity:.7}
 /* Runtime states own the cascade above legacy page-specific selectors. */
