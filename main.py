@@ -10169,6 +10169,17 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
                 rtcode = str(payload.get("rtcode") or "").strip()
                 if rtcode and rtcode not in ("0000", "0"):
                     raise ValueError("MIS rtcode=" + rtcode)
+                with _realtime_cache_lock:
+                    diag_at = float(_TWSE_MIS_CACHE.get("diagnostic_at") or 0)
+                    log_payload = time.time() - diag_at >= 60
+                    if log_payload:
+                        _TWSE_MIS_CACHE["diagnostic_at"] = time.time()
+                if log_payload:
+                    rows = payload.get("msgArray") or []
+                    fields = ("c", "ex", "d", "t", "z", "pz", "y")
+                    print("MIS 回應診斷：requested=%s rows=%s sample=%s" % (
+                        batch, len(rows), [{k: row.get(k) for k in fields}
+                                           for row in rows[:20] if isinstance(row, dict)]), flush=True)
                 return payload
             except Exception as exc:
                 last_exc = exc
@@ -52987,6 +52998,24 @@ def _bootstrap_tw_research(attempt=0):
 _tw_research_bootstrap_timer = threading.Timer(20, _bootstrap_tw_research)
 _tw_research_bootstrap_timer.daemon = True
 _tw_research_bootstrap_timer.start()
+
+
+# Temporary, read-only public-market probe for the missing-quote incident.
+def _probe_missing_mis_quotes():
+    if not _is_taiwan_intraday_window():
+        return
+    try:
+        result = _fetch_twse_mis_quotes(
+            ["2330", "2308", "3026", "6223"],
+            market_suffix={"2330": ".TW", "2308": ".TW", "3026": ".TW", "6223": ".TWO"},
+            force_refresh=True, cache_result=False, quick_mode=True)
+        print("MIS 開機診斷有效代號：%s" % sorted(result), flush=True)
+    except Exception as exc:
+        print("MIS 開機診斷失敗：%s" % type(exc).__name__, flush=True)
+
+_missing_mis_probe = threading.Timer(5, _probe_missing_mis_quotes)
+_missing_mis_probe.daemon = True
+_missing_mis_probe.start()
 
 
 if __name__ == "__main__":
