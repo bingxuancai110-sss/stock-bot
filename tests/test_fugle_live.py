@@ -54,6 +54,9 @@ def test_apply_is_owner_and_csrf_bound_and_does_not_receive_provider_key(monkeyp
     assert c.get('/web/quote-lab/app-config').status_code==401
     assert c.get('/web/quote-lab/app-config',headers={'X-User':'other'}).status_code==403
     config=c.get('/web/quote-lab/app-config',headers={'X-User':'owner'})
+    import hashlib
+    assert config.json['storage_scope']==hashlib.sha256(b'stockbot-fugle-device:owner').hexdigest()
+    assert config.json['storage_scope']==c.get('/web/quote-lab/app-config',headers={'X-User':'owner'}).json['storage_scope']
     assert config.json['csrf_token']=='bound-owner' and 'no-store' in config.headers['Cache-Control']
     path='/web/quote-lab/apply'
     assert c.post(path,headers={'X-User':'other'}).status_code==403

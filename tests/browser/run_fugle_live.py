@@ -38,7 +38,7 @@ with sync_playwright() as p:
   u=urlparse(r.request.url);q=parse_qs(u.query)
   if u.path.startswith('/static/'):
    f=REPO/u.path.lstrip('/');r.fulfill(body=f.read_text(),content_type='text/css' if f.suffix=='.css' else 'application/javascript');return
-  if u.path=='/web/quote-lab/app-config':r.fulfill(json={'ok':True,'csrf_token':'fixture-csrf','panel_html':page_markup()});return
+  if u.path=='/web/quote-lab/app-config':r.fulfill(json={'ok':True,'csrf_token':'fixture-csrf','storage_scope':'a'*64,'panel_html':page_markup()});return
   if u.path=='/web/quote-lab/holdings':r.fulfill(json={'ok':True,'holdings':[{'code':c,'name':'測試公司 '+c} for c in CODES]});return
   if u.path=='/web/quote-lab/apply':
    body=parse_qs(r.request.post_data or '');assert set(body) in ({'quotes','csrf_token'},{'quotes','csrf_token','market'}) and body['csrf_token']==['fixture-csrf'];posts.append(body)
