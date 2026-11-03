@@ -27656,7 +27656,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261103-5">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261103-6">
 <script defer src="/static/ui-feedback.js?v=20261103-4"></script>
 <script defer src="/static/fugle-live.js?v=20261103-5"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
@@ -31837,7 +31837,7 @@ def web_positions(uid):
 <section class="portfolio-chart-card portfolio-trend-card" id="portfolio-trend">
   <div class="section-head"><h2>組合 vs 加權指數</h2>
     <span class="section-note">相對起始日漲跌幅</span></div>
-  <p class="portfolio-chart-note">同一張圖比較你的組合與台灣加權指數。組合採時間加權報酬，加碼與贖回不影響曲線；除權當天股價機械性下跌但股數尚未調整，那一天會持平不計入。若快照不足兩天，會明確顯示資料累積狀態。</p>
+  <details class="portfolio-chart-about"><summary>績效計算方式</summary><p class="portfolio-chart-note">同一張圖比較你的組合與台灣加權指數。組合採時間加權報酬，加碼與贖回不影響曲線；除權當天股價機械性下跌但股數尚未調整，那一天會持平不計入。若快照不足兩天，會明確顯示資料累積狀態。</p></details>
   <div class="portfolio-trend-body">{position_trend_html}</div>
 </section>"""
 
