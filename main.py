@@ -27658,7 +27658,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261102-3">
 <script defer src="/static/ui-feedback.js?v=20261102-4"></script>
-<script defer src="/static/fugle-live.js?v=20261103-2"></script>
+<script defer src="/static/fugle-live.js?v=20261103-3"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">

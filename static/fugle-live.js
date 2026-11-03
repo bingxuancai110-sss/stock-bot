@@ -15,7 +15,37 @@
   function queueMount(){if(!mountFrame)mountFrame=requestAnimationFrame(mount);}
   mount();
   root.dataset.ready='1';
-  const $=s=>root.querySelector(s),keyInput=$('#ql-key'),symbolsInput=$('#ql-symbols'),start=$('#ql-start'),stopButton=$('#ql-stop'),followInput=$('#ql-follow');
+  const $=s=>root.querySelector(s),keyInput=$('#ql-key'),symbolsInput=$('#ql-symbols'),start=$('#ql-start'),stopButton=$('#ql-stop'),followInput=$('#ql-follow'),rememberInput=$('#ql-remember'),rememberStatus=$('#ql-remember-status'),changeButton=$('#ql-change-key'),forgetButton=$('#ql-forget');
+  // Account-scoped and owner-authorized before reading any local credential.
+  const storageKey=typeof config.storage_scope==='string'&&/^[a-f0-9]{64}$/.test(config.storage_scope)?'stockbot_fugle_device_v1:'+config.storage_scope:null;
+  let saved=null,storageFailed=false,restoreBlocked=false;
+  function readSaved(){
+    if(!storageKey)return null;
+    try{
+      const value=JSON.parse(localStorage.getItem(storageKey)||'null');
+      if(value&&value.version===1&&typeof value.key==='string'&&value.key.trim()&&value.key.length<=4096&&typeof value.symbols==='string'&&typeof value.follow==='boolean'&&typeof value.autoStart==='boolean')return value;
+      localStorage.removeItem(storageKey);
+    }catch(ignore){storageFailed=true;}
+    return null;
+  }
+  function showRemember(){
+    text(rememberStatus,storageFailed?'這個瀏覽器無法保存或清除裝置記錄，變更未儲存；本次仍可連線，請檢查瀏覽器設定。':saved?(saved.autoStart?'已記住此裝置，下次開網站會自動連線。':'已記住金鑰；自動連線已停止，按「啟用」可恢復。'):'尚未儲存金鑰；未勾選時僅在本次開啟期間使用。');
+    forgetButton.disabled=!saved&&!storageFailed;changeButton.disabled=!running&&!saved;
+  }
+  function removeSaved(){
+    saved=null;
+    try{if(storageKey)localStorage.removeItem(storageKey);storageFailed=false;}catch(ignore){storageFailed=true;}
+    showRemember();return !storageFailed;
+  }
+  function writeSaved(value){
+    if(!storageKey){storageFailed=true;showRemember();return;}
+    try{localStorage.setItem(storageKey,JSON.stringify(value));saved=value;storageFailed=false;}catch(ignore){storageFailed=true;}
+    showRemember();
+  }
+  function rememberVerified(){
+    if(rememberInput.checked&&authenticated&&apiKey)writeSaved({version:1,key:apiKey,symbols:symbolsInput.value,follow:following,autoStart:true});
+  }
+  function disableAutoStart(){restoreBlocked=true;if(saved)writeSaved({...saved,autoStart:false});}
   const REST='https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/';
   const URL='wss://api.fugle.tw/marketdata/v1.0/stock/streaming';
   const names={'2308':'台達電','8996':'高力','2383':'台光電','2368':'金像電','6442':'光聖'};
@@ -30,7 +60,7 @@
   const channels=new Map(),pendingSub=new Set(),pendingUnsub=new Set(),requestTimes=[];
   function text(el,value){if(el&&el.textContent!==value)el.textContent=value;}
   function status(state,label,message){$('#ql-state').dataset.state=state;text($('#ql-state'),label);text($('#ql-message'),message);text(panelLabel,'富果行情 · '+label);}
-  function controls(){start.disabled=running;stopButton.disabled=!running;keyInput.disabled=running;symbolsInput.disabled=running;followInput.disabled=running;}
+  function controls(){start.disabled=running;stopButton.disabled=!running;keyInput.disabled=running;symbolsInput.disabled=running;followInput.disabled=running;showRemember();}
   function clearTimer(id){if(id!==null)clearTimeout(id);}
   function dropSocket(){
     clearTimer(phaseTimer);phaseTimer=null;clearTimer(subTimer);subTimer=null;authenticated=false;channels.clear();pendingSub.clear();pendingUnsub.clear();
@@ -45,7 +75,7 @@
     if(releaseLock){releaseLock();releaseLock=null;}
     controls();status(state,label,message);
   }
-  function failed(message){stop(message,'error','連線已停止');}
+  function failed(message,invalidKey=false){restoreBlocked=true;if(invalidKey){removeSaved();rememberInput.checked=false;}stop(message,'error','連線已停止');}
   function timestamp(micros){const ms=micros/1000;return clock.format(new Date(ms))+'.'+String(Math.floor(ms)%1000).padStart(3,'0');}
   function number(value){return Number(value).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2});}
   function render(){
@@ -129,13 +159,13 @@
       if(token)url.searchParams.set('t',token);
       const response=await fetch(url.href,{credentials:'same-origin',cache:'no-store',redirect:'error',referrerPolicy:'no-referrer',signal:controller.signal});
       if(!running||mine!==generation)return false;
-      if(response.status===401||response.status===403||response.status===404){failed('BOT 登入或測試帳號權限已失效，已清除行情金鑰，請重新登入。');return false;}
+      if(response.status===401||response.status===403||response.status===404){failed('BOT 登入或帳號權限已失效，已停止行情，請重新登入。');return false;}
       if(!response.ok)throw new Error('holdings unavailable');
       const data=await response.json();
       if(!running||mine!==generation)return false;
       if(data.ok!==true||!Array.isArray(data.holdings)||data.holdings.some(h=>!h||!/^\d{4,6}[A-Z]?$/.test(h.code))||new Set(data.holdings.map(h=>h.code)).size!==data.holdings.length)throw new Error('invalid holdings');
       const nextAll=data.holdings.map(h=>h.code),held=new Set(nextAll);
-      if(!nextAll.length){stop(data.unsupported_count?'BOT 沒有可測試的上市櫃持股代碼，已清除金鑰。':'BOT 目前已無持股，已停止行情並清除金鑰。');return false;}
+      if(!nextAll.length){stop(data.unsupported_count?'BOT 沒有可查詢的上市櫃持股代碼，已停止行情。':'BOT 目前已無持股，已停止行情。');return false;}
       data.holdings.forEach(h=>{if(h.name)names[h.code]=String(h.name);});
       const next=[...new Set([...symbols.filter(c=>held.has(c)),...preferred.filter(c=>held.has(c)),...nextAll])].slice(0,5);
       const changed=JSON.stringify(allSymbols)!==JSON.stringify(nextAll)||JSON.stringify(symbols)!==JSON.stringify(next);
@@ -173,7 +203,7 @@
       const response=await fetch(REST+encodeURIComponent(code),{headers:{'X-API-KEY':apiKey},credentials:'omit',cache:'no-store',redirect:'error',referrerPolicy:'no-referrer',signal:controller.signal});
       if(!running||mine!==generation)return;
       if(response.status===403&&code==='IX0001'){text($('#ql-rest-status'),'富果暫未提供加權指數權限，持股行情照常更新。');return;}
-      if(response.status===401||response.status===403){failed('富果定時查詢金鑰或權限無效，已停止並清除金鑰。');return;}
+      if(response.status===401||response.status===403){failed(response.status===401?'富果行情金鑰已失效，已清除記錄，請重新輸入。':'富果查詢權限不足，已停止連線；已記住的金鑰保留。',response.status===401);return;}
       if(response.status===429){
         const raw=response.headers.get('Retry-After'),seconds=Number(raw),until=Number.isFinite(seconds)?Date.now()+Math.max(60,seconds)*1000:Date.parse(raw||'');
         restPause=Number.isFinite(until)?Math.max(Date.now()+60000,until):Date.now()+60000;
@@ -240,7 +270,7 @@
   }
   function reconnect(){
     dropSocket();if(!running||disposed)return;
-    if(failures>=6){failed('連線多次失敗，已停止重試並清除金鑰。請確認網路後重新輸入。');return;}
+    if(failures>=6){failed('連線多次失敗，已停止重試。請確認網路後按「啟用」，已記住的金鑰可直接沿用。');return;}
     const delay=Math.min(30000,1000*Math.pow(2,failures));failures++;retries++;
     text($('#ql-retries'),String(retries));status('retry','等待重連','連線中斷，保留最後行情；'+delay/1000+' 秒後重新連線。');
     const mine=generation;retryTimer=setTimeout(()=>{retryTimer=null;if(running&&mine===generation)connect();},delay);
@@ -265,7 +295,7 @@
       if(!message||typeof message!=='object')return;
       if(message.event==='authenticated'){
         clearTimer(phaseTimer);phaseTimer=null;
-        authenticated=true;reconcile();
+        authenticated=true;rememberVerified();reconcile();
         status('live','已連線','已驗證，等待 5 檔以內的成交資料。收盤後可能只有最近快照。');
         phaseTimer=setTimeout(()=>{if(current()&&events===0)text($('#ql-message'),'連線正常，尚無新成交。收盤後、尚未成交或代碼無效時可能沒有資料，請確認交易時段與代碼。');},15000);
         if(healthTimer!==null)clearInterval(healthTimer);
@@ -278,13 +308,13 @@
         const code=Number(message.code);
         if(code===1011){reconnect();return;}
         const explanations={1000:'金鑰無效或目前方案不支援，請確認金鑰與免費方案權限。',1001:'超出訂閱上限，請確認此金鑰是否也在其他程式使用。',1002:'富果拒絕此訂閱，請確認帳號權限。',1003:'連線數已滿或股票訂閱不受支援，請關閉其他測試連線並確認代碼。'};
-        failed((explanations[code]||'富果回報無法繼續訂閱。')+' 已停止並清除金鑰。');
+        failed((explanations[code]||'富果回報無法繼續訂閱。')+(code===1000?' 已清除記錄，請重新輸入。':' 已停止連線，已記住的金鑰仍保留。'),code===1000);
       }
     };
     socket.onerror=()=>{if(current())reconnect();};
     socket.onclose=event=>{
       if(!current())return;
-      if(event.code===1013||event.code===1008||event.code===1005||(event.code===1001&&String(event.reason).includes('plan'))){failed('連線遭拒或已達方案限制，請檢查金鑰、權限及其他連線。已清除金鑰。');return;}
+      if(event.code===1013||event.code===1008||event.code===1005||(event.code===1001&&String(event.reason).includes('plan'))){failed('連線遭拒或已達方案限制，請檢查金鑰、權限及其他連線。已停止本次連線；已記住的金鑰保留。');return;}
       reconnect();
     };
   }
@@ -293,8 +323,8 @@
     if(document.hidden){status('idle','請回到前景','請在可見的測試頁開始連線。');return;}
     const selected=symbolsInput.value.toUpperCase().split(/[\s,，、]+/).filter(Boolean);
     if((selected.length===0&&!followInput.checked)||selected.length>5||new Set(selected).size!==selected.length||selected.some(s=>!/^\d{4,6}[A-Z]?$/.test(s))){status('error','請確認代碼','請輸入 1～5 個不重複的上市櫃股票代碼，以逗號或空格分隔。');return;}
-    const supplied=keyInput.value.trim();if(!supplied){status('error','尚未輸入金鑰','請輸入你申請的富果行情 API Key。');return;}
-    apiKey=supplied;keyInput.value='';if(location.pathname!=='/web/quote-lab')panel.open=false;preferred=selected;following=followInput.checked;symbols=following?[]:selected;allSymbols=[];events=retries=failures=0;restPause=0;running=true;generation++;controls();
+    const supplied=keyInput.value.trim()||(rememberInput.checked&&saved?saved.key:'');if(!supplied){status('error','尚未輸入金鑰','請輸入你申請的富果行情 API Key。');return;}
+    restoreBlocked=false;apiKey=supplied;keyInput.value='';if(location.pathname!=='/web/quote-lab')panel.open=false;preferred=selected;following=followInput.checked;symbols=following?[]:selected;allSymbols=[];events=retries=failures=0;restPause=0;running=true;generation++;controls();
     indexQuote=null;indexAttempt=0;rows.clear();models.clear();flashes.forEach(clearTimer);flashes.clear();$('#ql-quotes').replaceChildren();text($('#ql-events'),'0');text($('#ql-retries'),'0');status('connecting','準備中',following?'正在確認你的 BOT 持股…':'正在準備串流…');
     const mine=generation;
     if(navigator.locks&&navigator.locks.request){
@@ -304,7 +334,7 @@
           if(!lock){failed('這個瀏覽器已有另一個測試分頁連線，請先在原分頁停止。');return;}
           await new Promise(resolve=>{releaseLock=resolve;launch();});
         });
-      }catch(ignore){if(running&&mine===generation)failed('無法取得測試頁連線鎖，已清除金鑰。請關閉其他分頁後重試。');}
+      }catch(ignore){if(running&&mine===generation)failed('無法取得測試頁連線鎖，已停止本次連線；已記住的金鑰保留。請關閉其他分頁後重試。');}
     }else{launch();}
   }
   function ensureAllocation(items){
@@ -362,7 +392,7 @@
       if(indexQuote)body.set('market',JSON.stringify(indexQuote));
       const response=await fetch(localURL('/web/quote-lab/apply'),{method:'POST',credentials:'same-origin',cache:'no-store',redirect:'error',body,signal:controller.signal});
       if(!running||mine!==generation)return;
-      if(response.status===401||response.status===403){failed('BOT 登入已失效，已停止富果行情並清除金鑰。');return;}
+      if(response.status===401||response.status===403){failed('BOT 登入已失效，已停止富果行情，請重新登入 BOT。');return;}
       if(!response.ok)throw new Error('calculation unavailable');
       const data=await response.json();if(!running||mine!==generation||!data.ok)return;
       document.dispatchEvent(new CustomEvent('stockbot:fuglequotes',{detail:data}));applyValuations(data);text(panelLabel,'富果行情 · '+(data.positions?.updates?.length||0)+'／'+allSymbols.length+' 檔已更新');
@@ -374,14 +404,33 @@
     if(document.hidden){
       if(!running)return;paused=true;generation++;dropSocket();clearTimer(holdTimer);clearTimer(restTimer);clearTimer(applyTimer);holdTimer=restTimer=applyTimer=null;
       if(holdController)holdController.abort();if(restController)restController.abort();if(applyController)applyController.abort();holdController=restController=applyController=null;
-      status('idle','背景暫停','回到前景後會重新確認持股與行情；金鑰僅保留在本分頁記憶體。');
+      status('idle','背景暫停','回到前景後會重新確認持股與行情；未儲存的金鑰僅保留在本分頁記憶體。');
     }else if(running&&paused){paused=false;launch();requestApply();}
+    else if(!running)restoreSaved();
   }
-  function pagehide(){stop('頁面已關閉，金鑰已清除。');}
-  start.addEventListener('click',begin);stopButton.addEventListener('click',()=>stop('連線已停止，金鑰已清除。最後行情保留供查看。'));
+  function pagehide(){stop('頁面已關閉；已記住的裝置記錄會保留。');}
+  start.addEventListener('click',begin);stopButton.addEventListener('click',()=>{disableAutoStart();stop('連線已停止；已記住的金鑰保留，按啟用可恢復。');});
+  function forget(message){const cleared=removeSaved();restoreBlocked=true;rememberInput.checked=false;stop(cleared?message:'本次連線已停止，但裝置記錄無法清除；請至瀏覽器設定清除這個網站的資料。');}
+  forgetButton.addEventListener('click',()=>forget('已清除這個裝置的金鑰與自動連線記錄。'));
+  changeButton.addEventListener('click',()=>{forget('請輸入新的富果 API Key。');panel.open=true;keyInput.focus();});
+  rememberInput.addEventListener('change',()=>{if(!rememberInput.checked)removeSaved();else rememberVerified();});
   keyInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();begin();}});
   document.addEventListener('visibilitychange',visibility);document.addEventListener('stockbot:pageleaving',detach);window.addEventListener('pagehide',pagehide);window.addEventListener('popstate',queueMount);
   const observer=new MutationObserver(queueMount);observer.observe(document.documentElement,{childList:true,subtree:true});
   window.StockBotFugle={active:()=>running&&following,request:requestApply};
-  controls();
+  function restoreSaved(){
+    if(running||disposed||document.hidden||restoreBlocked)return;
+    saved=readSaved();rememberInput.checked=!!saved;showRemember();
+    if(!saved)return;
+    symbolsInput.value=saved.symbols;followInput.checked=saved.follow;
+    if(saved.autoStart)begin();
+  }
+  window.addEventListener('pageshow',restoreSaved);
+  window.addEventListener('storage',event=>{
+    if(event.key!==storageKey&&event.key!==null)return;
+    const previous=saved;saved=readSaved();rememberInput.checked=!!saved;
+    if(running&&(!saved||!saved.autoStart||(previous&&saved.key!==previous.key)))stop('其他分頁已變更裝置記錄，這個分頁已停止。');
+    showRemember();
+  });
+  controls();restoreSaved();
 })();

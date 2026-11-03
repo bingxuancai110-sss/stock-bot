@@ -1,6 +1,7 @@
 """Owner-only, browser-direct Fugle trial; the server never receives market-data keys."""
 from functools import lru_cache
 import hmac
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -51,13 +52,15 @@ def page_markup():
     <h2 id="ql-connect-title">連接你的行情</h2>
     <p class="ql-muted">先到 <a href="https://www.fugle.tw/account/register?referrer=api" target="_blank" rel="noopener noreferrer">富果註冊</a>並依<a href="https://developer.fugle.tw/docs/key/" target="_blank" rel="noopener noreferrer">官方說明申請行情 API Key</a>。不需要提供證券帳戶密碼。</p>
     <label for="ql-key">行情 API Key</label>
-    <input id="ql-key" type="password" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="只在這個頁面記憶體使用" aria-describedby="ql-key-help">
-    <p id="ql-key-help" class="ql-muted">金鑰直接送往富果，不傳給 BOT、不儲存。僅留在本分頁記憶體；切換今日／持股沿用，重新整理或停止後須重新輸入。</p>
+    <input id="ql-key" type="password" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="輸入富果行情 API Key" aria-describedby="ql-key-help">
+    <p id="ql-key-help" class="ql-muted">金鑰直接送往富果，不傳給 BOT 後端。勾選下方選項可記住在這個瀏覽器，下次開網站自動連線；共用裝置請勿勾選。</p>
+    <label class="ql-follow"><input id="ql-remember" type="checkbox"> 記住此裝置，下次自動連線</label>
+    <p id="ql-remember-status" class="ql-muted" role="status">尚未儲存金鑰；未勾選時僅在本次開啟期間使用。</p>
     <label class="ql-follow"><input id="ql-follow" type="checkbox" checked> 自動追蹤我的 BOT 持股</label>
     <label for="ql-symbols">串流優先代碼（最多 5 檔）</label>
     <input id="ql-symbols" type="text" value="2308, 8996, 2383, 2368, 6442" spellcheck="false" autocomplete="off" aria-describedby="ql-symbol-help">
     <p id="ql-symbol-help" class="ql-muted">追蹤模式會略過已不在 BOT 持股的代碼，保留現有串流名額，缺額自動從其他持股補上。其餘持股約每 15 秒查詢；持股較多時自動放慢。取消追蹤可保留原本手動測試模式。</p>
-    <div class="ql-controls"><button type="button" id="ql-start">啟用富果行情</button><button type="button" id="ql-stop" disabled>停止並清除金鑰</button></div>
+    <div class="ql-controls"><button type="button" id="ql-start">啟用富果行情</button><button type="button" id="ql-stop" disabled>停止連線</button><button type="button" id="ql-change-key">更換金鑰</button><button type="button" id="ql-forget">清除記錄</button></div>
   </section>
   <section class="ql-panel" aria-labelledby="ql-status-title">
     <div class="ql-status-head"><h2 id="ql-status-title">連線狀態</h2><span id="ql-state" class="ql-state" role="status">尚未連線</span></div>
@@ -71,7 +74,7 @@ def page_markup():
     <div id="ql-quotes"><p class="ql-empty">尚未開始，行情會顯示在這裡。</p></div>
   </section>
   <aside class="ql-note"><b>如何看速度</b><p>行情時間來自富果，接收時間來自你的裝置。「觀測時間差」受裝置時鐘與傳輸影響，不能當作完整延遲保證。沒有新成交時價格不會跳動；收盤後通常只有最近快照，請在交易時段驗證速度。</p>
-  <p>全數賣出會在下次 BOT 持股同步後移除，部分減碼仍保留。同頁保持連線不用重輸金鑰；切換今日／持股沿用同一連線；切到背景暫停，回前景恢復；重新整理或關閉才清除。定時查詢限制本頁最多 40 次／分鐘，另留額度餘裕；同金鑰其他程式的用量仍會影響配額。整股成交與試撮分開標示。斷線會保留最後畫面，但不會標示為連線中；本頁不保存行情歷史。<a href="https://developer.fugle.tw/docs/pricing/" target="_blank" rel="noopener noreferrer">查看官方方案與限制 ↗</a></p></aside>
+  <p>全數賣出會在下次 BOT 持股同步後移除，部分減碼仍保留。同頁保持連線不用重輸金鑰；切換今日／持股沿用同一連線；切到背景暫停，回前景恢復；未勾選「記住此裝置」時，重新整理或關閉會清除記憶體中的金鑰；已記住時會自動恢復。停止連線會保留記錄並關閉自動連線，可在「更多」再次啟用或清除。定時查詢限制本頁最多 40 次／分鐘，另留額度餘裕；同金鑰其他程式的用量仍會影響配額。整股成交與試撮分開標示。斷線會保留最後畫面，但不會標示為連線中；本頁不保存行情歷史。<a href="https://developer.fugle.tw/docs/pricing/" target="_blank" rel="noopener noreferrer">查看官方方案與限制 ↗</a></p></aside>
 </main>'''
 
 
@@ -134,7 +137,7 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection, rele
         check_owner(uid)
         if not callable(csrf_token):
             abort(503)
-        return private(jsonify(ok=True, panel_html=page_markup(), csrf_token=csrf_token(uid)))
+        return private(jsonify(ok=True, panel_html=page_markup(), csrf_token=csrf_token(uid), storage_scope=hashlib.sha256(('stockbot-fugle-device:'+str(uid)).encode()).hexdigest()))
 
     @bp.route('/web/quote-lab/apply', methods=['POST'])
     @web_login_required
