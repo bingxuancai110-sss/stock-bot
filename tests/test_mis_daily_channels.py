@@ -63,3 +63,26 @@ def test_no_yesterday_or_missing_trade_price_is_promoted_to_today():
     with ThreadPoolExecutor(max_workers=1) as executor:
         ns['_TWSE_MIS_EXECUTOR']=executor
         assert ns['_fetch_twse_mis_quotes'](['2308','2330'],'.TW',force_refresh=True,cache_result=False)=={}
+
+
+def test_batch_missing_prices_recover_individually_without_refetching_successes():
+    codes=['2308','2330','3026']
+    ns,session=context([])
+    def get(url, **kwargs):
+        channels=kwargs['params']['ex_ch'].split('|')
+        rows=[]
+        for channel in channels:
+            c=channel.split('_')[1].split('.')[0]
+            rows.append(dict(c=c,ex='tse',d='20261103',t='09:39:59',y='100',
+                             z='101' if len(channels)==1 or c=='3026' else '-',pz='-'))
+        response=Mock();response.json.return_value={'rtcode':'0000','msgArray':rows}
+        return response
+    session.get.side_effect=get
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        ns['_TWSE_MIS_EXECUTOR']=executor
+        result=ns['_fetch_twse_mis_quotes'](codes,'.TW',force_refresh=True,cache_result=False)
+    assert set(result)==set(codes)
+    assert all(q['close']==101 and q['has_live_trade_price'] for q in result.values())
+    calls=[call.kwargs['params']['ex_ch'] for call in session.get.call_args_list]
+    assert len(calls)==3
+    assert 'tse_3026.tw_20261103' not in calls
