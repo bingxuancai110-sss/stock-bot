@@ -421,6 +421,26 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 @media(max-width:360px){#stockbot-app #stockbot-shell #app-page-content .rows>.position-card{padding:13px 11px 7px!important}#stockbot-app #stockbot-shell #app-page-content .position-card-top{gap:8px!important}#stockbot-app #stockbot-shell #app-page-content .position-card-title h3{font-size:15px!important}#stockbot-app #stockbot-shell #app-page-content .position-card-price b{font-size:20px!important}#stockbot-app #stockbot-shell #app-page-content .position-card-primary>div{padding:7px!important}}
 #stockbot-app #stockbot-shell #app-page-content .rows>.position-card.ui-allocation-selected{border-color:#92b59f!important;background:#f1f7f3!important;box-shadow:inset 3px 0 0 #80a78d!important}
 
+/* A small eye control belongs to the open portfolio summary, not a new card. */
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .totals .total-label{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:8px!important}
+#stockbot-app #stockbot-shell #app-page-content .positions-privacy-toggle{display:inline-flex!important;align-items:center!important;justify-content:center!important;flex:0 0 32px!important;width:32px!important;height:32px!important;min-width:32px!important;min-height:32px!important;margin:-7px -7px -7px 0!important;padding:6px!important;border:0!important;border-radius:50%!important;background:transparent!important;color:#718391!important;cursor:pointer!important;transition:background-color .16s ease,color .16s ease,transform .16s ease!important}
+#stockbot-app #stockbot-shell #app-page-content .positions-privacy-toggle:hover{background:#edf3f5!important;color:#365a70!important}
+#stockbot-app #stockbot-shell #app-page-content .positions-privacy-toggle:active{transform:scale(.92)!important}
+#stockbot-app #stockbot-shell #app-page-content .positions-privacy-toggle svg{width:18px!important;height:18px!important;fill:none!important;stroke:currentColor!important;stroke-width:1.8!important;stroke-linecap:round!important;stroke-linejoin:round!important}
+#stockbot-app #stockbot-shell #app-page-content .positions-privacy-toggle .eye-closed{display:none!important}
+#stockbot-app #stockbot-shell #app-page-content .totals.is-privacy-hidden .positions-privacy-toggle .eye-open{display:none!important}
+#stockbot-app #stockbot-shell #app-page-content .totals.is-privacy-hidden .positions-privacy-toggle .eye-closed{display:block!important}
+#stockbot-app #stockbot-shell #app-page-content .totals.is-privacy-hidden [data-home-sensitive]{letter-spacing:.12em!important}
+
+/* Add a quiet market-color cue to each open holding line without restoring card tiles. */
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card{transition:background-color .18s ease,border-color .18s ease!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:hover,
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:focus-within{background:linear-gradient(90deg,rgba(42,105,133,.045),transparent 76%)!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3{display:flex!important;align-items:baseline!important;gap:6px!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3::before{content:"";display:inline-block;flex:0 0 6px;width:6px;height:6px;border-radius:50%;background:#9aa9b2;transform:translateY(-1px)}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:has(.position-card-price span.up) .position-card-title h3::before{background:#c84c45}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:has(.position-card-price span.down) .position-card-title h3::before{background:#23866c}
+
 /* Restore the original non-blocking full-page route transition. */
 .ui-route-pending{opacity:1;pointer-events:auto;transition:none}
 .ui-feedback-route[data-state=error],.ui-feedback-route[data-state=waiting]{min-height:0;padding:10px 13px}
