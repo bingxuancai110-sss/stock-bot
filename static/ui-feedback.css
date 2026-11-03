@@ -440,6 +440,16 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3::before{content:"";display:inline-block;flex:0 0 6px;width:6px;height:6px;border-radius:50%;background:#9aa9b2;transform:translateY(-1px)}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:has(.position-card-price span.up) .position-card-title h3::before{background:#c84c45}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:has(.position-card-price span.down) .position-card-title h3::before{background:#23866c}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price b.up{color:#b4232e!important;-webkit-text-fill-color:#b4232e!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price b.down{color:#137451!important;-webkit-text-fill-color:#137451!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].up,
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].down{display:inline-flex!important;align-items:center!important;justify-content:center!important;min-height:23px!important;margin-top:5px!important;padding:3px 0!important;border:0!important;border-radius:7px!important;background:transparent!important;font-size:12px!important;line-height:1!important;font-weight:850!important;letter-spacing:.01em!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].up{color:#b4232e!important;-webkit-text-fill-color:#b4232e!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].down{color:#137451!important;-webkit-text-fill-color:#137451!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].is-limit-board{min-height:25px!important;margin-top:5px!important;padding:4px 8px!important;border-radius:7px!important;color:#fff!important;-webkit-text-fill-color:#fff!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].is-limit-board::before{content:attr(data-limit-label);margin-right:5px;font-weight:900}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].is-limit-board.up{background:#9f3036!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].is-limit-board.down{background:#0b684b!important}
 
 /* Restore the original non-blocking full-page route transition. */
 .ui-route-pending{opacity:1;pointer-events:auto;transition:none}
