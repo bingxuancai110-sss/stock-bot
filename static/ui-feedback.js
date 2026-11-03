@@ -38,7 +38,7 @@
     }, 20000);
   }
   function endLoad(host) { var state = loadStates.get(host); if (state) clearTimeout(state.timer); loadStates.delete(host); if (host) host.removeAttribute('aria-busy'); }
-  function routeEnd(ok, message) {
+  function routeEnd(ok, message, retry) {
     if (!route) return;
     var old = route; route = null; clearTimeout(old.timer);
     if (old.content) { old.content.classList.remove('ui-route-pending'); old.content.removeAttribute('aria-busy'); }
@@ -47,11 +47,16 @@
     if (!ok && old.content && old.content.isConnected) {
       var error = el('div', 'ui-feedback-route'); error.dataset.state = 'error'; error.setAttribute('role', 'alert');
       error.appendChild(el('p', '', message || '頁面未能載入，保留原本內容。請再次點選分頁重試。'));
+      if (typeof retry === 'function') {
+        var retryButton = el('button', '', '重試載入'); retryButton.type = 'button';
+        retryButton.onclick = function () { error.remove(); retry(); };
+        error.appendChild(retryButton);
+      }
       var dismiss = el('button', '', '繼續查看原頁面'); dismiss.type = 'button'; dismiss.onclick = function () { error.remove(); };
       error.appendChild(dismiss); old.content.before(error);
     }
   }
-  function routeStart(label, path, cancel) {
+  function routeStart(label, path, cancel, retry) {
     routeEnd(true); each(document, '.ui-feedback-route[data-state=error]', function (n) { n.remove(); });
     var content = root(); if (!content) return;
     // Keep the current page in place while the next fragment loads. The shared
@@ -63,13 +68,14 @@
     state.timer = setTimeout(function () {
       if (route !== state) return;
       var notice = el('div', 'ui-feedback-route'); notice.dataset.state = 'waiting'; notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite');
-      notice.appendChild(el('p', '', '頁面載入時間較長，原頁面仍可操作。'));
+      notice.appendChild(el('p', '', '載入比平常久，原畫面仍可操作。'));
       var button = el('button', '', cancel ? '取消等待' : '收起提示'); button.type = 'button'; button.onclick = function () {
-        if (cancel) { cancel(); routeEnd(false, '已取消等待，原頁面仍可使用。'); }
+        if (cancel) { cancel(); routeEnd(false, '已取消等待，原畫面仍可使用。', state.retry); }
         else { if (notice.isConnected) notice.remove(); state.box = null; }
       };
       notice.appendChild(button); content.before(notice); state.box = notice;
-    }, 18000);
+    }, 7000);
+    state.retry = typeof retry === 'function' ? retry : null;
   }
   function notify(message,state){
     if(notification)notification.remove();clearTimeout(notificationTimer);
