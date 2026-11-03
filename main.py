@@ -19,7 +19,7 @@ import ssl
 import socket
 import time
 import threading
-from market_quotes import quote_freshness, prefer_quote
+from market_quotes import quote_freshness, prefer_quote, mis_intraday_trade
 import math
 import struct
 import zlib
@@ -10125,6 +10125,70 @@ def _mis_quote_is_current_for_contribution(quote, now=None, max_age_seconds=None
     return True
 
 
+def _fetch_twse_mis_chart_trade(task):
+    """MIS z/pz can be absent on a snapshot; its same-day chart still has real trades."""
+    code, item = task
+    try:
+        previous = float(str(item["y"]).replace(",", ""))
+        if not 0 < previous < float("inf"):
+            return code, None
+    except (TypeError, ValueError, KeyError):
+        return code, None
+    exchange = str(item.get("ex") or "").lower()
+    if exchange not in ("tse", "otc"):
+        return code, None
+    cache_key = exchange + "_" + code
+    current = taiwan_now()
+    with _realtime_cache_lock:
+        cached = (_TWSE_MIS_CACHE.get("chart_data") or {}).get(cache_key)
+        if (cached and cached.get("close_date") == current.strftime("%Y%m%d") and
+                time.time() - cached.get("_cached_at", 0) < 15):
+            result = dict(cached)
+            result.pop("_cached_at", None)
+            result["previous_close"] = previous
+            result["pct"] = (result["close"] - previous) / previous * 100
+            return code, result
+        attempts = _TWSE_MIS_CACHE.setdefault("chart_attempts", {})
+        if time.time() - attempts.get(cache_key, 0) < 15:
+            return code, None
+        attempts[cache_key] = time.time()
+    try:
+        response = _twse_mis_session().get(
+            "https://mis.twse.com.tw/stock/api/getOhlc.jsp",
+            params={"ex_ch": exchange + "_" + code + ".tw", "d0": current.strftime("%Y%m%d"),
+                    "json": "1", "_": int(time.time() * 1000)}, timeout=(2.5, 4.5))
+        response.raise_for_status()
+        payload = response.json()
+        trade = mis_intraday_trade(payload, current)
+        if not trade:
+            with _realtime_cache_lock:
+                should_log = time.time() - float(_TWSE_MIS_CACHE.get("chart_diag_at") or 0) >= 60
+                if should_log:
+                    _TWSE_MIS_CACHE["chart_diag_at"] = time.time()
+            if should_log:
+                rows = payload.get("msgArray") if isinstance(payload, dict) else None
+                print("MIS 分時成交診斷：code=%s keys=%s sample=%s" % (
+                    code, list(payload)[:10] if isinstance(payload, dict) else [],
+                    rows[:1] if isinstance(rows, list) else None), flush=True)
+            return code, None
+        close, trade_time = trade["close"], trade["time"]
+        result = {"close": close, "previous_close": previous,
+                  "pct": (close - previous) / previous * 100,
+                  "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
+                  "updated_at": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
+                  "quote_updated_at": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
+                  "trade_at": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
+                  "has_live_trade_price": True, "close_is_final": False,
+                  "source": "TWSE MIS 當日分時成交", "close_date": current.strftime("%Y%m%d"),
+                  "close_time": trade_time.strftime("%H:%M:%S")}
+        with _realtime_cache_lock:
+            _TWSE_MIS_CACHE.setdefault("chart_data", {})[cache_key] = dict(result, _cached_at=time.time())
+        return code, result
+    except Exception as exc:
+        print("MIS 分時成交讀取失敗：%s %s" % (code, type(exc).__name__), flush=True)
+        return code, None
+
+
 def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache_result=True, quick_mode=False):
     """並行批次讀取官方 TWSE MIS 當日報價；不以歷史日K補今日漲跌。"""
     codes = list(dict.fromkeys(str(code).strip() for code in (codes or []) if code))
@@ -10209,6 +10273,7 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
     # 原本逐批序列等待：26 個上市／上櫃代號最多連等三次 timeout。
     # 將獨立批次並行，總等待時間接近最慢的一批，而非每批等待時間相加。
     parsed = {}
+    missing_trade_rows = {}
     batch_results = list(_TWSE_MIS_EXECUTOR.map(fetch_one, batches))
     for batch, payload, error in batch_results:
         if error is not None:
@@ -10239,6 +10304,10 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
             live_close = number("z")
             close = live_close if live_close is not None and live_close > 0 else number("pz")
             previous = number("y")
+            if (previous is not None and previous > 0 and
+                    not (live_close is not None and live_close > 0) and
+                    _is_taiwan_intraday_window()):
+                missing_trade_rows[code] = dict(item)
             if close is None or close <= 0 or previous is None or previous <= 0:
                 continue
             quote_updated_at = None
@@ -10271,15 +10340,20 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
                 "close_date": item.get("d"), "close_time": item.get("t"),
             }
 
+    # Only missing snapshot prices need the official same-day time-and-sales series.
+    # The shared executor bounds concurrency; no bid/ask midpoint or yesterday's close is used.
+    if missing_trade_rows:
+        for code, quote in _TWSE_MIS_EXECUTOR.map(_fetch_twse_mis_chart_trade, missing_trade_rows.items()):
+            if quote:
+                parsed[code] = quote
+
     if cache_result:
         with _realtime_cache_lock:
             existing = dict(_TWSE_MIS_CACHE.get("data") or {})
             merged = dict(existing)
             for code, quote in parsed.items():
                 old_quote = merged.get(code)
-                old_stamp = str((old_quote or {}).get("quote_updated_at") or (old_quote or {}).get("updated_at") or "")
-                new_stamp = str(quote.get("quote_updated_at") or quote.get("updated_at") or "")
-                if old_quote is None or (new_stamp and (not old_stamp or new_stamp >= old_stamp)):
+                if prefer_quote(old_quote, quote):
                     merged[code] = dict(quote)
             _TWSE_MIS_CACHE.update({"day": today, "at": time.time(), "data": merged})
             todays_cache = dict(merged)
