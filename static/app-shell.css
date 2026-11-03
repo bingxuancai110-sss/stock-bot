@@ -518,3 +518,246 @@ body#stockbot-app[data-app-view="screener"] #app-page-content .wb-row.wb-rich-ro
   font-size: 11px !important;
   line-height: 1.45 !important;
 }
+
+/* Native-app finish: clearer rhythm, readable controls, and fewer false signals. */
+body#stockbot-app #stockbot-shell > .wrap > #app-page-content {
+  padding-top: 8px !important;
+  padding-bottom: 28px !important;
+}
+body#stockbot-app #app-page-content :is(.section-head,.daily-section-title,.home-impact-heading) {
+  min-height: 34px !important;
+  margin-top: 18px !important;
+  margin-bottom: 8px !important;
+  padding-left: 10px !important;
+  border-left: 3px solid var(--sb-app-primary) !important;
+}
+body#stockbot-app #app-page-content :is(.section-head h2,.daily-section-title h2,.home-impact-heading h2) {
+  color: var(--sb-app-ink) !important;
+  font-size: clamp(17px, 2.4vw, 20px) !important;
+  font-weight: 820 !important;
+  letter-spacing: -.025em !important;
+}
+body#stockbot-app #app-page-content :is(button,a,input,select,[role=button]) {
+  touch-action: manipulation;
+}
+body#stockbot-app .app-bottom-nav .bottom-inner > a {
+  min-height: 60px !important;
+  gap: 4px !important;
+  font-size: 10px !important;
+  letter-spacing: .01em !important;
+}
+body#stockbot-app .app-bottom-nav .bottom-inner > a .app-nav-icon {
+  width: 21px !important;
+  height: 21px !important;
+  stroke-width: 1.9 !important;
+}
+body#stockbot-app .app-bottom-nav .bottom-inner > a.on {
+  background: #e6f0ee !important;
+  color: #1d6372 !important;
+}
+body#stockbot-app .app-bottom-nav .bottom-inner > a.on::before {
+  width: 22px !important;
+  height: 3px !important;
+}
+
+/* Market: quote and move should be scannable at a glance on a phone. */
+body#stockbot-app[data-app-view="market"] #app-page-content .market-quote-tile {
+  min-height: 72px !important;
+  padding: 10px 4px !important;
+}
+body#stockbot-app[data-app-view="market"] #app-page-content .market-quote-tile .tile-name {
+  font-size: 14px !important;
+  font-weight: 820 !important;
+}
+body#stockbot-app[data-app-view="market"] #app-page-content .market-quote-tile .tile-code {
+  color: #607583 !important;
+  font-size: 11px !important;
+  font-weight: 650 !important;
+}
+body#stockbot-app[data-app-view="market"] #app-page-content .market-quote-tile strong {
+  font-size: 19px !important;
+  letter-spacing: -.02em !important;
+}
+body#stockbot-app[data-app-view="market"] #app-page-content .market-quote-tile .tile-change {
+  min-width: 62px !important;
+  padding: 4px 8px !important;
+  border-radius: 8px !important;
+  font-size: 11px !important;
+}
+body#stockbot-app[data-app-view="market"] #app-page-content .market-quote-tile .tile-change.up {
+  background: #f8e2df !important;
+  color: #a92e28 !important;
+}
+body#stockbot-app[data-app-view="market"] #app-page-content .market-quote-tile .tile-change.down {
+  background: #e0eee7 !important;
+  color: #116747 !important;
+}
+
+/* Workbench: the empty decorative bars read like broken progress indicators. */
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-pulse {
+  display: grid !important;
+  grid-template-columns: auto auto minmax(0, 1fr) !important;
+  gap: 4px 9px !important;
+  align-items: center !important;
+  padding: 10px 11px !important;
+  border: 1px solid #dce6e4 !important;
+  border-radius: 12px !important;
+  background: #f8fbfa !important;
+  box-shadow: none !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-pulse > i {
+  display: none !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-pulse > span {
+  color: #536976 !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-pulse > b {
+  display: inline-flex !important;
+  align-items: center !important;
+  min-height: 25px !important;
+  padding: 3px 8px !important;
+  border-radius: 999px !important;
+  background: #e5f1eb !important;
+  color: #176a4c !important;
+  font-size: 11px !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-pulse > em {
+  grid-column: 1 / -1 !important;
+  color: #526878 !important;
+  font-size: 11px !important;
+  line-height: 1.45 !important;
+  font-style: normal !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-asset-tabs button,
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-tabs button {
+  min-height: 40px !important;
+  font-size: 12px !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-asset-tabs button.on,
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-tabs button.on {
+  color: #185d48 !important;
+  background: #e4f1e9 !important;
+  box-shadow: inset 0 -2px 0 #43856a !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-tools :is(input,button) {
+  min-height: 42px !important;
+  font-size: 13px !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-count {
+  margin: 8px 2px !important;
+  color: #425967 !important;
+  font-size: 12px !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content .wb-row.wb-rich-row {
+  padding-top: 12px !important;
+  padding-bottom: 12px !important;
+}
+
+/* Leaderboard: keep each member legible without a tall, form-like metric stack. */
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-situation-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  border-bottom: 1px solid var(--sb-app-line) !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-situation-item {
+  min-width: 0 !important;
+  padding: 11px 9px !important;
+  border-left: 1px solid var(--sb-app-line) !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-situation-item:first-child {
+  border-left: 0 !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-situation-item small {
+  color: #5b6f7c !important;
+  font-size: 10px !important;
+  line-height: 1.35 !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-situation-item b {
+  font-size: clamp(17px, 3vw, 23px) !important;
+  line-height: 1.15 !important;
+  overflow-wrap: anywhere !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-situation-item .rank-situation-sub {
+  font-size: 10px !important;
+  line-height: 1.35 !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-rows .rank-card {
+  padding-top: 10px !important;
+  padding-bottom: 10px !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-chart-panel {
+  padding-top: 14px !important;
+  padding-bottom: 12px !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-chart-panel svg.ui-interactive-chart {
+  display: block !important;
+  width: 100% !important;
+  min-height: 220px !important;
+  overflow: visible !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-chart-panel .legend {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 5px 8px !important;
+  padding-top: 9px !important;
+}
+
+/* US rotation: reinforce selected periods and keep its data-rich sections calm. */
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-hero {
+  padding-top: 8px !important;
+  padding-bottom: 13px !important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-section > h2,
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-advanced > h2 {
+  color: var(--sb-app-ink) !important;
+  font-weight: 840 !important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-heat :is(button,[role=button],[role=checkbox]) {
+  transition: transform .16s ease, border-color .16s ease, background-color .16s ease !important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-heat :is(button,[role=button],[role=checkbox]):active {
+  transform: scale(.985) !important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content .us-summary > div {
+  border-left-width: 3px !important;
+}
+
+/* More: tool rows have a stronger label, while retaining the uncluttered list. */
+body#stockbot-app[data-app-view="more"] #app-page-content .more-group-title {
+  margin-top: 23px !important;
+  color: #536b78 !important;
+  font-size: 12px !important;
+  font-weight: 800 !important;
+}
+body#stockbot-app[data-app-view="more"] #app-page-content .more-item {
+  min-height: 66px !important;
+}
+body#stockbot-app[data-app-view="more"] #app-page-content .more-item .more-icon {
+  width: 38px !important;
+  height: 38px !important;
+  border-radius: 12px !important;
+}
+body#stockbot-app[data-app-view="more"] #app-page-content .more-item b {
+  font-size: 14px !important;
+  font-weight: 820 !important;
+}
+
+@media (max-width: 620px) {
+  body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-situation-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-situation-item:nth-child(3) {
+    border-left: 0 !important;
+  }
+  body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-chart-panel svg.ui-interactive-chart {
+    min-height: 190px !important;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  body#stockbot-app #app-page-content *,
+  body#stockbot-app .app-bottom-nav * {
+    transition-duration: .001ms !important;
+    animation-duration: .001ms !important;
+  }
+}
