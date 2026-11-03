@@ -27656,9 +27656,9 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261103-8">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261103-9">
 <script defer src="/static/ui-feedback.js?v=20261103-4"></script>
-<script defer src="/static/fugle-live.js?v=20261103-5"></script>
+<script defer src="/static/fugle-live.js?v=20261103-6"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -31775,17 +31775,20 @@ def web_positions(uid):
     pl_total = (((total_value - total_fee - total_cost) / total_cost * 100)
                 if total_cost else None)
     totals = f"""
-<div class="totals">
-  <div><div class="total-label">總市值</div>
-       <div class="total-value num" data-fugle-total="value">{total_value:,.0f}</div>
-       <div class="total-sub {'up' if pl_total is not None and pl_total >= 0 else 'down' if pl_total is not None else 'flat'}" data-fugle-total="net_pct">{fmt_pct(pl_total)}</div></div>
+<div class="totals" data-home-privacy-card>
+  <div><div class="total-label">總市值<button type="button" class="positions-privacy-toggle" data-home-privacy-toggle aria-label="隱藏總市值與成本" title="隱藏總市值與成本" aria-pressed="false">
+         <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3.2"/></svg>
+         <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.7 5.2A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3 3.8M6.2 6.5C3.5 8.4 2 12 2 12s3.5 7 10 7a10.5 10.5 0 0 0 4-.8M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+       </button></div>
+       <div class="total-value num" data-fugle-total="value" data-home-sensitive data-home-original="{total_value:,.0f}">{total_value:,.0f}</div>
+       <div class="total-sub {'up' if pl_total is not None and pl_total >= 0 else 'down' if pl_total is not None else 'flat'}" data-fugle-total="net_pct" data-home-sensitive data-home-original="{fmt_pct(pl_total)}">{fmt_pct(pl_total)}</div></div>
   <div><div class="total-label">淨損益</div>
-       <div data-fugle-total="net_pl" class="total-value num {'up' if total_value - total_cost - total_fee >= 0 else 'down'}">
+       <div data-fugle-total="net_pl" data-home-sensitive data-home-original="{total_value - total_cost - total_fee:+,.0f}" class="total-value num {'up' if total_value - total_cost - total_fee >= 0 else 'down'}">
          {total_value - total_cost - total_fee:+,.0f}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
-         已扣交易成本 <span class="num" data-fugle-total="fee">{total_fee:,.0f}</span></div></div>
+         已扣交易成本 <span class="num" data-fugle-total="fee" data-home-sensitive data-home-original="{total_fee:,.0f}">{total_fee:,.0f}</span></div></div>
   <div><div class="total-label">今日損益</div>
-       <div data-fugle-total="day_pl" class="total-value num {'up' if total_day_pl >= 0 else 'down'}">
+       <div data-fugle-total="day_pl" data-home-sensitive data-home-original="{total_day_pl:+,.0f}" class="total-value num {'up' if total_day_pl >= 0 else 'down'}">
          {total_day_pl:+,.0f}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
          今收 vs 昨收</div></div>

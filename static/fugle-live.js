@@ -382,7 +382,7 @@
     const positions=data.positions||{},totals=positions.totals||{},complete=totals.complete===true;
     const money=(n,d=0)=>Number(n).toLocaleString('zh-TW',{minimumFractionDigits:d,maximumFractionDigits:d});
     const pct=n=>(Number(n)>=0?'+':'')+money(n,2)+'%';
-    if(complete)document.querySelectorAll('[data-fugle-total]').forEach(el=>{const field=el.dataset.fugleTotal,value=totals[field];el.textContent=value==null?'資料不足':field==='net_pct'?pct(value):money(value);if(['net_pl','net_pct','day_pl'].includes(field)){el.classList.toggle('up',value>=0);el.classList.toggle('down',value<0);}});
+    if(complete)document.querySelectorAll('[data-fugle-total]').forEach(el=>{const field=el.dataset.fugleTotal,value=totals[field],shown=value==null?'資料不足':field==='net_pct'?pct(value):money(value);if(el.hasAttribute('data-home-sensitive')){el.dataset.homeOriginal=shown;if(!el.closest('.is-privacy-hidden'))el.textContent=shown;}else el.textContent=shown;if(['net_pl','net_pct','day_pl'].includes(field)){el.classList.toggle('up',value>=0);el.classList.toggle('down',value<0);}});
     const hero=document.querySelector('[data-home-privacy-card] .hv2-px[data-home-sensitive]');
     if(hero&&complete){const value=totals.value==null?'資料不足':money(totals.value);hero.dataset.homeOriginal=value;if(!hero.closest('.is-privacy-hidden'))hero.textContent=value;const gain=document.querySelector('#hv2 .hv2-head-r>b');if(gain){gain.textContent=totals.net_pct==null?'資料不足':pct(totals.net_pct);gain.classList.toggle('up',totals.net_pct>=0);gain.classList.toggle('down',totals.net_pct<0);}}
     (positions.updates||[]).forEach(item=>{
@@ -421,7 +421,7 @@
     return null;
   }
   function clearOldAggregates(){
-    document.querySelectorAll('[data-fugle-total],[data-home-portfolio-pct],[data-home-relative],[data-home-judgement-relative]').forEach(el=>{el.textContent='更新中';el.classList.remove('up','down');});
+    document.querySelectorAll('[data-fugle-total],[data-home-portfolio-pct],[data-home-relative],[data-home-judgement-relative]').forEach(el=>{if(el.hasAttribute('data-home-sensitive')){el.dataset.homeOriginal='更新中';if(!el.closest('.is-privacy-hidden'))el.textContent='更新中';}else el.textContent='更新中';el.classList.remove('up','down');});
     const hero=document.querySelector('[data-home-privacy-card] .hv2-px[data-home-sensitive]');
     if(hero){hero.dataset.homeOriginal='更新中';if(!hero.closest('.is-privacy-hidden'))hero.textContent='更新中';}
     const gain=document.querySelector('#hv2 .hv2-head-r>b');if(gain){gain.textContent='更新中';gain.classList.remove('up','down');}
