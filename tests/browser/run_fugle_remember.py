@@ -11,8 +11,9 @@ from quote_lab import page_markup
 
 engine=sys.argv[1] if len(sys.argv)>1 else 'chromium'
 KEY='fixture-device-key';SCOPE='a'*64;STORE='stockbot_fugle_device_v1:'+SCOPE
-state={'scope':SCOPE,'authorize':True};checks=[];errors=[];requests=[]
-MOCK='''window.sockets=[];window.authOK=true;
+state={'scope':SCOPE,'authorize':True,'config_failures':0};checks=[];errors=[];requests=[]
+MOCK='''window.sockets=[];window.authOK=true;window.fixtureHidden=null;
+Object.defineProperty(document,'hidden',{get:()=>window.fixtureHidden??document.visibilityState==='hidden'});
 class FakeSocket {
  constructor(url){this.readyState=0;this.sent=[];sockets.push(this);queueMicrotask(()=>{this.readyState=1;this.onopen?.({});});}
  send(raw){const m=JSON.parse(raw);this.sent.push(m);if(m.event==='auth'&&authOK)queueMicrotask(()=>this.server({event:'authenticated'}));}
@@ -30,6 +31,8 @@ with sync_playwright() as p:
   requests.append((u.hostname,u.path))
   if u.path=='/static/fugle-live.js':r.fulfill(body=(REPO/'static/fugle-live.js').read_text(),content_type='application/javascript');return
   if u.path=='/web/quote-lab/app-config':
+   if state['config_failures']:
+    state['config_failures']-=1;r.fulfill(status=503,json={'ok':False});return
    if not state['authorize']:r.fulfill(status=403,json={'ok':False});return
    r.fulfill(json={'ok':True,'csrf_token':'fixture-csrf','storage_scope':state['scope'],'panel_html':page_markup()});return
   if u.path=='/web/quote-lab/holdings':r.fulfill(json={'ok':True,'holdings':[{'code':'2308','name':'台達電'}]});return
@@ -58,6 +61,34 @@ with sync_playwright() as p:
  assert not page.locator('#stockbot-fugle-panel').is_visible()
  assert page.evaluate('sockets[0].sent[0].data.apikey')==KEY
  checks.append('reload on Home auto-connects without showing credential')
+ # A temporary configuration failure during Home load must recover without visiting More.
+ state['config_failures']=1;count=sum(path=='/web/quote-lab/app-config' for host,path in requests)
+ ready('/web/portfolio');page.wait_for_selector('#ql-state[data-state=live]',state='attached')
+ assert sum(path=='/web/quote-lab/app-config' for host,path in requests)>=count+2
+ assert page.url.endswith('/web/portfolio') and not page.locator('#stockbot-fugle-panel').is_visible()
+ checks.append('Home retries transient startup failure without More')
+ # Exhausted retries stop; restoring connectivity provides a new bounded startup attempt.
+ state['config_failures']=20;count=sum(path=='/web/quote-lab/app-config' for host,path in requests)
+ page.goto('https://fixture.test/web/portfolio');page.wait_for_function('window.StockBotFugleInitializing===false')
+ assert sum(path=='/web/quote-lab/app-config' for host,path in requests)==count+4
+ assert not page.evaluate('!!window.StockBotFugle')
+ state['config_failures']=0;page.evaluate("window.dispatchEvent(new Event('online'))")
+ page.wait_for_selector('#ql-state[data-state=live]',state='attached')
+ checks.append('Home startup retries are bounded and recover on online event')
+ # The hidden old More tab must release the single browser connection slot.
+ ready();page.wait_for_selector('#ql-state[data-state=live]',state='attached')
+ page.evaluate('fixtureHidden=false')
+ other=context.new_page();other.goto('https://fixture.test/web/portfolio')
+ other.wait_for_selector('#ql-state[data-state=retry]',state='attached');assert other.evaluate('sockets.length')==0
+ page.evaluate("fixtureHidden=true;document.dispatchEvent(new Event('visibilitychange'))")
+ assert page.evaluate('sockets.at(-1).readyState')==3
+ other.wait_for_selector('#ql-state[data-state=live]',state='attached')
+ assert other.evaluate('sockets.length')==1
+ other.close();page.evaluate("fixtureHidden=false;document.dispatchEvent(new Event('visibilitychange'))")
+ page.wait_for_selector('#ql-state[data-state=live]',state='attached')
+ assert page.evaluate('sockets.length')==2
+ page.evaluate('fixtureHidden=null')
+ checks.append('background More tab releases slot for direct Home and safely resumes')
  # Opening a fresh document in the same browser also restores the remembered key.
  page.close();page=context.new_page();page.on('pageerror',lambda e:errors.append(str(e)));ready();page.wait_for_function('StockBotFugle.active()')
  checks.append('close and reopen same browser restores credentials')

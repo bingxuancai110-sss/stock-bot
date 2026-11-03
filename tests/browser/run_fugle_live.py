@@ -115,10 +115,17 @@ with sync_playwright() as p:
  assert not errors,errors
  page.remove_listener('pageerror',capture_error);page.close()
  page=browser.new_page(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
- page.add_init_script(MOCK);page.on('pageerror',capture_error)
+ page.clock.install(time=NOW);page.add_init_script(MOCK);page.on('pageerror',capture_error)
+ page.add_init_script("localStorage.setItem('stockbot_fugle_device_v1:'+ 'a'.repeat(64),JSON.stringify({version:1,key:'fixture-provider-key',symbols:'2308',follow:true,autoStart:true}))")
  page.route('https://fixture.test/**',route);page.route('https://api.fugle.tw/**',route)
- page.goto('https://fixture.test/web/portfolio?initial=1');page.wait_for_selector('#hv2')
+ provider_status['status']=200;posts.clear();page.goto('https://fixture.test/web/portfolio?initial=1');page.wait_for_selector('#hv2')
  assert not page.locator('#loading').is_visible()
+ page.wait_for_function('StockBotFugle.active()&&sockets.length===1')
+ for i in range(30):
+  page.clock.run_for(1500);page.wait_for_timeout(20)
+  if posts and len(json.loads(posts[-1]['quotes'][0]))==10:break
+ assert page.locator('[data-home-portfolio-pct]').inner_text()!='資料不足'
+ checks.append('remembered key connects and updates actual direct-entry Home without More')
  assert page.locator('#stockbot-fugle-panel').count()==1
  checks.append('direct-entry shell releases into real home')
  assert not errors,errors

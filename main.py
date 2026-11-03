@@ -27658,7 +27658,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261102-3">
 <script defer src="/static/ui-feedback.js?v=20261102-4"></script>
-<script defer src="/static/fugle-live.js?v=20261103-3"></script>
+<script defer src="/static/fugle-live.js?v=20261103-4"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -28129,6 +28129,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
         target.searchParams.delete('fragment');
         if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', target.pathname + target.search);
         setAppNavState(target.pathname);
+        document.dispatchEvent(new CustomEvent('stockbot:pagecontentready'));
         if (window.StockBotUI) {{ window.StockBotUI.routeEnd(true); window.StockBotUI.scan(); }}
         try {{
           var navElapsed = Math.round((performance.now() - navStartedAt) * 10) / 10;
@@ -28752,6 +28753,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
       // 頁面互動在 LINE 直連後也會初始化。
       executeFragmentScripts(content);
       content.style.display = '';
+      document.dispatchEvent(new CustomEvent('stockbot:pagecontentready'));
       var loadingEl = document.getElementById('loading');
       if (loadingEl) loadingEl.classList.add('is-complete');
       setTimeout(function () {{

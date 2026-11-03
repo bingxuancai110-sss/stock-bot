@@ -1,17 +1,38 @@
-(async function(){
+(async function startFugle(){
   'use strict';
-  if(window.StockBotFugle)return;
+  if(window.StockBotFugle||window.StockBotFugleInitializing)return;
+  if(!window.StockBotFugleBootstrapBound){
+    window.StockBotFugleBootstrapBound=true;
+    const resume=()=>{if(document.hidden)return;if(window.StockBotFugle)window.StockBotFugle.resume();else startFugle();};
+    window.addEventListener('pageshow',resume);window.addEventListener('online',resume);
+    document.addEventListener('DOMContentLoaded',resume);document.addEventListener('stockbot:pagecontentready',resume);
+    document.addEventListener('visibilitychange',resume);
+  }
+  window.StockBotFugleInitializing=true;
   const relevant=()=>/^\/web\/(portfolio|positions|more|quote-lab)\/?$/.test(location.pathname);
   const localURL=path=>{const url=new window.URL(path,location.origin);let token='';try{token=new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}catch(ignore){}if(token)url.searchParams.set('t',token);return url.href;};
   let config;
-  try{const r=await fetch(localURL('/web/quote-lab/app-config'),{credentials:'same-origin',cache:'no-store',redirect:'error'});if(!r.ok)return;config=await r.json();if(!config.ok||!config.csrf_token)return;}catch(ignore){return;}
+  try{
+    for(let attempt=0;attempt<4;attempt++){
+      const controller=new AbortController(),deadline=setTimeout(()=>controller.abort(),5000);
+      try{
+        const response=await fetch(localURL('/web/quote-lab/app-config'),{credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal});
+        if([401,403,404].includes(response.status))return;
+        if(!response.ok)throw new Error('configuration unavailable');
+        const value=await response.json();if(!value.ok||!value.csrf_token)throw new Error('invalid configuration');
+        config=value;break;
+      }catch(ignore){}finally{clearTimeout(deadline);}
+      if(attempt<3)await new Promise(resolve=>setTimeout(resolve,[300,1000,2000][attempt]));
+    }
+  }finally{window.StockBotFugleInitializing=false;}
+  if(!config)return;
   const doc=new DOMParser().parseFromString(config.panel_html,'text/html');
   if(!document.getElementById('fugle-panel-style')){const style=document.createElement('style');style.id='fugle-panel-style';style.textContent=Array.from(doc.querySelectorAll('style')).map(x=>x.textContent).join('\n')+'\n#stockbot-fugle-panel{margin:10px 0;border:1px solid #cbded5;border-radius:12px;background:#f6faf8;padding:10px 14px}#stockbot-fugle-panel>summary{min-height:38px;cursor:pointer;font-weight:750;font-size:13px;color:#315d49}#stockbot-fugle-panel #quote-lab{padding-bottom:8px}#stockbot-fugle-panel.is-compact .ql-back,#stockbot-fugle-panel.is-compact .ql-hero,#stockbot-fugle-panel.is-compact .ql-note{display:none}#stockbot-fugle-panel.is-compact .ql-panel{padding:12px;margin-top:10px}#stockbot-fugle-panel.is-compact .ql-stats{display:none}';document.head.appendChild(style);}
   const root=document.getElementById('quote-lab')||doc.getElementById('quote-lab');
   if(!root||root.dataset.ready==='1')return;
   const panel=document.createElement('details'),panelLabel=document.createElement('summary');panel.id='stockbot-fugle-panel';panelLabel.textContent='富果行情 · 尚未啟用';panel.append(panelLabel,root);
   let mountFrame=0;
-  function mount(){mountFrame=0;const host=document.getElementById('app-page-content');if(!host)return;document.querySelectorAll('#quote-lab').forEach(x=>{if(x!==root)x.remove();});panel.hidden=!/^\/web\/(more|quote-lab)\/?$/.test(location.pathname);panel.classList.toggle('is-compact',location.pathname!=='/web/quote-lab');if(panel.parentNode!==host)host.prepend(panel);if(location.pathname==='/web/quote-lab')panel.open=true;}
+  function mount(){mountFrame=0;const host=document.getElementById('app-page-content');if(!host)return;document.querySelectorAll('#quote-lab').forEach(x=>{if(x!==root)x.remove();});panel.hidden=!/^\/web\/(more|quote-lab)\/?$/.test(location.pathname);panel.classList.toggle('is-compact',location.pathname!=='/web/quote-lab');const parent=panel.hidden?document.body:host;if(panel.parentNode!==parent){if(panel.hidden)parent.appendChild(panel);else parent.prepend(panel);}if(location.pathname==='/web/quote-lab')panel.open=true;}
   function queueMount(){if(!mountFrame)mountFrame=requestAnimationFrame(mount);}
   mount();
   root.dataset.ready='1';
@@ -55,7 +76,7 @@
   let events=0,retries=0,failures=0,lastMessage=0;
   let following=false,preferred=[],allSymbols=[],authenticated=false,holdTimer=null,restTimer=null,subTimer=null;
   let holdController=null,restController=null,restCursor=0,restPause=0,indexQuote=null,indexAttempt=0;
-  let applyTimer=null,applyController=null,lastApply=0,paused=false;
+  let applyTimer=null,applyController=null,lastApply=0,paused=false,lockGeneration=null;
   const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   const channels=new Map(),pendingSub=new Set(),pendingUnsub=new Set(),requestTimes=[];
   function text(el,value){if(el&&el.textContent!==value)el.textContent=value;}
@@ -326,16 +347,25 @@
     const supplied=keyInput.value.trim()||(rememberInput.checked&&saved?saved.key:'');if(!supplied){status('error','尚未輸入金鑰','請輸入你申請的富果行情 API Key。');return;}
     restoreBlocked=false;apiKey=supplied;keyInput.value='';if(location.pathname!=='/web/quote-lab')panel.open=false;preferred=selected;following=followInput.checked;symbols=following?[]:selected;allSymbols=[];events=retries=failures=0;restPause=0;running=true;generation++;controls();
     indexQuote=null;indexAttempt=0;rows.clear();models.clear();flashes.forEach(clearTimer);flashes.clear();$('#ql-quotes').replaceChildren();text($('#ql-events'),'0');text($('#ql-retries'),'0');status('connecting','準備中',following?'正在確認你的 BOT 持股…':'正在準備串流…');
-    const mine=generation;
-    if(navigator.locks&&navigator.locks.request){
-      try{
+    acquireConnection();
+  }
+  async function acquireConnection(){
+    if(!running||disposed||paused||document.hidden||lockGeneration===generation)return;
+    const mine=generation;lockGeneration=mine;
+    try{
+      if(navigator.locks&&navigator.locks.request){
         await navigator.locks.request('stockbot-private-quote-lab',{ifAvailable:true},async lock=>{
           if(!running||mine!==generation)return;
-          if(!lock){failed('這個瀏覽器已有另一個測試分頁連線，請先在原分頁停止。');return;}
+          if(!lock){
+            status('retry','等待連線','另一個分頁正在使用富果行情，名額釋放後會自動連線。');
+            clearTimer(retryTimer);retryTimer=setTimeout(()=>{retryTimer=null;if(running&&mine===generation)acquireConnection();},2000);
+            return;
+          }
           await new Promise(resolve=>{releaseLock=resolve;launch();});
         });
-      }catch(ignore){if(running&&mine===generation)failed('無法取得測試頁連線鎖，已停止本次連線；已記住的金鑰保留。請關閉其他分頁後重試。');}
-    }else{launch();}
+      }else{launch();}
+    }catch(ignore){if(running&&mine===generation)failed('無法取得行情連線，已停止本次連線；已記住的金鑰保留。請稍後按啟用重試。');}
+    finally{if(lockGeneration===mine)lockGeneration=null;}
   }
   function ensureAllocation(items){
     let box=document.querySelector('.position-allocation');
@@ -402,10 +432,10 @@
   function detach(){panel.hidden=true;document.body.appendChild(panel);queueMount();}
   function visibility(){
     if(document.hidden){
-      if(!running)return;paused=true;generation++;dropSocket();clearTimer(holdTimer);clearTimer(restTimer);clearTimer(applyTimer);holdTimer=restTimer=applyTimer=null;
+      if(!running)return;paused=true;generation++;dropSocket();clearTimer(retryTimer);retryTimer=null;if(releaseLock){releaseLock();releaseLock=null;}clearTimer(holdTimer);clearTimer(restTimer);clearTimer(applyTimer);holdTimer=restTimer=applyTimer=null;
       if(holdController)holdController.abort();if(restController)restController.abort();if(applyController)applyController.abort();holdController=restController=applyController=null;
       status('idle','背景暫停','回到前景後會重新確認持股與行情；未儲存的金鑰僅保留在本分頁記憶體。');
-    }else if(running&&paused){paused=false;launch();requestApply();}
+    }else if(running&&paused){paused=false;acquireConnection();requestApply();}
     else if(!running)restoreSaved();
   }
   function pagehide(){stop('頁面已關閉；已記住的裝置記錄會保留。');}
@@ -417,7 +447,7 @@
   keyInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();begin();}});
   document.addEventListener('visibilitychange',visibility);document.addEventListener('stockbot:pageleaving',detach);window.addEventListener('pagehide',pagehide);window.addEventListener('popstate',queueMount);
   const observer=new MutationObserver(queueMount);observer.observe(document.documentElement,{childList:true,subtree:true});
-  window.StockBotFugle={active:()=>running&&following,request:requestApply};
+  window.StockBotFugle={active:()=>running&&following,request:requestApply,resume:()=>{restoreSaved();requestApply();}};
   function restoreSaved(){
     if(running||disposed||document.hidden||restoreBlocked)return;
     saved=readSaved();rememberInput.checked=!!saved;showRemember();
@@ -425,7 +455,6 @@
     symbolsInput.value=saved.symbols;followInput.checked=saved.follow;
     if(saved.autoStart)begin();
   }
-  window.addEventListener('pageshow',restoreSaved);
   window.addEventListener('storage',event=>{
     if(event.key!==storageKey&&event.key!==null)return;
     const previous=saved;saved=readSaved();rememberInput.checked=!!saved;
