@@ -440,6 +440,10 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3::before{content:"";display:inline-block;flex:0 0 6px;width:6px;height:6px;border-radius:50%;background:#9aa9b2;transform:translateY(-1px)}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:has(.position-card-price span.up) .position-card-title h3::before{background:#c84c45}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:has(.position-card-price span.down) .position-card-title h3::before{background:#23866c}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price span.up,
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price span.down{display:inline-flex!important;align-items:center!important;justify-content:center!important;min-height:23px!important;margin-top:5px!important;padding:3px 8px!important;border:0!important;border-radius:7px!important;color:#fff!important;-webkit-text-fill-color:#fff!important;font-size:11px!important;line-height:1!important;font-weight:850!important;letter-spacing:.01em!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price span.up{background:#9f3036!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price span.down{background:#0b684b!important}
 
 /* Restore the original non-blocking full-page route transition. */
 .ui-route-pending{opacity:1;pointer-events:auto;transition:none}
