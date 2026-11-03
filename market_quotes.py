@@ -70,3 +70,34 @@ def quote_freshness(quotes, now=None):
                 oldest_backup_at=oldest.isoformat() if oldest else None,
                 backup_age_seconds=age, poll_seconds=5,
                 text='；'.join(parts) if parts else '持股報價尚待確認，完成後會自動顯示來源與時間。')
+
+
+def mis_intraday_trade(payload, now):
+    """Read an actual same-day trade from MIS getOhlc, never an order-book estimate."""
+    import math
+    if not isinstance(payload, dict) or str(payload.get('rtcode') or '0000') not in ('0000', '0'):
+        return None
+    rows = payload.get('msgArray')
+    if not isinstance(rows, list):
+        return None
+    latest = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            price = float(row.get('c'))
+            stamp = float(row.get('tlong'))
+            if not math.isfinite(price) or price <= 0 or not math.isfinite(stamp):
+                continue
+            if stamp >= 100_000_000_000:
+                stamp /= 1000
+            trade_time = datetime.fromtimestamp(stamp, TW_TZ)
+        except (TypeError, ValueError, OverflowError, OSError):
+            continue
+        minute = trade_time.hour * 60 + trade_time.minute
+        if (trade_time.date() != now.date() or not 540 <= minute <= 810 or
+                (trade_time - now).total_seconds() > 60):
+            continue
+        if latest is None or trade_time > latest['time']:
+            latest = dict(close=price, time=trade_time)
+    return latest
