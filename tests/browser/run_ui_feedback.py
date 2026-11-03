@@ -120,6 +120,8 @@ with sync_playwright() as p:
  check('real rank delta retained','↑ 2 名' in page.locator('[data-board-panel=long] .rank-move').first.inner_text())
  check('rank period visible feedback','已切換' in page.locator('.ui-rank-feedback').inner_text())
  check('rank period triggers no fetch',len(requests)==count)
+ # Check the settled selected color after the brief press/release feedback.
+ page.wait_for_timeout(220)
  check('rank selected button has a light background',page.locator('#rankTabs [data-board=long]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
  history=page.locator('#historyTabs');check('history initially selected month is light',history.locator('[data-history=months]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
  history.locator('[data-history=seasons]').click();page.wait_for_timeout(40)

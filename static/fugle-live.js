@@ -1,7 +1,19 @@
-(function(){
+(async function(){
   'use strict';
-  const root=document.getElementById('quote-lab');
+  if(window.StockBotFugle)return;
+  const relevant=()=>/^\/web\/(portfolio|positions|quote-lab)\/?$/.test(location.pathname);
+  const localURL=path=>{const url=new window.URL(path,location.origin);let token='';try{token=new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}catch(ignore){}if(token)url.searchParams.set('t',token);return url.href;};
+  let config;
+  try{const r=await fetch(localURL('/web/quote-lab/app-config'),{credentials:'same-origin',cache:'no-store',redirect:'error'});if(!r.ok)return;config=await r.json();if(!config.ok||!config.csrf_token)return;}catch(ignore){return;}
+  const doc=new DOMParser().parseFromString(config.panel_html,'text/html');
+  if(!document.getElementById('fugle-panel-style')){const style=document.createElement('style');style.id='fugle-panel-style';style.textContent=Array.from(doc.querySelectorAll('style')).map(x=>x.textContent).join('\n')+'\n#stockbot-fugle-panel{margin:10px 0;border:1px solid #cbded5;border-radius:12px;background:#f6faf8;padding:10px 14px}#stockbot-fugle-panel>summary{min-height:38px;cursor:pointer;font-weight:750;font-size:13px;color:#315d49}#stockbot-fugle-panel #quote-lab{padding-bottom:8px}#stockbot-fugle-panel.is-compact .ql-back,#stockbot-fugle-panel.is-compact .ql-hero,#stockbot-fugle-panel.is-compact .ql-note{display:none}#stockbot-fugle-panel.is-compact .ql-panel{padding:12px;margin-top:10px}#stockbot-fugle-panel.is-compact .ql-stats{display:none}';document.head.appendChild(style);}
+  const root=document.getElementById('quote-lab')||doc.getElementById('quote-lab');
   if(!root||root.dataset.ready==='1')return;
+  const panel=document.createElement('details'),panelLabel=document.createElement('summary');panel.id='stockbot-fugle-panel';panelLabel.textContent='富果行情 · 尚未啟用';panel.append(panelLabel,root);
+  let mountFrame=0;
+  function mount(){mountFrame=0;const host=document.getElementById('app-page-content');if(!host)return;document.querySelectorAll('#quote-lab').forEach(x=>{if(x!==root)x.remove();});panel.hidden=!relevant();panel.classList.toggle('is-compact',location.pathname!=='/web/quote-lab');if(panel.parentNode!==host)host.prepend(panel);if(location.pathname==='/web/quote-lab')panel.open=true;}
+  function queueMount(){if(!mountFrame)mountFrame=requestAnimationFrame(mount);}
+  mount();
   root.dataset.ready='1';
   const $=s=>root.querySelector(s),keyInput=$('#ql-key'),symbolsInput=$('#ql-symbols'),start=$('#ql-start'),stopButton=$('#ql-stop'),followInput=$('#ql-follow');
   const REST='https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/';
@@ -13,9 +25,11 @@
   let events=0,retries=0,failures=0,lastMessage=0;
   let following=false,preferred=[],allSymbols=[],authenticated=false,holdTimer=null,restTimer=null,subTimer=null;
   let holdController=null,restController=null,restCursor=0,restPause=0;
+  let applyTimer=null,applyController=null,lastApply=0,paused=false;
+  const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   const channels=new Map(),pendingSub=new Set(),pendingUnsub=new Set(),requestTimes=[];
   function text(el,value){if(el&&el.textContent!==value)el.textContent=value;}
-  function status(state,label,message){$('#ql-state').dataset.state=state;text($('#ql-state'),label);text($('#ql-message'),message);}
+  function status(state,label,message){$('#ql-state').dataset.state=state;text($('#ql-state'),label);text($('#ql-message'),message);text(panelLabel,'富果行情 · '+label);}
   function controls(){start.disabled=running;stopButton.disabled=!running;keyInput.disabled=running;symbolsInput.disabled=running;followInput.disabled=running;}
   function clearTimer(id){if(id!==null)clearTimeout(id);}
   function dropSocket(){
@@ -25,7 +39,7 @@
     if(old){old.onopen=old.onmessage=old.onclose=old.onerror=null;try{old.close(1000,'Client stopped');}catch(ignore){}}
   }
   function stop(message,state='idle',label='已停止'){
-    generation++;running=false;apiKey='';keyInput.value='';clearTimer(retryTimer);retryTimer=null;dropSocket();
+    generation++;running=false;paused=false;apiKey='';clearTimer(applyTimer);applyTimer=null;if(applyController)applyController.abort();applyController=null;keyInput.value='';clearTimer(retryTimer);retryTimer=null;dropSocket();
     clearTimer(holdTimer);clearTimer(restTimer);holdTimer=restTimer=null;
     if(holdController)holdController.abort();if(restController)restController.abort();holdController=restController=null;
     if(releaseLock){releaseLock();releaseLock=null;}
@@ -111,7 +125,7 @@
     const mine=generation,controller=new AbortController();holdController=controller;
     const timeout=setTimeout(()=>controller.abort(),8000);
     try{
-      const url=new window.URL('/web/quote-lab/holdings',location.origin),token=new URLSearchParams(location.search).get('t');
+      const url=new window.URL(localURL('/web/quote-lab/holdings')),token='';
       if(token)url.searchParams.set('t',token);
       const response=await fetch(url.href,{credentials:'same-origin',cache:'no-store',redirect:'error',referrerPolicy:'no-referrer',signal:controller.signal});
       if(!running||mine!==generation)return false;
@@ -141,14 +155,18 @@
     }
   }
   function scheduleRest(delay){clearTimer(restTimer);restTimer=null;if(running&&following)restTimer=setTimeout(()=>{restTimer=null;pollRest();},delay);}
+  const afterClose=()=>Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Taipei',hour:'2-digit',hourCycle:'h23'}).format(new Date()))*60+Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Taipei',minute:'2-digit'}).format(new Date()))>=810;
+  function restSymbols(){return [...new Set([...symbols.filter(c=>!models.get(c)?.previousClose||models.get(c)?.previousCloseDay!==today()||(afterClose()&&!models.get(c)?.closed)),...extraSymbols()])];}
   async function pollRest(){
     if(!running||!following||restController)return;
-    const codes=extraSymbols();
+    const codes=restSymbols();
     if(!codes.length){text($('#ql-rest-status'),'所有持股都在串流名額內，不需額外查詢。');scheduleRest(15000);return;}
     const now=Date.now();while(requestTimes.length&&now-requestTimes[0]>=60000)requestTimes.shift();
     const blockedUntil=Math.max(restPause,requestTimes.length>=40?requestTimes[0]+60000:0);
     if(blockedUntil>now){text($('#ql-rest-status'),'定時查詢暫停約 '+Math.ceil((blockedUntil-now)/1000)+' 秒，等待免費額度恢復；串流照常。');scheduleRest(Math.max(1000,blockedUntil-now));return;}
-    const code=codes[restCursor++%codes.length],mine=generation,controller=new AbortController();restController=controller;
+    const unseeded=allSymbols.filter(c=>!models.get(c)?.previousClose||models.get(c)?.previousCloseDay!==today()||(afterClose()&&!models.get(c)?.closed));
+    const code=unseeded.sort((a,b)=>(models.get(a)?.baselineAttempt||0)-(models.get(b)?.baselineAttempt||0))[0]||codes[restCursor++%codes.length],mine=generation,controller=new AbortController();restController=controller;
+    models.get(code).baselineAttempt=Date.now();
     const timeout=setTimeout(()=>controller.abort(),8000);requestTimes.push(now);
     try{
       const response=await fetch(REST+encodeURIComponent(code),{headers:{'X-API-KEY':apiKey},credentials:'omit',cache:'no-store',redirect:'error',referrerPolicy:'no-referrer',signal:controller.signal});
@@ -160,8 +178,12 @@
         text($('#ql-rest-status'),'富果回報查詢額度已滿，暫停定時查詢至少 60 秒；不會重試轟炸，串流照常。');return;
       }
       if(!response.ok)throw new Error('quote unavailable');
-      const quote=await response.json();if(!running||mine!==generation||!models.has(code)||symbols.includes(code))return;
+      const quote=await response.json();if(!running||mine!==generation||!models.has(code))return;
       if(String(quote.symbol)!==code||quote.type==='ODDLOT')throw new Error('wrong symbol');
+      if(quote.date!==today())throw new Error('old trading day');
+      const prior=Number(quote.previousClose),reference=Number(quote.referencePrice);
+      const baseline=Number.isFinite(prior)&&prior>0?prior:reference;
+      if(Number.isFinite(baseline)&&baseline>0){models.get(code).previousClose=baseline;models.get(code).referencePrice=Number.isFinite(reference)&&reference>0?reference:baseline;models.get(code).previousCloseDay=quote.date;}
       if(quote.name){names[code]=String(quote.name);text(rows.get(code).querySelector('.ql-symbol'),names[code]+' '+code);}
       const trade=quote.lastTrade&&quote.lastTrade.price!=null&&quote.lastTrade.time!=null?quote.lastTrade:{price:quote.closePrice,time:quote.closeTime,serial:null};
       const parsedPrice=Number(trade.price),parsedTime=Number(trade.time);
@@ -177,26 +199,27 @@
       if(running&&mine===generation&&models.has(code)){models.get(code).fetchNote='查詢暫時失敗，保留最後行情；不以本次讀取時間冒充成交時間。';queueRender();text($('#ql-rest-status'),'部分定時查詢暫時失敗，會在下一輪再試；串流照常。');}
     }finally{
       clearTimeout(timeout);if(restController===controller)restController=null;
-      if(running&&mine===generation)scheduleRest(Math.max(1500,15000/Math.max(1,extraSymbols().length)));
+      if(running&&mine===generation)scheduleRest(Math.max(1500,15000/Math.max(1,restSymbols().length)));
     }
   }
   async function launch(){
     if(following){if(!await refreshHoldings(true)||!running)return;}
     else{allSymbols=symbols.slice();buildRows();text($('#ql-holdings-status'),'手動測試模式：不自動讀取或替換 BOT 持股。');}
-    connect();if(following)scheduleRest(0);
+    connect();if(following){scheduleRest(0);requestApply();}
   }
   function accept(message){
     const d=message.data;if(!d||message.channel!=='trades'||!models.has(String(d.symbol)))return;
     if(d.type==='ODDLOT'||(message.event!=='rest'&&!symbols.includes(String(d.symbol))))return;
     const time=Number(d.time),price=Number(d.price),serial=d.serial==null||!Number.isFinite(Number(d.serial))?null:Number(d.serial);
     if(!Number.isSafeInteger(time)||time<1577836800000000||time>4102444800000000||!Number.isFinite(price)||price<=0)return;
+    if(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(time/1000))!==today())return;
     const model=models.get(String(d.symbol));
     if(model.time!==undefined&&time<model.time)return;
     if(d.isTrial===true){
       if(!model.trialTime||time>=model.trialTime){model.trialTime=time;model.trial='試撮參考 '+number(price)+' · '+timestamp(time)+'（非正式成交）';queueRender();}
       return;
     }
-    if(message.event==='rest'&&model.time===time&&model.price===price){model.received=Date.now();model.kind='rest';model.closed=d.isClose===true;queueRender();return;}
+    if(message.event==='rest'&&model.time===time&&model.price===price){model.received=Date.now();model.kind='rest';model.closed=d.isClose===true;queueRender();requestApply();return;}
     if(model.time!==undefined&&(time<model.time||(time===model.time&&((serial!==null&&model.serial!==null&&serial<=model.serial)||(price===model.price&&serial===model.serial)))))return;
     const previous=model.price;
     model.delta=message.event==='snapshot'||previous===undefined?null:price-previous;
@@ -205,7 +228,7 @@
     if(message.event==='data'){events++;model.flash=model.delta>0?'up':model.delta<0?'down':'';}
     if(message.event!=='rest')failures=0;
     if(message.event!=='rest')status('live','已連線',model.closed?'已收到收盤資料；請在交易時段驗證新成交的更新速度。':message.event==='snapshot'?'已收到最近快照，等待下一筆新成交。':'正在接收新成交，價格只在有新資料時更新。');
-    queueRender();
+    queueRender();requestApply();
   }
   function reconnect(){
     dropSocket();if(!running||disposed)return;
@@ -219,7 +242,7 @@
     if(ws)return;
     status('connecting','連接中','正在建立富果連線…');
     let socket;try{socket=new WebSocket(URL);}catch(ignore){reconnect();return;}
-    ws=socket;const mine=generation;
+    ws=socket;lastMessage=Date.now();const mine=generation;
     const current=()=>running&&!disposed&&ws===socket&&mine===generation;
     phaseTimer=setTimeout(()=>{if(current())reconnect();},15000);
     socket.onopen=()=>{
@@ -263,7 +286,7 @@
     const selected=symbolsInput.value.toUpperCase().split(/[\s,，、]+/).filter(Boolean);
     if((selected.length===0&&!followInput.checked)||selected.length>5||new Set(selected).size!==selected.length||selected.some(s=>!/^\d{4,6}[A-Z]?$/.test(s))){status('error','請確認代碼','請輸入 1～5 個不重複的上市櫃股票代碼，以逗號或空格分隔。');return;}
     const supplied=keyInput.value.trim();if(!supplied){status('error','尚未輸入金鑰','請輸入你申請的富果行情 API Key。');return;}
-    apiKey=supplied;keyInput.value='';preferred=selected;following=followInput.checked;symbols=following?[]:selected;allSymbols=[];events=retries=failures=0;restPause=0;running=true;generation++;controls();
+    apiKey=supplied;keyInput.value='';if(location.pathname!=='/web/quote-lab')panel.open=false;preferred=selected;following=followInput.checked;symbols=following?[]:selected;allSymbols=[];events=retries=failures=0;restPause=0;running=true;generation++;controls();
     rows.clear();models.clear();flashes.forEach(clearTimer);flashes.clear();$('#ql-quotes').replaceChildren();text($('#ql-events'),'0');text($('#ql-retries'),'0');status('connecting','準備中',following?'正在確認你的 BOT 持股…':'正在準備串流…');
     const mine=generation;
     if(navigator.locks&&navigator.locks.request){
@@ -276,13 +299,80 @@
       }catch(ignore){if(running&&mine===generation)failed('無法取得測試頁連線鎖，已清除金鑰。請關閉其他分頁後重試。');}
     }else{launch();}
   }
-  function leave(){stop('頁面已離開或切到背景，連線已關閉、金鑰已清除；回到頁面後請重新輸入。');}
-  function dispose(){if(disposed)return;leave();disposed=true;if(raf!==null)cancelAnimationFrame(raf);raf=null;flashes.forEach(clearTimer);flashes.clear();observer.disconnect();document.removeEventListener('visibilitychange',visibility);document.removeEventListener('stockbot:pageleaving',dispose);window.removeEventListener('pagehide',pagehide);}
-  function visibility(){if(document.hidden)leave();}
-  function pagehide(){leave();}
+  function ensureAllocation(items){
+    let box=document.querySelector('.position-allocation');
+    if(!box){box=document.createElement('section');box.className='position-allocation';box.innerHTML='<div class="position-allocation-head"><h2>持股配置</h2><button type="button" data-allocation-reset>顯示全部</button></div><div class="position-allocation-body"><div class="position-allocation-visual"><svg viewBox="0 0 100 100" role="img" aria-label="富果行情持股市值權重"><circle cx="50" cy="50" r="31" fill="#fff"/></svg><div class="position-allocation-center"><b data-allocation-center-title>全部持股</b><strong data-allocation-center-weight>100%</strong><small data-allocation-center-value></small></div></div><div class="position-allocation-legend"></div></div><div class="allocation-selection" aria-live="polite"><span>組合概覽</span><strong>點選圓環或股票名稱</strong><small></small></div>';const card=document.querySelector('[data-position-code]');card.parentNode.insertBefore(box,card);}
+    const held=new Set(items.map(x=>x.code));box.querySelectorAll('[data-allocation-select],[data-allocation-code]').forEach(n=>{if(!held.has(n.dataset.allocationSelect||n.dataset.allocationCode))n.remove();});
+    const colors=['#2676A5','#D84B45','#14916C','#8165B5','#D29430','#3A8FA3','#CF6A36','#6E8498'];
+    items.forEach((item,index)=>{
+      if(box.querySelector('[data-allocation-select="'+item.code+'"]'))return;
+      const button=document.createElement('button'),dot=document.createElement('i'),label=document.createElement('span'),value=document.createElement('b');button.type='button';button.className='allocation-item';button.dataset.allocationSelect=item.code;button.dataset.allocationName=names[item.code]||item.code;button.setAttribute('aria-pressed','false');dot.style.background=colors[index%colors.length];label.textContent=names[item.code]||item.code;button.append(dot,label,value);box.querySelector('.position-allocation-legend').append(button);
+      const circle=document.createElementNS('http://www.w3.org/2000/svg','circle');circle.classList.add('allocation-slice');circle.dataset.allocationCode=item.code;Object.entries({cx:50,cy:50,r:40,fill:'none',stroke:colors[index%colors.length],'stroke-width':12,transform:'rotate(-90 50 50)',tabindex:0,role:'button','aria-label':names[item.code]||item.code}).forEach(([k,v])=>circle.setAttribute(k,v));const svg=box.querySelector('svg');svg.insertBefore(circle,svg.lastElementChild);
+    });return box;
+  }
+  function applyValuations(data){
+    const positions=data.positions||{},totals=positions.totals||{},complete=totals.complete===true;
+    const money=(n,d=0)=>Number(n).toLocaleString('zh-TW',{minimumFractionDigits:d,maximumFractionDigits:d});
+    const pct=n=>(Number(n)>=0?'+':'')+money(n,2)+'%';
+    document.querySelectorAll('[data-fugle-total]').forEach(el=>{const field=el.dataset.fugleTotal,value=totals[field];el.textContent=value==null?'資料不足':field==='net_pct'?pct(value):money(value);if(['net_pl','net_pct','day_pl'].includes(field)){el.classList.toggle('up',value>=0);el.classList.toggle('down',value<0);}});
+    const hero=document.querySelector('[data-home-privacy-card] .hv2-px[data-home-sensitive]');
+    if(hero){const value=totals.value==null?'資料不足':money(totals.value);hero.dataset.homeOriginal=value;if(!hero.closest('.is-privacy-hidden'))hero.textContent=value;const gain=document.querySelector('#hv2 .hv2-head-r>b');if(gain){gain.textContent=totals.net_pct==null?'資料不足':pct(totals.net_pct);gain.classList.toggle('up',totals.net_pct>=0);gain.classList.toggle('down',totals.net_pct<0);}}
+    (positions.updates||[]).forEach(item=>{
+      const card=document.querySelector('[data-position-code="'+item.code+'"]');
+      if(card){
+        const target=card.querySelector('.position-target-summary em');if(target&&item.target_pct!=null&&item.weight!=null){const diff=item.weight-item.target_pct;target.textContent=Math.abs(diff)<=0.05?'符合目標':(diff>0?'高於目標 ':'低於目標 ')+money(Math.abs(diff),1)+' 個百分點';}
+        const weightBar=card.querySelector('.position-card-weight i');if(weightBar)weightBar.style.width=(item.weight==null?0:Math.min(100,item.weight/30*100))+'%';
+        const summary=card.querySelector('.position-card-weight>b');if(summary)summary.textContent=item.weight==null?'資料不足':money(item.weight,1)+'%';
+        if(card.classList.contains('position-card-noquote')){
+          card.classList.remove('position-card-noquote');const primary=card.querySelector('.position-card-primary');if(primary){primary.replaceChildren();[['今日損益',item.day_pl,'data-position-day-pl'],['市值',item.value,'data-position-value'],['持有報酬',item.gross_pct,'data-position-gross']].forEach(([label,value,attr])=>{const col=document.createElement('div'),small=document.createElement('small'),b=document.createElement('b');small.textContent=label;b.setAttribute(attr,'');b.textContent=value==null?'—':attr==='data-position-gross'?pct(value):money(value);if(attr!=='data-position-value'){b.classList.toggle('up',value>=0);b.classList.toggle('down',value<0);}col.append(small,b);primary.append(col);});}
+        }
+      }
+      const legend=document.querySelector('[data-allocation-select="'+item.code+'"]');
+      if(legend&&complete&&item.weight!=null){legend.dataset.allocationWeight=item.weight;legend.dataset.allocationValue=item.value;const text=legend.querySelector('b');if(text)text.textContent=money(item.weight,1)+'%';}
+    });
+    const allocation=complete&&document.querySelector('[data-position-code]')?ensureAllocation(positions.updates||[]):document.querySelector('.position-allocation');
+    if(allocation){
+      allocation.setAttribute('aria-label',complete?'富果行情持股配置':'等待完整富果行情，配置保留前次資料');
+      if(complete){let offset=0;allocation.querySelectorAll('.allocation-slice').forEach(slice=>{const item=(positions.updates||[]).find(x=>x.code===slice.dataset.allocationCode);if(!item)return;const legend=allocation.querySelector('[data-allocation-select="'+item.code+'"]');if(legend){legend.dataset.allocationWeight=item.weight;legend.dataset.allocationValue=item.value;legend.querySelector('b').textContent=money(item.weight,1)+'%';}const arc=2*Math.PI*40*item.weight/100;slice.setAttribute('stroke-dasharray',arc+' '+(2*Math.PI*40-arc));slice.setAttribute('stroke-dashoffset',-offset);offset+=arc;});const selected=allocation.querySelector('[data-allocation-select][aria-pressed=true]');const title=allocation.querySelector('[data-allocation-center-title]'),weight=allocation.querySelector('[data-allocation-center-weight]'),value=allocation.querySelector('[data-allocation-center-value]');if(weight)weight.textContent=selected?money(selected.dataset.allocationWeight,1)+'%':'100%';if(value)value.textContent=money(selected?selected.dataset.allocationValue:totals.value)+' 元';}
+    }
+  }
+  function quoteRows(){
+    const now=Date.now(),healthy=authenticated&&ws&&ws.readyState===1&&now-lastMessage<45000;
+    return allSymbols.flatMap(code=>{const m=models.get(code);if(!m||m.price===undefined||!m.previousClose||m.previousCloseDay!==today())return [];const stream=symbols.includes(code)&&channels.has(code);return [{code,price:m.price,previous_close:m.previousClose,reference_price:m.referencePrice,time:m.time,observed_at:stream&&healthy?now:m.received,closed:m.closed===true,mode:stream?'stream':'rest'}];});
+  }
+  function requestApply(){
+    if(!running||!following||paused||disposed||document.hidden||!relevant()||applyController||applyTimer!==null)return;
+    applyTimer=setTimeout(()=>{applyTimer=null;apply();},Math.max(30,2000-(Date.now()-lastApply)));
+  }
+  async function apply(){
+    if(!running||!following||paused||document.hidden||applyController)return;
+    const rows=quoteRows();
+    const controller=new AbortController(),mine=generation;applyController=controller;lastApply=Date.now();
+    const deadline=setTimeout(()=>controller.abort(),10000);
+    try{
+      const body=new URLSearchParams({csrf_token:config.csrf_token,quotes:JSON.stringify(rows)});
+      const response=await fetch(localURL('/web/quote-lab/apply'),{method:'POST',credentials:'same-origin',cache:'no-store',redirect:'error',body,signal:controller.signal});
+      if(!running||mine!==generation)return;
+      if(response.status===401||response.status===403){failed('BOT 登入已失效，已停止富果行情並清除金鑰。');return;}
+      if(!response.ok)throw new Error('calculation unavailable');
+      const data=await response.json();if(!running||mine!==generation||!data.ok)return;
+      document.dispatchEvent(new CustomEvent('stockbot:fuglequotes',{detail:data}));applyValuations(data);text(panelLabel,'富果行情 · '+(data.positions?.updates?.length||0)+'／'+allSymbols.length+' 檔已更新');
+    }catch(ignore){if(running&&mine===generation)text($('#ql-message'),'富果行情計算暫時未完成，保留最後資料；不會切換成另一來源冒充富果。');}
+    finally{clearTimeout(deadline);if(applyController===controller)applyController=null;if(running&&mine===generation&&!paused)applyTimer=setTimeout(()=>{applyTimer=null;requestApply();},5000);}
+  }
+  function detach(){panel.hidden=true;document.body.appendChild(panel);queueMount();}
+  function visibility(){
+    if(document.hidden){
+      if(!running)return;paused=true;generation++;dropSocket();clearTimer(holdTimer);clearTimer(restTimer);clearTimer(applyTimer);holdTimer=restTimer=applyTimer=null;
+      if(holdController)holdController.abort();if(restController)restController.abort();if(applyController)applyController.abort();holdController=restController=applyController=null;
+      status('idle','背景暫停','回到前景後會重新確認持股與行情；金鑰僅保留在本分頁記憶體。');
+    }else if(running&&paused){paused=false;launch();requestApply();}
+  }
+  function pagehide(){stop('頁面已關閉，金鑰已清除。');}
   start.addEventListener('click',begin);stopButton.addEventListener('click',()=>stop('連線已停止，金鑰已清除。最後行情保留供查看。'));
   keyInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();begin();}});
-  document.addEventListener('visibilitychange',visibility);document.addEventListener('stockbot:pageleaving',dispose);window.addEventListener('pagehide',pagehide);
-  const observer=new MutationObserver(()=>{if(!root.isConnected)dispose();});observer.observe(document.documentElement,{childList:true,subtree:true});
+  document.addEventListener('visibilitychange',visibility);document.addEventListener('stockbot:pageleaving',detach);window.addEventListener('pagehide',pagehide);window.addEventListener('popstate',queueMount);
+  const observer=new MutationObserver(queueMount);observer.observe(document.documentElement,{childList:true,subtree:true});
+  window.StockBotFugle={active:()=>running&&following,request:requestApply};
   controls();
 })();

@@ -6890,6 +6890,155 @@ def _schedule_save_home_intraday_quotes(uid, quotes):
         return False
 
 
+def _calculate_home_quote_payload(uid, positions, price_map, fresh_contribution_quotes,
+                                  market_payload, intraday, today_logs, reduced_codes,
+                                  backup_quote_count=0, quote_is_current=None):
+    """Shared existing contribution calculation for server and private browser feeds."""
+    codes = [str(p.get("code") or "").strip() for p in positions if p.get("code")]
+    market_pct = (market_payload or {}).get("pct")
+    quote_is_current = quote_is_current or _mis_quote_is_current_for_contribution
+    total_value = sum(
+        float((price_map.get(str(position.get("code") or "").strip()) or {}).get("close") or 0) *
+        int(position.get("shares") or 0)
+        for position in positions)
+    # 每檔持股獨立維持最後一筆有效報價：本輪有新 MIS 報價就更新，
+    # 沒回來的就沿用同日上一筆。不能因為單一檔缺資料，就把整個組合暫停。
+    holdings = []
+    stale_codes = []
+    for position in positions:
+        code = str(position.get("code") or "").strip()
+        if not code:
+            continue
+        quote_data = price_map.get(code)
+        if not isinstance(quote_data, dict):
+            stale_codes.append(code)
+            continue
+        try:
+            close = float(quote_data.get("close"))
+        except (TypeError, ValueError):
+            stale_codes.append(code)
+            continue
+        if close <= 0:
+            stale_codes.append(code)
+            continue
+        shares = int(position.get("shares") or 0)
+        holdings.append({
+            "code": code,
+            "name": stock_display_name(code, {}, quote_data.get("name")),
+            "shares": shares,
+            "weight": (close * shares / total_value * 100) if total_value > 0 else 0.0,
+            "price": quote_data,
+        })
+    # Use the latest eligible official value when computing each valid row. The denominator
+    # still includes the full portfolio via its paired previous-close prices, while symbols
+    # without a sufficiently recent official tick will be omitted from the contribution list.
+    exposure_price_map = dict(price_map)
+    exposure_price_map.update(fresh_contribution_quotes)
+    exposure_holdings = []
+    for holding in holdings:
+        row_holding = dict(holding)
+        row_code = str(row_holding.get("code") or "").strip()
+        row_holding["price"] = exposure_price_map.get(row_code) or row_holding.get("price")
+        exposure_holdings.append(row_holding)
+    exposure_rows = _build_daily_pretrade_exposure(
+        exposure_holdings, exposure_price_map, today_logs)
+    realized_by_code = (_today_realized_by_code(get_realized_trades(uid, 100))
+                        if reduced_codes else {})
+
+    def exposure_label(row):
+        current_weight = float(row.get("current_weight") or 0)
+        if not row.get("reduced_today"):
+            return f"佔你的組合 {float(row.get('daily_weight') or 0):.1f}%"
+        current_text = ("目前已刪除（0.0%）" if row.get("fully_reduced_today")
+                        else f"目前權重 {current_weight:.1f}%")
+        if row.get("basis") == "intraday_trade_segments":
+            return f"今日交易切段：操作前 {float(row.get('daily_weight') or 0):.1f}%／{current_text}"
+        if row.get("basis") == "current":
+            return f"今日基準：操作前 {float(row.get('daily_weight') or 0):.1f}%／{current_text}"
+        return f"今日基準資料不足，暫用目前權重 {current_weight:.1f}%"
+
+    contribution_rows = []
+    for row in exposure_rows:
+        code = str(row.get("code") or "").strip()
+        # Do not let a quote retained only in the same-day sticky cache appear in today's
+        # winner/loser list. No sufficiently fresh official quote means no contribution row.
+        quote_data = fresh_contribution_quotes.get(code)
+        if not quote_data:
+            continue
+        try:
+            pct = float(quote_data.get("pct"))
+        except (TypeError, ValueError):
+            continue
+        # V232：若今天有買／賣，必須使用實際交易切段後的
+        # contribution_pct；不能再用「目前／操作前權重 × 今日整日漲跌」，
+        # 否則賣出後的跌幅仍會被算進已賣部位。
+        contribution = row.get("contribution_pct")
+        if contribution is None:
+            contribution = float(row.get("daily_weight") or 0) * pct / 100
+        contribution = float(contribution)
+        code = str(row.get("code") or "").strip()
+        realized_value = realized_by_code.get(code)
+        contribution_rows.append({
+            "code": code,
+            "name": row.get("name") or code,
+            "pct": pct,
+            "contribution": contribution,
+            "basis_text": exposure_label(row) + "；" + str(quote_data.get("source") or "來源未提供") + "；行情 " + str(quote_data.get("updated_at") or quote_data.get("trade_at") or "時間未提供"),
+            "realized_pl": realized_value,
+        })
+    # A partial sum is not the portfolio's total return. Individual fresh quote rows can
+    # still be listed, but the aggregate stays unavailable until every holding is current.
+    stale_codes = [code for code in codes if code not in fresh_contribution_quotes]
+    stale_names = [stock_display_name(code, {}, None) for code in stale_codes]
+    portfolio_pct = (sum(item["contribution"] for item in contribution_rows)
+                     if contribution_rows and not stale_codes else None)
+    positive = sorted((item for item in contribution_rows if item["contribution"] > 0),
+                      key=lambda item: item["contribution"], reverse=True)[:5]
+    negative = sorted((item for item in contribution_rows if item["contribution"] < 0),
+                      key=lambda item: item["contribution"])[:5]
+    relative = (portfolio_pct - market_pct
+                if portfolio_pct is not None and market_pct is not None else None)
+    # API 回傳行情也使用本輪已驗證的官方 quote，而非 sticky display cache。
+    # 收盤後尤其重要：快取中的同日盤中 quote 可能尚未帶 close_is_final。
+    quote_payload = {}
+    for _code, _quote in fresh_contribution_quotes.items():
+        if _code not in codes or not quote_is_current(_quote):
+            continue
+        try:
+            quote_payload[_code] = {
+                "close": float(_quote.get("close")),
+                "pct": float(_quote.get("pct")),
+                "updated_at": str(_quote.get("updated_at") or _quote.get("trade_at") or ""),
+                "fetched_at": str(_quote.get("fetched_at") or ""),
+                "close_date": str(_quote.get("close_date") or "").replace("-", "")[:8],
+                "source": str(_quote.get("source") or "TWSE MIS same-day cache"),
+            }
+        except (TypeError, ValueError):
+            continue
+    print("📊 首頁今日績效計算：uid=%s，有效行情=%s/%s，貢獻列=%s，缺漏=%s，組合=%s，相對大盤=%s，大盤=%s，盤中=%s" % (
+        str(uid).strip(), len(fresh_contribution_quotes), len(codes),
+        len(contribution_rows), len(stale_codes),
+        ("%.4f%%" % portfolio_pct) if portfolio_pct is not None else "資料不足",
+        ("%.4f%%" % relative) if relative is not None else "資料不足",
+        ("%.4f%%" % market_pct) if market_pct is not None else "資料不足", intraday), flush=True)
+    return {
+        # market_open=False 告訴前端更新完這份收盤資料後停止輪詢；payload 本身仍
+        # 含今日正式收盤的持股、組合與相對大盤數據，不能在前端提早丟掉。
+        "ok": True, "market_open": intraday,
+        "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
+        "market": market_payload,
+        "quotes": quote_payload,
+        "portfolio": {"pct": portfolio_pct, "relative": relative,
+                      "positive": positive, "negative": negative,
+                "stale_names": stale_names[:6],
+                "stale_count": len(stale_names), "ready": True},
+        "note": (("盤中報價尚未補齊；官方快照缺價，延遲備援尚未涵蓋全部持股；" if stale_codes else "首頁盤中行情已更新；") +
+                 (f"本輪有 {backup_quote_count} 檔使用 Yahoo 1 分 K 備援（可能延遲，非官方即時）；" if backup_quote_count else "") +
+                 "若 MIS 本輪漏回個股，會沿用今天先前已成功取得的有效報價；絕不沿用前一交易日行情。"
+                 "尚未有今天有效報價的標的暫不計入整體貢獻。"),
+    }
+
+
 def _refresh_home_intraday_payload_sync(uid):
     """同步取得今日完整持股行情；收盤後也會計算正式收盤的今日績效。"""
     now = taiwan_now()
@@ -7055,146 +7204,9 @@ def _refresh_home_intraday_payload_sync(uid):
             retry_quotes = _fetch_twse_mis_quotes(missing_reduced, force_refresh=False)
             price_map = _sticky_home_quotes(uid, retry_quotes)
 
-        total_value = sum(
-            float((price_map.get(str(position.get("code") or "").strip()) or {}).get("close") or 0) *
-            int(position.get("shares") or 0)
-            for position in positions)
-        # 每檔持股獨立維持最後一筆有效報價：本輪有新 MIS 報價就更新，
-        # 沒回來的就沿用同日上一筆。不能因為單一檔缺資料，就把整個組合暫停。
-        holdings = []
-        stale_codes = []
-        for position in positions:
-            code = str(position.get("code") or "").strip()
-            if not code:
-                continue
-            quote_data = price_map.get(code)
-            if not isinstance(quote_data, dict):
-                stale_codes.append(code)
-                continue
-            try:
-                close = float(quote_data.get("close"))
-            except (TypeError, ValueError):
-                stale_codes.append(code)
-                continue
-            if close <= 0:
-                stale_codes.append(code)
-                continue
-            shares = int(position.get("shares") or 0)
-            holdings.append({
-                "code": code,
-                "name": stock_display_name(code, {}, quote_data.get("name")),
-                "shares": shares,
-                "weight": (close * shares / total_value * 100) if total_value > 0 else 0.0,
-                "price": quote_data,
-            })
-        # Use the latest eligible official value when computing each valid row. The denominator
-        # still includes the full portfolio via its paired previous-close prices, while symbols
-        # without a sufficiently recent official tick will be omitted from the contribution list.
-        exposure_price_map = dict(price_map)
-        exposure_price_map.update(fresh_contribution_quotes)
-        exposure_holdings = []
-        for holding in holdings:
-            row_holding = dict(holding)
-            row_code = str(row_holding.get("code") or "").strip()
-            row_holding["price"] = exposure_price_map.get(row_code) or row_holding.get("price")
-            exposure_holdings.append(row_holding)
-        exposure_rows = _build_daily_pretrade_exposure(
-            exposure_holdings, exposure_price_map, today_logs)
-        realized_by_code = (_today_realized_by_code(get_realized_trades(uid, 100))
-                            if reduced_codes else {})
-
-        def exposure_label(row):
-            current_weight = float(row.get("current_weight") or 0)
-            if not row.get("reduced_today"):
-                return f"佔你的組合 {float(row.get('daily_weight') or 0):.1f}%"
-            current_text = ("目前已刪除（0.0%）" if row.get("fully_reduced_today")
-                            else f"目前權重 {current_weight:.1f}%")
-            if row.get("basis") == "intraday_trade_segments":
-                return f"今日交易切段：操作前 {float(row.get('daily_weight') or 0):.1f}%／{current_text}"
-            if row.get("basis") == "current":
-                return f"今日基準：操作前 {float(row.get('daily_weight') or 0):.1f}%／{current_text}"
-            return f"今日基準資料不足，暫用目前權重 {current_weight:.1f}%"
-
-        contribution_rows = []
-        for row in exposure_rows:
-            code = str(row.get("code") or "").strip()
-            # Do not let a quote retained only in the same-day sticky cache appear in today's
-            # winner/loser list. No sufficiently fresh official quote means no contribution row.
-            quote_data = fresh_contribution_quotes.get(code)
-            if not quote_data:
-                continue
-            try:
-                pct = float(quote_data.get("pct"))
-            except (TypeError, ValueError):
-                continue
-            # V232：若今天有買／賣，必須使用實際交易切段後的
-            # contribution_pct；不能再用「目前／操作前權重 × 今日整日漲跌」，
-            # 否則賣出後的跌幅仍會被算進已賣部位。
-            contribution = row.get("contribution_pct")
-            if contribution is None:
-                contribution = float(row.get("daily_weight") or 0) * pct / 100
-            contribution = float(contribution)
-            code = str(row.get("code") or "").strip()
-            realized_value = realized_by_code.get(code)
-            contribution_rows.append({
-                "code": code,
-                "name": row.get("name") or code,
-                "pct": pct,
-                "contribution": contribution,
-                "basis_text": exposure_label(row) + "；" + str(quote_data.get("source") or "來源未提供") + "；行情 " + str(quote_data.get("updated_at") or quote_data.get("trade_at") or "時間未提供"),
-                "realized_pl": realized_value,
-            })
-        # A partial sum is not the portfolio's total return. Individual fresh quote rows can
-        # still be listed, but the aggregate stays unavailable until every holding is current.
-        stale_codes = [code for code in codes if code not in fresh_contribution_quotes]
-        stale_names = [stock_display_name(code, {}, None) for code in stale_codes]
-        portfolio_pct = (sum(item["contribution"] for item in contribution_rows)
-                         if contribution_rows and not stale_codes else None)
-        positive = sorted((item for item in contribution_rows if item["contribution"] > 0),
-                          key=lambda item: item["contribution"], reverse=True)[:5]
-        negative = sorted((item for item in contribution_rows if item["contribution"] < 0),
-                          key=lambda item: item["contribution"])[:5]
-        relative = (portfolio_pct - market_pct
-                    if portfolio_pct is not None and market_pct is not None else None)
-        # API 回傳行情也使用本輪已驗證的官方 quote，而非 sticky display cache。
-        # 收盤後尤其重要：快取中的同日盤中 quote 可能尚未帶 close_is_final。
-        quote_payload = {}
-        for _code, _quote in fresh_contribution_quotes.items():
-            if _code not in codes or not _mis_quote_is_current_for_contribution(_quote):
-                continue
-            try:
-                quote_payload[_code] = {
-                    "close": float(_quote.get("close")),
-                    "pct": float(_quote.get("pct")),
-                    "updated_at": str(_quote.get("updated_at") or _quote.get("trade_at") or ""),
-                    "fetched_at": str(_quote.get("fetched_at") or ""),
-                    "close_date": str(_quote.get("close_date") or "").replace("-", "")[:8],
-                    "source": str(_quote.get("source") or "TWSE MIS same-day cache"),
-                }
-            except (TypeError, ValueError):
-                continue
-        print("📊 首頁今日績效計算：uid=%s，官方有效行情=%s/%s，貢獻列=%s，缺漏=%s，組合=%s，相對大盤=%s，大盤=%s，盤中=%s" % (
-            str(uid).strip(), len(fresh_contribution_quotes), len(codes),
-            len(contribution_rows), len(stale_codes),
-            ("%.4f%%" % portfolio_pct) if portfolio_pct is not None else "資料不足",
-            ("%.4f%%" % relative) if relative is not None else "資料不足",
-            ("%.4f%%" % market_pct) if market_pct is not None else "資料不足", intraday), flush=True)
-        return {
-            # market_open=False 告訴前端更新完這份收盤資料後停止輪詢；payload 本身仍
-            # 含今日正式收盤的持股、組合與相對大盤數據，不能在前端提早丟掉。
-            "ok": True, "market_open": intraday,
-            "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
-            "market": market_payload,
-            "quotes": quote_payload,
-            "portfolio": {"pct": portfolio_pct, "relative": relative,
-                          "positive": positive, "negative": negative,
-                    "stale_names": stale_names[:6],
-                    "stale_count": len(stale_names), "ready": True},
-            "note": (("盤中報價尚未補齊；官方快照缺價，延遲備援尚未涵蓋全部持股；" if stale_codes else "首頁盤中行情已更新；") +
-                     (f"本輪有 {backup_quote_count} 檔使用 Yahoo 1 分 K 備援（可能延遲，非官方即時）；" if backup_quote_count else "") +
-                     "若 MIS 本輪漏回個股，會沿用今天先前已成功取得的有效報價；絕不沿用前一交易日行情。"
-                     "尚未有今天有效報價的標的暫不計入整體貢獻。"),
-        }
+        return _calculate_home_quote_payload(
+            uid, positions, price_map, fresh_contribution_quotes, market_payload,
+            intraday, today_logs, reduced_codes, backup_quote_count)
     except Exception as exc:
         print(f"⚠️ 首頁盤中行情更新失敗（uid={uid}）：{exc}")
         return {"ok": False, "market_open": True, "updates": [], "market": market_payload,
@@ -27646,6 +27658,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261102-3">
 <script defer src="/static/ui-feedback.js?v=20261102-4"></script>
+<script defer src="/static/fugle-live.js?v=20261103-1"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -31688,19 +31701,19 @@ def web_positions(uid):
   </div>
   <div class="position-card-primary">
     <div><small>今日損益</small><b class="{day_cls}" data-position-day-pl="1">{day_pl:+,.0f}</b></div>
-    <div><small>市值</small><b>{value:,.0f}</b></div>
-    <div><small>持有報酬</small><b class="{'up' if gross_pl >= 0 else 'down'}">{gross_pct_text}</b></div>
+    <div><small>市值</small><b data-position-value>{value:,.0f}</b></div>
+    <div><small>持有報酬</small><b class="{'up' if gross_pl >= 0 else 'down'}" data-position-gross>{gross_pct_text}</b></div>
   </div>
   <details class="position-more">
     <summary>查看詳細資料</summary>
     <div class="position-detail-body">
       <div class="position-card-grid">
         <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
-        <div><small>估算賣出淨損益</small><b class="{net_cls}">{net_amt:+,.0f}</b><em>{net_pct_text}</em></div>
-        <div><small>目前權重</small><b>{weight:.1f}%</b></div>
+        <div><small>估算賣出淨損益</small><b class="{net_cls}" data-position-net>{net_amt:+,.0f}</b><em data-position-net-pct>{net_pct_text}</em></div>
+        <div><small>目前權重</small><b data-position-weight>{weight:.1f}%</b></div>
         <div><small>行情</small><b class="position-quote-stamp" data-position-stamp="1">{quote_stamp_safe}</b></div>
       </div>
-      <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b>{weight:.1f}%</b></div>
+      <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b data-position-weight>{weight:.1f}%</b></div>
       {target_line_html}
       <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}">
         <summary class="position-factors-trigger">🧭 查看五大因子與目前狀況</summary>
@@ -31757,15 +31770,15 @@ def web_positions(uid):
     totals = f"""
 <div class="totals">
   <div><div class="total-label">總市值</div>
-       <div class="total-value num">{total_value:,.0f}</div>
-       <div class="total-sub">{fmt_pct(pl_total)}</div></div>
+       <div class="total-value num" data-fugle-total="value">{total_value:,.0f}</div>
+       <div class="total-sub" data-fugle-total="net_pct">{fmt_pct(pl_total)}</div></div>
   <div><div class="total-label">淨損益</div>
-       <div class="total-value num {'up' if total_value - total_cost - total_fee >= 0 else 'down'}">
+       <div data-fugle-total="net_pl" class="total-value num {'up' if total_value - total_cost - total_fee >= 0 else 'down'}">
          {total_value - total_cost - total_fee:+,.0f}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
-         已扣交易成本 <span class="num">{total_fee:,.0f}</span></div></div>
+         已扣交易成本 <span class="num" data-fugle-total="fee">{total_fee:,.0f}</span></div></div>
   <div><div class="total-label">今日損益</div>
-       <div class="total-value num {'up' if total_day_pl >= 0 else 'down'}">
+       <div data-fugle-total="day_pl" class="total-value num {'up' if total_day_pl >= 0 else 'down'}">
          {total_day_pl:+,.0f}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
          今收 vs 昨收</div></div>
@@ -32190,11 +32203,25 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
   // 原本狀態列只在「渲染那一刻是盤中」才輸出，元素不存在就整段不啟動；
   // 於是開盤前開的頁面、或從別頁切換過來的，之後即使進入盤中也永遠不會跳，
   // 只能手動刷新。改成一律啟動，由這裡決定要不要真的去抓。
-  function stop(){stopped=true;if(timer)clearTimeout(timer);timer=null;document.removeEventListener('visibilitychange',onVisibility);document.removeEventListener('stockbot:pageleaving',stop);}
+  function stop(){document.removeEventListener('stockbot:fuglequotes',onFugle);stopped=true;if(timer)clearTimeout(timer);timer=null;document.removeEventListener('visibilitychange',onVisibility);document.removeEventListener('stockbot:pageleaving',stop);}
   function schedule(){if(stopped||!root.isConnected){stop();return;}if(timer)clearTimeout(timer);timer=setTimeout(refresh,5000);}
+  function applyQuotes(data){
+      if(stopped||!root.isConnected){stop();return;}
+      (data.updates||[]).forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
+      root.textContent=(data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。'))+' 約 5 秒檢查一次。';
+      (data.updates||[]).forEach(function(item){
+        if(!Object.prototype.hasOwnProperty.call(item,'value'))return;
+        var row=document.querySelector('[data-position-code="'+item.code+'"]');if(!row)return;
+        function put(selector,value,digits,percent){var el=row.querySelector(selector);if(!el)return;el.textContent=value==null?'—':(percent?(selector.indexOf('weight')>=0?numberText(value,digits):signedText(value,digits))+'%':numberText(value,digits));if(selector.indexOf('gross')>=0||selector.indexOf('net')>=0){el.classList.toggle('up',value>=0);el.classList.toggle('down',value<0);}}
+        put('[data-position-value]',item.value,0);put('[data-position-gross]',item.gross_pct,2,true);put('[data-position-net]',item.net_pl,0);put('[data-position-net-pct]',item.net_pct,2,true);put('[data-position-weight]',item.weight,1,true);
+      });
+  }
+  function onFugle(e){if(e.detail&&e.detail.positions)applyQuotes(e.detail.positions);}
+  document.addEventListener('stockbot:fuglequotes',onFugle);
   function refresh(){
     if(stopped||!root.isConnected){stop();return;}
     if(document.hidden||busy){schedule();return;}
+    if(window.StockBotFugle&&window.StockBotFugle.active()){window.StockBotFugle.request();schedule();return;}
     // 不在前端自行判斷交易時段：iOS Safari／時區或頁面片段導覽可能令
     // inMarket() 靜默判錯，整個持股頁就完全不發請求。改由伺服器 API
     // 依台灣交易時段決定是否回傳行情；非交易時段 API 只回狀態、不抓行情。
@@ -32210,9 +32237,8 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
     var url='/web/api/positions/quotes';
     if(token)url+='?t='+encodeURIComponent(token);
     fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
-      if(stopped||!root.isConnected){stop();return;}
-      (data.updates||[]).forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
-      root.textContent=(data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。'))+' 約 5 秒檢查一次。';
+      if(window.StockBotFugle&&window.StockBotFugle.active())return;
+      applyQuotes(data);
     }).catch(function(e){root.textContent='盤中行情暫時無法更新：'+(e&&e.message?e.message:e)+'（HTTP 401 代表登入已過期，請從 LINE 重新開啟）；保留最後有效價格。';}).finally(function(){busy=false;schedule();});
   }
   function factorClass(ratio){return ratio>=0.8?'strong':ratio>=0.6?'mid':ratio>=0.4?'neutral':'weak';}
@@ -42631,16 +42657,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       }
     }).catch(function(){});
   }
-  function refresh(){
-    // 大盤與持股由同一份績效 payload 回傳，避免每輪再獨立打一次 MIS 指數請求，
-    // 減少重複連線與上游競爭；背景更新完成後由同一 API 一次更新兩者。
-    // stopped 時仍然要送出請求（間隔已拉長到 5 分鐘），
-    // 由伺服器的 market_open 決定要不要恢復——判斷時段的事交給伺服器，
-    // 前端自己算時區在 iOS Safari 上出過事（持股頁那個 bug）。
-    if(document.hidden||busy){schedule();return;}
-    busy=true;
-    var url='/web/api/portfolio/intraday',t=token();if(t)url+='?t='+encodeURIComponent(t);
-    fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
+  function applyHome(data){
+    if(!marketEl.isConnected)return;
       // 即使已收盤，也必須先套用 API 回傳的「今日正式收盤」資料；不能因 market_open=false
       // 就在前端提早 return，讓頁面永久停留在收盤前的「資料不足」。
       if(data.market_open&&stopped){stopped=false;var t0=document.querySelector('[data-home-live-title]');if(t0)t0.textContent='盤中更新中';}
@@ -42693,6 +42711,23 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');
       if(!data.market_open){stopped=true;if(title)title.textContent='今日收盤資料已更新';if(note)note.textContent=data.note||('已於 '+(data.fetched_at||'剛剛')+' 同步今日正式收盤行情。');schedule();return;}
       if(title)title.textContent='盤中行情已局部更新';if(note)note.textContent=data.note||('已於 '+(data.fetched_at||'剛剛')+' 更新；操作日報未重新載入。');
+  }
+  function onFugle(e){if(e.detail&&e.detail.home)applyHome(e.detail.home);}
+  document.addEventListener('stockbot:fuglequotes',onFugle);
+  document.addEventListener('stockbot:pageleaving',function cleanFugle(){document.removeEventListener('stockbot:fuglequotes',onFugle);document.removeEventListener('stockbot:pageleaving',cleanFugle);});
+  function refresh(){
+    // 大盤與持股由同一份績效 payload 回傳，避免每輪再獨立打一次 MIS 指數請求，
+    // 減少重複連線與上游競爭；背景更新完成後由同一 API 一次更新兩者。
+    // stopped 時仍然要送出請求（間隔已拉長到 5 分鐘），
+    // 由伺服器的 market_open 決定要不要恢復——判斷時段的事交給伺服器，
+    // 前端自己算時區在 iOS Safari 上出過事（持股頁那個 bug）。
+    if(document.hidden||busy){schedule();return;}
+    if(window.StockBotFugle&&window.StockBotFugle.active()){window.StockBotFugle.request();schedule();return;}
+    busy=true;
+    var url='/web/api/portfolio/intraday',t=token();if(t)url+='?t='+encodeURIComponent(t);
+    fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
+      if(window.StockBotFugle&&window.StockBotFugle.active())return;
+      applyHome(data);
     }).catch(function(){var note=document.querySelector('[data-home-live-note]');if(note)note.textContent='首頁盤中行情暫時無法更新；保留頁面最後有效資料。';}).finally(function(){busy=false;schedule();});
   }
   document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
@@ -52984,12 +53019,63 @@ app.register_blueprint(create_us_rotation_blueprint(
 ))
 
 
+def _apply_fugle_browser_quotes(uid, raw):
+    from fugle_live import normalize_quotes
+    positions = merge_positions(get_positions(uid))
+    codes = {str(p.get("code") or "").strip() for p in positions}
+    now = taiwan_now()
+    quotes = normalize_quotes(raw, codes, now)
+    market = fetch_taiex_intraday() if _is_taiwan_intraday_window(now) else fetch_taiex_official_close(now=now)
+    market_payload = ({"pct": market.get("pct"), "source": market.get("source"),
+                       "updated_at": market.get("updated_at"), "stale": bool(market.get("stale"))}
+                      if market and market.get("pct") is not None else None)
+    logs = get_position_change_logs(uid, 5000, trade_date=taiwan_today())
+    reduced = {str(x.get("code") or "") for x in logs if int(x.get("shares_delta") or 0) < 0}
+    home = _calculate_home_quote_payload(uid, positions, quotes, quotes, market_payload,
+                                         _is_taiwan_intraday_window(now), logs, reduced,
+                                         quote_is_current=lambda q: True)
+    home["note"] = "持股採富果本機直連行情；5 檔成交串流，其餘定時查詢。資料未齊不計算完整組合。"
+    home["quote_freshness"] = {"text": "富果當日有效行情 %s／%s 檔 · 串流與定時查詢共用計算" % (len(quotes), len(codes))}
+    fee_disc, min_fee = get_fee_settings(get_profile(uid))
+    targets = get_portfolio_target_weights(uid)
+    updates = []
+    total_value = total_cost = total_fee = total_day = 0.0
+    for p in positions:
+        code = str(p["code"])
+        total_cost += float(p["cost"]) * int(p["shares"])
+        q = quotes.get(code)
+        if not q:
+            continue
+        shares, cost, price = int(p["shares"]), float(p["cost"]), q["close"]
+        value = price * shares
+        net, net_pct, fee = net_profit(code, shares, cost, price, p.get("lots"), fee_disc, min_fee)
+        day_pl = (price - q["previous_close"]) * shares
+        total_value += value
+        total_fee += float(fee or 0)
+        total_day += day_pl
+        updates.append(dict(code=code,price=price,pct=q["pct"],day_pl=day_pl,value=value,target_pct=targets.get(code),
+                            gross_pct=(price-cost)/cost*100 if cost else None,
+                            net_pl=net,net_pct=net_pct,source=q["source"],updated_at=q["updated_at"]))
+    complete = len(quotes) == len(codes) and bool(codes)
+    for row in updates:
+        row["weight"] = row["value"] / total_value * 100 if complete and total_value else None
+    totals = dict(complete=complete,value=total_value if complete else None,
+                  net_pl=total_value-total_cost-total_fee if complete else None,
+                  net_pct=(total_value-total_cost-total_fee)/total_cost*100 if complete and total_cost else None,
+                  day_pl=total_day if complete else None,fee=total_fee if complete else None)
+    return dict(ok=True,home=home,positions=dict(ok=True,updates=updates,totals=totals,
+                market_open=_is_taiwan_intraday_window(now),note=home["quote_freshness"]["text"]))
+
+
 from quote_lab import create_blueprint as create_quote_lab_blueprint
 app.register_blueprint(create_quote_lab_blueprint(
     web_login_required=web_login_required,
     render_page=render_page,
     get_db_connection=get_db_connection,
     release_db_connection=release_db_connection,
+    csrf_token=_web_csrf_user_signature,
+    valid_csrf=valid_web_csrf,
+    apply_quotes=_apply_fugle_browser_quotes,
 ))
 
 
