@@ -11,7 +11,8 @@ sys.path.insert(0,str(REPO/'tests'));from test_fugle_accounting import actual_na
 sys.path.insert(0,str(REPO));from quote_lab import page_markup
 os.environ['STOCKBOT_UI_ARTIFACTS']=str(ROOT)
 source=(REPO/'tests/browser/fixtures.py').read_text().replace('range(7)','range(10)').replace('[1355,1510,4705,26.57,1265,1060,637]','[1355,1510,4705,26.57,1265,1060,637,500,600,700]')
-exec(compile(source,'<actual-ten-stock-renderer>','exec'),{'__file__':str(REPO/'tests/browser/fixtures.py')})
+fixture_globals={'__file__':str(REPO/'tests/browser/fixtures.py')};exec(compile(source,'<actual-ten-stock-renderer>','exec'),fixture_globals)
+shell_html=fixture_globals['ns']['render_loading_shell']('今日','portfolio',['讀取市場'],staged=False)
 tree=ast.parse((REPO/'main.py').read_text());home_fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='render_daily_home_top')
 live=next(n.value.value for n in ast.walk(home_fn) if isinstance(n,ast.Assign) and any(getattr(t,'id','')=='home_intraday_script' for t in n.targets) and isinstance(n.value,ast.Constant) and len(str(n.value.value))>100)
 for name in ['home.html','home-fragment.html']:
@@ -32,7 +33,7 @@ ns['get_positions']=lambda uid:[dict(code=c,shares=1063 if c=='00981A' else 100,
 with sync_playwright() as p:
  browser=p.webkit.launch() if engine=='webkit' else p.chromium.launch(executable_path='/usr/bin/chromium',args=['--no-sandbox'])
  page=browser.new_page(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
- page.clock.install(time=NOW);page.add_init_script(MOCK);page.on('pageerror',lambda e:errors.append(str(e)))
+ page.clock.install(time=NOW);page.add_init_script(MOCK);capture_error=lambda e:errors.append(str(e));page.on('pageerror',capture_error)
  def route(r):
   u=urlparse(r.request.url);q=parse_qs(u.query)
   if u.path.startswith('/static/'):
@@ -52,6 +53,8 @@ with sync_playwright() as p:
    # Provider clock is supplied through the browser request interception clock.
    r.fulfill(json={'symbol':code,'date':'2026-11-03','type':'EQUITY','previousClose':110,'referencePrice':100,'lastTrade':{'price':101,'time':int(NOW.timestamp()*1e6),'serial':1}});return
   if '/api/' in u.path:r.fulfill(json={'ok':True,'market_open':True,'updates':[],'portfolio':{'ready':False},'note':'fixture normal source'});return
+  if u.path=='/web/portfolio' and q.get('initial') and not q.get('fragment'):
+   r.fulfill(body=shell_html,content_type='text/html');return
   name='home' if u.path=='/web/portfolio' else 'positions'
   suffix='-fragment' if q.get('fragment') else ''
   r.fulfill(body=(ROOT/(name+suffix+'.html')).read_text(),content_type='text/html')
@@ -104,5 +107,15 @@ with sync_playwright() as p:
  assert all('fixture-provider-key' not in json.dumps(body) for body in posts)
  page.locator('#stockbot-fugle-panel>summary').click() if not page.locator('#stockbot-fugle-panel').evaluate('(e)=>e.open') else None
  page.locator('#ql-stop').click();assert page.locator('#ql-key').input_value()=='' and page.evaluate('StockBotFugle.active()') is False;checks.append('stop clears credentials and feed')
+ # Exercise direct entry in a separate document, without WebKit unload-abort noise.
+ assert not errors,errors
+ page.remove_listener('pageerror',capture_error);page.close()
+ page=browser.new_page(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
+ page.add_init_script(MOCK);page.on('pageerror',capture_error)
+ page.route('https://fixture.test/**',route);page.route('https://api.fugle.tw/**',route)
+ page.goto('https://fixture.test/web/portfolio?initial=1');page.wait_for_selector('#hv2')
+ assert not page.locator('#loading').is_visible()
+ assert page.locator('#stockbot-fugle-panel').count()==1
+ checks.append('direct-entry shell releases into real home')
  assert not errors,errors
  print(json.dumps({'engine':engine,'passed':len(checks),'errors':errors,'provider_requests':len(external),'calculation_posts':len(posts)}));browser.close()
