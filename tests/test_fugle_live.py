@@ -79,3 +79,19 @@ def test_corporate_action_uses_provider_daily_reference_not_unadjusted_yesterday
     r=row();r.update(price=95,previous_close=100,reference_price=95)
     q=normalize_quotes([r],{'00981A'},NOW)['00981A']
     assert q['pct']==0 and q['previous_close']==95
+
+
+def test_market_rejects_stock_proxy_and_unconfirmed_close():
+    from fugle_live import normalize_market
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    import pytest
+    now = datetime(2026,11,3,13,42,tzinfo=ZoneInfo('Asia/Taipei'))
+    row = dict(code='IX0001',type='INDEX',price=19800,previous_close=20000,
+               time=int(now.replace(hour=13,minute=30).timestamp()*1e6),observed_at=int(now.timestamp()*1000),closed=True)
+    assert normalize_market(row,now)['pct']==-1
+    assert normalize_market(dict(row,closed=False),now) is None
+    assert normalize_market(dict(row,is_trial=True),now) is None
+    assert normalize_market(dict(row,time=row['time']-86400_000000),now) is None
+    with pytest.raises(ValueError):normalize_market(dict(row,code='0050'),now)
+    with pytest.raises(ValueError):normalize_market(dict(row,type='EQUITY'),now)

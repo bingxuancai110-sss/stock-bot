@@ -41,3 +41,15 @@ def normalize_quotes(raw, allowed, now):
                             has_live_trade_price=True, close_is_final=row.get('closed') is True,
                             source='富果'+mode+'（本機直連）')
     return result
+
+
+def normalize_market(raw, now):
+    """Only the actual TAIEX index may supply the portfolio benchmark."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or raw.get('code') != 'IX0001' or raw.get('type') != 'INDEX':
+        raise ValueError('大盤指數格式不正確')
+    quote = normalize_quotes([raw], {'IX0001'}, now).get('IX0001')
+    if quote:
+        quote['source'] = '富果加權指數（本機直連）'
+    return quote

@@ -148,7 +148,9 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection, rele
             abort(503)
         try:
             raw = json.loads(request.form.get('quotes', 'null'))
-            return private(jsonify(apply_quotes(uid, raw)))
+            market = json.loads(request.form['market']) if 'market' in request.form else None
+            result = apply_quotes(uid, raw, market_raw=market) if 'market' in request.form else apply_quotes(uid, raw)
+            return private(jsonify(result))
         except (ValueError, TypeError):
             return private(make_response(jsonify(ok=False, error='行情驗證失敗，請等待新的正式成交。'), 400))
         except Exception:

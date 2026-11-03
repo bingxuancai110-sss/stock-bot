@@ -62,3 +62,15 @@ def test_sale_segments_still_use_actual_trade_price():
     # Opening value = 20*100 + 20*50. Stock gain = 20*(110-100)+10*(120-110).
     # ETF loss = 20*(45-50). This is 200 / 3000, not current-weight times day return.
     assert r['home']['portfolio']['pct']==pytest.approx(200/3000*100)
+
+
+def test_fugle_actual_index_replaces_missing_official_market():
+    ns=actual_namespace()
+    ns['fetch_taiex_intraday']=lambda **kw:None
+    market=dict(code='IX0001',type='INDEX',price=19800,previous_close=20000,time=int(NOW.timestamp()*1e6),observed_at=int(NOW.timestamp()*1000))
+    r=ns['_apply_fugle_browser_quotes']('owner',quotes(),market_raw=market)
+    assert r['home']['portfolio']['relative']==6
+    assert len(r['positions']['updates'])==2
+    market['observed_at']-=121000
+    r=ns['_apply_fugle_browser_quotes']('owner',quotes(),market_raw=market)
+    assert r['home']['portfolio']['relative'] is None

@@ -1,7 +1,7 @@
 (async function(){
   'use strict';
   if(window.StockBotFugle)return;
-  const relevant=()=>/^\/web\/(portfolio|positions|quote-lab)\/?$/.test(location.pathname);
+  const relevant=()=>/^\/web\/(portfolio|positions|more|quote-lab)\/?$/.test(location.pathname);
   const localURL=path=>{const url=new window.URL(path,location.origin);let token='';try{token=new URLSearchParams(location.search).get('t')||localStorage.getItem('stockbot_web_token')||'';}catch(ignore){}if(token)url.searchParams.set('t',token);return url.href;};
   let config;
   try{const r=await fetch(localURL('/web/quote-lab/app-config'),{credentials:'same-origin',cache:'no-store',redirect:'error'});if(!r.ok)return;config=await r.json();if(!config.ok||!config.csrf_token)return;}catch(ignore){return;}
@@ -11,7 +11,7 @@
   if(!root||root.dataset.ready==='1')return;
   const panel=document.createElement('details'),panelLabel=document.createElement('summary');panel.id='stockbot-fugle-panel';panelLabel.textContent='富果行情 · 尚未啟用';panel.append(panelLabel,root);
   let mountFrame=0;
-  function mount(){mountFrame=0;const host=document.getElementById('app-page-content');if(!host)return;document.querySelectorAll('#quote-lab').forEach(x=>{if(x!==root)x.remove();});panel.hidden=!relevant();panel.classList.toggle('is-compact',location.pathname!=='/web/quote-lab');if(panel.parentNode!==host)host.prepend(panel);if(location.pathname==='/web/quote-lab')panel.open=true;}
+  function mount(){mountFrame=0;const host=document.getElementById('app-page-content');if(!host)return;document.querySelectorAll('#quote-lab').forEach(x=>{if(x!==root)x.remove();});panel.hidden=!/^\/web\/(more|quote-lab)\/?$/.test(location.pathname);panel.classList.toggle('is-compact',location.pathname!=='/web/quote-lab');if(panel.parentNode!==host)host.prepend(panel);if(location.pathname==='/web/quote-lab')panel.open=true;}
   function queueMount(){if(!mountFrame)mountFrame=requestAnimationFrame(mount);}
   mount();
   root.dataset.ready='1';
@@ -24,7 +24,7 @@
   let apiKey='',symbols=[],ws=null,running=false,disposed=false,generation=0,retryTimer=null,phaseTimer=null,healthTimer=null,raf=null,releaseLock=null;
   let events=0,retries=0,failures=0,lastMessage=0;
   let following=false,preferred=[],allSymbols=[],authenticated=false,holdTimer=null,restTimer=null,subTimer=null;
-  let holdController=null,restController=null,restCursor=0,restPause=0;
+  let holdController=null,restController=null,restCursor=0,restPause=0,indexQuote=null,indexAttempt=0;
   let applyTimer=null,applyController=null,lastApply=0,paused=false;
   const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   const channels=new Map(),pendingSub=new Set(),pendingUnsub=new Set(),requestTimes=[];
@@ -160,17 +160,19 @@
   async function pollRest(){
     if(!running||!following||restController)return;
     const codes=restSymbols();
-    if(!codes.length){text($('#ql-rest-status'),'所有持股都在串流名額內，不需額外查詢。');scheduleRest(15000);return;}
+    if(!codes.length&&Date.now()-indexAttempt<15000){scheduleRest(Math.max(1500,15000-(Date.now()-indexAttempt)));return;}
     const now=Date.now();while(requestTimes.length&&now-requestTimes[0]>=60000)requestTimes.shift();
     const blockedUntil=Math.max(restPause,requestTimes.length>=40?requestTimes[0]+60000:0);
     if(blockedUntil>now){text($('#ql-rest-status'),'定時查詢暫停約 '+Math.ceil((blockedUntil-now)/1000)+' 秒，等待免費額度恢復；串流照常。');scheduleRest(Math.max(1000,blockedUntil-now));return;}
     const unseeded=allSymbols.filter(c=>!models.get(c)?.previousClose||models.get(c)?.previousCloseDay!==today()||(afterClose()&&!models.get(c)?.closed));
-    const code=unseeded.sort((a,b)=>(models.get(a)?.baselineAttempt||0)-(models.get(b)?.baselineAttempt||0))[0]||codes[restCursor++%codes.length],mine=generation,controller=new AbortController();restController=controller;
-    models.get(code).baselineAttempt=Date.now();
+    const indexDue=Date.now()-indexAttempt>=15000;
+    const code=indexDue?'IX0001':unseeded.sort((a,b)=>(models.get(a)?.baselineAttempt||0)-(models.get(b)?.baselineAttempt||0))[0]||codes[restCursor++%codes.length],mine=generation,controller=new AbortController();restController=controller;
+    if(code==='IX0001')indexAttempt=Date.now();else models.get(code).baselineAttempt=Date.now();
     const timeout=setTimeout(()=>controller.abort(),8000);requestTimes.push(now);
     try{
       const response=await fetch(REST+encodeURIComponent(code),{headers:{'X-API-KEY':apiKey},credentials:'omit',cache:'no-store',redirect:'error',referrerPolicy:'no-referrer',signal:controller.signal});
       if(!running||mine!==generation)return;
+      if(response.status===403&&code==='IX0001'){text($('#ql-rest-status'),'富果暫未提供加權指數權限，持股行情照常更新。');return;}
       if(response.status===401||response.status===403){failed('富果定時查詢金鑰或權限無效，已停止並清除金鑰。');return;}
       if(response.status===429){
         const raw=response.headers.get('Retry-After'),seconds=Number(raw),until=Number.isFinite(seconds)?Date.now()+Math.max(60,seconds)*1000:Date.parse(raw||'');
@@ -178,7 +180,13 @@
         text($('#ql-rest-status'),'富果回報查詢額度已滿，暫停定時查詢至少 60 秒；不會重試轟炸，串流照常。');return;
       }
       if(!response.ok)throw new Error('quote unavailable');
-      const quote=await response.json();if(!running||mine!==generation||!models.has(code))return;
+      const quote=await response.json();if(!running||mine!==generation)return;
+      if(code==='IX0001'){
+        if(quote.symbol!=='IX0001'||quote.type!=='INDEX'||quote.date!==today()||quote.isTrial===true)throw new Error('invalid index');
+        indexQuote={code:'IX0001',type:'INDEX',price:quote.closePrice,previous_close:quote.previousClose??quote.referencePrice,time:quote.closeTime,observed_at:Date.now(),closed:quote.isClose===true,mode:'rest'};
+        requestApply();return;
+      }
+      if(!models.has(code))return;
       if(String(quote.symbol)!==code||quote.type==='ODDLOT')throw new Error('wrong symbol');
       if(quote.date!==today())throw new Error('old trading day');
       const prior=Number(quote.previousClose),reference=Number(quote.referencePrice);
@@ -287,7 +295,7 @@
     if((selected.length===0&&!followInput.checked)||selected.length>5||new Set(selected).size!==selected.length||selected.some(s=>!/^\d{4,6}[A-Z]?$/.test(s))){status('error','請確認代碼','請輸入 1～5 個不重複的上市櫃股票代碼，以逗號或空格分隔。');return;}
     const supplied=keyInput.value.trim();if(!supplied){status('error','尚未輸入金鑰','請輸入你申請的富果行情 API Key。');return;}
     apiKey=supplied;keyInput.value='';if(location.pathname!=='/web/quote-lab')panel.open=false;preferred=selected;following=followInput.checked;symbols=following?[]:selected;allSymbols=[];events=retries=failures=0;restPause=0;running=true;generation++;controls();
-    rows.clear();models.clear();flashes.forEach(clearTimer);flashes.clear();$('#ql-quotes').replaceChildren();text($('#ql-events'),'0');text($('#ql-retries'),'0');status('connecting','準備中',following?'正在確認你的 BOT 持股…':'正在準備串流…');
+    indexQuote=null;indexAttempt=0;rows.clear();models.clear();flashes.forEach(clearTimer);flashes.clear();$('#ql-quotes').replaceChildren();text($('#ql-events'),'0');text($('#ql-retries'),'0');status('connecting','準備中',following?'正在確認你的 BOT 持股…':'正在準備串流…');
     const mine=generation;
     if(navigator.locks&&navigator.locks.request){
       try{
@@ -351,6 +359,7 @@
     const deadline=setTimeout(()=>controller.abort(),10000);
     try{
       const body=new URLSearchParams({csrf_token:config.csrf_token,quotes:JSON.stringify(rows)});
+      if(indexQuote)body.set('market',JSON.stringify(indexQuote));
       const response=await fetch(localURL('/web/quote-lab/apply'),{method:'POST',credentials:'same-origin',cache:'no-store',redirect:'error',body,signal:controller.signal});
       if(!running||mine!==generation)return;
       if(response.status===401||response.status===403){failed('BOT 登入已失效，已停止富果行情並清除金鑰。');return;}
