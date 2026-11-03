@@ -10300,12 +10300,16 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
                 quote_updated_at = None
             trade_at = f"{item.get('d')} {item.get('t')}".strip()
             volume_lots = number("v")
+            limit_up = number("u")
+            limit_down = number("w")
             parsed[code] = {
                 "close": close, "previous_close": previous,
                 "pct": (close - previous) / previous * 100,
                 "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
                 "high": number("h") or close, "low": number("l") or close,
                 "volume": int(volume_lots * 1000) if volume_lots is not None else 0,
+                "limit_up": limit_up, "limit_down": limit_down,
+                "limit_known": bool(limit_up and limit_down and limit_up > 0 and limit_down > 0),
                 "updated_at": quote_updated_at or trade_at,
                 "quote_updated_at": quote_updated_at, "trade_at": trade_at,
                 "has_live_trade_price": bool(live_close is not None and live_close > 0),
@@ -10487,6 +10491,9 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                     "close_is_final": bool(official_quote.get("close_is_final")),
                     "close_date": official_quote.get("close_date"),
                     "close_time": official_quote.get("close_time"),
+                    "limit_up": official_quote.get("limit_up"),
+                    "limit_down": official_quote.get("limit_down"),
+                    "limit_known": bool(official_quote.get("limit_known")),
                 })
                 close_dates = refreshed.get("close_dates") or []
                 closes = list(refreshed.get("closes") or [])
@@ -10793,6 +10800,9 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 "close_date": (official_quote.get("close_date") if official_quote else
                                (bars[-1][0].strftime("%Y%m%d") if bars else None)),
                 "close_time": (official_quote.get("close_time") if official_quote else None),
+                "limit_up": official_quote.get("limit_up") if official_quote else None,
+                "limit_down": official_quote.get("limit_down") if official_quote else None,
+                "limit_known": bool(official_quote and official_quote.get("limit_known")),
                 "resistance": resistance,
                 "support": support,
                 "support_strength": support_strength,
@@ -27656,7 +27666,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261103-10">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261103-11">
 <script defer src="/static/ui-feedback.js?v=20261103-4"></script>
 <script defer src="/static/fugle-live.js?v=20261103-6"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
@@ -31694,6 +31704,19 @@ def web_positions(uid):
             gross_pct_text = fmt_pct(gross_pl)
             day_cls = 'up' if day_pl >= 0 else 'down'
             net_cls = 'up' if net_amt >= 0 else 'down'
+            limit_state = None
+            limit_known = bool(price.get("limit_known")) and (
+                price.get("close_date") == taiwan_today().strftime("%Y%m%d") and
+                (price.get("close_is_final") or price.get("has_live_trade_price")))
+            if limit_known:
+                try:
+                    limit_state = "none"
+                    if price.get("limit_up") and abs(float(price["close"]) - float(price["limit_up"])) < 0.001:
+                        limit_state = "up"
+                    elif price.get("limit_down") and abs(float(price["close"]) - float(price["limit_down"])) < 0.001:
+                        limit_state = "down"
+                except (TypeError, ValueError):
+                    limit_state = None
             quote_stamp_safe = quote_stamp
             rows_html.append(f"""
 <article class="position-card" data-position-code="{html.escape(str(p['code']), quote=True)}">
@@ -31703,8 +31726,8 @@ def web_positions(uid):
       <div><h3>{name}</h3><small><span class="position-lot-size">{p['shares']:,} 股</span><span class="position-held-days">{f'持有 {held} 天' if held is not None else '持有天數未提供'}</span></small></div>
     </div>
     <div class="position-card-price">
-      <b data-position-price="1">{price['close']:,.2f}</b>
-      <span class="{day_cls}" data-position-pct="1">{fmt_pct(price['pct'])}</span>
+      <b class="num {day_cls}" data-position-price="1">{price['close']:,.2f}</b>
+      <span class="{day_cls}{' is-limit-board' if limit_state in ('up', 'down') else ''}" data-position-pct="1" data-limit-state="{limit_state or ''}" data-limit-known="{'1' if limit_known else '0'}" data-limit-label="{'漲停' if limit_state == 'up' else '跌停' if limit_state == 'down' else ''}">{price['pct']:+.2f}%</span>
     </div>
   </div>
   <div class="position-card-primary">
@@ -32207,7 +32230,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
 </script>'''
     body += '''<style>.position-success-overlay{position:fixed;inset:0;z-index:2147483640;display:flex;align-items:center;justify-content:center;background:rgba(20,31,43,.10);opacity:0;pointer-events:none;transition:opacity .18s}.position-success-overlay.show{opacity:1}.position-success-card{min-width:190px;padding:22px 24px;border-radius:18px;background:#fff;box-shadow:0 14px 45px rgba(20,31,43,.18);text-align:center;transform:translateY(8px) scale(.96);transition:transform .22s}.position-success-overlay.show .position-success-card{transform:translateY(0) scale(1)}.position-success-check{width:54px;height:54px;margin:0 auto 10px;border-radius:50%;display:grid;place-items:center;background:#e7f5ee;color:#27835d;font-size:31px;font-weight:900;animation:position-success-pop .42s cubic-bezier(.2,.9,.25,1.25)}.position-success-card b{display:block;font-size:16px;color:#203142}.position-success-card span{display:block;margin-top:4px;font-size:12px;color:#7b8995}@keyframes position-success-pop{0%{transform:scale(.4);opacity:0}70%{transform:scale(1.12);opacity:1}100%{transform:scale(1)}}@media(prefers-reduced-motion:reduce){.position-success-overlay,.position-success-card{transition:none}.position-success-check{animation:none}}</style><script>
 (function(){
-  var timer=null,busy=false,stopped=false,root=document.getElementById('positions-quote-status');
+  var timer=null,busy=false,stopped=false,pollInterval=5000,lastOfficialCheck=0,root=document.getElementById('positions-quote-status');
   if(!root)return;
   function numberText(value,digits){var n=Number(value);return Number.isFinite(n)?n.toLocaleString('zh-TW',{minimumFractionDigits:digits,maximumFractionDigits:digits}):'—';}
   function signedText(value,digits){var n=Number(value);return Number.isFinite(n)?(n>=0?'+':'')+numberText(n,digits):'—';}
@@ -32216,11 +32239,13 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
   // 於是開盤前開的頁面、或從別頁切換過來的，之後即使進入盤中也永遠不會跳，
   // 只能手動刷新。改成一律啟動，由這裡決定要不要真的去抓。
   function stop(){document.removeEventListener('stockbot:fuglequotes',onFugle);stopped=true;if(timer)clearTimeout(timer);timer=null;document.removeEventListener('visibilitychange',onVisibility);document.removeEventListener('stockbot:pageleaving',stop);}
-  function schedule(){if(stopped||!root.isConnected){stop();return;}if(timer)clearTimeout(timer);timer=setTimeout(refresh,5000);}
-  function applyQuotes(data){
+  function schedule(){if(stopped||!root.isConnected){stop();return;}if(timer)clearTimeout(timer);timer=setTimeout(refresh,pollInterval);}
+  function applyQuotes(data,limitsOnly,preserveUnknownLimit){
       if(stopped||!root.isConnected){stop();return;}
-      (data.updates||[]).forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row||item.price==null)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');}if(pct)pct.innerHTML='<span class="num '+(Number(item.pct)>=0?'up':'down')+'">'+signedText(item.pct,2)+'%</span>';if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
-      root.textContent=(data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。'))+' 約 5 秒檢查一次。';
+      var updates=data.updates||[],hasLimit=updates.some(function(item){return item.limit_state==='up'||item.limit_state==='down';});
+      pollInterval=data.market_open?5000:60000;root.style.display=(data.market_open||hasLimit)?'':'none';
+      updates.forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(pct&&(!preserveUnknownLimit||item.limit_known)){var state=item.limit_known&&(item.limit_state==='up'||item.limit_state==='down')?item.limit_state:'';pct.classList.toggle('is-limit-board',!!state);pct.dataset.limitState=state;pct.dataset.limitKnown=item.limit_known?'1':'0';pct.dataset.limitLabel=state==='up'?'漲停':state==='down'?'跌停':'';}if(limitsOnly||item.price==null)return;if(pct){pct.textContent=item.pct==null?'':signedText(item.pct,2)+'%';pct.classList.toggle('up',Number(item.pct)>=0);pct.classList.toggle('down',Number(item.pct)<0);}if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');price.classList.toggle('up',Number(item.pct)>=0);price.classList.toggle('down',Number(item.pct)<0);}if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
+      if(data.market_open||hasLimit)root.textContent=(data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。'))+(data.market_open?' 約 5 秒檢查一次。':'');
       (data.updates||[]).forEach(function(item){
         if(!Object.prototype.hasOwnProperty.call(item,'value'))return;
         var row=document.querySelector('[data-position-code="'+item.code+'"]');if(!row)return;
@@ -32228,16 +32253,16 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
         put('[data-position-value]',item.value,0);put('[data-position-gross]',item.gross_pct,2,true);put('[data-position-net]',item.net_pl,0);put('[data-position-net-pct]',item.net_pct,2,true);put('[data-position-weight]',item.weight,1,true);
       });
   }
-  function onFugle(e){if(e.detail&&e.detail.positions)applyQuotes(e.detail.positions);}
+  function onFugle(e){if(e.detail&&e.detail.positions)applyQuotes(e.detail.positions,false,true);}
   document.addEventListener('stockbot:fuglequotes',onFugle);
   function refresh(){
     if(stopped||!root.isConnected){stop();return;}
     if(document.hidden||busy){schedule();return;}
-    if(window.StockBotFugle&&window.StockBotFugle.active()){window.StockBotFugle.request();schedule();return;}
+    var fugleActive=!!(window.StockBotFugle&&window.StockBotFugle.active());
+    if(fugleActive){window.StockBotFugle.request();if(Date.now()-lastOfficialCheck<30000){schedule();return;}lastOfficialCheck=Date.now();}
     // 不在前端自行判斷交易時段：iOS Safari／時區或頁面片段導覽可能令
     // inMarket() 靜默判錯，整個持股頁就完全不發請求。改由伺服器 API
     // 依台灣交易時段決定是否回傳行情；非交易時段 API 只回狀態、不抓行情。
-    if(root.style.display==='none')root.style.display='';
     busy=true;
     // token 也要看 localStorage：片段導覽會用 replaceState 改寫網址，
     // 只從 window.location.search 取的話會拿不到，端點就回 401。
@@ -32249,8 +32274,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
     var url='/web/api/positions/quotes';
     if(token)url+='?t='+encodeURIComponent(token);
     fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
-      if(window.StockBotFugle&&window.StockBotFugle.active())return;
-      applyQuotes(data);
+      applyQuotes(data,fugleActive);
     }).catch(function(e){root.textContent='盤中行情暫時無法更新：'+(e&&e.message?e.message:e)+'（HTTP 401 代表登入已過期，請從 LINE 重新開啟）；保留最後有效價格。';}).finally(function(){busy=false;schedule();});
   }
   function factorClass(ratio){return ratio>=0.8?'strong':ratio>=0.6?'mid':ratio>=0.4?'neutral':'weak';}
@@ -50457,9 +50481,7 @@ def web_positions_factors(uid):
 @web_login_required
 def web_positions_quotes(uid):
     """持股頁盤中局部更新；僅限登入者目前持有的代號，不開放任意行情查詢。"""
-    if not _is_taiwan_intraday_window():
-        return _workbench_json_response({"ok": True, "updates": [], "market_open": False,
-                                         "note": "目前非一般盤中時段；維持最近正式收盤或有效行情。"})
+    market_open = _is_taiwan_intraday_window()
     positions = merge_positions(get_positions(uid))
     shares_by_code = {}
     for position in positions:
@@ -50489,15 +50511,32 @@ def web_positions_quotes(uid):
             if price <= 0:
                 continue
             previous = price / (1 + pct / 100) if pct != -100 else price
-            updates.append({"code": code, "price": price, "pct": pct,
-                            "day_pl": (price - previous) * shares_by_code[code],
-                            "updated_at": quote_data.get("updated_at") or quote_data.get("close_time"),
-                            "source": quote_data.get("source") or "最近有效行情"})
-        return _workbench_json_response({"ok": True, "updates": updates, "market_open": True,
+            limit_known = bool(quote_data.get("limit_known")) and (
+                market_open or quote_data.get("close_is_final")) and quote_data.get("has_live_trade_price")
+            limit_state = None
+            if limit_known:
+                try:
+                    limit_state = "none"
+                    if quote_data.get("limit_up") and abs(price - float(quote_data["limit_up"])) < 0.001:
+                        limit_state = "up"
+                    elif quote_data.get("limit_down") and abs(price - float(quote_data["limit_down"])) < 0.001:
+                        limit_state = "down"
+                except (TypeError, ValueError):
+                    limit_state = None
+            update = {"code": code, "limit_state": limit_state, "limit_known": limit_known}
+            if market_open or quote_data.get("close_is_final"):
+                update.update({"price": price, "pct": pct,
+                               "day_pl": (price - previous) * shares_by_code[code],
+                               "updated_at": quote_data.get("updated_at") or quote_data.get("close_time"),
+                               "source": quote_data.get("source") or "最近有效行情"})
+            updates.append(update)
+        return _workbench_json_response({"ok": True, "updates": updates, "market_open": market_open,
                                          "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
                                          "official_count": len(updates),
                                          "requested_count": len(codes),
-                                         "note": "盤中價格只採 TWSE MIS 官方最後成交；約每 5 秒檢查、官方行情採共用 5 秒快取。MIS 暫缺時不退回 Yahoo 延遲行情。"})
+                                         "note": ("盤中價格只採 TWSE MIS 官方最後成交；約每 5 秒檢查。" if market_open else
+                                                  "非盤中時段僅核對官方 MIS 漲跌停價；資料不足時不顯示觸板狀態。") +
+                                                 "MIS 暫缺時不退回 Yahoo 延遲行情。"})
     except Exception as exc:
         print(f"⚠️ 持股盤中行情更新失敗（uid={uid}）：{exc}")
         return _workbench_json_response({"ok": False, "updates": [], "market_open": True,
