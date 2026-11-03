@@ -27658,7 +27658,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261102-3">
 <script defer src="/static/ui-feedback.js?v=20261102-4"></script>
-<script defer src="/static/fugle-live.js?v=20261103-1"></script>
+<script defer src="/static/fugle-live.js?v=20261103-2"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -53004,13 +53004,13 @@ def _fugle_market_quote(now):
     return result
 
 
-def _apply_fugle_browser_quotes(uid, raw):
-    from fugle_live import normalize_quotes
+def _apply_fugle_browser_quotes(uid, raw, market_raw=None):
+    from fugle_live import normalize_quotes, normalize_market
     positions = merge_positions(get_positions(uid))
     codes = {str(p.get("code") or "").strip() for p in positions}
     now = taiwan_now()
     quotes = normalize_quotes(raw, codes, now)
-    market = _fugle_market_quote(now)
+    market = normalize_market(market_raw, now) or _fugle_market_quote(now)
     market_payload = ({"pct": market.get("pct"), "source": market.get("source"),
                        "updated_at": market.get("updated_at"), "stale": bool(market.get("stale"))}
                       if market and market.get("pct") is not None else None)

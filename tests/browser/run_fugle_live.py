@@ -41,16 +41,18 @@ with sync_playwright() as p:
   if u.path=='/web/quote-lab/app-config':r.fulfill(json={'ok':True,'csrf_token':'fixture-csrf','panel_html':page_markup()});return
   if u.path=='/web/quote-lab/holdings':r.fulfill(json={'ok':True,'holdings':[{'code':c,'name':'測試公司 '+c} for c in CODES]});return
   if u.path=='/web/quote-lab/apply':
-   body=parse_qs(r.request.post_data or '');assert set(body)=={'quotes','csrf_token'} and body['csrf_token']==['fixture-csrf'];posts.append(body)
+   body=parse_qs(r.request.post_data or '');assert set(body) in ({'quotes','csrf_token'},{'quotes','csrf_token','market'}) and body['csrf_token']==['fixture-csrf'];posts.append(body)
    raw=json.loads(body['quotes'][0]);latest=max((x['observed_at'] for x in raw),default=int(NOW.timestamp()*1000))
    ns['taiwan_now']=lambda:datetime.fromtimestamp(latest/1000,ZoneInfo('Asia/Taipei'))
-   try:r.fulfill(json=ns['_apply_fugle_browser_quotes']('fixture-owner',raw))
+   try:r.fulfill(json=ns['_apply_fugle_browser_quotes']('fixture-owner',raw,market_raw=json.loads(body.get('market',['null'])[0])))
    except Exception as e:raise AssertionError('Actual accounting failed: '+str(e))
    return
   if u.hostname=='api.fugle.tw':
    external.append(r.request.headers);code=u.path.split('/')[-1]
    if provider_status['status']==429:r.fulfill(status=429,headers={'Retry-After':'60'},json={'error':'quota'});return
    # Provider clock is supplied through the browser request interception clock.
+   if code=='IX0001':
+    r.fulfill(json={'symbol':code,'date':'2026-11-03','type':'INDEX','previousClose':20000,'closePrice':19800,'closeTime':int(NOW.timestamp()*1e6)});return
    r.fulfill(json={'symbol':code,'date':'2026-11-03','type':'EQUITY','previousClose':110,'referencePrice':100,'lastTrade':{'price':101,'time':int(NOW.timestamp()*1e6),'serial':1}});return
   if '/api/' in u.path:r.fulfill(json={'ok':True,'market_open':True,'updates':[],'portfolio':{'ready':False},'note':'fixture normal source'});return
   if u.path=='/web/portfolio' and q.get('initial') and not q.get('fragment'):
@@ -59,7 +61,7 @@ with sync_playwright() as p:
   suffix='-fragment' if q.get('fragment') else ''
   r.fulfill(body=(ROOT/(name+suffix+'.html')).read_text(),content_type='text/html')
  page.route('https://fixture.test/**',route);page.route('https://api.fugle.tw/**',route)
- page.goto('https://fixture.test/web/positions');page.wait_for_selector('#stockbot-fugle-panel')
+ page.goto('https://fixture.test/web/more');page.wait_for_selector('#stockbot-fugle-panel')
  page.locator('#stockbot-fugle-panel>summary').click();page.locator('#ql-key').fill('fixture-provider-key');page.locator('#ql-start').click()
  # Drive the same event loop and real HTTP callbacks without waiting a trading minute.
  for i in range(30):
@@ -82,9 +84,10 @@ with sync_playwright() as p:
  # Use actual fragment navigation: the connection must survive the old page DOM being replaced.
  page.locator('a[data-app-nav][href="/web/portfolio"]').last.click();page.wait_for_selector('#hv2')
  page.clock.run_for(6000);page.wait_for_timeout(100)
- assert page.evaluate('sockets.length')==1 and page.locator('#stockbot-fugle-panel').count()==1
+ assert page.evaluate('sockets.length')==1 and not page.locator('#stockbot-fugle-panel').is_visible()
  assert '富果' in page.locator('[data-home-quote-quality]').inner_text()
  assert page.locator('[data-home-portfolio-pct]').inner_text()!='資料不足';checks+=['same connection across pages','home calculation uses Fugle']
+ assert '-1.00%' in page.locator('[data-home-market-pct]').inner_text();checks.append('actual index used separately from ten holdings')
  # On return the new page handlers use the existing feed, not a second WebSocket.
  page.locator('a[data-app-nav][href="/web/positions"]').last.click();page.wait_for_selector('[data-position-code="1001"]')
  page.evaluate("emit({event:'data',channel:'trades',data:{symbol:'1001',price:120,time:Date.now()*1000,serial:2}})")
@@ -105,6 +108,7 @@ with sync_playwright() as p:
  page.clock.run_for(30000);page.wait_for_timeout(100)
  assert len(external)-count<=1,'429 retried before cooldown';checks.append('429 respects cooldown')
  assert all('fixture-provider-key' not in json.dumps(body) for body in posts)
+ page.locator('a[data-app-nav][href="/web/more"]').last.click();page.wait_for_selector('#stockbot-fugle-panel');checks.append('controls live in More')
  page.locator('#stockbot-fugle-panel>summary').click() if not page.locator('#stockbot-fugle-panel').evaluate('(e)=>e.open') else None
  page.locator('#ql-stop').click();assert page.locator('#ql-key').input_value()=='' and page.evaluate('StockBotFugle.active()') is False;checks.append('stop clears credentials and feed')
  # Exercise direct entry in a separate document, without WebKit unload-abort noise.
