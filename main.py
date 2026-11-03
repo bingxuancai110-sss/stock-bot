@@ -53054,7 +53054,7 @@ def _build_us_rotation_tw_snapshot(codes, benchmark_history=None):
 
 app.register_blueprint(create_us_rotation_blueprint(
     web_login_required=web_login_required,
-    render_page=render_page,
+    render_page=respond_page,
     get_db_connection=get_db_connection,
     release_db_connection=release_db_connection,
     run_in_background=run_in_background,
