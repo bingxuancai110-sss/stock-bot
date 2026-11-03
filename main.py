@@ -53079,11 +53079,27 @@ def _probe_missing_mis_quotes():
     if not _is_taiwan_intraday_window():
         return
     try:
-        result = _fetch_twse_mis_quotes(
-            ["2330", "2308", "3026", "6223"],
-            market_suffix={"2330": ".TW", "2308": ".TW", "3026": ".TW", "6223": ".TWO"},
-            force_refresh=True, cache_result=False, quick_mode=True)
-        print("MIS 開機診斷有效代號：%s" % sorted(result), flush=True)
+        session = _twse_mis_session()
+        day = taiwan_today().strftime("%Y%m%d")
+        checks = [
+            ("dated-snapshot", "getStockInfo.jsp", {"ex_ch": "tse_2330.tw_" + day, "json": "1", "delay": "0"}),
+            ("snapshot-default-delay", "getStockInfo.jsp", {"ex_ch": "tse_2330.tw", "json": "1"}),
+            ("dated-chart", "getOhlc.jsp", {"ex_ch": "tse_2330.tw_" + day, "d0": day}),
+            ("ohlc-statis", "getChartOhlcStatis.jsp", {"ex": "tse", "ch": "2330.tw", "fqy": "1"}),
+        ]
+        for label, endpoint, params in checks:
+            try:
+                response = session.get("https://mis.twse.com.tw/stock/api/" + endpoint,
+                                       params=params, timeout=(2.5, 4.5))
+                payload = response.json()
+                rows = payload.get("msgArray") or []
+                print("MIS 端點核對：%s status=%s meta=%s sample=%s" % (
+                    label, response.status_code,
+                    {k:payload.get(k) for k in ("rtcode", "rtmessage", "userDelay")},
+                    [{k:r.get(k) for k in ("c","d","t","tlong","z","pz","y","ch")}
+                     for r in rows[-2:] if isinstance(r,dict)]), flush=True)
+            except Exception as exc:
+                print("MIS 端點核對：%s %s" % (label,type(exc).__name__), flush=True)
     except Exception as exc:
         print("MIS 開機診斷失敗：%s" % type(exc).__name__, flush=True)
 
