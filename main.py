@@ -7235,6 +7235,21 @@ def _refresh_home_intraday_payload_sync(uid):
                         backup_quote_count, len(missing_for_backup)), flush=True)
         # A successful quote earlier TODAY remains usable when this MIS poll is partial.
         # _sticky_home_quotes date-bounds its state, so this fallback can never cross into yesterday.
+        if not intraday and _taiwan_post_close(now):
+            missing_for_official_close = [code for code in codes if code not in fresh_contribution_quotes]
+            if missing_for_official_close:
+                official_closes = _fetch_official_daily_close_quotes(
+                    missing_for_official_close,
+                    market_suffix={code: home_suffix_map[code] for code in missing_for_official_close
+                                   if code in home_suffix_map},
+                    now=now)
+                for code, quote in (official_closes or {}).items():
+                    if _mis_quote_is_current_for_contribution(quote, now=now):
+                        fresh_price_map[code] = dict(quote)
+                        fresh_contribution_quotes[code] = dict(quote)
+                if official_closes:
+                    print("⚡ 官方盤後資料補齊持股收盤價 %s/%s 檔；資料已可保存" % (
+                        len(fresh_contribution_quotes), len(codes)), flush=True)
         same_day_price_map = _sticky_home_quotes(uid, fresh_price_map)
         same_day_cache_codes = set()
         for _code in codes:
@@ -16563,6 +16578,242 @@ def _taiex_live_number(value):
         return None
 
 
+_OFFICIAL_DAILY_CLOSE_CACHE = {
+    "twse": {"day": None, "quotes": {}, "taiex": None, "retry_after": 0.0,
+             "attempt_snapshot_checked_day": None, "attempt_marker_checked_day": None},
+    "tpex": {"day": None, "quotes": {}, "retry_after": 0.0,
+             "attempt_snapshot_checked_day": None, "attempt_marker_checked_day": None},
+}
+_OFFICIAL_DAILY_CLOSE_LOCK = threading.RLock()
+OFFICIAL_DAILY_CLOSE_RETRY_SECONDS = 300
+
+
+def _parse_official_close_trade_date(value):
+    compact = re.sub(r"\D", "", str(value or ""))
+    if len(compact) in (7, 8):
+        year_len = len(compact) - 4
+        year = int(compact[:year_len])
+        year = year + 1911 if year < 1911 else year
+        try:
+            return date(year, int(compact[year_len:year_len + 2]), int(compact[-2:]))
+        except ValueError:
+            return None
+    parts = [int(part) for part in re.findall(r"\d+", str(value or ""))]
+    if len(parts) != 3:
+        return None
+    year = parts[0] + 1911 if parts[0] < 1911 else parts[0]
+    try:
+        return date(year, parts[1], parts[2])
+    except ValueError:
+        return None
+
+
+def _fetch_official_daily_close_market(market, now=None, requested_codes=None):
+    """Load same-day official closing quotes from TWSE/TPEx only after market close."""
+    current = now or taiwan_now()
+    if not _taiwan_post_close(current) or market not in ("twse", "tpex"):
+        return {}
+    day = current.date().strftime("%Y%m%d")
+    wanted = set(str(code).strip() for code in (requested_codes or []) if str(code).strip())
+    snapshot_key = "official_daily_close_quotes:" + market
+    with _OFFICIAL_DAILY_CLOSE_LOCK:
+        state = _OFFICIAL_DAILY_CLOSE_CACHE[market]
+        if state.get("day") != day:
+            state.update(day=day, quotes={}, taiex=None, retry_after=0.0,
+                         attempt_snapshot_checked_day=None, attempt_marker_checked_day=None)
+        if wanted and wanted.issubset(state.get("quotes") or {}):
+            return {code: dict(state["quotes"][code]) for code in wanted}
+        if not wanted and market == "twse" and state.get("taiex"):
+            return {}
+        if state.get("attempt_snapshot_checked_day") != day:
+            try:
+                saved = _load_shared_data_snapshot(snapshot_key, max_age_seconds=2 * 86400)
+                saved_payload = (saved or {}).get("payload") or {}
+                if (str((saved or {}).get("data_date") or "")[:10] == current.date().isoformat() and
+                        str(saved_payload.get("day") or "") == day):
+                    state["quotes"].update({str(code): dict(value) for code, value in
+                                            (saved_payload.get("quotes") or {}).items()
+                                            if isinstance(value, dict)})
+                    if isinstance(saved_payload.get("taiex"), dict):
+                        state["taiex"] = dict(saved_payload["taiex"])
+                    if (wanted and wanted.issubset(state["quotes"])) or (not wanted and
+                            (market == "tpex" or state.get("taiex"))):
+                        state["attempt_snapshot_checked_day"] = day
+                        return {code: dict(state["quotes"][code]) for code in wanted} if wanted else {}
+            except Exception as exc:
+                print("⚠️ 讀取官方盤後行情快照失敗 %s：%s" % (market, type(exc).__name__), flush=True)
+            state["attempt_snapshot_checked_day"] = day
+        now_epoch = time.time()
+        if now_epoch < float(state.get("retry_after") or 0):
+            return {}
+        attempt_key = "official_daily_close_attempt:" + market
+        if state.get("attempt_marker_checked_day") != day:
+            try:
+                marker = _load_shared_data_snapshot(attempt_key, max_age_seconds=86400)
+                marker_payload = (marker or {}).get("payload") or {}
+                if (str((marker or {}).get("data_date") or "")[:10] == current.date().isoformat() and
+                        str(marker_payload.get("day") or "") == day):
+                    retry_after = float(marker_payload.get("retry_after_epoch") or 0)
+                    if retry_after > now_epoch:
+                        state["retry_after"] = retry_after
+                        state["attempt_marker_checked_day"] = day
+                        return {}
+            except Exception as exc:
+                print("⚠️ 讀取官方盤後行情重試狀態失敗 %s：%s" % (market, type(exc).__name__), flush=True)
+            state["attempt_marker_checked_day"] = day
+        try:
+            headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "zh-TW,zh;q=0.9"}
+            quotes = {}
+            taiex = None
+            if market == "twse":
+                response = requests.get(
+                    "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX",
+                    params={"date": day, "type": "ALLBUT0999", "response": "json"},
+                    headers=headers, timeout=6)
+                response.raise_for_status()
+                payload = response.json()
+                if str(payload.get("date") or "").replace("-", "")[:8] != day:
+                    raise ValueError("TWSE MI_INDEX 日期不是今日")
+                tables = payload.get("tables") or []
+                for table in tables:
+                    fields = [str(item).strip() for item in (table.get("fields") or [])]
+                    rows = table.get("data") or []
+                    if "指數" in fields and "收盤指數" in fields and "漲跌百分比(%)" in fields:
+                        idx = fields.index("指數")
+                        row = next((item for item in rows if len(item) > idx and
+                                    str(item[idx]).strip() == "發行量加權股價指數"), None)
+                        if row:
+                            get = lambda name: row[fields.index(name)] if name in fields and fields.index(name) < len(row) else ""
+                            close = _taiex_live_number(get("收盤指數"))
+                            change = _taiex_live_number(get("漲跌點數"))
+                            pct = _taiex_live_number(get("漲跌百分比(%)"))
+                            sign_text = re.sub(r"<[^>]*>", "", str(get("漲跌(+/-)"))).strip()
+                            signed_change = (-abs(change) if sign_text == "-" else abs(change)) if change is not None else None
+                            if close and signed_change is not None and pct is not None:
+                                previous = close - signed_change
+                                taiex = {"close": f"{close:,.2f}",
+                                         "sign": "+" if signed_change > 0 else ("-" if signed_change < 0 else ""),
+                                         "pts": f"{abs(signed_change):,.2f}", "pct": f"{pct:+.2f}",
+                                         "date": day, "previous_close": f"{previous:,.2f}",
+                                         "updated_at": f"{current.date().isoformat()} 13:30",
+                                         "source": "TWSE MI_INDEX 官方正式收盤", "close_is_final": True}
+                    if not all(name in fields for name in ("證券代號", "收盤價", "漲跌價差", "漲跌(+/-)")):
+                        continue
+                    ci, pi, di, si = (fields.index(name) for name in ("證券代號", "收盤價", "漲跌價差", "漲跌(+/-)"))
+                    for row in rows:
+                        if len(row) <= max(ci, pi, di, si):
+                            continue
+                        code = str(row[ci] or "").strip()
+                        if requested_codes is not None and code not in wanted:
+                            continue
+                        close = _taiex_live_number(row[pi])
+                        change = _taiex_live_number(row[di])
+                        sign_text = re.sub(r"<[^>]*>", "", str(row[si] or "")).strip()
+                        if not code or not close or close <= 0 or change is None:
+                            continue
+                        change = -abs(change) if sign_text == "-" else abs(change)
+                        previous = close - change
+                        if previous <= 0:
+                            continue
+                        quotes[code] = {"close": close, "previous_close": previous,
+                                        "pct": change / previous * 100,
+                                        "close_date": day, "close_time": "13:30",
+                                        "updated_at": f"{current.date().isoformat()} 13:30",
+                                        "quote_updated_at": current.isoformat(), "fetched_at": current.isoformat(),
+                                        "trade_at": f"{current.date().isoformat()} 13:30:00",
+                                        "has_live_trade_price": True, "close_is_final": True,
+                                        "source": "TWSE MI_INDEX 官方正式收盤"}
+                if not quotes and (wanted or not taiex):
+                    raise ValueError("TWSE MI_INDEX 未提供可用個股收盤價")
+            else:
+                response = requests.get(
+                    "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes",
+                    headers=headers, timeout=8)
+                response.raise_for_status()
+                rows = response.json()
+                if not isinstance(rows, list):
+                    raise ValueError("TPEx 官方收盤回應格式錯誤")
+                for row in rows:
+                    if not isinstance(row, dict) or _parse_official_close_trade_date(row.get("Date")) != current.date():
+                        continue
+                    code = str(row.get("SecuritiesCompanyCode") or "").strip()
+                    if requested_codes is not None and code not in wanted:
+                        continue
+                    close = _taiex_live_number(row.get("Close"))
+                    change = _taiex_live_number(row.get("Change"))
+                    if not code or not close or close <= 0 or change is None:
+                        continue
+                    previous = close - change
+                    if previous <= 0:
+                        continue
+                    quotes[code] = {"close": close, "previous_close": previous,
+                                    "pct": change / previous * 100,
+                                    "close_date": day, "close_time": "13:30",
+                                    "updated_at": f"{current.date().isoformat()} 13:30",
+                                    "quote_updated_at": current.isoformat(), "fetched_at": current.isoformat(),
+                                    "trade_at": f"{current.date().isoformat()} 13:30:00",
+                                    "has_live_trade_price": True, "close_is_final": True,
+                                    "source": "TPEx OpenAPI 官方正式收盤"}
+                if wanted and not quotes:
+                    raise ValueError("TPEx 官方收盤資料尚無今日行情")
+            state["quotes"].update(quotes)
+            if taiex:
+                state["taiex"] = taiex
+            state["retry_after"] = 0.0
+            if market == "twse":
+                _OFFICIAL_DAILY_CLOSE_CACHE["twse"]["taiex"] = taiex or state.get("taiex")
+            try:
+                _save_shared_data_snapshot(
+                    snapshot_key, {"day": day, "quotes": state["quotes"], "taiex": state.get("taiex")},
+                    data_date=current.date(), source_meta={"source": market.upper() + " official daily close", "day": day})
+                _delete_shared_data_snapshot(attempt_key)
+            except Exception as exc:
+                print("⚠️ 保存官方盤後行情快照失敗 %s：%s" % (market, type(exc).__name__), flush=True)
+            return {code: dict(state["quotes"][code]) for code in wanted if code in state["quotes"]} if wanted else {}
+        except Exception as exc:
+            retry_after = time.time() + OFFICIAL_DAILY_CLOSE_RETRY_SECONDS
+            state["retry_after"] = retry_after
+            try:
+                _save_shared_data_snapshot(attempt_key, {"day": day, "retry_after_epoch": retry_after},
+                    data_date=current.date(), source_meta={"source": market.upper() + " close retry cooldown", "day": day})
+            except Exception:
+                pass
+            print("⚠️ 讀取官方盤後行情失敗 %s：%s" % (market, type(exc).__name__), flush=True)
+            return {}
+
+
+def _fetch_official_daily_close_quotes(codes, market_suffix=None, now=None):
+    """Use official daily data as a close-only fallback and return requested symbols."""
+    symbols = list(dict.fromkeys(str(code).strip() for code in (codes or []) if str(code).strip()))
+    if not symbols:
+        return {}
+    suffixes = market_suffix if isinstance(market_suffix, dict) else {}
+    need_twse = any(suffixes.get(code) != ".TWO" for code in symbols)
+    need_tpex = any(suffixes.get(code) != ".TW" for code in symbols)
+    twse_codes = [code for code in symbols if suffixes.get(code) != ".TWO"] if need_twse else []
+    tpex_codes = [code for code in symbols if suffixes.get(code) != ".TW"] if need_tpex else []
+    twse = _fetch_official_daily_close_market("twse", now=now, requested_codes=twse_codes) if need_twse else {}
+    tpex = _fetch_official_daily_close_market("tpex", now=now, requested_codes=tpex_codes) if need_tpex else {}
+    result = {}
+    for code in symbols:
+        preferred = twse if suffixes.get(code) == ".TW" else tpex if suffixes.get(code) == ".TWO" else {}
+        other = tpex if preferred is twse else twse
+        quote = preferred.get(code) if preferred else None
+        quote = quote or other.get(code)
+        if quote:
+            result[code] = dict(quote)
+    return result
+
+
+def _fetch_twse_mi_index_close_uncached(now=None):
+    """Get today's published TAIEX close from the official TWSE daily report."""
+    current = now or taiwan_now()
+    _fetch_official_daily_close_market("twse", now=current, requested_codes=[])
+    with _OFFICIAL_DAILY_CLOSE_LOCK:
+        state = _OFFICIAL_DAILY_CLOSE_CACHE.get("twse") or {}
+        return dict(state["taiex"]) if state.get("day") == current.date().strftime("%Y%m%d") and state.get("taiex") else None
+
+
 def _schedule_taiex_intraday_refresh():
     """Refresh official index in the background; at most one request runs at a time."""
     global _TAIEX_INTRADAY_REFRESH_RUNNING
@@ -16705,6 +16956,12 @@ def _fetch_taiex_historical_close_uncached(now=None):
     current = now or taiwan_now()
     if not _taiwan_post_close(current):
         return None
+    try:
+        daily_index = _fetch_twse_mi_index_close_uncached(current)
+        if daily_index:
+            return daily_index
+    except Exception as exc:
+        print("⚠️ TWSE 每日收盤報表取加權指數失敗：%s" % type(exc).__name__, flush=True)
     expected = current.date()
 
     def month_rows(month_start):
@@ -21101,9 +21358,10 @@ def _do_daily_snapshot():
             except (TypeError, ValueError):
                 return False
             quote_date = str(q.get("close_date") or "").replace("-", "")[:8]
+            source = str(q.get("source") or "")
             return (close > 0 and quote_date == today_key and
                     bool(q.get("close_is_final")) and
-                    str(q.get("source") or "").startswith("TWSE MIS"))
+                    source.startswith(("TWSE MIS", "TWSE MI_INDEX", "TPEx OpenAPI")))
 
         quotes = {}
         if all_codes:
@@ -21132,6 +21390,21 @@ def _do_daily_snapshot():
                             quotes[code] = quote
                 except Exception as exc:
                     print(f"⚠️ 每日組合行情補抓第 {retry_round} 輪失敗：{exc}")
+
+            missing_official = [code for code in all_codes if not valid_close_quote(quotes.get(code))]
+            if missing_official:
+                try:
+                    official_quotes = _fetch_official_daily_close_quotes(
+                        missing_official,
+                        market_suffix={code: suffix_map[code] for code in missing_official
+                                       if code in suffix_map})
+                    quotes.update({code: quote for code, quote in official_quotes.items()
+                                   if valid_close_quote(quote)})
+                    if official_quotes:
+                        print("⚡ 每日組合快照由 TWSE/TPEx 官方盤後資料補齊 %s/%s 檔" % (
+                            sum(1 for code in all_codes if valid_close_quote(quotes.get(code))), len(all_codes)), flush=True)
+                except Exception as exc:
+                    print("⚠️ 每日組合官方盤後備援失敗：%s" % type(exc).__name__, flush=True)
 
         # 進入重建流程時清除今天舊的快照列。若本次官方報價不完整，就留下「缺資料」而非
         # 讓舊版可能只加總部分持股的市值繼續冒充完整組合報酬。

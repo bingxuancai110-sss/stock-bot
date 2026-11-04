@@ -37,6 +37,12 @@ def official_history_close_function():
     return compile(ast.Module(body=[fn],type_ignores=[]),'<official-close-history>','exec')
 
 
+@lru_cache(maxsize=1)
+def official_daily_close_functions():
+    names={'_parse_official_close_trade_date','_fetch_official_daily_close_market'}
+    return compile(ast.Module(body=[n for n in main_tree().body if isinstance(n,ast.FunctionDef) and n.name in names],type_ignores=[]),'<official-daily-close>','exec')
+
+
 def test_home_render_uses_local_quote_without_even_starting_a_live_request():
     network=Mock(side_effect=AssertionError('network attempted while rendering'))
     history={'2308':dict(close=110,pct=1,source='history',close_dates=[date(2026,11,1),date(2026,11,2)],closes=[100,110])}
@@ -151,6 +157,7 @@ def test_official_historical_index_fallback_parses_and_returns_same_day_close():
     get=Mock(return_value=response)
     ns=dict(_taiwan_post_close=lambda current:True,taiwan_now=lambda:NOW,
         requests=SimpleNamespace(get=get),_taiex_live_number=lambda value:float(str(value).replace(',','')) if value else None,
+        _fetch_twse_mi_index_close_uncached=lambda current:None,
         re=__import__('re'),date=date,timedelta=__import__('datetime').timedelta)
     exec(official_history_close_function(),ns)
     value=ns['_fetch_taiex_historical_close_uncached'](NOW)
@@ -158,6 +165,90 @@ def test_official_historical_index_fallback_parses_and_returns_same_day_close():
     assert value['pct']=='+0.74' and value['date']=='20261103'
     assert value['close_is_final'] is True and 'MI_5MINS_HIST' in value['source']
     get.assert_called_once()
+
+
+def test_official_twse_daily_report_parses_taiex_and_requested_stock_close():
+    payload={'date':'20261103','stat':'OK','tables':[
+        {'fields':['指數','收盤指數','漲跌(+/-)','漲跌點數','漲跌百分比(%)'],
+         'data':[['發行量加權股價指數','27000.00',"<p>-</p>",'200.00','-0.74']]},
+        {'fields':['證券代號','收盤價','漲跌價差','漲跌(+/-)'],
+         'data':[['2308','120.00','2.00','<p>+</p>'],['2330','1000.00','5.00','<p>+</p>']] }]}
+    response=SimpleNamespace(raise_for_status=lambda:None,json=lambda:payload)
+    calls=[]
+    ns=dict(_taiwan_post_close=lambda current:True,taiwan_now=lambda:NOW,time=time,
+        requests=SimpleNamespace(get=lambda *a,**k:(calls.append((a,k)) or response)),
+        _taiex_live_number=lambda value:float(str(value).replace(',','')) if value else None,
+        _OFFICIAL_DAILY_CLOSE_LOCK=threading.RLock(),_OFFICIAL_DAILY_CLOSE_CACHE={
+            'twse':{'day':None,'quotes':{},'taiex':None,'retry_after':0,'attempt_snapshot_checked_day':None},
+            'tpex':{'day':None,'quotes':{},'taiex':None,'retry_after':0,'attempt_snapshot_checked_day':None}},
+        _load_shared_data_snapshot=Mock(return_value=None),_save_shared_data_snapshot=Mock(),
+        _delete_shared_data_snapshot=Mock(),_OFFICIAL_DAILY_CLOSE_RETRY_SECONDS=300,
+        re=__import__('re'),date=date)
+    exec(official_daily_close_functions(),ns)
+    quotes=ns['_fetch_official_daily_close_market']('twse',NOW,requested_codes=['2308'])
+    assert quotes['2308']['close']==120 and quotes['2308']['previous_close']==118
+    assert quotes['2308']['close_is_final'] and quotes['2308']['close_date']=='20261103'
+    assert 'TWSE MI_INDEX' in quotes['2308']['source']
+    assert ns['_OFFICIAL_DAILY_CLOSE_CACHE']['twse']['taiex']['close']=='27,000.00'
+    assert ns['_OFFICIAL_DAILY_CLOSE_CACHE']['twse']['taiex']['pct']=='-0.74'
+    assert len(calls)==1
+
+
+def test_official_tpex_daily_quote_uses_compact_roc_date():
+    rows=[{'Date':'1151103','SecuritiesCompanyCode':'6488','Close':'100.00','Change':'-2.00'},
+          {'Date':'1151102','SecuritiesCompanyCode':'6488','Close':'101.00','Change':'-1.00'}]
+    response=SimpleNamespace(raise_for_status=lambda:None,json=lambda:rows)
+    ns=dict(_taiwan_post_close=lambda current:True,taiwan_now=lambda:NOW,time=time,
+        requests=SimpleNamespace(get=lambda *a,**k:response),
+        _taiex_live_number=lambda value:float(str(value).replace(',','')) if value else None,
+        _OFFICIAL_DAILY_CLOSE_LOCK=threading.RLock(),_OFFICIAL_DAILY_CLOSE_CACHE={
+            'twse':{'day':None,'quotes':{},'taiex':None,'retry_after':0,'attempt_snapshot_checked_day':None},
+            'tpex':{'day':None,'quotes':{},'taiex':None,'retry_after':0,'attempt_snapshot_checked_day':None}},
+        _load_shared_data_snapshot=Mock(return_value=None),_save_shared_data_snapshot=Mock(),
+        _delete_shared_data_snapshot=Mock(),_OFFICIAL_DAILY_CLOSE_RETRY_SECONDS=300,
+        re=__import__('re'),date=date)
+    exec(official_daily_close_functions(),ns)
+    quotes=ns['_fetch_official_daily_close_market']('tpex',NOW,requested_codes=['6488'])
+    assert quotes['6488']['close']==100 and quotes['6488']['previous_close']==102
+    assert quotes['6488']['close_date']=='20261103' and quotes['6488']['close_is_final']
+    assert 'TPEx OpenAPI' in quotes['6488']['source']
+
+
+def test_official_daily_stock_close_restores_same_day_saved_quotes_after_restart():
+    saved={'data_date':NOW.date(),'payload':{'day':'20261103','quotes':{
+        '2308':{'close':120,'previous_close':118,'close_date':'20261103','close_is_final':True,
+                'source':'TWSE MI_INDEX 官方正式收盤'}},'taiex':None}}
+    load=Mock(return_value=saved)
+    ns=dict(_taiwan_post_close=lambda current:True,taiwan_now=lambda:NOW,time=time,
+        requests=SimpleNamespace(get=Mock(side_effect=AssertionError('saved close should be reused'))),
+        _taiex_live_number=lambda value:float(str(value).replace(',','')) if value else None,
+        _OFFICIAL_DAILY_CLOSE_LOCK=threading.RLock(),_OFFICIAL_DAILY_CLOSE_CACHE={
+            'twse':{'day':None,'quotes':{},'taiex':None,'retry_after':0,'attempt_snapshot_checked_day':None},
+            'tpex':{'day':None,'quotes':{},'taiex':None,'retry_after':0,'attempt_snapshot_checked_day':None}},
+        _load_shared_data_snapshot=load,_save_shared_data_snapshot=Mock(),
+        _delete_shared_data_snapshot=Mock(),_OFFICIAL_DAILY_CLOSE_RETRY_SECONDS=300,
+        re=__import__('re'),date=date)
+    exec(official_daily_close_functions(),ns)
+    assert ns['_fetch_official_daily_close_market']('twse',NOW,requested_codes=['2308'])['2308']['close']==120
+    load.assert_called_once_with('official_daily_close_quotes:twse',max_age_seconds=2*86400)
+
+
+def test_official_daily_close_retry_cooldown_restores_after_restart():
+    marker={'data_date':NOW.date(),'payload':{'day':'20261103','retry_after_epoch':time.time()+120}}
+    load=Mock(side_effect=[None,marker])
+    request=Mock(side_effect=AssertionError('cooldown should suppress another fetch'))
+    ns=dict(_taiwan_post_close=lambda current:True,taiwan_now=lambda:NOW,time=time,
+        requests=SimpleNamespace(get=request),
+        _taiex_live_number=lambda value:float(str(value).replace(',','')) if value else None,
+        _OFFICIAL_DAILY_CLOSE_LOCK=threading.RLock(),_OFFICIAL_DAILY_CLOSE_CACHE={
+            'twse':{'day':None,'quotes':{},'taiex':None,'retry_after':0,'attempt_snapshot_checked_day':None},
+            'tpex':{'day':None,'quotes':{},'taiex':None,'retry_after':0,'attempt_snapshot_checked_day':None}},
+        _load_shared_data_snapshot=load,_save_shared_data_snapshot=Mock(),
+        _delete_shared_data_snapshot=Mock(),_OFFICIAL_DAILY_CLOSE_RETRY_SECONDS=300,
+        re=__import__('re'),date=date)
+    exec(official_daily_close_functions(),ns)
+    assert ns['_fetch_official_daily_close_market']('twse',NOW,requested_codes=['2308'])=={}
+    assert request.call_count==0 and load.call_count==2
 
 
 def test_saved_home_closes_are_reused_only_when_all_symbols_are_final_today():
