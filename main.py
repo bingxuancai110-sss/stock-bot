@@ -10258,7 +10258,10 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
             live_channels.add(str(row.get("ex") or "").lower() + "_" + str(row.get("c") or ""))
         recovery_symbols.extend(symbol for symbol in batch
                                 if symbol.split(".tw", 1)[0] not in live_channels)
-    if recovery_symbols:
+    # User-facing polling must not enqueue dozens of per-symbol retries behind the
+    # four MIS workers. In quick mode, return only what the bounded batch fetch found;
+    # the caller keeps its last valid display when any symbols are still missing.
+    if recovery_symbols and not quick_mode:
         with _realtime_cache_lock:
             attempts = _TWSE_MIS_CACHE.setdefault("single_attempt_at", {})
             single_batches = []
@@ -50427,7 +50430,8 @@ def web_workbench_quotes(uid):
     if not codes:
         return _workbench_json_response({"ok": True, "updates": [], "market_open": True})
     try:
-        official_quotes = _fetch_twse_mis_quotes(codes, force_refresh=False)
+        official_quotes = _fetch_twse_mis_quotes(
+            codes, force_refresh=False, quick_mode=True)
         missing = [code for code in codes if code not in official_quotes]
         fallback_quotes = (get_realtime_stocks_bulk(
             missing, workers=min(12, len(missing)), rng="3mo", force_refresh=True)
@@ -50561,7 +50565,8 @@ def web_positions_quotes(uid):
         # 快取有效時立即回傳可用官方報價；缺少的代號不捏造價格，TTL 到期後再補抓。
         # 盤中顯示價格只允許官方 TWSE MIS。
         # MIS 暫時查不到時，寧可保留畫面最後一筆，也不能退回 Yahoo 日線/延遲行情。
-        official_quotes = _fetch_twse_mis_quotes(codes, force_refresh=False)
+        official_quotes = _fetch_twse_mis_quotes(
+            codes, force_refresh=False, quick_mode=True)
         updates = []
         for code in codes:
             quote_data = official_quotes.get(code)
