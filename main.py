@@ -71,6 +71,13 @@ _HOMEPAGE_QUOTE_MAP_MAX_STALE = max(86400.0, float(os.environ.get("HOMEPAGE_QUOT
 _HOMEPAGE_QUOTE_REFRESH_LOCK = threading.Lock()
 _HOMEPAGE_QUOTE_REFRESHING = set()
 _HOMEPAGE_QUOTE_REFRESH_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="quote-history-refresh")
+# Scheduled market jobs share a single 512 MiB web instance. Serialize their
+# heavy phases so the nightly warm-up cannot overlap a portfolio snapshot or
+# a full-market scan and evict the web process while users are trading.
+_BACKGROUND_JOB_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="serialized-market-jobs")
+_BACKGROUND_JOB_SUBMISSION_LOCK = threading.RLock()
+_BACKGROUND_JOB_QUEUED = set()
 _POSITIONS_FEE_SETTINGS_CACHE = {}
 _POSITIONS_FEE_SETTINGS_CACHE_LOCK = threading.RLock()
 _HOMEPAGE_CACHE_LOCK = threading.RLock()
@@ -21063,23 +21070,43 @@ def log_trigger_source(name):
 
 
 def run_in_background(name, fn):
-    """把耗時工作丟到背景並立刻回應，避免 cron 端 30 秒超時。"""
+    """把耗時工作丟到序列背景佇列並立刻回應，避免工作互搶記憶體。"""
     log_trigger_source(name)
+    name = str(name or "背景工作")
+    with _BACKGROUND_JOB_SUBMISSION_LOCK:
+        if name in _BACKGROUND_JOB_QUEUED:
+            return f"{name} 已在執行或排隊中，本次略過。"
+        _BACKGROUND_JOB_QUEUED.add(name)
     if not _job_mark_start(name):
+        with _BACKGROUND_JOB_SUBMISSION_LOCK:
+            _BACKGROUND_JOB_QUEUED.discard(name)
         return f"{name} 仍在執行中，本次略過。"
 
     def _wrap():
         t0 = time.time()
         try:
+            print(f"🧠 背景工作開始 {name}（佇列等待 {max(0, time.time() - queued_at):.1f}s）",
+                  flush=True)
             result = fn()
             _job_mark_done(name, result, time.time() - t0)
-            print(f"✅ 背景工作 {name} 完成（{time.time() - t0:.1f}s）：{result}")
+            print(f"✅ 背景工作 {name} 完成（{time.time() - t0:.1f}s）：{result}", flush=True)
         except Exception as e:
             _job_mark_done(name, f"失敗：{e}", time.time() - t0)
-            print(f"❌ 背景工作 {name} 失敗: {e}")
+            print(f"❌ 背景工作 {name} 失敗: {e}", flush=True)
+        finally:
+            with _BACKGROUND_JOB_SUBMISSION_LOCK:
+                _BACKGROUND_JOB_QUEUED.discard(name)
 
-    threading.Thread(target=_wrap, daemon=True).start()
-    return f"{name} 已在背景啟動。稍候用 /job-status?token=... 看結果。"
+    queued_at = time.time()
+    try:
+        _BACKGROUND_JOB_EXECUTOR.submit(_wrap)
+    except Exception as e:
+        with _BACKGROUND_JOB_SUBMISSION_LOCK:
+            _BACKGROUND_JOB_QUEUED.discard(name)
+        _job_mark_done(name, f"未能排入背景佇列：{type(e).__name__}", 0)
+        print(f"❌ 背景工作 {name} 無法排入佇列: {type(e).__name__}", flush=True)
+        return f"{name} 無法啟動，請查看服務記錄。"
+    return f"{name} 已排入背景工作佇列。稍候用 /job-status?token=... 看結果。"
 
 
 # Render 部署會直接終止 daemon thread，但 job_runs 的 running 狀態存在資料庫，
@@ -21184,8 +21211,20 @@ def _recover_interrupted_daily_snapshot():
 
 @app.before_request
 def _recover_daily_snapshot_after_restart():
-    # 只做輕量的節流檢查；一般頁面請求不等待快照工作完成。
+    # Only a real top-level page navigation may recover a missed daily snapshot.
+    # Render/cron health probes and LINE/API/static requests must stay side-effect
+    # free: a /health ping used to start this heavy recovery job after a restart.
+    path = (request.path or "").strip("/")
+    is_page_navigation = (
+        request.method == "GET" and
+        (not path or (path.startswith("web/") and len(path.split("/")) == 2))
+    )
+    if not is_page_navigation:
+        return None
+    # Page navigation still only performs a throttled check and never waits for
+    # the recovery work itself to complete.
     _recover_interrupted_daily_snapshot()
+    return None
 
 
 @app.route("/job-status", methods=["POST", "GET"])
@@ -46805,8 +46844,16 @@ def _start_screener_background_refresh(mode, intraday=False,
                 except Exception as exc:
                     print("⚠️ 選股背景失敗回呼失敗 %s: %s" % (mode, exc))
 
-    threading.Thread(target=worker, name="screener-%s-refresh" % mode,
-                     daemon=True).start()
+    # Keep manual/automatic screener refreshes in the same single-worker queue as
+    # warm-up and daily snapshots; otherwise they can still overlap those jobs.
+    try:
+        _BACKGROUND_JOB_EXECUTOR.submit(worker)
+    except Exception as exc:
+        with _SCREENER_REFRESH_LOCK:
+            _SCREENER_REFRESH_RUNNING[mode] = False
+        print("⚠️ 選股背景刷新無法排入序列佇列 %s: %s" %
+              (mode, type(exc).__name__), flush=True)
+        return False
     return True
 
 
