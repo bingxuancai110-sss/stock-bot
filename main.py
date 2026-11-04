@@ -10024,7 +10024,7 @@ _suffix_cache = {}
 _realtime_cache = {}
 _realtime_cache_lock = threading.Lock()
 REALTIME_CACHE_SECONDS = max(30, int(os.environ.get("REALTIME_CACHE_SECONDS", "300")))
-_TWSE_MIS_CACHE = {"day": None, "at": 0, "data": {}}
+_TWSE_MIS_CACHE = {"day": None, "at": 0, "data": {}, "failure_at": 0}
 _TWSE_MIS_CACHE_SECONDS = 5
 _TWSE_MIS_BATCH_SIZE = 20  # 持股行情優先單批；失敗時自動拆批重試
 _TWSE_MIS_SESSION_LOCAL = threading.local()
@@ -10205,7 +10205,16 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
     now_epoch = time.time()
     with _realtime_cache_lock:
         if _TWSE_MIS_CACHE.get("day") != today:
-            _TWSE_MIS_CACHE.update({"day": today, "at": 0, "data": {}})
+            _TWSE_MIS_CACHE.update({"day": today, "at": 0, "data": {}, "failure_at": 0})
+        # The positions page polls every five seconds. If MIS is unavailable,
+        # repeated short-timeout retries consume request threads and amplify the
+        # incident. Keep returning last valid quotes for 30s after a degraded
+        # quick request, then try again automatically.
+        failure_at = float(_TWSE_MIS_CACHE.get("failure_at") or 0)
+        if quick_mode and not force_refresh and now_epoch - failure_at < 30:
+            cached = _TWSE_MIS_CACHE.get("data") or {}
+            return {c: dict(cached[c]) for c in codes
+                    if c in cached and str(cached[c].get("close_date") or "").replace("-", "")[:8] == today_key}
         if (not force_refresh and now_epoch - float(_TWSE_MIS_CACHE.get("at") or 0) < _TWSE_MIS_CACHE_SECONDS):
             cached = _TWSE_MIS_CACHE.get("data") or {}
             valid_cached = {c: q for c, q in cached.items()
@@ -10386,6 +10395,7 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
                 if prefer_quote(old_quote, quote):
                     merged[code] = dict(quote)
             _TWSE_MIS_CACHE.update({"day": today, "at": time.time(), "data": merged})
+            _TWSE_MIS_CACHE["failure_at"] = time.time() if len(parsed) < len(codes) else 0
             todays_cache = dict(merged)
     else:
         todays_cache = dict(parsed)
@@ -10996,15 +11006,31 @@ RADAR_SPARK_CACHE_SECONDS = 15
 # 只有未知市場代號才雙後綴，避免超過端點上限造成整批 400。
 RADAR_SPARK_BATCH_SIZE = 20
 # A full-market intraday scan can fan out to hundreds of Yahoo spark batches.
-# Keep only four requests in flight on Render's 512 MiB web instance; the scan
+# Keep one request in flight on Render's 512 MiB web instance; the scan
 # remains complete, but it no longer spikes memory with a dozen concurrent
 # responses while normal page requests are being served.
-RADAR_SPARK_MAX_WORKERS = 4
+RADAR_SPARK_MAX_WORKERS = 1
 RADAR_DEEP_SCAN_LIMIT = 240
 # 定時／網頁冷啟動 producer 以全市場輕量初篩為主；深度技術補抓控制在 12 檔，
 # 避免在 Render 512 MiB 的單一 Web instance 上與一般頁面搶記憶體。
 # 手動完整分析仍保留 RADAR_DEEP_SCAN_LIMIT=240。
-RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 12
+RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 4
+
+
+def _background_work_memory_safe(reserve_mb=160):
+    """Keep optional market scans away from the web process memory ceiling."""
+    try:
+        rss_mb = _current_process_rss_bytes() / (1024 * 1024)
+        limit_mb = float(globals().get("RENDER_MEMORY_LIMIT_MB", 512) or 512)
+        safe = rss_mb < max(180.0, limit_mb - float(reserve_mb))
+        if not safe:
+            print("⚠️ 略過非必要背景市場掃描：目前 RSS %.0f/%.0f MiB，保留網頁服務記憶體" %
+                  (rss_mb, limit_mb), flush=True)
+        return safe
+    except Exception:
+        # If memory cannot be measured, fail closed for optional heavy scans.
+        print("⚠️ 無法確認記憶體餘裕，略過非必要背景市場掃描", flush=True)
+        return False
 
 
 def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
@@ -21437,6 +21463,12 @@ def _do_warmup():
     # 順便把選股台的候選池也算好，使用者進來就是快取命中；
     # compute_screener_rows 會在完整計算後保存 rows，若已命中持久化快照則不重掃 Yahoo。
     for mode in ("blackhorse", "radar"):
+        # Warmup has already prepared the critical shared datasets above. Full-market
+        # scanners are optional; on a small single web instance, preserve page and
+        # trade availability when memory headroom is low.
+        if not _background_work_memory_safe(reserve_mb=290):
+            done.append(f"{mode} 略過（保留網站記憶體；沿用最近快照）")
+            continue
         stage_started = time.perf_counter()
         try:
             rows, _s, _m = compute_screener_rows(
@@ -31436,7 +31468,7 @@ def web_positions(uid):
 
     # POST 賣出一定要先讀手續費設定；GET 則等快取檢查後再讀，避免切頁時做不必要的 DB round-trip。
     fee_disc = min_fee = None
-    if request.method == "POST":
+    if request.method == "POST" and request.form.get("action") not in {"sell", "sell_all"}:
         fee_disc, min_fee = get_fee_settings(get_profile(uid))
 
     msg = ""
@@ -31622,12 +31654,12 @@ def web_positions(uid):
             return respond_page("持股", _cached_positions_body, "positions")
     if fee_disc is None or min_fee is None:
         fee_disc, min_fee = get_fee_settings(get_profile(uid))
-    inst_started = time.monotonic()
-    # 持股頁只需要目前持股的法人資料與股票名稱，不需要把全市場法人快照
-    # 載入進來。指定 codes 會直接走 Supabase 的持股快照查詢。
-    position_codes_for_page = [str(p.get("code") or "").strip() for p in positions]
-    inst = fetch_institutional_data(position_codes_for_page) if position_codes_for_page else {}
-    inst_done = time.monotonic()
+    # 持股畫面與賣出表單不可被法人快照的資料庫讀取拖住。股票名稱可由
+    # 現有名稱對照／行情快照補足；此處只讀程序已快取資料，不發出同步 DB 查詢。
+    inst = dict(_t86_cache.get("data") or {})
+    position_code_set = {str(p.get("code") or "").strip() for p in positions}
+    inst = {code: value for code, value in inst.items()
+            if str(code).strip() in position_code_set}
 
     def sell_form(lot_id, max_shares, code, cur_price, lot_cost, label="賣出"):
         """
@@ -32377,7 +32409,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
   function applyQuotes(data,limitsOnly,preserveUnknownLimit){
       if(stopped||!root.isConnected){stop();return;}
       var updates=data.updates||[],hasLimit=updates.some(function(item){return item.limit_state==='up'||item.limit_state==='down';});
-      pollInterval=data.market_open?5000:60000;root.style.display=(data.market_open||hasLimit)?'':'none';
+      pollInterval=data.market_open?(Number(data.official_count||0)>=Number(data.requested_count||0)?5000:30000):60000;root.style.display=(data.market_open||hasLimit)?'':'none';
       updates.forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(pct&&(!preserveUnknownLimit||item.limit_known)){var state=item.limit_known&&(item.limit_state==='up'||item.limit_state==='down')?item.limit_state:'';pct.classList.toggle('is-limit-board',!!state);pct.dataset.limitState=state;pct.dataset.limitKnown=item.limit_known?'1':'0';pct.dataset.limitLabel=state==='up'?'漲停':state==='down'?'跌停':'';}if(limitsOnly||item.price==null)return;if(pct){pct.textContent=item.pct==null?'':signedText(item.pct,2)+'%';pct.classList.toggle('up',Number(item.pct)>=0);pct.classList.toggle('down',Number(item.pct)<0);}if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');price.classList.toggle('up',Number(item.pct)>=0);price.classList.toggle('down',Number(item.pct)<0);}if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
       if(data.market_open||hasLimit)root.textContent=(data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。'))+(data.market_open?' 約 5 秒檢查一次。':'');
       (data.updates||[]).forEach(function(item){
@@ -32409,7 +32441,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
     if(token)url+='?t='+encodeURIComponent(token);
     fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
       applyQuotes(data,fugleActive);
-    }).catch(function(e){root.textContent='盤中行情暫時無法更新：'+(e&&e.message?e.message:e)+'（HTTP 401 代表登入已過期，請從 LINE 重新開啟）；保留最後有效價格。';}).finally(function(){busy=false;schedule();});
+    }).catch(function(e){pollInterval=30000;root.textContent='盤中行情暫時無法更新：'+(e&&e.message?e.message:e)+'（HTTP 401 代表登入已過期，請從 LINE 重新開啟）；保留最後有效價格。';}).finally(function(){busy=false;schedule();});
   }
   function factorClass(ratio){return ratio>=0.8?'strong':ratio>=0.6?'mid':ratio>=0.4?'neutral':'weak';}
   function factorStatus(ratio){return ratio>=0.8?'偏強':ratio>=0.6?'中上':ratio>=0.4?'中性':'偏弱';}
@@ -45631,7 +45663,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             radar_diagnostics["spark_pct_below_threshold_count"] = sum(
                 1 for _c, info in candidates if info.get("spark_pct", 0) < 1.5)
             deep_limit = (int(radar_deep_limit) if radar_deep_limit else RADAR_DEEP_SCAN_LIMIT)
-            deep_limit = max(12, min(deep_limit, RADAR_DEEP_SCAN_LIMIT))
+            deep_limit = max(4, min(deep_limit, RADAR_DEEP_SCAN_LIMIT))
             by_code = {c: info for c, info in candidates}
             # 三桶輪流取：價格強勢／成交金額／法人買超，避免前 48 檔被單一訊號壟斷。
             buckets = [
@@ -46008,6 +46040,8 @@ def cron_radar_live():
         abort(403)
     if not _is_taiwan_intraday_window():
         return "目前非台股一般盤中時段，未啟動盤中雷達快照。", 200
+    if not _background_work_memory_safe(reserve_mb=290):
+        return "目前網站記憶體負載較高，已保留最近雷達快照並略過本輪掃描。", 200
     try:
         print(push_intraday_market_anomalies(base_url=DEFAULT_WEB_BASE_URL))
     except Exception as exc:
