@@ -508,3 +508,66 @@ html body#stockbot-app #stockbot-shell .more-item:active{background:#eaf1f3!impo
   html body#stockbot-app .app-bottom-nav .bottom-inner>a{font-size:9px!important}
 }
 @media(prefers-reduced-motion:reduce){html body#stockbot-app .app-bottom-nav .bottom-inner>a{transition:none!important}}
+
+
+/* Route transitions: signal navigation immediately without covering the page. */
+@keyframes sb-route-progress {
+  0% { transform: translateX(-125%); }
+  100% { transform: translateX(240%); }
+}
+@keyframes sb-route-nav-spin {
+  to { transform: rotate(360deg); }
+}
+html body#stockbot-app #app-page-content[aria-busy="true"] {
+  opacity: .62 !important;
+  transform: translateY(3px) !important;
+  filter: saturate(.86) !important;
+  transition: opacity 160ms ease, transform 160ms ease, filter 160ms ease !important;
+}
+html body#stockbot-app #app-page-content {
+  transition: opacity 180ms ease, transform 180ms ease, filter 180ms ease !important;
+}
+html body#stockbot-app:has(#app-page-content[aria-busy="true"])::after {
+  content: "";
+  position: fixed;
+  z-index: 2147483000;
+  top: env(safe-area-inset-top, 0px);
+  left: 0;
+  width: 34%;
+  height: 3px;
+  border-radius: 0 4px 4px 0;
+  background: linear-gradient(90deg, #2c6c86, #77a991, #d9b777);
+  box-shadow: 0 1px 5px rgba(37, 92, 116, .22);
+  pointer-events: none;
+  animation: sb-route-progress 950ms cubic-bezier(.4,0,.2,1) infinite alternate;
+}
+html body#stockbot-app a.ui-nav-pending {
+  position: relative;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+html body#stockbot-app a.ui-nav-pending::after {
+  content: "" !important;
+  position: absolute !important;
+  left: calc(50% - 5px) !important;
+  bottom: 2px !important;
+  width: 8px !important;
+  height: 8px !important;
+  border: 1.5px solid #b7c9d0 !important;
+  border-top-color: #2c6c86 !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  animation: sb-route-nav-spin 720ms linear infinite !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  html body#stockbot-app #app-page-content,
+  html body#stockbot-app #app-page-content[aria-busy="true"] {
+    transition: none !important;
+    transform: none !important;
+    filter: none !important;
+  }
+  html body#stockbot-app:has(#app-page-content[aria-busy="true"])::after,
+  html body#stockbot-app a.ui-nav-pending::after {
+    animation: none !important;
+  }
+}
