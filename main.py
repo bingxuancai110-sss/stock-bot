@@ -27815,7 +27815,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261104-1">
-<link rel="stylesheet" href="/static/app-shell.css?v=20261104-5">
+<link rel="stylesheet" href="/static/app-shell.css?v=20261104-6">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261104-4">
 <script defer src="/static/ui-feedback.js?v=20261103-4"></script>
 <script defer src="/static/fugle-live.js?v=20261103-6"></script>

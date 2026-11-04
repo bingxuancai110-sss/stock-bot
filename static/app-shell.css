@@ -953,3 +953,274 @@ body#stockbot-app[data-app-view="positions"] #app-page-content .position-card-gr
     grid-template-columns: none !important;
   }
 }
+
+/* App finish: clearer rhythm, purposeful color, and touch feedback without
+   turning every data group into another floating card. */
+body#stockbot-app {
+  background: var(--sb-app-canvas) !important;
+}
+body#stockbot-app #stockbot-shell > .wrap > .app-header {
+  background: rgba(255,255,255,.82) !important;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+body#stockbot-app #stockbot-shell > .wrap > #app-page-content {
+  animation: sb-workspace-enter .28s cubic-bezier(.2,.75,.25,1) both;
+}
+@keyframes sb-workspace-enter {
+  from { opacity: .72; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+body#stockbot-app #app-page-content :is(.section-head,.section-title) {
+  position: relative !important;
+  min-height: 36px !important;
+  padding: 4px 0 8px 13px !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--sb-app-line) 78%, transparent) !important;
+  color: var(--sb-app-ink) !important;
+  font-size: 17px !important;
+  font-weight: 820 !important;
+  letter-spacing: -.025em !important;
+}
+body#stockbot-app #app-page-content .section-head::before {
+  content: "" !important;
+  position: absolute !important;
+  left: 0 !important;
+  top: 5px !important;
+  width: 3px !important;
+  height: 20px !important;
+  border-radius: 8px !important;
+  background: linear-gradient(180deg, var(--sb-app-primary), #8bb2ad) !important;
+}
+body#stockbot-app #app-page-content .section-title::before {
+  content: none !important;
+  display: none !important;
+}
+body#stockbot-app #app-page-content :is(button,a[role=button],[role=button],summary) {
+  transition: color .16s ease, background-color .16s ease, border-color .16s ease, transform .16s ease, box-shadow .16s ease !important;
+}
+body#stockbot-app #app-page-content :is(button,a[role=button],[role=button],summary):active {
+  transform: scale(.985) !important;
+}
+
+/* Today: give the portfolio overview a strong anchor; keep the rest editorial. */
+body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 > .hv2-sec.first {
+  position: relative !important;
+  overflow: hidden !important;
+  padding: 19px 21px 18px !important;
+  background: linear-gradient(112deg, #244f68 0%, #2e6d7b 68%, #48847e 100%) !important;
+  box-shadow: 0 10px 26px rgba(27,72,89,.13) !important;
+}
+body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 .hv2-sec:not(.first) {
+  transition: background-color .18s ease !important;
+}
+body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 .home-impact-card {
+  position: relative !important;
+  padding: 13px 12px !important;
+  border: 1px solid var(--sb-app-line) !important;
+  border-radius: 13px !important;
+  background: rgba(255,255,255,.72) !important;
+}
+body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 .home-impact-card + .home-impact-card {
+  border-left: 1px solid var(--sb-app-line) !important;
+  padding-left: 12px !important;
+}
+
+/* Market: separate the quote board from chart controls with compact rails. */
+body#stockbot-app[data-app-view="market"] #app-page-content .market-search:focus-within {
+  border-color: #6f9ca2 !important;
+  box-shadow: 0 0 0 3px rgba(58,116,128,.12) !important;
+}
+body#stockbot-app[data-app-view="market"] #app-page-content .market-quote-tile {
+  position: relative !important;
+  transition: background-color .16s ease, padding .16s ease !important;
+}
+body#stockbot-app[data-app-view="market"] #app-page-content .market-quote-tile:hover {
+  padding-left: 8px !important;
+  background: rgba(255,255,255,.68) !important;
+}
+body#stockbot-app[data-app-view="market"] #app-page-content .market-page .market-chart-card {
+  border: 1px solid #dbe4e5 !important;
+  background: #fff !important;
+}
+
+/* Positions: distinguish portfolio totals from the security list. */
+body#stockbot-app[data-app-view="positions"] #app-page-content .totals {
+  position: relative !important;
+  display: grid !important;
+  grid-template-columns: 1.35fr 1fr 1fr .7fr !important;
+  align-items: stretch !important;
+  gap: 0 !important;
+  overflow: hidden !important;
+  border: 1px solid #d4e0e2 !important;
+  border-radius: 17px !important;
+  background: linear-gradient(110deg,#eaf1f3,#f7f8f6 65%,#edf4f0) !important;
+}
+body#stockbot-app[data-app-view="positions"] #app-page-content .totals > * {
+  min-width: 0 !important;
+  padding: 7px 13px !important;
+  border-left: 1px solid rgba(74,105,117,.12) !important;
+}
+body#stockbot-app[data-app-view="positions"] #app-page-content .totals > *:first-child {
+  padding-left: 2px !important;
+  border-left: 0 !important;
+}
+body#stockbot-app[data-app-view="positions"] #app-page-content .totals :is(b,strong) {
+  font-variant-numeric: tabular-nums !important;
+  letter-spacing: -.03em !important;
+}
+body#stockbot-app[data-app-view="positions"] #app-page-content .totals > :first-child :is(b,strong) {
+  color: #204e66 !important;
+  font-size: clamp(23px,4vw,34px) !important;
+}
+body#stockbot-app[data-app-view="positions"] #app-page-content .rows:has(>.position-card) > .position-card {
+  transition: background-color .18s ease, padding .18s ease !important;
+}
+body#stockbot-app[data-app-view="positions"] #app-page-content .rows:has(>.position-card) > .position-card:hover {
+  background: rgba(255,255,255,.56) !important;
+}
+body#stockbot-app[data-app-view="positions"] #app-page-content .position-more[open] {
+  padding: 8px 10px !important;
+  border-radius: 12px !important;
+  background: #f1f5f4 !important;
+}
+
+/* Screener: present filters as one compact control surface and results as a
+   scan-friendly market list, not a tower of unrelated boxes. */
+body#stockbot-app[data-app-view="screener"] #app-page-content #stockbot-workbench .wb-pulse {
+  grid-template-columns: auto auto minmax(0,1fr) !important;
+  padding: 8px 11px !important;
+  border: 1px solid #dbe5e3 !important;
+  border-radius: 12px !important;
+  background: linear-gradient(90deg,#e9f1ef,#f8f9f7) !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content #stockbot-workbench .wb-tools label {
+  border-radius: 14px !important;
+  box-shadow: 0 3px 12px rgba(32,63,70,.06) !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content #stockbot-workbench .wb-row.wb-rich-row {
+  transition: background-color .16s ease, padding .16s ease !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content #stockbot-workbench .wb-row.wb-rich-row:hover {
+  padding-left: 9px !important;
+  padding-right: 9px !important;
+  background: rgba(255,255,255,.78) !important;
+}
+body#stockbot-app[data-app-view="screener"] #app-page-content #stockbot-workbench .wb-price-block .wb-num {
+  font-variant-numeric: tabular-nums !important;
+  font-size: 17px !important;
+}
+
+/* Leaderboard: make the active period, personal result and chart work as one
+   visual story while retaining all comparison toggles. */
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-tabs {
+  display: grid !important;
+  grid-template-columns: repeat(3,minmax(0,1fr)) !important;
+  gap: 5px !important;
+  padding: 5px !important;
+  border: 1px solid #d8e3e4 !important;
+  border-radius: 14px !important;
+  background: #e9eff0 !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-tabs :is(button,label) {
+  min-height: 40px !important;
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-tabs :is(.on,[aria-pressed="true"],[aria-checked="true"]) {
+  background: #fff !important;
+  color: #245b4a !important;
+  box-shadow: 0 2px 7px rgba(34,61,60,.1) !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-situation {
+  padding: 0 14px !important;
+  border: 1px solid #d7e3e1 !important;
+  border-top: 3px solid #397b78 !important;
+  border-radius: 15px !important;
+  background: linear-gradient(110deg,#eef5f2,#f8f8f4) !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-card:not(.rank-champion):hover {
+  padding-left: 10px !important;
+  padding-right: 10px !important;
+  background: #f4f7f6 !important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-chart-panel {
+  padding: 14px 12px !important;
+  border: 1px solid #dbe4e5 !important;
+  border-radius: 15px !important;
+  background: #fff !important;
+}
+
+/* US rotation: the summary has distinct signal colors; the heatmap remains a
+   compact grid, and alerts carry clear state without changing calculations. */
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary {
+  min-height: 92px !important;
+  padding: 12px 15px !important;
+  border: 1px solid #dbe5e3 !important;
+  border-top: 3px solid #548b82 !important;
+  border-radius: 13px !important;
+  background: linear-gradient(145deg,#fff,#f2f6f4) !important;
+  transition: transform .18s ease, box-shadow .18s ease !important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 8px 18px rgba(36,73,79,.08) !important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-heat [role="checkbox"] {
+  transition: transform .16s ease, border-color .16s ease, background .16s ease !important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-heat [role="checkbox"]:hover {
+  transform: translateY(-2px) !important;
+  border-color: #7fa69d !important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content .us-alert-card {
+  padding: 13px 15px !important;
+  border: 1px solid #dce5e5 !important;
+  border-radius: 13px !important;
+  background: rgba(255,255,255,.78) !important;
+}
+
+/* More: recognizable destinations, clear row affordance and tidy groups. */
+body#stockbot-app[data-app-view="more"] #app-page-content .more-group-title {
+  display: flex !important;
+  align-items: center !important;
+  gap: 9px !important;
+  margin-top: 21px !important;
+  color: #466b78 !important;
+  font-size: 12px !important;
+  font-weight: 800 !important;
+}
+body#stockbot-app[data-app-view="more"] #app-page-content .more-item {
+  min-height: 64px !important;
+  border-radius: 11px !important;
+  transition: background-color .16s ease, padding .16s ease !important;
+}
+body#stockbot-app[data-app-view="more"] #app-page-content .more-item:hover {
+  padding-left: 10px !important;
+  background: rgba(255,255,255,.72) !important;
+}
+@media (max-width: 699px) {
+  body#stockbot-app #stockbot-shell > .wrap > #app-page-content {
+    padding-bottom: calc(24px + env(safe-area-inset-bottom,0px)) !important;
+  }
+  body#stockbot-app #app-page-content :is(.section-head,.section-title) {
+    font-size: 16px !important;
+  }
+  body#stockbot-app[data-app-view="positions"] #app-page-content .totals {
+    grid-template-columns: repeat(4,minmax(0,1fr)) !important;
+    padding: 10px 7px !important;
+  }
+  body#stockbot-app[data-app-view="positions"] #app-page-content .totals > * {
+    padding: 6px 7px !important;
+  }
+  body#stockbot-app[data-app-view="positions"] #app-page-content .totals > :first-child {
+    padding-left: 3px !important;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  body#stockbot-app #stockbot-shell > .wrap > #app-page-content,
+  body#stockbot-app #app-page-content * {
+    animation-duration: .001ms !important;
+    transition-duration: .001ms !important;
+  }
+}
