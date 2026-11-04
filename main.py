@@ -35522,11 +35522,10 @@ def web_trades(uid):
     # 只使用已完成的程序快取；尚未完成時讓法人欄位依既有缺值呈現，不阻塞交易頁。
     inst = dict(_t86_cache.get("data") or {})
     current_positions = merge_positions(get_positions(uid))
-    journal_codes = (sorted({str(p.get("code")).strip() for p in current_positions if p.get("code")} |
-                            {str(log.get("code")).strip() for log in journal_logs if log.get("code")})
-                     if journal_logs else [])
-    journal_prices = (get_realtime_stocks_bulk(journal_codes, rng="1d")
-                      if journal_codes else {})
+    # 交易紀錄只顯示已保存的操作與成交資料；不應為了未顯示的目前權重，
+    # 把所有歷史操作代號重新送去抓行情。長期累積的代號會讓這個頁面卡數分鐘，
+    # 而且不會改變下面顯示的操作明細。缺少即時權重時由既有 renderer 留空即可。
+    journal_prices = {}
     journal_html = render_position_change_history(
         uid, current_positions=current_positions, price_map=journal_prices,
         inst_data=inst, logs=journal_logs, start_date=journal_start or None,
