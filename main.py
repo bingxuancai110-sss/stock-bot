@@ -31654,12 +31654,14 @@ def web_positions(uid):
             return respond_page("持股", _cached_positions_body, "positions")
     if fee_disc is None or min_fee is None:
         fee_disc, min_fee = get_fee_settings(get_profile(uid))
+    inst_started = time.monotonic()
     # 持股畫面與賣出表單不可被法人快照的資料庫讀取拖住。股票名稱可由
     # 現有名稱對照／行情快照補足；此處只讀程序已快取資料，不發出同步 DB 查詢。
     inst = dict(_t86_cache.get("data") or {})
     position_code_set = {str(p.get("code") or "").strip() for p in positions}
     inst = {code: value for code, value in inst.items()
             if str(code).strip() in position_code_set}
+    inst_done = time.monotonic()
 
     def sell_form(lot_id, max_shares, code, cur_price, lot_cost, label="賣出"):
         """
