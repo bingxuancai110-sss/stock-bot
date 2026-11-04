@@ -39228,13 +39228,13 @@ def web_market(uid):
         resistance_levels = sorted(set(round(v, 2) for v in pivot_highs if v > current_close))
         auto_levels = []
         if support_levels:
-            auto_levels.append((support_levels[-1], "支撐參考", "#278A70"))
+            auto_levels.append((support_levels[-1], "支撐參考", "#16856B"))
         if resistance_levels:
-            auto_levels.append((resistance_levels[0], "壓力參考", "#C16C53"))
+            auto_levels.append((resistance_levels[0], "壓力參考", "#D74642"))
         auto_level_note = ("虛線為近期波段支撐／壓力參考，不代表預測。" if auto_levels
                            else "所選區間沒有明顯支撐／壓力參考。")
         auto_svg = "".join(
-            f'<g class="market-auto-level"><line x1="{left}" y1="{_my(level):.2f}" x2="{W-right}" y2="{_my(level):.2f}" stroke="{color}" stroke-width="1.5" stroke-dasharray="7 5"/><text x="{W-right-5}" y="{_my(level)-4:.2f}" text-anchor="end" fill="{color}">{label} {level:.2f}</text></g>'
+            f'<g class="market-auto-level"><line x1="{left}" y1="{_my(level):.2f}" x2="{W-right}" y2="{_my(level):.2f}" stroke="{color}" stroke-width="1.5" stroke-dasharray="7 5"/><text class="market-level-price" x="{W-right-5}" y="{_my(level)-4:.2f}" text-anchor="end" fill="{color}" stroke="#fff" stroke-width="8" stroke-linejoin="round" paint-order="stroke fill" font-weight="800">{level:.2f}</text></g>'
             for level, label, color in auto_levels)
         candles, volume_bars = [], []
         for i, bar in enumerate(bars):
@@ -39381,7 +39381,7 @@ def web_market(uid):
     if (!card.classList.contains('is-fullscreen')) {
       var nav = document.querySelector('.app-bottom-nav'), edge = window.innerHeight;
       if (nav && getComputedStyle(nav).display !== 'none') edge = nav.getBoundingClientRect().top;
-      var desired = Math.max(160, Math.min(380, edge - (svg.getBoundingClientRect().top + window.scrollY) - 12));
+      var desired = Math.max(300, Math.min(380, edge - (svg.getBoundingClientRect().top + window.scrollY) - 12));
       svg.style.height = desired + 'px';
     } else svg.style.height = '';
     var r = svg.getBoundingClientRect(); if (!r.width || !r.height) return;
@@ -39434,18 +39434,18 @@ def web_market(uid):
       if(b.high>=Math.max.apply(null,around.map(function(q){return q.high;})) && b.high>close) resistances.push(b.high);
     }
     var levels=[];
-    if(supports.length) levels.push({price:Math.max.apply(null,supports),label:'支撐參考',color:'#278A70'});
-    if(resistances.length) levels.push({price:Math.min.apply(null,resistances),label:'壓力參考',color:'#C16C53'});
+    if(supports.length) levels.push({price:Math.max.apply(null,supports),label:'支撐參考',color:'#16856B'});
+    if(resistances.length) levels.push({price:Math.min.apply(null,resistances),label:'壓力參考',color:'#D74642'});
     levels.forEach(function (l) {
       var g=el('g',{class:'market-auto-level'}), yy=y(l.price);
       el('line',{x1:left,y1:yy,x2:width-right,y2:yy,stroke:l.color,'stroke-width':1,'stroke-dasharray':'7 5'},g);
-      el('text',{x:width-right-4,y:clamp(yy-5,top+12,bottom-4),'text-anchor':'end',fill:l.color},g,l.label+' '+l.price.toFixed(2));
+      el('text',{class:'market-level-price',x:width-right-4,y:clamp(yy-5,top+12,bottom-4),'text-anchor':'end',fill:l.color,stroke:'#fff','stroke-width':3,'stroke-linejoin':'round','paint-order':'stroke fill','font-weight':800},g,l.price.toFixed(2));
     });
      var highBar=visible.reduce(function(a,b){return b.high>a.high?b:a;}), lowBar=visible.reduce(function(a,b){return b.low<a.low?b:a;});
-     [[highBar,'區間高','#C16C53','high'],[lowBar,'區間低','#278A70','low']].forEach(function(q){
-       var b=q[0],cx=x(nearestDate(b.date)),yy=y(b[q[3]]),rightSide=cx<width*.72,tx=cx+(rightSide?9:-9),anchor=rightSide?'start':'end',g=el('g',{class:'market-extreme'});
-       el('circle',{cx:cx,cy:yy,r:3.5,fill:q[2]},g);el('line',{x1:cx,y1:yy,x2:tx,y2:yy,stroke:q[2],'stroke-width':1.2},g);
-       el('text',{x:tx,y:yy-6,'text-anchor':anchor,fill:q[2]},g,q[1]+' '+Number(b[q[3]]).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2}));
+     [[highBar,'#D74642','high'],[lowBar,'#16856B','low']].forEach(function(q){
+       var b=q[0],field=q[2],color=q[1],cx=x(nearestDate(b.date)),yy=y(b[field]),rightSide=cx<width*.72,tx=cx+(rightSide?9:-9),anchor=rightSide?'start':'end',g=el('g',{class:'market-extreme'});
+       el('circle',{cx:cx,cy:yy,r:3.5,fill:color},g);el('line',{x1:cx,y1:yy,x2:tx,y2:yy,stroke:color,'stroke-width':1.2},g);
+       el('text',{class:'market-extreme-price',x:tx,y:yy-6,'text-anchor':anchor,fill:color,stroke:'#fff','stroke-width':3,'stroke-linejoin':'round','paint-order':'stroke fill','font-weight':900},g,Number(b[field]).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2}));
      });
      var macdMax=.01;
      for(var i=first;i<=last;i++) if(dif[i]!==null&&dea[i]!==null) macdMax=Math.max(macdMax,Math.abs(dif[i]),Math.abs(dea[i]),Math.abs(dif[i]-dea[i]));
