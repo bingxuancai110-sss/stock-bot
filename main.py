@@ -10955,9 +10955,10 @@ RADAR_SPARK_CACHE_SECONDS = 15
 RADAR_SPARK_BATCH_SIZE = 20
 RADAR_SPARK_MAX_WORKERS = 12
 RADAR_DEEP_SCAN_LIMIT = 240
-# 定時 producer 以全市場 spark 初篩為主；深度技術補抓只處理前 48 檔，
-# 讓十分鐘快照週期有機會穩定完成，網頁仍可用手動完整分析上限 240。
-RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 48
+# 定時／網頁冷啟動 producer 以全市場輕量初篩為主；深度技術補抓控制在 20 檔，
+# 避免在 Render 512 MiB 的單一 Web instance 上與一般頁面搶記憶體。
+# 手動完整分析仍保留 RADAR_DEEP_SCAN_LIMIT=240。
+RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 20
 
 
 def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
@@ -20230,8 +20231,10 @@ def _job_mark_start(name):
     """
     batch_id = _job_batch_id(name)
     # 盤中雷達可能因 Render OOM 被殺，資料庫中的 running 狀態不會跟著程序重啟清除。
-    # 雷達由十分鐘排程重試，使用短於排程週期的殘留門檻，避免被舊狀態卡住半小時。
-    stale_minutes = 8 if name == "盤中雷達快照" else JOB_STALE_MINUTES
+    # Cron 每 10 分鐘呼叫一次；雷達最慢可能接近一輪週期，20 分鐘門檻
+    # 可避免前一輪尚未結束時又啟動第二個全市場工作。程序被 OOM 終止後，
+    # 最遲 20 分鐘仍可自動恢復。
+    stale_minutes = 20 if name == "盤中雷達快照" else JOB_STALE_MINUTES
     conn = None
     try:
         conn = get_db_connection()
@@ -20281,8 +20284,13 @@ def _job_mark_start(name):
                 # A dropped SSL connection is already unusable. Do not let cleanup
                 # prevent the in-process worker from attempting the scheduled job.
                 pass
+        if name == "盤中雷達快照":
+            # 雷達會消耗大量 CPU／記憶體；DB 不可用時無法確認是否已有
+            # 其他執行個體在跑，寧可略過本輪，也不能冒險重複啟動。
+            print(f"⚠️ 盤中雷達無法取得共享工作鎖，本輪略過: {e}", flush=True)
+            return False
         print(f"⚠️ 標記工作開始失敗（照樣執行）: {e}")
-        return True      # 記錄失敗不該擋住真正的工作
+        return True      # 其他工作保留既有容錯行為
     finally:
         if conn is not None:
             release_db_connection(conn)
@@ -45522,8 +45530,10 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                                      if re.fullmatch(r"\d{4}", str(code).strip())})
             radar_universe_count = len(universe_codes)
             radar_diagnostics["universe_count"] = radar_universe_count
+            # 即時初篩只需最新價與前一收盤；取 5 日即可，避免為全市場
+            # 數千檔下載三個月歷史序列（此處不會使用歷史收盤序列）。
             spark_quotes = _fetch_yahoo_spark_bulk(
-                universe_codes, rng="3mo", force_refresh=force_refresh,
+                universe_codes, rng="5d", force_refresh=force_refresh,
                 market_map=market_map, include_history=False)
             candidates = []
             for code in universe_codes:
@@ -45622,7 +45632,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
         # 選股台的候選池動輒上百檔，序列請求是這一頁最大的延遲來源。
         # 這裡開比較多執行緒——一次把整池抓完，總時間才不會隨檔數線性增加。
         pool_prices = get_realtime_stocks_bulk(
-            [c for c, _ in pool], workers=12 if mode == "radar" else 16,
+            [c for c, _ in pool], workers=4 if mode == "radar" else 16,
             rng="3mo",
             market_suffix=(market_map if mode == "radar" else None),
             force_refresh=(force_refresh or mode == "radar"))
@@ -49274,7 +49284,7 @@ def _build_workbench_core_payload(uid):
         else:
             started = _start_screener_background_refresh(
                 "radar", intraday=_is_taiwan_intraday_window(),
-                radar_deep_limit=RADAR_DEEP_SCAN_LIMIT if _is_taiwan_intraday_window() else None)
+                radar_deep_limit=RADAR_SCHEDULED_DEEP_SCAN_LIMIT if _is_taiwan_intraday_window() else None)
             sources["雷達"].update({"building": True,
                 "note": "雷達快照不存在、過期或內容為無效空清單；系統已在背景重新掃描。"})
             print("⚠️ 工作台首屏雷達快照不可用，背景重建%s" % ("已啟動" if started else "已在執行"))
@@ -49328,7 +49338,7 @@ def _workbench_source_payload(uid, source):
             in_market = (mode == "radar" and _is_taiwan_intraday_window())
             started = _start_screener_background_refresh(
                 mode, intraday=in_market,
-                radar_deep_limit=RADAR_DEEP_SCAN_LIMIT if in_market else None)
+                radar_deep_limit=RADAR_SCHEDULED_DEEP_SCAN_LIMIT if in_market else None)
             return {"ok":True,"source":source,"rows":[],"score_changes":[],
                     "meta":{"available":False,"building":True,
                             "date":"尚無可用快照",
@@ -50727,7 +50737,7 @@ def web_screener(uid):
                 else:
                     started = _start_screener_background_refresh(
                         "radar", intraday=True,
-                        radar_deep_limit=RADAR_DEEP_SCAN_LIMIT)
+                        radar_deep_limit=RADAR_SCHEDULED_DEEP_SCAN_LIMIT)
                     state = ("已啟動一次冷啟動背景掃描；完成後本頁會自動顯示結果。"
                              if started else "已有背景掃描正在處理；完成後本頁會自動顯示結果。")
                     return respond_page("選股台", f'''<section class="screener-fast-card" data-screener-pending="1">
@@ -50821,7 +50831,8 @@ def web_screener(uid):
                     scan_is_recent = False
             if not scan_is_recent:
                 _start_screener_background_refresh(
-                    "radar", intraday=True, radar_deep_limit=RADAR_DEEP_SCAN_LIMIT)
+                    "radar", intraday=True,
+                    radar_deep_limit=RADAR_SCHEDULED_DEEP_SCAN_LIMIT)
                 return respond_page("選股台", f'''<section class="screener-fast-card" data-screener-pending="1">
   <div class="screener-fast-state"><span class="screener-fast-state-mark"></span><div>
     <b>即時雷達全市場掃描中</b>
