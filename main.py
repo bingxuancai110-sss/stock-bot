@@ -3043,8 +3043,9 @@ def record_activity(user_id, feature, action="open", source="line", metadata=Non
     if not uid or not feature:
         return
     meta = metadata if isinstance(metadata, dict) else {}
-    conn = get_db_connection()
+    conn = None
     try:
+        conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
             """INSERT INTO activity_log
@@ -3060,11 +3061,23 @@ def record_activity(user_id, feature, action="open", source="line", metadata=Non
         conn.commit()
         cur.close()
     except Exception as exc:
-        conn.rollback()
-        print(f"⚠️ 活動紀錄失敗 {uid}/{feature}: {exc}")
+        # Page-view logging is best-effort. A stale pooled DB connection must
+        # never turn an otherwise available web page into a 500 response.
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception as rollback_exc:
+                print(f"⚠️ 活動紀錄失敗 {uid}/{feature}: {exc}; rollback 失敗: {rollback_exc}")
+            else:
+                print(f"⚠️ 活動紀錄失敗 {uid}/{feature}: {exc}")
+        else:
+            print(f"⚠️ 活動紀錄連線失敗 {uid}/{feature}: {exc}")
     finally:
-        release_db_connection(conn)
-
+        if conn is not None:
+            try:
+                release_db_connection(conn)
+            except Exception as release_exc:
+                print(f"⚠️ 活動紀錄釋放連線失敗 {feature}: {release_exc}")
 
 def _activity_feature_label(feature):
     return FEATURE_LABELS.get(str(feature), str(feature))
