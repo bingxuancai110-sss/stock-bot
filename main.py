@@ -21146,8 +21146,11 @@ def _recover_interrupted_daily_snapshot():
             portfolio_ready, (len(missing_users) if missing_users is not None else "unknown"),
             rank_ready, rank_rows_today, str(result or "")[:100]), flush=True)
 
-    print("♻️ 偵測到中斷／未完成的每日組合報酬與排行榜快照，重新啟動核心快照")
-    run_in_background("每日快照", _do_daily_snapshot)
+    print("♻️ 偵測到中斷／未完成的每日組合與排行榜快照；網頁請求只恢復核心快照")
+    # A normal page request must never resume the optional all-market screener
+    # scans from a stale daily job. Those scans are large enough to evict this
+    # single 512 MiB web instance; their existing scheduled warm-up owns them.
+    run_in_background("每日快照", lambda: _do_daily_snapshot(core_only_recovery=True))
 
 
 @app.before_request
@@ -21239,7 +21242,7 @@ def cron_snapshot_portfolio():
     return run_in_background("每日快照", _do_daily_snapshot), 200
 
 
-def _do_daily_snapshot():
+def _do_daily_snapshot(core_only_recovery=False):
     """先完成今日組合報酬與排行榜快照，再處理耗時的選股／自選／產業快照。
 
     舊流程先掃黑馬股與雷達，兩個全市場計算可能耗時數分鐘，導致每日工作長期停在
@@ -21306,6 +21309,21 @@ def _do_daily_snapshot():
 
     portfolio_ready, missing_users = portfolio_status()
     rank_ready, rank_rows_today, member_count = leaderboard_status()
+
+    if core_only_recovery:
+        # If the durable core outputs are already complete, do not repeat the
+        # old optional industry/watchlist/screener stages just because the
+        # process restarted while a previous full job was in one of them.
+        if portfolio_ready and rank_ready:
+            return (f"{today} 的持股與排行榜核心快照已完整；網頁自動恢復略過高記憶體選股掃描。"
+                    "選股快照由既有 warm-up／排程更新。")
+        # Resume only the first missing core stage. A stale checkpoint can be
+        # anywhere in the optional stages even when an earlier core output is
+        # incomplete, so reset the in-memory stage before using reached().
+        if not portfolio_ready:
+            current_stage = "portfolio"
+        elif not rank_ready:
+            current_stage = "rank"
 
     # 舊版會在選股階段顯示 picks 0/2（實際有 3 個 mode），但該版本的 portfolio
     # 與排行榜階段根本還沒跑到。遇到這種舊 checkpoint，必須回到核心快照重新補齊。
@@ -21517,6 +21535,13 @@ def _do_daily_snapshot():
         current_stage = "industry"
     else:
         ind_perf_saved = 0
+
+    if core_only_recovery:
+        # The web-triggered recovery exists to restore the daily portfolio and
+        # leaderboard essentials. Keep full-market selection work on its
+        # scheduled warm-up path, where the memory guard is already applied.
+        return (f"{today} 的持股與排行榜核心快照已完成；網頁自動恢復略過產業、自選及全市場選股掃描，"
+                "等待既有 warm-up／排程更新選股快照。")
 
     ind_saved = 0
     if not reached("industry"):
@@ -44337,15 +44362,17 @@ def _homepage_quote_map_seed_realtime_cache(prices):
     try:
         cache_day, cache_session = _realtime_cache_period()
         now = time.time()
-        with _realtime_cache_lock:
-            for code, item in (prices or {}).items():
-                if not isinstance(item, dict) or not item.get("close"):
-                    continue
-                key = f"{code}:3mo:{cache_day}:{cache_session}"
-                seeded = dict(item)
-                seeded.setdefault("_history_fetched_at", now)
-                seeded.setdefault("_history_period", f"{cache_day}:{cache_session}")
-                _realtime_cache[key] = {"at": now, "data": seeded}
+        # Route through the bounded LRU writer. Directly assigning here used
+        # to bypass REALTIME_CACHE_MAX_ITEMS and let persistent per-user quote
+        # snapshots grow the process cache without the hotfix's size ceiling.
+        for code, item in (prices or {}).items():
+            if not isinstance(item, dict) or not item.get("close"):
+                continue
+            key = f"{code}:3mo:{cache_day}:{cache_session}"
+            seeded = dict(item)
+            seeded.setdefault("_history_fetched_at", now)
+            seeded.setdefault("_history_period", f"{cache_day}:{cache_session}")
+            _store_realtime_cache(key, seeded, at=now)
     except Exception as exc:
         print("⚠️ 首頁持久行情快取預熱失敗：%s" % type(exc).__name__, flush=True)
 
