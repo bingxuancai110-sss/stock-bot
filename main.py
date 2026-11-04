@@ -6848,8 +6848,8 @@ def _is_completed_home_close_payload(payload, day=None):
     )
 
 
-def _usable_saved_home_final_quotes(quotes, codes, now=None):
-    """Return today's final saved closes only when they cover every held symbol."""
+def _usable_saved_home_final_quotes(quotes, codes, now=None, require_all=True):
+    """Return validated same-day official closes; optionally require every held symbol."""
     current = now or taiwan_now()
     if not _taiwan_post_close(current) or not isinstance(quotes, dict):
         return None
@@ -6859,8 +6859,13 @@ def _usable_saved_home_final_quotes(quotes, codes, now=None):
         if (not isinstance(quote, dict) or
                 not _mis_quote_is_current_for_contribution(quote, now=current) or
                 not quote.get("close_is_final")):
-            return None
+            if require_all:
+                return None
+            continue
         result[code] = dict(quote)
+    if require_all and len(result) != len(dict.fromkeys(
+            str(value).strip() for value in (codes or []) if str(value).strip())):
+        return None
     return result or None
 
 
@@ -7189,20 +7194,27 @@ def _refresh_home_intraday_payload_sync(uid):
         home_suffix_map = _home_market_suffix_map(codes)
         print("⚡ 首頁行情市場別辨識：已知市場 %s/%s 檔；未辨識才雙市場查詢" % (
             len(home_suffix_map), len(codes)), flush=True)
-        saved_final_closes = _usable_saved_home_final_quotes(restored_quotes, codes, now=now)
-        if saved_final_closes:
-            fresh_price_map = saved_final_closes
-            fresh_contribution_quotes = dict(fresh_price_map)
+        saved_final_closes = _usable_saved_home_final_quotes(
+            restored_quotes, codes, now=now, require_all=False) or {}
+        fresh_price_map = dict(saved_final_closes)
+        missing_close_codes = [code for code in codes if code not in saved_final_closes]
+        if missing_close_codes:
+            fetched_closes = _fetch_twse_mis_quotes(
+                missing_close_codes,
+                market_suffix={code: home_suffix_map[code] for code in missing_close_codes
+                               if code in home_suffix_map},
+                force_refresh=True, cache_result=False, quick_mode=True)
+            fresh_price_map.update(fetched_closes or {})
+        else:
             print("⚡ 首頁沿用今日已保存的正式收盤行情 uid=%s quotes=%s；略過重抓" % (
                 str(uid).strip(), len(fresh_price_map)), flush=True)
-        else:
-            fresh_price_map = _fetch_twse_mis_quotes(
-                codes, market_suffix=home_suffix_map, force_refresh=True,
-                cache_result=False, quick_mode=True)
-            fresh_contribution_quotes = {
-                str(code): dict(quote) for code, quote in (fresh_price_map or {}).items()
-                if _mis_quote_is_current_for_contribution(quote)
-            }
+        fresh_contribution_quotes = {
+            str(code): dict(quote) for code, quote in (fresh_price_map or {}).items()
+            if _mis_quote_is_current_for_contribution(quote)
+        }
+        if saved_final_closes and missing_close_codes:
+            print("⚡ 首頁沿用已保存的正式收盤行情 %s 檔，只補抓缺漏 %s 檔" % (
+                len(saved_final_closes), len(missing_close_codes)), flush=True)
         # One bounded MIS batch is enough per refresh. Missing symbols remain explicitly
         # incomplete; the next background refresh is rate-limited with exponential backoff.
         # Never recursively fan out failed batches from the homepage worker.
@@ -16530,8 +16542,9 @@ _TAIEX_OFFICIAL_CLOSE_CACHE = {
     "day": None, "data": None, "attempt_at": 0, "running": False,
     "snapshot_checked_day": None,
 }
-TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS = 30
+TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS = 300
 TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY = "taiex_official_close"
+TAIEX_OFFICIAL_CLOSE_ATTEMPT_KEY = "taiex_official_close_attempt"
 
 # 首頁盤中大盤不能拿日K或昨日快照假裝即時；獨立以 TWSE MIS 的 t00 指數短快取。
 _taiex_intraday_cache = {"day": None, "at": 0, "attempt_at": 0, "data": None}
@@ -16687,6 +16700,73 @@ def fetch_taiex_intraday(force_refresh=False, now=None, stale_while_revalidate=F
         return None
 
 
+def _fetch_taiex_historical_close_uncached(now=None):
+    """用證交所月歷史資料補取同日正式收盤，避免 MIS 暫斷就整頁無大盤。"""
+    current = now or taiwan_now()
+    if not _taiwan_post_close(current):
+        return None
+    expected = current.date()
+
+    def month_rows(month_start):
+        response = requests.get(
+            "https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST",
+            params={"date": month_start.strftime("%Y%m01"), "response": "json"},
+            headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "zh-TW,zh;q=0.9"},
+            timeout=8)
+        response.raise_for_status()
+        payload = response.json()
+        fields = payload.get("fields") or []
+        rows = payload.get("data") or []
+        date_index = next((i for i, name in enumerate(fields) if str(name).strip() in ("日期", "Date")), None)
+        close_index = next((i for i, name in enumerate(fields) if str(name).strip() in ("收盤指數", "ClosingIndex")), None)
+        if date_index is None or close_index is None:
+            raise ValueError("TWSE 指數歷史欄位不完整")
+        parsed = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or max(date_index, close_index) >= len(row):
+                continue
+            raw_date = str(row[date_index] or "").strip()
+            try:
+                parts = [int(part) for part in re.findall(r"\d+", raw_date)]
+                if len(parts) != 3:
+                    continue
+                year = parts[0] + 1911 if parts[0] < 1911 else parts[0]
+                trade_date = date(year, parts[1], parts[2])
+            except (TypeError, ValueError):
+                continue
+            close = _taiex_live_number(row[close_index])
+            if close and close > 0:
+                parsed.append((trade_date, close))
+        return parsed
+
+    first_of_month = expected.replace(day=1)
+    rows = month_rows(first_of_month)
+    current_rows = sorted((d, value) for d, value in rows if d <= expected)
+    target = next((value for d, value in current_rows if d == expected), None)
+    previous = next((value for d, value in reversed(current_rows) if d < expected), None)
+    if target is None:
+        raise ValueError("TWSE 歷史指數尚無同日正式收盤")
+    if previous is None:
+        previous_month = (first_of_month - timedelta(days=1)).replace(day=1)
+        prior_rows = sorted((d, value) for d, value in month_rows(previous_month) if d < expected)
+        previous = prior_rows[-1][1] if prior_rows else None
+    if previous is None:
+        raise ValueError("TWSE 歷史指數缺少前一交易日收盤")
+    diff = target - previous
+    expected_key = expected.strftime("%Y%m%d")
+    return {
+        "close": f"{target:,.2f}",
+        "sign": "+" if diff > 0 else ("-" if diff < 0 else ""),
+        "pts": f"{abs(diff):,.2f}",
+        "pct": f"{diff / previous * 100:+.2f}",
+        "date": expected_key,
+        "previous_close": f"{previous:,.2f}",
+        "updated_at": f"{expected.isoformat()} 13:30",
+        "source": "TWSE MI_5MINS_HIST 官方正式收盤",
+        "close_is_final": True,
+    }
+
+
 def _fetch_taiex_official_close_uncached(now=None):
     """取得 TWSE MIS 同日加權指數正式收盤；資料不完整時回傳 None，不降級冒充收盤。
 
@@ -16734,8 +16814,12 @@ def _fetch_taiex_official_close_uncached(now=None):
             "close_is_final": True,
         }
     except Exception as exc:
-        print(f"⚠️ 抓取 TWSE MIS 正式 TAIEX 收盤失敗：{exc}")
-        return None
+        print(f"⚠️ TWSE MIS 正式收盤失敗，改查官方歷史收盤：{type(exc).__name__}", flush=True)
+        try:
+            return _fetch_taiex_historical_close_uncached(current)
+        except Exception as history_exc:
+            print(f"⚠️ TWSE 官方歷史 TAIEX 收盤也失敗：{type(history_exc).__name__}", flush=True)
+            return None
 
 
 def fetch_taiex_official_close(now=None):
@@ -16749,11 +16833,12 @@ def fetch_taiex_official_close(now=None):
         state = _TAIEX_OFFICIAL_CLOSE_CACHE
         if state.get("day") != day:
             state.update(day=day, data=None, attempt_at=0, running=False,
-                         snapshot_checked_day=None)
+                         snapshot_checked_day=None, retry_after_epoch=0,
+                         attempt_snapshot_checked_day=None)
         cached = dict(state["data"]) if isinstance(state.get("data"), dict) else None
         if cached:
             return cached
-        if (state.get("running") or
+        if (state.get("running") or now_epoch < float(state.get("retry_after_epoch") or 0) or
                 now_epoch - float(state.get("attempt_at") or 0) < TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS):
             return cached
         check_snapshot = state.get("snapshot_checked_day") != day
@@ -16778,8 +16863,48 @@ def fetch_taiex_official_close(now=None):
                 with _TAIEX_OFFICIAL_CLOSE_LOCK:
                     if _TAIEX_OFFICIAL_CLOSE_CACHE.get("day") == day:
                         _TAIEX_OFFICIAL_CLOSE_CACHE["snapshot_checked_day"] = day
+        # Failed fetch cooldown survives a Render restart, so repeated page visits
+        # cannot stampede TWSE while MIS and the historical endpoint are unavailable.
+        check_attempt_snapshot = False
+        with _TAIEX_OFFICIAL_CLOSE_LOCK:
+            check_attempt_snapshot = (
+                _TAIEX_OFFICIAL_CLOSE_CACHE.get("day") == day and
+                _TAIEX_OFFICIAL_CLOSE_CACHE.get("attempt_snapshot_checked_day") != day)
+        if value is None and check_attempt_snapshot:
+            try:
+                attempted = _load_shared_data_snapshot(
+                    TAIEX_OFFICIAL_CLOSE_ATTEMPT_KEY, max_age_seconds=86400)
+                attempted_payload = (attempted or {}).get("payload") or {}
+                if (str((attempted or {}).get("data_date") or "")[:10] == day and
+                        str(attempted_payload.get("day") or "") == day):
+                    retry_after = float(attempted_payload.get("retry_after_epoch") or 0)
+                    if retry_after > now_epoch:
+                        with _TAIEX_OFFICIAL_CLOSE_LOCK:
+                            if _TAIEX_OFFICIAL_CLOSE_CACHE.get("day") == day:
+                                _TAIEX_OFFICIAL_CLOSE_CACHE["retry_after_epoch"] = retry_after
+                        return None
+            except Exception as exc:
+                print("⚠️ 讀取加權指數重試狀態失敗：%s" % type(exc).__name__, flush=True)
+            finally:
+                with _TAIEX_OFFICIAL_CLOSE_LOCK:
+                    if _TAIEX_OFFICIAL_CLOSE_CACHE.get("day") == day:
+                        _TAIEX_OFFICIAL_CLOSE_CACHE["attempt_snapshot_checked_day"] = day
         if value is None:
             value = _fetch_taiex_official_close_uncached(current)
+            if value is None:
+                retry_after = time.time() + TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS
+                with _TAIEX_OFFICIAL_CLOSE_LOCK:
+                    if _TAIEX_OFFICIAL_CLOSE_CACHE.get("day") == day:
+                        _TAIEX_OFFICIAL_CLOSE_CACHE["retry_after_epoch"] = retry_after
+                try:
+                    _save_shared_data_snapshot(
+                        TAIEX_OFFICIAL_CLOSE_ATTEMPT_KEY,
+                        {"day": day, "retry_after_epoch": retry_after},
+                        data_date=current.date(),
+                        source_meta={"source": "TWSE close retry cooldown", "day": day},
+                    )
+                except Exception as exc:
+                    print("⚠️ 保存加權指數重試狀態失敗：%s" % type(exc).__name__, flush=True)
         with _TAIEX_OFFICIAL_CLOSE_LOCK:
             if _TAIEX_OFFICIAL_CLOSE_CACHE.get("day") == day and value:
                 _TAIEX_OFFICIAL_CLOSE_CACHE["data"] = dict(value)
@@ -16788,8 +16913,12 @@ def fetch_taiex_official_close(now=None):
             _save_shared_data_snapshot(
                 TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY, value,
                 data_date=current.date(),
-                source_meta={"source": "TWSE MIS official TAIEX close", "day": day},
+                source_meta={"source": str(value.get("source") or "TWSE official TAIEX close"), "day": day},
             )
+            try:
+                _delete_shared_data_snapshot(TAIEX_OFFICIAL_CLOSE_ATTEMPT_KEY)
+            except Exception:
+                pass
         return value
     finally:
         with _TAIEX_OFFICIAL_CLOSE_LOCK:
@@ -27949,7 +28078,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261104-1">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261104-2">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261104-6">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261104-6">
 <script defer src="/static/ui-feedback.js?v=20261103-4"></script>

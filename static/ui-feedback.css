@@ -37,7 +37,7 @@ html body a.ui-nav-pending::after{content:'';position:absolute;bottom:3px;left:c
 .ui-number-source,.ui-number-source *{color:transparent!important;-webkit-text-fill-color:transparent!important;text-shadow:none!important}
 .ui-chart-readout button[aria-pressed=true]{background:#dceee2;border-color:#80ac90;color:#285b3a}
 .ui-chart-crosshair{stroke:#779b85;stroke-width:1;stroke-dasharray:4 3;pointer-events:none}.ui-chart-dot{fill:#fff;stroke:#597d64;stroke-width:2;pointer-events:none}
-#stockbot-app #stockbot-shell #app-page-content svg.ui-chart-tracking{touch-action:pan-y!important;cursor:crosshair}
+#stockbot-app #stockbot-shell #app-page-content svg.ui-chart-tracking{touch-action:pan-x pan-y!important;cursor:crosshair}
 #stockbot-app #stockbot-shell #app-page-content .ui-chart-point-active{stroke:#c69942!important;stroke-width:3!important}
 #stockbot-app #stockbot-shell #app-page-content :is(.rankTabs,.rank-tabs,#rankTabs) button{transition:transform var(--sb-feedback-press) var(--sb-feedback-ease)}
 #stockbot-app #stockbot-shell #app-page-content .rank-move{display:inline-block;border-radius:7px;padding:3px 6px;background:#f0f5f2}

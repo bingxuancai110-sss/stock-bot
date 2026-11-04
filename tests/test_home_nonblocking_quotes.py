@@ -31,6 +31,12 @@ def official_close_function():
     return compile(ast.Module(body=[fn],type_ignores=[]),'<official-close-cache>','exec')
 
 
+@lru_cache(maxsize=1)
+def official_history_close_function():
+    fn=next(n for n in main_tree().body if isinstance(n,ast.FunctionDef) and n.name=='_fetch_taiex_historical_close_uncached')
+    return compile(ast.Module(body=[fn],type_ignores=[]),'<official-close-history>','exec')
+
+
 def test_home_render_uses_local_quote_without_even_starting_a_live_request():
     network=Mock(side_effect=AssertionError('network attempted while rendering'))
     history={'2308':dict(close=110,pct=1,source='history',close_dates=[date(2026,11,1),date(2026,11,2)],closes=[100,110])}
@@ -108,13 +114,50 @@ def test_new_official_close_is_saved_once_and_tagged_by_trade_date():
         _TAIEX_OFFICIAL_CLOSE_CACHE={'day':None,'data':None,'attempt_at':0,'running':False,
             'snapshot_checked_day':None},TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS=30,
         TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY='taiex_official_close',
+        TAIEX_OFFICIAL_CLOSE_ATTEMPT_KEY='taiex_official_close_attempt',
         _load_shared_data_snapshot=Mock(return_value=None),
         _fetch_taiex_official_close_uncached=Mock(return_value=value),
         _save_shared_data_snapshot=save)
     exec(official_close_function(),ns)
     assert ns['fetch_taiex_official_close'](NOW)==value
     save.assert_called_once_with('taiex_official_close',value,data_date=NOW.date(),
-        source_meta={'source':'TWSE MIS official TAIEX close','day':'2026-11-03'})
+        source_meta={'source':'TWSE MIS 加權指數正式收盤','day':'2026-11-03'})
+
+
+def test_historical_official_close_fallback_is_persisted_too():
+    value={'date':'20261103','close':'27000.00','previous_close':'26800.00',
+        'pct':'+0.75','source':'TWSE MI_5MINS_HIST 官方正式收盤','close_is_final':True}
+    save=Mock(return_value=True)
+    ns=dict(_taiwan_post_close=lambda current:True,taiwan_now=lambda:NOW,time=time,
+        _TAIEX_OFFICIAL_CLOSE_LOCK=threading.Lock(),
+        _TAIEX_OFFICIAL_CLOSE_CACHE={'day':None,'data':None,'attempt_at':0,'running':False,
+            'snapshot_checked_day':None},TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS=30,
+        TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY='taiex_official_close',
+        TAIEX_OFFICIAL_CLOSE_ATTEMPT_KEY='taiex_official_close_attempt',
+        _load_shared_data_snapshot=Mock(return_value=None),
+        _fetch_taiex_official_close_uncached=Mock(return_value=value),
+        _save_shared_data_snapshot=save,_delete_shared_data_snapshot=Mock())
+    exec(official_close_function(),ns)
+    assert ns['fetch_taiex_official_close'](NOW)==value
+    save.assert_called_once_with('taiex_official_close',value,data_date=NOW.date(),
+        source_meta={'source':'TWSE MI_5MINS_HIST 官方正式收盤','day':'2026-11-03'})
+
+
+def test_official_historical_index_fallback_parses_and_returns_same_day_close():
+    response=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{
+        'stat':'OK','fields':['日期','開盤指數','最高指數','最低指數','收盤指數'],
+        'data':[['115/11/02','27000','27100','26900','27000.00'],
+                ['115/11/03','27050','27300','27000','27200.00']]})
+    get=Mock(return_value=response)
+    ns=dict(_taiwan_post_close=lambda current:True,taiwan_now=lambda:NOW,
+        requests=SimpleNamespace(get=get),_taiex_live_number=lambda value:float(str(value).replace(',','')) if value else None,
+        re=__import__('re'),date=date,timedelta=__import__('datetime').timedelta)
+    exec(official_history_close_function(),ns)
+    value=ns['_fetch_taiex_historical_close_uncached'](NOW)
+    assert value['close']=='27,200.00' and value['previous_close']=='27,000.00'
+    assert value['pct']=='+0.74' and value['date']=='20261103'
+    assert value['close_is_final'] is True and 'MI_5MINS_HIST' in value['source']
+    get.assert_called_once()
 
 
 def test_saved_home_closes_are_reused_only_when_all_symbols_are_final_today():
@@ -126,6 +169,8 @@ def test_saved_home_closes_are_reused_only_when_all_symbols_are_final_today():
     assert set(ns['_usable_saved_home_final_quotes'](quotes,['2308','2383'],NOW))=={'2308','2383'}
     assert ns['_usable_saved_home_final_quotes'](quotes,['2308','6488'],NOW) is None
     assert ns['_usable_saved_home_final_quotes']({**quotes,'2308':dict(quotes['2308'],close_is_final=False)},['2308'],NOW) is None
+    partial=ns['_usable_saved_home_final_quotes'](quotes,['2308','6488'],NOW,require_all=False)
+    assert set(partial)=={'2308'}
 
 
 def test_completed_close_snapshot_requires_final_same_day_market_and_holdings_quotes():
@@ -183,6 +228,7 @@ def test_failed_official_close_request_is_shared_and_cooled_down():
             'snapshot_checked_day':None},
         TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS=30,
         TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY='taiex_official_close',
+        TAIEX_OFFICIAL_CLOSE_ATTEMPT_KEY='taiex_official_close_attempt',
         _load_shared_data_snapshot=Mock(return_value=None),
         _save_shared_data_snapshot=Mock(),
         _fetch_taiex_official_close_uncached=lambda current:(calls.append(current) or None))
@@ -194,3 +240,21 @@ def test_failed_official_close_request_is_shared_and_cooled_down():
     now['value']=130.0
     ns['fetch_taiex_official_close'](NOW)
     assert len(calls)==2
+
+
+def test_failed_close_cooldown_is_restored_after_process_restart():
+    future_retry={'data_date':NOW.date(),'payload':{'day':'2026-11-03','retry_after_epoch':2000}}
+    load=Mock(side_effect=[None,future_retry])
+    fetch=Mock(side_effect=AssertionError('persisted cooldown should suppress upstream request'))
+    ns=dict(time=SimpleNamespace(time=lambda:1000),_taiwan_post_close=lambda current:True,
+        taiwan_now=lambda:NOW,_TAIEX_OFFICIAL_CLOSE_LOCK=threading.Lock(),
+        _TAIEX_OFFICIAL_CLOSE_CACHE={'day':None,'data':None,'attempt_at':0,'running':False,
+            'snapshot_checked_day':None},TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS=300,
+        TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY='taiex_official_close',
+        TAIEX_OFFICIAL_CLOSE_ATTEMPT_KEY='taiex_official_close_attempt',
+        _load_shared_data_snapshot=load,_save_shared_data_snapshot=Mock(),
+        _fetch_taiex_official_close_uncached=fetch,_delete_shared_data_snapshot=Mock())
+    exec(official_close_function(),ns)
+    assert ns['fetch_taiex_official_close'](NOW) is None
+    assert ns['fetch_taiex_official_close'](NOW) is None
+    assert load.call_count==2 and fetch.call_count==0
