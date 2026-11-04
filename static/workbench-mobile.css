@@ -1,0 +1,330 @@
+/* Workbench finishing pass: clearer hierarchy and lighter controls on narrow screens. */
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 0 22px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-intro {
+  margin: 0 !important;
+  padding: 0 0 8px !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-asset-tabs {
+  display: flex !important;
+  width: 100% !important;
+  gap: 5px !important;
+  margin: 9px 0 3px !important;
+  padding: 4px !important;
+  border: 1px solid #dbe5e2 !important;
+  border-radius: 13px !important;
+  background: #e9efed !important;
+  overflow-x: auto !important;
+  scrollbar-width: none;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-asset-tabs::-webkit-scrollbar,
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tabs::-webkit-scrollbar { display: none; }
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-asset-tabs button {
+  flex: 1 0 auto !important;
+  min-width: max-content !important;
+  min-height: 38px !important;
+  padding: 8px 12px !important;
+  border: 0 !important;
+  border-radius: 9px !important;
+  background: transparent !important;
+  color: #536872 !important;
+  box-shadow: none !important;
+  font-size: 12px !important;
+  font-weight: 750 !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-asset-tabs button.on {
+  background: #fff !important;
+  color: #245b4a !important;
+  box-shadow: 0 1px 3px rgba(28, 57, 48, .10) !important;
+}
+
+/* Source choices stay on one horizontally scrollable rail instead of wrapping
+   the last option onto a lonely second row. */
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tabs {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  gap: 18px !important;
+  width: 100% !important;
+  margin: 5px 0 2px !important;
+  padding: 0 2px !important;
+  border: 0 !important;
+  border-bottom: 1px solid #dce5e2 !important;
+  overflow-x: auto !important;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tabs button {
+  flex: 0 0 auto !important;
+  min-width: max-content !important;
+  min-height: 40px !important;
+  margin: 0 !important;
+  padding: 0 1px 9px !important;
+  border: 0 !important;
+  border-bottom: 2px solid transparent !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: #667a82 !important;
+  box-shadow: none !important;
+  font-size: 12px !important;
+  font-weight: 720 !important;
+  white-space: nowrap !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tabs button.on {
+  border-bottom-color: #43856a !important;
+  background: transparent !important;
+  color: #1f5d47 !important;
+  box-shadow: none !important;
+}
+
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto auto !important;
+  gap: 7px !important;
+  margin: 9px 0 5px !important;
+  padding: 0 !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools label {
+  grid-column: 1 / -1 !important;
+  min-width: 0 !important;
+  min-height: 43px !important;
+  padding: 0 12px !important;
+  border: 1px solid #d7e1de !important;
+  border-radius: 12px !important;
+  background: #fff !important;
+  box-shadow: 0 1px 2px rgba(25, 47, 44, .04) !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools input {
+  min-width: 0 !important;
+  min-height: 41px !important;
+  color: #263c47 !important;
+  font-size: 13px !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools button,
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-filter-panel button,
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-mobile-sort button {
+  min-height: 36px !important;
+  padding: 7px 11px !important;
+  border: 1px solid #d3dfdc !important;
+  border-radius: 9px !important;
+  background: #fff !important;
+  color: #405b62 !important;
+  box-shadow: none !important;
+  font-size: 11px !important;
+  font-weight: 720 !important;
+  white-space: nowrap !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-filter-panel button.on,
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-mobile-sort button.on {
+  border-color: #80a998 !important;
+  background: #e4f0e9 !important;
+  color: #205a43 !important;
+  box-shadow: inset 0 -2px 0 #43856a !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-filter-panel {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 10px 14px !important;
+  margin: 2px 0 7px !important;
+  padding: 10px 0 !important;
+  border: 0 !important;
+  border-top: 1px solid #e0e8e5 !important;
+  border-bottom: 1px solid #e0e8e5 !important;
+  background: transparent !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-filter-panel b,
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-mobile-sort > span {
+  color: #687b81 !important;
+  font-size: 11px !important;
+  font-weight: 750 !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-mobile-sort {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+  margin: 7px 0 !important;
+  color: #687b81 !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-meta {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: baseline !important;
+  justify-content: space-between !important;
+  gap: 4px 12px !important;
+  margin: 7px 0 2px !important;
+  padding: 0 2px !important;
+  color: #718187 !important;
+  font-size: 11px !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-count b {
+  color: #244f43 !important;
+  font-size: 13px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+@media (max-width: 699px) {
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row {
+    position: relative !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    grid-template-areas: "main price" "main score" "institutional signal" !important;
+    align-items: start !important;
+    gap: 7px 10px !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 13px 3px 12px !important;
+    border: 0 !important;
+    border-bottom: 1px solid #dfe7e4 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    text-align: left !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row > .wb-row-main {
+    grid-area: main !important;
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-content: start !important;
+    align-items: baseline !important;
+    gap: 3px 6px !important;
+    min-width: 0 !important;
+    padding: 0 15px 0 0 !important;
+    white-space: normal !important;
+    text-align: left !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row .wb-name {
+    display: block !important;
+    flex: 1 0 100% !important;
+    min-width: 0 !important;
+    margin: 2px 0 1px !important;
+    color: #203640 !important;
+    font-size: 16px !important;
+    font-weight: 820 !important;
+    line-height: 1.3 !important;
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row :is(.wb-tag,.wb-radar-rank,.wb-high-status,.wb-breakout,.wb-macd,.wb-chase-warning) {
+    flex: 0 0 auto !important;
+    margin: 0 !important;
+    font-size: 10px !important;
+    line-height: 1.3 !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row :is(.wb-industry,.wb-fact-line,.wb-small,.wb-code,.wb-turning-flow) {
+    flex: 1 0 100% !important;
+    min-width: 0 !important;
+    margin: 1px 0 0 !important;
+    color: #61757c !important;
+    font-size: 10px !important;
+    line-height: 1.45 !important;
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+    text-align: left !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row > .wb-price-block {
+    grid-area: price !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-end !important;
+    justify-content: start !important;
+    gap: 2px !important;
+    min-width: 82px !important;
+    padding: 1px 0 0 !important;
+    text-align: right !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row .wb-price-block .wb-num {
+    color: #203640 !important;
+    font-size: 16px !important;
+    font-weight: 820 !important;
+    line-height: 1.2 !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-price-block small {
+    font-size: 11px !important;
+    font-weight: 780 !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row > .wb-score-block {
+    grid-area: score !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-end !important;
+    min-width: 0 !important;
+    max-width: 132px !important;
+    text-align: right !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row .wb-score-parts {
+    max-width: 100% !important;
+    color: #74858a !important;
+    font-size: 9px !important;
+    line-height: 1.35 !important;
+    white-space: normal !important;
+    text-align: right !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row > .wb-institutional {
+    grid-area: institutional !important;
+    display: block !important;
+    min-width: 0 !important;
+    color: #435a60 !important;
+    font-size: 11px !important;
+    line-height: 1.4 !important;
+    white-space: normal !important;
+    text-align: left !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row > .wb-institutional small,
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row > .wb-signal small {
+    color: #718187 !important;
+    font-size: 9px !important;
+    white-space: normal !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row > .wb-signal {
+    grid-area: signal !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-end !important;
+    min-width: 0 !important;
+    color: #435a60 !important;
+    font-size: 10px !important;
+    line-height: 1.35 !important;
+    text-align: right !important;
+    white-space: normal !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row > span:last-child {
+    position: absolute !important;
+    top: 13px !important;
+    right: 2px !important;
+    color: #8b9a9b !important;
+    pointer-events: none !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row-wrap {
+    width: 100% !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row {
+    transition: background-color .14s ease, transform .14s ease !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row:active {
+    transform: scale(.995) !important;
+    background: #f1f6f3 !important;
+  }
+}
+
