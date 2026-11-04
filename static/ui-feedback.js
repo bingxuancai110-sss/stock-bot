@@ -186,14 +186,15 @@
     var panel = svg.closest('.portfolio-trend-panel') || svg.parentElement;
     var readout = el('div', 'ui-chart-readout '+(svg.matches('.portfolio-trend-svg')?'ui-portfolio-readout':'ui-rank-readout')), values = el('span', 'ui-chart-values');
     values.hidden=true;values.setAttribute('role','tooltip');
-    var button = el('button', '', '觸控追蹤'); button.type = 'button'; button.setAttribute('aria-pressed', 'false'); readout.append(values, button);
+    readout.append(values);
     panel.classList.add('ui-chart-host');
     var host = svg.closest('.portfolio-trend-plot') || svg;
     var anchor=svg.matches('.portfolio-trend-svg')?host:svg.parentElement.querySelector('.legend')||svg;anchor.after(readout);
     var ns = 'http://www.w3.org/2000/svg', guide = document.createElementNS(ns, 'line'), dot = document.createElementNS(ns, 'circle');
     guide.setAttribute('class', 'ui-chart-crosshair'); dot.setAttribute('class', 'ui-chart-dot'); dot.setAttribute('r', '5'); guide.style.display = dot.style.display = 'none'; svg.append(guide, dot);
     svg.setAttribute('tabindex', '0'); svg.setAttribute('aria-label', (svg.getAttribute('aria-label') || '走勢圖') + '，左右方向鍵追蹤資料');
-    var tracking = false, frame = 0, lastX = null, selected = 0;
+    svg.classList.add('ui-chart-tracking');
+    var frame = 0, lastX = null, selected = 0, drag = null, dragged = false;
     function clear() { values.hidden=true; guide.style.display = dot.style.display = 'none'; each(svg, '.ui-chart-point-active', function (n) { n.classList.remove('ui-chart-point-active'); }); }
     function show(index) {
       var points = chartPoints(svg); if (!points.length) return;
@@ -206,15 +207,23 @@
     }
     function nearest(x) { var points = chartPoints(svg), best = 0, distance = Infinity; points.forEach(function (p, i) { var d = Math.abs(p.x - x); if (d < distance) { best = i; distance = d; } }); show(best); }
     function move(e) {
-      if (e.pointerType === 'touch' && !tracking) return;
+      if (drag && drag.id === e.pointerId && host.scrollWidth > host.clientWidth) {
+        var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+        if (Math.abs(dx) > 6 && Math.abs(dx) > Math.abs(dy)) {
+          dragged = true;
+          host.scrollLeft = drag.scroll - dx;
+        }
+      }
       lastX = e.clientX;
       if (frame) return; frame = requestAnimationFrame(function () { frame = 0; if (!svg.isConnected) return; var r = svg.getBoundingClientRect(); if (r.width) nearest((lastX - r.left) / r.width * svg.viewBox.baseVal.width); });
     }
-    button.onclick = function () { tracking = !tracking; button.setAttribute('aria-pressed', String(tracking)); svg.classList.toggle('ui-chart-tracking', tracking); if (!tracking) clear(); };
     function key(e) { if (e.key === 'Escape') { clear(); return; } if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); var points=chartPoints(svg),current=points[selected];if(!current)return;var direction=e.key==='ArrowLeft'?-1:1,next=selected,distance=Infinity;points.forEach(function(p,i){var delta=(p.x-current.x)*direction;if(delta>.1&&delta<distance){distance=delta;next=i;}});show(next); } }
-    svg.addEventListener('pointermove', move, { passive: true }); svg.addEventListener('pointerdown', move, { passive: true }); svg.addEventListener('keydown', key);
-    var leave = function () { if (!tracking) clear(); }; svg.addEventListener('pointerleave', leave);
-    var cleanup = function () { cancelAnimationFrame(frame); svg.removeEventListener('pointermove', move); svg.removeEventListener('pointerdown', move); svg.removeEventListener('keydown', key); svg.removeEventListener('pointerleave', leave); chartCleanups.delete(cleanup); };
+    function down(e) { dragged = false; drag = {id:e.pointerId,x:e.clientX,y:e.clientY,scroll:host.scrollLeft}; move(e); }
+    function up() { drag = null; }
+    function click(e) { if (dragged) { e.preventDefault(); e.stopImmediatePropagation(); dragged = false; } }
+    svg.addEventListener('pointermove', move, { passive: true }); svg.addEventListener('pointerdown', down, { passive: true }); svg.addEventListener('pointerup', up); svg.addEventListener('click', click, true); svg.addEventListener('keydown', key);
+    var leave = function () { drag = null; clear(); }; svg.addEventListener('pointerleave', leave); svg.addEventListener('pointercancel', leave);
+    var cleanup = function () { cancelAnimationFrame(frame); svg.removeEventListener('pointermove', move); svg.removeEventListener('pointerdown', down); svg.removeEventListener('pointerup', up); svg.removeEventListener('click', click, true); svg.removeEventListener('keydown', key); svg.removeEventListener('pointerleave', leave); svg.removeEventListener('pointercancel', leave); chartCleanups.delete(cleanup); };
     cleanup.svg = svg; chartCleanups.add(cleanup);
   }
   function rankFeedback(button) {

@@ -28478,10 +28478,10 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261104-3">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261104-7">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261104-6">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261104-6">
-<script defer src="/static/ui-feedback.js?v=20261103-4"></script>
+<script defer src="/static/ui-feedback.js?v=20261104-7"></script>
 <script defer src="/static/fugle-live.js?v=20261104-2"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
@@ -29496,8 +29496,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
   var startedAt = Date.now();
   var visualFrame = 0;
   var statusMessages = [
-    '正在掃描市場資料…', '正在比對法人與估值…', '正在整理你的持股行情…',
-    '正在計算組合變化…', '正在建立今日市場判讀…', '正在完成最後資料校驗…'
+    '正在讀取頁面資料…', '正在等候伺服器回應…'
   ];
   var timer = null;
   // 此動畫只表示正在載入，不代表後端實際處理百分比。
@@ -29531,9 +29530,9 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
     var marketStatus = document.getElementById('market-loader-status');
     if (marketStatus && elapsedSec > 2.5) {{
       if (elapsedSec >= 75) {{
-        marketStatus.textContent = '資料同步時間較久，正在完成最後校驗…';
+        marketStatus.textContent = '連線時間較久，仍在等候資料回應…';
       }} else if (elapsedSec >= 60) {{
-        marketStatus.textContent = '市場資料仍在整理中，請再等一下…';
+        marketStatus.textContent = '正在等候資料回應，請稍候…';
       }} else {{
         marketStatus.textContent = statusMessages[messageIndex];
       }}
@@ -29553,7 +29552,7 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
       else if (si === stageIndex) {{ steps[si].classList.add('active'); if (icon) icon.textContent = '●'; }}
       else if (icon) icon.textContent = '○';
     }}
-    visualTimer = window.setTimeout(updateVisualProgress, 140);
+    visualTimer = window.setTimeout(updateVisualProgress, 1000);
   }}
   var visualTimer = window.setTimeout(updateVisualProgress, 40);
 
@@ -32177,7 +32176,7 @@ def web_positions(uid):
                         .replace("&lt;/b&gt;", "</b>"))
         succeeded = str(message or "").lstrip().startswith("✅")
         body = (
-            '<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261104-4">'
+            '<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261104-7">'
             f'<section class="p2-trade-result {"success" if succeeded else "error"}" role="status">'
             f'<span class="p2-result-mark" aria-hidden="true">{"✓" if succeeded else "!"}</span>'
             f'<h2>{"記帳完成" if succeeded else "操作未完成"}</h2>'
@@ -32896,7 +32895,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
     _p2_history_html = "".join(_p2_history_rows) or '<li class="p2-empty">目前沒有可辨識的已出清持股紀錄。</li>'
 
     body = f"""
-<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261104-4">
+<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261104-7">
 <div id="portfolio-v2">
 {holding_card_css}
 {f'<div class="msg">{msg}</div>' if msg else ''}
@@ -33015,8 +33014,11 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
       '<div class="position-confirm-grid">'+rows.map(function(r){return '<div class="position-confirm-item"><small>'+esc(r[0])+'</small><b>'+esc(r[1])+'</b></div>'}).join('')+'</div>'+
       (isAdd?'<div class="position-confirm-warning">送出後會立即寫入持股，並產生一筆加碼操作紀錄。若股數填錯，之後還要再修正，請先確認股數。</div>':'<div class="position-confirm-warning">這筆操作會正式賣出：更新持股、已實現損益與交易紀錄。為避免重複賣出，送出後請等待完成提示，不要重複點擊。</div>')+
       '</div><div class="position-confirm-actions"><button type="button" class="position-confirm-cancel">返回</button><button type="button" class="position-confirm-submit">確認送出</button></div></div></div>';
-    document.body.insertAdjacentHTML('beforeend',html);
-    var back=document.getElementById('position-confirm-backdrop');
+    // Native modal dialogs make everything outside their top layer inert.
+    // Keep the confirmation and pending feedback inside the active trade sheet.
+    var overlayHost=form.closest('dialog[open]') || document.body;
+    overlayHost.insertAdjacentHTML('beforeend',html);
+    var back=overlayHost.querySelector('#position-confirm-backdrop');
     var cancel=back.querySelector('.position-confirm-cancel');
     var submit=back.querySelector('.position-confirm-submit');
     cancel.onclick=function(){back.remove()};
@@ -33035,7 +33037,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
         '<p class="position-submit-progress-sub">'+esc(sub)+'</p>'+
         '<div class="position-submit-progress-track"><div class="position-submit-progress-bar"></div></div>'+
         '</div>';
-      document.body.appendChild(wrap);
+      overlayHost.appendChild(wrap);
       var bar=wrap.querySelector('.position-submit-progress-bar');
       var subEl=wrap.querySelector('.position-submit-progress-sub');
       var value=8, finished=false;
@@ -36058,7 +36060,7 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
   <div class="portfolio-trend-summary">
     <div class="portfolio-trend-stat portfolio-stat"><small>我的組合</small><strong class="port">{html.escape(fmt_pct(latest["port"]))}</strong></div>
     <div class="portfolio-trend-stat market-stat"><small>加權指數</small><strong class="market">{html.escape(fmt_pct(market_latest))}</strong></div>
-    <div class="portfolio-trend-stat excess-stat {perf_class(excess)}"><small>跑贏大盤</small><strong class="excess">{html.escape(fmt_pct(excess))}</strong><span class="excess-caption">{'▲ 領先大盤 ' + html.escape(fmt_pct(abs(excess))) + ' 個百分點' if excess is not None and excess > 0 else ('▼ 落後大盤 ' + html.escape(fmt_pct(abs(excess))) + ' 個百分點' if excess is not None and excess < 0 else '與大盤持平')}</span></div>
+    <div class="portfolio-trend-stat excess-stat {perf_class(excess)}"><small>相對大盤</small><strong class="excess">{html.escape(fmt_pct(excess))}</strong><span class="excess-caption">{'▲ 領先大盤 ' + html.escape(fmt_pct(abs(excess))) + ' 個百分點' if excess is not None and excess > 0 else ('▼ 落後大盤 ' + html.escape(fmt_pct(abs(excess))) + ' 個百分點' if excess is not None and excess < 0 else '與大盤持平')}</span></div>
   </div>
 </section>'''
         )
