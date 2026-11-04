@@ -4495,29 +4495,71 @@ def web_login_required(view):
 
 
 # ── 持股 CRUD ──
-def get_positions(user_id):
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT id, code, shares, cost, bought_on, note, created_at
-            FROM positions WHERE user_id = %s AND COALESCE(shares, 0) > 0 ORDER BY id
-            """,
-            (str(user_id).strip(),),
+class PositionsDataUnavailable(RuntimeError):
+    """持股資料庫讀取失敗；不可把連線錯誤偽裝成零持股。"""
+
+
+@app.errorhandler(PositionsDataUnavailable)
+def _positions_data_unavailable(exc):
+    if request.method == "POST":
+        message = (
+            "資料庫連線中斷，這次操作結果目前無法確認。請勿重複送出新增／賣出；"
+            "稍後重新整理持股頁並檢查操作日報。"
         )
-        rows = cursor.fetchall()
-        cursor.close()
-        return [
-            {"id": r[0], "code": r[1], "shares": r[2], "cost": r[3],
-             "bought_on": r[4], "note": r[5], "created_at": r[6]}
-            for r in rows
-        ]
-    except Exception as e:
-        print(f"❌ 讀取持股失敗: {e}")
-        return []
-    finally:
-        release_db_connection(conn)
+    else:
+        message = (
+            "資料庫連線中斷，持股資料暫時無法讀取。系統不會把讀取失敗當成零持股；"
+            "請稍後重新整理。"
+        )
+    body = (
+        '<section class="position-data-error" role="alert">'
+        '<h2>持股資料暫時無法確認</h2>'
+        f'<p>{html.escape(message)}</p>'
+        '<a href="/web/positions" data-no-busy="1">重新整理持股</a>'
+        '</section>'
+    )
+    response = respond_page("持股資料暫時無法確認", body, "positions")
+    response.status_code = 503
+    return response
+
+
+def get_positions(user_id):
+    last_error = None
+    for attempt in range(2):
+        conn = None
+        cursor = None
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, code, shares, cost, bought_on, note, created_at
+                FROM positions WHERE user_id = %s AND COALESCE(shares, 0) > 0 ORDER BY id
+                """,
+                (str(user_id).strip(),),
+            )
+            rows = cursor.fetchall()
+            return [
+                {"id": r[0], "code": r[1], "shares": r[2], "cost": r[3],
+                 "bought_on": r[4], "note": r[5], "created_at": r[6]}
+                for r in rows
+            ]
+        except Exception as exc:
+            last_error = exc
+            print(
+                "❌ 讀取持股失敗（第 %s/2 次，%s）；不回傳空持股。" %
+                (attempt + 1, type(exc).__name__), flush=True)
+            if attempt == 0:
+                time.sleep(0.2)
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+            if conn is not None:
+                release_db_connection(conn)
+    raise PositionsDataUnavailable("持股查詢連線連續失敗") from last_error
 
 
 def merge_positions(positions):
@@ -10953,12 +10995,16 @@ RADAR_SPARK_CACHE_SECONDS = 15
 # Yahoo spark 實測單次最多約 20 個 symbols；依 market map 選單一後綴，
 # 只有未知市場代號才雙後綴，避免超過端點上限造成整批 400。
 RADAR_SPARK_BATCH_SIZE = 20
-RADAR_SPARK_MAX_WORKERS = 12
+# A full-market intraday scan can fan out to hundreds of Yahoo spark batches.
+# Keep only four requests in flight on Render's 512 MiB web instance; the scan
+# remains complete, but it no longer spikes memory with a dozen concurrent
+# responses while normal page requests are being served.
+RADAR_SPARK_MAX_WORKERS = 4
 RADAR_DEEP_SCAN_LIMIT = 240
-# 定時／網頁冷啟動 producer 以全市場輕量初篩為主；深度技術補抓控制在 20 檔，
+# 定時／網頁冷啟動 producer 以全市場輕量初篩為主；深度技術補抓控制在 12 檔，
 # 避免在 Render 512 MiB 的單一 Web instance 上與一般頁面搶記憶體。
 # 手動完整分析仍保留 RADAR_DEEP_SCAN_LIMIT=240。
-RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 20
+RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 12
 
 
 def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
@@ -31394,6 +31440,24 @@ def web_positions(uid):
         fee_disc, min_fee = get_fee_settings(get_profile(uid))
 
     msg = ""
+    def trade_result_response(message):
+        """Finish an executed trade without a second DB read on the request path.
+
+        The trade helper commits its transaction before returning.  Re-reading
+        all positions here used to turn a successful sale into an HTTP error
+        whenever Supabase briefly dropped the follow-up connection.
+        """
+        safe_message = html.escape(str(message or ""))
+        safe_message = (safe_message.replace("&lt;br&gt;", "<br>")
+                        .replace("&lt;b&gt;", "<b>")
+                        .replace("&lt;/b&gt;", "</b>"))
+        body = (
+            f'<div class="msg" role="status">{safe_message}</div>'
+            '<p><a href="/web/positions" data-no-busy="1">回到持股頁</a>'
+            '　<a href="/web/portfolio" data-no-busy="1">查看操作日報</a></p>'
+        )
+        return respond_page("持股操作結果", body, "positions")
+
     if request.method == "POST":
         action = request.form.get("action")
         if action == "save_target_weights":
@@ -31441,6 +31505,7 @@ def web_positions(uid):
                        f"{info['realized_pl']:+,.0f} 元。")
             else:
                 msg = f"賣出失敗：{info}"
+            return trade_result_response(msg)
         elif action == "exright_apply":
             ok, info = apply_exright_adjustment(
                 uid, request.form.get("code"), request.form.get("ratio"))
@@ -31503,6 +31568,7 @@ def web_positions(uid):
                        f"證交稅 {summary['tax']:,.0f}。")
             else:
                 msg = "已賣出，但查不到報價，這筆沒有損益紀錄。"
+            return trade_result_response(msg)
         else:
             code = normalize_code(request.form.get("code", ""))
             try:
