@@ -328,3 +328,25 @@
   }
 }
 
+/* Three asset destinations fit together; only the longer source list scrolls. */
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-asset-tabs {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  overflow: visible !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-asset-tabs button {
+  width: 100% !important;
+  min-width: 0 !important;
+  flex: initial !important;
+  padding-right: 5px !important;
+  padding-left: 5px !important;
+  white-space: nowrap !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-load-elapsed {
+  border: 1px solid #d6e3dc !important;
+  border-radius: 999px !important;
+  background: #f0f5f1 !important;
+  color: #536d60 !important;
+  box-shadow: none !important;
+}
+
