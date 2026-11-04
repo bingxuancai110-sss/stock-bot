@@ -59,6 +59,8 @@ html body a.ui-nav-pending::after{content:'';position:absolute;bottom:3px;left:c
     linear-gradient(155deg,#f5f8f8 0%,#edf3f4 54%,#f8f7f2 100%)!important;
   box-shadow:none!important;color:#1d3445!important;animation:sb-loader-arrive 260ms var(--sb-feedback-ease) both
 }
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3::before{display:none!important;content:none!important}
+#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3{gap:0!important}
 #stockbot-app #stockbot-shell #app-page-content #loading .ui-shell-skeleton{display:none!important}
 #stockbot-app #stockbot-shell #app-page-content #loading .market-loader-inner{
   position:relative!important;display:block!important;width:min(420px,88vw)!important;padding:0!important;
@@ -447,6 +449,32 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].up{color:#b4232e!important;-webkit-text-fill-color:#b4232e!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].down{color:#137451!important;-webkit-text-fill-color:#137451!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].is-limit-board{min-height:25px!important;margin-top:5px!important;padding:4px 8px!important;border-radius:7px!important;color:#fff!important;-webkit-text-fill-color:#fff!important}
+
+/* Phones need a readable holdings list: use the full viewport width and one stock per row. */
+@media(max-width:760px){
+  #stockbot-app #stockbot-shell #app-page-content .rows:has(>.position-card){
+    display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:0!important;
+    width:100%!important;box-sizing:border-box!important;margin:12px 0 20px!important;
+    padding:0 14px!important;border:1px solid #dce5e9!important;border-radius:16px!important;
+    background:#fff!important;box-shadow:0 3px 12px rgba(31,60,77,.035)!important;overflow:hidden!important
+  }
+  #stockbot-app #stockbot-shell #app-page-content .rows:has(>.position-card)>.position-card{
+    width:100%!important;min-width:0!important;box-sizing:border-box!important;
+    padding:15px 1px 11px!important;border:0!important;border-bottom:1px solid #e7ebee!important;
+    border-radius:0!important;background:transparent!important;box-shadow:none!important
+  }
+  #stockbot-app #stockbot-shell #app-page-content .rows:has(>.position-card)>.position-card:last-child{border-bottom:0!important}
+  #stockbot-app #stockbot-shell #app-page-content .position-card-title{min-width:0!important}
+  #stockbot-app #stockbot-shell #app-page-content .position-card-title h3{
+    display:block!important;min-width:0!important;max-width:100%!important;white-space:normal!important;
+    overflow:visible!important;text-overflow:clip!important;overflow-wrap:anywhere!important;line-height:1.35!important
+  }
+  #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3::before{display:none!important;content:none!important}
+  #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3{gap:0!important}
+  #stockbot-app #stockbot-shell #app-page-content .position-card-price{max-width:none!important;min-width:0!important}
+  #stockbot-app #stockbot-shell #app-page-content .position-card-price b{white-space:nowrap!important;font-size:clamp(18px,5.2vw,22px)!important}
+  #stockbot-app #stockbot-shell #app-page-content .position-card-primary{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].is-limit-board::before{content:attr(data-limit-label);margin-right:5px;font-weight:900}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].is-limit-board.up{background:#9f3036!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].is-limit-board.down{background:#0b684b!important}

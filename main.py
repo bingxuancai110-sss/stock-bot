@@ -17830,7 +17830,8 @@ def build_watchlist_advice(total, chip_score, pos_score, rev_score, val_score,
 
 
 
-def _repair_missing_cumulative_revenue(codes, revenue_data, trace=None):
+def _repair_missing_cumulative_revenue(codes, revenue_data, trace=None,
+                                      allow_network_fallback=True):
     """補修缺失的「累計營收年增率」。
 
     月營收快照可能有「當月 YoY」但 cum_yoy_pct 為 NULL；這不能直接把單月 YoY
@@ -18005,6 +18006,12 @@ def _repair_missing_cumulative_revenue(codes, revenue_data, trace=None):
             continue
 
         _trace("db_calculation_failed", code=code, available_periods=sorted(db_rows.get(code, {}).keys())[-8:])
+
+        # 使用者即時查詢只讀已快取／已保存的營收。缺資料時保留「資料不足」，
+        # 不在 LINE webhook 背景工作內逐月呼叫 MOPS 最多 24 次；完整補抓由既有預熱工作負責。
+        if not allow_network_fallback:
+            _trace("network_repair_skipped", code=code, reason="user_facing_query")
+            continue
 
         # 先直接問最新完整月的 MOPS 官方資料；若官方列本身有累計 YoY，這一步就結束。
         market = None
@@ -18188,7 +18195,7 @@ def web_admin_revenue_debug(uid):
         return _workbench_json_response(out, 500)
 
 
-def _compute_stock_watchlist_scores(codes):
+def _compute_stock_watchlist_scores(codes, allow_network_revenue_repair=True):
     """
     計算個股自選評分；LINE、持股頁、選股台共用「網頁五大因子模型」。
     這裡只統一模型，不調整五大因子的權重／門檻，待成效資料累積後再評估。
@@ -18201,7 +18208,8 @@ def _compute_stock_watchlist_scores(codes):
     revenue_data = fetch_monthly_revenue() or {}
     # 五大因子真正使用前，先修補「有月營收、但累計 YoY 為 NULL」的個股。
     # 這是針對目前使用者的自選股做按需修補，不會把單月 YoY 冒充累計 YoY。
-    revenue_data = _repair_missing_cumulative_revenue(codes, revenue_data)
+    revenue_data = _repair_missing_cumulative_revenue(
+        codes, revenue_data, allow_network_fallback=allow_network_revenue_repair)
     valuation_data = fetch_valuation() or {}
     industry_map = get_industry_map() or {}
     momentum_stats = get_industry_momentum(revenue_data, industry_map)
@@ -18284,7 +18292,7 @@ def _compute_stock_watchlist_scores(codes):
     return result
 
 
-def compute_watchlist_scores(codes):
+def compute_watchlist_scores(codes, allow_network_revenue_repair=True):
     """自選股評分總入口：個股與 ETF 分流，避免用錯商品模型。"""
     normalized = list(dict.fromkeys(
         str(code).strip().upper() for code in (codes or []) if str(code).strip()))
@@ -18294,7 +18302,8 @@ def compute_watchlist_scores(codes):
     etf_codes = [code for code in normalized if is_etf(code)]
     result = {}
     if stock_codes:
-        result.update(_compute_stock_watchlist_scores(stock_codes))
+        result.update(_compute_stock_watchlist_scores(
+            stock_codes, allow_network_revenue_repair=allow_network_revenue_repair))
     if etf_codes:
         result.update(_compute_etf_watchlist_scores(etf_codes))
     return result
@@ -19029,7 +19038,9 @@ def build_single_stock_report(code, user_id=None):
         stock_for_display["low"] = None
 
     inst = dict(_t86_cache.get("data") or {})
-    scores = compute_watchlist_scores([code])
+    # LINE 個股查詢優先讀取既有營收快照；避免為一檔股票同步補抓最多 24 個月官方資料。
+    # 缺少累計營收時保留資料不足，日常完整補建仍由預熱流程執行。
+    scores = compute_watchlist_scores([code], allow_network_revenue_repair=False)
     score = scores.get(code)
     ind_map = get_industry_map() or {}
     industry = ind_map.get(code)
@@ -28358,7 +28369,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261104-2">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261104-3">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261104-6">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261104-6">
 <script defer src="/static/ui-feedback.js?v=20261103-4"></script>
@@ -52479,6 +52490,23 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
     if not loading_ok:
         print(f"⚠️ LINE 原生 Loading 未啟動，仍繼續分析：{user_id} / {cfg['name']}")
 
+    # LINE 原生 Loading 單次最多顯示 60 秒。遇到冷資料查詢時定期延長，
+    # 讓使用者不會在分析尚未完成時看著動畫消失；這不會送出額外訊息。
+    loading_stop = threading.Event()
+    loading_heartbeat = None
+    if loading_ok:
+        def _keep_loading_visible():
+            while not loading_stop.wait(45):
+                if not start_loading_animation(user_id, loading_seconds):
+                    print(f"⚠️ LINE Loading 延長失敗：{user_id} / {cfg['name']}")
+        try:
+            loading_heartbeat = threading.Thread(
+                target=_keep_loading_visible,
+                name=f"line-loading-{feature}", daemon=True)
+            loading_heartbeat.start()
+        except Exception as exc:
+            print(f"⚠️ LINE Loading 延長執行緒啟動失敗：{user_id} / {cfg['name']}: {exc}")
+
     def _send_final_messages(messages):
         """最多五則使用同一個 Reply Token；超出部分才使用 Push。"""
         normalized = list(messages or [])
@@ -52552,6 +52580,7 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
                 except Exception as push_exc:
                     print(f"❌ LINE 背景查詢失敗通知也送不出去 {user_id}: {push_exc}")
         finally:
+            loading_stop.set()
             _line_async_release(user_id)
 
     try:
@@ -52561,6 +52590,7 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
             daemon=True).start()
         return True
     except Exception as exc:
+        loading_stop.set()
         _line_async_release(user_id)
         print(f"❌ LINE 背景查詢執行緒啟動失敗 {user_id}: {exc}")
         try:
@@ -52906,14 +52936,11 @@ def handle_message(event):
     # 隱藏指令要先回覆，避免資料庫 upsert 或一般限流流程失敗時，
     # 使用者只看到自己送出的訊息、機器人卻完全沒有回覆。
     if text == "秉軒持股":
-        try:
-            line_bot_api.reply_message(event.reply_token, _line_hidden_combined_portfolio_flex(user_id))
-        except Exception as exc:
-            print(f"❌ 秉軒持股圖卡失敗 {user_id}: {type(exc).__name__}: {exc}")
-            try:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="秉軒持股暫時無法載入，請稍後再試。"))
-            except Exception as fallback_exc:
-                print(f"❌ 秉軒持股錯誤回覆失敗 {user_id}: {fallback_exc}")
+        line_base_url = public_web_base_url(request.url_root.rstrip("/"))
+        _line_async_query(
+            user_id, "positions_export",
+            lambda: _line_hidden_combined_portfolio_flex(user_id),
+            event.reply_token, line_base_url)
         return
 
 
