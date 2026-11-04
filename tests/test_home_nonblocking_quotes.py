@@ -65,3 +65,59 @@ def test_closing_index_refresh_runs_once_in_background_and_does_not_reuse_yester
     assert ns['_fugle_market_quote'](NOW) is None and len(jobs)==1
     fetch.assert_not_called();jobs[0]()
     assert ns['_fugle_market_quote'](NOW)['pct']==-1 and len(jobs)==1
+
+
+def test_incomplete_home_refresh_uses_exponential_backoff():
+    tree=ast.parse((Path(__file__).parents[1]/'main.py').read_text())
+    fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and
+            n.name=='_schedule_home_intraday_payload_refresh')
+    now={'value':100.0}
+    class Clock:
+        @staticmethod
+        def time():return now['value']
+        @staticmethod
+        def monotonic():return now['value']
+    class ImmediateThread:
+        def __init__(self,*,target,**kwargs):self.target=target
+        def start(self):self.target()
+    ns=dict(time=Clock,threading=SimpleNamespace(Thread=ImmediateThread),
+        _HOME_INTRADAY_REFRESH_LOCK=threading.Lock(),_HOME_INTRADAY_REFRESH_RUNNING=set(),
+        _HOME_INTRADAY_REFRESH_LAST_START={},_HOME_INTRADAY_REFRESH_MIN_GAP=5.0,
+        _HOME_INTRADAY_REFRESH_FAILURES={},_HOME_INTRADAY_REFRESH_RETRY_AFTER={},
+        _HOME_INTRADAY_REFRESH_BACKOFF_MIN=15.0,_HOME_INTRADAY_REFRESH_BACKOFF_MAX=120.0,
+        _refresh_home_intraday_payload_sync=lambda uid:{'ok':True,'market_open':True,
+            'portfolio':{'stale_count':2,'positive':[],'negative':[]}},
+        _HOME_INTRADAY_PAYLOAD_CACHE_LOCK=threading.Lock(),_HOME_INTRADAY_PAYLOAD_CACHE={},
+        taiwan_today=lambda:NOW.date(),_save_home_intraday_payload_snapshot=lambda *a:None,
+        _taiwan_post_close=lambda:False)
+    exec(compile(ast.Module(body=[fn],type_ignores=[]),'<home-refresh-scheduler>','exec'),ns)
+    assert ns['_schedule_home_intraday_payload_refresh']('owner') is True
+    assert ns['_HOME_INTRADAY_REFRESH_RETRY_AFTER']['owner']==115.0
+    now['value']=101.0
+    assert ns['_schedule_home_intraday_payload_refresh']('owner') is False
+    now['value']=115.0
+    assert ns['_schedule_home_intraday_payload_refresh']('owner') is True
+    assert ns['_HOME_INTRADAY_REFRESH_RETRY_AFTER']['owner']==145.0
+
+
+def test_failed_official_close_request_is_shared_and_cooled_down():
+    tree=ast.parse((Path(__file__).parents[1]/'main.py').read_text())
+    fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and
+            n.name=='fetch_taiex_official_close')
+    now={'value':100.0};calls=[]
+    class Clock:
+        @staticmethod
+        def time():return now['value']
+    ns=dict(time=Clock,_taiwan_post_close=lambda current:True,
+        taiwan_now=lambda:NOW,_TAIEX_OFFICIAL_CLOSE_LOCK=threading.Lock(),
+        _TAIEX_OFFICIAL_CLOSE_CACHE={'day':None,'data':None,'attempt_at':0,'running':False},
+        TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS=30,
+        _fetch_taiex_official_close_uncached=lambda current:(calls.append(current) or None))
+    exec(compile(ast.Module(body=[fn],type_ignores=[]),'<official-close-cache>','exec'),ns)
+    assert ns['fetch_taiex_official_close'](NOW) is None
+    now['value']=101.0
+    assert ns['fetch_taiex_official_close'](NOW) is None
+    assert len(calls)==1
+    now['value']=130.0
+    ns['fetch_taiex_official_close'](NOW)
+    assert len(calls)==2

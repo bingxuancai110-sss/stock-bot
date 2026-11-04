@@ -96,3 +96,15 @@ def test_failed_single_recovery_is_throttled_across_outer_retries():
         for _ in range(3):
             assert ns['_fetch_twse_mis_quotes'](['2308','2330'],'.TW',force_refresh=True,cache_result=False)=={}
     assert len(session.get.call_args_list)==5  # three batches, two single attempts total
+
+
+def test_quick_force_refresh_failure_is_cooled_down_even_without_shared_quote_cache():
+    ns,session=context([])
+    session.get.side_effect=RuntimeError('MIS unavailable')
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        ns['_TWSE_MIS_EXECUTOR']=executor
+        assert ns['_fetch_twse_mis_quotes'](['2308'],'.TW',force_refresh=True,
+                                             cache_result=False,quick_mode=True)=={}
+        assert ns['_fetch_twse_mis_quotes'](['2308'],'.TW',force_refresh=True,
+                                             cache_result=False,quick_mode=True)=={}
+    assert len(session.get.call_args_list)==2  # first request retries once; next poll is cooled down

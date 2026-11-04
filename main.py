@@ -6739,6 +6739,10 @@ _HOME_INTRADAY_REFRESH_LOCK = threading.Lock()
 _HOME_INTRADAY_REFRESH_RUNNING = set()
 _HOME_INTRADAY_REFRESH_LAST_START = {}
 _HOME_INTRADAY_REFRESH_MIN_GAP = 5.0
+_HOME_INTRADAY_REFRESH_FAILURES = {}
+_HOME_INTRADAY_REFRESH_RETRY_AFTER = {}
+_HOME_INTRADAY_REFRESH_BACKOFF_MIN = 15.0
+_HOME_INTRADAY_REFRESH_BACKOFF_MAX = 120.0
 _HOME_INTRADAY_PAYLOAD_SNAPSHOT_PREFIX = "homepage_intraday_payload:"
 _HOME_INTRADAY_PAYLOAD_SNAPSHOT_SAVE_LOCK = threading.Lock()
 _HOME_INTRADAY_PAYLOAD_SNAPSHOT_SAVE_LAST = {}
@@ -7143,33 +7147,14 @@ def _refresh_home_intraday_payload_sync(uid):
             len(home_suffix_map), len(codes)), flush=True)
         fresh_price_map = _fetch_twse_mis_quotes(
             codes, market_suffix=home_suffix_map, force_refresh=True,
-            cache_result=False, quick_mode=False)
+            cache_result=False, quick_mode=True)
         fresh_contribution_quotes = {
             str(code): dict(quote) for code, quote in (fresh_price_map or {}).items()
             if _mis_quote_is_current_for_contribution(quote)
         }
-        # 再把缺漏的股票整批補抓兩輪；只請求缺漏代號，不重抓已成功的股票。
-        # 這裡刻意不用短輪詢的重試冷卻，因為首頁首次載入必須先盡量取得完整組合。
-        for retry_round in range(2):
-            missing_codes = [code for code in codes if code not in fresh_contribution_quotes]
-            if not missing_codes:
-                break
-            time.sleep(0.35 * (retry_round + 1))
-            try:
-                retry_quotes = _fetch_twse_mis_quotes(
-                    missing_codes, market_suffix=_home_market_suffix_map(missing_codes),
-                    force_refresh=True, cache_result=False, quick_mode=False)
-            except Exception as retry_exc:
-                print("⚠️ 首頁缺漏行情整批重試 %s 失敗：%s" % (
-                    retry_round + 1, type(retry_exc).__name__), flush=True)
-                continue
-            for code, quote in (retry_quotes or {}).items():
-                if _mis_quote_is_current_for_contribution(quote):
-                    fresh_price_map[code] = dict(quote)
-                    fresh_contribution_quotes[code] = dict(quote)
-            print("⚡ 首頁行情補抓第 %s 輪：有效 %s/%s 檔；本輪補抓目標 %s 檔" % (
-                retry_round + 1, len(fresh_contribution_quotes), len(codes),
-                len(missing_codes)), flush=True)
+        # One bounded MIS batch is enough per refresh. Missing symbols remain explicitly
+        # incomplete; the next background refresh is rate-limited with exponential backoff.
+        # Never recursively fan out failed batches from the homepage worker.
         backup_quote_count = 0
         if intraday:
             missing_for_backup = [code for code in codes if code not in fresh_contribution_quotes]
@@ -7290,7 +7275,9 @@ def _schedule_home_intraday_payload_refresh(uid):
         if uid_key in _HOME_INTRADAY_REFRESH_RUNNING:
             return False
         last_start = float(_HOME_INTRADAY_REFRESH_LAST_START.get(uid_key) or 0)
-        if now_epoch - last_start < _HOME_INTRADAY_REFRESH_MIN_GAP:
+        retry_after = float(_HOME_INTRADAY_REFRESH_RETRY_AFTER.get(uid_key) or 0)
+        if (now_epoch - last_start < _HOME_INTRADAY_REFRESH_MIN_GAP or
+                now_epoch < retry_after):
             return False
         _HOME_INTRADAY_REFRESH_RUNNING.add(uid_key)
         _HOME_INTRADAY_REFRESH_LAST_START[uid_key] = now_epoch
@@ -7299,6 +7286,21 @@ def _schedule_home_intraday_payload_refresh(uid):
         started = time.monotonic()
         try:
             payload = _refresh_home_intraday_payload_sync(uid_key)
+            portfolio = payload.get("portfolio") or {} if isinstance(payload, dict) else {}
+            degraded = bool(isinstance(payload, dict) and
+                            ((not payload.get("ok")) or
+                             (portfolio and int(portfolio.get("stale_count") or 0) > 0)))
+            with _HOME_INTRADAY_REFRESH_LOCK:
+                if degraded:
+                    failures = min(8, int(_HOME_INTRADAY_REFRESH_FAILURES.get(uid_key) or 0) + 1)
+                    _HOME_INTRADAY_REFRESH_FAILURES[uid_key] = failures
+                    delay = min(_HOME_INTRADAY_REFRESH_BACKOFF_MAX,
+                                _HOME_INTRADAY_REFRESH_BACKOFF_MIN * (2 ** (failures - 1)))
+                    _HOME_INTRADAY_REFRESH_RETRY_AFTER[uid_key] = time.time() + delay
+                    print("⚠️ 首頁行情不完整，uid=%s 將於 %.0f 秒後再試" % (uid_key, delay), flush=True)
+                else:
+                    _HOME_INTRADAY_REFRESH_FAILURES.pop(uid_key, None)
+                    _HOME_INTRADAY_REFRESH_RETRY_AFTER.pop(uid_key, None)
             if (isinstance(payload, dict) and payload.get("ok") and
                     (payload.get("market_open") or _taiwan_post_close())):
                 with _HOME_INTRADAY_PAYLOAD_CACHE_LOCK:
@@ -7315,6 +7317,12 @@ def _schedule_home_intraday_payload_refresh(uid):
         except Exception as exc:
             print("⚠️ 首頁盤中資料背景刷新失敗 uid=%s error=%s" % (
                 uid_key, type(exc).__name__), flush=True)
+            with _HOME_INTRADAY_REFRESH_LOCK:
+                failures = min(8, int(_HOME_INTRADAY_REFRESH_FAILURES.get(uid_key) or 0) + 1)
+                _HOME_INTRADAY_REFRESH_FAILURES[uid_key] = failures
+                delay = min(_HOME_INTRADAY_REFRESH_BACKOFF_MAX,
+                            _HOME_INTRADAY_REFRESH_BACKOFF_MIN * (2 ** (failures - 1)))
+                _HOME_INTRADAY_REFRESH_RETRY_AFTER[uid_key] = time.time() + delay
         finally:
             with _HOME_INTRADAY_REFRESH_LOCK:
                 _HOME_INTRADAY_REFRESH_RUNNING.discard(uid_key)
@@ -7371,7 +7379,8 @@ def _build_home_intraday_payload(uid):
                 _cached_market = cached_copy.get("market") or {}
                 _cached_source = str(_cached_market.get("source") or "")
                 if "正式收盤" not in _cached_source:
-                    _official_close = fetch_taiex_official_close(now=now)
+                    # Never make the polling request wait on the official-close network call.
+                    _official_close = _fugle_market_quote(now)
                     try:
                         _official_pct = float(_official_close.get("pct")) if (
                             _official_close and _official_close.get("pct") is not None) else None
@@ -7445,7 +7454,8 @@ def _build_home_intraday_payload(uid):
         if post_close_now:
             _restored_market = restored.get("market") or {}
             if "正式收盤" not in str(_restored_market.get("source") or ""):
-                _official_close = fetch_taiex_official_close(now=now)
+                # Render this API immediately; the shared helper fetches close data in background.
+                _official_close = _fugle_market_quote(now)
                 try:
                     _official_pct = float(_official_close.get("pct")) if (
                         _official_close and _official_close.get("pct") is not None) else None
@@ -10214,7 +10224,7 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
         # incident. Keep returning last valid quotes for 30s after a degraded
         # quick request, then try again automatically.
         failure_at = float(_TWSE_MIS_CACHE.get("failure_at") or 0)
-        if quick_mode and not force_refresh and now_epoch - failure_at < 30:
+        if quick_mode and failure_at and now_epoch - failure_at < 30:
             cached = _TWSE_MIS_CACHE.get("data") or {}
             return {c: dict(cached[c]) for c in codes
                     if c in cached and str(cached[c].get("close_date") or "").replace("-", "")[:8] == today_key}
@@ -10402,6 +10412,11 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
             todays_cache = dict(merged)
     else:
         todays_cache = dict(parsed)
+        if quick_mode:
+            # Even when the caller intentionally bypasses the shared quote cache, remember
+            # degraded batches so polling cannot force-refresh MIS on every page tick.
+            with _realtime_cache_lock:
+                _TWSE_MIS_CACHE["failure_at"] = time.time() if len(parsed) < len(codes) else 0
     return {code: dict(todays_cache[code]) for code in codes
             if code in todays_cache and
             str((todays_cache[code] or {}).get("close_date") or "").replace("-", "")[:8] == today_key}
@@ -16456,6 +16471,9 @@ def score_from_revenue_growth(yoy_pct):
 # 今日首頁與盤前摘要都會用到大盤；短時間內重整不需要重複打外部 API。
 _taiex_cache = {"at": 0, "data": None}
 TAIEX_CACHE_SECONDS = 60
+_TAIEX_OFFICIAL_CLOSE_LOCK = threading.Lock()
+_TAIEX_OFFICIAL_CLOSE_CACHE = {"day": None, "data": None, "attempt_at": 0, "running": False}
+TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS = 30
 
 # 首頁盤中大盤不能拿日K或昨日快照假裝即時；獨立以 TWSE MIS 的 t00 指數短快取。
 _taiex_intraday_cache = {"day": None, "at": 0, "attempt_at": 0, "data": None}
@@ -16611,7 +16629,7 @@ def fetch_taiex_intraday(force_refresh=False, now=None, stale_while_revalidate=F
         return None
 
 
-def fetch_taiex_official_close(now=None):
+def _fetch_taiex_official_close_uncached(now=None):
     """取得 TWSE MIS 同日加權指數正式收盤；資料不完整時回傳 None，不降級冒充收盤。
 
     Yahoo 日K在集合競價後可能仍停在盤中最後一筆（例如 2026/08/27 回 45,969），
@@ -16660,6 +16678,34 @@ def fetch_taiex_official_close(now=None):
     except Exception as exc:
         print(f"⚠️ 抓取 TWSE MIS 正式 TAIEX 收盤失敗：{exc}")
         return None
+
+
+def fetch_taiex_official_close(now=None):
+    """Share same-day official-close requests and cool down repeated upstream failures."""
+    current = now or taiwan_now()
+    if not _taiwan_post_close(current):
+        return None
+    day = current.strftime("%Y%m%d")
+    now_epoch = time.time()
+    with _TAIEX_OFFICIAL_CLOSE_LOCK:
+        state = _TAIEX_OFFICIAL_CLOSE_CACHE
+        if state.get("day") != day:
+            state.update(day=day, data=None, attempt_at=0, running=False)
+        cached = dict(state["data"]) if isinstance(state.get("data"), dict) else None
+        if (state.get("running") or
+                now_epoch - float(state.get("attempt_at") or 0) < TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS):
+            return cached
+        state.update(running=True, attempt_at=now_epoch)
+    try:
+        value = _fetch_taiex_official_close_uncached(current)
+        with _TAIEX_OFFICIAL_CLOSE_LOCK:
+            if _TAIEX_OFFICIAL_CLOSE_CACHE.get("day") == day and value:
+                _TAIEX_OFFICIAL_CLOSE_CACHE["data"] = dict(value)
+        return value
+    finally:
+        with _TAIEX_OFFICIAL_CLOSE_LOCK:
+            if _TAIEX_OFFICIAL_CLOSE_CACHE.get("day") == day:
+                _TAIEX_OFFICIAL_CLOSE_CACHE["running"] = False
 
 
 _taifex_night_cache = {"at": 0, "data": None}
