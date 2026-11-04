@@ -10957,7 +10957,7 @@ RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 48
 
 
 def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
-                            market_map=None):
+                            market_map=None, include_history=True):
     """用 Yahoo spark 分批取全市場輕量即時報價；完整技術欄位再由候選股補抓。
 
     market_map 來自 stock_info 的官方市場欄位；能判斷上市／上櫃時只送一個
@@ -10970,7 +10970,7 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
     cache_day = taiwan_now().date().isoformat()
     now = time.time()
     with _RADAR_SPARK_CACHE_LOCK:
-        if (not force_refresh and _RADAR_SPARK_CACHE.get("day") == cache_day and
+        if (include_history and not force_refresh and _RADAR_SPARK_CACHE.get("day") == cache_day and
                 now - _RADAR_SPARK_CACHE.get("at", 0) < RADAR_SPARK_CACHE_SECONDS):
             cached = _RADAR_SPARK_CACHE.get("data") or {}
             return {code: cached[code] for code in codes if code in cached}
@@ -11019,6 +11019,8 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
             raw_timestamps = raw.get("timestamp") or []
             closes = []
             timestamps = []
+            previous_from_series = None
+            latest_from_series = None
             for idx, value in enumerate(raw_closes):
                 try:
                     px = float(value)
@@ -11026,17 +11028,19 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
                     continue
                 if px <= 0:
                     continue
-                closes.append(px)
-                try:
-                    ts = int(raw_timestamps[idx]) if idx < len(raw_timestamps) and raw_timestamps[idx] is not None else None
-                except (TypeError, ValueError):
-                    ts = None
-                timestamps.append(ts)
-            close = meta.get("regularMarketPrice") or (closes[-1] if closes else None)
+                previous_from_series, latest_from_series = latest_from_series, px
+                if include_history:
+                    closes.append(px)
+                    try:
+                        ts = int(raw_timestamps[idx]) if idx < len(raw_timestamps) and raw_timestamps[idx] is not None else None
+                    except (TypeError, ValueError):
+                        ts = None
+                    timestamps.append(ts)
+            close = meta.get("regularMarketPrice") or latest_from_series
             # chartPreviousClose 在部分台股商品會落到較早的調整基準，
             # 造成 1709／2605 等即時漲幅被放大，雷達便會錯誤排除或誤判。
             # 只要有最近兩個實際日線收盤，使用 closes[-2] 作為今日漲跌基準。
-            previous = closes[-2] if len(closes) >= 2 else meta.get("chartPreviousClose")
+            previous = previous_from_series if previous_from_series is not None else meta.get("chartPreviousClose")
             if close is None or previous in (None, 0):
                 continue
             volume = meta.get("regularMarketVolume") or 0
@@ -11050,15 +11054,11 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
             # 不讓回應順序決定結果；一般股票只會命中其中一個。
             if code in parsed and symbol.upper().endswith(".TWO"):
                 continue
-            parsed[code] = {
+            parsed_item = {
                 "close": close,
                 "pct": (close - previous) / previous * 100,
                 "volume": volume,
                 "previous_close": previous,
-                # 策略研究室也需要同一批 spark 歷史日線計算 60/120D 動能與波動，
-                # 不再為每個策略各自重抓 Yahoo。
-                "closes": closes,
-                "timestamps": timestamps,
                 "updated_at": meta.get("regularMarketTime"),
                 # spark 是盤中／輕量行情，不共享個股收盤 MIS 變數；
                 # 這裡不能引用 get_realtime_stock 作用域內的 official_quote 或 today_date。
@@ -11067,6 +11067,11 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
                 "close_date": None,
                 "close_time": None,
             }
+            if include_history:
+                # 策略研究室使用完整序列計算 60/120D 動能與波動。
+                parsed_item["closes"] = closes
+                parsed_item["timestamps"] = timestamps
+            parsed[code] = parsed_item
         return parsed
 
     parsed = {}
@@ -11076,8 +11081,9 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
         for future in futures:
             parsed.update(future.result())
 
-    with _RADAR_SPARK_CACHE_LOCK:
-        _RADAR_SPARK_CACHE.update({"at": time.time(), "day": cache_day, "data": parsed})
+    if include_history:
+        with _RADAR_SPARK_CACHE_LOCK:
+            _RADAR_SPARK_CACHE.update({"at": time.time(), "day": cache_day, "data": parsed})
     return parsed
 
 
@@ -20219,6 +20225,9 @@ def _job_mark_start(name):
     的失敗或逾時重試，保留 progress_stage／progress_index 讓工作可以續跑。
     """
     batch_id = _job_batch_id(name)
+    # 盤中雷達可能因 Render OOM 被殺，資料庫中的 running 狀態不會跟著程序重啟清除。
+    # 雷達由十分鐘排程重試，使用短於排程週期的殘留門檻，避免被舊狀態卡住半小時。
+    stale_minutes = 8 if name == "盤中雷達快照" else JOB_STALE_MINUTES
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -20253,7 +20262,7 @@ def _job_mark_start(name):
                    AND job_runs.started_at < NOW() - INTERVAL '5 minutes')
             RETURNING name
             """,
-            (name, batch_id, JOB_STALE_MINUTES),
+            (name, batch_id, stale_minutes),
         )
         got = cur.fetchone() is not None
         conn.commit()
@@ -21364,7 +21373,13 @@ def _do_warmup():
     for mode in ("blackhorse", "radar"):
         stage_started = time.perf_counter()
         try:
-            rows, _s, _m = compute_screener_rows(mode)
+            rows, _s, _m = compute_screener_rows(
+                mode,
+                # 預熱只需準備可讀快照，不執行手動完整掃描的 240 檔深度上限。
+                # 盤中雷達 producer 也使用同一個受限上限。
+                radar_deep_limit=(RADAR_SCHEDULED_DEEP_SCAN_LIMIT
+                                  if mode == "radar" else None),
+            )
             persisted = _load_persisted_screener_snapshot(mode)
             elapsed = time.perf_counter() - stage_started
             if persisted and _screener_snapshot_valid_for_today(persisted):
@@ -45485,7 +45500,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             radar_diagnostics["universe_count"] = radar_universe_count
             spark_quotes = _fetch_yahoo_spark_bulk(
                 universe_codes, rng="3mo", force_refresh=force_refresh,
-                market_map=market_map)
+                market_map=market_map, include_history=False)
             candidates = []
             for code in universe_codes:
                 quote = spark_quotes.get(code) or {}
@@ -45583,7 +45598,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
         # 選股台的候選池動輒上百檔，序列請求是這一頁最大的延遲來源。
         # 這裡開比較多執行緒——一次把整池抓完，總時間才不會隨檔數線性增加。
         pool_prices = get_realtime_stocks_bulk(
-            [c for c, _ in pool], workers=24 if mode == "radar" else 16,
+            [c for c, _ in pool], workers=12 if mode == "radar" else 16,
             rng="3mo",
             market_suffix=(market_map if mode == "radar" else None),
             force_refresh=(force_refresh or mode == "radar"))
@@ -45904,6 +45919,10 @@ def cron_radar_live():
     if _load_recent_live_radar_snapshot(max_age_seconds=RADAR_LIVE_SNAPSHOT_REFRESH_DUE_SECONDS):
         _maybe_start_scheduled_blackhorse_refresh()
         return (f"最近 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘已有盤中雷達快照；已檢查黑馬更新，本次雷達略過。", 200)
+    with _SCREENER_REFRESH_LOCK:
+        radar_scan_running = bool(_SCREENER_REFRESH_RUNNING.get("radar"))
+    if radar_scan_running:
+        return "已有雷達背景掃描正在執行，本次排程略過。", 200
     return run_in_background("盤中雷達快照", _do_scheduled_radar_live_snapshot), 200
 
 
