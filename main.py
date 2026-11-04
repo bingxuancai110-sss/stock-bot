@@ -71,6 +71,8 @@ _HOMEPAGE_QUOTE_MAP_MAX_STALE = max(86400.0, float(os.environ.get("HOMEPAGE_QUOT
 _HOMEPAGE_QUOTE_REFRESH_LOCK = threading.Lock()
 _HOMEPAGE_QUOTE_REFRESHING = set()
 _HOMEPAGE_QUOTE_REFRESH_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="quote-history-refresh")
+_POSITIONS_FEE_SETTINGS_CACHE = {}
+_POSITIONS_FEE_SETTINGS_CACHE_LOCK = threading.RLock()
 _HOMEPAGE_CACHE_LOCK = threading.RLock()
 _HOMEPAGE_TAIEX_REFRESH_LOCK = threading.Lock()
 _HOMEPAGE_TAIEX_REFRESH_RUNNING = False
@@ -24298,10 +24300,10 @@ a{ -webkit-tap-highlight-color:rgba(53,111,153,.12); }
   background:#F1F6FA !important;border-color:#D4E1EB !important;color:#526A80 !important;
   border-radius:12px !important;min-height:44px !important;
 }
+#trend-period-1w:checked ~ .portfolio-trend-tabs label[for="trend-period-1w"],
 #trend-period-1m:checked ~ .portfolio-trend-tabs label[for="trend-period-1m"],
 #trend-period-3m:checked ~ .portfolio-trend-tabs label[for="trend-period-3m"],
-#trend-period-6m:checked ~ .portfolio-trend-tabs label[for="trend-period-6m"],
-#trend-period-ytd:checked ~ .portfolio-trend-tabs label[for="trend-period-ytd"],
+#trend-period-1y:checked ~ .portfolio-trend-tabs label[for="trend-period-1y"],
 #trend-period-all:checked ~ .portfolio-trend-tabs label[for="trend-period-all"]{
   background:#204F73 !important;border-color:#204F73 !important;color:#FFFFFF !important;
   box-shadow:inset 0 -3px 0 #6FA2C6,0 4px 12px rgba(32,79,115,.16) !important;
@@ -28373,7 +28375,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-shell.css?v=20261104-6">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261104-6">
 <script defer src="/static/ui-feedback.js?v=20261103-4"></script>
-<script defer src="/static/fugle-live.js?v=20261103-6"></script>
+<script defer src="/static/fugle-live.js?v=20261104-2"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -32066,10 +32068,15 @@ def web_positions(uid):
         safe_message = (safe_message.replace("&lt;br&gt;", "<br>")
                         .replace("&lt;b&gt;", "<b>")
                         .replace("&lt;/b&gt;", "</b>"))
+        succeeded = str(message or "").lstrip().startswith("✅")
         body = (
-            f'<div class="msg" role="status">{safe_message}</div>'
-            '<p><a href="/web/positions" data-no-busy="1">回到持股頁</a>'
-            '　<a href="/web/portfolio" data-no-busy="1">查看操作日報</a></p>'
+            '<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261104-4">'
+            f'<section class="p2-trade-result {"success" if succeeded else "error"}" role="status">'
+            f'<span class="p2-result-mark" aria-hidden="true">{"✓" if succeeded else "!"}</span>'
+            f'<h2>{"記帳完成" if succeeded else "操作未完成"}</h2>'
+            f'<p>{safe_message}</p>'
+            '<div class="p2-card-actions"><a class="p2-primary-action" href="/web/positions" data-no-busy="1">回到持股</a>'
+            '<a href="/web/trades" data-no-busy="1">查看操作日報　›</a></div></section>'
         )
         return respond_page("持股操作結果", body, "positions")
 
@@ -32457,6 +32464,12 @@ def web_positions(uid):
                 quote_stamp += "・歷史序列快取，背景更新中"
             net_pct_text = fmt_pct(pl)
             gross_pct_text = fmt_pct(gross_pl)
+            _lot_dates = [lot.get("bought_on") for lot in (p.get("lots") or [])
+                          if lot.get("bought_on")]
+            _last_position_trade = max(_lot_dates) if _lot_dates else p.get("bought_on")
+            _last_position_trade_text = (_last_position_trade.strftime("%Y/%m/%d")
+                                         if hasattr(_last_position_trade, "strftime")
+                                         else str(_last_position_trade or "未提供"))
             day_cls = 'up' if day_pl >= 0 else 'down'
             net_cls = 'up' if net_amt >= 0 else 'down'
             limit_state = None
@@ -32474,7 +32487,8 @@ def web_positions(uid):
                     limit_state = None
             quote_stamp_safe = quote_stamp
             rows_html.append(f"""
-<article class="position-card" data-position-code="{html.escape(str(p['code']), quote=True)}">
+<article class="position-card" data-position-code="{html.escape(str(p['code']), quote=True)}"
+ data-sort-value="{value:.2f}" data-sort-pl="{net_amt:.2f}" data-sort-pct="{pl:.4f}" data-sort-weight="{weight:.4f}" data-sort-name="{html.escape(str(name), quote=True)}">
   <div class="position-card-top">
     <div class="position-card-title">
       <span class="position-card-code">{html.escape(str(p['code']))}</span>
@@ -32488,15 +32502,19 @@ def web_positions(uid):
   <div class="position-card-primary">
     <div><small>今日損益</small><b class="{day_cls}" data-position-day-pl="1">{day_pl:+,.0f}</b></div>
     <div><small>市值</small><b data-position-value>{value:,.0f}</b></div>
-    <div><small>持有報酬</small><b class="{'up' if gross_pl >= 0 else 'down'}" data-position-gross>{gross_pct_text}</b></div>
+    <div><small>未實現損益</small><b class="{net_cls}" data-position-net>{net_amt:+,.0f}</b><em data-position-net-pct>{net_pct_text}</em></div>
   </div>
+  <div class="p2-weight-track" aria-label="持股權重 {weight:.1f}%"><i style="width:{min(100.0, weight):.1f}%"></i></div>
   <details class="position-more">
     <summary>查看詳細資料</summary>
     <div class="position-detail-body">
       <div class="position-card-grid">
         <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
+        <div><small>總持有成本</small><b>{cost_total:,.0f}</b></div>
+        <div><small>目前市值</small><b>{value:,.0f}</b></div>
         <div><small>估算賣出淨損益</small><b class="{net_cls}" data-position-net>{net_amt:+,.0f}</b><em data-position-net-pct>{net_pct_text}</em></div>
         <div><small>目前權重</small><b data-position-weight>{weight:.1f}%</b></div>
+        <div><small>最近買進日期</small><b>{html.escape(_last_position_trade_text)}</b></div>
         <div><small>行情</small><b class="position-quote-stamp" data-position-stamp="1">{quote_stamp_safe}</b></div>
       </div>
       <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b data-position-weight>{weight:.1f}%</b></div>
@@ -32506,6 +32524,7 @@ def web_positions(uid):
         <div class="position-factors-body"><div class="position-factor-loading">展開後載入最近保存的五大因子…</div></div>
       </details>
       <div class="position-card-actions">
+        <div class="p2-card-actions"><button type="button" data-p2-buy="{html.escape(str(p['code']), quote=True)}">＋ 買進／加碼</button><button type="button" class="p2-sell-action" data-p2-sell>賣出</button><a href="/web/market?code={html.escape(str(p['code']), quote=True)}">個股行情　›</a></div>
         <details class="disclosure trend" data-code="{html.escape(str(p['code']), quote=True)}" ontoggle="window.loadPositionTrend(this)">
           <summary>📈 損益走勢</summary>
           <div class="trend-body"><div class="sub">展開後載入一年損益走勢…</div></div>
@@ -32524,7 +32543,7 @@ def web_positions(uid):
             _noquote_target_html = (f'<div class="position-target-summary"><span>目標權重</span><b>{_noquote_target:.1f}%</b><em>目前權重待行情確認</em></div>'
                                     if _noquote_target is not None else '<div class="position-target-summary"><span>目標權重</span><b>尚未設定</b><em>目前權重待行情確認</em></div>')
             rows_html.append(f"""
-<article class="position-card position-card-noquote" data-position-code="{html.escape(str(p['code']), quote=True)}">
+<article class="position-card position-card-noquote" data-position-code="{html.escape(str(p['code']), quote=True)}" data-sort-value="0" data-sort-pl="0" data-sort-pct="0" data-sort-weight="0" data-sort-name="{html.escape(str(p['code']), quote=True)}">
   <div class="position-card-top">
     <div class="position-card-title"><span class="position-card-code">{html.escape(str(p['code']))}</span><div><h3>{html.escape(str(p['code']))}</h3><small>{p['shares']:,} 股 · 查無行情</small></div></div>
     <div class="position-card-price"><b data-position-price="1">—</b><span class="flat" data-position-pct="1">—</span></div>
@@ -32534,6 +32553,7 @@ def web_positions(uid):
     <div><small>市值</small><b>—</b></div>
     <div><small>行情</small><b class="flat">暫無</b></div>
   </div>
+  <div class="p2-weight-track" aria-label="持股權重待行情確認"><i style="width:0%"></i></div>
   {_noquote_target_html}
   <details class="position-more">
     <summary>查看詳細資料</summary>
@@ -32546,34 +32566,48 @@ def web_positions(uid):
         <summary class="position-factors-trigger">🧭 查看五大因子與目前狀況</summary>
         <div class="position-factors-body"><div class="position-factor-loading">展開後載入最近保存的五大因子…</div></div>
       </details>
-      <div class="position-card-actions">{lots_html(p, p['code'], None)}</div>
+      <div class="position-card-actions"><div class="p2-card-actions"><button type="button" class="p2-sell-action" data-p2-sell>賣出</button></div>{lots_html(p, p['code'], None)}</div>
     </div>
   </details>
 </article>""")
 
+    _p2_active_codes = {str(p.get("code") or "").strip() for p in positions}
+    try:
+        _p2_realized = get_realized_trades(uid, limit=5000)
+    except Exception:
+        _p2_realized = []
+    _p2_realized_total = sum(float(item.get("realized_pl") or 0) for item in _p2_realized
+                             if item.get("realized_pl") is not None)
+    _p2_priced_count = sum(1 for _p, _pr, _v, _c in enriched if _pr)
+    _p2_valuation_complete = _p2_priced_count == len(positions)
+    _p2_quote_stamps = [str(_pr.get("updated_at")) for _p, _pr, _v, _c in enriched
+                        if _pr and _pr.get("updated_at")]
+    _p2_last_quote = max(_p2_quote_stamps) if _p2_quote_stamps else "最近有效行情"
     pl_total = (((total_value - total_fee - total_cost) / total_cost * 100)
                 if total_cost else None)
     pl_total_text = f"{pl_total:+.2f}%" if pl_total is not None else "—"
     totals = f"""
 <div class="totals" data-home-privacy-card data-home-privacy-label="持股金額與損益">
-  <div><div class="total-label">總市值<button type="button" class="positions-privacy-toggle" data-home-privacy-toggle aria-label="隱藏持股金額與損益" title="隱藏持股金額與損益" aria-pressed="false">
+  <div><div class="total-label">{'我的資產・已確認市值' if not _p2_valuation_complete else '我的資產・總市值'}<button type="button" class="positions-privacy-toggle" data-home-privacy-toggle aria-label="隱藏持股金額與損益" title="隱藏持股金額與損益" aria-pressed="false">
          <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3.2"/></svg>
          <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.7 5.2A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3 3.8M6.2 6.5C3.5 8.4 2 12 2 12s3.5 7 10 7a10.5 10.5 0 0 0 4-.8M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
        </button></div>
-       <div class="total-value num" data-fugle-total="value" data-home-sensitive data-home-original="{total_value:,.0f}">{total_value:,.0f}</div>
-       <div class="total-sub {'up' if pl_total is not None and pl_total >= 0 else 'down' if pl_total is not None else 'flat'}" data-fugle-total="net_pct" data-home-sensitive data-home-original="{pl_total_text}">{fmt_pct(pl_total)}</div></div>
-  <div><div class="total-label">淨損益</div>
-       <div data-fugle-total="net_pl" data-home-sensitive data-home-original="{total_value - total_cost - total_fee:+,.0f}" class="total-value num {'up' if total_value - total_cost - total_fee >= 0 else 'down'}">
-         {total_value - total_cost - total_fee:+,.0f}</div>
-       <div class="total-sub" style="color:var(--ink-faint)">
-         已扣交易成本 <span class="num" data-fugle-total="fee" data-home-sensitive data-home-original="{total_fee:,.0f}">{total_fee:,.0f}</span></div></div>
+       <div class="total-value num" data-fugle-total="value" data-home-sensitive data-home-original="{total_value:,.0f}">{f'{total_value:,.0f}' if _p2_priced_count else '—'}</div>
+       <div class="total-sub">{f'行情已確認 {_p2_priced_count} / {len(positions)} 檔' if not _p2_valuation_complete else '持有部位即時估值'}</div></div>
+  <div><div class="total-label">未實現損益</div>
+       <div data-fugle-total="net_pl" data-home-sensitive data-home-original="{total_value - total_cost - total_fee:+,.0f}" class="total-value num {('up' if total_value - total_cost - total_fee >= 0 else 'down') if _p2_valuation_complete else 'flat'}">
+         {f'{total_value - total_cost - total_fee:+,.0f}' if _p2_valuation_complete else '—'}</div>
+       <div class="total-sub" data-home-sensitive data-home-original="{f'報酬率 {fmt_pct(pl_total)}' if _p2_valuation_complete else '行情不完整，暫不計算'}" style="color:var(--ink-faint)">
+         {f'報酬率 {fmt_pct(pl_total)}' if _p2_valuation_complete else '行情不完整，暫不計算'}</div></div>
   <div><div class="total-label">今日損益</div>
-       <div data-fugle-total="day_pl" data-home-sensitive data-home-original="{total_day_pl:+,.0f}" class="total-value num {'up' if total_day_pl >= 0 else 'down'}">
-         {total_day_pl:+,.0f}</div>
+       <div data-fugle-total="day_pl" data-home-sensitive data-home-original="{total_day_pl:+,.0f}" class="total-value num {'up' if total_day_pl >= 0 else 'down' if _p2_valuation_complete else 'flat'}">
+         {f'{total_day_pl:+,.0f}' if _p2_valuation_complete else '—'}</div>
        <div class="total-sub" style="color:var(--ink-faint)">
-         今收 vs 昨收</div></div>
+         {'今收 vs 昨收' if _p2_valuation_complete else '行情不完整，暫不計算'}</div></div>
   <div><div class="total-label">持股檔數</div>
-       <div class="total-value num">{len(positions)}</div></div>
+       <div class="total-value num">{len(positions)}</div><div class="total-sub">行情 { _p2_priced_count } / { len(positions) } 檔・{html.escape(_p2_last_quote)}</div></div>
+  <div><div class="total-label">持有成本</div><div class="total-value num" data-home-sensitive>{total_cost:,.0f}</div><div class="total-sub">現有持股批次加總</div></div>
+  <div><div class="total-label">已實現損益</div><div class="total-value num {'up' if _p2_realized_total >= 0 else 'down'}" data-home-sensitive>{_p2_realized_total:+,.0f}</div><div class="total-sub">依正式賣出紀錄統計</div></div>
 </div>""" if positions else ""
 
     allocation_html = ""
@@ -32734,44 +32768,86 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
 }
 </style>"""
 
+    # History and the timeline use existing ledgers; the larger log query is
+    # intentionally deferred to an authenticated API when the user opens that tab.
+    _p2_history_groups = {}
+    for _trade in _p2_realized:
+        _code = str(_trade.get("code") or "").strip()
+        if not _code or _code in _p2_active_codes:
+            continue
+        _p2_history_groups.setdefault(_code, []).append(_trade)
+    _p2_history_rows = []
+    for _code, _items in sorted(_p2_history_groups.items(), key=lambda item: str(item[0])):
+        _pl = sum(float(item.get("realized_pl") or 0) for item in _items)
+        _qty = sum(int(item.get("shares") or 0) for item in _items)
+        _last = max((item.get("sold_on") for item in _items if item.get("sold_on")), default=None)
+        _p2_history_rows.append(
+            f'<li class="p2-event"><span class="p2-event-date">{html.escape(str(_last or "—"))}</span>'
+            f'<span class="p2-event-main"><b>{html.escape(stock_display_name(_code))}　{html.escape(_code)}</b>'
+            f'<small>目前未持有・累計賣出 {_qty:,} 股・{len(_items)} 筆成交</small></span>'
+            f'<span class="p2-event-value {"up" if _pl >= 0 else "down"}">已實現 {_pl:+,.0f}</span></li>')
+    _p2_history_html = "".join(_p2_history_rows) or '<li class="p2-empty">目前沒有可辨識的已出清持股紀錄。</li>'
+
     body = f"""
+<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261104-4">
+<div id="portfolio-v2">
 {holding_card_css}
 {f'<div class="msg">{msg}</div>' if msg else ''}
 {exright_html}
 {totals}
 {f'<div id="positions-quote-status" class="sub" style="margin:0 0 12px;{"" if _is_taiwan_intraday_window() else "display:none"}">歷史行情優先使用最近有效快取並在背景更新；盤中現價由官方 MIS 局部同步，約每 5 秒檢查一次。若官方報價暫缺，保留最後有效價格並顯示來源時間。</div>' if positions else ''}
-<div class="section-head"><h2>持股明細</h2>
-  <span class="section-note">依市值排序　·　<a href="/web/trades" style="color:var(--brass)">操作日報 →</a></span></div>
+{portfolio_trend_html}
+{allocation_html}
+<section class="p2-holdings" aria-label="投資組合持股">
+<div class="p2-page-head"><div><h2>持股明細</h2><small>點開單一持股查看成本、分析與買賣記帳</small></div><button type="button" class="p2-primary-action" data-p2-add>＋ 新增交易</button></div>
+<div class="p2-tabs" role="tablist" aria-label="持股檢視">
+ <button type="button" role="tab" aria-selected="true" aria-controls="p2-panel-current" data-p2-view="current">目前持股（{len(positions)}）</button>
+ <button type="button" role="tab" aria-selected="false" aria-controls="p2-panel-history" data-p2-view="history">歷史持股（{len(_p2_history_groups)}）</button>
+ <button type="button" role="tab" aria-selected="false" aria-controls="p2-panel-activity" data-p2-view="activity">交易紀錄</button>
+</div>
+<section class="p2-current-list" id="p2-panel-current" role="tabpanel" data-p2-panel="current">
+<div class="p2-holdings-toolbar"><label for="p2-sort">排序</label><select id="p2-sort" data-p2-sort aria-label="持股排序">
+ <option value="weight">權重由高到低</option><option value="pl">損益金額</option><option value="pct">損益百分比</option><option value="value">持股市值</option><option value="name">股票名稱</option>
+</select></div>
 <div class="rows">
 {''.join(rows_html) if rows_html else '<div class="empty">還沒有持股紀錄，用下方表單新增。</div>'}
 </div>
+</section>
+<section class="p2-history-list" id="p2-panel-history" role="tabpanel" data-p2-panel="history" hidden><h3>歷史持股</h3><p class="p2-subtitle">只列出目前沒有持股、且有正式賣出損益紀錄的標的。</p><ul class="p2-timeline">{_p2_history_html}</ul></section>
+<section class="p2-activity-list" id="p2-panel-activity" role="tabpanel" data-p2-panel="activity" hidden><h3>交易紀錄</h3><div class="p2-tabs p2-filter-tabs" role="group" aria-label="交易類型篩選"><button type="button" aria-pressed="true" data-p2-filter="all">全部</button><button type="button" aria-pressed="false" data-p2-filter="buy">買進</button><button type="button" aria-pressed="false" data-p2-filter="sell">賣出</button></div><div class="p2-history-filters"><label>股票<input type="search" data-p2-search placeholder="名稱或代號"></label><label>月份<input type="month" data-p2-month></label></div><ul class="p2-timeline" data-p2-timeline><li class="p2-empty">開啟分頁後載入你的交易紀錄…</li></ul></section>
+</section>
 {(f'<details class="target-allocation-disclosure" id="target-allocation"><summary><span><b>調整目標持股比例</b><small>直接修改每檔目標；股票與 ETF 合計 100%</small></span><span class="target-allocation-total" data-target-total>尚未完成</span></summary><section class="target-allocation-panel"><form method="post" action="/web/positions#target-allocation" class="target-allocation-form" id="target-allocation-form">{csrf_hidden_input()}<input type="hidden" name="action" value="save_target_weights"><div class="target-allocation-list">' + ''.join(f'<label class="target-allocation-row"><span><b>{html.escape(stock_display_name(str(x.get("code") or "")))}</b><small>{html.escape(str(x.get("code") or ""))}</small></span><span class="target-allocation-input"><input type="number" name="target_weight_{html.escape(str(x.get("code") or ""), quote=True)}" min="0" max="100" step="0.1" inputmode="decimal" value="{target_weights.get(str(x.get("code") or ""), "")}" placeholder="0.0" required><i>%</i></span></label>' for x in sorted(positions, key=lambda z: str(z.get("code") or ""))) + '</div><div class="target-allocation-foot"><span>目標合計 <b id="target-allocation-sum">0.0%</b></span><button type="submit">儲存目標比例</button></div><p class="target-allocation-hint" id="target-allocation-hint">比例只保存為目標，不會自動交易。合計必須等於 100%。</p></form></section></details>' if positions else '')}
-{portfolio_trend_html}
-{allocation_html}
 
+<dialog class="p2-trade-dialog" id="p2-trade-dialog" aria-labelledby="p2-trade-dialog-title">
+<section class="p2-trade-sheet">
+<header class="p2-trade-sheet-head"><div><h2 id="p2-trade-dialog-title">新增交易</h2><p>只記錄投資組合，不會送出券商委託</p></div><button type="button" class="p2-trade-close" data-p2-close aria-label="關閉新增交易">×</button></header>
 <form class="add" method="post" action="/web/positions">
   {csrf_hidden_input()}
-  <h3>新增持股</h3>
   <div class="fields">
-    <div><label>股票代號</label>
-      <input name="code" inputmode="numeric" placeholder="2330" required></div>
-    <div><label>股數</label>
-      <input name="shares" inputmode="numeric" placeholder="1000" required></div>
-    <div><label>成本價</label>
-      <input name="cost" inputmode="decimal" placeholder="950.5" required></div>
-    <div><label>手續費（可略）</label>
-      <input name="buy_fee" inputmode="numeric" placeholder="0"></div>
-    <div><label>買進日期（可略）</label>
-      <input name="bought_on" type="date"></div>
-    <div><label>操作備註（可略）</label>
-      <input name="position_note" maxlength="200" placeholder="例如：調整權重"></div>
+    <div><label for="p2-trade-code">股票代號</label>
+      <input id="p2-trade-code" name="code" inputmode="numeric" placeholder="2330" required></div>
+    <div><label for="p2-trade-shares">股數</label>
+      <input id="p2-trade-shares" name="shares" inputmode="numeric" placeholder="1000" required></div>
+    <div><label for="p2-trade-cost">成本價</label>
+      <input id="p2-trade-cost" name="cost" inputmode="decimal" placeholder="950.5" required></div>
+    <div><label for="p2-trade-fee">手續費（可略）</label>
+      <input id="p2-trade-fee" name="buy_fee" inputmode="numeric" placeholder="0"></div>
+    <div><label for="p2-trade-date">買進日期（可略）</label>
+      <input id="p2-trade-date" name="bought_on" type="date"></div>
+    <div><label for="p2-trade-note">操作備註（可略）</label>
+      <input id="p2-trade-note" name="position_note" maxlength="200" placeholder="例如：調整權重"></div>
   </div>
-  <button type="submit">新增並記錄加碼</button>
+  <div class="p2-trade-preview" aria-live="polite"><span>成交金額<b data-p2-trade-gross>—</b></span><span>手續費<b data-p2-trade-fee-total>—</b></span><strong>預估投入<b data-p2-trade-total>—</b></strong></div>
+  <button type="submit">確認記錄買進</button>
   <div class="sell-hint">
     直接抄券商庫存頁的「成本價」就好，那個數字已含買進手續費，手續費欄留空即可。<br>
     新增後會同步記入操作日報；備註只保存你自己輸入的內容。若填的是純成交價，在手續費欄填實際金額，會自動攤進每股成本。
   </div>
-</form>"""
+</form>
+</section>
+</dialog>
+<script src="/static/portfolio-v2.js?v=20261104-4" defer></script>
+</div>"""
     body += '''<script>
 (function(){
   var targetForm=document.getElementById('target-allocation-form');
@@ -33005,8 +33081,16 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
         if(!Object.prototype.hasOwnProperty.call(item,'value'))return;
         var row=document.querySelector('[data-position-code="'+item.code+'"]');if(!row)return;
         function put(selector,value,digits,percent){var el=row.querySelector(selector);if(!el)return;el.textContent=value==null?'—':(percent?(selector.indexOf('weight')>=0?numberText(value,digits):signedText(value,digits))+'%':numberText(value,digits));if(selector.indexOf('gross')>=0||selector.indexOf('net')>=0){el.classList.toggle('up',value>=0);el.classList.toggle('down',value<0);}}
-        put('[data-position-value]',item.value,0);put('[data-position-gross]',item.gross_pct,2,true);put('[data-position-net]',item.net_pl,0);put('[data-position-net-pct]',item.net_pct,2,true);put('[data-position-weight]',item.weight,1,true);
+        put('[data-position-value]',item.value,0);put('[data-position-net]',item.net_pl,0);put('[data-position-net-pct]',item.net_pct,2,true);put('[data-position-weight]',item.weight,1,true);
+        row.dataset.sortValue=String(item.value||0);row.dataset.sortPl=String(item.net_pl||0);row.dataset.sortPct=String(item.net_pct||0);row.dataset.sortWeight=String(item.weight||0);
+        var track=row.querySelector('.p2-weight-track i');if(track)track.style.width=Math.max(0,Math.min(100,Number(item.weight)||0))+'%';
       });
+      if(data.valuation_complete){
+        var totalValue=document.querySelector('[data-fugle-total="value"]'),totalNet=document.querySelector('[data-fugle-total="net_pl"]'),totalDay=document.querySelector('[data-fugle-total="day_pl"]');
+        function putTotal(el,value,plain){if(!el||value==null)return;var shown=plain?numberText(value,0):signedText(value,0);el.dataset.homeOriginal=shown;var card=el.closest('[data-home-privacy-card]');el.textContent=card&&card.classList.contains('is-privacy-hidden')?'******':shown;el.classList.toggle('up',Number(value)>=0);el.classList.toggle('down',Number(value)<0);el.classList.remove('flat')}
+        putTotal(totalValue,data.total_value,true);putTotal(totalNet,data.total_net_pl,false);putTotal(totalDay,data.total_day_pl,false);
+        var netSub=totalNet&&totalNet.parentElement.querySelector('.total-sub');if(netSub&&data.total_net_pct!=null){var pctText='報酬率 '+signedText(data.total_net_pct,2)+'%';netSub.dataset.homeOriginal=pctText;var privacyCard=netSub.closest('[data-home-privacy-card]');netSub.textContent=privacyCard&&privacyCard.classList.contains('is-privacy-hidden')?'******':pctText}
+      }
   }
   function onFugle(e){if(e.detail&&e.detail.positions)applyQuotes(e.detail.positions,false,true);}
   document.addEventListener('stockbot:fuglequotes',onFugle);
@@ -33171,6 +33255,63 @@ body #app-page-content .position-card.allocation-focused{background:#F3F8FB!impo
     return respond_page("持股", body, "positions")
 
 
+@app.route("/web/api/positions/history")
+@web_login_required
+def web_positions_history(uid):
+    """Lazy-load this user's existing trade ledger after they open the journal tab."""
+    try:
+        trades = get_realized_trades(uid, limit=1000)
+        logs = _filter_voided_same_day_logs(get_position_change_logs(uid, limit=1000))
+        events = []
+        for trade in trades:
+            code = str(trade.get("code") or "").strip()
+            shares = int(trade.get("shares") or 0)
+            price = trade.get("sell_price")
+            events.append({
+                "date": str(trade.get("sold_on") or ""), "code": code,
+                "name": stock_display_name(code), "type": "sell", "label": "賣出",
+                "shares": shares, "price": float(price) if price is not None else None,
+                "amount": shares * float(price) if price is not None else None,
+                "realized_pl": float(trade["realized_pl"]) if trade.get("realized_pl") is not None else None,
+                "fee": float(trade["fee"]) if trade.get("fee") is not None else None,
+                "tax": float(trade["tax"]) if trade.get("tax") is not None else None,
+                "note": str(trade.get("sell_reason") or ""),
+            })
+        for log in logs:
+            code = str(log.get("code") or "").strip()
+            action = str(log.get("action") or "操作")
+            action_key = action.strip().lower()
+            is_sell = action_key == "reduce" or "減" in action or "賣" in action
+            shares = abs(int(log.get("shares_delta") or 0))
+            if is_sell and any(
+                str(trade.get("code") or "").strip() == code
+                and trade.get("sold_on") == log.get("trade_date")
+                and int(trade.get("shares") or 0) == shares
+                for trade in trades
+            ):
+                continue
+            is_buy = action_key == "add" or "加" in action or "新增" in action
+            price = log.get("trade_price")
+            events.append({
+                "date": str(log.get("trade_date") or ""), "code": code,
+                "name": stock_display_name(code),
+                "type": "sell" if is_sell else "buy" if is_buy else "other",
+                "label": "賣出" if is_sell else "買進／加碼" if is_buy else action,
+                "shares": shares, "price": float(price) if price is not None else None,
+                "amount": shares * float(price) if price is not None else None,
+                "realized_pl": None,
+                "fee": None, "tax": None,
+                "note": str(log.get("note") or ""),
+            })
+        events.sort(key=lambda item: item.get("date") or "", reverse=True)
+        return _workbench_json_response({"ok": True, "events": events[:1000],
+                                         "limited": len(events) > 1000})
+    except Exception as exc:
+        print(f"⚠️ 持股交易紀錄載入失敗（uid={uid}）：{type(exc).__name__}")
+        return _workbench_json_response({"ok": False, "events": [],
+                                         "note": "目前無法載入交易紀錄，請稍後再試。"}, 503)
+
+
 # ── 問卷與門檻設定 ──
 # 全部必填。
 # 這些答案不是拿來裝飾的：組合分析的提醒要靠「交叉比對」才有價值——
@@ -33247,6 +33388,8 @@ def save_profile(user_id, data):
         """, (str(user_id).strip(), *[data.get(c) for c in cols]))
         conn.commit()
         cursor.close()
+        with _POSITIONS_FEE_SETTINGS_CACHE_LOCK:
+            _POSITIONS_FEE_SETTINGS_CACHE.pop(str(user_id or "").strip(), None)
         return True
     except Exception as e:
         conn.rollback()
@@ -34647,6 +34790,24 @@ def get_fee_settings(profile):
             else DEFAULT_MIN_FEE)
 
 
+def _positions_fee_settings(user_id):
+    """Cache per-user fee preferences so live quote polling does not query profiles every few seconds."""
+    key = str(user_id or "").strip()
+    now = time.monotonic()
+    with _POSITIONS_FEE_SETTINGS_CACHE_LOCK:
+        cached = _POSITIONS_FEE_SETTINGS_CACHE.get(key)
+        if cached and now - cached[0] < 900:
+            return cached[1]
+    value = get_fee_settings(get_profile(key))
+    with _POSITIONS_FEE_SETTINGS_CACHE_LOCK:
+        _POSITIONS_FEE_SETTINGS_CACHE[key] = (now, value)
+        if len(_POSITIONS_FEE_SETTINGS_CACHE) > 256:
+            oldest = sorted(_POSITIONS_FEE_SETTINGS_CACHE.items(), key=lambda item: item[1][0])
+            for old_key, _ in oldest[:len(_POSITIONS_FEE_SETTINGS_CACHE) - 192]:
+                _POSITIONS_FEE_SETTINGS_CACHE.pop(old_key, None)
+    return value
+
+
 def get_thresholds(profile):
     """
     取得提醒門檻。使用者沒自訂時給預設值；
@@ -35553,20 +35714,19 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
             return None
 
     requested_period = str(requested_period or "3m").lower()
-    if requested_period not in {"1m", "3m", "6m", "ytd", "all"}:
+    if requested_period not in {"1w", "1m", "3m", "1y", "all"}:
         requested_period = "3m"
-    period_labels = {"1m": "1 個月", "3m": "3 個月", "6m": "6 個月", "ytd": "今年", "all": "全部"}
-    period_order = ["1m", "3m", "6m", "ytd", "all"]
+    period_labels = {"1w": "1 週", "1m": "1 個月", "3m": "3 個月", "1y": "1 年", "all": "全部"}
+    period_order = ["1w", "1m", "3m", "1y", "all"]
     last_date = next((parse_date(r["date"]) for r in reversed(raw_data) if parse_date(r["date"])), None)
 
     def period_rows(key):
         if key == "all" or last_date is None:
             return list(raw_data)
-        if key == "ytd":
-            return [r for r in raw_data if (parse_date(r["date"]) and parse_date(r["date"]).year == last_date.year)]
-        days = {"1m": 31, "3m": 93, "6m": 186}[key]
-        cutoff = last_date - timedelta(days=days)
-        rows = [r for r in raw_data if (parse_date(r["date"]) and parse_date(r["date"]) >= cutoff)]
+        # 快照以有效台股交易日寫入；直接用交易日筆數，避免週末與休市日
+        # 令 1 週／1 個月圖表實際涵蓋期間不一致。
+        trading_sessions = {"1w": 5, "1m": 21, "3m": 63, "1y": 252}
+        rows = raw_data[-trading_sessions.get(key, 63):]
         return rows if len(rows) >= 2 else raw_data[-2:]
 
     def nice_step(span):
@@ -35633,8 +35793,8 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 
         # V218：保留左右滑動，但不要再把短週期放到過度誇張。
         # 交易日越多，每日可用寬度會逐步縮小；一年／全部仍可左右滑動。
-        point_px = {"1m": 23, "3m": 19, "6m": 16, "ytd": 13, "all": 11}.get(key, 16)
-        min_width = {"1m": 650, "3m": 850, "6m": 1000, "ytd": 1400, "all": 1550}.get(key, 850)
+        point_px = {"1w": 58, "1m": 24, "3m": 19, "1y": 13, "all": 11}.get(key, 16)
+        min_width = {"1w": 650, "1m": 650, "3m": 850, "1y": 1400, "all": 1550}.get(key, 850)
         W = max(min_width, 110 + len(norm) * point_px)
         H, ML, MR, MT, MB = 510, 76, 22, 28, 56  # V281.5：整體縮短約15%，保留足夠繪圖高度
         PW, PH = W - ML - MR, H - MT - MB
@@ -35807,16 +35967,16 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 .trend-period-radio,.trend-benchmark-toggle{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
 .portfolio-trend-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px;padding:4px 0 16px}
 .portfolio-trend-tab{display:flex;align-items:center;justify-content:center;min-height:48px;border:1px solid #d0dce5;background:#f7fafc;color:#63778a;border-radius:16px;padding:8px 3px;font-size:17px;line-height:1;font-weight:950;cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none}
-#trend-period-1m:checked ~ .portfolio-trend-tabs label[for="trend-period-1m"],#trend-period-3m:checked ~ .portfolio-trend-tabs label[for="trend-period-3m"],#trend-period-6m:checked ~ .portfolio-trend-tabs label[for="trend-period-6m"],#trend-period-ytd:checked ~ .portfolio-trend-tabs label[for="trend-period-ytd"],#trend-period-all:checked ~ .portfolio-trend-tabs label[for="trend-period-all"]{background:#fff;border-color:#b18a4b;color:#8b6934;box-shadow:inset 0 -4px 0 #b18a4b,0 7px 18px rgba(80,65,40,.08)}
+#trend-period-1w:checked ~ .portfolio-trend-tabs label[for="trend-period-1w"],#trend-period-1m:checked ~ .portfolio-trend-tabs label[for="trend-period-1m"],#trend-period-3m:checked ~ .portfolio-trend-tabs label[for="trend-period-3m"],#trend-period-1y:checked ~ .portfolio-trend-tabs label[for="trend-period-1y"],#trend-period-all:checked ~ .portfolio-trend-tabs label[for="trend-period-all"]{background:#fff;border-color:#b18a4b;color:#8b6934;box-shadow:inset 0 -4px 0 #b18a4b,0 7px 18px rgba(80,65,40,.08)}
 .portfolio-trend-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:1px 0 12px}
 .portfolio-trend-current{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;color:#8292a0;font-size:15px;font-weight:750}
 .portfolio-trend-current b{color:#8b6934;font-size:25px;font-weight:950}.portfolio-trend-current .period-current-label{display:none}
-#trend-period-1m:checked ~ .portfolio-trend-toolbar .period-label-1m,#trend-period-3m:checked ~ .portfolio-trend-toolbar .period-label-3m,#trend-period-6m:checked ~ .portfolio-trend-toolbar .period-label-6m,#trend-period-ytd:checked ~ .portfolio-trend-toolbar .period-label-ytd,#trend-period-all:checked ~ .portfolio-trend-toolbar .period-label-all{display:inline}
+#trend-period-1w:checked ~ .portfolio-trend-toolbar .period-label-1w,#trend-period-1m:checked ~ .portfolio-trend-toolbar .period-label-1m,#trend-period-3m:checked ~ .portfolio-trend-toolbar .period-label-3m,#trend-period-1y:checked ~ .portfolio-trend-toolbar .period-label-1y,#trend-period-all:checked ~ .portfolio-trend-toolbar .period-label-all{display:inline}
 .portfolio-trend-benchmark-label{display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:9px 13px;border:1px solid #ccdbe5;background:#fff;border-radius:15px;color:#536b7f;font-size:14px;font-weight:950;cursor:pointer;box-shadow:0 5px 15px rgba(42,69,91,.06)}
 .portfolio-trend-benchmark-label .show-text{display:none}
 #trend-benchmark:checked ~ .portfolio-trend-toolbar .portfolio-trend-benchmark-label .hide-text{display:none}#trend-benchmark:checked ~ .portfolio-trend-toolbar .portfolio-trend-benchmark-label .show-text{display:inline}#trend-benchmark:checked ~ .portfolio-trend-panels .market-layer{display:none}
 .portfolio-trend-panel{display:none}
-#trend-period-1m:checked ~ .portfolio-trend-panels .panel-1m,#trend-period-3m:checked ~ .portfolio-trend-panels .panel-3m,#trend-period-6m:checked ~ .portfolio-trend-panels .panel-6m,#trend-period-ytd:checked ~ .portfolio-trend-panels .panel-ytd,#trend-period-all:checked ~ .portfolio-trend-panels .panel-all{display:block}
+#trend-period-1w:checked ~ .portfolio-trend-panels .panel-1w,#trend-period-1m:checked ~ .portfolio-trend-panels .panel-1m,#trend-period-3m:checked ~ .portfolio-trend-panels .panel-3m,#trend-period-1y:checked ~ .portfolio-trend-panels .panel-1y,#trend-period-all:checked ~ .portfolio-trend-panels .panel-all{display:block}
 .portfolio-trend-range{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:2px 3px 11px;color:#8292a0;font-size:15px;font-weight:750}.portfolio-trend-range b{color:#5f7487;font-size:18px;font-weight:950}
 .portfolio-trend-plot{position:relative;border:0;border-radius:0;background:transparent;box-shadow:none;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;touch-action:pan-x pan-y;scrollbar-width:thin}
 .trend-chart-inner{position:relative;flex:0 0 auto}.portfolio-trend-svg{display:block;width:100%;height:100%;touch-action:auto}
@@ -35957,9 +36117,9 @@ def render_trend_chart(snapshots, requested_period="3m", show_benchmark=True, au
 {css}
   <div class="portfolio-trend-header"><div class="portfolio-trend-title"><h2>組合走勢</h2><p>TWR 報酬率・相對大盤績效</p></div><div class="portfolio-trend-status">TWR</div></div>
   {radios}
-  <div class="portfolio-trend-tabs" role="tablist" aria-label="績效期間"><label class="portfolio-trend-tab" for="trend-period-1m">1 個月</label><label class="portfolio-trend-tab" for="trend-period-3m">3 個月</label><label class="portfolio-trend-tab" for="trend-period-6m">6 個月</label><label class="portfolio-trend-tab" for="trend-period-ytd">今年</label><label class="portfolio-trend-tab" for="trend-period-all">全部</label></div>
+  <div class="portfolio-trend-tabs" role="tablist" aria-label="績效期間"><label class="portfolio-trend-tab" for="trend-period-1w">1 週</label><label class="portfolio-trend-tab" for="trend-period-1m">1 個月</label><label class="portfolio-trend-tab" for="trend-period-3m">3 個月</label><label class="portfolio-trend-tab" for="trend-period-1y">1 年</label><label class="portfolio-trend-tab" for="trend-period-all">全部</label></div>
   <input class="trend-benchmark-toggle" type="checkbox" id="trend-benchmark" {checked}>
-  <div class="portfolio-trend-toolbar"><div class="portfolio-trend-current"><span>目前顯示</span> <b class="period-current-label period-label-1m">1 個月</b><b class="period-current-label period-label-3m">3 個月</b><b class="period-current-label period-label-6m">6 個月</b><b class="period-current-label period-label-ytd">今年</b><b class="period-current-label period-label-all">全部</b></div><label class="portfolio-trend-benchmark-label" for="trend-benchmark"><span class="hide-text">隱藏加權指數</span><span class="show-text">顯示加權指數</span></label></div>
+ <div class="portfolio-trend-toolbar"><div class="portfolio-trend-current"><span>目前顯示</span> <b class="period-current-label period-label-1w">1 週</b><b class="period-current-label period-label-1m">1 個月</b><b class="period-current-label period-label-3m">3 個月</b><b class="period-current-label period-label-1y">1 年</b><b class="period-current-label period-label-all">全部</b></div><label class="portfolio-trend-benchmark-label" for="trend-benchmark"><span class="hide-text">隱藏加權指數</span><span class="show-text">顯示加權指數</span></label></div>
   <div class="portfolio-trend-panels">{"".join(panels)}</div>
   <div class="portfolio-trend-legend"><span><i></i>我的組合</span><span><i class="market"></i>加權指數</span><span><i class="point-up"></i>跑贏</span><span><i class="point-down"></i>跑輸</span><span><i class="point-neutral"></i>接近大盤</span><span>點擊圓點查看每日相對大盤績效</span></div>
   {trend_js}
@@ -35977,7 +36137,7 @@ def _clear_portfolio_trend_html_cache(user_id):
 def render_portfolio_trend_chart_cached(user_id, requested_period="3m", show_benchmark=True, auth_token=""):
     """同一使用者今日／持股共用已繪製的走勢圖；快取過期後才重新查快照並組 SVG。"""
     period = str(requested_period or "3m").lower()
-    if period not in {"1m", "3m", "6m", "ytd", "all"}:
+    if period not in {"1w", "1m", "3m", "1y", "all"}:
         period = "3m"
     uid_key = str(user_id).strip()
     key = (uid_key, taiwan_today().isoformat(), period, bool(show_benchmark), str(auth_token or ""))
@@ -35990,7 +36150,7 @@ def render_portfolio_trend_chart_cached(user_id, requested_period="3m", show_ben
         if entry:
             _PORTFOLIO_TREND_HTML_CACHE.pop(key, None)
     started = time.monotonic()
-    snapshots = get_portfolio_snapshots(uid_key, days=420)
+    snapshots = get_portfolio_snapshots(uid_key, days=1095)
     rendered = render_trend_chart(snapshots, requested_period=period,
                                   show_benchmark=bool(show_benchmark), auth_token=str(auth_token or ""))
     with _PORTFOLIO_TREND_HTML_CACHE_LOCK:
@@ -42199,7 +42359,7 @@ _HV2_TREND_CSS = r""".portfolio-trend-card{background:#fff!important;border:0!im
 .portfolio-trend-title p{font-size:12px!important;color:#6B7280!important;margin:2px 0 0!important}
 .portfolio-trend-tabs{display:flex!important;gap:0!important;border-bottom:1px solid #E5E7EB!important;background:none!important;padding:0!important;box-shadow:none!important;border-radius:0!important;margin:8px 0 0!important}
 .portfolio-trend-tab{flex:1!important;text-align:center!important;padding:10px 0!important;background:none!important;border:0!important;border-radius:0!important;box-shadow:none!important;color:#6B7280!important;font-size:14px!important;font-weight:600!important;border-bottom:2px solid transparent!important;margin:0 0 -1px!important;min-height:0!important}
-#trend-period-1m:checked~.portfolio-trend-tabs label[for="trend-period-1m"],#trend-period-3m:checked~.portfolio-trend-tabs label[for="trend-period-3m"],#trend-period-6m:checked~.portfolio-trend-tabs label[for="trend-period-6m"],#trend-period-ytd:checked~.portfolio-trend-tabs label[for="trend-period-ytd"],#trend-period-all:checked~.portfolio-trend-tabs label[for="trend-period-all"]{color:#1A56DB!important;border-bottom-color:#1A56DB!important;background:none!important;box-shadow:none!important}
+#trend-period-1w:checked~.portfolio-trend-tabs label[for="trend-period-1w"],#trend-period-1m:checked~.portfolio-trend-tabs label[for="trend-period-1m"],#trend-period-3m:checked~.portfolio-trend-tabs label[for="trend-period-3m"],#trend-period-1y:checked~.portfolio-trend-tabs label[for="trend-period-1y"],#trend-period-all:checked~.portfolio-trend-tabs label[for="trend-period-all"]{color:#1A56DB!important;border-bottom-color:#1A56DB!important;background:none!important;box-shadow:none!important}
 .portfolio-trend-toolbar{margin:8px 0 0!important;padding:0!important;background:none!important;border:0!important;font-size:12px!important;color:#6B7280!important}
 .portfolio-trend-panels .portfolio-trend-plot,.portfolio-trend-plot{background:none!important;border:0!important;box-shadow:none!important;border-radius:0!important}
 .port-line{stroke:#1A56DB!important;stroke-width:2.6!important}
@@ -45158,7 +45318,7 @@ def web_portfolio(uid):
     # 讀 request.args 會直接拋出「Working outside of request context」，
     # 最終讓 fragment 回 500，前端 Loader 就只會停在 97%。
     requested_trend_period = str(request.args.get("trend_period") or "3m").lower()
-    if requested_trend_period not in {"1m", "3m", "6m", "ytd", "all"}:
+    if requested_trend_period not in {"1w", "1m", "3m", "1y", "all"}:
         requested_trend_period = "3m"
     requested_trend_benchmark = str(request.args.get("trend_benchmark") or "1").lower() not in {"0", "false", "off", "no"}
     # Flask request 只能在主 request thread 使用；所有 request.args 都先取成純字串，
@@ -51271,12 +51431,13 @@ def web_positions_quotes(uid):
     """持股頁盤中局部更新；僅限登入者目前持有的代號，不開放任意行情查詢。"""
     market_open = _is_taiwan_intraday_window()
     positions = merge_positions(get_positions(uid))
-    shares_by_code = {}
+    position_by_code = {}
     for position in positions:
         code = str(position.get("code") or "").strip()
-        shares_by_code[code] = shares_by_code.get(code, 0) + int(position.get("shares") or 0)
-    codes = [code for code, shares in shares_by_code.items()
-             if re.fullmatch(r"\d{4,6}[A-Za-z]?", code) and shares > 0][:50]
+        if code:
+            position_by_code[code] = position
+    codes = [code for code, position in position_by_code.items()
+             if re.fullmatch(r"\d{4,6}[A-Za-z]?", code) and int(position.get("shares") or 0) > 0][:50]
     if not codes:
         return _workbench_json_response({"ok": True, "updates": [], "market_open": True,
                                          "note": "目前沒有可更新的持股。"})
@@ -51288,6 +51449,9 @@ def web_positions_quotes(uid):
         official_quotes = _fetch_twse_mis_quotes(
             codes, force_refresh=False, quick_mode=True)
         updates = []
+        fee_disc, min_fee = _positions_fee_settings(uid)
+        total_value = total_net_pl = total_day_pl = 0.0
+        valued_count = 0
         for code in codes:
             quote_data = official_quotes.get(code)
             if not isinstance(quote_data, dict):
@@ -51314,12 +51478,40 @@ def web_positions_quotes(uid):
                     limit_state = None
             update = {"code": code, "limit_state": limit_state, "limit_known": limit_known}
             if market_open or quote_data.get("close_is_final"):
+                position = position_by_code[code]
+                shares = int(position.get("shares") or 0)
+                avg_cost = float(position.get("cost") or 0)
+                value = price * shares
+                net_pl, net_pct, _ = net_profit(
+                    code, shares, avg_cost, price, position.get("lots"), fee_disc, min_fee)
+                day_pl = (price - previous) * shares
+                if net_pl is not None:
+                    total_value += value
+                    total_net_pl += net_pl
+                    total_day_pl += day_pl
+                    valued_count += 1
                 update.update({"price": price, "pct": pct,
-                               "day_pl": (price - previous) * shares_by_code[code],
+                               "day_pl": day_pl,
+                               "value": value,
+                               "net_pl": net_pl,
+                               "net_pct": net_pct,
                                "updated_at": quote_data.get("updated_at") or quote_data.get("close_time"),
                                "source": quote_data.get("source") or "最近有效行情"})
             updates.append(update)
+        valuation_complete = valued_count == len(positions) and bool(positions)
+        if valuation_complete:
+            total_cost = sum(float(position.get("cost") or 0) * int(position.get("shares") or 0)
+                             for position in positions)
+            for item in updates:
+                if item.get("value") is not None:
+                    item["weight"] = item["value"] / total_value * 100 if total_value else 0
         return _workbench_json_response({"ok": True, "updates": updates, "market_open": market_open,
+                                         "valuation_complete": valuation_complete,
+                                         "total_value": total_value if valuation_complete else None,
+                                         "total_net_pl": total_net_pl if valuation_complete else None,
+                                         "total_net_pct": (total_net_pl / total_cost * 100
+                                                           if valuation_complete and total_cost else None),
+                                         "total_day_pl": total_day_pl if valuation_complete else None,
                                          "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
                                          "official_count": len(updates),
                                          "requested_count": len(codes),
