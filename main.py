@@ -21477,6 +21477,7 @@ def _do_warmup():
                 # 盤中雷達 producer 也使用同一個受限上限。
                 radar_deep_limit=(RADAR_SCHEDULED_DEEP_SCAN_LIMIT
                                   if mode == "radar" else None),
+                price_workers=4,
             )
             persisted = _load_persisted_screener_snapshot(mode)
             elapsed = time.perf_counter() - stage_started
@@ -45543,7 +45544,8 @@ def _screener_snapshot_valid_for_today(snapshot):
 
 def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                           ind_map=None, persist=True, force_refresh=False,
-                          radar_deep_limit=None, persist_live=False):
+                          radar_deep_limit=None, persist_live=False,
+                          price_workers=None):
     """
     算出某個模式的完整候選清單。回傳 (rows, 因流動性被排除的檔數, 產業動能)。
     結果快取 5 分鐘，讓調整篩選條件變成瞬間反應。
@@ -45731,8 +45733,10 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
         rows, skipped_liquidity = [], 0
         # 選股台的候選池動輒上百檔，序列請求是這一頁最大的延遲來源。
         # 這裡開比較多執行緒——一次把整池抓完，總時間才不會隨檔數線性增加。
+        default_price_workers = 4 if mode == "radar" else 16
+        effective_price_workers = max(1, int(price_workers or default_price_workers))
         pool_prices = get_realtime_stocks_bulk(
-            [c for c, _ in pool], workers=4 if mode == "radar" else 16,
+            [c for c, _ in pool], workers=effective_price_workers,
             rng="3mo",
             market_suffix=(market_map if mode == "radar" else None),
             force_refresh=(force_refresh or mode == "radar"))
@@ -45930,7 +45934,7 @@ def _screener_recent_snapshot(mode):
 
 def _start_screener_background_refresh(mode, intraday=False,
                                       radar_deep_limit=None, on_complete=None,
-                                      on_failure=None):
+                                      on_failure=None, price_workers=None):
     """每個 process 每個模式只允許一個全量刷新，盤中結果不覆蓋收盤快照。
 
     `on_complete` 僅在計算成功後執行，供 LINE 在 webhook 已立即回覆後
@@ -45938,6 +45942,13 @@ def _start_screener_background_refresh(mode, intraday=False,
     """
     mode = str(mode or "").strip()
     if mode not in ("blackhorse", "radar"):
+        return False
+    # Scan work is optional; never let a cold-start/manual refresh evict the web
+    # process while it is serving positions, trades, or other pages. A later
+    # request/poll can start it when the existing snapshot is no longer busy.
+    if not _background_work_memory_safe(reserve_mb=280):
+        print("⚠️ 選股背景刷新延後 %s：保留持股與一般網頁請求的記憶體" % mode,
+              flush=True)
         return False
     with _SCREENER_REFRESH_LOCK:
         if _SCREENER_REFRESH_RUNNING.get(mode):
@@ -45952,6 +45963,10 @@ def _start_screener_background_refresh(mode, intraday=False,
                       "persist_live": bool(intraday and mode == "radar")}
             if radar_deep_limit is not None and mode == "radar":
                 kwargs["radar_deep_limit"] = radar_deep_limit
+            # Background scans share the single web process with portfolio writes.
+            # Limit quote fan-out for both modes; synchronous/manual calculations
+            # keep their existing worker count and ranking logic.
+            kwargs["price_workers"] = price_workers or 4
             compute_screener_rows(mode, **kwargs)
             completed = True
             print("✅ 選股背景刷新完成 %s%s" %
@@ -46004,7 +46019,14 @@ def _maybe_start_scheduled_blackhorse_refresh():
     due, age = _blackhorse_intraday_refresh_due()
     if not due:
         return False
-    started = _start_screener_background_refresh("blackhorse", intraday=False)
+    # Blackhorse can inspect up to 180 names. Only start it when the web worker
+    # has substantial headroom; it is optional and the last valid snapshot stays
+    # available when a live Radar scan has raised RSS.
+    if not _background_work_memory_safe(reserve_mb=290):
+        print("🐎 Cron 黑馬刷新略過：保留最近快照與網頁服務記憶體", flush=True)
+        return False
+    started = _start_screener_background_refresh(
+        "blackhorse", intraday=False, price_workers=4)
     print("🐎 Cron 黑馬刷新 %s（前次快照年齡：%s）" % (
         "已啟動" if started else "略過：已有刷新工作執行中",
         ("未知" if age is None else "%d 秒" % age)), flush=True)
@@ -46025,9 +46047,8 @@ def _do_scheduled_radar_live_snapshot():
             radar_deep_limit=RADAR_SCHEDULED_DEEP_SCAN_LIMIT, persist_live=True)
         result = (f"已完成盤中雷達快照：掃描 {len(rows) + int(skipped or 0)} 檔候選、"
                   f"輸出 {len(rows)} 檔；有效期 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘")
-        # Schedule Blackhorse after the Radar compute lock has been released, so the
-        # two full candidate scans don't compete. The next cron run also checks it.
-        _maybe_start_scheduled_blackhorse_refresh()
+        # Keep the 10-minute Radar producer isolated from Blackhorse. The next
+        # idle cron tick may refresh Blackhorse if RSS has returned to a safe level.
         return result
     finally:
         with _SCREENER_REFRESH_LOCK:
