@@ -19,7 +19,7 @@ html body a.ui-nav-pending::after{content:'';position:absolute;bottom:3px;left:c
 .ui-loading-ended .ui-skeleton::after{animation:none}.ui-feedback-route[data-state=error]{border-color:#d7ab92;background:#fff8f0;min-height:0}
 .ui-feedback-route button,.ui-load-inline button{min-height:44px;border:1px solid #b9d1c1;border-radius:9px;background:#f1f6f2;color:#315a43;font-weight:750;padding:9px 13px;margin:8px 6px 0 0}
 .ui-route-pending{opacity:.5;pointer-events:none;transition:opacity var(--sb-feedback-page) var(--sb-feedback-ease)}
-#stockbot-app #stockbot-shell #app-page-content.app-page-loading{opacity:.94;transition:opacity 240ms var(--sb-feedback-ease)}
+#stockbot-app #stockbot-shell #app-page-content.app-page-loading{opacity:1;transition:none}
 #stockbot-app #stockbot-shell #app-page-content.app-page-enter{animation:sb-page-enter 240ms var(--sb-feedback-ease) both}
 @keyframes sb-page-enter{from{opacity:.9;transform:translate3d(0,6px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
 .ui-form-status{display:flex;align-items:center;gap:9px;border:1px solid #cbdbd1;border-radius:11px;padding:12px;margin:12px 0;background:#f3f8f4;color:#41644c;font-size:13px;line-height:1.7}
@@ -37,7 +37,7 @@ html body a.ui-nav-pending::after{content:'';position:absolute;bottom:3px;left:c
 .ui-number-source,.ui-number-source *{color:transparent!important;-webkit-text-fill-color:transparent!important;text-shadow:none!important}
 .ui-chart-readout button[aria-pressed=true]{background:#dceee2;border-color:#80ac90;color:#285b3a}
 .ui-chart-crosshair{stroke:#779b85;stroke-width:1;stroke-dasharray:4 3;pointer-events:none}.ui-chart-dot{fill:#fff;stroke:#597d64;stroke-width:2;pointer-events:none}
-#stockbot-app #stockbot-shell #app-page-content svg.ui-chart-tracking{touch-action:pan-x pan-y!important;cursor:crosshair}
+#stockbot-app #stockbot-shell #app-page-content svg.ui-chart-tracking{touch-action:pan-y!important;cursor:crosshair;user-select:none;-webkit-user-select:none}
 #stockbot-app #stockbot-shell #app-page-content .ui-chart-point-active{stroke:#c69942!important;stroke-width:3!important}
 #stockbot-app #stockbot-shell #app-page-content :is(.rankTabs,.rank-tabs,#rankTabs) button{transition:transform var(--sb-feedback-press) var(--sb-feedback-ease)}
 #stockbot-app #stockbot-shell #app-page-content .rank-move{display:inline-block;border-radius:7px;padding:3px 6px;background:#f0f5f2}
@@ -49,53 +49,25 @@ html body a.ui-nav-pending::after{content:'';position:absolute;bottom:3px;left:c
 @media(prefers-reduced-motion:reduce){:root{--sb-feedback-press:0ms;--sb-feedback-expand:0ms;--sb-feedback-page:0ms;--sb-feedback-number:0ms}.ui-skeleton::after,.ui-status-spinner,.ui-chart-period,.ui-rank-enter,.ui-rank-moved{animation:none!important}#stockbot-app #stockbot-shell #app-page-content :is(.ui-pressed,.ui-selected-control){transition:none!important;transform:none!important}}
 @media print{.ui-feedback-route,.ui-chart-readout,.ui-form-status,.ui-number-tween{display:none!important}.ui-number-source,.ui-number-source *{color:inherit!important;-webkit-text-fill-color:currentColor!important}#app-page-content :is(.position-journal,.rank-chart-panel){content-visibility:visible!important;contain-intrinsic-size:none!important}#stockbot-app #stockbot-shell #app-page-content details.ui-disclosure{height:auto!important;overflow:visible!important}}
 /* Initial document load: one composed full-screen motion scene, never a stack of skeleton cards. */
-#stockbot-app #stockbot-shell #app-page-content #loading.market-loading-screen{
-  position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;height:100dvh!important;min-height:0!important;
-  z-index:2147483000!important;display:flex!important;flex-direction:column!important;align-items:center!important;
-  justify-content:center!important;box-sizing:border-box!important;margin:0!important;
-  padding:24px 20px calc(24px + env(safe-area-inset-bottom,0px))!important;overflow:hidden!important;
-  border:0!important;border-radius:0!important;background:
-    radial-gradient(ellipse at 78% 18%,rgba(119,166,190,.18),transparent 38%),
-    linear-gradient(155deg,#f5f8f8 0%,#edf3f4 54%,#f8f7f2 100%)!important;
-  box-shadow:none!important;color:#1d3445!important;animation:sb-loader-arrive 260ms var(--sb-feedback-ease) both
-}
+/* One restrained launch animation; page switches retain the existing thin progress rail. */
+html body#stockbot-app #stockbot-shell #app-page-content:has(#loading.market-loading-screen:not(.is-hidden)){animation:none!important;transform:none!important;filter:none!important;contain:none!important}
+#stockbot-app #stockbot-shell #app-page-content #loading.market-loading-screen{position:fixed!important;inset:0!important;z-index:2147483000!important;display:flex!important;align-items:center!important;justify-content:center!important;width:100%!important;height:100vh!important;height:100dvh!important;margin:0!important;padding:24px!important;border:0!important;border-radius:0!important;background:var(--sb-app-canvas,#f3f6f5)!important;color:var(--sb-app-ink,#1d3445)!important;box-shadow:none!important;animation:sb-loader-arrive 180ms ease-out both}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3::before{display:none!important;content:none!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3{gap:0!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .ui-shell-skeleton{display:none!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-inner{
-  position:relative!important;display:block!important;width:min(420px,88vw)!important;padding:0!important;
-  color:#1d3445!important;text-align:center!important
-}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-brand{
-  margin:0 0 10px!important;color:#557287!important;font-size:10px!important;font-weight:850!important;
-  letter-spacing:.2em!important;opacity:.9!important
-}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-visual{
-  height:148px!important;margin:0 auto 14px!important;max-width:100%!important
-}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-orbit{width:78px!important;height:78px!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-ring{border-color:rgba(48,92,119,.13)!important;border-top-color:#32738a!important;border-right-color:#b58b54!important;filter:none!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-dot{background:#b58b54!important;box-shadow:0 0 0 7px rgba(181,139,84,.12)!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-grid{opacity:.52!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-scan{background:linear-gradient(90deg,transparent,rgba(50,115,138,.55),transparent)!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-chart{right:4%!important;width:min(136px,34vw)!important;opacity:.72!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-title{
-  color:#1d3445!important;font-size:23px!important;font-weight:900!important;letter-spacing:-.025em!important;
-  text-shadow:none!important
-}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-status{
-  min-height:22px!important;margin-top:7px!important;color:#627b89!important;font-size:13px!important
-}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-progress-row{margin:17px auto 16px!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-bar{height:4px!important;margin:0!important;background:#dce6e7!important;box-shadow:none!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-bar i{background:linear-gradient(90deg,#32738a,#85adb2,#b58b54)!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-steps{width:100%!important;max-width:330px!important;gap:7px!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-steps .app-load-step{color:#87969d!important;font-size:11px!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-steps .app-load-step.active,
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-steps .app-load-step.done{color:#32738a!important}
-#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-foot{margin-top:15px!important;color:#819097!important;font-size:10px!important}
+#stockbot-app #stockbot-shell #app-page-content #loading :is(.ui-shell-skeleton,.market-loader-grid,.market-loader-scan,.market-loader-glow,.market-loader-orbit,.market-loader-steps,.market-loader-foot,.market-loader-brand span){display:none!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-inner{position:relative!important;display:block!important;width:min(300px,82vw)!important;padding:0!important;text-align:center!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-brand{margin:0 0 24px!important;color:var(--sb-app-muted,#687d89)!important;font-size:10px!important;letter-spacing:.18em!important;font-weight:700!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-visual{display:flex!important;align-items:center!important;justify-content:center!important;height:66px!important;margin:0 auto 22px!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-chart{position:relative!important;inset:auto!important;width:82px!important;height:46px!important;gap:5px!important;opacity:1!important;transform:none!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-chart i{border-radius:2px!important;background:var(--sb-app-primary,#24677b)!important;animation:market-bars 1.5s ease-in-out infinite}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-chart i:nth-child(3n){background:var(--sb-app-down,#167451)!important;opacity:.55}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-title{color:var(--sb-app-ink,#1d3445)!important;font-size:19px!important;font-weight:750!important;letter-spacing:-.02em!important;text-shadow:none!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-status{min-height:22px!important;margin-top:8px!important;color:var(--sb-app-muted,#687d89)!important;font-size:12px!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-progress-row{width:140px!important;margin:22px auto 0!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-bar{height:2px!important;margin:0!important;background:var(--sb-app-line,#dce5e3)!important;box-shadow:none!important}
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-bar i{width:35%!important;background:var(--sb-app-primary,#24677b)!important;animation:sb-launch-sweep 1.4s ease-in-out infinite!important;transition:none!important;will-change:transform}
+@keyframes sb-launch-sweep{from{transform:translateX(-110%)}to{transform:translateX(320%)}}
 @keyframes sb-loader-arrive{from{opacity:0}to{opacity:1}}
-@media(prefers-reduced-motion:reduce){#stockbot-app #stockbot-shell #app-page-content #loading.market-loading-screen{animation:none!important}#stockbot-app #stockbot-shell #app-page-content #loading :is(.market-loader-grid,.market-loader-scan,.market-loader-glow,.market-loader-chart i,.market-loader-ring,.market-loader-dot,.market-loader-bar i){animation:none!important;transition:none!important}}
+@media(prefers-reduced-motion:reduce){#stockbot-app #stockbot-shell #app-page-content #loading.market-loading-screen{animation:none!important}#stockbot-app #stockbot-shell #app-page-content #loading :is(.market-loader-chart i,.market-loader-bar i){animation:none!important;transition:none!important}}
 #loading[data-ui-load-state=error] .ui-shell-skeleton{display:none}
 html body .app-bottom-nav a{position:relative;transition:transform var(--sb-feedback-press) var(--sb-feedback-ease),background-color var(--sb-feedback-press) var(--sb-feedback-ease)}
 html body .app-bottom-nav a.ui-pressed{transform:scale(.95)!important;background:#e5f0e9!important;color:#315e45!important}
@@ -395,7 +367,7 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 #stockbot-app #stockbot-shell #app-page-content .ui-control:is(:active,:hover) :is(.down,.us-negative,.wb-down){color:var(--sb-feedback-down)!important;-webkit-text-fill-color:currentColor!important}
 /* Tracking stays available below the plot. Values appear only while inspecting. */
 #stockbot-app #stockbot-shell #app-page-content .ui-chart-host{position:relative}
-#stockbot-app #stockbot-shell #app-page-content .ui-chart-readout{position:static;display:flex;justify-content:flex-end;align-items:center;gap:8px;height:auto;min-height:38px;padding:0;margin:6px 0 0;border:0;border-radius:0;background:transparent;box-shadow:none;overflow:visible}
+#stockbot-app #stockbot-shell #app-page-content .ui-chart-readout{position:static;display:block;height:0;min-height:0;padding:0;margin:0;border:0;border-radius:0;background:transparent;box-shadow:none;overflow:visible}
 #stockbot-app #stockbot-shell #app-page-content .ui-chart-readout button{min-height:36px;margin:0;padding:6px 10px;font-size:11px;border-color:#cbdcd2;border-radius:9px;background:#f5f9f6;color:#4c6e58}
 #stockbot-app #stockbot-shell #app-page-content .ui-chart-readout .ui-chart-values{position:absolute;z-index:8;top:8px;left:8px;width:max-content;max-width:min(300px,calc(100% - 16px));min-width:0;max-height:none;overflow:visible;pointer-events:none;padding:10px 12px;border:1px solid #d8e3db;border-radius:11px;background:rgba(255,255,255,.97);box-shadow:0 5px 18px rgba(35,66,47,.1);font-size:11px;line-height:1.8;color:#3f5d49}
 #stockbot-app #stockbot-shell #app-page-content .ui-chart-values[hidden]{display:none!important}
@@ -488,10 +460,10 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 html body#stockbot-app{background:var(--sb-shell-canvas)!important;color:var(--sb-shell-ink)}
 html body#stockbot-app #stockbot-shell{box-sizing:border-box!important;width:100%!important;max-width:100%!important;margin:0 auto!important}
 html body#stockbot-app #stockbot-shell>.wrap{box-sizing:border-box!important;width:100%!important;max-width:100%!important;margin:0 auto!important;padding:0 18px calc(92px + env(safe-area-inset-bottom,0px))!important}
-html body#stockbot-app #stockbot-shell>.wrap>.app-header{position:relative!important;inset:auto!important;width:auto!important;max-width:none!important;margin:0 -18px 16px!important;padding:calc(env(safe-area-inset-top,0px) + 17px) 20px 15px!important;border:0!important;border-bottom:1px solid var(--sb-shell-line)!important;border-radius:0 0 20px 20px!important;background:var(--sb-shell-surface)!important;box-shadow:0 7px 24px rgba(26,53,70,.045)!important;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
-html body#stockbot-app #stockbot-shell>.wrap>.app-header h1{font-size:clamp(26px,5vw,34px)!important;letter-spacing:-.04em!important}
+html body#stockbot-app #stockbot-shell>.wrap>.app-header{position:relative!important;inset:auto!important;width:auto!important;max-width:none!important;margin:0 -18px 8px!important;padding:calc(env(safe-area-inset-top,0px) + 12px) 18px 12px!important;border:0!important;border-bottom:1px solid var(--sb-shell-line)!important;border-radius:0!important;background:var(--sb-shell-canvas)!important;box-shadow:none!important;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+html body#stockbot-app #stockbot-shell>.wrap>.app-header h1{font-size:clamp(23px,4.5vw,30px)!important;letter-spacing:-.035em!important}
 html body#stockbot-app #stockbot-shell>.wrap>.app-header .eyebrow{font-size:10px!important;letter-spacing:.16em!important}
-html body#stockbot-app #stockbot-shell>.wrap>.app-header .dateline{font-size:13px!important}
+html body#stockbot-app #stockbot-shell>.wrap>.app-header .dateline{font-size:11px!important}
 html body#stockbot-app #stockbot-shell>.wrap>.top-nav{display:none!important}
 html body#stockbot-app #stockbot-shell>.wrap>#app-page-content{box-sizing:border-box!important;width:100%!important;max-width:920px!important;margin:0 auto!important;padding-top:4px}
 html body#stockbot-app #stockbot-shell .more-hero{position:relative!important;overflow:visible!important;margin:2px 0 12px!important;padding:8px 2px 12px!important;border:0!important;border-bottom:1px solid var(--sb-shell-line)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
@@ -547,10 +519,10 @@ html body#stockbot-app #stockbot-shell .more-item:active{background:#eaf1f3!impo
   to { transform: rotate(360deg); }
 }
 html body#stockbot-app #app-page-content[aria-busy="true"] {
-  opacity: .62 !important;
-  transform: translateY(3px) !important;
-  filter: saturate(.86) !important;
-  transition: opacity 160ms ease, transform 160ms ease, filter 160ms ease !important;
+  opacity: 1 !important;
+  transform: none !important;
+  filter: none !important;
+  transition: none !important;
 }
 html body#stockbot-app #app-page-content {
   transition: opacity 180ms ease, transform 180ms ease, filter 180ms ease !important;

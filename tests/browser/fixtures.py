@@ -27,7 +27,7 @@ pts=[]
 for i in range(80):
  d=date(2026,7,15)+timedelta(days=i)
  if d.weekday()<5:pts.append(dict(date=d,value=10000+i*50,cost=10000,taiex=22000+i*15))
-local['portfolio_trend_html']='<section class="portfolio-trend-card">'+ns['render_trend_chart'](pts)+'</section>'
+local['portfolio_trend_html']=ns['render_trend_chart'](pts)
 fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='web_positions')
 # Use a small function AST for fast statement extraction.
 x=ast.parse(''.join(lines[fn.lineno-1:fn.end_lineno])).body[0]
