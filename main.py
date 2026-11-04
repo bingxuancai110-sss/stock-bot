@@ -20228,8 +20228,9 @@ def _job_mark_start(name):
     # 盤中雷達可能因 Render OOM 被殺，資料庫中的 running 狀態不會跟著程序重啟清除。
     # 雷達由十分鐘排程重試，使用短於排程週期的殘留門檻，避免被舊狀態卡住半小時。
     stale_minutes = 8 if name == "盤中雷達快照" else JOB_STALE_MINUTES
-    conn = get_db_connection()
+    conn = None
     try:
+        conn = get_db_connection()
         cur = conn.cursor()
         cur.execute(
             """
@@ -20269,11 +20270,18 @@ def _job_mark_start(name):
         cur.close()
         return got
     except Exception as e:
-        conn.rollback()
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                # A dropped SSL connection is already unusable. Do not let cleanup
+                # prevent the in-process worker from attempting the scheduled job.
+                pass
         print(f"⚠️ 標記工作開始失敗（照樣執行）: {e}")
         return True      # 記錄失敗不該擋住真正的工作
     finally:
-        release_db_connection(conn)
+        if conn is not None:
+            release_db_connection(conn)
 
 
 def _job_get_progress(name):
@@ -30802,20 +30810,26 @@ def _ensure_maintenance_table():
     if _MAINT_TABLE_READY: return True
     with _MAINT_TABLE_LOCK:
         if _MAINT_TABLE_READY: return True
-        conn=get_db_connection()
+        conn=None
         try:
+            conn=get_db_connection()
             cur=conn.cursor()
             cur.execute("CREATE TABLE IF NOT EXISTS web_maintenance_mode (id INTEGER PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT FALSE, scheduled_start TIMESTAMPTZ NULL, estimated_end TIMESTAMPTZ NULL, reason TEXT NOT NULL DEFAULT '', updated_by TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
             cur.execute("INSERT INTO web_maintenance_mode (id,enabled) VALUES (1,FALSE) ON CONFLICT (id) DO NOTHING")
             conn.commit(); cur.close(); _MAINT_TABLE_READY=True; return True
         except Exception as exc:
-            conn.rollback(); print(f"❌ 維護模式資料表初始化失敗：{exc}"); return False
-        finally: release_db_connection(conn)
+            if conn is not None:
+                try: conn.rollback()
+                except Exception: pass
+            print(f"❌ 維護模式資料表初始化失敗：{exc}"); return False
+        finally:
+            if conn is not None: release_db_connection(conn)
 
 def _maintenance_state():
     if not _ensure_maintenance_table(): return {"ok":False,"active":False,"enabled":False}
-    conn=get_db_connection()
+    conn=None
     try:
+        conn=get_db_connection()
         cur=conn.cursor(); cur.execute("SELECT enabled,scheduled_start,estimated_end,reason,updated_by,updated_at FROM web_maintenance_mode WHERE id=1"); row=cur.fetchone(); cur.close()
         if not row: return {"ok":True,"active":False,"enabled":False}
         enabled,start,end,reason,updated_by,updated_at=row; now=datetime.now(timezone.utc); active=bool(enabled)
@@ -30824,16 +30838,22 @@ def _maintenance_state():
         return {"ok":True,"active":active,"enabled":bool(enabled),"scheduled_start":start.isoformat() if start else None,"estimated_end":end.isoformat() if end else None,"reason":str(reason or ""),"updated_by":str(updated_by or ""),"updated_at":updated_at.isoformat() if updated_at else None}
     except Exception as exc:
         print(f"❌ 讀取維護模式失敗：{exc}"); return {"ok":False,"active":False,"enabled":False}
-    finally: release_db_connection(conn)
+    finally:
+        if conn is not None: release_db_connection(conn)
 
 def _set_maintenance(enabled=True,scheduled_start=None,estimated_end=None,reason="",updated_by=""):
     if not _ensure_maintenance_table(): return False
-    conn=get_db_connection()
+    conn=None
     try:
+        conn=get_db_connection()
         cur=conn.cursor(); cur.execute("UPDATE web_maintenance_mode SET enabled=%s,scheduled_start=%s,estimated_end=%s,reason=%s,updated_by=%s,updated_at=NOW() WHERE id=1",(bool(enabled),scheduled_start,estimated_end,str(reason or "")[:500],str(updated_by or "")[:200])); conn.commit(); cur.close(); return True
     except Exception as exc:
-        conn.rollback(); print(f"❌ 更新維護模式失敗：{exc}"); return False
-    finally: release_db_connection(conn)
+        if conn is not None:
+            try: conn.rollback()
+            except Exception: pass
+        print(f"❌ 更新維護模式失敗：{exc}"); return False
+    finally:
+        if conn is not None: release_db_connection(conn)
 
 def _parse_admin_datetime(value):
     if value in (None,""): return None
