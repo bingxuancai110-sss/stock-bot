@@ -13,10 +13,22 @@ NOW=datetime(2026,11,3,13,25,tzinfo=ZoneInfo('Asia/Taipei'))
 
 
 @lru_cache(maxsize=1)
+def main_tree():
+    return ast.parse((Path(__file__).parents[1]/'main.py').read_text(encoding='utf-8'))
+
+
+@lru_cache(maxsize=1)
 def functions():
-    tree=ast.parse((Path(__file__).parents[1]/'main.py').read_text())
-    names={'_get_homepage_render_prices','_homepage_merge_official_quotes','_fugle_market_quote'}
+    tree=main_tree()
+    names={'_get_homepage_render_prices','_homepage_merge_official_quotes','_fugle_market_quote',
+           '_usable_saved_home_final_quotes','_is_completed_home_close_payload'}
     return compile(ast.Module(body=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in names],type_ignores=[]),'<production-home>','exec')
+
+
+@lru_cache(maxsize=1)
+def official_close_function():
+    fn=next(n for n in main_tree().body if isinstance(n,ast.FunctionDef) and n.name=='fetch_taiex_official_close')
+    return compile(ast.Module(body=[fn],type_ignores=[]),'<official-close-cache>','exec')
 
 
 def test_home_render_uses_local_quote_without_even_starting_a_live_request():
@@ -67,8 +79,68 @@ def test_closing_index_refresh_runs_once_in_background_and_does_not_reuse_yester
     assert ns['_fugle_market_quote'](NOW)['pct']==-1 and len(jobs)==1
 
 
+def test_official_close_restores_same_day_persisted_snapshot_without_network_fetch():
+    saved_payload={'date':'20261103','close':'27000.00','previous_close':'26800.00',
+        'pct':'+0.75','source':'TWSE MIS 加權指數正式收盤','close_is_final':True}
+    load=Mock(return_value={'data_date':NOW.date(),'payload':saved_payload})
+    fetch=Mock(side_effect=AssertionError('same-day close should be restored'))
+    state={'day':None,'data':None,'attempt_at':0,'running':False,'snapshot_checked_day':None}
+    ns=dict(_taiwan_post_close=lambda current:True,taiwan_now=lambda:NOW,time=time,
+        _TAIEX_OFFICIAL_CLOSE_LOCK=threading.Lock(),_TAIEX_OFFICIAL_CLOSE_CACHE=state,
+        TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS=30,TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY='taiex_official_close',
+        _load_shared_data_snapshot=load,_fetch_taiex_official_close_uncached=fetch,
+        _save_shared_data_snapshot=Mock())
+    exec(official_close_function(),ns)
+    first=ns['fetch_taiex_official_close'](NOW)
+    second=ns['fetch_taiex_official_close'](NOW)
+    assert first['close']=='27000.00' and first['persisted'] is True
+    assert second['close']=='27000.00'
+    load.assert_called_once_with('taiex_official_close',max_age_seconds=7*86400)
+    fetch.assert_not_called()
+
+
+def test_new_official_close_is_saved_once_and_tagged_by_trade_date():
+    value={'date':'20261103','close':'27000.00','previous_close':'26800.00',
+        'pct':'+0.75','source':'TWSE MIS 加權指數正式收盤','close_is_final':True}
+    save=Mock(return_value=True)
+    ns=dict(_taiwan_post_close=lambda current:True,taiwan_now=lambda:NOW,time=time,
+        _TAIEX_OFFICIAL_CLOSE_LOCK=threading.Lock(),
+        _TAIEX_OFFICIAL_CLOSE_CACHE={'day':None,'data':None,'attempt_at':0,'running':False,
+            'snapshot_checked_day':None},TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS=30,
+        TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY='taiex_official_close',
+        _load_shared_data_snapshot=Mock(return_value=None),
+        _fetch_taiex_official_close_uncached=Mock(return_value=value),
+        _save_shared_data_snapshot=save)
+    exec(official_close_function(),ns)
+    assert ns['fetch_taiex_official_close'](NOW)==value
+    save.assert_called_once_with('taiex_official_close',value,data_date=NOW.date(),
+        source_meta={'source':'TWSE MIS official TAIEX close','day':'2026-11-03'})
+
+
+def test_saved_home_closes_are_reused_only_when_all_symbols_are_final_today():
+    quotes={code:{'close_date':'20261103','close_is_final':True,'close':100}
+        for code in ('2308','2383')}
+    ns=dict(_taiwan_post_close=lambda current:True,
+        _mis_quote_is_current_for_contribution=lambda q,now=None:bool(q and q.get('close_date')=='20261103' and q.get('close_is_final')))
+    exec(functions(),ns)
+    assert set(ns['_usable_saved_home_final_quotes'](quotes,['2308','2383'],NOW))=={'2308','2383'}
+    assert ns['_usable_saved_home_final_quotes'](quotes,['2308','6488'],NOW) is None
+    assert ns['_usable_saved_home_final_quotes']({**quotes,'2308':dict(quotes['2308'],close_is_final=False)},['2308'],NOW) is None
+
+
+def test_completed_close_snapshot_requires_final_same_day_market_and_holdings_quotes():
+    payload={'market_open':False,'market':{'source':'TWSE MIS 加權指數正式收盤','date':'20261103'},
+        'portfolio':{'ready':True,'stale_count':0},
+        'quotes':{'2308':{'close_date':'20261103','close_is_final':True}}}
+    ns=dict(taiwan_today=lambda:NOW.date())
+    exec(functions(),ns)
+    assert ns['_is_completed_home_close_payload'](payload)
+    assert not ns['_is_completed_home_close_payload']({**payload,'market':{'source':'正式收盤','date':'20261102'}})
+    assert not ns['_is_completed_home_close_payload']({**payload,'portfolio':{'ready':True,'stale_count':1}})
+
+
 def test_incomplete_home_refresh_uses_exponential_backoff():
-    tree=ast.parse((Path(__file__).parents[1]/'main.py').read_text())
+    tree=ast.parse((Path(__file__).parents[1]/'main.py').read_text(encoding='utf-8'))
     fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and
             n.name=='_schedule_home_intraday_payload_refresh')
     now={'value':100.0}
@@ -101,19 +173,20 @@ def test_incomplete_home_refresh_uses_exponential_backoff():
 
 
 def test_failed_official_close_request_is_shared_and_cooled_down():
-    tree=ast.parse((Path(__file__).parents[1]/'main.py').read_text())
-    fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and
-            n.name=='fetch_taiex_official_close')
     now={'value':100.0};calls=[]
     class Clock:
         @staticmethod
         def time():return now['value']
     ns=dict(time=Clock,_taiwan_post_close=lambda current:True,
         taiwan_now=lambda:NOW,_TAIEX_OFFICIAL_CLOSE_LOCK=threading.Lock(),
-        _TAIEX_OFFICIAL_CLOSE_CACHE={'day':None,'data':None,'attempt_at':0,'running':False},
+        _TAIEX_OFFICIAL_CLOSE_CACHE={'day':None,'data':None,'attempt_at':0,'running':False,
+            'snapshot_checked_day':None},
         TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS=30,
+        TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY='taiex_official_close',
+        _load_shared_data_snapshot=Mock(return_value=None),
+        _save_shared_data_snapshot=Mock(),
         _fetch_taiex_official_close_uncached=lambda current:(calls.append(current) or None))
-    exec(compile(ast.Module(body=[fn],type_ignores=[]),'<official-close-cache>','exec'),ns)
+    exec(official_close_function(),ns)
     assert ns['fetch_taiex_official_close'](NOW) is None
     now['value']=101.0
     assert ns['fetch_taiex_official_close'](NOW) is None

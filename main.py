@@ -6828,6 +6828,42 @@ def _restore_home_intraday_payload_snapshot(uid, intraday_now, post_close_now):
         return None
 
 
+def _is_completed_home_close_payload(payload, day=None):
+    """True only for a complete same-day payload made from verified final closes."""
+    if not isinstance(payload, dict) or payload.get("market_open"):
+        return False
+    day_key = str(day or taiwan_today().isoformat()).replace("-", "")[:8]
+    market = payload.get("market") or {}
+    portfolio = payload.get("portfolio") or {}
+    if ("正式收盤" not in str(market.get("source") or "") or
+            str(market.get("date") or "").replace("-", "")[:8] != day_key or
+            not portfolio.get("ready") or int(portfolio.get("stale_count") or 0) > 0):
+        return False
+    quotes = payload.get("quotes") or {}
+    return bool(quotes) and all(
+        isinstance(quote, dict) and
+        str(quote.get("close_date") or "").replace("-", "")[:8] == day_key and
+        bool(quote.get("close_is_final"))
+        for quote in quotes.values()
+    )
+
+
+def _usable_saved_home_final_quotes(quotes, codes, now=None):
+    """Return today's final saved closes only when they cover every held symbol."""
+    current = now or taiwan_now()
+    if not _taiwan_post_close(current) or not isinstance(quotes, dict):
+        return None
+    result = {}
+    for code in dict.fromkeys(str(value).strip() for value in (codes or []) if str(value).strip()):
+        quote = quotes.get(code)
+        if (not isinstance(quote, dict) or
+                not _mis_quote_is_current_for_contribution(quote, now=current) or
+                not quote.get("close_is_final")):
+            return None
+        result[code] = dict(quote)
+    return result or None
+
+
 def _sticky_home_quotes(uid, fresh_quotes):
     """Merge official MIS quotes, retaining the last good quote only within the same Taiwan day."""
     now = time.time()
@@ -6930,8 +6966,10 @@ def _schedule_save_home_intraday_quotes(uid, quotes):
     if not clean:
         return False
     now = time.time()
+    has_final_close = any(bool(quote.get("close_is_final")) for quote in clean.values())
     with _HOME_INTRADAY_SNAPSHOT_SAVE_LOCK:
-        if now - float(_HOME_INTRADAY_SNAPSHOT_SAVE_LAST.get(uid_key) or 0) < 30:
+        if (not has_final_close and
+                now - float(_HOME_INTRADAY_SNAPSHOT_SAVE_LAST.get(uid_key) or 0) < 30):
             return False
         _HOME_INTRADAY_SNAPSHOT_SAVE_LAST[uid_key] = now
 
@@ -7073,6 +7111,7 @@ def _calculate_home_quote_payload(uid, positions, price_map, fresh_contribution_
                 "updated_at": str(_quote.get("updated_at") or _quote.get("trade_at") or ""),
                 "fetched_at": str(_quote.get("fetched_at") or ""),
                 "close_date": str(_quote.get("close_date") or "").replace("-", "")[:8],
+                "close_is_final": bool(_quote.get("close_is_final")),
                 "source": str(_quote.get("source") or "TWSE MIS same-day cache"),
             }
         except (TypeError, ValueError):
@@ -7094,7 +7133,12 @@ def _calculate_home_quote_payload(uid, positions, price_map, fresh_contribution_
                       "positive": positive, "negative": negative,
                 "stale_names": stale_names[:6],
                 "stale_count": len(stale_names), "ready": True},
-        "note": (("盤中報價尚未補齊；官方快照缺價，延遲備援尚未涵蓋全部持股；" if stale_codes else "首頁盤中行情已更新；") +
+        "note": (("收盤行情尚未補齊；官方快照缺價，尚未取得全部持股的正式收盤價；"
+                  if stale_codes and not intraday else
+                  "盤中報價尚未補齊；官方快照缺價，延遲備援尚未涵蓋全部持股；"
+                  if stale_codes else
+                  "首頁今日正式收盤行情已保存；後續重整會沿用已保存資料。"
+                  if not intraday else "首頁盤中行情已更新；") +
                  (f"本輪有 {backup_quote_count} 檔使用 Yahoo 1 分 K 備援（可能延遲，非官方即時）；" if backup_quote_count else "") +
                  "若 MIS 本輪漏回個股，會沿用今天先前已成功取得的有效報價；絕不沿用前一交易日行情。"
                  "尚未有今天有效報價的標的暫不計入整體貢獻。"),
@@ -7119,7 +7163,7 @@ def _refresh_home_intraday_payload_sync(uid):
         market_pct = float(taiex.get("pct")) if taiex and taiex.get("pct") is not None else None
     except (TypeError, ValueError):
         market_pct = None
-    market_payload = ({"pct": market_pct, "source": taiex.get("source"),
+    market_payload = ({"pct": market_pct, "date": taiex.get("date"), "source": taiex.get("source"),
                        "updated_at": taiex.get("updated_at"),
                        "stale": bool(taiex.get("stale")),
                        "cache_age_seconds": taiex.get("cache_age_seconds")}
@@ -7134,7 +7178,7 @@ def _refresh_home_intraday_payload_sync(uid):
     codes = [code for code in codes if code]
     # Restore this user's last good quotes from today before contacting MIS; this is a
     # background-only database read and can survive a Render process restart.
-    _restore_home_intraday_quotes(uid)
+    restored_quotes = _restore_home_intraday_quotes(uid)
     try:
         # 首頁完整載入允許多等一點，先把全部持股的上市＋上櫃代號一起送入批次。
         # 不依賴可能過期的市場別快取，也不因前一次短輪詢曾重試過而跳過本輪。
@@ -7145,13 +7189,20 @@ def _refresh_home_intraday_payload_sync(uid):
         home_suffix_map = _home_market_suffix_map(codes)
         print("⚡ 首頁行情市場別辨識：已知市場 %s/%s 檔；未辨識才雙市場查詢" % (
             len(home_suffix_map), len(codes)), flush=True)
-        fresh_price_map = _fetch_twse_mis_quotes(
-            codes, market_suffix=home_suffix_map, force_refresh=True,
-            cache_result=False, quick_mode=True)
-        fresh_contribution_quotes = {
-            str(code): dict(quote) for code, quote in (fresh_price_map or {}).items()
-            if _mis_quote_is_current_for_contribution(quote)
-        }
+        saved_final_closes = _usable_saved_home_final_quotes(restored_quotes, codes, now=now)
+        if saved_final_closes:
+            fresh_price_map = saved_final_closes
+            fresh_contribution_quotes = dict(fresh_price_map)
+            print("⚡ 首頁沿用今日已保存的正式收盤行情 uid=%s quotes=%s；略過重抓" % (
+                str(uid).strip(), len(fresh_price_map)), flush=True)
+        else:
+            fresh_price_map = _fetch_twse_mis_quotes(
+                codes, market_suffix=home_suffix_map, force_refresh=True,
+                cache_result=False, quick_mode=True)
+            fresh_contribution_quotes = {
+                str(code): dict(quote) for code, quote in (fresh_price_map or {}).items()
+                if _mis_quote_is_current_for_contribution(quote)
+            }
         # One bounded MIS batch is enough per refresh. Missing symbols remain explicitly
         # incomplete; the next background refresh is rate-limited with exponential backoff.
         # Never recursively fan out failed batches from the homepage worker.
@@ -7433,7 +7484,8 @@ def _build_home_intraday_payload(uid):
         _cached_market_is_official_close = "正式收盤" in str(
             _cached_market_after_refresh.get("source") or "")
         if (cached_stale == 0 and cached_portfolio.get("ready") and
-                (age <= 2 or (post_close and age <= 300)) and
+                (age <= 2 or (post_close and age <= 300) or
+                 (post_close and _is_completed_home_close_payload(cached_copy))) and
                 (not post_close or _cached_market_is_official_close)):
             return cached_copy
         refresh_started = _schedule_home_intraday_payload_refresh(uid)
@@ -7466,6 +7518,7 @@ def _build_home_intraday_payload(uid):
                         "pct": _official_pct,
                         "source": _official_close.get("source") or "TWSE MIS 加權指數正式收盤",
                         "updated_at": _official_close.get("updated_at"),
+                        "date": _official_close.get("date"),
                         "stale": False,
                         "cache_age_seconds": 0,
                     }
@@ -7475,7 +7528,8 @@ def _build_home_intraday_payload(uid):
             _HOME_INTRADAY_PAYLOAD_CACHE[str(uid).strip()] = {
                 "day": day, "at": time.time(), "data": restored,
             }
-        _schedule_home_intraday_payload_refresh(uid)
+        if not (post_close_now and _is_completed_home_close_payload(restored)):
+            _schedule_home_intraday_payload_refresh(uid)
         return restored
 
     refresh_started = _schedule_home_intraday_payload_refresh(uid)
@@ -16472,8 +16526,12 @@ def score_from_revenue_growth(yoy_pct):
 _taiex_cache = {"at": 0, "data": None}
 TAIEX_CACHE_SECONDS = 60
 _TAIEX_OFFICIAL_CLOSE_LOCK = threading.Lock()
-_TAIEX_OFFICIAL_CLOSE_CACHE = {"day": None, "data": None, "attempt_at": 0, "running": False}
+_TAIEX_OFFICIAL_CLOSE_CACHE = {
+    "day": None, "data": None, "attempt_at": 0, "running": False,
+    "snapshot_checked_day": None,
+}
 TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS = 30
+TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY = "taiex_official_close"
 
 # 首頁盤中大盤不能拿日K或昨日快照假裝即時；獨立以 TWSE MIS 的 t00 指數短快取。
 _taiex_intraday_cache = {"day": None, "at": 0, "attempt_at": 0, "data": None}
@@ -16681,26 +16739,57 @@ def _fetch_taiex_official_close_uncached(now=None):
 
 
 def fetch_taiex_official_close(now=None):
-    """Share same-day official-close requests and cool down repeated upstream failures."""
+    """Reuse the persisted official close for today before contacting TWSE MIS."""
     current = now or taiwan_now()
     if not _taiwan_post_close(current):
         return None
-    day = current.strftime("%Y%m%d")
+    day = current.date().isoformat()
     now_epoch = time.time()
     with _TAIEX_OFFICIAL_CLOSE_LOCK:
         state = _TAIEX_OFFICIAL_CLOSE_CACHE
         if state.get("day") != day:
-            state.update(day=day, data=None, attempt_at=0, running=False)
+            state.update(day=day, data=None, attempt_at=0, running=False,
+                         snapshot_checked_day=None)
         cached = dict(state["data"]) if isinstance(state.get("data"), dict) else None
+        if cached:
+            return cached
         if (state.get("running") or
                 now_epoch - float(state.get("attempt_at") or 0) < TAIEX_OFFICIAL_CLOSE_RETRY_SECONDS):
             return cached
+        check_snapshot = state.get("snapshot_checked_day") != day
         state.update(running=True, attempt_at=now_epoch)
     try:
-        value = _fetch_taiex_official_close_uncached(current)
+        value = None
+        if check_snapshot:
+            try:
+                saved = _load_shared_data_snapshot(
+                    TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY, max_age_seconds=7 * 86400)
+                saved_payload = (saved or {}).get("payload") or {}
+                if (str((saved or {}).get("data_date") or "")[:10] == day and
+                        str(saved_payload.get("date") or "").replace("-", "")[:8] == day.replace("-", "") and
+                        saved_payload.get("close_is_final") and
+                        "正式收盤" in str(saved_payload.get("source") or "")):
+                    value = dict(saved_payload)
+                    value["persisted"] = True
+                    print("⚡ 還原今日加權指數正式收盤快照 %s" % day, flush=True)
+            except Exception as exc:
+                print("⚠️ 讀取加權指數收盤快照失敗：%s" % type(exc).__name__, flush=True)
+            finally:
+                with _TAIEX_OFFICIAL_CLOSE_LOCK:
+                    if _TAIEX_OFFICIAL_CLOSE_CACHE.get("day") == day:
+                        _TAIEX_OFFICIAL_CLOSE_CACHE["snapshot_checked_day"] = day
+        if value is None:
+            value = _fetch_taiex_official_close_uncached(current)
         with _TAIEX_OFFICIAL_CLOSE_LOCK:
             if _TAIEX_OFFICIAL_CLOSE_CACHE.get("day") == day and value:
                 _TAIEX_OFFICIAL_CLOSE_CACHE["data"] = dict(value)
+        if (value and not value.get("persisted") and value.get("close_is_final") and
+                "正式收盤" in str(value.get("source") or "")):
+            _save_shared_data_snapshot(
+                TAIEX_OFFICIAL_CLOSE_SNAPSHOT_KEY, value,
+                data_date=current.date(),
+                source_meta={"source": "TWSE MIS official TAIEX close", "day": day},
+            )
         return value
     finally:
         with _TAIEX_OFFICIAL_CLOSE_LOCK:
