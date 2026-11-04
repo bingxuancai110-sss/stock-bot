@@ -17,6 +17,7 @@ with sync_playwright() as p:
   if u.path.startswith('/static/'):
    file=REPO/u.path.lstrip('/');r.fulfill(body=file.read_text(),content_type='text/css' if file.suffix=='.css' else 'application/javascript');return
   if '/api/workbench/strategy-lab' in u.path:r.fulfill(json=dict(ok=True,active_strategy='四因子複合',strategy_library=[dict(key=k,available=True,status_label='可運作') for k in ['四因子複合','營收動能','價格動能']],strategy_data={},factors=[],reference={}));return
+  if u.path=='/web/api/positions/history':r.fulfill(json=dict(ok=True,events=[dict(date='2026-10-30',code='2330',name='台積電',type='sell',label='賣出',shares=10,price=1500,amount=15000,realized_pl=1200)]));return
   if '/api/workbench/' in u.path:r.fulfill(json=dict(ok=True,rows=[],sources={},personal={},meta={'market_open':False,'available':True}));return
   if '/api/' in u.path:r.fulfill(json=dict(market_open=False,updates=[],note='測試收盤快照'));return
   if u.path=='/web/position-trend':r.fulfill(body='<div>走勢載入測試</div>');return
@@ -49,19 +50,28 @@ with sync_playwright() as p:
  check('shared runtime only loaded once',page.locator('script[src*="ui-feedback.js"]').count()==1)
  check('mobile app bar exposes all seven destinations',page.locator('.app-bottom-nav a').count()==7 and [x.inner_text().strip() for x in page.locator('.app-bottom-nav a').all()]==['今日','看盤','持股','選股','排行榜','美股輪動','更多'])
  check('all seven destinations share one bottom bar',page.locator('.bottom-inner').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===7 and e.scrollHeight<90'))
- check('holdings use a two-column app layout',page.locator('.rows').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===2'))
- check('holdings read as a board rather than floating tiles',page.locator('.position-card').first.evaluate('(e)=>getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none"'))
+ check('holdings use a readable single-column brokerage list',page.locator('.rows').evaluate('(e)=>getComputedStyle(e).display==="block"'))
+ check('holdings read as a continuous brokerage list',page.locator('.position-card').first.evaluate('(e)=>getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none"'))
  check('holding summary numbers stay on one line',page.locator('.position-card-primary b').evaluateAll('(es)=>es.every(e=>getComputedStyle(e).whiteSpace==="nowrap")'))
- check('seven actual cards and donut legends',page.locator('.position-card').count()==7 and page.locator('.allocation-item').count()==7)
- check('each holding gets shared circle selector',page.locator('[data-ui-allocation-select]').count()==7)
- page.locator('[data-allocation-select="1002"]').click()
- check('legend updates circle center',page.locator('[data-allocation-center-title]').inner_text()=='測試公司2')
- check('legend highlights corresponding holding',page.locator('.position-card[data-position-code="1002"]').evaluate('(e)=>e.classList.contains("ui-allocation-selected")'))
- check('selected holding is visibly highlighted',page.locator('.position-card[data-position-code="1002"]').evaluate('(e)=>getComputedStyle(e).backgroundColor!=="rgb(255, 255, 255)"'))
- check('circle exposes selected aria state',page.locator('.allocation-slice[data-allocation-code="1002"]').get_attribute('aria-pressed')=='true')
- page.locator('[data-ui-allocation-select="1003"]').click()
- check('holding list selects corresponding circle',page.locator('[data-allocation-select="1003"]').get_attribute('aria-pressed')=='true')
- page.locator('[data-allocation-reset]').click();check('reset clears both sides',page.locator('.ui-allocation-selected').count()==0 and page.locator('.allocation-item[aria-pressed=true]').count()==0)
+ check('seven current holding rows render',page.locator('.position-card').count()==7)
+ check('unrealized P&L and weight are visible on each row',page.locator('.position-card-primary [data-position-net]').count()==7 and page.locator('.p2-weight-track').count()==7)
+ check('expanded position exposes buy and sell actions',page.locator('.position-card').first.locator('[data-p2-buy]').count()==1 and page.locator('.position-card').first.locator('[data-p2-sell]').count()==1)
+ page.locator('.position-card').first.locator('[data-p2-sell]').click();check('sell action opens the existing FIFO sell panel',page.locator('.position-card').first.locator('.sellbox-all').evaluate('(e)=>e.open'))
+ check('sell action focuses quantity without submitting',page.locator('.position-card').first.locator('input[name="sell_shares"]').evaluate('(e)=>document.activeElement===e') and state['post_count']==0)
+ page.locator('.position-card').first.locator('[data-p2-buy]').click();check('holding buy action opens the sheet with the selected ticker',page.locator('#p2-trade-dialog').evaluate('(e)=>e.open') and page.locator('#p2-trade-code').input_value()=='1001' and page.locator('#p2-trade-shares').evaluate('(e)=>document.activeElement===e'))
+ page.locator('[data-p2-close]').click();check('transaction sheet closes without posting',not page.locator('#p2-trade-dialog').evaluate('(e)=>e.open') and state['post_count']==0)
+ check('portfolio performance compares to weighted index','加權指數' in page.locator('.portfolio-trend-card').inner_text() and '0050' not in page.locator('.portfolio-trend-card').inner_text())
+ check('portfolio return chart and allocation donut sit above holdings',page.evaluate('(()=>{const t=document.querySelector(".portfolio-trend-card"),d=document.querySelector(".position-allocation"),h=document.querySelector(".p2-holdings");return !!(t&&d&&h&&(t.compareDocumentPosition(d)&Node.DOCUMENT_POSITION_FOLLOWING)&&(d.compareDocumentPosition(h)&Node.DOCUMENT_POSITION_FOLLOWING))})()'))
+ page.locator('[data-p2-sort]').select_option('name')
+ check('sorting is local and remembered',page.locator('.position-card').first.get_attribute('data-sort-name')=='測試公司1' and page.evaluate('localStorage.getItem("stockbot_portfolio_sort_v2")==="name"'))
+ page.locator('[data-p2-view="history"]').click();check('history tab switches without navigation',page.locator('[data-p2-panel="history"]').is_visible() and page.locator('[data-p2-panel="current"]').is_hidden())
+ page.locator('[data-p2-view="activity"]').click();page.wait_for_selector('.p2-event[data-type="sell"]')
+ check('trade timeline loads only when opened',any(path=='/web/api/positions/history' for method,path,q in requests))
+ page.locator('[data-p2-filter="buy"]').click();check('timeline filter selects buy events',page.locator('[data-p2-filter="buy"]').get_attribute('aria-pressed')=='true')
+ check('timeline filter hides other event types',page.locator('.p2-event[data-type="sell"]').is_hidden())
+ page.locator('[data-p2-filter="all"]').click();page.locator('[data-p2-search]').fill('2330');check('trade history searches by ticker',page.locator('.p2-event[data-type="sell"]').is_visible())
+ page.locator('[data-p2-search]').fill('not-a-ticker');check('trade history search filters non-matching rows',page.locator('.p2-event[data-type="sell"]').is_hidden())
+ page.locator('[data-p2-view="current"]').click()
  page.set_viewport_size({'width':1280,'height':900})
  check('desktop switches to sidebar navigation and three holding columns',css(page.locator('.top-nav'),'position')=='fixed' and css(page.locator('.app-bottom-nav'),'display')=='none' and page.locator('.rows').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===3'))
  page.set_viewport_size({'width':390,'height':844})
@@ -80,8 +90,8 @@ with sync_playwright() as p:
  check('child collapses independently',nested.evaluate('(e)=>e.open') and not child.evaluate('(e)=>e.open'))
  check('nested height changes have no observer errors',not errors,errors)
  nested.evaluate('(e)=>e.remove()')
- # No data request is made for animation or allocation selection.
- check('no extra data requests from circle interactions',not any(path not in ['/web/api/positions/quotes'] for method,path,q in requests if '/api/' in path))
+ # Chart and sorting remain local; only the opened journal tab requests its data.
+ check('journal is the only added data request',sum(1 for method,path,q in requests if path=='/web/api/positions/history')==1 and not any(path not in ['/web/api/positions/quotes','/web/api/positions/history'] for method,path,q in requests if '/api/' in path))
  price=card.locator('[data-position-price]');price.scroll_into_view_if_needed();old=price.inner_text()
  price.evaluate('(e)=>e.textContent="101.25"')
  page.wait_for_function('document.querySelectorAll(".ui-number-tween").length>0')
@@ -102,10 +112,10 @@ with sync_playwright() as p:
  check('tracking control is below the portfolio plot',readout.bounding_box()['y']>=svg.bounding_box()['y']+svg.bounding_box()['height']-2)
  check('tracking toolbar has no frame or reserved height',readout.evaluate('(e)=>{let s=getComputedStyle(e);return s.borderTopWidth==="0px"&&s.backgroundColor==="rgba(0, 0, 0, 0)"&&e.getBoundingClientRect().height<60}'))
 
- period=page.locator('label[for="trend-period-6m"]');period.click();page.wait_for_timeout(30)
- check('period uses existing cached panels',page.locator('.portfolio-trend-panel.panel-6m').is_visible())
+ period=page.locator('label[for="trend-period-1y"]');period.click();page.wait_for_timeout(30)
+ check('period uses existing cached panels',page.locator('.portfolio-trend-panel.panel-1y').is_visible())
  # Form confirmation + one request; backend validation 200 must not be shown as success.
- form=page.locator('form.add');form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100')
+ page.locator('[data-p2-add]').click();form=page.locator('form.add');check('top action opens an accessible transaction sheet',page.locator('#p2-trade-dialog').evaluate('(e)=>e.open') and form.locator('label[for="p2-trade-code"]').count()==1);form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100');form.locator('[name=buy_fee]').fill('5');check('trade preview computes gross and total without posting',form.locator('[data-p2-trade-gross]').inner_text()=='10,000 元' and form.locator('[data-p2-trade-total]').inner_text()=='10,005 元' and state['post_count']==0)
  state['post']='invalid';form.locator('button[type=submit]').click();page.wait_for_selector('.position-confirm-submit');page.locator('.position-confirm-submit').click()
  page.wait_for_selector('form.add .ui-form-status[data-state=error]')
  check('HTTP 200 validation failure is error state','請填入正確' in form.locator('.ui-form-status').inner_text())
@@ -118,7 +128,7 @@ with sync_playwright() as p:
  state['delay_nav']=True
  page.evaluate('window.stockBotSwitchPage("/web/leaderboard",true)')
  check('route does not insert a blocking skeleton card',page.locator('.ui-feedback-route').count()==0)
- check('route keeps previous page visible and interactive',page.locator('#app-page-content').evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).pointerEvents!=="none"') and page.locator('form.add').is_visible())
+ check('route keeps previous page visible and interactive',page.locator('#app-page-content').evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).pointerEvents!=="none"') and page.locator('[data-p2-add]').is_visible())
  check('navigation immediately acknowledges leaderboard selection',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').evaluate('(e)=>e.classList.contains("ui-nav-pending")'))
  state['delay_nav']=False;held_route().fulfill(body=ROOT.joinpath('rank-fragment.html').read_text(),content_type='text/html')
  page.wait_for_selector('#rankTabs');page.wait_for_timeout(150)
@@ -156,9 +166,9 @@ with sync_playwright() as p:
  check('failed route retains current leaderboard',page.locator('#rankTabs').count()==1)
  check('failed route clears pending state',page.locator('.ui-nav-pending').count()==0 and page.locator('.ui-route-pending').count()==0)
  # Return and verify confirmation does not multiply on repeated fragments.
- page.evaluate('window.stockBotSwitchPage("/web/positions",true)');page.wait_for_selector('form.add');page.wait_for_timeout(100)
+ page.evaluate('window.stockBotSwitchPage("/web/positions",true)');page.wait_for_selector('form.add',state='attached');page.wait_for_timeout(100)
  check('shared runtime reused after route reentry',page.locator('script[src*="ui-feedback.js"]').count()==1)
- form=page.locator('form.add');form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100');form.locator('button[type=submit]').click()
+ page.locator('[data-p2-add]').click();form=page.locator('form.add');form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100');form.locator('button[type=submit]').click()
  check('one confirmation dialog after route reentry',page.locator('#position-confirm-backdrop').count()==1);page.locator('.position-confirm-cancel').click()
  for width in [360,390,430,1280]:
   page.set_viewport_size({'width':width,'height':900});page.evaluate('scrollTo(0,0)');check('holdings no overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'));page.locator('.rows:has(.position-card)').screenshot(path=str(ROOT/(engine+'-holdings-cards-'+str(width)+'.png')));page.screenshot(path=str(ROOT/(engine+'-positions-'+str(width)+'.png')))
@@ -184,7 +194,7 @@ with sync_playwright() as p:
  # Two quick navigation requests: stale completion cannot replace the newer page.
  edge.evaluate('window.stockBotSwitchPage("/web/leaderboard",true)');old=held_route()
  edge.evaluate('window.stockBotSwitchPage("/web/positions",true)');new=held_route();state['delay_nav']=False
- new.fulfill(body=ROOT.joinpath('positions-fragment.html').read_text(),content_type='text/html');edge.clock.run_for(80);edge.wait_for_selector('form.add')
+ new.fulfill(body=ROOT.joinpath('positions-fragment.html').read_text(),content_type='text/html');edge.clock.run_for(80);edge.wait_for_selector('form.add',state='attached')
  try:old.fulfill(body=ROOT.joinpath('rank-fragment.html').read_text(),content_type='text/html')
  except Exception:pass
  edge.clock.run_for(80);check('latest route wins rapid navigation',edge.locator('form.add').count()==1 and edge.locator('#rankTabs').count()==0 and edge.locator('.ui-nav-pending').count()==0)
@@ -203,7 +213,7 @@ with sync_playwright() as p:
  shell.goto('https://fixture.test/shell',wait_until='domcontentloaded');shell.wait_for_function('!!window.StockBotUI');initial=held_route()
  check('initial page displays shared skeleton',shell.locator('#loading .ui-skeleton').count()==3 and shell.locator('#loading').is_visible())
  check('initial skeleton is in page flow, not black fullscreen',css(shell.locator('#loading'),'position')=='relative' and css(shell.locator('#loading'),'backgroundColor')=='rgb(249, 251, 250)')
- state['delay_nav']=False;initial.fulfill(body=ROOT.joinpath('positions-fragment.html').read_text(),content_type='text/html');shell.wait_for_selector('form.add');shell.wait_for_timeout(100)
+ state['delay_nav']=False;initial.fulfill(body=ROOT.joinpath('positions-fragment.html').read_text(),content_type='text/html');shell.wait_for_selector('form.add',state='attached');shell.wait_for_timeout(100)
  check('initial skeleton releases as soon as real content arrives',not shell.locator('#loading').is_visible() and shell.locator('.position-card').count()==7)
  shell.close();state['fail_nav']=True
  shell=context.new_page();shell.on('pageerror',lambda e:errors.append(str(e)));shell.route('https://fixture.test/**',fulfill);shell.goto('https://fixture.test/shell');shell.wait_for_selector('#loading[data-ui-load-state=error]');state['fail_nav']=False
@@ -211,8 +221,8 @@ with sync_playwright() as p:
  check('failed initial load offers explicit retry',shell.locator('.market-loader-retry').is_visible())
  shell.close()
  # Slow writes remain single-submit; a late completion cannot replace a newer route.
- post=context.new_page();post.on('pageerror',lambda e:errors.append(str(e)));post.route('https://fixture.test/**',fulfill);post.goto('https://fixture.test/web/positions');post.wait_for_function('!!window.StockBotUI');post.clock.install()
- form=post.locator('form.add');form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100');state['post']='error'
+ post=context.new_page();post.on('pageerror',lambda e:errors.append(str(e)));post.route('https://fixture.test/**',fulfill);post.goto('https://fixture.test/web/positions');post.wait_for_function('!!window.StockBotUI');post.clock.install();post.locator('[data-p2-add]').click()
+ post.locator('[data-p2-add]').click();form=post.locator('form.add');form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100');state['post']='error'
  form.locator('button[type=submit]').click();post.locator('.position-confirm-submit').click();post.wait_for_selector('form.add .ui-form-status[data-state=error]')
  check('HTTP failure restores form without success indication',form.locator('[name=code]').input_value()=='2330' and post.locator('.position-success-overlay').count()==0)
  state['post']='hold';before_post=state['post_count'];form.locator('button[type=submit]').click();post.locator('.position-confirm-submit').click()

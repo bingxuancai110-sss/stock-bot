@@ -22,7 +22,7 @@ positions=[dict(code=str(1001+i),name='測試公司'+str(i+1),shares=100,cost=90
 positions[3].update(code='00981A',name='主動統一台股增長',shares=1063,bought_on=date(2026,4,22))
 enriched=[(p,dict(name=p['name'],close=[1355,1510,4705,26.57,1265,1060,637][i],pct=1.2 if i%2==0 else -2.1,source='隔離測試行情'),p['shares']*[1355,1510,4705,26.57,1265,1060,637][i],p['shares']*90) for i,p in enumerate(positions)]
 local=dict(ns,positions=positions,enriched=enriched,total_value=sum(r[2] for r in enriched),total_cost=63000,pl_total=20,fee_total=100,total_fee=100,total_day_pl=0,rows_html=[],allocation_items=[],target_weights={},inst={},fee_disc=1,min_fee=20,
- stock_display_name=lambda code,*args:next((p['name'] for p in positions if p['code']==code),code),net_profit=lambda *args:(1000,11.11,20),lots_html=lambda *args:'',csrf_hidden_input=lambda:'<input type="hidden" name="csrf_token" value="fixture-only">',_is_taiwan_intraday_window=lambda:False,msg='',exright_html='')
+ stock_display_name=lambda code,*args:next((p['name'] for p in positions if p['code']==code),code),get_realized_trades=lambda *args,**kwargs:[],_p2_active_codes={p['code'] for p in positions},_p2_realized=[],_p2_realized_total=0,_p2_priced_count=len(positions),_p2_valuation_complete=True,_p2_quote_stamps=['2026-11-02 13:30'],_p2_last_quote='2026-11-02 13:30',net_profit=lambda *args:(1000,11.11,20),lots_html=lambda *args:'<details class="sellbox sellbox-all"><summary>全部賣出</summary><form><input name="sell_shares"></form></details>',csrf_hidden_input=lambda:'<input type="hidden" name="csrf_token" value="fixture-only">',_is_taiwan_intraday_window=lambda:False,msg='',exright_html='')
 pts=[]
 for i in range(80):
  d=date(2026,7,15)+timedelta(days=i)
@@ -33,7 +33,7 @@ fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='web_p
 x=ast.parse(''.join(lines[fn.lineno-1:fn.end_lineno])).body[0]
 for node in x.body:
  selected=isinstance(node,ast.For) and any(isinstance(a,ast.Call) and isinstance(a.func,ast.Attribute) and isinstance(a.func.value,ast.Name) and a.func.value.id=='rows_html' and a.func.attr=='append' for a in ast.walk(node))
- selected=selected or isinstance(node,ast.Assign) and any(getattr(t,'id','') in {'pl_total','pl_total_text','totals','allocation_html','holding_card_css','body'} for t in node.targets)
+ selected=selected or isinstance(node,ast.Assign) and any(getattr(t,'id','') in {'pl_total','pl_total_text','totals','allocation_html','holding_card_css','body','_p2_active_codes','_p2_realized','_p2_realized_total','_p2_priced_count','_p2_valuation_complete','_p2_quote_stamps','_p2_last_quote','_p2_history_groups','_p2_history_rows','_p2_history_html'} for t in node.targets)
  selected=selected or isinstance(node,ast.If) and isinstance(node.test,ast.Name) and node.test.id=='allocation_items'
  selected=selected or isinstance(node,ast.AugAssign) and getattr(node.target,'id','')=='body'
  if selected:compile_node(node,local)

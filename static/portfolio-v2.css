@@ -1,0 +1,140 @@
+/* Portfolio 2.0: compact brokerage layout, tuned for the existing Flask renderer. */
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2{--p2-ink:#17191c;--p2-muted:#73777d;--p2-line:#e4e6e8;--p2-red:#cf3542;--p2-green:#16815c;max-width:1040px;margin:0 auto;padding:0 0 32px;color:var(--p2-ink)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 :is(button,select,input){font:inherit}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0;margin:10px 0 18px;padding:18px 20px;border:1px solid var(--p2-line);border-radius:18px;background:#fff;box-shadow:0 4px 18px rgba(20,28,35,.035)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div{min-width:0;padding:12px 14px;border-bottom:1px solid #eff0f1}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:nth-child(3n+1){padding-left:0}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:nth-child(3n){padding-right:0}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:first-child{grid-column:1/-1;padding:0 0 15px;border-bottom:1px solid var(--p2-line)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:first-child .total-value{font-size:clamp(34px,7vw,48px);line-height:1.08;letter-spacing:-.045em;font-variant-numeric:tabular-nums;color:#111315}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals .total-label{font-size:12px;font-weight:700;letter-spacing:.015em;color:var(--p2-muted)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals .total-value{margin-top:5px;font-size:clamp(19px,4vw,25px);font-weight:750;line-height:1.2;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals .total-sub{margin-top:4px;font-size:11px;color:var(--p2-muted)!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals .up{color:var(--p2-red)!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals .down{color:var(--p2-green)!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .positions-privacy-toggle{width:36px;height:36px;margin-left:8px;border:1px solid var(--p2-line);border-radius:50%;background:#fff;color:#555;vertical-align:middle}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-page-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:5px 0 3px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-page-head h2{margin:0;font-size:20px;letter-spacing:-.025em}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-page-head small{display:block;margin-top:3px;color:var(--p2-muted);font-size:11px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-primary-action{min-height:44px;padding:0 15px;border:0;border-radius:12px;background:#202225;color:#fff;font-weight:750;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
+#stockbot-app #stockbot-shell #app-page-content .p2-trade-result{max-width:620px;margin:clamp(24px,8vh,80px) auto;padding:30px 24px;border:1px solid var(--p2-line,#e4e6e8);border-radius:18px;background:#fff;text-align:center}
+#stockbot-app #stockbot-shell #app-page-content .p2-result-mark{display:grid;place-items:center;width:50px;height:50px;margin:0 auto 12px;border-radius:50%;background:#eaf5ef;color:#16815c;font-size:24px;font-weight:800}
+#stockbot-app #stockbot-shell #app-page-content .p2-trade-result.error .p2-result-mark{background:#fff0ef;color:#c93643}
+#stockbot-app #stockbot-shell #app-page-content .p2-trade-result h2{margin:0;color:#202327;font-size:22px}
+#stockbot-app #stockbot-shell #app-page-content .p2-trade-result p{margin:12px 0;color:#555d64;line-height:1.65}
+#stockbot-app #stockbot-shell #app-page-content .p2-trade-result .p2-card-actions{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap}
+#stockbot-app #stockbot-shell #app-page-content .p2-trade-result .p2-primary-action{min-height:42px;padding:0 15px;border:0;border-radius:11px;background:#202225;color:#fff;font-weight:750;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-holdings-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:14px 0 3px;padding:0 2px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-holdings-toolbar label{font-size:12px;font-weight:700;color:#4d5156}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-holdings-toolbar select{min-height:44px;min-width:142px;padding:0 28px 0 12px;border:1px solid #dfe2e5;border-radius:11px;background:#fff;color:#292d31;font-size:12px;font-weight:700}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .rows{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:12px!important;margin:0 0 20px!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;overflow:visible!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .rows>.position-card{display:block!important;min-width:0;margin:0!important;padding:15px 14px 11px!important;border:1px solid var(--p2-line)!important;border-bottom:1px solid var(--p2-line)!important;border-radius:13px!important;background:#fff!important;box-shadow:0 2px 8px rgba(20,28,35,.025)!important;overflow:visible!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .rows>.position-card:last-child{border-bottom:0!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-top{align-items:center!important;gap:8px!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title{align-items:center!important;gap:10px!important;min-width:0}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title h3{margin:0!important;color:#202327!important;font-size:16px!important;font-weight:750!important;line-height:1.25!important;overflow-wrap:anywhere}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title small{display:flex!important;gap:8px!important;flex-wrap:wrap;margin-top:3px!important;color:var(--p2-muted)!important;font-size:11px!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-code{min-width:48px!important;height:28px!important;padding:0 7px!important;border:1px solid #e5e7e9!important;border-radius:8px!important;background:#fafafa!important;color:#62676c!important;font-variant-numeric:tabular-nums}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price{max-width:48%!important;min-width:0!important;text-align:right}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price b{color:#202327!important;font-size:20px!important;font-weight:750!important;font-variant-numeric:tabular-nums;white-space:nowrap}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price span{display:block;margin-top:3px;font-size:12px!important;font-weight:700!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary{display:grid!important;grid-template-columns:1fr 1fr 1fr!important;gap:0!important;margin:12px 0 4px!important;padding:10px 0 5px!important;border-top:1px solid #eff0f1!important;border-bottom:0!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary>div{display:block!important;min-height:0!important;padding:0 10px!important;border-left:1px solid #eff0f1!important;background:transparent!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary>div:first-child{padding-left:0!important;border-left:0!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary small{display:block!important;margin:0 0 4px!important;color:var(--p2-muted)!important;font-size:10px!important;white-space:normal!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary b{color:#292d31!important;font-size:13px!important;font-weight:720!important;font-variant-numeric:tabular-nums}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary b.up{color:var(--p2-red)!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary b.down{color:var(--p2-green)!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-weight-track{height:3px;margin:6px 0 0;border-radius:4px;background:#eceef0;overflow:hidden}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-weight-track i{display:block;height:100%;background:#555;opacity:.72}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-more{margin-top:5px!important;border-top:0!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-more>summary{min-height:40px!important;padding:8px 0 2px!important;color:#585d63!important;font-size:12px!important;font-weight:650!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-grid>div{border:1px solid #eceef0!important;border-radius:10px!important;background:#fafafa!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .portfolio-trend-card{margin:20px 0 24px!important;padding:0!important;border:0!important;border-top:1px solid var(--p2-line)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .portfolio-trend-card .section-head{margin:0!important;padding:19px 0 7px!important;border:0!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .portfolio-trend-card .section-head h2{font-size:19px!important;color:#22262a!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .portfolio-chart-about{margin:0 0 12px!important;color:#6f747a!important;font-size:11px!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-history-v2{margin:20px 0 24px;border-top:1px solid var(--p2-line)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-tabs{display:flex;gap:5px;margin:14px 0 8px;padding:4px;border-radius:12px;background:#f0f1f2}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-tabs button{flex:1;min-height:44px;border:0;border-radius:9px;background:transparent;color:#666b71;font-size:12px;font-weight:700}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-tabs button[aria-selected="true"]{background:#fff;color:#1e2226;box-shadow:0 1px 4px rgba(0,0,0,.09)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-timeline{margin:0;padding:0;list-style:none}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event{display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:12px;align-items:center;padding:13px 2px;border-bottom:1px solid #eceef0}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-date{color:#73777d;font-size:11px;font-variant-numeric:tabular-nums}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-main{min-width:0}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-main b{display:block;color:#24282c;font-size:13px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-main small{display:block;margin-top:3px;color:#74797f;font-size:11px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-main .p2-event-note{color:#8a8f95;font-size:10px;line-height:1.45}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-realized{margin-left:7px;font-size:11px;font-style:normal;font-weight:750;font-variant-numeric:tabular-nums}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-realized.up{color:var(--p2-red)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-realized.down{color:var(--p2-green)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-badge{display:inline-flex;align-items:center;min-height:22px;margin-left:7px;padding:0 7px;border-radius:6px;background:#f2f3f4;color:#4b5055;font-size:10px;font-weight:750}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-badge.buy{background:#fff0f1;color:var(--p2-red)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-badge.sell{background:#eaf5f0;color:var(--p2-green)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-value{text-align:right;color:#35393d;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-value.up{color:var(--p2-red)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-value.down{color:var(--p2-green)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-history-filters{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-history-filters label{display:grid;gap:5px;color:var(--p2-muted);font-size:11px;font-weight:700}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-history-filters input{width:100%;min-width:0;min-height:42px;padding:0 10px;border:1px solid #dfe2e5;border-radius:10px;background:#fff;color:#24282c;font-size:13px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 [data-p2-panel][hidden]{display:none!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-card-actions{display:flex;align-items:center;gap:9px;margin:11px 0 2px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-card-actions button{min-height:44px;padding:0 13px;border:0;border-radius:9px;background:#232629;color:#fff;font-size:12px;font-weight:750}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-card-actions button[data-p2-buy]{background:#c93643}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-card-actions button.p2-sell-action{background:#16815c}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-card-actions a{min-height:40px;display:inline-flex;align-items:center;padding:0 8px;color:#4d626f;text-decoration:none;font-size:12px;font-weight:700}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary b{white-space:nowrap}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary em{display:block;margin-top:3px;color:var(--p2-muted);font-size:10px;font-style:normal;font-variant-numeric:tabular-nums}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-subtitle{margin:5px 0 10px;color:var(--p2-muted);font-size:11px;line-height:1.55}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-empty{padding:18px 4px;color:#74797f;font-size:12px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-history-list[hidden],#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-current-list[hidden]{display:none!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .add{margin:0 0 16px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-dialog{width:min(540px,calc(100vw - 32px));max-width:none;max-height:min(92dvh,900px);padding:0;border:1px solid #e5e7e9;border-radius:20px;background:#fff;color:#22262a;box-shadow:0 24px 70px rgba(16,24,32,.22);overflow:auto}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-dialog::backdrop{background:rgba(18,24,30,.48);backdrop-filter:blur(3px)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-sheet{padding:20px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-sheet-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0 0 18px;padding:0 0 14px;border-bottom:1px solid var(--p2-line)}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-sheet-head h2{margin:0;color:#1e2226;font-size:20px;letter-spacing:-.02em}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-sheet-head p{margin:4px 0 0;color:#74797f;font-size:11px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-close{width:44px;height:44px;border:1px solid var(--p2-line);border-radius:50%;background:#fff;color:#4b5055;font-size:24px;line-height:1}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .add h3{margin:18px 0 10px;color:#22262a;font-size:18px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .add input{min-height:46px;border:1px solid #dadde0;border-radius:10px;background:#fff;color:#222}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .add button[type=submit]{min-height:46px;border:0;border-radius:11px;background:#202225;color:#fff;font-weight:750}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-preview{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:15px 0;padding:12px 13px;border-radius:12px;background:#f5f6f7}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-preview span{display:flex;justify-content:space-between;gap:8px;color:#73777d;font-size:11px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-preview b{color:#25292d;font-variant-numeric:tabular-nums}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-preview strong{grid-column:1/-1;display:flex;justify-content:space-between;padding-top:9px;border-top:1px solid #e0e2e4;color:#34383c;font-size:12px}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-preview strong b{font-size:16px}
+@media(max-width:760px){
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2{padding:0 0 20px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .rows{display:block!important;margin:0 0 20px!important;padding:0 13px!important;border:1px solid var(--p2-line)!important;border-radius:14px!important;background:#fff!important;box-shadow:none!important;overflow:hidden!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .rows>.position-card{padding:14px 0 10px!important;border:0!important;border-bottom:1px solid var(--p2-line)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .rows>.position-card:last-child{border-bottom:0!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals{grid-template-columns:repeat(2,minmax(0,1fr));margin:5px 0 18px;padding:14px;border-radius:15px;box-shadow:none}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div{padding:10px 8px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:nth-child(3n+1){padding-left:8px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:nth-child(3n){padding-right:8px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:first-child{grid-column:1/-1;padding:0 0 13px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:nth-child(odd){border-right:1px solid #eff0f1}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:last-child{border-right:0}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals .total-value{font-size:21px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:first-child .total-value{font-size:36px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals .total-label{font-size:11px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals .total-sub{font-size:10px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-page-head h2{font-size:18px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-primary-action{min-height:44px;padding:0 12px;border-radius:10px;font-size:12px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .rows{padding:0 13px!important;border-radius:14px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .rows>.position-card{padding:14px 0 10px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title h3{font-size:15px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price b{font-size:18px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary b{font-size:12px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-card-actions{gap:6px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-card-actions button{padding:0 10px;font-size:11px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary>div{padding:0 7px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary>div:first-child{padding-left:0!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event{grid-template-columns:52px minmax(0,1fr);gap:8px;padding:12px 0}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-event-value{grid-column:2;text-align:left;font-size:11px}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-dialog{position:fixed;inset:auto 0 0;margin:0;width:100%;max-width:none;max-height:94vh;max-height:94dvh;border:0;border-radius:20px 20px 0 0;box-shadow:0 -12px 44px rgba(16,24,32,.2);}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-sheet{padding:18px 18px calc(20px + env(safe-area-inset-bottom,0px))}
+}
+@media(prefers-reduced-motion:reduce){#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 *{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
