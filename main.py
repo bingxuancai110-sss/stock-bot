@@ -10125,7 +10125,9 @@ _suffix_cache = {}
 # 有有效的官方 MIS 報價時，get_realtime_stock 仍會覆寫最新價、漲跌幅與最後一根日線，
 # 所以延長的是歷史序列快取，不是把最新官方成交價固定 5 分鐘。可用環境變數調整。
 _realtime_cache = {}
-_realtime_cache_lock = threading.Lock()
+# Cached quotes are refreshed while this lock is held; the bounded cache writer
+# acquires it again. A primitive Lock deadlocks the report and every quote reader.
+_realtime_cache_lock = threading.RLock()
 REALTIME_CACHE_SECONDS = max(30, int(os.environ.get("REALTIME_CACHE_SECONDS", "300")))
 # A cache TTL alone is not a memory bound: a market-wide scan can add thousands
 # of fresh, long-history rows before any of them expire. Keep the web worker's
