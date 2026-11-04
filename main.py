@@ -16727,33 +16727,40 @@ def _fetch_official_daily_close_market(market, now=None, requested_codes=None):
                     raise ValueError("TWSE MI_INDEX 未提供可用個股收盤價")
             else:
                 response = requests.get(
-                    "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes",
+                    "https://www.tpex.org.tw/www/zh-tw/afterTrading/otc",
+                    params={"date": current.strftime("%Y/%m/%d"), "id": "",
+                            "response": "json", "type": "EW", "order": "0", "sort": "asc"},
                     headers=headers, timeout=8)
                 response.raise_for_status()
-                rows = response.json()
-                if not isinstance(rows, list):
-                    raise ValueError("TPEx 官方收盤回應格式錯誤")
-                for row in rows:
-                    if not isinstance(row, dict) or _parse_official_close_trade_date(row.get("Date")) != current.date():
+                payload = response.json()
+                if not isinstance(payload, dict) or _parse_official_close_trade_date(payload.get("date")) != current.date():
+                    raise ValueError("TPEx 日收盤回應日期或格式錯誤")
+                for table in payload.get("tables") or []:
+                    fields = [str(item).strip() for item in (table.get("fields") or [])]
+                    if not all(name in fields for name in ("代號", "收盤", "漲跌")):
                         continue
-                    code = str(row.get("SecuritiesCompanyCode") or "").strip()
-                    if requested_codes is not None and code not in wanted:
-                        continue
-                    close = _taiex_live_number(row.get("Close"))
-                    change = _taiex_live_number(row.get("Change"))
-                    if not code or not close or close <= 0 or change is None:
-                        continue
-                    previous = close - change
-                    if previous <= 0:
-                        continue
-                    quotes[code] = {"close": close, "previous_close": previous,
-                                    "pct": change / previous * 100,
-                                    "close_date": day, "close_time": "13:30",
-                                    "updated_at": f"{current.date().isoformat()} 13:30",
-                                    "quote_updated_at": current.isoformat(), "fetched_at": current.isoformat(),
-                                    "trade_at": f"{current.date().isoformat()} 13:30:00",
-                                    "has_live_trade_price": True, "close_is_final": True,
-                                    "source": "TPEx OpenAPI 官方正式收盤"}
+                    ci, pi, di = (fields.index(name) for name in ("代號", "收盤", "漲跌"))
+                    for row in table.get("data") or []:
+                        if len(row) <= max(ci, pi, di):
+                            continue
+                        code = str(row[ci] or "").strip()
+                        if requested_codes is not None and code not in wanted:
+                            continue
+                        close = _taiex_live_number(row[pi])
+                        change = _taiex_live_number(row[di])
+                        if not code or not close or close <= 0 or change is None:
+                            continue
+                        previous = close - change
+                        if previous <= 0:
+                            continue
+                        quotes[code] = {"close": close, "previous_close": previous,
+                                        "pct": change / previous * 100,
+                                        "close_date": day, "close_time": "13:30",
+                                        "updated_at": f"{current.date().isoformat()} 13:30",
+                                        "quote_updated_at": current.isoformat(), "fetched_at": current.isoformat(),
+                                        "trade_at": f"{current.date().isoformat()} 13:30:00",
+                                        "has_live_trade_price": True, "close_is_final": True,
+                                        "source": "TPEx 官方日收盤"}
                 if wanted and not quotes:
                     raise ValueError("TPEx 官方收盤資料尚無今日行情")
             state["quotes"].update(quotes)
@@ -21361,7 +21368,7 @@ def _do_daily_snapshot():
             source = str(q.get("source") or "")
             return (close > 0 and quote_date == today_key and
                     bool(q.get("close_is_final")) and
-                    source.startswith(("TWSE MIS", "TWSE MI_INDEX", "TPEx OpenAPI")))
+                    source.startswith(("TWSE MIS", "TWSE MI_INDEX", "TPEx 官方日收盤")))
 
         quotes = {}
         if all_codes:

@@ -195,9 +195,9 @@ def test_official_twse_daily_report_parses_taiex_and_requested_stock_close():
 
 
 def test_official_tpex_daily_quote_uses_compact_roc_date():
-    rows=[{'Date':'1151103','SecuritiesCompanyCode':'6488','Close':'100.00','Change':'-2.00'},
-          {'Date':'1151102','SecuritiesCompanyCode':'6488','Close':'101.00','Change':'-1.00'}]
-    response=SimpleNamespace(raise_for_status=lambda:None,json=lambda:rows)
+    payload={'date':'115/11/03','stat':'ok','tables':[{'fields':['代號','名稱','收盤 ','漲跌'],
+        'data':[['6488','環球晶','100.00','-2.00'],['6489','其他','101.00','-1.00']]}]}
+    response=SimpleNamespace(raise_for_status=lambda:None,json=lambda:payload)
     ns=dict(_taiwan_post_close=lambda current:True,taiwan_now=lambda:NOW,time=time,
         requests=SimpleNamespace(get=lambda *a,**k:response),
         _taiex_live_number=lambda value:float(str(value).replace(',','')) if value else None,
@@ -211,7 +211,7 @@ def test_official_tpex_daily_quote_uses_compact_roc_date():
     quotes=ns['_fetch_official_daily_close_market']('tpex',NOW,requested_codes=['6488'])
     assert quotes['6488']['close']==100 and quotes['6488']['previous_close']==102
     assert quotes['6488']['close_date']=='20261103' and quotes['6488']['close_is_final']
-    assert 'TPEx OpenAPI' in quotes['6488']['source']
+    assert 'TPEx 官方日收盤' in quotes['6488']['source']
 
 
 def test_official_daily_stock_close_restores_same_day_saved_quotes_after_restart():
