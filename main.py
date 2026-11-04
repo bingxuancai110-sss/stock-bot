@@ -28484,7 +28484,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-shell.css?v=20261104-6">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261104-6">
 <script defer src="/static/ui-feedback.js?v=20261104-7"></script>
-<script defer src="/static/fugle-live.js?v=20261104-2"></script>
+<script defer src="/static/fugle-live.js?v=20261104-3"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -54260,12 +54260,18 @@ def _fugle_market_quote(now):
     return result
 
 
-def _apply_fugle_browser_quotes(uid, raw, market_raw=None):
+def _apply_fugle_browser_quotes(uid, raw, market_raw=None, background=False):
     from fugle_live import normalize_quotes, normalize_market
     positions = merge_positions(get_positions(uid))
     codes = {str(p.get("code") or "").strip() for p in positions}
     now = taiwan_now()
-    quotes = normalize_quotes(raw, codes, now)
+    if background:
+        raw = [row for row in raw if row.get("code") in codes]
+    quotes = normalize_quotes(raw, codes, now,
+        max_observation_age=(86400 if background and now.hour*60+now.minute >= 810 else 120))
+    if background:
+        for quote in quotes.values():
+            quote["source"] = "富果背景定時查詢（伺服器）"
     market = normalize_market(market_raw, now) or _fugle_market_quote(now)
     market_payload = ({"pct": market.get("pct"), "source": market.get("source"),
                        "updated_at": market.get("updated_at"), "stale": bool(market.get("stale"))}
@@ -54315,6 +54321,14 @@ def _apply_fugle_browser_quotes(uid, raw, market_raw=None):
                 market_open=_is_taiwan_intraday_window(now),note=home["quote_freshness"]["text"]))
 
 
+from fugle_background import start_server_service
+_fugle_background_service = start_server_service(
+    get_positions=get_positions, merge_positions=merge_positions,
+    get_connection=get_db_connection, release_connection=release_db_connection,
+    load_snapshot=_load_shared_data_snapshot, save_snapshot=_save_shared_data_snapshot,
+    now=taiwan_now,
+)
+
 from quote_lab import create_blueprint as create_quote_lab_blueprint
 app.register_blueprint(create_quote_lab_blueprint(
     web_login_required=web_login_required,
@@ -54324,6 +54338,8 @@ app.register_blueprint(create_quote_lab_blueprint(
     csrf_token=_web_csrf_user_signature,
     valid_csrf=valid_web_csrf,
     apply_quotes=_apply_fugle_browser_quotes,
+    background_service=_fugle_background_service,
+    apply_background=lambda uid, rows: _apply_fugle_browser_quotes(uid, rows, background=True),
 ))
 
 

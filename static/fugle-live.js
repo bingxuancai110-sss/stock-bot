@@ -500,6 +500,7 @@
   const observer=new MutationObserver(queueMount);observer.observe(document.documentElement,{childList:true,subtree:true});
   window.StockBotFugle={active:()=>running&&following,request:requestApply,resume:()=>{restoreSaved();requestApply();}};
   function restoreSaved(){
+    if(config.background_enabled)return;
     if(running||disposed||document.hidden||restoreBlocked)return;
     saved=readSaved();rememberInput.checked=!!saved;showRemember();
     if(!saved)return;
@@ -512,5 +513,39 @@
     if(running&&(!saved||!saved.autoStart||(previous&&saved.key!==previous.key)))stop('其他分頁已變更裝置記錄，這個分頁已停止。');
     showRemember();
   });
-  controls();restoreSaved();
+  controls();
+  if(config.background_enabled){
+    // Server owns provider access. Never open a second browser connection or
+    // read/migrate its saved key when background mode is enabled.
+    start.disabled=true;keyInput.disabled=true;stopButton.disabled=true;
+    changeButton.disabled=true;rememberInput.disabled=true;
+    text(panelLabel,'富果行情 · 伺服器背景更新');
+    text($('#ql-message'),'關閉 App 後仍由伺服器定時更新；本頁只讀取完成的行情。');
+    let backgroundTimer=null,backgroundController=null,backgroundReady=false;
+    async function readBackground(){
+      clearTimeout(backgroundTimer);backgroundTimer=null;
+      if(document.hidden||backgroundController||!relevant())return;
+      const controller=new AbortController();backgroundController=controller;
+      const deadline=setTimeout(()=>controller.abort(),8000);
+      try{
+        const response=await fetch(localURL('/web/quote-lab/background'),{credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal});
+        if(!response.ok)throw new Error('background snapshot unavailable');
+        const data=await response.json();if(!data.ok||!data.view)return;
+        backgroundReady=data.view.positions?.totals?.complete===true;
+        allSymbols=data.codes||[];
+        const view=viewFor(data.view);
+        document.dispatchEvent(new CustomEvent('stockbot:fuglequotes',{detail:view}));
+        applyValuations(view);
+        text(panelLabel,'富果行情 · 背景資料 '+(data.view.positions?.updates?.length||0)+'／'+allSymbols.length+' 檔');
+        text($('#ql-message'),['credential_or_permission_error','rate_limited','partial'].includes(data.status)?'背景更新尚未完整（'+data.status+'），保留最後有效行情。':data.view.positions?.note||'等待首份背景行情。');
+      }catch(ignore){text($('#ql-message'),'背景行情暫時無法讀取，保留畫面最後有效資料。');}
+      finally{clearTimeout(deadline);backgroundController=null;if(!document.hidden)backgroundTimer=setTimeout(readBackground,15000);}
+    }
+    const resumeBackground=()=>{if(!document.hidden)readBackground();else{clearTimeout(backgroundTimer);backgroundTimer=null;if(backgroundController)backgroundController.abort();}};
+    document.addEventListener('visibilitychange',resumeBackground);
+    document.addEventListener('stockbot:pagecontentready',resumeBackground);
+    window.addEventListener('pagehide',()=>{clearTimeout(backgroundTimer);if(backgroundController)backgroundController.abort();});
+    window.StockBotFugle={active:()=>backgroundReady,request:readBackground,resume:resumeBackground};
+    readBackground();
+  }else restoreSaved();
 })();

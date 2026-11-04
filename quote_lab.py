@@ -1,4 +1,4 @@
-"""Owner-only, browser-direct Fugle trial; the server never receives market-data keys."""
+"""Owner-only Fugle views; HTTP endpoints never accept provider credentials."""
 from functools import lru_cache
 import hmac
 import hashlib
@@ -79,7 +79,8 @@ def page_markup():
 
 
 def create_blueprint(*, web_login_required, render_page, get_db_connection, release_db_connection,
-                     csrf_token=None, valid_csrf=None, apply_quotes=None):
+                     csrf_token=None, valid_csrf=None, apply_quotes=None, background_service=None,
+                     apply_background=None):
     bp = Blueprint('quote_lab', __name__)
 
     def check_owner(uid):
@@ -137,7 +138,28 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection, rele
         check_owner(uid)
         if not callable(csrf_token):
             abort(503)
-        return private(jsonify(ok=True, panel_html=page_markup(), csrf_token=csrf_token(uid), storage_scope=hashlib.sha256(('stockbot-fugle-device:'+str(uid)).encode()).hexdigest()))
+        return private(jsonify(ok=True, panel_html=page_markup(), csrf_token=csrf_token(uid),
+            background_enabled=bool(background_service and background_service.enabled_for(uid)),
+            storage_scope=hashlib.sha256(('stockbot-fugle-device:'+str(uid)).encode()).hexdigest()))
+
+    @bp.route('/web/quote-lab/background', methods=['GET'])
+    @web_login_required
+    def background(uid):
+        check_owner(uid)
+        if not background_service or not background_service.enabled_for(uid):
+            abort(404)
+        # Reading a completed snapshot must never trigger a provider download.
+        snapshot = background_service.read(uid)
+        rows = list((snapshot.get('quotes') or {}).values())
+        if not callable(apply_background):
+            abort(503)
+        view = apply_background(uid, rows)
+        note = '富果伺服器背景更新；最近抓取 '+str(snapshot.get('checked_at') or '尚未完成')
+        view['home']['note'] = note
+        view['home']['quote_freshness'] = {'text': note}
+        view['positions']['note'] = note
+        return private(jsonify(ok=True, view=view, codes=[row['code'] for row in rows],
+                               status=snapshot.get('status', 'waiting')))
 
     @bp.route('/web/quote-lab/apply', methods=['POST'])
     @web_login_required
