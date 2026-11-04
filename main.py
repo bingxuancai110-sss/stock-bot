@@ -10120,6 +10120,22 @@ _suffix_cache = {}
 _realtime_cache = {}
 _realtime_cache_lock = threading.Lock()
 REALTIME_CACHE_SECONDS = max(30, int(os.environ.get("REALTIME_CACHE_SECONDS", "300")))
+# A cache TTL alone is not a memory bound: a market-wide scan can add thousands
+# of fresh, long-history rows before any of them expire. Keep the web worker's
+# quote cache to a strict LRU ceiling on Render's 512 MiB instance.
+REALTIME_CACHE_MAX_ITEMS = max(200, int(os.environ.get("REALTIME_CACHE_MAX_ITEMS", "800")))
+
+
+def _store_realtime_cache(cache_key, data, at=None):
+    """Store one quote and evict oldest rows so scan bursts cannot grow RSS unbounded."""
+    stamp = time.time() if at is None else float(at)
+    with _realtime_cache_lock:
+        _realtime_cache.pop(cache_key, None)
+        _realtime_cache[cache_key] = {"at": stamp, "data": data}
+        while len(_realtime_cache) > REALTIME_CACHE_MAX_ITEMS:
+            _realtime_cache.pop(next(iter(_realtime_cache)), None)
+
+
 _TWSE_MIS_CACHE = {"day": None, "at": 0, "data": {}, "failure_at": 0}
 _TWSE_MIS_CACHE_SECONDS = 5
 _TWSE_MIS_BATCH_SIZE = 20  # 持股行情優先單批；失敗時自動拆批重試
@@ -10629,6 +10645,11 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
     with _realtime_cache_lock:
         cached = _realtime_cache.get(cache_key)
         if cached and not force_refresh and now - cached["at"] < REALTIME_CACHE_SECONDS:
+            # Refresh insertion order for LRU eviction without extending
+            # the freshness TTL of historical prices. The cache lock is
+            # already held here.
+            _realtime_cache.pop(cache_key, None)
+            _realtime_cache[cache_key] = cached
             # 同一次持股／首頁請求已經先取得官方 MIS 報價時，不能讓先前的
             # Yahoo／快照快取直接返回；否則會出現「其他檔已更新、單一檔仍舊價」。
             # 已有日線技術欄位時直接以官方成交價覆寫，避免再等一次 Yahoo。
@@ -10670,7 +10691,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 if closes and close_dates and close_dates[-1] == taiwan_today():
                     closes[-1] = official_close
                     refreshed["closes"] = closes
-                _realtime_cache[cache_key] = {"at": now, "data": refreshed}
+                _store_realtime_cache(cache_key, refreshed, at=now)
                 return refreshed
             if official_quote is None:
                 return cached["data"]
@@ -11020,14 +11041,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 # 與 close 相同，不需要再調整。
                 "adj_closes": [b[5] for b in hist] + [float(close)],
             }
-            with _realtime_cache_lock:
-                _realtime_cache[cache_key] = {"at": now, "data": result}
-                # 控制長期常駐 process 的記憶體，不影響正常短期命中。
-                if len(_realtime_cache) > 4000:
-                    cutoff = time.time() - REALTIME_CACHE_SECONDS * 2
-                    for k, v in list(_realtime_cache.items()):
-                        if v.get("at", 0) < cutoff:
-                            _realtime_cache.pop(k, None)
+            _store_realtime_cache(cache_key, result, at=now)
             return result
         except Exception:
             continue
@@ -52356,6 +52370,11 @@ _LINE_UX_CONFIG = {
 _LINE_ASYNC_JOB_LOCK = threading.Lock()
 _LINE_ASYNC_JOBS = {}
 _LINE_ASYNC_JOB_TTL = 300
+# Render currently runs this service as one 512 MiB instance with one Gunicorn
+# worker. Keep expensive LINE reports globally serialized so two different
+# users/features cannot multiply their peak memory at the same time. A request
+# that cannot enter is answered immediately instead of spawning another daemon.
+_LINE_HEAVY_QUERY_SLOT = threading.Lock()
 _LINE_LOADING_IMAGE_CACHE = {}
 _LINE_LOADING_IMAGE_LOCK = threading.Lock()
 
@@ -52674,6 +52693,22 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
             print(f"⚠️ LINE 重複查詢回覆失敗 {user_id}: {exc}")
         return False
 
+    # This Render service has a single 512 MiB instance. Per-user deduplication
+    # alone still lets different users/features build large reports together.
+    # Admit one expensive LINE report at a time and explicitly reject overflow.
+    if not _LINE_HEAVY_QUERY_SLOT.acquire(blocking=False):
+        _line_async_release(user_id)
+        try:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(
+                    text="📊 目前另一份分析正在整理，為避免服務中斷，請稍候再輸入一次。",
+                    quick_reply=build_quick_reply()))
+            print(f"⏳ LINE 查詢因全域記憶體保護暫緩 {user_id} {cfg['name']}")
+        except Exception as exc:
+            print(f"⚠️ LINE 忙碌提示送出失敗 {user_id} {cfg['name']}: {type(exc).__name__}: {exc}")
+        return False
+
     # 官方 Loading API 不會消耗 Reply Token，也不會送出一則計費訊息。
     # 即使 Loading API 暫時失敗，也不能中斷正式分析與結果回覆。
     # 設為官方允許的最長 60 秒，讓較慢的持股／個股分析期間 Loading 不會太早消失。
@@ -52774,6 +52809,7 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
         finally:
             loading_stop.set()
             _line_async_release(user_id)
+            _LINE_HEAVY_QUERY_SLOT.release()
 
     try:
         threading.Thread(
@@ -52784,6 +52820,7 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
     except Exception as exc:
         loading_stop.set()
         _line_async_release(user_id)
+        _LINE_HEAVY_QUERY_SLOT.release()
         print(f"❌ LINE 背景查詢執行緒啟動失敗 {user_id}: {exc}")
         try:
             line_bot_api.reply_message(
@@ -52800,7 +52837,9 @@ def _line_hidden_holdings_flex(user_id):
     if not positions:
         return FlexSendMessage(alt_text="秉軒持股", contents={"type":"bubble","body":{"type":"box","layout":"vertical","contents":[{"type":"text","text":"目前沒有持股資料","weight":"bold","size":"lg"},{"type":"text","text":"請先在網頁持股頁新增持股。","size":"sm","color":"#667085","wrap":True,"margin":"md"}]}})
     codes=[str(x.get("code") or "").strip() for x in positions if x.get("code")]
-    prices=get_realtime_stocks_bulk(codes,workers=8,rng="1d") or {}
+    # This is a LINE report on the small single-instance Render service; cap
+    # its fan-out so a holdings query does not open eight concurrent fetches.
+    prices=get_realtime_stocks_bulk(codes,workers=3,rng="1d") or {}
     colors=["#376A9B","#45A88B","#E9A34A","#8B78C6","#D97777","#5B9BD5","#D4A72C","#2C8C99","#B56B9A","#75808D"]
     staged=[]; total_market=0.0
     for pos in positions:
