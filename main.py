@@ -18576,6 +18576,22 @@ def _format_stock_detail_lines(code, name, stock, score=None, bd=None,
         lines += ["", watchlist_status]
     return lines
 
+
+def _line_timed_stock_stage(code, stage, callback):
+    """Expose the last completed section of a slow LINE stock report in logs."""
+    started = time.monotonic()
+    print("🧭 LINE 個股報告階段=%s 開始 code=%s" % (stage, code), flush=True)
+    try:
+        result = callback()
+    except Exception as exc:
+        print("❌ LINE 個股報告階段=%s 失敗 code=%s error=%s" % (
+            stage, code, type(exc).__name__), flush=True)
+        raise
+    else:
+        print("🧭 LINE 個股報告階段=%s 完成 code=%s 耗時=%.1fs" % (
+            stage, code, time.monotonic() - started), flush=True)
+        return result
+
 def _flex_report_contents(text):
     """把報告逐行轉成 Flex 元件，讓重點字級與粗細一致。"""
     contents = []
@@ -19028,7 +19044,10 @@ def build_single_stock_report(code, user_id=None):
     單檔完整健檢。LINE 直接輸入代號就走這裡——
     單檔與多檔自選股共用同一套手機版欄位，避免相同功能出現兩種格式。
     """
-    stock = get_realtime_stock(code)
+    report_started = time.monotonic()
+    print("🧭 LINE 個股報告開始 code=%s" % code, flush=True)
+    stock = _line_timed_stock_stage(
+        code, "行情", lambda: get_realtime_stock(code, request_timeout=5))
     if not stock:
         return f"❌ 查無代號 {code} 的行情，請確認代號是否正確。"
 
@@ -19056,7 +19075,9 @@ def build_single_stock_report(code, user_id=None):
     inst = dict(_t86_cache.get("data") or {})
     # LINE 個股查詢優先讀取既有營收快照；避免為一檔股票同步補抓最多 24 個月官方資料。
     # 缺少累計營收時保留資料不足，日常完整補建仍由預熱流程執行。
-    scores = compute_watchlist_scores([code], allow_network_revenue_repair=False)
+    scores = _line_timed_stock_stage(
+        code, "五因子", lambda: compute_watchlist_scores(
+            [code], allow_network_revenue_repair=False))
     score = scores.get(code)
     ind_map = get_industry_map() or {}
     industry = ind_map.get(code)
@@ -19066,21 +19087,25 @@ def build_single_stock_report(code, user_id=None):
     if score and user_id:
         # 先讀取前次快照，再保存本次查詢分數；如此首次查詢不會把自己當成前次，
         # 但從這次起，即使股票不在自選清單，後續查詢也能累積個股歷史分數。
-        prev = get_previous_scores(user_id, [code]).get(code)
+        prev = _line_timed_stock_stage(
+            code, "前次分數", lambda: get_previous_scores(user_id, [code]).get(code))
         if prev:
             score["previous_snapshot"] = prev
         arrow, change_txt = describe_score_change(score, prev)
         if arrow:
             score_change = f"{arrow} {change_txt}"
         try:
-            save_watchlist_scores(user_id, {code: score})
+            _line_timed_stock_stage(
+                code, "儲存分數", lambda: save_watchlist_scores(user_id, {code: score}))
         except Exception as snapshot_exc:
             print(f"⚠️ LINE 個股歷史分數快照保存失敗 {code}: {snapshot_exc}")
 
-    bd = get_investor_breakdown([code]).get(code)
+    bd = _line_timed_stock_stage(
+        code, "法人資料", lambda: get_investor_breakdown([code]).get(code))
     watchlist_status = None
     if user_id:
-        in_wl = code in get_user_watchlist(user_id)
+        in_wl = code in _line_timed_stock_stage(
+            code, "自選清單", lambda: get_user_watchlist(user_id))
         watchlist_status = ("※ 已在自選清單" if in_wl
                             else f"※ 輸入「加 {code}」加入自選")
 
@@ -19089,14 +19114,16 @@ def build_single_stock_report(code, user_id=None):
         industry_label=(f"📌 {score.get('category') or '個股'}" + (f"｜{industry_name(industry)}" if industry else "")) if score else (industry_name(industry) if industry else None),
         score_change=score_change, watchlist_status=watchlist_status)
 
-    news = fetch_stock_news(
+    news = _line_timed_stock_stage(code, "新聞", lambda: fetch_stock_news(
         name, max_items=2, within_hours=36,
-        subject_name=name, known_names=_news_company_names([name]))
+        subject_name=name, known_names=_news_company_names([name])))
     core_report = "\n".join(lines)
     if not news:
         core_report += ("\n\n📰 相關新聞\n"
                         f"目前沒有抓到以{name}為主體的相關新聞。")
-        return _build_stock_visual_flex_messages(code, name, stock_for_display, score, bd, lines + ["", "【關鍵數據】", f"累計營收年增 {score.get('cum_yoy'):+.1f}%" if score and score.get('cum_yoy') is not None else "累計營收年增：資料不足", f"PE {score.get('pe'):.1f} 倍" if score and score.get('pe') is not None else "PE：資料不足", f"PEG {score.get('peg'):.2f}（模型口徑，非標準 EPS-PEG）" if score and score.get('peg') is not None else "PEG：資料不足", f"殖利率 {score.get('yield'):.2f}%" if score and score.get('yield') is not None else "殖利率：資料不足", "【模型解讀】", build_web_factor_observation(score) if score else "模型解讀暫無資料"], news=[])
+        result = _line_timed_stock_stage(code, "Flex 組裝", lambda: _build_stock_visual_flex_messages(code, name, stock_for_display, score, bd, lines + ["", "【關鍵數據】", f"累計營收年增 {score.get('cum_yoy'):+.1f}%" if score and score.get('cum_yoy') is not None else "累計營收年增：資料不足", f"PE {score.get('pe'):.1f} 倍" if score and score.get('pe') is not None else "PE：資料不足", f"PEG {score.get('peg'):.2f}（模型口徑，非標準 EPS-PEG）" if score and score.get('peg') is not None else "PEG：資料不足", f"殖利率 {score.get('yield'):.2f}%" if score and score.get('yield') is not None else "殖利率：資料不足", "【模型解讀】", build_web_factor_observation(score) if score else "模型解讀暫無資料"], news=[]))
+        print("✅ LINE 個股報告完成 code=%s 總耗時=%.1fs" % (code, time.monotonic()-report_started), flush=True)
+        return result
 
     # 單檔查詢保留完整健檢文字，但新聞標題使用可點擊 Flex 元件，
     # 不把 Google News 的長網址直接顯示在聊天室。
@@ -19121,7 +19148,9 @@ def build_single_stock_report(code, user_id=None):
         contents.append(component)
     alt_text = core_report + "\n📰 相關新聞\n" + "；".join(
         item.get("title", "") for item in news)
-    return _build_stock_visual_flex_messages(code, name, stock_for_display, score, bd, lines + ["", "【關鍵數據】", f"累計營收年增 {score.get('cum_yoy'):+.1f}%" if score and score.get('cum_yoy') is not None else "累計營收年增：資料不足", f"PE {score.get('pe'):.1f} 倍" if score and score.get('pe') is not None else "PE：資料不足", f"PEG {score.get('peg'):.2f}（模型口徑，非標準 EPS-PEG）" if score and score.get('peg') is not None else "PEG：資料不足", f"殖利率 {score.get('yield'):.2f}%" if score and score.get('yield') is not None else "殖利率：資料不足", "【模型解讀】", build_web_factor_observation(score) if score else "模型解讀暫無資料"], news=news)
+    result = _line_timed_stock_stage(code, "Flex 組裝", lambda: _build_stock_visual_flex_messages(code, name, stock_for_display, score, bd, lines + ["", "【關鍵數據】", f"累計營收年增 {score.get('cum_yoy'):+.1f}%" if score and score.get('cum_yoy') is not None else "累計營收年增：資料不足", f"PE {score.get('pe'):.1f} 倍" if score and score.get('pe') is not None else "PE：資料不足", f"PEG {score.get('peg'):.2f}（模型口徑，非標準 EPS-PEG）" if score and score.get('peg') is not None else "PEG：資料不足", f"殖利率 {score.get('yield'):.2f}%" if score and score.get('yield') is not None else "殖利率：資料不足", "【模型解讀】", build_web_factor_observation(score) if score else "模型解讀暫無資料"], news=news))
+    print("✅ LINE 個股報告完成 code=%s 總耗時=%.1fs" % (code, time.monotonic()-report_started), flush=True)
+    return result
 
 def _etf_price_drawdown_summary(closes, close_dates):
     """用可取得的價格序列計算觀測期間最大回撤與是否回到前高。"""
@@ -52438,6 +52467,13 @@ def _line_async_release(user_id):
         _LINE_ASYNC_JOBS.pop(_line_job_key(user_id), None)
 
 
+def _line_async_active_feature(user_id):
+    """Return the feature already running for this user, if any."""
+    with _LINE_ASYNC_JOB_LOCK:
+        item = _LINE_ASYNC_JOBS.get(_line_job_key(user_id)) or {}
+        return str(item.get("feature") or "") if item.get("running") else ""
+
+
 def _png_chunk(kind, payload):
     raw = kind + payload
     return struct.pack(">I", len(payload)) + raw + struct.pack(">I", zlib.crc32(raw) & 0xffffffff)
@@ -52710,11 +52746,14 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
     """
     cfg = _line_ux_config(feature)
     if not _line_async_claim(user_id, feature):
+        active_feature = _line_async_active_feature(user_id)
+        active_cfg = _line_ux_config(active_feature or feature)
         try:
             line_bot_api.reply_message(
                 reply_token,
                 TextSendMessage(
-                    text=f"{cfg['emoji']} {cfg['name']}還在分析中，完成後會自動回傳。",
+                    text=(f"{active_cfg['emoji']} {active_cfg['name']}分析仍在處理中，"
+                          f"目前這次「{cfg['name']}」查詢尚未開始；完成後再輸入即可。"),
                     quick_reply=build_quick_reply()))
         except Exception as exc:
             print(f"⚠️ LINE 重複查詢回覆失敗 {user_id}: {exc}")
@@ -52858,15 +52897,16 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
         return False
 
 
-def _line_hidden_holdings_flex(user_id):
+def _line_hidden_holdings_flex(user_id, positions=None, prices=None):
     """隱藏指令：依持股比例由高到低顯示配置長條與今日漲幅；不顯示金額。"""
-    positions = merge_positions(get_positions(user_id))
+    positions = (merge_positions(get_positions(user_id)) if positions is None else positions)
     if not positions:
         return FlexSendMessage(alt_text="秉軒持股", contents={"type":"bubble","body":{"type":"box","layout":"vertical","contents":[{"type":"text","text":"目前沒有持股資料","weight":"bold","size":"lg"},{"type":"text","text":"請先在網頁持股頁新增持股。","size":"sm","color":"#667085","wrap":True,"margin":"md"}]}})
     codes=[str(x.get("code") or "").strip() for x in positions if x.get("code")]
     # This is a LINE report on the small single-instance Render service; cap
     # its fan-out so a holdings query does not open eight concurrent fetches.
-    prices=get_realtime_stocks_bulk(codes,workers=3,rng="1d") or {}
+    if prices is None:
+        prices=get_realtime_stocks_bulk(codes,workers=3,rng="1d",request_timeout=5) or {}
     colors=["#376A9B","#45A88B","#E9A34A","#8B78C6","#D97777","#5B9BD5","#D4A72C","#2C8C99","#B56B9A","#75808D"]
     staged=[]; total_market=0.0
     for pos in positions:
@@ -52900,8 +52940,23 @@ def _line_hidden_holdings_flex(user_id):
 
 def _line_hidden_combined_portfolio_flex(user_id):
     """單一隱藏指令：上半部顯示持股配置，下半部接續最近交易日操作日報。"""
-    holdings_msg = _line_hidden_holdings_flex(user_id)
-    report_msg = _line_hidden_operation_report(user_id)
+    started = time.monotonic()
+    print("🧭 LINE 持股報告階段=開始", flush=True)
+    positions = merge_positions(get_positions(user_id))
+    codes = list(dict.fromkeys(str(x.get("code") or "").strip()
+                               for x in positions if x.get("code")))
+    print("🧭 LINE 持股報告階段=持股讀取完成 檔數=%s" % len(codes), flush=True)
+    # Fetch each held symbol once, then reuse those real quotes for both the
+    # holdings summary and the operation report. This avoids duplicating a
+    # cold-start Yahoo/MIS fan-out in the same LINE request.
+    prices = get_realtime_stocks_bulk(
+        codes, workers=min(3, max(1, len(codes))), rng="1d", request_timeout=5) if codes else {}
+    prices = prices or {}
+    print("🧭 LINE 持股報告階段=持股行情完成 已取得=%s/%s 耗時=%.1fs" % (
+        sum(1 for code in codes if prices.get(code)), len(codes), time.monotonic()-started), flush=True)
+    holdings_msg = _line_hidden_holdings_flex(user_id, positions=positions, prices=prices)
+    report_msg = _line_hidden_operation_report(user_id, positions=positions, price_map=prices)
+    print("🧭 LINE 持股報告階段=日報完成 總耗時=%.1fs" % (time.monotonic()-started), flush=True)
     # line-bot-sdk v3 的 FlexSendMessage.contents 通常是 FlexContainer 物件，
     # 不是 dict。先轉成 JSON dict 再合併；否則 isinstance(dict) 判斷失敗，
     # 持股與日報內容都會被丟掉，最後只剩「近期操作日報」標題。
@@ -52959,7 +53014,7 @@ def _line_hidden_combined_portfolio_flex(user_id):
     )
 
 
-def _line_hidden_operation_report(user_id):
+def _line_hidden_operation_report(user_id, positions=None, price_map=None):
     """隱藏指令：以網站操作日報下半部為模板，只顯示最近一個交易日，不顯示金額與說明文字；狀態標籤使用合法 Flex box 容器。"""
     logs = _filter_voided_same_day_logs(get_position_change_logs(user_id, limit=100) or [])
     if not logs:
@@ -52992,9 +53047,14 @@ def _line_hidden_operation_report(user_id):
         )
 
     try:
-        positions = merge_positions(get_positions(user_id))
+        positions = merge_positions(get_positions(user_id)) if positions is None else positions
         codes = sorted({str(x.get("code") or "").strip() for x in positions + logs if x.get("code")})
-        price_map = get_realtime_stocks_bulk(codes, workers=8, rng="1d") or {}
+        price_map = dict(price_map or {})
+        missing_codes = [code for code in codes if not price_map.get(code)]
+        if missing_codes:
+            price_map.update(get_realtime_stocks_bulk(
+                missing_codes, workers=min(3, len(missing_codes)), rng="1d",
+                request_timeout=5) or {})
         total_value = sum(float((price_map.get(x.get("code")) or {}).get("close") or (price_map.get(x.get("code")) or {}).get("price") or 0) * float(x.get("shares") or 0) for x in positions)
         enriched = enrich_position_change_logs(logs, positions, price_map, total_value)
         # LINE 日報與網頁一致：同一交易日、同一股票的多筆原始操作合併成一列。
