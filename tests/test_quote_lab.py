@@ -20,7 +20,7 @@ def database(rows):
     return conn,cur
 
 
-def client(monkeypatch, rows=None):
+def client(monkeypatch, rows=None, **extra):
     conn,cur=database(rows or [])
     def login(fn):
         @wraps(fn)
@@ -32,7 +32,7 @@ def client(monkeypatch, rows=None):
     app=Flask(__name__)
     app.register_blueprint(create_blueprint(web_login_required=login,
         render_page=lambda title,body,active:body,
-        get_db_connection=lambda:conn,release_db_connection=Mock()))
+        get_db_connection=lambda:conn,release_db_connection=Mock(), **extra))
     return app.test_client(),cur
 
 
@@ -41,6 +41,24 @@ def test_closed_until_owner_configured(monkeypatch):
     assert c.get('/web/quote-lab').status_code==401
     assert c.get('/web/quote-lab',headers={'X-Fixture-User':'owner'}).status_code==404
     cur.execute.assert_not_called()
+
+
+def test_background_snapshot_is_authenticated_owner_only_and_never_downloads(monkeypatch):
+    monkeypatch.setenv('FUGLE_TEST_USER_ID', 'owner')
+    service = Mock()
+    service.enabled_for.side_effect = lambda uid: uid == 'owner'
+    service.read.return_value = {'quotes': {'2308': {'code': '2308'}},
+                                 'checked_at': '2026-11-04T10:30:00+08:00', 'status': 'ready'}
+    apply = Mock(return_value={'home': {}, 'positions': {}})
+    c, _ = client(monkeypatch, background_service=service, apply_background=apply)
+    assert c.get('/web/quote-lab/background').status_code == 401
+    assert c.get('/web/quote-lab/background', headers={'X-Fixture-User': 'other'}).status_code == 403
+    service.read.assert_not_called()
+    response = c.get('/web/quote-lab/background', headers={'X-Fixture-User': 'owner'})
+    assert response.status_code == 200 and 'no-store' in response.headers['Cache-Control']
+    assert response.json['codes'] == ['2308']
+    apply.assert_called_once_with('owner', [{'code': '2308'}])
+    service.tick.assert_not_called()
 
 
 def test_uid_owner_only_and_no_store(monkeypatch):

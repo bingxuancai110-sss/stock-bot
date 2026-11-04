@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo('Asia/Taipei')
 
 
-def normalize_quotes(raw, allowed, now):
+def normalize_quotes(raw, allowed, now, max_observation_age=120):
     if not isinstance(raw, list) or len(raw) > 60:
         raise ValueError('行情格式不正確')
     result = {}
@@ -28,7 +28,7 @@ def normalize_quotes(raw, allowed, now):
         except (KeyError, TypeError, ValueError, OverflowError, OSError):
             continue
         if (trade.date() != now.date() or not 540 <= trade.hour*60+trade.minute <= 810 or
-                (trade-now).total_seconds() > 60 or not -5 <= (now-seen).total_seconds() <= 120):
+                (trade-now).total_seconds() > 60 or not -5 <= (now-seen).total_seconds() <= max_observation_age):
             continue
         if now.hour*60+now.minute >= 810 and row.get('closed') is not True:
             continue
