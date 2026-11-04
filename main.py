@@ -50432,13 +50432,13 @@ def web_workbench_quotes(uid):
     try:
         official_quotes = _fetch_twse_mis_quotes(
             codes, force_refresh=False, quick_mode=True)
-        missing = [code for code in codes if code not in official_quotes]
-        fallback_quotes = (get_realtime_stocks_bulk(
-            missing, workers=min(12, len(missing)), rng="3mo", force_refresh=True)
-                           if missing else {})
         updates = []
         for code in codes:
-            quote_data = official_quotes.get(code) or fallback_quotes.get(code)
+            # This endpoint is polled by the workbench UI. Never turn a missed
+            # intraday quote into a forced 3-month history download: that path
+            # can block a Gunicorn worker for minutes when MIS is unavailable.
+            # The browser keeps its last valid value until the next MIS poll.
+            quote_data = official_quotes.get(code)
             if not isinstance(quote_data, dict):
                 continue
             price = _workbench_number(quote_data.get("close"))
@@ -50450,7 +50450,7 @@ def web_workbench_quotes(uid):
         fetched_at = taiwan_now().strftime("%Y-%m-%d %H:%M:%S")
         return _workbench_json_response({"ok": True, "updates": updates, "market_open": True,
                                          "fetched_at": fetched_at,
-                                         "note": "盤中可見標的已重新取得；價格每 15 秒更新，選股判斷維持最近完成快照。"})
+                                         "note": "僅更新成功取得的官方盤中行情；暫缺標的保留畫面最後有效值，選股判斷維持最近完成快照。"})
     except Exception as exc:
         print(f"⚠️ 工作台盤中行情更新失敗（uid={uid}）：{exc}")
         return _workbench_json_response({"ok": False, "updates": [], "market_open": True,
