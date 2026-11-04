@@ -770,6 +770,9 @@
   border-radius: 11px !important;
   white-space: nowrap !important;
 }
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench #wb-filter-panel[hidden] {
+  display: none !important;
+}
 
 @media (max-width: 699px) {
   #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools {
