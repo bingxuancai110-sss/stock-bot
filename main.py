@@ -4805,7 +4805,7 @@ def apply_exright_adjustment(user_id, code, ratio):
              f"（{total_before:,} → {total_after:,} 股，畸零股捨去）"))
         conn.commit()
         cursor.close()
-        clear_leaderboard_cache()
+        clear_leaderboard_cache(refresh=False)
         return True, {"ratio": ratio, "before": total_before, "after": total_after}
     except Exception as exc:
         conn.rollback()
@@ -4912,7 +4912,7 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
         )
         conn.commit()
         cursor.close()
-        clear_leaderboard_cache()
+        clear_leaderboard_cache(refresh=False)
         try: _invalidate_home_intraday_payload_cache(user_id)
         except Exception: pass
         return True
@@ -5049,7 +5049,7 @@ def delete_position_exact_id(user_id, pos_id):
                     cursor, uid, str(code_raw).strip(), taiwan_today())
         if voided_logs:
             print(f"🧹 已清除被刪除 lot 對應的操作日誌：{uid} {str(code_raw).strip()} {voided_logs} 筆")
-        conn.commit(); cursor.close(); clear_leaderboard_cache()
+        conn.commit(); cursor.close(); clear_leaderboard_cache(refresh=False)
         try: _invalidate_home_intraday_payload_cache(uid)
         except Exception: pass
         return True, "ok"
@@ -5166,7 +5166,7 @@ def delete_position(user_id, pos_id, fallback_code=None, fallback_shares=None,
         if deleted > 0:
             try: _invalidate_home_intraday_payload_cache(uid)
             except Exception: pass
-            clear_leaderboard_cache()
+            clear_leaderboard_cache(refresh=False)
         return deleted > 0
 
     except Exception as e:
@@ -5432,7 +5432,7 @@ def sell_position(user_id, pos_id, sell_shares,
         cursor.close()
         try: _invalidate_home_intraday_payload_cache(uid)
         except Exception: pass
-        clear_leaderboard_cache()
+        clear_leaderboard_cache(refresh=False)
         return True, None, {
             "code": str(code).strip(), "shares": sell_shares,
             "sell_price": sell_price, "cost": lot_cost,
@@ -8882,7 +8882,7 @@ _leaderboard_refresh_lock = threading.Lock()
 _leaderboard_refresh_state = {"started_at": 0.0, "thread": None}
 
 
-def clear_leaderboard_cache():
+def clear_leaderboard_cache(refresh=True):
     """成員加入、退出或設定變更後立即清掉排行榜結果。"""
     with _leaderboard_cache_lock:
         _leaderboard_cache.clear()
@@ -8894,12 +8894,13 @@ def clear_leaderboard_cache():
     if fast_cache_lock is not None and fast_cache is not None:
         with fast_cache_lock:
             fast_cache.clear()
-    # 不刪除最後一份完整快照。成員設定變更後仍先顯示上一版，
-    # 再由背景重算更新，避免下一次開排行榜被迫等待完整計算。
-    try:
-        _maybe_refresh_leaderboard_background(force=True)
-    except Exception as exc:
-        print(f"⚠️ 排行榜背景更新啟動失敗: {exc}")
+    # 持股交易只使快取失效，不在買賣請求後啟動全體成員一整年的重型重算。
+    # 收盤快照流程會更新排行榜；加入／退出排行榜等成員設定變更仍保留即時重算。
+    if refresh:
+        try:
+            _maybe_refresh_leaderboard_background(force=True)
+        except Exception as exc:
+            print(f"⚠️ 排行榜背景更新啟動失敗: {exc}")
 
 
 def _leaderboard_date(value):
