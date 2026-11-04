@@ -737,3 +737,62 @@
     grid-column:1 / -1 !important;
   }
 }
+
+/* Workbench toolbar: keep the search control and actions in an intentional
+   layout at each breakpoint. The earlier global full-row label rule made the
+   desktop filter button stretch across the page and squeezed the search icon. */
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools {
+  grid-template-columns: minmax(240px, 1fr) auto auto !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools label {
+  display: flex !important;
+  grid-column: auto !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+  min-height: 42px !important;
+  padding-inline: 12px !important;
+  border-radius: 12px !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools label > span {
+  display: inline-grid !important;
+  flex: 0 0 18px !important;
+  place-items: center !important;
+  color: #71828a !important;
+  font-size: 19px !important;
+  line-height: 1 !important;
+}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools button {
+  min-height: 42px !important;
+  padding-inline: 14px !important;
+  border-radius: 11px !important;
+  white-space: nowrap !important;
+}
+
+@media (max-width: 699px) {
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools {
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    gap: 6px 8px !important;
+    margin-top: 8px !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools label {
+    grid-column: 1 / -1 !important;
+    min-height: 44px !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-tools button {
+    min-height: 40px !important;
+    padding-inline: 13px !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench #wb-filter {
+    justify-self: start !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench #wb-refresh {
+    justify-self: end !important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-filter-panel:not([hidden]) {
+    flex-wrap: wrap !important;
+    row-gap: 8px !important;
+  }
+}
