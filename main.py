@@ -4959,7 +4959,10 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
         except Exception: pass
         return True
     except Exception as e:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception as rollback_error:
+            print(f"⚠️ 新增持股連線已中斷，略過 rollback（{type(rollback_error).__name__}）")
         print(f"❌ 新增持股失敗: {e}")
         return False
     finally:
@@ -9753,7 +9756,7 @@ def build_leaderboard(top_n=20, days=365, force_rebuild=False):
     # 不用買進成本混算成另一種口徑。
     prices = (get_realtime_stocks_bulk(list(codes), workers=16, rng="1y")
               if codes else {})
-    inst = fetch_institutional_data() or {} if codes else {}
+    inst = dict(_t86_cache.get("data") or {}) if codes else {}
     ind_map = get_industry_map() or {} if codes else {}
 
     rows, series_map, market = [], {}, []
@@ -11285,7 +11288,10 @@ def save_t86_history(query_date, data):
         cursor.close()
         print(f"💾 已存入 T86 歷史（{query_date}），共 {len(rows)} 檔")
     except Exception as e:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception as rollback_error:
+            print(f"⚠️ T86 連線已中斷，略過 rollback（{type(rollback_error).__name__}）")
         print(f"❌ 寫入 T86 歷史失敗（{query_date}）: {e}")
     finally:
         release_db_connection(conn)
@@ -14669,7 +14675,7 @@ def build_chips_payload(days=10, force_refresh=False, persist=True,
             _chips_cache.update({"at": time.time(), "result": result})
             return result
 
-        inst = fetch_institutional_data() or {}
+        inst = dict(_t86_cache.get("data") or {})
         actual = min(int(days), hist_days)
         raw = {
             "trust_buy": get_top_by_investor("trust", "buy", actual, 20, min_days=6),
@@ -15176,7 +15182,10 @@ def _load_latest_institutional_history():
     return data, data_date
 
 
-def fetch_institutional_data(codes=None):
+_T86_REFRESH_LOCK = threading.Lock()
+
+
+def _fetch_institutional_data_impl(codes=None):
     """
     抓當日三大法人買賣超，涵蓋上市（TWSE T86）與上櫃（TPEx）。
 
@@ -15296,6 +15305,24 @@ def fetch_institutional_data(codes=None):
 
     print("⚠️ 上市往前找了 5 天、上櫃也無資料")
     return _t86_cache["data"]
+
+
+def fetch_institutional_data(codes=None):
+    """讀法人資料；全市場更新只允許單一背景請求執行，互動頁不可排隊等待。"""
+    requested_codes = {str(c).strip() for c in (codes or []) if str(c).strip()}
+    if requested_codes:
+        return _fetch_institutional_data_impl(requested_codes)
+
+    # 頁面請求若遇上背景 T86 更新，立即回傳已完成快取，避免同時抓取
+    # 兩萬筆資料、寫入資料庫並佔住 Gunicorn worker。無快取時明確降級為空資料。
+    if not _T86_REFRESH_LOCK.acquire(blocking=False):
+        cached = _t86_cache.get("data")
+        print("⚡ T86 更新進行中；互動請求改用已完成快取")
+        return dict(cached) if isinstance(cached, dict) else {}
+    try:
+        return _fetch_institutional_data_impl()
+    finally:
+        _T86_REFRESH_LOCK.release()
 
 
 def format_data_date(yyyymmdd):
@@ -18473,7 +18500,7 @@ def build_single_stock_report(code, user_id=None):
         stock_for_display["high"] = None
         stock_for_display["low"] = None
 
-    inst = fetch_institutional_data() or {}
+    inst = dict(_t86_cache.get("data") or {})
     scores = compute_watchlist_scores([code])
     score = scores.get(code)
     ind_map = get_industry_map() or {}
@@ -31631,6 +31658,10 @@ def web_positions(uid):
                 else:
                     msg = (f"已新增 {code}（含手續費，每股成本 {cost:,.2f}）。"
                            if bf > 0 else f"已新增 {code}。")
+                    # INSERT 與操作日誌已在 add_position 內一併 commit。
+                    # 成功後直接回傳輕量確認，避免再同步重算整頁行情／圖表；
+                    # 若重算期間 Render 重啟，使用者會看到 429，卻無法判斷是否已寫入。
+                    return trade_result_response("✅ " + msg)
 
     positions_data_started = time.monotonic()
     positions = merge_positions(get_positions(uid))
@@ -35428,7 +35459,7 @@ def web_position_journal_csv(uid):
     requested_end = str(request.args.get("journal_end") or "").strip()
     journal_start = requested_start or journal_date
     journal_end = requested_end or journal_date
-    inst = fetch_institutional_data() or {}
+    inst = dict(_t86_cache.get("data") or {})
     csv_text = build_position_journal_csv(
         uid, inst_data=inst, trade_date=journal_date or None, code=code or None,
         start_date=journal_start or None, end_date=journal_end or None)
@@ -35487,7 +35518,9 @@ def web_trades(uid):
         trades = [t for t in trades
                   if (_position_change_date(t.get("sold_on")),
                       str(t.get("code") or "").strip()) not in voided_keys]
-    inst = fetch_institutional_data() or {}
+    # 交易紀錄是互動頁面，不能在請求中觸發全市場 T86 抓取／寫入（約兩萬筆）。
+    # 只使用已完成的程序快取；尚未完成時讓法人欄位依既有缺值呈現，不阻塞交易頁。
+    inst = dict(_t86_cache.get("data") or {})
     current_positions = merge_positions(get_positions(uid))
     journal_codes = (sorted({str(p.get("code")).strip() for p in current_positions if p.get("code")} |
                             {str(log.get("code")).strip() for log in journal_logs if log.get("code")})
@@ -38958,7 +38991,7 @@ def web_compare(uid):
             note="最多可同時比較 4 檔。")
 
     watchlist = get_user_watchlist(uid)
-    inst = fetch_institutional_data() or {}
+    inst = dict(_t86_cache.get("data") or {})
 
     # 選擇區：自選股一鍵勾選，不必記代號
     picked = set(codes)
@@ -39974,7 +40007,7 @@ def web_stock_analysis(uid):
         stock = get_realtime_stock(code, rng="1y") or {}
         if not stock:
             return respond_page("個股分析", '<section class="card">目前無法取得有效行情，請稍後重試。</section>', "portfolio")
-        inst = fetch_institutional_data() or {}
+        inst = dict(_t86_cache.get("data") or {})
         score = (compute_watchlist_scores([code]) or {}).get(code) or {}
         bd = (get_investor_breakdown([code], days=10) or {}).get(code) or {}
         revenue = (fetch_monthly_revenue() or {}).get(code) or {}
