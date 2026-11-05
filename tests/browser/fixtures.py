@@ -85,7 +85,7 @@ pos=[(p,1.2,.1+i*.1) for i,p in enumerate(positions[:4])];neg=[(p,-1.5,-.2-i*.1)
 groups=ns['_hv2_group_html']('up','推升組合',len(pos),home_ns['contribution_detail_rows'](pos,'up'))+ns['_hv2_group_html']('down','拖累組合',len(neg),home_ns['contribution_detail_rows'](neg,'down'))
 data=dict(total_value=70000,total_cost=63000,holdings_count=7,pl_html=ns['fmt_pct'](11.1),market_html=ns['fmt_pct'](-1),portfolio_label='你的組合',portfolio_html=ns['fmt_pct'](1),relative_html=ns['fmt_pct'](2),market_status='合成測試行情',sync_title='測試資料',sync_detail='畫面測試用',contribution_day_label='今日',stale_notice='',impact_positive=dict(name=pos[0][0]['name'],pct=1.2,contribution=.1),impact_negative=dict(name=neg[0][0]['name'],pct=-1.5,contribution=-.2),contribution_groups=groups,holdings_html=home_ns['_home_holdings_preview_html'],journal_html='',judgement_html='<p>合成組合判讀</p>',live_script='')
 home=ns['_render_home_v2'](data);root.joinpath('home-fragment.html').write_text(home,encoding='utf-8');root.joinpath('home.html').write_text(ns['render_page']('今日',home,'portfolio'),encoding='utf-8')
-workbench=ns['render_workbench_body']();root.joinpath('workbench.html').write_text(ns['render_page']('選股工作台',workbench,'screener'),encoding='utf-8')
+workbench=ns['render_workbench_body']();root.joinpath('workbench.html').write_text(ns['render_page']('選股',workbench,'screener'),encoding='utf-8')
 ns['is_admin']=lambda uid:False
 more=ns['web_more']('fixture-user')
 root.joinpath('more.html').write_text(more,encoding='utf-8')

@@ -15,10 +15,31 @@
 - Chromium and WebKit each passed 194 isolated checks with no page errors.
   The fixture explicitly returns denied personal-quote configuration rather than
   HTML; it has no credentials or live account writes. Buy submission deduplication
-  passed nine isolated tests. Full Python regression is still running.
-- Current production remains a5d4369. PR 83 is the review branch. Production
+  passed nine isolated tests. Full Python regression completed: 133 passed in
+  1271.72 seconds in the isolated Windows verification environment.
+- PR 83 merged as 93f8dc4; Render deploy dep-dbm75l2vcj2c7386l8ig is being
+  monitored. The prior production version is a5d4369. Production
   navigation was still slow, and final seven-page production review is pending.
   This is not an overall completion claim.
+
+### Live verification after PR 83
+
+- Render 93f8dc4 became live at 2026-11-05 12:15:14 UTC. The signed-in browser
+  loaded the intended shared assets and portfolio-v2.js version 20261105-5.
+  Allocation selection/reset and expanded holdings kept their values masked;
+  opening the unsaved trade dialog focused the code field immediately. No write
+  was submitted.
+- Production reproduced the reported blank holding row: the collapsed summary
+  is an absolute hit target over the quote row, and shared hover feedback painted
+  an opaque background on it. The follow-up keeps that hit target transparent.
+- Production also reproduced the invisible radar detail. Its drawer had
+  position:static and appeared below the list around 4,024px. render_page loaded
+  WORKBENCH_CSS only for the old title while the real route uses the new title.
+  The old browser fixture used the old title and therefore missed this bug.
+  The follow-up accepts both titles, updates the fixture to the real route title,
+  and asserts fixed viewport positioning.
+- Target deviation and sell-summary share count still exposed private numbers;
+  these are included in the follow-up patch. Seven-page review remains open.
 
 This is an ongoing audit, not a completion claim. Production pages are checked in the user's authenticated Chrome. Isolated renderer fixtures check regressions; they are not evidence of production layout.
 

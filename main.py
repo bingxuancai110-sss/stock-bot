@@ -26855,7 +26855,7 @@ def render_page(title, body, nav_active=None, user_name=None):
     # LINE WebView 偶爾不保留 cookie；導覽列也必須帶著有效 token，不能只有內容區帶。
     nav = preserve_web_token(nav)
     bottom_nav = preserve_web_token(bottom_nav)
-    page_extra_css = (WORKBENCH_CSS + WORKBENCH_TOUCH_CSS) if title == "選股工作台" else ""
+    page_extra_css = (WORKBENCH_CSS + WORKBENCH_TOUCH_CSS) if title in {"選股工作台", "選股"} else ""
     # 未登入入口是獨立的註冊／登入頁，不顯示登入後的底部分頁或「綁定 Google」按鈕，避免新使用者誤以為已登入。
     if title == "登入台股 BOT":
         # 未登入入口不顯示任何登入後導覽元素；不能只靠視覺上縮小按鈕。
@@ -28604,11 +28604,11 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261105-6">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261105-7">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261105-5">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-7">
 <script defer src="/static/ui-feedback.js?v=20261105-6"></script>
-<script defer src="/static/fugle-live.js?v=20261105-1"></script>
+<script defer src="/static/fugle-live.js?v=20261105-2"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -32588,7 +32588,7 @@ def web_positions(uid):
         est_fee = round(broker_fee(gross)) if gross else 0
         est_tax = round(gross * tax_rate) if gross else 0
         return f'''
-<details class="sellbox sellbox-all"><summary>全部賣出（{len(p.get("lots", []))} 筆・{total:,} 股）</summary>
+<details class="sellbox sellbox-all"><summary>全部賣出（{len(p.get("lots", []))} 筆・<span data-home-sensitive>{total:,} 股</span>）</summary>
 <form method="post" action="/web/positions" class="sellpanel"
       onsubmit="return confirm('確認依最早買進順序賣出所選股數？');">
   {csrf_hidden_input()}
@@ -32687,7 +32687,7 @@ def web_positions(uid):
                                else "符合目標")
             deviation_class = "over" if deviation > 0.05 else "under" if deviation < -0.05 else "on-target"
             target_line_html = (f'<div class="position-target-summary"><span>目標權重</span>'
-                                f'<b data-home-sensitive>{target_pct:.1f}%</b><em class="{deviation_class}">{deviation_label}</em></div>')
+                                f'<b data-home-sensitive>{target_pct:.1f}%</b><em class="{deviation_class}" data-home-sensitive>{deviation_label}</em></div>')
         if price:
             gross_pl = (price["close"] - p["cost"]) / p["cost"] * 100
             net_amt, pl, cost_fee = net_profit(
