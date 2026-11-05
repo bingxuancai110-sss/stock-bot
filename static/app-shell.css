@@ -69,7 +69,7 @@ body#stockbot-app .app-bottom-nav .bottom-inner > a {
 }
 body#stockbot-app .app-bottom-nav .bottom-inner > a .app-nav-icon { width: 19px !important; height: 19px !important; fill: none !important; stroke: currentColor !important; stroke-width: 1.8 !important; stroke-linecap: round !important; stroke-linejoin: round !important; }
 body#stockbot-app .app-bottom-nav .bottom-inner > a:first-child .app-nav-icon path { fill: currentColor !important; stroke: none !important; }
-body#stockbot-app .app-bottom-nav .bottom-inner > a.on { color: var(--sb-app-primary) !important; background: var(--sb-app-primary-soft) !important; }
+body#stockbot-app .app-bottom-nav .bottom-inner > a.on { color: #244e69 !important; background: #e5eef5 !important; }
 body#stockbot-app .app-bottom-nav .bottom-inner > a.on::before { content: ""; position: absolute; top: 3px; width: 18px; height: 2px; border-radius: 2px; background: currentColor; }
 body#stockbot-app .app-bottom-nav .bottom-inner > a:active { transform: scale(.94) !important; }
 body#stockbot-app #stockbot-shell > .wrap > .top-nav { display: none !important; }
@@ -258,7 +258,7 @@ body#stockbot-app[data-app-view="more"] #app-page-content .more-item .more-icon 
   body#stockbot-app #stockbot-shell > .wrap > .top-nav::before { content: "台股 BOT" !important; display: block !important; margin: 4px 12px 21px !important; padding: 4px 0 16px !important; border-bottom: 1px solid var(--sb-app-line) !important; color: var(--sb-app-ink) !important; font-size: 18px !important; font-weight: 850 !important; letter-spacing: -.03em !important; }
   body#stockbot-app #stockbot-shell > .wrap > .top-nav > a { display: flex !important; align-items: center !important; justify-content: flex-start !important; gap: 12px !important; min-height: 45px !important; padding: 0 12px !important; border: 0 !important; border-radius: 10px !important; background: transparent !important; color: #657982 !important; text-decoration: none !important; font-size: 13px !important; font-weight: 700 !important; }
   body#stockbot-app #stockbot-shell > .wrap > .top-nav > a .app-nav-icon { width: 19px !important; height: 19px !important; }
-  body#stockbot-app #stockbot-shell > .wrap > .top-nav > a.on { background: var(--sb-app-primary-soft) !important; color: var(--sb-app-primary) !important; }
+  body#stockbot-app #stockbot-shell > .wrap > .top-nav > a.on { background: #e5eef5 !important; color: #244e69 !important; }
   body#stockbot-app #stockbot-shell > .wrap > #app-page-content { max-width: 1320px !important; }
   body#stockbot-app .app-bottom-nav { display: none !important; }
   #stockbot-app #stockbot-shell #app-page-content:has(.rows > .position-card) .rows { grid-template-columns: repeat(3,minmax(0,1fr)) !important; column-gap: 24px !important; }
@@ -552,8 +552,8 @@ body#stockbot-app .app-bottom-nav .bottom-inner > a .app-nav-icon {
   stroke-width: 1.9 !important;
 }
 body#stockbot-app .app-bottom-nav .bottom-inner > a.on {
-  background: #e6f0ee !important;
-  color: #1d6372 !important;
+  background: #e5eef5 !important;
+  color: #244e69 !important;
 }
 body#stockbot-app .app-bottom-nav .bottom-inner > a.on::before {
   width: 22px !important;
@@ -637,9 +637,9 @@ body#stockbot-app[data-app-view="screener"] #app-page-content .wb-tabs button {
 }
 body#stockbot-app[data-app-view="screener"] #app-page-content .wb-asset-tabs button.on,
 body#stockbot-app[data-app-view="screener"] #app-page-content .wb-tabs button.on {
-  color: #185d48 !important;
-  background: #e4f1e9 !important;
-  box-shadow: inset 0 -2px 0 #43856a !important;
+  color: #244e69 !important;
+  background: #e5eef5 !important;
+  box-shadow: inset 0 -2px 0 #668ba4 !important;
 }
 body#stockbot-app[data-app-view="screener"] #app-page-content .wb-tools :is(input,button) {
   min-height: 42px !important;
@@ -1146,7 +1146,7 @@ body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-tabs :is(
 }
 body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-tabs :is(.on,[aria-pressed="true"],[aria-checked="true"]) {
   background: #fff !important;
-  color: #245b4a !important;
+  color: #244e69 !important;
   box-shadow: 0 2px 7px rgba(34,61,60,.1) !important;
 }
 body#stockbot-app[data-app-view="leaderboard"] #app-page-content .rank-situation {

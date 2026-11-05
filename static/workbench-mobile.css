@@ -916,6 +916,14 @@
   #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"]>.wb-price-block {min-width:68px!important}
 }
 
+/* Keep selected state slate blue across screener's higher-specificity legacy rules. */
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench :is(.wb-tabs button.on,.wb-mobile-sort button.on,.wb-filter-panel button.on,.wb-asset-tabs button.on){background:#e5eef5!important;background-image:none!important;color:#244e69!important;-webkit-text-fill-color:#244e69!important;border-color:#88a9bf!important;box-shadow:inset 0 -2px 0 #668ba4!important}
+#stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.ui-pressed{background:#edf3f8!important;box-shadow:inset 3px 0 #668ba4!important}
+
+/* Radar detail is a type/location reading, not a missing five-factor score. */
+#stockbot-app #stockbot-shell #app-page-content #wb-detail .wb-d-score-note{display:block;margin-top:5px;max-width:210px;color:#627786;font-size:10px;line-height:1.45;font-weight:650}
+#stockbot-app #stockbot-shell #app-page-content #wb-detail .wb-d-score>b{overflow-wrap:anywhere}
+
 /* Keep the radar list scannable on phones; full factor details remain available
    in the row's expanded research drawer. */
 @media (max-width:699px) {
