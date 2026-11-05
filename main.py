@@ -32908,12 +32908,9 @@ def web_positions(uid):
     # 只提示不自動改——判斷錯會把使用者的持股資料弄壞，而他不一定馬上發現。
     exright_html = ""
     try:
-        ignored = get_exright_ignored(uid)
         detected = detect_exright_adjustments(positions, price_map)
         ignored = get_exright_ignored(uid)
         # 使用者明確按過「忽略」的同一配股率不會被自動套用。
-        eligible = [x for x in detected
-                    if abs((ignored.get(x["code"]) or 0) - x["ratio"]) > 0.001]
         # 安全模式：還原價比值只能當作「候選事件」，不是官方配股公告。
         # 不在頁面載入時自動改動持股；歷史事件與未來事件都必須先核對券商實際股數。
         # 避免開啟頁面、快取重算或行情資料修訂時重複／錯誤調整真實持股。
