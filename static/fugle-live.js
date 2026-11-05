@@ -389,7 +389,7 @@
     (positions.updates||[]).forEach(item=>{
       const card=document.querySelector('[data-position-code="'+item.code+'"]');
       if(card){
-        const target=card.querySelector('.position-target-summary em');if(target&&item.target_pct!=null&&item.weight!=null){const diff=item.weight-item.target_pct;target.textContent=Math.abs(diff)<=0.05?'符合目標':(diff>0?'高於目標 ':'低於目標 ')+money(Math.abs(diff),1)+' 個百分點';}
+        const target=card.querySelector('.position-target-summary em');if(target&&item.target_pct!=null&&item.weight!=null){const diff=item.weight-item.target_pct;setPrivate(target,Math.abs(diff)<=0.05?'符合目標':(diff>0?'高於目標 ':'低於目標 ')+money(Math.abs(diff),1)+' 個百分點');}
         const weightBar=card.querySelector('.position-card-weight i');if(weightBar&&item.weight!=null)weightBar.style.width=(item.weight==null?0:Math.min(100,item.weight/30*100))+'%';
         const summary=card.querySelector('.position-card-weight>b');if(summary&&item.weight!=null)setPrivate(summary,money(item.weight,1)+'%');
         if(card.classList.contains('position-card-noquote')){

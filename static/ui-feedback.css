@@ -396,6 +396,10 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 #stockbot-app #stockbot-shell #app-page-content .position-card-code.ui-allocation-row-select{min-height:36px!important;min-width:44px!important;margin:0!important;padding:6px 8px!important;white-space:nowrap!important;flex:none!important;font-size:11px!important}.ui-allocation-row-select::after{content:'◎';font-size:10px;margin-left:4px;opacity:.7}
 /* Runtime states own the cascade above legacy page-specific selectors. */
 #stockbot-app #stockbot-shell #app-page-content .ui-control:is(:active,:hover){background:var(--sb-feedback-surface)!important;background-image:none!important;color:var(--sb-feedback-ink)!important;-webkit-text-fill-color:var(--sb-feedback-ink)!important;filter:none!important;transition:transform var(--sb-feedback-press) var(--sb-feedback-ease)!important}
+/* The collapsed holding summary covers the quote row as its hit target.
+   Its hover/focus surface must never paint over the underlying name and quote. */
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card>.position-more:not([open])>summary.ui-control{background:transparent!important;background-image:none!important;box-shadow:none!important;color:transparent!important;-webkit-text-fill-color:transparent!important;transform:none!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card:has(>.position-more:not([open])>summary:focus-visible){outline:3px solid var(--sb-feedback-border);outline-offset:2px}
 #stockbot-app #stockbot-shell #app-page-content .ui-selected-control :is(b,strong,small,em,span){color:inherit!important;-webkit-text-fill-color:currentColor!important}
 #stockbot-app #stockbot-shell #app-page-content .ui-control:is(:active,:hover) :is(.up,.us-positive,.wb-up){color:var(--sb-feedback-up)!important;-webkit-text-fill-color:currentColor!important}
 #stockbot-app #stockbot-shell #app-page-content .ui-control:is(:active,:hover) :is(.down,.us-negative,.wb-down){color:var(--sb-feedback-down)!important;-webkit-text-fill-color:currentColor!important}
