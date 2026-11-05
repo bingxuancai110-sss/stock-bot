@@ -41,4 +41,3 @@ for that visual/account-level verification.
   unavailable. Existing open pages must reload to load the revised script.
 - The ongoing UI branch merged this production commit and retained its own
   updated asset versions. No transaction, database or financial calculation change.
-
