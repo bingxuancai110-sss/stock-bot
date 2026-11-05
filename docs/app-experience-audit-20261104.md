@@ -88,8 +88,9 @@ Commit `23f87d5` became live on Render at 2026-11-04 14:32:58 UTC (PR #74).
   negative margins extending beyond the page gutter; removed those margins and
   reran both browser suites successfully. No Safari device or live-site claim
   follows from these isolated browser runs.
-- The urgent trade fix is isolated in draft PR #79. Visual assets remain outside
-  that PR. No historical portfolio records were changed during this work.
+- The urgent trade fix was merged as PR #79 and became live at 10:31 Taiwan
+  on 2026-11-05. The visual refinement is isolated in draft PR #80. No historical
+  portfolio records were changed; see production-checkpoint-20261105.md.
 
 ## Remaining verification/work
 
