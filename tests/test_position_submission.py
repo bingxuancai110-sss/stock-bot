@@ -119,5 +119,11 @@ class ResultTests(unittest.TestCase):
         self.assertIn('p2-trade-result success', result)
         self.assertNotIn('class="msg"', result)
 
+    def test_uncertain_commit_does_not_claim_failure(self):
+        result = self.render('資料可能已入帳', pending=True)
+        self.assertIn('p2-trade-result waiting', result)
+        self.assertIn('結果待確認', result)
+        self.assertNotIn('操作未完成', result)
+
 
 if __name__ == '__main__': unittest.main()

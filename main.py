@@ -32286,7 +32286,7 @@ def web_positions(uid):
         fee_disc, min_fee = get_fee_settings(get_profile(uid))
 
     msg = ""
-    def trade_result_response(message, succeeded=None):
+    def trade_result_response(message, succeeded=None, pending=False):
         """Finish an executed trade without a second DB read on the request path.
 
         The trade helper commits its transaction before returning.  Re-reading
@@ -32301,9 +32301,9 @@ def web_positions(uid):
             succeeded = str(message or "").lstrip().startswith("✅")
         body = (
             '<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261104-7">'
-            f'<section class="p2-trade-result {"success" if succeeded else "error"}" role="status">'
-            f'<span class="p2-result-mark" aria-hidden="true">{"✓" if succeeded else "!"}</span>'
-            f'<h2>{"記帳完成" if succeeded else "操作未完成"}</h2>'
+            f'<section class="p2-trade-result {"waiting" if pending else "success" if succeeded else "error"}" role="status">'
+            f'<span class="p2-result-mark" aria-hidden="true">{"…" if pending else "✓" if succeeded else "!"}</span>'
+            f'<h2>{"結果待確認" if pending else "記帳完成" if succeeded else "操作未完成"}</h2>'
             f'<p>{safe_message}</p>'
             '<div class="p2-card-actions"><a class="p2-primary-action" href="/web/positions" data-no-busy="1">回到持股</a>'
             '<a href="/web/trades" data-no-busy="1">查看操作日報　›</a></div></section>'
@@ -32452,7 +32452,7 @@ def web_positions(uid):
                     return trade_result_response("⚠️ 這份表單先前已送出不同內容，本次沒有新增。請先核對持股與操作日報，再開啟新的交易表單。")
                 if not add_result:
                     # commit 回應遺失時資料可能已入帳，不能宣稱「沒有寫入」。
-                    return trade_result_response("⚠️ 暫時無法確認這筆記帳結果，資料可能已入帳。請先查看持股與操作日報；保留本表單重試會使用同一筆識別碼，避免重複新增。")
+                    return trade_result_response("暫時無法確認這筆記帳結果，資料可能已入帳。請先查看持股與操作日報；保留本表單重試會使用同一筆識別碼，避免重複新增。", pending=True)
                 else:
                     if add_result == "duplicate":
                         msg = f"✅ {code} 這筆買進先前已完成記錄；這次是安全確認，沒有重複新增。"
@@ -33224,7 +33224,8 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
         var tradeResult=responseDoc.querySelector('#app-page-content .p2-trade-result');
         var confirmedSuccess=!!(tradeResult&&tradeResult.classList.contains('success'));
         var confirmedError=!!(tradeResult&&tradeResult.classList.contains('error'));
-        if(confirmedError) throw new Error(tradeResult.textContent.trim()||'操作沒有完成。');
+        if(confirmedError){var rejected=new Error(tradeResult.textContent.trim()||'操作沒有完成。');rejected.confirmedRejection=true;throw rejected;}
+        if(tradeResult&&tradeResult.classList.contains('waiting'))throw new Error(tradeResult.textContent.trim());
         if(responseMessage && /失敗|錯誤|不正確|請填|過期|無法|⚠/.test(responseMessage.textContent||'')) throw new Error(responseMessage.textContent);
         if(!responseDoc.getElementById('app-page-content') || (!confirmedSuccess && (!responseMessage || !/已新增|已賣出|✅|成功/.test(responseMessage.textContent||'')))) throw new Error((responseMessage&&responseMessage.textContent)||'未能確認處理結果，請先檢查持股與操作日報。');
         finished=true;
@@ -33274,8 +33275,9 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
         if(wrap && wrap.parentNode) wrap.remove();
         confirmed=false; submit.disabled=false;
         delete form.dataset.uiSubmitting;
-        if(window.StockBotUI) window.StockBotUI.formState(form,'error','送出未完成：'+(err && err.message ? err.message : '網路或伺服器錯誤')+'；請先確認持股與日報再決定是否重送。');
-        else alert('送出未完成：'+(err && err.message ? err.message : '網路或伺服器錯誤'));
+        var outcomeLabel=err&&err.confirmedRejection?'操作未完成：':'結果待確認：';
+        if(window.StockBotUI) window.StockBotUI.formState(form,'error',outcomeLabel+(err && err.message ? err.message : '網路或伺服器回應中斷，資料可能已入帳')+'；請先核對持股與日報。');
+        else alert(outcomeLabel+(err && err.message ? err.message : '網路或伺服器回應中斷，資料可能已入帳'));
       });
     }
     function go(){
