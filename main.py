@@ -5956,7 +5956,7 @@ def analyze_pick_factors(mode, days=90):
 
     span = "1y" if days > 120 else "6mo"
     price_map = get_realtime_stocks_bulk(
-        list({p["code"] for p in picks}), workers=16, rng=span)
+        list({p["code"] for p in picks}), workers=1, rng=span)
     today = taiwan_today()
 
     rows = []
@@ -13206,7 +13206,7 @@ def evaluate_picks(mode, days=90):
     # 而 8～9 月正是台股除權息旺季，不修正會系統性低估成效。
     span = "1y" if days > 120 else "6mo"
     price_map = get_realtime_stocks_bulk(
-        list({p["code"] for p in picks}), workers=16, rng=span)
+        list({p["code"] for p in picks}), workers=1, rng=span)
     today = taiwan_today()
 
     def pick_return(code, pick_date, raw_price):
@@ -48966,10 +48966,15 @@ def _start_workbench_review_background_refresh():
     with _WORKBENCH_REVIEW_REFRESH_LOCK:
         if _WORKBENCH_REVIEW_REFRESH_RUNNING:
             return False
+        if not _background_work_memory_safe(reserve_mb=160):
+            return False
         _WORKBENCH_REVIEW_REFRESH_RUNNING = True
     def worker():
         global _WORKBENCH_REVIEW_REFRESH_RUNNING, _workbench_review_cache
         try:
+            # Admission can change while another market job owns the queue.
+            if not _background_work_memory_safe(reserve_mb=160):
+                return
             evaluations = {"blackhorse": _workbench_merge_evaluations(("blackhorse",)),
                            "radar": _workbench_merge_evaluations(("radar", "radar_live"))}
             with _workbench_review_lock:
@@ -48980,7 +48985,12 @@ def _start_workbench_review_background_refresh():
         finally:
             with _WORKBENCH_REVIEW_REFRESH_LOCK:
                 _WORKBENCH_REVIEW_REFRESH_RUNNING = False
-    threading.Thread(target=worker, name="workbench-review-refresh", daemon=True).start()
+    try:
+        _BACKGROUND_JOB_EXECUTOR.submit(worker)
+    except Exception:
+        with _WORKBENCH_REVIEW_REFRESH_LOCK:
+            _WORKBENCH_REVIEW_REFRESH_RUNNING = False
+        raise
     return True
 
 
@@ -49044,8 +49054,12 @@ def build_workbench_review_payload():
             "recent": recent, "horizons": horizon_rows, "statistics_ready": bool(evaluation),
             "note": (f"已累積 {len(picks)} 筆既有推薦紀錄；近期推薦先列出，成熟樣本才計算報酬與同期大盤比較。"
                      if picks else "近 90 日尚未找到既有推薦紀錄。")})
-    return {"ok": True, "modes": modes, "computed_at": taiwan_now().isoformat(), "statistics_building": not fresh,
-            "note": ("已先列出既有累積推薦；成熟成效正在依原始公式更新，完成後自動顯示。" if not fresh
+    building = bool(_WORKBENCH_REVIEW_REFRESH_RUNNING)
+    deferred = not fresh and not building
+    return {"ok": True, "modes": modes, "computed_at": taiwan_now().isoformat(), "statistics_building": building,
+            "statistics_deferred": deferred,
+            "note": ("目前先保留既有推薦與統計；服務記憶體餘裕不足，完整成效更新暫緩，稍後重新開啟可再確認。" if deferred else
+                     "已先列出既有累積推薦；成熟成效已排隊或正在更新，完成後自動顯示。" if not fresh
                      else "成熟樣本依既有公式計算，並只在可取得同期大盤時比較。")}
 
 
@@ -49684,7 +49698,7 @@ def render_workbench_body(initial_tab=""):
       return '<section class="wb-review-horizon"><header><b>'+esc(h.period)+'</b><small>'+sampleMeta+'</small></header><div class="wb-review-metrics">'+reviewMetric('個股平均報酬',h.average_pct,'stock','中位 '+reviewPct(h.median_pct))+reviewMetric('同期大盤報酬',h.market_pct,'market',h.market_pct==null?'同期大盤資料未提供':'')+reviewMetric('超額報酬',h.excess_pct,'excess',h.excess_pct==null?'無同期大盤基準':'')+'</div>'+samples+'</section>';
     }).join('');
     var recent=(m.recent||[]).filter(function(p){return p.elapsed_days==null||p.elapsed_days<5;}).map(function(p){return '<li><b>'+esc(p.name)+' '+esc(p.code)+'</b><span>'+esc(p.date)+'・第 '+esc(p.rank==null?'—':p.rank)+' 名・'+(p.elapsed_days==null?'天期未確認':esc(p.elapsed_days)+' 日')+'</span></li>';}).join('');
-    var result=rows||(state.review.statistics_building?'<p>成熟樣本統計正在更新；完成後會依原始公式逐檔列出個股、同期大盤與超額報酬。</p>':'<p>目前尚無走完期間的樣本；近期推薦仍會保留在下方。</p>');
+    var result=rows||(state.review.statistics_deferred?'<p>服務記憶體餘裕不足，完整統計暫緩；既有推薦保留在下方，稍後重新開啟可再確認。</p>':state.review.statistics_building?'<p>成熟樣本統計已排隊或正在更新；完成後會依原始公式逐檔列出個股、同期大盤與超額報酬。</p>':'<p>目前尚無走完期間的樣本；近期推薦仍會保留在下方。</p>');
     return '<section class="wb-review-card"><h3>'+esc(m.label)+'</h3><p>'+esc(m.note||'尚無資料')+'</p>'+bestWorst+result+(recent?'<div class="wb-review-recent"><b>未滿 5 日推薦</b><ul>'+recent+'</ul></div>':'')+'</section>';
   }).join('')+'</div>'
     // 因子分析放在成效卡片之後，收合、展開才載入。
