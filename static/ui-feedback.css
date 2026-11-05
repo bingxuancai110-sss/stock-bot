@@ -1,7 +1,7 @@
 :root{--sb-feedback-press:150ms;--sb-feedback-expand:220ms;--sb-feedback-page:220ms;--sb-feedback-number:400ms;--sb-feedback-ease:cubic-bezier(.2,.7,.2,1);--sb-feedback-surface:#edf3f8;--sb-feedback-selected:#dce8f1;--sb-feedback-border:#88a9bf;--sb-feedback-ink:#244e69;--sb-feedback-up:#c74343;--sb-feedback-down:#0b8159}
-/* A finished translate animation still establishes a fixed-position containing
-   block. Keep viewport overlays independent of the scrollable page root. */
-#stockbot-app #stockbot-shell #app-page-content{transform:none!important}
+/* Root animation fill modes retain containing/stacking contexts even at their
+   final values. Animate content blocks so fixed panels stay above the app bar. */
+#stockbot-app #stockbot-shell #app-page-content{transform:none!important;animation:none!important;opacity:1!important}
 /* Legacy ID-based ranking rules can override the shared selected class in
    WebKit. Match the actual controls so both engines expose the same state. */
 #stockbot-app #stockbot-shell #app-page-content #historyTabs button.on,
