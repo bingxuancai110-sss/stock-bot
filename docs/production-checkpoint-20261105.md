@@ -21,3 +21,18 @@ engines passed 145 checks; final authenticated seven-page screenshot comparison
 is still outstanding. The browser inventory continues to report Local browser
 use disabled in Work settings. Health and permission checks do not substitute
 for that visual/account-level verification.
+# Portfolio swipe hotfix — 2026-11-05 13:58 Taiwan
+
+- PR #81 merged as `b3e3888436fe05ba371315f7cdfbd88d234e751c`.
+- Render deploy `dep-dbm1l53m8hqs73cmc0ag` became live at
+  `2026-11-05T05:58:40.66618Z`. Only shared chart touch handling and cache-version
+  references were deployed; PR #80's seven-page redesign remains a draft.
+- After live: `/health` and both `ui-feedback` assets returned 200. The CSS contains
+  the native portfolio touch override; JS contains mouse-only manual panning.
+  Unauthenticated positions quotes still returns 401.
+- Local Chromium native touch moved chart scrollLeft 848 → 681; WebKit mouse
+  dragging also passed. Actual signed-in production/iPhone verification remains
+  unavailable. Existing open pages must reload to load the revised script.
+- The ongoing UI branch merged this production commit and retained its own
+  updated asset versions. No transaction, database or financial calculation change.
+
