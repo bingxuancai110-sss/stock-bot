@@ -285,7 +285,7 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
   $('#us-tw-overview').addEventListener('click',()=>{const selected=root.querySelector('.us-heat-card.selected');if(selected){selected.scrollIntoView({block:'center',behavior:'instant'});selected.focus({preventScroll:true});}});
   root.querySelectorAll('[data-tw-industry]').forEach(b=>b.addEventListener('click',()=>selectIndustry(b.dataset.twIndustry,'tw')));
   root.querySelectorAll('[data-close-company]').forEach(b=>b.addEventListener('click',()=>{const detail=b.closest('details');detail.open=false;detail.querySelector('summary').focus({preventScroll:true});}));
-  $('[data-reload-research]').addEventListener('click',function(){const button=this;button.disabled=true;$('#us-research-load-note').textContent='讀取已完成的研究快照…';fetch(root.dataset.api+'?t='+encodeURIComponent(new URLSearchParams(location.search).get('t')||''),{credentials:'same-origin',cache:'no-store'}).then(response=>{if(!response.ok)throw new Error('read failed');return response.json();}).then(applyData).catch(()=>{button.disabled=false;$('#us-research-load-note').textContent='暫時無法讀取，保留原本資料。';});});
+  $('[data-reload-research]').addEventListener('click',()=>loadData());
  }
  function renderHistory(){const history=state.history||[];if(history.length<2){empty($('#us-history'),'歷史快照尚在累積','至少保存兩個更新日，才顯示產業名次變化；目前不使用今日成分反推過去。');return;}const dates=history.slice(-12);const keys=dates.map(x=>x.as_of);const topIds=(dates[dates.length-1].industries||[]).filter(x=>!x.overlay).sort((a,b)=>(a.rank||99)-(b.rank||99)).slice(0,5).map(x=>x.id);let html='<table><thead><tr><th>產業</th>'+keys.map(x=>'<th>'+esc(x.slice(5))+'</th>').join('')+'</tr></thead><tbody>';topIds.forEach(id=>{const nm=((dates[dates.length-1].industries||[]).find(x=>x.id===id)||{}).name||id;html+='<tr><td>'+esc(nm)+'</td>'+dates.map(day=>{const row=(day.industries||[]).find(x=>x.id===id);return '<td>'+(row&&row.rank?'第 '+row.rank+' 名':'—')+'</td>';}).join('')+'</tr>';});$('#us-history').innerHTML=html+'</tbody></table>';}
  function renderSignalTrends(){
@@ -386,7 +386,42 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
  window.addEventListener('resize',()=>{if(root.isConnected)renderSignalTrends();});
  function draw(){renderRiskAlerts();if(!state.snapshot){$('#us-asof').textContent='等待完成快照';$('#us-status').textContent='尚未有完成快照';empty($('#us-summary'),'等待第一筆可信資料','頁面只讀已完成快照，不會在開頁時同步抓行情。');renderHeat();renderRanking();renderQuadrant();renderDetail();renderGap();renderHistory();return;}const s=state.snapshot;$('#us-asof').textContent='美股交易日 '+(s.as_of||'—');let stamp='';try{const d=new Date(String(s.fetched_at||'').replace(' ','T').replace(/(\.\d{3})\d+/,'$1').replace(/([+-]\d{2})$/,'$1:00').replace(/([+-]\d{2})(\d{2})$/,'$1:$2'));if(!Number.isNaN(d.getTime()))stamp=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(d);}catch(e){} const source=String(s.source||'');$('#us-status').textContent='更新 '+(stamp?stamp+'（台北時間）':'時間未提供')+' · '+(source.includes('Yahoo')?'Yahoo Finance 日線':source||'來源未提供');renderSummary(s);renderHeat();renderRanking();renderQuadrant();renderDetail();renderGap();renderHistory();}
  function applyData(d){state.snapshot=d.snapshot||null;state.twResearch=d.tw_research||{};state.history=d.history||[];state.mapping=d.supply_chain||[];state.industryGuides=d.industry_guides||{};state.twCompanies=d.tw_companies||[];state.riskProfiles=d.risk_profiles||[];state.stopProfiles=d.stop_profiles||[];state.signalExplanations=d.signal_explanations||{};state.signalTrends=d.signal_trends||{};state.signalTrendsUnavailable=Boolean(d.signal_trends_unavailable);draw();}
- fetch(root.dataset.api+'?t='+encodeURIComponent(new URLSearchParams(location.search).get('t')||''),{credentials:'same-origin',cache:'no-store'}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(applyData).catch(()=>{draw();$('#us-status').textContent='載入失敗，請重新整理頁面';});
+ let reading=false,disposed=false,readController=null;
+ function disposeRead(){disposed=true;if(readController)readController.abort();document.removeEventListener('stockbot:pageleaving',disposeRead);window.removeEventListener('pagehide',disposeRead);}
+ document.addEventListener('stockbot:pageleaving',disposeRead);window.addEventListener('pagehide',disposeRead);
+ async function loadData(){
+  if(reading||disposed||!root.isConnected)return;
+  reading=true;root.setAttribute('aria-busy','true');
+  root.querySelectorAll('[data-period],[data-us-retry],[data-reload-research]').forEach(b=>b.disabled=true);
+  $('#us-status').textContent=state.snapshot?'重新讀取已完成快照，保留目前資料…':'正在讀取已完成快照…';
+  let failure=null;
+  try{
+   for(let attempt=0;attempt<3;attempt++){
+    if(disposed||!root.isConnected)return;
+    readController=new AbortController();const timer=setTimeout(()=>readController.abort(),10000);
+    try{
+     const response=await fetch(root.dataset.api+'?t='+encodeURIComponent(new URLSearchParams(location.search).get('t')||''),{credentials:'same-origin',cache:'no-store',signal:readController.signal});
+     if(!response.ok){const error=new Error('HTTP '+response.status);error.retryable=response.status===408||response.status===429||response.status>=500;throw error;}
+     const data=await response.json();if(!data||data.ok===false||!Object.prototype.hasOwnProperty.call(data,'snapshot')){const error=new Error('Invalid snapshot response');error.retryable=false;throw error;}
+     if(!disposed&&root.isConnected)applyData(data);return;
+    }catch(error){failure=error;if(error.retryable===false||attempt===2)break;}
+    finally{clearTimeout(timer);}
+    if(disposed||!root.isConnected)return;
+    await new Promise(resolve=>setTimeout(resolve,400*(attempt+1)));
+   }
+   if(disposed||!root.isConnected)return;
+   if(!state.snapshot){
+    $('#us-asof').textContent='資料日期暫時無法讀取';
+    ['#us-summary','#us-risk-alerts','#us-heat','#us-ranking','#us-quadrant','#us-detail','#us-gap','#us-history'].forEach(id=>empty($(id),'暫時無法讀取快照','讀取失敗不代表沒有資料；目前無法確認行情或訊號狀態。'));
+   }
+   const status=$('#us-status');status.setAttribute('role','status');status.textContent=(failure&&/HTTP 40[13]/.test(failure.message))?'登入已失效，請重新登入。':state.snapshot?'暫時無法更新，保留上次成功讀取的資料。':'暫時無法讀取已完成快照，不代表沒有資料。';
+   const retry=document.createElement('button');retry.type='button';retry.className='us-legend-button';retry.dataset.usRetry='1';retry.textContent='重新讀取';status.append(' ',retry);
+  }finally{
+   reading=false;readController=null;if(!disposed&&root.isConnected){root.removeAttribute('aria-busy');root.querySelectorAll('[data-period],[data-us-retry],[data-reload-research]').forEach(b=>b.disabled=false);}
+  }
+ }
+ root.addEventListener('click',event=>{if(event.target.closest('[data-us-retry]'))loadData();});
+ loadData();
  root.querySelectorAll('[data-period]').forEach(b=>b.addEventListener('click',()=>{root.querySelectorAll('[data-period]').forEach(x=>{x.classList.toggle('on',x===b);x.setAttribute('aria-pressed',String(x===b));});state.period=Number(b.dataset.period);renderHeat();}));
 })();
 </script>'''

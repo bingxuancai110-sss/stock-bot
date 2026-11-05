@@ -5,7 +5,7 @@ import json,sys,time,os
 from us_rotation_payload import populated_payload
 REPO=Path(__file__).resolve().parents[2];ROOT=Path(os.environ.get('STOCKBOT_UI_ARTIFACTS','/tmp/stockbot-ui-validation'))
 engine=sys.argv[1] if len(sys.argv)>1 else 'chromium';results=[];errors=[];requests=[]
-state=dict(fail_nav=False,delay_nav=False,post='success',post_count=0,us_populated=False)
+state=dict(fail_nav=False,delay_nav=False,post='success',post_count=0,us_populated=False,us_failures=0)
 def check(name,ok,detail=None):
  results.append(dict(check=name,passed=bool(ok),detail=detail))
  ROOT.joinpath(engine+'-results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -23,7 +23,10 @@ with sync_playwright() as p:
   # contract instead of HTML, which otherwise causes retries during navigation.
   if u.path=='/web/quote-lab/app-config':r.fulfill(status=403,json=dict(ok=False));return
   if '/api/workbench/strategy-lab' in u.path:r.fulfill(json=dict(ok=True,active_strategy='四因子複合',strategy_library=[dict(key=k,available=True,status_label='可運作') for k in ['四因子複合','營收動能','價格動能']],strategy_data={},factors=[],reference={}));return
-  if u.path=='/web/api/us-rotation':r.fulfill(json=populated_payload(REPO) if state['us_populated'] else dict(snapshot=None,tw_research={},history=[],supply_chain=[],industry_guides={},tw_companies=[],risk_profiles=[],stop_profiles=[],signal_explanations={},signal_trends={}));return
+  if u.path=='/web/api/us-rotation':
+   if state['us_failures']:
+    state['us_failures']-=1;r.fulfill(status=503,json=dict(ok=False,error='資料暫時無法讀取'));return
+   r.fulfill(json=populated_payload(REPO) if state['us_populated'] else dict(snapshot=None,tw_research={},history=[],supply_chain=[],industry_guides={},tw_companies=[],risk_profiles=[],stop_profiles=[],signal_explanations={},signal_trends={}));return
   if u.path=='/web/market/drawings':r.fulfill(json=dict(ok=True,id='fixture-drawing-'+str(state.get('drawing_count',0)+1),drawings=[]));state['drawing_count']=state.get('drawing_count',0)+1;return
   if u.path=='/web/api/positions/history':r.fulfill(json=dict(ok=True,events=[dict(date='2026-10-30',code='2330',name='台積電',type='sell',label='賣出',shares=10,price=1500,amount=15000,realized_pl=1200)]));return
   if '/api/workbench/' in u.path:r.fulfill(json=dict(ok=True,rows=[dict(code='2330',name='隔離測試台積電',source='黑馬',row_key='fixture-2330',score=80,total_score=80,price=100,change_pct=1.5,industry='測試產業',signal='測試快照',detail={})],sources={'黑馬':dict(available=True,date='2026-11-04')},personal={},meta={'market_open':False,'available':True}));return
@@ -322,6 +325,19 @@ with sync_playwright() as p:
  check('more preserves trading, comparison, appearance and install entries',all(page.locator('.more-item[href="'+path+'"]').count()==1 for path in ['/web/trades','/web/compare','/web/settings#appearance','/web/install']))
  for width in [360,390,430]:
   page.set_viewport_size({'width':width,'height':900});check('more tools stay within phone viewport '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+ state['us_populated']=True;state['us_failures']=2;before=sum(path=='/web/api/us-rotation' for method,path,q in requests)
+ ready('/web/us-rotation');page.wait_for_selector('#us-heat [data-industry]')
+ check('rotation transient 503 recovers within three reads',sum(path=='/web/api/us-rotation' for method,path,q in requests)-before==3)
+ state['us_failures']=10;before=sum(path=='/web/api/us-rotation' for method,path,q in requests)
+ ready('/web/us-rotation');page.wait_for_selector('[data-us-retry]')
+ check('rotation unavailable data is never presented as an empty snapshot','不代表沒有資料' in page.locator('#us-status').inner_text() and '等待第一筆可信資料' not in page.locator('#us-summary').inner_text())
+ page.wait_for_timeout(1300)
+ check('rotation stops automatically after three failed reads',sum(path=='/web/api/us-rotation' for method,path,q in requests)-before==3)
+ state['us_failures']=0;page.locator('[data-us-retry]').click();page.wait_for_selector('#us-heat [data-industry]')
+ check('rotation manual retry restores data and removes failure state',page.locator('[data-us-retry]').count()==0 and page.locator('#us-radar').get_attribute('aria-busy') is None)
+ state['us_failures']=3;page.locator('[data-reload-research]').click();page.wait_for_selector('[data-us-retry]')
+ check('rotation failed refresh preserves previously loaded prices',page.locator('#us-heat [data-industry]').count()>0 and '2026-11-04' in page.locator('#us-asof').inner_text() and '保留上次' in page.locator('#us-status').inner_text())
+ state['us_failures']=0;state['us_populated']=False
  ready('/web/us-rotation');page.wait_for_function('document.querySelector("#us-status")?.textContent==="尚未有完成快照"')
  check('US rotation empty-data state stays explicit','等待第一筆可信資料' in page.locator('#us-summary').inner_text() and '尚無美股產業快照' in page.locator('#us-heat').inner_text())
  check('US rotation sections use the continuous app layout',page.locator('#us-radar .us-section').first.evaluate('(e)=>getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none"'))
@@ -377,6 +393,7 @@ with sync_playwright() as p:
  check('real screener title loads the fixed detail panel stylesheet',page.locator('#wb-drawer').evaluate('(e)=>getComputedStyle(e).position==="fixed"&&e.getBoundingClientRect().top<innerHeight&&e.getBoundingClientRect().bottom>0'))
  check('screener detail is bounded by the viewport rather than the full page',page.locator('#wb-drawer').evaluate('(e)=>{const r=e.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight+1&&r.height<=innerHeight}'))
  check('screener row opens its actual detail renderer','2330' in page.locator('#wb-detail').inner_text() and '正在整理詳細資料' not in page.locator('#wb-detail').inner_text())
+ check('screener detail name contrasts with its light background',page.locator('#wb-detail .wb-d-hero h3').evaluate('(e)=>{const c=getComputedStyle(e).color.match(/[0-9]+/g).map(Number),b=getComputedStyle(e.closest(".wb-d-hero")).backgroundColor.match(/[0-9]+/g).map(Number);return Math.max(...c.slice(0,3))<100&&Math.min(...b.slice(0,3))>230}'))
  page.locator('#wb-close').click()
  check('screener close restores the list and hides the drawer',page.locator('#wb-drawer').get_attribute('aria-hidden')=='true' and not page.locator('#wb-drawer').evaluate('(e)=>e.classList.contains("open")') and page.locator('#wb-mask').is_hidden())
  check('screener assets use a three-part mobile selector',page.locator('#wb-asset-tabs').evaluate('(e)=>getComputedStyle(e).display==="grid"&&getComputedStyle(e).gridTemplateColumns.split(" ").length===3'))
