@@ -1209,12 +1209,11 @@ body#stockbot-app[data-app-view="more"] #app-page-content .more-group-title {
 }
 body#stockbot-app[data-app-view="more"] #app-page-content .more-item {
   min-height: 64px !important;
-  border-radius: 11px !important;
-  transition: background-color .16s ease, padding .16s ease !important;
+  border-radius: 0 !important;
+  transition: background-color .16s ease !important;
 }
 body#stockbot-app[data-app-view="more"] #app-page-content .more-item:hover {
-  padding-left: 10px !important;
-  background: rgba(255,255,255,.72) !important;
+  background: var(--sb-app-primary-soft) !important;
 }
 @media (max-width: 699px) {
   body#stockbot-app #stockbot-shell > .wrap > #app-page-content {

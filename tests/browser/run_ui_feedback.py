@@ -300,6 +300,11 @@ with sync_playwright() as p:
  page.locator('[data-home-privacy-toggle]').click();check('privacy immediately clears financial animation overlay',page.locator('.ui-number-tween').count()==0 and sensitive.inner_text()!='71,000')
  for width in [360,390,430]:
   page.set_viewport_size({'width':width,'height':900});check('homepage no overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+ ready('/web/more')
+ check('more tools keep continuous rows with accessible touch areas',page.locator('.more-item').evaluate_all('(es)=>es.length>=10&&es.every(e=>getComputedStyle(e).borderRadius==="0px"&&e.getBoundingClientRect().height>=44)'))
+ check('more preserves trading, comparison, appearance and install entries',all(page.locator('.more-item[href="'+path+'"]').count()==1 for path in ['/web/trades','/web/compare','/web/settings#appearance','/web/install']))
+ for width in [360,390,430]:
+  page.set_viewport_size({'width':width,'height':900});check('more tools stay within phone viewport '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
  ready('/web/us-rotation');page.wait_for_function('document.querySelector("#us-status")?.textContent==="尚未有完成快照"')
  check('US rotation empty-data state stays explicit','等待第一筆可信資料' in page.locator('#us-summary').inner_text() and '尚無美股產業快照' in page.locator('#us-heat').inner_text())
  check('US rotation sections use the continuous app layout',page.locator('#us-radar .us-section').first.evaluate('(e)=>getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none"'))

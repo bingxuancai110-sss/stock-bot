@@ -196,3 +196,14 @@ Commit `23f87d5` became live on Render at 2026-11-04 14:32:58 UTC (PR #74).
   events. WebKit verifies mouse dragging; neither result proves iPhone behavior.
 - CSS and JS cache versions are both `20261105-4`. Production remains unchanged
   until this branch is deployed.
+
+## More-page consistency — 2026-11-05
+
+- Removed rounded row outlines and hover padding shifts from the tool directory.
+  Original destinations and descriptions remain, with at least 44px touch areas.
+- Checked trading history, comparison, appearance and install entries explicitly,
+  and checked phone overflow at 360/390/430 widths. Chromium and WebKit each
+  passed 190 isolated interaction checks, including the portfolio swipe checks.
+- The subsequent full Python regression completed with 133 passed in 371.48s;
+  production swipe recovery was separately confirmed by the user. The visual
+  redesign itself is still undeployed and requires signed-in production review.
