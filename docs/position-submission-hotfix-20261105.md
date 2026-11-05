@@ -26,12 +26,12 @@ actual quantity, cost and date before removing a lot.
 
 Verification on 2026-11-05:
 
-- Eight isolated tests pass against the extracted actual helpers: replay,
+- Nine isolated tests pass against the extracted actual helpers: replay,
   lost commit reply, rollback after log failure, changed payload, and user/key
-  isolation, and three actual buy/sell response renderer cases. The dedup table
+  isolation, and four actual buy/sell/unknown-result renderer cases. The dedup table
   definition is also extracted from the real startup schema. SQLite is used;
   PostgreSQL contention is not exercised.
-- The browser success fixture now uses the actual result renderer instead of
+- In the companion UI worktree, the browser success fixture uses the actual result renderer instead of
   inventing a legacy `.msg` success. The browser harness asserts that response
   is accepted. Execution remains unavailable because Playwright is absent.
 - Python compilation and diff whitespace check pass.
