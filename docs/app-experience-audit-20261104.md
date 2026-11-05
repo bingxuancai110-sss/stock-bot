@@ -45,6 +45,52 @@ The original `seven-page-targets.html`, `seven-page-preview.png`, and `page-1.pn
 - Browser harness is being brought into alignment with the actual renderer. Repairs include Python/JavaScript API syntax, real expanded actions, sorted ticker expectations, chart coordinates within the visible scrolled viewport, and modal-sheet lifecycle.
 - Full Chromium run: 124 checks passed, zero page errors. Production verification and the remaining all-page visual work are still pending. No overall completion claim is justified yet.
 
+## Production verification of interaction patch
+
+Commit `23f87d5` became live on Render at 2026-11-04 14:32:58 UTC (PR #74).
+
+- User's authenticated Chrome loaded resource version `20261104-7`; shared header computed radius is zero and no tracking switch is rendered.
+- Real touch drag on the portfolio chart moved history scroll position from 848 to 748 pixels and displayed actual cached date/portfolio/benchmark values. A vertical touch gesture scrolled the page about 242 pixels and cleared the chart tooltip. No point dialog opened accidentally.
+- Opened the real transaction sheet, filled unsaved UI-validation values, opened confirmation, and clicked Return successfully. Cleared the temporary inputs and closed the sheet. No record was submitted.
+- In the real transaction timeline, choosing Buy hid all 60 Sell entries. Restored All and Current Holdings afterward.
+- Saved actual production launch, chart, preview and timeline JPEG evidence in the workspace proof directory. Temporary browser viewport override was reset.
+- This verifies the interaction patch only. Leaderboard, US Rotation and the other pages still require alignment with the recovered seven-page visual references and final end-to-end inspection.
+
+## 2026-11-05 worktree progress
+
+- Mobile Positions now overrides the legacy two-column rule with a full-width, flat holding list; desktop grid is retained. Removed the later rule that reintroduced red/green dots beside holding names.
+- Mobile Positions summary now has a full-width asset headline, two readable P/L rows and a compact three-column supporting-metrics row. Benchmark comparison and allocation donut remain before the stock list.
+- Screener mobile controls now form a compact status strip, asset selector, search/actions group, and scan list. Selection and filter controls remain the same DOM controls.
+- The renderer-based browser checks now also assert the screener's three-way mobile selector, search/action hierarchy, wrapping filter controls, and minimum touch heights. Fixture file reads/writes explicitly use UTF-8, so they run under Windows' legacy default code page as well.
+- The authenticated-shell fixture now also renders the US Rotation page from its actual blueprint renderer, and the browser suite checks its explicit no-snapshot state, in-place period/advanced controls, and mobile overflow at 360/390/430px. This expands automated page coverage but still does not replace a production session check.
+- The fixture now renders the actual market K-line route with isolated OHLC bars, and the browser suite is set up to check zoom, fullscreen horizontal-line drawing, dragged trendlines, and closing fullscreen. Drawing API writes are intercepted and never touch an account.
+- Leaderboard places one selected period chart before its corresponding ranking list. Short, long, and season chart panels follow the existing no-fetch period switch; member-series legend toggles stay in the same chart.
+- US Rotation now uses a flatter research layout with grouped metrics and continuous sector rows; red/green fills remain on actual warning states. Research formulas, sample scope and data requirements are unchanged.
+- Bumped shared CSS asset versions to `20261105-1` and the latest portfolio sheet to `20261105-2` so clients do not keep previous cached rules.
+- Current checks: Python compilation, renderer fixture generation, extracted JavaScript syntax, and `git -c core.whitespace=cr-at-eol diff --check` passed. The Playwright browser harness cannot start because Playwright is not installed and network access cannot reach PyPI. Computer Use reports Local browser use is disabled in Work settings; I cannot change that permission. These latest UI changes have not been verified on the live website.
+- The seven-page goal remains incomplete; this is not a deployment or a completion claim.
+
+## Latest executed checks — 2026-11-05
+
+- Installed development-only test dependencies and browser binaries under local
+  `.validation-*` directories; production requirements were not modified.
+- Chromium and WebKit: 145 actual-renderer interaction checks each passed, zero page errors,
+  including lightweight trade success responses and fullscreen drawing.
+- Python: 129 passed in the full run; four cache/LINE probe cases initially failed
+  because their loading-animation stub did not accept the current `max_attempts`
+  argument and selected the wrong Reply-vs-Push path. Updated that probe to model
+  successful loading, then those four cases passed. This is a split-run result.
+- Visual inspection of the rendered phone list found the price and third metric
+  still wrapped by legacy rules. Added scoped mobile grid overrides to align
+  name/price and the three metrics without changing the desktop layout.
+- WebKit exposed a selected-history-button style conflict; a targeted selected
+  control rule passed revalidation. A 360px homepage overflow came from nested
+  negative margins extending beyond the page gutter; removed those margins and
+  reran both browser suites successfully. No Safari device or live-site claim
+  follows from these isolated browser runs.
+- The urgent trade fix is isolated in draft PR #79. Visual assets remain outside
+  that PR. No historical portfolio records were changed during this work.
+
 ## Remaining verification/work
 
 - Complete chart touch, keyboard, existing dialogs and legend regression checks.

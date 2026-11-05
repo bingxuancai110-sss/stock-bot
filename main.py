@@ -2224,6 +2224,9 @@ def init_db():
                     CHECK (shares_delta <> 0)
             )
         ''')
+        # 防止手機網路逾時後重送同一筆買進，造成持股與操作日報重複入帳。
+        # request_key 與持股／日誌在同一個 DB transaction 寫入；即使回應遺失，
+        # 用戶端以同一 key 重送也只會讀到已處理結果，不會再新增 lot。
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS position_submission_dedup (
                 user_id TEXT NOT NULL,
@@ -28601,9 +28604,9 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261104-7">
-<link rel="stylesheet" href="/static/app-shell.css?v=20261104-6">
-<link rel="stylesheet" href="/static/workbench-mobile.css?v=20261104-6">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261105-2">
+<link rel="stylesheet" href="/static/app-shell.css?v=20261105-2">
+<link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-2">
 <script defer src="/static/ui-feedback.js?v=20261104-7"></script>
 <script defer src="/static/fugle-live.js?v=20261104-3"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
@@ -32300,7 +32303,7 @@ def web_positions(uid):
         if succeeded is None:
             succeeded = str(message or "").lstrip().startswith("✅")
         body = (
-            '<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261104-7">'
+            '<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261105-3">'
             f'<section class="p2-trade-result {"waiting" if pending else "success" if succeeded else "error"}" role="status">'
             f'<span class="p2-result-mark" aria-hidden="true">{"…" if pending else "✓" if succeeded else "!"}</span>'
             f'<h2>{"結果待確認" if pending else "記帳完成" if succeeded else "操作未完成"}</h2>'
@@ -33028,7 +33031,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
     _p2_history_html = "".join(_p2_history_rows) or '<li class="p2-empty">目前沒有可辨識的已出清持股紀錄。</li>'
 
     body = f"""
-<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261104-7">
+<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261105-3">
 <div id="portfolio-v2">
 {holding_card_css}
 {f'<div class="msg">{msg}</div>' if msg else ''}
@@ -39795,17 +39798,17 @@ body #app-page-content .rank-rows .rank-card .bot-history-price-values {
 
 <div class="section-head"><h2>走勢比較</h2>
   <span class="section-note">短期與長期分開看</span></div>
-<div class="callout rank-chart-panel" style="padding:14px 15px 8px">
+<div class="callout rank-chart-panel" data-rank-chart="short" style="padding:14px 15px 8px;{' ' if active_board == 'short' else 'display:none'}">
   <div style="font-weight:800;font-size:15px;margin-bottom:4px">短期｜近30天</div>
   <div class="sub" style="margin-bottom:10px">所有人從相同的30天區間重新歸零比較。</div>
   {short_chart}
 </div>
-<div class="callout rank-chart-panel" style="padding:14px 15px 8px;margin-top:12px">
+<div class="callout rank-chart-panel" data-rank-chart="long" style="padding:14px 15px 8px;margin-top:12px;{' ' if active_board == 'long' else 'display:none'}">
   <div style="font-weight:800;font-size:15px;margin-bottom:4px">長期｜加入後累計</div>
   <div class="sub" style="margin-bottom:10px">從各自加入排行榜的日期開始計算，不受30天滾動區間影響。</div>
   {long_chart}
 </div>
-<div class="callout rank-chart-panel" style="padding:14px 15px 8px;margin-top:12px">
+<div class="callout rank-chart-panel" data-rank-chart="season" style="padding:14px 15px 8px;margin-top:12px;{' ' if active_board == 'season' else 'display:none'}">
   <div style="font-weight:800;font-size:15px;margin-bottom:4px">賽季｜本季</div>
   <div class="sub" style="margin-bottom:10px">{html.escape((all_boards.get('season_info') or leaderboard_season_info()).get('label', '本季'))}，從本季第一個有效交易日重新計算。</div>
   {season_chart}
@@ -39835,6 +39838,9 @@ body #app-page-content .rank-rows .rank-card .bot-history-price-values {
           el.style.display =
             (el.getAttribute('data-board-' + kind) === board) ? '' : 'none';
         }});
+    }});
+    Array.prototype.forEach.call(document.querySelectorAll('[data-rank-chart]'), function (el) {{
+      el.style.display = (el.getAttribute('data-rank-chart') === board) ? '' : 'none';
     }});
     Array.prototype.forEach.call(document.querySelectorAll('[data-situation-panel]'), function (el) {{
       el.style.display = (el.getAttribute('data-situation-panel') === board) ? '' : 'none';

@@ -76,11 +76,11 @@ body#stockbot-app #stockbot-shell > .wrap > .top-nav { display: none !important;
 
 /* Home: market summary and portfolio impact are a continuous dashboard, not nested panels. */
 body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 {
-  margin: 0 -16px !important; padding: 0 16px 16px !important; border: 0 !important; border-radius: 0 !important;
+  margin: 0 !important; padding: 0 0 16px !important; min-width:0!important; border: 0 !important; border-radius: 0 !important;
   background: transparent !important; color: var(--sb-app-ink) !important;
 }
 body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 > .hv2-sec { margin: 0 !important; padding: 16px 2px !important; border: 0 !important; border-bottom: 1px solid var(--sb-app-line) !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; }
-body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 > .hv2-sec.first { margin: 0 -16px 4px !important; padding: 19px 18px 17px !important; border-bottom: 1px solid var(--sb-app-line) !important; border-radius: 0 0 18px 18px !important; background: var(--ui-surface-soft, #e9f0ef) !important; box-shadow: none !important; }
+body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 > .hv2-sec.first { margin: 0 0 4px !important; padding: 19px 18px 17px !important; border-bottom: 1px solid var(--sb-app-line) !important; border-radius: 0 0 18px 18px !important; background: var(--ui-surface-soft, #e9f0ef) !important; box-shadow: none !important; }
 body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 > .hv2-sec.first :is(.hv2-px,.hv2-head-r b,.hv2-k,.hv2-sub2) { color: var(--sb-app-ink) !important; }
 body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 > .hv2-sec.first .hv2-px { font-size: clamp(31px,8vw,40px) !important; font-weight: 780 !important; }
 body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 > .hv2-sec[aria-label="大盤與我的組合"] { margin: 4px 0 0 !important; padding: 14px 2px !important; border-radius: 0 !important; background: transparent !important; }
@@ -1223,4 +1223,87 @@ body#stockbot-app[data-app-view="more"] #app-page-content .more-item:hover {
     animation-duration: .001ms !important;
     transition-duration: .001ms !important;
   }
+}
+
+/* Leaderboard follows the intended app reading order: period, comparison
+   chart, then names/ranks. The selected period controls both list and chart. */
+body#stockbot-app[data-app-view="leaderboard"] #stockbot-shell > .wrap > #app-page-content:has(#rankTabs) {
+  display:flex!important;
+  flex-direction:column!important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .rank-situation { order:1!important; }
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > #rankTabs { order:2!important; }
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .section-head:has(+.rank-chart-panel) { order:3!important; }
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .rank-chart-panel { order:4!important; }
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .my-rank-card { order:5!important; }
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .rank-list-caption,
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .rank-source-note,
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .mode-note { order:6!important; }
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > [data-board-panel] { order:7!important; width:100%!important; }
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .leaderboard-history { order:8!important; }
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .leaderboard-settings.join-top { order:3!important; }
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .leaderboard-settings:not(.join-top) { order:9!important; }
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .rank-explainer,
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .leaderboard-guide,
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .leaderboard-method { order:10!important; }
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .rank-chart-panel {
+  margin:0 0 12px!important;
+  padding:12px 0 14px!important;
+  border:0!important;
+  border-bottom:1px solid var(--sb-app-line)!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+}
+body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .rank-chart-panel > div:first-child { font-size:16px!important; }
+
+/* US rotation: make the research workspace read like one continuous market
+   brief. Keep color only on meaningful risk states and selected values. */
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-hero {
+  margin:0 0 6px!important;padding:16px 17px!important;border:0!important;
+  border-radius:14px!important;background:#e9f1f1!important;color:var(--sb-app-ink)!important;
+  box-shadow:none!important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-hero :is(h1,p,.us-kicker) {
+  color:var(--sb-app-ink)!important;text-shadow:none!important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-hero p { opacity:.82!important; }
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-pill {
+  border-color:#c9dad8!important;background:rgba(255,255,255,.6)!important;color:#48666d!important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-section {
+  margin:0!important;padding:16px 0!important;border:0!important;
+  border-bottom:1px solid var(--sb-app-line)!important;border-radius:0!important;
+  background:transparent!important;box-shadow:none!important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-section-head { margin-bottom:10px!important; }
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary-grid { gap:0!important; }
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary {
+  min-height:0!important;padding:9px 10px!important;border:0!important;
+  border-left:1px solid var(--sb-app-line)!important;border-radius:0!important;
+  background:transparent!important;box-shadow:none!important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary:first-child { border-left:0!important;padding-left:0!important; }
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary b { font-size:16px!important; }
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-heat { gap:0!important; }
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-heat-card {
+  min-height:88px!important;padding:10px 9px!important;border:0!important;
+  border-bottom:1px solid var(--sb-app-line)!important;border-radius:0!important;
+  background:transparent!important;box-shadow:none!important;transform:none!important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-heat-card:nth-child(odd) { border-right:1px solid var(--sb-app-line)!important; }
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-heat-card.selected { background:#edf4f2!important; }
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-heat-card:hover { box-shadow:none!important; }
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-detail-box {
+  padding:12px 0!important;border:0!important;border-top:1px solid var(--sb-app-line)!important;
+  border-radius:0!important;background:transparent!important;
+}
+body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-alert-card {
+  border-radius:10px!important;box-shadow:none!important;
+}
+@media(max-width:700px) {
+  body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-section { padding:14px 0!important; }
+  body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary { padding:8px 6px!important; }
+  body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary:first-child { padding-left:0!important; }
+  body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary b { font-size:14px!important; }
 }

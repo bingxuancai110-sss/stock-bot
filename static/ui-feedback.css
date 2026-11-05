@@ -1,4 +1,11 @@
 :root{--sb-feedback-press:110ms;--sb-feedback-expand:220ms;--sb-feedback-page:220ms;--sb-feedback-number:400ms;--sb-feedback-ease:cubic-bezier(.2,.7,.2,1);--sb-feedback-surface:#e9f3ed;--sb-feedback-selected:#dcece2;--sb-feedback-border:#88af97;--sb-feedback-ink:#2c5e46;--sb-feedback-up:#c74343;--sb-feedback-down:#0b8159}
+/* Legacy ID-based ranking rules can override the shared selected class in
+   WebKit. Match the actual controls so both engines expose the same state. */
+#stockbot-app #stockbot-shell #app-page-content #historyTabs button.on,
+#stockbot-app #stockbot-shell #app-page-content #historyTabs button[aria-pressed="true"]{
+  background:#dcece2!important;background-image:none!important;color:#2c5e46!important;
+  -webkit-text-fill-color:#2c5e46!important;border-color:#88af97!important;
+}
 #stockbot-app #stockbot-shell #app-page-content :is(button,a[role=button],[role=button],summary,a[data-app-nav],label[for]){touch-action:manipulation;-webkit-tap-highlight-color:rgba(67,119,89,.12)}
 #stockbot-app #stockbot-shell #app-page-content :is(button,[role=button],summary,a[data-app-nav],label[for]):focus-visible,html body .bottom-nav a:focus-visible{outline:3px solid var(--sb-feedback-border)!important;outline-offset:3px!important}
 #stockbot-app #stockbot-shell #app-page-content .ui-pressed{transform:scale(.984)!important;filter:none!important;box-shadow:inset 0 0 0 2px #9abdA6!important;transition:transform var(--sb-feedback-press) var(--sb-feedback-ease)!important}
@@ -411,9 +418,6 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:hover,
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:focus-within{background:linear-gradient(90deg,rgba(42,105,133,.045),transparent 76%)!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3{display:flex!important;align-items:baseline!important;gap:6px!important}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-title h3::before{content:"";display:inline-block;flex:0 0 6px;width:6px;height:6px;border-radius:50%;background:#9aa9b2;transform:translateY(-1px)}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:has(.position-card-price span.up) .position-card-title h3::before{background:#c84c45}
-#stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card:has(.position-card-price span.down) .position-card-title h3::before{background:#23866c}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price b.up{color:#b4232e!important;-webkit-text-fill-color:#b4232e!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price b.down{color:#137451!important;-webkit-text-fill-color:#137451!important}
 #stockbot-app #stockbot-shell #app-page-content:has(.rows>.position-card) .position-card-price [data-position-pct].up,

@@ -1,10 +1,11 @@
-import ast,json,html,re,math,os
+import ast,json,html,re,math,os,secrets
 from pathlib import Path
 from datetime import date,datetime,timedelta
+from urllib.parse import quote as url_quote
 repo=Path(__file__).resolve().parents[2]
 root=Path(os.environ.get('STOCKBOT_UI_ARTIFACTS','/tmp/stockbot-ui-validation'));root.mkdir(parents=True,exist_ok=True)
-s=repo.joinpath('main.py').read_text();lines=s.splitlines(True);tree=ast.parse(s)
-ns=dict(html=html,re=re,json=json,math=math,date=date,datetime=datetime,timedelta=timedelta,taiwan_today=lambda:date(2026,11,2),taiwan_now=lambda:datetime(2026,11,2,15),current_web_user=lambda:None,get_web_ui_theme=lambda u:'mist',inject_csrf_inputs=lambda b:b,preserve_web_token=lambda b:b)
+s=repo.joinpath('main.py').read_text(encoding='utf-8');lines=s.splitlines(True);tree=ast.parse(s)
+ns=dict(html=html,re=re,json=json,math=math,secrets=secrets,date=date,datetime=datetime,timedelta=timedelta,taiwan_today=lambda:date(2026,11,2),taiwan_now=lambda:datetime(2026,11,2,15),current_web_user=lambda:None,get_web_ui_theme=lambda u:'mist',inject_csrf_inputs=lambda b:b,preserve_web_token=lambda b:b)
 ns['respond_page']=lambda title,body,nav_active=None:ns['render_page'](title,body,nav_active)
 def compile_node(n,local=ns):
  # Strip Flask decorators: these are isolated renderers, no app/database import.
@@ -29,6 +30,9 @@ for i in range(80):
  if d.weekday()<5:pts.append(dict(date=d,value=10000+i*50,cost=10000,taiex=22000+i*15))
 local['portfolio_trend_html']=ns['render_trend_chart'](pts)
 fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='web_positions')
+trade_result=next(n for n in fn.body if isinstance(n,ast.FunctionDef) and n.name=='trade_result_response')
+compile_node(trade_result,local)
+root.joinpath('trade-success.html').write_text(local['trade_result_response']('✅ 已新增測試持股。'),encoding='utf-8')
 # Use a small function AST for fast statement extraction.
 x=ast.parse(''.join(lines[fn.lineno-1:fn.end_lineno])).body[0]
 for node in x.body:
@@ -37,8 +41,8 @@ for node in x.body:
  selected=selected or isinstance(node,ast.If) and isinstance(node.test,ast.Name) and node.test.id=='allocation_items'
  selected=selected or isinstance(node,ast.AugAssign) and getattr(node.target,'id','')=='body'
  if selected:compile_node(node,local)
-body=local['body'];root.joinpath('positions-fragment.html').write_text(body)
-root.joinpath('positions.html').write_text(ns['render_page']('持股',body,'positions'))
+body=local['body'];root.joinpath('positions-fragment.html').write_text(body,encoding='utf-8')
+root.joinpath('positions.html').write_text(ns['render_page']('持股',body,'positions'),encoding='utf-8')
 # Actual leaderboard chart; fixed test memberships and actual board DOM contract.
 series={str(i):dict(nickname='測試會員'+str(i),curve=[(p['date'],i+j*.1) for j,p in enumerate(pts)]) for i in range(1,5)}
 ns['safe_html_text']=lambda text:html.escape(str(text))
@@ -47,7 +51,7 @@ rank='<div class="tabs rank-tabs" id="rankTabs">'+''.join('<button type="button"
 for k in ['short','long','season']:
  rank+='<section data-board-panel="'+k+'" style="'+('' if k=='short' else 'display:none')+'"><div class="rank-rows">'+''.join('<article class="rank-card"><div class="rank-primary-line"><b class="rank-number">#'+str(i)+'</b><span class="name">測試會員'+str(i)+'</span></div><b class="rank-return up">+'+str(i)+'.20%</b><span class="rank-move '+('up' if i%2 else 'down')+'">'+('↑ 2 名' if i%2 else '↓ 1 名')+'</span><details class="rank-detail"><summary>持股明細</summary><div>合成持股明細</div></details></article>' for i in range(1,5))+'</div></section>'
 rank+='<div class="section-head"><h2>走勢比較</h2><span class="section-note">短期與長期分開看</span></div>'
-for title,note in [('短期｜近30天','所有人從相同的30天區間重新歸零比較。'),('長期｜加入後累計','從各自加入排行榜的日期開始計算。'),('賽季｜本季','從本季第一個有效交易日重新計算。')]:rank+='<div class="callout rank-chart-panel"><div style="font-weight:800;font-size:15px;margin-bottom:4px">'+title+'</div><div class="sub" style="margin-bottom:10px">'+note+'</div>'+chart+'</div>'
+for board,title,note in [('short','短期｜近30天','所有人從相同的30天區間重新歸零比較。'),('long','長期｜加入後累計','從各自加入排行榜的日期開始計算。'),('season','賽季｜本季','從本季第一個有效交易日重新計算。')]:rank+='<div class="callout rank-chart-panel" data-rank-chart="'+board+'"'+('' if board=='short' else ' style="display:none"')+'><div style="font-weight:800;font-size:15px;margin-bottom:4px">'+title+'</div><div class="sub" style="margin-bottom:10px">'+note+'</div>'+chart+'</div>'
 # Use the actual existing board-switch listener, not a test replacement.
 rank_fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='web_leaderboard');rank_source=''.join(lines[rank_fn.lineno-1:rank_fn.end_lineno]);start=rank_source.index('var tabs = document.getElementById(\'rankTabs\')');end=rank_source.index('</script>',start)
 rank+='<script>(function(){'+rank_source[start:end].replace('{{','{').replace('}}','}')+'</script>'
@@ -58,19 +62,19 @@ rank='<style>'+ '\n'.join(re.findall(r'<style[^>]*>(.*?)</style>',rank_source,re
 rank+='<section class="leaderboard-history" id="leaderboard-history"><div class="tabs history-tabs" id="historyTabs"><button type="button" class="on" data-history="months">月榜</button><button type="button" data-history="seasons">賽季榜</button></div><div data-history-panel="months">合成月榜資料</div><div data-history-panel="seasons" style="display:none">合成賽季資料</div></section>'
 history_start=rank_source.index("var t=document.getElementById('historyTabs')");history_end=rank_source.index('</script>',history_start)
 rank+='<script>(function(){'+rank_source[history_start:history_end].replace('{{','{').replace('}}','}')+'</script>'
-root.joinpath('rank-fragment.html').write_text(rank);root.joinpath('rank.html').write_text(ns['render_page']('排行榜',rank,'leaderboard'))
+root.joinpath('rank-fragment.html').write_text(rank,encoding='utf-8');root.joinpath('rank.html').write_text(ns['render_page']('排行榜',rank,'leaderboard'),encoding='utf-8')
 # Native settings forms, slow/error lazy pane, and numeric contracts.
 settings='<form id="settings-form" method="post" action="/web/settings"><input name="nickname" value="合成帳號" required><button type="submit">儲存設定</button></form><details><summary>展開內容</summary><div style="height:160px">資料內容</div></details><div id="number-test" data-ui-number>1,234.50</div><div id="load-test"></div>'
-root.joinpath('settings-fragment.html').write_text(settings);root.joinpath('settings.html').write_text(ns['render_page']('設定',settings,'settings'))
+root.joinpath('settings-fragment.html').write_text(settings,encoding='utf-8');root.joinpath('settings.html').write_text(ns['render_page']('設定',settings,'settings'),encoding='utf-8')
 # Actual initial loading shell, without requiring a live Flask app.
 ns.update(render_quote_block=lambda:'',request=type('Request',(),{'args':{},'path':'/web/positions'})())
 n=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='render_loading_shell');compile_node(n)
-root.joinpath('loading.html').write_text(ns['render_loading_shell']('持股','positions',['讀取資料'],staged=False))
+root.joinpath('loading.html').write_text(ns['render_loading_shell']('持股','positions',['讀取資料'],staged=False),encoding='utf-8')
 # Validate every inline script syntax separately from the module.
-for name in ['positions','rank','settings','loading']:
- scripts=re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>',root.joinpath(name+'.html').read_text(),re.S)
- root.joinpath(name+'.js').write_text('\n'.join(scripts))
-print('Actual shell, holdings cards/allocations/scripts, portfolio chart, leaderboard chart/switch listener; explicit synthetic inputs.')
+for name in ['positions','rank','settings','loading','home','workbench','more','us_rotation']:
+ scripts=re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>',root.joinpath(name+'.html').read_text(encoding='utf-8'),re.S)
+ root.joinpath(name+'.js').write_text('\n'.join(scripts),encoding='utf-8')
+print('Actual shell, holdings, leaderboard, market K-line, and US rotation renderers; external data and writes are fixture-only.')
 
 # Homepage: real contribution/holdings renderers with synthetic data.
 home_fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='render_daily_home_top')
@@ -86,8 +90,52 @@ for n in home_ast.body:
 pos=[(p,1.2,.1+i*.1) for i,p in enumerate(positions[:4])];neg=[(p,-1.5,-.2-i*.1) for i,p in enumerate(positions[4:])]
 groups=ns['_hv2_group_html']('up','推升組合',len(pos),home_ns['contribution_detail_rows'](pos,'up'))+ns['_hv2_group_html']('down','拖累組合',len(neg),home_ns['contribution_detail_rows'](neg,'down'))
 data=dict(total_value=70000,total_cost=63000,holdings_count=7,pl_html=ns['fmt_pct'](11.1),market_html=ns['fmt_pct'](-1),portfolio_label='你的組合',portfolio_html=ns['fmt_pct'](1),relative_html=ns['fmt_pct'](2),market_status='合成測試行情',sync_title='測試資料',sync_detail='畫面測試用',contribution_day_label='今日',stale_notice='',impact_positive=dict(name=pos[0][0]['name'],pct=1.2,contribution=.1),impact_negative=dict(name=neg[0][0]['name'],pct=-1.5,contribution=-.2),contribution_groups=groups,holdings_html=home_ns['_home_holdings_preview_html'],journal_html='',judgement_html='<p>合成組合判讀</p>',live_script='')
-home=ns['_render_home_v2'](data);root.joinpath('home-fragment.html').write_text(home);root.joinpath('home.html').write_text(ns['render_page']('今日',home,'portfolio'))
-workbench=ns['render_workbench_body']();root.joinpath('workbench.html').write_text(ns['render_page']('選股工作台',workbench,'screener'))
+home=ns['_render_home_v2'](data);root.joinpath('home-fragment.html').write_text(home,encoding='utf-8');root.joinpath('home.html').write_text(ns['render_page']('今日',home,'portfolio'),encoding='utf-8')
+workbench=ns['render_workbench_body']();root.joinpath('workbench.html').write_text(ns['render_page']('選股工作台',workbench,'screener'),encoding='utf-8')
 ns['is_admin']=lambda uid:False
 more=ns['web_more']('fixture-user')
-root.joinpath('more.html').write_text(more)
+root.joinpath('more.html').write_text(more,encoding='utf-8')
+
+# US rotation uses its actual static page renderer from the feature blueprint;
+# the API response remains intercepted by the browser harness.
+us_routes=ast.parse(repo.joinpath('us_rotation','routes.py').read_text(encoding='utf-8'))
+us_blueprint=next(n for n in us_routes.body if isinstance(n,ast.FunctionDef) and n.name=='create_blueprint')
+us_page_fn=next(n for n in us_blueprint.body if isinstance(n,ast.FunctionDef) and n.name=='_page_html')
+compile_node(us_page_fn)
+us_rotation=ns['render_page']('美股輪動',ns['_page_html'](),'us_rotation')
+root.joinpath('us_rotation.html').write_text(us_rotation,encoding='utf-8')
+scripts=re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>',us_rotation,re.S)
+root.joinpath('us_rotation.js').write_text('\n'.join(scripts),encoding='utf-8')
+
+# Exercise the actual K-line route renderer with isolated daily bars and an
+# empty drawing repository; browser writes are intercepted by the test runner.
+class FixtureMarketCursor:
+ def execute(self,*args,**kwargs): pass
+ def fetchall(self): return []
+ def close(self): pass
+class FixtureMarketConnection:
+ def cursor(self): return FixtureMarketCursor()
+ def close(self): pass
+class FixtureMarketRequest:
+ args={'code':'2330','period':'day','t':'fixture-token'}
+ values={'q':''}
+ cookies={}
+market_dates=[];d=date(2026,1,2)
+while len(market_dates)<120:
+ if d.weekday()<5:market_dates.append(d)
+ d+=timedelta(days=1)
+market_closes=[620+i*1.15+math.sin(i/5)*16 for i in range(len(market_dates))]
+market_ns=dict(ns,request=FixtureMarketRequest(),normalize_code=lambda value:str(value or ''),STOCK_NAME_MAP={'2330':'台積電'},
+ get_positions=lambda uid:positions,merge_positions=lambda values:values,get_user_watchlist=lambda uid:['6488'],
+ get_realtime_stocks_bulk=lambda *a,**kw:{},get_realtime_stock=lambda code,**kw:dict(name='台積電',pct=1.2,close_dates=market_dates,
+  opens=[x-.8 for x in market_closes],highs=[x+5 for x in market_closes],lows=[x-5 for x in market_closes],closes=market_closes,volumes=[25000+i*40 for i in range(len(market_dates))]),
+ stock_display_name=lambda code,*args:'台積電' if str(code)=='2330' else '測試公司',short_company_name=lambda value:value,
+ get_db_connection=lambda:FixtureMarketConnection(),release_db_connection=lambda conn:None,
+ csrf_hidden_input=lambda:'<input type="hidden" name="csrf_token" value="fixture-only">',current_web_csrf_token=lambda:'fixture-only',
+ quote=url_quote)
+market_fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='web_market')
+compile_node(market_fn,market_ns)
+market_page=market_ns['web_market']('fixture-user')
+root.joinpath('market.html').write_text(market_page,encoding='utf-8')
+scripts=re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>',market_page,re.S)
+root.joinpath('market.js').write_text('\n'.join(scripts),encoding='utf-8')

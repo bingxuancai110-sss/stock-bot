@@ -7,6 +7,8 @@ engine=sys.argv[1] if len(sys.argv)>1 else 'chromium';results=[];errors=[];reque
 state=dict(fail_nav=False,delay_nav=False,post='success',post_count=0)
 def check(name,ok,detail=None):
  results.append(dict(check=name,passed=bool(ok),detail=detail))
+ ROOT.joinpath(engine+'-results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
+ if not ok:page.screenshot(path=str(ROOT/(engine+'-failure.png')))
  assert ok,(name,detail)
 with sync_playwright() as p:
  browser=p.webkit.launch(headless=True) if engine=='webkit' else p.chromium.launch(**({'executable_path':os.environ['STOCKBOT_CHROMIUM_EXECUTABLE']} if os.environ.get('STOCKBOT_CHROMIUM_EXECUTABLE') else {}),args=['--no-sandbox','--disable-dev-shm-usage'])
@@ -17,6 +19,8 @@ with sync_playwright() as p:
   if u.path.startswith('/static/'):
    file=REPO/u.path.lstrip('/');r.fulfill(body=file.read_text(),content_type='text/css' if file.suffix=='.css' else 'application/javascript');return
   if '/api/workbench/strategy-lab' in u.path:r.fulfill(json=dict(ok=True,active_strategy='四因子複合',strategy_library=[dict(key=k,available=True,status_label='可運作') for k in ['四因子複合','營收動能','價格動能']],strategy_data={},factors=[],reference={}));return
+  if u.path=='/web/api/us-rotation':r.fulfill(json=dict(snapshot=None,tw_research={},history=[],supply_chain=[],industry_guides={},tw_companies=[],risk_profiles=[],stop_profiles=[],signal_explanations={},signal_trends={}));return
+  if u.path=='/web/market/drawings':r.fulfill(json=dict(ok=True,id='fixture-drawing-'+str(state.get('drawing_count',0)+1),drawings=[]));state['drawing_count']=state.get('drawing_count',0)+1;return
   if u.path=='/web/api/positions/history':r.fulfill(json=dict(ok=True,events=[dict(date='2026-10-30',code='2330',name='台積電',type='sell',label='賣出',shares=10,price=1500,amount=15000,realized_pl=1200)]));return
   if '/api/workbench/' in u.path:r.fulfill(json=dict(ok=True,rows=[],sources={},personal={},meta={'market_open':False,'available':True}));return
   if '/api/' in u.path:r.fulfill(json=dict(market_open=False,updates=[],note='測試收盤快照'));return
@@ -25,11 +29,12 @@ with sync_playwright() as p:
    state['post_count']+=1
    if state['post']=='hold':state['held_post']=r;return
    if state['post']=='error':r.fulfill(status=500,body='測試失敗');return
+   if state['post']=='success':r.fulfill(body=ROOT.joinpath('trade-success.html').read_text(encoding='utf-8'),content_type='text/html');return
    html=ROOT.joinpath('positions.html').read_text()
    msg='請填入正確的代號、股數與成本價。' if state['post']=='invalid' else '已新增測試持股。'
    html=html.replace('<article class="position-card"','<div class="msg">'+msg+'</div><article class="position-card"',1)
    r.fulfill(body=html,content_type='text/html');return
-  mapping={'/web/positions':'positions','/web/leaderboard':'rank','/web/settings':'settings','/web/more':'more','/shell':'loading','/web/portfolio':'home','/web/workbench':'workbench'}
+  mapping={'/web/positions':'positions','/web/leaderboard':'rank','/web/settings':'settings','/web/more':'more','/shell':'loading','/web/portfolio':'home','/web/workbench':'workbench','/web/us-rotation':'us_rotation','/web/market':'market'}
   name=mapping.get(u.path,'settings');name='positions' if u.path=='/shell' and query.get('fragment') else name;suffix='-fragment' if query.get('fragment') else ''
   if query.get('fragment') and state['delay_nav']:state['held']=r;return
   if query.get('fragment') and state['fail_nav']:r.fulfill(status=503,body='測試失敗');return
@@ -52,6 +57,8 @@ with sync_playwright() as p:
  check('all seven destinations share one bottom bar',page.locator('.bottom-inner').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===7 && e.scrollHeight<90'))
  check('holdings use a readable single-column brokerage list',page.locator('.rows').evaluate('(e)=>getComputedStyle(e).display==="block"'))
  check('holdings read as a continuous brokerage list',page.locator('.position-card').first.evaluate('(e)=>getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none"'))
+ check('mobile asset summary has one full-width headline and full-width P/L rows',page.evaluate('(()=>{const t=document.querySelector("#portfolio-v2 .totals");if(!t)return false;const s=getComputedStyle(t),width=t.getBoundingClientRect().width-parseFloat(s.borderLeftWidth)-parseFloat(s.borderRightWidth)-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight);return Array.from(t.children).slice(0,3).every(e=>Math.abs(e.getBoundingClientRect().width-width)<1)})()'))
+ check('supporting asset metrics use a compact three-column row',page.evaluate('(()=>{const t=document.querySelector("#portfolio-v2 .totals"),w=[...t.children].slice(3).map(e=>e.getBoundingClientRect().width);return w.length===3&&w.every(x=>x>0&&x<t.getBoundingClientRect().width/2)})()'))
  check('holding summary numbers stay on one line',page.locator('.position-card-primary b').evaluate_all('(es)=>es.every(e=>getComputedStyle(e).whiteSpace==="nowrap")'))
  check('seven current holding rows render',page.locator('.position-card').count()==7)
  check('unrealized P&L and weight are visible on each row',page.locator('.position-card-primary [data-position-net]').count()==7 and page.locator('.p2-weight-track').count()==7)
@@ -121,20 +128,20 @@ with sync_playwright() as p:
  period=page.locator('label[for="trend-period-1y"]');period.click();page.wait_for_timeout(30)
  check('period uses existing cached panels',page.locator('.portfolio-trend-panel.panel-1y').is_visible())
  # Form confirmation + one request; backend validation 200 must not be shown as success.
- page.locator('[data-p2-add]').click();form=page.locator('form.add');check('top action opens an accessible transaction sheet',page.locator('#p2-trade-dialog').evaluate('(e)=>e.open') and form.locator('label[for="p2-trade-code"]').count()==1);form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100');form.locator('[name=buy_fee]').fill('5');check('trade preview computes gross and total without posting',form.locator('[data-p2-trade-gross]').inner_text()=='10,000 元' and form.locator('[data-p2-trade-total]').inner_text()=='10,005 元' and state['post_count']==0)
+ page.locator('[data-p2-add]').click();form=page.locator('form.add');check('top action opens an accessible transaction sheet',page.locator('#p2-trade-dialog').evaluate('(e)=>e.open') and form.locator('label[for="p2-trade-code"]').count()==1);form.locator('[name=code]').fill('2330');form.locator('[name=shares]').fill('100');form.locator('[name=cost]').fill('100');form.locator('[name=buy_fee]').fill('5');page.wait_for_function('document.querySelector("[data-p2-trade-total]")?.textContent==="10,005 元"');check('trade preview computes gross and total without posting',form.locator('[data-p2-trade-gross]').inner_text()=='10,000 元' and form.locator('[data-p2-trade-total]').inner_text()=='10,005 元' and state['post_count']==0)
  state['post']='invalid';form.locator('button[type=submit]').click();page.wait_for_selector('.position-confirm-submit');page.locator('.position-confirm-submit').click()
  page.wait_for_selector('form.add .ui-form-status[data-state=error]')
  check('HTTP 200 validation failure is error state','請填入正確' in form.locator('.ui-form-status').inner_text())
  check('failed form retains user inputs',form.locator('[name=code]').input_value()=='2330')
  check('no success overlay on validation failure',page.locator('.position-success-overlay').count()==0)
- count=state['post_count'];state['post']='success';form.locator('button[type=submit]').click();page.locator('.position-confirm-submit').click();page.wait_for_selector('.msg')
+ count=state['post_count'];state['post']='success';form.locator('button[type=submit]').click();page.locator('.position-confirm-submit').click();page.wait_for_selector('.p2-trade-result.success')
  check('success sends one write',state['post_count']==count+1)
- check('server-confirmed success remains visible','已新增' in page.locator('.msg').first.inner_text())
+ check('actual lightweight success response is accepted without legacy msg','已新增' in page.locator('.p2-trade-result.success').inner_text() and page.locator('form.add .ui-form-status[data-state=error]').count()==0)
  # SPA route keeps the current page visible and uses the shared top progress line.
  state['delay_nav']=True
  page.evaluate('window.stockBotSwitchPage("/web/leaderboard",true)')
  check('route does not insert a blocking skeleton card',page.locator('.ui-feedback-route').count()==0)
- check('route keeps previous page visible and interactive',page.locator('#app-page-content').evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).pointerEvents!=="none"') and page.locator('[data-p2-add]').is_visible(),page.locator('#app-page-content').evaluate('(e)=>({opacity:getComputedStyle(e).opacity,pointerEvents:getComputedStyle(e).pointerEvents,classes:e.className})'))
+ check('route keeps previous page visible and interactive',page.locator('#app-page-content').evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).pointerEvents!=="none"') and page.locator('.p2-trade-result.success').is_visible(),page.locator('#app-page-content').evaluate('(e)=>({opacity:getComputedStyle(e).opacity,pointerEvents:getComputedStyle(e).pointerEvents,classes:e.className})'))
  check('navigation immediately acknowledges leaderboard selection',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').evaluate('(e)=>e.classList.contains("ui-nav-pending")'))
  state['delay_nav']=False;held_route().fulfill(body=ROOT.joinpath('rank-fragment.html').read_text(),content_type='text/html')
  page.wait_for_selector('#rankTabs');page.wait_for_timeout(150)
@@ -142,16 +149,18 @@ with sync_playwright() as p:
  check('selected destination follows the loaded page',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').get_attribute('aria-current')=='page')
  check('page-specific styling follows SPA navigation',page.locator('body').get_attribute('data-app-view')=='leaderboard')
  count=len(requests);page.locator('#rankTabs [data-board=long]').click();check('period selection applies immediately',page.locator('[data-board-panel=long]').is_visible())
+ check('selected period updates the comparison chart without navigation',page.locator('[data-rank-chart=long]').is_visible() and page.locator('[data-rank-chart=short]').is_hidden())
  check('real rank delta retained','↑ 2 名' in page.locator('[data-board-panel=long] .rank-move').first.inner_text())
  check('rank period visible feedback','已切換' in page.locator('.ui-rank-feedback').inner_text())
  check('rank period triggers no fetch',len(requests)==count)
- member_toggle=page.locator('.rank-chart-panel .leaderboard-chart-toggle').first;member_line=page.locator('.rank-chart-panel .leaderboard-chart-series').first
+ rank_panel=page.locator('.rank-chart-panel:visible').first
+ member_toggle=rank_panel.locator('.leaderboard-chart-toggle').first;member_line=rank_panel.locator('.leaderboard-chart-series').first
  member_toggle.click();check('ranking member name hides its own comparison line',member_toggle.get_attribute('aria-pressed')=='false' and member_line.evaluate('(e)=>getComputedStyle(e).display==="none"'))
  member_toggle.click();check('ranking member name restores its comparison line',member_toggle.get_attribute('aria-pressed')=='true' and member_line.evaluate('(e)=>getComputedStyle(e).display!=="none"'))
  # Check the settled selected color after the brief press/release feedback.
  page.wait_for_timeout(220)
  check('rank selected button has a light background',page.locator('#rankTabs [data-board=long]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
- history=page.locator('#historyTabs');check('history initially selected month is light',history.locator('[data-history=months]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
+ history=page.locator('#historyTabs');history.scroll_into_view_if_needed();page.wait_for_timeout(80);check('history initially selected month is light',history.locator('[data-history=months]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
  history.locator('[data-history=seasons]').click();page.wait_for_timeout(40)
  check('history switches actual panel and aria state',page.locator('[data-history-panel=seasons]').is_visible() and history.locator('[data-history=seasons]').get_attribute('aria-pressed')=='true' and history.locator('[data-history=months]').get_attribute('aria-pressed')=='false')
  check('selected history text and WebKit fill remain dark',history.locator('[data-history=seasons]').evaluate('(e)=>getComputedStyle(e).color==="rgb(44, 94, 70)"&&getComputedStyle(e).webkitTextFillColor==="rgb(44, 94, 70)"'))
@@ -159,7 +168,6 @@ with sync_playwright() as p:
  history.locator('[data-history=seasons]').hover();page.mouse.down()
  check('pressed history tab never becomes dark blue',history.locator('[data-history=seasons]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'));page.mouse.up()
 
- rank_panel=page.locator('.rank-chart-panel').nth(1)
  rank_svg=rank_panel.locator('svg.ui-interactive-chart');rank_svg.scroll_into_view_if_needed();rank_svg.focus();page.keyboard.press('ArrowRight')
  check('leaderboard chart tracks cached series','測試會員' in rank_panel.locator('.ui-chart-readout').inner_text())
  check('ranking tracking toolbar follows the plot',rank_panel.locator('.ui-chart-readout').bounding_box()['y']>=rank_svg.bounding_box()['y']+rank_svg.bounding_box()['height']-2)
@@ -257,7 +265,34 @@ with sync_playwright() as p:
  page.locator('[data-home-privacy-toggle]').click();check('privacy immediately clears financial animation overlay',page.locator('.ui-number-tween').count()==0 and sensitive.inner_text()!='71,000')
  for width in [360,390,430]:
   page.set_viewport_size({'width':width,'height':900});check('homepage no overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
- ready('/web/workbench');page.locator('[data-asset=lab]').click();page.wait_for_selector('.wb-lab-strategy.active')
+ ready('/web/us-rotation');page.wait_for_function('document.querySelector("#us-status")?.textContent==="尚未有完成快照"')
+ check('US rotation empty-data state stays explicit','等待第一筆可信資料' in page.locator('#us-summary').inner_text() and '尚無美股產業快照' in page.locator('#us-heat').inner_text())
+ check('US rotation sections use the continuous app layout',page.locator('#us-radar .us-section').first.evaluate('(e)=>getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none"'))
+ page.locator('[data-period="5"]').click();check('US rotation period control updates locally',page.locator('[data-period="5"]').get_attribute('aria-pressed')=='true' and page.locator('[data-period="20"]').get_attribute('aria-pressed')=='false')
+ advanced=page.locator('#us-radar .us-advanced').first;advanced.locator('summary').click();check('US rotation advanced analysis opens in place',advanced.evaluate('(e)=>e.open'))
+ for width in [360,390,430]:
+  page.set_viewport_size({'width':width,'height':900});check('US rotation no overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+ ready('/web/market');page.wait_for_function('Number(document.querySelector("#market-kline")?.dataset.visibleCount)>0')
+ check('market K-line draws actual renderer candles and MACD',page.locator('#market-kline .market-candle').count()>0 and page.locator('#market-kline .market-macd').count()==1)
+ check('market offers real fullscreen and drawing controls',page.locator('#market-fullscreen-open').is_visible() and page.locator('[data-draw-mode=horizontal]').is_visible() and page.locator('[data-draw-mode=trendline]').is_visible())
+ visible_before=int(page.locator('#market-kline').get_attribute('data-visible-count'));page.locator('[data-chart-zoom=in]').click();page.wait_for_function('(n)=>Number(document.querySelector("#market-kline")?.dataset.visibleCount)<n',arg=visible_before)
+ check('market zoom updates the visible candle window',int(page.locator('#market-kline').get_attribute('data-visible-count'))<visible_before)
+ page.locator('#market-fullscreen-open').click();page.wait_for_function('document.querySelector(".market-chart-card")?.classList.contains("is-fullscreen")')
+ check('fullscreen expands the chart and keeps drawing tools available',page.locator('.market-chart-card.is-fullscreen').is_visible() and page.locator('[data-draw-mode=horizontal]').is_visible())
+ page.locator('[data-draw-mode=horizontal]').click();box=page.locator('#market-kline').bounding_box();page.mouse.click(box['x']+box['width']*.55,box['y']+box['height']*.3)
+ page.wait_for_function('document.querySelector("#market-drawing-status")?.textContent==="標線已同步保存"')
+ check('fullscreen horizontal drawing persists through the drawings API',page.locator('#market-user-drawings line[data-id]').count()==1 and state.get('drawing_count')==1)
+ page.locator('[data-draw-mode=trendline]').click();box=page.locator('#market-kline').bounding_box();page.mouse.move(box['x']+box['width']*.35,box['y']+box['height']*.28);page.mouse.down();page.mouse.move(box['x']+box['width']*.48,box['y']+box['height']*.42,steps=6);page.mouse.up()
+ page.wait_for_function('document.querySelector("#market-drawing-status")?.textContent==="標線已同步保存"&&document.querySelectorAll("#market-user-drawings line[data-id]").length===2')
+ check('fullscreen trendline drag saves a two-point drawing',state.get('drawing_count')==2)
+ page.locator('#market-fullscreen-close').click();check('market exits fullscreen without a route reload',not page.locator('.market-chart-card').evaluate('(e)=>e.classList.contains("is-fullscreen")'))
+ ready('/web/workbench')
+ check('screener assets use a three-part mobile selector',page.locator('#wb-asset-tabs').evaluate('(e)=>getComputedStyle(e).display==="grid"&&getComputedStyle(e).gridTemplateColumns.split(" ").length===3'))
+ check('screener search spans above its compact action row',page.evaluate('(()=>{const w=document.querySelector("#stockbot-workbench .wb-tools"),l=w?.querySelector("label"),b=w?.querySelector("button"),lr=l?.getBoundingClientRect(),br=b?.getBoundingClientRect();return !!(w&&l&&b&&getComputedStyle(w).gridTemplateColumns.split(" ").length===2&&lr&&br&&lr.y<br.y&&parseFloat(getComputedStyle(b).minHeight)>=40)})()'))
+ page.locator('#wb-filter').click()
+ check('screener filter opens as wrapping touch controls',page.locator('#wb-filter-panel').evaluate('(e)=>!e.hidden&&getComputedStyle(e).display==="flex"&&getComputedStyle(e).flexWrap==="wrap"'))
+ check('screener filter buttons meet mobile touch height',page.locator('#wb-filter-panel button').evaluate_all('(es)=>es.length>0&&es.every(e=>parseFloat(getComputedStyle(e).minHeight)>=36)'))
+ page.locator('[data-asset=lab]').click();page.wait_for_selector('.wb-lab-strategy.active')
  check('strategy lab still initializes after shared upgrades','經典四項選股' in page.locator('.wb-lab-strategy.active').inner_text())
  page.locator('.wb-lab-strategy').nth(1).click();check('strategy selection still works',page.locator('.wb-lab-strategy.active').get_attribute('data-lab-strategy')=='營收動能')
  check('strategy text stays readable with shared feedback',page.locator('.wb-lab-strategy.active strong').evaluate('(e)=>getComputedStyle(e).webkitTextFillColor') not in ['rgb(255, 255, 255)','rgba(0, 0, 0, 0)'])

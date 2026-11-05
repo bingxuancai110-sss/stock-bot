@@ -55,7 +55,10 @@ def _probe():
     ns.update(_LINE_ASYNC_JOB_LOCK=threading.Lock(), _LINE_ASYNC_JOBS={},
               _LINE_ASYNC_JOB_TTL=300, _LINE_HEAVY_QUERY_SLOT=threading.Lock(),
               _line_ux_config=lambda feature: dict(name=feature, emoji=''),
-              start_loading_animation=lambda *args: False,
+              # This probe checks the successful-loading / final Reply path.
+              # Loading failure now consumes Reply for a visible acknowledgement
+              # and delivers the report via Push instead of this probe's path.
+              start_loading_animation=lambda *args, **kwargs: True,
               build_quick_reply=lambda: None, TextSendMessage=SimpleNamespace,
               line_bot_api=SimpleNamespace(reply_message=lambda token, messages: replies.append((token, messages))),
               _line_async_normalize_result=lambda value: [SimpleNamespace(text=str(value))],
