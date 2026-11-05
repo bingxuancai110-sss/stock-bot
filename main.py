@@ -23026,7 +23026,7 @@ SLOW_COMMANDS = {
 }
 
 
-def start_loading_animation(user_id, seconds=60):
+def start_loading_animation(user_id, seconds=60, max_attempts=3, timeout=(2.0, 5.0)):
     """可靠啟動 LINE 官方原生 Loading。
 
     V91 修正：V90 只有一次 1.5 秒請求，API 若瞬時網路延遲就會
@@ -23050,16 +23050,20 @@ def start_loading_animation(user_id, seconds=60):
     }
     payload = {"chatId": chat_id, "loadingSeconds": loading_seconds}
 
-    for attempt in range(1, 4):
+    try:
+        attempts = max(1, min(3, int(max_attempts)))
+    except (TypeError, ValueError):
+        attempts = 3
+    for attempt in range(1, attempts + 1):
         try:
-            r = requests.post(url, headers=headers, json=payload, timeout=(2.0, 5.0))
+            r = requests.post(url, headers=headers, json=payload, timeout=timeout)
             if r.status_code in (200, 202):
                 print(f"✅ LINE Loading 已啟動 {chat_id[-6:]} ({loading_seconds}s, attempt={attempt})")
                 return True
             print(f"⚠️ LINE Loading 回應 {r.status_code} attempt={attempt}: {r.text[:500]}")
         except Exception as e:
             print(f"⚠️ LINE Loading 連線失敗 attempt={attempt} {chat_id[-6:]}: {type(e).__name__}: {e}")
-        if attempt < 3:
+        if attempt < attempts:
             time.sleep(0.35 * attempt)
     return False
 
@@ -52908,9 +52912,22 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
     # 即使 Loading API 暫時失敗，也不能中斷正式分析與結果回覆。
     # 設為官方允許的最長 60 秒，讓較慢的持股／個股分析期間 Loading 不會太早消失。
     loading_seconds = 60
-    loading_ok = start_loading_animation(user_id, loading_seconds)
+    # 先快速嘗試原生 Loading，避免網路重試讓 LINE webhook 卡住；若 API 沒啟動，
+    # 立刻用 Reply Token 顯示文字收件回饋，完成結果改由 Push 傳回。
+    loading_ok = start_loading_animation(
+        user_id, loading_seconds, max_attempts=1, timeout=(1.2, 1.8))
+    reply_token_used = False
     if not loading_ok:
-        print(f"⚠️ LINE 原生 Loading 未啟動，仍繼續分析：{user_id} / {cfg['name']}")
+        try:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(
+                    text=f"⏳ 已收到「{cfg['name']}」查詢，正在整理資料；完成後會在這裡自動回覆。",
+                    quick_reply=build_quick_reply()))
+            reply_token_used = True
+            print(f"📩 LINE Loading 未啟動，已先回覆收件狀態：{user_id} / {cfg['name']}")
+        except Exception as ack_exc:
+            print(f"⚠️ LINE 收件狀態回覆失敗，保留 Reply Token 給結果：{user_id} / {cfg['name']} / {type(ack_exc).__name__}")
 
     # LINE 原生 Loading 單次最多顯示 60 秒。遇到冷資料查詢時定期延長，
     # 讓使用者不會在分析尚未完成時看著動畫消失；這不會送出額外訊息。
@@ -52942,10 +52959,17 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
 
         reply_batch = normalized[:5]
         push_batch = normalized[5:]
-        try:
-            line_bot_api.reply_message(reply_token, reply_batch)
-            print(f"📩 LINE 背景查詢使用 Reply 回傳 {user_id} {cfg['name']}（{len(reply_batch)} 則）")
-        except Exception as reply_exc:
+        if reply_token_used:
+            reply_exc = RuntimeError("Reply Token 已用於收件狀態")
+        else:
+            reply_exc = None
+        if reply_exc is None:
+            try:
+                line_bot_api.reply_message(reply_token, reply_batch)
+                print(f"📩 LINE 背景查詢使用 Reply 回傳 {user_id} {cfg['name']}（{len(reply_batch)} 則）")
+            except Exception as exc:
+                reply_exc = exc
+        if reply_exc is not None:
             print(f"⚠️ LINE Reply 回傳失敗，改用 Push 備援 {user_id} {cfg['name']}: {type(reply_exc).__name__}: {reply_exc}")
             # 僅在 Reply API 失敗時才退回 Push；正常主動查詢不再固定消耗 Push 額度。
             for index, message in enumerate(reply_batch, 1):
@@ -52993,10 +53017,12 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
                       "請稍後再試一次；如果連續失敗，再告訴我。"),
                 quick_reply=build_quick_reply())
             try:
-                # build_fn 失敗時，Reply Token 尚未使用，先嘗試免費 Reply。
+                # 若已先回覆收件提示，Reply Token 已消耗，錯誤狀態直接 Push。
+                if reply_token_used:
+                    raise RuntimeError("Reply Token 已用於收件狀態")
                 line_bot_api.reply_message(reply_token, error_message)
             except Exception as reply_exc:
-                print(f"⚠️ LINE 錯誤通知 Reply 失敗，改用 Push 備援 {user_id}: {reply_exc}")
+                print(f"⚠️ LINE 錯誤通知改用 Push 備援 {user_id}: {reply_exc}")
                 try:
                     _push_line_with_retry(user_id, error_message)
                 except Exception as push_exc:
