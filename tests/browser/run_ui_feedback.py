@@ -29,6 +29,7 @@ with sync_playwright() as p:
    r.fulfill(json=populated_payload(REPO) if state['us_populated'] else dict(snapshot=None,tw_research={},history=[],supply_chain=[],industry_guides={},tw_companies=[],risk_profiles=[],stop_profiles=[],signal_explanations={},signal_trends={}));return
   if u.path=='/web/market/drawings':r.fulfill(json=dict(ok=True,id='fixture-drawing-'+str(state.get('drawing_count',0)+1),drawings=[]));state['drawing_count']=state.get('drawing_count',0)+1;return
   if u.path=='/web/api/positions/history':r.fulfill(json=dict(ok=True,events=[dict(date='2026-10-30',code='2330',name='台積電',type='sell',label='賣出',shares=10,price=1500,amount=15000,realized_pl=1200)]));return
+  if u.path=='/web/api/workbench/review':r.fulfill(json=dict(ok=True,modes=[],statistics_building=True));return
   if '/api/workbench/' in u.path:r.fulfill(json=dict(ok=True,rows=[dict(code='2330',name='隔離測試台積電',source='黑馬',row_key='fixture-2330',score=80,total_score=80,price=100,change_pct=1.5,industry='測試產業',signal='測試快照',detail={})],sources={'黑馬':dict(available=True,date='2026-11-04')},personal={},meta={'market_open':False,'available':True}));return
   if '/api/' in u.path:r.fulfill(json=dict(market_open=False,updates=[],note='測試收盤快照'));return
   if u.path=='/web/position-trend':r.fulfill(body='<div>走勢載入測試</div>');return
@@ -406,6 +407,22 @@ with sync_playwright() as p:
  page.locator('.wb-lab-strategy').nth(1).click();check('strategy selection still works',page.locator('.wb-lab-strategy.active').get_attribute('data-lab-strategy')=='營收動能')
  check('strategy text stays readable with shared feedback',page.locator('.wb-lab-strategy.active strong').evaluate('(e)=>getComputedStyle(e).webkitTextFillColor') not in ['rgb(255, 255, 255)','rgba(0, 0, 0, 0)'])
  page.screenshot(path=str(ROOT/(engine+'-workbench.png')))
+ # Review polling is a bounded read tied to the actual visible page lifecycle.
+ ready('/web/workbench');page.wait_for_selector('#wb-tabs button[data-source="成效"]');page.clock.install()
+ before=sum(path=='/web/api/workbench/review' for method,path,q in requests)
+ page.locator('#wb-tabs button[data-source="成效"]').click();page.wait_for_selector('.wb-review-grid')
+ for _ in range(8):page.clock.fast_forward(5001);page.wait_for_timeout(80)
+ check('review automatic reads stop after six follow-ups',sum(path=='/web/api/workbench/review' for method,path,q in requests)-before==7)
+ ready('/web/workbench');page.wait_for_selector('#wb-tabs button[data-source="成效"]')
+ page.locator('#wb-tabs button[data-source="成效"]').click();page.wait_for_selector('.wb-review-grid')
+ page.locator('#wb-tabs button[data-source="黑馬"]').click();before=sum(path=='/web/api/workbench/review' for method,path,q in requests)
+ page.clock.fast_forward(10001);page.wait_for_timeout(80)
+ check('review does not poll after switching away from its source',sum(path=='/web/api/workbench/review' for method,path,q in requests)==before)
+ ready('/web/workbench');page.wait_for_selector('#wb-tabs button[data-source="成效"]')
+ page.locator('#wb-tabs button[data-source="成效"]').click();page.wait_for_selector('.wb-review-grid')
+ page.locator('.app-bottom-nav a[href="/web/positions"]').click();page.wait_for_selector('.position-card');before=sum(path=='/web/api/workbench/review' for method,path,q in requests)
+ page.clock.fast_forward(20001);page.wait_for_timeout(80)
+ check('review read timers are cleaned up on SPA departure',sum(path=='/web/api/workbench/review' for method,path,q in requests)==before)
  check('all actual renderer scripts free of errors',not errors,errors)
  browser.close()
 ROOT.joinpath(engine+'-results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2));print(json.dumps({'engine':engine,'passed':len(results),'errors':errors,'requests':len(requests)},ensure_ascii=False))
