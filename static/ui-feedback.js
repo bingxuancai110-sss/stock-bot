@@ -207,7 +207,7 @@
     }
     function nearest(x) { var points = chartPoints(svg), best = 0, distance = Infinity; points.forEach(function (p, i) { var d = Math.abs(p.x - x); if (d < distance) { best = i; distance = d; } }); show(best); }
     function move(e) {
-      if (drag && drag.id === e.pointerId && host.scrollWidth > host.clientWidth) {
+      if (e.pointerType !== 'touch' && drag && drag.id === e.pointerId && host.scrollWidth > host.clientWidth) {
         var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
         if (Math.abs(dx) > 6 && Math.abs(dx) > Math.abs(dy)) {
           dragged = true;
@@ -218,7 +218,7 @@
       if (frame) return; frame = requestAnimationFrame(function () { frame = 0; if (!svg.isConnected) return; var r = svg.getBoundingClientRect(); if (r.width) nearest((lastX - r.left) / r.width * svg.viewBox.baseVal.width); });
     }
     function key(e) { if (e.key === 'Escape') { clear(); return; } if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); var points=chartPoints(svg),current=points[selected];if(!current)return;var direction=e.key==='ArrowLeft'?-1:1,next=selected,distance=Infinity;points.forEach(function(p,i){var delta=(p.x-current.x)*direction;if(delta>.1&&delta<distance){distance=delta;next=i;}});show(next); } }
-    function down(e) { dragged = false; drag = {id:e.pointerId,x:e.clientX,y:e.clientY,scroll:host.scrollLeft}; move(e); }
+    function down(e) { dragged = false; drag = {id:e.pointerId,x:e.clientX,y:e.clientY,scroll:host.scrollLeft}; if(e.pointerType!=='touch'&&host.scrollWidth>host.clientWidth&&svg.setPointerCapture){try{svg.setPointerCapture(e.pointerId);}catch(ignore){}} move(e); }
     function up() { drag = null; }
     function click(e) { if (dragged) { e.preventDefault(); e.stopImmediatePropagation(); dragged = false; } }
     svg.addEventListener('pointermove', move, { passive: true }); svg.addEventListener('pointerdown', down, { passive: true }); svg.addEventListener('pointerup', up); svg.addEventListener('click', click, true); svg.addEventListener('keydown', key);
