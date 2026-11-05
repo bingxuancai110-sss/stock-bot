@@ -2,9 +2,10 @@ from playwright.sync_api import sync_playwright
 from pathlib import Path
 from urllib.parse import urlparse,parse_qs
 import json,sys,time,os
+from us_rotation_payload import populated_payload
 REPO=Path(__file__).resolve().parents[2];ROOT=Path(os.environ.get('STOCKBOT_UI_ARTIFACTS','/tmp/stockbot-ui-validation'))
 engine=sys.argv[1] if len(sys.argv)>1 else 'chromium';results=[];errors=[];requests=[]
-state=dict(fail_nav=False,delay_nav=False,post='success',post_count=0)
+state=dict(fail_nav=False,delay_nav=False,post='success',post_count=0,us_populated=False)
 def check(name,ok,detail=None):
  results.append(dict(check=name,passed=bool(ok),detail=detail))
  ROOT.joinpath(engine+'-results.json').write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -19,7 +20,7 @@ with sync_playwright() as p:
   if u.path.startswith('/static/'):
    file=REPO/u.path.lstrip('/');r.fulfill(body=file.read_text(),content_type='text/css' if file.suffix=='.css' else 'application/javascript');return
   if '/api/workbench/strategy-lab' in u.path:r.fulfill(json=dict(ok=True,active_strategy='四因子複合',strategy_library=[dict(key=k,available=True,status_label='可運作') for k in ['四因子複合','營收動能','價格動能']],strategy_data={},factors=[],reference={}));return
-  if u.path=='/web/api/us-rotation':r.fulfill(json=dict(snapshot=None,tw_research={},history=[],supply_chain=[],industry_guides={},tw_companies=[],risk_profiles=[],stop_profiles=[],signal_explanations={},signal_trends={}));return
+  if u.path=='/web/api/us-rotation':r.fulfill(json=populated_payload(REPO) if state['us_populated'] else dict(snapshot=None,tw_research={},history=[],supply_chain=[],industry_guides={},tw_companies=[],risk_profiles=[],stop_profiles=[],signal_explanations={},signal_trends={}));return
   if u.path=='/web/market/drawings':r.fulfill(json=dict(ok=True,id='fixture-drawing-'+str(state.get('drawing_count',0)+1),drawings=[]));state['drawing_count']=state.get('drawing_count',0)+1;return
   if u.path=='/web/api/positions/history':r.fulfill(json=dict(ok=True,events=[dict(date='2026-10-30',code='2330',name='台積電',type='sell',label='賣出',shares=10,price=1500,amount=15000,realized_pl=1200)]));return
   if '/api/workbench/' in u.path:r.fulfill(json=dict(ok=True,rows=[dict(code='2330',name='隔離測試台積電',source='黑馬',row_key='fixture-2330',score=80,total_score=80,price=100,change_pct=1.5,industry='測試產業',signal='測試快照',detail={})],sources={'黑馬':dict(available=True,date='2026-11-04')},personal={},meta={'market_open':False,'available':True}));return
@@ -59,6 +60,7 @@ with sync_playwright() as p:
  ready('/web/positions')
  check('actual holdings initialize without JS parse errors',not errors,errors)
  check('shared runtime only loaded once',page.locator('script[src*="ui-feedback.js"]').count()==1)
+ check('authenticated shell retains its account settings entry',page.locator('.app-header .is-account').get_attribute('href')=='/web/settings')
  check('mobile app bar exposes all seven destinations',page.locator('.app-bottom-nav a').count()==7 and [x.inner_text().strip() for x in page.locator('.app-bottom-nav a').all()]==['今日','看盤','持股','選股','排行榜','美股輪動','更多'])
  check('all seven destinations share one bottom bar',page.locator('.bottom-inner').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===7 && e.scrollHeight<90'))
  check('holdings use a readable single-column brokerage list',page.locator('.rows').evaluate('(e)=>getComputedStyle(e).display==="block"'))
@@ -107,6 +109,7 @@ with sync_playwright() as p:
  check('shared height animation starts',page.evaluate('document.getAnimations().some(a=>a.effect&&a.effect.target.classList.contains("ui-disclosure"))'))
  summary.click();summary.click();page.wait_for_timeout(260);check('rapid toggle ends in correct state',card.locator('.position-more').get_attribute('open') is not None)
  check('chevron tracks aria-expanded',summary.get_attribute('aria-expanded')=='true')
+ check('shared disclosures suppress the duplicate native marker',summary.evaluate('(e)=>getComputedStyle(e).listStyleType==="none"'))
  # Nested research disclosures must not write height during ResizeObserver delivery.
  card.evaluate('(e,markup)=>e.insertAdjacentHTML("beforeend",markup)', '<details id="nested-research-check"><summary>歷史表現</summary><details><summary>統計定義</summary><p>分母與限制</p></details></details>')
  page.wait_for_timeout(100)
@@ -289,6 +292,28 @@ with sync_playwright() as p:
  advanced=page.locator('#us-radar .us-advanced').first;advanced.locator('summary').click();check('US rotation advanced analysis opens in place',advanced.evaluate('(e)=>e.open'))
  for width in [360,390,430]:
   page.set_viewport_size({'width':width,'height':900});check('US rotation no overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+ state['us_populated']=True;page.set_viewport_size({'width':390,'height':844});ready('/web/us-rotation');page.wait_for_selector('#us-heat [data-industry]')
+ check('rotation date and data source stay visible','2026-11-04' in page.locator('#us-asof').inner_text() and '隔離測試日線' in page.locator('#us-status').inner_text())
+ check('risk observation precedes the industry overview',page.evaluate('!!(document.querySelector("#us-risk-section").compareDocumentPosition(document.querySelector("#us-summary"))&Node.DOCUMENT_POSITION_FOLLOWING)'))
+ check('phone industry heat uses compact continuous rows',page.locator('#us-heat').evaluate('(e)=>getComputedStyle(e).display==="block"') and page.locator('#us-heat .us-heat-card').first.evaluate('(e)=>getComputedStyle(e).display==="grid"&&getComputedStyle(e).borderRadius==="0px"'))
+ check('risk and stop signals are clearly labeled',page.locator('[data-signal="us"] .us-alert-badge').inner_text()=='已達警戒' and page.locator('[data-signal="us_stop"] .us-alert-badge').inner_text()=='已突破')
+ check('unopened risk charts do not render SVGs',page.locator('.us-signal-svg').count()==0)
+ page.screenshot(path=str(ROOT/(engine+'-us-rotation-populated-390.png')))
+ signal=page.locator('[data-signal="us"]');signal.locator('.us-signal-trend-panel>summary').click();signal.locator('.us-signal-svg').wait_for(state='visible')
+ check('risk chart renders only after its disclosure opens',signal.locator('.us-signal-svg').count()==1 and page.locator('[data-signal="us_stop"] .us-signal-svg').count()==0)
+ readout=signal.locator('.us-trend-readout');latest=readout.inner_text();signal.locator('.us-signal-svg').focus();page.keyboard.press('ArrowLeft');check('risk chart keyboard tracking changes the inspected date',readout.inner_text()!=latest)
+ signal.locator('[data-trend-period="30"]').click();check('risk chart period selection stays local',signal.locator('[data-trend-period="30"]').get_attribute('aria-pressed')=='true' and '30 個交易日' in signal.locator('.us-trend-caption').inner_text())
+ signal.locator(':scope>details.us-research:not(.us-signal-trend-panel)>summary').click();signal.locator('.us-stat-limit-copy>summary').click();check('historical statistics preserve their verification warning','歷史研究數據待核驗' in signal.inner_text() and '原始研究來源' in signal.inner_text())
+ page.locator('[data-signal-market-select="taiwan"]').click();check('market switch hides US signals and shows Taiwan signals',signal.is_hidden() and page.locator('[data-signal="taiwan"]').is_visible() and page.locator('[data-signal="taiwan_stop"]').is_visible())
+ check('Taiwan risk and unconfirmed breakout remain distinct',page.locator('[data-signal="taiwan"] .us-alert-badge').inner_text()=='已達警戒' and page.locator('[data-signal="taiwan_stop"] .us-alert-badge').inner_text()=='尚未突破')
+ api_count=sum(path=='/web/api/us-rotation' for method,path,q in requests)
+ page.locator('[data-period="5"]').click();check('industry period displays the selected cached return',page.locator('[data-industry="technology"] .us-heat-value').inner_text()=='+2.00%')
+ page.locator('[data-industry="industrials"]').click();check('industry row selection synchronizes the Taiwan sector picker',page.locator('#us-tw-sector').input_value()=='industrials' and page.locator('[data-industry="industrials"]').get_attribute('aria-pressed')=='true')
+ page.locator('#us-tw-sector').select_option('technology');page.wait_for_function('document.activeElement?.id==="us-tw-companies-heading"');check('Taiwan sector navigation focuses the actual company section',page.locator('[data-research-code="2330"]').is_visible())
+ company=page.locator('[data-research-code="2330"]');company.locator('details>summary').click();check('company research retains dates, evidence and existing market link','2026-10-07' in company.inner_text() and company.locator('a[href*="stock-analysis?code=2330"]').count()==1)
+ check('rotation selection and chart inspection never refetch the snapshot',sum(path=='/web/api/us-rotation' for method,path,q in requests)==api_count)
+ for width in [360,390,430]:
+  page.set_viewport_size({'width':width,'height':900});check('populated rotation stays within phone viewport '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1&&innerWidth<=visualViewport.width+1'))
  ready('/web/market');page.wait_for_function('Number(document.querySelector("#market-kline")?.dataset.visibleCount)>0')
  check('market K-line draws actual renderer candles and MACD',page.locator('#market-kline .market-candle').count()>0 and page.locator('#market-kline .market-macd').count()==1)
  check('market offers real fullscreen and drawing controls',page.locator('#market-fullscreen-open').is_visible() and page.locator('[data-draw-mode=horizontal]').is_visible() and page.locator('[data-draw-mode=trendline]').is_visible())

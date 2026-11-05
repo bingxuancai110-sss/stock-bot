@@ -1302,8 +1302,24 @@ body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-a
   border-radius:10px!important;box-shadow:none!important;
 }
 @media(max-width:700px) {
-  body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-section { padding:14px 0!important; }
-  body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary { padding:8px 6px!important; }
-  body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary:first-child { padding-left:0!important; }
-  body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-summary b { font-size:14px!important; }
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-section { padding:14px 0!important; }
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-summary { padding:8px 6px!important; }
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-summary:first-child { padding-left:0!important; }
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-summary b { font-size:14px!important; }
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-hero {padding:8px 0 12px!important;border-radius:0!important;background:transparent!important;border-bottom:1px solid var(--sb-app-line)!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-hero .us-kicker {font-size:10px!important;letter-spacing:.08em!important;color:var(--sb-app-muted)!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-meta {gap:5px!important;margin-top:8px!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-pill {padding:4px 7px!important;font-size:10px!important;border-radius:6px!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-heat {display:block!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-heat-card {display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:4px 10px!important;min-height:76px!important;padding:10px 6px!important;border-right:0!important;border-radius:0!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-heat-top {grid-column:1!important;grid-row:1!important;flex-direction:row!important;align-items:center!important;gap:7px!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-heat-value {grid-column:2!important;grid-row:1!important;margin:0!important;font-size:18px!important;line-height:1.3!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-heat-foot {grid-column:1/-1!important;grid-row:2!important;flex-direction:row!important;justify-content:space-between!important;font-size:10px!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-alert-card {padding:13px!important;border-radius:0!important;border:0!important;border-left:3px solid var(--sb-app-line)!important;background:transparent!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-alert-card.signal-on {border-left-color:var(--sb-app-up)!important;background:#fff3f0!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-alert-card.confirm-on {border-left-color:var(--sb-app-down)!important;background:#edf6f1!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-alert-head h3 {font-size:14px!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-alert-value {font-size:28px!important;margin:8px 0 6px!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar .us-signal-distance {padding:0!important;margin:4px 0!important;border:0!important;background:transparent!important;font-size:11px!important}
+  body#stockbot-app[data-app-view="us_rotation"] #stockbot-shell #app-page-content #us-radar :is(.us-signal-condition,.us-signal-date) {font-size:11px!important;line-height:1.6!important}
 }

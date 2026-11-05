@@ -138,3 +138,31 @@ Commit `23f87d5` became live on Render at 2026-11-04 14:32:58 UTC (PR #74).
   renderer/fixture results, not signed-in production or iPhone device validation.
 - Portfolio stylesheet version is `20261105-4`. Changes remain in PR #80; the
   seven-page production visual comparison remains outstanding.
+
+## Rotation reading order and disclosure refinement — 2026-11-05
+
+- Moved the existing risk/stop observation section ahead of industry summaries.
+  Removed its duplicate page H1 and kept methodology/update explanations in
+  disclosures. The source, trading date and existing import entry stay available.
+- Phone industry heat cells now form compact continuous rows. Risk values,
+  thresholds, signal badges and data dates remain directly visible; indicator
+  explanations and historical statistics remain in an explicit disclosure.
+- Risk trend charts now render when their disclosure opens. Closed disclosures
+  are checked explicitly, and hidden-market charts are skipped. Market changes,
+  period selection, keyboard inspection and sector/company navigation stay local.
+- Shared disclosures now use one CSS chevron and suppress native markers in both
+  engines, eliminating the duplicated triangle/arrow. The compact holding row
+  keeps its whole-row disclosure target without an arrow over its values.
+- Added a populated rotation test payload, explicitly synthetic and isolated from
+  production, using the actual risk-description/profile functions. Normal fixture
+  shells now exercise the authenticated account-entry markup using a test user ID.
+  This does not authenticate a real user or prove production account behavior.
+- Chromium and WebKit each passed 178 interaction checks without page errors.
+  The four US-rotation Python test files passed 42 tests. Generated seven phone
+  captures for internal comparison; actual signed-in production screenshots remain
+  unavailable and the seven-page goal is not complete.
+- The phone capture audit still shows homepage highlight cards and a gradient
+  diverging from the approved flat dashboard, plus verbose workbench rows. These
+  are the next visual corrections; existing detail/data paths must remain reachable.
+- `app-shell.css` and `ui-feedback.css` versions are `20261105-3`; portfolio CSS
+  remains `20261105-4`. This branch has not been deployed.

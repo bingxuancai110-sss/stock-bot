@@ -34,9 +34,11 @@ html body a.ui-nav-pending::after{content:'';position:absolute;bottom:3px;left:c
 .ui-status-spinner{width:15px;height:15px;flex:none;border:2px solid #c4d8ca;border-top-color:#427854;border-radius:50%;animation:ui-spin .8s linear infinite}@keyframes ui-spin{to{transform:rotate(360deg)}}
 #stockbot-app #stockbot-shell #app-page-content form.ui-form-loading{position:relative}#stockbot-app #stockbot-shell #app-page-content [data-ui-state=loading]{cursor:progress;opacity:.78}
 #stockbot-app #stockbot-shell #app-page-content details.ui-disclosure{box-sizing:border-box;scroll-margin-top:20px}
-#stockbot-app #stockbot-shell #app-page-content details.ui-disclosure>.ui-disclosure-summary{position:relative;padding-right:30px!important;cursor:pointer}
-#stockbot-app #stockbot-shell #app-page-content details.ui-disclosure>.ui-disclosure-summary::after{content:'⌄'!important;position:absolute;right:8px;top:50%;margin-top:-11px;display:inline-block;font-size:20px;color:#64826c;transform:rotate(0);transition:transform var(--sb-feedback-expand) var(--sb-feedback-ease)}
-#stockbot-app #stockbot-shell #app-page-content details.ui-disclosure[open]>.ui-disclosure-summary::after{transform:rotate(180deg)}
+#stockbot-app #stockbot-shell #app-page-content details.ui-disclosure>.ui-disclosure-summary{position:relative;padding-right:30px!important;cursor:pointer;list-style:none!important}
+#stockbot-app #stockbot-shell #app-page-content details.ui-disclosure>.ui-disclosure-summary::marker{content:''!important}
+#stockbot-app #stockbot-shell #app-page-content details.ui-disclosure>.ui-disclosure-summary::-webkit-details-marker{display:none!important}
+#stockbot-app #stockbot-shell #app-page-content details.ui-disclosure>.ui-disclosure-summary::after{content:''!important;position:absolute;right:12px;top:50%;margin-top:-4px;display:block;width:6px;height:6px;border:0;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;background:transparent;color:var(--sb-app-muted,#687d89);transform:rotate(45deg);transition:transform var(--sb-feedback-expand) var(--sb-feedback-ease)}
+#stockbot-app #stockbot-shell #app-page-content details.ui-disclosure[open]>.ui-disclosure-summary::after{transform:rotate(225deg)}
 #stockbot-app #stockbot-shell #app-page-content .ui-allocation-selected{border-color:#7eac91!important;box-shadow:inset 3px 0 0 #79a58a!important;background-color:#f1f7f3!important}
 #stockbot-app #stockbot-shell #app-page-content .allocation-item[aria-pressed=true]{background:#e7f2eb!important;border-color:#8db59c!important;color:#2b5d42!important}
 .ui-allocation-row-select{margin-top:8px;min-height:36px;padding:7px 10px;border:1px solid #c6dacf;border-radius:9px;background:#f2f8f4;color:#446950;font-size:11px;font-weight:750}

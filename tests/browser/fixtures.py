@@ -5,7 +5,7 @@ from urllib.parse import quote as url_quote
 repo=Path(__file__).resolve().parents[2]
 root=Path(os.environ.get('STOCKBOT_UI_ARTIFACTS','/tmp/stockbot-ui-validation'));root.mkdir(parents=True,exist_ok=True)
 s=repo.joinpath('main.py').read_text(encoding='utf-8');lines=s.splitlines(True);tree=ast.parse(s)
-ns=dict(html=html,re=re,json=json,math=math,secrets=secrets,date=date,datetime=datetime,timedelta=timedelta,taiwan_today=lambda:date(2026,11,2),taiwan_now=lambda:datetime(2026,11,2,15),current_web_user=lambda:None,get_web_ui_theme=lambda u:'mist',inject_csrf_inputs=lambda b:b,preserve_web_token=lambda b:b)
+ns=dict(html=html,re=re,json=json,math=math,secrets=secrets,date=date,datetime=datetime,timedelta=timedelta,taiwan_today=lambda:date(2026,11,2),taiwan_now=lambda:datetime(2026,11,2,15),current_web_user=lambda: 'fixture-user',get_web_ui_theme=lambda u:'mist',inject_csrf_inputs=lambda b:b,preserve_web_token=lambda b:b)
 ns['respond_page']=lambda title,body,nav_active=None:ns['render_page'](title,body,nav_active)
 def compile_node(n,local=ns):
  # Strip Flask decorators: these are isolated renderers, no app/database import.
