@@ -23,6 +23,12 @@ use disabled in Work settings. Health and permission checks do not substitute
 for that visual/account-level verification.
 # Portfolio swipe hotfix — 2026-11-05 13:58 Taiwan
 
+- User subsequently confirmed the production chart can move again (「可以動了」).
+  This confirms the reported swipe symptom resolved for that session; it does
+  not constitute all-seven-page or all-device acceptance.
+- The complete Python suite on UI branch commit `86f490e` passed in one run:
+  **133 passed in 371.48s**, with no split-run extrapolation.
+
 - PR #81 merged as `b3e3888436fe05ba371315f7cdfbd88d234e751c`.
 - Render deploy `dep-dbm1l53m8hqs73cmc0ag` became live at
   `2026-11-05T05:58:40.66618Z`. Only shared chart touch handling and cache-version
