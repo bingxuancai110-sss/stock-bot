@@ -42,3 +42,20 @@ holdings math, or transaction mechanism changes.
 
 Production memory and the timed-out chart path must be retested after deployment;
 the bounded-work tests alone do not establish that the memory incident is solved.
+
+## Follow-up: visible review lifecycle
+
+The real request log also showed review reads continuing every few seconds after
+navigating to market. The old client retried for as long as statistics were
+building, without a source/page lifecycle check. Automatic refresh is now capped
+at six follow-ups, only while the review source is visible. SPA departure cancels
+the timer and in-flight read. Returning a late response cannot mutate the old
+view. This does not cancel a server-side completed/ongoing analysis or change any
+transaction result.
+
+Chromium and WebKit each pass 207 checks, including follow-up exhaustion, source
+switching, and SPA departure. Rotation Python regressions: 42 passed.
+
+PR #87 became live at 13:21:42 UTC. On that version, real 2308 chart navigation
+and fullscreen succeeded. Observed container memory was 214–243 MB from
+13:21–13:24 UTC. This short observation does not establish long-running stability.
