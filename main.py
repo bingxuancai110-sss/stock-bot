@@ -2225,6 +2225,15 @@ def init_db():
             )
         ''')
         cursor.execute('''
+            CREATE TABLE IF NOT EXISTS position_submission_dedup (
+                user_id TEXT NOT NULL,
+                request_key TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, request_key)
+            )
+        ''')
+        cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_position_change_logs_user_date
             ON position_change_logs (user_id, trade_date DESC, id DESC)
         ''')
@@ -4933,7 +4942,8 @@ def auto_apply_verified_exrights(user_id, items):
     return results
 
 
-def add_position(user_id, code, shares, cost, bought_on=None, note=None):
+def add_position(user_id, code, shares, cost, bought_on=None, note=None,
+                 request_key=None):
     try:
         shares = int(shares)
         cost = float(cost)
@@ -4944,6 +4954,35 @@ def add_position(user_id, code, shares, cost, bought_on=None, note=None):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
+        request_key = str(request_key or "").strip()
+        if request_key:
+            if len(request_key) > 100 or not re.fullmatch(r"[A-Za-z0-9_-]{16,100}", request_key):
+                conn.rollback()
+                cursor.close()
+                return False
+            payload_hash = hashlib.sha256(json.dumps(
+                [str(code).strip(), shares, cost, str(bought_on or taiwan_today()), note or None],
+                ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
+            cursor.execute(
+                "INSERT INTO position_submission_dedup (user_id, request_key, payload_hash) "
+                "VALUES (%s, %s, %s) ON CONFLICT (user_id, request_key) DO NOTHING "
+                "RETURNING request_key",
+                (str(user_id).strip(), request_key, payload_hash),
+            )
+            if cursor.fetchone() is None:
+                cursor.execute(
+                    "SELECT payload_hash FROM position_submission_dedup "
+                    "WHERE user_id=%s AND request_key=%s",
+                    (str(user_id).strip(), request_key))
+                existing = cursor.fetchone()
+                if not existing or existing[0] != payload_hash:
+                    conn.rollback()
+                    cursor.close()
+                    return "conflict"
+                # 上一個同 key 的請求已完成或正在同一交易中提交；安全地回報已處理。
+                conn.commit()
+                cursor.close()
+                return "duplicate"
         cursor.execute(
             """
             INSERT INTO positions (user_id, code, shares, cost, bought_on, note)
@@ -32247,7 +32286,7 @@ def web_positions(uid):
         fee_disc, min_fee = get_fee_settings(get_profile(uid))
 
     msg = ""
-    def trade_result_response(message):
+    def trade_result_response(message, succeeded=None, pending=False):
         """Finish an executed trade without a second DB read on the request path.
 
         The trade helper commits its transaction before returning.  Re-reading
@@ -32258,12 +32297,13 @@ def web_positions(uid):
         safe_message = (safe_message.replace("&lt;br&gt;", "<br>")
                         .replace("&lt;b&gt;", "<b>")
                         .replace("&lt;/b&gt;", "</b>"))
-        succeeded = str(message or "").lstrip().startswith("✅")
+        if succeeded is None:
+            succeeded = str(message or "").lstrip().startswith("✅")
         body = (
             '<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261104-7">'
-            f'<section class="p2-trade-result {"success" if succeeded else "error"}" role="status">'
-            f'<span class="p2-result-mark" aria-hidden="true">{"✓" if succeeded else "!"}</span>'
-            f'<h2>{"記帳完成" if succeeded else "操作未完成"}</h2>'
+            f'<section class="p2-trade-result {"waiting" if pending else "success" if succeeded else "error"}" role="status">'
+            f'<span class="p2-result-mark" aria-hidden="true">{"…" if pending else "✓" if succeeded else "!"}</span>'
+            f'<h2>{"結果待確認" if pending else "記帳完成" if succeeded else "操作未完成"}</h2>'
             f'<p>{safe_message}</p>'
             '<div class="p2-card-actions"><a class="p2-primary-action" href="/web/positions" data-no-busy="1">回到持股</a>'
             '<a href="/web/trades" data-no-busy="1">查看操作日報　›</a></div></section>'
@@ -32317,7 +32357,7 @@ def web_positions(uid):
                        f"{info['realized_pl']:+,.0f} 元。")
             else:
                 msg = f"賣出失敗：{info}"
-            return trade_result_response(msg)
+            return trade_result_response(msg, succeeded=ok)
         elif action == "exright_apply":
             ok, info = apply_exright_adjustment(
                 uid, request.form.get("code"), request.form.get("ratio"))
@@ -32380,7 +32420,7 @@ def web_positions(uid):
                        f"證交稅 {summary['tax']:,.0f}。")
             else:
                 msg = "已賣出，但查不到報價，這筆沒有損益紀錄。"
-            return trade_result_response(msg)
+            return trade_result_response(msg, succeeded=ok)
         else:
             code = normalize_code(request.form.get("code", ""))
             try:
@@ -32402,18 +32442,27 @@ def web_positions(uid):
                 if bf > 0:
                     cost = (cost * shares + bf) / shares
                 note = (request.form.get("position_note") or "").strip()[:200]
-                ok = add_position(uid, code, shares, cost,
+                request_key = (request.form.get("submission_key") or "").strip()
+                if not request_key:
+                    return trade_result_response("⚠️ 此交易表單版本已過期，本次沒有新增。請重新開啟持股頁後填寫。")
+                add_result = add_position(uid, code, shares, cost,
                                   request.form.get("bought_on") or None,
-                                  note=note or None)
-                if not ok:
-                    msg = "新增失敗，資料沒有成功寫入，請稍後再試。"
+                                  note=note or None, request_key=request_key)
+                if add_result == "conflict":
+                    return trade_result_response("⚠️ 這份表單先前已送出不同內容，本次沒有新增。請先核對持股與操作日報，再開啟新的交易表單。")
+                if not add_result:
+                    # commit 回應遺失時資料可能已入帳，不能宣稱「沒有寫入」。
+                    return trade_result_response("暫時無法確認這筆記帳結果，資料可能已入帳。請先查看持股與操作日報；保留本表單重試會使用同一筆識別碼，避免重複新增。", pending=True)
                 else:
-                    msg = (f"已新增 {code}（含手續費，每股成本 {cost:,.2f}）。"
-                           if bf > 0 else f"已新增 {code}。")
+                    if add_result == "duplicate":
+                        msg = f"✅ {code} 這筆買進先前已完成記錄；這次是安全確認，沒有重複新增。"
+                    else:
+                        msg = (f"已新增 {code}（含手續費，每股成本 {cost:,.2f}）。"
+                               if bf > 0 else f"已新增 {code}。")
                     # INSERT 與操作日誌已在 add_position 內一併 commit。
                     # 成功後直接回傳輕量確認，避免再同步重算整頁行情／圖表；
                     # 若重算期間 Render 重啟，使用者會看到 429，卻無法判斷是否已寫入。
-                    return trade_result_response("✅ " + msg)
+                    return trade_result_response(msg if str(msg).startswith("✅") else "✅ " + msg)
 
     positions_data_started = time.monotonic()
     positions = merge_positions(get_positions(uid))
@@ -33013,6 +33062,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
 <header class="p2-trade-sheet-head"><div><h2 id="p2-trade-dialog-title">新增交易</h2><p>只記錄投資組合，不會送出券商委託</p></div><button type="button" class="p2-trade-close" data-p2-close aria-label="關閉新增交易">×</button></header>
 <form class="add" method="post" action="/web/positions">
   {csrf_hidden_input()}
+  <input type="hidden" name="submission_key" value="{secrets.token_urlsafe(24)}">
   <div class="fields">
     <div><label for="p2-trade-code">股票代號</label>
       <input id="p2-trade-code" name="code" inputmode="numeric" placeholder="2330" required></div>
@@ -33169,8 +33219,15 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
         clearTimeout(responseDeadline);
         var responseDoc=new DOMParser().parseFromString(responseHtml,'text/html');
         var responseMessage=responseDoc.querySelector('#app-page-content .msg');
-        if(responseMessage && /失敗|錯誤|沒有|不正確|請填|過期|無法|⚠/.test(responseMessage.textContent||'')) throw new Error(responseMessage.textContent);
-        if(!responseDoc.getElementById('app-page-content') || !responseMessage || !/已新增|已賣出|✅|成功/.test(responseMessage.textContent||'')) throw new Error((responseMessage&&responseMessage.textContent)||'未能確認處理結果，請先檢查持股與操作日報。');
+        // 買賣 POST 使用輕量 trade_result_response，不含舊版 .msg；
+        // 只檢查 .msg 會把已 commit 的成功結果誤判成未知，讓使用者以為沒送出。
+        var tradeResult=responseDoc.querySelector('#app-page-content .p2-trade-result');
+        var confirmedSuccess=!!(tradeResult&&tradeResult.classList.contains('success'));
+        var confirmedError=!!(tradeResult&&tradeResult.classList.contains('error'));
+        if(confirmedError){var rejected=new Error(tradeResult.textContent.trim()||'操作沒有完成。');rejected.confirmedRejection=true;throw rejected;}
+        if(tradeResult&&tradeResult.classList.contains('waiting'))throw new Error(tradeResult.textContent.trim());
+        if(responseMessage && /失敗|錯誤|不正確|請填|過期|無法|⚠/.test(responseMessage.textContent||'')) throw new Error(responseMessage.textContent);
+        if(!responseDoc.getElementById('app-page-content') || (!confirmedSuccess && (!responseMessage || !/已新增|已賣出|✅|成功/.test(responseMessage.textContent||'')))) throw new Error((responseMessage&&responseMessage.textContent)||'未能確認處理結果，請先檢查持股與操作日報。');
         finished=true;
         if(timer) clearInterval(timer);
         setProgress(100);
@@ -33218,8 +33275,9 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
         if(wrap && wrap.parentNode) wrap.remove();
         confirmed=false; submit.disabled=false;
         delete form.dataset.uiSubmitting;
-        if(window.StockBotUI) window.StockBotUI.formState(form,'error','送出未完成：'+(err && err.message ? err.message : '網路或伺服器錯誤')+'；請先確認持股與日報再決定是否重送。');
-        else alert('送出未完成：'+(err && err.message ? err.message : '網路或伺服器錯誤'));
+        var outcomeLabel=err&&err.confirmedRejection?'操作未完成：':'結果待確認：';
+        if(window.StockBotUI) window.StockBotUI.formState(form,'error',outcomeLabel+(err && err.message ? err.message : '網路或伺服器回應中斷，資料可能已入帳')+'；請先核對持股與日報。');
+        else alert(outcomeLabel+(err && err.message ? err.message : '網路或伺服器回應中斷，資料可能已入帳'));
       });
     }
     function go(){
