@@ -70,12 +70,6 @@ root.joinpath('settings-fragment.html').write_text(settings,encoding='utf-8');ro
 ns.update(render_quote_block=lambda:'',request=type('Request',(),{'args':{},'path':'/web/positions'})())
 n=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='render_loading_shell');compile_node(n)
 root.joinpath('loading.html').write_text(ns['render_loading_shell']('持股','positions',['讀取資料'],staged=False),encoding='utf-8')
-# Validate every inline script syntax separately from the module.
-for name in ['positions','rank','settings','loading','home','workbench','more','us_rotation']:
- scripts=re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>',root.joinpath(name+'.html').read_text(encoding='utf-8'),re.S)
- root.joinpath(name+'.js').write_text('\n'.join(scripts),encoding='utf-8')
-print('Actual shell, holdings, leaderboard, market K-line, and US rotation renderers; external data and writes are fixture-only.')
-
 # Homepage: real contribution/holdings renderers with synthetic data.
 home_fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='render_daily_home_top')
 home_source=''.join(lines[home_fn.lineno-1:home_fn.end_lineno]);home_ast=ast.parse(home_source).body[0]
@@ -104,8 +98,6 @@ us_page_fn=next(n for n in us_blueprint.body if isinstance(n,ast.FunctionDef) an
 compile_node(us_page_fn)
 us_rotation=ns['render_page']('美股輪動',ns['_page_html'](),'us_rotation')
 root.joinpath('us_rotation.html').write_text(us_rotation,encoding='utf-8')
-scripts=re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>',us_rotation,re.S)
-root.joinpath('us_rotation.js').write_text('\n'.join(scripts),encoding='utf-8')
 
 # Exercise the actual K-line route renderer with isolated daily bars and an
 # empty drawing repository; browser writes are intercepted by the test runner.
@@ -137,5 +129,9 @@ market_fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=
 compile_node(market_fn,market_ns)
 market_page=market_ns['web_market']('fixture-user')
 root.joinpath('market.html').write_text(market_page,encoding='utf-8')
-scripts=re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>',market_page,re.S)
-root.joinpath('market.js').write_text('\n'.join(scripts),encoding='utf-8')
+# Extract scripts only after every page has been generated. A fresh artifact
+# directory must not depend on HTML left over from an earlier renderer run.
+for name in ['positions','rank','settings','loading','home','workbench','more','us_rotation','market']:
+ scripts=re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>',root.joinpath(name+'.html').read_text(encoding='utf-8'),re.S)
+ root.joinpath(name+'.js').write_text('\n'.join(scripts),encoding='utf-8')
+print('Actual shell, holdings, leaderboard, market K-line, and US rotation renderers; external data and writes are fixture-only.')

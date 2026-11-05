@@ -862,3 +862,14 @@
     border-radius:0!important;background:transparent!important;box-shadow:none!important;
   }
 }
+
+/* A translated, closed fixed drawer still expands mobile scrollable overflow.
+   Keep its box inside the viewport and reveal it with clipping instead. */
+#stockbot-app #stockbot-shell #app-page-content #wb-drawer {
+  transform:none!important;clip-path:inset(0 0 0 100%)!important;
+  visibility:hidden!important;pointer-events:none!important;
+  transition:clip-path .18s ease-out,visibility .18s!important;
+}
+#stockbot-app #stockbot-shell #app-page-content #wb-drawer.open {
+  clip-path:inset(0)!important;visibility:visible!important;pointer-events:auto!important;
+}

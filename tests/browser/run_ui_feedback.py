@@ -287,6 +287,8 @@ with sync_playwright() as p:
  check('fullscreen trendline drag saves a two-point drawing',state.get('drawing_count')==2)
  page.locator('#market-fullscreen-close').click();check('market exits fullscreen without a route reload',not page.locator('.market-chart-card').evaluate('(e)=>e.classList.contains("is-fullscreen")'))
  ready('/web/workbench')
+ check('closed screener drawer does not expand the phone layout viewport',page.evaluate('({width})=>innerWidth<=width+1&&document.documentElement.scrollWidth<=width+1',dict(width=page.viewport_size['width'])))
+ check('screener bottom navigation stays in the visible phone viewport',page.locator('.app-bottom-nav').evaluate('(e)=>{const r=e.getBoundingClientRect();return r.right<=document.documentElement.clientWidth+1&&r.bottom<=visualViewport.height+1}'))
  check('screener assets use a three-part mobile selector',page.locator('#wb-asset-tabs').evaluate('(e)=>getComputedStyle(e).display==="grid"&&getComputedStyle(e).gridTemplateColumns.split(" ").length===3'))
  check('screener search spans above its compact action row',page.evaluate('(()=>{const w=document.querySelector("#stockbot-workbench .wb-tools"),l=w?.querySelector("label"),b=w?.querySelector("button"),lr=l?.getBoundingClientRect(),br=b?.getBoundingClientRect();return !!(w&&l&&b&&getComputedStyle(w).gridTemplateColumns.split(" ").length===2&&lr&&br&&lr.y<br.y&&parseFloat(getComputedStyle(b).minHeight)>=40)})()'))
  page.locator('#wb-filter').click()

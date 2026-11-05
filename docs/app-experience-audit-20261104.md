@@ -99,3 +99,13 @@ Commit `23f87d5` became live on Render at 2026-11-04 14:32:58 UTC (PR #74).
 - Finish all-seven-page action audit, including market fullscreen/drawing and the mobile holdings transaction sheet without submitting real transactions.
 - Refine US Rotation density and repeated explanatory copy while retaining all research information.
 - Measure slow route transitions and address their actual bottlenecks without adding foreground market scans.
+
+## Clean-run findings
+
+- A fresh artifact directory exposed script extraction running before all HTML
+  renderers. Moved extraction to the end, then generated all pages in a new folder.
+- Seven-page capture found the closed screener drawer expanded the layout
+  viewport from 390 to 778px. The former scrollWidth-vs-innerWidth assertion
+  missed this because both expanded. Keep the drawer box inside the viewport
+  and reveal it with clipping; explicitly test against the configured phone
+  width and visible bottom navigation. Chromium and WebKit: 147 checks each passed.
