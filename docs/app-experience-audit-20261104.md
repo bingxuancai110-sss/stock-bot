@@ -1,5 +1,25 @@
 # App experience audit — 2026-11-04
 
+## Interaction/privacy follow-up — 2026-11-05
+
+- The signed-in production Positions page confirmed that hiding asset totals did
+  not hide allocation values or individual shares/returns. This branch extends
+  the existing privacy mode through holding details, quote updates and allocation
+  selection/reset. Public stock prices remain visible.
+- Pressed/selected controls use slate blue; quote direction keeps red/green.
+  Radar detail identifies its pattern signal rather than implying a missing
+  black-horse composite score. Historical rankings show five rows plus expansion.
+- Browser regression exposed a delayed trade-dialog focus stealing input from
+  the cost field back into the stock code. Focus now happens synchronously when
+  opening buy/sell controls; preview and confirmation pass without timing sleeps.
+- Chromium and WebKit each passed 194 isolated checks with no page errors.
+  The fixture explicitly returns denied personal-quote configuration rather than
+  HTML; it has no credentials or live account writes. Buy submission deduplication
+  passed nine isolated tests. Full Python regression is still running.
+- Current production remains a5d4369. PR 83 is the review branch. Production
+  navigation was still slow, and final seven-page production review is pending.
+  This is not an overall completion claim.
+
 This is an ongoing audit, not a completion claim. Production pages are checked in the user's authenticated Chrome. Isolated renderer fixtures check regressions; they are not evidence of production layout.
 
 ## Acceptance scope
