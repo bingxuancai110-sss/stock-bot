@@ -28604,11 +28604,11 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261105-5">
-<link rel="stylesheet" href="/static/app-shell.css?v=20261105-4">
-<link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-5">
-<script defer src="/static/ui-feedback.js?v=20261105-5"></script>
-<script defer src="/static/fugle-live.js?v=20261104-3"></script>
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261105-6">
+<link rel="stylesheet" href="/static/app-shell.css?v=20261105-5">
+<link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-7">
+<script defer src="/static/ui-feedback.js?v=20261105-6"></script>
+<script defer src="/static/fugle-live.js?v=20261105-1"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -29308,9 +29308,13 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     var root = scope || document;
     if (!root || !root.querySelectorAll) return;
     var masked = readHomePrivacyMasked();
+    window.__stockbotHomePrivacyMasked = masked;
     root.querySelectorAll('[data-home-sensitive]').forEach(function (node) {{
       var original = node.getAttribute('data-home-original');
-      if (original === null) original = node.textContent.trim();
+      if (original === null) {{
+        original = node.textContent.trim();
+        node.setAttribute('data-home-original', original);
+      }}
       var shown = masked ? '******' : original;
       if (node.textContent !== shown) node.textContent = shown;
     }});
@@ -32626,8 +32630,8 @@ def web_positions(uid):
                     + f'<div class="lot-actions">{delete_form(l["id"], name, l)}</div>')
         items = "".join(
             f'<div class="lot">'
-            f'<span class="num">{l["shares"]:,}</span> 股　'
-            f'成本 <span class="num">{l["cost"]:,.2f}</span>　'
+            f'<span class="num" data-home-sensitive>{l["shares"]:,}</span> 股　'
+            f'成本 <span class="num" data-home-sensitive>{l["cost"]:,.2f}</span>　'
             f'{l["bought_on"].strftime("%Y/%m/%d") if l["bought_on"] else "未填日期"}'
             f'<div class="lot-actions">{delete_form(l["id"], name, l)}</div>'
             f'</div>' for l in lots)
@@ -32683,7 +32687,7 @@ def web_positions(uid):
                                else "符合目標")
             deviation_class = "over" if deviation > 0.05 else "under" if deviation < -0.05 else "on-target"
             target_line_html = (f'<div class="position-target-summary"><span>目標權重</span>'
-                                f'<b>{target_pct:.1f}%</b><em class="{deviation_class}">{deviation_label}</em></div>')
+                                f'<b data-home-sensitive>{target_pct:.1f}%</b><em class="{deviation_class}">{deviation_label}</em></div>')
         if price:
             gross_pl = (price["close"] - p["cost"]) / p["cost"] * 100
             net_amt, pl, cost_fee = net_profit(
@@ -32734,32 +32738,32 @@ def web_positions(uid):
   <div class="position-card-top">
     <div class="position-card-title">
       <span class="position-card-code">{html.escape(str(p['code']))}</span>
-      <div><h3>{name}</h3><small><span class="p2-inline-code">{html.escape(str(p['code']))}</span><span class="position-lot-size">{p['shares']:,} 股</span><span class="position-held-days">{f'持有 {held} 天' if held is not None else '持有天數未提供'}</span></small></div>
+      <div><h3>{name}</h3><small><span class="p2-inline-code">{html.escape(str(p['code']))}</span><span class="position-lot-size" data-home-sensitive>{p['shares']:,} 股</span><span class="position-held-days">{f'持有 {held} 天' if held is not None else '持有天數未提供'}</span></small></div>
     </div>
     <div class="position-card-price">
       <b class="num {day_cls}" data-position-price="1">{price['close']:,.2f}</b>
-      <span class="{day_cls}{' is-limit-board' if limit_state in ('up', 'down') else ''}" data-position-pct="1" data-limit-state="{limit_state or ''}" data-limit-known="{'1' if limit_known else '0'}" data-limit-label="{'漲停' if limit_state == 'up' else '跌停' if limit_state == 'down' else ''}">{price['pct']:+.2f}%</span><em class="p2-list-return {net_cls}" data-position-net-pct>{net_pct_text}</em>
+      <span class="{day_cls}{' is-limit-board' if limit_state in ('up', 'down') else ''}" data-position-pct="1" data-limit-state="{limit_state or ''}" data-limit-known="{'1' if limit_known else '0'}" data-limit-label="{'漲停' if limit_state == 'up' else '跌停' if limit_state == 'down' else ''}">{price['pct']:+.2f}%</span><em class="p2-list-return {net_cls}" data-position-net-pct data-home-sensitive>{net_pct_text}</em>
     </div>
   </div>
   <div class="position-card-primary">
-    <div><small>今日損益</small><b class="{day_cls}" data-position-day-pl="1">{day_pl:+,.0f}</b></div>
-    <div><small>市值</small><b data-position-value>{value:,.0f}</b></div>
-    <div><small>未實現損益</small><b class="{net_cls}" data-position-net>{net_amt:+,.0f}</b><em data-position-net-pct>{net_pct_text}</em></div>
+    <div><small>今日損益</small><b class="{day_cls}" data-position-day-pl="1" data-home-sensitive>{day_pl:+,.0f}</b></div>
+    <div><small>市值</small><b data-position-value data-home-sensitive>{value:,.0f}</b></div>
+    <div><small>未實現損益</small><b class="{net_cls}" data-position-net data-home-sensitive>{net_amt:+,.0f}</b><em data-position-net-pct data-home-sensitive>{net_pct_text}</em></div>
   </div>
   <div class="p2-weight-track" aria-label="持股權重 {weight:.1f}%"><i style="width:{min(100.0, weight):.1f}%"></i></div>
   <details class="position-more">
     <summary>查看詳細資料</summary>
     <div class="position-detail-body">
       <div class="position-card-grid">
-        <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
-        <div><small>總持有成本</small><b>{cost_total:,.0f}</b></div>
-        <div><small>目前市值</small><b data-position-value>{value:,.0f}</b></div>
-        <div><small>估算賣出淨損益</small><b class="{net_cls}" data-position-net>{net_amt:+,.0f}</b><em data-position-net-pct>{net_pct_text}</em></div>
-        <div><small>目前權重</small><b data-position-weight>{weight:.1f}%</b></div>
+        <div><small>成本／股</small><b data-home-sensitive>{p['cost']:,.2f}</b></div>
+        <div><small>總持有成本</small><b data-home-sensitive>{cost_total:,.0f}</b></div>
+        <div><small>目前市值</small><b data-position-value data-home-sensitive>{value:,.0f}</b></div>
+        <div><small>估算賣出淨損益</small><b class="{net_cls}" data-position-net data-home-sensitive>{net_amt:+,.0f}</b><em data-position-net-pct data-home-sensitive>{net_pct_text}</em></div>
+        <div><small>目前權重</small><b data-position-weight data-home-sensitive>{weight:.1f}%</b></div>
         <div><small>最近買進日期</small><b>{html.escape(_last_position_trade_text)}</b></div>
         <div><small>行情</small><b class="position-quote-stamp" data-position-stamp="1">{quote_stamp_safe}</b></div>
       </div>
-      <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b data-position-weight>{weight:.1f}%</b></div>
+      <div class="position-card-weight"><span>組合權重</span><div><i style="width:{min(100.0, weight / 30.0 * 100):.1f}%"></i></div><b data-position-weight data-home-sensitive>{weight:.1f}%</b></div>
       {target_line_html}
       <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}">
         <summary class="position-factors-trigger">🧭 查看五大因子與目前狀況</summary>
@@ -32782,16 +32786,16 @@ def web_positions(uid):
 </article>""")
         else:
             _noquote_target = target_weights.get(str(p.get("code") or ""))
-            _noquote_target_html = (f'<div class="position-target-summary"><span>目標權重</span><b>{_noquote_target:.1f}%</b><em>目前權重待行情確認</em></div>'
+            _noquote_target_html = (f'<div class="position-target-summary"><span>目標權重</span><b data-home-sensitive>{_noquote_target:.1f}%</b><em>目前權重待行情確認</em></div>'
                                     if _noquote_target is not None else '<div class="position-target-summary"><span>目標權重</span><b>尚未設定</b><em>目前權重待行情確認</em></div>')
             rows_html.append(f"""
 <article class="position-card position-card-noquote" data-position-code="{html.escape(str(p['code']), quote=True)}" data-sort-value="0" data-sort-pl="0" data-sort-pct="0" data-sort-weight="0" data-sort-name="{html.escape(str(p['code']), quote=True)}">
   <div class="position-card-top">
-    <div class="position-card-title"><span class="position-card-code">{html.escape(str(p['code']))}</span><div><h3>{html.escape(str(p['code']))}</h3><small>{p['shares']:,} 股 · 查無行情</small></div></div>
+    <div class="position-card-title"><span class="position-card-code">{html.escape(str(p['code']))}</span><div><h3>{html.escape(str(p['code']))}</h3><small><span data-home-sensitive>{p['shares']:,} 股</span> · 查無行情</small></div></div>
     <div class="position-card-price"><b data-position-price="1">—</b><span class="flat" data-position-pct="1">—</span></div>
   </div>
   <div class="position-card-primary">
-    <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
+    <div><small>成本／股</small><b data-home-sensitive>{p['cost']:,.2f}</b></div>
     <div><small>市值</small><b>—</b></div>
     <div><small>行情</small><b class="flat">暫無</b></div>
   </div>
@@ -32801,7 +32805,7 @@ def web_positions(uid):
     <summary>查看詳細資料</summary>
     <div class="position-detail-body">
       <div class="position-card-grid">
-        <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
+        <div><small>成本／股</small><b data-home-sensitive>{p['cost']:,.2f}</b></div>
         <div><small>行情狀態</small><b class="flat position-quote-stamp" data-position-stamp="1">暫無可驗證行情</b></div>
       </div>
       <details class="position-factors" data-factor-code="{html.escape(str(p['code']), quote=True)}">
@@ -32874,11 +32878,11 @@ def web_positions(uid):
                 f'<button type="button" class="allocation-item" data-allocation-select="{_code_attr}" '
                 f'data-allocation-name="{_name_text}" data-allocation-weight="{_item["weight"]:.4f}" data-allocation-value="{_item["value"]:.2f}" '
                 f'aria-pressed="false"><i style="background:{_color}"></i><span>{_name_text}</span>'
-                f'<b>{_item["weight"]:.1f}%</b></button>')
+                f'<b data-home-sensitive>{_item["weight"]:.1f}%</b></button>')
             _arc_offset += _arc_len
         allocation_html = f'''<section class="position-allocation" aria-label="持股配置互動圖表">
   <div class="position-allocation-head"><div><h2>持股配置</h2><small>點選圖表或名稱查看市值與權重</small></div><button type="button" data-allocation-reset>顯示全部</button></div>
-  <div class="position-allocation-body"><div class="position-allocation-visual"><svg viewBox="0 0 100 100" role="img" aria-label="已取得行情的持股市值權重分布">{''.join(_arc_html)}<circle cx="50" cy="50" r="31" fill="#fff" stroke="#eef1f3" stroke-width=".5"/></svg><div class="position-allocation-center"><b data-allocation-center-title>全部持股</b><strong data-allocation-center-weight>{sum(x["weight"] for x in allocation_items):.1f}%</strong><small data-allocation-center-value>{total_value:,.0f} 元</small></div></div><div class="position-allocation-legend">{''.join(_legend_html)}</div></div>
+  <div class="position-allocation-body"><div class="position-allocation-visual"><svg viewBox="0 0 100 100" role="img" aria-label="已取得行情的持股市值權重分布">{''.join(_arc_html)}<circle cx="50" cy="50" r="31" fill="#fff" stroke="#eef1f3" stroke-width=".5"/></svg><div class="position-allocation-center"><b data-allocation-center-title>全部持股</b><strong data-allocation-center-weight data-home-sensitive>{sum(x["weight"] for x in allocation_items):.1f}%</strong><small data-allocation-center-value data-home-sensitive>{total_value:,.0f} 元</small></div></div><div class="position-allocation-legend">{''.join(_legend_html)}</div></div>
   <div class="allocation-selection" aria-live="polite"><span>組合概覽</span><strong>點選圓環或股票名稱</strong><small>立即查看該持股占比與市值，並可跳到持股明細。</small></div>
 </section>'''
 
@@ -32904,12 +32908,9 @@ def web_positions(uid):
     # 只提示不自動改——判斷錯會把使用者的持股資料弄壞，而他不一定馬上發現。
     exright_html = ""
     try:
-        ignored = get_exright_ignored(uid)
         detected = detect_exright_adjustments(positions, price_map)
         ignored = get_exright_ignored(uid)
         # 使用者明確按過「忽略」的同一配股率不會被自動套用。
-        eligible = [x for x in detected
-                    if abs((ignored.get(x["code"]) or 0) - x["ratio"]) > 0.001]
         # 安全模式：還原價比值只能當作「候選事件」，不是官方配股公告。
         # 不在頁面載入時自動改動持股；歷史事件與未來事件都必須先核對券商實際股數。
         # 避免開啟頁面、快取重算或行情資料修訂時重複／錯誤調整真實持股。
@@ -33090,7 +33091,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
 </form>
 </section>
 </dialog>
-<script src="/static/portfolio-v2.js?v=20261104-4" defer></script>
+<script src="/static/portfolio-v2.js?v=20261105-5" defer></script>
 </div>"""
     body += '''<script>
 (function(){
@@ -33330,12 +33331,13 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
       if(stopped||!root.isConnected){stop();return;}
       var updates=data.updates||[],hasLimit=updates.some(function(item){return item.limit_state==='up'||item.limit_state==='down';});
       pollInterval=data.market_open?(Number(data.official_count||0)>=Number(data.requested_count||0)?5000:30000):60000;root.style.display=(data.market_open||hasLimit)?'':'none';
-      updates.forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(pct&&(!preserveUnknownLimit||item.limit_known)){var state=item.limit_known&&(item.limit_state==='up'||item.limit_state==='down')?item.limit_state:'';pct.classList.toggle('is-limit-board',!!state);pct.dataset.limitState=state;pct.dataset.limitKnown=item.limit_known?'1':'0';pct.dataset.limitLabel=state==='up'?'漲停':state==='down'?'跌停':'';}if(limitsOnly||item.price==null)return;if(pct){pct.textContent=item.pct==null?'':signedText(item.pct,2)+'%';pct.classList.toggle('up',Number(item.pct)>=0);pct.classList.toggle('down',Number(item.pct)<0);}if(price){price.textContent=numberText(item.price,2);price.classList.remove('flat');price.classList.add('num');price.classList.toggle('up',Number(item.pct)>=0);price.classList.toggle('down',Number(item.pct)<0);}if(day){day.textContent=signedText(item.day_pl,0);day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
+      function setSensitive(el,text){if(!el)return;if(el.hasAttribute('data-home-sensitive')){el.setAttribute('data-home-original',text);el.textContent=window.__stockbotHomePrivacyMasked===true?'******':text;}else el.textContent=text;}
+      updates.forEach(function(item){var row=document.querySelector('[data-position-code="'+String(item.code).replace(/"/g,'\\"')+'"]');if(!row)return;var price=row.querySelector('[data-position-price]'),pct=row.querySelector('[data-position-pct]'),day=row.querySelector('[data-position-day-pl]'),stamp=row.querySelector('[data-position-stamp]');if(pct&&(!preserveUnknownLimit||item.limit_known)){var state=item.limit_known&&(item.limit_state==='up'||item.limit_state==='down')?item.limit_state:'';pct.classList.toggle('is-limit-board',!!state);pct.dataset.limitState=state;pct.dataset.limitKnown=item.limit_known?'1':'0';pct.dataset.limitLabel=state==='up'?'漲停':state==='down'?'跌停':'';}if(limitsOnly||item.price==null)return;if(pct){setSensitive(pct,item.pct==null?'':signedText(item.pct,2)+'%');pct.classList.toggle('up',Number(item.pct)>=0);pct.classList.toggle('down',Number(item.pct)<0);}if(price){setSensitive(price,numberText(item.price,2));price.classList.remove('flat');price.classList.add('num');price.classList.toggle('up',Number(item.pct)>=0);price.classList.toggle('down',Number(item.pct)<0);}if(day){setSensitive(day,signedText(item.day_pl,0));day.classList.toggle('up',Number(item.day_pl)>=0);day.classList.toggle('down',Number(item.day_pl)<0);}if(stamp)stamp.textContent=(item.source||'最近有效行情')+(item.updated_at?'・'+item.updated_at:'');});
       if(data.market_open||hasLimit)root.textContent=(data.note||('盤中持股行情已於 '+(data.fetched_at||'剛剛')+' 更新。'))+(data.market_open?' 約 5 秒檢查一次。':'');
       (data.updates||[]).forEach(function(item){
         if(!Object.prototype.hasOwnProperty.call(item,'value'))return;
         var row=document.querySelector('[data-position-code="'+item.code+'"]');if(!row)return;
-        function put(selector,value,digits,percent){row.querySelectorAll(selector).forEach(function(el){var valid=value!=null&&Number.isFinite(Number(value));el.textContent=!valid?'—':(percent?(selector.indexOf('weight')>=0?numberText(value,digits):signedText(value,digits))+'%':numberText(value,digits));if(selector.indexOf('gross')>=0||selector.indexOf('net')>=0){el.classList.toggle('up',valid&&value>=0);el.classList.toggle('down',valid&&value<0);}});}
+        function put(selector,value,digits,percent){row.querySelectorAll(selector).forEach(function(el){var valid=value!=null&&Number.isFinite(Number(value)),shown=!valid?'—':(percent?(selector.indexOf('weight')>=0?numberText(value,digits):signedText(value,digits))+'%':numberText(value,digits));if(el.hasAttribute('data-home-sensitive')){el.setAttribute('data-home-original',shown);el.textContent=window.__stockbotHomePrivacyMasked===true?'******':shown;}else el.textContent=shown;if(selector.indexOf('gross')>=0||selector.indexOf('net')>=0){el.classList.toggle('up',valid&&value>=0);el.classList.toggle('down',valid&&value<0);}});}
         put('[data-position-value]',item.value,0);put('[data-position-net]',item.net_pl,0);put('[data-position-net-pct]',item.net_pct,2,true);put('[data-position-weight]',item.weight,1,true);
         row.dataset.sortValue=String(item.value||0);row.dataset.sortPl=String(item.net_pl||0);row.dataset.sortPct=String(item.net_pct||0);row.dataset.sortWeight=String(item.weight||0);
         var track=row.querySelector('.p2-weight-track i');if(track)track.style.width=Math.max(0,Math.min(100,Number(item.weight)||0))+'%';
@@ -33471,6 +33473,7 @@ body #app-page-content .position-card.allocation-focused{background:#F3F8FB!impo
 (function(){
   if(window.__positionAllocationBound)return;
   window.__positionAllocationBound=true;
+  function setAllocationPrivate(node,text){if(!node)return;node.setAttribute('data-home-sensitive','');node.setAttribute('data-home-original',text);node.textContent=window.__stockbotHomePrivacyMasked===true?'******':text;}
   function selectAllocation(root,code){
     var button=root.querySelector('[data-allocation-select="'+CSS.escape(code)+'"]');
     var slice=root.querySelector('.allocation-slice[data-allocation-code="'+CSS.escape(code)+'"]');
@@ -33479,17 +33482,17 @@ body #app-page-content .position-card.allocation-focused{background:#F3F8FB!impo
     root.querySelectorAll('.allocation-slice').forEach(function(x){x.classList.toggle('is-selected',x===slice);x.style.opacity=x===slice?'1':'.28';});
     var title=root.querySelector('[data-allocation-center-title]'),weight=root.querySelector('[data-allocation-center-weight]'),value=root.querySelector('[data-allocation-center-value]');
     if(title)title.textContent=button.dataset.allocationName||code;
-    if(weight)weight.textContent=Number(button.dataset.allocationWeight||0).toFixed(1)+'%';
-    if(value)value.textContent=Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元';
+    if(weight)setAllocationPrivate(weight,Number(button.dataset.allocationWeight||0).toFixed(1)+'%');
+    if(value)setAllocationPrivate(value,Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元');
     var panel=root.querySelector('.allocation-selection');
-    if(panel){panel.innerHTML='<span>已選取持股</span><strong>'+((button.dataset.allocationName||code).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}))+'（'+code+'）</strong><small>組合占比 '+Number(button.dataset.allocationWeight||0).toFixed(1)+'% ・ 市值 '+Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元</small><button type="button" data-allocation-open="'+code+'">查看持股明細　›</button>';}
+    if(panel){panel.innerHTML='<span>已選取持股</span><strong>'+((button.dataset.allocationName||code).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}))+'（'+code+'）</strong><small data-home-sensitive data-home-original="組合占比 '+Number(button.dataset.allocationWeight||0).toFixed(1)+'% ・ 市值 '+Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元">'+(window.__stockbotHomePrivacyMasked===true?'******':'組合占比 '+Number(button.dataset.allocationWeight||0).toFixed(1)+'% ・ 市值 '+Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元')+'</small><button type="button" data-allocation-open="'+code+'">查看持股明細　›</button>';}
     document.querySelectorAll('#app-page-content .position-card').forEach(function(card){card.classList.toggle('allocation-focused',card.dataset.positionCode===code);});
   }
   document.addEventListener('click',function(event){
     var choose=event.target.closest('[data-allocation-select],[data-allocation-code]');
     if(choose){var root=choose.closest('.position-allocation');if(root)selectAllocation(root,choose.dataset.allocationSelect||choose.dataset.allocationCode);return;}
     var reset=event.target.closest('[data-allocation-reset]');
-    if(reset){var root=reset.closest('.position-allocation');if(!root)return;root.querySelectorAll('.allocation-item').forEach(function(x){x.setAttribute('aria-pressed','false');});root.querySelectorAll('.allocation-slice').forEach(function(x){x.classList.remove('is-selected');x.style.opacity='1';});root.querySelector('[data-allocation-center-title]').textContent='全部持股';root.querySelector('[data-allocation-center-weight]').textContent=root.querySelectorAll('.allocation-item').length?Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationWeight||0);},0).toFixed(1)+'%':'0.0%';root.querySelector('[data-allocation-center-value]').textContent=Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationValue||0);},0).toLocaleString('zh-TW')+' 元';root.querySelector('.allocation-selection').innerHTML='<span>組合概覽</span><strong>點選圓環或股票名稱</strong><small>立即查看該持股占比與市值，並可跳到持股明細。</small>';document.querySelectorAll('#app-page-content .position-card').forEach(function(card){card.classList.remove('allocation-focused');});return;}
+    if(reset){var root=reset.closest('.position-allocation');if(!root)return;root.querySelectorAll('.allocation-item').forEach(function(x){x.setAttribute('aria-pressed','false');});root.querySelectorAll('.allocation-slice').forEach(function(x){x.classList.remove('is-selected');x.style.opacity='1';});root.querySelector('[data-allocation-center-title]').textContent='全部持股';setAllocationPrivate(root.querySelector('[data-allocation-center-weight]'),root.querySelectorAll('.allocation-item').length?Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationWeight||0);},0).toFixed(1)+'%':'0.0%');setAllocationPrivate(root.querySelector('[data-allocation-center-value]'),Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationValue||0);},0).toLocaleString('zh-TW')+' 元');root.querySelector('.allocation-selection').innerHTML='<span>組合概覽</span><strong>點選圓環或股票名稱</strong><small>立即查看該持股占比與市值，並可跳到持股明細。</small>';document.querySelectorAll('#app-page-content .position-card').forEach(function(card){card.classList.remove('allocation-focused');});return;}
     var open=event.target.closest('[data-allocation-open]');
     if(open){var card=document.querySelector('.position-card[data-position-code="'+CSS.escape(open.dataset.allocationOpen)+'"]');if(card){var detail=card.querySelector('.position-more');if(detail)detail.open=true;card.scrollIntoView({behavior:(window.StockBotUI&&window.StockBotUI.reducedMotion()?'auto':'smooth'),block:'center'});card.classList.add('allocation-focused');}}
   });
@@ -41952,11 +41955,17 @@ def web_leaderboard_history(uid):
             return f'<div class="empty">{html.escape(empty_text)}</div>'
         blocks=[]
         for item in items:
-            rows=[]
-            for i, r in enumerate(item["rows"], 1):
+            all_rows=item["rows"] or []
+            def history_row(i, r):
                 cls = "up" if r["return_pct"] >= 0 else "down"
-                rows.append(f'<div class="history-rank-row"><span class="history-rank">{i}</span><span class="history-name">{safe_html_text(r["nickname"])}</span><b class="num {cls}">{r["return_pct"]:+.2f}%</b></div>')
-            blocks.append(f'<div class="history-period"><div class="history-period-head"><b>{html.escape(item["period"])}</b><span>Top 5</span></div>{"".join(rows) or "<div class=history-empty>資料不足</div>"}</div>')
+                return f'<div class="history-rank-row"><span class="history-rank">{i}</span><span class="history-name">{safe_html_text(r["nickname"])}</span><b class="num {cls}">{r["return_pct"]:+.2f}%</b></div>'
+            rows=''.join(history_row(i, r) for i, r in enumerate(all_rows[:5], 1))
+            rest=all_rows[5:]
+            more=''
+            if rest:
+                rest_html=''.join(history_row(i, r) for i, r in enumerate(rest, 6))
+                more=f'<details class="history-more"><summary>查看其餘 {len(rest)} 名</summary><div class="history-more-body">{rest_html}</div></details>'
+            blocks.append(f'<div class="history-period"><div class="history-period-head"><b>{html.escape(item["period"])}</b><span>Top 5</span></div>{rows or "<div class=history-empty>資料不足</div>"}{more}</div>')
         return '<div class="history-grid">' + ''.join(blocks) + '</div>'
     body=f'''<div class="more-hero"><div class="eyebrow">台股 BOT</div><h1>排行榜歷史</h1><p>只有完成月／季結算的成績才會封存到這裡；當期不會提前出現。</p></div>
 <section class="leaderboard-history" style="margin-top:0">
@@ -49766,13 +49775,15 @@ function bindFactors(){
       function list(items){var a=Array.isArray(items)?items.filter(function(x){return x!=null&&String(x).trim()}).slice(0,10):[];return a.length?'<ul class="wb-d-list">'+a.map(function(x){return '<li>'+escv(x)+'</li>'}).join('')+'</ul>':''}
       var src=txt(row.source||'選股'),name=txt(row.name||row.code||'標的'),code=txt(row.code||'—');
       var score=num(row.score!=null?row.score:d.score),price=num(row.price!=null?row.price:d.price),ch=num(row.change_pct!=null?row.change_pct:d.change_pct);
-      var titleScore=score==null?'未評分':score.toFixed(0)+' 分';
+      var isRadar=src==='雷達';
+      var radarSignal=txt(row.signal||d.signal||row.radar_state||d.radar_state||row.breakout||d.breakout||'型態資料不足');
+      var titleScore=isRadar?radarSignal:(score==null?'尚無保存分數':score.toFixed(0)+' 分');
       var scoreChange=d.score_change||null,oldScore=scoreChange?num(scoreChange.old_score):null,newScore=scoreChange?num(scoreChange.new_score):score;
       var delta=oldScore!=null&&newScore!=null?newScore-oldScore:null;
       var scoreBadge=scoreChange&&delta!=null?'<span class="wb-d-hero-delta '+(delta>0?'up':delta<0?'down':'flat')+'">'+(delta>0?'+':'')+delta.toFixed(0)+' 分</span>':'';
 
       /* 1. Hero */
-      var hero='<div class="wb-d-hero wb-d-hero-premium"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p><div class="wb-d-hero-meta"><span>資料日期 '+esc(txt(d.source_date||'未標日期'))+'</span>'+(row.radar_rank?' <span>雷達 #'+escv(row.radar_rank)+'</span>':'')+'</div></div><div class="wb-d-score"><span>綜合分數</span><b>'+esc(titleScore)+'</b>'+scoreBadge+'</div></div><div class="wb-d-price"><b>'+esc(price==null?'—':price)+'</b><span class="'+(ch!=null&&ch>0?'wb-up':ch!=null&&ch<0?'wb-down':'wb-flat')+'">'+esc(pct(ch))+'</span></div></div>';
+      var hero='<div class="wb-d-hero wb-d-hero-premium"><div class="wb-d-hero-top"><div><span class="wb-d-label">'+esc(src)+'</span><h3>'+esc(name)+' <small>'+esc(code)+'</small></h3><p>'+esc(txt(row.industry||d.industry||''))+'</p><div class="wb-d-hero-meta"><span>資料日期 '+esc(txt(d.source_date||'未標日期'))+'</span>'+(row.radar_rank?' <span>雷達 #'+escv(row.radar_rank)+'</span>':'')+'</div></div><div class="wb-d-score"><span>'+(isRadar?'型態訊號':'綜合分數')+'</span><b>'+esc(titleScore)+'</b>'+(isRadar?'<small class="wb-d-score-note">雷達依型態與位階判讀，不套用黑馬綜合分數。</small>':scoreBadge)+'</div></div><div class="wb-d-price"><b>'+esc(price==null?'—':price)+'</b><span class="'+(ch!=null&&ch>0?'wb-up':ch!=null&&ch<0?'wb-down':'wb-flat')+'">'+esc(pct(ch))+'</span></div></div>';
 
       /* 2. Today's score change */
       var changeHtml='';

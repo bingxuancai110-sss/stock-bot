@@ -19,6 +19,9 @@ with sync_playwright() as p:
   u=urlparse(r.request.url);query=parse_qs(u.query);requests.append((r.request.method,u.path,query))
   if u.path.startswith('/static/'):
    file=REPO/u.path.lstrip('/');r.fulfill(body=file.read_text(),content_type='text/css' if file.suffix=='.css' else 'application/javascript');return
+  # Fixture accounts have no personal quote credentials. Return the real denied
+  # contract instead of HTML, which otherwise causes retries during navigation.
+  if u.path=='/web/quote-lab/app-config':r.fulfill(status=403,json=dict(ok=False));return
   if '/api/workbench/strategy-lab' in u.path:r.fulfill(json=dict(ok=True,active_strategy='四因子複合',strategy_library=[dict(key=k,available=True,status_label='可運作') for k in ['四因子複合','營收動能','價格動能']],strategy_data={},factors=[],reference={}));return
   if u.path=='/web/api/us-rotation':r.fulfill(json=populated_payload(REPO) if state['us_populated'] else dict(snapshot=None,tw_research={},history=[],supply_chain=[],industry_guides={},tw_companies=[],risk_profiles=[],stop_profiles=[],signal_explanations={},signal_trends={}));return
   if u.path=='/web/market/drawings':r.fulfill(json=dict(ok=True,id='fixture-drawing-'+str(state.get('drawing_count',0)+1),drawings=[]));state['drawing_count']=state.get('drawing_count',0)+1;return
@@ -69,6 +72,15 @@ with sync_playwright() as p:
  check('supporting asset metrics use a compact three-column row',page.evaluate('(()=>{const t=document.querySelector("#portfolio-v2 .totals"),w=[...t.children].slice(3).map(e=>e.getBoundingClientRect().width);return w.length===3&&w.every(x=>x>0&&x<t.getBoundingClientRect().width/2)})()'))
  check('asset summary fields never overlap',page.locator('#portfolio-v2 .totals').evaluate('(e)=>{const rs=[...e.children].map(x=>x.getBoundingClientRect());return rs.every((a,i)=>rs.every((b,j)=>i===j||Math.min(a.right,b.right)-Math.max(a.left,b.left)<1||Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)<1))}'))
  check('privacy return value contains plain text instead of HTML',page.locator('.totals [data-home-original]').evaluate_all('(es)=>es.every(e=>!e.dataset.homeOriginal.includes("<"))'))
+ # Privacy must survive donut selection/reset, not only hide the asset headline.
+ page.locator('[data-home-privacy-toggle]').click()
+ check('privacy masks holdings and initial allocation values',page.locator('.position-card [data-home-sensitive],.position-allocation [data-home-sensitive]').evaluate_all('(es)=>es.length>10&&es.every(e=>e.textContent==="******")'))
+ page.locator('[data-allocation-select]').first.click()
+ check('selecting allocation cannot expose private amounts',page.locator('[data-allocation-center-value],.allocation-selection [data-home-sensitive]').evaluate_all('(es)=>es.length===2&&es.every(e=>e.textContent==="******")'))
+ page.locator('[data-allocation-reset]').click()
+ check('resetting allocation preserves privacy',page.locator('[data-allocation-center-value]').inner_text()=='******')
+ page.locator('[data-home-privacy-toggle]').click()
+ check('revealing allocation restores its latest value',page.locator('[data-allocation-center-value]').inner_text()!='******' and '元' in page.locator('[data-allocation-center-value]').inner_text())
  check('holding summary numbers stay on one line',page.locator('.position-card-primary b').evaluate_all('(es)=>es.every(e=>getComputedStyle(e).whiteSpace==="nowrap")'))
  check('seven current holding rows render',page.locator('.position-card').count()==7)
  check('unrealized P&L and weight remain in each expandable row',page.locator('.position-card-primary [data-position-net]').count()==7 and page.locator('.p2-weight-track').count()==7)
@@ -194,14 +206,14 @@ with sync_playwright() as p:
  history=page.locator('#historyTabs');history.scroll_into_view_if_needed();page.wait_for_timeout(80);check('history initially selected month is light',history.locator('[data-history=months]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
  history.locator('[data-history=seasons]').click();page.wait_for_timeout(40)
  check('history switches actual panel and aria state',page.locator('[data-history-panel=seasons]').is_visible() and history.locator('[data-history=seasons]').get_attribute('aria-pressed')=='true' and history.locator('[data-history=months]').get_attribute('aria-pressed')=='false')
- check('selected history text and WebKit fill remain dark',history.locator('[data-history=seasons]').evaluate('(e)=>getComputedStyle(e).color==="rgb(44, 94, 70)"&&getComputedStyle(e).webkitTextFillColor==="rgb(44, 94, 70)"'))
+ check('selected history text and WebKit fill remain dark',history.locator('[data-history=seasons]').evaluate('(e)=>getComputedStyle(e).color==="rgb(36, 78, 105)"&&getComputedStyle(e).webkitTextFillColor==="rgb(36, 78, 105)"'))
  check('selected history tab stays light after mouseup',history.locator('[data-history=seasons]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
  history.locator('[data-history=seasons]').hover();page.mouse.down()
  check('pressed history tab never becomes dark blue',history.locator('[data-history=seasons]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'));page.mouse.up()
 
  rank_svg=rank_panel.locator('svg.ui-interactive-chart');rank_svg.scroll_into_view_if_needed();rank_svg.focus();page.keyboard.press('ArrowRight')
  check('leaderboard chart tracks cached series','測試會員' in rank_panel.locator('.ui-chart-readout').inner_text())
- check('ranking tracking toolbar follows the plot',rank_panel.locator('.ui-chart-readout').bounding_box()['y']>=rank_svg.bounding_box()['y']+rank_svg.bounding_box()['height']-2)
+ check('ranking tracking toolbar follows the plot',rank_panel.evaluate('(e)=>{const readout=e.querySelector(".ui-chart-readout").getBoundingClientRect(),plot=e.querySelector("svg.ui-interactive-chart").getBoundingClientRect();return readout.top>=plot.bottom-2}'))
 
  for width in [360,375,390,430,1280]:
   page.set_viewport_size({'width':width,'height':900});page.evaluate('scrollTo(0,0)')
