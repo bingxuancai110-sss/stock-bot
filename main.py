@@ -18230,7 +18230,10 @@ def _compute_stock_watchlist_scores(codes, allow_network_revenue_repair=True):
         return {}
 
     institutional_data = fetch_institutional_data() or {}
-    revenue_data = fetch_monthly_revenue() or {}
+    # LINE 即時查詢不能在營收公告期間同步重抓整批官方資料。背景 warmup
+    # 已保存最新可用快照；若快照缺資料就讓營收因子顯示資料不足，避免卡住回覆。
+    revenue_data = fetch_monthly_revenue(
+        homepage=not allow_network_revenue_repair) or {}
     # 五大因子真正使用前，先修補「有月營收、但累計 YoY 為 NULL」的個股。
     # 這是針對目前使用者的自選股做按需修補，不會把單月 YoY 冒充累計 YoY。
     revenue_data = _repair_missing_cumulative_revenue(
@@ -21986,15 +21989,84 @@ def cron_warmup():
     return run_in_background("預熱快取", _do_warmup), 200
 
 
+def _line_holdings_quote_snapshot_key(uid):
+    """LINE 持股查詢只讀該使用者的行情快照，不保存任何持股數或成本。"""
+    return "line_holdings_quotes:" + str(uid).strip()
+
+
+def _save_line_holdings_quote_snapshot(uid, codes, prices):
+    """預熱時保存精簡行情；LINE 冷啟動不必為每檔持股重新打行情 API。"""
+    quote_fields = (
+        "close", "price", "pct", "previous_close", "high", "low", "volume",
+        "updated_at", "fetched_at", "quote_updated_at", "trade_at", "source",
+        "close_date", "close_time", "close_is_final", "has_live_trade_price",
+        "limit_up", "limit_down", "limit_known",
+    )
+    clean = {}
+    for code in codes or []:
+        quote = (prices or {}).get(str(code))
+        if not isinstance(quote, dict):
+            continue
+        try:
+            close = float(quote.get("close") or quote.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if close <= 0:
+            continue
+        clean[str(code)] = {key: quote.get(key) for key in quote_fields
+                            if quote.get(key) is not None}
+    if not clean:
+        return False
+    return _save_shared_data_snapshot(
+        _line_holdings_quote_snapshot_key(uid),
+        {"quotes": clean, "saved_at": time.time()},
+        data_date=taiwan_today(),
+        source_meta={"source": "LINE holdings quote warmup", "count": len(clean)},
+    )
+
+
+def _load_line_holdings_quote_snapshot(uid, codes, max_age_seconds=18 * 3600):
+    """讀取近期預熱快照，只回傳使用者目前仍持有的代號。"""
+    try:
+        saved = _load_shared_data_snapshot(
+            _line_holdings_quote_snapshot_key(uid),
+            max_age_seconds=max_age_seconds)
+    except Exception as exc:
+        print("⚠️ LINE 持股行情快照讀取失敗：%s" % type(exc).__name__, flush=True)
+        return {}
+    payload = (saved or {}).get("payload") or {}
+    quotes = payload.get("quotes") if isinstance(payload, dict) else None
+    if not isinstance(quotes, dict):
+        return {}
+    current_codes = {str(code).strip() for code in (codes or []) if str(code).strip()}
+    result = {}
+    for code in current_codes:
+        quote = quotes.get(code)
+        if not isinstance(quote, dict):
+            continue
+        try:
+            if float(quote.get("close") or quote.get("price") or 0) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        result[code] = dict(quote)
+    return result
+
+
 def _warm_current_position_quotes():
     """預熱目前持股主頁需要的 1d 真實行情，直接填入既有歷史日線快取。"""
     if taiwan_today().weekday() >= 5:
         return 0, 0, 0, "週末略過"
     user_ids = get_all_position_user_ids()
     codes = set()
+    user_codes = {}
     for uid in user_ids:
         try:
-            for position in merge_positions(get_positions(uid)):
+            positions = merge_positions(get_positions(uid))
+            user_codes[str(uid).strip()] = sorted({
+                str(position.get("code") or "").strip()
+                for position in positions if position.get("code")})
+            for position in positions:
                 code = str(position.get("code") or "").strip()
                 if code:
                     codes.add(code)
@@ -22006,6 +22078,12 @@ def _warm_current_position_quotes():
     # 使用者展開個別持股時才載入，避免每次打開頁面都下載不必要的歷史資料。
     prices = get_realtime_stocks_bulk(sorted(codes), workers=12, rng="1d")
     valid = sum(1 for value in prices.values() if value)
+    saved_users = 0
+    for uid, user_code_list in user_codes.items():
+        if _save_line_holdings_quote_snapshot(uid, user_code_list, prices or {}):
+            saved_users += 1
+    print("⚡ LINE 持股行情快照預熱完成 %s/%s 位使用者" % (
+        saved_users, len(user_codes)), flush=True)
     return len(user_ids), len(codes), valid, "完成"
 
 
@@ -52997,12 +53075,21 @@ def _line_hidden_combined_portfolio_flex(user_id):
     codes = list(dict.fromkeys(str(x.get("code") or "").strip()
                                for x in positions if x.get("code")))
     print("🧭 LINE 持股報告階段=持股讀取完成 檔數=%s" % len(codes), flush=True)
-    # Fetch each held symbol once, then reuse those real quotes for both the
-    # holdings summary and the operation report. This avoids duplicating a
-    # cold-start Yahoo/MIS fan-out in the same LINE request.
-    prices = get_realtime_stocks_bulk(
-        codes, workers=min(3, max(1, len(codes))), rng="1d", request_timeout=5) if codes else {}
-    prices = prices or {}
+    # Use the recent per-user quote snapshot first. During market hours only,
+    # refresh from the official MIS batch endpoint; do not make LINE wait for
+    # a per-symbol Yahoo history fan-out after a cold start.
+    prices = _load_line_holdings_quote_snapshot(user_id, codes) if codes else {}
+    if codes and _is_taiwan_intraday_window():
+        try:
+            fresh = _fetch_twse_mis_quotes(
+                codes, market_suffix=_home_market_suffix_map(codes),
+                force_refresh=True, cache_result=False, quick_mode=True)
+            prices.update(fresh or {})
+        except Exception as quote_exc:
+            print("⚠️ LINE 官方盤中行情刷新失敗：%s" % type(quote_exc).__name__, flush=True)
+    missing_quotes = [code for code in codes if not prices.get(code)]
+    print("⚡ LINE 持股行情快照命中 %s/%s；缺漏不阻塞回覆" % (
+        len(codes) - len(missing_quotes), len(codes)), flush=True)
     print("🧭 LINE 持股報告階段=持股行情完成 已取得=%s/%s 耗時=%.1fs" % (
         sum(1 for code in codes if prices.get(code)), len(codes), time.monotonic()-started), flush=True)
     holdings_msg = _line_hidden_holdings_flex(user_id, positions=positions, prices=prices)
@@ -53103,9 +53190,8 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None):
         price_map = dict(price_map or {})
         missing_codes = [code for code in codes if not price_map.get(code)]
         if missing_codes:
-            price_map.update(get_realtime_stocks_bulk(
-                missing_codes, workers=min(3, len(missing_codes)), rng="1d",
-                request_timeout=5) or {})
+            print("⚠️ LINE 操作日報行情快照缺漏 %s 檔；略過逐檔補抓" % (
+                len(missing_codes)), flush=True)
         total_value = sum(float((price_map.get(x.get("code")) or {}).get("close") or (price_map.get(x.get("code")) or {}).get("price") or 0) * float(x.get("shares") or 0) for x in positions)
         enriched = enrich_position_change_logs(logs, positions, price_map, total_value)
         # LINE 日報與網頁一致：同一交易日、同一股票的多筆原始操作合併成一列。
