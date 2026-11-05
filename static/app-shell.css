@@ -1276,6 +1276,9 @@ body#stockbot-app[data-app-view="leaderboard"] #app-page-content > .rank-chart-p
 
 /* US rotation: make the research workspace read like one continuous market
    brief. Keep color only on meaningful risk states and selected values. */
+body#stockbot-app[data-app-view="leaderboard"] #stockbot-shell #app-page-content .section-head::before{display:none!important;content:none!important}
+body#stockbot-app[data-app-view="leaderboard"] #stockbot-shell #app-page-content .rank-chart-panel .leaderboard-chart-toggle{min-height:44px!important;margin:0!important;padding:8px 6px!important;border:0!important;border-radius:0!important;background:transparent!important;background-image:none!important;box-shadow:none!important;text-align:left!important;font-size:12px!important}
+body#stockbot-app[data-app-view="leaderboard"] #stockbot-shell #app-page-content .rank-chart-panel .leaderboard-chart-toggle[aria-pressed="false"]{opacity:.45!important}
 body#stockbot-app[data-app-view="us_rotation"] #app-page-content #us-radar .us-hero {
   margin:0 0 6px!important;padding:16px 17px!important;border:0!important;
   border-radius:14px!important;background:#e9f1f1!important;color:var(--sb-app-ink)!important;
