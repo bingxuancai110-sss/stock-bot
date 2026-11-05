@@ -28604,10 +28604,10 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261105-4">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261105-5">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261105-4">
-<link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-4">
-<script defer src="/static/ui-feedback.js?v=20261105-4"></script>
+<link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-5">
+<script defer src="/static/ui-feedback.js?v=20261105-5"></script>
 <script defer src="/static/fugle-live.js?v=20261104-3"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
@@ -49540,13 +49540,14 @@ def render_workbench_body(initial_tab=""):
     var turnover=r.turnover==null?null:Number(r.turnover),trend=r.source==='雷達'?('連買 '+valueText(d.streak||r.up_streak,' 日')+'　量能 '+valueText(d.vol_ratio,' 倍')+'　成交金額 '+(turnover==null?'—':turnover.toFixed(1)+' 億')):('法人近十日 '+valueText(r.institutional_lots,' 張')+'　連買 '+valueText(r.buy_days||d.streak,' 日')+'　成交金額 '+(turnover==null?'—':turnover.toFixed(1)+' 億'));
     var flow=r.source==='轉折'?'<small class="wb-turning-flow '+esc(d.flow_key||'unknown')+'">'+esc(r.signal)+'</small>':'',radarRank=r.source==='雷達'?'<span class="wb-radar-rank">雷達第 '+esc(r.radar_rank||'—')+' 名</span>':'';
     var scoreHtml=r.source==='雷達'?'<b class="wb-radar-rule">排序依據</b><small class="wb-score-parts">突破／量能／法人連買／當日漲幅</small>':(r.category==='金融'&&r.score==null?'<b class="wb-score">金融股不評分</b><small class="wb-score-parts">舊版僅列事實供判讀</small>':(r.score==null?'<b class="wb-score">—</b><small class="wb-score-parts">舊版未提供評分拆解</small>':'<b class="wb-score">'+esc(r.score)+'<small>/100 分</small></b><small class="wb-score-parts">'+esc(r.score_policy||d.score_policy||(scoreParts.length?scoreParts.join(' · '):'舊版未提供評分拆解'))+'</small>'));
+    var radarCriteria=r.source==='雷達'?'<small class="wb-radar-criteria">依突破、量能、法人連買與當日漲幅排序</small>':'';
     var macdLabel=(r.macd_cross||'');
     var macdClass=macdLabel==='MACD 金叉'?'up':(macdLabel==='MACD 死叉'?'down':'flat');
     var cleanSignal=String(r.signal||'').replace(/(?:・)?MACD (?:金叉|死叉)/g,'').replace(/^・|・$/g,'').trim();
     var signalBlock=cleanSignal?'<span class="wb-signal"><b>'+esc(cleanSignal)+'</b><small>'+valueText(r.turnover,' 成交額')+'</small></span>':'<span class="wb-signal"></span>';
     var macdTag=macdLabel?'<span class="wb-macd '+macdClass+'">'+esc(macdLabel)+'</span>':'';
     var chaseTag=r.chase_risk?'<span class="wb-chase-warning">'+esc(r.chase_risk)+'</span>':'';
-    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-rich-row" onclick="return false" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'" data-row-key="'+esc(r.row_key||'')+'"><span class="wb-row-main"><span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>'+radarRank+'<b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b>'+highStatus+breakout+macdTag+chaseTag+'<small class="wb-industry">'+esc(r.industry)+'</small>'+flow+'<small class="wb-fact-line">'+basics+'</small><small class="wb-fact-line">'+trend+'</small></span><span class="wb-score-block">'+scoreHtml+'</span><span class="wb-price-block"><b class="wb-num">'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span><span class="wb-institutional wb-num"><b>'+esc(inst)+'</b><small>法人近十日</small></span>'+signalBlock+'<span>›</span></button>'+chipBlock(r.code)+'</div>'
+    return '<div class="wb-row-wrap"><button type="button" class="wb-row wb-rich-row" onclick="return false" data-code="'+esc(r.code)+'" data-source="'+esc(r.source)+'" data-row-key="'+esc(r.row_key||'')+'"><span class="wb-row-main"><span class="wb-tag '+esc(r.source)+'">'+esc(r.source)+'</span>'+radarRank+'<b class="wb-name">'+esc(r.code)+'　'+esc(r.name)+'</b>'+highStatus+breakout+macdTag+chaseTag+'<small class="wb-industry">'+esc(r.industry)+'</small>'+flow+radarCriteria+'<small class="wb-fact-line">'+basics+'</small><small class="wb-fact-line">'+trend+'</small></span><span class="wb-score-block">'+scoreHtml+'</span><span class="wb-price-block"><b class="wb-num">'+money(r.price)+'</b><small>'+pct(r.change_pct)+'</small></span><span class="wb-institutional wb-num"><b>'+esc(inst)+'</b><small>法人近十日</small></span>'+signalBlock+'<span>›</span></button>'+chipBlock(r.code)+'</div>'
   }
   function renderTurningRow(r){
     var d=r.detail||{},state=d.state||'observing',stateLabel=state==='invalid'?'失敗':(state==='confirmed'?'已確認':'觀察中'),invalidReasons=Array.isArray(d.invalid_reasons)?d.invalid_reasons.filter(Boolean):[],reasons=(state==='invalid'&&invalidReasons.length?invalidReasons:(Array.isArray(d.reasons)?d.reasons:[])),reason=(state==='invalid'?(invalidReasons[0]||d.state_reason||'原始快照尚未提供具體失敗原因'):(d.state_reason||'轉折細節資料不足'));
