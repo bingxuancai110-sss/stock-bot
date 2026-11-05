@@ -914,5 +914,10 @@
 }
 @media (max-width:360px) {
   #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"]>.wb-price-block {min-width:68px!important}
-  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"] .wb-radar-criteria {font-size:9px!important}
+}
+
+/* Keep the radar list scannable on phones; full factor details remain available
+   in the row's expanded research drawer. */
+@media (max-width:699px) {
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"] .wb-fact-line {display:none!important}
 }
