@@ -921,6 +921,9 @@
 #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.ui-pressed{background:#edf3f8!important;box-shadow:inset 3px 0 #668ba4!important}
 
 /* Radar detail is a type/location reading, not a missing five-factor score. */
+#stockbot-app #stockbot-shell #app-page-content #wb-detail .wb-d-hero-premium{background:#f7f9fb!important;background-image:none!important;color:#233b4b!important;border:1px solid #dbe4eb!important;box-shadow:none!important}
+#stockbot-app #stockbot-shell #app-page-content #wb-detail .wb-d-hero-premium :is(h3,.wb-d-score>b,.wb-d-price>b){color:#233b4b!important;-webkit-text-fill-color:#233b4b!important}
+#stockbot-app #stockbot-shell #app-page-content #wb-detail .wb-d-hero-premium :is(.wb-d-label,h3 small,p,.wb-d-hero-meta,.wb-d-score>span){color:#566c7b!important;-webkit-text-fill-color:#566c7b!important}
 #stockbot-app #stockbot-shell #app-page-content #wb-detail .wb-d-score-note{display:block;margin-top:5px;max-width:210px;color:#627786;font-size:10px;line-height:1.45;font-weight:650}
 #stockbot-app #stockbot-shell #app-page-content #wb-detail .wb-d-score>b{overflow-wrap:anywhere}
 

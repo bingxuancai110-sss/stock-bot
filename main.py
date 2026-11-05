@@ -11186,7 +11186,18 @@ RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 4
 def _background_work_memory_safe(reserve_mb=160):
     """Keep optional market scans away from the web process memory ceiling."""
     try:
-        rss_mb = _current_process_rss_bytes() / (1024 * 1024)
+        used_bytes = _current_process_rss_bytes()
+        # Render limits the whole container, not just this Gunicorn worker.
+        # Include other workers and charged buffers when cgroup data is available.
+        for memory_path in ("/sys/fs/cgroup/memory.current",
+                            "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+            try:
+                with open(memory_path, "r", encoding="utf-8") as memory_file:
+                    used_bytes = max(used_bytes, int(memory_file.read().strip()))
+                break
+            except (OSError, ValueError):
+                continue
+        rss_mb = used_bytes / (1024 * 1024)
         limit_mb = float(globals().get("RENDER_MEMORY_LIMIT_MB", 512) or 512)
         safe = rss_mb < max(180.0, limit_mb - float(reserve_mb))
         if not safe:
@@ -13185,6 +13196,20 @@ def _score_validation(mode, days=180, code=None):
         result['verdict']='只有在成熟樣本、推薦日分散且高低分組各至少10筆時，才把分數差異當成調權重依據。'
     return result
 
+def _review_price_map(codes, span):
+    """Abort optional research between bounded batches; never publish partial statistics."""
+    price_map = {}
+    codes = list(dict.fromkeys(codes))
+    for offset in range(0, len(codes), 4):
+        if not _background_work_memory_safe(reserve_mb=160):
+            raise RuntimeError("成效統計暫緩：保留網頁服務記憶體，未發布部分統計")
+        price_map.update(get_realtime_stocks_bulk(
+            codes[offset:offset + 4], workers=1, rng=span) or {})
+    if not _background_work_memory_safe(reserve_mb=160):
+        raise RuntimeError("成效統計暫緩：保留網頁服務記憶體，未發布部分統計")
+    return price_map
+
+
 def evaluate_picks(mode, days=90):
     """
     計算選股成效：把每一筆推薦的當時價格跟現價比，並依「推薦後經過幾天」分組。
@@ -13205,8 +13230,7 @@ def evaluate_picks(mode, days=90):
     # 除權息當天股價機械性下跌，用未還原價比較會把配息記成虧損，
     # 而 8～9 月正是台股除權息旺季，不修正會系統性低估成效。
     span = "1y" if days > 120 else "6mo"
-    price_map = get_realtime_stocks_bulk(
-        list({p["code"] for p in picks}), workers=1, rng=span)
+    price_map = _review_price_map(list({p["code"] for p in picks}), span)
     today = taiwan_today()
 
     def pick_return(code, pick_date, raw_price):
@@ -28606,7 +28630,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261105-8">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261105-5">
-<link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-7">
+<link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
 <script defer src="/static/ui-feedback.js?v=20261105-6"></script>
 <script defer src="/static/fugle-live.js?v=20261105-2"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
@@ -50105,6 +50129,8 @@ function bindFactors(){
     if(state.loadedSources[source]&&!forceRefresh)return;
     state.snapshotRetryCounts[source]=0;
     status.textContent='正在載入 '+source+' 快照…';
+    count.textContent='正在讀取 '+source+'，完成後顯示筆數';
+    note.textContent='只讀取已保存快照；切換分類不重新掃描市場。';
     rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
     fetchWorkbenchSource(source, !!forceRefresh).then(function(){
       if(state.source===source && loadEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer){

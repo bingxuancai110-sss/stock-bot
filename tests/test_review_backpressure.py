@@ -4,6 +4,7 @@ from pathlib import Path
 import threading
 import unittest
 from unittest.mock import Mock
+from unittest.mock import patch, mock_open
 
 
 class ReviewBackpressureTests(unittest.TestCase):
@@ -13,7 +14,8 @@ class ReviewBackpressureTests(unittest.TestCase):
         cls.compiled = {}
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name in {
-                '_start_workbench_review_background_refresh', 'evaluate_picks'
+                '_start_workbench_review_background_refresh', 'evaluate_picks',
+                '_review_price_map', '_background_work_memory_safe'
             }:
                 cls.compiled[node.name] = compile(ast.Module(body=[node], type_ignores=[]), '<actual-review>', 'exec')
 
@@ -66,9 +68,42 @@ class ReviewBackpressureTests(unittest.TestCase):
             pass
         picks = [{'code': str(i)} for i in range(200)]
         bulk = Mock(side_effect=Captured)
-        ns = dict(get_picks_since=lambda *args: picks, get_realtime_stocks_bulk=bulk)
+        ns = dict(get_picks_since=lambda *args: picks, get_realtime_stocks_bulk=bulk,
+                  _background_work_memory_safe=Mock(return_value=True))
+        exec(self.compiled['_review_price_map'], ns)
         exec(self.compiled['evaluate_picks'], ns)
         with self.assertRaises(Captured):
             ns['evaluate_picks']('radar')
-        self.assertEqual(set(bulk.call_args.args[0]), {p['code'] for p in picks})
+        self.assertEqual(len(bulk.call_args.args[0]), 4)
         self.assertEqual(bulk.call_args.kwargs, {'workers': 1, 'rng': '6mo'})
+
+    def test_bounded_batches_keep_all_symbols_when_memory_is_available(self):
+        codes = [str(i) for i in range(200)]
+        bulk = Mock(side_effect=lambda batch, **kwargs: {code: {'close': 10} for code in batch})
+        ns = dict(get_realtime_stocks_bulk=bulk, _background_work_memory_safe=Mock(return_value=True))
+        exec(self.compiled['_review_price_map'], ns)
+        result = ns['_review_price_map'](codes, '6mo')
+        self.assertEqual(set(result), set(codes))
+        self.assertEqual(bulk.call_count, 50)
+        self.assertTrue(all(len(call.args[0]) <= 4 for call in bulk.call_args_list))
+
+    def test_memory_pressure_mid_download_does_not_return_partial_statistics(self):
+        bulk = Mock(return_value={'2330': {'close': 10}})
+        ns = dict(get_realtime_stocks_bulk=bulk,
+                  _background_work_memory_safe=Mock(side_effect=[True, False]))
+        exec(self.compiled['_review_price_map'], ns)
+        with self.assertRaisesRegex(RuntimeError, '未發布部分統計'):
+            ns['_review_price_map']([str(i) for i in range(8)], '6mo')
+        self.assertEqual(bulk.call_count, 1)
+
+    def test_container_memory_is_checked_even_when_worker_rss_is_low(self):
+        ns = dict(_current_process_rss_bytes=lambda: 180 * 1024**2, RENDER_MEMORY_LIMIT_MB=512)
+        exec(self.compiled['_background_work_memory_safe'], ns)
+        with patch('builtins.open', mock_open(read_data=str(420 * 1024**2))):
+            self.assertFalse(ns['_background_work_memory_safe']())
+
+    def test_unavailable_cgroup_falls_back_to_worker_rss(self):
+        ns = dict(_current_process_rss_bytes=lambda: 200 * 1024**2, RENDER_MEMORY_LIMIT_MB=512)
+        exec(self.compiled['_background_work_memory_safe'], ns)
+        with patch('builtins.open', side_effect=FileNotFoundError):
+            self.assertTrue(ns['_background_work_memory_safe']())
