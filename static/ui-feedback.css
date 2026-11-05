@@ -97,8 +97,8 @@ html body .app-bottom-nav a.ui-pressed{transform:scale(.95)!important;background
    remains reserved for price direction and gain/loss values. */
 #stockbot-app #stockbot-shell #app-page-content .ui-selected-control{background:#e5eef5!important;background-image:none!important;border-color:#8aaabd!important;color:#244e69!important;-webkit-text-fill-color:#244e69!important;box-shadow:inset 0 -2px 0 #668ba4!important}
 #stockbot-app #stockbot-shell #app-page-content .ui-selected-control :is(strong,small,em,span){color:inherit!important;-webkit-text-fill-color:inherit!important}
-#stockbot-app #stockbot-shell #app-page-content .ui-selected-control :is(.up,.us-positive,.wb-up){color:var(--sb-feedback-up)!important;-webkit-text-fill:currentColor!important}
-#stockbot-app #stockbot-shell #app-page-content .ui-selected-control :is(.down,.us-negative,.wb-down){color:var(--sb-feedback-down)!important;-webkit-text-fill:currentColor!important}
+#stockbot-app #stockbot-shell #app-page-content .ui-selected-control :is(.up,.us-positive,.wb-up){color:var(--sb-feedback-up)!important;-webkit-text-fill-color:currentColor!important}
+#stockbot-app #stockbot-shell #app-page-content .ui-selected-control :is(.down,.us-negative,.wb-down){color:var(--sb-feedback-down)!important;-webkit-text-fill-color:currentColor!important}
 #stockbot-app #stockbot-shell #app-page-content #stockbot-workbench :is(.wb-tabs button.on,.wb-mobile-sort button.on,.wb-filter-panel button.on,.wb-asset-tabs button.on){background:#e5eef5!important;color:#244e69!important;border-color:#8aaabd!important;-webkit-text-fill-color:#244e69!important}
 #stockbot-app #stockbot-shell #app-page-content .allocation-item[aria-pressed=true],
 #stockbot-app #stockbot-shell #app-page-content .ui-allocation-selected{background:#edf3f8!important;border-color:#88a9bf!important;color:#244e69!important;box-shadow:inset 3px 0 #668ba4!important}
