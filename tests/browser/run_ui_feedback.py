@@ -19,6 +19,9 @@ with sync_playwright() as p:
   u=urlparse(r.request.url);query=parse_qs(u.query);requests.append((r.request.method,u.path,query))
   if u.path.startswith('/static/'):
    file=REPO/u.path.lstrip('/');r.fulfill(body=file.read_text(),content_type='text/css' if file.suffix=='.css' else 'application/javascript');return
+  # Fixture accounts have no personal quote credentials. Return the real denied
+  # contract instead of HTML, which otherwise causes retries during navigation.
+  if u.path=='/web/quote-lab/app-config':r.fulfill(status=403,json=dict(ok=False));return
   if '/api/workbench/strategy-lab' in u.path:r.fulfill(json=dict(ok=True,active_strategy='四因子複合',strategy_library=[dict(key=k,available=True,status_label='可運作') for k in ['四因子複合','營收動能','價格動能']],strategy_data={},factors=[],reference={}));return
   if u.path=='/web/api/us-rotation':r.fulfill(json=populated_payload(REPO) if state['us_populated'] else dict(snapshot=None,tw_research={},history=[],supply_chain=[],industry_guides={},tw_companies=[],risk_profiles=[],stop_profiles=[],signal_explanations={},signal_trends={}));return
   if u.path=='/web/market/drawings':r.fulfill(json=dict(ok=True,id='fixture-drawing-'+str(state.get('drawing_count',0)+1),drawings=[]));state['drawing_count']=state.get('drawing_count',0)+1;return
