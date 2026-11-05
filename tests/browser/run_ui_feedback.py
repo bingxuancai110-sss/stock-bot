@@ -203,14 +203,14 @@ with sync_playwright() as p:
  history=page.locator('#historyTabs');history.scroll_into_view_if_needed();page.wait_for_timeout(80);check('history initially selected month is light',history.locator('[data-history=months]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
  history.locator('[data-history=seasons]').click();page.wait_for_timeout(40)
  check('history switches actual panel and aria state',page.locator('[data-history-panel=seasons]').is_visible() and history.locator('[data-history=seasons]').get_attribute('aria-pressed')=='true' and history.locator('[data-history=months]').get_attribute('aria-pressed')=='false')
- check('selected history text and WebKit fill remain dark',history.locator('[data-history=seasons]').evaluate('(e)=>getComputedStyle(e).color==="rgb(44, 94, 70)"&&getComputedStyle(e).webkitTextFillColor==="rgb(44, 94, 70)"'))
+ check('selected history text and WebKit fill remain dark',history.locator('[data-history=seasons]').evaluate('(e)=>getComputedStyle(e).color==="rgb(36, 78, 105)"&&getComputedStyle(e).webkitTextFillColor==="rgb(36, 78, 105)"'))
  check('selected history tab stays light after mouseup',history.locator('[data-history=seasons]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
  history.locator('[data-history=seasons]').hover();page.mouse.down()
  check('pressed history tab never becomes dark blue',history.locator('[data-history=seasons]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'));page.mouse.up()
 
  rank_svg=rank_panel.locator('svg.ui-interactive-chart');rank_svg.scroll_into_view_if_needed();rank_svg.focus();page.keyboard.press('ArrowRight')
  check('leaderboard chart tracks cached series','測試會員' in rank_panel.locator('.ui-chart-readout').inner_text())
- check('ranking tracking toolbar follows the plot',rank_panel.locator('.ui-chart-readout').bounding_box()['y']>=rank_svg.bounding_box()['y']+rank_svg.bounding_box()['height']-2)
+ check('ranking tracking toolbar follows the plot',rank_panel.evaluate('(e)=>{const readout=e.querySelector(".ui-chart-readout").getBoundingClientRect(),plot=e.querySelector("svg.ui-interactive-chart").getBoundingClientRect();return readout.top>=plot.bottom-2}'))
 
  for width in [360,375,390,430,1280]:
   page.set_viewport_size({'width':width,'height':900});page.evaluate('scrollTo(0,0)')

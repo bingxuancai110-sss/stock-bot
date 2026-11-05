@@ -33094,7 +33094,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
 </form>
 </section>
 </dialog>
-<script src="/static/portfolio-v2.js?v=20261104-4" defer></script>
+<script src="/static/portfolio-v2.js?v=20261105-5" defer></script>
 </div>"""
     body += '''<script>
 (function(){
