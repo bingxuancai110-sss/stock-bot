@@ -1007,8 +1007,8 @@ body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 > .hv2-sec.f
   position: relative !important;
   overflow: hidden !important;
   padding: 19px 21px 18px !important;
-  background: linear-gradient(112deg, #244f68 0%, #2e6d7b 68%, #48847e 100%) !important;
-  box-shadow: 0 10px 26px rgba(27,72,89,.13) !important;
+  background: #204f61 !important;
+  box-shadow: none !important;
 }
 body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 .hv2-sec:not(.first) {
   transition: background-color .18s ease !important;
@@ -1023,6 +1023,23 @@ body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 .home-impact
 body#stockbot-app[data-app-view="portfolio"] #app-page-content #hv2 .home-impact-card + .home-impact-card {
   border-left: 1px solid var(--sb-app-line) !important;
   padding-left: 12px !important;
+}
+@media(max-width:699px){
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .hv2-feature-launcher{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .hv2-feature-launcher>a{display:flex!important;flex-direction:column!important;justify-content:center!important;gap:6px!important;min-height:72px!important;padding:6px 0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;text-align:center!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .hv2-feature-launcher>a>span{flex:none!important;align-items:center!important;gap:0!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .hv2-feature-launcher>a b{font-size:11px!important;line-height:1.3!important;white-space:nowrap!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .hv2-feature-launcher>a :is(small,em){display:none!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .hv2-feature-launcher i{width:32px!important;height:32px!important;border-radius:10px!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .home-impact-highlights{display:block!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .home-impact-card{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;align-items:center!important;gap:2px 12px!important;min-height:68px!important;padding:10px 0!important;border:0!important;border-bottom:1px solid var(--sb-app-line)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .home-impact-card h3{grid-column:1!important;grid-row:1!important;margin:0!important;font-size:15px!important;line-height:1.35!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .home-impact-card-label{grid-column:1!important;grid-row:2!important;font-size:10px!important;line-height:1.4!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .home-impact-card-label i{display:none!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .home-impact-number{grid-column:2!important;grid-row:1/4!important;display:flex!important;flex-direction:column!important;align-items:flex-end!important;gap:2px!important;line-height:1.2!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .home-impact-number b{font-size:23px!important;line-height:1.15!important;font-variant-numeric:tabular-nums!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .home-impact-number small{font-size:10px!important}
+  body#stockbot-app[data-app-view="portfolio"] #stockbot-shell #app-page-content #hv2 .home-impact-card p{grid-column:1!important;grid-row:3!important;margin:0!important;font-size:10px!important;line-height:1.4!important;color:var(--sb-app-muted)!important}
 }
 
 /* Market: separate the quote board from chart controls with compact rails. */

@@ -276,7 +276,11 @@ with sync_playwright() as p:
  check('late write completion provides visible outcome',post.locator('.ui-global-status').is_visible())
  post.close();state['post']='success'
  # Existing homepage custom expansions and privacy participate in the shared layer.
- ready('/web/portfolio');group=page.locator('.hv2-g-up');group.locator('[data-hv2-more]').click()
+ page.set_viewport_size({'width':390,'height':844});ready('/web/portfolio')
+ check('homepage asset anchor uses a flat color',page.locator('#hv2>.first').evaluate('(e)=>getComputedStyle(e).backgroundImage==="none"&&getComputedStyle(e).boxShadow==="none"'))
+ check('phone home keeps four reachable quick actions in one row',page.locator('.hv2-feature-launcher').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===4&&[...e.querySelectorAll("a")].length===4&&[...e.querySelectorAll("a")].every(x=>x.getBoundingClientRect().height>=44)'))
+ check('phone impact highlights read as continuous rows',page.locator('.home-impact-card').evaluate_all('(es)=>es.length===2&&es.every(e=>getComputedStyle(e).display==="grid"&&getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none")'))
+ group=page.locator('.hv2-g-up');group.locator('[data-hv2-more]').click()
  check('homepage custom more state retained',group.locator('[data-home-chart-row]:visible').count()==4 and group.locator('[data-hv2-more]').get_attribute('aria-expanded')=='true')
  row=group.locator('[data-home-chart-row]').first;row.click();check('homepage calculation details still open',row.get_attribute('aria-expanded')=='true')
  page.locator('[data-home-impact-mode=stock]').click();check('homepage period uses its actual cached percentage','%' in row.locator('strong').inner_text())
@@ -332,6 +336,8 @@ with sync_playwright() as p:
  check('closed screener drawer does not expand the phone layout viewport',page.evaluate('({width})=>innerWidth<=width+1&&document.documentElement.scrollWidth<=width+1',dict(width=page.viewport_size['width'])))
  check('screener bottom navigation stays in the visible phone viewport',page.locator('.app-bottom-nav').evaluate('(e)=>{const r=e.getBoundingClientRect();return r.right<=document.documentElement.clientWidth+1&&r.bottom<=visualViewport.height+1}'))
  page.wait_for_selector('#wb-rows .wb-row')
+ check('phone screener quote row keeps a compact three-column summary',page.locator('#wb-rows .wb-rich-row').first.evaluate('(e)=>{const s=getComputedStyle(e),r=e.getBoundingClientRect();return s.gridTemplateColumns.split(" ").length===3&&r.height>=64&&r.height<=120&&getComputedStyle(e.querySelector(".wb-fact-line")).display==="none"}'))
+ check('phone screener keeps price and score visible',page.locator('#wb-rows .wb-row').first.locator('.wb-price-block').is_visible() and page.locator('#wb-rows .wb-row').first.locator('.wb-score-block').is_visible())
  page.locator('#wb-rows .wb-row').first.click()
  page.wait_for_function('getComputedStyle(document.querySelector("#wb-drawer")).visibility==="visible"')
  check('opened screener drawer is visible inside the phone viewport',page.locator('#wb-drawer').evaluate('(e)=>getComputedStyle(e).visibility==="visible"&&e.getBoundingClientRect().right<=document.documentElement.clientWidth+1'))

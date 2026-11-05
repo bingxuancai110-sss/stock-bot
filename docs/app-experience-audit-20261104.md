@@ -166,3 +166,22 @@ Commit `23f87d5` became live on Render at 2026-11-04 14:32:58 UTC (PR #74).
   are the next visual corrections; existing detail/data paths must remain reachable.
 - `app-shell.css` and `ui-feedback.css` versions are `20261105-3`; portfolio CSS
   remains `20261105-4`. This branch has not been deployed.
+
+## Homepage and screener density — 2026-11-05
+
+- Replaced the homepage asset gradient/shadow with a flat deep-teal surface.
+  Phone quick actions occupy one four-item row with original destinations and
+  touch targets; their redundant subtitles and arrows are visually suppressed.
+- Phone contribution highlights are now continuous name/value rows rather than
+  two bordered cards. Existing contribution/stock-percentage toggles, expand,
+  sort, privacy and source/status information remain available.
+- Standard phone screener rows now prioritize name, industry, price/change and
+  score. Detailed fundamental/institutional lines stay available through the
+  existing detail drawer; desktop rows and specialized strategy/ETF views keep
+  their layouts. The meaningful signal note remains below the compact quote row.
+- Both Chromium and WebKit passed 183 isolated interaction checks with no page
+  errors, including the real screener detail open/close path. Refreshed and
+  inspected the seven phone captures. The final signal-note alignment is a CSS
+  presentation adjustment; production browser/device validation remains pending.
+- Workbench stylesheet version is `20261105-4`. No financial calculation,
+  transaction, LINE, data-source or database change accompanies these CSS edits.
