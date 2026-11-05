@@ -54,6 +54,7 @@
 #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .portfolio-trend-card{margin:20px 0 24px!important;padding:0!important;border:0!important;border-top:1px solid var(--p2-line)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
 #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .portfolio-trend-card .section-head{margin:0!important;padding:19px 0 7px!important;border:0!important}
 #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .portfolio-trend-card .section-head h2{font-size:19px!important;color:#22262a!important}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .section-head::before{display:none!important;content:none!important}
 #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .portfolio-chart-about{margin:0 0 12px!important;color:#6f747a!important;font-size:11px!important}
 #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-history-v2{margin:20px 0 24px;border-top:1px solid var(--p2-line)}
 #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-tabs{display:flex;gap:5px;margin:14px 0 8px;padding:4px;border-radius:12px;background:#f0f1f2}
@@ -138,14 +139,6 @@
   #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-dialog{position:fixed;inset:auto 0 0;margin:0;width:100%;max-width:none;max-height:94vh;max-height:94dvh;border:0;border-radius:20px 20px 0 0;box-shadow:0 -12px 44px rgba(16,24,32,.2);}
   #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-trade-sheet{padding:18px 18px calc(20px + env(safe-area-inset-bottom,0px))}
 }
-@media(prefers-reduced-motion:reduce){#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 *{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
-
-/* Keep the legacy desktop portfolio grid intact; only change the cramped
-   phone layout, where three/two-column tiles make names and prices unreadable. */
-#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title h3::before {
-  display:none!important;
-  content:none!important;
-}
 
 /* Phone holdings use a single compact quote row and aligned metrics. The
    legacy shell otherwise moves price onto a second row and stretches P/L. */
@@ -215,11 +208,13 @@
      then the compact cost / realized / position-count figures. */
   #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals {
     grid-template-columns:repeat(3,minmax(0,1fr))!important;
+    grid-template-areas:none!important;grid-template-rows:none!important;
     gap:0!important;overflow:hidden!important;padding:0!important;
     border:1px solid #dce5e3!important;border-radius:16px!important;
     background:#fff!important;box-shadow:0 2px 8px rgba(24,51,62,.035)!important;
   }
   #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div {
+    grid-area:auto!important;
     min-width:0!important;padding:10px 9px!important;border:0!important;
     border-bottom:1px solid #edf1ef!important;
   }
@@ -255,4 +250,50 @@
   #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:nth-child(n+4) .total-label {font-size:10px!important;white-space:nowrap!important}
   #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:nth-child(n+4) .total-value {font-size:13px!important;line-height:1.25!important;overflow-wrap:anywhere!important}
   #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .totals>div:nth-child(n+4) .total-sub {font-size:9px!important;line-height:1.25!important}
+}
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 :is(.p2-inline-code,.p2-list-return,.p2-list-columns){display:none!important}
+/* Phone holdings read as a brokerage list. The full figures stay in each
+   expanded holding; the closed row keeps the primary comparison visible. */
+@media(max-width:760px){
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-holdings-toolbar label{white-space:nowrap!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .allocation-selection:not(:has(button)){padding:3px 0!important;margin:5px 0 0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .allocation-selection:not(:has(button)) :is(span,small){display:none!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .allocation-selection:not(:has(button)) strong{font-size:11px!important;font-weight:400!important;color:var(--p2-muted)!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-holdings-toolbar select{min-width:0!important;flex:1!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-list-columns{display:grid!important;grid-template-columns:minmax(0,1fr) 88px 76px!important;align-items:center!important;padding:8px 2px!important;color:var(--p2-muted)!important;font-size:10px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-list-columns>span:not(:first-child){text-align:right!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .rows>.position-card{padding:0!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-top{min-height:70px!important;padding:10px 2px!important;gap:8px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-code{display:none!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title{align-items:flex-start!important;gap:0!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title>div{display:flex!important;min-width:0!important;flex-direction:column!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title h3{font-size:14px!important;line-height:1.3!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title small{margin-top:2px!important;font-size:10px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-inline-code{display:inline!important;color:#80888f!important;font-variant-numeric:tabular-nums!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price{display:grid!important;grid-template-columns:88px 76px!important;align-items:center!important;gap:0!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price b{grid-column:1!important;grid-row:1!important;font-size:14px!important;line-height:1.2!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price [data-position-pct]{display:none!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price .p2-list-return{display:block!important;grid-column:2!important;grid-row:1!important;margin:0!important;font-size:12px!important;font-style:normal!important;font-weight:700!important;font-variant-numeric:tabular-nums!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card:has(.position-more[open]) .position-card-price [data-position-pct]{display:block!important;grid-column:1/-1!important;grid-row:2!important;justify-self:end!important;margin-top:4px!important;font-size:10px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card:has(.position-more[open]) .position-card-price [data-position-pct]:not(.is-limit-board):before{content:'今日 ';font-weight:400}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price [data-position-pct].is-limit-board{display:block!important;grid-column:1/-1!important;justify-self:end!important;margin-top:4px!important;font-size:10px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price .p2-list-return.up{color:var(--p2-red)!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price .p2-list-return.down{color:var(--p2-green)!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary,
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-weight-track{display:none!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card:has(.position-more[open]) .position-card-primary{display:grid!important;padding:9px 0!important;border-top:1px solid var(--p2-line)!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card:has(.position-more[open]) .p2-weight-track{display:block!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-more{margin:0!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-more>summary{position:absolute!important;width:100%!important;height:70px!important;inset:0 0 auto!important;padding:0!important;border:0!important;color:transparent!important;font-size:0!important;overflow:hidden!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card{position:relative!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-more>summary:after{position:absolute!important;right:2px!important;bottom:3px!important;color:#92999c!important;font-size:13px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-more[open]>summary{height:70px!important}
+}
+@media(prefers-reduced-motion:reduce){#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 *{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
+
+/* Keep the legacy desktop portfolio grid intact; only change the cramped
+   phone layout, where three/two-column tiles make names and prices unreadable. */
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title h3::before {
+  display:none!important;
+  content:none!important;
 }

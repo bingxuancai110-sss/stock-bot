@@ -113,3 +113,28 @@ Commit `23f87d5` became live on Render at 2026-11-04 14:32:58 UTC (PR #74).
   real screener row click opened the actual stock-detail renderer, and the real
   close button restored the list. This verifies the interaction path using
   isolated input data; production account data remains unverified.
+
+## Mobile holdings refinement — 2026-11-05
+
+- Closed phone holdings now use compact rows with aligned price and holding-return
+  columns. The entire row opens the original detail disclosure; complete figures,
+  daily change, research, buy and sell controls remain available when expanded.
+  Desktop tiles keep their existing layout. Confirmed limit-board badges remain
+  visible even on closed rows.
+- Reset inherited named grid areas in the mobile asset summary. The legacy areas
+  placed total value and unrealized P/L on the same row, and overlapped position
+  count with today's P/L. Added geometric overlap verification rather than relying
+  only on column widths.
+- The privacy restoration attribute used `fmt_pct`, which returns HTML. Replaced
+  that attribute value with plain formatted text, preserving the financial value.
+- Quote updates now synchronize every repeated value, return and weight field;
+  the expanded market value also has its update binding. Missing values have no
+  positive/negative color. Calculations and transaction handling are unchanged.
+- The fixture now includes the actual outer performance-chart wrapper. That
+  exposed duplicate `portfolio-trend` IDs; the outer section now has a separate ID
+  and the chart keeps its existing interaction root.
+- Chromium and WebKit each passed 157 isolated interaction checks with no page
+  errors. The nine position-submission regression tests passed. These are local
+  renderer/fixture results, not signed-in production or iPhone device validation.
+- Portfolio stylesheet version is `20261105-4`. Changes remain in PR #80; the
+  seven-page production visual comparison remains outstanding.

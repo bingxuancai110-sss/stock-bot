@@ -32303,7 +32303,7 @@ def web_positions(uid):
         if succeeded is None:
             succeeded = str(message or "").lstrip().startswith("✅")
         body = (
-            '<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261105-3">'
+            '<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261105-4">'
             f'<section class="p2-trade-result {"waiting" if pending else "success" if succeeded else "error"}" role="status">'
             f'<span class="p2-result-mark" aria-hidden="true">{"…" if pending else "✓" if succeeded else "!"}</span>'
             f'<h2>{"結果待確認" if pending else "記帳完成" if succeeded else "操作未完成"}</h2>'
@@ -32734,11 +32734,11 @@ def web_positions(uid):
   <div class="position-card-top">
     <div class="position-card-title">
       <span class="position-card-code">{html.escape(str(p['code']))}</span>
-      <div><h3>{name}</h3><small><span class="position-lot-size">{p['shares']:,} 股</span><span class="position-held-days">{f'持有 {held} 天' if held is not None else '持有天數未提供'}</span></small></div>
+      <div><h3>{name}</h3><small><span class="p2-inline-code">{html.escape(str(p['code']))}</span><span class="position-lot-size">{p['shares']:,} 股</span><span class="position-held-days">{f'持有 {held} 天' if held is not None else '持有天數未提供'}</span></small></div>
     </div>
     <div class="position-card-price">
       <b class="num {day_cls}" data-position-price="1">{price['close']:,.2f}</b>
-      <span class="{day_cls}{' is-limit-board' if limit_state in ('up', 'down') else ''}" data-position-pct="1" data-limit-state="{limit_state or ''}" data-limit-known="{'1' if limit_known else '0'}" data-limit-label="{'漲停' if limit_state == 'up' else '跌停' if limit_state == 'down' else ''}">{price['pct']:+.2f}%</span>
+      <span class="{day_cls}{' is-limit-board' if limit_state in ('up', 'down') else ''}" data-position-pct="1" data-limit-state="{limit_state or ''}" data-limit-known="{'1' if limit_known else '0'}" data-limit-label="{'漲停' if limit_state == 'up' else '跌停' if limit_state == 'down' else ''}">{price['pct']:+.2f}%</span><em class="p2-list-return {net_cls}" data-position-net-pct>{net_pct_text}</em>
     </div>
   </div>
   <div class="position-card-primary">
@@ -32753,7 +32753,7 @@ def web_positions(uid):
       <div class="position-card-grid">
         <div><small>成本／股</small><b>{p['cost']:,.2f}</b></div>
         <div><small>總持有成本</small><b>{cost_total:,.0f}</b></div>
-        <div><small>目前市值</small><b>{value:,.0f}</b></div>
+        <div><small>目前市值</small><b data-position-value>{value:,.0f}</b></div>
         <div><small>估算賣出淨損益</small><b class="{net_cls}" data-position-net>{net_amt:+,.0f}</b><em data-position-net-pct>{net_pct_text}</em></div>
         <div><small>目前權重</small><b data-position-weight>{weight:.1f}%</b></div>
         <div><small>最近買進日期</small><b>{html.escape(_last_position_trade_text)}</b></div>
@@ -32839,7 +32839,7 @@ def web_positions(uid):
   <div><div class="total-label">未實現損益</div>
        <div data-fugle-total="net_pl" data-home-sensitive data-home-original="{total_value - total_cost - total_fee:+,.0f}" class="total-value num {('up' if total_value - total_cost - total_fee >= 0 else 'down') if _p2_valuation_complete else 'flat'}">
          {f'{total_value - total_cost - total_fee:+,.0f}' if _p2_valuation_complete else '—'}</div>
-       <div class="total-sub" data-home-sensitive data-home-original="{f'報酬率 {fmt_pct(pl_total)}' if _p2_valuation_complete else '行情不完整，暫不計算'}" style="color:var(--ink-faint)">
+       <div class="total-sub" data-home-sensitive data-home-original="{f'報酬率 {pl_total:+.2f}%' if _p2_valuation_complete else '行情不完整，暫不計算'}" style="color:var(--ink-faint)">
          {f'報酬率 {fmt_pct(pl_total)}' if _p2_valuation_complete else '行情不完整，暫不計算'}</div></div>
   <div><div class="total-label">今日損益</div>
        <div data-fugle-total="day_pl" data-home-sensitive data-home-original="{total_day_pl:+,.0f}" class="total-value num {'up' if total_day_pl >= 0 else 'down' if _p2_valuation_complete else 'flat'}">
@@ -32893,7 +32893,7 @@ def web_positions(uid):
         print(f"⚠️ 持股頁組合走勢載入失敗: {exc}")
         position_trend_html = '<div class="empty">組合走勢暫時無法載入，請稍後再試。</div>'
     portfolio_trend_html = f"""
-<section class="portfolio-chart-card portfolio-trend-card" id="portfolio-trend">
+<section class="portfolio-chart-card portfolio-trend-card" id="portfolio-performance-section">
   <div class="section-head"><h2>組合 vs 加權指數</h2>
     <span class="section-note">相對起始日漲跌幅</span></div>
   <details class="portfolio-chart-about"><summary>績效計算方式</summary><p class="portfolio-chart-note">同一張圖比較你的組合與台灣加權指數。組合採時間加權報酬，加碼與贖回不影響曲線；除權當天股價機械性下跌但股數尚未調整，那一天會持平不計入。若快照不足兩天，會明確顯示資料累積狀態。</p></details>
@@ -33031,7 +33031,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
     _p2_history_html = "".join(_p2_history_rows) or '<li class="p2-empty">目前沒有可辨識的已出清持股紀錄。</li>'
 
     body = f"""
-<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261105-3">
+<link rel="stylesheet" href="/static/portfolio-v2.css?v=20261105-4">
 <div id="portfolio-v2">
 {holding_card_css}
 {f'<div class="msg">{msg}</div>' if msg else ''}
@@ -33051,6 +33051,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
 <div class="p2-holdings-toolbar"><label for="p2-sort">排序</label><select id="p2-sort" data-p2-sort aria-label="持股排序">
  <option value="weight">權重由高到低</option><option value="pl">損益金額</option><option value="pct">損益百分比</option><option value="value">持股市值</option><option value="name">股票名稱</option>
 </select></div>
+<div class="p2-list-columns" aria-hidden="true"><span>標的</span><span>現價</span><span>持有報酬</span></div>
 <div class="rows">
 {''.join(rows_html) if rows_html else '<div class="empty">還沒有持股紀錄，用下方表單新增。</div>'}
 </div>
@@ -33334,7 +33335,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
       (data.updates||[]).forEach(function(item){
         if(!Object.prototype.hasOwnProperty.call(item,'value'))return;
         var row=document.querySelector('[data-position-code="'+item.code+'"]');if(!row)return;
-        function put(selector,value,digits,percent){var el=row.querySelector(selector);if(!el)return;el.textContent=value==null?'—':(percent?(selector.indexOf('weight')>=0?numberText(value,digits):signedText(value,digits))+'%':numberText(value,digits));if(selector.indexOf('gross')>=0||selector.indexOf('net')>=0){el.classList.toggle('up',value>=0);el.classList.toggle('down',value<0);}}
+        function put(selector,value,digits,percent){row.querySelectorAll(selector).forEach(function(el){var valid=value!=null&&Number.isFinite(Number(value));el.textContent=!valid?'—':(percent?(selector.indexOf('weight')>=0?numberText(value,digits):signedText(value,digits))+'%':numberText(value,digits));if(selector.indexOf('gross')>=0||selector.indexOf('net')>=0){el.classList.toggle('up',valid&&value>=0);el.classList.toggle('down',valid&&value<0);}});}
         put('[data-position-value]',item.value,0);put('[data-position-net]',item.net_pl,0);put('[data-position-net-pct]',item.net_pct,2,true);put('[data-position-weight]',item.weight,1,true);
         row.dataset.sortValue=String(item.value||0);row.dataset.sortPl=String(item.net_pl||0);row.dataset.sortPct=String(item.net_pct||0);row.dataset.sortWeight=String(item.weight||0);
         var track=row.querySelector('.p2-weight-track i');if(track)track.style.width=Math.max(0,Math.min(100,Number(item.weight)||0))+'%';

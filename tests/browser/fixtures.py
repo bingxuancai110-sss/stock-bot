@@ -28,7 +28,7 @@ pts=[]
 for i in range(80):
  d=date(2026,7,15)+timedelta(days=i)
  if d.weekday()<5:pts.append(dict(date=d,value=10000+i*50,cost=10000,taiex=22000+i*15))
-local['portfolio_trend_html']=ns['render_trend_chart'](pts)
+local['position_trend_html']=ns['render_trend_chart'](pts)
 fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='web_positions')
 trade_result=next(n for n in fn.body if isinstance(n,ast.FunctionDef) and n.name=='trade_result_response')
 compile_node(trade_result,local)
@@ -37,7 +37,7 @@ root.joinpath('trade-success.html').write_text(local['trade_result_response']('â
 x=ast.parse(''.join(lines[fn.lineno-1:fn.end_lineno])).body[0]
 for node in x.body:
  selected=isinstance(node,ast.For) and any(isinstance(a,ast.Call) and isinstance(a.func,ast.Attribute) and isinstance(a.func.value,ast.Name) and a.func.value.id=='rows_html' and a.func.attr=='append' for a in ast.walk(node))
- selected=selected or isinstance(node,ast.Assign) and any(getattr(t,'id','') in {'pl_total','pl_total_text','totals','allocation_html','holding_card_css','body','_p2_active_codes','_p2_realized','_p2_realized_total','_p2_priced_count','_p2_valuation_complete','_p2_quote_stamps','_p2_last_quote','_p2_history_groups','_p2_history_rows','_p2_history_html'} for t in node.targets)
+ selected=selected or isinstance(node,ast.Assign) and any(getattr(t,'id','') in {'pl_total','pl_total_text','totals','allocation_html','portfolio_trend_html','holding_card_css','body','_p2_active_codes','_p2_realized','_p2_realized_total','_p2_priced_count','_p2_valuation_complete','_p2_quote_stamps','_p2_last_quote','_p2_history_groups','_p2_history_rows','_p2_history_html'} for t in node.targets)
  selected=selected or isinstance(node,ast.If) and isinstance(node.test,ast.Name) and node.test.id=='allocation_items'
  selected=selected or isinstance(node,ast.AugAssign) and getattr(node.target,'id','')=='body'
  if selected:compile_node(node,local)
