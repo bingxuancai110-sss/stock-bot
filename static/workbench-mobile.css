@@ -889,3 +889,30 @@
 #stockbot-app #stockbot-shell #app-page-content #wb-drawer.open {
   clip-path:inset(0)!important;visibility:visible!important;pointer-events:auto!important;
 }
+
+/* Final radar layout: keep its quote beside the name, and move the ranking
+   explanation below it instead of squeezing it into a narrow score column. */
+@media (max-width:699px) {
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"] {
+    display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;
+    grid-template-rows:auto auto!important;gap:5px 9px!important;
+    min-height:0!important;padding:12px 3px!important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"]>.wb-score-block,
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"]>.wb-institutional,
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"]>span:last-child {display:none!important}
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"]>.wb-row-main {grid-column:1!important;grid-row:1!important;min-width:0!important}
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"]>.wb-price-block {grid-column:2!important;grid-row:1!important;align-self:start!important;min-width:75px!important}
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"]>.wb-signal {grid-column:1/-1!important;grid-row:2!important;justify-content:flex-start!important;text-align:left!important;min-width:0!important}
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"] .wb-radar-criteria {
+    display:block!important;width:100%!important;max-width:100%!important;margin:3px 0 0!important;
+    color:#71817d!important;font-size:10px!important;line-height:1.4!important;white-space:normal!important;
+  }
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"] .wb-fact-line {
+    display:-webkit-box!important;-webkit-box-orient:vertical!important;-webkit-line-clamp:1!important;overflow:hidden!important;
+  }
+}
+@media (max-width:360px) {
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"]>.wb-price-block {min-width:68px!important}
+  #stockbot-app[data-app-view="screener"] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row[data-source="雷達"] .wb-radar-criteria {font-size:9px!important}
+}

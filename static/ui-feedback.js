@@ -247,7 +247,7 @@
     chartCleanups.forEach(function (cleanup) { if (!cleanup.svg.isConnected) cleanup(); });
   }
   function schedule() { if (!scanFrame) scanFrame = requestAnimationFrame(scan); }
-  document.addEventListener('pointerdown', function (e) { var target = e.target.closest(controls); if (!target || target.disabled || e.button > 0) return; if(target.matches('[data-home-privacy-toggle]'))stopNumbers(); target.classList.add('ui-pressed'); setTimeout(function () { target.classList.remove('ui-pressed'); }, duration('press',110)); }, { capture: true, passive: true });
+  document.addEventListener('pointerdown', function (e) { var target = e.target.closest(controls); if (!target || target.disabled || e.button > 0) return; if(target.matches('[data-home-privacy-toggle]'))stopNumbers(); target.classList.add('ui-pressed'); var holdingCard=target.matches('.position-more>summary')?target.closest('.position-card'):null; if(holdingCard)holdingCard.classList.add('ui-pressed'); setTimeout(function () { target.classList.remove('ui-pressed'); if(holdingCard)holdingCard.classList.remove('ui-pressed'); }, duration('press',170)); }, { capture: true, passive: true });
   document.addEventListener('click',function(e){if(e.target.closest('[data-home-privacy-toggle]')){stopNumbers();return;}var trigger=e.target.closest('[data-home-chart-row],.hv2-hold-trigger,[data-hv2-more]');if(!trigger)return;var host=trigger.closest('.hv2-hold,.hv2-group')||trigger;var before=host.getBoundingClientRect().height;queueMicrotask(function(){if(host.isConnected)animateSize(host,before,host.getBoundingClientRect().height);});},true);
   document.addEventListener('click', function (e) {
     if(e.target.closest('[data-home-privacy-toggle]'))stopNumbers();
