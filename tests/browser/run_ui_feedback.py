@@ -289,6 +289,17 @@ with sync_playwright() as p:
  ready('/web/workbench')
  check('closed screener drawer does not expand the phone layout viewport',page.evaluate('({width})=>innerWidth<=width+1&&document.documentElement.scrollWidth<=width+1',dict(width=page.viewport_size['width'])))
  check('screener bottom navigation stays in the visible phone viewport',page.locator('.app-bottom-nav').evaluate('(e)=>{const r=e.getBoundingClientRect();return r.right<=document.documentElement.clientWidth+1&&r.bottom<=visualViewport.height+1}'))
+ # Seed an open drawer with fixture-only content, then use the real close handler.
+ # The API fixture has no stock rows, so this checks the drawer state and close
+ # path rather than pretending to verify a real stock-detail request.
+ page.evaluate('''() => { const d=document.querySelector('#wb-drawer');
+   d.classList.add('open'); d.setAttribute('aria-hidden','false');
+   document.querySelector('#wb-mask').hidden=false;
+   document.querySelector('#wb-detail').textContent='隔離測試內容'; }''')
+ page.wait_for_function('getComputedStyle(document.querySelector("#wb-drawer")).visibility==="visible"')
+ check('opened screener drawer is visible inside the phone viewport',page.locator('#wb-drawer').evaluate('(e)=>getComputedStyle(e).visibility==="visible"&&e.getBoundingClientRect().right<=document.documentElement.clientWidth+1'))
+ page.locator('#wb-close').click()
+ check('screener close restores the list and hides the drawer',page.locator('#wb-drawer').get_attribute('aria-hidden')=='true' and not page.locator('#wb-drawer').evaluate('(e)=>e.classList.contains("open")') and page.locator('#wb-mask').is_hidden())
  check('screener assets use a three-part mobile selector',page.locator('#wb-asset-tabs').evaluate('(e)=>getComputedStyle(e).display==="grid"&&getComputedStyle(e).gridTemplateColumns.split(" ").length===3'))
  check('screener search spans above its compact action row',page.evaluate('(()=>{const w=document.querySelector("#stockbot-workbench .wb-tools"),l=w?.querySelector("label"),b=w?.querySelector("button"),lr=l?.getBoundingClientRect(),br=b?.getBoundingClientRect();return !!(w&&l&&b&&getComputedStyle(w).gridTemplateColumns.split(" ").length===2&&lr&&br&&lr.y<br.y&&parseFloat(getComputedStyle(b).minHeight)>=40)})()'))
  page.locator('#wb-filter').click()

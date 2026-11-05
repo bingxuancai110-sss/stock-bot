@@ -109,3 +109,6 @@ Commit `23f87d5` became live on Render at 2026-11-04 14:32:58 UTC (PR #74).
   missed this because both expanded. Keep the drawer box inside the viewport
   and reveal it with clipping; explicitly test against the configured phone
   width and visible bottom navigation. Chromium and WebKit: 147 checks each passed.
+- Both engines subsequently passed 149 checks including a seeded open drawer
+  and the real close button. Stock-detail loading from a real screener row is
+  still unverified: the isolated API fixture currently returns no rows.
