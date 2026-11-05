@@ -185,3 +185,14 @@ Commit `23f87d5` became live on Render at 2026-11-04 14:32:58 UTC (PR #74).
   presentation adjustment; production browser/device validation remains pending.
 - Workbench stylesheet version is `20261105-4`. No financial calculation,
   transaction, LINE, data-source or database change accompanies these CSS edits.
+
+## Portfolio swipe correction — 2026-11-05
+
+- The shared tracking rule forced `touch-action:pan-y`, blocking native horizontal
+  scrolling. Portfolio SVGs now use native touch scrolling; custom scrollLeft
+  dragging is limited to mouse/pen, with pointer capture for desktop continuity.
+- Chromium native CDP touch input moved history scrollLeft from 848 to 681.
+  This is an actual browser touch gesture, not dispatching synthetic pointermove
+  events. WebKit verifies mouse dragging; neither result proves iPhone behavior.
+- CSS and JS cache versions are both `20261105-4`. Production remains unchanged
+  until this branch is deployed.

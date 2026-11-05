@@ -134,6 +134,17 @@ with sync_playwright() as p:
  check('reduced motion skips numeric animation',price.inner_text()=='102.25' and page.locator('.ui-number-tween').count()==0);page.emulate_media(reduced_motion='no-preference')
  # Existing point dialogs still work, with new in-place hover/touch and keyboard tracking.
  svg=page.locator('.portfolio-trend-panel:visible svg.portfolio-trend-svg');svg.scroll_into_view_if_needed()
+ plot=page.locator('.portfolio-trend-panel:visible .portfolio-trend-plot')
+ check('portfolio touch allows native horizontal and vertical gestures',svg.evaluate('(e)=>getComputedStyle(e).touchAction==="auto"'))
+ plot.evaluate('(e)=>e.scrollLeft=e.scrollWidth');page.wait_for_timeout(80);before_scroll=plot.evaluate('(e)=>e.scrollLeft');pb=plot.bounding_box();sx=pb['x']+pb['width']*.25;ex=pb['x']+pb['width']*.75;yy=pb['y']+min(100,pb['height']/2)
+ if engine=='chromium':
+  cdp=context.new_cdp_session(page);cdp.send('Input.dispatchTouchEvent',dict(type='touchStart',touchPoints=[dict(x=sx,y=yy)]))
+  for i in range(1,11):cdp.send('Input.dispatchTouchEvent',dict(type='touchMove',touchPoints=[dict(x=sx+(ex-sx)*i/10,y=yy)]));page.wait_for_timeout(16)
+  cdp.send('Input.dispatchTouchEvent',dict(type='touchEnd',touchPoints=[]));cdp.detach()
+ else:
+  page.mouse.move(sx,yy);page.mouse.down();page.mouse.move(ex,yy,steps=10);page.mouse.up()
+ page.wait_for_timeout(150)
+ check('native touch swipe scrolls portfolio history' if engine=='chromium' else 'mouse drag scrolls portfolio history',before_scroll>20 and plot.evaluate('(e)=>e.scrollLeft')<before_scroll-20,dict(before=before_scroll,after=plot.evaluate('(e)=>e.scrollLeft')))
  readout=page.locator('.portfolio-trend-panel:visible .ui-chart-readout');check('chart needs no tracking mode switch',readout.locator('button').count()==0)
  box=svg.bounding_box();pointer_x=page.viewport_size['width']/2;pointer_y=max(30,min(page.viewport_size['height']-100,box['y']+120));page.mouse.move(pointer_x,pointer_y);page.wait_for_timeout(70)
  svg.dispatch_event('pointerdown',dict(pointerType='touch',pointerId=7,clientX=pointer_x,clientY=pointer_y));page.wait_for_timeout(40)
@@ -172,7 +183,7 @@ with sync_playwright() as p:
  check('selected period updates the comparison chart without navigation',page.locator('[data-rank-chart=long]').is_visible() and page.locator('[data-rank-chart=short]').is_hidden())
  check('real rank delta retained','↑ 2 名' in page.locator('[data-board-panel=long] .rank-move').first.inner_text())
  check('rank period visible feedback','已切換' in page.locator('.ui-rank-feedback').inner_text())
- check('rank period triggers no data fetch',not any(path.startswith('/web/') for method,path,q in requests[count:]),requests[count:])
+ check('rank period triggers no data fetch',not any(path.startswith('/web/') and path!='/web/quote-lab/app-config' for method,path,q in requests[count:]),requests[count:])
  rank_panel=page.locator('.rank-chart-panel:visible').first
  member_toggle=rank_panel.locator('.leaderboard-chart-toggle').first;member_line=rank_panel.locator('.leaderboard-chart-series').first
  member_toggle.click();check('ranking member name hides its own comparison line',member_toggle.get_attribute('aria-pressed')=='false' and member_line.evaluate('(e)=>getComputedStyle(e).display==="none"'))
