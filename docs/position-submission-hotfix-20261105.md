@@ -33,7 +33,8 @@ Verification on 2026-11-05:
   PostgreSQL contention is not exercised.
 - In the companion UI worktree, the browser success fixture uses the actual result renderer instead of
   inventing a legacy `.msg` success. The browser harness asserts that response
-  is accepted. Execution remains unavailable because Playwright is absent.
+  is accepted. Chromium and WebKit each passed 145 isolated renderer checks,
+  including this lightweight success contract. These are not production account writes.
 - Python compilation and diff whitespace check pass.
 - Production verification and deployment have not been performed. Browser
   inventory still reports Local browser use disabled in Work settings.
