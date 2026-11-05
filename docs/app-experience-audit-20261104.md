@@ -55,6 +55,24 @@
   the root's filled opacity animation retained a stacking context. Removing the
   root animation resolved the actual click interception; WebKit passed 198 checks.
 
+### Production review/memory incident
+
+- fce511f became live at 2026-11-05 12:39:38 UTC. The real drawer measured
+  354x460px inside a 354x524 viewport; black-horse, radar, turning and chip
+  details opened. Holding hover remained transparent and name/price stayed visible.
+- During the real review -> holdings -> home -> market inspection, memory grew
+  from 233MB to 534,433,800 bytes against a 536,870,900-byte limit. The market
+  navigation received HTTP 502 and the service restarted at 12:46:35 UTC.
+  This contradicts an overall stability/completion claim.
+- Review statistics were still launched on an independent thread and used
+  16-way historical quote downloads. The follow-up serializes the research
+  downloads, admits review jobs through the existing market-job executor and
+  checks headroom both before enqueueing and after waiting. Old statistics stay
+  intact when deferred; the UI distinguishes deferral from an active update.
+- Five isolated actual-function tests passed for single-flight admission,
+  low-memory deferral, queued recheck, submission failure and retaining every
+  recommended symbol. Production memory validation is still required.
+
 This is an ongoing audit, not a completion claim. Production pages are checked in the user's authenticated Chrome. Isolated renderer fixtures check regressions; they are not evidence of production layout.
 
 ## Acceptance scope
