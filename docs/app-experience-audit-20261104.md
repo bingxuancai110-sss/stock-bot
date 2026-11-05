@@ -41,6 +41,20 @@
 - Target deviation and sell-summary share count still exposed private numbers;
   these are included in the follow-up patch. Seven-page review remains open.
 
+### Fixed overlay containing block — live follow-up
+
+- PR 84 deployed as e3792f2 at 2026-11-05 12:30:51 UTC. Production now loads
+  the workbench stylesheet and computes the drawer as fixed. Its actual height
+  was still about 2,989px because the page root retained an identity transform
+  from its entry animation, establishing a fixed-position containing block.
+- The next patch keeps the page root untransformed and without a filled root
+  animation; individual content blocks retain their transition feedback.
+  The browser assertion now checks the drawer's full bounds against the viewport,
+  rather than accepting any fixed element that intersects the viewport.
+- WebKit also reproduced a fullscreen close button beneath the app header when
+  the root's filled opacity animation retained a stacking context. Removing the
+  root animation resolved the actual click interception; WebKit passed 198 checks.
+
 This is an ongoing audit, not a completion claim. Production pages are checked in the user's authenticated Chrome. Isolated renderer fixtures check regressions; they are not evidence of production layout.
 
 ## Acceptance scope

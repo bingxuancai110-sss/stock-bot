@@ -375,6 +375,7 @@ with sync_playwright() as p:
  page.wait_for_function('getComputedStyle(document.querySelector("#wb-drawer")).visibility==="visible"')
  check('opened screener drawer is visible inside the phone viewport',page.locator('#wb-drawer').evaluate('(e)=>getComputedStyle(e).visibility==="visible"&&e.getBoundingClientRect().right<=document.documentElement.clientWidth+1'))
  check('real screener title loads the fixed detail panel stylesheet',page.locator('#wb-drawer').evaluate('(e)=>getComputedStyle(e).position==="fixed"&&e.getBoundingClientRect().top<innerHeight&&e.getBoundingClientRect().bottom>0'))
+ check('screener detail is bounded by the viewport rather than the full page',page.locator('#wb-drawer').evaluate('(e)=>{const r=e.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight+1&&r.height<=innerHeight}'))
  check('screener row opens its actual detail renderer','2330' in page.locator('#wb-detail').inner_text() and '正在整理詳細資料' not in page.locator('#wb-detail').inner_text())
  page.locator('#wb-close').click()
  check('screener close restores the list and hides the drawer',page.locator('#wb-drawer').get_attribute('aria-hidden')=='true' and not page.locator('#wb-drawer').evaluate('(e)=>e.classList.contains("open")') and page.locator('#wb-mask').is_hidden())
