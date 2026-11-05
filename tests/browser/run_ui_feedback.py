@@ -22,7 +22,7 @@ with sync_playwright() as p:
   if u.path=='/web/api/us-rotation':r.fulfill(json=dict(snapshot=None,tw_research={},history=[],supply_chain=[],industry_guides={},tw_companies=[],risk_profiles=[],stop_profiles=[],signal_explanations={},signal_trends={}));return
   if u.path=='/web/market/drawings':r.fulfill(json=dict(ok=True,id='fixture-drawing-'+str(state.get('drawing_count',0)+1),drawings=[]));state['drawing_count']=state.get('drawing_count',0)+1;return
   if u.path=='/web/api/positions/history':r.fulfill(json=dict(ok=True,events=[dict(date='2026-10-30',code='2330',name='台積電',type='sell',label='賣出',shares=10,price=1500,amount=15000,realized_pl=1200)]));return
-  if '/api/workbench/' in u.path:r.fulfill(json=dict(ok=True,rows=[],sources={},personal={},meta={'market_open':False,'available':True}));return
+  if '/api/workbench/' in u.path:r.fulfill(json=dict(ok=True,rows=[dict(code='2330',name='隔離測試台積電',source='黑馬',row_key='fixture-2330',score=80,total_score=80,price=100,change_pct=1.5,industry='測試產業',signal='測試快照',detail={})],sources={'黑馬':dict(available=True,date='2026-11-04')},personal={},meta={'market_open':False,'available':True}));return
   if '/api/' in u.path:r.fulfill(json=dict(market_open=False,updates=[],note='測試收盤快照'));return
   if u.path=='/web/position-trend':r.fulfill(body='<div>走勢載入測試</div>');return
   if r.request.method=='POST':
@@ -289,15 +289,11 @@ with sync_playwright() as p:
  ready('/web/workbench')
  check('closed screener drawer does not expand the phone layout viewport',page.evaluate('({width})=>innerWidth<=width+1&&document.documentElement.scrollWidth<=width+1',dict(width=page.viewport_size['width'])))
  check('screener bottom navigation stays in the visible phone viewport',page.locator('.app-bottom-nav').evaluate('(e)=>{const r=e.getBoundingClientRect();return r.right<=document.documentElement.clientWidth+1&&r.bottom<=visualViewport.height+1}'))
- # Seed an open drawer with fixture-only content, then use the real close handler.
- # The API fixture has no stock rows, so this checks the drawer state and close
- # path rather than pretending to verify a real stock-detail request.
- page.evaluate('''() => { const d=document.querySelector('#wb-drawer');
-   d.classList.add('open'); d.setAttribute('aria-hidden','false');
-   document.querySelector('#wb-mask').hidden=false;
-   document.querySelector('#wb-detail').textContent='隔離測試內容'; }''')
+ page.wait_for_selector('#wb-rows .wb-row')
+ page.locator('#wb-rows .wb-row').first.click()
  page.wait_for_function('getComputedStyle(document.querySelector("#wb-drawer")).visibility==="visible"')
  check('opened screener drawer is visible inside the phone viewport',page.locator('#wb-drawer').evaluate('(e)=>getComputedStyle(e).visibility==="visible"&&e.getBoundingClientRect().right<=document.documentElement.clientWidth+1'))
+ check('screener row opens its actual detail renderer','2330' in page.locator('#wb-detail').inner_text() and '正在整理詳細資料' not in page.locator('#wb-detail').inner_text())
  page.locator('#wb-close').click()
  check('screener close restores the list and hides the drawer',page.locator('#wb-drawer').get_attribute('aria-hidden')=='true' and not page.locator('#wb-drawer').evaluate('(e)=>e.classList.contains("open")') and page.locator('#wb-mask').is_hidden())
  check('screener assets use a three-part mobile selector',page.locator('#wb-asset-tabs').evaluate('(e)=>getComputedStyle(e).display==="grid"&&getComputedStyle(e).gridTemplateColumns.split(" ").length===3'))
