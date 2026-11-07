@@ -74,6 +74,7 @@ with sync_playwright() as p:
  check('holdings read as a continuous brokerage list',page.locator('.position-card').first.evaluate('(e)=>getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none"'))
  check('mobile asset summary has one full-width headline and full-width P/L rows',page.evaluate('(()=>{const t=document.querySelector("#portfolio-v2 .totals");if(!t)return false;const s=getComputedStyle(t),width=t.getBoundingClientRect().width-parseFloat(s.borderLeftWidth)-parseFloat(s.borderRightWidth)-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight);return Array.from(t.children).slice(0,3).every(e=>Math.abs(e.getBoundingClientRect().width-width)<1)})()'))
  check('supporting asset metrics use a compact three-column row',page.evaluate('(()=>{const t=document.querySelector("#portfolio-v2 .totals"),w=[...t.children].slice(3).map(e=>e.getBoundingClientRect().width);return w.length===3&&w.every(x=>x>0&&x<t.getBoundingClientRect().width/2)})()'))
+ check('holding instructions are removed while quote quality remains visible',page.locator('.p2-page-head small').is_hidden() and page.locator('.position-allocation-head small').is_hidden() and page.locator('.totals .total-sub').first.is_visible())
  check('asset summary fields never overlap',page.locator('#portfolio-v2 .totals').evaluate('(e)=>{const rs=[...e.children].map(x=>x.getBoundingClientRect());return rs.every((a,i)=>rs.every((b,j)=>i===j||Math.min(a.right,b.right)-Math.max(a.left,b.left)<1||Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)<1))}'))
  check('privacy return value contains plain text instead of HTML',page.locator('.totals [data-home-original]').evaluate_all('(es)=>es.every(e=>!e.dataset.homeOriginal.includes("<"))'))
  # Privacy must survive donut selection/reset, not only hide the asset headline.
@@ -128,6 +129,8 @@ with sync_playwright() as p:
  page.mouse.move(1,1);page.mouse.up()
  summary.click();check('details respond immediately',card.locator('.position-more').get_attribute('open') is not None)
  check('shared height animation starts',page.evaluate('document.getAnimations().some(a=>a.effect&&a.effect.target.classList.contains("ui-disclosure"))'))
+ summary.hover();check('expanded holding hit target never paints over name and price',summary.evaluate('(e)=>getComputedStyle(e).backgroundColor==="rgba(0, 0, 0, 0)"') and card.locator('h3').evaluate('(e)=>getComputedStyle(e).color!=="rgba(0, 0, 0, 0)"'))
+ page.mouse.down();check('expanded press retains a transparent hit target',summary.evaluate('(e)=>getComputedStyle(e).backgroundColor==="rgba(0, 0, 0, 0)"'));page.mouse.move(1,1);page.mouse.up()
  summary.click();summary.click();page.wait_for_timeout(260);check('rapid toggle ends in correct state',card.locator('.position-more').get_attribute('open') is not None)
  check('chevron tracks aria-expanded',summary.get_attribute('aria-expanded')=='true')
  check('shared disclosures suppress the duplicate native marker',summary.evaluate('(e)=>getComputedStyle(e).listStyleType==="none"'))
@@ -309,6 +312,7 @@ with sync_playwright() as p:
  post.close();state['post']='success'
  # Existing homepage custom expansions and privacy participate in the shared layer.
  page.set_viewport_size({'width':390,'height':844});ready('/web/portfolio')
+ check('home removes repetitive explanatory copy without removing live status',page.locator('.home-impact-intro').is_hidden() and page.locator('.hv2-sync').is_visible())
  check('homepage asset anchor uses a flat color',page.locator('#hv2>.first').evaluate('(e)=>getComputedStyle(e).backgroundImage==="none"&&getComputedStyle(e).boxShadow==="none"'))
  check('phone home keeps four reachable quick actions in one row',page.locator('.hv2-feature-launcher').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===4&&[...e.querySelectorAll("a")].length===4&&[...e.querySelectorAll("a")].every(x=>x.getBoundingClientRect().height>=44)'))
  check('phone impact highlights read as continuous rows',page.locator('.home-impact-card').evaluate_all('(es)=>es.length===2&&es.every(e=>getComputedStyle(e).display==="grid"&&getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none")'))
@@ -322,6 +326,7 @@ with sync_playwright() as p:
  for width in [360,390,430]:
   page.set_viewport_size({'width':width,'height':900});check('homepage no overflow '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
  ready('/web/more')
+ check('tool descriptions are removed without removing destinations',page.locator('.more-item small').evaluate_all('(es)=>es.length>0&&es.every(e=>getComputedStyle(e).display==="none")'))
  check('more tools keep continuous rows with accessible touch areas',page.locator('.more-item').evaluate_all('(es)=>es.length>=10&&es.every(e=>getComputedStyle(e).borderRadius==="0px"&&e.getBoundingClientRect().height>=44)'))
  check('more preserves trading, comparison, appearance and install entries',all(page.locator('.more-item[href="'+path+'"]').count()==1 for path in ['/web/trades','/web/compare','/web/settings#appearance','/web/install']))
  for width in [360,390,430]:
@@ -369,6 +374,7 @@ with sync_playwright() as p:
  for width in [360,390,430]:
   page.set_viewport_size({'width':width,'height':900});check('populated rotation stays within phone viewport '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1&&innerWidth<=visualViewport.width+1'))
  ready('/web/market');page.wait_for_function('Number(document.querySelector("#market-kline")?.dataset.visibleCount)>0')
+ check('market retains source and date while removing repeated drag instructions',page.locator('.market-under-chart>span').first.is_hidden() and page.locator('.market-under-chart>span').last.is_visible() and page.locator('#market-ohlc').is_visible())
  check('market K-line draws actual renderer candles and MACD',page.locator('#market-kline .market-candle').count()>0 and page.locator('#market-kline .market-macd').count()==1)
  check('market offers real fullscreen and drawing controls',page.locator('#market-fullscreen-open').is_visible() and page.locator('[data-draw-mode=horizontal]').is_visible() and page.locator('[data-draw-mode=trendline]').is_visible())
  visible_before=int(page.locator('#market-kline').get_attribute('data-visible-count'));page.locator('[data-chart-zoom=in]').click();page.wait_for_function('(n)=>Number(document.querySelector("#market-kline")?.dataset.visibleCount)<n',arg=visible_before)
