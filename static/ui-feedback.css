@@ -621,6 +621,9 @@ html body#stockbot-app a.ui-nav-pending::after {
 body#stockbot-app #stockbot-shell>.wrap>footer,
 #stockbot-app #stockbot-shell #app-page-content :is(
   .home-impact-intro,
+  .home-impact-caption,
+  .home-impact-help,
+  .home-analysis-disclosure>summary small,
   .hv2-feature-launcher small,
   .position-allocation-head small,
   .allocation-selection:not(:has(button)),
@@ -636,3 +639,4 @@ body#stockbot-app #stockbot-shell>.wrap>footer,
   .more-item small,
   .us-section-head p:not([id])
 ){display:none!important}
+#stockbot-app #stockbot-shell #app-page-content #hv2 [data-home-chart-row] .hv2-row-main::after{display:none!important;content:none!important}
