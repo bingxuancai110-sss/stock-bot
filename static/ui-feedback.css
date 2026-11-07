@@ -402,6 +402,12 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 /* The collapsed holding summary covers the quote row as its hit target.
    Its hover/focus surface must never paint over the underlying name and quote. */
 #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card>.position-more:not([open])>summary.ui-control{background:transparent!important;background-image:none!important;box-shadow:none!important;color:transparent!important;-webkit-text-fill-color:transparent!important;transform:none!important}
+/* The same absolute hit target stays over the name/quote after expansion.
+   Keep every interaction state transparent, not only the collapsed state. */
+#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card>.position-more>summary.ui-control{background:transparent!important;background-image:none!important;box-shadow:none!important;backdrop-filter:none!important;filter:none!important;transform:none!important}
+@media(max-width:760px){
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card>.position-more>summary.ui-control{color:transparent!important;-webkit-text-fill-color:transparent!important}
+}
 #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card:has(>.position-more:not([open])>summary:focus-visible){outline:3px solid var(--sb-feedback-border);outline-offset:2px}
 #stockbot-app #stockbot-shell #app-page-content .ui-selected-control :is(b,strong,small,em,span){color:inherit!important;-webkit-text-fill-color:currentColor!important}
 #stockbot-app #stockbot-shell #app-page-content .ui-control:is(:active,:hover) :is(.up,.us-positive,.wb-up){color:var(--sb-feedback-up)!important;-webkit-text-fill-color:currentColor!important}
@@ -609,3 +615,24 @@ html body#stockbot-app a.ui-nav-pending::after {
     animation: none !important;
   }
 }
+
+/* Remove repeated explanatory copy without hiding values, quality/error
+   states, dates, fees, confirmation text or on-demand methodology. */
+body#stockbot-app #stockbot-shell>.wrap>footer,
+#stockbot-app #stockbot-shell #app-page-content :is(
+  .home-impact-intro,
+  .hv2-feature-launcher small,
+  .position-allocation-head small,
+  .allocation-selection:not(:has(button)),
+  .p2-page-head small,
+  .p2-history-list>.p2-subtitle,
+  .target-allocation-disclosure>summary small,
+  .wb-intro .wb-sub,
+  .wb-disclaimer,
+  .wb-d-section-head>small,
+  .rank-chart-panel>.sub,
+  .market-welcome p,
+  .market-under-chart>span:first-child,
+  .more-item small,
+  .us-section-head p:not([id])
+){display:none!important}
