@@ -313,6 +313,7 @@ with sync_playwright() as p:
  # Existing homepage custom expansions and privacy participate in the shared layer.
  page.set_viewport_size({'width':390,'height':844});ready('/web/portfolio')
  check('home removes repetitive explanatory copy without removing live status',page.locator('.home-impact-intro').is_hidden() and page.locator('.hv2-sync').is_visible())
+ check('home chart helper copy is hidden while chart controls remain available',page.locator('.home-impact-caption').is_hidden() and page.locator('.home-impact-help').is_hidden() and page.locator('[data-home-impact-mode="stock"]').is_visible())
  check('homepage asset anchor uses a flat color',page.locator('#hv2>.first').evaluate('(e)=>getComputedStyle(e).backgroundImage==="none"&&getComputedStyle(e).boxShadow==="none"'))
  check('phone home keeps four reachable quick actions in one row',page.locator('.hv2-feature-launcher').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===4&&[...e.querySelectorAll("a")].length===4&&[...e.querySelectorAll("a")].every(x=>x.getBoundingClientRect().height>=44)'))
  check('phone impact highlights read as continuous rows',page.locator('.home-impact-card').evaluate_all('(es)=>es.length===2&&es.every(e=>getComputedStyle(e).display==="grid"&&getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none")'))
