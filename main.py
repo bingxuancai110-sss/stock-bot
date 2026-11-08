@@ -20,6 +20,7 @@ import socket
 import time
 import threading
 from market_quotes import quote_freshness, prefer_quote
+from taiex_reduction import ReductionAlerts, push_text as push_reduction_text, render_admin as render_reduction_admin
 import math
 import struct
 import zlib
@@ -20902,6 +20903,36 @@ def cron_push_leaderboard_settlement():
     return "排行榜結算通知已改為管理員手動發送，請至管理員後台 → 排行榜結算通知。", 410
 
 
+def _taiex_reduction_service():
+    return ReductionAlerts(
+        connect=get_db_connection, release=release_db_connection,
+        load=_load_shared_data_snapshot, save=_save_shared_data_snapshot,
+        history=lambda: _fetch_taiex_history("3mo"),
+        official=fetch_taiex_official_close, calendar=is_twse_trading_day,
+        now=taiwan_now, quiet=is_user_quiet_hours,
+        enabled=lambda: _admin_feature_enabled("line_daily"),
+        send=lambda uid, text, key: push_reduction_text(
+            os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") or "", uid, text, key,
+            post=requests.post))
+
+
+def _run_taiex_reduction_alerts():
+    # A reminder failure must not fail portfolio snapshots or existing warm-up.
+    try:
+        return _taiex_reduction_service().run()
+    except Exception as exc:
+        print("月線減碼提醒等待重試：%s: %s" % (type(exc).__name__, exc), flush=True)
+        return "月線減碼提醒未完成：" + type(exc).__name__
+
+
+@app.route("/cron/taiex-reduction", methods=["POST"])
+def cron_taiex_reduction():
+    secret = os.environ.get("CRON_SECRET")
+    if not secret or request.args.get("token") != secret:
+        abort(403)
+    return run_in_background("月線減碼提醒", _run_taiex_reduction_alerts), 202
+
+
 @app.route("/cron/push-watchlist", methods=["POST", "GET"])
 def cron_push_watchlist():
     """早上推播盤前簡報＋自選股摘要。受 PUSH_MAX_USERS 額度保護。"""
@@ -21445,6 +21476,9 @@ def _do_daily_snapshot(core_only_recovery=False):
     if not _taiwan_post_close():
         _job_mark_progress(job_name, current_stage, 0, progress.get("total"))
         return f"{today} 尚未到 13:30 正式收盤時間，暫不建立每日組合／排行榜快照。"
+
+    # Check signals before optional, expensive snapshot stages.
+    print(_run_taiex_reduction_alerts(), flush=True)
 
     portfolio_ready, missing_users = portfolio_status()
     rank_ready, rank_rows_today, member_count = leaderboard_status()
@@ -22155,7 +22189,7 @@ def _warm_current_position_quotes():
 
 def _do_warmup():
     warmup_started_at = taiwan_now()
-    done = []
+    done = [_run_taiex_reduction_alerts()]
     shared_data = {}
     for label, fn in [
         # 預熱必須取得全市場法人資料，不能引用只存在於首頁請求中的 position_codes。
@@ -30702,7 +30736,7 @@ def web_admin(uid):
     if not is_admin(uid): return make_response('Forbidden',403)
     d=_admin_dashboard_data(); state=_maintenance_state(); status='🟢 正常' if not state.get('active') else '🟠 維護中'
     cards=f'''<div class="admin-grid"><div class="admin-stat"><b>{d['users']}</b><small>使用者</small></div><div class="admin-stat"><b>{d['active_today']}</b><small>今日活躍</small></div><div class="admin-stat"><b>{d['trades']}</b><small>正式賣出</small></div><div class="admin-stat"><b>{d['activity_today']}</b><small>今日操作</small></div></div>'''
-    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/leaderboard-settlement">🏆 排行榜結算通知<br><small>手動發送月榜／賽季結算 LINE</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/exright-correction">🧾 歷史除權息補正<br><small>核對已完成配股事件、修正股數與成本</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股行事曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/international-calendar">🌎 國際行事曆<br><small>CPI、非農、PCE、GDP、FOMC</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>容量、RAM、可清理歷史資料</small></a><a class="admin-link" href="/web/admin/revenue-debug?code=2308">🧪 營收資料診斷<br><small>追查累計 YoY 到底斷在哪一層</small></a></div></div></div>'''
+    body=f'''<style>.admin-wrap{{max-width:860px;margin:auto}}.admin-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}}.admin-stat,.admin-panel{{background:#fff;border:1px solid #e4e8ee;border-radius:18px;padding:16px;box-sizing:border-box}}.admin-stat b{{font-size:25px;display:block}}.admin-stat small{{color:#667085;display:block;margin-top:5px}}.admin-panel{{margin:12px 0}}.admin-links{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.admin-link{{display:block;padding:14px;border:1px solid #e4e8ee;border-radius:14px;text-decoration:none;color:#172033;background:#fafbfc}}@media(max-width:650px){{.admin-grid{{grid-template-columns:repeat(2,1fr)}}.admin-links{{grid-template-columns:1fr}}}}</style><div class="admin-wrap"><div class="more-hero"><div class="eyebrow">ADMIN ONLY</div><h1>管理員後台</h1><p>系統總覽、資料、LINE、交易紀錄與維護都從這裡管理。</p></div>{cards}<div class="admin-panel"><h3>🩺 系統狀態</h3><b>{status}</b><p class="more-note">資料狀態詳情、快照與更新時間 → <a href="/web/admin/system">查看資料更新中心</a></p></div><div class="admin-panel"><h3>⚡ 快速管理</h3><div class="admin-links"><a class="admin-link" href="/web/admin/users">👥 使用者管理<br><small>活躍狀態與 LINE 設定</small></a><a class="admin-link" href="/web/admin/taiex-reduction">📉 月線減碼提醒<br><small>權限、收盤預警與本人測試</small></a><a class="admin-link" href="/web/admin/notifications">📢 LINE 推播中心<br><small>額度、推播與異常提醒</small></a><a class="admin-link" href="/web/admin/leaderboard-settlement">🏆 排行榜結算通知<br><small>手動發送月榜／賽季結算 LINE</small></a><a class="admin-link" href="/web/admin/transactions">📋 歷史交易<br><small>真正的買進／加碼／賣出</small></a><a class="admin-link" href="/web/admin/history">🔍 紀錄異常檢查<br><small>疑似誤新增／撤回</small></a><a class="admin-link" href="/web/admin/exright-correction">🧾 歷史除權息補正<br><small>核對已完成配股事件、修正股數與成本</small></a><a class="admin-link" href="/web/admin/maintenance">🛠️ 維護模式<br><small>{status}</small></a><a class="admin-link" href="/web/admin/features">🔧 功能開關<br><small>管理功能狀態</small></a><a class="admin-link" href="/web/admin/market-calendar">📅 台股行事曆<br><small>開市、休市與今日交易狀態</small></a><a class="admin-link" href="/web/admin/international-calendar">🌎 國際行事曆<br><small>CPI、非農、PCE、GDP、FOMC</small></a><a class="admin-link" href="/web/admin/data-cleanup">🗄️ 資料清理<br><small>容量、RAM、可清理歷史資料</small></a><a class="admin-link" href="/web/admin/revenue-debug?code=2308">🧪 營收資料診斷<br><small>追查累計 YoY 到底斷在哪一層</small></a></div></div></div>'''
     return render_page('管理員後台',body,'more')
 
 
@@ -31334,6 +31368,41 @@ def web_admin_users(uid):
   <p class="user-settings-note"><a href="/web/admin">← 返回管理員後台</a></p>
 </div>'''
     return render_page('使用者管理', body, 'more')
+
+@app.route('/web/admin/taiex-reduction', methods=['GET', 'POST'])
+@web_login_required
+def web_admin_taiex_reduction(uid):
+    if not is_admin(uid):
+        return make_response('Forbidden', 403)
+    users = _admin_user_rows(status='all', limit=500, offset=0)
+    service = _taiex_reduction_service()
+    if request.method == 'POST':
+        if not valid_web_csrf():
+            return make_response('CSRF validation failed', 403)
+        action = request.form.get('action')
+        try:
+            if action == 'settings':
+                target = str(request.form.get('target') or '').strip()
+                mode = str(request.form.get('mode') or '')
+                if target not in {str(row[0]).strip() for row in users} or mode not in {'on', 'allowed', 'off'}:
+                    return make_response('使用者或設定無效', 400)
+                service.admin_settings(uid, target=target, mode=mode)
+                message = '權限已儲存。'
+                if mode == 'on':
+                    run_in_background('月線減碼提醒', _run_taiex_reduction_alerts)
+            elif action == 'test':
+                # The recipient is the verified session user, never a form field.
+                message = service.send_test(uid)
+            else:
+                return make_response('無效操作', 400)
+        except Exception as exc:
+            print('管理月線提醒未確認：' + type(exc).__name__, flush=True)
+            message = '結果尚未確認，請重新查看設定；測試重試會沿用同一筆紀錄，避免重複推播。'
+        return redirect('/web/admin/taiex-reduction?status=' + quote(message, safe=''))
+    settings = service.admin_settings(uid)
+    body = render_reduction_admin(users, settings, csrf_hidden_input(), str(request.args.get('status') or ''))
+    return render_page('月線減碼提醒管理', body, 'more')
+
 
 @app.route('/web/admin/notifications')
 @web_login_required
@@ -53500,6 +53569,18 @@ def handle_message(event):
         text = "秉軒持股"
     text_upper = text.upper()
     pure_code = normalize_code(text)  # 保留主動式ETF的英文尾碼，如 00981A
+
+    # Explicit per-user opt-in; no automatic broadcast to existing users.
+    if text in ("減碼提醒", "減碼提醒開啟", "減碼提醒關閉"):
+        try:
+            reply = _taiex_reduction_service().command(user_id, text)
+        except Exception as exc:
+            print("月線提醒設定未確認：" + type(exc).__name__, flush=True)
+            reply = "提醒設定未能確認，請稍後輸入「減碼提醒」查看狀態。"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+        if text == "減碼提醒開啟":
+            run_in_background("月線減碼提醒", _run_taiex_reduction_alerts)
+        return
 
     # 「選單」是純靜態回覆，不應先等待 LINE 個人資料、使用者 upsert
     # 或活動紀錄寫入；否則資料庫池／Supabase 短暫延遲就會讓使用者
