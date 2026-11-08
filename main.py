@@ -21,6 +21,7 @@ import time
 import threading
 from market_quotes import quote_freshness, prefer_quote
 from taiex_reduction import ReductionAlerts, push_text as push_reduction_text, render_admin as render_reduction_admin
+from taiex_line_cards import admin_action as taiex_line_admin_action
 import math
 import struct
 import zlib
@@ -39,7 +40,7 @@ from flask import Flask, abort, request, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (MessageEvent, TextMessage, TextSendMessage,
-                            FlexSendMessage, FollowEvent,
+                            FlexSendMessage, FollowEvent, PostbackEvent,
                             QuickReply, QuickReplyButton, MessageAction)
 from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
@@ -53549,6 +53550,33 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None):
     return FlexSendMessage(alt_text="秉軒操作日報", contents={"type":"bubble","size":"giga","body":{"type":"box","layout":"vertical","paddingAll":"12px","spacing":"none","contents":body[:48]}})
 
 
+def _reply_taiex_line_card(event, payload):
+    if payload.get("type") == "flex":
+        outbound = FlexSendMessage(alt_text=payload["altText"], contents=payload["contents"])
+    else:
+        outbound = TextSendMessage(text=payload["text"])
+    line_bot_api.reply_message(event.reply_token, outbound)
+
+
+def _taiex_admin_line_action(event, data):
+    try:
+        return taiex_line_admin_action(
+            event.source.user_id, getattr(event.source, "type", ""), data,
+            is_admin=is_admin, users=lambda: _admin_user_rows(status="all", limit=500, offset=0),
+            service=_taiex_reduction_service(),
+            queue_check=lambda: run_in_background("月線減碼提醒", _run_taiex_reduction_alerts))
+    except Exception as exc:
+        print("LINE月線管理未確認：" + type(exc).__name__, flush=True)
+        return {"type": "text", "text": "操作結果未確認，請重新開啟「名單」查看狀態；測試重試使用同一紀錄防止重複。"}
+
+
+@handler.add(PostbackEvent)
+def handle_taiex_admin_postback(event):
+    data = str(event.postback.data or "")
+    if data.startswith("tr=1&"):
+        _reply_taiex_line_card(event, _taiex_admin_line_action(event, data))
+
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
@@ -53569,6 +53597,15 @@ def handle_message(event):
         text = "秉軒持股"
     text_upper = text.upper()
     pure_code = normalize_code(text)  # 保留主動式ETF的英文尾碼，如 00981A
+
+    if text in ("名單", "使用者名單", "使用者", "VIP", "月線提醒管理", "月線提醒測試", "名單詳情"):
+        if text == "名單詳情" and is_admin(user_id) and getattr(event.source, "type", "") == "user":
+            payload = {"type": "text", "text": build_admin_user_list_report(status="all", limit=10)}
+        else:
+            action = "test" if text == "月線提醒測試" else "list"
+            payload = _taiex_admin_line_action(event, "tr=1&action=" + action)
+        _reply_taiex_line_card(event, payload)
+        return
 
     # Explicit per-user opt-in; no automatic broadcast to existing users.
     if text in ("減碼提醒", "減碼提醒開啟", "減碼提醒關閉"):
