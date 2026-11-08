@@ -1,8 +1,9 @@
 """Close-only TAIEX MA20 reminders. No positions or trading writes."""
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 import math
 import json
 from taiex_line_cards import alert_card
+from taiex_cycle import initial_state, advance
 import time
 import uuid
 from html import escape
@@ -26,7 +27,7 @@ def render_admin(users, settings, csrf_html, message=""):
     .reduction-admin select,.reduction-admin button{{min-height:44px;max-width:100%;margin:6px 0}}
     .reduction-admin select{{display:block;width:100%}}.reduction-admin li{{padding:6px 0}}
     </style><div class="reduction-admin"><h1>月線減碼提醒管理</h1>{flash}
-    <p>連續2個交易日收盤低於MA20先預警；第3日確認，下一交易日收盤股票配置降至50%。</p>
+    <p>從月線上方跌破後，連續2日先預警、第3日確認，下一交易日收盤降至50%；舊走勢不補發。回補：本輪最低收盤反彈3%補至75%、4.5%補至100%。</p>
     <section><h2>使用者權限</h2><form method="post" action="/web/admin/taiex-reduction">
     {csrf_html}<input type="hidden" name="action" value="settings">
     <label>使用者<select name="target" required>{options}</select></label>
@@ -76,7 +77,8 @@ def evaluate(history, as_of, is_trading_day):
             break
         streak += 1
     return {"date": as_of.isoformat(), "streak": streak,
-            "level": min(streak, REDUCTION_DAYS), "rows": observations[-3:]}
+            "level": min(streak, REDUCTION_DAYS), "rows": observations[-3:],
+            "observations": observations}
 
 
 def format_alert(result, next_day):
@@ -148,9 +150,57 @@ class ReductionAlerts:
             retry_key TEXT NOT NULL, message TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), sent_at TIMESTAMPTZ,
             PRIMARY KEY(signal_date, user_id, level))""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS taiex_reduction_user_state (
+            user_id TEXT PRIMARY KEY, payload JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
         cur.execute("""CREATE TABLE IF NOT EXISTS taiex_reduction_job_lock (
             id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL,
             expires_at TIMESTAMPTZ NOT NULL)""")
+
+    def _next_day(self, day):
+        cursor = day + timedelta(days=1)
+        for _ in range(30):
+            if self.calendar(cursor):
+                return cursor
+            cursor += timedelta(days=1)
+        raise ValueError("無法確認下一交易日")
+
+    def _user_events(self, conn, user_id, result):
+        observations = result["observations"]
+        with conn.cursor() as cur:
+            cur.execute("""SELECT s.payload,u.updated_at FROM taiex_reduction_subscriptions u
+                LEFT JOIN taiex_reduction_user_state s ON s.user_id=u.user_id
+                WHERE u.user_id=%s AND u.enabled=TRUE AND u.approved=TRUE""", (user_id,))
+            row = cur.fetchone()
+        if not row:
+            conn.commit()
+            return []
+        state, activated_at = row
+        if isinstance(state, str):
+            state = json.loads(state)
+        if not state:
+            # Start from the last completed close available when this user enabled alerts.
+            local = activated_at.astimezone(self.now().tzinfo or timezone.utc)
+            cutoff = local.date() if (local.hour, local.minute) >= (13, 30) else local.date() - timedelta(days=1)
+            baseline = [item for item in observations if item["date"] <= cutoff.isoformat()]
+            state = initial_state(baseline[-1] if baseline else observations[-1])
+        elif state["as_of"] < observations[0]["date"]:
+            expected = self._next_day(date.fromisoformat(state["as_of"]))
+            if expected.isoformat() < observations[0]["date"]:
+                # Never reconstruct a cycle across a historical data gap.
+                state = initial_state(observations[-1])
+                state["reset_reason"] = "歷史資料不足，重新觀察，未補發舊訊號"
+        for observation in observations:
+            if observation["date"] > state["as_of"]:
+                state = advance(state, observation,
+                    self._next_day(date.fromisoformat(observation["date"])).isoformat())
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO taiex_reduction_user_state(user_id,payload,updated_at)
+                VALUES (%s,%s::jsonb,NOW()) ON CONFLICT(user_id) DO UPDATE
+                SET payload=EXCLUDED.payload,updated_at=NOW()""",
+                        (user_id, json.dumps(state, ensure_ascii=False, separators=(",", ":"))))
+        conn.commit()  # State and current-day events survive a restart before LINE accepts.
+        return state.get("events", []) if state["as_of"] == result["date"] else []
 
     def command(self, user_id, command):
         conn = self.connect()
@@ -172,7 +222,7 @@ class ReductionAlerts:
             latest = (f"最近檢查：{result['date']}，連續{result['streak']}個交易日低於月線。"
                       if result.get("date") else "尚無完整的收盤檢查結果。")
             return (f"月線減碼提醒：{state}\n\n第2日：預警。\n第3日：確認訊號，下一交易日收盤降至50%。"
-                    "\n重新站回月線後，才重新計數。\n\n" + latest +
+                    "\n啟用時已在月線下方的舊走勢不補發；站回月線後才重新計數。\n回補：本輪低點反彈3%補至75%、4.5%補至100%。\n\n" + latest +
                     "\n\n開啟：減碼提醒開啟\n關閉：減碼提醒關閉\n僅通知本人，不會自動交易。")
         except Exception:
             conn.rollback()
@@ -268,7 +318,7 @@ class ReductionAlerts:
                 return "月線提醒：尚無訂閱者；請在LINE輸入「減碼提醒開啟」。"
             saved = self.load(SNAPSHOT_KEY, max_age_seconds=86400)
             result = (saved or {}).get("payload") or {}
-            if result.get("date") != today.isoformat():
+            if result.get("date") != today.isoformat() or not result.get("observations"):
                 official = self.official() or {}
                 if (not official.get("close_is_final") or
                         str(official.get("date") or "").replace("-", "") != today.strftime("%Y%m%d")):
@@ -280,54 +330,51 @@ class ReductionAlerts:
                 if not self.save(SNAPSHOT_KEY, result, data_date=today,
                                  source_meta={"source": result["source"]}):
                     raise RuntimeError("提醒快照未保存，不發送無法追溯的訊號")
-            if result["streak"] not in (WARNING_DAYS, REDUCTION_DAYS):
-                return f"月線提醒：{today} 低於月線連續{result['streak']}日；無新增第2／3日訊號。"
-            next_day = today + timedelta(days=1)
-            for _ in range(30):
-                if self.calendar(next_day):
-                    break
-                next_day += timedelta(days=1)
-            else:
-                raise ValueError("無法確認下一交易日")
-            message = json.dumps(alert_card(result, next_day), ensure_ascii=False, separators=(",", ":"))
             sent = failed = 0
             for uid in users:
-                if self.quiet(uid):
-                    continue
                 with conn.cursor() as cur:
                     cur.execute("""UPDATE taiex_reduction_job_lock
                         SET expires_at=NOW()+INTERVAL '10 minutes'
                         WHERE id=1 AND owner=%s AND expires_at>NOW() RETURNING owner""", (owner,))
                     if cur.fetchone() is None:
                         raise RuntimeError("提醒工作鎖已逾時，停止本次批次")
-                    cur.execute("SELECT enabled AND approved FROM taiex_reduction_subscriptions WHERE user_id=%s", (uid,))
-                    active = cur.fetchone()
-                    if not active or not active[0]:
-                        conn.commit()
-                        continue
-                    cur.execute("""INSERT INTO taiex_reduction_deliveries
-                        (signal_date,user_id,level,retry_key,message) VALUES (%s,%s,%s,%s,%s)
-                        ON CONFLICT DO NOTHING""", (today, uid, result["level"], str(uuid.uuid4()), message))
-                    cur.execute("""SELECT retry_key,message,sent_at,
-                        created_at > NOW() - INTERVAL '23 hours'
-                        FROM taiex_reduction_deliveries
-                        WHERE signal_date=%s AND user_id=%s AND level=%s""", (today, uid, result["level"]))
-                    key, original_message, sent_at, retry_safe = cur.fetchone()
-                conn.commit()  # Save retry key BEFORE contacting LINE.
-                if sent_at or not retry_safe:
+                conn.commit()
+                events = self._user_events(conn, uid, result)
+                if self.quiet(uid):
                     continue
-                try:
-                    self.send(uid, original_message, key)
+                for event in events:
+                    level = event["level"]
+                    card = alert_card(event, date.fromisoformat(event["next_day"]))
+                    message = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
                     with conn.cursor() as cur:
-                        cur.execute("""UPDATE taiex_reduction_deliveries SET sent_at=NOW()
-                            WHERE signal_date=%s AND user_id=%s AND level=%s""", (today, uid, result["level"]))
+                        cur.execute("SELECT enabled AND approved FROM taiex_reduction_subscriptions WHERE user_id=%s", (uid,))
+                        active = cur.fetchone()
+                        if not active or not active[0]:
+                            conn.commit()
+                            break
+                        cur.execute("""INSERT INTO taiex_reduction_deliveries
+                            (signal_date,user_id,level,retry_key,message) VALUES (%s,%s,%s,%s,%s)
+                            ON CONFLICT DO NOTHING""", (today, uid, level, str(uuid.uuid4()), message))
+                        cur.execute("""SELECT retry_key,message,sent_at,
+                            created_at > NOW() - INTERVAL '23 hours'
+                            FROM taiex_reduction_deliveries
+                            WHERE signal_date=%s AND user_id=%s AND level=%s""", (today, uid, level))
+                        key, original_message, sent_at, retry_safe = cur.fetchone()
                     conn.commit()
-                    sent += 1
-                except Exception as exc:
-                    conn.rollback()
-                    failed += 1
-                    print("月線提醒推播未確認：" + type(exc).__name__, flush=True)
-            return f"月線提醒：{today} 第{result['streak']}日；LINE接受{sent}則、未確認{failed}則。"
+                    if sent_at or not retry_safe:
+                        continue
+                    try:
+                        self.send(uid, original_message, key)
+                        with conn.cursor() as cur:
+                            cur.execute("""UPDATE taiex_reduction_deliveries SET sent_at=NOW()
+                                WHERE signal_date=%s AND user_id=%s AND level=%s""", (today, uid, level))
+                        conn.commit()
+                        sent += 1
+                    except Exception as exc:
+                        conn.rollback()
+                        failed += 1
+                        print("月線提醒推播未確認：" + type(exc).__name__, flush=True)
+            return f"月線／回補提醒：{today}；LINE接受{sent}則、未確認{failed}則。"
         except Exception:
             conn.rollback()
             raise

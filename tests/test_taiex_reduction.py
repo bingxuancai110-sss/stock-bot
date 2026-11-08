@@ -87,7 +87,11 @@ def service(streak=2, subscribers=("only-opted-in",), cached=True):
                 calendar=lambda d: d.weekday() < 5,
                 now=lambda: datetime.combine(today, datetime.min.time(), timezone(timedelta(hours=8))).replace(hour=14),
                 send=Mock(), quiet=Mock(return_value=False), enabled=lambda: True)
-    return ReductionAlerts(**deps), deps, cursor, conn
+    worker = ReductionAlerts(**deps)
+    event = {**result, "next_day": (today + timedelta(days=1)).isoformat(),
+             "kind": "warning" if streak == 2 else "reduce"}
+    worker._user_events = Mock(return_value=[event] if streak in (2, 3) else [])
+    return worker, deps, cursor, conn
 
 
 def test_job_reads_same_day_snapshot_and_only_sends_opt_in_with_persisted_key():

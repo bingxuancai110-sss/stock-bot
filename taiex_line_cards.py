@@ -27,6 +27,8 @@ def message(title, body, footer=None, color=NAVY):
 
 
 def alert_card(result=None, next_day=None, test_date=None):
+    if result and result.get("kind") == "refill":
+        return refill_card(result)
     testing = test_date is not None
     stage = 0 if testing else result["streak"]
     if not testing and stage not in (2, 3):
@@ -45,7 +47,8 @@ def alert_card(result=None, next_day=None, test_date=None):
     body.append({"type": "box", "layout": "horizontal", "spacing": "md", "contents": steps})
     if testing:
         body += [text("這是管理員手動測試，並非真實減碼訊號。", color=color, weight="bold"),
-                 text("連續兩個交易日收盤低於20日均線先預警；第三日確認，下一交易日收盤降至50%。")]
+                 text("從月線上方跌破後，連續兩日先預警；第三日確認，下一交易日收盤降至50%。"),
+                 text("減碼後最低收盤反彈3%補至75%；反彈4.5%補至100%。", color=NAVY)]
     else:
         body.append({"type": "separator", "color": "#E6EBEE"})
         for row in result["rows"][-stage:]:
@@ -59,6 +62,23 @@ def alert_card(result=None, next_day=None, test_date=None):
         body.append(text("Yahoo Finance ^TWII 日收盤；當日以TWSE正式收盤覆核。", "xxs", MUTED))
     body.append(text("只發提醒，不會自動交易或更動持股。", "xs", MUTED))
     return message(title, body, color=color)
+
+
+def refill_card(event):
+    threshold = f"{event['threshold']:g}%"
+    body = [text(event["date"], "xs", MUTED),
+            text(f"股票配置補至 {event['target_pct']}%", "xl", NAVY, weight="bold"),
+            text(f"自本輪最低收盤反彈 {event['rebound_pct']:.2f}%", "md", weight="bold"),
+            {"type": "separator", "color": "#E6EBEE"},
+            text(f"本輪低點 {event['low']:,.2f} · {event['low_date']}", color=MUTED),
+            text(f"當日收盤 {event['close']:,.2f}", "lg", weight="bold"),
+            text(f"訊號門檻：{threshold}\n目標執行：{event['next_day']} 收盤", color=NAVY, weight="bold")]
+    if event.get("crossed_both"):
+        body.append(text("本日一次跨過3%與4.5%，合併提醒補至100%。"))
+    body += [text(f"低點自策略預定減碼日 {event['tracking_since']} 起追蹤；若再創低會下修。", "xs", MUTED),
+             text("這是策略目標，並非你的實際成交或庫存。只發提醒，不會自動買進。", "xs", MUTED),
+             text("Yahoo Finance ^TWII；當日以TWSE正式收盤覆核。", "xxs", MUTED)]
+    return message(f"月線回補提醒｜反彈 {threshold}", body)
 
 
 def state_label(state):
@@ -92,7 +112,7 @@ def editor(user, settings, notice=""):
     uid, name = str(user[0]), str(user[1])
     body = [text(name[:100], "xl", weight="bold"), text(f"ID …{uid[-5:]}", "xs", MUTED),
             text("月線減碼提醒", color=MUTED), text(state_label(settings.get(uid, {})), "lg", NAVY, weight="bold"),
-            text("連續2日先預警，3日確認；下一交易日收盤降至50%。", "xs", MUTED)]
+            text("新跌破第2日預警、3日確認降至50%；低點反彈3%／4.5%分批回補。", "xs", MUTED)]
     if notice:
         body.insert(0, text(notice, color="#187357", weight="bold"))
     return message("編輯使用者提醒", body, [
