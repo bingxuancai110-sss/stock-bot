@@ -35,7 +35,7 @@ def render_admin(users, settings, csrf_html, message=""):
     <option value="allowed">核准，但暫停通知（本人可自行開啟）</option>
     <option value="off">停用並撤銷權限（本人不能自行開啟）</option></select></label>
     <button type="submit">儲存這位使用者的設定</button></form><ul>{''.join(rows)}</ul></section>
-    <section><h2>今天測試一次</h2><p>只傳給目前登入的管理員本人。訊息會標示「測試」，不代表市場觸發訊號，也不影響正式提醒紀錄。每天最多接受一次。</p>
+    <section><h2>測試 LINE 通知</h2><p>只傳給目前登入的管理員本人。訊息會標示「測試」，不代表市場觸發訊號。可重複手動測試，兩次至少間隔30秒。</p>
     <form method="post" action="/web/admin/taiex-reduction">{csrf_html}
     <input type="hidden" name="action" value="test"><button type="submit">發送測試到我的 LINE</button></form></section>
     <p>正式檢查排定台灣時間13:40，14:10及15:10重試；排程可能延遲。資料不足不發交易訊號。</p>
@@ -255,7 +255,7 @@ class ReductionAlerts:
             self.release(conn)
 
     def send_test(self, admin_id):
-        """Explicit admin click only; once per Taiwan date, never fake a signal."""
+        """Manual tests may repeat after 30s; pending outcomes keep the same key."""
         conn = self.connect()
         today = self.now().date()
         try:
@@ -263,7 +263,11 @@ class ReductionAlerts:
                 self.ensure(cur)
                 cur.execute("""INSERT INTO taiex_reduction_deliveries
                     (signal_date,user_id,level,retry_key,message) VALUES (%s,%s,10,%s,%s)
-                    ON CONFLICT DO NOTHING""", (today, admin_id, str(uuid.uuid4()),
+                    ON CONFLICT(signal_date,user_id,level) DO UPDATE SET
+                    retry_key=EXCLUDED.retry_key,message=EXCLUDED.message,
+                    created_at=NOW(),sent_at=NULL
+                    WHERE taiex_reduction_deliveries.sent_at IS NOT NULL
+                    AND taiex_reduction_deliveries.created_at < NOW()-INTERVAL '30 seconds'""", (today, admin_id, str(uuid.uuid4()),
                     json.dumps(alert_card(test_date=today.isoformat()), ensure_ascii=False, separators=(",", ":"))))
                 cur.execute("""SELECT retry_key,message,sent_at,
                     created_at > NOW() - INTERVAL '23 hours' FROM taiex_reduction_deliveries
@@ -271,13 +275,13 @@ class ReductionAlerts:
                 key, text, sent_at, safe = cur.fetchone()
             conn.commit()
             if sent_at:
-                return "今天的測試已獲LINE接受，為避免重複通知未再次發送。"
+                return "30秒內的測試已獲LINE接受，為避免連點未再次發送。請間隔30秒後再測試。"
             if not safe:
                 return "測試結果未確認且已超過安全重試期限，未重送。"
             self.send(admin_id, text, key)
             with conn.cursor() as cur:
                 cur.execute("""UPDATE taiex_reduction_deliveries SET sent_at=NOW()
-                    WHERE signal_date=%s AND user_id=%s AND level=10""", (today, admin_id))
+                    WHERE signal_date=%s AND user_id=%s AND level=10 AND retry_key=%s""", (today, admin_id, key))
             conn.commit()
             return "測試訊息已獲LINE接受，請查看你本人的LINE。"
         except Exception:

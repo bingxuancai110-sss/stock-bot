@@ -267,8 +267,71 @@ def test_admin_test_is_labeled_and_only_goes_to_caller_with_separate_level():
 def test_admin_test_repeated_click_is_not_sent_twice():
     worker, deps, cur, _ = service()
     cur.fetchone.side_effect = [("test-key", "test-message", datetime.now(), True)]
-    assert "未再次發送" in worker.send_test("admin-self")
+    reply = worker.send_test("admin-self")
+    assert "未再次發送" in reply and "30秒" in reply
     deps["send"].assert_not_called()
+
+
+def sqlite_test_worker():
+    """Execute the actual upsert using SQLite date/placeholder equivalents."""
+    import sqlite3
+    db = sqlite3.connect(":memory:")
+    db.execute("""CREATE TABLE taiex_reduction_deliveries(
+        signal_date TEXT,user_id TEXT,level INTEGER,retry_key TEXT,message TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,sent_at TEXT,
+        PRIMARY KEY(signal_date,user_id,level))""")
+
+    class Cursor:
+        def __init__(self):
+            self.cur = db.cursor()
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            self.cur.close()
+        def execute(self, sql, values=()):
+            sql = sql.replace("NOW()-INTERVAL '30 seconds'", "datetime('now','-30 seconds')")
+            sql = sql.replace("NOW() - INTERVAL '23 hours'", "datetime('now','-23 hours')")
+            self.cur.execute(sql.replace("NOW()", "datetime('now')").replace("%s", "?"),
+                             tuple(v.isoformat() if isinstance(v, date) else v for v in values))
+        def fetchone(self):
+            return self.cur.fetchone()
+
+    conn = type("Conn", (), {"cursor": lambda _: Cursor(), "commit": lambda _: db.commit(),
+                              "rollback": lambda _: db.rollback()})()
+    worker, deps, _, _ = service()
+    worker.connect = lambda: conn
+    worker.ensure = lambda _: None
+    return worker, deps, db
+
+
+def test_real_upsert_allows_later_same_day_test_and_blocks_double_click():
+    worker, deps, db = sqlite_test_worker()
+    worker.send_test("self")
+    first = deps["send"].call_args.args
+    assert deps["send"].call_count == 1
+    assert "30秒" in worker.send_test("self")
+    assert deps["send"].call_count == 1
+    db.execute("UPDATE taiex_reduction_deliveries SET created_at=datetime('now','-31 seconds')")
+    db.commit()
+    worker.send_test("self")
+    assert deps["send"].call_count == 2
+    assert deps["send"].call_args.args[2] != first[2]
+    assert db.execute("SELECT COUNT(*) FROM taiex_reduction_deliveries").fetchone()[0] == 1
+    db.close()
+
+
+def test_unknown_delivery_keeps_exact_key_and_body_even_after_cooldown():
+    worker, deps, db = sqlite_test_worker()
+    deps["send"].side_effect = TimeoutError()
+    with pytest.raises(TimeoutError):
+        worker.send_test("self")
+    first = deps["send"].call_args.args
+    db.execute("UPDATE taiex_reduction_deliveries SET created_at=datetime('now','-31 seconds')")
+    db.commit()
+    deps["send"].side_effect = None
+    worker.send_test("self")
+    assert deps["send"].call_args.args == first
+    db.close()
 
 
 def test_admin_ui_escapes_user_names_and_includes_csrf_on_both_forms():
