@@ -1,0 +1,25 @@
+name: TAIEX close reduction reminders
+on:
+  schedule:
+    # UTC; Taiwan 13:40, 14:10, 15:10. Holiday/close guards live in the job.
+    - cron: '40 5 * * 1-5'
+    - cron: '10 6,7 * * 1-5'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: taiex-reduction
+  cancel-in-progress: false
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Queue close check
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          test -n "$CRON_SECRET"
+          curl --fail --silent --show-error --retry 2 --retry-delay 10 \
+            --max-time 35 --request POST \
+            "https://stock-bot-6xct.onrender.com/cron/taiex-reduction?token=$CRON_SECRET"
