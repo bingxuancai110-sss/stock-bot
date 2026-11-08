@@ -1,6 +1,8 @@
 """Close-only TAIEX MA20 reminders. No positions or trading writes."""
 from datetime import date, timedelta
 import math
+import json
+from taiex_line_cards import alert_card
 import time
 import uuid
 from html import escape
@@ -99,7 +101,15 @@ def format_alert(result, next_day):
 
 def push_text(token, user_id, text, retry_key, post, sleep=time.sleep):
     """Private request headers: never mutate the shared LINE client's headers."""
-    body = {"to": user_id, "messages": [{"type": "text", "text": text}]}
+    payload = {"type": "text", "text": text}
+    if isinstance(text, str) and text.startswith('{'):
+        try:
+            decoded = json.loads(text)
+            if isinstance(decoded, dict) and decoded.get("type") == "flex":
+                payload = decoded
+        except (ValueError, TypeError):
+            pass
+    body = {"to": user_id, "messages": [payload]}
     for attempt in range(3):
         try:
             response = post("https://api.line.me/v2/bot/message/push", json=body,
@@ -202,15 +212,12 @@ class ReductionAlerts:
             with conn.cursor() as cur:
                 self.ensure(cur)
                 cur.execute("""INSERT INTO taiex_reduction_deliveries
-                    (signal_date,user_id,level,retry_key,message) VALUES (%s,%s,9,%s,%s)
+                    (signal_date,user_id,level,retry_key,message) VALUES (%s,%s,10,%s,%s)
                     ON CONFLICT DO NOTHING""", (today, admin_id, str(uuid.uuid4()),
-                    f"🧪 月線減碼提醒｜測試通知\n{today.isoformat()}\n\n"
-                    "這是管理員手動測試，並非真實減碼訊號。\n"
-                    "正式規則：連續2個交易日低於20日均線先預警；第3日確認，下一交易日收盤配置降至50%。\n"
-                    "沒有執行任何交易。"))
+                    json.dumps(alert_card(test_date=today.isoformat()), ensure_ascii=False, separators=(",", ":"))))
                 cur.execute("""SELECT retry_key,message,sent_at,
                     created_at > NOW() - INTERVAL '23 hours' FROM taiex_reduction_deliveries
-                    WHERE signal_date=%s AND user_id=%s AND level=9""", (today, admin_id))
+                    WHERE signal_date=%s AND user_id=%s AND level=10""", (today, admin_id))
                 key, text, sent_at, safe = cur.fetchone()
             conn.commit()
             if sent_at:
@@ -220,7 +227,7 @@ class ReductionAlerts:
             self.send(admin_id, text, key)
             with conn.cursor() as cur:
                 cur.execute("""UPDATE taiex_reduction_deliveries SET sent_at=NOW()
-                    WHERE signal_date=%s AND user_id=%s AND level=9""", (today, admin_id))
+                    WHERE signal_date=%s AND user_id=%s AND level=10""", (today, admin_id))
             conn.commit()
             return "測試訊息已獲LINE接受，請查看你本人的LINE。"
         except Exception:
@@ -282,7 +289,7 @@ class ReductionAlerts:
                 next_day += timedelta(days=1)
             else:
                 raise ValueError("無法確認下一交易日")
-            message = format_alert(result, next_day)
+            message = json.dumps(alert_card(result, next_day), ensure_ascii=False, separators=(",", ":"))
             sent = failed = 0
             for uid in users:
                 if self.quiet(uid):

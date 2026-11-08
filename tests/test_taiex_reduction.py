@@ -256,7 +256,7 @@ def test_admin_test_is_labeled_and_only_goes_to_caller_with_separate_level():
     assert write.args[1][1] == "admin-self"
     assert "測試通知" in write.args[1][-1]
     assert "並非真實減碼訊號" in write.args[1][-1]
-    assert "9" in write.args[0]
+    assert "10" in write.args[0]
     deps["history"].assert_not_called()
 
 

@@ -13,7 +13,8 @@ def functions():
     selected = {}
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in {
-                "web_admin_taiex_reduction", "cron_taiex_reduction", "_run_taiex_reduction_alerts"}:
+                "web_admin_taiex_reduction", "cron_taiex_reduction", "_run_taiex_reduction_alerts",
+                "handle_taiex_admin_postback", "_reply_taiex_line_card"}:
             node.decorator_list = []
             selected[node.name] = compile(ast.Module(body=[node], type_ignores=[]), "<main-route>", "exec")
     return selected
@@ -83,3 +84,21 @@ def test_cron_empty_or_wrong_secret_rejected_before_work(functions):
 def test_reminder_failure_isolated_from_existing_background_jobs(functions):
     ns = {"_taiex_reduction_service": Mock(side_effect=TimeoutError())}
     assert "未完成" in load(functions, "_run_taiex_reduction_alerts", ns)()
+
+
+def test_postback_only_handles_its_own_feature(functions):
+    ns = {"_reply_taiex_line_card": Mock(), "_taiex_admin_line_action": Mock(return_value={"type": "flex"})}
+    handler = load(functions, "handle_taiex_admin_postback", ns)
+    handler(SimpleNamespace(postback=SimpleNamespace(data="other-feature=value")))
+    ns["_reply_taiex_line_card"].assert_not_called()
+    event = SimpleNamespace(postback=SimpleNamespace(data="tr=1&action=list"))
+    handler(event)
+    ns["_taiex_admin_line_action"].assert_called_once_with(event, "tr=1&action=list")
+
+
+def test_flex_reply_uses_existing_line_reply_mechanism(functions):
+    ns = {"FlexSendMessage": Mock(return_value="sdk-flex"), "TextSendMessage": Mock(),
+          "line_bot_api": SimpleNamespace(reply_message=Mock())}
+    load(functions, "_reply_taiex_line_card", ns)(SimpleNamespace(reply_token="existing-token"),
+        {"type": "flex", "altText": "title", "contents": {"type": "bubble"}})
+    ns["line_bot_api"].reply_message.assert_called_once_with("existing-token", "sdk-flex")
