@@ -461,7 +461,7 @@
       return {...previous,home:{...previous.home,market:previous.home.market?{...previous.home.market,stale:true}:null,note:message,quote_freshness:{text:message},view_retained:true},positions:{...previous.positions,note:message,view_retained:true}};
     }
     const message=progress+(changed?'；持股或設定已變更，正在重新計算。':'；保留頁面原有數值，等待完整行情。');
-    return {...data,home:{...data.home,portfolio:{...data.home.portfolio,ready:false},note:message,quote_freshness:{text:message}},positions:{...data.positions,totals:{...data.positions?.totals,complete:false}}};
+    return {...data,home:{...data.home,portfolio:{...data.home.portfolio,ready:false},note:message,quote_freshness:{text:message}},positions:{...data.positions,updates:complete?[]:data.positions?.updates||[],totals:{...data.positions?.totals,complete:false}}};
   }
   function quoteRows(){
     const now=Date.now(),healthy=authenticated&&ws&&ws.readyState===1&&now-lastMessage<45000;

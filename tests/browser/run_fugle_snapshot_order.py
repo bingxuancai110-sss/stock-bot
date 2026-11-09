@@ -23,6 +23,7 @@ new=json.loads(json.dumps(current));new['view_as_of']='2026-11-09 11:05:01'
 new['home'].update(fetched_at='2026-11-09 11:05:01',market={'pct':6.1,'updated_at':'2026-11-09 11:05:01','source':'Fugle server'})
 new['home']['portfolio'].update(pct=8,relative=1.9)
 new['positions']['totals'].update(value=160000,net_pct=-20.5)
+new['positions']['updates'][0]['weight']=65
 late=json.loads(json.dumps(old));late['view_as_of']='2026-11-09 10:50:00';late['home']['fetched_at']='2026-11-09 10:50:00'
 state={'view':partial,'calls':0}
 tree=ast.parse((ROOT/'main.py').read_text())
@@ -32,7 +33,7 @@ HTML='''<meta charset="utf-8"><div id="app-page-content"><div id="hv2">
 <section data-home-privacy-card><b class="hv2-px" data-home-sensitive>158,533</b><div class="hv2-head-r"><b>-21.24%</b></div></section>
 <b data-home-market-pct>+6.03%</b><b data-home-portfolio-pct>+7.62%</b><b data-home-relative>+1.59%</b>
 <p data-home-market-freshness>即時 TAIEX · 更新 2026-11-09 11:04:00</p><p data-home-quote-quality>Current data</p>
-<p data-home-live-title>Current data</p><p data-home-live-note></p>
+<article data-position-code="2308"><div class="position-card-weight"><b>50%</b><i></i></div></article><p data-home-live-title>Current data</p><p data-home-live-note></p>
 </div></div>'''+script+'<script defer src="/static/fugle-live.js"></script>'
 engine=sys.argv[1] if len(sys.argv)>1 else 'chromium'
 with sync_playwright() as p:
@@ -56,8 +57,10 @@ with sync_playwright() as p:
  assert '2026-11-06' not in page.locator('[data-home-quote-quality]').inner_text()
  state['view']=new;page.evaluate('StockBotFugle.request()');page.wait_for_timeout(150)
  assert value()=='160,000' and '8.00%' in page.locator('[data-home-portfolio-pct]').inner_text()
+ assert page.locator('[data-position-code="2308"] .position-card-weight>b').inner_text()=='65.0%'
  state['view']=late;page.evaluate('StockBotFugle.request()');page.wait_for_timeout(150)
  assert value()=='160,000' and '8.00%' in page.locator('[data-home-portfolio-pct]').inner_text()
+ assert page.locator('[data-position-code="2308"] .position-card-weight>b').inner_text()=='65.0%'
  state['view']=partial;page.evaluate('StockBotFugle.request()');page.wait_for_timeout(150)
  assert value()=='160,000' and '6.10%' in page.locator('[data-home-market-pct]').inner_text()
  # A late independent legacy response must also fail to roll back the home renderer.
