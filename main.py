@@ -80,9 +80,10 @@ _BACKGROUND_JOB_EXECUTOR = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="serialized-market-jobs")
 _BACKGROUND_JOB_SUBMISSION_LOCK = threading.RLock()
 _BACKGROUND_JOB_QUEUED = set()
-# Only the daily snapshot thread caps nested history downloads; web requests
+# Daily snapshot and warm-up threads cap nested history downloads; web requests
 # keep their own concurrency settings. Never mutate a global worker count.
 _DAILY_SNAPSHOT_DOWNLOAD_CONTEXT = threading.local()
+_ETF_RANKING_BUILD_LOCK = threading.Lock()
 _POSITIONS_FEE_SETTINGS_CACHE = {}
 _POSITIONS_FEE_SETTINGS_CACHE_LOCK = threading.RLock()
 _HOMEPAGE_CACHE_LOCK = threading.RLock()
@@ -21203,7 +21204,7 @@ def run_in_background(name, fn):
         t0 = time.time()
         context = globals().get("_DAILY_SNAPSHOT_DOWNLOAD_CONTEXT")
         previous_serial = getattr(context, "serial", False)
-        if context is not None and name == "每日快照":
+        if context is not None and name in ("每日快照", "預熱快取"):
             context.serial = True
         try:
             print(f"🧠 背景工作開始 {name}（佇列等待 {max(0, time.time() - queued_at):.1f}s）",
@@ -22229,6 +22230,36 @@ def _warm_current_position_quotes():
     return len(user_ids), len(codes), valid, "完成"
 
 
+def _guarded_background_stage(label, fn, reserve_mb=200):
+    """Admit each expensive stage against the container budget, not just the job."""
+    rss = _current_process_rss_bytes() / (1024 * 1024)
+    safe = _background_work_memory_safe(reserve_mb=reserve_mb)
+    print(f"🧠 背景階段 {label} RSS={rss:.1f}MiB reserve={reserve_mb}MiB admitted={safe}",
+          flush=True)
+    if not safe:
+        raise RuntimeError(f"{label} 暫緩：保留網站記憶體與上次完整快照")
+    try:
+        return fn()
+    finally:
+        rss = _current_process_rss_bytes() / (1024 * 1024)
+        print(f"🧠 背景階段結束 {label} RSS={rss:.1f}MiB", flush=True)
+
+
+def _guarded_history_quotes(codes, rng, market_suffix=None):
+    """Keep all requested symbols, or abort before publishing a partial ranking."""
+    codes = list(dict.fromkeys(codes))
+    quotes = {}
+    for offset in range(0, len(codes), 4):
+        if not _background_work_memory_safe(reserve_mb=200):
+            raise RuntimeError("歷史下載暫緩：記憶體不足，未發布部分排名")
+        batch = codes[offset:offset + 4]
+        quotes.update(get_realtime_stocks_bulk(
+            batch, workers=1, rng=rng, market_suffix=market_suffix) or {})
+    if not _background_work_memory_safe(reserve_mb=200):
+        raise RuntimeError("歷史下載暫緩：記憶體不足，未發布部分排名")
+    return quotes
+
+
 def _do_warmup():
     warmup_started_at = taiwan_now()
     done = [_run_taiex_reduction_alerts()]
@@ -22247,7 +22278,7 @@ def _do_warmup():
         ("名稱對照", get_name_map),
     ]:
         try:
-            data = fn()
+            data = _guarded_background_stage(label, fn)
             shared_data[label] = data or {}
             done.append(f"{label} {len(data) if data else 0}")
         except Exception as e:
@@ -22309,8 +22340,8 @@ def _do_warmup():
     # 籌碼超人與 LINE／網頁共用同一份近十日法人整理。17:00／20:00
     # 收盤後 warmup 強制刷新；其他時段只讀有效快照，避免重複做五組分類查詢。
     try:
-        chips_result = build_chips_payload(
-            force_refresh=taiwan_now().hour >= 16, persist=True)
+        chips_result = _guarded_background_stage("籌碼超人", lambda: build_chips_payload(
+            force_refresh=taiwan_now().hour >= 16, persist=True))
         chips_payload = chips_result.get("payload") or {}
         chips_state = ("資料日 " + str(chips_result.get("data_date"))
                        if chips_result.get("data_date") else "資料不足")
@@ -22322,8 +22353,8 @@ def _do_warmup():
     # ETF 商品指標先批次抓取並跨 worker 保存；不可讓每張商品卡片各自打 TWSE。
     # 這些欄位包含官方資產規模、官方收盤價、年初至今均成交與受益人次。
     try:
-        metrics_payload = fetch_twse_etf_product_metrics(
-            force_reload=taiwan_now().hour >= 16)
+        metrics_payload = _guarded_background_stage("ETF商品指標", lambda: fetch_twse_etf_product_metrics(
+            force_reload=taiwan_now().hour >= 16))
         done.append("ETF官方商品指標 %s 檔" % len(metrics_payload or {}))
     except Exception as e:
         print(f"❌ 預熱 ETF 官方商品指標失敗: {e}")
@@ -22332,8 +22363,8 @@ def _do_warmup():
     # ETF 配息資料先批次抓取並跨 worker 保存；不可讓每張商品卡片各自打 TWSE。
     # 若官方頁暫時不可用，保留既有快取／unknown，不把失敗當作零配息。
     try:
-        distribution_payload = fetch_twse_etf_distribution_history(
-            force_reload=taiwan_now().hour >= 16)
+        distribution_payload = _guarded_background_stage("ETF配息", lambda: fetch_twse_etf_distribution_history(
+            force_reload=taiwan_now().hour >= 16))
         done.append("ETF官方配息 %s 檔有已發生紀錄" % len(distribution_payload or {}))
     except Exception as e:
         print(f"❌ 預熱 ETF 官方配息失敗: {e}")
@@ -22344,8 +22375,8 @@ def _do_warmup():
     if taiwan_now().hour >= 16:
         try:
             _existing_ranking, ranking_fresh, _ranking_source = _load_etf_product_ranking_snapshot()
-            ranking_payload = build_etf_product_rankings(
-                force_refresh=not ranking_fresh)
+            ranking_payload = _guarded_background_stage("ETF排名", lambda: build_etf_product_rankings(
+                force_refresh=not ranking_fresh), reserve_mb=240)
             done.append("ETF排名 %s（資料日 %s）" % (
                 "已整合" if ranking_payload.get("categories") else "資料不足",
                 ranking_payload.get("market_data_date") or "未標日期"))
@@ -22356,8 +22387,8 @@ def _do_warmup():
     # 轉折觀察與籌碼超人共用 T86 與行情來源；在 warmup 先建立共享結果，
     # 避免第一位使用者進頁面時才並行抓取數十檔 3mo 行情。
     try:
-        turning_result = build_turning_observation(
-            limit=60, prior_days=5, force_refresh=taiwan_now().hour >= 16)
+        turning_result = _guarded_background_stage("轉折觀察", lambda: build_turning_observation(
+            limit=60, prior_days=5, force_refresh=taiwan_now().hour >= 16))
         turning_date = turning_result.get("data_date") or "資料不足"
         done.append(f"轉折觀察 {len(turning_result.get('items') or [])} 檔（資料日 {turning_date}）")
     except Exception as e:
@@ -22367,7 +22398,8 @@ def _do_warmup():
     # 今日完整首頁最慢的外部資料是持股即時行情；交易日先預熱到既有
     # 分時段記憶體快取，官方報價可覆寫最新價格。週末不把最新收盤誤當成今日行情。
     try:
-        user_count, code_count, valid_count, state = _warm_current_position_quotes()
+        user_count, code_count, valid_count, state = _guarded_background_stage(
+            "持股行情", _warm_current_position_quotes, reserve_mb=160)
         done.append(f"持股行情 {valid_count}/{code_count} 檔（{user_count} 人，{state}）")
     except Exception as e:
         print(f"❌ 預熱持股行情失敗: {e}")
@@ -22412,12 +22444,15 @@ def _do_warmup():
         try:
             # 若持久化頁面的曲線最新日還不是今天，收盤 warmup 必須重建一次；
             # 不能因快照仍在有效期限內就把前一交易日排名當成今日排名。
+            if not _background_work_memory_safe(reserve_mb=240):
+                raise RuntimeError("排行榜暫緩：保留上次完整快照")
             persisted_rank = _load_persisted_leaderboard_page()
             persisted_date = (_leaderboard_date(persisted_rank.get("data_date"))
                               if persisted_rank else None)
-            if taiwan_today().weekday() < 5 and persisted_date != taiwan_today():
-                clear_leaderboard_cache()
-            build_leaderboard(top_n=100, days=365, force_rebuild=True)
+            # force_rebuild refreshes the persisted page itself; cache clearing
+            # would start a second rebuild outside this serialized job.
+            _guarded_background_stage("排行榜", lambda: build_leaderboard(
+                top_n=100, days=365, force_rebuild=True), reserve_mb=240)
             persisted_after = _load_persisted_leaderboard_page(allow_stale=True)
             with _leaderboard_cache_lock:
                 rank_meta = dict(_leaderboard_cache.get((100, 365)) or {})
@@ -22436,7 +22471,8 @@ def _do_warmup():
     # 策略研究室是所有使用者共用的資料；在 warmup 預先完成，
     # 使用者第一次點進去直接讀 Supabase 快照，不再現場掃 180 檔 Yahoo。
     try:
-        strategy_payload = _build_strategy_lab_payload()
+        strategy_payload = _guarded_background_stage(
+            "策略研究室", _build_strategy_lab_payload, reserve_mb=280)
         saved = _save_strategy_lab_shared_cache(strategy_payload)
         done.append("策略研究室 " + ("已預熱" if saved else "已計算"))
     except Exception as e:
@@ -22447,7 +22483,7 @@ def _do_warmup():
     # 那時抓到的美股是「再前一晚」收盤；warmup 在 07:50 跑，
     # 美股已於約 04:00 收盤，這時抓到的才是最新一盤。
     try:
-        us_count = refresh_us_indices()
+        us_count = _guarded_background_stage("美股指數", refresh_us_indices, reserve_mb=160)
         done.append(f"美股指數 {us_count}")
     except Exception as e:
         print(f"❌ 預熱美股指數失敗: {e}")
@@ -22461,13 +22497,16 @@ def _do_warmup():
             radar_blueprint = app.blueprints.get("us_rotation")
             radar_refresh = getattr(radar_blueprint, "us_rotation_refresh_job", None)
             if callable(radar_refresh):
-                done.append(radar_refresh(allow_unofficial_override=True))
+                done.append(_guarded_background_stage("美股輪動",
+                    lambda: radar_refresh(allow_unofficial_override=True), reserve_mb=280))
             else:
                 done.append("美股輪動 略過（更新工作尚未註冊）")
         elif warmup_started_at.weekday() < 5 and warmup_started_at.hour >= 14:
             radar_blueprint = app.blueprints.get("us_rotation")
             research_job = getattr(radar_blueprint, "us_rotation_research_job", None)
-            done.append(research_job(force=True) if callable(research_job) else "台美台股觀察 尚未註冊")
+            done.append(_guarded_background_stage("台美台股觀察",
+                lambda: research_job(force=True), reserve_mb=280)
+                if callable(research_job) else "台美台股觀察 尚未註冊")
         else:
             done.append("美股輪動 略過（盤中不重建日線研究）")
     except Exception as e:
@@ -34975,6 +35014,16 @@ def _load_etf_product_ranking_snapshot():
 
 
 def build_etf_product_rankings(force_refresh=False):
+    # Warm-up and page-triggered refreshes share admission and single-flight.
+    if not _ETF_RANKING_BUILD_LOCK.acquire(blocking=False):
+        raise RuntimeError("ETF排名已在建立中，沿用最近完整快照")
+    try:
+        return _build_etf_product_rankings(force_refresh=force_refresh)
+    finally:
+        _ETF_RANKING_BUILD_LOCK.release()
+
+
+def _build_etf_product_rankings(force_refresh=False):
     """建立四類 ETF 的短／長期價格報酬排名與同期大盤對照。"""
     now = time.time()
     with _realtime_cache_lock:
@@ -34987,14 +35036,15 @@ def build_etf_product_rankings(force_refresh=False):
         if shared:
             return shared
 
+    if not _background_work_memory_safe(reserve_mb=240):
+        raise RuntimeError("ETF排名暫緩：保留網站記憶體與上次完整快照")
     catalog = get_etf_catalog_products()
     # 先用一年日線同時滿足大多數短期榜與成熟 ETF 的長期榜，
     # 不再對全市場每一檔直接抓 2 年；只有長期候選且一年資料不足者才回補。
     market_history = _fetch_taiex_history("1y")
     codes = [code for code, meta in catalog.items()
              if meta.get("category") in ("主動式", "高股息", "市值型", "主題型")]
-    quotes = get_realtime_stocks_bulk(
-        codes, workers=24, rng="1y", market_suffix=".TW") if codes else {}
+    quotes = _guarded_history_quotes(codes, "1y", market_suffix=".TW") if codes else {}
     cutoff = taiwan_today() - timedelta(days=320)
     long_candidates = []
     for code in codes:
@@ -35004,8 +35054,8 @@ def build_etf_product_rankings(force_refresh=False):
     long_fallback_codes = [code for code in long_candidates
                            if len(_history_from_quote(quotes.get(code) or {})) < 250]
     if long_fallback_codes:
-        quotes.update(get_realtime_stocks_bulk(
-            long_fallback_codes, workers=16, rng="2y", market_suffix=".TW"))
+        quotes.update(_guarded_history_quotes(
+            long_fallback_codes, "2y", market_suffix=".TW"))
     period_rows = {key: {"active": [], "dividend": [], "market": [], "theme": []}
                    for key in ETF_PRODUCT_RANKING_PERIODS}
     category_key = {"主動式": "active", "高股息": "dividend",
@@ -35132,7 +35182,13 @@ def _start_etf_product_ranking_refresh():
             with _ETF_RANKING_REFRESH_LOCK:
                 _ETF_RANKING_REFRESH_RUNNING = False
 
-    threading.Thread(target=worker, name="etf-ranking-refresh", daemon=True).start()
+    try:
+        _BACKGROUND_JOB_EXECUTOR.submit(worker)
+    except Exception as exc:
+        with _ETF_RANKING_REFRESH_LOCK:
+            _ETF_RANKING_REFRESH_RUNNING = False
+        print(f"⚠️ ETF排名未能排入背景佇列: {type(exc).__name__}", flush=True)
+        return False
     return True
 
 
