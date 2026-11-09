@@ -80,6 +80,9 @@ _BACKGROUND_JOB_EXECUTOR = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="serialized-market-jobs")
 _BACKGROUND_JOB_SUBMISSION_LOCK = threading.RLock()
 _BACKGROUND_JOB_QUEUED = set()
+# Only the daily snapshot thread caps nested history downloads; web requests
+# keep their own concurrency settings. Never mutate a global worker count.
+_DAILY_SNAPSHOT_DOWNLOAD_CONTEXT = threading.local()
 _POSITIONS_FEE_SETTINGS_CACHE = {}
 _POSITIONS_FEE_SETTINGS_CACHE_LOCK = threading.RLock()
 _HOMEPAGE_CACHE_LOCK = threading.RLock()
@@ -6262,8 +6265,8 @@ def compute_industry_recent_performance(days=90):
         if not picks:
             continue
         span = "1y" if days > 120 else "6mo"
-        price_map = get_realtime_stocks_bulk(
-            list({p["code"] for p in picks}), workers=16, rng=span)
+        # Reuse bounded history batches and refuse partial statistics on pressure.
+        price_map = _review_price_map(list({p["code"] for p in picks}), span)
         today = taiwan_today()
         for p in picks:
             cur = price_map.get(p["code"])
@@ -11163,6 +11166,9 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
             print(f"⚠️ 並行抓取失敗 {c}: {e}")
             return None
 
+    context = globals().get("_DAILY_SNAPSHOT_DOWNLOAD_CONTEXT")
+    if context is not None and getattr(context, "serial", False):
+        workers = 1
     with ThreadPoolExecutor(max_workers=min(workers, len(codes))) as ex:
         return dict(zip(codes, ex.map(safe_fetch, codes)))
 
@@ -11635,20 +11641,28 @@ def get_consecutive_days_batch(codes, direction="buy", max_days=20):
     一次查多檔股票的連續買（賣）超天數，只打一次資料庫。
     回傳 {code: streak}。黑馬／雷達要掃幾十檔，用這個比逐檔查快很多。
     """
-    codes = [str(c).strip() for c in codes]
+    codes = list(dict.fromkeys(str(c).strip() for c in codes))
     if not codes:
         return {}
+    max_days = max(0, int(max_days))
+    if not max_days:
+        return {code: 0 for code in codes}
 
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT code, trade_date, total_net_lots FROM inst_history
-            WHERE code = ANY(%s)
-            ORDER BY code, trade_date DESC
+            SELECT h.code, h.trade_date, h.total_net_lots
+            FROM unnest(%s::text[]) AS wanted(code)
+            CROSS JOIN LATERAL (
+                SELECT code, trade_date, total_net_lots FROM inst_history
+                WHERE code = wanted.code
+                ORDER BY trade_date DESC LIMIT %s
+            ) h
+            ORDER BY h.code, h.trade_date DESC
             """,
-            (codes,),
+            (codes, max_days),
         )
         rows = cursor.fetchall()
         cursor.close()
@@ -21187,6 +21201,10 @@ def run_in_background(name, fn):
 
     def _wrap():
         t0 = time.time()
+        context = globals().get("_DAILY_SNAPSHOT_DOWNLOAD_CONTEXT")
+        previous_serial = getattr(context, "serial", False)
+        if context is not None and name == "每日快照":
+            context.serial = True
         try:
             print(f"🧠 背景工作開始 {name}（佇列等待 {max(0, time.time() - queued_at):.1f}s）",
                   flush=True)
@@ -21197,6 +21215,8 @@ def run_in_background(name, fn):
             _job_mark_done(name, f"失敗：{e}", time.time() - t0)
             print(f"❌ 背景工作 {name} 失敗: {e}", flush=True)
         finally:
+            if context is not None:
+                context.serial = previous_serial
             with _BACKGROUND_JOB_SUBMISSION_LOCK:
                 _BACKGROUND_JOB_QUEUED.discard(name)
 
@@ -21717,8 +21737,23 @@ def _do_daily_snapshot(core_only_recovery=False):
         return (f"{today} 的持股與排行榜核心快照已完成；網頁自動恢復略過產業、自選及全市場選股掃描，"
                 "等待既有 warm-up／排程更新選股快照。")
 
+    def optional_stage_ready(stage, reserve_mb=200):
+        # Check the container budget before each expensive unit of work. Leave
+        # the last durable checkpoint intact so deferred work is not marked done.
+        rss_mb = _current_process_rss_bytes() / (1024 * 1024)
+        safe = _background_work_memory_safe(reserve_mb=reserve_mb)
+        print(f"🧠 每日快照階段 {stage} RSS={rss_mb:.1f}MiB "
+              f"reserve={reserve_mb}MiB admitted={safe}", flush=True)
+        return safe
+
+    def deferred(stage):
+        return (f"{today} 的持股與排行榜核心快照已完成；記憶體餘裕不足，"
+                f"暫緩 {stage}，保留進度與上次完整資料，未標記全部完成。")
+
     ind_saved = 0
     if not reached("industry"):
+        if not optional_stage_ready("industry"):
+            return deferred("industry")
         try:
             stats = get_industry_momentum(fetch_monthly_revenue() or {},
                                           get_industry_map() or {})
@@ -21727,6 +21762,8 @@ def _do_daily_snapshot(core_only_recovery=False):
         except Exception as exc:
             print(f"❌ 產業動能快照失敗: {exc}")
             # 核心組合／排行榜快照已完成，非核心產業資料失敗不阻斷每日工作。
+        if not optional_stage_ready("industry-performance"):
+            return deferred("industry")
         try:
             ind_perf_saved = save_industry_recent_performance()
         except Exception as exc:
@@ -21741,6 +21778,8 @@ def _do_daily_snapshot(core_only_recovery=False):
     if not reached("watchlist"):
         _job_mark_progress(job_name, "watchlist", 0, len(wl_users))
         for idx, uid in enumerate(wl_users):
+            if not optional_stage_ready("watchlist"):
+                return deferred("watchlist")
             codes = get_user_watchlist(uid)
             if codes:
                 try:
@@ -21767,6 +21806,8 @@ def _do_daily_snapshot(core_only_recovery=False):
         for idx, mode in enumerate(modes):
             if idx < start:
                 continue
+            if not optional_stage_ready(f"picks-{mode}", reserve_mb=280):
+                return deferred("picks")
             try:
                 if mode == "turning":
                     picks_saved += save_turning_picks()
