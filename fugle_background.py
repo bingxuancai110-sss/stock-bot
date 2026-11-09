@@ -157,7 +157,12 @@ class BackgroundService:
         with self._snapshot_lock:
             snapshot = self._snapshot
         # A different worker may own the collector lease; always read persisted state.
-        snapshot = self._load(self._owner) or snapshot or {}
+        try:
+            snapshot = self._load(self._owner) or snapshot or {}
+        except Exception:
+            if snapshot is None:
+                raise
+            snapshot = dict(snapshot, status='storage_unavailable')
         return copy.deepcopy(snapshot)
 
     def tick(self, now):
@@ -194,6 +199,24 @@ class BackgroundService:
             with self._snapshot_lock:
                 self._snapshot = copy.deepcopy(result)
             return result['status']
+
+
+def healthy_connection(get_connection, release_connection):
+    """Discard a dead pool connection and retry once before using a job lease/read."""
+    for attempt in range(2):
+        connection = None
+        try:
+            connection = get_connection()
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT 1')
+            return connection
+        except Exception:
+            if connection is not None:
+                try: connection.close()
+                except Exception: pass
+                release_connection(connection)
+            if attempt:
+                raise
 
 
 def resolve_owner(get_connection, release_connection):
@@ -243,21 +266,30 @@ def start_server_service(*, get_positions, merge_positions, get_connection,
     def load(uid):
         # Read authoritative state for the lease/cadence check; a worker-local
         # shared-snapshot cache can be five minutes behind another instance.
-        connection = get_connection()
+        connection = healthy_connection(get_connection, release_connection)
         try:
             with connection.cursor() as cursor:
                 cursor.execute('SELECT payload FROM shared_data_snapshots WHERE snapshot_key=%s',
                                (snapshot_key(uid),))
                 row = cursor.fetchone()
                 return row[0] if row and isinstance(row[0], dict) else {}
+        except Exception:
+            try: connection.close()
+            except Exception: pass
+            raise
         finally:
             release_connection(connection)
 
     def save(uid, data):
-        saved = save_snapshot(snapshot_key(uid), data, data_date=now().date(),
-                              source_meta={'source': 'Fugle private background REST'})
-        if not saved:
-            raise RuntimeError('private quote snapshot persistence failed')
+        for attempt in range(2):
+            try:
+                if save_snapshot(snapshot_key(uid), data, data_date=now().date(),
+                                 source_meta={'source': 'Fugle private background REST'}):
+                    return
+            except Exception:
+                if attempt:
+                    raise
+        raise RuntimeError('private quote snapshot persistence failed')
 
     def holdings(uid):
         codes = [str(row['code']).strip() for row in merge_positions(get_positions(uid))
@@ -266,7 +298,7 @@ def start_server_service(*, get_positions, merge_positions, get_connection,
 
     @contextmanager
     def lease():
-        connection = get_connection()
+        connection = healthy_connection(get_connection, release_connection)
         claimed = False
         try:
             with connection.cursor() as cursor:
@@ -290,9 +322,13 @@ def start_server_service(*, get_positions, merge_positions, get_connection,
             try:
                 status = service.tick(now())
                 if status != 'outside_session':
-                    print('Fugle background cycle status='+status, flush=True)
+                    with service._snapshot_lock:
+                        summary = service._snapshot or {}
+                        count = len(summary.get('quotes', {}))
+                        updated = int(summary.get('updated', 0))
+                    print('Fugle background cycle status='+status+' quotes='+str(count)+' updated='+str(updated), flush=True)
             except Exception as exc:
-                print('Fugle background cycle failed: '+type(exc).__name__, flush=True)
+                print('Fugle background cycle failed: '+type(exc).__name__+' sqlstate='+str(getattr(exc,'pgcode',None) or 'none'), flush=True)
             if stop.wait(60):
                 break
     print('Fugle background collector enabled', flush=True)
