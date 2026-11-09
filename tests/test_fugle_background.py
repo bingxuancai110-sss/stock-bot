@@ -165,3 +165,78 @@ def test_only_trusted_server_normalization_can_reuse_saved_final_close():
     assert saved['fetched_at'].endswith('13:30:00') and saved['close_is_final']
     assert normalize_quotes([dict(row, closed=False)], {'2308'}, late,
                             max_observation_age=86400) == {}
+
+
+def test_owner_resolver_reuses_uid_or_unique_google_allowlist(monkeypatch):
+    from fugle_background import resolve_owner
+    from unittest.mock import MagicMock
+    get, release = Mock(), Mock()
+    monkeypatch.setenv('FUGLE_TEST_USER_ID', 'owner')
+    assert resolve_owner(get, release) == 'owner'
+    get.assert_not_called()
+    monkeypatch.delenv('FUGLE_TEST_USER_ID')
+    monkeypatch.setenv('FUGLE_TEST_USER_EMAIL', ' OWNER@EXAMPLE.TEST ')
+    connection = MagicMock(); cursor = connection.cursor.return_value.__enter__.return_value
+    get.return_value = connection; cursor.fetchall.return_value = [('owner',)]
+    assert resolve_owner(get, release) == 'owner'
+    assert cursor.execute.call_args.args[1] == ('owner@example.test',)
+    cursor.fetchall.return_value = [('owner',), ('another',)]
+    assert resolve_owner(get, release) == ''
+    cursor.execute.side_effect = RuntimeError('unavailable')
+    assert resolve_owner(get, release) == ''
+    connection.rollback.assert_called_once()
+    assert release.call_count == 3
+
+
+def test_actual_index_is_collected_and_invalid_index_never_becomes_taiex():
+    index = dict(symbol='IX0001', type='INDEX', date=NOW.date().isoformat(),
+                 previousClose=20000, closePrice=19800, closeTime=int(NOW.timestamp()*1e6))
+    row = quote_row('IX0001', index, NOW)
+    assert row['type'] == 'INDEX' and row['price'] == 19800
+    assert quote_row('IX0001', dict(index,type='EQUITY'), NOW) is None
+    session = Mock(); session.get.return_value = response(index)
+    snapshot = Collector('fake-key', session=session).collect(['IX0001'], NOW)
+    assert snapshot['quotes']['IX0001']['previous_close'] == 20000
+    session.get.return_value = response(dict(index,date='2026-11-03'))
+    assert Collector('fake-key',session=session).collect(['IX0001'], NOW)['status'] == 'partial'
+
+
+def test_reader_observes_another_workers_saved_snapshot_without_provider_calls():
+    @contextmanager
+    def lease(): yield True
+    persisted = {'quotes':{'2308':{'price':100}}}
+    collector = Mock()
+    service = BackgroundService('owner',collector,holdings=Mock(),load=lambda uid:persisted,save=Mock(),lease=lease)
+    service._snapshot = {'quotes':{'2308':{'price':90}}}
+    assert service.read('owner')['quotes']['2308']['price'] == 100
+    collector.collect.assert_not_called()
+
+
+def test_bootstrap_collects_immediately_without_any_page_request(monkeypatch):
+    import fugle_background as module
+    from unittest.mock import MagicMock
+    from flask import has_request_context
+    monkeypatch.setenv('FUGLE_BACKGROUND_API_KEY','fake-server-key')
+    monkeypatch.setenv('FUGLE_TEST_USER_ID','owner')
+    connection=MagicMock(); cursor=connection.cursor.return_value.__enter__.return_value
+    cursor.fetchone.side_effect=[(True,), None]
+    collector=Mock(); collector.collect.return_value=dict(status='ready',quotes={},checked_at=NOW.isoformat())
+    factory=Mock(return_value=collector);monkeypatch.setattr(module,'Collector',factory)
+    targets=[]
+    def thread(**kwargs):
+        targets.append(kwargs['target']);return SimpleNamespace(start=Mock())
+    monkeypatch.setattr(module.threading,'Thread',thread)
+    event=Mock();event.wait.return_value=True
+    monkeypatch.setattr(module.threading,'Event',lambda:event)
+    def positions(uid):
+        assert not has_request_context()
+        return [dict(code='2308',shares=10)]
+    save=Mock(return_value=True)
+    service=module.start_server_service(get_positions=positions,merge_positions=lambda rows:rows,
+        get_connection=lambda:connection,release_connection=Mock(),load_snapshot=Mock(),
+        save_snapshot=save,now=lambda:NOW)
+    assert service.enabled_for('owner') and len(targets)==1
+    targets[0]()
+    assert collector.collect.call_args.args[0]==['2308','IX0001']
+    assert save.call_count==1 and 'fake-server-key' not in str(save.call_args)
+    event.wait.assert_called_once_with(60)

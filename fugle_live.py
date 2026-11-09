@@ -43,13 +43,13 @@ def normalize_quotes(raw, allowed, now, max_observation_age=120):
     return result
 
 
-def normalize_market(raw, now):
+def normalize_market(raw, now, max_observation_age=120):
     """Only the actual TAIEX index may supply the portfolio benchmark."""
     if raw is None:
         return None
     if not isinstance(raw, dict) or raw.get('code') != 'IX0001' or raw.get('type') != 'INDEX':
         raise ValueError('大盤指數格式不正確')
-    quote = normalize_quotes([raw], {'IX0001'}, now).get('IX0001')
+    quote = normalize_quotes([raw], {'IX0001'}, now, max_observation_age=max_observation_age).get('IX0001')
     if quote:
         quote['source'] = '富果加權指數（本機直連）'
     return quote

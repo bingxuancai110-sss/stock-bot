@@ -88,3 +88,18 @@ def test_view_context_matches_partial_batch_but_changes_with_financial_inputs():
     ns['get_positions']=lambda uid:positions
     changed=ns['_apply_fugle_browser_quotes']('owner',quotes()[:1])
     assert changed['view_context']!=full['view_context']
+
+
+def test_server_snapshot_uses_real_index_but_counts_only_current_holdings():
+    ns=actual_namespace()
+    index=dict(code='IX0001',type='INDEX',price=19800,previous_close=20000,
+               time=int(NOW.timestamp()*1e6),observed_at=int(NOW.timestamp()*1000))
+    result=ns['_apply_fugle_browser_quotes']('owner',quotes()+[index],background=True)
+    assert result['view_codes']==['00981A','2308']
+    assert result['home']['market']['pct']==-1
+    assert '伺服器背景' in result['home']['market']['source']
+    assert len(result['positions']['updates'])==2
+    assert result['home']['portfolio']['relative']==6
+    index['time']-=86400_000000
+    result=ns['_apply_fugle_browser_quotes']('owner',quotes()+[index],background=True)
+    assert result['home']['market']['source']=='fixture market'

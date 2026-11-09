@@ -24,7 +24,7 @@ def quote_row(symbol, payload, now):
     """Retain real trade/reference timestamps; never turn trial data into a trade."""
     if not isinstance(payload, dict) or str(payload.get('symbol')) != symbol:
         return None
-    if payload.get('date') != now.date().isoformat() or payload.get('type') == 'ODDLOT':
+    if payload.get('date') != now.date().isoformat() or payload.get('type') == 'ODDLOT' or (symbol == 'IX0001' and payload.get('type') != 'INDEX'):
         return None
     trade = payload.get('lastTrade') or {}
     price = trade.get('price', payload.get('closePrice'))
@@ -47,7 +47,7 @@ def quote_row(symbol, payload, now):
         return None
     return dict(code=symbol, price=price, previous_close=prior, reference_price=prior,
                 time=stamp, observed_at=now.timestamp()*1000,
-                closed=payload.get('isClose') is True, mode='rest')
+                closed=payload.get('isClose') is True, mode='rest', type='INDEX' if symbol == 'IX0001' else 'EQUITY')
 
 
 class Collector:
@@ -104,6 +104,9 @@ class Collector:
             try:
                 response = self._session.get(URL+code, headers={'X-API-KEY': self._key},
                                              timeout=(2, 3), allow_redirects=False)
+                if response.status_code == 403 and code == 'IX0001':
+                    result['status'] = 'partial'
+                    continue
                 if response.status_code in (401, 403):
                     # Stop credential/permission failures rather than hammering the API.
                     self._cooldown = tick+300
@@ -124,6 +127,8 @@ class Collector:
                 if row:
                     quotes[code] = row
                     result['updated'] += 1
+                else:
+                    result['status'] = 'partial'
             except (requests.RequestException, ValueError, TypeError):
                 # Do not log provider response bodies, headers or credentials.
                 result['status'] = 'partial'
@@ -151,8 +156,8 @@ class BackgroundService:
             raise PermissionError('private quote snapshot')
         with self._snapshot_lock:
             snapshot = self._snapshot
-        if snapshot is None:
-            snapshot = self._load(self._owner) or {}
+        # A different worker may own the collector lease; always read persisted state.
+        snapshot = self._load(self._owner) or snapshot or {}
         return copy.deepcopy(snapshot)
 
     def tick(self, now):
@@ -191,6 +196,31 @@ class BackgroundService:
             return result['status']
 
 
+def resolve_owner(get_connection, release_connection):
+    """Reuse the existing exact UID/email owner allowlist; never guess an account."""
+    owner = os.environ.get('FUGLE_TEST_USER_ID', '').strip()
+    if owner:
+        return owner
+    email = os.environ.get('FUGLE_TEST_USER_EMAIL', '').strip().lower()
+    if not email:
+        return ''
+    connection = None
+    try:
+        connection = get_connection()
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT DISTINCT user_id FROM user_auth_identities WHERE provider='google' AND LOWER(email)=%s LIMIT 2", (email,))
+            rows = cursor.fetchall()
+        return str(rows[0][0]) if len(rows) == 1 and rows[0][0] else ''
+    except Exception:
+        if connection is not None:
+            try: connection.rollback()
+            except Exception: pass
+        return ''
+    finally:
+        if connection is not None:
+            release_connection(connection)
+
+
 def start_server_service(*, get_positions, merge_positions, get_connection,
                          release_connection, load_snapshot, save_snapshot, now):
     """Opt-in bootstrap. No key migration, API calls or thread when unconfigured.
@@ -199,8 +229,12 @@ def start_server_service(*, get_positions, merge_positions, get_connection,
     not source code, browser storage inspection, logs or an unauthenticated URL.
     """
     key = os.environ.get('FUGLE_BACKGROUND_API_KEY', '').strip()
-    owner = os.environ.get('FUGLE_TEST_USER_ID', '').strip()
-    if not key or not owner:
+    if not key:
+        print('Fugle background disabled: missing FUGLE_BACKGROUND_API_KEY', flush=True)
+        return None
+    owner = resolve_owner(get_connection, release_connection)
+    if not owner:
+        print('Fugle background disabled: owner configuration unresolved', flush=True)
         return None
 
     def snapshot_key(uid):
@@ -226,8 +260,9 @@ def start_server_service(*, get_positions, merge_positions, get_connection,
             raise RuntimeError('private quote snapshot persistence failed')
 
     def holdings(uid):
-        return [str(row['code']).strip() for row in merge_positions(get_positions(uid))
-                if int(row.get('shares') or 0) > 0]
+        codes = [str(row['code']).strip() for row in merge_positions(get_positions(uid))
+                 if int(row.get('shares') or 0) > 0]
+        return codes+['IX0001'] if codes else []
 
     @contextmanager
     def lease():
@@ -251,12 +286,15 @@ def start_server_service(*, get_positions, merge_positions, get_connection,
     def run():
         stop = threading.Event()
         # One worker only. Fetches do not overlap or enqueue during slow cycles.
-        while not stop.wait(60):
+        while True:
             try:
                 status = service.tick(now())
                 if status != 'outside_session':
                     print('Fugle background cycle status='+status, flush=True)
             except Exception as exc:
                 print('Fugle background cycle failed: '+type(exc).__name__, flush=True)
+            if stop.wait(60):
+                break
+    print('Fugle background collector enabled', flush=True)
     threading.Thread(target=run, name='fugle-private-quotes', daemon=True).start()
     return service

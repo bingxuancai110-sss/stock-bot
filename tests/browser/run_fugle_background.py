@@ -10,8 +10,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from quote_lab import page_markup
 
+engine = sys.argv[1] if len(sys.argv) > 1 else 'chromium'
 with sync_playwright() as p:
-    browser = p.chromium.launch(executable_path=os.environ.get('STOCKBOT_CHROMIUM_EXECUTABLE'))
+    browser = p.webkit.launch() if engine == 'webkit' else p.chromium.launch(executable_path=os.environ.get('STOCKBOT_CHROMIUM_EXECUTABLE'))
     page = browser.new_page(viewport={'width': 390, 'height': 844})
     errors, external = [], []
     page.on('pageerror', lambda error: errors.append(str(error)))
@@ -39,6 +40,8 @@ with sync_playwright() as p:
     except Exception:
         print('errors', errors, 'body', page.locator('body').inner_text())
         raise
+    assert page.evaluate('StockBotFugle.active()') is True
+    assert '伺服器背景更新已啟用' in page.locator('#ql-mode-status').text_content()
     assert page.locator('#ql-start').is_disabled()
     assert page.locator('#ql-key').is_disabled()
     assert page.locator('#ql-message').inner_text() == '背景更新'

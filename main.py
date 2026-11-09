@@ -28667,7 +28667,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-shell.css?v=20261105-5">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
 <script defer src="/static/ui-feedback.js?v=20261105-6"></script>
-<script defer src="/static/fugle-live.js?v=20261105-2"></script>
+<script defer src="/static/fugle-live.js?v=20261109-1"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -54620,13 +54620,19 @@ def _apply_fugle_browser_quotes(uid, raw, market_raw=None, background=False):
     codes = {str(p.get("code") or "").strip() for p in positions}
     now = taiwan_now()
     if background:
+        market_raw = next((row for row in raw if row.get("code") == "IX0001"), market_raw)
         raw = [row for row in raw if row.get("code") in codes]
     quotes = normalize_quotes(raw, codes, now,
         max_observation_age=(86400 if background and now.hour*60+now.minute >= 810 else 120))
     if background:
         for quote in quotes.values():
             quote["source"] = "富果背景定時查詢（伺服器）"
-    market = normalize_market(market_raw, now) or _fugle_market_quote(now)
+    market = normalize_market(market_raw, now,
+        max_observation_age=(86400 if background and now.hour*60+now.minute >= 810 else 120))
+    if background and market:
+        market = dict(market, source="富果加權指數（伺服器背景更新）")
+    if market is None:
+        market = _fugle_market_quote(now)
     market_payload = ({"pct": market.get("pct"), "source": market.get("source"),
                        "updated_at": market.get("updated_at"), "stale": bool(market.get("stale"))}
                       if market and market.get("pct") is not None else None)
@@ -54670,7 +54676,7 @@ def _apply_fugle_browser_quotes(uid, raw, market_raw=None, background=False):
         {"uid": str(uid), "positions": sorted(positions, key=lambda p: str(p.get("code"))),
          "fees": [fee_disc, min_fee], "targets": targets, "logs": logs},
         sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
-    return dict(ok=True,view_context=view_context,view_as_of=now.strftime("%Y-%m-%d %H:%M:%S"),
+    return dict(ok=True,view_codes=sorted(codes),view_context=view_context,view_as_of=now.strftime("%Y-%m-%d %H:%M:%S"),
                 home=home,positions=dict(ok=True,updates=updates,totals=totals,
                 market_open=_is_taiwan_intraday_window(now),note=home["quote_freshness"]["text"]))
 

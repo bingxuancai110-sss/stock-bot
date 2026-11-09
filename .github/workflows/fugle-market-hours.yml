@@ -1,0 +1,23 @@
+name: Keep background quotes awake during Taiwan trading hours
+on:
+  schedule:
+    # UTC: weekdays 08:55-14:10 Taiwan. Collector validates actual market dates.
+    - cron: '55 0 * * 1-5'
+    - cron: '*/5 1-5 * * 1-5'
+    - cron: '0,5,10 6 * * 1-5'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fugle-market-hours
+  cancel-in-progress: false
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Wake existing service without a browser or provider credentials
+        run: |
+          curl --fail --silent --show-error \
+            --retry 2 --retry-delay 10 --max-time 65 \
+            https://stock-bot-6xct.onrender.com/health
