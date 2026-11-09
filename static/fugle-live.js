@@ -516,13 +516,14 @@
   });
   controls();
   if(config.background_enabled){
+    text($('#ql-mode-status'),'伺服器背景更新已啟用，盤中排程不依賴 App 是否開啟。');
     // Server owns provider access. Never open a second browser connection or
     // read/migrate its saved key when background mode is enabled.
     start.disabled=true;keyInput.disabled=true;stopButton.disabled=true;
     changeButton.disabled=true;rememberInput.disabled=true;
     text(panelLabel,'富果行情 · 伺服器背景更新');
     text($('#ql-message'),'關閉 App 後仍由伺服器定時更新；本頁只讀取完成的行情。');
-    let backgroundTimer=null,backgroundController=null,backgroundReady=false;
+    let backgroundTimer=null,backgroundController=null;
     async function readBackground(){
       clearTimeout(backgroundTimer);backgroundTimer=null;
       if(document.hidden||backgroundController||!relevant())return;
@@ -532,7 +533,6 @@
         const response=await fetch(localURL('/web/quote-lab/background'),{credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal});
         if(!response.ok)throw new Error('background snapshot unavailable');
         const data=await response.json();if(!data.ok||!data.view)return;
-        backgroundReady=data.view.positions?.totals?.complete===true;
         allSymbols=data.codes||[];
         const view=viewFor(data.view);
         document.dispatchEvent(new CustomEvent('stockbot:fuglequotes',{detail:view}));
@@ -546,7 +546,10 @@
     document.addEventListener('visibilitychange',resumeBackground);
     document.addEventListener('stockbot:pagecontentready',resumeBackground);
     window.addEventListener('pagehide',()=>{clearTimeout(backgroundTimer);if(backgroundController)backgroundController.abort();});
-    window.StockBotFugle={active:()=>backgroundReady,request:readBackground,resume:resumeBackground};
+    window.StockBotFugle={active:()=>true,request:readBackground,resume:resumeBackground};
     readBackground();
-  }else restoreSaved();
+  }else{
+    text($('#ql-mode-status'),'目前為裝置直連，關閉 App 會暫停；伺服器背景更新尚待啟用。');
+    restoreSaved();
+  }
 })();

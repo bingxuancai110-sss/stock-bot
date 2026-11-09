@@ -1,25 +1,32 @@
 # Private Fugle background collection
 
-Status: implementation under validation; not yet activated in production.
+Status: implementation deployed behind configuration; activation requires a protected server key and a verified live cycle.
 
 ## Deployment configuration
 
 Set `FUGLE_BACKGROUND_API_KEY` in the existing Render service's protected
-environment-variable settings. Set `FUGLE_TEST_USER_ID` to the same authorized
-owner's existing BOT user ID. Do not put the key in chat, source control, a URL,
+environment-variable settings. The existing owner allowlist is reused: an exact
+`FUGLE_TEST_USER_ID`, or a uniquely linked Google identity for
+`FUGLE_TEST_USER_EMAIL`. No additional account ID is needed when the existing
+email allowlist resolves uniquely. Do not put the key in chat, source control, a URL,
 logs or shared quote snapshots. Do not copy a key out of browser storage.
-Missing either value leaves the current browser-direct mode intact.
+A missing key or unresolved owner leaves browser-direct mode intact. The More
+panel states which mode is enabled.
 
 The new module does not create paid Render resources or change the compute
 plan. It runs one lightweight timer in the existing web process, every 60
 seconds, independently of page requests. A suspended/free Render service cannot
-run Python timers. The existing external health keep-alive must continue to
-wake/keep the service available during trading hours. This is not a guarantee
+run Python timers. The `fugle-market-hours.yml` GitHub Actions workflow requests `/health` every
+five minutes on weekdays 08:55–14:10 Taiwan time to wake/keep the existing
+service available, without storing the provider key in GitHub. The collector
+starts immediately on process startup and then waits 60 seconds between cycles.
+GitHub schedules may be delayed or dropped and are disabled after 60 days of
+repository inactivity. This is not a guarantee
 of continuous availability on a free instance.
 
 ## Behavior
 
-- Current owner holdings only, through the existing positions/cost logic.
+- Current owner holdings plus the actual `IX0001` TAIEX index, through the existing positions/cost logic. The index is excluded from holding counts and valuations.
 - At most 30 REST calls per rolling minute, including failures. A cycle stops
   initiating requests after 25 seconds; individual requests have 2/3-second
   connection/read timeouts. No parallel cycles, no unbounded task queue.
@@ -39,7 +46,7 @@ of continuous availability on a free instance.
   snapshots, then uses current holdings and the existing accounting functions.
   It never starts a provider download. Sold positions are filtered using current
   positions, rather than trusting the preceding minute's holding list.
-- The frontend reads snapshots every 15 seconds while visible. It does not open
+- The frontend reads snapshots every 15 seconds while visible and keeps server mode as its source even while the first snapshot is incomplete. It does not open
   a provider WebSocket, read/migrate a saved device key, or duplicate provider
   polling in server mode. Browser-direct mode remains the fallback when server
   configuration is absent.
@@ -54,7 +61,8 @@ tests are isolated from real accounts. The browser probe executes the actual JS
 and panel renderer, intercepts all transport, and rejects provider connections.
 Neither constitutes real account/provider verification.
 
-Before activation verify server secret ownership, deploy the reviewed commit,
+Before activation configure `FUGLE_BACKGROUND_API_KEY` using Render’s Environment
+page (Save, rebuild, and deploy), verify server secret ownership, deploy the reviewed commit,
 observe an actual successful background cycle with the App closed, then open
 the owner's authenticated page and check source/trade/fetch timestamps. Test
 foreground/background and position changes without submitting real trades.

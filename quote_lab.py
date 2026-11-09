@@ -50,6 +50,7 @@ def page_markup():
     <span class="ql-tag">5 檔串流 · 其他持股定時查詢</span></header>
   <section class="ql-panel" aria-labelledby="ql-connect-title">
     <h2 id="ql-connect-title">連接你的行情</h2>
+    <p id="ql-mode-status" class="ql-muted" role="status">正在確認行情更新模式…</p>
     <p class="ql-muted">先到 <a href="https://www.fugle.tw/account/register?referrer=api" target="_blank" rel="noopener noreferrer">富果註冊</a>並依<a href="https://developer.fugle.tw/docs/key/" target="_blank" rel="noopener noreferrer">官方說明申請行情 API Key</a>。不需要提供證券帳戶密碼。</p>
     <label for="ql-key">行情 API Key</label>
     <input id="ql-key" type="password" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="輸入富果行情 API Key" aria-describedby="ql-key-help">
@@ -158,7 +159,7 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection, rele
         view['home']['note'] = note
         view['home']['quote_freshness'] = {'text': note}
         view['positions']['note'] = note
-        return private(jsonify(ok=True, view=view, codes=[row['code'] for row in rows],
+        return private(jsonify(ok=True, view=view, codes=view.get('view_codes', [row['code'] for row in rows if row.get('code') != 'IX0001']),
                                status=snapshot.get('status', 'waiting')))
 
     @bp.route('/web/quote-lab/apply', methods=['POST'])
