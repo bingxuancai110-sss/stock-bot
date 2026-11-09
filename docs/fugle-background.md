@@ -74,3 +74,18 @@ Remove `FUGLE_BACKGROUND_API_KEY` and restart/redeploy to return to existing
 browser-direct mode. No schema migration is needed. Existing private quote
 snapshots can remain; they are inaccessible to other users and are ignored
 without the configured service. Revert the feature commit if necessary.
+
+## Continuity and recovery
+
+The browser compares completed-view timestamps with the data already visible.
+A retained previous-day snapshot, an older complete response, or a late legacy
+response must not overwrite a newer displayed view. The index timestamp is
+checked independently so an incomplete batch cannot roll back the index first.
+Partial updates keep the current values with an updating notice.
+
+Before private snapshot reads and collector leases, pooled connections are
+probed and a failed connection is closed and replaced, with one bounded retry.
+The idempotent snapshot upsert also retries once without changing original
+quote observation times. A temporary snapshot read failure may serve the last
+in-memory snapshot as `storage_unavailable`; it does not pretend to be a new
+fetch. Logs include counts and SQLSTATE only, never provider keys or prices.

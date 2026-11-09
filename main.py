@@ -28667,7 +28667,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-shell.css?v=20261105-5">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
 <script defer src="/static/ui-feedback.js?v=20261105-6"></script>
-<script defer src="/static/fugle-live.js?v=20261109-1"></script>
+<script defer src="/static/fugle-live.js?v=20261109-2"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -43960,14 +43960,21 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       }
     }).catch(function(){});
   }
+  function quoteViewStamp(value){
+    var match=String(value||'').match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?/);
+    return match?Date.parse(match[0].replace(' ','T')+'+08:00')||0:0;
+  }
   function applyHome(data){
     if(!marketEl.isConnected)return;
       // 即使已收盤，也必須先套用 API 回傳的「今日正式收盤」資料；不能因 market_open=false
       // 就在前端提早 return，讓頁面永久停留在收盤前的「資料不足」。
       if(data.market_open&&stopped){stopped=false;var t0=document.querySelector('[data-home-live-title]');if(t0)t0.textContent='盤中更新中';}
       var market=data.market,portfolio=data.portfolio||{};
-      if(market&&market.pct!=null){marketEl.innerHTML=pct(market.pct);var freshness=document.querySelector('[data-home-market-freshness]');if(freshness)freshness.textContent=(market.stale?'最近有效行情・背景更新中・':'')+(market.source||'TWSE MIS 即時加權指數')+(market.updated_at?'・更新 '+market.updated_at:'');}
-      else {marketEl.textContent='資料尚未更新';var missing=document.querySelector('[data-home-market-freshness]');if(missing)missing.textContent='即時 TAIEX 暫時無法取得，未使用日K快照';}
+      var homeRoot=document.getElementById('hv2'),incomingAt=quoteViewStamp(data.fetched_at);
+      if(homeRoot&&Number(homeRoot.dataset.quoteViewAt||0)>incomingAt&&incomingAt>0)return;
+      var currentFreshness=document.querySelector('[data-home-market-freshness]'),marketAt=quoteViewStamp(market&&market.updated_at),previousMarketAt=quoteViewStamp(currentFreshness&&currentFreshness.textContent);
+      if(market&&market.pct!=null&&marketAt>=previousMarketAt){marketEl.innerHTML=pct(market.pct);var freshness=document.querySelector('[data-home-market-freshness]');if(freshness)freshness.textContent=(market.stale?'最近有效行情・背景更新中・':'')+(market.source||'TWSE MIS 即時加權指數')+(market.updated_at?'・更新 '+market.updated_at:'');}
+      else if(!market||market.pct==null){if(!/%/.test(marketEl.textContent)){marketEl.textContent='資料尚未更新';var missing=document.querySelector('[data-home-market-freshness]');if(missing)missing.textContent='即時 TAIEX 暫時無法取得，未使用日K快照';}}
       var quality=document.querySelector('[data-home-quote-quality]');
       if(quality&&data.quote_freshness)quality.textContent=data.quote_freshness.text;
       var liveReady=portfolio.ready!==false&&!(portfolio.pct==null&&Number(portfolio.stale_count||0)>0);
@@ -43978,6 +43985,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         return;
       }
       if(liveReady&&portfolio.pct!=null){
+        if(homeRoot&&!data.view_retained)homeRoot.dataset.quoteViewAt=String(Math.max(Number(homeRoot.dataset.quoteViewAt||0),incomingAt));
         var nextPortfolio=Number(portfolio.pct), currentEl=document.querySelector('[data-home-portfolio-pct]');
         var currentText=currentEl?String(currentEl.textContent||'').replace(/[^0-9+\-.]/g,''):'';
         var currentValue=Number(currentText);

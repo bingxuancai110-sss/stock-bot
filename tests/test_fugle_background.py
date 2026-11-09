@@ -240,3 +240,24 @@ def test_bootstrap_collects_immediately_without_any_page_request(monkeypatch):
     assert collector.collect.call_args.args[0]==['2308','IX0001']
     assert save.call_count==1 and 'fake-server-key' not in str(save.call_args)
     event.wait.assert_called_once_with(60)
+
+
+def test_dead_background_connection_is_discarded_before_retry():
+    from fugle_background import healthy_connection
+    from unittest.mock import MagicMock
+    dead, live=MagicMock(),MagicMock()
+    dead.cursor.return_value.__enter__.return_value.execute.side_effect=RuntimeError('closed transport')
+    get=Mock(side_effect=[dead,live]);release=Mock()
+    assert healthy_connection(get,release) is live
+    dead.close.assert_called_once();release.assert_called_once_with(dead)
+    assert get.call_count==2
+
+
+def test_transient_snapshot_read_failure_preserves_original_snapshot_time():
+    @contextmanager
+    def lease():yield True
+    service=BackgroundService('owner',Mock(),holdings=Mock(),load=Mock(side_effect=RuntimeError('temporary')),save=Mock(),lease=lease)
+    service._snapshot={'checked_at':NOW.isoformat(),'quotes':{'2308':{'observed_at':123}}}
+    saved=service.read('owner')
+    assert saved['status']=='storage_unavailable'
+    assert saved['checked_at']==NOW.isoformat() and saved['quotes']['2308']['observed_at']==123

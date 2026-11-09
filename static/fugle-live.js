@@ -409,7 +409,7 @@
   // Keep complete valuation snapshots intact while a new quote batch is incomplete.
   // A server-generated context prevents restoring valuations after position/settings changes.
   const viewStorageKey=storageKey?storageKey.replace('fugle_device_v1:','fugle_view_v1:'):null;
-  let lastCompleteView=null,lastViewContext=null,lastViewWrite=0;
+  let lastCompleteView=null,lastViewContext=null,lastViewWrite=0,latestDisplayedAt=0;
   function validView(record){
     const data=record&&record.data,updates=data?.positions?.updates,totals=data?.positions?.totals;
     return record?.version===1&&Number.isFinite(record.savedAt)&&Date.now()-record.savedAt>=-300000&&Date.now()-record.savedAt<7*86400000&&
@@ -428,14 +428,25 @@
     if(hero){hero.dataset.homeOriginal='更新中';if(!hero.closest('.is-privacy-hidden'))hero.textContent='更新中';}
     const gain=document.querySelector('#hv2 .hv2-head-r>b');if(gain){gain.textContent='更新中';gain.classList.remove('up','down');}
   }
+  function viewStamp(value){
+    const match=String(value||'').match(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?/);
+    return match?Date.parse(match[0].replace(' ','T')+'+08:00')||0:0;
+  }
+  function visibleViewStamp(){
+    const home=document.getElementById('hv2'),portfolio=document.querySelector('[data-home-portfolio-pct]');
+    const visible=portfolio&&/%/.test(portfolio.textContent)?viewStamp(document.querySelector('[data-home-market-freshness]')?.textContent):0;
+    return Math.max(latestDisplayedAt,Number(home?.dataset.quoteViewAt||0),visible);
+  }
   function viewFor(data){
     if(lastCompleteView&&!validView(lastCompleteView))clearView();
     if(!lastCompleteView)lastCompleteView=readView();
     const context=data.view_context,changed=!!context&&((lastViewContext&&lastViewContext!==context)||(lastCompleteView&&lastCompleteView.data.view_context!==context));
     lastViewContext=context||lastViewContext;
-    if(changed){clearView();clearOldAggregates();}
+    if(changed){clearView();clearOldAggregates();latestDisplayedAt=0;const home=document.getElementById('hv2');if(home)delete home.dataset.quoteViewAt;}
     const complete=data.positions?.totals?.complete===true&&Number.isFinite(data.home?.portfolio?.pct);
-    if(complete){
+    const floor=visibleViewStamp(),incomingAt=viewStamp(data.view_as_of);
+    if(complete&&incomingAt>=floor){
+      latestDisplayedAt=Math.max(floor,incomingAt);
       const record={version:1,savedAt:Date.now(),data};
       if(validView(record)){
         lastCompleteView=record;
@@ -445,12 +456,12 @@
     }
     const count=data.positions?.updates?.length||0,progress='富果行情更新中 '+count+'／'+allSymbols.length+' 檔';
     const previous=lastCompleteView?.data;
-    if(previous&&previous.view_context===context){
+    if(previous&&previous.view_context===context&&viewStamp(previous.view_as_of)>=floor){
       const message=progress+'；沿用上次完整資料 '+previous.view_as_of+'，新行情完整後更新。';
       return {...previous,home:{...previous.home,market:previous.home.market?{...previous.home.market,stale:true}:null,note:message,quote_freshness:{text:message},view_retained:true},positions:{...previous.positions,note:message,view_retained:true}};
     }
     const message=progress+(changed?'；持股或設定已變更，正在重新計算。':'；保留頁面原有數值，等待完整行情。');
-    return {...data,home:{...data.home,portfolio:{...data.home.portfolio,ready:false},note:message,quote_freshness:{text:message}}};
+    return {...data,home:{...data.home,portfolio:{...data.home.portfolio,ready:false},note:message,quote_freshness:{text:message}},positions:{...data.positions,totals:{...data.positions?.totals,complete:false}}};
   }
   function quoteRows(){
     const now=Date.now(),healthy=authenticated&&ws&&ws.readyState===1&&now-lastMessage<45000;
@@ -538,8 +549,8 @@
         document.dispatchEvent(new CustomEvent('stockbot:fuglequotes',{detail:view}));
         applyValuations(view);
         text(panelLabel,'富果行情 · 背景資料 '+(data.view.positions?.updates?.length||0)+'／'+allSymbols.length+' 檔');
-        text($('#ql-message'),['credential_or_permission_error','rate_limited','partial'].includes(data.status)?'背景更新尚未完整（'+data.status+'），保留最後有效行情。':data.view.positions?.note||'等待首份背景行情。');
-      }catch(ignore){text($('#ql-message'),'背景行情暫時無法讀取，保留畫面最後有效資料。');}
+        text($('#ql-message'),['credential_or_permission_error','rate_limited','partial','storage_unavailable'].includes(data.status)?'背景更新尚未完整（'+data.status+'），保留最後有效行情。':data.view.positions?.note||'等待首份背景行情。');
+      }catch(ignore){const message='背景行情暫時無法讀取，保留畫面最後有效資料；稍後自動重試。';text($('#ql-message'),message);document.querySelectorAll('[data-home-quote-quality],[data-home-live-note]').forEach(el=>text(el,message));}
       finally{clearTimeout(deadline);backgroundController=null;if(!document.hidden)backgroundTimer=setTimeout(readBackground,15000);}
     }
     const resumeBackground=()=>{if(!document.hidden)readBackground();else{clearTimeout(backgroundTimer);backgroundTimer=null;if(backgroundController)backgroundController.abort();}};
