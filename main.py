@@ -53380,16 +53380,63 @@ def _line_hidden_holdings_flex(user_id, positions=None, prices=None):
                     today_pct=float(q.get(key)); break
             except (TypeError,ValueError):
                 pass
+        observed_day = str(q.get("close_date") or "").replace("-", "")
+        current_day = taiwan_today().strftime("%Y%m%d")
+        if observed_day != current_day or not q.get("has_live_trade_price"):
+            today_pct = None
         name=short_company_name(stock_display_name(code,None,q.get("name")))
-        rows.append((name,code,weight,today_pct))
+        quote_note = str(q.get("updated_at") or q.get("trade_at") or "行情時間未提供")
+        quote_note += " · " + str(q.get("source") or "最近可用行情")
+        limit_state = None
+        if today_pct is not None:
+            try:
+                upper = float(q.get("limit_up") or 0)
+                lower = float(q.get("limit_down") or 0)
+                if 0 < lower < upper:
+                    if abs(price - upper) < 0.001:
+                        limit_state = "漲停"
+                    elif abs(price - lower) < 0.001:
+                        limit_state = "跌停"
+            except (TypeError, ValueError):
+                pass
+        rows.append((name,code,weight,today_pct,quote_note,limit_state))
     rows.sort(key=lambda r:r[2], reverse=True)
     contents=[{"type":"text","text":"秉軒的投資組合","size":"xl","weight":"bold","color":"#203449"},{"type":"text","text":"持股配置比例","size":"sm","color":"#667085","margin":"sm"},{"type":"separator","margin":"md"}]
-    for i,(name,code,weight,today_pct) in enumerate(rows):
-        pct_text=f"{today_pct:+.2f}%" if today_pct is not None else "待確認"
+    for i,(name,code,weight,today_pct,quote_note,limit_state) in enumerate(rows):
+        pct_text=f"{today_pct:+.2f}%" if today_pct is not None else "待更新"
         pct_color="#D93025" if today_pct is not None and today_pct>=0 else "#18845B" if today_pct is not None else "#667085"
-        color=colors[i%len(colors)]
+        color=("#D93025" if limit_state == "漲停" else "#18845B" if limit_state == "跌停" else colors[i%len(colors)])
         contents.append({"type":"box","layout":"vertical","spacing":"xs","margin":"lg","contents":[{"type":"box","layout":"horizontal","alignItems":"center","contents":[{"type":"text","text":f"{name}（{code}）","weight":"bold","size":"sm","color":"#24364B","wrap":True,"flex":1},{"type":"text","text":f"{weight:.1f}%","weight":"bold","size":"md","color":"#24364B","align":"end","flex":0}]},{"type":"box","layout":"horizontal","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"4px","contents":[{"type":"box","layout":"vertical","width":f"{max(1,min(100,weight)):.1f}%","height":"7px","backgroundColor":color,"cornerRadius":"4px","contents":[]}]},{"type":"box","layout":"horizontal","contents":[{"type":"text","text":"今日漲幅","size":"xxs","color":"#667085","flex":1},{"type":"text","text":pct_text,"size":"sm","weight":"bold","color":pct_color,"align":"end"}]}]})
+        if limit_state:
+            contents[-1]["contents"][0]["contents"].insert(1, {
+                "type":"box", "layout":"vertical", "backgroundColor":color,
+                "cornerRadius":"4px", "paddingAll":"4px", "margin":"sm", "flex":0,
+                "contents":[{"type":"text", "text":limit_state, "color":"#FFFFFF",
+                             "size":"xs", "weight":"bold", "align":"center"}]})
+        contents[-1]["contents"].append({"type":"text","text":quote_note,"size":"xxs","color":"#667085","wrap":True})
     return FlexSendMessage(alt_text="秉軒持股配置比例",contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"18px","contents":contents[:48]}})
+
+
+def _line_fugle_holdings_quotes(user_id, codes):
+    """Read only the requesting owner's recent, same-day private collector rows."""
+    service = globals().get("_fugle_background_service")
+    if service is None or not service.enabled_for(user_id):
+        return {}
+    try:
+        from fugle_live import normalize_quotes
+        now = taiwan_now()
+        snapshot = service.read(user_id) or {}
+        allowed = set(codes)
+        raw = [row for code, row in (snapshot.get("quotes") or {}).items()
+               if code in allowed]
+        quotes = normalize_quotes(raw, allowed, now,
+            max_observation_age=86400 if _taiwan_post_close(now) else 180)
+        for quote in quotes.values():
+            quote["source"] = "富果伺服器背景行情"
+        return quotes
+    except Exception as exc:
+        print("⚠️ LINE 富果行情讀取失敗：%s" % type(exc).__name__, flush=True)
+        return {}
 
 
 def _line_hidden_combined_portfolio_flex(user_id):
@@ -53404,14 +53451,18 @@ def _line_hidden_combined_portfolio_flex(user_id):
     # refresh from the official MIS batch endpoint; do not make LINE wait for
     # a per-symbol Yahoo history fan-out after a cold start.
     prices = _load_line_holdings_quote_snapshot(user_id, codes) if codes else {}
-    if codes and _is_taiwan_intraday_window():
+    fugle_quotes = _line_fugle_holdings_quotes(user_id, codes) if codes else {}
+    missing_live = [code for code in codes if code not in fugle_quotes]
+    if missing_live and _is_taiwan_intraday_window():
         try:
             fresh = _fetch_twse_mis_quotes(
-                codes, market_suffix=_home_market_suffix_map(codes),
+                missing_live, market_suffix=_home_market_suffix_map(missing_live),
                 force_refresh=True, cache_result=False, quick_mode=True)
             prices.update(fresh or {})
         except Exception as quote_exc:
             print("⚠️ LINE 官方盤中行情刷新失敗：%s" % type(quote_exc).__name__, flush=True)
+    # A fallback cannot overwrite a fresh, owner-scoped Fugle observation.
+    prices.update(fugle_quotes)
     missing_quotes = [code for code in codes if not prices.get(code)]
     print("⚡ LINE 持股行情快照命中 %s/%s；缺漏不阻塞回覆" % (
         len(codes) - len(missing_quotes), len(codes)), flush=True)

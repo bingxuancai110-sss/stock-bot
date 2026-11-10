@@ -40,6 +40,15 @@ def normalize_quotes(raw, allowed, now, max_observation_age=120):
                             updated_at=trade.strftime('%Y-%m-%d %H:%M:%S'), fetched_at=seen.strftime('%Y-%m-%d %H:%M:%S'),
                             has_live_trade_price=True, close_is_final=row.get('closed') is True,
                             source='富果'+mode+'（本機直連）')
+        # Retain provider price limits; percentages alone cannot prove a limit hit.
+        try:
+            upper, lower = float(row.get('limit_up')), float(row.get('limit_down'))
+            if (not isinstance(row.get('limit_up'), bool) and
+                    not isinstance(row.get('limit_down'), bool) and
+                    math.isfinite(upper) and math.isfinite(lower) and 0 < lower < upper):
+                result[code].update(limit_up=upper, limit_down=lower, limit_known=True)
+        except (TypeError, ValueError):
+            pass
     return result
 
 

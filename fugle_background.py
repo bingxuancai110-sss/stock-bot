@@ -47,7 +47,9 @@ def quote_row(symbol, payload, now):
         return None
     return dict(code=symbol, price=price, previous_close=prior, reference_price=prior,
                 time=stamp, observed_at=now.timestamp()*1000,
-                closed=payload.get('isClose') is True, mode='rest', type='INDEX' if symbol == 'IX0001' else 'EQUITY')
+                closed=payload.get('isClose') is True, mode='rest',
+                limit_up=payload.get('limitUpPrice'), limit_down=payload.get('limitDownPrice'),
+                type='INDEX' if symbol == 'IX0001' else 'EQUITY')
 
 
 class Collector:
