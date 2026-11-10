@@ -20919,14 +20919,29 @@ def cron_push_leaderboard_settlement():
     return "排行榜結算通知已改為管理員手動發送，請至管理員後台 → 排行榜結算通知。", 410
 
 
+def _taiex_reduction_connect():
+    # Task-owned connections are never returned to the global website pool.
+    return psycopg2.connect(database=_url.path[1:], user=_url.username, password=_url.password,
+        host=_ipv4_addr, port=_url.port, sslmode='require', options='-c timezone=Asia/Taipei',
+        connect_timeout=10, keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3)
+
+
+def _taiex_reduction_store():
+    from taiex_job_store import SnapshotStore
+    return SnapshotStore(_taiex_reduction_connect, lambda conn: conn.close())
+
+
 def _taiex_reduction_service():
+    from taiex_market_data import official_history
+    store = _taiex_reduction_store()
     return ReductionAlerts(
-        connect=get_db_connection, release=release_db_connection,
-        load=_load_shared_data_snapshot, save=_save_shared_data_snapshot,
+        connect=_taiex_reduction_connect, release=lambda conn: conn.close(),
+        load=store.load, save=store.save,
         history=lambda: _fetch_taiex_history("3mo"),
         official=fetch_taiex_official_close, calendar=is_twse_trading_day,
-        now=taiwan_now, quiet=is_user_quiet_hours,
-        enabled=lambda: _admin_feature_enabled("line_daily"),
+        now=taiwan_now, quiet=lambda uid: store.quiet(uid, taiwan_now()),
+        enabled=store.feature_enabled,
+        official_history=lambda: official_history(taiwan_today(), store.load, store.save, requests.get),
         send=lambda uid, text, key: push_reduction_text(
             os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") or "", uid, text, key,
             post=requests.post))
@@ -20941,12 +20956,47 @@ def _run_taiex_reduction_alerts():
         return "月線減碼提醒未完成：" + type(exc).__name__
 
 
+_TAIEX_REMINDER_JOBS = None
+_TAIEX_REMINDER_JOBS_LOCK = threading.Lock()
+
+
+def _taiex_reminder_jobs():
+    global _TAIEX_REMINDER_JOBS
+    with _TAIEX_REMINDER_JOBS_LOCK:
+        if _TAIEX_REMINDER_JOBS is None:
+            from taiex_jobs import ReminderJobs
+            _TAIEX_REMINDER_JOBS = ReminderJobs(_taiex_reduction_store(),
+                lambda: _taiex_reduction_service().run(), now=taiwan_now)
+        return _TAIEX_REMINDER_JOBS
+
+
+def _require_taiex_cron_auth():
+    from taiex_cron_auth import authorized
+    if not authorized(request.headers, request.args.get("token"), os.environ.get("CRON_SECRET")):
+        abort(403)
+
+
 @app.route("/cron/taiex-reduction", methods=["POST"])
 def cron_taiex_reduction():
-    secret = os.environ.get("CRON_SECRET")
-    if not secret or request.args.get("token") != secret:
-        abort(403)
-    return run_in_background("月線減碼提醒", _run_taiex_reduction_alerts), 202
+    _require_taiex_cron_auth()
+    try:
+        run_id = _taiex_reminder_jobs().submit()
+        return jsonify({"id": run_id, "state": "queued"}), 202
+    except Exception as exc:
+        print("月線檢查未排入：" + type(exc).__name__, flush=True)
+        return jsonify({"state": "error", "error": type(exc).__name__}), 503
+
+
+@app.route("/cron/taiex-reduction/status", methods=["GET"])
+def cron_taiex_reduction_status():
+    _require_taiex_cron_auth()
+    try:
+        status = _taiex_reminder_jobs().status(str(request.args.get("id") or ""))
+        return (jsonify(status), 200) if status else (jsonify({"state": "unknown"}), 404)
+    except ValueError:
+        abort(400)
+    except Exception as exc:
+        return jsonify({"state": "error", "error": type(exc).__name__}), 503
 
 
 @app.route("/cron/push-watchlist", methods=["POST", "GET"])

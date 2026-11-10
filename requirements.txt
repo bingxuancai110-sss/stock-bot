@@ -7,3 +7,5 @@ requests
 psycopg2-binary
 google-genai
 google-auth>=2.0,<3.0
+
+PyJWT[crypto]==2.15.1

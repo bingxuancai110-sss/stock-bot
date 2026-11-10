@@ -1,48 +1,30 @@
 name: TAIEX close reduction reminders
 on:
   schedule:
-    # UTC; Taiwan 13:40, 14:10, 15:10. Holiday/close guards live in the job.
+    # UTC; Taiwan 13:40, 14:10, 15:10.
     - cron: '40 5 * * 1-5'
     - cron: '10 6,7 * * 1-5'
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/taiex-reduction.yml'
+      - 'scripts/check_taiex_reminder.py'
+      - 'taiex_cron_auth.py'
+      - 'taiex_market_data.py'
+      - 'taiex_job_store.py'
+      - 'taiex_jobs.py'
 permissions:
   contents: read
+  id-token: write
 concurrency:
   group: taiex-reduction
   cancel-in-progress: false
 jobs:
   trigger:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 10
     steps:
-      - name: Queue close check
-        env:
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
-        run: |
-          if [ -z "${CRON_SECRET:-}" ]; then
-            echo "::error::GitHub Actions CRON_SECRET is not configured."
-            exit 1
-          fi
-          response_file=$(mktemp)
-          trap 'rm -f "$response_file"' EXIT
-          if ! status=$(curl --silent --show-error --retry 2 --retry-delay 10 \
-            --connect-timeout 10 --max-time 65 --get --request POST \
-            --data-urlencode "token=$CRON_SECRET" \
-            --output "$response_file" --write-out '%{http_code}' \
-            "https://stock-bot-6xct.onrender.com/cron/taiex-reduction"); then
-            echo "::error::Reminder endpoint could not be reached after retries."
-            exit 1
-          fi
-          case "$status" in
-            202)
-              cat "$response_file"
-              ;;
-            401|403)
-              echo "::error::Reminder authentication rejected. Check that GitHub Actions and Render use the same CRON_SECRET."
-              exit 1
-              ;;
-            *)
-              echo "::error::Reminder endpoint returned HTTP $status instead of 202."
-              exit 1
-              ;;
-          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run and verify close check
+        run: python scripts/check_taiex_reminder.py
