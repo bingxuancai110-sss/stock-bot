@@ -2,10 +2,11 @@ import ast
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from line_portfolio_sharing import shared_owner
+from line_portfolio_sharing import shared_owner, SharingSettings
 
 
 def test_single_owner_and_explicit_multi_admin_mapping():
@@ -46,7 +47,10 @@ def test_shared_command_reads_owner_but_replies_to_requester(functions, command)
     calls = []
     def query(recipient, feature, builder, reply_token, base):
         calls.append((recipient, feature, builder(), reply_token))
-    ns = dict(os=SimpleNamespace(environ={"ADMIN_USER_ID": "owner"}),
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ({"user_id": "owner"},)
+    ns = dict(os=SimpleNamespace(environ={"ADMIN_USER_ID": "owner,other"}),
+              get_db_connection=lambda: conn, release_db_connection=lambda conn: None,
               normalize_code=lambda text: "", public_web_base_url=lambda url: url,
               request=SimpleNamespace(url_root="https://example.test/"),
               _line_async_query=query,
@@ -56,6 +60,38 @@ def test_shared_command_reads_owner_but_replies_to_requester(functions, command)
                             message=SimpleNamespace(text=command), reply_token="visitor-token")
     ns["handle_message"](event)
     assert calls == [("visitor", "positions_export", {"read_user": "owner"}, "visitor-token")]
+
+
+def test_binding_is_admin_only_atomic_and_idempotent():
+    conn = MagicMock()
+    cursor = conn.cursor.return_value.__enter__.return_value
+    cursor.fetchone.return_value = ("key",)
+    settings = SharingSettings(lambda: conn, lambda conn: None, {"ADMIN_USER_ID": "owner,other"})
+    assert settings.enable("visitor") is False
+    assert conn.cursor.call_count == 0
+    assert settings.enable("owner") is True
+    sql, params = cursor.execute.call_args.args
+    assert "ON CONFLICT" in sql and "WHERE shared_data_snapshots.payload->>'user_id'=EXCLUDED.payload->>'user_id'" in sql
+    assert '"user_id": "owner"' in params[1]
+    cursor.fetchone.return_value = None
+    assert settings.enable("other") is False
+
+
+def test_removed_admin_binding_is_not_shared():
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ({"user_id": "removed"},)
+    assert SharingSettings(lambda: conn, lambda conn: None, {"ADMIN_USER_ID": "owner"}).owner() is None
+
+
+@pytest.mark.parametrize("uid,source", [("visitor", "user"), ("owner", "group")])
+def test_public_sharing_setup_rejects_visitors_and_groups(functions, uid, source):
+    api = SimpleNamespace(reply_message=MagicMock())
+    ns = dict(normalize_code=lambda text: "", is_admin=lambda uid: uid == "owner",
+              line_bot_api=api, TextSendMessage=lambda **kw: kw)
+    exec(functions, ns)
+    ns["handle_message"](SimpleNamespace(source=SimpleNamespace(user_id=uid, type=source),
+        message=SimpleNamespace(text="公開我的持股"), reply_token="token"))
+    assert "限管理員本人" in api.reply_message.call_args.args[1]["text"]
 
 
 def test_normal_holdings_command_still_reads_requester(selected_tree):
