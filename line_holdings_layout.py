@@ -51,24 +51,23 @@ def render_holdings(rows):
                                    text(value, "sm", "#FFFFFF", weight="bold", flex=0)]}
         else:
             change = text(value, "sm", color, weight="bold", align="end", flex=0)
-        track = {"type": "box", "layout": "horizontal", "height": "6px", "flex": 1,
+        track = {"type": "box", "layout": "horizontal", "height": "6px", "margin": "xs",
                  "backgroundColor": "#E9EEF3", "cornerRadius": "3px", "contents": [
                      {"type": "box", "layout": "vertical", "width": f"{max(0, min(100, weight)):.1f}%",
                       "height": "6px", "backgroundColor": "#2D8B92", "cornerRadius": "3px", "contents": []}]}
-        allocation = {"type": "box", "layout": "horizontal", "alignItems": "center", "flex": 1,
-                      "spacing": "sm", "contents": [track, text(f"{weight:.1f}%", "sm", weight="bold", flex=0)]}
         content = [{"type": "box", "layout": "horizontal", "spacing": "sm", "alignItems": "center",
-                    "contents": [text(name, weight="bold", wrap=True, flex=1), text(code, "xs", MUTED, flex=0)]},
-                   {"type": "box", "layout": "horizontal", "spacing": "md", "alignItems": "center",
-                    "margin": "sm", "contents": [allocation, change]}]
+                    "contents": [text(f"{name}（{code}）", weight="bold", wrap=True, flex=1),
+                                 text(f"{weight:.1f}%", "md", weight="bold", align="end", flex=0)]},
+                   track,
+                   {"type": "box", "layout": "horizontal", "spacing": "sm", "alignItems": "center",
+                    "margin": "xs", "contents": [text("今日漲跌", "xxs", MUTED, flex=1), change]}]
         if pct is None:
             content.append(text("行情待更新 · " + note, "xxs", MUTED, wrap=True, margin="xs"))
         if i < len(rows) - 1:
             content.append({"type": "separator", "margin": "md", "color": "#E9EEF3"})
         stocks.append({"type": "box", "layout": "vertical", "margin": "md", "contents": content})
     return [text("秉軒的投資組合", "xl", "#203449", weight="bold"),
-            {"type": "box", "layout": "horizontal", "margin": "md", "contents": [
-                text("持股比重", "xs", MUTED, flex=1), text("今日漲跌", "xs", MUTED, align="end", flex=0)]},
+            text("持股配置比例", "xs", MUTED, margin="sm"),
             {"type": "box", "layout": "vertical", "contents": stocks},
             {"type": "separator", "margin": "md", "color": "#E9EEF3"},
             {"type": "box", "layout": "vertical", "spacing": "xs", "margin": "sm", "contents": quote_footer(rows)}]

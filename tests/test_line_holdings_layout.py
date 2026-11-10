@@ -24,7 +24,7 @@ def test_same_source_and_time_are_shared_once_in_footer_not_repeated_per_stock()
     assert raw.count("富果伺服器背景行情") == 1
     assert raw.count("2026-11-10 13:14:13") == 1
     assert "今日漲幅" not in raw
-    assert "持股比重" in raw and "今日漲跌" in raw
+    assert "持股配置比例" in raw and "今日漲跌" in raw
     assert "21.7%" in raw and "+9.91%" in raw
 
 
@@ -47,9 +47,9 @@ def test_pending_quote_retains_individual_time_and_source_without_limit_badge():
 def test_full_etf_name_and_code_do_not_get_truncated_and_percentages_are_unbroken():
     result = render_holdings([row("主動統一台股增長", "00981A", 14.1, 4.47)])
     texts = [n for n in nodes(result) if n.get("type") == "text"]
-    name = next(n for n in texts if n["text"] == "主動統一台股增長")
+    name = next(n for n in texts if n["text"] == "主動統一台股增長（00981A）")
     assert name["wrap"] is True
-    assert any(n["text"] == "00981A" for n in texts)
+    assert "00981A" in name["text"]
     assert all(not n.get("wrap", False) for n in texts if n["text"].endswith("%"))
 
 
@@ -66,3 +66,15 @@ def test_bar_lengths_use_actual_weights_and_current_zero_return_is_preserved():
     fills = [n for n in nodes(result) if n.get("backgroundColor") == "#2D8B92"]
     assert [n["width"] for n in fills] == ["0.0%", "100.0%"]
     assert "+0.00%" in json.dumps(result)
+
+
+def test_weight_and_daily_return_are_on_separate_rows_and_code_stays_with_name():
+    result = render_holdings([row()])
+    stock = result[2]["contents"][0]["contents"]
+    name_row, bar_row, return_row = stock[:3]
+    assert name_row["contents"][0]["text"] == "台達電（2308）"
+    assert name_row["contents"][1]["text"] == "21.7%"
+    assert bar_row["height"] == "6px" and bar_row["backgroundColor"] == "#E9EEF3"
+    assert return_row["contents"][0]["text"] == "今日漲跌"
+    assert return_row["contents"][1]["text"] == "+9.91%"
+    assert "+9.91%" not in json.dumps(name_row)
