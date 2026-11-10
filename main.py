@@ -53477,6 +53477,21 @@ def _line_fugle_holdings_quotes(user_id, codes):
         return {}
 
 
+# Log readiness without exposing account IDs or credentials.
+from line_portfolio_sharing import shared_owner as _line_shared_owner
+print("LINE具名持股分享：" + ("擁有者設定就緒" if _line_shared_owner(os.environ) else "需指定分享擁有者"), flush=True)
+
+
+def _line_shared_owner_portfolio_flex():
+    from line_portfolio_sharing import shared_owner
+    owner = shared_owner(os.environ)
+    if not owner:
+        return TextSendMessage(text="分享帳號尚未設定完成，暫時無法查看秉軒的持股。")
+    # Only this read-only named command is shared. Reply destination and all
+    # private holdings / trading / website authentication remain requester-scoped.
+    return _line_hidden_combined_portfolio_flex(owner)
+
+
 def _line_hidden_combined_portfolio_flex(user_id):
     """單一隱藏指令：上半部顯示持股配置，下半部接續最近交易日操作日報。"""
     started = time.monotonic()
@@ -53856,7 +53871,7 @@ def handle_message(event):
         line_base_url = public_web_base_url(request.url_root.rstrip("/"))
         _line_async_query(
             user_id, "positions_export",
-            lambda: _line_hidden_combined_portfolio_flex(user_id),
+            lambda: _line_shared_owner_portfolio_flex(),
             event.reply_token, line_base_url)
         return
 
