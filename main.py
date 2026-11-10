@@ -53479,12 +53479,12 @@ def _line_fugle_holdings_quotes(user_id, codes):
 
 # Log readiness without exposing account IDs or credentials.
 from line_portfolio_sharing import shared_owner as _line_shared_owner
-print("LINE具名持股分享：" + ("擁有者設定就緒" if _line_shared_owner(os.environ) else "需指定分享擁有者"), flush=True)
+print("LINE具名持股分享：" + ("擁有者設定就緒" if _line_shared_owner(os.environ) else "多管理員：由本人LINE綁定或沿用既有綁定"), flush=True)
 
 
 def _line_shared_owner_portfolio_flex():
-    from line_portfolio_sharing import shared_owner
-    owner = shared_owner(os.environ)
+    from line_portfolio_sharing import SharingSettings
+    owner = SharingSettings(get_db_connection, release_db_connection, os.environ).owner()
     if not owner:
         return TextSendMessage(text="分享帳號尚未設定完成，暫時無法查看秉軒的持股。")
     # Only this read-only named command is shared. Reply destination and all
@@ -53867,6 +53867,20 @@ def handle_message(event):
 
     # 隱藏指令要先回覆，避免資料庫 upsert 或一般限流流程失敗時，
     # 使用者只看到自己送出的訊息、機器人卻完全沒有回覆。
+    if text == "公開我的持股":
+        if not is_admin(user_id) or getattr(event.source, "type", "") != "user":
+            message = "此分享指令限管理員本人於機器人一對一對話設定。"
+        else:
+            try:
+                from line_portfolio_sharing import SharingSettings
+                ok = SharingSettings(get_db_connection, release_db_connection, os.environ).enable(user_id)
+                message = ("已開啟你的持股分享。其他人輸入「秉軒的持股」即可查看配置比例、今日漲跌與操作日報；不含實際股數、成本、資產金額或操作權限。"
+                           if ok else "分享已綁定其他管理員，沒有變更帳號。")
+            except Exception:
+                message = "分享設定未能確認，請稍後再試；不會改動持股。"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=message))
+        return
+
     if text == "秉軒持股":
         line_base_url = public_web_base_url(request.url_root.rstrip("/"))
         _line_async_query(
