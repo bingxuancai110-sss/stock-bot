@@ -53361,7 +53361,6 @@ def _line_hidden_holdings_flex(user_id, positions=None, prices=None):
     # its fan-out so a holdings query does not open eight concurrent fetches.
     if prices is None:
         prices=get_realtime_stocks_bulk(codes,workers=3,rng="1d",request_timeout=5) or {}
-    colors=["#376A9B","#45A88B","#E9A34A","#8B78C6","#D97777","#5B9BD5","#D4A72C","#2C8C99","#B56B9A","#75808D"]
     staged=[]; total_market=0.0
     for pos in positions:
         code=str(pos.get("code") or "").strip(); shares=float(pos.get("shares") or 0); q=prices.get(code) or {}
@@ -53401,19 +53400,8 @@ def _line_hidden_holdings_flex(user_id, positions=None, prices=None):
                 pass
         rows.append((name,code,weight,today_pct,quote_note,limit_state))
     rows.sort(key=lambda r:r[2], reverse=True)
-    contents=[{"type":"text","text":"秉軒的投資組合","size":"xl","weight":"bold","color":"#203449"},{"type":"text","text":"持股配置比例","size":"sm","color":"#667085","margin":"sm"},{"type":"separator","margin":"md"}]
-    for i,(name,code,weight,today_pct,quote_note,limit_state) in enumerate(rows):
-        pct_text=f"{today_pct:+.2f}%" if today_pct is not None else "待更新"
-        pct_color="#D93025" if today_pct is not None and today_pct>=0 else "#18845B" if today_pct is not None else "#667085"
-        color=("#D93025" if limit_state == "漲停" else "#18845B" if limit_state == "跌停" else colors[i%len(colors)])
-        contents.append({"type":"box","layout":"vertical","spacing":"xs","margin":"lg","contents":[{"type":"box","layout":"horizontal","alignItems":"center","contents":[{"type":"text","text":f"{name}（{code}）","weight":"bold","size":"sm","color":"#24364B","wrap":True,"flex":1},{"type":"text","text":f"{weight:.1f}%","weight":"bold","size":"md","color":"#24364B","align":"end","flex":0}]},{"type":"box","layout":"horizontal","height":"7px","backgroundColor":"#E9EEF3","cornerRadius":"4px","contents":[{"type":"box","layout":"vertical","width":f"{max(1,min(100,weight)):.1f}%","height":"7px","backgroundColor":color,"cornerRadius":"4px","contents":[]}]},{"type":"box","layout":"horizontal","contents":[{"type":"text","text":"今日漲幅","size":"xxs","color":"#667085","flex":1},{"type":"text","text":pct_text,"size":"sm","weight":"bold","color":pct_color,"align":"end"}]}]})
-        if limit_state:
-            contents[-1]["contents"][0]["contents"].insert(1, {
-                "type":"box", "layout":"vertical", "backgroundColor":color,
-                "cornerRadius":"4px", "paddingAll":"4px", "margin":"sm", "flex":0,
-                "contents":[{"type":"text", "text":limit_state, "color":"#FFFFFF",
-                             "size":"xs", "weight":"bold", "align":"center"}]})
-        contents[-1]["contents"].append({"type":"text","text":quote_note,"size":"xxs","color":"#667085","wrap":True})
+    from line_holdings_layout import render_holdings
+    contents = render_holdings(rows)
     return FlexSendMessage(alt_text="秉軒持股配置比例",contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"18px","contents":contents[:48]}})
 
 
