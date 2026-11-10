@@ -14,7 +14,7 @@ def functions():
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in {
                 "web_admin_taiex_reduction", "cron_taiex_reduction", "_run_taiex_reduction_alerts",
-                "handle_taiex_admin_postback", "_reply_taiex_line_card"}:
+                "handle_taiex_admin_postback", "_reply_taiex_line_card", "cron_taiex_reduction_status", "_taiex_reduction_connect"}:
             node.decorator_list = []
             selected[node.name] = compile(ast.Module(body=[node], type_ignores=[]), "<main-route>", "exec")
     return selected
@@ -75,7 +75,7 @@ def test_cron_empty_or_wrong_secret_rejected_before_work(functions):
     for configured, token in ((None, None), ("secret", None), ("secret", "wrong")):
         ns = {"os": SimpleNamespace(environ={"CRON_SECRET": configured}),
               "request": SimpleNamespace(args={"token": token}), "abort": abort,
-              "run_in_background": Mock()}
+              "run_in_background": Mock(), "_require_taiex_cron_auth": lambda: abort(403)}
         with pytest.raises(PermissionError):
             load(functions, "cron_taiex_reduction", ns)()
         ns["run_in_background"].assert_not_called()
@@ -102,3 +102,23 @@ def test_flex_reply_uses_existing_line_reply_mechanism(functions):
     load(functions, "_reply_taiex_line_card", ns)(SimpleNamespace(reply_token="existing-token"),
         {"type": "flex", "altText": "title", "contents": {"type": "bubble"}})
     ns["line_bot_api"].reply_message.assert_called_once_with("existing-token", "sdk-flex")
+
+
+def test_cron_reports_correlated_queue_id_and_connection_failure_as_503(functions):
+    jobs = Mock()
+    jobs.submit.return_value = "run-id"
+    ns = {"_require_taiex_cron_auth": Mock(), "_taiex_reminder_jobs": lambda: jobs,
+          "jsonify": lambda value: value}
+    route = load(functions, "cron_taiex_reduction", ns)
+    assert route() == ({"id": "run-id", "state": "queued"}, 202)
+    jobs.submit.side_effect = TimeoutError()
+    assert route()[1] == 503
+
+
+def test_task_connection_is_fresh_ssl_not_global_pool(functions):
+    connect = Mock(side_effect=["fresh-1", "fresh-2"])
+    ns = {"psycopg2": SimpleNamespace(connect=connect), "_ipv4_addr": "127.0.0.1",
+          "_url": SimpleNamespace(path="/testdb", username="test", password="dummy", port=6543)}
+    get = load(functions, "_taiex_reduction_connect", ns)
+    assert get() == "fresh-1" and get() == "fresh-2"
+    assert connect.call_args.kwargs["sslmode"] == "require"

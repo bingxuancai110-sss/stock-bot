@@ -133,11 +133,13 @@ def push_text(token, user_id, text, retry_key, post, sleep=time.sleep):
 
 class ReductionAlerts:
     def __init__(self, *, connect, release, load, save, history, official,
-                 calendar, now, send, quiet, enabled):
+                 calendar, now, send, quiet, enabled, official_history=None):
         self.connect, self.release = connect, release
         self.load, self.save, self.history, self.official = load, save, history, official
         self.calendar, self.now, self.send = calendar, now, send
         self.quiet, self.enabled = quiet, enabled
+        self.official_history = official_history
+        self._verified_sessions = set()
 
     @staticmethod
     def ensure(cur):
@@ -160,7 +162,8 @@ class ReductionAlerts:
     def _next_day(self, day):
         cursor = day + timedelta(days=1)
         for _ in range(30):
-            if self.calendar(cursor):
+            known_end = max(self._verified_sessions) if self._verified_sessions else None
+            if ((cursor in self._verified_sessions) if known_end and cursor <= known_end else self.calendar(cursor)):
                 return cursor
             cursor += timedelta(days=1)
         raise ValueError("無法確認下一交易日")
@@ -322,19 +325,29 @@ class ReductionAlerts:
                 return "月線提醒：尚無訂閱者；請在LINE輸入「減碼提醒開啟」。"
             saved = self.load(SNAPSHOT_KEY, max_age_seconds=86400)
             result = (saved or {}).get("payload") or {}
-            if result.get("date") != today.isoformat() or not result.get("observations"):
-                official = self.official() or {}
-                if (not official.get("close_is_final") or
-                        str(official.get("date") or "").replace("-", "") != today.strftime("%Y%m%d")):
-                    raise ValueError("尚無當日TWSE正式收盤，等待後續排程重試")
-                history = [(d, v) for d, v in self.history() if d < today]
-                history.append((today, float(str(official["close"]).replace(",", ""))))
-                result = evaluate(history, today, self.calendar)
-                result["source"] = "Yahoo Finance ^TWII + " + str(official.get("source") or "TWSE")
+            if result.get("date") != today.isoformat() or not result.get("observations") or (self.official_history and result.get("source") != "TWSE 加權指數官方月收盤"):
+                if self.official_history:
+                    history = self.official_history()
+                    sessions = {d for d, _ in history}
+                    result = evaluate(history, today, lambda d: d in sessions)
+                    result["source"] = "TWSE 加權指數官方月收盤"
+                    result["trading_dates"] = [d.isoformat() for d in sorted(sessions)]
+                else:
+                    official = self.official() or {}
+                    if (not official.get("close_is_final") or
+                            str(official.get("date") or "").replace("-", "") != today.strftime("%Y%m%d")):
+                        raise ValueError("尚無當日TWSE正式收盤，等待後續排程重試")
+                    history = [(d, v) for d, v in self.history() if d < today]
+                    history.append((today, float(str(official["close"]).replace(",", ""))))
+                    result = evaluate(history, today, self.calendar)
+                    result["source"] = "Yahoo Finance ^TWII + " + str(official.get("source") or "TWSE")
+                for observation in result["observations"]:
+                    observation["source"] = result["source"]
                 if not self.save(SNAPSHOT_KEY, result, data_date=today,
                                  source_meta={"source": result["source"]}):
                     raise RuntimeError("提醒快照未保存，不發送無法追溯的訊號")
-            sent = failed = 0
+            self._verified_sessions = {date.fromisoformat(d) for d in result.get("trading_dates", [])}
+            sent = failed = signal_count = 0
             for uid in users:
                 with conn.cursor() as cur:
                     cur.execute("""UPDATE taiex_reduction_job_lock
@@ -344,6 +357,7 @@ class ReductionAlerts:
                         raise RuntimeError("提醒工作鎖已逾時，停止本次批次")
                 conn.commit()
                 events = self._user_events(conn, uid, result)
+                signal_count += len(events)
                 if self.quiet(uid):
                     continue
                 for event in events:
@@ -378,7 +392,8 @@ class ReductionAlerts:
                         conn.rollback()
                         failed += 1
                         print("月線提醒推播未確認：" + type(exc).__name__, flush=True)
-            return f"月線／回補提醒：{today}；LINE接受{sent}則、未確認{failed}則。"
+            return (f"月線／回補提醒：{today}；資料日{result['date']}；檢查{len(users)}人、"
+                    f"新增訊號{signal_count}則；LINE接受{sent}則、未確認{failed}則。")
         except Exception:
             conn.rollback()
             raise

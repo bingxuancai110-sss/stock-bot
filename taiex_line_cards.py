@@ -59,7 +59,7 @@ def alert_card(result=None, next_day=None, test_date=None):
         body.append(text("若下一交易日仍低於月線，就確認第3日訊號；再於其下一交易日收盤減碼。"
                          if stage == 2 else f"目標執行：{next_day.isoformat()} 收盤\n股票配置降至總資產50%，不重複每天減半。",
                          color=color, weight="bold"))
-        body.append(text("Yahoo Finance ^TWII 日收盤；當日以TWSE正式收盤覆核。", "xxs", MUTED))
+        body.append(text(result.get("source") or "Yahoo Finance ^TWII 日收盤；當日以TWSE正式收盤覆核。", "xxs", MUTED))
     body.append(text("只發提醒，不會自動交易或更動持股。", "xs", MUTED))
     return message(title, body, color=color)
 
@@ -77,7 +77,7 @@ def refill_card(event):
         body.append(text("本日一次跨過3%與4.5%，合併提醒補至100%。"))
     body += [text(f"低點自策略預定減碼日 {event['tracking_since']} 起追蹤；若再創低會下修。", "xs", MUTED),
              text("這是策略目標，並非你的實際成交或庫存。只發提醒，不會自動買進。", "xs", MUTED),
-             text("Yahoo Finance ^TWII；當日以TWSE正式收盤覆核。", "xxs", MUTED)]
+             text(event.get("source") or "Yahoo Finance ^TWII；當日以TWSE正式收盤覆核。", "xxs", MUTED)]
     return message(f"月線回補提醒｜反彈 {threshold}", body)
 
 

@@ -28,7 +28,7 @@ def advance(state, observation, next_day):
     elif state["streak"] is not None:
         state["streak"] += 1
     streak = state["streak"]
-    common = {"date": day, "next_day": next_day, "rows": state["recent_rows"]}
+    common = {"date": day, "next_day": next_day, "rows": state["recent_rows"], "source": observation.get("source")}
     if streak == 2:
         state["events"].append({**common, "kind": "warning", "level": 2, "streak": 2})
     if streak == 3:
