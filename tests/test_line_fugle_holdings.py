@@ -98,5 +98,5 @@ def test_official_limits_survive_collector_and_render_distinct_badges(compiled, 
     assert [v['text'] for v in badges] == ([expected] if expected else [])
     if expected:
         assert badges[0]['color'] == '#FFFFFF'
-        color = '#D93025' if expected == '漲停' else '#18845B'
+        color = '#BC2936' if expected == '漲停' else '#10704E'
         assert any(v.get('backgroundColor') == color for v in boxes(card))
