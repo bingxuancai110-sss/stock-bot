@@ -22539,18 +22539,11 @@ def _do_warmup():
         print(f"❌ 預熱美股指數失敗: {e}")
         done.append("美股指數 失敗")
 
-    # Keep the US → Taiwan industry radar in the existing morning warm-up window.
-    # Other warm-up calls happen later in the day too, so fetch this history only
-    # during the 07:00 Taiwan run, after the US close, and never on weekends.
+    # US daily downloads run outside this memory-limited web process.
+    # Taiwan-company research keeps its separate existing afternoon update.
     try:
         if warmup_started_at.weekday() < 5 and warmup_started_at.hour == 7:
-            radar_blueprint = app.blueprints.get("us_rotation")
-            radar_refresh = getattr(radar_blueprint, "us_rotation_refresh_job", None)
-            if callable(radar_refresh):
-                done.append(_guarded_background_stage("美股輪動",
-                    lambda: radar_refresh(allow_unofficial_override=True), reserve_mb=280))
-            else:
-                done.append("美股輪動 略過（更新工作尚未註冊）")
+            done.append("美股輪動 由獨立每日排程更新（06:35／07:05）")
         elif warmup_started_at.weekday() < 5 and warmup_started_at.hour >= 14:
             radar_blueprint = app.blueprints.get("us_rotation")
             research_job = getattr(radar_blueprint, "us_rotation_research_job", None)
@@ -54805,6 +54798,7 @@ app.register_blueprint(create_us_rotation_blueprint(
     release_db_connection=release_db_connection,
     run_in_background=run_in_background,
     fetch_tw_company_snapshot=_build_us_rotation_tw_snapshot,
+    job_connect=_taiex_reduction_connect, job_release=lambda conn: conn.close(),
 ))
 
 

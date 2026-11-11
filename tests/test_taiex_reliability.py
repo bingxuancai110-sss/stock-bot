@@ -55,6 +55,17 @@ def test_legacy_secret_is_retained_and_missing_credentials_are_not_allowed():
     assert not authorized({}, None, None)
 
 
+def test_us_ingest_and_monthly_workflow_credentials_cannot_cross_scopes(private_key):
+    from us_rotation.daily_sync import AUDIENCE as US_AUDIENCE, WORKFLOW as US_WORKFLOW
+    keys = Mock()
+    keys.get_signing_key_from_jwt.return_value = SimpleNamespace(key=private_key.public_key())
+    us = {"Authorization": "Bearer " + signed(private_key, aud=US_AUDIENCE, workflow_ref=US_WORKFLOW)}
+    monthly = {"Authorization": "Bearer " + signed(private_key)}
+    assert authorized(us, None, None, keys, audience=US_AUDIENCE, workflow=US_WORKFLOW)
+    assert not authorized(us, None, None, keys)
+    assert not authorized(monthly, None, None, keys, audience=US_AUDIENCE, workflow=US_WORKFLOW)
+
+
 def month_payload(month, days):
     return {"stat": "OK", "fields": ["日期", "收盤指數"],
             "data": [[f"115/{month:02d}/{d:02d}", "42,000.00"] for d in days]}
