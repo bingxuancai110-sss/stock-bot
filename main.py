@@ -16088,203 +16088,13 @@ class _RevenueHTMLTableParser(HTMLParser):
 
 
 def _parse_mops_revenue_html(text, target_period):
-    """解析 MOPS t21sc03 月營收表，回傳與 OpenAPI 相同的資料結構。"""
-    parser = _RevenueHTMLTableParser()
-    try:
-        parser.feed(text or "")
-        parser.close()
-    except Exception as exc:
-        print(f"⚠️ MOPS 月營收 HTML 解析失敗: {exc}")
-        return {}
-
-    def norm(s):
-        return re.sub(r"\s+", "", str(s or "")).replace("\u3000", "")
-
-    def number(v):
-        t = str(v or "").strip().replace(",", "").replace("%", "")
-        if t in ("", "-", "--", "—", "－", "N/A", "NA"):
-            return None
-        # HTML 可能出現括號負數
-        if t.startswith("(") and t.endswith(")"):
-            t = "-" + t[1:-1]
-        try:
-            return float(t)
-        except (ValueError, TypeError):
-            return None
-
-    result = {}
-    target_label = _revenue_period_label(target_period)
-
-    for row in parser.rows:
-        cells = [str(x).strip() for x in row]
-        nc = [norm(x) for x in cells]
-        if len(cells) < 7:
-            continue
-        if not any("公司代號" in x for x in nc):
-            continue
-        if not any("當月營收" in x or "營業收入" in x for x in nc):
-            continue
-
-        # 這個頁面的欄位是固定且公開的；優先依標題找欄位，找不到才用標準順序。
-        def find_col(*keywords):
-            for i, x in enumerate(nc):
-                if all(k in x for k in keywords):
-                    return i
-            return None
-
-        code_i = find_col("公司代號")
-        month_i = find_col("當月營收")
-        yoy_i = find_col("去年同月增減")
-        cum_i = find_col("累計營收")
-        cum_yoy_i = find_col("累計營收增減")
-        mom_i = find_col("前月比較增減")
-
-        # 若標題列因 rowspan/colspan 被拆成多列，使用 MOPS 標準欄位順序。
-        if code_i is None:
-            code_i = 0
-        if month_i is None:
-            month_i = 2
-        if yoy_i is None:
-            yoy_i = 3
-        if cum_i is None:
-            cum_i = 4
-        if cum_yoy_i is None:
-            cum_yoy_i = 5
-        if mom_i is None:
-            mom_i = 6
-
-        header_positions = (code_i, month_i, yoy_i, cum_i, cum_yoy_i, mom_i)
-        if max(header_positions) >= len(cells):
-            continue
-
-        # 找到標題後，往後掃描同一 HTML 的資料列。
-        header_pos = parser.rows.index(row)
-        for data_row in parser.rows[header_pos + 1:]:
-            vals = [str(x).strip() for x in data_row]
-            if len(vals) <= max(header_positions):
-                continue
-            code = re.sub(r"\s+", "", vals[code_i])
-            # MOPS 可能有「合計」或分類列，不要塞進個股資料。
-            if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code):
-                continue
-            if code in ("合計", "總計"):
-                continue
-            result[code] = {
-                "yoy_pct": number(vals[yoy_i]),
-                "cum_yoy_pct": number(vals[cum_yoy_i]),
-                "mom_pct": number(vals[mom_i]),
-                "month_revenue": number(vals[month_i]),
-            }
-        if result:
-            break
-
-    if result:
-        print(f"✅ MOPS {target_label} 歷史月營收解析成功，共 {len(result)} 檔")
-    return result
+    from revenue_parser import parse_html
+    return parse_html(text)
 
 
 def _parse_mops_revenue_csv(raw, target_period, target_code=None):
-    """快速解析 MOPS 官方 CSV；可只取單一股票，避免 HTML 全表解析。"""
-    import csv
-    key = _normalize_revenue_period(target_period)
-    target = str(target_code or "").strip()
-    if not raw:
-        return {}
-    text = None
-    for enc in ("utf-8-sig", "utf-8", "cp950", "big5"):
-        try:
-            text = raw.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    if text is None:
-        text = raw.decode("utf-8", errors="replace")
-
-    lines = [ln for ln in text.replace("\r", "").split("\n") if ln.strip()]
-    if not lines:
-        return {}
-    try:
-        rows = list(csv.reader(lines))
-    except Exception:
-        return {}
-    if not rows:
-        return {}
-
-    header_i = None
-    for i, row in enumerate(rows[:20]):
-        joined = "|".join(str(x or "").replace("\ufeff", "").strip() for x in row)
-        if "公司代號" in joined and ("當月營收" in joined or "營業收入" in joined):
-            header_i = i
-            break
-    if header_i is None:
-        return {}
-
-    header = [re.sub(r"\s+", "", str(x or "").replace("\ufeff", "")) for x in rows[header_i]]
-    def col(*keys):
-        for i, h in enumerate(header):
-            if all(k in h for k in keys):
-                return i
-        return None
-    code_i = col("公司代號")
-    month_i = col("當月營收")
-    yoy_i = col("去年同月增減")
-    cum_yoy_i = col("累計營收增減")
-    mom_i = col("前月比較增減")
-    # CSV 欄位順序可能調整；尤其「累計營收增減」不能硬猜成第 6 欄。
-    code_i = 0 if code_i is None else code_i
-    month_i = 2 if month_i is None else month_i
-    yoy_i = 3 if yoy_i is None else yoy_i
-    if cum_yoy_i is None:
-        # 常見新版格式的累計 YoY 百分比通常在含「累計＋增減／比較」的欄位。
-        candidates = [i for i, h in enumerate(header)
-                      if "累計" in h and any(x in h for x in ("增減", "比較", "%", "百分"))]
-        cum_yoy_i = candidates[-1] if candidates else None
-    if mom_i is None:
-        candidates = [i for i, h in enumerate(header)
-                      if "前月比較" in h or ("上月比較" in h and "%" in h)]
-        mom_i = candidates[-1] if candidates else None
-
-    def num(v):
-        t = str(v or "").strip().replace(",", "").replace("%", "")
-        if t in ("", "-", "--", "—", "－", "N/A", "NA"):
-            return None
-        if t.startswith("(") and t.endswith(")"):
-            t = "-" + t[1:-1]
-        try:
-            return float(t)
-        except (ValueError, TypeError):
-            return None
-
-    result = {}
-    for row in rows[header_i + 1:]:
-        required_indices = [i for i in (code_i, month_i, yoy_i, cum_yoy_i, mom_i) if i is not None]
-        if required_indices and max(required_indices) >= len(row):
-            continue
-        code = re.sub(r"\s+", "", str(row[code_i] or ""))
-        if not re.fullmatch(r"\d{4,6}[A-Za-z]?", code):
-            continue
-        if target and code.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ") != target.rstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
-            continue
-        cum_value = num(row[cum_yoy_i]) if cum_yoy_i is not None and cum_yoy_i < len(row) else None
-        # 若沒有累計 YoY 百分比欄，嘗試從「今年累計／去年累計」兩欄計算。
-        if cum_value is None:
-            cur_i = next((i for i, h in enumerate(header)
-                          if "累計" in h and "營收" in h and not any(x in h for x in ("去年", "前期", "增減", "比較", "%", "百分"))), None)
-            prev_i = next((i for i, h in enumerate(header)
-                           if "累計" in h and ("去年" in h or "前期" in h) and not any(x in h for x in ("增減", "比較", "%", "百分"))), None)
-            if cur_i is not None and prev_i is not None and cur_i < len(row) and prev_i < len(row):
-                cur_v, prev_v = num(row[cur_i]), num(row[prev_i])
-                if cur_v is not None and prev_v not in (None, 0):
-                    cum_value = (cur_v / prev_v - 1.0) * 100.0
-        result[code] = {
-            "yoy_pct": num(row[yoy_i]) if yoy_i is not None and yoy_i < len(row) else None,
-            "cum_yoy_pct": cum_value,
-            "mom_pct": num(row[mom_i]) if mom_i is not None and mom_i < len(row) else None,
-            "month_revenue": num(row[month_i]) if month_i is not None and month_i < len(row) else None,
-        }
-        if target:
-            break
-    return result
+    from revenue_parser import parse_csv
+    return parse_csv(raw, target_code)
 
 
 def _fetch_mops_revenue_csv(target_key, target_code=None, market=None):
@@ -18328,6 +18138,8 @@ def _compute_stock_watchlist_scores(codes, allow_network_revenue_repair=True):
     cum_map = get_cumulative_net_buy_for_codes(codes, days=10)
     price_map = get_realtime_stocks_bulk(codes)
 
+    correction = (_load_shared_data_snapshot("revenue_repair_v2_status", max_age_seconds=7*86400) or {}).get("payload") or {}
+    corrected_codes = set(correction.get("corrected_codes") or [])
     result = {}
     for code in codes:
         stock = price_map.get(code)
@@ -18378,6 +18190,10 @@ def _compute_stock_watchlist_scores(codes, allow_network_revenue_repair=True):
         for factor in factors:
             detail = next((d for d in factor_details if d.get("name") == factor.get("name")), None)
             factor["details"] = detail.get("lines", []) if detail else []
+            if factor["name"] == "營收成長":
+                factor["details"].append("資料月份：" + str(_revenue_cache.get("period") or "未提供"))
+                if code in corrected_codes:
+                    factor["details"].append("營收欄位已更正，修正前的分數不宜直接比較。")
         result[code] = {
             "code": code,
             "name": stock_display_name(code, institutional_data, stock.get("name")),
@@ -18398,6 +18214,8 @@ def _compute_stock_watchlist_scores(codes, allow_network_revenue_repair=True):
             "cum_yoy": cum_yoy, "pe": model.get("pe"), "pb": model.get("pb"),
             "yield": model.get("yield"), "peg": model.get("peg"),
             "val_desc": model.get("val_desc"), "mom_desc": model.get("mom_desc"),
+            "data_correction_note": ("本期營收欄位已更正，修正前的歷史分數不宜直接比較。" if code in corrected_codes else None),
+            "revenue_period": _revenue_cache.get("period"),
             "turnover": turnover,
         }
     return result
@@ -18865,6 +18683,8 @@ def _build_stock_visual_flex_messages(code, name, stock, score, bd, lines, news=
             {"type":"box","layout":"horizontal","flex":1,"spacing":"xs","contents":[{"type":"box","layout":"vertical","width":"10px","height":"5px","backgroundColor":blue,"cornerRadius":"2px","contents":[]},txt("今日分數（升紅降綠）","xs",muted,None,"none")]}
         ]}
         factor_body=[{"type":"box","layout":"horizontal","alignItems":"center","contents":[txt("五大因子綜合分數","sm",muted,None,"none"),{"type":"text","text":f"{total}/100","size":"xxl","weight":"bold","color":navy,"align":"end","flex":1}]},factor_legend,*factor_rows]
+        if score.get("data_correction_note"):
+            factor_body.append(txt(score["data_correction_note"],"xs",muted,None,"md"))
         sc=find("📉")
         if sc!="暫無資料": factor_body.append(txt(sc,"xs",muted,None,"md"))
         factor_section=section("五大因子評分",factor_body)
@@ -54720,6 +54540,35 @@ def web_strategy_lab_backtest(uid):
 
 # Isolated US → Taiwan intelligence feature. Reuses the authenticated site shell
 # and existing PostgreSQL/background-job helpers without changing LINE messaging.
+def _invalidate_revenue_quality_caches():
+    _revenue_cache.update({"data": {}, "period": None, "checked_at": 0})
+    with _SHARED_SNAPSHOT_MEMORY_LOCK:
+        for key in ("monthly_revenue", "revenue_repair_v2_status"):
+            _SHARED_SNAPSHOT_MEMORY_CACHE.pop(key, None)
+
+
+def _verify_repaired_revenue(data):
+    from taiex_job_store import SnapshotStore
+    store = SnapshotStore(_taiex_reduction_connect, lambda conn: conn.close())
+    valuation = (store.load("valuation", max_age_seconds=30*86400) or {})
+    values = valuation.get("payload") or {}
+    result = {}
+    for code in ("2308", "2383"):
+        item = data.get(code) or {}
+        growth, pe = item.get("cum_yoy_pct"), (values.get(code) or {}).get("pe")
+        result[code] = {"cum_yoy_pct":growth, "mom_pct":item.get("mom_pct"),
+            "revenue_score":round(score_from_cum_revenue_growth(growth)*20/40),
+            "pe":pe, "valuation_source_date":str(valuation.get("data_date") or ""),
+            "valuation_score":score_from_valuation(pe,growth)[0] if pe is not None else None}
+    return result
+
+
+from revenue_repair_routes import create_blueprint as create_revenue_repair_blueprint
+app.register_blueprint(create_revenue_repair_blueprint(
+    _taiex_reduction_connect, lambda conn: conn.close(),
+    _invalidate_revenue_quality_caches, _verify_repaired_revenue))
+
+
 from us_rotation import create_blueprint as create_us_rotation_blueprint
 
 
