@@ -1,0 +1,29 @@
+name: US rotation daily close sync
+on:
+  schedule:
+    # Taiwan Tue-Sat 06:35 and 07:05, after the US daily close in both seasons.
+    - cron: '35 22 * * 1-5'
+    - cron: '5 23 * * 1-5'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/us-rotation-daily.yml'
+      - 'scripts/sync_us_rotation.py'
+      - 'us_rotation/daily_sync.py'
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: us-rotation-daily-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install lightweight download dependencies
+        run: python -m pip install requests flask==3.0.3 psycopg2-binary
+      - name: Fetch and persist verified daily close
+        run: python scripts/sync_us_rotation.py

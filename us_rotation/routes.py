@@ -31,7 +31,7 @@ def _esc(value):
 
 def create_blueprint(*, web_login_required, render_page, get_db_connection,
                      release_db_connection, run_in_background,
-                     fetch_tw_company_snapshot):
+                     fetch_tw_company_snapshot, job_connect=None, job_release=None):
     bp = Blueprint("us_rotation", __name__)
 
     def _page_html():
@@ -313,12 +313,12 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
  function renderRiskAlerts(){
   const all=state.signalExplanations||{},cur=(state.snapshot&&state.snapshot.current_risk_warning)||{};
   const num=(n,d=2)=>Number(n).toLocaleString('zh-TW',{minimumFractionDigits:d,maximumFractionDigits:d});
-  const dateNote=c=>'<span class="us-signal-date">資料日 '+esc(c.as_of||'尚無資料')+' · 採日線收盤判定</span>';
+  const dateNote=c=>((state.snapshot&&state.snapshot.update_warning)?'<p role="status" class="us-research-verification">'+esc(state.snapshot.update_warning)+'</p>':'')+'<span class="us-signal-date">資料日 '+esc(c.as_of||'尚無資料')+' · 採日線收盤判定</span>';
   const stat=(label,value,detail)=>'<div class="us-alert-stat"><span>'+esc(label)+'</span><b>'+esc(value)+(detail?'<small>'+esc(detail)+'</small>':'')+'</b></div>';
   const definitions=body=>'<details class="us-research us-stat-definitions us-stat-limit-copy"><summary>統計定義與限制</summary>'+body+'</details>';
   const card=(key,title,research)=>{
    const c=all[key]||{},stop=key.endsWith('_stop'),active=c.available&&c.triggered;
-   const badge=active?(stop?'已突破':'已達警戒'):(c.available?(stop?'尚未突破':'未達警戒'):'資料不足');
+   const stale=Boolean(state.snapshot&&state.snapshot.update_warning);const badge=stale?'歷史資料':active?(stop?'已突破':'已達警戒'):(c.available?(stop?'尚未突破':'未達警戒'):'資料不足');
    const unit=c.unit||(stop?'點':key==='us'?'':'個百分點');
    const value=c.available?num(c.value)+(unit?'<small>'+esc(unit)+'</small>':''):'尚無目前資料';
    let condition=stop?(c.available?'收盤須高於 '+num(c.threshold)+' 點，才算突破。':'收盤須高於前五日最高收盤價。'):key==='us'?'警戒線：VIX 收盤達 '+num(c.threshold??25)+'。':'警戒線：差值降到 '+num(c.threshold??-3)+' 個百分點。';
@@ -596,6 +596,9 @@ __RESULT__
     def api(uid):
         try:
             latest, history, mapping, tw_companies = _read_status()
+            from .daily_sync import freshness_warning
+            if latest:
+                latest["update_warning"] = freshness_warning(latest)
             trend_error = False
             try:
                 risk = (latest or {}).get("current_risk_warning") or {}
@@ -620,6 +623,40 @@ __RESULT__
                             "last_updated": datetime.now(timezone.utc).isoformat()})
         except Exception as exc:
             return jsonify({"ok": False, "error": "資料暫時無法讀取", "type": type(exc).__name__}), 503
+
+    @bp.route("/cron/us-rotation-ingest", methods=["POST"])
+    def daily_ingest():
+        from taiex_cron_auth import authorized
+        from .daily_sync import AUDIENCE, WORKFLOW, MAX_BYTES, validate_risk_dates
+        if not authorized(request.headers, None, None, audience=AUDIENCE, workflow=WORKFLOW):
+            abort(403)
+        raw = request.stream.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            abort(413)
+        try:
+            histories, _ = parse_history_csv(raw.decode("utf-8-sig"))
+            as_of = validate_risk_dates(histories)
+        except (UnicodeDecodeError, ValueError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 422
+        connect, release = job_connect or get_db_connection, job_release or release_db_connection
+        try:
+            prior = read_latest(connect, release) or {}
+            if prior.get("as_of") and as_of < prior["as_of"]:
+                return jsonify({"ok": False, "error": "不以較舊批次覆蓋目前快照"}), 409
+            fetched_at = datetime.now(timezone.utc).isoformat()
+            snapshot = calculate_snapshot(histories, source=SOURCE_NAME, fetched_at=fetched_at)
+            snapshot["current_risk_warning"] = calculate_current_risk(histories)
+            snapshot_id = save_snapshot(connect, release, snapshot, histories,
+                source_meta={"update_method": "github_daily_sync", "workflow": "us-rotation-daily.yml"})
+            result = {"ok": True, "snapshot_id": snapshot_id, "as_of": as_of,
+                      "vix_date": snapshot["current_risk_warning"]["us"].get("as_of"),
+                      "vix_close": snapshot["current_risk_warning"]["us"].get("value"),
+                      "symbols": len(histories), "fetched_at": fetched_at}
+            print("美股每日資料已保存：" + json.dumps(result, ensure_ascii=False), flush=True)
+            return jsonify(result)
+        except Exception as exc:
+            print("美股每日資料保存失敗：" + type(exc).__name__, flush=True)
+            return jsonify({"ok": False, "error": type(exc).__name__}), 503
 
     @bp.route("/cron/us-rotation-refresh", methods=["GET", "POST"])
     def cron_refresh():
