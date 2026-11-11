@@ -50,6 +50,7 @@ def test_shared_command_reads_owner_but_replies_to_requester(functions, command)
     conn = MagicMock()
     conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ({"user_id": "owner"},)
     ns = dict(os=SimpleNamespace(environ={"ADMIN_USER_ID": "owner,other"}),
+              is_admin=lambda uid: uid in {"owner", "other"},
               get_db_connection=lambda: conn, release_db_connection=lambda conn: None,
               normalize_code=lambda text: "", public_web_base_url=lambda url: url,
               request=SimpleNamespace(url_root="https://example.test/"),
@@ -60,6 +61,42 @@ def test_shared_command_reads_owner_but_replies_to_requester(functions, command)
                             message=SimpleNamespace(text=command), reply_token="visitor-token")
     ns["handle_message"](event)
     assert calls == [("visitor", "positions_export", {"read_user": "owner"}, "visitor-token")]
+
+
+@pytest.mark.parametrize("db_error", [False, True])
+def test_owner_can_read_own_without_sharing_binding_or_when_settings_unavailable(functions, db_error):
+    conn = MagicMock()
+    cursor = conn.cursor.return_value.__enter__.return_value
+    cursor.fetchone.return_value = None
+    if db_error:
+        cursor.execute.side_effect = RuntimeError("settings unavailable")
+    ns = dict(os=SimpleNamespace(environ={"ADMIN_USER_ID": "owner,other"}),
+              is_admin=lambda uid: uid == "owner",
+              get_db_connection=lambda: conn, release_db_connection=lambda conn: None,
+              normalize_code=lambda text: "", public_web_base_url=lambda url: url,
+              request=SimpleNamespace(url_root="https://example.test/"),
+              _line_hidden_combined_portfolio_flex=lambda uid: {"read_user": uid})
+    replies = []
+    ns["_line_async_query"] = lambda uid, feature, builder, token, base: replies.append((uid, builder()))
+    exec(functions, ns)
+    ns["handle_message"](SimpleNamespace(source=SimpleNamespace(user_id="owner", type="user"),
+        message=SimpleNamespace(text="秉軒的持股"), reply_token="token"))
+    assert replies == [("owner", {"read_user": "owner"})]
+
+
+@pytest.mark.parametrize("uid,private", [("visitor", True), ("owner", False)])
+def test_missing_binding_never_exposes_requester_or_admin_holdings_to_group(functions, uid, private):
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = None
+    renderer = MagicMock()
+    ns = dict(os=SimpleNamespace(environ={"ADMIN_USER_ID": "owner,other"}),
+              is_admin=lambda uid: uid == "owner", TextSendMessage=lambda **kw: kw,
+              get_db_connection=lambda: conn, release_db_connection=lambda conn: None,
+              _line_hidden_combined_portfolio_flex=renderer)
+    exec(functions, ns)
+    result = ns["_line_shared_owner_portfolio_flex"](uid, private_chat=private)
+    assert "尚未開啟持股分享" in result["text"]
+    renderer.assert_not_called()
 
 
 def test_binding_is_admin_only_atomic_and_idempotent():
