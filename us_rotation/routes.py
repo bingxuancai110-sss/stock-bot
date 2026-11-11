@@ -650,6 +650,7 @@ __RESULT__
                 source_meta={"update_method": "github_daily_sync", "workflow": "us-rotation-daily.yml"})
             result = {"ok": True, "snapshot_id": snapshot_id, "as_of": as_of,
                       "vix_date": snapshot["current_risk_warning"]["us"].get("as_of"),
+                      "vix_close": snapshot["current_risk_warning"]["us"].get("value"),
                       "symbols": len(histories), "fetched_at": fetched_at}
             print("美股每日資料已保存：" + json.dumps(result, ensure_ascii=False), flush=True)
             return jsonify(result)
