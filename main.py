@@ -53477,18 +53477,22 @@ def _line_fugle_holdings_quotes(user_id, codes):
         return {}
 
 
-# Log readiness without exposing account IDs or credentials.
-from line_portfolio_sharing import shared_owner as _line_shared_owner
-print("LINE具名持股分享：" + ("擁有者設定就緒" if _line_shared_owner(os.environ) else "多管理員：由本人LINE綁定或沿用既有綁定"), flush=True)
+# Verify the actual account mapping without logging account IDs or credentials.
+try:
+    from line_portfolio_sharing import SharingSettings as _LineSharingSettings
+    _line_sharing_ready = bool(_LineSharingSettings(get_db_connection, release_db_connection, os.environ).owner())
+    print("LINE具名持股分享：" + ("公開查詢擁有者已確認" if _line_sharing_ready else "缺少明確擁有者"), flush=True)
+except Exception as _sharing_config_error:
+    print("LINE具名持股分享設定檢查未完成：" + type(_sharing_config_error).__name__, flush=True)
 
 
 def _line_shared_owner_portfolio_flex():
     from line_portfolio_sharing import SharingSettings
     owner = SharingSettings(get_db_connection, release_db_connection, os.environ).owner()
     if not owner:
-        return TextSendMessage(text="分享帳號尚未設定完成，暫時無法查看秉軒的持股。")
-    # Only this read-only named command is shared. Reply destination and all
-    # private holdings / trading / website authentication remain requester-scoped.
+        return TextSendMessage(text="秉軒的持股暫時無法讀取，請稍後再試。")
+    # Everyone receives the same owner's public report. Never use requester ID
+    # to select the portfolio; private web / trading access stays unchanged.
     return _line_hidden_combined_portfolio_flex(owner)
 
 

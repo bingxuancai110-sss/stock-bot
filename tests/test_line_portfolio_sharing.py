@@ -50,6 +50,7 @@ def test_shared_command_reads_owner_but_replies_to_requester(functions, command)
     conn = MagicMock()
     conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ({"user_id": "owner"},)
     ns = dict(os=SimpleNamespace(environ={"ADMIN_USER_ID": "owner,other"}),
+              is_admin=lambda uid: uid in {"owner", "other"},
               get_db_connection=lambda: conn, release_db_connection=lambda conn: None,
               normalize_code=lambda text: "", public_web_base_url=lambda url: url,
               request=SimpleNamespace(url_root="https://example.test/"),
@@ -81,6 +82,45 @@ def test_removed_admin_binding_is_not_shared():
     conn = MagicMock()
     conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ({"user_id": "removed"},)
     assert SharingSettings(lambda: conn, lambda conn: None, {"ADMIN_USER_ID": "owner"}).owner() is None
+
+
+@pytest.mark.parametrize("requester", ["owner", "visitor", "other"])
+def test_everyone_reads_same_authorized_owner_without_manual_binding(functions, requester):
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = None
+    replies = []
+    ns = dict(os=SimpleNamespace(environ={"ADMIN_USER_ID": "owner,other", "FUGLE_TEST_USER_ID": "owner"}),
+              get_db_connection=lambda: conn, release_db_connection=lambda conn: None,
+              normalize_code=lambda text: "", public_web_base_url=lambda url: url,
+              request=SimpleNamespace(url_root="https://example.test/"),
+              _line_hidden_combined_portfolio_flex=lambda uid: {"read_user": uid},
+              _line_async_query=lambda uid, feature, builder, token, base: replies.append((uid, builder())))
+    exec(functions, ns)
+    ns["handle_message"](SimpleNamespace(source=SimpleNamespace(user_id=requester, type="user"),
+        message=SimpleNamespace(text="秉軒的持股"), reply_token="token"))
+    assert replies == [(requester, {"read_user": "owner"})]
+
+
+@pytest.mark.parametrize("rows,expected", [([("owner",)], "owner"), ([], None),
+    ([("owner",), ("other",)], None), ([("visitor",)], None)])
+def test_existing_verified_email_mapping_is_exact_unique_and_admin_only(rows, expected):
+    conn = MagicMock()
+    cursor = conn.cursor.return_value.__enter__.return_value
+    cursor.fetchone.return_value = None
+    cursor.fetchall.return_value = rows
+    env = {"ADMIN_USER_ID": "owner,other", "FUGLE_TEST_USER_EMAIL": " OWNER@EXAMPLE.TEST "}
+    assert SharingSettings(lambda: conn, lambda conn: None, env).owner() == expected
+    sql, params = cursor.execute.call_args.args
+    assert "provider='google'" in sql and "LOWER(email)=%s" in sql
+    assert params == ("owner@example.test",)
+
+
+def test_invalid_explicit_sharing_setting_does_not_select_another_account():
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = None
+    env = {"ADMIN_USER_ID": "owner,other", "LINE_SHARED_PORTFOLIO_USER_ID": "visitor",
+           "FUGLE_TEST_USER_ID": "owner"}
+    assert SharingSettings(lambda: conn, lambda conn: None, env).owner() is None
 
 
 @pytest.mark.parametrize("uid,source", [("visitor", "user"), ("owner", "group")])
