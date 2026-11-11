@@ -1,15 +1,17 @@
 import ast
+import re
 from datetime import date
 from pathlib import Path
 from unittest.mock import Mock
 
 
 MAIN = Path(__file__).parents[1] / "main.py"
-TREE = ast.parse(MAIN.read_text(encoding="utf-8"))
+SOURCE = MAIN.read_text(encoding="utf-8")
 
 
 def function_node(name):
-    return next(node for node in TREE.body
+    match = re.search(r"(?ms)^def " + name + r"\b.*?(?=^(?:def |class |@)|\Z)", SOURCE)
+    return next(node for node in ast.parse(match[0]).body
                 if isinstance(node, ast.FunctionDef) and node.name == name)
 
 
@@ -31,6 +33,7 @@ def test_line_scoring_reads_saved_revenue_snapshot_instead_of_refreshing_officia
         "get_consecutive_days_batch": Mock(return_value={}),
         "get_cumulative_net_buy_for_codes": Mock(return_value={}),
         "get_realtime_stocks_bulk": Mock(return_value={}),
+        "_load_shared_data_snapshot": Mock(return_value=None),
         "is_etf": lambda _code: False,
     }
     load_function("_compute_stock_watchlist_scores", ns)(

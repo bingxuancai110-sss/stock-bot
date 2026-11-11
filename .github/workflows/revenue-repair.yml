@@ -1,0 +1,26 @@
+name: Correct MOPS revenue column data
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/revenue-repair.yml'
+      - 'scripts/repair_revenue.py'
+      - 'revenue_parser.py'
+      - 'revenue_repair.py'
+      - 'revenue_repair_routes.py'
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: revenue-column-repair
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python -m pip install requests
+      - name: Repair real financial rows and verify committed results
+        run: python scripts/repair_revenue.py
