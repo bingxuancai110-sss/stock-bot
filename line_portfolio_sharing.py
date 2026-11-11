@@ -29,10 +29,34 @@ class SharingSettings:
         finally:
             self.release(conn)
         if not row:
-            return shared_owner(self.environ)
+            configured = shared_owner(self.environ)
+            if configured:
+                return configured
+            # The owner has explicitly authorized this named public report.
+            # Reuse their pre-existing exact UID / verified Google-email mapping,
+            # never a display-name search or the first account in an admin list.
+            if self.environ.get("LINE_SHARED_PORTFOLIO_USER_ID", "").strip():
+                return None  # An invalid explicit setting must not silently change owner.
+            owner = self.environ.get("FUGLE_TEST_USER_ID", "").strip()
+            if not owner and self.environ.get("FUGLE_TEST_USER_EMAIL", "").strip():
+                owner = self._email_owner(self.environ["FUGLE_TEST_USER_EMAIL"].strip().lower())
+            admins = {x.strip() for x in self.environ.get("ADMIN_USER_ID", "").split(",") if x.strip()}
+            return owner if owner and owner in admins else None
         uid = str((row[0] or {}).get("user_id") or "")
         admins = {x.strip() for x in self.environ.get("ADMIN_USER_ID", "").split(",")}
         return uid if uid and uid in admins else None
+
+    def _email_owner(self, email):
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT DISTINCT user_id FROM user_auth_identities
+                    WHERE provider='google' AND LOWER(email)=%s LIMIT 2""", (email,))
+                rows = cur.fetchall()
+            conn.commit()
+            return str(rows[0][0]) if len(rows) == 1 and rows[0][0] else None
+        finally:
+            self.release(conn)
 
     def enable(self, uid):
         admins = {x.strip() for x in self.environ.get("ADMIN_USER_ID", "").split(",") if x.strip()}
