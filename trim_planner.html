@@ -218,7 +218,8 @@ p{margin:0}
 }
 [hidden]{display:none!important}
 .back-to-bot{display:inline-block;margin-bottom:10px;color:var(--blue);font-size:13px;font-weight:750;text-decoration:none}
-.relative-trend h2{margin-bottom:6px}.relative-rows{margin-top:10px}.relative-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+.relative-trend h2{margin-bottom:6px}.trend-groups{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.trend-group{border:1px solid var(--line);border-radius:11px;padding:10px;background:#f9fbfc;min-width:0}.trend-group h3{display:flex;align-items:center;justify-content:space-between;margin:0 0 4px;font-size:14px}.trend-group h3 small{font-size:11px;color:var(--muted)}.trend-weak{background:#fff5f3;border-color:#efcdc7}.trend-strong{background:#eff8f3;border-color:#cce5d5}.trend-secondary .trend-group{margin-top:8px}@media(max-width:360px){.trend-groups{grid-template-columns:1fr}}
+.relative-rows{margin-top:10px}.relative-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
 .relative-row span{min-width:0}.relative-row b,.relative-row small{display:block}.relative-row b{font-size:13px}.relative-row small{color:var(--muted);font-size:11px;margin-top:3px}.relative-row strong{white-space:nowrap;color:var(--blue);font-size:12px}
 </style>
 </head>
@@ -231,7 +232,7 @@ p{margin:0}
    <div class="field"><label for="portfolioValue">帳戶總市值（元）</label><input id="portfolioValue" type="number" min="0" step="10000" value="__BOT_PORTFOLIO_VALUE__"></div>
    <div class="field"><label for="currentEquityPct">目前股票比例（%）</label><input id="currentEquityPct" type="number" min="0" max="100" step="1" value="100"><div class="hint">其餘自動視為現金</div></div>
    <div class="field"><label for="trimAmountPct">本次減碼幅度（百分點）</label><input id="trimAmountPct" type="number" min="0" max="100" step="1" value="50"><div class="hint">例：持股 100%，減碼 30 點後為 70% 股票、30% 現金</div></div>
-   <div class="field"><label for="sellAllocationMode">減碼分配方式</label><select id="sellAllocationMode"><option value="largest">最大持倉優先</option><option value="proportional">按持股比例平均</option></select><div class="hint">減碼總金額相同，只改每檔賣出分配</div></div>
+   <div class="field"><label for="sellAllocationMode">減碼分配方式</label><select id="sellAllocationMode"><option value="largest">最大持倉優先</option><option value="weakfirst">相對弱勢優先</option><option value="proportional">按持股比例平均</option></select><div class="hint">弱勢優先：先賣月線與季線都落後大盤的持股，受單檔上限限制；不足再賣訊號分歧、相對強的持股。</div></div>
   </div>
   <details class="advanced"><summary>費用與減碼限制</summary><div class="advanced-grid">
    <div class="field"><label for="feePct">單邊手續費（%）</label><input id="feePct" type="number" min="0" step="0.001" value="0.1425"></div>
@@ -357,6 +358,7 @@ p{margin:0}
 const botToken=new URLSearchParams(location.search).get("t");
 if(botToken)document.querySelector(".back-to-bot").href="/web/more?t="+encodeURIComponent(botToken);
 const botBootstrap=window.__trimPlannerBootstrap||{};
+const relativeRanking=botBootstrap.relativeRanking||{};
 const defaultStocks=Array.isArray(botBootstrap.stocks)?botBootstrap.stocks:[];
 let stocks=readSavedStocks()||defaultStocks.map(function(s){return {...s};});
 const savedRebuyPlan=readSavedRebuyPlan();
@@ -584,7 +586,17 @@ function calc(){
    const reductionShare=stockTotal?remaining/stockTotal:0;
    positions.forEach(function(s){const amount=Math.min(remaining,s.value*reductionShare,s.value*cap);sell[s.index]=amount;remaining-=amount;});
   }else{
-   positions.slice().sort(function(a,b){return b.value-a.value;}).forEach(function(s){
+   const sorted=positions.slice().sort(function(a,b){
+    if(allocationMode!=="weakfirst")return b.value-a.value;
+    const order={weak:0,mixed:1,strong:2};
+    const ar=relativeRanking[a.code]||{},br=relativeRanking[b.code]||{};
+    const ag=Object.prototype.hasOwnProperty.call(order,ar.category)?order[ar.category]:3;
+    const bg=Object.prototype.hasOwnProperty.call(order,br.category)?order[br.category]:3;
+    if(ag!==bg)return ag-bg;
+    if(Number.isFinite(ar.score)&&Number.isFinite(br.score)&&ar.score!==br.score)return ar.score-br.score;
+    return b.value-a.value;
+   });
+   sorted.forEach(function(s){
     if(remaining<=.01)return;
     const amount=Math.min(remaining,s.value*cap);
     sell[s.index]=amount;
@@ -595,7 +607,8 @@ function calc(){
   cost=positions.reduce(function(a,s){return a+sell[s.index]*(fee+s.tax);},0);
   stockAfter=stockTotal-trade;
   cashAfter=cashStart+trade-cost;
-  note=trade?"減碼後目標為 "+pct(targetSell*100)+" 股票；目前採用「"+(allocationMode==="proportional"?"按持股比例平均":"最大持倉優先")+"」，單檔上限為自身持倉的 "+pct(cap*100)+"。":"目前股票比例已不高於減碼後目標 "+pct(targetSell*100)+"，無需賣出。";
+  const allocationLabel=allocationMode==="proportional"?"按持股比例平均":allocationMode==="weakfirst"?"相對弱勢優先":"最大持倉優先";
+  note=trade?"減碼後目標為 "+pct(targetSell*100)+" 股票；目前採用「"+allocationLabel+"」，單檔上限為自身持倉的 "+pct(cap*100)+"。":"目前股票比例已不高於減碼後目標 "+pct(targetSell*100)+"，無需賣出。";
   if(read("trimAmountPct")<=0)note="減碼幅度設定為 0%，無需賣出。";
   if(reductionPoints+0.01<clamp(read("trimAmountPct")))note+=" 減碼幅度超過目前股票比例，目標已按可減部位降至 0%。";
   if(remaining>1)note+=" 受單檔賣出上限限制，距目標還差 "+money(remaining)+"。";
