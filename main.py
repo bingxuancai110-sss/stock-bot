@@ -2776,54 +2776,27 @@ WEB_UI_THEMES = {
 }
 
 
+def _theme_preferences_store():
+    from settings_theme import ThemeStore
+    return ThemeStore(_taiex_reduction_connect, lambda conn: conn.close(), WEB_UI_THEMES)
+
+
 def get_web_ui_theme(user_id):
-    """Return the signed-in user's saved site color theme, defaulting to mist blue-gray."""
-    uid = str(user_id or "").strip()
-    if not uid:
+    if not str(user_id or "").strip():
         return "mist"
-    conn = get_db_connection()
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT ui_theme FROM user_profile WHERE user_id=%s", (uid,))
-        row = cur.fetchone()
-        cur.close()
-        theme = str(row[0] or "").strip() if row else ""
-        return theme if theme in WEB_UI_THEMES else "mist"
+        return _theme_preferences_store().read(user_id)
     except Exception as exc:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        print(f"⚠️ 讀取網站配色偏好失敗：{type(exc).__name__}", flush=True)
+        print("讀取網站配色偏好未確認：" + type(exc).__name__, flush=True)
         return "mist"
-    finally:
-        release_db_connection(conn)
 
 
 def save_web_ui_theme(user_id, theme):
-    """Persist a validated site color theme for one user without touching survey fields."""
-    uid = str(user_id or "").strip()
-    theme = str(theme or "").strip()
-    if not uid or theme not in WEB_UI_THEMES:
-        return False
-    conn = get_db_connection()
     try:
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO user_profile (user_id, ui_theme, updated_at)
-            VALUES (%s, %s, NOW())
-            ON CONFLICT (user_id) DO UPDATE
-            SET ui_theme=EXCLUDED.ui_theme, updated_at=NOW()
-        """, (uid, theme))
-        conn.commit()
-        cur.close()
-        return True
+        return _theme_preferences_store().save(user_id, str(theme or "").strip()) == theme
     except Exception as exc:
-        conn.rollback()
-        print(f"⚠️ 儲存網站配色偏好失敗：{type(exc).__name__}", flush=True)
+        print("儲存網站配色偏好未確認：" + type(exc).__name__, flush=True)
         return False
-    finally:
-        release_db_connection(conn)
 
 
 def get_portfolio_target_weights(user_id):
@@ -4446,7 +4419,7 @@ def web_login_required(view):
             '/web/portfolio': 'portfolio', '/web/positions': 'positions',
             '/web/leaderboard': 'leaderboard', '/web/workbench': 'screener',
             '/web/trades': 'trades', '/web/compare': 'compare',
-            '/web/settings': 'settings', '/web/more': 'more',
+            '/web/settings': 'settings', '/web/api/settings/theme': 'settings', '/web/more': 'more',
             '/web/chips': 'chips', '/web/etf': 'etf',
             '/web/watchlist': 'watchlist', '/web/premarket': 'premarket',
             '/web/us-rotation': 'us_rotation',
@@ -28610,6 +28583,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-shell.css?v=20261105-5">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
 <script defer src="/static/ui-feedback.js?v=20261105-6"></script>
+<script defer src="/static/settings-theme.js?v=20261112-1"></script>
 <script defer src="/static/fugle-live.js?v=20261109-2"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
@@ -29215,7 +29189,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   document.addEventListener('submit', function(e) {{
     var form = e.target;
     if (!form) return;
-    if (form.matches('form.add, form.sellpanel, form[data-form-purpose="leaderboard-settlement"]')) return;
+    if (form.matches('form.add, form.sellpanel, form[data-form-purpose="leaderboard-settlement"], form[data-settings-theme-form]')) return;
     if (form.dataset.submitted === '1') {{
       e.preventDefault();
       return;
@@ -40159,14 +40133,14 @@ def web_settings(uid):
             elif save_web_ui_theme(uid, selected):
                 msg = f"配色已儲存：{WEB_UI_THEMES[selected]['label']}。"
             else:
-                msg = "配色儲存失敗，請稍後再試。"
+                msg = "配色保存結果尚未確認，請重新整理查看目前設定。"
         else:
             msg = "此頁目前沒有可儲存的欄位。"
 
     selected_theme = get_web_ui_theme(uid)
     theme_options_html = "".join(
         f'''<label class="settings-theme-option">
-          <input type="radio" name="ui_theme" value="{key}"{' checked' if key == selected_theme else ''}>
+          <input type="radio" name="ui_theme" data-theme-color="{theme['page']}" value="{key}"{' checked' if key == selected_theme else ''}>
           <span class="settings-theme-option-card">
             <span class="settings-theme-swatches" aria-hidden="true"><i style="background:{theme['page']}"></i><i style="background:{theme['surface']}"></i><i style="background:{theme['brand']}"></i><i style="background:#D83D35"></i></span>
             <b>{theme['label']}</b><small>{theme['description']}</small>
@@ -40212,7 +40186,7 @@ def web_settings(uid):
     <div class="settings-panel-kicker">個人化外觀</div>
     <h2>首頁配色</h2>
     <p>選擇你喜歡的色調，套用到網站各頁。這項偏好會跟著你的帳號保存。</p>
-    <form method="post" action="/web/settings#appearance">{csrf_hidden_input()}<input type="hidden" name="action" value="save_ui_theme">
+    <form method="post" action="/web/settings#appearance" data-settings-theme-form>{csrf_hidden_input()}<input type="hidden" name="action" value="save_ui_theme">
       <div class="settings-theme-grid">{theme_options_html}</div>
       <button class="settings-theme-save" type="submit">套用並儲存配色</button>
     </form>
@@ -40243,7 +40217,7 @@ def web_settings(uid):
     <p style="margin-top:10px">持股頁的「淨損益」是未實現的估計值，會依牌價手續費與證交稅試算；實際賣出時一律以你填寫的交易成本為準。</p>
   </section>
 </div>'''
-    return render_page("設定", body, nav_active="settings")
+    return respond_page("設定", body, "settings")
 
 
 def _render_report_lines_html(text, title=None):
@@ -54561,6 +54535,12 @@ def _verify_repaired_revenue(data):
             "pe":pe, "valuation_source_date":str(valuation.get("data_date") or ""),
             "valuation_score":score_from_valuation(pe,growth)[0] if pe is not None else None}
     return result
+
+
+from settings_theme import create_blueprint as create_settings_theme_blueprint
+app.register_blueprint(create_settings_theme_blueprint(
+    web_login_required=web_login_required, valid_csrf=valid_web_csrf,
+    store_factory=_theme_preferences_store, themes=WEB_UI_THEMES))
 
 
 from revenue_repair_routes import create_blueprint as create_revenue_repair_blueprint
