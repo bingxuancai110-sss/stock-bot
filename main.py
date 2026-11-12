@@ -1681,7 +1681,9 @@ STOCK_NAME_MAP = {
     "3081": "聯亞", "6442": "光聖", "3529": "力旺", "3443": "創意",
     "6173": "信昌電", "1503": "士電",
     "0050": "元大台灣50", "00981A": "主動統一台股增長",
-    "009816": "凱基台灣TOP50"
+    "009816": "凱基台灣TOP50", "8996": "高力", "2308": "台達電",
+    "2383": "台光電", "3026": "禾伸堂", "2368": "金像電",
+    "6223": "旺矽", "6442": "光聖"
 }
 
 # ETF 商品屬性只放已由官方產品頁核實的資料；未知 ETF 不猜測配息政策。
@@ -42064,11 +42066,19 @@ def _trim_planner_relative_trend(prices, positions, market):
     """Compare each holding's MA20/MA60 distance with TAIEX on common daily dates."""
     index_by_day = {day: float(close) for day, close in market if close and close > 0}
     if len(index_by_day) < 60:
-        return '<section class="card"><h2>持股相對大盤</h2><p class="hint">加權指數日線資料暫時不足，無法判讀。</p></section>'
-    rows = []
+        return ('<section class="card"><h2>持股相對大盤</h2><p class="hint">加權指數日線資料暫時不足，無法判讀。</p></section>', {})
+    groups = {"weak": [], "strong": [], "mixed": [], "unknown": []}
+    ranking = {}
+    observed_days = []
     for position in positions:
         code = str(position["code"])
         price = prices.get(code) or {}
+        name = short_company_name(stock_display_name(code, fallback=price.get("name")))
+        if name == code:
+            name = STOCK_NAME_MAP.get(code, code)
+        if not name or name == code:
+            groups["unknown"].append((code, "名稱待確認", None, None))
+            continue
         values = price.get("adj_closes") or price.get("closes") or []
         dates = price.get("close_dates") or []
         stock_by_day = {}
@@ -42082,9 +42092,10 @@ def _trim_planner_relative_trend(prices, positions, market):
                 stock_by_day[day] = close
         common = sorted(stock_by_day)
         if len(common) < 60:
-            rows.append((code, price.get("name") or code, None, None, "資料不足", None))
+            groups["unknown"].append((code, name, None, None))
             continue
         day = common[-1]
+        observed_days.append(day)
         metrics = []
         for count in (20, 60):
             dates_window = common[-count:]
@@ -42093,20 +42104,38 @@ def _trim_planner_relative_trend(prices, positions, market):
             stock_gap = (stock_by_day[day] / stock_ma - 1) * 100
             index_gap = (index_by_day[day] / index_ma - 1) * 100
             metrics.append(stock_gap - index_gap)
-        label = ("相對強" if all(gap > 0 for gap in metrics)
-                 else "相對弱" if all(gap < 0 for gap in metrics) else "訊號分歧")
-        rows.append((code, price.get("name") or code, metrics[0], metrics[1], label, day))
-    rows.sort(key=lambda item: (item[2] is None, (item[2] or 0) + (item[3] or 0)))
-    items = []
-    for code, name, month_gap, quarter_gap, label, day in rows:
-        detail = (f'月線 {month_gap:+.1f} 點・季線 {quarter_gap:+.1f} 點'
-                  if month_gap is not None else '月線／季線資料不足')
-        items.append(f'<div class="relative-row"><span><b>{html.escape(str(name))}</b><small>{html.escape(code)}・{html.escape(detail)}</small></span><strong>{html.escape(label)}</strong></div>')
-    as_of = max((row[5] for row in rows if row[5]), default=None)
+        category = ("strong" if all(gap > 0 for gap in metrics)
+                    else "weak" if all(gap < 0 for gap in metrics) else "mixed")
+        score = round(sum(metrics), 3)
+        ranking[code] = {"category": category, "score": score}
+        groups[category].append((code, name, metrics[0], metrics[1]))
+    groups["weak"].sort(key=lambda row: row[2] + row[3])
+    groups["strong"].sort(key=lambda row: row[2] + row[3], reverse=True)
+    groups["mixed"].sort(key=lambda row: row[2] + row[3])
+
+    def group_html(category, title, empty):
+        items = []
+        for code, name, month_gap, quarter_gap in groups[category]:
+            detail = (f'月線 {month_gap:+.1f} 點・季線 {quarter_gap:+.1f} 點'
+                      if month_gap is not None else '名稱或日線資料待確認')
+            items.append(f'<div class="relative-row"><span><b>{html.escape(str(name))}</b>'
+                         f'<small>{html.escape(code)}・{html.escape(detail)}</small></span></div>')
+        content = "".join(items) if items else f'<p class="hint">{empty}</p>'
+        return (f'<div class="trend-group trend-{category}"><h3>{title}'
+                f'<small>{len(items)} 檔</small></h3>{content}</div>')
+
+    as_of = max(observed_days, default=None)
     stamp = f'資料截至 {as_of.isoformat()}' if as_of else '資料日待確認'
-    return ('<section class="card relative-trend"><h2>持股相對大盤</h2>'
-            '<p class="hint">個股距離自己的月線／季線，與加權指數距離自己的均線相比。負值表示相對較弱；供減碼排序參考。</p>'
-            f'<div class="relative-rows">{"".join(items) or "目前沒有持股"}</div><p class="hint">{stamp}；只比較趨勢，不代表未來報酬。</p></section>')
+    panel = ('<section class="card relative-trend"><h2>持股相對大盤</h2>'
+             '<p class="hint">月線、季線都落後大盤的股票列在「相對弱」；兩條線都領先列在「相對強」。減碼時可選「相對弱勢優先」。</p>'
+             '<div class="trend-groups">'
+             + group_html("weak", "優先減碼・相對弱", "目前沒有兩條線都較弱的持股")
+             + group_html("strong", "優先保留・相對強", "目前沒有兩條線都較強的持股")
+             + '</div><div class="trend-secondary">'
+             + group_html("mixed", "訊號分歧", "沒有訊號分歧的持股")
+             + (group_html("unknown", "資料不足", "") if groups["unknown"] else "")
+             + f'</div><p class="hint">{stamp}；只比較趨勢，不代表未來報酬。</p></section>')
+    return panel, ranking
 
 
 @app.route("/web/trim-planner")
@@ -42129,7 +42158,11 @@ def web_trim_planner(uid):
         stocks = []
         for item, value in zip(positions, values):
             code = str(item["code"])
-            name = (prices.get(code) or {}).get("name") or stock_display_name(code)
+            name = short_company_name(stock_display_name(code, fallback=(prices.get(code) or {}).get("name")))
+            if name == code:
+                name = STOCK_NAME_MAP.get(code, code)
+            if not name or name == code:
+                name = "名稱待確認"
             weight = round(value / total * 100, 3) if total else 0
             stocks.append({"code": code, "name": str(name), "current": weight,
                            "target": weight, "kind": "etf" if is_etf(code) else "stock"})
@@ -42141,8 +42174,19 @@ def web_trim_planner(uid):
             cur.close()
         finally:
             release_db_connection(conn)
-        bootstrap = {"stocks": stocks, "savedStocks": saved[0] if saved else None,
+        saved_stocks = saved[0] if saved else None
+        if isinstance(saved_stocks, list):
+            resolved_names = {stock["code"]: stock["name"] for stock in stocks}
+            saved_stocks = [dict(row) for row in saved_stocks if isinstance(row, dict)]
+            for row in saved_stocks:
+                code = str(row.get("code") or "")
+                if str(row.get("name") or "").strip() in ("", code) and code in resolved_names:
+                    row["name"] = resolved_names[code]
+        market = _fetch_taiex_history("6mo")
+        trend_panel, relative_ranking = _trim_planner_relative_trend(prices, positions, market)
+        bootstrap = {"stocks": stocks, "savedStocks": saved_stocks,
                      "savedRebuyPlan": saved[1] if saved else None,
+                     "relativeRanking": relative_ranking,
                      "csrfToken": current_web_csrf_token()}
         template_path = os.path.join(os.path.dirname(__file__), "trim_planner.html")
         with open(template_path, "r", encoding="utf-8") as source:
@@ -42151,8 +42195,7 @@ def web_trim_planner(uid):
         payload = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
         page = page.replace("__BOT_BOOTSTRAP_JSON__", payload)
         page = page.replace("__BOT_PORTFOLIO_VALUE__", str(round(total)))
-        market = _fetch_taiex_history("6mo")
-        page = page.replace("__BOT_RELATIVE_TREND_PANEL__", _trim_planner_relative_trend(prices, positions, market))
+        page = page.replace("__BOT_RELATIVE_TREND_PANEL__", trend_panel)
         if len(market) >= 20:
             page = page.replace("__BOT_INDEX_CLOSE__", f"{market[-1][1]:.2f}")
             page = page.replace("__BOT_INDEX_MA20__", f"{sum(value for _, value in market[-20:]) / 20:.2f}")
