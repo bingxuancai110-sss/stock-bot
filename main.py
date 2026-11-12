@@ -2111,6 +2111,14 @@ def init_db():
         ''')
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_target_weights_user ON portfolio_target_weights (user_id)")
         cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trim_planner_states (
+                user_id TEXT PRIMARY KEY,
+                stocks JSONB NOT NULL DEFAULT '[]'::jsonb,
+                rebuy_plan JSONB NOT NULL DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        ''')
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS line_anomaly_sent (
                 id BIGSERIAL PRIMARY KEY,
                 snapshot_date DATE NOT NULL,
@@ -42018,6 +42026,7 @@ def web_more(uid):
 
 <div class="more-group">
   <div class="more-group-title">分析工具</div>
+  <a class="more-item" href="/web/trim-planner"><span class="more-icon">◫</span><span><b>加減碼規劃</b><small>用我的持股試算減碼、回補與交易後比例</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/leaderboard" data-app-nav="1"><span class="more-icon">▤</span><span><b>排行榜</b><small>查看會員組合績效與排名變化</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/us-rotation" data-app-nav="1"><span class="more-icon">↗</span><span><b>美股輪動</b><small>追蹐美國產業趨勢與台灣供應鏈</small></span><strong>›</strong></a>
   <a class="more-item" href="/web/workbench" data-app-nav="1"><span class="more-icon">⌕</span><span><b>智慧選股</b><small>既有因子、策略研究與選股工具</small></span><strong>›</strong></a>
@@ -42049,6 +42058,166 @@ def web_more(uid):
     if is_admin(uid):
         body = body.replace('<div class="more-note">部分功能僅在其他入口或管理端使用，不會顯示於此處。</div>', '<div class="more-group"><div class="more-group-title">管理員</div><a class="more-item" href="/web/admin"><span class="more-icon">⚙</span><span><b>管理員後台</b><small>使用者、LINE 通知、系統狀態與歷史紀錄維護</small></span><strong>›</strong></a></div><div class="more-note">管理員專用功能。</div>')
     return respond_page("更多", body, nav_active="more")
+
+
+def _trim_planner_relative_trend(prices, positions, market):
+    """Compare each holding's MA20/MA60 distance with TAIEX on common daily dates."""
+    index_by_day = {day: float(close) for day, close in market if close and close > 0}
+    if len(index_by_day) < 60:
+        return '<section class="card"><h2>持股相對大盤</h2><p class="hint">加權指數日線資料暫時不足，無法判讀。</p></section>'
+    rows = []
+    for position in positions:
+        code = str(position["code"])
+        price = prices.get(code) or {}
+        values = price.get("adj_closes") or price.get("closes") or []
+        dates = price.get("close_dates") or []
+        stock_by_day = {}
+        for raw_day, raw_close in zip(dates, values):
+            day = _parse_history_date(raw_day)
+            try:
+                close = float(raw_close)
+            except (TypeError, ValueError):
+                continue
+            if day and math.isfinite(close) and close > 0 and day in index_by_day:
+                stock_by_day[day] = close
+        common = sorted(stock_by_day)
+        if len(common) < 60:
+            rows.append((code, price.get("name") or code, None, None, "資料不足", None))
+            continue
+        day = common[-1]
+        metrics = []
+        for count in (20, 60):
+            dates_window = common[-count:]
+            stock_ma = sum(stock_by_day[d] for d in dates_window) / count
+            index_ma = sum(index_by_day[d] for d in dates_window) / count
+            stock_gap = (stock_by_day[day] / stock_ma - 1) * 100
+            index_gap = (index_by_day[day] / index_ma - 1) * 100
+            metrics.append(stock_gap - index_gap)
+        label = ("相對強" if all(gap > 0 for gap in metrics)
+                 else "相對弱" if all(gap < 0 for gap in metrics) else "訊號分歧")
+        rows.append((code, price.get("name") or code, metrics[0], metrics[1], label, day))
+    rows.sort(key=lambda item: (item[2] is None, (item[2] or 0) + (item[3] or 0)))
+    items = []
+    for code, name, month_gap, quarter_gap, label, day in rows:
+        detail = (f'月線 {month_gap:+.1f} 點・季線 {quarter_gap:+.1f} 點'
+                  if month_gap is not None else '月線／季線資料不足')
+        items.append(f'<div class="relative-row"><span><b>{html.escape(str(name))}</b><small>{html.escape(code)}・{html.escape(detail)}</small></span><strong>{html.escape(label)}</strong></div>')
+    as_of = max((row[5] for row in rows if row[5]), default=None)
+    stamp = f'資料截至 {as_of.isoformat()}' if as_of else '資料日待確認'
+    return ('<section class="card relative-trend"><h2>持股相對大盤</h2>'
+            '<p class="hint">個股距離自己的月線／季線，與加權指數距離自己的均線相比。負值表示相對較弱；供減碼排序參考。</p>'
+            f'<div class="relative-rows">{"".join(items) or "目前沒有持股"}</div><p class="hint">{stamp}；只比較趨勢，不代表未來報酬。</p></section>')
+
+
+@app.route("/web/trim-planner")
+@web_login_required
+def web_trim_planner(uid):
+    """Private copy of the calculator, seeded from this user's actual BOT holdings."""
+    try:
+        positions = merge_positions(get_positions(uid))
+        codes = [str(item["code"]) for item in positions]
+        prices = _get_homepage_prices_cached(uid, codes, refresh_official=False) if codes else {}
+        values = []
+        for item in positions:
+            price = prices.get(item["code"]) or {}
+            try:
+                close = float(price.get("close") or 0)
+            except (TypeError, ValueError):
+                close = 0
+            values.append(max(0.0, close) * max(0, int(item["shares"])))
+        total = sum(values)
+        stocks = []
+        for item, value in zip(positions, values):
+            code = str(item["code"])
+            name = (prices.get(code) or {}).get("name") or stock_display_name(code)
+            weight = round(value / total * 100, 3) if total else 0
+            stocks.append({"code": code, "name": str(name), "current": weight,
+                           "target": weight, "kind": "etf" if is_etf(code) else "stock"})
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT stocks, rebuy_plan FROM trim_planner_states WHERE user_id=%s", (str(uid),))
+            saved = cur.fetchone()
+            cur.close()
+        finally:
+            release_db_connection(conn)
+        bootstrap = {"stocks": stocks, "savedStocks": saved[0] if saved else None,
+                     "savedRebuyPlan": saved[1] if saved else None,
+                     "csrfToken": current_web_csrf_token()}
+        template_path = os.path.join(os.path.dirname(__file__), "trim_planner.html")
+        with open(template_path, "r", encoding="utf-8") as source:
+            page = source.read()
+        payload = json.dumps(bootstrap, ensure_ascii=False, separators=(",", ":"))
+        payload = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+        page = page.replace("__BOT_BOOTSTRAP_JSON__", payload)
+        page = page.replace("__BOT_PORTFOLIO_VALUE__", str(round(total)))
+        market = _fetch_taiex_history("6mo")
+        page = page.replace("__BOT_RELATIVE_TREND_PANEL__", _trim_planner_relative_trend(prices, positions, market))
+        if len(market) >= 20:
+            page = page.replace("__BOT_INDEX_CLOSE__", f"{market[-1][1]:.2f}")
+            page = page.replace("__BOT_INDEX_MA20__", f"{sum(value for _, value in market[-20:]) / 20:.2f}")
+            page = page.replace("__BOT_INDEX_DATE__", market[-1][0].isoformat())
+        else:
+            page = page.replace("__BOT_INDEX_CLOSE__", "").replace("__BOT_INDEX_MA20__", "")
+            page = page.replace("__BOT_INDEX_DATE__", "資料暫缺")
+        response = make_response(page)
+        response.headers["Cache-Control"] = "private, no-store, max-age=0"
+        return response
+    except PositionsDataUnavailable:
+        return respond_page("持股資料暫時無法確認", '<div class="empty">持股資料暫時無法確認，請稍後重試。</div>', "more"), 503
+
+
+@app.route("/web/trim-planner/state", methods=["POST"])
+@web_login_required
+def web_trim_planner_state(uid):
+    if not valid_web_csrf(uid):
+        return jsonify({"error": "安全驗證失敗"}), 403
+    try:
+        state = json.loads(request.form.get("state", ""))
+        raw_stocks = state.get("stocks")
+        raw_plan = state.get("rebuyPlan")
+        if not isinstance(raw_stocks, list) or len(raw_stocks) > 40 or not isinstance(raw_plan, dict):
+            raise ValueError("規劃資料格式不正確")
+        stocks = []
+        for row in raw_stocks:
+            if not isinstance(row, dict):
+                raise ValueError("持股資料格式不正確")
+            code, name = str(row.get("code") or "")[:16], str(row.get("name") or "")[:80]
+            current, target = float(row.get("current") or 0), float(row.get("target") or 0)
+            if not all(math.isfinite(v) and 0 <= v <= 100 for v in (current, target)):
+                raise ValueError("比例超出範圍")
+            stocks.append({"code": code, "name": name, "current": current,
+                           "target": target, "kind": "etf" if row.get("kind") == "etf" else "stock"})
+        steps = raw_plan.get("steps")
+        if not isinstance(steps, list) or not 1 <= len(steps) <= 5:
+            raise ValueError("回補批數不正確")
+        plan_steps = []
+        for step in steps:
+            trigger, target = float(step.get("trigger")), float(step.get("target"))
+            if not all(math.isfinite(v) and 0 <= v <= 100 for v in (trigger, target)):
+                raise ValueError("回補設定超出範圍")
+            plan_steps.append({"trigger": trigger, "target": target})
+        base = float(raw_plan.get("baseTargetPct") or 0)
+        if not math.isfinite(base) or not 0 <= base <= 100:
+            raise ValueError("基準比例超出範圍")
+        plan = {"steps": plan_steps, "baseTargetPct": base,
+                "isDefault": bool(raw_plan.get("isDefault"))}
+    except (TypeError, ValueError, AttributeError, json.JSONDecodeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('''
+            INSERT INTO trim_planner_states (user_id, stocks, rebuy_plan, updated_at)
+            VALUES (%s, CAST(%s AS JSONB), CAST(%s AS JSONB), NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+                stocks=EXCLUDED.stocks, rebuy_plan=EXCLUDED.rebuy_plan, updated_at=NOW()
+        ''', (str(uid), json.dumps(stocks, ensure_ascii=False), json.dumps(plan, ensure_ascii=False)))
+        conn.commit()
+        cur.close()
+    finally:
+        release_db_connection(conn)
+    return jsonify({"ok": True})
 
 
 @app.route("/web/watchlist")

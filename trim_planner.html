@@ -1,0 +1,820 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="持股減碼與回補儀表板，查看資產比例並試算每檔交易金額。">
+<title>持股減碼／回補儀表板</title>
+<style>
+:root{--ink:#163044;--muted:#5b6d79;--line:#d9e3e8;--white:#fff;--page:#f2f6f8;--blue:#0e6c89;--blue-dark:#084c64;--blue-light:#e9f5f8;--green:#176f54;--green-light:#e9f5ef;--amber:#855d13;--amber-light:#fff5dd;--red:#a33e38;--red-light:#fff0ef}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:860px;margin:auto;padding:18px 14px 34px}
+h1{font-size:24px;line-height:1.2;margin:0 0 5px}
+h2{font-size:18px;margin:0}
+h3{font-size:15px;margin:0}
+p{margin:0}
+.head{margin-bottom:12px}
+.subtitle,.muted{color:var(--muted);font-size:14px}
+.card{background:var(--white);border:1px solid var(--line);border-radius:14px;padding:15px;margin:10px 0;box-shadow:0 3px 14px #17344709}
+.card-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:11px}
+.fields{display:grid;grid-template-columns:1.4fr 1fr;gap:10px}
+.field label{display:block;font-size:13px;font-weight:700;margin-bottom:4px}
+.field input,.field select{width:100%;min-height:43px;border:1px solid #b8c7d0;border-radius:9px;padding:8px 10px;font:inherit;color:var(--ink);background:#fff}
+.field input:focus,.field select:focus{outline:2px solid #84becd;outline-offset:1px}
+.hint{font-size:12px;color:var(--muted);margin-top:3px}
+.modebar{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.modebar button,.button{border:1px solid #b8c7d0;border-radius:9px;padding:10px 12px;background:#fff;color:var(--ink);font:inherit;font-weight:700;cursor:pointer}
+.modebar button{text-align:left;min-height:54px}
+.modebar button strong{display:block}
+.modebar button small{display:block;color:var(--muted);font-size:12px;font-weight:400}
+.modebar button.active,.button.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.modebar button.active small{color:#e8f4f7}
+.modebar button:focus-visible,.button:focus-visible{outline:3px solid #9ccbd6;outline-offset:2px}
+.button{font-size:13px}
+.button.secondary{background:#fff;color:var(--blue-dark)}
+.button.delete{background:var(--red-light);border-color:#f0d1cf;color:var(--red);padding:6px 9px}
+.dashboard{padding:15px}
+.dashboard-title{font-weight:750;font-size:15px;margin-bottom:10px}
+.mix-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.mix-card{display:grid;grid-template-columns:78px 1fr;align-items:center;gap:10px;background:#f5f9fa;border-radius:12px;padding:10px}
+.mix-card.after{background:var(--blue-light)}
+.donut{--stock:100%;width:76px;height:76px;border-radius:50%;background:conic-gradient(var(--blue) 0 var(--stock),#dce5e9 var(--stock) 100%);display:grid;place-items:center;position:relative}
+.donut:before{content:"";position:absolute;inset:9px;background:#fff;border-radius:50%}
+.donut-center{position:relative;z-index:1;text-align:center;line-height:1.1}
+.donut-center strong{display:block;font-size:12px;font-variant-numeric:tabular-nums;letter-spacing:-.35px;white-space:nowrap}
+.donut-center small{font-size:10px;color:var(--muted)}
+.mix-label{font-size:12px;color:var(--muted);font-weight:650}
+.mix-values{margin-top:5px;font-size:12px;line-height:1.65}
+.mix-values b{font-variant-numeric:tabular-nums}
+.legend{display:inline-flex;align-items:center;gap:5px;margin-right:9px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--blue)}
+.dot.cash{background:#dce5e9;border:1px solid #bac7cc}
+.big-result{border-color:#b7d9e1;background:#fbfeff}
+.result-row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}
+.result-label{color:var(--muted);font-size:13px}
+.big-money{font-size:28px;font-weight:800;line-height:1.2;font-variant-numeric:tabular-nums}
+.mini-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:10px}
+.metric{background:#f3f7f9;border-radius:9px;padding:8px 9px}
+.metric span{display:block;color:var(--muted);font-size:11px}
+.metric strong{display:block;font-size:14px;margin-top:2px;font-variant-numeric:tabular-nums}
+.explain{font-size:13px;color:var(--blue-dark);background:var(--blue-light);padding:8px 10px;border-radius:8px;margin-top:9px}
+.advanced{margin-top:10px;border-top:1px solid var(--line);padding-top:9px}
+.advanced summary,.details summary{cursor:pointer;color:var(--blue-dark);font-weight:700;font-size:13px}
+.advanced-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}
+.stock-card{border:1px solid var(--line);border-radius:11px;padding:10px 11px;margin-top:8px}
+.stock-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.stock-title{font-size:14px;font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stock-split{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px}
+.weight-block{min-width:0}
+.weight-top{display:flex;justify-content:space-between;gap:5px;font-size:11px;color:var(--muted);margin-bottom:3px}
+.weight-top strong{font-size:12px;color:var(--ink);font-variant-numeric:tabular-nums}
+.bar{height:5px;background:#edf1f3;border-radius:9px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--blue);border-radius:9px}
+.weight-block.target .bar i{background:#41a58a}
+.stock-bottom{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:8px;padding-top:7px;border-top:1px solid #edf1f3}
+.position-value{font-size:11px;color:var(--muted)}
+.action-value{text-align:right;font-size:13px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap}
+.action-value small{display:block;color:var(--muted);font-size:10px;font-weight:500}
+.edit-stock{margin-top:7px}
+.edit-stock summary{font-size:11px;color:var(--muted)}
+.edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.edit-grid .field input,.edit-grid .field select{min-height:38px;padding:6px 8px;font-size:13px}
+.stock-buttons{display:flex;gap:8px;align-items:center}
+.list-summary{display:flex;gap:7px;flex-wrap:wrap}
+.badge{font-size:11px;color:var(--blue-dark);background:var(--blue-light);padding:4px 8px;border-radius:99px;font-weight:700}
+.weight-status{font-size:12px;color:var(--muted);margin-top:9px}
+.weight-status.warn{padding:8px 10px;background:var(--amber-light);color:var(--amber);border-radius:8px}
+.save-note{font-size:11px;color:var(--muted);margin-top:7px}
+.details{margin:9px 0}
+.details summary{padding:4px 1px}
+.details-body{padding:10px 12px;background:#f6f9fa;border-radius:9px;margin-top:7px;font-size:13px}
+.details-body ol{margin:0;padding-left:19px}
+.details-body li{margin:4px 0}
+.signal-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.plan-fields{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}
+.plan-steps{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.plan-step{border:1px solid var(--line);border-radius:10px;padding:10px;background:#f8fbfc}
+.plan-step-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;font-size:13px;font-weight:750}
+.step-fields{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.schedule-list{display:grid;gap:7px;margin-top:8px}
+.schedule-row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:#fff}
+.schedule-row.selected{border-color:#8cc3d0;background:var(--blue-light)}
+.schedule-title{font-size:13px;font-weight:750}
+.schedule-note{display:block;margin-top:2px;color:var(--muted);font-size:11px}
+.schedule-amount{text-align:right;font-size:14px;font-weight:800;white-space:nowrap}
+.schedule-amount small{display:block;color:var(--muted);font-size:10px;font-weight:500}
+.status{margin-top:9px;padding:9px 10px;border-radius:8px;background:#f1f5f7;color:var(--muted);font-size:12px}
+.status.ok{background:var(--green-light);color:var(--green)}
+.status.wait{background:var(--amber-light);color:var(--amber)}
+.pill{min-height:43px;display:flex;align-items:center;padding:7px 9px;border-radius:8px;background:#f0f5f7;font-size:12px;font-weight:700}
+.footer{font-size:11px;color:var(--muted);padding:3px 2px}
+.allocation-chart{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
+.chart-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.chart-title{font-size:12px;font-weight:750}
+.chart-toggle,.chart-tab{border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--blue-dark);font:inherit;font-size:11px;font-weight:700;padding:6px 9px;cursor:pointer}
+.chart-toggle:focus-visible,.chart-tab:focus-visible{outline:3px solid #9ccbd6;outline-offset:2px}
+.asset-chart-row{display:grid;grid-template-columns:82px 1fr;align-items:center;gap:9px;margin:7px 0}
+.asset-label{font-size:12px;font-weight:700}
+.asset-label small{display:block;color:var(--muted);font-size:10px;font-weight:500;margin-top:1px}
+.asset-bars{display:grid;gap:4px}
+.asset-track,.holding-track{height:8px;background:#edf2f4;border-radius:99px;overflow:hidden}
+.asset-track i,.holding-track i{display:block;height:100%;width:0;border-radius:99px;transition:width .22s ease}
+.asset-track .current-bar{background:var(--blue)}
+.asset-track .after-bar{background:#42a58a}
+.asset-values{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums;margin-top:3px}
+.chart-legend{display:flex;gap:11px;color:var(--muted);font-size:10px;margin-top:5px}
+.chart-legend span{display:inline-flex;align-items:center;gap:4px}
+.chart-legend i{width:8px;height:8px;border-radius:50%;background:var(--blue)}
+.chart-legend .after-key{background:#42a58a}
+.chart-legend .sell-bar{background:#cf6d65}
+.chart-legend .buy-bar{background:#42a58a}
+.holdings-chart{margin:8px 0 10px}
+.chart-tabs{display:flex;gap:6px}
+.chart-tab.active{background:var(--blue);border-color:var(--blue);color:#fff}
+.holding-chart-row{display:grid;grid-template-columns:minmax(105px,1fr) minmax(100px,1.45fr) 80px;gap:9px;align-items:center;padding:7px 0;border-top:1px solid #edf1f3}
+.holding-chart-name{min-width:0;font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.holding-chart-name small{display:block;color:var(--muted);font-size:10px;font-weight:500}
+.holding-bars{display:grid;gap:4px}
+.holding-track{height:6px}
+.holding-track .current-bar{background:var(--blue)}
+.holding-track .target-bar{background:#42a58a}
+.holding-track .sell-bar{background:#cf6d65}
+.holding-track .buy-bar{background:#42a58a}
+.holding-chart-value{text-align:right;font-size:11px;font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap}
+.holding-chart-value small{display:block;color:var(--muted);font-size:9px;font-weight:500}
+.chart-empty{padding:16px;text-align:center;color:var(--muted);font-size:12px;background:#f6f9fa;border-radius:9px}
+/* Keep the position list compact; detailed edits stay tucked into each row. */
+#holdingRows{border-top:1px solid var(--line);margin-top:9px}
+.stock-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(210px,1fr) auto;align-items:center;gap:8px;border:0;border-bottom:1px solid #edf1f3;border-radius:0;padding:8px 0;margin:0}
+.stock-head{display:contents}
+.stock-title{font-size:13px}
+.stock-head .button{grid-column:3;grid-row:1;font-size:11px;padding:5px 7px}
+.stock-split{grid-column:2;grid-row:1;display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0}
+.stock-split .weight-block{display:block}
+.weight-top{font-size:10px;margin:0}
+.weight-top strong{font-size:11px}
+.bar{display:none}
+.stock-bottom{grid-column:1/3;grid-row:2;margin:0;padding:0;border:0;align-items:baseline}
+.position-value{font-size:10px}
+.action-value{font-size:11px}
+.action-value small{display:inline;color:var(--muted);font-size:9px;margin-right:4px}
+.edit-stock{grid-column:1/-1;margin-top:0}
+.edit-stock summary{padding:3px 0;font-size:10px}
+.stock-card.muted{display:block;padding:14px 0}
+.ratio-basis{display:flex;align-items:center;gap:6px;margin:3px 0 8px}
+.ratio-basis-label{font-size:11px;color:var(--muted);margin-right:2px}
+.basis-button{border:1px solid var(--line);border-radius:99px;padding:5px 9px;background:#fff;color:var(--muted);font:inherit;font-size:11px;cursor:pointer}
+.basis-button.active{background:var(--blue-light);border-color:#9ac8d4;color:var(--blue-dark);font-weight:750}
+.basis-button:focus-visible{outline:3px solid #9ccbd6;outline-offset:2px}
+.basis-note{font-size:11px;color:var(--muted);margin:3px 0 9px}
+.view-tabs{display:flex;gap:6px;padding:4px;background:#eef4f6;border-radius:10px;margin:4px 0 10px}
+.view-tab{flex:1;border:0;border-radius:7px;background:transparent;color:var(--muted);padding:8px 10px;font:inherit;font-size:13px;font-weight:750;cursor:pointer}
+.view-tab.active{background:#fff;color:var(--blue-dark);box-shadow:0 1px 6px #17344718}
+.view-tab:focus-visible,.holding-chart-row:focus-visible{outline:3px solid #9ccbd6;outline-offset:2px}
+.holding-chart-row{width:100%;border:0;border-top:1px solid #edf1f3;background:#fff;color:var(--ink);font:inherit;text-align:left;cursor:pointer;transition:background .16s ease,transform .16s ease}
+.holding-chart-row:hover{background:#eef8fa;transform:translateX(2px)}
+.holding-chart-row:active{background:#dff0f4}
+.stock-card.is-highlighted{background:#e9f5f8;border-radius:8px;padding-left:7px;padding-right:7px}
+.feedback-toast{position:fixed;left:50%;bottom:18px;transform:translate(-50%,16px);z-index:30;background:#163044;color:#fff;border-radius:99px;padding:9px 15px;font-size:12px;font-weight:700;box-shadow:0 8px 24px #16304435;opacity:0;pointer-events:none;transition:opacity .2s ease,transform .2s ease;max-width:min(90vw,360px);text-align:center}
+.feedback-toast.show{opacity:1;transform:translate(-50%,0)}
+.big-money.flash{animation:resultFlash .42s ease}
+@keyframes resultFlash{0%{color:var(--green);transform:translateY(-2px)}100%{color:var(--ink);transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){.holding-chart-row,.feedback-toast,.asset-track i,.holding-track i{transition:none}.big-money.flash{animation:none}}
+@media(max-width:600px){
+ main{padding:14px 10px 28px}
+ h1{font-size:21px}
+ .card{padding:12px}
+ .modebar{gap:7px}
+ .modebar button{min-height:58px;padding:8px 9px;text-align:left}
+ .mix-grid{gap:7px}
+ .mix-card{grid-template-columns:64px 1fr;gap:7px;padding:8px}
+ .donut{width:62px;height:62px}
+ .donut:before{inset:7px}
+ .donut-center strong{font-size:11px}
+ .mini-metrics{grid-template-columns:1fr 1fr}
+ .advanced-grid{grid-template-columns:1fr 1fr}
+ .plan-steps{grid-template-columns:1fr}
+ .signal-grid{grid-template-columns:1fr 1fr}
+ .stock-card{padding:9px}
+ .stock-card{grid-template-columns:minmax(0,1fr) auto;gap:5px;padding:7px 0}
+ .stock-head .button{grid-column:2;grid-row:1}
+ .stock-split{grid-column:1/-1;grid-row:2}
+ .stock-bottom{grid-column:1/-1;grid-row:3}
+ .stock-title{font-size:12px}
+ .stock-head .button{font-size:10px;padding:4px 6px}
+ .holding-chart-row{grid-template-columns:minmax(86px,.85fr) minmax(80px,1.1fr) 68px;gap:6px}
+ .holding-chart-name{font-size:11px}
+ .holding-chart-value{font-size:10px}
+ .asset-chart-row{grid-template-columns:64px 1fr;gap:7px}
+}
+@media(max-width:380px){
+ .mix-grid{grid-template-columns:1fr}
+ .mix-card{grid-template-columns:58px 1fr;gap:6px;padding:7px}
+ .donut{width:56px;height:56px}
+ .donut:before{inset:6px}
+ .donut-center strong{font-size:10px}
+ .signal-grid{grid-template-columns:1fr}
+}
+[hidden]{display:none!important}
+.back-to-bot{display:inline-block;margin-bottom:10px;color:var(--blue);font-size:13px;font-weight:750;text-decoration:none}
+.relative-trend h2{margin-bottom:6px}.relative-rows{margin-top:10px}.relative-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+.relative-row span{min-width:0}.relative-row b,.relative-row small{display:block}.relative-row b{font-size:13px}.relative-row small{color:var(--muted);font-size:11px;margin-top:3px}.relative-row strong{white-space:nowrap;color:var(--blue);font-size:12px}
+</style>
+</head>
+<body>
+<main>
+ <header class="head"><a class="back-to-bot" href="/web/more">← 返回台股 BOT 更多</a><h1>加減碼規劃</h1><p class="subtitle">已帶入你的 BOT 持股；總市值、配置比例和每檔金額可自行調整。</p></header>
+
+ <section class="card">
+  <div class="fields">
+   <div class="field"><label for="portfolioValue">帳戶總市值（元）</label><input id="portfolioValue" type="number" min="0" step="10000" value="__BOT_PORTFOLIO_VALUE__"></div>
+   <div class="field"><label for="currentEquityPct">目前股票比例（%）</label><input id="currentEquityPct" type="number" min="0" max="100" step="1" value="100"><div class="hint">其餘自動視為現金</div></div>
+   <div class="field"><label for="trimAmountPct">本次減碼幅度（百分點）</label><input id="trimAmountPct" type="number" min="0" max="100" step="1" value="50"><div class="hint">例：持股 100%，減碼 30 點後為 70% 股票、30% 現金</div></div>
+   <div class="field"><label for="sellAllocationMode">減碼分配方式</label><select id="sellAllocationMode"><option value="largest">最大持倉優先</option><option value="proportional">按持股比例平均</option></select><div class="hint">減碼總金額相同，只改每檔賣出分配</div></div>
+  </div>
+  <details class="advanced"><summary>費用與減碼限制</summary><div class="advanced-grid">
+   <div class="field"><label for="feePct">單邊手續費（%）</label><input id="feePct" type="number" min="0" step="0.001" value="0.1425"></div>
+   <div class="field"><label for="perStockCap">單檔最多賣出自身持倉（%）</label><input id="perStockCap" type="number" min="0" max="100" step="1" value="50"></div>
+  </div></details>
+ </section>
+
+ <section class="card">
+  <div class="card-head"><h2>選擇操作</h2></div>
+  <div class="modebar" role="group" aria-label="選擇試算情境">
+   <button type="button" data-mode="trim" class="active" aria-pressed="true"><strong>減碼</strong><small id="trimModeSummary">確認跌破後，減碼 50 點</small></button>
+   <button type="button" data-mode="rebuy" aria-pressed="false"><strong>回補規劃</strong><small>自訂批數、反彈門檻與目標</small></button>
+  </div>
+ </section>
+
+ <section class="card rebuy-plan" id="rebuyPlan" hidden>
+  <div class="card-head"><h2>設定回補目標</h2><span class="badge">可設 1–5 批</span></div>
+  <p class="hint" id="rebuyPlanHint">依目前設定減碼後的股票比例開始回補。每批設定「反彈門檻」和「加碼後股票比例」，下方會換算本批要買多少、買完股票目標市值是多少。</p>
+  <div class="plan-fields">
+   <div class="field"><label for="rebuyBatchCount">回補批數</label><select id="rebuyBatchCount"><option value="1">1 批</option><option value="2" selected>2 批</option><option value="3">3 批</option><option value="4">4 批</option><option value="5">5 批</option></select></div>
+   <div class="field"><label for="selectedRebuyBatch">試算到第幾批</label><select id="selectedRebuyBatch"><option value="1">第 1 批</option><option value="2">第 2 批</option></select></div>
+  </div>
+  <div id="rebuyStepInputs" class="plan-steps"></div>
+  <div id="rebuyPlanStatus" class="status" aria-live="polite"></div>
+  <h3 style="margin:12px 0 0">每批金額預估</h3>
+  <div id="rebuySchedule" class="schedule-list" aria-live="polite"></div>
+  <p class="hint" style="margin-top:8px">按目前總市值估算，不含各批之間的漲跌；到下一批前，更新總市值和目前股票比例再試算。</p>
+ </section>
+
+ <section class="card dashboard">
+  <div class="dashboard-title">資產比例</div>
+  <div class="mix-grid">
+   <div class="mix-card">
+    <div class="donut" id="currentDonut"><div class="donut-center"><strong id="currentDonutPct">100%</strong><small>股票</small></div></div>
+    <div><div class="mix-label">目前配置</div><div class="mix-values"><span class="legend"><i class="dot"></i>股票 <b id="currentStockText">100%</b></span><span class="legend"><i class="dot cash"></i>現金 <b id="currentCashText">0%</b></span></div></div>
+   </div>
+   <div class="mix-card after">
+    <div class="donut" id="afterDonut"><div class="donut-center"><strong id="afterDonutPct">60%</strong><small>股票</small></div></div>
+    <div><div class="mix-label" id="afterMixLabel">試算後</div><div class="mix-values"><span class="legend"><i class="dot"></i>股票 <b id="afterStockText">50%</b></span><span class="legend"><i class="dot cash"></i>現金 <b id="afterCashText">50%</b></span></div></div>
+   </div>
+  </div>
+  <div class="allocation-chart" aria-label="目前與試算後資產配置比較">
+   <div class="chart-head"><span class="chart-title">配置比較</span><button type="button" class="chart-toggle" id="assetViewToggle" aria-label="切換配置圖顯示金額或比例">顯示金額</button></div>
+   <div id="assetCompareChart"></div>
+   <div class="chart-legend"><span><i></i>目前</span><span><i class="after-key"></i>試算後</span></div>
+  </div>
+ </section>
+
+ <section class="card big-result" aria-live="polite">
+  <div class="result-row"><div><div class="result-label" id="tradeLabel">預估賣出</div><div class="big-money" id="tradeTotal">—</div></div><div class="result-label" id="equityCashSummary">股票／現金 —</div></div>
+  <div class="mini-metrics">
+   <div class="metric"><span id="costLabel">本次交易成本</span><strong id="costTotal">—</strong></div>
+   <div class="metric"><span id="afterEquityLabel">交易後股票</span><strong id="afterEquity">—</strong></div>
+   <div class="metric"><span id="afterCashLabel">交易後現金</span><strong id="afterCash">—</strong></div>
+  </div>
+  <div class="explain" id="actionSummary">—</div>
+ </section>
+
+ <section class="card">
+  <div class="card-head">
+  <div><h2>持股配置</h2><div class="list-summary" style="margin-top:6px"><span class="badge" id="currentSumBadge">持股權重合計 100%</span><span class="badge" id="targetSumBadge">回補分配合計 100%</span></div></div>
+   <div class="stock-buttons"><button type="button" class="button primary" id="addStock">＋ 新增</button></div>
+  </div>
+  <div class="view-tabs" role="group" aria-label="持股顯示方式"><button type="button" class="view-tab active" data-view="chart" aria-pressed="true">圖表</button><button type="button" class="view-tab" data-view="list" aria-pressed="false">持股清單・編輯</button></div>
+  <div id="chartPanel">
+   <div class="holdings-chart">
+    <div class="chart-head"><span class="chart-title">點選股票可編輯</span><div class="chart-tabs" role="group" aria-label="持股圖表內容"><button type="button" class="chart-tab active" data-chart="weights" aria-pressed="true">交易前後比例</button><button type="button" class="chart-tab" data-chart="actions" aria-pressed="false">本次交易</button></div></div>
+    <div class="ratio-basis" id="ratioBasisControls" role="group" aria-label="持股比例計算基準"><span class="ratio-basis-label">比例基準</span><button type="button" class="basis-button active" data-basis="portfolio" aria-pressed="true">占總資產</button><button type="button" class="basis-button" data-basis="equity" aria-pressed="false">占股票部位</button></div>
+    <p class="basis-note" id="ratioBasisNote">比較每檔交易前後占整個帳戶的比例；交易後已扣除手續費與稅。</p>
+    <div id="holdingsChart" aria-live="polite"></div>
+    <div class="chart-legend" id="holdingsLegend"><span><i></i>交易前</span><span><i class="after-key"></i>交易後</span></div>
+   </div>
+  </div>
+  <div id="listPanel" hidden>
+   <p class="hint">下列比例均占總資產。點「編輯」可調整現有持股及回補分配權重。</p>
+   <div id="holdingRows"></div>
+   <div class="weight-status" id="weightStatus" aria-live="polite"></div>
+   <details class="advanced"><summary>清單設定</summary><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px"><span class="save-note" id="saveNote">只儲存在你的 BOT 帳號。</span><button type="button" class="button" id="restoreStocks">重新載入我的 BOT 持股</button></div></details>
+  </div>
+ </section>
+
+ __BOT_RELATIVE_TREND_PANEL__
+
+ <details class="card details">
+  <summary>訊號檢查（選填）</summary>
+  <div class="details-body">
+   <p id="signalInstructions">確認跌破月線後，依上方設定減碼；回補規劃依減碼後低點反彈幅度判斷。這裡只試算，不會自動下單。</p>
+   <div class="signal-grid" id="trimSignalFields" style="margin-top:10px">
+    <div class="field"><label for="indexClose">加權指數收盤</label><input id="indexClose" type="number" min="0" step="0.01" placeholder="收盤點數" value="__BOT_INDEX_CLOSE__"></div>
+    <div class="field"><label for="ma20">20 日線</label><input id="ma20" type="number" min="0" step="0.01" placeholder="月線點數" value="__BOT_INDEX_MA20__"></div>
+    <p class="hint" style="grid-column:1/-1">BOT 加權指數日線資料日：__BOT_INDEX_DATE__。當日盤中請等正式收盤再確認訊號。</p>
+    <div class="field"><label>減碼觀察線</label><div class="pill" id="lineValues">輸入月線後顯示</div></div>
+    <h3 style="grid-column:1/-1;margin:4px 0 0">3 日破底確認</h3>
+    <div class="field"><label for="setupClose">訊號日收盤</label><input id="setupClose" type="number" min="0" step="1"></div>
+    <div class="field"><label for="setupMa">訊號日 20 日線</label><input id="setupMa" type="number" min="0" step="1"></div>
+    <div class="field"><label for="setupLow">訊號日最低點</label><input id="setupLow" type="number" min="0" step="1"></div>
+    <div class="field"><label for="todayLow">今日最低點</label><input id="todayLow" type="number" min="0" step="1"></div>
+    <div class="field"><label for="daysSince">訊號日後第幾個交易日</label><input id="daysSince" type="number" min="0" max="3" step="1" value="0"></div>
+   </div>
+   <div class="signal-grid" id="rebuySignalFields" style="margin-top:10px" hidden>
+    <div class="field"><label for="rebuyLow">減碼後最低收盤</label><input id="rebuyLow" type="number" min="0" step="1" placeholder="低點點數"></div>
+    <div class="field"><label for="rebuyIndexClose">今日加權指數收盤</label><input id="rebuyIndexClose" type="number" min="0" step="1" placeholder="收盤點數"></div>
+   </div>
+   </div>
+   <div id="signalStatus" class="status">輸入收盤與 20 日線後顯示訊號狀態。</div>
+  </div>
+ </details>
+
+ <details class="card details">
+  <summary>目前交易規則</summary>
+  <div class="details-body"><ol>
+   <li>加權指數收盤低於 20 日線 1% 後記錄當日最低點；之後 3 個交易日內盤中再破低，確認後下一交易日收盤按上方減碼幅度調降股票比例。</li>
+   <li>回補批數預設 2 批，可改為 1–5 批。每批可自行設定反彈門檻及加碼後股票比例。</li>
+   <li>每批達到反彈門檻後，下一交易日收盤執行。金額依「目前帳戶總市值、目前股票比例、該批目標比例」計算。</li>
+   <li>若回補期間再次確認跌破，下一交易日按目前設定的減碼幅度調降股票比例；回補前請更新目前總市值與股票比例。</li>
+  </ol></div>
+ </details>
+ <p class="footer">金額為估算；個股賣出稅 0.3%、ETF 0.1%。BOT 持股與行情僅供帶入，請覆核金額；不會自動下單。</p>
+</main>
+<div class="feedback-toast" id="feedbackToast" role="status" aria-live="polite"></div>
+<script>window.__trimPlannerBootstrap=__BOT_BOOTSTRAP_JSON__;</script>
+<script>
+const botToken=new URLSearchParams(location.search).get("t");
+if(botToken)document.querySelector(".back-to-bot").href="/web/more?t="+encodeURIComponent(botToken);
+const botBootstrap=window.__trimPlannerBootstrap||{};
+const defaultStocks=Array.isArray(botBootstrap.stocks)?botBootstrap.stocks:[];
+let stocks=readSavedStocks()||defaultStocks.map(function(s){return {...s};});
+const savedRebuyPlan=readSavedRebuyPlan();
+let rebuyPlanBaseTargetPct=savedRebuyPlan&&Number.isFinite(savedRebuyPlan.baseTargetPct)?savedRebuyPlan.baseTargetPct:50;
+let rebuySteps=savedRebuyPlan?savedRebuyPlan.steps:defaultRebuySteps(2,currentTrimTargetPct());
+let rebuyPlanIsDefault=savedRebuyPlan?(savedRebuyPlan.isDefault===null?areDefaultRebuySteps(rebuySteps,rebuyPlanBaseTargetPct):savedRebuyPlan.isDefault):true;
+if(rebuyPlanIsDefault)rebuySteps=defaultRebuySteps(rebuySteps.length,currentTrimTargetPct());
+rebuyPlanBaseTargetPct=currentTrimTargetPct();
+let selectedRebuyBatch=1;
+let lastRebuyStages=[];
+let mode="trim";
+let chartMode="weights";
+let assetView="percent";
+let ratioBasis="portfolio";
+let holdingView="chart";
+let feedbackTimer;
+const el=id=>document.getElementById(id);
+let planSaveTimer;
+function queueSavePlan(){
+ clearTimeout(planSaveTimer);
+ el("saveNote").textContent="正在儲存到你的 BOT 帳號…";
+ planSaveTimer=setTimeout(async function(){
+  const payload={stocks:stocks,rebuyPlan:{steps:rebuySteps,baseTargetPct:rebuyPlanBaseTargetPct,isDefault:rebuyPlanIsDefault}};
+  const form=new URLSearchParams({csrf_token:String(botBootstrap.csrfToken||""),state:JSON.stringify(payload)});
+  const query=new URLSearchParams(location.search);
+  const endpoint="/web/trim-planner/state"+(query.has("t")?"?t="+encodeURIComponent(query.get("t")):"");
+  try{
+   const response=await fetch(endpoint,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:form.toString()});
+   if(!response.ok)throw Error("儲存失敗");
+   el("saveNote").textContent="已儲存到你的 BOT 帳號；其他使用者無法查看。";
+  }catch(e){el("saveNote").textContent="目前無法儲存。請確認網路後再修改一次。";}
+ },450);
+}
+const money=n=>new Intl.NumberFormat("zh-TW",{style:"currency",currency:"TWD",maximumFractionDigits:0}).format(Math.max(0,n||0));
+const read=id=>{const n=Number(el(id).value);return Number.isFinite(n)?n:0;};
+const pct=n=>Math.max(0,Number(n)||0).toFixed(1)+"%";
+function currentTrimTargetPct(){const equity=Number(document.getElementById("currentEquityPct").value),reduction=Number(document.getElementById("trimAmountPct").value);return Math.max(0,clamp(Number.isFinite(equity)?equity:0)-clamp(Number.isFinite(reduction)?reduction:0));}
+function readSavedStocks(){
+ try{
+  const parsed=botBootstrap.savedStocks;
+  if(!Array.isArray(parsed))return null;
+  return parsed.map(function(s){return {code:String(s.code||""),name:String(s.name||""),current:Math.max(0,Number(s.current)||0),target:Math.max(0,Number(s.target)||0),kind:s.kind==="etf"?"etf":"stock"};});
+ }catch(e){return null;}
+}
+function saveStocks(){
+ queueSavePlan();
+}
+function defaultRebuySteps(count,startTargetPct){
+ const total=Math.max(1,Math.min(5,Math.round(Number(count)||2)));
+ const start=Math.max(0,Math.min(100,Number.isFinite(Number(startTargetPct))?Number(startTargetPct):50));
+ return Array.from({length:total},function(_,i){return {trigger:Number((3+i*1.5).toFixed(1)),target:Number((start+(100-start)*(i+1)/total).toFixed(1))};});
+}
+function areDefaultRebuySteps(steps,startTargetPct){
+ const defaults=defaultRebuySteps(steps.length,startTargetPct);
+ return steps.every(function(step,i){return Math.abs(step.trigger-defaults[i].trigger)<.001&&Math.abs(step.target-defaults[i].target)<.001;});
+}
+function readSavedRebuyPlan(){
+ try{
+  const parsed=botBootstrap.savedRebuyPlan;
+  if(!parsed)return null;
+  if(!Array.isArray(parsed.steps)||parsed.steps.length<1||parsed.steps.length>5)return null;
+  return {steps:parsed.steps.map(function(step){return {trigger:Math.max(0,Math.min(100,Number(step.trigger)||0)),target:Math.max(0,Math.min(100,Number(step.target)||0))};}),baseTargetPct:Number.isFinite(Number(parsed.baseTargetPct))?Number(parsed.baseTargetPct):50,isDefault:typeof parsed.isDefault==="boolean"?parsed.isDefault:null};
+ }catch(e){return null;}
+}
+function saveRebuyPlan(){
+ rebuyPlanBaseTargetPct=currentTrimTargetPct();queueSavePlan();
+}
+function syncDefaultRebuyPlan(){
+ const nextTarget=currentTrimTargetPct();
+ if(!rebuyPlanIsDefault||Math.abs(nextTarget-rebuyPlanBaseTargetPct)<.01)return;
+ rebuySteps=defaultRebuySteps(rebuySteps.length,nextTarget);
+ rebuyPlanBaseTargetPct=nextTarget;
+ renderRebuySteps();saveRebuyPlan();
+}
+function esc(value){return String(value).replace(/[&<>"']/g,function(ch){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch];});}
+function renderRebuySteps(){
+ el("rebuyBatchCount").value=String(rebuySteps.length);
+ if(selectedRebuyBatch>rebuySteps.length)selectedRebuyBatch=rebuySteps.length;
+ el("selectedRebuyBatch").innerHTML=rebuySteps.map(function(_,i){return '<option value="'+(i+1)+'">第 '+(i+1)+' 批</option>';}).join("");
+ el("selectedRebuyBatch").value=String(selectedRebuyBatch);
+ el("rebuyStepInputs").innerHTML=rebuySteps.map(function(step,i){
+  return '<article class="plan-step"><div class="plan-step-head"><span>第 '+(i+1)+' 批</span><span class="badge">設定門檻與目標</span></div><div class="step-fields">'
+   +'<div class="field"><label for="rebuy-trigger-'+i+'">反彈門檻（%）</label><input id="rebuy-trigger-'+i+'" data-step-index="'+i+'" data-step-field="trigger" type="number" min="0" max="100" step="0.1" value="'+step.trigger+'"></div>'
+   +'<div class="field"><label for="rebuy-target-'+i+'">加碼後股票比例（%）</label><input id="rebuy-target-'+i+'" data-step-index="'+i+'" data-step-field="target" type="number" min="0" max="100" step="0.1" value="'+step.target+'"></div>'
+  +'</div></article>';
+ }).join("");
+}
+function renderStocks(){
+ if(!stocks.length){el("holdingRows").innerHTML='<div class="stock-card muted">清單目前是空的，按「新增」加入股票。</div>';return;}
+ el("holdingRows").innerHTML=stocks.map(function(s,i){
+  const title=esc(s.name||("持股 "+(i+1)));
+  const code=esc(s.code||"");
+  return '<article class="stock-card">'
+   +'<div class="stock-head"><span class="stock-title" id="stock-title-'+i+'">'+title+(code?'（'+code+'）':'')+'</span><button type="button" class="button delete remove-stock" data-index="'+i+'">刪除</button></div>'
+   +'<div class="stock-split">'
+    +'<div class="weight-block"><div class="weight-top"><span>交易前</span><strong id="current-weight-'+i+'">—</strong></div><div class="bar"><i id="current-bar-'+i+'"></i></div></div>'
+    +'<div class="weight-block target"><div class="weight-top"><span>交易後</span><strong id="target-weight-'+i+'">—</strong></div><div class="bar"><i id="target-bar-'+i+'"></i></div></div>'
+   +'</div>'
+   +'<div class="stock-bottom"><span class="position-value">持倉 <b id="position-'+i+'">—</b></span><span class="action-value"><small id="action-label-'+i+'">預估減碼</small><span id="action-value-'+i+'">—</span></span></div>'
+   +'<details class="edit-stock" id="edit-'+i+'"><summary>編輯</summary><div class="edit-grid">'
+    +'<div class="field"><label for="name-'+i+'">股票名稱</label><input id="name-'+i+'" data-index="'+i+'" data-field="name" type="text" value="'+esc(s.name)+'" placeholder="例如：台積電"></div>'
+    +'<div class="field"><label for="code-'+i+'">股票代號</label><input id="code-'+i+'" data-index="'+i+'" data-field="code" type="text" value="'+code+'" placeholder="例如：2330"></div>'
+    +'<div class="field"><label for="current-'+i+'">目前權重（%）</label><input id="current-'+i+'" data-index="'+i+'" data-field="current" type="number" min="0" step="0.1" value="'+s.current+'"></div>'
+    +'<div class="field"><label for="target-'+i+'">回補分配權重（%）</label><input id="target-'+i+'" data-index="'+i+'" data-field="target" type="number" min="0" step="0.1" value="'+s.target+'"></div>'
+    +'<div class="field"><label for="kind-'+i+'">個股或 ETF</label><select id="kind-'+i+'" data-index="'+i+'" data-field="kind"><option value="stock"'+(s.kind==="stock"?" selected":"")+'>個股（賣出稅 0.3%）</option><option value="etf"'+(s.kind==="etf"?" selected":"")+'>ETF（賣出稅 0.1%）</option></select></div>'
+   +'</div></details></article>';
+ }).join("");
+}
+function clamp(n){return Math.max(0,Math.min(100,n));}
+function renderAssetChart(total,stockNow,cashNow,stockNext,cashNext,totalNext,afterLabel){
+ const scale=assetView==="percent"?100:Math.max(1,total);
+ const nowStock=assetView==="percent"?(total?stockNow/total*100:0):stockNow;
+ const nextStock=assetView==="percent"?(totalNext?stockNext/totalNext*100:0):stockNext;
+ const nowCash=assetView==="percent"?(total?cashNow/total*100:0):cashNow;
+ const nextCash=assetView==="percent"?(totalNext?cashNext/totalNext*100:0):cashNext;
+ const display=assetView==="percent"?pct:money;
+ const rows=[{label:"股票",now:nowStock,next:nextStock},{label:"現金",now:nowCash,next:nextCash}];
+ el("assetViewToggle").textContent=assetView==="percent"?"顯示金額":"顯示比例";
+ el("assetCompareChart").innerHTML=rows.map(function(row,index){
+  const nowWidth=scale?clamp(row.now/scale*100):0;
+  const nextWidth=scale?clamp(row.next/scale*100):0;
+  return '<div class="asset-chart-row"><div class="asset-label">'+row.label+'</div><div><div class="asset-bars"><div class="asset-track"><i class="current-bar" style="width:'+nowWidth+'%" title="目前 '+display(row.now)+'"></i></div><div class="asset-track"><i class="after-bar" style="width:'+nextWidth+'%" title="'+afterLabel+' '+display(row.next)+'"></i></div></div><div class="asset-values"><span>目前 '+display(row.now)+'</span><span>'+afterLabel+' '+display(row.next)+'</span></div></div></div>';
+ }).join("");
+}
+function renderHoldingsChart(positions,sell,buy,total,stockTotal,afterTotal,stockAfter){
+ const chart=el("holdingsChart"),legend=el("holdingsLegend");
+ el("ratioBasisControls").hidden=chartMode!=="weights";
+ el("ratioBasisNote").hidden=chartMode!=="weights";
+ if(!positions.length){chart.innerHTML='<div class="chart-empty">尚未加入持股。</div>';legend.hidden=true;return;}
+ legend.hidden=false;
+ if(chartMode==="weights"){
+  const sorted=positions.slice().sort(function(a,b){return b.value-a.value;});
+  const share=function(value,base){return base?value/base*100:0;};
+  const values=sorted.map(function(s){const after=s.value-sell[s.index]+buy[s.index];return {stock:s,before:share(s.value,ratioBasis==="portfolio"?total:stockTotal),after:share(after,ratioBasis==="portfolio"?afterTotal:stockAfter)};});
+  const max=Math.max(1,...values.map(function(row){return Math.max(row.before,row.after);}));
+  const beforeLabel=mode==="trim"?"減碼前":"第 "+selectedRebuyBatch+" 批前";
+  const afterLabel=mode==="trim"?"減碼後":"第 "+selectedRebuyBatch+" 批後";
+  el("ratioBasisNote").textContent=ratioBasis==="portfolio"?"比較"+beforeLabel+"與"+afterLabel+"每檔占帳戶的比例；交易後已扣除手續費與稅。":"比較"+beforeLabel+"與"+afterLabel+"每檔占股票部位的比例。";
+  legend.innerHTML='<span><i></i>'+beforeLabel+'</span><span><i class="after-key"></i>'+afterLabel+'</span>';
+  chart.innerHTML=values.map(function(row){
+   const s=row.stock;
+   const title=(s.name||("持股 "+(s.index+1)))+(s.code?"（"+s.code+"）":"");
+   return '<button type="button" class="holding-chart-row" data-edit-stock="'+s.index+'" aria-label="編輯 '+esc(title)+'" title="'+esc(title)+'：'+beforeLabel+' '+pct(row.before)+'，'+afterLabel+' '+pct(row.after)+'"><span class="holding-chart-name">'+esc(s.name||("持股 "+(s.index+1)))+'<small>'+esc(s.code||"未填代號")+'</small></span><span class="holding-bars"><span class="holding-track"><i class="current-bar" style="width:'+clamp(row.before/max*100)+'%"></i></span><span class="holding-track"><i class="target-bar" style="width:'+clamp(row.after/max*100)+'%"></i></span></span><span class="holding-chart-value">'+pct(row.before)+'<small>'+afterLabel+' '+pct(row.after)+'</small></span></button>';
+  }).join("");
+ }else{
+  const sorted=positions.slice().sort(function(a,b){return (mode==="trim"?sell[b.index]-sell[a.index]:buy[b.index]-buy[a.index]);});
+  const amounts=sorted.map(function(s){return mode==="trim"?sell[s.index]:buy[s.index];});
+  const max=Math.max(1,...amounts);
+  const action=mode==="trim"?"sell-bar":"buy-bar";
+  const actionName=mode==="trim"?"預估賣出":"第 "+selectedRebuyBatch+" 批預估加碼";
+  legend.innerHTML='<span><i class="'+action+'"></i>'+actionName+'</span>';
+  chart.innerHTML=sorted.map(function(s){
+   const title=(s.name||("持股 "+(s.index+1)))+(s.code?"（"+s.code+"）":"");
+   const amount=mode==="trim"?sell[s.index]:buy[s.index];
+   return '<button type="button" class="holding-chart-row" data-edit-stock="'+s.index+'" aria-label="編輯 '+esc(title)+'" title="'+esc(title)+'：'+actionName+' '+money(amount)+'"><span class="holding-chart-name">'+esc(s.name||("持股 "+(s.index+1)))+'<small>'+esc(s.code||"未填代號")+'</small></span><span class="holding-bars"><span class="holding-track"><i class="'+action+'" style="width:'+clamp(amount/max*100)+'%"></i></span></span><span class="holding-chart-value">'+money(amount)+'<small>'+actionName+'</small></span></button>';
+  }).join("");
+ }
+}
+function validateRebuySteps(){
+ let previousTrigger=-1,previousTarget=currentTrimTargetPct();
+ if(previousTarget>=100)return "減碼幅度為 0%，目前沒有回補空間。";
+ for(let i=0;i<rebuySteps.length;i++){
+  const trigger=Number(rebuySteps[i].trigger),target=Number(rebuySteps[i].target);
+  if(!Number.isFinite(trigger)||trigger<0||trigger>100)return "第 "+(i+1)+" 批反彈門檻須介於 0%–100%。";
+  if(trigger<=previousTrigger)return "反彈門檻要逐批提高，請調整第 "+(i+1)+" 批。";
+  if(!Number.isFinite(target)||target>100)return "股票目標比例不可高於 100%。";
+  if(target<=previousTarget)return "每批加碼後的股票比例需高於前一批；第 "+(i+1)+" 批目前未提高目標。";
+  previousTrigger=trigger;previousTarget=target;
+ }
+ return "";
+}
+function renderRebuySchedule(stages){
+ if(!stages.length){el("rebuySchedule").innerHTML='<div class="hint">請設定至少一批回補。</div>';return;}
+ el("rebuySchedule").innerHTML=stages.map(function(stage,i){
+  const selected=i+1===selectedRebuyBatch?" selected":"";
+  const cashText=stage.cashLimited?"現金不足，已按可用金額估算。":"估算剩餘現金 "+money(stage.cashAfter);
+  return '<div class="schedule-row'+selected+'"><div><span class="schedule-title">第 '+(i+1)+' 批｜反彈 '+pct(stage.trigger)+'，加碼後目標 '+pct(stage.targetPct)+'</span><span class="schedule-note">目標股票市值 '+money(stage.targetValue)+' · '+cashText+'</span></div><div class="schedule-amount">'+money(stage.trade)+'<small>本批加碼</small></div></div>';
+ }).join("");
+}
+function calc(){
+ const total=Math.max(0,read("portfolioValue"));
+ const equityPct=clamp(read("currentEquityPct"))/100;
+ const stockTotal=total*equityPct;
+ const cashStart=total-stockTotal;
+ const fee=Math.max(0,read("feePct"))/100;
+ const targetSell=Math.max(0,equityPct-clamp(read("trimAmountPct"))/100);
+ const allocationMode=el("sellAllocationMode").value;
+ const cap=clamp(read("perStockCap"))/100;
+ const curSum=stocks.reduce(function(a,s){return a+Math.max(0,Number(s.current)||0);},0);
+ const tarSum=stocks.reduce(function(a,s){return a+Math.max(0,Number(s.target)||0);},0);
+ const positions=stocks.map(function(s,i){return {...s,index:i,value:curSum?stockTotal*Math.max(0,Number(s.current)||0)/curSum:0,tax:s.kind==="etf"?.001:.003};});
+ const sell=stocks.map(function(){return 0;});
+ const noBuys=stocks.map(function(){return 0;});
+ let trade=0,cost=0,stockAfter=stockTotal,cashAfter=cashStart,tradeStartStock=stockTotal,tradeStartCash=cashStart,note="";
+ let displayPositions=positions,displaySell=sell,displayBuy=noBuys;
+ let chartTotalBefore=total,chartStockBefore=stockTotal,chartAfterTotal=total,chartStockAfter=stockTotal;
+ let afterLabel="減碼後",activeBatch=1;
+ el("rebuyPlan").hidden=mode!=="rebuy";
+ const reductionPoints=Math.min(clamp(read("trimAmountPct")),equityPct*100);
+ el("trimModeSummary").textContent="確認跌破後，減少 "+reductionPoints.toFixed(0)+" 個百分點；股票降至 "+pct(targetSell*100);
+ el("rebuyPlanHint").textContent="依減碼後股票比例 "+pct(targetSell*100)+" 開始回補。每批設定「反彈門檻」和「加碼後股票比例」，下方會換算本批要買多少、買完股票目標市值是多少。";
+ const planIssue=validateRebuySteps();
+ const planStages=[];
+ let planStock=stockTotal,planCash=cashStart,planTotal=total;
+ let planPositionValues=positions.map(function(s){return s.value;});
+ for(let i=0;i<rebuySteps.length;i++){
+  const step=rebuySteps[i],target=clamp(Number(step.target)||0)/100;
+  const beforeStock=planStock,beforeCash=planCash,beforeTotal=planTotal;
+  const beforePositions=planPositionValues.slice();
+  const requested=planIssue||!tarSum?0:Math.max(0,(target*beforeTotal-beforeStock)/(1+target*fee));
+  const tradeThis=Math.min(requested,beforeCash/(1+fee));
+  const costThis=tradeThis*fee;
+  const buys=stocks.map(function(s){return tarSum?tradeThis*Math.max(0,Number(s.target)||0)/tarSum:0;});
+  planStock=beforeStock+tradeThis;
+  planCash=beforeCash-tradeThis-costThis;
+  planTotal=planStock+planCash;
+  planPositionValues=beforePositions.map(function(value,index){return value+buys[index];});
+  planStages.push({trigger:Number(step.trigger)||0,targetPct:target*100,targetValue:target*(beforeTotal-costThis),trade:tradeThis,cost:costThis,cashLimited:tradeThis+0.01<requested,stockBefore:beforeStock,cashBefore:beforeCash,totalBefore:beforeTotal,beforePositions:beforePositions,buy:buys,stockAfter:planStock,cashAfter:planCash,totalAfter:planTotal});
+ }
+ lastRebuyStages=planStages;
+ renderRebuySchedule(planStages);
+ if(mode==="trim"){
+  let remaining=Math.max(0,stockTotal-total*targetSell);
+  if(allocationMode==="proportional"){
+   const reductionShare=stockTotal?remaining/stockTotal:0;
+   positions.forEach(function(s){const amount=Math.min(remaining,s.value*reductionShare,s.value*cap);sell[s.index]=amount;remaining-=amount;});
+  }else{
+   positions.slice().sort(function(a,b){return b.value-a.value;}).forEach(function(s){
+    if(remaining<=.01)return;
+    const amount=Math.min(remaining,s.value*cap);
+    sell[s.index]=amount;
+    remaining-=amount;
+   });
+  }
+  trade=sell.reduce(function(a,b){return a+b;},0);
+  cost=positions.reduce(function(a,s){return a+sell[s.index]*(fee+s.tax);},0);
+  stockAfter=stockTotal-trade;
+  cashAfter=cashStart+trade-cost;
+  note=trade?"減碼後目標為 "+pct(targetSell*100)+" 股票；目前採用「"+(allocationMode==="proportional"?"按持股比例平均":"最大持倉優先")+"」，單檔上限為自身持倉的 "+pct(cap*100)+"。":"目前股票比例已不高於減碼後目標 "+pct(targetSell*100)+"，無需賣出。";
+  if(read("trimAmountPct")<=0)note="減碼幅度設定為 0%，無需賣出。";
+  if(reductionPoints+0.01<clamp(read("trimAmountPct")))note+=" 減碼幅度超過目前股票比例，目標已按可減部位降至 0%。";
+  if(remaining>1)note+=" 受單檔賣出上限限制，距目標還差 "+money(remaining)+"。";
+ }else{
+  activeBatch=Math.max(1,Math.min(rebuySteps.length,Math.round(Number(el("selectedRebuyBatch").value)||1)));
+  const stage=planStages[activeBatch-1];
+  trade=stage.trade;cost=stage.cost;stockAfter=stage.stockAfter;cashAfter=stage.cashAfter;
+  tradeStartStock=stage.stockBefore;tradeStartCash=stage.cashBefore;
+  note="第 "+activeBatch+" 批：反彈達 "+pct(stage.trigger)+" 時，目標股票比例 "+pct(stage.targetPct)+"；本批預估加碼 "+money(trade)+"。";
+  if(activeBatch>1)note+=" 交易後比例與金額包含前面各批。";
+  if(stage.cashLimited)note+=" 可用現金不足，已按可用金額估算。";
+  if(!tarSum)note="持股回補分配合計為 0%；請先編輯持股清單。";
+  if(trade<=.01&&tarSum)note="目前股票比例已達或高於本批目標；若已減碼，請輸入目前實際股票比例（減碼後目標為 "+pct(currentTrimTargetPct())+"）。";
+  displayPositions=positions.map(function(s){return {...s,value:stage.beforePositions[s.index]};});
+  displaySell=stocks.map(function(){return 0;});
+  displayBuy=stage.buy;
+  chartTotalBefore=stage.totalBefore;chartStockBefore=stage.stockBefore;
+  chartAfterTotal=stage.totalAfter;chartStockAfter=stage.stockAfter;
+  afterLabel="第 "+activeBatch+" 批後";
+ }
+ const afterTotal=stockAfter+cashAfter;
+ displayPositions.forEach(function(s){
+  const afterValue=Math.max(0,s.value-displaySell[s.index]+displayBuy[s.index]);
+  const currentShare=chartTotalBefore?s.value/chartTotalBefore*100:0;
+  const afterShare=chartAfterTotal?afterValue/chartAfterTotal*100:0;
+  const title=(s.name||("持股 "+(s.index+1)))+(s.code?"（"+s.code+"）":"");
+  el("stock-title-"+s.index).textContent=title;
+  el("current-weight-"+s.index).textContent=pct(currentShare);
+  el("target-weight-"+s.index).textContent=pct(afterShare);
+  el("current-bar-"+s.index).style.width=clamp(currentShare)+"%";
+  el("target-bar-"+s.index).style.width=clamp(afterShare)+"%";
+  el("position-"+s.index).textContent=money(s.value)+" → "+money(afterValue);
+  el("action-label-"+s.index).textContent=mode==="trim"?"預估減碼":"第 "+activeBatch+" 批加碼";
+  el("action-value-"+s.index).textContent=money(mode==="trim"?displaySell[s.index]:displayBuy[s.index]);
+ });
+ const afterPct=afterTotal?clamp(stockAfter/afterTotal*100):0;
+ el("currentDonut").style.setProperty("--stock",clamp(equityPct*100)+"%");
+ el("afterDonut").style.setProperty("--stock",afterPct+"%");
+ el("currentDonutPct").textContent=pct(equityPct*100);
+ el("afterDonutPct").textContent=pct(afterPct);
+ el("currentStockText").textContent=pct(equityPct*100);
+ el("currentCashText").textContent=pct(100-equityPct*100);
+ el("afterStockText").textContent=pct(afterPct);
+ el("afterCashText").textContent=pct(100-afterPct);
+ el("afterMixLabel").textContent=afterLabel;
+ el("equityCashSummary").textContent=(mode==="trim"?"目前：":"第 "+activeBatch+" 批前：")+money(tradeStartStock)+" 股票／"+money(tradeStartCash)+" 現金";
+ el("tradeLabel").textContent=mode==="trim"?"預估賣出":"第 "+activeBatch+" 批預估加碼";
+ el("costLabel").textContent=mode==="trim"?"手續費與賣出稅":"本批手續費";
+ el("tradeTotal").textContent=money(trade);
+ el("costTotal").textContent=money(cost);
+ el("afterEquity").textContent=money(stockAfter);
+ el("afterCash").textContent=money(cashAfter);
+ el("afterEquityLabel").textContent=mode==="trim"?"減碼後股票":"完成第 "+activeBatch+" 批後股票";
+ el("afterCashLabel").textContent=mode==="trim"?"減碼後現金":"完成第 "+activeBatch+" 批後現金";
+ el("actionSummary").textContent=note;
+ renderAssetChart(total,stockTotal,cashStart,stockAfter,cashAfter,afterTotal,afterLabel);
+ renderHoldingsChart(displayPositions,displaySell,displayBuy,chartTotalBefore,chartStockBefore,chartAfterTotal,chartStockAfter);
+ el("currentSumBadge").textContent="持股權重合計 "+curSum.toFixed(1)+"%";
+ el("targetSumBadge").textContent="回補分配合計 "+tarSum.toFixed(1)+"%";
+ const valid=Math.abs(curSum-100)<=.1&&Math.abs(tarSum-100)<=.1;
+ el("weightStatus").className="weight-status"+(valid?"":" warn");
+ el("weightStatus").textContent=valid?"目前持股與回補分配權重各合計 100%。":"目前持股或回補分配權重尚未合計 100%；請點「編輯」調整，試算會按輸入比例換算。";
+ const planStatus=el("rebuyPlanStatus");
+ if(planIssue){planStatus.className="status wait";planStatus.textContent="設定需要調整："+planIssue;}
+ else if(equityPct*100>=Number(rebuySteps[0].target)){planStatus.className="status wait";planStatus.textContent="目前股票比例已達或高於第一批目標；若已減碼，請輸入實際股票比例（本次目標為 "+pct(currentTrimTargetPct())+"）。";}
+ else{planStatus.className="status ok";planStatus.textContent="設定有效。輸入減碼後的目前股票比例，表格便會列出每批加碼金額與目標股票市值。";}
+ updateSignal();
+}
+function updateSignal(){
+ const status=el("signalStatus");
+ status.className="status";
+ el("trimSignalFields").hidden=mode!=="trim";
+ el("rebuySignalFields").hidden=mode!=="rebuy";
+ const has=function(id){return el(id).value.trim()!=="";};
+ if(mode==="trim"){
+  el("signalInstructions").textContent="收盤低於 20 日線 1% 後記錄訊號日低點；3 個交易日內再破低，確認後減少 "+Math.min(clamp(read("trimAmountPct")),clamp(read("currentEquityPct"))).toFixed(0)+" 個百分點，股票降至 "+pct(currentTrimTargetPct())+"。";
+  const close=read("indexClose"),ma=read("ma20");
+  if(!has("ma20")){el("lineValues").textContent="輸入月線後顯示";status.textContent="輸入加權指數收盤與 20 日線，檢查減碼條件。";return;}
+  const line=ma*.99;
+  el("lineValues").textContent="收盤低於 "+Math.round(line).toLocaleString("zh-TW")+" 點進入觀察";
+  if(!has("indexClose")){status.textContent="減碼觀察線已算出；輸入加權指數收盤比對。";return;}
+  const sc=read("setupClose"),sm=read("setupMa"),sl=read("setupLow"),tl=read("todayLow"),days=read("daysSince");
+  if(has("setupClose")&&has("setupMa")&&has("setupLow")&&has("todayLow")){
+   if(sc>=sm*.99){status.textContent="訊號日收盤未低於 20 日線 1%，尚未啟動破底確認。";status.classList.add("wait");}
+   else if(days<1||days>3){status.textContent="訊號日後交易日數須在 1–3 日內，逾期需重新觀察。";status.classList.add("wait");}
+   else if(tl<sl){status.textContent="破底確認成立；下一交易日收盤把股票降至 "+pct(currentTrimTargetPct())+"。";status.classList.add("ok");}
+   else{status.textContent="尚未確認：今日最低點仍未跌破訊號日最低點。";status.classList.add("wait");}
+  }else if(close<line){status.textContent="收盤低於觀察線；記錄今天最低點，3 個交易日內再破低才減碼。";status.classList.add("wait");}
+  else{status.textContent="尚未到減碼觀察線；收盤需低於 "+Math.round(line).toLocaleString("zh-TW")+" 點。";}
+  return;
+ }
+ el("signalInstructions").textContent="輸入減碼後最低收盤與今日加權指數收盤，查看是否達到所選批次的反彈門檻。";
+ if(!has("rebuyLow")||!has("rebuyIndexClose")){status.textContent="輸入減碼後最低收盤與今日收盤，檢查所選批次的回補門檻。";return;}
+ const low=read("rebuyLow"),close=read("rebuyIndexClose"),stage=lastRebuyStages[selectedRebuyBatch-1],step=rebuySteps[selectedRebuyBatch-1];
+ if(low<=0||close<=0){status.textContent="低點與收盤必須大於 0。";status.classList.add("wait");return;}
+ const rebound=(close/low-1)*100,trigger=Number(step.trigger)||0,thresholdPrice=low*(1+trigger/100);
+ if(rebound+1e-9>=trigger){
+  if(stage&&stage.trade<=.01){status.textContent="反彈已達第 "+selectedRebuyBatch+" 批門檻，但目前輸入比例已達該批目標，無需加碼。";status.classList.add("wait");}
+  else{status.textContent="反彈 "+rebound.toFixed(2)+"% 已達第 "+selectedRebuyBatch+" 批門檻；本批估算加碼 "+money(stage?stage.trade:0)+"，股票目標 "+pct(step.target)+"。";status.classList.add("ok");}
+ }else{
+  status.textContent="目前反彈 "+rebound.toFixed(2)+"%；第 "+selectedRebuyBatch+" 批需達 "+pct(trigger)+"（收盤約 "+Math.round(thresholdPrice).toLocaleString("zh-TW")+" 點），尚差 "+Math.round(thresholdPrice-close).toLocaleString("zh-TW")+" 點。";
+  status.classList.add("wait");
+ }
+}
+function setMode(next){
+ mode=next;
+ document.querySelectorAll("[data-mode]").forEach(function(button){
+  const active=button.dataset.mode===next;
+  button.classList.toggle("active",active);
+  button.setAttribute("aria-pressed",String(active));
+ });
+ calc();
+ flashResult();
+ showFeedback(next==="trim"?"已切換至減碼試算":"已切換至回補規劃");
+}
+function setHoldingView(next){
+ holdingView=next;
+ el("chartPanel").hidden=next!=="chart";
+ el("listPanel").hidden=next!=="list";
+ document.querySelectorAll("[data-view]").forEach(function(button){const active=button.dataset.view===next;button.classList.toggle("active",active);button.setAttribute("aria-pressed",String(active));});
+}
+function showFeedback(message){
+ const toast=el("feedbackToast");toast.textContent=message;toast.classList.add("show");
+ clearTimeout(feedbackTimer);feedbackTimer=setTimeout(function(){toast.classList.remove("show");},1800);
+}
+function flashResult(){const result=el("tradeTotal");result.classList.remove("flash");void result.offsetWidth;result.classList.add("flash");}
+renderRebuySteps();
+renderStocks();
+el("saveNote").textContent=Array.isArray(botBootstrap.savedStocks)?"已載入你的 BOT 專屬規劃。":"已帶入你的 BOT 持股；修改後會儲存到你的帳號。";
+document.querySelectorAll("[data-mode]").forEach(function(button){button.addEventListener("click",function(){setMode(button.dataset.mode);});});
+el("rebuyBatchCount").addEventListener("change",function(){
+ const count=Math.max(1,Math.min(5,Number(this.value)||2));
+ const oldCount=rebuySteps.length;
+ const unchanged=areDefaultRebuySteps(rebuySteps,rebuyPlanBaseTargetPct);
+ if(unchanged){rebuySteps=defaultRebuySteps(count,currentTrimTargetPct());rebuyPlanIsDefault=true;}
+ else if(count<oldCount){
+  const finalStep={...rebuySteps[oldCount-1]};
+  rebuySteps=rebuySteps.slice(0,count);
+  rebuySteps[count-1]=finalStep;
+  rebuyPlanIsDefault=false;
+ }
+ else if(count>oldCount){
+  while(rebuySteps.length<count){
+   const previous=rebuySteps[rebuySteps.length-1],remaining=count-rebuySteps.length;
+   rebuySteps.push({trigger:Number((previous.trigger+1.5).toFixed(1)),target:Number((previous.target+(100-previous.target)/remaining).toFixed(1))});
+  }
+  rebuyPlanIsDefault=false;
+ }
+ selectedRebuyBatch=1;
+ renderRebuySteps();saveRebuyPlan();calc();
+ showFeedback("已調整為 "+count+" 批；可逐批修改門檻和目標");
+});
+el("selectedRebuyBatch").addEventListener("change",function(){selectedRebuyBatch=Number(this.value)||1;});
+el("rebuyStepInputs").addEventListener("input",function(event){
+ const input=event.target;if(!input.matches("[data-step-index][data-step-field]"))return;
+ const index=Number(input.dataset.stepIndex),field=input.dataset.stepField;
+ if(!rebuySteps[index])return;
+ rebuySteps[index][field]=Math.max(0,Math.min(100,Number(input.value)||0));
+ rebuyPlanIsDefault=false;
+ saveRebuyPlan();
+});
+el("assetViewToggle").addEventListener("click",function(){assetView=assetView==="percent"?"amount":"percent";calc();showFeedback(assetView==="percent"?"配置圖已切換為比例":"配置圖已切換為金額");});
+document.querySelectorAll("[data-view]").forEach(function(button){button.addEventListener("click",function(){setHoldingView(button.dataset.view);showFeedback(button.dataset.view==="chart"?"正在查看持股圖表":"正在編輯持股清單");});});
+document.querySelectorAll("[data-chart]").forEach(function(button){button.addEventListener("click",function(){
+ chartMode=button.dataset.chart;
+ document.querySelectorAll("[data-chart]").forEach(function(item){const active=item.dataset.chart===chartMode;item.classList.toggle("active",active);item.setAttribute("aria-pressed",String(active));});
+ calc();
+ showFeedback(chartMode==="weights"?"圖表顯示交易前後比例":"圖表顯示本次交易金額");
+});});
+document.querySelectorAll("[data-basis]").forEach(function(button){button.addEventListener("click",function(){
+ ratioBasis=button.dataset.basis;
+ document.querySelectorAll("[data-basis]").forEach(function(item){const active=item.dataset.basis===ratioBasis;item.classList.toggle("active",active);item.setAttribute("aria-pressed",String(active));});
+ calc();showFeedback(ratioBasis==="portfolio"?"已切換為占總資產比例":"已切換為占股票部位比例");
+});});
+el("holdingsChart").addEventListener("click",function(event){
+ const button=event.target.closest("[data-edit-stock]");if(!button)return;
+ const index=Number(button.dataset.editStock);setHoldingView("list");
+ const editor=el("edit-"+index),card=editor&&editor.closest(".stock-card");if(!editor)return;
+ editor.open=true;card.classList.add("is-highlighted");
+ card.scrollIntoView({behavior:"smooth",block:"center"});
+ el("name-"+index).focus({preventScroll:true});
+ showFeedback("已開啟「"+(stocks[index].name||stocks[index].code||"新股票")+"」的編輯欄位");
+ setTimeout(function(){card.classList.remove("is-highlighted");},1800);
+});
+el("addStock").addEventListener("click",function(){
+ stocks.push({code:"",name:"新股票",current:0,target:0,kind:"stock"});
+ saveStocks();renderStocks();calc();
+ const index=stocks.length-1;
+ setHoldingView("list");
+ el("edit-"+index).open=true;
+ document.getElementById("name-"+index).focus();
+ showFeedback("已新增股票，請填寫名稱與權重");
+});
+el("holdingRows").addEventListener("click",function(event){
+ const button=event.target.closest(".remove-stock");
+ if(!button)return;
+ stocks.splice(Number(button.dataset.index),1);
+ saveStocks();renderStocks();calc();
+ showFeedback("已從持股清單刪除");
+});
+el("restoreStocks").addEventListener("click",function(){
+ if(!window.confirm("要重新載入你的 BOT 持股嗎？目前規劃清單會被取代。"))return;
+ stocks=defaultStocks.map(function(s){return {...s};});
+ saveStocks();renderStocks();calc();
+ showFeedback("已重新載入你的 BOT 持股");
+});
+function updateStockField(target){
+ if(!target.matches("[data-index][data-field]"))return;
+ const stock=stocks[Number(target.dataset.index)];
+ if(!stock)return;
+ const field=target.dataset.field;
+ if(field==="current"||field==="target")stock[field]=Math.max(0,Number(target.value)||0);
+ else if(field==="kind")stock[field]=target.value==="etf"?"etf":"stock";
+ else stock[field]=target.value;
+ saveStocks();
+}
+document.addEventListener("input",function(event){const target=event.target;updateStockField(target);if(target.matches("input,select")){if(target.id==="currentEquityPct"||target.id==="trimAmountPct")syncDefaultRebuyPlan();calc();if(target.id==="portfolioValue"||target.id==="currentEquityPct"||target.id==="trimAmountPct")flashResult();}});
+document.addEventListener("change",function(event){const target=event.target;updateStockField(target);if(target.matches("input,select"))calc();});
+calc();
+</script>
+</body>
+</html>
