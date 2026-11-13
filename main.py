@@ -20049,14 +20049,33 @@ def _macro_metric_rows(group):
     return rows
 
 
+def _morning_ma20_brief(user_id):
+    from taiex_morning import read_brief, unavailable
+    try:
+        return read_brief(_taiex_reduction_connect, lambda conn: conn.close(),
+                          user_id, taiwan_today(), is_twse_trading_day)
+    except Exception as exc:
+        print("盤前月線警示摘要未確認：" + type(exc).__name__, flush=True)
+        return unavailable()
+
+
+def _premarket_ma20_html(user_id):
+    from taiex_morning import html as render_ma20_html
+    return render_ma20_html(_morning_ma20_brief(user_id))
+
+
 def build_morning_push_message(user_id, base_url=None):
     """建立盤前 LINE 訊息：事件、美股與總經摘要，完整分析由按鈕導向今日網頁。"""
+    from taiex_morning import lines as ma20_lines, flex as ma20_flex
+    ma20_brief = _morning_ma20_brief(user_id)
     events = merge_change_events(user_id, limit=3)
 
     news_lines = _morning_macro_news_lines()
     plain_text = build_today_attention_push(user_id) + "\n\n" + "\n".join(_morning_macro_lines())
     if news_lines:
         plain_text += "\n\n📰 總經焦點\n" + "\n".join(news_lines)
+    if ma20_brief:
+        plain_text = "\n".join(ma20_lines(ma20_brief)) + "\n\n" + plain_text
     web_url = _line_feature_web_url(user_id, "premarket", base_url)
     if not web_url:
         return TextSendMessage(text=plain_text)
@@ -20064,6 +20083,8 @@ def build_morning_push_message(user_id, base_url=None):
         "type": "text", "text": "🔥 今日值得注意", "weight": "bold",
         "size": "xl", "color": "#1B2027"
     }]
+    if ma20_brief:
+        contents.append(ma20_flex(ma20_brief))
     if events:
         for idx, event in enumerate(events[:3], 1):
             contents.append({
@@ -20119,7 +20140,7 @@ def build_morning_push_message(user_id, base_url=None):
                   "backgroundColor": "#FFFFFF"},
         "styles": {"body": {"backgroundColor": "#FFFFFF"}}
     }
-    return FlexSendMessage(alt_text=plain_text, contents=bubble)
+    return FlexSendMessage(alt_text=plain_text[:400], contents=bubble)
 
 
 def build_push_request_message(user_id, base_url=None):
@@ -32205,7 +32226,8 @@ def web_premarket(uid):
     </section>
     """
     try:
-        return render_page("盤前變化", body, nav_active="premarket")
+        body = _premarket_ma20_html(uid) + body
+        return respond_page("盤前變化", body, "premarket")
     except Exception as exc:
         # route 的資料 fallback 之後仍可能遇到極舊快照或模板資料型別；
         # 不讓使用者看到 Flask 原生 500，並保留不含 token／資料內容的錯誤類型供 Logs 定位。
