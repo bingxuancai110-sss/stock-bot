@@ -46,4 +46,16 @@ const overCap = allocate(positions, 600000, 0.5, ranking, true);
 close(overCap.amounts.reduce((sum, amount) => sum + amount, 0), 500000);
 close(overCap.remaining, 100000);
 
+for (const requested of [600000, 700000]) {
+  for (const tilted of [false, true]) {
+    const result = allocate(positions, requested, 1, ranking, tilted);
+    close(result.amounts.reduce((sum, amount) => sum + amount, 0), requested);
+    close(result.remaining, 0);
+    assert.ok(result.amounts.every((amount, index) => amount <= positions[index].value));
+  }
+}
+
+assert.match(html, /id="perStockCap"[^>]*value="100"/);
+assert.match(html, /id="trimAmountPct"[^>]*value="40"/);
+
 console.log('Trim allocation scenarios passed');
