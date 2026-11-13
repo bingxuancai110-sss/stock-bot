@@ -56,5 +56,6 @@ for (const requested of [600000, 700000]) {
 }
 
 assert.match(html, /id="perStockCap"[^>]*value="100"/);
+assert.match(html, /id="trimAmountPct"[^>]*value="40"/);
 
 console.log('Trim allocation scenarios passed');

@@ -231,10 +231,11 @@ p{margin:0}
   <div class="fields">
    <div class="field"><label for="portfolioValue">帳戶總市值（元）</label><input id="portfolioValue" type="number" min="0" step="10000" value="__BOT_PORTFOLIO_VALUE__"></div>
    <div class="field"><label for="currentEquityPct">目前股票比例（%）</label><input id="currentEquityPct" type="number" min="0" max="100" step="1" value="100"><div class="hint">其餘自動視為現金</div></div>
-   <div class="field"><label for="trimAmountPct">本次減碼幅度（百分點）</label><input id="trimAmountPct" type="number" min="0" max="100" step="1" value="50"><div class="hint">例：持股 100%，減碼 30 點後為 70% 股票、30% 現金</div></div>
+   <div class="field"><label for="trimAmountPct">本次減碼幅度（百分點）</label><input id="trimAmountPct" type="number" min="0" max="100" step="1" value="40"><div class="hint">預設減 40 點：若原本 100% 股票，減碼後為 60% 股票、40% 現金。可自行改成 30、50、60 或 70。</div></div>
    <div class="field"><label for="sellAllocationMode">減碼分配方式</label><select id="sellAllocationMode"><option value="largest">最大持倉優先</option><option value="weakfirst">弱勢加權分散</option><option value="proportional">按持股比例平均</option></select><div class="hint">弱勢加權分散：按持倉金額分配，弱勢多賣一些、強勢少賣一些，不會先把一檔賣到上限。弱勢 1.25 倍、訊號分歧或未取得資料 1 倍、強勢 0.75 倍。</div></div>
    <div class="field"><label for="perStockCap">單檔最多賣出自身持倉（%）</label><input id="perStockCap" type="number" min="0" max="100" step="1" value="100"><div class="hint">預設 100%，減碼 60% 或 70% 都能算。若要限制每檔最多賣一半，再改成 50%。</div></div>
   </div>
+  <details class="advanced"><summary>為什麼預設減 40%？查看回測</summary><div class="hint" style="margin-top:8px">目前可回放的 8 檔持股：加權指數確認跌破月線後減碼，低點反彈 3% 與 4.5% 各補回一半。2019/11/25–2026/10/30、含手續費與賣出稅：減 30% 年化 70.17%、最大回撤 −36.00%；減 40% 為 69.77%、−35.19%；減 50% 為 69.01%、−34.28%。近三年 50% 報酬最高；單看 2026 年則更高減碼勝出，所以沒有各期間都第一的比例。40% 是全期報酬接近最高且回撤略低的折衷。00981A 因歷史不足未納入，0050 依你的設定替代 009816；以現存持股回放過去有選股偏差，不能把這些高年化當成未來期望報酬。</div></details>
   <details class="advanced"><summary>交易費用</summary><div class="advanced-grid">
    <div class="field"><label for="feePct">單邊手續費（%）</label><input id="feePct" type="number" min="0" step="0.001" value="0.1425"></div>
   </div></details>
@@ -243,7 +244,7 @@ p{margin:0}
  <section class="card">
   <div class="card-head"><h2>選擇操作</h2></div>
   <div class="modebar" role="group" aria-label="選擇試算情境">
-   <button type="button" data-mode="trim" class="active" aria-pressed="true"><strong>減碼</strong><small id="trimModeSummary">確認跌破後，減碼 50 點</small></button>
+   <button type="button" data-mode="trim" class="active" aria-pressed="true"><strong>減碼</strong><small id="trimModeSummary">確認跌破後，減碼 40 點</small></button>
    <button type="button" data-mode="rebuy" aria-pressed="false"><strong>回補規劃</strong><small>自訂批數、反彈門檻與目標</small></button>
   </div>
  </section>
@@ -271,7 +272,7 @@ p{margin:0}
    </div>
    <div class="mix-card after">
     <div class="donut" id="afterDonut"><div class="donut-center"><strong id="afterDonutPct">60%</strong><small>股票</small></div></div>
-    <div><div class="mix-label" id="afterMixLabel">試算後</div><div class="mix-values"><span class="legend"><i class="dot"></i>股票 <b id="afterStockText">50%</b></span><span class="legend"><i class="dot cash"></i>現金 <b id="afterCashText">50%</b></span></div></div>
+    <div><div class="mix-label" id="afterMixLabel">試算後</div><div class="mix-values"><span class="legend"><i class="dot"></i>股票 <b id="afterStockText">60%</b></span><span class="legend"><i class="dot cash"></i>現金 <b id="afterCashText">40%</b></span></div></div>
    </div>
   </div>
   <div class="allocation-chart" aria-label="目前與試算後資產配置比較">
