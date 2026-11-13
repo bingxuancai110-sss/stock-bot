@@ -233,10 +233,10 @@ p{margin:0}
    <div class="field"><label for="currentEquityPct">目前股票比例（%）</label><input id="currentEquityPct" type="number" min="0" max="100" step="1" value="100"><div class="hint">其餘自動視為現金</div></div>
    <div class="field"><label for="trimAmountPct">本次減碼幅度（百分點）</label><input id="trimAmountPct" type="number" min="0" max="100" step="1" value="50"><div class="hint">例：持股 100%，減碼 30 點後為 70% 股票、30% 現金</div></div>
    <div class="field"><label for="sellAllocationMode">減碼分配方式</label><select id="sellAllocationMode"><option value="largest">最大持倉優先</option><option value="weakfirst">弱勢加權分散</option><option value="proportional">按持股比例平均</option></select><div class="hint">弱勢加權分散：按持倉金額分配，弱勢多賣一些、強勢少賣一些，不會先把一檔賣到上限。弱勢 1.25 倍、訊號分歧或未取得資料 1 倍、強勢 0.75 倍。</div></div>
+   <div class="field"><label for="perStockCap">單檔最多賣出自身持倉（%）</label><input id="perStockCap" type="number" min="0" max="100" step="1" value="100"><div class="hint">預設 100%，減碼 60% 或 70% 都能算。若要限制每檔最多賣一半，再改成 50%。</div></div>
   </div>
-  <details class="advanced"><summary>費用與減碼限制</summary><div class="advanced-grid">
+  <details class="advanced"><summary>交易費用</summary><div class="advanced-grid">
    <div class="field"><label for="feePct">單邊手續費（%）</label><input id="feePct" type="number" min="0" step="0.001" value="0.1425"></div>
-   <div class="field"><label for="perStockCap">單檔最多賣出自身持倉（%）</label><input id="perStockCap" type="number" min="0" max="100" step="1" value="50"></div>
   </div></details>
  </section>
 
@@ -630,7 +630,7 @@ function calc(){
   if(allocationMode==="weakfirst"&&requested>0&&requested>=stockTotal*cap-.01&&remaining<=1)note+=" 這組設定要達成減碼目標，每檔都必須賣到上限；強弱訊號無法改變分配。可降低本次減碼幅度，讓弱勢股比強勢股略多減。";
   if(read("trimAmountPct")<=0)note="減碼幅度設定為 0%，無需賣出。";
   if(reductionPoints+0.01<clamp(read("trimAmountPct")))note+=" 減碼幅度超過目前股票比例，目標已按可減部位降至 0%。";
-  if(remaining>1)note+=" 受單檔賣出上限限制，距目標還差 "+money(remaining)+"。";
+  if(remaining>1)note+=" 受單檔賣出上限限制，距目標還差 "+money(remaining)+"；若要達成這次減碼，單檔上限至少要設為 "+pct(stockTotal?requested/stockTotal*100:0)+"。";
  }else{
   activeBatch=Math.max(1,Math.min(rebuySteps.length,Math.round(Number(el("selectedRebuyBatch").value)||1)));
   const stage=planStages[activeBatch-1];
