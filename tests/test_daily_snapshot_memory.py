@@ -29,6 +29,7 @@ class DailySnapshotMemoryTests(unittest.TestCase):
                   _taiwan_post_close=lambda: True, _run_taiex_reduction_alerts=lambda: 'signals checked',
                   _job_mark_progress=Mock(), _current_process_rss_bytes=lambda: 300 * 1024**2,
                   _background_work_memory_safe=Mock(side_effect=admission),
+                  fetch_taiex_summary=Mock(),
                   get_industry_momentum=Mock(return_value={}), fetch_monthly_revenue=lambda: {},
                   get_industry_map=lambda: {}, save_industry_momentum=Mock(),
                   save_industry_recent_performance=Mock(return_value=1),
@@ -43,6 +44,12 @@ class DailySnapshotMemoryTests(unittest.TestCase):
         self.assertIn('暫緩 industry', run())
         ns['get_industry_momentum'].assert_not_called()
         ns['save_industry_recent_performance'].assert_not_called()
+        ns['_job_mark_progress'].assert_not_called()
+
+    def test_core_snapshot_defers_before_market_fetch_when_memory_is_low(self):
+        ns, run = self.snapshot('portfolio', [False])
+        self.assertIn('暫緩 portfolio', run())
+        ns['fetch_taiex_summary'].assert_not_called()
         ns['_job_mark_progress'].assert_not_called()
 
     def test_industry_rechecks_budget_before_history_statistics(self):

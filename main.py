@@ -10163,7 +10163,7 @@ REALTIME_CACHE_SECONDS = max(30, int(os.environ.get("REALTIME_CACHE_SECONDS", "3
 # A cache TTL alone is not a memory bound: a market-wide scan can add thousands
 # of fresh, long-history rows before any of them expire. Keep the web worker's
 # quote cache to a strict LRU ceiling on Render's 512 MiB instance.
-REALTIME_CACHE_MAX_ITEMS = max(200, int(os.environ.get("REALTIME_CACHE_MAX_ITEMS", "800")))
+REALTIME_CACHE_MAX_ITEMS = max(200, int(os.environ.get("REALTIME_CACHE_MAX_ITEMS", "400")))
 
 
 def _store_realtime_cache(cache_key, data, at=None):
@@ -21397,6 +21397,19 @@ def _do_daily_snapshot(core_only_recovery=False):
     def reached(stage):
         return stage_order.get(current_stage, 0) > stage_order[stage]
 
+    # Portfolio and leaderboard snapshots are the daily core, but their history
+    # and ranking reads can still exceed the free web instance when warm-up has
+    # already filled its working set. Keep the durable checkpoint and retry on
+    # the next scheduled or page-triggered recovery instead of letting Render
+    # kill the only web process.
+    core_stage = ("portfolio" if not reached("portfolio") else
+                  "rank" if not reached("rank") else None)
+    if core_stage and not _background_work_memory_safe(reserve_mb=160):
+        print(f"⚠️ 每日快照核心階段 {core_stage} 暫緩：保留進度，等待記憶體回落後重試",
+              flush=True)
+        return (f"{today} 每日快照暫緩 {core_stage}：記憶體餘裕不足，已保留進度與既有完整資料；"
+                "稍後由排程或首頁恢復重試。")
+
     taiex_close = None
     portfolio_saved = len(user_ids) if portfolio_ready else 0
     portfolio_skipped = 0
@@ -21570,6 +21583,12 @@ def _do_daily_snapshot(core_only_recovery=False):
         current_stage = "rank"
 
     if not reached("rank"):
+        if not _background_work_memory_safe(reserve_mb=160):
+            _job_mark_progress(job_name, "rank", 0, 1)
+            print("⚠️ 每日快照排行榜階段暫緩：保留組合快照與 rank checkpoint，等待記憶體回落後重試",
+                  flush=True)
+            return (f"{today} 組合快照已保存；排行榜暫緩：記憶體餘裕不足，"
+                    "已保留 rank 進度與上次完整排名，稍後重試。")
         rank_saved = save_leaderboard_rank_snapshots(snapshot_date=today)
         rank_ready, rank_rows_today, member_count = leaderboard_status()
         if not rank_ready:
@@ -22252,7 +22271,7 @@ def _do_warmup():
     # 分時段記憶體快取，官方報價可覆寫最新價格。週末不把最新收盤誤當成今日行情。
     try:
         user_count, code_count, valid_count, state = _guarded_background_stage(
-            "持股行情", _warm_current_position_quotes, reserve_mb=160)
+            "持股行情", _warm_current_position_quotes, reserve_mb=220)
         done.append(f"持股行情 {valid_count}/{code_count} 檔（{user_count} 人，{state}）")
     except Exception as e:
         print(f"❌ 預熱持股行情失敗: {e}")
