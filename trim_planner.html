@@ -232,7 +232,7 @@ p{margin:0}
    <div class="field"><label for="portfolioValue">帳戶總市值（元）</label><input id="portfolioValue" type="number" min="0" step="10000" value="__BOT_PORTFOLIO_VALUE__"></div>
    <div class="field"><label for="currentEquityPct">目前股票比例（%）</label><input id="currentEquityPct" type="number" min="0" max="100" step="1" value="100"><div class="hint">其餘自動視為現金</div></div>
    <div class="field"><label for="trimAmountPct">本次減碼幅度（百分點）</label><input id="trimAmountPct" type="number" min="0" max="100" step="1" value="50"><div class="hint">例：持股 100%，減碼 30 點後為 70% 股票、30% 現金</div></div>
-   <div class="field"><label for="sellAllocationMode">減碼分配方式</label><select id="sellAllocationMode"><option value="largest">最大持倉優先</option><option value="weakfirst">相對弱勢優先</option><option value="proportional">按持股比例平均</option></select><div class="hint">弱勢優先：先賣月線與季線都落後大盤的持股，受單檔上限限制；不足再賣訊號分歧、相對強的持股。</div></div>
+   <div class="field"><label for="sellAllocationMode">減碼分配方式</label><select id="sellAllocationMode"><option value="largest">最大持倉優先</option><option value="weakfirst">弱勢加權分散</option><option value="proportional">按持股比例平均</option></select><div class="hint">弱勢加權分散：按持倉金額分配，弱勢多賣一些、強勢少賣一些，不會先把一檔賣到上限。弱勢 1.25 倍、訊號分歧或未取得資料 1 倍、強勢 0.75 倍。</div></div>
   </div>
   <details class="advanced"><summary>費用與減碼限制</summary><div class="advanced-grid">
    <div class="field"><label for="feePct">單邊手續費（%）</label><input id="feePct" type="number" min="0" step="0.001" value="0.1425"></div>
@@ -538,6 +538,31 @@ function renderRebuySchedule(stages){
   return '<div class="schedule-row'+selected+'"><div><span class="schedule-title">第 '+(i+1)+' 批｜反彈 '+pct(stage.trigger)+'，加碼後目標 '+pct(stage.targetPct)+'</span><span class="schedule-note">目標股票市值 '+money(stage.targetValue)+' · '+cashText+'</span></div><div class="schedule-amount">'+money(stage.trade)+'<small>本批加碼</small></div></div>';
  }).join("");
 }
+function allocateDistributedSell(positions,requested,cap,ranking,tilted){
+ const amounts=positions.map(function(){return 0;});
+ let remaining=requested;
+ for(let pass=0;pass<=positions.length&&remaining>.01;pass++){
+  const eligible=positions.filter(function(s){return s.value*cap-amounts[s.index]>.01;});
+  if(!eligible.length)break;
+  const weight=function(s){
+   if(!tilted)return s.value;
+   const category=(ranking[s.code]||{}).category;
+   return s.value*(category==="weak"?1.25:category==="strong"?.75:1);
+  };
+  const weightTotal=eligible.reduce(function(sum,s){return sum+weight(s);},0);
+  if(weightTotal<=0)break;
+  const roundAmount=remaining;
+  let allocated=0;
+  eligible.forEach(function(s){
+   const amount=Math.min(roundAmount*weight(s)/weightTotal,s.value*cap-amounts[s.index]);
+   amounts[s.index]+=amount;
+   allocated+=amount;
+  });
+  remaining=Math.max(0,remaining-allocated);
+  if(allocated<=.01)break;
+ }
+ return {amounts:amounts,remaining:remaining};
+}
 function calc(){
  const total=Math.max(0,read("portfolioValue"));
  const equityPct=clamp(read("currentEquityPct"))/100;
@@ -581,21 +606,14 @@ function calc(){
  lastRebuyStages=planStages;
  renderRebuySchedule(planStages);
  if(mode==="trim"){
-  let remaining=Math.max(0,stockTotal-total*targetSell);
-  if(allocationMode==="proportional"){
-   const reductionShare=stockTotal?remaining/stockTotal:0;
-   positions.forEach(function(s){const amount=Math.min(remaining,s.value*reductionShare,s.value*cap);sell[s.index]=amount;remaining-=amount;});
+  const requested=Math.max(0,stockTotal-total*targetSell);
+  let remaining=requested;
+  if(allocationMode==="proportional"||allocationMode==="weakfirst"){
+   const result=allocateDistributedSell(positions,requested,cap,relativeRanking,allocationMode==="weakfirst");
+   result.amounts.forEach(function(amount,index){sell[index]=amount;});
+   remaining=result.remaining;
   }else{
-   const sorted=positions.slice().sort(function(a,b){
-    if(allocationMode!=="weakfirst")return b.value-a.value;
-    const order={weak:0,mixed:1,strong:2};
-    const ar=relativeRanking[a.code]||{},br=relativeRanking[b.code]||{};
-    const ag=Object.prototype.hasOwnProperty.call(order,ar.category)?order[ar.category]:3;
-    const bg=Object.prototype.hasOwnProperty.call(order,br.category)?order[br.category]:3;
-    if(ag!==bg)return ag-bg;
-    if(Number.isFinite(ar.score)&&Number.isFinite(br.score)&&ar.score!==br.score)return ar.score-br.score;
-    return b.value-a.value;
-   });
+   const sorted=positions.slice().sort(function(a,b){return b.value-a.value;});
    sorted.forEach(function(s){
     if(remaining<=.01)return;
     const amount=Math.min(remaining,s.value*cap);
@@ -607,8 +625,9 @@ function calc(){
   cost=positions.reduce(function(a,s){return a+sell[s.index]*(fee+s.tax);},0);
   stockAfter=stockTotal-trade;
   cashAfter=cashStart+trade-cost;
-  const allocationLabel=allocationMode==="proportional"?"按持股比例平均":allocationMode==="weakfirst"?"相對弱勢優先":"最大持倉優先";
+  const allocationLabel=allocationMode==="proportional"?"按持股比例平均":allocationMode==="weakfirst"?"弱勢加權分散":"最大持倉優先";
   note=trade?"減碼後目標為 "+pct(targetSell*100)+" 股票；目前採用「"+allocationLabel+"」，單檔上限為自身持倉的 "+pct(cap*100)+"。":"目前股票比例已不高於減碼後目標 "+pct(targetSell*100)+"，無需賣出。";
+  if(allocationMode==="weakfirst"&&requested>0&&requested>=stockTotal*cap-.01&&remaining<=1)note+=" 這組設定要達成減碼目標，每檔都必須賣到上限；強弱訊號無法改變分配。可降低本次減碼幅度，讓弱勢股比強勢股略多減。";
   if(read("trimAmountPct")<=0)note="減碼幅度設定為 0%，無需賣出。";
   if(reductionPoints+0.01<clamp(read("trimAmountPct")))note+=" 減碼幅度超過目前股票比例，目標已按可減部位降至 0%。";
   if(remaining>1)note+=" 受單檔賣出上限限制，距目標還差 "+money(remaining)+"。";
