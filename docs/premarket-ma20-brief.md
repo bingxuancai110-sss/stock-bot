@@ -14,3 +14,9 @@ Implementation: taiex_morning.py reads one user-scoped subscription/state query 
 Validation: 79 focused tests passed across test_taiex_morning.py, test_taiex_cycle.py, test_taiex_reduction.py, and test_taiex_line_cards.py. The tests exercise saved strategy transitions, weekend freshness, invalid data, subscription scope, Flex/HTML escaping, and the actual extracted morning builder. No live user data or LINE deliveries are created by these tests.
 
 Roll back by reverting this change. No schema or saved strategy data needs reverting. Production message receipt still requires checking an approved user's LINE conversation; fixture tests do not prove delivery.
+
+## Compact LINE alert layout
+
+The LINE-only warning area uses a title/status header, closing date, two-column close/MA20 values, and a separate interpretation/action line. The original detailed web description and text fallback remain intact. Numeric metadata is copied from the same validated observation; strategy rules and subscriptions are unchanged. Existing lower market/news sections are untouched.
+
+Validation: 81 focused tests passed, including separate metric columns, unique numeric values, preserved action/date, and unavailable state without fabricated zero prices. Native LINE rendering and receipt are not reproduced by structural tests. Previously sent LINE messages retain their original layout; request a new premarket message to see the update.

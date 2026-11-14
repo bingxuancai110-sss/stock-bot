@@ -94,9 +94,31 @@ def test_card_and_html_are_safe_and_clearly_identify_summary():
     brief=summarize(reduction(),date(2026,11,13),CALENDAR)
     brief['source']='<script>bad</script>'
     card=flex(brief)
-    assert card['type']=='box' and '收盤訊號摘要' in json.dumps(card,ensure_ascii=False)
+    assert card['type']=='box' and '僅提醒，不自動交易' in json.dumps(card,ensure_ascii=False)
     assert '<script>' not in html(brief) and '&lt;script&gt;' in html(brief)
     assert flex(None) is None and html(None)==''
+
+
+def test_compact_card_separates_status_metrics_and_action_without_duplicate_numbers():
+    brief=summarize(reduction(),date(2026,11,13),CALENDAR)
+    card=flex(brief)
+    header=card['contents'][0]
+    assert header['layout']=='horizontal'
+    assert header['contents'][0]['text']=='月線警示'
+    assert header['contents'][1]['contents'][0]['text']=='第3日確認'
+    metrics=card['contents'][2]
+    assert metrics['layout']=='horizontal' and len(metrics['contents'])==2
+    raw=json.dumps(card,ensure_ascii=False)
+    assert '今日收盤策略目標：股票配置降至 50%' in raw
+    assert raw.count('97.00')==1 and raw.count('100.00')==1
+    assert '2026-11-12 收盤' in raw and 'TWSE 官方收盤' in raw
+
+
+def test_compact_unavailable_card_never_renders_zero_prices_or_a_clear_status():
+    brief=summarize(None,date(2026,11,13),CALENDAR)
+    raw=json.dumps(flex(brief),ensure_ascii=False)
+    assert '待更新' in raw and '等待第一筆' in raw
+    assert '加權收盤' not in raw and '0.00' not in raw and '無新訊號' not in raw
 
 
 def load_morning_builder(brief,url=True):
