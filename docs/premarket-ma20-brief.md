@@ -20,3 +20,7 @@ Roll back by reverting this change. No schema or saved strategy data needs rever
 The LINE-only warning area uses a title/status header, closing date, two-column close/MA20 values, and a separate interpretation/action line. The original detailed web description and text fallback remain intact. Numeric metadata is copied from the same validated observation; strategy rules and subscriptions are unchanged. Existing lower market/news sections are untouched.
 
 Validation: 81 focused tests passed, including separate metric columns, unique numeric values, preserved action/date, and unavailable state without fabricated zero prices. Native LINE rendering and receipt are not reproduced by structural tests. Previously sent LINE messages retain their original layout; request a new premarket message to see the update.
+
+## Unframed LINE warning section
+
+Replace the nested panel and pill with an unframed strategy section: small date/label header, primary status headline, smaller paired close/MA20 values, short interpretation, and a thin divider. No lower premarket content changes. Keep action dates, targets, source, and unavailable-data messages. The same 81 focused tests pass with additional assertions that the warning section has no background, border, or rounded panel.
