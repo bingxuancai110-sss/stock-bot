@@ -104,14 +104,17 @@ def test_compact_card_separates_status_metrics_and_action_without_duplicate_numb
     card=flex(brief)
     header=card['contents'][0]
     assert header['layout']=='horizontal'
-    assert header['contents'][0]['text']=='月線警示'
-    assert header['contents'][1]['contents'][0]['text']=='第3日確認'
+    assert header['contents'][0]['text']=='月線策略'
+    assert header['contents'][1]['text']=='2026-11-12'
+    assert card['contents'][1]['text']=='第3日確認'
+    assert card['contents'][1]['size']=='lg'
+    assert not any(k in card for k in ('borderWidth','backgroundColor','cornerRadius','paddingAll'))
     metrics=card['contents'][2]
     assert metrics['layout']=='horizontal' and len(metrics['contents'])==2
     raw=json.dumps(card,ensure_ascii=False)
     assert '今日收盤策略目標：股票配置降至 50%' in raw
     assert raw.count('97.00')==1 and raw.count('100.00')==1
-    assert '2026-11-12 收盤' in raw and 'TWSE 官方收盤' in raw
+    assert '2026-11-12' in raw and 'TWSE 官方收盤' in raw
 
 
 def test_compact_unavailable_card_never_renders_zero_prices_or_a_clear_status():
