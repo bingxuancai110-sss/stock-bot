@@ -56,8 +56,23 @@ for (const requested of [600000, 700000]) {
   }
 }
 
-assert.match(html, /id="perStockCap"[^>]*value="100"/);
+assert.match(html, /id="perStockCap"[^>]*value="50"/);
 assert.match(html, /id="trimAmountPct"[^>]*value="40"/);
+const capStart = html.indexOf('function recommendedPerStockCap(');
+const capEnd = html.indexOf('function syncRecommendedCap(){', capStart);
+const recommendedCap = vm.runInNewContext(`${html.slice(capStart, capEnd)}; recommendedPerStockCap`, {
+  clamp: value => Math.max(0, Math.min(100, value)),
+});
+assert.equal(recommendedCap(100, 40), 50);
+assert.equal(recommendedCap(100, 60), 70);
+assert.equal(recommendedCap(100, 70), 80);
+assert.equal(recommendedCap(85, 40), 58);
+for (const requested of [400000, 600000, 700000]) {
+  const cap = recommendedCap(100, requested / 10000) / 100;
+  const result = allocateByMode(positions, requested, cap, ranking, 'largest');
+  close(result.remaining, 0);
+  assert.ok(result.amounts.every((amount, index) => amount < positions[index].value));
+}
 
 const modes = ['largest', 'weakfirst', 'proportional'].map(mode =>
   allocateByMode(positions, 400000, 1, ranking, mode).amounts,
