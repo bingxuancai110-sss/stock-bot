@@ -12,6 +12,7 @@ const start = html.indexOf('function allocateDistributedSell(');
 const end = html.indexOf('function calc(){', start);
 assert.ok(start >= 0 && end > start, 'calculator allocation function exists');
 const allocate = vm.runInNewContext(`${html.slice(start, end)}; allocateDistributedSell`);
+const allocateByMode = vm.runInNewContext(`${html.slice(start, end)}; allocateSellByMode`);
 
 const positions = [
   { index: 0, code: 'WEAK', value: 400000 },
@@ -57,5 +58,32 @@ for (const requested of [600000, 700000]) {
 
 assert.match(html, /id="perStockCap"[^>]*value="100"/);
 assert.match(html, /id="trimAmountPct"[^>]*value="40"/);
+
+const modes = ['largest', 'weakfirst', 'proportional'].map(mode =>
+  allocateByMode(positions, 400000, 1, ranking, mode).amounts,
+);
+modes.forEach(amounts => close(amounts.reduce((sum, amount) => sum + amount, 0), 400000));
+assert.ok(modes[0].some((amount, index) => Math.abs(amount - modes[1][index]) > 1));
+assert.ok(modes[1].some((amount, index) => Math.abs(amount - modes[2][index]) > 1));
+const forced = ['largest', 'weakfirst', 'proportional'].map(mode =>
+  allocateByMode(positions, 500000, 0.5, ranking, mode).amounts,
+);
+forced.forEach(amounts => amounts.forEach((amount, index) => close(amount, positions[index].value * 0.5)));
+
+const elements = Object.fromEntries(['methodCompareNote', 'methodCompareOptions', 'methodCompareStocks'].map(id => [id, {}]));
+const renderComparison = vm.runInNewContext(`${html.slice(start, end)}; renderMethodComparison`, {
+  el: id => elements[id],
+  money: value => `$${Math.round(value)}`,
+  pct: value => `${value.toFixed(1)}%`,
+  esc: value => value,
+});
+renderComparison(positions, 400000, 1, ranking, 'weakfirst', 1000000);
+assert.match(elements.methodCompareNote.textContent, /每檔賣出金額/);
+assert.match(elements.methodCompareOptions.innerHTML, /data-pick-allocation="largest"/);
+assert.match(elements.methodCompareOptions.innerHTML, /data-pick-allocation="weakfirst"/);
+assert.match(elements.methodCompareOptions.innerHTML, /data-pick-allocation="proportional"/);
+assert.match(elements.methodCompareStocks.innerHTML, /高力|WEAK/);
+renderComparison(positions, 500000, 0.5, ranking, 'weakfirst', 1000000);
+assert.match(elements.methodCompareNote.textContent, /三種方式真的會一樣/);
 
 console.log('Trim allocation scenarios passed');
