@@ -232,11 +232,11 @@ p{margin:0}
   <div class="fields">
    <div class="field"><label for="portfolioValue">帳戶總市值（元）</label><input id="portfolioValue" type="number" min="0" step="10000" value="__BOT_PORTFOLIO_VALUE__"></div>
    <div class="field"><label for="currentEquityPct">目前股票比例（%）</label><input id="currentEquityPct" type="number" min="0" max="100" step="1" value="100"><div class="hint">其餘自動視為現金</div></div>
-   <div class="field"><label for="trimAmountPct">本次減碼幅度（百分點）</label><input id="trimAmountPct" type="number" min="0" max="100" step="1" value="40"><div class="hint">預設減 40 點：若原本 100% 股票，減碼後為 60% 股票、40% 現金。可自行改成 30、50、60 或 70。</div></div>
+   <div class="field"><label for="trimAmountPct">本次減碼幅度（百分點）</label><input id="trimAmountPct" type="number" min="0" max="100" step="1" value="20"><div class="hint" id="trimHint">目前方式的回測建議：減 20 點；可自行修改。</div><button type="button" class="button" id="restoreTrim" style="margin-top:7px">套用此方式建議幅度</button></div>
    <div class="field"><label for="sellAllocationMode">減碼分配方式</label><select id="sellAllocationMode"><option value="largest">最大持倉優先</option><option value="weakfirst">弱勢加權分散</option><option value="proportional">按持股比例平均</option></select><div class="hint">這裡只決定每檔賣多少；總股票比例由「本次減碼幅度」決定。弱勢加權：弱勢 1.25 倍、訊號分歧或未知 1 倍、強勢 0.75 倍。</div></div>
    <div class="field"><label for="perStockCap">單檔最多賣出自身持倉（%）</label><input id="perStockCap" type="number" min="0" max="100" step="1" value="50"><div class="hint" id="capHint">預設最多賣一半；提高總減碼幅度時，上限會跟著調整。</div><button type="button" class="button" id="restoreCap" style="margin-top:7px">恢復自動上限</button></div>
   </div>
-  <details class="advanced"><summary>為什麼預設減 40%？查看回測</summary><div class="hint" style="margin-top:8px">目前可回放的 8 檔持股：加權指數確認跌破月線後減碼，低點反彈 3% 與 4.5% 各補回一半。2019/11/25–2026/10/30、含手續費與賣出稅：減 30% 年化 70.17%、最大回撤 −36.00%；減 40% 為 69.77%、−35.19%；減 50% 為 69.01%、−34.28%。近三年 50% 報酬最高；單看 2026 年則更高減碼勝出，所以沒有各期間都第一的比例。40% 是全期報酬接近最高且回撤略低的折衷。00981A 因歷史不足未納入，0050 依你的設定替代 009816；以現存持股回放過去有選股偏差，不能把這些高年化當成未來期望報酬。</div></details>
+  <details class="advanced"><summary>三種方式的建議幅度與回測</summary><div class="hint" style="margin-top:8px">使用目前可回放的 8 檔持股、加權指數確認跌破月線、低點反彈 3% 與 4.5% 各補回一半；2019/11/25–2026/10/30，已計手續費與賣出稅。全期年化報酬最高：最大持倉優先減 20 點，年化 73.59%、最大回撤 −37.59%；弱勢加權分散減 30 點，70.63%、−36.02%；按持股比例平均減 30 點，70.17%、−36.00%。排序只使用減碼訊號當天已知資料，交易在下一共同交易日收盤。近三年與 2026 年勝出的幅度不同，並沒有跨期間穩定的最佳值。00981A 因歷史不足未納入，0050 依你的設定替代 009816；以現存持股回放過去有選股偏差，這些高年化不能當成未來期望報酬。</div></details>
   <details class="advanced"><summary>交易費用</summary><div class="advanced-grid">
    <div class="field"><label for="feePct">單邊手續費（%）</label><input id="feePct" type="number" min="0" step="0.001" value="0.1425"></div>
   </div></details>
@@ -245,7 +245,7 @@ p{margin:0}
  <section class="card">
   <div class="card-head"><h2>選擇操作</h2></div>
   <div class="modebar" role="group" aria-label="選擇試算情境">
-   <button type="button" data-mode="trim" class="active" aria-pressed="true"><strong>減碼</strong><small id="trimModeSummary">確認跌破後，減碼 40 點</small></button>
+   <button type="button" data-mode="trim" class="active" aria-pressed="true"><strong>減碼</strong><small id="trimModeSummary">確認跌破後，減碼 20 點</small></button>
    <button type="button" data-mode="rebuy" aria-pressed="false"><strong>回補規劃</strong><small>自訂批數、反彈門檻與目標</small></button>
   </div>
  </section>
@@ -266,15 +266,15 @@ p{margin:0}
 
  <section class="card dashboard">
   <div class="dashboard-title">資產比例</div>
-  <p class="hint" id="assetRatioExplanation" style="margin:0 0 10px">三種減碼方式的總比例相同；差別在各檔股票賣出多少。</p>
+  <p class="hint" id="assetRatioExplanation" style="margin:0 0 10px">切換方式會套用各自回測建議的減碼幅度；手動設定後可保持同一幅度比較。</p>
   <div class="mix-grid">
    <div class="mix-card">
     <div class="donut" id="currentDonut"><div class="donut-center"><strong id="currentDonutPct">100%</strong><small>股票</small></div></div>
     <div><div class="mix-label">目前配置</div><div class="mix-values"><span class="legend"><i class="dot"></i>股票 <b id="currentStockText">100%</b></span><span class="legend"><i class="dot cash"></i>現金 <b id="currentCashText">0%</b></span></div></div>
    </div>
    <div class="mix-card after">
-    <div class="donut" id="afterDonut"><div class="donut-center"><strong id="afterDonutPct">60%</strong><small>股票</small></div></div>
-    <div><div class="mix-label" id="afterMixLabel">試算後</div><div class="mix-values"><span class="legend"><i class="dot"></i>股票 <b id="afterStockText">60%</b></span><span class="legend"><i class="dot cash"></i>現金 <b id="afterCashText">40%</b></span></div></div>
+    <div class="donut" id="afterDonut"><div class="donut-center"><strong id="afterDonutPct">80%</strong><small>股票</small></div></div>
+    <div><div class="mix-label" id="afterMixLabel">試算後</div><div class="mix-values"><span class="legend"><i class="dot"></i>股票 <b id="afterStockText">80%</b></span><span class="legend"><i class="dot cash"></i>現金 <b id="afterCashText">20%</b></span></div></div>
    </div>
   </div>
   <div class="allocation-chart" aria-label="目前與試算後資產配置比較">
@@ -387,6 +387,7 @@ let holdingView="chart";
 let feedbackTimer;
 const el=id=>document.getElementById(id);
 let capFollowsTarget=true;
+let trimFollowsMode=true;
 let planSaveTimer;
 function queueSavePlan(){
  clearTimeout(planSaveTimer);
@@ -479,6 +480,13 @@ function renderStocks(){
  }).join("");
 }
 function clamp(n){return Math.max(0,Math.min(100,n));}
+function recommendedTrimForMode(allocationMode){return allocationMode==="largest"?20:30;}
+function syncRecommendedTrim(){
+ if(!trimFollowsMode)return;
+ const recommended=recommendedTrimForMode(el("sellAllocationMode").value);
+ el("trimAmountPct").value=String(recommended);
+ el("trimHint").textContent="此方式在可用全期回測的最高年化幅度：減 "+recommended+" 點。切換方式會套用各自建議；你也可自行修改。";
+}
 function recommendedPerStockCap(equityPct,trimPct){
  const equity=clamp(equityPct),reduction=Math.min(equity,clamp(trimPct));
  return equity?Math.min(100,Math.max(50,Math.ceil(reduction/equity*100+10))):50;
@@ -602,7 +610,7 @@ function renderMethodComparison(positions,requested,cap,ranking,selected,stockTo
  const methods=[{id:"largest",label:"最大持倉優先"},{id:"weakfirst",label:"弱勢加權分散"},{id:"proportional",label:"按持股比例平均"}];
  const results=methods.map(function(method){return {...method,...allocateSellByMode(positions,requested,cap,ranking,method.id)};});
  const allSame=positions.every(function(s){return results.every(function(result){return Math.abs(result.amounts[s.index]-results[0].amounts[s.index])<1;});});
- let note="同一個減碼幅度，三種方式的總股票比例相同；差別在每檔賣出金額。點選方式可切換下方結果。";
+ let note=trimFollowsMode?"點選方式會套用各自的回測建議幅度；下方每檔對照仍用目前相同幅度計算。":"目前使用自訂減碼幅度；三種方式的總股票比例相同，差別在每檔賣出金額。";
  if(requested<=.01||stockTotal<=.01)note="目前沒有可減碼的股票金額；請檢查總市值、股票比例和持股權重。";
  else if(allSame&&requested>=stockTotal*cap-.01)note="這組減碼幅度與單檔上限讓每檔都必須賣到上限，因此三種方式真的會一樣。請調低減碼幅度或調高單檔上限，才會出現分配差異。";
  else if(allSame)note="目前三種方式算出相同的每檔金額。請檢查持股權重與強弱訊號；只有一檔持股時也不會有分配差異。";
@@ -611,7 +619,7 @@ function renderMethodComparison(positions,requested,cap,ranking,selected,stockTo
   const top=positions.filter(function(s){return result.amounts[s.index]>1;}).sort(function(a,b){return result.amounts[b.index]-result.amounts[a.index];}).slice(0,2);
   const detail=top.length?top.map(function(s){return (s.name||s.code||"持股")+" "+money(result.amounts[s.index]);}).join("、"):"目前無需賣出";
   const active=result.id===selected;
-  return '<button type="button" class="method-option'+(active?' active':'')+'" data-pick-allocation="'+result.id+'" aria-pressed="'+active+'"><b>'+result.label+'</b><small>'+esc(detail)+'</small></button>';
+  return '<button type="button" class="method-option'+(active?' active':'')+'" data-pick-allocation="'+result.id+'" aria-pressed="'+active+'"><b>'+result.label+'</b><small>回測建議減 '+recommendedTrimForMode(result.id)+' 點</small><small>'+esc(detail)+'</small></button>';
  }).join("");
  el("methodCompareStocks").innerHTML=positions.slice().sort(function(a,b){return b.value-a.value;}).map(function(s){
   return '<div class="method-stock-row"><strong>'+esc((s.name||"持股")+(s.code?"（"+s.code+"）":""))+'</strong>'+results.map(function(result){
@@ -721,7 +729,7 @@ function calc(){
  el("afterStockText").textContent=pct(afterPct);
  el("afterCashText").textContent=pct(100-afterPct);
  el("afterMixLabel").textContent=afterLabel;
- el("assetRatioExplanation").textContent=mode==="trim"?"三種減碼方式的總比例相同，因為減碼幅度固定；差別在各檔股票賣出多少。":"回補後總比例由本批設定的加碼目標決定。";
+ el("assetRatioExplanation").textContent=mode==="trim"?(trimFollowsMode?"切換方式會套用各自回測建議的減碼幅度；手動設定後可保持同一幅度比較。":"目前減碼幅度由你自訂，三種方式的總股票比例相同；差別在每檔賣出多少。") :"回補後總比例由本批設定的加碼目標決定。";
  el("equityCashSummary").textContent=(mode==="trim"?"目前：":"第 "+activeBatch+" 批前：")+money(tradeStartStock)+" 股票／"+money(tradeStartCash)+" 現金";
  el("tradeLabel").textContent=mode==="trim"?"預估賣出":"第 "+activeBatch+" 批預估加碼";
  el("costLabel").textContent=mode==="trim"?"手續費與賣出稅":"本批手續費";
@@ -811,9 +819,11 @@ el("methodCompareOptions").addEventListener("click",function(event){
  const button=event.target.closest("[data-pick-allocation]");
  if(!button)return;
  el("sellAllocationMode").value=button.dataset.pickAllocation;
+ syncRecommendedTrim();syncDefaultRebuyPlan();syncRecommendedCap();
  calc();
- showFeedback("已切換減碼方式；請比較下方每檔賣出金額與持股比例");
+ showFeedback("已切換減碼方式與建議幅度；請比較每檔賣出金額");
 });
+el("restoreTrim").addEventListener("click",function(){trimFollowsMode=true;syncRecommendedTrim();syncDefaultRebuyPlan();syncRecommendedCap();calc();showFeedback("已套用此方式的回測建議幅度");});
 el("restoreCap").addEventListener("click",function(){capFollowsTarget=true;syncRecommendedCap();calc();showFeedback("已恢復單檔自動上限");});
 el("rebuyBatchCount").addEventListener("change",function(){
  const count=Math.max(1,Math.min(5,Number(this.value)||2));
@@ -901,8 +911,9 @@ function updateStockField(target){
  else stock[field]=target.value;
  saveStocks();
 }
-document.addEventListener("input",function(event){const target=event.target;updateStockField(target);if(target.matches("input,select")){if(target.id==="perStockCap"){capFollowsTarget=false;el("capHint").textContent="目前採用你手動設定的單檔上限；按「恢復自動上限」可重新連動減碼幅度。";}if(target.id==="currentEquityPct"||target.id==="trimAmountPct"){syncDefaultRebuyPlan();syncRecommendedCap();}calc();if(target.id==="portfolioValue"||target.id==="currentEquityPct"||target.id==="trimAmountPct")flashResult();}});
-document.addEventListener("change",function(event){const target=event.target;updateStockField(target);if(target.matches("input,select"))calc();});
+document.addEventListener("input",function(event){const target=event.target;updateStockField(target);if(target.matches("input,select")){if(target.id==="perStockCap"){capFollowsTarget=false;el("capHint").textContent="目前採用你手動設定的單檔上限；按「恢復自動上限」可重新連動減碼幅度。";}if(target.id==="trimAmountPct"){trimFollowsMode=false;el("trimHint").textContent="目前採用你自訂的減碼幅度；按「套用此方式建議幅度」可恢復回測建議。";}if(target.id==="sellAllocationMode")syncRecommendedTrim();if(target.id==="currentEquityPct"||target.id==="trimAmountPct"||target.id==="sellAllocationMode"){syncDefaultRebuyPlan();syncRecommendedCap();}calc();if(target.id==="portfolioValue"||target.id==="currentEquityPct"||target.id==="trimAmountPct")flashResult();}});
+document.addEventListener("change",function(event){const target=event.target;updateStockField(target);if(target.id==="sellAllocationMode"){syncRecommendedTrim();syncDefaultRebuyPlan();syncRecommendedCap();}if(target.matches("input,select"))calc();});
+syncRecommendedTrim();
 syncRecommendedCap();
 calc();
 </script>

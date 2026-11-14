@@ -57,7 +57,13 @@ for (const requested of [600000, 700000]) {
 }
 
 assert.match(html, /id="perStockCap"[^>]*value="50"/);
-assert.match(html, /id="trimAmountPct"[^>]*value="40"/);
+assert.match(html, /id="trimAmountPct"[^>]*value="20"/);
+const trimStart = html.indexOf('function recommendedTrimForMode(');
+const trimEnd = html.indexOf('function syncRecommendedTrim(){', trimStart);
+const recommendedTrim = vm.runInNewContext(`${html.slice(trimStart, trimEnd)}; recommendedTrimForMode`);
+assert.equal(recommendedTrim('largest'), 20);
+assert.equal(recommendedTrim('weakfirst'), 30);
+assert.equal(recommendedTrim('proportional'), 30);
 const capStart = html.indexOf('function recommendedPerStockCap(');
 const capEnd = html.indexOf('function syncRecommendedCap(){', capStart);
 const recommendedCap = vm.runInNewContext(`${html.slice(capStart, capEnd)}; recommendedPerStockCap`, {
@@ -91,6 +97,8 @@ const renderComparison = vm.runInNewContext(`${html.slice(start, end)}; renderMe
   money: value => `$${Math.round(value)}`,
   pct: value => `${value.toFixed(1)}%`,
   esc: value => value,
+  recommendedTrimForMode: recommendedTrim,
+  trimFollowsMode: false,
 });
 renderComparison(positions, 400000, 1, ranking, 'weakfirst', 1000000);
 assert.match(elements.methodCompareNote.textContent, /每檔賣出金額/);
