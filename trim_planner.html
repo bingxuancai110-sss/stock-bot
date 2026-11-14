@@ -221,6 +221,7 @@ p{margin:0}
 .relative-trend h2{margin-bottom:6px}.trend-groups{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.trend-group{border:1px solid var(--line);border-radius:11px;padding:10px;background:#f9fbfc;min-width:0}.trend-group h3{display:flex;align-items:center;justify-content:space-between;margin:0 0 4px;font-size:14px}.trend-group h3 small{font-size:11px;color:var(--muted)}.trend-weak{background:#fff5f3;border-color:#efcdc7}.trend-strong{background:#eff8f3;border-color:#cce5d5}.trend-secondary .trend-group{margin-top:8px}@media(max-width:360px){.trend-groups{grid-template-columns:1fr}}
 .relative-rows{margin-top:10px}.relative-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
 .relative-row span{min-width:0}.relative-row b,.relative-row small{display:block}.relative-row b{font-size:13px}.relative-row small{color:var(--muted);font-size:11px;margin-top:3px}.relative-row strong{white-space:nowrap;color:var(--blue);font-size:12px}
+.method-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}.method-option{border:1px solid var(--line);border-radius:11px;background:#f9fbfc;padding:10px;text-align:left;color:var(--ink);cursor:pointer;min-width:0}.method-option.active{border:2px solid var(--blue);background:var(--blue-light)}.method-option b,.method-option small{display:block}.method-option b{font-size:13px}.method-option small{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.35}.method-stock-row{padding:10px 0;border-top:1px solid var(--line)}.method-stock-row>strong{display:block;margin-bottom:5px}.method-stock-row span{display:block;font-size:12px;color:var(--muted);line-height:1.55}.method-stock-row b{color:var(--ink)}@media(max-width:560px){.method-options{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -232,7 +233,7 @@ p{margin:0}
    <div class="field"><label for="portfolioValue">帳戶總市值（元）</label><input id="portfolioValue" type="number" min="0" step="10000" value="__BOT_PORTFOLIO_VALUE__"></div>
    <div class="field"><label for="currentEquityPct">目前股票比例（%）</label><input id="currentEquityPct" type="number" min="0" max="100" step="1" value="100"><div class="hint">其餘自動視為現金</div></div>
    <div class="field"><label for="trimAmountPct">本次減碼幅度（百分點）</label><input id="trimAmountPct" type="number" min="0" max="100" step="1" value="40"><div class="hint">預設減 40 點：若原本 100% 股票，減碼後為 60% 股票、40% 現金。可自行改成 30、50、60 或 70。</div></div>
-   <div class="field"><label for="sellAllocationMode">減碼分配方式</label><select id="sellAllocationMode"><option value="largest">最大持倉優先</option><option value="weakfirst">弱勢加權分散</option><option value="proportional">按持股比例平均</option></select><div class="hint">弱勢加權分散：按持倉金額分配，弱勢多賣一些、強勢少賣一些，不會先把一檔賣到上限。弱勢 1.25 倍、訊號分歧或未取得資料 1 倍、強勢 0.75 倍。</div></div>
+   <div class="field"><label for="sellAllocationMode">減碼分配方式</label><select id="sellAllocationMode"><option value="largest">最大持倉優先</option><option value="weakfirst">弱勢加權分散</option><option value="proportional">按持股比例平均</option></select><div class="hint">這裡只決定每檔賣多少；總股票比例由「本次減碼幅度」決定。弱勢加權：弱勢 1.25 倍、訊號分歧或未知 1 倍、強勢 0.75 倍。</div></div>
    <div class="field"><label for="perStockCap">單檔最多賣出自身持倉（%）</label><input id="perStockCap" type="number" min="0" max="100" step="1" value="100"><div class="hint">預設 100%，減碼 60% 或 70% 都能算。若要限制每檔最多賣一半，再改成 50%。</div></div>
   </div>
   <details class="advanced"><summary>為什麼預設減 40%？查看回測</summary><div class="hint" style="margin-top:8px">目前可回放的 8 檔持股：加權指數確認跌破月線後減碼，低點反彈 3% 與 4.5% 各補回一半。2019/11/25–2026/10/30、含手續費與賣出稅：減 30% 年化 70.17%、最大回撤 −36.00%；減 40% 為 69.77%、−35.19%；減 50% 為 69.01%、−34.28%。近三年 50% 報酬最高；單看 2026 年則更高減碼勝出，所以沒有各期間都第一的比例。40% 是全期報酬接近最高且回撤略低的折衷。00981A 因歷史不足未納入，0050 依你的設定替代 009816；以現存持股回放過去有選股偏差，不能把這些高年化當成未來期望報酬。</div></details>
@@ -265,6 +266,7 @@ p{margin:0}
 
  <section class="card dashboard">
   <div class="dashboard-title">資產比例</div>
+  <p class="hint" id="assetRatioExplanation" style="margin:0 0 10px">三種減碼方式的總比例相同；差別在各檔股票賣出多少。</p>
   <div class="mix-grid">
    <div class="mix-card">
     <div class="donut" id="currentDonut"><div class="donut-center"><strong id="currentDonutPct">100%</strong><small>股票</small></div></div>
@@ -290,6 +292,13 @@ p{margin:0}
    <div class="metric"><span id="afterCashLabel">交易後現金</span><strong id="afterCash">—</strong></div>
   </div>
   <div class="explain" id="actionSummary">—</div>
+ </section>
+
+ <section class="card" id="methodCompareCard">
+  <div class="card-head"><h2>三種減碼方式比較</h2></div>
+  <p class="hint" id="methodCompareNote">同一個減碼幅度，總股票比例會相同；每檔賣出金額不同。</p>
+  <div class="method-options" id="methodCompareOptions" role="group" aria-label="選擇減碼分配方式"></div>
+  <details class="advanced"><summary>展開每檔賣出金額對照</summary><div id="methodCompareStocks"></div></details>
  </section>
 
  <section class="card">
@@ -564,6 +573,40 @@ function allocateDistributedSell(positions,requested,cap,ranking,tilted){
  }
  return {amounts:amounts,remaining:remaining};
 }
+function allocateSellByMode(positions,requested,cap,ranking,allocationMode){
+ if(allocationMode==="proportional"||allocationMode==="weakfirst")return allocateDistributedSell(positions,requested,cap,ranking,allocationMode==="weakfirst");
+ const amounts=positions.map(function(){return 0;});
+ let remaining=requested;
+ positions.slice().sort(function(a,b){return b.value-a.value;}).forEach(function(s){
+  if(remaining<=.01)return;
+  const amount=Math.min(remaining,s.value*cap);
+  amounts[s.index]=amount;
+  remaining-=amount;
+ });
+ return {amounts:amounts,remaining:remaining};
+}
+function renderMethodComparison(positions,requested,cap,ranking,selected,stockTotal){
+ const methods=[{id:"largest",label:"最大持倉優先"},{id:"weakfirst",label:"弱勢加權分散"},{id:"proportional",label:"按持股比例平均"}];
+ const results=methods.map(function(method){return {...method,...allocateSellByMode(positions,requested,cap,ranking,method.id)};});
+ const allSame=positions.every(function(s){return results.every(function(result){return Math.abs(result.amounts[s.index]-results[0].amounts[s.index])<1;});});
+ let note="同一個減碼幅度，三種方式的總股票比例相同；差別在每檔賣出金額。點選方式可切換下方結果。";
+ if(requested<=.01||stockTotal<=.01)note="目前沒有可減碼的股票金額；請檢查總市值、股票比例和持股權重。";
+ else if(allSame&&requested>=stockTotal*cap-.01)note="這組減碼幅度與單檔上限讓每檔都必須賣到上限，因此三種方式真的會一樣。請調低減碼幅度或調高單檔上限，才會出現分配差異。";
+ else if(allSame)note="目前三種方式算出相同的每檔金額。請檢查持股權重與強弱訊號；只有一檔持股時也不會有分配差異。";
+ el("methodCompareNote").textContent=note;
+ el("methodCompareOptions").innerHTML=results.map(function(result){
+  const top=positions.filter(function(s){return result.amounts[s.index]>1;}).sort(function(a,b){return result.amounts[b.index]-result.amounts[a.index];}).slice(0,2);
+  const detail=top.length?top.map(function(s){return (s.name||s.code||"持股")+" "+money(result.amounts[s.index]);}).join("、"):"目前無需賣出";
+  const active=result.id===selected;
+  return '<button type="button" class="method-option'+(active?' active':'')+'" data-pick-allocation="'+result.id+'" aria-pressed="'+active+'"><b>'+result.label+'</b><small>'+esc(detail)+'</small></button>';
+ }).join("");
+ el("methodCompareStocks").innerHTML=positions.slice().sort(function(a,b){return b.value-a.value;}).map(function(s){
+  return '<div class="method-stock-row"><strong>'+esc((s.name||"持股")+(s.code?"（"+s.code+"）":""))+'</strong>'+results.map(function(result){
+   const amount=result.amounts[s.index];
+   return '<span>'+result.label+'：<b>'+money(amount)+'</b>（原持股 '+pct(s.value?amount/s.value*100:0)+'）</span>';
+  }).join("")+'</div>';
+ }).join("");
+}
 function calc(){
  const total=Math.max(0,read("portfolioValue"));
  const equityPct=clamp(read("currentEquityPct"))/100;
@@ -583,6 +626,7 @@ function calc(){
  let chartTotalBefore=total,chartStockBefore=stockTotal,chartAfterTotal=total,chartStockAfter=stockTotal;
  let afterLabel="減碼後",activeBatch=1;
  el("rebuyPlan").hidden=mode!=="rebuy";
+ el("methodCompareCard").hidden=mode!=="trim";
  const reductionPoints=Math.min(clamp(read("trimAmountPct")),equityPct*100);
  el("trimModeSummary").textContent="確認跌破後，減少 "+reductionPoints.toFixed(0)+" 個百分點；股票降至 "+pct(targetSell*100);
  el("rebuyPlanHint").textContent="依減碼後股票比例 "+pct(targetSell*100)+" 開始回補。每批設定「反彈門檻」和「加碼後股票比例」，下方會換算本批要買多少、買完股票目標市值是多少。";
@@ -608,20 +652,10 @@ function calc(){
  renderRebuySchedule(planStages);
  if(mode==="trim"){
   const requested=Math.max(0,stockTotal-total*targetSell);
-  let remaining=requested;
-  if(allocationMode==="proportional"||allocationMode==="weakfirst"){
-   const result=allocateDistributedSell(positions,requested,cap,relativeRanking,allocationMode==="weakfirst");
-   result.amounts.forEach(function(amount,index){sell[index]=amount;});
-   remaining=result.remaining;
-  }else{
-   const sorted=positions.slice().sort(function(a,b){return b.value-a.value;});
-   sorted.forEach(function(s){
-    if(remaining<=.01)return;
-    const amount=Math.min(remaining,s.value*cap);
-    sell[s.index]=amount;
-    remaining-=amount;
-   });
-  }
+  const result=allocateSellByMode(positions,requested,cap,relativeRanking,allocationMode);
+  result.amounts.forEach(function(amount,index){sell[index]=amount;});
+  const remaining=result.remaining;
+  renderMethodComparison(positions,requested,cap,relativeRanking,allocationMode,stockTotal);
   trade=sell.reduce(function(a,b){return a+b;},0);
   cost=positions.reduce(function(a,s){return a+sell[s.index]*(fee+s.tax);},0);
   stockAfter=stockTotal-trade;
@@ -674,6 +708,7 @@ function calc(){
  el("afterStockText").textContent=pct(afterPct);
  el("afterCashText").textContent=pct(100-afterPct);
  el("afterMixLabel").textContent=afterLabel;
+ el("assetRatioExplanation").textContent=mode==="trim"?"三種減碼方式的總比例相同，因為減碼幅度固定；差別在各檔股票賣出多少。":"回補後總比例由本批設定的加碼目標決定。";
  el("equityCashSummary").textContent=(mode==="trim"?"目前：":"第 "+activeBatch+" 批前：")+money(tradeStartStock)+" 股票／"+money(tradeStartCash)+" 現金";
  el("tradeLabel").textContent=mode==="trim"?"預估賣出":"第 "+activeBatch+" 批預估加碼";
  el("costLabel").textContent=mode==="trim"?"手續費與賣出稅":"本批手續費";
@@ -759,6 +794,13 @@ renderRebuySteps();
 renderStocks();
 el("saveNote").textContent=Array.isArray(botBootstrap.savedStocks)?"已載入你的 BOT 專屬規劃。":"已帶入你的 BOT 持股；修改後會儲存到你的帳號。";
 document.querySelectorAll("[data-mode]").forEach(function(button){button.addEventListener("click",function(){setMode(button.dataset.mode);});});
+el("methodCompareOptions").addEventListener("click",function(event){
+ const button=event.target.closest("[data-pick-allocation]");
+ if(!button)return;
+ el("sellAllocationMode").value=button.dataset.pickAllocation;
+ calc();
+ showFeedback("已切換減碼方式；請比較下方每檔賣出金額與持股比例");
+});
 el("rebuyBatchCount").addEventListener("change",function(){
  const count=Math.max(1,Math.min(5,Number(this.value)||2));
  const oldCount=rebuySteps.length;
