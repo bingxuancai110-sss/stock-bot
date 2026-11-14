@@ -30,6 +30,7 @@ def summarize(state, today, calendar):
     if any(not isinstance(v,(int,float)) or isinstance(v,bool) or not math.isfinite(v) or v<=0 for v in (close,ma20)):
         return unavailable("收盤或月線資料不足，未產生推測訊號。")
     result = {"kind":"neutral", "title":"月線警示｜未有新訊號", "as_of":day.isoformat(),
+              "close":close, "ma20":ma20,
               "lines":[f"加權收盤 {close:,.2f} · 20日均線 {ma20:,.2f}"]}
     events = [e for e in state.get("events",[]) if e.get("date") == day.isoformat()]
     event = max(events,key=lambda e:int(e.get("level",0)),default={})
@@ -99,11 +100,44 @@ def lines(brief):
 def flex(brief):
     if not brief:return None
     color=COLORS[brief["kind"]]
-    return {"type":"box","layout":"vertical","margin":"lg","paddingAll":"12px",
-            "backgroundColor":"#F3F6F7","cornerRadius":"10px","spacing":"sm",
-            "contents":[{"type":"text","text":line,"wrap":True,"size":"sm" if i==0 else "xs",
-                         "weight":"bold" if i==0 else "regular","color":color if i==0 else "#40515E"}
-                        for i,line in enumerate(lines(brief))]}
+    kind=brief["kind"]
+    status={"neutral":"無新訊號", "warning":"第2日預警", "reduce":"第3日確認",
+            "refill":brief["title"].split("｜")[-1],
+            "tracking":brief["title"].split("｜")[-1], "unavailable":"待更新"}[kind]
+    tint={"warning":"#FFF5E5", "reduce":"#FCECED", "refill":"#E9F5EF"}.get(kind,"#EDF1F3")
+    def text(value,size="xs",tone="#68747F",bold=False,**extra):
+        return dict(type="text",text=value,size=size,color=tone,wrap=True,
+                    weight="bold" if bold else "regular",**extra)
+    content=[{"type":"box","layout":"horizontal","alignItems":"center","spacing":"sm",
+              "contents":[text("月線警示","sm","#263540",True,flex=1),
+                          {"type":"box","layout":"vertical","flex":0,
+                           "paddingStart":"8px","paddingEnd":"8px","paddingTop":"4px",
+                           "paddingBottom":"4px","cornerRadius":"6px","backgroundColor":tint,
+                           "contents":[text(status,"xs",color,True)]}]}]
+    if brief.get("as_of"):
+        content.append(text(brief["as_of"]+" 收盤",margin="sm"))
+    has_metrics=all(isinstance(brief.get(k),(int,float)) and not isinstance(brief[k],bool)
+                    and math.isfinite(brief[k]) and brief[k]>0 for k in ("close","ma20"))
+    if has_metrics:
+        content.append({"type":"box","layout":"horizontal","margin":"md","spacing":"md",
+                        "contents":[{"type":"box","layout":"vertical","flex":1,"spacing":"xs",
+                                     "contents":[text(label),text(f"{brief[key]:,.2f}","lg","#263540",True)]}
+                                    for key,label in (("close","加權收盤"),("ma20","20日均線"))]})
+    details=brief["lines"][1:] if has_metrics else brief["lines"]
+    # The same numbers live above in two columns; keep the short interpretation below.
+    concise={"開啟時已在月線下，舊走勢不補發；等待下一次有效跌破。":
+             "已在月線下，等待新一輪跌破；舊訊號不補發。",
+             "最近收盤在月線上方，本次沒有新增減碼事件。":"收盤在月線上方，無新增減碼訊號。"}
+    for i,line in enumerate(details):
+        content.append(text(concise.get(line,line),"sm",color if kind in {"reduce","refill"} else "#40515E",
+                            kind in {"reduce","refill"} and i==0,margin="md" if i==0 else "sm"))
+    source=brief.get("source","")
+    source="TWSE 官方收盤" if "TWSE" in source else source
+    footer=(source+" · " if source else "")+"僅提醒，不自動交易"
+    content.append(text(footer,"xxs","#87919A",margin="md"))
+    return {"type":"box","layout":"vertical","margin":"lg","paddingAll":"16px",
+            "backgroundColor":"#FAFBFC","borderColor":"#E6EBEF","borderWidth":"1px",
+            "cornerRadius":"12px","contents":content}
 
 
 def html(brief):
