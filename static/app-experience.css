@@ -1,0 +1,95 @@
+/* Shared visual hierarchy and motion. No data, pricing or transaction rules. */
+:root{--app-motion:180ms;--app-ease:cubic-bezier(.2,.8,.2,1)}
+html body#stockbot-app{font-size:14px;line-height:1.55}
+html body#stockbot-app .app-bottom-nav .bottom-inner{position:relative!important;isolation:isolate}
+html body#stockbot-app .app-bottom-nav .bottom-inner>a{z-index:1;transition:color var(--app-motion) ease!important}
+html body#stockbot-app .app-bottom-nav.experience-nav-ready .bottom-inner>a.on,
+html body#stockbot-app .app-bottom-nav.experience-nav-ready .bottom-inner>a.ui-nav-pending{background:transparent!important;box-shadow:none!important}
+html body#stockbot-app .app-bottom-nav.experience-nav-ready .bottom-inner>a.on::before{display:none!important}
+.app-nav-cursor{position:absolute;z-index:0;left:0;top:0;pointer-events:none;border-radius:12px;background:var(--sb-feedback-selected,#e5eef5);box-shadow:inset 0 0 0 1px rgba(77,110,134,.08);transition:none}
+.experience-nav-ready .app-nav-cursor{transition:transform var(--app-motion) var(--app-ease),width var(--app-motion) var(--app-ease),height var(--app-motion) var(--app-ease)}
+html body#stockbot-app.app-route-pending .app-bottom-nav a.on:not(.experience-nav-target){color:var(--sb-app-muted,#687d89)!important}
+html body#stockbot-app .app-bottom-nav a.experience-nav-target{color:var(--sb-feedback-ink,#244e69)!important}
+html body#stockbot-app .app-bottom-nav a.experience-nav-target .app-nav-icon{opacity:.18}
+html body#stockbot-app .app-bottom-nav a.experience-nav-target::after{content:'';position:absolute;top:9px;bottom:auto;left:calc(50% - 7px);width:14px;height:14px;box-sizing:border-box;border:2px solid rgba(36,78,105,.2);border-top-color:var(--sb-app-primary,#24677b);border-radius:50%;background:transparent;animation:app-busy .75s linear infinite}
+@keyframes app-busy{to{transform:rotate(360deg)}}
+.experience-route-status{position:fixed;z-index:1250;bottom:calc(80px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;max-width:calc(100vw - 32px);box-sizing:border-box;padding:12px 17px;border:1px solid var(--sb-app-line,#dce5e3);border-radius:12px;background:var(--sb-app-surface,#fff);color:var(--sb-app-ink,#1d3445);font-size:14px;font-weight:650;box-shadow:0 4px 18px rgba(25,44,62,.09);pointer-events:none}
+.experience-route-status[hidden]{display:none!important}
+.experience-route-status::before{content:'';width:16px;height:16px;flex:none;box-sizing:border-box;border:2px solid #dae5ed;border-top-color:var(--sb-app-primary,#24677b);border-radius:50%;animation:app-busy .75s linear infinite}
+body#stockbot-app:has(.experience-route-status:not([hidden])) #page-nav-progress-card.show:not(.stock-analysis-loader){visibility:hidden!important}
+body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) .experience-route-status{display:none!important}
+@media(max-width:760px){
+  html body#stockbot-app #stockbot-shell>.wrap{padding-left:16px!important;padding-right:16px!important}
+  html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header{
+    position:sticky!important;top:0!important;z-index:800!important;box-sizing:border-box!important;
+    display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;grid-template-areas:"title account" "date account"!important;grid-template-rows:28px 16px!important;gap:0 12px!important;align-content:center!important;align-items:center!important;
+    height:calc(72px + env(safe-area-inset-top,0px))!important;min-height:calc(72px + env(safe-area-inset-top,0px))!important;
+    margin:0 -16px 16px!important;padding:calc(12px + env(safe-area-inset-top,0px)) 16px 11px!important;
+    background:var(--sb-app-canvas,#f3f6f5)!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;
+    transition:background-color var(--app-motion) ease,box-shadow var(--app-motion) ease!important;
+  }
+  html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header h1{font-size:22px!important;line-height:1.2!important;font-weight:750!important;letter-spacing:-.025em!important;transition:transform var(--app-motion) var(--app-ease)!important}
+  html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header .dateline{font-size:11px!important;transition:opacity var(--app-motion) ease!important}
+  html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header h1{grid-area:title!important;align-self:center!important}
+  html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header .dateline{grid-area:date!important;align-self:center!important}
+  html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header .app-account-link{grid-area:account!important;align-self:center!important}
+  html body#stockbot-app[data-app-view].app-is-scrolled #stockbot-shell:has(#app-page-content)>.wrap>.app-header{background:var(--sb-app-surface,#fff)!important;box-shadow:0 2px 8px rgba(24,43,60,.05)!important}
+  html body#stockbot-app[data-app-view].app-is-scrolled #stockbot-shell:has(#app-page-content)>.wrap>.app-header h1{transform:translateY(7px)!important}
+  html body#stockbot-app[data-app-view].app-is-scrolled #stockbot-shell:has(#app-page-content)>.wrap>.app-header .dateline{opacity:0!important}
+  html body#stockbot-app .app-bottom-nav{padding-top:7px!important;padding-bottom:calc(7px + env(safe-area-inset-bottom,0px))!important}
+  html body#stockbot-app .app-bottom-nav .bottom-inner>a{min-height:54px!important;gap:5px!important;font-size:10.5px!important;font-weight:650!important;letter-spacing:0!important}
+  html body#stockbot-app .app-bottom-nav .bottom-inner>a .app-nav-icon{width:22px!important;height:22px!important;stroke-width:1.7!important}
+  html body#stockbot-app #app-page-content :is(h2,.section-title){font-size:19px!important;line-height:1.4!important;font-weight:750!important;letter-spacing:-.02em!important}
+  html body#stockbot-app #app-page-content :is(input,select,textarea){font-size:16px!important}
+  html body#stockbot-app #app-page-content :is(summary,.position-card,.wb-row,.hv2-sec){scroll-margin-top:88px;scroll-margin-bottom:88px}
+  html body#stockbot-app #app-page-content :is(.portfolio-trend-card,.portfolio-chart-card,.market-chart-card){border:1px solid var(--sb-app-line)!important;border-radius:16px!important;background:var(--sb-app-surface)!important;padding:16px!important;box-shadow:none!important}
+  html body#stockbot-app #app-page-content :is(.portfolio-trend-tab,.trend-period-tabs label,.rank-chart-periods button){min-height:42px!important;font-size:12px!important}
+  html body#stockbot-app #app-page-content :is(.more-item,.market-quote-tile){min-height:64px!important}
+  html body#stockbot-app #app-page-content .more-item b{font-size:16px!important}
+
+  /* Brokerage-style holdings sheet: larger quotes, one clear touch row. */
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-allocation-body{grid-template-columns:minmax(0,1fr)!important;gap:16px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-allocation-visual{width:132px!important;height:132px!important;justify-self:center!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-allocation-legend{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:0 12px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .allocation-item{min-width:0!important;min-height:44px!important;padding:7px 2px!important;font-size:11.5px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .allocation-item b{font-size:11px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-page-head h2{font-size:20px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 [data-p2-add]{font-size:13px!important;min-height:44px!important;border-radius:12px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-tabs{gap:4px!important;padding:4px!important;border-radius:13px!important;background:var(--sb-feedback-surface,#e9edf1)!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 [data-p2-view]{min-height:46px!important;font-size:13px!important;line-height:1.35!important;border-radius:10px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 [data-p2-view][aria-selected=true]{background:var(--sb-app-surface,#fff)!important;box-shadow:0 1px 3px rgba(24,43,60,.06)!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-current-list .rows{margin-top:12px!important;padding:0!important;border:1px solid var(--sb-app-line)!important;border-radius:16px!important;background:var(--sb-app-surface)!important;overflow:visible!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-current-list .rows>.position-card{padding:14px 14px!important;border:0!important;border-bottom:1px solid var(--sb-app-line)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .p2-current-list .rows>.position-card:last-child{border-bottom:0!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-top{grid-template-columns:minmax(0,1fr) auto!important;gap:10px!important;min-height:64px!important;align-items:center!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title h3{font-size:16px!important;line-height:1.35!important;font-weight:750!important;white-space:normal!important;overflow-wrap:anywhere!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title small{font-size:11px!important;line-height:1.5!important;margin-top:5px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price{grid-template-columns:86px 69px!important;gap:0 5px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price b{font-size:17px!important;line-height:1.3!important;font-weight:750!important;font-variant-numeric:tabular-nums!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-price .p2-list-return{font-size:13px!important;font-weight:700!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-more>summary.ui-control{height:92px!important;min-height:92px!important;padding:0!important;background:transparent!important;transform:none!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-grid{gap:10px!important;margin-top:12px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-grid :is(span,small){font-size:11px!important;line-height:1.5!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-grid b{font-size:14px!important;line-height:1.5!important}
+
+  /* Screening tools and stock rows use the same readable mobile rhythm. */
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench .wb-pulse{display:flex!important;align-items:center!important;gap:10px!important;min-height:42px!important;padding:9px 12px!important;border:1px solid var(--sb-app-line)!important;border-radius:10px!important;background:var(--sb-app-surface)!important;margin-bottom:14px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench :is(#wb-tabs,#wb-asset-tabs){gap:3px!important;padding:4px!important;border:0!important;border-radius:12px!important;background:var(--sb-feedback-surface,#e9edf1)!important;margin:10px 0!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench :is(#wb-tabs,#wb-asset-tabs) button{min-height:44px!important;font-size:13px!important;padding:8px 5px!important;border-radius:9px!important;border:0!important;box-shadow:none!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench :is(#wb-tabs,#wb-asset-tabs) button.on{background:var(--sb-app-surface)!important;color:var(--sb-app-ink)!important;box-shadow:0 1px 3px rgba(24,43,60,.06)!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench :is(#wb-filter,#wb-refresh,#wb-mobile-sort button){min-height:44px!important;font-size:13px!important;border-radius:10px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench #wb-count{font-size:12px!important;line-height:1.6!important;margin:12px 0!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-row.wb-rich-row{padding:17px 2px!important;min-height:112px!important;gap:10px!important;transition:background-color 150ms ease!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-name{font-size:16px!important;font-weight:750!important;line-height:1.4!important;white-space:normal!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-price-block>b{font-size:17px!important;font-weight:750!important;line-height:1.3!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench #wb-rows :is(.wb-price-block>small,.wb-industry,.wb-radar-rank){font-size:12px!important;line-height:1.5!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench #wb-rows :is(.wb-macd,.wb-breakout){font-size:11px!important;line-height:1.4!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench #wb-rows details>summary{min-height:44px!important;padding:12px 2px!important;font-size:12px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #us-radar :is(.us-summary b,.us-heat-value){font-size:18px!important;line-height:1.35!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #us-radar :is(.us-heat-foot,.us-meta,.us-signal-condition,.us-signal-date){font-size:12px!important;line-height:1.6!important}
+  html body#stockbot-app #stockbot-shell #app-page-content :is(.rank-name,.market-quote-name){font-size:16px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #hv2 .hv2-feature-launcher a{min-height:66px!important}
+  html body#stockbot-app #stockbot-shell #app-page-content #hv2 .hv2-feature-launcher a b{font-size:15px!important;line-height:1.4!important}
+}
+@media(min-width:900px){.experience-route-status{left:auto;right:24px;bottom:24px;transform:none}}
+@media(prefers-reduced-motion:reduce){:root{--app-motion:0ms}.app-nav-cursor,.experience-route-status::before,html body#stockbot-app .app-bottom-nav a.experience-nav-target::after{animation:none!important;transition:none!important}}
