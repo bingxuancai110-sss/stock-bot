@@ -11169,11 +11169,12 @@ RADAR_SPARK_BATCH_SIZE = 20
 # responses while normal page requests are being served.
 RADAR_SPARK_MAX_WORKERS = 1
 RADAR_DEEP_SCAN_LIMIT = 240
-# 定時／網頁冷啟動 producer 以全市場輕量初篩為主；深度技術補抓控制在 12 檔，
-# 避免在 Render 512 MiB 的單一 Web instance 上與一般頁面搶記憶體。
-# 手動完整分析仍保留 RADAR_DEEP_SCAN_LIMIT=240。
-RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 4
-RADAR_LIGHT_SCAN_RESERVE_MB = 200  # bounded 4-candidate, 2-worker producer
+# 全市場輕量初篩後，恢復最多 240 檔深度候選；每批只載入四檔歷史資料。
+# 批次大小和總候選數分開控制，不能為省記憶體把排行縮成四檔抽樣。
+RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 240
+RADAR_PRICE_BATCH_SIZE = 4
+RADAR_SCAN_POLICY_VERSION = 2
+RADAR_LIGHT_SCAN_RESERVE_MB = 200  # bounded batches, at most two quote workers
 
 
 def _background_work_memory_safe(reserve_mb=160):
@@ -22294,8 +22295,7 @@ def _do_warmup():
         try:
             rows, _s, _m = compute_screener_rows(
                 mode,
-                # 預熱只需準備可讀快照，不執行手動完整掃描的 240 檔深度上限。
-                # 盤中雷達 producer 也使用同一個受限上限。
+                # 預熱和盤中 producer 使用相同候選覆蓋率；由引擎分批補抓歷史。
                 radar_deep_limit=(RADAR_SCHEDULED_DEEP_SCAN_LIMIT
                                   if mode == "radar" else None),
                 price_workers=2 if mode == "radar" else 4,
@@ -46551,6 +46551,8 @@ def _load_persisted_screener_snapshot(mode):
             "computed_at": computed_at,
             "source_meta": source_meta,
         }
+        if mode in ("radar", "radar_live") and not _radar_snapshot_matches_policy(payload):
+            return None
         if not rows and not _screener_empty_result_has_scan_evidence(mode, payload):
             print(f"⚠️ 選股快照 {mode} 是空清單且沒有足夠掃描證據，視為不可用並觸發重建")
             return None
@@ -46834,6 +46836,44 @@ def _screener_snapshot_valid_for_today(snapshot):
             (today - source_date).days <= SCREENER_STALE_SNAPSHOT_MAX_AGE_SECONDS // 86400)
 
 
+def _radar_equity_universe(ind_map, inst):
+    """個股候選池不包含 ETF；不能只用四位數判斷個股。"""
+    return sorted({str(code).strip() for code in set(ind_map) | set(inst)
+                   if re.fullmatch(r"\d{4}", str(code).strip())
+                   and not is_etf(str(code).strip())})
+
+
+def _radar_snapshot_matches_policy(snapshot):
+    if not isinstance(snapshot, dict):
+        return False
+    diag = (snapshot.get("radar_diagnostics") or
+            (snapshot.get("source_meta") or {}).get("radar_diagnostics") or {})
+    return bool(diag.get("scan_policy_version") == RADAR_SCAN_POLICY_VERSION
+                and diag.get("deep_candidate_limit") == RADAR_SCHEDULED_DEEP_SCAN_LIMIT
+                and not any(is_etf(str(row.get("code") or ""))
+                            for row in snapshot.get("rows", []) if isinstance(row, dict)))
+
+
+def _iter_screener_pool_prices(pool, mode, workers, market_map, force_refresh):
+    """Bound in-flight history responses, not the total radar candidate coverage."""
+    batch_size = RADAR_PRICE_BATCH_SIZE if mode == "radar" else max(1, len(pool))
+    for offset in range(0, len(pool), batch_size):
+        if mode == "radar" and not _background_work_memory_safe(reserve_mb=120):
+            # Do not publish a partial ranking over the previous saved snapshot.
+            raise RuntimeError("雷達分批掃描暫停：記憶體餘裕不足，保留原快照")
+        batch = pool[offset:offset + batch_size]
+        prices = get_realtime_stocks_bulk(
+            [code for code, _info in batch],
+            workers=min(2, workers) if mode == "radar" else workers,
+            rng="3mo", market_suffix=market_map if mode == "radar" else None,
+            force_refresh=force_refresh or mode == "radar")
+        for code, info in batch:
+            yield code, info, prices.get(code)
+        del prices
+        if mode == "radar":
+            print("雷達候選進度 %s/%s" % (min(offset + batch_size, len(pool)), len(pool)), flush=True)
+
+
 def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                           ind_map=None, persist=True, force_refresh=False,
                           radar_deep_limit=None, persist_live=False,
@@ -46920,8 +46960,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             revenue = {} if revenue is None else revenue
             valuation = {} if valuation is None else valuation
             momentum = {}
-            universe_codes = sorted({str(code).strip() for code in set(ind_map) | set(inst)
-                                     if re.fullmatch(r"\d{4}", str(code).strip())})
+            universe_codes = _radar_equity_universe(ind_map, inst)
             radar_universe_count = len(universe_codes)
             radar_diagnostics["universe_count"] = radar_universe_count
             # 即時初篩只需最新價與前一收盤；取 5 日即可，避免為全市場
@@ -46980,6 +47019,8 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                             break
                 pos += 1
             radar_diagnostics["deep_candidate_count"] = len(pool)
+            radar_diagnostics["deep_candidate_limit"] = deep_limit
+            radar_diagnostics["scan_policy_version"] = RADAR_SCAN_POLICY_VERSION
             if pool:
                 try:
                     cum_map = {c: (cl, bd) for c, _nm, cl, bd in get_cumulative_net_buy(
@@ -47027,13 +47068,8 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
         # 這裡開比較多執行緒——一次把整池抓完，總時間才不會隨檔數線性增加。
         default_price_workers = 4 if mode == "radar" else 16
         effective_price_workers = max(1, int(price_workers or default_price_workers))
-        pool_prices = get_realtime_stocks_bulk(
-            [c for c, _ in pool], workers=effective_price_workers,
-            rng="3mo",
-            market_suffix=(market_map if mode == "radar" else None),
-            force_refresh=(force_refresh or mode == "radar"))
-        for code, info in pool:
-            price = pool_prices.get(code)
+        for code, info, price in _iter_screener_pool_prices(
+                pool, mode, effective_price_workers, market_map, force_refresh):
             if not price:
                 if mode == "radar":
                     radar_diagnostics["price_missing_count"] += 1
@@ -47203,6 +47239,8 @@ def _screener_recent_snapshot(mode):
     cached_rows = cached.get("rows") if isinstance(cached, dict) else None
     cached_usable = bool(cached and isinstance(cached_rows, list)
                          and (cached_rows or _screener_empty_result_has_scan_evidence(mode, cached)))
+    if mode == "radar" and not _radar_snapshot_matches_policy(cached):
+        cached_usable = False
     if (cached_usable and _screener_snapshot_is_recent(cached, max_days) and
             _radar_live_cache_is_fresh(cached)):
         return cached, "記憶體快照"
@@ -47251,12 +47289,12 @@ def _start_screener_background_refresh(mode, intraday=False,
     # Scan work is optional; never let a cold-start/manual refresh evict the web
     # process while it is serving positions, trades, or other pages. A later
     # request/poll can start it when the existing snapshot is no longer busy.
-    # A webpage cold start must use the same bounded candidate set as cron,
-    # including weekends. An explicit full scan retains the larger reserve.
+    # Use the original candidate coverage on weekdays and weekends alike.
+    # Radar history requests are bounded in batches, not by shrinking the universe.
     if mode == "radar":
         requested_limit = RADAR_SCHEDULED_DEEP_SCAN_LIMIT if radar_deep_limit is None else int(radar_deep_limit)
         radar_deep_limit = max(4, min(requested_limit, RADAR_DEEP_SCAN_LIMIT))
-    light_radar = (mode == "radar" and int(radar_deep_limit) <= RADAR_SCHEDULED_DEEP_SCAN_LIMIT)
+    light_radar = mode == "radar"
     reserve_mb = RADAR_LIGHT_SCAN_RESERVE_MB if light_radar else 280
     with _SCREENER_REFRESH_LOCK:
         failure = _SCREENER_REFRESH_ERRORS.get(mode)
@@ -48596,7 +48634,7 @@ def _workbench_screener_rows(mode, snapshot=None):
         if not isinstance(raw, dict):
             continue
         code = str(raw.get("code") or "").strip()
-        if not re.fullmatch(r"\d{4}", code):
+        if not re.fullmatch(r"\d{4}", code) or is_etf(code):
             continue
         quality_detail = raw.get("data_quality") if isinstance(raw.get("data_quality"), dict) else {}
         quality = (quality_detail.get("valid") if quality_detail else raw.get("data_quality"))
@@ -50387,7 +50425,7 @@ function bindFactors(){
         if(state.source===source && sourceViewEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer) render();
         if(building){
           var attempts=state.snapshotRetryCounts[source]||0;
-          if(attempts<=12){
+          if(attempts<=60){
             window.setTimeout(function(){
               if(!state.loadedSources[source]&&!state.loadingSources[source])fetchWorkbenchSource(source);
             },8000);

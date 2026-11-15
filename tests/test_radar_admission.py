@@ -15,7 +15,7 @@ def install(ns,name):
 
 def producer(admission=True):
     ns={'_SCREENER_REFRESH_LOCK':threading.Lock(),'_SCREENER_REFRESH_RUNNING':{},'_SCREENER_REFRESH_ERRORS':{},
-        'RADAR_SCHEDULED_DEEP_SCAN_LIMIT':4,'RADAR_LIGHT_SCAN_RESERVE_MB':200,'RADAR_DEEP_SCAN_LIMIT':240,
+        'RADAR_SCHEDULED_DEEP_SCAN_LIMIT':240,'RADAR_LIGHT_SCAN_RESERVE_MB':200,'RADAR_DEEP_SCAN_LIMIT':240,
         '_background_work_memory_safe':Mock(return_value=admission),'_BACKGROUND_JOB_EXECUTOR':Mock(),
         'compute_screener_rows':Mock(),'_screener_cache':{'radar':{'rows':[{'code':'2330'}]}},
         '_screener_empty_result_has_scan_evidence':Mock(return_value=False),'time':time}
@@ -26,11 +26,11 @@ def test_default_radar_background_is_bounded_even_outside_market_hours():
     ns=producer();assert ns['_start_screener_background_refresh']('radar')
     ns['_background_work_memory_safe'].assert_called_once_with(reserve_mb=200)
     ns['_BACKGROUND_JOB_EXECUTOR'].submit.call_args.args[0]()
-    ns['compute_screener_rows'].assert_called_once_with('radar',persist=True,force_refresh=True,persist_live=False,radar_deep_limit=4,price_workers=2)
+    ns['compute_screener_rows'].assert_called_once_with('radar',persist=True,force_refresh=True,persist_live=False,radar_deep_limit=240,price_workers=2)
     assert not ns['_SCREENER_REFRESH_RUNNING']['radar']
 
-@pytest.mark.parametrize('mode,limit',[('blackhorse',None),('radar',240)])
-def test_large_scans_keep_the_original_headroom(mode,limit):
+@pytest.mark.parametrize('mode,limit',[('blackhorse',None)])
+def test_non_radar_scans_keep_the_original_headroom(mode,limit):
     ns=producer();assert ns['_start_screener_background_refresh'](mode,radar_deep_limit=limit)
     ns['_background_work_memory_safe'].assert_called_once_with(reserve_mb=280)
 
@@ -74,7 +74,7 @@ def test_repeated_requests_do_not_queue_duplicate_scans():
     assert ns['_BACKGROUND_JOB_EXECUTOR'].submit.call_count==1
 
 @pytest.mark.parametrize('limit',[0,-1,4])
-def test_light_producer_cannot_sneak_in_a_full_scan_or_extra_workers(limit):
+def test_explicit_small_depth_normalizes_and_caps_history_workers(limit):
     ns=producer();ns['_start_screener_background_refresh']('radar',radar_deep_limit=limit,price_workers=20)
     ns['_BACKGROUND_JOB_EXECUTOR'].submit.call_args.args[0]()
     assert ns['compute_screener_rows'].call_args.kwargs['radar_deep_limit']==4

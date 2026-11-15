@@ -1,5 +1,7 @@
 # Radar background recovery and desktop alignment
 
+The four-candidate cap described below is superseded by [radar-coverage-batches.md](radar-coverage-batches.md), which preserves the 240-candidate depth while bounding each history-download batch.
+
 ## Observed production failure
 
 The signed-in production screener and the user's phone both showed radar rebuilding without results. Render logged rejected radar work due to memory reservation while the source API still returned HTTP 200 with building=true. Container memory was approximately 274 MiB of a 512 MiB limit. A 280/290 MiB reservation therefore prevented background admission. Off-hours page-triggered work also omitted the scheduled deep-candidate limit, leaving a possible 240-candidate request behind that reservation.
