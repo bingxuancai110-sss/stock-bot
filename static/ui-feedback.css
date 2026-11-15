@@ -398,7 +398,8 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 .ui-global-status{position:fixed;top:calc(env(safe-area-inset-top,0px) + 12px);left:50%;transform:translateX(-50%);z-index:20000;display:flex;align-items:center;gap:12px;width:max-content;max-width:calc(100vw - 28px);box-sizing:border-box;padding:12px 15px;border:1px solid #a2c4ad;border-radius:12px;background:#edf6ef;color:#355f42;font-size:13px;line-height:1.7;box-shadow:0 6px 24px rgba(36,70,48,.12)}.ui-global-status button{flex:none;border:0;background:transparent;color:inherit;min-height:40px;font-weight:750}
 #stockbot-app #stockbot-shell #app-page-content .position-card-code.ui-allocation-row-select{min-height:36px!important;min-width:44px!important;margin:0!important;padding:6px 8px!important;white-space:nowrap!important;flex:none!important;font-size:11px!important}.ui-allocation-row-select::after{content:'◎';font-size:10px;margin-left:4px;opacity:.7}
 /* Runtime states own the cascade above legacy page-specific selectors. */
-#stockbot-app #stockbot-shell #app-page-content .ui-control:is(:active,:hover){background:var(--sb-feedback-surface)!important;background-image:none!important;color:var(--sb-feedback-ink)!important;-webkit-text-fill-color:var(--sb-feedback-ink)!important;filter:none!important;transition:transform var(--sb-feedback-press) var(--sb-feedback-ease)!important}
+#stockbot-app #stockbot-shell #app-page-content .ui-control:active{background:var(--sb-feedback-surface)!important;background-image:none!important;filter:none!important}
+@media(hover:hover) and (pointer:fine){#stockbot-app #stockbot-shell #app-page-content .ui-control:hover{background:var(--sb-feedback-surface)!important;background-image:none!important;filter:none!important}}
 /* The collapsed holding summary covers the quote row as its hit target.
    Its hover/focus surface must never paint over the underlying name and quote. */
 #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card>.position-more:not([open])>summary.ui-control{background:transparent!important;background-image:none!important;box-shadow:none!important;color:transparent!important;-webkit-text-fill-color:transparent!important;transform:none!important}
@@ -743,4 +744,20 @@ body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) #page-nav-progress
   body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-row.wb-rich-row>.wb-institutional{grid-area:institution!important;text-align:right!important;min-width:0!important}
   body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-row.wb-rich-row>.wb-signal{grid-area:signal!important;min-width:0!important}
   body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-row.wb-rich-row>span:last-child{grid-area:arrow!important;text-align:right!important}
+}
+
+/* Feedback changes the surface, never the geometry or financial text. Native
+   phone scrolling must not leave a sticky hover or shrink the entire row. */
+body#stockbot-app #stockbot-shell #app-page-content .ui-pressed,
+body#stockbot-app .app-bottom-nav a.ui-pressed,
+html body#stockbot-app :is(.app-header,.position-confirm-backdrop,.position-submit-progress-backdrop) .ui-pressed{
+  transform:none!important;filter:none!important;
+  transition:background-color var(--sb-feedback-press) ease,border-color var(--sb-feedback-press) ease,box-shadow var(--sb-feedback-press) ease!important;
+}
+body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card.ui-pressed,
+body#stockbot-app #stockbot-shell #app-page-content #stockbot-workbench .wb-row.ui-pressed{
+  transform:none!important;background:var(--sb-feedback-surface)!important;
+  color:var(--sb-app-ink,#1d3445)!important;-webkit-text-fill-color:currentColor!important;
+  box-shadow:inset 3px 0 var(--sb-feedback-border)!important;
+  transition:background-color var(--sb-feedback-press) ease,box-shadow var(--sb-feedback-press) ease!important;
 }
