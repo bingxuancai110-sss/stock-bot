@@ -93,3 +93,56 @@ body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) .experience-route-
 }
 @media(min-width:900px){.experience-route-status{left:auto;right:24px;bottom:24px;transform:none}}
 @media(prefers-reduced-motion:reduce){:root{--app-motion:0ms}.app-nav-cursor,.experience-route-status::before,html body#stockbot-app .app-bottom-nav a.experience-nav-target::after{animation:none!important;transition:none!important}}
+
+/* Frosted viewport edges: content moves behind a small, fixed glass surface.
+   Keep blur off the document and quote rows; no scroll interception is needed. */
+:root{--app-glass:rgba(255,255,255,.74);--app-fog:rgba(241,244,247,.72)}
+@supports(background:color-mix(in srgb,white,transparent)){
+  :root{--app-glass:color-mix(in srgb,var(--ui-surface,#fff) 74%,transparent);--app-fog:color-mix(in srgb,var(--ui-page,#f1f4f7) 72%,transparent)}
+}
+@media(max-width:760px){
+  html body#stockbot-app[data-app-view].app-is-scrolled #stockbot-shell:has(#app-page-content)>.wrap>.app-header{
+    background:var(--app-glass)!important;
+    -webkit-backdrop-filter:blur(18px) saturate(1.2)!important;backdrop-filter:blur(18px) saturate(1.2)!important;
+    border-bottom-color:rgba(195,207,218,.36)!important;
+    box-shadow:0 10px 24px -15px rgba(23,43,62,.28),inset 0 -1px rgba(255,255,255,.45)!important;
+  }
+  html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header::after{
+    content:'';position:absolute;left:0;right:0;top:100%;height:34px;pointer-events:none;
+    background:linear-gradient(to bottom,var(--app-fog),transparent);
+    -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+    -webkit-mask-image:linear-gradient(to bottom,#000,transparent);mask-image:linear-gradient(to bottom,#000,transparent);
+    opacity:0;transition:opacity 200ms ease;
+  }
+  html body#stockbot-app[data-app-view].app-is-scrolled #stockbot-shell:has(#app-page-content)>.wrap>.app-header::after{opacity:1}
+  html body#stockbot-app .app-bottom-nav{
+    background:var(--app-glass)!important;
+    -webkit-backdrop-filter:blur(22px) saturate(1.2)!important;backdrop-filter:blur(22px) saturate(1.2)!important;
+    border-top-color:rgba(195,207,218,.4)!important;
+    box-shadow:0 -10px 28px -18px rgba(23,43,62,.24),inset 0 1px rgba(255,255,255,.6)!important;
+  }
+  html body#stockbot-app .app-bottom-nav .bottom-inner>a:not(.on):not(.experience-nav-target){color:#5b6d7a!important}
+  html body#stockbot-app .app-bottom-nav::before{
+    content:'';position:absolute;left:0;right:0;bottom:100%;height:40px;pointer-events:none;
+    background:linear-gradient(to top,var(--app-fog),transparent);
+    -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+    -webkit-mask-image:linear-gradient(to top,#000,transparent);mask-image:linear-gradient(to top,#000,transparent);
+    opacity:0;transition:opacity 200ms ease;
+  }
+  html body#stockbot-app.app-can-scroll-down .app-bottom-nav::before{opacity:1}
+  html body#stockbot-app #app-page-content :is(summary,.position-card,.wb-row,.hv2-sec){scroll-margin-top:106px;scroll-margin-bottom:110px}
+}
+@media(prefers-reduced-transparency:reduce){
+  html body#stockbot-app[data-app-view].app-is-scrolled #stockbot-shell:has(#app-page-content)>.wrap>.app-header,
+  html body#stockbot-app .app-bottom-nav{background:var(--sb-app-surface,#fff)!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
+  html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header::after,
+  html body#stockbot-app .app-bottom-nav::before{display:none!important}
+}
+@media(prefers-reduced-motion:reduce){
+  html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header::after,
+  html body#stockbot-app .app-bottom-nav::before{transition:none!important}
+}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  html body#stockbot-app[data-app-view].app-is-scrolled #stockbot-shell:has(#app-page-content)>.wrap>.app-header,
+  html body#stockbot-app .app-bottom-nav{background:var(--sb-app-surface,#fff)!important}
+}

@@ -30,7 +30,11 @@
     status.textContent=detail.label||'正在開啟頁面…';status.hidden=true;
     statusTimer=setTimeout(function(){if(pendingPath)status.hidden=false;},120);
   }
-  function syncScroll(){scrollFrame=0;var on=(window.scrollY||0)>28;if(document.body.classList.contains('app-is-scrolled')!==on)document.body.classList.toggle('app-is-scrolled',on);}
+  function syncScroll(){
+    scrollFrame=0;var y=window.scrollY||0,on=y>28,below=document.documentElement.scrollHeight-innerHeight-y>3;
+    if(document.body.classList.contains('app-is-scrolled')!==on)document.body.classList.toggle('app-is-scrolled',on);
+    if(document.body.classList.contains('app-can-scroll-down')!==below)document.body.classList.toggle('app-can-scroll-down',below);
+  }
   function scroll(){if(!scrollFrame)scrollFrame=requestAnimationFrame(syncScroll);}
   function arrive(){
     scheduleNav();scroll();if(motion.matches||document.hidden)return;
@@ -42,7 +46,7 @@
   document.addEventListener('stockbot:routecomplete',endRoute);
   document.addEventListener('stockbot:pagecontentready',arrive);
   document.addEventListener('stockbot:page-ready',arrive);
-  window.addEventListener('scroll',scroll,{passive:true});window.addEventListener('resize',scheduleNav,{passive:true});
+  window.addEventListener('scroll',scroll,{passive:true});window.addEventListener('resize',function(){scheduleNav();scroll();},{passive:true});
   window.addEventListener('pageshow',function(){endRoute();arrive();});
   window.addEventListener('pagehide',function(){endRoute();cancelAnimationFrame(navFrame);cancelAnimationFrame(scrollFrame);navFrame=scrollFrame=0;});
   window.StockBotExperience={sync:scheduleNav};
