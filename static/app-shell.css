@@ -56,8 +56,8 @@ body#stockbot-app .app-bottom-nav {
   display: flex !important; justify-content: center !important; box-sizing: border-box !important;
   width: 100% !important; padding: 5px 9px calc(5px + env(safe-area-inset-bottom, 0px)) !important;
   border: 0 !important; border-top: 1px solid rgba(207,220,219,.9) !important;
-  background: rgba(255,255,255,.96) !important; box-shadow: 0 -5px 20px rgba(24,51,62,.065) !important;
-  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  background: var(--sb-app-surface) !important; box-shadow: none !important;
+  backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
 }
 html body#stockbot-app .app-bottom-nav .bottom-inner { display: grid !important; grid-template-columns: repeat(7,minmax(0,1fr)) !important; gap: 0 !important; width: min(100%,820px) !important; margin: 0 auto !important; }
 body#stockbot-app .app-bottom-nav .bottom-inner > a {
@@ -961,8 +961,8 @@ body#stockbot-app {
 }
 body#stockbot-app #stockbot-shell > .wrap > .app-header {
   background: rgba(255,255,255,.82) !important;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 body#stockbot-app #stockbot-shell > .wrap > #app-page-content {
   animation: sb-workspace-enter .28s cubic-bezier(.2,.75,.25,1) both;
@@ -1049,10 +1049,9 @@ body#stockbot-app[data-app-view="market"] #app-page-content .market-search:focus
 }
 body#stockbot-app[data-app-view="market"] #app-page-content .market-quote-tile {
   position: relative !important;
-  transition: background-color .16s ease, padding .16s ease !important;
+  transition: background-color .16s ease !important;
 }
 body#stockbot-app[data-app-view="market"] #app-page-content .market-quote-tile:hover {
-  padding-left: 8px !important;
   background: rgba(255,255,255,.68) !important;
 }
 body#stockbot-app[data-app-view="market"] #app-page-content .market-page .market-chart-card {
@@ -1115,11 +1114,9 @@ body#stockbot-app[data-app-view="screener"] #app-page-content #stockbot-workbenc
   box-shadow: 0 3px 12px rgba(32,63,70,.06) !important;
 }
 body#stockbot-app[data-app-view="screener"] #app-page-content #stockbot-workbench .wb-row.wb-rich-row {
-  transition: background-color .16s ease, padding .16s ease !important;
+  transition: background-color .16s ease !important;
 }
 body#stockbot-app[data-app-view="screener"] #app-page-content #stockbot-workbench .wb-row.wb-rich-row:hover {
-  padding-left: 9px !important;
-  padding-right: 9px !important;
   background: rgba(255,255,255,.78) !important;
 }
 body#stockbot-app[data-app-view="screener"] #app-page-content #stockbot-workbench .wb-price-block .wb-num {
