@@ -28610,10 +28610,10 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261107-2">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261115-1">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261105-5">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
-<script defer src="/static/ui-feedback.js?v=20261105-6"></script>
+<script defer src="/static/ui-feedback.js?v=20261115-1"></script>
 <script defer src="/static/settings-theme.js?v=20261112-1"></script>
 <script defer src="/static/fugle-live.js?v=20261109-2"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
@@ -28873,7 +28873,13 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   var appNavBusy = false;
   var appNavSeq = 0;
   var appNavController = null;
-  var appScrollRestore = {{}};
+  function appViewKey(href) {{
+    var url = new URL(href, window.location.href);
+    ['fragment','_nav','fast'].forEach(function(key) {{ url.searchParams.delete(key); }});
+    url.searchParams.sort();
+    return url.pathname + url.search;
+  }}
+  var appCurrentViewKey = appViewKey(window.location.href);
   var appRouteKeys = {{
     '/web/portfolio':'portfolio','/web/positions':'positions','/web/workbench':'screener',
     '/web/leaderboard':'leaderboard','/web/trades':'trades','/web/compare':'compare',
@@ -29048,8 +29054,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     appNavBusy = true;
     if (appNavController) {{ try {{ appNavController.abort(); }} catch (ignore) {{}} }}
     appNavController = window.AbortController ? new AbortController() : null;
-    var previousScroll = window.scrollY || 0;
-    if (pushState) appScrollRestore[window.location.pathname + window.location.search] = previousScroll;
+    if (window.StockBotUI) window.StockBotUI.captureView(appCurrentViewKey);
     if (target.pathname === '/web/portfolio') target.searchParams.set('_nav', String(Date.now()));
     var retryHref = target.pathname + (target.search ? '?' + target.searchParams.toString() : '');
     var requestUrl = target.pathname + '?' + target.searchParams.toString();
@@ -29109,8 +29114,11 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
           var navElapsed = Math.round((performance.now() - navStartedAt) * 10) / 10;
           console.info('[台股 BOT] 頁面切換完成', target.pathname, navElapsed + 'ms');
         }} catch (ignore) {{}}
-        // 切換分頁不再彈出干擾閱讀的成功提示；新頁面直接定位頂部，避免額外平滑捲動延遲。
-        window.scrollTo({{top:0, behavior:'auto'}});
+        // Restore only after the actual fragment and its controls are ready.
+        // The volatile _nav timestamp must not create a new view identity.
+        appCurrentViewKey = appViewKey(target.href);
+        var restoredScroll = window.StockBotUI ? window.StockBotUI.restoreView(appCurrentViewKey) : 0;
+        window.scrollTo({{top:restoredScroll, behavior:'instant'}});
       }})
       .catch(function(error) {{
         if (navSeq !== appNavSeq) return;
@@ -29191,10 +29199,6 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   window.addEventListener('popstate', function() {{
     if (appRouteKeys[window.location.pathname]) {{
       switchAppPage(window.location.href, false);
-      window.setTimeout(function() {{
-        var key = window.location.pathname + window.location.search;
-        if (Object.prototype.hasOwnProperty.call(appScrollRestore, key)) window.scrollTo(0, appScrollRestore[key]);
-      }}, 80);
     }}
   }});
 
