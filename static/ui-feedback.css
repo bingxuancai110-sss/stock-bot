@@ -400,6 +400,10 @@ html body :is(.app-header,.position-confirm-backdrop,.position-submit-progress-b
 /* Runtime states own the cascade above legacy page-specific selectors. */
 #stockbot-app #stockbot-shell #app-page-content .ui-control:active{background:var(--sb-feedback-surface)!important;background-image:none!important;filter:none!important}
 @media(hover:hover) and (pointer:fine){#stockbot-app #stockbot-shell #app-page-content .ui-control:hover{background:var(--sb-feedback-surface)!important;background-image:none!important;filter:none!important}}
+/* Action buttons may have white text on a dark/red surface. When their surface
+   becomes pale, keep the label legible; quote rows keep their own text colors. */
+#stockbot-app #stockbot-shell #app-page-content .ui-control:not(.wb-row):not(summary):active{color:var(--sb-feedback-ink)!important;-webkit-text-fill-color:var(--sb-feedback-ink)!important}
+@media(hover:hover) and (pointer:fine){#stockbot-app #stockbot-shell #app-page-content .ui-control:not(.wb-row):not(summary):hover{color:var(--sb-feedback-ink)!important;-webkit-text-fill-color:var(--sb-feedback-ink)!important}}
 /* The collapsed holding summary covers the quote row as its hit target.
    Its hover/focus surface must never paint over the underlying name and quote. */
 #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card>.position-more:not([open])>summary.ui-control{background:transparent!important;background-image:none!important;box-shadow:none!important;color:transparent!important;-webkit-text-fill-color:transparent!important;transform:none!important}

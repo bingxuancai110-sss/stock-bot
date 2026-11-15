@@ -10,4 +10,6 @@ Changes:
 
 Validation uses actual rendered pages with intercepted test data, including gestures, rapid press/release timers, quote color/geometry, localized number updates, new-control initialization, nested disclosures, reduced motion, charts, navigation and transaction protections. No production transaction is submitted during acceptance. Production checks must verify the new asset versions and read-only tap/scroll/expand flows after Render is live. This is a presentation/DOM-work improvement, not a claim that backend response time or phone frame rate was measured.
 
-Shared CSS v20261115-4 and JavaScript v20261115-2. No schema, price source, scoring, portfolio or transaction changes. Roll back by reverting the release commit and restoring its asset references.
+Shared CSS v20261115-5 and JavaScript v20261115-2. No schema, price source, scoring, portfolio or transaction changes. Roll back by reverting the release commit and restoring its asset references.
+
+Desktop action labels also retain at least 4.5:1 text contrast during hover in Chromium and WebKit. Final validation: each engine passed 214 existing UI, 15 navigation, 23 presentation and 20 focused interaction checks (272 checks per engine).
