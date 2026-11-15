@@ -37,7 +37,7 @@ with sync_playwright() as p:
         assert ok,label
     page.goto('https://fixture.test/web/leaderboard');page.wait_for_function('!!window.StockBotUI')
     nav=page.locator('.app-bottom-nav')
-    check('navigation uses an opaque surface without backdrop repaint',nav.evaluate('(e)=>{const s=getComputedStyle(e);return s.backdropFilter==="none"&&(!s.webkitBackdropFilter||s.webkitBackdropFilter==="none")&&!s.backgroundColor.endsWith(", 0.96)")}'))
+    check('phone navigation uses the requested bounded frosted surface',nav.evaluate('(e)=>{const s=getComputedStyle(e);return (s.backdropFilter||s.webkitBackdropFilter).includes("blur(")&&e.getBoundingClientRect().height<100}'))
     page.evaluate('document.getElementById("app-page-content").classList.add("app-page-enter")')
     check('list rows remain stationary and readable during navigation entry',page.locator('.rank-card:visible').evaluate_all('(es)=>es.length>0&&es.every(e=>{const s=getComputedStyle(e);return s.animationName==="none"&&s.transform==="none"&&s.opacity==="1"})'))
     check('active destination does not bounce',page.locator('.app-bottom-nav a.on').evaluate('(e)=>getComputedStyle(e).animationName==="none"'))

@@ -1,5 +1,7 @@
 # App-wide visual and navigation experience
 
+The original opaque viewport chrome below is superseded by [frosted-scroll-surfaces.md](frosted-scroll-surfaces.md), following the user's request for an artistic frosted/blurred scrolling treatment.
+
 The preceding interaction release reduced DOM work, but left the overall hierarchy and navigation presentation almost unchanged. Production phone-size inspection found 9 px navigation labels, 14 px stock quotes and 10 px holding metadata. This release addresses the visible experience as a shared layer, retaining the existing application and all financial logic.
 
 ## Visible behavior
