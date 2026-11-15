@@ -640,3 +640,11 @@ body#stockbot-app #stockbot-shell>.wrap>footer,
   .us-section-head p:not([id])
 ){display:none!important}
 #stockbot-app #stockbot-shell #app-page-content #hv2 [data-home-chart-row] .hv2-row-main::after{display:none!important;content:none!important}
+
+/* A single gentle arrival below the fold. Never hide content while waiting for JS,
+   transform chart containers, reserve extra space, or intercept touch gestures. */
+@keyframes sb-section-arrive{from{opacity:.82}to{opacity:1}}
+#stockbot-app #app-page-content .ui-section-arrive{animation:sb-section-arrive 180ms ease-out!important}
+@media(prefers-reduced-motion:reduce){
+  #stockbot-app #app-page-content .ui-section-arrive{animation:none!important}
+}

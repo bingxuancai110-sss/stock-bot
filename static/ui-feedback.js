@@ -1,4 +1,4 @@
-/* StockBot UI: presentation only; no requests, price calculations, or persistence. */
+/* StockBot UI: presentation only; no requests, price calculations, or stored account data. */
 (function () {
   'use strict';
   if (window.StockBotUI) return;
@@ -10,6 +10,49 @@
   var route = null, scanFrame = 0, observer = null;
   var numberRecords = new WeakMap(), activeNumbers = new Map(), detailsAnimations = new Map();
   var loadStates = new Map(), formTimers = new Map(), chartCleanups = new Set();
+  var nearObserver=null, revealObserver=null, nearJobs=new Map(), chartQueued=new WeakSet(), revealSeen=new WeakSet();
+  var views=new Map();
+  function whenNear(host, work) {
+    if (!host || !host.isConnected) return;
+    var rect=host.getBoundingClientRect();
+    if (!window.IntersectionObserver || (rect.height>0 && rect.top<innerHeight+240 && rect.bottom>-240)) { work(); return; }
+    if (!nearObserver) nearObserver=new IntersectionObserver(function(entries){entries.forEach(function(entry){
+      if(!entry.isIntersecting)return;
+      var jobs=nearJobs.get(entry.target)||[];nearJobs.delete(entry.target);nearObserver.unobserve(entry.target);
+      if(entry.target.isConnected)jobs.forEach(function(fn){fn();});
+    });},{rootMargin:'240px 0px'});
+    if(!nearJobs.has(host))nearJobs.set(host,[]);
+    nearJobs.get(host).push(work);nearObserver.observe(host);
+  }
+  function prepareViewport(scope) {
+    if(!window.IntersectionObserver || reduced())return;
+    if(!revealObserver)revealObserver=new IntersectionObserver(function(entries){entries.forEach(function(entry){
+      if(!entry.isIntersecting)return;
+      revealObserver.unobserve(entry.target);enter(entry.target,'ui-section-arrive');
+    });},{threshold:0.02});
+    each(scope,'.portfolio-trend-card,.rank-chart-panel,.us-section,.hv2-sec:not(.first),.hv2-feature-section,.more-group,.p2-history-list,[data-ui-reveal]',function(section){
+      if(revealSeen.has(section))return;
+      var rect=section.getBoundingClientRect();if(!rect.height)return;
+      revealSeen.add(section);
+      // Content is always readable. Only sections below the initial viewport get
+      // a one-time opacity animation; no hidden state or moving chart containers.
+      if(rect.top>innerHeight+24)revealObserver.observe(section);
+    });
+  }
+  function captureView(key) {
+    var scope=root();if(!scope)return;
+    var radios=[];each(scope,'input.trend-period-radio:checked',function(input){radios.push(input.id);});
+    var benchmark=scope.querySelector('#trend-benchmark'),board=scope.querySelector('#rankTabs button.on');
+    views.delete(key);views.set(key,{y:window.scrollY||0,radios:radios,benchmark:benchmark?benchmark.checked:null,board:board?board.dataset.board:null});
+    if(views.size>16)views.delete(views.keys().next().value);
+  }
+  function restoreView(key) {
+    var state=views.get(key),scope=root();if(!state||!scope)return 0;
+    state.radios.forEach(function(id){var input=document.getElementById(id);if(input&&scope.contains(input)&&input.matches('input.trend-period-radio')){input.checked=true;input.dispatchEvent(new Event('change',{bubbles:true}));}});
+    var benchmark=scope.querySelector('#trend-benchmark');if(benchmark&&state.benchmark!==null)benchmark.checked=state.benchmark;
+    if(state.board)each(scope,'#rankTabs button[data-board]',function(button){if(button.dataset.board===state.board&&!button.classList.contains('on'))button.click();});
+    schedule();return state.y;
+  }
   var controls = 'button,a[href],summary,[role="button"],label[for]';
   var numberSelector = '[data-ui-number],[data-home-sensitive],[data-home-market-pct],[data-home-portfolio-pct],[data-home-relative],[data-position-price],[data-position-pct],[data-position-day-pl],.stat .num,.stat-value,.totals .total-value,.totals .num,.position-card-primary b,.portfolio-trend-stat strong,.rank-return,[data-allocation-center-value],[data-allocation-center-weight]';
   function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
@@ -183,6 +226,7 @@
   }
   function bindChart(svg) {
     if (svg.dataset.uiChartBound) return; svg.dataset.uiChartBound = '1';
+    var originalLabel=svg.getAttribute('aria-label'),originalTabindex=svg.getAttribute('tabindex');
     var panel = svg.closest('.portfolio-trend-panel') || svg.parentElement;
     var readout = el('div', 'ui-chart-readout '+(svg.matches('.portfolio-trend-svg')?'ui-portfolio-readout':'ui-rank-readout')), values = el('span', 'ui-chart-values');
     values.hidden=true;values.setAttribute('role','tooltip');
@@ -196,8 +240,8 @@
     svg.classList.add('ui-chart-tracking');
     var frame = 0, lastX = null, selected = 0, drag = null, dragged = false;
     function clear() { values.hidden=true; guide.style.display = dot.style.display = 'none'; each(svg, '.ui-chart-point-active', function (n) { n.classList.remove('ui-chart-point-active'); }); }
-    function show(index) {
-      var points = chartPoints(svg); if (!points.length) return;
+    function show(index, points) {
+      points = points || chartPoints(svg); if (!points.length) return;
       selected = Math.max(0, Math.min(points.length - 1, index)); var p = points[selected];
       var same = points.filter(function (other) { return Math.abs(other.x - p.x) < .1; });
       values.textContent = p.label + ' · ' + same.map(function (v) { return v.text; }).join(' ／ ');
@@ -205,7 +249,7 @@
       guide.setAttribute('x1', p.x); guide.setAttribute('x2', p.x); guide.setAttribute('y1', '0'); guide.setAttribute('y2', svg.viewBox.baseVal.height); dot.setAttribute('cx', p.x); dot.setAttribute('cy', p.y); guide.style.display = dot.style.display = '';
       each(svg, '.ui-chart-point-active', function (n) { n.classList.remove('ui-chart-point-active'); }); if (p.node) p.node.classList.add('ui-chart-point-active');
     }
-    function nearest(x) { var points = chartPoints(svg), best = 0, distance = Infinity; points.forEach(function (p, i) { var d = Math.abs(p.x - x); if (d < distance) { best = i; distance = d; } }); show(best); }
+    function nearest(x) { var points = chartPoints(svg), best = 0, distance = Infinity; points.forEach(function (p, i) { var d = Math.abs(p.x - x); if (d < distance) { best = i; distance = d; } }); show(best, points); }
     function move(e) {
       if (e.pointerType !== 'touch' && drag && drag.id === e.pointerId && host.scrollWidth > host.clientWidth) {
         var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -223,7 +267,7 @@
     function click(e) { if (dragged) { e.preventDefault(); e.stopImmediatePropagation(); dragged = false; } }
     svg.addEventListener('pointermove', move, { passive: true }); svg.addEventListener('pointerdown', down, { passive: true }); svg.addEventListener('pointerup', up); svg.addEventListener('click', click, true); svg.addEventListener('keydown', key);
     var leave = function () { drag = null; clear(); }; svg.addEventListener('pointerleave', leave); svg.addEventListener('pointercancel', leave);
-    var cleanup = function () { cancelAnimationFrame(frame); svg.removeEventListener('pointermove', move); svg.removeEventListener('pointerdown', down); svg.removeEventListener('pointerup', up); svg.removeEventListener('click', click, true); svg.removeEventListener('keydown', key); svg.removeEventListener('pointerleave', leave); svg.removeEventListener('pointercancel', leave); chartCleanups.delete(cleanup); };
+    var cleanup = function () { cancelAnimationFrame(frame); clear(); svg.removeEventListener('pointermove', move); svg.removeEventListener('pointerdown', down); svg.removeEventListener('pointerup', up); svg.removeEventListener('click', click, true); svg.removeEventListener('keydown', key); svg.removeEventListener('pointerleave', leave); svg.removeEventListener('pointercancel', leave); readout.remove();guide.remove();dot.remove();svg.classList.remove('ui-chart-tracking'); if(originalLabel===null)svg.removeAttribute('aria-label');else svg.setAttribute('aria-label',originalLabel);if(originalTabindex===null)svg.removeAttribute('tabindex');else svg.setAttribute('tabindex',originalTabindex); delete svg.dataset.uiChartBound; chartCleanups.delete(cleanup); };
     cleanup.svg = svg; chartCleanups.add(cleanup);
   }
   function rankFeedback(button) {
@@ -242,7 +286,9 @@
     each(scope,'.msg',function(box){if(box.dataset.uiOutcome)return;var text=box.textContent||'';var state=/失敗|錯誤|沒有儲存|不正確|過期|無法|請先|請填|未完成|⚠/.test(text)?'error':/成功|已儲存|已新增|已賣出|✅/.test(text)?'success':null;if(state){box.dataset.uiOutcome=state;box.dataset.state=state;box.classList.add('ui-form-status');box.setAttribute('role',state==='error'?'alert':'status');}});
     scanNumbers(scope); selectedControls(scope); prepareDetails(scope); prepareAllocation(scope);
     if(resizeObserver)each(scope,'details.ui-disclosure',function(d){if(!resizeBound.has(d)){resizeBound.add(d);disclosureOpen.set(d,d.open);disclosureSizes.set(d,d.getBoundingClientRect().height);resizeObserver.observe(d);}});
-    each(scope, 'svg.portfolio-trend-svg,svg.ui-interactive-chart', bindChart);
+    prepareViewport(scope);
+    each(scope, 'svg.portfolio-trend-svg,svg.ui-interactive-chart', function(svg){if(svg.dataset.uiChartBound||chartQueued.has(svg))return;chartQueued.add(svg);whenNear(svg,function(){chartQueued.delete(svg);bindChart(svg);});});
+    nearJobs.forEach(function(_,host){if(!host.isConnected){nearJobs.delete(host);if(nearObserver)nearObserver.unobserve(host);}});
     loadStates.forEach(function (state, host) { if (!host.isConnected || !host.contains(state.box)) endLoad(host); });
     chartCleanups.forEach(function (cleanup) { if (!cleanup.svg.isConnected) cleanup(); });
   }
@@ -263,13 +309,13 @@
   });
   document.addEventListener('change', function (e) { if (e.target.matches('.trend-period-radio')) { requestAnimationFrame(function () { each(root(), '.portfolio-trend-panel', function (p) { if (p.getClientRects().length) enter(p, 'ui-chart-period'); }); }); } schedule(); });
   document.addEventListener('toggle', function (e) { if (e.target.tagName === 'DETAILS') { var s = e.target.querySelector('summary'); if (s) s.setAttribute('aria-expanded', String(e.target.open)); } }, true);
-  function cleanup() { formTimers.forEach(clearTimeout);formTimers.clear(); if(resizeObserver){resizeObserver.disconnect();resizeBound=new WeakSet();} stopNumbers(); detailsAnimations.forEach(function (a) { a.cancel(); }); detailsAnimations.clear(); chartCleanups.forEach(function (fn) { fn(); }); loadStates.forEach(function (_, host) { endLoad(host); }); cancelAnimationFrame(scanFrame); scanFrame = 0; }
+  function cleanup() { if(nearObserver)nearObserver.disconnect();if(revealObserver)revealObserver.disconnect();nearJobs.clear();chartQueued=new WeakSet(); formTimers.forEach(clearTimeout);formTimers.clear(); if(resizeObserver){resizeObserver.disconnect();resizeBound=new WeakSet();} stopNumbers(); detailsAnimations.forEach(function (a) { a.cancel(); }); detailsAnimations.clear(); chartCleanups.forEach(function (fn) { fn(); }); loadStates.forEach(function (_, host) { endLoad(host); }); cancelAnimationFrame(scanFrame); scanFrame = 0; }
   document.addEventListener('stockbot:pageleaving', cleanup);
   document.addEventListener('visibilitychange', function () { if (document.hidden) stopNumbers(); });
   window.addEventListener('scroll', stopNumbers, { capture: true, passive: true }); window.addEventListener('resize', stopNumbers, { passive: true });
   window.addEventListener('pagehide', function () { cleanup(); routeEnd(true); });
   window.addEventListener('pageshow', function () { each(document, 'form[data-submitted="1"]', function (form) { delete form.dataset.submitted; form.classList.remove('tap-loading'); each(form, '[data-old-text]', function (b) { b.disabled = false; if (b.tagName === 'INPUT') b.value = b.dataset.oldText; else b.textContent = b.dataset.oldText; }); formState(form, 'error', '操作狀態已重設，請先確認是否已儲存。'); }); schedule(); });
-  window.StockBotUI = { routeStart: routeStart, routeEnd: routeEnd, load: load, endLoad: endLoad, formState: formState, notify: notify, scan: schedule, reducedMotion: reduced, cleanup: cleanup, parseNumber: parseNumber };
+  window.StockBotUI = { routeStart: routeStart, routeEnd: routeEnd, load: load, endLoad: endLoad, formState: formState, notify: notify, scan: schedule, reducedMotion: reduced, cleanup: cleanup, parseNumber: parseNumber, whenNear:whenNear, captureView:captureView, restoreView:restoreView };
   function boot() { var scope = root(); if (!scope) return; observer = new MutationObserver(function(records){ if(records.every(function(r){var n=r.target.nodeType===1?r.target:r.target.parentElement;return n&&n.closest('.ui-chart-readout');}))return; schedule(); }); observer.observe(scope, { childList: true, characterData: true, subtree: true }); scan(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true }); else boot();
 })();
