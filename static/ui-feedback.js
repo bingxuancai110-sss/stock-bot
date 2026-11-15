@@ -7,7 +7,8 @@
   function duration(name,fallback){var raw=getComputedStyle(document.documentElement).getPropertyValue('--sb-feedback-'+name).trim(),value=parseFloat(raw);return Number.isFinite(value)?value*(raw.endsWith('ms')?1:1000):fallback;}
   var root = function () { return document.getElementById('app-page-content'); };
   var notification=null, notificationTimer=0;
-  var route = null, scanFrame = 0, observer = null;
+  var route = null, scanFrame = 0, observer = null, fullScanPending = true;
+  var pendingNumbers = new Set(), press = null, pressTimer = 0;
   var numberRecords = new WeakMap(), activeNumbers = new Map(), detailsAnimations = new Map();
   var loadStates = new Map(), formTimers = new Map(), chartCleanups = new Set();
   var nearObserver=null, revealObserver=null, nearJobs=new Map(), chartQueued=new WeakSet(), revealSeen=new WeakSet();
@@ -167,16 +168,16 @@
     }
     frame(started);
   }
-  function scanNumbers(scope) {
-    each(scope, numberSelector, function (host) {
+  function updateNumber(host) {
+      if (!host || !host.isConnected) return;
       if (host.closest('svg,[aria-hidden=true],.ui-chart-readout,.ui-form-status') || host.matches('input')) return;
       var target = host.querySelector('.num') || host;
       if (target.childElementCount) return;
       var next = parseNumber(target.textContent), previous = numberRecords.get(host);
       numberRecords.set(host, next); if (!next) { stopNumber(target); return; }
       if (previous && previous.value !== next.value && previous.suffix === next.suffix) tweenNumber(target, previous, next);
-    });
   }
+  function scanNumbers(scope) { each(scope, numberSelector, updateNumber); }
   function selectedControls(scope) {
     each(scope,'.portfolio-trend-tab',function(label){var input=document.getElementById(label.htmlFor);label.classList.toggle('ui-selected-control',!!input&&input.checked);});
 
@@ -190,19 +191,19 @@
     each(document, 'a[data-app-nav]', function (a) { if (a.classList.contains('on')) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   }
   function prepareDetails(scope) { each(scope, 'details', function (d) { var summary = Array.from(d.children).find(function (x) { return x.tagName === 'SUMMARY'; }); if (summary) { d.classList.add('ui-disclosure'); summary.classList.add('ui-disclosure-summary'); summary.setAttribute('aria-expanded', String(d.open)); } }); }
-  var disclosureSizes = new WeakMap(), disclosureOpen = new WeakMap(), resizeBound = new WeakSet();
   function animateSize(node, start, end) {
     var old = detailsAnimations.get(node); if (old) { old.cancel(); detailsAnimations.delete(node); }
     if (reduced() || !node.animate || Math.abs(end-start)<1) return;
     var overflow=node.style.overflow;node.style.overflow='hidden';
     var a=node.animate([{height:start+'px'},{height:end+'px'}],{duration:duration('expand',220),easing:'cubic-bezier(.2,.7,.2,1)'});detailsAnimations.set(node,a);
-    function finish(){if(detailsAnimations.get(node)===a){node.style.overflow=overflow;detailsAnimations.delete(node);disclosureSizes.set(node,node.getBoundingClientRect().height);}}
+    function finish(){if(detailsAnimations.get(node)===a){node.style.overflow=overflow;detailsAnimations.delete(node);}}
     a.onfinish=finish;a.oncancel=finish;
   }
-  // Defer height writes so nested disclosures do not resize during observer delivery.
-  var resizeObserver = window.ResizeObserver ? new ResizeObserver(function(entries){entries.forEach(function(entry){var d=entry.target,wasOpen=disclosureOpen.get(d);disclosureOpen.set(d,d.open);if(detailsAnimations.has(d))return;var next=d.getBoundingClientRect().height,previous=disclosureSizes.get(d);disclosureSizes.set(d,next);if((d.open||wasOpen)&&previous!=null)requestAnimationFrame(function(){if(d.isConnected&&!detailsAnimations.has(d))animateSize(d,previous,next);});});}) : null;
+  // Animate explicit disclosure actions only. Async quotes, nested charts and
+  // viewport resizing must not start new layout animations while reading.
   function toggleDetails(d) {
     var summary=d.querySelector('summary'),start=d.getBoundingClientRect().height;
+    var running=detailsAnimations.get(d);if(running)running.cancel();
     d.open=!d.open;summary.setAttribute('aria-expanded',String(d.open));
     animateSize(d,start,d.getBoundingClientRect().height);
   }
@@ -282,18 +283,34 @@
   }
   function scan() {
     scanFrame = 0; var scope = root(); if (!scope) return;
+    var full=fullScanPending;fullScanPending=false;
+    if(!full){pendingNumbers.forEach(updateNumber);pendingNumbers.clear();return;}
+    pendingNumbers.clear();
     ['#us-summary','#us-heat','#us-ranking'].forEach(function(sel){var host=scope.querySelector(sel);if(host&&!host.childElementCount&&!host.textContent.trim())load(host,'讀取已完成快照…');});
     each(scope,'.msg',function(box){if(box.dataset.uiOutcome)return;var text=box.textContent||'';var state=/失敗|錯誤|沒有儲存|不正確|過期|無法|請先|請填|未完成|⚠/.test(text)?'error':/成功|已儲存|已新增|已賣出|✅/.test(text)?'success':null;if(state){box.dataset.uiOutcome=state;box.dataset.state=state;box.classList.add('ui-form-status');box.setAttribute('role',state==='error'?'alert':'status');}});
     scanNumbers(scope); selectedControls(scope); prepareDetails(scope); prepareAllocation(scope);
-    if(resizeObserver)each(scope,'details.ui-disclosure',function(d){if(!resizeBound.has(d)){resizeBound.add(d);disclosureOpen.set(d,d.open);disclosureSizes.set(d,d.getBoundingClientRect().height);resizeObserver.observe(d);}});
     prepareViewport(scope);
     each(scope, 'svg.portfolio-trend-svg,svg.ui-interactive-chart', function(svg){if(svg.dataset.uiChartBound||chartQueued.has(svg))return;chartQueued.add(svg);whenNear(svg,function(){chartQueued.delete(svg);bindChart(svg);});});
     nearJobs.forEach(function(_,host){if(!host.isConnected){nearJobs.delete(host);if(nearObserver)nearObserver.unobserve(host);}});
     loadStates.forEach(function (state, host) { if (!host.isConnected || !host.contains(state.box)) endLoad(host); });
     chartCleanups.forEach(function (cleanup) { if (!cleanup.svg.isConnected) cleanup(); });
   }
-  function schedule() { if (!scanFrame) scanFrame = requestAnimationFrame(scan); }
-  document.addEventListener('pointerdown', function (e) { var target = e.target.closest(controls); if (!target || target.disabled || e.button > 0) return; if(target.matches('[data-home-privacy-toggle]'))stopNumbers(); target.classList.add('ui-pressed'); var holdingCard=target.matches('.position-more>summary')?target.closest('.position-card'):null; if(holdingCard)holdingCard.classList.add('ui-pressed'); setTimeout(function () { target.classList.remove('ui-pressed'); if(holdingCard)holdingCard.classList.remove('ui-pressed'); }, duration('press',170)); }, { capture: true, passive: true });
+  function schedule() { fullScanPending=true;if (!scanFrame) scanFrame = requestAnimationFrame(scan); }
+  function scheduleNumber(host){pendingNumbers.add(host);if(!scanFrame)scanFrame=requestAnimationFrame(scan);}
+  function clearPress(){clearTimeout(pressTimer);pressTimer=0;if(!press)return;press.target.classList.remove('ui-pressed');if(press.card)press.card.classList.remove('ui-pressed');press=null;}
+  document.addEventListener('pointerdown', function(e){
+    clearPress();var target=e.target.closest(controls);
+    if(!target||target.disabled||e.button>0||e.isPrimary===false)return;
+    if(target.matches('[data-home-privacy-toggle]'))stopNumbers();
+    var card=target.matches('.position-more>summary')?target.closest('.position-card'):null;
+    press={id:e.pointerId,x:e.clientX,y:e.clientY,at:performance.now(),target:target,card:card};
+    target.classList.add('ui-pressed');if(card)card.classList.add('ui-pressed');
+    pressTimer=setTimeout(clearPress,2000);
+  },{capture:true,passive:true});
+  document.addEventListener('pointermove',function(e){if(press&&press.id===e.pointerId&&(Math.abs(e.clientX-press.x)>8||Math.abs(e.clientY-press.y)>8))clearPress();},{capture:true,passive:true});
+  document.addEventListener('pointerup',function(e){if(!press||press.id!==e.pointerId)return;clearTimeout(pressTimer);pressTimer=setTimeout(clearPress,Math.max(0,100-(performance.now()-press.at)));},{capture:true,passive:true});
+  document.addEventListener('pointercancel',clearPress,{capture:true,passive:true});
+  window.addEventListener('blur',clearPress);
   document.addEventListener('click',function(e){if(e.target.closest('[data-home-privacy-toggle]')){stopNumbers();return;}var trigger=e.target.closest('[data-home-chart-row],.hv2-hold-trigger,[data-hv2-more]');if(!trigger)return;var host=trigger.closest('.hv2-hold,.hv2-group')||trigger;var before=host.getBoundingClientRect().height;queueMicrotask(function(){if(host.isConnected)animateSize(host,before,host.getBoundingClientRect().height);});},true);
   document.addEventListener('click', function (e) {
     if(e.target.closest('[data-home-privacy-toggle]'))stopNumbers();
@@ -309,13 +326,19 @@
   });
   document.addEventListener('change', function (e) { if (e.target.matches('.trend-period-radio')) { requestAnimationFrame(function () { each(root(), '.portfolio-trend-panel', function (p) { if (p.getClientRects().length) enter(p, 'ui-chart-period'); }); }); } schedule(); });
   document.addEventListener('toggle', function (e) { if (e.target.tagName === 'DETAILS') { var s = e.target.querySelector('summary'); if (s) s.setAttribute('aria-expanded', String(e.target.open)); } }, true);
-  function cleanup() { if(nearObserver)nearObserver.disconnect();if(revealObserver)revealObserver.disconnect();nearJobs.clear();chartQueued=new WeakSet(); formTimers.forEach(clearTimeout);formTimers.clear(); if(resizeObserver){resizeObserver.disconnect();resizeBound=new WeakSet();} stopNumbers(); detailsAnimations.forEach(function (a) { a.cancel(); }); detailsAnimations.clear(); chartCleanups.forEach(function (fn) { fn(); }); loadStates.forEach(function (_, host) { endLoad(host); }); cancelAnimationFrame(scanFrame); scanFrame = 0; }
+  function cleanup() { clearPress();pendingNumbers.clear();fullScanPending=true;if(nearObserver)nearObserver.disconnect();if(revealObserver)revealObserver.disconnect();nearJobs.clear();chartQueued=new WeakSet(); formTimers.forEach(clearTimeout);formTimers.clear(); stopNumbers(); detailsAnimations.forEach(function (a) { a.cancel(); }); detailsAnimations.clear(); chartCleanups.forEach(function (fn) { fn(); }); loadStates.forEach(function (_, host) { endLoad(host); }); cancelAnimationFrame(scanFrame); scanFrame = 0; }
   document.addEventListener('stockbot:pageleaving', cleanup);
-  document.addEventListener('visibilitychange', function () { if (document.hidden) stopNumbers(); });
-  window.addEventListener('scroll', stopNumbers, { capture: true, passive: true }); window.addEventListener('resize', stopNumbers, { passive: true });
+  document.addEventListener('visibilitychange', function () { if (document.hidden) {stopNumbers();clearPress();} });
+  window.addEventListener('scroll',function(){stopNumbers();clearPress();}, { capture: true, passive: true }); window.addEventListener('resize', stopNumbers, { passive: true });
   window.addEventListener('pagehide', function () { cleanup(); routeEnd(true); });
   window.addEventListener('pageshow', function () { each(document, 'form[data-submitted="1"]', function (form) { delete form.dataset.submitted; form.classList.remove('tap-loading'); each(form, '[data-old-text]', function (b) { b.disabled = false; if (b.tagName === 'INPUT') b.value = b.dataset.oldText; else b.textContent = b.dataset.oldText; }); formState(form, 'error', '操作狀態已重設，請先確認是否已儲存。'); }); schedule(); });
   window.StockBotUI = { routeStart: routeStart, routeEnd: routeEnd, load: load, endLoad: endLoad, formState: formState, notify: notify, scan: schedule, reducedMotion: reduced, cleanup: cleanup, parseNumber: parseNumber, whenNear:whenNear, captureView:captureView, restoreView:restoreView };
-  function boot() { var scope = root(); if (!scope) return; observer = new MutationObserver(function(records){ if(records.every(function(r){var n=r.target.nodeType===1?r.target:r.target.parentElement;return n&&n.closest('.ui-chart-readout');}))return; schedule(); }); observer.observe(scope, { childList: true, characterData: true, subtree: true }); scan(); }
+  function boot() { var scope = root(); if (!scope) return; observer = new MutationObserver(function(records){records.forEach(function(r){
+    var node=r.target.nodeType===1?r.target:r.target.parentElement;
+    if(!node||node.closest('.ui-chart-readout'))return;
+    var host=node.closest(numberSelector);if(host){scheduleNumber(host);return;}
+    var structural=r.type==='childList'&&Array.from(r.addedNodes).concat(Array.from(r.removedNodes)).some(function(n){return n.nodeType===1;});
+    if(structural){schedule();return;}
+  });}); observer.observe(scope, { childList: true, characterData: true, subtree: true }); scan(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true }); else boot();
 })();

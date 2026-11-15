@@ -28612,10 +28612,10 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261115-3">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261115-4">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261115-2">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
-<script defer src="/static/ui-feedback.js?v=20261115-1"></script>
+<script defer src="/static/ui-feedback.js?v=20261115-2"></script>
 <script defer src="/static/settings-theme.js?v=20261112-1"></script>
 <script defer src="/static/fugle-live.js?v=20261109-2"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
