@@ -11173,6 +11173,7 @@ RADAR_DEEP_SCAN_LIMIT = 240
 # 避免在 Render 512 MiB 的單一 Web instance 上與一般頁面搶記憶體。
 # 手動完整分析仍保留 RADAR_DEEP_SCAN_LIMIT=240。
 RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 4
+RADAR_LIGHT_SCAN_RESERVE_MB = 200  # bounded 4-candidate, 2-worker producer
 
 
 def _background_work_memory_safe(reserve_mb=160):
@@ -22285,7 +22286,8 @@ def _do_warmup():
         # Warmup has already prepared the critical shared datasets above. Full-market
         # scanners are optional; on a small single web instance, preserve page and
         # trade availability when memory headroom is low.
-        if not _background_work_memory_safe(reserve_mb=290):
+        reserve_mb = RADAR_LIGHT_SCAN_RESERVE_MB if mode == "radar" else 290
+        if not _background_work_memory_safe(reserve_mb=reserve_mb):
             done.append(f"{mode} 略過（保留網站記憶體；沿用最近快照）")
             continue
         stage_started = time.perf_counter()
@@ -22296,7 +22298,7 @@ def _do_warmup():
                 # 盤中雷達 producer 也使用同一個受限上限。
                 radar_deep_limit=(RADAR_SCHEDULED_DEEP_SCAN_LIMIT
                                   if mode == "radar" else None),
-                price_workers=4,
+                price_workers=2 if mode == "radar" else 4,
             )
             persisted = _load_persisted_screener_snapshot(mode)
             elapsed = time.perf_counter() - stage_started
@@ -28610,7 +28612,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261115-2">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261115-3">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261115-2">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
 <script defer src="/static/ui-feedback.js?v=20261115-1"></script>
@@ -47151,6 +47153,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
 
 _SCREENER_REFRESH_LOCK = threading.Lock()
 _SCREENER_REFRESH_RUNNING = {"blackhorse": False, "radar": False}
+_SCREENER_REFRESH_ERRORS = {}
 SCREENER_STALE_SNAPSHOT_MAX_AGE_SECONDS = 3 * 86400
 
 
@@ -47222,6 +47225,18 @@ def _screener_recent_snapshot(mode):
     return None, "尚未建立可用快照"
 
 
+def _screener_refresh_status(mode, started=False):
+    with _SCREENER_REFRESH_LOCK:
+        running = bool(_SCREENER_REFRESH_RUNNING.get(mode))
+        failure = _SCREENER_REFRESH_ERRORS.get(mode)
+    building = bool(started or running)
+    note = ("已排入背景候選掃描；完成後自動更新。" if started else
+            "背景候選掃描已排程或執行中；完成後自動更新。" if running else
+            "最近一次候選掃描失敗；請稍後按重新整理重試。" if failure else
+            "可用記憶體不足，候選掃描暫緩；請稍後按重新整理重試。")
+    return {"building":building, "deferred":not building, "note":note}
+
+
 def _start_screener_background_refresh(mode, intraday=False,
                                       radar_deep_limit=None, on_complete=None,
                                       on_failure=None, price_workers=None):
@@ -47236,7 +47251,18 @@ def _start_screener_background_refresh(mode, intraday=False,
     # Scan work is optional; never let a cold-start/manual refresh evict the web
     # process while it is serving positions, trades, or other pages. A later
     # request/poll can start it when the existing snapshot is no longer busy.
-    if not _background_work_memory_safe(reserve_mb=280):
+    # A webpage cold start must use the same bounded candidate set as cron,
+    # including weekends. An explicit full scan retains the larger reserve.
+    if mode == "radar":
+        requested_limit = RADAR_SCHEDULED_DEEP_SCAN_LIMIT if radar_deep_limit is None else int(radar_deep_limit)
+        radar_deep_limit = max(4, min(requested_limit, RADAR_DEEP_SCAN_LIMIT))
+    light_radar = (mode == "radar" and int(radar_deep_limit) <= RADAR_SCHEDULED_DEEP_SCAN_LIMIT)
+    reserve_mb = RADAR_LIGHT_SCAN_RESERVE_MB if light_radar else 280
+    with _SCREENER_REFRESH_LOCK:
+        failure = _SCREENER_REFRESH_ERRORS.get(mode)
+        if failure and time.monotonic() - failure < 60:
+            return False
+    if not _background_work_memory_safe(reserve_mb=reserve_mb):
         print("⚠️ 選股背景刷新延後 %s：保留持股與一般網頁請求的記憶體" % mode,
               flush=True)
         return False
@@ -47244,11 +47270,15 @@ def _start_screener_background_refresh(mode, intraday=False,
         if _SCREENER_REFRESH_RUNNING.get(mode):
             return False
         _SCREENER_REFRESH_RUNNING[mode] = True
+        _SCREENER_REFRESH_ERRORS.pop(mode, None)
 
     def worker():
         completed = False
         failure = None
         try:
+            # Recheck after queueing: another completed job may have consumed RAM.
+            if not _background_work_memory_safe(reserve_mb=reserve_mb):
+                raise RuntimeError("背景掃描暫緩：可用記憶體不足")
             kwargs = {"persist": not intraday, "force_refresh": True,
                       "persist_live": bool(intraday and mode == "radar")}
             if radar_deep_limit is not None and mode == "radar":
@@ -47256,8 +47286,15 @@ def _start_screener_background_refresh(mode, intraday=False,
             # Background scans share the single web process with portfolio writes.
             # Limit quote fan-out for both modes; synchronous/manual calculations
             # keep their existing worker count and ranking logic.
-            kwargs["price_workers"] = price_workers or 4
+            kwargs["price_workers"] = (min(2, max(1, int(price_workers or 2))) if light_radar
+                                       else (price_workers or 4))
             compute_screener_rows(mode, **kwargs)
+            if mode == "radar":
+                snapshot = _screener_cache.get(mode)
+                if (not isinstance(snapshot, dict) or
+                        not isinstance(snapshot.get("rows"), list) or
+                        (not snapshot["rows"] and not _screener_empty_result_has_scan_evidence(mode, snapshot))):
+                    raise RuntimeError("行情資料不足，尚未建立可信雷達快照")
             completed = True
             print("✅ 選股背景刷新完成 %s%s" %
                   (mode, "（盤中不寫入收盤快照）" if intraday else ""))
@@ -47267,6 +47304,8 @@ def _start_screener_background_refresh(mode, intraday=False,
         finally:
             with _SCREENER_REFRESH_LOCK:
                 _SCREENER_REFRESH_RUNNING[mode] = False
+                if failure is not None:
+                    _SCREENER_REFRESH_ERRORS[mode] = time.monotonic()
             if completed and callable(on_complete):
                 try:
                     on_complete()
@@ -47342,7 +47381,8 @@ def _do_scheduled_radar_live_snapshot():
     try:
         rows, skipped, _momentum = compute_screener_rows(
             "radar", persist=False, force_refresh=True,
-            radar_deep_limit=RADAR_SCHEDULED_DEEP_SCAN_LIMIT, persist_live=True)
+            radar_deep_limit=RADAR_SCHEDULED_DEEP_SCAN_LIMIT, persist_live=True,
+            price_workers=2)
         result = (f"已完成盤中雷達快照：掃描 {len(rows) + int(skipped or 0)} 檔候選、"
                   f"輸出 {len(rows)} 檔；有效期 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘")
         # Keep the 10-minute Radar producer isolated from Blackhorse. The next
@@ -47361,7 +47401,7 @@ def cron_radar_live():
         abort(403)
     if not _is_taiwan_intraday_window():
         return "目前非台股一般盤中時段，未啟動盤中雷達快照。", 200
-    if not _background_work_memory_safe(reserve_mb=290):
+    if not _background_work_memory_safe(reserve_mb=RADAR_LIGHT_SCAN_RESERVE_MB):
         return "目前網站記憶體負載較高，已保留最近雷達快照並略過本輪掃描。", 200
     try:
         print(push_intraday_market_anomalies(base_url=DEFAULT_WEB_BASE_URL))
@@ -50043,7 +50083,7 @@ function bindFactors(){
     if(sel)sel.onchange=function(){state.scoreChangeSort=sel.value;renderScoreChanges();};
     scoreChangePanel.querySelectorAll('[data-score-change-code]').forEach(function(btn){btn.onclick=function(){var code=btn.getAttribute('data-score-change-code');var row=state.rows.find(function(r){return r.source==='黑馬'&&String(r.code)===String(code);});if(row)showDetail(row);};});
   }
-  function render(){renderScoreChanges();renderAssetTabs();renderTabs();var lab=state.assetMode==='lab'||state.source==='策略研究';root.classList.toggle('wb-lab-active',lab);var tools=document.querySelector('.wb-tools'),fp=document.getElementById('wb-filter-panel'),ms=document.getElementById('wb-mobile-sort'),meta=document.querySelector('.wb-meta'),table=document.getElementById('wb-table'),labEl=document.getElementById('wb-strategy-lab'),assetTabs=document.getElementById('wb-asset-tabs'),sourceTabs=document.getElementById('wb-tabs'),intro=document.querySelector('.wb-intro'),pulse=document.getElementById('wb-pulse');[tools,ms,meta,table,assetTabs,sourceTabs,intro,pulse].forEach(function(el){if(el)el.hidden=lab;});if(fp)fp.hidden=lab||!state.filterOpen;var filterButton=document.getElementById('wb-filter');if(filterButton)filterButton.setAttribute('aria-expanded',String(!!state.filterOpen));if(labEl)labEl.hidden=!lab;if(lab){state.source='策略研究';status.textContent='策略研究實驗室';loadStrategyLab(false);return;}document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}if(state.source!=='黑馬'&&state.source!=='雷達'&&state.source!=='成效'&&state.source!=='我的排行'&&!state.loadedSources[state.source]){rowsEl.innerHTML='<div class="wb-empty">正在準備 '+esc(state.source)+'…</div>';return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}var sourceTotal=(state.source==='黑馬'||state.source==='雷達')?state.rows.filter(function(r){return r.source===state.source;}).length:list.length;var sourceMeta=state.sources[state.source]||{};if((state.source==='黑馬'||state.source==='雷達')&&sourceMeta.building&&!sourceTotal){count.textContent='快照背景重建中';rowsEl.innerHTML='<div class="wb-empty"><b>'+esc(state.source)+'快照正在重新整理</b><small>'+esc(sourceMeta.note||'目前沒有可用快照，系統正在背景掃描；完成後會自動載入。')+'</small></div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔';if(state.source==='黑馬'||state.source==='雷達'){if(!list.length){var emptyMessage=sourceTotal?'目前的搜尋或篩選條件沒有符合資料。':(sourceMeta.no_candidates?'完整掃描已完成，但目前沒有符合雷達條件的標的。':'目前沒有可用的'+state.source+'結果。');var emptyNote=sourceTotal?'請清除搜尋文字或放寬篩選條件。':(sourceMeta.note||('資料日期：'+(sourceMeta.date||'未標日期')+'；可稍後重新整理。'));rowsEl.innerHTML='<div class="wb-empty"><b>'+esc(emptyMessage)+'</b><small>'+esc(emptyNote)+'</small></div>';return;}var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
+  function render(){renderScoreChanges();renderAssetTabs();renderTabs();var lab=state.assetMode==='lab'||state.source==='策略研究';root.classList.toggle('wb-lab-active',lab);var tools=document.querySelector('.wb-tools'),fp=document.getElementById('wb-filter-panel'),ms=document.getElementById('wb-mobile-sort'),meta=document.querySelector('.wb-meta'),table=document.getElementById('wb-table'),labEl=document.getElementById('wb-strategy-lab'),assetTabs=document.getElementById('wb-asset-tabs'),sourceTabs=document.getElementById('wb-tabs'),intro=document.querySelector('.wb-intro'),pulse=document.getElementById('wb-pulse');[tools,ms,meta,table,assetTabs,sourceTabs,intro,pulse].forEach(function(el){if(el)el.hidden=lab;});if(fp)fp.hidden=lab||!state.filterOpen;var filterButton=document.getElementById('wb-filter');if(filterButton)filterButton.setAttribute('aria-expanded',String(!!state.filterOpen));if(labEl)labEl.hidden=!lab;if(lab){state.source='策略研究';status.textContent='策略研究實驗室';loadStrategyLab(false);return;}document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}if(state.source!=='黑馬'&&state.source!=='雷達'&&state.source!=='成效'&&state.source!=='我的排行'&&!state.loadedSources[state.source]){rowsEl.innerHTML='<div class="wb-empty">正在準備 '+esc(state.source)+'…</div>';return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}var sourceTotal=(state.source==='黑馬'||state.source==='雷達')?state.rows.filter(function(r){return r.source===state.source;}).length:list.length;var sourceMeta=state.sources[state.source]||{};if((state.source==='黑馬'||state.source==='雷達')&&sourceMeta.building&&!sourceTotal){count.textContent='快照背景重建中';rowsEl.innerHTML='<div class="wb-empty"><b>'+esc(state.source)+'快照正在重新整理</b><small>'+esc(sourceMeta.note||'目前沒有可用快照，系統正在背景掃描；完成後會自動載入。')+'</small></div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔'+(state.source==='雷達'&&sourceMeta.scan_limited?' · 深度檢查 '+esc(sourceMeta.deep_scanned)+' 檔候選，非全市場完整排行':'');if(state.source==='黑馬'||state.source==='雷達'){if(!list.length){var emptyMessage=sourceTotal?'目前的搜尋或篩選條件沒有符合資料。':(sourceMeta.no_candidates?'完整掃描已完成，但目前沒有符合雷達條件的標的。':'目前沒有可用的'+state.source+'結果。');var emptyNote=sourceTotal?'請清除搜尋文字或放寬篩選條件。':(sourceMeta.note||('資料日期：'+(sourceMeta.date||'未標日期')+'；可稍後重新整理。'));rowsEl.innerHTML='<div class="wb-empty"><b>'+esc(emptyMessage)+'</b><small>'+esc(emptyNote)+'</small></div>';return;}var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
     state.detailOpen=true;
     var host=document.getElementById('wb-detail'), dr=document.getElementById('wb-drawer'), mk=document.getElementById('wb-mask');
     if(!host||!dr)return;
@@ -50334,10 +50374,15 @@ function bindFactors(){
           state.snapshotRetryCounts[source]=0;
         }
         delete state.loadingSources[source];
+        if(source===state.source){
+          status.removeAttribute('data-loading-source');
+          status.textContent=source+(building?'背景掃描排程中':data.meta&&data.meta.available===false?'暫緩':'已載入');
+        }
         var sourceElapsed=Math.max(0,(performance.now()-sourceStartedAt)/1000);
         console.info('[台股 BOT] 選股快照 '+source+' API 耗時 '+sourceElapsed.toFixed(2)+' 秒'+(building?'（背景重建中）':''));
-        if(source==='黑馬'&&!building)finishWorkbenchLoad('完成');
-        if(source==='黑馬'&&building)finishWorkbenchLoad('背景重建中');
+        if(source===state.source&&(source==='黑馬'||source==='雷達')){
+          finishWorkbenchLoad(building?'背景排程中':data.meta&&data.meta.available===false?'暫緩':'完成');
+        }
         renderTabs();
         if(state.source===source && sourceViewEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer) render();
         if(building){
@@ -50362,7 +50407,8 @@ function bindFactors(){
         var sourceElapsed=Math.max(0,(performance.now()-sourceStartedAt)/1000);
         console.error('[台股 BOT] 選股快照 '+source+' 失敗，耗時 '+sourceElapsed.toFixed(2)+' 秒：'+em);
         state.sources[source]=Object.assign({},state.sources[source]||{},{available:false,error:em});
-        if(source==='黑馬')finishWorkbenchLoad('失敗');
+        if(source===state.source){status.removeAttribute('data-loading-source');status.textContent=source+'載入失敗';}
+        if(source===state.source&&(source==='黑馬'||source==='雷達'))finishWorkbenchLoad('失敗');
         renderTabs();
         var retryCount=state.snapshotRetryCounts[source]||0;
         if(retryCount<3 && (!e || e.name==='AbortError' || /HTTP 5\d\d|非 JSON|有效 JSON|Failed to fetch|NetworkError|逾時/.test(em))){
@@ -50391,7 +50437,7 @@ function bindFactors(){
     rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
     fetchWorkbenchSource(source, !!forceRefresh).then(function(){
       if(state.source===source && loadEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer){
-        status.textContent=state.loadedSources[source]?'已載入 '+source:'正在等待 '+source+' 快照…';
+        status.textContent=(state.sources[source]||{}).deferred?source+'暫緩':state.loadedSources[source]?source+'已載入':'正在等待 '+source+' 快照…';
         render();
       }
     });
@@ -50696,8 +50742,7 @@ def _build_workbench_core_payload(uid):
                 "computed_at": str(snap.get("computed_at") or "")})
         else:
             started = _start_screener_background_refresh("blackhorse")
-            sources["黑馬"].update({"building": True,
-                "note": "黑馬快照不存在、過期或內容為無效空清單；系統已在背景重新掃描。"})
+            sources["黑馬"].update(_screener_refresh_status("blackhorse", started))
             print("⚠️ 工作台首屏黑馬快照不可用，背景重建%s" % ("已啟動" if started else "已在執行"))
     except Exception as exc:
         print(f"⚠️ 工作台黑馬快照讀取失敗：{exc}")
@@ -50732,8 +50777,7 @@ def _build_workbench_core_payload(uid):
             started = _start_screener_background_refresh(
                 "radar", intraday=_is_taiwan_intraday_window(),
                 radar_deep_limit=RADAR_SCHEDULED_DEEP_SCAN_LIMIT if _is_taiwan_intraday_window() else None)
-            sources["雷達"].update({"building": True,
-                "note": "雷達快照不存在、過期或內容為無效空清單；系統已在背景重新掃描。"})
+            sources["雷達"].update(_screener_refresh_status("radar", started))
             print("⚠️ 工作台首屏雷達快照不可用，背景重建%s" % ("已啟動" if started else "已在執行"))
     except Exception as exc:
         print(f"⚠️ 工作台雷達快照讀取失敗：{exc}")
@@ -50786,22 +50830,28 @@ def _workbench_source_payload(uid, source):
             started = _start_screener_background_refresh(
                 mode, intraday=in_market,
                 radar_deep_limit=RADAR_SCHEDULED_DEEP_SCAN_LIMIT if in_market else None)
+            refresh_status = _screener_refresh_status(mode, started)
             return {"ok":True,"source":source,"rows":[],"score_changes":[],
-                    "meta":{"available":False,"building":True,
+                    "meta":{"available":False,**refresh_status,
                             "date":"尚無可用快照",
                             "source":"背景重新掃描",
                             "intraday": bool(_is_taiwan_intraday_window()),
                             "market_open": bool(_is_taiwan_intraday_window()),
-                            "note": ("已啟動背景掃描；完成後自動更新。" if started
-                                     else "背景掃描正在進行；完成後自動更新。")}}
+                            "note": refresh_status["note"]}}
         # 黑馬首屏只讀快照；今日分數變化需要額外資料庫比對，不能阻塞首屏。
         changes=[]
         empty_radar = (mode == "radar" and not rows)
+        diagnostics = ((snap or {}).get("radar_diagnostics") or
+                       ((snap or {}).get("source_meta") or {}).get("radar_diagnostics") or {})
+        deep_count = int(diagnostics.get("deep_candidate_count") or 0)
+        qualified_count = int(diagnostics.get("spark_qualified_count") or 0)
+        scan_limited = bool(mode == "radar" and deep_count and qualified_count > deep_count)
         market_open = bool(_is_taiwan_intraday_window())
         return {"ok":True,"source":source,"rows":rows,"score_changes":changes,
                 "meta":{"available":True,
                         "building":False,
                         "no_candidates":empty_radar,
+                        "scan_limited":scan_limited,"deep_scanned":deep_count,
                         "intraday": market_open,
                         "market_open": market_open,
                         "computed_at": str((snap or {}).get("computed_at") or ""),

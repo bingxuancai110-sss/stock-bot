@@ -1,13 +1,13 @@
 """Actual shell styling and geometry checks; no production account traffic."""
 import json, os, sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from playwright.sync_api import sync_playwright
 
 REPO=Path(__file__).resolve().parents[2]
 ROOT=Path(os.environ.get('STOCKBOT_UI_ARTIFACTS','/tmp/stockbot-ui-validation'))
 engine=sys.argv[1] if len(sys.argv)>1 else 'chromium'
-checks=[];errors=[]
+checks=[];errors=[];scenario={'radar':'deferred'}
 with sync_playwright() as p:
     browser=(p.webkit.launch(headless=True) if engine=='webkit' else p.chromium.launch(
         **({'executable_path':os.environ['STOCKBOT_CHROMIUM_EXECUTABLE']} if os.environ.get('STOCKBOT_CHROMIUM_EXECUTABLE') else {}),
@@ -21,6 +21,10 @@ with sync_playwright() as p:
             r.fulfill(body=f.read_text(encoding='utf-8'),content_type='text/css' if f.suffix=='.css' else 'application/javascript');return
         if u.path=='/web/quote-lab/app-config':r.fulfill(status=403,json={'ok':False});return
         if '/api/workbench/' in u.path:
+            if parse_qs(u.query).get('source')==['雷達']:
+                ready=scenario['radar']=='ready'
+                r.fulfill(json={'ok':True,'source':'雷達','rows':[{'code':'2330','name':'隔離雷達樣本','source':'雷達','score':80,'price':100,'change_pct':1.5}] if ready else [],
+                                'meta':{'available':ready,'building':False,'deferred':not ready,'note':'記憶體保護暫緩；請稍後重新整理' if not ready else '', 'date':'2026-11-13','scan_limited':ready,'deep_scanned':4}});return
             r.fulfill(json={'ok':True,'rows':[{'code':'2330','name':'隔離測試台積電','source':'黑馬','row_key':'fixture-2330','score':80,'total_score':80,'price':100,'change_pct':1.5,'industry':'測試產業','signal':'測試快照','detail':{}}],
                            'sources':{'黑馬':{'available':True,'date':'2026-11-04'}},'personal':{},'meta':{'market_open':False,'available':True}});return
         if '/api/' in u.path:r.fulfill(json={'ok':True,'updates':[],'market_open':False});return
@@ -70,9 +74,16 @@ with sync_playwright() as p:
     check('long-range chart retains horizontal panning',page.locator('.panel-all .portfolio-trend-plot').evaluate('(e)=>e.scrollWidth>e.clientWidth'))
     page.goto('https://fixture.test/web/workbench');page.wait_for_selector('.wb-row.wb-rich-row')
     row=page.locator('.wb-row.wb-rich-row').first
+    check('wide screener uses aligned quote columns instead of stacked full-width blocks',row.evaluate('(e)=>{const p=e.querySelector(".wb-price-block"),s=e.querySelector(".wb-score-block");return getComputedStyle(e).display==="grid"&&getComputedStyle(p).gridArea.startsWith("price")&&getComputedStyle(s).gridArea.startsWith("score")&&Math.abs(p.getBoundingClientRect().top-s.getBoundingClientRect().top)<50}'))
+    check('desktop source tabs have readable labels and full touch targets',page.locator('#wb-tabs button').first.evaluate('(e)=>parseFloat(getComputedStyle(e).fontSize)>=14&&e.getBoundingClientRect().height>=44'))
     before=row.evaluate('(e)=>({left:e.getBoundingClientRect().left,padding:getComputedStyle(e).paddingLeft})')
     row.hover();page.wait_for_timeout(200)
     check('hovering a desktop stock row does not move its contents',row.evaluate('(e,p)=>Math.abs(e.getBoundingClientRect().left-p.left)<1&&getComputedStyle(e).paddingLeft===p.padding',before))
+    page.locator('#wb-tabs [data-source="雷達"]').click();page.wait_for_function('document.querySelector("#wb-status").textContent==="雷達暫緩"')
+    check('deferred radar shows a truthful finished read rather than perpetual scanning',page.locator('#wb-rows').inner_text().find('記憶體保護')>=0 and page.locator('#wb-status').get_attribute('data-loading-source') is None)
+    scenario['radar']='ready';page.reload();page.wait_for_selector('.wb-row.wb-rich-row')
+    page.locator('#wb-tabs [data-source="雷達"]').click();page.wait_for_function('document.querySelector("#wb-status").textContent==="雷達已載入"')
+    check('completed radar displays its candidate limit and clears its spinner','深度檢查 4 檔候選' in page.locator('#wb-count').inner_text() and page.locator('#wb-status').get_attribute('data-loading-source') is None)
     check('presentation checks cause no JavaScript errors',not errors)
     browser.close()
 ROOT.joinpath(engine+'-scroll-presentation-results.json').write_text(json.dumps(checks,ensure_ascii=False,indent=2),encoding='utf-8')
