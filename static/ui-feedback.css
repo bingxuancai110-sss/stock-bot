@@ -722,3 +722,25 @@ body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) #page-nav-progress
   body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row :is(.wb-name,.wb-code){font-size:16px!important}
   body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row :is(.wb-fact-line,.wb-industry,.wb-small){font-size:12px!important;line-height:1.6!important}
 }
+
+@media(min-width:900px){
+  body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench :is(#wb-tabs,#wb-asset-tabs,#wb-mobile-sort) button{
+    font-size:14px!important;min-height:44px!important;padding:8px 12px!important;
+  }
+}
+/* A wide workspace needs aligned quote columns rather than a phone stack
+   stretched across the screen. Every field and the existing detail action stay. */
+@media(min-width:1200px){
+  body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-row.wb-rich-row{
+    display:grid!important;grid-template-columns:minmax(220px,1fr) 104px 96px 112px 100px 18px!important;
+    grid-template-areas:"main price score institution signal arrow"!important;
+    align-items:center!important;gap:12px!important;min-height:108px!important;
+    padding:14px 10px!important;transition:background-color 160ms ease!important;
+  }
+  body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-row.wb-rich-row>.wb-row-main{grid-area:main!important;min-width:0!important}
+  body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-row.wb-rich-row>.wb-price-block{grid-area:price!important;text-align:right!important;min-width:0!important}
+  body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-row.wb-rich-row>.wb-score-block{grid-area:score!important;text-align:right!important;min-width:0!important}
+  body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-row.wb-rich-row>.wb-institutional{grid-area:institution!important;text-align:right!important;min-width:0!important}
+  body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-row.wb-rich-row>.wb-signal{grid-area:signal!important;min-width:0!important}
+  body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench #wb-rows .wb-row.wb-rich-row>span:last-child{grid-area:arrow!important;text-align:right!important}
+}
