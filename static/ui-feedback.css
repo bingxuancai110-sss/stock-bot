@@ -648,3 +648,77 @@ body#stockbot-app #stockbot-shell>.wrap>footer,
 @media(prefers-reduced-motion:reduce){
   #stockbot-app #app-page-content .ui-section-arrive{animation:none!important}
 }
+
+/* Keep scrolling visually anchored. Legacy entrance translations and guessed
+   content heights made rows drift and long sections resize under the reader. */
+html{scroll-behavior:auto!important}
+#stockbot-app #stockbot-shell #app-page-content :is(.leaderboard-history,.position-history,.position-journal,.rank-chart-panel){
+  content-visibility:visible!important;contain-intrinsic-size:none!important;
+}
+#stockbot-app #stockbot-shell #app-page-content.app-page-enter :is(
+  .daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,
+  .daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,
+  .rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row,.market-chart-card
+){animation:none!important;transform:none!important}
+body#stockbot-app .app-bottom-nav a.on{animation:none!important}
+body#stockbot-app .app-bottom-nav .bottom-inner>a:active{transform:none!important}
+@keyframes sb-data-settle{from{opacity:.94}to{opacity:1}}
+#stockbot-app #app-page-content :is(.ui-chart-period,.ui-rank-enter){animation:sb-data-settle 160ms ease-out!important}
+@media(prefers-reduced-motion:reduce){
+  #stockbot-app #app-page-content :is(.ui-chart-period,.ui-rank-enter){animation:none!important}
+}
+
+/* A single quiet indeterminate rail; slow-navigation status stays out of the
+   title area. Financial data and the previous page remain visible underneath. */
+body#stockbot-app #page-nav-loader .nav-loader-bar{background:var(--sb-app-primary,#24677b)!important}
+body#stockbot-app #page-nav-loader .nav-loader-bar:after{display:none!important;animation:none!important}
+body#stockbot-app #page-nav-progress-card.show:not(.stock-analysis-loader){
+  visibility:visible!important;opacity:1!important;
+  top:auto!important;left:auto!important;right:16px!important;
+  bottom:calc(82px + env(safe-area-inset-bottom,0px))!important;
+  transform:none!important;width:auto!important;max-width:calc(100vw - 32px)!important;
+  gap:16px!important;padding:11px 14px!important;border:1px solid var(--sb-app-line,#dce5e3)!important;
+  border-radius:10px!important;background:var(--sb-app-surface,#fff)!important;
+  box-shadow:0 2px 8px rgba(20,35,45,.06)!important;
+  backdrop-filter:none!important;-webkit-backdrop-filter:none!important;
+}
+body#stockbot-app #page-nav-progress-card.show:not(.stock-analysis-loader):before{content:none!important}
+body#stockbot-app #page-nav-progress-card.show:not(.stock-analysis-loader) #page-nav-progress-head{
+  color:var(--sb-app-ink,#1d3445)!important;font-size:12px!important;font-weight:600!important;
+}
+body#stockbot-app #page-nav-progress-card.show:not(.stock-analysis-loader) #page-nav-progress-time{
+  padding:0!important;background:none!important;color:var(--sb-app-muted,#687d89)!important;
+  font-size:11px!important;font-weight:500!important;
+}
+body#stockbot-app #page-nav-progress-card.show:not(.stock-analysis-loader) #page-nav-progress-time:before{display:none!important}
+body#stockbot-app .ui-feedback-route[data-state=waiting]{
+  position:fixed;z-index:2147483000;right:16px;left:auto;
+  bottom:calc(82px + env(safe-area-inset-bottom,0px));
+  width:min(340px,calc(100vw - 32px));margin:0;box-sizing:border-box;
+  border:1px solid var(--sb-app-line,#dce5e3);border-radius:10px;
+  background:var(--sb-app-surface,#fff);box-shadow:0 2px 8px rgba(20,35,45,.06);
+}
+body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) #page-nav-progress-card.show:not(.stock-analysis-loader){visibility:hidden!important}
+/* Retain the launch illustration without the perpetual jumping bars. */
+#stockbot-app #stockbot-shell #app-page-content #loading .market-loader-chart i{animation:none!important}
+
+/* Desktop findings from the signed-in production browser: tiny metadata and
+   a nine-row allocation legend made otherwise simple pages feel stretched. */
+@media(min-width:900px){
+  body#stockbot-app .app-bottom-nav .bottom-inner>a{font-size:14px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 :is(.total-label,.total-sub){font-size:12px!important;line-height:1.5!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-title h3{font-size:16px!important;line-height:1.4!important}
+  body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 :is(.position-card-title small,.position-card-primary small){font-size:12px!important;line-height:1.5!important}
+  body#stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-primary b{font-size:15px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-card-code{font-size:11px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-allocation-body{grid-template-columns:180px minmax(0,1fr)!important;gap:24px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-allocation-visual{width:180px!important;height:180px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .position-allocation-legend{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:4px 16px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .allocation-item{min-height:44px!important;font-size:13px!important;padding:6px 4px!important}
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .allocation-item b{font-size:13px!important}
+  /* Short ranges fit the desktop frame; retain long-range and phone panning. */
+  #stockbot-app #stockbot-shell #app-page-content #portfolio-v2 .portfolio-trend-panel:is(.panel-1w,.panel-1m,.panel-3m) .trend-chart-inner{width:100%!important;min-width:0!important;height:360px!important}
+  #stockbot-app #stockbot-shell #app-page-content #stockbot-workbench :is(.wb-tabs button,.wb-asset-tabs button,.wb-sort button){font-size:14px!important;min-height:44px!important}
+  body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row :is(.wb-name,.wb-code){font-size:16px!important}
+  body#stockbot-app[data-app-view=screener] #stockbot-shell #app-page-content #stockbot-workbench .wb-row.wb-rich-row :is(.wb-fact-line,.wb-industry,.wb-small){font-size:12px!important;line-height:1.6!important}
+}

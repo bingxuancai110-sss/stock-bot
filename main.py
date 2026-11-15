@@ -28610,8 +28610,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 @media(prefers-reduced-motion:reduce){{#app-page-content.app-page-enter :is(.daily-fast-hero,.daily-hero,.home-portfolio-card,.daily-fast-card,.portfolio-chart-card,.daily-operation-report,.position-card,.position-fast-card,.holding-card,.rank-situation,.rank-spotlight,.rank-card,.wb-row,.wb-row-wrap,.more-group,.trade-row,.watchlist-row),#app-page-content.app-page-enter .market-chart-card,.market-page-enter .market-chart-card,.market-chart-card.is-fullscreen,.app-bottom-nav a.on{{animation:none!important;transition:none!important;transform:none!important}}}}
 </style>
 <style id="user-account-color-theme">{USER_UI_THEME_CSS}</style>
-<link rel="stylesheet" href="/static/ui-feedback.css?v=20261115-1">
-<link rel="stylesheet" href="/static/app-shell.css?v=20261105-5">
+<link rel="stylesheet" href="/static/ui-feedback.css?v=20261115-2">
+<link rel="stylesheet" href="/static/app-shell.css?v=20261115-2">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
 <script defer src="/static/ui-feedback.js?v=20261115-1"></script>
 <script defer src="/static/settings-theme.js?v=20261112-1"></script>
@@ -28632,7 +28632,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <div id="page-nav-progress-card" role="status" aria-live="polite" aria-atomic="true">
   <div id="page-nav-progress-head"><span id="page-nav-progress-title">正在載入頁面…</span><span id="page-nav-progress-percent">0%</span></div>
   <div id="page-nav-progress-track"><div id="page-nav-progress-bar"></div></div>
-  <small id="page-nav-progress-time">已等待 0.0 秒</small>
+  <small id="page-nav-progress-time" aria-hidden="true">已等待 0.0 秒</small>
 </div>
 <script id="internal-top-loading-js">
 (function(){{
@@ -28699,14 +28699,14 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       progressCard.classList.toggle('stock-analysis-loader',String(label||'').indexOf('個股分析')>=0||window.__stockAnalysisNavPending===true);
       progressCard.classList.remove('show');
       if(internalNavigation){{
-        progressRevealTimer=window.setTimeout(function(){{if(active&&progressCard)progressCard.classList.add('show');}},450);
+        progressRevealTimer=window.setTimeout(function(){{if(active&&progressCard)progressCard.classList.add('show');}},1500);
       }}else{{progressCard.classList.add('show');}}
     }}
     if(progressPercent)progressPercent.hidden=true;
     if(progressBar)progressBar.style.width='0%';
     if(!wasActive && progressTime)progressTime.textContent='0.0 秒';
     loader.classList.remove('done');loader.classList.add('show');
-    progressTimer=window.setInterval(paintEstimatedProgress,100);
+    progressTimer=window.setInterval(paintEstimatedProgress,250);
     paintEstimatedProgress();
   }};
 
