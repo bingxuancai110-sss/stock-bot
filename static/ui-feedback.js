@@ -88,6 +88,7 @@
     if (old.content) { old.content.classList.remove('ui-route-pending'); old.content.removeAttribute('aria-busy'); }
     each(document, '.ui-nav-pending', function (n) { n.classList.remove('ui-nav-pending'); n.removeAttribute('aria-busy'); });
     if (old.box && old.box.isConnected) old.box.remove();
+    document.dispatchEvent(new CustomEvent('stockbot:routecomplete'));
     if (!ok && old.content && old.content.isConnected) {
       var error = el('div', 'ui-feedback-route'); error.dataset.state = 'error'; error.setAttribute('role', 'alert');
       error.appendChild(el('p', '', message || '頁面未能載入，保留原本內容。請再次點選分頁重試。'));
@@ -109,6 +110,7 @@
     content.classList.remove('ui-route-pending'); content.setAttribute('aria-busy', 'true');
     each(document, 'a[data-app-nav]', function (a) { if (new URL(a.href, location.href).pathname === path) { a.classList.add('ui-nav-pending'); a.setAttribute('aria-busy', 'true'); } });
     var state = { box: null, content: content, timer: 0 }; route = state;
+    document.dispatchEvent(new CustomEvent('stockbot:routepending',{detail:{label:label,path:path}}));
     state.timer = setTimeout(function () {
       if (route !== state) return;
       var notice = el('div', 'ui-feedback-route'); notice.dataset.state = 'waiting'; notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite');
