@@ -260,6 +260,7 @@ html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content .rank-mo
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content .rank-meta{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px 14px!important;margin-top:14px!important;padding-top:12px!important;border-top:1px solid var(--sb-app-line)!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content .rank-meta-item{display:flex!important;align-items:baseline!important;justify-content:space-between!important;gap:6px!important;min-width:0!important;font-size:12px!important;line-height:1.5!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content .rank-meta{margin-left:0!important;margin-right:0!important}
+html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content .rank-meta-item{flex-direction:row!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content .rank-meta-item em{flex-shrink:0!important;white-space:nowrap!important;font-size:11px!important;color:var(--sb-app-muted)!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content .rank-meta-excess{grid-column:1/-1!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content .rank-meta-value{min-width:0!important;text-align:right!important;white-space:normal!important;overflow-wrap:anywhere!important}
