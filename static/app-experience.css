@@ -146,3 +146,9 @@ body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) .experience-route-
   html body#stockbot-app[data-app-view].app-is-scrolled #stockbot-shell:has(#app-page-content)>.wrap>.app-header,
   html body#stockbot-app .app-bottom-nav{background:var(--sb-app-surface,#fff)!important}
 }
+
+/* First-view editorial reveal. Content remains visible without JS and after
+   completion; financial values and chart containers never receive this class. */
+@keyframes app-text-arrive{from{opacity:.2;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+#stockbot-app #stockbot-shell #app-page-content .ui-section-arrive{animation:app-text-arrive 200ms cubic-bezier(.2,.7,.2,1) both!important}
+@media(prefers-reduced-motion:reduce){#stockbot-app #stockbot-shell #app-page-content .ui-section-arrive{animation:none!important}}

@@ -29,15 +29,28 @@
     if(!window.IntersectionObserver || reduced())return;
     if(!revealObserver)revealObserver=new IntersectionObserver(function(entries){entries.forEach(function(entry){
       if(!entry.isIntersecting)return;
-      revealObserver.unobserve(entry.target);enter(entry.target,'ui-section-arrive');
-    });},{threshold:0.02});
-    each(scope,'.portfolio-trend-card,.rank-chart-panel,.us-section,.hv2-sec:not(.first),.hv2-feature-section,.more-group,.p2-history-list,[data-ui-reveal]',function(section){
+      revealObserver.unobserve(entry.target);
+      if(reduced()||!entry.target.isConnected)return;
+      entry.target.classList.add('ui-section-arrive');
+      function finish(e){if(e&&e.target!==entry.target)return;entry.target.classList.remove('ui-section-arrive');entry.target.removeEventListener('animationend',finish);entry.target.removeEventListener('animationcancel',finish);}
+      entry.target.addEventListener('animationend',finish);entry.target.addEventListener('animationcancel',finish);
+    });},{threshold:0.15,rootMargin:'-90px 0px -110px 0px'});
+    var selector='h2,h3,.more-group-title,.hv2-feature-heading,.portfolio-trend-title,.us-section-head,.wb-d-section-head,.wb-row-main,[data-ui-reveal]';
+    function safe(section){
+      return !section.closest('form,[role=alert],[role=status],[aria-live]') &&
+        (section.matches('.wb-row-main')||!section.closest('button,summary')) &&
+        !section.querySelector('svg,canvas,form,input,button,[data-home-sensitive],[data-position-price],[data-position-net],[data-position-pct]');
+    }
+    each(scope,selector,function(section){
       if(revealSeen.has(section))return;
+      if(!safe(section))return;
+      var parent=section.parentElement&&section.parentElement.closest(selector);
+      if(parent&&scope.contains(parent)&&safe(parent))return;
       var rect=section.getBoundingClientRect();if(!rect.height)return;
       revealSeen.add(section);
-      // Content is always readable. Only sections below the initial viewport get
-      // a one-time opacity animation; no hidden state or moving chart containers.
-      if(rect.top>innerHeight+24)revealObserver.observe(section);
+      // There is no hidden waiting state. Only editorial text below the usable
+      // first viewport reveals; quote values, forms and chart containers stay put.
+      if(rect.top>innerHeight-110)revealObserver.observe(section);
     });
   }
   function captureView(key) {
@@ -328,7 +341,9 @@
   });
   document.addEventListener('change', function (e) { if (e.target.matches('.trend-period-radio')) { requestAnimationFrame(function () { each(root(), '.portfolio-trend-panel', function (p) { if (p.getClientRects().length) enter(p, 'ui-chart-period'); }); }); } schedule(); });
   document.addEventListener('toggle', function (e) { if (e.target.tagName === 'DETAILS') { var s = e.target.querySelector('summary'); if (s) s.setAttribute('aria-expanded', String(e.target.open)); } }, true);
-  function cleanup() { clearPress();pendingNumbers.clear();fullScanPending=true;if(nearObserver)nearObserver.disconnect();if(revealObserver)revealObserver.disconnect();nearJobs.clear();chartQueued=new WeakSet(); formTimers.forEach(clearTimeout);formTimers.clear(); stopNumbers(); detailsAnimations.forEach(function (a) { a.cancel(); }); detailsAnimations.clear(); chartCleanups.forEach(function (fn) { fn(); }); loadStates.forEach(function (_, host) { endLoad(host); }); cancelAnimationFrame(scanFrame); scanFrame = 0; }
+  function cleanup() { clearPress();pendingNumbers.clear();fullScanPending=true;if(nearObserver)nearObserver.disconnect();if(revealObserver)revealObserver.disconnect();each(root(),'.ui-section-arrive',function(n){n.classList.remove('ui-section-arrive');});nearJobs.clear();chartQueued=new WeakSet(); formTimers.forEach(clearTimeout);formTimers.clear(); stopNumbers(); detailsAnimations.forEach(function (a) { a.cancel(); }); detailsAnimations.clear(); chartCleanups.forEach(function (fn) { fn(); }); loadStates.forEach(function (_, host) { endLoad(host); }); cancelAnimationFrame(scanFrame); scanFrame = 0; }
+  function reduceReveal(){if(motion.matches)each(root(),'.ui-section-arrive',function(n){n.classList.remove('ui-section-arrive');});}
+  if(motion.addEventListener)motion.addEventListener('change',reduceReveal);else if(motion.addListener)motion.addListener(reduceReveal);
   document.addEventListener('stockbot:pageleaving', cleanup);
   document.addEventListener('visibilitychange', function () { if (document.hidden) {stopNumbers();clearPress();} });
   window.addEventListener('scroll',function(){stopNumbers();clearPress();}, { capture: true, passive: true }); window.addEventListener('resize', stopNumbers, { passive: true });

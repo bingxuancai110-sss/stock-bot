@@ -6,11 +6,12 @@ target=Path(os.environ['STOCKBOT_UI_ARTIFACTS']);target.mkdir(parents=True,exist
 main=(Path(__file__).resolve().parents[2]/'main.py').read_text(encoding='utf-8')
 css=re.search(r'/static/app-experience\.css\?v=[^"\s]+',main)[0]
 js=re.search(r'/static/app-experience\.js\?v=[^"\s]+',main)[0]
+ui_js=re.search(r'/static/ui-feedback\.js\?v=[^"\s]+',main)[0]
 for f in source.iterdir():
     if f.suffix not in ('.html','.js'):continue
     text=f.read_text(encoding='utf-8')
     if f.suffix=='.html':
-        text=text.replace('/static/ui-feedback.js?v=20261115-1','/static/ui-feedback.js?v=20261115-3').replace('/static/ui-feedback.js?v=20261115-2','/static/ui-feedback.js?v=20261115-3')
+        text=re.sub(r'/static/ui-feedback\.js\?v=[^"\s]+',ui_js,text)
         text=text.replace('</head>',f'<link rel="stylesheet" href="{css}"><script defer src="{js}"></script></head>')
     (target/f.name).write_text(text,encoding='utf-8')
     if f.suffix=='.html' and not f.stem.endswith('-fragment') and '<main id="app-page-content"' in text:
