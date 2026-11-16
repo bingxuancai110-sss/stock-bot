@@ -35,13 +35,15 @@
     revealFrame=0;if(document.hidden)return;
     var edge=innerHeight-110, distance=Math.min(180,innerHeight*.24);
     var atEnd=scrollY+innerHeight>=document.documentElement.scrollHeight-4;
+    var updates=[];
     revealActive.forEach(function(node){
-      if(!node.isConnected||motion.matches){finishReveal(node);return;}
+      if(!node.isConnected||motion.matches){updates.push({node:node,done:true});return;}
       var progress=Math.max(0,Math.min(1,(edge-node.getBoundingClientRect().top)/distance));
-      if(progress>=1||atEnd){finishReveal(node);return;}
       var minimum=node.matches(revealCharts)?0.4:0.08;
-      node.style.setProperty('--ui-reveal-opacity',String(minimum+(1-minimum)*progress));
+      updates.push({node:node,done:progress>=1||atEnd,opacity:String(minimum+(1-minimum)*progress)});
     });
+    // Complete every geometry read before writing styles for this frame.
+    updates.forEach(function(update){if(update.done)finishReveal(update.node);else if(update.node.style.getPropertyValue('--ui-reveal-opacity')!==update.opacity)update.node.style.setProperty('--ui-reveal-opacity',update.opacity);});
   }
   function scheduleReveals(){if(!revealFrame&&!document.hidden)revealFrame=requestAnimationFrame(updateReveals);}
   function prepareViewport(scope) {
@@ -349,17 +351,44 @@
     svg.setAttribute('tabindex', '0'); svg.setAttribute('aria-label', (svg.getAttribute('aria-label') || '走勢圖') + '，左右方向鍵追蹤資料');
     svg.classList.add('ui-chart-tracking');if(svg.matches('.portfolio-trend-svg'))svg.setAttribute('aria-label',svg.getAttribute('aria-label')+'，雙指縮放日期範圍，按加減號縮放、0 重設');
     var frame = 0, lastX = null, selected = 0, drag = null, dragged = false;
-    function clear() { values.hidden=true; guide.style.display = dot.style.display = 'none'; each(svg, '.ui-chart-point-active', function (n) { n.classList.remove('ui-chart-point-active'); }); }
-    function show(index, points) {
-      points = points || chartPoints(svg); if (!points.length) return;
-      selected = Math.max(0, Math.min(points.length - 1, index)); var p = points[selected];
-      var same = points.filter(function (other) { return Math.abs(other.x - p.x) < .1; });
-      values.textContent = p.label + ' · ' + same.map(function (v) { return v.text; }).join(' ／ ');
-      values.hidden=false;var panelBox=panel.getBoundingClientRect(),svgBox=svg.getBoundingClientRect();values.style.top=Math.max(8,svgBox.top-panelBox.top+8)+'px';values.style.left=Math.max(8,Math.min(panelBox.width-300-8,svgBox.left-panelBox.left+8))+'px';
-      guide.setAttribute('x1', p.x); guide.setAttribute('x2', p.x); guide.setAttribute('y1', '0'); guide.setAttribute('y2', svg.viewBox.baseVal.height); dot.setAttribute('cx', p.x); dot.setAttribute('cy', p.y); guide.style.display = dot.style.display = '';
-      each(svg, '.ui-chart-point-active', function (n) { n.classList.remove('ui-chart-point-active'); }); if (p.node) p.node.classList.add('ui-chart-point-active');
+    var cachedPoints=null,groups=[],groupForIndex=[],activePoint=null,shownGroup=null;
+    function data(){
+      if(cachedPoints)return cachedPoints;
+      cachedPoints=chartPoints(svg);groups=[];groupForIndex=[];
+      cachedPoints.map(function(p,i){return {point:p,index:i};}).sort(function(a,b){return a.point.x-b.point.x;}).forEach(function(item){
+        var group=groups[groups.length-1];
+        if(!group||Math.abs(group.x-item.point.x)>=.1){group={x:item.point.x,index:item.index,points:[],order:groups.length};groups.push(group);}
+        group.points.push(item.point);groupForIndex[item.index]=group;
+      });
+      groups.forEach(function(group){group.text=group.points[0].label+' · '+group.points.map(function(p){return p.text;}).join(' ／ ');});
+      return cachedPoints;
     }
-    function nearest(x) { var points = chartPoints(svg), best = 0, distance = Infinity; points.forEach(function (p, i) { var d = Math.abs(p.x - x); if (d < distance) { best = i; distance = d; } }); show(best, points); }
+    var pointObserver=new MutationObserver(function(records){
+      if(records.some(function(r){return r.type==='childList'||(r.target.matches&&r.target.matches('.trend-hit-point,[data-ui-points]'));}))cachedPoints=null;
+    });
+    pointObserver.observe(svg,{subtree:true,childList:true,attributes:true,attributeFilter:['style','data-ui-points','cx','cy','data-date','data-port','data-market','data-excess']});
+    function clear() {
+      values.hidden=true;guide.style.display=dot.style.display='none';shownGroup=null;
+      if(activePoint){activePoint.classList.remove('ui-chart-point-active');activePoint=null;}
+    }
+    function show(index,points,svgBox) {
+      points=points||data();if(!points.length){clear();return;}
+      selected=Math.max(0,Math.min(points.length-1,index));var p=points[selected],group=groupForIndex[selected];
+      var panelBox=panel.getBoundingClientRect();svgBox=svgBox||svg.getBoundingClientRect();
+      var top=Math.max(8,svgBox.top-panelBox.top+8)+'px',left=Math.max(8,Math.min(panelBox.width-300-8,svgBox.left-panelBox.left+8))+'px';
+      if(values.textContent!==group.text)values.textContent=group.text;
+      if(values.style.top!==top)values.style.top=top;if(values.style.left!==left)values.style.left=left;values.hidden=false;
+      if(shownGroup===group)return;shownGroup=group;
+      guide.setAttribute('x1',p.x);guide.setAttribute('x2',p.x);guide.setAttribute('y1','0');guide.setAttribute('y2',svg.viewBox.baseVal.height);dot.setAttribute('cx',p.x);dot.setAttribute('cy',p.y);guide.style.display=dot.style.display='';
+      if(activePoint&&activePoint!==p.node)activePoint.classList.remove('ui-chart-point-active');activePoint=p.node;if(activePoint)activePoint.classList.add('ui-chart-point-active');
+    }
+    function nearest(x,svgBox) {
+      var points=data();if(!groups.length){clear();return;}
+      var lo=0,hi=groups.length-1;
+      while(lo<hi){var mid=Math.floor((lo+hi)/2);if(groups[mid].x<x)lo=mid+1;else hi=mid;}
+      var best=lo;if(lo>0&&Math.abs(groups[lo-1].x-x)<=Math.abs(groups[lo].x-x))best=lo-1;
+      show(groups[best].index,points,svgBox);
+    }
     var pinchZoom=bindPortfolioPinch(svg,host,clear);
     function move(e) {
       if(pinchZoom&&pinchZoom.active()){drag=null;dragged=true;clear();return;}
@@ -371,15 +400,21 @@
         }
       }
       lastX = e.clientX;
-      if (frame) return; frame = requestAnimationFrame(function () { frame = 0; if (!svg.isConnected||(pinchZoom&&pinchZoom.active())) return; var r = svg.getBoundingClientRect(); if (r.width) nearest((lastX - r.left) / r.width * svg.viewBox.baseVal.width); });
+      if (frame) return; frame = requestAnimationFrame(function () { frame = 0; if (!svg.isConnected||(pinchZoom&&pinchZoom.active())) return; var r = svg.getBoundingClientRect(); if (r.width) nearest((lastX - r.left) / r.width * svg.viewBox.baseVal.width,r); });
     }
-    function key(e) { if(pinchZoom&&pinchZoom.key(e))return;if (e.key === 'Escape') { clear(); return; } if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); var points=chartPoints(svg),current=points[selected];if(!current)return;var direction=e.key==='ArrowLeft'?-1:1,next=selected,distance=Infinity;points.forEach(function(p,i){var delta=(p.x-current.x)*direction;if(delta>.1&&delta<distance){distance=delta;next=i;}});show(next); } }
+    function key(e) {
+      if(pinchZoom&&pinchZoom.key(e))return;if(e.key==='Escape'){clear();return;}
+      if(e.key==='ArrowLeft'||e.key==='ArrowRight'){
+        e.preventDefault();var points=data(),current=groupForIndex[selected];if(!current)return;
+        var next=Math.max(0,Math.min(groups.length-1,current.order+(e.key==='ArrowLeft'?-1:1)));show(groups[next].index,points);
+      }
+    }
     function down(e) { if(pinchZoom&&pinchZoom.active()){dragged=true;return;}dragged = false; drag = {id:e.pointerId,x:e.clientX,y:e.clientY,scroll:host.scrollLeft}; if(e.pointerType!=='touch'&&host.scrollWidth>host.clientWidth&&svg.setPointerCapture){try{svg.setPointerCapture(e.pointerId);}catch(ignore){}} move(e); }
     function up() { drag = null; }
     function click(e) { if ((pinchZoom&&pinchZoom.active())||dragged) { e.preventDefault(); e.stopImmediatePropagation(); dragged = false; } }
     svg.addEventListener('pointermove', move, { passive: true }); svg.addEventListener('pointerdown', down, { passive: true }); svg.addEventListener('pointerup', up); svg.addEventListener('click', click, true); svg.addEventListener('keydown', key);
     var leave = function () { drag = null; clear(); }; svg.addEventListener('pointerleave', leave); svg.addEventListener('pointercancel', leave);
-    var cleanup = function () { if(pinchZoom)pinchZoom.cleanup();cancelAnimationFrame(frame); clear(); svg.removeEventListener('pointermove', move); svg.removeEventListener('pointerdown', down); svg.removeEventListener('pointerup', up); svg.removeEventListener('click', click, true); svg.removeEventListener('keydown', key); svg.removeEventListener('pointerleave', leave); svg.removeEventListener('pointercancel', leave); readout.remove();guide.remove();dot.remove();svg.classList.remove('ui-chart-tracking'); if(originalLabel===null)svg.removeAttribute('aria-label');else svg.setAttribute('aria-label',originalLabel);if(originalTabindex===null)svg.removeAttribute('tabindex');else svg.setAttribute('tabindex',originalTabindex); delete svg.dataset.uiChartBound; chartCleanups.delete(cleanup); };
+    var cleanup = function () { pointObserver.disconnect();cachedPoints=null;groups=[];groupForIndex=[];if(pinchZoom)pinchZoom.cleanup();cancelAnimationFrame(frame); clear(); svg.removeEventListener('pointermove', move); svg.removeEventListener('pointerdown', down); svg.removeEventListener('pointerup', up); svg.removeEventListener('click', click, true); svg.removeEventListener('keydown', key); svg.removeEventListener('pointerleave', leave); svg.removeEventListener('pointercancel', leave); readout.remove();guide.remove();dot.remove();svg.classList.remove('ui-chart-tracking'); if(originalLabel===null)svg.removeAttribute('aria-label');else svg.setAttribute('aria-label',originalLabel);if(originalTabindex===null)svg.removeAttribute('tabindex');else svg.setAttribute('tabindex',originalTabindex); delete svg.dataset.uiChartBound; chartCleanups.delete(cleanup); };
     cleanup.svg = svg; chartCleanups.add(cleanup);
   }
   function rankFeedback(button) {
