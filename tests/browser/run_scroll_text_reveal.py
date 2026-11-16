@@ -21,36 +21,33 @@ with sync_playwright() as p:
         checks.append({'check':name,'passed':bool(ok)});assert ok,name
     page.goto('https://fixture.test/web/positions');page.wait_for_function('!!window.StockBotUI');page.wait_for_timeout(250)
     check('first viewport has no hidden headline',page.locator('h2').first.evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).visibility==="visible"'))
-    page.evaluate('''()=>{
-      const section=document.createElement('section');section.id='reveal-fixture';section.dataset.uiReveal='1';section.style.cssText='margin-top:2200px;padding:20px;min-height:400px';
-      section.innerHTML='<h2 id="reveal-heading">滑入後的文字</h2><span id="reveal-quote" data-position-price>123.45</span><button id="reveal-buy">買進</button><svg id="reveal-chart" width="240" height="100"><path d="M0 70 L240 20" stroke="blue"/></svg><div aria-live="polite"><button type="button" id="reveal-stock-row"><span class="wb-row-main" id="reveal-row-text">公司名稱與說明</span><b data-position-price>140.00</b></button></div><div aria-live="assertive"><h2 id="reveal-alert">Alert</h2></div><div role="status"><h2 id="reveal-status">Status</h2></div>';
-      document.getElementById('app-page-content').append(section);window.revealStarts=[];
-      document.addEventListener('animationstart',e=>{if(e.animationName==='app-text-arrive')window.revealStarts.push(e.target.id)});StockBotUI.scan();
-    }''')
-    heading=page.locator('#reveal-heading');section=page.locator('#reveal-fixture');page.wait_for_timeout(80)
-    check('offscreen text remains visible without a waiting opacity state',heading.evaluate('(e)=>getComputedStyle(e).opacity==="1"&&!e.classList.contains("ui-section-arrive")'))
+    page.evaluate("""()=>{
+      const section=document.createElement('section');section.id='reveal-fixture';section.dataset.uiReveal='1';section.style.cssText='margin-top:2200px;padding:20px;min-height:2200px';
+      section.innerHTML='<h2 id="reveal-heading">Scroll text</h2><span id="reveal-quote" data-position-price>123.45</span><button id="reveal-buy">Buy</button><svg id="reveal-chart" width="240" height="100"></svg><div aria-live="polite"><button type="button" id="reveal-stock-row"><span class="wb-row-main" id="reveal-row-text">Company</span><b data-position-price>140.00</b></button></div><div aria-live="assertive"><h2 id="reveal-alert">Alert</h2></div><div role="status"><h2 id="reveal-status">Status</h2></div>';
+      document.getElementById('app-page-content').append(section);StockBotUI.scan();
+    }""")
+    heading=page.locator('#reveal-heading');section=page.locator('#reveal-fixture');page.wait_for_timeout(220)
     doc_height=page.evaluate('document.documentElement.scrollHeight')
-    heading.evaluate('(e)=>e.scrollIntoView({block:"center"})')
-    page.wait_for_function('window.revealStarts.includes("reveal-heading")')
-    check('heading starts a first-appearance reveal','reveal-heading' in page.evaluate('revealStarts'))
-    check('animation uses the approved duration and small translation',heading.evaluate('''e=>{const a=e.getAnimations().find(a=>a.animationName==='app-text-arrive');return !!a&&a.effect.getTiming().duration===200&&a.effect.getKeyframes()[0].transform==='translateY(5px)'}'''))
+    def place(y):
+        heading.evaluate('(e,y)=>scrollTo(0,scrollY+e.getBoundingClientRect().top-y)',y);page.wait_for_timeout(220)
+        return heading.evaluate('(e)=>parseFloat(getComputedStyle(e).opacity)')
+    faint=place(724);middle=place(640);clear=place(530)
+    check('text starts faint at the bottom of the readable viewport',.05<faint<.2)
+    check('opacity increases gradually with scroll position',faint<middle<.9 and clear==1)
+    check('completed text is unfiltered and stationary',heading.evaluate('(e)=>!e.classList.contains("ui-section-arrive")&&getComputedStyle(e).transform==="none"&&getComputedStyle(e).filter==="none"'))
     check('financial quote stays fully readable',page.locator('#reveal-quote').evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).transform==="none"'))
     check('buy button remains enabled and unanimated',page.locator('#reveal-buy').is_enabled() and page.locator('#reveal-buy').evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).transform==="none"'))
-    check('chart container stays stationary',section.evaluate('(e)=>getComputedStyle(e).transform==="none"&&!e.classList.contains("ui-section-arrive")') and page.locator('#reveal-chart').evaluate('(e)=>getComputedStyle(e).transform==="none"'))
-    page.locator('#reveal-row-text').evaluate('(e)=>e.scrollIntoView({block:"center"})');page.wait_for_function('revealStarts.includes("reveal-row-text")')
-    check('screener text reveals without moving its button or quote',page.locator('#reveal-stock-row').evaluate('(e)=>getComputedStyle(e).transform==="none"&&!e.classList.contains("ui-section-arrive")&&getComputedStyle(e.querySelector("[data-position-price]")).opacity==="1"'))
-    check('assertive alerts and status text stay immediate',not any(x in page.evaluate('revealStarts') for x in ['reveal-alert','reveal-status']))
-    page.wait_for_timeout(260)
-    check('reveal cleans up its class and restores normal text',heading.evaluate('(e)=>!e.classList.contains("ui-section-arrive")&&getComputedStyle(e).opacity==="1"&&getComputedStyle(e).transform==="none"'))
+    check('chart container stays stationary',section.evaluate('(e)=>getComputedStyle(e).transform==="none"&&!e.classList.contains("ui-section-arrive")'))
+    check('screener text in polite regions is included',page.locator('#reveal-row-text').evaluate('(e)=>e.classList.contains("ui-section-arrive")'))
+    check('assertive alerts and status stay immediate',all(page.locator('#'+id).evaluate('(e)=>getComputedStyle(e).opacity==="1"&&!e.classList.contains("ui-section-arrive")') for id in ['reveal-alert','reveal-status']))
     check('reveal does not change document height',page.evaluate('document.documentElement.scrollHeight')==doc_height)
-    page.evaluate('scrollTo(0,0)');page.wait_for_timeout(80);heading.evaluate('(e)=>e.scrollIntoView({block:"center"})');page.wait_for_timeout(260)
-    check('scrolling back does not replay the heading',page.evaluate('revealStarts.filter(id=>id==="reveal-heading").length')==1)
-    heading.evaluate('(e)=>e.textContent="更新後的標題"');page.wait_for_timeout(80)
-    check('text refresh does not replay the reveal',page.evaluate('revealStarts.filter(id=>id==="reveal-heading").length')==1)
-    page.emulate_media(reduced_motion='reduce')
-    page.evaluate('''()=>{const h=document.createElement('h2');h.id='reduced-heading';h.textContent='減少動態效果';h.style.marginTop='1600px';document.getElementById('app-page-content').append(h);StockBotUI.scan()}''');page.wait_for_timeout(50)
-    page.locator('#reduced-heading').evaluate('(e)=>e.scrollIntoView({block:"center"})');page.wait_for_timeout(80)
-    check('reduced motion shows text immediately with no reveal',page.locator('#reduced-heading').evaluate('(e)=>getComputedStyle(e).opacity==="1"&&!e.classList.contains("ui-section-arrive")') and 'reduced-heading' not in page.evaluate('revealStarts'))
+    place(724)
+    check('scrolling back does not fade completed text again',heading.evaluate('(e)=>getComputedStyle(e).opacity==="1"&&!e.classList.contains("ui-section-arrive")'))
+    heading.evaluate('(e)=>e.textContent="Updated heading"');page.wait_for_timeout(220)
+    check('text refresh does not replay the reveal',heading.evaluate('(e)=>getComputedStyle(e).opacity==="1"&&!e.classList.contains("ui-section-arrive")'))
+    page.emulate_media(reduced_motion='reduce');page.wait_for_timeout(50)
+    check('reduced motion clears all pending fades',page.locator('.ui-section-arrive').count()==0)
+    check('reduced motion restores screener text',page.locator('#reveal-row-text').evaluate('(e)=>getComputedStyle(e).opacity==="1"'))
     nojs=browser.new_context(java_script_enabled=False,viewport={'width':390,'height':844});np=nojs.new_page();np.route('https://fixture.test/**',route);np.goto('https://fixture.test/web/positions')
     check('headings stay readable when JavaScript is unavailable',np.locator('h2').first.evaluate('(e)=>getComputedStyle(e).opacity==="1"'))
     nojs.close();check('reveal tests never submit transactions',not posts);check('no JavaScript errors',not errors)
