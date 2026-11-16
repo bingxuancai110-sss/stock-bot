@@ -26,6 +26,7 @@
     nearJobs.get(host).push(work);nearObserver.observe(host);
   }
   var revealActive=new Set(), revealFrame=0;
+  var revealCharts='svg.portfolio-trend-svg,svg.ui-interactive-chart,svg#market-kline,svg.us-signal-svg,svg.us-chart,svg.sa-chart,svg.portfolio-allocation-svg,[data-ui-reveal-chart]';
   function finishReveal(node){
     revealActive.delete(node);if(revealObserver)revealObserver.unobserve(node);
     node.classList.remove('ui-section-arrive');node.style.removeProperty('--ui-reveal-opacity');
@@ -38,7 +39,8 @@
       if(!node.isConnected||motion.matches){finishReveal(node);return;}
       var progress=Math.max(0,Math.min(1,(edge-node.getBoundingClientRect().top)/distance));
       if(progress>=1||atEnd){finishReveal(node);return;}
-      node.style.setProperty('--ui-reveal-opacity',String(.08+.92*progress));
+      var minimum=node.matches(revealCharts)?0.4:0.08;
+      node.style.setProperty('--ui-reveal-opacity',String(minimum+(1-minimum)*progress));
     });
   }
   function scheduleReveals(){if(!revealFrame&&!document.hidden)revealFrame=requestAnimationFrame(updateReveals);}
@@ -49,11 +51,13 @@
       else if(entry.boundingClientRect.bottom<90){finishReveal(entry.target);}
       else revealActive.delete(entry.target);
     });scheduleReveals();},{rootMargin:'0px 0px 180px 0px'});
-    var selector='h2,h3,.more-group-title,.hv2-feature-heading,.portfolio-trend-title,.us-section-head,.wb-d-section-head,.wb-row-main,[data-ui-reveal]';
+    var selector='h2,h3,.more-group-title,.hv2-feature-heading,.portfolio-trend-title,.us-section-head,.wb-d-section-head,.wb-row-main,.hv2-feature-launcher a>span,.more-item>span:not(.more-icon),.rank-primary-line .name,.us-rank-name,.us-study-title,[data-ui-reveal],'+revealCharts;
     function safe(section){
       return !section.closest('form,[role=alert],[role=status],[aria-live="assertive"]') &&
         (section.matches('.wb-row-main')||!section.closest('button,summary')) &&
-        !section.querySelector('svg,canvas,form,input,button,[data-home-sensitive],[data-position-price],[data-position-net],[data-position-pct]');
+        (section.matches(revealCharts)||!section.querySelector('svg,canvas')) &&
+        !section.matches('[data-home-sensitive],[data-position-price],[data-position-net],[data-position-pct]') &&
+        !section.querySelector('form,input,button,[data-home-sensitive],[data-position-price],[data-position-net],[data-position-pct]');
     }
     each(scope,selector,function(section){
       if(revealSeen.has(section))return;
@@ -62,14 +66,23 @@
       if(parent&&scope.contains(parent)&&safe(parent))return;
       var rect=section.getBoundingClientRect();if(!rect.height)return;
       revealSeen.add(section);
-      // Only below-viewport editorial text fades with its scroll position.
-      // Initially visible text, financial values and actions stay immediate.
+      // Below-viewport editorial text and plots fade with their scroll position.
+      // Quotes, plot controls/readouts and initially visible content stay immediate.
       if(rect.top>innerHeight-110){
-        section.style.setProperty('--ui-reveal-opacity','.08');
+        section.style.setProperty('--ui-reveal-opacity',section.matches(revealCharts)?'.4':'.08');
         section.classList.add('ui-section-arrive');revealObserver.observe(section);
       }
     });
   }
+  function revealForInteraction(e){
+    var target=e.target&&e.target.closest?e.target.closest(revealCharts):null;
+    if(!target)return;
+    // Restore clarity before chart handlers run; never intercept native gestures.
+    revealSeen.add(target);finishReveal(target);
+  }
+  document.addEventListener('pointerdown',revealForInteraction,{capture:true,passive:true});
+  document.addEventListener('focusin',revealForInteraction,true);
+  document.addEventListener('keydown',revealForInteraction,true);
   function captureView(key) {
     var scope=root();if(!scope)return;
     var radios=[];each(scope,'input.trend-period-radio:checked',function(input){radios.push(input.id);});
