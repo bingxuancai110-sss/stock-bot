@@ -214,7 +214,7 @@ with sync_playwright() as p:
  member_toggle.click();check('ranking member name restores its comparison line',member_toggle.get_attribute('aria-pressed')=='true' and member_line.evaluate('(e)=>getComputedStyle(e).display!=="none"'))
  # Check the settled selected color after the brief press/release feedback.
  page.wait_for_timeout(220)
- check('rank selected button has a light background',page.locator('#rankTabs [data-board=long]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
+ check('rank selected button has dark background and readable light text',page.locator('#rankTabs [data-board=long]').evaluate('(e)=>{let s=getComputedStyle(e),b=s.backgroundColor.match(/[0-9]+/g).map(Number),c=s.webkitTextFillColor.match(/[0-9]+/g).map(Number);return b[0]<100&&b[1]<100&&b[2]<120&&c[0]>200&&c[1]>200&&c[2]>200}'))
  history=page.locator('#historyTabs');history.scroll_into_view_if_needed();page.wait_for_timeout(80);check('history initially selected month is light',history.locator('[data-history=months]').evaluate('(e)=>{let c=getComputedStyle(e).backgroundColor.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>210&&c[2]>200}'))
  history.locator('[data-history=seasons]').click();page.wait_for_timeout(40)
  check('history switches actual panel and aria state',page.locator('[data-history-panel=seasons]').is_visible() and history.locator('[data-history=seasons]').get_attribute('aria-pressed')=='true' and history.locator('[data-history=months]').get_attribute('aria-pressed')=='false')
@@ -312,11 +312,11 @@ with sync_playwright() as p:
  post.close();state['post']='success'
  # Existing homepage custom expansions and privacy participate in the shared layer.
  page.set_viewport_size({'width':390,'height':844});ready('/web/portfolio')
- check('home removes repetitive explanatory copy without removing live status',page.locator('.home-impact-intro').is_hidden() and page.locator('.hv2-sync').is_visible())
+ check('home collapses repetitive copy while keeping live status visible',page.locator('.home-impact-intro').is_hidden() and page.locator('.home-market-status').is_visible() and page.locator('.home-market-details .hv2-sync').count()==1)
  check('home chart helper copy is hidden while chart controls remain available',page.locator('.home-impact-caption').is_hidden() and page.locator('.home-impact-help').is_hidden() and page.locator('[data-home-impact-mode="stock"]').is_visible())
  check('homepage asset anchor uses a flat color',page.locator('#hv2>.first').evaluate('(e)=>getComputedStyle(e).backgroundImage==="none"&&getComputedStyle(e).boxShadow==="none"'))
  check('phone home keeps four reachable quick actions in one row',page.locator('.hv2-feature-launcher').evaluate('(e)=>getComputedStyle(e).gridTemplateColumns.split(" ").length===4&&[...e.querySelectorAll("a")].length===4&&[...e.querySelectorAll("a")].every(x=>x.getBoundingClientRect().height>=44)'))
- check('phone impact highlights read as continuous rows',page.locator('.home-impact-card').evaluate_all('(es)=>es.length===2&&es.every(e=>getComputedStyle(e).display==="grid"&&getComputedStyle(e).borderRadius==="0px"&&getComputedStyle(e).boxShadow==="none")'))
+ check('phone impact highlights are readable parallel cards',page.locator('.home-impact-highlights').evaluate('(e)=>{const a=e.children[0].getBoundingClientRect(),b=e.children[1].getBoundingClientRect();return Math.abs(a.top-b.top)<1&&a.right<=b.left&&a.width>100&&b.width>100}'))
  group=page.locator('.hv2-g-up');group.locator('[data-hv2-more]').click()
  check('homepage custom more state retained',group.locator('[data-home-chart-row]:visible').count()==4 and group.locator('[data-hv2-more]').get_attribute('aria-expanded')=='true')
  row=group.locator('[data-home-chart-row]').first;row.click();check('homepage calculation details still open',row.get_attribute('aria-expanded')=='true')
