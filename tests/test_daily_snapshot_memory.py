@@ -1,5 +1,6 @@
 """Exercise production memory controls without starting the app or market jobs."""
 import ast
+from main_function_loader import functions_tree
 import datetime
 from pathlib import Path
 import threading
@@ -10,10 +11,10 @@ from unittest.mock import Mock, MagicMock
 class DailySnapshotMemoryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        tree = ast.parse((Path(__file__).parents[1] / 'main.py').read_text(encoding='utf-8'))
         names = {'get_consecutive_days_batch', 'get_realtime_stocks_bulk',
                  'run_in_background', '_do_daily_snapshot',
                  'compute_industry_recent_performance', 'save_industry_recent_performance'}
+        tree = functions_tree(names)
         cls.code = {node.name: compile(ast.Module(body=[node], type_ignores=[]), '<actual-memory>', 'exec')
                     for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names}
 

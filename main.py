@@ -1896,6 +1896,11 @@ connection_pool = psycopg2.pool.ThreadedConnectionPool(
 )
 
 
+_DB_POOL_STARTED_AT = time.monotonic()
+_DB_CONN_LAST_RETURN = {}
+_DB_CONN_IDLE_PROBE_SECONDS = 30
+
+
 def get_db_connection():
     """
     借一條連線。診斷模式會量測「排隊等 connection」的時間，
@@ -1913,8 +1918,22 @@ def get_db_connection():
             raise
         try:
             if conn.closed:
+                with _DB_CONN_LOCK:
+                    _DB_CONN_LAST_RETURN.pop(id(conn), None)
                 connection_pool.putconn(conn, close=True)
                 continue
+            # SSL sockets can be dead while psycopg2 still reports closed == 0.
+            # Validate only idle connections, not every hot query; discard/retry
+            # before handing a broken socket to a snapshot or a user request.
+            with _DB_CONN_LOCK:
+                idle_since = _DB_CONN_LAST_RETURN.pop(id(conn), _DB_POOL_STARTED_AT)
+            if time.monotonic() - idle_since >= _DB_CONN_IDLE_PROBE_SECONDS:
+                probe = conn.cursor()
+                try:
+                    probe.execute("SELECT 1")
+                finally:
+                    probe.close()
+                conn.rollback()
             wait_ms = (time.monotonic() - checkout_started) * 1000
             with _DB_CONN_LOCK:
                 _DB_CONN_CHECKOUT[id(conn)] = time.monotonic()
@@ -1976,9 +1995,13 @@ def release_db_connection(conn):
         if conn.get_transaction_status() not in (
                 psycopg2.extensions.TRANSACTION_STATUS_IDLE,):
             conn.rollback()
+        with _DB_CONN_LOCK:
+            _DB_CONN_LAST_RETURN[id(conn)] = time.monotonic()
         connection_pool.putconn(conn)
     except Exception as e:
         print(f"⚠️ 歸還連線失敗，關閉該連線: {e}")
+        with _DB_CONN_LOCK:
+            _DB_CONN_LAST_RETURN.pop(id(conn), None)
         try:
             connection_pool.putconn(conn, close=True)
         except Exception:
@@ -11090,7 +11113,7 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
 
 def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
                              force_refresh=False, mis_force=None, skip_mis=False,
-                             request_timeout=8):
+                             request_timeout=8, quote_overrides=None):
     """
     並行抓多檔報價，回傳 {code: data 或 None}。
 
@@ -11127,9 +11150,10 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
     # History refreshes do not need a current MIS quote. Skipping this step is important:
     # _fetch_twse_mis_quotes can wait up to 10 seconds even though its result is discarded by
     # the background history cache. User-facing quote endpoints still use MIS by default.
-    official_quotes = {} if skip_mis else _fetch_twse_mis_quotes(
-        codes, market_suffix={c: suffix_for(c) for c in codes} if market_suffix is None else market_suffix,
-        force_refresh=(force_refresh if mis_force is None else mis_force))
+    official_quotes = (quote_overrides if isinstance(quote_overrides, dict) else
+                       {} if skip_mis else _fetch_twse_mis_quotes(
+                           codes, market_suffix={c: suffix_for(c) for c in codes} if market_suffix is None else market_suffix,
+                           force_refresh=(force_refresh if mis_force is None else mis_force)))
 
     if len(codes) == 1:  # 只有一檔就不必付出開執行緒池的成本
         return {codes[0]: get_realtime_stock(
@@ -21489,12 +21513,22 @@ def _do_daily_snapshot(core_only_recovery=False):
         quotes = {}
         if all_codes:
             try:
-                quotes = _fetch_twse_mis_quotes(
-                    all_codes, market_suffix=suffix_map,
-                    force_refresh=True, cache_result=False, quick_mode=False)
+                quotes = {code: quote for code, quote in
+                          _fetch_official_daily_close_quotes(all_codes, market_suffix=suffix_map).items()
+                          if valid_close_quote(quote)}
+                print(f"⚡ 每日組合優先官方盤後收盤：{len(quotes)}/{len(all_codes)} 檔", flush=True)
             except Exception as exc:
-                print(f"⚠️ 每日組合官方行情批次失敗：{exc}")
-                quotes = {}
+                print(f"⚠️ 每日組合官方盤後優先讀取失敗：{type(exc).__name__}")
+            missing_codes = [code for code in all_codes if not valid_close_quote(quotes.get(code))]
+            if missing_codes:
+                try:
+                    mis_quotes = _fetch_twse_mis_quotes(
+                        missing_codes, market_suffix=suffix_map,
+                        force_refresh=True, cache_result=False, quick_mode=True)
+                    quotes.update({code: quote for code, quote in mis_quotes.items()
+                                   if valid_close_quote(quote)})
+                except Exception as exc:
+                    print(f"⚠️ 每日組合官方行情批次失敗：{exc}")
 
             # MIS 缺漏只針對缺少的代號補抓兩輪；所有請求仍只用官方當日資料。
             for retry_round in range(1, 3):
@@ -21507,7 +21541,7 @@ def _do_daily_snapshot(core_only_recovery=False):
                     retry_quotes = _fetch_twse_mis_quotes(
                         missing_codes,
                         market_suffix={c: suffix_map[c] for c in missing_codes if c in suffix_map},
-                        force_refresh=True, cache_result=False, quick_mode=False)
+                        force_refresh=True, cache_result=False, quick_mode=True)
                     for code, quote in retry_quotes.items():
                         if valid_close_quote(quote):
                             quotes[code] = quote
@@ -21529,23 +21563,9 @@ def _do_daily_snapshot(core_only_recovery=False):
                 except Exception as exc:
                     print("⚠️ 每日組合官方盤後備援失敗：%s" % type(exc).__name__, flush=True)
 
-        # 進入重建流程時清除今天舊的快照列。若本次官方報價不完整，就留下「缺資料」而非
-        # 讓舊版可能只加總部分持股的市值繼續冒充完整組合報酬。
-        if user_ids:
-            conn = get_db_connection()
-            try:
-                cur = conn.cursor()
-                cur.execute("DELETE FROM portfolio_snapshots WHERE snapshot_date=%s AND user_id = ANY(%s)",
-                            (today, [str(uid).strip() for uid in user_ids]))
-                conn.commit()
-                cur.close()
-            except Exception as exc:
-                conn.rollback()
-                print(f"⚠️ 清除待重建的今日組合快照失敗：{exc}")
-                raise
-            finally:
-                release_db_connection(conn)
-
+        # Only replace a user's snapshot after all same-day official closes are
+        # validated. save_portfolio_snapshot uses UPSERT; never delete valid
+        # users' snapshots merely because another user's quote is unavailable.
         _job_mark_progress(job_name, "portfolio", 0, len(user_ids))
         for idx, uid in enumerate(user_ids):
             uid_key = str(uid).strip()
@@ -46859,16 +46879,30 @@ def _radar_snapshot_matches_policy(snapshot):
 def _iter_screener_pool_prices(pool, mode, workers, market_map, force_refresh):
     """Bound in-flight history responses, not the total radar candidate coverage."""
     batch_size = RADAR_PRICE_BATCH_SIZE if mode == "radar" else max(1, len(pool))
+    radar_quotes = None
     for offset in range(0, len(pool), batch_size):
         if mode == "radar" and not _background_work_memory_safe(reserve_mb=120):
             # Do not publish a partial ranking over the previous saved snapshot.
             raise RuntimeError("雷達分批掃描暫停：記憶體餘裕不足，保留原快照")
         batch = pool[offset:offset + batch_size]
+        options = {}
+        if mode == "radar":
+            if radar_quotes is None:
+                try:
+                    radar_quotes = _fetch_twse_mis_quotes(
+                        [code for code, _info in pool], market_suffix=market_map,
+                        force_refresh=force_refresh, quick_mode=True)
+                except Exception as exc:
+                    print(f"⚠️ 雷達整批官方即時行情暫缺：{type(exc).__name__}", flush=True)
+                    radar_quotes = {}
+                print(f"雷達整批官方行情 {len(radar_quotes)}/{len(pool)}；缺漏保留實際 Yahoo 來源標示", flush=True)
+            options = {"skip_mis": True,
+                       "quote_overrides": {code: radar_quotes[code] for code, _info in batch if code in radar_quotes}}
         prices = get_realtime_stocks_bulk(
             [code for code, _info in batch],
             workers=min(2, workers) if mode == "radar" else workers,
             rng="3mo", market_suffix=market_map if mode == "radar" else None,
-            force_refresh=force_refresh or mode == "radar")
+            force_refresh=force_refresh or mode == "radar", **options)
         for code, info in batch:
             yield code, info, prices.get(code)
         del prices

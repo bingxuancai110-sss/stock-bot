@@ -1,5 +1,6 @@
 """Request daily snapshot channels, not undated/incremental quote subscriptions."""
 import ast
+from main_function_loader import functions_tree
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import lru_cache
@@ -15,7 +16,7 @@ from market_quotes import prefer_quote
 @lru_cache(maxsize=1)
 def functions():
     names={'_twse_mis_quote_symbols','_fetch_twse_mis_quotes'}
-    tree=ast.parse((Path(__file__).parents[1]/'main.py').read_text())
+    tree=functions_tree(names)
     return compile(ast.Module(body=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in names],type_ignores=[]), '<mis-production>','exec')
 
 
