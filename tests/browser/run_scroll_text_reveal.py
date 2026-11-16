@@ -23,7 +23,7 @@ with sync_playwright() as p:
     check('first viewport has no hidden headline',page.locator('h2').first.evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).visibility==="visible"'))
     page.evaluate('''()=>{
       const section=document.createElement('section');section.id='reveal-fixture';section.dataset.uiReveal='1';section.style.cssText='margin-top:2200px;padding:20px;min-height:400px';
-      section.innerHTML='<h2 id="reveal-heading">滑入後的文字</h2><span id="reveal-quote" data-position-price>123.45</span><button id="reveal-buy">買進</button><svg id="reveal-chart" width="240" height="100"><path d="M0 70 L240 20" stroke="blue"/></svg><button type="button" id="reveal-stock-row"><span class="wb-row-main" id="reveal-row-text">公司名稱與說明</span><b data-position-price>140.00</b></button>';
+      section.innerHTML='<h2 id="reveal-heading">滑入後的文字</h2><span id="reveal-quote" data-position-price>123.45</span><button id="reveal-buy">買進</button><svg id="reveal-chart" width="240" height="100"><path d="M0 70 L240 20" stroke="blue"/></svg><div aria-live="polite"><button type="button" id="reveal-stock-row"><span class="wb-row-main" id="reveal-row-text">公司名稱與說明</span><b data-position-price>140.00</b></button></div><div aria-live="assertive"><h2 id="reveal-alert">Alert</h2></div><div role="status"><h2 id="reveal-status">Status</h2></div>';
       document.getElementById('app-page-content').append(section);window.revealStarts=[];
       document.addEventListener('animationstart',e=>{if(e.animationName==='app-text-arrive')window.revealStarts.push(e.target.id)});StockBotUI.scan();
     }''')
@@ -39,6 +39,7 @@ with sync_playwright() as p:
     check('chart container stays stationary',section.evaluate('(e)=>getComputedStyle(e).transform==="none"&&!e.classList.contains("ui-section-arrive")') and page.locator('#reveal-chart').evaluate('(e)=>getComputedStyle(e).transform==="none"'))
     page.locator('#reveal-row-text').evaluate('(e)=>e.scrollIntoView({block:"center"})');page.wait_for_function('revealStarts.includes("reveal-row-text")')
     check('screener text reveals without moving its button or quote',page.locator('#reveal-stock-row').evaluate('(e)=>getComputedStyle(e).transform==="none"&&!e.classList.contains("ui-section-arrive")&&getComputedStyle(e.querySelector("[data-position-price]")).opacity==="1"'))
+    check('assertive alerts and status text stay immediate',not any(x in page.evaluate('revealStarts') for x in ['reveal-alert','reveal-status']))
     page.wait_for_timeout(260)
     check('reveal cleans up its class and restores normal text',heading.evaluate('(e)=>!e.classList.contains("ui-section-arrive")&&getComputedStyle(e).opacity==="1"&&getComputedStyle(e).transform==="none"'))
     check('reveal does not change document height',page.evaluate('document.documentElement.scrollHeight')==doc_height)

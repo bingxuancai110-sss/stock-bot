@@ -37,7 +37,7 @@
     });},{threshold:0.15,rootMargin:'-90px 0px -110px 0px'});
     var selector='h2,h3,.more-group-title,.hv2-feature-heading,.portfolio-trend-title,.us-section-head,.wb-d-section-head,.wb-row-main,[data-ui-reveal]';
     function safe(section){
-      return !section.closest('form,[role=alert],[role=status],[aria-live]') &&
+      return !section.closest('form,[role=alert],[role=status],[aria-live="assertive"]') &&
         (section.matches('.wb-row-main')||!section.closest('button,summary')) &&
         !section.querySelector('svg,canvas,form,input,button,[data-home-sensitive],[data-position-price],[data-position-net],[data-position-pct]');
     }

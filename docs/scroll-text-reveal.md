@@ -8,4 +8,4 @@ Animation classes are removed on completion/cancellation, preference changes and
 
 Tests use isolated actual-renderer fixtures and cover the visible fallback, 200 ms/5 px treatment, safe screener text, quote/button/chart stability, unchanged document height, replay prevention, reduced motion, JavaScript-unavailable content and no transaction submission. Existing UI/chart/privacy/transaction and viewport lifecycle checks remain required. Production validation follows the live Render deploy.
 
-Shared UI JS and experience CSS versions: 20261116-1. Revert this commit to restore the prior opacity-only section treatment. No schema migration is needed.
+Shared UI JS version: 20261116-2; experience CSS version: 20261116-1. Polite live-region containers (including the production screener list) allow editorial reveals; assertive alerts and status messages remain immediate. Revert this commit to restore the prior opacity-only section treatment. No schema migration is needed.
