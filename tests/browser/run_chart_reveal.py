@@ -20,6 +20,9 @@ with sync_playwright() as p:
     def check(name,ok):
         checks.append({'check':name,'passed':bool(ok)});assert ok,name
     page.goto('https://fixture.test/web/positions');page.wait_for_function('!!window.StockBotUI');page.wait_for_timeout(250)
+    page.evaluate("""()=>{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.id='initial-edge-plot';svg.setAttribute('class','sa-chart');svg.style.cssText='position:fixed;top:640px;width:240px;height:160px';document.getElementById('app-page-content').append(svg);StockBotUI.scan()}""");page.wait_for_timeout(220)
+    check('plot partially visible on entry also receives gradual reveal',page.locator('#initial-edge-plot').evaluate('(e)=>e.classList.contains("ui-section-arrive")&&parseFloat(getComputedStyle(e).opacity)>.4&&parseFloat(getComputedStyle(e).opacity)<1'))
+    page.locator('#initial-edge-plot').evaluate('(e)=>e.remove()')
     page.evaluate("""()=>{
       const host=document.createElement('section');host.id='chart-test';host.style.cssText='margin-top:2400px;min-height:4500px';
       const original=document.querySelector('svg.portfolio-trend-svg');const svg=original.cloneNode(true);svg.id='reveal-portfolio';svg.removeAttribute('data-ui-chart-bound');svg.style.cssText='display:block;width:300px;height:260px';

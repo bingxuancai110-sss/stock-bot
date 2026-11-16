@@ -68,7 +68,8 @@
       revealSeen.add(section);
       // Below-viewport editorial text and plots fade with their scroll position.
       // Quotes, plot controls/readouts and initially visible content stay immediate.
-      if(rect.top>innerHeight-110){
+      var start=innerHeight-110-(section.matches(revealCharts)?Math.min(180,innerHeight*.24):0);
+      if(rect.top>start){
         section.style.setProperty('--ui-reveal-opacity',section.matches(revealCharts)?'.4':'.08');
         section.classList.add('ui-section-arrive');revealObserver.observe(section);
       }
