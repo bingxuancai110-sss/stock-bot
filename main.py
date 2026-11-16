@@ -28616,7 +28616,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-shell.css?v=20261115-2">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
 <link rel="stylesheet" href="/static/app-experience.css?v=20261116-1">
-<script defer src="/static/ui-feedback.js?v=20261116-1"></script>
+<script defer src="/static/ui-feedback.js?v=20261116-2"></script>
 <script defer src="/static/app-experience.js?v=20261115-2"></script>
 <script defer src="/static/settings-theme.js?v=20261112-1"></script>
 <script defer src="/static/fugle-live.js?v=20261109-2"></script>
