@@ -159,7 +159,7 @@ with sync_playwright() as p:
  # Existing point dialogs still work, with new in-place hover/touch and keyboard tracking.
  svg=page.locator('.portfolio-trend-panel:visible svg.portfolio-trend-svg');svg.scroll_into_view_if_needed()
  plot=page.locator('.portfolio-trend-panel:visible .portfolio-trend-plot')
- check('portfolio touch allows native horizontal and vertical gestures',svg.evaluate('(e)=>getComputedStyle(e).touchAction==="auto"'))
+ check('portfolio touch allows native horizontal and vertical gestures',svg.evaluate('(e)=>getComputedStyle(e).touchAction==="pan-x pan-y"'))
  plot.evaluate('(e)=>e.scrollLeft=e.scrollWidth');page.wait_for_timeout(80);before_scroll=plot.evaluate('(e)=>e.scrollLeft');pb=plot.bounding_box();sx=pb['x']+pb['width']*.25;ex=pb['x']+pb['width']*.75;yy=pb['y']+min(100,pb['height']/2)
  if engine=='chromium':
   cdp=context.new_cdp_session(page);cdp.send('Input.dispatchTouchEvent',dict(type='touchStart',touchPoints=[dict(x=sx,y=yy)]))
