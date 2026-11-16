@@ -3,6 +3,7 @@
   'use strict';
   if(window.StockBotExperience)return;
   var nav,inner,cursor,status,pendingPath=null,statusTimer=0,navFrame=0,scrollFrame=0;
+  var arrived=new WeakSet();
   var motion=matchMedia('(prefers-reduced-motion: reduce)');
   function syncNav(){
     navFrame=0;nav=document.querySelector('.app-bottom-nav');inner=nav&&nav.querySelector('.bottom-inner');
@@ -40,7 +41,7 @@
     scheduleNav();scroll();if(motion.matches||document.hidden)return;
     var scope=document.getElementById('app-page-content');if(!scope)return;
     var first=scope.querySelector('.totals,.wb-pulse,.us-hero,.rank-situation,#hv2>.hv2-sec.first,.market-quote-hero');
-    if(first&&first.animate)first.animate([{opacity:.75},{opacity:1}],{duration:180,easing:'ease-out'});
+    if(first&&first.animate&&!arrived.has(first)){arrived.add(first);first.animate([{opacity:.75},{opacity:1}],{duration:180,easing:'ease-out'});}
   }
   document.addEventListener('stockbot:routepending',startRoute);
   document.addEventListener('stockbot:routecomplete',endRoute);
