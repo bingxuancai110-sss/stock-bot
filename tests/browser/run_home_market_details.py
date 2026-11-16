@@ -34,6 +34,7 @@ with sync_playwright() as p:
     details.locator('summary').click()
     check('source details can be opened', details.locator('.hv2-src').is_visible())
     page.evaluate("""()=>{
+      const legacy=document.createElement('style');legacy.textContent='body #app-page-content .rank-rows .rank-meta-item{flex-direction:column!important}';document.head.append(legacy);
       window.originalQuality=document.querySelector('[data-home-quote-quality]');
       originalQuality.textContent='持股行情已更新 2026-11-16 13:30:00';
       document.querySelector('[data-home-live-title]').textContent='收盤行情';
@@ -60,6 +61,7 @@ with sync_playwright() as p:
         page.set_viewport_size({'width': width, 'height': 844})
         check(f'long ranking labels remain inside card {width}', page.locator('.rank-card').evaluate('(card)=>Array.from(card.querySelectorAll(".name,.rank-return,.rank-meta-value")).every(e=>{const r=e.getBoundingClientRect(),c=card.getBoundingClientRect();return r.right<=c.right&&r.left>=c.left})'))
     page.set_viewport_size({'width': 390, 'height': 844})
+    check('legacy column style cannot expand ranking rows', page.locator('.rank-meta-item').first.evaluate('(e)=>getComputedStyle(e).flexDirection==="row"'))
     page.screenshot(path=str(ROOT / (engine+'-rank-layout.png')))
     if posts or errors: print({'posts': posts, 'errors': errors}, flush=True)
     check('no writes or JavaScript errors', not posts and not errors)
