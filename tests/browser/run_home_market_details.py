@@ -34,7 +34,6 @@ with sync_playwright() as p:
     details.locator('summary').click()
     check('source details can be opened', details.locator('.hv2-src').is_visible())
     page.evaluate("""()=>{
-      const legacy=document.createElement('style');legacy.textContent='body #app-page-content .rank-rows .rank-meta-item{flex-direction:column!important}';document.head.append(legacy);
       window.originalQuality=document.querySelector('[data-home-quote-quality]');
       originalQuality.textContent='持股行情已更新 2026-11-16 13:30:00';
       document.querySelector('[data-home-live-title]').textContent='收盤行情';
@@ -52,7 +51,10 @@ with sync_playwright() as p:
     for width in (320, 390, 768, 1280):
         page.set_viewport_size({'width': width, 'height': 844})
         check(f'homepage fits viewport {width}', page.evaluate('document.documentElement.scrollWidth<=innerWidth'))
+    if os.environ.get('STOCKBOT_RANK_LEGACY_CSS'):
+        page.add_style_tag(path=os.environ['STOCKBOT_RANK_LEGACY_CSS'])
     page.evaluate("""()=>{
+      const legacy=document.createElement('style');legacy.textContent='body #app-page-content .rank-rows .rank-meta-item{flex-direction:column!important;min-height:54px!important} body #app-page-content .rank-rows .rank-meta-item>em{width:100%!important}';document.head.append(legacy);
       const rows=document.createElement('section'); rows.className='rank-rows';
       rows.innerHTML='<article class="rank-card"><div class="rank-row-main"><div class="rank-primary-line"><span class="rank-number">#1</span><span class="name">測試長姓名｜投資組合管理人</span></div><span class="rank-return">+123.45%</span><span class="rank-movement">↑ 2 名</span></div><div class="rank-meta"><span class="rank-meta-item"><em>本季</em><b class="rank-meta-value">+12.3%</b></span><span class="rank-meta-item rank-meta-excess"><em>超額報酬</em><b class="rank-meta-value">贏 13.7% （大盤 -11.4%）</b></span><span class="rank-meta-item"><em>持股</em><b class="rank-meta-value">9 檔（含 ETF 2 檔）</b></span><span class="rank-meta-item"><em>有效樣本</em><b class="rank-meta-value">28 天</b></span></div></article>';
       document.getElementById('app-page-content').replaceChildren(rows);
@@ -62,6 +64,7 @@ with sync_playwright() as p:
         check(f'long ranking labels remain inside card {width}', page.locator('.rank-card').evaluate('(card)=>Array.from(card.querySelectorAll(".name,.rank-return,.rank-meta-value")).every(e=>{const r=e.getBoundingClientRect(),c=card.getBoundingClientRect();return r.right<=c.right&&r.left>=c.left})'))
     page.set_viewport_size({'width': 390, 'height': 844})
     check('legacy column style cannot expand ranking rows', page.locator('.rank-meta-item').first.evaluate('(e)=>getComputedStyle(e).flexDirection==="row"'))
+    check('legacy full width labels cannot squeeze returns vertically', page.locator('.rank-meta-item').first.evaluate('(e)=>e.querySelector("b").getBoundingClientRect().width>35&&e.getBoundingClientRect().height<45'))
     page.screenshot(path=str(ROOT / (engine+'-rank-layout.png')))
     if posts or errors: print({'posts': posts, 'errors': errors}, flush=True)
     check('no writes or JavaScript errors', not posts and not errors)
