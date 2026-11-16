@@ -9,6 +9,7 @@ from test_radar_admission import install, producer
 def engine():
     ns=producer()
     ns.update(re=re,RADAR_PRICE_BATCH_SIZE=4,RADAR_SCAN_POLICY_VERSION=2,
+              _fetch_twse_mis_quotes=Mock(return_value={}),
               is_etf=lambda code:str(code).startswith('00'),
               get_realtime_stocks_bulk=Mock(side_effect=lambda codes,**kw:{c:None for c in codes}))
     for name in ('_radar_equity_universe','_radar_snapshot_matches_policy','_iter_screener_pool_prices'):
@@ -86,3 +87,15 @@ def test_real_compute_scores_all_selected_candidates_and_excludes_etf():
     assert diag['scan_policy_version']==2 and diag['deep_candidate_limit']==240
     assert ns['_radar_snapshot_matches_policy'](ns['_screener_cache']['radar'])
     ns['_save_persisted_screener_snapshot'].assert_called_once()
+
+
+def test_240_candidate_scan_prefetches_live_feed_once_and_passes_only_each_batch():
+    ns=engine();pool=[(str(1000+i),{}) for i in range(240)]
+    ns['_fetch_twse_mis_quotes'].return_value={code:{'close':100} for code,_ in pool}
+    list(ns['_iter_screener_pool_prices'](pool,'radar',2,{},True))
+    ns['_fetch_twse_mis_quotes'].assert_called_once()
+    assert ns['_fetch_twse_mis_quotes'].call_args.kwargs['quick_mode'] is True
+    calls=ns['get_realtime_stocks_bulk'].call_args_list
+    assert len(calls)==60
+    assert all(c.kwargs['skip_mis'] and len(c.kwargs['quote_overrides'])==4 for c in calls)
+    assert [code for c in calls for code in c.kwargs['quote_overrides']]==[code for code,_ in pool]

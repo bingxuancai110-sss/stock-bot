@@ -1,5 +1,6 @@
 """An unavailable market source must not gate page HTML or private Fugle calculations."""
 import ast
+from main_function_loader import functions_tree
 from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -14,7 +15,7 @@ NOW=datetime(2026,11,3,13,25,tzinfo=ZoneInfo('Asia/Taipei'))
 
 @lru_cache(maxsize=1)
 def main_tree():
-    return ast.parse((Path(__file__).parents[1]/'main.py').read_text(encoding='utf-8'))
+    return functions_tree({'_get_homepage_render_prices','_homepage_merge_official_quotes','_fugle_market_quote','_usable_saved_home_final_quotes','_is_completed_home_close_payload','fetch_taiex_official_close','_fetch_taiex_historical_close_uncached','_parse_official_close_trade_date','_fetch_official_daily_close_market'})
 
 
 @lru_cache(maxsize=1)

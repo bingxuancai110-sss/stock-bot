@@ -1,5 +1,6 @@
 """Exercise the production MIS request and session functions without importing app startup."""
 import ast
+from main_function_loader import functions_tree
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 
 def test_official_polls_reuse_session_without_rebootstrapping_each_time():
-    tree=ast.parse((Path(__file__).parents[1]/'main.py').read_text())
+    tree=functions_tree({'_twse_mis_session','_twse_mis_quote_symbols','_fetch_twse_mis_quotes'})
     now=datetime(2026,11,2,10,45,tzinfo=ZoneInfo('Asia/Taipei'))
     session=Mock()
     response=Mock()
