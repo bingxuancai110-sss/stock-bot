@@ -150,3 +150,6 @@ body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) .experience-route-
 /* Scroll-linked editorial fade; no movement or filtering of content. */
 #stockbot-app #stockbot-shell #app-page-content .ui-section-arrive{animation:none!important;opacity:var(--ui-reveal-opacity,1);transition:opacity 180ms ease-out}
 @media(prefers-reduced-motion:reduce){#stockbot-app #stockbot-shell #app-page-content .ui-section-arrive{opacity:1!important;transition:none!important}}
+
+#stockbot-app #stockbot-shell #app-page-content .ui-portfolio-zoom-reset{display:block;margin:8px 0 0 auto;min-width:96px;min-height:44px;padding:8px 14px;border:1px solid var(--sb-app-border,#cbd5dd);border-radius:10px;background:var(--sb-app-surface,#fff);color:var(--sb-app-ink,#244e69);font:inherit;font-size:13px;font-weight:700}
+#stockbot-app #stockbot-shell #app-page-content .ui-portfolio-zoom-reset[hidden]{display:none!important}
