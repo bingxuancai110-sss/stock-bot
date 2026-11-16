@@ -25,16 +25,30 @@
     if(!nearJobs.has(host))nearJobs.set(host,[]);
     nearJobs.get(host).push(work);nearObserver.observe(host);
   }
+  var revealActive=new Set(), revealFrame=0;
+  function finishReveal(node){
+    revealActive.delete(node);if(revealObserver)revealObserver.unobserve(node);
+    node.classList.remove('ui-section-arrive');node.style.removeProperty('--ui-reveal-opacity');
+  }
+  function updateReveals(){
+    revealFrame=0;if(document.hidden)return;
+    var edge=innerHeight-110, distance=Math.min(180,innerHeight*.24);
+    var atEnd=scrollY+innerHeight>=document.documentElement.scrollHeight-4;
+    revealActive.forEach(function(node){
+      if(!node.isConnected||motion.matches){finishReveal(node);return;}
+      var progress=Math.max(0,Math.min(1,(edge-node.getBoundingClientRect().top)/distance));
+      if(progress>=1||atEnd){finishReveal(node);return;}
+      node.style.setProperty('--ui-reveal-opacity',String(.08+.92*progress));
+    });
+  }
+  function scheduleReveals(){if(!revealFrame&&!document.hidden)revealFrame=requestAnimationFrame(updateReveals);}
   function prepareViewport(scope) {
     if(!window.IntersectionObserver || reduced())return;
     if(!revealObserver)revealObserver=new IntersectionObserver(function(entries){entries.forEach(function(entry){
-      if(!entry.isIntersecting)return;
-      revealObserver.unobserve(entry.target);
-      if(reduced()||!entry.target.isConnected)return;
-      entry.target.classList.add('ui-section-arrive');
-      function finish(e){if(e&&e.target!==entry.target)return;entry.target.classList.remove('ui-section-arrive');entry.target.removeEventListener('animationend',finish);entry.target.removeEventListener('animationcancel',finish);}
-      entry.target.addEventListener('animationend',finish);entry.target.addEventListener('animationcancel',finish);
-    });},{threshold:0.15,rootMargin:'-90px 0px -110px 0px'});
+      if(entry.isIntersecting){revealActive.add(entry.target);}
+      else if(entry.boundingClientRect.bottom<90){finishReveal(entry.target);}
+      else revealActive.delete(entry.target);
+    });scheduleReveals();},{rootMargin:'0px 0px 180px 0px'});
     var selector='h2,h3,.more-group-title,.hv2-feature-heading,.portfolio-trend-title,.us-section-head,.wb-d-section-head,.wb-row-main,[data-ui-reveal]';
     function safe(section){
       return !section.closest('form,[role=alert],[role=status],[aria-live="assertive"]') &&
@@ -48,9 +62,12 @@
       if(parent&&scope.contains(parent)&&safe(parent))return;
       var rect=section.getBoundingClientRect();if(!rect.height)return;
       revealSeen.add(section);
-      // There is no hidden waiting state. Only editorial text below the usable
-      // first viewport reveals; quote values, forms and chart containers stay put.
-      if(rect.top>innerHeight-110)revealObserver.observe(section);
+      // Only below-viewport editorial text fades with its scroll position.
+      // Initially visible text, financial values and actions stay immediate.
+      if(rect.top>innerHeight-110){
+        section.style.setProperty('--ui-reveal-opacity','.08');
+        section.classList.add('ui-section-arrive');revealObserver.observe(section);
+      }
     });
   }
   function captureView(key) {
@@ -341,12 +358,12 @@
   });
   document.addEventListener('change', function (e) { if (e.target.matches('.trend-period-radio')) { requestAnimationFrame(function () { each(root(), '.portfolio-trend-panel', function (p) { if (p.getClientRects().length) enter(p, 'ui-chart-period'); }); }); } schedule(); });
   document.addEventListener('toggle', function (e) { if (e.target.tagName === 'DETAILS') { var s = e.target.querySelector('summary'); if (s) s.setAttribute('aria-expanded', String(e.target.open)); } }, true);
-  function cleanup() { clearPress();pendingNumbers.clear();fullScanPending=true;if(nearObserver)nearObserver.disconnect();if(revealObserver)revealObserver.disconnect();each(root(),'.ui-section-arrive',function(n){n.classList.remove('ui-section-arrive');});nearJobs.clear();chartQueued=new WeakSet(); formTimers.forEach(clearTimeout);formTimers.clear(); stopNumbers(); detailsAnimations.forEach(function (a) { a.cancel(); }); detailsAnimations.clear(); chartCleanups.forEach(function (fn) { fn(); }); loadStates.forEach(function (_, host) { endLoad(host); }); cancelAnimationFrame(scanFrame); scanFrame = 0; }
-  function reduceReveal(){if(motion.matches)each(root(),'.ui-section-arrive',function(n){n.classList.remove('ui-section-arrive');});}
+  function cleanup() { clearPress();pendingNumbers.clear();fullScanPending=true;if(nearObserver)nearObserver.disconnect();if(revealObserver)revealObserver.disconnect();each(root(),'.ui-section-arrive',finishReveal);revealActive.clear();cancelAnimationFrame(revealFrame);revealFrame=0;nearJobs.clear();chartQueued=new WeakSet(); formTimers.forEach(clearTimeout);formTimers.clear(); stopNumbers(); detailsAnimations.forEach(function (a) { a.cancel(); }); detailsAnimations.clear(); chartCleanups.forEach(function (fn) { fn(); }); loadStates.forEach(function (_, host) { endLoad(host); }); cancelAnimationFrame(scanFrame); scanFrame = 0; }
+  function reduceReveal(){if(motion.matches)each(root(),'.ui-section-arrive',finishReveal);}
   if(motion.addEventListener)motion.addEventListener('change',reduceReveal);else if(motion.addListener)motion.addListener(reduceReveal);
   document.addEventListener('stockbot:pageleaving', cleanup);
-  document.addEventListener('visibilitychange', function () { if (document.hidden) {stopNumbers();clearPress();} });
-  window.addEventListener('scroll',function(){stopNumbers();clearPress();}, { capture: true, passive: true }); window.addEventListener('resize', stopNumbers, { passive: true });
+  document.addEventListener('visibilitychange', function () { if (document.hidden) {stopNumbers();clearPress();}else{schedule();scheduleReveals();} });
+  window.addEventListener('scroll',function(){stopNumbers();clearPress();scheduleReveals();}, { capture: true, passive: true }); window.addEventListener('resize',function(){stopNumbers();scheduleReveals();}, { passive: true });
   window.addEventListener('pagehide', function () { cleanup(); routeEnd(true); });
   window.addEventListener('pageshow', function () { each(document, 'form[data-submitted="1"]', function (form) { delete form.dataset.submitted; form.classList.remove('tap-loading'); each(form, '[data-old-text]', function (b) { b.disabled = false; if (b.tagName === 'INPUT') b.value = b.dataset.oldText; else b.textContent = b.dataset.oldText; }); formState(form, 'error', '操作狀態已重設，請先確認是否已儲存。'); }); schedule(); });
   window.StockBotUI = { routeStart: routeStart, routeEnd: routeEnd, load: load, endLoad: endLoad, formState: formState, notify: notify, scan: schedule, reducedMotion: reduced, cleanup: cleanup, parseNumber: parseNumber, whenNear:whenNear, captureView:captureView, restoreView:restoreView };
