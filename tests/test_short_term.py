@@ -51,7 +51,8 @@ def test_no_entry_for_illiquid_overheated_missing_or_unsupportive_chips(kind):
     else:h[-3]['foreign']=None
     result=st.analyse('2330','fixture',quote(bars),h,now(bars))
     if kind=='selling':
-        assert result['watch_only'] and result['state']=='等待籌碼確認'
+        assert result['watch_only'] and result['current_action']=='wait'
+        assert '等待籌碼確認' in result['action_note']
         assert not result['entry_ready'] and not result['signals']
     else:
         assert result is None
@@ -84,7 +85,7 @@ def test_stop_wins_over_target_in_same_daily_bar_and_gap_is_not_filled_at_stop()
     today=[s for s in out['signals'] if s['date']==bars[-1]['date']]
     assert [s['type'] for s in today]==['exit']
     assert today[0]['price']==round(stop-1,2)
-    assert not out['active'] and out['state']=='出場訊號'
+    assert not out['active'] and out['current_action']=='exit'
 
 
 def test_additions_are_limited_and_cannot_expand_initial_downside_budget():
@@ -142,7 +143,8 @@ def test_memory_rejection_preserves_saved_rows_and_does_not_submit_work():
     s=service(False)
     s.store.load.return_value={'payload':{'rows':[{'code':'2330'}],'generated_at':'2026-11-16T16:00:00','date':'2026-11-16'}}
     p=s.payload()
-    assert p['rows']==[{'code':'2330'}] and p['meta']['stale'] and not p['meta']['building']
+    assert p['rows'][0]['code']=='2330' and p['rows'][0]['current_action']=='unconfirmed'
+    assert p['meta']['stale'] and not p['meta']['building']
     assert p['meta']['error']
     s.executor.submit.assert_not_called()
 
@@ -238,3 +240,63 @@ def test_api_is_authenticated_read_only_and_does_not_cache():
     response=client.get(url,headers={'X-Test-Login':'1'})
     assert response.status_code==200 and response.headers['Cache-Control']=='no-store'
     assert client.post(url,headers={'X-Test-Login':'1'}).status_code==405
+
+
+def test_october_entry_and_november_exit_are_not_current_buy_instructions():
+    signals=[dict(id='old-entry',date='2026-10-13',type='entry',price=148),
+             dict(id='old-exit',date='2026-11-06',type='exit',price=160)]
+    status=st.current_status(signals,False,'2026-11-17',[])
+    assert status['action']=='wait' and status['event'] is None
+    assert status['state']=='已出場，等待新訊號'
+    assert '2026-11-06 已出場' in status['action_note'] and '不是現在買進提示' in status['action_note']
+    assert st.latest_alerts([dict(code='2412',name='fixture',date='2026-11-17',signals=signals)],'2026-11-17')==[]
+
+
+def test_old_active_entry_is_hold_not_a_new_entry():
+    status=st.current_status([dict(date='2026-10-13',type='entry')],True,'2026-11-17',[])
+    assert status['action']=='hold' and status['event'] is None
+    assert '非新進場' in status['state'] and '不代表現在補買' in status['action_note']
+
+
+def test_current_events_are_announced_and_stale_symbol_dates_are_excluded():
+    rows=[dict(code=str(i),name='fixture',date='2026-11-17',signals=[dict(date='2026-11-17',type='entry',price=100)]) for i in range(8)]
+    rows.append(dict(code='old',name='stale',date='2026-11-16',signals=[dict(date='2026-11-16',type='entry',price=90)]))
+    alerts=st.latest_alerts(rows,'2026-11-17')
+    assert len(alerts)==8 and all(a['date']=='2026-11-17' for a in alerts)
+    status=st.current_status(rows[0]['signals'],True,'2026-11-17',[])
+    assert status['action']=='entry' and status['event']
+    assert '下一交易日' in status['action_note']
+
+
+@pytest.mark.parametrize('hour,source,valid',[(10,'2026-11-16',True),(16,'2026-11-16',False),(16,'2026-11-17',True)])
+def test_notification_freshness_uses_completed_session_not_just_snapshot_generation(hour,source,valid):
+    s=service();s.now=lambda:datetime(2026,11,17,hour)
+    s.store.load.return_value={'payload':dict(date=source,generated_at=s.now().isoformat(),selection_version=st.SELECTION_VERSION,rows=[])}
+    assert s.payload()['meta']['signals_current'] is valid
+
+
+def test_notification_freshness_respects_exchange_holidays():
+    s=service();s.now=lambda:datetime(2026,11,17,10)
+    s.calendar=lambda d:d.weekday()<5 and str(d)!='2026-11-16'
+    s.store.load.return_value={'payload':dict(date='2026-11-13',generated_at=s.now().isoformat(),selection_version=st.SELECTION_VERSION,rows=[])}
+    payload=s.payload()
+    assert payload['meta']['signals_current'] and payload['meta']['expected_date']=='2026-11-13'
+
+
+def test_individual_stale_quote_cannot_keep_a_new_entry_badge():
+    s=service()
+    old=dict(code='2330',date='2026-11-16',state='本次新進場',current_action='entry',entry_ready=True,
+             signals=[dict(date='2026-11-16',type='entry')])
+    s.store.load.return_value={'payload':dict(date='2026-11-17',generated_at=s.now().isoformat(),
+        selection_version=st.SELECTION_VERSION,rows=[old],alerts=[])}
+    row=s.payload()['rows'][0]
+    assert row['current_action']=='unconfirmed' and not row['entry_ready']
+    assert row['signals']==old['signals']  # original history remains available
+
+
+def test_stale_session_suppresses_cached_entry_notifications():
+    s=service()
+    s.store.load.return_value={'payload':dict(date='2026-11-16',generated_at=s.now().isoformat(),
+        selection_version=st.SELECTION_VERSION,rows=[],alerts=[dict(date='2026-11-16',type='entry')])}
+    payload=s.payload()
+    assert not payload['meta']['signals_current'] and payload['alerts']==[]

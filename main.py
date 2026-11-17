@@ -28638,8 +28638,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-experience.css?v=20261117-12">
 <script defer src="/static/ui-feedback.js?v=20261116-7"></script>
 <script defer src="/static/app-experience.js?v=20261116-9"></script>
-<link rel="stylesheet" href="/static/short-term.css?v=20261117-3">
-<script defer src="/static/short-term.js?v=20261117-3"></script>
+<link rel="stylesheet" href="/static/short-term.css?v=20261117-4">
+<script defer src="/static/short-term.js?v=20261117-4"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
@@ -54891,7 +54891,7 @@ from short_term import ShortTermService, create_blueprint as create_short_term_b
 _short_term_service = ShortTermService(
     connect=_taiex_reduction_connect, store=_taiex_reduction_store(),
     quote=get_realtime_stock, executor=_BACKGROUND_JOB_EXECUTOR,
-    safe=_background_work_memory_safe, now=taiwan_now,
+    safe=_background_work_memory_safe, now=taiwan_now, calendar=is_twse_trading_day,
     equity=lambda code: bool(re.fullmatch(r"[1-9]\d{3}", code)) and not is_etf(code))
 app.register_blueprint(create_short_term_blueprint(
     login=web_login_required, service=_short_term_service))

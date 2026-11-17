@@ -15,6 +15,16 @@ html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #stockbo
 #wb-short-term .st-heading p{font-size:13px;color:var(--st-muted);margin:0}
 #wb-short-term .st-beta{display:inline-block;vertical-align:middle;font-size:10px;letter-spacing:0;padding:4px 6px;border:1px solid var(--st-line);border-radius:5px}
 #wb-short-term .st-refresh{padding:8px 12px;white-space:nowrap;font-size:12px;font-weight:700}
+#wb-short-term .st-notices{margin:18px 0 12px;padding:16px;background:var(--st-paper);border:1px solid var(--st-line);border-left:4px solid var(--st-ink);border-radius:12px}
+#wb-short-term .st-notices h3{font-size:18px;line-height:1.5;margin:0 0 8px;color:var(--st-ink)}
+#wb-short-term .st-notices p{font-size:12px;line-height:1.7;margin:6px 0;color:var(--st-muted)}
+#wb-short-term .st-notice-event{display:flex;flex-direction:column;gap:6px;padding:12px 0;border-top:1px solid var(--st-line);font-size:12px}
+#wb-short-term .st-notice-event b{font-size:15px}#wb-short-term .st-notice-event[data-kind=entry] b{color:#c5343b}#wb-short-term .st-notice-event[data-kind=exit] b{color:#13805f}
+#wb-short-term .st-notice-event span{color:var(--st-muted);font-variant-numeric:tabular-nums}
+#wb-short-term .st-action{margin:0 18px 14px;padding:12px;background:var(--suite-soft,#f2f5f7);border-radius:10px}
+#wb-short-term .st-action b{font-size:13px}#wb-short-term .st-action p{font-size:12px;line-height:1.7;color:var(--st-muted);margin:5px 0 0}
+#wb-short-term .st-chart-mode{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px}
+#wb-short-term .st-chart-context{font-size:11px;color:var(--st-muted)}#wb-short-term .st-history-toggle{font-size:11px;padding:5px 8px;white-space:nowrap}
 #wb-short-term .st-summary{display:flex;flex-wrap:wrap;gap:8px;margin:19px 0 12px}
 #wb-short-term .st-summary span{border:1px solid var(--st-line);padding:5px 8px;border-radius:6px;font-size:11px;color:var(--st-muted)}
 #wb-short-term .st-status{font-size:12px;color:var(--st-muted);line-height:1.6;margin:0 0 15px}
