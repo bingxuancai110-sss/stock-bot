@@ -28639,6 +28639,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <script defer src="/static/ui-feedback.js?v=20261116-7"></script>
 <script defer src="/static/app-experience.js?v=20261116-9"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
+<link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <script defer src="/static/trade-completion.js?v=20261117-1"></script>
 <script defer src="/static/settings-theme.js?v=20261112-1"></script>
 <script defer src="/static/fugle-live.js?v=20261109-2"></script>
