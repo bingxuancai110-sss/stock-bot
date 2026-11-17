@@ -14,7 +14,7 @@ VERSION = 'short-daily-v1'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 80
 MAX_PICKS = 6
-SELECTION_VERSION = 2
+SELECTION_VERSION = 3
 
 
 def number(value):
@@ -27,6 +27,46 @@ def number(value):
 
 def day(value):
     return str(value.isoformat() if hasattr(value, 'isoformat') else value)[:10]
+
+
+def current_status(signals, active, asof, pending):
+    """A historical entry is never a new-entry instruction today."""
+    latest=signals[-1] if signals else None
+    event=latest if latest and latest['date']==asof else None
+    last_exit=next((s for s in reversed(signals) if s['type']=='exit'),None)
+    last_entry=next((s for s in reversed(signals) if s['type']=='entry'),None)
+    labels={'entry':'本次新進場','add':'本次加碼訊號','reduce':'本次減碼訊號','exit':'本次出場訊號'}
+    if event:
+        message=(asof+' 收盤資料確認'+{'entry':'進場條件成立；下一交易日需重新確認價格與停損距離，不能直接按歷史訊號價成交。',
+            'add':'加碼條件成立；僅適用於仍在追蹤該策略部位的情境，不是首次進場訊號。',
+            'reduce':'減碼條件成立；適用於仍持有該策略部位的情境。',
+            'exit':'已觸發出場；目前不是新進場訊號。'}[event['type']])
+        return dict(state=labels[event['type']],action=event['type'],action_note=message,
+                    event=event,last_exit=last_exit,last_entry=last_entry)
+    if active:
+        return dict(state='策略持有中，非新進場',action='hold',event=None,
+            action_note='原策略於 '+(last_entry['date'] if last_entry else '歷史日期')+' 進場，尚未出場；目前沒有新的進場訊號，不代表現在補買。',
+            last_exit=last_exit,last_entry=last_entry)
+    if last_exit:
+        return dict(state='已出場，等待新訊號',action='wait',event=None,
+            action_note=last_exit['date']+' 已出場，目前沒有新的進場訊號。'+
+            ((last_entry['date']+' 的進場已是歷史紀錄，不是現在買進提示。') if last_entry else ''),
+            last_exit=last_exit,last_entry=last_entry)
+    return dict(state='等待進場，尚未觸發',action='wait',event=None,
+                action_note='尚未觸發進場。'+('、'.join(pending) or '等待新的確認條件')+'。',
+                last_exit=None,last_entry=None)
+
+
+def latest_alerts(rows, asof):
+    alerts=[]
+    for row in rows:
+        if row['date']!=asof:
+            continue
+        for event in row.get('signals',[]):
+            if event['date']==asof:
+                alerts.append(dict(event,code=row['code'],name=row['name']))
+    order={'entry':0,'exit':1,'reduce':2,'add':3}
+    return sorted(alerts,key=lambda a:(order.get(a['type'],4),a['code']))
 
 
 def normalize_bars(quote, now):
@@ -221,21 +261,24 @@ def analyse(code, name, quote, history, now):
     preview_target=preview_pressure or observation+2*preview_risk
     preview_rr=(preview_target-observation)/preview_risk if preview_risk>0 else 0
     preview_risk_ok=0<preview_risk/observation<=.06 and preview_rr>=1.5
-    label = {'entry':'進場訊號','add':'加碼訊號','reduce':'減碼訊號','exit':'出場訊號'}
     pending=[]
     if not latest['trend']:pending.append('等待趨勢確認')
     if not latest['chips_ok']:pending.append('等待籌碼確認')
     if not (latest['risk_ok'] if position else preview_risk_ok):pending.append('等待風險空間')
     if not latest['trigger']:pending.append('等待突破／回測')
-    state = label[recent[-1]['type']] if recent else ('策略追蹤中' if position else pending[0] if pending else '等待進場')
+    status=current_status(signals,bool(position),bars[-1]['date'],pending)
+    event=status['event']
     checks=[dict(label='趨勢',passed=latest['trend']),dict(label='籌碼',passed=latest['chips_ok']),
             dict(label='風險空間',passed=latest['risk_ok'] if position else preview_risk_ok),dict(label='進場型態',passed=latest['trigger'])]
     # Exit candidates remain for three sessions, even though position is now flat.
     return dict(code=code,name=name,date=bars[-1]['date'],price=bars[-1]['close'],
-                change_pct=round(latest['change'],2),state=state,active=bool(position),
+                change_pct=round(latest['change'],2),state=status['state'],active=bool(position),
+                current_action=status['action'],action_note=status['action_note'],
+                last_exit_date=(status['last_exit'] or {}).get('date'),
+                last_entry_date=(status['last_entry'] or {}).get('date'),
                 watch_only=not position and not recent, pending=pending, checks=checks,
-                entry_ready=bool(recent and recent[-1]['type']=='entry' and recent[-1]['date']==bars[-1]['date']),
-                latest_event_date=recent[-1]['date'] if recent else None,
+                entry_ready=bool(event and event['type']=='entry'),
+                latest_event_date=event['date'] if event else None,
                 entry=round(observation if not position else position['entry'],2),
                 stop=round(position['stop'] if position else latest['stop'],2),
                 target=round(position['target'] if position else preview_target,2),
@@ -246,7 +289,7 @@ def analyse(code, name, quote, history, now):
                 avg_turnover=round(latest['avg_turnover']),
                 trend=latest['trend'], bars=bars[-120:],signals=signals,trailing=trails,
                 source=str(quote.get('source') or 'Yahoo 日線'),
-                latest_event=recent[-1]['type'] if recent else None)
+                latest_event=event['type'] if event else None)
 
 
 def exclusion_reason(bars, history, now):
@@ -270,9 +313,10 @@ def exclusion_reason(bars, history, now):
 
 
 class ShortTermService:
-    def __init__(self, *, connect, store, quote, executor, safe, now, equity):
+    def __init__(self, *, connect, store, quote, executor, safe, now, equity, calendar=None):
         self.connect=connect; self.store=store; self.quote=quote; self.executor=executor
         self.safe=safe; self.now=now; self.equity=equity
+        self.calendar=calendar or (lambda d:d.weekday()<5)
         self.lock=threading.RLock(); self.cached=None; self.loaded=False
         self.running=False; self.started=0.; self.progress=0; self.error=''; self.last_try=0.
 
@@ -354,6 +398,7 @@ class ShortTermService:
             payload=dict(version=VERSION,selection_version=SELECTION_VERSION,
                          rows=rows[:MAX_PICKS],scanned=len(codes),failed=failures,
                          date=max(quote_dates,default=None),excluded=excluded,
+                         alerts=latest_alerts(rows,max(quote_dates,default=None)),
                          generated_at=self.now().isoformat(),
                          note='日 K 規則試行・歷史箭頭為規則重播，尚未宣稱回測績效；不含基本面、不送出交易。')
             if not self.store.save(KEY,payload,data_date=payload['date'],source_meta={'version':VERSION}):
@@ -395,8 +440,25 @@ class ShortTermService:
                         self.running=False; self.error='背景佇列暫時無法接收，請稍後重試'
                 else:
                     self.error='記憶體餘裕不足，稍後可重試'
-            return dict(ok=True,rows=(cached or {}).get('rows',[]),meta=dict(
+            expected=self.now().date()
+            if self.now().hour<14:
+                expected-=timedelta(days=1)
+            for _ in range(20):
+                if self.calendar(expected):break
+                expected-=timedelta(days=1)
+            signals_current=bool((cached or {}).get('date')==day(expected) and
+                (cached or {}).get('selection_version')==SELECTION_VERSION and not self.error)
+            rows=[]
+            for row in (cached or {}).get('rows',[]):
+                if signals_current and row.get('date')==day(expected):
+                    rows.append(row)
+                else:
+                    rows.append(dict(row,state='資料待更新，非最新訊號',current_action='unconfirmed',
+                        action_note='行情截至 '+str(row.get('date') or '未確認')+'；尚未確認最新交易日的訊號，不沿用舊買點。',
+                        entry_ready=False,latest_event=None,latest_event_date=None))
+            return dict(ok=True,rows=rows,alerts=(cached or {}).get('alerts',[]) if signals_current else [],meta=dict(
                 version=VERSION,building=self.running,progress=self.progress,pool_limit=MAX_POOL,
+                signals_current=signals_current,expected_date=day(expected),
                 date=(cached or {}).get('date'),generated_at=generated,stale=stale,
                 scanned=(cached or {}).get('scanned',0),failed=(cached or {}).get('failed',0),
                 excluded=(cached or {}).get('excluded',{}),

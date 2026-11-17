@@ -119,3 +119,33 @@ policy cache invalidation and an observation UI case. 23 backend strategy tests
 and 26 short-term UI checks on each browser engine.
 
 Each build checks a 120-second execution deadline between symbols, preserving the previous snapshot on timeout so a slow upstream cannot monopolize the shared job queue.
+
+## Current-session notices — selection policy 3
+
+The panel now leads with the latest completed-session entry notices, or an explicit
+dated statement that no new entry was confirmed. New exit/reduce/add notices appear
+there as well, across all checked candidates before the six-card display limit.
+Older entries cannot become new notices simply because the snapshot was refreshed.
+Session validity uses the existing TWSE trading calendar and the 14:00 completed-
+bar cutoff; stale or failed data is unconfirmed, rather than a no-entry claim.
+An individually stale stock cannot keep a new-entry badge. Original event history
+is preserved for explicit inspection.
+
+Each card states its current action: new entry, add/reduce/exit this session, an
+existing modeled position (not a new entry), already exited and waiting, or no
+entry triggered. In the reported example, an October 13 entry and November 6 exit
+show `已出場，等待新訊號` on November 17, with neither event in the new-entry banner.
+Historical markers and flat-position trailing lines are hidden by default. The
+user explicitly switches to historical replay or selects a timeline event to see
+them. Returning to current mode clears old markers. Protection levels are labeled
+support-stop (`支撐停損`) without equating them to raw structural support.
+
+Current signals are completed-bar observations, not guaranteed fills: the next
+session's execution price and downside distance need confirmation. No real order,
+personal portfolio, LINE notification or push-notification permission is used.
+
+Validation: 32 strategy/service/API tests, 42 Radar/snapshot regressions; Chromium
+and WebKit each pass 31 short-term and 214 existing interaction checks (564 total).
+Specific cases cover October entry/November exit, old active holdings, true fresh
+entries above the card list, stale source dates, exchange holidays, explicit history
+mode and returning from history. Revert this release for rollback; no schema change.
