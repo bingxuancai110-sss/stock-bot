@@ -48,6 +48,8 @@ with sync_playwright() as p:
     check('navigation responds before the network request finishes',target.evaluate('(e)=>e.classList.contains("experience-nav-target")') and page.locator('.experience-route-status').is_visible())
     check('destination pill moves to the requested tab',page.locator('.app-nav-cursor').evaluate('(e)=>{const a=document.querySelector(".experience-nav-target").getBoundingClientRect(),b=e.getBoundingClientRect();return Math.abs(a.left-b.left)<2&&Math.abs(a.top-b.top)<2}'))
     check('pending navigation keeps current page semantics and layout',page.locator('.app-bottom-nav a[aria-current="page"]').get_attribute('href')=='/web/positions' and page.evaluate('document.documentElement.scrollHeight')==old_height)
+    check('previous navigation label stays dark when the pill moves away',page.locator('.app-bottom-nav a.on:not(.experience-nav-target)').evaluate('(e)=>{const s=getComputedStyle(e),label=getComputedStyle(e.querySelector("span")),c=label.color.match(/[0-9]+/g).map(Number);return c[0]<160&&c[1]<160&&c[2]<160&&s.backgroundColor==="rgba(0, 0, 0, 0)"&&s.borderTopColor==="rgba(0, 0, 0, 0)"}'))
+    check('loading destination retains readable light text',target.evaluate('(e)=>{const c=getComputedStyle(e).color.match(/[0-9]+/g).map(Number);return c[0]>200&&c[1]>200&&c[2]>200}'))
     page.screenshot(path=str(ROOT/(engine+'-experience-navigation.png')))
     page.wait_for_function('document.body.classList.contains("app-route-pending")')
     held=state.pop('held');state['hold']=False;held.fulfill(body=(ROOT/'more-fragment.html').read_text(encoding='utf-8'),content_type='text/html')
