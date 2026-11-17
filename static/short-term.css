@@ -95,6 +95,7 @@ html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-shor
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-short-term .st-card-toggle[aria-expanded=true]{box-shadow:inset 3px 0 0 var(--st-ink)!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-short-term .st-card-toggle :is(b,strong,small,em,span){-webkit-text-fill-color:currentColor!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-short-term .st-quote strong{color:var(--st-ink)!important}
+html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-short-term :is(.st-notices h3,.st-stock h3,.st-action b,.st-inspector h4,.st-chart-head b,.st-chip-detail h4){color:var(--st-ink)!important;-webkit-text-fill-color:currentColor!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-short-term :is(.st-date,.st-open-label,.st-stock h3 small){color:var(--st-muted)!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-short-term .st-up{color:#c5343b!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-short-term .st-down{color:#13805f!important}
@@ -105,3 +106,4 @@ html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-shor
 @media(max-width:360px){#wb-short-term .st-card-toggle{padding:16px 12px}#wb-short-term .st-detail{padding:12px}#wb-short-term .st-stock h3{font-size:16px}#wb-short-term .st-quote strong{font-size:21px}#wb-short-term .st-levels{padding-left:12px;padding-right:12px}#wb-short-term .st-levels b{font-size:14px}#wb-short-term .st-chart-head{align-items:flex-start}#wb-short-term .st-periods button{padding:5px 7px}}
 @media(prefers-reduced-motion:reduce){#wb-short-term *{animation:none!important;transition:none!important}}
 @media(prefers-color-scheme:dark){#wb-short-term{--st-paper:#182630;--st-ink:#e5edf2;--st-muted:#a9bac5;--st-line:#344550;--suite-soft:#22343f}#wb-short-term .st-up{color:#ff868c!important}#wb-short-term .st-down{color:#66cda7!important}}
+@media(prefers-color-scheme:dark){html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-short-term .st-up{color:#ff868c!important}html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-short-term .st-down{color:#66cda7!important}}
