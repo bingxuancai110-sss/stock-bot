@@ -1,0 +1,9 @@
+html body#stockbot-app dialog.trade-completion-dialog{position:fixed!important;inset:0!important;margin:auto!important;box-sizing:border-box!important;height:fit-content!important;width:min(360px,calc(100vw - 32px));padding:0;border:1px solid #e2e7eb;border-radius:22px;background:var(--sb-app-surface,#fff);color:var(--sb-app-ink,#203142);box-shadow:0 24px 80px #14233129;max-height:calc(100dvh - 48px);overflow:auto}
+.trade-completion-dialog::backdrop{background:#13212f40;backdrop-filter:blur(5px)}
+.trade-completion-dialog .p2-trade-result{margin:0!important;padding:26px 22px!important;border:0!important;border-radius:0!important;background:transparent!important;text-align:center}
+.trade-completion-mark{display:grid;place-items:center;width:48px;height:48px;margin:0 auto 16px;border-radius:50%;background:#edf2f5;color:#203142;font-size:26px}
+.trade-completion-dialog h2{margin:0 0 12px;font-size:21px}.trade-completion-dialog p{font-size:14px;line-height:1.65;overflow-wrap:anywhere}
+.trade-completion-dialog .trade-completion-state{font-size:12px;color:var(--sb-app-muted,#647483);margin:18px 0}
+.trade-completion-dialog button{display:block;width:100%;min-height:44px;margin-top:10px;padding:12px;border:1px solid #dce3e8;border-radius:12px;cursor:pointer;font:inherit;background:var(--sb-app-surface,#fff);color:inherit}
+.trade-completion-dialog button[hidden]{display:none}.trade-completion-dialog .trade-completion-close{background:#1b3340;color:#fff;-webkit-text-fill-color:#fff;border-color:#1b3340;font-weight:700}
+@media(prefers-reduced-motion:no-preference){.trade-completion-dialog[open]{animation:trade-card-arrive .18s ease-out}@keyframes trade-card-arrive{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}}

@@ -28638,6 +28638,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-experience.css?v=20261116-11">
 <script defer src="/static/ui-feedback.js?v=20261116-7"></script>
 <script defer src="/static/app-experience.js?v=20261116-9"></script>
+<link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
+<script defer src="/static/trade-completion.js?v=20261117-1"></script>
 <script defer src="/static/settings-theme.js?v=20261112-1"></script>
 <script defer src="/static/fugle-live.js?v=20261109-2"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
@@ -33307,48 +33309,19 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
         finished=true;
         if(timer) clearInterval(timer);
         setProgress(100);
-        if(subEl) subEl.textContent=isAddAction?'新增完成，正在更新持股畫面…':'賣出完成，正在更新持股畫面…';
-
-        // 不再整頁跳轉／重新載入。後端仍然照正常 POST 寫入資料，
-        // 成功後只把目前的 #app-page-content 換成最新內容，
-        // 因此手機不會重新跑整個首頁 loader，也不會把使用者帶回頁面頂端。
-        (function(){
-          if(!form.isConnected){if(wrap.parentNode)wrap.remove();if(window.StockBotUI)window.StockBotUI.notify('持股已完成處理，可返回持股頁查看最新內容。','success');return;}
-          var target=document.getElementById('app-page-content');
-          if(!target){ window.location.href=url; return; }
-          Promise.resolve(responseHtml)
-            .then(function(html){
-              var doc=new DOMParser().parseFromString(html,'text/html');
-              var fresh=doc.getElementById('app-page-content');
-              if(!fresh) throw new Error('找不到更新後的持股內容');
-              document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
-              target.innerHTML=fresh.innerHTML;
-              // innerHTML 插入的 script 不會自動執行，這裡只重新啟動片段內原本需要的腳本。
-              target.querySelectorAll('script').forEach(function(oldScript){
-                var replacement=document.createElement('script');
-                Array.prototype.slice.call(oldScript.attributes).forEach(function(attr){ replacement.setAttribute(attr.name,attr.name==='src'?attr.value:attr.value); });
-                replacement.text=oldScript.text||oldScript.textContent||'';
-                oldScript.parentNode.replaceChild(replacement,oldScript);
-              });
-              if(isAddAction){
-                try{window.scrollTo({top:0,left:0,behavior:(window.StockBotUI&&window.StockBotUI.reducedMotion()?'auto':'smooth')});}catch(ignore){window.scrollTo(0,0);}
-                var success=document.createElement('div');success.className='position-success-overlay';
-                success.innerHTML='<div class="position-success-card" role="status"><div class="position-success-check">✓</div><b>持股新增成功</b><span>持股已載入完成</span></div>';
-                document.body.appendChild(success);requestAnimationFrame(function(){success.classList.add('show');});
-                setTimeout(function(){success.classList.remove('show');setTimeout(function(){if(success.parentNode)success.parentNode.removeChild(success)},220)},1050);
-              }else{try{window.scrollTo({top:0,left:0,behavior:(window.StockBotUI&&window.StockBotUI.reducedMotion()?'auto':'smooth')});}catch(ignore){window.scrollTo(0,0);}}
-              if(wrap && wrap.parentNode) wrap.remove();
-            })
-            .catch(function(err){
-              // 更新片段失敗時才退回整頁導覽，避免資料其實已寫入卻卡在舊畫面。
-              if(subEl) subEl.textContent='資料已完成寫入，正在重新同步畫面…';
-              setTimeout(function(){ window.location.href=url; },300);
-            });
-        })();
+        if(!form.isConnected){if(wrap.parentNode)wrap.remove();if(window.StockBotUI)window.StockBotUI.notify("持股記帳已完成。","success");return;}
+        if(window.StockBotTradeCompletion){
+          if(wrap.parentNode)wrap.remove();
+          window.StockBotTradeCompletion.show({form:form,isBuy:isAddAction,url:submitUrl,message:(tradeResult&&tradeResult.querySelector('p')?tradeResult.querySelector('p').textContent:responseMessage.textContent).trim()});
+        }else{
+          if(subEl)subEl.textContent=isAddAction?'買進記帳已完成。':'賣出記帳已完成。';
+          var done=document.createElement('button');done.type='button';done.textContent='完成';done.onclick=function(){wrap.remove();var dialog=form.closest('dialog');if(dialog&&dialog.open)dialog.close();};wrap.querySelector('.position-submit-progress-card').appendChild(done);
+        }
       }).catch(function(err){
         clearTimeout(responseDeadline);
         if(timer) clearInterval(timer);
         if(wrap && wrap.parentNode) wrap.remove();
+        if(finished){if(window.StockBotUI)window.StockBotUI.notify("記帳已完成，請核對持股資料。","success");return;}
         confirmed=false; submit.disabled=false;
         delete form.dataset.uiSubmitting;
         var outcomeLabel=err&&err.confirmedRejection?'操作未完成：':'結果待確認：';

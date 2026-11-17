@@ -192,11 +192,13 @@ with sync_playwright() as p:
  count=state['post_count'];state['post']='success';form.locator('button[type=submit]').click();page.locator('.position-confirm-submit').click();page.wait_for_selector('.p2-trade-result.success')
  check('success sends one write',state['post_count']==count+1)
  check('actual lightweight success response is accepted without legacy msg','已新增' in page.locator('.p2-trade-result.success').inner_text() and page.locator('form.add .ui-form-status[data-state=error]').count()==0)
+ page.wait_for_function("document.querySelector('.trade-completion-state')?.textContent==='持股與損益已更新'")
+ page.locator('.trade-completion-close').click()
  # SPA route keeps the current page visible and uses the shared top progress line.
  state['delay_nav']=True
  page.evaluate('window.stockBotSwitchPage("/web/leaderboard",true)')
  check('route does not insert a blocking skeleton card',page.locator('.ui-feedback-route').count()==0)
- check('route keeps previous page visible and interactive',page.locator('#app-page-content').evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).pointerEvents!=="none"') and page.locator('.p2-trade-result.success').is_visible(),page.locator('#app-page-content').evaluate('(e)=>({opacity:getComputedStyle(e).opacity,pointerEvents:getComputedStyle(e).pointerEvents,classes:e.className})'))
+ check('route keeps previous page visible and interactive',page.locator('#app-page-content').evaluate('(e)=>getComputedStyle(e).opacity==="1"&&getComputedStyle(e).pointerEvents!=="none"') and page.locator('#portfolio-v2').is_visible(),page.locator('#app-page-content').evaluate('(e)=>({opacity:getComputedStyle(e).opacity,pointerEvents:getComputedStyle(e).pointerEvents,classes:e.className})'))
  check('navigation immediately acknowledges leaderboard selection',page.locator('.app-bottom-nav a[href="/web/leaderboard"]').evaluate('(e)=>e.classList.contains("ui-nav-pending")'))
  state['delay_nav']=False;held_route().fulfill(body=ROOT.joinpath('rank-fragment.html').read_text(),content_type='text/html')
  page.wait_for_selector('#rankTabs');page.wait_for_timeout(150)
