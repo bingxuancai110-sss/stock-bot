@@ -31,6 +31,7 @@ html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #stockbo
 #wb-short-term .st-summary{display:flex;flex-wrap:wrap;gap:8px;margin:19px 0 12px}
 #wb-short-term .st-summary span{border:1px solid var(--st-line);padding:5px 8px;border-radius:6px;font-size:11px;color:var(--st-muted)}
 #wb-short-term .st-status{font-size:12px;color:var(--st-muted);line-height:1.6;margin:0 0 15px}
+#wb-short-term .st-scope{font-size:11px;color:var(--st-muted);line-height:1.7;margin:-5px 0 15px}
 #wb-short-term .st-cards{display:grid;gap:15px}
 #wb-short-term .st-card{min-width:0;background:var(--st-paper);border:1px solid var(--st-line);border-radius:18px;overflow:hidden}
 #wb-short-term .st-card-toggle{display:flex;justify-content:space-between;gap:12px;padding:20px 18px 14px;width:100%;border:0;border-radius:0;text-align:left;background:transparent}
@@ -54,7 +55,7 @@ html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #stockbo
 #wb-short-term .st-levels span{display:block;color:var(--st-muted);font-size:10px;margin-bottom:5px}
 #wb-short-term .st-levels b{font-size:16px;font-variant-numeric:tabular-nums;white-space:nowrap}
 #wb-short-term .st-evidence{display:flex;flex-wrap:wrap;gap:6px 12px;padding:12px 18px;border-top:1px solid var(--st-line);font-size:10px;color:var(--st-muted)}
-#wb-short-term .st-checks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px 10px;padding:12px 18px;border-top:1px solid var(--st-line);font-size:11px;color:var(--st-muted)}
+#wb-short-term .st-checks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px 10px;padding:12px 18px;border-top:1px solid var(--st-line);font-size:11px;color:var(--st-muted)}
 #wb-short-term .st-checks span[data-passed=true]{color:var(--st-ink);font-weight:600}
 #wb-short-term .st-detail{border-top:1px solid var(--st-line);padding:18px}
 #wb-short-term .st-detail[hidden]{display:none}

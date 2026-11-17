@@ -1,4 +1,10 @@
-# Short-term workbench — daily-bar trial v1
+# Short-term workbench — current method
+
+**Current behavior:** see [technical-first v2](short-term-technical-v2.md).
+The institution-first gates described below are retained as legacy release notes,
+not the active selection/entry policy.
+
+## Legacy daily-bar trial v1
 
 Entry: 選股 → 短線, or `/web/workbench?tab=短線` after authentication.
 This independent source does not use the five-factor score, fundamentals,

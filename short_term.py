@@ -4,17 +4,18 @@ All replay decisions use an expanding prefix and institutional observations stri
 before the bar date (daily reports are unavailable at that day's closing auction).
 These are model signals, never asserted fills or measured investment performance.
 """
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import math
 import threading
 import time
 from flask import Blueprint, jsonify, request
 
-VERSION = 'short-daily-v1'
+VERSION = 'short-tech-v2'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 80
 MAX_PICKS = 6
-SELECTION_VERSION = 3
+SELECTION_VERSION = 4
+LIGHT_BATCH = 64
 
 
 def number(value):
@@ -176,6 +177,7 @@ def levels(bars):
     avg_vol = sum(b['volume'] for b in prev[-20:])/20
     avg_turnover = sum(b['close']*b['volume'] for b in prev[-20:])/20
     return dict(ma10=ma10, ma20=ma20, ma60=ma60, atr=atr,
+                trend_slope=ma20/old20-1,
                 trend=last['close'] > ma20 > ma60 and ma20 > old20,
                 recovering=last['close'] > ma20 or last['close'] > ma60,
                 pressure=pressure, support=support, resistance=resistance,
@@ -189,7 +191,7 @@ def setup(bars, chip):
     hot = (abs(x['change']) > 5 or c/bars[-6]['close'] > 1.15 or
            c/bars[-21]['close'] > 1.30 or c/x['ma20'] > 1.08 or
            x['atr']/c > .045 or x['volume_ratio'] > 3)
-    liquid = x['avg_turnover'] >= 100_000_000 and x['avg_volume'] >= 1_000_000
+    liquid = x['avg_turnover'] >= 10_000_000  # advisory only, never an entry/selection gate
     stop = x['support']-.25*x['atr']
     risk = c-stop
     target = x['resistance'] or c+2*risk
@@ -201,13 +203,13 @@ def setup(bars, chip):
     breakout = c > x['pressure'] and x['volume_ratio'] >= 1.25 and candle_strong
     pullback = (b['low'] <= x['ma20']*1.015 and c > bars[-2]['high']
                 and c > x['ma20'] and .8 <= x['volume_ratio'] <= 2)
-    valid = liquid and not hot and x['trend'] and chip['available'] and chips_ok
+    valid = not hot and x['trend'] and b['volume']>0
     risk_ok = 0 < risk/c <= .06 and rr >= 1.5
     return dict(x, stop=stop, target=target, target_kind='壓力區' if x['resistance'] else '2R 參考',
                 risk=risk, rr=rr, hot=hot, liquid=liquid, chips_ok=chips_ok,
                 chip_ratio=ratio*100, eligible=valid and risk_ok, risk_ok=risk_ok,
                 trigger=breakout or pullback,
-                watchable=(liquid and not hot and chip['available'] and x['recovering'] and
+                watchable=(not hot and b['volume']>0 and x['recovering'] and
                            (abs(c/x['ma20']-1)<=.06 or 0<=x['pressure']/c-1<=.05)),
                 entry=(breakout or pullback) and valid and risk_ok,
                 pattern='突破確認' if breakout else '回測轉強' if pullback else '等待突破／回測')
@@ -242,10 +244,16 @@ def analyse(code, name, quote, history, now):
             upper = b['high']-max(b['open'],b['close'])
             rejection = (b['high'] >= p['target'] and
                          (b['close'] < b['open'] or upper > .45*(b['high']-b['low'])))
-            weak = chip['available'] and chip['weak'] and b['close'] < plan['ma10']
+            previous_ma10=sum(z['close'] for z in prefix[-11:-1])/10
+            technical_weak=b['close']<plan['ma10'] and prefix[-2]['close']<previous_ma10
+            chip_weak=chip['available'] and chip['weak'] and b['close']<plan['ma10']
+            weak=technical_weak or chip_weak
             if not p['reduced'] and (rejection or weak):
                 units = p['units']/2; p['units'] -= units; p['reduced'] = True
-                emit('reduce',b['close'],'壓力區受阻，減少策略部位一半' if rejection else '收盤跌破十日線且近兩日法人合計轉賣，減少策略部位一半',p['stop'],p['target'],units)
+                reason=('壓力區受阻，減少策略部位一半' if rejection else
+                        '連續兩日收盤跌破十日線，減少策略部位一半' if technical_weak else
+                        '收盤跌破十日線且法人轉賣，減少策略部位一半')
+                emit('reduce',b['close'],reason,p['stop'],p['target'],units)
             elif (not p['added'] and not p['reduced'] and plan['eligible'] and
                   b['close'] >= p['entry']+p['risk'] and
                   b['close'] > max(z['high'] for z in prefix[-11:-1]) and
@@ -254,7 +262,7 @@ def analyse(code, name, quote, history, now):
                 existing_risk = p['cost']-p['units']*p['stop']
                 if existing_risk+added_risk <= p['risk']:
                     p['units'] += .5; p['cost'] += .5*b['close']; p['added'] = True
-                    emit('add',b['close'],'獲利達 1R 後再次放量突破；籌碼支持且合併風險未超過初始預算，加碼初始部位的一半',p['stop'],p['target'],.5)
+                    emit('add',b['close'],'獲利達 1R 後再次放量突破；技術與風險成立，法人僅供參考，加碼初始部位的一半',p['stop'],p['target'],.5)
             # Structural trailing stop only ratchets upward, effective next session.
             new_stop = max(p['stop'], min(z['low'] for z in prefix[-5:])-.25*plan['atr'])
             if new_stop < b['close']:
@@ -267,7 +275,7 @@ def analyse(code, name, quote, history, now):
             position = dict(entry=b['close'],risk=plan['risk'],stop=plan['stop'],
                             target=plan['target'],units=1.,cost=b['close'],added=False,
                             reduced=False,entry_date=b['date'],target_kind=plan['target_kind'])
-            emit('entry',b['close'],plan['pattern']+'；五日法人買盤與量價條件同時成立（收盤訊號，非當根可成交保證）',plan['stop'],plan['target'],1)
+            emit('entry',b['close'],plan['pattern']+'；趨勢、量價與風險條件成立，法人僅供參考（收盤訊號，非成交保證）',plan['stop'],plan['target'],1)
             trails.append(dict(date=b['date'],value=round(plan['stop'],2)))
     if latest is None:
         return None
@@ -287,12 +295,11 @@ def analyse(code, name, quote, history, now):
     preview_risk_ok=0<preview_risk/observation<=.06 and preview_rr>=1.5
     pending=[]
     if not latest['trend']:pending.append('等待趨勢確認')
-    if not latest['chips_ok']:pending.append('等待籌碼確認')
     if not (latest['risk_ok'] if position else preview_risk_ok):pending.append('等待風險空間')
     if not latest['trigger']:pending.append('等待突破／回測')
     status=current_status(signals,bool(position),bars[-1]['date'],pending)
     event=status['event']
-    checks=[dict(label='趨勢',passed=latest['trend']),dict(label='籌碼',passed=latest['chips_ok']),
+    checks=[dict(label='趨勢',passed=latest['trend']),
             dict(label='風險空間',passed=latest['risk_ok'] if position else preview_risk_ok),dict(label='進場型態',passed=latest['trigger'])]
     # Exit candidates remain for three sessions, even though position is now flat.
     return dict(code=code,name=name,date=bars[-1]['date'],price=bars[-1]['close'],
@@ -309,7 +316,12 @@ def analyse(code, name, quote, history, now):
                 target_kind=position['target_kind'] if position else '壓力區' if preview_pressure else '2R 參考',support=round(latest['support'],2),
                 resistance=round(latest['resistance'],2) if latest['resistance'] else None,
                 rr=round(latest['rr'] if position else preview_rr,2), chip=chip,volume_ratio=round(latest['volume_ratio'],2),
+                technical_priority=(not latest['trend'],-latest['trend_slope'],
+                    min(abs(bars[-1]['close']/latest['ma20']-1),abs(latest['pressure']/bars[-1]['close']-1))),
                 chip_ratio=round(latest['chip_ratio'],2) if chip['available'] else None,
+                chip_support='資料待確認' if not chip['available'] else '買盤支持' if latest['chips_ok'] else '買盤分歧／未延續',
+                liquidity_warning=not latest['liquid'],
+                avg_volume=round(latest['avg_volume']),
                 avg_turnover=round(latest['avg_turnover']),
                 trend=latest['trend'], bars=bars[-120:],signals=signals,trailing=trails,
                 source=str(quote.get('source') or 'Yahoo 日線'),
@@ -323,60 +335,135 @@ def exclusion_reason(bars, history, now):
         return '行情日期過舊'
     chip=chip_at(history,bars[-1]['date'],[b['date'] for b in bars])
     plan=setup(bars,chip)
-    if not plan['liquid']:
-        return '流動性不足'
     if plan['hot']:
         return '過熱或波動過高'
     if not plan['trend']:
         return '上升趨勢未成立'
-    if not chip['available']:
-        return '法人資料不完整'
-    if not plan['chips_ok']:
-        return '法人買盤未確認'
     return '停損距離或壓力空間不合適'
 
 
+def light_technical(quote, now):
+    """Price-only streamed preselection; no institution, price or lot-size bias."""
+    points=[]
+    for ts,px in zip(quote.get('timestamps') or [],quote.get('closes') or []):
+        p=number(px)
+        if not p or not ts:
+            continue
+        d=datetime.fromtimestamp(int(ts),timezone(timedelta(hours=8))).date()
+        if d>now.date() or (d==now.date() and now.hour<14):continue
+        points.append((d,p))
+    if len(points)<60 or (now.date()-points[-1][0]).days>7:return None
+    closes=[p[1] for p in points];c=closes[-1]
+    ma20=sum(closes[-20:])/20;ma60=sum(closes[-60:])/60
+    old20=sum(closes[-25:-5])/20;pressure=max(closes[-21:-1])
+    if (abs(c/closes[-2]-1)>.05 or c/ma20>1.08 or
+            c/closes[-6]>1.15 or c/closes[-21]>1.30):return None
+    trend=c>ma20>ma60 and ma20>old20
+    if not (c>ma20 or c>ma60):return None
+    if not (abs(c/ma20-1)<=.06 or 0<=pressure/c-1<=.05):return None
+    bucket='breakout' if trend and c>=pressure*.99 else 'pullback' if trend and abs(c/ma20-1)<=.03 else 'recovery'
+    return dict(bucket=bucket,rank=(not trend,-(ma20/old20-1),abs(c/pressure-1)))
+
+
+def technical_pool(metrics, keep, limit=MAX_POOL):
+    buckets=[sorted(((c,m) for c,m in metrics.items() if m['bucket']==b),key=lambda x:(x[1]['rank'],x[0]))
+             for b in ('breakout','pullback','recovery')]
+    result=list(dict.fromkeys(c for c in keep))[:limit]
+    for i in range(max((len(b) for b in buckets),default=0)):
+        for bucket in buckets:
+            if i<len(bucket) and bucket[i][0] not in result:
+                result.append(bucket[i][0])
+                if len(result)>=limit:return result
+    return result
+
+
 class ShortTermService:
-    def __init__(self, *, connect, store, quote, executor, safe, now, equity, calendar=None):
+    def __init__(self, *, connect, store, quote, executor, safe, now, equity, calendar=None,light=None,category=None):
         self.connect=connect; self.store=store; self.quote=quote; self.executor=executor
         self.safe=safe; self.now=now; self.equity=equity
         self.calendar=calendar or (lambda d:d.weekday()<5)
+        self.light=light;self.category=category or (lambda code,industry:'未分類')
+        self.stock_meta={};self.scan_meta={};self.phase='等待排程';self.progress_total=MAX_POOL
         self.lock=threading.RLock(); self.cached=None; self.loaded=False
         self.running=False; self.started=0.; self.progress=0; self.error=''; self.last_try=0.
 
     def inputs(self, keep):
+        # The catalogue defines the universe. Institution activity never chooses
+        # which symbols get a technical look. Do not hold a DB connection over HTTP.
         conn=self.connect()
         try:
             with conn.cursor() as cur:
                 cur.execute('SET LOCAL statement_timeout=12000')
-                cur.execute('''WITH days AS (SELECT DISTINCT trade_date FROM inst_history
-                    WHERE trade_date <= %s ORDER BY trade_date DESC LIMIT 5)
-                    SELECT code,MAX(name),SUM(foreign_net_lots),SUM(trust_net_lots),
-                    COUNT(*) FILTER(WHERE foreign_net_lots>0),COUNT(*) FILTER(WHERE trust_net_lots>0)
-                    FROM inst_history WHERE trade_date IN (SELECT trade_date FROM days)
-                    AND code ~ '^[0-9]{4}$' GROUP BY code HAVING COUNT(*)=5
-                    AND ((SUM(foreign_net_lots)>0 AND COUNT(*) FILTER(WHERE foreign_net_lots>0)>=3)
-                    OR (SUM(trust_net_lots)>0 AND COUNT(*) FILTER(WHERE trust_net_lots>0)>=3))
-                    ORDER BY GREATEST(SUM(foreign_net_lots),SUM(trust_net_lots)) DESC LIMIT 160''',(self.now().date(),))
+                cur.execute("SELECT code,name,industry,market FROM stock_info WHERE code ~ '^[0-9]{4}$' ORDER BY code")
                 raw=cur.fetchall()
-                names={str(r[0]):str(r[1] or r[0]) for r in raw if self.equity(str(r[0]))}
-                codes=list(dict.fromkeys([str(r['code']) for r in keep if self.equity(str(r['code']))]+list(names)))[:MAX_POOL]
-                for r in keep:
-                    names.setdefault(r['code'],r['name'])
-                cur.execute('''SELECT code,trade_date,foreign_net_lots,trust_net_lots
-                    FROM inst_history WHERE code=ANY(%s) AND trade_date BETWEEN %s AND %s
-                    ORDER BY code,trade_date''',(codes,self.now().date()-timedelta(days=240),self.now().date()))
-                history={c:[] for c in codes}
-                for c,d,f,t in cur.fetchall():
-                    history[str(c)].append(dict(date=day(d),foreign=number(f),trust=number(t)))
             conn.commit()
-            return codes,names,history
         finally:
             conn.close()
+        self.stock_meta={str(c):dict(name=str(n or c),industry=i,market=str(m or ''),sector=self.category(str(c),i))
+                         for c,n,i,m in raw if self.equity(str(c))}
+        for row in keep:
+            if self.equity(str(row['code'])):
+                self.stock_meta.setdefault(row['code'],dict(name=row['name'],industry='',market='',sector='未分類'))
+        universe=sorted(self.stock_meta)
+        if not universe or not self.light:
+            raise RuntimeError('全市場股票清單或技術行情來源尚未就緒')
+        markets={};sectors={}
+        for info in self.stock_meta.values():
+            m=info['market'] or '未確認';markets[m]=markets.get(m,0)+1
+            c=info['sector'];sectors[c]=sectors.get(c,0)+1
+        metrics={};quote_count=0;dates=[]
+        with self.lock:
+            self.phase='全市場技術初篩';self.progress=0;self.progress_total=len(universe)
+            self.scan_meta=dict(universe_count=len(universe),markets=markets,sectors=sectors)
+        for offset in range(0,len(universe),LIGHT_BATCH):
+            if time.monotonic()>self.deadline:
+                raise RuntimeError('全市場技術行情回應逾時；保留原結果，稍後可重試')
+            if not self.safe(reserve_mb=96):
+                raise RuntimeError('全市場初篩因記憶體餘裕不足暫停')
+            batch=universe[offset:offset+LIGHT_BATCH]
+            quotes=self.light(batch,{c:self.stock_meta[c]['market'] for c in batch}) or {}
+            for code in batch:
+                q=quotes.get(code) or {}
+                if q:
+                    quote_count+=1
+                    for ts in reversed(q.get('timestamps') or []):
+                        if not ts:continue
+                        d=datetime.fromtimestamp(int(ts),timezone(timedelta(hours=8))).date()
+                        if d<=self.now().date() and not(d==self.now().date() and self.now().hour<14):
+                            dates.append(day(d));break
+                metric=light_technical(q,self.now())
+                if metric:metrics[code]=metric
+            with self.lock:self.progress=min(offset+len(batch),len(universe))
+            print('短線全市場技術初篩 %s/%s'%(self.progress,len(universe)),flush=True)
+        if not quote_count:raise RuntimeError('全市場技術行情暫時無法取得，沒有使用法人買超名單替代')
+        codes=technical_pool(metrics,[r['code'] for r in keep if r['code'] in self.stock_meta])
+        names={c:self.stock_meta[c]['name'] for c in codes};history={c:[] for c in codes}
+        with self.lock:
+            self.scan_meta.update(light_scanned=len(universe),light_quotes=quote_count,
+                light_missing=len(universe)-quote_count,technical_candidates=len(metrics),
+                market_date=max(dates,default=None),deep_total=len(codes))
+            self.phase='技術詳查';self.progress=0;self.progress_total=len(codes)
+        conn=None
+        try:
+            if codes:
+                conn=self.connect()
+                with conn.cursor() as cur:
+                    cur.execute('SET LOCAL statement_timeout=12000')
+                    cur.execute('SELECT code,trade_date,foreign_net_lots,trust_net_lots\n                        FROM inst_history WHERE code=ANY(%s) AND trade_date BETWEEN %s AND %s\n                        ORDER BY code,trade_date',(codes,self.now().date()-timedelta(days=240),self.now().date()))
+                    for c,d,f,t in cur.fetchall():
+                        history[str(c)].append(dict(date=day(d),foreign=number(f),trust=number(t)))
+                conn.commit()
+        except Exception as exc:
+            print('短線法人輔助資料暫缺：'+type(exc).__name__,flush=True)
+            history={c:[] for c in codes}
+        finally:
+            if conn:conn.close()
+        return codes,names,history
 
     def build(self):
         try:
             deadline=time.monotonic()+120
+            self.deadline=deadline
             if not self.safe(reserve_mb=96):
                 raise RuntimeError('記憶體餘裕不足，稍後可重試')
             with self.lock:
@@ -389,7 +476,9 @@ class ShortTermService:
                 if not self.safe(reserve_mb=96):
                     raise RuntimeError('背景研究因記憶體餘裕不足暫停，保留原結果')
                 try:
-                    q=self.quote(code,rng='6mo',include_mis=False,request_timeout=5)
+                    market=(self.stock_meta.get(code) or {}).get('market','').lower()
+                    suffix='.TW' if market in ('上市','twse','listed','tw') else '.TWO' if market in ('上櫃','上柜','tpex','otc','two') else None
+                    q=self.quote(code,rng='6mo',include_mis=False,request_timeout=5,market_suffix=suffix)
                     if not q:
                         failures+=1
                         excluded['行情來源暫缺']=excluded.get('行情來源暫缺',0)+1
@@ -399,6 +488,8 @@ class ShortTermService:
                         quote_dates.append(bars[-1]['date'])
                     row=analyse(code,names[code],q,history[code],self.now())
                     if row:
+                        row['sector']=(self.stock_meta.get(code) or {}).get('sector','未分類')
+                        row['market']=(self.stock_meta.get(code) or {}).get('market','未確認')
                         rows.append(row)
                     else:
                         reason=exclusion_reason(bars,history[code],self.now())
@@ -413,7 +504,7 @@ class ShortTermService:
                 raise RuntimeError('行情來源暫時無法取得，保留原結果')
             order={'entry':0,'add':1,'reduce':2,'exit':3}
             rows.sort(key=lambda r:(order.get(r['latest_event'],4),0 if r.get('active') else 1,
-                                    len(r.get('pending',[])),-r['avg_turnover']))
+                                    len(r.get('pending',[])),r.get('technical_priority',(True,0,0)),r['code']))
             # Preserve observed events in stored snapshots instead of retrospectively
             # replacing their reasons/prices when upstream history is revised.
             old={s['id']:s for r in previous.get('rows',[]) for s in r.get('signals',[])}
@@ -421,7 +512,7 @@ class ShortTermService:
                 row['signals']=[old.get(s['id']) or dict(s,observed_at=self.now().isoformat()) for s in row['signals']]
             payload=dict(version=VERSION,selection_version=SELECTION_VERSION,
                          rows=rows[:MAX_PICKS],scanned=len(codes),failed=failures,
-                         date=max(quote_dates,default=None),excluded=excluded,
+                         date=max(quote_dates,default=self.scan_meta.get('market_date')),excluded=excluded,scope=dict(self.scan_meta),
                          alerts=latest_alerts(rows,max(quote_dates,default=None)),
                          generated_at=self.now().isoformat(),
                          note='日 K 規則試行・歷史箭頭為規則重播，尚未宣稱回測績效；不含基本面、不送出交易。')
@@ -490,11 +581,13 @@ class ShortTermService:
                 alerts.append(dict(alert,spread=spread))
             return dict(ok=True,rows=rows,alerts=alerts,meta=dict(
                 version=VERSION,building=self.running,progress=self.progress,pool_limit=MAX_POOL,
+                phase=self.phase,progress_total=self.progress_total,
+                scope=dict(self.scan_meta) if self.running else (cached or {}).get('scope',{}),
                 signals_current=signals_current,expected_date=day(expected),
                 date=(cached or {}).get('date'),generated_at=generated,stale=stale,
                 scanned=(cached or {}).get('scanned',0),failed=(cached or {}).get('failed',0),
                 excluded=(cached or {}).get('excluded',{}),
-                error=self.error,note=(cached or {}).get('note','日 K 規則試行・背景篩選最多 80 檔法人買盤候選，顯示最多 6 檔。')))
+                error=self.error,note=(cached or {}).get('note','全市場技術初篩・量價與風險決定進場，法人僅供參考；最多顯示 6 檔。')))
 
 
 def create_blueprint(*, login, service):
