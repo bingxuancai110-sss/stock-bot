@@ -129,6 +129,10 @@ market_fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=
 compile_node(market_fn,market_ns)
 market_page=market_ns['web_market']('fixture-user')
 root.joinpath('market.html').write_text(market_page,encoding='utf-8')
+# The quote-board landing page is a separate renderer branch from the K-line.
+market_ns['request'].args={'t':'fixture-token'}
+market_ns['get_realtime_stocks_bulk']=lambda codes,**kwargs:{code:dict(close=100+i,pct=1.2 if i%2 else -1.2) for i,code in enumerate(codes)}
+root.joinpath('market-board.html').write_text(market_ns['web_market']('fixture-user'),encoding='utf-8')
 # Extract scripts only after every page has been generated. A fresh artifact
 # directory must not depend on HTML left over from an earlier renderer run.
 for name in ['positions','rank','settings','loading','home','workbench','more','us_rotation','market']:
