@@ -149,3 +149,20 @@ and WebKit each pass 31 short-term and 214 existing interaction checks (564 tota
 Specific cases cover October entry/November exit, old active holdings, true fresh
 entries above the card list, stale source dates, exchange holidays, explicit history
 mode and returning from history. Revert this release for rollback; no schema change.
+
+## Simple per-share price spread
+
+At the user's request, show final exit price minus the cycle's initial entry price:
+24 to 36 is +12 per share; 100 to 1000 is +900. Gains are red, losses green, zero
+neutral. This deliberately ignores quantities, fees/taxes and add/reduce average
+cost. It is a signal-price comparison, not realized user-account profit. Multiple
+completed cycles of the same stock show a clearly labeled sum of their per-share
+differences; incomplete cycles use current close minus entry and are separately
+labeled unrealized. Unmatched exits do not invent a cost basis.
+
+Both the card and the selected historical cycle show the dated price pair. A new
+exit notice can include that cycle's spread. Calculation decorates existing stored
+history at read time, requiring no new market requests, schema or paid resource.
+Validation: 38 strategy/service/API tests and 35 short-term browser checks per
+engine, including the user's numerical examples, losses, zero, multiple cycles,
+unrealized separation and red/green computed styles.

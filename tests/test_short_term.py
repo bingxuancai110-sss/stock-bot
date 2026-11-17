@@ -300,3 +300,26 @@ def test_stale_session_suppresses_cached_entry_notifications():
         selection_version=st.SELECTION_VERSION,rows=[],alerts=[dict(date='2026-11-16',type='entry')])}
     payload=s.payload()
     assert not payload['meta']['signals_current'] and payload['alerts']==[]
+
+
+@pytest.mark.parametrize('entry,exit,spread',[(24,36,12),(100,1000,900),(36,24,-12),(24,24,0)])
+def test_raw_per_share_spread_matches_requested_examples(entry,exit,spread):
+    result=st.trade_spreads([dict(type='entry',date='2026-10-13',price=entry),
+                             dict(type='exit',date='2026-11-06',price=exit)])
+    assert result['total_closed_spread']==spread
+    assert result['completed'][0]['spread']==spread and result['open'] is None
+
+
+def test_simple_spread_ignores_add_reduce_costs_and_keeps_unrealized_separate():
+    result=st.trade_spreads([dict(type='entry',date='2026-10-13',price=24),
+        dict(type='add',date='2026-10-14',price=30),dict(type='reduce',date='2026-10-15',price=40),
+        dict(type='exit',date='2026-10-16',price=36),dict(type='entry',date='2026-11-17',price=100)],105,'2026-11-17')
+    assert result['total_closed_spread']==12 and result['open']['spread']==5
+    assert len(result['completed'])==1
+
+
+def test_closed_spread_totals_completed_cycles_without_inventing_unmatched_exits():
+    result=st.trade_spreads([dict(type='exit',date='2026-09-01',price=80),
+        dict(type='entry',date='2026-10-01',price=24),dict(type='exit',date='2026-10-03',price=36),
+        dict(type='entry',date='2026-11-01',price=100),dict(type='exit',date='2026-11-06',price=90)])
+    assert len(result['completed'])==2 and result['total_closed_spread']==2

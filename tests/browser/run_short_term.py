@@ -14,6 +14,8 @@ row2=dict(row,code='2308',name='第二檔隔離測試')
 watch_bars,watch_h=m['market'](70)
 watch=m['st'].analyse('2308','第二檔隔離測試',m['quote'](watch_bars),watch_h,m['now'](watch_bars))
 row2=watch
+row['spreads']=m['st'].trade_spreads(row['signals'],row['price'],row['date'])
+row2['spreads']=m['st'].trade_spreads(row2['signals'],row2['price'],row2['date'])
 payload=dict(ok=True,rows=[row,row2],alerts=[],meta=dict(building=False,signals_current=True,stale=False,date=row['date'],scanned=80))
 requests=[];posts=[];errors=[];checks=[];state=dict(building=True,error=False,empty=False)
 with sync_playwright() as p:
@@ -46,6 +48,7 @@ with sync_playwright() as p:
  page.locator('.st-card').first.wait_for()
  check('background result replaces skeleton without page reload',page.locator('.st-card').count()==2 and page.locator('.st-skeleton').count()==0)
  check('current notification is above candidates and old entries are not announced','沒有新的進場訊號' in page.locator('.st-notices').inner_text() and page.locator('.st-notice-event').count()==0 and page.locator('.st-notices').bounding_box()['y']<page.locator('.st-cards').bounding_box()['y'])
+ check('open trade spread is explicitly unrealized','未實現每股價差' in page.locator('.st-card').first.inner_text() and page.locator('.st-card').first.locator('.st-profit strong.st-up').count()==1)
  page.locator('.st-card-toggle').first.click()
  check('current chart hides old entry arrows by default',page.locator('.st-chart svg').count()==1 and page.locator('[data-marker]').count()==0 and '非新進場' in page.locator('.st-action').first.inner_text())
  page.locator('.st-history-toggle').click()
@@ -81,6 +84,15 @@ with sync_playwright() as p:
  payload['meta']['signals_current']=False;payload['meta']['expected_date']='2026-11-18'
  page.locator('.st-refresh').click();page.get_by_text('最新訊號尚未確認',exact=True).wait_for()
  check('stale notification never presents old entry as current',page.locator('.st-notice-event').count()==0)
+ examples=[]
+ for code,entry,exit in [('2330',24,36),('2308',36,24)]:
+  events=[dict(id=code+'-entry',type='entry',date=row['signals'][0]['date'],price=entry),dict(id=code+'-exit',type='exit',date=row['date'],price=exit,stop=20,target=40)]
+  examples.append(dict(row,code=code,active=False,signals=events,state='本次出場訊號',current_action='exit',spreads=m['st'].trade_spreads(events)))
+ payload.update(rows=examples,alerts=m['st'].latest_alerts(examples,row['date']),meta=dict(building=False,signals_current=True,date=row['date'],scanned=80))
+ page.locator('.st-refresh').click();page.locator('.st-card[data-code="2330"] .st-profit strong').wait_for()
+ check('24 to 36 displays twelve per share in red','每股賺 NT$12.00' in page.locator('.st-card[data-code="2330"] .st-profit').inner_text() and page.locator('.st-card[data-code="2330"] .st-profit strong').evaluate('(e)=>getComputedStyle(e).color==="rgb(197, 52, 59)"'))
+ check('36 to 24 displays twelve per share loss in green','每股賠 NT$12.00' in page.locator('.st-card[data-code="2308"] .st-profit').inner_text() and page.locator('.st-card[data-code="2308"] .st-profit strong').evaluate('(e)=>getComputedStyle(e).color==="rgb(19, 128, 95)"'))
+ check('fresh exit notices also show per-share price spread','每股賺 NT$12.00' in page.locator('.st-notices').inner_text() and '每股賠 NT$12.00' in page.locator('.st-notices').inner_text())
  payload.clear();payload.update(original)
  state['empty']=True;page.locator('.st-refresh').click();page.locator('.st-excluded').wait_for()
  check('empty results explain actual exclusion reasons and retain source date','過熱或波動過高' in page.locator('.st-excluded').inner_text() and row['date'] in page.locator('.st-status').inner_text())

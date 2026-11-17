@@ -57,6 +57,26 @@ def current_status(signals, active, asof, pending):
                 last_exit=None,last_entry=None)
 
 
+def trade_spreads(signals, close=None, asof=None):
+    """User-requested raw exit minus initial entry, not position/account P&L."""
+    completed=[]; opened=None
+    for signal in signals:
+        price=number(signal.get('price'))
+        if price is None:
+            continue
+        if signal['type']=='entry':
+            opened=dict(entry_date=signal['date'],entry_price=price)
+        elif signal['type']=='exit' and opened:
+            completed.append(dict(opened,exit_date=signal['date'],exit_price=price,
+                                  spread=round(price-opened['entry_price'],2)))
+            opened=None
+        # Adds/reductions intentionally do not alter this simple price difference.
+    if opened and number(close) is not None:
+        opened=dict(opened,date=asof,price=number(close),spread=round(number(close)-opened['entry_price'],2))
+    return dict(completed=completed,open=opened,
+                total_closed_spread=round(sum(t['spread'] for t in completed),2))
+
+
 def latest_alerts(rows, asof):
     alerts=[]
     for row in rows:
@@ -64,7 +84,11 @@ def latest_alerts(rows, asof):
             continue
         for event in row.get('signals',[]):
             if event['date']==asof:
-                alerts.append(dict(event,code=row['code'],name=row['name']))
+                spread=None
+                if event['type']=='exit':
+                    trades=trade_spreads(row.get('signals',[]))['completed']
+                    spread=next((t['spread'] for t in reversed(trades) if t['exit_date']==asof),None)
+                alerts.append(dict(event,code=row['code'],name=row['name'],spread=spread))
     order={'entry':0,'exit':1,'reduce':2,'add':3}
     return sorted(alerts,key=lambda a:(order.get(a['type'],4),a['code']))
 
@@ -450,13 +474,21 @@ class ShortTermService:
                 (cached or {}).get('selection_version')==SELECTION_VERSION and not self.error)
             rows=[]
             for row in (cached or {}).get('rows',[]):
+                row=dict(row,spreads=trade_spreads(row.get('signals',[]),row.get('price'),row.get('date')))
                 if signals_current and row.get('date')==day(expected):
                     rows.append(row)
                 else:
                     rows.append(dict(row,state='資料待更新，非最新訊號',current_action='unconfirmed',
                         action_note='行情截至 '+str(row.get('date') or '未確認')+'；尚未確認最新交易日的訊號，不沿用舊買點。',
                         entry_ready=False,latest_event=None,latest_event_date=None))
-            return dict(ok=True,rows=rows,alerts=(cached or {}).get('alerts',[]) if signals_current else [],meta=dict(
+            alerts=[]
+            for alert in (cached or {}).get('alerts',[]) if signals_current else []:
+                row=next((r for r in rows if r['code']==alert['code']),None)
+                spread=alert.get('spread')
+                if spread is None and row and alert['type']=='exit':
+                    spread=next((t['spread'] for t in reversed(row['spreads']['completed']) if t['exit_date']==alert['date']),None)
+                alerts.append(dict(alert,spread=spread))
+            return dict(ok=True,rows=rows,alerts=alerts,meta=dict(
                 version=VERSION,building=self.running,progress=self.progress,pool_limit=MAX_POOL,
                 signals_current=signals_current,expected_date=day(expected),
                 date=(cached or {}).get('date'),generated_at=generated,stale=stale,
