@@ -49,14 +49,20 @@ def test_no_entry_for_illiquid_overheated_missing_or_unsupportive_chips(kind):
     elif kind=='selling':
         for r in h:r.update(foreign=-40,trust=-10)
     else:h[-3]['foreign']=None
-    assert st.analyse('2330','fixture',quote(bars),h,now(bars)) is None
+    result=st.analyse('2330','fixture',quote(bars),h,now(bars))
+    if kind=='selling':
+        assert result['watch_only'] and result['state']=='等待籌碼確認'
+        assert not result['entry_ready'] and not result['signals']
+    else:
+        assert result is None
 
 
 def test_today_chip_report_is_not_used_for_today_entry():
     bars,h=market(71)
     for r in h:r.update(foreign=-40,trust=-10)
     h[-1].update(foreign=999999,trust=999999)
-    assert st.analyse('2330','fixture',quote(bars),h,now(bars)) is None
+    result=st.analyse('2330','fixture',quote(bars),h,now(bars))
+    assert result['watch_only'] and not result['signals'] and not result['entry_ready']
 
 
 def test_future_bars_cannot_change_existing_signals_or_trailing_history():
@@ -144,16 +150,44 @@ def test_memory_rejection_preserves_saved_rows_and_does_not_submit_work():
 def test_publish_caps_six_rows_and_preserves_observed_events(monkeypatch):
     s=service();s.running=True
     bars,_=market();s.quote.return_value=quote(bars)
-    codes=[str(i) for i in range(24)]
+    codes=[str(i) for i in range(st.MAX_POOL)]
     s.inputs=lambda keep:(codes,{c:c for c in codes},{c:[] for c in codes})
     old_event={'id':'saved','date':'2026-11-17','type':'entry','price':123,'reason':'original'}
     s.cached={'rows':[{'active':True,'code':'0','name':'0','signals':[old_event]}]}
     monkeypatch.setattr(st,'analyse',lambda c,*args:dict(code=c,name=c,active=True,
         latest_event='entry',avg_turnover=100,date='2026-11-17',signals=[dict(old_event,price=999)]))
     s.build()
-    assert not s.running and len(s.cached['rows'])==6 and s.cached['scanned']==24
+    assert not s.running and len(s.cached['rows'])==6 and s.cached['scanned']==80
     assert s.cached['rows'][0]['signals'][0]['price']==123
     s.store.save.assert_called_once()
+
+
+def test_observation_stock_is_visible_before_breakout_without_fabricated_entry():
+    bars,h=market(70)
+    result=st.analyse('2330','fixture',quote(bars),h,now(bars))
+    assert result and result['watch_only'] and not result['active']
+    assert result['signals']==[] and not result['entry_ready']
+    assert '等待突破／回測' in result['pending']
+    assert result['entry']>=result['price'] and result['stop']<result['entry']<result['target']
+    assert {c['label']:c['passed'] for c in result['checks']}['進場型態'] is False
+
+
+def test_a_rebound_can_be_watched_without_claiming_uptrend_confirmation():
+    bars,h=market(70)
+    # Earlier high prices keep MA60 above MA20; recent recovery is near MA20.
+    for i,b in enumerate(bars[:40]):
+        c=116-i*.3;b.update(open=c-.2,close=c,high=c+.2,low=c-.6)
+    result=st.analyse('2330','fixture',quote(bars),h,now(bars))
+    assert result and result['watch_only'] and not result['signals']
+    assert not result['trend'] and '等待趨勢確認' in result['pending']
+
+
+def test_old_selection_snapshot_is_rebuilt_even_when_age_is_fresh():
+    s=service()
+    s.store.load.return_value={'payload':{'rows':[],'generated_at':'2026-11-17T16:00:00'}}
+    result=s.payload()
+    assert result['meta']['building'] and result['meta']['pool_limit']==80
+    s.executor.submit.assert_called_once()
 
 
 def test_empty_result_retains_real_quote_date_and_exclusion_counts():
@@ -173,6 +207,15 @@ def test_all_missing_quotes_do_not_publish_a_false_empty_scan():
     s.quote.return_value=None;s.build()
     assert s.cached is previous and '行情來源' in s.error
     s.store.save.assert_not_called()
+
+
+def test_slow_market_source_cannot_monopolize_background_queue(monkeypatch):
+    s=service();previous={'rows':[],'date':'2026-11-16'};s.cached=previous
+    s.inputs=lambda keep:(['2330'],{'2330':'fixture'},{'2330':[]})
+    clock=iter([0,121]);monkeypatch.setattr(st.time,'monotonic',lambda:next(clock))
+    s.build()
+    assert not s.running and s.cached is previous and '逾時' in s.error
+    s.quote.assert_not_called();s.store.save.assert_not_called()
 
 
 def test_failed_save_keeps_previous_result_and_reports_failure(monkeypatch):

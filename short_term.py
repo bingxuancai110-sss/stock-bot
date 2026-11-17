@@ -12,8 +12,9 @@ from flask import Blueprint, jsonify, request
 
 VERSION = 'short-daily-v1'
 KEY = 'short_term:' + VERSION
-MAX_POOL = 24
+MAX_POOL = 80
 MAX_PICKS = 6
+SELECTION_VERSION = 2
 
 
 def number(value):
@@ -112,6 +113,7 @@ def levels(bars):
     avg_turnover = sum(b['close']*b['volume'] for b in prev[-20:])/20
     return dict(ma10=ma10, ma20=ma20, ma60=ma60, atr=atr,
                 trend=last['close'] > ma20 > ma60 and ma20 > old20,
+                recovering=last['close'] > ma20 or last['close'] > ma60,
                 pressure=pressure, support=support, resistance=resistance,
                 volume_ratio=last['volume']/avg_vol if avg_vol else 0,
                 avg_volume=avg_vol, avg_turnover=avg_turnover,
@@ -139,7 +141,10 @@ def setup(bars, chip):
     risk_ok = 0 < risk/c <= .06 and rr >= 1.5
     return dict(x, stop=stop, target=target, target_kind='壓力區' if x['resistance'] else '2R 參考',
                 risk=risk, rr=rr, hot=hot, liquid=liquid, chips_ok=chips_ok,
-                chip_ratio=ratio*100, eligible=valid and risk_ok,
+                chip_ratio=ratio*100, eligible=valid and risk_ok, risk_ok=risk_ok,
+                trigger=breakout or pullback,
+                watchable=(liquid and not hot and chip['available'] and x['recovering'] and
+                           (abs(c/x['ma20']-1)<=.06 or 0<=x['pressure']/c-1<=.05)),
                 entry=(breakout or pullback) and valid and risk_ok,
                 pattern='突破確認' if breakout else '回測轉強' if pullback else '等待突破／回測')
 
@@ -205,20 +210,40 @@ def analyse(code, name, quote, history, now):
     # Existing modeled positions remain visible for exits even if entry filters
     # subsequently fail. Flat overextended/illiquid names never become picks.
     recent = [s for s in signals if s['date'] >= bars[-3]['date']]
-    if not position and not latest['eligible'] and not any(s['type']=='exit' for s in recent):
+    if not position and not latest['watchable'] and not any(s['type']=='exit' for s in recent):
         return None
+    observation=max(latest['pressure'],bars[-1]['close'])
+    preview_risk=observation-latest['stop']
+    preview_pressure=latest['resistance']
+    if not preview_pressure or preview_pressure<=observation:
+        above=[b['high'] for b in bars[-61:-1] if b['high']>observation]
+        preview_pressure=max(above) if above else None
+    preview_target=preview_pressure or observation+2*preview_risk
+    preview_rr=(preview_target-observation)/preview_risk if preview_risk>0 else 0
+    preview_risk_ok=0<preview_risk/observation<=.06 and preview_rr>=1.5
     label = {'entry':'進場訊號','add':'加碼訊號','reduce':'減碼訊號','exit':'出場訊號'}
-    state = label[recent[-1]['type']] if recent else ('策略追蹤中' if position else '等待進場')
+    pending=[]
+    if not latest['trend']:pending.append('等待趨勢確認')
+    if not latest['chips_ok']:pending.append('等待籌碼確認')
+    if not (latest['risk_ok'] if position else preview_risk_ok):pending.append('等待風險空間')
+    if not latest['trigger']:pending.append('等待突破／回測')
+    state = label[recent[-1]['type']] if recent else ('策略追蹤中' if position else pending[0] if pending else '等待進場')
+    checks=[dict(label='趨勢',passed=latest['trend']),dict(label='籌碼',passed=latest['chips_ok']),
+            dict(label='風險空間',passed=latest['risk_ok'] if position else preview_risk_ok),dict(label='進場型態',passed=latest['trigger'])]
     # Exit candidates remain for three sessions, even though position is now flat.
     return dict(code=code,name=name,date=bars[-1]['date'],price=bars[-1]['close'],
                 change_pct=round(latest['change'],2),state=state,active=bool(position),
-                entry=round(latest['pressure'] if not position else position['entry'],2),
+                watch_only=not position and not recent, pending=pending, checks=checks,
+                entry_ready=bool(recent and recent[-1]['type']=='entry' and recent[-1]['date']==bars[-1]['date']),
+                latest_event_date=recent[-1]['date'] if recent else None,
+                entry=round(observation if not position else position['entry'],2),
                 stop=round(position['stop'] if position else latest['stop'],2),
-                target=round(position['target'] if position else latest['target'],2),
-                target_kind=position['target_kind'] if position else latest['target_kind'],support=round(latest['support'],2),
+                target=round(position['target'] if position else preview_target,2),
+                target_kind=position['target_kind'] if position else '壓力區' if preview_pressure else '2R 參考',support=round(latest['support'],2),
                 resistance=round(latest['resistance'],2) if latest['resistance'] else None,
-                rr=round(latest['rr'],2), chip=chip,volume_ratio=round(latest['volume_ratio'],2),
-                chip_ratio=round(latest['chip_ratio'],2), avg_turnover=round(latest['avg_turnover']),
+                rr=round(latest['rr'] if position else preview_rr,2), chip=chip,volume_ratio=round(latest['volume_ratio'],2),
+                chip_ratio=round(latest['chip_ratio'],2) if chip['available'] else None,
+                avg_turnover=round(latest['avg_turnover']),
                 trend=latest['trend'], bars=bars[-120:],signals=signals,trailing=trails,
                 source=str(quote.get('source') or 'Yahoo 日線'),
                 latest_event=recent[-1]['type'] if recent else None)
@@ -264,7 +289,7 @@ class ShortTermService:
                     AND code ~ '^[0-9]{4}$' GROUP BY code HAVING COUNT(*)=5
                     AND ((SUM(foreign_net_lots)>0 AND COUNT(*) FILTER(WHERE foreign_net_lots>0)>=3)
                     OR (SUM(trust_net_lots)>0 AND COUNT(*) FILTER(WHERE trust_net_lots>0)>=3))
-                    ORDER BY GREATEST(SUM(foreign_net_lots),SUM(trust_net_lots)) DESC LIMIT 80''',(self.now().date(),))
+                    ORDER BY GREATEST(SUM(foreign_net_lots),SUM(trust_net_lots)) DESC LIMIT 160''',(self.now().date(),))
                 raw=cur.fetchall()
                 names={str(r[0]):str(r[1] or r[0]) for r in raw if self.equity(str(r[0]))}
                 codes=list(dict.fromkeys([str(r['code']) for r in keep if self.equity(str(r['code']))]+list(names)))[:MAX_POOL]
@@ -283,6 +308,7 @@ class ShortTermService:
 
     def build(self):
         try:
+            deadline=time.monotonic()+120
             if not self.safe(reserve_mb=96):
                 raise RuntimeError('記憶體餘裕不足，稍後可重試')
             with self.lock:
@@ -290,6 +316,8 @@ class ShortTermService:
             codes,names,history=self.inputs(keep)
             rows=[]; failures=0; excluded={}; quote_dates=[]
             for i,code in enumerate(codes):
+                if time.monotonic()>deadline:
+                    raise RuntimeError('行情回應較慢，本輪研究逾時；保留原結果，稍後可重試')
                 if not self.safe(reserve_mb=96):
                     raise RuntimeError('背景研究因記憶體餘裕不足暫停，保留原結果')
                 try:
@@ -316,13 +344,15 @@ class ShortTermService:
             if codes and failures==len(codes):
                 raise RuntimeError('行情來源暫時無法取得，保留原結果')
             order={'entry':0,'add':1,'reduce':2,'exit':3}
-            rows.sort(key=lambda r:(order.get(r['latest_event'],4),0 if r.get('active') else 1,-r['avg_turnover']))
+            rows.sort(key=lambda r:(order.get(r['latest_event'],4),0 if r.get('active') else 1,
+                                    len(r.get('pending',[])),-r['avg_turnover']))
             # Preserve observed events in stored snapshots instead of retrospectively
             # replacing their reasons/prices when upstream history is revised.
             old={s['id']:s for r in previous.get('rows',[]) for s in r.get('signals',[])}
             for row in rows:
                 row['signals']=[old.get(s['id']) or dict(s,observed_at=self.now().isoformat()) for s in row['signals']]
-            payload=dict(version=VERSION,rows=rows[:MAX_PICKS],scanned=len(codes),failed=failures,
+            payload=dict(version=VERSION,selection_version=SELECTION_VERSION,
+                         rows=rows[:MAX_PICKS],scanned=len(codes),failed=failures,
                          date=max(quote_dates,default=None),excluded=excluded,
                          generated_at=self.now().isoformat(),
                          note='日 K 規則試行・歷史箭頭為規則重播，尚未宣稱回測績效；不含基本面、不送出交易。')
@@ -351,7 +381,8 @@ class ShortTermService:
                 age=(self.now()-datetime.fromisoformat(generated)).total_seconds()
             except (ValueError,TypeError):
                 age=999999
-            stale=age>1800 or generated[:10]!=day(self.now())
+            stale=(age>1800 or generated[:10]!=day(self.now()) or
+                   (cached or {}).get('selection_version')!=SELECTION_VERSION)
             # One job shared across all signed-in viewers. Never start work from
             # entering another workbench tab or fan out to extra threads.
             if (not cached or stale or refresh) and not self.running and time.monotonic()-self.last_try>60:
@@ -369,7 +400,7 @@ class ShortTermService:
                 date=(cached or {}).get('date'),generated_at=generated,stale=stale,
                 scanned=(cached or {}).get('scanned',0),failed=(cached or {}).get('failed',0),
                 excluded=(cached or {}).get('excluded',{}),
-                error=self.error,note=(cached or {}).get('note','日 K 規則試行・背景篩選最多 24 檔法人買盤候選，顯示最多 6 檔。')))
+                error=self.error,note=(cached or {}).get('note','日 K 規則試行・背景篩選最多 80 檔法人買盤候選，顯示最多 6 檔。')))
 
 
 def create_blueprint(*, login, service):

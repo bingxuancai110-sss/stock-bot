@@ -7,7 +7,7 @@ portfolio holdings, order placement, or LINE. Existing sources remain intact.
 ## Data and selection
 
 - Read the latest five institutional sessions from existing `inst_history`.
-  Consider the top 24 non-ETF four-digit equity codes with foreign or investment
+  Consider the top 80 non-ETF four-digit equity codes with foreign or investment
   trust net buying and at least three buying sessions. This is a bounded research
   universe, not an exhaustive market ranking. Retain prior displayed active models
   in the next candidate pool. At most six rows are displayed.
@@ -98,3 +98,24 @@ Next validation before treating as an actionable strategy: walk-forward/out-of-
 sample backtests with fees, taxes, next-session execution, corporate actions,
 survivorship-safe selection and unfillable limit sessions. Official attention/
 disposition exclusions and permanent forward signal storage are later work.
+
+## Selection policy 2 — 2026-11-17
+
+The initial live scan had no candidates: 12 failed full trend confirmation, 10
+were overheated/volatile, one failed chip support, one failed risk geometry.
+The bounded pool expands from 24 to 80; the display remains at six. Genuine
+entry/add/reduce/exit rules are unchanged. A flat stock may now appear as an
+observation only if liquid, not overheated, with complete chip history and a
+price above MA20 or MA60, near MA20 (within 6%) or preceding resistance (5%).
+Every missing confirmation is exposed; no observation receives an invented buy
+arrow. Candidate planning risk uses its observation entry price, not today's
+lower close. Today's entry count is distinct from older replay signals, which
+carry their original dates. Old policy snapshots trigger a coalesced rebuild.
+Missing institution values render as unknown rather than NaN. Desktop workbench
+status follows the independent panel instead of waiting for an unused source.
+
+Validation adds watch-before-breakout, recovery without trend confirmation,
+policy cache invalidation and an observation UI case. 23 backend strategy tests
+and 26 short-term UI checks on each browser engine.
+
+Each build checks a 120-second execution deadline between symbols, preserving the previous snapshot on timeout so a slow upstream cannot monopolize the shared job queue.
