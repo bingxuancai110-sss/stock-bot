@@ -66,6 +66,12 @@ opening other workbench tabs never starts short-term work. Poll every five secon
 while visible/building, bounded to 90 attempts. Server per-symbol memory checks
 retain a 96 MiB reserve and abort without publishing partial results.
 
+Empty scans retain the newest actual completed-bar date from checked quotes and
+expose counts by each rejected stock's first exclusion reason. Missing quotes are
+counted separately; a completely missing quote batch reports source failure and
+cannot publish a misleading empty success. Follow-up validation adds two backend
+tests and one browser check per engine for this case.
+
 Frontend renders only an expanded stock's SVG, 30/60/120 sessions with horizontal
 pointer inspection, earlier/later navigation, clickable/keyboard-accessible arrows,
 original-event inspector, structural stop steps and dated institutional evidence.

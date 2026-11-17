@@ -12,7 +12,7 @@ bars,h=m['market'](100);bars[82]['volume']=2200000
 row=m['st'].analyse('2330','隔離測試股票',m['quote'](bars),h,m['now'](bars))
 row2=dict(row,code='2308',name='第二檔隔離測試')
 payload=dict(ok=True,rows=[row,row2],meta=dict(building=False,stale=False,date=row['date'],scanned=24))
-requests=[];posts=[];errors=[];checks=[];state=dict(building=True,error=False)
+requests=[];posts=[];errors=[];checks=[];state=dict(building=True,error=False,empty=False)
 with sync_playwright() as p:
  browser=getattr(p,engine).launch(headless=True)
  page=browser.new_page(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
@@ -24,6 +24,7 @@ with sync_playwright() as p:
    f=REPO/u.path.lstrip('/');r.fulfill(body=f.read_text(encoding='utf-8'),content_type='text/css' if f.suffix=='.css' else 'application/javascript');return
   if u.path=='/web/api/workbench/short-term':
    if state['error']:r.fulfill(status=503,json={'ok':False});return
+   if state['empty']:r.fulfill(json=dict(ok=True,rows=[],meta=dict(building=False,date=row['date'],scanned=24,excluded={'過熱或波動過高':24})));return
    r.fulfill(json=dict(ok=True,rows=[],meta=dict(building=True,progress=4,pool_limit=24)) if state['building'] else payload);return
   if '/api/' in u.path or '/app-config' in u.path:
    r.fulfill(json=dict(ok=True,rows=[],meta=dict(available=True,market_open=False)));return
@@ -64,6 +65,9 @@ with sync_playwright() as p:
  page.emulate_media(color_scheme='dark',reduced_motion='reduce')
  check('dark preference retains readable chart labels',page.locator('.st-axis').first.evaluate('(e)=>getComputedStyle(e).fill!=="rgba(0, 0, 0, 0)"'))
  check('dark chart panel uses a dark surface with light text',page.locator('.st-card').first.evaluate(r'(e)=>{const p=getComputedStyle(e).backgroundColor.match(/\d+/g).map(Number),c=getComputedStyle(e).color.match(/\d+/g).map(Number);return p[0]<60&&c[0]>180}'))
+ state['empty']=True;page.locator('.st-refresh').click();page.locator('.st-excluded').wait_for()
+ check('empty results explain actual exclusion reasons and retain source date','過熱或波動過高' in page.locator('.st-excluded').inner_text() and row['date'] in page.locator('.st-status').inner_text())
+ state['empty']=False;page.locator('.st-refresh').click();page.locator('.st-card').first.wait_for()
  state['error']=True;page.locator('.st-refresh').click();page.get_by_text('暫時無法載入，請重試',exact=True).wait_for()
  check('refresh error retains previous candidates',page.locator('.st-card').count()==2)
  page.locator('button[data-source="雷達"]').click()

@@ -224,6 +224,26 @@ def analyse(code, name, quote, history, now):
                 latest_event=recent[-1]['type'] if recent else None)
 
 
+def exclusion_reason(bars, history, now):
+    if len(bars)<65:
+        return '完整日 K 不足'
+    if (now.date()-date.fromisoformat(bars[-1]['date'])).days>7:
+        return '行情日期過舊'
+    chip=chip_at(history,bars[-1]['date'],[b['date'] for b in bars])
+    plan=setup(bars,chip)
+    if not plan['liquid']:
+        return '流動性不足'
+    if plan['hot']:
+        return '過熱或波動過高'
+    if not plan['trend']:
+        return '上升趨勢未成立'
+    if not chip['available']:
+        return '法人資料不完整'
+    if not plan['chips_ok']:
+        return '法人買盤未確認'
+    return '停損距離或壓力空間不合適'
+
+
 class ShortTermService:
     def __init__(self, *, connect, store, quote, executor, safe, now, equity):
         self.connect=connect; self.store=store; self.quote=quote; self.executor=executor
@@ -268,17 +288,28 @@ class ShortTermService:
             with self.lock:
                 previous=self.cached or {}; keep=[r for r in previous.get('rows',[]) if r.get('active')]
             codes,names,history=self.inputs(keep)
-            rows=[]; failures=0
+            rows=[]; failures=0; excluded={}; quote_dates=[]
             for i,code in enumerate(codes):
                 if not self.safe(reserve_mb=96):
                     raise RuntimeError('背景研究因記憶體餘裕不足暫停，保留原結果')
                 try:
                     q=self.quote(code,rng='6mo',include_mis=False,request_timeout=5)
+                    if not q:
+                        failures+=1
+                        excluded['行情來源暫缺']=excluded.get('行情來源暫缺',0)+1
+                        continue
+                    bars=normalize_bars(q,self.now())
+                    if bars:
+                        quote_dates.append(bars[-1]['date'])
                     row=analyse(code,names[code],q,history[code],self.now())
                     if row:
                         rows.append(row)
+                    else:
+                        reason=exclusion_reason(bars,history[code],self.now())
+                        excluded[reason]=excluded.get(reason,0)+1
                 except Exception as exc:
                     failures+=1
+                    excluded['資料讀取或計算失敗']=excluded.get('資料讀取或計算失敗',0)+1
                     print('短線研究單檔略過 %s: %s'%(code,type(exc).__name__),flush=True)
                 with self.lock:
                     self.progress=i+1
@@ -292,7 +323,7 @@ class ShortTermService:
             for row in rows:
                 row['signals']=[old.get(s['id']) or dict(s,observed_at=self.now().isoformat()) for s in row['signals']]
             payload=dict(version=VERSION,rows=rows[:MAX_PICKS],scanned=len(codes),failed=failures,
-                         date=max((r['date'] for r in rows),default=None),
+                         date=max(quote_dates,default=None),excluded=excluded,
                          generated_at=self.now().isoformat(),
                          note='日 K 規則試行・歷史箭頭為規則重播，尚未宣稱回測績效；不含基本面、不送出交易。')
             if not self.store.save(KEY,payload,data_date=payload['date'],source_meta={'version':VERSION}):
@@ -337,6 +368,7 @@ class ShortTermService:
                 version=VERSION,building=self.running,progress=self.progress,pool_limit=MAX_POOL,
                 date=(cached or {}).get('date'),generated_at=generated,stale=stale,
                 scanned=(cached or {}).get('scanned',0),failed=(cached or {}).get('failed',0),
+                excluded=(cached or {}).get('excluded',{}),
                 error=self.error,note=(cached or {}).get('note','日 K 規則試行・背景篩選最多 24 檔法人買盤候選，顯示最多 6 檔。')))
 
 
