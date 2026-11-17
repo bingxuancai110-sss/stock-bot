@@ -11,6 +11,9 @@ m=runpy.run_path(str(REPO/'tests/test_short_term.py'))
 bars,h=m['market'](100);bars[82]['volume']=2200000
 row=m['st'].analyse('2330','隔離測試股票',m['quote'](bars),h,m['now'](bars))
 row2=dict(row,code='2308',name='第二檔隔離測試')
+watch_bars,watch_h=m['market'](70)
+watch=m['st'].analyse('2308','第二檔隔離測試',m['quote'](watch_bars),watch_h,m['now'](watch_bars))
+row2=watch
 payload=dict(ok=True,rows=[row,row2],meta=dict(building=False,stale=False,date=row['date'],scanned=24))
 requests=[];posts=[];errors=[];checks=[];state=dict(building=True,error=False,empty=False)
 with sync_playwright() as p:
@@ -55,6 +58,7 @@ with sync_playwright() as p:
  check('earlier candle navigation enables return to latest',page.locator('[data-step="1"]').is_enabled())
  page.locator('.st-card-toggle').nth(1).click()
  check('only one stock chart is open at once',page.locator('.st-detail:visible').count()==1 and page.locator('.st-card-toggle[aria-expanded="true"]').count()==1)
+ check('waiting candidate displays unmet conditions without buy markers',page.locator('.st-card[data-code="2308"] .st-checks').inner_text().find('進場型態待確認')>=0 and page.locator('.st-card[data-code="2308"] [data-marker]').count()==0 and '尚未觸發進場' in page.locator('.st-inspector').inner_text())
  for width in [320,390,1024]:
   page.set_viewport_size(dict(width=width,height=844))
   check('no horizontal overflow at '+str(width),page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
