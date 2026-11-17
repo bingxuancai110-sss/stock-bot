@@ -39,10 +39,11 @@ def test_real_rules_find_breakout_with_aligned_institutional_evidence():
 
 
 @pytest.mark.parametrize('kind',['thin','hot','missing','selling','null'])
-def test_no_entry_for_illiquid_overheated_missing_or_unsupportive_chips(kind):
+def test_technical_entry_is_not_blocked_by_lot_size_or_auxiliary_chips(kind):
     bars,h=market(71)
     if kind=='thin':
         for b in bars:b['volume']=10000
+        bars[-1]['volume']=14000
     elif kind=='hot':
         bars[-1].update(open=115,low=114,high=121,close=120)
     elif kind=='missing':h=[]
@@ -50,12 +51,13 @@ def test_no_entry_for_illiquid_overheated_missing_or_unsupportive_chips(kind):
         for r in h:r.update(foreign=-40,trust=-10)
     else:h[-3]['foreign']=None
     result=st.analyse('2330','fixture',quote(bars),h,now(bars))
-    if kind=='selling':
-        assert result['watch_only'] and result['current_action']=='wait'
-        assert '等待籌碼確認' in result['action_note']
-        assert not result['entry_ready'] and not result['signals']
-    else:
+    if kind=='hot':
         assert result is None
+    else:
+        assert result['entry_ready'] and result['current_action']=='entry'
+        assert result['signals'][-1]['type']=='entry'
+        assert '法人僅供參考' in result['signals'][-1]['reason']
+        assert not any(c['label']=='籌碼' for c in result['checks'])
 
 
 def test_today_chip_report_is_not_used_for_today_entry():
@@ -63,7 +65,8 @@ def test_today_chip_report_is_not_used_for_today_entry():
     for r in h:r.update(foreign=-40,trust=-10)
     h[-1].update(foreign=999999,trust=999999)
     result=st.analyse('2330','fixture',quote(bars),h,now(bars))
-    assert result['watch_only'] and not result['signals'] and not result['entry_ready']
+    assert result['entry_ready'] and result['chip']['foreign']==-200
+    assert result['chip']['date']==bars[-2]['date']
 
 
 def test_future_bars_cannot_change_existing_signals_or_trailing_history():
@@ -193,14 +196,14 @@ def test_old_selection_snapshot_is_rebuilt_even_when_age_is_fresh():
 
 
 def test_empty_result_retains_real_quote_date_and_exclusion_counts():
-    s=service();bars,h=market()
-    for b in bars:b['volume']=10000
+    s=service();bars,h=market(70)
+    bars[-1].update(open=115,low=114,high=121,close=120)
     s.inputs=lambda keep:(['2330'],{'2330':'fixture'},{'2330':h})
     s.quote.return_value=quote(bars);s.now=lambda:now(bars)
     s.build()
     assert s.cached['rows']==[] and s.cached['scanned']==1
     assert s.cached['date']==bars[-1]['date']
-    assert s.cached['excluded']=={'流動性不足':1}
+    assert s.cached['excluded']=={'過熱或波動過高':1}
 
 
 def test_all_missing_quotes_do_not_publish_a_false_empty_scan():
@@ -323,3 +326,84 @@ def test_closed_spread_totals_completed_cycles_without_inventing_unmatched_exits
         dict(type='entry',date='2026-10-01',price=24),dict(type='exit',date='2026-10-03',price=36),
         dict(type='entry',date='2026-11-01',price=100),dict(type='exit',date='2026-11-06',price=90)])
     assert len(result['completed'])==2 and result['total_closed_spread']==2
+
+
+def test_high_price_tiny_volume_can_enter_when_technical_conditions_confirm():
+    bars,h=market(71)
+    for b in bars:
+        for k in ('open','high','low','close'):b[k]*=10
+        b['volume']=10
+    bars[-1]['volume']=14
+    result=st.analyse('2330','fixture',quote(bars),[],now(bars))
+    assert result['entry_ready'] and result['liquidity_warning']
+    assert result['price']>1000 and result['avg_volume']<1000
+
+
+def test_full_catalogue_streams_bounded_batches_and_includes_both_markets_without_chip_prefilter():
+    from unittest.mock import MagicMock
+    import time
+    bars,_=market(71)
+    light=dict(closes=[b['close'] for b in bars],timestamps=[int(datetime.fromisoformat(b['date']+'T05:30:00').replace(tzinfo=st.timezone.utc).timestamp()) for b in bars])
+    catalogue=[(str(1000+i),'fixture','24' if i%2 else '17','上櫃' if i%2 else '上市') for i in range(130)]
+    catalogue.append(('0050','ETF','', '上市'))
+    first=MagicMock();second=MagicMock()
+    for conn,rows in [(first,catalogue),(second,[])]:
+        cur=conn.cursor.return_value;cur.__enter__.return_value=cur;cur.fetchall.return_value=rows
+    s=service();s.connect=Mock(side_effect=[first,second]);s.equity=lambda c:not c.startswith('0')
+    s.category=lambda c,i:'電子' if i=='24' else '金融'
+    s.light=Mock(side_effect=lambda codes,markets:{c:light for c in codes})
+    s.now=lambda:now(bars);s.deadline=time.monotonic()+120
+    codes,names,history=s.inputs([dict(code='1129',name='fixture')])
+    assert len(codes)==80 and codes[0]=='1129'
+    assert s.scan_meta['universe_count']==130 and s.scan_meta['light_scanned']==130
+    assert s.scan_meta['sectors']=={'金融':65,'電子':65}
+    assert s.scan_meta['markets']=={'上市':65,'上櫃':65}
+    assert all(len(call.args[0])<=64 for call in s.light.call_args_list)
+    assert s.light.call_count==3 and all(history[c]==[] for c in codes)
+    sql=' '.join(str(c.args[0]) for c in first.cursor.return_value.execute.call_args_list)
+    assert 'stock_info' in sql and 'inst_history' not in sql
+
+
+def test_negative_institutional_flows_do_not_affect_technical_preselection():
+    bars,_=market(71)
+    light=dict(closes=[b['close'] for b in bars],timestamps=[int(datetime.fromisoformat(b['date']+'T05:30:00').replace(tzinfo=st.timezone.utc).timestamp()) for b in bars])
+    metric=st.light_technical(light,now(bars))
+    assert metric and st.technical_pool({'2330':metric,'6488':metric},[],80)==['2330','6488']
+
+
+def test_full_market_spark_stream_does_not_overwrite_other_pages_quote_cache():
+    import re,threading
+    from concurrent.futures import ThreadPoolExecutor
+    from test_radar_admission import install
+    old={'day':'2026-11-17','at':999,'data':{'2330':{'label':'existing shared quote'}}}
+    response=Mock()
+    response.json.return_value={'spark':{'result':[dict(symbol='2330.TW',response=[dict(
+        meta={'regularMarketPrice':100,'regularMarketVolume':100},timestamp=[1,2],
+        indicators={'quote':[{'close':[99,100]}]})])]}}
+    ns=dict(re=re,time=Mock(time=Mock(return_value=1000)),taiwan_now=lambda:datetime(2026,11,17,16),
+        requests=Mock(get=Mock(return_value=response)),_RADAR_SPARK_CACHE_LOCK=threading.Lock(),
+        _RADAR_SPARK_CACHE=old,RADAR_SPARK_CACHE_SECONDS=15,RADAR_SPARK_BATCH_SIZE=20,
+        RADAR_SPARK_MAX_WORKERS=1,ThreadPoolExecutor=Mock(side_effect=ThreadPoolExecutor))
+    install(ns,'_fetch_yahoo_spark_bulk')
+    data=ns['_fetch_yahoo_spark_bulk'](['2330'],rng='3mo',force_refresh=True,market_map={'2330':'上市'},
+        include_history=True,cache_result=False,workers=2)
+    assert data['2330']['closes']==[99,100] and old['data']=={'2330':{'label':'existing shared quote'}}
+    ns['ThreadPoolExecutor'].assert_called_once_with(max_workers=1)  # one HTTP batch only
+    ns['requests'].get.reset_mock()
+    assert ns['_fetch_yahoo_spark_bulk'](['2330'])=={'2330':{'label':'existing shared quote'}}
+    ns['requests'].get.assert_not_called()
+
+
+def test_institutional_database_failure_does_not_block_technical_scan():
+    from unittest.mock import MagicMock
+    bars,_=market(71)
+    light=dict(closes=[b['close'] for b in bars],timestamps=[int(datetime.fromisoformat(b['date']+'T05:30:00').replace(tzinfo=st.timezone.utc).timestamp()) for b in bars])
+    conn=MagicMock();cur=conn.cursor.return_value;cur.__enter__.return_value=cur
+    cur.fetchall.return_value=[('2330','fixture','24','上市')]
+    s=service();s.now=lambda:now(bars);s.category=lambda c,i:'電子'
+    s.connect=Mock(side_effect=[conn,OSError('auxiliary-only database unavailable')])
+    s.light=Mock(return_value={'2330':light});s.quote.return_value=quote(bars)
+    s.build()
+    assert not s.error and s.cached['rows'][0]['entry_ready']
+    assert not s.cached['rows'][0]['chip']['available']
+    assert s.cached['scope']['sectors']=={'電子':1}

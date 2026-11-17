@@ -11229,7 +11229,7 @@ def _background_work_memory_safe(reserve_mb=160):
 
 
 def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
-                            market_map=None, include_history=True):
+                            market_map=None, include_history=True, cache_result=True, workers=None):
     """用 Yahoo spark 分批取全市場輕量即時報價；完整技術欄位再由候選股補抓。
 
     market_map 來自 stock_info 的官方市場欄位；能判斷上市／上櫃時只送一個
@@ -11242,7 +11242,7 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
     cache_day = taiwan_now().date().isoformat()
     now = time.time()
     with _RADAR_SPARK_CACHE_LOCK:
-        if (include_history and not force_refresh and _RADAR_SPARK_CACHE.get("day") == cache_day and
+        if (cache_result and include_history and not force_refresh and _RADAR_SPARK_CACHE.get("day") == cache_day and
                 now - _RADAR_SPARK_CACHE.get("at", 0) < RADAR_SPARK_CACHE_SECONDS):
             cached = _RADAR_SPARK_CACHE.get("data") or {}
             return {code: cached[code] for code in codes if code in cached}
@@ -11347,13 +11347,13 @@ def _fetch_yahoo_spark_bulk(codes, rng="3mo", force_refresh=False,
         return parsed
 
     parsed = {}
-    max_workers = int(globals().get("RADAR_SPARK_MAX_WORKERS", 8) or 8)
+    max_workers = int(workers or globals().get("RADAR_SPARK_MAX_WORKERS", 8) or 8)
     with ThreadPoolExecutor(max_workers=min(max_workers, len(batches))) as executor:
         futures = [executor.submit(fetch_batch, batch) for batch in batches]
         for future in futures:
             parsed.update(future.result())
 
-    if include_history:
+    if include_history and cache_result:
         with _RADAR_SPARK_CACHE_LOCK:
             _RADAR_SPARK_CACHE.update({"at": time.time(), "day": cache_day, "data": parsed})
     return parsed
@@ -28638,8 +28638,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-experience.css?v=20261117-12">
 <script defer src="/static/ui-feedback.js?v=20261116-7"></script>
 <script defer src="/static/app-experience.js?v=20261116-9"></script>
-<link rel="stylesheet" href="/static/short-term.css?v=20261117-6">
-<script defer src="/static/short-term.js?v=20261117-5"></script>
+<link rel="stylesheet" href="/static/short-term.css?v=20261117-7">
+<script defer src="/static/short-term.js?v=20261117-7"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
@@ -54892,6 +54892,10 @@ _short_term_service = ShortTermService(
     connect=_taiex_reduction_connect, store=_taiex_reduction_store(),
     quote=get_realtime_stock, executor=_BACKGROUND_JOB_EXECUTOR,
     safe=_background_work_memory_safe, now=taiwan_now, calendar=is_twse_trading_day,
+    light=lambda codes, markets: _fetch_yahoo_spark_bulk(
+        codes, rng="3mo", force_refresh=True, market_map=markets,
+        include_history=True, cache_result=False, workers=2),
+    category=lambda code, industry: stock_category(code, {code: industry}),
     equity=lambda code: bool(re.fullmatch(r"[1-9]\d{3}", code)) and not is_etf(code))
 app.register_blueprint(create_short_term_blueprint(
     login=web_login_required, service=_short_term_service))

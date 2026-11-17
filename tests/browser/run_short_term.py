@@ -16,7 +16,8 @@ watch=m['st'].analyse('2308','第二檔隔離測試',m['quote'](watch_bars),watc
 row2=watch
 row['spreads']=m['st'].trade_spreads(row['signals'],row['price'],row['date'])
 row2['spreads']=m['st'].trade_spreads(row2['signals'],row2['price'],row2['date'])
-payload=dict(ok=True,rows=[row,row2],alerts=[],meta=dict(building=False,signals_current=True,stale=False,date=row['date'],scanned=80))
+payload=dict(ok=True,rows=[row,row2],alerts=[],meta=dict(building=False,signals_current=True,stale=False,date=row['date'],scanned=80,
+ scope=dict(universe_count=2200,markets={'上市':1100,'上櫃':1100},sectors={'電子':900,'金融':100,'傳產':1200})))
 requests=[];posts=[];errors=[];checks=[];state=dict(building=True,error=False,empty=False)
 with sync_playwright() as p:
  browser=getattr(p,engine).launch(headless=True)
@@ -43,10 +44,14 @@ with sync_playwright() as p:
  page.locator('.st-skeleton').first.wait_for()
  check('short tab initializes directly without fetching other strategy sources','/web/api/workbench/source' not in requests)
  check('short mode hides unrelated score and sort controls',page.locator('#wb-mobile-sort').is_hidden() and page.locator('.wb-table').is_hidden())
- check('small candidate limit and no fundamental score are visible','最多 6 檔' in page.locator('.st-summary').inner_text() and '不使用基本面分數' in page.locator('.st-summary').inner_text())
+ check('small candidate limit and no institution gate are visible','最多 6 檔' in page.locator('.st-summary').inner_text() and '不設法人買超門檻' in page.locator('.st-summary').inner_text())
  page.clock.install();state['building']=False;page.clock.fast_forward(5100)
  page.locator('.st-card').first.wait_for()
  check('background result replaces skeleton without page reload',page.locator('.st-card').count()==2 and page.locator('.st-skeleton').count()==0)
+ check('whole-market scope includes both markets and electronics','全市場初篩 2200 檔' in page.locator('.st-status').inner_text() and all(x in page.locator('.st-scope').inner_text() for x in ['上市','上櫃','電子']))
+ page.locator('.st-rules summary').click()
+ check('rules do not impose absolute turnover or volume minimums','成交量、成交金額不設最低門檻' in page.locator('.st-rules').inner_text())
+ page.locator('.st-rules summary').click()
  check('current notification is above candidates and old entries are not announced','沒有新的進場訊號' in page.locator('.st-notices').inner_text() and page.locator('.st-notice-event').count()==0 and page.locator('.st-notices').bounding_box()['y']<page.locator('.st-cards').bounding_box()['y'])
  check('open trade spread is explicitly unrealized','未實現每股價差' in page.locator('.st-card').first.inner_text() and page.locator('.st-card').first.locator('.st-profit strong.st-up').count()==1)
  page.locator('.st-card-toggle').first.click()
@@ -77,10 +82,16 @@ with sync_playwright() as p:
  check('dark preference retains readable chart labels',page.locator('.st-axis').first.evaluate('(e)=>getComputedStyle(e).fill!=="rgba(0, 0, 0, 0)"'))
  check('dark chart panel uses a dark surface with light text',page.locator('.st-card').first.evaluate(r'(e)=>{const p=getComputedStyle(e).backgroundColor.match(/\d+/g).map(Number),c=getComputedStyle(e).color.match(/\d+/g).map(Number);return p[0]<60&&c[0]>180}'))
  original=payload.copy();entry_bars,entry_h=m['market'](71)
- new=m['st'].analyse('2330','新進場隔離測試',m['quote'](entry_bars),entry_h,m['now'](entry_bars))
+ for bar in entry_bars:
+  for key in ('open','high','low','close'):bar[key]*=10
+  bar['volume']=10
+ entry_bars[-1]['volume']=14
+ new=m['st'].analyse('2330','新進場隔離測試',m['quote'](entry_bars),[],m['now'](entry_bars))
+ new.update(sector='電子',market='上櫃')
  payload.update(rows=[new],alerts=m['st'].latest_alerts([new],new['date']),meta=dict(building=False,signals_current=True,date=new['date'],scanned=80))
  page.locator('.st-refresh').click();page.locator('.st-notice-event[data-kind="entry"]').wait_for()
  check('genuine new entry appears at top with date stop and target','新進場 1 檔' in page.locator('.st-notices h3').inner_text() and new['date'] in page.locator('.st-notice-event').inner_text() and '支撐停損' in page.locator('.st-notice-event').inner_text())
+ check('high-price thinly traded electronic stock can enter without institutional evidence','上櫃 電子' in page.locator('.st-date').inner_text() and '法人參考：資料待確認' in page.locator('.st-evidence').inner_text() and page.locator('.st-notice-event[data-kind="entry"]').count()==1 and 'NaN' not in page.locator('#wb-short-term').inner_text())
  payload['meta']['signals_current']=False;payload['meta']['expected_date']='2026-11-18'
  page.locator('.st-refresh').click();page.get_by_text('最新訊號尚未確認',exact=True).wait_for()
  check('stale notification never presents old entry as current',page.locator('.st-notice-event').count()==0)
