@@ -15,7 +15,7 @@ def install(ns,name):
 
 def producer(admission=True):
     ns={'_SCREENER_REFRESH_LOCK':threading.Lock(),'_SCREENER_REFRESH_RUNNING':{},'_SCREENER_REFRESH_ERRORS':{},
-        'RADAR_SCHEDULED_DEEP_SCAN_LIMIT':240,'RADAR_LIGHT_SCAN_RESERVE_MB':200,'RADAR_DEEP_SCAN_LIMIT':240,
+        'RADAR_SCHEDULED_DEEP_SCAN_LIMIT':240,'RADAR_LIGHT_SCAN_RESERVE_MB':96,'RADAR_DEEP_SCAN_LIMIT':240,
         '_background_work_memory_safe':Mock(return_value=admission),'_BACKGROUND_JOB_EXECUTOR':Mock(),
         'compute_screener_rows':Mock(),'_screener_cache':{'radar':{'rows':[{'code':'2330'}]}},
         '_screener_empty_result_has_scan_evidence':Mock(return_value=False),'time':time}
@@ -24,7 +24,7 @@ def producer(admission=True):
 
 def test_default_radar_background_is_bounded_even_outside_market_hours():
     ns=producer();assert ns['_start_screener_background_refresh']('radar')
-    ns['_background_work_memory_safe'].assert_called_once_with(reserve_mb=200)
+    ns['_background_work_memory_safe'].assert_called_once_with(reserve_mb=96)
     ns['_BACKGROUND_JOB_EXECUTOR'].submit.call_args.args[0]()
     ns['compute_screener_rows'].assert_called_once_with('radar',persist=True,force_refresh=True,persist_live=False,radar_deep_limit=240,price_workers=2)
     assert not ns['_SCREENER_REFRESH_RUNNING']['radar']
@@ -83,6 +83,7 @@ def test_explicit_small_depth_normalizes_and_caps_history_workers(limit):
 def test_workbench_api_exposes_actual_deferred_status_and_limited_scope():
     ns=producer(False)
     ns.update(_is_taiwan_intraday_window=lambda:False,_screener_recent_snapshot=lambda mode:(None,''),
+              _screener_snapshot_valid_for_today=lambda snap:True,
               _workbench_screener_rows=lambda mode,snapshot:[])
     install(ns,'_workbench_source_payload')
     payload=ns['_workbench_source_payload']('fixture-user','雷達')
@@ -90,3 +91,37 @@ def test_workbench_api_exposes_actual_deferred_status_and_limited_scope():
     ns['_screener_recent_snapshot']=lambda mode:({'rows':[{}],'source_meta':{'radar_diagnostics':{'deep_candidate_count':4,'spark_qualified_count':1600}}},'fixture')
     payload=ns['_workbench_source_payload']('fixture-user','雷達')
     assert payload['meta']['scan_limited'] and payload['meta']['deep_scanned']==4
+
+
+@pytest.mark.parametrize('used,allowed',[(380,True),(415,True),(416,False),(480,False)])
+def test_bounded_scan_admission_with_realistic_512mib_baseline(monkeypatch,used,allowed):
+    import builtins
+    ns=dict(_current_process_rss_bytes=lambda:used*1024*1024,RENDER_MEMORY_LIMIT_MB=512)
+    install(ns,'_background_work_memory_safe')
+    monkeypatch.setattr(builtins,'open',Mock(side_effect=OSError('fixture cgroup unavailable')))
+    assert ns['_background_work_memory_safe'](reserve_mb=96) is allowed
+
+
+@pytest.mark.parametrize('admitted',[True,False])
+def test_stale_radar_retains_old_rows_and_date_while_requesting_one_rebuild(admitted):
+    ns=producer(admitted)
+    snapshot={'source_date':'2026-11-16','rows':[{'code':'2330'}]}
+    ns.update(_is_taiwan_intraday_window=lambda:False,_screener_recent_snapshot=lambda mode:(snapshot,'shared'),
+              _screener_snapshot_valid_for_today=lambda snap:False,
+              _workbench_screener_rows=lambda mode,snap:snap['rows'])
+    install(ns,'_workbench_source_payload')
+    for _ in range(2):
+        result=ns['_workbench_source_payload']('fixture-user','雷達')
+        assert result['rows']==snapshot['rows'] and result['meta']['date']=='2026-11-16'
+        assert result['meta']['stale'] and result['meta']['building'] is admitted
+        assert result['meta']['deferred'] is not admitted
+    assert ns['_BACKGROUND_JOB_EXECUTOR'].submit.call_count==int(admitted)
+
+
+def test_current_radar_does_not_queue_another_scan():
+    ns=producer();ns.update(_is_taiwan_intraday_window=lambda:False,
+        _screener_recent_snapshot=lambda mode:({'rows':[{'code':'2330'}],'source_date':'2026-11-17'},'shared'),
+        _screener_snapshot_valid_for_today=lambda snap:True,_workbench_screener_rows=lambda mode,snap:snap['rows'])
+    install(ns,'_workbench_source_payload')
+    assert not ns['_workbench_source_payload']('fixture-user','雷達')['meta']['stale']
+    ns['_BACKGROUND_JOB_EXECUTOR'].submit.assert_not_called()

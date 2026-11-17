@@ -181,6 +181,12 @@ html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content .more-it
 html body#stockbot-app[data-app-view] .app-bottom-nav .app-nav-cursor{background:var(--app-art-hero)!important;border-radius:14px!important;box-shadow:none!important}
 html body#stockbot-app[data-app-view]:not(.app-route-pending) .app-bottom-nav.experience-nav-ready .bottom-inner>a.on,
 html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bottom-inner>a.experience-nav-target{color:var(--app-art-on-hero)!important}
+/* Only the destination under the moving pill uses light text. The previous
+   active link stays visible on the light navigation surface while loading. */
+html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bottom-inner>a{-webkit-text-fill-color:currentColor!important;border-color:transparent!important;transition:none!important}
+html body#stockbot-app[data-app-view].app-route-pending .app-bottom-nav.experience-nav-ready .bottom-inner>a.on:not(.experience-nav-target){color:#5b6d7a!important;-webkit-text-fill-color:#5b6d7a!important;background:transparent!important;box-shadow:none!important}
+html body#stockbot-app[data-app-view].app-route-pending .app-bottom-nav.experience-nav-ready .bottom-inner>a.on:not(.experience-nav-target) :is(span,b,svg){color:#5b6d7a!important;-webkit-text-fill-color:#5b6d7a!important}
+html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bottom-inner>a.experience-nav-target::after{border-color:rgba(245,249,252,.3)!important;border-top-color:var(--app-art-on-hero)!important}
 @media(max-width:760px){
   html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #portfolio-v2 .totals{
     display:grid!important;grid-template-columns:repeat(12,minmax(0,1fr))!important;gap:0!important;
