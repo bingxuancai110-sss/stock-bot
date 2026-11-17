@@ -74,6 +74,7 @@ html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #stockbo
 #wb-short-term .st-rules{margin-top:20px;border-top:1px solid var(--st-line)}#wb-short-term .st-rules p{font-size:12px;color:var(--st-muted);line-height:1.8}
 #wb-short-term .st-skeleton{height:200px;border-radius:18px;background:var(--suite-soft,#e9eef1);animation:st-pulse 1.8s ease-in-out infinite}
 #wb-short-term .st-empty{padding:35px 16px;border:1px solid var(--st-line);border-radius:16px;text-align:center;background:var(--st-paper)}#wb-short-term .st-empty b{font-size:15px}#wb-short-term .st-empty p{font-size:12px;color:var(--st-muted)}
+#wb-short-term .st-excluded{list-style:none;text-align:left;padding:8px 0 0;margin:0}#wb-short-term .st-excluded li{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--st-line);font-size:12px;color:var(--st-muted)}#wb-short-term .st-excluded b{font-size:12px;color:var(--st-ink)}
 /* Keep the shared selected-control paint from recoloring whole quote cards. */
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-short-term .st-card-toggle{background:transparent!important;color:var(--st-ink)!important;-webkit-text-fill-color:currentColor!important;box-shadow:none!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #wb-short-term .st-card-toggle[aria-expanded=true]{box-shadow:inset 3px 0 0 var(--st-ink)!important}

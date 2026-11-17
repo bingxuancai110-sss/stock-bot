@@ -143,6 +143,7 @@ def test_memory_rejection_preserves_saved_rows_and_does_not_submit_work():
 
 def test_publish_caps_six_rows_and_preserves_observed_events(monkeypatch):
     s=service();s.running=True
+    bars,_=market();s.quote.return_value=quote(bars)
     codes=[str(i) for i in range(24)]
     s.inputs=lambda keep:(codes,{c:c for c in codes},{c:[] for c in codes})
     old_event={'id':'saved','date':'2026-11-17','type':'entry','price':123,'reason':'original'}
@@ -153,6 +154,25 @@ def test_publish_caps_six_rows_and_preserves_observed_events(monkeypatch):
     assert not s.running and len(s.cached['rows'])==6 and s.cached['scanned']==24
     assert s.cached['rows'][0]['signals'][0]['price']==123
     s.store.save.assert_called_once()
+
+
+def test_empty_result_retains_real_quote_date_and_exclusion_counts():
+    s=service();bars,h=market()
+    for b in bars:b['volume']=10000
+    s.inputs=lambda keep:(['2330'],{'2330':'fixture'},{'2330':h})
+    s.quote.return_value=quote(bars);s.now=lambda:now(bars)
+    s.build()
+    assert s.cached['rows']==[] and s.cached['scanned']==1
+    assert s.cached['date']==bars[-1]['date']
+    assert s.cached['excluded']=={'流動性不足':1}
+
+
+def test_all_missing_quotes_do_not_publish_a_false_empty_scan():
+    s=service();s.cached={'rows':[],'date':'2026-11-16'};previous=s.cached
+    s.inputs=lambda keep:(['2330'],{'2330':'fixture'},{'2330':[]})
+    s.quote.return_value=None;s.build()
+    assert s.cached is previous and '行情來源' in s.error
+    s.store.save.assert_not_called()
 
 
 def test_failed_save_keeps_previous_result_and_reports_failure(monkeypatch):
