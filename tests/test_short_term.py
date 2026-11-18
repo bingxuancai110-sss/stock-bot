@@ -358,6 +358,8 @@ def test_full_catalogue_streams_bounded_batches_and_includes_both_markets_withou
     assert s.scan_meta['universe_count']==130 and s.scan_meta['light_scanned']==130
     assert s.scan_meta['sectors']=={'金融':65,'電子':65}
     assert s.scan_meta['markets']=={'上市':65,'上櫃':65}
+    assert s.scan_meta['price_coverage']['100–499']['quoted']==130
+    assert s.scan_meta['price_coverage']['100–499']['deep']==80
     assert all(len(call.args[0])<=64 for call in s.light.call_args_list)
     assert s.light.call_count==3 and all(history[c]==[] for c in codes)
     sql=' '.join(str(c.args[0]) for c in first.cursor.return_value.execute.call_args_list)
@@ -501,3 +503,49 @@ def test_existing_radar_producer_requests_short_term_refresh_and_survives_aux_fa
     svc.refresh_from_radar.side_effect=OSError('unavailable')
     assert '已完成' in ns['_do_scheduled_radar_live_snapshot']()
     assert not ns['_SCREENER_REFRESH_RUNNING']['radar']
+
+@pytest.mark.parametrize('events,active,provisional,expected',[
+ ([],False,False,'waiting'),([],True,False,'held'),
+ ([dict(type='entry')],True,False,'held'),
+ ([dict(type='entry'),dict(type='exit')],False,False,'closed'),
+ ([dict(type='entry',provisional=True)],True,True,'waiting'),
+ ([dict(type='entry'),dict(type='exit',provisional=True)],False,True,'held'),
+ ([dict(type='entry'),dict(type='exit'),dict(type='entry',provisional=True)],True,True,'closed')])
+def test_position_groups_do_not_confuse_previews_with_confirmed_positions(events,active,provisional,expected):
+    assert st.position_group(dict(signals=events,active=active,provisional=provisional))==expected
+
+
+def test_position_filter_can_show_held_stock_beyond_the_default_six():
+    s=service();rows=[dict(code=str(i),date='2026-11-17',signals=[],active=False) for i in range(6)]
+    rows.append(dict(code='2330',date='2026-11-17',signals=[dict(type='entry',date='2026-11-14',price=1500)],active=True))
+    s.store.load.return_value={'payload':dict(date='2026-11-17',generated_at=s.now().isoformat(),
+        selection_version=st.SELECTION_VERSION,rows=rows[:6],all_rows=rows)}
+    result=s.payload(position='held')
+    assert [r['code'] for r in result['rows']]==['2330']
+    assert result['meta']['position_counts']['waiting']==6
+    assert result['rows'][0]['position_group']=='held'
+    s.executor.submit.assert_not_called()
+
+
+def test_nominal_price_scaling_does_not_change_technical_preselection_or_entry():
+    bars,h=market(71)
+    def light(bs):return dict(closes=[b['close'] for b in bs],timestamps=[int(datetime.fromisoformat(b['date']+'T05:30:00').replace(tzinfo=st.timezone.utc).timestamp()) for b in bs])
+    small=st.light_technical(light(bars),now(bars))
+    large=copy.deepcopy(bars)
+    for b in large:
+        for key in ('open','high','low','close'):b[key]*=20
+    big=st.light_technical(light(large),now(bars))
+    assert small['bucket']==big['bucket'] and small['rank']==pytest.approx(big['rank'])
+    assert st.analyse('2330','fixture',quote(large),[],now(bars))['entry_ready']
+    assert st.price_band(large[-1]['close'])=='1000以上'
+
+
+def test_price_diagnostics_record_high_price_exclusion_as_technical_not_institutional():
+    bars,_=market(71)
+    for b in bars:
+        for k in ('open','high','low','close'):b[k]*=20
+    bars[-1]['close']*=1.10
+    q=dict(closes=[b['close'] for b in bars],timestamps=[int(datetime.fromisoformat(b['date']+'T05:30:00').replace(tzinfo=st.timezone.utc).timestamp()) for b in bars])
+    audit={}
+    assert st.light_technical(q,now(bars),diagnostics=audit) is None
+    assert audit['reason']=='單日漲跌超過5%'

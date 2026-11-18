@@ -14,8 +14,20 @@ VERSION = 'short-tech-v2'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 80
 MAX_PICKS = 6
-SELECTION_VERSION = 5
+SELECTION_VERSION = 6
 LIGHT_BATCH = 64
+
+
+def position_group(row):
+    """Confirmed model state; an unfinished entry/exit cannot change this state."""
+    if row.get('current_action')=='unconfirmed':return 'unknown'
+    confirmed=[e for e in row.get('signals',[]) if not e.get('provisional') and e.get('type') in ('entry','exit')]
+    if confirmed:return 'held' if confirmed[-1]['type']=='entry' else 'closed'
+    return 'held' if row.get('active') and not row.get('provisional') else 'waiting'
+
+
+def price_band(price):
+    return '1000以上' if price>=1000 else '500–999' if price>=500 else '100–499' if price>=100 else '低於100'
 
 
 def number(value):
@@ -370,7 +382,7 @@ def exclusion_reason(bars, history, now):
     return '停損距離或壓力空間不合適'
 
 
-def light_technical(quote, now, intraday=False):
+def light_technical(quote, now, intraday=False, diagnostics=None):
     """Price-only streamed preselection; no institution, price or lot-size bias."""
     points=[]
     for ts,px in zip(quote.get('timestamps') or [],quote.get('closes') or []):
@@ -380,15 +392,22 @@ def light_technical(quote, now, intraday=False):
         d=datetime.fromtimestamp(int(ts),timezone(timedelta(hours=8))).date()
         if d>now.date() or (d==now.date() and now.hour<14 and not intraday):continue
         points.append((d,p))
-    if len(points)<60 or (now.date()-points[-1][0]).days>7:return None
+    def reject(reason):
+        if diagnostics is not None:diagnostics['reason']=reason
+        return None
+    if len(points)<60:return reject('歷史資料不足60日')
+    if (now.date()-points[-1][0]).days>7:return reject('行情日期過舊')
     closes=[p[1] for p in points];c=closes[-1]
     ma20=sum(closes[-20:])/20;ma60=sum(closes[-60:])/60
     old20=sum(closes[-25:-5])/20;pressure=max(closes[-21:-1])
-    if (abs(c/closes[-2]-1)>.05 or c/ma20>1.08 or
-            c/closes[-6]>1.15 or c/closes[-21]>1.30):return None
+    if abs(c/closes[-2]-1)>.05:return reject('單日漲跌超過5%')
+    if c/ma20>1.08:return reject('月線乖離超過8%')
+    if c/closes[-6]>1.15:return reject('五日漲幅超過15%')
+    if c/closes[-21]>1.30:return reject('二十日漲幅超過30%')
     trend=c>ma20>ma60 and ma20>old20
-    if not (c>ma20 or c>ma60):return None
-    if not (abs(c/ma20-1)<=.06 or 0<=pressure/c-1<=.05):return None
+    if not (c>ma20 or c>ma60):return reject('尚未站回均線')
+    if not (abs(c/ma20-1)<=.06 or 0<=pressure/c-1<=.05):return reject('距月線或突破位置過遠')
+    if diagnostics is not None:diagnostics['reason']='通過技術初篩'
     bucket='breakout' if trend and c>=pressure*.99 else 'pullback' if trend and abs(c/ma20-1)<=.03 else 'recovery'
     return dict(bucket=bucket,rank=(not trend,-(ma20/old20-1),abs(c/pressure-1)))
 
@@ -455,7 +474,7 @@ class ShortTermService:
         for info in self.stock_meta.values():
             m=info['market'] or '未確認';markets[m]=markets.get(m,0)+1
             c=info['sector'];sectors[c]=sectors.get(c,0)+1
-        metrics={};quote_count=0;dates=[]
+        metrics={};quote_count=0;dates=[];coverage={};price_by_code={};high_examples=[]
         with self.lock:
             self.phase='全市場技術初篩';self.progress=0;self.progress_total=len(universe)
             self.scan_meta=dict(universe_count=len(universe),markets=markets,sectors=sectors)
@@ -475,8 +494,16 @@ class ShortTermService:
                         d=datetime.fromtimestamp(int(ts),timezone(timedelta(hours=8))).date()
                         if d<=self.now().date() and not(d==self.now().date() and self.now().hour<14 and not self.intraday()):
                             dates.append(day(d));break
-                metric=light_technical(q,self.now(),intraday=self.intraday())
+                diagnostic={}
+                metric=light_technical(q,self.now(),intraday=self.intraday(),diagnostics=diagnostic)
                 if metric:metrics[code]=metric
+                px=next((number(v) for v in reversed(q.get('closes') or []) if number(v) and number(v)>0),None)
+                if px:
+                    band=price_band(px);price_by_code[code]=band
+                    counter=coverage.setdefault(band,dict(quoted=0,technical=0,deep=0,qualified=0))
+                    counter['quoted']+=1;counter['technical']+=bool(metric)
+                    if px>=500 and len(high_examples)<20:
+                        high_examples.append(dict(code=code,name=self.stock_meta[code]['name'],price=round(px,2),reason=diagnostic.get('reason','資料待確認')))
             with self.lock:self.progress=min(offset+len(batch),len(universe))
             print('短線全市場技術初篩 %s/%s'%(self.progress,len(universe)),flush=True)
         if not quote_count:raise RuntimeError('全市場技術行情暫時無法取得，沒有使用法人買超名單替代')
@@ -489,6 +516,9 @@ class ShortTermService:
                 market_date=max(dates,default=None),deep_total=len(codes))
             self.scan_meta['deep_sectors']={s:sum(self.stock_meta[c]['sector']==s for c in codes)
                                            for s in sectors}
+            for code in codes:
+                if code in price_by_code:coverage[price_by_code[code]]['deep']+=1
+            self.scan_meta.update(price_coverage=coverage,high_price_examples=high_examples)
             self.phase='技術詳查';self.progress=0;self.progress_total=len(codes)
         conn=None
         try:
@@ -569,6 +599,10 @@ class ShortTermService:
                                 or dict(s,observed_at=self.now().isoformat()) for s in row['signals']]
             self.scan_meta['qualified_sectors']={s:sum(r.get('sector')==s for r in rows)
                                                 for s in {r.get('sector') for r in rows}}
+            for row in rows:
+                band=price_band(number(row.get('price')) or 0)
+                counter=self.scan_meta.get('price_coverage',{}).get(band)
+                if counter is not None:counter['qualified']+=1
             payload=dict(version=VERSION,selection_version=SELECTION_VERSION,
                          rows=rows[:MAX_PICKS],all_rows=rows,scanned=len(codes),failed=failures,
                          intraday=intraday,trigger=self.trigger,radar_at=self.radar_at,
@@ -589,7 +623,7 @@ class ShortTermService:
             with self.lock:
                 self.running=False
 
-    def payload(self, refresh=False, sector=None):
+    def payload(self, refresh=False, sector=None, position=None):
         with self.lock:
             intraday=self.intraday()
             if not self.loaded or (self.cache_mode is not None and self.cache_mode!=intraday and not self.running):
@@ -646,8 +680,12 @@ class ShortTermService:
             alerts=[a for a in alerts if any(r['code']==a['code'] and r.get('current_action')!='unconfirmed' for r in rows)]
             if sector=='電子':rows=[r for r in rows if r.get('sector')=='電子']
             elif sector=='非電子':rows=[r for r in rows if r.get('sector')!='電子']
+            position_counts={g:sum(position_group(r)==g for r in rows) for g in ('held','waiting','closed','unknown')}
+            for row in rows:row['position_group']=position_group(row)
+            if position in position_counts:rows=[r for r in rows if r['position_group']==position]
             if sector in ('電子','非電子'):alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
             return dict(ok=True,rows=rows[:MAX_PICKS],alerts=alerts,meta=dict(
+                position_counts=position_counts,
                 intraday=intraday,refresh_interval_seconds=600,
                 next_refresh_at=(datetime.fromisoformat(generated)+timedelta(seconds=600)).isoformat() if generated and intraday else None,
                 trigger=(cached or {}).get('trigger'),radar_at=(cached or {}).get('radar_at'),
@@ -667,7 +705,7 @@ def create_blueprint(*, login, service):
     @login
     def short_term(uid):
         try:
-            result=service.payload(request.args.get('refresh')=='1',sector=request.args.get('sector'))
+            result=service.payload(request.args.get('refresh')=='1',sector=request.args.get('sector'),position=request.args.get('position'))
             response=jsonify(result)
         except Exception:
             response=jsonify(ok=False,error='短線研究暫時無法載入，請稍後重試')
