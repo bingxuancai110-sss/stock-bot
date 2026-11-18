@@ -8,7 +8,7 @@ REPO=Path(__file__).resolve().parents[2];ROOT=Path(os.environ['STOCKBOT_UI_ARTIF
 sys.path.insert(0,str(REPO))
 engine=sys.argv[1] if len(sys.argv)>1 else 'chromium'
 m=runpy.run_path(str(REPO/'tests/test_short_term.py'))
-bars,h=m['market'](100);bars[82]['volume']=2200000
+bars,h=m['market'](100);bars[90]['volume']=2200000
 row=m['st'].analyse('2330','隔離測試股票',m['quote'](bars),h,m['now'](bars))
 row2=dict(row,code='2308',name='第二檔隔離測試')
 watch_bars,watch_h=m['market'](70)
@@ -38,6 +38,9 @@ with sync_playwright() as p:
    if shape:result['rows']=[r for r in result['rows'] if shape in r.get('patterns',[])]
    position=parse_qs(u.query).get('position',[''])[0]
    if position:result['rows']=[r for r in result['rows'] if m['st'].position_group(r)==position]
+   offset=int(parse_qs(u.query).get('offset',['0'])[0]);limit=int(parse_qs(u.query).get('limit',['20'])[0]);total=len(result['rows'])
+   result['meta']=dict(result['meta'],total=total,offset=offset,limit=limit,has_more=offset+limit<total)
+   result['rows']=result['rows'][offset:offset+limit]
    r.fulfill(json=dict(ok=True,rows=[],meta=dict(building=True,progress=4,pool_limit=24)) if state['building'] else result);return
   if '/api/' in u.path or '/app-config' in u.path:
    r.fulfill(json=dict(ok=True,rows=[],meta=dict(available=True,market_open=False)));return
@@ -73,15 +76,15 @@ with sync_playwright() as p:
  check('rules do not impose absolute turnover or volume minimums','成交量、成交金額不設最低門檻' in page.locator('.st-rules').inner_text())
  page.locator('.st-rules > summary').click()
  page.locator('.st-data > summary').click()
- check('current notification is above candidates and old entries are not announced','沒有新的進場訊號' in page.locator('.st-notices').inner_text() and page.locator('.st-notice-event').count()==0 and page.locator('.st-notices').bounding_box()['y']<page.locator('.st-cards').bounding_box()['y'])
+ check('current notification is above candidates and old entries are not announced','進場 0' in page.locator('.st-notices').inner_text() and page.locator('.st-notice-event').count()==0 and page.locator('.st-notices').bounding_box()['y']<page.locator('.st-cards').bounding_box()['y'])
  check('open trade spread is explicitly unrealized','未實現每股價差' in page.locator('.st-card').first.inner_text() and page.locator('.st-card').first.locator('.st-profit strong.st-up').count()==1)
  page.locator('.st-card-toggle').first.click()
  check('current chart hides old entry arrows by default',page.locator('.st-chart svg').count()==1 and page.locator('[data-marker]').count()==0 and '非新進場' in page.locator('.st-inspector').first.inner_text())
  page.locator('.st-history-toggle').click()
  check('old arrows require explicit history mode',page.locator('[data-marker]').count()>=2 and '歷史重播，非目前買點' in page.locator('.st-chart-context').inner_text())
  check('expanded stock quote retains neutral text and positive change stays red',page.locator('.st-quote strong').first.evaluate('(e)=>getComputedStyle(e).color===getComputedStyle(e.closest("#wb-short-term")).color') and page.locator('.st-quote .st-up').first.evaluate('(e)=>getComputedStyle(e).color==="rgb(197, 52, 59)"'))
- check('timeline shows dates actions and reasons directly below chart without extra clicks',page.locator('.st-history').is_visible() and row['signals'][0]['date'] in page.locator('.st-history').inner_text() and row['signals'][0]['reason'] in page.locator('.st-history').text_content() and '當時支撐停損' in page.locator('.st-history').inner_text())
- check('protection and profit reference are visible','支撐停損價' in page.locator('.st-inspector').inner_text() and '停利參考' in page.locator('.st-inspector').inner_text())
+ check('timeline shows dates actions and reasons directly below chart without extra clicks',page.locator('.st-history').is_visible() and row['signals'][0]['date'] in page.locator('.st-history').inner_text() and row['signals'][0]['reason'] in page.locator('.st-history').text_content() and '當時硬停損' in page.locator('.st-history').inner_text())
+ check('protection and profit reference are visible','硬停損價' in page.locator('.st-inspector').inner_text() and '停利參考' in page.locator('.st-inspector').inner_text())
  check('chip data date is explicit and precedes signal date',row['chip']['date'] in page.locator('.st-chip-detail').inner_text() and row['chip']['date']<row['date'])
  marker=page.locator('[data-marker]').first;marker.click()
  check('clicking marker reveals its original reason and stop','歷史規則重播' in page.locator('.st-inspector').inner_text() and row['signals'][0]['reason'] in page.locator('.st-inspector').inner_text() and str(row['signals'][0]['stop']) in page.locator('.st-inspector').inner_text())
@@ -115,7 +118,7 @@ with sync_playwright() as p:
  new.update(sector='電子',market='上櫃')
  payload.update(rows=[new],alerts=m['st'].latest_alerts([new],new['date']),meta=dict(building=False,signals_current=True,date=new['date'],scanned=80))
  page.locator('.st-refresh').click();page.locator('.st-notice-event[data-kind="entry"]').wait_for()
- check('genuine new entry appears at top with date stop and target','新進場 1 檔' in page.locator('.st-notices h3').inner_text() and new['date'] in page.locator('.st-notice-event').inner_text() and '支撐停損' in page.locator('.st-notice-event').inner_text())
+ check('genuine new entry appears at top with date stop and target','進場 1' in page.locator('.st-notices h3').inner_text() and new['date'] in page.locator('.st-notice-event').inner_text() and '硬停損' in page.locator('.st-notice-event').inner_text())
  check('high-price thinly traded electronic stock can enter without institutional evidence','上櫃 電子' in page.locator('.st-chart-head').inner_text() and page.locator('.st-chip-badge').count()==0 and page.locator('.st-notice-event[data-kind="entry"]').count()==1 and 'NaN' not in page.locator('#wb-short-term').inner_text())
  payload['meta']['signals_current']=False;payload['meta']['expected_date']='2026-11-18'
  page.locator('.st-refresh').click();page.get_by_text('最新訊號尚未確認',exact=True).wait_for()
@@ -142,12 +145,22 @@ with sync_playwright() as p:
  live_event=dict(type='entry',name=row['name'],code=row['code'],date=row['date'],price=row['price'],stop=row['stop'],target=row['target'],provisional=True)
  payload.update(rows=[live],alerts=[live_event],meta=dict(building=False,intraday=True,signals_current=True,date=row['date'],scanned=80,generated_at='2026-11-18T10:04:00+08:00',next_refresh_at='2026-11-18T10:14:00+08:00'))
  page.locator('.st-refresh').click();page.get_by_text('盤中暫定',exact=False).first.wait_for()
- check('live entry is explicitly provisional in top notification','盤中暫定進場' in page.locator('.st-notices').inner_text() and '可能消失' in page.locator('.st-notices').inner_text())
+ check('live entry is explicitly provisional in top notification','暫定進場 1' in page.locator('.st-notices').inner_text() and '可能消失' in page.locator('.st-notices').inner_text())
  page.locator('.st-data > summary').click()
  check('refresh cadence completion time and next batch are visible',all(x in page.locator('.st-refresh-info').inner_text() for x in ['雷達','10 分鐘','10:04:00','10:14:00']))
  page.locator('.st-data > summary').click()
  check('individual source time and estimated relative volume are visible','10:03:00' in page.locator('.st-source').inner_text() and '時間比例估算量比' in page.locator('.st-evidence').inner_text())
  payload.clear();payload.update(original)
+ many=[dict(row,code=str(3000+i),name='隔離候選'+str(i),active=False,signals=[],signal_stage='watch',spreads={}) for i in range(47)]
+ payload.update(rows=many,observations=[dict(name='隔離新觀察',code='3000',date=row['date'],price=100)],meta=dict(building=False,signals_current=True,date=row['date'],stage_counts=dict(watch=47,triggered=0,entry=0)))
+ page.locator('.st-refresh').click();page.locator('.st-card[data-code="3019"]').wait_for()
+ check('candidate list is not limited to six and starts with twenty',page.locator('.st-card').count()==20 and '共 47 檔' in page.locator('.st-list-summary').inner_text())
+ check('observation opportunities are visible even without formal entries','觀察 47' in page.locator('.st-notices').inner_text() and '今日新增型態觀察 1' in page.locator('.st-notices').inner_text())
+ page.locator('[data-page="1"]').click();page.locator('.st-card[data-code="3020"]').wait_for()
+ check('next page loads another twenty candidates without navigation',page.locator('.st-card').count()==20 and page.locator('.st-card[data-code="3000"]').count()==0)
+ page.locator('[data-page="1"]').click();page.locator('.st-card[data-code="3046"]').wait_for()
+ check('last page exposes all remaining candidates',page.locator('.st-card').count()==7 and page.locator('[data-page="1"]').is_disabled())
+ payload.clear();payload.update(original);page.locator('[data-sector="全部"]').click();page.locator('.st-card[data-code="2330"]').wait_for()
  state['empty']=True;page.locator('.st-refresh').click();page.locator('.st-empty').wait_for()
  check('empty results explain actual exclusion reasons and retain source date','目前沒有符合條件的股票' in page.locator('.st-empty').inner_text() and row['date'] in page.locator('.st-status').inner_text())
  state['empty']=False;page.locator('.st-refresh').click();page.locator('.st-card').first.wait_for()
