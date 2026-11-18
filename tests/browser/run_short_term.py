@@ -34,6 +34,8 @@ with sync_playwright() as p:
    if state['empty']:r.fulfill(json=dict(ok=True,rows=[],meta=dict(building=False,date=row['date'],scanned=24,excluded={'過熱或波動過高':24})));return
    result=dict(payload);sector=parse_qs(u.query).get('sector',[''])[0]
    if sector:result['rows']=[r for r in result['rows'] if (r.get('sector')=='電子')==(sector=='電子')]
+   shape=parse_qs(u.query).get('shape',[''])[0]
+   if shape:result['rows']=[r for r in result['rows'] if shape in r.get('patterns',[])]
    position=parse_qs(u.query).get('position',[''])[0]
    if position:result['rows']=[r for r in result['rows'] if m['st'].position_group(r)==position]
    r.fulfill(json=dict(ok=True,rows=[],meta=dict(building=True,progress=4,pool_limit=24)) if state['building'] else result);return
@@ -53,7 +55,11 @@ with sync_playwright() as p:
  page.clock.install();state['building']=False;page.clock.fast_forward(5100)
  page.locator('.st-card').first.wait_for()
  check('background result replaces skeleton without page reload',page.locator('.st-card').count()==2 and page.locator('.st-skeleton').count()==0)
+ check('pattern family and optional positive institutional tag are visible without a score',page.locator('.st-pattern-label').count()==2 and '法人同買' in page.locator('.st-chip-badge').first.inner_text())
  check('collapsed cards show explicit state and hide technical explanation paragraphs',all(t.strip() in ['場內','未進場','已出場','待更新'] for t in page.locator('.st-state').all_text_contents()) and page.locator('.st-evidence').count()==0 and page.locator('.st-checks').count()==0)
+ page.locator('.st-shape-filter').select_option('breakout');page.locator('.st-refresh:not([disabled])').wait_for()
+ check('pattern selector offers four independent families',page.locator('.st-shape-filter option').count()==5 and page.locator('.st-card').count()>=1)
+ page.locator('.st-shape-filter').select_option('');page.locator('.st-refresh:not([disabled])').wait_for()
  check('unselected state tab text is dark and readable in light mode',page.locator('.st-state-tabs button').last.evaluate(r'(e)=>{const c=getComputedStyle(e);return Number(c.color.match(/\d+/g)[0])<100&&c.webkitTextFillColor===c.color}'))
  page.locator('button[data-position="held"]').click();page.wait_for_function("document.querySelector('.st-state-tabs button[data-position=held]').getAttribute('aria-pressed')==='true'")
  check('held filter shows only stocks actually in model position',page.locator('.st-card').count()==1 and page.locator('.st-state').inner_text()=='場內')
@@ -110,7 +116,7 @@ with sync_playwright() as p:
  payload.update(rows=[new],alerts=m['st'].latest_alerts([new],new['date']),meta=dict(building=False,signals_current=True,date=new['date'],scanned=80))
  page.locator('.st-refresh').click();page.locator('.st-notice-event[data-kind="entry"]').wait_for()
  check('genuine new entry appears at top with date stop and target','新進場 1 檔' in page.locator('.st-notices h3').inner_text() and new['date'] in page.locator('.st-notice-event').inner_text() and '支撐停損' in page.locator('.st-notice-event').inner_text())
- check('high-price thinly traded electronic stock can enter without institutional evidence','上櫃 電子' in page.locator('.st-chart-head').inner_text() and '法人參考：資料待確認' in page.locator('.st-evidence').inner_text() and page.locator('.st-notice-event[data-kind="entry"]').count()==1 and 'NaN' not in page.locator('#wb-short-term').inner_text())
+ check('high-price thinly traded electronic stock can enter without institutional evidence','上櫃 電子' in page.locator('.st-chart-head').inner_text() and page.locator('.st-chip-badge').count()==0 and page.locator('.st-notice-event[data-kind="entry"]').count()==1 and 'NaN' not in page.locator('#wb-short-term').inner_text())
  payload['meta']['signals_current']=False;payload['meta']['expected_date']='2026-11-18'
  page.locator('.st-refresh').click();page.get_by_text('最新訊號尚未確認',exact=True).wait_for()
  check('stale notification never presents old entry as current',page.locator('.st-notice-event').count()==0)

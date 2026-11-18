@@ -160,3 +160,7 @@ html body#stockbot-app[data-app-view] #stockbot-shell #stockbot-workbench #wb-sh
 html body#stockbot-app[data-app-view] #stockbot-shell #stockbot-workbench #wb-short-term :is(.st-data,.st-rules)>summary{color:var(--sb-app-ink,#20313d)!important}
 #wb-short-term :is(.st-data,.st-rules)[open]{background:var(--st-paper);color:var(--st-ink);padding:12px;border-radius:12px}
 html body#stockbot-app[data-app-view] #stockbot-shell #stockbot-workbench #wb-short-term :is(.st-data,.st-rules)[open]>summary{color:var(--st-ink)!important}
+
+#wb-short-term :is(.st-pattern-label,.st-chip-badge){display:inline-block;font-size:12px;line-height:1.5;border:1px solid var(--st-line);border-radius:5px;padding:2px 6px;margin:0 5px 5px 0;color:var(--st-ink)!important;-webkit-text-fill-color:currentColor!important}
+
+#wb-short-term .st-shape-filter{margin-left:auto;min-height:44px;max-width:120px;padding:8px;border:1px solid var(--st-line);border-radius:10px;background:var(--sb-app-surface,#fff);color:var(--sb-app-ink,#20313d);font-size:13px}#wb-short-term .st-sector{align-items:center;gap:6px;flex-wrap:wrap}
