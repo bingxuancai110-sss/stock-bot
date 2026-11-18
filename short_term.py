@@ -6,15 +6,16 @@ These are model signals, never asserted fills or measured investment performance
 """
 from datetime import date, datetime, timedelta, timezone
 import math
+import copy
 import threading
 import time
 from flask import Blueprint, jsonify, request
 
-VERSION = 'short-pattern-v3'
+VERSION = 'short-wave-v4'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 80
-MAX_PICKS = 6
-SELECTION_VERSION = 8
+MAX_PICKS = 20
+SELECTION_VERSION = 9
 LIGHT_BATCH = 64
 
 
@@ -28,6 +29,13 @@ def position_group(row):
 
 def price_band(price):
     return '1000以上' if price>=1000 else '500–999' if price>=500 else '100–499' if price>=100 else '低於100'
+
+
+def clarity_rank(row):
+    stage=row.get('signal_stage','watch')
+    return (-{'entry':3,'triggered':2,'watch':1}.get(stage,0),
+            not row.get('trend',False),len(row.get('pending',[])),
+            (row.get('technical_priority') or (True,0,0))[1:],row['code'])
 
 
 def number(value):
@@ -188,7 +196,12 @@ def levels(bars):
     resistance = min(pivots) if pivots else (resistances[-1] if resistances else None)
     avg_vol = sum(b['volume'] for b in prev[-20:])/20
     avg_turnover = sum(b['close']*b['volume'] for b in prev[-20:])/20
+    low_pivots=[i for i in range(max(2,len(prev)-20),len(prev)-2)
+                if prev[i]['low']<=min(z['low'] for z in prev[i-2:i+3])
+                and prev[i]['low']<max(z['low'] for z in prev[i-2:i+3])]
+    swing_floor=prev[low_pivots[-1]]['low'] if low_pivots else min(z['low'] for z in prev[-10:])
     return dict(ma10=ma10, ma20=ma20, ma60=ma60, atr=atr,
+                ma20_previous=sum(z['close'] for z in prev[-20:])/20,swing_floor=swing_floor,
                 trend_slope=ma20/old20-1,
                 trend=last['close'] > ma20 > ma60 and ma20 > old20,
                 recovering=last['close'] > ma20 or last['close'] > ma60,
@@ -255,16 +268,20 @@ def setup(bars, chip, volume_fraction=1):
     x['volume_ratio']/=max(15/270,min(1,volume_fraction))
     hot = abs(x['change'])>9.5 or x['atr']/c>.06
     liquid = x['avg_turnover'] >= 10_000_000  # advisory only, never an entry/selection gate
-    stop = x['support']-.25*x['atr']
+    shapes=technical_shapes(bars,x,x['volume_ratio'])
+    base_days=5 if shapes['kind']=='continuation' else 10
+    anchor=min(z['low'] for z in bars[:-1][-base_days:])
+    soft_support=anchor-.25*x['atr']
+    floor=anchor if shapes['kind']=='continuation' else x['swing_floor']
+    stop = min(soft_support-.5*x['atr'],floor-.75*x['atr'])
     risk = c-stop
     target = x['resistance'] or c+2*risk
     rr = (target-c)/risk if risk > 0 else 0
     vol5 = sum(z['volume'] for z in bars[-6:-1])/1000
     ratio = ((chip.get('foreign',0)+chip.get('trust',0))/vol5) if vol5 else 0
-    shapes=technical_shapes(bars,x,x['volume_ratio'])
     valid = not hot and bool(shapes['watching'] or shapes['trigger']) and b['volume']>0
     risk_ok = 0 < risk/c <= .06 and rr >= 1.5
-    return dict(x, stop=stop, target=target, target_kind='壓力區' if x['resistance'] else '2R 參考',
+    return dict(x, stop=stop,soft_support=soft_support, target=target, target_kind='壓力區' if x['resistance'] else '2R 參考',
                 risk=risk, rr=rr, hot=hot, liquid=liquid,
                 chip_ratio=ratio*100, eligible=valid and risk_ok, risk_ok=risk_ok,
                 trigger=shapes['trigger'],watchable=not hot and b['volume']>0 and bool(shapes['watching']),
@@ -278,6 +295,7 @@ def analyse(code, name, quote, history, now, intraday=False):
     if len(bars) < 65 or (now.date()-date.fromisoformat(bars[-1]['date'])).days > 7:
         return None
     signals = []; trails = []; position = None; latest = None; chip = None
+    watch_dates={};trigger_dates={};previous_patterns=set();previous_trigger=None
     dates = [b['date'] for b in bars]
     for i in range(64, len(bars)):
         prefix = bars[:i+1]; b = bars[i]
@@ -286,6 +304,13 @@ def analyse(code, name, quote, history, now, intraday=False):
         if intraday and b['date']==day(now):
             fraction=((now.hour-9)*60+now.minute)/270
         plan = setup(prefix, chip, volume_fraction=fraction); latest = plan
+        current_patterns=set(plan['patterns'])
+        for k in current_patterns-previous_patterns:
+            watch_dates[k]=b['date'] if i>64 else None
+        if plan['trigger'] and plan['strategy']!=previous_trigger:
+            trigger_dates[plan['strategy']]=b['date'] if i>64 else None
+        previous_patterns=current_patterns
+        previous_trigger=plan['strategy'] if plan['trigger'] else None
         def emit(kind, price, reason, stop=None, target=None, units=None):
             if kind=='entry':
                 reason+=('；價格 %.2f，MA20 %.2f／MA60 %.2f；%s %.2f，量比 %.2f，初始停損 %.2f，報酬風險比 %.2fR' %
@@ -310,43 +335,56 @@ def analyse(code, name, quote, history, now, intraday=False):
             p = position
             # The line used for today's touch was known after yesterday's close.
             if b['low'] <= p['stop']:
-                emit('exit', min(b['open'],p['stop']), '觸及前一日保護價；跳空時以開盤價標示觸發參考，非成交保證',
+                emit('exit', min(b['open'],p['stop']), '觸及事前設定的硬停損；跳空按較低開盤價標示參考，非成交保證',
                      p['stop'],p['target'],p['units'])
                 trails.append(dict(date=b['date'],value=round(p['stop'],2)))
                 position = None
                 continue  # no same-bar re-entry or optimistic stop/target sequencing
+            broken=b['close']<p['soft_support'] and b['close']<plan['ma20']
+            p['trend_breaks']=p['trend_breaks']+1 if broken else 0
+            if p['trend_breaks']>=2 and plan['ma20']<=plan['ma20_previous']:
+                emit('exit',b['close'],'趨勢反轉確認：連續兩日收盤跌破事前趨勢支撐與20日線，且20日線不再上升',p['stop'],p['target'],p['units'])
+                trails.append(dict(date=b['date'],value=round(p['stop'],2),support=round(p['soft_support'],2)))
+                position=None;continue
             upper = b['high']-max(b['open'],b['close'])
             rejection = (b['high'] >= p['target'] and
                          (b['close'] < b['open'] or upper > .45*(b['high']-b['low'])))
             previous_ma10=sum(z['close'] for z in prefix[-11:-1])/10
-            technical_weak=b['close']<plan['ma10'] and prefix[-2]['close']<previous_ma10
+            technical_weak=(b['close']<p['soft_support'] and b['close']<plan['ma10']) or (
+                b['close']<plan['ma20'] and prefix[-2]['close']<plan['ma20_previous'])
             weak=technical_weak
-            if not p['reduced'] and (rejection or weak):
-                units = p['units']/2; p['units'] -= units; p['reduced'] = True
-                reason=('壓力區受阻，減少策略部位一半' if rejection else
-                        '連續兩日收盤跌破十日線，減少策略部位一半')
+            if not p['reduced'] and ((rejection and b['close']<plan['ma10']) or weak):
+                units = p['units']/2;p['cost']*=.5;p['units']-=units;p['reduced']=True;p['reduced_units']=units
+                reason=('壓力受阻且跌破十日線，先減碼一半，保留其餘部位追蹤趨勢' if rejection else
+                        '短期轉弱／收盤跌破趨勢支撐，先減碼一半；尚未確認反轉，不直接出清')
                 emit('reduce',b['close'],reason,p['stop'],p['target'],units)
-            elif (not p['added'] and not p['reduced'] and plan['eligible'] and
-                  b['close'] >= p['entry']+p['risk'] and
+            elif (((not p['added'] and not p['reduced'] and b['close']>=p['entry']+p['risk']) or
+                   (p['reduced'] and not p['restored'] and b['close']>p['soft_support'])) and plan['eligible'] and
                   b['close'] > max(z['high'] for z in prefix[-11:-1]) and
                   b['close'] > p['entry']*1.01 and plan['volume_ratio'] >= 1.25):
-                added_risk = (b['close']-p['stop'])*.5
-                existing_risk = p['cost']-p['units']*p['stop']
+                restoring=p['reduced'];add_units=p['reduced_units'] if restoring else .5
+                added_risk = (b['close']-p['stop'])*add_units
+                existing_risk = max(0,p['cost']-p['units']*p['stop'])
                 if existing_risk+added_risk <= p['risk']:
-                    p['units'] += .5; p['cost'] += .5*b['close']; p['added'] = True
-                    emit('add',b['close'],'獲利達 1R 後再次放量突破；技術與風險成立，法人僅供參考，加碼初始部位的一半',p['stop'],p['target'],.5)
+                    p['units']+=add_units;p['cost']+=add_units*b['close']
+                    if restoring:p['restored']=True;p['reduced']=False
+                    else:p['added']=True
+                    emit('add',b['close'],'減碼後收復趨勢支撐、再次突破且風險受控，回補減碼部位' if restoring else
+                         '獲利達1R後再次放量突破；技術與風險成立，加碼初始部位一半',p['stop'],p['target'],add_units)
             # Structural trailing stop only ratchets upward, effective next session.
-            new_stop = max(p['stop'], min(z['low'] for z in prefix[-5:])-.25*plan['atr'])
+            new_stop = max(p['stop'],min(plan['swing_floor']-.75*plan['atr'],p['soft_support']-.5*plan['atr']))
             if new_stop < b['close']:
                 p['stop'] = new_stop
+            p['soft_support']=max(p['soft_support'],min(z['low'] for z in prefix[-10:])-.25*plan['atr'])
             if b['close'] > p['target'] and not rejection:
                 p['target'] = plan['resistance'] or b['close']+2*(b['close']-p['stop'])
                 p['target_kind'] = '壓力區' if plan['resistance'] else '2R 參考'
-            trails.append(dict(date=b['date'],value=round(p['stop'],2),target=round(p['target'],2)))
+            trails.append(dict(date=b['date'],value=round(p['stop'],2),support=round(p['soft_support'],2),target=round(p['target'],2)))
         elif plan['entry']:
             position = dict(entry=b['close'],risk=plan['risk'],stop=plan['stop'],
                             target=plan['target'],units=1.,cost=b['close'],added=False,
-                            reduced=False,entry_date=b['date'],target_kind=plan['target_kind'],strategy=plan['strategy'])
+                            reduced=False,restored=False,reduced_units=0,trend_breaks=0,soft_support=plan['soft_support'],
+                            entry_date=b['date'],target_kind=plan['target_kind'],strategy=plan['strategy'])
             emit('entry',b['close'],plan['pattern']+'；趨勢、量價與風險條件成立，法人僅供參考（收盤訊號，非成交保證）',plan['stop'],plan['target'],1)
             trails.append(dict(date=b['date'],value=round(plan['stop'],2)))
     if latest is None:
@@ -389,6 +427,10 @@ def analyse(code, name, quote, history, now, intraday=False):
                 strategy=position['strategy'] if position else latest['strategy'],
                 patterns=list(dict.fromkeys(latest['patterns']+([position['strategy']] if position else []))),
                 pattern_line=latest['pattern_line'],
+                signal_stage='entry' if event and event['type']=='entry' else 'triggered' if latest['trigger'] else 'watch',
+                watch_date=max((watch_dates.get(k) or '' for k in latest['patterns']),default='') or None,
+                trigger_date=trigger_dates.get(latest['strategy']),
+                soft_support=round(position['soft_support'] if position else latest['soft_support'],2),
                 change_pct=round(latest['change'],2),state=status['state'],active=bool(position),
                 current_action=status['action'],action_note=status['action_note'],
                 last_exit_date=(status['last_exit'] or {}).get('date'),
@@ -489,7 +531,7 @@ class ShortTermService:
         self.stock_meta={};self.scan_meta={};self.phase='等待排程';self.progress_total=MAX_POOL
         self.lock=threading.RLock(); self.cached=None; self.loaded=False
         self.running=False; self.started=0.; self.progress=0; self.error=''; self.last_try=0.
-        self.cache_mode=None;self.radar_at=None;self.trigger='頁面補檢'
+        self.cache_mode=None;self.radar_at=None;self.trigger='頁面補檢';self.full_queue=[]
 
     def intraday(self):
         n=self.now()
@@ -558,19 +600,26 @@ class ShortTermService:
             with self.lock:self.progress=min(offset+len(batch),len(universe))
             print('短線全市場技術初篩 %s/%s'%(self.progress,len(universe)),flush=True)
         if not quote_count:raise RuntimeError('全市場技術行情暫時無法取得，沒有使用法人買超名單替代')
-        codes=technical_pool(metrics,[r['code'] for r in keep if r['code'] in self.stock_meta],
+        ordered=technical_pool(metrics,[r['code'] for r in keep if r['code'] in self.stock_meta],limit=len(universe),
                              sectors={c:i['sector'] for c,i in self.stock_meta.items()},price_bands=price_by_code)
+        self.full_queue=ordered+[c for c in universe if c not in set(ordered)]
+        for c,band in price_by_code.items():self.stock_meta[c]['price_band']=band
+        codes=self.full_queue[:MAX_POOL]
         names={c:self.stock_meta[c]['name'] for c in codes};history={c:[] for c in codes}
         with self.lock:
             self.scan_meta.update(light_scanned=len(universe),light_quotes=quote_count,
                 light_missing=len(universe)-quote_count,technical_candidates=len(metrics),
-                market_date=max(dates,default=None),deep_total=len(codes))
+                market_date=max(dates,default=None),deep_total=len(self.full_queue),deep_done=0,deep_complete=False)
             self.scan_meta['deep_sectors']={s:sum(self.stock_meta[c]['sector']==s for c in codes)
                                            for s in sectors}
             for code in codes:
                 if code in price_by_code:coverage[price_by_code[code]]['deep']+=1
             self.scan_meta.update(price_coverage=coverage,high_price_examples=high_examples)
             self.phase='技術詳查';self.progress=0;self.progress_total=len(codes)
+        return codes,names,self.histories(codes)
+
+    def histories(self,codes):
+        history={c:[] for c in codes}
         conn=None
         try:
             if codes:
@@ -586,34 +635,58 @@ class ShortTermService:
             history={c:[] for c in codes}
         finally:
             if conn:conn.close()
-        return codes,names,history
+        return history
 
     def build(self):
+        queued=False
         try:
-            intraday=self.intraday()
-            snapshot_key=KEY+(':intraday' if intraday else '')
-            deadline=time.monotonic()+120
-            self.deadline=deadline
-            if not self.safe(reserve_mb=96):
-                raise RuntimeError('記憶體餘裕不足，稍後可重試')
+            with self.lock:self.running=True
+            intraday=self.intraday();snapshot_key=KEY+(':intraday' if intraday else '')
+            self.deadline=time.monotonic()+120
+            if not self.safe(reserve_mb=96):raise RuntimeError('記憶體餘裕不足，已保留掃描進度')
+            with self.lock:previous=self.cached or {}
+            saved=previous.get('cycle') or {}
+            resume=(saved.get('day')==day(self.now()) and saved.get('intraday')==intraday and
+                    previous.get('selection_version')==SELECTION_VERSION and saved.get('cursor',0)<len(saved.get('queue',[])))
+            if resume:
+                cycle=copy.deepcopy(saved);self.stock_meta=cycle['stocks'];self.scan_meta=copy.deepcopy(previous.get('scope',{}))
+                cursor=cycle['cursor'];queue=cycle['queue']
+                active=[r['code'] for r in previous.get('all_rows',[]) if r.get('active') and r['code'] in self.stock_meta]
+                start=cycle.get('active_cursor',0)%max(1,len(active))
+                fast=(active+active)[start:start+min(16,len(active))]
+                base=queue[cursor:cursor+MAX_POOL-len(fast)]
+                codes=fast+[c for c in base if c not in fast]
+                cycle['active_cursor']=start+len(fast)
+                names={c:self.stock_meta[c]['name'] for c in codes};history=self.histories(codes)
+            else:
+                self.full_queue=[]
+                keep=[r for r in previous.get('all_rows',previous.get('rows',[])) if r.get('active')]
+                codes,names,history=self.inputs(keep)
+                base=list(codes)
+                queue=self.full_queue or codes;cursor=0
+                cycle=dict(day=day(self.now()),intraday=intraday,queue=queue,cursor=0,stocks=self.stock_meta,
+                           evaluated=[],excluded={},failures=0,started_at=self.now().isoformat())
+            covered=set(cycle.get('evaluated',[]));failed_codes=set(cycle.get('failed_codes',[]))
+            excluded=dict(cycle.get('excluded',{}));failures=0;processed=0;finished=set();quote_dates=[]
+            rows_by_code={r['code']:r for r in previous.get('all_rows',previous.get('rows',[])) if r['code'] in set(queue)}
             with self.lock:
-                previous=self.cached or {}; keep=[r for r in previous.get('rows',[]) if r.get('active')]
-            codes,names,history=self.inputs(keep)
-            rows=[]; failures=0; excluded={}; quote_dates=[]
+                self.phase='全市場分批詳查';self.progress=len(covered);self.progress_total=len(queue)
+            pause=''
             for i,code in enumerate(codes):
-                if time.monotonic()>deadline:
-                    raise RuntimeError('行情回應較慢，本輪研究逾時；保留原結果，稍後可重試')
+                if time.monotonic()>self.deadline:
+                    pause='本批行情逾時，進度已保存，稍後接續';break
                 if not self.safe(reserve_mb=96):
-                    raise RuntimeError('背景研究因記憶體餘裕不足暫停，保留原結果')
+                    pause='記憶體餘裕不足，進度已保存';break
                 try:
                     market=(self.stock_meta.get(code) or {}).get('market','').lower()
                     suffix='.TW' if market in ('上市','twse','listed','tw') else '.TWO' if market in ('上櫃','上柜','tpex','otc','two') else None
                     q=self.quote(code,rng='6mo',include_mis=False,request_timeout=5,market_suffix=suffix,
                                  force_refresh=intraday)
                     if not q:
-                        failures+=1
+                        failures+=1;failed_codes.add(code)
                         excluded['行情來源暫缺']=excluded.get('行情來源暫缺',0)+1
                         continue
+                    failed_codes.discard(code)
                     observed=number(q.get('market_observed_at'))
                     # A recent fetch is not proof of a recent trade. Require the
                     # source's market timestamp before exposing a live signal.
@@ -627,54 +700,63 @@ class ShortTermService:
                         row['sector']=(self.stock_meta.get(code) or {}).get('sector','未分類')
                         row['market']=(self.stock_meta.get(code) or {}).get('market','未確認')
                         row['observed_at']=datetime.fromtimestamp(observed,timezone(timedelta(hours=8))).isoformat() if observed else None
-                        rows.append(row)
+                        row['computed_at']=self.now().isoformat()
+                        rows_by_code[code]=row
                     else:
+                        rows_by_code.pop(code,None)
                         reason=exclusion_reason(bars,history[code],self.now())
                         excluded[reason]=excluded.get(reason,0)+1
                 except Exception as exc:
-                    failures+=1
+                    failures+=1;failed_codes.add(code)
                     excluded['資料讀取或計算失敗']=excluded.get('資料讀取或計算失敗',0)+1
                     print('短線研究單檔略過 %s: %s'%(code,type(exc).__name__),flush=True)
-                with self.lock:
-                    self.progress=i+1
-            if codes and failures==len(codes):
-                raise RuntimeError('行情來源暫時無法取得，保留原結果')
-            order={'entry':0,'add':1,'reduce':2,'exit':3}
-            rows.sort(key=lambda r:(order.get(r['latest_event'],4),0 if r.get('active') else 1,
-                                    len(r.get('pending',[])),r.get('technical_priority',(True,0,0)),r['code']))
-            # Preserve observed events in stored snapshots instead of retrospectively
-            # replacing their reasons/prices when upstream history is revised.
-            old={s['id']:s for r in previous.get('rows',[]) for s in r.get('signals',[])}
+                finally:
+                    processed+=1;covered.add(code);finished.add(code)
+                    with self.lock:self.progress=len(covered)
+
+            if processed and failures==processed:raise RuntimeError('行情來源暫時無法取得，保留原結果與進度')
+            if not processed and codes:raise RuntimeError(pause or '本批尚未取得可確認的資料')
+            rows=list(rows_by_code.values())
+            rows.sort(key=clarity_rank)
+            old={e['id']:e for r in previous.get('all_rows',previous.get('rows',[])) for e in r.get('signals',[])}
             for row in rows:
-                row['signals']=[(old.get(s['id']) if not s.get('provisional') and not (old.get(s['id']) or {}).get('provisional') else None)
-                                or dict(s,observed_at=self.now().isoformat()) for s in row['signals']]
-            self.scan_meta['qualified_sectors']={s:sum(r.get('sector')==s for r in rows)
-                                                for s in {r.get('sector') for r in rows}}
-            for row in rows:
-                band=price_band(number(row.get('price')) or 0)
-                counter=self.scan_meta.get('price_coverage',{}).get(band)
-                if counter is not None:counter['qualified']+=1
-            payload=dict(version=VERSION,selection_version=SELECTION_VERSION,
-                         rows=rows[:MAX_PICKS],all_rows=rows,scanned=len(codes),failed=failures,
-                         intraday=intraday,trigger=self.trigger,radar_at=self.radar_at,
-                         date=max(quote_dates,default=self.scan_meta.get('market_date')),excluded=excluded,scope=dict(self.scan_meta),
-                         alerts=latest_alerts(rows,max(quote_dates,default=None)),
-                         generated_at=self.now().isoformat(),
-                         note='日 K 規則試行・歷史箭頭為規則重播，尚未宣稱回測績效；不含基本面、不送出交易。')
-            if not self.store.save(snapshot_key,payload,data_date=payload['date'],source_meta={'version':VERSION,'intraday':intraday}):
-                raise RuntimeError('研究結果未確認保存，保留原結果')
-            with self.lock:
-                self.cached=payload; self.error=''
-            print('✅ 短線研究完成 %s/%s'%(len(payload['rows']),len(codes)),flush=True)
+                row['signals']=[(old.get(e['id']) if not e.get('provisional') and not (old.get(e['id']) or {}).get('provisional') else None)
+                                or dict(e,observed_at=self.now().isoformat()) for e in row['signals']]
+            advanced=0
+            for c in base:
+                if c not in finished:break
+                advanced+=1
+            cycle.update(cursor=cursor+advanced,evaluated=sorted(covered),excluded=excluded,failures=len(failed_codes),failed_codes=sorted(failed_codes))
+            complete=cycle['cursor']>=len(queue)
+            self.scan_meta.update(deep_total=len(queue),deep_done=len(covered),deep_success=len(covered)-len(failed_codes),deep_complete=complete,scan_warning=pause)
+            self.scan_meta['deep_sectors']={sector:sum((self.stock_meta.get(c) or {}).get('sector')==sector for c in covered)
+                for sector in {i.get('sector') for i in self.stock_meta.values()}}
+            self.scan_meta['qualified_sectors']={g:sum(r.get('sector')==g for r in rows) for g in {r.get('sector') for r in rows}}
+            for band,counter in self.scan_meta.get('price_coverage',{}).items():
+                counter['deep']=sum((self.stock_meta.get(c) or {}).get('price_band')==band for c in covered)
+                counter['qualified']=sum(price_band(number(r.get('price')) or 0)==band for r in rows)
+            asof=max(quote_dates+[r.get('date') for r in rows if r.get('date')],default=self.scan_meta.get('market_date'))
+            payload=dict(version=VERSION,selection_version=SELECTION_VERSION,rows=rows[:MAX_PICKS],all_rows=rows,
+                scanned=len(covered),failed=cycle['failures'],cycle=cycle,intraday=intraday,trigger=self.trigger,radar_at=self.radar_at,
+                date=asof,excluded=excluded,scope=copy.deepcopy(self.scan_meta),alerts=latest_alerts(rows,asof),
+                generated_at=self.now().isoformat(),note='全市場分批詳查；部分完成會明確顯示進度。規則重播，不送出交易。')
+            if not self.store.save(snapshot_key,payload,data_date=asof,source_meta={'version':VERSION,'intraday':intraday}):
+                raise RuntimeError('研究結果未確認保存，保留原結果與進度')
+            with self.lock:self.cached=payload;self.error=''
+            print('✅ 短線分批詳查 %s/%s，本批 %s 檔，候選 %s 檔'%(len(covered),len(queue),processed,len(rows)),flush=True)
+            if (not complete and not pause and self.safe(reserve_mb=96) and self.intraday()==intraday and day(self.now())==cycle['day']):
+                queued=True
+                try:self.executor.submit(self.build)
+                except Exception:
+                    queued=False;self.error='背景佇列暫緩，掃描進度已保存'
         except Exception as exc:
-            with self.lock:
-                self.error=str(exc)[:160]
+            with self.lock:self.error=str(exc)[:160]
             print('⚠️ 短線研究暫緩: '+str(exc)[:160],flush=True)
         finally:
-            with self.lock:
-                self.running=False
+            if not queued:
+                with self.lock:self.running=False
 
-    def payload(self, refresh=False, sector=None, position=None, shape=None):
+    def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS):
         with self.lock:
             intraday=self.intraday()
             if not self.loaded or (self.cache_mode is not None and self.cache_mode!=intraday and not self.running):
@@ -687,11 +769,18 @@ class ShortTermService:
                 age=(self.now()-datetime.fromisoformat(generated)).total_seconds()
             except (ValueError,TypeError):
                 age=999999
-            stale=(age>(600 if intraday else 1800) or generated[:10]!=day(self.now()) or
+            expected=self.now().date()
+            if self.now().hour<14 and not intraday:expected-=timedelta(days=1)
+            for _ in range(20):
+                if self.calendar(expected):break
+                expected-=timedelta(days=1)
+            stale=((age>600 if intraday else (cached or {}).get('date')!=day(expected)) or
                    (cached or {}).get('selection_version')!=SELECTION_VERSION)
             # One job shared across all signed-in viewers. Never start work from
             # entering another workbench tab or fan out to extra threads.
-            if (not cached or stale or refresh) and not self.running and time.monotonic()-self.last_try>60:
+            cycle=(cached or {}).get('cycle') or {}
+            unfinished=cycle.get('day')==day(self.now()) and cycle.get('cursor',0)<len(cycle.get('queue',[]))
+            if (not cached or stale or refresh or unfinished) and not self.running and time.monotonic()-self.last_try>60:
                 self.last_try=time.monotonic()
                 if self.safe(reserve_mb=96):
                     self.running=True; self.progress=0; self.error=''; self.started=time.monotonic()
@@ -701,14 +790,8 @@ class ShortTermService:
                         self.running=False; self.error='背景佇列暫時無法接收，請稍後重試'
                 else:
                     self.error='記憶體餘裕不足，稍後可重試'
-            expected=self.now().date()
-            if self.now().hour<14 and not intraday:
-                expected-=timedelta(days=1)
-            for _ in range(20):
-                if self.calendar(expected):break
-                expected-=timedelta(days=1)
             signals_current=bool((cached or {}).get('date')==day(expected) and
-                (cached or {}).get('selection_version')==SELECTION_VERSION and not self.error and
+                (cached or {}).get('selection_version')==SELECTION_VERSION and
                 (not intraday or ((cached or {}).get('intraday') and age<=1200)))
             rows=[]
             for row in (cached or {}).get('all_rows',(cached or {}).get('rows',[])):
@@ -720,7 +803,7 @@ class ShortTermService:
                 else:
                     rows.append(dict(row,state='資料待更新，非最新訊號',current_action='unconfirmed',
                         action_note='行情截至 '+str(row.get('date') or '未確認')+'；尚未確認最新交易日的訊號，不沿用舊買點。',
-                        entry_ready=False,latest_event=None,latest_event_date=None))
+                        entry_ready=False,latest_event=None,latest_event_date=None,signal_stage='unconfirmed'))
             alerts=[]
             for alert in (cached or {}).get('alerts',[]) if signals_current else []:
                 row=next((r for r in rows if r['code']==alert['code']),None)
@@ -738,7 +821,17 @@ class ShortTermService:
             for row in rows:row['position_group']=position_group(row)
             if position in position_counts:rows=[r for r in rows if r['position_group']==position]
             if sector in ('電子','非電子'):alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
-            return dict(ok=True,rows=rows[:MAX_PICKS],alerts=alerts,meta=dict(
+            rows.sort(key=clarity_rank)
+            total=len(rows)
+            try:offset=max(0,int(offset));limit=max(1,min(50,int(limit)))
+            except (ValueError,TypeError):offset=0;limit=MAX_PICKS
+            stages={k:sum(r.get('signal_stage','watch')==k and r.get('current_action')!='unconfirmed' for r in rows)
+                    for k in ('watch','triggered','entry')}
+            new_watch=[dict(code=r['code'],name=r['name'],date=r['watch_date'],price=r['price'],type='watch')
+                       for r in rows if r.get('watch_date')==day(expected) and r.get('current_action')!='unconfirmed' and not r.get('active')]
+            return dict(ok=True,rows=rows[offset:offset+limit],alerts=alerts,observations=new_watch,meta=dict(
+                total=total,offset=offset,limit=limit,has_more=offset+limit<total,
+                stage_counts=stages,
                 position_counts=position_counts,
                 intraday=intraday,refresh_interval_seconds=600,
                 next_refresh_at=(datetime.fromisoformat(generated)+timedelta(seconds=600)).isoformat() if generated and intraday else None,
@@ -750,7 +843,7 @@ class ShortTermService:
                 date=(cached or {}).get('date'),generated_at=generated,stale=stale,
                 scanned=(cached or {}).get('scanned',0),failed=(cached or {}).get('failed',0),
                 excluded=(cached or {}).get('excluded',{}),
-                error=self.error,note=(cached or {}).get('note','全市場技術初篩・量價與風險決定進場，法人僅供參考；最多顯示 6 檔。')))
+                error=self.error,note=(cached or {}).get('note','全市場分批詳查・依型態與趨勢排列，可分頁查看全部候選。')))
 
 
 def create_blueprint(*, login, service):
@@ -759,7 +852,7 @@ def create_blueprint(*, login, service):
     @login
     def short_term(uid):
         try:
-            result=service.payload(request.args.get('refresh')=='1',sector=request.args.get('sector'),position=request.args.get('position'),shape=request.args.get('shape'))
+            result=service.payload(request.args.get('refresh')=='1',sector=request.args.get('sector'),position=request.args.get('position'),shape=request.args.get('shape'),offset=request.args.get('offset',0),limit=request.args.get('limit',MAX_PICKS))
             response=jsonify(result)
         except Exception:
             response=jsonify(ok=False,error='短線研究暫時無法載入，請稍後重試')

@@ -93,7 +93,7 @@ def test_stop_wins_over_target_in_same_daily_bar_and_gap_is_not_filled_at_stop()
 
 def test_additions_are_limited_and_cannot_expand_initial_downside_budget():
     bars,h=market(100)
-    bars[82]['volume']=2_200_000  # a second distinct volume expansion after 1R
+    bars[90]['volume']=2_200_000  # after confirmed support releases enough risk budget
     out=st.analyse('2330','fixture',quote(bars),h,now(bars))
     adds=[s for s in out['signals'] if s['type']=='add']
     assert len(adds)==1
@@ -103,14 +103,14 @@ def test_additions_are_limited_and_cannot_expand_initial_downside_budget():
     assert cost-1.5*add['stop']<=entry['price']-entry['stop']+.03
 
 
-def test_pressure_rejection_reduces_once_and_preserves_the_stop():
+def test_pressure_rejection_above_the_trend_does_not_automatically_reduce():
     bars,h=market(78)
     initial=st.analyse('2330','fixture',quote(bars[:77]),h,now(bars[:77]))
     target=initial['target']; stop=initial['stop']
     bars[-1].update(open=target-.1,high=target+.5,low=max(stop+.1,target-1),close=target-.8)
     out=st.analyse('2330','fixture',quote(bars),h,now(bars))
     reductions=[s for s in out['signals'] if s['type']=='reduce']
-    assert len(reductions)==1 and reductions[0]['stop']>=initial['stop']
+    assert reductions==[] and out['active']
 
 
 def test_unfinished_bar_invalid_ohlc_and_price_scaling_are_not_signals():
@@ -152,7 +152,7 @@ def test_memory_rejection_preserves_saved_rows_and_does_not_submit_work():
     s.executor.submit.assert_not_called()
 
 
-def test_publish_caps_six_rows_and_preserves_observed_events(monkeypatch):
+def test_publish_pages_twenty_rows_and_preserves_observed_events(monkeypatch):
     s=service();s.running=True
     bars,_=market();s.quote.return_value=quote(bars)
     codes=[str(i) for i in range(st.MAX_POOL)]
@@ -162,7 +162,7 @@ def test_publish_caps_six_rows_and_preserves_observed_events(monkeypatch):
     monkeypatch.setattr(st,'analyse',lambda c,*args,**kwargs:dict(code=c,name=c,active=True,
         latest_event='entry',avg_turnover=100,date='2026-11-17',signals=[dict(old_event,price=999)]))
     s.build()
-    assert not s.running and len(s.cached['rows'])==6 and s.cached['scanned']==80
+    assert not s.running and len(s.cached['rows'])==20 and s.cached['scanned']==80
     assert s.cached['rows'][0]['signals'][0]['price']==123
     s.store.save.assert_called_once()
 
@@ -472,7 +472,7 @@ def test_sector_filter_reads_all_qualified_rows_without_another_market_scan():
     rows.append(dict(code='2330',date='2026-11-17',sector='電子',signals=[]))
     s.store.load.return_value={'payload':dict(date='2026-11-17',generated_at=s.now().isoformat(),
         selection_version=st.SELECTION_VERSION,rows=rows[:6],all_rows=rows)}
-    assert len(s.payload()['rows'])==6
+    assert len(s.payload()['rows'])==7
     assert [r['code'] for r in s.payload(sector='電子')['rows']]==['2330']
     s.executor.submit.assert_not_called()
     assert 'all_rows' not in s.payload()  # bounded response, no 80 charts sent per poll
@@ -611,9 +611,107 @@ def test_four_independent_pattern_families_detect_breakout_pullback_continuation
 
 
 def test_pattern_v3_uses_separate_snapshot_namespace_and_no_price_ceiling():
-    assert st.VERSION=='short-pattern-v3' and st.KEY=='short_term:short-pattern-v3'
+    assert st.VERSION=='short-wave-v4' and st.KEY=='short_term:short-wave-v4'
     bars,h=market(71)
     for b in bars:
         for k in ('open','high','low','close'):b[k]*=100
     a=st.analyse('2330','fixture',quote(bars),[],now(bars))
     assert a['entry_ready'] and a['price']>10000
+
+
+def test_single_support_break_reduces_but_does_not_exit_and_recovery_retains_position():
+    bars,h=market(87)
+    early=st.analyse('2330','fixture',quote(bars[:84]),h,now(bars[:84]))
+    hard=early['stop'];support=early['soft_support'];assert hard<support
+    c=(hard+support)/2
+    bars[84].update(open=c+.05,close=c,high=c+.15,low=max(hard+.01,c-.05))
+    out=st.analyse('2330','fixture',quote(bars),h,now(bars))
+    assert out['active'] and not [e for e in out['signals'] if e['type']=='exit']
+    reductions=[e for e in out['signals'] if e['type']=='reduce']
+    assert len(reductions)==1 and reductions[0]['units']==.5
+
+
+def test_two_confirmed_support_breaks_and_falling_ma20_can_close_wave_above_hard_stop():
+    import math
+    bars,h=market(104)
+    for i,b in enumerate(bars[83:102]):
+        c=110.9+.1*math.sin(i)
+        b.update(open=c-.1,close=c,high=c+.2,low=c-.4,volume=1000000)
+    early=st.analyse('2330','fixture',quote(bars[:102]),h,now(bars[:102]))
+    assert early['active']
+    hard=early['stop'];support=early['soft_support'];c=(hard+support)/2
+    for j in (102,103):
+        v=c-.02*(j-102)
+        bars[j].update(open=v+.02,close=v,high=v+.1,low=max(hard+.01,v-.03),volume=1000000)
+    first=st.analyse('2330','fixture',quote(bars[:103]),h,now(bars[:103]))
+    assert first['active'] and any(e['type']=='reduce' for e in first['signals'])
+    out=st.analyse('2330','fixture',quote(bars),h,now(bars))
+    exits=[e for e in out['signals'] if e['type']=='exit']
+    assert exits and '趨勢反轉確認' in exits[-1]['reason'] and exits[-1]['price']>hard
+    assert not out['active']
+
+
+def test_pagination_exposes_every_qualified_stock_sorted_by_clarity():
+    s=service();rows=[dict(code=str(1000+i),name='fixture',date='2026-11-17',signals=[],signal_stage='watch',trend=False) for i in range(47)]
+    rows[-1].update(signal_stage='triggered',trend=True)
+    s.store.load.return_value={'payload':dict(date='2026-11-17',generated_at=s.now().isoformat(),
+        selection_version=st.SELECTION_VERSION,all_rows=rows,rows=rows[:20])}
+    pages=[s.payload(offset=i) for i in (0,20,40)]
+    assert [len(p['rows']) for p in pages]==[20,20,7]
+    assert pages[0]['rows'][0]['code']=='1046' and pages[0]['meta']['total']==47
+    assert len({r['code'] for p in pages for r in p['rows']})==47
+    assert pages[0]['meta']['has_more'] and not pages[2]['meta']['has_more']
+    s.executor.submit.assert_not_called()
+
+def test_all_market_batches_accumulate_and_resume_beyond_eighty_without_rescanning_light_quotes():
+    from unittest.mock import MagicMock
+    bars,h=market(71)
+    light=dict(closes=[b['close'] for b in bars],timestamps=[int(datetime.fromisoformat(b['date']+'T05:30:00').replace(tzinfo=st.timezone.utc).timestamp()) for b in bars])
+    catalogue=[(str(1000+i),'fixture','24','上市') for i in range(170)]
+    connections=[]
+    for data in (catalogue,[],[],[]):
+        c=MagicMock();cur=c.cursor.return_value;cur.__enter__.return_value=cur;cur.fetchall.return_value=data;connections.append(c)
+    s=service();s.now=lambda:now(bars);s.connect=Mock(side_effect=connections)
+    s.light=Mock(side_effect=lambda codes,markets:{c:light for c in codes});s.quote.return_value=quote(bars)
+    s.build()
+    first=copy.deepcopy(s.cached)
+    assert first['cycle']['cursor']==80 and first['scope']['deep_total']==170 and not first['scope']['deep_complete']
+    assert len(first['all_rows'])==80 and s.running
+    s.build();assert s.cached['cycle']['cursor']==144
+    s.build();assert s.cached['cycle']['cursor']==170 and not s.running
+    assert s.cached['scope']['deep_complete'] and len(s.cached['all_rows'])==170
+    assert len({c.args[0] for c in s.quote.call_args_list})==170 and s.quote.call_count<=240 and s.light.call_count==3
+    assert first['cycle']['cursor']==80  # committed checkpoint did not mutate
+    # A restarted process reads the persisted cursor and does not restart at 0.
+    restarted=service();restarted.now=lambda:now(bars);restarted.cached=first
+    restarted.inputs=Mock(side_effect=AssertionError('must resume existing full-market cycle'))
+    restarted.histories=Mock(side_effect=lambda codes:{c:[] for c in codes});restarted.quote.return_value=quote(bars)
+    restarted.build()
+    assert restarted.cached['cycle']['cursor']==144 and restarted.quote.call_count==80
+    restarted.inputs.assert_not_called()
+
+
+def test_partial_time_budget_saves_completed_symbols_and_never_claims_full_coverage(monkeypatch):
+    bars,h=market(71);s=service();s.now=lambda:now(bars)
+    codes=[str(1000+i) for i in range(10)]
+    s.inputs=lambda keep:(codes,{c:c for c in codes},{c:[] for c in codes})
+    s.quote.return_value=quote(bars)
+    ticks=iter([0,1,2,121]);monkeypatch.setattr(st.time,'monotonic',lambda:next(ticks))
+    s.build()
+    assert s.cached['cycle']['cursor']==2 and s.cached['scanned']==2
+    assert not s.cached['scope']['deep_complete'] and '逾時' in s.cached['scope']['scan_warning']
+    assert not s.running and s.quote.call_count==2
+
+
+def test_wave_support_recovery_can_restore_reduced_units_without_exceeding_risk_budget():
+    bars,h=market(100)
+    early=st.analyse('2330','fixture',quote(bars[:84]),h,now(bars[:84]))
+    hard=early['stop'];support=early['soft_support'];c=(hard+support)/2
+    bars[84].update(open=c+.05,close=c,high=c+.15,low=max(hard+.01,c-.05))
+    bars[90]['volume']=2200000
+    out=st.analyse('2330','fixture',quote(bars),h,now(bars))
+    restored=[e for e in out['signals'] if e['type']=='add' and '回補' in e['reason']]
+    assert len(restored)==1 and out['active']
+    entry=out['signals'][0];event=restored[0]
+    cost=.5*entry['price']+.5*event['price']
+    assert cost-event['stop']<=entry['price']-entry['stop']+.03
