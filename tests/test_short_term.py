@@ -159,7 +159,7 @@ def test_publish_caps_six_rows_and_preserves_observed_events(monkeypatch):
     s.inputs=lambda keep:(codes,{c:c for c in codes},{c:[] for c in codes})
     old_event={'id':'saved','date':'2026-11-17','type':'entry','price':123,'reason':'original'}
     s.cached={'rows':[{'active':True,'code':'0','name':'0','signals':[old_event]}]}
-    monkeypatch.setattr(st,'analyse',lambda c,*args:dict(code=c,name=c,active=True,
+    monkeypatch.setattr(st,'analyse',lambda c,*args,**kwargs:dict(code=c,name=c,active=True,
         latest_event='entry',avg_turnover=100,date='2026-11-17',signals=[dict(old_event,price=999)]))
     s.build()
     assert not s.running and len(s.cached['rows'])==6 and s.cached['scanned']==80
@@ -271,7 +271,7 @@ def test_current_events_are_announced_and_stale_symbol_dates_are_excluded():
     assert '下一交易日' in status['action_note']
 
 
-@pytest.mark.parametrize('hour,source,valid',[(10,'2026-11-16',True),(16,'2026-11-16',False),(16,'2026-11-17',True)])
+@pytest.mark.parametrize('hour,source,valid',[(10,'2026-11-16',False),(16,'2026-11-16',False),(16,'2026-11-17',True)])
 def test_notification_freshness_uses_completed_session_not_just_snapshot_generation(hour,source,valid):
     s=service();s.now=lambda:datetime(2026,11,17,hour)
     s.store.load.return_value={'payload':dict(date=source,generated_at=s.now().isoformat(),selection_version=st.SELECTION_VERSION,rows=[])}
@@ -279,7 +279,7 @@ def test_notification_freshness_uses_completed_session_not_just_snapshot_generat
 
 
 def test_notification_freshness_respects_exchange_holidays():
-    s=service();s.now=lambda:datetime(2026,11,17,10)
+    s=service();s.now=lambda:datetime(2026,11,17,8)
     s.calendar=lambda d:d.weekday()<5 and str(d)!='2026-11-16'
     s.store.load.return_value={'payload':dict(date='2026-11-13',generated_at=s.now().isoformat(),selection_version=st.SELECTION_VERSION,rows=[])}
     payload=s.payload()
@@ -407,3 +407,97 @@ def test_institutional_database_failure_does_not_block_technical_scan():
     assert not s.error and s.cached['rows'][0]['entry_ready']
     assert not s.cached['rows'][0]['chip']['available']
     assert s.cached['scope']['sectors']=={'電子':1}
+
+def test_intraday_bar_is_provisional_and_can_disappear_without_rewriting_closed_signals():
+    bars,h=market(71);n=now(bars).replace(hour=12,minute=30)
+    live=st.analyse('2330','fixture',quote(bars),h,n,intraday=True)
+    assert live['provisional'] and live['entry_ready']
+    assert live['signals'][-1]['provisional'] and '盤中' in live['state']
+    changed=copy.deepcopy(bars);changed[-1].update(close=106.9,high=107.1,open=106.8,low=106.5)
+    revised=st.analyse('2330','fixture',quote(changed),h,n,intraday=True)
+    assert revised and not revised['entry_ready']
+    assert not [e for e in revised['signals'] if e['date']==st.day(n)]
+    closed=st.analyse('2330','fixture',quote(bars),h,now(bars))
+    assert not closed['provisional'] and not closed['signals'][-1].get('provisional')
+
+
+def test_intraday_volume_is_time_normalized_and_raw_chart_volume_is_not_changed():
+    bars,h=market(71);bars[-1]['volume']=700000
+    n=now(bars).replace(hour=11,minute=15)
+    live=st.analyse('2330','fixture',quote(bars),h,n,intraday=True)
+    assert live['volume_estimated'] and live['volume_ratio']==1.4
+    assert live['bars'][-1]['volume']==700000
+    assert live['entry_ready']
+    assert not st.analyse('2330','fixture',quote(bars),h,now(bars))['entry_ready']
+
+
+def test_intraday_snapshots_are_separate_and_stale_source_times_suppress_live_signals():
+    bars,h=market(71)
+    n=now(bars).replace(hour=12,minute=30,tzinfo=st.timezone(timedelta(hours=8)))
+    s=service();s.now=lambda:n
+    s.inputs=lambda keep:(['2330'],{'2330':'fixture'},{'2330':h})
+    s.stock_meta={'2330':dict(sector='電子',market='上市')}
+    q=quote(bars);q['market_observed_at']=n.timestamp()-120
+    s.quote.return_value=q;s.build()
+    assert s.store.save.call_args.args[0]==st.KEY+':intraday'
+    assert s.cached['rows'][0]['entry_ready'] and s.cached['intraday']
+    assert s.cached['rows'][0]['observed_at']
+    # A snapshot with today's date is insufficient if its trade timestamp is old.
+    s.loaded=True;s.cache_mode=True
+    payload=s.payload()
+    assert payload['meta']['signals_current'] and payload['alerts']
+    s.now=lambda:n+timedelta(minutes=25)
+    payload=s.payload()
+    assert not payload['alerts'] and payload['rows'][0]['current_action']=='unconfirmed'
+    assert not payload['meta']['signals_current']
+    # Source timestamp missing: a freshly fetched yesterday quote cannot be a live entry.
+    s=service();s.now=lambda:n;s.inputs=lambda keep:(['2330'],{'2330':'fixture'},{'2330':h})
+    s.quote.return_value=quote(bars);s.build()
+    assert s.cached['date']!=st.day(n)
+    assert not s.cached['rows'][0]['entry_ready']
+
+
+def test_radar_trigger_queues_one_job_without_a_page_and_keeps_correlation():
+    s=service();s.now=lambda:datetime(2026,11,18,10,tzinfo=st.timezone(timedelta(hours=8)))
+    for _ in range(3):s.refresh_from_radar('2026-11-18T10:00:00+08:00')
+    s.executor.submit.assert_called_once()
+    assert s.trigger=='雷達快照排程' and s.radar_at=='2026-11-18T10:00:00+08:00'
+    assert s.store.load.call_args.args[0]==st.KEY+':intraday'
+
+
+def test_sector_filter_reads_all_qualified_rows_without_another_market_scan():
+    s=service();rows=[dict(code=str(i),date='2026-11-17',sector='傳產',signals=[]) for i in range(6)]
+    rows.append(dict(code='2330',date='2026-11-17',sector='電子',signals=[]))
+    s.store.load.return_value={'payload':dict(date='2026-11-17',generated_at=s.now().isoformat(),
+        selection_version=st.SELECTION_VERSION,rows=rows[:6],all_rows=rows)}
+    assert len(s.payload()['rows'])==6
+    assert [r['code'] for r in s.payload(sector='電子')['rows']]==['2330']
+    s.executor.submit.assert_not_called()
+    assert 'all_rows' not in s.payload()  # bounded response, no 80 charts sent per poll
+
+
+def test_technical_deep_coverage_includes_each_sector_without_forcing_entries():
+    metrics={str(i):dict(bucket='breakout',rank=(False,-i,0)) for i in range(100)}
+    sectors={str(i):'電子' if i<10 else '傳產' for i in range(100)}
+    chosen=st.technical_pool(metrics,[],limit=20,sectors=sectors)
+    assert len(chosen)==20 and any(sectors[c]=='電子' for c in chosen)
+    assert any(sectors[c]=='傳產' for c in chosen)
+
+
+def test_existing_radar_producer_requests_short_term_refresh_and_survives_aux_failure():
+    import ast,threading
+    from pathlib import Path
+    source=Path('main.py').read_text(encoding='utf-8')
+    block=source.split('def _do_scheduled_radar_live_snapshot():',1)[1].split('\n@app.route',1)[0]
+    node=ast.parse('def _do_scheduled_radar_live_snapshot():'+block).body[0]
+    svc=Mock();ns=dict(_is_taiwan_intraday_window=lambda:True,
+        _SCREENER_REFRESH_LOCK=threading.Lock(),_SCREENER_REFRESH_RUNNING={},
+        compute_screener_rows=Mock(return_value=([{}],0,None)),
+        RADAR_SCHEDULED_DEEP_SCAN_LIMIT=4,RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS=600,
+        _short_term_service=svc,taiwan_now=lambda:datetime(2026,11,18,10))
+    exec(compile(ast.Module(body=[node],type_ignores=[]),'<actual-radar-producer>','exec'),ns)
+    assert '已完成' in ns['_do_scheduled_radar_live_snapshot']()
+    svc.refresh_from_radar.assert_called_once_with('2026-11-18T10:00:00')
+    svc.refresh_from_radar.side_effect=OSError('unavailable')
+    assert '已完成' in ns['_do_scheduled_radar_live_snapshot']()
+    assert not ns['_SCREENER_REFRESH_RUNNING']['radar']

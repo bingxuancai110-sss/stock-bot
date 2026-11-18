@@ -1,7 +1,7 @@
 """Actual workbench and strategy engine, with clearly isolated synthetic bars."""
 import json,os,sys,runpy
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse,parse_qs
 from playwright.sync_api import sync_playwright
 
 REPO=Path(__file__).resolve().parents[2];ROOT=Path(os.environ['STOCKBOT_UI_ARTIFACTS'])
@@ -14,6 +14,7 @@ row2=dict(row,code='2308',name='第二檔隔離測試')
 watch_bars,watch_h=m['market'](70)
 watch=m['st'].analyse('2308','第二檔隔離測試',m['quote'](watch_bars),watch_h,m['now'](watch_bars))
 row2=watch
+row['sector']='傳產';row2['sector']='電子'
 row['spreads']=m['st'].trade_spreads(row['signals'],row['price'],row['date'])
 row2['spreads']=m['st'].trade_spreads(row2['signals'],row2['price'],row2['date'])
 payload=dict(ok=True,rows=[row,row2],alerts=[],meta=dict(building=False,signals_current=True,stale=False,date=row['date'],scanned=80,
@@ -31,7 +32,9 @@ with sync_playwright() as p:
   if u.path=='/web/api/workbench/short-term':
    if state['error']:r.fulfill(status=503,json={'ok':False});return
    if state['empty']:r.fulfill(json=dict(ok=True,rows=[],meta=dict(building=False,date=row['date'],scanned=24,excluded={'過熱或波動過高':24})));return
-   r.fulfill(json=dict(ok=True,rows=[],meta=dict(building=True,progress=4,pool_limit=24)) if state['building'] else payload);return
+   result=dict(payload);sector=parse_qs(u.query).get('sector',[''])[0]
+   if sector:result['rows']=[r for r in result['rows'] if (r.get('sector')=='電子')==(sector=='電子')]
+   r.fulfill(json=dict(ok=True,rows=[],meta=dict(building=True,progress=4,pool_limit=24)) if state['building'] else result);return
   if '/api/' in u.path or '/app-config' in u.path:
    r.fulfill(json=dict(ok=True,rows=[],meta=dict(available=True,market_open=False)));return
   r.fulfill(body=(ROOT/'workbench.html').read_text(encoding='utf-8'),content_type='text/html')
@@ -59,6 +62,7 @@ with sync_playwright() as p:
  page.locator('.st-history-toggle').click()
  check('old arrows require explicit history mode',page.locator('[data-marker]').count()>=2 and '歷史重播，非目前買點' in page.locator('.st-chart-context').inner_text())
  check('expanded stock quote retains neutral text and positive change stays red',page.locator('.st-quote strong').first.evaluate('(e)=>getComputedStyle(e).color===getComputedStyle(e.closest("#wb-short-term")).color') and page.locator('.st-quote .st-up').first.evaluate('(e)=>getComputedStyle(e).color==="rgb(197, 52, 59)"'))
+ check('timeline shows dates actions and reasons directly below chart without extra clicks',page.locator('.st-history').is_visible() and row['signals'][0]['date'] in page.locator('.st-history').inner_text() and row['signals'][0]['reason'] in page.locator('.st-history').inner_text() and '當時支撐停損' in page.locator('.st-history').inner_text())
  check('protection and profit reference are visible','支撐停損價' in page.locator('.st-inspector').inner_text() and '停利參考' in page.locator('.st-inspector').inner_text())
  check('chip data date is explicit and precedes signal date',row['chip']['date'] in page.locator('.st-chip-detail').inner_text() and row['chip']['date']<row['date'])
  marker=page.locator('[data-marker]').first;marker.click()
@@ -106,6 +110,21 @@ with sync_playwright() as p:
  check('fresh exit notices also show per-share price spread','每股賺 NT$12.00' in page.locator('.st-notices').inner_text() and '每股賠 NT$12.00' in page.locator('.st-notices').inner_text())
  payload.clear();payload.update(original)
  check('dark notice and stock headings retain readable light text',page.locator('.st-notices h3,.st-stock h3').evaluate_all(r'(es)=>es.every(e=>Number(getComputedStyle(e).color.match(/\d+/g)[0])>180)'))
+ page.locator('[data-sector="電子"]').click();page.wait_for_function("document.querySelector('[data-sector=電子]').getAttribute('aria-pressed')==='true'")
+ check('electronics filter can show a candidate outside the default top list',page.locator('.st-card').count()==1 and page.locator('[data-sector="電子"]').get_attribute('aria-pressed')=='true')
+ page.locator('[data-sector="全部"]').click();page.locator('.st-card[data-code="2330"]').wait_for()
+ page.locator('.st-card-toggle').first.click();page.locator('[data-range="120"]').click()
+ before=len(requests);page.clock.fast_forward(30100);page.wait_for_timeout(100)
+ check('completed view automatically polls without manual refresh',len(requests)>before)
+ check('unchanged polling preserves expanded K-line and chosen range',page.locator('.st-detail').first.is_visible() and page.locator('[data-range="120"]').get_attribute('aria-pressed')=='true')
+ live=dict(row,provisional=True,observed_at='2026-11-18T10:03:00+08:00',volume_estimated=True)
+ live_event=dict(type='entry',name=row['name'],code=row['code'],date=row['date'],price=row['price'],stop=row['stop'],target=row['target'],provisional=True)
+ payload.update(rows=[live],alerts=[live_event],meta=dict(building=False,intraday=True,signals_current=True,date=row['date'],scanned=80,generated_at='2026-11-18T10:04:00+08:00',next_refresh_at='2026-11-18T10:14:00+08:00'))
+ page.locator('.st-refresh').click();page.get_by_text('盤中暫定',exact=False).first.wait_for()
+ check('live entry is explicitly provisional in top notification','盤中暫定進場' in page.locator('.st-notices').inner_text() and '可能消失' in page.locator('.st-notices').inner_text())
+ check('refresh cadence completion time and next batch are visible',all(x in page.locator('.st-refresh-info').inner_text() for x in ['雷達','10 分鐘','10:04:00','10:14:00']))
+ check('individual source time and estimated relative volume are visible','10:03:00' in page.locator('.st-date').inner_text() and '時間比例估算量比' in page.locator('.st-evidence').inner_text())
+ payload.clear();payload.update(original)
  state['empty']=True;page.locator('.st-refresh').click();page.locator('.st-excluded').wait_for()
  check('empty results explain actual exclusion reasons and retain source date','過熱或波動過高' in page.locator('.st-excluded').inner_text() and row['date'] in page.locator('.st-status').inner_text())
  state['empty']=False;page.locator('.st-refresh').click();page.locator('.st-card').first.wait_for()

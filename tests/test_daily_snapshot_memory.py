@@ -22,6 +22,7 @@ class DailySnapshotMemoryTests(unittest.TestCase):
         cursor = Mock()
         cursor.fetchone.return_value = (0,)
         ns = dict(taiwan_today=lambda: datetime.date(2026, 11, 9),
+                  taiwan_now=lambda: datetime.datetime(2026,11,9,16),
                   _job_get_progress=lambda _: {'stage': stage, 'index': 0, 'total': 3},
                   get_all_position_user_ids=lambda: ['owner'],
                   get_missing_portfolio_snapshot_user_ids=lambda _: [],
