@@ -85,6 +85,8 @@ with sync_playwright() as p:
  page.emulate_media(color_scheme='dark',reduced_motion='reduce')
  check('dark preference retains readable chart labels',page.locator('.st-axis').first.evaluate('(e)=>getComputedStyle(e).fill!=="rgba(0, 0, 0, 0)"'))
  check('dark chart panel uses a dark surface with light text',page.locator('.st-card').first.evaluate(r'(e)=>{const p=getComputedStyle(e).backgroundColor.match(/\d+/g).map(Number),c=getComputedStyle(e).color.match(/\d+/g).map(Number);return p[0]<60&&c[0]>180}'))
+ page.locator('.st-card-toggle').first.click();page.locator('.st-history button').first.focus()
+ check('focused timeline keeps a dark surface and readable date and price',page.locator('.st-history button').first.evaluate(r'(e)=>{const rgb=x=>getComputedStyle(x).color.match(/\d+/g).map(Number);const bg=getComputedStyle(e).backgroundColor.match(/\d+/g).map(Number);return bg[0]<60&&rgb(e.querySelector("span"))[0]>180&&rgb(e.querySelector("strong"))[0]>180}'))
  original=payload.copy();entry_bars,entry_h=m['market'](71)
  for bar in entry_bars:
   for key in ('open','high','low','close'):bar[key]*=10
