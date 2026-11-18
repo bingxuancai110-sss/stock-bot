@@ -44,12 +44,12 @@ def test_batch_iterator_is_lazy_and_stops_without_publishing_partial_snapshot():
     assert ns['_screener_cache']['radar'] is before
 
 
-def test_blackhorse_bulk_behaviour_and_worker_count_unchanged():
+def test_blackhorse_is_bounded_without_reducing_total_candidates():
     ns=engine();pool=[(str(1000+i),{}) for i in range(10)]
     assert len(list(ns['_iter_screener_pool_prices'](pool,'blackhorse',16,{},False)))==10
-    ns['get_realtime_stocks_bulk'].assert_called_once()
-    assert ns['get_realtime_stocks_bulk'].call_args.kwargs['workers']==16
-    ns['_background_work_memory_safe'].assert_not_called()
+    calls=ns['get_realtime_stocks_bulk'].call_args_list
+    assert len(calls)==3 and all(len(c.args[0])<=4 and c.kwargs['workers']==2 for c in calls)
+    assert ns['_background_work_memory_safe'].call_count==3
 
 
 def test_previous_four_candidate_or_etf_snapshot_requires_rebuild():

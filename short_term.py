@@ -517,8 +517,12 @@ def light_technical(quote, now, intraday=False, diagnostics=None):
         p=number(px)
         if not p or not ts:
             continue
-        d=datetime.fromtimestamp(int(ts),timezone(timedelta(hours=8))).date()
+        try:d=datetime.fromtimestamp(int(ts),timezone(timedelta(hours=8))).date()
+        except (ValueError,TypeError,OverflowError,OSError):continue
         if d>now.date() or (d==now.date() and now.hour<14 and not intraday):continue
+        if points and d<=points[-1][0]:
+            if diagnostics is not None:diagnostics['reason']='行情日期重複或順序異常'
+            return None
         points.append((d,p))
     def reject(reason):
         if diagnostics is not None:diagnostics['reason']=reason
@@ -623,7 +627,8 @@ class ShortTermService:
                     quote_count+=1
                     for ts in reversed(q.get('timestamps') or []):
                         if not ts:continue
-                        d=datetime.fromtimestamp(int(ts),timezone(timedelta(hours=8))).date()
+                        try:d=datetime.fromtimestamp(int(ts),timezone(timedelta(hours=8))).date()
+                        except (ValueError,TypeError,OverflowError,OSError):continue
                         if d<=self.now().date() and not(d==self.now().date() and self.now().hour<14 and not self.intraday()):
                             dates.append(day(d));break
                 diagnostic={}
@@ -864,7 +869,9 @@ class ShortTermService:
             total=len(rows)
             try:offset=max(0,int(offset));limit=max(1,min(50,int(limit)))
             except (ValueError,TypeError):offset=0;limit=MAX_PICKS
-            stages={k:sum(r.get('signal_stage','watch')==k and r.get('current_action')!='unconfirmed' for r in rows)
+            offset=min(offset,((total-1)//limit)*limit) if total else 0
+            stages={k:sum(r.get('signal_stage','watch')==k and r.get('current_action')!='unconfirmed'
+                         and (k=='entry' or not r.get('active')) for r in rows)
                     for k in ('watch','triggered','entry')}
             new_watch=[dict(code=r['code'],name=r['name'],date=r['watch_date'],price=r['price'],type='watch')
                        for r in rows if r.get('watch_date')==day(expected) and r.get('current_action')!='unconfirmed' and not r.get('active')]
