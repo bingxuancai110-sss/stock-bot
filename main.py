@@ -28657,8 +28657,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-experience.css?v=20261117-12">
 <script defer src="/static/ui-feedback.js?v=20261116-7"></script>
 <script defer src="/static/app-experience.js?v=20261116-9"></script>
-<link rel="stylesheet" href="/static/short-term.css?v=20261118-7">
-<script defer src="/static/short-term.js?v=20261118-7"></script>
+<link rel="stylesheet" href="/static/short-term.css?v=20261118-8">
+<script defer src="/static/short-term.js?v=20261118-8"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
@@ -46662,7 +46662,11 @@ def _save_persisted_screener_snapshot(mode, rows, skipped, momentum,
     storage_date = confirmed_source_date or computed_at_local.date()
     if not confirmed_source_date:
         print(f"⚠️ 選股快照 {mode} 行情來源日未確認；仍保存計算結果供其他 worker 讀取，UI 必須標示未標日期", flush=True)
-    effective_date = confirmed_source_date or storage_date
+    # New Blackhorse observations belong to the time we computed them, not
+    # yesterday's institution data date (which would backdate today's prices).
+    if mode == "blackhorse" and (source_meta or {}).get("blackhorse_policy") == 1:
+        storage_date = computed_at_local.date()
+    effective_date = storage_date
     old_rows = []
     conn = get_db_connection()
     try:
@@ -46695,7 +46699,7 @@ def _save_persisted_screener_snapshot(mode, rows, skipped, momentum,
         old_rows = []
     try:
         old_by_code = {str(x.get("code") or ""): x for x in old_rows if isinstance(x, dict)}
-        same_day_previous = bool(confirmed_source_date and old_snapshot_date and str(old_snapshot_date) == str(confirmed_source_date))
+        same_day_previous = bool((confirmed_source_date or (mode == "blackhorse" and (source_meta or {}).get("blackhorse_policy") == 1)) and old_snapshot_date and str(old_snapshot_date) == str(storage_date))
         for new_row in rows if isinstance(rows, list) else []:
             if not same_day_previous:
                 break
@@ -46722,7 +46726,7 @@ def _save_persisted_screener_snapshot(mode, rows, skipped, momentum,
                     json.dumps(_jsonable(old_f), ensure_ascii=False),
                     json.dumps(_jsonable(new_f), ensure_ascii=False)))
             cur2.close()
-        conn.commit()
+        # Commit score changes together with the replacement snapshot below.
     except Exception as exc:
         conn.rollback()
         print(f"⚠️ 保存選股分數變化歷史失敗 {mode}: {exc}")
@@ -46874,30 +46878,34 @@ def _radar_snapshot_matches_policy(snapshot):
 
 def _iter_screener_pool_prices(pool, mode, workers, market_map, force_refresh):
     """Bound in-flight history responses, not the total radar candidate coverage."""
-    batch_size = RADAR_PRICE_BATCH_SIZE if mode == "radar" else max(1, len(pool))
+    batch_size = RADAR_PRICE_BATCH_SIZE  # bounded for Radar AND Blackhorse
     radar_quotes = None
+    deadline = time.monotonic() + 180 if mode == "blackhorse" else None
     for offset in range(0, len(pool), batch_size):
-        if mode == "radar" and not _background_work_memory_safe(reserve_mb=RADAR_LIGHT_SCAN_RESERVE_MB):
+        if deadline and time.monotonic() >= deadline:
+            raise RuntimeError("黑馬行情逾時，保留原快照並等待下一輪重試")
+        if not _background_work_memory_safe(reserve_mb=RADAR_LIGHT_SCAN_RESERVE_MB):
             # Do not publish a partial ranking over the previous saved snapshot.
-            raise RuntimeError("雷達分批掃描暫停：記憶體餘裕不足，保留原快照")
+            raise RuntimeError("選股分批掃描暫停：記憶體餘裕不足，保留原快照")
         batch = pool[offset:offset + batch_size]
         options = {}
-        if mode == "radar":
+        if mode in ("radar", "blackhorse"):
             if radar_quotes is None:
                 try:
                     radar_quotes = _fetch_twse_mis_quotes(
                         [code for code, _info in pool], market_suffix=market_map,
                         force_refresh=force_refresh, quick_mode=True)
                 except Exception as exc:
-                    print(f"⚠️ 雷達整批官方即時行情暫缺：{type(exc).__name__}", flush=True)
+                    print(f"⚠️ 選股整批官方即時行情暫缺：{type(exc).__name__}", flush=True)
                     radar_quotes = {}
-                print(f"雷達整批官方行情 {len(radar_quotes)}/{len(pool)}；缺漏保留實際 Yahoo 來源標示", flush=True)
+                print(f"選股整批官方行情 {len(radar_quotes)}/{len(pool)}；缺漏保留實際 Yahoo 來源標示", flush=True)
             options = {"skip_mis": True,
                        "quote_overrides": {code: radar_quotes[code] for code, _info in batch if code in radar_quotes}}
+        if mode == "blackhorse":options["request_timeout"] = 5
         prices = get_realtime_stocks_bulk(
             [code for code, _info in batch],
-            workers=min(2, workers) if mode == "radar" else workers,
-            rng="3mo", market_suffix=market_map if mode == "radar" else None,
+            workers=min(2, workers),
+            rng="3mo", market_suffix=market_map or None,
             force_refresh=force_refresh or mode == "radar", **options)
         for code, info in batch:
             yield code, info, prices.get(code)
@@ -46969,7 +46977,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
         inst = fetch_institutional_data() or {} if inst is None else inst
         ind_map = get_industry_map() or {} if ind_map is None else ind_map
         market_map = {}
-        if mode == "radar" and "get_market_map" in globals():
+        if "get_market_map" in globals():
             market_map = get_market_map() or {}
         radar_universe_count = 0
         radar_diagnostics = {
@@ -47095,7 +47103,9 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
         # 傳產與金融的成交金額天生低於電子股，用同一組門檻會整批被濾掉。
         LIQUIDITY = {"電子": (10, 1.0), "傳產": (8, 0.3), "金融": (8, 0.3)}
 
+        from screener_freshness import quote_date as observed_quote_date
         rows, skipped_liquidity = [], 0
+        quote_failures = 0
         # 選股台的候選池動輒上百檔，序列請求是這一頁最大的延遲來源。
         # 這裡開比較多執行緒——一次把整池抓完，總時間才不會隨檔數線性增加。
         default_price_workers = 4 if mode == "radar" else 16
@@ -47103,6 +47113,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
         for code, info, price in _iter_screener_pool_prices(
                 pool, mode, effective_price_workers, market_map, force_refresh):
             if not price:
+                quote_failures += 1
                 if mode == "radar":
                     radar_diagnostics["price_missing_count"] += 1
                 continue
@@ -47157,6 +47168,7 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             rows.append({
                 "code": code, "name": info["name"], "industry": ind_txt,
                 "close": price["close"], "pct": price["pct"], "score": total,
+                "quote_date": observed_quote_date(price),
                 "rev": rev_score, "val": val_score, "mom": mom_score,
                 "streak": streak, "streak_score": streak_score, "chip": chip_tech,
                 "cum_yoy": cum_yoy, "pe": pe, "pb": pb, "yield": dy,
@@ -47187,6 +47199,8 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                 "radar_state": classify_radar_state(price),
             })
 
+        if pool and quote_failures == len(pool):
+            raise RuntimeError("候選行情全部讀取失敗，保留原快照")
         source_date = _screener_source_date()
         # 關鍵修正：法人來源日可能在週末／來源暫缺時為 None。
         # 舊版記憶體快取沒有 computed_at，_screener_snapshot_is_recent() 因而
@@ -47197,14 +47211,21 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                       "skipped": skipped_liquidity, "momentum": momentum,
                       "source_date": source_date,
                       "computed_at": computed_at}
+        if mode == "blackhorse":
+            days=[r.get("quote_date") for r in rows]
+            cache_item["source_meta"] = {"blackhorse_policy": 1,
+                "quote_date": max(d for d in days if d) if any(days) else None,
+                "quote_date_min": min(d for d in days if d) if any(days) else None,
+                "unknown_quote_count": sum(not d for d in days),
+                "quote_date_max": max(d for d in days if d) if any(days) else None,
+                "price_missing_count": quote_failures, "deep_candidate_count": len(pool)}
         if mode == "radar":
             radar_diagnostics["final_count"] = len(rows)
             cache_item["scan_universe_count"] = radar_universe_count
             cache_item["scan_finished_at"] = taiwan_now().isoformat()
             cache_item["radar_diagnostics"] = radar_diagnostics
-        _screener_cache[mode] = cache_item
         if persist or (mode == "radar" and persist_live):
-            persisted_meta = {}
+            persisted_meta = dict(cache_item.get("source_meta") or {})
             persisted_mode = mode
             if mode == "radar":
                 persisted_meta["radar_diagnostics"] = radar_diagnostics
@@ -47212,10 +47233,13 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                 persisted_meta["scan_finished_at"] = cache_item.get("scan_finished_at")
                 if persist_live and not persist:
                     persisted_mode = "radar_live"
-            _save_persisted_screener_snapshot(
+            saved = _save_persisted_screener_snapshot(
                 persisted_mode, rows, skipped_liquidity, momentum,
                 source_date=source_date, source_meta=persisted_meta,
             )
+            if saved is False:
+                raise RuntimeError("選股快照未確認保存，請稍後重試")
+        _screener_cache[mode] = cache_item
         return rows, skipped_liquidity, momentum
 
 
@@ -47327,7 +47351,7 @@ def _start_screener_background_refresh(mode, intraday=False,
         requested_limit = RADAR_SCHEDULED_DEEP_SCAN_LIMIT if radar_deep_limit is None else int(radar_deep_limit)
         radar_deep_limit = max(4, min(requested_limit, RADAR_DEEP_SCAN_LIMIT))
     light_radar = mode == "radar"
-    reserve_mb = RADAR_LIGHT_SCAN_RESERVE_MB if light_radar else 280
+    reserve_mb = RADAR_LIGHT_SCAN_RESERVE_MB  # both now use 4-symbol/2-worker batches
     with _SCREENER_REFRESH_LOCK:
         failure = _SCREENER_REFRESH_ERRORS.get(mode)
         if failure and time.monotonic() - failure < 60:
@@ -47357,7 +47381,7 @@ def _start_screener_background_refresh(mode, intraday=False,
             # Limit quote fan-out for both modes; synchronous/manual calculations
             # keep their existing worker count and ranking logic.
             kwargs["price_workers"] = (min(2, max(1, int(price_workers or 2))) if light_radar
-                                       else (price_workers or 4))
+                                       else min(2, max(1, int(price_workers or 2))))
             compute_screener_rows(mode, **kwargs)
             if mode == "radar":
                 snapshot = _screener_cache.get(mode)
@@ -47400,44 +47424,24 @@ def _start_screener_background_refresh(mode, intraday=False,
     return True
 
 
+def _blackhorse_snapshot_due(snapshot):
+    from screener_freshness import blackhorse_due
+    return blackhorse_due(snapshot, taiwan_now(), _is_taiwan_intraday_window(),
+                          is_twse_trading_day, _screener_source_date())
+
+
 def _blackhorse_intraday_refresh_due():
-    """檢查黑馬快照是否已到盤中例行重算時間；未知時間視為需要重建。"""
     try:
-        snapshot = _load_persisted_screener_snapshot("blackhorse")
-        if not snapshot:
-            return True, None
-        computed_at = snapshot.get("computed_at")
-        if isinstance(computed_at, str):
-            computed_at = datetime.fromisoformat(computed_at.replace("Z", "+00:00"))
-        if not isinstance(computed_at, datetime):
-            return True, None
-        if computed_at.tzinfo is None:
-            computed_at = computed_at.replace(tzinfo=timezone.utc)
-        age = (datetime.now(timezone.utc) - computed_at).total_seconds()
-        return (age < 0 or age >= BLACKHORSE_INTRADAY_REFRESH_INTERVAL_SECONDS), max(0, age)
+        return _blackhorse_snapshot_due(_load_persisted_screener_snapshot("blackhorse"))
     except Exception as exc:
-        print(f"⚠️ 判斷黑馬快照是否需更新失敗：{exc}", flush=True)
-        # On an inspection error, do not kick off an expensive scan on every cron tick.
-        return False, None
+        print("⚠️ 黑馬更新狀態暫缺：%s" % type(exc).__name__, flush=True)
+        return False,None
 
 
 def _maybe_start_scheduled_blackhorse_refresh():
-    """盤中黑馬快照到期才重算；避免與全市場雷達同時爭用計算鎖。"""
     due, age = _blackhorse_intraday_refresh_due()
-    if not due:
-        return False
-    # Blackhorse can inspect up to 180 names. Only start it when the web worker
-    # has substantial headroom; it is optional and the last valid snapshot stays
-    # available when a live Radar scan has raised RSS.
-    if not _background_work_memory_safe(reserve_mb=290):
-        print("🐎 Cron 黑馬刷新略過：保留最近快照與網頁服務記憶體", flush=True)
-        return False
-    started = _start_screener_background_refresh(
-        "blackhorse", intraday=False, price_workers=4)
-    print("🐎 Cron 黑馬刷新 %s（前次快照年齡：%s）" % (
-        "已啟動" if started else "略過：已有刷新工作執行中",
-        ("未知" if age is None else "%d 秒" % age)), flush=True)
-    return started
+    if not due:return False
+    return _start_screener_background_refresh("blackhorse", intraday=False, price_workers=2)
 
 
 def _do_scheduled_radar_live_snapshot():
@@ -47463,6 +47467,27 @@ def _do_scheduled_radar_live_snapshot():
     finally:
         with _SCREENER_REFRESH_LOCK:
             _SCREENER_REFRESH_RUNNING["radar"] = False
+
+
+@app.route("/cron/blackhorse-refresh", methods=["POST", "GET"])
+def cron_blackhorse_refresh():
+    from taiex_cron_auth import authorized, REPOSITORY
+    audience = DEFAULT_WEB_BASE_URL.rstrip("/") + "/cron/blackhorse-refresh"
+    workflow = REPOSITORY + "/.github/workflows/blackhorse-refresh.yml@refs/heads/main"
+    if not authorized(request.headers, request.args.get("token"), os.environ.get("CRON_SECRET"),
+                      audience=audience, workflow=workflow):abort(403)
+    snap, _source = _screener_recent_snapshot("blackhorse")
+    due, _age = _blackhorse_snapshot_due(snap)
+    started = False
+    if request.method == "POST" and due:
+        started = _start_screener_background_refresh("blackhorse", intraday=False, price_workers=2)
+    with _SCREENER_REFRESH_LOCK:
+        running = bool(started or _SCREENER_REFRESH_RUNNING.get("blackhorse"))
+    return jsonify(ok=True, state="building" if running else "stale" if due else "fresh",
+        building=running, stale=due, count=len((snap or {}).get("rows") or []),
+        institution_date=str((snap or {}).get("source_date") or ""),
+        quote_date=((snap or {}).get("source_meta") or {}).get("quote_date"),
+        computed_at=str((snap or {}).get("computed_at") or ""))
 
 
 @app.route("/cron/short-term-live", methods=["POST", "GET"])
@@ -48733,6 +48758,8 @@ def _workbench_screener_rows(mode, snapshot=None):
             "score": (None if mode == "radar" else _workbench_number(raw.get("score"))),
             "legacy_score": _workbench_number(raw.get("score")),
             "price": _workbench_number(raw.get("close")),
+            "quote_date": raw.get("quote_date"),
+            "quote_stale": bool(mode == "blackhorse" and (snapshot.get("source_meta") or {}).get("quote_date") and raw.get("quote_date") != (snapshot.get("source_meta") or {}).get("quote_date")),
             "change_pct": _workbench_number(raw.get("pct")),
             "metric_label": "當日漲跌",
             "institutional_lots": _workbench_number(raw.get("cum_lots")),
@@ -49977,7 +50004,8 @@ def render_workbench_body(initial_tab=""):
     [['營收',r.rev,legacyCaps&&legacyCaps[0]],['估值',r.val,legacyCaps&&legacyCaps[1]],['產業',r.mom,legacyCaps&&legacyCaps[2]],['連續性',r.streak_score,legacyCaps&&legacyCaps[3]],['籌碼技術',r.chip,legacyCaps&&legacyCaps[4]]].forEach(function(x){if(x[1]!=null)scoreParts.push(x[0]+esc(x[1])+(x[2]?'/'+x[2]:''));});
     var basics=r.source==='雷達'?('法人近十日 '+valueText(r.institutional_lots,' 張')+(r.radar_state?'　'+esc(r.radar_state):'')):('營收年增 '+valueText(r.cum_yoy,'%')+'　PE '+valueText(r.pe)+'　PEG '+valueText(r.peg)+'　殖利率 '+valueText(r.yield,'%')+'　PB '+valueText(r.pb));
     var turnover=r.turnover==null?null:Number(r.turnover),trend=r.source==='雷達'?('連買 '+valueText(d.streak||r.up_streak,' 日')+'　量能 '+valueText(d.vol_ratio,' 倍')+'　成交金額 '+(turnover==null?'—':turnover.toFixed(1)+' 億')):('法人近十日 '+valueText(r.institutional_lots,' 張')+'　連買 '+valueText(r.buy_days||d.streak,' 日')+'　成交金額 '+(turnover==null?'—':turnover.toFixed(1)+' 億'));
-    var flow=r.source==='轉折'?'<small class="wb-turning-flow '+esc(d.flow_key||'unknown')+'">'+esc(r.signal)+'</small>':'',radarRank=r.source==='雷達'?'<span class="wb-radar-rank">雷達第 '+esc(r.radar_rank||'—')+' 名</span>':'';
+    var quoteAge=r.quote_stale?'<span class="wb-quote-age">行情 '+esc(r.quote_date||'未確認')+'</span>':'';
+    var flow=r.source==='轉折'?'<small class="wb-turning-flow '+esc(d.flow_key||'unknown')+'">'+esc(r.signal)+'</small>':quoteAge,radarRank=r.source==='雷達'?'<span class="wb-radar-rank">雷達第 '+esc(r.radar_rank||'—')+' 名</span>':'';
     var scoreHtml=r.source==='雷達'?'<b class="wb-radar-rule">排序依據</b><small class="wb-score-parts">突破／量能／法人連買／當日漲幅</small>':(r.category==='金融'&&r.score==null?'<b class="wb-score">金融股不評分</b><small class="wb-score-parts">舊版僅列事實供判讀</small>':(r.score==null?'<b class="wb-score">—</b><small class="wb-score-parts">舊版未提供評分拆解</small>':'<b class="wb-score">'+esc(r.score)+'<small>/100 分</small></b><small class="wb-score-parts">'+esc(r.score_policy||d.score_policy||(scoreParts.length?scoreParts.join(' · '):'舊版未提供評分拆解'))+'</small>'));
     var radarCriteria=r.source==='雷達'?'<small class="wb-radar-criteria">依突破、量能、法人連買與當日漲幅排序</small>':'';
     var macdLabel=(r.macd_cross||'');
@@ -50185,7 +50213,7 @@ function bindFactors(){
     if(sel)sel.onchange=function(){state.scoreChangeSort=sel.value;renderScoreChanges();};
     scoreChangePanel.querySelectorAll('[data-score-change-code]').forEach(function(btn){btn.onclick=function(){var code=btn.getAttribute('data-score-change-code');var row=state.rows.find(function(r){return r.source==='黑馬'&&String(r.code)===String(code);});if(row)showDetail(row);};});
   }
-  function render(){renderScoreChanges();renderAssetTabs();renderTabs();var shortMode=state.assetMode==='stock'&&state.source==='短線';root.classList.toggle('wb-short-active',shortMode);var shortPanel=document.getElementById('wb-short-term');shortPanel.hidden=!shortMode;if(shortMode){if(window.StockBotShortTerm)window.StockBotShortTerm.mount(shortPanel);return;}var lab=state.assetMode==='lab'||state.source==='策略研究';root.classList.toggle('wb-lab-active',lab);var tools=document.querySelector('.wb-tools'),fp=document.getElementById('wb-filter-panel'),ms=document.getElementById('wb-mobile-sort'),meta=document.querySelector('.wb-meta'),table=document.getElementById('wb-table'),labEl=document.getElementById('wb-strategy-lab'),assetTabs=document.getElementById('wb-asset-tabs'),sourceTabs=document.getElementById('wb-tabs'),intro=document.querySelector('.wb-intro'),pulse=document.getElementById('wb-pulse');[tools,ms,meta,table,assetTabs,sourceTabs,intro,pulse].forEach(function(el){if(el)el.hidden=lab;});if(fp)fp.hidden=lab||!state.filterOpen;var filterButton=document.getElementById('wb-filter');if(filterButton)filterButton.setAttribute('aria-expanded',String(!!state.filterOpen));if(labEl)labEl.hidden=!lab;if(lab){state.source='策略研究';status.textContent='策略研究實驗室';loadStrategyLab(false);return;}document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}if(state.source!=='黑馬'&&state.source!=='雷達'&&state.source!=='成效'&&state.source!=='我的排行'&&!state.loadedSources[state.source]){rowsEl.innerHTML='<div class="wb-empty">正在準備 '+esc(state.source)+'…</div>';return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}var sourceTotal=(state.source==='黑馬'||state.source==='雷達')?state.rows.filter(function(r){return r.source===state.source;}).length:list.length;var sourceMeta=state.sources[state.source]||{};if(state.source==='雷達'){note.textContent='資料日 '+(sourceMeta.date||'未標日期')+'｜'+(sourceMeta.stale?(sourceMeta.building?'舊快照・背景更新中':'舊快照・更新暫緩，請稍後重試'):'已保存快照');}if((state.source==='黑馬'||state.source==='雷達')&&sourceMeta.building&&!sourceTotal){count.textContent='快照背景重建中';rowsEl.innerHTML='<div class="wb-empty"><b>'+esc(state.source)+'快照正在重新整理</b><small>'+esc(sourceMeta.note||'目前沒有可用快照，系統正在背景掃描；完成後會自動載入。')+'</small></div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔'+(state.source==='雷達'&&sourceMeta.scan_limited?' · 深度檢查 '+esc(sourceMeta.deep_scanned)+' 檔候選，非全市場完整排行':'');if(state.source==='黑馬'||state.source==='雷達'){if(!list.length){var emptyMessage=sourceTotal?'目前的搜尋或篩選條件沒有符合資料。':(sourceMeta.no_candidates?'完整掃描已完成，但目前沒有符合雷達條件的標的。':'目前沒有可用的'+state.source+'結果。');var emptyNote=sourceTotal?'請清除搜尋文字或放寬篩選條件。':(sourceMeta.note||('資料日期：'+(sourceMeta.date||'未標日期')+'；可稍後重新整理。'));rowsEl.innerHTML='<div class="wb-empty"><b>'+esc(emptyMessage)+'</b><small>'+esc(emptyNote)+'</small></div>';return;}var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
+  function render(){renderScoreChanges();renderAssetTabs();renderTabs();var shortMode=state.assetMode==='stock'&&state.source==='短線';root.classList.toggle('wb-short-active',shortMode);var shortPanel=document.getElementById('wb-short-term');shortPanel.hidden=!shortMode;if(shortMode){if(window.StockBotShortTerm)window.StockBotShortTerm.mount(shortPanel);return;}var lab=state.assetMode==='lab'||state.source==='策略研究';root.classList.toggle('wb-lab-active',lab);var tools=document.querySelector('.wb-tools'),fp=document.getElementById('wb-filter-panel'),ms=document.getElementById('wb-mobile-sort'),meta=document.querySelector('.wb-meta'),table=document.getElementById('wb-table'),labEl=document.getElementById('wb-strategy-lab'),assetTabs=document.getElementById('wb-asset-tabs'),sourceTabs=document.getElementById('wb-tabs'),intro=document.querySelector('.wb-intro'),pulse=document.getElementById('wb-pulse');[tools,ms,meta,table,assetTabs,sourceTabs,intro,pulse].forEach(function(el){if(el)el.hidden=lab;});if(fp)fp.hidden=lab||!state.filterOpen;var filterButton=document.getElementById('wb-filter');if(filterButton)filterButton.setAttribute('aria-expanded',String(!!state.filterOpen));if(labEl)labEl.hidden=!lab;if(lab){state.source='策略研究';status.textContent='策略研究實驗室';loadStrategyLab(false);return;}document.querySelector('.wb-head').hidden=['成效','轉折','籌碼','ETF','我的排行'].indexOf(state.source)>=0;if(state.source==='成效'){renderReview();return;}if(state.source!=='黑馬'&&state.source!=='雷達'&&state.source!=='成效'&&state.source!=='我的排行'&&!state.loadedSources[state.source]){rowsEl.innerHTML='<div class="wb-empty">正在準備 '+esc(state.source)+'…</div>';return;}var list=filtered();if(state.source==='轉折'){renderTurningGrouped();return;}if(state.source==='籌碼'){renderChipsGrouped(list);return;}if(state.source==='ETF'){renderEtfGrouped(list);return;}document.querySelectorAll('.wb-head button').forEach(function(b){b.classList.toggle('on',b.dataset.sort===state.sort)});if(state.source==='我的排行'){var rank=state.personal&&state.personal.rank_summary||{};var rankHtml=['short','long'].map(function(k){var r=rank[k]||{},delta=r.delta==null?'尚無前次比較':(r.delta>0?'↑ '+r.delta:'↓ '+Math.abs(r.delta))+' 名';return '<div class="wb-rank-card"><small>'+esc(r.label||k)+'</small><b>'+(r.rank==null?'尚無名次':'第 '+esc(r.rank)+' 名')+'</b><span class="'+(r.direction==='up'?'wb-up':r.direction==='down'?'wb-down':'wb-flat')+'">'+esc(delta)+'</span><em>'+esc(r.snapshot_date||'尚無已保存排名')+'</em></div>';}).join('');count.textContent='只顯示你的已保存排行榜名次';rowsEl.innerHTML='<div class="wb-rank-grid">'+(rankHtml||'<div class="wb-rank-card">目前尚無已保存排名。</div>')+'</div>';return;}var sourceTotal=(state.source==='黑馬'||state.source==='雷達')?state.rows.filter(function(r){return r.source===state.source;}).length:list.length;var sourceMeta=state.sources[state.source]||{};if(state.source==='雷達'||state.source==='黑馬'){var stamp=sourceMeta.computed_at?new Date(String(sourceMeta.computed_at).replace(' ','T')).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'未標時間';note.textContent='籌碼 '+(sourceMeta.date||'未確認')+(state.source==='黑馬'?' · 行情 '+((sourceMeta.quote_date_min&&sourceMeta.quote_date_min!==sourceMeta.quote_date?sourceMeta.quote_date_min+'～':'')+(sourceMeta.quote_date||'未確認'))+(sourceMeta.unknown_quote_count?'（部分未確認）':''):'')+' · 更新 '+stamp+(sourceMeta.stale?(sourceMeta.building?' · 更新中':' · 更新暫緩'):'');}if((state.source==='黑馬'||state.source==='雷達')&&sourceMeta.building&&!sourceTotal){count.textContent='快照背景重建中';rowsEl.innerHTML='<div class="wb-empty"><b>'+esc(state.source)+'快照正在重新整理</b><small>'+esc(sourceMeta.note||'目前沒有可用快照，系統正在背景掃描；完成後會自動載入。')+'</small></div>';return;}count.innerHTML='符合條件 <b>'+list.length+'</b> 檔'+(state.source==='雷達'&&sourceMeta.scan_limited?' · 深度檢查 '+esc(sourceMeta.deep_scanned)+' 檔候選，非全市場完整排行':'');if(state.source==='黑馬'||state.source==='雷達'){if(!list.length){var emptyMessage=sourceTotal?'目前的搜尋或篩選條件沒有符合資料。':(sourceMeta.no_candidates?'完整掃描已完成，但目前沒有符合雷達條件的標的。':'目前沒有可用的'+state.source+'結果。');var emptyNote=sourceTotal?'請清除搜尋文字或放寬篩選條件。':(sourceMeta.note||('資料日期：'+(sourceMeta.date||'未標日期')+'；可稍後重新整理。'));rowsEl.innerHTML='<div class="wb-empty"><b>'+esc(emptyMessage)+'</b><small>'+esc(emptyNote)+'</small></div>';return;}var visible=list.slice(0,20).map(renderRichRow).join(''),more=list.slice(20).map(renderRichRow).join('');rowsEl.innerHTML=visible+(more?'<details class="wb-result-more"><summary>其餘 '+(list.length-20)+' 檔</summary>'+more+'</details>':'');return;}rowsEl.innerHTML=list.length?list.map(renderRichRow).join(''):'<div class="wb-skeleton" style="animation:none;background:#fff;color:#746d61;padding:18px">目前沒有符合條件的已保存資料。</div>';}   function showDetail(row){
     state.detailOpen=true;
     var host=document.getElementById('wb-detail'), dr=document.getElementById('wb-drawer'), mk=document.getElementById('wb-mask');
     if(!host||!dr)return;
@@ -50946,7 +50974,7 @@ def _workbench_source_payload(uid, source):
                             "note": refresh_status["note"]}}
         # 黑馬首屏只讀快照；今日分數變化需要額外資料庫比對，不能阻塞首屏。
         changes=[]
-        stale = bool(mode == "radar" and not _screener_snapshot_valid_for_today(snap))
+        stale = bool(not _screener_snapshot_valid_for_today(snap)) if mode == "radar" else _blackhorse_snapshot_due(snap)[0]
         refresh_status = {}
         if stale:
             started = _start_screener_background_refresh(mode, intraday=_is_taiwan_intraday_window())
@@ -50967,6 +50995,10 @@ def _workbench_source_payload(uid, source):
                         "intraday": market_open,
                         "market_open": market_open,
                         "computed_at": str((snap or {}).get("computed_at") or ""),
+                        "quote_date": ((snap or {}).get("source_meta") or {}).get("quote_date"),
+                        "quote_date_min": ((snap or {}).get("source_meta") or {}).get("quote_date_min"),
+                        "unknown_quote_count": ((snap or {}).get("source_meta") or {}).get("unknown_quote_count", 0),
+                        "refresh_interval_seconds": 1800 if mode == "blackhorse" else 600,
                         "note": (refresh_status.get("note", "") if stale else "完整掃描已完成，但目前沒有通過雷達條件的標的。" if empty_radar else ""),
                         "date":str((snap or {}).get("source_date") or "未標日期"),
                         "source":snap_source or "最近已保存快照"}}

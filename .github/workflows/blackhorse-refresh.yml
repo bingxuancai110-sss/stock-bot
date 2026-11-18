@@ -1,0 +1,23 @@
+name: Blackhorse snapshot refresh
+on:
+  schedule:
+    # Taiwan 09:02–13:02, every30minutes; independent of Radar freshness.
+    - cron: '2,32 1-4 * * 1-5'
+    - cron: '2 5 * * 1-5'
+    # Taiwan 14:12,16:12,20:12: refresh closing prices and late institution data.
+    - cron: '12 6,8,12 * * 1-5'
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: blackhorse-snapshot-refresh
+  cancel-in-progress: false
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Refresh and verify saved snapshot
+        run: python scripts/refresh_blackhorse.py

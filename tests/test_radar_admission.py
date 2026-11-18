@@ -30,9 +30,9 @@ def test_default_radar_background_is_bounded_even_outside_market_hours():
     assert not ns['_SCREENER_REFRESH_RUNNING']['radar']
 
 @pytest.mark.parametrize('mode,limit',[('blackhorse',None)])
-def test_non_radar_scans_keep_the_original_headroom(mode,limit):
+def test_blackhorse_uses_same_reserve_after_bounding_batch_size(mode,limit):
     ns=producer();assert ns['_start_screener_background_refresh'](mode,radar_deep_limit=limit)
-    ns['_background_work_memory_safe'].assert_called_once_with(reserve_mb=280)
+    ns['_background_work_memory_safe'].assert_called_once_with(reserve_mb=96)
 
 def test_memory_rejection_is_not_reported_as_a_running_scan():
     ns=producer(False);assert not ns['_start_screener_background_refresh']('radar')

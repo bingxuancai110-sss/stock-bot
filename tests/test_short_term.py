@@ -697,6 +697,29 @@ def test_pagination_exposes_every_qualified_stock_sorted_by_clarity():
     assert len({r['code'] for p in pages for r in p['rows']})==47
     assert pages[0]['meta']['has_more'] and not pages[2]['meta']['has_more']
     s.executor.submit.assert_not_called()
+    tail=s.payload(offset=1000)
+    assert tail['meta']['offset']==40 and len(tail['rows'])==7
+    s.store.load.return_value=None;s.cached=None;s.loaded=False
+    empty=s.payload(offset=40)
+    assert empty['meta']['offset']==0
+
+
+def test_holding_a_model_position_is_not_counted_as_a_new_watch():
+    s=service();s.store.load.return_value={'payload':dict(date='2026-11-17',generated_at=s.now().isoformat(),
+        selection_version=st.SELECTION_VERSION,all_rows=[dict(code='2330',date='2026-11-17',signals=[],active=True,signal_stage='watch')])}
+    assert s.payload()['meta']['stage_counts']['watch']==0
+
+
+def test_bad_light_timestamps_do_not_abort_the_market_pass():
+    bars,_=market(71)
+    timestamps=[int(datetime.fromisoformat(b['date']+'T05:30:00').replace(tzinfo=st.timezone.utc).timestamp()) for b in bars]
+    q=dict(closes=[0]+[b['close'] for b in bars],timestamps=['bad']+timestamps)
+    assert st.light_technical(q,now(bars))
+    q=dict(closes=[b['close'] for b in bars],timestamps=timestamps)
+    q['timestamps'][-1]=q['timestamps'][-2]
+    diagnostic={}
+    assert st.light_technical(q,now(bars),diagnostics=diagnostic) is None
+    assert '重複' in diagnostic['reason']
 
 def test_all_market_batches_accumulate_and_resume_beyond_eighty_without_rescanning_light_quotes():
     from unittest.mock import MagicMock
