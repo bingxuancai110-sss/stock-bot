@@ -184,7 +184,7 @@ def test_a_rebound_can_be_watched_without_claiming_uptrend_confirmation():
         c=116-i*.3;b.update(open=c-.2,close=c,high=c+.2,low=c-.6)
     result=st.analyse('2330','fixture',quote(bars),h,now(bars))
     assert result and result['watch_only'] and not result['signals']
-    assert not result['trend'] and '等待趨勢確認' in result['pending']
+    assert not result['trend'] and not result['entry_ready'] and result['patterns']
 
 
 def test_old_selection_snapshot_is_rebuilt_even_when_age_is_fresh():
@@ -548,7 +548,7 @@ def test_price_diagnostics_record_high_price_exclusion_as_technical_not_institut
     q=dict(closes=[b['close'] for b in bars],timestamps=[int(datetime.fromisoformat(b['date']+'T05:30:00').replace(tzinfo=st.timezone.utc).timestamp()) for b in bars])
     audit={}
     assert st.light_technical(q,now(bars),diagnostics=audit) is None
-    assert audit['reason']=='單日漲跌超過5%'
+    assert audit['reason']=='單日漲跌超過9.5%'
 
 def test_detailed_cap_does_not_erase_high_price_candidates_behind_many_low_price_names():
     metrics={str(i):dict(bucket='breakout',rank=(False,-(100-i),0)) for i in range(100)}
@@ -563,3 +563,57 @@ def test_detailed_cap_does_not_erase_high_price_candidates_behind_many_low_price
     assert len(chosen)==80 and all(c in chosen for c in ('high1','high2','high3'))
     # Research inclusion does not declare any of these stocks to be an entry.
     assert all('entry' not in metrics[c] for c in chosen)
+
+
+def test_institutional_data_cannot_change_any_entry_add_reduce_exit_or_stop():
+    bars,h=market(100)
+    # One close below MA10 must not become a chip-driven early reduction.
+    bars[80].update(open=108,close=107.5,low=107.4,high=108.1)
+    buying=[dict(r,foreign=100,trust=50) for r in h]
+    selling=[dict(r,foreign=-100,trust=-50) for r in h]
+    results=[st.analyse('2330','fixture',quote(bars),data,now(bars)) for data in (buying,selling,[])]
+    assert all(r for r in results)
+    assert results[0]['signals']==results[1]['signals']==results[2]['signals']
+    assert results[0]['trailing']==results[1]['trailing']==results[2]['trailing']
+    assert results[0]['institutional_buying'] is True
+    assert results[1]['institutional_buying'] is False
+    assert results[2]['institutional_buying'] is None
+
+
+def test_four_independent_pattern_families_detect_breakout_pullback_continuation_and_reversal():
+    bars,h=market(75)
+    initial=st.setup(market(71)[0],st.chip_at([],bars[-1]['date'],[]))
+    assert initial['strategy']=='breakout' and initial['entry']
+    pullback=copy.deepcopy(bars);pullback[-1].update(close=109,open=108.7,high=109.2,low=106.5,volume=1000000)
+    plan=st.setup(pullback,st.chip_at([],bars[-1]['date'],[]))
+    assert plan['strategy']=='pullback' and plan['entry']
+    continuation=copy.deepcopy(bars)
+    for j,b in enumerate(continuation[-21:-6]):
+        c=95+j*2;b.update(open=c-.2,close=c,high=c+.2,low=c-.5)
+    for b in continuation[-6:-1]:b.update(open=124.8,close=125,high=125.5,low=124.5,volume=1000000)
+    continuation[-1].update(open=126.5,close=127,high=127.2,low=125.2,volume=1400000)
+    plan=st.setup(continuation,st.chip_at([],bars[-1]['date'],[]))
+    assert plan['strategy']=='continuation' and plan['entry']
+    assert continuation[-1]['close']/plan['ma20']>1.08  # an old shared veto no longer kills the setup
+    import math
+    reversal=copy.deepcopy(bars)
+    for i,b in enumerate(reversal):
+        c=130-i*.25+math.sin(i*math.pi/5)
+        b.update(open=c-.15,close=c,high=c+.25,low=c-.4,volume=1000000)
+    x=st.levels(reversal);shapes=st.technical_shapes(reversal,x,1.3)
+    line=shapes['line'];assert line and line['confirmed_date']<reversal[-1]['date']
+    c=line['end_price']+.5
+    reversal[-1].update(open=c-.3,close=c,high=c+.1,low=c-.5,volume=1400000)
+    plan=st.setup(reversal,st.chip_at([],bars[-1]['date'],[]))
+    assert plan['strategy']=='reversal' and plan['trigger'] and not plan['trend']
+    # Observation versus entry still depends on risk/reward; no fabricated fill.
+    assert plan['entry']==(not plan['hot'] and plan['risk_ok'])
+
+
+def test_pattern_v3_uses_separate_snapshot_namespace_and_no_price_ceiling():
+    assert st.VERSION=='short-pattern-v3' and st.KEY=='short_term:short-pattern-v3'
+    bars,h=market(71)
+    for b in bars:
+        for k in ('open','high','low','close'):b[k]*=100
+    a=st.analyse('2330','fixture',quote(bars),[],now(bars))
+    assert a['entry_ready'] and a['price']>10000
