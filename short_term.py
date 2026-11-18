@@ -217,7 +217,9 @@ def standing_confirmation(bars, level, slope=0):
     Do not keep calling a weeks-old break a fresh reversal. The current boundary
     is projected back, never refitted separately to make yesterday pass.
     """
-    buffer=max(bars[-1]['close']*.005, levels(bars)['atr']*.25)
+    ranges=[max(b['high']-b['low'],abs(b['high']-a['close']),abs(b['low']-a['close']))
+            for a,b in zip(bars[-15:-1],bars[-14:])]
+    buffer=max(bars[-1]['close']*.005, sum(ranges)/14*.25)
     above=[]
     for lag in range(5, -1, -1):
         end=len(bars)-lag
@@ -227,7 +229,8 @@ def standing_confirmation(bars, level, slope=0):
     ma_now=sum(b['close'] for b in bars[-20:])/20
     ma_prev=sum(b['close'] for b in bars[-21:-1])/20
     reclaimed=bars[-1]['close']>ma_now and bars[-2]['close']>ma_prev
-    traded=all(b['volume']>0 for b in bars[-2:])
+    # Close-only preselection must remain a watch, never fake volume evidence.
+    traded=all((number(b.get('volume')) or 0)>0 for b in bars[-2:])
     return dict(confirmed=bool(recent_cross and all(above[-2:]) and reclaimed and traded),
                 buffer=buffer, reclaimed=reclaimed, standing=all(above[-2:]),
                 recent_cross=recent_cross, crossed=above[-1] and recent_cross)
@@ -255,7 +258,7 @@ def technical_shapes(bars, x, ratio):
                 near_line=abs(c/level-1)<=.05
                 confirmation=standing_confirmation(bars,level,slope)
                 # A resistance line must not cut through intervening swing highs.
-                valid_line=all(prev[k]['high']<=prev[i]['high']+slope*(k-i)+max(x['atr']*.25,prev[k]['high']*.005)
+                valid_line=all(prev[k]['high']<=prev[i]['high']+slope*(k-i)+max(x.get('atr',0)*.25,prev[k]['high']*.005)
                                for k in highs if i<k<j)
                 reversal=valid_line and confirmation['crossed'] and b['low']>=min(z['low'] for z in prev[-10:])*.995
     bottom=False

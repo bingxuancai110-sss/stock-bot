@@ -631,6 +631,11 @@ def test_7791_real_downtrend_tiny_cross_is_not_a_confirmed_entry():
     assert result and not result['entry_ready'] and not result['active']
     assert not [e for e in result['signals'] if e['date']=='2026-11-18' and e['type']=='entry']
     assert '等待連續2日站穩突破線並站回20日線' in result['pending']
+    light=dict(closes=[b['close'] for b in bars],timestamps=[int(datetime.fromisoformat(b['date']+'T05:30:00').replace(tzinfo=st.timezone.utc).timestamp()) for b in bars])
+    assert st.light_technical(light,now(bars)) is not None
+    # The catalogue's close-only path cannot claim traded two-close evidence.
+    pseudo=[{k:v for k,v in b.items() if k!='volume'} for b in bars]
+    assert not st.standing_confirmation(pseudo,45.8)['confirmed']
 
 
 def test_standing_confirmation_requires_two_closes_and_recent_cross():
