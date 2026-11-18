@@ -14,7 +14,7 @@ VERSION = 'short-tech-v2'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 80
 MAX_PICKS = 6
-SELECTION_VERSION = 6
+SELECTION_VERSION = 7
 LIGHT_BATCH = 64
 
 
@@ -412,7 +412,7 @@ def light_technical(quote, now, intraday=False, diagnostics=None):
     return dict(bucket=bucket,rank=(not trend,-(ma20/old20-1),abs(c/pressure-1)))
 
 
-def technical_pool(metrics, keep, limit=MAX_POOL, sectors=None):
+def technical_pool(metrics, keep, limit=MAX_POOL, sectors=None, price_bands=None):
     buckets=[sorted(((c,m) for c,m in metrics.items() if m['bucket']==b),key=lambda x:(x[1]['rank'],x[0]))
              for b in ('breakout','pullback','recovery')]
     result=list(dict.fromkeys(c for c in keep))[:limit]
@@ -421,6 +421,11 @@ def technical_pool(metrics, keep, limit=MAX_POOL, sectors=None):
         # This affects research coverage, never forces a buy or sector quota in picks.
         buckets=[[(c,m) for c,m in bucket if sectors.get(c,'未分類')==sector]
                  for bucket in buckets for sector in sorted(set(sectors.values()))]
+    if price_bands:
+        # The detailed-research cap must not silently erase a nominal-price band.
+        # Interleave coverage only; entry/risk and final technical ranking stay unchanged.
+        buckets=[[(c,m) for c,m in bucket if price_bands.get(c)==band]
+                 for bucket in buckets for band in sorted(set(price_bands.values()))]
     for i in range(max((len(b) for b in buckets),default=0)):
         for bucket in buckets:
             if i<len(bucket) and bucket[i][0] not in result:
@@ -508,7 +513,7 @@ class ShortTermService:
             print('短線全市場技術初篩 %s/%s'%(self.progress,len(universe)),flush=True)
         if not quote_count:raise RuntimeError('全市場技術行情暫時無法取得，沒有使用法人買超名單替代')
         codes=technical_pool(metrics,[r['code'] for r in keep if r['code'] in self.stock_meta],
-                             sectors={c:i['sector'] for c,i in self.stock_meta.items()})
+                             sectors={c:i['sector'] for c,i in self.stock_meta.items()},price_bands=price_by_code)
         names={c:self.stock_meta[c]['name'] for c in codes};history={c:[] for c in codes}
         with self.lock:
             self.scan_meta.update(light_scanned=len(universe),light_quotes=quote_count,

@@ -549,3 +549,17 @@ def test_price_diagnostics_record_high_price_exclusion_as_technical_not_institut
     audit={}
     assert st.light_technical(q,now(bars),diagnostics=audit) is None
     assert audit['reason']=='單日漲跌超過5%'
+
+def test_detailed_cap_does_not_erase_high_price_candidates_behind_many_low_price_names():
+    metrics={str(i):dict(bucket='breakout',rank=(False,-(100-i),0)) for i in range(100)}
+    metrics.update({'high1':dict(bucket='recovery',rank=(True,0,0)),
+                    'high2':dict(bucket='pullback',rank=(False,0,0)),
+                    'high3':dict(bucket='breakout',rank=(False,0,0))})
+    sectors={c:'電子' for c in metrics};bands={c:'低於100' for c in metrics}
+    bands.update(high1='1000以上',high2='500–999',high3='500–999')
+    old=st.technical_pool(metrics,[],sectors=sectors)
+    assert not all(c in old for c in ('high1','high2','high3'))
+    chosen=st.technical_pool(metrics,[],sectors=sectors,price_bands=bands)
+    assert len(chosen)==80 and all(c in chosen for c in ('high1','high2','high3'))
+    # Research inclusion does not declare any of these stocks to be an entry.
+    assert all('entry' not in metrics[c] for c in chosen)
