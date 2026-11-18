@@ -10186,7 +10186,7 @@ REALTIME_CACHE_SECONDS = max(30, int(os.environ.get("REALTIME_CACHE_SECONDS", "3
 # A cache TTL alone is not a memory bound: a market-wide scan can add thousands
 # of fresh, long-history rows before any of them expire. Keep the web worker's
 # quote cache to a strict LRU ceiling on Render's 512 MiB instance.
-REALTIME_CACHE_MAX_ITEMS = max(200, int(os.environ.get("REALTIME_CACHE_MAX_ITEMS", "800")))
+REALTIME_CACHE_MAX_ITEMS = max(128, int(os.environ.get("REALTIME_CACHE_MAX_ITEMS", "240")))
 
 
 def _store_realtime_cache(cache_key, data, at=None):
@@ -11202,29 +11202,38 @@ RADAR_SCAN_POLICY_VERSION = 2
 RADAR_LIGHT_SCAN_RESERVE_MB = 96  # four-symbol batches, two quote workers; rechecked before every batch
 
 
+def _reclaim_market_scan_memory():
+    from market_scan_memory import reclaim
+    return reclaim(globals())
+
+
 def _background_work_memory_safe(reserve_mb=160):
-    """Keep optional market scans away from the web process memory ceiling."""
-    try:
-        used_bytes = _current_process_rss_bytes()
-        # Render limits the whole container, not just this Gunicorn worker.
-        # Include other workers and charged buffers when cgroup data is available.
-        for memory_path in ("/sys/fs/cgroup/memory.current",
-                            "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+    """Reclaim disposable caches, then measure again; never relax the reserve."""
+    def used():
+        total = _current_process_rss_bytes()
+        for path in ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
             try:
-                with open(memory_path, "r", encoding="utf-8") as memory_file:
-                    used_bytes = max(used_bytes, int(memory_file.read().strip()))
+                with open(path, "r", encoding="utf-8") as stream:
+                    total = max(total, int(stream.read().strip()))
                 break
             except (OSError, ValueError):
                 continue
-        rss_mb = used_bytes / (1024 * 1024)
+        return total / (1024 * 1024)
+    try:
+        rss_mb = used()
         limit_mb = float(globals().get("RENDER_MEMORY_LIMIT_MB", 512) or 512)
-        safe = rss_mb < max(180.0, limit_mb - float(reserve_mb))
+        threshold = max(180.0, limit_mb - float(reserve_mb))
+        reclaim = globals().get("_reclaim_market_scan_memory")
+        if rss_mb >= threshold and reclaim and reclaim():
+            before = rss_mb
+            rss_mb = used()
+            print("市場掃描快取回收：%.0f → %.0f MiB" % (before, rss_mb), flush=True)
+        safe = rss_mb < threshold
         if not safe:
             print("⚠️ 略過非必要背景市場掃描：目前 RSS %.0f/%.0f MiB，保留網頁服務記憶體" %
                   (rss_mb, limit_mb), flush=True)
         return safe
     except Exception:
-        # If memory cannot be measured, fail closed for optional heavy scans.
         print("⚠️ 無法確認記憶體餘裕，略過非必要背景市場掃描", flush=True)
         return False
 
@@ -28648,8 +28657,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-experience.css?v=20261117-12">
 <script defer src="/static/ui-feedback.js?v=20261116-7"></script>
 <script defer src="/static/app-experience.js?v=20261116-9"></script>
-<link rel="stylesheet" href="/static/short-term.css?v=20261118-6">
-<script defer src="/static/short-term.js?v=20261118-6"></script>
+<link rel="stylesheet" href="/static/short-term.css?v=20261118-7">
+<script defer src="/static/short-term.js?v=20261118-7"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
@@ -47446,20 +47455,40 @@ def _do_scheduled_radar_live_snapshot():
             price_workers=2)
         result = (f"已完成盤中雷達快照：掃描 {len(rows) + int(skipped or 0)} 檔候選、"
                   f"輸出 {len(rows)} 檔；有效期 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘")
-        # Queue short-term research after Radar releases the market scan;
-        # both run in the existing bounded worker, without a viewer opening a page.
-        service = globals().get("_short_term_service")
-        if service is not None:
-            try:
-                service.refresh_from_radar(taiwan_now().isoformat())
-            except Exception as exc:
-                print("⚠️ 短線排程未啟動：%s" % type(exc).__name__, flush=True)
+        # Short-term has its own staggered authenticated schedule. Radar failures
+        # must not gate it, and successful Radar jobs must not double-trigger it.
         # Keep the 10-minute Radar producer isolated from Blackhorse. The next
         # idle cron tick may refresh Blackhorse if RSS has returned to a safe level.
         return result
     finally:
         with _SCREENER_REFRESH_LOCK:
             _SCREENER_REFRESH_RUNNING["radar"] = False
+
+
+@app.route("/cron/short-term-live", methods=["POST", "GET"])
+def cron_short_term_live():
+    """Independent, staggered short-term scheduler; no dependency on Radar success."""
+    from taiex_cron_auth import authorized, REPOSITORY
+    audience = DEFAULT_WEB_BASE_URL.rstrip("/") + "/cron/short-term-live"
+    workflow = REPOSITORY + "/.github/workflows/short-term-intraday.yml@refs/heads/main"
+    if not authorized(request.headers, request.args.get("token"), os.environ.get("CRON_SECRET"),
+                      audience=audience, workflow=workflow):
+        abort(403)
+    if not _is_taiwan_intraday_window():
+        return jsonify(ok=True, state="outside_session", note="目前非盤中，不重算盤中訊號")
+    service = globals().get("_short_term_service")
+    if service is None:
+        return jsonify(ok=False, state="unavailable"), 503
+    service.trigger = "獨立盤中排程"
+    result = service.payload(refresh=True)
+    meta = result["meta"]
+    accepted = bool(meta.get("building"))
+    print("短線獨立排程：%s；進度 %s/%s；%s" % (
+        "執行／排隊中" if accepted else "暫緩", meta.get("progress", 0),
+        meta.get("progress_total", 0), meta.get("error") or ""), flush=True)
+    return jsonify(ok=accepted, state="queued" if accepted else "deferred",
+                   progress=meta.get("progress"), total=meta.get("progress_total"),
+                   note=meta.get("error") or "已接收；排隊不代表掃描完成"), (202 if accepted else 503)
 
 
 @app.route("/cron/radar-live", methods=["POST", "GET"])
@@ -47471,6 +47500,9 @@ def cron_radar_live():
     if not _is_taiwan_intraday_window():
         return "目前非台股一般盤中時段，未啟動盤中雷達快照。", 200
     if not _background_work_memory_safe(reserve_mb=RADAR_LIGHT_SCAN_RESERVE_MB):
+        with _SCREENER_REFRESH_LOCK:
+            _SCREENER_REFRESH_ERRORS["radar"] = time.monotonic()
+        print("⚠️ 雷達盤中排程暫緩：回收快取後仍無足夠記憶體，未完成更新", flush=True)
         return "目前網站記憶體負載較高，已保留最近雷達快照並略過本輪掃描。", 200
     try:
         print(push_intraday_market_anomalies(base_url=DEFAULT_WEB_BASE_URL))
@@ -47481,12 +47513,6 @@ def cron_radar_live():
     # If Radar needs a full scan, Blackhorse is queued from the Radar completion path,
     # after the global screener compute lock has been released.
     if _load_recent_live_radar_snapshot(max_age_seconds=RADAR_LIVE_SNAPSHOT_REFRESH_DUE_SECONDS):
-        service = globals().get("_short_term_service")
-        if service is not None:
-            try:
-                service.payload()  # Catch up an overdue short-term batch on an idle Radar tick.
-            except Exception as exc:
-                print("⚠️ 短線補檢未啟動：%s" % type(exc).__name__, flush=True)
         _maybe_start_scheduled_blackhorse_refresh()
         return (f"最近 {RADAR_LIVE_SNAPSHOT_INTERVAL_SECONDS // 60} 分鐘已有盤中雷達快照；已檢查黑馬更新，本次雷達略過。", 200)
     with _SCREENER_REFRESH_LOCK:

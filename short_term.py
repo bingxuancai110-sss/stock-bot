@@ -11,11 +11,11 @@ import threading
 import time
 from flask import Blueprint, jsonify, request
 
-VERSION = 'short-wave-v4'
+VERSION = 'short-wave-v5'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 80
 MAX_PICKS = 20
-SELECTION_VERSION = 9
+SELECTION_VERSION = 10
 LIGHT_BATCH = 64
 
 
@@ -211,6 +211,28 @@ def levels(bars):
                 change=(last['close']/prev[-1]['close']-1)*100)
 
 
+def standing_confirmation(bars, level, slope=0):
+    """Two closes above the same known boundary and MA20, with a noise buffer.
+
+    Do not keep calling a weeks-old break a fresh reversal. The current boundary
+    is projected back, never refitted separately to make yesterday pass.
+    """
+    buffer=max(bars[-1]['close']*.005, levels(bars)['atr']*.25)
+    above=[]
+    for lag in range(5, -1, -1):
+        end=len(bars)-lag
+        close=bars[end-1]['close']
+        above.append(close > level-slope*lag+buffer)
+    recent_cross=any(not above[i-1] and above[i] for i in range(1,len(above)))
+    ma_now=sum(b['close'] for b in bars[-20:])/20
+    ma_prev=sum(b['close'] for b in bars[-21:-1])/20
+    reclaimed=bars[-1]['close']>ma_now and bars[-2]['close']>ma_prev
+    traded=all(b['volume']>0 for b in bars[-2:])
+    return dict(confirmed=bool(recent_cross and all(above[-2:]) and reclaimed and traded),
+                buffer=buffer, reclaimed=reclaimed, standing=all(above[-2:]),
+                recent_cross=recent_cross, crossed=above[-1] and recent_cross)
+
+
 def technical_shapes(bars, x, ratio):
     """Independent causal pattern families, using only confirmed prior pivots."""
     n=len(bars);b=bars[-1];prev=bars[:-1];c=b['close']
@@ -220,7 +242,7 @@ def technical_shapes(bars, x, ratio):
     lows=[i for i in range(max(2,n-60),n-3)
           if prev[i]['low']<=min(z['low'] for z in prev[i-2:i+3])
           and prev[i]['low']<max(z['low'] for z in prev[i-2:i+3])]
-    line=None;reversal=False;near_line=False;neckline=None
+    line=None;reversal=False;near_line=False;neckline=None;confirmation=None
     if highs:
         j=highs[-1]
         i=next((i for i in reversed(highs[:-1]) if j-i>=3 and prev[j]['high']<prev[i]['high']*.995),None)
@@ -231,13 +253,19 @@ def technical_shapes(bars, x, ratio):
                 line=dict(start_date=prev[i]['date'],end_date=b['date'],start_price=prev[i]['high'],end_price=level,
                           confirmed_date=bars[j+2]['date'])
                 near_line=abs(c/level-1)<=.05
-                reversal=c>level and prev[-1]['close']<=level-slope and b['low']>=min(z['low'] for z in prev[-10:])*.995
+                confirmation=standing_confirmation(bars,level,slope)
+                # A resistance line must not cut through intervening swing highs.
+                valid_line=all(prev[k]['high']<=prev[i]['high']+slope*(k-i)+max(x['atr']*.25,prev[k]['high']*.005)
+                               for k in highs if i<k<j)
+                reversal=valid_line and confirmation['crossed'] and b['low']>=min(z['low'] for z in prev[-10:])*.995
     bottom=False
     if len(lows)>=2:
         i,j=lows[-2:]
         if j-i>=4 and prev[j]['low']>prev[i]['low']*1.005 and (x['ma20']<=x['ma60'] or x['trend_slope']<=0):
             neckline=max(z['high'] for z in prev[i:j+1])
-            bottom=c>neckline and prev[-1]['close']<=neckline
+            bottom_check=standing_confirmation(bars,neckline)
+            bottom=bottom_check['crossed']
+            if bottom:confirmation=bottom_check
     strong=c>=b['low']+.6*(b['high']-b['low'])
     recovered=c>x['ma20'] and (x['trend_slope']>0 or c>max(z['high'] for z in prev[-10:]))
     consolidation=(max(z['high'] for z in prev[-20:])-min(z['low'] for z in prev[-20:]))/c<=.16
@@ -258,6 +286,8 @@ def technical_shapes(bars, x, ratio):
     watching=[k for k,v in watches.items() if v or triggers[k]]
     chosen=kind or (watching[0] if watching else None)
     return dict(kind=kind,watching=watching,trigger=bool(kind),pattern=labels.get(kind,'等待型態'),
+                confirmed=chosen!='reversal' or bool(confirmation and confirmation['confirmed']),
+                confirmation=confirmation if chosen=='reversal' else None,
                 line=line,level=(neckline if bottom or (chosen=='reversal' and not line and neckline) else
                       line['end_price'] if chosen=='reversal' and line else base_high if chosen=='continuation' else
                       x['pressure'] if chosen=='breakout' else prev[-1]['high']))
@@ -285,7 +315,8 @@ def setup(bars, chip, volume_fraction=1):
                 risk=risk, rr=rr, hot=hot, liquid=liquid,
                 chip_ratio=ratio*100, eligible=valid and risk_ok, risk_ok=risk_ok,
                 trigger=shapes['trigger'],watchable=not hot and b['volume']>0 and bool(shapes['watching']),
-                entry=shapes['trigger'] and valid and risk_ok,pattern=shapes['pattern'],
+                entry=shapes['trigger'] and shapes['confirmed'] and valid and risk_ok,pattern=shapes['pattern'],
+                entry_confirmed=shapes['confirmed'],confirmation=shapes['confirmation'],
                 strategy=shapes['kind'] or (shapes['watching'][0] if shapes['watching'] else None),
                 patterns=shapes['watching'],pattern_line=shapes['line'],pattern_level=shapes['level'])
 
@@ -317,6 +348,8 @@ def analyse(code, name, quote, history, now, intraday=False):
                          (b['close'],plan['ma20'],plan['ma60'],
                           plan['pattern'],plan['pattern_level'],
                           plan['volume_ratio'],plan['stop'],plan['rr']))
+                if plan['strategy']=='reversal':
+                    reason+='；連續2日收在同一突破線＋緩衝之上，且兩日均站回20日線；緩衝 %.2f' % plan['confirmation']['buffer']
             elif kind=='add':
                 reason+='；原進場 %.2f，1R %.2f，目前 %.2f，前10日高點 %.2f，量比 %.2f' % (
                     position['entry'],position['risk'],b['close'],max(z['high'] for z in prefix[-11:-1]),plan['volume_ratio'])
@@ -407,6 +440,8 @@ def analyse(code, name, quote, history, now, intraday=False):
     if not latest['patterns']:pending.append('等待型態確認')
     if not (latest['risk_ok'] if position else preview_risk_ok):pending.append('等待風險空間')
     if not latest['trigger']:pending.append('等待突破／回測')
+    if latest['strategy']=='reversal' and not latest['entry_confirmed']:
+        pending.append('等待連續2日站穩突破線並站回20日線')
     provisional=intraday and bars[-1]['date']==day(now)
     if provisional:
         for signal in signals:
@@ -421,7 +456,8 @@ def analyse(code, name, quote, history, now, intraday=False):
         status['action_note']='盤中未收棒，條件可能改變；'+status['action_note'].replace('收盤資料確認','盤中暫定').replace('收盤','本次')
     event=status['event']
     checks=[dict(label='型態',passed=bool(latest['patterns'])),
-            dict(label='風險空間',passed=latest['risk_ok'] if position else preview_risk_ok),dict(label='進場型態',passed=latest['trigger'])]
+            dict(label='風險空間',passed=latest['risk_ok'] if position else preview_risk_ok),
+            dict(label='站穩確認' if latest['strategy']=='reversal' else '進場型態',passed=latest['trigger'] and latest['entry_confirmed'])]
     # Exit candidates remain for three sessions, even though position is now flat.
     return dict(code=code,name=name,date=bars[-1]['date'],price=bars[-1]['close'],provisional=provisional,
                 strategy=position['strategy'] if position else latest['strategy'],
