@@ -50,7 +50,7 @@
  }
  function timeline(r){
   var events=(r.signals||[]).slice().reverse();
-  return '<section class="st-history" aria-label="訊號時間軸"><h4>訊號時間軸（'+events.length+'）</h4><p class="st-history-note">依日期由新到舊；歷史規則重播，不是當下的新買點。</p><ol>'+events.map(function(e){return '<li><button type="button" data-event="'+esc(e.id)+'"><span>'+esc(e.date)+'</span><b style="color:'+colors[e.type]+'">'+esc(names[e.type])+'</b><strong>'+price(e.price)+'</strong></button><span class="st-event-status">'+(e.provisional?'盤中暫定 · 未收棒':'歷史收盤規則重播')+'</span><p class="st-event-reason"><b>理由：</b>'+esc(e.reason||'此筆舊紀錄沒有保存理由，不補造原因。')+'</p><small>當時支撐停損 '+price(e.stop)+' · 停利參考 '+price(e.target)+'</small></li>';}).join('')+'</ol>'+(events.length?'':'<p>這段資料尚無進出場紀錄，不補畫訊號。</p>')+'</section>';
+  return '<section class="st-history" aria-label="訊號時間軸"><h4>訊號時間軸（'+events.length+'）</h4><p class="st-history-note">依日期由新到舊；歷史規則重播，不是當下的新買點。</p><ol>'+events.map(function(e){return '<li><button type="button" data-event="'+esc(e.id)+'"><span>'+esc(e.date)+'</span><b class="'+(['entry','add'].indexOf(e.type)>=0?'st-up':'st-down')+'">'+esc(names[e.type])+'</b><strong>'+price(e.price)+'</strong></button><span class="st-event-status">'+(e.provisional?'盤中暫定 · 未收棒':'歷史收盤規則重播')+'</span><p class="st-event-reason"><b>理由：</b>'+esc(e.reason||'此筆舊紀錄沒有保存理由，不補造原因。')+'</p><small>當時支撐停損 '+price(e.stop)+' · 停利參考 '+price(e.target)+'</small></li>';}).join('')+'</ol>'+(events.length?'':'<p>這段資料尚無進出場紀錄，不補畫訊號。</p>')+'</section>';
  }
  function detail(s,r){
   var el=s.el.querySelector('#st-detail-'+r.code),events=r.signals||[],chip=r.chip||{};
