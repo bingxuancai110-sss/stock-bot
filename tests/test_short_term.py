@@ -486,7 +486,7 @@ def test_technical_deep_coverage_includes_each_sector_without_forcing_entries():
     assert any(sectors[c]=='傳產' for c in chosen)
 
 
-def test_existing_radar_producer_requests_short_term_refresh_and_survives_aux_failure():
+def test_radar_producer_is_independent_from_short_term_refresh():
     import ast,threading
     from pathlib import Path
     source=Path('main.py').read_text(encoding='utf-8')
@@ -499,9 +499,8 @@ def test_existing_radar_producer_requests_short_term_refresh_and_survives_aux_fa
         _short_term_service=svc,taiwan_now=lambda:datetime(2026,11,18,10))
     exec(compile(ast.Module(body=[node],type_ignores=[]),'<actual-radar-producer>','exec'),ns)
     assert '已完成' in ns['_do_scheduled_radar_live_snapshot']()
-    svc.refresh_from_radar.assert_called_once_with('2026-11-18T10:00:00')
-    svc.refresh_from_radar.side_effect=OSError('unavailable')
-    assert '已完成' in ns['_do_scheduled_radar_live_snapshot']()
+    svc.refresh_from_radar.assert_not_called()
+    svc.payload.assert_not_called()
     assert not ns['_SCREENER_REFRESH_RUNNING']['radar']
 
 @pytest.mark.parametrize('events,active,provisional,expected',[
@@ -602,21 +601,52 @@ def test_four_independent_pattern_families_detect_breakout_pullback_continuation
         b.update(open=c-.15,close=c,high=c+.25,low=c-.4,volume=1000000)
     x=st.levels(reversal);shapes=st.technical_shapes(reversal,x,1.3)
     line=shapes['line'];assert line and line['confirmed_date']<reversal[-1]['date']
-    c=line['end_price']+.5
+    c=line['end_price']+1
     reversal[-1].update(open=c-.3,close=c,high=c+.1,low=c-.5,volume=1400000)
     plan=st.setup(reversal,st.chip_at([],bars[-1]['date'],[]))
     assert plan['strategy']=='reversal' and plan['trigger'] and not plan['trend']
     # Observation versus entry still depends on risk/reward; no fabricated fill.
-    assert plan['entry']==(not plan['hot'] and plan['risk_ok'])
+    assert not plan['entry']  # a single cross in a downtrend is only observation
 
 
 def test_pattern_v3_uses_separate_snapshot_namespace_and_no_price_ceiling():
-    assert st.VERSION=='short-wave-v4' and st.KEY=='short_term:short-wave-v4'
+    assert st.VERSION=='short-wave-v5' and st.KEY=='short_term:short-wave-v5'
     bars,h=market(71)
     for b in bars:
         for k in ('open','high','low','close'):b[k]*=100
     a=st.analyse('2330','fixture',quote(bars),[],now(bars))
     assert a['entry_ready'] and a['price']>10000
+
+
+def test_7791_real_downtrend_tiny_cross_is_not_a_confirmed_entry():
+    import json
+    from pathlib import Path
+    fixture=json.loads(Path('tests/fixtures/7791-20261118.json').read_text(encoding='utf8'))
+    bars=fixture['bars']
+    plan=st.setup(bars,{'available':False})
+    assert plan['ma20']>bars[-1]['close'] and plan['trend_slope']<0
+    assert plan['pattern_line']['end_price']==pytest.approx(45.78947,abs=.001)
+    assert not plan['entry'] and not plan['entry_confirmed']
+    result=st.analyse('7791','皇家可口',quote(bars),[],now(bars))
+    assert result and not result['entry_ready'] and not result['active']
+    assert not [e for e in result['signals'] if e['date']=='2026-11-18' and e['type']=='entry']
+    assert '等待連續2日站穩突破線並站回20日線' in result['pending']
+
+
+def test_standing_confirmation_requires_two_closes_and_recent_cross():
+    bars,_=market(75)
+    assert not st.standing_confirmation(bars[:-1],108.1)['confirmed']
+    assert st.standing_confirmation(bars,108.1)['confirmed']
+    assert not st.standing_confirmation(bars,100)['confirmed']  # weeks-old break
+
+
+def test_two_closes_above_line_without_reclaiming_ma20_remain_unconfirmed():
+    import json
+    from pathlib import Path
+    bars=json.loads(Path('tests/fixtures/7791-20261118.json').read_text(encoding='utf8'))['bars']
+    bars[-2]['close']=46.2;bars[-1]['close']=46.4
+    check=st.standing_confirmation(bars,45.8)
+    assert check['standing'] and not check['reclaimed'] and not check['confirmed']
 
 
 def test_single_support_break_reduces_but_does_not_exit_and_recovery_retains_position():

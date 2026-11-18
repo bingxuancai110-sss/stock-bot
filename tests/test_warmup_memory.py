@@ -115,6 +115,7 @@ class WarmupMemoryTests(unittest.TestCase):
                   _run_taiex_reduction_alerts=lambda: 'signals checked',
                   _background_work_memory_safe=Mock(return_value=False),
                   _current_process_rss_bytes=lambda: 400 * 1024**2,
+                  RADAR_LIGHT_SCAN_RESERVE_MB=96, RADAR_SCHEDULED_DEEP_SCAN_LIMIT=240,
                   _revenue_cache={}, _valuation_cache={},
                   _load_etf_product_ranking_snapshot=lambda: ({'old': True}, False, 'old'),
                   _taiwan_post_close=lambda: True,

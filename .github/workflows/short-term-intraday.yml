@@ -1,0 +1,21 @@
+name: Independent intraday technical scan
+on:
+  schedule:
+    # Taiwan 09:05–13:25; Radar's existing cron-job.org runs at :00/:10/…
+    - cron: '5,15,25,35,45,55 1-4 * * 1-5'
+    - cron: '5,15,25 5 * * 1-5'
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: short-term-intraday-trigger
+  cancel-in-progress: false
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Trigger independent short-term work
+        run: python scripts/trigger_short_term.py
