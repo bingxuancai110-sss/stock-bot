@@ -47891,24 +47891,9 @@ def score_radar_breakout(price, market_pct=None):
             "breakout_type": "60日新高" if is_60d else ("20日新高" if is_20d else "未確認突破")}
 
 def classify_radar_state(price):
-    """把雷達訊號拆成突破／量能狀態，避免把普通上漲誤稱為帶量突破。"""
-    price = price or {}
-    close = price.get("close")
-    high_60 = price.get("high_60d")
-    high_20 = price.get("high_20d")
-    vol_ratio = price.get("vol_ratio") or 0
-    breakout = ""
-    if high_60 and close is not None and close >= high_60:
-        breakout = "季線新高"
-    elif high_20 and close is not None and close >= high_20:
-        breakout = "破月高"
-    if breakout and vol_ratio >= 1.5:
-        return "真正帶量突破"
-    if breakout:
-        return "突破但量能普通"
-    if vol_ratio >= 1.5:
-        return "帶量上漲"
-    return "價格強、量能普通"
+    """Classify price direction and volume without inventing bullish evidence."""
+    from selection_logic import radar_state
+    return radar_state(price)
 
 
 # ── 每日盤前變化偵測初始化 ──
