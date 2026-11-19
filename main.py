@@ -11198,7 +11198,7 @@ RADAR_DEEP_SCAN_LIMIT = 240
 # 批次大小和總候選數分開控制，不能為省記憶體把排行縮成四檔抽樣。
 RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 240
 RADAR_PRICE_BATCH_SIZE = 4
-RADAR_SCAN_POLICY_VERSION = 2
+RADAR_SCAN_POLICY_VERSION = 3
 RADAR_LIGHT_SCAN_RESERVE_MB = 96  # four-symbol batches, two quote workers; rechecked before every batch
 
 
@@ -28657,8 +28657,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-experience.css?v=20261117-12">
 <script defer src="/static/ui-feedback.js?v=20261116-7"></script>
 <script defer src="/static/app-experience.js?v=20261116-9"></script>
-<link rel="stylesheet" href="/static/short-term.css?v=20261119-1">
-<script defer src="/static/short-term.js?v=20261119-1"></script>
+<link rel="stylesheet" href="/static/short-term.css?v=20261119-2">
+<script defer src="/static/short-term.js?v=20261119-2"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
@@ -47040,24 +47040,11 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
             deep_limit = (int(radar_deep_limit) if radar_deep_limit else RADAR_DEEP_SCAN_LIMIT)
             deep_limit = max(4, min(deep_limit, RADAR_DEEP_SCAN_LIMIT))
             by_code = {c: info for c, info in candidates}
-            # 三桶輪流取：價格強勢／成交金額／法人買超，避免前 48 檔被單一訊號壟斷。
-            buckets = [
-                sorted(candidates, key=lambda x: x[1].get("spark_pct", 0), reverse=True),
-                sorted(candidates, key=lambda x: x[1].get("spark_turnover", 0), reverse=True),
-                sorted(candidates, key=lambda x: x[1].get("total_net_lots", 0), reverse=True),
-            ]
-            pool, seen, pos = [], set(), 0
-            while len(pool) < deep_limit and pos < max((len(b) for b in buckets), default=0):
-                for bucket in buckets:
-                    if pos >= len(bucket):
-                        continue
-                    code, _info = bucket[pos]
-                    if code not in seen:
-                        pool.append((code, by_code[code]))
-                        seen.add(code)
-                        if len(pool) >= deep_limit:
-                            break
-                pos += 1
+            # Price/turnover/category coverage choose research slots; institution
+            # buying is an annotation and cannot buy a deep-analysis slot.
+            from selection_logic import radar_candidates
+            pool = radar_candidates(candidates, deep_limit,
+                {c: stock_category(c, ind_map) for c, _ in candidates})
             radar_diagnostics["deep_candidate_count"] = len(pool)
             radar_diagnostics["deep_candidate_limit"] = deep_limit
             radar_diagnostics["scan_policy_version"] = RADAR_SCAN_POLICY_VERSION

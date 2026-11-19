@@ -8,7 +8,7 @@ from test_radar_admission import install, producer
 
 def engine():
     ns=producer()
-    ns.update(re=re,RADAR_PRICE_BATCH_SIZE=4,RADAR_SCAN_POLICY_VERSION=2,
+    ns.update(re=re,RADAR_PRICE_BATCH_SIZE=4,RADAR_SCAN_POLICY_VERSION=3,
               _fetch_twse_mis_quotes=Mock(return_value={}),
               is_etf=lambda code:str(code).startswith('00'),
               get_realtime_stocks_bulk=Mock(side_effect=lambda codes,**kw:{c:None for c in codes}))
@@ -55,7 +55,8 @@ def test_blackhorse_is_bounded_without_reducing_total_candidates():
 def test_previous_four_candidate_or_etf_snapshot_requires_rebuild():
     ns=engine();check=ns['_radar_snapshot_matches_policy']
     assert not check({'rows':[{'code':'2330'}],'radar_diagnostics':{'deep_candidate_count':4}})
-    diag={'scan_policy_version':2,'deep_candidate_limit':240}
+    diag={'scan_policy_version':3,'deep_candidate_limit':240}
+    assert not check({'rows':[{'code':'2330'}],'radar_diagnostics':{**diag,'scan_policy_version':2}})
     assert not check({'rows':[{'code':'0050'}],'radar_diagnostics':diag})
     assert not check({'rows':[],'radar_diagnostics':{**diag,'deep_candidate_limit':4}})
     assert check({'rows':[{'code':'2330'}],'source_meta':{'radar_diagnostics':diag}})
@@ -84,7 +85,7 @@ def test_real_compute_scores_all_selected_candidates_and_excludes_etf():
     assert '0050' not in ns['_fetch_yahoo_spark_bulk'].call_args.args[0]
     diag=ns['_screener_cache']['radar']['radar_diagnostics']
     assert diag['deep_candidate_count']==240 and diag['final_count']==240
-    assert diag['scan_policy_version']==2 and diag['deep_candidate_limit']==240
+    assert diag['scan_policy_version']==3 and diag['deep_candidate_limit']==240
     assert ns['_radar_snapshot_matches_policy'](ns['_screener_cache']['radar'])
     ns['_save_persisted_screener_snapshot'].assert_called_once()
 

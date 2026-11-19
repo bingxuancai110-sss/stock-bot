@@ -11,11 +11,11 @@ import threading
 import time
 from flask import Blueprint, jsonify, request
 
-VERSION = 'short-wave-v5'
+VERSION = 'short-wave-v6'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 80
 MAX_PICKS = 20
-SELECTION_VERSION = 10
+SELECTION_VERSION = 11
 LIGHT_BATCH = 64
 
 
@@ -36,7 +36,11 @@ def clarity_rank(row):
     # JSON persistence turns tuples into lists. A partial market pass mixes
     # restored rows with newly analysed rows, so use one comparable key type.
     priority=tuple(row.get('technical_priority') or (True,0,0))
-    return (-{'entry':3,'triggered':2,'watch':1}.get(stage,0),
+    action=row.get('current_action')
+    urgency={'exit':0,'reduce':1,'entry':2,'add':3}.get(action,4 if row.get('active') else 5)
+    return (action=='unconfirmed',urgency,bool(row.get('provisional')),
+            -{'entry':3,'triggered':2,'watch':1}.get(stage,0),
+            any('風險' in str(p) for p in row.get('pending',[])),
             not row.get('trend',False),len(row.get('pending',[])),
             priority[1:],row['code'])
 
@@ -230,7 +234,7 @@ def levels(bars):
     pivots = [prev[i]['high'] for i in range(max(2,len(prev)-60),len(prev)-2)
               if prev[i]['high'] >= max(b['high'] for b in prev[i-2:i+3])
               and prev[i]['high'] > last['close']]
-    resistance = min(pivots) if pivots else (resistances[-1] if resistances else None)
+    resistance = min(pivots) if pivots else (resistances[0] if resistances else None)
     avg_vol = sum(b['volume'] for b in prev[-20:])/20
     avg_turnover = sum(b['close']*b['volume'] for b in prev[-20:])/20
     low_pivots=[i for i in range(max(2,len(prev)-20),len(prev)-2)
@@ -322,7 +326,12 @@ def technical_shapes(bars, x, ratio):
              'pullback':x['trend'] and abs(c/x['ma20']-1)<=.06,
              'continuation':preceding_run>=.08 and base and recovered}
     labels={'reversal':'底部轉強' if bottom else '下降線突破','breakout':'突破確認','pullback':'回測轉強','continuation':'強勢整理再突破'}
-    kind=next((k for k in ('reversal','continuation','breakout','pullback') if triggers[k]),None)
+    families=('reversal','continuation','breakout','pullback')
+    # Each family stands on its own. A tentative reversal must not veto an
+    # independently confirmed continuation/breakout/pullback on the same bar.
+    kind=next((k for k in families if triggers[k] and
+        (k!='reversal' or confirmation and confirmation['confirmed'])),None)
+    if kind is None:kind=next((k for k in families if triggers[k]),None)
     watching=[k for k,v in watches.items() if v or triggers[k]]
     chosen=kind or (watching[0] if watching else None)
     return dict(kind=kind,watching=watching,trigger=bool(kind),pattern=labels.get(kind,'等待型態'),
