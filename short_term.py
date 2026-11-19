@@ -698,7 +698,9 @@ class ShortTermService:
             if resume:
                 cycle=copy.deepcopy(saved);self.stock_meta=cycle['stocks'];self.scan_meta=copy.deepcopy(previous.get('scope',{}))
                 cursor=cycle['cursor'];queue=cycle['queue']
-                active=[r['code'] for r in previous.get('all_rows',[]) if r.get('active') and r['code'] in self.stock_meta]
+                # Closing bars do not change between batches. Rechecking model
+                # positions there wastes requests without improving freshness.
+                active=[r['code'] for r in previous.get('all_rows',[]) if intraday and r.get('active') and r['code'] in self.stock_meta]
                 start=cycle.get('active_cursor',0)%max(1,len(active))
                 fast=(active+active)[start:start+min(16,len(active))]
                 base=queue[cursor:cursor+MAX_POOL-len(fast)]
@@ -718,10 +720,10 @@ class ShortTermService:
             rows_by_code={r['code']:r for r in previous.get('all_rows',previous.get('rows',[])) if r['code'] in set(queue)}
             with self.lock:
                 self.phase='全市場分批詳查';self.progress=len(covered);self.progress_total=len(queue)
-            pause=''
+            pause='';time_exhausted=False
             for i,code in enumerate(codes):
                 if time.monotonic()>self.deadline:
-                    pause='本批行情逾時，進度已保存，稍後接續';break
+                    pause='本批行情逾時，進度已保存，稍後接續';time_exhausted=True;break
                 if not self.safe(reserve_mb=96):
                     pause='記憶體餘裕不足，進度已保存';break
                 try:
@@ -791,7 +793,7 @@ class ShortTermService:
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
             with self.lock:self.cached=payload;self.error=''
             print('✅ 短線分批詳查 %s/%s，本批 %s 檔，候選 %s 檔'%(len(covered),len(queue),processed,len(rows)),flush=True)
-            if (not complete and not pause and self.safe(reserve_mb=96) and self.intraday()==intraday and day(self.now())==cycle['day']):
+            if (not complete and (not pause or time_exhausted) and self.safe(reserve_mb=96) and self.intraday()==intraday and day(self.now())==cycle['day']):
                 queued=True
                 try:self.executor.submit(self.build)
                 except Exception:
@@ -803,7 +805,7 @@ class ShortTermService:
             if not queued:
                 with self.lock:self.running=False
 
-    def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS):
+    def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS, schedule=False):
         with self.lock:
             intraday=self.intraday()
             if not self.loaded or (self.cache_mode is not None and self.cache_mode!=intraday and not self.running):
@@ -823,11 +825,11 @@ class ShortTermService:
                 expected-=timedelta(days=1)
             stale=((age>600 if intraday else (cached or {}).get('date')!=day(expected)) or
                    (cached or {}).get('selection_version')!=SELECTION_VERSION)
-            # One job shared across all signed-in viewers. Never start work from
-            # entering another workbench tab or fan out to extra threads.
+            # Viewing, polling and filtering are read-only. Only the independent
+            # scheduler or an explicit refresh may start the shared producer.
             cycle=(cached or {}).get('cycle') or {}
             unfinished=cycle.get('day')==day(self.now()) and cycle.get('cursor',0)<len(cycle.get('queue',[]))
-            if (not cached or stale or refresh or unfinished) and not self.running and time.monotonic()-self.last_try>60:
+            if (refresh or schedule and (not cached or stale or unfinished)) and not self.running and time.monotonic()-self.last_try>60:
                 self.last_try=time.monotonic()
                 if self.safe(reserve_mb=96):
                     self.running=True; self.progress=0; self.error=''; self.started=time.monotonic()
@@ -889,6 +891,7 @@ class ShortTermService:
                 phase=self.phase,progress_total=self.progress_total,
                 scope=dict(self.scan_meta) if self.running else (cached or {}).get('scope',{}),
                 signals_current=signals_current,expected_date=day(expected),
+                scan_complete=bool(cycle and not unfinished and cycle.get('cursor',0)>=len(cycle.get('queue',[]))),
                 date=(cached or {}).get('date'),generated_at=generated,stale=stale,
                 scanned=(cached or {}).get('scanned',0),failed=(cached or {}).get('failed',0),
                 excluded=(cached or {}).get('excluded',{}),

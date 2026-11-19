@@ -47499,21 +47499,34 @@ def cron_short_term_live():
     if not authorized(request.headers, request.args.get("token"), os.environ.get("CRON_SECRET"),
                       audience=audience, workflow=workflow):
         abort(403)
-    if not _is_taiwan_intraday_window():
-        return jsonify(ok=True, state="outside_session", note="目前非盤中，不重算盤中訊號")
     service = globals().get("_short_term_service")
     if service is None:
         return jsonify(ok=False, state="unavailable"), 503
-    service.trigger = "獨立盤中排程"
-    result = service.payload(refresh=True)
+    intraday = _is_taiwan_intraday_window()
+    now = taiwan_now()
+    allowed = intraday or (is_twse_trading_day(now.date()) and 14 <= now.hour < 21)
+    if request.method == "POST" and not allowed:
+        return jsonify(ok=True, state="outside_session", note="目前非盤中或收盤更新時段，保留最近結果")
+    if request.method == "POST":
+        service.trigger = "獨立盤中排程" if intraday else "獨立收盤排程"
+    result = service.payload(schedule=request.method == "POST")
     meta = result["meta"]
-    accepted = bool(meta.get("building"))
-    print("短線獨立排程：%s；進度 %s/%s；%s" % (
-        "執行／排隊中" if accepted else "暫緩", meta.get("progress", 0),
-        meta.get("progress_total", 0), meta.get("error") or ""), flush=True)
-    return jsonify(ok=accepted, state="queued" if accepted else "deferred",
-                   progress=meta.get("progress"), total=meta.get("progress_total"),
-                   note=meta.get("error") or "已接收；排隊不代表掃描完成"), (202 if accepted else 503)
+    building = bool(meta.get("building"))
+    complete = bool(meta.get("scan_complete") and meta.get("signals_current"))
+    state = "queued" if building else "fresh" if complete else "deferred"
+    scope = meta.get("scope") or {}
+    progress = meta.get("progress", 0) if building else meta.get("scanned", 0)
+    total = scope.get("deep_total") or meta.get("progress_total", 0)
+    counts = meta.get("position_counts") or {}
+    if request.method == "POST":
+        print("短線獨立排程：%s；進度 %s/%s；%s" % (
+            state, progress, total, meta.get("error") or ""), flush=True)
+    return jsonify(ok=True, state=state, building=building, complete=complete,
+                   progress=progress, total=total, date=meta.get("date"),
+                   generated_at=meta.get("generated_at"),
+                   confirmed=meta.get("total", 0)-counts.get("unknown", 0),
+                   pending=counts.get("unknown", 0), failed=meta.get("failed", 0),
+                   note=meta.get("error") or ("已確認保存全市場掃描結果" if complete else "背景接續中；排隊不代表掃描完成")), (202 if building else 200)
 
 
 @app.route("/cron/radar-live", methods=["POST", "GET"])
