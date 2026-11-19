@@ -613,7 +613,7 @@ def test_four_independent_pattern_families_detect_breakout_pullback_continuation
 
 
 def test_pattern_v3_uses_separate_snapshot_namespace_and_no_price_ceiling():
-    assert st.VERSION=='short-wave-v5' and st.KEY=='short_term:short-wave-v5'
+    assert st.VERSION=='short-wave-v6' and st.KEY=='short_term:short-wave-v6'
     bars,h=market(71)
     for b in bars:
         for k in ('open','high','low','close'):b[k]*=100
@@ -875,3 +875,31 @@ def test_saved_signals_and_latest_alert_receive_the_same_sizing_without_rescan()
     assert result['alerts'][0]['allocation']['after_pct']==150
     assert 'allocation' not in events[-1]
     s.executor.submit.assert_not_called();s.store.save.assert_not_called()
+
+
+def test_pressure_fallback_uses_nearest_overhead_high_not_farthest():
+    bars,_=market(75);c=bars[-1]['close']
+    bars[-3]['high']=c+1;bars[-2]['high']=c+.3
+    assert st.levels(bars)['resistance']==pytest.approx(c+.3)
+
+
+def test_pending_reversal_cannot_veto_independent_confirmed_breakout():
+    import math
+    bars,_=market(75)
+    for i,b in enumerate(bars):
+        c=130-i*.25+math.sin(i*math.pi/5)
+        b.update(open=c-.15,close=c,high=c+.25,low=c-.4,volume=1000000)
+    c=max(b['high'] for b in bars[-21:-1])+.2
+    bars[-1].update(open=c-.3,close=c,high=c+.1,low=c-.5,volume=1400000)
+    shapes=st.technical_shapes(bars,st.levels(bars),1.4)
+    assert shapes['kind']=='breakout' and shapes['confirmed']
+    assert 'reversal' in shapes['watching'] and 'breakout' in shapes['watching']
+
+
+def test_current_risk_actions_and_entries_rank_above_old_watches_and_stale_rows():
+    base=dict(signal_stage='watch',trend=True,pending=[],technical_priority=[False,-.5,0])
+    rows=[dict(base,code=kind,current_action=kind,active=kind=='hold')
+          for kind in ['unconfirmed','hold','watch','add','entry','reduce','exit']]
+    assert [r['code'] for r in sorted(rows,key=st.clarity_rank)]==['exit','reduce','entry','add','hold','watch','unconfirmed']
+    waiting=[dict(base,code='blocked',pending=['等待風險空間']),dict(base,code='ready')]
+    assert sorted(waiting,key=st.clarity_rank)[0]['code']=='ready'
