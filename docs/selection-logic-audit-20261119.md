@@ -14,6 +14,8 @@ Rank current exits/reductions, entries/additions and held models ahead of generi
 
 ## Migration and verification
 
+The follow-up Radar state audit found that high relative volume alone was labelled "volume-backed rise", including negative and flat prices. Classify price direction explicitly, keep flat expansion distinct, and show unknown evidence for missing/invalid price or volume data. Conflicting overhead-high metadata must not turn a negative move into a bullish breakout. Positive valid breakout states remain available. This is a direction/evidence correction, not a new ranking score.
+
 Short-term uses a separate `short_term:short-wave-v6` namespace (including a separate intraday key), selection version 11. A fresh background replay is required because historical entry/risk decisions may change. Prior v5 snapshots remain untouched for rollback; v5 model rows are not relabelled as v6 signals. Actual holdings, transactions and LINE behavior are unaffected. During the first replay only genuinely processed v6 candidates are available; do not interpret partial coverage as a completed market pass.
 
 Tests cover institution/price/input-order invariance of Radar research slots, category coverage, duplicate/negative/empty inputs, nearest resistance, overlapping family confirmation, stale-versus-current/risk ordering, plus existing causal replay, real 7791 downtrend, wave holding, source timestamps, model sizing, scheduler and memory checks. Synthetic fixtures are isolated and are not production performance evidence.
