@@ -33,9 +33,12 @@ def price_band(price):
 
 def clarity_rank(row):
     stage=row.get('signal_stage','watch')
+    # JSON persistence turns tuples into lists. A partial market pass mixes
+    # restored rows with newly analysed rows, so use one comparable key type.
+    priority=tuple(row.get('technical_priority') or (True,0,0))
     return (-{'entry':3,'triggered':2,'watch':1}.get(stage,0),
             not row.get('trend',False),len(row.get('pending',[])),
-            (row.get('technical_priority') or (True,0,0))[1:],row['code'])
+            priority[1:],row['code'])
 
 
 def number(value):
