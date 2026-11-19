@@ -1,0 +1,20 @@
+name: Saved screener review statistics
+on:
+  schedule:
+    # Taiwan 14:22,16:22,20:22, separate from market snapshot triggers.
+    - cron: '22 6,8,12 * * 1-5'
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: screener-review-refresh
+  cancel-in-progress: false
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Refresh and verify saved statistics
+        run: python scripts/refresh_review.py
