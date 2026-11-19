@@ -27,9 +27,7 @@
   function startRoute(e){
     clearTimeout(statusTimer);var detail=e.detail||{};pendingPath=detail.path||null;
     document.body.classList.add('app-route-pending');syncNav();
-    if(!status){status=document.createElement('div');status.className='experience-route-status';status.setAttribute('role','status');status.setAttribute('aria-live','polite');status.hidden=true;document.body.appendChild(status);}
-    status.textContent=detail.label||'正在開啟頁面…';status.hidden=true;
-    statusTimer=setTimeout(function(){if(pendingPath)status.hidden=false;},120);
+
   }
   function syncScroll(){
     scrollFrame=0;var y=window.scrollY||0,on=y>28,below=document.documentElement.scrollHeight-innerHeight-y>3;
