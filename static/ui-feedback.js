@@ -130,7 +130,12 @@
   function endLoad(host) { var state = loadStates.get(host); if (state) clearTimeout(state.timer); loadStates.delete(host); if (host) host.removeAttribute('aria-busy'); }
   function routeEnd(ok, message, retry) {
     if (!route) return;
-    var old = route; route = null; clearTimeout(old.timer);
+    var old = route; route = null; clearTimeout(old.timer); clearTimeout(old.previewTimer);
+    if(old.preview)old.preview.remove();
+    if(ok && old.content && old.content.isConnected && !reduced()) {
+      old.content.classList.remove('ui-route-arrive');
+      requestAnimationFrame(function(){if(!route&&old.content.isConnected){old.content.classList.add('ui-route-arrive');setTimeout(function(){old.content.classList.remove('ui-route-arrive');},260);}});
+    }
     if (old.content) { old.content.classList.remove('ui-route-pending'); old.content.removeAttribute('aria-busy'); }
     each(document, '.ui-nav-pending', function (n) { n.classList.remove('ui-nav-pending'); n.removeAttribute('aria-busy'); });
     if (old.box && old.box.isConnected) old.box.remove();
@@ -155,7 +160,15 @@
     // whole screen with a second skeleton card.
     content.classList.remove('ui-route-pending'); content.setAttribute('aria-busy', 'true');
     each(document, 'a[data-app-nav]', function (a) { if (new URL(a.href, location.href).pathname === path) { a.classList.add('ui-nav-pending'); a.setAttribute('aria-busy', 'true'); } });
-    var state = { box: null, content: content, timer: 0 }; route = state;
+    var state = { box: null, content: content, timer: 0, path:path }; route = state;
+    state.previewTimer=setTimeout(function(){
+      if(route!==state||!content.isConnected)return;
+      var preview=el('div','ui-route-preview');preview.setAttribute('role','status');preview.setAttribute('aria-live','polite');
+      preview.appendChild(el('span','ui-route-preview-label',label||'正在開啟頁面'));
+      var blocks=el('div','ui-route-preview-blocks');blocks.setAttribute('aria-hidden','true');
+      for(var i=0;i<3;i++){var block=el('div','ui-route-preview-block');block.appendChild(el('i'));block.appendChild(el('i'));blocks.appendChild(block);}
+      preview.appendChild(blocks);document.body.appendChild(preview);state.preview=preview;
+    },280);
     document.dispatchEvent(new CustomEvent('stockbot:routepending',{detail:{label:label,path:path}}));
     state.timer = setTimeout(function () {
       if (route !== state) return;
@@ -478,7 +491,16 @@
   document.addEventListener('stockbot:pageleaving', cleanup);
   document.addEventListener('visibilitychange', function () { if (document.hidden) {stopNumbers();clearPress();}else{schedule();scheduleReveals();} });
   window.addEventListener('scroll',function(){stopNumbers();clearPress();scheduleReveals();}, { capture: true, passive: true }); window.addEventListener('resize',function(){stopNumbers();scheduleReveals();}, { passive: true });
-  window.addEventListener('pagehide', function () { cleanup(); routeEnd(true); });
+  window.addEventListener('pagehide', function () {
+    if(route){try{sessionStorage.setItem('sb-route-handoff',JSON.stringify({path:route.path,at:Date.now()}));}catch(ignore){}}
+    cleanup(); routeEnd(true);
+  });
+  try {
+    var handoff=JSON.parse(sessionStorage.getItem('sb-route-handoff')||'null');sessionStorage.removeItem('sb-route-handoff');
+    if(handoff&&handoff.path===location.pathname&&Date.now()-handoff.at<60000&&!reduced()){
+      var arriving=root();if(arriving){arriving.classList.add('ui-route-arrive');setTimeout(function(){arriving.classList.remove('ui-route-arrive');},260);}
+    }
+  } catch(ignore){}
   window.addEventListener('pageshow', function () { each(document, 'form[data-submitted="1"]', function (form) { delete form.dataset.submitted; form.classList.remove('tap-loading'); each(form, '[data-old-text]', function (b) { b.disabled = false; if (b.tagName === 'INPUT') b.value = b.dataset.oldText; else b.textContent = b.dataset.oldText; }); formState(form, 'error', '操作狀態已重設，請先確認是否已儲存。'); }); schedule(); });
   window.StockBotUI = { routeStart: routeStart, routeEnd: routeEnd, load: load, endLoad: endLoad, formState: formState, notify: notify, scan: schedule, reducedMotion: reduced, cleanup: cleanup, parseNumber: parseNumber, whenNear:whenNear, captureView:captureView, restoreView:restoreView };
   function boot() { var scope = root(); if (!scope) return; observer = new MutationObserver(function(records){records.forEach(function(r){
