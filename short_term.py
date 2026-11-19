@@ -49,6 +49,40 @@ def number(value):
         return None
 
 
+def signal_allocations(signals):
+    """Explain recorded model units relative to each entry, never account assets."""
+    result=[];initial=None;balance=None;reduced=0
+    for source in signals:
+        prior=(initial,balance,reduced)
+        event=dict(source);event.pop('allocation',None)
+        units=number(event.get('units'));kind=event.get('type')
+        if kind=='entry':
+            initial=units if units and units>0 else None
+            balance=0 if initial else None;reduced=0
+        before=balance
+        if units and units>0 and initial and balance is not None:
+            if kind in ('entry','add'):
+                after=balance+units
+                restoring=kind=='add' and reduced>0 and units<=reduced+1e-8
+                label='首次進場 100%' if kind=='entry' else '回補前次減碼股數（首次股數的 %g%%）'%(units/initial*100) if restoring else '加碼首次股數的 %g%%'%(units/initial*100)
+                if restoring:reduced=max(0,reduced-units)
+            elif kind in ('reduce','exit') and balance>0 and units<=balance+1e-8 and (kind!='exit' or abs(units-balance)<1e-8):
+                after=max(0,balance-units)
+                label='出清剩餘全部' if kind=='exit' else '減碼當時股數的 %g%%'%(units/balance*100)
+                if kind=='reduce':reduced+=units
+            else:
+                after=None
+            if after is not None:
+                event['allocation']=dict(label=label,before_pct=round(before/initial*100,4),
+                    after_pct=round(after/initial*100,4),change_pct=round(units/initial*100,4),
+                    basis='首次進場股數為100%，不是總資產比例')
+                if not event.get('provisional'):balance=after
+        if event.get('allocation') is None:balance=None
+        if event.get('provisional'):initial,balance,reduced=prior
+        result.append(event)
+    return result
+
+
 def day(value):
     return str(value.isoformat() if hasattr(value, 'isoformat') else value)[:10]
 
@@ -844,7 +878,8 @@ class ShortTermService:
                 (not intraday or ((cached or {}).get('intraday') and age<=1200)))
             rows=[]
             for row in (cached or {}).get('all_rows',(cached or {}).get('rows',[])):
-                row=dict(row,spreads=trade_spreads(row.get('signals',[]),row.get('price'),row.get('date')))
+                row=dict(row,signals=signal_allocations(row.get('signals',[])),
+                    spreads=trade_spreads(row.get('signals',[]),row.get('price'),row.get('date')))
                 try:quote_age=(self.now()-datetime.fromisoformat(row.get('observed_at') or '')).total_seconds()
                 except (ValueError,TypeError):quote_age=999999
                 if signals_current and row.get('date')==day(expected) and (not intraday or -60<=quote_age<=1200):
@@ -859,7 +894,8 @@ class ShortTermService:
                 spread=alert.get('spread')
                 if spread is None and row and alert['type']=='exit':
                     spread=next((t['spread'] for t in reversed(row['spreads']['completed']) if t['exit_date']==alert['date']),None)
-                alerts.append(dict(alert,spread=spread))
+                event=next((e for e in (row or {}).get('signals',[]) if e.get('id')==alert.get('id')),None)
+                alerts.append(dict(alert,spread=spread,allocation=(event or {}).get('allocation')))
             alerts=[a for a in alerts if any(r['code']==a['code'] and r.get('current_action')!='unconfirmed' for r in rows)]
             if sector=='電子':rows=[r for r in rows if r.get('sector')=='電子']
             elif sector=='非電子':rows=[r for r in rows if r.get('sector')!='電子']

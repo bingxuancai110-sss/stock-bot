@@ -10,6 +10,7 @@ engine=sys.argv[1] if len(sys.argv)>1 else 'chromium'
 m=runpy.run_path(str(REPO/'tests/test_short_term.py'))
 bars,h=m['market'](100);bars[90]['volume']=2200000
 row=m['st'].analyse('2330','隔離測試股票',m['quote'](bars),h,m['now'](bars))
+row['signals']=m['st'].signal_allocations(row['signals'])
 row2=dict(row,code='2308',name='第二檔隔離測試')
 watch_bars,watch_h=m['market'](70)
 watch=m['st'].analyse('2308','第二檔隔離測試',m['quote'](watch_bars),watch_h,m['now'](watch_bars))
@@ -78,6 +79,7 @@ with sync_playwright() as p:
  check('whole-market scope includes both markets and electronics','全市場初篩 2,200 檔' in page.locator('.st-scope').inner_text() and all(x in page.locator('.st-scope').inner_text() for x in ['上市','上櫃','電子']))
  page.locator('.st-rules > summary').click()
  check('rules do not impose absolute turnover or volume minimums','成交量、成交金額不設最低門檻' in page.locator('.st-rules').inner_text())
+ check('rules define initial versus current shares and a concrete add reduce restore example',all(x in page.locator('.st-rules').inner_text() for x in ['不是總資產','1000股→加500股→減750股→回補750股','最多一次','剩餘全部']))
  page.locator('.st-rules > summary').click()
  page.locator('.st-data > summary').click()
  check('current notification is above candidates and old entries are not announced','進場 0' in notice_text() and page.locator('.st-notice-event').count()==0 and page.locator('.st-notices').bounding_box()['y']<page.locator('.st-cards').bounding_box()['y'])
@@ -95,10 +97,12 @@ with sync_playwright() as p:
  check('old arrows require explicit history mode',page.locator('[data-marker]').count()>=2 and '歷史重播，非目前買點' in page.locator('.st-chart-context').inner_text())
  check('expanded stock quote retains neutral text and positive change stays red',page.locator('.st-quote strong').first.evaluate('(e)=>getComputedStyle(e).color===getComputedStyle(e.closest("#wb-short-term")).color') and page.locator('.st-quote .st-up').first.evaluate('(e)=>getComputedStyle(e).color==="rgb(197, 52, 59)"'))
  check('timeline shows dates actions and reasons directly below chart without extra clicks',page.locator('.st-history').is_visible() and row['signals'][0]['date'] in page.locator('.st-history').inner_text() and row['signals'][0]['reason'] in page.locator('.st-history').text_content() and '當時硬停損' in page.locator('.st-history').inner_text())
+ check('timeline makes the exact add amount and resulting size explicit','加碼首次股數的 50%' in page.locator('.st-history').inner_text() and '100% → 150%' in page.locator('.st-history').inner_text())
  check('protection and profit reference are visible','硬停損價' in page.locator('.st-inspector').inner_text() and '停利參考' in page.locator('.st-inspector').inner_text())
  check('chip data date is explicit and precedes signal date',row['chip']['date'] in page.locator('.st-chip-detail').inner_text() and row['chip']['date']<row['date'])
  marker=page.locator('[data-marker]').first;marker.click()
  check('clicking marker reveals its original reason and stop','歷史規則重播' in page.locator('.st-inspector').inner_text() and row['signals'][0]['reason'] in page.locator('.st-inspector').inner_text() and str(row['signals'][0]['stop']) in page.locator('.st-inspector').inner_text())
+ check('selected marker shows its size without referring to account assets','首次進場 100%' in page.locator('.st-inspector .st-sizing').inner_text() and '首次股數為100%' in page.locator('.st-inspector .st-sizing').inner_text())
  page.locator('.st-current').click();page.locator('[data-range="30"]').click()
  check('return to current clears historical arrows',page.locator('[data-marker]').count()==0 and page.locator('.st-history-toggle').get_attribute('aria-pressed')=='false')
  check('period changes in place',page.locator('[data-range="30"]').get_attribute('aria-pressed')=='true')
@@ -126,10 +130,12 @@ with sync_playwright() as p:
   bar['volume']=10
  entry_bars[-1]['volume']=14
  new=m['st'].analyse('2330','新進場隔離測試',m['quote'](entry_bars),[],m['now'](entry_bars))
+ new['signals']=m['st'].signal_allocations(new['signals'])
  new.update(sector='電子',market='上櫃')
  payload.update(rows=[new],alerts=m['st'].latest_alerts([new],new['date']),meta=dict(building=False,signals_current=True,date=new['date'],scanned=80))
  page.locator('.st-refresh').click();page.locator('.st-notice-event[data-kind="entry"]').wait_for()
  check('genuine new entry appears at top with date stop and target','進場 1' in str(page.locator('.st-notices h3').get_attribute('aria-label') or '') and new['date'] in page.locator('.st-notice-event').inner_text() and '硬停損' in page.locator('.st-notice-event').inner_text())
+ check('latest notice and collapsed current card expose the same share basis','首次進場 100%' in page.locator('.st-notice-event .st-sizing').inner_text() and '0% → 100%' in page.locator('.st-card>.st-sizing').inner_text())
  check('high-price thinly traded electronic stock can enter without institutional evidence','上櫃 電子' in page.locator('.st-chart-head').inner_text() and page.locator('.st-chip-badge').count()==0 and page.locator('.st-notice-event[data-kind="entry"]').count()==1 and 'NaN' not in page.locator('#wb-short-term').inner_text())
  payload['meta']['signals_current']=False;payload['meta']['expected_date']='2026-11-18'
  page.locator('.st-refresh').click();page.get_by_text('最新訊號尚未確認',exact=True).wait_for()
