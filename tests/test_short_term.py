@@ -773,3 +773,36 @@ def test_wave_support_recovery_can_restore_reduced_units_without_exceeding_risk_
     entry=out['signals'][0];event=restored[0]
     cost=.5*entry['price']+.5*event['price']
     assert cost-event['stop']<=entry['price']-entry['stop']+.03
+
+
+def test_json_checkpoint_and_fresh_rows_have_identical_comparable_rank():
+    import json
+    rows=[dict(code=str(1000+i),signal_stage='watch',trend=True,pending=[],
+               technical_priority=(False,-.02+i*.01,.03)) for i in range(3)]
+    restored=json.loads(json.dumps(rows))
+    assert st.clarity_rank(restored[0])==st.clarity_rank(rows[0])
+    assert [r['code'] for r in sorted([restored[2],rows[0],restored[1]],key=st.clarity_rank)]==['1000','1001','1002']
+
+
+def test_rebuild_publishes_mixed_json_checkpoint_and_new_analysis():
+    import json
+    bars,h=market(71);s=service();s.now=lambda:now(bars)
+    old=st.analyse('1001','saved',quote(bars),h,now(bars))
+    old['date']=(now(bars)-timedelta(days=1)).date().isoformat()
+    s.cached=json.loads(json.dumps(dict(all_rows=[old],date=old['date'])))
+    def inputs(keep):
+        s.full_queue=['1000','1001']
+        return ['1000'],{'1000':'fresh'},{'1000':h}
+    s.inputs=inputs;s.quote.return_value=quote(bars)
+    s.build()
+    assert not s.error
+    s.store.save.assert_called_once()
+    saved=s.store.save.call_args.args[1]
+    assert {r['code'] for r in saved['all_rows']}=={'1000','1001'}
+    assert saved['date']==bars[-1]['date']
+    s.loaded=True;s.cache_mode=False
+    result=s.payload()
+    by_code={r['code']:r for r in result['rows']}
+    assert result['meta']['signals_current']
+    assert by_code['1000']['current_action']!='unconfirmed'
+    assert by_code['1001']['current_action']=='unconfirmed'
