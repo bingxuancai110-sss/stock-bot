@@ -29,11 +29,16 @@ with sync_playwright() as p:
    r.fulfill(json=populated_payload(REPO) if state['us_populated'] else dict(snapshot=None,tw_research={},history=[],supply_chain=[],industry_guides={},tw_companies=[],risk_profiles=[],stop_profiles=[],signal_explanations={},signal_trends={}));return
   if u.path=='/web/market/drawings':r.fulfill(json=dict(ok=True,id='fixture-drawing-'+str(state.get('drawing_count',0)+1),drawings=[]));state['drawing_count']=state.get('drawing_count',0)+1;return
   if u.path=='/web/api/positions/history':r.fulfill(json=dict(ok=True,events=[dict(date='2026-10-30',code='2330',name='台積電',type='sell',label='賣出',shares=10,price=1500,amount=15000,realized_pl=1200)]));return
+  if u.path=='/web/api/pick-factors':
+   if state.get('factor_hold'):state['held_factor']=r;return
+   if state.get('factor_error'):r.fulfill(status=503,body='isolated failure');return
+   stamp=state.get('review_at','2026-11-19T18:00:00+08:00')
+   r.fulfill(body='<section class="factor-fixture">已保存因子分析</section>',content_type='text/html',headers={'X-Factors-Status':'fresh','X-Factors-Available':'1','X-Factors-Updated-At':stamp});return
   if u.path=='/web/api/workbench/review':
    if state.get('review_error'):r.fulfill(status=503,json=dict(ok=False));return
    ready_review=state.get('review_ready',False)
    modes=[dict(key='turning',label='轉折',available=True,total_picks=1,note='已保存1筆隔離測試推薦',statistics_ready=True,horizons=[dict(period='5–19 日',samples=1,average_pct=10,median_pct=10,win_rate=100,market_pct=2,excess_pct=8,sample_rows=[])])] if ready_review else []
-   r.fulfill(json=dict(ok=True,modes=modes,statistics_building=not ready_review,statistics_deferred=False,computed_at='2026-11-19T18:00:00+08:00' if ready_review else None));return
+   r.fulfill(json=dict(ok=True,modes=modes,statistics_building=not ready_review,statistics_deferred=False,computed_at=state.get('review_at','2026-11-19T18:00:00+08:00') if ready_review else None));return
   if '/api/workbench/' in u.path:r.fulfill(json=dict(ok=True,rows=[dict(code='2330',name='隔離測試台積電',source='黑馬',row_key='fixture-2330',score=80,total_score=80,price=100,change_pct=1.5,industry='測試產業',signal='測試快照',detail={})],sources={'黑馬':dict(available=True,date='2026-11-04')},personal={},meta={'market_open':False,'available':True}));return
   if '/api/' in u.path:r.fulfill(json=dict(market_open=False,updates=[],note='測試收盤快照'));return
   if u.path=='/web/position-trend':r.fulfill(body='<div>走勢載入測試</div>');return
@@ -433,6 +438,19 @@ with sync_playwright() as p:
  state['review_error']=True;page.locator('#wb-refresh').click();page.wait_for_function("document.querySelector('#wb-note').textContent.includes('保留上次統計')")
  check('review manual refresh actually reads and keeps old statistics after an error',page.locator('.wb-review-card').is_visible() and sum(path=='/web/api/workbench/review' for method,path,q in requests)>before)
  state['review_error']=False;page.clock.fast_forward(15001);page.wait_for_timeout(80)
+ state['factor_hold']=True;page.locator('#wbFactors>summary').click();page.wait_for_timeout(80)
+ check('factor analysis makes one read on expansion',state.get('held_factor') is not None)
+ page.evaluate("window.__factorNode=document.getElementById('wbFactors')")
+ state['review_ready']=False;page.locator('#wb-refresh').click();page.wait_for_function("document.querySelector('#wb-note').textContent.includes('正在建立')")
+ check('review polling preserves the exact expanded factor node while its response is pending',page.evaluate("window.__factorNode===document.getElementById('wbFactors')&&window.__factorNode.open"))
+ state['factor_hold']=False;state.pop('held_factor').fulfill(body='<section class="factor-fixture">已保存因子分析</section>',content_type='text/html',headers={'X-Factors-Status':'fresh','X-Factors-Available':'1','X-Factors-Updated-At':'2026-11-19T18:00:00+08:00'})
+ page.locator('.factor-fixture').wait_for()
+ check('factor response reaches the live panel after its parent rerenders',page.locator('#wbFactors').evaluate('(e)=>e.open') and '已保存因子分析' in page.locator('#wbFactorsBox').inner_text())
+ state['review_ready']=True;page.clock.fast_forward(15001);page.wait_for_timeout(80)
+ state['review_at']='2026-11-19T19:00:00+08:00';state['factor_error']=True;page.locator('#wb-refresh').click();page.locator('.wb-factor-retry').wait_for()
+ check('new statistics revalidate factors and failed refresh retains saved groups',page.locator('.factor-fixture').is_visible() and page.locator('#wbFactors').evaluate('(e)=>e.open'))
+ state['factor_error']=False;page.locator('.wb-factor-retry').click();page.wait_for_function("document.getElementById('wbFactors').dataset.updated==='2026-11-19T19:00:00+08:00'")
+ check('factor retry recovers in place and removes the retry button',page.locator('.factor-fixture').is_visible() and page.locator('.wb-factor-retry').count()==0)
  state['review_ready']=False;page.evaluate("sessionStorage.removeItem('stockbot_workbench_review_v4')")
  ready('/web/workbench');page.wait_for_selector('#wb-tabs button[data-source="成效"]')
  page.locator('#wb-tabs button[data-source="成效"]').click();page.wait_for_selector('.wb-review-grid')

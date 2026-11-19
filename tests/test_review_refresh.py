@@ -17,6 +17,7 @@ def test_review_refresh_is_scoped_and_get_is_read_only(monkeypatch,authorized,me
     ns=dict(request=request,jsonify=jsonify,abort=abort,os=os,
         DEFAULT_WEB_BASE_URL='https://stock-bot-6xct.onrender.com',
         build_workbench_review_payload=build,_workbench_review_lock=threading.Lock(),
+        _workbench_review_snapshot_complete=lambda data:True,
         _WORKBENCH_REVIEW_REFRESH_RUNNING=building,_WORKBENCH_REVIEW_CACHE_SECONDS=900,
         time=Mock(time=lambda:123),_workbench_review_cache=dict(at=100,computed_at='saved',
         evaluations={'turning':{'total_picks':10,'horizons':{'5–19 日':{'n':8}}}}))

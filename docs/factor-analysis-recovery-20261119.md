@@ -1,0 +1,11 @@
+# Saved factor analysis and stable expansion
+
+The factor endpoint still synchronously analysed three recommendation modes and downloaded each mode's historical prices. Production requests took tens of seconds. Meanwhile review refresh replaced its entire rows container, destroying the open details node; delayed factor responses then updated a detached node. The old client set its loaded flag before receiving a result and had no timeout or retry button.
+
+Compute factor groups in the existing shared review worker, using its one mature-symbol historical price map. Perform existing same-day factor synchronization once in that worker, not in the read endpoint. Retain the original grouping/return formulas. Save factors and review results atomically in the existing workbench_review:v1 snapshot. Legacy snapshots without all three factor keys remain readable for review results but require a background upgrade before reporting fresh completion. No schema or account/trade changes.
+
+The authenticated factor endpoint reads saved groups and returns HTML plus freshness/availability/timestamp headers. It does no synchronous analysis or quote downloads. Missing groups return 202 and a truthful pending state. Older saved groups remain visible during updates.
+
+Preserve the actual expanded details node through review rerenders, including in-flight response targets. Revalidate when the saved review timestamp advances. Reads have a fifteen-second timeout, retry in place, preserve previous content on failure or temporary unavailability, and stop following when closed/departed/hidden. Retry controls and a bounded thirty-minute following window prevent an indefinite silent spinner.
+
+Verification covers shared quote identity, absence of synchronous factor calculation, existing group math, legacy snapshot upgrade, preservation of the same open DOM node through a parent rerender, delayed response delivery, stale-result retention, retry recovery and surrounding app regressions. Deploy then dispatch the existing review-refresh workflow; require saved factor sample/group counts for all three modes. Rollback is a code revert; extra factor_data in the shared JSON snapshot is ignored by older readers.

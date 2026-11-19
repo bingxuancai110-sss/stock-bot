@@ -17,7 +17,8 @@ class ReviewBackpressureTests(unittest.TestCase):
         for name in {
                 '_start_workbench_review_background_refresh', 'evaluate_picks',
                 '_review_price_map', '_background_work_memory_safe'
-                ,'build_workbench_review_payload','_load_workbench_review_snapshot','_save_workbench_review_snapshot'
+                ,'build_workbench_review_payload','_load_workbench_review_snapshot','_save_workbench_review_snapshot',
+                '_get_workbench_review_snapshot','_workbench_review_snapshot_complete'
             }:
             fragment=re.search(r'(?ms)^def '+name+r'\b.*?(?=^def |^@|\Z)',source)[0]
             node=next(n for n in ast.parse(fragment).body if isinstance(n,ast.FunctionDef))
@@ -39,6 +40,8 @@ class ReviewBackpressureTests(unittest.TestCase):
                        get_picks_since=Mock(return_value=[]),
                        _review_price_map=Mock(return_value={}),_jsonable=lambda x:x,
                        _save_workbench_review_snapshot=Mock(return_value=True),
+                       _sync_today_pick_factors_from_screener_snapshot=Mock(),
+                       analyze_pick_factors=Mock(return_value={'n':0,'groups':[]}),
                        _workbench_merge_evaluations=Mock(return_value={'samples': []}))
         exec(self.compiled['_start_workbench_review_background_refresh'], self.ns)
         self.start = self.ns['_start_workbench_review_background_refresh']
@@ -126,6 +129,9 @@ class ReviewBackpressureTests(unittest.TestCase):
         calls=self.ns['_workbench_merge_evaluations'].call_args_list
         self.assertEqual([c.args[0] for c in calls],[('blackhorse',),('radar','radar_live'),('turning',)])
         self.assertTrue(all(c.kwargs['price_map'] is prices for c in calls))
+        factor_calls=self.ns['analyze_pick_factors'].call_args_list
+        self.assertEqual([c.args[0] for c in factor_calls],['blackhorse','radar','turning'])
+        self.assertTrue(all(c.kwargs['price_map'] is prices and not c.kwargs['sync_factors'] for c in factor_calls))
         self.ns['_save_workbench_review_snapshot'].assert_called_once()
 
     def test_persistence_failure_preserves_previous_statistics(self):
@@ -149,7 +155,7 @@ class ReviewBackpressureTests(unittest.TestCase):
             _start_workbench_review_background_refresh=Mock(return_value=False),
             _workbench_review_mode_picks=lambda *a:[],
             _workbench_number=lambda v,default=None:default if v is None else float(v))
-        exec(self.compiled['build_workbench_review_payload'],self.ns)
+        for name in ('_workbench_review_snapshot_complete','_get_workbench_review_snapshot','build_workbench_review_payload'):exec(self.compiled[name],self.ns)
         payload=self.ns['build_workbench_review_payload']()
         self.assertTrue(payload['statistics_stale'] and payload['statistics_deferred'])
         self.assertTrue(all(m['statistics_ready'] and m['horizons'][0]['average_pct']==10 for m in payload['modes']))
@@ -164,3 +170,10 @@ class ReviewBackpressureTests(unittest.TestCase):
         self.assertTrue(ns['_save_workbench_review_snapshot'](saved))
         self.assertEqual(store.save.call_args.args[0],'workbench_review:v1')
         self.assertEqual(store.save.call_args.kwargs['data_date'],datetime(2026,11,19).date())
+
+    def test_legacy_review_without_factor_groups_requires_refresh_but_keeps_evaluations(self):
+        ns={};exec(self.compiled['_workbench_review_snapshot_complete'],ns)
+        snapshot={'evaluations':{m:None for m in ('blackhorse','radar','turning')}}
+        assert not ns['_workbench_review_snapshot_complete'](snapshot)
+        snapshot['factor_data']={m:None for m in ('blackhorse','radar','turning')}
+        assert ns['_workbench_review_snapshot_complete'](snapshot)
