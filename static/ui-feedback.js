@@ -130,8 +130,7 @@
   function endLoad(host) { var state = loadStates.get(host); if (state) clearTimeout(state.timer); loadStates.delete(host); if (host) host.removeAttribute('aria-busy'); }
   function routeEnd(ok, message, retry) {
     if (!route) return;
-    var old = route; route = null; clearTimeout(old.timer); clearTimeout(old.previewTimer);
-    if(old.preview)old.preview.remove();
+    var old = route; route = null; clearTimeout(old.timer);
     if(ok && old.content && old.content.isConnected && !reduced()) {
       old.content.classList.remove('ui-route-arrive');
       requestAnimationFrame(function(){if(!route&&old.content.isConnected){old.content.classList.add('ui-route-arrive');setTimeout(function(){old.content.classList.remove('ui-route-arrive');},260);}});
@@ -158,17 +157,9 @@
     // Keep the current page in place while the next fragment loads. The shared
     // top progress line and pending tab provide feedback without covering the
     // whole screen with a second skeleton card.
-    content.classList.remove('ui-route-pending'); content.setAttribute('aria-busy', 'true');
+    content.classList.add('ui-route-pending'); content.setAttribute('aria-busy', 'true');
     each(document, 'a[data-app-nav]', function (a) { if (new URL(a.href, location.href).pathname === path) { a.classList.add('ui-nav-pending'); a.setAttribute('aria-busy', 'true'); } });
     var state = { box: null, content: content, timer: 0, path:path }; route = state;
-    state.previewTimer=setTimeout(function(){
-      if(route!==state||!content.isConnected)return;
-      var preview=el('div','ui-route-preview');preview.setAttribute('role','status');preview.setAttribute('aria-live','polite');
-      preview.appendChild(el('span','ui-route-preview-label',label||'正在開啟頁面'));
-      var blocks=el('div','ui-route-preview-blocks');blocks.setAttribute('aria-hidden','true');
-      for(var i=0;i<3;i++){var block=el('div','ui-route-preview-block');block.appendChild(el('i'));block.appendChild(el('i'));blocks.appendChild(block);}
-      preview.appendChild(blocks);document.body.appendChild(preview);state.preview=preview;
-    },280);
     document.dispatchEvent(new CustomEvent('stockbot:routepending',{detail:{label:label,path:path}}));
     state.timer = setTimeout(function () {
       if (route !== state) return;
