@@ -135,6 +135,9 @@ def service(safe=True):
 
 def test_all_viewers_share_one_background_job_and_get_no_fake_rows():
     s=service()
+    assert not s.payload()['meta']['building']
+    s.executor.submit.assert_not_called()
+    s.payload(schedule=True)
     for _ in range(4):
         p=s.payload()
         assert p['meta']['building'] and p['rows']==[]
@@ -145,7 +148,7 @@ def test_all_viewers_share_one_background_job_and_get_no_fake_rows():
 def test_memory_rejection_preserves_saved_rows_and_does_not_submit_work():
     s=service(False)
     s.store.load.return_value={'payload':{'rows':[{'code':'2330'}],'generated_at':'2026-11-16T16:00:00','date':'2026-11-16'}}
-    p=s.payload()
+    p=s.payload(schedule=True)
     assert p['rows'][0]['code']=='2330' and p['rows'][0]['current_action']=='unconfirmed'
     assert p['meta']['stale'] and not p['meta']['building']
     assert p['meta']['error']
@@ -190,7 +193,7 @@ def test_a_rebound_can_be_watched_without_claiming_uptrend_confirmation():
 def test_old_selection_snapshot_is_rebuilt_even_when_age_is_fresh():
     s=service()
     s.store.load.return_value={'payload':{'rows':[],'generated_at':'2026-11-17T16:00:00'}}
-    result=s.payload()
+    result=s.payload(schedule=True)
     assert result['meta']['building'] and result['meta']['pool_limit']==80
     s.executor.submit.assert_called_once()
 
@@ -735,7 +738,7 @@ def test_all_market_batches_accumulate_and_resume_beyond_eighty_without_rescanni
     first=copy.deepcopy(s.cached)
     assert first['cycle']['cursor']==80 and first['scope']['deep_total']==170 and not first['scope']['deep_complete']
     assert len(first['all_rows'])==80 and s.running
-    s.build();assert s.cached['cycle']['cursor']==144
+    s.build();assert s.cached['cycle']['cursor']==160
     s.build();assert s.cached['cycle']['cursor']==170 and not s.running
     assert s.cached['scope']['deep_complete'] and len(s.cached['all_rows'])==170
     assert len({c.args[0] for c in s.quote.call_args_list})==170 and s.quote.call_count<=240 and s.light.call_count==3
@@ -745,7 +748,7 @@ def test_all_market_batches_accumulate_and_resume_beyond_eighty_without_rescanni
     restarted.inputs=Mock(side_effect=AssertionError('must resume existing full-market cycle'))
     restarted.histories=Mock(side_effect=lambda codes:{c:[] for c in codes});restarted.quote.return_value=quote(bars)
     restarted.build()
-    assert restarted.cached['cycle']['cursor']==144 and restarted.quote.call_count==80
+    assert restarted.cached['cycle']['cursor']==160 and restarted.quote.call_count==80
     restarted.inputs.assert_not_called()
 
 
@@ -758,7 +761,8 @@ def test_partial_time_budget_saves_completed_symbols_and_never_claims_full_cover
     s.build()
     assert s.cached['cycle']['cursor']==2 and s.cached['scanned']==2
     assert not s.cached['scope']['deep_complete'] and '逾時' in s.cached['scope']['scan_warning']
-    assert not s.running and s.quote.call_count==2
+    assert s.running and s.quote.call_count==2
+    s.executor.submit.assert_called_once_with(s.build)
 
 
 def test_wave_support_recovery_can_restore_reduced_units_without_exceeding_risk_budget():
@@ -806,3 +810,25 @@ def test_rebuild_publishes_mixed_json_checkpoint_and_new_analysis():
     assert result['meta']['signals_current']
     assert by_code['1000']['current_action']!='unconfirmed'
     assert by_code['1001']['current_action']=='unconfirmed'
+
+
+def test_reopening_polling_and_filtering_stale_pages_never_restarts_scan():
+    s=service();s.store.load.return_value={'payload':dict(date='2026-11-16',
+        generated_at='2026-11-16T16:00:00',selection_version=st.SELECTION_VERSION,
+        all_rows=[],cycle=dict(day='2026-11-17',queue=['1000','1001'],cursor=1))}
+    for _ in range(4):
+        assert s.payload()['meta']['stale']
+        s.payload(sector='電子');s.payload(position='waiting')
+    s.executor.submit.assert_not_called()
+    s.payload(schedule=True)
+    s.executor.submit.assert_called_once_with(s.build)
+
+
+def test_scheduled_check_of_completed_close_does_not_restart_finished_scan():
+    s=service();s.store.load.return_value={'payload':dict(date='2026-11-17',
+        generated_at=s.now().isoformat(),selection_version=st.SELECTION_VERSION,
+        all_rows=[],cycle=dict(day='2026-11-17',queue=['1000'],cursor=1))}
+    for _ in range(3):
+        out=s.payload(schedule=True)
+        assert out['meta']['scan_complete'] and out['meta']['signals_current']
+    s.executor.submit.assert_not_called()
