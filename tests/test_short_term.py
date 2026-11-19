@@ -832,3 +832,46 @@ def test_scheduled_check_of_completed_close_does_not_restart_finished_scan():
         out=s.payload(schedule=True)
         assert out['meta']['scan_complete'] and out['meta']['signals_current']
     s.executor.submit.assert_not_called()
+
+
+def test_allocation_explains_initial_add_current_half_restore_and_full_exit():
+    events=[dict(id=str(i),type=kind,units=units) for i,(kind,units) in enumerate([
+        ('entry',1),('add',.5),('reduce',.75),('add',.75),('exit',1.5),
+        ('entry',1),('reduce',.5),('add',.5)])]
+    plans=[e['allocation'] for e in st.signal_allocations(events)]
+    assert [(p['before_pct'],p['after_pct']) for p in plans]==[
+        (0,100),(100,150),(150,75),(75,150),(150,0),(0,100),(100,50),(50,100)]
+    assert plans[1]['label']=='加碼首次股數的 50%'
+    assert plans[2]['label']=='減碼當時股數的 50%' and plans[2]['change_pct']==75
+    assert plans[3]['label']=='回補前次減碼股數（首次股數的 75%）' and plans[3]['change_pct']==75
+    assert plans[4]['label']=='出清剩餘全部'
+    assert all('不是總資產' in p['basis'] for p in plans)
+    assert all('allocation' not in e for e in events)
+
+
+def test_unknown_units_and_partial_exit_do_not_invent_an_allocation():
+    events=[dict(type='entry'),dict(type='add',units=.5),dict(type='entry',units=1),dict(type='exit',units=.5)]
+    result=st.signal_allocations(events)
+    assert [bool(e.get('allocation')) for e in result]==[False,False,True,False]
+
+
+def test_provisional_sizing_does_not_change_confirmed_position_or_restore_state():
+    events=[dict(type='entry',units=1),dict(type='reduce',units=.5,provisional=True),dict(type='add',units=.5)]
+    result=st.signal_allocations(events)
+    assert result[1]['allocation']['after_pct']==50
+    assert result[2]['allocation']['label']=='加碼首次股數的 50%'
+    assert result[2]['allocation']['before_pct']==100 and result[2]['allocation']['after_pct']==150
+
+
+def test_saved_signals_and_latest_alert_receive_the_same_sizing_without_rescan():
+    s=service();events=[dict(id='initial',type='entry',date='2026-11-16',units=1,price=100),
+        dict(id='add',type='add',date='2026-11-17',units=.5,price=110)]
+    row=dict(code='2330',name='fixture',date='2026-11-17',price=110,signals=events)
+    saved=dict(date='2026-11-17',generated_at=s.now().isoformat(),selection_version=st.SELECTION_VERSION,
+        all_rows=[row],alerts=[dict(events[-1],code='2330',name='fixture')])
+    s.store.load.return_value={'payload':saved}
+    result=s.payload()
+    assert result['rows'][0]['signals'][-1]['allocation']==result['alerts'][0]['allocation']
+    assert result['alerts'][0]['allocation']['after_pct']==150
+    assert 'allocation' not in events[-1]
+    s.executor.submit.assert_not_called();s.store.save.assert_not_called()
