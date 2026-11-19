@@ -5924,7 +5924,7 @@ def _sync_today_pick_factors_from_screener_snapshot(mode):
     return updated
 
 
-def analyze_pick_factors(mode, days=90):
+def analyze_pick_factors(mode, days=90, price_map=None, sync_factors=True):
     """
     選股因子分析：把既有推薦紀錄按不同維度切開，看哪一群表現好、哪一群拖累。
 
@@ -5940,7 +5940,7 @@ def analyze_pick_factors(mode, days=90):
     注意：五個子分數現在已存進 pick_history；但樣本仍在累積，不能只靠小樣本調權重。
     另外提供「推薦日等權」統計，避免同一天 5 檔被當成 5 個獨立實驗。
     """
-    _sync_today_pick_factors_from_screener_snapshot(mode)
+    if sync_factors:_sync_today_pick_factors_from_screener_snapshot(mode)
     picks = get_picks_since(mode, days)
     if not picks:
         return None
@@ -5967,8 +5967,8 @@ def analyze_pick_factors(mode, days=90):
         stored_factor_days[field] = len(set(str(x.get("date"))[:10] for x in valid))
 
     span = "1y" if days > 120 else "6mo"
-    price_map = get_realtime_stocks_bulk(
-        list({p["code"] for p in picks}), workers=1, rng=span)
+    if price_map is None:
+        price_map = _review_price_map(list({p["code"] for p in picks}),span)
     today = taiwan_today()
 
     rows = []
@@ -35730,26 +35730,25 @@ def web_chip_bins(uid):
 @app.route("/web/api/pick-factors")
 @web_login_required
 def web_pick_factors(uid):
-    """
-    選股因子分析。獨立端點、展開才呼叫——它要抓所有推薦過的標的報價，
-    比成效頁本身還重，不該讓每個人開頁面都先等它算完。
-    """
+    """Read saved factor groups; expensive calculations belong to the shared job."""
+    from flask import make_response
+    cached, fresh = _get_workbench_review_snapshot()
+    factors = cached.get("factor_data") or {}
+    available = all(mode in factors for mode in ("blackhorse","radar","turning"))
+    updated = str(cached.get("computed_at") or "")
     parts = []
-    for mode, label in (("blackhorse", "黑馬"), ("radar", "雷達"),
-                        ("turning", "轉折")):
-        try:
-            parts.append(render_pick_factors(label, analyze_pick_factors(mode)))
-        except Exception as e:
-            # 暫時把實際錯誤顯示在已登入的選股工作台，停止盲猜。
-            # 下一版確認根因後會移除這個診斷文字。
-            err_type = type(e).__name__
-            err_msg = str(e) or "（沒有錯誤訊息）"
-            print(f"❌ 因子分析失敗 {label}: {err_type}: {err_msg}")
-            parts.append(
-                f'<div class="sub">{html.escape(label)}：因子分析發生錯誤。'
-                f'<br><small>診斷：{html.escape(err_type)}：{html.escape(err_msg)[:500]}</small></div>'
-            )
-    return "".join(parts)
+    if available:
+        parts.append('<div class="wb-factor-read-status">因子統計更新 '+html.escape(updated.replace('T',' ')[:19])+(' · 背景更新中' if not fresh else '')+'</div>')
+        for mode,label in (("blackhorse","黑馬"),("radar","雷達"),("turning","轉折")):
+            parts.append(render_pick_factors(label,factors[mode]))
+    else:
+        parts.append('<div class="wb-factor-read-status">因子分析正在背景整理，完成後會自動顯示。</div>')
+    response = make_response("".join(parts),200 if available else 202)
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Factors-Status'] = 'fresh' if fresh else 'building' if _WORKBENCH_REVIEW_REFRESH_RUNNING else 'deferred'
+    response.headers['X-Factors-Available'] = '1' if available else '0'
+    response.headers['X-Factors-Updated-At'] = updated
+    return response
 
 
 @app.route("/web/api/score-validation")
@@ -47488,10 +47487,12 @@ def cron_review_refresh():
     if request.method == "POST":build_workbench_review_payload()
     with _workbench_review_lock:cached = dict(_workbench_review_cache)
     building = bool(_WORKBENCH_REVIEW_REFRESH_RUNNING)
-    fresh = bool(cached.get("evaluations")) and time.time()-float(cached.get("at") or 0)<_WORKBENCH_REVIEW_CACHE_SECONDS
+    fresh = _workbench_review_snapshot_complete(cached) and time.time()-float(cached.get("at") or 0)<_WORKBENCH_REVIEW_CACHE_SECONDS
     return jsonify(ok=True,state="building" if building else "fresh" if fresh else "deferred",
         building=building,computed_at=cached.get("computed_at"),
         missing_quotes=cached.get("missing_quotes",0),
+        factors={key:{"samples":(value or {}).get("n",0),"groups":len((value or {}).get("groups") or [])}
+                 for key,value in (cached.get("factor_data") or {}).items()},
         modes={key:{"recommendations":(value or {}).get("total_picks",0),
                     "samples":sum(v.get("n",0) for v in ((value or {}).get("horizons") or {}).values())}
                for key,value in (cached.get("evaluations") or {}).items()})
@@ -49351,6 +49352,11 @@ def _save_workbench_review_snapshot(snapshot):
         data_date=taiwan_today(), source_meta={"kind":"recommendation_review","version":1})
 
 
+def _workbench_review_snapshot_complete(snapshot):
+    modes={"blackhorse","radar","turning"}
+    return modes.issubset(snapshot.get("evaluations") or {}) and modes.issubset(snapshot.get("factor_data") or {})
+
+
 def _workbench_review_mode_picks(mode_keys, days=90):
     """沿用既有 pick_history，並相容早期盤中雷達可能留下的 radar_live mode。"""
     rows = []
@@ -49435,6 +49441,8 @@ def _start_workbench_review_background_refresh():
             if not _background_work_memory_safe(reserve_mb=160):
                 return
             today = taiwan_today()
+            for mode in ("blackhorse","radar","turning"):
+                _sync_today_pick_factors_from_screener_snapshot(mode)
             codes = sorted({p["code"] for mode in ("blackhorse","radar","radar_live","turning")
                 for p in get_picks_since(mode,90)
                 if hasattr(p.get("date"),"__sub__") and (today-p["date"]).days>=5})
@@ -49444,8 +49452,11 @@ def _start_workbench_review_background_refresh():
             evaluations = {"blackhorse": _workbench_merge_evaluations(("blackhorse",),price_map=prices),
                            "radar": _workbench_merge_evaluations(("radar", "radar_live"),price_map=prices),
                            "turning": _workbench_merge_evaluations(("turning",),price_map=prices)}
+            factors = {mode:analyze_pick_factors(mode,price_map=prices,sync_factors=False)
+                       for mode in ("blackhorse","radar","turning")}
             snapshot = {"at":time.time(),"computed_at":taiwan_now().isoformat(),
                         "evaluations":_jsonable(evaluations),
+                        "factor_data":_jsonable(factors),
                         "missing_quotes":sum(not prices.get(c) for c in codes)}
             if not _save_workbench_review_snapshot(snapshot):
                 raise RuntimeError("成效快照尚未確認保存，保留原統計")
@@ -49466,7 +49477,7 @@ def _start_workbench_review_background_refresh():
     return True
 
 
-def build_workbench_review_payload():
+def _get_workbench_review_snapshot():
     """先回傳真實 pick_history 累積紀錄；成熟報酬沿用舊公式，由背景快取補上。"""
     global _WORKBENCH_REVIEW_SNAPSHOT_LOADED, _workbench_review_cache
     now = time.time()
@@ -49480,9 +49491,14 @@ def build_workbench_review_payload():
             except Exception as exc:
                 print("⚠️ 成效已保存快照讀取失敗: %s" % type(exc).__name__)
         cached = dict(_workbench_review_cache)
-    fresh = bool(cached.get("evaluations")) and now - float(cached.get("at") or 0) < _WORKBENCH_REVIEW_CACHE_SECONDS
+    fresh = _workbench_review_snapshot_complete(cached) and now - float(cached.get("at") or 0) < _WORKBENCH_REVIEW_CACHE_SECONDS
     if not fresh:
         _start_workbench_review_background_refresh()
+    return cached, fresh
+
+
+def build_workbench_review_payload():
+    cached, fresh = _get_workbench_review_snapshot()
     today = taiwan_today()
     modes = []
     for key, label, source_modes in (("blackhorse", "黑馬", ("blackhorse",)),
@@ -50148,7 +50164,9 @@ def render_workbench_body(initial_tab=""):
     state.reviewPollCount=(state.reviewPollCount||0)+1;
     state.reviewPollTimer=window.setTimeout(function(){state.reviewPollTimer=null;if(!state.reviewDisposed&&root.isConnected&&state.source==='成效'&&!document.hidden)requestReview(true);},15000);
   }
-  function stopReviewReads(){state.reviewDisposed=true;if(state.reviewPollTimer)clearTimeout(state.reviewPollTimer);state.reviewPollTimer=null;if(state.reviewController)state.reviewController.abort();document.removeEventListener('stockbot:pageleaving',stopReviewReads);window.removeEventListener('pagehide',stopReviewReads);}
+  function resumeReviewReads(){if(document.hidden||state.reviewDisposed||!root.isConnected||state.source!=='成效')return;requestReview(true);var factors=rowsEl.querySelector('#wbFactors');if(factors&&factors.open)factors.dispatchEvent(new Event('stockbot:factorrefresh'));}
+  document.addEventListener('visibilitychange',resumeReviewReads);
+  function stopReviewReads(){state.reviewDisposed=true;document.removeEventListener('visibilitychange',resumeReviewReads);if(state.factorTimer)clearTimeout(state.factorTimer);state.factorTimer=null;if(state.factorController)state.factorController.abort();if(state.reviewPollTimer)clearTimeout(state.reviewPollTimer);state.reviewPollTimer=null;if(state.reviewController)state.reviewController.abort();document.removeEventListener('stockbot:pageleaving',stopReviewReads);window.removeEventListener('pagehide',stopReviewReads);}
   document.addEventListener('stockbot:pageleaving',stopReviewReads);window.addEventListener('pagehide',stopReviewReads);
   function requestReview(force){
     if(state.reviewDisposed||!root.isConnected||state.reviewLoading)return;
@@ -50193,6 +50211,7 @@ def render_workbench_body(initial_tab=""):
     return '<div class="wb-review-extreme '+(label==='最佳報酬'?'best':'worst')+'"><small>'+label+'</small><b>'+esc(s.name)+' '+esc(s.code)+'</b><strong class="'+tone(s.stock_pct)+'">'+esc(reviewPct(s.stock_pct))+'</strong></div>';
   }
   var modes=state.review.modes||[];
+  var factorNode=rowsEl.querySelector('#wbFactors');
   rowsEl.innerHTML='<div class="wb-review-grid">'+modes.map(function(m){
     var mature=[];
     (m.horizons||[]).forEach(function(h){(h.sample_rows||[]).forEach(function(s){if(s&&s.stock_pct!=null)mature.push(s);});});
@@ -50224,26 +50243,56 @@ def render_workbench_body(initial_tab=""):
     // 它要抓所有推薦過標的的報價，比成效頁本身更重，
     // 不該讓每個開成效頁的人都先等它算完。
     +'<details class="wb-factors" id="wbFactors">'
-    +'<summary>因子分析　<small>哪一組推薦在拖累？展開才計算</small></summary>'
-    +'<div id="wbFactorsBox" class="wb-empty">點開後才計算，不影響本頁載入速度。</div>'
+    +'<summary>因子分析　<small>分組成效</small></summary>'
+    +'<div id="wbFactorsBox" class="wb-empty">展開查看已保存的因子分析。</div>'
     +'</details>';
+  if(factorNode){var slot=rowsEl.querySelector('#wbFactors');if(slot)slot.replaceWith(factorNode);}
   bindFactors();
+  var currentFactors=rowsEl.querySelector('#wbFactors');
+  if(currentFactors&&currentFactors.open&&state.review.computed_at&&currentFactors.dataset.updated!==state.review.computed_at){currentFactors.dataset.loaded='';currentFactors.dispatchEvent(new Event('stockbot:factorrefresh'));}
 }
 function bindFactors(){
-  var d=document.getElementById('wbFactors');
-  var box=document.getElementById('wbFactorsBox');
-  if(!d||!box||d.dataset.bound)return;
-  d.dataset.bound='1';
+  var d=document.getElementById('wbFactors'),box=document.getElementById('wbFactorsBox');
+  if(!d||!box||d.dataset.bound)return;d.dataset.bound='1';
+  function active(){return !document.hidden&&root.isConnected&&!state.reviewDisposed&&d.isConnected&&state.source==='成效';}
+  function schedule(){
+    if(!active()||!d.open||document.hidden||state.factorTimer)return;
+    if(Number(d.dataset.reads||0)>=120){return;}
+    state.factorTimer=window.setTimeout(function(){state.factorTimer=null;if(active()&&d.open)read();},15000);
+  }
+  function read(){
+    if(!active()||d.dataset.loading==='1'||d.dataset.loaded==='1')return;
+    d.dataset.loading='1';d.dataset.reads=String(Number(d.dataset.reads||0)+1);
+    if(d.dataset.hasData!=='1'&&Number(d.dataset.reads)===1)box.textContent='正在讀取已保存分析…';
+    var controller=window.AbortController?new AbortController():null;state.factorController=controller;
+    var timeout=window.setTimeout(function(){if(controller)controller.abort();},15000);
+    fetch(api('/web/api/pick-factors'),{credentials:'same-origin',cache:'no-store',signal:controller?controller.signal:undefined}).then(function(r){
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      var status=r.headers.get('X-Factors-Status')||'fresh',available=r.headers.get('X-Factors-Available');var updated=r.headers.get('X-Factors-Updated-At')||'';
+      return r.text().then(function(html){return {html:html,status:status,available:available,updated:updated};});
+    }).then(function(result){
+      if(!active())return;
+      if(result.available!=='0'||d.dataset.hasData!=='1'){box.innerHTML=result.html;d.dataset.hasData=result.available==='1'||result.status==='fresh'?'1':'';}d.dataset.updated=result.updated;
+      d.dataset.loaded=result.status==='fresh'?'1':'';
+      if(!d.dataset.loaded)schedule();
+      if(d.dataset.loaded&&result.updated&&state.review&&state.review.computed_at!==result.updated)requestReview(true);
+    }).catch(function(e){
+      if(!active())return;d.dataset.loaded='';
+      var old=box.querySelector('.wb-factor-retry');if(old)old.remove();
+      if(d.dataset.hasData!=='1')box.textContent='因子分析暫時無法讀取，稍後自動重試。';
+      var retry=document.createElement('button');retry.type='button';retry.className='wb-factor-retry';retry.textContent='重新讀取因子分析';
+      retry.onclick=function(){d.dataset.reads='0';read();};box.appendChild(retry);schedule();
+    }).finally(function(){
+      window.clearTimeout(timeout);d.dataset.loading='';if(state.factorController===controller)state.factorController=null;
+    });
+  }
+  d.addEventListener('stockbot:factorrefresh',read);
   d.addEventListener('toggle',function(){
-    if(!d.open||d.dataset.loaded)return;
-    d.dataset.loaded='1';
-    box.textContent='計算中…';
-    fetch(api('/web/api/pick-factors'),{credentials:'same-origin'})
-      .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text();})
-      .then(function(html){box.innerHTML=html;})
-      .catch(function(e){d.dataset.loaded='';box.textContent='因子分析載入失敗：'+(e&&e.message?e.message:e);});
+    if(!d.open){if(state.factorTimer)clearTimeout(state.factorTimer);state.factorTimer=null;return;}
+    read();
   });
-}  function renderScoreChanges(){
+}
+  function renderScoreChanges(){
     if(!scoreChangePanel)return;
     var xs=Array.isArray(state.scoreChanges)?state.scoreChanges.slice():[];
     if(!xs.length){
