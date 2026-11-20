@@ -613,7 +613,7 @@ def test_four_independent_pattern_families_detect_breakout_pullback_continuation
 
 
 def test_pattern_v3_uses_separate_snapshot_namespace_and_no_price_ceiling():
-    assert st.VERSION=='short-wave-v6' and st.KEY=='short_term:short-wave-v6'
+    assert st.VERSION=='short-wave-v7' and st.KEY=='short_term:short-wave-v7'
     bars,h=market(71)
     for b in bars:
         for k in ('open','high','low','close'):b[k]*=100

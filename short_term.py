@@ -11,11 +11,11 @@ import threading
 import time
 from flask import Blueprint, jsonify, request
 
-VERSION = 'short-wave-v6'
+VERSION = 'short-wave-v7'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 80
 MAX_PICKS = 20
-SELECTION_VERSION = 11
+SELECTION_VERSION = 12
 LIGHT_BATCH = 64
 
 
@@ -119,7 +119,7 @@ def current_status(signals, active, asof, pending):
                 last_exit=None,last_entry=None)
 
 
-def trade_spreads(signals, close=None, asof=None):
+def trade_spreads(signals, close=None, asof=None, direction="long"):
     """User-requested raw exit minus initial entry, not position/account P&L."""
     completed=[]; opened=None
     for signal in signals:
@@ -130,11 +130,11 @@ def trade_spreads(signals, close=None, asof=None):
             opened=dict(entry_date=signal['date'],entry_price=price)
         elif signal['type']=='exit' and opened:
             completed.append(dict(opened,exit_date=signal['date'],exit_price=price,
-                                  spread=round(price-opened['entry_price'],2)))
+                                  spread=round((opened['entry_price']-price) if direction=='short' else (price-opened['entry_price']),2)))
             opened=None
         # Adds/reductions intentionally do not alter this simple price difference.
     if opened and number(close) is not None:
-        opened=dict(opened,date=asof,price=number(close),spread=round(number(close)-opened['entry_price'],2))
+        opened=dict(opened,date=asof,price=number(close),spread=round((opened['entry_price']-number(close)) if direction=='short' else (number(close)-opened['entry_price']),2))
     return dict(completed=completed,open=opened,
                 total_closed_spread=round(sum(t['spread'] for t in completed),2))
 
@@ -148,9 +148,9 @@ def latest_alerts(rows, asof):
             if event['date']==asof:
                 spread=None
                 if event['type']=='exit':
-                    trades=trade_spreads(row.get('signals',[]))['completed']
+                    trades=trade_spreads(row.get('signals',[]),direction=row.get('direction','long'))['completed']
                     spread=next((t['spread'] for t in reversed(trades) if t['exit_date']==asof),None)
-                alerts.append(dict(event,code=row['code'],name=row['name'],spread=spread))
+                alerts.append(dict(event,code=row['code'],name=row['name'],spread=spread,direction=row.get('direction','long')))
     order={'entry':0,'exit':1,'reduce':2,'add':3}
     return sorted(alerts,key=lambda a:(order.get(a['type'],4),a['code']))
 
@@ -583,7 +583,12 @@ def light_technical(quote, now, intraday=False, diagnostics=None):
     # Preliminary closes locate shapes; actual OHLC/volume/risk is verified later.
     pseudo=[dict(date=day(d),open=p,high=p,low=p,close=p) for d,p in points]
     shapes=technical_shapes(pseudo,dict(ma20=ma20,ma60=ma60,trend=trend,trend_slope=ma20/old20-1,pressure=pressure),1.3)
-    if not shapes['watching']:return reject('尚未接近型態觀察位置')
+    if not shapes['watching']:
+        floor=min(closes[-21:-1])
+        if c<ma20 and (ma20<ma60 or c<=floor*1.03):
+            if diagnostics is not None:diagnostics['reason']='通過空方技術初篩'
+            return dict(bucket='short',rank=(not (ma20<ma60),ma20/old20-1,abs(c/floor-1)))
+        return reject('尚未接近型態觀察位置')
     if diagnostics is not None:diagnostics['reason']='通過技術初篩'
     bucket=shapes['kind'] or shapes['watching'][0]
     return dict(bucket=bucket,rank=(not trend,-(ma20/old20-1),abs(c/pressure-1)))
@@ -591,7 +596,7 @@ def light_technical(quote, now, intraday=False, diagnostics=None):
 
 def technical_pool(metrics, keep, limit=MAX_POOL, sectors=None, price_bands=None):
     buckets=[sorted(((c,m) for c,m in metrics.items() if m['bucket']==b),key=lambda x:(x[1]['rank'],x[0]))
-             for b in ('reversal','breakout','pullback','continuation','recovery')]
+             for b in ('reversal','breakout','pullback','continuation','recovery','short')]
     result=list(dict.fromkeys(c for c in keep))[:limit]
     if sectors:
         # Inspect each technical setup across sectors before consuming the cap.
@@ -743,7 +748,7 @@ class ShortTermService:
                 cursor=cycle['cursor'];queue=cycle['queue']
                 # Closing bars do not change between batches. Rechecking model
                 # positions there wastes requests without improving freshness.
-                active=[r['code'] for r in previous.get('all_rows',[]) if intraday and r.get('active') and r['code'] in self.stock_meta]
+                active=list(dict.fromkeys(r['code'] for r in previous.get('all_rows',[])+previous.get('short_rows',[]) if intraday and r.get('active') and r['code'] in self.stock_meta))
                 start=cycle.get('active_cursor',0)%max(1,len(active))
                 fast=(active+active)[start:start+min(16,len(active))]
                 base=queue[cursor:cursor+MAX_POOL-len(fast)]
@@ -752,7 +757,7 @@ class ShortTermService:
                 names={c:self.stock_meta[c]['name'] for c in codes};history=self.histories(codes)
             else:
                 self.full_queue=[]
-                keep=[r for r in previous.get('all_rows',previous.get('rows',[])) if r.get('active')]
+                keep=[r for r in previous.get('all_rows',previous.get('rows',[]))+previous.get('short_rows',[]) if r.get('active')]
                 codes,names,history=self.inputs(keep)
                 base=list(codes)
                 queue=self.full_queue or codes;cursor=0
@@ -761,6 +766,7 @@ class ShortTermService:
             covered=set(cycle.get('evaluated',[]));failed_codes=set(cycle.get('failed_codes',[]))
             excluded=dict(cycle.get('excluded',{}));failures=0;processed=0;finished=set();quote_dates=[]
             rows_by_code={r['code']:r for r in previous.get('all_rows',previous.get('rows',[])) if r['code'] in set(queue)}
+            short_by_code={r['code']:r for r in previous.get('short_rows',[]) if r['code'] in set(queue)}
             with self.lock:
                 self.phase='全市場分批詳查';self.progress=len(covered);self.progress_total=len(queue)
             pause='';time_exhausted=False
@@ -787,6 +793,12 @@ class ShortTermService:
                     bars=normalize_bars(q,self.now(),include_current=intraday and live_fresh)
                     if bars:
                         quote_dates.append(bars[-1]['date'])
+                    from short_side import analyse as analyse_short
+                    short_row=analyse_short(code,names[code],q,history[code],self.now(),intraday=intraday and live_fresh)
+                    if short_row:
+                        short_row.update(sector=(self.stock_meta.get(code) or {}).get('sector','未分類'),market=(self.stock_meta.get(code) or {}).get('market','未確認'),observed_at=datetime.fromtimestamp(observed,timezone(timedelta(hours=8))).isoformat() if observed else None,computed_at=self.now().isoformat())
+                        short_by_code[code]=short_row
+                    else:short_by_code.pop(code,None)
                     row=analyse(code,names[code],q,history[code],self.now(),intraday=intraday and live_fresh)
                     if row:
                         row['sector']=(self.stock_meta.get(code) or {}).get('sector','未分類')
@@ -808,10 +820,11 @@ class ShortTermService:
 
             if processed and failures==processed:raise RuntimeError('行情來源暫時無法取得，保留原結果與進度')
             if not processed and codes:raise RuntimeError(pause or '本批尚未取得可確認的資料')
+            short_rows=sorted(short_by_code.values(),key=clarity_rank)
             rows=list(rows_by_code.values())
             rows.sort(key=clarity_rank)
-            old={e['id']:e for r in previous.get('all_rows',previous.get('rows',[])) for e in r.get('signals',[])}
-            for row in rows:
+            old={e['id']:e for r in previous.get('all_rows',previous.get('rows',[]))+previous.get('short_rows',[]) for e in r.get('signals',[])}
+            for row in rows+short_rows:
                 row['signals']=[(old.get(e['id']) if not e.get('provisional') and not (old.get(e['id']) or {}).get('provisional') else None)
                                 or dict(e,observed_at=self.now().isoformat()) for e in row['signals']]
             advanced=0
@@ -824,13 +837,14 @@ class ShortTermService:
             self.scan_meta['deep_sectors']={sector:sum((self.stock_meta.get(c) or {}).get('sector')==sector for c in covered)
                 for sector in {i.get('sector') for i in self.stock_meta.values()}}
             self.scan_meta['qualified_sectors']={g:sum(r.get('sector')==g for r in rows) for g in {r.get('sector') for r in rows}}
+            self.scan_meta['short_qualified_sectors']={g:sum(r.get('sector')==g for r in short_rows) for g in {r.get('sector') for r in short_rows}}
             for band,counter in self.scan_meta.get('price_coverage',{}).items():
                 counter['deep']=sum((self.stock_meta.get(c) or {}).get('price_band')==band for c in covered)
                 counter['qualified']=sum(price_band(number(r.get('price')) or 0)==band for r in rows)
             asof=max(quote_dates+[r.get('date') for r in rows if r.get('date')],default=self.scan_meta.get('market_date'))
-            payload=dict(version=VERSION,selection_version=SELECTION_VERSION,rows=rows[:MAX_PICKS],all_rows=rows,
+            payload=dict(version=VERSION,selection_version=SELECTION_VERSION,rows=rows[:MAX_PICKS],all_rows=rows,short_rows=short_rows,
                 scanned=len(covered),failed=cycle['failures'],cycle=cycle,intraday=intraday,trigger=self.trigger,radar_at=self.radar_at,
-                date=asof,excluded=excluded,scope=copy.deepcopy(self.scan_meta),alerts=latest_alerts(rows,asof),
+                date=asof,excluded=excluded,scope=copy.deepcopy(self.scan_meta),alerts=latest_alerts(rows+short_rows,asof),
                 generated_at=self.now().isoformat(),note='全市場分批詳查；部分完成會明確顯示進度。規則重播，不送出交易。')
             if not self.store.save(snapshot_key,payload,data_date=asof,source_meta={'version':VERSION,'intraday':intraday}):
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
@@ -848,7 +862,7 @@ class ShortTermService:
             if not queued:
                 with self.lock:self.running=False
 
-    def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS, schedule=False):
+    def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS, schedule=False, direction="long"):
         with self.lock:
             intraday=self.intraday()
             if not self.loaded or (self.cache_mode is not None and self.cache_mode!=intraday and not self.running):
@@ -885,10 +899,16 @@ class ShortTermService:
             signals_current=bool((cached or {}).get('date')==day(expected) and
                 (cached or {}).get('selection_version')==SELECTION_VERSION and
                 (not intraday or ((cached or {}).get('intraday') and age<=1200)))
+            direction='short' if direction=='short' else 'long'
             rows=[]
-            for row in (cached or {}).get('all_rows',(cached or {}).get('rows',[])):
+            saved_rows=(cached or {}).get('short_rows',[]) if direction=='short' else (cached or {}).get('all_rows',(cached or {}).get('rows',[]))
+            for row in saved_rows:
                 row=dict(row,signals=signal_allocations(row.get('signals',[])),
-                    spreads=trade_spreads(row.get('signals',[]),row.get('price'),row.get('date')))
+                    spreads=trade_spreads(row.get('signals',[]),row.get('price'),row.get('date'),direction=direction))
+                if direction=='short':
+                    labels={'entry':'首次放空100%','add':'加空首次股數50%','reduce':'回補當時空單50%','exit':'全部回補剩餘空單'}
+                    for event in row['signals']:
+                        if event.get('allocation'):event['allocation']['label']=labels[event['type']]
                 try:quote_age=(self.now()-datetime.fromisoformat(row.get('observed_at') or '')).total_seconds()
                 except (ValueError,TypeError):quote_age=999999
                 if signals_current and row.get('date')==day(expected) and (not intraday or -60<=quote_age<=1200):
@@ -899,6 +919,7 @@ class ShortTermService:
                         entry_ready=False,latest_event=None,latest_event_date=None,signal_stage='unconfirmed'))
             alerts=[]
             for alert in (cached or {}).get('alerts',[]) if signals_current else []:
+                if alert.get('direction','long')!=direction:continue
                 row=next((r for r in rows if r['code']==alert['code']),None)
                 spread=alert.get('spread')
                 if spread is None and row and alert['type']=='exit':
@@ -926,7 +947,7 @@ class ShortTermService:
             new_watch=[dict(code=r['code'],name=r['name'],date=r['watch_date'],price=r['price'],type='watch')
                        for r in rows if r.get('watch_date')==day(expected) and r.get('current_action')!='unconfirmed' and not r.get('active')]
             return dict(ok=True,rows=rows[offset:offset+limit],alerts=alerts,observations=new_watch,meta=dict(
-                total=total,offset=offset,limit=limit,has_more=offset+limit<total,
+                direction=direction,direction_counts={'long':len((cached or {}).get('all_rows',[])),'short':len((cached or {}).get('short_rows',[]))},total=total,offset=offset,limit=limit,has_more=offset+limit<total,
                 stage_counts=stages,
                 position_counts=position_counts,
                 intraday=intraday,refresh_interval_seconds=600,
@@ -949,7 +970,7 @@ def create_blueprint(*, login, service):
     @login
     def short_term(uid):
         try:
-            result=service.payload(request.args.get('refresh')=='1',sector=request.args.get('sector'),position=request.args.get('position'),shape=request.args.get('shape'),offset=request.args.get('offset',0),limit=request.args.get('limit',MAX_PICKS))
+            result=service.payload(request.args.get('refresh')=='1',sector=request.args.get('sector'),position=request.args.get('position'),shape=request.args.get('shape'),offset=request.args.get('offset',0),limit=request.args.get('limit',MAX_PICKS),direction=request.args.get('direction','long'))
             response=jsonify(result)
         except Exception:
             response=jsonify(ok=False,error='短線研究暫時無法載入，請稍後重試')

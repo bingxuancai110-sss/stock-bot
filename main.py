@@ -28658,8 +28658,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-experience.css?v=20261117-12">
 <script defer src="/static/ui-feedback.js?v=20261119-2"></script>
 <script defer src="/static/app-experience.js?v=20261119-2"></script>
-<link rel="stylesheet" href="/static/short-term.css?v=20261119-2">
-<script defer src="/static/short-term.js?v=20261119-2"></script>
+<link rel="stylesheet" href="/static/short-term.css?v=20261120-1">
+<script defer src="/static/short-term.js?v=20261120-1"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
@@ -47512,7 +47512,8 @@ def cron_short_term_live():
         return jsonify(ok=False, state="unavailable"), 503
     intraday = _is_taiwan_intraday_window()
     now = taiwan_now()
-    allowed = intraday or (is_twse_trading_day(now.date()) and 14 <= now.hour < 21)
+    manual_close = request.headers.get("X-Stockbot-Manual-Close") == "1"
+    allowed = intraday or (is_twse_trading_day(now.date()) and 14 <= now.hour < (24 if manual_close else 21))
     if request.method == "POST" and not allowed:
         return jsonify(ok=True, state="outside_session", note="目前非盤中或收盤更新時段，保留最近結果")
     if request.method == "POST":
@@ -47531,7 +47532,7 @@ def cron_short_term_live():
             state, progress, total, meta.get("error") or ""), flush=True)
     return jsonify(ok=True, state=state, building=building, complete=complete,
                    progress=progress, total=total, date=meta.get("date"),
-                   generated_at=meta.get("generated_at"),
+                   generated_at=meta.get("generated_at"), direction_counts=meta.get("direction_counts", {}),
                    confirmed=meta.get("total", 0)-counts.get("unknown", 0),
                    pending=counts.get("unknown", 0), failed=meta.get("failed", 0),
                    note=meta.get("error") or ("已確認保存全市場掃描結果" if complete else "背景接續中；排隊不代表掃描完成")), (202 if building else 200)

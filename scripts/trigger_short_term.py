@@ -15,7 +15,9 @@ def call(method):
     req = Request(url, headers={'Authorization': 'Bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
     with urlopen(req, timeout=20) as response:
         token = json.load(response)['value']
-    req = Request(ENDPOINT, data=b'' if method=='POST' else None, headers={'Authorization': 'Bearer ' + token}, method=method)
+    headers={'Authorization':'Bearer '+token}
+    if method=='POST' and os.environ.get('VERIFY_COMPLETE')=='1':headers['X-Stockbot-Manual-Close']='1'
+    req = Request(ENDPOINT, data=b'' if method=='POST' else None, headers=headers, method=method)
     with urlopen(req, timeout=45) as response:
         return json.load(response)
 
