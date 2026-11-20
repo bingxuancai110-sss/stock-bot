@@ -12,11 +12,11 @@ import time
 from flask import Blueprint, jsonify, request
 from technical_space import long_space
 
-VERSION = 'short-wave-v9'
+VERSION = 'short-wave-v10'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 80
 MAX_PICKS = 20
-SELECTION_VERSION = 14
+SELECTION_VERSION = 15
 LIGHT_BATCH = 64
 
 
@@ -162,8 +162,9 @@ def normalize_bars(quote, now, include_current=False):
     arrays = [quote.get(k) or [] for k in keys]
     if not arrays[0] or len({len(a) for a in arrays}) != 1:
         return []
-    bars = []
-    for values in zip(*arrays):
+    bars = [];aligned_adjs=[]
+    adjs=quote.get('adj_closes') or []
+    for source_index,values in enumerate(zip(*arrays)):
         d = day(values[0]); nums = [number(v) for v in values[1:]]
         try:
             parsed = date.fromisoformat(d)
@@ -178,17 +179,18 @@ def normalize_bars(quote, now, include_current=False):
             return []
         if parsed > now.date() or (parsed == now.date() and now.hour < 14 and not include_current):
             continue
+        if v==0:continue  # no transaction: not a daily trading bar or confirmation session
         bars.append(dict(date=d, open=o, high=h, low=l, close=c, volume=v))
+        aligned_adjs.append(number(adjs[source_index]) if len(adjs)==len(arrays[0]) else None)
     # Do not interpret corporate-action price scaling as a stop or breakout.
     # Retain only a fresh segment after a large raw-price discontinuity. There
     # must still be 65 complete bars before a candidate can be published.
     cut = 0
-    adjs = quote.get('adj_closes') or []
     for i in range(1, len(bars)):
         if abs(bars[i]['close']/bars[i-1]['close']-1) > .25:
             cut = i
-        if len(adjs) == len(arrays[0]):
-            a, b = number(adjs[i-1]), number(adjs[i])
+        if len(aligned_adjs)==len(bars):
+            a,b=aligned_adjs[i-1],aligned_adjs[i]
             if a and b:
                 ratio = (a/bars[i-1]['close'])/(b/bars[i]['close'])
                 if abs(ratio-1) > .02:
@@ -314,13 +316,17 @@ def technical_shapes(bars, x, ratio):
     strong=c>=b['low']+.6*(b['high']-b['low'])
     recovered=c>x['ma20'] and (x['trend_slope']>0 or c>max(z['high'] for z in prev[-10:]))
     consolidation=(max(z['high'] for z in prev[-20:])-min(z['low'] for z in prev[-20:]))/c<=max(.16,min(.24,4*x.get('atr',0)/c))
-    breakout=consolidation and recovered and c>x['pressure'] and ratio>=1.2 and strong
-    pullback=x['trend'] and b['low']<=x['ma20']+max(x['ma20']*.015,.5*x.get('atr',0)) and c>prev[-1]['high'] and c>x['ma20'] and ratio>=.8
+    fixed_pressure=max(z['high'] for z in bars[-22:-2])
+    price_confirmation=standing_confirmation(bars,fixed_pressure)
+    confirmed_breakout=bool(price_confirmation['confirmed'])
+    breakout=consolidation and recovered and strong and ((c>x['pressure'] and ratio>=1.2) or confirmed_breakout)
+    breakout_level=fixed_pressure if confirmed_breakout else x['pressure']
+    pullback=x['trend'] and b['low']<=x['ma20']+max(x['ma20']*.015,.5*x.get('atr',0)) and c>prev[-1]['high'] and c>x['ma20']
     base_high=max(z['high'] for z in prev[-5:]);base_low=min(z['low'] for z in prev[-5:])
     preceding_run=prev[-6]['close']/min(z['low'] for z in prev[-21:-5])-1
     base=(base_high-base_low)/c<=max(.08,min(.16,2*x.get('atr',0)/c)) and base_low>=x['ma20']*.97
-    continuation=preceding_run>=.08 and base and recovered and c>base_high and ratio>=1.1 and strong
-    reversal=(reversal or bottom) and ratio>=1.05 and strong
+    continuation=preceding_run>=.08 and base and recovered and c>base_high and strong and (ratio>=1.1 or c>base_high+max(.5*x.get('atr',0),c*.005))
+    reversal=(reversal or bottom) and strong and (ratio>=1.05 or bool(confirmation and confirmation['confirmed']))
     triggers={'reversal':reversal,'breakout':breakout,'pullback':pullback,'continuation':continuation}
     watches={'reversal':near_line or (neckline is not None and abs(c/neckline-1)<=.05),
              'breakout':recovered and 0<=x['pressure']/c-1<=.05,
@@ -338,43 +344,58 @@ def technical_shapes(bars, x, ratio):
     if not watching and c<x['ma20'] and any(sum(z['close'] for z in bars[k-19:k+1])/20>sum(z['close'] for z in bars[k-59:k+1])/60 for k in range(max(59,n-20),n-1)):
         watching=['repair']
     chosen=kind or (watching[0] if watching else None)
-    return dict(kind=kind,watching=watching,trigger=bool(kind),pattern=labels.get(kind,'等待型態'),
+    candidates=[]
+    for family in families:
+        if not triggers[family]:continue
+        level=(neckline if bottom else line['end_price'] if line else prev[-1]['high']) if family=='reversal' else base_high if family=='continuation' else breakout_level if family=='breakout' else prev[-1]['high']
+        invalidation=prev[lows[-1]]['low'] if family=='reversal' and lows else base_low if family=='continuation' else min(z['low'] for z in prev[-3:]) if family=='pullback' else min(z['low'] for z in prev[-10:])
+        candidates.append(dict(kind=family,trigger=True,pattern=labels[family],confirmed=family!='reversal' or bool(confirmation and confirmation['confirmed']),
+                               confirmation=confirmation if family=='reversal' else None,confirmation_method=('連2日站穩同一壓力與20日線' if family=='breakout' and confirmed_breakout else '收盤放量突破20日壓力' if family=='breakout' else '連2日站穩下降線與20日線' if family=='reversal' else '回測支撐後收復前日高點' if family=='pullback' else '整理後有效突破箱頂'),line=line if family=='reversal' and not bottom else None,level=level,invalidation=invalidation))
+    return dict(candidates=candidates,kind=kind,watching=watching,trigger=bool(kind),pattern=labels.get(kind,'等待型態'),
                 confirmed=chosen!='reversal' or bool(confirmation and confirmation['confirmed']),
                 confirmation=confirmation if chosen=='reversal' else None,
                 invalidation=(prev[lows[-1]]['low'] if chosen=='reversal' and lows else min(z['low'] for z in prev[-3:]) if chosen=='pullback' else base_low if chosen=='continuation' else min(z['low'] for z in prev[-10:])),
                 line=line,level=(neckline if bottom or (chosen=='reversal' and not line and neckline) else
                       line['end_price'] if chosen=='reversal' and line else base_high if chosen=='continuation' else
-                      x['pressure'] if chosen=='breakout' else prev[-1]['high']))
+                      breakout_level if chosen=='breakout' else prev[-1]['high']))
 
 
 def setup(bars, chip, volume_fraction=1):
-    x = levels(bars); b = bars[-1]; c = b['close']
+    x=levels(bars);b=bars[-1];c=b['close']
     x['volume_ratio']/=max(15/270,min(1,volume_fraction))
-    hot = abs(x['change'])>9.5 or x['atr']/c>.06
-    liquid = x['avg_turnover'] >= 10_000_000  # advisory only, never an entry/selection gate
+    hot=abs(x['change'])>9.5
+    high_volatility=x['atr']/c>.06
     shapes=technical_shapes(bars,x,x['volume_ratio'])
-    base_days=5 if shapes['kind']=='continuation' else 10
-    anchor=shapes['invalidation'] if shapes['kind'] in ('reversal','pullback','continuation') else min(z['low'] for z in bars[:-1][-base_days:])
-    soft_support=anchor-.25*x['atr']
-    floor=anchor if shapes['kind'] in ('reversal','pullback','continuation') else x['swing_floor']
-    stop = min(soft_support-.5*x['atr'],floor-.75*x['atr'])
-    risk = c-stop
-    space=long_space(bars,c,x['atr']);x['resistance']=space['resistance']
-    target = space['resistance'] or c+2*risk
-    rr = (target-c)/risk if risk > 0 else 0
-    vol5 = sum(z['volume'] for z in bars[-6:-1])/1000
-    ratio = ((chip.get('foreign',0)+chip.get('trust',0))/vol5) if vol5 else 0
-    valid = not hot and bool(shapes['watching'] or shapes['trigger']) and b['volume']>0
+    space=long_space(bars,c,x['atr'])
     risk_limit=max(.06,min(.12,2*x['atr']/c))
-    risk_ok = 0 < risk/c <= risk_limit and rr >= 1.5
-    return dict(x, stop=stop,soft_support=soft_support, target=target, target_kind=space['kind'],space=space,
-                risk=risk, rr=rr, hot=hot, liquid=liquid,
-                risk_limit=risk_limit,chip_ratio=ratio*100, eligible=valid and risk_ok, risk_ok=risk_ok,
-                trigger=shapes['trigger'],watchable=b['volume']>0 and bool(shapes['watching']),
-                entry=shapes['trigger'] and shapes['confirmed'] and valid and risk_ok,pattern=shapes['pattern'],
-                entry_confirmed=shapes['confirmed'],confirmation=shapes['confirmation'],
-                strategy=shapes['kind'] or (shapes['watching'][0] if shapes['watching'] else None),
-                patterns=shapes['watching'],pattern_line=shapes['line'],pattern_level=shapes['level'])
+    vol5=sum(z['volume'] for z in bars[-6:-1])/1000
+    ratio=((chip.get('foreign',0)+chip.get('trust',0))/vol5) if vol5 else 0
+    def plan_for(shape):
+        base_days=5 if shape['kind']=='continuation' else 10
+        anchor=shape['invalidation'] if shape['kind'] in ('reversal','pullback','continuation') else min(z['low'] for z in bars[:-1][-base_days:])
+        soft=anchor-.25*x['atr']
+        floor=anchor if shape['kind'] in ('reversal','pullback','continuation') else x['swing_floor']
+        stop=min(soft-.5*x['atr'],floor-.75*x['atr']);risk=c-stop
+        target=space['resistance'] or c+2*risk
+        rr=(target-c)/risk if risk>0 else 0
+        trend_following=shape['kind'] in ('breakout','pullback','continuation') and c>x['ma20'] and x['ma20']>=x['ma20_previous']
+        distance_ok=0<risk/c<=risk_limit
+        risk_ok=distance_ok and (trend_following or rr>=1.5)
+        valid=not hot and bool(shape['watching'] or shape['trigger']) and b['volume']>0
+        return dict(x,resistance=space['resistance'],stop=stop,soft_support=soft,target=target,target_kind=space['kind'],space=space,
+                    risk=risk,rr=rr,risk_policy='trend_following' if trend_following else 'turning_space',distance_ok=distance_ok,hot=hot,high_volatility=high_volatility,liquid=x['avg_turnover']>=10_000_000,
+                    risk_limit=risk_limit,chip_ratio=ratio*100,eligible=valid and risk_ok,risk_ok=risk_ok,
+                    trigger=shape['trigger'],watchable=b['volume']>0 and bool(shape['watching']),
+                    entry=shape['trigger'] and shape['confirmed'] and valid and risk_ok,pattern=shape['pattern'],
+                    entry_confirmed=shape['confirmed'],confirmation=shape['confirmation'],confirmation_method=shape.get('confirmation_method','型態尚待確認'),
+                    strategy=shape['kind'] or (shape['watching'][0] if shape['watching'] else None),
+                    patterns=shape['watching'],pattern_line=shape['line'],pattern_level=shape['level'])
+    plans=[plan_for(dict(shapes,**candidate)) for candidate in shapes.get('candidates',[])] or [plan_for(shapes)]
+    selected=next((p for p in plans if p['entry']),None)
+    if selected is None:selected=next((p for p in plans if p['trigger'] and p['entry_confirmed']),plans[0])
+    selected['family_checks']=[dict(strategy=p['strategy'],pattern=p['pattern'],trigger=p['trigger'],entry=p['entry'],
+                                    confirmed=p['entry_confirmed'],risk_policy=p['risk_policy'],stop=round(p['stop'],2),rr=round(p['rr'],2),risk_pct=round(p['risk']/c*100,2)) for p in plans]
+    return selected
 
 
 def analyse(code, name, quote, history, now, intraday=False):
@@ -400,6 +421,8 @@ def analyse(code, name, quote, history, now, intraday=False):
         previous_trigger=plan['strategy'] if plan['trigger'] else None
         def emit(kind, price, reason, stop=None, target=None, units=None):
             if kind=='entry':
+                reason+='；確認方式 '+str(plan.get('confirmation_method') or '依事前型態')
+                reason+='；波段追蹤：首道壓力作減碼觀察，不是固定賣出終點' if plan.get('risk_policy')=='trend_following' else '；轉折初期須有至少1.5R空間'
                 reason+=('；價格 %.2f，MA20 %.2f／MA60 %.2f；%s %.2f，量比 %.2f，初始停損 %.2f，報酬風險比 %.2fR' %
                          (b['close'],plan['ma20'],plan['ma60'],
                           plan['pattern'],plan['pattern_level'],
@@ -417,7 +440,7 @@ def analyse(code, name, quote, history, now, intraday=False):
                          type=kind, price=round(price,2), reason=reason,
                          stop=round(stop,2) if stop else None,
                          target=round(target,2) if target else None,
-                         units=units, origin='replay',strategy=plan['strategy'],pattern=plan['pattern'],
+                         units=units, origin='replay',strategy=(position or {}).get('strategy') or plan['strategy'],pattern=plan['pattern'],
                          pattern_line=plan['pattern_line'])
             signals.append(event)
         if position:
@@ -489,12 +512,12 @@ def analyse(code, name, quote, history, now, intraday=False):
     preview_pressure=preview_space['resistance']
     preview_target=preview_pressure or observation+2*preview_risk
     preview_rr=(preview_target-observation)/preview_risk if preview_risk>0 else 0
-    preview_risk_ok=0<preview_risk/observation<=latest['risk_limit'] and preview_rr>=1.5
+    preview_risk_ok=0<preview_risk/observation<=latest['risk_limit'] and (latest.get('risk_policy')=='trend_following' or preview_rr>=1.5)
     pending=[]
-    if latest['hot']:pending.append('單日急漲跌／波動過高，只觀察不新增部位')
+    if latest['hot']:pending.append('單日漲跌逾9.5%，等待下一交易日可交易性確認，不新增部位')
     if 'repair' in latest['patterns']:pending.append('多方修復觀察：尚未收復20日線，不是買點')
     if not latest['patterns']:pending.append('等待型態確認')
-    if not (latest['risk_ok'] if position else preview_risk_ok):pending.append('等待風險空間：停損距離 %.1f%%／上限 %.1f%%；至%s %.2fR／至少1.5R'%((latest['risk']/bars[-1]['close'] if position else preview_risk/observation)*100,latest['risk_limit']*100,(latest['space'] if position else preview_space)['kind'],latest['rr'] if position else preview_rr))
+    if not (latest['risk_ok'] if position else preview_risk_ok):pending.append('等待風險空間：停損距離 %.1f%%／上限 %.1f%%；至%s %.2fR／%s'%((latest['risk']/bars[-1]['close'] if position else preview_risk/observation)*100,latest['risk_limit']*100,(latest['space'] if position else preview_space)['kind'],latest['rr'] if position else preview_rr,'波段追蹤關卡' if latest.get('risk_policy')=='trend_following' else '至少1.5R'))
     if not latest['trigger']:pending.append('等待突破／回測')
     if latest['strategy']=='reversal' and not latest['entry_confirmed']:
         pending.append('等待連續2日站穩突破線並站回20日線')
@@ -512,10 +535,10 @@ def analyse(code, name, quote, history, now, intraday=False):
         status['action_note']='盤中未收棒，條件可能改變；'+status['action_note'].replace('收盤資料確認','盤中暫定').replace('收盤','本次')
     event=status['event']
     checks=[dict(label='追價／波動風險',passed=not latest['hot']),dict(label='型態',passed=bool(latest['patterns'])),
-            dict(label='風險空間',passed=latest['risk_ok'] if position else preview_risk_ok),
+            dict(label='結構風險',passed=latest['risk_ok'] if position else preview_risk_ok),
             dict(label='站穩確認' if latest['strategy']=='reversal' else '進場型態',passed=latest['trigger'] and latest['entry_confirmed'])]
     # Exit candidates remain for three sessions, even though position is now flat.
-    return dict(code=code,name=name,observation_price=round(observation,2) if not position else None,space=latest['space'] if position else preview_space,pattern_label=('多方修復觀察' if 'repair' in latest['patterns'] else '多方趨勢觀察' if not latest['trigger'] and not position else None),risk_limit=round(latest['risk_limit']*100,2),date=bars[-1]['date'],price=bars[-1]['close'],provisional=provisional,
+    return dict(code=code,name=name,observation_price=round(observation,2) if not position else None,family_checks=latest.get('family_checks',[]),space=latest['space'] if position else preview_space,pattern_label=('多方修復觀察' if 'repair' in latest['patterns'] else '多方趨勢觀察' if not latest['trigger'] and not position else None),risk_policy=latest.get('risk_policy'),risk_limit=round(latest['risk_limit']*100,2),date=bars[-1]['date'],price=bars[-1]['close'],provisional=provisional,
                 strategy=position['strategy'] if position else latest['strategy'],
                 patterns=list(dict.fromkeys(latest['patterns']+([position['strategy']] if position else []))),
                 pattern_line=latest['pattern_line'],
@@ -565,10 +588,10 @@ def technical_audit(code,name,bars):
         if side=='long' and not p['entry_confirmed']:reasons.append('尚未連2日站穩')
         risk=p['risk']/bars[-1]['close']*100
         if not (0<risk<=p['risk_limit']*100):reasons.append('停損距離不合適')
-        if p['rr']<1.5:reasons.append('至支撐壓力不足1.5R')
+        if p['rr']<1.5 and p.get('risk_policy')!='trend_following':reasons.append('至支撐壓力不足1.5R')
         if p['entry']:reasons=['本次進場條件成立（重播部位另行判斷）']
         result[side]=dict(watch=p['watchable'],trigger=p['trigger'],entry=p['entry'],
-                          risk_pct=round(risk,2),risk_limit_pct=round(p['risk_limit']*100,2),
+                          risk_policy=p.get('risk_policy'),risk_pct=round(risk,2),risk_limit_pct=round(p['risk_limit']*100,2),
                           rr=round(p['rr'],2),stop=round(p['stop'],2),target=round(p['target'],2),reasons=reasons)
         messages.append(('多方' if side=='long' else '空方')+'：'+'、'.join(reasons)+
                         '；停損距離 %.1f%%／上限 %.1f%%，空間 %.2fR'%(risk,p['risk_limit']*100,p['rr']))
@@ -983,6 +1006,17 @@ class ShortTermService:
             if sector in ('電子','非電子'):alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
             rows.sort(key=(lambda r:(number(r.get('price')) is None, (-1 if sort=='price_desc' else 1)*(number(r.get('price')) or 0),r['code'])) if sort!='signal' else clarity_rank)
             total=len(rows)
+            recent=dict(entries=0,exits=0,active=sum(position_group(r)=='held' for r in rows),last_entry_date=None)
+            for row in rows:
+                if row.get('current_action')=='unconfirmed':continue
+                dates=[b['date'] for b in row.get('bars',[])][-30:]
+                if not dates:continue
+                for event in row.get('signals',[]):
+                    if event.get('provisional') or event.get('date','')<dates[0]:continue
+                    if event['type']=='entry':
+                        recent['entries']+=1
+                        recent['last_entry_date']=max(recent['last_entry_date'] or '',event['date'])
+                    elif event['type']=='exit':recent['exits']+=1
             try:offset=max(0,int(offset));limit=max(1,min(50,int(limit)))
             except (ValueError,TypeError):offset=0;limit=MAX_PICKS
             offset=min(offset,((total-1)//limit)*limit) if total else 0
@@ -993,7 +1027,7 @@ class ShortTermService:
                        for r in rows if r.get('watch_date')==day(expected) and r.get('current_action')!='unconfirmed' and not r.get('active')]
             return dict(ok=True,rows=rows[offset:offset+limit],alerts=alerts,observations=new_watch,meta=dict(
                 price_range=price_range,sort=sort,direction=direction,direction_counts={'long':len((cached or {}).get('all_rows',[])),'short':len((cached or {}).get('short_rows',[]))},total=total,offset=offset,limit=limit,has_more=offset+limit<total,
-                stage_counts=stages,
+                recent_signals=recent,stage_counts=stages,
                 position_counts=position_counts,
                 intraday=intraday,refresh_interval_seconds=600,
                 next_refresh_at=(datetime.fromisoformat(generated)+timedelta(seconds=600)).isoformat() if generated and intraday else None,
