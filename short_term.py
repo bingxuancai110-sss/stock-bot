@@ -10,12 +10,13 @@ import copy
 import threading
 import time
 from flask import Blueprint, jsonify, request
+from technical_space import long_space
 
-VERSION = 'short-wave-v8'
+VERSION = 'short-wave-v9'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 80
 MAX_PICKS = 20
-SELECTION_VERSION = 13
+SELECTION_VERSION = 14
 LIGHT_BATCH = 64
 
 
@@ -312,12 +313,12 @@ def technical_shapes(bars, x, ratio):
             if bottom:confirmation=bottom_check
     strong=c>=b['low']+.6*(b['high']-b['low'])
     recovered=c>x['ma20'] and (x['trend_slope']>0 or c>max(z['high'] for z in prev[-10:]))
-    consolidation=(max(z['high'] for z in prev[-20:])-min(z['low'] for z in prev[-20:]))/c<=.16
+    consolidation=(max(z['high'] for z in prev[-20:])-min(z['low'] for z in prev[-20:]))/c<=max(.16,min(.24,4*x.get('atr',0)/c))
     breakout=consolidation and recovered and c>x['pressure'] and ratio>=1.2 and strong
-    pullback=x['trend'] and b['low']<=x['ma20']*1.015 and c>prev[-1]['high'] and c>x['ma20'] and .8<=ratio<=2.5
+    pullback=x['trend'] and b['low']<=x['ma20']+max(x['ma20']*.015,.5*x.get('atr',0)) and c>prev[-1]['high'] and c>x['ma20'] and ratio>=.8
     base_high=max(z['high'] for z in prev[-5:]);base_low=min(z['low'] for z in prev[-5:])
     preceding_run=prev[-6]['close']/min(z['low'] for z in prev[-21:-5])-1
-    base=(base_high-base_low)/c<=.08 and base_low>=x['ma20']*.97
+    base=(base_high-base_low)/c<=max(.08,min(.16,2*x.get('atr',0)/c)) and base_low>=x['ma20']*.97
     continuation=preceding_run>=.08 and base and recovered and c>base_high and ratio>=1.1 and strong
     reversal=(reversal or bottom) and ratio>=1.05 and strong
     triggers={'reversal':reversal,'breakout':breakout,'pullback':pullback,'continuation':continuation}
@@ -340,6 +341,7 @@ def technical_shapes(bars, x, ratio):
     return dict(kind=kind,watching=watching,trigger=bool(kind),pattern=labels.get(kind,'等待型態'),
                 confirmed=chosen!='reversal' or bool(confirmation and confirmation['confirmed']),
                 confirmation=confirmation if chosen=='reversal' else None,
+                invalidation=(prev[lows[-1]]['low'] if chosen=='reversal' and lows else min(z['low'] for z in prev[-3:]) if chosen=='pullback' else base_low if chosen=='continuation' else min(z['low'] for z in prev[-10:])),
                 line=line,level=(neckline if bottom or (chosen=='reversal' and not line and neckline) else
                       line['end_price'] if chosen=='reversal' and line else base_high if chosen=='continuation' else
                       x['pressure'] if chosen=='breakout' else prev[-1]['high']))
@@ -352,19 +354,20 @@ def setup(bars, chip, volume_fraction=1):
     liquid = x['avg_turnover'] >= 10_000_000  # advisory only, never an entry/selection gate
     shapes=technical_shapes(bars,x,x['volume_ratio'])
     base_days=5 if shapes['kind']=='continuation' else 10
-    anchor=min(z['low'] for z in bars[:-1][-base_days:])
+    anchor=shapes['invalidation'] if shapes['kind'] in ('reversal','pullback','continuation') else min(z['low'] for z in bars[:-1][-base_days:])
     soft_support=anchor-.25*x['atr']
-    floor=anchor if shapes['kind']=='continuation' else x['swing_floor']
+    floor=anchor if shapes['kind'] in ('reversal','pullback','continuation') else x['swing_floor']
     stop = min(soft_support-.5*x['atr'],floor-.75*x['atr'])
     risk = c-stop
-    target = x['resistance'] or c+2*risk
+    space=long_space(bars,c,x['atr']);x['resistance']=space['resistance']
+    target = space['resistance'] or c+2*risk
     rr = (target-c)/risk if risk > 0 else 0
     vol5 = sum(z['volume'] for z in bars[-6:-1])/1000
     ratio = ((chip.get('foreign',0)+chip.get('trust',0))/vol5) if vol5 else 0
     valid = not hot and bool(shapes['watching'] or shapes['trigger']) and b['volume']>0
     risk_limit=max(.06,min(.12,2*x['atr']/c))
     risk_ok = 0 < risk/c <= risk_limit and rr >= 1.5
-    return dict(x, stop=stop,soft_support=soft_support, target=target, target_kind='壓力區' if x['resistance'] else '2R 參考',
+    return dict(x, stop=stop,soft_support=soft_support, target=target, target_kind=space['kind'],space=space,
                 risk=risk, rr=rr, hot=hot, liquid=liquid,
                 risk_limit=risk_limit,chip_ratio=ratio*100, eligible=valid and risk_ok, risk_ok=risk_ok,
                 trigger=shapes['trigger'],watchable=b['volume']>0 and bool(shapes['watching']),
@@ -464,7 +467,7 @@ def analyse(code, name, quote, history, now, intraday=False):
             p['soft_support']=max(p['soft_support'],min(z['low'] for z in prefix[-10:])-.25*plan['atr'])
             if b['close'] > p['target'] and not rejection:
                 p['target'] = plan['resistance'] or b['close']+2*(b['close']-p['stop'])
-                p['target_kind'] = '壓力區' if plan['resistance'] else '2R 參考'
+                p['target_kind'] = plan['target_kind']
             trails.append(dict(date=b['date'],value=round(p['stop'],2),support=round(p['soft_support'],2),target=round(p['target'],2)))
         elif plan['entry']:
             position = dict(entry=b['close'],risk=plan['risk'],stop=plan['stop'],
@@ -480,12 +483,10 @@ def analyse(code, name, quote, history, now, intraday=False):
     recent = [s for s in signals if s['date'] >= bars[-3]['date']]
     if not position and not latest['watchable'] and not any(s['type']=='exit' for s in recent):
         return None
-    observation=max(latest['pattern_level'],bars[-1]['close'])
+    observation=max(latest['ma20'] if 'repair' in latest['patterns'] else latest['pattern_level'],bars[-1]['close'])
     preview_risk=observation-latest['stop']
-    preview_pressure=latest['resistance']
-    if not preview_pressure or preview_pressure<=observation:
-        above=[b['high'] for b in bars[-61:-1] if b['high']>observation]
-        preview_pressure=max(above) if above else None
+    preview_space=long_space(bars,observation,latest['atr'])
+    preview_pressure=preview_space['resistance']
     preview_target=preview_pressure or observation+2*preview_risk
     preview_rr=(preview_target-observation)/preview_risk if preview_risk>0 else 0
     preview_risk_ok=0<preview_risk/observation<=latest['risk_limit'] and preview_rr>=1.5
@@ -493,7 +494,7 @@ def analyse(code, name, quote, history, now, intraday=False):
     if latest['hot']:pending.append('單日急漲跌／波動過高，只觀察不新增部位')
     if 'repair' in latest['patterns']:pending.append('多方修復觀察：尚未收復20日線，不是買點')
     if not latest['patterns']:pending.append('等待型態確認')
-    if not (latest['risk_ok'] if position else preview_risk_ok):pending.append('等待風險空間')
+    if not (latest['risk_ok'] if position else preview_risk_ok):pending.append('等待風險空間：停損距離 %.1f%%／上限 %.1f%%；至%s %.2fR／至少1.5R'%((latest['risk']/bars[-1]['close'] if position else preview_risk/observation)*100,latest['risk_limit']*100,(latest['space'] if position else preview_space)['kind'],latest['rr'] if position else preview_rr))
     if not latest['trigger']:pending.append('等待突破／回測')
     if latest['strategy']=='reversal' and not latest['entry_confirmed']:
         pending.append('等待連續2日站穩突破線並站回20日線')
@@ -514,7 +515,7 @@ def analyse(code, name, quote, history, now, intraday=False):
             dict(label='風險空間',passed=latest['risk_ok'] if position else preview_risk_ok),
             dict(label='站穩確認' if latest['strategy']=='reversal' else '進場型態',passed=latest['trigger'] and latest['entry_confirmed'])]
     # Exit candidates remain for three sessions, even though position is now flat.
-    return dict(code=code,name=name,pattern_label=('多方修復觀察' if 'repair' in latest['patterns'] else '多方趨勢觀察' if not latest['trigger'] and not position else None),risk_limit=round(latest['risk_limit']*100,2),date=bars[-1]['date'],price=bars[-1]['close'],provisional=provisional,
+    return dict(code=code,name=name,observation_price=round(observation,2) if not position else None,space=latest['space'] if position else preview_space,pattern_label=('多方修復觀察' if 'repair' in latest['patterns'] else '多方趨勢觀察' if not latest['trigger'] and not position else None),risk_limit=round(latest['risk_limit']*100,2),date=bars[-1]['date'],price=bars[-1]['close'],provisional=provisional,
                 strategy=position['strategy'] if position else latest['strategy'],
                 patterns=list(dict.fromkeys(latest['patterns']+([position['strategy']] if position else []))),
                 pattern_line=latest['pattern_line'],
@@ -532,7 +533,7 @@ def analyse(code, name, quote, history, now, intraday=False):
                 entry=round(observation if not position else position['entry'],2),
                 stop=round(position['stop'] if position else latest['stop'],2),
                 target=round(position['target'] if position else preview_target,2),
-                target_kind=position['target_kind'] if position else '壓力區' if preview_pressure else '2R 參考',support=round(latest['support'],2),
+                target_kind=position['target_kind'] if position else preview_space['kind'],support=round(latest['support'],2),
                 resistance=round(latest['resistance'],2) if latest['resistance'] else None,
                 rr=round(latest['rr'] if position else preview_rr,2), chip=chip,volume_ratio=round(latest['volume_ratio'],2),
                 technical_priority=(not latest['trend'],-latest['trend_slope'],
