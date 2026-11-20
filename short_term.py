@@ -11,11 +11,11 @@ import threading
 import time
 from flask import Blueprint, jsonify, request
 
-VERSION = 'short-wave-v7'
+VERSION = 'short-wave-v8'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 80
 MAX_PICKS = 20
-SELECTION_VERSION = 12
+SELECTION_VERSION = 13
 LIGHT_BATCH = 64
 
 
@@ -296,7 +296,7 @@ def technical_shapes(bars, x, ratio):
             if level>0:
                 line=dict(start_date=prev[i]['date'],end_date=b['date'],start_price=prev[i]['high'],end_price=level,
                           confirmed_date=bars[j+2]['date'])
-                near_line=abs(c/level-1)<=.05
+                near_line=abs(c/level-1)<=max(.05,1.5*x.get('atr',0)/c)
                 confirmation=standing_confirmation(bars,level,slope)
                 # A resistance line must not cut through intervening swing highs.
                 valid_line=all(prev[k]['high']<=prev[i]['high']+slope*(k-i)+max(x.get('atr',0)*.25,prev[k]['high']*.005)
@@ -333,6 +333,9 @@ def technical_shapes(bars, x, ratio):
         (k!='reversal' or confirmation and confirmation['confirmed'])),None)
     if kind is None:kind=next((k for k in families if triggers[k]),None)
     watching=[k for k,v in watches.items() if v or triggers[k]]
+    if x['trend'] and not watching:watching=['continuation']
+    if not watching and c<x['ma20'] and any(sum(z['close'] for z in bars[k-19:k+1])/20>sum(z['close'] for z in bars[k-59:k+1])/60 for k in range(max(59,n-20),n-1)):
+        watching=['repair']
     chosen=kind or (watching[0] if watching else None)
     return dict(kind=kind,watching=watching,trigger=bool(kind),pattern=labels.get(kind,'等待型態'),
                 confirmed=chosen!='reversal' or bool(confirmation and confirmation['confirmed']),
@@ -359,11 +362,12 @@ def setup(bars, chip, volume_fraction=1):
     vol5 = sum(z['volume'] for z in bars[-6:-1])/1000
     ratio = ((chip.get('foreign',0)+chip.get('trust',0))/vol5) if vol5 else 0
     valid = not hot and bool(shapes['watching'] or shapes['trigger']) and b['volume']>0
-    risk_ok = 0 < risk/c <= .06 and rr >= 1.5
+    risk_limit=max(.06,min(.12,2*x['atr']/c))
+    risk_ok = 0 < risk/c <= risk_limit and rr >= 1.5
     return dict(x, stop=stop,soft_support=soft_support, target=target, target_kind='壓力區' if x['resistance'] else '2R 參考',
                 risk=risk, rr=rr, hot=hot, liquid=liquid,
-                chip_ratio=ratio*100, eligible=valid and risk_ok, risk_ok=risk_ok,
-                trigger=shapes['trigger'],watchable=not hot and b['volume']>0 and bool(shapes['watching']),
+                risk_limit=risk_limit,chip_ratio=ratio*100, eligible=valid and risk_ok, risk_ok=risk_ok,
+                trigger=shapes['trigger'],watchable=b['volume']>0 and bool(shapes['watching']),
                 entry=shapes['trigger'] and shapes['confirmed'] and valid and risk_ok,pattern=shapes['pattern'],
                 entry_confirmed=shapes['confirmed'],confirmation=shapes['confirmation'],
                 strategy=shapes['kind'] or (shapes['watching'][0] if shapes['watching'] else None),
@@ -484,8 +488,10 @@ def analyse(code, name, quote, history, now, intraday=False):
         preview_pressure=max(above) if above else None
     preview_target=preview_pressure or observation+2*preview_risk
     preview_rr=(preview_target-observation)/preview_risk if preview_risk>0 else 0
-    preview_risk_ok=0<preview_risk/observation<=.06 and preview_rr>=1.5
+    preview_risk_ok=0<preview_risk/observation<=latest['risk_limit'] and preview_rr>=1.5
     pending=[]
+    if latest['hot']:pending.append('單日急漲跌／波動過高，只觀察不新增部位')
+    if 'repair' in latest['patterns']:pending.append('多方修復觀察：尚未收復20日線，不是買點')
     if not latest['patterns']:pending.append('等待型態確認')
     if not (latest['risk_ok'] if position else preview_risk_ok):pending.append('等待風險空間')
     if not latest['trigger']:pending.append('等待突破／回測')
@@ -504,11 +510,11 @@ def analyse(code, name, quote, history, now, intraday=False):
         status['state']=labels.get(status['action'],status['state'])
         status['action_note']='盤中未收棒，條件可能改變；'+status['action_note'].replace('收盤資料確認','盤中暫定').replace('收盤','本次')
     event=status['event']
-    checks=[dict(label='型態',passed=bool(latest['patterns'])),
+    checks=[dict(label='追價／波動風險',passed=not latest['hot']),dict(label='型態',passed=bool(latest['patterns'])),
             dict(label='風險空間',passed=latest['risk_ok'] if position else preview_risk_ok),
             dict(label='站穩確認' if latest['strategy']=='reversal' else '進場型態',passed=latest['trigger'] and latest['entry_confirmed'])]
     # Exit candidates remain for three sessions, even though position is now flat.
-    return dict(code=code,name=name,date=bars[-1]['date'],price=bars[-1]['close'],provisional=provisional,
+    return dict(code=code,name=name,pattern_label=('多方修復觀察' if 'repair' in latest['patterns'] else '多方趨勢觀察' if not latest['trigger'] and not position else None),risk_limit=round(latest['risk_limit']*100,2),date=bars[-1]['date'],price=bars[-1]['close'],provisional=provisional,
                 strategy=position['strategy'] if position else latest['strategy'],
                 patterns=list(dict.fromkeys(latest['patterns']+([position['strategy']] if position else []))),
                 pattern_line=latest['pattern_line'],
@@ -540,6 +546,33 @@ def analyse(code, name, quote, history, now, intraday=False):
                 trend=latest['trend'], bars=bars[-120:],signals=signals,trailing=trails,
                 source=str(quote.get('source') or 'Yahoo 日線'),volume_estimated=provisional,
                 latest_event=event['type'] if event else None)
+
+
+def technical_audit(code,name,bars):
+    """Explain real deep OHLC decisions; neither an order nor a shortlist quota."""
+    result=dict(code=code,name=name,price=bars[-1]['close'] if bars else None,
+                date=bars[-1]['date'] if bars else None,deep=True,bars=len(bars))
+    if len(bars)<65:
+        return dict(result,reason='完整日K不足65根／OHLC未通過驗證，未產生訊號')
+    from short_side import setup as short_setup
+    plans={'long':setup(bars,dict(available=False,foreign=0,trust=0)), 'short':short_setup(bars)}
+    messages=[]
+    for side,p in plans.items():
+        reasons=[]
+        if p['hot']:reasons.append('急漲跌或高波動，只觀察')
+        if not p['trigger']:reasons.append('進場型態尚未觸發')
+        if side=='long' and not p['entry_confirmed']:reasons.append('尚未連2日站穩')
+        risk=p['risk']/bars[-1]['close']*100
+        if not (0<risk<=p['risk_limit']*100):reasons.append('停損距離不合適')
+        if p['rr']<1.5:reasons.append('至支撐壓力不足1.5R')
+        if p['entry']:reasons=['本次進場條件成立（重播部位另行判斷）']
+        result[side]=dict(watch=p['watchable'],trigger=p['trigger'],entry=p['entry'],
+                          risk_pct=round(risk,2),risk_limit_pct=round(p['risk_limit']*100,2),
+                          rr=round(p['rr'],2),stop=round(p['stop'],2),target=round(p['target'],2),reasons=reasons)
+        messages.append(('多方' if side=='long' else '空方')+'：'+'、'.join(reasons)+
+                        '；停損距離 %.1f%%／上限 %.1f%%，空間 %.2fR'%(risk,p['risk_limit']*100,p['rr']))
+    result['reason']='；'.join(messages)
+    return result
 
 
 def exclusion_reason(bars, history, now):
@@ -578,7 +611,7 @@ def light_technical(quote, now, intraday=False, diagnostics=None):
     closes=[p[1] for p in points];c=closes[-1]
     ma20=sum(closes[-20:])/20;ma60=sum(closes[-60:])/60
     old20=sum(closes[-25:-5])/20;pressure=max(closes[-21:-1])
-    if abs(c/closes[-2]-1)>.095:return reject('單日漲跌超過9.5%')
+    extreme_move=abs(c/closes[-2]-1)>.095  # entry guard lives in the OHLC engine, not observation coverage
     trend=c>ma20>ma60 and ma20>old20
     # Preliminary closes locate shapes; actual OHLC/volume/risk is verified later.
     pseudo=[dict(date=day(d),open=p,high=p,low=p,close=p) for d,p in points]
@@ -586,17 +619,17 @@ def light_technical(quote, now, intraday=False, diagnostics=None):
     if not shapes['watching']:
         floor=min(closes[-21:-1])
         if c<ma20 and (ma20<ma60 or c<=floor*1.03):
-            if diagnostics is not None:diagnostics['reason']='通過空方技術初篩'
+            if diagnostics is not None:diagnostics['reason']='通過空方觀察初篩'+('（急漲跌，非進場）' if extreme_move else '')
             return dict(bucket='short',rank=(not (ma20<ma60),ma20/old20-1,abs(c/floor-1)))
         return reject('尚未接近型態觀察位置')
-    if diagnostics is not None:diagnostics['reason']='通過技術初篩'
+    if diagnostics is not None:diagnostics['reason']='通過技術觀察初篩'+('（急漲跌，非進場）' if extreme_move else '')
     bucket=shapes['kind'] or shapes['watching'][0]
     return dict(bucket=bucket,rank=(not trend,-(ma20/old20-1),abs(c/pressure-1)))
 
 
 def technical_pool(metrics, keep, limit=MAX_POOL, sectors=None, price_bands=None):
     buckets=[sorted(((c,m) for c,m in metrics.items() if m['bucket']==b),key=lambda x:(x[1]['rank'],x[0]))
-             for b in ('reversal','breakout','pullback','continuation','recovery','short')]
+             for b in ('reversal','breakout','pullback','continuation','repair','recovery','short')]
     result=list(dict.fromkeys(c for c in keep))[:limit]
     if sectors:
         # Inspect each technical setup across sectors before consuming the cap.
@@ -764,7 +797,7 @@ class ShortTermService:
                 cycle=dict(day=day(self.now()),intraday=intraday,queue=queue,cursor=0,stocks=self.stock_meta,
                            evaluated=[],excluded={},failures=0,started_at=self.now().isoformat())
             covered=set(cycle.get('evaluated',[]));failed_codes=set(cycle.get('failed_codes',[]))
-            excluded=dict(cycle.get('excluded',{}));failures=0;processed=0;finished=set();quote_dates=[]
+            excluded=dict(cycle.get('excluded',{}));audits=dict(cycle.get('audits',{}));failures=0;processed=0;finished=set();quote_dates=[]
             rows_by_code={r['code']:r for r in previous.get('all_rows',previous.get('rows',[])) if r['code'] in set(queue)}
             short_by_code={r['code']:r for r in previous.get('short_rows',[]) if r['code'] in set(queue)}
             with self.lock:
@@ -793,6 +826,8 @@ class ShortTermService:
                     bars=normalize_bars(q,self.now(),include_current=intraday and live_fresh)
                     if bars:
                         quote_dates.append(bars[-1]['date'])
+                    raw_price=number(q.get('close')) or next((number(v) for v in reversed(q.get('closes') or []) if number(v)),0)
+                    if raw_price>=500:audits[code]=technical_audit(code,names[code],bars)
                     from short_side import analyse as analyse_short
                     short_row=analyse_short(code,names[code],q,history[code],self.now(),intraday=intraday and live_fresh)
                     if short_row:
@@ -831,7 +866,7 @@ class ShortTermService:
             for c in base:
                 if c not in finished:break
                 advanced+=1
-            cycle.update(cursor=cursor+advanced,evaluated=sorted(covered),excluded=excluded,failures=len(failed_codes),failed_codes=sorted(failed_codes))
+            cycle.update(audits=audits,cursor=cursor+advanced,evaluated=sorted(covered),excluded=excluded,failures=len(failed_codes),failed_codes=sorted(failed_codes))
             complete=cycle['cursor']>=len(queue)
             self.scan_meta.update(deep_total=len(queue),deep_done=len(covered),deep_success=len(covered)-len(failed_codes),deep_complete=complete,scan_warning=pause)
             self.scan_meta['deep_sectors']={sector:sum((self.stock_meta.get(c) or {}).get('sector')==sector for c in covered)
@@ -841,6 +876,8 @@ class ShortTermService:
             for band,counter in self.scan_meta.get('price_coverage',{}).items():
                 counter['deep']=sum((self.stock_meta.get(c) or {}).get('price_band')==band for c in covered)
                 counter['qualified']=sum(price_band(number(r.get('price')) or 0)==band for r in rows)
+                counter['short_qualified']=sum(price_band(number(r.get('price')) or 0)==band for r in short_rows)
+            if audits:self.scan_meta['high_price_examples']=sorted(audits.values(),key=lambda a:-(a.get('price') or 0))
             asof=max(quote_dates+[r.get('date') for r in rows if r.get('date')],default=self.scan_meta.get('market_date'))
             payload=dict(version=VERSION,selection_version=SELECTION_VERSION,rows=rows[:MAX_PICKS],all_rows=rows,short_rows=short_rows,
                 scanned=len(covered),failed=cycle['failures'],cycle=cycle,intraday=intraday,trigger=self.trigger,radar_at=self.radar_at,
@@ -929,7 +966,7 @@ class ShortTermService:
             alerts=[a for a in alerts if any(r['code']==a['code'] and r.get('current_action')!='unconfirmed' for r in rows)]
             if sector=='電子':rows=[r for r in rows if r.get('sector')=='電子']
             elif sector=='非電子':rows=[r for r in rows if r.get('sector')!='電子']
-            if shape in ('reversal','breakout','pullback','continuation'):
+            if shape in ('reversal','breakout','pullback','continuation','repair'):
                 rows=[r for r in rows if shape in r.get('patterns',[])]
                 alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
             ranges={'under100':(0,100),'100to500':(100,500),'500to1000':(500,1000),'1000plus':(1000,float('inf'))}

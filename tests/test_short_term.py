@@ -52,7 +52,7 @@ def test_technical_entry_is_not_blocked_by_lot_size_or_auxiliary_chips(kind):
     else:h[-3]['foreign']=None
     result=st.analyse('2330','fixture',quote(bars),h,now(bars))
     if kind=='hot':
-        assert result is None
+        assert result and not result['entry_ready'] and result['current_action']!='entry'
     else:
         assert result['entry_ready'] and result['current_action']=='entry'
         assert result['signals'][-1]['type']=='entry'
@@ -198,15 +198,17 @@ def test_old_selection_snapshot_is_rebuilt_even_when_age_is_fresh():
     s.executor.submit.assert_called_once()
 
 
-def test_empty_result_retains_real_quote_date_and_exclusion_counts():
+def test_extreme_move_retains_real_quote_date_as_watch_without_new_entry():
     s=service();bars,h=market(70)
     bars[-1].update(open=115,low=114,high=121,close=120)
     s.inputs=lambda keep:(['2330'],{'2330':'fixture'},{'2330':h})
     s.quote.return_value=quote(bars);s.now=lambda:now(bars)
     s.build()
-    assert s.cached['rows']==[] and s.cached['scanned']==1
+    assert len(s.cached['rows'])==1 and s.cached['scanned']==1
     assert s.cached['date']==bars[-1]['date']
-    assert s.cached['excluded']=={'過熱或波動過高':1}
+    assert not s.cached['rows'][0]['entry_ready']
+    assert any('波動' in x for x in s.cached['rows'][0]['pending'])
+    assert s.cached['excluded']=={}
 
 
 def test_all_missing_quotes_do_not_publish_a_false_empty_scan():
@@ -542,15 +544,15 @@ def test_nominal_price_scaling_does_not_change_technical_preselection_or_entry()
     assert st.price_band(large[-1]['close'])=='1000以上'
 
 
-def test_price_diagnostics_record_high_price_exclusion_as_technical_not_institutional():
+def test_high_price_extreme_move_is_initial_observation_not_silently_excluded():
     bars,_=market(71)
     for b in bars:
         for k in ('open','high','low','close'):b[k]*=20
     bars[-1]['close']*=1.10
     q=dict(closes=[b['close'] for b in bars],timestamps=[int(datetime.fromisoformat(b['date']+'T05:30:00').replace(tzinfo=st.timezone.utc).timestamp()) for b in bars])
     audit={}
-    assert st.light_technical(q,now(bars),diagnostics=audit) is None
-    assert audit['reason']=='單日漲跌超過9.5%'
+    assert st.light_technical(q,now(bars),diagnostics=audit) is not None
+    assert '非進場' in audit['reason']
 
 def test_detailed_cap_does_not_erase_high_price_candidates_behind_many_low_price_names():
     metrics={str(i):dict(bucket='breakout',rank=(False,-(100-i),0)) for i in range(100)}
@@ -613,7 +615,7 @@ def test_four_independent_pattern_families_detect_breakout_pullback_continuation
 
 
 def test_pattern_v3_uses_separate_snapshot_namespace_and_no_price_ceiling():
-    assert st.VERSION=='short-wave-v7' and st.KEY=='short_term:short-wave-v7'
+    assert st.VERSION=='short-wave-v8' and st.KEY=='short_term:short-wave-v8'
     bars,h=market(71)
     for b in bars:
         for k in ('open','high','low','close'):b[k]*=100
