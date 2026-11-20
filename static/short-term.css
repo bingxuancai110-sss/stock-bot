@@ -222,3 +222,5 @@ html body#stockbot-app[data-app-view] #stockbot-shell #stockbot-workbench #wb-sh
 #wb-short-term .st-card>.st-sizing{margin:0 18px 12px}
 
 .st-direction{display:flex;gap:6px;padding:5px;background:var(--sb-feedback-surface,#edf1f3);border-radius:14px;margin:12px 0 16px}.st-direction button{flex:1;min-height:46px;border:0;border-radius:10px;background:transparent;color:inherit;font:inherit;font-weight:750;transition:background 180ms ease,color 180ms ease}.st-direction button[aria-pressed="true"]{background:#203e4b;color:#fff}.st-direction button:focus-visible{outline:2px solid #7296aa;outline-offset:2px}
+
+.st-price-tools{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin:12px 0 16px}.st-price-tools label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:700;color:inherit;min-width:0}.st-price-tools select{width:100%;min-width:0;min-height:46px;padding:10px 28px 10px 10px;border:1px solid var(--sb-app-line,#dce2e5);border-radius:11px;background:var(--sb-feedback-surface,#fff);color:inherit;font:inherit;font-size:13px}.st-price-tools select:focus-visible{outline:2px solid #7296aa;outline-offset:2px}

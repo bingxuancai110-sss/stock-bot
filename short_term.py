@@ -862,7 +862,7 @@ class ShortTermService:
             if not queued:
                 with self.lock:self.running=False
 
-    def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS, schedule=False, direction="long"):
+    def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS, schedule=False, direction="long", price_range="all", sort="signal"):
         with self.lock:
             intraday=self.intraday()
             if not self.loaded or (self.cache_mode is not None and self.cache_mode!=intraday and not self.running):
@@ -932,11 +932,18 @@ class ShortTermService:
             if shape in ('reversal','breakout','pullback','continuation'):
                 rows=[r for r in rows if shape in r.get('patterns',[])]
                 alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
+            ranges={'under100':(0,100),'100to500':(100,500),'500to1000':(500,1000),'1000plus':(1000,float('inf'))}
+            price_range=price_range if price_range in ranges else 'all'
+            sort=sort if sort in ('price_desc','price_asc') else 'signal'
+            if price_range in ranges:
+                lo,hi=ranges[price_range]
+                rows=[r for r in rows if number(r.get('price')) is not None and lo<=number(r['price'])<hi]
+                alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
             position_counts={g:sum(position_group(r)==g for r in rows) for g in ('held','waiting','closed','unknown')}
             for row in rows:row['position_group']=position_group(row)
             if position in position_counts:rows=[r for r in rows if r['position_group']==position]
             if sector in ('電子','非電子'):alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
-            rows.sort(key=clarity_rank)
+            rows.sort(key=(lambda r:(number(r.get('price')) is None, (-1 if sort=='price_desc' else 1)*(number(r.get('price')) or 0),r['code'])) if sort!='signal' else clarity_rank)
             total=len(rows)
             try:offset=max(0,int(offset));limit=max(1,min(50,int(limit)))
             except (ValueError,TypeError):offset=0;limit=MAX_PICKS
@@ -947,7 +954,7 @@ class ShortTermService:
             new_watch=[dict(code=r['code'],name=r['name'],date=r['watch_date'],price=r['price'],type='watch')
                        for r in rows if r.get('watch_date')==day(expected) and r.get('current_action')!='unconfirmed' and not r.get('active')]
             return dict(ok=True,rows=rows[offset:offset+limit],alerts=alerts,observations=new_watch,meta=dict(
-                direction=direction,direction_counts={'long':len((cached or {}).get('all_rows',[])),'short':len((cached or {}).get('short_rows',[]))},total=total,offset=offset,limit=limit,has_more=offset+limit<total,
+                price_range=price_range,sort=sort,direction=direction,direction_counts={'long':len((cached or {}).get('all_rows',[])),'short':len((cached or {}).get('short_rows',[]))},total=total,offset=offset,limit=limit,has_more=offset+limit<total,
                 stage_counts=stages,
                 position_counts=position_counts,
                 intraday=intraday,refresh_interval_seconds=600,
@@ -970,7 +977,7 @@ def create_blueprint(*, login, service):
     @login
     def short_term(uid):
         try:
-            result=service.payload(request.args.get('refresh')=='1',sector=request.args.get('sector'),position=request.args.get('position'),shape=request.args.get('shape'),offset=request.args.get('offset',0),limit=request.args.get('limit',MAX_PICKS),direction=request.args.get('direction','long'))
+            result=service.payload(request.args.get('refresh')=='1',sector=request.args.get('sector'),position=request.args.get('position'),shape=request.args.get('shape'),offset=request.args.get('offset',0),limit=request.args.get('limit',MAX_PICKS),direction=request.args.get('direction','long'),price_range=request.args.get('price_range','all'),sort=request.args.get('sort','signal'))
             response=jsonify(result)
         except Exception:
             response=jsonify(ok=False,error='短線研究暫時無法載入，請稍後重試')
