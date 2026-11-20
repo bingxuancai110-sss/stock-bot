@@ -78,3 +78,21 @@ def test_manual_verifier_waits_for_saved_completion_and_resumes_when_deferred(mo
     monkeypatch.setattr(script.time,'sleep',Mock())
     script.main()
     assert [c.args[0] for c in call.call_args_list]==['POST','GET','POST']
+
+
+@pytest.mark.parametrize('auth,manual,hour,trading,accepted',[
+    (True,True,22,True,True),(True,False,22,True,False),
+    (False,True,22,True,False),(True,True,22,False,False),
+    (True,True,8,True,False),
+])
+def test_authenticated_manual_close_rebuild_keeps_schedule_guards(monkeypatch,auth,manual,hour,trading,accepted):
+    monkeypatch.setattr(taiex_cron_auth,'authorized',Mock(return_value=auth))
+    service=Mock();service.payload.return_value={'meta':{'building':True}}
+    ns=dict(request=request,jsonify=jsonify,abort=abort,os=os,DEFAULT_WEB_BASE_URL='https://stock-bot-6xct.onrender.com',
+        _is_taiwan_intraday_window=lambda:False,_short_term_service=service,
+        taiwan_now=lambda:datetime(2026,11,20,hour),is_twse_trading_day=lambda d:trading)
+    install(ns,'cron_short_term_live');app=Flask(__name__)
+    app.add_url_rule('/trigger',view_func=ns['cron_short_term_live'],methods=['POST'])
+    result=app.test_client().post('/trigger',headers={'X-Stockbot-Manual-Close':'1'} if manual else {})
+    assert result.status_code==(202 if accepted else 200 if auth else 403)
+    assert service.payload.called==accepted
