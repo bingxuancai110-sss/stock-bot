@@ -207,7 +207,7 @@ def test_extreme_move_retains_real_quote_date_as_watch_without_new_entry():
     assert len(s.cached['rows'])==1 and s.cached['scanned']==1
     assert s.cached['date']==bars[-1]['date']
     assert not s.cached['rows'][0]['entry_ready']
-    assert any('波動' in x for x in s.cached['rows'][0]['pending'])
+    assert any('9.5%' in x for x in s.cached['rows'][0]['pending'])
     assert s.cached['excluded']=={}
 
 
@@ -435,7 +435,9 @@ def test_intraday_volume_is_time_normalized_and_raw_chart_volume_is_not_changed(
     assert live['volume_estimated'] and live['volume_ratio']==1.4
     assert live['bars'][-1]['volume']==700000
     assert live['entry_ready']
-    assert not st.analyse('2330','fixture',quote(bars),h,now(bars))['entry_ready']
+    closed=st.analyse('2330','fixture',quote(bars),h,now(bars))
+    assert closed['volume_ratio']==.7 and not closed['volume_estimated']
+    # Another independently confirmed price pattern may still qualify at close.
 
 
 def test_intraday_snapshots_are_separate_and_stale_source_times_suppress_live_signals():
@@ -615,7 +617,7 @@ def test_four_independent_pattern_families_detect_breakout_pullback_continuation
 
 
 def test_pattern_v3_uses_separate_snapshot_namespace_and_no_price_ceiling():
-    assert st.VERSION=='short-wave-v9' and st.KEY=='short_term:short-wave-v9'
+    assert st.VERSION=='short-wave-v10' and st.KEY=='short_term:short-wave-v10'
     bars,h=market(71)
     for b in bars:
         for k in ('open','high','low','close'):b[k]*=100

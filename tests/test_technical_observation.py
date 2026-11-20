@@ -15,7 +15,7 @@ def test_extreme_high_price_decline_is_visible_without_becoming_new_short():
         result=ss.analyse('2330','isolated',quote(scaled),h,now(scaled))
         assert result and not result['entry_ready']
         assert result['current_action']!='entry'
-        assert any('只觀察' in x for x in result['pending'])
+        assert any('9.5%' in x for x in result['pending'])
 
 
 def test_breakdown_stop_uses_broken_structure_not_distant_high():
