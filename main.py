@@ -53739,7 +53739,7 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
 
 
 def _line_hidden_holdings_flex(user_id, positions=None, prices=None):
-    """隱藏指令：依持股比例由高到低顯示配置長條與今日漲幅；不顯示金額。"""
+    """隱藏指令：依持股比例由高到低顯示配置長條與最近交易日漲幅；不顯示金額。"""
     positions = (merge_positions(get_positions(user_id)) if positions is None else positions)
     if not positions:
         return FlexSendMessage(alt_text="秉軒持股", contents={"type":"bubble","body":{"type":"box","layout":"vertical","contents":[{"type":"text","text":"目前沒有持股資料","weight":"bold","size":"lg"},{"type":"text","text":"請先在網頁持股頁新增持股。","size":"sm","color":"#667085","wrap":True,"margin":"md"}]}})
@@ -53748,17 +53748,23 @@ def _line_hidden_holdings_flex(user_id, positions=None, prices=None):
     # its fan-out so a holdings query does not open eight concurrent fetches.
     if prices is None:
         prices=get_realtime_stocks_bulk(codes,workers=3,rng="1d",request_timeout=5) or {}
-    staged=[]; total_market=0.0
+    staged=[]; total_market=0.0; priced_position_count=0
     for pos in positions:
         code=str(pos.get("code") or "").strip(); shares=float(pos.get("shares") or 0); q=prices.get(code) or {}
         try: price=float(q.get("close") or q.get("price") or 0)
         except (TypeError,ValueError): price=0
-        market=price*shares if price>0 else 0; total_market+=market
+        market=price*shares if price>0 else 0
+        if shares > 0 and price > 0:
+            priced_position_count += 1
+            total_market += market
         staged.append((pos,price,market,q))
+    positive_positions = sum(1 for pos in positions if float(pos.get("shares") or 0) > 0)
+    weights_complete = positive_positions == priced_position_count and total_market > 0
     rows=[]
     for pos,price,market,q in staged:
-        code=str(pos.get("code") or "").strip(); weight=market/total_market*100 if total_market>0 else 0
-        # 今日漲幅來自即時行情欄位；若行情源未提供則顯示待確認，不以持倉報酬冒充。
+        code=str(pos.get("code") or "").strip()
+        weight=market/total_market*100 if weights_complete and total_market>0 else None
+        # 休市時沿用最新交易日的日漲跌，並把資料日期標出來，不冒稱為今日變化。
         today_pct=None
         for key in ("pct","change_pct","pct_change","changePercent","percent","regularMarketChangePercent","today_change_pct","daily_change_pct"):
             try:
@@ -53766,12 +53772,18 @@ def _line_hidden_holdings_flex(user_id, positions=None, prices=None):
                     today_pct=float(q.get(key)); break
             except (TypeError,ValueError):
                 pass
-        observed_day = str(q.get("close_date") or "").replace("-", "")
+        observed_raw = str(q.get("close_date") or "").strip()
+        observed_day = observed_raw.replace("-", "").replace("/", "")[:8]
         current_day = taiwan_today().strftime("%Y%m%d")
-        if observed_day != current_day or not q.get("has_live_trade_price"):
+        if len(observed_day) != 8 or not observed_day.isdigit() or observed_day > current_day:
             today_pct = None
+            observed_day = ""
+        pct_label = "今日漲跌" if observed_day == current_day else "最近交易日漲跌"
+        pct_date = (f"{observed_day[:4]}-{observed_day[4:6]}-{observed_day[6:8]}"
+                    if observed_day and observed_day != current_day and today_pct is not None else None)
         name=short_company_name(stock_display_name(code,None,q.get("name")))
-        quote_note = str(q.get("updated_at") or q.get("trade_at") or "行情時間未提供")
+        quote_note = str(q.get("updated_at") or q.get("trade_at") or
+                         (f"{observed_day[:4]}-{observed_day[4:6]}-{observed_day[6:8]}" if observed_day else "行情時間未提供"))
         quote_note += " · " + str(q.get("source") or "最近可用行情")
         limit_state = None
         if today_pct is not None:
@@ -53785,8 +53797,8 @@ def _line_hidden_holdings_flex(user_id, positions=None, prices=None):
                         limit_state = "跌停"
             except (TypeError, ValueError):
                 pass
-        rows.append((name,code,weight,today_pct,quote_note,limit_state))
-    rows.sort(key=lambda r:r[2], reverse=True)
+        rows.append((name,code,weight,today_pct,quote_note,limit_state,pct_label,pct_date))
+    rows.sort(key=lambda r:(r[2] is not None, r[2] or 0), reverse=True)
     from line_holdings_layout import render_holdings
     contents = render_holdings(rows)
     return FlexSendMessage(alt_text="秉軒持股配置比例",contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"18px","contents":contents[:48]}})
@@ -53857,11 +53869,40 @@ def _line_hidden_combined_portfolio_flex(user_id):
             print("⚠️ LINE 官方盤中行情刷新失敗：%s" % type(quote_exc).__name__, flush=True)
     # A fallback cannot overwrite a fresh, owner-scoped Fugle observation.
     prices.update(fugle_quotes)
-    missing_quotes = [code for code in codes if not prices.get(code)]
+    def _has_close(quote):
+        try:
+            return isinstance(quote, dict) and float(quote.get("close") or quote.get("price") or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    # 休市或開盤前沒有官方盤中報價時，補抓最近日 K 收盤；週末快取週期
+    # 已固定指向上週五的 postclose key，因此不會把週五資料標成今日行情。
+    missing_quotes = [code for code in codes if not _has_close(prices.get(code))]
+    closed_market = not _is_taiwan_intraday_window()
+    fallback_codes = codes if closed_market else []
+    if fallback_codes:
+        try:
+            fallback = get_realtime_stocks_bulk(
+                fallback_codes, workers=3, rng="1d", skip_mis=True, request_timeout=5) or {}
+            recovered = 0
+            for code, quote in fallback.items():
+                if _has_close(quote):
+                    existing = prices.get(code) or {}
+                    old_day = str(existing.get("close_date") or "").replace("-", "").replace("/", "")[:8]
+                    new_day = str(quote.get("close_date") or "").replace("-", "").replace("/", "")[:8]
+                    if (not _has_close(existing) or not old_day or
+                            (new_day and new_day > old_day) or
+                            (closed_market and new_day == old_day and not existing.get("close_is_final"))):
+                        prices[code] = quote
+                        recovered += 1
+            print("🕒 LINE 休市／缺漏收盤回退 已更新=%s/%s" % (recovered, len(fallback_codes)), flush=True)
+        except Exception as quote_exc:
+            print("⚠️ LINE 最近收盤回退失敗：%s" % type(quote_exc).__name__, flush=True)
+    missing_quotes = [code for code in codes if not _has_close(prices.get(code))]
     print("⚡ LINE 持股行情快照命中 %s/%s；缺漏不阻塞回覆" % (
         len(codes) - len(missing_quotes), len(codes)), flush=True)
     print("🧭 LINE 持股報告階段=持股行情完成 已取得=%s/%s 耗時=%.1fs" % (
-        sum(1 for code in codes if prices.get(code)), len(codes), time.monotonic()-started), flush=True)
+        sum(1 for code in codes if _has_close(prices.get(code))), len(codes), time.monotonic()-started), flush=True)
     holdings_msg = _line_hidden_holdings_flex(user_id, positions=positions, prices=prices)
     report_msg = _line_hidden_operation_report(user_id, positions=positions, price_map=prices)
     print("🧭 LINE 持股報告階段=日報完成 總耗時=%.1fs" % (time.monotonic()-started), flush=True)
@@ -53958,11 +53999,21 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None):
         positions = merge_positions(get_positions(user_id)) if positions is None else positions
         codes = sorted({str(x.get("code") or "").strip() for x in positions + logs if x.get("code")})
         price_map = dict(price_map or {})
-        missing_codes = [code for code in codes if not price_map.get(code)]
+        def _has_close(quote):
+            try:
+                return isinstance(quote, dict) and float(quote.get("close") or quote.get("price") or 0) > 0
+            except (TypeError, ValueError):
+                return False
+        missing_codes = [code for code in codes if not _has_close(price_map.get(code))]
         if missing_codes:
             print("⚠️ LINE 操作日報行情快照缺漏 %s 檔；略過逐檔補抓" % (
                 len(missing_codes)), flush=True)
-        total_value = sum(float((price_map.get(x.get("code")) or {}).get("close") or (price_map.get(x.get("code")) or {}).get("price") or 0) * float(x.get("shares") or 0) for x in positions)
+        held_positions = [x for x in positions if float(x.get("shares") or 0) > 0]
+        all_held_prices_known = all(_has_close(price_map.get(x.get("code"))) for x in held_positions)
+        total_value = (sum(float((price_map.get(x.get("code")) or {}).get("close") or
+                                 (price_map.get(x.get("code")) or {}).get("price") or 0) *
+                            float(x.get("shares") or 0) for x in held_positions)
+                       if all_held_prices_known else 0.0)
         enriched = enrich_position_change_logs(logs, positions, price_map, total_value)
         # LINE 日報與網頁一致：同一交易日、同一股票的多筆原始操作合併成一列。
         # 例如同一天「新增 +1」和「加碼 +1」合併為「新增」一列，而不是重複顯示。
@@ -53978,13 +54029,17 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None):
                 merged["_first_before"] = entry.get("shares_before")
                 merged["_last_after"] = entry.get("shares_after")
                 merged["_first_id"] = int(entry.get("id") or 0)
-                merged["_event_weight_sum"] = float(entry.get("event_weight") or 0)
+                merged["_event_weight_known"] = entry.get("event_weight") is not None
+                merged["_event_weight_sum"] = float(entry.get("event_weight")) if entry.get("event_weight") is not None else 0.0
                 merged_by_code[code] = merged
             else:
                 merged = merged_by_code[code]
                 merged["shares_delta"] = int(merged.get("shares_delta") or 0) + delta
                 merged["_last_after"] = entry.get("shares_after", merged.get("_last_after"))
-                merged["_event_weight_sum"] += float(entry.get("event_weight") or 0)
+                if entry.get("event_weight") is None:
+                    merged["_event_weight_known"] = False
+                else:
+                    merged["_event_weight_sum"] += float(entry.get("event_weight"))
                 # 同一股票合併後的變動幅度，以當日第一筆操作前持股為基準。
                 merged["trade_price"] = entry.get("trade_price", merged.get("trade_price"))
         merged_enriched = []
@@ -53995,10 +54050,11 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None):
             merged["shares_before"] = before
             merged["shares_after"] = after
             merged["change_pct"] = (net_delta / before * 100) if before > 0 else None
-            merged["event_weight"] = merged.get("_event_weight_sum")
+            merged["event_weight"] = (merged.get("_event_weight_sum")
+                                       if merged.get("_event_weight_known") else None)
             merged["action"] = "add" if net_delta > 0 else "reduce" if net_delta < 0 else merged.get("action")
             merged["id"] = merged.get("_first_id")
-            for internal_key in ("_first_before", "_last_after", "_first_id", "_event_weight_sum"):
+            for internal_key in ("_first_before", "_last_after", "_first_id", "_event_weight_sum", "_event_weight_known"):
                 merged.pop(internal_key, None)
             if net_delta != 0:
                 merged_enriched.append(merged)
